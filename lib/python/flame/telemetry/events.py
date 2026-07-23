@@ -31,6 +31,8 @@ EVENT_ABANDON_TIMEOUT = "abandon_timeout"      # 90s vclock slot-free of a stall
 EVENT_AGG_BELIEF_CHANGE = "agg_belief_change"   # aggregator's belief about a trainer's avail state
 EVENT_STEP_TIMING = "step_timing"    # per-function wall duration of a timed compute step
 EVENT_COMM = "comm"                  # one message put on the wire (byte-size accounting)
+EVENT_VERSION_BUMP_CENSUS = "version_bump_census"  # #S1: pool-wide in-flight state at a model_version bump
+EVENT_VAR_CALC = "var_calc"          # fwdllm: grad-norm summary in/out of the variance gate (DEBUG-only audit)
 
 KNOWN_EVENTS = frozenset(
     {
@@ -51,6 +53,8 @@ KNOWN_EVENTS = frozenset(
         EVENT_AGG_BELIEF_CHANGE,
         EVENT_STEP_TIMING,
         EVENT_COMM,
+        EVENT_VERSION_BUMP_CENSUS,
+        EVENT_VAR_CALC,
     }
 )
 
@@ -200,6 +204,10 @@ def build_step_timing(
     data_id: Optional[int] = None,
     iteration: Optional[int] = None,
     trainer_id: Optional[str] = None,
+    vclock_s: Optional[float] = None,
+    vclock_now_s: Optional[float] = None,
+    cpu_duration_s: Optional[float] = None,
+    gc_pause_s: Optional[float] = None,
 ) -> tuple[str, dict[str, Any]]:
     """Per-function wall duration of one timed compute step (`timer_decorator`).
 
@@ -207,6 +215,20 @@ def build_step_timing(
     wall time to individual forward-grad steps (functional-model setup,
     perturbation selection, per-batch JVP, delay emulation) for GPU-cost
     decomposition. Keyed by (data_id, iteration) to track cost across the cadence.
+
+    `vclock_s`/`vclock_now_s` are sim-mode-only, absent (not 0.0) in real mode.
+    `vclock_s` is this step's vclock delta (meaningful on the aggregator,
+    where the clock ticks live; usually 0 on a trainer, which only has a
+    last-known snapshot). `vclock_now_s` is the cumulative pointer as of this
+    step's end, for cross-step alignment.
+
+    `cpu_duration_s` is thread CPU time consumed, vs `duration_s`'s wall time.
+    Wall time diverging real<->sim while CPU time doesn't means the function
+    is waiting on contention, not doing more work.
+
+    `gc_pause_s` is the portion of `duration_s` that overlapped a cyclic-GC
+    collection, 0.0 if none ran. Isolates a GC pause from a genuine per-call
+    compute regression.
     """
     fields: dict[str, Any] = {"func": func, "duration_s": duration_s}
     for k, v in (
@@ -214,10 +236,37 @@ def build_step_timing(
         ("data_id", data_id),
         ("iteration_per_data_id", iteration),
         ("trainer_id", trainer_id),
+        ("vclock_s", vclock_s),
+        ("vclock_now_s", vclock_now_s),
+        ("cpu_duration_s", cpu_duration_s),
+        ("gc_pause_s", gc_pause_s),
     ):
         if v is not None:
             fields[k] = v
     return EVENT_STEP_TIMING, fields
+
+
+def build_var_calc(
+    *,
+    round_num: int,
+    data_id: int,
+    iteration: int,
+    input_grad_norms: list[float],
+    output_var: float,
+) -> tuple[str, dict[str, Any]]:
+    """DEBUG-only audit: per-tensor L2 norm of the input `grad_for_var_check_
+    list` feeding `calculate_var`, plus its scalar output, one record per
+    `_compute_var` call. Diffable real vs sim to localize a `v2_var_trajectory`
+    divergence to a specific input tensor vs the reduction itself. Gated at
+    the call site -- the norm computation is a GPU->CPU sync.
+    """
+    return EVENT_VAR_CALC, {
+        "round": round_num,
+        "data_id": data_id,
+        "iteration_per_data_id": iteration,
+        "input_grad_norms": input_grad_norms,
+        "output_var": output_var,
+    }
 
 
 def build_comm(
@@ -231,6 +280,7 @@ def build_comm(
     payload_kind: Optional[str] = None,
     n_tensors: Optional[int] = None,
     trainer_id: Optional[str] = None,
+    model_version: Optional[int] = None,
 ) -> tuple[str, dict[str, Any]]:
     """One message placed on the wire, for network-cost accounting (Experiment 4).
 
@@ -242,7 +292,9 @@ def build_comm(
     direction: "agg_to_trainer" (dispatch) | "trainer_to_agg" (update upload).
     peer_id: the other end (may be None trainer-side). payload_kind: "weights" /
     "var_bad" / "gradients", to split dispatch vs update and full-weight vs
-    var-signal. size_bytes: serialized message size.
+    var-signal. size_bytes: serialized message size. model_version: the
+    version this message carries (dispatch: what's being sent out; update:
+    what the sender computed against), for staleness diagnostics.
     """
     fields: dict[str, Any] = {"direction": direction, "size_bytes": int(size_bytes)}
     for k, v in (
@@ -253,10 +305,43 @@ def build_comm(
         ("payload_kind", payload_kind),
         ("n_tensors", n_tensors),
         ("trainer_id", trainer_id),
+        ("model_version", model_version),
     ):
         if v is not None:
             fields[k] = v
     return EVENT_COMM, fields
+
+
+def build_version_bump_census(
+    *,
+    old_model_version: int,
+    new_model_version: int,
+    data_id: int,
+    inflight: dict[str, tuple[int, int]],
+    vclock_now: Optional[float] = None,
+) -> tuple[str, dict[str, Any]]:
+    """Diagnostic: pool-wide snapshot at the instant model_version bumps.
+
+    inflight: {end_id: dispatch_version_key} for every trainer with an
+    outstanding (dispatched, not-yet-returned) send at this instant --
+    version_key is the full (model_version, iteration_per_data_id) tuple, not
+    just model_version, so a real/sim comparison isn't fooled by a matching
+    model_version that hides a differing iteration. Compares how many
+    trainers are stale at the bump, and at what version, between real and sim.
+    """
+    fields: dict[str, Any] = {
+        "old_model_version": old_model_version,
+        "new_model_version": new_model_version,
+        "data_id": data_id,
+        "n_inflight": len(inflight),
+        "inflight_version_key": {e: list(k) for e, k in inflight.items()},
+        "inflight_staleness": {
+            e: new_model_version - k[0] for e, k in inflight.items()
+        },
+    }
+    if vclock_now is not None:
+        fields["vclock_now"] = vclock_now
+    return EVENT_VERSION_BUMP_CENSUS, fields
 
 
 def build_util_disparity(

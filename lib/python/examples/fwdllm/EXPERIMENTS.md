@@ -14,8 +14,9 @@ doc for **what we intend and why**.
 draft [`05-evaluation.tex`](05-evaluation.tex). The **run ledger** (which log on which node feeds which
 result) is §10.
 
-Related: [`simulate_fwdllm.md`](simulate_fwdllm.md) (principles), [`PARITY_LOGICAL_TASKS.md`](PARITY_LOGICAL_TASKS.md)
-(real↔sim parity), [`fluxtune_contributions.md`](fluxtune_contributions.md) (systems/ML contributions, incl.
+Related: [`simulate_fwdllm.md`](simulate_fwdllm.md) (real↔sim parity — principles + the open sim front, §J),
+[`../_metadata/BASELINES.md`](../_metadata/BASELINES.md) (baseline catalog + restructure plan),
+[`fluxtune_contributions.md`](fluxtune_contributions.md) (systems/ML contributions, incl.
 the memory/inference-only-NPU thesis — a motivation/design claim, not an eval experiment).
 
 ---
@@ -47,7 +48,23 @@ experiments.yaml ──> run_sequential.sh ──> experiments/run_*/telemetry/*
 
 ## 1. Baselines (what distinguishes them)
 
-Substance lives in `_metadata/baselines.yaml`; run YAMLs only pick `baseline:` + a few overrides.
+Substance lives in `_metadata/baselines.yaml`; run YAMLs only pick `baseline:` + a few overrides. The
+canonical cross-cutting catalog of **all** baselines (+ the planned 5-baseline restructure) is
+[`../_metadata/BASELINES.md`](../_metadata/BASELINES.md); the table below is the experiment-local view.
+
+> **Don't create unnecessary comparison points.** A baseline earns a slot only if it *innovates on the
+> same axis one of our contributions claims*, on a substrate where the comparison isn't confounded.
+> Our baselines ARE the related works that tried to innovate on those axes; performance is measured
+> against exactly those. Backprop CNN/speech selection schemes (refl, feddance, raw oort) are
+> **related work to cite, not eval baselines**, unless ported onto the forward-grad LLM substrate.
+> Which candidates fit (feddance / felix / refl / oort scored, with the reasoning and a compare-or-not
+> decision) is in [`../_metadata/BASELINES.md`](../_metadata/BASELINES.md) §3. **For now we proceed
+> with the set we have.**
+>
+> **Naming (being reframed — [`BASELINES.md`](../_metadata/BASELINES.md) §2).** The set is a 2×2 of
+> round↔iteration × sync↔async-random: **FwdLLM** (`fwdllm`) · **FwdLLM-It** (≈ `fwdllm_plus`) ·
+> **FedBuff** (new) · **FedBuff-It** (new) · **FluxTune** (`fluxtune`). Runs still use current yaml
+> keys until the rename lands; the ledger (§10) carries the name map.
 
 | Knob | **fwdllm** | **fwdllm_plus** | **fluxtune** |
 |---|---|---|---|

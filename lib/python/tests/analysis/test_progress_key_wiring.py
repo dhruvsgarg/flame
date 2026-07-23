@@ -84,7 +84,7 @@ class TestCumulativeCommByRoundFolding:
     def test_fwdllm_selection_events_fold_data_id(self):
         """Real aggregator-side selection events (selector/random.py, P5.6)
         carry data_id/iteration_per_data_id when the aggregator threads
-        agg_version_state through channel.ends() -- must spread across
+        agg_version_key through channel.ends() -- must spread across
         distinct buckets instead of collapsing onto round==1."""
         _use_fwdllm_hierarchy()
         records = [

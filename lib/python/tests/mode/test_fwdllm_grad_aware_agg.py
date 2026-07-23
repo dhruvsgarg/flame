@@ -25,6 +25,7 @@ from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
 
 rate = TopAggregator._grad_aware_rate
 cosf = TopAggregator._cosine_flat
+gnorm = TopAggregator._flat_grad_norm
 
 
 # --- (1) both off -> passthrough -------------------------------------------
@@ -122,3 +123,31 @@ def test_cosine_multi_tensor_orthogonal():
     g = {"a": torch.tensor([1.0, 0.0]), "b": torch.tensor([0.0, 0.0])}
     run = [torch.tensor([0.0, 1.0]), torch.tensor([0.0, 0.0])]
     assert abs(cosf(g, run, _np(["a", "b"]))) < 1e-6
+
+
+# --- (6) G1 grad-norm primitive ---------------------------------------------
+
+def test_grad_norm_single_tensor():
+    g = {"w": torch.tensor([3.0, 4.0])}
+    assert abs(gnorm(g, _np(["w"])) - 5.0) < 1e-6  # 3-4-5 triangle
+
+
+def test_grad_norm_multi_tensor_combines_flat():
+    g = {"a": torch.tensor([3.0, 0.0]), "b": torch.tensor([0.0, 4.0])}
+    assert abs(gnorm(g, _np(["a", "b"])) - 5.0) < 1e-6
+
+
+def test_grad_norm_zero_on_no_overlap():
+    # named_params names absent from grad_named contribute nothing (mirrors
+    # _cosine_flat's implicit trainable-only filter: a frozen param's name
+    # never appears in the trainer's sent grad dict).
+    g = {"other": torch.tensor([9.0])}
+    assert gnorm(g, _np(["w"])) == 0.0
+
+
+def test_grad_norm_ignores_extra_grad_named_entries():
+    # Only params present in named_params are summed, even if grad_named
+    # carries more (defensive: the caller always passes the model's full
+    # named_parameters(), so this is a robustness check, not a real path).
+    g = {"w": torch.tensor([3.0, 4.0]), "unused": torch.tensor([100.0])}
+    assert abs(gnorm(g, _np(["w"])) - 5.0) < 1e-6

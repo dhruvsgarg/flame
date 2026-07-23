@@ -27,6 +27,7 @@ from flame.common.typing import Scalar
 from flame.common.util import run_async
 from flame.config import TrainerAvailState, GROUPBY_DEFAULT_GROUP
 from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD, PROP_END_AVL_STATE, End
+from flame.selector.properties import PROP_AVL_STATE
 from flame.mode.message import MessageType
 from flame.mode.role import Role
 from flame.monitor.runtime import timer_decorator
@@ -189,14 +190,18 @@ class Channel(object):
         self,
         state: Union[None, str] = None,
         task_to_perform: str = "train",
-        agg_version_state: tuple[int, int, int] = None,
-        trainer_version_states: dict[str, tuple[int, int, int]] = None,
+        agg_version_key: tuple = None,  # (model_version, iteration)
+        trainer_version_keys: dict[str, tuple] = None,
+        data_id: int = None,
     ) -> list[str]:
         """Return a list of end ids.
 
         Args:
-            agg_version_state: Aggregator version as (model_version, data_id, iteration_id)
-            trainer_version_states: Map of trainer_id to their version triplets
+            agg_version_key: Aggregator version_key
+            trainer_version_keys: Map of trainer_id to their version_key
+            data_id: Progress axis for selection telemetry. Not part of
+                version_key (model_version already implies it); pass
+                explicitly when a caller needs it.
         """
         logger.debug(
             f"ends() for channel name: {self._name}, "
@@ -223,8 +228,9 @@ class Channel(object):
                     channel_props=self.properties,
                     trainer_unavail_list=self.trainer_unavail_list,
                     task_to_perform=task_to_perform,
-                    agg_version_state=agg_version_state,
-                    trainer_version_states=trainer_version_states,
+                    agg_version_key=agg_version_key,
+                    trainer_version_keys=trainer_version_keys,
+                    data_id=data_id,
                 )
                 logger.debug(f"trainer unavail list available, selected: {selected}")
                 if len(selected) == 0:
@@ -235,8 +241,9 @@ class Channel(object):
                     channel_props=self.properties,
                     trainer_unavail_list=[],
                     task_to_perform=task_to_perform,
-                    agg_version_state=agg_version_state,
-                    trainer_version_states=trainer_version_states,
+                    agg_version_key=agg_version_key,
+                    trainer_version_keys=trainer_version_keys,
+                    data_id=data_id,
                 )
                 logger.debug(
                     f"trainer unavail list not available, selected: {selected}"
@@ -669,7 +676,9 @@ class Channel(object):
                         f"[RECV_FIFO] Cannot receive message from end_id {end_id} - end not in channel"
                     )
                     return
-                logger.info(
+                # DEBUG not INFO: fires ~10x/cycle per end, bloats logs (425k
+                # lines/112MB in one run).
+                logger.debug(
                     f"[RECV_FIFO] channel {self._name} awaiting get() on end_id {end_id} in self.ends"
                 )
                 try:
@@ -681,7 +690,7 @@ class Channel(object):
                     if payload:
                         # ignore timestamp for measuring bytes received
                         self.mc.accumulate("bytes", "recv", len(payload[0]))
-                        logger.info(
+                        logger.debug(
                             f"[RECV_FIFO] Received payload from end_id {end_id}, size={len(payload[0])} bytes"
                         )
                     else:
@@ -689,7 +698,7 @@ class Channel(object):
                             f"[RECV_FIFO] Got empty/None payload from end_id {end_id}"
                         )
                 except asyncio.TimeoutError:
-                    logger.info(
+                    logger.debug(
                         f"[RECV_FIFO] timeout ({timeout}s) waiting on end_id {end_id}; "
                         f"releasing active task so it can be re-selected"
                     )
@@ -700,7 +709,7 @@ class Channel(object):
                     )
                     payload = None
 
-                logger.info(
+                logger.debug(
                     f"[RECV_FIFO] _get_inner() yielding for end_id: {end_id}, payload={'present' if payload else 'None'}"
                 )
                 yield end_id, payload
@@ -709,7 +718,7 @@ class Channel(object):
                 # message, timed out, hit an error, or were cancelled. This is
                 # what prevents the permanent active_tasks leak.
                 self._active_recv_fifo_tasks.discard(end_id)
-                logger.info(
+                logger.debug(
                     f"[RECV_FIFO] active task released for {end_id}, "
                     f"active_tasks={len(self._active_recv_fifo_tasks)}"
                 )
@@ -736,7 +745,7 @@ class Channel(object):
 
             runs.append(_get_inner(end_id))
             self._active_recv_fifo_tasks.add(end_id)
-            logger.info(
+            logger.debug(
                 f"[RECV_FIFO] active task added for {end_id}, total runs: {len(runs)}"
             )
 
@@ -744,7 +753,7 @@ class Channel(object):
             logger.warning(
                 f"[RECV_FIFO] Skipped {len(skipped_ends)} ends: {skipped_ends[:10]}..."
             )  # Show first 10
-        logger.info(
+        logger.debug(
             f"[RECV_FIFO] Starting merge stream with {len(runs)} tasks, active_tasks={len(self._active_recv_fifo_tasks)}"
         )
 
@@ -758,17 +767,17 @@ class Channel(object):
                 # would consume a first_k slot ahead of a real update. The
                 # caller's own timeout bounds how long it waits on the rx queue.
                 if payload is None:
-                    logger.info(
+                    logger.debug(
                         f"[RECV_FIFO] no message from {end_id}; not enqueuing"
                     )
                     continue
                 msg_count += 1
                 await self._rx_queue.put(result)
-                logger.info(
+                logger.debug(
                     f"[RECV_FIFO] delivered message {msg_count} from {end_id}"
                 )
 
-        logger.info(
+        logger.debug(
             f"[RECV_FIFO] Merge stream completed, delivered {msg_count} messages from {len(runs)} tasks"
         )
 
@@ -891,6 +900,12 @@ class Channel(object):
         # Set END_LAST_AVAIL_TS to current timestamp.
         current_ts = datetime.now()
         self.set_end_property(end_id=end_id, key=END_LAST_AVAIL_TS, value=current_ts)
+
+        # Default AVL_TRAIN so a new end isn't read as UNKNOWN before its first
+        # selection; aware runs then overwrite it from the trace.
+        self.set_end_property(
+            end_id=end_id, key=PROP_AVL_STATE, value=TrainerAvailState.AVL_TRAIN
+        )
 
         # NOTE: Also set in end_state_info for further use
         if end_id not in self._end_state_info.keys():

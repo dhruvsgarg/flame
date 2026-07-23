@@ -114,6 +114,14 @@ def _extract_sample_data(example):
     return {"text": text, "label": label, "hash": sample_hash}
 
 
+def resolve_training_delay_s(raw_delay_s, floor_s) -> float:
+    """Floors the raw registry delay before it's divided, so a trainer near
+    the class floor keeps headroom over GPU-compute variance. `floor_s` of
+    0.0/None is a no-op."""
+    _floor = float(floor_s) if floor_s is not None else 0.0
+    return max(float(raw_delay_s), _floor)
+
+
 class FedSGDTrainer(Trainer):
 
     def __init__(
@@ -179,8 +187,15 @@ class FedSGDTrainer(Trainer):
 
         # Check if client will emulate delays in training time
         self.training_delay_enabled = self.config.hyperparameters.training_delay_enabled
-        self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
-        self.training_delay_factor = float(
+        # Floor the raw registry delay before dividing, so a trainer near the
+        # class floor keeps headroom over GPU-compute variance. 0.0 = no-op.
+        self.training_delay_s = resolve_training_delay_s(
+            self.config.hyperparameters.training_delay_s,
+            getattr(self.config.hyperparameters, "training_delay_floor_s", 0.0),
+        )
+        # Divisor on the modeled delay (effective = training_delay_s / divisor):
+        # >1 shortens, <1 lengthens. Wire key stays `training_delay_factor`.
+        self.training_delay_divisor = float(
             self.config.hyperparameters.training_delay_factor
         )
         self.speedup_factor = 1.0
@@ -214,6 +229,13 @@ class FedSGDTrainer(Trainer):
         # Storing synthetic avail traces
         self.avl_events_syn_0 = _parse_avl_events(
             self.config.hyperparameters.avl_events_syn_0
+        )
+        # DEBUG: log actual syn_0 events received, to catch a runtime
+        # mutation/aliasing bug a static file check can't see. Remove once
+        # root-caused.
+        logger.info(
+            f"[DEBUG_AVL_SYN0] trainer {self.trainer_id}: "
+            f"len={len(self.avl_events_syn_0)} content={self.avl_events_syn_0!r}"
         )
 
         self.avl_events_syn_20 = _parse_avl_events(
@@ -515,11 +537,15 @@ class FedSGDTrainer(Trainer):
     @timer_decorator
     def _emulate_training_delay(self, gpu_time_s: float = 0.0):
         """Remainder-wait delay model (aligned with async_cifar10). The modeled
-        mobile device takes `_delay_s = training_delay_s / factor / speedup`; our
-        GPU forward pass takes `gpu_time_s`, which should be << the device time.
+        mobile device takes `_delay_s = training_delay_s / divisor / speedup`
+        (divisor >1 shortens the delay, <1 lengthens it); our GPU forward pass
+        takes `gpu_time_s`, which should be << the device time.
 
-          - REAL sleeps only the remainder max(0, _delay_s - gpu_time_s) → wall
-            this round ≈ _delay_s, with GPU compute hidden inside it.
+          - REAL sleeps max(0, _delay_s - elapsed_since_dispatch_s), elapsed
+            since `_wall_recv_ts` (stamped on `channel.recv()` return) rather
+            than `gpu_time_s` alone, which misses comm lag/availability
+            checks/GC/scheduling. Falls back to `gpu_time_s` if `_wall_recv_ts`
+            is unset.
           - SIM skips the sleep (charged to the vclock); the round duration is
             max(gpu, _delay_s) (see train_with_data_id), NOT gpu + _delay_s. The
             per-trainer registry delays give the completion spread, so update
@@ -527,9 +553,11 @@ class FedSGDTrainer(Trainer):
             cohort_sequence parity).
 
         Overrun: if gpu_time_s > _delay_s the GPU is slower than the modeled
-        device (contention / delay_factor too big) — emulation unfaithful and
-        update order can flip, so we log [TIMING_OVERRUN] and flag it in
-        telemetry. Returns (modeled_delay_s, remaining_s, overran).
+        device — emulation unfaithful, update order can flip; logged as
+        [TIMING_OVERRUN]. Keyed on gpu_time_s alone (not elapsed_since_
+        dispatch_s) so it stays a compute signal, not a comm-overhead one.
+        Fix by lengthening the delay (LOWER training_delay_factor) or
+        reducing trainers/GPU. Returns (modeled_delay_s, remaining_s, overran).
         """
         # config schema types training_delay_enabled as bool (default False)
         # but historical launcher yamls pass the string "True"; accept both so
@@ -537,16 +565,22 @@ class FedSGDTrainer(Trainer):
         _enabled = self.training_delay_enabled in (True, "True", "true")
         if not _enabled:
             return 0.0, 0.0, False
-        _delay_s = (self.training_delay_s / self.training_delay_factor) / self.speedup_factor
-        _remaining_s = max(0.0, _delay_s - gpu_time_s)
+        _delay_s = (self.training_delay_s / self.training_delay_divisor) / self.speedup_factor
+        _wrt = getattr(self, "_wall_recv_ts", None)
+        # max(..., gpu_time_s): wall-clock isn't monotonic, so never let
+        # elapsed read below the compute window it should contain.
+        _elapsed_since_dispatch_s = (
+            max(time.time() - _wrt, gpu_time_s) if _wrt is not None else gpu_time_s
+        )
+        _remaining_s = max(0.0, _delay_s - _elapsed_since_dispatch_s)
         _overran = gpu_time_s > _delay_s
         if _overran:
             logger.warning(
                 f"[TIMING_OVERRUN] trainer {self.trainer_id} data_id={self.data_id} "
                 f"iter={self.iteration_per_data_id}: gpu={gpu_time_s:.2f}s > "
                 f"budget={_delay_s:.2f}s (excess={gpu_time_s - _delay_s:.2f}s) — "
-                f"emulation unfaithful, update order may flip. Reduce trainers/GPU "
-                f"or raise training_delay_factor."
+                f"emulation unfaithful, update order may flip. Lengthen the delay "
+                f"(LOWER training_delay_factor) or reduce trainers/GPU."
             )
         if self.simulated:
             logger.info(
@@ -557,7 +591,8 @@ class FedSGDTrainer(Trainer):
             time.sleep(_remaining_s)
             logger.info(
                 f"Trainer {self.trainer_id} slept remainder {_remaining_s:.3f}s "
-                f"(budget {_delay_s:.3f}s - gpu {gpu_time_s:.3f}s)."
+                f"(budget {_delay_s:.3f}s - elapsed_since_dispatch "
+                f"{_elapsed_since_dispatch_s:.3f}s [gpu {gpu_time_s:.3f}s])."
             )
         return _delay_s, _remaining_s, _overran
 
@@ -594,14 +629,21 @@ class FedSGDTrainer(Trainer):
 
         # Phase-timing entry: everything up to the compute loop is pre_train
         # (avail check, FwdLLMStage setup, loader state).
+        # These 3 are hand-timed (not via self._phase()), so vclock capture is
+        # explicit here too, reusing the same _phase_vclock_s dict _phase()
+        # writes into, so phase_vclock_s in telemetry covers both.
+        if not hasattr(self, "_phase_vclock_s"):
+            self._phase_vclock_s = {}
         _phase_entry = time.time()
         if not self._check_availability():
             return
 
         _round_start_ts = time.time()
         _pre_train_s = _round_start_ts - _phase_entry
+        self._phase_vclock_s["pre_train_s"] = getattr(self, "vclock_now", None)
         self._perform_training()
         _real_gpu_time_s = time.time() - _round_start_ts
+        self._phase_vclock_s["gpu_compute_s"] = getattr(self, "vclock_now", None)
 
         # emulate the mobile-device delay via the remainder-wait model: real
         # sleeps max(0, delay - gpu); sim skips it. Returns the modeled budget,
@@ -663,6 +705,7 @@ class FedSGDTrainer(Trainer):
             # term for the wall decomposition. Modeled delay is excluded via the
             # _phase_post_start stamp position (after the delay).
             _post_train_s = time.time() - _phase_post_start
+            self._phase_vclock_s["post_train_s"] = getattr(self, "vclock_now", None)
             # Forward-pass / perturbation accounting (WS3-b). Cumulative counters
             # live in fwdgrad_utils (per-process = per-client); the delta since the
             # last trainer_round is this iteration's cost. jvp_evals == scored
@@ -694,6 +737,10 @@ class FedSGDTrainer(Trainer):
                     # _phase_times (populated in fwdllm_trainer._fetch_weights).
                     "pre_train_s": _pre_train_s,
                     "gpu_compute_s": _real_gpu_time_s,
+                    # Wall-clock span of this GPU pass, for measuring overlap
+                    # against the aggregator's aggregate() compute (real-mode only).
+                    "gpu_pass_start_wall": _round_start_ts,
+                    "gpu_pass_end_wall": _round_start_ts + _real_gpu_time_s,
                     "post_train_s": _post_train_s,
                     "training_budget_s": _delay_s,
                     # Remainder-wait model: what real actually slept + whether the
@@ -711,6 +758,10 @@ class FedSGDTrainer(Trainer):
                     "perturbations_iter": _jvp_iter,
                     "perturbations_total": _jvp_total,
                     **getattr(self, "_phase_times", {}),
+                    # Sim-mode-only vclock snapshot per _phase_times key; nested
+                    # (not flattened) so real mode's empty dict needs no
+                    # per-key None-checks.
+                    "phase_vclock_s": getattr(self, "_phase_vclock_s", {}),
                 },
             )
             telemetry.emit(ev, **fields)
@@ -758,6 +809,12 @@ class FedSGDTrainer(Trainer):
             if len(self.state_avl_event_ts) > 0:
                 next_event_ts = self.trainer_start_ts + (self.state_avl_event_ts[0][0])
                 if time.time() >= next_event_ts:
+                    # DEBUG: log the queue before each pop, to trace where a
+                    # spurious entry came from. Remove once root-caused.
+                    logger.info(
+                        f"[DEBUG_AVL_POP] trainer {self.trainer_id}: "
+                        f"popping from queue={list(self.state_avl_event_ts)!r}"
+                    )
                     state_to_set = self.state_avl_event_ts.pop(0)[1]
                     old_status = self.avl_state.value
                     try:

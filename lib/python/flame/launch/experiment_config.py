@@ -112,6 +112,9 @@ class ExecutionConfig:
     """Execution configuration."""
 
     num_gpus: int = 8
+    # Explicit CUDA ordinals to use instead of range(num_gpus) -- skips a
+    # broken GPU. Drives round-robin; num_gpus becomes metadata-only when set.
+    gpu_ids: Optional[List[int]] = None
     sleep_between_spawns: float = 1.0
     aggregator_warmup_time: int = 10
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
@@ -246,6 +249,7 @@ class ExperimentBatch:
                 execution=(
                     ExecutionConfig(
                         num_gpus=exec_data.get("num_gpus", 8),
+                        gpu_ids=exec_data.get("gpu_ids"),
                         sleep_between_spawns=exec_data.get("sleep_between_spawns", 1.0),
                         aggregator_warmup_time=exec_data.get("aggregator_warmup_time", 10),
                         monitoring=(

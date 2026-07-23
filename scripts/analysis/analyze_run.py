@@ -24,6 +24,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import glob
 import json
@@ -50,7 +51,9 @@ try:
         EVENT_AGG_EVAL,
         EVENT_AGG_ROUND,
         EVENT_AVAIL_CHANGE,
+        EVENT_INFLIGHT_RESIDENCE,
         EVENT_SELECTION,
+        EVENT_STEP_TIMING,
         EVENT_TASK_SEND,
         EVENT_TRAINER_ROUND,
         EVENT_UTIL_DISPARITY,
@@ -62,12 +65,14 @@ except Exception:  # pragma: no cover
     EVENT_AGG_EVAL = "agg_eval"
     EVENT_AGG_ROUND = "agg_round"
     EVENT_TRAINER_ROUND = "trainer_round"
+    EVENT_STEP_TIMING = "step_timing"
     EVENT_UTIL_DISPARITY = "util_disparity"
     EVENT_AVAIL_CHANGE = "avail_change"
     EVENT_UTILITY_BELIEF = "utility_belief"
     EVENT_AGG_BELIEF_CHANGE = "agg_belief_change"
     EVENT_TASK_SEND = "task_send"
     EVENT_WITHHELD_DELIVERY = "withheld_delivery"
+    EVENT_INFLIGHT_RESIDENCE = "inflight_residence"
 
 # Batch 3 T3.2 (UNAVAILABILITY_DESIGN.md): the A6 trainer_trace_fidelity ground-
 # truth lookups live under the async_cifar10 example's parity checker package
@@ -1873,6 +1878,343 @@ def sim_speedup_plots(records, out, stamp, tdir):
     return saved
 
 
+# Excluded from the flag check below: trainers/aggregator are still coming
+# online in the first few seconds, so vclock legitimately lags wall there
+# even in a healthy sim.
+_PHASE_VCLOCK_WARMUP_S = 5.0
+
+
+def train_batch_phase_plots(records, out, stamp, tdir):
+    """CDFs of the trainer's per-batch wall phases (`tb_*` step_timing events).
+
+    CDFs, not means: a mean can't separate "every batch pays 300ms here" from
+    "1 in 50 stalls for 15s" -- opposite diagnoses, same average.
+
+    `tb_unaccounted` (batch total minus the sum of its top-level phases) is the
+    load-bearing series: if the phases sum to the batch, the cost is IN the code
+    and the CDFs say which stage; if unaccounted dominates, the batch is being
+    stalled outside the instrumented work and stage-level optimization won't
+    touch it.
+    """
+    d = _sub(out, "system")
+    st = by_event(records, EVENT_STEP_TIMING)
+    if not st:
+        p = ph.no_data_plot(
+            "Trainer batch phases (no step_timing telemetry)", d,
+            "train_batch_phase_cdf.pdf",
+            note="run predates tb_* phase instrumentation", stamp=stamp)
+        return [p] if p else []
+
+    by_func = defaultdict(list)
+    for r in st:
+        f, dur = r.get("func"), r.get("duration_s")
+        if f and dur is not None and dur >= 0:
+            by_func[f].append(float(dur))
+
+    tb = {f: v for f, v in by_func.items() if f.startswith("tb_")}
+    if not tb:
+        p = ph.no_data_plot(
+            "Trainer batch phases (no tb_* events)", d,
+            "train_batch_phase_cdf.pdf",
+            note="run predates tb_* phase instrumentation", stamp=stamp)
+        return [p] if p else []
+
+    out_paths = []
+
+    # ---- 1. per-phase CDF overlay, in ms (phases are sub-second) ----
+    series = {f.replace("tb_", ""): [x * 1e3 for x in v]
+              for f, v in sorted(tb.items(), key=lambda kv: -sum(kv[1]))}
+    p = ph.cdf_multi(series, "phase wall (ms)",
+                     "Trainer per-batch phase wall (CDF by stage)",
+                     d, "train_batch_phase_cdf.pdf", stamp=stamp)
+    if p:
+        out_paths.append(p)
+
+    # ---- 2. unaccounted = batch total - sum(top-level phases) ----
+    # Only TOP-LEVEL phases; tb_grad_clone/tb_perturb_draw_cpu/tb_cos_sim_select
+    # nest inside tb_setup_training_state and would be double-counted.
+    _TOP = ("tb_batch_to_device", "tb_stat_utility", "tb_setup_training_state",
+            "tb_prepare_perturbation", "tb_deepcopy_best_v", "tb_forward_jvp",
+            "tb_accumulate_grads")
+
+    # Pair phases to their batch by emission order per trainer, not by
+    # (data_id, iteration): a variance retry revisits the same cadence key and
+    # would collide, folding N batches' phases onto one total.
+    per_trainer = defaultdict(list)
+    for r in st:
+        if r.get("func") and r.get("duration_s") is not None:
+            per_trainer[r.get("trainer_id")].append(r)
+
+    unacc, batch_totals = [], []
+    for _tid, rows in per_trainer.items():
+        rows.sort(key=lambda r: (r.get("ts") is None, r.get("ts") or 0.0))
+        acc = 0.0
+        for r in rows:
+            f = r["func"]
+            if f in _TOP:
+                acc += float(r["duration_s"])
+            elif f == "_train_one_batch":
+                total = float(r["duration_s"])
+                batch_totals.append(total)
+                unacc.append((total - acc) * 1e3)
+                acc = 0.0
+    if unacc:
+        p = ph.cdf_plot(unacc, "unaccounted wall per batch (ms)",
+                        "Trainer batch time NOT in any instrumented phase",
+                        d, "train_batch_unaccounted_cdf.pdf", stamp=stamp)
+        if p:
+            out_paths.append(p)
+        tot_batch = sum(batch_totals)
+        tot_unacc = sum(unacc) / 1e3
+        frac = tot_unacc / tot_batch if tot_batch else 0.0
+        print(f"  [train_batch_phase_plots] batches={len(unacc)} "
+              f"mean_batch={tot_batch/len(unacc)*1e3:.0f}ms "
+              f"mean_unaccounted={tot_unacc/len(unacc)*1e3:.0f}ms ({frac:.0%})")
+        if frac > 0.5:
+            print(f"  [train_batch_phase_plots] >50% of batch wall is OUTSIDE the "
+                  f"instrumented phases -- the batch is being stalled, not computing; "
+                  f"stage-level optimization will not move it.")
+
+    # ---- 3. stage ranking table (printed; the CDFs are the visual) ----
+    print(f"  [train_batch_phase_plots] per-batch stage means (ms):")
+    n_batches = len(batch_totals) or 1
+    for f, v in sorted(tb.items(), key=lambda kv: -sum(kv[1])):
+        print(f"      {f:26} n={len(v):6} total/batch={sum(v)/n_batches*1e3:8.2f} "
+              f"mean/call={sum(v)/len(v)*1e3:7.2f}")
+    return out_paths
+
+
+def agg_step_timing_plots(records, out, stamp, tdir):
+    """CDF + mean-bar of the aggregator's own `step_timing` events
+    (`_compute_var`/`_prepare_round_state`/`_apply_weighted_update`/etc, plus
+    the isolated sync-point sub-events). Aggregator-side analog of
+    `train_batch_phase_plots`; distinguished by func name not starting with
+    `tb_`, since both roles' `step_timing` events merge into one `records`
+    list upstream."""
+    d = _sub(out, "aggregation")
+    st = by_event(records, EVENT_STEP_TIMING)
+    if not st:
+        p = ph.no_data_plot(
+            "Aggregator step timing (no step_timing telemetry)", d,
+            "agg_step_timing_cdf.pdf",
+            note="run predates step_timing instrumentation", stamp=stamp)
+        return [p] if p else []
+
+    by_func = defaultdict(list)
+    for r in st:
+        f, dur = r.get("func"), r.get("duration_s")
+        if f and not f.startswith("tb_") and dur is not None and dur >= 0:
+            by_func[f].append(float(dur))
+    if not by_func:
+        p = ph.no_data_plot(
+            "Aggregator step timing (no aggregator-side events)", d,
+            "agg_step_timing_cdf.pdf",
+            note="only trainer tb_* events present", stamp=stamp)
+        return [p] if p else []
+
+    out_paths = []
+    ranked = sorted(by_func.items(), key=lambda kv: -sum(kv[1]))
+    series = {f: [x * 1e3 for x in v] for f, v in ranked}
+    p = ph.cdf_multi(series, "duration (ms)",
+                     "Aggregator step_timing wall duration (CDF by function)",
+                     d, "agg_step_timing_cdf.pdf", stamp=stamp)
+    if p:
+        out_paths.append(p)
+
+    means_ms = [sum(v) / len(v) * 1e3 for _, v in ranked]
+    p = ph.bar_plot([f for f, _ in ranked], means_ms, "mean duration (ms)",
+                    "Aggregator step_timing mean duration by function",
+                    d, "agg_step_timing_mean_bar.pdf", stamp=stamp)
+    if p:
+        out_paths.append(p)
+    return out_paths
+
+
+def phase_vclock_plots(records, out, stamp, tdir):
+    """Per-function (`step_timing`) vclock-vs-wall ratio -- the fine-grained
+    companion to sim_speedup_plots' round-level view. `vclock_s`/`vclock_now_s`
+    are sim-only (absent, not 0.0, in real mode), so this is a no-op plot on a
+    real run, same convention as sim_speedup_plots.
+
+    Flags (printed, not just plotted) any function whose mean vclock delta is
+    less than its mean wall duration post-warmup -- a candidate bottleneck.
+    """
+    d = _sub(out, "system")
+    st = by_event(records, EVENT_STEP_TIMING)
+    is_sim = any(r.get("vclock_s") is not None for r in st)
+
+    if not is_sim:
+        p = ph.no_data_plot(
+            "Per-phase vclock/wall ratio (real run: N/A)", d,
+            "phase_vclock_ratio.pdf",
+            note="vclock_s is sim-only; real mode has no virtual clock",
+            stamp=stamp,
+        )
+        return [p] if p else []
+
+    all_ts = [r["ts"] for r in st if r.get("ts") is not None]
+    t0 = min(all_ts) if all_ts else 0.0
+
+    by_func = defaultdict(lambda: {"wall": [], "vclock": []})
+    for r in st:
+        vc = r.get("vclock_s")
+        if vc is None or r.get("ts") is None:
+            continue
+        if r["ts"] - t0 < _PHASE_VCLOCK_WARMUP_S:
+            continue
+        func = r.get("func")
+        dur = r.get("duration_s")
+        if func is None or dur is None:
+            continue
+        by_func[func]["wall"].append(dur)
+        by_func[func]["vclock"].append(vc)
+
+    funcs = sorted(f for f, v in by_func.items() if v["wall"])
+    if not funcs:
+        return []
+
+    ratios, flagged = [], []
+    for f in funcs:
+        mean_wall = sum(by_func[f]["wall"]) / len(by_func[f]["wall"])
+        mean_vclock = sum(by_func[f]["vclock"]) / len(by_func[f]["vclock"])
+        ratio = mean_vclock / mean_wall if mean_wall > 0 else float("nan")
+        ratios.append(ratio)
+        if ratio < 1.0:
+            flagged.append((f, mean_wall, mean_vclock, ratio))
+
+    saved = []
+    p = ph.bar_plot(
+        funcs, ratios, "mean vclock_s / mean wall duration_s",
+        "Per-phase sim speedup (>1 = sim skips real wait there; "
+        "<1 = a wall-bound bottleneck, post-warmup)",
+        d, "phase_vclock_ratio.pdf", stamp=stamp)
+    if p:
+        saved.append(p)
+
+    if flagged:
+        print(f"  [phase_vclock_plots] {len(flagged)} phase(s) NOT leading wall-clock "
+              f"(post-{_PHASE_VCLOCK_WARMUP_S:.0f}s warmup) -- candidate bottlenecks:")
+        for f, w, v, r in sorted(flagged, key=lambda t: t[3]):
+            print(f"    {f}: mean_wall={w:.3f}s mean_vclock={v:.3f}s ratio={r:.3f}")
+
+    return saved
+
+
+# trainer_round's per-phase wall breakdown (syncfl/trainer.py's _phase() +
+# hand-stamped mqtt_fetch_s/mqtt_send_s) -- flat top-level keys merged in via
+# `**self._phase_times` at the trainer_round emit call site.
+_TRAINER_PHASE_KEYS = (
+    "mqtt_fetch_s", "weights_to_ram_s", "weights_to_gpu_s",
+    "send_gate_wait_s", "weights_from_gpu_s", "post_cpu_s", "mqtt_send_s",
+)
+# agg_round's per-cycle wall decomposition (fwdllm_aggregator.py's #6 anchor:
+# barrier + drain-tail artifact + fedavg compute + eval).
+_AGG_ROUND_PHASE_KEYS = (
+    "barrier_wait_s", "drain_tail_s", "aggregate_fedavg_s", "eval_s",
+)
+
+
+def phase_wall_vclock_plots(records, out, stamp, tdir):
+    """Round-level wall-clock phase decomposition for both roles -- the
+    general-cycle companion to phase_vclock_plots' forward-grad-step view
+    above. Reads trainer_round's _phase_times and agg_round's per-cycle wall
+    decomposition.
+
+    Does NOT derive a vclock/wall ratio from `phase_vclock_s`: unlike
+    step_timing's per-step vclock_s delta, trainer_round/agg_round's
+    phase_vclock_s is a snapshot at phase-end with no matching phase-start
+    stamp, so there's no correct way to turn it into a per-phase rate. Plots
+    only the wall side plus the aggregator's own sim_rate/intrinsic_span_s.
+    """
+    d = _sub(out, "system"); saved = []
+
+    # ---- trainer-side phase wall breakdown ----
+    tr = by_event(records, EVENT_TRAINER_ROUND)
+    phase_series = defaultdict(lambda: ([], []))
+    for r in tr:
+        rd = progress_key(r)
+        for key in _TRAINER_PHASE_KEYS:
+            v = r.get(key)
+            if v is not None:
+                xs, ys = phase_series[key]
+                xs.append(rd); ys.append(float(v))
+    if phase_series:
+        p = ph.binned_line(
+            {k: v for k, v in sorted(phase_series.items())},
+            PROGRESS_AXIS_LABEL, "wall seconds",
+            "Trainer per-phase wall-clock breakdown (mean/bin)",
+            d, "trainer_phase_wall_breakdown.pdf", stamp=stamp,
+            nbins=150, reducer="mean")
+        if p: saved.append(p)
+    else:
+        p = ph.no_data_plot(
+            "Trainer per-phase wall-clock breakdown", d,
+            "trainer_phase_wall_breakdown.pdf",
+            note="no _phase_times fields on trainer_round for this run",
+            stamp=stamp)
+        if p: saved.append(p)
+
+    # ---- aggregator-side per-cycle wall decomposition ----
+    ar = by_event(records, EVENT_AGG_ROUND)
+    agg_series = defaultdict(lambda: ([], []))
+    for r in ar:
+        rd = progress_key(r)
+        for key in _AGG_ROUND_PHASE_KEYS:
+            v = r.get(key)
+            if v is not None:
+                xs, ys = agg_series[key]
+                xs.append(rd); ys.append(float(v))
+    if agg_series:
+        p = ph.binned_line(
+            {k: v for k, v in sorted(agg_series.items())},
+            PROGRESS_AXIS_LABEL, "wall seconds",
+            "Aggregator per-cycle wall decomposition (mean/bin)",
+            d, "agg_round_wall_breakdown.pdf", stamp=stamp,
+            nbins=150, reducer="mean")
+        if p: saved.append(p)
+    else:
+        p = ph.no_data_plot(
+            "Aggregator per-cycle wall decomposition", d,
+            "agg_round_wall_breakdown.pdf",
+            note="no barrier_wait_s/drain_tail_s/aggregate_fedavg_s/eval_s on agg_round for this run",
+            stamp=stamp)
+        if p: saved.append(p)
+
+    # ---- intrinsic_span_s (transport-artifact-excluded) vs full wall_elapsed_s ----
+    ix, iv, wv = [], [], []
+    for r in ar:
+        i_s, w_s = r.get("intrinsic_span_s"), r.get("wall_elapsed_s")
+        if i_s is not None and w_s is not None:
+            rd = progress_key(r)
+            ix.append(rd); iv.append(float(i_s)); wv.append(float(w_s))
+    if ix:
+        p = ph.binned_line(
+            {"intrinsic_span_s": (ix, iv), "wall_elapsed_s": (ix, wv)},
+            PROGRESS_AXIS_LABEL, "seconds",
+            "Per-cycle intrinsic (transport-excluded) span vs full wall span (mean/bin)",
+            d, "agg_intrinsic_vs_wall.pdf", stamp=stamp, nbins=150, reducer="mean")
+        if p: saved.append(p)
+
+    # ---- sim_rate, direct from telemetry (cross-check vs sim_speedup_plots'
+    # vclock_now/wall reconstruction -- this is the aggregator's own
+    # already-computed value, not re-derived here) ----
+    sx, sv = [], []
+    for r in ar:
+        sr = r.get("sim_rate")
+        if sr is not None:
+            sx.append(progress_key(r)); sv.append(float(sr))
+    if sx:
+        p = ph.binned_line(
+            {"sim_rate (telemetry)": (sx, sv)},
+            PROGRESS_AXIS_LABEL, "vclock-s / wall-s",
+            "Per-cycle sim_rate, direct from telemetry (>=1 = speedup, <1 = slowdown)",
+            d, "agg_sim_rate_over_progress.pdf", stamp=stamp,
+            nbins=150, reducer="mean", target=1.0)
+        if p: saved.append(p)
+
+    return saved
+
+
 def system_plots(records, out, stamp, tdir):
     d = _sub(out, "system"); saved = []
     xs, ys = comm_vs_accuracy_series(records)
@@ -2717,6 +3059,26 @@ def aggregation_plots(records, out, stamp, tdir):
                            nbins=150, reducer="mean")
         if p: saved.append(p)
 
+    # 1b) iterations-per-data_id (realized dynamic-K) = agg_rounds per
+    # cycle_data_id, smoothed with a P10-P90 band.
+    iters_by_data = defaultdict(int)
+    for r in ar:
+        did = r.get("cycle_data_id")
+        if did is not None:
+            iters_by_data[did] += 1
+    if iters_by_data:
+        ix = sorted(iters_by_data)
+        # nbins << data_id count so each bin holds several bins; else the band is
+        # degenerate (1 point/bin).
+        _nb = max(10, min(40, len(ix) // 3))
+        p = ph.binned_line(
+            {"iters/data_id": (ix, [iters_by_data[k] for k in ix])},
+            "data_id (progress)", "iterations to commit (realized K)",
+            "Iterations per data bin (realized dynamic-K, mean/bin ± P10-P90)",
+            d, "iters_per_data_bin.pdf", stamp=stamp,
+            nbins=_nb, reducer="mean", band=True)
+        if p: saved.append(p)
+
     # 2) staleness vs trainer-speed (per commit): slow trainers should be the
     # stale ones — confirms the staleness mechanism. Both are single-element lists.
     sp_x, st_y = [], []
@@ -2767,14 +3129,80 @@ def aggregation_plots(records, out, stamp, tdir):
                         "commit_gap_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
 
-    # 4) update residence time: rounds an update waited in the buffer before
-    # committing — ties staleness to the buffer mechanic.
-    resid = [int(r["residence_rounds"]) for r in ar
-             if r.get("residence_rounds") is not None]
+    # 3b) past-dating occurrence + degree over time (run-cumulative, sim only):
+    # a healthy sim's commits land at/near their sct, so these stay flat near
+    # zero. carried_surplus_commits is a separate counter for surplus grads
+    # deliberately carried across a data_id boundary -- expected to step up
+    # once per boundary, not a pacing anomaly; plotted alongside so it isn't
+    # conflated with the pastdated alarm. Field is `pastdated_gap_max` (no _s
+    # suffix despite the series label below).
+    pc_x, pc_y, pgm_y = [], [], []
+    for r in ar:
+        rd = int(r.get("round", 0))
+        if rd < 1 or r.get("pastdated_commits") is None:
+            continue
+        pc_x.append(rd)
+        pc_y.append(float(r["pastdated_commits"]))
+        pgm_y.append(float(r.get("pastdated_gap_max") or 0.0))
+
+    cs_y = []
+    for r in ar:
+        rd = int(r.get("round", 0))
+        if rd < 1 or r.get("carried_surplus_commits") is None:
+            continue
+        cs_y.append((rd, float(r["carried_surplus_commits"])))
+    if pc_x:
+        _series = {
+            "pastdated_commits (cumulative)": (pc_x, pc_y),
+            "pastdated_gap_max_s (cumulative worst-case)": (pc_x, pgm_y),
+        }
+        if cs_y:
+            _series["carried_surplus_commits (cumulative, expected cadence)"] = (
+                [x for x, _ in cs_y], [y for _, y in cs_y]
+            )
+        p = ph.line_plot(
+            _series,
+            "round", "count / seconds",
+            "Past-dated + carried-surplus commit occurrence over time "
+            "(pastdated flat-at-0 = healthy; carried_surplus stepping up "
+            "once/data_id-boundary is expected, not an anomaly)",
+            d, "pastdated_commits_over_rounds.pdf", stamp=stamp)
+        if p: saved.append(p)
+
+    # 4) update residence time: rounds an update stayed in-flight (selected but
+    # not yet cleaned) before commit -- ties staleness to the in-flight
+    # mechanic. Reads EVENT_INFLIGHT_RESIDENCE; EVENT_AGG_ROUND never carries
+    # `residence_rounds`.
+    ir = by_event(records, EVENT_INFLIGHT_RESIDENCE)
+    resid, carried = [], []
+    resid_fresh, resid_stale = [], []
+    for r in ir:
+        rr = r.get("residence_rounds") or []
+        resid.extend(int(v) for v in rr)
+        carried.extend(int(v) for v in (r.get("carried_over_ages") or []))
+        rf = r.get("residence_was_fresh") or []
+        for age, fresh in zip(rr, rf):
+            (resid_fresh if fresh else resid_stale).append(int(age))
     if resid:
-        p = ph.cdf_plot(resid, "residence (rounds in buffer)",
+        p = ph.cdf_plot(resid, "residence (rounds in-flight before cleaned)",
                         f"Update residence-time CDF (n={len(resid)})", d,
                         "residence_rounds_cdf.pdf", stamp=stamp)
+        if p: saved.append(p)
+    if resid_fresh or resid_stale:
+        # Decomposes the residence-distribution SHAPE gap (real peaks at
+        # residence=3, sim flatter) by commit class: does sim under-hold the
+        # fresh-committed body, or the stale-carryover tail?
+        p = ph.cdf_multi(
+            {f"fresh-committed (n={len(resid_fresh)})": sorted(resid_fresh),
+             f"stale-rejected (n={len(resid_stale)})": sorted(resid_stale)},
+            "residence (rounds in-flight before cleaned)",
+            "Residence-time CDF by commit class", d,
+            "residence_rounds_cdf_by_class.pdf", stamp=stamp)
+        if p: saved.append(p)
+    if carried:
+        p = ph.cdf_plot(carried, "age (rounds still in-flight after cleanup)",
+                        f"Carried-over in-flight age CDF (n={len(carried)})", d,
+                        "carried_over_ages_cdf.pdf", stamp=stamp)
         if p: saved.append(p)
     return saved
 
@@ -2822,6 +3250,28 @@ def write_summary(records, out, tdir, manifest=None, saved_paths=None):
     return path
 
 
+_PLOT_GROUPS = (
+    perf_plots, sanity_plots, selection_plots, insights_plots,
+    system_plots, sim_speedup_plots, phase_vclock_plots, phase_wall_vclock_plots,
+    train_batch_phase_plots, agg_step_timing_plots,
+    mqtt_delivery_plots,
+    availability_plots, trace_fidelity_plots, agg_belief_fidelity_plots,
+    send_gate_wait_plots, commit_promptness_plots,
+    selection_why_plots, aggregation_plots,
+)
+
+
+def _run_plot_group(fn, records, out_dir, stamp, telemetry_dir):
+    """Top-level (picklable, for ProcessPoolExecutor) dispatch of one plot
+    group. Converts a failure into (name, [], error) instead of propagating,
+    matching the previous serial loop's per-group try/except isolation --
+    one group's crash must never take down the rest."""
+    try:
+        return fn.__name__, fn(records, out_dir, stamp, telemetry_dir), None
+    except Exception as e:
+        return fn.__name__, [], str(e)
+
+
 def analyze(telemetry_dir, out_dir=None):
     manifest = configure_from_manifest(telemetry_dir)
     records = load_events(telemetry_dir)
@@ -2833,20 +3283,27 @@ def analyze(telemetry_dir, out_dir=None):
         return []
     stamp = ph.config_stamp(run_dir)
     saved = []
-    for fn in (perf_plots, sanity_plots, selection_plots, insights_plots,
-               system_plots, sim_speedup_plots, mqtt_delivery_plots,
-               availability_plots, trace_fidelity_plots, agg_belief_fidelity_plots,
-               send_gate_wait_plots, commit_promptness_plots,
-               selection_why_plots, aggregation_plots):
-        try:
-            saved.extend(fn(records, out_dir, stamp, telemetry_dir))
-        except Exception as e:
-            print("  (%s failed: %s)" % (fn.__name__, e))
+    # Each _PLOT_GROUPS entry is a pure function over the same `records` list,
+    # writing to its own disjoint plots/<subdir>/ path -- parallelizable.
+    # matplotlib's Agg backend is fork-safe. resource_plots and write_summary
+    # have real ordering dependencies and stay outside the pool.
+    max_workers = min(len(_PLOT_GROUPS), os.cpu_count() or 4)
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
+        futures = [
+            ex.submit(_run_plot_group, fn, records, out_dir, stamp, telemetry_dir)
+            for fn in _PLOT_GROUPS
+        ]
+        for fut in concurrent.futures.as_completed(futures):
+            name, paths, err = fut.result()
+            saved.extend(paths)
+            if err:
+                print("  (%s failed: %s)" % (name, err))
     try:
         saved.extend(resource_plots(out_dir, stamp, run_dir))
     except Exception as e:
         print("  (resource_plots failed: %s)" % e)
     saved.append(write_summary(records, out_dir, telemetry_dir, manifest=manifest, saved_paths=saved))
+    saved.sort()
     print("wrote %d artifact(s) under %s" % (len(saved), out_dir))
     for p in saved:
         print("  %s" % p)

@@ -40,7 +40,7 @@ class _FakeGradChannel:
     def add_msg(self, end, sct, budget=None, release_at=0):
         m = {MessageType.SIM_COMPLETION_TS: sct}
         if budget is not None:
-            m[MessageType.TRAINING_BUDGET_S] = budget
+            m[MessageType.MODELED_DELAY_S] = budget
         self._ends_set.add(end)
         self._msgs[end] = m
         self._release_at[end] = release_at
@@ -80,7 +80,15 @@ class _FakeGradAgg:
     _sim_recv_min_grad = TopAggregator._sim_recv_min_grad
     _release_sim_slots_at_agg_goal = TopAggregator._release_sim_slots_at_agg_goal
     _advance_sim_clock = _SyncBase._advance_sim_clock
-    _sim_recv_grace_s = _SyncBase._sim_recv_grace_s
+    # §M: shared per-trainer delay cache primitives (syncfl.TopAggregator).
+    _sim_recv_timeout_s = _SyncBase._sim_recv_timeout_s
+    _note_sim_known_delay = _SyncBase._note_sim_known_delay
+    _SIM_RECV_MARGIN_S = _SyncBase._SIM_RECV_MARGIN_S
+    # §6 Part 3 (simulate_fwdllm.md §G): shared safe-fast-path check.
+    _sim_gate_is_safe = _SyncBase._sim_gate_is_safe
+    _SIM_GATE_FAST_PROBE_TIMEOUT_S = _SyncBase._SIM_GATE_FAST_PROBE_TIMEOUT_S
+    # §6 Part 4 (simulate_fwdllm.md §G): shared visibility-lag primitive.
+    _update_visibility_lag = _SyncBase._update_visibility_lag
     # #13 step 2 ready-gating helper (inherited by the real fwdllm agg from asyncfl).
     _sim_end_has_ready_msg = staticmethod(TopAggregator._sim_end_has_ready_msg)
     # #13 step 4 freed-slot FIFO consumer (inherited from asyncfl).
@@ -89,9 +97,6 @@ class _FakeGradAgg:
     _sim_hold_busy_slots = TopAggregator._sim_hold_busy_slots
     # The return-path guard/slot release (defers to COMMIT in sim residence).
     _release_end_on_return = TopAggregator._release_end_on_return
-    # grace-window class knobs the base method reads off self
-    SIM_RECV_GRACE_FLOOR_S = 0.0
-    SIM_RECV_GRACE_FACTOR = 0.0
 
     def __init__(self):
         self.simulated = True
@@ -100,14 +105,18 @@ class _FakeGradAgg:
         self._sim_buffer = SimReorderBuffer()
         self._sim_committed = set()
         self._sim_inflight_expected = {}
-        self._sim_trainer_budget = {}
-        self._sim_budget_min = 12.0
-        self._sim_fill_ema = 0.0
+        self._sim_known_delay_s = {}  # §M: shared per-trainer delay cache
+        self._sim_dispatch_wall = {}  # #16: cold-start gate dispatch stamps
         self._sim_pending_commit = set()
-        self._sim_inflight_residence = False
+        self._inflight_residence = False
         self._sim_staggered_redispatch = False   # #13 step 4 (default off)
         self._sim_free_slot_ts = deque(maxlen=128)
         self._trainer_state_dict = {}
+        self._curr_agg_version = (1, 0)
+        # data_id is the progress axis _sim_recv_min_grad stamps ingested
+        # grads with; carried-surplus classification reads it back at pop time.
+        self.data_id = 0
+        self._sim_enqueue_data_id = {}
 
     def _drain(self, channel, recv_ends, n):
         """Commit n grads, returning the ordered list of committed scts."""
@@ -155,8 +164,25 @@ class TestSctOrderedCommit:
 
         agg._drain(ch, ["A", "B"], 2)
 
-        assert agg._sim_trainer_budget == {"A": 8.0, "B": 5.0}
-        assert agg._sim_budget_min == 5.0  # min(12.0, 8.0, 5.0)
+        # §M: each trainer's own exact MODELED_DELAY_S, no cross-trainer min.
+        assert agg._sim_known_delay_s == {"A": 8.0, "B": 5.0}
+
+
+class TestVisibilityLagTelemetry:
+    """_sim_recv_min_grad now also calls the shared _update_visibility_lag
+    alongside the existing _commit_gap computation. Must not change the
+    committed number, only add the standardized field triplet."""
+
+    def test_visibility_lag_matches_commit_gap_bit_for_bit(self):
+        agg = _FakeGradAgg()
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=30.0)
+
+        agg._sim_recv_min_grad(ch, ["A"])
+
+        assert agg._sim_last_update_visibility_lag_s == agg._sim_last_commit_gap_s
+        assert agg._sim_last_update_ready_ts == 30.0
+        assert agg._sim_last_update_committed_ts == agg._vclock.now
 
 
 class TestInFlightGate:
@@ -188,14 +214,18 @@ class _RecordingChannel(_FakeGradChannel):
         super().__init__(ends)
         self.probe_calls = []          # recv_fifo end-id lists
         self.drain_calls = []          # drain_ready end-id lists
+        self.probe_timeouts = []       # recv_fifo timeout values, call-aligned
+        self.drain_timeouts = []       # drain_ready timeout values, call-aligned
         self._ready = set(ready)
 
     def recv_fifo(self, end_ids, first_k=None, timeout=None):
         self.probe_calls.append(list(end_ids))
+        self.probe_timeouts.append(timeout)
         yield from super().recv_fifo(end_ids, first_k=first_k, timeout=timeout)
 
     def drain_ready(self, end_ids, timeout=None):
         self.drain_calls.append(list(end_ids))
+        self.drain_timeouts.append(timeout)
         return super().drain_ready(end_ids, timeout=timeout)
 
     # Mirrors channel._ends[e].is_rxq_empty() as read by _sim_end_has_ready_msg.
@@ -255,6 +285,74 @@ class TestProbeCeilingReadyGating:
 
         agg._sim_recv_min_grad(ch, [])
         assert any("READY" in call for call in ch.probe_calls)
+
+
+class TestSafeFastPathTiming:
+    """When the gate is already provably safe from in-memory state alone
+    (bmin known, no in-flight end's known delay beats bmin - slack), the
+    probe must use the tiny `_SIM_GATE_FAST_PROBE_TIMEOUT_S` bound instead of
+    the full `_sim_recv_timeout_s` bound -- the fix for multi-second blocking
+    waits. Asserts the timeout VALUE, unlike TestProbeCeilingReadyGating
+    above which covers eager-probe behavior."""
+
+    def test_fast_path_uses_tiny_timeout_when_already_safe_and_known(self):
+        agg = _FakeGradAgg()
+        # READY's delay is cached and its exp (1000) is nowhere near bmin(10)
+        # -> gate is provably safe. Still probed (readiness overrides exp),
+        # but the call must use the tiny fast-path timeout.
+        agg._sim_known_delay_s["READY"] = 3.0
+        agg._sim_inflight_expected = {"READY": 1000.0}
+        ch = _RecordingChannel([], ready={"READY"})
+        ch.add_msg("READY", sct=1000.0, release_at=0)
+        agg._sim_buffer.add(
+            "A", 10.0, ({MessageType.SIM_COMPLETION_TS: 10.0}, ("A", datetime.now()))
+        )
+
+        agg._sim_recv_min_grad(ch, [])
+        assert any("READY" in call for call in ch.probe_calls)
+        assert ch.probe_timeouts[0] == agg._SIM_GATE_FAST_PROBE_TIMEOUT_S
+        # sanity: the fast-path bound really is tiny relative to the full bound
+        # this pass would otherwise have used (known delay 3.0 + margin 0.5).
+        assert ch.probe_timeouts[0] < agg._sim_recv_timeout_s(["READY"])
+
+    def test_unknown_delay_end_in_mix_forces_full_bound_not_fast_path(self):
+        """Even with an otherwise-safe gate, any end whose delay isn't cached
+        yet must keep the fully-conservative behavior (block) -- the fast
+        path must never fire on an uncertain end."""
+        agg = _FakeGradAgg()
+        # UNKNOWN has never been observed before (no _sim_known_delay_s entry)
+        # and is physically ready, so it's probed same as the test above --
+        # but its delay is uncached, so the fast path must NOT engage.
+        agg._sim_inflight_expected = {"UNKNOWN": 1000.0}
+        ch = _RecordingChannel([], ready={"UNKNOWN"})
+        ch.add_msg("UNKNOWN", sct=1000.0, release_at=0)
+        agg._sim_buffer.add(
+            "A", 10.0, ({MessageType.SIM_COMPLETION_TS: 10.0}, ("A", datetime.now()))
+        )
+
+        agg._sim_recv_min_grad(ch, [])
+        assert any("UNKNOWN" in call for call in ch.probe_calls)
+        assert ch.probe_timeouts[0] is None  # genuinely blocking, unchanged
+
+    def test_earlier_stuck_end_forces_full_bound_not_fast_path(self):
+        """A genuinely stuck straggler (known delay, expected BEFORE the
+        buffered minimum) must keep using the full computed bound -- the gate
+        is not safe, so the fast path must not engage."""
+        agg = _FakeGradAgg()
+        # STUCK's known delay puts its exp (5) well before bmin(10) - slack ->
+        # earlier_stuck -> the gate is NOT safe, must wait the full bound.
+        agg._sim_known_delay_s["STUCK"] = 1.0
+        agg._sim_inflight_expected = {"STUCK": 5.0}
+        ch = _RecordingChannel([])
+        ch.add_msg("STUCK", sct=5.0, budget=1.0, release_at=1)  # arrives on 2nd probe
+        agg._sim_buffer.add(
+            "A", 10.0, ({MessageType.SIM_COMPLETION_TS: 10.0}, ("A", datetime.now()))
+        )
+
+        agg._sim_recv_min_grad(ch, [])
+        assert any("STUCK" in call for call in ch.probe_calls)
+        assert ch.probe_timeouts[0] == agg._sim_recv_timeout_s(["STUCK"])
+        assert ch.probe_timeouts[0] != agg._SIM_GATE_FAST_PROBE_TIMEOUT_S
 
 
 class TestSctOrderedDrain:
@@ -341,7 +439,7 @@ class TestFreedSlotRefill:
         round frontier (which would give the same expected for both)."""
         agg = _FakeGradAgg()
         agg._sim_staggered_redispatch = True
-        agg._sim_budget_min = 4.0
+        _budget = 4.0  # a hypothetical known per-trainer delay for this check
         for e, s in [("A", 10.0), ("B", 25.0)]:
             agg._sim_inflight_expected = {e: s}
             ch = _FakeGradChannel([])
@@ -351,8 +449,8 @@ class TestFreedSlotRefill:
 
         sst1 = agg._pop_free_slot_ts(100.0)
         sst2 = agg._pop_free_slot_ts(100.0)
-        exp1 = sst1 + agg._sim_budget_min
-        exp2 = sst2 + agg._sim_budget_min
+        exp1 = sst1 + _budget
+        exp2 = sst2 + _budget
         assert (exp1, exp2) == (14.0, 29.0)   # spread, not (round_now+budget)×2
 
 
@@ -497,7 +595,7 @@ class TestAsyncBoundaryReleasesSlots:
     def test_async_boundary_frees_every_committed_slot(self):
         agg = _FakeGradAgg()
         agg._sim_pending_commit = set()
-        agg._sim_inflight_residence = False
+        agg._inflight_residence = False
         ch = _FakeSelChannel(["X", "Y"])
         agg._sim_committed = {"X", "Y"}
 
@@ -595,3 +693,217 @@ class TestComputeTruthfulGate:
         assert msg[MessageType.SIM_COMPLETION_TS] == 100.0
         assert getattr(agg, "_sim_gate_phantom_skip", 0) == 0
         assert agg._sim_gate_failsafe == 1
+
+
+def _full_grad_msg(sct, model_version=0, iteration=0):
+    """A buffered grad message as _sim_recv_min_grad returns it -- carries the
+    sct for the drain AND the grad fields _process_single_trainer_message needs."""
+    return {
+        MessageType.SIM_COMPLETION_TS: sct,
+        MessageType.MODEL_VERSION: model_version,
+        MessageType.ITERATION_PER_DATA_ID: iteration,
+        MessageType.GRADIENTS: {},
+        MessageType.GRADIENTS_FOR_VAR_CHECK: None,
+        MessageType.STAT_UTILITY: 1.0,
+    }
+
+
+class _LoopChannel(_FakeSelChannel):
+    """_FakeSelChannel + the bits _process_single_trainer_message reads."""
+
+    def __init__(self, ends):
+        super().__init__(ends)
+        self._selector.ordered_updates_recv_ends = []
+
+    def set_end_property(self, *_a, **_k):
+        pass
+
+    def get_end_property(self, *_a, **_k):
+        return None
+
+
+class _LoopAgg(_FakeGradAgg):
+    """_FakeGradAgg (drain + slot-hold) + the real
+    _process_single_trainer_message, so a test can drive the exact
+    _aggregate_grads_async seam: commit (discard) THEN process."""
+
+    from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+        _OrderedContributorList as _OCL,
+    )
+    _process = TopAggregator._process_single_trainer_message
+
+    def __init__(self):
+        super().__init__()
+        self.is_async = True
+        self._model_version = 0
+        self.iteration_per_data_id = 0
+        self._agg_goal_cnt = 0
+        self._updates_in_queue = 0
+        self._updates_received = {}
+        self._per_agg_trainer_list = _LoopAgg._OCL()
+        self.grad_pool = []
+        self._trainer_last_model_version = {}
+        self._round_cache_activity_ts = {}
+        self._commit_key_by_end = {}
+
+
+class TestCommitThenProcessFreesTheSlot:
+    """Regression (simulate_fwdllm.md §F.1-23). In sim, _aggregate_grads_async
+    calls _sim_recv_min_grad (COMMIT: discards the end from _sim_pending_commit
+    at its sct) and THEN _process_single_trainer_message on that same grad. The
+    latter must NOT re-add to _sim_pending_commit -- doing so re-pins every
+    committed trainer, `selected_ends` never shrinks, distribute finds no free
+    slot, and re-dispatch across variance-retry iterations deadlocks. The unit
+    test checks _process in isolation; this drives the full seam and asserts the
+    slot actually frees."""
+
+    def _dispatched(self, ends, scts):
+        agg = _LoopAgg()
+        agg._inflight_residence = True
+        ch = _LoopChannel(ends)
+        agg._sim_pending_commit = set(ends)            # dispatch pinned them
+        agg._sim_inflight_expected = dict(zip(ends, scts))
+        for e, s in zip(ends, scts):
+            ch._msgs[e] = _full_grad_msg(sct=s)         # grads arrived, buffered
+        return agg, ch
+
+    def test_committed_trainer_freed_not_repinned(self):
+        agg, ch = self._dispatched(["X", "Y"], [10.0, 20.0])
+
+        msg, md = agg._sim_recv_min_grad(ch, ["X", "Y"])   # commit X (min sct)
+        assert msg[MessageType.SIM_COMPLETION_TS] == 10.0
+        agg._process(ch, msg, md[0], md[1])                 # process the SAME grad
+
+        # X committed -> unpinned + slot freed; Y still in flight.
+        assert agg._sim_pending_commit == {"Y"}
+        assert ch._selector.selected_ends["agg"] == {"Y"}
+
+    def test_all_commits_drain_the_pool(self):
+        """The deadlock signature: once every dispatched grad commits+processes,
+        `_sim_pending_commit` must be EMPTY so distribute can re-dispatch. The
+        bug left all of them pinned -> `selected_ends` stuck full -> None."""
+        agg, ch = self._dispatched(["X", "Y"], [10.0, 20.0])
+
+        for _ in range(2):
+            msg, md = agg._sim_recv_min_grad(ch, ["X", "Y"])
+            agg._process(ch, msg, md[0], md[1])
+
+        assert agg._sim_pending_commit == set()
+        assert ch._selector.selected_ends["agg"] == set()
+
+
+class TestChargeSimVclockOverhead:
+    """#6: the agg commit-side wall (drain-tail + FedAvg) is charged to the
+    vclock DYNAMICALLY (the measured span, never a pre-profiled constant),
+    sim-only + gated, with an over-threshold warning."""
+
+    @staticmethod
+    def _cfg(flag=True, warn_s=5.0):
+        import types
+        return types.SimpleNamespace(hyperparameters=types.SimpleNamespace(
+            sim_model_agg_compute_time=flag, sim_overhead_warn_s=warn_s))
+
+    def test_charges_measured_span_when_flag_on(self):
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        vc, cfg = VirtualClock(), self._cfg()
+        assert chg(vc, True, cfg, 0.8, "fedavg") == 0.8 and vc.now == 0.8
+        # cumulative: a second charge advances further (drain-tail then fedavg).
+        assert chg(vc, True, cfg, 0.2, "drain_tail") == 0.2
+        assert abs(vc.now - 1.0) < 1e-9
+
+    def test_no_charge_when_flag_off(self):
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        vc = VirtualClock()
+        assert chg(vc, True, self._cfg(flag=False), 0.8, "fedavg") == 0.0
+        assert vc.now == 0.0
+
+    def test_no_charge_in_real_mode(self):
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        vc = VirtualClock()
+        assert chg(vc, False, self._cfg(), 0.8, "fedavg") == 0.0
+        assert vc.now == 0.0
+
+    def test_zero_or_none_span_is_noop(self):
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        vc = VirtualClock()
+        assert chg(vc, True, self._cfg(), 0.0, "x") == 0.0
+        assert chg(vc, True, self._cfg(), None, "x") == 0.0
+        assert vc.now == 0.0
+
+    def test_warns_over_threshold(self, caplog):
+        import logging
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        with caplog.at_level(logging.WARNING):
+            chg(VirtualClock(), True, self._cfg(warn_s=1.0), 2.5, "drain_tail")
+        assert any("SIM_OVERHEAD" in r.getMessage() for r in caplog.records)
+
+
+class TestColdStartUnknownDelayGate:
+    """A trainer's first-ever contact has no _sim_known_delay_s entry
+    (reactive cache, no fallback), so earlier_stuck was blind to it and a
+    cold run committed whatever arrived first. Unconditional -- independent
+    of sim_compute_truthful_gate -- reuses the same sim_gate_compute_cap_s
+    bound."""
+
+    def test_holds_for_a_still_unknown_faster_trainer(self):
+        """Neither A nor B has a known delay. A arrives first physically but
+        B's modeled completion is earlier -- gate must hold A, commit B first."""
+        agg = _FakeGradAgg()
+        agg._sim_gate_compute_cap_s = 10.0
+        now = time.time()
+        agg._sim_dispatch_wall = {"A": now, "B": now}
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)  # arrives first physically
+        ch.add_msg("B", sct=50.0, release_at=1)    # arrives on the 2nd probe
+
+        first_msg, _md = agg._sim_recv_min_grad(ch, ["A", "B"])
+        assert first_msg[MessageType.SIM_COMPLETION_TS] == 50.0  # B, not A
+
+    def test_releases_after_cap_elapses_for_a_never_arriving_unknown_trainer(self):
+        """A trainer dispatched long enough ago that it's past the compute cap
+        can't block a commit forever -- same "not genuinely computing anymore"
+        reasoning as the #15 phantom-skip path, just for an unknown-delay end."""
+        agg = _FakeGradAgg()
+        agg._sim_gate_compute_cap_s = 0.05
+        agg._sim_dispatch_wall = {"GHOST": time.time() - 1.0}  # cap long elapsed
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)
+        # GHOST never gets a message -- would otherwise block forever.
+
+        msg, _md = agg._sim_recv_min_grad(ch, ["A", "GHOST"])
+        assert msg[MessageType.SIM_COMPLETION_TS] == 100.0
+        assert getattr(agg, "_sim_gate_failsafe", 0) == 0  # cap resolved it
+
+    def test_no_dispatch_wall_stamp_does_not_hold(self):
+        """An end with no _sim_dispatch_wall entry (never dispatched via the
+        real path) can't spuriously trigger the cold-start hold -- matches
+        production, where dispatch always stamps it unconditionally."""
+        agg = _FakeGradAgg()
+        agg._sim_gate_compute_cap_s = 10.0
+        # _sim_dispatch_wall stays {} (default from __init__).
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)
+        ch.add_msg("B", sct=50.0, release_at=5)  # would arrive much later
+
+        msg, _md = agg._sim_recv_min_grad(ch, ["A", "B"])
+        assert msg[MessageType.SIM_COMPLETION_TS] == 100.0  # A commits, doesn't wait for B
+
+    def test_flag_off_still_applies_the_cold_start_gate(self):
+        """Unlike #15's phantom-skip, this gate does NOT depend on
+        sim_compute_truthful_gate -- it must hold even with that flag at its
+        default (off)."""
+        agg = _FakeGradAgg()  # sim_compute_truthful_gate never set (off)
+        agg._sim_gate_compute_cap_s = 10.0
+        now = time.time()
+        agg._sim_dispatch_wall = {"A": now, "B": now}
+        ch = _FakeGradChannel([])
+        ch.add_msg("A", sct=100.0, release_at=0)
+        ch.add_msg("B", sct=50.0, release_at=1)
+
+        first_msg, _md = agg._sim_recv_min_grad(ch, ["A", "B"])
+        assert first_msg[MessageType.SIM_COMPLETION_TS] == 50.0

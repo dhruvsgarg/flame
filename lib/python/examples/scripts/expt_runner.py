@@ -102,8 +102,7 @@ def _colour_for(st: _Style, level: str):
 
 # ---- renderer --------------------------------------------------------------
 
-_RULE = "─" * 79  # ─────
-_BAR_W = 79       # header-bar width (matches the rule)
+_BAR_W = 79       # header-bar/rule MINIMUM width; widened to match tier ②'s table if wider
 
 # Per-tier header-bar background colours so ①②③ are visually distinct blocks.
 _TIER_BAR = ["44", "45", "100"]  # blue, magenta, bright-black(grey)
@@ -112,6 +111,29 @@ _TIER_BAR = ["44", "45", "100"]  # blue, magenta, bright-black(grey)
 def _cell(v) -> str:
     """Table cell text: None -> '–', everything else str()."""
     return "–" if v is None else str(v)
+
+
+def _table_layout(table: dict):
+    """Shared column-sizing pass: (cols, name_w, col_w) for a tier ② table.
+
+    Split out of `_render_table` so a pre-pass can measure the rendered width
+    (to size the header bars/note column of the OTHER tiers to match) without
+    duplicating the sizing logic.
+    """
+    cols = [(c, c) if isinstance(c, str) else (c[0], c[1]) for c in table["columns"]]
+    rows = table["rows"]
+    name_w = max([len("baseline")] + [len(_cell(r["name"])) for r in rows])
+    col_w = {}
+    for key, hdr in cols:
+        col_w[key] = max(len(hdr), max((len(_cell(r["cells"].get(key))) for r in rows),
+                                       default=0))
+    return cols, rows, name_w, col_w
+
+
+def _table_width(table: dict) -> int:
+    """Rendered width of a tier ② table's data row: `"   " + name + "  " + cells`."""
+    cols, _rows, name_w, col_w = _table_layout(table)
+    return 3 + name_w + sum(2 + col_w[key] + 1 for key, _h in cols)
 
 
 def _render_table(out, st, table: dict) -> None:
@@ -128,8 +150,7 @@ def _render_table(out, st, table: dict) -> None:
     and must be eyeballed. Columns identical across all rows stay dim (expected).
     Row (baseline) names are cyan. A flag-overridden column gets a green '•'.
     """
-    cols = [(c, c) if isinstance(c, str) else (c[0], c[1]) for c in table["columns"]]
-    rows = table["rows"]
+    cols, rows, name_w, col_w = _table_layout(table)
     overridden = set(table.get("overridden", []))
 
     # Which columns differ across baselines?
@@ -137,12 +158,6 @@ def _render_table(out, st, table: dict) -> None:
     for key, _h in cols:
         vals = {_cell(r["cells"].get(key)) for r in rows}
         differs[key] = len(vals) > 1
-
-    name_w = max([len("baseline")] + [len(_cell(r["name"])) for r in rows])
-    col_w = {}
-    for key, hdr in cols:
-        col_w[key] = max(len(hdr), max((len(_cell(r["cells"].get(key))) for r in rows),
-                                       default=0))
 
     # header row
     hcells = [st.dim("baseline".ljust(name_w))]
@@ -185,9 +200,15 @@ def render_and_gate(spec: dict, show_all: bool | None = None, stream=None) -> in
     title = spec.get("title", "EXPERIMENT RUN")
     subtitle = spec.get("subtitle", "")
     tag = st.yellow("[DRY-RUN]") if spec.get("dry_run") else ""
+
+    # Bar/rule/note-column width: at least _BAR_W, but widened to match the
+    # widest tier ② table so the header bars don't look truncated next to it.
+    bar_w = max([_BAR_W] + [_table_width(t["table"]) for t in spec.get("tiers", []) if t.get("table")])
+    rule = "─" * bar_w
+
     out()
     out(f" {st.bold(title)}  {subtitle}  {tag}".rstrip())
-    out(" " + _RULE)
+    out(" " + rule)
 
     n_err_rows = 0
     for ti, tier in enumerate(spec.get("tiers", [])):
@@ -196,7 +217,7 @@ def render_and_gate(spec: dict, show_all: bool | None = None, stream=None) -> in
         table = tier.get("table")
         collapsed = tier.get("collapsed", False)
         bar_code = tier.get("bar", _TIER_BAR[ti % len(_TIER_BAR)])
-        out(" " + st.bar(name, _BAR_W, bar_code))
+        out(" " + st.bar(name, bar_w, bar_code))
         n_hidden = len(table["rows"]) if table else len(rows)
         if collapsed and not show_all:
             out(st.dim(f"      [{n_hidden} row(s) hidden — set EXPT_SHOW_ALL=1]"))
@@ -215,7 +236,7 @@ def render_and_gate(spec: dict, show_all: bool | None = None, stream=None) -> in
         value_w = min(max((len(str(r.get("value", ""))) for r in _noted), default=0), 20)
         # cell column at which the note starts: 2 lead + 2 icon + 1 + label + 1 + value + 1
         note_col = 2 + 2 + 1 + label_w + 1 + value_w + 1
-        note_w = max(24, _BAR_W - note_col)
+        note_w = max(24, bar_w - note_col)
         cont_pad = " " * (note_col + 2)  # continuation lines align under the note text
         for r in rows:
             level = r.get("level", "ok")
@@ -239,7 +260,7 @@ def render_and_gate(spec: dict, show_all: bool | None = None, stream=None) -> in
             for cont in wrapped[1:]:
                 out(cont_pad + st.dim(cont))
 
-    out(" " + _RULE)
+    out(" " + rule)
 
     # ---- checks / gate ----
     checks = spec.get("checks", [])

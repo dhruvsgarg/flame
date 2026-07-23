@@ -28,7 +28,7 @@ sys.path.insert(
 )
 
 import FedSgdTrainer as _fst_module  # noqa: E402
-from FedSgdTrainer import FedSGDTrainer  # noqa: E402
+from FedSgdTrainer import FedSGDTrainer, resolve_training_delay_s  # noqa: E402
 
 
 class _FakeTrainer:
@@ -38,10 +38,10 @@ class _FakeTrainer:
     _emulate_training_delay = FedSGDTrainer._emulate_training_delay
 
     def __init__(self, training_delay_enabled, training_delay_s=0.0,
-                 training_delay_factor=1.0, speedup_factor=1.0, simulated=False):
+                 training_delay_divisor=1.0, speedup_factor=1.0, simulated=False):
         self.training_delay_enabled = training_delay_enabled
         self.training_delay_s = training_delay_s
-        self.training_delay_factor = training_delay_factor
+        self.training_delay_divisor = training_delay_divisor
         self.speedup_factor = speedup_factor
         self.simulated = simulated
         self.trainer_id = "t1"
@@ -57,21 +57,21 @@ class TestEmulateTrainingDelayRemainderWait:
     def test_modeled_delay_and_remainder_when_gpu_below_budget(self):
         # delay = 4.0/2.0/1.0 = 2.0; gpu = 0.5 -> remaining = 1.5, no overrun.
         t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
-                         training_delay_factor=2.0, speedup_factor=1.0)
+                         training_delay_divisor=2.0, speedup_factor=1.0)
         modeled, remaining, overran = t._emulate_training_delay(0.5)
         assert modeled == 2.0 and remaining == 1.5 and overran is False
 
     def test_speedup_factor_scales_the_modeled_delay(self):
         # eval_delay = 10/2 = 5; modeled = 5/5 = 1.0; gpu 0.25 -> remaining 0.75.
         t = _FakeTrainer(training_delay_enabled="True", training_delay_s=10.0,
-                         training_delay_factor=2.0, speedup_factor=5.0)
+                         training_delay_divisor=2.0, speedup_factor=5.0)
         modeled, remaining, overran = t._emulate_training_delay(0.25)
         assert modeled == 1.0 and remaining == 0.75 and overran is False
 
     def test_overrun_when_gpu_exceeds_budget(self):
         # gpu 3.0 > budget 2.0 -> overran, remaining clamped to 0.
         t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
-                         training_delay_factor=2.0, speedup_factor=1.0)
+                         training_delay_divisor=2.0, speedup_factor=1.0)
         modeled, remaining, overran = t._emulate_training_delay(3.0)
         assert modeled == 2.0 and remaining == 0.0 and overran is True
 
@@ -81,7 +81,7 @@ class TestSleepOnlyTheRemainderInRealMode:
         slept = []
         monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
         t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
-                         training_delay_factor=2.0, speedup_factor=1.0,
+                         training_delay_divisor=2.0, speedup_factor=1.0,
                          simulated=False)
         modeled, remaining, _ = t._emulate_training_delay(0.5)
         assert modeled == 2.0 and remaining == 1.5
@@ -91,7 +91,7 @@ class TestSleepOnlyTheRemainderInRealMode:
         slept = []
         monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
         t = _FakeTrainer(training_delay_enabled="True", training_delay_s=2.0,
-                         training_delay_factor=1.0, speedup_factor=1.0,
+                         training_delay_divisor=1.0, speedup_factor=1.0,
                          simulated=False)
         t._emulate_training_delay(5.0)  # gpu > budget
         assert slept == []             # nothing to sleep; overran
@@ -100,7 +100,7 @@ class TestSleepOnlyTheRemainderInRealMode:
         slept = []
         monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
         t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
-                         training_delay_factor=2.0, speedup_factor=1.0,
+                         training_delay_divisor=2.0, speedup_factor=1.0,
                          simulated=True)
         modeled, remaining, _ = t._emulate_training_delay(0.5)
         assert modeled == 2.0 and remaining == 1.5   # same modeled math as real
@@ -113,6 +113,57 @@ class TestSleepOnlyTheRemainderInRealMode:
                          simulated=True)
         assert t._emulate_training_delay(0.1) == (0.0, 0.0, False)
         assert slept == []
+
+
+class TestElapsedSinceDispatchAbsorbsNonGpuOverhead:
+    """REAL should converge to _delay_s regardless of WHERE the extra wall
+    time went (comm lag, availability checks, GC, scheduling) -- not just
+    compensate for gpu_time_s, which only covers the compute window."""
+
+    def test_uses_elapsed_since_dispatch_not_just_gpu_time(self, monkeypatch):
+        # delay=4.0; dispatched at t=100.0, now t=103.0 (3.0s elapsed), but
+        # GPU compute took only 0.5s. Old gpu-only formula would sleep 3.5s,
+        # overshooting by the unmodeled overhead; fix sleeps 1.0s, converging
+        # on the modeled 4.0s total.
+        monkeypatch.setattr(_fst_module.time, "time", lambda: 103.0)
+        slept = []
+        monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
+        t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
+                         training_delay_divisor=1.0, speedup_factor=1.0,
+                         simulated=False)
+        t._wall_recv_ts = 100.0
+        modeled, remaining, overran = t._emulate_training_delay(0.5)
+        assert modeled == 4.0
+        assert remaining == 1.0        # NOT 3.5 (the old gpu-only answer)
+        assert overran is False        # overrun stays keyed on gpu_time_s alone
+        assert slept == [1.0]
+
+    def test_elapsed_never_undercounts_below_gpu_time(self, monkeypatch):
+        # Clock-skew case: elapsed-since-dispatch reads smaller than
+        # gpu_time_s (time.time() isn't monotonic) -- must not
+        # under-compensate vs. the gpu-only baseline.
+        monkeypatch.setattr(_fst_module.time, "time", lambda: 100.1)
+        slept = []
+        monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
+        t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
+                         training_delay_divisor=1.0, speedup_factor=1.0,
+                         simulated=False)
+        t._wall_recv_ts = 100.0   # elapsed would read 0.1s, below gpu_time_s
+        modeled, remaining, _ = t._emulate_training_delay(0.5)
+        assert modeled == 4.0
+        assert remaining == 3.5    # clamped to the gpu-only answer, not 3.9
+        assert slept == [3.5]
+
+    def test_falls_back_to_gpu_time_without_wall_recv_ts(self, monkeypatch):
+        slept = []
+        monkeypatch.setattr(_fst_module.time, "sleep", lambda s: slept.append(s))
+        t = _FakeTrainer(training_delay_enabled="True", training_delay_s=4.0,
+                         training_delay_divisor=1.0, speedup_factor=1.0,
+                         simulated=False)
+        assert not hasattr(t, "_wall_recv_ts")
+        modeled, remaining, _ = t._emulate_training_delay(0.5)
+        assert modeled == 4.0 and remaining == 3.5   # unchanged gpu-only math
+        assert slept == [3.5]
 
 
 class _FakeTime:
@@ -194,3 +245,25 @@ class TestSimCompletionStampIsMaxGpuDelay:
         t.train_with_data_id()
         assert t._sim_round_duration_s == 2.0
         assert t._sim_completion_ts == 13.5  # 10.0 + 2.0 + 1.5
+
+
+class TestResolveTrainingDelayS:
+    """Floors the raw registry delay before it's divided by
+    training_delay_factor, so a trainer near the registry's class floor
+    doesn't get a razor-thin (or negative-margin) budget once divided."""
+
+    def test_no_floor_is_byte_identical(self):
+        assert resolve_training_delay_s(2.0, 0.0) == 2.0
+        assert resolve_training_delay_s(2.0, None) == 2.0
+
+    def test_floor_raises_a_trainer_below_it(self):
+        # fluxtune's floor: a delay=2.0 (class floor) trainer gets bumped to
+        # 7.0, not left at 2.0.
+        assert resolve_training_delay_s(2.0, 7.0) == 7.0
+
+    def test_floor_never_lowers_a_trainer_above_it(self):
+        # a very_slow trainer (e.g. raw delay 20.0) is unaffected by a 7.0 floor.
+        assert resolve_training_delay_s(20.0, 7.0) == 20.0
+
+    def test_floor_at_exact_boundary_is_a_no_op(self):
+        assert resolve_training_delay_s(7.0, 7.0) == 7.0

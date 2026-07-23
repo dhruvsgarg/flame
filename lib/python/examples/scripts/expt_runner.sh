@@ -209,6 +209,47 @@ expt_launch() {
     EXPT_LAST_CONVERGE_JSON="$cj"; export EXPT_LAST_CONVERGE_JSON
   fi
 
+  # Wall-clock backstop watchdog: the aggregator's own self-stop (budget_s) can
+  # fail to fire on a hang that never reaches the training loop, which would
+  # block `wait "$run_pid"` forever and stall the whole run sequence. Fires
+  # only when budget_s>0, after EXPT_BUDGET_GRACE_S grace so a clean self-stop
+  # wins the race under normal operation.
+  local watchdog_pid="" timeout_marker="$logdir/.timeout_${label}"
+  rm -f "$timeout_marker"
+  if [ "$budget_s" -gt 0 ]; then
+    (
+      local grace="${EXPT_BUDGET_GRACE_S:-120}"
+      local deadline=$(( start_ts + budget_s + grace ))
+      while kill -0 "$run_pid" 2>/dev/null; do
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+          kill -0 "$run_pid" 2>/dev/null || break   # re-check: avoid a late race
+          echo "[$(date '+%F %T')] TIMEOUT $label: still alive ${grace}s past its ${budget_s}s budget -- force-killing so the run sequence isn't blocked." \
+            | tee -a "$logdir/expt_runner.log" >&2
+          : > "$timeout_marker"
+          kill -TERM -"$run_pid" 2>/dev/null || true
+          kill -TERM  "$run_pid" 2>/dev/null || true
+          [ -n "$watcher_pid" ] && kill -TERM "$watcher_pid" 2>/dev/null
+          pkill -TERM -f converge_watch.py 2>/dev/null || true
+          sleep "${EXPT_KILL_GRACE_S:-20}"
+          kill -KILL -"$run_pid" 2>/dev/null || true
+          kill -KILL  "$run_pid" 2>/dev/null || true
+          local p
+          for p in "${EXPT_WORKER_PATS[@]}"; do
+            pkill -9 -f "$p" 2>/dev/null || true
+          done
+          break
+        fi
+        sleep 5
+      done
+    ) &
+    watchdog_pid=$!
+  fi
+  _expt_stop_watchdog() {
+    [ -n "$watchdog_pid" ] || return 0
+    kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+  }
+
   # Ctrl+C/SIGTERM teardown: the run is in its OWN process group (set -m) so a
   # terminal SIGINT never reaches it -- without this trap it (and the watcher and
   # ticker) would orphan and keep the GPU pinned. TERM run group + watcher + ticker,
@@ -220,6 +261,7 @@ expt_launch() {
     kill -TERM -"$run_pid" 2>/dev/null || true   # run's process group ...
     kill -TERM  "$run_pid" 2>/dev/null || true   # ... and its leader (group may not have formed)
     _expt_stop_ticker                            # PID-based; never a group signal
+    _expt_stop_watchdog                          # PID-based; never a group signal
     # $watcher_pid is the tee of the `converge_watch.py | tee` pipeline, so also
     # kill the poller by name.
     [ -n "$watcher_pid" ] && kill -TERM "$watcher_pid" 2>/dev/null
@@ -242,6 +284,7 @@ expt_launch() {
   trap - INT TERM
 
   _expt_stop_ticker   # PID-based (+ its sleep child); may already have self-exited
+  _expt_stop_watchdog # PID-based; may already have self-exited (or just fired -- either way idempotent)
   if [ -n "$watcher_pid" ]; then kill "$watcher_pid" 2>/dev/null; wait "$watcher_pid" 2>/dev/null; fi
 
   # Watcher verdict: converge.json = CONVERGED, stall.json = STALLED. On a
@@ -254,8 +297,21 @@ expt_launch() {
     pkill -9 -f "aggregator/pytorch/main_" 2>/dev/null || true
   fi
 
+  # Backstop-watchdog verdict: it already swept EXPT_WORKER_PATS itself, but sweep
+  # once more here in case anything spawned in the gap between its sweep and this
+  # process actually exiting -- so a dirty node never blocks the NEXT run's launch.
+  EXPT_LAST_TIMED_OUT=0; export EXPT_LAST_TIMED_OUT
+  if [ -f "$timeout_marker" ]; then
+    EXPT_LAST_TIMED_OUT=1
+    local p
+    for p in "${EXPT_WORKER_PATS[@]}"; do
+      pkill -9 -f "$p" 2>/dev/null || true
+    done
+    rm -f "$timeout_marker"
+  fi
+
   local elapsed=$(( $(date +%s) - start_ts ))
-  echo "[$(date '+%F %T')] DONE  $label exit=$rc converged=${EXPT_LAST_CONVERGED} stalled=${EXPT_LAST_STALLED} (took ${elapsed}s / ~${budget_s}s budget)" | tee -a "$logdir/expt_runner.log"
+  echo "[$(date '+%F %T')] DONE  $label exit=$rc converged=${EXPT_LAST_CONVERGED} stalled=${EXPT_LAST_STALLED} timed_out=${EXPT_LAST_TIMED_OUT} (took ${elapsed}s / ~${budget_s}s budget)" | tee -a "$logdir/expt_runner.log"
   EXPT_LAST_RC=$rc
   return $rc
 }
@@ -299,6 +355,9 @@ expt_assert_run() {
     elif [ "${EXPT_LAST_STALLED:-0}" = "1" ]; then status="STALLED"
     else status="DID_NOT_CONVERGE"; fi
   fi
+  # Backstop watchdog fired (expt_launch): run never self-stopped and had to be
+  # force-killed. Takes priority over other verdicts below.
+  [ "${EXPT_LAST_TIMED_OUT:-0}" = "1" ] && status="TIMEOUT_KILLED"
   EXPT_LAST_HEALTH="$status"; export EXPT_LAST_HEALTH
   printf "  [%s] %-14s agg_round=%s stopping_run=%s wall_ceiling=%s starvation=%s crash=%s (%s agg log(s))\n" \
     "$label" "$status" "$agg" "$stop" "$wall" "$starv" "$crash" "$nlogs"

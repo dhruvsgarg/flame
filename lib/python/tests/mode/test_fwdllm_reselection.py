@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the `reselect_each_iteration` selection-granularity gate:
 per-round (False) selects once and reuses the same trainer set for the
-whole round; per-iteration (True, default) re-invokes the selector every
-call."""
+whole round; per-iteration (True, default) caches per version_key, re-invoking the
+selector once per GENUINE (model_version, iteration)."""
 
 import time
 
@@ -38,7 +38,7 @@ class _FakeChannel:
         self._removed = set()
         self._unavail = set()
 
-    def ends(self, state, task_to_perform):
+    def ends(self, state, task_to_perform, agg_version_key=None, data_id=None):
         self.calls += 1
         return self._selections[min(self.calls - 1, len(self._selections) - 1)]
 
@@ -61,8 +61,17 @@ class _FakeAggregator:
         self._round_selected_ends_round = None
         self._round_cache_activity_ts = {}
         self._round = 0
+        self._model_version = 0
+        self.iteration_per_data_id = 0
+        self.data_id = 0
+        self._reselect_true_cache_key = None
+        self._reselect_true_cache_ends = None
         if agg_goal is not None:
             self._agg_goal = agg_goal
+
+    @property
+    def version_key(self):
+        return (self._model_version, self.iteration_per_data_id)
 
     select = TopAggregator._select_ends_respecting_reselect_gate
     _rearm_recv_eligibility = staticmethod(TopAggregator._rearm_recv_eligibility)
@@ -72,10 +81,15 @@ class _FakeAggregator:
 
 
 def _drive_two_databins_two_iterations(agg, channel):
-    """2 databins x 2 iterations each, within one round."""
+    """2 databins x 2 iterations each, within one round -- each iteration
+    bumps `iteration_per_data_id`, each databin bumps `_model_version`, so
+    every call carries a distinct version_key."""
     for _databin in range(2):
         for _iteration in range(2):
             agg.select(channel, "train")
+            agg.iteration_per_data_id += 1
+        agg._model_version += 1
+        agg.iteration_per_data_id = 0
 
 
 class TestReselectGate:
@@ -106,7 +120,7 @@ class TestReselectGate:
         channel = _FakeChannel(selections=[["t1"], ["t2"], ["t3"], ["t4"]])
 
         _drive_two_databins_two_iterations(agg, channel)
-        assert channel.calls == 4
+        assert channel.calls == 4  # 4 genuinely distinct version_keys
 
     def test_per_round_does_not_cache_empty_selection(self):
         """An empty/None selection (no trainers joined yet) must not be
@@ -168,6 +182,59 @@ class TestReselectGate:
         assert channel._selector.selected_ends == {"t1"}
 
         agg.select(channel, "train")
+        assert channel._selector.selected_ends == {"t1", "t2"}
+
+
+class TestPerIterationVersionKeyCache:
+    """reselect_each_iteration=True caches per version_key -- repeated calls
+    within the same (model_version, iteration) reuse one channel.ends()
+    result instead of re-invoking the selector every tick."""
+
+    def test_repeat_calls_within_same_version_key_are_cached(self):
+        agg = _FakeAggregator(reselect_each_iteration=True)
+        channel = _FakeChannel(selections=[["t1", "t2"]])
+
+        for _ in range(5):
+            ends = agg.select(channel, "train")
+            assert ends == ["t1", "t2"]
+        assert channel.calls == 1  # 5 calls, same version_key -> 1 fetch
+
+    def test_version_key_change_invalidates_cache(self):
+        agg = _FakeAggregator(reselect_each_iteration=True)
+        channel = _FakeChannel(selections=[["t1"], ["t2"]])
+
+        assert agg.select(channel, "train") == ["t1"]
+        assert agg.select(channel, "train") == ["t1"]  # cached
+        assert channel.calls == 1
+
+        agg.iteration_per_data_id += 1  # new version_key
+        assert agg.select(channel, "train") == ["t2"]
+        assert channel.calls == 2
+
+    def test_empty_selection_is_not_cached(self):
+        agg = _FakeAggregator(reselect_each_iteration=True)
+        channel = _FakeChannel(selections=[None, ["t1"]])
+
+        assert agg.select(channel, "train") is None
+        assert agg.select(channel, "train") == ["t1"]  # retried, not stuck at None
+        assert channel.calls == 2
+
+        # now cached (non-empty) -- a further call within the same
+        # version_key must not re-query.
+        assert agg.select(channel, "train") == ["t1"]
+        assert channel.calls == 2
+
+    def test_cache_hit_rearms_selector_recv_eligibility(self):
+        agg = _FakeAggregator(reselect_each_iteration=True)
+        channel = _FakeChannel(selections=[["t1", "t2"]])
+
+        agg.select(channel, "train")
+        assert channel._selector.selected_ends == {"t1", "t2"}
+
+        channel._selector.selected_ends.clear()
+        ends = agg.select(channel, "train")
+        assert ends == ["t1", "t2"]
+        assert channel.calls == 1  # still cache-hit
         assert channel._selector.selected_ends == {"t1", "t2"}
 
 

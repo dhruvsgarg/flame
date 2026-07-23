@@ -45,6 +45,20 @@ def abstract_attribute(obj: Callable[[Any], R] = None) -> R:
     return cast(R, _obj)
 
 
+def _is_unfilled_abstract_attribute(instance: Any, name: str) -> bool:
+    """True only for a still-unfilled abstract_attribute placeholder.
+
+    Reads the instance attribute (a @property getter runs). A getter that
+    raises can't be an unfilled placeholder -- those never raise -- so treat
+    raises as implemented rather than aborting instantiation.
+    """
+    try:
+        value = getattr(instance, name)
+    except Exception:
+        return False
+    return getattr(value, "__is_abstract_attribute__", False)
+
+
 class ABCMeta(NativeABCMeta):
     """ABCMeta."""
 
@@ -55,7 +69,7 @@ class ABCMeta(NativeABCMeta):
         abstract_attributes = {
             name
             for name in dir(instance)
-            if getattr(getattr(instance, name), "__is_abstract_attribute__", False)
+            if _is_unfilled_abstract_attribute(instance, name)
         }
 
         if abstract_attributes:

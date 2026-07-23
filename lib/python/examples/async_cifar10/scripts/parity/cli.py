@@ -29,15 +29,19 @@ from pathlib import Path
 
 
 def _find_run_dirs(experiments_dir: str, baseline_tag: str) -> tuple:
-    """Return (real_dir, sim_dir) by looking for latest real/sim pair matching baseline_tag."""
-    pattern_real = os.path.join(experiments_dir, f"*{baseline_tag}*real*")
-    pattern_sim = os.path.join(experiments_dir, f"*{baseline_tag}*sim*")
+    """Return (real_dir, sim_dir) by looking for latest real/sim pair matching baseline_tag.
+
+    Anchored on `_{tag}_n<digits>_` to avoid prefix collisions, e.g. a bare
+    `*fwdllm*` also matching `fwdllm_plus` run dirs.
+    """
+    pattern_real = os.path.join(experiments_dir, f"*_{baseline_tag}_n[0-9]*real*")
+    pattern_sim = os.path.join(experiments_dir, f"*_{baseline_tag}_n[0-9]*sim*")
     reals = sorted(glob.glob(pattern_real))
     sims = sorted(glob.glob(pattern_sim))
     if not reals:
-        raise FileNotFoundError(f"No real run dir matching *{baseline_tag}*real* in {experiments_dir}")
+        raise FileNotFoundError(f"No real run dir matching *_{baseline_tag}_n<N>_*real* in {experiments_dir}")
     if not sims:
-        raise FileNotFoundError(f"No sim run dir matching *{baseline_tag}*sim* in {experiments_dir}")
+        raise FileNotFoundError(f"No sim run dir matching *_{baseline_tag}_n<N>_*sim* in {experiments_dir}")
     return reals[-1], sims[-1]
 
 

@@ -93,6 +93,12 @@ TAG_HEARTBEAT = "heartbeat_recv"
 # and sim (localhost). Added to budget_s before firing [TIMING_OVERRUN_AGG].
 _NETWORK_SLACK_S = 2.0
 
+# Gate slack: don't hold a commit for an in-flight trainer expected to
+# complete only marginally earlier than the buffered minimum (absorbs
+# budget-estimate noise). Shared by `_sim_gate_is_safe` below and asyncfl's/
+# fwdllm's `earlier_stuck` gates; keep this the single source of truth.
+_SIM_ORDER_SLACK_S = 2.0
+
 # Startup join barrier: how long to wait for the trainer cohort to join before
 # the first selection (see _await_min_trainers). Bounded so a crashed/slow
 # trainer can't deadlock startup.
@@ -120,12 +126,11 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
     def internal_init(self) -> None:
         """Initialize internal state for role."""
-        # Optional deterministic seeding for real/sim parity. The selector runs
-        # in this (the aggregator) process and draws from the process-global
-        # np.random / random RNGs, so seeding here makes selection reproducible
-        # across runs/modes (given identical decision-point ordering). Also
-        # seeds torch for reproducible model init. seed=None (default) preserves
-        # the legacy unseeded behaviour.
+        # Optional deterministic seeding. Seeds process-global np.random/random/
+        # torch (model init etc). The selector does NOT draw from these -- it has
+        # its own dedicated `_rng`/`_pyrng` (flame/selector/__init__.py), seeded
+        # separately by ChannelManager.join threading this same seed into the
+        # selector's `_seed` kwarg. seed=None (default) leaves both paths unseeded.
         _seed = getattr(self.config.hyperparameters, "seed", None)
         if _seed is not None:
             import random as _random
@@ -228,6 +233,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self._sim_buffer = SimReorderBuffer()
         self._sim_committed: set = set()
 
+        # Shared per-trainer delay cache (end -> MODELED_DELAY_S). No
+        # cross-trainer fallback -- an unseen end has no entry.
+        self._sim_known_delay_s: dict = {}
+
         self._updates_recevied = {}
 
         self._agg_training_stats = {}
@@ -241,6 +250,25 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # TODO Add "wt_contrib_stats" as a key later but cannot
         # directly populate it here since it is only in the optimizer.
         # For now, do it in post-proc script.
+
+    @property
+    def version_key(self) -> tuple[int, int]:
+        """(model_version, iteration): the aggregator's current step identity,
+        shared by staleness checks and the selector no-repeat guard. Plain
+        sync FL has no intra-round iteration axis, so iteration is always 0;
+        fwdllm_aggregator overrides this for its variance-gated cadence."""
+        return (self._round, 0)
+
+    @property
+    def vclock_now(self) -> float | None:
+        """Virtual-clock reading, sim mode only -- `None` in real mode.
+
+        Real mode has no virtual clock (wall-clock IS the clock), so this
+        stays `None` rather than aliasing wall-clock, which would make any
+        vclock-vs-wall-clock comparison vacuous. Centralizes the
+        `self.simulated` check so callers don't repeat it.
+        """
+        return self._vclock.now if self.simulated else None
 
     def _compute_aggregator_stats(self) -> None:
         for key in self._round_update_stat_keys:
@@ -342,20 +370,62 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self._sim_overhead_cum = getattr(self, "_sim_overhead_cum", 0.0) + max(0.0, overhead)
         self._sim_sct_adv_cum = getattr(self, "_sim_sct_adv_cum", 0.0) + max(0.0, from_sct)
 
-    # Recv-barrier dead-end ceiling: max(floor, factor * EMA of full-drain wall).
-    # Bounds the wait for a non-responding end only; never paces responders.
-    SIM_RECV_GRACE_FLOOR_S = 2.0
-    SIM_RECV_GRACE_FACTOR = 4.0
+    # Replaces the old reactive-EMA grace ceiling with exact per-trainer
+    # knowledge; `_note_sim_known_delay` writes it, `_sim_recv_timeout_s` reads it.
+    _SIM_RECV_MARGIN_S = 0.5
 
-    def _sim_recv_grace_s(self) -> float:
-        return max(self.SIM_RECV_GRACE_FLOOR_S,
-                   self.SIM_RECV_GRACE_FACTOR * getattr(self, "_sim_fill_ema", 0.0))
+    # When `_sim_gate_is_safe` proves the buffered minimum is committable from
+    # in-memory state alone, this pass only needs to catch what's already
+    # queued -- not wait the full per-trainer delay bound. Non-zero (not 0)
+    # because recv_fifo's real-mode timeout races an asyncio future across
+    # threads and can spuriously time out at exactly 0; one scheduling window
+    # is enough, and stays orders of magnitude below the waits it replaces.
+    _SIM_GATE_FAST_PROBE_TIMEOUT_S = 0.01
 
-    def _note_sim_fill(self, barrier_wait: float, drained_all: bool) -> None:
-        if not drained_all:
+    def _note_sim_known_delay(self, end, msg) -> None:
+        """Cache `end`'s MODELED_DELAY_S on first observation (constant per
+        trainer_id, so no decay/EMA needed). None (delays disabled) is left
+        uncached, distinct from "not yet observed"."""
+        if not isinstance(msg, dict):
             return
-        prev = getattr(self, "_sim_fill_ema", 0.0)
-        self._sim_fill_ema = (0.7 * prev + 0.3 * barrier_wait) if prev else barrier_wait
+        delay = msg.get(MessageType.MODELED_DELAY_S)
+        if delay is not None:
+            self._sim_known_delay_s[end] = float(delay)
+
+    def _sim_recv_timeout_s(self, ends) -> float:
+        """Real-wall-clock recv_fifo timeout for `ends`. None (genuinely
+        block) if any end hasn't reported MODELED_DELAY_S yet; otherwise the
+        max known delay + margin -- a safe real-time bound since compute is
+        fidelity-guaranteed << the modeled delay. No fallback for unseen ends."""
+        cache = self._sim_known_delay_s
+        if not ends or any(e not in cache for e in ends):
+            return None
+        return max(cache[e] for e in ends) + self._SIM_RECV_MARGIN_S
+
+    def _sim_gate_is_safe(self, bmin, inflight_items) -> bool:
+        """True iff buffered minimum `bmin` is safe to commit now, using only
+        already-known state (no real-time wait needed).
+
+        `inflight_items` is (end, exp) pairs for in-flight ends not yet
+        buffered/committed, pre-filtered by the caller. `exp` is `None` for
+        an end whose delay isn't cached yet, which forces the conservative
+        `False` (mirrors `_sim_recv_timeout_s`'s None-if-unseen convention).
+
+        Returns False if `bmin` is None or any item's `exp` is None --
+        caller falls through to the normal blocking ingest-then-recheck path.
+        Otherwise True iff no known in-flight end is expected to complete
+        before `bmin` (same check `_sim_recv_min`/`_sim_recv_min_grad`
+        already do after ingest; this makes it available before, so a
+        provably-safe pass can skip the wait)."""
+        if bmin is None:
+            return False
+        min_stuck = None
+        for _end, exp in inflight_items:
+            if exp is None:
+                return False
+            if min_stuck is None or exp < min_stuck:
+                min_stuck = exp
+        return min_stuck is None or not (min_stuck + _SIM_ORDER_SLACK_S < bmin)
 
     def _sync_sim_recv_first_k(self, channel, ends, first_k):
         """Simulated mode: commit the first_k updates with the SMALLEST
@@ -386,18 +456,19 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         barrier_t0 = time.time()
         drained_all = True
         if ends:
-            grace = self._sim_recv_grace_s()
-            for msg, md in channel.recv_fifo(ends, first_k=len(ends), timeout=grace):
-                if not msg:  # no more ready (grace expired or set drained)
+            # Exact per-end bound, or None to genuinely block.
+            timeout = self._sim_recv_timeout_s(ends)
+            for msg, md in channel.recv_fifo(ends, first_k=len(ends), timeout=timeout):
+                if not msg:  # no more ready (bound expired or set drained)
                     break
                 end = md[0]
+                self._note_sim_known_delay(end, msg)
                 sct = msg.get(MessageType.SIM_COMPLETION_TS)
                 sct = float(sct) if sct is not None else self._vclock.now
                 buf.add(end, sct, (msg, md))
             drained_all = all(buf.has(e) for e in ends)
         barrier_wait = time.time() - barrier_t0
         if ends:
-            self._note_sim_fill(barrier_wait, drained_all)
             logger.info(
                 f"[SIM_BARRIER] round={getattr(self, '_round', -1)} probed={len(ends)} "
                 f"first_k={first_k} barrier_wait_s={barrier_wait:.3f} "
@@ -641,7 +712,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                     f"queue_wait_s={_queue_wait} "
                     f"process_s={_process}"
                 )
-                _budget_s = float(msg.get(MessageType.TRAINING_BUDGET_S, 0.0))
+                # MODELED_DELAY_S supersedes TRAINING_BUDGET_S (same value).
+                _budget_s = float(msg.get(MessageType.MODELED_DELAY_S) or 0.0)
                 if _budget_s > 0:
                     if self.simulated:
                         _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
@@ -781,7 +853,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 contributing_trainers=list(self.cache),  # diskcache iterates keys
                 agg_observed_s=agg_obs or None,
                 extra={
-                    "vclock_now": self._vclock.now if self.simulated else None,
+                    "vclock_now": getattr(self, "vclock_now", None),
                     "update_visibility_lag_s": list(
                         self._round_update_values.get("update_visibility_lag_s", [])
                     ),
@@ -1045,7 +1117,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 
         # Same model goes to every recipient this round; build + serialize once.
-        _sim_send_ts = self._vclock.now if self.simulated else None
+        _sim_send_ts = getattr(self, "vclock_now", None)
         msg = {
             MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
             MessageType.ROUND: self._round,
@@ -1093,10 +1165,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # later trace transitions (UNAVAILABILITY_DESIGN.md's Batch 4 finding
         # 2). Piggyback the final vclock on this broadcast (reaches every
         # connected end regardless of dispatch state) as a last wake-up for
-        # _refresh_avl_state() to flush queued transitions before exit. Gated
-        # on the availability feature (byte-identical broadcast payload when
-        # off); real mode's clock never freezes, so it doesn't need this.
-        if self.simulated and getattr(self, "trainer_event_dict", None) is not None:
+        # _refresh_avl_state() to flush queued transitions before exit.
+        # Unconditional on `simulated`: the old `trainer_event_dict` gate left
+        # non-avail-trace runs' final task_recv null for no reason.
+        if self.simulated:
             payload[MessageType.SIM_SEND_TS] = self._avail_now()
         channel.broadcast(payload)
         logger.debug("done broadcasting end-of-training")
@@ -1196,9 +1268,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 _wall_e = time.time() - self.agg_start_time_ts
                 _v = float(self._vclock.now)
                 _sim_rate = _v / _wall_e if _wall_e > 0 else 0.0
+                _slow = " SLOWDOWN" if _sim_rate < 1.0 else ""
                 logger.info(
                     f"[VCLOCK_PROGRESS] vclock={_v:.1f}s wall={_wall_e:.1f}s "
-                    f"sim_rate={_sim_rate:.3f} (virtual-s/wall-s) round={self._round}"
+                    f"sim_rate={_sim_rate:.3f}{_slow} (virtual-s/wall-s) round={self._round}"
                 )
                 self._last_vclock_log_wall_ts = time.time()
 

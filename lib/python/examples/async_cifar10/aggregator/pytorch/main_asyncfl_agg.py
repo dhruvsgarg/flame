@@ -179,6 +179,10 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
         # Off the critical path: snapshot weights now, run the test-set forward
         # pass in a daemon thread so the aggregator keeps committing/dispatching
         # (the synchronous eval penalised async — more rounds -> more pauses).
+        #
+        # Backgrounding is why this needs no sim_model_*_compute_time vclock fold
+        # (flame/config.py); if eval ever becomes synchronous, add one or sim mode
+        # will under-count wall time.
         eval_model = self._eval_snapshot_model()
         if eval_model is None:
             return  # prior async eval still running

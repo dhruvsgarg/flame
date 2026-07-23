@@ -2,15 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Async grad-path residence + commit-then-carry.
 
-For the async path with `sim_inflight_residence` on, `_release_sim_slots_at_agg_goal`
+For the async path with `inflight_residence` on, `_release_sim_slots_at_agg_goal`
 HOLDs the still-busy trainers (surplus buffered u not-yet-arrived in-flight) in
 their slots BEFORE clearing anything, releases only the committed subset, and
 CARRIEs the surplus buffer to the next cycle (never dropped) -- otherwise the
 boundary re-dispatches busy trainers (2x forward passes) and drops arrived-but-
 uncommitted grads. These tests drive the boundary directly and assert (a) surplus
 carried, (b) busy trainers not re-selected, (c) R1 one-in-flight residence holds,
-and (d) flag-off => byte-identical to the legacy drop behavior (sync baselines +
-async-without-residence unchanged).
+and (d) flag-off => byte-identical to the legacy drop behavior.
 """
 
 from flame.mode.horizontal.asyncfl.top_aggregator import (
@@ -30,12 +29,12 @@ from tests.mode.test_fwdllm_sim_grad_loop import (
 def _residence_agg(residence: bool) -> _FakeGradAgg:
     agg = _FakeGradAgg()
     agg._sim_pending_commit = set()
-    agg._sim_inflight_residence = residence
+    agg._inflight_residence = residence
     return agg
 
 
 class TestCommitThenCarryResidenceOn:
-    """async + sim_inflight_residence=True: hold-before-clear + carry surplus."""
+    """async + inflight_residence=True: hold-before-clear + carry surplus."""
 
     def test_surplus_carried_and_busy_held(self):
         agg = _residence_agg(residence=True)
@@ -108,10 +107,10 @@ class TestCommitThenCarryResidenceOn:
 
 class TestReturnPathGuardHeldToCommit:
     """The guard release on grad RETURN (`_release_end_on_return`, called from
-    `_process_single_trainer_message`). The async accept path must not call
-    `channel.cleanup_provided_ends(end)` on physical return -- that tears the
-    trainer out of `all_selected` while its carried grad has not committed in
-    virtual time -> re-selectable -> re-dispatch-while-in-flight.
+    `_process_single_trainer_message`). With `_inflight_residence` on, RETURN
+    must not release `all_selected` -- that would make an uncommitted trainer
+    re-selectable -> re-dispatch-while-in-flight. One check, no `is_async`
+    branch: holds for sync and real too, not just sim.
     """
 
     def test_guard_held_on_return_in_sim_residence(self):
@@ -134,13 +133,86 @@ class TestReturnPathGuardHeldToCommit:
         agg._release_end_on_return(ch, "A")
         assert "A" not in ch._selector.all_selected
 
-    def test_sync_return_uses_recvd_cleanup(self):
-        """sync (random selector, is_async=False): unchanged cleanup_recvd_end
-        path -- releases on return (barrier re-selects the whole cohort)."""
-        agg = _residence_agg(residence=True)   # residence flag is inert when sync
+    def test_guard_held_on_return_in_sync_residence(self):
+        """sync + residence on also holds now -- one invariant, no is_async
+        special case. Must not silently diverge from async's behavior."""
+        agg = _residence_agg(residence=True)
         agg.is_async = False
         ch = _FakeSelChannel(["A", "B", "C"])
         agg._release_end_on_return(ch, "A")
+        assert "A" in ch._selector.all_selected
+
+    def test_sync_return_uses_recvd_cleanup_when_residence_off(self):
+        """sync (random selector, is_async=False) WITHOUT residence: unchanged
+        cleanup_recvd_end path -- releases on return, default/legacy."""
+        agg = _residence_agg(residence=False)
+        agg.is_async = False
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A")
+        assert "A" not in ch._selector.all_selected
+
+    def test_guard_held_on_return_in_real_residence(self):
+        """async + real + residence on must also hold to commit -- previously
+        gated on `simulated`, so real always fell through to immediate
+        release."""
+        agg = _residence_agg(residence=True)
+        agg.is_async = True
+        agg.simulated = False
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A")
+        assert "A" in ch._selector.all_selected
+        assert "A" in ch._selector.selected_ends["agg"]
+
+    def test_guard_released_on_return_in_real_when_residence_off(self):
+        """async + REAL + residence off: legacy immediate release preserved."""
+        agg = _residence_agg(residence=False)
+        agg.is_async = True
+        agg.simulated = False
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A")
+        assert "A" not in ch._selector.all_selected
+
+
+class TestReturnPathBufferedReleasesImmediately:
+    """Once a contribution is captured in `_pending_cohort_contribs` (deferred
+    merge), re-dispatch can't lose/overwrite it -- `buffered=True` releases
+    the slot immediately even with `_inflight_residence` on, instead of
+    deferring to the cohort's commit. Restores flat fedbuff concurrency
+    without reopening the gap `_inflight_residence` closes for un-buffered
+    returns."""
+
+    def test_buffered_true_releases_immediately_despite_residence(self):
+        agg = _residence_agg(residence=True)
+        agg.is_async = True
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A", buffered=True)
+        assert "A" not in ch._selector.all_selected
+        assert "A" not in ch._selector.selected_ends["agg"]
+
+    def test_buffered_false_still_holds_to_commit(self):
+        """Explicit buffered=False (e.g. a non-gradient message) preserves
+        the pre-fix hold-to-commit behavior -- same as the default."""
+        agg = _residence_agg(residence=True)
+        agg.is_async = True
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A", buffered=False)
+        assert "A" in ch._selector.all_selected
+
+    def test_buffered_true_in_real_releases_immediately(self):
+        agg = _residence_agg(residence=True)
+        agg.is_async = True
+        agg.simulated = False
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A", buffered=True)
+        assert "A" not in ch._selector.all_selected
+
+    def test_buffered_true_with_residence_off_still_releases(self):
+        """residence off already released immediately -- buffered=True must
+        not change that (no double-release / no-op path)."""
+        agg = _residence_agg(residence=False)
+        agg.is_async = True
+        ch = _FakeSelChannel(["A", "B", "C"])
+        agg._release_end_on_return(ch, "A", buffered=True)
         assert "A" not in ch._selector.all_selected
 
 
@@ -184,12 +256,18 @@ class TestVirtualInflightSlotHold:
         assert ch._selector.selected_ends["agg"] == {"B", "C"}
         assert "A" not in ch._selector.all_selected
 
-    def test_triplet_guard_pruned_to_busy_on_commit(self):
+    def test_triplet_guard_kept_until_tuple_advances_not_on_commit(self):
+        # A trainer's contributed version_key stamp survives its commit and is
+        # dropped only when the agg advances PAST that version_key. Dropping
+        # it on commit let a fast committer be re-picked for the same
+        # version_key -> abort_training -> phantom starvation.
         agg = _residence_agg(residence=True)
-        ch = _FakeSelChannel(["A", "B", "C"])
-        # A committed (popped) this cycle; B carried; C computing.
+        agg._curr_agg_version = (1, 0)
+        ch = _FakeSelChannel(["A", "B", "C", "D"])
+        # A committed this cycle; B carried; C computing -- all at the CURRENT
+        # version_key (1,0). D contributed to a PAST (1,0)-predecessor.
         agg._trainer_state_dict = {
-            "A": (1, 0, 0), "B": (1, 0, 0), "C": (1, 0, 0),
+            "A": (1, 0), "B": (1, 0), "C": (1, 0), "D": (0, 0),
         }
         agg._sim_committed = {"A"}
         agg._sim_buffer.add("B", 20.0, None)
@@ -197,9 +275,24 @@ class TestVirtualInflightSlotHold:
 
         agg._release_sim_slots_at_agg_goal(ch, is_async=True)
 
-        # The committed A is dropped from the triplet guard (re-pickable); the
-        # still-outstanding B, C remain so async_oort's filter keeps skipping them.
-        assert set(agg._trainer_state_dict) == {"B", "C"}
+        # A/B/C keep their (1,0) stamp (still the current version_key) -> the
+        # committed A is NOT re-pickable for (1,0). Only D, stamped at a
+        # superseded version_key, is dropped (re-pickable for the current one).
+        assert set(agg._trainer_state_dict) == {"A", "B", "C"}
+
+    def test_triplet_guard_all_dropped_once_tuple_advances(self):
+        # When the agg has moved to a new version_key, every stale stamp drops
+        # -> all trainers re-enter the pool for the new (model_version, iteration).
+        agg = _residence_agg(residence=True)
+        agg._curr_agg_version = (1, 1)   # iteration advanced past (1,0)
+        ch = _FakeSelChannel(["A", "B"])
+        agg._trainer_state_dict = {"A": (1, 0), "B": (1, 0)}
+        agg._sim_committed = {"A"}
+        agg._sim_inflight_expected = {"B": 30.0}
+
+        agg._release_sim_slots_at_agg_goal(ch, is_async=True)
+
+        assert agg._trainer_state_dict == {}
 
 
 class TestFlagOffByteIdentical:
@@ -279,13 +372,41 @@ class TestPendingCommitBridge:
         agg._sim_hold_busy_slots(ch)
         assert agg._sim_pending_commit == {"A", "B"}
 
-        # A commits -> leaves in-flight, marked committed.
+        # A commits -> leaves in-flight, marked committed. `outstanding` now
+        # also reads `_sim_pending_commit`, so a faithful "A committed" must
+        # include the same discard the real commit path always performs, not
+        # just mutating `_sim_inflight_expected`.
         agg._sim_inflight_expected = {"B": 20.0}
         agg._sim_committed = {"A"}
+        agg._sim_pending_commit.discard("A")
         agg._sim_hold_busy_slots(ch)
 
         # A is re-pickable again (dropped from pending); `|=` would have kept it.
         assert agg._sim_pending_commit == {"B"}
+
+    def test_unseen_delay_trainer_stays_held_until_commit(self):
+        """A trainer's first-ever dispatch has no `_sim_known_delay_s` entry
+        yet, so `_sim_inflight_expected` never gets one either (deliberate,
+        see test_train_staggered_unseen_trainer_gets_no_gate_entry). Before
+        this fix, `outstanding` only read `_sim_inflight_expected | buffered`,
+        so such a trainer was invisible to it and got wiped from
+        `all_selected` the moment any other trainer's commit triggered this
+        reconcile. `_sim_pending_commit` (added unconditionally at dispatch)
+        must keep it held instead.
+        """
+        agg = _residence_agg(residence=True)
+        ch = _FakeSelChannel(["NEW", "B"])
+        # NEW was just dispatched (the real dispatch path adds to all_selected +
+        # selected_ends + _sim_pending_commit unconditionally) but has no known
+        # delay yet, so _sim_inflight_expected has nothing for it.
+        agg._sim_pending_commit = {"NEW"}
+        agg._sim_inflight_expected = {"B": 20.0}   # B has a known delay, still computing
+
+        agg._sim_hold_busy_slots(ch)
+
+        assert "NEW" in agg._sim_pending_commit
+        assert "NEW" in ch._selector.all_selected
+        assert "NEW" in ch._selector.selected_ends["agg"]
 
     def test_commit_discards_from_pending(self):
         agg = _residence_agg(residence=True)

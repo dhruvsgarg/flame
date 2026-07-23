@@ -195,10 +195,20 @@ class OortSelector(AbstractSelector):
 
         self.pacer(round)
 
+        # Same no-repeat filter as async_oort's guard, kept inert here -- no
+        # caller passes both kwargs yet, since the round-scoped `selected_ends`
+        # guard above already prevents a within-round re-pick.
+        agg_version_key = kwargs.get("agg_version_key")
+        trainer_version_keys = kwargs.get("trainer_version_keys")
         eligible_ends = {
             end_id: end
             for end_id, end in ends.items()
             if end_id not in self.selected_ends
+            and not (
+                agg_version_key is not None
+                and trainer_version_keys is not None
+                and trainer_version_keys.get(end_id) == agg_version_key
+            )
         }
 
         if len(eligible_ends) == 0:
@@ -487,7 +497,9 @@ class OortSelector(AbstractSelector):
         utility_list = []
         unexplored_end_ids = []
 
-        for end_id in ends.keys():
+        # sorted(): canonicalize before the seeded draws (join order differs
+        # real vs sim). Same as async_oort.
+        for end_id in sorted(ends.keys()):
             if (end_id not in blocklist_end_ids) and (
                 end_id not in trainer_unavail_list
             ):
@@ -615,8 +627,11 @@ class OortSelector(AbstractSelector):
 
     def select_random(self, ends: dict[str, End], num_of_ends: int) -> dict[str, None]:
         """Randomly select num_of_ends ends, merging with any in-flight set."""
-        newly_selected = set(self._pyrng.sample(sorted(ends), num_of_ends))
-        self.selected_ends = self.selected_ends | newly_selected
+        # dict.fromkeys, not set(): set() order is PYTHONHASHSEED-randomized
+        # per process, breaking real/sim parity despite the seeded sample
+        # being deterministic (see async_oort.py's twin of this method).
+        newly_selected = dict.fromkeys(self._pyrng.sample(sorted(ends), num_of_ends))
+        self.selected_ends = self.selected_ends | set(newly_selected)
         return {key: None for key in newly_selected}
 
     def calculate_total_utility(

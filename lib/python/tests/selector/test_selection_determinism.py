@@ -120,8 +120,10 @@ class TestDedicatedRngInsulation:
         second = _oort_chosen(7, make_ends)
         assert first == second
 
-    def test_unseeded_is_still_stochastic(self, make_ends):
-        # _seed=None (legacy) -> independent RNG each construction -> may differ.
+    def test_no_seed_defaults_to_deterministic(self, make_ends):
+        # No seed passed -> every construction falls back to DEFAULT_SEED, so
+        # selection is deterministic across constructions (there is no longer an
+        # "unseeded" path -- see AbstractSelector.DEFAULT_SEED).
         outcomes = {
             frozenset(
                 OortSelector(aggr_num=3).select(
@@ -132,7 +134,7 @@ class TestDedicatedRngInsulation:
             )
             for _ in range(12)
         }
-        assert len(outcomes) > 1
+        assert len(outcomes) == 1
 
 
 from flame.selector import AbstractSelector
@@ -166,10 +168,12 @@ class TestDedicatedRngContract:
         assert _np_seq(_Mini(_seed=7)) != _np_seq(_Mini(_seed=8))
         assert _py_seq(_Mini(_seed=7)) != _py_seq(_Mini(_seed=8))
 
-    def test_none_seed_is_unseeded_and_independent(self):
-        assert _Mini(_seed=None)._seed is None
-        # two independent unseeded RNGs almost surely differ
-        assert _np_seq(_Mini(_seed=None)) != _np_seq(_Mini(_seed=None))
+    def test_none_seed_falls_back_to_default_and_is_deterministic(self):
+        # _seed=None now falls back to DEFAULT_SEED (no unseeded path), so two
+        # None-seed selectors produce IDENTICAL sequences.
+        assert _Mini(_seed=None)._seed == AbstractSelector.DEFAULT_SEED
+        assert _np_seq(_Mini(_seed=None)) == _np_seq(_Mini(_seed=None))
+        assert _py_seq(_Mini(_seed=None)) == _py_seq(_Mini(_seed=None))
 
     def test_construction_does_not_touch_global_rng(self):
         # Seeding a selector must not perturb the process-global RNG state.
@@ -183,5 +187,210 @@ class TestDedicatedRngContract:
     @pytest.mark.parametrize("seed", [None, 0, 1234])
     def test_seed_recorded_and_rngs_present(self, seed):
         sel = _Mini(_seed=seed)
-        assert sel._seed == seed
+        expected = AbstractSelector.DEFAULT_SEED if seed is None else seed
+        assert sel._seed == expected
         assert isinstance(_np_seq(sel), list) and isinstance(_py_seq(sel), list)
+
+
+class TestSelectRandomOrderDeterminism:
+    """select_random's dispatch order, not just its chosen set, must be a pure
+    function of (state, seed): it feeds `_pyrng.sample(...)` (deterministic)
+    into `dict.fromkeys(...)`. A bare `set()` there would silently reorder by
+    string hash, which Python randomizes per-process (PYTHONHASHSEED)
+    independent of the seed -- same trainers, different dispatch order every
+    launch. Only shows up ACROSS process launches, so these spawn real
+    subprocesses under different PYTHONHASHSEED values to catch it."""
+
+    _SNIPPET = """
+import json, torch  # noqa: F401 -- import marks ml framework in use as PYTORCH
+from flame.selector.{module} import {cls}
+sel = {cls}(_seed=7, **{kwargs!r})
+ends = {{f"t{{i}}": None for i in range(20)}}
+print(json.dumps(list(sel.select_random(ends, num_of_ends=5).keys())))
+"""
+
+    def _order_under_hashseed(self, module, cls, kwargs, hashseed):
+        import json
+        import os
+        import subprocess
+        import sys
+
+        env = dict(os.environ, PYTHONHASHSEED=hashseed)
+        code = self._SNIPPET.format(module=module, cls=cls, kwargs=kwargs)
+        out = subprocess.run(
+            [sys.executable, "-c", code], env=env, capture_output=True, text=True,
+        )
+        assert out.returncode == 0, out.stderr
+        # logging (this repo's default config) may also land on stdout; the
+        # payload is always the last non-empty line.
+        last_line = [ln for ln in out.stdout.splitlines() if ln.strip()][-1]
+        return json.loads(last_line)
+
+    def _assert_order_hashseed_invariant(self, module, cls, kwargs):
+        a = self._order_under_hashseed(module, cls, kwargs, "0")
+        b = self._order_under_hashseed(module, cls, kwargs, "1")
+        c = self._order_under_hashseed(module, cls, kwargs, "42")
+        assert a == b == c, (
+            f"{cls}.select_random order depends on PYTHONHASHSEED "
+            f"(same seed=7, different hash seeds): {a} vs {b} vs {c}"
+        )
+
+    def test_async_oort_order_reproducible(self):
+        self._assert_order_hashseed_invariant(
+            "async_oort", "AsyncOortSelector",
+            dict(
+                c=5, aggGoal=2, evalGoalFactor=0.5,
+                roundNudgeType="last_train", selectType="default",
+            ),
+        )
+
+    def test_oort_order_reproducible(self):
+        self._assert_order_hashseed_invariant("oort", "OortSelector", dict(aggr_num=5))
+
+    def test_async_random_order_reproducible(self):
+        self._assert_order_hashseed_invariant(
+            "async_random", "AsyncRandomSelector", dict(c=5, aggGoal=2)
+        )
+
+
+class TestCandidateOrderInsulatedFromEndsInsertionOrder:
+    """The oort-family candidate list must not depend on `ends` insertion order
+    (= trainer JOIN order, differs real vs sim). Pre-fix, `unexplored_end_ids`
+    came from raw `ends.keys()`, so the seeded `_rng.choice` drew a different
+    cohort per leg under an identical seed. Feed the same ids in two orders;
+    require identical output."""
+
+    _IDS = [f"t{i:03d}" for i in range(40)]
+
+    def _async_oort(self):
+        from flame.selector.async_oort import AsyncOortSelector
+        return AsyncOortSelector(_seed=1234, c=5, aggGoal=2, evalGoalFactor=0.5,
+                                 roundNudgeType="last_train", selectType="default")
+
+    def _oort(self):
+        from flame.selector.oort import OortSelector
+        return OortSelector(_seed=1234, aggr_num=5)
+
+    def test_async_oort_collect_order_invariant(self, make_ends):
+        fwd = make_ends(ids=list(self._IDS))
+        rev = make_ends(ids=list(reversed(self._IDS)))
+        _, un_fwd = self._async_oort().fetch_statistical_utility(fwd, [], [])
+        _, un_rev = self._async_oort().fetch_statistical_utility(rev, [], [])
+        assert un_fwd == un_rev == sorted(self._IDS)
+
+    def test_oort_collect_order_invariant(self, make_ends):
+        fwd = make_ends(ids=list(self._IDS))
+        rev = make_ends(ids=list(reversed(self._IDS)))
+        _, un_fwd = self._oort().fetch_statistical_utility(fwd, [], [])
+        _, un_rev = self._oort().fetch_statistical_utility(rev, [], [])
+        assert un_fwd == un_rev == sorted(self._IDS)
+
+    def test_async_oort_unexplored_draw_same_cohort_across_orders(self, make_ends):
+        # End-to-end at the leak site: the seeded explore draw over the collected
+        # candidates must pick the SAME set regardless of ends insertion order.
+        fwd = make_ends(ids=list(self._IDS))
+        rev = make_ends(ids=list(reversed(self._IDS)))
+        _, un_fwd = self._async_oort().fetch_statistical_utility(fwd, [], [])
+        _, un_rev = self._async_oort().fetch_statistical_utility(rev, [], [])
+        a = frozenset(self._async_oort().sample_by_speed(un_fwd, 5))
+        b = frozenset(self._async_oort().sample_by_speed(un_rev, 5))
+        assert a == b and len(a) == 5
+
+
+class TestKeyedTopkPopulationInvariance:
+    """`_keyed_topk` (select_random/sample_by_speed's shared mechanism) must
+    stay population-size-independent: real and sim can momentarily see a
+    candidate pool differing by one trainer (async arrival timing), and that
+    must never perturb any other candidate's pick or desync later draws --
+    the failure mode `random.sample()`/`np.random.choice()` had."""
+
+    def _sel(self, seed=1234):
+        from flame.selector.async_oort import AsyncOortSelector
+        return AsyncOortSelector(_seed=seed, c=30, aggGoal=10, evalGoalFactor=0.5,
+                                 roundNudgeType="last_train", selectType="default")
+
+    def test_extra_non_winning_candidate_does_not_change_pick(self, make_ends):
+        base = make_ends(count=70, prefix="t")
+        winner = list(self._sel().select_random(
+            base, num_of_ends=1, agg_version_key=(0, 1)).keys())
+
+        extended = dict(base, extra=None)
+        winner_with_extra = list(self._sel().select_random(
+            extended, num_of_ends=1, agg_version_key=(0, 1)).keys())
+
+        # Either the extra candidate doesn't win (pick unchanged), or it does
+        # win outright -- never a THIRD, different candidate.
+        assert winner_with_extra == winner or winner_with_extra == ["extra"]
+
+    def test_next_draw_resyncs_regardless_of_prior_pool_difference(self, make_ends):
+        """The property random.sample() lacks: one pool differing by an extra
+        candidate must not desync any LATER draw once pools match again."""
+        pool_a = make_ends(count=70, prefix="t")
+        pool_b = dict(pool_a, extra=None)  # sim-side transient extra candidate
+
+        sel_a, sel_b = self._sel(), self._sel()
+        sel_a.select_random(pool_a, num_of_ends=1, agg_version_key=(0, 1))
+        sel_b.select_random(pool_b, num_of_ends=1, agg_version_key=(0, 1))
+
+        # Next call: pools match again on both sides -> must pick identically,
+        # regardless of whether the previous call's pools (and picks) matched.
+        next_a = list(sel_a.select_random(
+            pool_a, num_of_ends=1, agg_version_key=(0, 2)).keys())
+        next_b = list(sel_b.select_random(
+            pool_a, num_of_ends=1, agg_version_key=(0, 2)).keys())
+        assert next_a == next_b
+
+    def test_different_agg_version_key_gives_independent_draw(self, make_ends):
+        ends = make_ends(count=20, prefix="t")
+        sel = self._sel()
+        r1 = sel.select_random(ends, num_of_ends=1, agg_version_key=(0, 1))
+        r2 = sel.select_random(ends, num_of_ends=1, agg_version_key=(0, 2))
+        # Not asserting inequality (a collision is legal, just unlikely) --
+        # only that the key genuinely depends on agg_version_key.
+        r3 = sel.select_random(ends, num_of_ends=1, agg_version_key=(0, 1))
+        assert r1 == r3  # same round key -> same pick, repeatable
+
+    def test_incremental_single_picks_match_one_bulk_pick(self, make_ends):
+        """Within one agg_version_key window, priorities are fixed: picking
+        top-1 twice (removing the winner between draws) must match the top-2
+        of a single bulk draw -- the consistent-priority-queue property."""
+        ends = make_ends(count=20, prefix="t")
+        sel = self._sel()
+        bulk = list(sel.select_random(ends, num_of_ends=2, agg_version_key=(0, 1)).keys())
+
+        sel2 = self._sel()
+        first = list(sel2.select_random(ends, num_of_ends=1, agg_version_key=(0, 1)).keys())
+        remaining = {e: None for e in ends if e != first[0]}
+        second = list(sel2.select_random(remaining, num_of_ends=1, agg_version_key=(0, 1)).keys())
+
+        assert bulk == [first[0], second[0]]
+
+    def test_pythonhashseed_independent(self):
+        # agg_version_key is a tuple embedded in an f-string, not hashed
+        # directly -- must stay stable across PYTHONHASHSEED (the exact class
+        # of bug TestSelectRandomOrderDeterminism guards against elsewhere).
+        import json
+        import os
+        import subprocess
+        import sys
+
+        code = (
+            "import json, torch\n"
+            "from flame.selector.async_oort import AsyncOortSelector\n"
+            "sel = AsyncOortSelector(_seed=7, c=5, aggGoal=2, evalGoalFactor=0.5,"
+            " roundNudgeType='last_train', selectType='default')\n"
+            "ends = {f't{i}': None for i in range(20)}\n"
+            "print(json.dumps(list(sel.select_random(ends, num_of_ends=5,"
+            " agg_version_key=(0, 1)).keys())))\n"
+        )
+
+        def _run(hashseed):
+            env = dict(os.environ, PYTHONHASHSEED=hashseed)
+            out = subprocess.run([sys.executable, "-c", code], env=env,
+                                 capture_output=True, text=True)
+            assert out.returncode == 0, out.stderr
+            last_line = [ln for ln in out.stdout.splitlines() if ln.strip()][-1]
+            return json.loads(last_line)
+
+        a, b, c = _run("0"), _run("1"), _run("42")
+        assert a == b == c

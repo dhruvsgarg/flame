@@ -25,6 +25,7 @@ These tests pin two things:
 import asyncio
 import itertools
 import threading
+import time
 
 import cloudpickle
 import pytest
@@ -156,6 +157,18 @@ class TestRealChannelDrainReady:
         finally:
             ch._backend.stop()
 
+    def test_timeout_none_returns_immediately_does_not_block(self):
+        # drain_ready(timeout=None) returns immediately (poll guard falsy),
+        # unlike recv_fifo, which genuinely blocks.
+        ch = _make_channel(["a"])
+        try:
+            t0 = time.time()
+            out = ch.drain_ready(["a"], timeout=None)
+            assert time.time() - t0 < 0.5  # returned immediately, no polling
+            assert out == []
+        finally:
+            ch._backend.stop()
+
 
 # --------------------------------------------------------------------------- #
 # Fake channel whose drain_ready models the streamer-free direct drain:
@@ -205,7 +218,7 @@ class FakeChannel:
                 yield (
                     {MessageType.WEIGHTS: f"w_{end_id}",
                      MessageType.SIM_COMPLETION_TS: sct,
-                     MessageType.TRAINING_BUDGET_S: sct},
+                     MessageType.MODELED_DELAY_S: sct},  # §M: canonical delay field
                     (end_id, None),
                 )
             else:
@@ -221,7 +234,7 @@ class FakeChannel:
                 out.append((
                     {MessageType.WEIGHTS: f"w_{end_id}",
                      MessageType.SIM_COMPLETION_TS: sct,
-                     MessageType.TRAINING_BUDGET_S: sct},
+                     MessageType.MODELED_DELAY_S: sct},  # §M: canonical delay field
                     (end_id, None),
                 ))
             else:
@@ -254,10 +267,7 @@ def _make_agg(sct_ordered_drain):
     agg._sim_committed = set()
     agg._sim_pending_commit = set()
     agg._sim_inflight_expected = {}
-    agg._sim_trainer_budget = {}
-    agg._sim_budget_min = 12.0
-    agg._sim_budget_running_mean = 12.0
-    agg._sim_budget_n = 0
+    agg._sim_known_delay_s = {}
     agg._sim_sct_ordered_drain = sct_ordered_drain
     return agg
 

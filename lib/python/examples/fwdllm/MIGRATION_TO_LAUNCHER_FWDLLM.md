@@ -21,6 +21,6 @@ For the full investigation history (evidence trails, exact log lines,
 commit-by-commit narrative) behind everything that used to be tracked here,
 see `git log -- lib/python/examples/fwdllm/MIGRATION_TO_LAUNCHER_FWDLLM.md`.
 
-The one remaining fwdllm follow-up is **not** a migration item: once
-`launcher-script-fwdllm` merges, open the legacy-code deletion PR per
-[`DELETION_CANDIDATES.md`](DELETION_CANDIDATES.md).
+The legacy-code deletion follow-up is **done** — the JSON/MPI launch path
+(`expts/run_tc_expts/`, `aggregator/fl_main.py`, `trainer/fl_main.py`) was
+removed in the post-migration cleanup PR (#73). No fwdllm follow-ups remain.

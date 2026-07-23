@@ -231,6 +231,9 @@ if __name__ == "__main__":
         None,
         config.task_id,
     )
+    # Trainer-only warmup; must not run on the aggregator's own trainer instance
+    # (see _warmup_gpu_kernels docstring).
+    client_trainer._warmup_gpu_kernels()
     fed_trainer = FedTransformerTrainer(client_trainer, client_model)
 
     # client manager in their code also passes client index which is the list of clients that need to do training

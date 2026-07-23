@@ -49,6 +49,7 @@ class FakeChannel:
     def __init__(self, inflight, arrival_order):
         self._inflight = set(inflight)
         self._queue = list(arrival_order)  # list of (end_id, sct)
+        self.probe_timeouts = []           # recv_fifo timeout values, call-aligned
         # An end's rxq is "non-empty" iff it has a message still queued — models
         # physical arrival (§3j drains ready in-flight ends regardless of exp).
         self._ends = {
@@ -67,6 +68,7 @@ class FakeChannel:
         # is in end_ids (FIFO across the set) in a single call, then signal "no
         # more ready" with (None, ...). The barrier drain relies on this set-wide
         # behavior; yielding one-at-a-time would misrepresent the real API.
+        self.probe_timeouts.append(timeout)
         ids = set(end_ids)
         i = 0
         while i < len(self._queue):
@@ -76,7 +78,7 @@ class FakeChannel:
                 yield (
                     {MessageType.WEIGHTS: f"w_{end_id}",
                      MessageType.SIM_COMPLETION_TS: sct,
-                     MessageType.TRAINING_BUDGET_S: sct},
+                     MessageType.MODELED_DELAY_S: sct},  # §M: canonical delay field
                     (end_id, None),
                 )
             else:
@@ -114,10 +116,7 @@ def _make_agg():
     agg._sim_pending_commit = set()
     # Virtual-completion gate state (real __init__ sets these; __new__ bypasses).
     agg._sim_inflight_expected = {}
-    agg._sim_trainer_budget = {}
-    agg._sim_budget_min = 12.0
-    agg._sim_budget_running_mean = 12.0
-    agg._sim_budget_n = 0
+    agg._sim_known_delay_s = {}  # §M: shared per-trainer delay cache
     return agg
 
 
@@ -314,6 +313,7 @@ class TestCoolingHoldsConcurrency:
         sel.requester = "agg"
         sel.selected_ends = {"agg": set()}  # no in-flight
         sel.all_selected = {}
+        sel._last_pacer_round = None
         return sel
 
     def _call(self, sel, concurrency, cooling_count):
@@ -324,8 +324,8 @@ class TestCoolingHoldsConcurrency:
             channel_props={"round": 1, "sim_cooling_count": cooling_count},
             trainer_unavail_list=[],
             task_to_perform="train",
-            agg_version_state=(1, 0, 0),
-            trainer_version_states={},
+            agg_version_key=(1, 0, 0),
+            trainer_version_keys={},
         )
 
     def test_full_cooling_holds_all_slots_no_refill(self):
@@ -341,7 +341,7 @@ class TestCoolingHoldsConcurrency:
         class _Tripwire(Exception):
             pass
 
-        def _boom():
+        def _boom(*args, **kwargs):
             raise _Tripwire()
 
         sel.pacer = _boom
@@ -377,6 +377,7 @@ class TestSendTimeoutReclaimsConcurrencySlot:
         sel.all_selected = {cls.STALE_END: send_ts}
         sel.ordered_updates_recv_ends = []
         sel.track_trainer_timeouts = {}
+        sel._last_pacer_round = None
         return sel
 
     def _call(self, sel, concurrency=1):
@@ -393,8 +394,8 @@ class TestSendTimeoutReclaimsConcurrencySlot:
             channel_props={"round": 1},
             trainer_unavail_list=[],
             task_to_perform="train",
-            agg_version_state=(1, 0, 0),
-            trainer_version_states={},
+            agg_version_key=(1, 0, 0),
+            trainer_version_keys={},
         )
 
     def test_stale_end_freed_from_both_dicts_and_unblocks_selection(self):
@@ -403,7 +404,7 @@ class TestSendTimeoutReclaimsConcurrencySlot:
         class _Tripwire(Exception):
             pass
 
-        def _boom():
+        def _boom(*args, **kwargs):
             raise _Tripwire()
 
         sel.pacer = _boom
@@ -512,6 +513,62 @@ class TestGateProbesLiveInflight:
         assert agg._sim_buffer.peek_min_ts() == 5.0  # buffered as a future
 
 
+class TestSafeFastPathTiming:
+    """When the gate is already provably safe from in-memory state alone
+    (buffered min known, no in-flight end's known delay beats bmin - slack),
+    the probe must use the tiny `_SIM_GATE_FAST_PROBE_TIMEOUT_S` bound instead
+    of the full `_sim_recv_timeout_s` bound. Asserts the timeout VALUE, unlike
+    TestGateProbesLiveInflight above which covers eager-probe behavior."""
+
+    def test_fast_path_uses_tiny_timeout_when_already_safe_and_known(self):
+        # Mirrors test_drains_ready_inflight_above_ceiling, plus a pre-cached
+        # known delay for SLOW so the fast path can engage: SLOW's exp (999) is
+        # nowhere near bmin(2) -> not stuck -> gate is safe; SLOW is still
+        # probed via rxq readiness (its message has arrived).
+        agg = _make_agg()
+        agg._sim_known_delay_s["SLOW"] = 3.0
+        agg._sim_inflight_expected = {"SLOW": 999.0}
+        agg._sim_buffer.add(
+            "A", 2.0,
+            ({MessageType.WEIGHTS: "w_A", MessageType.SIM_COMPLETION_TS: 2.0}, ("A", None)),
+        )
+        channel = FakeChannel(inflight={"SLOW"}, arrival_order=[("SLOW", 5.0)])
+
+        agg._sim_recv_min(channel, [])
+        assert channel.probe_timeouts[0] == agg._SIM_GATE_FAST_PROBE_TIMEOUT_S
+        assert channel.probe_timeouts[0] < agg._sim_recv_timeout_s(["SLOW"])
+
+    def test_unknown_delay_end_in_mix_forces_full_bound_not_fast_path(self):
+        """SLOW's delay is uncached -> _sim_recv_timeout_s returns None -> the
+        fast path must not engage even though the gate is otherwise safe."""
+        agg = _make_agg()
+        agg._sim_inflight_expected = {"SLOW": 999.0}
+        agg._sim_buffer.add(
+            "A", 2.0,
+            ({MessageType.WEIGHTS: "w_A", MessageType.SIM_COMPLETION_TS: 2.0}, ("A", None)),
+        )
+        channel = FakeChannel(inflight={"SLOW"}, arrival_order=[("SLOW", 5.0)])
+
+        agg._sim_recv_min(channel, [])
+        assert channel.probe_timeouts[0] is None  # genuinely blocking, unchanged
+
+    def test_earlier_stuck_end_forces_full_bound_not_fast_path(self):
+        """T's expected completion is before the buffered minimum (earlier_stuck)
+        -> gate is not safe -> must use the full computed bound."""
+        agg = _make_agg()
+        agg._sim_known_delay_s["T"] = 1.0
+        agg._sim_inflight_expected = {"T": 1.0}
+        agg._sim_buffer.add(
+            "A", 10.0,
+            ({MessageType.WEIGHTS: "w_A", MessageType.SIM_COMPLETION_TS: 10.0}, ("A", None)),
+        )
+        channel = FakeChannel(inflight={"T"}, arrival_order=[("T", 1.0)])
+
+        agg._sim_recv_min(channel, [])
+        assert channel.probe_timeouts[0] == agg._sim_recv_timeout_s(["T"])
+        assert channel.probe_timeouts[0] != agg._SIM_GATE_FAST_PROBE_TIMEOUT_S
+
+
 class TestClockJumpClamp:
     """The arrival-based gate is inert in sim — real-GPU compute is ~0.4s wall, so
     every in-flight trainer is already buffered (inflight_tracked==buf_depth) and
@@ -572,25 +629,19 @@ class TestClockJumpClamp:
 
 
 class TestExpectedCompletionLowerBound:
-    """The gate's expected completion must be a LOWER BOUND on sct, so the clock
-    never laps a not-yet-seen trainer (the past-dating seed). The unseen-trainer
-    default is the running MINIMUM observed budget, not the mean (which overshoots
-    fast trainers: gate_holds=0 over a full felix run, 74% commits past-dated)."""
+    """Expected completion comes from the shared per-trainer delay cache
+    (self._sim_known_delay_s) -- exact per-trainer, no cross-trainer estimate
+    or guessed lower bound for unseen trainers."""
 
-    def test_budget_min_tracks_minimum_below_mean(self):
+    def test_known_delay_cache_holds_each_trainers_own_exact_value(self):
         agg = _make_agg()
-        # commit a fast (2s) and slow (25s) trainer; min must follow the fastest.
         channel = FakeChannel({"fast", "slow"}, [("fast", 2.0), ("slow", 25.0)])
         _drain(agg, channel)
-        assert agg._sim_budget_min == 2.0
-        assert agg._sim_budget_min < agg._sim_budget_running_mean  # min, not mean
+        assert agg._sim_known_delay_s == {"fast": 2.0, "slow": 25.0}
 
-    def test_unseen_default_is_lower_bound_not_mean(self):
-        # After observing a fast trainer, an UNSEEN trainer dispatched now must get
-        # expected = send + min (a true lower bound), never the larger mean — else
-        # the clock laps the unseen trainer when it actually finishes earlier.
+    def test_unseen_trainer_has_no_cache_entry_no_fallback(self):
         agg = _make_agg()
         _drain(agg, FakeChannel({"fast"}, [("fast", 2.0)]))
-        unseen_budget = agg._sim_trainer_budget.get("NEW", agg._sim_budget_min)
-        assert unseen_budget == agg._sim_budget_min == 2.0
-        assert unseen_budget <= agg._sim_budget_running_mean
+        assert "fast" in agg._sim_known_delay_s
+        assert "NEW" not in agg._sim_known_delay_s
+        assert agg._sim_known_delay_s.get("NEW") is None

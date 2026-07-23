@@ -164,8 +164,9 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     )
     # Deterministic RNG seed: seeds the global RNGs (torch model init, syncfl
     # internal_init) and each selector's dedicated RNG, making selection
-    # reproducible across real/sim. None = unseeded.
-    seed: t.Optional[int] = Field(alias="seed", default=None)
+    # reproducible across real/sim. Defaults to 1234, not None, so real<->sim
+    # parity is on by default; set None to opt out of determinism.
+    seed: t.Optional[int] = Field(alias="seed", default=1234)
     # TODO: concurrency is for coordinator in coordinated asyncfl this
     #       is a workaround since there is no per-role config
     #       mechanism in the control plane. This needs to be revisited
@@ -200,8 +201,16 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     training_delay_s: t.Optional[float] = Field(
         alias="trainingDelaySeconds", default=None
     )
+    # Divisor on the modeled delay (effective = training_delay_s / factor):
+    # >1 shortens, <1 lengthens. Wire key kept as *factor* for back-compat.
     training_delay_factor: t.Optional[float] = Field(
         alias="trainingDelayFactor", default=None
+    )
+    # Floor on the raw registry training_delay_s, applied before dividing by
+    # training_delay_factor, so fast-class trainers don't get a razor-thin
+    # budget once divided. 0.0 = no-op.
+    training_delay_floor_s: t.Optional[float] = Field(
+        alias="trainingDelayFloorSeconds", default=0.0
     )
     # Sim-mode per-commit virtual-clock overhead (MQTT/dispatch). 0 = off.
     sim_commit_overhead_s: t.Optional[float] = Field(
@@ -246,21 +255,19 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1
     )
-    # Hold a dispatched trainer in-flight (occupying its concurrency slot, out of the
-    # eligible pool) until its update commits, instead of freeing the slot at instant
-    # physical arrival — so the committed/eligible mix matches real. Sync stack (oort):
-    # adds the still-computing set to the unavailable list (§4.5). Async stack (felix):
-    # widens _sim_hold_busy_slots to the full dispatched-but-not-committed set, held via
-    # selected_ends (a slot), NOT the unavailable list. Default off ⇒ holds only the
-    # already-buffered set.
-    sim_inflight_residence: t.Optional[bool] = Field(
-        alias="simInflightResidence", default=False
+    # Hold a dispatched trainer's slot until its update commits, instead of
+    # releasing at RETURN (a carried, not-yet-aggregated update can't be
+    # re-dispatched). oort: adds it to the unavailable list. asyncfl: widens
+    # `_sim_hold_busy_slots`. fwdllm: holds `_release_end_on_return`. Default
+    # off = legacy release.
+    inflight_residence: t.Optional[bool] = Field(
+        alias="inflightResidence", default=False
     )
     # Sim sync-stack: keep a prior-round straggler still computing at round start
     # (sct > vclock_round_start) buffered and carried in-flight until vclock >= sct,
     # instead of popping + stale-rejecting it on instant arrival (which drains sim's
     # in-flight to ~0 while real carries the overcommit). Gates carry/cleanup, whereas
-    # sim_inflight_residence gates pool re-entry.
+    # inflight_residence gates pool re-entry.
     sim_inflight_carryover: t.Optional[bool] = Field(
         alias="simInflightCarryover", default=False
     )
@@ -274,14 +281,39 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
         alias="simUnavailability", default=False
     )
     # sct-model folds (fwdllm Stage B / K-D20 #6). Default OFF ⇒ byte-identical.
-    # simModelEvalTime (B1): charge the measured server-eval wall to the vclock
-    # after each committed data_id -- the largest GENUINE unmodeled term (~3.34
-    # s/round). simStragglerSpreadS (B2): per-trainer straggler dispersion (s)
-    # added to the modeled delay so the sync barrier's k-th sct reflects real
-    # trainer_speed_s spread (~2.3 s/round). simWanTransferS (B3): WAN payload-
-    # transfer term -- NOT measurable on localhost, documented knob, leave 0.
-    sim_model_eval_time: t.Optional[bool] = Field(
-        alias="simModelEvalTime", default=False
+    # simModelAggComputeTime: charge aggregate()'s measured wall time to the
+    # vclock every cycle -- real GPU merge/step math, mode-invariant cost
+    # (~1.4s/cycle), always synchronous. simStragglerSpreadS (B2): per-trainer
+    # straggler dispersion (s) added to the modeled delay so the sync barrier's
+    # k-th sct reflects real trainer_speed_s spread (~2.3s/round).
+    # simWanTransferS (B3): WAN transfer term, not measurable on localhost --
+    # documented knob, leave 0.
+    #
+    # simModelEvalTime (B1) was removed: it charged eval_model()'s wall the
+    # same way while eval ran synchronously on the critical path; no longer
+    # needed once eval_model() moved to a background daemon thread. Any future
+    # synchronous, non-backgrounded eval/aggregate step needs an equivalent
+    # fold or sim will silently under-count its wall time.
+    # Sim: charge the aggregator's MEASURED critical-path wall (FedAvg merge +
+    # drain-tail + dispatch transport) to the vclock per commit, live-measured
+    # not pre-profiled (#6) -- this real cost was never credited before.
+    # Default OFF (byte-identical), an A/B lever until validated against real.
+    sim_model_agg_compute_time: t.Optional[bool] = Field(
+        alias="simModelAggComputeTime", default=False
+    )
+    # Sim: warn when a single charged overhead span exceeds this many seconds
+    # (signals a sim host slower/more contended than the modeled deployment).
+    # 0/None disables.
+    sim_overhead_warn_s: t.Optional[float] = Field(
+        alias="simOverheadWarnS", default=5.0
+    )
+    # Sim: model the aggregator's SERIAL dispatch cost (#6) -- the agg sends
+    # each cohort's payloads one at a time, so the k-th trainer's weights land
+    # after the first k-1 sends, a real delay sim otherwise omits. When on,
+    # each trainer's sim_send_ts is offset by the measured cumulative send wall
+    # of the prior sends in its burst. Sim-only, default OFF, an A/B lever.
+    sim_model_dispatch_queue: t.Optional[bool] = Field(
+        alias="simModelDispatchQueue", default=False
     )
     sim_straggler_spread_s: t.Optional[float] = Field(
         alias="simStragglerSpreadS", default=0.0
@@ -307,9 +339,6 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     # examples/_metadata/availability_traces/ when None.
     availability_trace_dir: t.Optional[str] = Field(
         alias="availabilityTraceDir", default=None
-    )
-    inc_model_version_per_data_id: t.Optional[bool] = Field(
-        alias="incModelVersionPerDataId", default=False
     )
     satellite_coordinates_path: t.Optional[str]=None
     satellite_index: t.Optional[int]=None

@@ -166,10 +166,29 @@ class Trainer(Role, metaclass=ABCMeta):
         # fetch; drained into the trainer_round telemetry `extra`. Mirrors the
         # base syncfl trainer's _phase/_phase_times.
         self._phase_times: dict = {}
+        # vclock reading (sim only) as of each phase's END -- see vclock_now's
+        # docstring. Not a duration; a snapshot for cross-phase alignment.
+        self._phase_vclock_s: dict = {}
+
+    @property
+    def vclock_now(self) -> float | None:
+        """Last known virtual-clock reading, sim mode only -- `None` in real
+        mode. NOT a live tick: trainers have no access to the aggregator's
+        clock, so this is the most recent SIM_SEND_TS/SIM_COMPLETION_TS the
+        aggregator stamped, held until the next message arrives. Fine for
+        cross-phase alignment; do not use to measure elapsed time within one
+        phase.
+        """
+        if not getattr(self, "simulated", False):
+            return None
+        return getattr(self, "_sim_send_ts", None)
 
     @contextmanager
     def _phase(self, name: str):
-        """Time a named phase and accumulate into self._phase_times."""
+        """Time a named phase (wall-clock) and accumulate into
+        self._phase_times; also snapshot vclock_now (sim only, else None)
+        into self._phase_vclock_s -- see its class-level comment for why
+        that's a snapshot, not a duration."""
         t0 = time.time()
         try:
             yield
@@ -177,6 +196,7 @@ class Trainer(Role, metaclass=ABCMeta):
             self._phase_times[name] = self._phase_times.get(name, 0.0) + (
                 time.time() - t0
             )
+            self._phase_vclock_s[name] = getattr(self, "vclock_now", None)
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
@@ -193,6 +213,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self.fetch_success = False
         # Reset per-round phase accumulator at the round boundary.
         self._phase_times = {}
+        self._phase_vclock_s = {}
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.info(
@@ -213,6 +234,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
+        # vclock BEFORE this wait -- _sim_send_ts isn't updated until the new
+        # message arrives, so the delta below measures vclock moved while
+        # waiting, not a same-instant snapshot like other phases.
+        _mqtt_vclock_start = getattr(self, "vclock_now", None)
         _recv_start = time.time()
         msg, _ = recv_wrapper(self, channel, end)
         # agg->trainer delivery + payload transfer (leg i); the first phase term.
@@ -238,6 +263,12 @@ class Trainer(Role, metaclass=ABCMeta):
         # (WALL_SEND - WALL_RECV). Both inert in real mode (SIM_SEND_TS absent).
         self._sim_send_ts = msg.get(MessageType.SIM_SEND_TS)
         self._wall_recv_ts = time.time()
+        _mqtt_vclock_end = getattr(self, "vclock_now", None)
+        self._phase_vclock_s["mqtt_fetch_s"] = (
+            _mqtt_vclock_end - _mqtt_vclock_start
+            if _mqtt_vclock_start is not None and _mqtt_vclock_end is not None
+            else None
+        )
 
         if MessageType.ROUND in msg:
             self._round = msg[MessageType.ROUND]
@@ -265,19 +296,28 @@ class Trainer(Role, metaclass=ABCMeta):
         )
         logger.info(f"isMessageType.Weights?: {MessageType.WEIGHTS in msg}")
 
-        if MessageType.DATA_ID in msg and MessageType.ITERATION_PER_DATA_ID in msg:
+        if (
+            MessageType.MODEL_VERSION in msg
+            and MessageType.DATA_ID in msg
+            and MessageType.ITERATION_PER_DATA_ID in msg
+        ):
+            # version_key match (model_version, iteration), not just (data_id,
+            # iteration): data_id wraps at total_data_bins, so a bare (data_id,
+            # iteration) match can false-positive across model_versions that
+            # recycle the same data_id -> spurious abort, no grad sent. data_id
+            # is redundant here (model_version bumps once per data-bin, so it
+            # already identifies data_id uniquely) -- not compared.
             if (
-                self.data_id is not None
-                and self.data_id == msg[MessageType.DATA_ID]
+                self._model_version == msg[MessageType.MODEL_VERSION]
                 and self.iteration_per_data_id is not None
                 and self.iteration_per_data_id == msg[MessageType.ITERATION_PER_DATA_ID]
             ):
                 self.abort_training = True
                 logger.info(
-                    f"Fetch weights aborted for given model version "
-                    f"{self._model_version} while trainer_id {self.trainer_id} has "
-                    f"already sent updates "
-                    f"upto iteration_per_data_id: {self.iteration_per_data_id}"
+                    f"Fetch weights aborted for version_key "
+                    f"(model_version={self._model_version}, "
+                    f"iteration={self.iteration_per_data_id}) -- trainer_id "
+                    f"{self.trainer_id} already sent updates for it."
                 )
                 # Received old data but still allow aggregator cleanup state to
                 # occur so as to receive the next update
@@ -354,9 +394,10 @@ class Trainer(Role, metaclass=ABCMeta):
                 self._model_version = msg[MessageType.MODEL_VERSION]
                 logger.info(f"Trainer {self.trainer_id} actually updated local _model_version to {self._model_version} after receiving weights.")
 
-            # Helper lambda for a cleaner log
-            format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
-            logging.debug(f"Trainer Id : {self.trainer_id} received weights (hashed): {format_hash(self.model.state_dict())}")
+            # Debug-gated: hashes the full state_dict (GPU->CPU) per weight recv.
+            if logger.isEnabledFor(logging.DEBUG):
+                format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
+                logging.debug(f"Trainer Id : {self.trainer_id} received weights (hashed): {format_hash(self.model.state_dict())}")
             
             if MessageType.DATA_ID in msg:
                 logger.info(
@@ -390,8 +431,9 @@ class Trainer(Role, metaclass=ABCMeta):
                                     )
                         
                         if partial_grad is not None:
-                            format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                            logger.debug(f"Trainer: {self.trainer_id}  - old_grad: {format_hash(partial_grad)}")
+                            if logger.isEnabledFor(logging.DEBUG):
+                                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                                logger.debug(f"Trainer: {self.trainer_id}  - old_grad: {format_hash(partial_grad)}")
                         else:
                             logger.debug(f"Trainer: {self.trainer_id}  - old_grad: None")
 
@@ -548,8 +590,10 @@ class Trainer(Role, metaclass=ABCMeta):
                     f"({size_mb:.2f} MB)."
                 )
 
-                format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
-                logger.info(f"Sending grads from Trainer: {self.trainer_id} - model version: {self._model_version} - grad: {format_hash(grad_dict)} - grad_for_var_check: {_calculate_hash(self.grad_for_var_check)}")
+                # Debug-gated (was INFO): hashes the full grad dict + var-check grad per send.
+                if logger.isEnabledFor(logging.DEBUG):
+                    format_hash = lambda d: {k: _calculate_hash(v)[:8] for k, v in d.items()}
+                    logger.debug(f"Sending grads from Trainer: {self.trainer_id} - model version: {self._model_version} - grad: {format_hash(grad_dict)} - grad_for_var_check: {_calculate_hash(self.grad_for_var_check)}")
             else:
                 total_bytes = 0
                 logger.info("No gradients exist; sending an empty dictionary.")
@@ -564,7 +608,7 @@ class Trainer(Role, metaclass=ABCMeta):
                         peer_id=str(end), round_num=int(self._round),
                         data_id=self.data_id, iteration=self.iteration_per_data_id,
                         payload_kind="gradients", n_tensors=len(grad_dict),
-                        trainer_id=self.trainer_id,
+                        trainer_id=self.trainer_id, model_version=self._model_version,
                     )
                     telemetry.emit(ev, **f)
                 except Exception as e:
@@ -578,10 +622,11 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.JVP_FOR_SNR_CHECK: self.jvp_for_snr_check,
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.MODEL_VERSION: self._model_version,
-                # Echoes the iteration this update answers, so the aggregator's
-                # staleness_policy="exact" mode (see flame/config.py) can reject
-                # updates answering a since-superseded iteration of the same
-                # data_id, not just a stale model_version/data_id.
+                # Echoes (data_id, iteration) so staleness_policy="exact" can
+                # reject a superseded iteration, and the re-pick guard can
+                # record this trainer's version_key (model_version, iteration)
+                # to exclude it from re-selection. data_id isn't part of the key.
+                MessageType.DATA_ID: self.data_id,
                 MessageType.ITERATION_PER_DATA_ID: self.iteration_per_data_id,
                 MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
                 MessageType.STAT_UTILITY: self._stat_utility,
@@ -602,7 +647,6 @@ class Trainer(Role, metaclass=ABCMeta):
                 # contribution's [dispatch, completion] interval for R1.
                 MessageType.SIM_SEND_TS: self._sim_send_ts,
                 MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S: self._sim_round_duration_s,
-                MessageType.TRAINING_BUDGET_S: self._sim_round_duration_s,
                 MessageType.WALL_SEND_TS: time.time(),
                 MessageType.WALL_RECV_TS: self._wall_recv_ts,
             }
@@ -647,11 +691,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
         channel._selector._cleanup_send_ends()
 
-        # Optimization: Perform GC and CUDA memory cleanup after sending gradients.
-        # This moves the "stop the world" synchronous flushes out of the measured 
-        # training/evaluation phases and into the idle time between rounds.
-        gc.collect()
-        torch.cuda.empty_cache()
+        # No gc.collect()/torch.cuda.empty_cache() here: it only moved the cost
+        # off this trainer's stopwatch, and empty_cache() forces a re-cudaMalloc
+        # next round. Measured: ~14% slower wall, peak alloc 817MB->1090MB;
+        # without it, a 300-cycle soak drifts 0.00MB.
 
     def _perform_channel_leave(self, tag: str) -> None:
         logger.debug(
@@ -849,12 +892,12 @@ class Trainer(Role, metaclass=ABCMeta):
 
     @timer_decorator
     def pause_execution(self):
-        # Per-round MQTT throttle chained at the tail of the trainer loop. A
-        # real-transport artifact with no sim analog (#8): the sim's inter-round
-        # barrier is the blocking recv in _fetch_weights + the sct reorder buffer,
-        # so charging 1 wall-s/round to the sim is pure slowdown. Gate off in sim.
-        if not getattr(self, "simulated", False):
-            time.sleep(1)
+        # No-op (§H). Formerly a per-loop time.sleep(1) MQTT throttle (real
+        # only, #8), removed: channel.recv already blocks until the next
+        # instruction, and the version_key dedup leaves no VAR=bad backlog to
+        # pace-drain, so this only added real-only latency widening the
+        # real<->sim gap. _fetch_weights' own sleep(1) guard still prevents
+        # hot-spinning the no-message path.
         return
 
     def compose(self) -> None:

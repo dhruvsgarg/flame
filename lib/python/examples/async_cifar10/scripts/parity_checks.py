@@ -26,6 +26,9 @@ from parity.checks import (  # noqa: F401, E402
     mean_std,
     ks_stat,
     spearman_rho,
+    percentile,
+    pctl_band_ok,
+    _matched_logical_budget,
     # loaders
     load_agg_jsonl,
     load_trainer_jsonl_dir,
@@ -48,6 +51,7 @@ from parity.checks import (  # noqa: F401, E402
     # §3.E processing
     participation_parity,
     trainer_speed_parity,
+    trainer_speed_identity_parity,
     # §3.F utility
     utility_parity,
     # §3.G convergence
@@ -89,8 +93,10 @@ from parity.checks import (  # noqa: F401, E402
     budget_not_cap,
     # §F fwdllm variance-cadence layer (V/DK/G rungs)
     _iters_per_data_id,
+    _moving_avg,
     cohort_sequence_parity,
     iters_per_data_id_parity,
+    iters_per_data_id_moving_avg_parity,
     var_trajectory_parity,
     cached_v_pool_parity,
     force_commit_rate_parity,
@@ -106,6 +112,13 @@ from parity.checks import (  # noqa: F401, E402
     _committed_grads,
     inflight_overlap_parity,
     compute_conservation_parity,
+    drain_wall_budget_parity,
+    trainer_phase_wall_budget_ok,
+    _STEP_TIMING_REAL_ONLY_FUNCS,
+    _AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS,
+    step_timing_breakdown_parity,
+    agg_step_timing_breakdown_parity,
+    aggregation_compute_wall_parity,
     # overall
     run_all_parity,
     overall_verdict,

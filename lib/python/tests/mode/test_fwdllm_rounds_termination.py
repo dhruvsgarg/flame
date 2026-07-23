@@ -43,6 +43,7 @@ class _FakeAggregator:
         self._agg_goal = 2
         self._agg_goal_cnt = 2
         self._per_agg_trainer_list = []
+        self._cycle_grad_norms = []
         self._model_version_unique_trainers = set()
         self._model_version_trainer_stats = {
             "train_duration": [],
@@ -68,9 +69,7 @@ class _FakeAggregator:
         self._var_pass_count = 0
         self._dynamic_kc_controller = None
         self.config = SimpleNamespace(
-            hyperparameters=SimpleNamespace(
-                inc_model_version_per_data_id=True, rounds=rounds
-            )
+            hyperparameters=SimpleNamespace(rounds=rounds)
         )
 
     def add_local_trained_result(self, *args, **kwargs):
@@ -79,13 +78,19 @@ class _FakeAggregator:
     def aggregate(self, round_id):
         pass
 
-    def eval_model(self):
+    def eval_model(self, model=None):
         return {"eval_loss": 0.0}, None, None
 
     def _log_and_reset_model_version_stats(self):
         pass
 
     process = TopAggregator._process_aggregation_goal_met
+    _replay_buffered_cohort_contribs = TopAggregator._replay_buffered_cohort_contribs
+    # eval_model() is snapshotted + backgrounded via _eval_snapshot_model.
+    # With self.model = None here, the snapshot fails gracefully and returns
+    # None, so no eval thread launches -- fine, this fixture only exercises
+    # round-rollover/work_done logic.
+    _eval_snapshot_model = TopAggregator._eval_snapshot_model
 
 
 @patch(

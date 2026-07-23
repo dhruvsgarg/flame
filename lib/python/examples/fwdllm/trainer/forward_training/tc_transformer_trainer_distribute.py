@@ -45,6 +45,55 @@ def _calculate_hash(tensor):
     return hashlib.sha256(tensor.detach().cpu().numpy().tobytes()).hexdigest()
 
 
+@contextlib.contextmanager
+def _stage_timer(owner, name: str, extra: dict = None):
+    """Emit a `step_timing` record for a named wall phase of the training step.
+
+    timer_decorator can't be used here: it needs `self = args[0]` to carry
+    `fwd_llm_stage`, but the helpers inside `_train_one_batch` are nested
+    functions whose first arg is `device`. `extra` merges additional fields
+    into the emitted record (e.g. which branch was taken)."""
+    t0 = time.time()
+    try:
+        yield
+    finally:
+        dur = time.time() - t0
+        stage = getattr(owner, "fwd_llm_stage", None)
+        if stage is not None:
+            try:
+                from flame import telemetry
+                if telemetry.is_enabled():
+                    from flame.telemetry.events import build_step_timing
+                    ev, fields = build_step_timing(
+                        func=name, duration_s=dur,
+                        round_num=stage.round_id, data_id=stage.data_id,
+                        iteration=stage.iteration, trainer_id=stage.trainer_id,
+                    )
+                    if extra:
+                        fields.update(extra)
+                    telemetry.emit(ev, **fields)
+            except Exception:  # pragma: no cover - never break training
+                logging.debug("stage_timer telemetry emit failed", exc_info=True)
+
+
+def _perturb_audit_enabled() -> bool:
+    """Whether the perturbation determinism audit ([RNG_FINGERPRINT] + rolling
+    candidate_v hash) is wanted this run. Opt-in only: it sha256s every 10x
+    perturbation tensor and the whole model, ~10x the cost of the JVP it audits.
+    Enable with FWDLLM_PERTURB_AUDIT=1, or DEBUG logging."""
+    if os.environ.get("FWDLLM_PERTURB_AUDIT", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    return logging.getLogger().isEnabledFor(logging.DEBUG)
+
+
+def _torch_rng_fingerprint(generator: "torch.Generator") -> str:
+    """Short hex digest of a torch.Generator's internal state, for
+    determinism audits: two same-seed (same client_idx) runs whose
+    fingerprint differs at the same call site proves the perturbation RNG
+    consumed a different number of draws before that point."""
+    return _calculate_hash(generator.get_state())[:12]
+
+
 def _calculate_rolling_hash(tensor: torch.Tensor, hash_str: str) -> str:
     """Calculate a rolling hash for a tensor for logging."""
     if hash_str is None:
@@ -83,65 +132,20 @@ def _randn_wrapper(
     else:
         gen = generator
 
-    pre_state = _rng_state_hash(gen)
+    # f-string args evaluate before logging.debug() checks the level, so gate
+    # explicitly: both hashes otherwise run on every call even with DEBUG off.
+    _dbg = logging.getLogger().isEnabledFor(logging.DEBUG)
+    pre_state = _rng_state_hash(gen) if _dbg else None
 
     res = torch.randn(*size, device=device, generator=gen, **kwargs)
 
-    logging.debug(
-        f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, logging_state={logging_state}, size={size}, kwargs={kwargs}, pre_state={pre_state}, param_name={param_name}"
-    )
+    if _dbg:
+        logging.debug(
+            f"[{label}] device={device}, generator={gen}, post_state={_rng_state_hash(gen)}, logging_state={logging_state}, size={size}, kwargs={kwargs}, pre_state={pre_state}, param_name={param_name}"
+        )
     return res
 
 
-def _randn_like_wrapper(
-    input_tensor,
-    generator=None,
-    label="randn_like",
-    logging_state=None,
-    param_name=None,
-    device=None,
-    **kwargs,
-):
-    """Wrapper for torch.randn_like that logs device + RNG info (older PyTorch, no generator kwarg)."""
-    if not device:
-        device = input_tensor.device
-
-    # Choose generator if not provided
-    if generator is None:
-        if device.type == "cpu":
-            gen = torch.default_generator
-        else:
-            gen = torch.cuda.default_generators[device.index]
-    else:
-        gen = generator
-
-    pre_state = _rng_state_hash(gen)
-
-    # Build args to mimic randn_like
-    res = torch.randn(
-        tuple(input_tensor.shape),
-        dtype=kwargs.get("dtype", input_tensor.dtype),
-        layout=kwargs.get("layout", input_tensor.layout),
-        device=device,
-        generator=gen,
-        requires_grad=kwargs.get("requires_grad", input_tensor.requires_grad),
-    ).to(
-        device
-    )  # then move to param’s device
-
-    # Force CUDA to flush RNG consumption so generator state actually updates
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-    post_state = _rng_state_hash(gen)
-
-    logging.debug(
-        f"[{label}] device={device}, generator={gen}, "
-        f"input_shape={input_tensor.shape}, "
-        f"post_state={post_state}, pre_state={pre_state}, "
-        f"logging_state={logging_state}, "
-        f"kwargs={kwargs}, param_name={param_name}"
-    )
-    return res
 
 
 class ForwardTextClassificationTrainer:
@@ -151,31 +155,34 @@ class ForwardTextClassificationTrainer:
         self.args = args
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
-        gpu_id = torch.cuda.current_device()
+        if self.device.type == "cuda":
+            visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+            gpu_id = torch.cuda.current_device()
 
-        # Get free and total memory on the selected CUDA device
-        free_mem, total_mem = torch.cuda.mem_get_info(gpu_id)
+            # Get free and total memory on the selected CUDA device
+            free_mem, total_mem = torch.cuda.mem_get_info(gpu_id)
 
-        # Convert to MB for easier reading
-        free_mb = free_mem / (1024 * 1024)
-        total_mb = total_mem / (1024 * 1024)
+            # Convert to MB for easier reading
+            free_mb = free_mem / (1024 * 1024)
+            total_mb = total_mem / (1024 * 1024)
 
-        print(
-            f"[GPU Memory Info] Device: {self.device}, logical_device_id: {device}, Free: {free_mb:.2f} MB / Total: {total_mb:.2f} MB, Occupied: {(total_mb-free_mb):.2f} MB"
-        )
+            print(
+                f"[GPU Memory Info] Device: {self.device}, logical_device_id: {device}, Free: {free_mb:.2f} MB / Total: {total_mb:.2f} MB, Occupied: {(total_mb-free_mb):.2f} MB"
+            )
 
-        device_name = torch.cuda.get_device_name(gpu_id)
+            device_name = torch.cuda.get_device_name(gpu_id)
 
-        real_index = (
-            visible_devices.split(",")[gpu_id] if visible_devices else str(gpu_id)
-        )
+            real_index = (
+                visible_devices.split(",")[gpu_id] if visible_devices else str(gpu_id)
+            )
 
-        logging.info(
-            f"[Device Init] CUDA_VISIBLE_DEVICES={visible_devices}, "
-            f"torch.device={self.device}, torch.cuda.current_device={gpu_id}, "
-            f"Real GPU Index (Global) = {real_index}, Device Name: {device_name}"
-        )
+            logging.info(
+                f"[Device Init] CUDA_VISIBLE_DEVICES={visible_devices}, "
+                f"torch.device={self.device}, torch.cuda.current_device={gpu_id}, "
+                f"Real GPU Index (Global) = {real_index}, Device Name: {device_name}"
+            )
+        else:
+            logging.info(f"[Device Init] torch.device={self.device} (no CUDA device available)")
 
         self.loss_fn = None
         self.dataset_size = 0
@@ -247,8 +254,10 @@ class ForwardTextClassificationTrainer:
         # Initialized RNGs with client_ids and the exact same static seed (42), to avoid all trainers generating the same sequence of perturbations, which was stalling the accuracy increase
         self.torch_rng = torch.Generator(device="cpu")
         self.torch_rng.manual_seed(self.args.client_idx)
-        self.torch_cuda_rng = torch.Generator(device="cuda")
-        self.torch_cuda_rng.manual_seed(self.args.client_idx)
+        self.torch_cuda_rng = None
+        if self.device.type == "cuda":
+            self.torch_cuda_rng = torch.Generator(device="cuda")
+            self.torch_cuda_rng.manual_seed(self.args.client_idx)
 
         self.total_rng_iter = 0
 
@@ -261,6 +270,32 @@ class ForwardTextClassificationTrainer:
         self.databin_best_jvp_val = 0.0
         self.databin_best_v_params = None
         self.last_model_version_jvp_updated = -1
+
+    def _warmup_gpu_kernels(self):
+        """Throwaway forward pass before round 1, to absorb CUDA/cudnn kernel-
+        compile cost outside the timed window. Plain forward, not the JVP
+        pipeline -- doesn't touch RNG state or model weights. Call only from
+        trainer/main.py: calling this on the aggregator's own trainer instance
+        moves its model to GPU too early and crashes `_apply_weighted_update`
+        (device mismatch)."""
+        if self.device.type != "cuda":
+            return
+        try:
+            self.model.to(self.device)
+            was_training = self.model.training
+            emb = self.model.get_input_embeddings()
+            vocab_size = emb.num_embeddings if emb is not None else 1000
+            seq_len = getattr(self.args, "max_seq_length", 128)
+            dummy_x = torch.randint(0, vocab_size, (1, seq_len), device=self.device)
+            with torch.no_grad():
+                self.model(dummy_x)
+            self.model.train(was_training)
+            logging.info(
+                f"[GPU_WARMUP] trainer_id={self.trainer_id} device={self.device} "
+                f"vocab_size={vocab_size} seq_len={seq_len} -- kernel warmup pass complete"
+            )
+        except Exception as e:
+            logging.warning(f"[GPU_WARMUP] skipped (non-fatal): {e}")
 
 
     # def initialize(self) -> None: """Initialize role.""" self.device =
@@ -293,11 +328,12 @@ class ForwardTextClassificationTrainer:
         )
 
     def compute_metrics_with_logging_train(self, x, labels):
-
-        logging.info(f"Trainer ID |  'Example'  | 'Label")
-
+        # Debug-gated: per-example GPU->CPU hash; monitoring/audit only.
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        logging.debug(f"Trainer ID |  'Example'  | 'Label")
         for j, example in enumerate(x):
-            logging.info(f"trainer: {self.trainer_id} | {_calculate_hash(example)}... | {labels[j]} ")
+            logging.debug(f"trainer: {self.trainer_id} | {_calculate_hash(example)}... | {labels[j]} ")
         return
     
     @timer_decorator
@@ -311,108 +347,9 @@ class ForwardTextClassificationTrainer:
         self.params = [p.to(device) for p in self.params]    # In case it was moved to CPU for serialization before being sent over the channel
         self.buffers = [b.to(device) for b in self.buffers]
 
-    @timer_decorator
-    def _select_optimal_perturbations(self, device, logging_state):
-        if self.args.var_control:
-            self.grad = None if self.old_grad is None else [g.clone() for g in self.old_grad]
-
-        v_buffer = {}
-        all_perturbations_hash = ""
-        selected_perturbation_hash = ""
-        index = 0
-        if (self.grad is not None):
-            logging.debug(f"self.grad hashes: {[(_calculate_hash(p), p.shape) for p in self.grad]}")
-            logging.debug(f"self.grad/target_grad_full length = {len(self.grad)}")
-        else:
-            logging.debug("self.grad is None")
-        for k, v in self.model.named_parameters():
-            if self.grad is not None and v.requires_grad:
-                self.total_rng_iter += 1
-                shape = v.shape
-                candidate_v = _randn_wrapper((self.perturbation_count, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
-                logging.debug(f"Candidate v - random generation for layer - '{index}' layer shape {candidate_v.shape}")
-                # torch.randn((self.perturbation_count, *shape), device="cpu", generator=self.torch_rng)
-                target_grad = self.grad[index]
-
-                target_grad = torch.flatten(target_grad)
-                candidate_v = torch.flatten(candidate_v, start_dim=1)
-
-                logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
-                all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
-
-                cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
-
-                sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
-                logging.debug(f"cos sim values for trainer {self.trainer_id}:  {sorted_values}")
-                v_buffer[index] = [
-                    candidate_v[i].reshape(v.shape) for i in sorted_indices[:1]
-                ]
-
-                del candidate_v, target_grad, cos_sim, sorted_indices, shape
-            index += 1
-        return v_buffer
-
-
-    @timer_decorator
-    def _setup_training_state(self, device, logging_state):
-        @timer_decorator
-        def _select_optimal_perturbations(device, logging_state):
-            if self.args.var_control:
-                self.grad = None if self.old_grad is None else [g.clone() for g in self.old_grad]
-
-            v_buffer = {}
-            all_perturbations_hash = ""
-            selected_perturbation_hash = ""
-            index = 0
-            for k, v in self.model.named_parameters():
-                if self.grad is not None and v.requires_grad:
-                    self.total_rng_iter += 1
-                    shape = v.shape
-                    candidate_v = _randn_wrapper((self.perturbation_count, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
-                    # torch.randn((self.perturbation_count, *shape), device="cpu", generator=self.torch_rng)
-                    target_grad = self.grad[index]
-
-                    target_grad = torch.flatten(target_grad)
-                    candidate_v = torch.flatten(candidate_v, start_dim=1)
-
-                    logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
-                    all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
-
-                    cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
-
-                    sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
-                    v_buffer[index] = [
-                        candidate_v[i].reshape(v.shape) for i in sorted_indices[:1]
-                    ]
-
-                    del candidate_v, target_grad, cos_sim, sorted_indices, shape
-                index += 1
-            return v_buffer
-
-        self.log_memory("after_fmodel_setup", device)
-
-        v_buffer = {}
-        # Perturbation selection logic slightly differs from the vanilla FwdLLM implementation. Their logic has a flaw which cannot be used in a true-FL setting 
-        # with distributed clients. As their clients are emulated in a for loop, they generate `num_clients` * 10 candidate perturbations & select the top `num_clients`
-        # perturbations based on cosine similarity. This is not the same as generating 10 candidate perturbations per client & selecting the top 1. We did not
-        # observe any significant changes in accuracy, after assigning clients distinct RNG seeds, & hence we chose the later approach.
-        if self.args.perturbation_sampling:
-            v_buffer = _select_optimal_perturbations(device, logging_state)
-
-        # Efficient grad allocation / zeroing
-        if (
-            not hasattr(self, "grad")
-            or self.grad is None
-            or len(self.grad) != len(self.params)
-        ):
-            # Optimization: Initialize on device to avoid Host to Device transfer every batch
-            self.grad = [torch.zeros_like(p, device=device) for p in self.params]
-        else:
-            # Ensure gradients are on the correct device (they might have been moved to CPU in a previous round)
-            self.grad = [fg.to(device).zero_() for fg in self.grad]
-            
-        return v_buffer
-
+    # Removed dead code: `_select_optimal_perturbations`/`_setup_training_state`
+    # were unreachable, stale forks -- `_train_one_batch` uses its own live
+    # nested copies.
     @timer_decorator
     def _train_one_batch(self, device, batch, epoch, batch_idx, logging_state):
         @timer_decorator
@@ -426,30 +363,43 @@ class ForwardTextClassificationTrainer:
                     logging.info(f"data_id_iteration {logging_state.get('iteration')} - resetting")
                 
                 if self.args.var_control:
-                    self.grad = None if self.old_grad is None else [g.clone() for g in self.old_grad]
+                    # Full grad-shape clone (old_grad arrives from the aggregator
+                    # on CPU); only on odd data_ids (old_grad is None on even ones).
+                    with _stage_timer(self, "tb_grad_clone"):
+                        self.grad = None if self.old_grad is None else [g.clone() for g in self.old_grad]
 
                 # v_all_pert = []
                 v_buffer = {}
                 all_perturbations_hash = ""
-                selected_perturbation_hash = ""
                 index = 0
+                # [RNG_FINGERPRINT] is opt-in: sha256s every 10x candidate_v,
+                # too costly to run unconditionally.
+                _perturb_audit = _perturb_audit_enabled()
+                rng_before = _torch_rng_fingerprint(self.torch_rng) if _perturb_audit else "off"
                 for k, v in self.model.named_parameters():
                     if v.requires_grad:
                         self.total_rng_iter += 1
                         shape = v.shape
-                        candidate_v = _randn_wrapper((self.perturbation_count, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
-                        candidate_v = torch.flatten(candidate_v, start_dim=1)
-                        logging.info(f"len of candidate_v {len(candidate_v)}")
-
-                        logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
-                        all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
+                        # perturbation_count(10) candidates for this param, drawn
+                        # on CPU then moved to device downstream.
+                        with _stage_timer(self, "tb_perturb_draw_cpu"):
+                            candidate_v = _randn_wrapper((self.perturbation_count, *shape), device="cpu", generator=self.torch_rng, logging_state=logging_state, param_name=k)
+                            candidate_v = torch.flatten(candidate_v, start_dim=1)
+                        # Both hashes below walk the full 10x tensor; audit-only,
+                        # gated to avoid the log volume.
+                        if _perturb_audit:
+                            logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
+                            all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
 
                         if not self.select_perturbation_using_jvp and self.grad is not None:
-                            target_grad = self.grad[index]
-                            target_grad = torch.flatten(target_grad)
-                            cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
-                            sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
-                            logging.info(f"cos sim values for trainer {self.trainer_id}:  {sorted_values}")
+                            # Cosine-sim rank of the 10 candidates against the
+                            # carried grad; runs on CPU (old_grad arrives on CPU).
+                            with _stage_timer(self, "tb_cos_sim_select"):
+                                target_grad = self.grad[index]
+                                target_grad = torch.flatten(target_grad)
+                                cos_sim = calculate_cos_sim(candidate_v, target_grad, device)
+                                sorted_values, sorted_indices = torch.sort(cos_sim, descending=True)
+                            logging.debug("cos sim values for trainer %s: %s", self.trainer_id, sorted_values)
                             v_buffer[index] = [
                                 candidate_v[i].reshape(v.shape) for i in sorted_indices[:1]
                             ]
@@ -460,6 +410,14 @@ class ForwardTextClassificationTrainer:
                             ]
                             del candidate_v, shape
                     index += 1
+
+                if _perturb_audit:
+                    logging.info(
+                        f"[RNG_FINGERPRINT] client_idx={self.args.client_idx} "
+                        f"data_id={logging_state.get('data_id')} iteration={logging_state.get('iteration')} "
+                        f"torch_rng before={rng_before} after={_torch_rng_fingerprint(self.torch_rng)} "
+                        f"all_perturbations_hash={all_perturbations_hash}"
+                    )
 
                 if not self.select_perturbation_using_jvp:
                     return v_buffer, 0 # we add only the best cos sim values here
@@ -488,7 +446,11 @@ class ForwardTextClassificationTrainer:
                     best_idx = -1
                     logging.info(f"Databin best jvp so far: {self.databin_best_jvp_val} - best this iteration: {abs(sorted_jvps[-1])}")
                 else:
-                    best_idx = np.random.choice([sorted_indices[-1], sorted_indices[-2]])
+                    # Use the client-seeded torch_rng, not np.random.choice
+                    # (process-global, unseeded here) -- would break reproducibility.
+                    pair = [sorted_indices[-1], sorted_indices[-2]]
+                    pick = int(torch.randint(0, 2, (1,), generator=self.torch_rng).item())
+                    best_idx = pair[pick]
                     self.databin_best_jvp_val = abs(sorted_jvps[-1])
                     logging.info(f"All JVPs sorted by magnitude: {sorted_jvps} and chosen jvp: {jvp_all_perturbations[sorted_indices[-1]]} for trainer : {self.trainer_id} for model version: {logging_state.get('round_id')} data-id: {logging_state.get('data_id')}. iteration: {logging_state.get('iteration')}")
   
@@ -557,13 +519,16 @@ class ForwardTextClassificationTrainer:
                     for p in self.params
                 ]
 
-            logging.debug(
-                f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}"
-            )
-            logging.debug(
-                f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}"
-            )
-            
+            # Second copy of the same audit pair (see _train_one_batch); the
+            # unfiltered 67M-param hash ran twice per batch, both eagerly.
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.debug(
+                    f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}"
+                )
+                logging.debug(
+                    f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}"
+                )
+
             return v_params
 
         @timer_decorator
@@ -646,24 +611,43 @@ class ForwardTextClassificationTrainer:
             device,
         )
 
-        x = batch[1].to(device, non_blocking=True)
-        labels = batch[4].to(device, non_blocking=True)
+        with _stage_timer(self, "tb_batch_to_device"):
+            x = batch[1].to(device, non_blocking=True)
+            labels = batch[4].to(device, non_blocking=True)
 
         # Use this logging for debugging
         # self.compute_metrics_with_logging_train(x,labels)
 
         # Stat-utility calculation
-        _compute_batch_stat_utility(device, x, labels)
-        v_buffer, best_idx = _setup_training_state(device, logging_state, x, labels)
+        with _stage_timer(self, "tb_stat_utility"):
+            _compute_batch_stat_utility(device, x, labels)
+        with _stage_timer(self, "tb_setup_training_state"):
+            v_buffer, best_idx = _setup_training_state(device, logging_state, x, labels)
 
         if best_idx == -1 and self.databin_best_v_params is not None:
             v_params = self.databin_best_v_params
-            logging.info(f"Using global best, not using a new perturbation.")
+            logging.debug("Using global best, not using a new perturbation.")
         else:
-            v_params = _prepare_perturbation_tensors(device, v_buffer, best_idx)
-            self.databin_best_v_params = copy.deepcopy(v_params)
-        logging.debug(f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}")
-        logging.info(f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}")
+            # Mirrors _prepare_perturbation_tensors' own gate; computed here (not
+            # returned) since that function has a second call site with a
+            # different attribution, at _select_optimal_perturbations.
+            _tb_branch = (
+                "cached" if (self.args.perturbation_sampling and v_buffer != {})
+                else "fresh"
+            )
+            with _stage_timer(
+                self, "tb_prepare_perturbation", extra={"branch": _tb_branch},
+            ):
+                v_params = _prepare_perturbation_tensors(device, v_buffer, best_idx)
+            # deepcopy of all 104 v_param tensors (~257MB incl. the frozen zeros)
+            with _stage_timer(self, "tb_deepcopy_best_v"):
+                self.databin_best_v_params = copy.deepcopy(v_params)
+        # Determinism-audit only: _calculate_hash pulls each tensor GPU->CPU and
+        # sha256s the whole model, too costly to run unconditionally. Reading a
+        # tensor can't perturb it, so gating is numerically inert.
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            logging.debug(f"v_params hashes: {[(_calculate_hash(v), v.shape) for v in v_params if v.requires_grad]}")
+            logging.debug(f"params hashes: {[(_calculate_hash(p), p.shape) for p in self.params]}")
 
         # perf-opt: reuse the winner's JVP already computed during selection
         # (same params + v_params for best_idx -> bit-identical), saving 2
@@ -674,7 +658,10 @@ class ForwardTextClassificationTrainer:
                 and best_idx in getattr(self, "_sel_jvp_cache", {})):
             loss, jvp = self._sel_jvp_cache[best_idx]
         else:
-            loss, jvp = _compute_forward_jvp(device, x, labels, v_params)
+            # calculate_jvp = 2 autocast forward passes (finite difference);
+            # everything else in this batch is scaffolding around it.
+            with _stage_timer(self, "tb_forward_jvp"):
+                loss, jvp = _compute_forward_jvp(device, x, labels, v_params)
         # 3 diagnostic-only passes: their losses ONLY feed the log below (never
         # grads/telemetry), so skip them under perf-opt (bit-identical grads, §L).
         if not self.jvp_perf_opt:
@@ -683,9 +670,12 @@ class ForwardTextClassificationTrainer:
             loss_before_update = _compute_loss_before_update(device, x, labels, v_params, jvp)
             logging.info(f"At trainer: {self.trainer_id} - iteration: {logging_state.get('iteration')} - jvp_magnitude: {jvp} - loss before update: { loss_before_update } - loss after update (not downscaled): {nonscaled_global_loss}  - loss after update (down scaled): {scaled_global_loss}")
         self.jvp_for_snr_check = abs(jvp)
-        logging.info(f"JVP of the perturbation: {jvp}")
+        logging.debug("JVP of the perturbation: %s", jvp)
 
-        _accumulate_and_extract_grads(device, jvp, v_params)
+        # Carries a .detach().cpu() of the var-check layer -- a device sync that
+        # dominated this phase in the offline profile (55ms of its 62ms).
+        with _stage_timer(self, "tb_accumulate_grads"):
+            _accumulate_and_extract_grads(device, jvp, v_params)
 
         # Optimization: Remove GC & buffer flushes from the batch loop
         # self._force_cuda_memory_cleanup(device, f"epoch{epoch}_batch{batch_idx}_end")
@@ -759,10 +749,6 @@ class ForwardTextClassificationTrainer:
         )
 
     @timer_decorator
-    def _force_cuda_memory_cleanup(self, device, tag):
-        gc.collect()
-        torch.cuda.empty_cache()
-        self.log_memory(tag, device)
 
     @timer_decorator
     def train_model(self, device=None, logging_state=None):
@@ -785,7 +771,9 @@ class ForwardTextClassificationTrainer:
         Even though this seems to not affect training, this is commented as we're not sure how the model trains in eval mode. Any relative impact on accuracy without it isn't measured.
         self.model.eval()
         """
-        self._force_cuda_memory_cleanup(device, "before_train_model")
+        # No _force_cuda_memory_cleanup(): empty_cache() is a device-wide sync
+        # and had nothing to reclaim (allocated stays flat across the run).
+        self.log_memory("before_train_model", device)
         self._make_model_functional(device)
         
         

@@ -21,6 +21,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Without this, CUDA's enumeration order can diverge from nvidia-smi's
+# PCI-bus-ID order, so a GPU pin by raw ordinal could silently land on the
+# wrong physical card. Must be set before any torch.cuda call; inherited by
+# spawned subprocesses.
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
 from flame.launch.aggregator_spawner import AggregatorSpawner
 from flame.launch.baselines import (
     format_provenance,
@@ -51,6 +57,55 @@ def _resolve(base: Path, rel: Optional[str]) -> Optional[Path]:
     if p.is_absolute():
         return p
     return (base / p).resolve()
+
+
+def _check_gpu_health(gpu_ids: set) -> dict:
+    """Probe each ordinal with a real allocation -- is_available()/device_count()
+    can both report healthy on a faulted GPU (e.g. "requires reset").
+    Returns {gpu_id: error_str} for any ordinal that fails; {} if all healthy."""
+    try:
+        import torch as _torch
+    except ImportError:
+        return {}
+    bad = {}
+    for gid in sorted(gpu_ids):
+        try:
+            _torch.cuda.set_device(gid)
+            _torch.zeros(1, device=f"cuda:{gid}")
+        except Exception as exc:
+            bad[gid] = str(exc).splitlines()[0]
+    return bad
+
+
+def _read_numa_nodes() -> dict:
+    """{node_id: sorted([cpu_id, ...])} from sysfs; {} if unavailable (single
+    node / non-Linux / no permission) -- callers must fall back gracefully."""
+    base = "/sys/devices/system/node"
+    nodes: dict = {}
+    if not os.path.isdir(base):
+        return nodes
+    for entry in os.listdir(base):
+        if not entry.startswith("node") or not entry[4:].isdigit():
+            continue
+        cpulist_path = os.path.join(base, entry, "cpulist")
+        try:
+            with open(cpulist_path) as f:
+                spec = f.read().strip()
+        except OSError:
+            continue
+        cpus: list = []
+        for part in spec.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                lo, hi = part.split("-")
+                cpus.extend(range(int(lo), int(hi) + 1))
+            else:
+                cpus.append(int(part))
+        if cpus:
+            nodes[int(entry[4:])] = sorted(cpus)
+    return nodes
 
 
 class ExperimentRunner:
@@ -165,29 +220,58 @@ class ExperimentRunner:
             # to stderr (merged into _aggregator.log) before the process dies.
             os.environ.setdefault("PYTHONFAULTHANDLER", "1")
 
-            # CPU partition: reserve a few cores for the single, message-processing
-            # -bound aggregator so the 300 pinned trainers don't time-slice it
-            # (the aggregator's recv/chunk-reassembly throughput sets the sim's
-            # commit rate). Trainers pin to the remaining cores.
-            reserved_cores: set = set()
+            # CPU partition: pin the message-processing-bound aggregator away
+            # from trainers so they don't time-slice it. Core-ID pinning alone
+            # isn't enough on >=2 NUMA nodes -- trainer memory traffic can still
+            # saturate the aggregator's own node -- so trainers prefer other
+            # node(s) first and only spill onto the aggregator's remaining
+            # cores as overflow, rather than excluding that node outright
+            # (which would force >1 trainer/core once the pool outgrows one
+            # node). Single-node hosts fall back to the prior core-ID split.
+            reserved_cores: set = set()      # cores excluded from the trainer pool
+            agg_pin_cores: set = set()       # cores the aggregator itself is pinned to
+            trainer_core_order: list = []    # NUMA-preferred core order for trainers
             if hasattr(os, "sched_getaffinity"):
                 _all = sorted(os.sched_getaffinity(0))
-                _n = min(8, max(2, len(_all) // 8))
-                reserved_cores = set(_all[:_n])
-                print(f"  CPU partition: {len(reserved_cores)} core(s) reserved for "
-                      f"aggregator {sorted(reserved_cores)}, "
-                      f"{len(_all) - len(reserved_cores)} for trainers")
+                _numa = {nid: [c for c in cpus if c in set(_all)]
+                         for nid, cpus in _read_numa_nodes().items()}
+                _numa = {nid: cpus for nid, cpus in _numa.items() if cpus}
+                if len(_numa) >= 2:
+                    _agg_node = min(_numa, key=lambda nid: len(_numa[nid]))
+                    _node_cores = _numa[_agg_node]
+                    _n = min(8, max(2, len(_node_cores) // 8))
+                    agg_pin_cores = set(_node_cores[:_n])
+                    reserved_cores = set(agg_pin_cores)
+                    _other_cores = sorted(c for nid, cpus in _numa.items()
+                                          if nid != _agg_node for c in cpus)
+                    _overflow_cores = sorted(c for c in _node_cores if c not in agg_pin_cores)
+                    trainer_core_order = _other_cores + _overflow_cores
+                    print(f"  CPU partition (NUMA-aware): aggregator pinned to "
+                          f"{len(agg_pin_cores)} core(s) on node {_agg_node} "
+                          f"{sorted(agg_pin_cores)}; trainers prefer "
+                          f"{len(_other_cores)} core(s) on other node(s), "
+                          f"spilling onto node {_agg_node}'s remaining "
+                          f"{len(_overflow_cores)} core(s) past "
+                          f"{len(_other_cores)} trainers")
+                else:
+                    _n = min(8, max(2, len(_all) // 8))
+                    agg_pin_cores = reserved_cores = set(_all[:_n])
+                    print(f"  CPU partition: {len(reserved_cores)} core(s) reserved for "
+                          f"aggregator {sorted(reserved_cores)}, "
+                          f"{len(_all) - len(reserved_cores)} for trainers")
 
             self.aggregator_spawner = AggregatorSpawner(log_file=agg_log)
             self.trainer_spawner = TrainerSpawner(
                 config_gen,
                 num_gpus=exp.execution.num_gpus,
+                gpu_ids=exp.execution.gpu_ids,
                 sleep_between_spawns=exp.execution.sleep_between_spawns,
                 log_file=trainers_log,
                 # CLI-only knobs passed on the trainer command line.
                 time_mode=exp.trainer.time_mode,
                 battery_threshold=exp.trainer.battery_threshold,
                 reserved_cores=reserved_cores,
+                core_order=trainer_core_order,
             )
 
             if exp.execution.monitoring.enabled and create_monitor_from_config is not None:
@@ -202,27 +286,43 @@ class ExperimentRunner:
                     },
                 )
 
-            # Dedicated aggregator GPU: prefer a physical GPU the trainer pool
-            # does NOT use (visible > num_gpus → the first idle one); else the
-            # least-loaded trainer GPU (highest index under (tid-1)%num_gpus).
+            # Dedicated aggregator GPU: prefer a visible ordinal outside gpu_ids
+            # (fully idle); else the pool's last entry. gpu_ids overrides
+            # range(num_gpus) so a known-bad ordinal can be skipped.
             _num_gpus = exp.execution.num_gpus
+            _gpu_ids = list(exp.execution.gpu_ids) if exp.execution.gpu_ids else list(range(_num_gpus))
             try:
                 import torch as _torch
                 _visible = _torch.cuda.device_count()
             except Exception:
                 _visible = 0
-            if _visible > _num_gpus:
-                _agg_gpu = _num_gpus            # a fully idle physical GPU
-            elif _num_gpus > 0:
-                _agg_gpu = _num_gpus - 1        # least-loaded trainer GPU
+            _idle_gpus = [g for g in range(_visible) if g not in _gpu_ids]
+            if _idle_gpus:
+                _agg_gpu = _idle_gpus[0]        # a fully idle physical GPU
+            elif _gpu_ids:
+                _agg_gpu = _gpu_ids[-1]         # least-loaded trainer GPU
             else:
                 _agg_gpu = None
+
+            # Fail fast on a faulted GPU before spawning anything, rather than
+            # an obscure crash deep in whichever process lands on it.
+            _gpu_pool = set(_gpu_ids)
+            if _agg_gpu is not None:
+                _gpu_pool.add(_agg_gpu)
+            if _gpu_pool:
+                _bad_gpus = _check_gpu_health(_gpu_pool)
+                if _bad_gpus:
+                    raise RuntimeError(
+                        "GPU health check failed before spawn -- refusing to launch: "
+                        + "; ".join(f"GPU {gid}: {err}" for gid, err in _bad_gpus.items())
+                    )
+
             self.aggregator_spawner.spawn(
                 paths["aggregator_main"],
                 config_json=json.dumps(agg_cfg),
                 log_to_wandb=exp.aggregator.log_to_wandb,
                 wandb_run_name=exp.aggregator.wandb_run_name,
-                cpu_cores=reserved_cores,
+                cpu_cores=agg_pin_cores,
                 gpu_id=_agg_gpu,
             )
             if not self.aggregator_spawner.wait_until_ready(
@@ -274,15 +374,9 @@ class ExperimentRunner:
             # existing dotted-key override mechanism. The baseline.trainer dict
             # and exp.trainer.config_overrides dict are deep-merged first; then
             # the dotted-key overrides (job.id, etc.) are applied last.
-            baseline_trainer = (baseline_entry or {}).get("trainer") or {}
-            exp_trainer_overrides = exp.trainer.config_overrides or {}
-            if baseline_trainer or exp_trainer_overrides:
-                merged_t, t_prov = merge_with_provenance([
-                    (f"baseline:{exp.baseline}", baseline_trainer),
-                    ("experiment.trainer.config_overrides", exp_trainer_overrides),
-                ])
-                config_gen.set_baseline_overrides(merged_t)
-                print(format_provenance("trainer", t_prov))
+            merged_t, t_prov = self._build_trainer_baseline_overrides(exp, baseline_entry)
+            config_gen.set_baseline_overrides(merged_t)
+            print(format_provenance("trainer", t_prov))
 
             # client_idx_modulo wraps N trainers onto M data partitions for
             # path-style datasets (e.g. fwdllm's H5 partitions) -- each
@@ -503,6 +597,39 @@ class ExperimentRunner:
                 f"selector resolved differently than intended."
             )
 
+    def _build_trainer_baseline_overrides(
+        self,
+        exp: ExperimentConfig,
+        baseline_entry: Optional[dict],
+    ) -> tuple[dict, dict]:
+        """Merge baseline.trainer + experiment.trainer.config_overrides, then
+        fan exp.trainer.availability.mode into hyperparameters.client_notify.trace
+        as the final (highest-precedence) layer.
+
+        exp.trainer.availability.mode only selects which avl_events_* data a
+        trainer loads; it does NOT decide which trace
+        check_and_update_state_avl() replays (hyperparameters.client_notify.trace,
+        a separate field a baseline can hardcode). Left unfanned, a baseline
+        default can silently override the experiment's intended availability
+        mode even though the right data loaded. Aggregator-side analog
+        (trackTrainerAvail.trace) is fanned in _build_aggregator_config.
+
+        Returns (merged_dict, provenance) -- provenance maps each leaf path to
+        the layer name that contributed it.
+        """
+        avail_fan = {
+            "hyperparameters": {
+                "client_notify": {"trace": exp.trainer.availability.mode}
+            }
+        }
+        baseline_trainer = (baseline_entry or {}).get("trainer") or {}
+        exp_trainer_overrides = exp.trainer.config_overrides or {}
+        return merge_with_provenance([
+            (f"baseline:{exp.baseline}", baseline_trainer),
+            ("experiment.trainer.config_overrides", exp_trainer_overrides),
+            ("experiment.trainer.availability (fanned to client_notify)", avail_fan),
+        ])
+
     def _build_aggregator_config(
         self,
         exp: ExperimentConfig,
@@ -571,9 +698,19 @@ class ExperimentRunner:
         _tr_hp = exp.trainer.hyperparameters or {}
         if "training_delay_factor" in _tr_hp:
             _delay_fan["trainingDelayFactor"] = _tr_hp["training_delay_factor"]
+        if "training_delay_floor_s" in _tr_hp:
+            _delay_fan["trainingDelayFloorSeconds"] = _tr_hp["training_delay_floor_s"]
         layers.append((
             "experiment.trainer.training_delay (fanned to aggregator)",
             {"hyperparameters": _delay_fan},
+        ))
+
+        # Aggregator-side analog of the client_notify.trace fan above:
+        # trackTrainerAvail.trace is equally prone to a baseline default
+        # winning over the experiment's intended availability.mode.
+        layers.append((
+            "experiment.trainer.availability (fanned to trackTrainerAvail)",
+            {"hyperparameters": {"trackTrainerAvail": {"trace": exp.trainer.availability.mode}}},
         ))
 
         merged, provenance = merge_with_provenance(layers)

@@ -136,12 +136,12 @@ class AsyncRandomSelector(AbstractSelector):
         """
         logger.info("calling async random select")
         # Extract aggregator version and trainer version states for staleness tracking
-        agg_version_state = kwargs.get("agg_version_state")
-        trainer_version_states = kwargs.get("trainer_version_states")
+        agg_version_key = kwargs.get("agg_version_key")
+        trainer_version_keys = kwargs.get("trainer_version_keys")
         logger.debug(
-            f"Aggregator version state (model_version, data_id, iteration_id): {agg_version_state}"
+            f"Aggregator version_key: {agg_version_key}"
         )
-        logger.debug(f"Trainer version states: {trainer_version_states}")
+        logger.debug(f"Trainer version states: {trainer_version_keys}")
 
         if self.enforce_min_start(len(ends)):
             return {}
@@ -184,10 +184,10 @@ class AsyncRandomSelector(AbstractSelector):
 
         if channel_props[KEY_CH_STATE] == VAL_CH_STATE_SEND:
             logger.debug(
-                f"Inside send state: aggregator version state (model_version, data_id, iteration_id): {agg_version_state}"
+                f"Inside send state: aggregator version_key: {agg_version_key}"
             )
             logger.debug(
-                f"Inside send state: trainer version states: {trainer_version_states}"
+                f"Inside send state: trainer version states: {trainer_version_keys}"
             )
             results = self._handle_send_state(
                 ends=eligible_ends,
@@ -195,8 +195,8 @@ class AsyncRandomSelector(AbstractSelector):
                 channel_props=channel_props,
                 trainer_unavail_list=trainer_unavail_list,
                 task_to_perform=task_to_perform,
-                agg_version_state=agg_version_state,
-                trainer_version_states=trainer_version_states,
+                agg_version_key=agg_version_key,
+                trainer_version_keys=trainer_version_keys,
                 connected_ends=ends,  # Challenge 13: full pool for cleanup
             )
 
@@ -223,7 +223,10 @@ class AsyncRandomSelector(AbstractSelector):
     def select_random(self, ends: dict[str, End], num_of_ends: int) -> dict[str, None]:
         """Randomly select num_of_ends ends."""
 
-        selected_random_ends = set(self._pyrng.sample(sorted(ends), num_of_ends))
+        # dict.fromkeys, not set(): set() order is PYTHONHASHSEED-randomized
+        # per process, breaking real/sim parity despite the seeded sample
+        # being deterministic (see async_oort.py's twin of this method).
+        selected_random_ends = dict.fromkeys(self._pyrng.sample(sorted(ends), num_of_ends))
         logger.debug(f"selected_random_ends: {selected_random_ends}")
 
         return {key: None for key in selected_random_ends}
@@ -459,14 +462,14 @@ class AsyncRandomSelector(AbstractSelector):
         channel_props: dict[str, Scalar],
         trainer_unavail_list: list = None,
         task_to_perform: str = "train",
-        agg_version_state=None,  # (model_version, data_id, iteration_id)
-        trainer_version_states: dict[str, tuple[int, int, int]] = None,
+        agg_version_key=None,  # aggregator-defined version_key (shape varies by aggregator)
+        trainer_version_keys: dict[str, tuple] = None,
         connected_ends: dict[str, End] = None,
     ) -> SelectorReturnType:
         selected_ends = self.selected_ends[self.requester]
-        logger.debug(f"Inside handle send state: aggregator version state {agg_version_state}")
+        logger.debug(f"Inside handle send state: aggregator version state {agg_version_key}")
         logger.debug(
-            f"Inside handle send state: trainer version states {trainer_version_states}"
+            f"Inside handle send state: trainer version states {trainer_version_keys}"
         )
 
         # Invalidate previous all_selected entry if you don't get an
@@ -648,25 +651,23 @@ class AsyncRandomSelector(AbstractSelector):
             f"Filtered ends created. count_avl_train: {count_avl_train},  count_ineligible: {count_ineligible}"
         )
 
-        if agg_version_state is not None and trainer_version_states is not None:
-            curr_model_version, curr_data_id, curr_iteration_id = agg_version_state
-            logger.info(f"Trainer version states: {trainer_version_states}")
-            logger.info(f"Handle send state: aggregator version state {agg_version_state}")
-            # Filter out trainers who already received this same triplet
+        if agg_version_key is not None and trainer_version_keys is not None:
+            logger.info(f"Trainer version keys: {trainer_version_keys}")
+            logger.info(f"Handle send state: aggregator version_key {agg_version_key}")
+            # Filter out trainers who already contributed to this same version_key.
             eligible_filtered_ends = {}
             logger.debug(f"Filtered ends: {filtered_ends.items()}")
             for end_id, end in filtered_ends.items():
-                prev_state = trainer_version_states.get(end_id)
-                logger.debug(f"Prev version state: {prev_state}")
+                prev_key = trainer_version_keys.get(end_id)
+                logger.debug(f"Prev version_key: {prev_key}")
 
-                if prev_state != agg_version_state:
+                if prev_key != agg_version_key:
                     logger.debug(f"Not skipping trainer: {end_id}")
                     eligible_filtered_ends[end_id] = end
                 else:
                     logger.info(
                         f"Skipping trainer: {end_id} already has same "
-                        f"(model_version={curr_model_version}, "
-                        f"iteration_id={curr_iteration_id}, data_id={curr_data_id})"
+                        f"version_key={agg_version_key}"
                     )
             filtered_ends = eligible_filtered_ends
 
@@ -733,13 +734,17 @@ class AsyncRandomSelector(AbstractSelector):
     def _handle_recv_state(
         self, ends: dict[str, End], concurrency: int
     ) -> SelectorReturnType:
+        """Read-only over `selected_ends`: reports who is outstanding, minus
+        replies received. Never assigns new selections -- that's
+        `_handle_send_state`'s job; a prior version that resampled here raced
+        send-state dispatch and could deadlock. Returns {} if empty; the next
+        send-state tick dispatches normally.
+        """
         selected_ends = self.selected_ends[self.requester]
 
         # from the selected ends, remove those that are in recv state
         # already This is done to avoid waiting on trainers that you
-        # have already heard from. If selected ends is empty, get()
-        # will proceed and wait on distribute_weights before running
-        # again. Thus, it avoids stalling and ensures progress
+        # have already heard from.
         for end_id in list(selected_ends):
             # trainer might have become unavailable, check if it is
             # still available first
@@ -758,49 +763,10 @@ class AsyncRandomSelector(AbstractSelector):
                     f"longer in self._ends"
                 )
 
-        if len(selected_ends) == 0:
-            logger.debug(f"len(selected_ends)=0, let's select {concurrency} ends")
-
-            candidates = dict()
-            for end_id, end in ends.items():
-                curr_end_state = end.get_property(KEY_END_STATE)
-                # candidates[end_id] = end
-                if end_id not in self.all_selected.keys():
-                    if curr_end_state != VAL_END_STATE_NONE:
-                        logging.info(
-                            f"end_id {end_id} not in all_selected and in state: {curr_end_state}, adding "
-                            f"to candidates: key {end_id}, val: {end}"
-                        )
-                        candidates[end_id] = end
-                    else:
-                        logging.debug(
-                            f"end_id {end_id} not in all_selected but in state: {curr_end_state}, not adding "
-                            f"to candidates"
-                        )
-
-            cc = min(len(candidates), concurrency)
-            logger.debug(
-                f"Will pick cc: {cc} as min(candidates,concurrency) "
-                f"from candidates: {candidates}"
-            )
-            selected_ends = set(self._pyrng.sample(sorted(candidates), cc))
-
-            self.selected_ends[self.requester] = selected_ends
-            logger.debug(
-                f"self.selected_ends[req]: {self.selected_ends[self.requester]}"
-            )
-
-            for selected_end in selected_ends:
-                # Add to all_selected. {key: end, val: TS epoch (s)}
-                self.all_selected[selected_end] = time.time()
-            logging.debug(
-                f"self.all_selected {self.all_selected} after combining with "
-                f"selected_ends {selected_ends}"
-            )
-
         logger.debug(f"handle_recv_state returning selected_ends: {selected_ends}")
 
-        return {key: None for key in selected_ends}
+        # sorted(): process-stable order so real and sim agree.
+        return {key: None for key in sorted(selected_ends)}
 
     def reset_end_state_to_none(self, ends: dict[str, End], end_id: str) -> None:
         """Reset's the state of end_id from send/recv to none"""

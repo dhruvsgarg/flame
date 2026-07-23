@@ -11,6 +11,15 @@
 # Third party
 */third_party/*
 
+# FwdLLM AE (artifact-evaluation) bundle — vendored data dump, not source
+third_party/ae/
+
+# Vendored reference repos (own .git each, ~1.6GB) — reference-only, not tracked
+third_party/FedML/
+third_party/FwdLLM/
+third_party/Oort/
+third_party/REFL/
+
 # Binaries for programs and plugins
 *.exe
 *.exe~

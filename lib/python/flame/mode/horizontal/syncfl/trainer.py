@@ -139,15 +139,40 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # Per-round phase timing accumulator; reset at each round boundary in _fetch_weights.
         self._phase_times: dict = {}
+        # vclock reading (sim only) as of each phase's END, not a duration --
+        # trainers have no live clock (see vclock_now); this is a snapshot for
+        # cross-phase/cross-process alignment, not an in-phase delta.
+        self._phase_vclock_s: dict = {}
+        # Set by concrete subclasses (fwdllm's FedSgdTrainer, async_cifar10)
+        # when a fresh aggregator message carries SIM_SEND_TS/SIM_COMPLETION_TS.
+        # Absent in the shared base; vclock_now reads it via getattr so unset
+        # -> None.
+
+    @property
+    def vclock_now(self) -> float | None:
+        """Last known virtual-clock reading, sim mode only -- `None` in real
+        mode. NOT a live tick: trainers have no access to the aggregator's
+        clock, so this is the most recent SIM_SEND_TS/SIM_COMPLETION_TS the
+        aggregator stamped, held until the next message arrives. Fine for
+        cross-phase alignment; do not use to measure elapsed time within one
+        phase.
+        """
+        if not getattr(self, "simulated", False):
+            return None
+        return getattr(self, "_sim_send_ts", None)
 
     @contextmanager
     def _phase(self, name: str):
-        """Time a named phase and accumulate into self._phase_times."""
+        """Time a named phase (wall-clock) and accumulate into
+        self._phase_times; also snapshot vclock_now (sim only, else None)
+        into self._phase_vclock_s -- see its class-level comment for why
+        that's a snapshot, not a duration."""
         t0 = time.time()
         try:
             yield
         finally:
             self._phase_times[name] = self._phase_times.get(name, 0.0) + (time.time() - t0)
+            self._phase_vclock_s[name] = getattr(self, "vclock_now", None)
 
     def get(self, tag: str) -> None:
         """Get data from remote role(s)."""
@@ -162,6 +187,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # Reset per-round phase accumulator at the round boundary.
         self._phase_times = {}
+        self._phase_vclock_s = {}
 
         self.fetch_success = False
         channel = self.cm.get_by_tag(tag)
@@ -184,6 +210,10 @@ class Trainer(Role, metaclass=ABCMeta):
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
+        # vclock BEFORE this wait -- _sim_send_ts isn't updated until the new
+        # message arrives, so the delta below measures vclock moved while
+        # waiting, not a same-instant snapshot like other phases.
+        _mqtt_vclock_start = getattr(self, "vclock_now", None)
         _recv_wall_start = time.time()
         msg, _ = channel.recv(end)
         # Stamp as early as possible so the aggregator can measure
@@ -255,6 +285,12 @@ class Trainer(Role, metaclass=ABCMeta):
         # Capture virtual send-time stamped by aggregator (sim mode); used for sim_completion_ts.
         if MessageType.SIM_SEND_TS in msg:
             self._sim_send_ts = msg[MessageType.SIM_SEND_TS]
+        _mqtt_vclock_end = getattr(self, "vclock_now", None)
+        self._phase_vclock_s["mqtt_fetch_s"] = (
+            _mqtt_vclock_end - _mqtt_vclock_start
+            if _mqtt_vclock_start is not None and _mqtt_vclock_end is not None
+            else None
+        )
 
         # Cache the aggregator's trace-read origin (real mode only) so this
         # trainer's own wall-clock availability lookups share the exact
@@ -460,9 +496,13 @@ class Trainer(Role, metaclass=ABCMeta):
                 msg.pop(MessageType.WEIGHTS)
             )
 
+        # MODELED_DELAY_S (mirrors fwdllm_trainer.py); None when delays are
+        # off, distinct from a legitimate zero delay.
         _budget = getattr(self, "_training_budget_s", None)
         if _budget is not None:
-            msg[MessageType.TRAINING_BUDGET_S] = float(_budget)
+            msg[MessageType.MODELED_DELAY_S] = (
+                float(_budget) if getattr(self, "training_delay_enabled", False) else None
+            )
 
         # Modeled round compute: max(real_gpu_time, training_delay_s). Stamped
         # unconditionally (real + sim) so the aggregator can decompose the

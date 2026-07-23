@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import logging
 import random
@@ -21,6 +22,32 @@ def _calculate_hash(tensor):
 
     """Calculate a hash for a tensor for logging."""
     return hashlib.sha256(tensor.detach().cpu().numpy().tobytes()).hexdigest()
+
+
+@contextlib.contextmanager
+def _agg_sync_timer(owner, name: str):
+    """Times a single sync point (`.item()`, `.to("cpu")`) separately from
+    its enclosing `@timer_decorator`-wrapped function, as its own named
+    `step_timing` event."""
+    t0 = time.time()
+    try:
+        yield
+    finally:
+        dur = time.time() - t0
+        stage = getattr(owner, "fwd_llm_stage", None)
+        if stage is not None:
+            try:
+                from flame import telemetry
+                if telemetry.is_enabled():
+                    from flame.telemetry.events import build_step_timing
+                    ev, fields = build_step_timing(
+                        func=name, duration_s=dur,
+                        round_num=stage.round_id, data_id=stage.data_id,
+                        iteration=stage.iteration, trainer_id=stage.trainer_id,
+                    )
+                    telemetry.emit(ev, **fields)
+            except Exception:  # pragma: no cover - telemetry must never fault training
+                logger.debug("agg_sync_timer telemetry emit failed", exc_info=True)
 
 
 class FedSGDAggregator(TopAggregator):
@@ -128,6 +155,12 @@ class FedSGDAggregator(TopAggregator):
         )
         self.grad = [torch.zeros_like(p) for p in self.params]
 
+        # Server-side momentum on the raw SGD update; 0.0 (default) is byte-identical.
+        self.server_momentum = float(
+            getattr(self.config.hyperparameters, "server_momentum", 0.0) or 0.0
+        )
+        self._server_momentum_buf = {}
+
     def var_within_epsilon(self):
         if self.var < self.var_threshold:
             logger.info("Var under threshold, aggregate now")
@@ -165,7 +198,9 @@ class FedSGDAggregator(TopAggregator):
         return False
         
 
+    @timer_decorator
     def get_global_model_params(self):
+        """Timed: `.cpu().state_dict()` is a real device transfer, not a free accessor."""
         return self.trainer.get_model_params()
 
     def get_global_model(self):
@@ -188,19 +223,117 @@ class FedSGDAggregator(TopAggregator):
             self.flag_client_model_uploaded_dict[idx] = False
         return True
 
+    def _server_update_step(self, param_idx: int, raw_update: "torch.Tensor") -> "torch.Tensor":
+        """Heavy-ball momentum on one parameter's update; momentum=0.0 is a no-op
+        (byte-identical)."""
+        if not self.server_momentum:
+            return raw_update
+        buf = self._server_momentum_buf.get(param_idx)
+        if buf is None:
+            buf = raw_update.clone()
+        else:
+            buf = buf.mul(self.server_momentum).add_(raw_update)
+        self._server_momentum_buf[param_idx] = buf
+        return buf
+
     @timer_decorator
-    def aggregate(self, current_round):
-        start_time = time.time()
-        self.var = calculate_var(self.grad_for_var_check_list)
-        var_jvp = calculate_real_var(self.jvp_for_snr_check_list)
-        self.var_prev_iter_list.append(self.var.item())
-        self.snr = calculate_snr(self.jvp_for_snr_check_list)
-        grads_snr = calculate_snr_gradients(self.grad_for_var_check_list)
-        self.snr_prev_iter_list.append(self.snr)
-        c_of_variation = calculate_cv(self.grad_for_var_check_list)
-        logger.info(f"self.var = {self.var}")
-        logger.info(f"snr of jvps = {self.snr}")
-        logger.info(f"coefficient of variation = {c_of_variation}")
+    def _compute_var(self):
+        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
+        result = calculate_var(self.grad_for_var_check_list)
+        # Diagnostic telemetry (grad norms + var); DEBUG-gated to avoid taxing every prod run.
+        if logger.isEnabledFor(logging.DEBUG):
+            try:
+                from flame import telemetry
+                if telemetry.is_enabled():
+                    from flame.telemetry.events import build_var_calc
+                    stage = getattr(self, "fwd_llm_stage", None)
+                    norms = [p.detach().norm().item() for p in self.grad_for_var_check_list]
+                    ev, fields = build_var_calc(
+                        round_num=getattr(stage, "round_id", None),
+                        data_id=getattr(stage, "data_id", None),
+                        iteration=getattr(stage, "iteration", None),
+                        input_grad_norms=norms,
+                        output_var=result.item() if hasattr(result, "item") else float(result),
+                    )
+                    telemetry.emit(ev, **fields)
+            except Exception:  # pragma: no cover - telemetry must never fault training
+                logger.debug("var_calc telemetry emit failed", exc_info=True)
+        return result
+
+    @timer_decorator
+    def _snapshot_retry_cache(self):
+        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
+        return copy.deepcopy(self.model_dict)
+
+    @timer_decorator
+    def _snapshot_last_round_update(self, weighted_gradient_sum):
+        """Timed separately; shared by both commit branches (was duplicated verbatim)."""
+        return [p.clone().detach() for p in weighted_gradient_sum]
+
+    @timer_decorator
+    def _accumulate_retry_cache(self, model_list, training_num):
+        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
+        for cached_v in self.cached_v:
+            model_list.append(cached_v)
+            if logger.isEnabledFor(logging.DEBUG):
+                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                logger.debug(
+                    f"cached-v[i] - length : {len(cached_v[1])} (should be same as grad pool):  {format_hash(cached_v[1])}"
+                )
+            training_num += cached_v[0]
+        return training_num
+
+    @timer_decorator
+    def _cache_grad_for_retry(self, model_dict_cached):
+        """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
+        for idx in range(self.worker_num):
+            self.cached_v.append(
+                (self.sample_num_dict[idx], model_dict_cached[idx])
+            )
+
+    @timer_decorator
+    def _apply_weighted_update(self, model_list, weighted_gradient_sum, old_param,
+                                learning_rate, training_num):
+        """Timed separately; shared by both commit branches (natural / force-commit),
+        was duplicated verbatim."""
+        for id, k in enumerate(weighted_gradient_sum):
+            for i in range(0, len(model_list)):
+                local_sample_number, local_model_params = model_list[i]
+                # w = local_sample_number / training_num
+                if i == 0:
+                    weighted_gradient_sum[id] = local_model_params[id]
+                else:
+                    weighted_gradient_sum[id] += local_model_params[id]
+            # `.to("cpu")` syncs GPU->CPU; timed separately since it runs once
+            # per param, not once per call.
+            with _agg_sync_timer(self, "agg_apply_update_cpu_sync"):
+                next(old_param).detach().to("cpu").sub_(
+                    self._server_update_step(
+                        id, learning_rate * weighted_gradient_sum[id] / training_num
+                    )
+                )
+
+    @timer_decorator
+    def _prepare_round_state(self, current_round):
+        """Timed separately; shared preamble (var bookkeeping, plateau check, accumulation)
+        that runs before the commit/rollback branch split."""
+        # self.var drives the live commit gate; snr/real-var/grad-snr/cv are
+        # diagnostics with no live consumer (snr gate is commented out) -> DEBUG only.
+        self.var = self._compute_var()
+        # Cached scalar avoids re-syncing the GPU tensor on every log print;
+        # `.item()` is timed separately as the sync point.
+        with _agg_sync_timer(self, "agg_var_item_sync"):
+            self._var_scalar = self.var.item()
+        self.var_prev_iter_list.append(self._var_scalar)
+        logger.info(f"self.var = {self._var_scalar}")
+        if logger.isEnabledFor(logging.DEBUG):
+            var_jvp = calculate_real_var(self.jvp_for_snr_check_list)
+            self.snr = calculate_snr(self.jvp_for_snr_check_list)
+            grads_snr = calculate_snr_gradients(self.grad_for_var_check_list)
+            self.snr_prev_iter_list.append(self.snr)
+            c_of_variation = calculate_cv(self.grad_for_var_check_list)
+            logger.debug(f"snr of jvps = {self.snr}")
+            logger.debug(f"coefficient of variation = {c_of_variation}")
 
         # Opt-2 (charter §5c/§5e): variance-plateau force-commit. Under the
         # 'plateau' policy, additionally force a commit once the per-bin variance
@@ -222,9 +355,10 @@ class FedSGDAggregator(TopAggregator):
         logger.debug(
             f"self.grad_for_var_check_list size: {len(self.grad_for_var_check_list)}"
         )
-        logger.debug(
-            f"self.grad_for_var_check_list hashes: {[(_calculate_hash(p), p.shape) for p in self.grad_for_var_check_list]}"
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"self.grad_for_var_check_list hashes: {[(_calculate_hash(p), p.shape) for p in self.grad_for_var_check_list]}"
+            )
 
         model_list = []
         training_num = 0
@@ -248,39 +382,22 @@ class FedSGDAggregator(TopAggregator):
             logger.info(
                 f"Model dict length (should be same as total layers in the model) : {len(self.model_dict[idx])}"
             )
+        return model_list, training_num, learning_rate
+
+    @timer_decorator
+    def aggregate(self, current_round):
+        start_time = time.time()
+        model_list, training_num, learning_rate = self._prepare_round_state(current_round)
 
         # logger.info(f"len(model_list): {len(model_list)}")
 
-        # self.model_dict在聚合的过程中会被改变,很奇怪，这里先存一个deepcopy吧，
-        # 用于后面cache_v
+        # Snapshot model_dict (mutated below) for cache_v reuse.
         if self.args.var_control:
-            model_dict_cached = copy.deepcopy(self.model_dict)
-            origin_param = copy.deepcopy(self.get_global_model_params())
-        # logger.info(f"len(model_list): {len(model_list)}")
-
-        # self.model_dict在聚合的过程中会被改变,很奇怪，这里先存一个deepcopy吧，
-        # 用于后面cache_v
-        if self.args.var_control:
-            model_dict_cached = copy.deepcopy(self.model_dict)
-            origin_param = copy.deepcopy(self.get_global_model_params())
-        # logger.info(f"len(model_list): {len(model_list)}")
-
-        # self.model_dict在聚合的过程中会被改变,很奇怪，这里先存一个deepcopy吧，
-        # 用于后面cache_v
-        if self.args.var_control:
-            model_dict_cached = copy.deepcopy(self.model_dict)
-            origin_param = copy.deepcopy(self.get_global_model_params())
+            model_dict_cached = self._snapshot_retry_cache()
 
             # cached_v:  (num, params)
             logger.info(f"len of cached v: {len(self.cached_v)}")
-            for cached_v in self.cached_v:
-                model_list.append(cached_v)
-                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                logger.info(
-                    f"cached-v[i] - length : {len(cached_v[1])} (should be same as grad pool):  {format_hash(cached_v[1])}"
-                )
-
-                training_num += cached_v[0]
+            training_num = self._accumulate_retry_cache(model_list, training_num)
             logger.info(f"training_num : {training_num}")
 
         logger.info("len of self.model_dict[idx] = " + str(len(self.model_dict)))
@@ -304,31 +421,22 @@ class FedSGDAggregator(TopAggregator):
                     return old_param
                 # If weighted_aggregation_enabled is False, then the weight of each gradient in this sum is 1. Else, the weight the is determined by calling self.optimizer.weight_factor()
                 (_, weighted_gradient_sum) = model_list[0]
-                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                logger.debug(
-                    f"model_list[0] - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
-                )
-                logger.info(f"Length of model_list : {len(model_list)}")
-                for id, k in enumerate(weighted_gradient_sum):
-                    for i in range(0, len(model_list)):
-                        local_sample_number, local_model_params = model_list[i]
-                        # w = local_sample_number / training_num
-                        if i == 0:
-                            weighted_gradient_sum[id] = local_model_params[id]
-                        else:
-                            weighted_gradient_sum[id] += local_model_params[id]
-                    next(old_param).detach().to("cpu").sub_(
-                        learning_rate * weighted_gradient_sum[id] / training_num
+                if logger.isEnabledFor(logging.DEBUG):
+                    format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                    logger.debug(
+                        f"model_list[0] - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
                     )
-                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                logger.debug(
-                    f"weighted_gradient_sum - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
-                )
-                self.last_round_update = [
-                    p.clone().detach() for p in weighted_gradient_sum
-                ]
-                logger.info(
-                    f"[Variance=GOOD] var={self.var} <= thr={self.var_threshold}; "
+                logger.info(f"Length of model_list : {len(model_list)}")
+                self._apply_weighted_update(model_list, weighted_gradient_sum, old_param,
+                                             learning_rate, training_num)
+                if logger.isEnabledFor(logging.DEBUG):
+                    format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                    logger.debug(
+                        f"weighted_gradient_sum - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
+                    )
+                self.last_round_update = self._snapshot_last_round_update(weighted_gradient_sum)
+                logger.info(  # cached float, avoids extra GPU sync
+                    f"[Variance=GOOD] var={self._var_scalar} <= thr={self.var_threshold}; "
                     f"keeping weight update, clearing cached_v."
                 )
                 self.var_good_enough = True
@@ -347,36 +455,27 @@ class FedSGDAggregator(TopAggregator):
                     return old_param
                 # If weighted_aggregation_enabled is False, then the weight of each gradient in this sum is 1. Else, the weight the is determined by calling self.optimizer.weight_factor()
                 (_, weighted_gradient_sum) = model_list[0]
-                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                logger.debug(
-                    f"model_list[0] - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
-                )
-                logger.info(f"Length of model_list : {len(model_list)}")
-                for id, k in enumerate(weighted_gradient_sum):
-                    for i in range(0, len(model_list)):
-                        local_sample_number, local_model_params = model_list[i]
-                        # w = local_sample_number / training_num
-                        if i == 0:
-                            weighted_gradient_sum[id] = local_model_params[id]
-                        else:
-                            weighted_gradient_sum[id] += local_model_params[id]
-                    next(old_param).detach().to("cpu").sub_(
-                        learning_rate * weighted_gradient_sum[id] / training_num
+                if logger.isEnabledFor(logging.DEBUG):
+                    format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                    logger.debug(
+                        f"model_list[0] - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
                     )
-                format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
-                logger.debug(
-                    f"weighted_gradient_sum - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
-                )
+                logger.info(f"Length of model_list : {len(model_list)}")
+                self._apply_weighted_update(model_list, weighted_gradient_sum, old_param,
+                                             learning_rate, training_num)
+                if logger.isEnabledFor(logging.DEBUG):
+                    format_hash = lambda d: [_calculate_hash(v)[:8] for v in d]
+                    logger.debug(
+                        f"weighted_gradient_sum - length : {len(weighted_gradient_sum)} (should be same as grad pool):  {format_hash(weighted_gradient_sum)}"
+                    )
 
-                self.last_round_update = [
-                    p.clone().detach() for p in weighted_gradient_sum
-                ]
+                self.last_round_update = self._snapshot_last_round_update(weighted_gradient_sum)
                 self._force_commit_reason = (
                     "plateau" if getattr(self, "_plateau_fired_this_cycle", False)
                     else "cap"
                 )
-                logger.info(
-                    f"[MaxIterBypass] Variance FAILED (var={self.var} > "
+                logger.info(  # cached float, avoids extra GPU sync
+                    f"[MaxIterBypass] Variance FAILED (var={self._var_scalar} > "
                     f"thr={self.var_threshold}) but force-commit is set "
                     f"(reason={self._force_commit_reason}); "
                     f"committing weights anyway, clearing cached_v."
@@ -385,17 +484,12 @@ class FedSGDAggregator(TopAggregator):
                 self.cached_v = []
             else:
                 self.var_good_enough = False
-                logger.info(
-                    f"[Variance=BAD] var={self.var} > thr={self.var_threshold}; "
+                logger.info(  # cached float, avoids extra GPU sync
+                    f"[Variance=BAD] var={self._var_scalar} > thr={self.var_threshold}; "
                     f"rolling back weights, caching grads for next iteration."
                 )
                 # 当前模型不行，v不够，暂存起来，后面再计算更多的v
-                for idx in range(self.worker_num):
-                    self.cached_v.append(
-                        (self.sample_num_dict[idx], model_dict_cached[idx])
-                    )
-                # 模型改回去
-                # self.set_global_model_params(origin_param)
+                self._cache_grad_for_retry(model_dict_cached)
 
         self._force_commit_this_cycle = False
 

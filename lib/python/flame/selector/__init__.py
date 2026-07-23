@@ -51,24 +51,41 @@ def _round_or_none(v, ndigits: int = 4):
 class AbstractSelector(ABC):
     """Abstract base class for selector implementation."""
 
+    # Fallback seed when none is threaded in: every selector is deterministic
+    # across real/sim by default, not a per-process PYTHONHASHSEED lottery.
+    DEFAULT_SEED = 1234
+
     def __init__(self, **kwargs) -> None:
-        # Reserved kwarg (consumed, not setattr'd as a hyperparameter).
+        # Reserved kwarg (consumed, not setattr'd). None -> DEFAULT_SEED.
         _seed = kwargs.pop("_seed", None)
+        if _seed is None:
+            _seed = self.DEFAULT_SEED
         for key, value in kwargs.items():
             setattr(self, key, value)
         self.selected_ends: set = set()
         self.ordered_updates_recv_ends: list = []
         # Dedicated, seed-able RNGs insulated from the process-global np.random/
         # random. Selectors MUST draw from these (never bare np.random/random) so
-        # selection is reproducible across real/sim. seed=None = unseeded (legacy).
+        # selection is reproducible across real/sim. Always seeded (DEFAULT_SEED).
         self._seed = _seed
         self._rng = _NpRandomState(_seed)
         self._pyrng = _StdRandom(_seed)
         if _seed is not None:
             logger.info(
                 f"[SELECTOR_SEED] {type(self).__name__} dedicated RNGs seeded "
-                f"with seed={_seed}"
+                f"with seed={_seed} fingerprint={self.rng_fingerprint()}"
             )
+
+    def rng_fingerprint(self) -> str:
+        """Short hex digest of both dedicated RNGs' internal state.
+
+        For determinism audits: two same-seed runs with differing
+        fingerprints at the same call site prove extra draws happened
+        between construction and that point.
+        """
+        py_state = repr(self._pyrng.getstate()).encode()
+        np_state = repr(self._rng.get_state()).encode()
+        return hashlib.sha256(py_state + np_state).hexdigest()[:12]
 
     def enforce_min_start(self, ends_count: int) -> bool:
         """Return True if selection should wait due to min-start threshold."""

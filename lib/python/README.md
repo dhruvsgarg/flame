@@ -61,8 +61,8 @@ if needed.
 
 ```bash
 python -m flame.launch.run_experiment \
-    lib/python/examples/fwdllm/expt_scripts/fwdllm_n10_smoke.yaml
-# siblings: fwdllm_plus_n10_smoke.yaml, fluxtune_n10_smoke.yaml
+    lib/python/examples/fwdllm/expt_scripts/fwdllm_n100_smoke.yaml
+# siblings: fwdllm_plus_n100_smoke.yaml, fluxtune_n10_smoke.yaml
 ```
 
 ### async_google_speech — speech

@@ -46,8 +46,8 @@ class DefaultSelector(AbstractSelector):
         Additional kwargs (for compatibility, unused in default selector):
         - trainer_unavail_list: List of unavailable trainers
         - task_to_perform: Task type (train/eval)
-        - agg_version_state: Aggregator's (model_version, data_id, iteration_id)
-        - trainer_version_states: Map of trainer_id to version triplets
+        - agg_version_key: Aggregator's version_key
+        - trainer_version_keys: Map of trainer_id to version_key
         """
         logger.debug("calling default select")
 

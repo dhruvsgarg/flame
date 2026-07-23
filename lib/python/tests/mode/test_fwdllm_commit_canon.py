@@ -7,10 +7,15 @@ physical arrival and sim by sct-sort, so the receive ORDER can swap even though
 `var` and the cohort SET match -- and the EXACT-order `cohort_sequence` rung
 flags it. `_canonicalize_cohort_commit_order` reorders THIS cycle's cohort by
 (D, str(end)) so equal-D ties break by trainer_id IDENTICALLY in real and sim.
+
+`_pending_cohort_contribs` is 1:1 with `_per_agg_trainer_list` -- canon() must
+permute both in lockstep, or self.grad's later summation replays contribs out
+of order even though trainer-id bookkeeping looks canonical.
+
 These tests pin: (1) two different input orders (real-physical vs sim-sct)
-canonicalize to the SAME sequence; (2) the grad/jvp trailing slice reorders in
-lockstep; (3) accumulated earlier-iteration entries are untouched; (4) no-op
-when keys are missing (delays off) or the cohort is already canonical.
+canonicalize to the SAME sequence, contribs included; (2) the tie-break is by
+trainer_id; (3) no-op when keys are missing (delays off) or already canonical;
+(4) a tie-swap never crosses the split-half boundary (calculate_var invariant).
 """
 
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
@@ -20,7 +25,7 @@ class _CanonAgg:
     """Minimal stand-in exposing only what _canonicalize_cohort_commit_order
     touches. `end` values are the last-3-hex trainer tokens for readability."""
 
-    def __init__(self, ends, delays, grad_list=None, jvp_list=None):
+    def __init__(self, ends, delays, contribs=None):
         self._per_agg_trainer_list = list(ends)
         # end -> (D, str(end)) key, mirroring aggregate_weights' capture; a None
         # delay models a contributor that did not stamp D (delays off).
@@ -28,12 +33,9 @@ class _CanonAgg:
             e: ((float(d), str(e)) if d is not None else None)
             for e, d in zip(ends, delays)
         }
-        self.grad_for_var_check_list = list(
-            grad_list if grad_list is not None else ends
-        )
-        self.jvp_for_snr_check_list = list(
-            jvp_list if jvp_list is not None else ends
-        )
+        # Buffered per-contribution material, 1:1 with _per_agg_trainer_list;
+        # defaults to end tokens so a permutation is directly comparable.
+        self._pending_cohort_contribs = list(contribs if contribs is not None else ends)
 
     canon = TopAggregator._canonicalize_cohort_commit_order
 
@@ -62,6 +64,10 @@ class TestCanonicalizesToOneOrder:
         assert ra._per_agg_trainer_list == _CANON_ORDER
         assert sa._per_agg_trainer_list == _CANON_ORDER
         assert ra._per_agg_trainer_list == sa._per_agg_trainer_list
+        # contribs converge too, not just trainer-id bookkeeping -- this is
+        # what makes self.grad's replay order real/sim-identical.
+        assert ra._pending_cohort_contribs == _CANON_ORDER
+        assert sa._pending_cohort_contribs == _CANON_ORDER
 
     def test_tie_breaks_by_trainer_id_not_arrival(self):
         # only the two tied (D=6.5) members may move, and by id order (372<378)
@@ -69,42 +75,27 @@ class TestCanonicalizesToOneOrder:
         a.canon()
         assert a._per_agg_trainer_list == ["379", "372", "378", "371"]
 
-    def test_grad_and_jvp_reorder_in_lockstep(self):
-        a = _mk(["379", "378", "372", "371"])
-        a.canon()
-        assert a.grad_for_var_check_list == ["379", "372", "378", "371"]
-        assert a.jvp_for_snr_check_list == ["379", "372", "378", "371"]
-
-
-class TestSliceScope:
-    def test_only_trailing_cohort_slice_reorders(self):
-        # grad list ACCUMULATES: an earlier iteration's 2 entries precede this
-        # cycle's 4-cohort. Only the trailing 4 may move.
-        prev = ["p0", "p1"]
-        cohort = ["379", "378", "372", "371"]
-        a = _CanonAgg(cohort, [_D[e] for e in cohort], grad_list=prev + cohort,
-                      jvp_list=prev + cohort)
-        a.canon()
-        assert a.grad_for_var_check_list == prev + ["379", "372", "378", "371"]
-        assert a._per_agg_trainer_list == ["379", "372", "378", "371"]
-
-    def test_misaligned_grad_list_left_untouched(self):
-        # a shorter-than-cohort grad list (a non-grad message slipped in) must
-        # not be sliced/corrupted -- reorder the contributor list only.
-        cohort = ["379", "378", "372", "371"]
-        a = _CanonAgg(cohort, [_D[e] for e in cohort], grad_list=["x"],
-                      jvp_list=["x"])
+    def test_pending_contribs_reorder_in_lockstep(self):
+        # contribs need not equal the end tokens (real code buffers gradient
+        # tensors, not ids) -- pin that canon() permutes by INDEX, not value.
+        a = _CanonAgg(
+            ["379", "378", "372", "371"],
+            [_D[e] for e in ["379", "378", "372", "371"]],
+            contribs=["c_379", "c_378", "c_372", "c_371"],
+        )
         a.canon()
         assert a._per_agg_trainer_list == ["379", "372", "378", "371"]
-        assert a.grad_for_var_check_list == ["x"]  # untouched
+        assert a._pending_cohort_contribs == ["c_379", "c_372", "c_378", "c_371"]
 
 
 class TestNoOps:
     def test_already_canonical_is_unchanged(self):
         a = _mk(_CANON_ORDER)
         before = list(a._per_agg_trainer_list)
+        before_contribs = list(a._pending_cohort_contribs)
         a.canon()
         assert a._per_agg_trainer_list == before
+        assert a._pending_cohort_contribs == before_contribs
 
     def test_missing_delay_key_falls_back_to_arrival_order(self):
         # a contributor without a stamped D (delays off) -> arrival order kept
@@ -112,6 +103,7 @@ class TestNoOps:
         a = _CanonAgg(ends, [5.5, None, 6.5, 8.0])
         a.canon()
         assert a._per_agg_trainer_list == ends  # no reorder
+        assert a._pending_cohort_contribs == ends
 
     def test_single_contributor_is_noop(self):
         a = _mk(["370"])

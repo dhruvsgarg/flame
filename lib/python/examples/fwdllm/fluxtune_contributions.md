@@ -215,6 +215,7 @@ charter's I-1 "epoch-boundary bug" framing (F10 refuted).
 | F13 | Collapses are **frozen-noise events, not class-structure events**: data (bins/cohort) is identical every epoch → the same high-variance JVP estimates recur at the same data_ids → position-locked collapse (F5). The *magnitude/variance* of the update, not its class direction, is the driver → points at F6-F9 (optimizer), not H1 (shuffle). | H0 (F11) + F6-F9 | VERIFIED |
 | F14 | Partition is **quantity-balanced label-skew**: exactly **1200 samples/trainer at every α** (per-class totals 30k each) — α changes only the class *mix*, never the amount. Heterogeneity ladder (per-bin dom-frac mean / % bins ≥50%-one-class / #single-class trainers): α0.1 **0.94/96%/53** · α0.5 0.83/90%/0 · α1 **0.75/81%/1** · α5 0.57/46% · α10 0.52/32% · α100 **0.45/14%/0**. | H0 `--dist`, `trainer_class_heatmap.pdf` | VERIFIED |
 | F15 | **Small-batch lumpiness is α-independent:** even at α=100 (near-IID clients) 14% of 8-sample bins are ≥50% one class — an artifact of the bin *size*, not heterogeneity. Within a trainer, bins are ≈ iid draws of that trainer's own class mix (the `executor.map` load already scrambles intra-trainer order — no class-sorted sequence). So **bin *composition/size* matters; intra-bin *order* is a no-op** (JVP/loss is a mean over the bin → permutation-invariant). | H0 `--dist`; F1 | VERIFIED |
+| F16 | **Within-cohort commit-merge order is an F8/F9-adjacent noise source, fluxtune-only.** `grad_aware`'s rate gates on `cos = cosine(trainer_grad, self.grad)` against the RUNNING partial sum — so for two trainers tied on delay, which merges first changes the SECOND one's rate/weight (an algorithmic effect, not float non-associativity dust). Before P0-1, real broke such ties by nondeterministic physical arrival → merge order (and thus the final commit) varied run-to-run for the exact same cohort. P0-1 made it deterministic `(D, trainer_id)` in real too (not sim-only). fwdllm/fwdllm_plus use staleness-only rate (`old`/`new`, don't read `self.grad`) → not exposed. | `fwdllm_aggregator.py:854-856` (`_grad_aware_rate` reads `self.grad`), `:1669-1682`,`:1875-1910` (buffer + canonicalize), `simulate_fwdllm.md` §G 07-18l | SUSPECTED (code-derived; no A/B run yet against a frozen-order control) |
 
 ### 8.2 Resolution plan — by scope
 
@@ -235,12 +236,12 @@ Two independent levers. Each item is tagged **cross-baseline hygiene** (applied 
 
 | ID | Contribution | Why (finding) | Code — how | Sanity check to pass | Status |
 |---|---|---|---|---|---|
-| S1 | **Server-side optimizer with momentum / EMA of the global model** (a damping / restoring force) | F8: undamped direct SGD → random walk on the loss surface | `FedSgdAggregator.py:322-324` add a server momentum buffer or global-weight EMA | loss envelope becomes monotone; peak is *sustained*, not transient | TODO |
+| S1 | ~~Heavy-ball momentum on the raw per-commit grad~~ **REFUTED as-designed.** 4h N=100 A/B run: momentum=0.9 diverges to **NaN loss by data_id 73** (no-momentum leg: healthy, acc 0.35→0.86). Root: heavy-ball assumes correlated gradients across steps; fluxtune's `g=jvp·v` is a high-variance single-sample directional-derivative estimate (F7: variance floor 0.45 never denoises below threshold) — momentum's `buf=β·buf+g` recursion amplifies uncorrelated noise (~1/(1−β) persistence) instead of damping it, compounding hardest exactly at F5/F13's known position-locked collapse zone (data_id 4-7). PAUSED (2026-07-14) to prioritize real↔sim parity; next attempt should use variance-*normalized* step (Adam-style, `Δ=m/(√v+ε)`) or Polyak/EMA-of-iterate (smooths the trajectory without touching the update), not raw heavy-ball. | F8: undamped direct SGD → random walk on the loss surface | `FedSgdAggregator.py` `_server_update_step` (heavy-ball momentum, `hyperparameters.server_momentum`, default 0.0 = byte-identical); shared across all 3 baselines, enabled only in fluxtune's yaml | loss envelope becomes monotone; peak is *sustained*, not transient | **REVERTED** (flag stays default 0.0; momentum work paused, not resumed) |
 | S2 | **Variance-gate recalibration** — commit on the *plateau*, not on a noise dip; align threshold to the achievable floor | F6,F7: gate commits the noisiest updates | `var_threshold` + plateau policy (extends charter **Opt-2**) | mean it-at-commit rises; early-commit collapse (F6) gone | TODO (Opt-2 partial) |
 | S3 | **Aggregation-rate tempering** — cap rate ≤ 1; retune grad-aware to damp, not amplify | F9 + charter: R4 (full grad-aware) diverged *worst* | `fedbuff.py` beta upshift; grad_aware `align_floor`/`inverse_var` (retunes charter **Opt-3**) | R4 no longer the worst diverger; per-commit step magnitude bounded | TODO |
 
 **Order of attack — pick by IMPACT, not table order.** Re-rank each turn to whatever best fixes the problem:
-- **NEXT → S1** (server optimizer: descent, not random walk) — the root cause (EXPERIMENTS.md M2).
+- **PAUSED** (07-14): S1/S2/S3 all on hold — real↔sim parity (`simulate_fwdllm.md` §A) takes priority. When resumed, **NEXT → S1 retry** with a variance-normalized server step (Adam-style), not heavy-ball — see the REFUTED row above.
 - then **S2** (don't commit on noise dips), **S3** (rate cap).
 - **DEFERRED:** H2 (bin size — needs the M1 sweep), H3 (bin-order permutation). **PARKED:** H1.
 
@@ -250,6 +251,16 @@ Two independent levers. Each item is tagged **cross-baseline hygiene** (applied 
   stabilize forward-mode async FL are genuine contributions the sync baselines don't need.
 - **Not claimable (H1-H3):** shuffle / bin-size / bin-order are correctness fixes any FL should have; applied to
   all three baselines so E1 stays fair (P1). Reported as fixed, not as wins.
+- **Caveat on "sync baselines don't need it" (07-14, unverified, flag now available to test):** a quick check of
+  the banked `fwdllm_n10_smoke_sim` telemetry (sync/fedavg) shows the SAME exact acc=0.25/mcc=0.000 collapse
+  signature early in round 1 (`data_id` 6-14) that F4 documents for fluxtune — `_server_update_step`'s undamped
+  update (F8) is shared code, so this isn't surprising. It did NOT recur at the same position in round 2 in that
+  short run, unlike fluxtune's F5 position-lock, but that run only has 2 rounds to check — not enough to
+  distinguish "ordinary cold-start noise" from "the same random-walk instability, just less severe" (fedavg
+  pools a full `c=10` cohort every commit with no fedbuff rate-amplification, F9's mechanism, which plausibly
+  makes it structurally less exposed, not immune). `server_momentum` is flag-gated per-baseline specifically so
+  this can be tested on fwdllm/fwdllm_plus too if a longer run reproduces a persistent collapse — don't assume
+  S1 stays fluxtune-only until that's checked.
 
 ### 8.4 Design Q&A
 - **Bin vs. classical-FL round?** FedAvg updates from the *whole* local set (batch washed out pre-aggregation);

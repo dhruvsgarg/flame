@@ -55,18 +55,15 @@ class RandomSelector(AbstractSelector):
                 "is_async param isn't specified in config. Defaulting to sync version"
             )
             self.is_async = False
-        try:
-            self.k = kwargs["k"]
-        except KeyError:
-            raise KeyError("k is not specified in config")
 
         try:
             self.c = kwargs["c"]
         except KeyError:
             raise KeyError("c is not specified in config")
 
-        if self.k < 0:
-            self.k = 1
+        # `c` (concurrency) alone drives selection, matching other selectors --
+        # none have a `k` concept. A legacy `k` cap on cleanup caused a
+        # starve-to-livelock bug; a leftover `k` in config is now inert (unused).
 
         self.round = 0
 
@@ -172,12 +169,10 @@ class RandomSelector(AbstractSelector):
         if self.enforce_min_start(len(ends)):
             return {}
 
-        k = min(len(ends), self.k)
-        if k == 0:
+        if len(ends) == 0:
             logger.debug("ends is empty")
             return {}
 
-        logger.debug(f"len(ends), self.k: {len(ends)}, {self.k}")
         # trainers
         trainers_in_use_cnt = len(set(self.selected_ends))
         required_trainers = min(len(ends), self.c - trainers_in_use_cnt)
@@ -191,7 +186,6 @@ class RandomSelector(AbstractSelector):
 
         logger.info(f"trainer_unavail_list : {trainer_unavail_list}")
 
-        logger.debug(f"new k = {k}")
         if "round" in channel_props:
             round = channel_props["round"]
         else:
@@ -252,9 +246,21 @@ class RandomSelector(AbstractSelector):
                 )
                 return {}
 
-            selected_candidates = set(
-                self._pyrng.sample(sorted(avl_candidates), required_trainers)
+            logger.info(
+                f"[RNG_FINGERPRINT] before sample: {self.rng_fingerprint()} "
+                f"candidates={sorted(avl_candidates)} required_trainers={required_trainers}"
             )
+            # `sampled` is the deterministic draw; log it before set()
+            # conversion, since set/dict order is PYTHONHASHSEED-randomized
+            # per process and would look nondeterministic even though the
+            # actual selection is identical. Diff `sampled`, not the log line
+            # after set conversion, when auditing determinism.
+            sampled = self._pyrng.sample(sorted(avl_candidates), required_trainers)
+            logger.info(
+                f"[RNG_FINGERPRINT] after sample: {self.rng_fingerprint()} "
+                f"sampled(ordered)={sampled}"
+            )
+            selected_candidates = set(sampled)
             logger.info(f"new selected ends: {selected_candidates}")
 
             self.selected_ends = set(self.selected_ends).union(selected_candidates)
@@ -276,19 +282,17 @@ class RandomSelector(AbstractSelector):
                 "concurrency": self.c,
                 "requester": channel_props.get(KEY_CH_SELECT_REQUESTER),
             }
-            # fwdllm-family aggregators thread (model_version, data_id,
-            # iteration_id) through channel.ends(agg_version_state=...) ->
-            # select()'s kwargs (see fwdllm_aggregator.py). Attaching data_id/
-            # iteration_per_data_id here lets analyze_run.py's progress_key()
-            # place this event on the same fine-grained axis as trainer_round/
-            # agg_round/agg_eval, instead of collapsing onto fwdllm's
-            # coarse `round` (which can stay at 1 for an entire run). No-op
-            # (absent from extra) for callers that don't pass agg_version_state
-            # -- e.g. async_cifar10's fedavg baseline also uses this selector.
-            _avs = kwargs.get("agg_version_state")
-            if isinstance(_avs, (tuple, list)) and len(_avs) == 3:
-                _extra["data_id"] = _avs[1]
-                _extra["iteration_per_data_id"] = _avs[2]
+            # fwdllm threads version_key=(model_version, iteration_per_data_id)
+            # plus data_id (kept separate from version_key, see
+            # fwdllm_aggregator.py) so analyze_run.py can place this event on
+            # the fine-grained progress axis instead of fwdllm's coarse
+            # `round`. No-op for callers that don't pass these.
+            _avs = kwargs.get("agg_version_key")
+            if isinstance(_avs, (tuple, list)) and len(_avs) == 2:
+                _extra["iteration_per_data_id"] = _avs[1]
+            _did = kwargs.get("data_id")
+            if _did is not None:
+                _extra["data_id"] = _did
             self.emit_selection(
                 round,
                 task_to_perform,
@@ -332,7 +336,10 @@ class RandomSelector(AbstractSelector):
 
         selected_ends = self.selected_ends
 
-        num_ends_to_remove = min(len(self.ordered_updates_recv_ends), self.k)
+        # Drain all received ends, no k-cap (matches async_oort): a capped
+        # batch permanently orphans the excess each cycle, starving the pool
+        # until deadlock.
+        num_ends_to_remove = len(self.ordered_updates_recv_ends)
         logger.debug(f"num_ends_to_remove: {num_ends_to_remove}")
         if num_ends_to_remove != 0:
             ends_to_remove = self.ordered_updates_recv_ends[:num_ends_to_remove]

@@ -68,6 +68,7 @@ setup(
         ],
         "dev": [
             "pytest",
+            "pytest-xdist",
             "pre-commit",
             "black",
             "flake8",

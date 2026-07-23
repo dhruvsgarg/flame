@@ -2,13 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """Oort selector tests."""
 
+import json
 from datetime import timedelta
 
 import pytest
 
 from flame.selector.oort import OortSelector
 from flame.selector.async_oort import AsyncOortSelector
-from flame.selector.properties import PROP_CLIENT_TASK_TRAIN_DURATION
+from flame.selector.properties import (
+    PROP_CLIENT_TASK_TRAIN_DURATION,
+    PROP_STAT_UTILITY,
+)
 
 
 @pytest.fixture
@@ -75,6 +79,46 @@ class TestOortIdempotentWithinRound:
             ends, channel_props, trainer_unavail_list=[], task_to_perform="train"
         )
         assert set(r1.keys()) == set(r2.keys())
+
+
+class TestVersionKeySymmetry:
+    """oort mirrors async_oort's optional no-repeat-this-tuple filter, for
+    interface symmetry. Inert unless a caller passes both kwargs -- no
+    current caller does (sync's round-scoped `selected_ends` guard already
+    prevents a within-round re-pick)."""
+
+    def test_absent_kwargs_are_noop(self, oort, make_ends, channel_props):
+        ends = make_ends(count=5, prefix="t")
+        result = oort.select(
+            ends, channel_props, trainer_unavail_list=[], task_to_perform="train"
+        )
+        assert len(result) == oort.num_of_ends
+
+    def test_matching_version_key_excludes_candidate(self, oort, channel_props, make_ends):
+        ends = make_ends(count=1, prefix="t")
+        end_id = next(iter(ends))
+        result = oort.select(
+            ends,
+            channel_props,
+            trainer_unavail_list=[],
+            task_to_perform="train",
+            agg_version_key=(1, 0),
+            trainer_version_keys={end_id: (1, 0)},
+        )
+        assert result == {}
+
+    def test_mismatched_version_key_still_selects(self, oort, channel_props, make_ends):
+        ends = make_ends(count=1, prefix="t")
+        end_id = next(iter(ends))
+        result = oort.select(
+            ends,
+            channel_props,
+            trainer_unavail_list=[],
+            task_to_perform="train",
+            agg_version_key=(1, 0),
+            trainer_version_keys={end_id: (0, 0)},
+        )
+        assert end_id in result
 
 
 class TestTemporalUncertaintyFidelity:
@@ -188,6 +232,139 @@ class TestAsyncRoundPreferredDuration:
         async_oort.round_threshold = 100.0
         pref = async_oort.calculate_round_preferred_duration(ends)
         assert pref.total_seconds() == 99999
+
+
+class TestAsyncOortSystemUtilTelemetry:
+    """AsyncOortSelector never emitted round_preferred_duration_s/round_threshold/
+    sys_util_mean/pref_binds -- sync oort.py had it, async didn't, so a real
+    vs sim divergence in the Oort speed-penalty couldn't be directly observed,
+    only inferred. Guards the ported telemetry."""
+
+    def test_selection_emits_pref_and_system_util_fields(
+        self, tmp_path, async_oort, make_ends
+    ):
+        from flame import telemetry
+        from flame.channel import (
+            KEY_CH_SELECT_REQUESTER, KEY_CH_STATE, VAL_CH_STATE_SEND,
+        )
+
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            async_oort.round_threshold = 30  # low percentile -> forces binding
+            durations = [8, 10, 14, 20, 22, 26, 28, 30, 32, 36]
+            ends = make_ends([f"t{i}" for i in range(len(durations))])
+            for (eid, e), d in zip(ends.items(), durations):
+                e.set_property(
+                    PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=d)
+                )
+                # PROP_STAT_UTILITY None routes the end to unexplored_end_ids,
+                # and calculate_total_utility short-circuits before
+                # recomputing round_preferred_duration -- must be set for the
+                # scored (exploitation) path.
+                e.set_property(PROP_STAT_UTILITY, 1.0)
+
+            channel_props = {
+                "round": 5,
+                KEY_CH_STATE: VAL_CH_STATE_SEND,
+                KEY_CH_SELECT_REQUESTER: "agg1",
+            }
+            # model_version=5 (non-zero) so this takes the scored path
+            # (calculate_total_utility -> calculate_round_preferred_duration),
+            # not the model_version==0 cold-start random branch.
+            async_oort.select(
+                ends, channel_props, trainer_unavail_list=[],
+                task_to_perform="train", agg_version_key=(5, 0),
+            )
+
+            events = [
+                json.loads(l)
+                for l in (tmp_path / "aggregator.jsonl").read_text().splitlines()
+            ]
+            sels = [e for e in events if e["event"] == "selection"]
+            assert len(sels) == 1
+            s = sels[0]
+
+            # round_preferred_duration_s must match the sorted-percentile
+            # value TestAsyncRoundPreferredDuration proves the pure function
+            # computes -- confirms select() wires it into telemetry, not
+            # leaves it None.
+            expected_pref = async_oort.calculate_round_preferred_duration(
+                ends
+            ).total_seconds()
+            assert s["round_preferred_duration_s"] == expected_pref
+            assert s["round_threshold"] == 30
+
+            # pref is well below max duration, so at least one end should be
+            # penalized -- sys_util_mean/pref_binds catches a "penalty never
+            # binds" regression.
+            assert s["sys_util_mean"] is not None
+            assert s["pref_binds"] is True
+            assert 0.0 < s["frac_penalized"] <= 1.0
+        finally:
+            telemetry.shutdown()
+
+    def test_singleton_filtered_ends_still_uses_full_pool_for_pref(
+        self, tmp_path, async_oort, make_ends
+    ):
+        """Async dispatches one freed trainer per SEND call, so
+        calculate_round_preferred_duration used to see a population of one --
+        the percentile trivially returns that candidate's own duration, so it
+        can never exceed pref. Reference Oort computes the percentile from
+        ALL tracked clients, not just this round's feasible subset. Fix:
+        calculate_total_utility's duration population is now the full
+        `connected_ends`, not `filtered_ends`.
+
+        Here only one of ten registered ends is eligible (the rest unavail)
+        -- the slowest one (36s). Pre-fix this singleton would trivially set
+        its own pref, never binding. Post-fix, pref reflects the full
+        10-trainer spread, so the straggler gets penalized.
+        """
+        from flame import telemetry
+        from flame.channel import (
+            KEY_CH_SELECT_REQUESTER, KEY_CH_STATE, VAL_CH_STATE_SEND,
+        )
+
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            async_oort.round_threshold = 10.0  # the real default
+            durations = [8, 10, 14, 20, 22, 26, 28, 30, 32, 36]
+            ends = make_ends([f"t{i}" for i in range(len(durations))])
+            for (eid, e), d in zip(ends.items(), durations):
+                e.set_property(
+                    PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=d)
+                )
+                e.set_property(PROP_STAT_UTILITY, 1.0)
+
+            # Only the slowest trainer (t9, 36s) is eligible this round --
+            # mirrors async's one-at-a-time dispatch cadence.
+            unavail = [f"t{i}" for i in range(9)]
+
+            channel_props = {
+                "round": 5,
+                KEY_CH_STATE: VAL_CH_STATE_SEND,
+                KEY_CH_SELECT_REQUESTER: "agg1",
+            }
+            async_oort.select(
+                ends, channel_props, trainer_unavail_list=unavail,
+                task_to_perform="train", agg_version_key=(5, 0),
+            )
+
+            events = [
+                json.loads(l)
+                for l in (tmp_path / "aggregator.jsonl").read_text().splitlines()
+            ]
+            sels = [e for e in events if e["event"] == "selection"]
+            assert len(sels) == 1
+            s = sels[0]
+
+            # Pre-fix this would be 36.0 (the singleton's own duration,
+            # self-referentially always <= itself). Post-fix it's the 10th
+            # percentile of the FULL 10-trainer pool.
+            assert s["round_preferred_duration_s"] < 36.0
+            t9_util = (s.get("per_trainer") or {}).get("t9", {}).get("system_util")
+            assert t9_util is not None and t9_util < 1.0
+        finally:
+            telemetry.shutdown()
 
 
 class TestRewardNormalization:
@@ -334,20 +511,33 @@ class TestPacerFidelity:
         assert oort.round_threshold == 10.0
 
     def test_async_oort_pacer_faithful(self, async_oort):
-        # felix's separate AsyncOortSelector.pacer must use the same two-branch
-        # reference logic, keyed on self.round.
+        # felix/fluxtune's shared AsyncOortSelector.pacer must use the same
+        # two-branch reference logic, keyed on the passed current_round.
         async_oort.pacer_step, async_oort.pacer_delta = 2, 5.0
         async_oort.exploitation_util_history = [10.0, 10.0, 10.0, 11.0]
-        async_oort.round_threshold, async_oort.round = 10.0, 4
-        async_oort.pacer()                       # FLAT |Δ|=1 <= 2 -> relax
+        async_oort.round_threshold = 10.0
+        async_oort.pacer(current_round=4)        # FLAT |Δ|=1 <= 2 -> relax
         assert async_oort.round_threshold == 15.0
         async_oort.exploitation_util_history = [10.0, 10.0, 100.0, 100.0]
-        async_oort.round_threshold, async_oort.round = 30.0, 4
-        async_oort.pacer()                       # SHARP |Δ|=180 >= 100 -> tighten
+        async_oort.round_threshold = 30.0
+        async_oort.pacer(current_round=4)        # SHARP |Δ|=180 >= 100 -> tighten
         assert async_oort.round_threshold == 25.0
-        async_oort.round_threshold, async_oort.round = 30.0, 3  # off-cadence
-        async_oort.pacer()
+        async_oort.round_threshold = 30.0
+        async_oort.pacer(current_round=3)         # off-cadence
         assert async_oort.round_threshold == 30.0
+
+    def test_async_oort_pacer_once_per_round(self, async_oort):
+        # Once-per-round guard: a burst of same-model_version select() calls
+        # must fire the pacer's state transition at most once, not per call.
+        async_oort.pacer_step, async_oort.pacer_delta = 2, 5.0
+        async_oort.exploitation_util_history = [10.0, 10.0, 10.0, 11.0]
+        async_oort.round_threshold = 10.0
+        assert async_oort._last_pacer_round is None
+        for _ in range(5):  # simulate 5 select() calls for the SAME round
+            if 4 != async_oort._last_pacer_round:
+                async_oort.pacer(current_round=4)
+                async_oort._last_pacer_round = 4
+        assert async_oort.round_threshold == 15.0  # moved ONCE, not 5x (would be 35.0)
 
 
 class TestOortCleanup:
@@ -406,6 +596,69 @@ class TestChallenge13SendStateCleanup:
         assert async_oort.selected_ends["agg"] == {"t1"}
 
 
+class TestRecvStateNeverWritesNewSelections:
+    """`_handle_recv_state` must be read-only over `selected_ends`: it reports
+    who send-state already dispatched, minus anyone who has replied, and
+    never picks new candidates itself -- that's `_handle_send_state`'s job.
+    A prior version resampled fresh candidates here when `selected_ends` was
+    empty (a `None` vs `"none"` comparison bug), claiming ends into
+    `all_selected` before they were ever sent anything -> permanent deadlock.
+    The fallback is removed; empty `selected_ends` in -> empty result out.
+    """
+
+    def test_empty_selected_ends_returns_empty_never_touched(
+        self, async_oort, make_ends
+    ):
+        async_oort.requester = "agg"
+        async_oort.selected_ends = {"agg": set()}   # nothing currently in flight
+        async_oort.all_selected = {}
+        ends = make_ends(count=5, prefix="t")        # KEY_END_STATE never set -> None
+
+        result = async_oort._handle_recv_state(ends=ends, concurrency=5)
+
+        assert result == {}
+        assert async_oort.selected_ends["agg"] == set()
+        assert async_oort.all_selected == {}
+
+    def test_empty_selected_ends_returns_empty_even_with_real_state(
+        self, async_oort, make_ends
+    ):
+        from flame.end import KEY_END_STATE, VAL_END_STATE_HEARTBEAT_RECVD
+
+        async_oort.requester = "agg"
+        async_oort.selected_ends = {"agg": set()}
+        async_oort.all_selected = {}
+        ends = make_ends(count=3, prefix="t")
+        for e in ends.values():
+            e.set_property(KEY_END_STATE, VAL_END_STATE_HEARTBEAT_RECVD)
+
+        result = async_oort._handle_recv_state(ends=ends, concurrency=3)
+
+        # No resample fallback at all -> a real state doesn't matter either.
+        assert result == {}
+        assert async_oort.selected_ends["agg"] == set()
+        assert async_oort.all_selected == {}
+
+    def test_only_reports_already_selected_ends_minus_recvd(
+        self, async_oort, make_ends
+    ):
+        from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD
+
+        async_oort.requester = "agg"
+        async_oort.selected_ends = {"agg": {"t0", "t1"}}  # send-state already dispatched
+        async_oort.all_selected = {"t0": 0.0, "t1": 0.0}
+        ends = make_ends(["t0", "t1"])
+        ends["t0"].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)  # t0 replied
+
+        result = async_oort._handle_recv_state(ends=ends, concurrency=2)
+
+        assert set(result) == {"t1"}
+        assert async_oort.selected_ends["agg"] == {"t1"}
+        # all_selected untouched here -- cleared by the aggregator after
+        # processing t0's grad (_cleanup_recvd_ends), not by this function.
+        assert async_oort.all_selected == {"t0": 0.0, "t1": 0.0}
+
+
 class TestPendingCommitExcludedFromSelection:
     """async_oort must exclude the aggregator's VIRTUAL in-flight set
     (`_agg_pending_commit_ref`, bound live to the fwdllm aggregator's
@@ -428,7 +681,7 @@ class TestPendingCommitExcludedFromSelection:
         result = async_oort._handle_send_state(
             ends=ends, concurrency=5, channel_props={"round": 1},
             trainer_unavail_list=[], task_to_perform="train",
-            agg_version_state=(1, 0, 0), trainer_version_states={},
+            agg_version_key=(1, 0, 0), trainer_version_keys={},
             connected_ends=ends,
         )
 
@@ -448,7 +701,7 @@ class TestPendingCommitExcludedFromSelection:
         result = async_oort._handle_send_state(
             ends=ends, concurrency=4, channel_props={"round": 1},
             trainer_unavail_list=[], task_to_perform="train",
-            agg_version_state=(1, 0, 0), trainer_version_states={},
+            agg_version_key=(1, 0, 0), trainer_version_keys={},
             connected_ends=ends,
         )
         assert result == {}   # nobody eligible -> no re-dispatch-while-in-flight
@@ -464,7 +717,7 @@ class TestPendingCommitExcludedFromSelection:
         result = async_oort._handle_send_state(
             ends=ends, concurrency=5, channel_props={"round": 1},
             trainer_unavail_list=[], task_to_perform="train",
-            agg_version_state=(1, 0, 0), trainer_version_states={},
+            agg_version_key=(1, 0, 0), trainer_version_keys={},
             connected_ends=ends,
         )
         assert len(result) >= 1
