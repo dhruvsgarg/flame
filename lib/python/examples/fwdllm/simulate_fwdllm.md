@@ -95,17 +95,17 @@ fluxtune's 5 fails: `cohort_sequence`, `v1b_iters_moving_avg`, `v2_var_trajector
 | ALL | `drain_wall_budget` (`drain_tail_s`) | sim modeled drain tail overshoots real (sim 0.55-0.73 vs real 0.11-0.47s, budget 0.5-0.59) | Trim sim drain-tail model; 2h pair now available |
 | FW, FW+ | `agg_step_timing_breakdown` | `_aggregate_grads_sync`/`_distribute_weights_sync` are real-transport (sim rightly collapses); real outlier is `_compute_var` sim **6x** real (0.031 vs 0.005s) | Isolate `_compute_var` sim path |
 
-### fluxtune — real-only distribute settle sleep (ROOT-CAUSED, A/B enabled, PENDING VALIDATION)
+### fluxtune — async composition skew (EMERGENT; two per-cycle fixes INERT — §H)
 
-**Root found (§H).** The 4 fails (`cohort_sequence`, `v1b_iters_moving_avg`, `v2_var_trajectory`,
-`trainer_speed_identity.utility`) are ONE cascade off a **real-only `time.sleep(0.1)` settle pad per distribute**
-(~1.08s/cohort real distribute vs sim 0.34) that sim skips + never charges. Per-cohort constant → compresses real's
-fast/slow ratio, so sim over-weights fast trainers (D=8.33 49.5%→56.8%). Wired to `real_distribute_settle_s` knob;
-fluxtune yaml A/B at 0.0. **recv_fifo/drain_ready fix was INERT (recv was NOT the cause); kept as cleanup.** NOT a
-vclock under-charge (`leg` cancels; sim over-charges drain_tail/fedavg). **Next: operator A/B run with settle=0.0.**
+The 4 fails (`cohort_sequence`, `v1b_iters_moving_avg`, `v2_var_trajectory`, `trainer_speed_identity.utility`) are
+ONE cascade off the D=8.33 committed skew (real 49.5% / sim 56.8%). **Two A/B fixes INERT:** recv_fifo→drain_ready
+and distribute settle sleep→0 both removed real aggregator wall that OVERLAPS the cohort-fill, so neither moved the
+skew or cadence. Every per-cycle leg is small (post-fill 0.375s, re-dispatch floor 0.24s); the skew is emergent —
+sim commits strict sct-order, real physical-arrival, and small timing diffs compound over ~400 cohorts. **Next
+(fresh context): (1) force real cohort MEMBERSHIP to sct-order (extend `_canonicalize_cohort_commit_order`),
+(2) wire `sim_redispatch_gap_s` into fluxtune's sim path, or (3) widen the composition grading band. Details §H.**
 
-- **`cohort_sequence`/`utility` are SYMPTOMS:** downstream of the fast-skewed committed cohort mix; the grades are
-  correct. Closing the settle skew closes them.
+- **`cohort_sequence`/`utility` are SYMPTOMS:** downstream of the fast-skewed committed cohort mix; grades correct.
 
 **Flag-promotion decision (next step, operator call per [[flag-gate-ab-lifecycle]]).**
 `sim_model_agg_compute_time` is effectively default (ON all three baselines). `sim_sct_ordered_drain` +
@@ -313,9 +313,36 @@ Reading the fails into three buckets:
   `sync_collect_and_accumulate_grads`, `_process_aggregation_goal_met`, `_replay_buffered_cohort_contribs` are
   real-transport/sim-collapse that need adding to the real-only timing-exemption set.
 
-### THE OPEN GAP — fluxtune async throughput — ROOT-CAUSED (real-only distribute settle sleep)
-Root cause: a **real-only `time.sleep(0.1)` settle pad per distribute** that sim skips and never charges to the
-vclock. NOT recv_fifo (that fix is inert — below), NOT a vclock under-charge.
+### THE OPEN GAP — fluxtune async composition skew — TWO PER-CYCLE FIXES INERT; EMERGENT, NOT A SINGLE LEG
+State after two A/B runs: the D=8.33 committed skew (real **49.5%** / sim **56.8%**) and per-cohort cadence (real
+~3.98s / sim ~3.70s) are **UNMOVED** by both attempted fixes. The residual is a compounding/emergent effect, NOT
+any single chargeable per-cycle leg — every aggregator serial leg measured is small and OVERLAPS the cohort-fill.
+
+**Two fixes tried, both INERT (negative results):**
+- **recv_fifo → drain_ready** (`real_drain_ready_ingest`): dropped 181k streamer-skip log lines but D-skew and
+  cadence unchanged. The streamer stall overlapped the fill.
+- **real distribute settle sleep** (`real_distribute_settle_s: 0.0`): real `_distribute_weights_async` 0.143→0.041s
+  (matches sim), but per-cohort wall 4.015→3.979 (Δ0.04) and D-skew IDENTICAL (49.5/56.8). The 1s/cohort of sleep
+  overlapped the fill too. (Real ran fine at settle=0 → the sleep is droppable, just not the parity cause.)
+
+**Why they're inert:** the per-cohort cadence is bound by the **cohort-fill** (time for 10 grads to physically
+arrive = trainer completion + re-dispatch cadence), which sim models faithfully (real arrival spread 3.55s ≈ sim
+sct-spread 3.40s). Aggregator serial legs (recv, distribute, drain_tail) run *during* the fill, so removing them
+frees aggregator time without shortening the critical path. Measured legs are ALL small: post-fill stall 0.375s,
+re-dispatch floor **0.24s**, distribute now 0.04s. Yet fast trainers do **124 rounds vs slow 17** and sim
+over-cycles fast trainers → the skew. Small per-cycle timing diffs (re-dispatch, arrival-order jitter) **compound**
+over ~400 cohorts because sim commits in strict sct-order and real in physical-arrival-order — chaotic divergence.
+
+**Next — needs a DIFFERENT approach than per-cycle leg-charging (fresh context):**
+1. **Force real's commit ORDER/membership to match sim's modeled sct-order** (§F-12/F-20 determinism path). Real
+   commits cohort membership by physical arrival; sim by sct. `_canonicalize_cohort_commit_order` already matches
+   INTRA-cohort order — extend it to cohort MEMBERSHIP (select the 10 by dispatch_ts+D, not arrival) so the
+   jitter/compounding seed is removed. Highest-leverage untried lever.
+2. **`sim_redispatch_gap_s` is NOT applied in fluxtune's sim path** (felix/asyncfl-only; `grep` finds no ref in
+   `fwdllm_aggregator.py`). Real's re-dispatch floor is ~0.24s; wiring the cooldown into `_sim_recv_min_grad`
+   would space sim's fast re-cycling. Small (0.24s) so likely partial — pair with (1).
+3. **Or accept ~8% as inherent async chaos** and widen the composition/throughput grading band (the skew IS
+   distributionally bounded and directionally stable). Pragmatic fallback if (1)+(2) don't converge.
 
 **Verification of the operator's hypothesis ("agg sends at T, update commits at T+D"), pair `_222013`/`_222057`:**
 - **SIM commits at ≈ T+D** — `commit_gap_s = vclock−sct` median 0.0, not speed-correlated. Clean.
@@ -343,17 +370,11 @@ in the per-cohort delta (grow-leg hypothesis REFUTED).
 the existing `real_distribute_settle_s` knob (code-default 0.1 = byte-identical). `fluxtune_n10_smoke.yaml` sets it
 to **0.0** for the A/B.
 
-### VALIDATE NEXT (operator run — start here)
-1. **A/B the settle: run the fluxtune pair with `real_distribute_settle_s: 0.0`** (already in the yaml), then
-   `run_parity.py --baselines fluxtune`. Expect real distribute/call → ~0.034s (matching sim), per-cohort wall →
-   ~sim, D=8.33 skew close, and `cohort_sequence`/`v1b`/`v2`/`trainer_speed_identity.utility` flip green. If it
-   closes cleanly with no selection-correctness regression, **drop the sleep** (flip code-default to 0.0) on BOTH
-   paths — check whether it also tightens fwdllm's 1.7% / fwdllm_plus's 3.9% residuals.
-2. **If the settle guards a real MQTT selection race** (selection reads channel state before a just-distributed
-   msg lands), removing it could desync real selection — verify selection determinism holds at 0.0 before dropping.
-3. **PARKED checker fix (below):** filter `cohort_sequence.count` to the matched virtual budget → flips FW/FW+
-   green; independent of the fluxtune fix.
-4. **Re-check the FW+ marginal fails** (throughput mw 5.6%, v2 mw 2.55%) on a >3600s pair; refresh §A when run.
+### OTHER OPEN (independent of the fluxtune skew above)
+- **PARKED checker fix (below):** filter `cohort_sequence.count` to the matched virtual budget → flips FW/FW+ green.
+- **Re-check the FW+ marginal fails** (throughput mw 5.6%, v2 mw 2.55%) on a >3600s pair; refresh §A when run.
+- **Settle sleep:** real ran clean at `real_distribute_settle_s: 0.0` (droppable dead weight), but it's NOT the
+  parity cause — don't expect it to move fluxtune. Verify selection determinism before dropping code-wide.
 
 ### PARKED — mid-flight checker work (`async_cifar10/scripts/parity/checks.py`), DO NOT SHIP AS-IS
 Uncommitted edits from this session, correct in spirit but **one is broken**:
