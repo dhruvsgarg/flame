@@ -29,6 +29,9 @@ experiments:
       start_id: 1
       dataset:
         name: agnews
+        # Cosmetic-only for path-style (naming/snapshot), but kept in sync
+        # with the actual partition_method below (EXPTS_CHARTER A5: alpha=1).
+        dirichlet_alpha: 1
         # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
         # file exists (or ever will) for agnews; skips that lookup entirely.
         path_style: true
@@ -48,9 +51,8 @@ experiments:
           seed: 1234
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
-          # Uniform/IID partition for smoke tests -- avoids the niid_label
-          # baseline default's data-skew confound while validating mechanics.
-          partition_method: uniform
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          partition_method: niid_label_clients=100_alpha=1
           sim_straggler_spread_s: 0.0  # per-trainer registry delays supply the completion spread instead
           client_notify:
             trace: syn_0
@@ -75,7 +77,7 @@ experiments:
           sim_sct_ordered_drain: true      # drain buffered grads in sct order (#13)
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
-          partition_method: uniform
+          partition_method: niid_label_clients=100_alpha=1
         selector:
           kwargs:
             c: 10
