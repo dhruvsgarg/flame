@@ -281,7 +281,8 @@ Ordered so each step is independently testable before the next depends on it.
       reducer), **N6** (E5 sync session should use one-round-span) — these block `Ready?` regardless of
       telemetry status, so fixing them now avoids re-deriving numbers later. **DONE** — see "Handoff
       status" below.
-- [ ] **4.** Add `main_v2` run-set to `experiments.yaml` (4-anchor E1–E5 + attribution reuse), sim-mode.
+- [x] **4.** Add `main_v2` run-set to `experiments.yaml` (4-anchor E1–E5 + attribution reuse), sim-mode.
+      **DONE** — see "Handoff status" below.
 - [ ] **5.** Write the new Layer-0 tex-map + §2b instrumentation ledger into `EXPERIMENTS.md`, superseding
       its old "Experiment 1–5" framing — keep the metric/reducer content (§4, §5 of `EXPERIMENTS.md`
       today), re-anchor to tex labels, keep row numbers 1–13 aligned between the two docs.
@@ -314,14 +315,15 @@ turn into small feature work, not just config authoring.
 All open questions from the previous two rounds are resolved (baseline rebuild scope, registry location,
 sim mode, alpha conflict, M1/M2 naming + deferred-placeholder policy, no-duplication rule, and now the
 instrumentation-readiness gate: §2b ledger + §4 gate 0 + per-baseline validation checklist).
-Implementation started (checklist step 1) and **checklist steps 1–3 are now complete** (rename fully
-propagated + validated; instrumentation pre-check done, N3/N5/N6 reducer gaps fixed) — see "Handoff
-status" below for exact state. Do not re-derive the round/iteration async design from scratch; it's
-settled (see below). Next up: checklist step 4 (add `main_v2` run-set to `experiments.yaml`).
+Implementation started (checklist step 1) and **checklist steps 1–4 are now complete** (rename fully
+propagated + validated; instrumentation pre-check done, N3/N5/N6 reducer gaps fixed; `main_v2` run-set
++ tex-anchored analyses added) — see "Handoff status" below for exact state. Do not re-derive the
+round/iteration async design from scratch; it's settled (see below). Next up: checklist step 5 (write
+the Layer-0 tex-map + §2b ledger into `EXPERIMENTS.md`).
 
 ---
 
-## Handoff status (checklist step 3 complete, resume at step 4)
+## Handoff status (checklist step 4 complete, resume at step 5)
 
 **Session context you need before touching anything:** this implementation surfaced a real gap not
 anticipated when this doc was signed off — the `reselect_each_iteration` flag (round vs `+IT` baselines)
@@ -445,6 +447,35 @@ already-landed `fluxtune`/`felix` numbers) **and implemented and tested** — th
     (381 passed, unchanged) and re-imported `plot_run.py`/`make_paper_figs.py` to confirm the new
     `RunResult` fields don't break their (untouched) call sites.
 
+### Done and verified this session (checklist step 4)
+
+16. **`main_v2` run-set added** (`experiments.yaml`) — same shared condition axes as `main` (N=100, K=10,
+    C={sync:10,async:30}, α=1, syn_0, delays on/factor=2, target 0.84/window 20), `baselines: [fwdllm,
+    fedbuff_round, felix_round, fluxtune, fwdllm_it_oracular]` (the 4-anchor set + `fwdllm_it_oracular`
+    folded in for A0 — resolved the design doc's "reuses the same run dirs, no new launch" as "gets its
+    own sim-mode launch as part of main_v2's normal batch, A0 just reuses those dirs like E2-E5 already
+    reuse E1's" — the alternative reading (reuse the OLD `main` real-mode fwdllm_it_oracular run) would
+    mode-mismatch A0's two sides (sim fluxtune vs real fwdllm_it_oracular), which the pre-flight gate
+    exists to catch, not reintroduce). `main`'s own run-set/analyses are untouched (decision #3).
+17. **Tex-anchored analyses added**: `e1_time_to_accuracy` .. `e5_session_length` + `a0_attribution`
+    (BRIDGE_DESIGN.md §2's own Layer-0 naming — `sec:eval:tta`/`util`/`compute`/`comm`/`sessions`/
+    `attribution`), all `run_set: main_v2`. `e2` also reports the new N5 metrics
+    (`trainer_net_wait_fraction`, `trainer_idle_fraction`) alongside the existing `trainer_busy_fraction`.
+    `a0_attribution` is scoped to `baselines: [fluxtune, fwdllm_it_oracular]` (a 2-baseline subset of
+    main_v2, not the full 4-anchor set) — matches §2's "this is exactly the old fwdllm_plus comparison,
+    renamed." The old `1_time_to_target`..`5_client_sessions` ids are untouched, still pointing at `main`.
+18. **Validated end-to-end**, not just yaml-parsed: `run_sequential.sh --run-set main_v2 --mode sim --only
+    fwdllm,fedbuff_round,felix_round,fluxtune,fwdllm_it_oracular --dry-run --show-all` — condition
+    resolves correctly through the real launcher (not just a yaml read), agg_goal fans to 10 for every
+    baseline, selector/optimizer/mode columns correct per baseline, delay_factor=2 applies uniformly
+    (main_v2's condition overrides each baseline's individual default, same as `main` already does),
+    pre-flight gate passes clean (11 ✓, 1 expected ⚠ for the unverifiable partition-group-exists check).
+19. **Tests**: new `lib/python/examples/fwdllm/test_experiments_yaml.py` (6 tests — no-local-baselines-
+    stanza regression, main_v2's 5-baseline list, condition-parity with `main`'s shared axes, e1-e5's
+    `run_set` pointer, a0's 2-baseline scoping, old `main` analyses untouched). Full `-k fwdllm` suite
+    re-run, unaffected (experiments.yaml isn't imported by any test module — only read at runtime by
+    `run_sequential.sh`/`compare_baselines.py`).
+
 ### Deliberately deferred (separate, later checklist step — NOT step 2 or 3)
 
 BASELINES.md item #2's **cosmetic-comment sweep** (mentions of `fwdllm_plus` in code comments across
@@ -460,23 +491,22 @@ retroactively (matches decision #3's "already-landed numbers kept as-is" policy)
 
 ### Git state (uncommitted, nothing pushed)
 
-Checklist steps 1–2 were committed earlier this session (`7062d35e`, `e4d1ff3d`). Checklist step 3's
-work is done but **not yet committed**. `git status --short`:
+Checklist steps 1–3 were committed earlier this session (`7062d35e`, `e4d1ff3d`, `bf0b1477`). Checklist
+step 4's work is done but **not yet committed**. `git status --short`:
 ```
- M lib/python/examples/fwdllm/expt_scripts/compare_baselines.py
- M lib/python/examples/fwdllm/expt_scripts/plotlib/reducers.py
+ M lib/python/examples/fwdllm/experiments.yaml
  M lib/python/examples/paper_expts_fluxtune/BRIDGE_DESIGN.md
-?? lib/python/examples/fwdllm/expt_scripts/plotlib/test_reducers.py
-?? lib/python/examples/fwdllm/expt_scripts/test_compare_baselines.py
+?? lib/python/examples/fwdllm/test_experiments_yaml.py
 ```
-Per CLAUDE.md, ask the user before committing/pushing — checklist step 3 (code-only, no yaml/config
-changes, 16 new tests + full `-k fwdllm` suite green) is a natural commit boundary before starting step 4
-(a config change: adding the `main_v2` run-set to `experiments.yaml`).
+Per CLAUDE.md, ask the user before committing/pushing — checklist step 4 is a natural commit boundary
+before starting step 5 (an `EXPERIMENTS.md` rewrite, a different file/kind of change).
 
 ### Next actions, in order
 
-1. Ask the user whether to commit checklist step 3 now.
-2. Checklist step 4: add the `main_v2` run-set to `experiments.yaml` (4-anchor E1–E5 + attribution reuse,
-   sim-mode only, per §3's spec).
-3. Checklist step 5: write the new Layer-0 tex-map + §2b instrumentation ledger into `EXPERIMENTS.md`,
-   superseding its old "Experiment 1–5" framing.
+1. Ask the user whether to commit checklist step 4 now.
+2. Checklist step 5: write the new Layer-0 tex-map + §2b instrumentation ledger into `EXPERIMENTS.md`,
+   superseding its old "Experiment 1–5" framing — keep the metric/reducer content (§4, §5 of
+   `EXPERIMENTS.md` today), re-anchor to tex labels, keep row numbers 1–13 aligned between the two docs.
+3. Checklist step 6: smoke-test each new baseline (`fedbuff_round`, `felix_round`, `+IT`/`+O` rows) at
+   N=10 sim — confirm `run_parity.py` doesn't need new rungs, and walk the §2b per-baseline checklist
+   (flip WS3-a/WS3-b from `smoke-pending` to `validated` per baseline by inspecting real telemetry).
