@@ -24,7 +24,7 @@ defaults:
   # stall guard: terminate EARLY (before 48h) if the run is clearly not learning —
   # no PROGRESS within stall_window_s on the armed signal (stall_on).
   # -> verdict STALLED (distinct from DID_NOT_CONVERGE). 0 window disables it.
-  stall_window_s: 7200         # 2h with no progress ⇒ stalled
+  stall_window_s: 3600         # 1h with no progress ⇒ stalled
   stall_min_delta: 0.01        # acc: 1% ABSOLUTE test-accuracy gain counts as progress
   stall_on: either             # acc | loss | either — 'either' keeps a run alive while EITHER
                                # accuracy OR test-loss is still improving (a run can plateau in
