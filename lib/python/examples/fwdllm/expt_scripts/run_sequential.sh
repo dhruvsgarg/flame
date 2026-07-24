@@ -377,19 +377,22 @@ delays_on = (DELAYS == "on")
 # fluxtune (C1 on) -- and `floor` from *observed compute under that baseline's
 # own concurrency* -- fwdllm_it_unaware is sync C=10, same regime fwdllm was
 # profiled at. Both axes match fwdllm exactly, so its number transfers cleanly.
-# The 5 async net-new baselines (fedbuff_round/it_*, felix_round/it) deliberately
-# have NO entry here yet -- resolve_delay_settings() falls back to the OFF/
-# base-code default for an unregistered baseline. Unlike fwdllm_it_unaware,
-# borrowing either fwdllm's or fluxtune's floor for them WOULD be a guess: their
-# forward-pass-unit count matches fwdllm (C1 off) but their concurrency (C=30
-# async) matches fluxtune, not fwdllm -- and floor is contention-derived, so
-# neither existing profile transfers. Needs its own smoke-profiled floor
-# (BRIDGE_DESIGN.md §2b smoke-test step), not a borrowed number.
+# The 5 async net-new baselines (fedbuff_round/it_*, felix_round/it) borrow
+# fwdllm's number (operator decision, 07-24): C1 (JVP) is off for all of them,
+# same as fwdllm, so per-update compute matches fwdllm, not fluxtune -- despite
+# their C=30 async concurrency matching fluxtune's regime, not fwdllm's C=10
+# sync one. No real-mode yaml exists for these to profile floor against
+# independently (sim-only per BRIDGE_DESIGN.md decision #3), so this is the
+# operator's considered choice, not a placeholder.
 BASELINE_DELAY_DEFAULTS = {
     "fluxtune":           {"delays": True, "factor": 0.48, "floor": 4.0},
     "fwdllm":             {"delays": True, "factor": 1.63, "floor": 7.0},
     "fwdllm_it_oracular": {"delays": True, "factor": 1.63, "floor": 7.0},
     "fwdllm_it_unaware":  {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fedbuff_round":      {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fedbuff_it_unaware": {"delays": True, "factor": 1.63, "floor": 7.0},
+    "felix_round":        {"delays": True, "factor": 1.63, "floor": 7.0},
+    "felix_it":           {"delays": True, "factor": 1.63, "floor": 7.0},
 }
 
 
