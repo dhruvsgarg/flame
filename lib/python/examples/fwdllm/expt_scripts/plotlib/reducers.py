@@ -66,10 +66,24 @@ class RunResult:
     up_sizes: list = field(default_factory=list)
     comm_by_kind: dict = field(default_factory=dict)
     have_comm: bool = False
-    # E5 — sessions
+    # E5 — sessions (async: dispatch->commit per contribution, validated).
     session_durs: list = field(default_factory=list)
+    # E5 — sync "one round span" (BRIDGE_DESIGN.md N6): per-data_id engagement
+    # duration (first agg_round cycle's ts -> commit ts for that data_id), the
+    # sync-reselect-cadence analog of session_durs. Populated for BOTH sync and
+    # async runs (harmless for async — compare_baselines.py's is_async switch
+    # decides which list a baseline actually reports).
+    round_span_durs: list = field(default_factory=list)
+    # E2 — per-trainer fraction of its span spent waiting on mqtt_fetch_s (N5):
+    # emitted but previously unused, so idle was only ever 1-busy_frac (one
+    # undifferentiated bucket). Same denominator as busy_frac (ts_hi-ts_lo).
+    net_wait_frac: list = field(default_factory=list)
     # E1 (sim) — (ts, vclock_now) from agg_round, for vclock-at-convergence
     vclock_track: list = field(default_factory=list)
+    # E1 (N3) — converge_watch.py's own verdict for this run, matched via its
+    # agg_telemetry field (converge.json lives in expt_scripts/smoke_logs/,
+    # not co-located with run_dir). None if no --target-acc watcher ran.
+    converge_json: dict | None = None
     # productive-learning cutoff (see load_run): telemetry beyond `cutoff_ts` is
     # IGNORED so a non-productive stalled tail can't skew the accumulated metrics.
     cutoff_ts: float | None = None      # None = no cutoff applied (full telemetry)
@@ -174,6 +188,10 @@ def _read_aggregator(path: str) -> dict:
                 "barrier": e.get("barrier_wait_s") or 0.0,
                 "drain": e.get("drain_tail_s") or 0.0,
                 "wall": e.get("wall_elapsed_s"),
+                # N6: data_id + is_async let the round-span reducer group
+                # consecutive same-data_id cycles into one sync "session".
+                "data_id": e.get("data_id"),
+                "is_async": e.get("is_async"),
             })
             if e.get("vclock_now") is not None:
                 vclock.append((ts, float(e["vclock_now"])))
@@ -241,12 +259,64 @@ def _compute_cutoff(evals, grace_s, loss_rel, mode="peak_acc"):
     return peak_ts + grace_s, peak_ts
 
 
+def _compute_round_spans(agg_rounds):
+    """N6: per-data_id engagement span (contiguous run of same-data_id agg_round
+    cycles) — the SYNC "one round span" session definition, distinct from the
+    async dispatch_to_commit one (see RunResult.round_span_durs). Only computed
+    over is_async=False cycles (the concept doesn't apply to async's own
+    per-contribution reselect cadence, already covered by session_durs)."""
+    spans = []
+    run_ts_lo = run_ts_hi = run_data_id = None
+    for r in agg_rounds:
+        if r.get("is_async"):
+            continue
+        ts, did = r["ts"], r.get("data_id")
+        if ts is None:
+            continue
+        if run_data_id is None or did != run_data_id:
+            if run_ts_lo is not None:
+                spans.append(run_ts_hi - run_ts_lo)
+            run_data_id, run_ts_lo, run_ts_hi = did, ts, ts
+        else:
+            run_ts_hi = ts
+    if run_ts_lo is not None:
+        spans.append(run_ts_hi - run_ts_lo)
+    return spans
+
+
+def _find_converge_json(run_dir: str, smoke_logs_dir: str | None = None) -> dict | None:
+    """Locate this run's converge.json (written by converge_watch.py to
+    expt_scripts/smoke_logs/<ts>/converge_<label>.json — NOT co-located with
+    run_dir) by matching its `agg_telemetry` field against this run's own
+    aggregator file, the one value converge.json emits that names the run
+    unambiguously. None if no --target-acc watcher ran for this run (the
+    common case — most launches are governed by --max-runtime-s/--max-data-id).
+    `smoke_logs_dir` override is for tests; defaults to the real expt_scripts/
+    smoke_logs next to this file."""
+    agg_files = glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl"))
+    if not agg_files:
+        return None
+    agg_real = os.path.realpath(agg_files[0])
+    smoke_logs = smoke_logs_dir or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "smoke_logs")
+    for cj_path in glob.glob(os.path.join(smoke_logs, "*", "converge_*.json")):
+        try:
+            with open(cj_path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        at = payload.get("agg_telemetry")
+        if at and os.path.realpath(at) == agg_real:
+            return payload
+    return None
+
+
 def _read_trainers(tdir: str, cutoff: float, rr: RunResult):
     """Per-trainer aggregates, counting only trainer telemetry at ts <= cutoff."""
     for f in glob.glob(os.path.join(tdir, "trainer_*.jsonl")):
         rr.n_trainers += 1
         rounds_seen, bins_seen, n_iters = set(), set(), 0
-        gpu = 0.0
+        gpu = mqtt_wait = 0.0
         ts_lo = ts_hi = None
         fp_max = pt_max = 0
         saw_fp = False
@@ -257,6 +327,7 @@ def _read_trainers(tdir: str, cutoff: float, rr: RunResult):
                 continue                                   # past the cutoff — ignore
             if ev == "trainer_round":
                 gpu += e.get("gpu_compute_s") or 0.0
+                mqtt_wait += e.get("mqtt_fetch_s") or 0.0
                 n_iters += 1
                 if e.get("round") is not None:
                     rounds_seen.add(e["round"])
@@ -287,7 +358,9 @@ def _read_trainers(tdir: str, cutoff: float, rr: RunResult):
             rr.part_bins.append(len(bins_seen))
             rr.part_iters.append(n_iters)
         if ts_lo is not None and ts_hi is not None and ts_hi > ts_lo:
-            rr.busy_frac.append(min(1.0, gpu / (ts_hi - ts_lo)))
+            span = ts_hi - ts_lo
+            rr.busy_frac.append(min(1.0, gpu / span))
+            rr.net_wait_frac.append(min(1.0, mqtt_wait / span))
 
 
 def load_run(run_dir: str, key: str | None = None,
@@ -325,6 +398,8 @@ def load_run(run_dir: str, key: str | None = None,
     elif rr.evals and rr.t0 is not None:
         rr.agg_wall_s = max(0.0, rr.evals[-1]["ts"] - rr.t0)
     rr.vclock_track = [(t, v) for (t, v) in raw["vclock"] if within(t)]
+    rr.round_span_durs = _compute_round_spans(used_rounds)
+    rr.converge_json = _find_converge_json(run_dir)
     for (t, sz, kind) in raw["comm_down"]:
         if within(t):
             rr.down_sizes.append(sz)
