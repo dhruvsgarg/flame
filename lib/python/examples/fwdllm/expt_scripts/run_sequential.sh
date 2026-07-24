@@ -95,6 +95,13 @@ VAR_STOPPING_POLICY=""   # Opt-2: off|fixed_cap|plateau (empty => baselines.yaml
 AGG_RATE_TYPE=""         # Opt-3: grad_aware|new (empty => baselines.yaml, fluxtune=grad_aware; new=FeLiX)
 TARGET_ACC=""          # convergence stop: terminate when last --converge-window bins all >= this acc
 CONVERGE_WINDOW=""     # W-bin window for the convergence stop (default 20 when --target-acc set)
+SIM_WALL_CEILING_S=""  # sim-mode REAL-wall-clock outer safety (hyperparameters.sim_wall_ceiling_s).
+                        # unset => code default = max_runtime_s * 20 (fwdllm_aggregator.py
+                        # SIM_WALL_CEILING_FACTOR) -- with max_runtime_s in VIRTUAL/vclock seconds
+                        # (sim mode), that default is ~20x too loose to bound REAL run duration
+                        # (e.g. 48h vclock budget -> 40-DAY real-wall failsafe). Set this explicitly
+                        # whenever the vclock budget alone doesn't bound how long the run can
+                        # occupy GPUs in real time (e.g. an overnight launch).
 STALL_WINDOW_S=""      # stall guard: terminate EARLY if no progress within this many wall s (--stall-window-s/-h)
 STALL_MIN_DELTA=""     # accuracy gain that counts as progress (default 0.01 = 1%)
 STALL_ON=""            # signal that resets the idle clock: acc|loss|either (default either)
@@ -122,6 +129,9 @@ usage() {
   echo "          (BASELINE_DELAY_DEFAULTS in this script); pass explicitly only to override." >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
+  echo "          [--sim-wall-ceiling-s S | --sim-wall-ceiling-h H]  REAL-wall-clock outer safety" >&2
+  echo "          (sim mode only; unset => max_runtime_s(vclock-s) * 20 -- far too loose to bound" >&2
+  echo "          REAL duration, e.g. 48h vclock => 40-day real failsafe. Set for an unattended run." >&2
   echo "          [--run-set NAME] [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
   echo "          [--dry-run] [--yes] [--force] [--show-all] [--clean]" >&2
   echo "    --clean  auto-kill stray FL workers from a prior/crashed run before each" >&2
@@ -155,6 +165,10 @@ while [[ $# -gt 0 ]]; do
                             AGG_RATE_TYPE="$2"; shift 2 ;;
     --target-acc)           TARGET_ACC="$2"; shift 2 ;;
     --converge-window)      CONVERGE_WINDOW="$2"; shift 2 ;;
+    --sim-wall-ceiling-s)   SIM_WALL_CEILING_S="$2"; shift 2 ;;
+    --sim-wall-ceiling-h)   # hours alias, mirrors --stall-window-h
+      case "$2" in ''|*[!0-9.]*|*.*.*) echo "ERROR: --sim-wall-ceiling-h needs a number of hours (got '$2')" >&2; exit 2 ;; esac
+      SIM_WALL_CEILING_S="$(awk "BEGIN{printf \"%d\", ($2)*3600}")"; shift 2 ;;
     --stall-window-s)       STALL_WINDOW_S="$2"; shift 2 ;;
     --stall-window-h)       # ergonomic hours alias -> seconds (e.g. --stall-window-h 6 => 21600)
       case "$2" in ''|*[!0-9.]*|*.*.*) echo "ERROR: --stall-window-h needs a number of hours (got '$2')" >&2; exit 2 ;; esac
@@ -312,6 +326,7 @@ VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELA
 DELAY_FLOOR="$DELAY_FLOOR" \
 VAR_STOPPING_POLICY="$VAR_STOPPING_POLICY" AGG_RATE_TYPE="$AGG_RATE_TYPE" \
 TARGET_ACC="$TARGET_ACC" CONVERGE_WINDOW="$CONVERGE_WINDOW" \
+SIM_WALL_CEILING_S="$SIM_WALL_CEILING_S" \
 STALL_WINDOW_S="$STALL_WINDOW_S" STALL_MIN_DELTA="$STALL_MIN_DELTA" \
 STALL_ON="$STALL_ON" LOSS_MIN_REL_DELTA="$LOSS_MIN_REL_DELTA" \
 MODE_SET="$MODE_SET" DELAYS_SET="$DELAYS_SET" MAX_RUNTIME_S_SET="$MAX_RUNTIME_S_SET" MAX_DATA_ID_SET="$MAX_DATA_ID_SET" \
@@ -338,6 +353,7 @@ DELAY_FACTOR = env("DELAY_FACTOR") or ""
 DELAY_FLOOR = env("DELAY_FLOOR") or ""
 STALL_ON = env("STALL_ON") or ""; LOSS_MIN_REL_DELTA = env("LOSS_MIN_REL_DELTA") or ""
 TARGET_ACC = env("TARGET_ACC") or ""; CONVERGE_WINDOW = env("CONVERGE_WINDOW") or ""
+SIM_WALL_CEILING_S = env("SIM_WALL_CEILING_S") or ""
 STALL_WINDOW_S = env("STALL_WINDOW_S") or ""; STALL_MIN_DELTA = env("STALL_MIN_DELTA") or ""
 # "was it passed on the command line?" (override -> green) for the defaulted flags
 MODE_SET = env("MODE_SET") == "1"; DELAYS_SET = env("DELAYS_SET") == "1"
@@ -434,6 +450,11 @@ def patch(exp, run_key, variant, trace):
     h = exp["aggregator"]["config_overrides"]["hyperparameters"]
     h["max_runtime_s"] = MAX_RUNTIME_S
     h["max_data_id_progress"] = MAX_DATA_ID
+    # sim_wall_ceiling_s: REAL-wall-clock outer safety, sim mode only (max_runtime_s
+    # is VIRTUAL/vclock seconds there -- see the flag's own help text). Only set when
+    # the operator passes it; unset keeps the code default (max_runtime_s * 20).
+    if SIM_WALL_CEILING_S and variant == "sim":
+        h["sim_wall_ceiling_s"] = float(SIM_WALL_CEILING_S)
     # enable_training_delays: SAME on both sides of a pair (K-D8) -- resolve_delay_settings
     # is a pure function of run_key, so real/sim calls for one baseline always agree.
     _bl_delays_on, _bl_delay_factor, _bl_delay_floor = resolve_delay_settings(run_key)
@@ -620,6 +641,7 @@ _cond = {
     "stall_on": STALL_ON or "either", "loss_min_rel_delta": LOSS_MIN_REL_DELTA or "0.01",
     "converge_window": (CONVERGE_WINDOW or "20") if TARGET_ACC else "none",
     "max_runtime_s": MAX_RUNTIME_S, "max_data_id": MAX_DATA_ID,
+    "sim_wall_ceiling_s": SIM_WALL_CEILING_S or "default",
 }
 _cond_fp = hashlib.sha256(json.dumps(_cond, sort_keys=True).encode()).hexdigest()[:8]
 
@@ -663,7 +685,9 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
     mode_row,
     {"label": "baselines", "value": " ".join(rk for rk, *_ in runs)},
     # The two similarly-named-but-DIFFERENT knobs, disambiguated + on their own rows:
-    scalar_row("max_runtime_s", MAX_RUNTIME_S, MAX_RUNTIME_S_SET, note="wall/vclock cap (--max-runtime-s)"),
+    scalar_row("max_runtime_s", MAX_RUNTIME_S, MAX_RUNTIME_S_SET,
+               note=("--max-runtime-s: REAL mode = wall-clock seconds; SIM mode = VIRTUAL/vclock "
+                     "seconds, NOT wall -- see sim_wall_ceiling_s below for the real-wall cap")),
     scalar_row("max_data_id_progress", MAX_DATA_ID, MAX_DATA_ID_SET,
                note="STOP condition: stop when data_id reaches this (--max-data-id)"),
     scalar_row("trace", trace_val, trace_overridden,
@@ -693,6 +717,15 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
                bool(TARGET_ACC), review=True,
                note=("stop when last %s bins all >= target. unset ⇒ time/data-id bound only"
                      % (CONVERGE_WINDOW or "20"))),
+    # REAL-wall-clock outer safety for sim mode (max_runtime_s there is VIRTUAL
+    # seconds). unset ⇒ code default = max_runtime_s(vclock-s) * 20, which for a
+    # 48h vclock budget is a 40-DAY real failsafe -- effectively no bound. Always
+    # reviewed (not just when MODE includes sim) since --mode both patches both.
+    scalar_row("sim_wall_ceiling_s",
+               SIM_WALL_CEILING_S if SIM_WALL_CEILING_S
+               else f"unset ⇒ {int(MAX_RUNTIME_S) * 20}s (={MAX_RUNTIME_S}s*20)",
+               bool(SIM_WALL_CEILING_S), review=True,
+               note="REAL-wall-clock cap in sim mode (max_runtime_s there is vclock-seconds, not wall)"),
     # Stall guard: early-terminate a not-learning run before the wall ceiling.
     scalar_row("stall_guard",
                ((lambda _on, _h: {
