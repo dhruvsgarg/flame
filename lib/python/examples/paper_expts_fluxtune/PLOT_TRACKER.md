@@ -89,11 +89,17 @@ still renders every figure, just with fewer bars/curves.
 
 ## ⏳ OPEN WORK (temporary tracking section — 2026-07-24 batch, remove/fold in as each item lands)
 
-Six items from the 2026-07-24 planning discussion, captured here *before* any
-implementation so a closed/reopened chat doesn't lose the thread. Update the
-status inline as each moves; delete an item's block once it's fully landed and
-folded into the relevant doc (tex, EXPERIMENTS.md §10a, or the manifest tables
-above) — this section is meant to be temporary, not a permanent seventh doc.
+Three items remain open from the original six (2026-07-24 planning
+discussion). Update the status inline as each moves; delete an item's block
+once it's fully landed and folded into the relevant doc (tex, EXPERIMENTS.md
+§10a, or the manifest tables above) — this section is meant to be temporary,
+not a permanent seventh doc. **Purged 2026-07-24**: items #2 (palette-preview
+script — landed, command now documented in `EXPTS_CHARTER.md`'s "Latest
+figures" section), #3 (auto broken y-axis — landed in `fig_e1_acc_vs_time`,
+x-axis explicitly scoped out, not a pending task), #4 (CDF P50/P90 — landed
+in `fig_e2_trainer_busy_cdf`/`fig_e5_session_cdf`). All three are covered by
+`plotlib/test_figures.py` and committed; see git history for detail instead
+of this doc.
 
 ### 1. tex ⇄ EXPERIMENTS.md §10a ⇄ PLOT_TRACKER.md are out of alignment
 **Status:** wiring fixed 2026-07-24; one follow-up decision left for the operator (not a wiring bug).
@@ -122,62 +128,7 @@ swap the prose's numbers or baseline name — that's a scientific/editorial
 call (do we launch the oracular run, or rewrite the claim to `\fwdllmit{}`?),
 not something to guess at. Ask the operator before touching those numbers.
 
-### 2. Color-palette / marker preview script (dummy data, no real telemetry)
-**Status:** done 2026-07-24.
-
-`expt_scripts/preview_palette.py`: reads baseline keys from `--baselines`,
-`--manifest <figs_*.yaml>`, or (default) every key in `plotlib/baselines.py`'s
-`BASELINES` registry; renders line/scatter/bar charts on deterministic
-seeded-per-key synthetic data, styled through the exact same `style_for`/
-`apply_legend_emphasis`/`use_paper_style`/`save_pdf` pipeline the real figures
-use, to the same flat/overwrite output convention as
-`make_paper_figs.py`. No telemetry I/O — full-registry preview runs in
-under a second vs. ~4 min/manifest for the real pipeline. Tested: default
-(all 13 registered baselines), `--manifest figs_main_v2.yaml` (correctly
-resolves its 4-baseline subset), and an unknown key (falls through
-`style_for`'s existing fallback instead of crashing).
-
-### 3. Auto broken/split axes (x and y) on whitespace-heavy plots
-**Status:** done 2026-07-24 for the named motivating case (`e1_acc_vs_time`,
-**y-axis only**); x-axis breaking explicitly deferred, see below.
-
-`plotlib/figures.py` gained `_detect_axis_break` (finds the largest gap
-between sorted data values that's ≥30% of the total span while keeping ≥10%
-of the *points* — not value-range — on each side; point-count is the
-correct guard, a range-based one rejects the exact motivating shape: two
-tight clusters, e.g. one baseline stuck near-zero and another near the
-target, far apart) and a two-panel broken-y-axis renderer (`_broken_y_axes`,
-standard matplotlib "Broken Axis" idiom with diagonal break marks). Wired
-into `fig_e1_acc_vs_time` only: when no qualifying gap exists, the function
-takes the exact old single-Axes code path (zero behavior change for the
-common case); when one exists, curves/peak-stars/round-boundaries are drawn
-on both panels and rely on default `clip_on=True` clipping to split the
-visible output — the target-line/speedup-arrow callout attaches to whichever
-panel actually contains the target value. **Caught and fixed a real bug
-during testing**: the first version's side-guard checked value-*range* per
-side, which silently blocked the break in the exact case it exists for
-(tight clusters have almost no internal range) — switched to a point-count
-guard. Verified against synthetic data (no-gap, two-cluster, three-cluster,
-single-outlier-must-not-trigger cases) + a visual PNG check of the broken
-render. 6 new tests in `plotlib/test_figures.py`; full `-k fwdllm` suite green.
-**Deferred**: x-axis breaking (the doc's other named case, "fast-time-to-target
-band, left") and extending either break to other line/CDF figures — the
-y-only, e1-only scope was chosen to keep this pass reviewable; a combined
-x+y break (4-panel grid) was considered and rejected as more complexity/risk
-than a single-column paper figure can readably support.
-
-### 4. CDF plots need P50/P90 annotated in-plot, per line's color
-**Status:** done 2026-07-24.
-
-`plotlib/figures.py._annotate_cdf_percentiles`: color-matched tick + `P50`/
-`P90` text at each curve's interpolated crossing, silently skipped for a
-percentile a curve never reaches (too few samples). Wired into both
-`fig_e2_trainer_busy_cdf` and `fig_e5_session_cdf`. Verified against a known
-synthetic distribution (N(50,10) → P50≈50, P90≈63) and re-rendered on real
-telemetry via the full `make_paper_figs.py` pipeline (both manifests) without
-error. 2 new tests in `plotlib/test_figures.py`.
-
-### 5. New bar plot: total perturbations to reach target accuracy, per baseline
+### 2. New bar plot: total perturbations to reach target accuracy, per baseline
 **Status:** grounded 2026-07-24 — (a) confirmed sufficient, no new counter
 needed. Still not implemented (plot itself is a separate follow-up); this is
 the requested grounding pass only.
@@ -189,7 +140,7 @@ Findings:
   monotonic per-trainer cumulative counters with a `ts` on every event.
   `plotlib/reducers.py`'s `_read_trainers` already sums each trainer's max
   counter value at events with `ts <= cutoff` into `RunResult.pert_total`/
-  `fwd_total` — exactly the "sum up to a timestamp" operation #5 needs, just
+  `fwd_total` — exactly the "sum up to a timestamp" operation this item needs, just
   parameterized by the wrong cutoff today (`_compute_cutoff`'s run-wide
   peak-acc/plateau cutoff, not "first eval crossing the target accuracy").
   The missing piece is small and reducer-side only: a new cutoff mode (or a
@@ -213,7 +164,7 @@ Paper-text grounding (what claim this would support) not yet done — still
 needs a pass over `evaluation.tex` to confirm where "perturbations to target"
 would land before the plot itself is built.
 
-### 6. Investigate: iterations-per-data-id trend vs. baseline / round-vs-iteration control
+### 3. Investigate: iterations-per-data-id trend vs. baseline / round-vs-iteration control
 **Status:** grounded 2026-07-24 — real, sample-based signal found. Still
 exploratory; not promoted to a figure spec (needs operator sign-off per the
 "do the grounding work only" scoping).
@@ -281,3 +232,6 @@ subsection's mechanism discussion, and (c) operator sign-off before either.
   (`plotlib/test_figures.py`); full `-k fwdllm` suite green (32 passed). Both
   manifests re-rendered end-to-end on real telemetry with all three changes
   combined, no errors.
+- **2026-07-24 (5)** — purged items #2–#4 from OPEN WORK (landed + committed,
+  per this doc's own "delete once fully landed" policy); renumbered the
+  remaining items (former #5→#2, #6→#3). No code change, doc cleanup only.
