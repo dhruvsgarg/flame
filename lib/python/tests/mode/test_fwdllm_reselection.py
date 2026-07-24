@@ -21,6 +21,20 @@ class _FakeSelector:
         self.selected_ends = set()
 
 
+class _FakeAsyncSelector:
+    """Stand-in for FedBuffSelector/AsyncOortSelector: `selected_ends` is a
+    dict[requester, set], not a bare set (see `_FakeSelector` above) --
+    real_async selectors' own convention, missed by the bare-set fake for a
+    long time since `TestAsyncReselectGate` never drove a cache-hit against
+    it (the bug: `_rearm_recv_eligibility` crashed `'set' object is not
+    subscriptable` the first time a round-level async baseline actually ran,
+    felix_round's 2026-07-23 smoke test)."""
+
+    def __init__(self, requester="agg"):
+        self.requester = requester
+        self.selected_ends = {requester: set()}
+
+
 class _FakeChannel:
     """Records each `ends()` call and returns the next canned selection.
 
@@ -425,3 +439,27 @@ class TestAsyncReselectGate:
 
         assert agg.select_async(channel, "train") == ["t2", "t3"]
         assert channel.calls == 2
+
+    def test_cache_hit_rearms_dict_based_async_selector_without_crashing(self):
+        """Regression for the felix_round smoke-test crash: a cache-hit call
+        (cohort already at agg_goal) must rearm recv-eligibility on a REAL
+        async selector's dict[requester, set] `selected_ends`, not assume the
+        sync selector's bare-set convention `_rearm_recv_eligibility` was
+        originally written for."""
+        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
+        channel = _FakeChannel(selections=[["t1", "t2"]])
+        channel._selector = _FakeAsyncSelector()
+
+        # Accumulate call: builds the round cache but (like the real
+        # channel.ends() -> selector.select() path on a genuine miss) doesn't
+        # touch selected_ends -- only a cache HIT rearms it.
+        assert agg.select_async(channel, "train") == ["t1", "t2"]
+
+        # Cache hit: cohort already at agg_goal -- must not raise, and must
+        # keep selected_ends a dict (this call crashed with TypeError before
+        # the fix: `_rearm_recv_eligibility` reassigned the whole attribute
+        # to a bare set, so the NEXT selector.select() call -- reading
+        # selected_ends[requester] -- blew up).
+        assert agg.select_async(channel, "train") == ["t1", "t2"]
+        assert isinstance(channel._selector.selected_ends, dict)
+        assert channel._selector.selected_ends["agg"] == {"t1", "t2"}

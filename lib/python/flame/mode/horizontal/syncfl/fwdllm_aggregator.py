@@ -3226,9 +3226,28 @@ class TopAggregator(AsyncTopAgg):
         `channel.ends(VAL_CH_STATE_RECV)`. Each processed contribution
         removes its end from it via `cleanup_recvd_end(s)`; without this,
         it permanently empties out after one pass over the cached trainers.
+
+        Two incompatible selector conventions share this helper (called from
+        both the sync and async round-cache gates): sync selectors (random.py
+        in its post-select state) keep `selected_ends` as a bare `set`; async
+        selectors (fedbuff/async_random/async_oort) keep it as a
+        dict[requester, set] -- reassigning the whole attribute to a bare set
+        for those clobbers the dict and crashes the NEXT recv-state call with
+        `TypeError: 'set' object is not subscriptable` (found via the
+        felix_round smoke test -- async_oort.py:2146, first-ever exercise of
+        a round-cache HIT on an async selector). Branch on the actual type
+        instead of assuming one convention.
         """
         selector = getattr(channel, "_selector", None)
-        if selector is not None and hasattr(selector, "selected_ends"):
+        if selector is None or not hasattr(selector, "selected_ends"):
+            return
+        if isinstance(selector.selected_ends, dict):
+            requester = getattr(selector, "requester", None)
+            if requester is None:
+                return
+            existing = selector.selected_ends.get(requester, set())
+            selector.selected_ends[requester] = set(existing) | set(ends)
+        else:
             selector.selected_ends = set(selector.selected_ends) | set(ends)
 
     def _prune_departed_from_round_cache(self, channel):
