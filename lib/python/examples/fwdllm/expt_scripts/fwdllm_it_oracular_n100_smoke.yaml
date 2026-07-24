@@ -2,7 +2,7 @@
 # full 100-partition niid_label_clients=100_alpha=1 population), real time_mode
 # (FedFwd has no simulated-clock support yet).
 #
-# Uses the `fwdllm_plus` baseline (sync, random selector, fedavg, ORACULAR
+# Uses the `fwdllm_it_oracular` baseline (sync, random selector, fedavg, ORACULAR
 # availability read from _metadata, per-iteration reselection). Sibling of
 # fwdllm_n10_smoke.yaml/fluxtune_n10_smoke.yaml; run all three for full
 # real/sim parity coverage across the taxonomy. c=10 of the 100-trainer pool
@@ -10,13 +10,13 @@
 #
 # Run:
 #   python -m flame.launch.run_experiment \
-#       lib/python/examples/fwdllm/expt_scripts/fwdllm_plus_n100_smoke.yaml
+#       lib/python/examples/fwdllm/expt_scripts/fwdllm_it_oracular_n100_smoke.yaml
 
 experiments:
-  - name: fwdllm_plus_n100_smoke
-    description: "FedFwd smoke (100 trainers, c=10, fwdllm_plus baseline: sync random+fedavg+ORACULAR). Validates the launcher port before a full-scale run."
+  - name: fwdllm_it_oracular_n100_smoke
+    description: "FedFwd smoke (100 trainers, c=10, fwdllm_it_oracular baseline: sync random+fedavg+ORACULAR). Validates the launcher port before a full-scale run."
 
-    baseline: fwdllm_plus
+    baseline: fwdllm_it_oracular
 
     example:
       # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
@@ -65,9 +65,9 @@ experiments:
       log_to_wandb: false
       config_overrides:
         job:
-          id: fwdllm_plus_n100_smoke
+          id: fwdllm_it_oracular_n100_smoke
         hyperparameters:
-          seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs, see fwdllm_plus_n10_smoke_momentum.yaml)
+          seed: 1234  # deterministic selector RNG + model init
           rounds: 50  # short smoke run, not the full 300
           # Hold a returned trainer's re-pick guard to commit, not RETURN
           # (§R, 2026-07-11). No-op here (agg_goal == c, full-cohort barrier)

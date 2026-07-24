@@ -1,10 +1,10 @@
 # FedFwd SIMULATED-clock smoke test: 100 trainers, agnews H5 partitions
 # (client_idx 0-99, the full 100-partition niid_label_clients=100_alpha=1
-# population). Sim sibling of fwdllm_plus_n100_smoke.yaml -- IDENTICAL except
+# population). Sim sibling of fwdllm_it_oracular_n100_smoke.yaml -- IDENTICAL except
 # time_mode: simulated and the job id (so run dirs don't collide). c=10 of
 # the 100-trainer pool selected/round (agg_goal==c==10).
 #
-# fwdllm_plus is SYNC (random selector, fedavg, ORACULAR availability read,
+# fwdllm_it_oracular is SYNC (random selector, fedavg, ORACULAR availability read,
 # per-iteration reselection), so this variant exercises the Batch-1 sync
 # barrier sim drive (_sync_sim_recv_first_k: commit k-smallest-sct, advance the
 # virtual clock to the k-th). Trainers still do real forward-grad compute
@@ -16,13 +16,13 @@
 #
 # Run:
 #   python -m flame.launch.run_experiment \
-#       lib/python/examples/fwdllm/expt_scripts/fwdllm_plus_n100_smoke_sim.yaml
+#       lib/python/examples/fwdllm/expt_scripts/fwdllm_it_oracular_n100_smoke_sim.yaml
 
 experiments:
-  - name: fwdllm_plus_n100_smoke_sim
-    description: "FedFwd SIM smoke (100 trainers, c=10, fwdllm_plus baseline: sync random+fedavg+ORACULAR, time_mode=simulated). Validates the Batch-1 sync barrier sim drive."
+  - name: fwdllm_it_oracular_n100_smoke_sim
+    description: "FedFwd SIM smoke (100 trainers, c=10, fwdllm_it_oracular baseline: sync random+fedavg+ORACULAR, time_mode=simulated). Validates the Batch-1 sync barrier sim drive."
 
-    baseline: fwdllm_plus
+    baseline: fwdllm_it_oracular
 
     example:
       # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
@@ -76,9 +76,9 @@ experiments:
       log_to_wandb: false
       config_overrides:
         job:
-          id: fwdllm_plus_n100_smoke_sim
+          id: fwdllm_it_oracular_n100_smoke_sim
         hyperparameters:
-          seed: 1234  # deterministic selector RNG + model init; MUST match fwdllm_plus_n100_smoke.yaml
+          seed: 1234  # deterministic selector RNG + model init; MUST match fwdllm_it_oracular_n100_smoke.yaml
           rounds: 50  # short smoke run, not the full 300
           # Hold a returned trainer's re-pick guard to commit, not RETURN
           # (§R, 2026-07-11). No-op here (agg_goal == c, full-cohort barrier)
