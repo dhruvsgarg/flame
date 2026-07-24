@@ -291,8 +291,15 @@ baselines:
   # still share the same selector/optimizer library code as the CNN/speech
   # family above (no forking) -- only this catalog's parameters differ.
   #
-  # Taxonomy (see examples/MIGRATING_TO_LAUNCHER.md §9 "Baseline taxonomy"):
-  # fwdllm/fwdllm_plus are sync, fluxtune/fluxtune_dynkc are async.
+  # Taxonomy (BASELINES.md "FluxTune" section is the source of truth for the
+  # full 9-baseline naming grammar `base < base+IT < base+IT+O`, `(P)` =
+  # ported): fwdllm/fwdllm_it_unaware/fwdllm_it_oracular are sync;
+  # fedbuff_round/fedbuff_it_unaware/fedbuff_it_oracular/felix_round/felix_it/
+  # fluxtune/fluxtune_dynkc are async. `reselect_each_iteration` (round vs
+  # +IT) gates both the sync path (_select_ends_respecting_reselect_gate)
+  # and, as of the async round-cache extension, the async path
+  # (_select_ends_for_async_respecting_reselect_gate) -- see
+  # fwdllm_aggregator.py.
 
   fwdllm:
     description: >-
@@ -347,16 +354,57 @@ baselines:
           enabled: "False"
           trace: syn_0
 
-  fwdllm_plus:
+  fwdllm_it_unaware:
     description: >-
-      FedFwd's syncfl+ baseline (owner's "fwdllm+" spec): same sync
-      random+fedavg stack as fwdllm, but with ORACULAR trainer-availability
+      FwdLLM+IT: round->iteration on the sync substrate, isolating L1 alone
+      (BASELINES.md naming grammar). Identical random+fedavg sync stack +
+      unaware trainer availability as `fwdllm`, but
+      reselect_each_iteration=true (fresh selection on every SEND-state
+      call) instead of fwdllm's per-round caching. Pairs with
+      `fwdllm_it_oracular` (the availability-aware twin) to isolate L1's
+      iteration-level control independent of availability tracking.
+    example:
+      aggregator_main: aggregator/main_fedfwd_agg.py
+    aggregator:
+      selector:
+        sort: random
+        kwargs:
+          is_async: false
+          k: 5  # override per experiment to scale with num_trainers
+          c: 15  # override per experiment to scale with num_trainers
+      optimizer:
+        sort: fedavg
+        kwargs: {}
+      hyperparameters:
+        trackTrainerAvail:
+          enabled: "False"
+          type: "NONE"
+        # Looser than fwdllm's "exact" -- reselect_each_iteration=true
+        # already re-picks trainers every iteration, same reasoning as
+        # fwdllm_it_oracular below.
+        stalenessPolicy: round_data_id
+        # Unbounded (None) -- the iteration cap is a fluxtune optimization
+        # (charter Opt-2), not part of vanilla FwdLLM+IT.
+        var_threshold: 0.3
+        reselect_each_iteration: true
+    trainer:
+      hyperparameters:
+        client_notify:
+          enabled: "False"
+          trace: syn_0
+
+  fwdllm_it_oracular:
+    description: >-
+      FwdLLM+IT+O (renamed from `fwdllm_plus`; owner's "fwdllm+" spec): same
+      sync random+fedavg stack as fwdllm, but with ORACULAR trainer-availability
       tracking -- read from _metadata/trainer_registry.yaml +
       _metadata/availability_traces/*.yaml (no more json_scripts/
       dependency) -- and per-iteration reselection
       (reselect_each_iteration=true, i.e. today's default selector-call
       behavior: a fresh selection on every iteration) instead of fwdllm's
-      per-round caching.
+      per-round caching. Identical to `fwdllm_it_unaware` at `syn_0`
+      (oracular tracking is inert under full availability); diverges once
+      run under a scarcity trace (Phase 2).
     example:
       aggregator_main: aggregator/main_fedfwd_agg.py
     aggregator:
@@ -538,6 +586,254 @@ baselines:
     trainer:
       hyperparameters:
         select_perturbation_using_jvp: true
+        client_notify:
+          enabled: "True"
+          trace: mobiperf_3st_50
+
+  fedbuff_round:
+    description: >-
+      FedBuff(P): FedFwd's published-anchor baseline (Nguyen et al. FedBuff,
+      ported onto the forward-mode substrate). Async stack, FedBuffSelector
+      (uniform random async selection, NOT oort-smart) + fedbuff optimizer
+      with a plain staleness-only rate (agg_rate_conf.type=old,
+      use_oort_lr=False -- same as the CNN family's own `fedbuff` baseline)
+      + unaware trainer availability (no client_notify, no ORACULAR
+      tracking). Round-level (reselect_each_iteration=false -- pins the
+      selected cohort for the span of a round, only swapping out members
+      that depart; see fwdllm_aggregator.py's async round-cache). Isolates
+      L0 alone: does simply removing the sync barrier already help, before
+      any FluxTune contribution? Headline EVAL.
+    example:
+      aggregator_main: aggregator/main_fedfwd_agg.py
+    aggregator:
+      selector:
+        sort: fedbuff
+        kwargs:
+          c: 15  # override per experiment to scale with num_trainers
+          aggGoal: 5  # override per experiment to scale with num_trainers
+          is_async: true
+          minInitialTrainers: 15  # override per experiment to scale with num_trainers
+          task_eligible_states:
+            train: [AVL_TRAIN, AVL_EVAL]
+            eval: [AVL_EVAL, AVL_TRAIN]
+      optimizer:
+        sort: fedbuff
+        kwargs:
+          use_oort_lr: "False"
+          dataset_name: agnews
+          # No agnews entry in fedbuff's dataset_name rate table -- explicit
+          # rate, same placeholder as fluxtune/felix_round.
+          # TODO(verify): retune against a smoke run.
+          learning_rate: 0.075
+          agg_rate_conf:
+            type: old
+      hyperparameters:
+        trackTrainerAvail:
+          enabled: "False"
+          type: "NA"
+        stalenessPolicy: none
+        var_threshold: 0.3
+        reselect_each_iteration: false
+    trainer:
+      hyperparameters:
+        client_notify:
+          enabled: "False"
+          trace: syn_0
+
+  fedbuff_it_unaware:
+    description: >-
+      FedBuff(P)+IT -- the direct L2 attribution floor: FluxTune minus
+      C1/C2(pending)/C3, with L0 async + L1 iteration-level control both
+      held fixed. Same stack as fedbuff_round (uniform random async
+      selection, plain staleness-only rate, unaware tracking) but
+      reselect_each_iteration=true: re-invoke the selector's full scoring on
+      every dispatch instead of pinning the round's cohort. Pairs with
+      fedbuff_it_oracular (the availability-aware twin).
+    example:
+      aggregator_main: aggregator/main_fedfwd_agg.py
+    aggregator:
+      selector:
+        sort: fedbuff
+        kwargs:
+          c: 15
+          aggGoal: 5
+          is_async: true
+          minInitialTrainers: 15
+          task_eligible_states:
+            train: [AVL_TRAIN, AVL_EVAL]
+            eval: [AVL_EVAL, AVL_TRAIN]
+      optimizer:
+        sort: fedbuff
+        kwargs:
+          use_oort_lr: "False"
+          dataset_name: agnews
+          learning_rate: 0.075  # TODO(verify): see fedbuff_round
+          agg_rate_conf:
+            type: old
+      hyperparameters:
+        trackTrainerAvail:
+          enabled: "False"
+          type: "NA"
+        stalenessPolicy: none
+        var_threshold: 0.3
+        reselect_each_iteration: true
+    trainer:
+      hyperparameters:
+        client_notify:
+          enabled: "False"
+          trace: syn_0
+
+  fedbuff_it_oracular:
+    description: >-
+      FedBuff(P)+IT+O -- fedbuff_it_unaware's availability-aware twin:
+      identical stack, but ORACULAR trainer-availability tracking (read from
+      _metadata/trainer_registry.yaml + _metadata/availability_traces/*.yaml)
+      instead of unaware. L2 floor's aware variant.
+    example:
+      aggregator_main: aggregator/main_fedfwd_agg.py
+    aggregator:
+      selector:
+        sort: fedbuff
+        kwargs:
+          c: 15
+          aggGoal: 5
+          is_async: true
+          minInitialTrainers: 15
+          task_eligible_states:
+            train: [AVL_TRAIN, AVL_EVAL]
+            eval: [AVL_EVAL, AVL_TRAIN]
+      optimizer:
+        sort: fedbuff
+        kwargs:
+          use_oort_lr: "False"
+          dataset_name: agnews
+          learning_rate: 0.075  # TODO(verify): see fedbuff_round
+          agg_rate_conf:
+            type: old
+      hyperparameters:
+        trackTrainerAvail:
+          enabled: "True"
+          type: ORACULAR
+          # TODO(verify): 2-tier trace ported from fwdllm_it_oracular --
+          # unconfirmed whether the async eval-dispatch path needs a 3-tier
+          # trace instead. Check on the first smoke run (BRIDGE_DESIGN.md
+          # §2b instrumentation-readiness pattern).
+          trace: mobiperf_2st
+        stalenessPolicy: none
+        var_threshold: 0.3
+        reselect_each_iteration: true
+    trainer:
+      hyperparameters:
+        client_notify:
+          enabled: "False"
+          trace: syn_0
+
+  felix_round:
+    description: >-
+      Felix(P): FedFwd's other published anchor (this project's own Felix,
+      async_oort oort-smart selection, ported onto the forward-mode
+      substrate). Same async_oort selection axis as Felix's own CNN-family
+      baseline (evalGoalFactor=1.0 -- NOT fluxtune's 0) + fedbuff optimizer
+      with the borrowed FeLiX staleness x utility rate
+      (agg_rate_conf.type=new, NOT fluxtune's own grad_aware C3) +
+      client_notify availability (Felix's own tracking mechanism -- NOT
+      oracular, see BASELINES.md Felix section) -- no C1
+      (select_perturbation_using_jvp stays off, trainer_base.yaml default)
+      and no C3. Round-level (reselect_each_iteration=false). Isolates L1 on
+      a smart-selection substrate: does availability-aware smart selection
+      alone already close most of the gap before any FluxTune contribution?
+      Headline EVAL. `learning_rate: 0.075` ported from fluxtune
+      (TODO(verify): retune against a smoke run, BASELINES.md Remaining
+      work #5).
+    example:
+      aggregator_main: aggregator/main_fedfwd_agg.py
+    aggregator:
+      selector:
+        sort: async_oort
+        kwargs:
+          c: 15  # override per experiment to scale with num_trainers
+          aggGoal: 5  # override per experiment to scale with num_trainers
+          evalGoalFactor: 1.0
+          selectType: default
+          roundNudgeType: last_train
+          minInitialTrainers: 15  # override per experiment to scale with num_trainers
+          k: 5
+          is_async: true
+          task_eligible_states:
+            train: [AVL_TRAIN, AVL_EVAL]
+            eval: [AVL_EVAL, AVL_TRAIN]
+      optimizer:
+        sort: fedbuff
+        kwargs:
+          use_oort_lr: "True"
+          dataset_name: agnews
+          learning_rate: 0.075  # TODO(verify), see description
+          agg_rate_conf:
+            type: new
+            scale: 0.4
+            a_exp: 0.25
+            b_exp: 0.1
+      hyperparameters:
+        trackTrainerAvail:
+          enabled: "False"
+          type: "NA"
+        stalenessPolicy: none
+        var_threshold: 0.3
+        reselect_each_iteration: false
+    trainer:
+      hyperparameters:
+        client_notify:
+          enabled: "True"
+          trace: mobiperf_3st_50
+
+  felix_it:
+    description: >-
+      Felix(P)+IT -- not Felix's native behavior: grafts FluxTune's own
+      iteration-level reselect cadence (reselect_each_iteration=true) onto
+      Felix(P)'s selector, done only to isolate L1's contribution and show
+      iteration-level control *alone* isn't enough (motivating C1+C3).
+      Otherwise identical to felix_round (same selector/optimizer/tracking,
+      still no C1/C3). felix_it -> fluxtune isolates exactly C1+C3 (not C2).
+      Never headlined -- crediting a published baseline with our own
+      mechanism in the EVAL row would be an unearned advantage to that
+      baseline.
+    example:
+      aggregator_main: aggregator/main_fedfwd_agg.py
+    aggregator:
+      selector:
+        sort: async_oort
+        kwargs:
+          c: 15
+          aggGoal: 5
+          evalGoalFactor: 1.0
+          selectType: default
+          roundNudgeType: last_train
+          minInitialTrainers: 15
+          k: 5
+          is_async: true
+          task_eligible_states:
+            train: [AVL_TRAIN, AVL_EVAL]
+            eval: [AVL_EVAL, AVL_TRAIN]
+      optimizer:
+        sort: fedbuff
+        kwargs:
+          use_oort_lr: "True"
+          dataset_name: agnews
+          learning_rate: 0.075  # TODO(verify), see felix_round
+          agg_rate_conf:
+            type: new
+            scale: 0.4
+            a_exp: 0.25
+            b_exp: 0.1
+      hyperparameters:
+        trackTrainerAvail:
+          enabled: "False"
+          type: "NA"
+        stalenessPolicy: none
+        var_threshold: 0.3
+        reselect_each_iteration: true
+    trainer:
+      hyperparameters:
         client_notify:
           enabled: "True"
           trace: mobiperf_3st_50

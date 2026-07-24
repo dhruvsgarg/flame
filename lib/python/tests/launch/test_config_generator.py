@@ -105,7 +105,7 @@ class TestFwdllmEndToEndConfigGeneration:
         return ConfigGenerator(loader, FWDLLM_TRAINER_BASE)
 
     @pytest.mark.parametrize(
-        "baseline_name", ["fwdllm", "fwdllm_plus", "fluxtune", "fluxtune_dynkc"]
+        "baseline_name", ["fwdllm", "fwdllm_it_oracular", "fluxtune", "fluxtune_dynkc"]
     )
     def test_trainer_config_generates_without_keyerror(
         self, gen, baselines, baseline_name
@@ -127,7 +127,7 @@ class TestFwdllmEndToEndConfigGeneration:
         "baseline_name,expected",
         [
             ("fwdllm", {"client_notify.enabled": "False"}),
-            ("fwdllm_plus", {"client_notify.enabled": "False"}),
+            ("fwdllm_it_oracular", {"client_notify.enabled": "False"}),
             (
                 "fluxtune",
                 {
@@ -169,7 +169,7 @@ class TestFwdllmEndToEndConfigGeneration:
                 },
             ),
             (
-                "fwdllm_plus",
+                "fwdllm_it_oracular",
                 {
                     "selector.sort": "random",
                     "optimizer.sort": "fedavg",
@@ -220,7 +220,7 @@ FWDLLM_EXPT_SCRIPTS = (
 )
 class TestFwdllmSmokeYamlsResolve:
     """The smoke yaml for each of the three owner-spec baselines (fwdllm,
-    fwdllm_plus, fluxtune) must load, resolve its baseline, generate a
+    fwdllm_it_oracular, fluxtune) must load, resolve its baseline, generate a
     trainer config, and pass _validate_stack against the real entrypoint --
     this is the dry-run Smoke Test D does live, kept as a permanent
     regression test for all three so real/sim parity runs stay covered."""
@@ -229,7 +229,7 @@ class TestFwdllmSmokeYamlsResolve:
         "yaml_name,expected_baseline",
         [
             ("fwdllm_n100_smoke.yaml", "fwdllm"),
-            ("fwdllm_plus_n100_smoke.yaml", "fwdllm_plus"),
+            ("fwdllm_it_oracular_n100_smoke.yaml", "fwdllm_it_oracular"),
             ("fluxtune_n10_smoke.yaml", "fluxtune"),
         ],
     )

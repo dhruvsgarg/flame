@@ -169,8 +169,9 @@ class TestSharedBaselinesYaml:
 
 
 class TestFwdllmBaselines:
-    """fwdllm/fwdllm_plus/fluxtune/fluxtune_dynkc replace the retired
-    fedfwd_async_random_dynkc/fedfwd_oracular."""
+    """fwdllm/fwdllm_it_unaware/fwdllm_it_oracular/fluxtune/fluxtune_dynkc
+    replace the retired fedfwd_async_random_dynkc/fedfwd_oracular.
+    fwdllm_it_oracular is the rename target for the old fwdllm_plus key."""
 
     @pytest.fixture
     def baselines(self):
@@ -182,9 +183,15 @@ class TestFwdllmBaselines:
     def test_retired_keys_are_gone(self, baselines):
         assert "fedfwd_async_random_dynkc" not in baselines
         assert "fedfwd_oracular" not in baselines
+        assert "fwdllm_plus" not in baselines
 
-    def test_all_four_present(self, baselines):
-        for name in ("fwdllm", "fwdllm_plus", "fluxtune", "fluxtune_dynkc"):
+    def test_all_nine_plus_dynkc_present(self, baselines):
+        for name in (
+            "fwdllm", "fwdllm_it_unaware", "fwdllm_it_oracular",
+            "fedbuff_round", "fedbuff_it_unaware", "fedbuff_it_oracular",
+            "felix_round", "felix_it",
+            "fluxtune", "fluxtune_dynkc",
+        ):
             assert name in baselines
 
     def test_fwdllm_is_sync_random_fedavg_unaware(self, baselines):
@@ -199,8 +206,16 @@ class TestFwdllmBaselines:
             == "False"
         )
 
-    def test_fwdllm_plus_is_sync_random_fedavg_oracular(self, baselines):
-        b = baselines["fwdllm_plus"]["aggregator"]
+    def test_fwdllm_it_unaware_is_sync_random_fedavg_unaware_with_reselect(self, baselines):
+        b = baselines["fwdllm_it_unaware"]["aggregator"]
+        assert b["selector"]["sort"] == "random"
+        assert b["selector"]["kwargs"]["is_async"] is False
+        assert b["optimizer"]["sort"] == "fedavg"
+        assert b["hyperparameters"]["trackTrainerAvail"]["enabled"] == "False"
+        assert b["hyperparameters"]["reselect_each_iteration"] is True
+
+    def test_fwdllm_it_oracular_is_sync_random_fedavg_oracular(self, baselines):
+        b = baselines["fwdllm_it_oracular"]["aggregator"]
         assert b["selector"]["sort"] == "random"
         assert b["selector"]["kwargs"]["is_async"] is False
         assert b["optimizer"]["sort"] == "fedavg"
@@ -239,3 +254,81 @@ class TestFwdllmBaselines:
         assert b["optimizer"]["sort"] == "fedbuff"
         assert "learning_rate" not in b["optimizer"]["kwargs"]
         assert b["optimizer"]["kwargs"]["dataset_name"] == "google-speech"
+
+
+class TestNewAsyncFwdllmBaselines:
+    """The 5 net-new async baselines wired per BASELINES.md's FluxTune
+    matrix: FedBuff(P) family (random async selection, plain staleness-only
+    rate, no C1/C3) and Felix(P) family (async_oort selection, FeLiX
+    staleness x utility rate, no C1/C3) -- both round/+IT/+IT+O staircases,
+    contrasted against fluxtune's own oort-smart selection + grad_aware C3."""
+
+    @pytest.fixture
+    def baselines(self):
+        shared = Path(__file__).resolve().parents[2] / "examples" / "_metadata"
+        if not (shared / "baselines.yaml").is_file():
+            pytest.skip("shared baselines.yaml not present in this checkout")
+        return load_baselines(shared)
+
+    def test_fedbuff_round_is_async_fedbuff_selector_unaware_round_level(self, baselines):
+        b = baselines["fedbuff_round"]["aggregator"]
+        assert b["selector"]["sort"] == "fedbuff"
+        assert b["selector"]["kwargs"]["is_async"] is True
+        assert b["optimizer"]["sort"] == "fedbuff"
+        assert b["optimizer"]["kwargs"]["use_oort_lr"] == "False"
+        assert b["optimizer"]["kwargs"]["agg_rate_conf"]["type"] == "old"
+        assert b["hyperparameters"]["trackTrainerAvail"]["enabled"] == "False"
+        assert b["hyperparameters"]["reselect_each_iteration"] is False
+        assert (
+            baselines["fedbuff_round"]["trainer"]["hyperparameters"]["client_notify"]["enabled"]
+            == "False"
+        )
+
+    def test_fedbuff_it_unaware_matches_fedbuff_round_but_reselects(self, baselines):
+        round_b = baselines["fedbuff_round"]["aggregator"]
+        it_b = baselines["fedbuff_it_unaware"]["aggregator"]
+        assert it_b["selector"]["sort"] == round_b["selector"]["sort"]
+        assert it_b["optimizer"]["kwargs"]["agg_rate_conf"]["type"] == "old"
+        assert it_b["hyperparameters"]["trackTrainerAvail"]["enabled"] == "False"
+        assert it_b["hyperparameters"]["reselect_each_iteration"] is True
+
+    def test_fedbuff_it_oracular_is_fedbuff_it_unaware_plus_oracular(self, baselines):
+        b = baselines["fedbuff_it_oracular"]["aggregator"]
+        assert b["selector"]["sort"] == "fedbuff"
+        assert b["hyperparameters"]["trackTrainerAvail"]["enabled"] == "True"
+        assert b["hyperparameters"]["trackTrainerAvail"]["type"] == "ORACULAR"
+        assert b["hyperparameters"]["reselect_each_iteration"] is True
+
+    def test_felix_round_is_async_oort_felix_rate_no_c1_c3_round_level(self, baselines):
+        b = baselines["felix_round"]["aggregator"]
+        assert b["selector"]["sort"] == "async_oort"
+        assert b["selector"]["kwargs"]["is_async"] is True
+        assert b["selector"]["kwargs"]["evalGoalFactor"] == 1.0
+        assert b["optimizer"]["sort"] == "fedbuff"
+        assert b["optimizer"]["kwargs"]["agg_rate_conf"]["type"] == "new"
+        assert b["hyperparameters"]["trackTrainerAvail"]["enabled"] == "False"
+        assert b["hyperparameters"]["reselect_each_iteration"] is False
+        trainer_hp = baselines["felix_round"]["trainer"]["hyperparameters"]
+        assert trainer_hp["client_notify"]["enabled"] == "True"
+        assert "select_perturbation_using_jvp" not in trainer_hp
+
+    def test_felix_it_matches_felix_round_but_reselects(self, baselines):
+        round_b = baselines["felix_round"]["aggregator"]
+        it_b = baselines["felix_it"]["aggregator"]
+        assert it_b["selector"]["sort"] == round_b["selector"]["sort"]
+        assert it_b["optimizer"]["kwargs"]["agg_rate_conf"]["type"] == "new"
+        assert it_b["hyperparameters"]["reselect_each_iteration"] is True
+
+    def test_no_new_baseline_carries_grad_aware_or_jvp(self, baselines):
+        """C1/C3 stay exclusively fluxtune's -- none of the 5 new baselines
+        may accidentally inherit the grad_aware rate or JVP-guided
+        perturbation."""
+        for name in (
+            "fedbuff_round", "fedbuff_it_unaware", "fedbuff_it_oracular",
+            "felix_round", "felix_it",
+        ):
+            b = baselines[name]
+            rate_type = b["aggregator"]["optimizer"]["kwargs"]["agg_rate_conf"]["type"]
+            assert rate_type != "grad_aware", name
+            trainer_hp = b["trainer"]["hyperparameters"]
+            assert trainer_hp.get("select_perturbation_using_jvp") is not True, name

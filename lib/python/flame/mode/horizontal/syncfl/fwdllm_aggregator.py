@@ -471,12 +471,15 @@ class TopAggregator(AsyncTopAgg):
         # end -> wall time its weights/VAR=bad payload was last sent (sim only).
         self._sim_dispatch_wall = {}
 
-        # Selection granularity for the sync path (fwdllm/fwdllm_plus):
-        # True (default, preserves pre-existing behavior) = re-select
-        # trainers on every SEND-state call, i.e. every iteration of every
-        # databin. False = select once per round and reuse that selection
-        # across all databins/iterations until self._round advances. The
-        # async path (fluxtune) is untouched by this flag.
+        # Selection granularity, shared by both paths (round vs +IT baselines,
+        # BASELINES.md naming grammar): True (default, preserves pre-existing
+        # behavior) = re-select trainers on every SEND-state call, i.e. every
+        # iteration of every databin -- today's only async behavior. False =
+        # pin a cohort once per round and reuse it across all databins/
+        # iterations until self._round advances, replacing only members that
+        # depart (see _prune_departed_from_round_cache). Sync path:
+        # _select_ends_respecting_reselect_gate. Async path:
+        # _select_ends_for_async_respecting_reselect_gate.
         self._reselect_each_iteration = bool(
             getattr(
                 self.config.hyperparameters, "reselect_each_iteration", True
@@ -3361,6 +3364,68 @@ class TopAggregator(AsyncTopAgg):
             self._rearm_recv_eligibility(channel, new_ends)
         return new_ends
 
+    def _select_ends_for_async_respecting_reselect_gate(
+        self, channel, task_to_perform: str
+    ):
+        """Async-path counterpart of `_select_ends_respecting_reselect_gate`,
+        honoring `self._reselect_each_iteration` (round vs +IT baselines).
+
+        True (default, preserves pre-existing behavior): re-invoke the
+        selector's full utility/availability-based scoring on every dispatch
+        call -- today's only async behavior, unchanged. False: pin a cohort
+        of `self._agg_goal` ends for the span of `self._round`, reusing the
+        same per-round cache/prune-departed machinery as the sync path --
+        lets a round-level baseline swap out a departed client but not
+        otherwise reselect on availability/utility churn until the round
+        advances.
+        """
+        if self._reselect_each_iteration:
+            return channel.ends(
+                state=VAL_CH_STATE_SEND,
+                task_to_perform=task_to_perform,
+                agg_version_key=self._curr_agg_version,
+                trainer_version_keys=self._trainer_state_dict,
+                data_id=self.data_id,
+            )
+
+        if self._round_selected_ends_round != self._round:
+            self._round_selected_ends = None
+            self._round_selected_ends_round = self._round
+            self._round_cache_activity_ts = {}
+        self._prune_departed_from_round_cache(channel)
+
+        target = getattr(self, "_agg_goal", None)
+        if target is not None and self._round_selected_ends and len(self._round_selected_ends) >= target:
+            ends = list(self._round_selected_ends)
+            logger.info(
+                f"[ReselectGate-async] reselect_each_iteration=False; reusing "
+                f"cached per-round cohort ends={ends} for round={self._round}"
+            )
+            self._rearm_recv_eligibility(channel, ends)
+            return ends
+
+        new_ends = channel.ends(
+            state=VAL_CH_STATE_SEND,
+            task_to_perform=task_to_perform,
+            agg_version_key=self._curr_agg_version,
+            trainer_version_keys=self._trainer_state_dict,
+            data_id=self.data_id,
+        )
+        if new_ends:
+            merged = list(self._round_selected_ends or [])
+            for end in new_ends:
+                if end not in merged:
+                    merged.append(end)
+                    self._round_cache_activity_ts[end] = time.time()
+            self._round_selected_ends = merged
+            logger.info(
+                f"[ReselectGate-async] reselect_each_iteration=False; "
+                f"accumulated per-round cohort ends={merged} "
+                f"({len(merged)}/{target}) for round={self._round}"
+            )
+            return merged
+        return list(self._round_selected_ends or [])
+
     def _await_dispatchable_under_scarcity(self, task_to_perform: str) -> None:
         """Real-mode sync-barrier liveness under availability scarcity.
 
@@ -3796,12 +3861,8 @@ class TopAggregator(AsyncTopAgg):
         # that consumes it (AsyncOortSelector); harmless no-op for
         # RandomSelector (fwdllm/fwdllm_plus, sync path).
         channel.properties["vclock_now"] = self.vclock_now
-        ends = channel.ends(
-            state=VAL_CH_STATE_SEND,
-            task_to_perform=task_to_perform,
-            agg_version_key=self._curr_agg_version,
-            trainer_version_keys=self._trainer_state_dict,
-            data_id=self.data_id,
+        ends = self._select_ends_for_async_respecting_reselect_gate(
+            channel, task_to_perform
         )
         logger.info(f"ends: {ends}")
 

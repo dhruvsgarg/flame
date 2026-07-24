@@ -1,7 +1,13 @@
 #!/bin/bash
-# Drive the fwdllm real<->sim launcher pairs (fwdllm, fwdllm_plus, fluxtune) for
-# parity runs. Thin driver over examples/scripts/expt_runner.sh; owns the fwdllm
-# baseline->(real yaml, sim yaml) map, knob patching, and the pre-flight gate.
+# Drive the fwdllm real<->sim launcher pairs (9-baseline FluxTune matrix, see
+# BASELINES.md: fwdllm/fwdllm_it_unaware/fwdllm_it_oracular,
+# fedbuff_round/fedbuff_it_unaware/fedbuff_it_oracular, felix_round/felix_it,
+# fluxtune) for parity runs. Thin driver over examples/scripts/expt_runner.sh;
+# owns the fwdllm baseline->(real yaml, sim yaml) map, knob patching, and the
+# pre-flight gate. The 6 net-new baselines have NO real yaml yet (BRIDGE_DESIGN.md
+# decision #3: all new launches use --mode sim) -- pass --mode sim or --only
+# to select them; --mode both/real over the full default set will correctly
+# block on their missing real yaml (see "source yaml exists" check below).
 # --mode both pairs each baseline's real+sim (names tagged _real/_sim so
 # scripts.parity.cli globs the pair); --delays sets enable_training_delays
 # IDENTICALLY both sides (mismatched D = false divergence). Pre-flight prints a
@@ -30,7 +36,8 @@
 #                    round-robin and the aggregator's pinned GPU. Implies
 #                    num_gpus=len(list) unless --num-gpus is also given.
 #   --c              selector.kwargs.c (+ minInitialTrainers + agg_goal unless overridden).
-#   --c-async        selector.kwargs.c for the async baseline (fluxtune) only.
+#   --c-async        selector.kwargs.c for async baselines (fedbuff_round/it_*,
+#                    felix_round/it, fluxtune) only.
 #   --k / --agg-goal selector k / aggregator.agg_goal directly.
 #   --min-initial-trainers / --min-initial-frac  join barrier before first selection:
 #                    absolute count, or floor(F*N). DEFAULT = N (wait for ALL trainers ->
@@ -244,10 +251,20 @@ if [ -n "$TARGET_ACC" ] && [ "$MAX_RUNTIME_S_SET" = "0" ] && [ "$MAX_RUNTIME_S" 
 fi
 
 # baseline -> (real yaml : sim yaml). Plain baseline names, independent of the
-# "n10" baked into each source filename.
+# "n10"/"n100" baked into each source filename. The 6 net-new baselines have no
+# real yaml yet (decision #3: sim-only for now) -- their real_y path is a
+# deliberately nonexistent placeholder so "--mode real|both" fails the
+# pre-flight "source yaml exists" check instead of silently launching sim-only
+# coverage under a real-mode label.
 ALL_RUNS=(
   "fwdllm:$SCRIPT_DIR/fwdllm_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_n100_smoke_sim.yaml"
-  "fwdllm_plus:$SCRIPT_DIR/fwdllm_plus_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_plus_n100_smoke_sim.yaml"
+  "fwdllm_it_unaware:$SCRIPT_DIR/fwdllm_it_unaware_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_it_unaware_n100_smoke_sim.yaml"
+  "fwdllm_it_oracular:$SCRIPT_DIR/fwdllm_it_oracular_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_it_oracular_n100_smoke_sim.yaml"
+  "fedbuff_round:$SCRIPT_DIR/fedbuff_round_n10_smoke.yaml:$SCRIPT_DIR/fedbuff_round_n10_smoke_sim.yaml"
+  "fedbuff_it_unaware:$SCRIPT_DIR/fedbuff_it_unaware_n10_smoke.yaml:$SCRIPT_DIR/fedbuff_it_unaware_n10_smoke_sim.yaml"
+  "fedbuff_it_oracular:$SCRIPT_DIR/fedbuff_it_oracular_n10_smoke.yaml:$SCRIPT_DIR/fedbuff_it_oracular_n10_smoke_sim.yaml"
+  "felix_round:$SCRIPT_DIR/felix_round_n10_smoke.yaml:$SCRIPT_DIR/felix_round_n10_smoke_sim.yaml"
+  "felix_it:$SCRIPT_DIR/felix_it_n10_smoke.yaml:$SCRIPT_DIR/felix_it_n10_smoke_sim.yaml"
   "fluxtune:$SCRIPT_DIR/fluxtune_n10_smoke.yaml:$SCRIPT_DIR/fluxtune_n10_smoke_sim.yaml"
 )
 
@@ -333,15 +350,20 @@ delays_on = (DELAYS == "on")
 # Settled per-baseline training-delay condition so operators stop re-typing
 # --delays/--delay-divisor/--delay-floor every launch. CLI flags still win
 # when explicitly passed. `factor` is validated at 7200s scale (simulate_
-# fwdllm.md §A). fwdllm/fwdllm_plus's `floor` re-derived 07-19 pm (FWDLLM_
-# DESIGN.md §O, same 1.3x-over-observed-max-compute formula as fluxtune's
-# 7.0->4.0): the old 11.0 predated the harness-overhead-removal fix and was
-# never re-checked against post-fix compute (2.72s/3.18s max, floor >=
+# fwdllm.md §A). fwdllm/fwdllm_it_oracular's `floor` re-derived 07-19 pm
+# (FWDLLM_DESIGN.md §O, same 1.3x-over-observed-max-compute formula as
+# fluxtune's 7.0->4.0): the old 11.0 predated the harness-overhead-removal fix
+# and was never re-checked against post-fix compute (2.72s/3.18s max, floor >=
 # 1.3*1.63*3.18=6.74s) -- pending a validation run to confirm 0 TIMING_OVERRUN.
+# The 6 net-new baselines (fwdllm_it_unaware, fedbuff_round/it_*, felix_round/it)
+# deliberately have NO entry here yet -- resolve_delay_settings() falls back to
+# the OFF/base-code default for an unregistered baseline; adding a "settled"
+# factor/floor without having actually smoke-profiled it would misrepresent an
+# unverified guess as calibrated (BRIDGE_DESIGN.md §2b smoke-test step).
 BASELINE_DELAY_DEFAULTS = {
-    "fluxtune":    {"delays": True, "factor": 0.48, "floor": 4.0},
-    "fwdllm":      {"delays": True, "factor": 1.63, "floor": 7.0},
-    "fwdllm_plus": {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fluxtune":           {"delays": True, "factor": 0.48, "floor": 4.0},
+    "fwdllm":             {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fwdllm_it_oracular": {"delays": True, "factor": 1.63, "floor": 7.0},
 }
 
 
@@ -453,7 +475,7 @@ def patch(exp, run_key, variant, trace):
         if not NUM_GPUS:  # keep the displayed n_gpus honest with the actual pool size
             exp["execution"]["num_gpus"] = len(_ids)
     kwargs = exp["aggregator"]["config_overrides"]["selector"]["kwargs"]
-    is_async = (run_key == "fluxtune")
+    is_async = _BL_INTERNALS.get(run_key, {}).get("async") == "async"
     if SEL_C:
         kwargs["c"] = int(SEL_C)
         if not AGG_GOAL:
@@ -531,7 +553,7 @@ for trace in traces:
                 # RESOLVED availability mode read back from the PATCHED cfg (what
                 # actually launches), so the table can't show a stale default.
                 "avail": e0["trainer"].get("availability", {}).get("mode"),
-                "async": (run_key == "fluxtune"),
+                "async": _BL_INTERNALS.get(run_key, {}).get("async") == "async",
                 # baseline-distinguishing internals from the shared catalog
                 "selector": _BL_INTERNALS.get(run_key, {}).get("selector", "?"),
                 "optimizer": _BL_INTERNALS.get(run_key, {}).get("optimizer", "?"),
@@ -756,7 +778,7 @@ elif _gset:
                    "detail": f"all baselines agg_goal={next(iter(_gset))}"})
 # Availability liveness: BLOCK a full-participation sync barrier (agg_goal >=
 # n_trainers) under a non-syn_0 trace — it can never assemble if any trainer is
-# unavailable, so the barrier stalls to the wall cap (fwdllm_plus / K-D20).
+# unavailable, so the barrier stalls to the wall cap (fwdllm_it_oracular / K-D20).
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})
     av, g, n, is_async = b.get("avail"), b.get("agg_goal"), b.get("n_trainers"), b.get("async")

@@ -55,6 +55,9 @@ class _Buf:
 
 class _Agg:
     _distribute_weights_async = TopAggregator._distribute_weights_async
+    _select_ends_for_async_respecting_reselect_gate = (
+        TopAggregator._select_ends_for_async_respecting_reselect_gate
+    )
     _should_send_full_weights = TopAggregator._should_send_full_weights
     _warn_if_redundant_weights_resend = TopAggregator._warn_if_redundant_weights_resend
 
@@ -78,6 +81,7 @@ class _Agg:
         self._sim_dispatch_wall = {}
         self._sim_buffer = _Buf()
         self._sim_staggered_redispatch = False
+        self._reselect_each_iteration = True
         self.weights = None
         self.config = types.SimpleNamespace(hyperparameters=types.SimpleNamespace(
             sim_model_dispatch_queue=dq, sim_overhead_warn_s=5.0))

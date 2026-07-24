@@ -263,10 +263,17 @@ implementation, not now.
 
 Ordered so each step is independently testable before the next depends on it.
 
-- [ ] **1.** Rebuild `_metadata/baselines.yaml` — add/rename the 7 baseline entries (§3.1). Verify
-      `felix_round`'s LR against a smoke run before trusting it downstream.
-- [ ] **2.** Propagate rename into `experiments.yaml`, `run_sequential.sh`, tests, `plotlib/baselines.py`
-      (§3.2–3.6).
+- [x] **1.** Rebuild `_metadata/baselines.yaml` — add/rename the 7 baseline entries (§3.1). Verify
+      `felix_round`'s LR against a smoke run before trusting it downstream. **DONE** — see "Handoff status"
+      below for exact state; LR verification still pending (needs a real smoke run).
+- [x] **2.** Propagate rename into `experiments.yaml`, `run_sequential.sh`, tests, `plotlib/baselines.py`
+      (§3.2–3.6). **DONE** — `run_sequential.sh` heredoc validated standalone (sync + 2 new async
+      baselines, exit 0, correct `is_async` resolution); `test_config_generator.py` rename fixed (29/29
+      pass); `plotlib/baselines.py` registers all 9 baselines with `(P)`/`+IT`/`+O` display names +
+      2 new CVD-safe family hues (fedbuff=green, felix=pink); `experiments.yaml`'s local `baselines:`
+      stanza deleted, run-sets reference keys only. Full `-k fwdllm` suite: 381 passed. See "Handoff
+      status" below for what's still deferred (BASELINES.md item #2's cosmetic comment sweep — separate,
+      later, mechanical).
 - [ ] **3.** Instrumentation pre-check for `main_v2` (§4 gate 0): confirm metrics #1–13 in §2b are
       `CODE-READY` for fedbuff_round/felix_round specifically (not just "fluxtune already validated it") —
       read the async dispatch + selector code paths these two new baselines actually run through. Fix
@@ -305,5 +312,141 @@ turn into small feature work, not just config authoring.
 
 All open questions from the previous two rounds are resolved (baseline rebuild scope, registry location,
 sim mode, alpha conflict, M1/M2 naming + deferred-placeholder policy, no-duplication rule, and now the
-instrumentation-readiness gate: §2b ledger + §4 gate 0 + per-baseline validation checklist). Ready for
-implementation to begin at checklist step 1, pending your final read of this doc.
+instrumentation-readiness gate: §2b ledger + §4 gate 0 + per-baseline validation checklist).
+Implementation started (checklist step 1) and **checklist step 2 is now complete** (rename fully
+propagated + validated, full `-k fwdllm` suite green) — see "Handoff status" below for exact state.
+Do not re-derive the round/iteration async design from scratch; it's settled (see below). Next up:
+checklist step 3 (instrumentation pre-check for `main_v2`).
+
+---
+
+## Handoff status (checklist step 2 complete, resume at step 3)
+
+**Session context you need before touching anything:** this implementation surfaced a real gap not
+anticipated when this doc was signed off — the `reselect_each_iteration` flag (round vs `+IT` baselines)
+only ever worked on the *sync* path; the async dispatch path (`_distribute_weights_async`) had zero
+caching and always behaved like `+IT`. Without fixing that, `fedbuff_round`/`felix_round` would have been
+byte-identical to their `+IT` siblings. This was found, scoped, and confirmed with the operator (two
+`AskUserQuestion` rounds — round-cache design confirmed: pin the async_oort/fedbuff-selected cohort for
+the span of `self._round`, only replacing departed members via the existing
+`_prune_departed_from_round_cache`; default `True` stays a byte-identical passthrough, zero risk to
+already-landed `fluxtune`/`felix` numbers) **and implemented and tested** — this is done, not a to-do.
+
+### Done and verified (tests green)
+
+1. **Async round-cache extension** (`lib/python/flame/mode/horizontal/syncfl/fwdllm_aggregator.py`) —
+   new `_select_ends_for_async_respecting_reselect_gate` method, wired into `_distribute_weights_async`.
+   Extended `__init__`'s comment. Tests: `TestAsyncReselectGate` (4 new tests) added to
+   `lib/python/tests/mode/test_fwdllm_reselection.py`; fixed 2 other test doubles
+   (`test_fwdllm_dispatch_queue.py`, `test_fwdllm_distribute_vclock_stamp.py`) that needed the new
+   method/attribute wired into their hand-rolled aggregator fakes. **Full `-k fwdllm` suite: 340 passed.**
+2. **`_metadata/baselines.yaml` rebuilt** — 18 baseline keys now present (was 12; `fwdllm_plus` retired).
+   Added `fwdllm_it_unaware` (new), renamed `fwdllm_plus`→`fwdllm_it_oracular`, added
+   `fedbuff_round`/`fedbuff_it_unaware`/`fedbuff_it_oracular`/`felix_round`/`felix_it` (all new). Verified
+   `python3 -c "import yaml; ..."` parses and lists all 18 keys correctly.
+   - **Known unverified placeholders left in the yaml (flagged inline with `TODO(verify)`)**: `felix_round`/
+     `felix_it`'s `learning_rate: 0.075` (ported from fluxtune, needs its own smoke-run retune — this is
+     literally checklist step 1's own explicit caveat); `fedbuff_round`/`fedbuff_it_*`'s same LR placeholder
+     (same reasoning, no dataset_name-table entry for agnews); `fedbuff_it_oracular`'s `trace: mobiperf_2st`
+     (2-tier, ported from `fwdllm_it_oracular` — unconfirmed whether the async eval-dispatch path needs a
+     3-tier trace instead).
+3. **`test_baselines.py`** (`lib/python/tests/launch/test_baselines.py`) updated: renamed/added cases in
+   `TestFwdllmBaselines`, new `TestNewAsyncFwdllmBaselines` class (7 tests) covering the 5 net-new async
+   baselines' invariants (selector sort, `is_async`, `reselect_each_iteration`, `agg_rate_conf.type`, no
+   accidental C1/C3 leakage). **All 31 tests in the file pass.**
+4. **Smoke yaml files** — renamed (via `git mv`) `fwdllm_plus_n100_smoke{,_sim}.yaml` →
+   `fwdllm_it_oracular_n100_smoke{,_sim}.yaml` (content + internal name/baseline/job-id fields updated).
+   Created 6 new sim-only yamls (BRIDGE_DESIGN.md decision #3: sim-only for new launches):
+   `fwdllm_it_unaware_n100_smoke_sim.yaml`, `fedbuff_round_n10_smoke_sim.yaml`,
+   `fedbuff_it_unaware_n10_smoke_sim.yaml`, `fedbuff_it_oracular_n10_smoke_sim.yaml`,
+   `felix_round_n10_smoke_sim.yaml`, `felix_it_n10_smoke_sim.yaml`. All 8 files verified to parse and
+   resolve to the correct `baseline:` key via a `yaml.safe_load` check. These yamls deliberately do NOT
+   copy fluxtune's own profiled sim-fidelity numbers (`sim_gate_compute_cap_s`, `sim_completion_leg_s`) —
+   those were measured for fluxtune's specific JVP-guided compute/payload cost, not these baselines'; left
+   at sim defaults (inert/off) with a `TODO(verify)` comment pointing at the still-needed profiling pass.
+
+### Done and verified this session (all of checklist step 2)
+
+5. **`run_sequential.sh`** — `bash -n` syntax-checked AND the embedded Python heredoc (the `python -
+   <<'PY' ... PY` block, ~line 320) exercised standalone (extracted, fed a representative `RUN_TSV` of
+   one sync + two new async baselines — `fwdllm`, `fedbuff_round`, `felix_it`). Confirmed: `--mode both`
+   correctly blocks on the expected missing-real-yaml checks for the 6 sim-only baselines (exit 2, by
+   design); `--mode sim` generates all 3 cfgs cleanly (exit 0), `is_async` resolves correctly per baseline
+   (fwdllm=sync, fedbuff_round/felix_it=async) in the tier-② table, and `patch()`/`_BL_INTERNALS` don't
+   throw. Prior content (header comment, `ALL_RUNS`, `BASELINE_DELAY_DEFAULTS`, the `is_async` hardcode
+   fix, the K-D20 comment fix) unchanged from earlier in the session — see git diff for full detail.
+6. **`experiments.yaml`** — local `baselines:` stanza deleted (decision #5; confirmed nothing in the repo
+   programmatically read it). `main` run-set's `baselines: [fwdllm, fwdllm_plus, fluxtune]` renamed to
+   `[fwdllm, fwdllm_it_oracular, fluxtune]` (plain rename of the same config, not a new baseline — kept
+   consistent with the rest of the rename rather than left stale). Cosmetic `fwdllm_plus` mentions in the
+   file header comment, the `1_time_to_target` takeaway string, and the `scale_n100` `_blocked_pending`
+   tag updated too. Parses clean (`yaml.safe_load` verified).
+7. **`plotlib/baselines.py`** — all 9 baselines now registered per `BASELINES.md`'s naming grammar
+   (`(P)`/`+IT`/`+O`): FwdLLM family (orange, unchanged) gets `fwdllm_it_unaware`/`fwdllm_it_oracular`
+   rows; two new CVD-safe family hues added — FedBuff(P) (green, `#009E73`/`#66C2A5`) and Felix(P) (pink,
+   `#CC79A7`/`#E8A5C7`) — for the 5 new baselines. Legend order (0–8) follows the paper's sync→async→ours
+   staircase narrative; ✅ EVAL rows are bold, ⚠ ABLATION `+IT`/`+IT+O` rows are italic (same convention
+   the old `fwdllm_plus` row used). `style_for()`'s unknown-key fallback extended to recognize
+   `fedbuff_`/`felix_` prefixes (previously only `fwdllm_`/`fluxtune_`, which would have mis-bucketed any
+   future ablation of the new families into the fluxtune-blue fallback). Verified by direct import +
+   `style_for()` calls on all 9 keys.
+8. **`test_config_generator.py`** — `fwdllm_plus` renamed to `fwdllm_it_oracular` in
+   `TestFwdllmEndToEndConfigGeneration`'s two parametrize lists and `TestFwdllmSmokeYamlsResolve`'s
+   yaml-filename/baseline-key pair (`fwdllm_plus_n100_smoke.yaml` → `fwdllm_it_oracular_n100_smoke.yaml`),
+   plus the class docstring. All 29 tests in the file pass.
+9. **Full affected suite re-run**: `pytest -k fwdllm` (excluding an unrelated pre-existing collection
+   error in `examples/async_cifar10/launch/test_monitor.py` — a `ModuleNotFoundError` on a `launch`
+   package that predates this session, from commit `9503cad4`, orthogonal to fwdllm) — **381 passed**
+   (up from the 340 noted earlier in the session, reflecting the tests added since). No regressions.
+
+### Deliberately deferred (separate, later checklist step — NOT step 2)
+
+BASELINES.md item #2's **cosmetic-comment sweep** (mentions of `fwdllm_plus` in code comments across
+`flame/config.py`, `flame/launch/runner.py`, `flame/mode/horizontal/syncfl/fwdllm_aggregator.py`,
+`flame/selector/random.py`) and item #4's **doc sweep** (`EXPERIMENTS.md`, `EXPTS_CHARTER.md`,
+`simulate_fwdllm.md`, `fluxtune_contributions.md`, `MIGRATION_TO_LAUNCHER_FWDLLM.md`,
+`compare_baselines.py`, `logical_parity.py`, `run_parity.py`, `telemetry_manifest.yaml`, `figs.yaml`) are
+this doc's own checklist **step 5** ("low priority, do last, mechanical") — a distinct, later step from
+checklist step 2 (rename propagation into the *registry/test* files), not part of what this session
+resumed. Old `run_*` experiment directories under `experiments/` also still carry the old
+`fwdllm_plus_*` name in their dirnames/snapshots — those are historical run artifacts, not renamed
+retroactively (matches decision #3's "already-landed numbers kept as-is" policy).
+
+### Git state (uncommitted, nothing pushed)
+
+Checklist steps 1–2 are done but **nothing has been committed this session**. `git status --short`:
+```
+ M lib/python/examples/_metadata/baselines.yaml
+ M lib/python/examples/fwdllm/expt_scripts/plotlib/baselines.py
+ M lib/python/examples/fwdllm/experiments.yaml
+RM .../fwdllm_plus_n100_smoke.yaml -> .../fwdllm_it_oracular_n100_smoke.yaml
+RM .../fwdllm_plus_n100_smoke_sim.yaml -> .../fwdllm_it_oracular_n100_smoke_sim.yaml
+ M lib/python/examples/fwdllm/expt_scripts/run_sequential.sh
+ M lib/python/flame/mode/horizontal/syncfl/fwdllm_aggregator.py
+ M lib/python/tests/launch/test_baselines.py
+ M lib/python/tests/launch/test_config_generator.py
+ M lib/python/tests/mode/test_fwdllm_dispatch_queue.py
+ M lib/python/tests/mode/test_fwdllm_distribute_vclock_stamp.py
+ M lib/python/tests/mode/test_fwdllm_reselection.py
+ M lib/python/examples/paper_expts_fluxtune/BRIDGE_DESIGN.md
+?? .../fedbuff_it_oracular_n10_smoke_sim.yaml
+?? .../fedbuff_it_unaware_n10_smoke_sim.yaml
+?? .../fedbuff_round_n10_smoke_sim.yaml
+?? .../felix_it_n10_smoke_sim.yaml
+?? .../felix_round_n10_smoke_sim.yaml
+?? .../fwdllm_it_unaware_n100_smoke_sim.yaml
+```
+Per CLAUDE.md, ask the user before committing/pushing — checklist step 2 (a coherent, fully-tested unit)
+is a natural commit boundary before starting step 3 (instrumentation pre-check, a code-reading exercise,
+not a code change).
+
+### Next actions, in order
+
+1. Ask the user whether to commit checklist steps 1–2 now (this is the natural boundary the earlier
+   handoff also flagged).
+2. Checklist step 3 (§4 gate 0): read the async dispatch + selector code paths `fedbuff_round`/
+   `felix_round` actually run through and confirm §2b metrics #1–13 are `CODE-READY` for them
+   specifically — not assumed from fluxtune's already-validated pass. Fix reducer gaps N3/N5/N6 while
+   in there (they block `Ready?` regardless of telemetry status).
+3. Checklist step 4: add the `main_v2` run-set to `experiments.yaml` (4-anchor E1–E5 + attribution reuse,
+   sim-mode only, per §3's spec).

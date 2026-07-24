@@ -1,5 +1,5 @@
 # ============================================================================
-# FLUXTUNE vs FWDLLM / FWDLLM_PLUS — machine-readable experiment registry.
+# FLUXTUNE vs FWDLLM / FWDLLM_IT_ORACULAR — machine-readable experiment registry.
 #
 # Consumed by:
 #   * run_sequential.sh      -> launches a run_set's (baseline x condition) matrix
@@ -32,19 +32,16 @@ defaults:
   loss_min_rel_delta: 0.01     # loss: 1% RELATIVE drop vs running-best counts as progress
                                # (loss is unbounded, so progress is relative, not absolute)
 
-# ---- baselines (descriptive; substance lives in _metadata/baselines.yaml) ---
-baselines:
-  fwdllm:      { sync: true,  selector: random,     tracking: default,       agg_goal_default: 10 }
-  fwdllm_plus: { sync: true,  selector: random,     tracking: oracular,      agg_goal_default: 10 }
-  fluxtune:    { sync: false, selector: async_oort, tracking: client_notify, agg_goal_default: 3  }
-
 # ---- run-sets: the expensive GPU work, produced ONCE, reused by all analyses -
+# Run-sets reference baseline KEYS only; knobs (sync/selector/tracking/agg_goal)
+# resolve from _metadata/baselines.yaml, the single source of truth (no local
+# baselines: stanza here to drift out of sync with it).
 run_sets:
   main:
     description: >
       Canonical comparison run-set. Experiment 1 defines it; Experiments 2-5 are
       pure reducers over these run dirs (no new GPU runs). One run per baseline.
-    baselines: [fwdllm, fwdllm_plus, fluxtune]
+    baselines: [fwdllm, fwdllm_it_oracular, fluxtune]
     # Active condition = the real comparison (operator-signed-off 2026-07-06):
     # N=100, 84% target, syn_0 (Phase 1), data heterogeneity alpha=1, modeled
     # mobile-latency delays ON at delay_factor=2. agg_goal MATCHES across all three
@@ -68,10 +65,11 @@ run_sets:
       C: { sync: 10, async: 30 }
       partition_method: niid_label_clients=100_alpha=0.1
       avail_trace: mobiperf_2st
-      # NOTE: fwdllm_plus sync barrier cannot assemble under mobiperf unavailability
-      # (agg_goal >= available trainers). Needs a policy decision before this runs;
-      # the pre-flight gate will BLOCK it otherwise. See EXPERIMENTS.md sec 1.
-      _blocked_pending: fwdllm_plus_mobiperf_policy
+      # NOTE: fwdllm_it_oracular sync barrier cannot assemble under mobiperf
+      # unavailability (agg_goal >= available trainers). Needs a policy decision
+      # before this runs; the pre-flight gate will BLOCK it otherwise. See
+      # EXPERIMENTS.md sec 1.
+      _blocked_pending: fwdllm_it_oracular_mobiperf_policy
 
 # ---- analyses: every experiment is a view over a run_set --------------------
 # reuse: run_set analyses share the SAME run dirs. `metrics[].id` are implemented
@@ -81,7 +79,7 @@ run_sets:
 #   ws3b  = perturbation counter (new)
 analyses:
   - id: 1_time_to_target
-    takeaway: Fluxtune reaches target accuracy faster than FwdLLM and FwdLLM_Plus.
+    takeaway: Fluxtune reaches target accuracy faster than FwdLLM and FwdLLM+IT+O.
     run_set: main
     reuses: null                 # this analysis DEFINES the run-set
     metrics:

@@ -38,7 +38,14 @@ class _FakeChannel:
         self._removed = set()
         self._unavail = set()
 
-    def ends(self, state, task_to_perform, agg_version_key=None, data_id=None):
+    def ends(
+        self,
+        state,
+        task_to_perform,
+        agg_version_key=None,
+        data_id=None,
+        trainer_version_keys=None,
+    ):
         self.calls += 1
         return self._selections[min(self.calls - 1, len(self._selections) - 1)]
 
@@ -66,6 +73,8 @@ class _FakeAggregator:
         self.data_id = 0
         self._reselect_true_cache_key = None
         self._reselect_true_cache_ends = None
+        self._trainer_state_dict = {}
+        self._curr_agg_version = None
         if agg_goal is not None:
             self._agg_goal = agg_goal
 
@@ -74,6 +83,7 @@ class _FakeAggregator:
         return (self._model_version, self.iteration_per_data_id)
 
     select = TopAggregator._select_ends_respecting_reselect_gate
+    select_async = TopAggregator._select_ends_for_async_respecting_reselect_gate
     _rearm_recv_eligibility = staticmethod(TopAggregator._rearm_recv_eligibility)
     _prune_departed_from_round_cache = (
         TopAggregator._prune_departed_from_round_cache
@@ -343,3 +353,75 @@ class TestStuckCachePruning:
 
         assert agg.select(channel, "train") == ["t1", "t2"]
         assert channel.calls == 1
+
+
+class TestAsyncReselectGate:
+    """`_select_ends_for_async_respecting_reselect_gate` -- the async
+    counterpart wired into `_distribute_weights_async` (round vs +IT
+    baselines: fedbuff_round/felix_round vs fedbuff_it_*/felix_it).
+    True (default) must stay a pure passthrough (today's only async
+    behavior, unchanged); False reuses the same round-cache/prune-departed
+    machinery as the sync gate."""
+
+    def test_reselect_true_always_reinvokes_no_caching(self):
+        """Default (unchanged) async behavior: every call re-queries the
+        selector, even within the same version_key -- no caching at all,
+        unlike the sync True-branch's per-version_key cache."""
+        agg = _FakeAggregator(reselect_each_iteration=True)
+        channel = _FakeChannel(selections=[["t1"], ["t2"], ["t1", "t3"]])
+
+        assert agg.select_async(channel, "train") == ["t1"]
+        assert agg.select_async(channel, "train") == ["t2"]
+        assert agg.select_async(channel, "train") == ["t1", "t3"]
+        assert channel.calls == 3
+
+    def test_reselect_false_pins_cohort_until_round_advances(self):
+        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
+        channel = _FakeChannel(selections=[["t1"], ["t2"]])
+
+        assert agg.select_async(channel, "train") == ["t1"]
+        assert agg.select_async(channel, "train") == ["t1", "t2"]
+        assert channel.calls == 2
+
+        # Cohort reached agg_goal -- further calls must not re-query.
+        assert agg.select_async(channel, "train") == ["t1", "t2"]
+        assert channel.calls == 2
+
+        # Round rollover -- cohort re-forms.
+        agg._round += 1
+        channel._selections = [["t3", "t4"]]
+        channel.calls = 0
+        assert agg.select_async(channel, "train") == ["t3", "t4"]
+        assert channel.calls == 1
+        assert agg.select_async(channel, "train") == ["t3", "t4"]
+        assert channel.calls == 1
+
+    def test_reselect_false_does_not_cache_empty_selection(self):
+        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=1)
+        channel = _FakeChannel(selections=[None, None, ["t1"]])
+
+        assert agg.select_async(channel, "train") == []
+        assert agg.select_async(channel, "train") == []
+        assert agg.select_async(channel, "train") == ["t1"]
+        assert channel.calls == 3
+
+        assert agg.select_async(channel, "train") == ["t1"]
+        assert channel.calls == 3
+
+    def test_reselect_false_prunes_departed_and_backfills(self):
+        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
+        channel = _FakeChannel(selections=[["t1", "t2"], ["t3"]])
+
+        assert agg.select_async(channel, "train") == ["t1", "t2"]
+        assert channel.calls == 1
+
+        # t1 departs mid-round -- a round-level baseline swaps it out, it
+        # doesn't deadlock the cohort.
+        channel._removed.add("t1")
+
+        ends = agg.select_async(channel, "train")
+        assert ends == ["t2", "t3"]
+        assert channel.calls == 2
+
+        assert agg.select_async(channel, "train") == ["t2", "t3"]
+        assert channel.calls == 2
