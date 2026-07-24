@@ -1,0 +1,79 @@
+# FedFwd smoke test. Real sibling of fedbuff_it_unaware_n10_smoke_sim.yaml --
+# identical stack, but reselect_each_iteration=true (per BASELINES.md,
+# fedbuff_it_unaware's own catalog entry). Same real/sim delta as
+# fedbuff_round_n10_smoke.yaml (time_mode, job id, dropped sim-only knobs).
+#
+# Uses the `fedbuff_it_unaware` baseline: FedBuff(P)+IT, the direct L2
+# attribution floor (FluxTune minus C1/C2-pending/C3, L0+L1 held fixed).
+#
+# TODO(verify): smoke-pending, see fedbuff_round_n10_smoke.yaml's note on
+# sim-fidelity knobs not yet profiled for this baseline.
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/fedbuff_it_unaware_n10_smoke.yaml
+
+experiments:
+  - name: fedbuff_it_unaware_n10_smoke
+    description: "FedFwd smoke (100 trainers, c=15/agg_goal=5, fedbuff_it_unaware baseline: async FedBuffSelector+fedbuff uniform rate, unaware, per-iteration reselect)."
+
+    baseline: fedbuff_it_unaware
+
+    example:
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 100
+      start_id: 1
+      dataset:
+        name: agnews
+        # Cosmetic-only for path-style (naming/snapshot), but kept in sync
+        # with the actual partition_method below (EXPTS_CHARTER A5: alpha=1).
+        dirichlet_alpha: 1
+        path_style: true
+      availability:
+        mode: syn_0
+      time_mode: real
+      enable_training_delays: false
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          seed: 1234
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          partition_method: niid_label_clients=100_alpha=1
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: fedbuff
+      tracking_mode: default
+      agg_goal: 5
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fedbuff_it_unaware_n10_smoke
+        hyperparameters:
+          seed: 1234
+          rounds: 50
+          inflight_residence: true
+          real_drain_ready_ingest: true
+          real_distribute_settle_s: 0.0
+          send_timeout_wait_s: 300
+          max_data_id_progress: 9999
+          max_runtime_s: 1800
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          partition_method: niid_label_clients=100_alpha=1
+        selector:
+          kwargs:
+            c: 15
+            minInitialTrainers: 100
+
+    execution:
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false
