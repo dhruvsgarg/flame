@@ -283,9 +283,10 @@ Ordered so each step is independently testable before the next depends on it.
       status" below.
 - [x] **4.** Add `main_v2` run-set to `experiments.yaml` (4-anchor E1–E5 + attribution reuse), sim-mode.
       **DONE** — see "Handoff status" below.
-- [ ] **5.** Write the new Layer-0 tex-map + §2b instrumentation ledger into `EXPERIMENTS.md`, superseding
+- [x] **5.** Write the new Layer-0 tex-map + §2b instrumentation ledger into `EXPERIMENTS.md`, superseding
       its old "Experiment 1–5" framing — keep the metric/reducer content (§4, §5 of `EXPERIMENTS.md`
-      today), re-anchor to tex labels, keep row numbers 1–13 aligned between the two docs.
+      today), re-anchor to tex labels, keep row numbers 1–13 aligned between the two docs. **DONE** — see
+      "Handoff status" below.
 - [ ] **6.** Smoke-test each new baseline (`fedbuff_round`, `felix_round`, and the `+IT`/`+O` rows) at
       N=10 sim. Two things happen in this step, not one: (a) confirm `run_parity.py` doesn't need new
       rungs for them (new *configs* of an already-parity-tested code path, but verify); (b) walk the §2b
@@ -315,15 +316,16 @@ turn into small feature work, not just config authoring.
 All open questions from the previous two rounds are resolved (baseline rebuild scope, registry location,
 sim mode, alpha conflict, M1/M2 naming + deferred-placeholder policy, no-duplication rule, and now the
 instrumentation-readiness gate: §2b ledger + §4 gate 0 + per-baseline validation checklist).
-Implementation started (checklist step 1) and **checklist steps 1–4 are now complete** (rename fully
+Implementation started (checklist step 1) and **checklist steps 1–5 are now complete** (rename fully
 propagated + validated; instrumentation pre-check done, N3/N5/N6 reducer gaps fixed; `main_v2` run-set
-+ tex-anchored analyses added) — see "Handoff status" below for exact state. Do not re-derive the
-round/iteration async design from scratch; it's settled (see below). Next up: checklist step 5 (write
-the Layer-0 tex-map + §2b ledger into `EXPERIMENTS.md`).
++ tex-anchored analyses added; `EXPERIMENTS.md` now carries the Layer-0 tex-map + §2b ledger, kept
+row-aligned with this doc) — see "Handoff status" below for exact state. Do not re-derive the
+round/iteration async design from scratch; it's settled (see below). Next up: checklist step 6
+(smoke-test each new baseline at N=10 sim).
 
 ---
 
-## Handoff status (checklist step 4 complete, resume at step 5)
+## Handoff status (checklist step 5 complete, resume at step 6)
 
 **Session context you need before touching anything:** this implementation surfaced a real gap not
 anticipated when this doc was signed off — the `reselect_each_iteration` flag (round vs `+IT` baselines)
@@ -476,6 +478,24 @@ already-landed `fluxtune`/`felix` numbers) **and implemented and tested** — th
     re-run, unaffected (experiments.yaml isn't imported by any test module — only read at runtime by
     `run_sequential.sh`/`compare_baselines.py`).
 
+### Done and verified this session (checklist step 5)
+
+20. **`EXPERIMENTS.md` restructured** (not rewritten from scratch — all existing prose/observed-results
+    preserved): title/intro updated for the rename + a pointer to this doc; §1's baseline table marked as
+    the historical 3-baseline view with a pointer to `BASELINES.md`'s 9-baseline catalog (no duplication);
+    §4's "Experiment 1–5" headers now carry tex `\label`s (E1 `sec:eval:tta` .. E5 `sec:eval:sessions`) and
+    its reducer-audit callout updated from "N3/N5/N6 — fix before claims land" to "FIXED, see §5"; §5
+    replaced wholesale with the full §2b instrumentation-readiness ledger (rows 1–19 + the per-baseline
+    validation checklist) — **row numbers 1–13 verified byte-identical to this doc's §2b** (metric name,
+    telemetry field, provenance, status all match; row 8's status string even independently caught a
+    `fwdllm_plus`→`fwdllm_it_oracular` inconsistency in a draft, since fixed in both copies); new §10a adds
+    the Layer-0 tex↔experiment map (this doc's §2, kept in sync) ahead of the renamed §10b (the existing
+    per-run ledger). Also fixed two real breakages the rename left behind: a stale §7 multi-node command
+    example (`--only fwdllm_plus`, would now fail — `run_sequential.sh`'s `ALL_RUNS` no longer has that
+    key) and a stale "Naming (being reframed)" blockquote in §1 promising a future rename that already
+    landed. Added a changelog entry summarizing checklist steps 1–5. Doc-only change — no code/tests
+    affected, nothing to re-run.
+
 ### Deliberately deferred (separate, later checklist step — NOT step 2 or 3)
 
 BASELINES.md item #2's **cosmetic-comment sweep** (mentions of `fwdllm_plus` in code comments across
@@ -491,22 +511,18 @@ retroactively (matches decision #3's "already-landed numbers kept as-is" policy)
 
 ### Git state (uncommitted, nothing pushed)
 
-Checklist steps 1–3 were committed earlier this session (`7062d35e`, `e4d1ff3d`, `bf0b1477`). Checklist
-step 4's work is done but **not yet committed**. `git status --short`:
+Checklist steps 1–4 were committed earlier this session (`7062d35e`, `e4d1ff3d`, `bf0b1477`, `0f3eced8`).
+Checklist step 5's work is done but **not yet committed**. `git status --short`:
 ```
- M lib/python/examples/fwdllm/experiments.yaml
  M lib/python/examples/paper_expts_fluxtune/BRIDGE_DESIGN.md
-?? lib/python/examples/fwdllm/test_experiments_yaml.py
+ M lib/python/examples/paper_expts_fluxtune/EXPERIMENTS.md
 ```
-Per CLAUDE.md, ask the user before committing/pushing — checklist step 4 is a natural commit boundary
-before starting step 5 (an `EXPERIMENTS.md` rewrite, a different file/kind of change).
+Per CLAUDE.md, ask the user before committing/pushing — checklist step 5 is doc-only (no code/config), a
+clean commit boundary before step 6 (an actual GPU smoke-test launch, a very different kind of action).
 
 ### Next actions, in order
 
-1. Ask the user whether to commit checklist step 4 now.
-2. Checklist step 5: write the new Layer-0 tex-map + §2b instrumentation ledger into `EXPERIMENTS.md`,
-   superseding its old "Experiment 1–5" framing — keep the metric/reducer content (§4, §5 of
-   `EXPERIMENTS.md` today), re-anchor to tex labels, keep row numbers 1–13 aligned between the two docs.
-3. Checklist step 6: smoke-test each new baseline (`fedbuff_round`, `felix_round`, `+IT`/`+O` rows) at
+1. Ask the user whether to commit checklist step 5 now.
+2. Checklist step 6: smoke-test each new baseline (`fedbuff_round`, `felix_round`, `+IT`/`+O` rows) at
    N=10 sim — confirm `run_parity.py` doesn't need new rungs, and walk the §2b per-baseline checklist
    (flip WS3-a/WS3-b from `smoke-pending` to `validated` per baseline by inspecting real telemetry).
