@@ -22,6 +22,9 @@ Related: [`simulate_fwdllm.md`](simulate_fwdllm.md) (real↔sim parity — princ
 [`../_metadata/BASELINES.md`](../_metadata/BASELINES.md) (baseline catalog + restructure plan),
 [`fluxtune_contributions.md`](fluxtune_contributions.md) (systems/ML contributions, incl.
 the memory/inference-only-NPU thesis — a motivation/design claim, not an eval experiment).
+[`PLOT_TRACKER.md`](PLOT_TRACKER.md) is the finer-grained twin of §10a below: per
+figure-manifest (`figs_main_v2.yaml`/`figs_attribution.yaml`) baseline readiness —
+which run dir backs each baseline, how far it's progressed, what's still missing.
 
 ---
 
@@ -537,6 +540,17 @@ Session artifacts: `expt_scripts/smoke_logs/<ts>/` (`converge_<run>.json`, manif
 ---
 
 ## 9. Changelog
+- **2026-07-24 — tex⇄§10a⇄PLOT_TRACKER.md realignment.** Fixed the gap `PLOT_TRACKER.md`'s "OPEN WORK #1"
+  diagnosed: `evaluation.tex`'s five `sec:eval:sota` `\input{figs/code/eval/e2e/*}` paths had no backing
+  files (now created, pointing live at `expt_scripts/paper_figs_main_v2/*.pdf` — no copy step, stays
+  in sync on every regen); `sec:eval:attribution` had no `\input`s at all and reused sota's `fig:eval:*`
+  labels, now gets its own `figs/code/eval/attr/*` fragments + `fig:eval:attr:*` labels pointing at
+  `paper_figs_attribution/`. §10a's E1–E5 rows flipped ✅ RENDERED (`main_v2`/`figs_main_v2.yaml`
+  fully landed); A0's row rewritten — it previously described a 2-baseline `main_v2`-reuse comparison that
+  no longer matches either the manifest or the tex; the real attribution manifest is a separate 6-baseline
+  `figs_attribution.yaml`, 3/6 landed. Surfaced (not resolved) a real claims mismatch: the attribution
+  prose's numbers are for `\fwdllmito{}` (oracular), which has no run at all — the landed comparison point
+  is `fwdllm_it_unaware`. See `PLOT_TRACKER.md` for the manifest-level detail this table now cites directly.
 - **2026-07-23 — 9-baseline rebuild + Layer-0 bridge (`BRIDGE_DESIGN.md` checklist steps 1–5).** Rebuilt
   `_metadata/baselines.yaml` to 9 keys (5 new async baselines `fedbuff_round/it_*`, `felix_round/it` +
   `fwdllm_it_unaware`; `fwdllm_plus`→`fwdllm_it_oracular` renamed); propagated the rename through
@@ -601,12 +615,12 @@ needs is at least `CODE-READY` (§5). This replaces free-form cross-referencing 
 
 | tex label | Experiment id | Baselines needed | Run-set | `Ready?` | Status |
 |---|---|---|---|---|---|
-| `sec:eval:tta` | **E1** time-to-accuracy | fwdllm, fedbuff_round, felix_round, fluxtune | `main_v2` | ⚠ NOT LAUNCHED | fwdllm/fluxtune landed on `main` (real, 3-baseline, α=1, §10b); `main_v2` (sim, 4-anchor) added to `experiments.yaml`, validated via `--dry-run`, **not yet launched**. N3 fixed. |
-| `sec:eval:util` | **E2** resource utilization | same as E1 | reuses `main_v2` | ⚠ NOT LAUNCHED | N5 fixed; blocked only on the launch. |
-| `sec:eval:compute` | **E3** compute effectiveness | same as E1 | reuses `main_v2` | ⚠ NOT LAUNCHED | reducer exists, `main`'s 3-baseline numbers are stale (superseded); needs `main_v2` launch + fedbuff_round/felix_round WS3-b re-validation (§5 row 8). |
-| `sec:eval:comm` | **E4** communication | same as E1 | reuses `main_v2` | ⚠ NOT LAUNCHED | reducer exists, numbers stale; needs `main_v2` launch + per-baseline WS3-a re-validation (§5 row 9-10). |
-| `sec:eval:sessions` | **E5** session length | same as E1 | reuses `main_v2` | ⚠ NOT LAUNCHED | N6 fixed; blocked only on the launch. |
-| `sec:eval:attribution` | **A0** attribution (reuses E1–E4 metrics) | fluxtune vs `fwdllm_it_oracular` | reuses `main_v2` | ⚠ blocked on E1-E4 | `a0_attribution` analysis added to `experiments.yaml`, scoped to the 2-baseline pair — closest to already-landed (old `fwdllm_plus` vs `fluxtune` comparison, renamed), same launch blocker as E1-E4. |
+| `sec:eval:tta` | **E1** time-to-accuracy | fwdllm, fedbuff_round, felix_round, fluxtune | manifest `figs_main_v2.yaml` (`PLOT_TRACKER.md` Manifest 1) | ✅ RENDERED | All 4 anchor baselines landed + rendered → `expt_scripts/paper_figs_main_v2/`, wired into `evaluation.tex` via `figs/code/eval/e2e/e1_tta.tex`. 5th manifest row `fwdllm_it_oracular` unlaunched but blocks nothing here (not one of E1's 4 anchors). |
+| `sec:eval:util` | **E2** resource utilization | same as E1 | same manifest | ✅ RENDERED | Same render; `figs/code/eval/e2e/e2_util.tex`. |
+| `sec:eval:compute` | **E3** compute effectiveness | same as E1 | same manifest | ✅ RENDERED | Same render (both `e3_dloss_per_mfwd`/`e3_dloss_per_gpu_hour` panels); `figs/code/eval/e2e/e3_compute.tex`. Numbers now current (superseded the old 3-baseline `main` render). |
+| `sec:eval:comm` | **E4** communication | same as E1 | same manifest | ✅ RENDERED | Same render; `figs/code/eval/e2e/e4_comm.tex`. |
+| `sec:eval:sessions` | **E5** session length | same as E1 | same manifest | ✅ RENDERED | Same render; `figs/code/eval/e2e/e5_sessions.tex`. |
+| `sec:eval:attribution` | **A0** attribution (reuses E1–E4 metrics) | fluxtune, fwdllm_it_unaware, felix_it, fedbuff_it_unaware, fwdllm_it_oracular, fedbuff_it_oracular | **separate** manifest `figs_attribution.yaml` (`PLOT_TRACKER.md` Manifest 2) — corrects this row's prior "reuses `main_v2`, 2-baseline `fwdllm_it_oracular`" framing, which no longer matches either the manifest or the tex | ⚠ PARTIAL | Rendered 2026-07-24 14:56 with 3/6 baselines (`fluxtune`, `fwdllm_it_unaware`, `felix_it`); `fedbuff_it_unaware` too early (16 evals), both `_oracular` legs **unlaunched**. **Open mismatch**: `evaluation.tex`'s prose cites `\fwdllmito{}` (oracular) numbers ("80.9%, 7.4h") but that baseline has no run at all — the landed comparison point is `fwdllm_it_unaware` (85.26% @ 1.56h). Flagged inline as a `\tbd` in `figs/code/eval/attr/a_tta.tex`; not resolved here since it's a claims/numbers decision, not a wiring fix. |
 | `sec:ablation:ladder` | **L-ladder** opt on/off ladder | fluxtune only, 4 configs (R1–R4) | `opt_ladder` (existing, informal) | ✅ landed / ⬜ L1-completion unrun | ✅ **landed** (§10b R1–R4, `commit_reason`+`grad_aware_gated_total` telemetry validated); per-contribution C1/C2/C3 on/off ("L1 completion") is separate, unrun. |
 | `sec:ablation:c1alt` | **L3-c1alt** selection-policy sweep | fluxtune, selector ∈ {random, cosine, quasi, JVP-guided} | NEW, unwritten | ❌ NEEDS CODE | selector code-existence unverified (§5 row 16). |
 | `sec:ablation:jvp` | **L2-jvp** JVP threshold/refresh sensitivity | fluxtune, param sweep | NEW, unwritten | ❌ NEEDS CODE CHECK | refresh-frequency knob unverified (§5 row 17). |

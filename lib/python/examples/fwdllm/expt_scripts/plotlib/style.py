@@ -1,18 +1,16 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
 """SOCC-2026 figure style — the single source of every "look" decision: rcParams,
-column geometry, PDF export, EMA smoothing and the timestamped-output convention.
+column geometry, PDF export, EMA smoothing and the output-dir convention.
 
 `pdf.fonttype=42` embeds TrueType glyphs (camera-ready checkers reject Type-3).
-`timestamped_outdir()` writes to `<root>/<ts>/` with stable basenames + a `latest`
-symlink, so renders never clobber each other yet copying `latest/` into Overleaf
-overwrites the draft's figures by name.
+`render_outdir()` writes straight into `<root>/` -- stable basenames, so each
+render overwrites in place; copy `<root>/*.pdf` into Overleaf directly.
 """
 
 from __future__ import annotations
 
 import os
-from datetime import datetime
 
 
 # single-column width for a 2-column ACM/IEEE-style layout (inches)
@@ -74,25 +72,14 @@ def column_figsize(fraction: float = 1.0, aspect: float = DEFAULT_ASPECT):
 
 
 # --------------------------------------------------------------------------- #
-# output convention — timestamped dir + stable basenames + `latest` symlink
+# output convention — flat dir, stable basenames, overwritten every render
 # --------------------------------------------------------------------------- #
-def timestamped_outdir(root: str, stamp: str | None = None) -> str:
-    """Create `<root>/<stamp>/`, refresh a `<root>/latest` symlink, return the dir.
-
-    `stamp` defaults to now (YYYYMMDD_HHMMSS). Basenames written inside are stable,
-    so old renders are preserved while `latest/` always holds the newest set to
-    copy into the paper.
-    """
-    stamp = stamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = os.path.join(os.path.abspath(root), stamp)
+def render_outdir(root: str) -> str:
+    """Create (if needed) and return `root` itself. No timestamped subdir, no
+    `latest` symlink -- every figure name is already stable and unique, so a
+    rerun just overwrites its own PDF in place."""
+    out = os.path.abspath(root)
     os.makedirs(out, exist_ok=True)
-    link = os.path.join(os.path.abspath(root), "latest")
-    try:
-        if os.path.islink(link) or os.path.exists(link):
-            os.remove(link)
-        os.symlink(stamp, link)  # relative target -> portable if root moves
-    except OSError:
-        pass  # symlink is a convenience, never fatal
     return out
 
 

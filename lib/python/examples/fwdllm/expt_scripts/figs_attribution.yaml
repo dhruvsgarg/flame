@@ -1,0 +1,32 @@
+# SOCC-2026 paper-figure manifest for `sec:eval:attribution` (evaluation.tex) --
+# the SECOND comparison subsection: FluxTune vs. the round->iteration DERIVED
+# baselines (the `+IT`/`+IT+O` rows -- our own systems-fixes applied to each
+# published anchor's selector, per BASELINES.md's "round -> iteration" staircase),
+# not the published anchors themselves (those are figs_main_v2.yaml's top row).
+# Isolates FluxTune's C1/C2/C3 contributions from the iteration-level reframe
+# (`evaluation.tex` sec:eval:attribution: "does the reframe alone close the gap,
+# or do the contributions?").
+#
+# Paths resolve relative to the fwdllm example dir (...examples/fwdllm) or
+# absolute. Fill entries as logs land. Missing baselines are skipped, not fatal.
+#
+# Keys are INTERNAL baseline names; paper display names/colors live in
+# plotlib/baselines.py. speedup_baseline is fwdllm_it_unaware here (not fwdllm) --
+# this subsection's whole point is comparing against the STRENGTHENED baseline,
+# not the raw floor (evaluation.tex sec:eval:attribution intro).
+
+runs:
+  fluxtune:            experiments/run_20260724_023501_fluxtune_n100_smoke_syn_0_sim
+  fwdllm_it_unaware:   experiments/run_20260724_053835_fwdllm_it_unaware_n100_smoke_syn_0_sim
+  felix_it:            experiments/run_20260724_092656_felix_it_n100_smoke_syn_0_sim
+  # felix_it was "too early" as of 09:33 (2 evals); now at 467 evals / peak
+  # 84.5% as of the 14:2x sync -- far enough along to plot.
+  # fwdllm_it_oracular:   -- not yet landed (the +O twin; identical to +IT at syn_0)
+  # fedbuff_it_unaware:   -- landed but still very early (run_20260724_001229,
+  #   only 16 evals / peak 39.5% as of the 14:2x sync) -- re-paste once further along
+  # fedbuff_it_oracular:  -- not yet landed (no run dir exists at all)
+
+target_acc: 0.84
+window: 20
+speedup_baseline: fwdllm_it_unaware
+speedup_champion: fluxtune

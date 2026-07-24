@@ -36,6 +36,25 @@ _RUN_RE = re.compile(
 _DEFAULT_BASELINES = ["fwdllm", "fwdllm_plus", "fluxtune"]
 
 _BASELINES_YAML = os.path.join(HERE, "..", "..", "_metadata", "baselines.yaml")
+_EXPERIMENTS_YAML = os.path.join(HERE, "..", "experiments.yaml")
+
+
+def _load_run_set(name: str) -> dict:
+    """Resolve a run_set's baseline list + target_accuracy/converge_window from
+    experiments.yaml (mirrors run_sequential.sh's --run-set condition load) —
+    lets `--run-set main_v2` stand in for hand-typing all 5+ baseline names."""
+    import yaml
+    reg = yaml.safe_load(open(_EXPERIMENTS_YAML, encoding="utf-8"))
+    rs = (reg.get("run_sets") or {}).get(name)
+    if not rs:
+        valid = sorted((reg.get("run_sets") or {}).keys())
+        raise SystemExit(f"ERROR: run_set '{name}' not in {_EXPERIMENTS_YAML}. Valid: {valid}")
+    cond = rs.get("condition", {}) or {}
+    return {
+        "baselines": rs.get("baselines") or [],
+        "target_accuracy": cond.get("target_accuracy"),
+        "converge_window": cond.get("converge_window"),
+    }
 
 
 def _is_async(baseline: str) -> bool:
@@ -253,11 +272,23 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--experiments-dir", default=os.path.join(HERE, "..", "experiments"))
     ap.add_argument("--variant", choices=["real", "sim"], default="real")
-    ap.add_argument("--baselines", default=",".join(_DEFAULT_BASELINES))
-    ap.add_argument("--target-acc", type=float, default=0.84)
-    ap.add_argument("--window", type=int, default=20)
+    ap.add_argument("--run-set", default=None,
+                    help="load baselines + target-acc/window from experiments.yaml's "
+                         "run_sets[NAME] (e.g. main_v2's 5-baseline sim set); "
+                         "--baselines/--target-acc/--window still override")
+    ap.add_argument("--baselines", default=None)
+    ap.add_argument("--target-acc", type=float, default=None)
+    ap.add_argument("--window", type=int, default=None)
     ap.add_argument("--out", default=None, help="output dir for CSV (+plots); default = experiments/_compare")
     ap.add_argument("--plots", action="store_true", help="also write paper overlay plots (via plotlib)")
+    ap.add_argument("--baseline-key", default="fwdllm",
+                    help="'true baseline' for the E1/E3 speedup callouts")
+    ap.add_argument("--champion-key", default="fluxtune",
+                    help="our system for the E1/E3 speedup callouts")
+    ap.add_argument("--savings-from", default="fwdllm",
+                    help="E4 bandwidth-savings-factor callout: from this baseline...")
+    ap.add_argument("--savings-to", default="felix_round",
+                    help="...to this one (default FwdLLM->Felix(P))")
     ap.add_argument("--smooth", type=float, default=0.7,
                     help="EMA smoothing factor for overlay learning curves (0 = raw)")
     ap.add_argument("--loss-plateau-rel", type=float, default=0.01,
@@ -269,8 +300,17 @@ def main() -> int:
     args = ap.parse_args()
     grace_s = None if args.no_cutoff else args.post_peak_grace_min * 60.0
 
+    rs = _load_run_set(args.run_set) if args.run_set else {}
+    baselines_arg = args.baselines if args.baselines is not None else \
+        (",".join(rs["baselines"]) if rs.get("baselines") else ",".join(_DEFAULT_BASELINES))
+    target_acc = args.target_acc if args.target_acc is not None else \
+        (rs.get("target_accuracy") if rs.get("target_accuracy") is not None else 0.84)
+    window = args.window if args.window is not None else \
+        (rs.get("converge_window") if rs.get("converge_window") is not None else 20)
+    args.target_acc, args.window = target_acc, window
+
     exp_dir = os.path.abspath(args.experiments_dir)
-    baselines = [b.strip() for b in args.baselines.split(",") if b.strip()]
+    baselines = [b.strip() for b in baselines_arg.split(",") if b.strip()]
     out_dir = os.path.abspath(args.out) if args.out else os.path.join(exp_dir, "_compare")
     os.makedirs(out_dir, exist_ok=True)
 
@@ -345,12 +385,16 @@ def main() -> int:
     print(f"\nCSV:   {csv_path}")
 
     if args.plots:
-        _plots(results, out_dir, args.target_acc, args.smooth)
+        _plots(results, out_dir, args.target_acc, args.smooth,
+              baseline_key=args.baseline_key, champion_key=args.champion_key,
+              savings_from=args.savings_from, savings_to=args.savings_to)
     print(f"Out:   {out_dir}")
     return 0
 
 
-def _plots(results: dict, out_dir: str, target, smooth: float = 0.0):
+def _plots(results: dict, out_dir: str, target, smooth: float = 0.0,
+           baseline_key: str = "fwdllm", champion_key: str = "fluxtune",
+           savings_from: str = "fwdllm", savings_to: str = "felix_round"):
     """Overlay plots via the shared plotlib (same look as the paper figures)."""
     try:
         from plotlib import baselines as B
@@ -363,7 +407,9 @@ def _plots(results: dict, out_dir: str, target, smooth: float = 0.0):
     ordered = [results[k] for k in B.ordered(results.keys())]
     n = 0
     for name, builder in F.FIG_BUILDERS.items():
-        fig = builder(ordered, target=target, smooth=smooth)
+        fig = builder(ordered, target=target, smooth=smooth,
+                      baseline_key=baseline_key, champion_key=champion_key,
+                      savings_from=savings_from, savings_to=savings_to)
         if fig is None:
             continue
         S.save_pdf(fig, out_dir, name)

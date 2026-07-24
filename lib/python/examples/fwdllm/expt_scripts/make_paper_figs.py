@@ -4,8 +4,8 @@
 """Render the SOCC-2026 paper figures from a baseline→run-dir mapping.
 
 The mapping is data: `figs.yaml` maps each baseline to a run dir, overridable with
-`--run KEY=PATH`. Missing baselines are skipped. Output goes to a timestamped
-`paper_figs/<ts>/` (+ `latest` symlink) with stable basenames + a manifest.json.
+`--run KEY=PATH`. Missing baselines are skipped. Output goes straight into
+`paper_figs/` (stable basenames, overwritten each render) + a manifest.json.
 
     python make_paper_figs.py [--run fluxtune=/data/run_...] [--figures e1_acc_vs_time,...]
 """
@@ -60,10 +60,16 @@ def main() -> int:
     ap.add_argument("--run", action="append", default=[], metavar="KEY=PATH",
                     help="add/override one baseline's run dir (repeatable)")
     ap.add_argument("--out-root", default=os.path.join(HERE, "paper_figs"),
-                    help="root for timestamped output dirs")
+                    help="output dir (flat, overwritten each render)")
     ap.add_argument("--figures", default=None,
                     help="comma list of figure names (default: all)")
     ap.add_argument("--target-acc", type=float, default=None)
+    ap.add_argument("--baseline-key", default=None,
+                    help="'true baseline' for the E1/E3 speedup callouts "
+                         "(default: fwdllm, or the manifest's speedup_baseline)")
+    ap.add_argument("--champion-key", default=None,
+                    help="our system for the E1/E3 speedup callouts "
+                         "(default: fluxtune, or the manifest's speedup_champion)")
     ap.add_argument("--smooth", type=float, default=0.7,
                     help="EMA line-smoothing factor ∈ [0,1) for learning curves "
                          "(visual only; 0 = raw). Default 0.7")
@@ -89,6 +95,10 @@ def main() -> int:
     manifest = _load_manifest(args.manifest)
     runs_map = dict(manifest.get("runs", {}) or {})
     target = args.target_acc if args.target_acc is not None else manifest.get("target_acc")
+    baseline_key = args.baseline_key or manifest.get("speedup_baseline") or "fwdllm"
+    champion_key = args.champion_key or manifest.get("speedup_champion") or "fluxtune"
+    savings_from = manifest.get("bandwidth_savings_from") or "fwdllm"
+    savings_to = manifest.get("bandwidth_savings_to") or "felix_round"
     for spec in args.run:                      # CLI overrides the manifest
         if "=" not in spec:
             print(f"  [paper-figs] ignoring malformed --run '{spec}' (want KEY=PATH)",
@@ -125,14 +135,16 @@ def main() -> int:
              if args.figures else list(F.FIG_BUILDERS))
 
     S.use_paper_style()
-    out_dir = S.timestamped_outdir(args.out_root)
+    out_dir = S.render_outdir(args.out_root)
     written = []
     for name in which:
         builder = F.FIG_BUILDERS.get(name)
         if builder is None:
             print(f"  [paper-figs] unknown figure '{name}' — skipping", file=sys.stderr)
             continue
-        fig = builder(ordered_runs, target=target, smooth=args.smooth)
+        fig = builder(ordered_runs, target=target, smooth=args.smooth,
+                     baseline_key=baseline_key, champion_key=champion_key,
+                     savings_from=savings_from, savings_to=savings_to)
         if fig is None:
             print(f"  [paper-figs] {name}: no data across baselines — skipped")
             continue
@@ -144,6 +156,10 @@ def main() -> int:
             "runs": {k: loaded[k].run_dir for k in loaded},
             "baselines_order": B.ordered(loaded.keys()),
             "target_acc": target,
+            "speedup_baseline": baseline_key,
+            "speedup_champion": champion_key,
+            "bandwidth_savings_from": savings_from,
+            "bandwidth_savings_to": savings_to,
             "figures": written,
             "system_label": B.SYSTEM_LABEL,
             "smooth": args.smooth,
@@ -156,7 +172,6 @@ def main() -> int:
         }, fh, indent=2)
 
     print(f"\n  wrote {len(written)} figure(s) → {out_dir}")
-    print(f"  latest → {os.path.join(os.path.abspath(args.out_root), 'latest')}")
     return 0
 
 

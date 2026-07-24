@@ -42,6 +42,12 @@ def _iter_jsonl(path):
 class RunResult:
     key: str
     run_dir: str
+    # is this a sim-mode run? (aggregator_config.json hyperparameters.time_mode,
+    # dirname-suffix fallback — see load_run). Drives which clock learning_curve()
+    # plots on: sim runs report simulated vclock time, real runs wall-clock time,
+    # since a real run's wall-clock IS its time-to-accuracy but a sim run's isn't
+    # (it's inflated by however fast/slow the simulator itself executed).
+    is_sim: bool = False
     # E1/E3 — ordered evals, emission order preserved. Each: dict(ts,round,data_id,
     # iter,acc,loss). Bounded by #bins * #rounds (~hundreds), safe to keep.
     evals: list = field(default_factory=list)
@@ -91,10 +97,23 @@ class RunResult:
 
     # ---- derived views (pure over the fields above) ----------------------- #
     def learning_curve(self):
-        """Ordered (hours, acc%, loss, round) arrays over the eval series."""
+        """Ordered (hours, acc%, loss, round) arrays over the eval series.
+
+        Hours are on each run's NATIVE clock: wall-clock for real runs (its
+        wall-clock IS the time-to-accuracy claim); simulated vclock for sim runs
+        (vclock_now, already zeroed near run start -- wall-clock on a sim run only
+        measures how fast the simulator executed, not simulated time-to-accuracy).
+        Falls back to wall-clock for a sim eval with no vclock_track entry yet
+        (only possible before the first agg_round cycle)."""
         if not self.evals or self.t0 is None:
             return [], [], [], []
-        hrs = [(e["ts"] - self.t0) / 3600 for e in self.evals]
+        if self.is_sim:
+            hrs = []
+            for e in self.evals:
+                v = self.vclock_at(e["ts"])
+                hrs.append((v if v is not None else (e["ts"] - self.t0)) / 3600)
+        else:
+            hrs = [(e["ts"] - self.t0) / 3600 for e in self.evals]
         acc = [e["acc"] * 100 if e["acc"] is not None else None for e in self.evals]
         loss = [e["loss"] for e in self.evals]
         rnd = [e["round"] for e in self.evals]
@@ -284,6 +303,26 @@ def _compute_round_spans(agg_rounds):
     return spans
 
 
+def _detect_is_sim(run_dir: str) -> bool:
+    """sim vs. real, read from the run's own self-describing config (not the
+    dirname, which is an operator-typed convention and per EXPERIMENTS.md §7.0
+    has a known history of mislabeling -- e.g. alpha0p1 dirs that were actually
+    alpha=1). aggregator_config.json's hyperparameters.time_mode is the ground
+    truth ('simulated'/'real'); dirname's trailing _sim/_real is only a fallback
+    for run dirs saved without that file."""
+    cfg_path = os.path.join(run_dir, "aggregator_config.json")
+    try:
+        with open(cfg_path, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        tm = (cfg.get("hyperparameters") or {}).get("time_mode")
+        if tm:
+            return str(tm).lower().startswith("sim")
+    except (OSError, json.JSONDecodeError):
+        pass
+    base = os.path.basename(run_dir.rstrip("/"))
+    return base.endswith("_sim")
+
+
 def _find_converge_json(run_dir: str, smoke_logs_dir: str | None = None) -> dict | None:
     """Locate this run's converge.json (written by converge_watch.py to
     expt_scripts/smoke_logs/<ts>/converge_<label>.json — NOT co-located with
@@ -382,6 +421,7 @@ def load_run(run_dir: str, key: str | None = None,
                                          loss_plateau_rel, mode=cutoff_mode)
 
     rr = RunResult(key=key or os.path.basename(run_dir), run_dir=run_dir)
+    rr.is_sim = _detect_is_sim(run_dir)
     rr.t0 = raw["t0"]
     rr.cutoff_ts = None if cutoff == float("inf") else cutoff
     rr.plateau_ts = plateau_ts

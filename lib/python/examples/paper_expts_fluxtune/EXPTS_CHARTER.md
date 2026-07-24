@@ -117,19 +117,28 @@ round 2 destroys the model.
 
 ## Latest figures (for paper embedding)
 
-Two PDF sets, same 7 basenames, from `make_paper_figs.py` (cutoff `--cutoff-mode peak_acc` default →
+Four PDF sets, same 7 basenames, from `make_paper_figs.py` (cutoff `--cutoff-mode peak_acc` default →
 every run clipped at its peak, Issue I-1 tail excluded; E1 acc plots carry a ★ + legend "peak X%" per
-run). Rebuild: `cd expt_scripts && python make_paper_figs.py --manifest <m> [--out-root <r>]`. `latest`
-symlinks the newest timestamped dir; copy PDFs into Overleaf by basename.
+run). Rebuild: `cd expt_scripts && python make_paper_figs.py --manifest <m> [--out-root <r>]`. Output
+is flat and overwritten each render (stable basenames, no timestamped subdirs or `latest` symlink,
+decided 2026-07-24) — copy PDFs into Overleaf by basename directly.
 
-| Set | Manifest | Dir (`latest` symlink) |
+| Set | Manifest | Dir |
 |---|---|---|
-| **Baseline comparison** (FwdLLM / FwdLLM++ / FluxTune=R4) | `expt_scripts/figs.yaml` | `expt_scripts/paper_figs/latest/` |
-| **FluxTune opt-ablation** (R1–R4, blue ramp) | `expt_scripts/figs_ablation.yaml` | `expt_scripts/paper_figs_ablation/latest/` |
+| **Baseline comparison** (FwdLLM / FwdLLM++ / FluxTune=R4) | `expt_scripts/figs.yaml` | `expt_scripts/paper_figs/` |
+| **FluxTune opt-ablation** (R1–R4, blue ramp) | `expt_scripts/figs_ablation.yaml` | `expt_scripts/paper_figs_ablation/` |
+| **`sec:eval:sota` (top-row anchors)** | `expt_scripts/figs_main_v2.yaml` | `expt_scripts/paper_figs_main_v2/` |
+| **`sec:eval:attribution` (+IT staircase)** | `expt_scripts/figs_attribution.yaml` | `expt_scripts/paper_figs_attribution/` |
 
-Figure basenames (both sets): `e1_acc_vs_time.pdf` (time-to-acc, peak ★) · `e1_loss_vs_time.pdf` ·
+Figure basenames (all sets): `e1_acc_vs_time.pdf` (time-to-acc, peak ★) · `e1_loss_vs_time.pdf` ·
 `e2_trainer_busy_cdf.pdf` · `e3_dloss_per_gpu_hour.pdf` · `e3_dloss_per_mfwd.pdf` ·
 `e4_network_bytes.pdf` · `e5_session_cdf.pdf`. Each dir also has `manifest.json` (run dirs + cutoff h).
+See [`PLOT_TRACKER.md`](PLOT_TRACKER.md) for the last two sets' per-baseline readiness.
+
+**Palette preview** (dummy data, no telemetry — eyeball a `plotlib/baselines.py` color/marker change in
+seconds instead of waiting on a real render): `cd expt_scripts && python preview_palette.py
+[--baselines k1,k2,...|--manifest <m>] [--charts line,scatter,bar]` → `expt_scripts/palette_preview/`
+(same flat/overwrite convention).
 
 ## Resolved decisions
 
