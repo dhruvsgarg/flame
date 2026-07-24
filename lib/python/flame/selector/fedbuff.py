@@ -363,6 +363,47 @@ class FedBuffSelector(AbstractSelector):
         else:
             logger.debug("No ends to remove so far")
 
+    def _cleanup_provided_ends(
+        self, ends_to_cleanup: dict[str, End], ends: dict[str, End]
+    ):
+        """Clean-up a specific end so it becomes eligible for sampling again -
+        reject stale updates in FwdLLM (async). Mirrors async_random.py's and
+        async_oort.py's identical implementation (FedBuffSelector shares the
+        same self.selected_ends/self.all_selected/self.requester state) --
+        this method was simply never ported when FedBuffSelector was first
+        wired to channel.cleanup_provided_ends(), which every other async
+        selector implements. Found via the first real run pairing
+        FedBuffSelector with fwdllm's aggregator (fedbuff_round smoke test)."""
+
+        selected_ends = self.selected_ends.get(self.requester, set())
+        for end_id, _ in ends_to_cleanup.items():
+            state = ends[end_id].get_property(KEY_END_STATE)
+            logger.info(f"Cleaning end {end_id}, current state: {state}")
+
+            # reset only if it's in received state
+            if state == VAL_END_STATE_RECVD:
+                ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+                logger.debug(
+                    f"Setting {end_id} state to {VAL_END_STATE_NONE}, "
+                    f"and"
+                    f" removing from selected_ends and all_selected"
+                )
+
+            # remove from active selection tracking
+            if end_id in selected_ends:
+                selected_ends.remove(end_id)
+                logger.debug(f"Removed {end_id} from selected_ends")
+
+            if end_id in self.all_selected:
+                del self.all_selected[end_id]
+                logger.debug(f"Removed {end_id} from all_selected")
+
+        # update the mapping back
+        self.selected_ends[self.requester] = selected_ends
+        logger.info(
+            f"Cleanup complete. Freed [{ends}] end(s) for resampling; state set to {VAL_END_STATE_NONE}."
+        )
+
     def _cleanup_removed_ends(self, end_id):
         logger.debug(
             f"Going to cleanup selector state for "

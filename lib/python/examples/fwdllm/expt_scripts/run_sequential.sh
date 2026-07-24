@@ -355,15 +355,25 @@ delays_on = (DELAYS == "on")
 # fluxtune's 7.0->4.0): the old 11.0 predated the harness-overhead-removal fix
 # and was never re-checked against post-fix compute (2.72s/3.18s max, floor >=
 # 1.3*1.63*3.18=6.74s) -- pending a validation run to confirm 0 TIMING_OVERRUN.
-# The 6 net-new baselines (fwdllm_it_unaware, fedbuff_round/it_*, felix_round/it)
-# deliberately have NO entry here yet -- resolve_delay_settings() falls back to
-# the OFF/base-code default for an unregistered baseline; adding a "settled"
-# factor/floor without having actually smoke-profiled it would misrepresent an
-# unverified guess as calibrated (BRIDGE_DESIGN.md §2b smoke-test step).
+# fwdllm_it_unaware reuses fwdllm's exact values, not a guess: FWDLLM_DESIGN.md
+# §O derives `factor` from select_perturbation_using_jvp (C1) forward-pass-unit
+# count -- fwdllm_it_unaware has C1 off (code default), same as fwdllm, unlike
+# fluxtune (C1 on) -- and `floor` from *observed compute under that baseline's
+# own concurrency* -- fwdllm_it_unaware is sync C=10, same regime fwdllm was
+# profiled at. Both axes match fwdllm exactly, so its number transfers cleanly.
+# The 5 async net-new baselines (fedbuff_round/it_*, felix_round/it) deliberately
+# have NO entry here yet -- resolve_delay_settings() falls back to the OFF/
+# base-code default for an unregistered baseline. Unlike fwdllm_it_unaware,
+# borrowing either fwdllm's or fluxtune's floor for them WOULD be a guess: their
+# forward-pass-unit count matches fwdllm (C1 off) but their concurrency (C=30
+# async) matches fluxtune, not fwdllm -- and floor is contention-derived, so
+# neither existing profile transfers. Needs its own smoke-profiled floor
+# (BRIDGE_DESIGN.md §2b smoke-test step), not a borrowed number.
 BASELINE_DELAY_DEFAULTS = {
     "fluxtune":           {"delays": True, "factor": 0.48, "floor": 4.0},
     "fwdllm":             {"delays": True, "factor": 1.63, "floor": 7.0},
     "fwdllm_it_oracular": {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fwdllm_it_unaware":  {"delays": True, "factor": 1.63, "floor": 7.0},
 }
 
 
