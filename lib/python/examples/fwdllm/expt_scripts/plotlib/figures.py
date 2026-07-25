@@ -71,8 +71,8 @@ def _plot_curve(ax, x, y_raw, st, smooth, label):
     else:
         y = y_raw
     ax.plot(x, y, color=st.color, linestyle=st.linestyle, marker=st.marker,
-            markevery=0.1, markersize=4.5, markeredgecolor="white",
-            markeredgewidth=0.5, label=label, zorder=3 + st.order)
+            markevery=0.1, markersize=4.5, label=label, zorder=3 + st.order,
+            **st.marker_fill_kwargs())
 
 
 def _round_boundaries(ax, rr, hrs):
@@ -323,8 +323,7 @@ def fig_e2_trainer_busy_cdf(runs, **_):
             continue
         ax.plot(xs, ys, color=st.color, linestyle=st.linestyle,
                 marker=st.marker, markevery=0.12, markersize=4.5,
-                markeredgecolor="white", markeredgewidth=0.5,
-                label=st.label, zorder=3 + st.order)
+                label=st.label, zorder=3 + st.order, **st.marker_fill_kwargs())
         _annotate_cdf_percentiles(ax, xs, ys, st.color)
         any_data = True
     if not any_data:
@@ -378,7 +377,10 @@ def _bar_by_baseline(runs, valfn, ylabel, fmt="{:.3g}", delta=None):
         return None
     xs = np.arange(len(keys))
     vals = [(valfn(rr) or 0.0) for rr in runs]
-    ax.bar(xs, vals, 0.62, color=[B.style_for(k).color for k in keys], zorder=3)
+    styles = [B.style_for(k) for k in keys]
+    ax.bar(xs, vals, 0.62, color=[s.color for s in styles],
+           hatch=[s.bar_hatch() for s in styles],
+           edgecolor="white", linewidth=0.6, zorder=3)
     ax.axhline(0, color="#888888", lw=0.6)
     ax.set_xticks(xs)
     ax.set_xticklabels([B.style_for(k).label for k in keys])
@@ -440,6 +442,7 @@ def fig_e4_network_bytes(runs, savings_from="fwdllm", savings_to="felix_round", 
         total = down + up
         xj = x + (j - (n - 1) / 2) * width
         ax.bar(xj, [down, up, total], width * 0.92, color=st.color,
+               hatch=st.bar_hatch(), edgecolor="white", linewidth=0.6,
                label=st.label, zorder=3)
         for xi, v in zip(xj, (down, up, total)):
             ax.text(xi, v, f"{v:.0f}", ha="center", va="bottom", fontsize=6.5,
@@ -487,8 +490,7 @@ def fig_e5_session_cdf(runs, **_):
             continue
         ax.plot(xs, ys, color=st.color, linestyle=st.linestyle,
                 marker=st.marker, markevery=0.12, markersize=4.5,
-                markeredgecolor="white", markeredgewidth=0.5,
-                label=st.label, zorder=3 + st.order)
+                label=st.label, zorder=3 + st.order, **st.marker_fill_kwargs())
         _annotate_cdf_percentiles(ax, xs, ys, st.color)
         any_data = True
     if not any_data:

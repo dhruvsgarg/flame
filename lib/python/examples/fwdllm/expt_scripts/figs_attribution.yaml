@@ -21,10 +21,17 @@ runs:
   felix_it:            experiments/run_20260724_092656_felix_it_n100_smoke_syn_0_sim
   # felix_it was "too early" as of 09:33 (2 evals); now at 467 evals / peak
   # 84.5% as of the 14:2x sync -- far enough along to plot.
-  # fwdllm_it_oracular:   -- not yet landed (the +O twin; identical to +IT at syn_0)
-  # fedbuff_it_unaware:   -- landed but still very early (run_20260724_001229,
-  #   only 16 evals / peak 39.5% as of the 14:2x sync) -- re-paste once further along
-  # fedbuff_it_oracular:  -- not yet landed (no run dir exists at all)
+  fedbuff_it_unaware:  experiments/run_20260724_144822_fedbuff_it_unaware_n100_smoke_syn_0_sim
+  # supersedes the dead run_20260724_001229 attempt (16 evals, 39.5%, commented
+  # out below was the old placeholder) -- 144822 is the 0230-batch relaunch,
+  # landed 112 evals / peak 79.5% over a 5.05h span as of the 2026-07-25 sync.
+  # fwdllm_it_oracular / fedbuff_it_oracular: -- intentionally not run under
+  #   syn_0 (confirmed by operator 2026-07-25): oracular availability-tracking
+  #   is inert at 100% availability (identical to the +IT unaware twin already
+  #   landed above), so this run-set's target is 4 baselines, not 6, and
+  #   4/4 is COMPLETE, not partial. (A short post-17:30 fedbuff_it_oracular
+  #   sim run exists, run_20260724_182737, but belongs to the separate
+  #   real-sim parity batch, simulate_fwdllm.md -- unrelated to this decision.)
 
 target_acc: 0.84
 window: 20

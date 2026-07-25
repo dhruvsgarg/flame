@@ -25,7 +25,10 @@ runs:
   # has landed 445 evals / peak 85.5% as of 2026-07-24 14:2x sync.
   felix_round:         experiments/run_20260724_042943_felix_round_n100_smoke_syn_0_sim
   fluxtune:            experiments/run_20260724_023501_fluxtune_n100_smoke_syn_0_sim
-  # fwdllm_it_oracular: -- not yet landed (no run dir exists at all)
+  # fwdllm_it_oracular: -- intentionally not run under syn_0 (confirmed by
+  #   operator 2026-07-25): oracular availability-tracking is inert at 100%
+  #   availability (identical behavior to fwdllm_it_unaware), so this run
+  #   isn't needed for this condition -- not a gap, don't launch it here.
 
 target_acc: 0.84
 window: 20

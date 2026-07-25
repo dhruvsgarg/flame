@@ -91,8 +91,8 @@ def preview_line(keys):
         st = B.style_for(k)
         x, y = _dummy_curve(k)
         ax.plot(x, y, color=st.color, linestyle=st.linestyle, marker=st.marker,
-                markevery=0.15, markersize=4.5, markeredgecolor="white",
-                markeredgewidth=0.5, label=st.label, zorder=3 + st.order)
+                markevery=0.15, markersize=4.5, label=st.label,
+                zorder=3 + st.order, **st.marker_fill_kwargs())
     ax.set_xlabel("synthetic x")
     ax.set_ylabel("synthetic y")
     return _finish(fig, ax, "line — dummy data, palette preview only")
@@ -104,9 +104,8 @@ def preview_scatter(keys):
     for k in keys:
         st = B.style_for(k)
         x, y = _dummy_scatter(k)
-        ax.scatter(x, y, color=st.color, marker=st.marker, s=22,
-                   edgecolor="white", linewidth=0.4, label=st.label,
-                   zorder=3 + st.order)
+        ax.scatter(x, y, marker=st.marker, s=22, label=st.label,
+                   zorder=3 + st.order, **st.scatter_fill_kwargs())
     ax.set_xlabel("synthetic x")
     ax.set_ylabel("synthetic y")
     return _finish(fig, ax, "scatter — dummy data, palette preview only")
@@ -117,7 +116,10 @@ def preview_bar(keys):
     fig, ax = plt.subplots(figsize=S.column_figsize(1.0, 0.72))
     xs = np.arange(len(keys))
     vals = [_dummy_bar(k) for k in keys]
-    ax.bar(xs, vals, 0.62, color=[B.style_for(k).color for k in keys], zorder=3)
+    styles = [B.style_for(k) for k in keys]
+    ax.bar(xs, vals, 0.62, color=[s.color for s in styles],
+           hatch=[s.bar_hatch() for s in styles],
+           edgecolor="white", linewidth=0.6, zorder=3)
     ax.set_xticks(xs)
     ax.set_xticklabels([B.style_for(k).label for k in keys], rotation=35, ha="right")
     for t, k in zip(ax.get_xticklabels(), keys):

@@ -36,9 +36,11 @@ Feeds: `e1_acc_vs_time`, `e1_loss_vs_time`, `e2_trainer_busy_cdf`,
 | `fedbuff_round` | `run_20260724_093607_fedbuff_round_n100_smoke_syn_0_sim` | 410 | 85.54% @ 4.18h | ✅ **rendered** — added this sync, supersedes the dead `run_20260724_000757_…` attempt (0 `agg_eval` events, no live process backing it) |
 | `felix_round` | `run_20260724_042943_felix_round_n100_smoke_syn_0_sim` | 381 | 84.63% @ 3.95h | ✅ **rendered** — supersedes the dead `run_20260724_015555_…` attempt (only 11 events) |
 | `fluxtune` | `run_20260724_023501_fluxtune_n100_smoke_syn_0_sim` | 124 | 84.72% @ 0.80h | ✅ **rendered** |
-| `fwdllm_it_oracular` | — | — | — | ❌ **NOT LAUNCHED** — no run dir exists anywhere under `experiments/`. Needed per EXPERIMENTS.md §10a's E1 baseline list; blocks nothing else in this manifest but is the one missing anchor. |
+| `fwdllm_it_oracular` | — | — | — | ➖ **intentionally not run** (confirmed by operator 2026-07-25) — oracular availability-tracking is inert under `syn_0`'s 100% availability (identical to `fwdllm_it_unaware`), so this condition needs no oracular run. Not a gap. |
 
-**Rendered** 2026-07-24 → `expt_scripts/paper_figs_main_v2/` (all 7 basenames, `--cutoff-mode peak_acc`; flat/overwrite dir, no timestamped subdirs — see "Regenerating" below).
+**This manifest is COMPLETE — 4/4 target baselines rendered** 2026-07-24 →
+`expt_scripts/paper_figs_main_v2/` (all 7 basenames, `--cutoff-mode peak_acc`;
+flat/overwrite dir, no timestamped subdirs — see "Regenerating" below).
 
 All four landed baselines have already peaked ≥ the 84% target (consistent with
 the known Issue I-1 oscillation/collapse pattern, EXPTS_CHARTER.md) — cutoff
@@ -57,20 +59,30 @@ Feeds the same 7 basenames → `paper_figs_attribution/`.
 | `fluxtune` | `run_20260724_023501_fluxtune_n100_smoke_syn_0_sim` | 124 | 84.72% @ 0.80h | ✅ **rendered** |
 | `fwdllm_it_unaware` | `run_20260724_053835_fwdllm_it_unaware_n100_smoke_syn_0_sim` | 222 | 85.26% @ 1.56h | ✅ **rendered** — this was the **only** comparison point at the 11am generation, which is why that figure set showed just fluxtune-vs-fwdllm_it_unaware |
 | `felix_it` | `run_20260724_092656_felix_it_n100_smoke_syn_0_sim` | 291 (was 2 as of 09:33) | 84.49% @ 2.35h | ✅ **rendered** — was flagged "too early to plot" at the 11am generation; now far enough along |
-| `fedbuff_it_unaware` | `run_20260724_001229_fedbuff_it_unaware_n100_smoke_syn_0_sim` | 16 | 39.5% | ⚠ landed but still too early — left commented out in the manifest, re-check next sync |
-| `fwdllm_it_oracular` | — | — | — | ❌ **NOT LAUNCHED**. Design note: identical to `+IT` at `syn_0` (no dropout to arbitrate), so may be deliberately skipped for this condition — confirm with operator before spending a launch slot on it. |
-| `fedbuff_it_oracular` | — | — | — | ❌ **NOT LAUNCHED** — no run dir exists. |
+| `fedbuff_it_unaware` | `run_20260724_144822_fedbuff_it_unaware_n100_smoke_syn_0_sim` | 95 (at peak-acc cutoff; 112 raw) | 79.51% @ 2.99h | ✅ **rendered** 2026-07-25 — supersedes the dead `run_20260724_001229` attempt (16 evals, 39.5%); 144822 is the 0230-batch relaunch (launched 14:48, still inside the original long-run window, well before the unrelated post-17:30 real-sim parity batch — see note below) |
+| `fwdllm_it_oracular` | — | — | — | ➖ **intentionally not run** (confirmed by operator 2026-07-25) — oracular tracking is inert under `syn_0`'s 100% availability, identical to the landed `fwdllm_it_unaware` twin. Not a gap. |
+| `fedbuff_it_oracular` | — | — | — | ➖ **intentionally not run**, same reason. (A short post-17:30 `fedbuff_it_oracular` sim run, `run_20260724_182737`, exists but belongs to the separate real-sim parity batch, `simulate_fwdllm.md` — unrelated to this decision, not reused here.) |
 
-**Rendered** 2026-07-24 → `expt_scripts/paper_figs_attribution/` (all 7 basenames, `--cutoff-mode peak_acc`; flat/overwrite dir, no timestamped subdirs — see "Regenerating" below).
+**This manifest is COMPLETE — 4/4 target baselines rendered** (the two
+`_oracular` rows were never targets, not missing rows). Rendered 2026-07-24,
+refreshed 2026-07-25 (added `fedbuff_it_unaware`) →
+`expt_scripts/paper_figs_attribution/` (all 7 basenames, `--cutoff-mode
+peak_acc`; flat/overwrite dir, no timestamped subdirs — see "Regenerating"
+below).
 
-### Why the attribution plot only had one comparison baseline
+### Why the attribution plot only had one comparison baseline at first
 
-Not a script/mapping bug — `figs_attribution.yaml`'s other four rows were
+Not a script/mapping bug — `figs_attribution.yaml`'s other rows were
 genuinely commented out because those runs either didn't exist yet or hadn't
-progressed far enough to plot at the time of the 11am generation. Re-checking
-the actual `experiments/` telemetry now shows `felix_it` has since progressed
-from 2 to 467 evals, so it's promoted above; `fedbuff_it_unaware` is still at
-16 evals and stays parked; the two `_oracular` legs have no run dir at all yet.
+progressed far enough to plot at the time of the 11am (2026-07-24) generation.
+Re-checking `experiments/` telemetry that day showed `felix_it` had progressed
+from 2 to 467 evals, so it was promoted; `fedbuff_it_unaware` was still at 16
+evals and stayed parked. As of the 2026-07-25 sync, the original 0230-batch
+`fedbuff_it_unaware` relaunch (`run_20260724_144822`) has landed 112 evals /
+79.5% peak, so it's promoted too — **4/4 target baselines now render.** The two
+`_oracular` legs were never additional rows to fill: confirmed 2026-07-25 that
+oracular tracking is intentionally not run under `syn_0` (inert at 100%
+availability), so this manifest's target was 4 baselines all along, not 6.
 
 ---
 
@@ -235,3 +247,17 @@ subsection's mechanism discussion, and (c) operator sign-off before either.
 - **2026-07-24 (5)** — purged items #2–#4 from OPEN WORK (landed + committed,
   per this doc's own "delete once fully landed" policy); renumbered the
   remaining items (former #5→#2, #6→#3). No code change, doc cleanup only.
+- **2026-07-25** — swept the 0230-batch long sim run-set (started 2026-07-24
+  ~02:30, now fully stopped/complete) for newly-matured logs. `figs_main_v2.yaml`
+  unchanged (its 4 run dirs are still each baseline's best/most-progressed —
+  checked every later same-baseline dir in `experiments/`, none beat the
+  incumbent). `figs_attribution.yaml` promoted `fedbuff_it_unaware` from the
+  dead 16-eval `run_20260724_001229` attempt to the 0230-batch relaunch
+  `run_20260724_144822` (95 evals @ peak-acc cutoff, 79.5% peak @ 2.99h) —
+  Manifest 2 now 4/6 rendered, only the two `_oracular` legs remain unfilled.
+  Re-rendered `paper_figs_attribution/` (all 7 basenames, clean). Deliberately
+  did **not** touch the several other-baseline sim/real dirs launched
+  post-17:30 that day (`fedbuff_round`/`felix_round`/`felix_it`/
+  `fwdllm_it_unaware`/`fedbuff_it_oracular` re-attempts, all short ~1-2h spans)
+  — those belong to the separate real-sim parity batch (`simulate_fwdllm.md`),
+  a distinct task, not this run-set; see the note under Manifest 2.

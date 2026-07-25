@@ -71,28 +71,53 @@ vclock. Decision needed next: charge-the-floor vs relax (§B).
 **Flag inventory (promotion call in §B):** `sim_model_agg_compute_time` is ON for all three;
 `sim_sct_ordered_drain` + `sim_model_dispatch_queue` are fluxtune-yaml-only.
 
-**Latest run per baseline** (`run_parity.py`, `lib/python/examples/fwdllm/expt_scripts`):
+**Latest run per baseline** (`run_parity.py`, `lib/python/examples/fwdllm/expt_scripts`; ✓ pass · ✗ fail ·
+– skip; rung catalog `async_cifar10/PARITY.md` §F):
 
-| baseline | run pair | duration | pass | fail | skip |
-|---|---|---|---|---|---|
-| fluxtune/syn_0 | `run_20260723_044359`/`_064615` (agg_goal=10) | ~7200s | 69 | 0 | 16 |
-| fwdllm/syn_0 | `run_20260723_161459`/`_171648` (agg_goal=10) | ~3600s | 59 | 3 | 22 |
-| fwdllm_plus/syn_0 | `run_20260723_161647`/`_171829` (agg_goal=10) | ~3600s | 61 | 2 | 21 |
+| baseline | run pair | dur | pass/fail/skip | cohort | vclock | thru | commits | terminal | R1 | V1 | V2 | U3 | S2 | conv | conv_loss |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| fluxtune/syn_0 | `run_20260723_044359`/`_064615` (agg_goal=10) | ~7200s | 69/0/16 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| fwdllm/syn_0 | `run_20260723_161459`/`_171648` (agg_goal=10) | ~3600s | 59/3/22 | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| fwdllm_plus/syn_0 | `run_20260723_161647`/`_171829` (agg_goal=10) | ~3600s | 61/2/21 | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-(fwdllm/fwdllm_plus: post-`_flat_grad_norm`-fix re-run, 3600s. Same pass/fail/skip counts as the pre-fix 7200s
-pair — the timing family persists (§B). fluxtune re-graded on stored dirs with this session's checker change.)
-
-**Key-rung status** (✓ pass · ✗ fail · – skip; catalog: `async_cifar10/PARITY.md` §F):
-
-| baseline | cohort | vclock | thru | commits | terminal | R1 | V1 | V2 | U3 | S2 | conv | conv_loss |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| fluxtune | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| fwdllm | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| fwdllm_plus | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+STALE — all three run-dir pairs above no longer exist on disk (cleaned up); numbers carried forward per this
+doc's own rule, not re-verified this session. Re-run via `run_parity.py --baselines fwdllm` etc. next time
+either is touched. (fwdllm/fwdllm_plus numbers are the post-`_flat_grad_norm`-fix re-run, 3600s — same
+pass/fail/skip as the pre-fix 7200s pair, timing family persists, §B. fluxtune re-graded on stored dirs with
+this session's checker change.)
 
 fluxtune CLEAN (all rungs pass). fwdllm/fwdllm_plus's remaining `drain_wall_budget` (gating) +
 `step_timing_breakdown`/`agg_step_timing_breakdown` (DIAG) are ONE family — co-location contention (root-caused
 §G), fix-1 landed; re-run + vclock-charge re-measure pending (§B).
+
+**FIRST parity pass — 6 newly-ported baselines, refreshed 2026-07-25** (`run_parity.py`, ~2h real/sim pairs
+launched post-17:30 the prior day, one pair per baseline, no live process contention across nodes). These
+baselines had **never** been parity-checked before (fedbuff/felix-lineage rebuild landed 2026-07-23,
+`_metadata/BASELINES.md`) — this is the first read, not a re-verify:
+
+| baseline | run pair | dur | pass/fail/skip | cohort | vclock | thru | commits | terminal | R1 | V1 | V2 | U3 | S2 | conv | conv_loss |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| fwdllm_it_unaware/syn_0 | `run_20260724_211542`/`_231751` | ~2h | 57/6/21 | ✓ | ✓ | ✗ | ✗ | ✗ | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| felix_it/syn_0 | `run_20260724_173702`/`_193925` | ~2h | 67/3/16 | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| felix_round/syn_0 | `run_20260724_201348`/`_212714` | ~2h | 45/17/21 | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
+| fedbuff_round/syn_0 | `run_20260724_173554`/`_183913` | ~2h | 54/12/18 | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| fedbuff_it_unaware/syn_0 | `run_20260724_185838`/`_194932` | ~2h | 47/17/18 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ |
+| fedbuff_it_oracular/syn_0 | `run_20260724_173639`/`_182737` | ~2h | 43/21/18 | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ |
+
+**Observed pattern (not yet root-caused — §B): failures split by CADENCE, not by substrate.**
+`fwdllm_it_unaware`/`felix_it` (iteration-level) mostly hit only the *already-known* co-location timing family
+(`throughput`/`drain_wall_budget`/`agg_step_timing_breakdown` — same as fwdllm/fwdllm_plus above) plus a couple
+DIAG-adjacent misses — not a new bug class. `felix_round`/`fedbuff_round`/`fedbuff_it_*` (round-level or
+round-derived) additionally fail core selection/variance rungs never seen failing before this session
+(`cohort_sequence`, `v1`/`v1b`/`v2`/`v5`, `staleness`, `eligibility`, `selection_detail`, and for
+`fedbuff_it_unaware`/`_oracular` even `convergence` itself) — a materially different, larger failure class.
+`fwdllm` itself (also round-level) is clean on all these rungs (§A above), so "round cadence" alone isn't the
+cause — likely specific to how `fedbuff`'s selector and `felix_round`'s round-cadence wrapper (new code paths,
+first exercised this session) interact with fwdllm's variance-gate/grad-pool machinery. Per §F.2: this is exactly
+the "selector ported cleanly, aggregator/trainer sim-timing logic didn't" pattern — these are NEW code paths on
+fwdllm's substrate, not a re-verify of already-proven ones. Per-pair detail: `experiments/_parity_reports/
+parity_<baseline>_syn_0_<sim-ts>.json`. Root-causing the round-cadence family is open work, not started this
+session (§B).
 
 ---
 
@@ -103,6 +128,38 @@ fluxtune CLEAN (all rungs pass). fwdllm/fwdllm_plus's remaining `drain_wall_budg
 
 **fluxtune: all 3 fails RESOLVED this session** (boundary-race cascade → stochastic-async identity gating; →
 §G/§H). No open fluxtune parity gap except the deferred 81% accuracy drop below.
+
+**⭐ RESUME HERE — 6 newly-ported baselines' FIRST parity pass, not yet root-caused, no fix attempted yet
+(§A has the scoreboard).** `fwdllm_it_unaware`/`felix_it` (iteration-level): only the already-known co-location
+timing family fails — same bucket as fwdllm/fwdllm_plus below, no new investigation needed, just needs the same
+fix once that lands. `felix_round`/`fedbuff_round`/`fedbuff_it_unaware`/`fedbuff_it_oracular` (round-level or
+round-derived): a SECOND, larger, genuinely new failure class. Not yet localized to a mechanism — `fwdllm` (also
+round-level) is clean, so it's not cadence alone; likely `fedbuff`'s selector or the round-cadence wrapper hitting
+an fwdllm-substrate code path never exercised before (§F.2 — check the aggregator/trainer class hierarchy first).
+
+Full per-baseline fail list (from the 2026-07-25 run, `run_parity.py` output, also in each pair's JSON below):
+
+| Baseline | Fails |
+|---|---|
+| `fedbuff_round` | overhead_residual, per_round_advance, throughput, avail_composition, eligibility, avail_timebase, selection_detail, drain_wall_budget, agg_step_timing_breakdown, r1_inflight_overlap, terminal_state, total_commits |
+| `fedbuff_it_unaware` | trainer_speed, overhead_residual, per_round_advance, throughput, selection_detail, staleness, agg_step_timing_breakdown, cohort_sequence, v1_iter_per_data_id, v1b_iters_moving_avg, v2_var_trajectory, v5_variance_pass_ratio, g2_grad_pool_size, utility, terminal_state, total_commits, convergence |
+| `fedbuff_it_oracular` | trainer_speed, trainer_speed_identity, overhead_residual, per_round_advance, throughput, eligibility, selection_detail, training_budget, staleness, drain_wall_budget, agg_step_timing_breakdown, cohort_sequence, v1_iter_per_data_id, v1b_iters_moving_avg, v2_var_trajectory, v5_variance_pass_ratio, g2_grad_pool_size, r1_inflight_overlap, terminal_state, total_commits, convergence |
+| `felix_round` | overhead_residual, per_round_advance, throughput, selection_detail, participation, training_budget, gpu_budget_real, staleness, cohort_sequence, v1_iter_per_data_id, v1b_iters_moving_avg, v2_var_trajectory, v5_variance_pass_ratio, g2_grad_pool_size, r1_inflight_overlap, terminal_state, total_commits |
+| `felix_it` | throughput, cohort_sequence, v1b_iters_moving_avg |
+| `fwdllm_it_unaware` | throughput, step_timing_breakdown, drain_wall_budget, agg_step_timing_breakdown, terminal_state, total_commits |
+
+**Next action (not started):** pick `fedbuff_round` first — smallest fail set (12) of the four round-cadence
+rows, simplest selector (uniform), and it shares `selection_detail`/`eligibility`/`avail_*` fails with no other
+row having exactly that combo, so it likely isolates a selection-layer bug distinct from the `fedbuff_it_*`
+rows' additional variance/grad-pool fails (`v1`/`v2`/`v5`/`g2`/`cohort_sequence`). Per §F preamble: **ground in
+telemetry before instrumenting or running** — diff `fedbuff_round`'s real vs sim
+`telemetry/aggregator_*.jsonl`/`trainer_*.jsonl` (dirs: `experiments/run_20260724_173554_fedbuff_round_
+n100_smoke_syn_0_real`, `experiments/run_20260724_183913_fedbuff_round_n100_smoke_syn_0_sim`) against `fwdllm`'s
+clean equivalent, starting with `eligibility`/`selection_detail` (selection-layer, likely upstream of the rest).
+Full per-check numeric detail (not just pass/fail) for every one of the 6 pairs: `experiments/_parity_reports/
+parity_<baseline>_syn_0_<sim-run-ts>.json` (already on disk, generated 2026-07-25 — no re-run needed to start
+this). Re-run a single baseline after a fix attempt: `cd expt_scripts && python run_parity.py --baselines
+<name> --yes`.
 
 **Shared-compute timing family ROOT-CAUSED (this session → §G): co-location contention, NOT sim over-compute.**
 Only `drain_wall_budget` GATES (MECHANISM); `step_timing_breakdown` + `agg_step_timing_breakdown` are DIAG
@@ -230,6 +287,38 @@ broken card — the operator must pass `--gpu-ids`. Lower priority.
     aggregator sends full WEIGHTS to a trainer only for a `model_version` it has not yet received this data-bin
     (`_weights_sent_this_cycle`, cleared on the `model_version` bump). A re-pick at the same `model_version`
     (still on this data-bin) is told VAR=bad — recompute new perturbations — never a redundant weight re-send.
+
+### §F.2 Porting a baseline's SELECTOR does not port its real↔sim TIMING parity (2026-07-25)
+
+**25. Check the aggregator/trainer class hierarchy, not just the selector, before assuming a ported baseline
+inherits parity.** `felix`'s selector (`AsyncOortSelector`, `flame/selector/async_oort.py`) is one shared class
+both async_cifar10 and fwdllm import — `felix_round`/`felix_it` got it for free when ported (`_metadata/
+BASELINES.md`). But **selection policy and sim-clock/timing modeling live in different classes, and only the
+first one is shared:**
+- async_cifar10's aggregator subclasses the shared `flame/mode/horizontal/asyncfl/top_aggregator.py::TopAggregator`
+  directly (owns `_sim_recv_min`, `_sim_hold_busy_slots`, `sim_sct_ordered_drain`) — this IS `PARITY.md`'s parity
+  surface.
+- fwdllm's `flame/mode/horizontal/syncfl/fwdllm_aggregator.py::TopAggregator` is a **separate 4200-line subclass**
+  of that same base, not a thin wrapper: it adds an fwdllm-only `_sim_recv_min_grad` alongside (not replacing) the
+  base's `_sim_recv_min`, **redefines `_sim_hold_busy_slots` with different semantics** (same method name, "fwdllm-
+  class override only" per its own docstring), and owns fwdllm-only timing knobs with no async_cifar10 consumer at
+  all (`sim_model_agg_compute_time`, `sim_model_dispatch_queue`, `charge_sim_vclock_overhead`,
+  `_release_sim_slots_at_agg_goal`, `_flat_grad_norm`). The trainer side is fully separate too — fwdllm has its own
+  `flame/mode/horizontal/syncfl/fwdllm_trainer.py::Trainer` (981 lines); async_cifar10 uses the generic
+  `flame/mode/horizontal/trainer.py::Trainer`. No shared trainer class exists.
+
+**Consequence:** a parity fix landed against the shared base (or documented in `PARITY.md`) only auto-propagates
+to fwdllm for the methods fwdllm still inherits unmodified (`sim_sct_ordered_drain`, `VirtualClock`/
+`SimReorderBuffer`). Anything fwdllm overrides or adds has to be independently found, fixed, and pytest-verified
+here — which is *why this doc's §F exists as its own principle set instead of just pointing at PARITY.md*, and why
+`felix_round`/`felix_it` needed this session's fresh real↔sim pair (§A) despite `felix` already being clean in
+async_cifar10.
+
+**Applying this to the NEXT port:** before trusting a source example's parity result for a baseline being ported
+into a new example, diff the destination's aggregator/trainer against the source's shared base class. Anything
+overridden (even same-named, different body) or newly added is unverified from scratch, no matter how solid the
+selector/policy code's own parity record is — the two are orthogonal axes, and only one of them travels with a
+straight import.
 
 ---
 
