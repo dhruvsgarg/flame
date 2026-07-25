@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 paper_figs/
 paper_figs_ablation/
+paper_figs_main_v2/
+paper_figs_attribution/
