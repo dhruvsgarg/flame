@@ -193,16 +193,36 @@ class TestRecvStateIsReadOnly:
     dispatch; it must only report who is outstanding."""
 
     def test_recv_never_selects_new_ends(self, build, make_ends):
+        """Mid-run (all_selected non-empty): RECV must not resample."""
         sel = build(c=3)
         ends = make_ends(count=8, prefix="t")
         sel.requester = "agg"
         sel.selected_ends = {"agg": set()}
-        sel.all_selected = {}
+        stamp = time.time()
+        sel.all_selected = {"t7": stamp}  # something else already in flight
 
         recv_props = dict(_send_props(), **{KEY_CH_STATE: VAL_CH_STATE_RECV})
         assert sel.select(ends, recv_props, []) == {}
         assert sel.selected_ends["agg"] == set()
-        assert sel.all_selected == {}
+        assert sel.all_selected == {"t7": stamp}
+
+    def test_recv_bootstraps_when_nothing_ever_dispatched(self, build, make_ends):
+        """Fresh selector (all_selected empty): RECV must bootstrap-select --
+        needed by a trainer's 1:1 channel, whose first call is RECV, not SEND."""
+        sel = build(c=3)
+        ends = make_ends(count=1, prefix="agg")
+        sel.requester = "trainer-x"
+        sel.selected_ends = {"trainer-x": set()}
+        sel.all_selected = {}
+
+        recv_props = {
+            KEY_CH_STATE: VAL_CH_STATE_RECV,
+            KEY_CH_SELECT_REQUESTER: "trainer-x",
+            "round": 1,
+        }
+        chosen = sel.select(ends, recv_props, [])
+        assert set(chosen) == {"agg0"}
+        assert sel.selected_ends["trainer-x"] == {"agg0"}
 
     def test_recv_drops_ends_already_received(self, build, make_ends):
         sel = build(c=3)

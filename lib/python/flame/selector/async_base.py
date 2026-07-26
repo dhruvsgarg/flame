@@ -437,6 +437,12 @@ class AsyncSelectorBase(AbstractSelector):
         `_handle_send_state`'s job; a prior version that resampled here raced
         send-state dispatch and could deadlock. Returns {} if empty; the next
         send-state tick dispatches normally.
+
+        Bootstrap exception: if `all_selected` is empty too (nothing ever
+        dispatched, so nothing to race), pick directly. Needed by callers
+        whose first-ever call is RECV, not SEND -- e.g. a trainer's own 1:1
+        channel, which only reaches SEND on upload -- else RECV permanently
+        returns {} and `channel.one_end` crashes on it.
         """
         selected_ends = self.selected_ends[self.requester]
 
@@ -448,6 +454,18 @@ class AsyncSelectorBase(AbstractSelector):
             if ends[end_id].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD:
                 selected_ends.remove(end_id)
                 logger.debug(f"Removed {end_id} from selected_ends: already RECVD")
+
+        if not selected_ends and not self.all_selected and ends:
+            bootstrap = sorted(ends)[:concurrency]
+            selected_ends = set(bootstrap)
+            self.selected_ends[self.requester] = selected_ends
+            stamp = self._abandon_clock_now()
+            for end_id in bootstrap:
+                self.all_selected[end_id] = stamp
+            logger.info(
+                f"[RecvBootstrap] first-ever recv for requester={self.requester}, "
+                f"nothing in flight yet; picked {bootstrap}"
+            )
 
         # sorted(): process-stable order so real and sim agree.
         return {key: None for key in sorted(selected_ends)}

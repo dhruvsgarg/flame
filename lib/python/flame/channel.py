@@ -232,7 +232,7 @@ class Channel(object):
                 )
                 logger.debug(f"trainer unavail list available, selected: {selected}")
                 if len(selected) == 0:
-                    return
+                    return []
             else:
                 selected = self._selector.select(
                     ends=self._ends,
@@ -247,7 +247,7 @@ class Channel(object):
                     f"trainer unavail list not available, selected: {selected}"
                 )
                 if len(selected) == 0:
-                    return
+                    return []
             logger.debug(
                 f"selected for task {task_to_perform} and returned from select(): {selected}"
             )

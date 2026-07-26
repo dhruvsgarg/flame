@@ -33,6 +33,11 @@ parity methodology (ladder, roles/tiers/gating, run-length budget) and fwdllm's 
 > causes, not symptoms; never launch an experiment directly (print the command for the operator to run);
 > always use the `dg_flame` conda env for python/pytest/analyze_run.py; ship new telemetry with its plot +
 > pytest in the same change (a field with no reader in `analyze_run.py` is dark data).
+> **Runs happen on a separate node the operator controls** — never check GPU/hardware specs or launch/babysit
+> a run yourself; ground claims in on-disk telemetry or the command you hand back. Each run costs the
+> operator real time, so before handing one back, sweep for other open non-blocking, non-conflicting fixes
+> and land them in the same pass.
+> Run artifacts live under `lib/python/examples/fwdllm/experiments/run_<timestamp>_<name>_<syn>_<real|sim>/`.
 
 **Prerequisites:** [async_cifar10/PARITY.md](../async_cifar10/PARITY.md) (methodology + rung catalog §F),
 [UNAVAILABILITY_DESIGN.md](../async_cifar10/UNAVAILABILITY_DESIGN.md) (availability substrate),
