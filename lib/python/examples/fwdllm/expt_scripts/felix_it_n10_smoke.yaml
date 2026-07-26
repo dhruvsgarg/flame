@@ -16,7 +16,7 @@
 
 experiments:
   - name: felix_it_n10_smoke
-    description: "FedFwd smoke (100 trainers, c=15/agg_goal=5, felix_it baseline: async async_oort+fedbuff FeLiX rate+client_notify, no C1/C3, per-iteration reselect)."
+    description: "FedFwd smoke (100 trainers, c=30/agg_goal=10, felix_it baseline: async async_oort+fedbuff FeLiX rate+client_notify, no C1/C3, per-iteration reselect)."
 
     baseline: felix_it
 
@@ -49,7 +49,7 @@ experiments:
       config_template: configs/aggregator_base.json
       selector: async_oort
       tracking_mode: client_notify
-      agg_goal: 5
+      agg_goal: 10
       log_to_wandb: false
       config_overrides:
         job:
@@ -68,7 +68,7 @@ experiments:
           partition_method: niid_label_clients=100_alpha=1
         selector:
           kwargs:
-            c: 15
+            c: 30
             minInitialTrainers: 100
 
     execution:

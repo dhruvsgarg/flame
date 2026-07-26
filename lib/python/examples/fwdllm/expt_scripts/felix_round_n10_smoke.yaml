@@ -4,7 +4,7 @@
 # felix_round_n10_smoke_sim.yaml -- IDENTICAL except time_mode: real, the job
 # id, and dropping the sim-only knobs (sim_straggler_spread_s,
 # sim_sct_ordered_drain, sim_staggered_redispatch, sim_model_dispatch_queue,
-# sim_model_agg_compute_time). c=15 concurrency pool, agg_goal=5.
+# sim_model_agg_compute_time). c=30 concurrency pool, agg_goal=10.
 #
 # Uses the `felix_round` baseline: Felix(P), the other published anchor
 # (this project's own Felix, async_oort oort-smart selection, ported onto
@@ -26,7 +26,7 @@
 
 experiments:
   - name: felix_round_n10_smoke
-    description: "FedFwd smoke (100 trainers, c=15/agg_goal=5, felix_round baseline: async async_oort+fedbuff FeLiX rate+client_notify, no C1/C3, round-level). Validates the launcher port before a full-scale run."
+    description: "FedFwd smoke (100 trainers, c=30/agg_goal=10, felix_round baseline: async async_oort+fedbuff FeLiX rate+client_notify, no C1/C3, round-level). Validates the launcher port before a full-scale run."
 
     baseline: felix_round
 
@@ -68,7 +68,7 @@ experiments:
       config_template: configs/aggregator_base.json
       selector: async_oort
       tracking_mode: client_notify
-      agg_goal: 5
+      agg_goal: 10
       log_to_wandb: false
       config_overrides:
         job:
@@ -94,7 +94,7 @@ experiments:
           partition_method: niid_label_clients=100_alpha=1
         selector:
           kwargs:
-            c: 15
+            c: 30
             minInitialTrainers: 100
 
     execution:

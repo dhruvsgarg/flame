@@ -19,7 +19,7 @@
 
 experiments:
   - name: fedbuff_it_oracular_n10_smoke_sim
-    description: "FedFwd SIM smoke (100 trainers, c=15/agg_goal=5, fedbuff_it_oracular baseline: async FedBuffSelector+fedbuff uniform rate, ORACULAR, per-iteration reselect, time_mode=simulated)."
+    description: "FedFwd SIM smoke (100 trainers, c=30/agg_goal=10, fedbuff_it_oracular baseline: async FedBuffSelector+fedbuff uniform rate, ORACULAR, per-iteration reselect, time_mode=simulated)."
 
     baseline: fedbuff_it_oracular
 
@@ -53,7 +53,7 @@ experiments:
       config_template: configs/aggregator_base.json
       selector: fedbuff
       tracking_mode: oracular
-      agg_goal: 5
+      agg_goal: 10
       log_to_wandb: false
       config_overrides:
         job:
@@ -75,7 +75,7 @@ experiments:
           partition_method: niid_label_clients=100_alpha=1
         selector:
           kwargs:
-            c: 15
+            c: 30
             minInitialTrainers: 100
 
     execution:

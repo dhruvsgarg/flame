@@ -39,7 +39,9 @@
 #   --c              selector.kwargs.c (+ minInitialTrainers + agg_goal unless overridden).
 #   --c-async        selector.kwargs.c for async baselines (fedbuff_round/it_*,
 #                    felix_round/it, fluxtune) only.
-#   --k / --agg-goal selector k / aggregator.agg_goal directly.
+#   --k / --agg-goal  BOTH set aggregator.agg_goal -- K and agg_goal are the same
+#                    knob (selector.kwargs.k is dead; nothing reads it).
+#                    --agg-goal wins over --k, which wins over --c's fallback.
 #   --min-initial-trainers / --min-initial-frac  join barrier before first selection:
 #                    absolute count, or floor(F*N). DEFAULT = N (wait for ALL trainers ->
 #                    set-exact initial cohort real<->sim). frac<1 tolerates stragglers but
@@ -517,14 +519,16 @@ def patch(exp, run_key, variant, trace):
     is_async = _BL_INTERNALS.get(run_key, {}).get("async") == "async"
     if SEL_C:
         kwargs["c"] = int(SEL_C)
-        if not AGG_GOAL:
-            exp["aggregator"]["agg_goal"] = int(SEL_C)  # legacy: agg_goal matches c
     if SEL_C_ASYNC and is_async:
         kwargs["c"] = int(SEL_C_ASYNC)
-    if SEL_K:
-        kwargs["k"] = int(SEL_K)
-    if AGG_GOAL:
-        exp["aggregator"]["agg_goal"] = int(AGG_GOAL)
+    # K IS agg_goal. `selector.kwargs.k` is read by NOTHING in flame, so --k
+    # (and the registry's `K`) silently no-opped; agg_goal is the single source
+    # of truth the runner fans into hyperparameters.aggGoal + selector.kwargs
+    # aggGoal/aggr_num (runner.py:674). Precedence: --agg-goal > --k > the
+    # legacy "agg_goal follows --c" fallback.
+    _goal = AGG_GOAL or SEL_K or (SEL_C if SEL_C else "")
+    if _goal:
+        exp["aggregator"]["agg_goal"] = int(_goal)
     # minInitialTrainers join barrier. DEFAULT = N: the gate fires at
     # ends_count >= threshold, so threshold < N admits a nondeterministic surplus
     # (98 vs 99, join-vs-poll race) -> divergent seeded first cohort; threshold=N
@@ -579,7 +583,7 @@ for trace in traces:
             h0 = e0["aggregator"]["config_overrides"]["hyperparameters"]
             kw0 = e0["aggregator"]["config_overrides"]["selector"]["kwargs"]
             per_baseline.setdefault(run_key, {
-                "c": kw0.get("c"), "k": kw0.get("k"),
+                "c": kw0.get("c"),
                 "agg_goal": e0["aggregator"].get("agg_goal"),
                 "min_init": kw0.get("minInitialTrainers"),
                 "n_trainers": e0["trainer"].get("num_trainers"),
@@ -753,7 +757,7 @@ tiers.append(tier1)
 # are the ones to eyeball); columns identical across all 3 stay dim (expected).
 tier2_cols = [
     ("sync_async", "mode"), ("selector", "selector"), ("optimizer", "optim"),
-    ("c", "c"), ("agg_goal", "agg_goal"), ("k", "k"),
+    ("c", "c"), ("agg_goal", "agg_goal (K)"),
     ("min_init", "minInit"), ("n_trainers", "n_trainers"),
     ("n_gpus", "n_gpus"), ("partition", "part"), ("avail", "avail"),
     ("delays", "delays (factor/floor)"),
@@ -762,8 +766,7 @@ if GPU_IDS:
     tier2_cols.append(("gpu_ids", "gpu_ids"))
 overridden2 = []
 if bool(SEL_C) or bool(SEL_C_ASYNC): overridden2.append("c")
-if bool(AGG_GOAL) or bool(SEL_C):    overridden2.append("agg_goal")
-if bool(SEL_K):        overridden2.append("k")
+if bool(AGG_GOAL) or bool(SEL_K) or bool(SEL_C): overridden2.append("agg_goal")
 if bool(MIN_INIT):     overridden2.append("min_init")
 if bool(NUM_TRAINERS): overridden2.append("n_trainers")
 if bool(NUM_GPUS):     overridden2.append("n_gpus")
@@ -779,7 +782,7 @@ for rk in (r[0] for r in runs):
     rows2.append({"name": rk, "cells": {
         "sync_async": b.get("sync_async"), "selector": b.get("selector"),
         "optimizer": b.get("optimizer"),
-        "c": b.get("c"), "agg_goal": b.get("agg_goal"), "k": b.get("k"),
+        "c": b.get("c"), "agg_goal": b.get("agg_goal"),
         "min_init": b.get("min_init"), "n_trainers": b.get("n_trainers"),
         "n_gpus": b.get("n_gpus"), "partition": b.get("partition"),
         "avail": b.get("avail"),

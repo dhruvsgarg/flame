@@ -15,7 +15,7 @@
 
 experiments:
   - name: fedbuff_it_unaware_n10_smoke
-    description: "FedFwd smoke (100 trainers, c=15/agg_goal=5, fedbuff_it_unaware baseline: async FedBuffSelector+fedbuff uniform rate, unaware, per-iteration reselect)."
+    description: "FedFwd smoke (100 trainers, c=30/agg_goal=10, fedbuff_it_unaware baseline: async FedBuffSelector+fedbuff uniform rate, unaware, per-iteration reselect)."
 
     baseline: fedbuff_it_unaware
 
@@ -48,7 +48,7 @@ experiments:
       config_template: configs/aggregator_base.json
       selector: fedbuff
       tracking_mode: default
-      agg_goal: 5
+      agg_goal: 10
       log_to_wandb: false
       config_overrides:
         job:
@@ -68,7 +68,7 @@ experiments:
           partition_method: niid_label_clients=100_alpha=1
         selector:
           kwargs:
-            c: 15
+            c: 30
             minInitialTrainers: 100
 
     execution:

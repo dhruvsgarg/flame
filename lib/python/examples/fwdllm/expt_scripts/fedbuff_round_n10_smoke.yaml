@@ -4,7 +4,7 @@
 # fedbuff_round_n10_smoke_sim.yaml -- IDENTICAL except time_mode: real, the
 # job id, and dropping the sim-only knobs (sim_straggler_spread_s,
 # sim_sct_ordered_drain, sim_staggered_redispatch, sim_model_dispatch_queue,
-# sim_model_agg_compute_time). c=15 concurrency pool, agg_goal=5.
+# sim_model_agg_compute_time). c=30 concurrency pool, agg_goal=10.
 #
 # Uses the `fedbuff_round` baseline: FedBuff(P), the published-anchor async
 # floor (uniform random async selection via FedBuffSelector, plain
@@ -24,7 +24,7 @@
 
 experiments:
   - name: fedbuff_round_n10_smoke
-    description: "FedFwd smoke (100 trainers, c=15/agg_goal=5, fedbuff_round baseline: async FedBuffSelector+fedbuff uniform rate, unaware, round-level). Validates the launcher port before a full-scale run."
+    description: "FedFwd smoke (100 trainers, c=30/agg_goal=10, fedbuff_round baseline: async FedBuffSelector+fedbuff uniform rate, unaware, round-level). Validates the launcher port before a full-scale run."
 
     baseline: fedbuff_round
 
@@ -67,7 +67,7 @@ experiments:
       config_template: configs/aggregator_base.json
       selector: fedbuff
       tracking_mode: default
-      agg_goal: 5
+      agg_goal: 10
       log_to_wandb: false
       config_overrides:
         job:
@@ -75,7 +75,7 @@ experiments:
         hyperparameters:
           seed: 1234  # deterministic selector RNG + model init; MUST match fedbuff_round_n10_smoke_sim.yaml
           rounds: 50  # short smoke run, not the full 300
-          # With c=15 > agg_goal=5, commit-then-carry the surplus grads +
+          # With c=30 > agg_goal=10, commit-then-carry the surplus grads +
           # hold busy trainers across the boundary (K-D12) -- generic async
           # substrate mechanic, not fluxtune-specific.
           inflight_residence: true
@@ -96,7 +96,7 @@ experiments:
           partition_method: niid_label_clients=100_alpha=1
         selector:
           kwargs:
-            c: 15
+            c: 30
             minInitialTrainers: 100
 
     execution:

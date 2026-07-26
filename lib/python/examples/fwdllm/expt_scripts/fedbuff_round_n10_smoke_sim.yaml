@@ -1,7 +1,7 @@
 # FedFwd SIMULATED-clock smoke test: 100 trainers, agnews H5 partitions
 # (client_idx 0-99, the full 100-partition niid_label_clients=100_alpha=1
-# population). c=15 concurrency pool out of the 100-trainer population,
-# agg_goal=5 (matches baselines.yaml fedbuff_round's smoke-scale defaults).
+# population). c=30 concurrency pool out of the 100-trainer population,
+# agg_goal=10 (matches baselines.yaml fedbuff_round's smoke-scale defaults).
 # Sim-only per BRIDGE_DESIGN.md decision #3 (all new launches use --mode sim).
 #
 # Uses the `fedbuff_round` baseline: FedBuff(P), the published-anchor async
@@ -23,7 +23,7 @@
 
 experiments:
   - name: fedbuff_round_n10_smoke_sim
-    description: "FedFwd SIM smoke (100 trainers, c=15/agg_goal=5, fedbuff_round baseline: async FedBuffSelector+fedbuff uniform rate, unaware, round-level, time_mode=simulated)."
+    description: "FedFwd SIM smoke (100 trainers, c=30/agg_goal=10, fedbuff_round baseline: async FedBuffSelector+fedbuff uniform rate, unaware, round-level, time_mode=simulated)."
 
     baseline: fedbuff_round
 
@@ -67,7 +67,7 @@ experiments:
       config_template: configs/aggregator_base.json
       selector: fedbuff
       tracking_mode: default
-      agg_goal: 5
+      agg_goal: 10
       log_to_wandb: false
       config_overrides:
         job:
@@ -75,7 +75,7 @@ experiments:
         hyperparameters:
           seed: 1234  # deterministic selector RNG + model init
           rounds: 50  # short smoke run, not the full 300
-          # With c=15 > agg_goal=5, commit-then-carry the surplus grads +
+          # With c=30 > agg_goal=10, commit-then-carry the surplus grads +
           # hold busy trainers across the boundary (K-D12) -- generic async
           # substrate mechanic, not fluxtune-specific.
           inflight_residence: true
@@ -91,7 +91,7 @@ experiments:
           partition_method: niid_label_clients=100_alpha=1
         selector:
           kwargs:
-            c: 15
+            c: 30
             minInitialTrainers: 100
 
     execution:
