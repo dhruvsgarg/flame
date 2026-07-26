@@ -434,8 +434,14 @@ class AsyncOortSelector(AbstractSelector):
         cutoff_utility: float,
         utility_list: list[dict[str, Scalar]],
         num_of_ends: int,
+        agg_version_key=None,
     ) -> list[str]:
-        """Sample num_of_ends clients by utility."""
+        """Sample num_of_ends clients by utility.
+
+        `_keyed_weighted_topk`, not `np.random.choice(p=...)` -- the latter is
+        pool-size/order-dependent, same anti-pattern `_keyed_topk` already
+        fixed for the plain uniform draw (see its docstring).
+        """
 
         over_cutoff_utility_end_ids = []
         over_cutoff_utility_probs = []
@@ -458,7 +464,7 @@ class AsyncOortSelector(AbstractSelector):
         for prob_idx in range(len(over_cutoff_utility_probs)):
             over_cutoff_utility_probs[prob_idx] /= over_cutoff_utility_sum
 
-        # Exclude zero-probability entries; np.random.choice(replace=False) requires ≥size non-zero.
+        # Exclude zero-weight entries; A-ExpJ's key formula divides by weight.
         nz_pairs = [
             (e, p)
             for e, p in zip(over_cutoff_utility_end_ids, over_cutoff_utility_probs)
@@ -466,18 +472,11 @@ class AsyncOortSelector(AbstractSelector):
         ]
         if not nz_pairs:
             return []
-        nz_ends, nz_probs = zip(*nz_pairs)
-        nz_total = sum(nz_probs)
-        nz_probs = [p / nz_total for p in nz_probs]
 
-        selected_ends = self._rng.choice(
-            list(nz_ends),
-            size=min(len(nz_ends), num_of_ends),
-            replace=False,
-            p=nz_probs,
+        return self._keyed_weighted_topk(
+            nz_pairs, min(len(nz_pairs), num_of_ends), agg_version_key,
+            "sample_by_util",
         )
-
-        return selected_ends
 
     def _system_util_summary(self, selected_ids) -> dict:
         """Per-round speed-penalty summary over selected ends, for telemetry.
@@ -504,22 +503,30 @@ class AsyncOortSelector(AbstractSelector):
             "pref_binds": penalized > 0,
         }
 
-    def _keyed_topk(self, candidate_ids, k: int, agg_version_key, salt: str) -> list[str]:
-        """Order-sample top-k: each id's rank key depends only on its own
+    def _keyed_draw(self, candidate_id: str, agg_version_key, salt: str) -> float:
+        """Deterministic per-candidate uniform draw in (0, 1): depends only on
         (seed, salt, agg_version_key, id), never on pool membership/size/call
-        order. Replaces index-based random.sample()/np.random.choice(), where
-        one trainer's incidental presence/absence shifts every other
-        candidate's draw and permanently desyncs later calls.
+        order. Shared by `_keyed_topk` and `_keyed_weighted_topk` -- one
+        seeded-material implementation, not two near-identical copies.
 
         Seed material is a str, not a raw tuple -- Random() hashes non-str/
         int/bytes seeds, and str hash() is PYTHONHASHSEED-randomized per
         process, which would silently break real/sim parity.
         """
-        def _key(c: str) -> float:
-            material = f"{self._seed}|{salt}|{agg_version_key}|{c}"
-            return _StdRandom(material).random()
+        material = f"{self._seed}|{salt}|{agg_version_key}|{candidate_id}"
+        return _StdRandom(material).random()
 
-        ranked = sorted(candidate_ids, key=_key, reverse=True)
+    def _keyed_topk(self, candidate_ids, k: int, agg_version_key, salt: str) -> list[str]:
+        """Order-sample top-k by `_keyed_draw`. Replaces index-based
+        random.sample()/np.random.choice(), where one trainer's incidental
+        presence/absence shifts every other candidate's draw and permanently
+        desyncs later calls.
+        """
+        ranked = sorted(
+            candidate_ids,
+            key=lambda c: self._keyed_draw(c, agg_version_key, salt),
+            reverse=True,
+        )
         return ranked[:k]
 
     def sample_by_speed(
@@ -532,6 +539,22 @@ class AsyncOortSelector(AbstractSelector):
         """
         return self._keyed_topk(unexplored_end_ids, num_of_ends, agg_version_key,
                                 "sample_by_speed")
+
+    def _keyed_weighted_topk(
+        self, candidate_weights: list[tuple], k: int, agg_version_key, salt: str
+    ) -> list[str]:
+        """Weighted counterpart of `_keyed_topk`, same `_keyed_draw` primitive:
+        Efraimidis-Spirakis (A-ExpJ) keys `u_i ** (1/w_i)` turn the pool-
+        independent uniform draw into weighted sampling without replacement.
+        Replaces `np.random.choice(p=probs)`, whose output for every
+        candidate shifts when the pool's size/order changes.
+        """
+        def _key(item: tuple) -> float:
+            end_id, weight = item
+            return self._keyed_draw(end_id, agg_version_key, salt) ** (1.0 / weight)
+
+        ranked = sorted(candidate_weights, key=_key, reverse=True)
+        return [end_id for end_id, _weight in ranked[:k]]
 
     def pacer(self, current_round: int) -> None:
         """Adapt `round_threshold` from the exploited-utility trend — faithful to
@@ -1187,7 +1210,8 @@ class AsyncOortSelector(AbstractSelector):
             f"{exploitation_len}"
         )
         exploit_end_ids = self.sample_by_util(
-            cutoff_utility, utility_list, exploitation_len
+            cutoff_utility, utility_list, exploitation_len,
+            agg_version_key=agg_version_key,
         )
         logger.debug(f"exploit_end_ids: {exploit_end_ids}")
 

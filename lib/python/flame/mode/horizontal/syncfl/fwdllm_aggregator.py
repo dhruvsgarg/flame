@@ -3428,13 +3428,20 @@ class TopAggregator(AsyncTopAgg):
         dispatched the CURRENT `version_key`, so re-sending this distribute pass
         would only queue a stale VAR=bad it will abort. Re-serves automatically
         on a version_key advance (the stored value stops matching), and a never-
-        served end (not in the map) always returns False."""
-        return self._end_served_version_key.get(end) == self.version_key
+        served end (not in the map) always returns False.
+
+        getattr-guarded: test doubles built via __new__ skip __init__."""
+        served = getattr(self, "_end_served_version_key", None)
+        return served is not None and served.get(end) == self.version_key
 
     def _mark_instruction_served(self, end) -> None:
         """Record that the CURRENT version_key's instruction was dispatched to
-        `end` (paired with `_already_served_current_instruction`)."""
-        self._end_served_version_key[end] = self.version_key
+        `end` (paired with `_already_served_current_instruction`).
+
+        getattr-guarded: test doubles built via __new__ skip __init__."""
+        served = getattr(self, "_end_served_version_key", None)
+        if served is not None:
+            served[end] = self.version_key
 
     def _should_send_full_weights(self, end, is_stale: bool) -> bool:
         """Decide WEIGHTS vs the tiny VAR=bad 'keep training' message for one end.
@@ -3881,6 +3888,11 @@ class TopAggregator(AsyncTopAgg):
         _n_weights_sent = 0
         _n_var_bad_sent = 0
         for end in ends:
+            # §F-25: skip an end already served this version_key -- the round-cache
+            # re-invokes the whole cohort every tick; mirrors the sync path's guard
+            # (~3654), which async lacked (was flooding VAR=bad, r1_inflight_overlap).
+            if self._already_served_current_instruction(end):
+                continue
             trainer_version = self._trainer_last_model_version.get(end, -1)
             is_stale = (trainer_version != self._model_version)
             # Opt-1: shared decision with the sync path (_should_send_full_weights).
@@ -3975,6 +3987,7 @@ class TopAggregator(AsyncTopAgg):
                 self._trainer_inflight_dispatch_version[end] = self.version_key
             _send_t0 = time.time()
             channel.send(end, payload)
+            self._mark_instruction_served(end)
             _send_wall = time.time()
             # Serial-dispatch queue: accumulate this send's MEASURED wall (pickle +
             # publish) so the next trainer's sim_send_ts reflects waiting behind it.

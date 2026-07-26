@@ -415,3 +415,74 @@ class TestKeyedTopkPopulationInvariance:
 
         a, b, c = _run("0"), _run("1"), _run("42")
         assert a == b == c
+
+
+class TestKeyedWeightedTopkPopulationInvariance:
+    """`sample_by_util`'s exploitation draw used `np.random.choice(p=probs)`
+    -- pool-size/order dependent, the same anti-pattern `_keyed_topk` already
+    fixed for the plain uniform draw (`TestKeyedTopkPopulationInvariance`
+    above). Fixed via `_keyed_weighted_topk` (Efraimidis-Spirakis keys)."""
+
+    from flame.selector.properties import PROP_END_ID, PROP_UTILITY
+
+    def _sel(self, seed=1234):
+        from flame.selector.async_oort import AsyncOortSelector
+        return AsyncOortSelector(_seed=seed, c=30, aggGoal=10, evalGoalFactor=0.5,
+                                 roundNudgeType="last_train", selectType="default")
+
+    def _utility_list(self, n, seed=0):
+        rng = random.Random(seed)
+        return [
+            {self.PROP_END_ID: f"t{i:03d}", self.PROP_UTILITY: rng.uniform(0.1, 1.0)}
+            for i in range(n)
+        ]
+
+    def test_same_seed_reproducible(self):
+        ul = self._utility_list(20)
+        a = self._sel().sample_by_util(0.0, ul, 5, agg_version_key=(0, 1))
+        b = self._sel().sample_by_util(0.0, ul, 5, agg_version_key=(0, 1))
+        assert a == b
+
+    def test_extra_non_winning_candidate_does_not_change_pick(self):
+        ul = self._utility_list(20)
+        winner = self._sel().sample_by_util(0.0, ul, 1, agg_version_key=(0, 1))
+
+        extended = ul + [{self.PROP_END_ID: "extra", self.PROP_UTILITY: 1e-9}]
+        winner_with_extra = self._sel().sample_by_util(
+            0.0, extended, 1, agg_version_key=(0, 1)
+        )
+        assert winner_with_extra == winner
+
+    def test_next_draw_resyncs_regardless_of_prior_pool_difference(self):
+        ul_a = self._utility_list(20)
+        ul_b = ul_a + [{self.PROP_END_ID: "extra", self.PROP_UTILITY: 0.5}]
+
+        sel_a, sel_b = self._sel(), self._sel()
+        sel_a.sample_by_util(0.0, ul_a, 1, agg_version_key=(0, 1))
+        sel_b.sample_by_util(0.0, ul_b, 1, agg_version_key=(0, 1))
+
+        next_a = sel_a.sample_by_util(0.0, ul_a, 1, agg_version_key=(0, 2))
+        next_b = sel_b.sample_by_util(0.0, ul_a, 1, agg_version_key=(0, 2))
+        assert next_a == next_b
+
+    def test_different_agg_version_key_gives_independent_draw(self):
+        ul = self._utility_list(20)
+        sel = self._sel()
+        r1 = sel.sample_by_util(0.0, ul, 1, agg_version_key=(0, 1))
+        r2 = sel.sample_by_util(0.0, ul, 1, agg_version_key=(0, 2))
+        r3 = sel.sample_by_util(0.0, ul, 1, agg_version_key=(0, 1))
+        assert r1 == r3  # same key -> same pick, repeatable
+
+    def test_higher_utility_wins_more_often(self):
+        # Not a determinism test -- a sanity check that weight actually
+        # steers the draw (a uniform pool-independent-but-unweighted bug
+        # would still pass every test above).
+        ul = [
+            {self.PROP_END_ID: "hi", self.PROP_UTILITY: 100.0},
+            {self.PROP_END_ID: "lo", self.PROP_UTILITY: 0.01},
+        ]
+        wins = sum(
+            1 for vk in range(200)
+            if self._sel().sample_by_util(0.0, ul, 1, agg_version_key=(0, vk)) == ["hi"]
+        )
+        assert wins > 150  # heavily weighted toward "hi"
