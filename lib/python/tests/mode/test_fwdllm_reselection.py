@@ -45,12 +45,20 @@ class _FakeChannel:
     still True, but its avl-state property reads `UN_AVL`).
     """
 
-    def __init__(self, selections):
+    def __init__(self, selections, c=None):
         self._selections = list(selections)
         self.calls = 0
         self._selector = _FakeSelector()
         self._removed = set()
         self._unavail = set()
+        # Concurrency target: what sizes the pinned per-round cohort (NOT
+        # agg_goal -- see _round_cohort_target). `properties` also carries
+        # DynamicKCController's `dynamic_c` override, which takes precedence.
+        self._c = c
+        self.properties = {}
+
+    def get_c(self):
+        return self._c
 
     def ends(
         self,
@@ -76,10 +84,13 @@ class _FakeAggregator:
     """Minimal stand-in exposing only the state
     `_select_ends_respecting_reselect_gate` touches."""
 
-    def __init__(self, reselect_each_iteration, agg_goal=None):
-        self._reselect_each_iteration = reselect_each_iteration
+    def __init__(self, reselect_each_iteration=None, cadence=None):
+        if cadence is None:
+            cadence = "iteration" if reselect_each_iteration else "round"
+        self._reselect_cadence = cadence
+        self._reselect_each_iteration = cadence == "iteration"
         self._round_selected_ends = None
-        self._round_selected_ends_round = None
+        self._pinned_cohort_key = None
         self._round_cache_activity_ts = {}
         self._round = 0
         self._model_version = 0
@@ -89,8 +100,6 @@ class _FakeAggregator:
         self._reselect_true_cache_ends = None
         self._trainer_state_dict = {}
         self._curr_agg_version = None
-        if agg_goal is not None:
-            self._agg_goal = agg_goal
 
     @property
     def version_key(self):
@@ -101,6 +110,12 @@ class _FakeAggregator:
     _rearm_recv_eligibility = staticmethod(TopAggregator._rearm_recv_eligibility)
     _prune_departed_from_round_cache = (
         TopAggregator._prune_departed_from_round_cache
+    )
+    _round_cohort_target = TopAggregator._round_cohort_target
+    _trim_round_cohort = TopAggregator._trim_round_cohort
+    _cohort_cache_key = TopAggregator._cohort_cache_key
+    _invalidate_cohort_cache_if_stale = (
+        TopAggregator._invalidate_cohort_cache_if_stale
     )
 
 
@@ -161,18 +176,18 @@ class TestReselectGate:
         assert agg.select(channel, "train") == ["t1"]
         assert channel.calls == 3
 
-    def test_per_round_accumulates_partial_selections_until_agg_goal(self):
+    def test_per_round_accumulates_partial_selections_until_c(self):
         """Must keep merging in newly-selected trainers until the cache
-        reaches `_agg_goal`, not freeze on the first partial result."""
-        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=3)
-        channel = _FakeChannel(selections=[["t1"], ["t2"], ["t3"]])
+        reaches `c`, not freeze on the first partial result."""
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1"], ["t2"], ["t3"]], c=3)
 
         assert agg.select(channel, "train") == ["t1"]
         assert agg.select(channel, "train") == ["t1", "t2"]
         assert agg.select(channel, "train") == ["t1", "t2", "t3"]
         assert channel.calls == 3
 
-        # Cache has reached agg_goal -- further calls must not re-query.
+        # Cohort has reached c -- further calls must not re-query.
         assert agg.select(channel, "train") == ["t1", "t2", "t3"]
         assert channel.calls == 3
 
@@ -180,8 +195,8 @@ class TestReselectGate:
         """Regression test (2026-06-28 live-run hang): a cache hit must
         re-arm selected_ends, or it drains to empty after one pass and
         the receive side permanently stalls."""
-        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
-        channel = _FakeChannel(selections=[["t1", "t2"]])
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1", "t2"]], c=2)
 
         ends = agg.select(channel, "train")
         assert ends == ["t1", "t2"]
@@ -197,16 +212,170 @@ class TestReselectGate:
         assert channel._selector.selected_ends == {"t1", "t2"}
 
     def test_accumulate_path_also_rearms_selector_recv_eligibility(self):
-        """The accumulate-until-agg_goal path re-arms too, so behavior
+        """The accumulate-until-c path re-arms too, so behavior
         doesn't depend on which branch is taken."""
-        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
-        channel = _FakeChannel(selections=[["t1"], ["t2"]])
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1"], ["t2"]], c=2)
 
         agg.select(channel, "train")
         assert channel._selector.selected_ends == {"t1"}
 
         agg.select(channel, "train")
         assert channel._selector.selected_ends == {"t1", "t2"}
+
+
+class TestRoundCohortSizedByConcurrency:
+    """The pinned cohort is sized by `c` (what the system promises to keep
+    training), never by `agg_goal` (only the aggregation trigger). Both
+    directions were broken and BOTH modes were broken identically, so parity
+    reported a pass on a 10-of-30-trainer run (fedbuff_round, felix_round)."""
+
+    def test_cohort_fills_to_c_not_agg_goal(self):
+        """Under-fill: fedbuff_round ran c=30/agg_goal=10 and froze at 10,
+        leaving 20 dispatch slots idle for the whole round."""
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        agg._agg_goal = 2  # must NOT cap the cohort
+        channel = _FakeChannel(
+            selections=[["t1", "t2"], ["t3", "t4"], ["t5"]], c=5
+        )
+
+        agg.select(channel, "train")
+        agg.select(channel, "train")
+        assert agg.select(channel, "train") == ["t1", "t2", "t3", "t4", "t5"]
+        assert channel.calls == 3
+
+        # At c now -- frozen for the rest of the round.
+        assert agg.select(channel, "train") == ["t1", "t2", "t3", "t4", "t5"]
+        assert channel.calls == 3
+
+    def test_cohort_trimmed_to_exactly_c_on_overshoot(self):
+        """Over-fill: the reuse check runs before the merge, so one batch can
+        blow past `c` in a single step. Untrimmed, final size fell out of
+        arrival-burst timing -- felix_round landed 30 real vs 40 sim."""
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1", "t2", "t3", "t4", "t5"]], c=3)
+
+        assert agg.select(channel, "train") == ["t1", "t2", "t3"]
+        # Surplus must not linger in the stuck-timeout bookkeeping either.
+        assert set(agg._round_cache_activity_ts) == {"t1", "t2", "t3"}
+
+    def test_dynamic_c_overrides_static_c(self):
+        """DynamicKCController pushes `dynamic_c` as a channel property; it
+        takes precedence over the selector's static `c` (matches async_oort)."""
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1", "t2", "t3", "t4"]], c=4)
+        channel.properties["dynamic_c"] = 2
+
+        assert agg.select(channel, "train") == ["t1", "t2"]
+
+    def test_no_discoverable_c_keeps_legacy_reuse(self):
+        """A selector without `c` -> no target -> reuse whenever non-empty,
+        the pre-`c` fallback, rather than re-querying forever."""
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1"], ["t2"]], c=None)
+
+        assert agg.select(channel, "train") == ["t1"]
+        assert agg.select(channel, "train") == ["t1"]
+        assert channel.calls == 1
+
+    def test_async_gate_cohort_sized_by_c(self):
+        """Async twin of the same two defects."""
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        agg._agg_goal = 2
+        channel = _FakeChannel(selections=[["t1", "t2", "t3", "t4"]], c=3)
+        channel._selector = _FakeAsyncSelector()
+
+        assert agg.select_async(channel, "train") == ["t1", "t2", "t3"]
+        assert agg.select_async(channel, "train") == ["t1", "t2", "t3"]
+        assert channel.calls == 1
+
+
+class TestReselectCadence:
+    """Three cadences, coarsest first: round (a full total_data_bins lap),
+    data_bin (one completed databin), iteration. The deprecated boolean
+    `reselect_each_iteration` maps True->iteration, False->round."""
+
+    def test_data_bin_cadence_repins_per_model_version(self):
+        agg = _FakeAggregator(cadence="data_bin")
+        channel = _FakeChannel(selections=[["t1"], ["t2"], ["t3"]], c=1)
+
+        # Iterations within one databin reuse the pinned cohort.
+        assert agg.select(channel, "train") == ["t1"]
+        agg.iteration_per_data_id += 1
+        assert agg.select(channel, "train") == ["t1"]
+        assert channel.calls == 1
+
+        # Databin advance -> re-pin.
+        agg._model_version += 1
+        agg.iteration_per_data_id = 0
+        assert agg.select(channel, "train") == ["t2"]
+        assert channel.calls == 2
+
+    def test_round_cadence_survives_model_version_advance(self):
+        """The discriminator against data_bin: a databin advance must NOT
+        re-pin at round cadence -- only a lap does."""
+        agg = _FakeAggregator(cadence="round")
+        channel = _FakeChannel(selections=[["t1"], ["t2"]], c=1)
+
+        assert agg.select(channel, "train") == ["t1"]
+        agg._model_version += 1
+        assert agg.select(channel, "train") == ["t1"]
+        assert channel.calls == 1
+
+        agg._round += 1
+        assert agg.select(channel, "train") == ["t2"]
+        assert channel.calls == 2
+
+    def test_data_bin_key_does_not_collide_across_laps(self):
+        """`_model_version` is monotone; `data_id` wraps at total_data_bins
+        and would collide lap-to-lap (§F-2)."""
+        agg = _FakeAggregator(cadence="data_bin")
+        channel = _FakeChannel(selections=[["t1"], ["t2"]], c=1)
+
+        agg.data_id = 0
+        assert agg.select(channel, "train") == ["t1"]
+        # New lap: data_id wraps back to 0, but model_version keeps climbing.
+        agg._round += 1
+        agg.data_id = 0
+        agg._model_version += 1
+        assert agg.select(channel, "train") == ["t2"]
+        assert channel.calls == 2
+
+
+class TestResolveReselectCadence:
+    """`reselect_cadence` wins; the boolean alias is the fallback."""
+
+    class _HP:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    class _Agg:
+        _resolve_reselect_cadence = TopAggregator._resolve_reselect_cadence
+        RESELECT_CADENCES = TopAggregator.RESELECT_CADENCES
+
+        def __init__(self, hp):
+            self.config = type("C", (), {"hyperparameters": hp})()
+
+    def _resolve(self, **kw):
+        return self._Agg(self._HP(**kw))._resolve_reselect_cadence()
+
+    def test_defaults_to_iteration(self):
+        assert self._resolve() == "iteration"
+
+    def test_boolean_alias_maps_to_iteration_and_round(self):
+        assert self._resolve(reselect_each_iteration=True) == "iteration"
+        assert self._resolve(reselect_each_iteration=False) == "round"
+
+    def test_explicit_cadence_wins_over_alias(self):
+        assert self._resolve(
+            reselect_cadence="data_bin", reselect_each_iteration=True
+        ) == "data_bin"
+
+    def test_unknown_cadence_raises(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="reselect_cadence"):
+            self._resolve(reselect_cadence="every_other_tuesday")
 
 
 class TestPerIterationVersionKeyCache:
@@ -269,8 +438,8 @@ class TestStaleCachePruning:
     stalling forever on a contribution that can never arrive."""
 
     def test_disconnected_end_pruned_and_backfilled(self):
-        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
-        channel = _FakeChannel(selections=[["t1", "t2"], ["t3"]])
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1", "t2"], ["t3"]], c=2)
 
         assert agg.select(channel, "train") == ["t1", "t2"]
         assert channel.calls == 1
@@ -282,13 +451,13 @@ class TestStaleCachePruning:
         assert ends == ["t2", "t3"]
         assert channel.calls == 2  # re-queried the selector to backfill
 
-        # Now cached again at agg_goal -- no further re-query.
+        # Now cached again at c -- no further re-query.
         assert agg.select(channel, "train") == ["t2", "t3"]
         assert channel.calls == 2
 
     def test_un_avl_end_pruned_and_backfilled(self):
-        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
-        channel = _FakeChannel(selections=[["t1", "t2"], ["t3"]])
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1", "t2"], ["t3"]], c=2)
 
         assert agg.select(channel, "train") == ["t1", "t2"]
         assert channel.calls == 1
@@ -305,8 +474,8 @@ class TestStaleCachePruning:
 
     def test_still_present_end_not_pruned(self):
         """Control case: no departure means no pruning and no re-query."""
-        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
-        channel = _FakeChannel(selections=[["t1", "t2"]])
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1", "t2"]], c=2)
 
         assert agg.select(channel, "train") == ["t1", "t2"]
         assert agg.select(channel, "train") == ["t1", "t2"]
@@ -323,8 +492,8 @@ class TestStuckCachePruning:
     (TestStaleCachePruning above)."""
 
     def test_stuck_end_pruned_and_backfilled(self):
-        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
-        channel = _FakeChannel(selections=[["t1", "t2"], ["t3"]])
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1", "t2"], ["t3"]], c=2)
 
         assert agg.select(channel, "train") == ["t1", "t2"]
         assert channel.calls == 1
@@ -346,8 +515,8 @@ class TestStuckCachePruning:
         """An end within the timeout window (even if not the most recent to
         contribute) must not be pruned -- only genuinely stuck members
         should churn the cache."""
-        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
-        channel = _FakeChannel(selections=[["t1", "t2"]])
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1", "t2"]], c=2)
 
         assert agg.select(channel, "train") == ["t1", "t2"]
         agg._round_cache_activity_ts["t1"] = time.time() - (ROUND_CACHE_STUCK_TIMEOUT_S - 30)
@@ -359,8 +528,8 @@ class TestStuckCachePruning:
         """Control: an end that just entered the cache (activity_ts == now,
         set by the accumulate path itself) must not be immediately treated
         as stuck on the very next call."""
-        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
-        channel = _FakeChannel(selections=[["t1", "t2"]])
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1", "t2"]], c=2)
 
         assert agg.select(channel, "train") == ["t1", "t2"]
         assert set(agg._round_cache_activity_ts.keys()) == {"t1", "t2"}
@@ -390,14 +559,14 @@ class TestAsyncReselectGate:
         assert channel.calls == 3
 
     def test_reselect_false_pins_cohort_until_round_advances(self):
-        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
-        channel = _FakeChannel(selections=[["t1"], ["t2"]])
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1"], ["t2"]], c=2)
 
         assert agg.select_async(channel, "train") == ["t1"]
         assert agg.select_async(channel, "train") == ["t1", "t2"]
         assert channel.calls == 2
 
-        # Cohort reached agg_goal -- further calls must not re-query.
+        # Cohort reached c -- further calls must not re-query.
         assert agg.select_async(channel, "train") == ["t1", "t2"]
         assert channel.calls == 2
 
@@ -411,8 +580,8 @@ class TestAsyncReselectGate:
         assert channel.calls == 1
 
     def test_reselect_false_does_not_cache_empty_selection(self):
-        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=1)
-        channel = _FakeChannel(selections=[None, None, ["t1"]])
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[None, None, ["t1"]], c=1)
 
         assert agg.select_async(channel, "train") == []
         assert agg.select_async(channel, "train") == []
@@ -423,8 +592,8 @@ class TestAsyncReselectGate:
         assert channel.calls == 3
 
     def test_reselect_false_prunes_departed_and_backfills(self):
-        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
-        channel = _FakeChannel(selections=[["t1", "t2"], ["t3"]])
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1", "t2"], ["t3"]], c=2)
 
         assert agg.select_async(channel, "train") == ["t1", "t2"]
         assert channel.calls == 1
@@ -442,12 +611,12 @@ class TestAsyncReselectGate:
 
     def test_cache_hit_rearms_dict_based_async_selector_without_crashing(self):
         """Regression for the felix_round smoke-test crash: a cache-hit call
-        (cohort already at agg_goal) must rearm recv-eligibility on a REAL
+        (cohort already at c) must rearm recv-eligibility on a REAL
         async selector's dict[requester, set] `selected_ends`, not assume the
         sync selector's bare-set convention `_rearm_recv_eligibility` was
         originally written for."""
-        agg = _FakeAggregator(reselect_each_iteration=False, agg_goal=2)
-        channel = _FakeChannel(selections=[["t1", "t2"]])
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1", "t2"]], c=2)
         channel._selector = _FakeAsyncSelector()
 
         # Accumulate call: builds the round cache but (like the real
@@ -455,7 +624,7 @@ class TestAsyncReselectGate:
         # touch selected_ends -- only a cache HIT rearms it.
         assert agg.select_async(channel, "train") == ["t1", "t2"]
 
-        # Cache hit: cohort already at agg_goal -- must not raise, and must
+        # Cache hit: cohort already at c -- must not raise, and must
         # keep selected_ends a dict (this call crashed with TypeError before
         # the fix: `_rearm_recv_eligibility` reassigned the whole attribute
         # to a bare set, so the NEXT selector.select() call -- reading

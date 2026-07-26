@@ -8,6 +8,11 @@ parity methodology (ladder, roles/tiers/gating, run-length budget) and fwdllm's 
 [async_cifar10/PARITY.md](../async_cifar10/PARITY.md) — read it first if new to this track.
 
 > ## PREAMBLE — maintaining this doc
+> **Correctness per mode first; parity is the consequence, never the goal.** Real and sim must each be
+> independently correct against the configured intent (e.g. `c` trainers training at any instant).
+> Aligning the two by making either wrong — or by preserving a defect symmetrically — is a regression
+> even when every rung is green. Matched-but-wrong is the hardest failure to find: parity reports it as
+> a pass.
 > **Parity findings/fixes only** — design decisions, roadmap items, calibration derivations belong in
 > FWDLLM_DESIGN.md.
 > **Living doc, not a changelog** — §A/§B describe the state *right now*, rewritten in place, never
@@ -77,7 +82,8 @@ not re-verified this session. Re-run via `run_parity.py --baselines <name>` when
 
 **FIRST parity pass — 6 newly-ported baselines** (fedbuff/felix lineage, rebuild landed 2026-07-23,
 `_metadata/BASELINES.md`), one ~2h real/sim pair each launched post-17:30 the prior day. These had **never**
-been parity-checked before — this is the first read, not a re-verify. Failure analysis + resume pointer: §B.
+been parity-checked before — this is the first read, not a re-verify. **ROOT-CAUSED 2026-07-25 from
+stored telemetry, no fix landed, implementation blocked on one decision — §B.**
 
 | baseline | run pair | dur | pass/fail/skip | cohort | vclock | thru | commits | terminal | R1 | V1 | V2 | U3 | S2 | conv | conv_loss |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -88,7 +94,8 @@ been parity-checked before — this is the first read, not a re-verify. Failure 
 | fedbuff_it_unaware/syn_0 | `run_20260724_185838`/`_194932` | ~2h | 47/17/18 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ |
 | fedbuff_it_oracular/syn_0 | `run_20260724_173639`/`_182737` | ~2h | 43/21/18 | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ |
 
-Per-pair numeric detail: `experiments/_parity_reports/parity_<baseline>_syn_0_<sim-ts>.json`.
+Per-pair numeric detail: `experiments/_parity_reports/parity_<baseline>_syn_0_<sim-ts>.json` — NOT on disk
+for these six; re-derive from each run dir's `telemetry/*.jsonl` (run dirs are present).
 
 ---
 
@@ -97,18 +104,89 @@ Per-pair numeric detail: `experiments/_parity_reports/parity_<baseline>_syn_0_<s
 > **RULE: every tracker cell ≤20 words.** State the claim/number, cut qualifiers. If it needs more, it's
 > not tracker material — shorten it or point at the code comment/commit.
 
-**⭐ RESUME HERE — 6 newly-ported baselines' FIRST parity pass, not yet root-caused, no fix attempted.**
-Failures split by CADENCE, not substrate:
-- `fwdllm_it_unaware` / `felix_it` (iteration-level): only the already-known co-location timing family
-  (`throughput`/`drain_wall_budget`/`agg_step_timing_breakdown`) — same bucket as fwdllm/fwdllm_plus below,
-  no new investigation, needs the same fix once that lands.
-- `felix_round` / `fedbuff_round` / `fedbuff_it_unaware` / `fedbuff_it_oracular` (round-level or
-  round-derived): a SECOND, larger, genuinely NEW failure class — core selection/variance rungs never seen
-  failing before (`cohort_sequence`, `v1`/`v1b`/`v2`/`v5`, `staleness`, `eligibility`, `selection_detail`,
-  and `convergence` for the two `fedbuff_it_*`). `fwdllm` itself is round-level and CLEAN on these, so it's
-  NOT cadence alone — likely `fedbuff`'s selector or the round-cadence wrapper hitting an fwdllm-substrate
-  code path never exercised before (§D-3: ported selector ≠ ported timing; check the aggregator/trainer
-  class hierarchy first).
+**⭐ RESUME HERE — 6 newly-ported baselines: R-A + R-B FIXED IN CODE (2026-07-25), AWAITING one batch of
+re-runs.** R-C open. All 5 round/+IT baselines plus `fwdllm` need fresh pairs before §A means anything;
+operator will run them as a single batch.
+
+R-B's original framing was WRONG and is corrected below — the round cohort is *supposed* to be pinned per
+round; the defect was its SIZE. R-A stands as diagnosed.
+
+| baseline | dispatch path | cadence | version_key guard from | root |
+|---|---|---|---|---|
+| `fwdllm`, `fwdllm_it_*` | sync gate | mixed | aggregator (`_reselect_true_cache_key`) | R-B (size only) |
+| `felix_it` | async gate | iteration | selector (`async_oort` honors it) | timing fails only |
+| `fedbuff_it_unaware/oracular` | async gate | iteration | selector — `fedbuff` DROPPED it | R-A |
+| `fedbuff_round`, `felix_round` | async gate | round | — | R-B |
+
+**R-A — `FedBuffSelector` never received the real→sim port. FIXED** by re-basing it onto the new
+`AsyncSelectorBase` (§G). `channel.ends()` threads `agg_version_key`/`trainer_version_keys`;
+`async_oort` filtered on them, `fedbuff.py::select()` swallowed them in `**kwargs`. Measured
+repeat-commits on the same `(data_id, iteration_per_data_id)`:
+
+| baseline | selector | real re-pick | sim re-pick | real staleness tail |
+|---|---|---|---|---|
+| `felix_it` | async_oort (ported) | 3.5% | 4.0% | {0,1,2,3} |
+| `fedbuff_it_unaware` | fedbuff | **34.4%** | **0.9%** | out to **312** |
+
+Real is the divergent side (§F-5): 34% of its 10742 commits are same-version re-picks. Sim's
+`_sim_pending_commit` slot-hold masks the gap on one side only. Owns `fedbuff_it_*`'s
+staleness/`v1`/`v1b`/`v2`/`v5`/`g2_grad_pool_size`/`convergence` cluster. Every row below is now
+inherited from the shared base, not re-implemented:
+
+| construct | async_oort | fedbuff.py (pre-fix) | rung |
+|---|---|---|---|
+| version_key re-pick filter | yes | absent | R-A cluster |
+| `enforce_min_start` | called | never called (`minInitialTrainers:100` inert) | cohort/eligibility |
+| `_abandon_clock_now()` (vclock in sim) | yes | bare `time.time()` | latent |
+| `send_timeout_wait_s` from config | yes | hardcoded 90 (config 300) | latent |
+| `_agg_pending_commit_ref` R1 guard | yes | absent | `r1_inflight_overlap` |
+| `task_eligible_states`/`PROP_AVL_STATE` | yes | kwarg set, never read | `avail_composition`, `eligibility` |
+| `_handle_recv_state` re-samples | removed (raced dispatch) | still present | latent |
+| `_cleanup_recvd_ends` drain | all | capped at `agg_goal` | latent deadlock |
+| sampling | `_keyed_topk` (pool-size-independent) | reservoir `randrange(idx)` | RNG desync |
+
+**R-B — the pinned cohort was sized by `agg_goal`, not `c`. FIXED** (§G). NOT a cache-invalidation bug:
+`_round` advances once per `total_data_bins` lap by design (`fwdllm_aggregator.py:2325`), and a 2h run
+never completes one, so a round-level baseline pinning for the whole run is the SPEC. The real defects,
+both in `_select_ends_*_respecting_reselect_gate` and both wrong in real and sim independently:
+
+* **under-fill** — target was `_agg_goal`, so `fedbuff_round` (c=30, agg_goal=10) froze at 10/100
+  committers with 20 dispatch slots idle all run.
+* **over-fill** — the `>= target` check ran BEFORE the merge and nothing trimmed, so one batch could
+  overshoot; final size fell out of arrival timing (`felix_round`: 30 real vs 40 sim).
+
+| baseline | agg_round events | distinct `round` | distinct `data_id` | committers |
+|---|---|---|---|---|
+| `fedbuff_round` real | 398 | {1} | 46 | 10/100 |
+| `fedbuff_round` sim | 753 | {1} | 78 | 10/100 |
+| `felix_round` real | 348 | {1} | 64 | 30/100 |
+| `felix_round` sim | 1679 | {1,2} | 150 | 40/100 |
+
+`fedbuff_round` froze the identical trainers in both modes, so `cohort_sequence` PASSED on a 10-of-30
+run — the matched-but-wrong case the preamble invariant now names. `felix_round` runs the fully-ported
+`async_oort` and still failed 17 rungs, which is what proves R-B is not a selector bug.
+
+**R-C — `_prune_departed_from_round_cache` uses wall `time.time()`** (`fwdllm_aggregator.py:3296`). STILL
+OPEN. Real evicted 6 stuck ends, sim 0 → sim refilled once more than real. Same #1c class
+`_abandon_clock_now()` already solved for the selector; the aggregator copy never got it.
+
+**Decisions settled 2026-07-25 (all now implemented — see §G):**
+1. **Selection cadence is a first-class knob**, `reselect_cadence: round | data_bin | iteration`, boolean
+   `reselect_each_iteration` kept as a deprecated alias. `round` = pin for a full lap (fwdllm's intent);
+   `data_bin` = re-pin per completed databin, keyed on monotone `_model_version` (§F-2), no baseline uses
+   it yet — wired for the cadence ablation; `iteration` = today's default.
+2. **Cohort target is `c`, trimmed to exactly `c`** — `c` is the promise ("keep c trainers training"),
+   `agg_goal` is only the aggregation trigger.
+3. **Extraction reference is `async_oort.py`, NOT `async_random.py`.** `fwdllm_it` uses
+   `selector: random` → `RandomSelector` (`random.py`). `AsyncRandomSelector` had **zero** methods of its
+   own — all drifted copies — so it collapsed to a `_choose` + docstring; kept registered because
+   `fluxtune_dynkc` is parked-not-deleted (`baselines.yaml:862`). `RandomSelector` (sync) is clean only
+   because the SYNC aggregator guards for it (§D-6) — it too lacks the version_key filter, the R1 guard,
+   and vclock timeouts, and is NOT yet on the shared base.
+4. **`async_oort` is not yet re-based** onto `AsyncSelectorBase` — the base was extracted *from* it, but
+   its Oort scoring/eval branches need the `_choose`/`_pre_choose`/`_task_extra_eligible` mapping done
+   carefully, and `felix_it` currently passes 67/3. Next step; until then `async_oort.py` keeps its own
+   ~600-line copy of the mechanism.
 
 Full per-baseline fail list (2026-07-25 `run_parity.py`; also in each pair's JSON):
 
@@ -121,15 +199,11 @@ Full per-baseline fail list (2026-07-25 `run_parity.py`; also in each pair's JSO
 | `felix_it` | throughput, cohort_sequence, v1b_iters_moving_avg |
 | `fwdllm_it_unaware` | throughput, step_timing_breakdown, drain_wall_budget, agg_step_timing_breakdown, terminal_state, total_commits |
 
-**Next action (not started): pick `fedbuff_round` first** — smallest fail set (12) of the four
-round-cadence rows, simplest selector (uniform); its `selection_detail`/`eligibility`/`avail_*` combo is
-unique among the four, so it likely isolates a selection-layer bug distinct from the `fedbuff_it_*` rows'
-variance/grad-pool fails. **Ground in telemetry BEFORE instrumenting** (§F-8): diff `fedbuff_round`'s real
-vs sim `telemetry/aggregator_*.jsonl`/`trainer_*.jsonl` (dirs `experiments/run_20260724_173554_fedbuff_round_
-n100_smoke_syn_0_real`, `experiments/run_20260724_183913_..._sim`) against `fwdllm`'s clean equivalent,
-starting with `eligibility`/`selection_detail` (selection-layer, upstream of the rest). Full numeric detail:
-`experiments/_parity_reports/parity_<baseline>_syn_0_<sim-ts>.json` (on disk, no re-run to start). Re-run
-one baseline after a fix: `cd expt_scripts && python run_parity.py --baselines <name> --yes`.
+Root ownership: `felix_it`/`fwdllm_it_unaware` = timing family only (below, no new work). `fedbuff_round`
++ `felix_round` = R-B (+R-C). `fedbuff_it_unaware`/`fedbuff_it_oracular` = R-A. Re-run one baseline after
+a fix: `cd expt_scripts && python run_parity.py --baselines <name> --yes`. Run dirs are on disk
+(`experiments/run_20260724_*`); `_parity_reports/` was not written, so re-derive numbers from the
+`telemetry/*.jsonl` as above.
 
 ### fwdllm / fwdllm_plus — shared-compute timing family (co-location contention, root-caused → §D-1)
 
@@ -277,6 +351,27 @@ while HIDING a real 1.57× throughput gap (found only via raw databins/wall), AN
 — real algorithmic-time-to-N vs sim vclock-to-N. Design: PARITY.md §1.5; `matched_virtual_budget` is
 DELETED, don't reintroduce (§E).
 
+**D-5. Parity PASSES when both sides are equally wrong — a green rung is not a correctness claim.** A
+bug whose effect is deterministic and mode-independent produces identical real and sim output, so every
+comparison rung passes. `reselect_each_iteration: false` froze `fedbuff_round`'s participant set to the
+first 10 of 100 joiners — in BOTH modes, the same ids 370-379 — and `cohort_sequence` passed;
+`felix_round` failed 17 rungs only because its freeze happened to be asymmetric (30 vs 40, a wall-clock
+race). **Tell:** a rung passes while an absolute invariant is violated — here, selection telemetry
+stopping at t+19s of a 3738s run, and `distinct committers ≪ n`. **Discriminate by:** checking absolute
+sanity (participation coverage, event-stream liveness, does the progress counter actually advance)
+independently of the real-vs-sim diff, on the CLEAN baselines too. Parity is a differential test; it is
+blind to common-mode faults by construction. Corollary: a clean §A row is evidence of *agreement*, not
+of correctness — never treat one as a regression baseline without an absolute check alongside.
+
+**D-6. A selector's parity record is a property of the SELECTOR+AGGREGATOR pair, not the selector.** The
+version_key re-pick guard (§F-23) can be supplied by either side, and the two dispatch paths choose
+differently: fwdllm's SYNC gate caches selection per `version_key` in the aggregator, so `RandomSelector`
+needs no guard and reads clean; the ASYNC gate passes `trainer_version_keys` down and expects the
+SELECTOR to filter, which `async_oort` does and `fedbuff` does not (34.4% vs 3.5% same-version re-picks).
+**Consequence:** "selector X is verified" is unsound as a porting reference — verify the pair. Before
+citing a clean baseline as the model to copy, check which side of ITS pair owns each guard, then confirm
+the destination pair still has an owner for that guard. (Extends §D-3 from timing to selection policy.)
+
 ---
 
 ## §E  Dead ends — do NOT retry
@@ -312,7 +407,11 @@ DELETED, don't reintroduce (§E).
 
 1. **Sim does real forward-grad compute, charges modeled time.** GPU runs the real JVP; the agg stamps
    `sct = sim_send_ts + max(real_gpu_s, D) + leg`. Never put overhead on the vclock (`vclock = max(vclock, sct)`).
-2. **Progress axis is `data_id`.** Updates-per-data_id is the dynamic-K output to match, not an input to assume.
+2. **Progress axis is `data_id`; identity/caching axis is `model_version`.** Updates-per-data_id is the
+   dynamic-K output to match, not an input to assume. But `data_id` wraps to 0 every `total_data_bins` lap,
+   so it must never key a cache or an identity — use `model_version`, which bumps in lockstep and is
+   monotone (§F-21). `_round` is the lap counter, equal to `model_version` only in regular FL
+   (async_cifar10); carrying a round-keyed construct over from there without re-deriving the axis is the trap.
 3. **Variance is an emergent gate; localize, never tune it.** `var_threshold`/`max_iterations_per_data_id` are
    baseline-defining knobs, not parity levers.
 4. **Slot residence must survive variance rollbacks.** Release keys on the agg-goal boundary; the sct reorder
@@ -387,6 +486,18 @@ rule now live in §D-3.
 > **RULE: closed = here, ≤30 words, immediately.** The instant a rung flips or a hypothesis resolves, write
 > ONE line (mechanism + outcome) and delete it from §A/§B in the same edit.
 
+- **R-B cohort sized by `agg_goal` not `c`, and never trimmed** (07-25) — `_round_cohort_target`/
+  `_trim_round_cohort` on both gates; fixes 10-of-30 under-fill and the 30-vs-40 overshoot race.
+- **`reselect_cadence` knob added** (07-25) — round/data_bin/iteration; boolean kept as alias, every
+  shipped baseline byte-identical; `data_bin` keyed on monotone `_model_version`, unused so far.
+- **R-A: `FedBuffSelector` re-based onto new `AsyncSelectorBase`** (07-25) — 832→54 lines; inherits
+  version_key guard, R1 guard, vclock timeout, avl filter, full drain, `_keyed_topk`.
+- **`AsyncRandomSelector` collapsed 850→31 lines** (07-25) — had zero methods of its own; stays
+  registered for parked `fluxtune_dynkc`.
+- **Selector stats block de-duplicated ×4 into `AbstractSelector`** (07-25) — `record_selection_stats`/
+  `maybe_log_stat_summary`; found `RandomSelector` never recorded at all.
+- **Heartbeat mechanism deleted** (07-25) — no sender existed, tags never in `func_tag_map`, no baseline
+  used `type: HEARTBEAT`; removed across 10 files incl. `VAL_CH_STATE_HTBT_*`, `MessageType.HEARTBEAT`.
 - **fluxtune 3→0 (69/0/16): all fails were ONE boundary-race cascade, not a sim bug** (07-23) — marginal cohort
   slot is a physical-FIFO vs modeled-sct near-tie; index overlap 0.239 = independent-draw floor 0.237; every
   marginal criterion matches (S2/utility-dist/count/v1/v2/speed). Checker: gate index-identity for stochastic-async

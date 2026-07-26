@@ -40,8 +40,6 @@ logger = logging.getLogger(__name__)
 KEY_CH_STATE = "state"
 VAL_CH_STATE_RECV = "recv"
 VAL_CH_STATE_SEND = "send"
-VAL_CH_STATE_HTBT_RECV = "heartbeat_recv"
-VAL_CH_STATE_HTBT_SEND = "heartbeat_send"
 
 KEY_CH_SELECT_REQUESTER = "requester"
 
@@ -565,8 +563,6 @@ class Channel(object):
                     f"msg of type MODEL_VERSION recvd for end {end_id}, "
                     f"model_version={msg[MessageType.MODEL_VERSION]}"
                 )
-            elif MessageType.HEARTBEAT in msg:
-                logger.debug(f"msg of type HEARTBEAT recvd for end {end_id}")
             else:
                 logger.debug(f"msg of type UNKNOWN recvd for end {end_id}")
         else:

@@ -213,10 +213,20 @@ class TestFedBuffSendTimeoutFreesSelectedEnds:
         sel = self._stub_selector()
         ends = make_ends(["stale", "fresh"])
 
-        # concurrency=1 with 1 already selected -> extra=0, fixed before the
-        # abandon loop runs, so the freed slot can't be immediately re-filled
-        # by the candidate loop below (a separate, correct RNG-dependent path).
-        sel._handle_send_state(ends=ends, concurrency=1, connected_ends=ends)
+        # Inspect state right after the abandon block, before the freed slot
+        # can be re-filled in the same call -- FedBuff now shares async_oort's
+        # ordering (reclaim BEFORE `extra` is computed), so a reclaimed end is
+        # immediately re-pickable. `_pre_choose` is the first hook past the
+        # reclaim, so it stands in for async_oort's stubbed pacer above.
+        from flame.selector.async_base import SelectContext
+
+        sel._pre_choose = _boom
+        with pytest.raises(_StopAfterAbandon):
+            sel._handle_send_state(
+                ends=ends,
+                concurrency=1,
+                ctx=SelectContext(task_to_perform="train", connected_ends=ends),
+            )
 
         assert "stale" not in sel.all_selected
         assert "stale" not in sel.selected_ends["agg"]

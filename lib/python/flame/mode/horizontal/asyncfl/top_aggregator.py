@@ -21,7 +21,7 @@ from collections import deque
 from datetime import datetime, timedelta
 
 import numpy as np
-from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
+from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE
 from flame.common.constants import DeviceType
 from flame.common.util import (
@@ -33,7 +33,6 @@ from flame.mode.composer import CloneComposer
 from flame.mode.horizontal.syncfl.top_aggregator import (
     TAG_AGGREGATE,
     TAG_DISTRIBUTE,
-    TAG_HEARTBEAT,
     _SIM_ORDER_SLACK_S,
 )
 from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as SyncTopAgg
@@ -194,20 +193,6 @@ class TopAggregator(SyncTopAgg):
 
         self._prev_distribute_weights_success = False
 
-        self._per_trainer_last_heartbeat_ts = {}
-        if "heartbeat_freq_s" in self.config.hyperparameters.track_trainer_avail:
-            self._trainer_heartbeat_freq_s = (
-                self.config.hyperparameters.track_trainer_avail["heartbeat_freq_s"]
-            )
-        else:
-            self._trainer_heartbeat_freq_s = 99999
-
-        if "max_allowed_miss_heartbeats" in self.config.hyperparameters.track_trainer_avail:
-            self._trainer_max_miss_heartbeats = (
-                self.config.hyperparameters.track_trainer_avail["max_allowed_miss_heartbeats"]
-            )
-        else:
-            self._trainer_max_miss_heartbeats = 99999
 
         self.all_trainers = set()
 
@@ -229,67 +214,6 @@ class TopAggregator(SyncTopAgg):
         if self.simulated:
             self._sim_committed.clear()
 
-    # TODO: (DG) Need to update or delete, not used right now
-    def _read_heartbeat(self, tag: str) -> None:
-        """Receive trainer heartbeat messaages asynchronously.
-
-        This method is overriden from one in synchronous top
-        aggregator (..top_aggregator).
-        """
-        channel = self.cm.get_by_tag(tag)
-        if not channel:
-            logger.debug("No channel found")
-            return
-
-        logger.debug(f"Channel {channel} found for tag {tag}")
-        # receive heartbeat message from trainers
-        msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_HTBT_RECV), 1))
-        end, _ = metadata
-        if not msg:
-            logger.debug(f"No data from {end}; skipping it")
-            return
-
-        logger.debug(f"received heartbeat from {end}, will process further")
-        self._process_trainer_heartbeat(msg=msg, end=end)
-
-    def _process_trainer_heartbeat(self, msg, end) -> None:
-        if MessageType.HEARTBEAT in msg:
-            heartbeat_timestamp = msg[MessageType.HEARTBEAT]
-            logger.debug(
-                f"received heartbeat from {end} "
-                f"with timestamp {heartbeat_timestamp} "
-                f"at current time: {time.time()}"
-            )
-
-            # Add trainer to global_trainer set Used only to check
-            # unavailable trainers later
-            if end not in self.all_trainers:
-                self.all_trainers.add(end)
-                logger.debug(f"Added end {end} to all_trainers set")
-
-            # Add trainer to heartbeat dict if it isnt there Add only
-            # most recent heartbeat timestamp as value Discard stale
-            # heartbeats if received.
-            if end not in self._per_trainer_last_heartbeat_ts.keys():
-                self._per_trainer_last_heartbeat_ts[end] = heartbeat_timestamp
-                logger.debug(
-                    f"Added first timestamp for trainer {end} "
-                    f"with timestamp {heartbeat_timestamp}"
-                )
-            elif heartbeat_timestamp > self._per_trainer_last_heartbeat_ts[end]:
-                logger.debug(
-                    f"Will update timestamp for trainer {end} "
-                    f" (current={self._per_trainer_last_heartbeat_ts[end]})"
-                    f" with new timestamp {heartbeat_timestamp}"
-                )
-                self._per_trainer_last_heartbeat_ts[end] = heartbeat_timestamp
-            else:
-                logger.debug(
-                    f"the heartbeat for {end} with timestamp "
-                    f"{heartbeat_timestamp} was stale"
-                )
-        else:
-            logger.warning(f"Got invalid {msg} while processing heartbeat")
 
     @staticmethod
     def _sim_end_has_ready_msg(channel, end) -> bool:
@@ -1388,68 +1312,12 @@ class TopAggregator(SyncTopAgg):
             )
         return picked_trainer_is_available
 
-    def hearbeat_trainer_avail_check(self, end: str) -> bool:
-        picked_trainer_is_available = True
-        last_acceptable_heartbeat_ts = time.time() - (
-            self._trainer_max_miss_heartbeats * self._trainer_heartbeat_freq_s
-        )
-
-        # return True if: heartbeat was received from trainer and it
-        # is within last_acceptable_heartbeat_ts
-
-        # return False if: if end isnt in heartbeat dict, means that
-        # the trainer hasn't given a heartbeat in a while and was
-        # removed based on last_acceptable_heartbeat_ts
-
-        # NOTE: During agg init, it might have registered a trainer,
-        # but not received heartbeat in such a scenario, we return
-        # True so that agg is able to send init_weights to trainer and
-        # start the training process this is when trainer not in
-        # all_trainers and not in dict
-
-        if (end not in self._per_trainer_last_heartbeat_ts.keys()) and (
-            end not in self.all_trainers
-        ):
-            picked_trainer_is_available = True
-            logger.debug(
-                f"Might be trainer init(), trainer {end} hasnt sent any"
-                f" heartbeats yet, but we return True"
-            )
-        elif end not in self._per_trainer_last_heartbeat_ts.keys():
-            picked_trainer_is_available = False
-            logger.debug(f"Trainer {end} was already marked unavailable")
-        elif self._per_trainer_last_heartbeat_ts[end] < last_acceptable_heartbeat_ts:
-            del self._per_trainer_last_heartbeat_ts[end]
-            picked_trainer_is_available = False
-            logger.debug(
-                f"Trainer {end} missed max_allowed_heartbeats, " f"marked unavailable"
-            )
-        elif self._per_trainer_last_heartbeat_ts[end] >= last_acceptable_heartbeat_ts:
-            picked_trainer_is_available = True
-            logger.debug(f"Trainer {end} is available")
-        else:
-            logger.error(f"Availability check failed, trainer {end}, returning True")
-
-        return picked_trainer_is_available
-
-    def get_unavailable_trainers(self) -> list:
-        # Works only for heartbeat based right now TODO: (DG) Extend
-        # for other trainer_avail_checks too
-        current_unavailable_trainers = [
-            end
-            for end in self.all_trainers
-            if end not in self._per_trainer_last_heartbeat_ts.keys()
-        ]
-        return current_unavailable_trainers
-
     def check_trainer_availability(self, end: str) -> bool:
         picked_trainer_is_available = True
         if self.track_trainer_avail["enabled"] == "False":
             return True
         elif self.track_trainer_avail["type"] == "ORACULAR":
             picked_trainer_is_available = self._trace_read_avail_check(end)
-        elif self.track_trainer_avail["type"] == "HEARTBEAT":
-            picked_trainer_is_available = self.hearbeat_trainer_avail_check(end)
 
         return picked_trainer_is_available
 
@@ -1749,9 +1617,6 @@ class TopAggregator(SyncTopAgg):
             # separation later.
             task_get_weights = Tasklet("aggregate", self.get, TAG_AGGREGATE)
 
-            # task_get_heartbeat = Tasklet("heartbeat", self.get,
-            # TAG_HEARTBEAT)
-
         c = self.composer
         c.unlink()
 
@@ -1767,8 +1632,6 @@ class TopAggregator(SyncTopAgg):
             >> c.tasklet("initialize")
             >> loop(
                 task_reset_agg_goal_vars
-                # >> asyncfl_loop(task_put >> task_get_weights >>
-                # >> task_get_heartbeat)
                 >> asyncfl_loop(task_put_train >> task_put_eval >> task_get_weights)
                 >> c.tasklet("train")
                 >> c.tasklet("evaluate")
@@ -1786,4 +1649,4 @@ class TopAggregator(SyncTopAgg):
     def get_func_tags(cls) -> list[str]:
         """Return a list of function tags defined in the top level
         aggregator role."""
-        return [TAG_DISTRIBUTE, TAG_AGGREGATE, TAG_HEARTBEAT]
+        return [TAG_DISTRIBUTE, TAG_AGGREGATE]

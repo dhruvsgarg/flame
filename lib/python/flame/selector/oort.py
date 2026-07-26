@@ -19,7 +19,6 @@ import logging
 import math
 import random
 from datetime import timedelta
-from collections import deque
 import numpy as np
 
 from flame.common.typing import Scalar
@@ -105,68 +104,6 @@ class OortSelector(AbstractSelector):
         # ones. Default ON = faithful; False = ablation (dead temporal, the pre-fix refl path).
         self.enable_temporal = kwargs.get("enable_temporal", True)
 
-        # Track sliding window statistics for the selector
-        self._selector_stats = {}
-        for task in ["train", "eval"]:
-            self._selector_stats[task] = {"data": {}, "summary": {}}
-            for metric in ["util", "speed", "round"]:
-                for window in [50, 100, 200]:
-                    key = f"{metric}_last_{window}"
-                    self._selector_stats[task]["data"][key] = deque(maxlen=window)
-
-        self._select_run_counter = 0
-
-    def compute_trainer_stat_summary(self):
-        def compute_summary(values):
-            # Filter out None values
-            if values is None:
-                return {
-                    "min": None,
-                    "max": None,
-                    "p25": None,
-                    "p50": None,
-                    "p75": None,
-                }
-            values = [v for v in values if v is not None]
-            if not values:
-                return {
-                    "min": None,
-                    "max": None,
-                    "p25": None,
-                    "p50": None,
-                    "p75": None,
-                }
-
-            values = np.array(values, dtype=float)
-            return {
-                "min": float(np.min(values)),
-                "max": float(np.max(values)),
-                "p25": float(np.percentile(values, 25)),
-                "p50": float(np.percentile(values, 50)),
-                "p75": float(np.percentile(values, 75)),
-            }
-
-        tasks = ["train", "eval"]
-        metrics = [
-            "util_last_50",
-            "util_last_100",
-            "util_last_200",
-            "speed_last_50",
-            "speed_last_100",
-            "speed_last_200",
-            "round_last_50",
-            "round_last_100",
-            "round_last_200",
-        ]
-
-        for task in tasks:
-            for metric in metrics:
-                values = self._selector_stats[task]["data"].get(metric, [])
-                key = f"stat_{metric}" if "util" in metric else metric
-                self._selector_stats[task]["summary"][key] = compute_summary(values)
-
-    def _reset_selector_stats(self) -> None:
-        self._selector_stats = {}
 
     def select(
         self,
@@ -303,37 +240,8 @@ class OortSelector(AbstractSelector):
         logger.info(f"selected ends: {self.selected_ends}")
         self._last_selection_round = round
 
-        self._select_run_counter += 1
-        for selected_end_id in self.selected_ends:
-            # in-flight ids may not be in the current eligible `ends`; skip them
-            if selected_end_id not in ends:
-                continue
-            end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
-            end_speed = ends[selected_end_id].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
-            end_last_eval_round = ends[selected_end_id].get_property(PROP_LAST_EVAL_ROUND)
-            for window in [50, 100, 200]:
-                if end_stat_util is not None:
-                    self._selector_stats[task_to_perform]["data"][
-                        f"util_last_{window}"
-                    ].append(end_stat_util)
-                if end_speed is not None:
-                    self._selector_stats[task_to_perform]["data"][
-                        f"speed_last_{window}"
-                    ].append(end_speed.total_seconds())
-                if end_last_eval_round is not None:
-                    self._selector_stats[task_to_perform]["data"][
-                        f"round_last_{window}"
-                    ].append(end_last_eval_round)
-
-        if self._select_run_counter % 5 == 0:
-            self.compute_trainer_stat_summary()
-            logger.info(
-                f"Train selector stats summary: {self._selector_stats['train']['summary']}"
-            )
-            logger.info(
-                f"Eval selector stats summary: {self._selector_stats['eval']['summary']}"
-            )
-            self._select_run_counter = 0
+        self.record_selection_stats(ends, self.selected_ends, task_to_perform)
+        self.maybe_log_stat_summary()
 
         # Emit round_preferred_duration (the per-round percentile that drives the
         # system_util speed penalty) so a divergence localizes to target vs input.

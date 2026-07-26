@@ -191,7 +191,6 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     # None (unset) falls back to reject_stale_updates above, for examples
     # that only know that older boolean knob.
     staleness_policy: t.Optional[str] = Field(alias="stalenessPolicy", default=None)
-    heartbeats: t.Optional[dict] = Field(alias="heartbeats", default={})
     client_notify: t.Optional[dict] = Field(
         alias="clientAvailAwareNotify", default=None
     )

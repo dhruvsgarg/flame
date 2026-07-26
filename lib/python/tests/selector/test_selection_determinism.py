@@ -209,14 +209,26 @@ ends = {{f"t{{i}}": None for i in range(20)}}
 print(json.dumps(list(sel.select_random(ends, num_of_ends=5).keys())))
 """
 
-    def _order_under_hashseed(self, module, cls, kwargs, hashseed):
+    _CHOOSE_SNIPPET = """
+import json, torch  # noqa: F401 -- import marks ml framework in use as PYTORCH
+from flame.selector.{module} import {cls}
+from flame.selector.async_base import SelectContext
+sel = {cls}(_seed=7, **{kwargs!r})
+ends = {{f"t{{i}}": None for i in range(20)}}
+ctx = SelectContext(agg_version_key=(0, 0))
+print(json.dumps(list(sel._choose(ends, 5, ctx))))
+"""
+
+    def _order_under_hashseed(self, module, cls, kwargs, hashseed, snippet=None):
         import json
         import os
         import subprocess
         import sys
 
         env = dict(os.environ, PYTHONHASHSEED=hashseed)
-        code = self._SNIPPET.format(module=module, cls=cls, kwargs=kwargs)
+        code = (snippet or self._SNIPPET).format(
+            module=module, cls=cls, kwargs=kwargs
+        )
         out = subprocess.run(
             [sys.executable, "-c", code], env=env, capture_output=True, text=True,
         )
@@ -226,10 +238,10 @@ print(json.dumps(list(sel.select_random(ends, num_of_ends=5).keys())))
         last_line = [ln for ln in out.stdout.splitlines() if ln.strip()][-1]
         return json.loads(last_line)
 
-    def _assert_order_hashseed_invariant(self, module, cls, kwargs):
-        a = self._order_under_hashseed(module, cls, kwargs, "0")
-        b = self._order_under_hashseed(module, cls, kwargs, "1")
-        c = self._order_under_hashseed(module, cls, kwargs, "42")
+    def _assert_order_hashseed_invariant(self, module, cls, kwargs, snippet=None):
+        a = self._order_under_hashseed(module, cls, kwargs, "0", snippet)
+        b = self._order_under_hashseed(module, cls, kwargs, "1", snippet)
+        c = self._order_under_hashseed(module, cls, kwargs, "42", snippet)
         assert a == b == c, (
             f"{cls}.select_random order depends on PYTHONHASHSEED "
             f"(same seed=7, different hash seeds): {a} vs {b} vs {c}"
@@ -248,8 +260,17 @@ print(json.dumps(list(sel.select_random(ends, num_of_ends=5).keys())))
         self._assert_order_hashseed_invariant("oort", "OortSelector", dict(aggr_num=5))
 
     def test_async_random_order_reproducible(self):
+        # AsyncRandom/FedBuff draw via AsyncSelectorBase._choose (_keyed_topk),
+        # not select_random -- same invariant, different entry point.
         self._assert_order_hashseed_invariant(
-            "async_random", "AsyncRandomSelector", dict(c=5, aggGoal=2)
+            "async_random", "AsyncRandomSelector", dict(c=5, aggGoal=2),
+            snippet=self._CHOOSE_SNIPPET,
+        )
+
+    def test_fedbuff_order_reproducible(self):
+        self._assert_order_hashseed_invariant(
+            "fedbuff", "FedBuffSelector", dict(c=5, aggGoal=2),
+            snippet=self._CHOOSE_SNIPPET,
         )
 
 

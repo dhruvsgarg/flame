@@ -82,7 +82,6 @@ class MemCache(dict):
 
 TAG_DISTRIBUTE = "distribute"
 TAG_AGGREGATE = "aggregate"
-TAG_HEARTBEAT = "heartbeat_recv"
 
 # Simulated-mode receive bounds (sync): how long to keep draining selected ends
 # before committing, and the per-probe wait. In simulated mode trainers do not
@@ -319,42 +318,6 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 f"invoking _aggregate_weights({tag})"
             )
             self._aggregate_weights(tag)
-        elif tag == TAG_HEARTBEAT:
-            logger.debug(
-                f"In get(), got message for tag {tag},"
-                f" will invoke _read_heartbeat({tag})"
-            )
-            self._read_heartbeat(tag)
-
-    def _read_heartbeat(self, tag: str) -> None:
-        logger.debug("In syncfl _read_heartbeat()")
-        channel = self.cm.get_by_tag(tag)
-        if not channel:
-            logger.debug("No channel found for read_heartbeat")
-            return
-
-        logger.debug(f"Channel {channel} found for _read_heartbeat and tag {tag}")
-        logger.debug(f"channel.ends(): {channel.ends()}")
-        # receive heartbeat message from trainers TODO: (DG) Check if
-        # it processes all heartbeats at once before proceeding to the
-        # next sampling?
-        for msg, metadata in channel.recv_fifo(channel.ends()):
-            end, timestamp = metadata
-            if not msg:
-                logger.debug(f"No data from {end}; skipping it")
-                continue
-
-            if MessageType.HEARTBEAT in msg:
-                heartbeat_timestamp = msg[MessageType.HEARTBEAT]
-                logger.debug(
-                    f"received heartbeat from {end} "
-                    f"at timestamp {heartbeat_timestamp}"
-                )
-            else:
-                logger.warm(
-                    f"Tried to read message in _read_heartbeat()"
-                    f"but got message of type {msg}"
-                )
 
     def _advance_sim_clock(self, sct: float) -> None:
         """Advance vclock to a commit's sim_completion_ts + per-commit overhead."""
@@ -1480,8 +1443,6 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
             task_get_weights = Tasklet("aggregate", self.get, TAG_AGGREGATE)
 
-            task_get_heartbeat = Tasklet("heartbeat_recv", self.get, TAG_HEARTBEAT)
-
             task_train = Tasklet("train", self.train)
 
             task_eval = Tasklet("evaluate", self.evaluate)
@@ -1517,7 +1478,6 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 >> task_save_metrics
                 >> task_checkpoint
                 >> task_increment_round
-                >> task_get_heartbeat
             )
             >> task_end_of_training
             >> task_save_params
@@ -1532,4 +1492,4 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
     def get_func_tags(cls) -> list[str]:
         """Return a list of function tags defined in the top level
         aggregator role."""
-        return [TAG_DISTRIBUTE, TAG_AGGREGATE, TAG_HEARTBEAT]
+        return [TAG_DISTRIBUTE, TAG_AGGREGATE]

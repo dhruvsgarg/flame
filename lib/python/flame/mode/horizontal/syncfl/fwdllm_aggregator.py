@@ -30,7 +30,7 @@ import numpy as np
 import yaml
 from sortedcontainers import SortedDict
 import torch.nn.functional as F
-from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
+from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
 from flame.common.util import weights_to_device, weights_to_model_device
 from flame.config import OptimizerType, TrainerAvailState
@@ -40,7 +40,6 @@ import pickle
 from flame.mode.horizontal.syncfl.top_aggregator import (
     TAG_AGGREGATE,
     TAG_DISTRIBUTE,
-    TAG_HEARTBEAT,
 )
 from sklearn.metrics import (
     confusion_matrix,
@@ -472,21 +471,18 @@ class TopAggregator(AsyncTopAgg):
         self._sim_dispatch_wall = {}
 
         # Selection granularity, shared by both paths (round vs +IT baselines,
-        # BASELINES.md naming grammar): True (default, preserves pre-existing
-        # behavior) = re-select trainers on every SEND-state call, i.e. every
-        # iteration of every databin -- today's only async behavior. False =
-        # pin a cohort once per round and reuse it across all databins/
-        # iterations until self._round advances, replacing only members that
-        # depart (see _prune_departed_from_round_cache). Sync path:
-        # _select_ends_respecting_reselect_gate. Async path:
-        # _select_ends_for_async_respecting_reselect_gate.
-        self._reselect_each_iteration = bool(
-            getattr(
-                self.config.hyperparameters, "reselect_each_iteration", True
-            )
-        )
+        # BASELINES.md naming grammar). Cadence = how long a cohort stays
+        # pinned: `round` (a full total_data_bins lap), `data_bin` (one
+        # completed databin, unused so far -- wired for the ablation), or
+        # `iteration` (re-select every SEND call, the default). Keyed on the
+        # matching axis via _cohort_cache_key -- never data_id, which wraps
+        # each lap (§F-2).
+        self._reselect_cadence = self._resolve_reselect_cadence()
+        # Derived bool: hot-path predicate, and back-compat for call sites.
+        self._reselect_each_iteration = self._reselect_cadence == "iteration"
         self._round_selected_ends = None
-        self._round_selected_ends_round = None
+        # Cadence-axis value the cohort was pinned under; a change invalidates.
+        self._pinned_cohort_key = None
         # end_id -> time.time() of its last real accepted contribution (or
         # of first entering the cache, if it hasn't contributed yet) -- lets
         # _prune_departed_from_round_cache also evict a member that's stuck
@@ -522,26 +518,6 @@ class TopAggregator(AsyncTopAgg):
                 f"Setting rate=1.0 for all updates because optimizer.sort is "
                 f"{self._optimizer_sort_value}; weighted aggregation only supported by {OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION}."
             )
-        # variables related to checking trainer availability
-        self._per_trainer_last_heartbeat_ts = {}
-        if "heartbeat_freq_s" in self.config.hyperparameters.track_trainer_avail.keys():
-            self._trainer_heartbeat_freq_s = (
-                self.config.hyperparameters.track_trainer_avail["heartbeat_freq_s"]
-            )
-        else:
-            self._trainer_heartbeat_freq_s = 99999
-
-        if (
-            "max_allowed_miss_heartbeats"
-            in self.config.hyperparameters.track_trainer_avail.keys()
-        ):
-            self._trainer_max_miss_heartbeats = (
-                self.config.hyperparameters.track_trainer_avail[
-                    "max_allowed_miss_heartbeats"
-                ]
-            )
-        else:
-            self._trainer_max_miss_heartbeats = 99999
 
         logger.info(f"Experiment set to run in is_async: {self.is_async}")
 
@@ -574,7 +550,7 @@ class TopAggregator(AsyncTopAgg):
                 f"c_init={self.config.selector.kwargs.get('c', 1)}"
             )
 
-        # maintain a set of all trainers that have sent heartbeats previously
+        # every trainer seen so far
         self.all_trainers = set()
         self.minInitialTrainers = self.config.selector.kwargs.get("minInitialTrainers")
         if self.is_async and self.minInitialTrainers is None:
@@ -682,67 +658,6 @@ class TopAggregator(AsyncTopAgg):
             f"{self._agg_goal_weights}"
         )
 
-    # TODO: (DG) Need to update or delete, not used right now
-    def _read_heartbeat(self, tag: str) -> None:
-        """Receive trainer heartbeat messaages asynchronously.
-
-        This method is overriden from one in synchronous top aggregator
-        (..top_aggregator).
-        """
-        channel = self.cm.get_by_tag(tag)
-        if not channel:
-            logger.info("No channel found")
-            return
-
-        logger.debug(f"Channel {channel} found for tag {tag}")
-        # receive heartbeat message from trainers
-        msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_HTBT_RECV), 1))
-        end, _ = metadata
-        if not msg:
-            logger.debug(f"No data from {end}; skipping it")
-            return
-
-        logger.debug(f"received heartbeat from {end}, will process further")
-        self._process_trainer_heartbeat(msg=msg, end=end)
-
-    def _process_trainer_heartbeat(self, msg, end) -> None:
-        if MessageType.HEARTBEAT in msg:
-            heartbeat_timestamp = msg[MessageType.HEARTBEAT]
-            logger.debug(
-                f"received heartbeat from {end} "
-                f"with timestamp {heartbeat_timestamp} "
-                f"at current time: {time.time()}"
-            )
-
-            # Add trainer to global_trainer set Used only to check unavailable
-            # trainers later
-            if end not in self.all_trainers:
-                self.all_trainers.add(end)
-                logger.debug(f"Added end {end} to all_trainers set")
-
-            # Add trainer to heartbeat dict if it isnt there Add only most
-            # recent heartbeat timestamp as value Discard stale heartbeats if
-            # received.
-            if end not in self._per_trainer_last_heartbeat_ts.keys():
-                self._per_trainer_last_heartbeat_ts[end] = heartbeat_timestamp
-                logger.debug(
-                    f"Added first timestamp for trainer {end} "
-                    f"with timestamp {heartbeat_timestamp}"
-                )
-            elif heartbeat_timestamp > self._per_trainer_last_heartbeat_ts[end]:
-                logger.debug(
-                    f"Will update timestamp for trainer {end} "
-                    f" (current={self._per_trainer_last_heartbeat_ts[end]})"
-                    f" with new timestamp {heartbeat_timestamp}"
-                )
-                self._per_trainer_last_heartbeat_ts[end] = heartbeat_timestamp
-            else:
-                logger.info(
-                    f"the heartbeat for {end} with timestamp "
-                    f"{heartbeat_timestamp} was stale"
-                )
-        else:
-            logger.warning(f"Got invalid {msg} while processing heartbeat")
 
     def read_trainer_unavailability(
         self, trace=None, base_dir: Optional[Union[str, Path]] = None
@@ -3076,67 +2991,12 @@ class TopAggregator(AsyncTopAgg):
             wrong,
         )
 
-    def hearbeat_trainer_avail_check(self, end: str) -> bool:
-        picked_trainer_is_available = True
-        last_acceptable_heartbeat_ts = time.time() - (
-            self._trainer_max_miss_heartbeats * self._trainer_heartbeat_freq_s
-        )
-
-        # return True if: heartbeat was received from trainer and it is within
-        # last_acceptable_heartbeat_ts
-
-        # return False if: if end isnt in heartbeat dict, means that the trainer
-        # hasn't given a heartbeat in a while and was removed based on
-        # last_acceptable_heartbeat_ts
-
-        # NOTE: During agg init, it might have registered a trainer, but not
-        # received heartbeat in such a scenario, we return True so that agg is
-        # able to send init_weights to trainer and start the training process
-        # this is when trainer not in all_trainers and not in dict
-
-        if (end not in self._per_trainer_last_heartbeat_ts.keys()) and (
-            end not in self.all_trainers
-        ):
-            picked_trainer_is_available = True
-            logger.info(
-                f"Might be trainer init(), trainer {end} hasnt sent any"
-                f" heartbeats yet, but we return True"
-            )
-        elif end not in self._per_trainer_last_heartbeat_ts.keys():
-            picked_trainer_is_available = False
-            logger.debug(f"Trainer {end} was already marked unavailable")
-        elif self._per_trainer_last_heartbeat_ts[end] < last_acceptable_heartbeat_ts:
-            del self._per_trainer_last_heartbeat_ts[end]
-            picked_trainer_is_available = False
-            logger.info(
-                f"Trainer {end} missed max_allowed_heartbeats, " f"marked unavailable"
-            )
-        elif self._per_trainer_last_heartbeat_ts[end] >= last_acceptable_heartbeat_ts:
-            picked_trainer_is_available = True
-            logger.debug(f"Trainer {end} is available")
-        else:
-            logger.error(f"Availability check failed, trainer {end}, returning True")
-
-        return picked_trainer_is_available
-
-    def get_unavailable_trainers(self) -> list:
-        # Works only for heartbeat based right now TODO: (DG) Extend for other
-        # trainer_avail_checks too
-        current_unavailable_trainers = [
-            end
-            for end in self.all_trainers
-            if end not in self._per_trainer_last_heartbeat_ts.keys()
-        ]
-        return current_unavailable_trainers
-
     def check_trainer_availability(self, end: str) -> bool:
         picked_trainer_is_available = True
         if self.track_trainer_avail["enabled"] == "False":
             return True
         elif self.track_trainer_avail["type"] == "ORACULAR":
             picked_trainer_is_available = self._trace_read_avail_check(end)
-        elif self.track_trainer_avail["type"] == "HEARTBEAT":
-            picked_trainer_is_available = self.hearbeat_trainer_avail_check(end)
 
         return picked_trainer_is_available
 
@@ -3306,22 +3166,85 @@ class TopAggregator(AsyncTopAgg):
         if len(still_present) != len(self._round_selected_ends):
             self._round_selected_ends = still_present
 
-    def _select_ends_respecting_reselect_gate(self, channel, task_to_perform: str):
-        """Return the SEND-state-selected ends, honoring
-        `self._reselect_each_iteration`.
+    RESELECT_CADENCES = ("round", "data_bin", "iteration")
 
-        True (default): cached per `self.version_key` -- repeated calls
-        within the SAME (model_version, iteration) reuse one channel.ends()
-        result; a version_key change invalidates and re-fetches. False:
-        accumulate selections into a per-round cache, re-invoking the
-        selector each call until the cache reaches `self._agg_goal`
-        (trainers join asynchronously, so one early call may only see a
-        few); then reuse until `self._round` advances.
+    def _resolve_reselect_cadence(self) -> str:
+        """`reselect_cadence`, else the deprecated boolean alias
+        (True->iteration, False->round), which every shipped baseline still
+        sets -- so they stay byte-identical while `data_bin` becomes sayable.
         """
-        if self._round_selected_ends_round != self._round:
+        hp = self.config.hyperparameters
+        cadence = getattr(hp, "reselect_cadence", None)
+        if cadence is not None:
+            if cadence not in self.RESELECT_CADENCES:
+                raise ValueError(
+                    f"reselect_cadence={cadence!r} is not one of "
+                    f"{self.RESELECT_CADENCES}"
+                )
+            return cadence
+        return (
+            "iteration"
+            if bool(getattr(hp, "reselect_each_iteration", True))
+            else "round"
+        )
+
+    def _cohort_cache_key(self):
+        """Axis value the cohort is keyed on. `data_bin` uses the monotone
+        `_model_version`, not `data_id`, which wraps each lap (§F-2)."""
+        return (
+            self._model_version
+            if self._reselect_cadence == "data_bin"
+            else self._round
+        )
+
+    def _invalidate_cohort_cache_if_stale(self) -> None:
+        """Drop the pinned cohort when its cadence axis has advanced."""
+        key = self._cohort_cache_key()
+        if self._pinned_cohort_key != key:
             self._round_selected_ends = None
-            self._round_selected_ends_round = self._round
+            self._pinned_cohort_key = key
             self._round_cache_activity_ts = {}
+
+    def _round_cohort_target(self, channel) -> Optional[int]:
+        """Cohort size = `c`, the promise to keep c trainers training;
+        `agg_goal` is only the aggregation trigger. Sizing by agg_goal left
+        c-agg_goal slots idle all round (fedbuff_round: c=30, agg_goal=10, 10
+        of 100 committers) -- wrong in real and sim alike, so parity passed
+        it. Honors `dynamic_c`; None -> legacy accumulate-forever path.
+        """
+        c = channel.properties.get("dynamic_c")
+        if c is None:
+            c = channel.get_c()
+        try:
+            c = int(c)
+        except (TypeError, ValueError):
+            return None
+        return c if c > 0 else None
+
+    def _trim_round_cohort(self, merged: list, target: Optional[int]) -> list:
+        """Cap at exactly `target`, dropping the newest surplus. The reuse
+        check runs before the merge, so one batch can overshoot and nothing
+        trimmed it back -- size then fell out of arrival timing (felix_round:
+        30 real vs 40 sim). Take-first is reproducible across modes.
+        """
+        if target is None or len(merged) <= target:
+            return merged
+        for end in merged[target:]:
+            self._round_cache_activity_ts.pop(end, None)
+        return merged[:target]
+
+    def _select_ends_respecting_reselect_gate(self, channel, task_to_perform: str):
+        """Return the SEND-state-selected ends, honoring `_reselect_cadence`.
+
+        `iteration` (default): cached per `self.version_key` -- repeated calls
+        within the SAME (model_version, iteration) reuse one channel.ends()
+        result; a version_key change invalidates and re-fetches. `round` /
+        `data_bin`: accumulate selections into a pinned cohort, re-invoking the
+        selector each call until it reaches `c` (trainers join asynchronously,
+        so one early call may only see a few); then reuse until the cadence
+        axis advances (`_cohort_cache_key`).
+        """
+        self._invalidate_cohort_cache_if_stale()
 
         if self._reselect_each_iteration:
             if (self._reselect_true_cache_ends is not None
@@ -3338,13 +3261,15 @@ class TopAggregator(AsyncTopAgg):
         if not self._reselect_each_iteration:
             self._prune_departed_from_round_cache(channel)
 
+        target = self._round_cohort_target(channel)
         if not self._reselect_each_iteration and self._round_selected_ends is not None:
-            target = getattr(self, "_agg_goal", len(self._round_selected_ends))
-            if len(self._round_selected_ends) >= target:
+            # target None (no discoverable `c`) -> reuse whenever non-empty,
+            # the pre-`c` fallback.
+            if target is None or len(self._round_selected_ends) >= target:
                 ends = list(self._round_selected_ends)
                 logger.info(
-                    f"[ReselectGate] reselect_each_iteration=False; reusing "
-                    f"cached per-round selection ends={ends} for round={self._round}"
+                    f"[ReselectGate] cadence={self._reselect_cadence}; reusing "
+                    f"pinned cohort ends={ends} at key={self._pinned_cohort_key}"
                 )
                 self._rearm_recv_eligibility(channel, ends)
                 return ends
@@ -3367,11 +3292,12 @@ class TopAggregator(AsyncTopAgg):
                     # stuck-timeout clock (reset again on each real accepted
                     # contribution, see _process_single_trainer_message).
                     self._round_cache_activity_ts[end] = time.time()
+            merged = self._trim_round_cohort(merged, target)
             self._round_selected_ends = merged
             logger.info(
-                f"[ReselectGate] reselect_each_iteration=False; accumulated "
-                f"per-round selection ends={merged} "
-                f"({len(merged)}/{getattr(self, '_agg_goal', '?')}) for round={self._round}"
+                f"[ReselectGate] cadence={self._reselect_cadence}; accumulated "
+                f"pinned cohort ends={merged} "
+                f"({len(merged)}/{target}) at key={self._pinned_cohort_key}"
             )
             self._rearm_recv_eligibility(channel, merged)
             return merged
@@ -3387,16 +3313,15 @@ class TopAggregator(AsyncTopAgg):
         self, channel, task_to_perform: str
     ):
         """Async-path counterpart of `_select_ends_respecting_reselect_gate`,
-        honoring `self._reselect_each_iteration` (round vs +IT baselines).
+        honoring `_reselect_cadence` (round vs +IT baselines).
 
-        True (default, preserves pre-existing behavior): re-invoke the
+        `iteration` (default, preserves pre-existing behavior): re-invoke the
         selector's full utility/availability-based scoring on every dispatch
-        call -- today's only async behavior, unchanged. False: pin a cohort
-        of `self._agg_goal` ends for the span of `self._round`, reusing the
-        same per-round cache/prune-departed machinery as the sync path --
-        lets a round-level baseline swap out a departed client but not
-        otherwise reselect on availability/utility churn until the round
-        advances.
+        call -- unlike the sync path, this one does NOT cache per version_key.
+        `round` / `data_bin`: pin a cohort of `c` ends for the span of the
+        cadence axis, reusing the same cache/prune-departed machinery as the
+        sync path -- lets a round-level baseline swap out a departed client but
+        not otherwise reselect on availability/utility churn.
         """
         if self._reselect_each_iteration:
             return channel.ends(
@@ -3407,18 +3332,17 @@ class TopAggregator(AsyncTopAgg):
                 data_id=self.data_id,
             )
 
-        if self._round_selected_ends_round != self._round:
-            self._round_selected_ends = None
-            self._round_selected_ends_round = self._round
-            self._round_cache_activity_ts = {}
+        self._invalidate_cohort_cache_if_stale()
         self._prune_departed_from_round_cache(channel)
 
-        target = getattr(self, "_agg_goal", None)
-        if target is not None and self._round_selected_ends and len(self._round_selected_ends) >= target:
+        target = self._round_cohort_target(channel)
+        if self._round_selected_ends and (
+            target is None or len(self._round_selected_ends) >= target
+        ):
             ends = list(self._round_selected_ends)
             logger.info(
-                f"[ReselectGate-async] reselect_each_iteration=False; reusing "
-                f"cached per-round cohort ends={ends} for round={self._round}"
+                f"[ReselectGate-async] cadence={self._reselect_cadence}; reusing "
+                f"pinned cohort ends={ends} at key={self._pinned_cohort_key}"
             )
             self._rearm_recv_eligibility(channel, ends)
             return ends
@@ -3436,11 +3360,12 @@ class TopAggregator(AsyncTopAgg):
                 if end not in merged:
                     merged.append(end)
                     self._round_cache_activity_ts[end] = time.time()
+            merged = self._trim_round_cohort(merged, target)
             self._round_selected_ends = merged
             logger.info(
-                f"[ReselectGate-async] reselect_each_iteration=False; "
-                f"accumulated per-round cohort ends={merged} "
-                f"({len(merged)}/{target}) for round={self._round}"
+                f"[ReselectGate-async] cadence={self._reselect_cadence}; "
+                f"accumulated pinned cohort ends={merged} "
+                f"({len(merged)}/{target}) at key={self._pinned_cohort_key}"
             )
             return merged
         return list(self._round_selected_ends or [])
@@ -4202,8 +4127,6 @@ class TopAggregator(AsyncTopAgg):
                     "aggregate", self._aggregate_weights, TAG_AGGREGATE
                 )
 
-                # task_get_heartbeat = Tasklet("heartbeat", self.get,
-                # TAG_HEARTBEAT)
                 task_init = Tasklet("initialize", self.initialize)
 
             c = self.composer
@@ -4251,7 +4174,6 @@ class TopAggregator(AsyncTopAgg):
                 # train and eval tasks. Will create a cleaner separation later.
                 task_get_weights = Tasklet("aggregate", self.get, TAG_AGGREGATE)
 
-                task_get_heartbeat = Tasklet("heartbeat", self.get, TAG_HEARTBEAT)
                 task_init = Tasklet("initialize", self.initialize)
 
                 task_aggregate_grads_sync = Tasklet(
@@ -4273,25 +4195,13 @@ class TopAggregator(AsyncTopAgg):
                 >> loop(
                     # task_reset_agg_goal_vars
                     task_put_train
-                    # >> asyncfl_loop(task_put >> task_get_weights >>
-                    # >> task_get_heartbeat
                     >> task_aggregate_grads_sync
                 )
                 >> c.tasklet("inform_end_of_training")
-                # >> c.tasklet("load_data") c.tasklet("initialize")
-                # >> task_get_heartbeat task_put_train c.tasklet("heartbeat") loop(
-                # >> task_reset_agg_goal_vars # >> asyncfl_loop(task_put >>
-                # >> task_get_weights >> c.tasklet("heartbeat") ) >>
-                # >> asyncfl_loop(task_put_train >> task_put_eval >>
-                # >> task_get_weights) >> c.tasklet("train") >>
-                #     c.tasklet("evaluate") >> c.tasklet("analysis") >>
-                #     c.tasklet("save_metrics") >> c.tasklet("inc_round") )
-                # >> c.tasklet("inform_end_of_training") c.tasklet("save_params")
-                # c.tasklet("save_model")
             )
 
     @classmethod
     def get_func_tags(cls) -> list[str]:
         """Return a list of function tags defined in the top level
         aggregator role."""
-        return [TAG_DISTRIBUTE, TAG_AGGREGATE, TAG_HEARTBEAT]
+        return [TAG_DISTRIBUTE, TAG_AGGREGATE]

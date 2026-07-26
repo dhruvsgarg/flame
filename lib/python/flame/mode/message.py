@@ -25,7 +25,6 @@ class MessageType(Enum):
     EOT = 2  # end of training
     DATASET_SIZE = 3  # dataset size
     ROUND = 4  # round number
-    HEARTBEAT = 5  # heartbeat from trainer to aggregator
 
     # a digest of all the workers in distributed learning
     MEMBER_DIGEST = 6

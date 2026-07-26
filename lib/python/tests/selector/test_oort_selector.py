@@ -623,14 +623,14 @@ class TestRecvStateNeverWritesNewSelections:
     def test_empty_selected_ends_returns_empty_even_with_real_state(
         self, async_oort, make_ends
     ):
-        from flame.end import KEY_END_STATE, VAL_END_STATE_HEARTBEAT_RECVD
+        from flame.end import KEY_END_STATE, VAL_END_STATE_NONE
 
         async_oort.requester = "agg"
         async_oort.selected_ends = {"agg": set()}
         async_oort.all_selected = {}
         ends = make_ends(count=3, prefix="t")
         for e in ends.values():
-            e.set_property(KEY_END_STATE, VAL_END_STATE_HEARTBEAT_RECVD)
+            e.set_property(KEY_END_STATE, VAL_END_STATE_NONE)
 
         result = async_oort._handle_recv_state(ends=ends, concurrency=3)
 
