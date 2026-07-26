@@ -31,6 +31,9 @@ experiments:
         # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
         # file exists (or ever will) for agnews; skips that lookup entirely.
         path_style: true
+        # Cosmetic-only for path-style (naming/snapshot), but kept in sync
+        # with the actual partition_method below (EXPTS_CHARTER A5: alpha=1).
+        dirichlet_alpha: 1
       availability:
         # Phase 1 is syn_0 (100% availability); the ORACULAR aggregator then
         # reads all-available, so the sync barrier assembles the agg_goal=10
@@ -53,9 +56,10 @@ experiments:
           seed: 1234
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
-          # Uniform/IID partition for smoke tests -- avoids the niid_label
-          # baseline default's data-skew confound while validating mechanics.
-          partition_method: uniform
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          # MUST match the _sim pair's value or parity sees a data-skew
+          # divergence that has nothing to do with the clock.
+          partition_method: niid_label_clients=100_alpha=1
 
     aggregator:
       config_template: configs/aggregator_base.json
@@ -84,7 +88,8 @@ experiments:
           max_runtime_s: 1800  # ...or after 30 minutes wall time
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
-          partition_method: uniform
+          # alpha=1 (EXPTS_CHARTER A5); must match the _sim pair — see trainer side.
+          partition_method: niid_label_clients=100_alpha=1
         selector:
           kwargs:
             # RandomSelector has no `k` concept (matches oort/async_oort/fedbuff/

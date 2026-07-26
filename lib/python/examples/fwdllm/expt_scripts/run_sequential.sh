@@ -4,10 +4,11 @@
 # fedbuff_round/fedbuff_it_unaware/fedbuff_it_oracular, felix_round/felix_it,
 # fluxtune) for parity runs. Thin driver over examples/scripts/expt_runner.sh;
 # owns the fwdllm baseline->(real yaml, sim yaml) map, knob patching, and the
-# pre-flight gate. The 6 net-new baselines have NO real yaml yet (BRIDGE_DESIGN.md
-# decision #3: all new launches use --mode sim) -- pass --mode sim or --only
-# to select them; --mode both/real over the full default set will correctly
-# block on their missing real yaml (see "source yaml exists" check below).
+# pre-flight gate. All 9 baselines now have BOTH a real and a sim yaml, so
+# --mode both works over the full set (the 6 net-new ones got their real yamls
+# in 1f419505; BRIDGE_DESIGN.md decision #3's sim-only rule applied only while
+# those were missing). The "source yaml exists" check below still blocks any
+# baseline whose side is absent.
 # --mode both pairs each baseline's real+sim (names tagged _real/_sim so
 # scripts.parity.cli globs the pair); --delays sets enable_training_delays
 # IDENTICALLY both sides (mismatched D = false divergence). Pre-flight prints a
@@ -265,11 +266,10 @@ if [ -n "$TARGET_ACC" ] && [ "$MAX_RUNTIME_S_SET" = "0" ] && [ "$MAX_RUNTIME_S" 
 fi
 
 # baseline -> (real yaml : sim yaml). Plain baseline names, independent of the
-# "n10"/"n100" baked into each source filename. The 6 net-new baselines have no
-# real yaml yet (decision #3: sim-only for now) -- their real_y path is a
-# deliberately nonexistent placeholder so "--mode real|both" fails the
-# pre-flight "source yaml exists" check instead of silently launching sim-only
-# coverage under a real-mode label.
+# "n10"/"n100" baked into each source filename. Every entry's two sides must
+# agree on the shared condition (partition_method above all) -- a mismatch is a
+# parity divergence with no clock cause. The pre-flight "source yaml exists"
+# check blocks a missing side rather than silently launching one-sided.
 ALL_RUNS=(
   "fwdllm:$SCRIPT_DIR/fwdllm_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_n100_smoke_sim.yaml"
   "fwdllm_it_unaware:$SCRIPT_DIR/fwdllm_it_unaware_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_it_unaware_n100_smoke_sim.yaml"
