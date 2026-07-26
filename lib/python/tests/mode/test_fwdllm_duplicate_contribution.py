@@ -33,6 +33,7 @@ class _FakeAggregator:
         self.is_async = is_async
 
     process = TopAggregator._process_single_trainer_message
+    _round_cache_clock_now = TopAggregator._round_cache_clock_now
 
 
 class TestDuplicateContributionGuard:

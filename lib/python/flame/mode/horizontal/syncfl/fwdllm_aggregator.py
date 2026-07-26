@@ -483,10 +483,11 @@ class TopAggregator(AsyncTopAgg):
         self._round_selected_ends = None
         # Cadence-axis value the cohort was pinned under; a change invalidates.
         self._pinned_cohort_key = None
-        # end_id -> time.time() of its last real accepted contribution (or
-        # of first entering the cache, if it hasn't contributed yet) -- lets
-        # _prune_departed_from_round_cache also evict a member that's stuck
-        # but not formally departed (see ROUND_CACHE_STUCK_TIMEOUT_S).
+        # end_id -> _round_cache_clock_now() of its last real accepted
+        # contribution (or of first entering the cache, if it hasn't
+        # contributed yet) -- lets _prune_departed_from_round_cache also evict
+        # a member that's stuck but not formally departed (see
+        # ROUND_CACHE_STUCK_TIMEOUT_S).
         self._round_cache_activity_ts: dict = {}
         # reselect_each_iteration=True's selection cached per version_key
         # (mirrors the False branch's cache) -- fixes fwdllm_plus's
@@ -1585,7 +1586,7 @@ class TopAggregator(AsyncTopAgg):
         # _prune_departed_from_round_cache). No-op if reselect_each_iteration
         # is True (that path never populates this dict) or end isn't
         # currently cached (dict grows a harmless extra key either way).
-        self._round_cache_activity_ts[end] = time.time()
+        self._round_cache_activity_ts[end] = self._round_cache_clock_now()
 
         channel._selector.ordered_updates_recv_ends.append(end)
         self._updates_in_queue += 1
@@ -3110,6 +3111,16 @@ class TopAggregator(AsyncTopAgg):
         else:
             selector.selected_ends = set(selector.selected_ends) | set(ends)
 
+    def _round_cache_clock_now(self) -> float:
+        """Clock for the round-cache stuck timeout: vclock in sim, wall in real
+        (#1c, what `_abandon_clock_now` already fixed for the selector).
+        Stamping and checking on wall measured a virtual-time run in wall
+        seconds, so sim never reached ROUND_CACHE_STUCK_TIMEOUT_S: 0 stuck
+        evictions vs real's 6, and sim refilled one round more (R-C).
+        """
+        vclock_now = getattr(self, "vclock_now", None)
+        return vclock_now if vclock_now is not None else time.time()
+
     def _prune_departed_from_round_cache(self, channel):
         """Drop ends from `self._round_selected_ends` that have since
         departed (disconnected, or explicitly reported `UN_AVL`) -- or that
@@ -3136,7 +3147,7 @@ class TopAggregator(AsyncTopAgg):
         """
         if not self._round_selected_ends:
             return
-        now = time.time()
+        now = self._round_cache_clock_now()
         still_present = []
         for end in self._round_selected_ends:
             if not channel.has(end):
@@ -3291,7 +3302,7 @@ class TopAggregator(AsyncTopAgg):
                     # First time this end enters the cache -- starts its
                     # stuck-timeout clock (reset again on each real accepted
                     # contribution, see _process_single_trainer_message).
-                    self._round_cache_activity_ts[end] = time.time()
+                    self._round_cache_activity_ts[end] = self._round_cache_clock_now()
             merged = self._trim_round_cohort(merged, target)
             self._round_selected_ends = merged
             logger.info(
@@ -3359,7 +3370,7 @@ class TopAggregator(AsyncTopAgg):
             for end in new_ends:
                 if end not in merged:
                     merged.append(end)
-                    self._round_cache_activity_ts[end] = time.time()
+                    self._round_cache_activity_ts[end] = self._round_cache_clock_now()
             merged = self._trim_round_cohort(merged, target)
             self._round_selected_ends = merged
             logger.info(

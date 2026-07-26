@@ -84,9 +84,11 @@ class _FakeAggregator:
     """Minimal stand-in exposing only the state
     `_select_ends_respecting_reselect_gate` touches."""
 
-    def __init__(self, reselect_each_iteration=None, cadence=None):
+    def __init__(self, reselect_each_iteration=None, cadence=None, vclock_now=None):
         if cadence is None:
             cadence = "iteration" if reselect_each_iteration else "round"
+        # None = real mode, mirroring TopAggregator.vclock_now's contract.
+        self.vclock_now = vclock_now
         self._reselect_cadence = cadence
         self._reselect_each_iteration = cadence == "iteration"
         self._round_selected_ends = None
@@ -111,6 +113,7 @@ class _FakeAggregator:
     _prune_departed_from_round_cache = (
         TopAggregator._prune_departed_from_round_cache
     )
+    _round_cache_clock_now = TopAggregator._round_cache_clock_now
     _round_cohort_target = TopAggregator._round_cohort_target
     _trim_round_cohort = TopAggregator._trim_round_cohort
     _cohort_cache_key = TopAggregator._cohort_cache_key
@@ -536,6 +539,47 @@ class TestStuckCachePruning:
 
         assert agg.select(channel, "train") == ["t1", "t2"]
         assert channel.calls == 1
+
+
+class TestRoundCacheClockSource:
+    """R-C: the stuck timeout must be stamped and checked on the clock the run
+    actually advances on -- virtual in sim, wall in real. Measuring virtual
+    progress against wall meant a sim run never reached the timeout (0 stuck
+    evictions where real had 6), so sim refilled one round more than real."""
+
+    def test_real_mode_uses_wall_clock(self):
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        assert abs(agg._round_cache_clock_now() - time.time()) < 5
+
+    def test_sim_mode_uses_virtual_clock(self):
+        agg = _FakeAggregator(reselect_each_iteration=False, vclock_now=1234.0)
+        assert agg._round_cache_clock_now() == 1234.0
+
+    def test_sim_stuck_end_pruned_on_virtual_advance(self):
+        agg = _FakeAggregator(reselect_each_iteration=False, vclock_now=1000.0)
+        channel = _FakeChannel(selections=[["t1", "t2"], ["t3"]], c=2)
+
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        assert agg._round_cache_activity_ts["t1"] == 1000.0  # stamped in vtime
+
+        # Virtual clock races past the timeout while wall barely moves -- the
+        # case the wall-clock version could never evict.
+        agg.vclock_now = 1000.0 + ROUND_CACHE_STUCK_TIMEOUT_S + 10
+        agg._round_cache_activity_ts["t2"] = agg.vclock_now  # t2 just contributed
+
+        assert agg.select(channel, "train") == ["t2", "t3"]
+        assert channel.calls == 2  # re-queried to backfill
+        assert "t1" not in agg._round_cache_activity_ts
+
+    def test_sim_end_within_virtual_window_not_pruned(self):
+        agg = _FakeAggregator(reselect_each_iteration=False, vclock_now=1000.0)
+        channel = _FakeChannel(selections=[["t1", "t2"]], c=2)
+
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        agg.vclock_now = 1000.0 + ROUND_CACHE_STUCK_TIMEOUT_S - 30
+
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        assert channel.calls == 1  # no re-query -- nothing pruned
 
 
 class TestAsyncReselectGate:

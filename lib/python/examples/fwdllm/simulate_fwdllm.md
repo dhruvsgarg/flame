@@ -104,9 +104,10 @@ for these six; re-derive from each run dir's `telemetry/*.jsonl` (run dirs are p
 > **RULE: every tracker cell ≤20 words.** State the claim/number, cut qualifiers. If it needs more, it's
 > not tracker material — shorten it or point at the code comment/commit.
 
-**⭐ RESUME HERE — 6 newly-ported baselines: R-A + R-B FIXED IN CODE (2026-07-25), AWAITING one batch of
-re-runs.** R-C open. All 5 round/+IT baselines plus `fwdllm` need fresh pairs before §A means anything;
-operator will run them as a single batch.
+**⭐ RESUME HERE — 6 newly-ported baselines: R-A + R-B + R-C ALL FIXED IN CODE (07-25/07-26), AWAITING one
+batch of re-runs.** No root is open. All 5 round/+IT baselines plus `fwdllm` need fresh pairs before §A
+means anything; operator will run them as a single batch. `async_oort` re-base (decision 4) comes AFTER
+the batch — it keeps `felix_it`/`felix_round` a clean control for the R-A/R-B/R-C cohort fixes.
 
 R-B's original framing was WRONG and is corrected below — the round cohort is *supposed* to be pinned per
 round; the defect was its SIZE. R-A stands as diagnosed.
@@ -116,7 +117,7 @@ round; the defect was its SIZE. R-A stands as diagnosed.
 | `fwdllm`, `fwdllm_it_*` | sync gate | mixed | aggregator (`_reselect_true_cache_key`) | R-B (size only) |
 | `felix_it` | async gate | iteration | selector (`async_oort` honors it) | timing fails only |
 | `fedbuff_it_unaware/oracular` | async gate | iteration | selector — `fedbuff` DROPPED it | R-A |
-| `fedbuff_round`, `felix_round` | async gate | round | — | R-B |
+| `fedbuff_round`, `felix_round` | async gate | round | — | R-B, R-C |
 
 **R-A — `FedBuffSelector` never received the real→sim port. FIXED** by re-basing it onto the new
 `AsyncSelectorBase` (§G). `channel.ends()` threads `agg_version_key`/`trainer_version_keys`;
@@ -166,10 +167,6 @@ both in `_select_ends_*_respecting_reselect_gate` and both wrong in real and sim
 run — the matched-but-wrong case the preamble invariant now names. `felix_round` runs the fully-ported
 `async_oort` and still failed 17 rungs, which is what proves R-B is not a selector bug.
 
-**R-C — `_prune_departed_from_round_cache` uses wall `time.time()`** (`fwdllm_aggregator.py:3296`). STILL
-OPEN. Real evicted 6 stuck ends, sim 0 → sim refilled once more than real. Same #1c class
-`_abandon_clock_now()` already solved for the selector; the aggregator copy never got it.
-
 **Decisions settled 2026-07-25 (all now implemented — see §G):**
 1. **Selection cadence is a first-class knob**, `reselect_cadence: round | data_bin | iteration`, boolean
    `reselect_each_iteration` kept as a deprecated alias. `round` = pin for a full lap (fwdllm's intent);
@@ -200,7 +197,7 @@ Full per-baseline fail list (2026-07-25 `run_parity.py`; also in each pair's JSO
 | `fwdllm_it_unaware` | throughput, step_timing_breakdown, drain_wall_budget, agg_step_timing_breakdown, terminal_state, total_commits |
 
 Root ownership: `felix_it`/`fwdllm_it_unaware` = timing family only (below, no new work). `fedbuff_round`
-+ `felix_round` = R-B (+R-C). `fedbuff_it_unaware`/`fedbuff_it_oracular` = R-A. Re-run one baseline after
++ `felix_round` = R-B + R-C. `fedbuff_it_unaware`/`fedbuff_it_oracular` = R-A. Re-run one baseline after
 a fix: `cd expt_scripts && python run_parity.py --baselines <name> --yes`. Run dirs are on disk
 (`experiments/run_20260724_*`); `_parity_reports/` was not written, so re-derive numbers from the
 `telemetry/*.jsonl` as above.
@@ -486,6 +483,8 @@ rule now live in §D-3.
 > **RULE: closed = here, ≤30 words, immediately.** The instant a rung flips or a hypothesis resolves, write
 > ONE line (mechanism + outcome) and delete it from §A/§B in the same edit.
 
+- **R-C round-cache stuck timeout stamped/checked on wall in sim** (07-26) — new
+  `_round_cache_clock_now()` (vclock in sim, wall in real, #1c); sim evicted 0 stuck ends vs real's 6.
 - **R-B cohort sized by `agg_goal` not `c`, and never trimmed** (07-25) — `_round_cohort_target`/
   `_trim_round_cohort` on both gates; fixes 10-of-30 under-fill and the 30-vs-40 overshoot race.
 - **`reselect_cadence` knob added** (07-25) — round/data_bin/iteration; boolean kept as alias, every

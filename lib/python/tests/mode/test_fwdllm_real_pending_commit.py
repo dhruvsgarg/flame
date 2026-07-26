@@ -76,6 +76,7 @@ class _FakeAggregator:
     completion on a single fresh GRADIENTS contribution."""
 
     process = TopAggregator._process_single_trainer_message
+    _round_cache_clock_now = TopAggregator._round_cache_clock_now
     _release_end_on_return = TopAggregator._release_end_on_return
 
     def __init__(self, simulated: bool, is_async: bool = True):

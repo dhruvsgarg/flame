@@ -731,6 +731,7 @@ class _LoopAgg(_FakeGradAgg):
         _OrderedContributorList as _OCL,
     )
     _process = TopAggregator._process_single_trainer_message
+    _round_cache_clock_now = TopAggregator._round_cache_clock_now
 
     def __init__(self):
         super().__init__()
