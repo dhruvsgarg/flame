@@ -384,6 +384,10 @@ delays_on = (DELAYS == "on")
 # sync one. No real-mode yaml exists for these to profile floor against
 # independently (sim-only per BRIDGE_DESIGN.md decision #3), so this is the
 # operator's considered choice, not a placeholder.
+# CAVEAT (07-26): fwdllm's 7.0 and fluxtune's 4.0 floors were profiled when
+# those two ran `uniform`; all 9 baselines are now niid alpha=1, which shifts
+# per-client partition size and hence observed compute. Re-derive both against
+# post-switch compute if TIMING_OVERRUN shows up.
 BASELINE_DELAY_DEFAULTS = {
     "fluxtune":           {"delays": True, "factor": 0.48, "floor": 4.0},
     "fwdllm":             {"delays": True, "factor": 1.63, "floor": 7.0},
@@ -391,6 +395,7 @@ BASELINE_DELAY_DEFAULTS = {
     "fwdllm_it_unaware":  {"delays": True, "factor": 1.63, "floor": 7.0},
     "fedbuff_round":      {"delays": True, "factor": 1.63, "floor": 7.0},
     "fedbuff_it_unaware": {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fedbuff_it_oracular": {"delays": True, "factor": 1.63, "floor": 7.0},
     "felix_round":        {"delays": True, "factor": 1.63, "floor": 7.0},
     "felix_it":           {"delays": True, "factor": 1.63, "floor": 7.0},
 }
