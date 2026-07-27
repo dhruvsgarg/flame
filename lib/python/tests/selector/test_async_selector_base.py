@@ -207,8 +207,9 @@ class TestRecvStateIsReadOnly:
         assert sel.all_selected == {"t7": stamp}
 
     def test_recv_bootstraps_when_nothing_ever_dispatched(self, build, make_ends):
-        """Fresh selector (all_selected empty): RECV must bootstrap-select --
-        needed by a trainer's 1:1 channel, whose first call is RECV, not SEND."""
+        """`channel.one_end()` caller (`allow_recv_bootstrap=True`), fresh
+        selector: RECV must bootstrap-select -- a trainer's first call is
+        RECV, not SEND, by protocol."""
         sel = build(c=3)
         ends = make_ends(count=1, prefix="agg")
         sel.requester = "trainer-x"
@@ -220,9 +221,25 @@ class TestRecvStateIsReadOnly:
             KEY_CH_SELECT_REQUESTER: "trainer-x",
             "round": 1,
         }
-        chosen = sel.select(ends, recv_props, [])
+        chosen = sel.select(ends, recv_props, [], allow_recv_bootstrap=True)
         assert set(chosen) == {"agg0"}
         assert sel.selected_ends["trainer-x"] == {"agg0"}
+
+    def test_recv_never_bootstraps_for_a_dispatcher(self, build, make_ends):
+        """`channel.ends()` caller (default, no `allow_recv_bootstrap`), fresh
+        selector: must stay read-only. Bootstrapping here (the aggregator's
+        RECV racing its own first SEND) froze `fedbuff_round`'s sim vclock at
+        0.0 forever -- nothing dispatched, nothing to reclaim on."""
+        sel = build(c=3)
+        ends = make_ends(count=8, prefix="t")
+        sel.requester = "agg"
+        sel.selected_ends = {"agg": set()}
+        sel.all_selected = {}
+
+        recv_props = dict(_send_props(), **{KEY_CH_STATE: VAL_CH_STATE_RECV})
+        assert sel.select(ends, recv_props, []) == {}
+        assert sel.selected_ends["agg"] == set()
+        assert sel.all_selected == {}
 
     def test_recv_drops_ends_already_received(self, build, make_ends):
         sel = build(c=3)

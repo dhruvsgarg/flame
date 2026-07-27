@@ -69,7 +69,10 @@ experiments:
           sim_model_dispatch_queue: true
           sim_model_agg_compute_time: true
           max_data_id_progress: 9999
-          max_runtime_s: 360
+          max_runtime_s: 360  # 6 minutes sim vclock
+          # Outer wall failsafe: code default (max_runtime_s x 20 = 7200s) is
+          # too loose for a smoke test. Also arms runner.py's watchdog.
+          sim_wall_ceiling_s: 600
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).

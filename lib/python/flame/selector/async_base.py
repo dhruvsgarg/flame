@@ -225,6 +225,10 @@ class AsyncSelectorBase(AbstractSelector):
         # STAMP and the CHECK agree; None in real -> time.time().
         self._sim_now_s = channel_props.get("vclock_now")
 
+        # Only `channel.one_end()` (a single-parent caller, e.g. a trainer
+        # picking its aggregator) sets this -- see `_handle_recv_state`.
+        self._recv_bootstrap_allowed = bool(kwargs.get("allow_recv_bootstrap"))
+
         eligible_ends = ends
         if trainer_unavail_list:
             eligible_ends = {
@@ -438,11 +442,15 @@ class AsyncSelectorBase(AbstractSelector):
         send-state dispatch and could deadlock. Returns {} if empty; the next
         send-state tick dispatches normally.
 
-        Bootstrap exception: if `all_selected` is empty too (nothing ever
-        dispatched, so nothing to race), pick directly. Needed by callers
-        whose first-ever call is RECV, not SEND -- e.g. a trainer's own 1:1
-        channel, which only reaches SEND on upload -- else RECV permanently
-        returns {} and `channel.one_end` crashes on it.
+        Bootstrap exception: only for `channel.one_end()` callers
+        (`allow_recv_bootstrap`) -- a single-parent caller (e.g. trainer
+        picking its aggregator) whose first-ever call is RECV, not SEND, by
+        PROTOCOL, so bootstrapping races nothing. A multi-candidate
+        dispatcher (`channel.ends()`, e.g. the aggregator) must never
+        bootstrap here: `all_selected` empty can mean "haven't decided yet,"
+        not "never will," and a pending SEND tick would be starved by the
+        fabricated phantom in-flight ends -- in sim, permanently, since the
+        reclaim clock (vclock) never advances without a completed round-trip.
         """
         selected_ends = self.selected_ends[self.requester]
 
@@ -455,7 +463,12 @@ class AsyncSelectorBase(AbstractSelector):
                 selected_ends.remove(end_id)
                 logger.debug(f"Removed {end_id} from selected_ends: already RECVD")
 
-        if not selected_ends and not self.all_selected and ends:
+        if (
+            getattr(self, "_recv_bootstrap_allowed", False)
+            and not selected_ends
+            and not self.all_selected
+            and ends
+        ):
             bootstrap = sorted(ends)[:concurrency]
             selected_ends = set(bootstrap)
             self.selected_ends[self.requester] = selected_ends

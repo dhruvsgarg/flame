@@ -173,8 +173,13 @@ class Channel(object):
         return result
 
     def one_end(self, state: Union[None, str] = None) -> Union[None, str]:
-        """Return one end out of all ends."""
-        end_list = self.ends(state)
+        """Return one end out of all ends.
+
+        Single-parent caller (e.g. trainer picking its aggregator): RECV is
+        protocol-guaranteed to precede SEND, so bootstrapping is safe -- see
+        `allow_recv_bootstrap` on `ends()`.
+        """
+        end_list = self.ends(state, allow_recv_bootstrap=True)
         return end_list[0] if len(end_list) > 0 else None
     
     def get_c(self):
@@ -191,6 +196,7 @@ class Channel(object):
         agg_version_key: tuple = None,  # (model_version, iteration)
         trainer_version_keys: dict[str, tuple] = None,
         data_id: int = None,
+        allow_recv_bootstrap: bool = False,
     ) -> list[str]:
         """Return a list of end ids.
 
@@ -200,6 +206,12 @@ class Channel(object):
             data_id: Progress axis for selection telemetry. Not part of
                 version_key (model_version already implies it); pass
                 explicitly when a caller needs it.
+            allow_recv_bootstrap: Let a RECV-state selector fabricate an
+                in-flight set when nothing was ever dispatched. Only safe for
+                a single-parent caller (`one_end()` sets this); a real
+                dispatcher (e.g. the aggregator) must never set it, or a
+                RECV racing its own first SEND fabricates phantom in-flight
+                ends that starve every real dispatch behind them.
         """
         logger.debug(
             f"ends() for channel name: {self._name}, "
@@ -229,6 +241,7 @@ class Channel(object):
                     agg_version_key=agg_version_key,
                     trainer_version_keys=trainer_version_keys,
                     data_id=data_id,
+                    allow_recv_bootstrap=allow_recv_bootstrap,
                 )
                 logger.debug(f"trainer unavail list available, selected: {selected}")
                 if len(selected) == 0:
@@ -242,6 +255,7 @@ class Channel(object):
                     agg_version_key=agg_version_key,
                     trainer_version_keys=trainer_version_keys,
                     data_id=data_id,
+                    allow_recv_bootstrap=allow_recv_bootstrap,
                 )
                 logger.debug(
                     f"trainer unavail list not available, selected: {selected}"

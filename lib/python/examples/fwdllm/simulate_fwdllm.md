@@ -155,42 +155,29 @@ MASKED divergence via the exact §D-5 pattern (parity passes when both sides are
 * **Blocks decision 4** (`async_oort` re-base needs `felix_round` as a clean control — it is no longer
   clean).
 
-**Mechanism traced (2026-07-26): real's round-cache is stuck-evicting live trainers, driven by a
-GPU/CPU-contention hypothesis the operator disputes — pending falsification, see below.**
-`_prune_departed_from_round_cache` (`fwdllm_aggregator.py`) evicts a cohort member as "stuck" after
-`ROUND_CACHE_STUCK_TIMEOUT_S=300` without a processed contribution. On the fresh `fedbuff_round` re-run this
-fired 13 times on 11 distinct trainers — all confirmed still mid-computation (not dead/hung), via
-`[TIMING_OVERRUN]` trainer-log warnings (real GPU wall time vs modeled budget): 149 events, real gpu_s
-distribution p50=71s / p90=274s / p99=475s / max=504s against a 13.5s modeled budget. Sim never evicts
-(0 stuck events, 1 total `select()` call all run) because it charges the modeled duration, never a
-contention-inflated one (§F-20) — this is what pins sim's cohort at a clean 30 while real's genuinely alive
-but "stuck-evicted" churns through 53 distinct trainers, driving the `selection_detail`/`participation`/
-`training_budget` divergence above.
-
-**GPU/CPU-contention hypothesis — HELD PENDING FALSIFICATION, operator disputes it (2026-07-26).**
-Investigation so far (`run_20260726_161249_fedbuff_round_*` real telemetry):
-- GPU/CPU pinning confirmed correct: `[PIN]` self-report shows all 100 trainers round-robined 1:1 across
-  8 GPUs (`client_idx % 8`) with a unique dedicated CPU core each.
-- GC pause ruled out: `gc_pause_s` stays ~1-5ms during every 100-500s stall (extends the existing
-  `_compute_var` GC dead-end, §E, to this trainer-side function too).
-- `cpu_duration_s` (thread CPU time) stays ~0.3-1.2s regardless of `duration_s` (100-500s) — the process is
-  genuinely blocked/waiting, not busy-computing.
-- Naive "how many other same-GPU trainers are actively computing right now" only explains a MODEST mean
-  effect (2.85s @ concurrency=0 → 8.19s @ concurrency=3) — nowhere near the 500s tail, and outliers occur
-  even at concurrency=0 (max 393s completely alone on its GPU).
-- Cross-baseline comparison on the SAME host, same time window: `fedbuff_round` 149 TIMING_OVERRUN events,
-  `felix_round` 157, `felix_it` 1, `fwdllm` 0, `fluxtune` 0. Essentially exclusive to the two `round`-cadence
-  baselines — rules out a generic host/infra problem (would hit all five).
-- **Operator's counter-evidence (overrides the above as the working prior):** 4+ hour `fwdllm`/`fluxtune`
-  real runs at n=100 have NEVER shown a single TIMING_OVERRUN. Operator's hypothesis: this is NOT a
-  compute/GPU-contention issue at all — it's in how weights are dispatched to / received from trainers on
-  the round-cadence path specifically (round-cache dispatch/receipt, not compute).
-- **Falsification test staged, not yet run:** reduced-scale repro configs written —
-  `expt_scripts/{fedbuff_round,felix_round}_n15_smoke{,_sim}.yaml` (n=100→15, c=30→10, agg_goal=10→5,
-  max_runtime_s=1800→360; ~2 trainers/GPU instead of ~12-13, dataset/partition/seed otherwise identical).
-  If TIMING_OVERRUN still fires at this scale, GPU/CPU contention is FALSIFIED (n=15/8 GPUs has no
-  meaningful compute sharing) and the dispatch/receipt path becomes the prime suspect. Operator to launch
-  and return logs.
+**GPU/CPU-contention hypothesis FALSIFIED; true root found + fixed (2026-07-26) — see §G.** The n=15
+falsification test (staged last session) was run: both `fedbuff_round_n15_smoke{,_sim}` reproduced the
+identical evict-at-`send_timeout_wait_s` signature with zero GPU sharing possible (2 trainers/GPU), and the
+sim sibling never terminated at all (vclock frozen at 0.0 for the full run) — ruling out contention and
+exposing a harder bug than the real-mode stall alone suggested. Root: `AsyncSelectorBase._handle_recv_state`'s
+`[RecvBootstrap]` (added 07-26 AM to fix a trainer-side crash) also fires on the AGGREGATOR's shared
+channel whenever its RECV-state tick (`aggregate`) reaches the selector before its own SEND-state tick
+(`distribute`) has ever run — a benign scheduling race, not contention. It fabricates `concurrency` phantom
+in-flight ends with no real dispatch behind them, so `_handle_send_state` sees every slot full
+(`extra = concurrency - len(selected_ends) = 0`) and never dispatches again. Real self-heals at
+`send_timeout_wait_s` (wall clock advances regardless) — this IS the "cold-start" eviction below. Sim never
+self-heals: the reclaim check runs on `vclock_now`, which only advances via a completed round-trip, so with
+every slot phantom-filled nothing ever completes and the vclock stays at 0.0 forever — permanent deadlock,
+confirmed in `run_20260726_220922_fedbuff_round_n15_smoke_sim` telemetry (2590 `selection` events over 667s
+wall, `vclock_now` never leaving 0.0). Confirmed 6/6 on every FedBuffSelector-based aggregator run checked
+(`fedbuff_round` real×2/sim×1, `fedbuff_it_unaware`, `fedbuff_it_oracular`) and 0/7 on every
+AsyncOortSelector-based one (`felix_round`, `felix_it`, `fluxtune` — `async_oort.py`'s own
+`_handle_recv_state`, still un-rebased per decision 4, never had a bootstrap branch and is the correct
+reference). Fixed (§G) by gating the bootstrap on an explicit `allow_recv_bootstrap` flag that only
+`channel.one_end()` sets — the single-parent-caller pattern (trainer→aggregator, middle-agg→parent) where
+RECV is protocol-guaranteed to precede SEND, never a race. `channel.ends()` (the many-candidate dispatcher
+path) now always defaults to no-bootstrap, matching `async_oort.py`'s proven-safe behavior, for every
+baseline, not just these two.
 
 **Next candidate (not blocked on the pending re-run): `fedbuff_it_oracular`, 12 fails — worst baseline whose
 root isn't already covered above.** Isolated to the ONE config diff vs its clean-ish twin
@@ -232,17 +219,6 @@ fix itself (§G): `phase_gpu_compute` real mean dropped 13.5s→4.8s (`fedbuff_r
 (`felix_round`) once the flood stopped, both now PASS. The remaining §D-1 co-location contention baseline
 (charge-floor-vs-relax, still open for fwdllm/fwdllm_plus/fluxtune) is a separate, smaller residual not
 addressed by this fix.
-
-**Open, not yet actioned (found this session, tracked for the next pass):**
-* **`fedbuff_round` cold-start: entire initial cohort evicted together at `send_timeout_wait_s`.**
-  `minInitialTrainers` IS correctly scaled (100, verified in `aggregator_config.json` — not a config bug).
-  The FIRST cohort of 30 forms in one shot as designed, but real's 100-trainer simultaneous model-load
-  (DistilBERT × 100 processes, shared hardware) plausibly pushes every one of that first cohort past
-  `send_timeout_wait_s=300`, so `_reclaim_timed_out_ends` evicts all 30 together and a full fresh cohort
-  gets re-picked (traced in real telemetry: 10 empty `selection` probes at the 30s poll cadence, then one
-  30-chosen event at exactly t+300s; only ONE such event all run — a one-time cold-start transient, not a
-  steady-state churn). Matches the already-flagged, never-verified "round-1 cold-start gap" below. Not
-  fixed — needs a design call (grace period separate from the steady-state timeout?) before touching it.
 
 R-B's original framing was WRONG and is corrected below — the round cohort is *supposed* to be pinned per
 round; the defect was its SIZE. R-A stands as diagnosed.
@@ -643,6 +619,16 @@ rule now live in §D-3.
 > **RULE: closed = here, ≤30 words, immediately.** The instant a rung flips or a hypothesis resolves, write
 > ONE line (mechanism + outcome) and delete it from §A/§B in the same edit.
 
+- **`[RecvBootstrap]` phantom-selected the aggregator's own dispatch slots, deadlocking sim forever**
+  (07-26 PM) — `_handle_recv_state`'s bootstrap (added 07-26 AM for a trainer-side crash) also raced the
+  aggregator's own first SEND tick, permanently zeroing `extra`. `fedbuff_round_n15_smoke_sim` never left
+  `vclock_now=0.0` (found debugging why the n=15 no-contention repro didn't terminate); real's version was
+  the already-flagged "cold-start" eviction. Also FALSIFIES the GPU/CPU-contention hypothesis for that
+  eviction (n=15 has no meaningful GPU sharing and still shows it). Fixed: bootstrap now gated on
+  `allow_recv_bootstrap`, set only by `channel.one_end()` (single-parent callers, e.g. trainer→aggregator)
+  where RECV provably precedes SEND; `channel.ends()` (real dispatchers) defaults to no-bootstrap, matching
+  `async_oort.py`'s always-correct behavior. 2 new/updated tests in `test_async_selector_base.py`, full
+  suite (1320) green. Re-run needed to confirm `selection_detail`/cold-start clear on `fedbuff_round`.
 - **R-D VALIDATED on a fresh `fedbuff_round`/`felix_round` re-run** (07-26) — `r1_inflight_overlap` real
   0.0%/sim 0.0% both baselines (was ~90-91%). Fix is complete, not partial.
 - **`sample_by_util` reproducibility fix VALIDATED on a fresh `felix_it` re-run** (07-26) —
