@@ -3114,6 +3114,20 @@ class TopAggregator(AsyncTopAgg):
         else:
             selector.selected_ends = set(selector.selected_ends) | set(ends)
 
+    @staticmethod
+    def _exclude_pending_commit(channel, ends):
+        """Drop ends still awaiting commit, mirroring `_eligible_candidates`'s
+        pending exclusion (`async_base.py`) -- the guard the round-cache
+        reuse branch above would otherwise skip, since it never calls
+        `select()`. No-op for selectors without `_agg_pending_commit_ref`
+        (e.g. sync's `RandomSelector`, whose busy-tracking lives in the
+        aggregator instead)."""
+        selector = getattr(channel, "_selector", None)
+        pending = getattr(selector, "_agg_pending_commit_ref", None) if selector else None
+        if not pending:
+            return ends
+        return [e for e in ends if e not in pending]
+
     def _round_cache_clock_now(self) -> float:
         """Clock for the round-cache stuck timeout: vclock in sim, wall in real
         (#1c, what `_abandon_clock_now` already fixed for the selector).
@@ -3358,8 +3372,11 @@ class TopAggregator(AsyncTopAgg):
                 f"[ReselectGate-async] cadence={self._reselect_cadence}; reusing "
                 f"pinned cohort ends={ends} at key={self._pinned_cohort_key}"
             )
+            # Re-arm RECV for the whole cohort, but only DISPATCH to ends not
+            # still awaiting commit (§D-8) -- this branch skips select(), the
+            # only other place `_agg_pending_commit_ref` gets checked.
             self._rearm_recv_eligibility(channel, ends)
-            return ends
+            return self._exclude_pending_commit(channel, ends)
 
         new_ends = channel.ends(
             state=VAL_CH_STATE_SEND,

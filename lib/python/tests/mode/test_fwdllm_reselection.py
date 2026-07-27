@@ -110,6 +110,7 @@ class _FakeAggregator:
     select = TopAggregator._select_ends_respecting_reselect_gate
     select_async = TopAggregator._select_ends_for_async_respecting_reselect_gate
     _rearm_recv_eligibility = staticmethod(TopAggregator._rearm_recv_eligibility)
+    _exclude_pending_commit = staticmethod(TopAggregator._exclude_pending_commit)
     _prune_departed_from_round_cache = (
         TopAggregator._prune_departed_from_round_cache
     )
@@ -676,3 +677,26 @@ class TestAsyncReselectGate:
         assert agg.select_async(channel, "train") == ["t1", "t2"]
         assert isinstance(channel._selector.selected_ends, dict)
         assert channel._selector.selected_ends["agg"] == {"t1", "t2"}
+
+    def test_cache_hit_excludes_pending_commit_ends(self):
+        """Regression for the round-cadence staleness bug (2026-07-27): a
+        cache-hit dispatch must drop ends still awaiting commit -- the guard
+        this branch otherwise skips, since it never calls select()."""
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1", "t2"]], c=2)
+        channel._selector = _FakeAsyncSelector()
+
+        assert agg.select_async(channel, "train") == ["t1", "t2"]
+
+        # t1 hasn't committed yet -- must be withheld from dispatch.
+        channel._selector._agg_pending_commit_ref = {"t1"}
+        ends = agg.select_async(channel, "train")
+        assert ends == ["t2"]
+        assert channel.calls == 1  # still a cache hit, no re-query
+
+        # RECV stays armed for both -- t1's eventual return still gets processed.
+        assert channel._selector.selected_ends["agg"] == {"t1", "t2"}
+
+        # Once t1 commits (leaves pending), it's dispatchable again.
+        channel._selector._agg_pending_commit_ref = set()
+        assert agg.select_async(channel, "train") == ["t1", "t2"]

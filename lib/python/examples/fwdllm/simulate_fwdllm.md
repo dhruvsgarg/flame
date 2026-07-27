@@ -69,7 +69,7 @@ and its `min_abs` calibration rule, full wall-budget/timing rung table):
 
 ---
 
-## §A  Score — refreshed 2026-07-26
+## §A  Score — refreshed 2026-07-27
 
 **fluxtune/syn_0 — CLEAN** (69/0/16): the three former fails were ONE boundary-race cascade, resolved by
 gating index-identity for stochastic-async selectors (→ §D-2, §G). Only the deferred 81% accuracy drop
@@ -92,6 +92,15 @@ draw (`sample_by_util`) fix (`_keyed_weighted_topk`, replacing the pool/order-de
 all flip fail→pass. **New finding from the same re-run, not previously visible:** `selection_detail`
 regressed hard on `felix_round` (was passing pre-fix) and stayed badly failing on `fedbuff_round` — see §B,
 this is now the priority item.
+
+**n15/c=10 falsification-scale re-run, 2026-07-27 — RecvBootstrap + var-check-pool fixes hold; `staleness`
+is the new root, sim-side (§B, §D-8).** Not a production-scale (n=100+) confirmation; see §B for detail.
+
+| baseline | run pair | dur | pass/fail/skip | selection_detail | staleness | per_round_advance |
+|---|---|---|---|---|---|---|
+| fedbuff_round/syn_0 (n15) | `run_20260727_005613`/`_015747` | 3600s | 48/14/21 | ✓ | ✗ | ✗ |
+| felix_round/syn_0 (n15) | `run_20260727_005705`/`_015909` | 3600s | 48/13/21 | ✓ | ✗ | ✗ |
+| fluxtune/syn_0 (n15) | `run_20260727_021855`/`_032028` | 3600s | 61/7/16 | ✓ | ✓ | ✗ |
 
 **Latest run per baseline** (`run_parity.py`; ✓ pass · ✗ fail · – skip; rung catalog PARITY.md §F):
 
@@ -138,25 +147,26 @@ short-run fails are `step_timing_breakdown`/`drain_wall_budget`/`v2_var_trajecto
 > **RULE: every tracker cell ≤20 words.** State the claim/number, cut qualifiers. If it needs more, it's
 > not tracker material — shorten it or point at the code comment/commit.
 
-**⭐ RESUME HERE — `selection_detail` cadence divergence, newly exposed by the R-D re-run (2026-07-26).**
-R-D and the `sample_by_util` fix are both VALIDATED (§A, §G) — but the re-run exposed a genuine, previously
-MASKED divergence via the exact §D-5 pattern (parity passes when both sides are equally wrong):
+**`selection_detail` — flips fail→pass on both `fedbuff_round`/`felix_round` at n15 (§A), var-check-pool fix
+(§G) the only plausible mechanism. Re-confirm at production n=100/c=30 before closing** (the original
+divergence scaled with `c − agg_goal`; not re-tested at that `c` yet). Unblocks decision 4 once confirmed.
 
-* **`felix_round`: `selection_detail` PASSED pre-fix, FAILS post-fix.** `real_mean_chosen` was 30.0 pre-fix
-  (matching sim's 30.0 — looked clean) but that 30 included the R-D flood's illegitimate re-dispatches to
-  already-busy trainers. Post-fix, real's genuine newly-free-trainer rate per distribute tick is **2.23**,
-  while sim's is unchanged at **30.0**. `fedbuff_round` shows the same shape, worse: 2.73 (pre) → 0.84
-  (post) vs sim's fixed 30.0.
-* **Total distinct trainers churned is inflated in real**, not sim: `fedbuff_round` real touches 53 trainers
-  against a `c=30` target (sim stays a clean 30); `felix_round` real touches 41. `real_mean_inflight`
-  (~30.8/32.2) still roughly matches sim's 30, so the STEADY-STATE occupied count is fine — only the
-  per-tick turnover RATE and the total-distinct-trainers-ever-used diverge.
-* **Likely downstream:** `participation` and `training_budget` both flipped pass→fail on `fedbuff_round`
-  post-fix (were already failing on `felix_round`), and `v5_variance_pass_ratio` got noticeably worse on
-  both (`fedbuff_round` abs_diff 0.17→0.65). All three are plausible consequences of the same cadence gap,
-  not independent roots — don't chase them separately until `selection_detail` is understood.
-* **Blocks decision 4** (`async_oort` re-base needs `felix_round` as a clean control — it is no longer
-  clean).
+**⭐ RESUME HERE — `staleness` fix landed (§G), NOT yet validated against a live run.** Operator: re-run
+`fedbuff_round`/`felix_round` (n15 smoke rig or production n=100/c=30) and re-check `staleness`,
+`overhead_residual`/`per_round_advance`/`throughput` (the other n15 open item, above), and `selection_detail`
+(re-confirm at production `c`, above). Suggested command (reconstructed from the n15 run configs — confirm
+flags against whatever originally launched them if they differ):
+```bash
+cd lib/python/examples/fwdllm/expt_scripts
+./run_sequential.sh --mode both --only fedbuff_round,felix_round --max-runtime-s 3600 \
+  --num-trainers 15 --c-async 10 --agg-goal 5 --min-initial-trainers 15 --yes
+```
+
+**`overhead_residual`/`per_round_advance`/`throughput` fail 18% (`fedbuff_round`) / 26-28% (`felix_round`,
+real slower) vs fluxtune's ~10% same-batch gap (§D-1).** n=15 is below §D-1's ~100-trainer contention floor
+(§F-16) — don't default to blaming contention. Plausibly downstream of the same lockstep-dispatch bug above
+(sim re-sending every pinned trainer every tick is extra dispatch volume real doesn't pay); re-check after
+the staleness fix lands before treating this as independent.
 
 **GPU/CPU-contention hypothesis FALSIFIED; true root found + fixed (2026-07-26) — see §G.** The n=15
 falsification test (staged last session) was run: both `fedbuff_round_n15_smoke{,_sim}` reproduced the
@@ -510,6 +520,18 @@ before suspecting the formula. Here real's genuinely-larger staleness (round-cad
 §F-17) drove the same rate formula harder than sim's, whose own convergence artifact (this same bug) kept
 `model_version` — and its own staleness — from growing within a short run. One bug, two symptoms.
 
+**D-8. A cohort-reuse fast path that returns a cached selection directly bypasses whatever guard lives
+inside the selector call it skips.** Round-cadence's `_select_ends_for_async_respecting_reselect_gate`
+returns `self._round_selected_ends` once the cohort is full, without calling `channel.ends()`/`select()` —
+the only place `_agg_pending_commit_ref` (busy-exclusion) is enforced. Real never notices because a
+physically-busy trainer process can't act on a redundant dispatch regardless; sim's trainers run genuinely
+fast (§F-1: real GPU compute, not slept-out to the modeled duration), so they're free again before the
+guard would have mattered — collapsing intended per-trainer speed heterogeneity into lockstep. **Tell:**
+every entity in a cache/reuse fast path shows IDENTICAL behavior (same update count, same rate) where the
+un-cached path shows heterogeneity — the fast path dropped a per-entity guard the slow path had.
+**Discriminate by:** diffing the fast path's return against what the bypassed call would have filtered, not
+by re-deriving the guard's logic from scratch.
+
 ---
 
 ## §E  Dead ends — do NOT retry
@@ -633,6 +655,22 @@ rule now live in §D-3.
 > **RULE: closed = here, ≤30 words, immediately.** The instant a rung flips or a hypothesis resolves, write
 > ONE line (mechanism + outcome) and delete it from §A/§B in the same edit.
 
+- **RecvBootstrap deadlock fix VALIDATED on n15/3600s re-run** (07-27) — `fedbuff_round`/`felix_round`/
+  `fluxtune` all complete, `sim_rate` 3.4-10.6x, vclock fully populated; no repeat of the `vclock_now=0.0`
+  freeze.
+- **Variance-check-pool fix VALIDATED for cadence effects** (07-27) —
+  `selection_detail`/`participation`/`training_budget` flip pass at n15 (re-confirm at n=100+). `staleness`
+  (model_version lag, not seconds) was still failing — separate sim-side bug, fixed below.
+- **`staleness` root-caused + FIXED: round-cohort-reuse dispatch never re-checked pending-commit** (07-27,
+  §D-8). Confirmed via `selection` telemetry: fluxtune (iteration cadence) re-invokes `select()` every tick,
+  2191 times/run, 0/19710 pending-commit violations; `fedbuff_round`/`felix_round` (round cadence) invoke it
+  ONCE per run, both modes — `_select_ends_for_async_respecting_reselect_gate`'s cache-hit branch
+  (`fwdllm_aggregator.py:3353`) returns `self._round_selected_ends` directly forever after, bypassing
+  `_agg_pending_commit_ref`. Fix: new `_exclude_pending_commit` (mirrors `_eligible_candidates`'s exclusion,
+  `async_base.py:350`) filters the cache-hit dispatch list every tick; `_rearm_recv_eligibility` still arms
+  the FULL cohort so a pending end's eventual return is still processed. 1 new test
+  (`test_fwdllm_reselection.py`), 356 fwdllm + 114 shared-selector tests green. **NOT yet validated against
+  a live run** (§B).
 - **Variance-check pool was staleness-rate-scaled, letting round-cadence's carried surplus fake convergence
   (07-27, §D-7).** `aggregate_grads_from_trainers` (`fwdllm_aggregator.py:869`) appended `stacked * rate`
   to `grad_for_var_check_list` — the same staleness-decayed `rate` used for the model-update merge. Under
