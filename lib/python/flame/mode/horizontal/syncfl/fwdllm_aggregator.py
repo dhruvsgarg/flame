@@ -276,6 +276,40 @@ class _OrderedContributorList(list):
             pass
 
 
+class _PendingCommitUnion:
+    """Real's `_agg_pending_commit_ref`: union of dispatched-not-yet-returned
+    (`_trainer_inflight_dispatch_version`) and returned-not-yet-committed
+    (`_per_agg_trainer_list`) ends -- mirrors sim's single `_sim_pending_commit`
+    (one set spanning dispatch-to-commit). Without the inflight half, a
+    round-cadence dispatch loop can't tell a still-training end from an idle
+    one and floods it every version_key advance -- the real-only unbounded
+    `staleness` (simulate_fwdllm.md U3)."""
+
+    def __init__(self, inflight_dispatch: dict, returned_pending: list):
+        self._inflight_dispatch = inflight_dispatch
+        self._returned_pending = returned_pending
+
+    def __contains__(self, end) -> bool:
+        return end in self._inflight_dispatch or end in self._returned_pending
+
+    def __bool__(self) -> bool:
+        return bool(self._inflight_dispatch) or bool(self._returned_pending)
+
+    def __iter__(self):
+        seen = set()
+        for end in self._returned_pending:
+            seen.add(end)
+            yield end
+        for end in self._inflight_dispatch:
+            if end not in seen:
+                yield end
+
+    def discard(self, end) -> None:
+        """R1 timeout eviction (`async_base.py`) drops a departed end from both halves."""
+        self._inflight_dispatch.pop(end, None)
+        self._returned_pending.discard(end)
+
+
 class TopAggregator(AsyncTopAgg):
     """Top level Aggregator implements an ML aggregation
     role."""
@@ -300,9 +334,9 @@ class TopAggregator(AsyncTopAgg):
         # so comparisons can use the full key, not just its first component.
         self._trainer_last_version_key = {}
         # Diagnostic: end -> version_key this end was DISPATCHED at, for
-        # every outstanding send. Set in the dispatch loop, cleared on
-        # return. Lets a version-bump census count how many of the pool
-        # still carry stale-version work when model_version advances.
+        # every outstanding send. Set in the dispatch loop, cleared on return.
+        # Feeds the version-bump census AND real mode's pending-commit
+        # busy-guard below.
         self._trainer_inflight_dispatch_version = {}
 
         self._agg_goal_cnt = 0
@@ -312,6 +346,11 @@ class TopAggregator(AsyncTopAgg):
         self._updates_in_queue = 0
         self._updates_received = {}
         self._per_agg_trainer_list = _OrderedContributorList()
+        # Real's `_agg_pending_commit_ref` (bound at receipt, below). Sim's
+        # `_sim_pending_commit` already covers both halves in one set.
+        self._real_pending_commit = _PendingCommitUnion(
+            self._trainer_inflight_dispatch_version, self._per_agg_trainer_list
+        )
         # Parallel to _per_agg_trainer_list: buffered per-contribution material,
         # merged into self.grad in canonical order, not raw arrival order.
         self._pending_cohort_contribs = []
@@ -1595,12 +1634,17 @@ class TopAggregator(AsyncTopAgg):
         self._updates_in_queue += 1
         self._per_agg_trainer_list.append(end)
         # Exclude this trainer from re-selection until its grad commits.
-        # Real: live-rebind to `_per_agg_trainer_list`. Sim: NO add -- here runs
-        # at COMMIT (`_sim_recv_min_grad` already discarded `end`), so re-adding
-        # re-pins the committed trainer forever (§F.1-23). Dispatch add +
-        # `_trainer_state_dict` version_key guard already cover it.
+        # Real: live-rebind to `_real_pending_commit` (see _PendingCommitUnion).
+        # Sim: NO add -- here runs at COMMIT (`_sim_recv_min_grad` already
+        # discarded `end`), so re-adding re-pins the committed trainer forever
+        # (§F.1-23). Dispatch add + `_trainer_state_dict` version_key guard
+        # already cover it.
         if not getattr(self, "simulated", False):
-            channel._selector._agg_pending_commit_ref = self._per_agg_trainer_list
+            # getattr-guarded: minimal test doubles without `_real_pending_commit`
+            # fall back to the narrower (still correct pre-fix) list.
+            channel._selector._agg_pending_commit_ref = getattr(
+                self, "_real_pending_commit", self._per_agg_trainer_list
+            )
 
         # Canonical commit-order key: the trainer's pure modeled delay D
         # (deterministic from the registry) + str(end) as tie-break. Lets
