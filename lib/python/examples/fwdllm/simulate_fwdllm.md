@@ -103,6 +103,9 @@ this is now the priority item.
 
 STALE — the three run-dir pairs above were cleaned from disk; numbers carried forward per this doc's rule,
 not re-verified this session. Re-run via `run_parity.py --baselines <name>` when either is touched.
+**fluxtune row doubly stale as of 07-27**: the var-check-pool rate fix (§G) touches the same shared method
+its V1/V2/V5/`cohort_sequence` rungs depend on — expected inert, not yet confirmed. Don't cite as current
+until the next long fluxtune pair re-runs.
 
 **WIP — 9-baseline batch** (`run_parity.py`, 2026-07-26, ~1800s each — below the §C 3600s sign-off bar, in
 scope for early-onset issues only). `fedbuff_round`/`felix_round`/`felix_it` rows below are the POST-FIX
@@ -496,6 +499,17 @@ SELECTOR to filter, which `async_oort` does and `fedbuff` does not (34.4% vs 3.5
 citing a clean baseline as the model to copy, check which side of ITS pair owns each guard, then confirm
 the destination pair still has an owner for that guard. (Extends §D-3 from timing to selection policy.)
 
+**D-7. A statistic computed over rate-scaled samples measures the rate, not the samples.** FedBuff's
+staleness-decayed `rate` correctly down-weights a stale contribution INTO the model update, but scaling the
+same sample toward zero before a variance/noise gate just makes the pool look less noisy — a spurious
+claim, not a real one. Neither FedBuff's nor Felix's papers define a variance gate at all (pure FwdLLM
+overlay), so there's no baseline-fidelity reason for rate to touch it; fluxtune's own `inverse_var` already
+computes its reliability score from the unscaled sample. **Tell:** real and sim run the identical formula
+but diverge 10x on an EXACT/DIST rung — check whether the two sides' INPUT to that shared formula differs
+before suspecting the formula. Here real's genuinely-larger staleness (round-cadence's carried surplus,
+§F-17) drove the same rate formula harder than sim's, whose own convergence artifact (this same bug) kept
+`model_version` — and its own staleness — from growing within a short run. One bug, two symptoms.
+
 ---
 
 ## §E  Dead ends — do NOT retry
@@ -619,6 +633,19 @@ rule now live in §D-3.
 > **RULE: closed = here, ≤30 words, immediately.** The instant a rung flips or a hypothesis resolves, write
 > ONE line (mechanism + outcome) and delete it from §A/§B in the same edit.
 
+- **Variance-check pool was staleness-rate-scaled, letting round-cadence's carried surplus fake convergence
+  (07-27, §D-7).** `aggregate_grads_from_trainers` (`fwdllm_aggregator.py:869`) appended `stacked * rate`
+  to `grad_for_var_check_list` — the same staleness-decayed `rate` used for the model-update merge. Under
+  round-cadence (`c > agg_goal`), carried-surplus trainers report genuinely stale (§F-17), scaling many
+  pool entries toward zero and making `calculate_var()` read that as converged: real committed
+  `fedbuff_round` data_ids in ~1.7 JVP samples (mean) vs fluxtune's ~16, and 0 retries for ~148/150
+  data_ids by the back half of a 6-min run — also explains real's staleness telemetry (20-54 vs sim's
+  ~0.1-0.2): `model_version` was churning ~10x too fast, so any pinned straggler landed proportionally
+  stalier. Rejected 3 config-only alternatives (cadence/optimizer changes) since neither FedBuff's nor
+  Felix's papers define a variance gate at all — no baseline-fidelity reason to diverge; fixed uniformly,
+  no flag. **Fix:** stop scaling the var-check pool by `rate`; the model-update merge is untouched. 1 new
+  test, full suite (1321) green. **NOT yet validated against a fresh run** — touches every FedBuff-optimizer
+  baseline, so fluxtune's clean 69/0/16 record (§A, STALE) needs re-confirming on the next long pair.
 - **`[RecvBootstrap]` phantom-selected the aggregator's own dispatch slots, deadlocking sim forever**
   (07-26 PM) — `_handle_recv_state`'s bootstrap (added 07-26 AM for a trainer-side crash) also raced the
   aggregator's own first SEND tick, permanently zeroing `extra`. `fedbuff_round_n15_smoke_sim` never left

@@ -180,3 +180,43 @@ class TestGradAwareOrderDependence:
             not torch.equal(r, s) for r, s in zip(real.grad, sim.grad)
         )
         assert diverges
+
+
+class TestVarCheckPoolIsRateIndependent:
+    """The variance gate measures noise, not model-update rate -- staleness-
+    scaling the var-check pool (as `self.grad` legitimately is) understates
+    its variance and let round-cadence's stale carried-surplus (§F-17) fake
+    convergence."""
+
+    _old_conf = {"type": "old"}
+
+    def test_var_check_pool_ignores_rate_but_grad_still_uses_it(self):
+        model = _model()
+        (name, _param) = next(model.named_parameters())
+        torch.manual_seed(7)
+        grad = {name: torch.randn(1, 4)}
+        var_check = [torch.randn_like(p) for p in model.parameters()]
+
+        fresh = _MergeAgg(model, weighted=True, agg_rate_conf=self._old_conf)
+        fresh._model_version = 0
+        fresh.aggregate_grads_from_trainers(
+            dict(grad), version_for_rate=0, stat_utility=0.5,
+            grad_for_var_check=var_check, jvp_for_snr_check=None,
+        )
+
+        stale = _MergeAgg(model, weighted=True, agg_rate_conf=self._old_conf)
+        stale._model_version = 50  # staleness=50 -> rate = 1/sqrt(51), far from 1.0
+        stale.aggregate_grads_from_trainers(
+            dict(grad), version_for_rate=0, stat_utility=0.5,
+            grad_for_var_check=var_check, jvp_for_snr_check=None,
+        )
+
+        # Variance-check pool: identical regardless of staleness/rate.
+        assert torch.equal(
+            fresh.grad_for_var_check_list[0], stale.grad_for_var_check_list[0]
+        )
+        raw_stacked = torch.stack(list(var_check))
+        assert torch.equal(fresh.grad_for_var_check_list[0], raw_stacked)
+
+        # Model-update merge: still rate-weighted, so it DOES differ.
+        assert not torch.equal(fresh.grad[0], stale.grad[0])

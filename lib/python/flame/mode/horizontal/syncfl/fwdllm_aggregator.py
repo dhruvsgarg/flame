@@ -862,11 +862,14 @@ class TopAggregator(AsyncTopAgg):
                 else:
                     logger.warning(f"Gradient for {name} not found in trainer_grad.")
 
-        # Also accumulate var-check gradients with the same rate if provided.
-        # Assumption: grad_for_var_check is an iterable of tensors.
+        # Unscaled: the gate measures noise across comparable JVP samples, not
+        # the model-update rate. Round-cadence's carried-surplus trainers are
+        # genuinely stale (§F-17); scaling their sample toward zero shrank
+        # `var` toward 0 and caused premature convergence. `rate` still
+        # applies to `self.grad` above -- only this pool's input changes.
         if grad_for_var_check is not None:
             stacked = torch.stack(list(grad_for_var_check))
-            self.grad_for_var_check_list.append(stacked * rate)
+            self.grad_for_var_check_list.append(stacked)
             self.jvp_for_snr_check_list.append(jvp_for_snr_check)
 
         self.log_memory("end aggregate_grads_from_trainers", self.device)
