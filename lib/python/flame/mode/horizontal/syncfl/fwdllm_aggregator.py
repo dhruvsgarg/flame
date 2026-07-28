@@ -54,6 +54,7 @@ from flame.mode.horizontal.asyncfl.top_aggregator import (
 )
 from flame.mode.message import MessageType
 from flame.mode.horizontal.client_duration import real_client_task_train_duration
+from flame.mode.horizontal.sim_charge_registry import get_profiled_charge_s
 from flame.mode.tasklet import Loop, Tasklet
 from flame.sim.virtual_clock import SimReorderBuffer
 from flame.optimizer.train_result import TrainResult
@@ -244,19 +245,27 @@ def recv_fifo_wrapper(channel, ends):
 def charge_sim_vclock_overhead(
     vclock, simulated, config, span_s, label: str,
     *, charge: bool = True, payload_kind: str | None = None,
+    profiled_s: float | None = None,
 ) -> float:
-    """Fold a MEASURED aggregator-side wall span (`span_s`, seconds) into the
-    vclock -- dynamically, using the live number, never a pre-profiled constant
-    (#6). Sim-only and gated on `sim_model_agg_compute_time` (OFF -> no-op,
-    byte-identical). Warns when the span exceeds `sim_overhead_warn_s` (excess
+    """Fold an aggregator-side wall span into the vclock. Two independent
+    sources, both dynamic (never a hand-typed constant, #6):
+    - shared-compute categories (drain_tail/fedavg): sim runs the identical
+      op, so its own live `span_s` IS the real cost -- gated on
+      `sim_model_agg_compute_time`.
+    - real-only-artifact categories (e.g. redispatch_turnaround): sim's own
+      span is near-zero by construction (it doesn't do the real work), so the
+      caller resolves `profiled_s` via `sim_charge_registry.get_profiled_charge_s`
+      and passes it here; charged whenever present, independent of the
+      live-span flag (see FWDLLM_DESIGN.md §P).
+    Sim-only. Warns when `span_s` exceeds `sim_overhead_warn_s` (excess
     sim-host overhead, not modeled deployment cost). Returns seconds charged.
 
     Emits a `vclock_charge` ledger event every call, both modes (§D-11) --
     compare `span_s` real-vs-sim per `label` to spot an uncharged real cost.
-    `charge=False` still emits the event but never calls `vclock.advance()`,
-    for measuring a candidate category (`redispatch_turnaround`) before
-    deciding whether to fold it onto the clock."""
+    `charge=False` still emits the event but never advances the vclock, for
+    measuring a candidate category before deciding whether to charge it."""
     _charged = 0.0
+    _source = "none"
     if span_s and span_s > 0.0:
         hp = getattr(config, "hyperparameters", None)
         _warn = getattr(hp, "sim_overhead_warn_s", None)
@@ -266,16 +275,19 @@ def charge_sim_vclock_overhead(
                 f"[SIM_OVERHEAD] {label}={span_s:.3f}s > expected {float(_warn):.1f}s "
                 f"(vclock={_now}) -- excess sim-host overhead"
             )
-        if (charge and simulated and vclock is not None
-                and getattr(hp, "sim_model_agg_compute_time", False)):
-            vclock.advance(vclock.now + span_s)
-            _charged = span_s
+        if charge and simulated and vclock is not None:
+            if profiled_s is not None:
+                vclock.advance(vclock.now + profiled_s)
+                _charged, _source = profiled_s, "profiled"
+            elif getattr(hp, "sim_model_agg_compute_time", False):
+                vclock.advance(vclock.now + span_s)
+                _charged, _source = span_s, "live"
     try:
         ev, f = build_vclock_charge(
             label=label, span_s=(span_s or 0.0), charged_s=_charged,
             time_mode="sim" if simulated else "real",
             vclock_now=(vclock.now if (simulated and vclock is not None) else None),
-            payload_kind=payload_kind,
+            payload_kind=payload_kind, charge_source=_source,
         )
         telemetry.emit(ev, **f)
     except Exception as e:
@@ -4153,12 +4165,17 @@ class TopAggregator(AsyncTopAgg):
                     f"peer_wait_wall_s={_rd_peer_wait:.3f} "
                     f"post_close_overhead_wall_s={_rd_post_close:.3f}"
                 )
-                # [VCLOCK_CHARGE] measurement-only -- candidate category, not
-                # yet decided whether to fold onto the vclock (§D-11).
+                # [VCLOCK_CHARGE] real-only artifact -- charge sourced from
+                # sim_charge_registry (§P), not sim's own near-zero live span.
+                _rd_profiled = get_profiled_charge_s(
+                    getattr(self.config.hyperparameters, "sim_charge_profile_path", None),
+                    "redispatch_turnaround", _pk,
+                )
                 charge_sim_vclock_overhead(
                     getattr(self, "_vclock", None), self.simulated, self.config,
                     _rd_post_close, "redispatch_turnaround",
-                    charge=False, payload_kind=_pk,
+                    charge=(_rd_profiled is not None),
+                    payload_kind=_pk, profiled_s=_rd_profiled,
                 )
             # Diagnostic: this end now carries an outstanding dispatch at the
             # CURRENT version_key until it returns (cleared on return in

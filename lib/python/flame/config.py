@@ -314,6 +314,11 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_model_dispatch_queue: t.Optional[bool] = Field(
         alias="simModelDispatchQueue", default=False
     )
+    # Repo-root-relative path to a sim_charge_registry YAML (FWDLLM_DESIGN.md
+    # §P) -- profiled real-only-cost charges. None -> no-op, byte-identical.
+    sim_charge_profile_path: t.Optional[str] = Field(
+        alias="simChargeProfilePath", default=None
+    )
     sim_straggler_spread_s: t.Optional[float] = Field(
         alias="simStragglerSpreadS", default=0.0
     )

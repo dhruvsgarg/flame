@@ -5,8 +5,9 @@ open parity questions, and landed parity fixes for the fluxtune/fwdllm/fwdllm_pl
 [async_cifar10/PARITY.md](../async_cifar10/PARITY.md) (shared parity methodology + fwdllm's rung
 catalog, §F). This doc covers everything else about the fwdllm build: how it differs structurally
 from async_cifar10 (§B), the baseline matrix (§C), the phased roadmap (§E), the forward-gradient JVP
-compute profile (§L), the sim receive/barrier redesign (§M), and the NPU-calibrated delay-factor
-derivation (§O) — plus open design decisions not yet made.
+compute profile (§L), the sim receive/barrier redesign (§M), the NPU-calibrated delay-factor
+derivation (§O), and the profiled sim-vclock charge registry (§P) — plus open design decisions not
+yet made.
 
 **Section letters are kept as they were when this content lived in `simulate_fwdllm.md`**, so existing
 code-comment references (`simulate_fwdllm.md §B`/`§C`/`§E`/`§L`/`§M`/`§O`) resolve to the sections
@@ -318,6 +319,62 @@ both share one divisor and were always operated as one calibration group). `floo
 
 ---
 
+## §P  Profiled sim-vclock charge registry
+
+**Problem this replaces.** Two prior patterns for getting a real-only cost onto the sim vclock both
+don't scale: (1) `training_delay_factor` (§O) is a hand-derived divisor, re-derived from scratch by a
+human three times as the harness changed underneath it (0.5 → 1.63/0.48, floor 7→4, floor 4→11→7) --
+nothing forces a re-check when the underlying cost shifts, it just silently drifts stale until someone
+notices a rung fail. (2) each new charged category got its own bespoke `config.py` boolean
+(`sim_model_agg_compute_time`, `sim_model_dispatch_queue`, ...), so "what does sim currently charge,
+and why" is scattered across code comments in two docs, not answerable from one place.
+
+**Two categories of vclock charge need two different number sources, not one mechanism:**
+- **Shared-compute** (`drain_tail`, `fedavg`): both real and sim run the IDENTICAL op, so sim's own
+  live-measured span already IS the real cost -- self-calibrating, never goes stale. Charged via
+  `charge_sim_vclock_overhead`'s existing live-span path, gated on `sim_model_agg_compute_time`.
+  Unchanged by this section.
+- **Real-only artifact** (`redispatch_turnaround`'s `weights` payload -- MQTT/dispatch-thread
+  turnaround sim doesn't do): sim's own span is near-zero by construction, live-measuring it can never
+  produce the real cost. This needs a value SOURCED FROM REAL TELEMETRY.
+
+**Design: a YAML registry + a profiler script, not a hand-typed constant.**
+- `examples/fwdllm/sim_charge_profile.yaml` -- one entry per `(label, payload_kind)`, holding
+  `charge` (bool, the only hand-edited field besides `rationale`), `mean_s` (what gets charged),
+  `p90_s`/`n` (for sanity-checking shape before trusting the mean), `source_runs` + `profiled_at`
+  (provenance -- when this was last measured and from what).
+- `flame/mode/horizontal/sim_charge_registry.py::get_profiled_charge_s(path, label, payload_kind)` --
+  the loader. Returns the entry's `mean_s` if `charge: true`, else `None` (missing file/label/kind all
+  resolve to `None` too, so an unconfigured baseline is byte-identical). Shared across examples, not
+  fwdllm-specific -- any aggregator can import it.
+- `charge_sim_vclock_overhead(..., profiled_s=...)` -- the caller resolves `profiled_s` via the loader
+  and passes it in; when present, it's charged INSTEAD of `span_s`, independent of
+  `sim_model_agg_compute_time` (that flag only gates the live-span path). The `vclock_charge` ledger
+  now also records `charge_source` (`"live"` / `"profiled"` / `"none"`), so a run's own telemetry says
+  which mechanism fired for every charge, no re-deriving from code.
+- `expt_scripts/profile_sim_charges.py` -- regenerates the registry's numeric fields from a real run's
+  `vclock_charge` telemetry (pooled across however many `--real-run` dirs given). Never flips `charge:`
+  on its own (needs `--enable label.payload_kind`) -- enabling a new charged category stays a reviewed
+  human decision, the script only removes the manual-arithmetic step. **Re-run this after any hardware
+  or harness change** (GPU swap, host contention profile change, dependency upgrade that shifts wall
+  timings) -- that is exactly the staleness §O's `training_delay_factor` hit three times, now a
+  one-line rerun instead of a fresh notebook derivation. It is also the reference for porting a NEW
+  example onto sim: point it at that example's own real run to seed that example's own registry file
+  (a `redispatch_turnaround`-shaped cost is not universal -- §D-3 in `simulate_fwdllm.md`: timing
+  parity doesn't transfer just because a selector or aggregator class is shared).
+
+**Landed 2026-07-28, seeded from `run_20260728_151722`/`_151831` (felix_round/fedbuff_round real,
+n=100/c=30, 1800s):** `redispatch_turnaround.weights` charge: true, `mean_s: 0.4365`
+(pooled n=3264, real ~13x sim's own live span) -- reconciles the `fedbuff_round`/`felix_round`
+`per_round_advance`/`overhead_residual`/`throughput`/`total_commits`/`terminal_state` cluster
+(simulate_fwdllm.md §B). `redispatch_turnaround.var_bad` left `charge: false` (real gap only ~2x/
+~0.01s -- charging it too overshoots). Wired into `felix_round_n10_smoke_sim.yaml` /
+`fedbuff_round_n10_smoke_sim.yaml` (the production n=100 sim configs) via `sim_charge_profile_path`.
+**Not yet re-validated live** -- next step + expected outcome tracked in `simulate_fwdllm.md` §B (search
+"NEXT STEP"), not duplicated here.
+
+---
+
 ## Open design decisions
 
 ### Real-mode sync visibility-lag anchor (not yet decided)
@@ -333,6 +390,10 @@ by reading how `sync_collect_and_accumulate_grads`'s collection loop actually sh
 fwdllm's dynamic-K. Left `None` deliberately rather than guessed at.
 
 ### Opt-in "deployment-time" vclock mode (not yet built) — proposed 2026-07-20
+
+**Still open** (this is fwdllm's SYNC transport tax, a different mechanism from §P's async
+`redispatch_turnaround` charge) -- but when built, wire it through §P's registry/loader rather than a
+new bespoke flag: same "profiled real cost, sim can't measure it live" shape.
 
 Sim's vclock deliberately never charges real's transport tax (mqtt refetch/redistribute/drain-tail between
 sync rounds, §F-1 of `simulate_fwdllm.md`) — that's why `matched_window_*` was needed to fix the `throughput`/

@@ -910,6 +910,33 @@ class TestChargeSimVclockOverhead:
         finally:
             telemetry.shutdown()
 
+    def test_profiled_s_charges_instead_of_live_span(self):
+        """§P: a real-only-artifact category charges the REGISTRY value, not
+        sim's own (near-zero) live span -- independent of `sim_model_agg_
+        compute_time` (that flag only gates the live-span path)."""
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        vc = VirtualClock()
+        charged = chg(vc, True, self._cfg(flag=False), 0.03,
+                      "redispatch_turnaround", profiled_s=0.4365)
+        assert charged == 0.4365 and abs(vc.now - 0.4365) < 1e-9
+
+    def test_charge_source_recorded_in_ledger(self, tmp_path):
+        from flame import telemetry
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            chg(VirtualClock(), True, self._cfg(), 0.8, "fedavg")
+            chg(VirtualClock(), True, self._cfg(flag=False), 0.03,
+                "redispatch_turnaround", profiled_s=0.4365)
+            chg(VirtualClock(), True, self._cfg(), 3.0,
+                "redispatch_turnaround", charge=False, payload_kind="var_bad")
+            evs = self._events(tmp_path, "vclock_charge")
+            assert [e["charge_source"] for e in evs] == ["live", "profiled", "none"]
+        finally:
+            telemetry.shutdown()
+
 
 class TestColdStartUnknownDelayGate:
     """A trainer's first-ever contact has no _sim_known_delay_s entry

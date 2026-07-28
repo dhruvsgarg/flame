@@ -278,19 +278,37 @@ aggregator so every fwdllm-family baseline gets them for free, no per-baseline r
    `var_bad`) is wired through with `charge=False`** (`fwdllm_aggregator.py:~4175`) — instrumented for
    visibility only; nothing about any baseline's vclock behavior changes from this alone.
 
-4 new tests total (2 `vclock_charge` ledger tests in `test_fwdllm_sim_grad_loop.py`, 1
-`payload_kind`/`redispatch_turnaround` test in `test_fwdllm_redispatch_decomp.py`, 1 `payload_kind` assertion
-on the existing weights test); 573 `tests/mode -k "fwdllm or telemetry or parity"` pass, 0 regressions.
-**Needs one fresh pair to actually read the numbers** — this session only landed instrumentation, it did not
-re-run live (no broker in this environment, per this doc's own rule). Once a pair lands: group
-`redispatch_decomp`/`vclock_charge` events by `payload_kind`, compare `post_close_overhead_wall_s` (and
-`vclock_charge`'s `span_s` for `redispatch_turnaround`) real-vs-sim for `var_bad` the same way this session
-did for `weights` (§D-11) — if elevated similarly (~13-15x), that CONFIRMS the per-cycle-turnaround
-hypothesis across all ~10 cycles/data_id, not just the terminal one, and the fix becomes flipping that ONE
-call site's `charge` to `True` (mirroring `drain_tail`/`fedavg`, §F-20 — never inject noise into sim, so this
-is charging a real, measured cost, not tuning sim down). Scoped to the shared `_distribute_weights_async`
-path — fixing it should flip `throughput`/`per_round_advance`/`overhead_residual`/`total_commits`/
-`terminal_state` together on BOTH `fedbuff_round` and `felix_round` (§F-11).
+**07-28 fresh pair read (`run_20260728_151722`/`_151831` real, n=100/c=30, 1800s) — hypothesis CONFIRMED,
+with a correction: the gap is `weights`-payload only, not `var_bad`.** `post_close_overhead_wall_s`:
+`weights` real mean 0.44-0.46s vs sim 0.03s (~13x, matches the guess); `var_bad` real mean only
+0.019-0.022s vs sim 0.01s (~2x, negligible) — so it's the fresh-dispatch turnaround, not the keep-training
+pings, despite `var_bad` being ~9 of every 10 cycles. Reconciliation: charging just `weights` at its
+profiled mean adds ~1.2-1.4s/round to sim's vclock on both baselines, closing the observed
+per-round gap (1.05-1.13s/round) and slightly overshooting (+15-21%) — strong confirmation this one
+category is the (or the dominant) driver of the `throughput`/`per_round_advance`/`overhead_residual`/
+`total_commits`/`terminal_state` cluster; don't also charge `var_bad` (would only add overshoot).
+
+**Fix LANDED 07-28 (FWDLLM_DESIGN.md §P), not yet re-run live.** Rather than hardcoding `charge=True` at
+the call site as originally sketched, built the general mechanism: `sim_charge_registry.yaml` +
+`get_profiled_charge_s()` loader + `charge_sim_vclock_overhead(..., profiled_s=...)` — a registry entry's
+`charge: true` is what flips a category on, independent of `sim_model_agg_compute_time` (that flag stays
+scoped to the live-span drain_tail/fedavg path). `redispatch_turnaround.weights` seeded `charge: true,
+mean_s: 0.4365` (pooled n=3264) from this pair; `.var_bad` left `charge: false`. Wired into
+`felix_round_n10_smoke_sim.yaml`/`fedbuff_round_n10_smoke_sim.yaml` via `sim_charge_profile_path`.
+`vclock_charge` ledger gained a `charge_source` field (`live`/`profiled`/`none`). 8 new tests
+(`test_sim_charge_registry.py` + additions to `test_fwdllm_sim_grad_loop.py`/`test_fwdllm_redispatch_decomp.py`).
+**NEXT STEP (operator, not yet run): launch fresh SIM-ONLY runs, 3600s+, for `felix_round` and
+`fedbuff_round`** (`felix_round_n10_smoke_sim.yaml`/`fedbuff_round_n10_smoke_sim.yaml` — both now
+carry `sim_charge_profile_path`; no real re-run needed, the existing `run_20260728_151722`/`_151831`
+real logs are still valid). 1800s was smoke-only (§C bar wants 3600s+ before trusting
+`per_round_advance`/`terminal_state`). Then `run_parity.py --baselines fedbuff_round,felix_round`
+against those real logs. Expect the `throughput`/`per_round_advance`/`overhead_residual`/
+`total_commits`/`terminal_state` cluster to flip pass, and `per_round_advance`'s mean gap to land
+close to zero but possibly overshoot slightly (~15-21%, see below) — if the overshoot is large, revisit
+`redispatch_turnaround.weights`' `mean_s` before touching anything else. If clean: profile
+`felix_it`/`fedbuff_it_unaware`/`fedbuff_it_oracular` the same way (rerun `profile_sim_charges.py`
+against their own real logs, §D-3 — don't assume this pair's numbers transfer) as a fast follow-up.
+See FWDLLM_DESIGN.md §P for the full design.
 
 **`fluxtune` — same-direction signal already visible in TODAY's telemetry, not yet proven same mechanism.**
 `fluxtune` is async/iteration-cadence (§D-10), not round-cadence, but shares the identical
@@ -338,19 +356,12 @@ direct-read approach (as used throughout §B this session) is a working substitu
 passes on both `fedbuff_round`/`felix_round` at n=100/c=30/3600s (07-28, §A) — re-confirmation from n15 is
 done; unblocks decision 4 below.
 
-⭐ **Open — `throughput`/`per_round_advance`/`overhead_residual` still FAIL on `fedbuff_round`
-(07-28, full scale): real 15-27% SLOWER per round than sim** (fedbuff 73.15s vs 62.12s pre-fix numbers,
-direction confirmed unchanged at full scale). Symptom: `step_timing_breakdown`'s `phase_mqtt_fetch_s` — real
-spends 2.0-2.3s mean waiting on `channel.recv()` for its next dispatch, sim reads ~0s. Ruled out: sim
-in-memory shortcut (both modes run the identical MQTT `_fetch_weights` path — no cache exists in either
-mode, a prior doc note claiming otherwise was fabricated and is now fixed), `sim_model_agg_compute_time`
-(off on this pair), aggregator SEND-loop being busy (only 15% duty cycle, weak overlap with trainer wait).
-Most of the gap is plausibly genuine peer-wait (waiting on round/cohort-mates before the pinned cohort's
-`version_key` advances, §D-8/F-25) already modeled via the vclock's `max()` — not necessarily an unmodeled
-cost. **`[LAG_DECOMP]` + `redispatch_decomp` telemetry landed (§G) to settle this on the next run** — a prior
-offline reconstruction attempt gave inconsistent numbers depending on method and should not be trusted or
-reused. Re-run `fedbuff_round`/`felix_round` and read the new fields before touching `sim_redispatch_gap_s`
-(unused by fwdllm today; calibrating it off unreliable data would violate §F-13).
+**`throughput`/`per_round_advance`/`overhead_residual` — ROOT-CAUSED + FIX LANDED, superseded by the
+07-28 `redispatch_turnaround`/§P finding above** (was: real 15-27% slower per round than sim, symptom
+`phase_mqtt_fetch_s`; peer-wait via vclock `max()` ruled out as the sole explanation). Settled by reading
+the widened telemetry rather than the prior inconsistent offline reconstruction: it's the uncharged
+`weights`-payload post-close turnaround, not `sim_redispatch_gap_s` (still correctly unused, §F-13) or
+peer-wait. See the confirmed-hypothesis block above for numbers; awaiting live re-validation.
 
 **`fedbuff_it_oracular` — CONFIRMED at scale: 12→4 fails (07-26→07-28, §A).** Root for the 8 that closed:
 `get_curr_unavail_trainers`/`get_curr_task_ineligible_trainers` did a 300-entry trace scan + unguarded INFO

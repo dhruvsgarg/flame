@@ -380,14 +380,18 @@ def build_vclock_charge(
     time_mode: str,
     vclock_now: Optional[float] = None,
     payload_kind: Optional[str] = None,
+    charge_source: str = "none",
 ) -> tuple[str, dict[str, Any]]:
     """One record per `charge_sim_vclock_overhead()` call, both modes -- the
     shared ledger of what wall-time got charged onto the vclock, per baseline.
 
     ``span_s`` = measured wall duration passed in (both modes, comparable).
     ``charged_s`` = what actually landed on the vclock (0.0 in real always;
-    0.0 in sim if the flag's off or `charge=False`, else `span_s`).
+    0.0 in sim if the flag's off or `charge=False`, else the charged amount).
     ``vclock_now`` = sim's clock after this call (None in real).
+    ``charge_source`` = "live" (span_s itself charged, shared-compute
+    categories), "profiled" (a `sim_charge_registry` value charged instead,
+    real-only-artifact categories), or "none" (not charged).
 
     A real-vs-sim `span_s` gap that `charged_s` never reflects is the §F-1
     unmodeled-cost signature (simulate_fwdllm.md §D-11).
@@ -399,6 +403,7 @@ def build_vclock_charge(
         "time_mode": time_mode,
         "vclock_now": vclock_now,
         "payload_kind": payload_kind,
+        "charge_source": charge_source,
     }
 
 

@@ -84,6 +84,8 @@ experiments:
           sim_staggered_redispatch: false
           sim_model_dispatch_queue: true
           sim_model_agg_compute_time: true
+          # §P: profiled redispatch_turnaround charge (round-cadence family).
+          sim_charge_profile_path: lib/python/examples/fwdllm/sim_charge_profile.yaml
           max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s
           max_runtime_s: 3600  # ...or after 60 minutes sim vclock
           # Outer wall failsafe (code default 20x max_runtime_s is too loose).

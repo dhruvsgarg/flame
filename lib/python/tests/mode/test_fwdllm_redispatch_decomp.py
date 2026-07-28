@@ -410,3 +410,69 @@ class TestRedispatchDecompTelemetry:
             assert evs[0]["time_mode"] == "sim"
         finally:
             telemetry.shutdown()
+
+    def test_redispatch_charges_from_registry_when_configured(self, tmp_path):
+        """§P wiring: with `sim_charge_profile_path` set and a `weights` entry
+        marked `charge: true`, the call site charges the PROFILED mean, not
+        the live (near-zero) sim span."""
+        from flame.sim.virtual_clock import VirtualClock
+        profile = tmp_path / "profile.yaml"
+        profile.write_text(
+            "redispatch_turnaround:\n"
+            "  weights:\n"
+            "    charge: true\n"
+            "    mean_s: 0.4365\n"
+        )
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _DAgg(simulated=True)
+            agg._vclock = VirtualClock()
+            agg.config.hyperparameters.sim_charge_profile_path = str(profile)
+            t0 = time.time() - 5.0
+            agg._last_commit_wall_ts["A"] = t0
+            agg._last_round_close_wall_ts = t0 + 1.0
+
+            agg._distribute_weights_async("t")
+
+            ch = _events(tmp_path, "vclock_charge")[0]
+            assert ch["charge_source"] == "profiled"
+            assert ch["charged_s"] == 0.4365
+            assert abs(agg._vclock.now - 0.4365) < 1e-9
+        finally:
+            telemetry.shutdown()
+
+    def test_redispatch_var_bad_not_charged_when_only_weights_enabled(self, tmp_path):
+        """The registry entry is looked up per `payload_kind` -- `var_bad`
+        stays uncharged even with the same profile configured, matching the
+        yaml's own `charge: false` for that kind (avoids the overshoot found
+        when both kinds are charged, simulate_fwdllm.md §B)."""
+        from flame.sim.virtual_clock import VirtualClock
+        profile = tmp_path / "profile.yaml"
+        profile.write_text(
+            "redispatch_turnaround:\n"
+            "  weights:\n"
+            "    charge: true\n"
+            "    mean_s: 0.4365\n"
+            "  var_bad:\n"
+            "    charge: false\n"
+            "    mean_s: 0.0201\n"
+        )
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _DAgg(simulated=True)
+            agg._vclock = VirtualClock()
+            agg.config.hyperparameters.sim_charge_profile_path = str(profile)
+            agg.var_good_enough = False
+            agg._trainer_last_model_version["A"] = agg._model_version
+            t0 = time.time() - 5.0
+            agg._last_commit_wall_ts["A"] = t0
+            agg._last_round_close_wall_ts = t0 + 1.0
+
+            agg._distribute_weights_async("t")
+
+            ch = _events(tmp_path, "vclock_charge")[0]
+            assert ch["charge_source"] == "none"
+            assert ch["charged_s"] == 0.0
+            assert agg._vclock.now == 0.0
+        finally:
+            telemetry.shutdown()
