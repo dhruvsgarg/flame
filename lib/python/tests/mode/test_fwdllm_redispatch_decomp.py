@@ -13,10 +13,13 @@ Covers two additions to `TopAggregator`:
     order as `_LAG_DECOMP_RE` in scripts/analysis/analyze_run.py, so the
     existing parser picks it up) and stamps `_last_commit_wall_ts[end]`.
   - `_distribute_weights_async` now emits a `redispatch_decomp` telemetry
-    event per genuine (WEIGHTS) redispatch, splitting the commit->dispatch
-    wall gap into `peer_wait_wall_s` (bounded by the round's own close) and
-    `post_close_overhead_wall_s` (the residual -- what would actually
-    calibrate `sim_redispatch_gap_s`, if non-trivial).
+    event per redispatch -- both a genuine WEIGHTS send and a VAR=bad
+    keep-training ping (widened 07-28: VAR=bad retries are the majority of
+    cycles and were previously uninstrumented, simulate_fwdllm.md §D-11) --
+    splitting the commit->dispatch wall gap into `peer_wait_wall_s` (bounded
+    by the round's own close) and `post_close_overhead_wall_s` (the residual
+    -- what would actually calibrate `sim_redispatch_gap_s`, if non-trivial).
+    `payload_kind` distinguishes the two.
 """
 
 import time
@@ -315,11 +318,36 @@ class TestRedispatchDecompTelemetry:
             ev = evs[0]
             assert ev["end_id"] == "A"
             assert ev["time_mode"] == "real"
+            assert ev["payload_kind"] == "weights"
             assert abs(ev["peer_wait_wall_s"] - 1.0) < 0.3
             assert abs(ev["redispatch_gap_wall_s"] - 5.0) < 0.3
             # gap == peer_wait + post_close, by construction.
             assert abs(ev["redispatch_gap_wall_s"]
                        - (ev["peer_wait_wall_s"] + ev["post_close_overhead_wall_s"])) < 1e-6
+        finally:
+            telemetry.shutdown()
+
+    def test_var_bad_redispatch_also_splits_peer_wait_and_post_close(self, tmp_path):
+        """A VAR=bad ping shares the WEIGHTS path's channel.send() call, so it
+        gets the same peer_wait/post_close split -- previously uninstrumented
+        despite being most of the cycles (simulate_fwdllm.md §D-11)."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _DAgg()
+            agg.var_good_enough = False
+            agg._trainer_last_model_version["A"] = agg._model_version  # not stale -> VAR=bad
+            t0 = time.time() - 5.0
+            agg._last_commit_wall_ts["A"] = t0
+            agg._last_round_close_wall_ts = t0 + 1.0
+
+            agg._distribute_weights_async("t")
+
+            evs = _events(tmp_path, "redispatch_decomp")
+            assert len(evs) == 1
+            ev = evs[0]
+            assert ev["payload_kind"] == "var_bad"
+            assert abs(ev["peer_wait_wall_s"] - 1.0) < 0.3
+            assert abs(ev["redispatch_gap_wall_s"] - 5.0) < 0.3
         finally:
             telemetry.shutdown()
 
@@ -340,6 +368,30 @@ class TestRedispatchDecompTelemetry:
             assert len(evs) == 1
             assert evs[0]["peer_wait_wall_s"] == 0.0
             assert abs(evs[0]["post_close_overhead_wall_s"] - 3.0) < 0.3
+        finally:
+            telemetry.shutdown()
+
+    def test_redispatch_also_emits_measurement_only_vclock_charge(self, tmp_path):
+        """The post-close span also flows through `charge_sim_vclock_overhead`
+        as a `charge=False` candidate category (§D-11) -- must appear in
+        `vclock_charge` with charged_s==0.0, never altering behavior."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _DAgg()
+            t0 = time.time() - 5.0
+            agg._last_commit_wall_ts["A"] = t0
+            agg._last_round_close_wall_ts = t0 + 1.0
+
+            agg._distribute_weights_async("t")
+
+            decomp = _events(tmp_path, "redispatch_decomp")[0]
+            charges = _events(tmp_path, "vclock_charge")
+            assert len(charges) == 1
+            ch = charges[0]
+            assert ch["label"] == "redispatch_turnaround"
+            assert ch["payload_kind"] == "weights"
+            assert ch["charged_s"] == 0.0
+            assert abs(ch["span_s"] - decomp["post_close_overhead_wall_s"]) < 1e-6
         finally:
             telemetry.shutdown()
 

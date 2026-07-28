@@ -160,12 +160,12 @@ its V1/V2/V5/`cohort_sequence` rungs depend on — expected inert, not yet confi
 until the next long fluxtune pair re-runs.
 
 **9-baseline batch, full scale (`run_parity.py`, 2026-07-28, n=100/c=30/agg_goal=10, 3600s target — clears
-the §C sign-off bar for all rungs, including duration-gated ones).** 7 of 9 baselines produced a usable
-real/sim pair at this scale; `felix_round` (real ran, killed mid-run, no sim) and `fluxtune` (neither side
-ran) did not — root cause + operator follow-up in §B ("Jul28 missing runs / early-exit"). This table
-supersedes the 2026-07-26 ~1800s WIP batch below for the 7 baselines it covers; the two 2026-07-27
-`fedbuff_round`/`felix_round` 1800s rows and the 2026-07-26 `fluxtune` WIP row remain the latest data for
-those baselines until a fresh pair lands (STALE, carried forward, not re-verified this session).
+the §C sign-off bar for all rungs, including duration-gated ones).** All 9 baselines now have a usable
+real/sim pair at this scale; the two that initially dropped (`felix_round` real killed mid-run/no sim,
+`fluxtune` neither side ran) were relaunched clean same-day (`run_20260728_102750`/`_113005` felix_round,
+`run_20260728_102831`/`_113046` fluxtune) — see update note below the table. This table supersedes the
+2026-07-26 ~1800s WIP batch below for the baselines it covers; the 2026-07-27 `fedbuff_round`/`felix_round`
+1800s rows and the 2026-07-26 `fluxtune` WIP row are now superseded too and kept only as prior-state history.
 
 | baseline | run pair | dur | pass/fail/skip | cohort | vclock | thru | commits | terminal | R1 | V1 | V2 | U3 | S2 | conv | conv_loss |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -176,8 +176,13 @@ those baselines until a fresh pair lands (STALE, carried forward, not re-verifie
 | fedbuff_it_unaware/syn_0 | `run_20260728_015339`/`_025553` | 3600s | 67/1/18 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ |
 | fwdllm_it_oracular/syn_0 | `run_20260728_022355`/`_032547` | 3600s | 58/5/21 | ✓ | ✓ | ✓ | ✗ | ✗ | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | fedbuff_it_oracular/syn_0 | `run_20260728_032938`/`_043152` | 3600s | 64/4/18 | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ | ✗ | ✓ |
-| felix_round/syn_0 | **no fresh pair — real killed at t≈252s, 0 agg_rounds; §B** | — | — | | | | | | | | | | | | |
-| fluxtune/syn_0 | **no fresh pair — neither side launched; §B** | — | — | | | | | | | | | | | | |
+| felix_round/syn_0 | `run_20260728_102750`/`_113005` | 3600s | 55/9/21 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
+| fluxtune/syn_0 | `run_20260728_102831`/`_113046` | 3600s | 58/10/16 | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ | ✗ | ✓ |
+
+**Update 07-28 (later same day): both missing pairs relaunched clean, batch now 9/9** — `felix_round`
+(`run_20260728_102750`/`_113005`) and `fluxtune` (`run_20260728_102831`/`_113046`), both 3600s. Neither
+repeated the earlier early-exit/no-launch symptom (§G); the DIRTY_ABORT hypothesis was never confirmed and
+is now moot for this pair — flag again only if a future batch drops runs the same way.
 
 Per-pair numeric detail: `experiments/_parity_reports/parity_<baseline>_syn_0_<sim-ts>.json`. At full scale
 + duration, `fedbuff_it_unaware` and `fedbuff_it_oracular` are now the cleanest of the round-cadence/oracular
@@ -188,6 +193,18 @@ regression (not yet done this session). `fwdllm`/`fwdllm_it_*` stay on the §D-1
 (`step_timing_breakdown`/`drain_wall_budget`/`agg_step_timing_breakdown`), now joined by `terminal_state`/
 `total_commits` on `fwdllm_it_unaware`/`fwdllm_it_oracular` (new at this duration — not seen at 1800s, likely
 downstream of the same timing family, not independently diagnosed this session).
+
+**`felix_round` reproduces `fedbuff_round`'s exact fail cluster** — `throughput`/`per_round_advance`/
+`overhead_residual`/`v2_var_trajectory`/`terminal_state`/`total_commits` all fail on both round-cadence
+baselines, same shared dispatch path (§B dispatch-path table); `felix_round` additionally fails
+`cohort_sequence` (§D-2 stochastic-identity candidate, not yet gated) where `fedbuff_round` passes it. This
+is the strongest cross-baseline signal so far for a SHARED root over the round-cadence dispatch path, not two
+independent bugs — see §B decision note.
+**`fluxtune` now also fails `throughput`/`per_round_advance`/`total_commits`/`terminal_state`** — a new
+result at this scale/duration (the STALE 7200s-clean row above predates the round-cadence fixes and wasn't
+this rung set). Fluxtune is iteration-cadence, not round-cadence (§D-10), so this is either (a) the same
+underlying mechanism reaching further than the dispatch-path label suggests, or (b) a coincidental
+scale-driven regression independent of round-cadence. Not yet discriminated — §B.
 
 `fluxtune`'s only remaining WIP-scale (not yet re-run full-scale post-fix) pair: `run_20260726_130810`/
 `_134012`, 1800s, 60/7/16 (fails: `per_round_advance`, `preferred_duration`, `step_timing_breakdown`,
@@ -201,44 +218,121 @@ or duration-gated, consistent with the STALE 7200s-clean row above, not a regres
 > **RULE: every tracker cell ≤20 words.** State the claim/number, cut qualifiers. If it needs more, it's
 > not tracker material — shorten it or point at the code comment/commit.
 
-⭐ **Jul28 missing runs / early-exit — operator action needed, not a code fix (yet).** The 9-baseline batch
-(§A) was queued as 3 separate `run_sequential.sh` invocations (`smoke_logs/20260727_235306` for the 7-item
-n100 set, `20260728_000442` for `fedbuff_round`+`felix_round` n100 after the stale-n10-mapping fix landed).
-Two run-dir slots never landed on disk:
-- **`fluxtune`** (last item in the 7-baseline invocation) — **zero** run directories, real or sim; no
-  process ever seems to have started (no aggregator/trainer log, no telemetry dir).
-- **`felix_round` sim** (2nd item in the 2-baseline invocation) — never started; its **real** run
-  (`run_20260728_014219`) DID start but its aggregator+trainer logs both stop abruptly at t≈252s
-  (01:47:00/01:47:02), mid-message, no traceback, no `agg_round` in either log, telemetry/*.jsonl all
-  0 bytes — `expt_runner.sh`'s own health classifier would call this `NO_AGG_ROUNDS`.
-Diagnosis of the `felix_round` real cutoff (from telemetry alone, ground truth per §F rules): `enforce_min_start`
-(`flame/selector/__init__.py:183`, called by `async_oort.py:261` — same as every baseline, `minInitialTrainers:
-100`/`sleep_between_spawns:2.0` in every yaml) gates ALL selection until every one of the 100 trainers has
-joined — ~230s of serial joins. `[SELECT_TRACE]` shows the gate clearing and the first real dispatch (30
-trainers, `chosen concurrency: 30`) at 01:46:33, and the very next trainer response (`_fetch_weights`,
-Round=1) lands at 01:47:02 — then both logs simply stop. This bootstrap cost is identical across all 9
-baselines (`fwdllm`/`fwdllm_it_*` share the same gate via `random.py`) and every other baseline cleared it
-fine, so the gate itself is not the bug — something killed the whole process tree (aggregator + all 100
-trainers, simultaneously, no exception) right as the first cohort's weights arrived. `run_sequential.sh`'s own
-watchdog/stall-watcher (`expt_runner.sh`) wouldn't fire this early under default settings (backstop
-watchdog = budget_s(3600)+120s grace; stall/convergence watcher only arms when `--target-acc` is passed) —
-**not ruled out without knowing the operator's actual invocation flags.** Most likely mechanism given the
-code: `expt_assert_clean_slate` (`expt_runner.sh:81`) refuses to launch the NEXT queued baseline on top of
-stray FL worker processes from an unhealthy prior run and aborts (`DIRTY_ABORT`) the REST of that
-invocation's queue — which would explain both gaps (felix_round left something dirty → its own sim never
-launched; whatever ran immediately before fluxtune in the other invocation left something dirty → fluxtune,
-last in queue, never launched) without needing a second, independent failure. **Can't confirm further from
-this node** — this doc's own rule is "runs happen on a separate node the operator controls," and the
-`expt_runner.log`/`*.out` files `expt_runner.sh` normally writes to `$LOGDIR` (`smoke_logs/<ts>/`) are absent
-from every `smoke_logs/` batch dir on this node (only the yaml snapshots + manifest synced back) — that log
-is exactly what would show the real verdict/kill reason and isn't available here.
-**Ask the operator to check on the run node:** (1) `expt_runner.log` / terminal scrollback for the
-`20260727_235306` and `20260728_000442` invocations — look for `DIRTY_ABORT`, `TIMEOUT`, `NOT CLEAN`, or a
-`STALLED`/watcher line; (2) whether `--target-acc`/`--stall-*` flags were passed to either invocation; (3)
-dmesg/OOM-killer or job-scheduler logs around 01:47 on felix_round's node. Once the mechanism's confirmed,
-re-launch just the two missing runs: `felix_round` sim + `fluxtune` (both sides) — `./run_sequential.sh
---only felix_round,fluxtune --mode both --yes` (felix_round's real doesn't need re-running if its sim can be
-launched standalone; confirm with the operator before excluding it).
+⭐ **`throughput`/`per_round_advance`/`overhead_residual`/`total_commits`/`terminal_state` ROOT-CAUSED
+(round-cadence family, 07-28 telemetry-only session, not yet fix-landed).** All five rungs are ONE shared
+root, not five bugs — `total_commits`/`terminal_state` are literally `sim_vclock_to_n_s` vs
+`real_time_to_n_s` (cumulative round-advance to matched N), and `throughput` is rounds/final_vclock, so all
+three are arithmetic functions of `per_round_advance`/`overhead_residual`'s single per-round-advance gap
+(§C ladder: walk to the lowest broken rung with sound inputs). `v2_var_trajectory`'s marginal DIST fail
+(mean_rel_diff 0.02-0.039 vs 0.02 tol — barely over) is very likely the same downstream cascade (differing
+cycle counts from a shifted timeline), not independently diagnosed.
+
+**Localized below `per_round_advance` itself, using `agg_round` telemetry (both `fedbuff_round`/
+`felix_round`, 07-28 full-scale pairs) — the gap is NOT one per-round cost, it's a per-VARIANCE-ITERATION
+cost that compounds ~10x:**
+- Per data_id (`_per_progress_last_event`'s round key), real needs a fresh WEIGHTS/`VAR=bad` cycle
+  ~9.8-9.9× before variance passes (1130 `agg_round` events / 114 data_ids, felix_round; 1203/110,
+  fedbuff_round) — confirmed via literal event counts, not assumed from `var_threshold`.
+- Per-CYCLE wall advance (consecutive `agg_round` events, same or new data_id — no distinction, both equally
+  slow): real mean 2.96s (felix)/2.79s (fedbuff) vs sim's own vclock-basis mean 2.29s/2.20s — a genuine
+  ~25-30% per-cycle gap, present on EVERY cycle (intra-data_id retry and inter-data_id alike), not just the
+  final one. Compounding ~10× reproduces the full observed ~15-21% per-round(data_id) gap (reconciled
+  directly: felix_round's 114-span mean-per-data_id wall = 29.13s, matching the checker's own
+  `real_mean_advance_s=29.35` almost exactly).
+- **Ruled OUT with hard telemetry, do not re-chase (candidates for §E):** (a) aggregation-compute
+  contention (§D-1's fwdllm/fwdllm_plus mechanism) — `drain_tail_s`/`aggregate_fedavg_s` are NOT larger in
+  real (felix: real 0.31s/0.069s vs sim 0.40s/0.094s — sim's own is larger if anything), and both are
+  already explicitly charged onto the vclock symmetrically via `charge_sim_vclock_overhead`
+  (`fwdllm_aggregator.py:2140-2144`) — not an unmodeled asymmetry. (b) per-trainer modeled compute duration
+  — matched real vs sim `agg_observed_s` for the SAME trainer ID: ratio 1.0001-1.0008 (30/30 common
+  trainers, felix_round) — essentially bit-identical, the "productive" compute time is faithfully modeled.
+  (c) per-message MQTT fetch/receive wall (`phase_mqtt_fetch`/`_fetch_weights` DIAG) — percentile bands show
+  sim ≥ real at p50/p90, not real-slower.
+- **The one component that DOES show a clean, reproducible, cross-baseline gap:** `redispatch_decomp`'s
+  `post_close_overhead_wall_s` (round-close → this end's actual next dispatch) — real mean 0.499s
+  (felix)/0.524s (fedbuff) vs sim 0.034s/0.038s, a consistent ~13-15x gap on BOTH baselines (n=3387/3290
+  real events). `peer_wait_wall_s`'s much larger real-vs-sim gap (1.8-1.9s vs ~0.08s) is NOT independent
+  evidence — it's structurally circular (a longer real round mechanically inflates average per-trainer
+  wait; the event's own docstring warns of this, `events.py:349`). **But `post_close_overhead` is only
+  instrumented for `_pk == "weights"` (fresh-dispatch) sends (`fwdllm_aggregator.py:4103`) — the ~9-of-10
+  cycles per data_id that are `VAR=bad` "keep training" pings share the IDENTICAL dispatch loop
+  (`_distribute_weights_async`, same `channel` send call, `fwdllm_aggregator.py:4005-4039`) but carry ZERO
+  telemetry today.** Given the magnitude match (post_close's measured ~0.46-0.52s gap vs the ~0.6-0.7s
+  per-cycle gap implied by the compounding reconciliation above), the working hypothesis is that the SAME
+  uninstrumented, unmodeled-onto-vclock turnaround recurs on every cycle, not just the terminal one.
+
+**Telemetry widened + LANDED 07-28 (not yet re-run live) — two changes, both routed through the ONE shared
+aggregator so every fwdllm-family baseline gets them for free, no per-baseline repeat:**
+1. `redispatch_decomp`'s emission gate now covers `_pk in ("weights", "var_bad")` instead of
+   `_pk == "weights"` only (`fwdllm_aggregator.py:4135`), with a new `payload_kind` field so the two can be
+   told apart post-hoc (`build_redispatch_decomp`, `events.py`).
+2. **New `vclock_charge` ledger event** (`build_vclock_charge`, `events.py`) — `charge_sim_vclock_overhead`
+   (the ONE function that folds any measured wall span onto the vclock, currently called for `drain_tail`/
+   `fedavg` only) now emits this event on EVERY call, both modes: `label`, `span_s` (measured), `charged_s`
+   (what actually landed on the vclock — 0.0 in real always), `time_mode`, `vclock_now`, `payload_kind`. This
+   directly answers "is a real-only cost reflected in the vclock at all" for ANY category, not just the one
+   under investigation — a real-vs-sim `span_s` gap with `charged_s` staying 0 IS the §F-1 unmodeled-cost
+   signature, no inference needed. New optional `charge: bool = True` param: `charge=False` still emits the
+   ledger (so real/sim stay comparable) but never calls `vclock.advance()`, regardless of mode/flag — for a
+   candidate category not yet decided on. **`redispatch_turnaround` (the post-close span, both `weights` and
+   `var_bad`) is wired through with `charge=False`** (`fwdllm_aggregator.py:~4175`) — instrumented for
+   visibility only; nothing about any baseline's vclock behavior changes from this alone.
+
+4 new tests total (2 `vclock_charge` ledger tests in `test_fwdllm_sim_grad_loop.py`, 1
+`payload_kind`/`redispatch_turnaround` test in `test_fwdllm_redispatch_decomp.py`, 1 `payload_kind` assertion
+on the existing weights test); 573 `tests/mode -k "fwdllm or telemetry or parity"` pass, 0 regressions.
+**Needs one fresh pair to actually read the numbers** — this session only landed instrumentation, it did not
+re-run live (no broker in this environment, per this doc's own rule). Once a pair lands: group
+`redispatch_decomp`/`vclock_charge` events by `payload_kind`, compare `post_close_overhead_wall_s` (and
+`vclock_charge`'s `span_s` for `redispatch_turnaround`) real-vs-sim for `var_bad` the same way this session
+did for `weights` (§D-11) — if elevated similarly (~13-15x), that CONFIRMS the per-cycle-turnaround
+hypothesis across all ~10 cycles/data_id, not just the terminal one, and the fix becomes flipping that ONE
+call site's `charge` to `True` (mirroring `drain_tail`/`fedavg`, §F-20 — never inject noise into sim, so this
+is charging a real, measured cost, not tuning sim down). Scoped to the shared `_distribute_weights_async`
+path — fixing it should flip `throughput`/`per_round_advance`/`overhead_residual`/`total_commits`/
+`terminal_state` together on BOTH `fedbuff_round` and `felix_round` (§F-11).
+
+**`fluxtune` — same-direction signal already visible in TODAY's telemetry, not yet proven same mechanism.**
+`fluxtune` is async/iteration-cadence (§D-10), not round-cadence, but shares the identical
+`_distribute_weights_async`/`charge_sim_vclock_overhead` code, so it already has `redispatch_decomp` events
+(no widening needed to see this much): `post_close_overhead_wall_s` real mean 1.695s vs sim 0.178s (~9.5x,
+n=2068 real events, 07-28 pair) — same DIRECTION and comparable order of magnitude to round-cadence's
+13-15x. But `fluxtune`'s `per_round_advance` fails on a DIFFERENT signature: KS 0.5-0.52 (vs 0.2 tol, badly
+over) with only 6.5-8.5% mean_rel_diff (vs 15% tol, actually PASSING the mean check) — round-cadence fails
+both mean AND KS together. A large-KS/small-mean failure reads as a distributional SHAPE mismatch (e.g. a
+heavy right tail on some data_ids, `matched_window_ratio_max` 3.46 vs round-cadence's 2.3-9.9 — comparable,
+not clearly distinguishing), not a uniform per-cycle additive shift — so don't assume this is byte-identical
+to round-cadence's mechanism until the widened telemetry is read on a fresh fluxtune pair. `fluxtune` also
+needs far more cycles/data_id than round-cadence (~18.6 vs ~9.8, today's pair) — MORE opportunities for the
+same per-cycle gap to compound, consistent with (but not proof of) the same root.
+
+**Why did `fluxtune` pass clean (69/0/16) on 07-23 but fail 10 rungs today, with no `fluxtune`-targeted code
+change in between?** Leading hypothesis, not yet confirmed: the 07-27 variance-check-pool rate-scaling fix
+(§G, §D-7) — which correctly stopped scaling stale/carried contributions toward zero before the variance
+gate — makes variance readings HONEST (higher) instead of artificially low, so MORE variance-retry cycles
+are now needed before a data_id's gate passes. This doc ITSELF already flagged the exposure in writing
+BEFORE today's run: "the var-check-pool rate fix touches the same shared method [fluxtune's] V1/V2/V5/
+`cohort_sequence` rungs depend on — expected inert, not yet confirmed" (§A, 07-27 note). Today's pair is the
+first re-verification since that fix landed, and `v2_var_trajectory` DOES now fail for `fluxtune` too — direct
+confirmation the variance computation shifted, exactly the flagged risk. The mechanism connecting that to
+`throughput`/`per_round_advance`: the SAME uninstrumented per-cycle `post_close_overhead` gap shown above was
+presumably ALWAYS present, but mattered less when fewer cycles were needed per data_id (pre-fix, artificially
+-low variance passed the gate sooner) — MORE cycles now needed means the SAME per-cycle gap compounds MORE,
+crossing tolerance for the first time. This reframes the finding: **not a new bug introduced today, and not
+purely a scale effect — a correct fix (07-27) removing a convergence-faking shortcut increased how many
+times a pre-existing, still-uncharged per-cycle cost gets to compound.** Can't fully confirm without the
+07-23 run's raw telemetry (cleaned from disk per this doc's own STALE-data policy, so the pre-fix cycles/
+data_id count isn't recoverable) — treat as the leading, well-corroborated hypothesis, not a closed root
+cause. `fluxtune`'s newly-failing `throughput`/`per_round_advance` (§A) needs its OWN read of the widened
+telemetry once a fresh pair lands, not an assumption that fixing round-cadence's `redispatch_turnaround`
+charge automatically covers it.
+
+**Known gap, not newly introduced:** `redispatch_decomp` (landed 07-27) and the new `vclock_charge` event
+have no reader in `scripts/analysis/analyze_run.py` — checked, zero hits for either event name in any
+analysis/plotting script. Per §F-8 ("ship telemetry + plot + pytest together... a field with no reader is
+dark data") this is already a standing violation predating this session's changes, not something introduced
+here. Flagged, not fixed — building the plot is a separate, larger scoped task; this session's python-script-
+direct-read approach (as used throughout §B this session) is a working substitute for now.
 
 **`selection_detail` CLOSED — CONFIRMED at production scale.** `_exclude_pending_commit` fix (§D-8, §G)
 passes on both `fedbuff_round`/`felix_round` at n=100/c=30/3600s (07-28, §A) — re-confirmation from n15 is
@@ -517,9 +611,30 @@ overrides `reselect_each_iteration` in `baselines.yaml`, so `_resolve_reselect_c
 `channel.ends()` against the FULL trainer pool every tick, so a freed slot has a much larger not-yet-
 contributed candidate set to draw from. **Tell:** a throughput/`overhead_residual` gap on a round-cadence
 baseline but not a same-selector-family iteration-cadence one is consistent with this, but NOT yet confirmed
-by telemetry — the pool-size story is a code trace, not a measurement. **Discriminate by:** once
-`redispatch_decomp` telemetry (§G) exists for a fluxtune pair, check whether its `post_close_overhead_wall_s`
-reads near-zero (pool-size theory holds) rather than assuming it from the code alone.
+by telemetry — the pool-size story is a code trace, not a measurement. **Superseded 07-28:** read against
+fresh `fedbuff_round`/`felix_round` pairs, `post_close_overhead_wall_s` is NOT near-zero (real 0.46-0.52s vs
+sim 0.03-0.04s, ~13-15x) — the pool-size theory doesn't explain the observed gap on its own; §B's 07-28
+root-cause entry (per-variance-cycle turnaround, not pool size) supersedes this as the throughput driver.
+Kept here as the pool-size mechanism may still matter for `slot_starvation`-style idling, just not this gap.
+
+**D-11. A per-ROUND wall-time residual can be a per-CYCLE cost compounded, not a one-time round cost —
+check the compounding count before sizing the mechanism.** `fedbuff_round`/`felix_round`'s
+`per_round_advance` gap (~15-21%) looked, from means alone, too large for `redispatch_decomp`'s measured
+`post_close_overhead_wall_s` gap (~0.46-0.52s) to explain — a naive one-per-round accounting left ~90% of
+the residual unattributed. Reconciled by checking how many `agg_round` (variance-check) CYCLES occur per
+progress unit (`_per_progress_last_event`'s round key, `data_id` here): ~9.8-9.9 cycles/data_id (event
+count ÷ data_id count, not assumed from `var_threshold`). Every cycle — not just the terminal
+model-version-bumping one — showed the same ~25-30% real-vs-sim wall gap (2.96s/2.79s vs 2.29s/2.20s
+vclock-basis, both baselines), and compounding that per-cycle gap ~10x reproduces the full per-round
+residual almost exactly (felix_round: 114-span mean 29.13s vs the checker's own 29.35s). **Tell:** a
+telemetry field's measured gap (small) doesn't obviously scale to a checker rung's reported gap (larger) by
+any simple per-round multiplication. **Discriminate by:** count actual cycles-per-progress-unit from raw
+event counts, then check whether the SAME per-cycle telemetry (if it existed) would apply to the
+uninstrumented cycles too — here, `post_close_overhead` is gated to `_pk == "weights"` sends only
+(`fwdllm_aggregator.py:4103`), leaving the ~90% `VAR=bad` retry cycles — which share the IDENTICAL
+`_distribute_weights_async` dispatch loop — with zero coverage; the magnitude match between the two
+independently-derived numbers (~0.5s measured vs ~0.6-0.7s implied) is the corroborating signal, not proof
+by itself (§B's next step: widen the telemetry gate to confirm directly).
 
 ---
 
@@ -644,6 +759,19 @@ rule now live in §D-3.
 > **RULE: closed = here, ≤30 words, immediately.** The instant a rung flips or a hypothesis resolves, write
 > ONE line (mechanism + outcome) and delete it from §A/§B in the same edit.
 
+- **07-28: `redispatch_decomp` widened to cover `VAR=bad` dispatches (not just fresh `weights` sends) +
+  new `vclock_charge` ledger event added.** `_pk in ("weights", "var_bad")` gate + `payload_kind` field
+  (`fwdllm_aggregator.py:4135`); `charge_sim_vclock_overhead` (the ONE shared fold-onto-vclock function, used
+  by every fwdllm-family baseline) now emits `vclock_charge` on every call in both modes, plus a
+  `charge: bool` param so a candidate category (`redispatch_turnaround`, wired in `charge=False`
+  measurement-only) can be measured before being charged. Root-cause reconciliation this session (§B/§D-11)
+  found the round-cadence throughput gap is a per-cycle cost compounding ~10x, but the OLD telemetry only
+  measured the 1-of-10 terminal cycle and had no way to see whether ANY cost was reaching the vclock — this
+  closes both gaps at once, generically, not just for this one investigation. 4 new tests, 573 `-k "fwdllm or
+  telemetry or parity"` pass. **Not yet read against a live run** (§B, still the open item there).
+- **07-28: `felix_round` sim + `fluxtune` (both sides) missing-run episode resolved by relaunch, not a code
+  fix.** Both pairs re-ran clean same-day (`run_20260728_102750`/`_113005`, `_102831`/`_113046`); the
+  `DIRTY_ABORT` hypothesis was never confirmed on the run node and is now moot for this batch.
 - **07-28: `selection_detail` CONFIRMED at production scale** — `_exclude_pending_commit` (07-27) passes on
   both `fedbuff_round`/`felix_round` at n=100/c=30/3600s, not just n15. CLOSED.
 - **07-28: `fedbuff_it_unaware` 6→1 fails confirmed duration-gated, not a bug** — running the same config

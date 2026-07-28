@@ -78,7 +78,7 @@ import math
 from flame import telemetry
 from flame.telemetry.events import (
     build_agg_eval, build_agg_round, build_utility_belief, build_comm,
-    build_version_bump_census, build_redispatch_decomp,
+    build_version_bump_census, build_redispatch_decomp, build_vclock_charge,
 )
 
 
@@ -241,27 +241,46 @@ def recv_fifo_wrapper(channel, ends):
     logger.debug("Exiting recv_fifo_wrapper")
 
 
-def charge_sim_vclock_overhead(vclock, simulated, config, span_s, label: str) -> float:
+def charge_sim_vclock_overhead(
+    vclock, simulated, config, span_s, label: str,
+    *, charge: bool = True, payload_kind: str | None = None,
+) -> float:
     """Fold a MEASURED aggregator-side wall span (`span_s`, seconds) into the
     vclock -- dynamically, using the live number, never a pre-profiled constant
     (#6). Sim-only and gated on `sim_model_agg_compute_time` (OFF -> no-op,
     byte-identical). Warns when the span exceeds `sim_overhead_warn_s` (excess
-    sim-host overhead, not modeled deployment cost). Returns seconds charged."""
-    if not span_s or span_s <= 0.0:
-        return 0.0
-    hp = getattr(config, "hyperparameters", None)
-    _warn = getattr(hp, "sim_overhead_warn_s", None)
-    if _warn and span_s > float(_warn):
-        _now = f"{vclock.now:.1f}s" if vclock is not None else "n/a"
-        logger.warning(
-            f"[SIM_OVERHEAD] {label}={span_s:.3f}s > expected {float(_warn):.1f}s "
-            f"(vclock={_now}) -- excess sim-host overhead"
+    sim-host overhead, not modeled deployment cost). Returns seconds charged.
+
+    Emits a `vclock_charge` ledger event every call, both modes (§D-11) --
+    compare `span_s` real-vs-sim per `label` to spot an uncharged real cost.
+    `charge=False` still emits the event but never calls `vclock.advance()`,
+    for measuring a candidate category (`redispatch_turnaround`) before
+    deciding whether to fold it onto the clock."""
+    _charged = 0.0
+    if span_s and span_s > 0.0:
+        hp = getattr(config, "hyperparameters", None)
+        _warn = getattr(hp, "sim_overhead_warn_s", None)
+        if _warn and span_s > float(_warn):
+            _now = f"{vclock.now:.1f}s" if vclock is not None else "n/a"
+            logger.warning(
+                f"[SIM_OVERHEAD] {label}={span_s:.3f}s > expected {float(_warn):.1f}s "
+                f"(vclock={_now}) -- excess sim-host overhead"
+            )
+        if (charge and simulated and vclock is not None
+                and getattr(hp, "sim_model_agg_compute_time", False)):
+            vclock.advance(vclock.now + span_s)
+            _charged = span_s
+    try:
+        ev, f = build_vclock_charge(
+            label=label, span_s=(span_s or 0.0), charged_s=_charged,
+            time_mode="sim" if simulated else "real",
+            vclock_now=(vclock.now if (simulated and vclock is not None) else None),
+            payload_kind=payload_kind,
         )
-    if simulated and vclock is not None and getattr(
-            hp, "sim_model_agg_compute_time", False):
-        vclock.advance(vclock.now + span_s)
-        return span_s
-    return 0.0
+        telemetry.emit(ev, **f)
+    except Exception as e:
+        logger.debug(f"vclock_charge telemetry emit failed: {e}")
+    return _charged
 
 
 class _OrderedContributorList(list):
@@ -4097,13 +4116,11 @@ class TopAggregator(AsyncTopAgg):
                 telemetry.emit(ev, **f)
             except Exception as e:
                 logger.debug(f"comm telemetry emit failed (agg async send): {e}")
-            # [REDISPATCH_DECOMP]: split this end's commit->next-dispatch wall
-            # gap into peer-wait vs post-close overhead (§B throughput
-            # investigation). Only for a genuine next-version dispatch
-            # (send_weights), not a VAR=bad keep-training ping; only once this
-            # end has a prior commit to measure from (skips its first-ever
-            # dispatch, which has no meaningful gap).
-            if (_pk == "weights"
+            # [REDISPATCH_DECOMP]: split commit->next-dispatch wall gap into
+            # peer-wait vs post-close overhead. Covers both weights and
+            # VAR=bad (§D-11 -- the VAR=bad retries are most of the cycles).
+            # Skipped on this end's first-ever dispatch (no prior commit).
+            if (_pk in ("weights", "var_bad")
                     and end in getattr(self, "_last_commit_wall_ts", {})):
                 _rd_now = time.time()
                 _rd_last_commit = self._last_commit_wall_ts[end]
@@ -4125,14 +4142,23 @@ class TopAggregator(AsyncTopAgg):
                         peer_wait_wall_s=_rd_peer_wait,
                         post_close_overhead_wall_s=_rd_post_close,
                         time_mode="sim" if self.simulated else "real",
+                        payload_kind=_pk,
                     )
                     telemetry.emit(ev, **f)
                 except Exception as e:
                     logger.debug(f"redispatch_decomp telemetry emit failed: {e}")
                 logger.info(
-                    f"[REDISPATCH_DECOMP] end={end} redispatch_gap_wall_s={_rd_gap:.3f} "
+                    f"[REDISPATCH_DECOMP] end={end} payload_kind={_pk} "
+                    f"redispatch_gap_wall_s={_rd_gap:.3f} "
                     f"peer_wait_wall_s={_rd_peer_wait:.3f} "
                     f"post_close_overhead_wall_s={_rd_post_close:.3f}"
+                )
+                # [VCLOCK_CHARGE] measurement-only -- candidate category, not
+                # yet decided whether to fold onto the vclock (§D-11).
+                charge_sim_vclock_overhead(
+                    getattr(self, "_vclock", None), self.simulated, self.config,
+                    _rd_post_close, "redispatch_turnaround",
+                    charge=False, payload_kind=_pk,
                 )
             # Diagnostic: this end now carries an outstanding dispatch at the
             # CURRENT version_key until it returns (cleared on return in

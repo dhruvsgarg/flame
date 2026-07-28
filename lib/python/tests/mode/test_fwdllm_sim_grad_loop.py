@@ -843,6 +843,73 @@ class TestChargeSimVclockOverhead:
             chg(VirtualClock(), True, self._cfg(warn_s=1.0), 2.5, "drain_tail")
         assert any("SIM_OVERHEAD" in r.getMessage() for r in caplog.records)
 
+    @staticmethod
+    def _events(tmp_path, event_name):
+        import json
+        path = tmp_path / "aggregator.jsonl"
+        if not path.exists():
+            return []
+        lines = path.read_text().splitlines()
+        return [e for e in (json.loads(l) for l in lines) if e["event"] == event_name]
+
+    def test_emits_vclock_charge_ledger_event(self, tmp_path):
+        """Every call emits `vclock_charge`, both modes -- one shared ledger
+        for any label, no per-call-site plumbing (simulate_fwdllm.md §D-11)."""
+        from flame import telemetry
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            vc = VirtualClock()
+            chg(vc, True, self._cfg(), 0.8, "fedavg")
+            evs = self._events(tmp_path, "vclock_charge")
+            assert len(evs) == 1
+            assert evs[0]["label"] == "fedavg"
+            assert evs[0]["span_s"] == 0.8
+            assert evs[0]["charged_s"] == 0.8
+            assert evs[0]["time_mode"] == "sim"
+            assert evs[0]["vclock_now"] == 0.8
+        finally:
+            telemetry.shutdown()
+
+    def test_measurement_only_mode_never_charges_but_still_emits(self, tmp_path):
+        """`charge=False` never advances the vclock, even with the flag on,
+        but still logs `span_s` for a not-yet-decided candidate category."""
+        from flame import telemetry
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            vc = VirtualClock()
+            result = chg(vc, True, self._cfg(), 3.0, "redispatch_turnaround",
+                         charge=False, payload_kind="var_bad")
+            assert result == 0.0
+            assert vc.now == 0.0
+
+            evs = self._events(tmp_path, "vclock_charge")
+            assert len(evs) == 1
+            assert evs[0]["label"] == "redispatch_turnaround"
+            assert evs[0]["span_s"] == 3.0
+            assert evs[0]["charged_s"] == 0.0
+            assert evs[0]["payload_kind"] == "var_bad"
+        finally:
+            telemetry.shutdown()
+
+    def test_real_mode_ledger_has_no_vclock_now(self, tmp_path):
+        from flame import telemetry
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            chg(None, False, self._cfg(), 1.5, "drain_tail")
+            evs = self._events(tmp_path, "vclock_charge")
+            assert len(evs) == 1
+            assert evs[0]["time_mode"] == "real"
+            assert evs[0]["charged_s"] == 0.0
+            assert evs[0]["vclock_now"] is None
+        finally:
+            telemetry.shutdown()
+
 
 class TestColdStartUnknownDelayGate:
     """A trainer's first-ever contact has no _sim_known_delay_s entry

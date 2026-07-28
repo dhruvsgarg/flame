@@ -35,6 +35,7 @@ EVENT_VERSION_BUMP_CENSUS = "version_bump_census"  # #S1: pool-wide in-flight st
 EVENT_VAR_CALC = "var_calc"          # fwdllm: grad-norm summary in/out of the variance gate (DEBUG-only audit)
 EVENT_REDISPATCH_DECOMP = "redispatch_decomp"  # fwdllm round-cadence: commit->next-dispatch wall split
 EVENT_SLOT_STARVATION = "slot_starvation"  # a freed dispatch slot had fewer eligible candidates than slots
+EVENT_VCLOCK_CHARGE = "vclock_charge"  # every charge_sim_vclock_overhead() call: measured span vs actually-charged
 
 KNOWN_EVENTS = frozenset(
     {
@@ -59,6 +60,7 @@ KNOWN_EVENTS = frozenset(
         EVENT_VAR_CALC,
         EVENT_REDISPATCH_DECOMP,
         EVENT_SLOT_STARVATION,
+        EVENT_VCLOCK_CHARGE,
     }
 )
 
@@ -326,6 +328,7 @@ def build_redispatch_decomp(
     peer_wait_wall_s: float,
     post_close_overhead_wall_s: float,
     time_mode: str,
+    payload_kind: str = "weights",
 ) -> tuple[str, dict[str, Any]]:
     """fwdllm round-cadence: split a trainer's commit->next-dispatch WALL gap
     into peer-wait vs post-close overhead.
@@ -347,12 +350,13 @@ def build_redispatch_decomp(
                                  peer-wait -- the residual to actually calibrate
                                  `sim_redispatch_gap_s` against, if non-trivial.
 
-    Emitted for `send_weights` (new-version) dispatches only -- not `VAR=bad`
-    keep-training pings, which aren't a "next round" dispatch. Wall-clock
-    (`time.time()`) in BOTH modes: sim doesn't sleep to emulate the modeled
-    training delay (§F-1), so a genuine sim/real gap here means the
-    SIMULATOR's own wall-clock redispatch loop is faster, not that a cost is
-    unmodeled on the vclock -- compare against `overhead_residual`/
+    Emitted for both `send_weights` and `VAR=bad` dispatches (``payload_kind``
+    distinguishes them) -- both share the same channel-send call, and VAR=bad
+    retries are the majority of cycles (§D-11), so excluding them hid most of
+    the signal. Wall-clock (`time.time()`) in BOTH modes: sim doesn't sleep to
+    emulate the modeled training delay (§F-1), so a genuine sim/real gap here
+    means the SIMULATOR's own wall-clock redispatch loop is faster, not that a
+    cost is unmodeled on the vclock -- compare against `overhead_residual`/
     `per_round_advance` (vclock-based) before concluding a vclock gap exists.
     """
     return EVENT_REDISPATCH_DECOMP, {
@@ -364,6 +368,37 @@ def build_redispatch_decomp(
         "peer_wait_wall_s": peer_wait_wall_s,
         "post_close_overhead_wall_s": post_close_overhead_wall_s,
         "time_mode": time_mode,
+        "payload_kind": payload_kind,
+    }
+
+
+def build_vclock_charge(
+    *,
+    label: str,
+    span_s: float,
+    charged_s: float,
+    time_mode: str,
+    vclock_now: Optional[float] = None,
+    payload_kind: Optional[str] = None,
+) -> tuple[str, dict[str, Any]]:
+    """One record per `charge_sim_vclock_overhead()` call, both modes -- the
+    shared ledger of what wall-time got charged onto the vclock, per baseline.
+
+    ``span_s`` = measured wall duration passed in (both modes, comparable).
+    ``charged_s`` = what actually landed on the vclock (0.0 in real always;
+    0.0 in sim if the flag's off or `charge=False`, else `span_s`).
+    ``vclock_now`` = sim's clock after this call (None in real).
+
+    A real-vs-sim `span_s` gap that `charged_s` never reflects is the §F-1
+    unmodeled-cost signature (simulate_fwdllm.md §D-11).
+    """
+    return EVENT_VCLOCK_CHARGE, {
+        "label": label,
+        "span_s": span_s,
+        "charged_s": charged_s,
+        "time_mode": time_mode,
+        "vclock_now": vclock_now,
+        "payload_kind": payload_kind,
     }
 
 
