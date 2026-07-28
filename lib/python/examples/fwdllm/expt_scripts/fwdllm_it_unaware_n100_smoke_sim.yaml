@@ -71,7 +71,9 @@ experiments:
           rounds: 50  # short smoke run, not the full 300
           inflight_residence: true
           max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s
-          max_runtime_s: 1800  # ...or after 30 minutes wall time
+          max_runtime_s: 3600  # ...or after 60 minutes sim vclock
+          # Outer wall failsafe (code default 20x max_runtime_s is too loose).
+          sim_wall_ceiling_s: 7200
           sim_model_agg_compute_time: true
           sim_model_dispatch_queue: true   # MQTT serial-send stagger (#6)
           sim_sct_ordered_drain: true      # drain buffered grads in sct order (#13)

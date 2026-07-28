@@ -26,6 +26,8 @@ from random import Random as _StdRandom
 
 from flame.config import TrainerAvailState
 import numpy as np
+from flame import telemetry
+from flame.telemetry.events import build_slot_starvation
 from flame.channel import (
     KEY_CH_SELECT_REQUESTER,
     KEY_CH_STATE,
@@ -1763,6 +1765,18 @@ class AsyncOortSelector(AbstractSelector):
         # (extra=1, filtered=3),  (extra=2, filtered=2), (extra=3,
         # filtered=1)
         feasible_extra = min(extra, len(filtered_ends))
+        if feasible_extra < extra:
+            # D-10 (simulate_fwdllm.md): a freed slot with no eligible
+            # candidate to fill it -- the candidate-pool-exhaustion signal.
+            try:
+                ev, f = build_slot_starvation(
+                    concurrency=concurrency, extra=extra,
+                    n_filtered=len(filtered_ends), feasible_extra=feasible_extra,
+                    model_version=model_version,
+                )
+                telemetry.emit(ev, **f)
+            except Exception as e:
+                logger.debug(f"slot_starvation telemetry emit failed: {e}")
         logger.info(
             f"desired extra: {extra}, len(filtered_ends): {len(filtered_ends)}, feasible_extra: {feasible_extra}"
         )

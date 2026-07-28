@@ -78,7 +78,7 @@ import math
 from flame import telemetry
 from flame.telemetry.events import (
     build_agg_eval, build_agg_round, build_utility_belief, build_comm,
-    build_version_bump_census,
+    build_version_bump_census, build_redispatch_decomp,
 )
 
 
@@ -477,6 +477,13 @@ class TopAggregator(AsyncTopAgg):
         # end_id -> {dispatch_ts, commit_ts} of its last accepted contribution,
         # emitted per-cycle as contributor_intervals for the R1/W1 rungs (§L.3).
         self._sim_contrib_intervals = {}
+
+        # end_id -> wall time.time() of its last accepted commit, and the wall
+        # time.time() aggregate() last finished -- [REDISPATCH_DECOMP]'s
+        # peer-wait/post-close-overhead split (§B fedbuff_round/felix_round
+        # throughput investigation, 2026-07-27).
+        self._last_commit_wall_ts: dict = {}
+        self._last_round_close_wall_ts = None
 
         # Real-side collect via streamer-free `drain_ready`, replacing recv_fifo
         # (§H, see _real_sync_recv_incremental). A/B flag, default OFF.
@@ -1557,6 +1564,11 @@ class TopAggregator(AsyncTopAgg):
             # Wall of the most-recent accepted grad -> barrier_wait_s / drain_
             # tail_s in the per-round wall decomposition.
             self._last_grad_wall_ts = time.time()
+            # Per-end commit wall, for [REDISPATCH_DECOMP]'s peer-wait split.
+            # getattr-guarded: minimal test doubles without the dict are a
+            # no-op, matching _sim_contrib_intervals's own convention below.
+            if getattr(self, "_last_commit_wall_ts", None) is not None:
+                self._last_commit_wall_ts[end] = self._last_grad_wall_ts
 
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
@@ -1594,6 +1606,44 @@ class TopAggregator(AsyncTopAgg):
                 logger.info(
                     f"Set PROP_CLIENT_TASK_TRAIN_DURATION for {end}: {round_duration.total_seconds():.3f}s"
                 )
+
+                # [LAG_DECOMP] fwdllm's own per-message round-trip breakdown,
+                # ported from asyncfl/top_aggregator.py using fields fwdllm's
+                # trainer already stamps in BOTH modes (WALL_SEND_TS/
+                # WALL_RECV_TS, §D-3: fwdllm never inherited the shared
+                # base's logging or its structured `_sim_contrib_intervals`
+                # wall/vclock split). agg_to_trainer_s/mqtt_lag_s are the two
+                # network legs; compute_s is the trainer's own span (mirrors
+                # round_duration above -- sim's collapses to raw GPU, §F-1,
+                # since sim doesn't sleep the modeled delay). post_wait_s/
+                # queue_wait_s/process_s stay "-": fwdllm's trainer has no
+                # post-compute-wait stamp and the aggregator has no
+                # message-dequeue timestamp distinct from `timestamp`
+                # (unlike asyncfl's `_t_msg_start`) -- not fabricated.
+                # Same field order as `_LAG_DECOMP_RE`
+                # (scripts/analysis/analyze_run.py) so the existing parser/
+                # plots pick this up for fwdllm too, no new regex needed.
+                try:
+                    _wst = msg.get(MessageType.WALL_SEND_TS)
+                    _wrt = msg.get(MessageType.WALL_RECV_TS)
+                    _sent_unix = sent_ts.timestamp() if hasattr(sent_ts, "timestamp") else None
+                    _recv_unix = timestamp.timestamp() if hasattr(timestamp, "timestamp") else None
+                    _agg_to_trainer = (f"{float(_wrt) - _sent_unix:.3f}"
+                                       if (_wrt is not None and _sent_unix is not None) else "-")
+                    _compute = (f"{float(_wst) - float(_wrt):.3f}"
+                               if (_wst is not None and _wrt is not None) else "-")
+                    _mqtt_lag = (f"{_recv_unix - float(_wst):.3f}"
+                                if (_wst is not None and _recv_unix is not None) else "-")
+                    _wall_lag = (f"{_recv_unix - _sent_unix:.3f}"
+                                if (_recv_unix is not None and _sent_unix is not None) else "-")
+                    logger.info(
+                        f"[LAG_DECOMP] end={end} version={msg[MessageType.MODEL_VERSION]} "
+                        f"wall_lag_s={_wall_lag} agg_to_trainer_s={_agg_to_trainer} "
+                        f"compute_s={_compute} post_wait_s=- "
+                        f"mqtt_lag_s={_mqtt_lag} queue_wait_s=- process_s=-"
+                    )
+                except Exception as e:
+                    logger.debug(f"[LAG_DECOMP] compute failed for {end}: {e}")
 
             # Record this contribution's [dispatch, commit] interval for R1/W1
             # (§L.3): sim uses the vclock interval the trainer echoes back (exact
@@ -2082,6 +2132,9 @@ class TopAggregator(AsyncTopAgg):
         _drain_tail_s = (_agg_start_wall - _lastg) if _lastg else None
         self.aggregate(self._round)
         _aggregate_fedavg_s = time.time() - _agg_start_wall
+        # [REDISPATCH_DECOMP] peer-wait boundary: this micro-batch/round just
+        # closed at this wall instant (both modes -- see build_redispatch_decomp).
+        self._last_round_close_wall_ts = _agg_start_wall + _aggregate_fedavg_s
         # #6: charge the measured drain-tail + FedAvg merge wall to the vclock --
         # genuine server-step compute that runs every cycle but was never
         # credited. See `charge_sim_vclock_overhead`.
@@ -4044,6 +4097,43 @@ class TopAggregator(AsyncTopAgg):
                 telemetry.emit(ev, **f)
             except Exception as e:
                 logger.debug(f"comm telemetry emit failed (agg async send): {e}")
+            # [REDISPATCH_DECOMP]: split this end's commit->next-dispatch wall
+            # gap into peer-wait vs post-close overhead (§B throughput
+            # investigation). Only for a genuine next-version dispatch
+            # (send_weights), not a VAR=bad keep-training ping; only once this
+            # end has a prior commit to measure from (skips its first-ever
+            # dispatch, which has no meaningful gap).
+            if (_pk == "weights"
+                    and end in getattr(self, "_last_commit_wall_ts", {})):
+                _rd_now = time.time()
+                _rd_last_commit = self._last_commit_wall_ts[end]
+                _rd_gap = _rd_now - _rd_last_commit
+                _rd_close = getattr(self, "_last_round_close_wall_ts", None)
+                if _rd_close is not None and _rd_close >= _rd_last_commit:
+                    _rd_peer_wait = _rd_close - _rd_last_commit
+                    _rd_post_close = _rd_now - _rd_close
+                else:
+                    # This end's own commit closed its round (or none has
+                    # closed since) -- no peer-wait component to attribute.
+                    _rd_peer_wait = 0.0
+                    _rd_post_close = _rd_gap
+                try:
+                    ev, f = build_redispatch_decomp(
+                        end_id=str(end), round_num=int(self._round),
+                        data_id=self.data_id, iteration=self.iteration_per_data_id,
+                        redispatch_gap_wall_s=_rd_gap,
+                        peer_wait_wall_s=_rd_peer_wait,
+                        post_close_overhead_wall_s=_rd_post_close,
+                        time_mode="sim" if self.simulated else "real",
+                    )
+                    telemetry.emit(ev, **f)
+                except Exception as e:
+                    logger.debug(f"redispatch_decomp telemetry emit failed: {e}")
+                logger.info(
+                    f"[REDISPATCH_DECOMP] end={end} redispatch_gap_wall_s={_rd_gap:.3f} "
+                    f"peer_wait_wall_s={_rd_peer_wait:.3f} "
+                    f"post_close_overhead_wall_s={_rd_post_close:.3f}"
+                )
             # Diagnostic: this end now carries an outstanding dispatch at the
             # CURRENT version_key until it returns (cleared on return in
             # _process_single_trainer_message).

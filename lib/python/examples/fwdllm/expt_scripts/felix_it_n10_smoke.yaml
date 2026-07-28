@@ -62,7 +62,9 @@ experiments:
           real_distribute_settle_s: 0.0
           send_timeout_wait_s: 300
           max_data_id_progress: 9999
-          max_runtime_s: 1800
+          max_runtime_s: 3600  # ...or after 60 minutes wall time
+          # Arms runner.py's watchdog (force-kill on hang); inert otherwise.
+          max_experiment_runtime_s: 7200
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           partition_method: niid_label_clients=100_alpha=1

@@ -4054,16 +4054,18 @@ def trainer_phase_split(real_trainers: dict, sim_trainers: dict,
                "real_mean_s": round(rm, 3), "sim_mean_s": round(sm, 3)}
         if note:
             res["note"] = note
-        # mqtt_fetch is pure network-I/O wall time: the sim serves weights from
-        # an in-memory cache and folds the trainer cycle into budget+leg, so this
-        # phase is deliberately NOT part of the virtual clock.  Comparing it
-        # is apples-to-oranges (real MQTT round-trip vs in-mem read) — keep it as
-        # a DIAG so a divergence is reported but never enforced.  gpu_compute and
-        # the other modeled phases stay enforced DIST.
+        # mqtt_fetch is real wall-clock wait on channel.recv() in BOTH modes (sim
+        # runs the same MQTT channel path, not an in-memory shortcut) -- but it's
+        # not part of the vclock's schedule, which only models trainer-side
+        # device delay, not real/sim's differing dispatch cadence or aggregator-
+        # side serial overhead. Comparing it directly is apples-to-oranges for
+        # that reason, not because sim skips the network -- keep it DIAG so a
+        # divergence is reported but never enforced. gpu_compute and the other
+        # modeled phases stay enforced DIST.
         if f == "mqtt_fetch_s":
             res["tier"] = "DIAG"
-            res["note"] = ("wall-time network I/O; sim uses in-mem cache, "
-                           "excluded from the virtual clock (diagnostic only)")
+            res["note"] = ("wall-time channel wait, not vclock-modeled in either "
+                           "mode; dispatch cadence differs real vs sim (diagnostic only)")
         results[key] = res
     return results
 
@@ -4080,9 +4082,12 @@ def trainer_phase_wall_budget_ok(real_trainers: dict, sim_trainers: dict,
     """Trainer-side twin of `drain_wall_budget`: ONE-SIDED (`sim <=
     real*(1+tol_rel)`), never a two-sided KS/mean match -- sim must never cost
     more wall-clock than real on dispatch/local-copy phases it should collapse
-    to ~0. `mqtt_fetch_s` is reported but never gates `ok` (apples-to-oranges:
-    real network round-trip vs sim's in-memory cache). SKIPs cleanly with no
-    telemetry.
+    to ~0. `mqtt_fetch_s` is reported but never gates `ok` -- it's a real
+    wall-clock `channel.recv()` wait in BOTH modes (sim runs the same MQTT
+    path, not an in-memory shortcut), but dispatch cadence/aggregator-side
+    serial overhead differ real vs sim and aren't vclock-modeled in either
+    mode, so a direct compare is apples-to-oranges for that reason instead
+    (see `_step_timing_compare`). SKIPs cleanly with no telemetry.
     """
     def _vals(trainers: dict, field: str) -> list:
         out = []

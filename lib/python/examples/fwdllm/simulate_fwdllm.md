@@ -87,29 +87,29 @@ open (§B).
 `sim_model_dispatch_queue` fluxtune-yaml-only (promotion call §B).
 **Round-cadence family (`fedbuff_round`/`felix_round`) — R-D guard VALIDATED 2026-07-26; `_exclude_pending_commit`
 staleness-cadence fix LANDED + VALIDATED 2026-07-27 (commit `2d181d8f`); `staleness` (U3) itself
-root-caused + FIXED same day (§G), pending live-run validation — priority item next session.** R-D (§F-25 guard, §G) and the var-check-pool rate
+root-caused, FIXED, and now VALIDATED on a fresh post-fix run (commit `918ef533`, §G).** R-D (§F-25 guard, §G) and the var-check-pool rate
 fix (§D-7, §G) together close 12 rungs at n15/1800s vs the 2026-07-26 POST-FIX pair: `overhead_residual`,
 `per_round_advance`, `selection_detail`, `participation`, `training_budget`, `phase_weights_to_gpu`,
 `v1_iter_per_data_id`, `v5_variance_pass_ratio`, `g2_grad_pool_size` on both; `agg_step_timing_breakdown`/
 `cohort_sequence`/`v1b_iters_moving_avg` on `fedbuff_round` only (still open on `felix_round`, §B).
-`fedbuff_round` 42/18/21→**56/7/21**, `felix_round` 43/17/21→**54/9/21**
-(`run_20260727_102433`/`_105616` fedbuff, `run_20260727_102459`/`_105644` felix, both 1800s). Same re-run
-also confirms the `phase_gpu_compute` flood-contention hypothesis from last session: real mean compute-phase
-wall dropped 13.5s→4.8s (`fedbuff_round`), 7.9s→3.6s (`felix_round`) once the flood stopped — CLOSED, §G.
+`fedbuff_round` 42/18/21→56/7/21→**53/10/21**, `felix_round` 43/17/21→54/9/21→**54/9/21**
+(`run_20260727_150357`/`_153538` fedbuff, `run_20260727_150412`/`_153552` felix, both 1800s, post-`918ef533`).
+`overhead_residual`/`per_round_advance` flip back to fail on this pair (both baselines) — see §B, next rung
+to chase. Prior re-run also confirmed the `phase_gpu_compute` flood-contention hypothesis from last session: real
+mean compute-phase wall dropped 13.5s→4.8s (`fedbuff_round`), 7.9s→3.6s (`felix_round`) once the flood
+stopped — CLOSED, §G (`felix_round`'s `phase_gpu_compute` fails again on this pair too, §B).
 Oort's utility-weighted draw (`sample_by_util`) fix is also validated: `felix_it`'s
 `cohort_sequence`/`v1b_iters_moving_avg`/`utility` all flip fail→pass.
 
-**`staleness` (U3) — NOT fixed by the pending-commit-exclusion fix; re-characterized, ROOT-CAUSED, and
-FIXED 2026-07-27 (§G), pending live-run validation.** Confirmed on both round-cadence baselines
-(`fedbuff_round` real mean 7.62 vs sim 0.105, KS 0.867; `felix_round` real mean 9.10 vs sim 0.122, KS 0.894)
-and ruled OUT as a round-cadence-inherent property: fluxtune (iteration cadence) real caps at max=1 too,
-matching its sim. Root + fix in §G; **next run must cover BOTH `fedbuff_round` and `felix_round`** — same
-shared dispatch/pending-commit code path, same root, neither validated yet.
+**`staleness` (U3) — CLOSED, VALIDATED 2026-07-27 post-`918ef533` (§G).** `fedbuff_round` real mean 0.056 vs
+sim 0.095 (KS 0.039); `felix_round` real mean 0.064 vs sim 0.12 (KS 0.056) — both well inside DIST tol, real
+now *lower* than sim (was real≫sim pre-fix: 7.62/9.10 vs sim ~0.1). Confirmed on both round-cadence
+baselines, same shared dispatch/pending-commit code path.
 
 | baseline | run pair | dur | pass/fail/skip | cohort | vclock | thru | commits | terminal | R1 | V1 | V2 | U3 | S2 | conv | conv_loss |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| fedbuff_round/syn_0 (n15, POST-staleness-fix) | `run_20260727_102433`/`_105616` | 1800s | 56/7/21 | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| felix_round/syn_0 (n15, POST-staleness-fix) | `run_20260727_102459`/`_105644` | 1800s | 54/9/21 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
+| fedbuff_round/syn_0 (post-`918ef533`) | `run_20260727_150357`/`_153538` | 1800s | 53/10/21 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
+| felix_round/syn_0 (post-`918ef533`) | `run_20260727_150412`/`_153552` | 1800s | 54/9/21 | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
 
 fluxtune/syn_0 (n15) row dropped from this table — its 61/7/16 pair (`run_20260727_021855`/`_032028`, 3600s)
 predates today's fix and is unrelated (fluxtune isn't round-cadence); cited in prose above by telemetry only
@@ -134,15 +134,15 @@ its V1/V2/V5/`cohort_sequence` rungs depend on — expected inert, not yet confi
 until the next long fluxtune pair re-runs.
 
 **WIP — 9-baseline batch** (`run_parity.py`, 2026-07-26, ~1800s each — below the §C 3600s sign-off bar, in
-scope for early-onset issues only). `fedbuff_round`/`felix_round` rows are the 2026-07-27 POST-STALENESS-FIX
-re-run (supersedes the 07-26 POST-FIX pair — R-D + `_exclude_pending_commit` + var-check-pool fixes all in);
+scope for early-onset issues only). `fedbuff_round`/`felix_round` rows are the 2026-07-27 POST-`918ef533`
+re-run (supersedes the earlier POST-STALENESS-FIX pair — `staleness` (U3) itself now confirmed closed);
 `felix_it` is the 07-26 POST-FIX row (R-D async guard + `sample_by_util` reproducibility fix); the other six
 are still the original PRE-batch pairs, unchanged.
 
 | baseline | run pair | dur | pass/fail/skip | cohort | vclock | thru | commits | terminal | R1 | V1 | V2 | U3 | S2 | conv | conv_loss |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| fedbuff_round/syn_0 (POST-staleness-fix) | `run_20260727_102433`/`_105616` | 1800s | 56/7/21 | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| felix_round/syn_0 (POST-staleness-fix) | `run_20260727_102459`/`_105644` | 1800s | 54/9/21 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
+| fedbuff_round/syn_0 (post-`918ef533`) | `run_20260727_150357`/`_153538` | 1800s | 53/10/21 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
+| felix_round/syn_0 (post-`918ef533`) | `run_20260727_150412`/`_153552` | 1800s | 54/9/21 | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
 | felix_it/syn_0 (POST-FIX) | `run_20260726_161336`/`_164554` | ~1800s | 64/5/16 | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ | ✗ | ✓ |
 | fedbuff_it_oracular/syn_0 | `run_20260726_111552`/`_114739` | ~1800s | 55/12/18 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ |
 | fwdllm/syn_0 | `run_20260726_102437`/`_105615` | ~1800s | 52/10/22 | ✗ | ✓ | ✗ | ✗ | ✗ | – | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
@@ -155,10 +155,11 @@ Per-pair numeric detail: `experiments/_parity_reports/parity_<baseline>_syn_0_<s
 **R1 (`r1_inflight_overlap`) PASSES on both `fedbuff_round`/`felix_round`** (real 0.0%/sim 0.0%, was
 ~90-91%) — the R-D fix is fully validated, not partial. `selection_detail` also now PASSES both (was the
 priority item last session) — the `_exclude_pending_commit` fix (§D-8, §G) closed it, confirmed at n15;
-still needs re-confirming at production `c` (§B). Remaining `fedbuff_round`/`felix_round` fails are
-`staleness` (U3, real unbounded growth, sim caps at 1 — root-caused + fixed, §G, pending validation) and
-its downstream (`throughput`, `total_commits`, `terminal_state`, `utility`\*, `v2_var_trajectory`) —
-\*fedbuff_round only. `fluxtune`/`fwdllm` short-run fails are `step_timing_breakdown`/`drain_wall_budget`/
+still needs re-confirming at production `c` (§B). **`staleness` (U3) now PASSES both** (real 0.056/0.064 vs
+sim 0.095/0.12, fedbuff/felix — §G, CLOSED). Remaining `fedbuff_round`/`felix_round` fails are
+`throughput`/`overhead_residual`/`per_round_advance`/`total_commits`/`terminal_state` — real ~15-27% slower
+per round than sim (§B, next rung to chase) — plus stochastic `cohort_sequence`/`v2_var_trajectory` noise at
+the independent-draw floor. `fluxtune`/`fwdllm` short-run fails are `step_timing_breakdown`/`drain_wall_budget`/
 `v2_var_trajectory` family, consistent with §D-1 (below the 3600s bar this rung needs anyway — not a new
 regression).
 
@@ -174,19 +175,51 @@ regression).
 production n=100/c=30 before fully closing** (the original divergence scaled with `c − agg_goal`, not
 re-tested at that `c` yet). Unblocks decision 4 once confirmed.
 
-**`staleness` (U3) root-caused and fixed 2026-07-27 — moved to §G.** ⭐ **Resume here next session: verify
-the fix** — run `run_parity.py --baselines fedbuff_round felix_round` (n15 smoke is enough to check the
-mechanism; both baselines share the same code path and root, so neither is validated by running only one)
-and confirm real `staleness` now stays bounded, `U3` flips fail→pass, and nothing else regresses (esp.
-`throughput`/`total_commits`/`terminal_state`/`utility`, all listed as U3-downstream in §A). If the fix
-holds, fold the confirmed numbers into §A's scoreboard and delete the "pending validation" caveat there
-and in §G in the same edit.
+**`staleness` (U3) CLOSED + VALIDATED 2026-07-27 (§G) — moved out of resume queue.** Confirmed on the fresh
+post-`918ef533` pair, real now ≤ sim both baselines (§A).
 
-**`overhead_residual`/`per_round_advance` CLOSED at n15 (§A) — the `_exclude_pending_commit` fix's flip,
-not independently investigated.** `throughput` still fails but is close: 7-8% rel_diff vs 5% tol both
-baselines (`fedbuff_round` sim 56.17s/round vs real 51.6s, `felix_round` sim 46.14s vs real 42.78s) — real
-consistently faster, consistent with fluxtune's own ~10% same-batch gap (§D-1) and NOT the lockstep-dispatch
-bug (closed). Re-check after `staleness` root-causes; may be the same mechanism or a smaller residual.
+⭐ **Resume here next session: `throughput`/`per_round_advance`/`overhead_residual` flipped back to FAIL on
+the post-`918ef533` re-run — direction also flipped (real was faster pre-fix, now real is 15-27% SLOWER/round:
+fedbuff 73.15s vs sim 62.12s; felix 64.93s vs sim 47.38s).** Symptom, from the same pair's
+`step_timing_breakdown`: `_fetch_weights`/`phase_mqtt_fetch_s` — real spends 2.0-2.3s mean waiting on
+`channel.recv()` for its next dispatch, sim's reads ~0s. `overhead_residual`'s `implied_per_commit_overhead_s`
+(2.23s fedbuff / 3.52s felix) tracks this phase's real mean closely. It wasn't visible on
+`fedbuff_round`/`felix_round` before because the flood bug was giving real a compensating throughput boost
+(extra, illegitimate re-dispatch hits) that happened to roughly cancel this deficit; fixing the flood removed
+the compensation and exposed the pre-existing gap.
+**Prior "sim uses in-mem cache" explanation was WRONG, corrected 2026-07-27:** verified via code (not
+re-derived from the note alone) that sim runs the identical `channel.recv()`/MQTT path as real
+(`fwdllm_trainer.py:_fetch_weights`, `backends.py` registers one `MqttBackend` for both modes,
+`trainer_base.yaml: backend: mqtt` is the only backend configured) — there is no in-memory shortcut for
+weights fetch in either mode, and `_perform_training()` (the real GPU forward/backward) also runs identically
+in both; the ONLY sim-real divergence is that sim skips the post-training remainder-sleep (`_emulate_
+training_delay`, charged to the vclock instead). The `checks.py` DIAG note was fabricated and has been fixed
+to stop claiming a cache (also fixed 2 stale copies of the same claim found this session, §G). **Still open
+— real mechanism unconfirmed:** candidates checked so far: (1) `sim_model_agg_compute_time` is `true` on the
+sim side of this pair (real side reads `false` in its own startup log — expected, the flag is a sim-only
+vclock charge — don't misread the real-side log as contradicting this), so an unfolded-aggregate-compute gap
+is NOT the explanation here for this pair. (2) The aggregator's per-end SEND loop
+(`_distribute_weights_async`) is a real serial Python for-loop, but its own `step_timing` total is only
+~267s of the 1800s run (15% duty cycle) and only ~26% of trainer fetch-wait overlaps ANY of the aggregator's
+instrumented busy windows — weak support for "aggregator busy" as the dominant cause, though it doesn't rule
+out un-instrumented framework/broker-level cost. The intra-micro-batch peer-wait SPAN (a round's
+`commit_max - dispatch_min` in `agg_round.contributor_intervals`) already matches well (real 10.43s vs sim
+10.73s, this pair) — most of the gap is plausibly genuine peer-wait (waiting on round/cohort-mates before the
+pinned cohort's `version_key` advances, §D-8/F-25) already modeled via the vclock's `max()`, not an
+unmodeled cost. Ad-hoc reconstruction of a per-trainer commit→next-dispatch gap from
+`agg_round.contributor_intervals` this session gave inconsistent results across two construction methods
+(sim mean read either 0.23s or ~4.5s depending on method) — likely a `_replay_buffered_cohort_contribs`/
+lane-interleaving artifact in that telemetry, not a real signal; don't reuse it, don't trust either number.
+**Instrumentation landed 2026-07-27 (§G) to settle this on the NEXT run, not by more offline reconstruction:**
+`[LAG_DECOMP]` (fwdllm's own per-message wall_lag_s/agg_to_trainer_s/compute_s/mqtt_lag_s, ported from
+asyncfl's shared version using fwdllm's existing `WALL_SEND_TS`/`WALL_RECV_TS` fields) and a new
+`redispatch_decomp` telemetry event (`peer_wait_wall_s` vs `post_close_overhead_wall_s`, live-split at each
+end's actual redispatch using `_last_commit_wall_ts`/`_last_round_close_wall_ts`, both wall-clock in BOTH
+modes per §F-1) in `_process_single_trainer_message`/`_distribute_weights_async`. **Re-run
+`fedbuff_round`/`felix_round` (real+sim) before concluding anything or touching `sim_redispatch_gap_s`** —
+it's unused by any fwdllm baseline today (only `felix`/async_cifar10 sets it, 0.6s, calibrated against ITS
+OWN `[LAG_DECOMP]` leg, §D-3) and calibrating fwdllm's off the unreliable reconstruction above would be
+exactly the hack §F-13 forbids.
 
 **GPU/CPU-contention hypothesis FALSIFIED; true root found + fixed (2026-07-26) — see §G.** The n=15
 falsification test (staged last session) was run: both `fedbuff_round_n15_smoke{,_sim}` reproduced the
@@ -573,6 +606,24 @@ still-training-never-returned — so real, not sim, had the gap. **Tell:** one s
 suspiciously clean next to the other's growth. **Discriminate by:** finding or building the SAME-side
 absolute check (never a real/sim diff) before deciding which side's behavior to change (→ preamble).
 
+**D-10. `reselect_cadence` narrows or widens the CANDIDATE POOL for a freed dispatch slot, not whether a
+committed trainer personally waits.** Easy to over-state (corrected mid-session, 2026-07-27): a just-
+committed trainer is excluded from re-selection under EITHER cadence until its own `agg_goal`-sized batch's
+`version_key` advances — `async_oort.py`'s `select()` filters any candidate whose `trainer_version_keys[end]`
+already equals the current `agg_version_key` (the R-A/D-6 re-pick guard), and that gate is cadence-agnostic.
+What `reselect_cadence` actually changes is which POOL fills a slot that just freed up
+(`extra = concurrency - len(selected_ends) - cooling_count`, async_oort.py): **round** cadence
+(`fedbuff_round`/`felix_round`) restricts it to the pinned cohort (up to `c`, e.g. 10) — as more of that
+small set contributes to the current version_key, fewer remain eligible to fill a newly-freed slot, so a
+slot can idle even though other candidates exist system-wide. **iteration** cadence (`fluxtune` — never
+overrides `reselect_each_iteration` in `baselines.yaml`, so `_resolve_reselect_cadence` defaults it) re-runs
+`channel.ends()` against the FULL trainer pool every tick, so a freed slot has a much larger not-yet-
+contributed candidate set to draw from. **Tell:** a throughput/`overhead_residual` gap on a round-cadence
+baseline but not a same-selector-family iteration-cadence one is consistent with this, but NOT yet confirmed
+by telemetry — the pool-size story is a code trace, not a measurement. **Discriminate by:** once
+`redispatch_decomp` telemetry (§G) exists for a fluxtune pair, check whether its `post_close_overhead_wall_s`
+reads near-zero (pool-size theory holds) rather than assuming it from the code alone.
+
 ---
 
 ## §E  Dead ends — do NOT retry
@@ -696,6 +747,36 @@ rule now live in §D-3.
 > **RULE: closed = here, ≤30 words, immediately.** The instant a rung flips or a hypothesis resolves, write
 > ONE line (mechanism + outcome) and delete it from §A/§B in the same edit.
 
+- **`slot_starvation` telemetry landed (D-10's pool side)** (07-27) — `async_oort.py::_handle_send_state`
+  already computed `extra`/`filtered_ends`/`feasible_extra` but never surfaced when `feasible_extra < extra`
+  (a freed dispatch slot with no eligible candidate). New event emitted ONLY on a starved tick, shared by
+  every async baseline (fedbuff_round/felix_round/fedbuff_it_*/felix_it/fluxtune/fluxtune_dynkc all go
+  through this selector or its base). 3 new tests (`test_slot_starvation_telemetry.py`).
+- **9 baselines' n15/n100/n10 smoke yamls bumped 1800s/30min → 3600s/60min + watchdog** (07-27) — matches
+  the §C run-length bar for `throughput`/`per_round_advance`/`overhead_residual` (was already done for
+  `fedbuff_round`/`felix_round`; now also `fwdllm`, `fwdllm_it_unaware`, `fwdllm_it_oracular`, `felix_it`,
+  `fedbuff_it_unaware`, `fedbuff_it_oracular`, `fluxtune` — 14 yaml files, real+sim). Real gets
+  `max_experiment_runtime_s: 7200` (runner.py watchdog); sim gets `sim_wall_ceiling_s: 7200` (tighter than
+  the 20x-too-loose code default, matching `fedbuff_round`'s existing pattern). Staged for an overnight
+  multi-node sweep — not yet launched.
+- **`[LAG_DECOMP]` + `redispatch_decomp` telemetry landed for fwdllm** (07-27) — `_process_single_trainer_
+  message` now logs fwdllm's own `[LAG_DECOMP]` (wall_lag_s/agg_to_trainer_s/compute_s/mqtt_lag_s, same field
+  order as the shared `_LAG_DECOMP_RE` so `analyze_run.py` needs no new parser) and stamps
+  `_last_commit_wall_ts[end]`; `_distribute_weights_async` emits a new `redispatch_decomp` event per
+  redispatch splitting the wall gap into `peer_wait_wall_s`/`post_close_overhead_wall_s` at the round's own
+  `_last_round_close_wall_ts`. 9 new tests (`test_fwdllm_redispatch_decomp.py`), full suite 1340/8 green.
+  **NOT yet validated against a run** — needs a fresh `fedbuff_round`/`felix_round` real+sim pair (§B).
+- **2 more stale "sim uses in-mem cache" copies found + fixed** (07-27) — `checks.py`'s
+  `trainer_phase_wall_budget_ok` docstring, `PARITY.md`'s `phase_mqtt_fetch` bullet, and
+  `PARITY_CHECKER_README.md`'s rung table both still had the fabricated cache claim §B already flagged fixed
+  elsewhere in the SAME file (`checks.py:_step_timing_compare`); all 3 now say the corrected reason
+  (dispatch cadence/aggregator-side overhead, not vclock-modeled — apples-to-oranges for that reason, not a
+  cache).
+- **`staleness` (U3) VALIDATED on fresh post-`918ef533` re-run** (07-27) — `fedbuff_round` real mean 0.056
+  vs sim 0.095 (KS 0.039), `felix_round` real 0.064 vs sim 0.12 (KS 0.056), both DIST-pass; real now lower
+  than sim (was 7.62/9.10 vs ~0.1 pre-fix). `run_20260727_150357`/`_153538` (fedbuff),
+  `run_20260727_150412`/`_153552` (felix). Unmasked a separate, pre-existing `throughput`/`per_round_advance`
+  gap (§B) — see that item, not a regression from this fix.
 - **`staleness` (U3) root-caused + FIXED, NOT yet validated against a fresh run** (07-27, §D-9). Real's
   `_agg_pending_commit_ref` was bound only to `_per_agg_trainer_list` (populated on RETURN) — a
   still-training end that hadn't returned anything yet was invisible to it, so the round-cadence dispatch

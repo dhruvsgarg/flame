@@ -33,6 +33,8 @@ EVENT_STEP_TIMING = "step_timing"    # per-function wall duration of a timed com
 EVENT_COMM = "comm"                  # one message put on the wire (byte-size accounting)
 EVENT_VERSION_BUMP_CENSUS = "version_bump_census"  # #S1: pool-wide in-flight state at a model_version bump
 EVENT_VAR_CALC = "var_calc"          # fwdllm: grad-norm summary in/out of the variance gate (DEBUG-only audit)
+EVENT_REDISPATCH_DECOMP = "redispatch_decomp"  # fwdllm round-cadence: commit->next-dispatch wall split
+EVENT_SLOT_STARVATION = "slot_starvation"  # a freed dispatch slot had fewer eligible candidates than slots
 
 KNOWN_EVENTS = frozenset(
     {
@@ -55,6 +57,8 @@ KNOWN_EVENTS = frozenset(
         EVENT_COMM,
         EVENT_VERSION_BUMP_CENSUS,
         EVENT_VAR_CALC,
+        EVENT_REDISPATCH_DECOMP,
+        EVENT_SLOT_STARVATION,
     }
 )
 
@@ -310,6 +314,84 @@ def build_comm(
         if v is not None:
             fields[k] = v
     return EVENT_COMM, fields
+
+
+def build_redispatch_decomp(
+    *,
+    end_id: str,
+    round_num: int,
+    data_id: int,
+    iteration: int,
+    redispatch_gap_wall_s: float,
+    peer_wait_wall_s: float,
+    post_close_overhead_wall_s: float,
+    time_mode: str,
+) -> tuple[str, dict[str, Any]]:
+    """fwdllm round-cadence: split a trainer's commit->next-dispatch WALL gap
+    into peer-wait vs post-close overhead.
+
+    Round-cadence (`fedbuff_round`/`felix_round`) pins a fixed cohort and only
+    re-dispatches a committed trainer once the WHOLE `agg_goal`-sized
+    micro-batch's `version_key` advances (§D-8/F-25) -- so most of the gap is
+    this trainer waiting on its round-mates, not idle server time. This event
+    disambiguates the two, using ``self._last_round_close_wall_ts`` (wall
+    ``aggregate()`` finished, real time in BOTH modes -- see §F-1) as the
+    boundary:
+
+    ``redispatch_gap_wall_s`` = now - this end's own last commit wall ts.
+    ``peer_wait_wall_s``      = round-close wall ts - this end's own commit wall ts
+                                 (0 if this end's own commit WAS the round-closer,
+                                 or no round has closed since its commit).
+    ``post_close_overhead_wall_s`` = now - round-close wall ts: genuine
+                                 server-side redispatch turnaround, free of
+                                 peer-wait -- the residual to actually calibrate
+                                 `sim_redispatch_gap_s` against, if non-trivial.
+
+    Emitted for `send_weights` (new-version) dispatches only -- not `VAR=bad`
+    keep-training pings, which aren't a "next round" dispatch. Wall-clock
+    (`time.time()`) in BOTH modes: sim doesn't sleep to emulate the modeled
+    training delay (§F-1), so a genuine sim/real gap here means the
+    SIMULATOR's own wall-clock redispatch loop is faster, not that a cost is
+    unmodeled on the vclock -- compare against `overhead_residual`/
+    `per_round_advance` (vclock-based) before concluding a vclock gap exists.
+    """
+    return EVENT_REDISPATCH_DECOMP, {
+        "end_id": end_id,
+        "round": round_num,
+        "data_id": data_id,
+        "iteration_per_data_id": iteration,
+        "redispatch_gap_wall_s": redispatch_gap_wall_s,
+        "peer_wait_wall_s": peer_wait_wall_s,
+        "post_close_overhead_wall_s": post_close_overhead_wall_s,
+        "time_mode": time_mode,
+    }
+
+
+def build_slot_starvation(
+    *,
+    concurrency: int,
+    extra: int,
+    n_filtered: int,
+    feasible_extra: int,
+    model_version: Optional[int] = None,
+) -> tuple[str, dict[str, Any]]:
+    """A dispatch slot just freed up (`extra > 0`) but fewer eligible
+    candidates existed than slots to fill (`feasible_extra < extra`,
+    `async_oort.py::handle_send_state`) -- the candidate-POOL side of D-10
+    (simulate_fwdllm.md): round cadence's pinned cohort can run out of
+    not-yet-contributed-to-this-version_key members before its `agg_goal`
+    batch closes, iteration cadence draws from the whole trainer pool
+    instead. Emitted ONLY on a starved tick (`feasible_extra < extra`), not
+    every `select()` call, to stay low-volume across a baseline sweep.
+    """
+    return EVENT_SLOT_STARVATION, {
+        "concurrency": concurrency,
+        "extra": extra,
+        "n_filtered": n_filtered,
+        "feasible_extra": feasible_extra,
+        "starved": extra - feasible_extra,
+        "model_version": model_version,
+    }
 
 
 def build_version_bump_census(
