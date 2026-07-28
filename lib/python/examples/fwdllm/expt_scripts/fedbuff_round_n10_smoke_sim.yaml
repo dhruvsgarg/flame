@@ -85,7 +85,9 @@ experiments:
           sim_model_dispatch_queue: true
           sim_model_agg_compute_time: true
           max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s
-          max_runtime_s: 1800  # ...or after 30 minutes wall time
+          max_runtime_s: 3600  # ...or after 60 minutes sim vclock
+          # Outer wall failsafe (code default 20x max_runtime_s is too loose).
+          sim_wall_ceiling_s: 7200
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           partition_method: niid_label_clients=100_alpha=1
