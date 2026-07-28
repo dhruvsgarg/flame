@@ -276,15 +276,18 @@ ALL_RUNS=(
   "fwdllm:$SCRIPT_DIR/fwdllm_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_n100_smoke_sim.yaml"
   "fwdllm_it_unaware:$SCRIPT_DIR/fwdllm_it_unaware_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_it_unaware_n100_smoke_sim.yaml"
   "fwdllm_it_oracular:$SCRIPT_DIR/fwdllm_it_oracular_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_it_oracular_n100_smoke_sim.yaml"
-  # n15, not n10: the n10 fedbuff_round/felix_round yamls are stale (n=100/c=30,
-  # last touched 07-26, no watchdog) -- every 07-26/07-27 fix + this session's
-  # whole investigation ran against the n15 reduced-scale repro (n=15/c=10/
-  # agg_goal=5, simulate_fwdllm.md §A/§B). Using n10 here would silently launch
-  # a different scale than what's actually validated.
-  "fedbuff_round:$SCRIPT_DIR/fedbuff_round_n15_smoke.yaml:$SCRIPT_DIR/fedbuff_round_n15_smoke_sim.yaml"
+  # NAME IS MISLEADING: "n10" here does NOT mean 10 trainers -- these two files
+  # are the full n=100/c=30/agg_goal=10 production scale (matches every other
+  # baseline below), just never renamed. Don't swap these for the "n15" files:
+  # fedbuff_round_n15_smoke.yaml/felix_round_n15_smoke.yaml are a DELIBERATELY
+  # reduced-scale repro (n=15/c=10/agg_goal=5) built solely to cheaply debug the
+  # TIMING_OVERRUN/compute-contention question (see that file's own header) --
+  # a special-purpose debug tool this session used for fast iteration, not a
+  # replacement for the production condition every other baseline runs at.
+  "fedbuff_round:$SCRIPT_DIR/fedbuff_round_n10_smoke.yaml:$SCRIPT_DIR/fedbuff_round_n10_smoke_sim.yaml"
   "fedbuff_it_unaware:$SCRIPT_DIR/fedbuff_it_unaware_n10_smoke.yaml:$SCRIPT_DIR/fedbuff_it_unaware_n10_smoke_sim.yaml"
   "fedbuff_it_oracular:$SCRIPT_DIR/fedbuff_it_oracular_n10_smoke.yaml:$SCRIPT_DIR/fedbuff_it_oracular_n10_smoke_sim.yaml"
-  "felix_round:$SCRIPT_DIR/felix_round_n15_smoke.yaml:$SCRIPT_DIR/felix_round_n15_smoke_sim.yaml"
+  "felix_round:$SCRIPT_DIR/felix_round_n10_smoke.yaml:$SCRIPT_DIR/felix_round_n10_smoke_sim.yaml"
   "felix_it:$SCRIPT_DIR/felix_it_n10_smoke.yaml:$SCRIPT_DIR/felix_it_n10_smoke_sim.yaml"
   "fluxtune:$SCRIPT_DIR/fluxtune_n10_smoke.yaml:$SCRIPT_DIR/fluxtune_n10_smoke_sim.yaml"
 )

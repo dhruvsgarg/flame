@@ -747,11 +747,18 @@ rule now live in §D-3.
 > **RULE: closed = here, ≤30 words, immediately.** The instant a rung flips or a hypothesis resolves, write
 > ONE line (mechanism + outcome) and delete it from §A/§B in the same edit.
 
-- **`run_sequential.sh`'s baseline map pointed `fedbuff_round`/`felix_round` at stale n10 yamls** (07-27) —
-  `ALL_RUNS` mapped them to `_n10_smoke.yaml` (n=100/c=30, last touched 07-26, no watchdog), not the
-  `_n15_smoke.yaml` (n=15/c=10/agg_goal=5) every 07-26/07-27 fix and this session's whole investigation
-  actually ran against. Would've silently launched the wrong scale on the overnight sweep. Fixed; verified
-  via `--dry-run --only fedbuff_round,felix_round` (n_trainers=15/c=10/agg_goal=5 confirmed, 8/8 checks green).
+- **CORRECTED (07-28), see below: `run_sequential.sh`'s `fedbuff_round`/`felix_round` mapping was briefly
+  (mis)changed to the n15 files, then reverted.** `fedbuff_round_n10_smoke.yaml`/`felix_round_n10_smoke.yaml`
+  are NAMED misleadingly but ARE the production scale (n=100/c=30/agg_goal=10, matching every other
+  baseline) — confirmed via the file's own header + `--dry-run` (`c=30, agg_goal=10, n_trainers=100`).
+  `fedbuff_round_n15_smoke.yaml`/`felix_round_n15_smoke.yaml` are a DELIBERATELY reduced-scale repro
+  (n=15/c=10/agg_goal=5, own header: "Reduced-scale repro for the round-cadence TIMING_OVERRUN
+  investigation... to cheaply falsify or confirm compute contention") — this session's telemetry
+  investigation (§B, the `run_20260727_150357`-family pairs) correctly used it for fast iteration, but it
+  is NOT a substitute for the n=100 production condition. `run_sequential.sh`'s `ALL_RUNS` now correctly
+  points back at the n10 (=n100-scale) files for the overnight sweep; use `--only fedbuff_round,felix_round`
+  with the n15 yamls directly (`flame.launch.run_experiment ..._n15_smoke*.yaml`) only when specifically
+  re-chasing the TIMING_OVERRUN/redispatch-gap mechanism at reduced scale.
 - **`slot_starvation` telemetry landed (D-10's pool side)** (07-27) — `async_oort.py::_handle_send_state`
   already computed `extra`/`filtered_ends`/`feasible_extra` but never surfaced when `feasible_extra < extra`
   (a freed dispatch slot with no eligible candidate). New event emitted ONLY on a starved tick, shared by
