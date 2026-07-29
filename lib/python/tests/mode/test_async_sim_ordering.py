@@ -14,7 +14,18 @@ import pytest
 
 from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator
 from flame.mode.message import MessageType
+from flame.selector.async_base import SelectContext
 from flame.sim import SimReorderBuffer, VirtualClock
+
+
+def _oort_ctx(**kw):
+    """`_handle_send_state` takes a `SelectContext` (base's shared mechanism,
+    post async_oort re-basing) instead of discrete kwargs."""
+    kw.setdefault("task_to_perform", "train")
+    kw.setdefault("trainer_unavail_list", [])
+    kw.setdefault("agg_version_key", (1, 0, 0))
+    kw.setdefault("trainer_version_keys", {})
+    return SelectContext(**kw)
 
 
 class _FakeEnd:
@@ -319,13 +330,8 @@ class TestCoolingHoldsConcurrency:
     def _call(self, sel, concurrency, cooling_count):
         ends = {f"t{i}": _FakeEnd() for i in range(5)}
         return sel._handle_send_state(
-            ends=ends,
-            concurrency=concurrency,
-            channel_props={"round": 1, "sim_cooling_count": cooling_count},
-            trainer_unavail_list=[],
-            task_to_perform="train",
-            agg_version_key=(1, 0, 0),
-            trainer_version_keys={},
+            ends, concurrency,
+            _oort_ctx(channel_props={"round": 1, "sim_cooling_count": cooling_count}),
         )
 
     def test_full_cooling_holds_all_slots_no_refill(self):
@@ -368,7 +374,8 @@ class TestSendTimeoutReclaimsConcurrencySlot:
     def _stub_selector(cls, stale: bool):
         import time
 
-        from flame.selector.async_oort import SEND_TIMEOUT_WAIT_S, AsyncOortSelector
+        from flame.selector.async_base import SEND_TIMEOUT_WAIT_S
+        from flame.selector.async_oort import AsyncOortSelector
 
         sel = AsyncOortSelector.__new__(AsyncOortSelector)
         sel.requester = "agg"
@@ -389,13 +396,7 @@ class TestSendTimeoutReclaimsConcurrencySlot:
         ends = {f"t{i}": _FakeEnd() for i in range(5)}
         ends[self.STALE_END] = _FakeEnd()
         return sel._handle_send_state(
-            ends=ends,
-            concurrency=concurrency,
-            channel_props={"round": 1},
-            trainer_unavail_list=[],
-            task_to_perform="train",
-            agg_version_key=(1, 0, 0),
-            trainer_version_keys={},
+            ends, concurrency, _oort_ctx(channel_props={"round": 1}),
         )
 
     def test_stale_end_freed_from_both_dicts_and_unblocks_selection(self):

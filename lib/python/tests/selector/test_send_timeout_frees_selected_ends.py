@@ -9,6 +9,17 @@ import time
 
 import pytest
 
+from flame.selector.async_base import SelectContext
+
+
+def _oort_ctx(**kw):
+    kw.setdefault("task_to_perform", "train")
+    kw.setdefault("channel_props", {"round": 1})
+    kw.setdefault("trainer_unavail_list", [])
+    kw.setdefault("agg_version_key", (1, 0, 0))
+    kw.setdefault("trainer_version_keys", {})
+    return SelectContext(**kw)
+
 
 class _StopAfterAbandon(Exception):
     """Raised from a stubbed pacer() to inspect state right after the abandon
@@ -40,15 +51,7 @@ class TestAsyncOortSendTimeoutFreesSelectedEnds:
         ends = make_ends(["stale", "fresh"])
 
         with pytest.raises(_StopAfterAbandon):
-            sel._handle_send_state(
-                ends=ends,
-                concurrency=2,
-                channel_props={"round": 1},
-                trainer_unavail_list=[],
-                task_to_perform="train",
-                agg_version_key=(1, 0, 0),
-                trainer_version_keys={},
-            )
+            sel._handle_send_state(ends, 2, _oort_ctx())
 
         assert "stale" not in sel.all_selected
         assert "stale" not in sel.selected_ends["agg"]
@@ -60,15 +63,8 @@ class TestAsyncOortSendTimeoutFreesSelectedEnds:
         ends = make_ends(["stale", "fresh", "third"])
 
         with pytest.raises(_StopAfterAbandon):
-            sel._handle_send_state(
-                ends=ends,
-                concurrency=3,  # 2 already selected -> extra=1, past the extra==0 short-circuit
-                channel_props={"round": 1},
-                trainer_unavail_list=[],
-                task_to_perform="train",
-                agg_version_key=(1, 0, 0),
-                trainer_version_keys={},
-            )
+            # 2 already selected -> extra=1, past the extra==0 short-circuit
+            sel._handle_send_state(ends, 3, _oort_ctx())
 
         assert "fresh" in sel.all_selected
         assert "fresh" in sel.selected_ends["agg"]
@@ -101,15 +97,7 @@ class TestAsyncOortSendTimeoutDropsPendingCommitRef:
         ends = make_ends(["stale", "fresh"])
 
         with pytest.raises(_StopAfterAbandon):
-            sel._handle_send_state(
-                ends=ends,
-                concurrency=2,
-                channel_props={"round": 1},
-                trainer_unavail_list=[],
-                task_to_perform="train",
-                agg_version_key=(1, 0, 0),
-                trainer_version_keys={},
-            )
+            sel._handle_send_state(ends, 2, _oort_ctx())
 
         assert "stale" not in sel._agg_pending_commit_ref
         assert "other" in sel._agg_pending_commit_ref  # unrelated entry untouched
@@ -122,15 +110,7 @@ class TestAsyncOortSendTimeoutDropsPendingCommitRef:
         ends = make_ends(["stale", "fresh"])
 
         with pytest.raises(_StopAfterAbandon):
-            sel._handle_send_state(
-                ends=ends,
-                concurrency=2,
-                channel_props={"round": 1},
-                trainer_unavail_list=[],
-                task_to_perform="train",
-                agg_version_key=(1, 0, 0),
-                trainer_version_keys={},
-            )
+            sel._handle_send_state(ends, 2, _oort_ctx())
 
         assert "stale" not in sel.all_selected
 
@@ -166,15 +146,7 @@ class TestAsyncOortSendTimeoutIsConfigurable:
         # whether "slow" gets evicted, so execution reaches pacer() either way
         # (mirrors test_fresh_end_untouched's not-evicted case above).
         with pytest.raises(_StopAfterAbandon):
-            sel._handle_send_state(
-                ends=ends,
-                concurrency=2,
-                channel_props={"round": 1},
-                trainer_unavail_list=[],
-                task_to_perform="train",
-                agg_version_key=(1, 0, 0),
-                trainer_version_keys={},
-            )
+            sel._handle_send_state(ends, 2, _oort_ctx())
 
         assert "slow" in sel.all_selected
         assert "slow" in sel.selected_ends["agg"]
@@ -184,15 +156,7 @@ class TestAsyncOortSendTimeoutIsConfigurable:
         ends = make_ends(["slow"])
 
         with pytest.raises(_StopAfterAbandon):
-            sel._handle_send_state(
-                ends=ends,
-                concurrency=1,
-                channel_props={"round": 1},
-                trainer_unavail_list=[],
-                task_to_perform="train",
-                agg_version_key=(1, 0, 0),
-                trainer_version_keys={},
-            )
+            sel._handle_send_state(ends, 1, _oort_ctx())
 
         assert "slow" not in sel.all_selected
         assert "slow" not in sel.selected_ends["agg"]

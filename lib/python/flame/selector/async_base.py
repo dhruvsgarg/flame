@@ -31,6 +31,7 @@ import logging
 import time
 from random import Random as _StdRandom
 
+from flame import telemetry
 from flame.channel import (
     KEY_CH_SELECT_REQUESTER,
     KEY_CH_STATE,
@@ -42,6 +43,7 @@ from flame.config import TrainerAvailState
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD, End
 from flame.selector import AbstractSelector, SelectorReturnType
 from flame.selector.properties import PROP_AVL_STATE
+from flame.telemetry.events import build_slot_starvation
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,7 @@ class SelectContext:
         "connected_ends",
         "trainer_unavail_list",
         "concurrency",
+        "extra",
     )
 
     def __init__(self, **kw):
@@ -406,11 +409,24 @@ class AsyncSelectorBase(AbstractSelector):
         )
         if extra == 0:
             return {}
+        ctx.extra = extra
 
         ctx.model_version = self._model_version_for(ctx)
         self._pre_choose(ctx)
 
         candidates = self._eligible_candidates(ends, ctx)
+        if len(candidates) < extra:
+            # D-10 (simulate_fwdllm.md): a freed slot with no eligible
+            # candidate to fill it -- the candidate-pool-exhaustion signal.
+            try:
+                ev, f = build_slot_starvation(
+                    concurrency=concurrency, extra=extra,
+                    n_filtered=len(candidates), feasible_extra=min(extra, len(candidates)),
+                    model_version=ctx.model_version,
+                )
+                telemetry.emit(ev, **f)
+            except Exception as e:
+                logger.debug(f"slot_starvation telemetry emit failed: {e}")
         if not candidates:
             logger.info("no eligible candidates; returning empty selection")
             return {}
@@ -497,21 +513,30 @@ class AsyncSelectorBase(AbstractSelector):
             f"all_selected now {sorted(self.all_selected)}"
         )
 
-    def _keyed_topk(self, candidate_ids, k: int, agg_version_key, salt: str) -> list:
-        """Order-sample top-k: each id's rank key depends only on its own
+    def _keyed_draw(self, candidate_id: str, agg_version_key, salt: str) -> float:
+        """Deterministic per-candidate uniform draw in (0, 1): depends only on
         (seed, salt, agg_version_key, id), never on pool membership/size/call
-        order. Replaces index-based random.sample()/np.random.choice(), where
-        one trainer's incidental presence/absence shifts every other
-        candidate's draw and permanently desyncs later calls.
+        order. Shared primitive behind `_keyed_topk`; a weighted-sampling
+        subclass (e.g. Oort's `_keyed_weighted_topk`) reuses it too rather
+        than re-deriving the seed-material format (§F-26).
 
         Seed material is a str, not a raw tuple -- Random() hashes non-str/
         int/bytes seeds, and str hash() is PYTHONHASHSEED-randomized per
         process, which would silently break real/sim parity.
         """
-        def _key(c: str) -> float:
-            return _StdRandom(f"{self._seed}|{salt}|{agg_version_key}|{c}").random()
+        return _StdRandom(f"{self._seed}|{salt}|{agg_version_key}|{candidate_id}").random()
 
-        return sorted(candidate_ids, key=_key, reverse=True)[:k]
+    def _keyed_topk(self, candidate_ids, k: int, agg_version_key, salt: str) -> list:
+        """Order-sample top-k via `_keyed_draw`. Replaces index-based
+        random.sample()/np.random.choice(), where one trainer's incidental
+        presence/absence shifts every other candidate's draw and permanently
+        desyncs later calls.
+        """
+        return sorted(
+            candidate_ids,
+            key=lambda c: self._keyed_draw(c, agg_version_key, salt),
+            reverse=True,
+        )[:k]
 
     # --------------------------------------------------------------- cleanup
 

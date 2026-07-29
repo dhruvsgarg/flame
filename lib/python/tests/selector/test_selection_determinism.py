@@ -219,6 +219,17 @@ ctx = SelectContext(agg_version_key=(0, 0))
 print(json.dumps(list(sel._choose(ends, 5, ctx))))
 """
 
+    # AsyncOortSelector.select_random returns a list (its `_choose` contract,
+    # post async_oort re-basing), not the dict the sync OortSelector's
+    # (unrelated class) select_random still returns -- no `.keys()` here.
+    _ASYNC_OORT_SNIPPET = """
+import json, torch  # noqa: F401 -- import marks ml framework in use as PYTORCH
+from flame.selector.{module} import {cls}
+sel = {cls}(_seed=7, **{kwargs!r})
+ends = {{f"t{{i}}": None for i in range(20)}}
+print(json.dumps(list(sel.select_random(ends, num_of_ends=5))))
+"""
+
     def _order_under_hashseed(self, module, cls, kwargs, hashseed, snippet=None):
         import json
         import os
@@ -254,6 +265,7 @@ print(json.dumps(list(sel._choose(ends, 5, ctx))))
                 c=5, aggGoal=2, evalGoalFactor=0.5,
                 roundNudgeType="last_train", selectType="default",
             ),
+            snippet=self._ASYNC_OORT_SNIPPET,
         )
 
     def test_oort_order_reproducible(self):
@@ -333,11 +345,11 @@ class TestKeyedTopkPopulationInvariance:
     def test_extra_non_winning_candidate_does_not_change_pick(self, make_ends):
         base = make_ends(count=70, prefix="t")
         winner = list(self._sel().select_random(
-            base, num_of_ends=1, agg_version_key=(0, 1)).keys())
+            base, num_of_ends=1, agg_version_key=(0, 1)))
 
         extended = dict(base, extra=None)
         winner_with_extra = list(self._sel().select_random(
-            extended, num_of_ends=1, agg_version_key=(0, 1)).keys())
+            extended, num_of_ends=1, agg_version_key=(0, 1)))
 
         # Either the extra candidate doesn't win (pick unchanged), or it does
         # win outright -- never a THIRD, different candidate.
@@ -356,9 +368,9 @@ class TestKeyedTopkPopulationInvariance:
         # Next call: pools match again on both sides -> must pick identically,
         # regardless of whether the previous call's pools (and picks) matched.
         next_a = list(sel_a.select_random(
-            pool_a, num_of_ends=1, agg_version_key=(0, 2)).keys())
+            pool_a, num_of_ends=1, agg_version_key=(0, 2)))
         next_b = list(sel_b.select_random(
-            pool_a, num_of_ends=1, agg_version_key=(0, 2)).keys())
+            pool_a, num_of_ends=1, agg_version_key=(0, 2)))
         assert next_a == next_b
 
     def test_different_agg_version_key_gives_independent_draw(self, make_ends):
@@ -377,12 +389,12 @@ class TestKeyedTopkPopulationInvariance:
         of a single bulk draw -- the consistent-priority-queue property."""
         ends = make_ends(count=20, prefix="t")
         sel = self._sel()
-        bulk = list(sel.select_random(ends, num_of_ends=2, agg_version_key=(0, 1)).keys())
+        bulk = list(sel.select_random(ends, num_of_ends=2, agg_version_key=(0, 1)))
 
         sel2 = self._sel()
-        first = list(sel2.select_random(ends, num_of_ends=1, agg_version_key=(0, 1)).keys())
+        first = list(sel2.select_random(ends, num_of_ends=1, agg_version_key=(0, 1)))
         remaining = {e: None for e in ends if e != first[0]}
-        second = list(sel2.select_random(remaining, num_of_ends=1, agg_version_key=(0, 1)).keys())
+        second = list(sel2.select_random(remaining, num_of_ends=1, agg_version_key=(0, 1)))
 
         assert bulk == [first[0], second[0]]
 
@@ -402,7 +414,7 @@ class TestKeyedTopkPopulationInvariance:
             " roundNudgeType='last_train', selectType='default')\n"
             "ends = {f't{i}': None for i in range(20)}\n"
             "print(json.dumps(list(sel.select_random(ends, num_of_ends=5,"
-            " agg_version_key=(0, 1)).keys())))\n"
+            " agg_version_key=(0, 1)))))\n"
         )
 
         def _run(hashseed):

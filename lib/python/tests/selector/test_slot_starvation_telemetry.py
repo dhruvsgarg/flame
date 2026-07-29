@@ -4,11 +4,15 @@
 run out of not-yet-contributed-to-this-version_key candidates before its
 `agg_goal` batch closes, leaving a freed dispatch slot unfilled even though
 `extra > 0`. `_handle_send_state` already computed the ingredients
-(`extra`/`filtered_ends`/`feasible_extra`) but never surfaced when they
-diverge. This covers the new `slot_starvation` telemetry event, emitted only
-on a starved tick (`feasible_extra < extra`) to stay low-volume."""
+(`extra`/candidates/`feasible_extra`) but never surfaced when they diverge.
+This covers the `slot_starvation` telemetry event -- emitted from
+`AsyncSelectorBase._handle_send_state` (shared by every async selector since
+the async_oort re-basing) only on a starved tick (`feasible_extra < extra`),
+to stay low-volume. Exercised here via `AsyncOortSelector` as a representative
+subclass."""
 
 from flame import telemetry
+from flame.selector.async_base import SelectContext
 from flame.selector.async_oort import AsyncOortSelector
 
 
@@ -34,8 +38,9 @@ class TestSlotStarvationTelemetry:
         try:
             ends = make_ends(["t1", "t2"])
             sel._handle_send_state(
-                ends=ends, concurrency=5, channel_props=channel_props,
-                trainer_unavail_list=[], task_to_perform="train",
+                ends, 5,
+                SelectContext(task_to_perform="train", channel_props=channel_props,
+                             trainer_unavail_list=[]),
             )
             evs = _events(tmp_path, "slot_starvation")
             assert len(evs) == 1
@@ -59,8 +64,9 @@ class TestSlotStarvationTelemetry:
         try:
             ends = make_ends(["t1", "t2", "t3", "t4", "t5"])
             sel._handle_send_state(
-                ends=ends, concurrency=2, channel_props=channel_props,
-                trainer_unavail_list=[], task_to_perform="train",
+                ends, 2,
+                SelectContext(task_to_perform="train", channel_props=channel_props,
+                             trainer_unavail_list=[]),
             )
             assert _events(tmp_path, "slot_starvation") == []
         finally:
@@ -77,6 +83,7 @@ class TestSlotStarvationTelemetry:
         sel.selected_ends = {"agg": set()}
         ends = make_ends(["t1"])
         sel._handle_send_state(
-            ends=ends, concurrency=5, channel_props=channel_props,
-            trainer_unavail_list=[], task_to_perform="train",
+            ends, 5,
+            SelectContext(task_to_perform="train", channel_props=channel_props,
+                         trainer_unavail_list=[]),
         )  # no assertion needed -- just must not raise

@@ -4,50 +4,50 @@
 drain_tail:
   _default:
     charge: false
-    mean_s: 0.3279
-    n: 1072
-    p90_s: 1.0679
+    mean_s: 0.2978
+    n: 2342
+    p90_s: 0.9471
     profiled_at: '2026-07-28'
-    rationale: not consumed -- already charged via the LIVE-span path (sim's
-      own span IS the cost, shared compute); listed here only because it
-      shares the vclock_charge ledger, no call site reads this entry.
+    rationale: not consumed -- already charged via the LIVE-span path (sim's own span
+      IS the cost, shared compute); listed here only because it shares the vclock_charge
+      ledger, no call site reads this entry.
     source_runs:
-    - run_20260728_151722_felix_round_n100_smoke_syn_0_real
-    - run_20260728_151831_fedbuff_round_n100_smoke_syn_0_real
+    - run_20260728_175740_felix_round_n100_smoke_syn_0_real
+    - run_20260728_175756_fedbuff_round_n100_smoke_syn_0_real
 fedavg:
   _default:
     charge: false
-    mean_s: 0.0715
-    n: 1072
-    p90_s: 0.2049
+    mean_s: 0.0718
+    n: 2342
+    p90_s: 0.2083
     profiled_at: '2026-07-28'
-    rationale: not consumed -- same as drain_tail, live-span path already
-      correct for this shared-compute category.
+    rationale: not consumed -- same as drain_tail, live-span path already correct
+      for this shared-compute category.
     source_runs:
-    - run_20260728_151722_felix_round_n100_smoke_syn_0_real
-    - run_20260728_151831_fedbuff_round_n100_smoke_syn_0_real
+    - run_20260728_175740_felix_round_n100_smoke_syn_0_real
+    - run_20260728_175756_fedbuff_round_n100_smoke_syn_0_real
 redispatch_turnaround:
   var_bad:
     charge: false
     mean_s: 0.0201
-    n: 7456
-    p90_s: 0.0401
+    n: 16772
+    p90_s: 0.0393
     profiled_at: '2026-07-28'
-    rationale: real gap is ~2x/~0.01s only (not the ~13x/~0.4s "weights" gap)
-      -- charging it too would overshoot the round-advance fix; left off.
+    rationale: real gap is ~2x/~0.01s only (not the ~13x/~0.4s "weights" gap) -- charging
+      it too would overshoot the round-advance fix; left off.
     source_runs:
-    - run_20260728_151722_felix_round_n100_smoke_syn_0_real
-    - run_20260728_151831_fedbuff_round_n100_smoke_syn_0_real
+    - run_20260728_175740_felix_round_n100_smoke_syn_0_real
+    - run_20260728_175756_fedbuff_round_n100_smoke_syn_0_real
   weights:
     charge: true
-    mean_s: 0.4365
-    n: 3264
-    p90_s: 1.4148
+    mean_s: 0.488
+    n: 6648
+    p90_s: 1.6731
     profiled_at: '2026-07-28'
-    rationale: sim's own live span (~0.033s) is ~13x smaller than real -- a
-      real MQTT/dispatch-thread turnaround sim doesn't do; this single
-      category reconciles the fedbuff_round/felix_round per_round_advance gap
-      (simulate_fwdllm.md §B, 07-28 telemetry).
+    rationale: "sim's own live span (~0.033s) is ~13x smaller than real -- a real\
+      \ MQTT/dispatch-thread turnaround sim doesn't do; this single category reconciles\
+      \ the fedbuff_round/felix_round per_round_advance gap (simulate_fwdllm.md \xA7\
+      B, 07-28 telemetry)."
     source_runs:
-    - run_20260728_151722_felix_round_n100_smoke_syn_0_real
-    - run_20260728_151831_fedbuff_round_n100_smoke_syn_0_real
+    - run_20260728_175740_felix_round_n100_smoke_syn_0_real
+    - run_20260728_175756_fedbuff_round_n100_smoke_syn_0_real

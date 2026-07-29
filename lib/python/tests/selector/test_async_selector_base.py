@@ -22,6 +22,7 @@ from flame.channel import (
 from flame.config import TrainerAvailState
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD
 from flame.selector.async_base import AsyncSelectorBase, SelectContext
+from flame.selector.async_oort import AsyncOortSelector
 from flame.selector.async_random import AsyncRandomSelector
 from flame.selector.fedbuff import FedBuffSelector
 from flame.selector.properties import PROP_AVL_STATE
@@ -29,10 +30,19 @@ from flame.selector.properties import PROP_AVL_STATE
 BUILDERS = [
     lambda **kw: FedBuffSelector(_seed=7, c=kw.pop("c", 4), aggGoal=2, **kw),
     lambda **kw: AsyncRandomSelector(_seed=7, c=kw.pop("c", 4), aggGoal=2, **kw),
+    # §F-26: async_oort re-based onto AsyncSelectorBase (simulate_fwdllm.md
+    # known-gap). No PROP_STAT_UTILITY on the generic `make_ends` fixture ->
+    # every candidate reads as unexplored -> Oort's own "empty utility_list"
+    # fallback (select_random, uniform via _keyed_topk) drives these generic
+    # contract tests, same mechanism fedbuff/async_random use directly.
+    lambda **kw: AsyncOortSelector(
+        _seed=7, c=kw.pop("c", 4), aggGoal=2, evalGoalFactor=0.5,
+        roundNudgeType="last_train", selectType="default", **kw,
+    ),
 ]
 
 
-@pytest.fixture(params=BUILDERS, ids=["fedbuff", "async_random"])
+@pytest.fixture(params=BUILDERS, ids=["fedbuff", "async_random", "async_oort"])
 def build(request):
     return request.param
 
@@ -365,28 +375,36 @@ class TestDisconnectedSelectionsFreeTheirSlot:
 class TestChoiceIsPoolSizeIndependent:
     """`_keyed_topk` ranks each id by a key derived only from itself, so a
     trainer's incidental presence can't shift anyone else's draw -- the failure
-    mode of index-based `random.sample`/reservoir sampling across real vs sim."""
+    mode of index-based `random.sample`/reservoir sampling across real vs sim.
 
-    def test_extra_candidate_does_not_reorder_the_others(self, build):
+    Real `End`-like objects (via `make_ends`), not bare `{id: None}`: Oort's
+    `_choose` reads `PROP_STAT_UTILITY` off every candidate before its
+    model_version==0 branch even runs. With none set, every candidate reads
+    as unexplored and Oort falls back to `select_random` (`_keyed_topk`
+    underneath -- the same mechanism fedbuff/async_random's `_choose` always
+    uses), so the pool-size-independence property applies generically.
+    `model_version=0` additionally pins Oort to its documented first-round path."""
+
+    def test_extra_candidate_does_not_reorder_the_others(self, build, make_ends):
         sel = build()
-        ctx = SelectContext(agg_version_key=(1, 0))
-        small = {f"t{i}": None for i in range(8)}
-        large = dict(small, extra_one=None, extra_two=None)
+        ctx = SelectContext(agg_version_key=(1, 0), model_version=0)
+        small = make_ends(count=8, prefix="t")
+        large = dict(small, **make_ends(["extra_one", "extra_two"]))
 
         ranked_small = sel._choose(small, 8, ctx)
         ranked_large = [e for e in sel._choose(large, 10, ctx) if e in small]
         assert ranked_small == ranked_large
 
-    def test_selection_is_seed_reproducible(self, build):
-        ctx = SelectContext(agg_version_key=(1, 0))
-        ends = {f"t{i}": None for i in range(20)}
+    def test_selection_is_seed_reproducible(self, build, make_ends):
+        ctx = SelectContext(agg_version_key=(1, 0), model_version=0)
+        ends = make_ends(count=20, prefix="t")
         assert build()._choose(ends, 5, ctx) == build()._choose(ends, 5, ctx)
 
-    def test_version_key_advance_rerolls_the_order(self, build):
+    def test_version_key_advance_rerolls_the_order(self, build, make_ends):
         sel = build()
-        ends = {f"t{i}": None for i in range(20)}
-        first = sel._choose(ends, 5, SelectContext(agg_version_key=(1, 0)))
-        second = sel._choose(ends, 5, SelectContext(agg_version_key=(2, 0)))
+        ends = make_ends(count=20, prefix="t")
+        first = sel._choose(ends, 5, SelectContext(agg_version_key=(1, 0), model_version=0))
+        second = sel._choose(ends, 5, SelectContext(agg_version_key=(2, 0), model_version=0))
         assert first != second
 
 
