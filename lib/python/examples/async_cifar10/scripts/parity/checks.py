@@ -426,6 +426,19 @@ def _per_round_last_event(agg_rounds: list) -> dict:
     return by_round
 
 
+# `round`-axis progress (async_cifar10) is self-verifying: `round` only
+# increments after a genuine close, so an event's presence already proves
+# completion -- no commit-evidence field needed. `data_id`-axis progress
+# (fwdllm-family) has no such guarantee (many retry attempts share one
+# data_id before it maybe commits), so `_per_progress_last_event` requires
+# this field == True per key (§D-13). Hardcoded, not a knob: every current
+# `data_id`-axis baseline shares one aggregator class (fwdllm_aggregator.py)
+# and this one field name. A future baseline on a NEW progress axis, or a
+# `data_id`-axis one from a different aggregator, needs its own commit
+# signal here -- check `_progress_axis` too, same assumption applies there.
+_DATA_ID_COMMIT_FIELD = "var_good_enough"
+
+
 def _progress_axis(agg_rounds: list) -> str:
     """The run's true progress axis. Normal FL advances FL `round`; fwdllm holds
     `round` static (one model, grads aggregated in place) and advances committed
@@ -454,10 +467,19 @@ def _per_progress_last_event(agg_rounds: list, axis: str) -> dict:
     `cycle_data_id` wraps mod `total_data_bins` each lap, so keying on the raw
     value alone collapses events from different laps onto the same key and
     produces out-of-order advances. The composite tuple sorts chronologically
-    without needing to know `total_data_bins`."""
+    without needing to know `total_data_bins`.
+
+    On the `data_id` axis, a key is dropped unless verified (see
+    `_DATA_ID_COMMIT_FIELD` above) -- a run stopped by `max_runtime_s` mid
+    variance-check can emit one event for a data bin it never finished, and
+    every consumer here treats a key's presence as "reached" (§D-13). Falls
+    back to unfiltered if NO key anywhere verifies (field absent, or a fixture
+    that never sets it) -- zero verified progress is more likely "field not
+    meaningful here" than a real run with zero progress."""
     if axis == "round":
         return _per_round_last_event(agg_rounds)
     out: dict = {}
+    verified: set = set()
     for e in agg_rounds:
         k = e.get("cycle_data_id")
         if k is None:
@@ -465,7 +487,11 @@ def _per_progress_last_event(agg_rounds: list, axis: str) -> dict:
         key = (e.get("round") or 0, k)
         if key not in out or e.get("ts", 0) > out[key].get("ts", 0):
             out[key] = e
-    return out
+        if e.get(_DATA_ID_COMMIT_FIELD) is True:
+            verified.add(key)
+    if not verified:
+        return out
+    return {k: v for k, v in out.items() if k in verified}
 
 
 def _per_round_max_speed(agg_rounds: list) -> dict:
@@ -518,6 +544,10 @@ def _matched_logical_budget(real_agg_rounds: list, sim_agg_rounds: list):
     Returns (N, prog_fn) or (None, None). `prog_fn(event) -> progress_key or
     None` -- a `round` int, or the `(round, cycle_data_id)` tuple that sorts
     across laps; compare with N via `<=`.
+
+    Ceiling per side is `_per_progress_last_event`'s keys, not the raw max --
+    reuses that helper's `data_id`-axis commit filter (§D-13) instead of
+    duplicating it, so every consumer agrees on what "reached" means (§F-26).
     """
     axis = "data_id" if "data_id" in (_progress_axis(real_agg_rounds),
                                       _progress_axis(sim_agg_rounds)) else "round"
@@ -526,11 +556,11 @@ def _matched_logical_budget(real_agg_rounds: list, sim_agg_rounds: list):
     else:
         prog_fn = lambda e: ((e.get("round") or 0, e.get("cycle_data_id"))
                              if e.get("cycle_data_id") is not None else None)
-    real_p = [p for e in real_agg_rounds if (p := prog_fn(e)) is not None]
-    sim_p = [p for e in sim_agg_rounds if (p := prog_fn(e)) is not None]
-    if not real_p or not sim_p:
+    real_keys = _per_progress_last_event(real_agg_rounds, axis)
+    sim_keys = _per_progress_last_event(sim_agg_rounds, axis)
+    if not real_keys or not sim_keys:
         return None, None
-    return min(max(real_p), max(sim_p)), prog_fn
+    return min(max(real_keys), max(sim_keys)), prog_fn
 
 
 def _time_to_progress(agg_rounds: list, prog_fn, N, time_fn) -> Optional[float]:

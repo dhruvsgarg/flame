@@ -22,6 +22,21 @@ across all given runs, and writes mean/p50/p90/n + provenance into `--out`.
 Existing entries' `charge:`/`rationale:` are preserved on refresh; a brand
 new (label, payload_kind) is written with `charge: false` (review before
 enabling) unless named in `--enable`.
+
+`redispatch_turnaround` is a special case (simulate_fwdllm.md §B, 07-29
+overcharge finding): its `post_close_overhead_wall_s` is CUMULATIVE from a
+shared round-close wall-ts across every trainer redispatched in that batch
+(`build_redispatch_decomp`'s own docstring: "now - round-close wall ts"), not
+a standalone per-trainer cost -- the aggregator dispatches trainers in one
+serial loop, so the k-th trainer's reading already includes the 1..k-1
+trainers' dispatch wall ahead of it. Pooling those raw readings into one flat
+mean (the generic path above) measures roughly HALF of a typical batch's
+total span and then charges that flat amount to EVERY trainer in the batch,
+overcharging by the batch size (confirmed 7.3-8.3x on fedbuff_round/
+felix_round's 5400s pair). Fixed by grouping `redispatch_decomp` events per
+(data_id, iteration_per_data_id) batch, sorting by ts, and pooling the FIRST
+DIFFERENCE between consecutive positions -- the true per-trainer marginal
+cost the charging loop actually adds one trainer at a time.
 """
 from __future__ import annotations
 
@@ -37,7 +52,8 @@ import yaml
 
 
 def _load_real_spans(run_dir: str) -> dict:
-    """{(label, payload_kind or '_default'): [span_s, ...]} from one real run."""
+    """{(label, payload_kind or '_default'): [span_s, ...]} from one real run.
+    Excludes `redispatch_turnaround` -- see `_load_real_redispatch_marginal`."""
     out = defaultdict(list)
     files = glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl"))
     if not files:
@@ -50,10 +66,49 @@ def _load_real_spans(run_dir: str) -> dict:
                 continue
             if e.get("event") != "vclock_charge" or e.get("time_mode") != "real":
                 continue
+            if e.get("label") == "redispatch_turnaround":
+                continue
             span = e.get("span_s")
             if span is None:
                 continue
             out[(e["label"], e.get("payload_kind") or "_default")].append(span)
+    return out
+
+
+def _load_real_redispatch_marginal(run_dir: str) -> dict:
+    """{("redispatch_turnaround", payload_kind or '_default'): [marginal_s, ...]}
+    from one real run's `redispatch_decomp` events -- see module docstring.
+    Groups by (data_id, iteration_per_data_id) (one redispatch batch), sorts
+    by ts (loop dispatch order, mixed payload kinds), and takes the first
+    difference of `post_close_overhead_wall_s` between consecutive positions
+    (position 0's own cumulative reading is already its marginal cost, since
+    nothing precedes it in the batch)."""
+    batches = defaultdict(list)
+    files = glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl"))
+    if not files:
+        raise SystemExit(f"no telemetry/aggregator_*.jsonl under {run_dir}")
+    with open(files[0]) as f:
+        for line in f:
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("event") != "redispatch_decomp" or e.get("time_mode") != "real":
+                continue
+            span = e.get("post_close_overhead_wall_s")
+            if span is None:
+                continue
+            key = (e.get("data_id"), e.get("iteration_per_data_id"))
+            batches[key].append(
+                (e.get("ts", 0.0), e.get("payload_kind") or "_default", span))
+
+    out = defaultdict(list)
+    for evts in batches.values():
+        evts.sort(key=lambda t: t[0])
+        prev = 0.0
+        for _, pk, span in evts:
+            out[("redispatch_turnaround", pk)].append(max(span - prev, 0.0))
+            prev = span
     return out
 
 
@@ -74,6 +129,8 @@ def main():
     pooled = defaultdict(list)
     for run_dir in args.real_runs:
         for key, spans in _load_real_spans(run_dir).items():
+            pooled[key].extend(spans)
+        for key, spans in _load_real_redispatch_marginal(run_dir).items():
             pooled[key].extend(spans)
 
     registry = {}
