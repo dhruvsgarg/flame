@@ -62,6 +62,7 @@ class _Agg:
     _warn_if_redundant_weights_resend = TopAggregator._warn_if_redundant_weights_resend
     _already_served_current_instruction = TopAggregator._already_served_current_instruction
     _mark_instruction_served = TopAggregator._mark_instruction_served
+    _outstanding_dispatch_count = TopAggregator._outstanding_dispatch_count
 
     def __init__(self, dq):
         self.simulated = True

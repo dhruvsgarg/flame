@@ -189,10 +189,12 @@ class TestLagDecompLog:
 # ---------------------------------------------------------------------------
 
 class _DChan:
-    def __init__(self):
+    def __init__(self, send_ends=("A",), c=30):
         self.properties = {}
         self.props = {}
         self.sent = []
+        self._send_ends = list(send_ends)
+        self._c = c
 
     def await_join(self):
         return True
@@ -203,7 +205,7 @@ class _DChan:
     def ends(self, *args, **kwargs):
         if args and args[0] == VAL_CH_STATE_RECV:
             return []
-        return ["A"]
+        return list(self._send_ends)
 
     def set_end_property(self, end, key, value):
         self.props[(end, key)] = value
@@ -215,7 +217,7 @@ class _DChan:
         self.sent.append(end)
 
     def get_c(self):
-        return 30
+        return self._c
 
 
 class _Buf:
@@ -232,11 +234,17 @@ class _DAgg:
     _warn_if_redundant_weights_resend = TopAggregator._warn_if_redundant_weights_resend
     _already_served_current_instruction = TopAggregator._already_served_current_instruction
     _mark_instruction_served = TopAggregator._mark_instruction_served
+    _outstanding_dispatch_count = TopAggregator._outstanding_dispatch_count
 
-    def __init__(self, simulated=False):
+    def __init__(self, simulated=False, send_ends=("A",), c=30):
         self.simulated = simulated
         self.trainer_event_dict = None
-        self._chan = _DChan()
+        self._chan = _DChan(send_ends=send_ends, c=c)
+        self._per_agg_trainer_list = _OrderedContributorList()
+        self._trainer_inflight_dispatch_version = {}
+        self._real_pending_commit = _PendingCommitUnion(
+            self._trainer_inflight_dispatch_version, self._per_agg_trainer_list
+        )
         self.cm = types.SimpleNamespace(get_by_tag=lambda _t: self._chan)
         self._round = 1
         self.data_id = 0
@@ -474,5 +482,120 @@ class TestRedispatchDecompTelemetry:
             assert ch["charge_source"] == "none"
             assert ch["charged_s"] == 0.0
             assert agg._vclock.now == 0.0
+        finally:
+            telemetry.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# §D-15 dispatch-loop tripwires (both modes, INV) -- pure telemetry, no
+# behaviour change, so the fix's effect is measured rather than asserted.
+# ---------------------------------------------------------------------------
+
+def _armed(agg, ends):
+    """Give each end a prior commit so the redispatch_decomp event fires."""
+    t0 = time.time() - 1.0
+    for e in ends:
+        agg._last_commit_wall_ts[e] = t0
+    agg._last_round_close_wall_ts = t0
+
+
+class TestConcurrencyCapTripwire:
+    """Tripwire A: outstanding dispatched-not-committed ends must never exceed the
+    selector's `c`. Counted off whichever pending-commit construct the mode owns --
+    sim's `_sim_pending_commit`, real's `_PendingCommitUnion`."""
+
+    def test_under_cap_reports_fields_and_stays_quiet(self, tmp_path, caplog):
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _DAgg()
+            _armed(agg, ["A"])
+            with caplog.at_level("WARNING"):
+                agg._distribute_weights_async("t")
+            ev = _events(tmp_path, "redispatch_decomp")[0]
+            assert ev["outstanding_at_dispatch"] == 1
+            assert ev["concurrency_target"] == 30
+            assert not [r for r in caplog.records if "[CONCURRENCY_CAP]" in r.message]
+        finally:
+            telemetry.shutdown()
+
+    def test_breach_warns_and_reports_the_count_real(self, tmp_path, caplog):
+        """c+1 dispatches with no intervening commit: real's union grows with each
+        `_trainer_inflight_dispatch_version` stamp, so the 3rd send breaches c=2."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _DAgg(send_ends=("A", "B", "C"), c=2)
+            _armed(agg, ["A", "B", "C"])
+            with caplog.at_level("WARNING"):
+                agg._distribute_weights_async("t")
+            breaches = [r for r in caplog.records if "[CONCURRENCY_CAP]" in r.message]
+            assert len(breaches) == 1
+            assert "outstanding=3 > c=2" in breaches[0].message
+            evs = _events(tmp_path, "redispatch_decomp")
+            assert [e["outstanding_at_dispatch"] for e in evs] == [1, 2, 3]
+            assert {e["concurrency_target"] for e in evs} == {2}
+        finally:
+            telemetry.shutdown()
+
+    def test_sim_counts_off_the_sim_pending_set(self, tmp_path, caplog):
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _DAgg(simulated=True, send_ends=("A", "B", "C"), c=2)
+            _armed(agg, ["A", "B", "C"])
+            with caplog.at_level("WARNING"):
+                agg._distribute_weights_async("t")
+            assert agg._sim_pending_commit == {"A", "B", "C"}
+            evs = _events(tmp_path, "redispatch_decomp")
+            assert [e["outstanding_at_dispatch"] for e in evs] == [1, 2, 3]
+            assert [r for r in caplog.records if "[CONCURRENCY_CAP]" in r.message]
+        finally:
+            telemetry.shutdown()
+
+
+class TestRetaskBeforeCloseTripwire:
+    """Tripwire B: an end that already contributed to the currently-OPEN agg cycle
+    must not be dispatched again until that cycle closes and `version_key`
+    advances -- neither payload is legitimate before the variance check runs.
+    `_already_served_current_instruction` does not cover this (the end's serving
+    key is cycles stale by then, so it doesn't match and the guard passes)."""
+
+    def test_clean_dispatch_reports_false(self, tmp_path, caplog):
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _DAgg()
+            _armed(agg, ["A"])
+            with caplog.at_level("WARNING"):
+                agg._distribute_weights_async("t")
+            assert _events(tmp_path, "redispatch_decomp")[0]["retask_before_close"] is False
+            assert not [r for r in caplog.records
+                        if "[RETASK_BEFORE_CLOSE]" in r.message]
+        finally:
+            telemetry.shutdown()
+
+    def test_open_cycle_contributor_is_flagged(self, tmp_path, caplog):
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _DAgg(send_ends=("A", "B"))
+            _armed(agg, ["A", "B"])
+            agg._per_agg_trainer_list.append("A")   # A already committed this cycle
+            with caplog.at_level("WARNING"):
+                agg._distribute_weights_async("t")
+            flagged = {e["end_id"]: e["retask_before_close"]
+                       for e in _events(tmp_path, "redispatch_decomp")}
+            assert flagged == {"A": True, "B": False}
+            warns = [r for r in caplog.records if "[RETASK_BEFORE_CLOSE]" in r.message]
+            assert len(warns) == 1 and "end=A" in warns[0].message
+        finally:
+            telemetry.shutdown()
+
+    def test_dispatch_still_happens_telemetry_only(self, tmp_path):
+        """The tripwire must not change behaviour -- the fix is the deferred slot
+        release, not a dispatch-time skip, so the send still goes out."""
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            agg = _DAgg()
+            _armed(agg, ["A"])
+            agg._per_agg_trainer_list.append("A")
+            agg._distribute_weights_async("t")
+            assert agg._chan.sent == ["A"]
         finally:
             telemetry.shutdown()

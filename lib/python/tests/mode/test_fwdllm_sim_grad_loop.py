@@ -750,17 +750,20 @@ class _LoopAgg(_FakeGradAgg):
 
 class TestCommitThenProcessFreesTheSlot:
     """Regression (simulate_fwdllm.md §F.1-23). In sim, _aggregate_grads_async
-    calls _sim_recv_min_grad (COMMIT: discards the end from _sim_pending_commit
-    at its sct) and THEN _process_single_trainer_message on that same grad. The
-    latter must NOT re-add to _sim_pending_commit -- doing so re-pins every
-    committed trainer, `selected_ends` never shrinks, distribute finds no free
-    slot, and re-dispatch across variance-retry iterations deadlocks. The unit
-    test checks _process in isolation; this drives the full seam and asserts the
-    slot actually frees."""
+    calls _sim_recv_min_grad (COMMIT) and THEN _process_single_trainer_message on
+    that same grad. The latter must NOT re-add to _sim_pending_commit -- doing so
+    re-pins every committed trainer, `selected_ends` never shrinks, distribute
+    finds no free slot, and re-dispatch across variance-retry iterations
+    deadlocks. The unit test checks _process in isolation; this drives the full
+    seam and asserts the slot actually frees.
 
-    def _dispatched(self, ends, scts):
+    WHERE the release happens depends on the declared contract (§D-15):
+    `inflight_residence` on -> the agg-goal boundary owns it (real's
+    `cleanup_recvd_ends()` twin); off -> legacy per-commit release."""
+
+    def _dispatched(self, ends, scts, residence=False):
         agg = _LoopAgg()
-        agg._inflight_residence = True
+        agg._inflight_residence = residence
         ch = _LoopChannel(ends)
         agg._sim_pending_commit = set(ends)            # dispatch pinned them
         agg._sim_inflight_expected = dict(zip(ends, scts))
@@ -788,6 +791,68 @@ class TestCommitThenProcessFreesTheSlot:
         for _ in range(2):
             msg, md = agg._sim_recv_min_grad(ch, ["X", "Y"])
             agg._process(ch, msg, md[0], md[1])
+
+        assert agg._sim_pending_commit == set()
+        assert ch._selector.selected_ends["agg"] == set()
+
+
+class TestResidenceHoldsCommitterToCycleClose:
+    """§D-15 root-cause fix. With `inflight_residence` declared (both fwdllm
+    configs do), a commit no longer frees the trainer: it stays pinned until the
+    agg-goal boundary, so it cannot be re-tasked mid-cycle under the very
+    `version_key` it just answered -- before that cycle's variance check has run.
+    Real already behaved this way (`_release_end_on_return` defers to
+    `channel.cleanup_recvd_ends()`); sim was violating its own declared
+    contract."""
+
+    def _dispatched(self, ends, scts):
+        agg = _LoopAgg()
+        agg._inflight_residence = True
+        ch = _LoopChannel(ends)
+        agg._sim_pending_commit = set(ends)
+        agg._sim_inflight_expected = dict(zip(ends, scts))
+        for e, s in zip(ends, scts):
+            ch._msgs[e] = _full_grad_msg(sct=s)
+        return agg, ch
+
+    def test_commit_alone_does_not_free_the_committer(self):
+        agg, ch = self._dispatched(["X", "Y"], [10.0, 20.0])
+
+        msg, md = agg._sim_recv_min_grad(ch, ["X", "Y"])   # commit X (min sct)
+        agg._process(ch, msg, md[0], md[1])
+
+        # X's cycle hasn't closed -> still pinned, so the selector's
+        # `_agg_pending_commit_ref` filter keeps excluding it from re-selection...
+        assert agg._sim_pending_commit == {"X", "Y"}
+        # ...and the next reconcile re-asserts its slot (the return-path release
+        # frees the CHANNEL slot to keep concurrency flat; the pin is the guard).
+        agg._sim_hold_busy_slots(ch)
+        assert ch._selector.selected_ends["agg"] == {"X", "Y"}
+
+    def test_boundary_releases_only_this_cycle_s_committers(self):
+        agg, ch = self._dispatched(["X", "Y"], [10.0, 20.0])
+
+        msg, md = agg._sim_recv_min_grad(ch, ["X", "Y"])
+        agg._process(ch, msg, md[0], md[1])
+        agg._release_sim_slots_at_agg_goal(ch, is_async=True)
+
+        # X committed into the closed cycle -> re-taskable now; Y is still in
+        # flight (carried surplus) -> keeps its pin and its slot.
+        assert agg._sim_pending_commit == {"Y"}
+        assert ch._selector.selected_ends["agg"] == {"Y"}
+        assert agg._sim_committed == set()
+
+    def test_full_cycle_drains_the_pool_at_the_boundary(self):
+        """The deadlock guard restated for the deferred release: nothing may stay
+        pinned once every dispatched grad has committed AND the cycle closed."""
+        agg, ch = self._dispatched(["X", "Y"], [10.0, 20.0])
+
+        for _ in range(2):
+            msg, md = agg._sim_recv_min_grad(ch, ["X", "Y"])
+            agg._process(ch, msg, md[0], md[1])
+        assert agg._sim_pending_commit == {"X", "Y"}       # held to the boundary
+
+        agg._release_sim_slots_at_agg_goal(ch, is_async=True)
 
         assert agg._sim_pending_commit == set()
         assert ch._selector.selected_ends["agg"] == set()

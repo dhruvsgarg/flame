@@ -329,6 +329,9 @@ def build_redispatch_decomp(
     post_close_overhead_wall_s: float,
     time_mode: str,
     payload_kind: str = "weights",
+    outstanding_at_dispatch: Optional[int] = None,
+    concurrency_target: Optional[int] = None,
+    retask_before_close: Optional[bool] = None,
 ) -> tuple[str, dict[str, Any]]:
     """fwdllm round-cadence: split a trainer's commit->next-dispatch WALL gap
     into peer-wait vs post-close overhead.
@@ -358,8 +361,21 @@ def build_redispatch_decomp(
     means the SIMULATOR's own wall-clock redispatch loop is faster, not that a
     cost is unmodeled on the vclock -- compare against `overhead_residual`/
     `per_round_advance` (vclock-based) before concluding a vclock gap exists.
+
+    Two per-dispatch INVARIANT tripwires ride this event, both single-side
+    decidable (no real/sim diff needed):
+
+    ``outstanding_at_dispatch`` / ``concurrency_target`` -- dispatched-not-yet-
+    committed ends after this dispatch vs the selector's `c`. Above `c` = the
+    dispatch loop found free capacity that doesn't exist.
+
+    ``retask_before_close`` -- this end had ALREADY contributed to the still-OPEN
+    agg cycle, so the payload asserts a variance verdict the aggregator hasn't
+    computed (simulate_fwdllm.md §D-15). Must always be False;
+    `_already_served_current_instruction` can't see it (the end's serving key is
+    cycles stale by then, so it doesn't match and the guard passes).
     """
-    return EVENT_REDISPATCH_DECOMP, {
+    fields: dict[str, Any] = {
         "end_id": end_id,
         "round": round_num,
         "data_id": data_id,
@@ -370,6 +386,14 @@ def build_redispatch_decomp(
         "time_mode": time_mode,
         "payload_kind": payload_kind,
     }
+    for k, v in (
+        ("outstanding_at_dispatch", outstanding_at_dispatch),
+        ("concurrency_target", concurrency_target),
+        ("retask_before_close", retask_before_close),
+    ):
+        if v is not None:
+            fields[k] = v
+    return EVENT_REDISPATCH_DECOMP, fields
 
 
 def build_vclock_charge(

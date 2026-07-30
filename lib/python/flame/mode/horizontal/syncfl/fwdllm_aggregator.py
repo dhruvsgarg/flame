@@ -335,6 +335,12 @@ class _PendingCommitUnion:
             if end not in seen:
                 yield end
 
+    def __len__(self) -> int:
+        """Deduped size across both halves (an end can sit in either, never
+        both at once, but don't rely on that) -- the concurrency-cap tripwire
+        reads the outstanding count off this."""
+        return len(set(iter(self)))
+
     def discard(self, end) -> None:
         """R1 timeout eviction (`async_base.py`) drops a departed end from both halves."""
         self._inflight_dispatch.pop(end, None)
@@ -1233,9 +1239,14 @@ class TopAggregator(AsyncTopAgg):
         # stops holding for a batch of same-expected stragglers. Sim-only + gated.
         if getattr(self, "_sim_staggered_redispatch", False):
             self._sim_free_slot_ts.append(self._vclock.now)
-        # Grad committed -> trainer no longer in flight in virtual time -> drop it
-        # from pending so it is re-pickable (_sim_hold_busy_slots reconciles too).
-        self._sim_pending_commit.discard(_end)
+        # Under the declared `inflight_residence` contract the release belongs to the
+        # AGG-GOAL BOUNDARY (`_release_sim_slots_at_agg_goal`, real's
+        # `cleanup_recvd_ends()` twin), not to this commit: releasing here re-tasked
+        # the end mid-cycle under the `version_key` it had just answered, before that
+        # cycle's variance check (§D-15, the throughput root cause). Flag off keeps
+        # the legacy per-commit release, byte-identical.
+        if not getattr(self, "_inflight_residence", False):
+            self._sim_pending_commit.discard(_end)
         # MODELED_DELAY_S was already learned into _sim_known_delay_s
         # at ingest time above.
         # Reassert selected_ends == the virtual-time in-flight set after this
@@ -1282,10 +1293,11 @@ class TopAggregator(AsyncTopAgg):
         """Sim slot release at the agg-goal boundary. Two policies (§L):
 
         - async + inflight_residence (fluxtune, c >> agg_goal): commit-then-
-          carry. Hold still-busy trainers before clearing and carry the surplus
-          buffer to the next fedbuff step. `_sim_hold_busy_slots` holds every
-          dispatched-but-not-committed trainer (computing ∪ carried) in both its
-          compute slot and re-pick guard until its grad commits.
+          carry. Release THIS cycle's committers (deferred from their own commit --
+          see `_sim_recv_min_grad`), hold the still-busy trainers, and carry the
+          surplus buffer to the next fedbuff step. `_sim_hold_busy_slots` holds
+          every dispatched-but-not-committed trainer (computing ∪ carried) in both
+          its compute slot and re-pick guard.
         - else (sync barriers c ≈ agg_goal, or residence off): legacy drop -- no
           surplus, so clearing is correct and flag-off is byte-identical.
 
@@ -1304,6 +1316,10 @@ class TopAggregator(AsyncTopAgg):
             _sim_sync_committed.clear()
         self._sim_sync_barrier_durs = []
         if is_async and getattr(self, "_inflight_residence", False):
+            # The cycle has closed and `version_key` is about to advance, so its
+            # committers are re-taskable now (and only now). In-place, never
+            # rebound -- the selector holds a live reference.
+            self._sim_pending_commit.difference_update(self._sim_committed)
             self._sim_hold_busy_slots(channel)   # reads buffer/in-flight -> hold before clear
             self._sim_committed.clear()
             return  # keep _sim_buffer / _sim_inflight_expected -> carry surplus
@@ -1324,14 +1340,15 @@ class TopAggregator(AsyncTopAgg):
         whose delay isn't learned yet -- see the `outstanding` comment below),
         holding both its compute slot (`selected_ends`, drives
         `extra = c − len(selected_ends)`) and its re-pick guard (`all_selected`)
-        until its grad commits.
+        until the agg-goal boundary releases it (`inflight_residence`; else until
+        its grad commits).
 
         WHY: a returned-but-uncommitted trainer is still in flight in virtual time
         (its grad commits only when the vclock reaches its sct), so its slot is
         genuinely occupied. Freeing on physical RETURN collapsed `selected_ends`
         to the physically-computing few while many were truly in flight, so the
         in_flight telemetry undercounted and `extra` read false free capacity.
-        Holding to COMMIT also keeps one-in-flight-per-trainer across the carry
+        Holding past COMMIT also keeps one-in-flight-per-trainer across the carry
         boundary + variance-FAIL rollbacks. Idempotent -- safe per-commit and at
         the boundary. fwdllm-class override only (adds the triplet prune).
         """
@@ -1347,19 +1364,16 @@ class TopAggregator(AsyncTopAgg):
         # only holds an entry once a trainer's delay has been LEARNED from a
         # prior message, so a trainer's FIRST-EVER dispatch is invisible to it.
         # Folding in `_sim_pending_commit` (added unconditionally at dispatch,
-        # discarded only on commit) closes that gap: a first-time trainer now
-        # stays held until it genuinely commits, instead of being wiped from
-        # `all_selected` the instant any OTHER trainer's commit triggers this
-        # reconcile. Safe to read here because `_sim_pending_commit.discard(_end)`
-        # (commit path) always runs before this function for that same commit
-        # event -- see `_sim_recv_min_grad`, which calls both in that order.
+        # dropped at the agg-goal boundary under `inflight_residence`, else on
+        # commit) closes that gap: a first-time trainer now stays held until it
+        # genuinely commits, instead of being wiped from `all_selected` the instant
+        # any OTHER trainer's commit triggers this reconcile.
         #
-        # Do NOT subtract `_sim_committed`: it is a stale cross-cycle marker
-        # cleared only at the agg-goal boundary, so a trainer that committed then
-        # got re-picked + re-dispatched (re-added to `_sim_inflight_expected`/
-        # `_sim_pending_commit`) would be wrongly dropped -> re-pickable while its
-        # new dispatch is in flight -> R1 violation. One that committed THIS cycle
-        # is already absent from all three sets, so the subtraction was redundant.
+        # Do NOT subtract `_sim_committed` here -- the boundary owns that release
+        # (`_release_sim_slots_at_agg_goal` subtracts before calling this). Doing it
+        # per-commit re-tasks a contributor mid-cycle (§D-15), and drops a trainer
+        # that committed in an EARLIER cycle and was since re-dispatched ->
+        # re-pickable while in flight -> R1 violation.
         outstanding = set(self._sim_inflight_expected) | buffered | set(self._sim_pending_commit)
         # `_sim_pending_commit` is the authoritative virtual in-flight set;
         # reconcile it to `outstanding` in place (clear+update, never rebind -- the
@@ -3591,6 +3605,16 @@ class TopAggregator(AsyncTopAgg):
         if served is not None:
             served[end] = self.version_key
 
+    def _outstanding_dispatch_count(self) -> int:
+        """Ends dispatched but not yet released back to the pool, read off
+        whichever pending-commit construct this mode owns: sim's single
+        `_sim_pending_commit` set, or real's `_PendingCommitUnion` (in-flight ∪
+        returned-not-committed). Feeds the concurrency-cap tripwire only -- no
+        new state, and no side effects."""
+        pending = (getattr(self, "_sim_pending_commit", None) if self.simulated
+                   else getattr(self, "_real_pending_commit", None))
+        return len(pending) if pending is not None else 0
+
     def _should_send_full_weights(self, end, is_stale: bool) -> bool:
         """Decide WEIGHTS vs the tiny VAR=bad 'keep training' message for one end.
 
@@ -4041,6 +4065,19 @@ class TopAggregator(AsyncTopAgg):
             # (~3654), which async lacked (was flooding VAR=bad, r1_inflight_overlap).
             if self._already_served_current_instruction(end):
                 continue
+            # Tripwire B [INV, both modes]: invariant 1 at DISPATCH level -- no
+            # re-tasking a still-OPEN cycle's contributor before `version_key`
+            # advances, since neither payload is legitimate until the variance check
+            # runs. The guard above can't see this: the end's serving key is ~2
+            # cycles stale by then, so it doesn't match and passes (§D-15).
+            _retask_before_close = end in (
+                getattr(self, "_per_agg_trainer_list", None) or ())
+            if _retask_before_close:
+                logger.warning(
+                    f"[RETASK_BEFORE_CLOSE] end={end} already contributed to the "
+                    f"open cycle version_key={self.version_key}; re-tasked before "
+                    f"that cycle closed"
+                )
             trainer_version = self._trainer_last_model_version.get(end, -1)
             is_stale = (trainer_version != self._model_version)
             # Opt-1: shared decision with the sync path (_should_send_full_weights).
@@ -4108,13 +4145,31 @@ class TopAggregator(AsyncTopAgg):
                     payload[MessageType.SIM_SEND_TS] = _sst
                 # Once dispatched a trainer is in flight in virtual time -> add to
                 # the pending-commit set so the selector's eligibility filter
-                # excludes it until its grad COMMITS (discarded in _sim_recv_min_grad).
+                # excludes it until its cycle closes (released in
+                # _release_sim_slots_at_agg_goal).
                 self._sim_pending_commit.add(end)
                 # NOTE: the async_oort re-pick triplet is stamped on grad RETURN,
                 # not here at dispatch -- stamping the whole cohort at the current
                 # _curr_agg_version froze the eligible pool before any commit could
                 # advance the version (re-dispatch deadlock). An in-flight trainer
                 # is already guarded by its compute slot.
+            # Diagnostic: this end now carries an outstanding dispatch at the CURRENT
+            # version_key until it returns (cleared in _process_single_trainer_message).
+            # Real's half of the pending-commit union -- kept adjacent to sim's `add`
+            # above so the cap tripwire counts this dispatch in either mode.
+            if getattr(self, "_trainer_inflight_dispatch_version", None) is not None:
+                self._trainer_inflight_dispatch_version[end] = self.version_key
+            # Tripwire A [INV, both modes]: outstanding dispatched-not-committed ends
+            # must never exceed the selector's `c`. Read off whichever pending-commit
+            # construct this mode owns -- no new state. Warning ungated: rare by
+            # construction, and if it isn't, that is the finding.
+            _outstanding = self._outstanding_dispatch_count()
+            _conc_target = channel.get_c()
+            if _conc_target is not None and _outstanding > int(_conc_target):
+                logger.warning(
+                    f"[CONCURRENCY_CAP] outstanding={_outstanding} > c={_conc_target} "
+                    f"(end={end} version_key={self.version_key})"
+                )
             # One dispatch message onto the wire (async path).
             try:
                 _sz = _bytes_weights if _pk == "weights" else _bytes_var_bad
@@ -4155,6 +4210,10 @@ class TopAggregator(AsyncTopAgg):
                         post_close_overhead_wall_s=_rd_post_close,
                         time_mode="sim" if self.simulated else "real",
                         payload_kind=_pk,
+                        outstanding_at_dispatch=_outstanding,
+                        concurrency_target=(
+                            int(_conc_target) if _conc_target is not None else None),
+                        retask_before_close=_retask_before_close,
                     )
                     telemetry.emit(ev, **f)
                 except Exception as e:
@@ -4177,11 +4236,6 @@ class TopAggregator(AsyncTopAgg):
                     charge=(_rd_profiled is not None),
                     payload_kind=_pk, profiled_s=_rd_profiled,
                 )
-            # Diagnostic: this end now carries an outstanding dispatch at the
-            # CURRENT version_key until it returns (cleared on return in
-            # _process_single_trainer_message).
-            if getattr(self, "_trainer_inflight_dispatch_version", None) is not None:
-                self._trainer_inflight_dispatch_version[end] = self.version_key
             _send_t0 = time.time()
             channel.send(end, payload)
             self._mark_instruction_served(end)

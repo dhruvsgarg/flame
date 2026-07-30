@@ -59,6 +59,26 @@ def test_redispatch_decomp_plots_writes_cdf_and_bar(tmp_path):
     assert any("post_close_mean_bar" in p for p in paths)
 
 
+def test_redispatch_decomp_plots_adds_tripwire_panels(tmp_path):
+    """§D-15 tripwire fields (outstanding_at_dispatch/concurrency_target/
+    retask_before_close) get their own concurrency line + re-task bar; runs
+    predating them keep the original 4 panels (test above)."""
+    records = []
+    for i, (mode, out, retask) in enumerate(
+            [("real", 30, False), ("real", 29, False),
+             ("sim", 38, True), ("sim", 36, False)]):
+        e = _redispatch_event(mode, "weights", 0.1, 0.1, 0.2)
+        e.update({"ts": 1000.0 + i, "outstanding_at_dispatch": out,
+                  "concurrency_target": 30, "retask_before_close": retask})
+        records.append(e)
+    paths = redispatch_decomp_plots(records, str(tmp_path), "stamp", str(tmp_path))
+    assert len(paths) == 6
+    assert any("outstanding_line" in p for p in paths)
+    assert any("retask_bar" in p for p in paths)
+    for p in paths:
+        assert os.path.exists(p)
+
+
 def test_vclock_charge_plots_no_data_is_a_placeholder(tmp_path):
     paths = vclock_charge_plots([], str(tmp_path), "stamp", str(tmp_path))
     assert len(paths) == 1

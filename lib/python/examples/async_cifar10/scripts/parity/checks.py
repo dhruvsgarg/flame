@@ -241,6 +241,7 @@ def load_agg_jsonl(path: str) -> dict:
     agg_belief_changes: list = []
     step_timing: list = []
     comm_dispatch: list = []
+    redispatch_decomp: list = []
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -276,6 +277,9 @@ def load_agg_jsonl(path: str) -> dict:
             elif ev == "step_timing":
                 # Per-function wall-duration from `timer_decorator` on aggregator methods.
                 step_timing.append(e)
+            elif ev == "redispatch_decomp":
+                # Per-dispatch wall split + the two dispatch-loop INV tripwires.
+                redispatch_decomp.append(e)
     selection_train.sort(key=lambda x: (x["round"], x["ts"]))
     agg_rounds.sort(key=lambda x: (x["round"], x.get("agg_goal_count", 0), x["ts"]))
     eval_commits.sort(key=lambda x: (x["round"], x["ts"]))
@@ -300,6 +304,7 @@ def load_agg_jsonl(path: str) -> dict:
         # the selection checkpoint is already in selection_train.per_trainer.avl_state).
         "agg_belief_changes": agg_belief_changes,
         "step_timing": step_timing,
+        "redispatch_decomp": redispatch_decomp,
     }
 
 
@@ -374,7 +379,8 @@ def load_run_dir(run_dir: str) -> tuple:
     else:
         merged: dict = {"selection_train": [], "agg_rounds": [],
                         "eval_commits": [], "agg_evals": [], "residence": [],
-                        "step_timing": [], "comm_dispatch": []}
+                        "step_timing": [], "comm_dispatch": [],
+                        "redispatch_decomp": []}
         for f in agg_files:
             d = load_agg_jsonl(f)
             for k in merged:
@@ -5671,6 +5677,112 @@ def inflight_overlap_parity(real_agg: dict, sim_agg: dict,
     }
 
 
+def _dispatch_tripwire_stats(agg: dict) -> dict:
+    """Per-mode dispatch-loop tripwire rollup from `redispatch_decomp`.
+
+    {n, max_outstanding, target, n_over_cap, n_retask} -- `target` is the
+    `concurrency_target` (selector `c`) the run itself reported, so the cap is
+    graded against this run's own configuration, never a hardcoded number.
+    """
+    evs = agg.get("redispatch_decomp", []) or []
+    n = max_out = n_over = n_retask = 0
+    target = None
+    for e in evs:
+        out, tgt = e.get("outstanding_at_dispatch"), e.get("concurrency_target")
+        if out is None:
+            continue
+        n += 1
+        max_out = max(max_out, int(out))
+        if tgt is not None:
+            target = int(tgt) if target is None else max(target, int(tgt))
+            if int(out) > int(tgt):
+                n_over += 1
+        if e.get("retask_before_close"):
+            n_retask += 1
+    return {"n": n, "max_outstanding": max_out, "target": target,
+            "n_over_cap": n_over, "n_retask": n_retask}
+
+
+def concurrency_cap_ok(real_agg: dict, sim_agg: dict) -> dict:
+    """[INV, per mode] outstanding dispatched-not-committed ends <= selector `c`.
+
+    A single-side invariant (§D-9): a mode that dispatches past its own `c` found
+    free capacity that doesn't exist, decidable without any real/sim diff. Graded
+    independently per mode off that mode's own `concurrency_target`; the failing
+    side is named. Sim overshooting while real sits exactly at `c` is the
+    signature of a slot released too early (simulate_fwdllm.md §D-15).
+    """
+    r, s = _dispatch_tripwire_stats(real_agg), _dispatch_tripwire_stats(sim_agg)
+    if (r["n"] == 0 and s["n"] == 0) or (r["target"] is None and s["target"] is None):
+        return {"ok": True, "tier": "INV", "status": "SKIP",
+                "note": "no redispatch_decomp tripwire telemetry (pre-§D-15 run "
+                        "or non-fwdllm baseline)"}
+    offending = [m for m, d in (("real", r), ("sim", s)) if d["n_over_cap"] > 0]
+    # A side with no events predates the telemetry -- report ungraded, never a
+    # measured 0 (the §D-15 fix is sim-only, so a pair can mix an old real leg).
+    no_data = [m for m, d in (("real", r), ("sim", s)) if d["n"] == 0]
+    return {
+        "ok": not offending,
+        "tier": "INV",
+        "offending_modes": offending,
+        "ungraded_modes": no_data,
+        "real_max_outstanding": r["max_outstanding"] if r["n"] else None,
+        "real_target": r["target"],
+        "sim_max_outstanding": s["max_outstanding"] if s["n"] else None,
+        "sim_target": s["target"],
+        "real_over_cap_frac": round(r["n_over_cap"] / r["n"], 4) if r["n"] else None,
+        "sim_over_cap_frac": round(s["n_over_cap"] / s["n"], 4) if s["n"] else None,
+        "n_real_dispatches": r["n"], "n_sim_dispatches": s["n"],
+        "interpretation": (
+            f"peak outstanding real {r['max_outstanding'] if r['n'] else 'n/a'}/"
+            f"{r['target']}, sim {s['max_outstanding'] if s['n'] else 'n/a'}/"
+            f"{s['target']}; >c means the dispatch loop saw capacity the "
+            f"concurrency model doesn't have."
+            + (f" UNGRADED (no telemetry): {', '.join(no_data)}." if no_data else "")
+        ),
+    }
+
+
+def retask_before_close_ok(real_agg: dict, sim_agg: dict) -> dict:
+    """[INV, per mode] no end is re-tasked while the cycle it contributed to is
+    still open.
+
+    Invariant 1 at DISPATCH level, and the direct detector for the §D-15 root
+    cause: dispatching under the `version_key` an end just answered sends a
+    variance verdict the aggregator hasn't computed (VAR=bad) or weights that
+    haven't moved. Rate must be 0 in both modes. Distinct from
+    `r1_inflight_overlap`, which grades CONTRIBUTIONS -- those stay clean here
+    even while dispatch is violating, because the round-trip outruns the cycle
+    (simulate_fwdllm.md §D-15 measurement trap 3).
+    """
+    r, s = _dispatch_tripwire_stats(real_agg), _dispatch_tripwire_stats(sim_agg)
+    if r["n"] == 0 and s["n"] == 0:
+        return {"ok": True, "tier": "INV", "status": "SKIP",
+                "note": "no redispatch_decomp tripwire telemetry (pre-§D-15 run "
+                        "or non-fwdllm baseline)"}
+    r_frac = r["n_retask"] / r["n"] if r["n"] else None
+    s_frac = s["n_retask"] / s["n"] if s["n"] else None
+    offending = [m for m, f in (("real", r_frac), ("sim", s_frac)) if f]
+    # Ungraded, not a measured 0 -- see `concurrency_cap_ok`.
+    no_data = [m for m, d in (("real", r), ("sim", s)) if d["n"] == 0]
+    _pct = lambda f: f"{f:.1%}" if f is not None else "n/a"
+    return {
+        "ok": not offending,
+        "tier": "INV",
+        "offending_modes": offending,
+        "ungraded_modes": no_data,
+        "real_retask_frac": round(r_frac, 4) if r_frac is not None else None,
+        "sim_retask_frac": round(s_frac, 4) if s_frac is not None else None,
+        "n_real_dispatches": r["n"], "n_sim_dispatches": s["n"],
+        "interpretation": (
+            f"real {_pct(r_frac)} / sim {_pct(s_frac)} of dispatches re-task an end "
+            f"that already contributed to the still-open agg cycle; any nonzero "
+            f"rate is a dispatch under an unevaluated version_key."
+            + (f" UNGRADED (no telemetry): {', '.join(no_data)}." if no_data else "")
+        ),
+    }
+
+
 def _forward_passes(trainers: dict) -> int:
     """Total forward passes = trainer_round events across all trainers."""
     return sum(len(t.get("trainer_round", []) or []) for t in trainers.values())
@@ -6172,6 +6284,8 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     # R1 is the finest residence check (per-trainer interval overlap); W1 is the
     # coarse compute-conservation tell that feeds V1/K2. Both SKIP cleanly when
     # contributor_intervals is absent (sync baselines / non-fwdllm runs).
+    results["concurrency_cap"] = concurrency_cap_ok(real_agg, sim_agg)
+    results["retask_before_close"] = retask_before_close_ok(real_agg, sim_agg)
     results["r1_inflight_overlap"] = inflight_overlap_parity(real_agg, sim_agg)
     results["w1_compute_conservation"] = compute_conservation_parity(
         real_agg, sim_agg, real_trainers, sim_trainers)
@@ -6283,7 +6397,12 @@ CHECK_META: dict = {
     # R1 is the residence INV; W1 the compute-conservation DIAG that first flags a
     # violation and localizes to R1. V1's cadence divergence is DOWNSTREAM of R1
     # (a residence violation changes the contributing set/order), so V1 deps on it.
-    "r1_inflight_overlap":     {"stage": 3, "role": "MECHANISM", "deps": ("participation",)},
+    # The two dispatch-loop tripwires sit UPSTREAM of R1: both are single-side INVs
+    # on the send path, so they have no real/sim deps of their own, and R1 (a
+    # contribution-level view) is only meaningful once dispatch itself is legal.
+    "concurrency_cap":         {"stage": 4, "role": "CONTROL",   "deps": ()},
+    "retask_before_close":     {"stage": 4, "role": "MECHANISM", "deps": ("concurrency_cap",)},
+    "r1_inflight_overlap":     {"stage": 3, "role": "MECHANISM", "deps": ("participation", "retask_before_close")},
     "w1_compute_conservation": {"stage": 3, "role": "DIAG",      "deps": ("r1_inflight_overlap",)},
     # ── Stage 6' FwdLLM variance-gated aggregation cadence (PARITY.md §F.4) ──
     "v1_iter_per_data_id":     {"stage": 6, "role": "MECHANISM", "deps": ("inter_arrival_order", "r1_inflight_overlap")},

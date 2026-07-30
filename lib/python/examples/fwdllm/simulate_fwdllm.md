@@ -78,20 +78,22 @@ and its `min_abs` calibration rule, full wall-budget/timing rung table):
 
 ---
 
-## §A  Score — refreshed 2026-07-29
+## §A  Score — refreshed 2026-07-29 (post redispatch-charge-fix validation pairs)
 
 **Latest run per baseline** (`run_parity.py`; ✓/✗/– = pass/fail/skip; PARITY.md §F). `fluxtune`,
 `fwdllm`, `fedbuff_round`, `felix_round` now have a 5400s pair (up from 3600s); the other 6 remain
 3600s+ n=100/c=30 except `fwdllm_plus` (STALE, 07-23). Open fails: §B.
 
-**STALE = scored before a fix landed that changes its numbers; ignore the pass/fail/skip cell, re-run before
-citing.** `fedbuff_round`/`felix_round`/`fluxtune` predate both the `redispatch_turnaround` charge fix
-(§D-12) and the checker's logical-budget fix (§D-13, `data_id`-axis, applies to all three); `fwdllm_plus`
-predates the 07-27/28 batch generally. `fwdllm` is CURRENT (59/3/22, both fixes already reflected, §G).
+**`fedbuff_round`/`felix_round`/`fluxtune` re-run with fresh sim legs against the SAME real logs**
+(real unaffected, only the `redispatch_turnaround.weights` registry value + checker logical-budget fix
+changed) — no longer STALE, this IS the validation run §B was awaiting. Result: **not a clean win** — see
+§B, `throughput`/`per_round_advance` got WORSE, not better (§D-14). These three rows now PREDATE the §D-15
+mid-cycle-redispatch fix (landed 07-29 pm, sim-only) — their sim legs need a re-run before the numbers mean
+anything. `fwdllm_plus` still predates the 07-27/28 batch generally. `fwdllm` remains CURRENT (59/3/22, §G).
 
 | baseline | run pair | dur | pass/fail/skip | cohort | vclock | thru | commits | terminal | R1 | V1 | V2 | U3 | S2 | conv | conv_loss |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| fluxtune/syn_0 STALE | `run_20260729_080111`/`_093329` | 5400s | 59/8/16 | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
+| fluxtune/syn_0 | `run_20260729_080111`/`_142902` | 5400s | 57/10/16 | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ | ✗ | ✓ |
 | fwdllm/syn_0 | `run_20260729_020102`/`_033249` | 5400s | 59/3/22 | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | fwdllm_plus/syn_0 STALE | `run_20260723_161647`/`_171829` | ~3600s | 61/2/21 | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | felix_it/syn_0 | `run_20260728_000201`/`_010416` | 3600s | 63/6/16 | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ |
@@ -99,8 +101,8 @@ predates the 07-27/28 batch generally. `fwdllm` is CURRENT (59/3/22, both fixes 
 | fedbuff_it_unaware/syn_0 | `run_20260728_015339`/`_025553` | 3600s | 67/1/18 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ |
 | fwdllm_it_oracular/syn_0 | `run_20260728_022355`/`_032547` | 3600s | 58/5/21 | ✓ | ✓ | ✓ | ✗ | ✗ | – | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | fedbuff_it_oracular/syn_0 | `run_20260728_032938`/`_043152` | 3600s | 64/4/18 | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ | ✗ | ✓ |
-| fedbuff_round/syn_0 STALE | `run_20260729_034223`/`_051440` | 5400s | 54/10/21 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ | ✗ | ✓ |
-| felix_round/syn_0 STALE | `run_20260729_055151`/`_072408` | 5400s | 64/3/18 | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
+| fedbuff_round/syn_0 | `run_20260729_034223`/`_125616` | 5400s | 53/11/21 | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| felix_round/syn_0 | `run_20260729_055151`/`_134315` | 5400s | 59/8/18 | ✗ | ✓ | ✗ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ |
 
 Per-pair numeric detail: `experiments/_parity_reports/parity_<baseline>_syn_0_<sim-ts>.json`. Open fails: §B.
 
@@ -113,14 +115,71 @@ Per-pair numeric detail: `experiments/_parity_reports/parity_<baseline>_syn_0_<s
 
 | baseline | open fails | next step |
 |---|---|---|
-| `fedbuff_round` (54/10/21) | `throughput`/`per_round_advance`/`total_commits`/`terminal_state` REOPENED at 5400s (sim 8.6% slower, was <5% at 3600s) · `v1b_iters_moving_avg` 7.4% (was 5.3%) · `convergence` new fail (5.15%) · `cohort_sequence` (known stochastic) · timing DIAGs (noise) | TWO fixes now landed (below): `redispatch_turnaround.weights` re-profiled (0.488→0.0598s/trainer, was 7.3x overcharged) AND the checker's logical-budget-N helper now excludes an uncommitted trailing data bin — **awaiting a fresh 5400s pair to validate both** |
-| `felix_round` (64/3/18) | `throughput` NEW at 5400s (sim 8.2% slower, same direction as `fedbuff_round`) · `selection_detail` NEW (real refills 2.73 ends/tick vs sim 1.88, -31%, matched in_flight/eff_c) · `v2_var_trajectory` 3.4% vs 2%, same split-half/composition root (open, §D-2 extension) | `convergence` now PASSES at 5400s (duration-gate cleared); `throughput` shared `fedbuff_round`'s overcharge, same two fixes apply (below) — **awaiting validation**; `selection_detail` still undiagnosed, check `async_oort` refill cadence separately after the charge fix lands |
-| `fluxtune` (59/8/16) | `throughput`/`per_round_advance`/`total_commits`/`terminal_state` persist at 5400s (~7-9%, sim FASTER — opposite direction from round-cadence, still uncharged) · `v2_var_trajectory` worse (12.8% vs 2%) · `preferred_duration` NEW (21.3% vs 20%, barely over) · `drain_wall_budget`/`step_timing_breakdown` (D-1 family) | `cohort_sequence`/`convergence` now PASS at 5400s (07-27 var-pool fix + stochastic gating hold at full duration); also inherits the same `redispatch_turnaround` registry entry (`is_async: true`, shares the dispatch path) though never profiled from its own log — still owes that; checker's logical-budget fix (below) applies too |
+| `fedbuff_round` (53/11/21) | `throughput`/`per_round_advance` (sim 14.0% FASTER) · `total_commits`/`terminal_state` (24%) · `v1_iter_per_data_id`/`v1b_iters_moving_avg` (sim 16.7 vs real 12.4) · `cohort_sequence` (2502 vs 1855 cycles) · `overhead_residual`/`agg_step_timing_breakdown` | ALL one root: §D-15 mid-cycle redispatch, FIXED, awaiting sim-only validation. V1/cohort are downstream (§D-11) |
+| `felix_round` (59/8/18) | `throughput`/`per_round_advance` (sim 10.0% FASTER) · `v1_iter_per_data_id`/`v1b_iters_moving_avg` (sim 15.7 vs real 12.0) · `cohort_sequence`/`v2_var_trajectory`/`selection_detail`/`g2_grad_pool_size` (D-2 family, downstream) | Same §D-15 root + validation. Its 19 in-flight redispatches / 2 duplicate steps (0 in real) should also hit 0; else separate defect |
+| `fluxtune` (57/10/16) | `throughput`/`per_round_advance`/`total_commits`/`terminal_state` (~7.9-8.5%, sim FASTER) · `v2_var_trajectory` (12.4%) · `preferred_duration` (21.5%, barely over) · `convergence` (5.7%, marginal) · `utility` (raw KS 0.213 fails, matched-window 0.112 passes — post-N tail artifact) · `drain_wall_budget`/`step_timing_breakdown` (D-1 family) | Same §D-15 root (78.3% retask) PLUS missing `sim_charge_profile_path`; both fixed, same validation run. Re-check `convergence`/`utility` there |
 | `fwdllm`/`fwdllm_plus` | `drain_wall_budget` (GATING)/`step_timing_breakdown`/`agg_step_timing_breakdown` (DIAG) — pre-existing, D-1 co-location contention, unresolved (`sim_model_agg_compute_time` charges sim's own contention-inflated live span onto the vclock — the "charge-the-floor vs relax" decision is still open) | `throughput`/`terminal_state`/`total_commits` ROOT-CAUSED + FIXED 07-29 (§D-13, checker bug not a sim bug) — CLOSED, see §G |
 | `fwdllm_it_unaware`/`fwdllm_it_oracular` | `terminal_state`/`total_commits`, new at 3600s | likely same §D-1 contention family (shares fwdllm's sync dispatch path) — not independently diagnosed |
 | `felix_it` | `total_commits`/`terminal_state`/`cohort_sequence`/`convergence` | profile `redispatch_turnaround` from felix_it's own real log (§D-3 — timing parity isn't inherited from a sibling that shares only the selector) |
 | `fedbuff_it_oracular` (64/4/18) | `total_commits`/`terminal_state`/`v2_var_trajectory`/`convergence` | same: profile own real log, don't reuse round-cadence's charge |
 | `fedbuff_it_unaware` (67/1/18) | `convergence` only | duration-gated (§C bar 2h+), not a bug |
+
+**07-29 pm — §D-14: the `redispatch_turnaround` charge fix landed correctly but did NOT fix `throughput`;
+it overcorrected the DIRECTION.** Fresh sim-only reruns (`_125616` fedbuff_round, `_134315` felix_round,
+same real logs) confirm: `sim_s_per_round` dropped enough that sim flipped from 8.2-8.6% SLOWER than real
+to 10.0-14.0% FASTER — a worse relative gap than pre-fix, not better, and it now cascades into new
+`v1_iter_per_data_id`/`v1b_iters_moving_avg`/`cohort_sequence.count` fails (sim races through more
+iterations per data_id because its rounds are cheaper — §D-11 downstream-compounding pattern, not
+independent bugs).
+
+**Checked whether the reprofiled value (0.0598s) is itself under-scaled — it is NOT.** Two lines of
+evidence, both from the SAME real telemetry the registry was built from:
+1. The distribution is heavily right-tailed (`redispatch_decomp`'s `weights`-kind marginal: median
+   ~0.011-0.013s, mean ~0.059-0.066s, max 4.7-5.2s, ~1.5% of events >1s) — a flat scalar mean charge is
+   the right statistic for reproducing an AGGREGATE total (law of large numbers, n>4400 per baseline), not
+   an under-estimate from averaging away the tail.
+2. Directly summed real's TRUE per-batch total (`post_close_overhead_wall_s`'s last/cumulative position per
+   `(data_id, iteration)` batch — the actual batch-total wall cost, not the double-counted raw pool D-12
+   already fixed) against sim's own `vclock_charge` ledger sum for this label, per data_id:
+   **fedbuff_round: real 296s vs sim-charged 325s (sim ~10% OVER, not under); felix_round: real 276s vs
+   sim-charged 336s (sim ~22% OVER).** `redispatch_turnaround` is ruled out as the source of the residual
+   sim-too-fast gap — raising it further would make the flip worse, not better.
+
+**07-29 pm — §D-15: residual ROOT-CAUSED + FIXED. It was never a charge.** Sim released a trainer's slot at
+its own COMMIT instead of at the agg-goal boundary, so it re-dispatched mid-cycle under the SAME
+`version_key` that trainer had just contributed to — before that cycle's variance check had run, making
+both possible payloads illegitimate (`var_bad` asserts a verdict with no evidence; `weights` would be
+unchanged). Measured on the 5400s pairs: 78-90% of sim dispatches vs **0%** of real's; peak concurrency
+38-46 against `c`=30; per-contribution idle 0.2s (sim) vs 1.6s (real) on identical busy time. **Not excess
+messages or wasted compute** — dispatches/cycle 10.03 vs 10.02, forward passes per contribution 1.003 vs
+1.002; the defect is purely the `sim_send_ts` stamp landing pre-close (§D-15). Substituting
+real's idle collapses the residual **28.3%→4.8% / 24.9%→1.1% / 15.7%→3.1%**. Both configs declare
+`inflight_residence: true`, so sim was violating the run's own contract — single-side, no diff needed
+(§D-9). Fixed by deferring the release to `_release_sim_slots_at_agg_goal` (real's
+`cleanup_recvd_ends()` twin); `redispatch_turnaround` stays at 0.0598s — do NOT re-tune it (§F-13, §D-14
+verified it). **Needs a fresh sim run per baseline to validate** (real unaffected — sim-only policy + the
+`fluxtune` charge-path fix below):
+```bash
+cd lib/python/examples/fwdllm/expt_scripts
+bash run_sequential.sh --mode sim --only fedbuff_round,felix_round,fluxtune
+```
+Two INV tripwires shipped WITH the fix so that run grades itself instead of being argued about:
+`concurrency_cap` (outstanding dispatched-not-committed vs `c`) and `retask_before_close` (dispatch to an
+open cycle's contributor), both per-mode on `redispatch_decomp`, both wired into the checker + README.
+Expected post-fix: `retask_before_close`→0, `concurrency_cap`→under 30, sim idle→real's ~1.6s, sim
+`pastdated_commits`→0, throughput residual ~1-5%.
+
+**Also fixed alongside: `fluxtune` never applied the charge registry at all** — its sim yaml had no
+`sim_charge_profile_path`, so every `redispatch_turnaround` ledger row read `charge_source: "none"` and 0s
+was charged (~180s, same direction as the main bug). §B's earlier claim that it shares the round-cadence
+entry was false in effect. Added.
+
+**Not the mechanism (checked, keep as negative results).** Past-dated commits are small and mostly the
+legitimate carried-surplus case (sim 2.0-9.0% of cycles, 17-96s of 5400s; real `pastdated_commits = 0`) —
+the vclock stall is dispatches ISSUED mid-cycle at a still-low vclock, not out-of-order commits. The
+distinct-contributor gap (fedbuff real 30 vs sim 49) is a round-lap artifact: real never crossed the lap
+boundary so exactly `c`=30 is correct; sim crossed because it ran further. Both are DOWNSTREAM of the
+throughput gap (§D-11) — re-grade `cohort_sequence` only after the fix.
 
 **07-28 evening: `redispatch_turnaround.weights` reprofiled — registry was stale, not cross-baseline-pooled.**
 Split-by-baseline test (§B's prior next-step) on the ORIGINAL smoke-scale source runs
@@ -235,8 +294,10 @@ clean) served as the unblocking control per this doc's prior note.
 
 **Tech debt.** Sim's in-flight bookkeeping is split across `_sim_pending_commit`, `_sim_inflight_expected`,
 `_sim_buffer`, `_sim_committed`, `selected_ends`, `all_selected` — should be one authoritative per-end state
-machine with slot/guard sets derived. Simplify after the timing fix validates; scope behind
-`test_fwdllm_sim_grad_loop.py::TestCommitThenProcessFreesTheSlot`, never bundled with a correctness fix.
+machine with slot/guard sets derived — §D-15 was exactly a lifetime bug inside that split. Simplify after
+the timing fix validates; scope behind `test_fwdllm_sim_grad_loop.py`'s
+`TestCommitThenProcessFreesTheSlot` + `TestResidenceHoldsCommitterToCycleClose`, never bundled with a
+correctness fix.
 
 **P3, infra:** no automatic GPU skip-and-remap on a broken ordinal (manual `execution.gpu_ids` exclude works,
 §G). `fedbuff_round`'s 07-27 sim run SIGABRT'd at exit after a clean, fully-flushed run (native atexit crash,
@@ -472,6 +533,67 @@ wall-clock deadline mid-cycle is exposed the same way (`fedbuff_round`/`felix_ro
 `round`-axis baselines (async_cifar10) are untouched — a `round` only increments after a genuine close, so
 presence there already proves completion; no analogous truncation risk, no filter applied.
 
+**D-14. Fixing a proven overcharge can overcorrect past zero — re-verify the SIGN of the residual, not just
+that the old bug is gone.** `redispatch_turnaround.weights`'s cumulative-batch-pooling overcharge (D-12, 7.3-
+8.3x) was real and the marginal-diff fix is mechanically correct — but applying the smaller value to a fresh
+sim run flipped `fedbuff_round`/`felix_round`'s `throughput` from 8.2-8.6% sim-SLOWER to 10.0-14.0% sim-
+FASTER, a worse relative gap in the other direction, cascading into new `v1_iter_per_data_id`/`cohort_sequence`
+fails (§D-11 pattern: sim's cheaper rounds buy it more iterations per data_id within the same budget). **Tell:**
+a "before: X% one direction, after: Y% the OTHER direction" pattern where |Y| > |X| means the fix's magnitude
+was probably right in kind but the specific value moved past the true target, OR (as verified here) the fixed
+category was never the dominant term — check both. **Discriminate by:** sum the charged category's real
+`vclock_charge` total against an independent real-side reconstruction of its true total (not the per-event
+mean, the actual aggregate) at the SAME progress granularity (here: per `data_id`, matching `redispatch_
+turnaround`'s real total of 276-296s against sim's charged 325-336s — sim charges *more*, not less, ruling
+the category out as the residual's source). Don't re-tune a charge a second time on the strength of a
+downstream rung alone (§F-13) — confirm via the category's own totals first. **Resolved by §D-15: the
+residual was not a charge at all.** The elimination this entry performed was correct and load-bearing —
+what it could not do was name the mechanism, because no charge could.
+
+**D-15. When sim is FASTER than real per unit of progress and no charge category explains it, the gap is a
+CONCURRENCY/scheduling policy divergence, not an unpriced cost — measure per-trainer IDLE, not the server's
+wall.** After D-14 ruled `redispatch_turnaround` out, the round-cadence residual (sim 15.7-28.3% faster)
+resolved to the identity `commits/s = c / (busy + idle)` per contribution, verified to 3 decimals in both
+modes: `busy` matched (6.3-11.3s), `idle` did not — real 1.6-17.7s vs sim 0.2-14.7s. Substituting real's
+idle into sim's cycle collapsed the residual to 1.1-4.8%. The mechanism: sim released a trainer's slot at
+its own COMMIT (`_sim_pending_commit.discard` in `_sim_recv_min_grad`) instead of at the agg-goal boundary,
+so it re-dispatched mid-cycle under the SAME `version_key` the trainer had just contributed to — 78-90% of
+sim dispatches, 0% of real's — and peak concurrency ran to 38-46 against `c`=30. Both configs declare
+`inflight_residence: true`, so this was sim violating its own contract: a single-side failure decidable
+with no real/sim diff (§D-9). **Tell:** matched per-contribution busy time + a large idle deficit, with the
+gap's own decomposition (`redispatch_decomp`) showing real's gap is 76-98% `peer_wait_wall_s` (the barrier,
+already modeled) and only 2-24% `post_close_overhead_wall_s` (what the charge prices). A charge cannot buy
+back time a scheduling policy gave away.
+
+**NOT excess dispatch, and nothing was wasted — the sole defect is WHEN the dispatch is stamped.** Measured
+on the same pair: dispatches/cycle **10.02 real vs 10.03 sim**, contributions/cycle 10.00 both,
+`trainer_round` forward passes per contribution **1.002 vs 1.003**. Every sim dispatch produced exactly one
+forward pass and one accepted grad, same as real; sim ran 2502 cycles where real ran 1857, at an identical
+per-cycle message cost. The trainer's own same-key self-guard
+(`fwdllm_trainer.py:309`, `abort_training`) never fires on these sends because it compares the incoming key
+against what the trainer last SENT — and with a 6.7s round trip against a 2.8s cycle its last-sent key is
+~2 cycles stale, so the labels differ and it computes. The illegitimacy is the AGGREGATOR asserting a
+verdict for a `version_key` it hasn't evaluated, not the trainer receiving duplicate work. **Mechanism of
+the throughput gain:** the mid-cycle dispatch is stamped at a vclock that hasn't yet advanced past the
+cycle's close, so `sct = sim_send_ts + max(gpu, D) + leg` lands ~1.0s early (82.6% of sim dispatches
+past-date the max committed sct of the cycle they land in; amortized 0.83s each). Per contribution
+`c/(busy+idle)`: sim 30/(6.27+0.20) = 4.64/s → 2.16 s/cycle → 2502 cycles in 5400s; real 30/(6.67+1.63) =
+3.61/s → 2.77 s/cycle. Restoring the barrier restores the idle, and with it the cycle cost. **Fix:** defer
+the release to
+`_release_sim_slots_at_agg_goal`, matching real's `inflight_residence` → `cleanup_recvd_ends()` path, plus
+two per-dispatch INV tripwires (`concurrency_cap`, `retask_before_close`) so the next run grades itself.
+
+**D-15a. Three measurement traps, all hit before the raw trace settled it.** (1)
+`contributor_intervals.dispatch_version_key` is read at cycle-CLOSE time, so it holds the end's NEXT
+dispatch, not the one that produced that contribution — never use it for "what key was this sent under".
+(2) Anchoring a was-it-already-served test on the cycle's `agg_round.ts` misses a mid-cycle send entirely
+(the send PRECEDES the close) — anchor on `contributor_intervals.processing_wall_ts`, the wall instant the
+grad was accepted. (3) Contribution-level and dispatch-level invariant 1 are different questions:
+contribution level is clean in BOTH modes (0 duplicates) *because the round-trip outruns the cycle*, so a
+green `r1_inflight_overlap` does not clear the dispatch path. Ground truth for "what was sent, to whom,
+under what key" is the `comm` event (`direction=agg_to_trainer`, `model_version`,
+`iteration_per_data_id`, `payload_kind`) interleaved with `processing_wall_ts`; everything else is derived.
+
 ---
 
 ## §E  Dead ends — do NOT retry
@@ -599,6 +721,9 @@ rule now live in §D-3.
 > **RULE: closed = here, ≤30 words, immediately.** The instant a rung flips or a hypothesis resolves, write
 > ONE line (mechanism + outcome) and delete it from §A/§B in the same edit.
 
+- **07-29 pm: round-cadence + fluxtune throughput residual ROOT-CAUSED as sim's mid-cycle redispatch
+  (§D-15); release deferred to the agg-goal boundary + 2 INV tripwires shipped. NOT yet closed — awaiting
+  the sim-only validation run (§B).**
 - **07-29: fwdllm's `throughput`/`terminal_state`/`total_commits` 5400s fails ROOT-CAUSED as a CHECKER bug,
   FIXED + VALIDATED** (§D-13). `_matched_logical_budget`/`_per_progress_last_event` treated an uncommitted
   trailing `data_id` (real hit `max_runtime_s` one variance-check attempt into it) as reached progress,

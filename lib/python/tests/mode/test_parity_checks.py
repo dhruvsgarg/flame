@@ -1516,6 +1516,89 @@ class TestR1W1Registered:
         assert pc.CHECK_META["w1_compute_conservation"]["deps"] == ("r1_inflight_overlap",)
 
 
+def _agg_rd(rows):
+    """agg dict carrying `redispatch_decomp` tripwire rows:
+    (outstanding, target, retask)."""
+    return {"selection_train": [], "agg_rounds": [], "agg_evals": [],
+            "redispatch_decomp": [
+                {"event": "redispatch_decomp", "ts": float(i), "end_id": "A",
+                 "outstanding_at_dispatch": o, "concurrency_target": t,
+                 "retask_before_close": rt}
+                for i, (o, t, rt) in enumerate(rows)]}
+
+
+class TestConcurrencyCapTripwire:
+    """[INV, per mode] outstanding dispatched-not-committed ends <= that mode's
+    own selector `c`. Single-side decidable -- graded per mode, never as a diff."""
+
+    def test_both_within_cap_passes(self):
+        agg = _agg_rd([(28, 30, False), (30, 30, False)])
+        r = pc.concurrency_cap_ok(agg, agg)
+        assert r["ok"] and r["offending_modes"] == []
+        assert r["real_max_outstanding"] == 30 and r["real_target"] == 30
+
+    def test_sim_breach_fails_and_names_sim_only(self):
+        real = _agg_rd([(30, 30, False)])
+        sim = _agg_rd([(30, 30, False), (38, 30, False)])
+        r = pc.concurrency_cap_ok(real, sim)
+        assert not r["ok"] and r["offending_modes"] == ["sim"]
+        assert r["sim_max_outstanding"] == 38
+        assert r["real_over_cap_frac"] == 0.0 and r["sim_over_cap_frac"] == 0.5
+
+    def test_real_breach_fails_the_real_side(self):
+        r = pc.concurrency_cap_ok(_agg_rd([(31, 30, False)]), _agg_rd([(30, 30, False)]))
+        assert not r["ok"] and r["offending_modes"] == ["real"]
+
+    def test_skips_without_tripwire_telemetry(self):
+        r = pc.concurrency_cap_ok(_agg(), _agg())
+        assert r.get("status") == "SKIP" and r["ok"]
+
+    def test_old_real_leg_reads_ungraded_not_a_measured_zero(self):
+        """The fix is sim-only, so a pair can mix a pre-telemetry real leg with a
+        fresh sim leg -- real must not report a peak of 0 it never measured."""
+        r = pc.concurrency_cap_ok(_agg(), _agg_rd([(38, 30, False)]))
+        assert r["ungraded_modes"] == ["real"]
+        assert r["real_max_outstanding"] is None and r["real_over_cap_frac"] is None
+        assert not r["ok"] and r["offending_modes"] == ["sim"]
+
+
+class TestRetaskBeforeCloseTripwire:
+    """[INV, per mode] rate of dispatches to an end that already contributed to
+    the still-open agg cycle must be 0 -- the direct §D-15 root-cause detector."""
+
+    def test_zero_rate_passes(self):
+        agg = _agg_rd([(5, 30, False), (6, 30, False)])
+        r = pc.retask_before_close_ok(agg, agg)
+        assert r["ok"] and r["sim_retask_frac"] == 0.0
+
+    def test_any_sim_retask_fails(self):
+        real = _agg_rd([(5, 30, False), (6, 30, False)])
+        sim = _agg_rd([(5, 30, True), (6, 30, False)])
+        r = pc.retask_before_close_ok(real, sim)
+        assert not r["ok"] and r["offending_modes"] == ["sim"]
+        assert r["sim_retask_frac"] == 0.5 and r["real_retask_frac"] == 0.0
+
+    def test_skips_without_tripwire_telemetry(self):
+        r = pc.retask_before_close_ok(_agg(), _agg())
+        assert r.get("status") == "SKIP" and r["ok"]
+
+    def test_old_real_leg_reads_ungraded_not_a_measured_zero(self):
+        r = pc.retask_before_close_ok(_agg(), _agg_rd([(5, 30, False)]))
+        assert r["ungraded_modes"] == ["real"]
+        assert r["real_retask_frac"] is None and r["sim_retask_frac"] == 0.0
+        assert r["ok"]
+
+
+class TestDispatchTripwiresRegistered:
+    """Both tripwires are wired into the causal registry upstream of R1: a
+    contribution-level R1 pass does not clear the dispatch path (§D-15 trap 3)."""
+
+    def test_present_in_meta_with_dispatch_upstream_of_r1(self):
+        assert pc.CHECK_META["concurrency_cap"]["deps"] == ()
+        assert pc.CHECK_META["retask_before_close"]["deps"] == ("concurrency_cap",)
+        assert "retask_before_close" in pc.CHECK_META["r1_inflight_overlap"]["deps"]
+
+
 def _lcyc(data_id, iteration, cohort, var, var_good=False, force=False, goal=3,
           is_async=False):
     """One fwdllm variance-cadence cycle event (cohort in receive/commit order)."""

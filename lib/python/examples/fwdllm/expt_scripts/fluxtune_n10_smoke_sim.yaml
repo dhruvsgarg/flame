@@ -140,6 +140,11 @@ experiments:
           # without over-charging (sim_rate must stay >= 1).
           sim_model_dispatch_queue: true
           sim_model_agg_compute_time: true
+          # §P: profiled redispatch_turnaround charge. Was MISSING here (§D-15) --
+          # every ledger row read `charge_source: none`, charging 0s for a cost the
+          # round-cadence pair charges. The entry is server-side dispatch
+          # turnaround, not baseline-specific.
+          sim_charge_profile_path: lib/python/examples/fwdllm/sim_charge_profile.yaml
           # Async fedbuff: accept stale carried grads + down-weight by (V'-V),
           # not reject (K-D13). Set identically in the real sibling; never a
           # parity lever. camelCase MUST match the base key to override it —

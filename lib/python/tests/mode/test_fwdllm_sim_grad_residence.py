@@ -408,15 +408,33 @@ class TestPendingCommitBridge:
         assert "NEW" in ch._selector.all_selected
         assert "NEW" in ch._selector.selected_ends["agg"]
 
-    def test_commit_discards_from_pending(self):
-        agg = _residence_agg(residence=True)
+    def _committable(self, residence):
+        agg = _residence_agg(residence=residence)
         ch = _FakeSelChannel([])
         for e, sct in zip(["A", "B"], (10.0, 20.0)):
             ch.add_msg(e, sct)
         agg._sim_inflight_expected = {"A": 10.0, "B": 20.0}
         agg._sim_pending_commit = {"A", "B"}
+        return agg, ch
+
+    def test_residence_holds_the_committer_until_the_boundary(self):
+        """§D-15: under the declared `inflight_residence` contract the COMMIT does
+        not release -- the agg-goal boundary does (real's `cleanup_recvd_ends()`
+        twin). Releasing on commit re-tasked the end mid-cycle under the
+        `version_key` it had just answered, before that cycle's variance check."""
+        agg, ch = self._committable(residence=True)
 
         agg._drain(ch, ["A", "B"], 1)   # commit the smallest-sct grad (A)
+
+        assert agg._sim_pending_commit == {"A", "B"}   # A still pinned
+        agg._release_sim_slots_at_agg_goal(ch, is_async=True)
+        assert "A" not in agg._sim_pending_commit      # released at the close
+        assert "B" in agg._sim_pending_commit          # still in flight
+
+    def test_residence_off_keeps_the_legacy_per_commit_discard(self):
+        agg, ch = self._committable(residence=False)
+
+        agg._drain(ch, ["A", "B"], 1)
 
         assert "A" not in agg._sim_pending_commit   # discarded on COMMIT
         assert "B" in agg._sim_pending_commit       # still in flight

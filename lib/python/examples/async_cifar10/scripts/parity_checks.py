@@ -112,6 +112,10 @@ from parity.checks import (  # noqa: F401, E402
     _committed_grads,
     inflight_overlap_parity,
     compute_conservation_parity,
+    # dispatch-loop INV tripwires (§D-15)
+    _dispatch_tripwire_stats,
+    concurrency_cap_ok,
+    retask_before_close_ok,
     drain_wall_budget_parity,
     trainer_phase_wall_budget_ok,
     _STEP_TIMING_REAL_ONLY_FUNCS,

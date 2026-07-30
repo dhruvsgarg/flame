@@ -2081,6 +2081,41 @@ def redispatch_decomp_plots(records, out, stamp, tdir):
                         d, "redispatch_decomp_post_close_mean_bar.pdf", stamp=stamp)
         if p:
             out_paths.append(p)
+
+    # §D-15 tripwires: peak outstanding per time-bin against the run's own `c`
+    # (dashed target), and the fraction of dispatches handed to an end whose agg
+    # cycle hadn't closed yet (must be 0).
+    conc = defaultdict(lambda: ([], []))
+    target = None
+    retask = defaultdict(lambda: [0, 0])
+    t0 = min((float(r["ts"]) for r in rd if r.get("ts") is not None), default=None)
+    for r in rd:
+        mode = r.get("time_mode", "?")
+        out_n, ts = r.get("outstanding_at_dispatch"), r.get("ts")
+        if out_n is not None and ts is not None and t0 is not None:
+            xs, ys = conc[mode]
+            xs.append(float(ts) - t0)
+            ys.append(float(out_n))
+            if r.get("concurrency_target") is not None:
+                target = max(target or 0, int(r["concurrency_target"]))
+        if r.get("retask_before_close") is not None:
+            retask[mode][0] += 1
+            retask[mode][1] += 1 if r["retask_before_close"] else 0
+    if conc:
+        p = ph.binned_line(dict(conc), "wall elapsed (s)", "outstanding at dispatch",
+                           "redispatch_decomp: dispatched-not-committed vs c",
+                           d, "redispatch_decomp_outstanding_line.pdf", stamp=stamp,
+                           reducer="max", target=target)
+        if p:
+            out_paths.append(p)
+    if retask:
+        cats = sorted(retask)
+        p = ph.bar_plot(cats, [retask[k][1] / retask[k][0] for k in cats],
+                        "fraction of dispatches",
+                        "redispatch_decomp: re-task before cycle close (must be 0)",
+                        d, "redispatch_decomp_retask_bar.pdf", stamp=stamp)
+        if p:
+            out_paths.append(p)
     return out_paths
 
 
