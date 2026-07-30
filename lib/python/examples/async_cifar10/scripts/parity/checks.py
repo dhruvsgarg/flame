@@ -1148,10 +1148,22 @@ def selection_detail_parity(real: dict, sim: dict,
     """S3/S4 [DIST]: num_chosen, in_flight, effective_c mean parity across modes.
 
     num_chosen and in_flight are enforced (DIST); effective_c is diagnostic only.
+
+    Both sides are truncated to the matched LOGICAL budget N before any mean is
+    taken (§D-4). Selection events carry no `cycle_data_id`, so the cut is the
+    wall ts at which each side reached N (`_time_to_progress`, §F-26). Without
+    it, a side that ran past N contributes events the other never had a chance
+    to emit: felix_round real emitted 21 of its 22 in a lap-boundary re-draw
+    after passing N, reading "real 2.73 vs sim 30.0" where the two are in fact
+    identical inside the window (1 draw of 30 each) -- §D-17.
     """
-    def collect(sel_events):
+    def collect(sel_events, cutoff_ts):
         chosen, inflight, eff_c = [], [], []
         for e in sel_events:
+            if cutoff_ts is not None:
+                ts = e.get("ts")
+                if ts is not None and ts > cutoff_ts:
+                    continue
             nc = e.get("num_chosen")
             inf = e.get("in_flight")
             ec = e.get("effective_c")
@@ -1163,8 +1175,21 @@ def selection_detail_parity(real: dict, sim: dict,
                 eff_c.append(ec)
         return chosen, inflight, eff_c
 
-    r_ch, r_inf, r_ec = collect(real["selection_train"])
-    s_ch, s_inf, s_ec = collect(sim["selection_train"])
+    r_cut = s_cut = None
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+    if N is not None:
+        ts_of = lambda e: e.get("ts")
+        r_cut = _time_to_progress(real["agg_rounds"], prog_fn, N, ts_of)
+        s_cut = _time_to_progress(sim["agg_rounds"], prog_fn, N, ts_of)
+
+    r_ch, r_inf, r_ec = collect(real["selection_train"], r_cut)
+    s_ch, s_inf, s_ec = collect(sim["selection_train"], s_cut)
+    # Never let the window itself empty a side out -- fall back to the full run
+    # so a missing/degenerate budget can't manufacture a pass.
+    if (not r_ch or not s_ch) and (r_cut is not None or s_cut is not None):
+        r_cut = s_cut = N = None
+        r_ch, r_inf, r_ec = collect(real["selection_train"], None)
+        s_ch, s_inf, s_ec = collect(sim["selection_train"], None)
     if not r_ch:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no num_chosen in selection telemetry"}
@@ -1183,10 +1208,17 @@ def selection_detail_parity(real: dict, sim: dict,
     rel_inflight = abs(r_inf_m - s_inf_m) / max(r_inf_m, s_inf_m, 1) if (
         not math.isnan(r_inf_m) and not math.isnan(s_inf_m)) else 0.0
 
-    ok = rel_chosen <= tol_chosen and rel_inflight <= tol_inflight
-    return {
+    # "Same rounds, same cohorts" is the contract, so the event COUNT is graded
+    # too, not just cohort size. Counted at matched work (above) so this grades
+    # the SELECTOR, not how far each side got (`throughput` owns that).
+    rel_events = (abs(len(r_ch) - len(s_ch)) / max(len(r_ch), len(s_ch))
+                  if max(len(r_ch), len(s_ch)) > 0 else 0.0)
+    ok = (rel_chosen <= tol_chosen and rel_inflight <= tol_inflight
+          and rel_events <= tol_chosen)
+    result = {
         "ok": ok,
         "tier": "DIST",
+        "rel_diff_n_selections": round(rel_events, 3),
         "real_mean_chosen": round(r_ch_m, 2) if not math.isnan(r_ch_m) else None,
         "sim_mean_chosen": round(s_ch_m, 2) if not math.isnan(s_ch_m) else None,
         "rel_diff_chosen": round(rel_chosen, 3),
@@ -1197,7 +1229,17 @@ def selection_detail_parity(real: dict, sim: dict,
         "sim_mean_effective_c": round(s_ec_m, 2) if not math.isnan(s_ec_m) else None,
         "tol_chosen": tol_chosen,
         "tol_inflight": tol_inflight,
+        "n_real_selections": len(r_ch),
+        "n_sim_selections": len(s_ch),
     }
+    if N is not None:
+        result["matched_logical_budget_n"] = _prog_json(N)
+        # Full-run counts alongside the graded ones, so the window hides
+        # nothing: a gap here with matched-work agreement is progress, which
+        # `throughput` grades, not selection.
+        result["full_run_n_real_selections"] = len(real["selection_train"])
+        result["full_run_n_sim_selections"] = len(sim["selection_train"])
+    return result
 
 
 def inflight_residence_parity(real: dict, sim: dict,
@@ -4448,18 +4490,37 @@ def _fwd_cadence_cycles(agg: dict, max_bin: Optional[int] = None) -> list:
 
 
 def _iters_per_data_id(cycles: list) -> dict:
-    """{cycle_data_id -> #cycles spent on it} = realized dynamic-K per data_id.
+    """{data-bin VISIT -> #cycles spent on it} = realized dynamic-K per bin.
 
     Exact for both natural-pass and force-commit paths because each agg-goal
     boundary emits exactly one cadence event tagged with the data_id it worked
-    on (cycle_data_id), pre-advance."""
+    on (cycle_data_id), pre-advance.
+
+    Keyed on `(round, cycle_data_id)`, not raw `cycle_data_id`, which wraps each
+    lap -- a run that laps then sums two visits into one bin AND divides by too
+    few bins (§F-2). felix_round real completed 163 bins across 150 distinct
+    `data_id`s: the raw key read 11.98 vs sim's 12.54 (a 4.4% PASS) where the
+    true per-visit figures are 11.02 vs 12.54, +13.8%, matching its failing
+    `throughput` residual (§D-19). Same composite key as
+    `_per_progress_last_event`, same reason.
+
+    Counts a visit only if it COMPLETED (`_DATA_ID_COMMIT_FIELD`) -- a deadline
+    truncates the final visit, whose cycle count isn't "iterations to close"
+    (§D-13). Falls back to unfiltered when nothing verifies, as that helper
+    does."""
     out: dict = {}
+    completed: set = set()
     for e in cycles:
         d = e.get("cycle_data_id")
         if d is None:
             continue
-        out[d] = out.get(d, 0) + 1
-    return out
+        key = (e.get("round") or 0, d)
+        out[key] = out.get(key, 0) + 1
+        if e.get(_DATA_ID_COMMIT_FIELD) is True:
+            completed.add(key)
+    if not completed:
+        return out
+    return {k: v for k, v in out.items() if k in completed}
 
 
 def _moving_avg(seq: list, window: int) -> list:
@@ -4487,15 +4548,28 @@ def iters_per_data_id_parity(real: dict, sim: dict, ks_tol: float = 0.2,
                              max_bin: Optional[int] = None) -> dict:
     """V1 [DIST]: iterations-per-data_id distribution (realized dynamic K).
 
-    The number of accumulation cycles a data_id needs to pass the variance gate.
+    The number of accumulation cycles a data bin needs to pass the variance gate.
     A divergence means the contributing set/order (U5/U4 upstream) differs, so
     the accumulated grad-pool composition — and thus the variance trajectory —
-    differs. KS on the per-data_id iteration counts + a mean guard.
+    differs. KS on the per-visit iteration counts + a mean guard.
+
+    Counted per data-bin VISIT and only for visits that completed — see
+    `_iters_per_data_id`. Both sides are additionally truncated to the matched
+    logical budget N (§D-4), so a side that ran further contributes no extra
+    bins to the pooled distribution.
     """
     rc, sc = _fwd_cadence_cycles(real, max_bin), _fwd_cadence_cycles(sim, max_bin)
     if not rc or not sc:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no fwdllm cadence events (non-fwdllm run or telemetry absent)"}
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+    if N is not None:
+        w_rc = [e for e in rc if (p := prog_fn(e)) is not None and p <= N]
+        w_sc = [e for e in sc if (p := prog_fn(e)) is not None and p <= N]
+        if w_rc and w_sc:
+            rc, sc = w_rc, w_sc
+        else:
+            N = None
     r_iters = list(_iters_per_data_id(rc).values())
     s_iters = list(_iters_per_data_id(sc).values())
     if not r_iters or not s_iters:
@@ -4506,7 +4580,7 @@ def iters_per_data_id_parity(real: dict, sim: dict, ks_tol: float = 0.2,
     s_mean, _ = mean_std(s_iters)
     mean_rel = (abs(r_mean - s_mean) / max(r_mean, s_mean)
                 if max(r_mean, s_mean) > 0 else 0.0)
-    return {
+    result = {
         "ok": ks <= ks_tol and mean_rel <= mean_tol_rel,
         "tier": "DIST",
         "real_mean_iters": round(r_mean, 3),
@@ -4518,6 +4592,9 @@ def iters_per_data_id_parity(real: dict, sim: dict, ks_tol: float = 0.2,
         "n_real_data_ids": len(r_iters),
         "n_sim_data_ids": len(s_iters),
     }
+    if N is not None:
+        result["matched_logical_budget_n"] = _prog_json(N)
+    return result
 
 
 def iters_per_data_id_moving_avg_parity(real: dict, sim: dict, window: int = 20,
@@ -4541,7 +4618,10 @@ def iters_per_data_id_moving_avg_parity(real: dict, sim: dict, window: int = 20,
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no fwdllm cadence events (non-fwdllm run or telemetry absent)"}
     r_map, s_map = _iters_per_data_id(rc), _iters_per_data_id(sc)
-    # Align on data_ids BOTH legs reached (real may cap earlier on a wall budget).
+    # Align on the data-bin VISITS both legs completed (real may cap earlier on a
+    # wall budget). Keys are `(round, cycle_data_id)`, which sorts chronologically
+    # across laps, so a wrapped run's second visit to a bin no longer aligns
+    # against the other side's first (§D-19).
     common = sorted(set(r_map) & set(s_map))
     if len(common) < 2:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
@@ -5703,42 +5783,116 @@ def _dispatch_tripwire_stats(agg: dict) -> dict:
             "n_over_cap": n_over, "n_retask": n_retask}
 
 
-def concurrency_cap_ok(real_agg: dict, sim_agg: dict) -> dict:
-    """[INV, per mode] outstanding dispatched-not-committed ends <= selector `c`.
+def _peak_inflight_overlap(agg: dict) -> dict:
+    """Peak simultaneously-in-flight DISTINCT ends, by sweeping each
+    contribution's [dispatch_ts, commit_ts] interval from `contributor_intervals`.
 
-    A single-side invariant (§D-9): a mode that dispatches past its own `c` found
-    free capacity that doesn't exist, decidable without any real/sim diff. Graded
-    independently per mode off that mode's own `concurrency_target`; the failing
-    side is named. Sim overshooting while real sits exactly at `c` is the
-    signature of a slot released too early (simulate_fwdllm.md §D-15).
+    Measured on the mode's own axis (vclock in sim, wall in real) -- the axis `c`
+    is defined on. Symmetric, and read from telemetry both legs already emit, so
+    real is gradeable without the dispatch-time tripwire that only newer runs
+    carry.
+
+    DISTINCT ends, not intervals: an end with two concurrent dispatches is one
+    busy trainer in one slot, so counting intervals over-reports the cap
+    (fedbuff_round 61 intervals vs 35 ends). That second dispatch is its own
+    violation (§F-25), counted separately as `n_self_overlap`.
     """
+    ev = []
+    for e in agg.get("agg_rounds", []):
+        for iv in (e.get("contributor_intervals") or []):
+            a, b = iv.get("dispatch_ts"), iv.get("commit_ts")
+            if a is None or b is None or b < a:
+                continue
+            ev.append((a, 1, iv.get("end")))
+            ev.append((b, -1, iv.get("end")))
+    if not ev:
+        return {"n": 0, "peak": None, "n_self_overlap": 0, "_ev": []}
+    # Close intervals before opening at the same instant: an end that commits and
+    # is re-dispatched at the same stamp holds one slot, not two.
+    ev.sort(key=lambda x: (x[0], x[1]))
+    per_end: dict = {}
+    peak = n = n_self = 0
+    for _, delta, end in ev:
+        per_end[end] = per_end.get(end, 0) + delta
+        if per_end[end] <= 0:
+            per_end.pop(end, None)
+        if delta > 0:
+            n += 1
+            if per_end.get(end, 0) > 1:
+                n_self += 1
+        peak = max(peak, len(per_end))
+    return {"n": n, "peak": peak, "n_self_overlap": n_self, "_ev": ev}
+
+
+def concurrency_cap_ok(real_agg: dict, sim_agg: dict) -> dict:
+    """[INV, per mode] ends in flight at any instant <= selector `c`.
+
+    A single-side invariant (§D-9): a mode that runs past its own `c` found free
+    capacity that doesn't exist, decidable without any real/sim diff. Graded
+    independently per mode; the failing side is named.
+
+    Measured as peak interval overlap on each mode's own clock, not the size of
+    the aggregator's pending set at dispatch instants. That set-size reading was
+    wrong in both directions (§D-20): it counted committed-but-not-yet-released
+    ends, inflating fluxtune to a phantom 31/30 once per cycle, and by sampling
+    only at dispatch instants it under-reported fedbuff_round. Tripwire counts
+    are still reported, but do not decide the verdict.
+    """
+    r_ov, s_ov = _peak_inflight_overlap(real_agg), _peak_inflight_overlap(sim_agg)
     r, s = _dispatch_tripwire_stats(real_agg), _dispatch_tripwire_stats(sim_agg)
-    if (r["n"] == 0 and s["n"] == 0) or (r["target"] is None and s["target"] is None):
+    target = r["target"] if r["target"] is not None else s["target"]
+    if target is None or (r_ov["n"] == 0 and s_ov["n"] == 0):
         return {"ok": True, "tier": "INV", "status": "SKIP",
-                "note": "no redispatch_decomp tripwire telemetry (pre-§D-15 run "
-                        "or non-fwdllm baseline)"}
-    offending = [m for m, d in (("real", r), ("sim", s)) if d["n_over_cap"] > 0]
-    # A side with no events predates the telemetry -- report ungraded, never a
-    # measured 0 (the §D-15 fix is sim-only, so a pair can mix an old real leg).
-    no_data = [m for m, d in (("real", r), ("sim", s)) if d["n"] == 0]
+                "note": "no contributor_intervals / no concurrency target "
+                        "(non-fwdllm baseline or telemetry absent)"}
+    tgt = int(target)
+
+    def _over(ov):
+        if ov["n"] == 0:
+            return None, None
+        per_end: dict = {}
+        n_over = 0
+        for _, delta, end in ov["_ev"]:
+            per_end[end] = per_end.get(end, 0) + delta
+            if per_end[end] <= 0:
+                per_end.pop(end, None)
+            if delta > 0 and len(per_end) > tgt:
+                n_over += 1
+        return n_over, round(n_over / ov["n"], 4)
+
+    r_n_over, r_frac = _over(r_ov)
+    s_n_over, s_frac = _over(s_ov)
+    # Two separate INV violations, either of which fails: >`c` trainers at once,
+    # and two live dispatches to the SAME end (§F-25).
+    offending = sorted({m for m, n_over in (("real", r_n_over), ("sim", s_n_over))
+                        if n_over}
+                       | {m for m, ov in (("real", r_ov), ("sim", s_ov))
+                          if ov["n_self_overlap"]})
+    no_data = [m for m, ov in (("real", r_ov), ("sim", s_ov)) if ov["n"] == 0]
     return {
         "ok": not offending,
         "tier": "INV",
         "offending_modes": offending,
         "ungraded_modes": no_data,
-        "real_max_outstanding": r["max_outstanding"] if r["n"] else None,
-        "real_target": r["target"],
-        "sim_max_outstanding": s["max_outstanding"] if s["n"] else None,
-        "sim_target": s["target"],
-        "real_over_cap_frac": round(r["n_over_cap"] / r["n"], 4) if r["n"] else None,
-        "sim_over_cap_frac": round(s["n_over_cap"] / s["n"], 4) if s["n"] else None,
-        "n_real_dispatches": r["n"], "n_sim_dispatches": s["n"],
+        "target_c": tgt,
+        "real_peak_inflight": r_ov["peak"],
+        "sim_peak_inflight": s_ov["peak"],
+        "real_over_cap_frac": r_frac,
+        "sim_over_cap_frac": s_frac,
+        "real_n_self_overlap_dispatches": r_ov["n_self_overlap"],
+        "sim_n_self_overlap_dispatches": s_ov["n_self_overlap"],
+        "n_real_contributions": r_ov["n"], "n_sim_contributions": s_ov["n"],
+        # Dispatch-time tripwire, reported but not graded -- see docstring.
+        "tripwire_real_max_outstanding": r["max_outstanding"] if r["n"] else None,
+        "tripwire_sim_max_outstanding": s["max_outstanding"] if s["n"] else None,
         "interpretation": (
-            f"peak outstanding real {r['max_outstanding'] if r['n'] else 'n/a'}/"
-            f"{r['target']}, sim {s['max_outstanding'] if s['n'] else 'n/a'}/"
-            f"{s['target']}; >c means the dispatch loop saw capacity the "
-            f"concurrency model doesn't have."
-            + (f" UNGRADED (no telemetry): {', '.join(no_data)}." if no_data else "")
+            f"peak distinct ends in flight: real {r_ov['peak']}, sim "
+            f"{s_ov['peak']}, against c={tgt}; >c means the dispatch loop saw "
+            f"capacity the concurrency model doesn't have. Same-end concurrent "
+            f"dispatches (§F-25): real {r_ov['n_self_overlap']}, sim "
+            f"{s_ov['n_self_overlap']}."
+            + (f" UNGRADED (no contributor_intervals): {', '.join(no_data)}."
+               if no_data else "")
         ),
     }
 

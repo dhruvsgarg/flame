@@ -3,26 +3,28 @@
 # profile_sim_charges.py -- hand-edit only `charge:`/`rationale:`.
 drain_tail:
   _default:
-    charge: false
+    charge: true
     mean_s: 0.2783
     n: 3654
     p90_s: 0.8304
     profiled_at: '2026-07-29'
-    rationale: not consumed -- already charged via the LIVE-span path (sim's own span
-      IS the cost, shared compute); listed here only because it shares the vclock_charge
-      ledger, no call site reads this entry.
+    rationale: 07-30 flipped ON. The old "sim's own span IS the cost" rationale was
+      falsified -- sim runs the same op but under ~100 co-located trainer threads,
+      so its live span is contention-inflated (0.585 vs real 0.330 s/cycle on
+      fluxtune, 1.77x) and folding it onto the vclock injects sim-host noise into
+      the clock (simulate_fwdllm.md §D-18, §F-1/§F-20). Charged from real instead.
     source_runs:
     - run_20260729_034223_fedbuff_round_n100_smoke_syn_0_real
     - run_20260729_055151_felix_round_n100_smoke_syn_0_real
 fedavg:
   _default:
-    charge: false
+    charge: true
     mean_s: 0.0645
     n: 3654
     p90_s: 0.1997
     profiled_at: '2026-07-29'
-    rationale: not consumed -- same as drain_tail, live-span path already correct
-      for this shared-compute category.
+    rationale: 07-30 flipped ON, same reason as drain_tail -- sim 0.078 vs real 0.059
+      s/cycle. Smaller term but the same contention-injection defect.
     source_runs:
     - run_20260729_034223_fedbuff_round_n100_smoke_syn_0_real
     - run_20260729_055151_felix_round_n100_smoke_syn_0_real

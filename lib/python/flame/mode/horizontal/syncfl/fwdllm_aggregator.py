@@ -249,9 +249,10 @@ def charge_sim_vclock_overhead(
 ) -> float:
     """Fold an aggregator-side wall span into the vclock. Two independent
     sources, both dynamic (never a hand-typed constant, #6):
-    - shared-compute categories (drain_tail/fedavg): sim runs the identical
-      op, so its own live `span_s` IS the real cost -- gated on
-      `sim_model_agg_compute_time`.
+    - shared-compute categories (drain_tail/fedavg): sim runs the identical op
+      but its wall is contention-inflated at n=100, so the live `span_s` is NOT
+      the real cost (§D-18) -- these resolve `profiled_s` too, falling back to
+      the live path (gated on `sim_model_agg_compute_time`) with no registry.
     - real-only-artifact categories (e.g. redispatch_turnaround): sim's own
       span is near-zero by construction (it doesn't do the real work), so the
       caller resolves `profiled_s` via `sim_charge_registry.get_profiled_charge_s`
@@ -2180,14 +2181,18 @@ class TopAggregator(AsyncTopAgg):
         # [REDISPATCH_DECOMP] peer-wait boundary: this micro-batch/round just
         # closed at this wall instant (both modes -- see build_redispatch_decomp).
         self._last_round_close_wall_ts = _agg_start_wall + _aggregate_fedavg_s
-        # #6: charge the measured drain-tail + FedAvg merge wall to the vclock --
-        # genuine server-step compute that runs every cycle but was never
-        # credited. See `charge_sim_vclock_overhead`.
+        # #6: charge the drain-tail + FedAvg merge to the vclock -- genuine
+        # per-cycle server compute. PROFILED from real, not sim's own live span
+        # (§D-18): sim's wall is contention-inflated (1.77x on fluxtune) and
+        # charging it injects sim-host noise into the clock (§F-1/§F-20).
         _vc = getattr(self, "_vclock", None)
+        _prof_path = getattr(self.config.hyperparameters, "sim_charge_profile_path", None)
         charge_sim_vclock_overhead(
-            _vc, self.simulated, self.config, _drain_tail_s, "drain_tail")
+            _vc, self.simulated, self.config, _drain_tail_s, "drain_tail",
+            profiled_s=get_profiled_charge_s(_prof_path, "drain_tail"))
         charge_sim_vclock_overhead(
-            _vc, self.simulated, self.config, _aggregate_fedavg_s, "fedavg")
+            _vc, self.simulated, self.config, _aggregate_fedavg_s, "fedavg",
+            profiled_s=get_profiled_charge_s(_prof_path, "fedavg"))
         _agg_vclock_end = getattr(self, "vclock_now", None)
         _aggregate_fedavg_vclock_s = (
             _agg_vclock_end - _agg_vclock_start
@@ -3270,6 +3275,38 @@ class TopAggregator(AsyncTopAgg):
             return ends
         return [e for e in ends if e not in pending]
 
+    @staticmethod
+    def _cap_dispatch_to_concurrency(channel, ends):
+        """Trim a dispatch list so `outstanding + dispatched <= c` -- BACKFILL
+        at a round boundary (operator call, 07-30). Re-drawing a full-`c` cohort
+        while the previous round is still in flight ran `c + stragglers` at once
+        (`fedbuff_round` sim 35 vs c=30, all inside the lap wrap, §D-20); real
+        fills freed slots as they free. The surplus goes out on a later tick.
+        Reads the same `_agg_pending_commit_ref` as `_exclude_pending_commit` so
+        the two can't disagree (§F-26). No-op without that ref or a known `c`.
+        """
+        selector = getattr(channel, "_selector", None)
+        pending = getattr(selector, "_agg_pending_commit_ref", None) if selector else None
+        if pending is None:
+            return ends
+        c = channel.properties.get("dynamic_c")
+        if c is None:
+            c = channel.get_c()
+        try:
+            c = int(c)
+        except (TypeError, ValueError):
+            return ends
+        if c <= 0:
+            return ends
+        allowed = max(0, c - len(pending))
+        if len(ends) <= allowed:
+            return ends
+        logger.info(
+            f"[ConcurrencyBackfill] holding {len(ends) - allowed} of {len(ends)} "
+            f"cohort dispatches: {len(pending)} still in flight against c={c}"
+        )
+        return ends[:allowed]
+
     def _round_cache_clock_now(self) -> float:
         """Clock for the round-cache stuck timeout: vclock in sim, wall in real
         (#1c, what `_abandon_clock_now` already fixed for the selector).
@@ -3518,7 +3555,8 @@ class TopAggregator(AsyncTopAgg):
             # still awaiting commit (§D-8) -- this branch skips select(), the
             # only other place `_agg_pending_commit_ref` gets checked.
             self._rearm_recv_eligibility(channel, ends)
-            return self._exclude_pending_commit(channel, ends)
+            return self._cap_dispatch_to_concurrency(
+                channel, self._exclude_pending_commit(channel, ends))
 
         new_ends = channel.ends(
             state=VAL_CH_STATE_SEND,
@@ -3540,8 +3578,15 @@ class TopAggregator(AsyncTopAgg):
                 f"accumulated pinned cohort ends={merged} "
                 f"({len(merged)}/{target}) at key={self._pinned_cohort_key}"
             )
-            return merged
-        return list(self._round_selected_ends or [])
+            # Roster is `c`; dispatchable NOW is `c` minus still-in-flight.
+            # This branch had neither guard, so a lap boundary re-dispatched
+            # live ends and pushed concurrency past `c` (§D-20).
+            return self._cap_dispatch_to_concurrency(
+                channel, self._exclude_pending_commit(channel, merged))
+        return self._cap_dispatch_to_concurrency(
+            channel,
+            self._exclude_pending_commit(channel,
+                                         list(self._round_selected_ends or [])))
 
     def _await_dispatchable_under_scarcity(self, task_to_perform: str) -> None:
         """Real-mode sync-barrier liveness under availability scarcity.
@@ -3606,13 +3651,22 @@ class TopAggregator(AsyncTopAgg):
             served[end] = self.version_key
 
     def _outstanding_dispatch_count(self) -> int:
-        """Ends dispatched but not yet released back to the pool, read off
-        whichever pending-commit construct this mode owns: sim's single
-        `_sim_pending_commit` set, or real's `_PendingCommitUnion` (in-flight ∪
-        returned-not-committed). Feeds the concurrency-cap tripwire only -- no
-        new state, and no side effects."""
-        pending = (getattr(self, "_sim_pending_commit", None) if self.simulated
-                   else getattr(self, "_real_pending_commit", None))
+        """Ends still IN FLIGHT, read off whichever pending-commit construct this
+        mode owns: sim's single `_sim_pending_commit` set, or real's
+        `_PendingCommitUnion` (in-flight ∪ returned-not-committed). Feeds the
+        concurrency-cap tripwire only -- no new state, and no side effects.
+
+        Sim subtracts `_sim_committed`: those ends committed in virtual time but
+        still hold their slot until the agg-goal boundary (deliberate, §D-15).
+        Counting them reported a phantom `c + 1` once per cycle (fluxtune: 1218
+        false positives, §D-20). Only the cap arithmetic changes, not the set."""
+        if self.simulated:
+            pending = getattr(self, "_sim_pending_commit", None)
+            if pending is None:
+                return 0
+            committed = getattr(self, "_sim_committed", None) or ()
+            return len(set(pending) - set(committed))
+        pending = getattr(self, "_real_pending_commit", None)
         return len(pending) if pending is not None else 0
 
     def _should_send_full_weights(self, end, is_stale: bool) -> bool:

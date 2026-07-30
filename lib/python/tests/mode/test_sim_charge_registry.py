@@ -56,3 +56,35 @@ def test_missing_file_is_a_noop_not_a_crash(tmp_path):
 def test_default_payload_kind_key(tmp_path):
     path = _write(tmp_path, "drain_tail:\n  _default:\n    charge: true\n    mean_s: 0.33\n")
     assert get_profiled_charge_s(path, "drain_tail") == 0.33
+
+
+_SHARED_COMPUTE_YAML = """
+drain_tail:
+  _default:
+    charge: true
+    mean_s: 0.2783
+    n: 3654
+fedavg:
+  _default:
+    charge: true
+    mean_s: 0.0645
+    n: 3654
+"""
+
+
+def test_shared_compute_categories_resolve_a_profiled_charge(tmp_path):
+    """§D-18: drain_tail/fedavg were charged from sim's OWN live span on the
+    theory that "sim runs the identical op, so its span IS the cost". At n=100
+    that span is contention-inflated (fluxtune: sim 0.585 vs real 0.330 s/cycle),
+    so the live path folds sim-host noise onto the vclock (§F-1/§F-20). They are
+    profiled from real now, like any other charged category."""
+    path = _write(tmp_path, _SHARED_COMPUTE_YAML)
+    assert get_profiled_charge_s(path, "drain_tail") == 0.2783
+    assert get_profiled_charge_s(path, "fedavg") == 0.0645
+
+
+def test_shared_compute_charge_is_inert_without_a_registry(tmp_path):
+    """A baseline that never opted in must keep the old live-span behavior --
+    the call site passes profiled_s=None and falls back."""
+    assert get_profiled_charge_s(None, "drain_tail") is None
+    assert get_profiled_charge_s(_write(tmp_path), "drain_tail") is None

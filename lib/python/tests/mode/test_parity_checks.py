@@ -1046,10 +1046,13 @@ def _cadence(cycle_data_id, cycle_iteration, var, var_threshold,
 
 
 def _cadence_run(iters_per_data, var_threshold=1.0, pass_var=0.5, fail_var=2.0,
-                 agg_goal=3):
+                 agg_goal=3, round_=1):
     """Series where data_id d takes iters_per_data[d] cycles: (n-1) variance
     FAILs (var>thr) then one PASS (var<=thr). grad_pool grows each retry and is
     at its max on the committing cycle; cached_v grows across the FAIL rollbacks.
+
+    `round_` is the lap counter -- pass it to build a run that WRAPPED past
+    `total_data_bins` and re-visited the same `cycle_data_id`s (§D-19).
     """
     events = []
     for d, n in enumerate(iters_per_data):
@@ -1060,8 +1063,97 @@ def _cadence_run(iters_per_data, var_threshold=1.0, pass_var=0.5, fail_var=2.0,
                 var=(pass_var if committed else fail_var),
                 var_threshold=var_threshold, var_good_enough=committed,
                 grad_pool_size=(it + 1) * agg_goal, cached_v_size=it,
-                agg_goal=agg_goal))
+                agg_goal=agg_goal, round_=round_))
     return events
+
+
+class TestSelectionDetailMatchedWindow:
+    """S3/S4 contract: same number of cohort re-draws AND same cohort size, at
+    matched WORK. A round-cadence baseline re-draws once per round, so the event
+    COUNT is part of the contract, not just `num_chosen`.
+
+    Counted at the matched logical budget (§D-4) so the rung grades the selector
+    rather than how far each side got: felix_round's real leg lapped and re-drew
+    at 4752-4760s, after it had already passed the budget, reading as "real 2.73
+    vs sim 30.0 chosen" when over the work both sides actually did the two are
+    identical (§D-17). That progress difference is real and is graded -- by
+    `throughput`, which fails on the same pair."""
+
+    @staticmethod
+    def _sd(num_chosen, ts):
+        return {"event": "selection", "task": "train", "ts": ts,
+                "num_chosen": num_chosen, "in_flight": 30, "effective_c": 30}
+
+    def _side(self, sel, n_bins, ts_per_bin=1.0):
+        rounds = [_cadence(d, 0, 0.5, 1.0, True, ts=(d + 1) * ts_per_bin)
+                  for d in range(n_bins)]
+        return _agg(selection=sel, agg_rounds=rounds)
+
+    def test_out_of_budget_redraw_excluded(self):
+        # Real reaches the budget at bin 4 (ts=5.0) then re-draws its cohort in
+        # small backfills at ts>5.0; sim never gets there. Inside the window the
+        # two are identical.
+        real = self._side([self._sd(30, 0.5)]
+                          + [self._sd(2, t) for t in (6.0, 6.1, 6.2)], n_bins=8)
+        sim = self._side([self._sd(30, 0.5)], n_bins=5)
+        r = pc.selection_detail_parity(real, sim)
+        assert r["ok"], r
+        assert r["real_mean_chosen"] == 30.0 and r["sim_mean_chosen"] == 30.0, r
+        assert r["n_real_selections"] == 1, r
+
+    def test_unwindowed_would_have_failed(self):
+        # Same data, budget removed: proves the window is what changes the
+        # verdict, not a tolerance change.
+        real = self._side([self._sd(30, 0.5)]
+                          + [self._sd(2, t) for t in (6.0, 6.1, 6.2)], n_bins=8)
+        real_no_budget = _agg(selection=real["selection_train"], agg_rounds=[])
+        sim_no_budget = _agg(selection=[self._sd(30, 0.5)], agg_rounds=[])
+        r = pc.selection_detail_parity(real_no_budget, sim_no_budget)
+        assert not r["ok"] and r["real_mean_chosen"] == 9.0, r
+
+    def test_in_budget_divergence_still_fails(self):
+        # The window must not become a blanket amnesty: a genuine granularity
+        # difference INSIDE the budget still has to fail.
+        real = self._side([self._sd(30, 0.5)], n_bins=5)
+        sim = self._side([self._sd(2, t) for t in (0.5, 1.5, 2.5)], n_bins=5)
+        r = pc.selection_detail_parity(real, sim)
+        assert not r["ok"] and r["sim_mean_chosen"] == 2.0, r
+
+    def test_one_redraw_each_of_the_same_size_passes(self):
+        """Operator ruling: a 1.5h run IS how this baseline operates. One round,
+        one cohort draw per side, same size -> PASS. Trivial, but true to the
+        system: nothing about the selector diverged."""
+        real = self._side([self._sd(30, 0.5)], n_bins=5)
+        sim = self._side([self._sd(30, 0.5)], n_bins=5)
+        r = pc.selection_detail_parity(real, sim)
+        assert r["ok"] and "underpowered" not in r, r
+
+    def test_redraw_COUNT_mismatch_fails_even_when_cohort_size_matches(self):
+        """Rounds must match too: 1 re-draw vs 4, both of 30 trainers, is a
+        divergence (`fedbuff_round`'s shape -- sim crossed the round boundary
+        inside the graded window and re-drew, real never did)."""
+        real = self._side([self._sd(30, 0.5)], n_bins=5)
+        sim = self._side([self._sd(30, t) for t in (0.5, 1.5, 2.5, 3.5)], n_bins=5)
+        r = pc.selection_detail_parity(real, sim)
+        assert not r["ok"] and r["rel_diff_n_selections"] == 0.75, r
+        assert r["real_mean_chosen"] == r["sim_mean_chosen"] == 30.0, r
+
+    def test_full_run_counts_reported_so_the_window_hides_nothing(self):
+        real = self._side([self._sd(30, 0.5)]
+                          + [self._sd(2, t) for t in (6.0, 6.1, 6.2)], n_bins=8)
+        sim = self._side([self._sd(30, 0.5)], n_bins=5)
+        r = pc.selection_detail_parity(real, sim)
+        assert r["ok"], r
+        assert r["full_run_n_real_selections"] == 4, r
+        assert r["full_run_n_sim_selections"] == 1, r
+
+    def test_window_never_empties_a_side_out(self):
+        # If the budget would leave a side with no selections at all, fall back
+        # to the full run rather than manufacturing a pass on zero data.
+        real = self._side([self._sd(30, 9.0)], n_bins=5)   # all past the budget
+        sim = self._side([self._sd(2, 9.0)], n_bins=5)
+        r = pc.selection_detail_parity(real, sim)
+        assert r["n_real_selections"] == 1 and not r["ok"], r
 
 
 class TestV1IterPerDataId:
@@ -1082,12 +1174,62 @@ class TestV1IterPerDataId:
     def test_iters_binning_exact_for_force_commit(self):
         # A data_id that force-commits after 2 fails still counts 3 cycles: the
         # commit event carries cycle_data_id of the SAME data_id (pre-advance).
+        # Keyed per VISIT -- (round, cycle_data_id) -- not raw data_id (§D-19).
         cycles = [
             _cadence(0, 0, 2.0, 1.0, False),
             _cadence(0, 1, 2.0, 1.0, False),
             _cadence(0, 2, 2.0, 1.0, True, force_commit_planned=True),  # forced
         ]
-        assert pc._iters_per_data_id(cycles) == {0: 3}
+        assert pc._iters_per_data_id(cycles) == {(1, 0): 3}
+
+    def test_wrapped_data_id_counted_as_two_visits_not_one_bin(self):
+        """§D-19: `cycle_data_id` wraps each lap. Two visits to bin 0 in
+        different rounds are two bins of 2 and 3 cycles -- NOT one bin of 5,
+        which is what the old raw-data_id key produced (and which both summed
+        the counts and divided by too few bins, hiding a real gap)."""
+        cycles = [
+            _cadence(0, 0, 2.0, 1.0, False, round_=1),
+            _cadence(0, 1, 0.5, 1.0, True, round_=1),
+            _cadence(0, 0, 2.0, 1.0, False, round_=2),
+            _cadence(0, 1, 2.0, 1.0, False, round_=2),
+            _cadence(0, 2, 0.5, 1.0, True, round_=2),
+        ]
+        assert pc._iters_per_data_id(cycles) == {(1, 0): 2, (2, 0): 3}
+
+    def test_incomplete_trailing_visit_excluded(self):
+        """A run stopped by `max_runtime_s` mid variance-check leaves a visit
+        that never passed the gate; its truncated cycle count is not "iterations
+        needed to close" and must not enter the distribution (§D-13)."""
+        cycles = [
+            _cadence(0, 0, 2.0, 1.0, False, round_=1),
+            _cadence(0, 1, 0.5, 1.0, True, round_=1),   # completed
+            _cadence(1, 0, 2.0, 1.0, False, round_=1),  # deadline hit here
+        ]
+        assert pc._iters_per_data_id(cycles) == {(1, 0): 2}
+
+    def test_no_completed_visit_falls_back_to_unfiltered(self):
+        """Fixtures/baselines that never set the commit field must not collapse
+        to an empty distribution -- mirrors `_per_progress_last_event`."""
+        cycles = [
+            {"event": "agg_round", "round": 1, "cycle_data_id": 0},
+            {"event": "agg_round", "round": 1, "cycle_data_id": 0},
+        ]
+        assert pc._iters_per_data_id(cycles) == {(1, 0): 2}
+
+    def test_truncated_to_matched_budget_so_extra_real_bins_dont_count(self):
+        """The felix_round shape end-to-end: real laps past `total_data_bins`
+        and re-visits early bins; sim never gets there. Those extra visits are
+        beyond the matched logical budget and must not enter either mean --
+        otherwise real's late, differently-priced bins pull its average and the
+        comparison stops being like-for-like (§D-4)."""
+        real = _agg(agg_rounds=(_cadence_run([2, 2, 2, 2])
+                                + _cadence_run([9, 9], round_=2)))  # 2nd lap
+        sim = _agg(agg_rounds=_cadence_run([3, 3, 3, 3]))
+        r = pc.iters_per_data_id_parity(real, sim)
+        # The 2nd-lap visits (9 cycles each) are outside the budget: real is 2.0,
+        # not (2*4 + 9*2)/6 = 4.33.
+        assert r["n_real_data_ids"] == 4 and r["real_mean_iters"] == 2.0, r
+        assert r["sim_mean_iters"] == 3.0 and not r["ok"], r
 
     def test_non_fwdllm_skips(self):
         a = _agg(agg_rounds=[_round(1, ["a"], [0], vclock=1.0)])  # no cadence fields
@@ -1527,39 +1669,115 @@ def _agg_rd(rows):
                 for i, (o, t, rt) in enumerate(rows)]}
 
 
+def _agg_ci(intervals, target=30):
+    """agg dict whose agg_rounds carry `contributor_intervals` [(dispatch, commit)]
+    plus one tripwire row to supply `concurrency_target` (both modes share the
+    same configured `c`, so either side's row can name it)."""
+    return {"selection_train": [], "agg_evals": [],
+            "agg_rounds": [{"event": "agg_round", "round": 1, "ts": 0.0,
+                            "contributor_intervals": [
+                                {"end": f"e{i}", "dispatch_ts": a, "commit_ts": b}
+                                for i, (a, b) in enumerate(intervals)]}],
+            "redispatch_decomp": [
+                {"event": "redispatch_decomp", "ts": 0.0, "end_id": "A",
+                 "outstanding_at_dispatch": 1, "concurrency_target": target,
+                 "retask_before_close": False}]}
+
+
 class TestConcurrencyCapTripwire:
-    """[INV, per mode] outstanding dispatched-not-committed ends <= that mode's
-    own selector `c`. Single-side decidable -- graded per mode, never as a diff."""
+    """[INV, per mode] ends in flight at any instant <= that mode's own selector
+    `c`. Single-side decidable -- graded per mode, never as a diff.
+
+    Graded as peak INTERVAL OVERLAP on each mode's own clock (§D-20), not as the
+    aggregator's pending-set size at dispatch instants: that reading counted
+    committed-but-not-yet-released ends (phantom +1) and, sampling only at
+    dispatch instants, missed a genuine 2x breach entirely."""
 
     def test_both_within_cap_passes(self):
-        agg = _agg_rd([(28, 30, False), (30, 30, False)])
+        # 3 fully overlapping intervals, c=30.
+        agg = _agg_ci([(0.0, 10.0), (1.0, 11.0), (2.0, 12.0)])
         r = pc.concurrency_cap_ok(agg, agg)
         assert r["ok"] and r["offending_modes"] == []
-        assert r["real_max_outstanding"] == 30 and r["real_target"] == 30
+        assert r["real_peak_inflight"] == 3 and r["target_c"] == 30
 
     def test_sim_breach_fails_and_names_sim_only(self):
-        real = _agg_rd([(30, 30, False)])
-        sim = _agg_rd([(30, 30, False), (38, 30, False)])
+        real = _agg_ci([(0.0, 10.0), (20.0, 30.0)], target=1)   # never overlaps
+        sim = _agg_ci([(0.0, 10.0), (1.0, 11.0)], target=1)     # overlaps -> 2 > 1
         r = pc.concurrency_cap_ok(real, sim)
-        assert not r["ok"] and r["offending_modes"] == ["sim"]
-        assert r["sim_max_outstanding"] == 38
-        assert r["real_over_cap_frac"] == 0.0 and r["sim_over_cap_frac"] == 0.5
+        assert not r["ok"] and r["offending_modes"] == ["sim"], r
+        assert r["sim_peak_inflight"] == 2 and r["real_peak_inflight"] == 1, r
 
     def test_real_breach_fails_the_real_side(self):
-        r = pc.concurrency_cap_ok(_agg_rd([(31, 30, False)]), _agg_rd([(30, 30, False)]))
-        assert not r["ok"] and r["offending_modes"] == ["real"]
+        real = _agg_ci([(0.0, 10.0), (1.0, 11.0)], target=1)
+        sim = _agg_ci([(0.0, 10.0), (20.0, 30.0)], target=1)
+        r = pc.concurrency_cap_ok(real, sim)
+        assert not r["ok"] and r["offending_modes"] == ["real"], r
 
-    def test_skips_without_tripwire_telemetry(self):
+    def test_skips_without_contributor_intervals(self):
         r = pc.concurrency_cap_ok(_agg(), _agg())
         assert r.get("status") == "SKIP" and r["ok"]
 
-    def test_old_real_leg_reads_ungraded_not_a_measured_zero(self):
-        """The fix is sim-only, so a pair can mix a pre-telemetry real leg with a
-        fresh sim leg -- real must not report a peak of 0 it never measured."""
-        r = pc.concurrency_cap_ok(_agg(), _agg_rd([(38, 30, False)]))
-        assert r["ungraded_modes"] == ["real"]
-        assert r["real_max_outstanding"] is None and r["real_over_cap_frac"] is None
-        assert not r["ok"] and r["offending_modes"] == ["sim"]
+    def test_pre_tripwire_real_leg_is_gradeable_from_intervals_alone(self):
+        """The old rung reported real UNGRADED whenever its leg predated the
+        dispatch tripwire. `contributor_intervals` is emitted by every leg, so
+        real is now graded from its own telemetry -- and the target falls back to
+        sim's row, since both modes run the same configured `c`."""
+        real = {"selection_train": [], "agg_evals": [],
+                "agg_rounds": [{"event": "agg_round", "round": 1, "ts": 0.0,
+                                "contributor_intervals": [
+                                    {"end": "a", "dispatch_ts": 0.0, "commit_ts": 9.0},
+                                    {"end": "b", "dispatch_ts": 1.0, "commit_ts": 8.0},
+                                ]}]}          # no redispatch_decomp rows at all
+        sim = _agg_ci([(0.0, 10.0)], target=1)
+        r = pc.concurrency_cap_ok(real, sim)
+        assert r["ungraded_modes"] == [] and r["real_peak_inflight"] == 2, r
+        assert not r["ok"] and r["offending_modes"] == ["real"], r
+
+    def test_boundary_double_cohort_is_caught(self):
+        """fedbuff_round's shape: a second cohort of DIFFERENT ends dispatched
+        while the first is still in flight -> 2x the cap."""
+        first = [(0.0, 100.0)] * 30
+        second = [(50.0, 150.0)] * 30      # overlaps the first by 50
+        sim = _agg_ci(first + second)      # _agg_ci names every end uniquely
+        r = pc.concurrency_cap_ok(_agg_ci([(0.0, 1.0)]), sim)
+        assert not r["ok"] and r["offending_modes"] == ["sim"], r
+        assert r["sim_peak_inflight"] == 60, r
+
+    def test_counts_distinct_ends_not_intervals(self):
+        """One end holding two concurrent dispatches is ONE busy trainer, so it
+        must not inflate the cap reading -- counting intervals reported
+        fedbuff_round at 61 where only 35 distinct ends were in flight."""
+        agg = {"selection_train": [], "agg_evals": [],
+               "agg_rounds": [{"event": "agg_round", "round": 1, "ts": 0.0,
+                               "contributor_intervals": [
+                                   {"end": "a", "dispatch_ts": 0.0, "commit_ts": 10.0},
+                                   {"end": "a", "dispatch_ts": 1.0, "commit_ts": 11.0},
+                                   {"end": "b", "dispatch_ts": 2.0, "commit_ts": 12.0},
+                               ]}],
+               "redispatch_decomp": [
+                   {"event": "redispatch_decomp", "ts": 0.0, "end_id": "A",
+                    "outstanding_at_dispatch": 1, "concurrency_target": 30,
+                    "retask_before_close": False}]}
+        r = pc.concurrency_cap_ok(_agg_ci([(0.0, 1.0)]), agg)
+        assert r["sim_peak_inflight"] == 2, r        # not 3
+        assert r["sim_n_self_overlap_dispatches"] == 1, r
+
+    def test_same_end_concurrent_dispatch_fails_even_under_the_cap(self):
+        """§F-25: one instruction per version_key. Two live dispatches to one end
+        is a violation regardless of how far below `c` the run is."""
+        agg = {"selection_train": [], "agg_evals": [],
+               "agg_rounds": [{"event": "agg_round", "round": 1, "ts": 0.0,
+                               "contributor_intervals": [
+                                   {"end": "a", "dispatch_ts": 0.0, "commit_ts": 10.0},
+                                   {"end": "a", "dispatch_ts": 1.0, "commit_ts": 11.0},
+                               ]}],
+               "redispatch_decomp": [
+                   {"event": "redispatch_decomp", "ts": 0.0, "end_id": "A",
+                    "outstanding_at_dispatch": 1, "concurrency_target": 30,
+                    "retask_before_close": False}]}
+        r = pc.concurrency_cap_ok(_agg_ci([(0.0, 1.0)]), agg)
+        assert not r["ok"] and r["offending_modes"] == ["sim"], r
+        assert r["sim_peak_inflight"] == 1 <= r["target_c"], r
 
 
 class TestRetaskBeforeCloseTripwire:

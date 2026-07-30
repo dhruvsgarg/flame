@@ -111,6 +111,9 @@ class _FakeAggregator:
     select_async = TopAggregator._select_ends_for_async_respecting_reselect_gate
     _rearm_recv_eligibility = staticmethod(TopAggregator._rearm_recv_eligibility)
     _exclude_pending_commit = staticmethod(TopAggregator._exclude_pending_commit)
+    _cap_dispatch_to_concurrency = staticmethod(
+        TopAggregator._cap_dispatch_to_concurrency
+    )
     _prune_departed_from_round_cache = (
         TopAggregator._prune_departed_from_round_cache
     )
@@ -700,3 +703,65 @@ class TestAsyncReselectGate:
         # Once t1 commits (leaves pending), it's dispatchable again.
         channel._selector._agg_pending_commit_ref = set()
         assert agg.select_async(channel, "train") == ["t1", "t2"]
+
+    def test_accumulate_path_also_excludes_pending_commit_ends(self):
+        """The ACCUMULATE branch never had the guard the cache-hit branch got in
+        2026-07-27 -- so at a round boundary, where the cohort is re-drawn, it
+        re-dispatched ends that already had a live dispatch (fedbuff_round sim:
+        553 same-end concurrent dispatches, §D-20)."""
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["t1"], ["t1", "t2"]], c=2)
+        channel._selector = _FakeAsyncSelector()
+
+        assert agg.select_async(channel, "train") == ["t1"]   # cohort 1/2
+        # t1 is in flight; the accumulate call that fills the cohort to c must
+        # not hand t1 back for a second concurrent dispatch.
+        channel._selector._agg_pending_commit_ref = {"t1"}
+        assert agg.select_async(channel, "train") == ["t2"]
+        assert agg._round_selected_ends == ["t1", "t2"]        # roster still c
+
+
+class TestConcurrencyBackfillAtRoundBoundary:
+    """Operator call 07-30: a round boundary BACKFILLS -- the new round's roster
+    is `c`, but only `c - still_in_flight` may be dispatched now, the rest as
+    stragglers commit. Sizing the new cohort to `c` outright ran c+stragglers at
+    once (fedbuff_round sim peaked at 35 vs c=30, §D-20). Real already behaves
+    this way; this makes sim keep the same contract."""
+
+    def test_new_cohort_is_capped_by_still_in_flight_ends(self):
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["a", "b", "c", "d"]], c=4)
+        channel._selector = _FakeAsyncSelector()
+        # 3 stragglers from the previous round are still in flight against c=4,
+        # so exactly one of the fresh cohort may go out now.
+        channel._selector._agg_pending_commit_ref = {"x", "y", "z"}
+        ends = agg.select_async(channel, "train")
+        assert len(ends) == 1, ends
+        assert agg._round_selected_ends == ["a", "b", "c", "d"]  # roster intact
+
+    def test_remainder_dispatches_as_stragglers_commit(self):
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["a", "b", "c", "d"]], c=4)
+        channel._selector = _FakeAsyncSelector()
+        channel._selector._agg_pending_commit_ref = {"x", "y", "z"}
+        assert len(agg.select_async(channel, "train")) == 1
+        # Two stragglers commit -> two more slots free -> backfill.
+        channel._selector._agg_pending_commit_ref = {"z"}
+        assert agg.select_async(channel, "train") == ["a", "b", "c"]
+        channel._selector._agg_pending_commit_ref = set()
+        assert agg.select_async(channel, "train") == ["a", "b", "c", "d"]
+
+    def test_no_stragglers_means_no_cap(self):
+        """The common case must be byte-identical: nothing in flight -> the whole
+        cohort dispatches, exactly as before."""
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["a", "b", "c", "d"]], c=4)
+        channel._selector = _FakeAsyncSelector()
+        assert agg.select_async(channel, "train") == ["a", "b", "c", "d"]
+
+    def test_cap_is_a_noop_without_a_discoverable_c(self):
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        channel = _FakeChannel(selections=[["a", "b"]], c=None)
+        channel._selector = _FakeAsyncSelector()
+        channel._selector._agg_pending_commit_ref = {"x", "y", "z"}
+        assert agg.select_async(channel, "train") == ["a", "b"]
