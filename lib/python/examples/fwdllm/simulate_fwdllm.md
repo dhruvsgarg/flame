@@ -16,7 +16,7 @@ gating, run-length budget) and fwdllm's rung catalog (§F) live in
 > | section | contents | update rule |
 > |---|---|---|
 > | §A | scoreboard: pass/fail per baseline, ≤2-line caption | rewrite in place on every >3600s run |
-> | §B | per-baseline open issues + ONE "Next session" block | current-state only; an issue lives here XOR §G, never both |
+> | §B | per-baseline open issues + ONE "Next session" block + the RUN PLAN | current-state only; an issue lives here XOR §G, never both |
 > | §C | ladder/decomposition method, run-length budget | timeless; edit only if the method itself changes |
 > | §D | durable lessons — positive, transferable invariants | ≤30 words each; update in place, never append near-dupes |
 > | §E | dead ends — falsified hypotheses, do not retry | append-only, one line each |
@@ -91,8 +91,10 @@ rows compare to each other. `fwdllm_plus` has no run dirs left on disk. Open fai
 
 Per-pair numeric detail: `experiments/_parity_reports/parity_<baseline>_syn_0_<sim-ts>.json`. Open fails: §B.
 
-**Counts include this session's checker fixes** (§G): `aggregation_compute_wall` now grades what reached the
-CLOCK, and `worst_func` now names a func that actually gates. Rung VERDICTS moved; no run was re-executed.
+**These rows PRE-DATE four landed fixes and none has seen a run** — read them for what still fails, not as
+a post-fix state. The counts do include this session's checker fixes (§G: `aggregation_compute_wall` now
+grades what reached the CLOCK, `worst_func` now names a func that gates), but those moved rung VERDICTS on
+existing telemetry; no run was re-executed. §B's run plan replaces this table.
 
 **What the batch settled.** H4 CONFIRMED and H3 falsified-as-stated (§G); `fluxtune` is the batch's biggest
 mover (62/11 → **72/3**). The *pipelining* rungs are green on all nine — `overlap_factor` 0.2-5.2%,
@@ -180,14 +182,57 @@ green, cohort set-overlap is 0.848 against a 0.8 floor. Same trainers, same slot
 per-cycle after all and sends the walk to `U5`/`S2` (§C). Do not read `g2_grad_pool_size` (12%, sim 12.568 vs
 real 11.061) as independent evidence: it tracks `v1`'s own number, so it localizes nothing (§D-22).
 
-**Run these BEFORE attributing anything — four fixes landed this session and none has seen a run.** The eval
-stride changes what `convergence` grades on all nine; the charge-profile fix changes sim's vclock on six.
-Both perturb cadence (§D-21), so H5/H6 are not attributable until a clean post-fix pair exists:
+### Run plan — validating the four landed fixes
+
+> **Update in place. Delete a phase the moment its exit criteria are met and its findings are in §A/§G.**
+
+Four fixes landed with ZERO live runs (§G): eval stride, charge-profile path on 6 sim yamls, real's
+drain-lag capacity read, and two checker rungs. The eval stride changes what `convergence` grades on all
+nine; the charge fix changes sim's vclock on six. Both perturb cadence (§D-21), so **H5/H6 are not
+attributable, and no §A row is trustworthy, until a clean post-fix pair exists.**
+
+**Phase 0 — 900s smoke, all 9 baselines, real+sim. ~1.5h on 4 nodes.** Everything this phase validates is
+un-windowed (pools the whole run), so it grades at full strength at 900s. Do NOT read cadence here — `v1`/
+`v2`/`v2b`/`cohort_sequence` accumulate and will read a FALSE PASS (§D-29; this is exactly how the 900s
+batch mislabelled `fedbuff_round`'s cadence family green).
 ```bash
 cd lib/python/examples/fwdllm/expt_scripts
-bash run_sequential.sh --mode both --only fedbuff_it_unaware,fedbuff_round   # H5/H6 + eval stride
-bash run_sequential.sh --mode both --only fwdllm,fwdllm_it_unaware           # charge-profile fix
+bash run_sequential.sh --mode both --max-runtime-s 900 --only <this-node's-baselines>
 ```
+Exit criteria — all four must hold before spending an overnight:
+| # | check | how | pass |
+|---|---|---|---|
+| 1 | eval stride did not stall sim | `grep -c "eval still running at commit" <sim>/*aggregator.log` | **0** (non-zero ⇒ raise `eval_every_n_commits` for that baseline) |
+| 2 | eval cadence now MATCHES | evals ÷ commits, both modes | ~0.5 on **both** sides (was real 0.99-1.0 / sim 0.49-0.60) |
+| 3 | charges are profiled on all 9 | `charge_source` in the `vclock_charge` ledger | `profiled`, no `live` |
+| 4 | real's capacity read is sane | `run_parity.py --validate` | `tripwire_real_max_outstanding` ≤ 30 (was 45-55) |
+Also watch: `sim_rate` ≥ 1 (§F-10) — the charge fix LOWERS charges, so sim does more cycles per vclock
+second and `sim_rate` falls. `felix_it` starts at 1.45 and is the one to watch.
+
+**Phase 1 — the long batch. Prefer 7200s over 3600s if the window is overnight.** 3600s cannot close
+`convergence` (§C bars it at full 2h+), and `convergence` is precisely the fix we most want to judge; 7200s
+also takes the `fwdllm` family's thin matched budget from N=20 to ~40, which 3600s cannot do at all (N is
+the min of both sides and REAL is the binding side — its 20 bins do not move with the charge fix).
+**BLOCKER to clear first:** every real yaml sets `max_experiment_runtime_s: 7200`, equal to a 7200s target,
+so real races its own ceiling and truncates. Bump it (≥ 10800) before launching 7200s; sim's
+`sim_wall_ceiling_s: 7200` is a WALL cap and is tight only for `felix_it` if its `sim_rate` drops below
+~1.05 in Phase 0.
+
+Node split — ordered so a partial finish still answers the questions that matter, and balanced by SIM wall
+cost, not run count (the `fwdllm` family's `sim_rate` is 6.5-8.9, so its sim legs are ~8 min each, while
+`felix_it` is 1.45):
+| node | baselines | answers | est. @7200s |
+|---|---|---|---|
+| 1 | `fedbuff_it_unaware`, `fedbuff_round` | H5/H6 — the only gating cadence fails | ~5.5h |
+| 2 | `fwdllm`, `fwdllm_it_unaware`, `fwdllm_it_oracular` | charge fix; N 20→40; cheap sim legs | ~7h |
+| 3 | `felix_it`, `fedbuff_it_oracular` | charge fix + `convergence`; slowest sim | ~7h |
+| 4 | `fluxtune`, `felix_round` | eval stride only; hairline `v2`/`conv` re-grade | ~5.5h |
+
+**What Phase 1 can and cannot settle.** CAN: `convergence` on matched eval points (all 9), H5 (does one
+`sim_commit_frees_slot` A/B move both fedbuff baselines together), H6 (is the it_unaware decile ratio still
+climbing 1.03→1.25 or now flat), and whether the charge fix moved cadence on the 6 it touched. CANNOT: give
+`fwdllm`/`fwdllm_it_*` a cadence verdict worth banking even at N=40 — treat those three as a no-regression
+check, not a question being answered.
 
 ### Other open items
 
