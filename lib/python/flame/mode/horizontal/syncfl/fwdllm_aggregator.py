@@ -523,6 +523,19 @@ class TopAggregator(AsyncTopAgg):
         self._last_commit_wall_ts: dict = {}
         self._last_round_close_wall_ts = None
 
+        # §F-23: "commit frees the compute SLOT immediately, but a version_key
+        # re-pick guard keeps the trainer un-pickable for the SAME version_key."
+        # Those are two different roles and sim served both from one set
+        # (`_sim_pending_commit`), so holding the guard past commit also held the
+        # SLOT -- blocking OTHER trainers from a slot that is logically free.
+        # Measured cost on fluxtune: real sits at 30/30 slots for 80.8% of the run,
+        # sim for 8.6%, mean in-flight 29.50 vs 24.66. Correctness fix, so ON by
+        # default; the flag is a kill-switch for A/B on the run node, not a feature
+        # gate. OFF restores the byte-identical conflated behaviour.
+        self._sim_commit_frees_slot = bool(getattr(
+            self.config.hyperparameters, "sim_commit_frees_slot", True))
+        logger.info(f"sim_commit_frees_slot = {self._sim_commit_frees_slot}")
+
         # Real-side collect via streamer-free `drain_ready`, replacing recv_fifo
         # (§H, see _real_sync_recv_incremental). A/B flag, default OFF.
         self._real_drain_ready_ingest = bool(getattr(
@@ -1297,8 +1310,8 @@ class TopAggregator(AsyncTopAgg):
           carry. Release THIS cycle's committers (deferred from their own commit --
           see `_sim_recv_min_grad`), hold the still-busy trainers, and carry the
           surplus buffer to the next fedbuff step. `_sim_hold_busy_slots` holds
-          every dispatched-but-not-committed trainer (computing ∪ carried) in both
-          its compute slot and re-pick guard.
+          every dispatched-but-not-committed trainer (computing ∪ carried) in its
+          re-pick guard, and the not-yet-committed ones in a compute slot.
         - else (sync barriers c ≈ agg_goal, or residence off): legacy drop -- no
           surplus, so clearing is correct and flag-off is byte-identical.
 
@@ -1335,14 +1348,18 @@ class TopAggregator(AsyncTopAgg):
             self._sim_hold_busy_slots(channel)
 
     def _sim_hold_busy_slots(self, channel) -> None:
-        """Assert `selected_ends` == the virtual-time in-flight set: every
-        dispatched-but-not-committed trainer (`_sim_inflight_expected` ∪ buffered
-        surplus ∪ `_sim_pending_commit`, the last covering first-ever dispatches
-        whose delay isn't learned yet -- see the `outstanding` comment below),
-        holding both its compute slot (`selected_ends`, drives
-        `extra = c − len(selected_ends)`) and its re-pick guard (`all_selected`)
-        until the agg-goal boundary releases it (`inflight_residence`; else until
-        its grad commits).
+        """Reconcile the selector to the virtual-time in-flight set
+        `outstanding` = `_sim_inflight_expected` ∪ buffered surplus ∪
+        `_sim_pending_commit` (the last covering first-ever dispatches whose delay
+        isn't learned yet -- see the `outstanding` comment below), in its TWO
+        separate roles (§F-23, `_slot_holders`):
+
+        - re-pick guard (`all_selected`, `_agg_pending_commit_ref`): all of
+          `outstanding`, held until the agg-goal boundary releases it
+          (`inflight_residence`; else until its grad commits) -- §D-15.
+        - compute slot (`selected_ends`, drives `extra = c − len(selected_ends)`):
+          only `_sim_slot_holder_set()`, i.e. minus this cycle's committers. Their
+          grad is in, so the slot is anyone's.
 
         WHY: a returned-but-uncommitted trainer is still in flight in virtual time
         (its grad commits only when the vclock reaches its sct), so its slot is
@@ -1385,6 +1402,12 @@ class TopAggregator(AsyncTopAgg):
         self._sim_pending_commit.clear()
         self._sim_pending_commit.update(outstanding)
         sel._agg_pending_commit_ref = self._sim_pending_commit
+        # CAPACITY view, published separately from the IDENTITY set above so the
+        # dispatch cap stops charging `c` for slots that are logically free
+        # (§F-23, `_slot_holders`). Rebound (not mutated in place) because it is
+        # a derived snapshot, not shared state anyone else edits.
+        slot_holders = TopAggregator._sim_slot_holder_set(self)
+        sel._agg_slot_holders_ref = slot_holders
         # Keep each trainer's contributed-tuple stamp until the aggregator
         # ADVANCES PAST that tuple (v != current), NOT until it commits. The
         # old `e in outstanding` filter dropped the stamp the instant a grad
@@ -1418,11 +1441,18 @@ class TopAggregator(AsyncTopAgg):
                 if eid not in all_selected:
                     all_selected[eid] = time.time()
 
-        # Compute slot: held by EVERY outstanding trainer (computing OR returned-
-        # but-uncommitted) — both are in flight in virtual time until commit.
+        # Compute slot: held by every trainer still IN FLIGHT (computing OR
+        # returned-but-uncommitted) — but NOT by one that already committed this
+        # cycle. Its grad is in; the slot is free for anyone else (§F-23), even
+        # though `all_selected` above still guards it from being re-picked itself
+        # until the version_key advances (§D-15). Serving both roles from
+        # `outstanding` left sim ~5 of 30 slots permanently idle.
         if isinstance(selected_ends, dict) and requester in selected_ends:
             for eid in outstanding:
-                selected_ends[requester].add(eid)
+                if eid in slot_holders:
+                    selected_ends[requester].add(eid)
+                else:
+                    selected_ends[requester].discard(eid)
 
     def _aggregate_grads_async(self, tag: str) -> None:
         """
@@ -2233,6 +2263,12 @@ class TopAggregator(AsyncTopAgg):
         # cycle worked on and its 0-based attempt index.
         _cycle_data_id = self.data_id
         _cycle_iteration = self.iteration_per_data_id
+        # `_round` MUST be snapshotted here too, not read live at emit time below.
+        # The emit sits after the pass/fail branch, which on the last bin of a lap
+        # has already bumped `_round` -- pairing a post-bump round with this
+        # pre-mutation `cycle_data_id` emitted `(2, 149)` between `(1, 148)` and
+        # `(2, 0)`, i.e. a NON-MONOTONE progress key that no consumer can sort.
+        _cycle_round = self._round
         # Same pre-mutation snapshot for model_version (bumped below on a
         # commit): the version this cycle worked ON, readable off agg_round
         # directly instead of cross-referencing the DK-controller status dict.
@@ -2354,6 +2390,34 @@ class TopAggregator(AsyncTopAgg):
             self.iteration_per_data_id = 0
             self._is_model_updated = True
 
+            # Wrap the lap IMMEDIATELY, before anything can observe `data_id`.
+            # Advancing off the last bin leaves it transiently == total_data_bins,
+            # i.e. out of range [0, total_data_bins-1]; anything reading it in that
+            # window records a bin that does not exist (`version_bump_census`
+            # emitted data_id=150 once per lap). The bump and the wrap are one
+            # atomic state transition -- keep them adjacent, and never insert a
+            # read of `self.data_id` between the `+= 1` and this block.
+            if self.data_id == self.total_data_bins:
+                logger.info(
+                    f"All data bins complete. Incrementing round to {self._round + 1}"
+                )
+                self._round += 1
+                self.data_id = 0
+                channel.set_property("round", self._round)
+
+                # fwdllm's TopAggregator extends the asyncfl base (not
+                # syncfl's), which has no rounds-based stop condition of its
+                # own -- self._work_done is otherwise never set here, so the
+                # composer loop (Loop(loop_check_fn=lambda: self._work_done))
+                # never exits and the aggregator process runs forever
+                # regardless of hyperparameters.rounds.
+                self._work_done = self._round > self.config.hyperparameters.rounds
+                if self._work_done:
+                    logger.info(
+                        f"rounds={self.config.hyperparameters.rounds} reached "
+                        f"at round {self._round}; stopping run."
+                    )
+
             # model_version bumps once per completed data-bin, unconditionally
             # (was gated by the now-purged inc_model_version_per_data_id flag;
             # every baseline already ran with it True). version_key =
@@ -2387,27 +2451,6 @@ class TopAggregator(AsyncTopAgg):
                 self._weights_sent_this_cycle.clear()
 
             self._log_and_reset_model_version_stats()
-
-            if self.data_id == self.total_data_bins:
-                logger.info(
-                    f"All data bins complete. Incrementing round to {self._round + 1}"
-                )
-                self._round += 1
-                self.data_id = 0
-                channel.set_property("round", self._round)
-
-                # fwdllm's TopAggregator extends the asyncfl base (not
-                # syncfl's), which has no rounds-based stop condition of its
-                # own -- self._work_done is otherwise never set here, so the
-                # composer loop (Loop(loop_check_fn=lambda: self._work_done))
-                # never exits and the aggregator process runs forever
-                # regardless of hyperparameters.rounds.
-                self._work_done = self._round > self.config.hyperparameters.rounds
-                if self._work_done:
-                    logger.info(
-                        f"rounds={self.config.hyperparameters.rounds} reached "
-                        f"at round {self._round}; stopping run."
-                    )
 
         else:
             logger.info(
@@ -2470,7 +2513,7 @@ class TopAggregator(AsyncTopAgg):
             )
             try:
                 ev, fields = build_agg_round(
-                    round_num=self._round,
+                    round_num=_cycle_round,
                     agg_goal=self._agg_goal,
                     agg_goal_count=self._agg_goal_cnt,
                     updates_in_queue=self._updates_in_queue,
@@ -3277,16 +3320,23 @@ class TopAggregator(AsyncTopAgg):
 
     @staticmethod
     def _cap_dispatch_to_concurrency(channel, ends):
-        """Trim a dispatch list so `outstanding + dispatched <= c` -- BACKFILL
+        """Trim a dispatch list so `slot_holders + dispatched <= c` -- BACKFILL
         at a round boundary (operator call, 07-30). Re-drawing a full-`c` cohort
         while the previous round is still in flight ran `c + stragglers` at once
         (`fedbuff_round` sim 35 vs c=30, all inside the lap wrap, §D-20); real
         fills freed slots as they free. The surplus goes out on a later tick.
-        Reads the same `_agg_pending_commit_ref` as `_exclude_pending_commit` so
-        the two can't disagree (§F-26). No-op without that ref or a known `c`.
+
+        This is a CAPACITY question, so it reads `_agg_slot_holders_ref`, NOT the
+        `_agg_pending_commit_ref` identity set `_exclude_pending_commit` uses --
+        counting a committed-but-guarded end against `c` denies its free slot to
+        every OTHER trainer (§F-23, the fluxtune under-fill). Falls back to the
+        pending ref when no slot ref is published, so real and any baseline that
+        doesn't split the roles stays byte-identical. No-op without a known `c`.
         """
         selector = getattr(channel, "_selector", None)
-        pending = getattr(selector, "_agg_pending_commit_ref", None) if selector else None
+        pending = getattr(selector, "_agg_slot_holders_ref", None) if selector else None
+        if pending is None:
+            pending = getattr(selector, "_agg_pending_commit_ref", None) if selector else None
         if pending is None:
             return ends
         c = channel.properties.get("dynamic_c")
@@ -3650,24 +3700,68 @@ class TopAggregator(AsyncTopAgg):
         if served is not None:
             served[end] = self.version_key
 
-    def _outstanding_dispatch_count(self) -> int:
-        """Ends still IN FLIGHT, read off whichever pending-commit construct this
-        mode owns: sim's single `_sim_pending_commit` set, or real's
-        `_PendingCommitUnion` (in-flight ∪ returned-not-committed). Feeds the
-        concurrency-cap tripwire only -- no new state, and no side effects.
+    def _sim_slot_holder_set(self) -> set:
+        """THE rule for sim's CAPACITY view, in one place so the method below and
+        `_sim_hold_busy_slots` cannot drift (§F-26). Module-visible on the class
+        rather than a bound helper so test doubles that borrow single methods off
+        `TopAggregator` still resolve it.
 
-        Sim subtracts `_sim_committed`: those ends committed in virtual time but
-        still hold their slot until the agg-goal boundary (deliberate, §D-15).
-        Counting them reported a phantom `c + 1` once per cycle (fluxtune: 1218
-        false positives, §D-20). Only the cap arithmetic changes, not the set."""
+        An end holds a slot iff it has a LIVE, uncommitted dispatch:
+
+            (inflight ∪ buffered)  ∪  (pending − committed)
+
+        Both terms are needed. `_sim_committed` is a STALE cross-cycle marker
+        cleared only at the agg-goal boundary, so an end that committed earlier
+        this cycle and has since been re-picked and re-dispatched still carries
+        it -- subtracting blindly would free a slot that is genuinely occupied and
+        let the loop over-dispatch into an R1 overlap. The first term keeps it
+        held on the strength of its NEW dispatch. The second term covers a
+        first-ever dispatch, whose delay `_sim_inflight_expected` has not learned
+        yet, so it is invisible to the first term.
+        """
+        pending = set(getattr(self, "_sim_pending_commit", None) or ())
+        if not getattr(self, "_sim_commit_frees_slot", True):
+            return pending
+        live = set(getattr(self, "_sim_inflight_expected", None) or ())
+        buf = getattr(self, "_sim_buffer", None)
+        if buf is not None:
+            try:
+                live |= set(buf.pending_ends())
+            except (AttributeError, TypeError):
+                pass
+        return live | (pending - set(getattr(self, "_sim_committed", None) or ()))
+
+    def _slot_holders(self) -> set:
+        """**CAPACITY role** -- the ONE authoritative answer to "which ends occupy
+        a dispatch slot right now", for both modes. Every capacity computation
+        (`extra = c - len(selected_ends)`, `_cap_dispatch_to_concurrency`, the
+        `concurrency_cap` tripwire) must read this and nothing else.
+
+        Distinct from the **IDENTITY role** -- "which ends must not be re-picked"
+        -- which is `_sim_pending_commit` / `_real_pending_commit` and is
+        published to the selector as `_agg_pending_commit_ref`. The two sets
+        differ by exactly the ends that committed this cycle but whose re-pick
+        guard is still held to the agg-goal boundary (§D-15): their slot is free
+        (§F-23), their identity is not.
+
+        Sim: dispatched-not-committed. Real: the `_PendingCommitUnion` already
+        drops an end from both halves at commit, so the two roles coincide and
+        this is byte-identical to reading the union directly.
+        """
         if self.simulated:
-            pending = getattr(self, "_sim_pending_commit", None)
-            if pending is None:
-                return 0
-            committed = getattr(self, "_sim_committed", None) or ()
-            return len(set(pending) - set(committed))
+            if getattr(self, "_sim_pending_commit", None) is None:
+                return set()
+            # Explicit unbound call: test doubles borrow individual methods off
+            # this class, so `self._sim_slot_holder_set` may not be bound.
+            return TopAggregator._sim_slot_holder_set(self)
         pending = getattr(self, "_real_pending_commit", None)
-        return len(pending) if pending is not None else 0
+        return set(pending) if pending is not None else set()
+
+    def _outstanding_dispatch_count(self) -> int:
+        """Ends occupying a dispatch slot -- the `concurrency_cap` tripwire's
+        count. Thin wrapper so the tripwire and the dispatch cap can never drift
+        apart on what "in flight" means (§F-26)."""
+        return len(TopAggregator._slot_holders(self))
 
     def _should_send_full_weights(self, end, is_stale: bool) -> bool:
         """Decide WEIGHTS vs the tiny VAR=bad 'keep training' message for one end.

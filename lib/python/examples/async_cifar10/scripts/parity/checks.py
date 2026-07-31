@@ -513,6 +513,29 @@ def _per_round_max_speed(agg_rounds: list) -> dict:
     return out
 
 
+def _per_cycle_barrier_s(agg_rounds: list) -> list:
+    """Per aggregation CYCLE: the barrier span = slowest committed trainer's
+    intrinsic duration. Emitted directly as `intrinsic_span_s` (both modes); falls
+    back to max(trainer_speed_s) on pre-instrumentation telemetry.
+
+    Not `_per_round_max_speed`: that keys on FL `round`, which fwdllm holds static
+    for a whole lap, so it collapses to ONE entry per lap holding the max over the
+    entire run -- both modes then read the same global-max trainer and any rung
+    built on it degenerates into a restatement of its own denominator.
+    """
+    out = []
+    for e in agg_rounds:
+        if e.get("event") not in (None, "agg_round"):
+            continue
+        span = e.get("intrinsic_span_s")
+        if span is None:
+            speeds = e.get("trainer_speed_s") or []
+            span = max(speeds) if speeds else None
+        if span is not None:
+            out.append(span)
+    return out
+
+
 def _real_intrinsic_clock(agg_rounds: list) -> Optional[dict]:
     """Real's genuine-time coordinate for the clock-rate rungs, or None.
 
@@ -538,9 +561,23 @@ def _real_intrinsic_clock(agg_rounds: list) -> Optional[dict]:
     return coord
 
 
+def _verified_progress_order(agg_rounds: list, axis: str) -> list:
+    """The run's verified progress keys in CHRONOLOGICAL order.
+
+    Ordering is by the key's own last-event `ts`, never by sorting the keys
+    themselves: on the `data_id` axis `round` bumps one bin BEFORE `cycle_data_id`
+    wraps, so a lap runs `(1,148) -> (2,149) -> (2,0) -> (2,1) ...` and the tuple
+    `(round, cycle_data_id)` is NOT monotone across a lap boundary (`(2,149)`
+    sorts last but happens first). Events are emitted in time order, so `ts`
+    is the reliable sequencer on both axes.
+    """
+    last = _per_progress_last_event(agg_rounds, axis)
+    return [k for k, _ in sorted(last.items(), key=lambda kv: kv[1].get("ts") or 0.0)]
+
+
 def _matched_logical_budget(real_agg_rounds: list, sim_agg_rounds: list):
-    """Matched LOGICAL budget N = min(final_real_progress, final_sim_progress) on
-    the run's progress axis (fwdllm committed `data_id`, else FL `round`).
+    """Matched LOGICAL budget N -- the work BOTH sides actually did, on the run's
+    progress axis (fwdllm committed `data_id`, else FL `round`).
 
     Parity is "same work, differing only in wall-clock" (F-12): fix the WORK
     (progress <= N) and let TIME be the measured output, never fix a clock
@@ -548,25 +585,136 @@ def _matched_logical_budget(real_agg_rounds: list, sim_agg_rounds: list):
     the axis `sim_rate` tests. See PARITY.md §1.5.
 
     Returns (N, prog_fn) or (None, None). `prog_fn(event) -> progress_key or
-    None` -- a `round` int, or the `(round, cycle_data_id)` tuple that sorts
-    across laps; compare with N via `<=`.
+    None`; compare with N via `<=`. Events outside the matched work return None,
+    which every call site already guards.
 
-    Ceiling per side is `_per_progress_last_event`'s keys, not the raw max --
-    reuses that helper's `data_id`-axis commit filter (§D-13) instead of
-    duplicating it, so every consumer agrees on what "reached" means (§F-26).
+    **`round` axis** (async_cifar10): `round` is dense, monotone and
+    self-verifying, so N stays `min(final_round)` and `prog_fn` stays the raw
+    `round` -- byte-identical to before.
+
+    **`data_id` axis** (fwdllm family): a max-key ceiling is unsound twice over.
+    The key isn't monotone (see `_verified_progress_order`), so `max()` returns
+    the FIRST bin of the last lap and `<= N` then admits the whole lap; and even
+    within a lap "both sides reached key K" does not mean they committed the same
+    BINS -- `felix_round` had 9 bins sim committed and real never did, sitting
+    under a budget the checker called matched, so `total_commits` compared two
+    different workloads and graded 4.7% as a pass. N is therefore the length of
+    the position-wise COMMON PREFIX of the two chronological commit sequences,
+    and `prog_fn` maps a bin to its 1-based ordinal in that prefix. Same bins,
+    same order, same count on both sides, by construction.
     """
     axis = "data_id" if "data_id" in (_progress_axis(real_agg_rounds),
                                       _progress_axis(sim_agg_rounds)) else "round"
     if axis == "round":
-        prog_fn = lambda e: e.get("round")
-    else:
-        prog_fn = lambda e: ((e.get("round") or 0, e.get("cycle_data_id"))
-                             if e.get("cycle_data_id") is not None else None)
-    real_keys = _per_progress_last_event(real_agg_rounds, axis)
-    sim_keys = _per_progress_last_event(sim_agg_rounds, axis)
-    if not real_keys or not sim_keys:
+        real_keys = _per_progress_last_event(real_agg_rounds, axis)
+        sim_keys = _per_progress_last_event(sim_agg_rounds, axis)
+        if not real_keys or not sim_keys:
+            return None, None
+        return min(max(real_keys), max(sim_keys)), (lambda e: e.get("round"))
+    real_seq = _verified_progress_order(real_agg_rounds, axis)
+    sim_seq = _verified_progress_order(sim_agg_rounds, axis)
+    common = []
+    for r_key, s_key in zip(real_seq, sim_seq):
+        if r_key != s_key:
+            break
+        common.append(r_key)
+    if not common:
         return None, None
-    return min(max(real_keys), max(sim_keys)), prog_fn
+    ordinal = {k: i + 1 for i, k in enumerate(common)}
+    prog_fn = lambda e: (ordinal.get((e.get("round") or 0, e.get("cycle_data_id")))
+                         if e.get("cycle_data_id") is not None else None)
+    return len(common), prog_fn
+
+
+_BUDGET_COVERAGE_MIN = 0.50      # below this the windowed rungs are not gradeable
+_BUDGET_COVERAGE_DEGRADED = 0.80  # below this they are stamped low-confidence
+
+
+def _matched_budget_coverage(real_agg_rounds: list, sim_agg_rounds: list) -> dict:
+    """How much of each run the matched budget actually grades, and WHY it stops.
+
+    8 of the 88 rungs window on `_matched_logical_budget` (`selection_detail`,
+    `utility`, `overlap_factor`, `total_commits`, `terminal_state`,
+    `v1_iter_per_data_id`, `v2_var_trajectory`, `v2b_var_drift`). They all share
+    this one primitive, so a budget that silently covers a third of the run would
+    make all 8 read as clean parity on a prefix. Report the fraction on every one
+    of them, and gate it here.
+
+    The slower side is always 100% covered — parity fixes the WORK and measures
+    the TIME (§D-4), so the faster side's overrun has no counterpart to compare
+    against and is dropped by construction. `min_coverage` is therefore
+    `1 / throughput_ratio`, and reading it as "the graded fraction" is exact.
+
+    `truncation` distinguishes two very different reasons the budget ends:
+    - `overrun` — benign: the common prefix is complete for the shorter side and
+      only the faster side's tail was dropped.
+    - `sequence_divergence` — a real defect: the two sides committed DIFFERENT
+      progress units at some position, so the prefix broke before either side ran
+      out. `first_divergence` names the position and both keys.
+    """
+    axis = "data_id" if "data_id" in (_progress_axis(real_agg_rounds),
+                                      _progress_axis(sim_agg_rounds)) else "round"
+    real_seq = _verified_progress_order(real_agg_rounds, axis)
+    sim_seq = _verified_progress_order(sim_agg_rounds, axis)
+    N, _ = _matched_logical_budget(real_agg_rounds, sim_agg_rounds)
+    if N is None:
+        return {"n": None, "min_coverage": None, "truncation": "no_budget"}
+    n = N if axis == "data_id" else sum(1 for k in real_seq if k <= N)
+    r_tot, s_tot = len(real_seq), len(sim_seq)
+    r_cov = n / r_tot if r_tot else 0.0
+    s_cov = n / s_tot if s_tot else 0.0
+    out = {
+        "n": n,
+        "real_units_total": r_tot, "sim_units_total": s_tot,
+        "real_coverage": round(r_cov, 4), "sim_coverage": round(s_cov, 4),
+        "min_coverage": round(min(r_cov, s_cov), 4),
+        "axis": axis,
+    }
+    if n >= min(r_tot, s_tot) and r_tot == s_tot:
+        out["truncation"] = "none"
+    elif n >= min(r_tot, s_tot):
+        out["truncation"] = "overrun"
+    else:
+        out["truncation"] = "sequence_divergence"
+        pos = n            # 0-based index of the first mismatch
+        out["first_divergence"] = {
+            "position": pos + 1,
+            "real_unit": _prog_json(real_seq[pos]) if pos < r_tot else None,
+            "sim_unit": _prog_json(sim_seq[pos]) if pos < s_tot else None,
+        }
+    return out
+
+
+def matched_budget_coverage_parity(real: dict, sim: dict,
+                                   min_coverage: float = _BUDGET_COVERAGE_MIN) -> dict:
+    """CONTROL [EXACT]: is the matched budget a sound basis for the 8 rungs that
+    window on it? Fails on a sequence divergence (the two sides did different
+    work) or when it grades less than `min_coverage` of a run. When this fails,
+    every windowed rung is DOWNSTREAM of it by construction — read it first."""
+    cov = _matched_budget_coverage(real["agg_rounds"], sim["agg_rounds"])
+    if cov.get("n") is None:
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "no matched logical budget — run too short to measure",
+                **cov}
+    diverged = cov["truncation"] == "sequence_divergence"
+    ok = not diverged and cov["min_coverage"] >= min_coverage
+    return {
+        "ok": ok,
+        "tier": "EXACT",
+        "min_coverage_tol": min_coverage,
+        "degraded_below": _BUDGET_COVERAGE_DEGRADED,
+        "degraded": cov["min_coverage"] < _BUDGET_COVERAGE_DEGRADED,
+        **cov,
+        "interpretation": (
+            f"{cov['n']} matched units grade {cov['real_coverage']:.1%} of real / "
+            f"{cov['sim_coverage']:.1%} of sim ({cov['truncation']}). The slower "
+            f"side is always 100% — min_coverage is 1/throughput_ratio. "
+            + ("A sequence divergence means the two sides committed DIFFERENT "
+               "units: a real defect, not a windowing artifact."
+               if diverged else
+               "Overrun truncation is expected and benign.")
+        ),
+    }
 
 
 def _time_to_progress(agg_rounds: list, prog_fn, N, time_fn) -> Optional[float]:
@@ -598,7 +746,9 @@ def _per_round_advances(agg_rounds: list, use_vclock: bool) -> list:
     """
     axis = _progress_axis(agg_rounds)
     by_round = _per_progress_last_event(agg_rounds, axis)
-    rounds_sorted = sorted(by_round.keys())
+    # Chronological, not key-sorted -- the `data_id` key is non-monotone across a
+    # lap boundary (_verified_progress_order).
+    rounds_sorted = _verified_progress_order(agg_rounds, axis)
     if len(rounds_sorted) < 2:
         return []
     # Real: prefer real's intrinsic algorithmic clock over raw wall ts.
@@ -811,7 +961,8 @@ def eligible_speed_composition_parity(real: dict, sim: dict, ks_tol: float = 0.2
     }
 
 
-def selection_speed_bias_parity(real: dict, sim: dict, ks_tol: float = 0.20) -> dict:
+def selection_speed_bias_parity(real: dict, sim: dict, ks_tol: float = 0.20,
+                                bias_tol: float = 0.10) -> dict:
     """A2c [DIST]: does the selector pick the same SPEED mix from its pool?
 
     A2b (eligible_speed) checks the *pool* composition; this checks the *selected*
@@ -861,14 +1012,31 @@ def selection_speed_bias_parity(real: dict, sim: dict, ks_tol: float = 0.20) -> 
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no selected per_trainer speed/delay in selection telemetry"}
     ks = ks_stat(r_sel, s_sel)
-    ok = not math.isnan(ks) and ks <= ks_tol
 
     def _m(x):
         return round(sum(x) / len(x), 2) if x else None
 
+    # Grade the BIAS -- this rung's own named quantity -- not just the KS of the
+    # selected distribution. KS is nearly blind to a uniform shift (the same
+    # blindness `v2_var_trajectory` documents), and the shift is exactly the
+    # signal here: on `fedbuff_round` real selects at +0.19s off a 12.51s pool
+    # while sim selects at +2.62s, i.e. sim is speed-biased against its own pool
+    # and real is not -- with KS a clean 0.187. Both sides draw from an IDENTICAL
+    # pool (`real_pool_mean_s == sim_pool_mean_s`), so the bias difference is
+    # attributable to the selector, not the input.
+    r_bias = (_m(r_sel) - _m(r_pool)) if (r_sel and r_pool) else None
+    s_bias = (_m(s_sel) - _m(s_pool)) if (s_sel and s_pool) else None
+    pool_scale = max(abs(_m(r_pool) or 0.0), abs(_m(s_pool) or 0.0), 1e-9)
+    bias_rel = (abs(s_bias - r_bias) / pool_scale
+                if r_bias is not None and s_bias is not None else None)
+    ok = (not math.isnan(ks) and ks <= ks_tol
+          and (bias_rel is None or bias_rel <= bias_tol))
+
     return {
         "ok": ok, "tier": "DIST",
         "ks_stat": round(ks, 3) if not math.isnan(ks) else None, "ks_tol": ks_tol,
+        "bias_rel_diff": round(bias_rel, 4) if bias_rel is not None else None,
+        "bias_tol": bias_tol,
         "speed_source": "training_delay_s" if used_metadata else "observed_speed_s",
         "real_selected_mean_s": _m(r_sel), "sim_selected_mean_s": _m(s_sel),
         "real_pool_mean_s": _m(r_pool), "sim_pool_mean_s": _m(s_pool),
@@ -2267,7 +2435,19 @@ def failsafe_ok(sim: dict, budget_s: Optional[float] = None,
     }
 
 
-def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
+# Shared tolerance for the throughput family (K2 `throughput`, K8 `terminal_state`,
+# U2 `total_commits`) -- all three report the same clock-per-unit-work signal and
+# must agree. Calibrated to the measured real<->real REPRODUCIBILITY floor, not
+# chosen: `expt_scripts/replicate_floor.py` puts same-seed same-config replicate
+# spread at 3.4-4.5% on committed bins (fedbuff_round/felix_round, 3600s), so the
+# historical 5% bar sat inside the pipeline's own noise and could fire on a run
+# nobody could ever make pass. 8% clears the floor with margin while leaving every
+# open residual (fluxtune 11.9%, fedbuff_round 16.4%) firmly outside it.
+# Re-run replicate_floor.py after any change to scale, hardware or run length.
+_THROUGHPUT_FAMILY_TOL_REL = 0.08
+
+
+def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY_TOL_REL) -> dict:
     """K2 [EXACT]: rounds-per-virtual-second parity.
 
     sim_throughput  = total_sim_rounds / final_vclock_sim
@@ -2276,10 +2456,11 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     On the motivating Felix run (410 vs 673 rounds in the same 3 h budget)
     rel_diff ≈ 40% → FAIL.
 
-    Tolerance 5%: the throughput family — K2 (this mechanism), K8 (rounds at
-    matched V), U2 (commits at matched V) — all measure the same rounds-per-virtual-time
-    signal and share ONE tolerance, set here. Tightened 10%->5% deliberately as the
-    throughput-fidelity bar. U2 == K8 == K2 on the identical quantity, so they must agree.
+    The throughput family — K2 (this mechanism), K8 (rounds at matched V), U2
+    (commits at matched V) — all measure the same rounds-per-virtual-time signal
+    and share ONE tolerance, `_THROUGHPUT_FAMILY_TOL_REL` (see its comment for the
+    replicate-floor calibration). U2 == K8 == K2 on the identical quantity, so
+    they must agree.
     """
     sim_vclock_vals = [e.get("vclock_now") for e in sim["agg_rounds"]
                        if e.get("vclock_now") is not None]
@@ -2539,58 +2720,95 @@ def sim_speedup(real: dict, sim: dict, min_rate: float = 0.98) -> dict:
     }
 
 
-def overlap_factor(real: dict, sim: dict, tol: float = 0.3) -> dict:
-    """K4 [DIAG]: async overlap factor diagnostic.
+def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
+                   tol_rel: float = 0.10) -> dict:
+    """K4 [MECHANISM/EXACT]: async pipelining depth — how many cycles' worth of
+    trainer compute each mode keeps in flight per unit of its own clock.
 
-    overlap = mean(max_trainer_speed) / mean(per_round_advance).
-    Real ≈ 1.8 (healthy async overlap); sim ≈ 1.06 (no inter-round overlap).
-    FAIL if |sim_overlap - real_overlap| > 0.3 — localizes the bug to
-    "sim does not model inter-round overlap".
+    ``overlap = mean(per-cycle barrier) / (clock span / cycles)`` per side, over
+    the matched logical budget. The barrier is `intrinsic_span_s` (the slowest
+    committed trainer of THAT cycle, emitted in both modes); the denominator is
+    that mode's own clock — real's wall, sim's vclock. 1.0 = fully serial, higher
+    = deeper async pipelining.
+
+    **This is the localizing rung for a throughput residual with matched cadence.**
+    `throughput`/`per_round_advance`/`overhead_residual` all report the same
+    clock-per-unit-work number, so they cannot say WHY it differs. Splitting it
+    against the barrier can: identical trainer speeds + identical cycles-per-bin
+    + a lower sim overlap means sim serializes work real pipelines, and no vclock
+    charge will fix it (charging more moves sim the wrong way). `fluxtune` reads
+    real 5.09 vs sim 3.93 while `fedbuff_round` (4.97/5.03) and `felix_round`
+    (4.94/4.87) sit at parity — the same throughput symptom, disjoint roots (§D-16).
+
+    Promoted from DIAG: as a DIAG on `_per_round_max_speed` it was inert twice
+    over — ungated, and its numerator collapsed to the run-global max trainer on
+    the `data_id` axis (see `_per_cycle_barrier_s`), making both sides read an
+    identical constant so the rung just restated `per_round_advance`.
+
+    Passes on an absolute band (`tol`, the historical async_cifar10 bar) OR a
+    relative one (`tol_rel`) — the factor is ~1.2 on async_cifar10 and ~5 on
+    fwdllm, so neither band alone is scale-appropriate for both.
     """
-    sim_adv = _per_round_advances(sim["agg_rounds"], use_vclock=True)
-    real_adv = _per_round_advances(real["agg_rounds"], use_vclock=False)
-    sim_speeds = _per_round_max_speed(sim["agg_rounds"])
-    real_speeds = _per_round_max_speed(real["agg_rounds"])
-    if not sim_adv or not real_adv:
-        return {"ok": True, "tier": "DIAG", "status": "SKIP",
-                "note": "insufficient advance data (K10 may be blocking)"}
-    sim_mean_adv = sum(sim_adv) / len(sim_adv)
-    real_mean_adv = sum(real_adv) / len(real_adv)
-    sim_mean_speed = (sum(sim_speeds.values()) / len(sim_speeds)
-                      if sim_speeds else float("nan"))
-    real_mean_speed = (sum(real_speeds.values()) / len(real_speeds)
-                       if real_speeds else float("nan"))
-    if sim_mean_adv == 0 or real_mean_adv == 0:
-        return {"ok": False, "tier": "DIAG", "note": "zero advance in one mode"}
-    sim_ov = sim_mean_speed / sim_mean_adv if not math.isnan(sim_mean_speed) else float("nan")
-    real_ov = real_mean_speed / real_mean_adv if not math.isnan(real_mean_speed) else float("nan")
-    if math.isnan(sim_ov) or math.isnan(real_ov):
-        return {"ok": True, "tier": "DIAG", "status": "SKIP",
-                "note": "no trainer_speed_s telemetry"}
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+
+    def side(agg_rounds: list, time_fn) -> Optional[dict]:
+        evs = [e for e in agg_rounds if e.get("event") in (None, "agg_round")]
+        if N is not None:
+            windowed = [e for e in evs
+                        if (p := prog_fn(e)) is not None and p <= N]
+            if windowed:
+                evs = windowed
+        barriers = _per_cycle_barrier_s(evs)
+        times = [t for e in evs if (t := time_fn(e)) is not None]
+        if not barriers or len(times) < 2:
+            return None
+        span = max(times) - min(times)
+        if span <= 0:
+            return None
+        adv = span / len(evs)
+        return {"barrier": sum(barriers) / len(barriers), "adv": adv,
+                "cycles": len(evs), "span": span}
+
+    real_coord = _real_intrinsic_clock(real["agg_rounds"])
+    real_time_fn = ((lambda e: real_coord.get(id(e))) if real_coord is not None
+                    else (lambda e: e.get("ts")))
+    r = side(real["agg_rounds"], real_time_fn)
+    s = side(sim["agg_rounds"], lambda e: e.get("vclock_now"))
+    if r is None or s is None:
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "insufficient barrier/clock data (K10 may be blocking)"}
+    real_ov = r["barrier"] / r["adv"]
+    sim_ov = s["barrier"] / s["adv"]
     abs_diff = abs(sim_ov - real_ov)
-    ok = abs_diff <= tol
+    rel_diff = abs_diff / max(sim_ov, real_ov, 1e-9)
     return {
-        "ok": ok,
-        "tier": "DIAG",
+        "ok": abs_diff <= tol or rel_diff <= tol_rel,
+        "tier": "EXACT",
         "sim_overlap_factor": round(sim_ov, 3),
         "real_overlap_factor": round(real_ov, 3),
         "abs_diff": round(abs_diff, 3),
+        "rel_diff": round(rel_diff, 3),
         "tol": tol,
-        "sim_mean_speed_s": round(sim_mean_speed, 2) if not math.isnan(sim_mean_speed) else None,
-        "real_mean_speed_s": round(real_mean_speed, 2) if not math.isnan(real_mean_speed) else None,
-        "sim_mean_advance_s": round(sim_mean_adv, 2),
-        "real_mean_advance_s": round(real_mean_adv, 2),
+        "tol_rel": tol_rel,
+        "matched_logical_budget_n": _prog_json(N) if N is not None else None,
+        "sim_mean_barrier_s": round(s["barrier"], 2),
+        "real_mean_barrier_s": round(r["barrier"], 2),
+        "sim_mean_advance_s": round(s["adv"], 3),
+        "real_mean_advance_s": round(r["adv"], 3),
+        "sim_cycles": s["cycles"],
+        "real_cycles": r["cycles"],
         "interpretation": (
-            f"sim: {sim_mean_speed:.1f}s speed / {sim_mean_adv:.1f}s advance = "
-            f"{sim_ov:.2f}x overlap; "
-            f"real: {real_mean_speed:.1f}s speed / {real_mean_adv:.1f}s advance = "
-            f"{real_ov:.2f}x overlap. "
-            f"1.0 = no inter-round overlap; higher = more async pipelining."
+            f"sim: {s['barrier']:.1f}s barrier / {s['adv']:.2f}s per-cycle clock = "
+            f"{sim_ov:.2f}x in flight; "
+            f"real: {r['barrier']:.1f}s barrier / {r['adv']:.2f}s per-cycle clock = "
+            f"{real_ov:.2f}x. 1.0 = fully serial; a sim deficit means sim "
+            f"serializes work real pipelines (not a missing vclock charge)."
         ),
     }
 
 
-def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
+def total_commits_parity(real: dict, sim: dict,
+                         tol_rel: float = _THROUGHPUT_FAMILY_TOL_REL) -> dict:
     """U2 [EXACT]: virtual TIME to reach the matched LOGICAL budget N.
 
     At a fixed logical budget N (min committed data_ids / FL rounds both sides
@@ -2639,7 +2857,7 @@ def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
 
 
 def terminal_state_parity(real: dict, sim: dict,
-                           rounds_tol: float = 0.05,
+                           rounds_tol: float = _THROUGHPUT_FAMILY_TOL_REL,
                            trainers_tol: float = 0.05) -> dict:
     """K8 [EXACT]: at the matched LOGICAL budget N, do the modes agree on the
     virtual TIME to reach N and on the set of unique contributing trainers?
@@ -4735,6 +4953,89 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
     return result
 
 
+def var_drift_parity(real: dict, sim: dict, n_bins: int = 10,
+                     drift_tol: float = 0.05,
+                     max_bin: Optional[int] = None) -> dict:
+    """V2b [DIAG]: is V2's `var` gap a LEVEL offset or a PROGRESSIVE drift?
+
+    Bins the matched-budget cycles by progress ordinal and reports the sim/real
+    mean-`var` ratio per bin. V2 pools the whole run into one mean, so a steady
+    per-cycle mechanism bug and a slowly-compounding trajectory divergence are
+    indistinguishable there — and they need opposite investigations:
+
+    - **flat ratio, nonzero offset** → a per-cycle mechanism (pool contents,
+      accumulation order, a scheduling divergence). Chase the mechanism.
+    - **ratio drifting monotonically with progress** → the two models are on
+      diverging training trajectories, and `var` is the readout, not the cause.
+      Chasing a per-cycle mechanism here burns sessions; the cadence↔variance
+      feedback loop (var gate -> iterations -> updates -> model -> var) amplifies
+      any small seed difference, so the question becomes whether the drift
+      exceeds the pipeline's own real<->real replicate floor.
+
+    `fedbuff_round` reads 0.95 -> 0.65 across the run (real's `var@it1` climbing
+    3.02 -> 5.94 while sim's stays ~3), i.e. progressive; `felix_round` and
+    `fluxtune` oscillate around 1.0 with no trend.
+
+    DIAG: routing information for the next investigation, never a gate.
+    """
+    rc, sc = _fwd_cadence_cycles(real, max_bin), _fwd_cadence_cycles(sim, max_bin)
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+    if N is None or not isinstance(N, int) or N < n_bins:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no integer matched budget, or too few progress units to bin"}
+
+    def binned(cycles: list) -> dict:
+        acc: dict = {}
+        for e in cycles:
+            v = e.get("var")
+            p = prog_fn(e)
+            if v is None or p is None or p > N:
+                continue
+            acc.setdefault(min(n_bins - 1, (p - 1) * n_bins // N), []).append(v)
+        return {b: sum(vs) / len(vs) for b, vs in acc.items() if vs}
+
+    r_bins, s_bins = binned(rc), binned(sc)
+    shared = sorted(set(r_bins) & set(s_bins))
+    if len(shared) < 3:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "fewer than 3 shared progress bins with `var`"}
+    ratios = [s_bins[b] / r_bins[b] if r_bins[b] else float("nan") for b in shared]
+    ratios = [r for r in ratios if not math.isnan(r)]
+    if len(ratios) < 3:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "degenerate real `var` in the binned window"}
+    # Thirds, not first-vs-last bin: a single terminal bin is the noisiest
+    # estimate in the series and would decide the verdict on its own.
+    k = max(1, len(ratios) // 3)
+    first = sum(ratios[:k]) / k
+    last = sum(ratios[-k:]) / k
+    drift = abs(last - first)
+    rho = spearman_rho(list(range(len(ratios))), ratios)
+    progressive = drift > drift_tol and rho is not None and abs(rho) >= 0.6
+    return {
+        "ok": not progressive,
+        "tier": "DIAG",
+        "verdict": ("progressive_drift" if progressive
+                    else "level_offset" if abs(1.0 - sum(ratios) / len(ratios)) > 0.02
+                    else "flat"),
+        "n_bins": len(ratios),
+        "matched_logical_budget_n": N,
+        "first_third_ratio": round(first, 3),
+        "last_third_ratio": round(last, 3),
+        "drift": round(drift, 3),
+        "drift_tol": drift_tol,
+        "trend_rho": round(rho, 3) if rho is not None else None,
+        "mean_ratio": round(sum(ratios) / len(ratios), 3),
+        "per_bin_ratio": [round(r, 3) for r in ratios],
+        "interpretation": (
+            "sim/real mean-`var` ratio by progress bin. Monotone drift => the "
+            "models are on diverging trajectories (compare against the real<->real "
+            "replicate floor before chasing a mechanism); flat offset => a genuine "
+            "per-cycle mechanism divergence."
+        ),
+    }
+
+
 def _cohort_expected_delay_map(real: dict, sim: dict,
                                floor_s: Optional[float] = None) -> Optional[dict]:
     """{task_id: expected_delay_s}, mirroring `FedSgdTrainer.resolve_training_
@@ -5543,7 +5844,8 @@ def eligible_ends_metric_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> d
     }
 
 
-def grad_norm_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
+def grad_norm_parity(real: dict, sim: dict, ks_tol: float = 0.2,
+                     mean_tol_rel: float = 0.10) -> dict:
     """G1 [DIST]: per-update grad/JVP norm distribution.
 
     Gradient values are mode-invariant given identical input + perturbation seed,
@@ -5568,10 +5870,19 @@ def grad_norm_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no grad_norm in cadence events (G1 emit deferred, §K-D10)"}
     ks = ks_stat(s_n, r_n)
+    r_mean, s_mean = sum(r_n) / len(r_n), sum(s_n) / len(s_n)
+    # Mean guard alongside KS: gradient values are mode-invariant given identical
+    # input + perturbation seed, so a systematic LEVEL shift is exactly the defect
+    # this rung exists to catch -- and it is what KS cannot see (a uniform shift
+    # barely moves the empirical CDFs; `fedbuff_round` reads 5.1% apart at KS
+    # 0.024). Same blindness `v2_var_trajectory` documents.
+    mean_rel = (abs(r_mean - s_mean) / max(abs(r_mean), abs(s_mean))
+                if max(abs(r_mean), abs(s_mean)) > 0 else 0.0)
     return {
-        "ok": ks <= ks_tol, "tier": "DIST",
-        "real_mean_grad_norm": round(sum(r_n) / len(r_n), 6),
-        "sim_mean_grad_norm": round(sum(s_n) / len(s_n), 6),
+        "ok": ks <= ks_tol and mean_rel <= mean_tol_rel, "tier": "DIST",
+        "real_mean_grad_norm": round(r_mean, 6),
+        "sim_mean_grad_norm": round(s_mean, 6),
+        "mean_rel_diff": round(mean_rel, 4), "mean_tol_rel": mean_tol_rel,
         "ks_stat": round(ks, 3), "ks_tol": ks_tol,
     }
 
@@ -5812,7 +6123,16 @@ def _peak_inflight_overlap(agg: dict) -> dict:
     ev.sort(key=lambda x: (x[0], x[1]))
     per_end: dict = {}
     peak = n = n_self = 0
-    for _, delta, end in ev:
+    # TIME-WEIGHTED occupancy, not per-event: how long the run actually sat at
+    # each level. PEAK alone is blind to chronic under-fill -- fluxtune reads
+    # peak 30/30 in BOTH modes while real sits at 30 for 80.8% of the run and sim
+    # for 8.6% (mean 29.50 vs 24.66). Peak was the wrong statistic (§D-20).
+    dwell: dict = {}
+    prev_t = ev[0][0]
+    for t, delta, end in ev:
+        if t > prev_t:
+            dwell[len(per_end)] = dwell.get(len(per_end), 0.0) + (t - prev_t)
+        prev_t = t
         per_end[end] = per_end.get(end, 0) + delta
         if per_end[end] <= 0:
             per_end.pop(end, None)
@@ -5821,7 +6141,19 @@ def _peak_inflight_overlap(agg: dict) -> dict:
             if per_end.get(end, 0) > 1:
                 n_self += 1
         peak = max(peak, len(per_end))
-    return {"n": n, "peak": peak, "n_self_overlap": n_self, "_ev": ev}
+    span = sum(dwell.values())
+    mean_inflight = (sum(k * v for k, v in dwell.items()) / span) if span else None
+    median_inflight = None
+    if span:
+        acc = 0.0
+        for level in sorted(dwell):
+            acc += dwell[level]
+            if acc >= span / 2:
+                median_inflight = level
+                break
+    return {"n": n, "peak": peak, "n_self_overlap": n_self, "_ev": ev,
+            "mean_inflight": mean_inflight, "median_inflight": median_inflight,
+            "dwell": dwell, "span": span}
 
 
 def concurrency_cap_ok(real_agg: dict, sim_agg: dict) -> dict:
@@ -5877,6 +6209,14 @@ def concurrency_cap_ok(real_agg: dict, sim_agg: dict) -> dict:
         "target_c": tgt,
         "real_peak_inflight": r_ov["peak"],
         "sim_peak_inflight": s_ov["peak"],
+        # Peak decides the INV; mean/median are reported so a chronic under-fill
+        # can never again hide behind a matching peak (see `slot_utilization`).
+        "real_mean_inflight": (round(r_ov["mean_inflight"], 2)
+                               if r_ov.get("mean_inflight") is not None else None),
+        "sim_mean_inflight": (round(s_ov["mean_inflight"], 2)
+                              if s_ov.get("mean_inflight") is not None else None),
+        "real_median_inflight": r_ov.get("median_inflight"),
+        "sim_median_inflight": s_ov.get("median_inflight"),
         "real_over_cap_frac": r_frac,
         "sim_over_cap_frac": s_frac,
         "real_n_self_overlap_dispatches": r_ov["n_self_overlap"],
@@ -5890,9 +6230,68 @@ def concurrency_cap_ok(real_agg: dict, sim_agg: dict) -> dict:
             f"{s_ov['peak']}, against c={tgt}; >c means the dispatch loop saw "
             f"capacity the concurrency model doesn't have. Same-end concurrent "
             f"dispatches (§F-25): real {r_ov['n_self_overlap']}, sim "
-            f"{s_ov['n_self_overlap']}."
+            f"{s_ov['n_self_overlap']}. Time-weighted MEAN in flight: real "
+            f"{r_ov.get('mean_inflight')}, sim {s_ov.get('mean_inflight')} "
+            f"(peak alone is blind to chronic under-fill -- `slot_utilization` "
+            f"grades the gap)."
             + (f" UNGRADED (no contributor_intervals): {', '.join(no_data)}."
                if no_data else "")
+        ),
+    }
+
+
+def slot_utilization_parity(real_agg: dict, sim_agg: dict,
+                            tol_rel: float = 0.05) -> dict:
+    """[MECHANISM] Do both modes keep the SAME fraction of their `c` dispatch
+    slots busy, time-weighted?
+
+    `concurrency_cap` grades PEAK occupancy against `c` and is a per-mode
+    invariant -- it answers "did anyone exceed capacity". It cannot answer "did
+    anyone fail to USE capacity", and those are different failures: fluxtune read
+    peak 30/30 on BOTH modes (a clean INV pass) while real sat at 30/30 for 80.8%
+    of the run and sim for 8.6%, mean 29.50 vs 24.66. That 16.4% concurrency
+    deficit was the whole of an 11.9% throughput residual, and no rung saw it.
+
+    A mode that under-fills its own slots with candidates available is broken on
+    its own terms, so the direction is diagnosable single-side (§D-9) -- but the
+    BAR is what the other mode achieves, so this is graded as a comparison.
+    """
+    r_ov, s_ov = _peak_inflight_overlap(real_agg), _peak_inflight_overlap(sim_agg)
+    r_mean, s_mean = r_ov.get("mean_inflight"), s_ov.get("mean_inflight")
+    if r_mean is None or s_mean is None or max(r_mean, s_mean) <= 0:
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "no contributor_intervals on one or both sides"}
+    target = _dispatch_tripwire_stats(real_agg)["target"]
+    if target is None:
+        target = _dispatch_tripwire_stats(sim_agg)["target"]
+    rel = abs(r_mean - s_mean) / max(r_mean, s_mean)
+
+    def _frac_full(ov):
+        if not ov.get("span") or ov.get("peak") in (None, 0):
+            return None
+        full = sum(v for k, v in ov["dwell"].items() if k >= ov["peak"])
+        return round(full / ov["span"], 4)
+
+    under = "sim" if s_mean < r_mean else ("real" if r_mean < s_mean else None)
+    return {
+        "ok": rel <= tol_rel,
+        "tier": "EXACT",
+        "target_c": int(target) if target is not None else None,
+        "real_mean_inflight": round(r_mean, 2),
+        "sim_mean_inflight": round(s_mean, 2),
+        "real_median_inflight": r_ov.get("median_inflight"),
+        "sim_median_inflight": s_ov.get("median_inflight"),
+        "real_frac_at_peak": _frac_full(r_ov),
+        "sim_frac_at_peak": _frac_full(s_ov),
+        "rel_diff": round(rel, 4),
+        "tol_rel": tol_rel,
+        "under_filling_mode": under if rel > tol_rel else None,
+        "interpretation": (
+            f"time-weighted mean slots busy: real {r_mean:.2f}, sim {s_mean:.2f}"
+            + (f" against c={int(target)}" if target is not None else "")
+            + f"; {rel:.1%} apart. A deficit means that mode leaves slots idle "
+            f"it is entitled to use -- check `slot_starvation` to tell 'no "
+            f"eligible candidate' from 'believed itself full'."
         ),
     }
 
@@ -6425,6 +6824,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["v1_iter_per_data_id"] = iters_per_data_id_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v1b_iters_moving_avg"] = iters_per_data_id_moving_avg_parity(real_agg, sim_agg)
     results["v2_var_trajectory"] = var_trajectory_parity(real_agg, sim_agg, max_bin=max_bin)
+    results["v2b_var_drift"] = var_drift_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v3_cached_v_pool"] = cached_v_pool_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v4_force_commit_rate"] = force_commit_rate_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v5_variance_pass_ratio"] = variance_pass_ratio_parity(real_agg, sim_agg, max_bin=max_bin)
@@ -6439,6 +6839,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     # coarse compute-conservation tell that feeds V1/K2. Both SKIP cleanly when
     # contributor_intervals is absent (sync baselines / non-fwdllm runs).
     results["concurrency_cap"] = concurrency_cap_ok(real_agg, sim_agg)
+    results["slot_utilization"] = slot_utilization_parity(real_agg, sim_agg)
     results["retask_before_close"] = retask_before_close_ok(real_agg, sim_agg)
     results["r1_inflight_overlap"] = inflight_overlap_parity(real_agg, sim_agg)
     results["w1_compute_conservation"] = compute_conservation_parity(
@@ -6459,6 +6860,25 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         real_agg, sim_agg, rounds_cap=rounds_cap, budget_s=budget_s)
     results["failsafe"] = failsafe_ok(sim_agg, budget_s=budget_s)
 
+    # ── Budget coverage: graded once, then stamped on every rung that windows ──
+    # 8 of the 88 rungs share `_matched_logical_budget`. Rather than have each
+    # re-derive (and re-word) what fraction of the run it graded, compute it once
+    # and attach it wherever a `matched_logical_budget_n` appears, so no windowed
+    # number can be read without its coverage. `low_budget_coverage` marks a rung
+    # whose verdict rests on too little of the run to trust.
+    results["matched_budget_coverage"] = matched_budget_coverage_parity(
+        real_agg, sim_agg)
+    _cov = _matched_budget_coverage(real_agg["agg_rounds"], sim_agg["agg_rounds"])
+    if _cov.get("min_coverage") is not None:
+        for _res in results.values():
+            if isinstance(_res, dict) and _res.get("matched_logical_budget_n") is not None:
+                _res["budget_coverage"] = {
+                    "real": _cov["real_coverage"], "sim": _cov["sim_coverage"],
+                    "min": _cov["min_coverage"], "truncation": _cov["truncation"],
+                }
+                if _cov["min_coverage"] < _BUDGET_COVERAGE_DEGRADED:
+                    _res["low_budget_coverage"] = True
+
     return results
 
 
@@ -6476,6 +6896,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
 CHECK_META: dict = {
     # ── Stage 0 Telemetry coverage ──
     "field_coverage":          {"stage": 0, "role": "CONTROL",  "deps": ()},
+    "matched_budget_coverage": {"stage": 0, "role": "CONTROL",  "deps": ("field_coverage",)},
     "vclock_telemetry":        {"stage": 0, "role": "CONTROL",  "deps": ("field_coverage",)},
     # ── Stage 1 Clock model ──
     "sim_commit_monotone":     {"stage": 1, "role": "MECHANISM", "deps": ("vclock_telemetry",)},
@@ -6483,8 +6904,8 @@ CHECK_META: dict = {
     "trainer_speed":           {"stage": 1, "role": "CONTROL",  "deps": ()},
     "trainer_speed_identity":  {"stage": 1, "role": "CONTROL",  "deps": ("trainer_speed",)},
     "modeled_compute_advance": {"stage": 1, "role": "DIAG",     "deps": ("trainer_speed", "sim_commit_monotone")},
-    "overhead_residual":       {"stage": 1, "role": "MECHANISM", "deps": ("trainer_speed", "sim_commit_monotone")},
-    "overlap_factor":          {"stage": 1, "role": "DIAG",     "deps": ("trainer_speed", "sim_commit_monotone")},
+    "overlap_factor":          {"stage": 1, "role": "MECHANISM", "deps": ("trainer_speed", "sim_commit_monotone")},
+    "overhead_residual":       {"stage": 1, "role": "MECHANISM", "deps": ("trainer_speed", "sim_commit_monotone", "overlap_factor")},
     "per_round_advance":       {"stage": 1, "role": "EMERGENT", "deps": ("overhead_residual",)},
     "throughput":              {"stage": 1, "role": "EMERGENT", "deps": ("per_round_advance",)},
     "wall_disparity":          {"stage": 1, "role": "DIAG",     "deps": ("throughput",)},
@@ -6555,6 +6976,7 @@ CHECK_META: dict = {
     # on the send path, so they have no real/sim deps of their own, and R1 (a
     # contribution-level view) is only meaningful once dispatch itself is legal.
     "concurrency_cap":         {"stage": 4, "role": "CONTROL",   "deps": ()},
+    "slot_utilization":        {"stage": 4, "role": "MECHANISM", "deps": ("concurrency_cap",)},
     "retask_before_close":     {"stage": 4, "role": "MECHANISM", "deps": ("concurrency_cap",)},
     "r1_inflight_overlap":     {"stage": 3, "role": "MECHANISM", "deps": ("participation", "retask_before_close")},
     "w1_compute_conservation": {"stage": 3, "role": "DIAG",      "deps": ("r1_inflight_overlap",)},
@@ -6562,6 +6984,7 @@ CHECK_META: dict = {
     "v1_iter_per_data_id":     {"stage": 6, "role": "MECHANISM", "deps": ("inter_arrival_order", "r1_inflight_overlap")},
     "v1b_iters_moving_avg":    {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},
     "v2_var_trajectory":       {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},
+    "v2b_var_drift":           {"stage": 6, "role": "DIAG",      "deps": ("v2_var_trajectory",)},
     "v3_cached_v_pool":        {"stage": 6, "role": "DIAG",      "deps": ("v1_iter_per_data_id",)},
     "v4_force_commit_rate":    {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},
     "v5_variance_pass_ratio":  {"stage": 6, "role": "EMERGENT", "deps": ("v1_iter_per_data_id", "v2_var_trajectory")},

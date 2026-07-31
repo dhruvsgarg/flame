@@ -797,13 +797,19 @@ class TestCommitThenProcessFreesTheSlot:
 
 
 class TestResidenceHoldsCommitterToCycleClose:
-    """§D-15 root-cause fix. With `inflight_residence` declared (both fwdllm
-    configs do), a commit no longer frees the trainer: it stays pinned until the
-    agg-goal boundary, so it cannot be re-tasked mid-cycle under the very
-    `version_key` it just answered -- before that cycle's variance check has run.
-    Real already behaved this way (`_release_end_on_return` defers to
-    `channel.cleanup_recvd_ends()`); sim was violating its own declared
-    contract."""
+    """§D-15 root-cause fix, in its two SEPARATE roles (§F-23).
+
+    IDENTITY (`_sim_pending_commit` / `all_selected`): with `inflight_residence`
+    declared (both fwdllm configs do), a commit does not free the trainer's
+    re-pick guard -- it stays pinned to the agg-goal boundary, so it cannot be
+    re-tasked mid-cycle under the very `version_key` it just answered, before
+    that cycle's variance check has run. Real already behaved this way
+    (`_release_end_on_return` defers to `channel.cleanup_recvd_ends()`).
+
+    CAPACITY (`selected_ends` / `_slot_holders`): the committer's slot IS freed
+    at commit -- its grad is in, so the slot belongs to anyone else. Serving both
+    roles from one set left sim at 24.66/30 mean in-flight against real's
+    29.50/30."""
 
     def _dispatched(self, ends, scts):
         agg = _LoopAgg()
@@ -815,19 +821,23 @@ class TestResidenceHoldsCommitterToCycleClose:
             ch._msgs[e] = _full_grad_msg(sct=s)
         return agg, ch
 
-    def test_commit_alone_does_not_free_the_committer(self):
+    def test_commit_frees_the_slot_but_not_the_repick_guard(self):
         agg, ch = self._dispatched(["X", "Y"], [10.0, 20.0])
 
         msg, md = agg._sim_recv_min_grad(ch, ["X", "Y"])   # commit X (min sct)
         agg._process(ch, msg, md[0], md[1])
-
-        # X's cycle hasn't closed -> still pinned, so the selector's
-        # `_agg_pending_commit_ref` filter keeps excluding it from re-selection...
-        assert agg._sim_pending_commit == {"X", "Y"}
-        # ...and the next reconcile re-asserts its slot (the return-path release
-        # frees the CHANNEL slot to keep concurrency flat; the pin is the guard).
         agg._sim_hold_busy_slots(ch)
-        assert ch._selector.selected_ends["agg"] == {"X", "Y"}
+
+        # IDENTITY: X's cycle hasn't closed -> still pinned, so the selector's
+        # `_agg_pending_commit_ref` filter keeps excluding it from re-selection
+        # (§D-15: no mid-cycle re-task under the version_key it just answered).
+        assert agg._sim_pending_commit == {"X", "Y"}
+        assert set(ch._selector.all_selected) == {"X", "Y"}
+        # CAPACITY: X's grad is in, so its compute slot is free for anyone else
+        # (§F-23); only still-in-flight Y holds one.
+        assert ch._selector.selected_ends["agg"] == {"Y"}
+        assert TopAggregator._sim_slot_holder_set(agg) == {"Y"}
+        assert ch._selector._agg_slot_holders_ref == {"Y"}
 
     def test_boundary_releases_only_this_cycle_s_committers(self):
         agg, ch = self._dispatched(["X", "Y"], [10.0, 20.0])

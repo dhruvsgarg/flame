@@ -511,6 +511,247 @@ class TestTerminalStateParity:
         assert not r["ok"], r
 
 
+def _fwd_cycle(data_id, ts, vclock=None, round_=1, committed=True,
+               barrier=None, var=None, iteration=0):
+    """fwdllm agg_round with the fields the clock/variance rungs read."""
+    e = {"event": "agg_round", "round": round_, "ts": ts,
+         "cycle_data_id": data_id, "var_good_enough": committed,
+         "contributing_trainers": ["a"], "staleness": [0], "agg_goal_count": 1,
+         "iteration_per_data_id": iteration, "is_async": True}
+    if vclock is not None:
+        e["vclock_now"] = vclock
+    if barrier is not None:
+        e["intrinsic_span_s"] = barrier
+    if var is not None:
+        e["var"] = var
+    return e
+
+
+class TestMatchedBudgetLapWrap:
+    """`round` bumps one bin BEFORE `cycle_data_id` wraps, so a real lap runs
+    (1,148) -> (2,149) -> (2,0) -> (2,1). The tuple key is therefore NOT monotone
+    and a max-key ceiling both mis-orders progress and admits work only one side
+    did (felix_round: 9 bins sim committed and real never did, under a budget the
+    checker called matched)."""
+
+    @staticmethod
+    def _lap(n_tail, ts0=0.0, vclock=False):
+        """Bins (1,8),(1,9), then the wrap (2,10),(2,0),(2,1)... n_tail deep."""
+        seq = [(1, 8), (1, 9), (2, 10)] + [(2, i) for i in range(n_tail)]
+        out = []
+        for i, (rd, did) in enumerate(seq):
+            t = ts0 + i * 10.0
+            out.append(_fwd_cycle(did, ts=t, round_=rd,
+                                  vclock=(t if vclock else None)))
+        return out
+
+    def test_budget_counts_only_bins_both_sides_committed(self):
+        # sim ran 4 bins deeper into lap 2 than real. Old max-key ceiling was
+        # (2,10) on BOTH sides -- which sorts above every (2,0..3) -- so `<= N`
+        # admitted sim's extra bins and graded two different workloads.
+        real = _agg(agg_rounds=self._lap(2))
+        sim = _agg(agg_rounds=self._lap(6, vclock=True))
+        N, prog_fn = pc._matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+        assert N == 5, N                      # (1,8),(1,9),(2,10),(2,0),(2,1)
+        n_sim_in = sum(1 for e in sim["agg_rounds"]
+                       if (p := prog_fn(e)) is not None and p <= N)
+        n_real_in = sum(1 for e in real["agg_rounds"]
+                        if (p := prog_fn(e)) is not None and p <= N)
+        assert n_sim_in == n_real_in == 5      # same work on both sides
+
+    def test_ordinals_follow_time_not_key_sort(self):
+        # (2,10) happens BEFORE (2,0) but sorts after it. The ordinal must be
+        # chronological, or every windowed rung mis-attributes the lap boundary.
+        real = _agg(agg_rounds=self._lap(2))
+        sim = _agg(agg_rounds=self._lap(2, vclock=True))
+        _, prog_fn = pc._matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+        by_key = {(e["round"], e["cycle_data_id"]): prog_fn(e)
+                  for e in real["agg_rounds"]}
+        assert by_key[(2, 10)] == 3 and by_key[(2, 0)] == 4 and by_key[(2, 1)] == 5
+
+    def test_time_to_n_stops_at_the_shared_prefix(self):
+        # The regression this fixes: sim's clock was read at ITS deadline rather
+        # than at the last shared bin, so `total_commits` compared full run
+        # lengths and called a 4.7% deadline artifact a throughput measurement.
+        real = _agg(agg_rounds=self._lap(2))
+        sim = _agg(agg_rounds=self._lap(6, vclock=True))
+        r = pc.total_commits_parity(real, sim)
+        assert r["matched_logical_budget_n"] == 5
+        assert r["sim_vclock_to_n_s"] == 40.0     # bin 5 of 5, not sim's last bin
+        assert r["ok"], r
+
+    def test_divergent_bin_order_truncates_the_budget(self):
+        # If the two sides commit DIFFERENT bins, the budget must stop at the
+        # first disagreement rather than pretend the suffix is comparable.
+        real = _agg(agg_rounds=[_fwd_cycle(d, ts=float(d * 10)) for d in range(6)])
+        sim = _agg(agg_rounds=[_fwd_cycle(d if d < 3 else d + 7, ts=float(d * 10),
+                                          vclock=float(d * 10)) for d in range(6)])
+        N, _ = pc._matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+        assert N == 3
+
+
+class TestOverlapFactorPipeliningDepth:
+    """K4 grades pipelining depth = per-cycle barrier / per-cycle clock advance.
+    Its old numerator (`_per_round_max_speed`) keyed on FL `round`, which fwdllm
+    holds static for a whole lap -- so it returned the run-global max trainer,
+    identical on both sides, and the rung silently restated its own denominator."""
+
+    @staticmethod
+    def _run(n, barrier, adv, vclock=False):
+        return _agg(agg_rounds=[
+            _fwd_cycle(d, ts=d * adv, vclock=(d * adv if vclock else None),
+                       barrier=barrier)
+            for d in range(n)])
+
+    def test_matched_pipelining_passes(self):
+        r = pc.overlap_factor(self._run(20, 20.0, 4.0),
+                              self._run(20, 20.0, 4.0, vclock=True))
+        assert r["ok"], r
+        assert r["real_overlap_factor"] == pytest.approx(5.0, rel=0.1)
+
+    def test_sim_serializes_what_real_pipelines_fails(self):
+        # Identical barriers; sim advances its clock 25% more per cycle. This is
+        # fluxtune's signature (real 5.09 vs sim 3.95) and no vclock charge fixes
+        # it -- charging more moves sim further the wrong way.
+        r = pc.overlap_factor(self._run(20, 20.0, 4.0),
+                              self._run(20, 20.0, 5.0, vclock=True))
+        assert not r["ok"], r
+        assert r["sim_overlap_factor"] < r["real_overlap_factor"]
+
+    def test_numerator_is_per_cycle_not_run_global(self):
+        # Static `round` + a per-cycle barrier that differs between modes must be
+        # SEEN. Under the old per-round max both sides read the same global max.
+        real = self._run(20, 30.0, 4.0)
+        sim = self._run(20, 15.0, 4.0, vclock=True)
+        r = pc.overlap_factor(real, sim)
+        assert r["real_mean_barrier_s"] == pytest.approx(30.0)
+        assert r["sim_mean_barrier_s"] == pytest.approx(15.0)
+        assert not r["ok"], r
+
+    def test_gates_as_exact_not_diag(self):
+        assert pc.CHECK_META["overlap_factor"]["role"] == "MECHANISM"
+        assert "overlap_factor" in pc.CHECK_META["overhead_residual"]["deps"]
+
+
+class TestVarDriftParity:
+    """V2b routes the V2 investigation: a flat offset is a per-cycle mechanism;
+    a monotone drift means the two models are on diverging trajectories and the
+    per-cycle hunt is the wrong one."""
+
+    @staticmethod
+    def _pair(var_fn_real, var_fn_sim, n=60):
+        real = _agg(agg_rounds=[_fwd_cycle(d, ts=float(d), var=var_fn_real(d))
+                                for d in range(n)])
+        sim = _agg(agg_rounds=[_fwd_cycle(d, ts=float(d), vclock=float(d),
+                                          var=var_fn_sim(d)) for d in range(n)])
+        return real, sim
+
+    def test_flat_ratio_reads_as_level_offset(self):
+        real, sim = self._pair(lambda d: 1.0, lambda d: 0.9)
+        r = pc.var_drift_parity(real, sim)
+        assert r["verdict"] == "level_offset"
+        assert r["ok"], r                     # a level offset is not "drift"
+        assert r["mean_ratio"] == pytest.approx(0.9, rel=0.02)
+
+    def test_progressive_divergence_is_flagged(self):
+        # real's var climbs, sim's stays flat -- fedbuff_round's signature.
+        real, sim = self._pair(lambda d: 1.0 + d * 0.03, lambda d: 1.0)
+        r = pc.var_drift_parity(real, sim)
+        assert r["verdict"] == "progressive_drift"
+        assert not r["ok"], r
+        assert r["last_third_ratio"] < r["first_third_ratio"]
+        assert abs(r["trend_rho"]) >= 0.6
+
+    def test_identical_reads_flat(self):
+        real, sim = self._pair(lambda d: 1.0 + (d % 3) * 0.1,
+                               lambda d: 1.0 + (d % 3) * 0.1)
+        r = pc.var_drift_parity(real, sim)
+        assert r["verdict"] == "flat" and r["ok"]
+
+    def test_never_gates_the_verdict(self):
+        assert pc.CHECK_META["v2b_var_drift"]["role"] == "DIAG"
+
+
+class TestMatchedBudgetCoverage:
+    """8 of the 88 rungs window on `_matched_logical_budget`. Their numbers are
+    only as trustworthy as the fraction of the run the budget covers, so the
+    fraction is graded once and stamped on every one of them."""
+
+    @staticmethod
+    def _run(bins, ts0=0.0, vclock=False):
+        return _agg(agg_rounds=[
+            _fwd_cycle(b, ts=ts0 + i * 10.0,
+                       vclock=(ts0 + i * 10.0 if vclock else None))
+            for i, b in enumerate(bins)])
+
+    def test_equal_runs_are_full_coverage(self):
+        r = pc.matched_budget_coverage_parity(
+            self._run(range(10)), self._run(range(10), vclock=True))
+        assert r["ok"] and r["truncation"] == "none"
+        assert r["real_coverage"] == 1.0 and r["sim_coverage"] == 1.0
+
+    def test_overrun_truncates_only_the_faster_side(self):
+        # Parity fixes the WORK: real's 10 bins are fully graded, sim's extra 5
+        # have no counterpart and are dropped. The slower side is always 100%.
+        r = pc.matched_budget_coverage_parity(
+            self._run(range(10)), self._run(range(15), vclock=True))
+        assert r["ok"] and r["truncation"] == "overrun"
+        assert r["real_coverage"] == 1.0
+        assert r["sim_coverage"] == pytest.approx(10 / 15, abs=1e-3)
+
+    def test_sequence_divergence_is_a_hard_fail_not_a_windowing_artifact(self):
+        # Same COUNT on both sides, but they committed different bins from
+        # position 4 on -- the budget stops early for a reason no amount of
+        # running longer would fix.
+        real = self._run(list(range(10)))
+        sim = self._run([0, 1, 2, 3, 40, 41, 42, 43, 44, 45], vclock=True)
+        r = pc.matched_budget_coverage_parity(real, sim)
+        assert not r["ok"]
+        assert r["truncation"] == "sequence_divergence"
+        assert r["first_divergence"]["position"] == 5
+        assert r["first_divergence"]["real_unit"] != r["first_divergence"]["sim_unit"]
+
+    def test_fails_when_coverage_falls_below_the_floor(self):
+        # sim did 3x real's work: the windowed rungs would grade a third of it.
+        r = pc.matched_budget_coverage_parity(
+            self._run(range(10)), self._run(range(30), vclock=True))
+        assert not r["ok"], r
+        assert r["min_coverage"] == pytest.approx(1 / 3, abs=1e-3)
+
+    def test_degraded_flag_trips_before_the_hard_fail(self):
+        r = pc.matched_budget_coverage_parity(
+            self._run(range(10)), self._run(range(14), vclock=True))
+        assert r["ok"]                      # 71% still above the 50% floor
+        assert r["degraded"] is True        # but below the 80% confidence bar
+
+    def test_coverage_is_stamped_on_every_windowed_rung(self):
+        real = self._run(range(20))
+        sim = self._run(range(30), vclock=True)
+        res = pc.run_all_parity(real, sim, {}, {}, agg_goal=1)
+        stamped = {k for k, v in res.items()
+                   if isinstance(v, dict) and "budget_coverage" in v}
+        # every rung reporting a matched budget must carry its coverage
+        windowed = {k for k, v in res.items()
+                    if isinstance(v, dict)
+                    and v.get("matched_logical_budget_n") is not None}
+        assert windowed and stamped == windowed, (windowed - stamped)
+        for k in stamped:
+            assert res[k]["budget_coverage"]["min"] == pytest.approx(2 / 3, abs=1e-3)
+            assert res[k]["low_budget_coverage"] is True
+
+    def test_no_stamp_when_coverage_is_healthy(self):
+        real = self._run(range(20))
+        sim = self._run(range(20), vclock=True)
+        res = pc.run_all_parity(real, sim, {}, {}, agg_goal=1)
+        for v in res.values():
+            if isinstance(v, dict) and "budget_coverage" in v:
+                assert "low_budget_coverage" not in v
+
+    def test_gates_as_a_stage0_control(self):
+        meta = pc.CHECK_META["matched_budget_coverage"]
+        assert meta["stage"] == 0 and meta["role"] == "CONTROL"
+
+
 class TestMatchedLogicalBudget:
     """The logical-budget primitive + the U2/K8 reshape from count-at-clock-V to
     TIME-to-N. N = min(final progress each side) on the progress axis; the
@@ -526,12 +767,14 @@ class TestMatchedLogicalBudget:
         assert N == 5  # min(5, 8)
         assert prog_fn(real["agg_rounds"][0]) == 1
 
-    def test_primitive_data_id_axis_is_min_final_tuple(self):
+    def test_primitive_data_id_axis_is_committed_bin_count(self):
         real = _agg(agg_rounds=[_fwd_round(d, ["a"], ts=float(d)) for d in range(5)])
         sim = _agg(agg_rounds=[_fwd_round(d, ["a"], vclock=float(d), ts=float(d))
                                for d in range(8)])
         N, _ = pc._matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
-        assert N == (1, 4)  # min over (round, cycle_data_id) keys
+        # data_id axis: N is the COUNT of bins both sides committed, in order
+        # (5 = data_id 0..4), not a max key -- see the primitive's docstring.
+        assert N == 5
 
     def test_primitive_none_when_a_side_has_no_progress(self):
         real = _agg(agg_rounds=[])
@@ -640,7 +883,7 @@ class TestProgressAxisRekey:
             _fwd_round(1, ["a"], vclock=10.0, ts=3.0),
         ])
         r = pc.total_commits_parity(real, sim, tol_rel=0.05)
-        assert r["matched_logical_budget_n"] == "1:1", r
+        assert r["matched_logical_budget_n"] == 2, r   # bins 0 and 1
         assert r["real_time_to_n_s"] == 10.0 and r["sim_vclock_to_n_s"] == 10.0, r
         assert r["ok"], r
 
@@ -1684,6 +1927,149 @@ def _agg_ci(intervals, target=30):
                  "retask_before_close": False}]}
 
 
+def _iv_round(intervals, ts=0.0):
+    """agg_round carrying contributor_intervals: [(end, dispatch, commit), ...]."""
+    return {"event": "agg_round", "round": 1, "ts": ts, "cycle_data_id": 0,
+            "var_good_enough": True, "contributing_trainers": [i[0] for i in intervals],
+            "staleness": [0], "agg_goal_count": 1,
+            "contributor_intervals": [
+                {"end": e, "dispatch_ts": a, "commit_ts": b} for e, a, b in intervals]}
+
+
+class TestKsBlindToLevelShift:
+    """KS barely moves under a uniform shift, so a rung graded on KS ALONE cannot
+    see a systematic level divergence -- the failure mode `v2_var_trajectory`
+    documents and guards, which several sibling rungs never got."""
+
+    def test_grad_norm_level_shift_fails_despite_clean_ks(self):
+        def _run(scale, vclock=False):
+            return _agg(agg_rounds=[
+                _fwd_cycle(d, ts=float(d), vclock=(float(d) if vclock else None))
+                | {"grad_norm": [100.0 * scale + d, 101.0 * scale + d]}
+                for d in range(40)])
+        r = pc.grad_norm_parity(_run(1.0), _run(1.25, vclock=True))
+        assert r["mean_rel_diff"] > 0.1
+        assert not r["ok"], r
+
+    def test_grad_norm_matched_passes(self):
+        run = _agg(agg_rounds=[
+            _fwd_cycle(d, ts=float(d)) | {"grad_norm": [100.0 + d]}
+            for d in range(40)])
+        assert pc.grad_norm_parity(run, run)["ok"]
+
+
+class TestSelectionSpeedBiasGradesTheBias:
+    """The rung is NAMED for the bias and already computed it -- it just never
+    graded it. Both modes draw from an identical pool, so a bias difference is
+    the selector's, not the input's."""
+
+    @staticmethod
+    def _sel_events(selected_speeds, pool_speeds):
+        per = {}
+        for i, sp in enumerate(pool_speeds):
+            per[f"p{i}"] = {"speed_s": sp, "selected": False}
+        for i, sp in enumerate(selected_speeds):
+            per[f"s{i}"] = {"speed_s": sp, "selected": True}
+        return _agg(selection=[{"event": "selection", "task": "train", "round": 1,
+                                "ts": 0.0, "chosen": [f"s{i}" for i in
+                                                      range(len(selected_speeds))],
+                                "per_trainer": per}])
+
+    def test_sim_speed_biased_against_its_own_pool_fails(self):
+        pool = [10.0, 12.0, 14.0, 16.0]
+        real = self._sel_events([12.0, 14.0], pool)      # ~pool mean
+        sim = self._sel_events([16.0, 16.0], pool)       # biased slow
+        r = pc.selection_speed_bias_parity(real, sim)
+        assert r["bias_rel_diff"] > 0.10
+        assert not r["ok"], r
+
+    def test_matched_bias_passes(self):
+        pool = [10.0, 12.0, 14.0, 16.0]
+        run = self._sel_events([12.0, 14.0], pool)
+        r = pc.selection_speed_bias_parity(run, run)
+        assert r["ok"] and r["bias_rel_diff"] == pytest.approx(0.0, abs=1e-6)
+
+    def test_ks_failure_still_fails(self):
+        pool = [10.0, 12.0, 14.0, 16.0]
+        real = self._sel_events([10.0, 10.0, 10.0, 10.0], pool)
+        sim = self._sel_events([16.0, 16.0, 16.0, 16.0], pool)
+        assert not pc.selection_speed_bias_parity(real, sim)["ok"]
+
+
+class TestSlotUtilization:
+    """PEAK answers 'did anyone exceed c'. It cannot answer 'did anyone fail to
+    USE c', and that second failure cost fluxtune 16% of its throughput while
+    `concurrency_cap` read a clean 30/30 on both modes."""
+
+    @staticmethod
+    def _steady(n_busy, span=100.0, c_marker=None, target_c=30):
+        """n_busy ends held continuously, plus one brief spike to `c_marker` so
+        PEAK matches across modes while MEAN does not. `redispatch_decomp`
+        carries the run's own `c` (what the cap grades against)."""
+        iv = [(f"e{i}", 0.0, span) for i in range(n_busy)]
+        if c_marker:
+            iv += [(f"spike{i}", 0.0, 0.5) for i in range(c_marker - n_busy)]
+        run = _agg(agg_rounds=[_iv_round(iv)])
+        run["redispatch_decomp"] = [
+            {"event": "redispatch_decomp", "outstanding_at_dispatch": n_busy,
+             "concurrency_target": target_c}]
+        return run
+
+    def test_matched_utilization_passes(self):
+        r = pc.slot_utilization_parity(self._steady(20), self._steady(20))
+        assert r["ok"], r
+        assert r["real_mean_inflight"] == pytest.approx(20, abs=0.5)
+
+    def test_chronic_underfill_fails_even_when_peak_matches(self):
+        # THE fluxtune signature: identical peak, very different mean.
+        real = self._steady(29, c_marker=30)
+        sim = self._steady(24, c_marker=30)
+        cap = pc.concurrency_cap_ok(real, sim)
+        util = pc.slot_utilization_parity(real, sim)
+        assert cap["real_peak_inflight"] == cap["sim_peak_inflight"] == 30
+        assert not util["ok"], util
+        assert util["under_filling_mode"] == "sim"
+
+    def test_names_the_under_filling_side(self):
+        r = pc.slot_utilization_parity(self._steady(15), self._steady(25))
+        assert r["under_filling_mode"] == "real"
+
+    def test_occupancy_is_time_weighted_not_event_weighted(self):
+        # 2 ends busy the whole span, plus 20 ends busy for 1% of it. An
+        # event-weighted mean would read ~20; time-weighted reads ~2.
+        iv = [("a", 0.0, 100.0), ("b", 0.0, 100.0)]
+        iv += [(f"blip{i}", 50.0, 51.0) for i in range(20)]
+        one = _agg(agg_rounds=[_iv_round(iv)])
+        r = pc.slot_utilization_parity(one, one)
+        assert r["real_mean_inflight"] < 3.0, r
+        assert r["ok"]
+
+    def test_skips_without_contributor_intervals(self):
+        assert pc.slot_utilization_parity(_agg(), _agg())["status"] == "SKIP"
+
+    def test_gates_as_a_mechanism_downstream_of_the_cap(self):
+        meta = pc.CHECK_META["slot_utilization"]
+        assert meta["role"] == "MECHANISM" and "concurrency_cap" in meta["deps"]
+
+
+class TestConcurrencyCapReportsCentralOccupancy:
+    def test_cap_reports_mean_and_median_alongside_peak(self):
+        real = TestSlotUtilization._steady(29, c_marker=30)
+        sim = TestSlotUtilization._steady(24, c_marker=30)
+        r = pc.concurrency_cap_ok(real, sim)
+        # The INV verdict still rests on peak, and peak is clean...
+        assert r["ok"], r
+        # ...but the central statistics now make the divergence visible.
+        assert r["real_median_inflight"] != r["sim_median_inflight"]
+        assert r["real_mean_inflight"] > r["sim_mean_inflight"]
+
+    def test_peak_still_decides_the_invariant(self):
+        over = TestSlotUtilization._steady(40, c_marker=None)
+        ok = TestSlotUtilization._steady(20, c_marker=30)
+        r = pc.concurrency_cap_ok(ok, over)
+        assert not r["ok"] and "sim" in r["offending_modes"]
+
+
 class TestConcurrencyCapTripwire:
     """[INV, per mode] ends in flight at any instant <= that mode's own selector
     `c`. Single-side decidable -- graded per mode, never as a diff.
@@ -2084,7 +2470,7 @@ class TestCohortSequenceCountLogicalBudget:
         assert r["count"]["ok"], r["count"]
         assert r["count"]["n_real_cohorts"] == 10
         assert r["count"]["n_sim_cohorts"] == 10
-        assert r["count"]["matched_logical_budget_n"] == "1:9"
+        assert r["count"]["matched_logical_budget_n"] == 10
 
     def test_extra_cycles_to_reach_same_data_ids_fails(self):
         # Genuine cohort-count divergence on the logical axis: sim does 2

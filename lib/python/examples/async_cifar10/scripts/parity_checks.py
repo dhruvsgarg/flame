@@ -29,6 +29,9 @@ from parity.checks import (  # noqa: F401, E402
     percentile,
     pctl_band_ok,
     _matched_logical_budget,
+    _matched_budget_coverage,
+    matched_budget_coverage_parity,
+    _verified_progress_order,
     # loaders
     load_agg_jsonl,
     load_trainer_jsonl_dir,
@@ -73,6 +76,7 @@ from parity.checks import (  # noqa: F401, E402
     avail_composition_parity,
     eligibility_parity,
     eligible_speed_composition_parity,
+    selection_speed_bias_parity,
     selection_detail_parity,
     # registry / verdict helpers
     CHECK_META,
@@ -98,6 +102,7 @@ from parity.checks import (  # noqa: F401, E402
     iters_per_data_id_parity,
     iters_per_data_id_moving_avg_parity,
     var_trajectory_parity,
+    var_drift_parity,
     cached_v_pool_parity,
     force_commit_rate_parity,
     variance_pass_ratio_parity,
@@ -115,6 +120,7 @@ from parity.checks import (  # noqa: F401, E402
     # dispatch-loop INV tripwires (§D-15)
     _dispatch_tripwire_stats,
     concurrency_cap_ok,
+    slot_utilization_parity,
     retask_before_close_ok,
     drain_wall_budget_parity,
     trainer_phase_wall_budget_ok,
