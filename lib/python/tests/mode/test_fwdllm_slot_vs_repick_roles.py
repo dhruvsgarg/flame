@@ -212,6 +212,62 @@ class TestRealSlotFreesOnReturn:
         assert agg._slot_holders() == set()
         assert "a" in agg._real_pending_commit
 
+
+class _RxChan:
+    """Channel double exposing only the cheap arrival probe."""
+
+    def __init__(self, pending_rx=()):
+        self._pending_rx = set(pending_rx)
+
+    def ends_with_pending_rx(self):
+        return set(self._pending_rx)
+
+
+class TestArrivedButUnprocessedHoldsNoSlot:
+    """Real clears `_trainer_inflight_dispatch_version` when the drain loop
+    PROCESSES a message, not when it lands. The gap is the aggregator's own
+    lag, not trainer concurrency -- charging it to the cap produced `felix_it`
+    real reading up to 55 against c=30 on 49.1% of dispatches while its
+    trainers' own spans peaked at exactly 30."""
+
+    def test_arrived_end_is_excluded_from_the_count(self):
+        agg = _RealAgg(inflight=["a", "b", "c"])
+        assert agg._outstanding_dispatch_count() == 3          # raw, pre-fix
+        chan = _RxChan(pending_rx={"b", "c"})                  # already landed
+        assert agg._outstanding_dispatch_count(chan) == 1
+
+    def test_felix_it_shape_drops_back_under_c(self):
+        """25 genuinely training + 25 sent-but-not-yet-drained -> 50 raw."""
+        agg = _RealAgg(inflight=[f"t{i}" for i in range(25)]
+                                + [f"q{i}" for i in range(25)])
+        chan = _RxChan(pending_rx={f"q{i}" for i in range(25)})
+        assert agg._outstanding_dispatch_count() == 50         # what it read
+        assert agg._outstanding_dispatch_count(chan) == 25     # what is true
+
+    def test_no_channel_leaves_the_count_unchanged(self):
+        agg = _RealAgg(inflight=["a", "b"])
+        assert agg._outstanding_dispatch_count(None) == 2
+
+    def test_channel_without_the_probe_is_tolerated(self):
+        agg = _RealAgg(inflight=["a", "b"])
+        assert agg._outstanding_dispatch_count(object()) == 2
+
+    def test_sim_branch_is_untouched(self):
+        """Sim ingests straight off the End queue, so it has no drain lag and
+        must not get the subtraction -- its count is already exact."""
+        agg = _Agg(pending={"a", "b", "c"})
+        chan = _RxChan(pending_rx={"a", "b"})
+        assert agg.simulated is True
+        assert agg._outstanding_dispatch_count(chan) == 3
+
+    def test_arrived_end_still_holds_its_repick_guard(self):
+        """Capacity only. The identity half is untouched (§D-27) -- an arrived
+        end must stay un-pickable until its version_key advances."""
+        agg = _RealAgg(inflight=["a"])
+        chan = _RxChan(pending_rx={"a"})
+        assert agg._outstanding_dispatch_count(chan) == 0
+        assert "a" in agg._real_pending_commit
+
     def test_kill_switch_restores_the_union_read(self):
         agg = _RealAgg(inflight=["a", "b"], returned=["c"], commit_frees_slot=False)
         assert agg._slot_holders() == {"a", "b", "c"}

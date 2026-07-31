@@ -17,6 +17,7 @@
 
 import logging
 import os
+import threading
 import time
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -106,6 +107,9 @@ MIN_TRAINERS_JOIN_TIMEOUT_S = 180
 
 class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
     """Top level Aggregator implements an ML aggregation role."""
+
+    # Wedged eval thread degrades to a skip rather than stalling training.
+    _EVAL_WAIT_TIMEOUT_S = 300.0
 
     @abstract_attribute
     def config(self) -> Config:
@@ -1345,26 +1349,74 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             ev, fields = build_agg_eval(round_num=self._round, metrics=metrics)
             telemetry.emit(ev, **fields)
 
+    def _eval_stride(self) -> int:
+        """Commits per eval -- the DETERMINISTIC eval cadence, identical in both
+        modes. Read and logged once (§F-18). Duck-typed on config so test
+        doubles can borrow this method or pin `_eval_every_n_commits` directly."""
+        n = getattr(self, "_eval_every_n_commits", None)
+        if n is None:
+            hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+            n = max(1, int(getattr(hp, "eval_every_n_commits", 2) or 1))
+            self._eval_every_n_commits = n
+            logger.info(f"eval_every_n_commits = {n}")
+        return n
+
     def _eval_snapshot_model(self):
         """Snapshot current weights into a reused eval model (main thread, cheap)
         so the full test-set forward pass can run OFF the aggregator's critical
         path. The synchronous eval was a per-round pause that penalised async
-        baselines (more rounds -> more pauses). Returns the eval model, or None to
-        skip when a prior async eval is still running (no thread pile-up)."""
-        if getattr(self, "_eval_inflight", False):
-            logger.debug("prior async eval still running; skipping this eval")
+        baselines (more rounds -> more pauses). Returns the eval model, or None
+        on a commit the stride skips.
+
+        Call once per commit. WHICH commits evaluate is decided by the commit
+        INDEX, never by whether the eval thread is free: gating on
+        `_eval_inflight` made the cadence a wall-clock race sim lost
+        structurally (it compresses the inter-commit gap; the test-set pass
+        costs the same wall). Measured at 3600s -- real kept 99-100% of its
+        evals, sim 49-60% on seven of nine baselines, so the two modes sampled
+        the accuracy trajectory at different, host-speed-dependent points
+        (§F-12) and `_check_target_stop` saw a subsampled series in sim.
+        """
+        self._eval_commit_seq = getattr(self, "_eval_commit_seq", 0) + 1
+        # Explicit unbound call: test doubles borrow individual methods off this
+        # class (same pattern as `_slot_holders` -> `_sim_slot_holder_set`).
+        stride = TopAggregator._eval_stride(self)
+        # Phase on the FIRST commit (1, 1+N, 1+2N ...), so stride 1 is exactly
+        # "every commit" and both modes land on the same progress indices.
+        if (self._eval_commit_seq - 1) % stride != 0:
             return None
+        if getattr(self, "_eval_inflight", False):
+            # Stride too small for this config. Wait it out and warn -- never
+            # silently drop, which is the race this method exists to remove.
+            logger.warning(
+                f"eval still running at commit {self._eval_commit_seq}; "
+                f"waiting (raise eval_every_n_commits above {stride} "
+                f"for this baseline)"
+            )
+            done = getattr(self, "_eval_done", None)
+            if done is not None and not done.wait(timeout=self._EVAL_WAIT_TIMEOUT_S):
+                logger.warning("eval wait timed out; skipping this eval")
+                return None
         try:
             import copy
             if getattr(self, "_eval_model", None) is None:
                 self._eval_model = copy.deepcopy(self.model)
             self._eval_model.load_state_dict(self.model.state_dict())
+            self._eval_done = threading.Event()
             self._eval_inflight = True
             return self._eval_model
         except Exception as e:  # eval must never break training
             logger.warning(f"eval snapshot failed (non-fatal): {e}")
             self._eval_inflight = False
             return None
+
+    def _eval_release(self) -> None:
+        """Mark the in-flight eval finished. Must run in the eval thread's
+        `finally`, so a failed eval can never wedge the cadence."""
+        self._eval_inflight = False
+        done = getattr(self, "_eval_done", None)
+        if done is not None:
+            done.set()
 
     def _eval_emit(self, round_num, test_loss, test_accuracy):
         """Emit agg_eval telemetry (tagged with the captured round) + wandb from
@@ -1390,7 +1442,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                     pass
             self._check_target_stop(round_num, test_accuracy)
         finally:
-            self._eval_inflight = False
+            TopAggregator._eval_release(self)
 
     def _check_target_stop(self, round_num, test_accuracy):
         """Stop after `stable_evals_above_target` consecutive evals >= target.

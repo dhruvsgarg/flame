@@ -242,6 +242,7 @@ def load_agg_jsonl(path: str) -> dict:
     step_timing: list = []
     comm_dispatch: list = []
     redispatch_decomp: list = []
+    vclock_charges: list = []
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -280,6 +281,10 @@ def load_agg_jsonl(path: str) -> dict:
             elif ev == "redispatch_decomp":
                 # Per-dispatch wall split + the two dispatch-loop INV tripwires.
                 redispatch_decomp.append(e)
+            elif ev == "vclock_charge":
+                # What each overhead category folded onto the clock
+                # (`charged_s`) vs sim's own `span_s`, and which one it used.
+                vclock_charges.append(e)
     selection_train.sort(key=lambda x: (x["round"], x["ts"]))
     agg_rounds.sort(key=lambda x: (x["round"], x.get("agg_goal_count", 0), x["ts"]))
     eval_commits.sort(key=lambda x: (x["round"], x["ts"]))
@@ -305,6 +310,7 @@ def load_agg_jsonl(path: str) -> dict:
         "agg_belief_changes": agg_belief_changes,
         "step_timing": step_timing,
         "redispatch_decomp": redispatch_decomp,
+        "vclock_charges": vclock_charges,
     }
 
 
@@ -4552,15 +4558,24 @@ def _step_timing_compare(r_by_func: dict, s_by_func: dict, ks_tol: float,
             entry["gates_ok"] = False
         by_func[func] = entry
 
-    _gating = [r for f, r in by_func.items() if r.get("gates_ok", True)]
+    _gating = {f: r for f, r in by_func.items() if r.get("gates_ok", True)}
+
+    def _worst(pool):
+        cand = [f for f in pool if pool[f].get("ks_stat") is not None]
+        return max(cand, key=lambda f: pool[f]["ks_stat"]) if cand else None
+
+    # `worst_func` must name a func that GATES. Ranking over all funcs put the
+    # exempted `_emulate_training_delay` (KS 1.0 by construction) atop a fail
+    # actually caused by `_make_model_functional` -- reads as a moving root
+    # cause. Raw winner kept as `worst_func_incl_exempt`.
     return {
-        "ok": all(r["ok"] for r in _gating),
+        "ok": all(r["ok"] for r in _gating.values()),
         "tier": "DIST",
         "ks_tol": ks_tol,
         "n_funcs": len(funcs),
-        "worst_func": (max(by_func, key=lambda f: by_func[f].get("ks_stat") or -1.0)
-                      if any(r.get("ks_stat") is not None for r in by_func.values())
-                      else None),
+        "worst_func": _worst(_gating),
+        "worst_func_incl_exempt": _worst(by_func),
+        "failing_gating_funcs": sorted(f for f, r in _gating.items() if not r["ok"]),
         "by_func": by_func,
     }
 
@@ -6497,6 +6512,33 @@ def drain_wall_budget_parity(real: dict, sim: dict, tol_rel: float = 0.25,
     }
 
 
+# agg_round wall field -> the `vclock_charge` label that funds it, for the
+# phases where sim folds a real-profiled constant instead of its own span.
+_AGG_PHASE_CHARGE_LABEL = {"aggregate_fedavg_s": "fedavg"}
+
+
+def _profiled_charge_means(sim: dict) -> dict:
+    """{label: mean charged_s} for phases sim charges from a PROFILE.
+
+    Only `charge_source == "profiled"` rows count: a `live` row means sim folded
+    its own contended span (the run's yaml is missing `sim_charge_profile_path`
+    -- §D-18), and a `none` row means the phase is uncharged. In both of those
+    the raw span IS what the clock saw, so the caller keeps grading it.
+    """
+    tot: dict = {}
+    for e in sim.get("vclock_charges", []) or []:
+        if e.get("event") != "vclock_charge":
+            continue
+        if e.get("charge_source") != "profiled":
+            continue
+        label, c = e.get("label"), e.get("charged_s")
+        if label is None or c is None:
+            continue
+        s, n = tot.get(label, (0.0, 0))
+        tot[label] = (s + float(c), n + 1)
+    return {k: s / n for k, (s, n) in tot.items() if n}
+
+
 def aggregation_compute_wall_parity(real: dict, sim: dict, ks_tol: float = 0.3,
                                     mean_tol_rel: float = 0.35) -> dict:
     """Aggregation-stage wall-clock EQUALITY check (DIAG, TWO-SIDED) -- the
@@ -6520,6 +6562,13 @@ def aggregation_compute_wall_parity(real: dict, sim: dict, ks_tol: float = 0.3,
         return [e[field] for e in agg["agg_rounds"]
                 if e.get("event") == "agg_round" and e.get(field) is not None]
 
+    # Where sim charges a REAL-PROFILED constant (§D-18) its own span is a §D-1
+    # contention artifact the vclock discards, so grading it compares a quantity
+    # the design threw away. Measured: sim's raw `aggregate_fedavg_s` sat at a
+    # flat 0.088-0.097s on all nine while real tracked 0.051-0.098s, failing 8
+    # of 9 purely on how fast each real was. Grade what reached the clock.
+    charged = _profiled_charge_means(sim)
+
     components = {}
     for field in ("aggregate_fedavg_s", "eval_s"):
         rv, sv = _vals(real, field), _vals(sim, field)
@@ -6529,13 +6578,27 @@ def aggregation_compute_wall_parity(real: dict, sim: dict, ks_tol: float = 0.3,
             continue
         ks = ks_stat(rv, sv)
         rm, sm = sum(rv) / len(rv), sum(sv) / len(sv)
-        mean_rel = abs(rm - sm) / max(abs(rm), abs(sm), 1e-9)
-        components[field] = {
-            "ok": ks <= ks_tol and mean_rel <= mean_tol_rel,
+        graded_sim, basis = sm, "sim_wall"
+        cm = charged.get(_AGG_PHASE_CHARGE_LABEL.get(field))
+        if cm is not None:
+            graded_sim, basis = cm, "sim_charged"
+        mean_rel = abs(rm - graded_sim) / max(abs(rm), abs(graded_sim), 1e-9)
+        comp = {
+            # KS stays on the raw spans (a shape test); a profiled charge is a
+            # constant with no shape, so gate on the graded mean alone there.
+            "ok": (mean_rel <= mean_tol_rel if basis == "sim_charged"
+                   else (ks <= ks_tol and mean_rel <= mean_tol_rel)),
+            "graded_basis": basis,
             "ks_stat": round(ks, 3), "ks_tol": ks_tol,
             "real_mean_s": round(rm, 3), "sim_mean_s": round(sm, 3),
             "mean_rel_diff": round(mean_rel, 3), "mean_tol_rel": mean_tol_rel,
         }
+        if basis == "sim_charged":
+            comp["sim_charged_mean_s"] = round(graded_sim, 4)
+            # Co-location inflation, reported so §D-1 stays visible.
+            comp["sim_wall_inflation_x"] = (round(sm / graded_sim, 2)
+                                            if graded_sim > 1e-9 else None)
+        components[field] = comp
 
     if all(c.get("status") == "SKIP" for c in components.values()):
         return {"ok": True, "tier": "DIAG", "status": "SKIP",

@@ -3116,6 +3116,81 @@ class TestAggregationComputeWall:
     def test_never_hard_fails_is_diag(self):
         assert pc.CHECK_META["aggregation_compute_wall"]["role"] == "DIAG"
 
+    # --- graded basis: what reached the CLOCK, not sim's contended span ---
+
+    def _charges(self, label, charged, source="profiled", n=5):
+        return [{"event": "vclock_charge", "label": label,
+                 "charged_s": charged, "span_s": 99.0,
+                 "charge_source": source} for _ in range(n)]
+
+    def test_profiled_charge_is_graded_not_sims_own_span(self):
+        """The measured shape: sim's raw fedavg wall sits at a flat co-location
+        floor well above real's, but the vclock is folded a real-profiled
+        constant instead -- so the raw span is a quantity the design discarded
+        and grading it fails a run that is actually charging correctly."""
+        real = self._agg_with_fedavg([0.060, 0.061, 0.059, 0.062, 0.058])
+        sim = self._agg_with_fedavg([0.088, 0.090, 0.089, 0.091, 0.087])
+        sim["vclock_charges"] = self._charges("fedavg", 0.0645)
+        r = pc.aggregation_compute_wall_parity(real, sim)
+        c = r["components"]["aggregate_fedavg_s"]
+        assert c["graded_basis"] == "sim_charged"
+        assert c["sim_charged_mean_s"] == 0.0645
+        assert r["ok"], c
+
+    def test_contention_inflation_is_reported_not_hidden(self):
+        """§D-1 must stay visible: the span/charge ratio is the co-location
+        inflation, reported even though it no longer gates."""
+        real = self._agg_with_fedavg([0.060, 0.061, 0.059, 0.062, 0.058])
+        sim = self._agg_with_fedavg([0.088, 0.090, 0.089, 0.091, 0.087])
+        sim["vclock_charges"] = self._charges("fedavg", 0.0645)
+        c = pc.aggregation_compute_wall_parity(real, sim)["components"]["aggregate_fedavg_s"]
+        assert c["sim_wall_inflation_x"] == round(0.089 / 0.0645, 2)
+        assert c["sim_mean_s"] == 0.089  # raw span still reported
+
+    def test_a_genuinely_wrong_charge_still_FAILS(self):
+        """Switching the basis must not make the rung toothless -- a profile
+        that mis-prices real's cost is exactly what this should now catch."""
+        real = self._agg_with_fedavg([0.060, 0.061, 0.059, 0.062, 0.058])
+        sim = self._agg_with_fedavg([0.088, 0.090, 0.089, 0.091, 0.087])
+        sim["vclock_charges"] = self._charges("fedavg", 0.5)  # 8x real
+        r = pc.aggregation_compute_wall_parity(real, sim)
+        assert not r["ok"]
+        assert r["components"]["aggregate_fedavg_s"]["graded_basis"] == "sim_charged"
+
+    def test_live_charge_keeps_grading_the_raw_span(self):
+        """`live` means sim folded its OWN span, so the span IS what the clock
+        saw -- the yaml is missing sim_charge_profile_path (§D-18) and the raw
+        comparison is the right one to fail on."""
+        real = self._agg_with_fedavg([0.051, 0.052, 0.050, 0.053, 0.049])
+        sim = self._agg_with_fedavg([0.096, 0.097, 0.095, 0.098, 0.094])
+        sim["vclock_charges"] = self._charges("fedavg", 0.096, source="live")
+        r = pc.aggregation_compute_wall_parity(real, sim)
+        c = r["components"]["aggregate_fedavg_s"]
+        assert c["graded_basis"] == "sim_wall"
+        assert not r["ok"]
+
+    def test_uncharged_keeps_grading_the_raw_span(self):
+        real = self._agg_with_fedavg([0.051, 0.052, 0.050, 0.053, 0.049])
+        sim = self._agg_with_fedavg([0.096, 0.097, 0.095, 0.098, 0.094])
+        sim["vclock_charges"] = self._charges("fedavg", 0.0, source="none")
+        c = pc.aggregation_compute_wall_parity(real, sim)["components"]["aggregate_fedavg_s"]
+        assert c["graded_basis"] == "sim_wall"
+
+    def test_no_charge_ledger_at_all_is_the_old_behaviour(self):
+        """Legacy runs recorded before the ledger existed must still grade."""
+        real = self._agg_with_fedavg([1.28, 1.29, 1.30, 1.31, 1.32])
+        sim = self._agg_with_fedavg([1.29, 1.30, 1.31, 1.32, 1.33])
+        r = pc.aggregation_compute_wall_parity(real, sim)
+        assert r["components"]["aggregate_fedavg_s"]["graded_basis"] == "sim_wall"
+        assert r["ok"]
+
+    def test_other_charge_labels_do_not_leak_into_fedavg(self):
+        real = self._agg_with_fedavg([0.060, 0.061, 0.059, 0.062, 0.058])
+        sim = self._agg_with_fedavg([0.088, 0.090, 0.089, 0.091, 0.087])
+        sim["vclock_charges"] = self._charges("drain_tail", 0.2783)
+        c = pc.aggregation_compute_wall_parity(real, sim)["components"]["aggregate_fedavg_s"]
+        assert c["graded_basis"] == "sim_wall"
+
     def test_skips_without_telemetry(self):
         real = _agg(agg_rounds=[{"event": "agg_round", "round": 1}])
         sim = _agg(agg_rounds=[{"event": "agg_round", "round": 1}])
@@ -3302,3 +3377,49 @@ class TestVclockFoldDiagnostic:
         r = pc.aggregation_compute_wall_parity(_agg(), _agg())
         assert r.get("status") == "SKIP"
         assert "vclock_fold_diagnostic" not in r
+
+
+class TestStepTimingWorstFuncNamesAGatingFunc:
+    """`worst_func` ranked over EVERY func, including the ones exempted from
+    gating. `_emulate_training_delay` is a modeled sleep the sim skips, so its
+    KS is 1.0 by construction and it won every ranking -- naming it as the worst
+    func of a failure actually caused by `_make_model_functional` reads as the
+    divergence having moved when nothing moved."""
+
+    def _tr(self, func_vals):
+        """{trainer: [step_timing events]} for {func: [durations]}."""
+        evs = [{"event": "step_timing", "func": f, "duration_s": v, "ts": i}
+               for f, vals in func_vals.items() for i, v in enumerate(vals)]
+        return {"t0": {"step_timing": evs}}
+
+    def _run(self):
+        # Exempted sleep: real-only, KS 1.0. Gating func: a genuine small gap.
+        real = self._tr({"_emulate_training_delay": [10.0, 11.0, 12.0, 13.0, 14.0],
+                         "_make_model_functional": [0.034, 0.035, 0.036, 0.037, 0.038]})
+        sim = self._tr({"_emulate_training_delay": [0.0, 0.0, 0.0, 0.0, 0.0],
+                        "_make_model_functional": [0.030, 0.031, 0.031, 0.032, 0.033]})
+        return pc.step_timing_breakdown_parity(real, sim)
+
+    def test_worst_func_is_not_the_exempted_sleep(self):
+        r = self._run()
+        assert r["worst_func"] != "_emulate_training_delay"
+
+    def test_worst_func_is_the_gating_one(self):
+        assert self._run()["worst_func"] == "_make_model_functional"
+
+    def test_raw_ranking_still_reported(self):
+        """The all-func winner is kept, just no longer mistakable for a cause."""
+        assert self._run()["worst_func_incl_exempt"] == "_emulate_training_delay"
+
+    def test_failing_gating_funcs_listed(self):
+        r = self._run()
+        assert "_emulate_training_delay" not in r["failing_gating_funcs"]
+
+    def test_exempted_sleep_still_does_not_gate(self):
+        """The exemption itself must be untouched -- sim skipping a modeled
+        sleep is correct behaviour, never a divergence."""
+        real = self._tr({"_emulate_training_delay": [10.0, 11.0, 12.0, 13.0, 14.0]})
+        sim = self._tr({"_emulate_training_delay": [0.0, 0.0, 0.0, 0.0, 0.0]})
+        r = pc.step_timing_breakdown_parity(real, sim)
+        assert r["ok"], r
+        assert r["by_func"]["_emulate_training_delay"]["gates_ok"] is False

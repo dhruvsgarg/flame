@@ -107,6 +107,9 @@ experiments:
           # data-id completions).
           max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
           max_runtime_s: 3600  # ...or after 60 minutes wall time
+          # Eval cadence -- MUST match real/sim, else the two sample the accuracy
+          # curve at different points. Raise if the run warns about waiting.
+          eval_every_n_commits: 2
           # Arms runner.py's watchdog (force-kill on hang); inert otherwise.
           max_experiment_runtime_s: 7200
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5

@@ -155,6 +155,9 @@ experiments:
           # data-id completions).
           max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
           max_runtime_s: 3600  # ...or after 60 minutes sim vclock
+          # Eval cadence -- MUST match real/sim, else the two sample the accuracy
+          # curve at different points. Raise if the run warns about waiting.
+          eval_every_n_commits: 2
           # Outer wall failsafe (code default 20x max_runtime_s is too loose).
           sim_wall_ceiling_s: 7200
           # Phase 4c (B1, #6, REMOVED §6 Part 6): sim_model_eval_time used to

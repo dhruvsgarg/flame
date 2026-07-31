@@ -88,6 +88,9 @@ experiments:
           sim_charge_profile_path: lib/python/examples/fwdllm/sim_charge_profile.yaml
           max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s
           max_runtime_s: 3600  # ...or after 60 minutes sim vclock
+          # Eval cadence -- MUST match real/sim, else the two sample the accuracy
+          # curve at different points. Raise if the run warns about waiting.
+          eval_every_n_commits: 2
           # Outer wall failsafe (code default 20x max_runtime_s is too loose).
           sim_wall_ceiling_s: 7200
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5

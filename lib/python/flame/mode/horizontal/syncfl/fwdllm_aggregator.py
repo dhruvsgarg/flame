@@ -40,6 +40,7 @@ import pickle
 from flame.mode.horizontal.syncfl.top_aggregator import (
     TAG_AGGREGATE,
     TAG_DISTRIBUTE,
+    TopAggregator as SyncTopAggregator,
 )
 from sklearn.metrics import (
     confusion_matrix,
@@ -2361,9 +2362,7 @@ class TopAggregator(AsyncTopAgg):
             _eval_iteration = self.iteration_per_data_id
             _eval_model_snapshot = self._eval_snapshot_model()
             if _eval_model_snapshot is None:
-                logger.debug(
-                    "prior async fwdllm eval still running; skipping this cycle's eval"
-                )
+                logger.debug("eval stride skips this commit")
             else:
                 def _fwdllm_eval_job(
                     _model=_eval_model_snapshot, _round_id=_eval_round_id,
@@ -2405,7 +2404,7 @@ class TopAggregator(AsyncTopAgg):
                     except Exception as e:  # eval must never break training
                         logger.warning(f"[FWDLLM_EVAL] failed (non-fatal): {e}")
                     finally:
-                        self._eval_inflight = False
+                        SyncTopAggregator._eval_release(self)
 
                 threading.Thread(target=_fwdllm_eval_job, daemon=True).start()
             self.data_id += 1
@@ -3793,11 +3792,25 @@ class TopAggregator(AsyncTopAgg):
             return set(pending)
         return holders()
 
-    def _outstanding_dispatch_count(self) -> int:
+    def _outstanding_dispatch_count(self, channel=None) -> int:
         """Ends occupying a dispatch slot -- the `concurrency_cap` tripwire's
         count. Thin wrapper so the tripwire and the dispatch cap can never drift
-        apart on what "in flight" means (§F-26)."""
-        return len(TopAggregator._slot_holders(self))
+        apart on what "in flight" means (§F-26).
+
+        `channel` (real only) excludes ends whose update has already ARRIVED but
+        is still queued: real clears `_trainer_inflight_dispatch_version` when
+        the drain loop PROCESSES a message, not when it lands, so the raw count
+        charges the aggregator's own drain lag to trainer concurrency. Sim has
+        no such lag -- it ingests straight off the End queue -- so its branch is
+        unchanged.
+        """
+        holders = TopAggregator._slot_holders(self)
+        if channel is not None and not self.simulated:
+            try:
+                holders = holders - channel.ends_with_pending_rx()
+            except AttributeError:  # channel double without the probe
+                pass
+        return len(holders)
 
     def _should_send_full_weights(self, end, is_stale: bool) -> bool:
         """Decide WEIGHTS vs the tiny VAR=bad 'keep training' message for one end.
@@ -4347,7 +4360,7 @@ class TopAggregator(AsyncTopAgg):
             # must never exceed the selector's `c`. Read off whichever pending-commit
             # construct this mode owns -- no new state. Warning ungated: rare by
             # construction, and if it isn't, that is the finding.
-            _outstanding = self._outstanding_dispatch_count()
+            _outstanding = self._outstanding_dispatch_count(channel)
             _conc_target = channel.get_c()
             if _conc_target is not None and _outstanding > int(_conc_target):
                 logger.warning(

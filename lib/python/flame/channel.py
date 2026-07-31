@@ -791,6 +791,25 @@ class Channel(object):
             f"[RECV_FIFO] Merge stream completed, delivered {msg_count} messages from {len(runs)} tasks"
         )
 
+    def ends_with_pending_rx(self) -> set:
+        """Ends whose message has ARRIVED but the aggregator has not processed yet.
+
+        Queue depth only, never a deserialize, so it is safe on the dispatch
+        path (§F-19) -- `peek()` below cloudpickle-loads and must not be used
+        here. A trainer that has sent has an idle GPU whatever the drain loop is
+        doing, so real's capacity read excludes these: without it the count
+        charges real's own drain lag to concurrency (`felix_it` read 55 against
+        c=30 on 49.1% of dispatches; its trainers' spans peaked at exactly 30).
+        """
+        pending = set()
+        for end_id, end in list(self._ends.items()):
+            try:
+                if end.peek_buf is not None or end.rxq.qsize() > 0:
+                    pending.add(end_id)
+            except AttributeError:  # duck-typed test doubles
+                continue
+        return pending
+
     def peek(self, end_id):
         """Peek rxq of end_id and return data if queue is not
         empty."""
