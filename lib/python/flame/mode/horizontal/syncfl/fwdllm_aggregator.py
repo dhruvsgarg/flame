@@ -338,9 +338,23 @@ class _PendingCommitUnion:
 
     def __len__(self) -> int:
         """Deduped size across both halves (an end can sit in either, never
-        both at once, but don't rely on that) -- the concurrency-cap tripwire
-        reads the outstanding count off this."""
+        both at once, but don't rely on that) -- the IDENTITY-role size."""
         return len(set(iter(self)))
+
+    def slot_holders(self) -> set:
+        """**CAPACITY role** -- real's half of `_slot_holders()` (§F-23), kept on
+        the class that owns both halves so they can't drift.
+
+        Only dispatched-not-yet-RETURNED holds a compute slot: once a trainer's
+        message arrives its GPU is idle, whatever the aggregator still owes it.
+        The returned half is the boundary-held re-pick guard (§D-15) -- identity,
+        not capacity (§D-27). Reading the union instead made `fluxtune` real
+        report 30->39 outstanding per cycle (max 52) against c=30, breaching the
+        `outstanding_at_dispatch` invariant on 90.4% of dispatches while true
+        peak concurrent training was 30. Invisible on the round baselines, which
+        dispatch after the boundary clear.
+        """
+        return set(self._inflight_dispatch)
 
     def discard(self, end) -> None:
         """R1 timeout eviction (`async_base.py`) drops a departed end from both halves."""
@@ -535,6 +549,14 @@ class TopAggregator(AsyncTopAgg):
         self._sim_commit_frees_slot = bool(getattr(
             self.config.hyperparameters, "sim_commit_frees_slot", True))
         logger.info(f"sim_commit_frees_slot = {self._sim_commit_frees_slot}")
+
+        # Real's twin of the same §F-23 split: RETURN frees the slot, the boundary
+        # releases the guard (`_PendingCommitUnion.slot_holders`). Only the
+        # `outstanding_at_dispatch` tripwire reads it on real today, so this is a
+        # measurement-truth fix. Kill-switch as above: OFF restores the union read.
+        self._real_commit_frees_slot = bool(getattr(
+            self.config.hyperparameters, "real_commit_frees_slot", True))
+        logger.info(f"real_commit_frees_slot = {self._real_commit_frees_slot}")
 
         # Real-side collect via streamer-free `drain_ready`, replacing recv_fifo
         # (§H, see _real_sync_recv_incremental). A/B flag, default OFF.
@@ -3332,6 +3354,12 @@ class TopAggregator(AsyncTopAgg):
         every OTHER trainer (§F-23, the fluxtune under-fill). Falls back to the
         pending ref when no slot ref is published, so real and any baseline that
         doesn't split the roles stays byte-identical. No-op without a known `c`.
+
+        KNOWN GAP: real publishes no slot ref, so it falls back to the IDENTITY
+        set here -- the same conflation `slot_holders()` fixes for the tripwire.
+        Harmless today (the round cadences reaching this path dispatch after the
+        boundary clear, where the two sets coincide); publishing a real slot ref
+        would let real dispatch into slots it withholds, so it owes its own A/B.
         """
         selector = getattr(channel, "_selector", None)
         pending = getattr(selector, "_agg_slot_holders_ref", None) if selector else None
@@ -3744,9 +3772,10 @@ class TopAggregator(AsyncTopAgg):
         guard is still held to the agg-goal boundary (§D-15): their slot is free
         (§F-23), their identity is not.
 
-        Sim: dispatched-not-committed. Real: the `_PendingCommitUnion` already
-        drops an end from both halves at commit, so the two roles coincide and
-        this is byte-identical to reading the union directly.
+        Sim: dispatched-not-committed. Real: the dispatched-not-yet-RETURNED
+        half of `_PendingCommitUnion` (`slot_holders()`) -- its returned half is
+        the boundary-held re-pick guard, so reading the union charged `c` for
+        trainers that had already stopped computing.
         """
         if self.simulated:
             if getattr(self, "_sim_pending_commit", None) is None:
@@ -3755,7 +3784,14 @@ class TopAggregator(AsyncTopAgg):
             # this class, so `self._sim_slot_holder_set` may not be bound.
             return TopAggregator._sim_slot_holder_set(self)
         pending = getattr(self, "_real_pending_commit", None)
-        return set(pending) if pending is not None else set()
+        if pending is None:
+            return set()
+        # Duck-typed: test doubles and the pre-`_PendingCommitUnion` fallback
+        # bind a plain list here, for which the two roles do coincide.
+        holders = getattr(pending, "slot_holders", None)
+        if not callable(holders) or not getattr(self, "_real_commit_frees_slot", True):
+            return set(pending)
+        return holders()
 
     def _outstanding_dispatch_count(self) -> int:
         """Ends occupying a dispatch slot -- the `concurrency_cap` tripwire's

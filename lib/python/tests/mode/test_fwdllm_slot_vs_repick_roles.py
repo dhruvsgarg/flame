@@ -21,15 +21,23 @@ against an 11.9% throughput residual. `slot_starvation` was 0 in both modes, so
 sim was never short of candidates -- it believed it had no free slots.
 
 `_slot_holders()` is now the single authoritative CAPACITY answer; the identity
-set is unchanged. Real is byte-identical (its `_PendingCommitUnion` drops an end
-from both halves at commit, so the two roles already coincided).
+set is unchanged.
+
+Real had the SAME conflation, found later on live telemetry: its
+`_PendingCommitUnion` holds a returned end to the agg-goal boundary, so the union
+counted trainers that had already stopped computing -- `fluxtune` real read 30->39
+outstanding per cycle (max 52) against c=30, breaching `outstanding_at_dispatch`
+on 90.4% of dispatches while true peak concurrent training was 30.
+`_PendingCommitUnion.slot_holders()` is real's capacity half.
 """
 
 from types import SimpleNamespace
 
 import pytest
 
-from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
+from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+    TopAggregator, _OrderedContributorList, _PendingCommitUnion,
+)
 
 
 class _Agg:
@@ -82,8 +90,9 @@ class TestSlotHoldersIsCapacityNotIdentity:
         agg = _Agg(pending={"a", "b", "c", "d"}, committed={"c", "d"})
         assert agg._outstanding_dispatch_count() == len(agg._slot_holders()) == 2
 
-    def test_real_mode_is_unchanged(self):
-        # Real's union already drops an end at commit -> the roles coincide.
+    def test_real_mode_plain_container_falls_back_to_the_whole_set(self):
+        # Test doubles (and the pre-`_PendingCommitUnion` path) bind a plain
+        # container, which carries only the identity role -- read it whole.
         agg = _Agg(simulated=False, pending={"a", "b", "c"}, committed={"c"})
         assert agg._slot_holders() == {"a", "b", "c"}
 
@@ -156,3 +165,60 @@ class TestIdentityGuardStillHolds:
         # This is the whole point: identity ⊇ capacity, never the reverse.
         agg = _Agg(pending={"a", "b", "c"}, committed={"c"})
         assert agg._slot_holders() < set(agg._sim_pending_commit)
+
+
+class _RealAgg:
+    """Real's two halves, wired exactly as `internal_init` binds them."""
+
+    def __init__(self, inflight=(), returned=(), commit_frees_slot=True):
+        self.simulated = False
+        self._trainer_inflight_dispatch_version = {e: (1, 0) for e in inflight}
+        self._per_agg_trainer_list = _OrderedContributorList(returned)
+        self._real_pending_commit = _PendingCommitUnion(
+            self._trainer_inflight_dispatch_version, self._per_agg_trainer_list)
+        self._real_commit_frees_slot = commit_frees_slot
+
+    _slot_holders = TopAggregator._slot_holders
+    _outstanding_dispatch_count = TopAggregator._outstanding_dispatch_count
+
+
+class TestRealSlotFreesOnReturn:
+    """A returned trainer's GPU is idle whatever the aggregator still owes it,
+    so it holds no slot -- but its re-pick guard runs to the boundary (§D-15)."""
+
+    def test_returned_end_holds_the_guard_but_not_a_slot(self):
+        agg = _RealAgg(inflight=["a", "b"], returned=["c"])
+        assert agg._slot_holders() == {"a", "b"}
+        assert "c" in agg._real_pending_commit          # identity: still guarded
+        assert len(agg._real_pending_commit) == 3       # identity size unchanged
+
+    def test_the_fluxtune_tripwire_no_longer_breaches_c(self):
+        # The measured shape: 20 still training, 10 returned awaiting the
+        # boundary, then 10 fresh dispatches -> union read 40 against c=30.
+        agg = _RealAgg(inflight=[f"t{i}" for i in range(20)],
+                       returned=[f"r{i}" for i in range(10)])
+        for i in range(10):
+            agg._trainer_inflight_dispatch_version[f"n{i}"] = (1, 0)
+        assert len(agg._real_pending_commit) == 40      # what the tripwire read
+        assert agg._outstanding_dispatch_count() == 30  # what it should read
+
+    def test_return_is_what_frees_it_not_the_boundary(self):
+        agg = _RealAgg(inflight=["a"], returned=[])
+        assert agg._slot_holders() == {"a"}
+        # Arrival: `aggregate_weights` pops the inflight entry and appends to
+        # the returned half. The boundary has NOT run yet.
+        agg._trainer_inflight_dispatch_version.pop("a")
+        agg._per_agg_trainer_list.append("a")
+        assert agg._slot_holders() == set()
+        assert "a" in agg._real_pending_commit
+
+    def test_kill_switch_restores_the_union_read(self):
+        agg = _RealAgg(inflight=["a", "b"], returned=["c"], commit_frees_slot=False)
+        assert agg._slot_holders() == {"a", "b", "c"}
+
+    def test_r1_eviction_clears_both_roles(self):
+        agg = _RealAgg(inflight=["a"], returned=["b"])
+        agg._real_pending_commit.discard("a")
+        agg._real_pending_commit.discard("b")
+        assert agg._slot_holders() == set()
+        assert not agg._real_pending_commit
