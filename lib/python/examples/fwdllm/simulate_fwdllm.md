@@ -20,7 +20,7 @@ gating, run-length budget) and fwdllm's rung catalog (§F) live in
 > | §C | ladder/decomposition method, run-length budget | timeless; edit only if the method itself changes |
 > | §D | durable lessons — positive, transferable invariants | ≤30 words each; update in place, never append near-dupes |
 > | §E | dead ends — falsified hypotheses, do not retry | append-only, one line each |
-> | §F | locked invariants — always-true / always-do | numbers are cited elsewhere; keep stable |
+> | §F | locked invariants — always-true / always-do | append/amend with OPERATOR APPROVAL + evidence; amend in place, never renumber (§F header) |
 > | §G | closed items, one line each | move here the instant a §A/§B issue resolves, delete the source in the same edit |
 >
 > **Living doc, not a log — no dated annotations.** Every claim here must read as true right now (or believed
@@ -138,23 +138,35 @@ Also settled, don't re-derive: real's clock anchor is NOT the problem — anchor
 FIXED in code** (sim conflated the compute SLOT with the re-pick GUARD — §G), but nothing on disk reflects
 it: every number above is pre-fix.
 
-**Part 2 — what to do next.**
+**Part 2 — the live hypotheses, each with the observation that would falsify it.** State the prediction
+BEFORE the run; a hypothesis that can only be confirmed is not one (§D-9).
 
-1. **Validate the fluxtune slot⇄re-pick split — the only step that needs a run.** 1800s pair suffices (a
-   per-cycle mechanism, §D-25). Expect `slot_utilization` (16.4%) and `overlap_factor` (22.5%) to flip green
-   and the throughput residual to close. **If mean in-flight rises but throughput doesn't, the pipelining
-   deficit was not the whole story — re-split per §D-16 rather than re-tuning.** Kill-switch for an A/B is
-   `sim_commit_frees_slot: false`. Smoke 5-10 min first: the lap-boundary snapshot fix (§G) touches the
-   training path.
-2. **`selection_bias` fails on BOTH round baselines (fedbuff 19.4%, felix 15.4%) — new, uninvestigated.**
-   Pools are identical (12.51s both sides); sim's SELECTED mean is 15.13s on fedbuff (slow-biased) and
-   10.57s on felix (fast-biased), real ~12.5s on both. Opposite directions, so not one shared selector bug.
-   Upstream of cadence — which trainers are selected sets which grads pool → var → cadence — so settle this
-   before hunting a fedbuff/felix cadence mechanism.
-3. **`fedbuff_round` / cadence (needs 3600s+, §C).** Its 14.8% clears the 3.4-4.5% replicate floor, so it IS
-   real, but `v2b_var_drift` says progressive — a per-cycle mechanism is the wrong shape of explanation
-   (§D-23). Compare the two sides' model trajectories (`grad_norm`, loss-per-bin) on the pairs already on
-   disk before touching `SimReorderBuffer`.
+**H1 — `fluxtune`. The slot⇄guard conflation was the WHOLE pipelining deficit.** Predicts: sim mean
+in-flight 24.66 → ~29.5/30 and `slot_utilization` green (it is NOT budget-windowed, so it grades at any
+duration); `overlap_factor` 3.95 → ~5.09 as the freed slots raise per-cycle clock advance; `throughput`'s
+11.9% residual closes with it. Guard rails: `concurrency_cap` must stay ≤30 (a naive `- _sim_committed`
+over-dispatches — that is what `_slot_holders`' `(pending − committed)` term prevents) and
+`retask_before_close` must stay 0.0% (§D-15 must keep holding, on the identity set).
+**FALSIFIED IF** mean in-flight rises but `throughput` does not — then the deficit was real but not
+rate-limiting, and the residual re-splits per §D-16 rather than getting re-tuned. Also falsified if
+`slot_starvation` goes non-zero: that would mean sim was candidate-limited all along, not slot-limited.
+A/B kill-switch: `sim_commit_frees_slot: false`.
+
+**H2 — `selection_bias` on the round baselines is TWO faults, not one.** Pools are identical (12.51s both
+sides); sim's SELECTED mean is 15.13s on fedbuff (slow-biased) and 10.57s on felix (fast-biased), real ~12.5s
+on both. Opposite signs against a shared pool rules out one common selector bug (§D-6: the record belongs to
+the SELECTOR+AGGREGATOR pair). Sub-hypothesis: the bias is a CONSEQUENCE of who is available to select, i.e.
+downstream of the same slot/eligibility bookkeeping as H1, in which case the H1 run moves it on both without
+any selector change. **FALSIFIED IF** H1 lands and both biases are unchanged — then it is genuinely in the
+selectors and each needs its own walk. Grade it early: it is distributional over selections, not
+accumulating, so a 900s pair already carries a few hundred cycles.
+
+**H3 — `fedbuff_round` cadence is a TRAJECTORY divergence, not a per-cycle mechanism.** Its 14.8% clears the
+3.4-4.5% replicate floor so it is real, but `v2b_var_drift` reads progressive (0.98→0.89, ρ=−0.61), which is
+the wrong shape for a per-cycle bug (§D-23). Predicts the two sides' `grad_norm`/loss-per-bin curves separate
+progressively on the pairs ALREADY ON DISK — check that before spending a 3600s run or touching
+`SimReorderBuffer`. **FALSIFIED IF** the curves sit on top of each other; then the drift is in the variance
+gate's inputs, not the model, and the walk goes to `U5`/`S2` (§C).
 
 ### Other open items
 
@@ -247,11 +259,20 @@ because they are fixed but because the divergence hasn't accumulated yet.
 | validating | min run | why |
 |---|---|---|
 | telemetry field present / instrument sane | 5-10 min | a few hundred commits populate any per-commit field |
+| **regression smoke after a shared-path change** | **900s** | INV tripwires + occupancy rungs are un-windowed, so they grade at any duration (below) |
 | clock/pipelining family (`overlap_factor` K4, `throughput`, `per_round_advance`, `overhead_residual`) | **900-1800s** | per-cycle mechanisms — fire at full magnitude immediately (evidence above) |
 | one MECHANISM rung (`drain_wall_budget`, `selection_detail`, `eligibility`) | **1800s** | the mechanism fires; per-commit dists stabilize |
 | variance-cadence rungs (`V1`/`V2`/`V2b`/`V5`) | 3600s+ | the divergence ACCUMULATES; a short run reads a false PASS |
 | stochastic identity / participation (`cohort_sequence`, `S2`) | 3600s+ | index overlap must reach its independent-draw floor to read as identity-not-bias (§D-2) |
 | convergence sign-off (`terminal_state`, `conv`, `conv_loss`) | full 2h+ | terminal-state + curve parity only |
+
+**WINDOWED vs UN-WINDOWED is what makes a short run readable — check before choosing a duration.** A rung
+carrying `matched_logical_budget_n` grades only the work both sides did, so at 900s its N is ~1/6 of the
+5400s N and a thin-N verdict is weak (`overlap_factor` 65→~11; `fwdllm` is unreadable at ANY short duration —
+only ~30 committed bins in 5400s). A rung with no `matched_logical_budget_n` pools the whole run and grades
+at full strength immediately: every INV tripwire (`concurrency_cap`, `retask_before_close`,
+`r1_inflight_overlap`, `sim_rate`), `slot_utilization`, `throughput`. Read the field in the pair's JSON
+rather than assuming.
 
 **Is a given duration long enough? Measure, don't guess.** The reproducibility floor grows as runs shorten,
 so launch the SAME short config twice on one side and run
@@ -434,6 +455,20 @@ event `ts`; a composite key can wrap out of order.
 
 > Always-true / always-do rules. Numbers are cited across this doc — keep them stable, don't renumber.
 > Diagnostic *patterns* (see X → means Y) live in §D, not here.
+>
+> **This list is not frozen — it is APPEND-and-AMEND with operator approval.** An invariant is the current
+> best statement of a rule, not scripture; when work proves one incomplete, wrong, or worth adding, say so
+> and propose the exact wording. Rules:
+> - **Never silently.** Ask the operator before adding or changing one, and state the EVIDENCE (code, live
+>   telemetry, or a test that fails without it) — not a plausible-sounding argument.
+> - **Amend in place, keep the number.** §F-23 gained its two-set clause without renumbering. Other sections
+>   cite these numbers; a renumber silently rewrites every citation.
+> - **Deleting needs more evidence than adding.** An invariant usually exists because something broke once.
+>   Prefer narrowing its scope to removing it.
+> - **A new invariant must be always-true, both modes.** One-baseline or one-rung findings are §B/§G; a
+>   see-X-means-Y pattern is §D. If it needs a caveat, it is probably not an invariant.
+> - When a fix contradicts an invariant, that is a STOP — the invariant may be wrong, but resolve it
+>   explicitly with the operator before landing (the fix that split §F-23 was gated exactly this way).
 
 1. **Sim does real forward-grad compute, charges modeled time.** Agg stamps
    `sct = sim_send_ts + max(real_gpu_s, D) + leg`. Never put overhead on the vclock (`vclock = max(vclock, sct)`).
