@@ -103,6 +103,7 @@ from parity.checks import (  # noqa: F401, E402
     iters_per_data_id_moving_avg_parity,
     var_trajectory_parity,
     var_drift_parity,
+    iter_drift_rate_parity,
     cached_v_pool_parity,
     force_commit_rate_parity,
     variance_pass_ratio_parity,
@@ -129,6 +130,8 @@ from parity.checks import (  # noqa: F401, E402
     step_timing_breakdown_parity,
     agg_step_timing_breakdown_parity,
     aggregation_compute_wall_parity,
+    sim_clock_basis,
+    charge_coverage,
     # overall
     run_all_parity,
     overall_verdict,

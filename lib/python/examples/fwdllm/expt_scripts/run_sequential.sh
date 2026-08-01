@@ -461,6 +461,7 @@ with open(env("RUN_TSV")) as fh:
 
 manifest = []            # (name, cfg_path, variant, budget_s)
 per_baseline = {}        # baseline -> resolved knobs (for the tier ② rows)
+sim_profiles = {}        # baseline -> sim_charge_profile_path (provenance check)
 checks = []
 
 
@@ -589,6 +590,8 @@ for trace in traces:
             # record resolved knobs from the (first) patched experiment for display
             e0 = exps[0]
             h0 = e0["aggregator"]["config_overrides"]["hyperparameters"]
+            if variant == "sim":
+                sim_profiles[run_key] = h0.get("sim_charge_profile_path")
             kw0 = e0["aggregator"]["config_overrides"]["selector"]["kwargs"]
             per_baseline.setdefault(run_key, {
                 "c": kw0.get("c"),
@@ -819,6 +822,44 @@ if MODE == "both":
         checks.append({"name": f"enable_training_delays matched across real/sim pair ({rk})",
                        "level": "ok",
                        "detail": f"D={'>0' if _don else '0'} both sides (factor={_dfac or 'base'}, floor={_dflr or '0.0'})"})
+# sim charge profile provenance: every charged entry must have been profiled from
+# a real run of THIS baseline. A shared family-wide profile silently mis-prices the
+# vclock -- one constant was 1.08-2.75x each baseline's own real drain_tail, i.e.
+# 0.6-3.4% of sim's clock, always making sim look slower (simulate_fwdllm.md §D-18).
+for rk in (r[0] for r in runs):
+    prof = sim_profiles.get(rk)
+    if not prof:
+        continue
+    _repo_root = os.path.abspath(os.path.join(env("EXAMPLE_DIR", ""), "..", "..", "..", ".."))
+    path = prof if os.path.isabs(prof) else os.path.join(_repo_root, prof)
+    if not os.path.exists(path):
+        checks.append({"name": f"sim charge profile exists ({rk})", "level": "error",
+                       "detail": f"missing: {prof}"})
+        continue
+    try:
+        _pf = yaml.safe_load(open(path, encoding="utf-8")) or {}
+    except Exception as _e:
+        checks.append({"name": f"sim charge profile readable ({rk})", "level": "error",
+                       "detail": f"{prof}: {_e}"})
+        continue
+    _foreign, _dates = [], set()
+    for _lbl, _entries in _pf.items():
+        for _pk, _e in (_entries or {}).items():
+            if not _e.get("charge"):
+                continue
+            _dates.add(_e.get("profiled_at"))
+            # `_<rk>_n` not a bare substring: "fwdllm" is a prefix of
+            # "fwdllm_it_unaware", so a plain `in` would accept a sibling's profile.
+            if not any(f"_{rk}_n" in str(s) for s in (_e.get("source_runs") or [])):
+                _foreign.append(f"{_lbl}.{_pk}")
+    if _foreign:
+        checks.append({"name": f"sim charge profile provenance ({rk})", "level": "error",
+                       "detail": f"{prof}: charged entries not profiled from a {rk} real run: "
+                                 f"{', '.join(sorted(_foreign))}"})
+    else:
+        checks.append({"name": f"sim charge profile provenance ({rk})", "level": "ok",
+                       "detail": f"{os.path.basename(path)} profiled {'/'.join(sorted(d for d in _dates if d))} from {rk} real"})
+
 # agg_goal <= c (more required than concurrently selected -> stall).
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})

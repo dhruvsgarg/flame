@@ -4,6 +4,13 @@
 charge for a real-only-artifact category, gated on the registry's own
 `charge:` flag -- never on whether the caller merely asked."""
 
+import json
+import pathlib
+import subprocess
+import sys
+
+import yaml
+
 from flame.mode.horizontal.sim_charge_registry import get_profiled_charge_s
 
 _YAML = """
@@ -88,3 +95,60 @@ def test_shared_compute_charge_is_inert_without_a_registry(tmp_path):
     the call site passes profiled_s=None and falls back."""
     assert get_profiled_charge_s(None, "drain_tail") is None
     assert get_profiled_charge_s(_write(tmp_path), "drain_tail") is None
+
+
+class TestPerBaselineProfileGeneration:
+    """`profile_sim_charges.py --only-observed`: a PER-BASELINE profile must not
+    carry a number for an op that baseline never performs. Without the flag the
+    seed's entry survives the refresh and is re-stamped with the new run's
+    provenance -- sync fwdllm inherited `redispatch_turnaround` (an async-only
+    dispatch cost) that way, claiming a value it never measured."""
+
+    @staticmethod
+    def _run_dir(tmp_path, name, labels):
+        d = tmp_path / name / "telemetry"
+        d.mkdir(parents=True)
+        rows = [json.dumps({"event": "vclock_charge", "time_mode": "real",
+                            "label": lbl, "span_s": span})
+                for lbl, span in labels for _ in range(8)]
+        (d / "aggregator_x.jsonl").write_text("\n".join(rows))
+        return str(tmp_path / name)
+
+    def _profile(self, tmp_path, run, seed, extra_args=()):
+        out = tmp_path / "profile.yaml"
+        out.write_text(seed)
+        script = (pathlib.Path(__file__).resolve().parents[2]
+                  / "examples/fwdllm/expt_scripts/profile_sim_charges.py")
+        subprocess.run([sys.executable, str(script), "--real-run", run,
+                        "--out", str(out), *extra_args], check=True,
+                       capture_output=True)
+        return yaml.safe_load(out.read_text())
+
+    _SEED = ("drain_tail:\n  _default:\n    charge: true\n    rationale: keep me\n"
+             "redispatch_turnaround:\n  weights:\n    charge: true\n    rationale: async only\n")
+
+    def test_only_observed_drops_an_op_this_baseline_never_ran(self, tmp_path):
+        run = self._run_dir(tmp_path, "run_x_fwdllm_n100_real", [("drain_tail", 0.10)])
+        got = self._profile(tmp_path, run, self._SEED, ("--only-observed",))
+        assert "redispatch_turnaround" not in got
+        assert got["drain_tail"]["_default"]["mean_s"] == 0.10
+
+    def test_without_the_flag_the_unobserved_entry_survives(self, tmp_path):
+        run = self._run_dir(tmp_path, "run_x_fwdllm_n100_real", [("drain_tail", 0.10)])
+        got = self._profile(tmp_path, run, self._SEED)
+        assert "redispatch_turnaround" in got
+
+    def test_charge_flag_and_rationale_survive_a_refresh(self, tmp_path):
+        """The numbers are the script's to write; `charge:` is a human decision
+        it must never flip on its own."""
+        run = self._run_dir(tmp_path, "run_x_fwdllm_n100_real", [("drain_tail", 0.10)])
+        got = self._profile(tmp_path, run, self._SEED, ("--only-observed",))
+        assert got["drain_tail"]["_default"]["charge"] is True
+        assert got["drain_tail"]["_default"]["rationale"] == "keep me"
+
+    def test_provenance_records_the_source_run(self, tmp_path):
+        run = self._run_dir(tmp_path, "run_x_fwdllm_n100_real", [("drain_tail", 0.10)])
+        got = self._profile(tmp_path, run, self._SEED, ("--only-observed",))
+        e = got["drain_tail"]["_default"]
+        assert e["source_runs"] == ["run_x_fwdllm_n100_real"]
+        assert e["profiled_at"]

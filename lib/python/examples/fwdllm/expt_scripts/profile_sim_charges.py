@@ -14,7 +14,8 @@ that example's own real run to seed its own registry.
 
 Usage:
     python profile_sim_charges.py --real-run <run_dir> [--real-run <run_dir> ...] \\
-        --out ../sim_charge_profile.yaml [--enable redispatch_turnaround.weights]
+        --out ../sim_charge_profiles/<baseline>.yaml --only-observed \\
+        [--enable redispatch_turnaround.weights]
 
 Scans each real run's `telemetry/aggregator_*.jsonl` for `vclock_charge`
 events with `time_mode == "real"`, pools samples per (label, payload_kind)
@@ -124,6 +125,13 @@ def main():
     ap.add_argument("--out", required=True, help="registry YAML to update/create")
     ap.add_argument("--enable", action="append", default=[],
                      help="label.payload_kind to flip charge:true (repeatable)")
+    ap.add_argument("--only-observed", action="store_true",
+                     help="drop entries the source runs never emitted. Use for a "
+                          "PER-BASELINE profile: a baseline that never performs an "
+                          "op must not carry a number for it, or the entry keeps a "
+                          "stale value under fresh provenance (sync fwdllm inherited "
+                          "`redispatch_turnaround` this way). Omit when refreshing a "
+                          "pooled multi-baseline registry.")
     args = ap.parse_args()
 
     pooled = defaultdict(list)
@@ -152,6 +160,13 @@ def main():
             "profiled_at": today,
             "rationale": prior.get("rationale", "new candidate -- review before enabling"),
         }
+
+    if args.only_observed:
+        registry = {
+            label: {pk: e for pk, e in entries.items() if (label, pk) in pooled}
+            for label, entries in registry.items()
+        }
+        registry = {label: e for label, e in registry.items() if e}
 
     with open(args.out, "w") as f:
         f.write(

@@ -339,7 +339,8 @@ and why" is scattered across code comments in two docs, not answerable from one 
   produce the real cost. This needs a value SOURCED FROM REAL TELEMETRY.
 
 **Design: a YAML registry + a profiler script, not a hand-typed constant.**
-- `examples/fwdllm/sim_charge_profile.yaml` -- one entry per `(label, payload_kind)`, holding
+- `examples/fwdllm/sim_charge_profiles/<baseline>.yaml` -- ONE PER BASELINE (a shared profile was
+  1.08-2.75x each baseline's own real cost; simulate_fwdllm.md §D-36), one entry per `(label, payload_kind)`, holding
   `charge` (bool, the only hand-edited field besides `rationale`), `mean_s` (what gets charged),
   `p90_s`/`n` (for sanity-checking shape before trusting the mean), `source_runs` + `profiled_at`
   (provenance -- when this was last measured and from what).

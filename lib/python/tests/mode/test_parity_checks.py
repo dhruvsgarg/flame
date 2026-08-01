@@ -7,6 +7,7 @@ logic itself is verified independently of any live run. The opt-in end-to-end
 check (test_real_sim_e2e_parity.py) reuses the same functions on real runs.
 """
 
+import math
 import pathlib
 import sys
 
@@ -1897,8 +1898,21 @@ class TestR1W1Registered:
     def test_present_in_run_all_and_meta(self):
         assert "r1_inflight_overlap" in pc.CHECK_META
         assert "w1_compute_conservation" in pc.CHECK_META
-        assert "r1_inflight_overlap" in pc.CHECK_META["v1_iter_per_data_id"]["deps"]
         assert pc.CHECK_META["w1_compute_conservation"]["deps"] == ("r1_inflight_overlap",)
+
+    def test_r1_is_upstream_of_the_cadence_chain(self):
+        """REACHABILITY, not a direct edge: `v1c_iter_drift_rate` was inserted
+        between R1 and V1, so R1 reaches V1 one hop further down. What the
+        registry must preserve is that cadence stays DOWNSTREAM of R1."""
+        seen, stack = set(), ["v1_iter_per_data_id"]
+        while stack:
+            node = stack.pop()
+            for dep in pc.CHECK_META.get(node, {}).get("deps", ()):
+                if dep not in seen:
+                    seen.add(dep)
+                    stack.append(dep)
+        assert "r1_inflight_overlap" in seen
+        assert "v1c_iter_drift_rate" in seen
 
 
 def _agg_rd(rows):
@@ -3423,3 +3437,227 @@ class TestStepTimingWorstFuncNamesAGatingFunc:
         r = pc.step_timing_breakdown_parity(real, sim)
         assert r["ok"], r
         assert r["by_func"]["_emulate_training_delay"]["gates_ok"] is False
+
+
+class TestIterDriftRate:
+    """V1c grades the per-bin RATE of cadence divergence, not its level.
+
+    `iterations_per_data_id` is an algorithm output that legitimately grows near
+    convergence -- parity claims only that both modes need the SAME number. But
+    the variance gate is a feedback loop, so a divergence compounds and the
+    pooled level becomes a function of run length: `felix_round` read +1.1% at
+    3600s and +19.4% at 7200s on unchanged code. The slope does not move with
+    the stopping point, so it is what can carry a fixed verdict.
+    """
+
+    @staticmethod
+    def _run(iters_fn, n_units=200, vclock=False):
+        """One agg_round per cycle; `iters_fn(unit)` cycles spent on each bin."""
+        rounds, ts = [], 0.0
+        for u in range(n_units):
+            for it in range(int(round(iters_fn(u)))):
+                ts += 1.0
+                rounds.append(_fwd_cycle(u, ts=ts,
+                                         vclock=(ts if vclock else None),
+                                         committed=(it == int(round(iters_fn(u))) - 1),
+                                         iteration=it))
+        return _agg(agg_rounds=rounds)
+
+    def test_identical_cadence_is_flat(self):
+        r = pc.iter_drift_rate_parity(self._run(lambda u: 10),
+                                      self._run(lambda u: 10, vclock=True))
+        assert r["verdict"] == "flat" and r["ok"], r
+        assert r["lambda_per_100_units"] == pytest.approx(0.0, abs=1e-9)
+
+    def test_level_offset_with_no_trend_passes(self):
+        """`fedbuff_round`'s shape: sim runs a steady ~5% under real with no
+        trend. The LEVEL trips 5%-tolerance rungs, but there is no compounding
+        mechanism to find -- the residual is inside the replicate floor (§D-24),
+        so this rung must not call it a divergence."""
+        r = pc.iter_drift_rate_parity(
+            self._run(lambda u: 15 + (u % 3)),
+            self._run(lambda u: 14 + (u % 3), vclock=True))
+        assert r["verdict"] == "flat" and r["ok"], r
+        assert r["sim_mean_iters"] < r["real_mean_iters"]
+
+    def test_compounding_divergence_fails(self):
+        """`felix_round`'s shape: the ratio climbs monotonically across the run."""
+        r = pc.iter_drift_rate_parity(
+            self._run(lambda u: 10),
+            self._run(lambda u: 10 * (1.0 + u * 0.002), vclock=True))
+        assert r["verdict"] == "diverging" and not r["ok"], r
+        assert r["lambda_per_100_units"] > 0
+        assert r["last_bin_ratio"] > r["first_bin_ratio"]
+        assert abs(r["t_stat"]) > r["t_crit"]
+
+    def test_slope_is_duration_invariant(self):
+        """The point of the rung: one underlying divergence must report the same
+        lambda whether the run stopped early or late. Compounding is exponential
+        in progress, so the generator is too -- and the recovered slope should
+        match the planted one at both lengths. A LEVEL rung cannot do this: its
+        mean gap keeps growing with the run."""
+        planted = 0.002                                  # per unit
+        def _sim(u):
+            return 10 * math.exp(planted * u)
+        short = pc.iter_drift_rate_parity(
+            self._run(lambda u: 10, n_units=100),
+            self._run(_sim, n_units=100, vclock=True))
+        long = pc.iter_drift_rate_parity(
+            self._run(lambda u: 10, n_units=200),
+            self._run(_sim, n_units=200, vclock=True))
+        for r in (short, long):
+            assert r["lambda_per_100_units"] == pytest.approx(planted * 100, rel=0.1), r
+        # ... while the LEVEL gap a fixed tolerance would grade roughly doubles,
+        # which is why no constant tolerance on it can be right at two lengths.
+        def _excess(r):
+            return r["sim_mean_iters"] / r["real_mean_iters"] - 1.0
+        assert _excess(long) > _excess(short) * 1.8
+
+    def test_significant_but_below_floor_does_not_gate(self):
+        """A slope can clear significance on a long run and still be physically
+        negligible. Both the t-test AND the replicate floor must trip."""
+        r = pc.iter_drift_rate_parity(
+            self._run(lambda u: 10),
+            self._run(lambda u: 10 * (1.0 + u * 0.000002), vclock=True),
+            lambda_floor_per_100=0.05)
+        assert r["ok"], r
+        assert r["verdict"] in ("flat", "significant_below_floor")
+
+    def test_is_the_root_the_level_rungs_depend_on(self):
+        meta = pc.CHECK_META
+        assert "v1c_iter_drift_rate" in meta["v1_iter_per_data_id"]["deps"]
+        assert "v1c_iter_drift_rate" in meta["v2_var_trajectory"]["deps"]
+        assert meta["v1c_iter_drift_rate"]["role"] == "MECHANISM"
+
+
+class TestSimClockBasis:
+    """§D-31: grade what the sim CLOCK consumed, never sim's own contended wall."""
+
+    @staticmethod
+    def _charge(label, source, charged, span, kind=None, n=4):
+        e = {"event": "vclock_charge", "label": label, "charge_source": source,
+             "charged_s": charged, "span_s": span}
+        if kind:
+            e["payload_kind"] = kind
+        return [dict(e) for _ in range(n)]
+
+    def test_profiled_label_reports_the_charge_not_the_span(self):
+        sim = _agg()
+        sim["vclock_charges"] = self._charge("drain_tail", "profiled", 0.2783, 0.3462)
+        b = pc.sim_clock_basis(sim)["by_label"]["drain_tail"]
+        assert b["source"] == "profiled"
+        assert b["charged_mean_s"] == pytest.approx(0.2783)
+        assert b["span_mean_s"] == pytest.approx(0.3462)
+
+    def test_payload_kinds_are_not_pooled(self):
+        """`redispatch_turnaround` carries a charged `weights` and an uncharged
+        `var_bad`. Pooling by bare label reported the whole thing as uncharged,
+        because `var_bad` outnumbers `weights` ~4:1."""
+        sim = _agg()
+        sim["vclock_charges"] = (
+            self._charge("redispatch_turnaround", "profiled", 0.06, 0.31, kind="weights", n=4)
+            + self._charge("redispatch_turnaround", "none", 0.0, 0.02, kind="var_bad", n=16))
+        by = pc.sim_clock_basis(sim)["by_label"]
+        assert by["redispatch_turnaround.weights"]["source"] == "profiled"
+        assert by["redispatch_turnaround.var_bad"]["source"] == "none"
+
+    def test_agg_wall_gates_only_when_a_label_charges_live(self):
+        profiled, live = _agg(), _agg()
+        profiled["vclock_charges"] = self._charge("fedavg", "profiled", 0.0645, 0.088)
+        live["vclock_charges"] = self._charge("fedavg", "live", 0.088, 0.088)
+        assert pc.sim_clock_basis(profiled)["agg_wall_gates"] is False
+        assert pc.sim_clock_basis(live)["agg_wall_gates"] is True
+
+    def test_compute_binds_frac_zero_when_delay_dominates(self):
+        """D ~7s against ~0.3s of JVP: sim's compute never binds sct's max(), so
+        trainer step spans never reach the clock."""
+        sim = _agg(agg_rounds=[{"event": "agg_round", "trainer_speed_s": [7.0, 7.0]}])
+        trainers = {"t1": {"step_timing": [
+            {"func": "train_with_data_id", "duration_s": 0.3} for _ in range(10)]}}
+        assert pc.sim_clock_basis(sim, trainers)["compute_binds_frac"] == 0.0
+
+    def test_drain_tail_graded_on_the_charge_when_profiled(self):
+        """The mispricing detector: a charge far from THIS baseline's own real
+        span is a stale/shared profile, and it lands straight on the vclock."""
+        def _dt(vals):
+            return _agg(agg_rounds=[{"event": "agg_round", "drain_tail_s": v} for v in vals])
+        real = _dt([0.10, 0.10, 0.11, 0.10, 0.10])
+        sim = _dt([0.38, 0.39, 0.38, 0.39, 0.38])
+        sim["vclock_charges"] = self._charge("drain_tail", "profiled", 0.2783, 0.387)
+        c = pc.drain_wall_budget_parity(real, sim)["components"]["drain_tail_s"]
+        assert c["graded_basis"] == "sim_charged"
+        assert not c["ok"], c            # 0.278 charged against a 0.101 real cost
+        assert c["sim_wall_inflation_x"] is not None
+
+    def test_step_timing_rungs_report_when_the_clock_discards(self):
+        sim = _agg(agg_rounds=[{"event": "agg_round", "trainer_speed_s": [7.0]}])
+        sim["vclock_charges"] = self._charge("fedavg", "profiled", 0.0645, 0.088)
+        sim["step_timing"] = [{"func": "_compute_var", "duration_s": 0.023} for _ in range(50)]
+        real = _agg()
+        real["step_timing"] = [{"func": "_compute_var", "duration_s": 0.010} for _ in range(50)]
+        r = pc.agg_step_timing_breakdown_parity(real, sim)
+        assert r["ok"] and r["tier"] == "DIAG", r
+        assert "discarded" in r["clock_basis"]
+
+
+class TestChargeCoverage:
+    """The standing audit: a mispriced or uncharged span announces itself on the
+    run that introduces it, instead of surfacing later as a rung that flipped."""
+
+    @staticmethod
+    def _side(label, source, charged, span, n=6):
+        a = _agg()
+        a["vclock_charges"] = [{"event": "vclock_charge", "label": label,
+                                "charge_source": source, "charged_s": charged,
+                                "span_s": span} for _ in range(n)]
+        return a
+
+    def test_flags_a_charge_far_from_this_baselines_own_real(self):
+        real = self._side("drain_tail", "none", 0.0, 0.1011)
+        sim = self._side("drain_tail", "profiled", 0.2783, 0.3869)
+        r = pc.charge_coverage(real, sim)
+        assert r["mispriced"] is True
+        assert r["worst_mispriced_label"] == "drain_tail"
+        assert r["worst_charge_vs_real_x"] == pytest.approx(2.75, abs=0.02)
+
+    def test_matched_charge_is_not_flagged(self):
+        real = self._side("drain_tail", "none", 0.0, 0.2137)
+        sim = self._side("drain_tail", "profiled", 0.2137, 0.3462)
+        assert pc.charge_coverage(real, sim)["mispriced"] is False
+
+    def test_uncharged_labels_are_named(self):
+        real = self._side("fedavg", "none", 0.0, 0.05)
+        sim = self._side("fedavg", "none", 0.0, 0.08)
+        assert pc.charge_coverage(real, sim)["uncharged_labels"] == ["fedavg"]
+
+    def test_never_gates(self):
+        real = self._side("drain_tail", "none", 0.0, 0.1)
+        sim = self._side("drain_tail", "profiled", 9.9, 0.4)
+        assert pc.charge_coverage(real, sim)["ok"] is True
+        assert pc.CHECK_META["charge_coverage"]["role"] == "DIAG"
+
+
+class TestVarTrajectoryMatchedBudgetOnAsync:
+    """§D-4: `v2` must compare the work BOTH sides did. It used to apply the
+    matched-budget truncation only when `_real_intrinsic_clock` returned a
+    coordinate, which it never does for an async baseline -- so async graded the
+    pooled run and compared real's 94 bins against sim's 99."""
+
+    @staticmethod
+    def _run(n, var_fn, vclock=False):
+        return _agg(agg_rounds=[
+            _fwd_cycle(d, ts=float(d), vclock=(float(d) if vclock else None),
+                       var=var_fn(d)) for d in range(n)])
+
+    def test_sims_overrun_tail_does_not_decide_the_verdict(self):
+        # Matched over the shared 40 bins; sim's extra 10 are late/high-var.
+        real = self._run(40, lambda d: 1.0 + d * 0.01)
+        sim = self._run(50, lambda d: 1.0 + d * 0.01, vclock=True)
+        r = pc.var_trajectory_parity(real, sim)
+        assert r["matched_window_mean_rel_diff"] < r["mean_rel_diff"]
+        assert r["ok"], r
+
+    def test_a_genuine_matched_window_gap_still_fails(self):
+        real = self._run(40, lambda d: 1.0)
+        sim = self._run(40, lambda d: 1.6, vclock=True)
+        assert not pc.var_trajectory_parity(real, sim)["ok"]

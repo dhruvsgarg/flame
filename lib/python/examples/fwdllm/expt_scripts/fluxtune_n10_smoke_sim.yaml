@@ -144,7 +144,7 @@ experiments:
           # every ledger row read `charge_source: none`, charging 0s for a cost the
           # round-cadence pair charges. The entry is server-side dispatch
           # turnaround, not baseline-specific.
-          sim_charge_profile_path: lib/python/examples/fwdllm/sim_charge_profile.yaml
+          sim_charge_profile_path: lib/python/examples/fwdllm/sim_charge_profiles/fluxtune.yaml
           # Async fedbuff: accept stale carried grads + down-weight by (V'-V),
           # not reject (K-D13). Set identically in the real sibling; never a
           # parity lever. camelCase MUST match the base key to override it —

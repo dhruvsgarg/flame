@@ -1,0 +1,49 @@
+# Real-profiled vclock charges for sim-only costs sim can't measure
+# live (FWDLLM_DESIGN.md §P). Regenerate via expt_scripts/
+# profile_sim_charges.py -- hand-edit only `charge:`/`rationale:`.
+drain_tail:
+  _default:
+    charge: true
+    mean_s: 0.249
+    n: 364
+    p90_s: 0.6722
+    profiled_at: '2026-08-01'
+    rationale: sim runs the same op under ~100 co-located trainer threads, so its
+      live span is contention-inflated and folding it on the vclock injects sim-host
+      noise (simulate_fwdllm.md D-18, F-1/F-20). Charged from this baseline's real.
+    source_runs:
+    - run_20260731_180442_fedbuff_it_unaware_n100_smoke_syn_0_real
+fedavg:
+  _default:
+    charge: true
+    mean_s: 0.0664
+    n: 364
+    p90_s: 0.1956
+    profiled_at: '2026-08-01'
+    rationale: same as drain_tail -- sim's own span is contention-inflated, so the
+      charge comes from this baseline's real.
+    source_runs:
+    - run_20260731_180442_fedbuff_it_unaware_n100_smoke_syn_0_real
+redispatch_turnaround:
+  var_bad:
+    charge: false
+    mean_s: 0.2202
+    n: 866
+    p90_s: 0.5635
+    profiled_at: '2026-08-01'
+    rationale: OFF. Negligible on the round baselines (~0.003s vs weights' ~0.04s),
+      but NOT on fluxtune (0.318 vs 0.297) or the it_* baselines (~0.2 vs ~0.2) --
+      flipping it on is an open operator decision, not a refresh.
+    source_runs:
+    - run_20260731_180442_fedbuff_it_unaware_n100_smoke_syn_0_real
+  weights:
+    charge: true
+    mean_s: 0.1988
+    n: 2712
+    p90_s: 0.5264
+    profiled_at: '2026-08-01'
+    rationale: real MQTT/dispatch-thread turnaround sim does not do. First-difference
+      marginal per-trainer cost within each redispatch batch, never a flat pool of
+      the cumulative per-batch readings (simulate_fwdllm.md D-12).
+    source_runs:
+    - run_20260731_180442_fedbuff_it_unaware_n100_smoke_syn_0_real

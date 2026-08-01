@@ -4581,7 +4581,8 @@ def _step_timing_compare(r_by_func: dict, s_by_func: dict, ks_tol: float,
 
 
 def step_timing_breakdown_parity(real_trainers: dict, sim_trainers: dict,
-                                 ks_tol: float = 0.25) -> dict:
+                                 ks_tol: float = 0.25,
+                                 sim_agg: Optional[dict] = None) -> dict:
     """Fine-grained GPU-compute decomposition: one DISTRIBUTIONAL (KS + mean)
     check per `step_timing` function name. These are genuine shared compute
     (mode-invariant) -- the target is a MATCH, not a one-sided bound. Pinpoints
@@ -4608,9 +4609,22 @@ def step_timing_breakdown_parity(real_trainers: dict, sim_trainers: dict,
         return out
 
     r_by_func, s_by_func = _collect(real_trainers), _collect(sim_trainers)
-    return _step_timing_compare(
-        r_by_func, s_by_func, ks_tol,
-        _STEP_TIMING_REAL_ONLY_FUNCS | _STEP_TIMING_OFF_CRITICAL_PATH_FUNCS)
+    exempt = _STEP_TIMING_REAL_ONLY_FUNCS | _STEP_TIMING_OFF_CRITICAL_PATH_FUNCS
+    basis = sim_clock_basis(sim_agg, sim_trainers) if sim_agg is not None else None
+    # §D-31: trainer compute reaches the clock only when it BINDS
+    # `max(real_gpu_s, D)`, which it never does at D ~7-11s vs ~0.3-0.5s of JVP.
+    # The gap is then co-location contention (§D-1) -- `_make_model_functional`
+    # read KS 0.233/0.237/0.282/0.458 across four baselines for one physical
+    # effect. Report, don't gate; `timing_overrun` catches the binding case.
+    # `== 0.0` not falsy: an unmeasurable fraction is UNKNOWN and must keep grading.
+    if basis is not None and basis["compute_binds_frac"] == 0.0:
+        out = _step_timing_compare(r_by_func, s_by_func, ks_tol,
+                                   exempt | set(r_by_func) | set(s_by_func))
+        out["tier"] = "DIAG"
+        out["clock_basis"] = "discarded: sim compute never binds max(real_gpu_s, D)"
+        out["compute_binds_frac"] = basis["compute_binds_frac"]
+        return out
+    return _step_timing_compare(r_by_func, s_by_func, ks_tol, exempt)
 
 
 def agg_step_timing_breakdown_parity(real_agg: dict, sim_agg: dict,
@@ -4643,10 +4657,23 @@ def agg_step_timing_breakdown_parity(real_agg: dict, sim_agg: dict,
         return out
 
     r_by_func, s_by_func = _collect(real_agg), _collect(sim_agg)
-    return _step_timing_compare(
-        r_by_func, s_by_func, ks_tol,
-        _AGG_STEP_TIMING_REAL_ONLY_FUNCS | _AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS,
-        mean_tol_rel=mean_tol_rel)
+    exempt = _AGG_STEP_TIMING_REAL_ONLY_FUNCS | _AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS
+    basis = sim_clock_basis(sim_agg)
+    # §D-31: an aggregator span reaches the clock only via a `live` charge. Once
+    # every label resolves from a profile -- the designed steady state -- sim's
+    # own wall is a discarded §D-1 artifact, so the rung reports and stops
+    # gating. It flipped on all four baselines when the eval stride cut REAL's
+    # contention (`_compute_var` 0.0152 -> 0.0105) while sim's held: host load,
+    # not either model.
+    if not basis["agg_wall_gates"]:
+        out = _step_timing_compare(r_by_func, s_by_func, ks_tol,
+                                   exempt | set(r_by_func) | set(s_by_func),
+                                   mean_tol_rel=mean_tol_rel)
+        out["tier"] = "DIAG"
+        out["clock_basis"] = "discarded: every charged label resolves from a profile"
+        return out
+    return _step_timing_compare(r_by_func, s_by_func, ks_tol, exempt,
+                                mean_tol_rel=mean_tol_rel)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -4939,8 +4966,12 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
     }
     # Truncate both to the matched LOGICAL budget N (progress <= N), not a clock
     # window: sim's cycles beyond the shared prefix average a higher `var` and pull
-    # the pooled mean/KS (PARITY.md §1.5). Gated for sync; async diagnostic.
-    real_coord = _real_intrinsic_clock(real["agg_rounds"])
+    # the pooled mean/KS (PARITY.md §1.5, §D-4). Grades on EVERY baseline: this
+    # used to gate on `_real_intrinsic_clock() is not None`, a clock coordinate
+    # that is None for all async baselines by construction, so async graded the
+    # un-truncated pool -- fluxtune failed on 6.52% pooled against a 1.79%
+    # matched window, i.e. real's 94 bins vs sim's 99. The budget comes from
+    # `prog_fn`, which is axis-based and mode-agnostic.
     N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
     if N is not None:
         matched_r = [e["var"] for e in rc
@@ -4963,8 +4994,7 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
             result["matched_window_sim_mean_var"] = round(matched_s_mean, 6)
             result["matched_window_mean_rel_diff"] = round(matched_mean_rel, 4)
             result["matched_window_ks_stat"] = round(matched_ks, 3)
-            if real_coord is not None:
-                result["ok"] = matched_ks <= ks_tol and matched_mean_rel <= mean_tol_rel
+            result["ok"] = matched_ks <= ks_tol and matched_mean_rel <= mean_tol_rel
     return result
 
 
@@ -5047,6 +5077,144 @@ def var_drift_parity(real: dict, sim: dict, n_bins: int = 10,
             "models are on diverging trajectories (compare against the real<->real "
             "replicate floor before chasing a mechanism); flat offset => a genuine "
             "per-cycle mechanism divergence."
+        ),
+    }
+
+
+# Two-sided Student-t critical values by df, for the drift-slope test. A table,
+# not scipy: the rest of this module hand-rolls its statistics (`ks_stat`,
+# `spearman_rho`) and the checker should not grow a scipy dependency for one CDF.
+_T_CRIT_TWO_SIDED = {
+    0.05: {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+           8: 2.306, 9: 2.262, 10: 2.228, 12: 2.179, 15: 2.131, 20: 2.086,
+           25: 2.060, 30: 2.042},
+    0.01: {1: 63.657, 2: 9.925, 3: 5.841, 4: 4.604, 5: 4.032, 6: 3.707, 7: 3.499,
+           8: 3.355, 9: 3.250, 10: 3.169, 12: 3.055, 15: 2.947, 20: 2.845,
+           25: 2.787, 30: 2.750},
+}
+_T_CRIT_LARGE_DF = {0.05: 1.960, 0.01: 2.576}
+
+
+def _t_crit(df: int, alpha: float) -> float:
+    """Two-sided critical t for `df`, conservative between tabulated rows."""
+    table = _T_CRIT_TWO_SIDED[alpha]
+    if df >= 30:
+        return _T_CRIT_LARGE_DF[alpha]
+    return table[min((d for d in sorted(table) if d >= df), default=30)]
+
+
+def iter_drift_rate_parity(real: dict, sim: dict, n_bins: int = 10,
+                           alpha: float = 0.01,
+                           lambda_floor_per_100: float = 0.05,
+                           max_bin: Optional[int] = None) -> dict:
+    """V1c [MECHANISM/DIST]: is sim's iterations-per-data-bin DIVERGING from
+    real's, at a rate that is a property of the run rather than of its length?
+
+    Why a RATE and not a level. `iterations_per_data_id` is an algorithm OUTPUT
+    -- FwdLLM accumulates forward-gradient samples until their split-half
+    variance clears `var_threshold`, and legitimately needs more of them near
+    convergence. Parity does not claim a value for it; it claims real and sim
+    need the SAME value. But the variance gate is a positive feedback loop
+    (var -> iterations -> updates -> model -> var), so any divergence COMPOUNDS:
+    the pooled mean gap grows with N, and no fixed tolerance on it can be right
+    at two run lengths. Measured: `felix_round` read +1.1% at 3600s and +19.4%
+    at 7200s on unchanged code.
+
+    So gate the per-bin slope. Fit `ln(sim_iters / real_iters)` against the
+    progress ordinal and test the slope against zero: under compounding the
+    ratio is ~exp(lambda*k), and lambda is intrinsic -- it does not depend on
+    where the run stopped, and a longer run estimates it more precisely instead
+    of mis-scaling the tolerance.
+
+    Calibration (§D-24), measured over six real<->real replicate pairs: |lambda|
+    ranges to 0.38 per 100 units, but NONE is significant (max |t| 1.61 against
+    a 3.355 critical value) -- the large values are all short runs where the
+    slope is simply unresolved. The two well-powered pairs (N=107, N=111) sit at
+    |lambda| 0.003 and 0.033, which is what `lambda_floor_per_100` is set just
+    above. So the t-test does the duration-handling and the floor only guards
+    the very-long-run case where a physically negligible slope clears
+    significance; BOTH must trip for a fail.
+
+    Shape, not magnitude, is the discriminator. Real<->real replicate ratios
+    oscillate (quartiles 0.72-1.38, no trend) while a genuine divergence climbs
+    monotonically (`felix_round` 1.03 -> 1.50, t=5.69). This is the rung the
+    cadence LEVEL rungs (`v1`, `v1b`, `v2`) depend on: with a flat slope their
+    residual is accumulated noise and they are DOWNSTREAM, not roots.
+    """
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+    if N is None or not isinstance(N, int) or N < n_bins:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no integer matched budget, or too few progress units to bin"}
+
+    def binned_iters(agg: dict) -> dict:
+        """{bin: mean iterations per completed data bin}. Counts CYCLES per
+        progress unit, which is what the variance gate spends."""
+        per_unit: dict = {}
+        for e in agg["agg_rounds"]:
+            if e.get("event") != "agg_round":
+                continue
+            p = prog_fn(e)
+            if p is None or p > N:
+                continue
+            per_unit[p] = per_unit.get(p, 0) + 1
+        acc: dict = {}
+        for p, c in per_unit.items():
+            acc.setdefault(min(n_bins - 1, (p - 1) * n_bins // N), []).append(c)
+        return {b: sum(v) / len(v) for b, v in acc.items() if v}
+
+    r_bins, s_bins = binned_iters(real), binned_iters(sim)
+    shared = sorted(set(r_bins) & set(s_bins))
+    pts = [(i, math.log(s_bins[b] / r_bins[b]))
+           for i, b in enumerate(shared) if r_bins[b] > 0 and s_bins[b] > 0]
+    if len(pts) < 4:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "fewer than 4 usable progress bins"}
+
+    n = len(pts)
+    mx = sum(p[0] for p in pts) / n
+    my = sum(p[1] for p in pts) / n
+    sxx = sum((p[0] - mx) ** 2 for p in pts)
+    if sxx <= 0:
+        return {"ok": True, "tier": "DIST", "status": "SKIP", "note": "degenerate bins"}
+    slope = sum((p[0] - mx) * (p[1] - my) for p in pts) / sxx
+    intercept = my - slope * mx
+    resid = [p[1] - (intercept + slope * p[0]) for p in pts]
+    df = n - 2
+    se_resid = math.sqrt(sum(r * r for r in resid) / df) if df > 0 else 0.0
+    se_slope = se_resid / math.sqrt(sxx) if sxx > 0 else 0.0
+    t = (slope / se_slope) if se_slope > 1e-12 else 0.0
+    crit = _t_crit(df, alpha)
+    significant = abs(t) > crit
+
+    # Slope is per BIN; restate per 100 progress units so the number is
+    # comparable across run lengths and bin counts.
+    units_per_bin = N / n_bins
+    lam_per_100 = slope / units_per_bin * 100.0
+    above_floor = abs(lam_per_100) > lambda_floor_per_100
+    ratios = [math.exp(p[1]) for p in pts]
+    return {
+        "ok": not (significant and above_floor),
+        "tier": "DIST",
+        "verdict": ("diverging" if (significant and above_floor)
+                    else "significant_below_floor" if significant
+                    else "flat"),
+        "lambda_per_100_units": round(lam_per_100, 4),
+        "lambda_floor_per_100": lambda_floor_per_100,
+        "t_stat": round(t, 3),
+        "t_crit": crit,
+        "alpha": alpha,
+        "n_bins": n,
+        "matched_logical_budget_n": N,
+        "first_bin_ratio": round(ratios[0], 3),
+        "last_bin_ratio": round(ratios[-1], 3),
+        "per_bin_ratio": [round(r, 3) for r in ratios],
+        "real_mean_iters": round(sum(r_bins[b] for b in shared) / len(shared), 3),
+        "sim_mean_iters": round(sum(s_bins[b] for b in shared) / len(shared), 3),
+        "interpretation": (
+            "slope of ln(sim/real iterations-per-bin) vs progress, per 100 units. "
+            "Duration-invariant: a longer run estimates it more precisely rather "
+            "than inflating it. `flat` => the cadence LEVEL rungs are grading "
+            "accumulated noise; `diverging` => they are downstream of this."
         ),
     }
 
@@ -6470,19 +6638,32 @@ def drain_wall_budget_parity(real: dict, sim: dict, tol_rel: float = 0.25,
     # drain_tail_s is NOT transport: it's the batched cohort-merge replay
     # (`_replay_buffered_cohort_contribs` -> `aggregate_grads_from_trainers`),
     # genuine shared compute that runs heavier on the sim host from GPU/memory
-    # contention. Its modeled cost is charged to the vclock separately
-    # (`charge_sim_vclock_overhead`), so grade this DISTRIBUTIONALLY on a
-    # central+P90/P95 band rather than a one-sided sim<=real budget (§F-10).
+    # contention. Where sim folds a real-PROFILED constant for it, that constant
+    # -- not sim's contended span -- is what the clock consumed, so grade it
+    # (§D-31, same rule as `aggregation_compute_wall`). Falls back to the
+    # central+P90/P95 band when the run charged `live` or nothing (§F-10).
     r_dt, s_dt = _phase_vals(real, "drain_tail_s"), _phase_vals(sim, "drain_tail_s")
     if r_dt and s_dt:
-        band = pctl_band_ok(r_dt, s_dt, qs=(50, 90, 95),
-                            tol_rel=0.5, min_abs=min_abs_s)
-        components["drain_tail_s"] = {
-            "ok": band["ok"], "tier": "DIST",
-            "real_mean_s": round(sum(r_dt) / len(r_dt), 3),
-            "sim_mean_s": round(sum(s_dt) / len(s_dt), 3),
-            "pctl_band": band,
-        }
+        rm_dt, sm_dt = sum(r_dt) / len(r_dt), sum(s_dt) / len(s_dt)
+        charged_dt = _profiled_charge_means(sim).get(_AGG_PHASE_CHARGE_LABEL["drain_tail_s"])
+        if charged_dt is not None:
+            rel = abs(rm_dt - charged_dt) / max(abs(rm_dt), abs(charged_dt), 1e-9)
+            components["drain_tail_s"] = {
+                "ok": rel <= tol_rel, "tier": "DIST", "graded_basis": "sim_charged",
+                "real_mean_s": round(rm_dt, 3), "sim_mean_s": round(sm_dt, 3),
+                "sim_charged_mean_s": round(charged_dt, 4),
+                "mean_rel_diff": round(rel, 3), "mean_tol_rel": tol_rel,
+                "sim_wall_inflation_x": (round(sm_dt / charged_dt, 2)
+                                         if charged_dt > 1e-9 else None),
+            }
+        else:
+            band = pctl_band_ok(r_dt, s_dt, qs=(50, 90, 95),
+                                tol_rel=0.5, min_abs=min_abs_s)
+            components["drain_tail_s"] = {
+                "ok": band["ok"], "tier": "DIST", "graded_basis": "sim_wall",
+                "real_mean_s": round(rm_dt, 3), "sim_mean_s": round(sm_dt, 3),
+                "pctl_band": band,
+            }
     else:
         components["drain_tail_s"] = {"ok": True, "status": "SKIP",
                                       "note": "no drain_tail_s in telemetry"}
@@ -6514,29 +6695,146 @@ def drain_wall_budget_parity(real: dict, sim: dict, tol_rel: float = 0.25,
 
 # agg_round wall field -> the `vclock_charge` label that funds it, for the
 # phases where sim folds a real-profiled constant instead of its own span.
-_AGG_PHASE_CHARGE_LABEL = {"aggregate_fedavg_s": "fedavg"}
+_AGG_PHASE_CHARGE_LABEL = {"aggregate_fedavg_s": "fedavg", "drain_tail_s": "drain_tail"}
 
 
-def _profiled_charge_means(sim: dict) -> dict:
-    """{label: mean charged_s} for phases sim charges from a PROFILE.
+def sim_clock_basis(sim: dict, sim_trainers: Optional[dict] = None) -> dict:
+    """§D-31 primitive: what the SIM VCLOCK actually consumed, per charge label.
 
-    Only `charge_source == "profiled"` rows count: a `live` row means sim folded
-    its own contended span (the run's yaml is missing `sim_charge_profile_path`
-    -- §D-18), and a `none` row means the phase is uncharged. In both of those
-    the raw span IS what the clock saw, so the caller keeps grading it.
+    Sim's clock advances from exactly two sources -- `sct` on the trainer side
+    (`sim_send_ts + max(real_gpu_s, D) + leg`) and `charge_sim_vclock_overhead`
+    on the aggregator side. A span outside both never reaches the clock, so
+    comparing sim's own wall for it grades a discarded quantity and fails as a
+    function of host contention rather than of either model. Per label:
+
+      profiled -- sim folded a real-PROFILED constant; grade `charged_mean_s`,
+                  and drop KS (a constant has no shape).
+      live     -- sim folded its OWN span; that span IS what the clock saw, so
+                  grade it as an ordinary shared-compute comparison.
+      none     -- charged nothing. Report with the inflation factor, never gate.
+
+    `agg_wall_gates` answers the same question for the aggregator as a whole:
+    false once every charged label resolves from a profile, which is the
+    designed steady state and makes the agg-side wall rungs report-only.
+
+    `compute_binds_frac` is the trainer-side analog: sim's measured compute
+    reaches the clock only when it BINDS `max(real_gpu_s, D)`. With D ~7-11s
+    against ~0.3-0.5s of JVP it never binds, so trainer step spans are
+    clock-discarded too -- the regime `_emulate_training_delay`'s
+    [TIMING_OVERRUN] warns about leaving.
     """
+    # Keyed (label, payload_kind) exactly as the registry is: one label can carry
+    # a charged kind and an uncharged one (`redispatch_turnaround` is `weights`
+    # charge:true + `var_bad` charge:false), and pooling them reports the whole
+    # label as uncharged.
     tot: dict = {}
     for e in sim.get("vclock_charges", []) or []:
         if e.get("event") != "vclock_charge":
             continue
-        if e.get("charge_source") != "profiled":
+        label = e.get("label")
+        if label is None:
             continue
-        label, c = e.get("label"), e.get("charged_s")
-        if label is None or c is None:
-            continue
-        s, n = tot.get(label, (0.0, 0))
-        tot[label] = (s + float(c), n + 1)
-    return {k: s / n for k, (s, n) in tot.items() if n}
+        key = label if not e.get("payload_kind") else f"{label}.{e['payload_kind']}"
+        src = e.get("charge_source") or "none"
+        agg = tot.setdefault(key, {"sources": {}, "charged": 0.0, "span": 0.0, "n": 0})
+        agg["sources"][src] = agg["sources"].get(src, 0) + 1
+        agg["charged"] += float(e.get("charged_s") or 0.0)
+        agg["span"] += float(e.get("span_s") or 0.0)
+        agg["n"] += 1
+
+    by_label = {}
+    for key, a in tot.items():
+        src = max(a["sources"], key=lambda k: a["sources"][k])
+        by_label[key] = {
+            "source": src,
+            "n": a["n"],
+            "span_mean_s": round(a["span"] / a["n"], 4) if a["n"] else None,
+            "charged_mean_s": (round(a["charged"] / a["n"], 4)
+                               if a["n"] and src != "none" else None),
+        }
+
+    binds = None
+    if sim_trainers:
+        d_vals = [s for e in sim.get("agg_rounds", [])
+                  if e.get("event") == "agg_round"
+                  for s in (e.get("trainer_speed_s") or [])
+                  if isinstance(s, (int, float))]
+        gpu = [float(t["duration_s"]) for d in sim_trainers.values()
+               for t in d.get("step_timing", [])
+               if t.get("func") == "train_with_data_id"
+               and isinstance(t.get("duration_s"), (int, float))]
+        if d_vals and gpu:
+            d_mean = sum(d_vals) / len(d_vals)
+            binds = sum(1 for g in gpu if g > d_mean) / len(gpu)
+
+    return {
+        "by_label": by_label,
+        "has_ledger": bool(by_label),
+        # No ledger at all means the basis is UNKNOWN, not "profiled" -- a
+        # non-fwdllm or pre-instrumentation run must keep grading sim's wall
+        # rather than be silently demoted to report-only.
+        "agg_wall_gates": (any(v["source"] == "live" for v in by_label.values())
+                           if by_label else True),
+        "compute_binds_frac": (round(binds, 4) if binds is not None else None),
+    }
+
+
+def _profiled_charge_means(sim: dict) -> dict:
+    """{label: mean charged_s} for the labels sim funds from a PROFILE."""
+    return {k: v["charged_mean_s"] for k, v in sim_clock_basis(sim)["by_label"].items()
+            if v["source"] == "profiled" and v["charged_mean_s"] is not None}
+
+
+def charge_coverage(real: dict, sim: dict, sim_trainers: Optional[dict] = None,
+                    mispricing_warn_x: float = 1.25) -> dict:
+    """[DIAG] Per label: what sim SPENT in wall vs what reached its vclock, and
+    how the charge compares to REAL's own span for the same label.
+
+    Exists so an uncharged or mispriced span announces itself on the run that
+    introduces it, instead of surfacing later as a rung that flipped for reasons
+    nobody can reconstruct. A profiled charge is only as good as the real leg it
+    came from: one family-wide constant sat at 1.08-2.75x each baseline's own
+    real `drain_tail`, i.e. 0.6-3.4% of sim's clock, always making sim look
+    slower. `charge_vs_real_x` is that ratio; far from 1.0 means re-profile
+    against THIS baseline's real (`profile_sim_charges.py`), never re-tune.
+    """
+    basis = sim_clock_basis(sim, sim_trainers)
+    real_span = {k: v["span_mean_s"] for k, v in sim_clock_basis(real)["by_label"].items()}
+
+    labels, worst, worst_x = {}, None, 1.0
+    for label, v in basis["by_label"].items():
+        rs, cm = real_span.get(label), v["charged_mean_s"]
+        # `redispatch_turnaround`'s registry value is a first-difference MARGINAL
+        # (§D-12); its raw spans are cumulative-per-batch, so a raw ratio against
+        # them is meaningless. Report the spans, skip the pricing verdict.
+        comparable = not label.startswith("redispatch_turnaround")
+        x = (round(cm / rs, 2) if (comparable and cm and rs and rs > 1e-9) else None)
+        labels[label] = {
+            "source": v["source"], "n": v["n"],
+            "sim_span_mean_s": v["span_mean_s"],
+            "charged_mean_s": cm,
+            "real_span_mean_s": rs,
+            "charge_vs_real_x": x,
+            "sim_wall_inflation_x": (round(v["span_mean_s"] / cm, 2)
+                                     if (cm and cm > 1e-9 and v["span_mean_s"]) else None),
+        }
+        if not comparable:
+            labels[label]["note"] = "cumulative-per-batch spans; charge is a marginal (§D-12)"
+        if x is not None and max(x, 1 / x) > max(worst_x, 1 / worst_x):
+            worst, worst_x = label, x
+
+    uncharged = sorted(k for k, v in basis["by_label"].items() if v["source"] == "none")
+    return {
+        "ok": True, "tier": "DIAG",
+        "by_label": labels,
+        "uncharged_labels": uncharged,
+        "worst_mispriced_label": worst,
+        "worst_charge_vs_real_x": worst_x if worst else None,
+        "mispriced": bool(worst and max(worst_x, 1 / worst_x) > mispricing_warn_x),
+        "mispricing_warn_x": mispricing_warn_x,
+        "agg_wall_gates": basis["agg_wall_gates"],
+        "compute_binds_frac": basis["compute_binds_frac"],
+    }
 
 
 def aggregation_compute_wall_parity(real: dict, sim: dict, ks_tol: float = 0.3,
@@ -6852,7 +7150,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["trainer_phase_wall_budget"] = trainer_phase_wall_budget_ok(
         real_trainers, sim_trainers)
     results["step_timing_breakdown"] = step_timing_breakdown_parity(
-        real_trainers, sim_trainers)
+        real_trainers, sim_trainers, sim_agg=sim_agg)
     results["trainer_phase"] = trainer_phase_parity(real_trainers, sim_trainers)
     results["gpu_budget_real"] = gpu_budget_ok(real_trainers)
     results["gpu_budget_sim"] = gpu_budget_ok(sim_trainers)
@@ -6875,6 +7173,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         real_agg, sim_agg, max_rounds)
     results["drain_wall_budget"] = drain_wall_budget_parity(real_agg, sim_agg)
     results["aggregation_compute_wall"] = aggregation_compute_wall_parity(real_agg, sim_agg)
+    results["charge_coverage"] = charge_coverage(real_agg, sim_agg, sim_trainers)
     results["agg_step_timing_breakdown"] = agg_step_timing_breakdown_parity(real_agg, sim_agg)
     results["phase_vclock_bottlenecks"] = phase_vclock_bottlenecks(
         real_agg, sim_agg, real_trainers, sim_trainers)
@@ -6884,6 +7183,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     # non-fwdllm runs (no cadence fields emitted). V/G rungs feed off Stage-5
     # ordering + Stage-1 clock; DK rungs are inert unless DynamicKC is enabled.
     results["cohort_sequence"] = cohort_sequence_parity(real_agg, sim_agg, max_bin=max_bin)
+    results["v1c_iter_drift_rate"] = iter_drift_rate_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v1_iter_per_data_id"] = iters_per_data_id_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v1b_iters_moving_avg"] = iters_per_data_id_moving_avg_parity(real_agg, sim_agg)
     results["v2_var_trajectory"] = var_trajectory_parity(real_agg, sim_agg, max_bin=max_bin)
@@ -7028,6 +7328,7 @@ CHECK_META: dict = {
     "drain_wall_budget":       {"stage": 6, "role": "MECHANISM", "deps": ("vclock_telemetry", "commit_visibility")},
     "aggregation_compute_wall": {"stage": 6, "role": "DIAG",     "deps": ("drain_wall_budget",)},
     "agg_step_timing_breakdown": {"stage": 6, "role": "DIAG",    "deps": ("aggregation_compute_wall",)},
+    "charge_coverage":          {"stage": 6, "role": "DIAG",    "deps": ("vclock_telemetry",)},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
     "cohort_sequence":         {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order", "r1_inflight_overlap", "v1_iter_per_data_id")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},
@@ -7044,9 +7345,14 @@ CHECK_META: dict = {
     "r1_inflight_overlap":     {"stage": 3, "role": "MECHANISM", "deps": ("participation", "retask_before_close")},
     "w1_compute_conservation": {"stage": 3, "role": "DIAG",      "deps": ("r1_inflight_overlap",)},
     # ── Stage 6' FwdLLM variance-gated aggregation cadence (PARITY.md §F.4) ──
-    "v1_iter_per_data_id":     {"stage": 6, "role": "MECHANISM", "deps": ("inter_arrival_order", "r1_inflight_overlap")},
+    # The RATE sits BELOW the cadence level rungs: a compounding divergence makes
+    # every level a function of run length, so `v1c` is the root and `v1`/`v1b`/
+    # `v2` are its readouts. A flat rate with a failing level means the level is
+    # grading accumulated noise -- calibrate its tolerance, don't chase it (§D-24).
+    "v1c_iter_drift_rate":     {"stage": 6, "role": "MECHANISM", "deps": ("inter_arrival_order", "r1_inflight_overlap")},
+    "v1_iter_per_data_id":     {"stage": 6, "role": "MECHANISM", "deps": ("v1c_iter_drift_rate",)},
     "v1b_iters_moving_avg":    {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},
-    "v2_var_trajectory":       {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},
+    "v2_var_trajectory":       {"stage": 6, "role": "MECHANISM", "deps": ("v1c_iter_drift_rate", "v1_iter_per_data_id")},
     "v2b_var_drift":           {"stage": 6, "role": "DIAG",      "deps": ("v2_var_trajectory",)},
     "v3_cached_v_pool":        {"stage": 6, "role": "DIAG",      "deps": ("v1_iter_per_data_id",)},
     "v4_force_commit_rate":    {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},

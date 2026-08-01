@@ -70,7 +70,7 @@ experiments:
           eval_every_n_commits: 2
           # §P: real-profiled vclock charges. Without it sim folds its own
           # contention-inflated span onto the clock (§D-18/§F-1/§F-20).
-          sim_charge_profile_path: lib/python/examples/fwdllm/sim_charge_profile.yaml
+          sim_charge_profile_path: lib/python/examples/fwdllm/sim_charge_profiles/felix_it.yaml
           # Outer wall failsafe (code default 20x max_runtime_s is too loose).
           sim_wall_ceiling_s: 7200
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
