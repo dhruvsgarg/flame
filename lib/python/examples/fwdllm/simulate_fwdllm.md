@@ -169,6 +169,25 @@ selection/ordering change and tracks only how far the two models have drifted ap
 post-fix pair shows the first-20-bin ratio already off parity, or `v1c` flat while `v1` still fails — either
 makes it per-cycle after all and sends the walk to `U5`/`S2` (§C).
 
+**H9 — the removed overcharge passes through to throughput at ~29%, not ~100%, so no throughput verdict
+flips.** The per-baseline profiles cut the charge by 0.61-1.95 s/round. §D-18 forbids sizing a throughput
+prediction off a charge delta, and §E measured the pass-through at **29%** once (0.320 s/cycle removed bought
+0.092). The two hypotheses give different, checkable answers — `fedbuff_round` is the discriminator because
+its charge cut is the largest:
+
+| baseline | now | at 29% pass-through | at 100% | tol |
+|---|---|---|---|---|
+| `fedbuff_round` | 1.9% | **3.3%** | **6.8%** | 8% |
+| `felix_round` | 12.0% | 10.9% | 7.9% | 8% |
+| `fluxtune` | 1.3% | 1.6% | 2.2% | 8% |
+| `fwdllm` | 2.5% | 2.2% | 1.6% | 8% |
+
+Predicts every throughput cell stays green except `felix_round`, whose gap is cadence-driven (§B) and only
+partly charge-driven. **FALSIFIED IF** `fedbuff_round` lands at or beyond 6.8%, which would mean the clock IS
+charge-limited and the 29% figure was baseline-specific; or if `felix_round` drops under 8%, which would mean
+its throughput gap was mostly the overcharge rather than the +19.4% iteration divergence — and that would
+contradict `v1c` and demand a re-decomposition (§D-14).
+
 **H8 — `fedbuff_it_unaware`'s H6 signature is unresolvable below 7200s, not absent.** Its 1200s pair reads
 λ=+0.42/100 units — the largest magnitude of all nine — at t=1.68 against a 3.355 critical value, i.e. a
 slope the run is too short to resolve. Predicts a 7200s pair either resolves the same sign into `diverging`
@@ -189,12 +208,16 @@ per-baseline charge profiles, and the `var_bad` flip. Sim wall: `fwdllm` 573s, `
 cd lib/python/examples/fwdllm/expt_scripts
 bash run_sequential.sh --mode sim --max-runtime-s 7200 --only fwdllm,fluxtune,fedbuff_round,felix_round
 ```
+**CIRCULAR, do not read as evidence:** `charge_coverage.worst_charge_vs_real_x` and `drain_wall_budget` will
+both pass by construction — the charge was set EQUAL to the mean of the same real leg they are graded against.
+They only become informative on a real run that did not seed the profile.
+
 | # | check | pass |
 |---|---|---|
-| 1 | charges priced right | `charge_coverage.worst_charge_vs_real_x` within **1.25x** on all four (was 1.08-2.75x) |
-| 2 | `drain_wall_budget` clears | passes on `fwdllm` + `fedbuff_round` — it fails today ONLY on the stale shared charge |
-| 3 | the clock moved only as intended | net charge change is **−0.8% (fwdllm, fluxtune) / −5.1% (fedbuff_round) / −4.5% (felix_round)**, all removing overcharge. `throughput` must still pass on `fluxtune` (1.3% today) and `fedbuff_round` (1.9%) |
-| 4 | cadence verdicts unmoved | `felix_round` still `diverging`; the other three `flat`. A charge change perturbs cadence (§D-21), so a moved verdict here is attributable and worth reading |
+| 1 | **the pass-through coefficient** (the whole point) | measure `Δ(sim s/round) ÷ Δ(charge per round)`. Prior measurement is **29%** (§E); full pass-through is 100%. This run measures it on four baselines at once |
+| 2 | throughput stays green where it is green | `fluxtune` (1.3% now) and `fedbuff_round` (1.9% now) must stay under the 8% tol |
+| 3 | cadence verdicts unmoved | `felix_round` still `diverging`; the other three `flat`. A charge change perturbs cadence (§D-21), so a moved verdict IS attributable |
+| 4 | `sim_rate` rises | charges down ⇒ more cycles per vclock second (3.02-12.55 today) |
 
 **Phase A — the replicate floor. Two same-seed REAL runs per baseline, 7200s.** This is the one thing §D-24
 requires and nothing on disk supplies: `v1b` and `cohort_sequence` count hold 5% tolerances against a floor
