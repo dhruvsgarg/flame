@@ -180,6 +180,22 @@ estimate of a real effect.
 
 > **Update in place. Delete a phase the moment its exit criteria are met and its findings are in §A/§G.**
 
+**Phase 0' — SIM LEGS ONLY, 4 baselines, ~2h on one node. Do this first.** The real legs already exist
+(`run_20260801_*`, post-fix 7200s) and nothing landed since touches real, so re-running only the sim side and
+re-grading against them validates BOTH open config changes for the price of one short batch: the nine
+per-baseline charge profiles, and the `var_bad` flip. Sim wall: `fwdllm` 573s, `fluxtune` 2197s,
+`fedbuff_round` 2381s, `felix_round` 2339s.
+```bash
+cd lib/python/examples/fwdllm/expt_scripts
+bash run_sequential.sh --mode sim --max-runtime-s 7200 --only fwdllm,fluxtune,fedbuff_round,felix_round
+```
+| # | check | pass |
+|---|---|---|
+| 1 | charges priced right | `charge_coverage.worst_charge_vs_real_x` within **1.25x** on all four (was 1.08-2.75x) |
+| 2 | `drain_wall_budget` clears | passes on `fwdllm` + `fedbuff_round` — it fails today ONLY on the stale shared charge |
+| 3 | **`var_bad` did not wreck the clock** | `throughput` still passes on `fluxtune` (1.3% today). **PREDICTED TO FAIL** at +61.6% clock — if it does, revert `var_bad` to `charge: false` on `fluxtune`/`felix_it`/`fedbuff_it_*` and record it in §E as an off-critical-path cost |
+| 4 | cadence verdicts unmoved | `felix_round` still `diverging`; the other three `flat`. A charge change perturbs cadence (§D-21), so a moved verdict here is attributable and worth reading |
+
 **Phase A — the replicate floor. Two same-seed REAL runs per baseline, 7200s.** This is the one thing §D-24
 requires and nothing on disk supplies: `v1b` and `cohort_sequence` count hold 5% tolerances against a floor
 estimated at **5-13%** from mismatched-duration legs, which is why `fedbuff_round` fails them with a flat
@@ -770,9 +786,14 @@ rule now live in §D-3.
   `run_sequential.sh`'s preflight now BLOCKS a launch whose charged entries were not profiled from a real run
   of the same baseline — matching on `_<baseline>_n` so `fwdllm` cannot accept `fwdllm_it_unaware`'s profile.
   4 tests + verified to block both the foreign-profile and sibling-prefix cases.
-  - **OPEN operator decision:** `redispatch_turnaround.var_bad` is `charge: false`, justified when it was
-    ~0.003s on the round baselines. It is **0.318s on `fluxtune`** (against `weights`' 0.297) and ~0.22s on
-    the `fedbuff_it_*` pair. Flipping it on is a charge-policy change, not a refresh — not done unilaterally.
+  - **`redispatch_turnaround.var_bad` flipped ON (operator decision), magnitude UNVALIDATED.** It was off on
+    the ~0.003s round-baseline reading; it is 0.117-0.318s elsewhere. Charging it as measured would add
+    **fluxtune +61.6%**, `felix_it` +39.3%, `fedbuff_it_*` +20-23% to those vclocks (round baselines +0.9%).
+    That is a clock rewrite, not an accounting tweak, and `fluxtune` currently passes `throughput` at 1.3%
+    WITHOUT it — so either the cost overlaps training and is off the critical path, or sim pays it another
+    way (§D-18, and the §E precedent where 0.320 s/cycle of removed charge bought 0.092). The
+    first-difference marginal is NOT degenerate (batches are ~10 wide on every baseline), so the measurement
+    is sound; what is unproven is that the clock is charge-limited here. Phase 0' answers it.
 - **Eval cadence made DETERMINISTIC — the `convergence` root, and it was never duration.** `_eval_snapshot_model`
   returned None whenever the background eval thread was still busy, making WHICH commits evaluate a wall-clock
   race between the test-set pass and the inter-commit gap. Sim loses that race structurally: it compresses the

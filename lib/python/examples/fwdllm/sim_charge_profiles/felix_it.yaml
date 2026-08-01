@@ -26,14 +26,17 @@ fedavg:
     - run_20260731_195405_felix_it_n100_smoke_syn_0_real
 redispatch_turnaround:
   var_bad:
-    charge: false
+    charge: true
     mean_s: 0.117
     n: 2759
     p90_s: 0.3315
     profiled_at: '2026-08-01'
-    rationale: OFF. Negligible on the round baselines (~0.003s vs weights' ~0.04s),
-      but NOT on fluxtune (0.318 vs 0.297) or the it_* baselines (~0.2 vs ~0.2) --
-      flipping it on is an open operator decision, not a refresh.
+    rationale: ON. Real's per-trainer marginal dispatch turnaround for a VAR=bad resend,
+      which sim does not perform. Negligible on the round baselines (~0.003s, <1%
+      of the vclock) but 0.12-0.32s elsewhere, where leaving it off omits a real cost
+      (simulate_fwdllm.md D-36). Operator decision 08-01; MAGNITUDE UNVALIDATED on
+      fluxtune/felix_it/fedbuff_it_* -- it would add 20-62% to those vclocks, so the
+      sim-leg A/B in section B must confirm it before any long batch.
     source_runs:
     - run_20260731_195405_felix_it_n100_smoke_syn_0_real
   weights:
