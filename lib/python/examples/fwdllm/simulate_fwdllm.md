@@ -193,7 +193,7 @@ bash run_sequential.sh --mode sim --max-runtime-s 7200 --only fwdllm,fluxtune,fe
 |---|---|---|
 | 1 | charges priced right | `charge_coverage.worst_charge_vs_real_x` within **1.25x** on all four (was 1.08-2.75x) |
 | 2 | `drain_wall_budget` clears | passes on `fwdllm` + `fedbuff_round` — it fails today ONLY on the stale shared charge |
-| 3 | **`var_bad` did not wreck the clock** | `throughput` still passes on `fluxtune` (1.3% today). **PREDICTED TO FAIL** at +61.6% clock — if it does, revert `var_bad` to `charge: false` on `fluxtune`/`felix_it`/`fedbuff_it_*` and record it in §E as an off-critical-path cost |
+| 3 | the clock moved only as intended | net charge change is **−0.8% (fwdllm, fluxtune) / −5.1% (fedbuff_round) / −4.5% (felix_round)**, all removing overcharge. `throughput` must still pass on `fluxtune` (1.3% today) and `fedbuff_round` (1.9%) |
 | 4 | cadence verdicts unmoved | `felix_round` still `diverging`; the other three `flat`. A charge change perturbs cadence (§D-21), so a moved verdict here is attributable and worth reading |
 
 **Phase A — the replicate floor. Two same-seed REAL runs per baseline, 7200s.** This is the one thing §D-24
@@ -533,6 +533,18 @@ Profile per baseline, from the paired real leg, and gate provenance at launch.
 > Falsified hypotheses, one line each, append-only. A dead end never un-dies; re-listing one wastes a
 > session. Landed-but-inert cleanups belong in §G, not here.
 
+- **`redispatch_turnaround` as a large per-baseline cost sim omits** — FALSIFIED by direct measurement, and
+  the profiler's own number was the artifact. The first-difference marginal (§D-12) assumes a batch is ONE
+  serial dispatch BURST. That holds on the round baselines (cohort pinned, dispatched together after the
+  boundary clear) but NOT under event-driven dispatch, where a batch's timestamps span most of a cycle and
+  consecutive readings differ by the gap between trainers RETURNING. Measured: `fluxtune`'s marginal 0.318s
+  against a `cycle ÷ dispatches` of 0.400s and a batch ts-spread of 3.03s in a 3.99s cycle. The DIRECT cost
+  (`_distribute_weights_async` step_timing) is real **0.016-0.032s** against sim **0.018-0.029s** — sim
+  performs the same call and pays the same wall, so there is almost nothing to charge (real−sim −0.002 to
+  +0.008s). Charging the marginal would have added **+62% (fluxtune) / +39% (felix_it) / +20-23%
+  (fedbuff_it_*)** to those vclocks. `var_bad` is OFF and `weights` is pinned to the round-baseline value;
+  the profiler now cross-checks against the direct measurement and refuses to overwrite (§G). Don't re-derive
+  a redispatch charge from timestamp differences on an event-driven baseline.
 - **per-cycle committed-set overlap as the discriminator for trajectory divergence** — FALSIFIED. It looked
   like the source term feeding the compounding, but it does not separate the baselines: `fluxtune` has the
   LEAST set agreement of the three async baselines (0.262 against a 0.243 independent-draw floor) and the
@@ -786,14 +798,13 @@ rule now live in §D-3.
   `run_sequential.sh`'s preflight now BLOCKS a launch whose charged entries were not profiled from a real run
   of the same baseline — matching on `_<baseline>_n` so `fwdllm` cannot accept `fwdllm_it_unaware`'s profile.
   4 tests + verified to block both the foreign-profile and sibling-prefix cases.
-  - **`redispatch_turnaround.var_bad` flipped ON (operator decision), magnitude UNVALIDATED.** It was off on
-    the ~0.003s round-baseline reading; it is 0.117-0.318s elsewhere. Charging it as measured would add
-    **fluxtune +61.6%**, `felix_it` +39.3%, `fedbuff_it_*` +20-23% to those vclocks (round baselines +0.9%).
-    That is a clock rewrite, not an accounting tweak, and `fluxtune` currently passes `throughput` at 1.3%
-    WITHOUT it — so either the cost overlaps training and is off the critical path, or sim pays it another
-    way (§D-18, and the §E precedent where 0.320 s/cycle of removed charge bought 0.092). The
-    first-difference marginal is NOT degenerate (batches are ~10 wide on every baseline), so the measurement
-    is sound; what is unproven is that the clock is charge-limited here. Phase 0' answers it.
+  - **`redispatch_turnaround` is NOT per-baseline** (§E). Its marginal is only valid under burst dispatch;
+    on the event-driven baselines it prices inter-arrival waiting at 3.4-9.9x the real per-dispatch cost.
+    `var_bad` stays OFF (sim performs the same dispatch and pays the same wall — nothing is skipped) and
+    `weights` is pinned to the round-baseline 0.0598 except on `fedbuff_round`/`felix_round`, which measure
+    their own (0.043/0.035) under a burst the guard accepts. Only `drain_tail`/`fedavg` are genuinely
+    per-baseline — those are direct per-cycle span means, not timestamp differences, which is why the 2.75x
+    mispricing they carried was real.
 - **Eval cadence made DETERMINISTIC — the `convergence` root, and it was never duration.** `_eval_snapshot_model`
   returned None whenever the background eval thread was still busy, making WHICH commits evaluate a wall-clock
   race between the test-set pass and the inter-commit gap. Sim loses that race structurally: it compresses the

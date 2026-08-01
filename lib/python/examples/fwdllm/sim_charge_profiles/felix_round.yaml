@@ -10,7 +10,8 @@ drain_tail:
     profiled_at: '2026-08-01'
     rationale: sim runs the same op under ~100 co-located trainer threads, so its
       live span is contention-inflated and folding it on the vclock injects sim-host
-      noise (simulate_fwdllm.md D-18, F-1/F-20). Charged from this baseline's real.
+      noise (simulate_fwdllm.md D-18, F-1/F-20). Charged from this baseline's own
+      real.
     source_runs:
     - run_20260801_084040_felix_round_n100_smoke_syn_0_real
 fedavg:
@@ -21,22 +22,21 @@ fedavg:
     p90_s: 0.1854
     profiled_at: '2026-08-01'
     rationale: same as drain_tail -- sim's own span is contention-inflated, so the
-      charge comes from this baseline's real.
+      charge comes from this baseline's own real.
     source_runs:
     - run_20260801_084040_felix_round_n100_smoke_syn_0_real
 redispatch_turnaround:
   var_bad:
-    charge: true
+    charge: false
     mean_s: 0.0034
     n: 18166
     p90_s: 0.0076
     profiled_at: '2026-08-01'
-    rationale: ON. Real's per-trainer marginal dispatch turnaround for a VAR=bad resend,
-      which sim does not perform. Negligible on the round baselines (~0.003s, <1%
-      of the vclock) but 0.12-0.32s elsewhere, where leaving it off omits a real cost
-      (simulate_fwdllm.md D-36). Operator decision 08-01; MAGNITUDE UNVALIDATED on
-      fluxtune/felix_it/fedbuff_it_* -- it would add 20-62% to those vclocks, so the
-      sim-leg A/B in section B must confirm it before any long batch.
+    rationale: OFF. Directly measured, sim performs the SAME `_distribute_weights_*`
+      call and pays the same wall (real 0.016-0.032s vs sim 0.018-0.029s), so there
+      is no skipped cost to charge. The 0.12-0.32s readings that argued for turning
+      it on were the same waiting-not-work artifact as `weights` (simulate_fwdllm.md
+      section E).
     source_runs:
     - run_20260801_084040_felix_round_n100_smoke_syn_0_real
   weights:
@@ -45,8 +45,10 @@ redispatch_turnaround:
     n: 6444
     p90_s: 0.0492
     profiled_at: '2026-08-01'
-    rationale: real MQTT/dispatch-thread turnaround sim does not do. First-difference
-      marginal per-trainer cost within each redispatch batch, never a flat pool of
-      the cumulative per-batch readings (simulate_fwdllm.md D-12).
+    rationale: NOT per-baseline. The first-difference marginal is only valid where
+      dispatch is a serial BURST (round cadence, cohort pinned); under event-driven
+      dispatch it measures inter-arrival waiting, 10-40x the real work (simulate_fwdllm.md
+      section E). This value comes from the round baselines, where the burst assumption
+      holds, and is the one with a live validation behind it.
     source_runs:
     - run_20260801_084040_felix_round_n100_smoke_syn_0_real

@@ -848,6 +848,12 @@ for rk in (r[0] for r in runs):
             if not _e.get("charge"):
                 continue
             _dates.add(_e.get("profiled_at"))
+            # `cross_baseline: true` is a DECLARED exemption, not an inferred one:
+            # `redispatch_turnaround.weights` is deliberately shared because its
+            # marginal is only valid under burst dispatch (§E). Declaring it keeps
+            # the gate meaningful for everything that must be self-sourced.
+            if _e.get("cross_baseline"):
+                continue
             # `_<rk>_n` not a bare substring: "fwdllm" is a prefix of
             # "fwdllm_it_unaware", so a plain `in` would accept a sibling's profile.
             if not any(f"_{rk}_n" in str(s) for s in (_e.get("source_runs") or [])):

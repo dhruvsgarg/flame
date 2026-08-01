@@ -118,6 +118,33 @@ def _pctl(vals: list, q: float) -> float:
     return s[min(int(len(s) * q), len(s) - 1)]
 
 
+# A first-difference marginal above this multiple of the DIRECTLY measured
+# per-dispatch cost is inter-arrival waiting, not work. 3x leaves room for the
+# queueing/serialisation the step_timing span excludes.
+_REDISPATCH_MARGINAL_MAX_X = 3.0
+
+
+def _load_real_dispatch_cost(run_dir: str) -> float | None:
+    """Mean real `_distribute_weights_*` duration -- the per-dispatch cost measured
+    DIRECTLY, as an independent cross-check on the first-difference marginal (§D-22)."""
+    vals = []
+    for path in glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl")):
+        with open(path) as f:
+            for line in f:
+                if '"step_timing"' not in line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (e.get("event") == "step_timing"
+                        and str(e.get("func", "")).startswith("_distribute_weights")
+                        and e.get("duration_s") is not None):
+                    vals.append(float(e["duration_s"]))
+        break
+    return (sum(vals) / len(vals)) if vals else None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--real-run", action="append", required=True, dest="real_runs",
@@ -146,9 +173,33 @@ def main():
         with open(args.out) as f:
             registry = yaml.safe_load(f) or {}
 
+    # The first-difference marginal assumes a batch is ONE serial dispatch burst.
+    # It is, on the round baselines (cohort pinned, dispatched together after the
+    # boundary clear) -- but NOT where dispatch is event-driven as slots free: there
+    # a batch's timestamps span most of a cycle and the "marginal" is the gap between
+    # trainers RETURNING. Measured: fluxtune's marginal 0.318s against a
+    # cycle/dispatches of 0.400s and a directly-measured dispatch cost of 0.032s.
+    # Cross-check against that direct cost and refuse to overwrite rather than write
+    # a number that is 10-40x the work it claims to price (simulate_fwdllm.md §E).
+    direct = [c for c in (_load_real_dispatch_cost(r) for r in args.real_runs) if c]
+    direct_mean = (sum(direct) / len(direct)) if direct else None
+    contaminated = set()
+    if direct_mean:
+        for key, spans in pooled.items():
+            if key[0] == "redispatch_turnaround" and spans:
+                m = st.mean(spans)
+                if m > _REDISPATCH_MARGINAL_MAX_X * direct_mean:
+                    contaminated.add(key)
+                    print(f"WARN {key[0]}.{key[1]}: marginal {m:.4f}s is "
+                          f"{m / direct_mean:.1f}x the measured per-dispatch cost "
+                          f"{direct_mean:.4f}s -- event-driven dispatch, so this is "
+                          f"inter-arrival waiting. Keeping the prior value.")
+
     today = date.today().isoformat()
     enable = set(args.enable)
     for (label, payload_kind), spans in pooled.items():
+        if (label, payload_kind) in contaminated:
+            continue
         prior = registry.setdefault(label, {}).get(payload_kind, {})
         key = f"{label}.{payload_kind}" if payload_kind != "_default" else label
         registry[label][payload_kind] = {
@@ -162,8 +213,9 @@ def main():
         }
 
     if args.only_observed:
+        keep = set(pooled) | contaminated      # a kept-prior entry is still observed
         registry = {
-            label: {pk: e for pk, e in entries.items() if (label, pk) in pooled}
+            label: {pk: e for pk, e in entries.items() if (label, pk) in keep}
             for label, entries in registry.items()
         }
         registry = {label: e for label, e in registry.items() if e}

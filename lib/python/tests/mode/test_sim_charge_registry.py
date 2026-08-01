@@ -105,12 +105,24 @@ class TestPerBaselineProfileGeneration:
     dispatch cost) that way, claiming a value it never measured."""
 
     @staticmethod
-    def _run_dir(tmp_path, name, labels):
+    def _run_dir(tmp_path, name, labels, redispatch=None, dispatch_cost=None):
         d = tmp_path / name / "telemetry"
         d.mkdir(parents=True)
         rows = [json.dumps({"event": "vclock_charge", "time_mode": "real",
                             "label": lbl, "span_s": span})
                 for lbl, span in labels for _ in range(8)]
+        if redispatch:
+            # One batch of 10 dispatches; `post_close_overhead_wall_s` is cumulative
+            # from round close, so consecutive readings differ by `redispatch`.
+            rows += [json.dumps({"event": "redispatch_decomp", "time_mode": "real",
+                                 "data_id": 0, "iteration_per_data_id": 0,
+                                 "ts": 100.0 + i * redispatch, "payload_kind": "weights",
+                                 "post_close_overhead_wall_s": redispatch * (i + 1)})
+                     for i in range(10)]
+        if dispatch_cost is not None:
+            rows += [json.dumps({"event": "step_timing", "role": "aggregator",
+                                 "func": "_distribute_weights_async",
+                                 "duration_s": dispatch_cost}) for _ in range(20)]
         (d / "aggregator_x.jsonl").write_text("\n".join(rows))
         return str(tmp_path / name)
 
@@ -152,3 +164,51 @@ class TestPerBaselineProfileGeneration:
         e = got["drain_tail"]["_default"]
         assert e["source_runs"] == ["run_x_fwdllm_n100_real"]
         assert e["profiled_at"]
+
+
+class TestRedispatchMarginalContaminationGuard:
+    """The first-difference marginal assumes a batch is ONE serial dispatch burst.
+    Under event-driven dispatch it measures the gap between trainers RETURNING, so
+    it prices waiting as work -- fluxtune wrote 0.318s against a directly measured
+    per-dispatch cost of 0.032s, which would have added 62% to its vclock. Guarded
+    by cross-checking the independent `_distribute_weights_*` measurement (§D-22)."""
+
+    _SEED = ("redispatch_turnaround:\n  weights:\n    charge: true\n"
+             "    mean_s: 0.0598\n    rationale: validated round-baseline value\n")
+
+    def _profile(self, tmp_path, run):
+        out = tmp_path / "profile.yaml"
+        out.write_text(self._SEED)
+        script = (pathlib.Path(__file__).resolve().parents[2]
+                  / "examples/fwdllm/expt_scripts/profile_sim_charges.py")
+        r = subprocess.run([sys.executable, str(script), "--real-run", run,
+                            "--out", str(out), "--only-observed"],
+                           check=True, capture_output=True, text=True)
+        return yaml.safe_load(out.read_text()), r.stdout
+
+    def test_burst_dispatch_marginal_is_written(self, tmp_path):
+        """Round cadence: dispatches ARE back-to-back, so the marginal is real work."""
+        run = TestPerBaselineProfileGeneration._run_dir(
+            tmp_path, "run_x_fedbuff_round_n100_real", [],
+            redispatch=0.04, dispatch_cost=0.016)
+        got, out = self._profile(tmp_path, run)
+        assert "WARN" not in out
+        assert got["redispatch_turnaround"]["weights"]["mean_s"] == 0.04
+
+    def test_event_driven_marginal_is_refused(self, tmp_path):
+        """0.32s of "cost" against a 0.032s dispatch -- inter-arrival waiting."""
+        run = TestPerBaselineProfileGeneration._run_dir(
+            tmp_path, "run_x_fluxtune_n100_real", [],
+            redispatch=0.32, dispatch_cost=0.032)
+        got, out = self._profile(tmp_path, run)
+        assert "WARN" in out and "inter-arrival waiting" in out
+        assert got["redispatch_turnaround"]["weights"]["mean_s"] == 0.0598
+
+    def test_refusal_keeps_the_entry_rather_than_dropping_it(self, tmp_path):
+        """Dropping it would make the loader return None, and the caller would fall
+        back to charging sim's OWN span -- worse than the stale value."""
+        run = TestPerBaselineProfileGeneration._run_dir(
+            tmp_path, "run_x_fluxtune_n100_real", [],
+            redispatch=0.32, dispatch_cost=0.032)
+        got, _ = self._profile(tmp_path, run)
+        assert got["redispatch_turnaround"]["weights"]["charge"] is True
