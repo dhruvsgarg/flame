@@ -764,8 +764,6 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 self._agg_cache_store_s = (
                     getattr(self, "_agg_cache_store_s", 0.0) + time.time() - _cs0)
 
-                if channel._selector is not None:
-                    channel._selector.on_update_received(end, msg, self._round)
 
                 update_staleness_val = self._round - tres.version
 
@@ -792,6 +790,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                     _rd.total_seconds() if _rd is not None else 0.0
                 )
 
+            if channel._selector is not None:
+                channel._selector.on_update_received(end, msg, self._round)
+                
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
         # [U6 real barrier-anchor] Finalize real visibility lag against the single round barrier:
