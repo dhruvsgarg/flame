@@ -209,6 +209,8 @@ uninterpretable until H12 resolves.
 
 > **Update in place. Delete a step the moment its exit criteria are met and its findings are in §A/§G.**
 > Goal is parity on all nine, fast. Order is by *information per node-hour*, not by baseline.
+> H11/H12 validate-invalidate state + the pending H11 launch: [HANDOFF_H11_H12.md](HANDOFF_H11_H12.md)
+> (temporary — delete when both close).
 
 **Where the nine stand.** 2 clean at 7200s (`fluxtune`, `fwdllm`) · 3 blocked on H12 (`felix_round`,
 `felix_it`, `fedbuff_round` — tolerances below their measured floor, **no code change can close them**) ·
@@ -220,7 +222,7 @@ replicate**, so their verdicts are single-leg readings — and we have direct pr
 | | what | why | cost |
 |---|---|---|---|
 | **bench** | two `--sweep --model real --hetero` runs, then `--compare` | runs 1-2 confirmed the amplifier (189x) but did NOT reproduce the nondeterminism; this is the last arithmetic hypothesis before the walk moves to inputs | minutes |
-| **node 1** | `felix_round` real+sim 3600s, then `run_parity.py` | validates the landed H11 fix — `selection_detail` green and `trace_boundary_repicks.py` reads OVER-DISPATCH=0 | ~2h |
+| **node 1** | `felix_round` real+sim **7200s**, then `run_parity.py` | validates the landed H11 fix — `selection_detail` green and `trace_boundary_repicks.py` reads OVER-DISPATCH=0. **NOT 3600s**: the round-1→2 boundary the defect needs first fires at wall 4270-4823s (real) / vclock 4441s (sim), so a 3600s pair grades a run in which the defect cannot occur | ~4h |
 | **node 2** | `fluxtune` real, then `fwdllm` real, then `run_parity.py` | the two CLEAN rows have unmeasured floors; a 77/0 graded against one real is a single-leg reading. Re-grading against the new real is FREE and is the same A/B that flipped `felix_round` | ~4h |
 | **node 3** | `fwdllm_it_unaware` 7200s pair, then `fwdllm_it_oracular` 7200s pair | gets two rows off N=5 smokes onto real evidence; their `drain_wall_budget` fail also closes because the sim leg finally picks up the 08-01 profile | ~5h |
 
@@ -236,8 +238,8 @@ python probe_jvp_determinism.py --sweep --model real --hetero --replicas 8 --out
 python probe_jvp_determinism.py --sweep --model real --hetero --replicas 8 --out-dir probe_B
 python probe_jvp_determinism.py --compare probe_A probe_B
 
-# node 1 — validate the H11 fix
-bash run_sequential.sh --mode both --max-runtime-s 3600 --only felix_round --yes
+# node 1 — validate the H11 fix (7200s; the boundary arrives after 3600s)
+bash run_sequential.sh --mode both --max-runtime-s 7200 --only felix_round --yes
 python trace_boundary_repicks.py ../experiments/<new felix_round sim dir>   # expect OVER-DISPATCH=0
 python run_parity.py --yes --baselines felix_round
 
@@ -367,7 +369,7 @@ family fires hard at 30 min; the cadence family does not, and reading it green t
 | telemetry field present / instrument sane | 5-10 min | a few hundred commits populate any per-commit field |
 | **regression smoke after a shared-path change** | **900s** | INV tripwires + occupancy rungs are un-windowed, so they grade at any duration (below) |
 | clock/pipelining family (`overlap_factor` K4, `throughput`, `per_round_advance`, `overhead_residual`) | **900-1800s** | per-cycle mechanisms — fire at full magnitude immediately (evidence above) |
-| one MECHANISM rung (`drain_wall_budget`, `selection_detail`, `eligibility`) | **1800s** | the mechanism fires; per-commit dists stabilize |
+| one MECHANISM rung (`drain_wall_budget`, `selection_detail`, `eligibility`) | **1800s** | the mechanism fires; per-commit dists stabilize. ⚠ a BOUNDARY-gated defect overrides this — the run must be long enough to REACH the boundary (`felix_round`'s round-1→2 is at wall ~4300-4800s) |
 | variance-cadence LEVELS (`V1`/`V2`/`V2b`/`V5`) | 3600s+ | the divergence ACCUMULATES; a short run reads a false PASS |
 | variance-cadence RATE (`V1c`) | 1800s+ / N≥40 bins | duration-invariant by construction (§D-35), but its t-test needs bins; SKIPs below 4 |
 | stochastic identity / participation (`cohort_sequence`, `S2`) | 3600s+ | index overlap must reach its independent-draw floor to read as identity-not-bias (§D-2) |
