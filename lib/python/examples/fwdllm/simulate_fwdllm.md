@@ -162,7 +162,7 @@ a hypothesis that can only be confirmed is not one (§D-9).
 
 **H12 — the replicate floor is fp16 round-off in the JVP forward passes, amplified by a
 catastrophically-cancelling central difference. NOT a seeding bug, and possibly not reducible at all.**
-`IN PROGRESS — probe written, not run.` Evidence already on disk: §A. Mechanism:
+`IN PROGRESS — probe RUN ONCE, SPLIT RESULT.` Evidence on disk: §A. Mechanism:
 `jvp = (L(p+hv) − L(p−hv))/(2h)` at h=0.01 under `autocast()`, so its condition number is ~`|L|/(2h·|ΔL|)`.
 Two candidate fixes are landed behind env flags, default OFF, byte-identical off — `FWDLLM_JVP_FP32`
 (JVP passes outside autocast) and `FWDLLM_STRICT_DETERMINISM` (`use_deterministic_algorithms` +
@@ -175,6 +175,21 @@ cuBLAS reduction order).
 - fp32 alone closes it ⇒ the amplifier is the whole story; strict determinism stays off the critical path.
 - **FALSIFIED IF** the `base` arm is itself bit-exact across concurrent processes — the probe then proved
   nothing about any arm, and the PROBE is what needs fixing (preamble).
+
+**Probe run 1 (A40, torch 2.12, 8 concurrent processes, `--model proxy`) — the two halves split:**
+- **AMPLIFIER CONFIRMED, independently.** fp16 vs fp32 on the SAME input: `rel d(loss)` 1.61e-05 →
+  `rel d(jvp)` 1.12e-03 = **70x**, against the 72x median measured on production telemetry. Two independent
+  routes to the same condition number. This needs no nondeterminism to hold and is the standing case for
+  `FWDLLM_JVP_FP32`.
+- **NONDETERMINISM NOT REPRODUCED.** All 160 values per arm bit-identical across 8 co-located processes, so
+  `base` was already exact and no arm can be credited. `FWDLLM_STRICT_DETERMINISM` is *inert here* — nothing
+  to pin — which is not evidence it is broken.
+- **Why the proxy is inadequate, two ways.** (a) `--model real` was parsed but never used — a script bug, now
+  fixed. (b) Its fp16 loss error is **1.6e-5 against production's 1.6e-3, 100x too small**, so the proxy's
+  arithmetic is not representative of DistilBERT's accumulation depth. Re-run with `--model real`.
+- **If `--model real` is ALSO bit-exact**, the diagnosis changes: the production divergence would not be
+  kernel nondeterminism at all, and the walk goes to an INPUT difference at the trainer's first task
+  (batch construction, adapter init order, per-process model build) — not to more probe load.
 
 **H12a — the per-baseline floor DISPARITY is the aggregation rate, not the trainer.** The same fp16 noise
 enters every trainer, so H12 alone cannot explain 3.9% vs 13-19%. `felix_round`/`felix_it` use
@@ -204,7 +219,7 @@ replicate**, so their verdicts are single-leg readings — and we have direct pr
 
 | | what | why | cost |
 |---|---|---|---|
-| **bench** | `probe_jvp_determinism.py --sweep` | decides the H12 branch below; a few minutes on one GPU, no node reservation | minutes |
+| **bench** | `probe_jvp_determinism.py --sweep --model real` | run 1 (`--model proxy`) confirmed the 70x amplifier but did NOT reproduce the nondeterminism; the real stack is the discriminator | minutes |
 | **node 1** | `felix_round` real+sim 3600s, then `run_parity.py` | validates the landed H11 fix — `selection_detail` green and `trace_boundary_repicks.py` reads OVER-DISPATCH=0 | ~2h |
 | **node 2** | `fluxtune` real, then `fwdllm` real, then `run_parity.py` | the two CLEAN rows have unmeasured floors; a 77/0 graded against one real is a single-leg reading. Re-grading against the new real is FREE and is the same A/B that flipped `felix_round` | ~4h |
 | **node 3** | `fwdllm_it_unaware` 7200s pair, then `fwdllm_it_oracular` 7200s pair | gets two rows off N=5 smokes onto real evidence; their `drain_wall_budget` fail also closes because the sim leg finally picks up the 08-01 profile | ~5h |
@@ -216,7 +231,7 @@ would grade against a 1200s real. Watchdogs on all four Phase-B real yamls are b
 cd lib/python/examples/fwdllm/expt_scripts
 
 # bench — run this FIRST, anywhere with a GPU
-python probe_jvp_determinism.py --sweep --replicas 8 --repeats 20
+python probe_jvp_determinism.py --sweep --replicas 8 --repeats 20 --model real
 
 # node 1 — validate the H11 fix
 bash run_sequential.sh --mode both --max-runtime-s 3600 --only felix_round --yes

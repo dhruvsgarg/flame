@@ -82,6 +82,40 @@ def _build_proxy(device, seed, d_model=256, n_layers=4, vocab=1024, seq=128):
     return model, x, t
 
 
+def _build_real(device, seed, seq=192, batch=8, n_labels=4):
+    """The ACTUAL DistilBERT+adapter stack the trainer runs.
+
+    Size is the point: the proxy's GEMMs are small enough that cuBLAS picks a
+    single deterministic kernel every time, and its fp16 error is ~100x smaller
+    than production's. Token ids are random -- the probe measures arithmetic, not
+    accuracy, so only the SHAPES have to match the real batch.
+
+    The "adapters available but none are activated" warning is EXPECTED and must
+    not be "fixed": every production trainer logs it too (100/run), so silencing
+    it here would make the probe diverge from the path under test.
+    """
+    import torch
+    from expts.initializer import create_model
+    from model.transformer.model_args import ClassificationArgs
+
+    a = ClassificationArgs()
+    a.model_name, a.model_type = "distilbert-base-uncased", "distilbert"
+    a.load(a.model_name)
+    a.num_labels = n_labels
+    a.update_from_dict({"peft_method": "adapter", "do_lower_case": True,
+                        "max_seq_length": seq, "manual_seed": seed})
+    a.config = dict(getattr(a, "config", {}) or {})
+    a.config["num_labels"] = n_labels
+    torch.manual_seed(seed)
+    _, model, _ = create_model(a, formulation="classification")
+    model = model.to(device).eval()
+    g = torch.Generator(device="cpu").manual_seed(seed)
+    vocab = model.get_input_embeddings().num_embeddings
+    x = torch.randint(0, vocab, (batch, seq), generator=g).to(device)
+    t = torch.randint(0, n_labels, (batch,), generator=g).to(device)
+    return model, x, t
+
+
 def _run_arm(args) -> dict:
     """One arm, in THIS process. Env flags must already be set."""
     import torch
@@ -91,13 +125,18 @@ def _run_arm(args) -> dict:
     set_seed(args.seed)
     device = torch.device(args.device if torch.cuda.is_available()
                           or args.device == "cpu" else "cpu")
-    model, x, t = _build_proxy(device, args.seed)
+    build = _build_real if args.model == "real" else _build_proxy
+    model, x, t = build(device, args.seed)
+    # Perturb only trainable params, as the trainer does under `peft_method`.
     params = [p.detach().clone() for p in model.parameters()]
+    trainable = [i for i, p in enumerate(model.parameters()) if p.requires_grad]
+    _tset = set(trainable)
 
     # ONE fixed perturbation, drawn on CPU from a seeded generator -- identical in
     # every repeat and every arm, so anything that moves is arithmetic, not RNG.
     g = torch.Generator(device="cpu").manual_seed(args.seed + 1)
-    v = [torch.randn(p.shape, generator=g).to(device) for p in params]
+    v = [(torch.randn(p.shape, generator=g) if i in _tset
+          else torch.zeros(p.shape)).to(device) for i, p in enumerate(params)]
 
     ce = torch.nn.CrossEntropyLoss()
 
@@ -108,7 +147,7 @@ def _run_arm(args) -> dict:
 
     losses, jvps = [], []
     for _ in range(args.repeats):
-        loss, jvp = calculate_jvp(f, params, v)
+        loss, jvp = calculate_jvp(f, params, v, trainable_idx=trainable)
         losses.append(float(loss))
         jvps.append(float(jvp))
 
@@ -124,6 +163,9 @@ def _run_arm(args) -> dict:
                  "CUBLAS_WORKSPACE_CONFIG")},
         "jvp_fp32": jvp_fp32_enabled(),
         "strict_determinism": strict_determinism_enabled(),
+        "model": args.model,
+        "n_params": sum(p.numel() for p in params),
+        "n_trainable": sum(params[i].numel() for i in trainable),
         "device": str(device),
         "torch": torch.__version__,
         "cuda_device": (torch.cuda.get_device_name(0)
@@ -162,6 +204,7 @@ def _merge_replicas(arm: str, reps: list) -> dict:
         "replicas": len(reps),
         "repeats": reps[0]["repeats"],
         "device": reps[0]["device"],
+        "model": reps[0].get("model"),
         "cuda_device": reps[0].get("cuda_device"),
         "jvp_fp32": reps[0]["jvp_fp32"],
         "strict_determinism": reps[0]["strict_determinism"],
@@ -188,6 +231,18 @@ def _report(rows: list) -> None:
         print(f"{r['arm']:<12}{r['loss_exact_frac']:>11.0%}{r['loss_rel_spread']:>14.2e}"
               f"{r['jvp_exact_frac']:>10.0%}{r['jvp_rel_spread']:>13.2e}{amp:>10}")
     base = next((r for r in rows if r["arm"] == "base"), None)
+    fp32 = next((r for r in rows if r["arm"] == "fp32"), None)
+    # The AMPLIFIER is measurable even when nothing is nondeterministic: fp16 vs
+    # fp32 on the SAME input isolates the central difference's condition number.
+    if base and fp32:
+        dl = abs(base["losses"][0] - fp32["losses"][0]) / max(abs(fp32["losses"][0]), 1e-30)
+        dj = abs(base["jvps"][0] - fp32["jvps"][0]) / max(abs(fp32["jvps"][0]), 1e-30)
+        if dl > 0:
+            print("\n  AMPLIFIER (fp16 vs fp32, same input -- independent of any "
+                  f"nondeterminism):\n    rel d(loss) {dl:.2e}  ->  rel d(jvp) "
+                  f"{dj:.2e}   = {dj/dl:.0f}x")
+        else:
+            print("\n  AMPLIFIER: fp16 and fp32 agree bit-for-bit (nothing to amplify).")
     print()
     # No baseline spread => the probe never reproduced the phenomenon, so NOTHING
     # here can be read as a fix. Say so instead of crediting every arm.
