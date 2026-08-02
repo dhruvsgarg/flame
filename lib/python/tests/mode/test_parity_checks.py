@@ -3661,3 +3661,74 @@ class TestVarTrajectoryMatchedBudgetOnAsync:
         real = self._run(40, lambda d: 1.0)
         sim = self._run(40, lambda d: 1.6, vclock=True)
         assert not pc.var_trajectory_parity(real, sim)["ok"]
+
+
+def _seld(round_, chosen, ts=0.0):
+    """A selection event carrying the scalars selection_detail grades."""
+    e = _sel(round_, chosen, ts=ts)
+    e.update({"num_chosen": len(chosen), "in_flight": 30, "effective_c": 30})
+    return e
+
+
+class TestSelectionDetailRepicks:
+    """`mean_chosen` averages a bimodal burst (one draw of c, then single-trainer
+    top-ups), so it reports how many top-ups fired rather than who they went to.
+    felix_round's sim read 2.41 vs real 2.73 while the actual defect was 35 picks
+    filling 30 slots. The re-pick count reports that quantity directly (§D-32)."""
+
+    @staticmethod
+    def _pair(sim_boundary):
+        real = _agg(selection=[_seld(0, [f"t{i}" for i in range(30)])]
+                    + [_seld(2, [f"t{i}"], ts=1.0) for i in range(5)])
+        sim = _agg(selection=[_seld(0, [f"t{i}" for i in range(30)])]
+                   + [_seld(2, [c], ts=1.0) for c in sim_boundary])
+        return real, sim
+
+    def test_clean_boundary_reports_zero_repicks(self):
+        real, sim = self._pair([f"t{i}" for i in range(5)])
+        r = pc.selection_detail_parity(real, sim)
+        assert r["real_repicks_in_round"] == 0
+        assert r["sim_repicks_in_round"] == 0
+        assert "repick_note" not in r
+
+    def test_duplicate_pick_in_one_boundary_is_reported(self):
+        # sim re-picks t0 twice inside the SAME round-2 re-draw.
+        real, sim = self._pair(["t0", "t1", "t2", "t3", "t0"])
+        r = pc.selection_detail_parity(real, sim)
+        assert r["real_repicks_in_round"] == 0
+        assert r["sim_repicks_in_round"] == 1
+        assert "DIVERGE" in r["repick_note"]
+
+    def test_event_driven_reselection_is_not_counted(self):
+        # `round` never advances, so a burst is indistinguishable from the run:
+        # every legitimate re-pick would otherwise read as a duplicate.
+        run = _agg(selection=[_seld(0, ["a", "b"], ts=float(i)) for i in range(20)])
+        r = pc.selection_detail_parity(run, run)
+        assert r["sim_repicks_in_round"] is None
+        assert "N/A" in r["repick_note"]
+
+    def test_repicks_never_flip_the_verdict(self):
+        clean_r, clean_s = self._pair([f"t{i}" for i in range(5)])
+        dup_r, dup_s = self._pair(["t0", "t1", "t2", "t3", "t0"])
+        assert (pc.selection_detail_parity(clean_r, clean_s)["ok"]
+                == pc.selection_detail_parity(dup_r, dup_s)["ok"])
+
+
+class TestInterArrivalOrderPower:
+    """ρ must be read with its bucket count: on the fwdllm family `round` is
+    coarse, so a 7200s run yields TWO buckets and a 0.66 is unresolved, not a
+    well-powered fail."""
+
+    def test_coarse_round_is_flagged_underpowered(self):
+        rounds = [_round(1, ["a", "b", "c"], [0, 0, 0]),
+                  _round(2, ["c", "b", "a"], [0, 0, 0])]
+        r = pc.inter_arrival_order_parity(_agg(agg_rounds=rounds),
+                                          _agg(agg_rounds=rounds))
+        assert r["n_rounds"] == 2 and r["underpowered"] is True
+        assert r["bucket_sizes"]["real"] == [3, 3]
+
+    def test_many_rounds_is_not_flagged(self):
+        rounds = [_round(i, ["a", "b"], [0, 0]) for i in range(1, 8)]
+        r = pc.inter_arrival_order_parity(_agg(agg_rounds=rounds),
+                                          _agg(agg_rounds=rounds))
+        assert r["n_rounds"] == 7 and r["underpowered"] is False

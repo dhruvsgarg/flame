@@ -1349,6 +1349,29 @@ def selection_detail_parity(real: dict, sim: dict,
                 eff_c.append(ec)
         return chosen, inflight, eff_c
 
+    def repicks_per_round(sel_events, cutoff_ts):
+        """(n_repicks, n_rounds): ends picked twice inside ONE boundary re-draw.
+        `mean_chosen` averages a bimodal burst (one draw of c, then 1-end
+        top-ups), so it reports how many top-ups fired, not who they went to:
+        felix_round read 2.41 vs 2.73 while the defect was 35 picks for 30 slots
+        (§D-32). DIAGNOSTIC -- under event-driven reselection `round` never
+        advances, collapsing the run to one bucket where every legitimate
+        re-pick counts (fluxtune: 18k both sides), hence the >=2-round guard.
+        Gating wants the finer predicate -- re-pick while still in flight --
+        which needs in-flight state this rung lacks.
+        """
+        by_round = collections.defaultdict(list)
+        for e in sel_events:
+            if cutoff_ts is not None:
+                ts = e.get("ts")
+                if ts is not None and ts > cutoff_ts:
+                    continue
+            by_round[e.get("round")].extend(e.get("chosen") or [])
+        if len(by_round) < 2:
+            return None, len(by_round)
+        return (sum(len(p) - len(set(p)) for p in by_round.values()),
+                len(by_round))
+
     r_cut = s_cut = None
     N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
     if N is not None:
@@ -1406,6 +1429,17 @@ def selection_detail_parity(real: dict, sim: dict,
         "n_real_selections": len(r_ch),
         "n_sim_selections": len(s_ch),
     }
+    r_rep, r_nr = repicks_per_round(real["selection_train"], r_cut)
+    s_rep, s_nr = repicks_per_round(sim["selection_train"], s_cut)
+    result["real_repicks_in_round"] = r_rep
+    result["sim_repicks_in_round"] = s_rep
+    result["repick_n_selection_rounds"] = {"real": r_nr, "sim": s_nr}
+    if r_rep is None or s_rep is None:
+        result["repick_note"] = ("event-driven reselection: `round` does not advance, "
+                                 "so a burst is indistinguishable from the run -- N/A")
+    elif s_rep != r_rep:
+        result["repick_note"] = ("re-picks inside one round-boundary re-draw DIVERGE "
+                                 "(real %d, sim %d) -- diagnostic, does not gate" % (r_rep, s_rep))
     if N is not None:
         result["matched_logical_budget_n"] = _prog_json(N)
         # Full-run counts alongside the graded ones, so the window hides
@@ -1761,6 +1795,13 @@ def inter_arrival_order_parity(real: dict, sim: dict,
 
     For each FL round present in both, compute Spearman ρ between real and sim
     per-trainer arrival rank.  Mean ρ across rounds is the metric.
+
+    Read `n_rounds` WITH ρ: on the fwdllm family `round` is coarse, so a 7200s
+    run reaches round 2 and ρ means TWO buckets of ~12k arrivals -- exposed via
+    `bucket_sizes`/`underpowered` so 0.66 does not read as a well-powered fail.
+    `participation_parity` re-keys on event position for this; NOT copied here,
+    since per-cycle buckets would correlate two ~10-end sets already at their
+    independent-draw floor (§D-2), manufacturing a fail. Settle the unit first.
     """
     def arrival_ranks(agg_rounds):
         by_round: dict = {}
@@ -1792,6 +1833,9 @@ def inter_arrival_order_parity(real: dict, sim: dict,
         "mean_spearman_rho": round(mean_rho, 3) if not math.isnan(mean_rho) else None,
         "n_rounds": len(rhos),
         "min_rho": min_rho,
+        "bucket_sizes": {"real": [len(r_arr[rd]) for rd in common],
+                         "sim": [len(s_arr[rd]) for rd in common]},
+        "underpowered": len(rhos) < 4,
     }
 
 
