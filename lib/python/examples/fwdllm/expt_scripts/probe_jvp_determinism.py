@@ -36,6 +36,7 @@ and land in `probe_out/` as JSON (`sweep.json` = the merged comparison).
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import statistics as st
@@ -271,6 +272,41 @@ def _report(rows: list) -> None:
               "cannot reproduce the fp16 effect. Use a GPU node.")
 
 
+def _compare_dirs(da: str, db: str) -> int:
+    """Replica-by-replica diff of two sweeps -- the comparison production makes.
+
+    Within one sweep, replicas are neighbours; across two sweeps, replica i is
+    the SAME trainer run twice. Under `--hetero` only the cross-run form is
+    meaningful, because neighbours deliberately hold different seeds.
+    """
+    print(f"\n  CROSS-RUN (replica i of A vs replica i of B -- same work, two launches):")
+    print(f"{'arm':<12}{'replicas':>9}{'loss exact':>12}{'loss spread':>14}"
+          f"{'jvp exact':>11}{'jvp spread':>13}")
+    worst = 0.0
+    for arm in _ARMS:
+        pairs = []
+        for fa in sorted(glob.glob(os.path.join(da, f"{arm}.r*.json"))):
+            fb = os.path.join(db, os.path.basename(fa))
+            if os.path.exists(fb):
+                pairs.append((json.load(open(fa)), json.load(open(fb))))
+        if not pairs:
+            continue
+        le = sum(1 for a, b in pairs if a["losses"][0] == b["losses"][0]) / len(pairs)
+        je = sum(1 for a, b in pairs if a["jvps"][0] == b["jvps"][0]) / len(pairs)
+        ls = max(abs(a["losses"][0] - b["losses"][0]) / max(abs(a["losses"][0]), 1e-30)
+                 for a, b in pairs)
+        js = max(abs(a["jvps"][0] - b["jvps"][0]) / max(abs(a["jvps"][0]), 1e-30)
+                 for a, b in pairs)
+        worst = max(worst, js)
+        print(f"{arm:<12}{len(pairs):>9}{le:>11.0%}{ls:>14.2e}{je:>10.0%}{js:>13.2e}")
+    if worst == 0.0:
+        print("\n  Every arm reproduces across launches. Production's divergence is "
+              "NOT arithmetic -- stop probing and hunt the differing INPUT.")
+    else:
+        print("\n  Reproduced across launches. The arm whose spread collapses is the fix.")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -280,6 +316,14 @@ def main(argv=None) -> int:
     ap.add_argument("--model", choices=("proxy", "real"), default="proxy")
     ap.add_argument("--tag", default="base")
     ap.add_argument("--out-dir", default=str(_HERE / "probe_out"))
+    ap.add_argument("--hetero", action="store_true",
+                    help="give each replica seed+i so co-tenants do DIFFERENT "
+                         "work, as production's 12-per-GPU trainers do. Compare "
+                         "two --sweep runs with --compare, not replicas to each "
+                         "other (their seeds differ by design)")
+    ap.add_argument("--compare", nargs=2, metavar=("DIR_A", "DIR_B"),
+                    help="diff two sweep out-dirs replica-by-replica: the "
+                         "same-trainer-across-two-runs comparison production makes")
     ap.add_argument("--replicas", type=int, default=4,
                     help="concurrent PROCESSES per arm (--sweep). The "
                          "cross-process spread is the decision input; 1 measures "
@@ -288,6 +332,8 @@ def main(argv=None) -> int:
                     help="re-exec once per arm (flags must precede CUDA init), "
                          "then print the comparison")
     args = ap.parse_args(argv)
+    if args.compare:
+        return _compare_dirs(*args.compare)
     os.makedirs(args.out_dir, exist_ok=True)
 
     if args.sweep:
@@ -300,7 +346,8 @@ def main(argv=None) -> int:
             procs = []
             for i in range(args.replicas):
                 cmd = [sys.executable, __file__, "--tag", f"{arm}.r{i}",
-                       "--repeats", str(args.repeats), "--seed", str(args.seed),
+                       "--repeats", str(args.repeats),
+                       "--seed", str(args.seed + i if args.hetero else args.seed),
                        "--device", args.device, "--model", args.model,
                        "--out-dir", args.out_dir]
                 procs.append(subprocess.Popen(cmd, env={**os.environ, **env}))

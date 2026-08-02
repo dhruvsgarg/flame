@@ -160,8 +160,13 @@ defect is the round-boundary batch path, not AsyncOort's `select()`. **Charge ci
 **Live hypotheses — each with the observation that would falsify it.** State the prediction BEFORE the run;
 a hypothesis that can only be confirmed is not one (§D-9).
 
-**H12 — the replicate floor is fp16 round-off in the JVP forward passes, amplified by a
-catastrophically-cancelling central difference. NOT a seeding bug, and possibly not reducible at all.**
+**H12 — SPLIT. Amplifier CONFIRMED (189x on the real stack); source FALSIFIED (§E) and now OPEN.**
+The JVP's central difference is ill-conditioned by construction and that stands on its own. But the noise it
+amplifies does NOT come from fp16/GPU nondeterminism — the real stack reproduces bit-exactly. **Something
+still has to supply production's 1.6e-3, and with data, dispatch order, iteration, model_version, RNG
+position and arithmetic all verified identical, no candidate is currently standing.** Next step is
+`--hetero` + `--compare` (below) to rule out heterogeneous co-tenancy, then a weights/logits hash on the
+trainer's first task — one short run, not a scoreboard run.
 `IN PROGRESS — probe RUN ONCE, SPLIT RESULT.` Evidence on disk: §A. Mechanism:
 `jvp = (L(p+hv) − L(p−hv))/(2h)` at h=0.01 under `autocast()`, so its condition number is ~`|L|/(2h·|ΔL|)`.
 Two candidate fixes are landed behind env flags, default OFF, byte-identical off — `FWDLLM_JVP_FP32`
@@ -176,20 +181,15 @@ cuBLAS reduction order).
 - **FALSIFIED IF** the `base` arm is itself bit-exact across concurrent processes — the probe then proved
   nothing about any arm, and the PROBE is what needs fixing (preamble).
 
-**Probe run 1 (A40, torch 2.12, 8 concurrent processes, `--model proxy`) — the two halves split:**
-- **AMPLIFIER CONFIRMED, independently.** fp16 vs fp32 on the SAME input: `rel d(loss)` 1.61e-05 →
-  `rel d(jvp)` 1.12e-03 = **70x**, against the 72x median measured on production telemetry. Two independent
-  routes to the same condition number. This needs no nondeterminism to hold and is the standing case for
-  `FWDLLM_JVP_FP32`.
-- **NONDETERMINISM NOT REPRODUCED.** All 160 values per arm bit-identical across 8 co-located processes, so
-  `base` was already exact and no arm can be credited. `FWDLLM_STRICT_DETERMINISM` is *inert here* — nothing
-  to pin — which is not evidence it is broken.
-- **Why the proxy is inadequate, two ways.** (a) `--model real` was parsed but never used — a script bug, now
-  fixed. (b) Its fp16 loss error is **1.6e-5 against production's 1.6e-3, 100x too small**, so the proxy's
-  arithmetic is not representative of DistilBERT's accumulation depth. Re-run with `--model real`.
-- **If `--model real` is ALSO bit-exact**, the diagnosis changes: the production divergence would not be
-  kernel nondeterminism at all, and the walk goes to an INPUT difference at the trainer's first task
-  (batch construction, adapter init order, per-process model build) — not to more probe load.
+**Probe runs 1-2 (A40, torch 2.12, 8 concurrent processes) — the two halves split, and the SOURCE half is
+now FALSIFIED (§E):**
+- **AMPLIFIER CONFIRMED and it is WORSE on the real stack.** fp16 vs fp32 on the SAME input:
+  **70x** on the proxy, **189x** on real DistilBERT+adapter (1.04M trainable of 67.4M) — deeper accumulation,
+  worse conditioning. Production telemetry independently measured a 72x median. This needs no nondeterminism
+  to hold and is the standing, run-independent case for `FWDLLM_JVP_FP32`.
+- **NONDETERMINISM NOT REPRODUCED, on either model.** Every value bit-identical across 8 co-located processes
+  on the REAL stack, so `base` was already exact and no arm can be credited.
+  `FWDLLM_STRICT_DETERMINISM` is *inert* — there was nothing to pin, which is not evidence it is broken.
 
 **H12a — the per-baseline floor DISPARITY is the aggregation rate, not the trainer.** The same fp16 noise
 enters every trainer, so H12 alone cannot explain 3.9% vs 13-19%. `felix_round`/`felix_it` use
@@ -219,7 +219,7 @@ replicate**, so their verdicts are single-leg readings — and we have direct pr
 
 | | what | why | cost |
 |---|---|---|---|
-| **bench** | `probe_jvp_determinism.py --sweep --model real` | run 1 (`--model proxy`) confirmed the 70x amplifier but did NOT reproduce the nondeterminism; the real stack is the discriminator | minutes |
+| **bench** | two `--sweep --model real --hetero` runs, then `--compare` | runs 1-2 confirmed the amplifier (189x) but did NOT reproduce the nondeterminism; this is the last arithmetic hypothesis before the walk moves to inputs | minutes |
 | **node 1** | `felix_round` real+sim 3600s, then `run_parity.py` | validates the landed H11 fix — `selection_detail` green and `trace_boundary_repicks.py` reads OVER-DISPATCH=0 | ~2h |
 | **node 2** | `fluxtune` real, then `fwdllm` real, then `run_parity.py` | the two CLEAN rows have unmeasured floors; a 77/0 graded against one real is a single-leg reading. Re-grading against the new real is FREE and is the same A/B that flipped `felix_round` | ~4h |
 | **node 3** | `fwdllm_it_unaware` 7200s pair, then `fwdllm_it_oracular` 7200s pair | gets two rows off N=5 smokes onto real evidence; their `drain_wall_budget` fail also closes because the sim leg finally picks up the 08-01 profile | ~5h |
@@ -231,7 +231,10 @@ would grade against a 1200s real. Watchdogs on all four Phase-B real yamls are b
 cd lib/python/examples/fwdllm/expt_scripts
 
 # bench — run this FIRST, anywhere with a GPU
-python probe_jvp_determinism.py --sweep --replicas 8 --repeats 20 --model real
+# co-tenants doing DIFFERENT work, then the same-work-across-two-launches diff
+python probe_jvp_determinism.py --sweep --model real --hetero --replicas 8 --out-dir probe_A
+python probe_jvp_determinism.py --sweep --model real --hetero --replicas 8 --out-dir probe_B
+python probe_jvp_determinism.py --compare probe_A probe_B
 
 # node 1 — validate the H11 fix
 bash run_sequential.sh --mode both --max-runtime-s 3600 --only felix_round --yes
@@ -543,6 +546,17 @@ Confirm the CONTROL reproduces before crediting any fix (preamble).
 > the number IS the lesson. Landed-but-inert cleanups belong in §G.
 
 **Replicate floor / H12**
+- **H12's SOURCE half — fp16/GPU kernel nondeterminism as the replicate floor's cause** — **FALSIFIED on the
+  bench.** The REAL DistilBERT+adapter stack, 8 co-located processes on one A40, same node: every loss and
+  jvp bit-identical, within and across processes. Also falsified for the production divergence, on disk:
+  the trainer data is bit-identical (all 100 `CLIENT n DATA HASH` lines match across runs), dispatch order
+  matches, and every first task is `iteration 0` / `model_version 0` — yet 22 of 30 trainers still differ.
+  Don't spend more probe load on this; the arithmetic reproduces.
+- **"first task at iteration k>0 sees mid-bin updated weights"** — FALSIFIED: all 30 first tasks are at
+  iteration 0 in both runs.
+- **arrival/dispatch order as the discriminator for which trainers reproduce** — FALSIFIED: the two runs'
+  dispatch ranks are identical (two adjacent swaps in 30), and the 8 reproducing trainers are scattered
+  across ranks 1-29.
 - **`v1c`'s "monotone shape is the discriminator" calibration** — FALSIFIED: a real↔real pair climbs
   monotonically at t=8.23, bigger than any real↔sim λ on that baseline. Don't cite shape or
   `lambda_floor_per_100` as evidence a `diverging` verdict means sim.
