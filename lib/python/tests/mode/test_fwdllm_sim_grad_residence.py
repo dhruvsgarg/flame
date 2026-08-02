@@ -475,3 +475,55 @@ class TestPendingCommitBridge:
         assert "B" in agg._sim_pending_commit
         assert "A" in ch._selector.all_selected
         assert "A" in ch._selector.selected_ends["agg"]
+
+
+class TestBoundaryDropKeepsDispatchedGuard:
+    """H11: the legacy boundary drop clears both virtual in-flight sets, then
+    calls `_sim_hold_busy_slots`, which rebuilds the re-pick guard from them and
+    strips `all_selected` -- so boundary top-ups re-picked still-training ends
+    (sim 35 picks against c=30; real 30 unique).
+
+    `_trainer_inflight_dispatch_version` (dispatched, not yet returned; both
+    modes) is the only in-flight record the boundary does not clear, and is the
+    half real's `_PendingCommitUnion` already carries.
+    """
+
+    def _dispatched(self, agg, *ends):
+        agg._trainer_inflight_dispatch_version = {e: (2, 0) for e in ends}
+        return agg
+
+    def test_still_dispatched_end_survives_the_legacy_drop(self):
+        agg = self._dispatched(_residence_agg(residence=False), "W")
+        ch = _FakeSelChannel(["W", "X"])
+        agg._sim_committed = {"X"}
+        agg._sim_inflight_expected = {"W": 9.0}
+
+        agg._release_sim_slots_at_agg_goal(ch, is_async=True)
+
+        # W never returned -> still un-re-pickable, so the top-up cannot dispatch
+        # a second task to it. X committed -> released.
+        assert "W" in ch._selector.all_selected
+        assert "W" in agg._sim_pending_commit
+        assert "X" not in ch._selector.all_selected
+
+    def test_returned_end_is_still_released(self):
+        # Same boundary, but W already returned (popped on receipt) -> the legacy
+        # drop still frees it; the fix must not over-hold.
+        agg = self._dispatched(_residence_agg(residence=False))
+        ch = _FakeSelChannel(["W"])
+        agg._sim_inflight_expected = {"W": 9.0}
+
+        agg._release_sim_slots_at_agg_goal(ch, is_async=True)
+
+        assert ch._selector.all_selected == {}
+        assert agg._sim_pending_commit == set()
+
+    def test_reconcile_alone_holds_a_dispatched_end(self):
+        # The same guarantee at the per-commit reconcile, not just the boundary.
+        agg = self._dispatched(_residence_agg(residence=False), "W")
+        ch = _FakeSelChannel(["W"])
+
+        agg._sim_hold_busy_slots(ch)
+
+        assert "W" in agg._sim_pending_commit
+        assert "W" in ch._selector.all_selected

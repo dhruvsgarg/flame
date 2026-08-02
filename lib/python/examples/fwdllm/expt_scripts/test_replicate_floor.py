@@ -14,16 +14,24 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import replicate_floor as rf  # noqa: E402
 
 
-def _write_run(tmp_path, name, cycles, seed=1234, max_runtime_s=3600):
-    """cycles: list of (round, data_id, iteration, var, committed)."""
+def _write_run(tmp_path, name, cycles, seed=1234, max_runtime_s=3600,
+               achieved_s=None):
+    """cycles: list of (round, data_id, iteration, var, committed).
+
+    `ts` is WALL-CLOCK, as in real telemetry -- spread over `achieved_s`. Keying
+    it to the cycle index would make a run that completed fewer bins look
+    truncated, the exact distinction `achieved_span_s` draws.
+    """
     d = tmp_path / name
     (d / "telemetry").mkdir(parents=True)
     json.dump({"hyperparameters": {"seed": seed, "max_runtime_s": max_runtime_s}},
               open(d / "aggregator_config.json", "w"))
+    span = float(max_runtime_s if achieved_s is None else achieved_s)
+    step = span / max(1, len(cycles) - 1)
     with open(d / "telemetry" / "aggregator_x.jsonl", "w") as fh:
         for i, (rd, did, it, var, committed) in enumerate(cycles):
             fh.write(json.dumps({
-                "event": "agg_round", "round": rd, "ts": float(i),
+                "event": "agg_round", "round": rd, "ts": i * step,
                 "cycle_data_id": did, "iteration_per_data_id": it,
                 "var": var, "var_good_enough": committed}) + "\n")
     return str(d)
@@ -128,3 +136,50 @@ class TestVerdicts:
         _run(5, 4, 0.9, tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_real")
         assert rf.main(["--experiments-dir", str(tmp_path), "--mode", "real"]) == 1
         assert "No replicate groups" in capsys.readouterr().out
+
+
+class TestTruncatedLegIsNotAReplicate:
+    """A run killed early still reports the `max_runtime_s` it was asked for.
+    `run_20260801_232459_felix_round` stopped at 5571s of 7200s and was pooled
+    with two 6949s legs, inflating the floor. Group on the ACHIEVED span."""
+
+    def _out(self, tmp_path, capsys, *args):
+        rf.main(["--experiments-dir", str(tmp_path), *args])
+        return capsys.readouterr().out
+
+    def test_short_leg_is_dropped_and_named(self, tmp_path, capsys):
+        _run(9, 4, 0.9, tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_real")
+        _run(9, 4, 0.9, tmp_path, "run_20260102_000000_b_n10_smoke_syn_0_real")
+        _run(5, 4, 0.9, tmp_path, "run_20260103_000000_b_n10_smoke_syn_0_real",
+             achieved_s=1800)                      # killed at half the target
+        out = self._out(tmp_path, capsys)
+        assert "20260103_000000  DROPPED" in out
+        assert "n_replicates=2" in out
+        # The two full legs are identical -> a zero floor, not the 44% the
+        # truncated leg would have manufactured.
+        assert "BELOW FLOOR" not in out
+
+    def test_full_length_legs_are_kept_even_with_different_bin_counts(self, tmp_path, capsys):
+        # Fewer bins in the SAME wall time is a real reproducibility gap, not a
+        # truncation -- it must still be graded.
+        _run(9, 4, 0.9, tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_real")
+        _run(5, 4, 0.9, tmp_path, "run_20260102_000000_b_n10_smoke_syn_0_real")
+        out = self._out(tmp_path, capsys)
+        assert "DROPPED" not in out
+        assert "BELOW FLOOR" in out
+
+    def test_span_tol_is_tunable(self, tmp_path, capsys):
+        _run(9, 4, 0.9, tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_real")
+        _run(9, 4, 0.9, tmp_path, "run_20260102_000000_b_n10_smoke_syn_0_real")
+        _run(9, 4, 0.9, tmp_path, "run_20260103_000000_b_n10_smoke_syn_0_real",
+             achieved_s=3400)                      # 5.6% short
+        assert "DROPPED" in self._out(tmp_path, capsys)
+        assert "DROPPED" not in self._out(tmp_path, capsys, "--span-tol", "0.10")
+
+    def test_dropping_below_two_legs_says_why(self, tmp_path, capsys):
+        # Must not degrade to a bare "No replicate groups found".
+        _run(9, 4, 0.9, tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_real")
+        _run(5, 4, 0.9, tmp_path, "run_20260102_000000_b_n10_smoke_syn_0_real",
+             achieved_s=1800)
+        out = self._out(tmp_path, capsys)
+        assert "DROPPED" in out and "no floor for this group" in out

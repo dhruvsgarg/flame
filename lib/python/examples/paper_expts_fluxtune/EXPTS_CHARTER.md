@@ -99,6 +99,11 @@ smarter" (C3) or "accept the floor" (plateau) will → dynamic-K de-prioritized.
 loss→4.9); force-stopped 2026-07-08. Paper uses each run's round-1 peak; E1 plots clipped at peak. Not a
 blocker for the E1 headline.
 
+**Where the variance COMES FROM (new, see Reproducibility above):** not the seed — fp16 `autocast` round-off
+in the two JVP forward passes (~1.6e-3), amplified a median **72×** by the central difference at h=0.01.
+Same mechanism, upstream end; it also means seeding cannot damp I-1, and that **S1's momentum/EMA should
+shrink the replicate spread too — re-measure the floor after S1 lands.**
+
 **Root cause (H0 diagnostic — `fluxtune_contributions.md` §8, F1-F15):** an **undamped, high-variance
 forward-gradient optimizer** — each noisy JVP commit applied raw (`FedSgdAggregator.py:322`, no momentum/EMA)
 → the model random-walks. Severity tracks aggregation aggressiveness (R4 grad-aware worst; R1 least → Opt-3
@@ -140,6 +145,53 @@ seconds instead of waiting on a real render): `cd expt_scripts && python preview
 [--baselines k1,k2,...|--manifest <m>] [--charts line,scatter,bar]` → `expt_scripts/palette_preview/`
 (same flat/overwrite convention).
 
+## ⚠ Reproducibility — how many runs a reported number needs (OPEN, gated on H12)
+
+**Status: measured, root-caused, fix under test. Do not finalize an error bar or a seed count until the H12
+probe returns** (`fwdllm/simulate_fwdllm.md` §B-H12; probe is
+`fwdllm/expt_scripts/probe_jvp_determinism.py --sweep`, minutes on one GPU, no FL run).
+
+**What was measured.** Two 7200s real runs per baseline, same seed (1234), config-identical, different nodes:
+
+| baseline | peak acc A | peak acc B | gap | iters/bin floor |
+|---|---|---|---|---|
+| `felix_round` | 77.17% | 66.01% | **11.16 pts** | 13.3% |
+| `fedbuff_round` | 75.11% | 73.32% | 1.79 pts | 3.9% |
+
+**It is not a seeding bug.** Both runs agree on every RNG-stream coordinate — same `client_idx` (fixed by the
+registry), same partition, same `(data_id, iteration, model_version)`, `perturbations_total` and
+`forward_passes_total` on every trainer's first task. The divergence is floating-point: 8 of 30 trainers
+reproduce their first-task loss bit-exactly and the other 22 differ at a median 1.6e-3 (fp16 `autocast`),
+which `calculate_jvp`'s central difference at h=0.01 amplifies by a **median 72× (max 1311×)** into the
+gradient. 7 of the 8 bit-identical-loss trainers also have bit-identical gradients, so nothing else injects
+randomness.
+
+**This is Issue I-1 seen from the input end.** I-1 is already root-caused as an undamped high-variance
+forward-gradient optimizer; this supplies where the variance originates and shows seeding cannot remove it.
+The planned I-1 fix (server-side momentum/EMA, §8 S1) is also the damping that should shrink this spread —
+**re-measure the floor after S1 lands**, it may be the cheaper lever than buying runs.
+
+**Why it differs per baseline** — how much loss-derived `stat_utility` reaches the model update, and whether
+iterations are capped. Cohorts are bit-identical between replicates (Jaccard 1.000), so it is not selection:
+
+| baseline | `agg_rate_type` | weight depends on | iter cap |
+|---|---|---|---|
+| `fedbuff_round` | `old` | staleness only (integer) | none |
+| `felix_round`, `felix_it` | `new` | `+ β(stat_utility)` — loss-derived | none |
+| **`fluxtune`** | `grad_aware` | align gate + inverse-var | **plateau + `max_iterations_per_data_id=20`** |
+
+`fluxtune` — the baseline the headline numbers come from — is the only one with the cap, which bounds the
+compounding. Its own floor is **UNMEASURED** (no replicate exists); measuring it is the single most important
+missing number for the paper, because every E1 accuracy claim rests on it.
+
+**Decision, once H12 returns.** If a flag (`FWDLLM_JVP_FP32` / `FWDLLM_STRICT_DETERMINISM`) collapses the
+spread, this is a bug: fix it, keep single-seed, delete this section. If it does not, then per-baseline
+replicate error bars are mandatory on every reported accuracy, `n` sized from that baseline's measured floor
+(not a conventional 3), and the paper must say the pipeline is not bit-reproducible and why.
+
+**Immediate action regardless of H12: measure `fluxtune`'s floor.** One extra `fluxtune` real replicate at
+the run length the paper uses. Until it exists, the ±  on the headline 84.08% is unknown.
+
 ## Resolved decisions
 
 | # | Decision |
@@ -155,7 +207,7 @@ seconds instead of waiting on a real render): `cd expt_scripts && python preview
 | **N2** C3 | `type=new` fedbuff rate is a borrowed **FeLiX** placeholder (scalar staleness×utility), NOT fluxtune's C3 → replaced by `grad_aware` (Opt-3, default on). |
 | **N4** Clock | Report wall + rounds + data-bins + iterations; drop virtual-clock (note as future). |
 | **N7** Memory | Motivation/design claim argued from structure (peak mem bounded by inference); no memory experiment. |
-| **D1** Seeds | Single seed now; paper TODO for ≥3-seed medians on headline E1. |
+| **D1** Seeds | ⚠️ **REOPENED — single seed is not defensible on the uncapped baselines.** Two same-seed, config-identical *real* replicates of `felix_round` differ by **11.16 accuracy points at peak** (77.17% vs 66.01%); `fedbuff_round` differs by 1.79 pts. Seeding is not the cause and cannot fix it (§ Reproducibility below). "≥3-seed medians" was chosen by convention, not from a measured spread — **size n from the floor, per baseline, once H12 resolves.** |
 | **D2** GPU-sec | Forward-pass count is the primary denominator; GPU-seconds secondary w/ an 8-GPU-contention caveat. |
 | **D3** Fidelity | Accuracy parity (not time-to-accuracy) vs `xu2024fwdllm`; do **not** compare wall-clock. |
 | **D4** SPRY | Exclude split/personalized-per-device FL; 1-line Baselines pointer + Background *why* (bib: spry, split-learning, HeteroFL, personalized-FL survey). |
@@ -171,8 +223,10 @@ seconds instead of waiting on a real render): `cd expt_scripts && python preview
 - **Figures (`plotlib/figures.py`):** E1 iterations-to-target metric · E2 aggregator-breakdown bar ·
   E3 Δloss-vs-cumulative-compute trajectory · E4 msg-size inset · E5 participation-count bars ·
   unify `FwdLLM++`/`FwdLLM_Plus` label.
-- **Runs:** full-system E2/E3/E4 (C2+C3 on) · mobiperf E1 (needs the fwdllm_plus-under-scarcity barrier
-  decision) · fidelity accuracy-parity (locate old run) · optional ≥3-seed medians for E1.
+- **Runs:** **`fluxtune` replicate for the floor (BLOCKING the E1 error bar — see Reproducibility)** ·
+  full-system E2/E3/E4 (C2+C3 on) · mobiperf E1 (needs the fwdllm_plus-under-scarcity barrier decision) ·
+  fidelity accuracy-parity (locate old run) · multi-seed E1 medians, `n` sized from the measured floor once
+  H12 resolves (no longer "optional ≥3", D1).
 - **Ablations:** C1 JVP sensitivity (threshold, refresh) · C2 K/C sensitivity · α∈{10,100}.
 
 ## Principles

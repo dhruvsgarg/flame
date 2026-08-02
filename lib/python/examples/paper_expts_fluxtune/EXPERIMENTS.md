@@ -214,6 +214,14 @@ sim-mode numbers don't exist yet (§10a `Ready?` column).
 > `fluxtune_contributions.md` §8, fix = server optimizer S1 / M2 below). E1 uses the round-1 peak, plots
 > clipped there (`--cutoff-mode peak_acc`); the time-to-τ streak never fires (accuracy only grazes 84% amid
 > oscillation).
+> ⚠ **Caveat 2 — every peak-accuracy number here is currently a SINGLE run with no error bar, and the
+> pipeline is not bit-reproducible.** Two same-seed, config-identical real replicates differ by **11.16
+> accuracy points at peak** on `felix_round` and 1.79 pts on `fedbuff_round`. The cause is fp16 round-off in
+> the JVP amplified ~72× by its central difference, not seeding — it cannot be fixed by re-seeding
+> (EXPTS_CHARTER "Reproducibility"; `fwdllm/simulate_fwdllm.md` §B-H12). **`fluxtune`'s own spread is
+> UNMEASURED** — it is the only baseline with the iteration cap that bounds this, so its floor is expected to
+> be the smallest, but "expected" is not measured. Do not quote 84.08% with an implied precision until a
+> `fluxtune` replicate exists. **Blocking action:** one extra `fluxtune` real replicate at paper run length.
 
 ### E2 (`sec:eval:util`) — Resource utilization (wait-time reduction)
 > **Takeaway:** Fluxtune improves utilization by cutting wait times at trainers (primary, thousands) and the
@@ -540,6 +548,18 @@ Session artifacts: `expt_scripts/smoke_logs/<ts>/` (`converge_<run>.json`, manif
 ---
 
 ## 9. Changelog
+- **2026-08-02 — pipeline reproducibility measured; single-seed results reopened (D1).** Two same-seed,
+  config-identical 7200s real replicates per baseline: peak accuracy differs by **11.16 pts** on
+  `felix_round`, 1.79 pts on `fedbuff_round`; the `iters/bin` replicate floor is 13.3% / 3.9%. Root cause is
+  NOT seeding — every RNG-stream coordinate matches on each trainer's first task, but fp16 `autocast` makes
+  the forward loss differ by ~1.6e-3 on 22 of 30 trainers and `calculate_jvp`'s central difference at h=0.01
+  amplifies that by a median **72×** into the gradient. Floor size tracks `agg_rate_type` (whether the
+  loss-derived `stat_utility` reaches the aggregation weights) and whether iterations are capped —
+  `fluxtune` is the only baseline with the cap, and its own floor is still UNMEASURED. Two candidate fixes
+  landed behind default-OFF env flags (`FWDLLM_JVP_FP32`, `FWDLLM_STRICT_DETERMINISM`) plus a bench probe
+  (`fwdllm/expt_scripts/probe_jvp_determinism.py`); the experiment deciding reducible-vs-irreducible is H12
+  in `fwdllm/simulate_fwdllm.md` §B and has NOT been run. Until it returns, no error-bar or seed-count
+  decision is final. Same mechanism as Issue I-1, seen from the input end.
 - **2026-07-24 — tex⇄§10a⇄PLOT_TRACKER.md realignment.** Fixed the gap `PLOT_TRACKER.md`'s "OPEN WORK #1"
   diagnosed: `evaluation.tex`'s five `sec:eval:sota` `\input{figs/code/eval/e2e/*}` paths had no backing
   files (now created, pointing live at `expt_scripts/paper_figs_main_v2/*.pdf` — no copy step, stays

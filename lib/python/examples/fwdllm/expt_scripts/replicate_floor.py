@@ -99,6 +99,16 @@ def _seed(run_dir: str):
         return None
 
 
+def achieved_span_s(run_dir: str):
+    """Wall span the aggregator ACTUALLY covered.
+
+    `max_runtime_s` is what the run was ASKED for; a run killed early still
+    reports it, and pooling one reads its truncation as irreproducibility.
+    """
+    ts = [e["ts"] for e in _agg_events(run_dir) if isinstance(e.get("ts"), (int, float))]
+    return (max(ts) - min(ts)) if len(ts) >= 2 else None
+
+
 def metrics(run_dir: str):
     """The four run-level quantities the DIST rungs grade, from one run."""
     ev = _agg_events(run_dir)
@@ -156,6 +166,10 @@ def main(argv=None) -> int:
                     help="which side's replicates to pool (default real)")
     ap.add_argument("--min-duration", type=float, default=0.0,
                     help="skip groups whose max_runtime_s is below this")
+    ap.add_argument("--span-tol", type=float, default=0.05,
+                    help="drop a leg whose ACHIEVED span is this far below the "
+                         "group's longest (default 0.05 = 5%%); a truncated run "
+                         "is a shorter run, not a replicate")
     ap.add_argument("--json-out", default=None)
     args = ap.parse_args(argv)
 
@@ -170,22 +184,46 @@ def main(argv=None) -> int:
         for ts, path in runs:
             m = metrics(path)
             if m:
-                rows.append((ts, _seed(path), m))
-        if len(rows) < 2:
-            continue
-        seeds = {s for _, s, _ in rows}
-        any_group = True
+                rows.append((ts, _seed(path), m, achieved_span_s(path)))
+        # A leg killed early is a shorter run wearing the same `max_runtime_s`,
+        # not a replicate -- keep the longest-span cohort.
+        spans = [s for _, _, _, s in rows if s]
+        dropped = []
+        if spans:
+            ref = max(spans)
+            keep = []
+            for row in rows:
+                if row[3] is not None and row[3] < ref * (1.0 - args.span_tol):
+                    dropped.append(row)
+                else:
+                    keep.append(row)
+            rows = keep
         label = "/".join(x for x in (baseline, trace) if x)
-        print(f"\n=== {label}  mode={mode}  max_runtime_s={maxrt}  "
-              f"n_replicates={len(rows)}  seeds={sorted(seeds)}"
+        # Report drops BEFORE the too-few-replicates bail, else a group that fell
+        # below 2 from a truncated leg reads as "no replicates found", unexplained.
+        if dropped:
+            print(f"\n=== {label}  mode={mode}  max_runtime_s={maxrt}")
+            for ts, _s, _m, span in dropped:
+                print(f"    {ts}  DROPPED — achieved span {span:.0f}s is >{args.span_tol:.0%} "
+                      f"short of {max(spans):.0f}s (truncated run, not a replicate)")
+        if len(rows) < 2:
+            if dropped:
+                print(f"    only {len(rows)} full-length leg(s) left — no floor for this group")
+            continue
+        seeds = {s for _, s, _, _ in rows}
+        any_group = True
+        print((f"    n_replicates={len(rows)}  seeds={sorted(seeds)}" if dropped else
+               f"\n=== {label}  mode={mode}  max_runtime_s={maxrt}  "
+               f"n_replicates={len(rows)}  seeds={sorted(seeds)}")
               + ("   ⚠ MIXED SEEDS — not a reproducibility floor" if len(seeds) > 1 else ""))
-        for ts, seed, m in rows:
+        for ts, seed, m, span in rows:
             print(f"    {ts}  bins={m['committed_bins']:.0f}  cycles={m['cycles']:.0f}  "
-                  f"iters/bin={m['iters_per_bin']:.2f}  var={m['mean_var']:.4f}")
+                  f"iters/bin={m['iters_per_bin']:.2f}  var={m['mean_var']:.4f}"
+                  + (f"  span={span:.0f}s" if span else "  span=?"))
         print(f"    {'metric':16s} {'floor':>8s}   {'rung':<22s} {'tol':>7s}  verdict")
         entry = {}
         for metric, (rung, field, tol) in _CALIBRATES.items():
-            vals = [m[metric] for _, _, m in rows]
+            vals = [m[metric] for _, _, m, _ in rows]
             if any(v != v for v in vals):     # NaN
                 continue
             floor = _spread(vals)
@@ -196,8 +234,10 @@ def main(argv=None) -> int:
             entry[metric] = {"floor_rel": round(floor, 4), "rung": rung,
                              "tolerance_field": field, "tolerance": tol,
                              "verdict": verdict}
-        report[label + f"@{maxrt}"] = {"mode": mode, "n_replicates": len(rows),
-                                       "seeds": sorted(seeds), "metrics": entry}
+        report[label + f"@{maxrt}"] = {
+            "mode": mode, "n_replicates": len(rows), "seeds": sorted(seeds),
+            "achieved_span_s": [s for _, _, _, s in rows],
+            "dropped_truncated": [t for t, _, _, _ in dropped], "metrics": entry}
 
     if not any_group:
         print("No replicate groups found (need >= 2 runs sharing "

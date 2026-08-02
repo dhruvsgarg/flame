@@ -399,8 +399,9 @@ class TopAggregator(AsyncTopAgg):
         self._updates_in_queue = 0
         self._updates_received = {}
         self._per_agg_trainer_list = _OrderedContributorList()
-        # Real's `_agg_pending_commit_ref` (bound at receipt, below). Sim's
-        # `_sim_pending_commit` already covers both halves in one set.
+        # Real's `_agg_pending_commit_ref` (bound at receipt, below). Sim reaches
+        # the same union in `_sim_hold_busy_slots`, which folds this dict in
+        # alongside `_sim_pending_commit`.
         self._real_pending_commit = _PendingCommitUnion(
             self._trainer_inflight_dispatch_version, self._per_agg_trainer_list
         )
@@ -1415,7 +1416,19 @@ class TopAggregator(AsyncTopAgg):
         # per-commit re-tasks a contributor mid-cycle (§D-15), and drops a trainer
         # that committed in an EARLIER cycle and was since re-dispatched ->
         # re-pickable while in flight -> R1 violation.
-        outstanding = set(self._sim_inflight_expected) | buffered | set(self._sim_pending_commit)
+        #
+        # `_trainer_inflight_dispatch_version` (dispatched-not-yet-returned, both
+        # modes) is real's other `_PendingCommitUnion` half and the only in-flight
+        # record the legacy boundary drop does NOT clear. Without it that drop
+        # empties both sets before this reconcile, which then rebuilds the guard
+        # from nothing and strips `all_selected` -- so boundary top-ups re-pick
+        # still-training ends (H11).
+        outstanding = (
+            set(self._sim_inflight_expected)
+            | buffered
+            | set(self._sim_pending_commit)
+            | set(getattr(self, "_trainer_inflight_dispatch_version", None) or ())
+        )
         # `_sim_pending_commit` is the authoritative virtual in-flight set;
         # reconcile it to `outstanding` in place (clear+update, never rebind -- the
         # selector holds a live reference) so a committed trainer drops out

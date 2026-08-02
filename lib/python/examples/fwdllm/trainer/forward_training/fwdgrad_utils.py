@@ -1,5 +1,7 @@
+import os
 import torch
 import math
+from contextlib import nullcontext as _nullcontext
 
 from torch.nn import CrossEntropyLoss
 from typing import Callable, Tuple
@@ -88,6 +90,18 @@ def functional_get_loss(
     return _get_loss(y, t, num_classes)
 
 
+def jvp_fp32_enabled() -> bool:
+    """`FWDLLM_JVP_FP32=1` runs the two JVP forward passes OUTSIDE autocast.
+
+    The central difference below divides two nearly-equal losses by 2h, so its
+    condition number is ~L/(2h*|dL|); under autocast they carry fp16's ~1e-3
+    error, measured amplifying ~72x into the gradient (H12, simulate_fwdllm.md).
+    Env-gated so a standalone probe can read it with no config in scope.
+    Default OFF => byte-identical.
+    """
+    return os.environ.get("FWDLLM_JVP_FP32", "").strip().lower() in ("1", "true", "yes")
+
+
 def calculate_jvp(func, params, v, trainable_idx=None):
     """
     Calculations Jacobian-vector product using numerical differentiation.
@@ -101,7 +115,8 @@ def calculate_jvp(func, params, v, trainable_idx=None):
     _FWD_PASSES += 2   # loss + terbulence_loss forward passes below
     _JVP_EVALS += 1
     h = 0.01
-    with torch.no_grad(), autocast():
+    _cast = _nullcontext() if jvp_fp32_enabled() else autocast()
+    with torch.no_grad(), _cast:
         if trainable_idx is None:
             minus = tuple([params[i] - h * v[i] for i in range(len(params))])
             plus = tuple([params[i] + h * v[i] for i in range(len(params))])
