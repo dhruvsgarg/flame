@@ -650,3 +650,9 @@ class RandomSelector(AbstractSelector):
         #         logger.debug( f"Attempted to remove end {end_id} from "
         #             f"self.selected_ends {self.selected_ends}, but it wasnt in
         #             ends")
+        
+    def on_round_completed(self, ends: dict[str, End], round_num: int) -> None:
+        for end_id in self.ordered_updates_recv_ends:
+            self.selected_ends.discard(end_id)
+            self.all_selected.pop(end_id, None)
+        self.ordered_updates_recv_ends = []
