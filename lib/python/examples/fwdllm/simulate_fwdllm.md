@@ -30,6 +30,9 @@ gating, run-length budget) and fwdllm's rung catalog (§F) live in
 > - Correctness per mode first; parity is the consequence, never the goal. A rung green because both sides
 >   are equally wrong is a regression (§D-5). A divergence names two disagreeing sides, never which is at
 >   fault — check each side's own absolute signal before choosing which to change (§D-9).
+> - **Grade against §B's EXIT CRITERIA, not the pass count.** Parity is done when sim cannot change the
+>   conclusion — the claims are comparative, so a common-mode residual costs nothing and driving it to zero
+>   is over-optimization. Read that list before opening any investigation into a red rung.
 > - Parity findings/fixes only here; design decisions, roadmap and calibration derivations belong in
 >   FWDLLM_DESIGN.md.
 > - Ground every claim in telemetry already on disk before instrumenting or running; fix root causes, not
@@ -180,6 +183,46 @@ so one leg is not a band. That comparison needs a second OFF leg before it means
 ---
 
 ## §B  Next steps / open issues — per baseline
+
+### EXIT CRITERIA — when parity is DONE and the campaign moves to real experiments
+
+> **Read this before chasing a red rung.** Parity's job is that **sim does not change the CONCLUSION**, not
+> that every rung is green. Every claim in this work is comparative, so a residual that is the same on every
+> baseline cancels out of a ranking and costs nothing. Chasing it to zero is over-optimization.
+
+Parity is DONE when all four hold. Grade against these, not against the pass count:
+
+1. **Every INV/EXACT rung green on all nine.** Correctness, non-negotiable — these are logic, not tolerance.
+2. **Convergence and terminal state within each baseline's own replicate band.** Once a real↔sim accuracy gap
+   is smaller than the same-seed real↔real band, no code change can measurably improve it (§D-24). Stop.
+3. **Every remaining DIST residual is COMMON-MODE** — same sign on every baseline, and its spread across
+   baselines smaller than the effect the experiments claim.
+4. **No residual correlates with a baseline-DISTINGUISHING knob** (aggregation rate, selector, iteration cap).
+   This is the only criterion that can silently flip a comparative result, and the only one worth a long
+   investigation. A residual that tracks such a knob flatters one family of baselines over another.
+
+**If 1-3 hold and 4 fails → fix it.** If all four hold → ship, record the residual as a known bias, and go
+run the real experiments.
+
+**Tells that the campaign has tipped into over-optimization:** chasing a rung whose residual is inside the
+replicate band · the board getting worse from measurement changes rather than better from fixes · adding
+instrumentation faster than closing bugs · a session that ends with more red rungs and no code fix. One or
+two are normal; all four at once means stop and re-read this list.
+
+**Coverage beats polish.** Four baselines still have NO 7200s ON evidence at all. That gap matters more to
+the experiments than the last few percent of any rung.
+
+**Where we stand** (one ON pair, so two of four are simply not yet answerable):
+
+| # | status |
+|---|---|
+| 1 | **Nearly** — `felix_round` ON has ONE EXACT-tier fail, and it is the cohort count gate reporting the same 5.4% iteration quantity as `v1`, not an independent logic break |
+| 2 | **MET** — 4.07 pts avg accuracy diff against a 5.25-pt real↔real band; `terminal_state` and `total_commits` pass at 6.5% |
+| 3 | **UNKNOWN** — needs ≥3 ON parity rows to see whether the ~5% sim under-iteration is common-mode |
+| 4 | **UNKNOWN, and it is the one that matters** — H12a already showed the aggregation rate makes one family behave differently, so the residual tracking it is a live possibility, not a hypothetical |
+
+So H14 is a **footnote unless criterion 4 fails.** Grade the incoming ON sim legs against 3 and 4 first; only
+open the grad pool if the residual turns out to track the aggregation rate.
 
 > **RULE: every tracker cell ≤20 words.** State the claim/number, cut qualifiers. If it needs more, it's
 > not tracker material — shorten it or point at the code comment/commit.
