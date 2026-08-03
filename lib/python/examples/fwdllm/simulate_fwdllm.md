@@ -306,8 +306,9 @@ launched before T1.3 would price the JVP off an OFF-derived charge profile.
 | **C** | `fluxtune` real ON ×2, then `fwdllm` real ON ×2 | the two tightest controls: `fluxtune`'s 0.23-pt band makes any accuracy change visible, and `fwdllm`'s 0.0% cadence floor makes its 12.67-pt accuracy band a clean H13 test | ~8h |
 
 One command per node. Node A is `&&`-chained because every step feeds the next; B and C use `;` so a bad
-baseline cannot cost the other one its night. The `$(ls -dt …)` substitutions resolve when that step runs, not
-at paste time, so they pick up the runs the earlier steps just produced.
+baseline cannot cost the other one its night. The `$(ls …)` substitutions resolve when that step runs, not at
+paste time, so they pick up the runs the earlier steps just produced — and they sort on the run dir's
+timestamped NAME, not mtime, so reading an old run's telemetry cannot reorder them.
 
 ```bash
 cd lib/python/examples/fwdllm/expt_scripts
@@ -317,10 +318,10 @@ cp ../sim_charge_profiles/felix_round.yaml ../sim_charge_profiles/felix_round.ya
 bash run_sequential.sh --mode real --max-runtime-s 7200 --only felix_round --yes && \
 bash run_sequential.sh --mode real --max-runtime-s 7200 --only felix_round --yes && \
 python replicate_floor.py --mode real --baselines felix_round && \
-python profile_sim_charges.py $(ls -dt ../experiments/*felix_round*_real | head -2 | sed 's/^/--real-run /') \
+python profile_sim_charges.py $(ls -d ../experiments/*felix_round*_real | sort | tail -2 | sed 's/^/--real-run /') \
     --out ../sim_charge_profiles/felix_round.yaml --only-observed && \
 bash run_sequential.sh --mode sim --max-runtime-s 7200 --only felix_round --yes && \
-python trace_boundary_repicks.py $(ls -dt ../experiments/*felix_round*_sim | head -1) && \
+python trace_boundary_repicks.py $(ls -d ../experiments/*felix_round*_sim | sort | tail -1) && \
 python run_parity.py --yes --baselines felix_round
 
 # ---- node B ----
