@@ -291,10 +291,11 @@ is Step 3's.
 ~3% cheaper, direction as predicted, no slowdown. Small enough that the OFF-derived charge profile is not
 badly wrong, large enough that node A's re-profile stays in the plan.
 
-#### Step 2 — **IN FLIGHT** (launched 08-02 late). The 9h overnight; every 7200s baseline gets an ON pair.
+#### Step 2 — **LAUNCHING / IN FLIGHT** (08-02 late). The 9h overnight; every 7200s baseline gets an ON pair.
 
-**⇒ THE NEXT THING THAT HAPPENS IS STEP 3: read these runs.** Nothing else is queued. If a node came back
-short or empty, that baseline simply has no ON leg — grade the ones that landed, do not wait for all five.
+**⇒ START HERE NEXT SESSION.** If ON run dirs newer than `run_20260802_2327` exist, go straight to Step 3 and
+grade whatever landed — do not wait for all five, and do not relaunch a baseline that already has its pair.
+If they do NOT exist, the launch never happened: run the three commands below as-is.
 
 Reals first by design: a real↔real floor needs no sim leg, accuracy is a reals-only question, and a sim leg
 launched before T1.3 would price the JVP off an OFF-derived charge profile.
@@ -431,6 +432,10 @@ Never spend a run on a question a bench repro can answer (preamble).
   never had the conflation. Re-check if async_cifar10 shows the same under-fill.
 
 **Future tasks**
+- **A run dir cannot say which training config produced it.** `jvp_eval_mode` lives in the trainer's
+  `config_overrides`, which the runner never dumps — not in `aggregator_config.json`, not in `snapshot.yaml`;
+  the only record is 100 lines in the trainer log. `replicate_floor.py` now greps that log, which works but is
+  the wrong layer. Dump the resolved TRAINER config into the run dir and key off it. Same class as §F-18.
 - **Enforce §F-18 mechanically: a per-baseline knob CONTRACT.** Two correctness-path knobs went missing from
   yamls and were caught only by reading telemetry days later, so those runs were not fairly comparable. The
   mechanism mostly EXISTS — `run_sequential.sh`'s preflight `checks[]` already blocks a launch and ships both

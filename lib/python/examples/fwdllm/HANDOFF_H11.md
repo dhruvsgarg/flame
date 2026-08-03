@@ -33,12 +33,9 @@ right moment relative to the boundary. That is exactly what the pending run test
 
 ### PENDING LAUNCH — `felix_round` real+sim, **7200s** (now §B node A, with `jvp_eval_mode` ON)
 
-```bash
-cd lib/python/examples/fwdllm/expt_scripts
-bash run_sequential.sh --mode both --max-runtime-s 7200 --only felix_round --yes
-python trace_boundary_repicks.py ../experiments/<new felix_round sim dir>
-python run_parity.py --yes --baselines felix_round
-```
+**Do NOT run `--mode both` here.** Use node A's chain in `simulate_fwdllm.md` §B verbatim: it runs the two
+reals, RE-PROFILES the charge registry from them, and only then runs the sim leg. `--mode both` would grade
+the sim leg against an OFF-derived charge profile and the parity verdict would be about the profile.
 
 **⚠ MUST be 7200s, NOT 3600s** — an earlier plan said 3600s and it would have been a wasted run. The defect
 only fires at the round-1→2 boundary, and that boundary arrives late:
@@ -70,6 +67,6 @@ If over-dispatch persists, the guard is being cleared somewhere else as well —
 | node | job | state |
 |---|---|---|
 | 1 | `felix_round` real+sim **7200s** — H11 live validation | **STILL OWED** — now folded into node A of `simulate_fwdllm.md` §B, which runs it with `jvp_eval_mode` ON |
-| 2 | `fluxtune` + `fwdllm` real replicates (floors) | **done** — `run_20260802_172341`, `run_20260802_192556`; unread (§B T0.1) |
-| 3 | `fwdllm_it_unaware` + `fwdllm_it_oracular` 7200s pairs | **done** — `run_20260802_172249`/`_192444`, `run_20260802_193900`/`_214059`; ungraded (§B T0.1) |
+| 2 | `fluxtune` + `fwdllm` real replicates (floors) | **done** — `run_20260802_172341`, `run_20260802_192556`; **graded** — floors in §A, H12a confirmed |
+| 3 | `fwdllm_it_unaware` + `fwdllm_it_oracular` 7200s pairs | **done** — `run_20260802_172249`/`_192444`, `run_20260802_193900`/`_214059`; **graded 69/0/23, both CLEAN** (§A) |
 | bench | H13 probe C | **done** — CONFIRMED, §B |
