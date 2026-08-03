@@ -283,7 +283,28 @@ causes: cadence tracks the aggregation rate (H12a), accuracy tracks gradient noi
 grading rule — **an ON leg must be compared to a BAND, not a number.** For `fluxtune` (0.23 pts) a 1-point
 move is signal; for `fwdllm` anything inside 28-42% says nothing.
 
-#### Step 1 — 30-MINUTE VERIFICATION on all three nodes. Do this BEFORE the overnight.
+#### Step 1 — DONE (08-02 23:27, 903s per node). **CLEARED for step 2.**
+
+All four gates green on all three nodes: **100/100 trainers logged `jvp_eval_mode=True`, zero `False`**, zero
+tracebacks, full 903s span. Learning, in the ON run's OWN eval window applied identically to each OFF leg
+(matching the window matters — an unmatched cutoff silently handed OFF more time):
+
+| baseline | window | ON | OFF leg 1 | OFF leg 2 | evals ON/OFF |
+|---|---|---|---|---|---|
+| `felix_round` | 597s | **34.22%** | 32.55% | 32.00% | 12 / 12 / 12 |
+| `fedbuff_round` | 559s | 40.47% | 36.21% | 41.43% | 12 / 11 / 11 |
+| `fluxtune` | 445s | 40.72% | 31.00% | 40.96% | 4 / 3 / 4 |
+
+**No baseline degrades outside its OFF spread, and `felix_round` beats both its OFF legs.** Matched eval
+counts say throughput did not regress. **Read this as a go/no-go, NOT as the accuracy answer** — dropout is a
+regularizer, so its absence flatters an early curve and can still cost peak accuracy at 7200s. That verdict
+is Step 3's.
+
+**JVP cost (T1.3).** `tb_forward_jvp` median 23.75ms ON vs 24.48ms OFF, `tb_stat_utility` 8.32 vs 8.42ms —
+~3% cheaper, direction as predicted, no slowdown. Small enough that the OFF-derived charge profile is not
+badly wrong, large enough that node A's re-profile stays in the plan.
+
+#### Step 1 (for reference) — 15-MINUTE VERIFICATION on all three nodes, BEFORE the overnight.
 
 Same yamls, same command, `--max-runtime-s 1800`. Costs 35 minutes and is the only thing standing between a
 mistyped knob and nine wasted node-hours.
