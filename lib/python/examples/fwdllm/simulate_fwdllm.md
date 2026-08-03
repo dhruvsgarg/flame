@@ -258,15 +258,52 @@ so no parity verdict until they get a sim leg (`fwdllm`, `fluxtune`, `fedbuff_ro
 
 #### Step 4a — H14's grad pool. **THE ACTIVE TASK, and it needs no node.**
 
-One quantity explains four fails, and it is not yet mechanised. In order:
-1. Look for existing per-cycle telemetry naming the grad pool's MEMBERS at the instant `var` is computed —
-   `contributing_trainers` is a post-hoc list, and §D-20 warns that a proxy sampled at the wrong instant is
-   not the quantity. If none exists, add one (with its plot + test, §F-8).
-2. Bench-repro `_compute_var` over a pool assembled in each mode's order, importing the real function.
-   CONTROL FIRST: an unfixed arm that comes back matched means the harness is wrong (preamble).
-3. Only then a sim leg, to validate.
+One quantity explains four fails. **The summary statistics are exhausted — every one of them matches**, so
+the next evidence has to be the pool's individual entries.
 
-Do NOT widen a tolerance to make these four pass — they now sit 9x above a measured floor.
+**Also ruled out, on disk:** the AGGREGATION RATE (computed from telemetry through the real `weight_factor`:
+rate@it0 0.4643 / 0.4641 real vs 0.4649 sim, i.e. sim marginally HIGHER, which would push variance up) and
+the raw GRAD MAGNITUDE (`g1_grad_norm` 2278.8 vs 2276.7, **0.09%**, KS 0.006).
+
+**So the pool has the same size, the same magnitude and the same weights, but less DISPERSION** — variance
+reacts to spread, not scale. That is the one thing no existing summary reports.
+
+The instrument already existed and had never been wired to a run: `build_var_calc` emits each pool entry's
+norm beside the reduction's output, but only under global DEBUG, which would also flood the log and perturb
+timing. It is now behind `var_calc_audit` (default OFF, ~one GPU→CPU sync per pool entry), set on both legs
+of the `felix_round` pair. `diff_var_pool.py` pairs cycles at identical (bin, iteration) and separates the two
+possible roots: **inputs match but output differs ⇒ the reduction; inputs less dispersed in sim ⇒ pool
+assembly.** 5 tests.
+
+⚠ **This needs the FULL 7200s, not a smoke.** The gap DRIFTS (+5.6% → −15.5% → −9.2% by progress quartile),
+so a short run can show it with the opposite sign — §D-25's accumulating case, where a short run reads a
+false PASS.
+
+Do NOT widen a tolerance to make these four pass — they now sit 9x above a measured floor. Remove
+`var_calc_audit` from both yamls once H14 closes.
+
+```bash
+cd lib/python/examples/fwdllm/expt_scripts
+
+# ---- node A: H14's instrumented pair (var_calc_audit already set on both legs) ----
+bash run_sequential.sh --mode real --max-runtime-s 7200 --only felix_round --yes && \
+bash run_sequential.sh --mode sim  --max-runtime-s 7200 --only felix_round --yes && \
+python diff_var_pool.py $(ls -d ../experiments/*_felix_round_n100_*_real | sort | tail -1) \
+                        $(ls -d ../experiments/*_felix_round_n100_*_sim  | sort | tail -1)
+
+# ---- node B: H15's control — felix_it with the flag OFF, the ONLY leg that should be ----
+#   the code default is now ON, so this leg needs an explicit false, and the
+#   preflight will (correctly) warn about it. Restore the yaml straight after.
+sed -i 's/^\( *\)jvp_eval_mode: true/\1jvp_eval_mode: false/' felix_it_n10_smoke.yaml
+bash run_sequential.sh --mode real --max-runtime-s 7200 --only felix_it --yes
+git checkout -- felix_it_n10_smoke.yaml            # put the default back immediately
+grep -h 'JVP_EVAL_MODE' $(ls -d ../experiments/*_felix_it_n100_*_real | sort | tail -1)/*trainers.log | sort | uniq -c
+python replicate_floor.py --mode real --baselines felix_it
+```
+
+The `grep` is the point of §D-49: it must report **100 trainers at `jvp_eval_mode=False`** and
+`live_dropout=19/20`. An ON control measures nothing, and this is the leg that decides whether the promotion
+holds.
 
 #### Step 4b — ON sim legs, once 4a has a verdict.
 

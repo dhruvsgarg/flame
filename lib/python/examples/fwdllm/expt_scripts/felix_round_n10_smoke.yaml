@@ -95,6 +95,9 @@ experiments:
           # Eval cadence -- MUST match real/sim, else the two sample the accuracy
           # curve at different points. Raise if the run warns about waiting.
           eval_every_n_commits: 2
+          # H14 diagnostic, TEMPORARY: per-contribution grad norms into the
+          # variance gate. Remove once H14 closes. Must match on both legs.
+          var_calc_audit: true
           # Arms runner.py's watchdog (force-kill on hang); inert otherwise.
           max_experiment_runtime_s: 10800
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5

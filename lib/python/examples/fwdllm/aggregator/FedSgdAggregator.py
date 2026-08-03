@@ -77,6 +77,11 @@ class FedSGDAggregator(TopAggregator):
         self.model = model_trainer.model
         self.dataset = None
         self.num_labels = num_labels
+        # H14 audit: per-contribution grad norms into the variance gate. Default
+        # OFF (costs a GPU->CPU sync per pool entry); flip on BOTH legs of a pair.
+        self._var_calc_audit = bool(getattr(self.args, "var_calc_audit", False))
+        if self._var_calc_audit:
+            logger.info("[VAR_CALC_AUDIT] emitting per-cycle grad-norm records")
 
         self.train_data_local_dict = train_data_local_dict
         self.test_data_local_dict = test_data_local_dict
@@ -240,8 +245,11 @@ class FedSGDAggregator(TopAggregator):
     def _compute_var(self):
         """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
         result = calculate_var(self.grad_for_var_check_list)
-        # Diagnostic telemetry (grad norms + var); DEBUG-gated to avoid taxing every prod run.
-        if logger.isEnabledFor(logging.DEBUG):
+        # Diagnostic telemetry (grad norms + var). Off by default: ~n_pool GPU->CPU
+        # syncs per cycle. `var_calc_audit` turns it on WITHOUT global DEBUG, which
+        # would also flood the log and perturb timing — the point is to diff the
+        # pool's dispersion real vs sim (H14), not to debug everything.
+        if getattr(self, "_var_calc_audit", False) or logger.isEnabledFor(logging.DEBUG):
             try:
                 from flame import telemetry
                 if telemetry.is_enabled():
