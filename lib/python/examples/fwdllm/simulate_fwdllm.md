@@ -161,15 +161,12 @@ dropout-live** — the OFF-mode control for every `jvp_eval_mode` run (§B).
 
 > **Update in place on every run — overwrite, never stack a new dated block below.**
 
-**What the last batch settled.** Three new 7200s reals (`felix_round`, `fedbuff_round`, `felix_it`) + `felix_it`'s
-first 7200s sim leg. **H10 CONFIRMED far more broadly than stated** — not four hairline rungs but
-`felix_round`'s entire cadence family failing against its own replicate, including `v1c`, the rung built to be
-the duration-invariant ROOT (§A). **H11 CONFIRMED and FIXED** (§G); `felix_it` is a clean negative, so the
-defect is the round-boundary batch path, not AsyncOort's `select()`. **Charge circularity closed** (§G).
-**H13 found the replicate floor's source and closed it on the bench: live dropout inside `calculate_jvp`.**
-Probe C confirmed it on the real stack and `jvp_eval_mode` drives the spread to exactly 0, so the three
-blocked baselines are no longer heading for a tolerance-widening ending. What is unmeasured is what eval mode
-does to ACCURACY — that is the whole point of the next runs.
+**What the last batch settled.** **H13 found and closed the replicate floor's source** — live dropout inside
+`calculate_jvp`, confirmed on the real stack by probe C, driven to exactly 0 by `jvp_eval_mode` (§G).
+**H12a CONFIRMED by its own falsifier** (`fwdllm` cadence floor 0.0%). **T0.1 graded the whole backlog**: two
+baselines went clean, two lost their clean status to their own new replicate, and `v2_var_trajectory` turned
+out ungradeable everywhere (§A). **H11 is still the one thing owed a live run** ([HANDOFF_H11.md](HANDOFF_H11.md)),
+now folded into Step 2's node A. **Step 1 verified the ON config on all three nodes; Step 2 is in flight.**
 
 **Live hypotheses — each with the observation that would falsify it.** State the prediction BEFORE the run;
 a hypothesis that can only be confirmed is not one (§D-9).
@@ -246,26 +243,16 @@ uninterpretable until H13 resolves.
 > H11's validate-invalidate state + its still-owed launch: [HANDOFF_H11.md](HANDOFF_H11.md)
 > (temporary — delete when H11 closes).
 
-**Where the nine stand.** 2 clean at 7200s (`fluxtune`, `fwdllm`) · 3 blocked on H13 (`felix_round`,
-`felix_it`, `fedbuff_round` — tolerances below their measured floor, and H13 is a CODE bug, so a code change
-is what closes them) · 4 thin (`fwdllm_it_*` now have 7200s pairs on disk and are UNGRADED; `fedbuff_it_*`
-are still 1200s smokes at N=38).
+**Where the nine stand, after T0.1 graded everything on disk.** 2 clean at 7200s (`fwdllm_it_unaware`,
+`fwdllm_it_oracular`, 69/0/23) · 3 blocked on H13 (`felix_round`, `felix_it`, `fedbuff_round`) · 2 that LOST
+their clean status to their own new replicate (`fluxtune` 73/3, `fwdllm` 64/3 — and `fwdllm`'s are real
+signal, its cadence floor is 0.0%) · 2 still on 1200s smokes at N=38 (`fedbuff_it_*`).
 
-**Landed on disk, not yet read (T0 below).** `fluxtune` + `fwdllm` second reals (`run_20260802_172341`,
-`run_20260802_192556`) and `fwdllm_it_unaware` / `fwdllm_it_oracular` 7200s pairs (`run_20260802_172249` +
-`_192444`, `run_20260802_193900` + `_214059`). All four reals achieved their 7200s. **These are OFF-mode
-runs** — they are the last word on the current config and the control for every ON run below.
+**Everything above is OFF-mode** (dropout live) and is the control for every ON run below.
 
 ---
 
-#### T0 — DONE (08-02). What it established.
-
-| | task | outcome |
-|---|---|---|
-| **T0.1** | grade the four runs on disk | §A updated. `fwdllm_it_*` **69/0/23 CLEAN**; `fluxtune` 77/0→**73/3**, `fwdllm` 68/0→**64/3** on the new reals; floors measured for `fluxtune`/`fwdllm`. **H12a CONFIRMED** by its own falsifier |
-| **T0.2** | `jvp_eval_mode: true` in the trainer block of 10 yamls (real+sim × `felix_round`, `felix_it`, `fedbuff_round`, `fluxtune`, `fwdllm`) | all five 7200s baselines can now run ON. Flip one line per file to go back |
-| **T0.3** | preflight check in `run_sequential.sh` | blocks the launch on a mismatched OR one-sided knob; both cases negative-controlled. Warns when absent (code default = dropout LIVE) |
-| **T0.4** | OFF-mode peak accuracy — **the control every ON leg is graded against** | below |
+#### T0 — DONE (08-02). Backlog graded (§A), knob wired into 10 yamls + preflight (§G).
 
 **OFF-mode peak accuracy, 7200s reals (dropout LIVE).** Two legs where a replicate exists:
 
@@ -304,41 +291,10 @@ is Step 3's.
 ~3% cheaper, direction as predicted, no slowdown. Small enough that the OFF-derived charge profile is not
 badly wrong, large enough that node A's re-profile stays in the plan.
 
-#### Step 1 (for reference) — 15-MINUTE VERIFICATION on all three nodes, BEFORE the overnight.
+#### Step 2 — **IN FLIGHT** (launched 08-02 late). The 9h overnight; every 7200s baseline gets an ON pair.
 
-Same yamls, same command, `--max-runtime-s 1800`. Costs 35 minutes and is the only thing standing between a
-mistyped knob and nine wasted node-hours.
-
-**15 minutes is enough, and the second baseline on each node needs no run at all.** The knob check is a
-preflight, so `--dry-run` settles it in seconds; the live leg only has to prove the trainer still learns, and
-at 900s `felix_round`/`fedbuff_round` produce ~10 evals and `fluxtune` ~5 — a curve, not a peak.
-
-```bash
-cd lib/python/examples/fwdllm/expt_scripts
-
-# node A  (--mode both: also exercises the real/sim knob-match check A needs tonight)
-bash run_sequential.sh --mode both --max-runtime-s 7200 --only felix_round --dry-run && \
-bash run_sequential.sh --mode real --max-runtime-s 900  --only felix_round --yes
-
-# node B
-bash run_sequential.sh --mode real --max-runtime-s 7200 --only fedbuff_round,felix_it --dry-run && \
-bash run_sequential.sh --mode real --max-runtime-s 900  --only fedbuff_round --yes
-
-# node C
-bash run_sequential.sh --mode real --max-runtime-s 7200 --only fluxtune,fwdllm --dry-run && \
-bash run_sequential.sh --mode real --max-runtime-s 900  --only fluxtune --yes
-```
-
-Check all four, per node, before launching anything long:
-
-| | check | how |
-|---|---|---|
-| 1 | preflight is green on the knob | `jvp_eval_mode (…) true on every leg` in the PRE-FLIGHT block |
-| 2 | the knob reached the TRAINER | `grep -m1 JVP_EVAL_MODE ../experiments/<run>/*trainers.log` reads `jvp_eval_mode=True` — **100 lines, one per trainer** |
-| 3 | it still learns | `plot_run.py --run-dir …` max acc well above 25% (4-class chance). A 30-min leg will not reach the 7200s peak; you are looking for a curve, not a number |
-| 4 | nothing threw | no `Traceback` in the trainer or aggregator log |
-
-#### Step 2 — the 9h overnight, 3 nodes. Every 7200s baseline gets an ON replicate PAIR.
+**⇒ THE NEXT THING THAT HAPPENS IS STEP 3: read these runs.** Nothing else is queued. If a node came back
+short or empty, that baseline simply has no ON leg — grade the ones that landed, do not wait for all five.
 
 Reals first by design: a real↔real floor needs no sim leg, accuracy is a reals-only question, and a sim leg
 launched before T1.3 would price the JVP off an OFF-derived charge profile.
@@ -388,7 +344,10 @@ which is correct for an ON sim leg and WRONG the moment the flag goes back off �
 **⚠ MUST be 7200s, not 3600s** — node A doubles as the H11 validation and that defect only fires at the
 round-1→2 boundary, which arrives at wall 4270-4823s (real) / vclock 4441s (sim).
 
-#### Step 3 — TOMORROW MORNING. Read in this order, stop at the first failure.
+#### Step 3 — **THE ACTIVE TASK.** Read in this order, stop at the first failure.
+
+Runs to grade: `felix_round` (real ON ×2 + sim ON + parity + boundary trace), `fedbuff_round` ×2,
+`felix_it` ×2, `fluxtune` ×2, `fwdllm` ×2 — all `*_real`/`*_sim` dirs newer than `run_20260802_2327`.
 
 | | check | if it fails |
 |---|---|---|
@@ -414,11 +373,12 @@ round-1→2 boundary, which arrives at wall 4270-4823s (real) / vclock 4441s (si
   not going ON tonight; getting them onto 7200s pairs is the next night's work either way.
 
 **SHORT TERM — the remaining gaps, in priority order.**
-1. **`fedbuff_it_*` off 1200s** (7200s pairs). N=38 smokes; nothing cadence-shaped there is evidence and H8 is
-   unanswerable without it. Run as replicate PAIRS if H13 came back irreducible.
-2. **Re-profile the four 1200s-sourced charge profiles** from their new 7200s reals — no run of its own, just
-   `profile_sim_charges.py`, then one sim leg to pick it up.
-3. **Floors for the last baselines without one**, so every row on the scoreboard is interpretable.
+1. **`fedbuff_it_*` off 1200s** (7200s pairs) — the LAST two baselines with no 7200s evidence. N=38 smokes;
+   nothing cadence-shaped there is evidence and H8 is unanswerable without it.
+2. **Re-profile `fedbuff_it_*`'s charge profiles** once (1) lands. `fwdllm_it_*` are already done — their
+   08-02 sim legs picked the new profile up and both went 69/0/23.
+3. **Floors for `fwdllm_it_*` and `fedbuff_it_*`** — the only four with no replicate at all once Step 2 lands
+   ON floors for the other five.
 4. **Full 9-baseline re-grade** at 7200s with every tolerance calibrated. This is the parity sign-off.
 5. **`async_oort`→`AsyncSelectorBase` integration confirmation** (`--only felix_round,felix_it`) — unit tests
    cover the mechanism, not a live comparison.
@@ -473,8 +433,8 @@ Never spend a run on a question a bench repro can answer (preamble).
   sim-only, `reselect_cadence: round` round-only, `trackTrainerAvail` oracular-only), so applicability must be
   DECLARED, not diffed — sketch: a `knob_contract` block in `_metadata/baselines.yaml` read by all three
   layers. Open: where it lives; error-vs-warn; whether `condition_fp` absorbs it; who declares a new knob.
-- Regenerate the four 1200s-sourced charge profiles (`fedbuff_it_*`, `fwdllm_it_*`) once their 7200s reals
-  exist. Not urgent — the charge is not materially duration-sensitive.
+- Regenerate `fedbuff_it_*`'s charge profiles once their 7200s reals exist (`fwdllm_it_*` done, 08-02). Not
+  urgent — the charge is not materially duration-sensitive.
 - Flag promotion: `sim_sct_ordered_drain` + `sim_model_dispatch_queue` are fluxtune-yaml-only but model
   general async-transport artifacts — smoke fwdllm/fwdllm_plus with both ON, confirm inert-or-better, promote.
 - Checker invariants I1-I6 were drafted in a prior session and never committed anywhere (unrecoverable).
@@ -698,6 +658,15 @@ warmup. Assert the mode in the record (`live drop`), don't assume it.
 **D-48.** `model.training` is not the answer to "is dropout on". `train_adapter` left 13 of 20 `nn.Dropout`
 modules training while the root module read False. Count the live submodules.
 
+**D-49.** Before an overnight, spend 15 minutes proving the knob reached the TRAINER — `--dry-run` for the
+preflight, then one short real leg and `grep` its trainer log for the knob's own log line, expecting one per
+trainer. A yaml-only knob is invisible to `condition_fp` (§F-18), so the run looks perfect and grades the old
+config. Cost 17 min, insures 9 node-hours.
+
+**D-50.** Comparing a short run to a long one: cut BOTH at the short one's achieved span, never at a fixed
+number. A 800s cutoff against a 597s run silently hands the longer run more time and the shorter one loses on
+a difference that is pure window. Sibling of §D-44 — same failure, applied to curves instead of replicates.
+
 ---
 
 ## §E  Dead ends — do NOT retry
@@ -897,6 +866,10 @@ rule now live in §D-3.
 > current depends on it — git log keeps it.
 
 **This batch**
+- **`jvp_eval_mode` wired end to end for the A/B.** Trainer knob in the **trainer** `config_overrides` block of
+  10 yamls (real+sim × the five 7200s baselines); `run_sequential.sh` preflight BLOCKS on a mismatched or
+  one-sided pair and warns when absent (= code default, dropout live). Both failure modes negative-controlled.
+  One line per yaml to revert.
 - **H13 CONFIRMED on the real stack and `jvp_eval_mode` closes it (probe C, §B).** `base` 10% of repeats
   bit-exact / jvp spread 3.44; `evalmode` 100% / 0.00e+00. `determ` bit-for-bit `base`, `fp32` worse — neither
   touches dropout. Probe now names the direction of a spread change and refuses cross-arm comparisons while
