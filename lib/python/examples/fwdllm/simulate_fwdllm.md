@@ -333,9 +333,15 @@ Do NOT widen a tolerance to make these four pass — they now sit 9x above a mea
 
 | node | leg | buys | expected if the hypothesis holds | falsified if |
 |---|---|---|---|---|
-| A | `felix_round` real, `var_calc_audit` ON | H14's real half | `var_calc` records on ~2450 cycles | no `var_calc` events ⇒ knob never reached the AGGREGATOR (it is an aggregator knob, not a trainer one) |
+| A | `fedbuff_it_unaware` real, 7200s | COVERAGE — one of the last two baselines with no 7200s evidence at all | the real half of a future ON pair; a 2nd leg later gives it a floor | — |
 | B | `felix_it` real, **`jvp_eval_mode` OFF** | H15's missing control | a second OFF leg near 84.72%, giving `felix_it` its first OFF band | the leg lands at 81-82% ⇒ 84.72% was the outlier, the ON "drop" was never real, promotion is safe |
-| C | `felix_round` sim (audit) + `fwdllm` sim, ON charges | H14's sim half + a 2nd ON parity row | `diff_var_pool` separates pool assembly from the reduction | — |
+| C | ON sim legs for all five 7200s baselines | criteria 3 and 4 — the stopping decision | ~5% sim under-iteration, same sign everywhere ⇒ common-mode ⇒ STOP | the residual tracks the aggregation rate ⇒ criterion 4 fails ⇒ open H14 |
+
+**H14's instrumentation is DEFERRED, deliberately.** Reproducing it needs both legs re-run with
+`var_calc_audit`, and the exit criteria make H14 a footnote unless criterion 4 fails — so spending a node on
+it before criterion 4 is answered is the over-optimization this section warns about. The knob and
+`diff_var_pool.py` stay in the code, OFF, costing nothing; the yamls are back to the config that produced the
+existing rows, so tonight's sim legs stay comparable to last night's reals (§F-18).
 
 **H14's two outcomes, and they need different fixes.** `diff_var_pool.py` is built to tell them apart:
 - **Input norms match, output var differs** ⇒ the reduction itself diverges. Look at accumulation ORDER and

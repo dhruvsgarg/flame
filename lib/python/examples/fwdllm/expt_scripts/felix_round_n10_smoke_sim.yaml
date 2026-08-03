@@ -84,9 +84,6 @@ experiments:
           # Eval cadence -- MUST match real/sim, else the two sample the accuracy
           # curve at different points. Raise if the run warns about waiting.
           eval_every_n_commits: 2
-          # H14 diagnostic, TEMPORARY: per-contribution grad norms into the
-          # variance gate. Remove once H14 closes. Must match on both legs.
-          var_calc_audit: true
           # Outer wall failsafe (code default 20x max_runtime_s is too loose).
           sim_wall_ceiling_s: 7200
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
