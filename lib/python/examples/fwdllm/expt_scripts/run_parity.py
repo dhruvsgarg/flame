@@ -54,18 +54,56 @@ _RUN_RE = re.compile(
 
 def _discover(experiments_dir: str) -> dict:
     """{(baseline, trace): {'real': (ts, path), 'sim': (ts, path)}} keeping the
-    latest ts per (baseline, trace, variant)."""
+    latest ts per (baseline, trace, variant).
+
+    The real leg is the latest whose `jvp_eval_mode` MATCHES the sim's: taking
+    the latest outright grades an OFF control against an ON sim leg, i.e. the
+    flag rather than the code (simulate_fwdllm.md §A).
+    """
     out: dict = {}
     for path in glob.glob(os.path.join(experiments_dir, "run_*")):
         m = _RUN_RE.match(os.path.basename(path))
         if not m:
             continue
         key = (m["baseline"], m["trace"] or "")
-        slot = out.setdefault(key, {})
-        prev = slot.get(m["variant"])
-        if prev is None or m["ts"] > prev[0]:   # ts is fixed-width -> lexical == chronological
-            slot[m["variant"]] = (m["ts"], path)
-    return out
+        legs = out.setdefault(key, {"real": [], "sim": []})
+        legs[m["variant"]].append((m["ts"], path))
+
+    paired: dict = {}
+    for key, legs in out.items():
+        slot = {}
+        sims = sorted(legs["sim"], reverse=True)
+        reals = sorted(legs["real"], reverse=True)
+        if sims:
+            slot["sim"] = sims[0]
+        if reals:
+            slot["real"] = reals[0]
+        if sims and reals:
+            want = _jvp_eval_mode(sims[0][1])
+            match = next((r for r in reals if _jvp_eval_mode(r[1]) == want), None)
+            if match is not None:
+                slot["real"] = match
+            slot["_flag"] = want
+            slot["_flag_skipped"] = [r for r in reals if r[0] > slot["real"][0]]
+        if slot:
+            paired[key] = slot
+    return paired
+
+
+def _jvp_eval_mode(run_dir: str) -> bool:
+    """Was this leg trained with dropout off inside the JVP? Only the trainer log
+    records it (§B.6). Absent = predates the flag = old default, dropout live."""
+    for lg in glob.glob(os.path.join(run_dir, "*trainers.log")):
+        try:
+            with open(lg, errors="ignore") as fh:
+                for i, line in enumerate(fh):
+                    if "jvp_eval_mode=" in line:
+                        return "jvp_eval_mode=True" in line
+                    if i > 50000:      # the knob logs at trainer init or never
+                        break
+        except OSError:
+            continue
+    return False
 
 
 def _agg_goal(run_dir: str) -> int | None:
@@ -235,22 +273,28 @@ def main(argv=None) -> int:
                 print(f"  [SKIP] {'/'.join(k for k in key if k)}: "
                       f"missing a side (have: {have})")
                 continue
-            pairs.append((key, slot["real"], slot["sim"]))
+            pairs.append((key, slot["real"], slot["sim"],
+                          slot.get("_flag"), slot.get("_flag_skipped") or []))
 
     if not pairs:
         print("No complete real/sim pairs to check.")
         return 1
 
     # ── confirmation: show exactly which dirs will be compared ──
-    label_w = max(len("/".join(k for k in key if k)) for key, _, _ in pairs)
-    print("\n  Real<->sim pairs to check (latest per baseline):")
-    for key, (rts, rdir), (sts, sdir) in pairs:
+    label_w = max(len("/".join(k for k in key if k)) for key, *_ in pairs)
+    print("\n  Real<->sim pairs to check (latest per baseline, flag-matched):")
+    for key, (rts, rdir), (sts, sdir), flag, skipped in pairs:
         goal_r, goal_s = _agg_goal(rdir), _agg_goal(sdir)
         goal = f"agg_goal={goal_r}" + (f"!={goal_s}⚠" if goal_s != goal_r else "")
         label = "/".join(k for k in key if k)
         print(f"    {label.ljust(label_w)}  {goal}")
         print(f"      real {rts}  {os.path.basename(rdir)}")
         print(f"      sim  {sts}  {os.path.basename(sdir)}")
+        if flag is not None:
+            print(f"      jvp_eval_mode={flag} on both legs")
+        for sts_, sdir_ in skipped:
+            print(f"      [skipped newer real {sts_} {os.path.basename(sdir_)} "
+                  f"-- jvp_eval_mode differs]")
     if not args.yes and sys.stdin.isatty():
         if input("\n  Proceed with these pairs? [y/N] ").strip().lower() not in ("y", "yes"):
             print("  Aborted.")
@@ -263,7 +307,7 @@ def main(argv=None) -> int:
     jobs = args.jobs if args.jobs else _default_jobs(len(pairs))
     work = [(("/".join(k for k in key if k)), rdir, sdir, _agg_goal(rdir) or 0,
              args.max_bin, json_dir, sts)
-            for key, (_rts, rdir), (sts, sdir) in pairs]
+            for key, (_rts, rdir), (sts, sdir), _flag, _skipped in pairs]
     print(f"\n  Grading {len(pairs)} pair(s) with {jobs} worker(s) "
           f"(~{_PAIR_RSS_GB:.0f} GB each)...")
 
@@ -276,8 +320,8 @@ def main(argv=None) -> int:
         # this is close to linear until it saturates memory or disk.
         with ProcessPoolExecutor(max_workers=jobs) as pool:
             done = list(pool.map(_grade_pair, work))    # map preserves input order
-    for (label, res, jpath, tally, fails), (_key, (_rts, rdir), (_sts, sdir)) in zip(
-            done, pairs):
+    for (label, res, jpath, tally, fails), (_key, (_rts, rdir), (_sts, sdir),
+                                            _flag, _skipped) in zip(done, pairs):
         live = _live_checks(label, rdir, sdir) if args.validate else []
         summary.append((label, res, jpath, tally, fails, live))
 

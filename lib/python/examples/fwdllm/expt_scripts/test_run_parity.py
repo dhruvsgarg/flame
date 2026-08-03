@@ -16,9 +16,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import run_parity as rp  # noqa: E402
 
 
-def _mk_run(tmp_path, name, n_bins=4, agg_goal=2, vclock=False):
+def _mk_run(tmp_path, name, n_bins=4, agg_goal=2, vclock=False, jvp=None):
     d = tmp_path / name
     (d / "telemetry").mkdir(parents=True)
+    if jvp is not None:                       # the knob lives only in the trainer log
+        (d / "x_trainers.log").write_text(f"[JVP_EVAL_MODE] jvp_eval_mode={jvp}\n")
     json.dump({"hyperparameters": {"aggGoal": agg_goal, "seed": 1234}},
               open(d / "aggregator_config.json", "w"))
     with open(d / "telemetry" / "aggregator_a.jsonl", "w") as fh:
@@ -77,6 +79,33 @@ class TestDiscovery:
         _pair(tmp_path, "fwdllm_plus")
         found = rp._discover(str(tmp_path))
         assert ("fwdllm", "syn_0") in found and ("fwdllm_plus", "syn_0") in found
+
+    def test_skips_a_newer_real_whose_flag_differs(self, tmp_path):
+        """An OFF control landing after the ON reals must not become the pair."""
+        _mk_run(tmp_path, "run_20260101_000000_felix_it_n10_smoke_syn_0_real", jvp=True)
+        _mk_run(tmp_path, "run_20260102_000000_felix_it_n10_smoke_syn_0_sim",
+                vclock=True, jvp=True)
+        _mk_run(tmp_path, "run_20260103_000000_felix_it_n10_smoke_syn_0_real", jvp=False)
+        slot = rp._discover(str(tmp_path))[("felix_it", "syn_0")]
+        assert slot["real"][0] == "20260101_000000"
+        assert [s[0] for s in slot["_flag_skipped"]] == ["20260103_000000"]
+
+    def test_takes_the_latest_real_when_the_flag_matches(self, tmp_path):
+        _mk_run(tmp_path, "run_20260101_000000_felix_it_n10_smoke_syn_0_real", jvp=True)
+        _mk_run(tmp_path, "run_20260102_000000_felix_it_n10_smoke_syn_0_sim",
+                vclock=True, jvp=True)
+        _mk_run(tmp_path, "run_20260103_000000_felix_it_n10_smoke_syn_0_real", jvp=True)
+        slot = rp._discover(str(tmp_path))[("felix_it", "syn_0")]
+        assert slot["real"][0] == "20260103_000000"
+        assert slot["_flag_skipped"] == []
+
+    def test_falls_back_to_latest_when_no_real_matches(self, tmp_path):
+        """Never grade nothing: an unmatched flag still pairs, and says so."""
+        _mk_run(tmp_path, "run_20260101_000000_felix_it_n10_smoke_syn_0_real", jvp=False)
+        _mk_run(tmp_path, "run_20260102_000000_felix_it_n10_smoke_syn_0_sim",
+                vclock=True, jvp=True)
+        slot = rp._discover(str(tmp_path))[("felix_it", "syn_0")]
+        assert slot["real"][0] == "20260101_000000" and slot["_flag"] is True
 
 
 class TestParallelGrading:

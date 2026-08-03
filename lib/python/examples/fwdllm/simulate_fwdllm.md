@@ -9,19 +9,24 @@ gating, run-length budget) and fwdllm's rung catalog (§F) live in
 
 > ## PREAMBLE — how to use this doc
 >
-> **Fresh session? Read in this order:** §F (locked invariants) → §E (dead ends) → §A (scoreboard) → §B
-> (open issues + "Next session" + the run plan) → §D (only the lessons for the rung you're chasing) → §C
-> for ladder mechanics.
+> **Fresh session? Read in this order:** §F (locked invariants) → §E (dead ends) → §A.1 (readiness ledger:
+> where every baseline is) → §B.0/§B.2 (exit criteria + what to run next) → §D (only the lessons for the rung
+> you're chasing) → §C for ladder mechanics.
 >
 > | section | contents | update rule |
 > |---|---|---|
-> | §A | scoreboard: pass/fail per baseline, ≤2-line caption | rewrite in place on every >3600s run |
-> | §B | open issues + ONE "Next session" block + the run plan | current state only; an issue lives here XOR §G |
+> | §A.1 | readiness ledger — the five stages per baseline | tick a stage the moment its artifact exists |
+> | §A.2-4 | parity rows, floors/accuracy bands, legacy OFF board | rewrite in place on every >3600s run |
+> | §B | exit criteria · the pipeline · next-up queue · open questions · backlog | current state only; an item lives here XOR §G |
 > | §C | ladder/decomposition method, run-length budget | edit only if the method itself changes |
 > | §D | durable lessons — transferable invariants | ≤30 words each; update in place, never append near-dupes |
 > | §E | dead ends — falsified hypotheses | one line each; never re-open |
 > | §F | locked invariants — always-true / always-do | operator approval + evidence; amend in place, never renumber |
 > | §G | closed items | move here the instant a §A/§B issue resolves; delete the source in the same edit |
+>
+> **No hypothesis numbering.** A question lives in §B.3 with its falsifier until it resolves, then it becomes
+> a §D lesson (true and worth keeping), a §E dead end (false and worth not re-opening), or nothing at all.
+> Carrying an H-number past its answer is how the doc grew a hypothesis zoo.
 >
 > **Living doc, not a log — no dated annotations.** Every claim must read as true right now. §G is the one
 > exception: newest-first by position, not by date. Full history is `git log` on this file.
@@ -30,7 +35,7 @@ gating, run-length budget) and fwdllm's rung catalog (§F) live in
 > - Correctness per mode first; parity is the consequence, never the goal. A rung green because both sides
 >   are equally wrong is a regression (§D-5). A divergence names two disagreeing sides, never which is at
 >   fault — check each side's own absolute signal before choosing which to change (§D-9).
-> - **Grade against §B's EXIT CRITERIA, not the pass count.** Parity is done when sim cannot change the
+> - **Grade against §B.0's EXIT CRITERIA, not the pass count.** Parity is done when sim cannot change the
 >   conclusion — the claims are comparative, so a common-mode residual costs nothing and driving it to zero
 >   is over-optimization. Read that list before opening any investigation into a red rung.
 > - Parity findings/fixes only here; design decisions, roadmap and calibration derivations belong in
@@ -79,68 +84,88 @@ and its `min_abs` calibration rule, full wall-budget/timing rung table):
 
 ---
 
-## §A  Score
+## §A  Score — the ON campaign
 
-**Two boards, one per `jvp_eval_mode` setting. A row NEVER compares across boards** — ON and OFF are
-different training configs, and every OFF tolerance and charge profile was measured dropout-live (T1.2).
+Everything here is **`jvp_eval_mode` ON**. **An OFF row is a different training config and NEVER compares to
+an ON row** — §A.4's board, all nine tolerance sets and every charge profile older than the flag were measured
+dropout-live. §A.4 survives only because three baselines have no ON evidence at all.
 
-### §A.1  eval mode OFF (dropout live)
+### §A.1  Readiness ledger — what each baseline still needs
 
-**Latest OFF run per baseline** (`run_parity.py`; ✓/✗/– = pass/fail/skip; PARITY.md §F). **Mixed durations —
-rows do NOT compare to each other.** Five baselines have a 7200s pair; four have only the 1200s Phase-0 smoke
-(N=5-38), far below scoreboard strength. `fwdllm_plus` has no run dirs on disk.
+Five stages, in order, each feeding the next. **A parity row is readable only when all five are ✓.**
 
-| baseline | run pair | dur | pass/fail/skip | N | cohort | vclock | K4 | slots | sbias | thru | commits | terminal | V1c | V1 | V2 | U3 | S2 | conv |
+| | stage | artifact |
+|---|---|---|
+| **R2** | two 7200s ON real legs | `experiments/run_*_<b>_*_real` |
+| **FL** | replicate floor measured from them | `parity_floors/<b>.yaml` |
+| **CH** | charge profile derived from THOSE reals | `sim_charge_profiles/<b>.yaml` |
+| **SIM** | ON sim leg launched AFTER CH | `experiments/run_*_<b>_*_sim` |
+| **GR** | graded row | `experiments/_parity_reports/` |
+
+| baseline | R2 | FL | CH | SIM | GR | next stage |
+|---|---|---|---|---|---|---|
+| `felix_round` | ✓ | ✓ | ✓ | ✓ | ✓ **73/1/18** | — reference row |
+| `fwdllm` | ✓ | ✓ | ✓ | pre-CH | INVALID | **re-run SIM** |
+| `fedbuff_round` | ✓ | ✓ | ✓ | pre-CH | INVALID | **re-run SIM** |
+| `fluxtune` | ✓ | ✓ | ✓ | ✗ | — | **SIM** |
+| `felix_it` | ✓ | ✓ | ✓ | ✗ | — | **SIM** |
+| `fedbuff_it_unaware` | 1 leg | ✗ | ✗ | pre-CH | provisional 71/3/18 | 2nd real → FL → CH → re-run SIM |
+| `fedbuff_it_oracular` | ✗ | ✗ | ✗ | — | — | 2 ON reals |
+| `fwdllm_it_unaware` | ✗ | ✗ | ✗ | — | — | 2 ON reals |
+| `fwdllm_it_oracular` | ✗ | ✗ | ✗ | — | — | 2 ON reals |
+
+**CH is the stage that gets skipped, and it is not cosmetic** — it is the only change between `felix_round`'s
+70/4 and 73/1 rows (§A.2). It is now enforced: the launch preflight BLOCKS a sim leg whose profile predates
+any real of that baseline trained under the SAME flag, and the comparator pairs on matching flag rather than
+on latest timestamp (§G). Neither guard can be satisfied by remembering to do something.
+
+### §A.2  Parity rows, ON
+
+`run_parity.py`; ✓/✗/– = pass/fail/skip; rung catalog PARITY.md §F. Per-pair numbers:
+`experiments/_parity_reports/parity_<baseline>_syn_0_<sim-ts>.json`.
+
+| baseline | real / sim | N | pass/fail/skip | cohort | vclock | K4 | slots | sbias | thru | commits | terminal | V1c | V1 | V2 | U3 | S2 | conv |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| fluxtune/syn_0 | `run_20260802_172341`/`_150819` | 7200s | 73/3/16 | 95 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✗ |
-| fwdllm/syn_0 | `run_20260802_192556`/`_145728` | 7200s | 64/3/24 | 39 | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| fedbuff_round/syn_0 | `run_20260802_104607`/`_155005` | 7200s | 72/3/18 | 178 | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
-| felix_round/syn_0 | `run_20260802_104547`/`_163513` | 7200s | 65/9/18 | 189 | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ | ✗ |
-| felix_it/syn_0 | `run_20260802_105134`/`_130206` | 7200s | 67/10/16 | 259 | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ |
-| fedbuff_it_unaware/syn_0 | `run_20260731_180442`/`_182654` | 1200s | 72/3/18 | 38 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✗ |
-| fedbuff_it_oracular/syn_0 | `run_20260731_184247`/`_190502` | 1200s | 73/2/18 | 38 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✗ |
-| fwdllm_it_unaware/syn_0 | `run_20260802_172249`/`_192444` | 7200s | **69/0/23** | 39 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| fwdllm_it_oracular/syn_0 | `run_20260802_193900`/`_214059` | 7200s | **69/0/23** | 39 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `felix_round` | `20260803_021757` / `_115430` | 196 | **73/1/18** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
+| `fedbuff_it_unaware` ⚠no FL | `20260803_115320` / `_135535` | 205 | 71/3/18 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ |
+| `fwdllm` ⚠no CH | `20260803_062233` / `_123938` | 36 | 58/10/24 | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
+| `fedbuff_round` ⚠no CH | `20260803_021819` / `_125016` | 174 | 64/10/18 | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ |
 
-Per-pair numeric detail: `experiments/_parity_reports/parity_<baseline>_syn_0_<sim-ts>.json`. Open fails: §B.
+Budget coverage: 100.0/98.0 · 100.0/97.2 · 87.8/100.0 (N=36, thin) · 93.0/100.0. All four passed the validity
+gate — 100/100 trainers logged the knob, zero `False`, zero tracebacks, achieved span 6928-7193s.
 
-**⚠ The cadence/convergence cells on the three uncapped OFF rows are not evidence about sim.** Swapping only
-which real replicate they were graded against — no code change — moved `felix_round` 71/3 → 65/9 and
-`fedbuff_round` 72/2 → 72/3 *with different fails*. Read OFF rows for INV/un-windowed rungs only; the ON
-board is where a cadence verdict is now readable.
+**`felix_round` is the reference row, and the ONLY thing that changed to produce it is the charge profile.**
+Same real leg, same checker, byte-identical config, no runtime source change — the sim leg was re-run against
+charges profiled from its own two ON reals:
 
-**Budget coverage.** The seven 7200s OFF pairs are healthy (min 88.3-100%). Only `fedbuff_it_*` are still
-1200s; `fedbuff_it_oracular` 76.0% trips the low-coverage flag. Read those two for INV rungs only.
+| quantity | pre-CH | post-CH | real |
+|---|---|---|---|
+| iters/bin (`v1`) | 11.857 (−5.4%) | **12.536 (−0.0%)** | 12.531 |
+| cohorts (count gate) | 2324 (−5.4%) | **2457 (+0.0%)** | 2456 |
+| `v1b` cumulative | 5.37% | **0.04%** | — |
+| `throughput` / `terminal` / `commits`, matched window | 6.5% | **1.3%** | — |
+| `v2` mean var, matched window | 3.66% | 2.79% (tol 2%) | — |
 
-### §A.2  eval mode ON (`jvp_eval_mode`, dropout off inside the JVP)
+That is §D-21 live — the charge is not neutral accounting, and a stale one moved sim's cadence by 5.4%. It is
+also what killed the grad-pool hypothesis (§E).
 
-Only `felix_round` has an ON real↔sim PAIR. Four baselines have ON reals only (floors and accuracy, no
-parity verdict); the four `*_it_*` have no ON run at all. NA = not run, not a skip.
+**The two ⚠no-CH rows fail the same family in the OPPOSITE direction** — sim OVER-iterates (`v1` +18.0% on
+`fwdllm`, +12.8% on `fedbuff_round`) and is over-charged per round (199.8 vs 166.5s; 41.4 vs 37.1s). A
+sign-reversing residual across baselines is the signature of stale profiles, not of a shared code root, and it
+is why exit criteria 3-4 are still unanswerable.
 
-| baseline | run pair | dur | pass/fail/skip | N | cohort | vclock | K4 | slots | sbias | thru | commits | terminal | V1c | V1 | V2 | U3 | S2 | conv |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| felix_round/syn_0 | `run_20260803_021757`/`_042024` | 7200s | **70/4/18** | 196 | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| fluxtune/syn_0 | reals ×2, no sim leg | 7200s | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA |
-| fwdllm/syn_0 | reals ×2, no sim leg | 7200s | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA |
-| fedbuff_round/syn_0 | reals ×2, no sim leg | 7200s | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA |
-| felix_it/syn_0 | reals ×2, no sim leg | 7200s | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA |
-| the four `*_it_*` | no ON run | — | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA | NA |
+**`fedbuff_it_unaware` is provisional, not clean.** It has no replicate, so every DIST rung grades at NOMINAL
+tolerance — `v1` passes at 1.8% against a 15% gate that `felix_round` would fail. Its fails are `v2` (3.2% vs
+2%), `utility` (KS 0.383 vs 0.2) and `convergence` (5.45% vs a 5% `acc_tol` that has no floor behind it). It
+also has no CH (its profile is from a 1200s OFF leg) yet passes `throughput` at 0.8% — a stale profile bites
+where the cadence is variance-gated and feeds back into the clock, and this baseline is iteration-capped.
 
-`felix_round` ON: `selection_detail`, `commits`, `terminal_state` and `convergence` flipped green; `v1c` reads
-`flat`; budget 196 matched units, real 100.0% / sim 94.2%. **`v1` fails only after the tolerance was sized
-against the ON floor** (§G) — at its old 15% gate it passed a 5.4% gap over a 0.6% floor. Every ON run passed
-the validity gate: 100/100 trainers logged the knob, zero `False`, zero tracebacks, achieved span 6928-7192s
-on all eleven.
-
-**All four fails are sim-SPECIFIC, confirmed by running the rung functions real↔real** (§D-45). The control
-pair fails none of them, and fails only rungs that are structurally meaningless without a sim leg
-(`sim_send_ts`, `vclock_telemetry`, `field_coverage`) or that compare one real's wall clock to another's
-(`throughput`, `total_commits`, `terminal_state`). So the cadence family is not stochastic-selector noise.
-
-### §A.3  Replicate floor, OFF → ON
+### §A.3  Replicate floors and accuracy bands, OFF → ON
 
 `replicate_floor.py --mode real`, 7200s, seed 1234, config-identical legs, grouped by achieved span (§D-44)
-and by flag state (§G). The number every DIST tolerance must clear (§D-24):
+and flag state. **The floors are inputs to the checker, not a table**: `--profile-out` writes
+`parity_floors/<b>.yaml`, and DIST tolerances tighten toward `3x floor`, never past 2% absolute, never looser
+than nominal, and SKIP once the floor swallows the tolerance. No profile ⇒ nominal gates (§D-36).
 
 | baseline | agg rate | bins | cycles | iters/bin | mean_var (tol 2%) |
 |---|---|---|---|---|---|
@@ -148,350 +173,237 @@ and by flag state (§G). The number every DIST tolerance must clear (§D-24):
 | `fluxtune` | old, capped | 1.1 → **0.0%** | 1.0 → 0.8% | 2.0 → **0.8%** | 21.3 → 6.6% |
 | `fedbuff_round` | old | 1.1 → 4.3% | 2.8 → **0.2%** | 3.9 → 4.1% | 4.7 → **1.5%** |
 | `felix_round` | new | 12.9 → **1.5%** | 0.1 → 0.5% | **13.3 → 0.6%** | 0.5 → 0.4% |
-| `felix_it` | new | — → 2.7% | — → 0.4% | — → 2.3% | — → 2.4% |
+| `felix_it` | new | 2.3 → 2.7% | 0.1 → 0.4% | 2.2 → 2.3% | 2.4 → 2.4% |
 | the four `*_it_*` | — | — | — | — | **UNMEASURED — no replicate exists** |
 
-**The cadence floor collapsed exactly where H12a predicted and nowhere else.** `felix_round` (loss-derived
-aggregation weight) went 13.3% → 0.6%, a 22x drop; the `old`-rate baselines had no cadence floor to lose and
-did not move (`fwdllm` 0.0 → 0.3%, `fedbuff_round` 3.9 → 4.1%). The VARIANCE floor fell on every baseline that
-had one. `fedbuff_round`'s bins floor moved the wrong way (1.1 → 4.3%) — one metric against nine, watch it.
+**Eval mode collapsed the cadence floor only where one existed.** `felix_round` went 13.3% → 0.6%, a 22x
+drop, and it is the loss-derived-weight baseline; the integer-staleness ones had no floor to lose and did not
+move. `felix_it` is also loss-derived and also did not move (2.2 → 2.3%) — so the rule is "where a floor
+existed", not "every new-rate baseline". `fedbuff_round`'s bins floor moved the WRONG way (1.1 → 4.3%) — one
+metric against nine, re-check before trusting its `throughput`.
 
-**`v2_var_trajectory` is now gradeable on three of five** — `fwdllm` 0.2%, `felix_round` 0.4%, `fedbuff_round`
-1.5% (tight) are under its 2% tolerance; `felix_it` 2.4% and `fluxtune` 6.6% still are not, and the checker now
-SKIPs those rather than returning a coin flip (§G).
+`v2_var_trajectory` is gradeable on three of five: `fwdllm` 0.2%, `felix_round` 0.4%, `fedbuff_round` 1.5%
+(tight). `felix_it` 2.4% and `fluxtune` 6.6% are still above its 2% tolerance and SKIP.
 
-**These floors are inputs to the checker, not just a table.** `replicate_floor.py --profile-out` writes
-`parity_floors/<baseline>.yaml`, and the DIST tolerances are sized from it: tighten toward the floor, never
-past 2% absolute, never looser than nominal, and refuse to grade once the floor exceeds the tolerance (§G).
-A baseline with no profile keeps its nominal gates, so nothing is ever graded against another baseline's
-floor (§D-36).
-
-**Peak accuracy, ON vs the OFF band** (§D-44: both legs cut at the matched achieved span, 6947s / 7189s):
+**Peak accuracy, ON vs the OFF band** (§D-44: both legs cut at the matched achieved span):
 
 | baseline | OFF legs | ON legs | band OFF → ON | verdict |
 |---|---|---|---|---|
-| `fluxtune` | 83.38 / 83.61 | 84.33 / 83.18 | 0.23 → 1.15 pts | straddles OFF — no change, on the tightest control |
-| `fedbuff_round` | 75.11 / 73.32 | **77.49 / 81.20** | 1.79 → 3.71 pts | ON entirely ABOVE the OFF band, +2.4 to +6.1 pts |
-| `felix_round` | 77.17 / 66.01 | **75.87 / 81.12** | 11.16 → 5.25 pts | band halved, top end +3.9 pts |
-| `fwdllm` | 28.74 / 41.41 | 38.17 / 38.17 | 12.67 → **0.00 pts** | inside the band; the band vanished |
-| `felix_it` | 84.72 (ONE leg) | 81.30 / 82.29 | — → 0.99 pts | −2.4 to −3.4 pts, but against no OFF band at all |
+| `fluxtune` | 83.38 / 83.61 | 84.33 / 83.18 | 0.23 → 1.15 | straddles OFF — no change, on the tightest control |
+| `fedbuff_round` | 75.11 / 73.32 | **77.49 / 81.20** | 1.79 → 3.71 | ON entirely ABOVE OFF, +2.4 to +6.1 pts |
+| `felix_round` | 77.17 / 66.01 | **75.87 / 81.12** | 11.16 → 5.25 | band halved, top end +3.9 pts |
+| `fwdllm` | 28.74 / 41.41 | 38.17 / 38.17 | 12.67 → **0.00** | inside the band; the band vanished |
+| `felix_it` | **84.72 / 83.28** | 81.30 / 82.29 | 1.44 → 0.99 | ON entirely BELOW OFF, −1.0 to −3.4 pts |
 
-**No baseline degrades against a measured OFF band; two beat theirs.** The only apparent drop is `felix_it`,
-the one baseline whose OFF side is a single unreplicated leg — and `felix_round`'s OFF band spanned 11 points,
-so one leg is not a band. That comparison needs a second OFF leg before it means anything (§B).
+Four of five match or beat their OFF band; `felix_it` is the flag's one measured accuracy cost, and it does
+not generalize by aggregation rate (`felix_round` is the same rate and improved). Open question in §B.3.
 
----
+### §A.4  Legacy OFF board — reference only
 
-## §B  Next steps / open issues — per baseline
+**Never compare a row here to §A.2.** Mixed durations, so the rows do not compare to each other either. Kept
+because `fwdllm_it_*` and `fedbuff_it_oracular` have no ON evidence at all.
 
-### EXIT CRITERIA — when parity is DONE and the campaign moves to real experiments
+| baseline | run pair | dur | pass/fail/skip | N | notes |
+|---|---|---|---|---|---|
+| `fwdllm_it_unaware` | `20260802_172249`/`_192444` | 7200s | **69/0/23** | 39 | clean, unreplicated |
+| `fwdllm_it_oracular` | `20260802_193900`/`_214059` | 7200s | **69/0/23** | 39 | clean, unreplicated |
+| `fluxtune` | `20260802_172341`/`20260801_150819` | 7200s | 73/3/16 | 95 | superseded by ON reals |
+| `fedbuff_round` | `20260802_104607`/`20260801_155005` | 7200s | 72/3/18 | 178 | superseded |
+| `fwdllm` | `20260802_192556`/`20260801_145728` | 7200s | 64/3/24 | 39 | superseded |
+| `felix_round` | `20260802_104547`/`20260801_163513` | 7200s | 65/9/18 | 189 | superseded |
+| `felix_it` | `20260802_105134`/`20260802_130206` | 7200s | 67/10/16 | 259 | superseded |
+| `fedbuff_it_unaware` | `20260731_180442`/`_182654` | 1200s | 72/3/18 | 38 | superseded |
+| `fedbuff_it_oracular` | `20260731_184247`/`_190502` | 1200s | 73/2/18 | 38 | **the only row this baseline has**; 76.0% coverage trips the low-coverage flag |
 
-> **Read this before chasing a red rung.** Parity's job is that **sim does not change the CONCLUSION**, not
-> that every rung is green. Every claim in this work is comparative, so a residual that is the same on every
-> baseline cancels out of a ranking and costs nothing. Chasing it to zero is over-optimization.
-
-Parity is DONE when all four hold. Grade against these, not against the pass count:
-
-1. **Every INV/EXACT rung green on all nine.** Correctness, non-negotiable — these are logic, not tolerance.
-2. **Convergence and terminal state within each baseline's own replicate band.** Once a real↔sim accuracy gap
-   is smaller than the same-seed real↔real band, no code change can measurably improve it (§D-24). Stop.
-3. **Every remaining DIST residual is COMMON-MODE** — same sign on every baseline, and its spread across
-   baselines smaller than the effect the experiments claim.
-4. **No residual correlates with a baseline-DISTINGUISHING knob** (aggregation rate, selector, iteration cap).
-   This is the only criterion that can silently flip a comparative result, and the only one worth a long
-   investigation. A residual that tracks such a knob flatters one family of baselines over another.
-
-**If 1-3 hold and 4 fails → fix it.** If all four hold → ship, record the residual as a known bias, and go
-run the real experiments.
-
-**Tells that the campaign has tipped into over-optimization:** chasing a rung whose residual is inside the
-replicate band · the board getting worse from measurement changes rather than better from fixes · adding
-instrumentation faster than closing bugs · a session that ends with more red rungs and no code fix. One or
-two are normal; all four at once means stop and re-read this list.
-
-**Coverage beats polish.** Four baselines still have NO 7200s ON evidence at all. That gap matters more to
-the experiments than the last few percent of any rung.
-
-**Where we stand** (one ON pair, so two of four are simply not yet answerable):
-
-| # | status |
-|---|---|
-| 1 | **Nearly** — `felix_round` ON has ONE EXACT-tier fail, and it is the cohort count gate reporting the same 5.4% iteration quantity as `v1`, not an independent logic break |
-| 2 | **MET** — 4.07 pts avg accuracy diff against a 5.25-pt real↔real band; `terminal_state` and `total_commits` pass at 6.5% |
-| 3 | **UNKNOWN** — needs ≥3 ON parity rows to see whether the ~5% sim under-iteration is common-mode |
-| 4 | **UNKNOWN, and it is the one that matters** — H12a already showed the aggregation rate makes one family behave differently, so the residual tracking it is a live possibility, not a hypothetical |
-
-So H14 is a **footnote unless criterion 4 fails.** Grade the incoming ON sim legs against 3 and 4 first; only
-open the grad pool if the residual turns out to track the aggregation rate.
-
-> **RULE: every tracker cell ≤20 words.** State the claim/number, cut qualifiers. If it needs more, it's
-> not tracker material — shorten it or point at the code comment/commit.
-
-| baseline | open fails | next step |
-|---|---|---|
-| `felix_round` **ON** (70/4/18) | `cohort_sequence` · `v1` · `v1b` · `v2` | **All four are sim-specific and all four are ONE quantity** — var@it0 7.3% low (H14). Clean real↔real control. Chase the grad pool, not the four rungs |
-| `fwdllm` (OFF 64/3/24) | `cohort_sequence` · `v1b_iters_moving_avg` · `v2` | Its fails were already real (0.0% cadence floor) and `v2` is gradeable ON (0.2%). ON reals only — **needs an ON sim leg**, which is also H14's test |
-| `fluxtune` (OFF 73/3/16) | `drain_wall_budget` · `v2` · `convergence` | ON reals only. `v2` stays ungradeable ON (6.6% floor, tol 2%). `drain_wall_budget` is the one to chase once an ON sim leg exists |
-| `fedbuff_round` (OFF 72/3/18) | `selection_bias` 10.4% (tol 10%) · `utility` · `convergence` | ON reals only; ON var floor 1.5% makes `v2` gradeable. ⚠ its bins floor moved the WRONG way OFF→ON (1.1 → 4.3%) — re-check on the next replicate before trusting `throughput` |
-| `felix_it` (OFF 67/10/16) | cadence family · `terminal`/`commits` · `conv` · `selection_detail` | ON reals only; first floor now exists (2.3% cadence / 2.4% var). **Owed a second OFF real** — its ON accuracy sits 2.4-3.4 pts under a single unreplicated OFF leg, which is not yet a comparison (§A.3) |
-| `fwdllm_it_unaware` / `fwdllm_it_oracular` (69/0/23) | none | **Both CLEAN at 7200s OFF, N=39.** No replicate and no ON run — floor UNMEASURED |
-| `fedbuff_it_unaware` / `fedbuff_it_oracular` (72/3, 73/2) | `v2` · `convergence` (+ `per_round_advance` on unaware) | Still 1200s OFF smokes, N=38. `v1c` flat on both, but at t=1.68/−0.06 the slope is unresolved. **H8 cannot be answered at 1200s** |
-
-### Next session
-
-> **Update in place on every run — overwrite, never stack a new dated block below.**
-
-**What the last batch settled — three hypotheses closed at once (§G).** **H13 is CONFIRMED as the DOMINANT
-term of the replicate floor, and closed**: `jvp_eval_mode` collapsed `felix_round`'s cadence floor 13.3% →
-0.6% and every measured variance floor, at no accuracy cost against any measured OFF band (§A.3). **H12a is
-CONFIRMED by its own asymmetry** — only the loss-derived-weight baseline moved; the integer-staleness ones had
-no floor to lose and did not. **H11 is validated live**: the boundary trace reads 30 unique picks / 0
-re-picks and `selection_detail` is green, so the H11 handoff file is deleted. The proposed
-"forward-gradient training is not reproducible, widen the tolerances" invariant is dead — this was a bug, and
-a flag closed it.
-
-**Live hypotheses — each with the observation that would falsify it.** State the prediction BEFORE the run;
-a hypothesis that can only be confirmed is not one (§D-9).
-
-**H14 — ONE quantity drives the whole cadence family: sim's variance at the FIRST aggregation of each data
-bin runs 7.3% below real's.** Everything else follows arithmetically through §D-34's identity
-(iterations-per-bin ≈ var@it0 ÷ threshold): 7.3% less variance ⇒ the gate trips a bin early ⇒ 5.4% fewer
-iterations per bin (11.86 vs 12.53) ⇒ 5.4% fewer cycles over matched work, which is what `v1`, `v1b`,
-`v2` and `cohort_sequence`'s count gate each report in their own units.
-
-**Ruled OUT on disk, all of it at matched (bin, iteration):** pool SIZE (exactly 10 contributors both sides,
-every cycle) · staleness (0.98 vs 0.98 at it0, KS 0.002) · contributor CONCENTRATION (gini 0.31 vs 0.30, 58
-vs 60 distinct) · contributed trainer SPEED (mean 6.85 vs 6.72) · utility (+0.9%) · `g2_grad_pool_size` (0.9%)
-· `v3_cached_v_pool` (KS 0.0) · `v4`/`v5`.
-
-**And contributor IDENTITY is ruled out by the strongest control available.** Two REAL legs disagree about
-who contributes exactly as much as real disagrees with sim — it0 overlap 0.362 vs 0.385, both sitting on the
-independent-draw floor of 0.333 — yet the two reals land within **0.25%** on var@it0 while sim is **6.7%** off
-(paired per-bin median, §D-38). Different contributor sets demonstrably do NOT move this quantity.
-
-So every observable INPUT to the variance matches within the real↔real spread while the OUTPUT does not,
-which is §C's decomposition tree pointing at a grad-pool accumulation bug in sim. The gap also DRIFTS rather
-than sitting flat (+5.6% → −15.5% → −9.2% across progress quartiles), so it is not a fixed computational
-offset. **FALSIFIED IF** an ON sim leg on `fwdllm` shows the cadence family failing with var@it0 matched, or
-if the residual reverses sign under a different aggregation rate.
-
-**Next step is NOT a run** (preamble): the gradient values themselves are not in telemetry, so this needs
-either a bench repro driving the real `_compute_var` over a controlled pool, or per-cycle telemetry capturing
-the pool's identity AT THE INSTANT var is computed (§D-20 — check for an existing span first).
-
-**H15 — `felix_it`'s single 84.72% OFF leg is a lucky draw, not a real ON regression.** Its OFF side has never
-been replicated, and the comparable uncapped baseline had an 11-point OFF band. **FALSIFIED IF** a second OFF
-leg lands within ~1 pt of 84.72%, which would make the ON pair a genuine 2.4-3.4 pt drop and put a shared-mask
-JVP back on the table for the `new`-rate baselines.
-
-**H8 — `fedbuff_it_unaware`'s H6 signature is unresolvable below 7200s, not absent.** Unchanged, still open.
-**FALSIFIED IF** the 7200s λ flips sign. Needs a replicate PAIR, now readable since the floor is no longer
-dominated by gradient noise.
-
-### Roadmap to parity on all nine — 3 nodes
-
-> **Update in place. Delete a step the moment its exit criteria are met and its findings are in §A/§G.**
-> Goal is parity on all nine, fast. Order is by *information per node-hour*, not by baseline.
-
-**Where the nine stand.** 1 ON parity pair with three REAL fails (`felix_round` 71/3) · 4 with ON reals only,
-so no parity verdict until they get a sim leg (`fwdllm`, `fluxtune`, `fedbuff_round`, `felix_it`) · 2 clean at
-7200s but OFF and unreplicated (`fwdllm_it_*` 69/0) · 2 still on 1200s OFF smokes (`fedbuff_it_*`).
+⚠ **The cadence/convergence cells on the uncapped OFF rows are not evidence about sim.** Swapping only which
+real replicate they were graded against — no code change — moved `felix_round` 71/3 → 65/9 and `fedbuff_round`
+72/2 → 72/3 with *different* fails (§E). Read OFF rows for INV/un-windowed rungs only.
 
 ---
 
-#### Step 4a — H14's grad pool. **THE ACTIVE TASK, and it needs no node.**
+## §B  Next steps
 
-One quantity explains four fails. **The summary statistics are exhausted — every one of them matches**, so
-the next evidence has to be the pool's individual entries.
+### §B.0  Exit criteria — when parity is DONE
 
-**Also ruled out, on disk:** the AGGREGATION RATE (computed from telemetry through the real `weight_factor`:
-rate@it0 0.4643 / 0.4641 real vs 0.4649 sim, i.e. sim marginally HIGHER, which would push variance up) and
-the raw GRAD MAGNITUDE (`g1_grad_norm` 2278.8 vs 2276.7, **0.09%**, KS 0.006).
+> Parity's job is that **sim does not change the CONCLUSION**, not that every rung is green. Every claim in
+> this work is comparative, so a residual identical on every baseline cancels out of a ranking. Grade against
+> this list, never against the pass count.
 
-**So the pool has the same size, the same magnitude and the same weights, but less DISPERSION** — variance
-reacts to spread, not scale. That is the one thing no existing summary reports.
-
-The instrument already existed and had never been wired to a run: `build_var_calc` emits each pool entry's
-norm beside the reduction's output, but only under global DEBUG, which would also flood the log and perturb
-timing. It is now behind `var_calc_audit` (default OFF, ~one GPU→CPU sync per pool entry), set on both legs
-of the `felix_round` pair. `diff_var_pool.py` pairs cycles at identical (bin, iteration) and separates the two
-possible roots: **inputs match but output differs ⇒ the reduction; inputs less dispersed in sim ⇒ pool
-assembly.** 5 tests.
-
-⚠ **This needs the FULL 7200s, not a smoke.** The gap DRIFTS (+5.6% → −15.5% → −9.2% by progress quartile),
-so a short run can show it with the opposite sign — §D-25's accumulating case, where a short run reads a
-false PASS.
-
-Do NOT widen a tolerance to make these four pass — they now sit 9x above a measured floor. Remove
-`var_calc_audit` from both yamls once H14 closes.
-
-### The 2h batch in flight — what each leg buys and what would falsify it
-
-> **Sizing rule this batch established: a 7200s REAL leg costs ~2h05 wall** (6940s achieved + ~400s
-> startup/teardown), while a 7200s-VCLOCK **sim leg costs ~45min wall**. So a 2-hour node fits exactly ONE
-> real leg, or two-to-three sim legs. Plan the night around that asymmetry, not around run count.
-
-| node | leg | buys | expected if the hypothesis holds | falsified if |
-|---|---|---|---|---|
-| A | `fedbuff_it_unaware` real, 7200s | COVERAGE — one of the last two baselines with no 7200s evidence at all | the real half of a future ON pair; a 2nd leg later gives it a floor | — |
-| B | `felix_it` real, **`jvp_eval_mode` OFF** | H15's missing control | a second OFF leg near 84.72%, giving `felix_it` its first OFF band | the leg lands at 81-82% ⇒ 84.72% was the outlier, the ON "drop" was never real, promotion is safe |
-| C | ON sim legs for all five 7200s baselines | criteria 3 and 4 — the stopping decision | ~5% sim under-iteration, same sign everywhere ⇒ common-mode ⇒ STOP | the residual tracks the aggregation rate ⇒ criterion 4 fails ⇒ open H14 |
-
-**H14's instrumentation is DEFERRED, deliberately.** Reproducing it needs both legs re-run with
-`var_calc_audit`, and the exit criteria make H14 a footnote unless criterion 4 fails — so spending a node on
-it before criterion 4 is answered is the over-optimization this section warns about. The knob and
-`diff_var_pool.py` stay in the code, OFF, costing nothing; the yamls are back to the config that produced the
-existing rows, so tonight's sim legs stay comparable to last night's reals (§F-18).
-
-**H14's two outcomes, and they need different fixes.** `diff_var_pool.py` is built to tell them apart:
-- **Input norms match, output var differs** ⇒ the reduction itself diverges. Look at accumulation ORDER and
-  dtype in `calculate_var`, not at the pool.
-- **Input norms less dispersed in sim** ⇒ pool ASSEMBLY. The pool has the same size, magnitude, weights and
-  staleness, so a dispersion gap means sim is admitting a more mutually-correlated set of contributions —
-  walk to what decides membership at the instant `var` is computed, not to the variance gate (§F-3).
-
-**`fwdllm`'s sim leg is H14's cross-baseline test.** It shares `felix_round`'s clean floor but differs in
-aggregation rate AND selector. Same four rungs failing ⇒ one root, in shared code. A different set ⇒ H14 is
-`felix_round`-specific and the shared-root claim dies.
-
-**Do not read a short run here** (§D-25): the var gap DRIFTS in sign across the run, so anything under the
-full duration can report it backwards.
-
-⚠ **`felix_it` cannot be graded by the default comparator after this batch.** It now has ON reals, an ON sim
-leg, and an OFF real (H15's control) — and the comparator takes the LATEST real, which is the OFF one. That
-pairs an OFF real against an ON sim and grades the flag, not the code (T1.2). Grade it by pinning the ON
-real explicitly until the OFF control ages out, and profile its charges from the two ON reals BY NAME for
-the same reason.
-
-#### Step 4b — the remaining ON sim legs (`fluxtune`, `fedbuff_round`, `felix_it`), once 4a has a verdict.
-
-Every baseline with ON reals needs its charge profile re-derived from THOSE reals before its sim leg — a sim
-leg graded against OFF-derived charges reports on the profile, not the code. One `&&`-chain per node, because
-the profile feeds the run feeds the grade.
-
-| node | jobs, in order | buys |
+| # | criterion | status |
 |---|---|---|
-| **A** | `fwdllm` re-profile → sim ON → parity | **H14's test** — same three fails as `felix_round`, or a different set. Its 0.0-0.3% floor makes any verdict readable |
-| **B** | `fluxtune`, then `fedbuff_round` (each: re-profile → sim ON → parity) | `drain_wall_budget` under ON charges; and whether `fedbuff_round`'s bins-floor regression is real |
-| **C** | `felix_it` real **OFF** ×1 → `felix_it` re-profile → sim ON → parity | H15's control first (the missing OFF replicate), then the parity leg |
+| 1 | Every INV/EXACT rung green on all nine | **MET on the one valid row** — `felix_round` has zero EXACT fails |
+| 2 | Convergence + terminal state inside each baseline's own replicate band | **MET there too** — `terminal`/`commits` at 1.3% |
+| 3 | Every remaining DIST residual is COMMON-MODE (same sign, spread smaller than the claimed effect) | **BLOCKED** — needs ≥3 valid ON rows; today the sign reverses between stale-profile rows |
+| 4 | No residual correlates with a baseline-DISTINGUISHING knob (agg rate, selector, iteration cap) | **BLOCKED, and it is the one that matters** — the only criterion that can silently flip a comparative result |
+
+If 1-3 hold and 4 fails → fix it. If all four hold → ship, record the residual as a known bias, go run the
+real experiments.
+
+**Tells that this has tipped into over-optimization:** chasing a rung whose residual is inside the replicate
+band · the board getting worse from measurement changes rather than better from fixes · adding instrumentation
+faster than closing bugs · a session ending with more red rungs and no code fix. All four at once means stop.
+
+**Coverage beats polish.** Eight of nine baselines have no valid ON row. That gap matters more to the
+experiments than the last few percent of any rung.
+
+### §B.1  The pipeline — one procedure, run it per baseline
+
+Stages are §A.1's. The `&&`-chain exists because the profile feeds the run feeds the grade; do not split it.
 
 ```bash
 cd lib/python/examples/fwdllm/expt_scripts
 
-# ---- node A: fwdllm ON sim = H14's test ----
-cp ../sim_charge_profiles/fwdllm.yaml ../sim_charge_profiles/fwdllm.yaml.off-bak && \
-python profile_sim_charges.py $(ls -d ../experiments/*_fwdllm_n100_*_real | sort | tail -2 | sed 's/^/--real-run /') \
-    --out ../sim_charge_profiles/fwdllm.yaml --only-observed && \
-bash run_sequential.sh --mode sim --max-runtime-s 7200 --only fwdllm --yes && \
-python run_parity.py --yes --baselines fwdllm
+# R2 — two ON real legs
+bash run_sequential.sh --mode real --max-runtime-s 7200 --only <b> --yes
 
-# ---- node B: fluxtune, then fedbuff_round ----
-for b in fluxtune fedbuff_round ; do \
-  cp ../sim_charge_profiles/$b.yaml ../sim_charge_profiles/$b.yaml.off-bak && \
-  python profile_sim_charges.py $(ls -d ../experiments/*_${b}_n100_*_real | sort | tail -2 | sed 's/^/--real-run /') \
-      --out ../sim_charge_profiles/$b.yaml --only-observed && \
+# FL — from runs already on disk; no sim leg needed
+python replicate_floor.py --mode real --baselines <b> --profile-out ../parity_floors
+
+# CH + SIM + GR — one chain, never split
+cp ../sim_charge_profiles/<b>.yaml ../sim_charge_profiles/<b>.yaml.off-bak && \
+python profile_sim_charges.py $(ls -d ../experiments/*_<b>_n100_*_real | sort | tail -2 | sed 's/^/--real-run /') \
+    --out ../sim_charge_profiles/<b>.yaml --only-observed && \
+bash run_sequential.sh --mode sim --max-runtime-s 7200 --only <b> --yes && \
+python run_parity.py --yes --baselines <b>
+```
+
+**Guards — both mechanical, neither needs remembering:**
+- The launch preflight **BLOCKS** a sim leg whose charge profile predates any real of that baseline trained
+  under the SAME `jvp_eval_mode`. A deliberate flag-OFF control landing later does NOT stale the profile.
+  `--force` overrides; if you reach for it, write down why.
+- `run_parity.py` pairs the sim leg with the latest real **whose flag matches**, and prints any newer real it
+  skipped. Grading an ON sim against an OFF real reports the flag, not the code.
+
+**Still on you:**
+- ⚠ **Glob precision.** `*fwdllm*_real` also matches `fwdllm_it_unaware`/`_oracular`;
+  `*_<baseline>_n100_*_real` is the safe form. Check what the `ls` resolves to before launching.
+- ⚠ **`--dry-run` first, always.** It generates the configs and runs the full preflight without launching;
+  a 30-second check against a 2h leg.
+- ⚠ **Keep a baseline's replicate PAIR on ONE node** unless the nodes are known identical — a cross-node pair
+  puts a hardware term in the floor that §D-44's span grouping only partly catches.
+
+**Cost:** a 7200s REAL leg = ~2h05 wall (6940s achieved + ~400s startup/teardown); a 7200s-VCLOCK SIM leg =
+~35-50 min, except `fwdllm`-family legs at ~10-15 min (few aggregations). A 6h node fits two real legs plus a
+sim chain, or four-to-five sim legs.
+
+### §B.2  Next up — the 3-node batch in flight
+
+> **Update in place after every batch.** Delete a leg the instant its artifact exists and §A reflects it.
+
+**Setup is DONE and verified:** CH re-derived for `fwdllm`/`fedbuff_round`/`fluxtune`/`felix_it` from their
+own ON reals; both guards landed and negative-controlled (the preflight fired on all four stale profiles, then
+went 21/21 green after re-profiling); `--dry-run` clean for every leg below; 1708 tests pass. The aborted
+`run_20260803_114907` felix_it launch is parked in `experiments/_aborted/`.
+
+| node | legs, in order | wall | leaves |
+|---|---|---|---|
+| **A** | `fwdllm_it_unaware` real ×2 → FL → CH → sim → parity | ~4h35 | that baseline COMPLETE, replicate pair same-node |
+| **B** | `fedbuff_it_oracular` real ×2 → FL → CH → sim → parity | ~5h10 | that baseline COMPLETE, replicate pair same-node |
+| **C** | the four ON sim legs + grading, then `fedbuff_it_unaware` real #2 → FL → CH → re-run sim → parity | ~5h35 | **first results in ~15 min**; four rows by ~2h30 |
+
+Node C is the fast-cycle node: it answers exit criteria 3-4 before either real node finishes a single leg.
+After this batch **8 of 9 baselines have a valid ON row**; only `fwdllm_it_oracular` is left (2 reals + a sim
+chain, one more node-night). Then the sign-off re-grade with every tolerance recalibrated against the ON
+floors (§B.4). Node C's `fedbuff_it_unaware` leg also completes that baseline's replicate pair.
+
+```bash
+cd lib/python/examples/fwdllm/expt_scripts   # every chain: --dry-run first, drop it to launch
+
+# ---- node C: the four ON sim legs, fastest first ----
+for b in fwdllm fedbuff_round fluxtune felix_it ; do \
   bash run_sequential.sh --mode sim --max-runtime-s 7200 --only $b --yes && \
   python run_parity.py --yes --baselines $b ; \
 done
+# ...then close out fedbuff_it_unaware (its profile is a 1200s OFF leg, so CH is mandatory —
+#    the preflight will block the sim leg until it is re-derived)
+bash run_sequential.sh --mode real --max-runtime-s 7200 --only fedbuff_it_unaware --yes && \
+python replicate_floor.py --mode real --baselines fedbuff_it_unaware --profile-out ../parity_floors && \
+cp ../sim_charge_profiles/fedbuff_it_unaware.yaml ../sim_charge_profiles/fedbuff_it_unaware.yaml.off-bak && \
+python profile_sim_charges.py $(ls -d ../experiments/*_fedbuff_it_unaware_n100_*_real | sort | tail -2 | sed 's/^/--real-run /') \
+    --out ../sim_charge_profiles/fedbuff_it_unaware.yaml --only-observed && \
+bash run_sequential.sh --mode sim --max-runtime-s 7200 --only fedbuff_it_unaware --yes && \
+python run_parity.py --yes --baselines fedbuff_it_unaware
 
-# ---- node C: the felix_it OFF control (H15) first, then its ON sim ----
-#   flip jvp_eval_mode back to False in felix_it's REAL yaml for this one leg, then restore
-bash run_sequential.sh --mode real --max-runtime-s 7200 --only felix_it --yes ; \
-python replicate_floor.py --mode real --baselines felix_it ; \
-cp ../sim_charge_profiles/felix_it.yaml ../sim_charge_profiles/felix_it.yaml.off-bak && \
-python profile_sim_charges.py $(ls -d ../experiments/*_felix_it_n100_*_real | sort | tail -2 | sed 's/^/--real-run /') \
-    --out ../sim_charge_profiles/felix_it.yaml --only-observed && \
-bash run_sequential.sh --mode sim --max-runtime-s 7200 --only felix_it --yes && \
-python run_parity.py --yes --baselines felix_it
+# ---- nodes A and B: b=fwdllm_it_unaware on A, b=fedbuff_it_oracular on B ----
+b=<baseline> ; \
+bash run_sequential.sh --mode real --max-runtime-s 7200 --only $b --yes && \
+bash run_sequential.sh --mode real --max-runtime-s 7200 --only $b --yes && \
+python replicate_floor.py --mode real --baselines $b --profile-out ../parity_floors && \
+cp ../sim_charge_profiles/$b.yaml ../sim_charge_profiles/$b.yaml.off-bak && \
+python profile_sim_charges.py $(ls -d ../experiments/*_${b}_n100_*_real | sort | tail -2 | sed 's/^/--real-run /') \
+    --out ../sim_charge_profiles/$b.yaml --only-observed && \
+bash run_sequential.sh --mode sim --max-runtime-s 7200 --only $b --yes && \
+python run_parity.py --yes --baselines $b
 ```
 
-⚠ **Glob precision.** `*fwdllm*_real` also matches `fwdllm_it_unaware`/`_oracular`, which would profile one
-baseline's charges from another's real; `*_<baseline>_n100_*_real` is the safe form. Node C's re-profile must
-run AFTER its OFF control leg but must pick the two ON reals — check what the `ls` resolves to before
-launching, or run the control on a different node.
+**What each node buys, and what would falsify it.** Node C's four rows are the criteria 3-4 read: same-sign
+residuals inside the floors ⇒ common-mode ⇒ stop; a residual tracking the aggregation rate or the iteration
+cap ⇒ criterion 4 fails and that becomes the one investigation worth running. Nodes A and B buy coverage —
+they have no hypothesis attached and cannot fail, only take time.
 
-⚠ **Node C's control leg must actually be OFF.** Flip the knob in `felix_it`'s real yaml for that leg only and
-grep the trainer log for it afterwards (§D-49) — an ON control measures nothing.
+### §B.3  Open questions — each with its falsifier
 
-**Exit criteria.** Each ON sim leg produces a §A.2 row. H14 resolves on node A. H15 resolves on node C's first
-leg. `.off-bak` is the revert path if the flag ever goes back off.
+State the prediction BEFORE the run; a hypothesis that can only be confirmed is not one (§D-9).
 
-#### T1 — the flag decision, now answerable
+- **The `fwdllm`/`fedbuff_round` cadence family is stale-charge artifact, not code.** Both over-charge per
+  round and over-iterate — the mirror of `felix_round` pre-CH. **FALSIFIED IF** re-profiling and re-running
+  leaves `v1` outside its floor-gated tolerance. Node C answers it; nothing else about those two is readable first.
+- **`felix_it`'s ON accuracy drop is baseline-specific.** Its ON band sits 1.0-3.4 pts below its OFF band
+  while `felix_round` — same aggregation rate — improved. **FALSIFIED IF** a second loss-derived baseline
+  degrades ON. Low priority: n=2 per side, four other bands support the flag. Do not re-open the shared-mask
+  JVP on one baseline.
+- **`fedbuff_it_unaware`'s iteration-cap signature is unresolvable below 7200s, not absent.** **FALSIFIED IF**
+  the 7200s λ flips sign. Now has one 7200s ON real; needs the replicate PAIR (node C).
 
-- **T1.1 — DONE (§G).** Promoted to default ON, declared in every baseline yaml, and verified on the real
-  model rather than inferred from the config. H15 remains the one open check against it.
-- **T1.2 — every OFF result is a different config.** §A.1's board, all nine tolerance sets and the charge
-  profiles were measured dropout-live. A full ON re-grade is ~2 nights on 3 nodes; never read an ON row
-  against an OFF row.
-- **T1.3 — DONE.** ON charge profiles are ~3% cheaper on the JVP, direction as predicted; the re-profile step
-  is now standing procedure before any ON sim leg (Step 4).
-- **T1.4 — `fedbuff_it_*` stay OFF at 1200s** until the promotion decision; getting them onto 7200s pairs is
-  the next night's work either way.
+### §B.4  Tolerances and rung gaps
 
-**SHORT TERM — the remaining gaps, in priority order.**
-1. **`fedbuff_it_*` off 1200s** (7200s pairs) — the LAST two with no 7200s evidence; H8 is unanswerable
-   without it, and their charge profiles need regenerating once those reals exist.
-2. **Floors for the four `*_it_*`** — the only baselines with no replicate at all.
-3. **Full 9-baseline re-grade** at 7200s, ON, with every tolerance recalibrated against the ON floors (§A.3).
-   This is the parity sign-off.
-4. **`async_oort`→`AsyncSelectorBase` integration confirmation** (`--only felix_round,felix_it`) — unit tests
-   cover the mechanism, not a live comparison.
-
-**Standing rules for this campaign.** A real↔real floor needs **no sim leg** — halve the cost. Compare
-flag-OFF vs flag-ON **at one duration** (§C). One mechanism per run when a fix could perturb another baseline.
-Never spend a run on a question a bench repro can answer (preamble).
-
-### Other open items
-
-**Tolerances, post-ON**
-- **Recalibrate every DIST tolerance against the ON floors (§A.3), not the OFF ones.** Some are now far too
-  loose to catch anything — `v1`'s 15% sits 25x above `felix_round`'s 0.6% ON floor — and `v2`'s 2% is still
-  under two baselines' floors. Neither direction is safe to leave; this is part of the sign-off re-grade.
-- **`convergence` was ungradeable at its 5% `acc_tol` OFF** — below the real↔real accuracy gap on both
-  baselines that had a replicate. It PASSES on the ON pair, and the ON accuracy bands are 0.99-5.25 pts, so
-  it is worth re-deriving the tolerance rather than assuming the old one.
-
-**Rung/tolerance gaps**
+- **Recalibrate every DIST tolerance against the ON floors (§A.3).** Some are far too loose — `v1`'s nominal
+  15% sits 25x above `felix_round`'s 0.6% ON floor, and it is what let `fedbuff_it_unaware` pass at 1.8%
+  — and `v2`'s 2% is still under two baselines' floors. Part of the sign-off re-grade, once every baseline has an ON floor.
+- **`convergence`'s 5% `acc_tol` has no floor behind it.** It was ungradeable OFF (below the real↔real
+  accuracy gap) and now fails `fedbuff_it_unaware` at 5.45%. ON bands are 0.99-5.25 pts — re-derive it.
 - KS-only rungs unguarded against a level shift (same class as the `selection_bias` repair, §G; all clean on
   live data): `dk1_agg_goal_trajectory`, `dk2_dynamic_c`, `dk3_eligible_ends_metric`, `eligible_speed`,
   `v3_cached_v_pool`. `selector_score` is DIAG.
-- Thin ABSOLUTE budgets: `fwdllm_it_*` grade N=5 and `v1c` SKIPs. Coverage percentage cannot catch this; an
-  absolute-N floor is proposed, threshold not chosen.
+- Thin ABSOLUTE budgets: `fwdllm_it_*` grade N=5 and `v1c` SKIPs; `fwdllm` ON grades N=36. Coverage
+  percentage cannot catch this; an absolute-N floor is proposed, threshold not chosen.
 - `cohort_sequence.count` is rolled-up V1 — never chase it separately; it fails exactly when `v1` does.
 - `step_timing_breakdown` / `agg_step_timing_breakdown` are REPORT-ONLY wherever the sim clock discards the
-  span (§G, §D-31) — the designed steady state everywhere. Residuals there are §D-1 contention that never
-  reaches the vclock; watch `charge_coverage` instead.
+  span (§D-31) — the designed steady state. Residuals there are §D-1 contention that never reaches the vclock;
+  watch `charge_coverage` instead.
 - Do not re-tune `redispatch_turnaround` (§D-14, §E).
-- `felix_round`'s lap-boundary fails (`preferred_duration`, `terminal_state`) are underpowered artifacts —
-  expect them at any duration whose graded window straddles a lap boundary. Both are clear on the ON pair
-  (`terminal_state` passes, `preferred_duration` SKIPs).
+- `felix_round`'s lap-boundary fails (`preferred_duration`, `terminal_state`) are underpowered artifacts at
+  any duration whose graded window straddles a lap boundary. Both clear on the ON row.
 
-**Known-and-deliberate**
-- Real's over-`c` slot read is drain lag, not a §D-27 conflation (§E, §G). Telemetry only; the tripwire
-  disagrees with the authoritative measure, not with `c`. Low priority.
-- Real publishes no `_agg_slot_holders_ref`, so `_cap_dispatch_to_concurrency` falls back to the IDENTITY
-  set. Harmless today; publishing one would let real dispatch into slots it now withholds — owed its own A/B.
-- Sim's in-flight bookkeeping is still split across six sets and should be one per-end state machine. The
-  slot⇄guard split did the CAPACITY half; IDENTITY is still ad-hoc. Never bundle with a correctness fix.
+### §B.5  Known-and-deliberate
+
+- Real's over-`c` slot read is drain lag, not a §D-27 conflation (§E, §G). Telemetry only. Low priority.
+- Real publishes no `_agg_slot_holders_ref`, so `_cap_dispatch_to_concurrency` falls back to the IDENTITY set.
+  Harmless today; publishing one would let real dispatch into slots it now withholds — owed its own A/B.
+- Sim's in-flight bookkeeping is split across six sets and should be one per-end state machine. The slot⇄guard
+  split did the CAPACITY half; IDENTITY is still ad-hoc. Never bundle with a correctness fix.
 - Base `asyncfl/top_aggregator._sim_hold_busy_slots` deliberately untouched — no `_sim_committed` term, so it
   never had the conflation. Re-check if async_cifar10 shows the same under-fill.
 
-**Future tasks**
+### §B.6  Backlog
+
 - **A run dir cannot say which training config produced it.** `jvp_eval_mode` lives in the trainer's
-  `config_overrides`, which the runner never dumps — not in `aggregator_config.json`, not in `snapshot.yaml`;
-  the only record is 100 lines in the trainer log. `replicate_floor.py` now greps that log, which works but is
-  the wrong layer. Dump the resolved TRAINER config into the run dir and key off it. Same class as §F-18.
+  `config_overrides`, which the runner never dumps — the only record is 100 lines in the trainer log.
+  `replicate_floor.py` greps that log, which works but is the wrong layer. Dump the resolved TRAINER config
+  into the run dir and key off it. Same class as §F-18, and it is what makes the CH stage easy to skip.
 - **Enforce §F-18 mechanically: a per-baseline knob CONTRACT.** Two correctness-path knobs went missing from
-  yamls and were caught only by reading telemetry days later, so those runs were not fairly comparable. The
-  mechanism mostly EXISTS — `run_sequential.sh`'s preflight `checks[]` already blocks a launch and ships both
-  patterns; the gap is that `condition_fp` hashes only CLI-patched knobs, so yaml-only knobs are invisible.
-  Three homes, none new: `test_baseline_readiness.py` → preflight `checks[]` (first tenant landed, §G) →
-  parity `--validate`. **The hard part is "missing" vs "legitimately N/A"** (`sim_charge_profile_path` is
-  sim-only, `reselect_cadence: round` round-only, `trackTrainerAvail` oracular-only), so applicability must be
-  DECLARED, not diffed — sketch: a `knob_contract` block in `_metadata/baselines.yaml` read by all three
-  layers. Open: where it lives; error-vs-warn; whether `condition_fp` absorbs it; who declares a new knob.
-- Regenerate `fedbuff_it_*`'s charge profiles once their 7200s reals exist (`fwdllm_it_*` done, 08-02). Not
-  urgent — the charge is not materially duration-sensitive.
+  yamls and were caught only days later by reading telemetry. The mechanism mostly EXISTS —
+  `run_sequential.sh`'s preflight `checks[]` blocks a launch and ships both patterns; the gap is that
+  `condition_fp` hashes only CLI-patched knobs, so yaml-only knobs are invisible. Three homes, none new:
+  `test_baseline_readiness.py` → preflight `checks[]` → parity `--validate`. **The hard part is "missing" vs
+  "legitimately N/A"** (`sim_charge_profile_path` is sim-only, `reselect_cadence: round` round-only,
+  `trackTrainerAvail` oracular-only), so applicability must be DECLARED, not diffed — sketch: a
+  `knob_contract` block in `_metadata/baselines.yaml` read by all three layers. Open: where it lives;
+  error-vs-warn; whether `condition_fp` absorbs it; who declares a new knob.
+- **The preflight's python lives in a `run_sequential.sh` heredoc, so its checks cannot be unit-tested.**
+  The CH gate is negative-controlled on live data, which is weaker than a test that survives a refactor.
+  Extracting the heredoc into an importable module is the fix; `lib/python/tests/mode/test_baseline_readiness.py`
+  is the natural home.
 - Flag promotion: `sim_sct_ordered_drain` + `sim_model_dispatch_queue` are fluxtune-yaml-only but model
   general async-transport artifacts — smoke fwdllm/fwdllm_plus with both ON, confirm inert-or-better, promote.
 - Checker invariants I1-I6 were drafted in a prior session and never committed anywhere (unrecoverable).
@@ -501,6 +413,10 @@ Never spend a run on a question a bench repro can answer (preamble).
 - Momentum (S1-S3) / server-optimizer — roadmap, not parity. NOTE: S1's damping should also shrink the
   replicate floor (EXPTS_CHARTER I-1) — re-measure after it lands.
 - P3/infra: no automatic GPU skip-and-remap on a broken ordinal (manual `execution.gpu_ids` exclude works).
+
+**Standing rules.** A real↔real floor needs NO sim leg — halve the cost. One mechanism per run when a fix
+could perturb another baseline. Never spend a run on a question a bench repro can answer (preamble).
+
 
 ## §C  How we debug here — the ladder, the fwdllm decomposition tree, run-length budget
 
@@ -696,6 +612,10 @@ flag is not proof — count the live leaf modules, and record the mode alongside
 one short leg grepped for the knob's own log line, one per trainer. A config-file-only knob is invisible to
 the launch fingerprint (§F-18), so the run looks perfect and grades the old config.
 
+**D-50.** A profiled constant outlives the config it was measured under. When a training knob changes,
+re-derive the profile from the new paired real BEFORE reading any residual — a stale charge moves sim's own
+cadence (§D-21), so the run grades the profile, not the code, and the residual can reverse sign per baseline.
+
 ---
 
 ## §E  Dead ends — do NOT retry
@@ -728,6 +648,13 @@ the launch fingerprint (§F-18), so the run looks perfect and grades the old con
   settle term** — all REFUTED as parity causes.
 
 **Cadence / trajectory**
+- **A grad-pool accumulation bug behind `felix_round`'s cadence family** — FALSIFIED. Re-profiling the charges
+  from the baseline's own ON reals closed `v1`/`v1b`/`cohort_sequence` with ZERO code change, and the residual
+  reverses sign on baselines still carrying stale charges. Every summary statistic matching while the output
+  moved was the tell that the divergent input was the CLOCK (§D-50). Do not re-open `calculate_var` or the
+  pool-assembly path on cadence evidence alone.
+- **`felix_it`'s 84.72% OFF leg as a lucky draw** — FALSIFIED; the replicate landed at 83.28, so the ON band
+  really is below the OFF band on that one baseline (§B.3).
 - **The round-baseline divergence as a variance-at-iteration-0 trajectory effect** — DEAD; a per-cycle charge
   correction closed the whole family.
 - **Cadence as a progressive trajectory divergence** — FALSIFIED; the drift rung flipped to a level offset and
@@ -866,6 +793,21 @@ Moved to §D-3; stub kept because prior sessions cite "§F.2".
 > current depends on it — git log keeps it.
 
 **This batch**
+- **Two mechanical guards for the CH stage, both negative-controlled on live data.** (1) The launch preflight
+  BLOCKS a sim leg whose charge profile predates any real of that baseline trained under the same
+  `jvp_eval_mode` — it fired on all four stale profiles, then went 21/21 green after re-profiling, and does
+  NOT fire on a deliberate flag-OFF control. `--force` overrides. (2) `run_parity.py` pairs the sim leg with
+  the latest real whose FLAG matches, not the latest outright, and prints any newer real it skipped — the
+  `felix_it` OFF-control trap is now structural rather than a note in this doc. 3 tests; the preflight half
+  lives in a shell heredoc and has no importable test (§B.6).
+- **The charge profile is a first-class parity stage, not a detail — it alone took `felix_round` 70/4 → 73/1.**
+  Re-profiling from its own two ON reals, with no code change and the same real leg, took `v1` 5.4% → 0.0% and
+  flipped `cohort_sequence`/`v1b` green. It killed the grad-pool hypothesis the cadence family had been
+  charged to (§E) and became §A.1's CH stage and §D-50. `var_calc_audit` and `diff_var_pool.py` stay in the
+  tree, OFF and now unused.
+- **`felix_it` has an OFF band at last: 83.28 / 84.72.** Floors 2.3/0.1/2.2/2.4%, and the band sits 1.0-3.4
+  pts ABOVE its ON band — the flag's only measured accuracy cost, and it does not follow the aggregation rate
+  (§A.3, open in §B.3).
 - **DIST tolerances are now sized from each baseline's measured replicate floor, not hand-typed (§D-24).**
   `replicate_floor.py --profile-out` writes `parity_floors/<baseline>.yaml`; the checker tightens toward
   `3x floor`, never past 2% absolute, never looser than nominal, and SKIPs a rung whose floor has swallowed
@@ -873,48 +815,34 @@ Moved to §D-3; stub kept because prior sessions cite "§F.2".
   tolerance. **This caught a real defect immediately**: `v1` had been passing a 5.4% gap against a 15% gate
   calibrated when the floor was 13.3%; at the ON floor of 0.6% it fails. No floor file ⇒ nominal gates, so
   async_cifar10 is inert. 8 tests.
-- **`jvp_eval_mode` PROMOTED to default ON (T1.1), and declared in all 22 baseline yamls.** Both read sites
-  default True; the launch preflight now warns on an explicit OFF (the H13 defect) instead of on absence.
-  **Verified rather than assumed**: a per-trainer census logged from inside the eval block counts the model's
-  live dropout leaves, and on the real DistilBERT+adapter stack it reads **19 of 20 live before, 0 inside** —
-  `model.training` reads False throughout, which is why the flag alone was never evidence (§D-47). A yaml
-  contract test now fails if any baseline drops the knob. 11 tests.
-- **H13 CLOSED — eval mode is confirmed as the floor's DOMINANT term, at no accuracy cost.** ON reals on five
-  baselines: the worst cadence floor fell 13.3% → 0.6% (22x) and every measured variance floor fell with it
-  (worst 21.3% → 6.6%), while peak accuracy landed inside or above every OFF band that has a replicate behind
-  it (§A.3). The proposed tolerance-widening invariant is RETIRED — this was a bug, and a flag closed it.
-- **H12a CONFIRMED by the asymmetry it predicted.** Only the baseline whose aggregation weight is
-  loss-derived lost its cadence floor; the integer-staleness ones had none to lose and did not move
-  (0.0 → 0.3%, 3.9 → 4.1%). Cadence tracks the aggregation rate, accuracy tracks gradient noise — different
-  floors, different causes, and the fix separates them cleanly.
-- **H11 CLOSED — validated live.** The ON sim leg's round-2 boundary reads **30 unique picks, 0 re-picks**
-  against c=30, `selection_detail` is green and the occupancy rungs did not regress. `HANDOFF_H11.md` deleted.
+- **`jvp_eval_mode` PROMOTED to default ON, declared in all 22 baseline yamls, and confirmed as the replicate
+  floor's DOMINANT term.** Live dropout inside the finite difference made the two JVP passes draw different
+  masks. ON reals on five baselines: the worst cadence floor fell 13.3% → 0.6% (22x) and every measured
+  variance floor fell with it (21.3% → 6.6% worst), at no accuracy cost against four of five OFF bands.
+  **Verified rather than assumed** — a per-trainer census from inside the eval block reads 19 of 20 live
+  dropout leaves before, 0 inside, while `model.training` reads False throughout, which is why the flag alone
+  was never evidence (§D-47). Eval mode is applied before the model is made functional and held for the whole
+  loop (the functional transform deep-copies the module), then every module's own flag is restored. A yaml
+  contract test fails if any baseline drops the knob; the preflight warns on an explicit OFF. 24 tests.
+  The proposed "forward-gradient training is not reproducible, widen the tolerances" invariant is RETIRED.
+- **Only the loss-derived-weight baselines could lose a cadence floor, and only where one existed.** The
+  integer-staleness baselines had none and did not move (0.0 → 0.3%, 3.9 → 4.1%); `felix_it` is loss-derived
+  and also did not move, because its floor was already 2.2%. Cadence tracks the aggregation rate, accuracy
+  tracks gradient noise — different floors, different causes.
 - **`replicate_floor.py` splits groups by `jvp_eval_mode`, read back from the trainer log.** It pooled every
   same-duration leg of a baseline, so ON legs would have been averaged with OFF ones and the exit criterion
   would have measured the flag, not the floor (§D-45). The knob is in no config file in the run dir — a
-  provenance gap worth closing separately. 4 tests.
-- **`jvp_eval_mode` wired end to end for the A/B.** Trainer knob in the **trainer** override block of the 10
-  yamls (real+sim × the five 7200s baselines); the launch preflight BLOCKS a mismatched or one-sided pair and
-  warns when absent (= code default, dropout live). Both failure modes negative-controlled. One line per yaml
-  to revert.
-- **H13 fix landed behind `jvp_eval_mode`, default False = today's behavior.** Eval mode is applied before the
-  model is made functional and held for the whole training loop (the functional transform deep-copies the
-  module, so a later toggle never reaches what the JVP evaluates), then every module's own flag is restored —
-  a blanket re-enable would invent a state the model never had. Covers the utility path too. 6 tests.
-  **NOT bit-identical when ON, NOT parity-only — A/B first (§B).**
-- **H13 CONFIRMED on the real stack once the probe was rebuilt to run the PRODUCTION model (§D-47).** The
-  probe had forced inference mode, silencing the very dropout at issue; it now builds as-created, carries an
-  eval-mode arm, records a live-dropout census, reads its verdict off the within-process column and suppresses
-  the cross-process table (different seeds = different work, not nondeterminism). Numbers in §B. 7 tests.
-- **H11 over-dispatch FIXED.** The boundary's release path cleared both re-pick guards before rebuilding the
-  outstanding set from them, so top-up selections re-picked still-training ends. Sim now also folds in the
-  dispatched-not-yet-returned record — the half real's equivalent always carried, which is why real never had
-  the bug. 3 tests (2 fail without). Validated live on the ON sim leg — 0 over-dispatch.
+  provenance gap tracked in §B.6. 4 tests.
+- **Boundary over-dispatch FIXED, and validated live.** The release path cleared both re-pick guards before
+  rebuilding the outstanding set from them, so top-up selections re-picked still-training ends. Sim now also
+  folds in the dispatched-not-yet-returned record — the half real's equivalent always carried, which is why
+  real never had the bug. The ON sim leg's round-2 boundary reads 30 unique picks / 0 re-picks against c=30.
+  3 tests (2 fail without).
 - **Watchdog runtime raised above the run budget on all eight real yamls** — a watchdog equal to the target
   duration can kill the run it is meant to outlive.
-- **H12 probe + two candidate flags, default OFF, byte-identical off** — a bench A/B across concurrent
-  processes with no FL run, plus fp32-outside-autocast and strict-determinism knobs. 23 tests. The amplifier
-  is CONFIRMED; neither flag touches H13's source (§B).
+- **Two determinism knobs (fp32-outside-autocast, strict-determinism) exist, default OFF, byte-identical
+  off.** Bench A/B across concurrent processes confirmed reduced precision AMPLIFIES the floor but is not its
+  source; neither knob touches it. 23 tests. Don't re-run that bench (§E).
 - **`replicate_floor.py` groups on ACHIEVED span, not the configured duration (§D-44).** A leg short of the
   group's longest by more than the span tolerance is DROPPED and named, even when that leaves <2 legs. One
   truncated leg had inflated a baseline's floor by ~3-6 points. 5 tests.
@@ -969,4 +897,5 @@ Moved to §D-3; stub kept because prior sessions cite "§F.2".
   Training state was always correct (staleness keys on `model_version`). 7 tests.
 - **`async_oort.py` re-based onto `AsyncSelectorBase`** (2193→897 lines) — utility-scoring POLICY unchanged,
   routed through the shared choose path, with weighted sampling moved onto reproducible keys (the old
-  pool/order-dependent draw was not reproducible). Integration-level real+sim confirmation still open (§B).
+  pool/order-dependent draw was not reproducible). Live real↔sim confirmation landed with `felix_round`'s ON
+  row — `selection`, `selection_detail`, `selection_bias` and `utility` all green; `felix_it` still owes one.

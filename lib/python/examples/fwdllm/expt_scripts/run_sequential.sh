@@ -343,7 +343,7 @@ MODE_SET="$MODE_SET" DELAYS_SET="$DELAYS_SET" MAX_RUNTIME_S_SET="$MAX_RUNTIME_S_
 LOGDIR="$LOGDIR" MANIFEST="$MANIFEST" RUN_TSV="$RUN_TSV" DRY_RUN="$DRY_RUN" SHOW_ALL="$SHOW_ALL" \
 EXAMPLE_DIR="$EXAMPLE_DIR" AC10_DIR="$AC10_DIR" \
 python - <<'PY'
-import os, sys, copy, yaml, json, hashlib
+import os, sys, copy, yaml, json, hashlib, glob
 sys.path.insert(0, os.environ["EXPT_RUNNER_DIR"])
 import expt_runner
 
@@ -855,6 +855,22 @@ for rk in (r[0] for r in runs):
         checks.append({"name": f"jvp_eval_mode ({rk})", "level": "ok",
                        "detail": f"{_vals.pop()} on every leg"})
 
+def leg_jvp_eval_mode(run_dir):
+    """Was this finished leg trained with dropout off inside the JVP? Only the
+    trainer log records it (simulate_fwdllm.md §B.6)."""
+    for lg in glob.glob(os.path.join(run_dir, "*trainers.log")):
+        try:
+            with open(lg, errors="ignore") as fh:
+                for i, line in enumerate(fh):
+                    if "jvp_eval_mode=" in line:
+                        return "jvp_eval_mode=True" in line
+                    if i > 50000:      # the knob logs at trainer init or never
+                        break
+        except OSError:
+            continue
+    return False
+
+
 # sim charge profile provenance: every charged entry must have been profiled from
 # a real run of THIS baseline. A shared family-wide profile silently mis-prices the
 # vclock -- one constant was 1.08-2.75x each baseline's own real drain_tail, i.e.
@@ -898,6 +914,35 @@ for rk in (r[0] for r in runs):
     else:
         checks.append({"name": f"sim charge profile provenance ({rk})", "level": "ok",
                        "detail": f"{os.path.basename(path)} profiled {'/'.join(sorted(d for d in _dates if d))} from {rk} real"})
+
+    # ...and from its CURRENT reals. A profile from an older training config
+    # mis-prices the vclock, and sim selects work against that clock, so the leg
+    # grades the PROFILE not the code -- worth 5.4% of cadence on one baseline
+    # (§A.1 stage CH, §D-50). --force overrides.
+    _src = set()
+    for _lbl, _entries in _pf.items():
+        for _pk, _e in (_entries or {}).items():
+            if _e.get("charge") and not _e.get("cross_baseline"):
+                _src.update(str(s) for s in (_e.get("source_runs") or []))
+    _newest_src = max((s.split("run_")[-1][:15] for s in _src), default="")
+    _expt = os.path.join(env("EXAMPLE_DIR", ""), "experiments")
+    _reals = [d for d in glob.glob(os.path.join(_expt, f"run_*_{rk}_n*_real"))
+              if os.path.basename(d).split("run_")[-1][:15] > _newest_src]
+    # Only a same-config real can stale a profile; a deliberate flag-OFF control
+    # landing later is not a reason to re-profile.
+    _want = per_baseline.get(rk, {}).get("jvp_eval_mode", {}).get("sim", "ABSENT")
+    _want = True if _want == "ABSENT" else _want
+    _newer = sorted(os.path.basename(d) for d in _reals
+                    if leg_jvp_eval_mode(d) == _want)
+    if _newer and _newest_src:
+        checks.append({"name": f"sim charge profile is CURRENT ({rk})", "level": "error",
+                       "detail": f"{len(_newer)} real leg(s) newer than the profile "
+                                 f"(newest source {_newest_src}): {', '.join(_newer[-2:])}. "
+                                 f"Re-run profile_sim_charges.py, or --force if the newer "
+                                 f"reals are a different config on purpose."})
+    elif _newest_src:
+        checks.append({"name": f"sim charge profile is CURRENT ({rk})", "level": "ok",
+                       "detail": f"sourced from this baseline's newest real ({_newest_src})"})
 
 # agg_goal <= c (more required than concurrently selected -> stall).
 for rk in (r[0] for r in runs):
