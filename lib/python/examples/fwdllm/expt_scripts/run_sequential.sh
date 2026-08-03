@@ -847,7 +847,10 @@ for rk in (r[0] for r in runs):
                        "level": "error", "detail": f"MISMATCH: {_jv}"})
     elif _vals == {"ABSENT"}:
         checks.append({"name": f"jvp_eval_mode ({rk})", "level": "warn",
-                       "detail": "not declared -> code default False (dropout LIVE)"})
+                       "detail": "not declared -> code default True (dropout off in the JVP)"})
+    elif _vals == {False}:
+        checks.append({"name": f"jvp_eval_mode ({rk})", "level": "warn",
+                       "detail": "explicitly OFF -> dropout LIVE in the JVP, the H13 defect"})
     else:
         checks.append({"name": f"jvp_eval_mode ({rk})", "level": "ok",
                        "detail": f"{_vals.pop()} on every leg"})

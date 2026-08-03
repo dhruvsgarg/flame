@@ -145,10 +145,10 @@ if __name__ == "__main__":
             # byte-identical; enabled only in the fluxtune yamls.
             "jvp_perf_opt": getattr(
                 config.hyperparameters, "jvp_perf_opt", False),
-            # H13: dropout off during the finite difference. NOT bit-identical —
-            # A/B before promotion. Real and sim must match (same config).
+            # H13: dropout off during the finite difference. Default ON (a
+            # correctness fix); real and sim must match (same config).
             "jvp_eval_mode": getattr(
-                config.hyperparameters, "jvp_eval_mode", False),
+                config.hyperparameters, "jvp_eval_mode", True),
         }
     )
     model_args.config["num_labels"] = num_labels

@@ -53,9 +53,8 @@ experiments:
           # MUST match the _sim pair or parity sees a data-skew divergence
           # with no clock cause.
           partition_method: niid_label_clients=100_alpha=1
-          # H13 (simulate_fwdllm.md §B): dropout off during the JVP's two
-          # finite-difference passes. NOT bit-identical and NOT parity-only — it
-          # changes what is trained. Flip real AND sim together (§F-18).
+          # H13: dropout off during the JVP's two finite-difference passes.
+          # Code default ON (simulate_fwdllm.md §G); real and sim must match.
           jvp_eval_mode: true
           client_notify:
             trace: syn_0

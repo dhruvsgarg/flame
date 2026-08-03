@@ -34,6 +34,8 @@ import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
+import yaml
+
 _HERE = Path(__file__).resolve().parent
 _LIB_PYTHON = _HERE.parents[2]                       # lib/python
 _PARITY_SCRIPTS = _LIB_PYTHON / "examples" / "async_cifar10" / "scripts"
@@ -147,6 +149,23 @@ def _default_jobs(n_pairs: int) -> int:
     return max(1, min(n_pairs, cores, by_ram))
 
 
+_FLOOR_DIR = _HERE.parent / "parity_floors"
+
+
+def _floors(label: str) -> dict | None:
+    """This baseline's measured replicate floor, if one has been generated.
+
+    Sizes the DIST tolerances (§D-24). Absent file => nominal tolerances, so a
+    baseline with no replicate is graded exactly as before rather than silently
+    on someone else's floor (§D-36).
+    """
+    path = _FLOOR_DIR / f"{label.split('/')[0]}.yaml"
+    if not path.exists():
+        return None
+    prof = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return prof.get("metrics") or None
+
+
 def _grade_pair(job):
     """Grade one real/sim pair. Module-level and self-contained so it can run in
     a worker process: takes paths, returns picklable primitives, writes its own
@@ -161,7 +180,7 @@ def _grade_pair(job):
     real_agg, real_tr = load_run_dir(rdir)
     sim_agg, sim_tr = load_run_dir(sdir)
     res = run_all_parity(real_agg, sim_agg, real_tr, sim_tr, agg_goal=goal,
-                         max_bin=max_bin)
+                         max_bin=max_bin, floors=_floors(label))
     jpath = os.path.join(json_dir, f"parity_{label.replace('/', '_')}_{sts}.json")
     json.dump(res, open(jpath, "w"), indent=2, default=str)
     n_pass = sum(1 for v in res.values()

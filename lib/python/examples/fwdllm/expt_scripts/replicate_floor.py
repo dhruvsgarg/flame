@@ -35,6 +35,7 @@ durations measures the training curve, not reproducibility.
 from __future__ import annotations
 
 import argparse
+import datetime
 import glob
 import json
 import os
@@ -43,8 +44,22 @@ import statistics as st
 import sys
 from pathlib import Path
 
+import yaml
+
 _HERE = Path(__file__).resolve().parent
 _DEFAULT_EXPERIMENTS = _HERE.parent / "experiments"
+
+_PROFILE_HEADER = """\
+# Measured same-seed replicate floor: the spread two config-identical real legs
+# show with NO code change. The parity checker sizes its DIST tolerances from
+# this (simulate_fwdllm.md D-24) -- a tolerance far above the floor passes real
+# divergences, one below it grades noise. Regenerate with
+# `replicate_floor.py --mode real --profile-out <dir>`; do not hand-edit.
+"""
+
+
+def _today() -> str:
+    return datetime.date.today().isoformat()
 
 _RUN_RE = re.compile(
     r"^run_(?P<ts>\d{8}_\d{6})_(?P<baseline>.+)_n(?P<n>\d+)_smoke"
@@ -194,10 +209,14 @@ def main(argv=None) -> int:
                          "group's longest (default 0.05 = 5%%); a truncated run "
                          "is a shorter run, not a replicate")
     ap.add_argument("--json-out", default=None)
+    ap.add_argument("--profile-out", default=None, metavar="DIR",
+                    help="write per-baseline floor profiles the parity checker "
+                         "reads to size its DIST tolerances (D-24). Only the "
+                         "longest ON group per baseline is written.")
     args = ap.parse_args(argv)
 
     groups = discover(args.experiments_dir, args.baselines, args.mode)
-    report, any_group = {}, False
+    report, profiles, any_group = {}, {}, False
     for key in sorted(groups, key=lambda k: (k[0], k[3] or 0, k[4])):
         baseline, trace, mode, maxrt, jvp_eval = key
         # Name the training config in the header: two groups of the same baseline
@@ -265,6 +284,21 @@ def main(argv=None) -> int:
             "n_replicates": len(rows), "seeds": sorted(seeds),
             "achieved_span_s": [s for _, _, _, s in rows],
             "dropped_truncated": [t for t, _, _, _ in dropped], "metrics": entry}
+        # Keep the longest ON group per baseline as that baseline's profile: the
+        # floor is what the CURRENT training config reproduces to, and duration
+        # changes it (§D-24), so a short or OFF group must never win.
+        if args.profile_out and mode == "real" and jvp_eval:
+            prev = profiles.get(baseline)
+            if prev is None or (maxrt or 0) >= prev["max_runtime_s"]:
+                profiles[baseline] = {
+                    "max_runtime_s": maxrt or 0, "jvp_eval_mode": True,
+                    "n_replicates": len(rows), "measured_at": _today(),
+                    "source_runs": [t for t, _, _, _ in rows],
+                    "metrics": {k: v["floor_rel"] for k, v in entry.items()},
+                    "rungs": {k: {"rung": v["rung"], "field": v["tolerance_field"],
+                                  "nominal": v["tolerance"]}
+                              for k, v in entry.items()},
+                }
 
     if not any_group:
         print("No replicate groups found (need >= 2 runs sharing "
@@ -275,6 +309,16 @@ def main(argv=None) -> int:
     if args.json_out:
         json.dump(report, open(args.json_out, "w"), indent=2)
         print(f"json: {args.json_out}")
+    if args.profile_out:
+        os.makedirs(args.profile_out, exist_ok=True)
+        for baseline, prof in sorted(profiles.items()):
+            path = os.path.join(args.profile_out, f"{baseline}.yaml")
+            with open(path, "w") as fh:
+                fh.write(_PROFILE_HEADER)
+                yaml.safe_dump(prof, fh, sort_keys=True)
+            print(f"floor profile: {path}")
+        if not profiles:
+            print("no ON real groups -- no floor profile written")
     return 0
 
 

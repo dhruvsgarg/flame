@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import collections
 import glob
+import inspect
 import json
 import math
 import os
@@ -2495,6 +2496,35 @@ def failsafe_ok(sim: dict, budget_s: Optional[float] = None,
 # open residual (fluxtune 11.9%, fedbuff_round 16.4%) firmly outside it.
 # Re-run replicate_floor.py after any change to scale, hardware or run length.
 _THROUGHPUT_FAMILY_TOL_REL = 0.08
+
+
+#: How many same-seed replicate spreads a residual must exceed to count as
+#: signal, and the tightest tolerance we will ever derive. Below ~2% these
+#: run-level means are quantization, not measurement.
+_FLOOR_TOL_K = 3.0
+_FLOOR_TOL_MIN_ABS = 0.02
+
+
+def floor_gated_tol(nominal: float, floor_rel: Optional[float],
+                    k: float = _FLOOR_TOL_K,
+                    min_abs: float = _FLOOR_TOL_MIN_ABS) -> tuple:
+    """Size a DIST tolerance against the baseline's measured replicate floor.
+
+    A tolerance far ABOVE the floor passes real divergences (a 15% gate over a
+    0.6% floor let a 5.4% gap read green); one BELOW it grades noise, and no code
+    change can ever close it (§D-24). So: tighten toward the floor but never past
+    `min_abs`, never loosen past the nominal, and refuse to grade at all once the
+    floor has swallowed the tolerance — an honest SKIP, not a coin-flip verdict.
+
+    Returns `(effective_tol, ungradeable_reason_or_None)`. No floor measured =>
+    nominal, unchanged: this can only ever tighten a rung that has evidence.
+    """
+    if floor_rel is None:
+        return nominal, None
+    if floor_rel >= nominal:
+        return nominal, (f"replicate floor {floor_rel:.1%} >= tolerance "
+                         f"{nominal:.1%}; a verdict here grades noise")
+    return min(nominal, max(k * floor_rel, min_abs)), None
 
 
 def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY_TOL_REL) -> dict:
@@ -7118,7 +7148,8 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
                    budget_s: Optional[float] = None,
                    real_ground_truth: Optional[dict] = None,
                    sim_ground_truth: Optional[dict] = None,
-                   max_bin: Optional[int] = None) -> dict:
+                   max_bin: Optional[int] = None,
+                   floors: Optional[dict] = None) -> dict:
     """Run the full parity + invariant battery; returns {name: result_dict}.
 
     Ordered HIGH → MID → LOW so coarse failures surface first:
@@ -7133,6 +7164,26 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
       §8 Statistical utility
     """
     results: dict = {}
+
+    # DIST tolerances sized against THIS baseline's measured replicate floor
+    # (§D-24). The nominal gates were calibrated when the floor was 10-20x larger,
+    # so they passed divergences well above noise; with no floor file they are
+    # unchanged, which keeps every other example inert.
+    _floor_specs = {
+        "throughput": (throughput_parity, "tol_rel", "committed_bins"),
+        "cohort_sequence": (cohort_sequence_parity, "count_tol", "cycles"),
+        "v1_iter_per_data_id": (iters_per_data_id_parity, "mean_tol_rel",
+                                "iters_per_bin"),
+        "v2_var_trajectory": (var_trajectory_parity, "mean_tol_rel", "mean_var"),
+    }
+    _tol, _ungradeable, _floor_of = {}, {}, {}
+    for _rung, (_fn, _field, _metric) in _floor_specs.items():
+        _floor = (floors or {}).get(_metric)
+        _nominal = inspect.signature(_fn).parameters[_field].default
+        _eff, _why = floor_gated_tol(_nominal, _floor)
+        _tol[_rung] = {_field: _eff}
+        _ungradeable[_rung] = _why
+        _floor_of[_rung] = (_metric, _floor, _nominal, _eff)
 
     # ── Stage 0 Telemetry coverage (gate) ──
     results["field_coverage"] = field_coverage(
@@ -7149,7 +7200,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         real_agg, sim_agg, agg_goal=agg_goal)
     results["overlap_factor"] = overlap_factor(real_agg, sim_agg)
     results["per_round_advance"] = per_round_advance_parity(real_agg, sim_agg)
-    results["throughput"] = throughput_parity(real_agg, sim_agg)
+    results["throughput"] = throughput_parity(real_agg, sim_agg, **_tol["throughput"])
     results["wall_disparity"] = wall_disparity(real_agg, sim_agg)
     results["sim_speedup"] = sim_speedup(real_agg, sim_agg)
 
@@ -7226,11 +7277,14 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     # Pure functions over the per-cycle agg_round series; SKIP cleanly on
     # non-fwdllm runs (no cadence fields emitted). V/G rungs feed off Stage-5
     # ordering + Stage-1 clock; DK rungs are inert unless DynamicKC is enabled.
-    results["cohort_sequence"] = cohort_sequence_parity(real_agg, sim_agg, max_bin=max_bin)
+    results["cohort_sequence"] = cohort_sequence_parity(real_agg, sim_agg, max_bin=max_bin,
+                                                        **_tol["cohort_sequence"])
     results["v1c_iter_drift_rate"] = iter_drift_rate_parity(real_agg, sim_agg, max_bin=max_bin)
-    results["v1_iter_per_data_id"] = iters_per_data_id_parity(real_agg, sim_agg, max_bin=max_bin)
+    results["v1_iter_per_data_id"] = iters_per_data_id_parity(real_agg, sim_agg, max_bin=max_bin,
+                                                              **_tol["v1_iter_per_data_id"])
     results["v1b_iters_moving_avg"] = iters_per_data_id_moving_avg_parity(real_agg, sim_agg)
-    results["v2_var_trajectory"] = var_trajectory_parity(real_agg, sim_agg, max_bin=max_bin)
+    results["v2_var_trajectory"] = var_trajectory_parity(real_agg, sim_agg, max_bin=max_bin,
+                                                         **_tol["v2_var_trajectory"])
     results["v2b_var_drift"] = var_drift_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v3_cached_v_pool"] = cached_v_pool_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v4_force_commit_rate"] = force_commit_rate_parity(real_agg, sim_agg, max_bin=max_bin)
@@ -7285,6 +7339,20 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
                 }
                 if _cov["min_coverage"] < _BUDGET_COVERAGE_DEGRADED:
                     _res["low_budget_coverage"] = True
+
+    # Record what the floor did to each gated rung, and refuse to grade the ones
+    # whose floor has swallowed their tolerance — a SKIP naming the floor beats a
+    # verdict that is a coin flip either way (§D-24).
+    for _rung, (_metric, _floor, _nominal, _eff) in _floor_of.items():
+        _res = results.get(_rung)
+        if not isinstance(_res, dict) or _floor is None:
+            continue
+        _res["replicate_floor_rel"] = round(_floor, 4)
+        _res["floor_gated_tol"] = round(_eff, 4)
+        _res["nominal_tol"] = _nominal
+        if _ungradeable[_rung]:
+            _res.update({"ok": True, "status": "SKIP",
+                         "reason": _ungradeable[_rung]})
 
     return results
 

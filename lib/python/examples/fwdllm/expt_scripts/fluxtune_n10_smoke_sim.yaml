@@ -69,9 +69,8 @@ experiments:
           # MUST match the real pair or parity sees a data-skew divergence
           # with no clock cause.
           partition_method: niid_label_clients=100_alpha=1
-          # H13 (simulate_fwdllm.md §B): dropout off during the JVP's two
-          # finite-difference passes. NOT bit-identical and NOT parity-only — it
-          # changes what is trained. Flip real AND sim together (§F-18).
+          # H13: dropout off during the JVP's two finite-difference passes.
+          # Code default ON (simulate_fwdllm.md §G); real and sim must match.
           jvp_eval_mode: true
           # Phase 4c (B2, #6): sim barrier straggler spread to match real's
           # per-trainer completion dispersion (uniform[0,spread), spread ≈

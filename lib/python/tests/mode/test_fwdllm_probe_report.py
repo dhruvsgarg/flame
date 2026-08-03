@@ -10,13 +10,16 @@ unit-testable even though the probe itself is an experiment
 """
 
 import importlib.util
+import logging
+import pathlib
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
-_PROBE = (Path(__file__).resolve().parents[2] / "examples" / "fwdllm"
-          / "expt_scripts" / "probe_jvp_determinism.py")
+_FWDLLM = Path(__file__).resolve().parents[2] / "examples" / "fwdllm"
+_PROBE = _FWDLLM / "expt_scripts" / "probe_jvp_determinism.py"
 
 
 @pytest.fixture(scope="module")
@@ -86,8 +89,91 @@ class TestEvalModeArm:
         assert probe._eval_mode_requested() is True
 
 
+class TestEvalModePromoted:
+    """`jvp_eval_mode` is a promoted correctness fix: ON unless explicitly
+    disabled, at BOTH read sites, and declared in every baseline yaml.
+
+    A yaml-only knob is invisible to the launch fingerprint (§F-18), so "the
+    config says true" is not evidence the model saw it — these pin the layers
+    the config cannot reach.
+    """
+
+    @staticmethod
+    def _default_at(path, needle):
+        """The literal default in a `getattr(..., "jvp_eval_mode", X)` call."""
+        src = pathlib.Path(path).read_text(encoding="utf-8")
+        i = src.index(needle)
+        return src[i:i + 400]
+
+    def test_trainer_entrypoint_defaults_on(self):
+        chunk = self._default_at(
+            _FWDLLM / "trainer" / "main.py", '"jvp_eval_mode": getattr(')
+        assert 'jvp_eval_mode", True)' in chunk
+
+    def test_trainer_class_defaults_on(self):
+        chunk = self._default_at(
+            _FWDLLM / "trainer" / "forward_training"
+            / "tc_transformer_trainer_distribute.py",
+            'self.jvp_eval_mode = bool(')
+        assert '"jvp_eval_mode", True)' in chunk
+
+    @pytest.mark.parametrize("yml", sorted(
+        p for p in (_FWDLLM / "expt_scripts").glob("*_smoke*.yaml")
+        if not p.name.startswith("figs")))
+    def test_every_baseline_yaml_declares_it(self, yml):
+        """The §F-18 contract, enforced instead of remembered: a baseline that
+        silently loses the knob trains a different experiment."""
+        cfg = yaml.safe_load(yml.read_text(encoding="utf-8"))
+        hp = (cfg["experiments"][0]["trainer"]
+              ["config_overrides"]["hyperparameters"])
+        assert hp.get("jvp_eval_mode") is True, f"{yml.name} does not declare it ON"
+
+
+class TestDropoutCensus:
+    """The run must PROVE dropout was off, not assert the flag was set (§D-48):
+    `model.training` reads False while its dropout leaves train on."""
+
+    @pytest.fixture
+    def trainer(self):
+        torch = pytest.importorskip("torch")
+        mod = pytest.importorskip(
+            "examples.fwdllm.trainer.forward_training."
+            "tc_transformer_trainer_distribute")
+        m = torch.nn.Sequential(torch.nn.Dropout(0.1), torch.nn.Dropout(0.1),
+                                torch.nn.Linear(4, 4))
+        m.training = False                      # the shape train_adapter leaves
+        for child in m.children():
+            child.training = True
+        cls = mod.ForwardTextClassificationTrainer
+        t = cls.__new__(cls)
+        t.model, t._dropout_census_logged, t.jvp_eval_mode = m, False, True
+        return mod, t
+
+    def test_census_reads_zero_inside_the_block(self, trainer, caplog):
+        mod, t = trainer
+        with caplog.at_level(logging.INFO):
+            with mod._eval_mode(t.model):
+                t._log_dropout_census()
+        assert "live_dropout=0/2" in caplog.text
+
+    def test_census_counts_live_leaves_when_off(self, trainer, caplog):
+        """Without the block the leaves stay training — the defect's signature."""
+        mod, t = trainer
+        t.jvp_eval_mode = False
+        with caplog.at_level(logging.INFO):
+            t._log_dropout_census()
+        assert "live_dropout=2/2" in caplog.text
+
+    def test_logged_once_per_process(self, trainer, caplog):
+        mod, t = trainer
+        with caplog.at_level(logging.INFO):
+            for _ in range(3):
+                t._log_dropout_census()
+        assert caplog.text.count("live_dropout=") == 1
+
+
 class TestEvalModeContext:
-    """`_eval_mode` is the trainer-side H13 fix (`jvp_eval_mode`, default OFF)."""
+    """`_eval_mode` is the trainer-side H13 fix, now promoted to default ON."""
 
     @pytest.fixture(scope="class")
     def trainer_mod(self):

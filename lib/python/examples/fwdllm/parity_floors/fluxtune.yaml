@@ -1,0 +1,34 @@
+# Measured same-seed replicate floor: the spread two config-identical real legs
+# show with NO code change. The parity checker sizes its DIST tolerances from
+# this (simulate_fwdllm.md D-24) -- a tolerance far above the floor passes real
+# divergences, one below it grades noise. Regenerate with
+# `replicate_floor.py --mode real --profile-out <dir>`; do not hand-edit.
+jvp_eval_mode: true
+max_runtime_s: 7200
+measured_at: '2026-08-03'
+metrics:
+  committed_bins: 0.0
+  cycles: 0.0083
+  iters_per_bin: 0.0083
+  mean_var: 0.0661
+n_replicates: 2
+rungs:
+  committed_bins:
+    field: tol_rel
+    nominal: 0.05
+    rung: throughput
+  cycles:
+    field: count_tol
+    nominal: 0.05
+    rung: cohort_sequence
+  iters_per_bin:
+    field: mean_tol_rel
+    nominal: 0.15
+    rung: v1_iter_per_data_id
+  mean_var:
+    field: mean_tol_rel
+    nominal: 0.02
+    rung: v2_var_trajectory
+source_runs:
+- '20260803_001625'
+- '20260803_042016'

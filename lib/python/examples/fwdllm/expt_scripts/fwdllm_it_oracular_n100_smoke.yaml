@@ -60,6 +60,9 @@ experiments:
           # MUST match the _sim pair's value or parity sees a data-skew
           # divergence that has nothing to do with the clock.
           partition_method: niid_label_clients=100_alpha=1
+          # H13: dropout off during the JVP's two finite-difference passes.
+          # Code default ON (simulate_fwdllm.md §G); real and sim must match.
+          jvp_eval_mode: true
 
     aggregator:
       config_template: configs/aggregator_base.json

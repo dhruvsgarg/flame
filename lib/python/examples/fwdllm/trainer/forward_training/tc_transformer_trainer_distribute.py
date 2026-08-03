@@ -80,10 +80,12 @@ def _stage_timer(owner, name: str, extra: dict = None):
 def _eval_mode(model):
     """Dropout off for the block, then EVERY module's own flag back (H13).
 
-    `train_adapter` leaves 13 of 20 `nn.Dropout` modules training at p=0.1 while
-    the root `model.training` reads False, so `calculate_jvp`'s two passes draw
-    DIFFERENT masks — not a derivative of any one function, and irreproducible.
-    Restores per-module: a blanket `.train()` invents a state the model never had.
+    `train_adapter` leaves most `nn.Dropout` modules training while the root
+    `model.training` reads False (19 of 20 as built today — the count is
+    build-dependent, the mechanism is not), so the finite difference's two passes
+    draw DIFFERENT masks — not a derivative of any one function, and
+    irreproducible. Restores per-module: a blanket `.train()` would invent a
+    state the model never had.
     """
     modes = [(m, m.training) for m in model.modules()]
     try:
@@ -256,10 +258,11 @@ class ForwardTextClassificationTrainer:
             f"all bit-identical — simulate_fwdllm.md §L)"
         )
 
-        # H13: run the JVP passes with dropout off (see train_model). NOT
-        # bit-identical and NOT parity-only — it changes what is trained, so it is
-        # A/B'd before promotion. Default False = today's behavior.
-        self.jvp_eval_mode = bool(getattr(self.args, "jvp_eval_mode", False))
+        # H13: run the JVP passes with dropout off (see train_model). Default ON —
+        # two dropout masks make the estimate a derivative of no single function,
+        # and the A/B collapsed the replicate floor at no accuracy cost.
+        self.jvp_eval_mode = bool(getattr(self.args, "jvp_eval_mode", True))
+        self._dropout_census_logged = False
         logging.info(
             f"[JVP_EVAL_MODE] jvp_eval_mode={self.jvp_eval_mode} "
             f"(dropout off during the finite difference — simulate_fwdllm.md §B-H13)"
@@ -797,6 +800,7 @@ class ForwardTextClassificationTrainer:
         # module, so a later toggle never reaches the fmodel the JVP evaluates.
         with (_eval_mode(self.model) if self.jvp_eval_mode
               else contextlib.nullcontext()):
+            self._log_dropout_census()
             # No _force_cuda_memory_cleanup(): empty_cache() is a device-wide sync
             # and had nothing to reclaim (allocated stays flat across the run).
             self.log_memory("before_train_model", device)
@@ -806,6 +810,23 @@ class ForwardTextClassificationTrainer:
 
             self._finalize_training(device)
 
+
+    def _log_dropout_census(self):
+        """Prove the knob reached the MODEL, don't infer it from the yaml (§D-48).
+
+        Emitted from inside the eval-mode block, at the instant the functional
+        copy is taken — `model.training` is not the answer, so count the leaves.
+        One line per trainer process; `live=0` is the whole verification.
+        """
+        if self._dropout_census_logged:
+            return
+        self._dropout_census_logged = True
+        drops = [m for m in self.model.modules() if isinstance(m, torch.nn.Dropout)]
+        live = sum(1 for m in drops if m.training)
+        logging.info(
+            f"[JVP_EVAL_MODE] live_dropout={live}/{len(drops)} "
+            f"jvp_eval_mode={self.jvp_eval_mode} (live must be 0 when ON)"
+        )
 
     @timer_decorator
     def eval_model(self, epoch=0, global_step=0, device=None):
