@@ -282,30 +282,33 @@ false PASS.
 Do NOT widen a tolerance to make these four pass — they now sit 9x above a measured floor. Remove
 `var_calc_audit` from both yamls once H14 closes.
 
-```bash
-cd lib/python/examples/fwdllm/expt_scripts
+### The 2h batch in flight — what each leg buys and what would falsify it
 
-# ---- node A: H14's instrumented pair (var_calc_audit already set on both legs) ----
-bash run_sequential.sh --mode real --max-runtime-s 7200 --only felix_round --yes && \
-bash run_sequential.sh --mode sim  --max-runtime-s 7200 --only felix_round --yes && \
-python diff_var_pool.py $(ls -d ../experiments/*_felix_round_n100_*_real | sort | tail -1) \
-                        $(ls -d ../experiments/*_felix_round_n100_*_sim  | sort | tail -1)
+> **Sizing rule this batch established: a 7200s REAL leg costs ~2h05 wall** (6940s achieved + ~400s
+> startup/teardown), while a 7200s-VCLOCK **sim leg costs ~45min wall**. So a 2-hour node fits exactly ONE
+> real leg, or two-to-three sim legs. Plan the night around that asymmetry, not around run count.
 
-# ---- node B: H15's control — felix_it with the flag OFF, the ONLY leg that should be ----
-#   the code default is now ON, so this leg needs an explicit false, and the
-#   preflight will (correctly) warn about it. Restore the yaml straight after.
-sed -i 's/^\( *\)jvp_eval_mode: true/\1jvp_eval_mode: false/' felix_it_n10_smoke.yaml
-bash run_sequential.sh --mode real --max-runtime-s 7200 --only felix_it --yes
-git checkout -- felix_it_n10_smoke.yaml            # put the default back immediately
-grep -h 'JVP_EVAL_MODE' $(ls -d ../experiments/*_felix_it_n100_*_real | sort | tail -1)/*trainers.log | sort | uniq -c
-python replicate_floor.py --mode real --baselines felix_it
-```
+| node | leg | buys | expected if the hypothesis holds | falsified if |
+|---|---|---|---|---|
+| A | `felix_round` real, `var_calc_audit` ON | H14's real half | `var_calc` records on ~2450 cycles | no `var_calc` events ⇒ knob never reached the AGGREGATOR (it is an aggregator knob, not a trainer one) |
+| B | `felix_it` real, **`jvp_eval_mode` OFF** | H15's missing control | a second OFF leg near 84.72%, giving `felix_it` its first OFF band | the leg lands at 81-82% ⇒ 84.72% was the outlier, the ON "drop" was never real, promotion is safe |
+| C | `felix_round` sim (audit) + `fwdllm` sim, ON charges | H14's sim half + a 2nd ON parity row | `diff_var_pool` separates pool assembly from the reduction | — |
 
-The `grep` is the point of §D-49: it must report **100 trainers at `jvp_eval_mode=False`** and
-`live_dropout=19/20`. An ON control measures nothing, and this is the leg that decides whether the promotion
-holds.
+**H14's two outcomes, and they need different fixes.** `diff_var_pool.py` is built to tell them apart:
+- **Input norms match, output var differs** ⇒ the reduction itself diverges. Look at accumulation ORDER and
+  dtype in `calculate_var`, not at the pool.
+- **Input norms less dispersed in sim** ⇒ pool ASSEMBLY. The pool has the same size, magnitude, weights and
+  staleness, so a dispersion gap means sim is admitting a more mutually-correlated set of contributions —
+  walk to what decides membership at the instant `var` is computed, not to the variance gate (§F-3).
 
-#### Step 4b — ON sim legs, once 4a has a verdict.
+**`fwdllm`'s sim leg is H14's cross-baseline test.** It shares `felix_round`'s clean floor but differs in
+aggregation rate AND selector. Same four rungs failing ⇒ one root, in shared code. A different set ⇒ H14 is
+`felix_round`-specific and the shared-root claim dies.
+
+**Do not read a short run here** (§D-25): the var gap DRIFTS in sign across the run, so anything under the
+full duration can report it backwards.
+
+#### Step 4b — the remaining ON sim legs (`fluxtune`, `fedbuff_round`, `felix_it`), once 4a has a verdict.
 
 Every baseline with ON reals needs its charge profile re-derived from THOSE reals before its sim leg — a sim
 leg graded against OFF-derived charges reports on the profile, not the code. One `&&`-chain per node, because
