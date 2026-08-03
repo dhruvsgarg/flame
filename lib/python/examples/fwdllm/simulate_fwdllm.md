@@ -308,6 +308,12 @@ aggregation rate AND selector. Same four rungs failing ⇒ one root, in shared c
 **Do not read a short run here** (§D-25): the var gap DRIFTS in sign across the run, so anything under the
 full duration can report it backwards.
 
+⚠ **`felix_it` cannot be graded by the default comparator after this batch.** It now has ON reals, an ON sim
+leg, and an OFF real (H15's control) — and the comparator takes the LATEST real, which is the OFF one. That
+pairs an OFF real against an ON sim and grades the flag, not the code (T1.2). Grade it by pinning the ON
+real explicitly until the OFF control ages out, and profile its charges from the two ON reals BY NAME for
+the same reason.
+
 #### Step 4b — the remaining ON sim legs (`fluxtune`, `fedbuff_round`, `felix_it`), once 4a has a verdict.
 
 Every baseline with ON reals needs its charge profile re-derived from THOSE reals before its sim leg — a sim
