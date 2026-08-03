@@ -1,37 +1,41 @@
 #!/usr/bin/env python3
-"""H12 probe: is the forward-gradient pipeline reproducible run-to-run, and does
-fp32/strict-determinism make it so? Minutes on one GPU, NO FL run.
+"""H13 probe: is the forward-gradient pipeline reproducible, and what breaks it?
+Minutes on one GPU, NO FL run.
 
 Two same-seed real replicates of `felix_round` disagree by 13.3% on iters/bin and
-11.2 accuracy points at peak, and it is not a seeding bug: the RNG stream and its
-position match on every trainer's first task. What differs is arithmetic --
-8 of 30 trainers reproduce their loss bit-exactly, 22 differ at ~1.6e-3 (fp16
-autocast), and `calculate_jvp`'s central difference at h=0.01 amplifies that by a
-median 72x into the gradient. This isolates both halves without the FL loop:
+11.2 accuracy points at peak, with data, dispatch order, iteration, model_version
+and the per-client perturbation RNG all verified identical. Runs 1-2 falsified
+arithmetic as the source (§E). What is left is DROPOUT: `create_model` +
+`train_adapter` leaves 13 of DistilBERT's 20 `nn.Dropout` modules in training mode
+at p=0.1, so `calculate_jvp` evaluates its two finite-difference passes under
+DIFFERENT masks drawn from the process-global RNG -- which nothing seeds per task.
 
-  SEED      -- does the same forward pass reproduce bit-exactly across processes?
-  AMPLIFIER -- how far does the measured loss spread move the jvp?
+  SOURCE    -- does the same forward pass reproduce, in the mode production runs?
+  AMPLIFIER -- how far does the measured loss spread move the jvp? (h=0.01)
 
 DECISION RULE, fixed before running (simulate_fwdllm.md D-9, and printed by the
 tool):
   * some arm goes bit-exact         => a BUG. Fix it; don't widen tolerances.
   * spread unchanged on every arm   => IRREDUCIBLE. Write the invariant, widen
                                        each tolerance to its floor, buy seeds.
-  * fp32 alone closes it            => the amplifier is the whole story.
+  * `evalmode` alone closes it      => dropout is the source; the fix is in the
+                                       trainer, not in tolerances.
   * `base` itself bit-exact         => the PROBE failed to reproduce and says
                                        nothing about any arm. Fix the probe.
 
-Measures spread ACROSS concurrently-launched processes, not repeats inside one:
-co-location is what varies kernel selection, and a single process reuses one
-kernel plan so it can read bit-exact while two trainers still disagree.
+Reports spread both WITHIN one process (repeats) and ACROSS concurrently-launched
+ones: dropout shows up in the first, kernel selection only in the second.
 
-    python probe_jvp_determinism.py --sweep --replicas 8 --repeats 20
+    python probe_jvp_determinism.py --sweep --model real --replicas 8 --repeats 20
     python probe_jvp_determinism.py --repeats 20 --tag base      # one arm
 
-Calls the REAL `calculate_jvp`, so whatever the trainer does, this does.
+Calls the REAL `calculate_jvp`, so whatever the trainer does, this does. Builds
+the model in the mode production ACTUALLY runs it -- `--eval-mode` (arm
+`evalmode`) is the A/B, not the default. Runs 1-2 forced `.eval()` and so read
+bit-exact on every arm; that is what made them inconclusive.
 `--model real` loads the actual DistilBERT+adapter stack; default `--model proxy`
-is a small transformer on the same autocast/GEMM path. Results print as a table
-and land in `probe_out/` as JSON (`sweep.json` = the merged comparison).
+is a small transformer on the same autocast/GEMM/dropout path. Results print as a
+table and land in `probe_out/` as JSON (`sweep.json` = the merged comparison).
 """
 from __future__ import annotations
 
@@ -51,14 +55,29 @@ sys.path.insert(0, str(_FWDLLM / "trainer"))
 
 _ARMS = {
     "base":      {},
+    "evalmode":  {"FWDLLM_PROBE_EVAL": "1"},
     "fp32":      {"FWDLLM_JVP_FP32": "1"},
     "determ":    {"FWDLLM_STRICT_DETERMINISM": "1"},
     "fp32determ": {"FWDLLM_JVP_FP32": "1", "FWDLLM_STRICT_DETERMINISM": "1"},
 }
 
 
-def _build_proxy(device, seed, d_model=256, n_layers=4, vocab=1024, seq=128):
-    """Small transformer on the same autocast/GEMM path as DistilBERT."""
+def _eval_mode_requested() -> bool:
+    """`evalmode` arm: run the model in eval(). Off by default -- production does
+    NOT call eval(), and forcing it is what made runs 1-2 read bit-exact."""
+    return os.environ.get("FWDLLM_PROBE_EVAL", "").strip().lower() in ("1", "true", "yes")
+
+
+def _dropout_census(model) -> int:
+    """Dropout modules live (p>0 AND training) in the graph the probe evaluates."""
+    import torch.nn as nn
+    return sum(1 for m in model.modules()
+               if isinstance(m, nn.Dropout) and m.p > 0 and m.training)
+
+
+def _build_proxy(device, seed, eval_mode=False, d_model=256, n_layers=4,
+                 vocab=1024, seq=128, dropout=0.1):
+    """Small transformer on the same autocast/GEMM/dropout path as DistilBERT."""
     import torch
     import torch.nn as nn
     g = torch.Generator(device="cpu").manual_seed(seed)
@@ -69,7 +88,7 @@ def _build_proxy(device, seed, d_model=256, n_layers=4, vocab=1024, seq=128):
             self.emb = nn.Embedding(vocab, d_model)
             layer = nn.TransformerEncoderLayer(
                 d_model, nhead=4, dim_feedforward=4 * d_model,
-                batch_first=True, dropout=0.0)
+                batch_first=True, dropout=dropout)
             self.enc = nn.TransformerEncoder(layer, n_layers)
             self.head = nn.Linear(d_model, 4)
 
@@ -77,14 +96,20 @@ def _build_proxy(device, seed, d_model=256, n_layers=4, vocab=1024, seq=128):
             return (self.head(self.enc(self.emb(x)).mean(1)),)
 
     torch.manual_seed(seed)
-    model = M().to(device).eval()
+    model = M().to(device)
+    if eval_mode:
+        model.eval()
     x = torch.randint(0, vocab, (8, seq), generator=g).to(device)
     t = torch.randint(0, 4, (8,), generator=g).to(device)
     return model, x, t
 
 
-def _build_real(device, seed, seq=192, batch=8, n_labels=4):
-    """The ACTUAL DistilBERT+adapter stack the trainer runs.
+def _build_real(device, seed, eval_mode=False, seq=192, batch=8, n_labels=4):
+    """The ACTUAL DistilBERT+adapter stack the trainer runs, in its mode.
+
+    `train_adapter` leaves 13 of the 20 `nn.Dropout` modules training at p=0.1
+    even though `model.training` reads False, so DO NOT call `.eval()` here: that
+    silences the mechanism under test (`eval_mode` is the A/B arm, default off).
 
     Size is the point: the proxy's GEMMs are small enough that cuBLAS picks a
     single deterministic kernel every time, and its fp16 error is ~100x smaller
@@ -109,7 +134,9 @@ def _build_real(device, seed, seq=192, batch=8, n_labels=4):
     a.config["num_labels"] = n_labels
     torch.manual_seed(seed)
     _, model, _ = create_model(a, formulation="classification")
-    model = model.to(device).eval()
+    model = model.to(device)
+    if eval_mode:
+        model.eval()
     g = torch.Generator(device="cpu").manual_seed(seed)
     vocab = model.get_input_embeddings().num_embeddings
     x = torch.randint(0, vocab, (batch, seq), generator=g).to(device)
@@ -127,7 +154,8 @@ def _run_arm(args) -> dict:
     device = torch.device(args.device if torch.cuda.is_available()
                           or args.device == "cpu" else "cpu")
     build = _build_real if args.model == "real" else _build_proxy
-    model, x, t = build(device, args.seed)
+    eval_mode = args.eval_mode or _eval_mode_requested()
+    model, x, t = build(device, args.seed, eval_mode=eval_mode)
     # Perturb only trainable params, as the trainer does under `peft_method`.
     params = [p.detach().clone() for p in model.parameters()]
     trainable = [i for i, p in enumerate(model.parameters()) if p.requires_grad]
@@ -165,6 +193,9 @@ def _run_arm(args) -> dict:
         "jvp_fp32": jvp_fp32_enabled(),
         "strict_determinism": strict_determinism_enabled(),
         "model": args.model,
+        "seed": args.seed,
+        "eval_mode": eval_mode,
+        "live_dropout": _dropout_census(model),
         "n_params": sum(p.numel() for p in params),
         "n_trainable": sum(params[i].numel() for i in trainable),
         "device": str(device),
@@ -209,8 +240,15 @@ def _merge_replicas(arm: str, reps: list) -> dict:
         "cuda_device": reps[0].get("cuda_device"),
         "jvp_fp32": reps[0]["jvp_fp32"],
         "strict_determinism": reps[0]["strict_determinism"],
-        # Within one process (kernel plan fixed) -- the weaker signal.
+        "eval_mode": reps[0].get("eval_mode"),
+        "live_dropout": reps[0].get("live_dropout"),
+        # Replicas hold DIFFERENT seeds under --hetero, so their cross-process
+        # spread is work, not nondeterminism; the report must not read it.
+        "hetero": len({r.get("seed") for r in reps}) > 1,
+        # Within one process (same seed, same kernel plan): the only thing that
+        # can move here is per-pass RNG -- i.e. dropout.
         "within_loss_exact_frac": st.mean(r["loss_exact_frac"] for r in reps),
+        "within_loss_rel_spread": st.mean(r["loss_rel_spread"] for r in reps),
         "within_jvp_rel_spread": st.mean(r["jvp_rel_spread"] for r in reps),
         # ACROSS processes -- the replicate-floor analogue, and the decision input.
         "loss_exact_frac": sum(1 for l in losses if l == losses[0]) / len(losses),
@@ -224,18 +262,40 @@ def _merge_replicas(arm: str, reps: list) -> dict:
 
 
 def _report(rows: list) -> None:
-    print("\n  ACROSS concurrent processes (the replicate-floor analogue):")
-    print(f"{'arm':<12}{'loss exact':>12}{'loss spread':>14}{'jvp exact':>11}"
-          f"{'jvp spread':>13}{'amplif':>10}")
+    hetero = any(r.get("hetero") for r in rows)
+    print("\n  WITHIN one process, same input repeated (dropout shows up here):")
+    print(f"{'arm':<12}{'live drop':>10}{'loss exact':>12}{'loss spread':>14}"
+          f"{'jvp spread':>13}")
     for r in rows:
-        amp = f"{r['amplification']:.0f}x" if r.get("amplification") else "--"
-        print(f"{r['arm']:<12}{r['loss_exact_frac']:>11.0%}{r['loss_rel_spread']:>14.2e}"
-              f"{r['jvp_exact_frac']:>10.0%}{r['jvp_rel_spread']:>13.2e}{amp:>10}")
+        print(f"{r['arm']:<12}{str(r.get('live_dropout', '?')):>10}"
+              f"{r['within_loss_exact_frac']:>11.0%}"
+              f"{r['within_loss_rel_spread']:>14.2e}{r['within_jvp_rel_spread']:>13.2e}")
+    if hetero:
+        # Under --hetero every replica holds a different seed, so the table below
+        # measures different WORK. Printing it as a determinism number is how a
+        # `base` arm reads non-exact for a reason that has nothing to do with H13.
+        print("\n  ACROSS concurrent processes: SUPPRESSED -- --hetero gives each "
+              "replica its own seed,\n  so cross-process spread is different work, "
+              "not nondeterminism. Use --compare for the\n  same-work diff, and drop "
+              "--hetero to read this table.")
+    else:
+        print("\n  ACROSS concurrent processes (the replicate-floor analogue):")
+        print(f"{'arm':<12}{'loss exact':>12}{'loss spread':>14}{'jvp exact':>11}"
+              f"{'jvp spread':>13}{'amplif':>10}")
+        for r in rows:
+            amp = f"{r['amplification']:.0f}x" if r.get("amplification") else "--"
+            print(f"{r['arm']:<12}{r['loss_exact_frac']:>11.0%}{r['loss_rel_spread']:>14.2e}"
+                  f"{r['jvp_exact_frac']:>10.0%}{r['jvp_rel_spread']:>13.2e}{amp:>10}")
     base = next((r for r in rows if r["arm"] == "base"), None)
     fp32 = next((r for r in rows if r["arm"] == "fp32"), None)
-    # The AMPLIFIER is measurable even when nothing is nondeterministic: fp16 vs
-    # fp32 on the SAME input isolates the central difference's condition number.
-    if base and fp32:
+    # The AMPLIFIER isolates the central difference's condition number by moving
+    # ONE thing (fp16 -> fp32). Live dropout moves a second, so the ratio is only
+    # readable with dropout off -- runs 1-2 measured it clean at 189x.
+    if base and fp32 and base.get("live_dropout"):
+        print("\n  AMPLIFIER: not readable -- dropout is live, so base and fp32 do "
+              "not share an input.\n    Re-read it from the `evalmode` arm, or "
+              "cite the 189x already on record (§B).")
+    elif base and fp32:
         dl = abs(base["losses"][0] - fp32["losses"][0]) / max(abs(fp32["losses"][0]), 1e-30)
         dj = abs(base["jvps"][0] - fp32["jvps"][0]) / max(abs(fp32["jvps"][0]), 1e-30)
         if dl > 0:
@@ -245,31 +305,44 @@ def _report(rows: list) -> None:
         else:
             print("\n  AMPLIFIER: fp16 and fp32 agree bit-for-bit (nothing to amplify).")
     print()
+    # Read the verdict off the column that actually shows spread. Within-process
+    # wins ties: it is the tighter control (one process, one seed, one input), and
+    # under --hetero it is the only determinism measure in the table.
+    if base and (hetero or base.get("within_jvp_rel_spread", 0.0) > 0):
+        key, scope = "within_jvp_rel_spread", "within process"
+    else:
+        key, scope = "jvp_rel_spread", "across processes"
+    if (base and base.get("within_jvp_rel_spread", 0.0) > 0
+            and not hetero and base["jvp_rel_spread"] == 0.0):
+        print("  Cross-process reads exact only because every replica restarts the "
+              "same global RNG stream;\n  production advances it by a "
+              "task/eval count that timing decides. Read the within column.")
     # No baseline spread => the probe never reproduced the phenomenon, so NOTHING
     # here can be read as a fix. Say so instead of crediting every arm.
-    if not base or base["jvp_rel_spread"] == 0.0:
-        print("  INCONCLUSIVE: the `base` arm is already bit-exact, so this run "
-              "did not reproduce H12 and no arm can be credited with fixing it.\n"
-              "  Reproduce first (GPU, --replicas >= 4, ideally under load); only "
-              "then do the other arms mean anything.")
+    if not base or base[key] == 0.0:
+        print(f"  INCONCLUSIVE: the `base` arm is already bit-exact ({scope}), so "
+              "this run did not reproduce\n  the phenomenon and no arm can be "
+              "credited with fixing it. Check `live drop` above: 0 there means the "
+              "model was built in eval mode and dropout, the standing source (H13), "
+              "was silenced.")
         return
     for r in rows:
         if r["arm"] == "base":
             continue
-        if r["loss_exact_frac"] == 1.0 and r["jvp_exact_frac"] == 1.0:
-            print(f"  {r['arm']}: BIT-EXACT across processes where base spread "
-                  f"{base['jvp_rel_spread']:.2e} -- H12 is a BUG on this arm; "
+        if r[key] == 0.0:
+            print(f"  {r['arm']}: BIT-EXACT {scope} where base spread "
+                  f"{base[key]:.2e} -- that is a BUG on this arm; "
                   f"fix rather than widen tolerances.")
         else:
-            cut = 1.0 - r["jvp_rel_spread"] / base["jvp_rel_spread"]
+            cut = 1.0 - r[key] / base[key]
             print(f"  {r['arm']}: jvp spread {cut:+.0%} vs base "
-                  f"({base['jvp_rel_spread']:.2e} -> {r['jvp_rel_spread']:.2e})")
-    if rows and all(r.get("replicas", 1) < 2 for r in rows):
+                  f"({base[key]:.2e} -> {r[key]:.2e})")
+    if not hetero and rows and all(r.get("replicas", 1) < 2 for r in rows):
         print("\n  NOTE: --replicas 1 measures only WITHIN-process repeatability, "
               "which is not the live signature. Re-run with --replicas 4+.")
     if rows and rows[0].get("device", "").startswith("cpu"):
-        print("\n  WARNING: ran on CPU -- autocast is disabled there, so this "
-              "cannot reproduce the fp16 effect. Use a GPU node.")
+        print("\n  WARNING: ran on CPU -- autocast is disabled there, so the fp16 "
+              "arms say nothing. Dropout still reproduces; use a GPU for the rest.")
 
 
 def _compare_dirs(da: str, db: str) -> int:
@@ -314,6 +387,9 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--model", choices=("proxy", "real"), default="proxy")
+    ap.add_argument("--eval-mode", action="store_true",
+                    help="build the model in eval() -- dropout off. NOT what "
+                         "production does; this is the `evalmode` arm's A/B")
     ap.add_argument("--tag", default="base")
     ap.add_argument("--out-dir", default=str(_HERE / "probe_out"))
     ap.add_argument("--hetero", action="store_true",

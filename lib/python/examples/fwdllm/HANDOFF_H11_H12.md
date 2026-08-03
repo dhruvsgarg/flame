@@ -1,4 +1,4 @@
-# HANDOFF — H11 / H12 hypothesis state
+# HANDOFF — H11 / H13 hypothesis state
 
 **TEMPORARY. Delete when both close**; findings move to `simulate_fwdllm.md` §A/§E/§G. This file exists so
 the validate/invalidate state of two hypotheses survives a session boundary without re-deriving it.
@@ -29,7 +29,7 @@ and the only in-flight record the boundary does not clear) into sim's `outstandi
 mechanism. They do not confirm that in a live run `_trainer_inflight_dispatch_version` is populated at the
 right moment relative to the boundary. That is exactly what the pending run tests.
 
-### PENDING LAUNCH — `felix_round` real+sim, **7200s** (blocked: node in use by the H12 probe)
+### PENDING LAUNCH — `felix_round` real+sim, **7200s** (blocked: node in use by the probe)
 
 ```bash
 cd lib/python/examples/fwdllm/expt_scripts
@@ -63,73 +63,110 @@ If over-dispatch persists, the guard is being cleared somewhere else as well —
 
 ---
 
-## H12 — what supplies the replicate floor
+## H13 — what supplies the replicate floor
 
-**Status: SPLIT. Amplifier CONFIRMED. Source FALSIFIED. No standing candidate — this is the open question.**
+**Status: SOURCE FOUND. Live dropout inside `calculate_jvp`. The fix is unbuilt.**
 
-### CONFIRMED — the JVP is ill-conditioned by construction
+### CONFIRMED — dropout is on during the finite difference
 
-`jvp = (L(p+hv) − L(p−hv)) / 2h` at `h=0.01`, so its condition number is ~`|L|/(2h·|ΔL|)`. Measured on the
-bench, fp16 vs fp32 on the SAME input (needs no nondeterminism at all):
+`create_model` → `train_adapter("rotten tomato")` leaves **13 of DistilBERT's 20 `nn.Dropout` modules
+training at p=0.1**, while the root `model.training` reads **False**. Nothing on the training path calls
+`.eval()`. So `calculate_jvp` runs `L(p−hv)` and `L(p+hv)` as two forward passes under **two different
+dropout masks**, drawn from the process-global RNG that no per-task seed pins.
+
+Bench, real stack, CPU, no autocast, one input + one perturbation repeated 6x:
+
+| model mode | loss exact | loss spread | jvp values |
+|---|---|---|---|
+| as production builds it | 17% | **5.1e-3** | −0.91, −0.83, −0.88, −0.94, **−1.50**, **−0.31** |
+| `.eval()` | 100% | 0.00e+00 | −0.9245 x6 |
+
+A **5x** swing in the "gradient" for identical inputs, with no GPU and no fp16 involved.
+
+### Why every earlier audit came back clean
+
+The per-client `torch_rng` (seeded `client_idx`) is a **different generator** from the global one dropout
+draws on, so the RNG-position fingerprint matches. Data, dispatch order, iteration and model_version match
+because the divergence enters *below* all of them. And a trainer reproduces exactly when its global stream
+happens to sit at the same offset — advanced by prior forward passes, a count async timing decides. That is
+the 8-of-30 split.
+
+### Runs 1-2 were INCONCLUSIVE, not negative
+
+`probe_jvp_determinism.py::_build_real` called `.to(device).eval()` — silencing the mechanism. Every
+bit-exact null from those runs is void. The probe is fixed (`evalmode` arm, `live drop` census, verdict read
+off the WITHIN-process column, `--hetero`'s cross-process table suppressed). Two results survive:
 
 | model | rel Δloss | rel Δjvp | amplification |
 |---|---|---|---|
 | proxy (4-layer, 256d) | 1.61e-05 | 1.12e-03 | **70x** |
 | **real DistilBERT+adapter** (67.4M / 1.04M trainable) | 2.24e-05 | 4.22e-03 | **189x** |
 
-Production telemetry independently gave a **72x** median. This is the standing, run-independent case for
-`FWDLLM_JVP_FP32` — but it AMPLIFIES noise, it does not CREATE it.
+`jvp = (L(p+hv) − L(p−hv)) / 2h` at `h=0.01` is ill-conditioned by construction (~`|L|/(2h·|ΔL|)`);
+production telemetry independently gave a 72x median. It AMPLIFIES noise, it does not create it — and what
+it amplifies is dropout, not fp16. `FWDLLM_STRICT_DETERMINISM` stays inert and unrelated.
 
-### FALSIFIED — fp16 / GPU kernel nondeterminism is NOT the source
+### It is a correctness bug, not only a reproducibility one
 
-Real DistilBERT stack, 8 co-located processes, one A40, torch 2.12: **every loss and jvp bit-identical**,
-within and across processes. `FWDLLM_STRICT_DETERMINISM` came back inert (nothing to pin) — not evidence it
-is broken.
+Two masks means the estimator is not a directional derivative of any one function. Separately,
+`eval_model()` sets `.eval()` and **never restores train mode**, so a trainer trains with dropout on until
+its first eval and off afterwards.
 
-### FALSIFIED on disk — every other input hypothesis
+### Open questions, answered
 
-| hypothesis | how it died |
-|---|---|
-| trainer data differs | all **100** `CLIENT n DATA HASH` lines identical across runs |
-| first task saw mid-bin updated weights | all 30 first tasks are `iteration 0`, `model_version 0` in BOTH runs |
-| arrival/dispatch order | dispatch ranks identical (2 adjacent swaps in 30); the 8 reproducing trainers scatter across ranks 1-29 |
-| seeding / `client_idx` / partition / cohort | `client_idx=(trainer_id−1)%modulo` is registry-fixed; `perturbations_total`, `forward_passes_total`, `(data_id, iteration, model_version)` all match; cohorts bit-identical (Jaccard 1.000) |
-| the model weights | all 30 trainers receive the SAME weights at iteration 0 — if weights were the differing input, all 30 would differ. **8 do not.** |
+**Is the bug "eval", and should forward-gradient tuning run with dropout or without?**
+The bug is not dropout's presence, it is that the TWO passes of one finite difference draw DIFFERENT masks.
+`(L_b(p+hv) - L_a(p-hv))/2h` is not a directional derivative of anything. Two fixes are defensible: run the
+difference in eval (differentiate the deterministic loss, lose the regularizer) or share one mask across the
++/- passes (`L_m` for both -- keeps the regularizer and is still a correct derivative *of L_m*). Only the
+first is built. "Dropout is a training construct" is true but does not settle it alone: the JVP passes are
+inference-SHAPED, yet what they compute is a training gradient. The 1h A/B decides.
 
-### The contradiction, stated plainly
+**What does probe C measure -- does dropout change the perturbations?**
+No: it changes their SCORE, not their draw. Candidates come from the per-client CPU `torch_rng`, which
+dropout never touches, and probe C holds `v` FIXED and repeats the same call. What moves is `jvp`, and
+through it `grad += jvp*v` and `stat_utility`. Selection flips a round LATER: `old_grad` arrives noisy from
+the aggregator, and the cos-sim top-1 over 10 candidates is a discrete pick over near-ties (§D-42).
+Expect `base` (live drop 13) within-process jvp spread > 0, `evalmode` (live drop 0) exactly 0. It says
+nothing about accuracy -- that is the 1h A/B's job.
 
-Data, dispatch order, iteration, model_version, RNG stream position, and arithmetic-under-identical-inputs
-are **all verified identical** — and **22 of 30 trainers still differ by ~1.6e-3** on their first task,
-which the 189x amplifier then turns into O(10%) gradient differences and a 13.3% iters/bin floor.
+**Did `stat_utility` use eval? Does anything in the code?**
+`_compute_batch_stat_utility` runs `self.model(x)` under `torch.no_grad()` only -- `no_grad` is not `eval`,
+so dropout was live there too, and `agg_rate_type: new` weights it via `beta(stat_utility)` (H12a). The ONLY
+`.eval()` on the trainer path is in `eval_model()`, which never restores train mode: today a trainer trains
+with dropout on until its first eval and off forever after. Under the new flag that stickiness is moot.
 
-**There is no standing candidate.** Do not adopt one without evidence.
+**Runtime cost of dropout, GPU and NPU?**
+GPU: small and measurable, not modelled -- mask RNG plus one elementwise multiply per site, memory-bound, no
+GEMM. Eval mode should be marginally FASTER; `tb_forward_jvp` / `tb_stat_utility` in the A/B give the number,
+so do not guess one. If it moves materially, the four charge profiles need regenerating (§B). NPU: the
+mobile delay is MODELLED, not measured, so nothing here reaches the sim clock on its own, and a deployed
+inference graph folds dropout out entirely.
 
-### PENDING — the last arithmetic hypothesis
+**Flag across the trainer files?**
+There is only one: `tc_transformer_trainer_distribute.py` is the sole caller of `calculate_jvp`, and
+`trainer/main.py` wires the knob. One code path, one yaml key.
 
-The probe ran 8 processes doing **identical work in lockstep**. Production runs ~12 per GPU doing
-**different** work at different times — different allocation patterns, different cuBLAS workspace
-availability. `--hetero` gives each replica its own seed; `--compare` diffs two launches replica-by-replica,
-which is the same-trainer-across-two-runs comparison production actually makes (comparing neighbours *within*
-one launch is meaningless once seeds differ).
+### Next -- the A/B
+
+`jvp_eval_mode` is LANDED, config-gated, default False = today's behavior. Set it in the `felix_round`
+yamls' `hyperparameters` (real AND sim -- they must match, §F-18) and run the two 1h legs.
 
 ```bash
 cd lib/python/examples/fwdllm/expt_scripts
-python probe_jvp_determinism.py --sweep --model real --hetero --replicas 8 --out-dir probe_A
-python probe_jvp_determinism.py --sweep --model real --hetero --replicas 8 --out-dir probe_B
-python probe_jvp_determinism.py --compare probe_A probe_B
+python probe_jvp_determinism.py --sweep --model real --replicas 8 --out-dir probe_C   # bench, minutes
+# then, per leg: jvp_eval_mode false vs true, same duration
+grep JVP_EVAL_MODE ../experiments/<run dir>/*trainers.log | head -1                   # confirm it took
 ```
 
-**If it reproduces** → the arm whose spread collapses is the fix; promote the flag, re-measure the floor.
-**If it does not** → the tool says so explicitly (*"stop probing and hunt the differing INPUT"*), and the
-next step is instrumentation, not another probe: a weights/logits hash emitted at INFO on the trainer's first
-task, then ONE short run. Every hypothesis testable on existing telemetry is exhausted.
+Read, in order: (1) does `[JVP_EVAL_MODE] jvp_eval_mode=True` appear -- a knob that never reached the trainer
+is the failure mode §F-18 exists for; (2) peak accuracy, ON vs OFF -- the part that is NOT a parity question;
+(3) the replicate floor, once there are two ON legs.
+**Exit criterion: the 13.3% iters/bin / 11.16-point floor drops.** If it does not, H13 is falsified as the
+dominant term and the tolerance-recalibration branch (§F-28) is back. If accuracy drops materially with it
+ON, prefer the shared-mask fix over eval mode and re-run.
 
-### Consequence for the roadmap either way
-
-The floor is real and measured (`felix_round` 13.3% iters/bin, 11.16 accuracy points at peak;
-`fedbuff_round` 3.9%). With its cause unknown, **the IRREDUCIBLE branch is the more likely one** — tolerance
-recalibration against per-baseline measured floors, not a code fix. That path needs node 2's
-`fluxtune`/`fwdllm` floors regardless of how H12 resolves, which is why those runs are not blocked on this.
+Node 2's `fluxtune`/`fwdllm` floors are still worth having either way.
 
 ---
 
@@ -140,4 +177,4 @@ recalibration against per-baseline measured floors, not a code fix. That path ne
 | 1 | `felix_round` real+sim **7200s** — H11 live validation | **PENDING — blocked on the probe node** |
 | 2 | `fluxtune` + `fwdllm` real replicates (floors) | launched |
 | 3 | `fwdllm_it_unaware` + `fwdllm_it_oracular` 7200s pairs | launched |
-| bench | H12 `--hetero` / `--compare` probe | running |
+| bench | H13 `--sweep --model real` on the fixed probe | **PENDING** |

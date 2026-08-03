@@ -76,6 +76,24 @@ def _stage_timer(owner, name: str, extra: dict = None):
                 logging.debug("stage_timer telemetry emit failed", exc_info=True)
 
 
+@contextlib.contextmanager
+def _eval_mode(model):
+    """Dropout off for the block, then EVERY module's own flag back (H13).
+
+    `train_adapter` leaves 13 of 20 `nn.Dropout` modules training at p=0.1 while
+    the root `model.training` reads False, so `calculate_jvp`'s two passes draw
+    DIFFERENT masks — not a derivative of any one function, and irreproducible.
+    Restores per-module: a blanket `.train()` invents a state the model never had.
+    """
+    modes = [(m, m.training) for m in model.modules()]
+    try:
+        model.eval()
+        yield model
+    finally:
+        for m, was_training in modes:
+            m.training = was_training
+
+
 def _perturb_audit_enabled() -> bool:
     """Whether the perturbation determinism audit ([RNG_FINGERPRINT] + rolling
     candidate_v hash) is wanted this run. Opt-in only: it sha256s every 10x
@@ -236,6 +254,15 @@ class ForwardTextClassificationTrainer:
             f"[JVP_PERF_OPT] jvp_perf_opt={self.jvp_perf_opt} "
             f"(trainable-only FD + skip diagnostic passes + reuse winner JVP; "
             f"all bit-identical — simulate_fwdllm.md §L)"
+        )
+
+        # H13: run the JVP passes with dropout off (see train_model). NOT
+        # bit-identical and NOT parity-only — it changes what is trained, so it is
+        # A/B'd before promotion. Default False = today's behavior.
+        self.jvp_eval_mode = bool(getattr(self.args, "jvp_eval_mode", False))
+        logging.info(
+            f"[JVP_EVAL_MODE] jvp_eval_mode={self.jvp_eval_mode} "
+            f"(dropout off during the finite difference — simulate_fwdllm.md §B-H13)"
         )
 
         # var control TODO: It is not layer id it is param id. Distilbert for eg
@@ -765,21 +792,19 @@ class ForwardTextClassificationTrainer:
 
         self.log_memory("train_model_start", device)
         self.allocated_before = torch.cuda.memory_allocated(device)
-        
-        """
-        If you want absolute determinism between runs, run the model in eval mode. Make sure to switch the model back to train model before the method returns: `self.model.train()`. 
-        Even though this seems to not affect training, this is commented as we're not sure how the model trains in eval mode. Any relative impact on accuracy without it isn't measured.
-        self.model.eval()
-        """
-        # No _force_cuda_memory_cleanup(): empty_cache() is a device-wide sync
-        # and had nothing to reclaim (allocated stays flat across the run).
-        self.log_memory("before_train_model", device)
-        self._make_model_functional(device)
-        
-        
-        self._training_loop(device, logging_state)
-        
-        self._finalize_training(device)
+
+        # H13: must wrap _make_model_functional too — functorch deep-copies the
+        # module, so a later toggle never reaches the fmodel the JVP evaluates.
+        with (_eval_mode(self.model) if self.jvp_eval_mode
+              else contextlib.nullcontext()):
+            # No _force_cuda_memory_cleanup(): empty_cache() is a device-wide sync
+            # and had nothing to reclaim (allocated stays flat across the run).
+            self.log_memory("before_train_model", device)
+            self._make_model_functional(device)
+
+            self._training_loop(device, logging_state)
+
+            self._finalize_training(device)
 
 
     @timer_decorator
