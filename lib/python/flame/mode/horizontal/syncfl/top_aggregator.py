@@ -852,6 +852,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self._agg_cache_store_s = 0.0
         if global_weights is None:
             logger.debug("failed model aggregation")
+            if channel._selector is not None:
+                channel._selector.on_round_completed(channel._ends, self._round)
             time.sleep(1)
             return
 
@@ -1058,7 +1060,12 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                     logger.info(
                         f"[SIM_STARVATION] trace horizon or budget reached at "
                         f"vclock={self._vclock.now:.1f}s (nxt={_nxt}, "
-                        f"budget={_budget:.0f}s, round={self._round}); stopping run."
+                        f"budget={_budget:.0f}s, round={self._round}); stopping run. "
+                        f"num_eligible={num_eligible} threshold={_threshold} "
+                        f"total_ends={len(channel._ends)} "
+                        f"unavail={len(curr_unavail_trainer_list)} "
+                        f"in_flight={len(_in_flight)} "
+                        f"in_flight_ids={sorted(_in_flight)}"
                     )
             else:
                 _max_rt = getattr(self.config.hyperparameters, "max_experiment_runtime_s", None)

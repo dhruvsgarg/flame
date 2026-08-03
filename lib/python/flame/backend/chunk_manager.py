@@ -32,6 +32,7 @@ KEY_CHANNEL = "channel"
 KEY_END_ID = "end_id"
 
 QUEUE_TIMEOUT = 5  # 5 seconds
+TRANSFER_TIMEOUT = 30 # 30 seconds
 
 
 class ChunkThread(Thread):
@@ -100,49 +101,38 @@ class ChunkThread(Thread):
                 msg = self.queue.get(timeout=QUEUE_TIMEOUT)
             except Empty:
                 logger.debug("Currently empty")
+                if self.chunk_store.is_stale(TRANSFER_TIMEOUT):
+                    logger.warning(
+                        f"incomplete transfer for {self._end_id} stalled for "
+                        f"{TRANSFER_TIMEOUT}s (chunk likely lost); resetting"
+                    )
+                    self.chunk_store.reset()
+                    self._backend.set_cleanup_ready(self._end_id)
                 continue
 
             timestamp = datetime.now()
 
             # assemble is done in a chunk thread so that it won't block asyncio
             # task
-            if self.chunk_store.seqno + 1 != msg.seqno:
-                logger.info(
-                    f"about to assemble message for end id: {msg.end_id}. Might get out-of-order"
-                )
-            status = self.chunk_store.assemble(msg)
+            self.chunk_store.assemble(msg)
             logger.debug("Assemble attempted for chunkstore")
-            if not status:
-                # reset chunk_store if message is wrong
-                self.chunk_store.reset()
 
-                # set cleanup ready event for a given end id
+            if not self.chunk_store.eom:
+                logger.debug(f"self.chunk_store.eom is {self.chunk_store.eom}")
                 self._backend.set_cleanup_ready(msg.end_id)
-                logger.debug(
-                    f"EOM was set, put a cleanup ready for end_id: {msg.end_id}"
-                )
-            else:
-                logger.debug(f"Status is {status}")
-                if not self.chunk_store.eom:
-                    logger.debug(f"self.chunk_store.eom is {self.chunk_store.eom}")
-                    # not an end of message, hence, can't get a payload out of
-                    # chunk store yet
+                continue
+                
+            payload = self.chunk_store.get_data()
+            logger.debug(
+                f"Payload will now be pushed to target receive queue for end: {msg.end_id}"
+            )
+            # now push payload to a target receive queue.
+            _, status = run_async(
+                inner(msg.end_id, payload, timestamp), self._backend.loop()
+            )
 
-                    # set cleanup ready event for a given end id
-                    self._backend.set_cleanup_ready(msg.end_id)
-                    continue
-
-                payload = self.chunk_store.get_data()
-                logger.debug(
-                    f"Payload will now be pushed to target receive queue for end: {msg.end_id}"
-                )
-                # now push payload to a target receive queue.
-                _, status = run_async(
-                    inner(msg.end_id, payload, timestamp), self._backend.loop()
-                )
-
-                # message was completely assembled, reset the chunk store
-                self.chunk_store.reset()
+            # message was completely assembled, reset the chunk store
+            self.chunk_store.reset()
 
         logger.debug(f"finished chunk thread for {self._end_id}")
 
