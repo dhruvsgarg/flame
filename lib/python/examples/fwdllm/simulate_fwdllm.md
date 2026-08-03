@@ -306,35 +306,53 @@ After this batch **8 of 9 baselines have a valid ON row**; only `fwdllm_it_oracu
 chain, one more node-night). Then the sign-off re-grade with every tolerance recalibrated against the ON
 floors (§B.4). Node C's `fedbuff_it_unaware` leg also completes that baseline's replicate pair.
 
+**One command per node.** `conda activate dg_flame` first; each backgrounds itself and logs, so it survives
+a dropped ssh. Watch with `tail -f ~/node<X>.log`. Add `--dry-run` to the `run_sequential.sh` calls to
+rehearse without launching.
+
 ```bash
-cd lib/python/examples/fwdllm/expt_scripts   # every chain: --dry-run first, drop it to launch
-
-# ---- node C: the four ON sim legs, fastest first ----
-for b in fwdllm fedbuff_round fluxtune felix_it ; do \
-  bash run_sequential.sh --mode sim --max-runtime-s 7200 --only $b --yes && \
-  python run_parity.py --yes --baselines $b ; \
+# ---- node C: four ON sim legs, then close out fedbuff_it_unaware ----
+cd /home/dgarg39/flame/lib/python/examples/fwdllm/expt_scripts && nohup bash -c '
+set -u
+for b in fwdllm fedbuff_round fluxtune felix_it ; do
+  echo "=== [$(date +%F\ %H:%M)] SIM $b"
+  bash run_sequential.sh --mode sim --max-runtime-s 7200 --only "$b" --yes \
+    || { echo "!! $b sim leg FAILED, skipping its grade"; continue; }
+  python run_parity.py --yes --baselines "$b" || true
 done
-# ...then close out fedbuff_it_unaware (its profile is a 1200s OFF leg, so CH is mandatory —
-#    the preflight will block the sim leg until it is re-derived)
-bash run_sequential.sh --mode real --max-runtime-s 7200 --only fedbuff_it_unaware --yes && \
-python replicate_floor.py --mode real --baselines fedbuff_it_unaware --profile-out ../parity_floors && \
-cp ../sim_charge_profiles/fedbuff_it_unaware.yaml ../sim_charge_profiles/fedbuff_it_unaware.yaml.off-bak && \
-python profile_sim_charges.py $(ls -d ../experiments/*_fedbuff_it_unaware_n100_*_real | sort | tail -2 | sed 's/^/--real-run /') \
-    --out ../sim_charge_profiles/fedbuff_it_unaware.yaml --only-observed && \
-bash run_sequential.sh --mode sim --max-runtime-s 7200 --only fedbuff_it_unaware --yes && \
-python run_parity.py --yes --baselines fedbuff_it_unaware
+echo "=== [$(date +%F\ %H:%M)] REAL fedbuff_it_unaware"
+bash run_sequential.sh --mode real --max-runtime-s 7200 --only fedbuff_it_unaware --yes \
+  && python replicate_floor.py --mode real --baselines fedbuff_it_unaware --profile-out ../parity_floors \
+  && cp ../sim_charge_profiles/fedbuff_it_unaware.yaml ../sim_charge_profiles/fedbuff_it_unaware.yaml.off-bak \
+  && python profile_sim_charges.py $(ls -d ../experiments/*_fedbuff_it_unaware_n100_*_real | sort | tail -2 | sed "s|^|--real-run |") \
+       --out ../sim_charge_profiles/fedbuff_it_unaware.yaml --only-observed \
+  && bash run_sequential.sh --mode sim --max-runtime-s 7200 --only fedbuff_it_unaware --yes \
+  && { python run_parity.py --yes --baselines fedbuff_it_unaware || true; }
+echo "=== [$(date +%F\ %H:%M)] node C DONE"
+' > ~/nodeC.log 2>&1 &
 
-# ---- nodes A and B: b=fwdllm_it_unaware on A, b=fedbuff_it_oracular on B ----
-b=<baseline> ; \
-bash run_sequential.sh --mode real --max-runtime-s 7200 --only $b --yes && \
-bash run_sequential.sh --mode real --max-runtime-s 7200 --only $b --yes && \
-python replicate_floor.py --mode real --baselines $b --profile-out ../parity_floors && \
-cp ../sim_charge_profiles/$b.yaml ../sim_charge_profiles/$b.yaml.off-bak && \
-python profile_sim_charges.py $(ls -d ../experiments/*_${b}_n100_*_real | sort | tail -2 | sed 's/^/--real-run /') \
-    --out ../sim_charge_profiles/$b.yaml --only-observed && \
-bash run_sequential.sh --mode sim --max-runtime-s 7200 --only $b --yes && \
-python run_parity.py --yes --baselines $b
+# ---- nodes A and B: same command, b=fwdllm_it_unaware on A, b=fedbuff_it_oracular on B ----
+cd /home/dgarg39/flame/lib/python/examples/fwdllm/expt_scripts && nohup bash -c '
+set -u
+b=fwdllm_it_unaware          # <-- node B: fedbuff_it_oracular
+echo "=== [$(date +%F\ %H:%M)] REAL $b leg 1/2"
+bash run_sequential.sh --mode real --max-runtime-s 7200 --only "$b" --yes \
+  && { echo "=== [$(date +%F\ %H:%M)] REAL $b leg 2/2"; \
+       bash run_sequential.sh --mode real --max-runtime-s 7200 --only "$b" --yes; } \
+  && python replicate_floor.py --mode real --baselines "$b" --profile-out ../parity_floors \
+  && cp ../sim_charge_profiles/$b.yaml ../sim_charge_profiles/$b.yaml.off-bak \
+  && python profile_sim_charges.py $(ls -d ../experiments/*_${b}_n100_*_real | sort | tail -2 | sed "s|^|--real-run |") \
+       --out ../sim_charge_profiles/$b.yaml --only-observed \
+  && bash run_sequential.sh --mode sim --max-runtime-s 7200 --only "$b" --yes \
+  && { python run_parity.py --yes --baselines "$b" || true; }
+echo "=== [$(date +%F\ %H:%M)] node done"
+' > ~/nodeA.log 2>&1 &
 ```
+
+⚠ **`run_parity.py` exits 1 whenever any rung fails** — the normal outcome on every current row. Never put it
+mid-`&&`-chain without `|| true`, or the rest of the night silently does not run. The `$(ls ...)` inside these
+chains is expanded when its own command runs, not at paste time, so it correctly sees the reals the earlier
+legs produced.
 
 **What each node buys, and what would falsify it.** Node C's four rows are the criteria 3-4 read: same-sign
 residuals inside the floors ⇒ common-mode ⇒ stop; a residual tracking the aggregation rate or the iteration
@@ -615,6 +633,9 @@ the launch fingerprint (§F-18), so the run looks perfect and grades the old con
 **D-50.** A profiled constant outlives the config it was measured under. When a training knob changes,
 re-derive the profile from the new paired real BEFORE reading any residual — a stale charge moves sim's own
 cadence (§D-21), so the run grades the profile, not the code, and the residual can reverse sign per baseline.
+
+**D-51.** A tool that exits nonzero to report FINDINGS, not failure, silently truncates any `&&` chain it sits
+in. Check a grader's exit-code contract before scripting it; `|| true` the ones that report.
 
 ---
 
