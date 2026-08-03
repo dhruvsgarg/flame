@@ -178,8 +178,10 @@ Same call in `.eval()`: **bit-exact, every repeat.**
   and that offset is advanced by prior forward passes — a count that async timing decides.
 - **Correctness, not just reproducibility.** Two masks means the estimator is not a directional derivative of
   any one function. The 189x amplifier (H12, still CONFIRMED) then multiplies mask noise, not fp16 noise.
-- `eval_model()` sets `.eval()` and **never restores train mode**, so a trainer's dropout silently switches off
-  for good after its first eval — the mode itself is timing-dependent state.
+- **Dropout is live for 100% of training.** `eval_model()` is the only `.eval()` on the trainer path and it
+  NEVER FIRES: `evaluate_during_training` is hardcoded False (`trainer/main.py:125`) and `test_on_the_server`
+  is the aggregator's model. Verified on disk — 0 `len(test_dl)` lines in a 100-trainer `felix_round` real log.
+  So **the 75-77% peaks on record were trained dropout-live; eval-mode accuracy is UNMEASURED.**
 **FALSIFIED IF**, on the real stack, `base`'s within-process jvp spread is 0 — or `evalmode` fails to collapse
 it to 0. Falsified as the *dominant* term if the fix lands and the 13.3% floor does not move.
 **Next step:** `probe_jvp_determinism.py --sweep --model real` (bench, minutes; the `evalmode` arm is the
@@ -266,8 +268,8 @@ python run_parity.py --yes --baselines fwdllm_it_unaware fwdllm_it_oracular
 2. **If accuracy drops materially with it ON**, switch to the shared-mask fix — one dropout mask reused across
    the ± passes keeps the regularizer and is still a correct derivative of that masked loss. Not built.
 3. **Then** re-run the three blocked pairs and re-grade. Their fails likely vanish; no tolerance moves.
-4. `eval_model()` never restoring train mode is a separate bug — today a trainer trains with dropout on until
-   its first eval and off forever after. Moot under `jvp_eval_mode`; still wrong with it OFF.
+4. `eval_model()` never restoring train mode is a latent bug, not an active one — it never fires on trainers
+   (above). Leave it; fixing it would silently change behavior the moment anyone enables trainer-side eval.
 
 - **IRREDUCIBLE fallback** (only if step 2's floor does not move) ⇒ widen every DIST tolerance to its measured
   floor, re-grade, write the §F invariant. Needs one extra real per baseline to have a floor to widen TO:

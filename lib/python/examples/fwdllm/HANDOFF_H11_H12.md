@@ -133,8 +133,15 @@ nothing about accuracy -- that is the 1h A/B's job.
 **Did `stat_utility` use eval? Does anything in the code?**
 `_compute_batch_stat_utility` runs `self.model(x)` under `torch.no_grad()` only -- `no_grad` is not `eval`,
 so dropout was live there too, and `agg_rate_type: new` weights it via `beta(stat_utility)` (H12a). The ONLY
-`.eval()` on the trainer path is in `eval_model()`, which never restores train mode: today a trainer trains
-with dropout on until its first eval and off forever after. Under the new flag that stickiness is moot.
+`.eval()` on the trainer path is `eval_model()`, and **it never fires**: `evaluate_during_training` is
+hardcoded False (`trainer/main.py:125`), and `test_on_the_server` evaluates the AGGREGATOR's model. Verified
+on disk -- 0 `len(test_dl)` lines in a 100-trainer `felix_round` real log. Its missing `.train()` restore is
+therefore latent, not active.
+
+**So can we assume eval-mode training is fine, since baselines already reach 75%?**
+No -- that inference would hold only if those runs had been in eval mode, and they were not. Dropout was live
+for 100% of every training pass on record, so **75-77% is the DROPOUT-LIVE number and eval-mode accuracy is
+unmeasured.** That is exactly what the A/B buys, and it is the reason the flag defaults OFF.
 
 **Runtime cost of dropout, GPU and NPU?**
 GPU: small and measurable, not modelled -- mask RNG plus one elementwise multiply per site, memory-bound, no
