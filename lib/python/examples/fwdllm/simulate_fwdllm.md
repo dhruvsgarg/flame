@@ -110,6 +110,9 @@ do NOT compare to each other.** Five baselines have a 7200s pair; four have only
 | fwdllm_it_oracular/syn_0 | `run_20260731_170129`/`_172308` | 1200s | 66/1/25 | 5 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 Per-pair numeric detail: `experiments/_parity_reports/parity_<baseline>_syn_0_<sim-ts>.json`. Open fails: §B.
+**Four 08-02 runs are on disk and NOT in this table yet** — `fluxtune`/`fwdllm` second reals and both
+`fwdllm_it_*` 7200s pairs. Grading them is §B T0.1; until then the `fwdllm_it_*` rows below are the old 1200s
+smokes.
 
 **⚠ The cadence/convergence cells on the three uncapped rows are NOT currently evidence about sim.** Swapping
 only which real replicate they were graded against — no code change — moved `felix_round` 71/3 → 65/9 and
@@ -157,20 +160,37 @@ first 7200s sim leg. **H10 CONFIRMED far more broadly than stated** — not four
 `felix_round`'s entire cadence family failing against its own replicate, including `v1c`, the rung built to be
 the duration-invariant ROOT (§A). **H11 CONFIRMED and FIXED** (§G); `felix_it` is a clean negative, so the
 defect is the round-boundary batch path, not AsyncOort's `select()`. **Charge circularity closed** (§G).
-**H13 found the replicate floor's source: live dropout inside `calculate_jvp`** — below, and it is a code bug,
-so the three blocked baselines are no longer heading for a tolerance-widening ending.
+**H13 found the replicate floor's source and closed it on the bench: live dropout inside `calculate_jvp`.**
+Probe C confirmed it on the real stack and `jvp_eval_mode` drives the spread to exactly 0, so the three
+blocked baselines are no longer heading for a tolerance-widening ending. What is unmeasured is what eval mode
+does to ACCURACY — that is the whole point of the next runs.
 
 **Live hypotheses — each with the observation that would falsify it.** State the prediction BEFORE the run;
 a hypothesis that can only be confirmed is not one (§D-9).
 
-**H13 — the noise source is DROPOUT inside the finite difference. CONFIRMED on the bench; `jvp_eval_mode`
-landed (§G, default OFF) and awaits its A/B.** `create_model` → `train_adapter` leaves **13 of DistilBERT's 20 `nn.Dropout` modules training at
+**H13 — the noise source is DROPOUT inside the finite difference. CONFIRMED on the real stack, and
+`jvp_eval_mode` (§G) removes it completely. Only the ACCURACY question is open.**
+**Probe C (A40, real DistilBERT+adapter, 8 concurrent processes, 20 repeats/arm) — within one process, same
+input and same perturbation repeated:**
+
+| arm | live dropout | loss exact | loss spread | jvp spread |
+|---|---|---|---|---|
+| `base` | 13 | 10% | 8.38e-03 | **3.44** |
+| **`evalmode`** | **0** | **100%** | **0.00e+00** | **0.00e+00** |
+| `fp32` | 13 | 5% | 9.87e-03 | 5.44 |
+| `determ` | 13 | 10% | 8.38e-03 | 3.44 |
+| `fp32determ` | 13 | 5% | 9.87e-03 | 5.44 |
+
+A jvp *relative* spread of 3.44 means the estimate's range is 3.4x its own largest value — the gradient is
+noise-dominated, not noisy. `determ` is bit-for-bit `base` and `fp32` is WORSE, both as predicted: neither
+flag touches dropout, and with live masks each arm draws its own stream, so only `evalmode` reaching exactly
+0 is a signal. **Decision rule (§B, fixed before the run) says BUG, not IRREDUCIBLE: fix it, do not widen
+tolerances.** Cross-process still reads exact on every arm because each replica restarts the same global RNG
+stream; production advances it by a task count timing decides. `create_model` → `train_adapter` leaves **13 of DistilBERT's 20 `nn.Dropout` modules training at
 p=0.1** while `model.training` reads **False**, and nothing ever calls `.eval()` on the training path. So
 `calculate_jvp` evaluates `L(p−hv)` and `L(p+hv)` under **two different dropout masks**, drawn from the
-process-global RNG that no per-task seed pins. Bench, real stack, CPU, no autocast, same input + same
-perturbation repeated 6x: `loss` spread **5.1e-3**, `jvp` ∈ [−0.31, −1.50] — a **5x** swing on one number.
-Same call in `.eval()`: **bit-exact, every repeat.**
-`base`/`fp32`/`determ` were never going to separate — none of them touches dropout.
+process-global RNG that no per-task seed pins. First seen on CPU with no autocast (`jvp` ∈ [−0.31, −1.50]
+for one fixed input), so it is neither a GPU nor an fp16 effect.
 - Explains every prior null at once: the per-client `torch_rng` is a *different* generator from the global one
   dropout draws on, so the RNG-position audit passes; data, dispatch order, iteration and model_version all
   match because the divergence enters *below* them (§E).
@@ -182,11 +202,10 @@ Same call in `.eval()`: **bit-exact, every repeat.**
   NEVER FIRES: `evaluate_during_training` is hardcoded False (`trainer/main.py:125`) and `test_on_the_server`
   is the aggregator's model. Verified on disk — 0 `len(test_dl)` lines in a 100-trainer `felix_round` real log.
   So **the 75-77% peaks on record were trained dropout-live; eval-mode accuracy is UNMEASURED.**
-**FALSIFIED IF**, on the real stack, `base`'s within-process jvp spread is 0 — or `evalmode` fails to collapse
-it to 0. Falsified as the *dominant* term if the fix lands and the 13.3% floor does not move.
-**Next step:** `probe_jvp_determinism.py --sweep --model real` (bench, minutes; the `evalmode` arm is the
-A/B), then `felix_round` real 1h × `jvp_eval_mode` OFF/ON. `probe_out/`'s `live drop` column is the guard: 0
-there means dropout was silenced and the run says nothing.
+**STILL FALSIFIABLE as the *dominant* term** — if `jvp_eval_mode` runs land and the 13.3% iters/bin /
+11.16-point floor does not move, something else supplies most of it and §F-28 comes back.
+**What is NOT yet known: accuracy.** Every peak on record was trained dropout-live, so eval-mode accuracy is
+unmeasured — that, not the noise, is what the next runs buy.
 
 **Probe runs 1-2 were INCONCLUSIVE, not negative.** `_build_real` called `.to(device).eval()`, which silences
 exactly the mechanism above — so "every value bit-identical across 8 co-located processes" measured a model
@@ -215,67 +234,85 @@ uninterpretable until H13 resolves.
 
 > **Update in place. Delete a step the moment its exit criteria are met and its findings are in §A/§G.**
 > Goal is parity on all nine, fast. Order is by *information per node-hour*, not by baseline.
-> H11/H13 validate-invalidate state + the pending H11 launch: [HANDOFF_H11_H12.md](HANDOFF_H11_H12.md)
-> (temporary — delete when both close).
+> H11's validate-invalidate state + its still-owed launch: [HANDOFF_H11.md](HANDOFF_H11.md)
+> (temporary — delete when H11 closes).
 
 **Where the nine stand.** 2 clean at 7200s (`fluxtune`, `fwdllm`) · 3 blocked on H13 (`felix_round`,
-`felix_it`, `fedbuff_round` — tolerances below their measured floor, and H13 says **a code change is exactly
-what closes them**) ·
-4 on 1200s smokes at N=5-38, which are not evidence (`fwdllm_it_*`, `fedbuff_it_*`). **Seven of nine have no
-replicate**, so their verdicts are single-leg readings — and we have direct proof single-leg readings flip.
+`felix_it`, `fedbuff_round` — tolerances below their measured floor, and H13 is a CODE bug, so a code change
+is what closes them) · 4 thin (`fwdllm_it_*` now have 7200s pairs on disk and are UNGRADED; `fedbuff_it_*`
+are still 1200s smokes at N=38).
 
-**IMMEDIATE — tonight. Nothing here waits on anything else; run all three nodes in parallel.**
+**Landed on disk, not yet read (T0 below).** `fluxtune` + `fwdllm` second reals (`run_20260802_172341`,
+`run_20260802_192556`) and `fwdllm_it_unaware` / `fwdllm_it_oracular` 7200s pairs (`run_20260802_172249` +
+`_192444`, `run_20260802_193900` + `_214059`). All four reals achieved their 7200s. **These are OFF-mode
+runs** — they are the last word on the current config and the control for every ON run below.
 
-| | what | why | cost |
+---
+
+#### T0 — desk work, no GPU. Do ALL of it before launching, in this order.
+
+| | task | why it blocks the launch |
+|---|---|---|
+| **T0.1** | `replicate_floor.py --mode real --baselines fluxtune fwdllm` + `run_parity.py --yes --baselines fluxtune fwdllm fwdllm_it_unaware fwdllm_it_oracular`, then update §A | four baselines' floors/verdicts are sitting unread; without them we cannot tell an ON improvement from an OFF single-leg artifact |
+| **T0.2** | add `jvp_eval_mode: true` to the **trainer** `config_overrides.hyperparameters` of the real AND sim yamls for `felix_round`, `felix_it`, `fedbuff_round` | real and sim must carry the same knob (§F-18). Sim yamls too, even though tonight is reals-only — a mismatched pair next night is a wasted night |
+| **T0.3** | add `jvp_eval_mode` to `run_sequential.sh`'s preflight `checks[]` | it is a yaml-only knob, so `condition_fp` cannot see it (§B, future tasks). A silently-absent knob is the exact failure §F-18 exists for |
+| **T0.4** | record the OFF-mode peak accuracy per baseline from the existing reals (`plot_run.py --run-dir`) | the ON legs are graded against this number and nothing else; write it down BEFORE the runs so the comparison cannot drift |
+
+#### Tonight — 3 nodes, REALS ONLY. One question: does eval mode hold accuracy and drop the floor?
+
+Sim legs are deliberately NOT tonight. A real↔real floor needs no sim leg, the accuracy question is answered
+by reals alone, and a sim leg launched now would price the JVP off an OFF-derived charge profile (T1.3).
+
+| node | job | buys | cost |
 |---|---|---|---|
-| **bench** | `--sweep --model real` on the fixed probe, then build the trainer fix | confirms H13's `evalmode` arm on the real stack (`base` spread > 0, `evalmode` 0) and sizes what the fix buys. Blocks node 1: re-running the three blocked pairs before the fix lands spends 12 node-hours on a known-noisy trainer | minutes |
-| **node 1** | `felix_round` real+sim **7200s**, then `run_parity.py` | validates the landed H11 fix — `selection_detail` green and `trace_boundary_repicks.py` reads OVER-DISPATCH=0. **NOT 3600s**: the round-1→2 boundary the defect needs first fires at wall 4270-4823s (real) / vclock 4441s (sim), so a 3600s pair grades a run in which the defect cannot occur | ~4h |
-| **node 2** | `fluxtune` real, then `fwdllm` real, then `run_parity.py` | the two CLEAN rows have unmeasured floors; a 77/0 graded against one real is a single-leg reading. Re-grading against the new real is FREE and is the same A/B that flipped `felix_round` | ~4h |
-| **node 3** | `fwdllm_it_unaware` 7200s pair, then `fwdllm_it_oracular` 7200s pair | gets two rows off N=5 smokes onto real evidence; their `drain_wall_budget` fail also closes because the sim leg finally picks up the 08-01 profile | ~5h |
-
-⚠️ **`fwdllm_it_*` need a full 7200s PAIR, not a sim-leg re-run.** Their reals are 1200s, so a 7200s sim leg
-would grade against a 1200s real. Watchdogs on all four Phase-B real yamls are bumped to 10800 (§G).
+| **A** | `felix_round` real ON ×2 → re-profile → sim ON → `trace_boundary_repicks.py` + `run_parity.py` | the whole `felix_round` story: ON floor, ON accuracy, ON parity, **and the H11 live validation still owed** (HANDOFF) | ~5h |
+| **B** | `fedbuff_round` real ON ×2 | second blocked baseline's ON floor + accuracy | ~4h |
+| **C** | `felix_it` real ON ×2 | third blocked baseline's ON floor + accuracy | ~4h |
 
 ```bash
 cd lib/python/examples/fwdllm/expt_scripts
 
-# bench — run this FIRST, anywhere with a GPU. Read the WITHIN-process table and the
-# `live drop` column; `evalmode` is the A/B. --hetero is for --compare only (§D-47)
-python probe_jvp_determinism.py --sweep --model real --replicas 8 --out-dir probe_C
-
-# node 1 — validate the H11 fix (7200s; the boundary arrives after 3600s)
-bash run_sequential.sh --mode both --max-runtime-s 7200 --only felix_round --yes
+# node A — felix_round end to end (real ON x2, then the sim leg on a FRESH charge profile)
+bash run_sequential.sh --mode real --max-runtime-s 7200 --only felix_round --yes   # leg 1
+bash run_sequential.sh --mode real --max-runtime-s 7200 --only felix_round --yes   # leg 2
+python replicate_floor.py --mode real --baselines felix_round        # the exit criterion
+python profile_sim_charges.py                                        # T1.3 — from an ON real
+bash run_sequential.sh --mode sim  --max-runtime-s 7200 --only felix_round --yes
 python trace_boundary_repicks.py ../experiments/<new felix_round sim dir>   # expect OVER-DISPATCH=0
 python run_parity.py --yes --baselines felix_round
 
-# node 2 — floors for the two clean baselines (real only; a floor needs no sim leg)
-bash run_sequential.sh --mode real --max-runtime-s 7200 --only fluxtune --yes
-bash run_sequential.sh --mode real --max-runtime-s 7200 --only fwdllm --yes
-python replicate_floor.py --mode real --baselines fluxtune fwdllm
-python run_parity.py --yes --baselines fluxtune fwdllm      # free re-grade vs the NEW real
-
-# node 3 — get the two thinnest rows onto real evidence
-bash run_sequential.sh --mode both --max-runtime-s 7200 --only fwdllm_it_unaware,fwdllm_it_oracular --yes
-python run_parity.py --yes --baselines fwdllm_it_unaware fwdllm_it_oracular
+# nodes B and C — reals only
+bash run_sequential.sh --mode real --max-runtime-s 7200 --only fedbuff_round --yes   # x2
+bash run_sequential.sh --mode real --max-runtime-s 7200 --only felix_it --yes        # x2
+python replicate_floor.py --mode real --baselines fedbuff_round felix_it
 ```
 
-**THEN — land the H13 fix. This is the whole critical path for the three blocked baselines.**
+**⚠ MUST be 7200s, not 3600s** — node A doubles as the H11 validation and that defect only fires at the
+round-1→2 boundary, which arrives at wall 4270-4823s (real) / vclock 4441s (sim).
 
-1. **A/B `jvp_eval_mode` on `felix_round`, 1h per leg, OFF vs ON** (§G; default OFF = today's behavior).
-   Not a parity-only change — it alters what is trained, so read peak accuracy before the floor. **Exit: the
-   replicate floor drops from 13.3% iters/bin and 11.16 accuracy pts.** If the floor does NOT move, H13 is
-   falsified as the *dominant* term and the IRREDUCIBLE branch below is back.
-2. **If accuracy drops materially with it ON**, switch to the shared-mask fix — one dropout mask reused across
-   the ± passes keeps the regularizer and is still a correct derivative of that masked loss. Not built.
-3. **Then** re-run the three blocked pairs and re-grade. Their fails likely vanish; no tolerance moves.
-4. `eval_model()` never restoring train mode is a latent bug, not an active one — it never fires on trainers
-   (above). Leave it; fixing it would silently change behavior the moment anyone enables trainer-side eval.
+#### Read in this order, and stop at the first failure
 
-- **IRREDUCIBLE fallback** (only if step 2's floor does not move) ⇒ widen every DIST tolerance to its measured
-  floor, re-grade, write the §F invariant. Needs one extra real per baseline to have a floor to widen TO:
-  7 baselines × 2h ≈ **2 nights on 3 nodes**, and the reals parallelize perfectly.
-- **PROBE DIDN'T REPRODUCE** ⇒ fix the probe (`--model real`, more load), not the code. The issue is measured
-  independently of it; only the FIX is unvalidated (preamble).
+| | check | if it fails |
+|---|---|---|
+| **1** | `grep -m1 JVP_EVAL_MODE <run>/*trainers.log` reads `jvp_eval_mode=True` | the knob never reached the trainer — the run is void, fix T0.2/T0.3 and relaunch. Check this at minute 5, not at hour 2 |
+| **2** | peak accuracy ON vs the T0.4 OFF number | **this is not a parity question.** A material drop means the regularizer was earning its keep: abandon eval mode, build the shared-mask fix (one mask reused across the ± passes — still a correct derivative of that masked loss), re-run |
+| **3** | `replicate_floor.py` ON vs OFF: `felix_round` 13.3% iters/bin, 11.16 accuracy pts | no movement ⇒ **H13 is falsified as the dominant term**; §F-28's tolerance recalibration comes back and the ON runs still stand as the control |
+| **4** | `run_parity.py` on `felix_round` (node A only) | `selection_detail` green + OVER-DISPATCH=0 closes H11; the cadence family should follow the floor |
+
+#### T1 — the consequences to handle, once the verdict is in
+
+- **T1.1 — promote or revert the flag deliberately.** If ON wins on both accuracy and floor, `jvp_eval_mode`
+  stops being an A/B flag: it is a correctness fix and ships default-ON in code, not just in yamls. Operator
+  call, not an automatic one.
+- **T1.2 — every OFF result becomes a different config.** The §A scoreboard, all nine baselines' tolerances
+  and the four charge profiles were measured dropout-live. Re-grading is a full re-run of the board, ~2
+  nights on 3 nodes; do not pretend an ON row and an OFF row compare.
+- **T1.3 — charge profiles must come from an ON real.** Dropout is a mask RNG plus an elementwise multiply, so
+  the JVP should get marginally cheaper; `tb_forward_jvp` / `tb_stat_utility` in the ON legs give the actual
+  number. Regenerate before any ON sim leg — a sim leg on OFF-derived charges mis-prices the trainer and the
+  parity verdict is then about the profile, not the code.
+- **T1.4 — `fwdllm`/`fluxtune`/`fedbuff_it_*` stay OFF until the verdict.** Spreading the flag before the
+  accuracy answer risks nine baselines' worth of wasted node-hours.
 
 **SHORT TERM — the remaining gaps, in priority order.**
 1. **`fedbuff_it_*` off 1200s** (7200s pairs). N=38 smokes; nothing cadence-shaped there is evidence and H8 is
@@ -761,6 +798,10 @@ rule now live in §D-3.
 > current depends on it — git log keeps it.
 
 **This batch**
+- **H13 CONFIRMED on the real stack and `jvp_eval_mode` closes it (probe C, §B).** `base` 10% of repeats
+  bit-exact / jvp spread 3.44; `evalmode` 100% / 0.00e+00. `determ` bit-for-bit `base`, `fp32` worse — neither
+  touches dropout. Probe now names the direction of a spread change and refuses cross-arm comparisons while
+  dropout is live.
 - **H13 fix landed behind `jvp_eval_mode`, default False = today's behavior.** `_eval_mode()` puts the model
   in eval for `_make_model_functional` + the whole training loop (functorch deep-copies the module, so a later
   toggle never reaches the fmodel the JVP evaluates), then restores EVERY module's own flag — a blanket

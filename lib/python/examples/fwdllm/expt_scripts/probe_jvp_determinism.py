@@ -334,9 +334,16 @@ def _report(rows: list) -> None:
                   f"{base[key]:.2e} -- that is a BUG on this arm; "
                   f"fix rather than widen tolerances.")
         else:
-            cut = 1.0 - r[key] / base[key]
-            print(f"  {r['arm']}: jvp spread {cut:+.0%} vs base "
+            # Signed percentages read as improvements either way round; name the
+            # direction. fp32 came back LARGER than base on probe C.
+            ratio = r[key] / base[key]
+            verb = "smaller than" if ratio < 1 else "LARGER than"
+            print(f"  {r['arm']}: jvp spread {abs(1.0 - ratio):.0%} {verb} base "
                   f"({base[key]:.2e} -> {r[key]:.2e})")
+    if base.get("live_dropout"):
+        print("  With dropout live each arm draws its own mask stream, so only "
+              "`evalmode` reaching 0 is\n  a signal -- do not read the other arms' "
+              "spreads against each other.")
     if not hetero and rows and all(r.get("replicas", 1) < 2 for r in rows):
         print("\n  NOTE: --replicas 1 measures only WITHIN-process repeatability, "
               "which is not the live signature. Re-run with --replicas 4+.")
