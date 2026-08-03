@@ -122,3 +122,45 @@ class TestEvalModeContext:
             with trainer_mod._eval_mode(model):
                 raise RuntimeError("boom")
         assert [m.training for m in model.modules()] == before
+
+
+class TestReplicateFloorConfigSplit:
+    """A floor pooled across `jvp_eval_mode` values measures the flag, not the
+    floor (§D-45). The knob is in no config file in the run dir, so the grouping
+    reads it back from the trainer log."""
+
+    @pytest.fixture(scope="class")
+    def rf(self):
+        import importlib.util
+        path = (Path(__file__).resolve().parents[2] / "examples" / "fwdllm"
+                / "expt_scripts" / "replicate_floor.py")
+        spec = importlib.util.spec_from_file_location("_rf", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["_rf"] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _run_dir(self, tmp_path, name, line):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "x_trainers.log").write_text(
+            "some preamble\n" + (line + "\n" if line else "") + "more\n")
+        return d
+
+    def test_on_leg_detected(self, rf, tmp_path):
+        d = self._run_dir(tmp_path, "on", "INFO | [JVP_EVAL_MODE] jvp_eval_mode=True (…)")
+        assert rf._jvp_eval_mode(str(d)) is True
+
+    def test_off_leg_detected(self, rf, tmp_path):
+        d = self._run_dir(tmp_path, "off", "INFO | [JVP_EVAL_MODE] jvp_eval_mode=False (…)")
+        assert rf._jvp_eval_mode(str(d)) is False
+
+    def test_pre_flag_run_reads_as_off(self, rf, tmp_path):
+        """Runs older than the flag never log it; the code default was dropout live."""
+        d = self._run_dir(tmp_path, "legacy", None)
+        assert rf._jvp_eval_mode(str(d)) is False
+
+    def test_missing_log_reads_as_off(self, rf, tmp_path):
+        d = tmp_path / "empty"
+        d.mkdir()
+        assert rf._jvp_eval_mode(str(d)) is False

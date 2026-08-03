@@ -115,7 +115,7 @@ experiments:
           # curve at different points. Raise if the run warns about waiting.
           eval_every_n_commits: 2
           # Arms runner.py's watchdog (force-kill on hang); inert otherwise.
-          max_experiment_runtime_s: 7200
+          max_experiment_runtime_s: 10800
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           # alpha=1 (EXPTS_CHARTER A5); must match the _sim pair — see trainer side.

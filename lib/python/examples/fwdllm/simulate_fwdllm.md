@@ -341,6 +341,12 @@ python replicate_floor.py --mode real --baselines fluxtune fwdllm
 **The `.off-bak` copy is the revert path.** Node A regenerates `felix_round`'s charge profile from ON reals,
 which is correct for an ON sim leg and WRONG the moment the flag goes back off — restoring is one `cp`.
 
+**Audited before launch** (every step of node A, since `&&` means one bad step costs the H11 validation):
+all four analysis scripts run under the default `python`; `sim_charge_profile_path` resolves to the file the
+re-profile writes; both preflights green. Two defects found and fixed rather than discovered at 08:00 —
+`replicate_floor.py` pooled ON with OFF legs, and four reals had `max_experiment_runtime_s` equal to the run
+budget (§G).
+
 **⚠ MUST be 7200s, not 3600s** — node A doubles as the H11 validation and that defect only fires at the
 round-1→2 boundary, which arrives at wall 4270-4823s (real) / vclock 4441s (sim).
 
@@ -866,6 +872,12 @@ rule now live in §D-3.
 > current depends on it — git log keeps it.
 
 **This batch**
+- **`replicate_floor.py` now splits groups by `jvp_eval_mode`, read back from the trainer log.** It pooled every
+  same-duration leg of a baseline, so tonight's ON legs would have been averaged with the OFF ones and the
+  headline exit criterion would have measured the flag, not the floor (§D-45). The knob is in NO config file
+  in the run dir — a provenance gap worth closing separately. Header and JSON now name the config. 4 tests.
+- **Watchdog `max_experiment_runtime_s` 7200→10800 on `felix_round`, `fedbuff_round`, `fluxtune`, `fwdllm`.**
+  They were the four reals still equal to the run budget; §G's earlier bump had covered only the other four.
 - **`jvp_eval_mode` wired end to end for the A/B.** Trainer knob in the **trainer** `config_overrides` block of
   10 yamls (real+sim × the five 7200s baselines); `run_sequential.sh` preflight BLOCKS on a mismatched or
   one-sided pair and warns when absent (= code default, dropout live). Both failure modes negative-controlled.

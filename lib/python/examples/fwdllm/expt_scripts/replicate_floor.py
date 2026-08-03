@@ -137,8 +137,30 @@ def metrics(run_dir: str):
     }
 
 
+def _jvp_eval_mode(path: str) -> bool:
+    """Was this leg trained with dropout off (`jvp_eval_mode`, H13)?
+
+    Read from the trainer log because the knob is written to NO config file in
+    the run dir -- it lives in the trainer's `config_overrides`, which the runner
+    does not dump. Absent means the run predates the flag, i.e. the code default:
+    dropout LIVE. Pooling an ON leg with an OFF one would measure the flag rather
+    than the floor, which is exactly what §D-45 forbids.
+    """
+    for lg in glob.glob(os.path.join(path, "*trainers.log")):
+        try:
+            with open(lg, errors="ignore") as fh:
+                for i, line in enumerate(fh):
+                    if "jvp_eval_mode=" in line:
+                        return "jvp_eval_mode=True" in line
+                    if i > 50000:      # the knob logs at trainer init or never
+                        break
+        except OSError:
+            continue
+    return False
+
+
 def discover(experiments_dir: str, baselines, mode: str) -> dict:
-    """{(baseline, trace, mode, max_runtime_s): [(ts, path), ...]}"""
+    """{(baseline, trace, mode, max_runtime_s, jvp_eval_mode): [(ts, path), ...]}"""
     groups: dict = {}
     for path in sorted(glob.glob(os.path.join(experiments_dir, "run_*"))):
         m = _RUN_RE.match(os.path.basename(path))
@@ -146,7 +168,8 @@ def discover(experiments_dir: str, baselines, mode: str) -> dict:
             continue
         if baselines and m["baseline"] not in baselines:
             continue
-        key = (m["baseline"], m["trace"] or "", mode, _max_runtime_s(path))
+        key = (m["baseline"], m["trace"] or "", mode, _max_runtime_s(path),
+               _jvp_eval_mode(path))
         groups.setdefault(key, []).append((m["ts"], path))
     return groups
 
@@ -175,8 +198,11 @@ def main(argv=None) -> int:
 
     groups = discover(args.experiments_dir, args.baselines, args.mode)
     report, any_group = {}, False
-    for key in sorted(groups, key=lambda k: (k[0], k[3] or 0)):
-        baseline, trace, mode, maxrt = key
+    for key in sorted(groups, key=lambda k: (k[0], k[3] or 0, k[4])):
+        baseline, trace, mode, maxrt, jvp_eval = key
+        # Name the training config in the header: two groups of the same baseline
+        # and duration now appear, and reading the wrong one inverts the verdict.
+        cfg = f"  jvp_eval_mode={jvp_eval}"
         runs = groups[key]
         if len(runs) < 2 or (maxrt or 0) < args.min_duration:
             continue
@@ -202,7 +228,7 @@ def main(argv=None) -> int:
         # Report drops BEFORE the too-few-replicates bail, else a group that fell
         # below 2 from a truncated leg reads as "no replicates found", unexplained.
         if dropped:
-            print(f"\n=== {label}  mode={mode}  max_runtime_s={maxrt}")
+            print(f"\n=== {label}  mode={mode}  max_runtime_s={maxrt}{cfg}")
             for ts, _s, _m, span in dropped:
                 print(f"    {ts}  DROPPED — achieved span {span:.0f}s is >{args.span_tol:.0%} "
                       f"short of {max(spans):.0f}s (truncated run, not a replicate)")
@@ -213,7 +239,7 @@ def main(argv=None) -> int:
         seeds = {s for _, s, _, _ in rows}
         any_group = True
         print((f"    n_replicates={len(rows)}  seeds={sorted(seeds)}" if dropped else
-               f"\n=== {label}  mode={mode}  max_runtime_s={maxrt}  "
+               f"\n=== {label}  mode={mode}  max_runtime_s={maxrt}{cfg}  "
                f"n_replicates={len(rows)}  seeds={sorted(seeds)}")
               + ("   ⚠ MIXED SEEDS — not a reproducibility floor" if len(seeds) > 1 else ""))
         for ts, seed, m, span in rows:
@@ -235,7 +261,8 @@ def main(argv=None) -> int:
                              "tolerance_field": field, "tolerance": tol,
                              "verdict": verdict}
         report[label + f"@{maxrt}"] = {
-            "mode": mode, "n_replicates": len(rows), "seeds": sorted(seeds),
+            "mode": mode, "jvp_eval_mode": jvp_eval,
+            "n_replicates": len(rows), "seeds": sorted(seeds),
             "achieved_span_s": [s for _, _, _, s in rows],
             "dropped_truncated": [t for t, _, _, _ in dropped], "metrics": entry}
 
