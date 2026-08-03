@@ -26,6 +26,7 @@ import sys
 import threading
 import time
 import math
+import random
 
 import numpy as np
 import torch
@@ -714,6 +715,8 @@ class PyTorchFMoWTrainer(Trainer):
 
         if not self.simulated and _remaining_time > 0:
             time.sleep(_remaining_time)
+        elif self.simulated:
+            time.sleep(random.uniform(0, 1))
 
         _cycle_elapsed = time.time() - _cycle_start
         if self.simulated:
