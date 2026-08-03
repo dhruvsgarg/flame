@@ -63,6 +63,10 @@ experiments:
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
           # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
           partition_method: niid_label_clients=100_alpha=1
+          # H13 (simulate_fwdllm.md §B): dropout off during the JVP's two
+          # finite-difference passes. NOT bit-identical and NOT parity-only — it
+          # changes what is trained. Flip real AND sim together (§F-18).
+          jvp_eval_mode: true
 
     aggregator:
       config_template: configs/aggregator_base.json

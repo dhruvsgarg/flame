@@ -593,6 +593,8 @@ for trace in traces:
             if variant == "sim":
                 sim_profiles[run_key] = h0.get("sim_charge_profile_path")
             kw0 = e0["aggregator"]["config_overrides"]["selector"]["kwargs"]
+            _t_hp0 = (e0["trainer"].get("config_overrides", {})
+                      .get("hyperparameters", {}))
             per_baseline.setdefault(run_key, {
                 "c": kw0.get("c"),
                 "agg_goal": e0["aggregator"].get("agg_goal"),
@@ -602,6 +604,9 @@ for trace in traces:
                 "gpu_ids": e0.get("execution", {}).get("gpu_ids"),
                 "partition": h0.get("partition_method"),
                 "delays": e0["trainer"].get("enable_training_delays"),
+                # H13 A/B knob: yaml-only, so condition_fp cannot see it (§F-18).
+                # Captured per variant and cross-checked below.
+                "jvp_eval_mode": {},
                 "delay_factor": e0["trainer"].get("hyperparameters", {}).get("training_delay_factor"),
                 "delay_floor": e0["trainer"].get("hyperparameters", {}).get("training_delay_floor_s"),
                 # RESOLVED availability mode read back from the PATCHED cfg (what
@@ -613,6 +618,9 @@ for trace in traces:
                 "optimizer": _BL_INTERNALS.get(run_key, {}).get("optimizer", "?"),
                 "sync_async": _BL_INTERNALS.get(run_key, {}).get("async", "?"),
             })
+
+            per_baseline[run_key]["jvp_eval_mode"][variant] = _t_hp0.get(
+                "jvp_eval_mode", "ABSENT")
 
 with open(MANIFEST, "w") as fh:
     for name, out, variant, budget in manifest:
@@ -822,6 +830,28 @@ if MODE == "both":
         checks.append({"name": f"enable_training_delays matched across real/sim pair ({rk})",
                        "level": "ok",
                        "detail": f"D={'>0' if _don else '0'} both sides (factor={_dfac or 'base'}, floor={_dflr or '0.0'})"})
+# H13 `jvp_eval_mode` (simulate_fwdllm.md §B): a yaml-only knob, so `condition_fp`
+# cannot detect it going missing -- the exact §F-18 failure mode. It changes what is
+# TRAINED, so a real/sim pair that disagrees grades two different experiments.
+for rk in (r[0] for r in runs):
+    _jv = per_baseline.get(rk, {}).get("jvp_eval_mode", {})
+    _vals = set(_jv.values())
+    if not _jv:
+        pass
+    elif "ABSENT" in _vals and len(_vals) > 1:
+        checks.append({"name": f"jvp_eval_mode present on both legs ({rk})",
+                       "level": "error",
+                       "detail": f"declared on one leg only: {_jv}"})
+    elif len(_vals) > 1:
+        checks.append({"name": f"jvp_eval_mode matched across real/sim pair ({rk})",
+                       "level": "error", "detail": f"MISMATCH: {_jv}"})
+    elif _vals == {"ABSENT"}:
+        checks.append({"name": f"jvp_eval_mode ({rk})", "level": "warn",
+                       "detail": "not declared -> code default False (dropout LIVE)"})
+    else:
+        checks.append({"name": f"jvp_eval_mode ({rk})", "level": "ok",
+                       "detail": f"{_vals.pop()} on every leg"})
+
 # sim charge profile provenance: every charged entry must have been profiled from
 # a real run of THIS baseline. A shared family-wide profile silently mis-prices the
 # vclock -- one constant was 1.08-2.75x each baseline's own real drain_tail, i.e.

@@ -63,6 +63,10 @@ experiments:
           # MUST match the real pair or parity sees a data-skew divergence
           # with no clock cause.
           partition_method: niid_label_clients=100_alpha=1
+          # H13 (simulate_fwdllm.md §B): dropout off during the JVP's two
+          # finite-difference passes. NOT bit-identical and NOT parity-only — it
+          # changes what is trained. Flip real AND sim together (§F-18).
+          jvp_eval_mode: true
           # Phase 4c (B2, #6): widen the sim barrier's k-th-smallest sct to
           # match real's per-trainer completion dispersion (banked real compute
           # std ~0.26s; uniform[0,spread) offset ⇒ spread ≈ 0.26·√12). Only
