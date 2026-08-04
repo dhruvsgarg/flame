@@ -5,7 +5,7 @@
 # `replicate_floor.py --mode real --profile-out <dir>`; do not hand-edit.
 jvp_eval_mode: true
 max_runtime_s: 7200
-measured_at: '2026-08-03'
+measured_at: '2026-08-04'
 metrics:
   committed_bins: 0.0
   cycles: 0.0032

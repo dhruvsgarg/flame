@@ -9,6 +9,7 @@ import os
 import sys
 
 import pytest
+import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import replicate_floor as rf  # noqa: E402
@@ -183,3 +184,60 @@ class TestTruncatedLegIsNotAReplicate:
              achieved_s=1800)
         out = self._out(tmp_path, capsys)
         assert "DROPPED" in out and "no floor for this group" in out
+
+
+class TestFloorDurationMustMatchTheRungsWindow:
+    """A baseline can now have ON replicate groups at two durations (fluxtune has
+    7200s and 14400s). The floor must come from the length the rung grades, so the
+    "longest ON group wins" rule needs an explicit override and a loud warning."""
+
+    def _on(self, tmp_path, name, n_bins, iters, **kw):
+        p = _run(n_bins, iters, 0.9, tmp_path, name, **kw)
+        open(os.path.join(p, "x_trainers.log"), "w").write("jvp_eval_mode=True\n")
+        return p
+
+    def test_duration_selects_the_group(self, tmp_path, capsys):
+        self._on(tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_real", 5, 4)
+        self._on(tmp_path, "run_20260102_000000_b_n10_smoke_syn_0_real", 5, 4)
+        self._on(tmp_path, "run_20260103_000000_b_n10_smoke_syn_0_real", 9, 4,
+                 max_runtime_s=7200)
+        self._on(tmp_path, "run_20260104_000000_b_n10_smoke_syn_0_real", 9, 4,
+                 max_runtime_s=7200)
+        rf.main(["--experiments-dir", str(tmp_path), "--mode", "real",
+                 "--duration", "3600"])
+        out = capsys.readouterr().out
+        assert "max_runtime_s=3600" in out and "max_runtime_s=7200" not in out
+
+    def test_two_on_durations_warn_when_unselected(self, tmp_path, capsys):
+        self._on(tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_real", 5, 4)
+        self._on(tmp_path, "run_20260102_000000_b_n10_smoke_syn_0_real", 5, 4)
+        self._on(tmp_path, "run_20260103_000000_b_n10_smoke_syn_0_real", 9, 4,
+                 max_runtime_s=7200)
+        self._on(tmp_path, "run_20260104_000000_b_n10_smoke_syn_0_real", 9, 4,
+                 max_runtime_s=7200)
+        rf.main(["--experiments-dir", str(tmp_path), "--mode", "real",
+                 "--profile-out", str(tmp_path / "floors")])
+        out = capsys.readouterr().out
+        assert "ON groups at" in out and "--duration" in out
+        prof = yaml.safe_load(open(tmp_path / "floors" / "b.yaml"))
+        assert prof["max_runtime_s"] == 7200        # longest, as documented
+
+    def test_selected_duration_writes_that_floor_and_no_warning(self, tmp_path, capsys):
+        self._on(tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_real", 5, 4)
+        self._on(tmp_path, "run_20260102_000000_b_n10_smoke_syn_0_real", 5, 4)
+        self._on(tmp_path, "run_20260103_000000_b_n10_smoke_syn_0_real", 9, 4,
+                 max_runtime_s=7200)
+        self._on(tmp_path, "run_20260104_000000_b_n10_smoke_syn_0_real", 9, 4,
+                 max_runtime_s=7200)
+        rf.main(["--experiments-dir", str(tmp_path), "--mode", "real",
+                 "--duration", "3600", "--profile-out", str(tmp_path / "floors")])
+        assert "ON groups at" not in capsys.readouterr().out
+        prof = yaml.safe_load(open(tmp_path / "floors" / "b.yaml"))
+        assert prof["max_runtime_s"] == 3600
+
+    def test_single_duration_never_warns(self, tmp_path, capsys):
+        self._on(tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_real", 5, 4)
+        self._on(tmp_path, "run_20260102_000000_b_n10_smoke_syn_0_real", 5, 4)
+        rf.main(["--experiments-dir", str(tmp_path), "--mode", "real",
+                 "--profile-out", str(tmp_path / "floors")])
+        assert "ON groups at" not in capsys.readouterr().out

@@ -7,11 +7,11 @@ jvp_eval_mode: true
 max_runtime_s: 7200
 measured_at: '2026-08-04'
 metrics:
-  committed_bins: 0.0268
-  cycles: 0.0078
-  iters_per_bin: 0.0303
-  mean_var: 0.0244
-n_replicates: 3
+  committed_bins: 0.0
+  cycles: 0.0027
+  iters_per_bin: 0.0026
+  mean_var: 0.0015
+n_replicates: 2
 rungs:
   committed_bins:
     field: tol_rel
@@ -30,6 +30,5 @@ rungs:
     nominal: 0.02
     rung: v2_var_trajectory
 source_runs:
-- '20260803_042036'
-- '20260803_062254'
-- '20260804_043609'
+- '20260804_003210'
+- '20260804_023421'

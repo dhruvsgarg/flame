@@ -5,13 +5,13 @@
 # `replicate_floor.py --mode real --profile-out <dir>`; do not hand-edit.
 jvp_eval_mode: true
 max_runtime_s: 7200
-measured_at: '2026-08-03'
+measured_at: '2026-08-04'
 metrics:
-  committed_bins: 0.0488
-  cycles: 0.0007
-  iters_per_bin: 0.0492
-  mean_var: 0.0065
-n_replicates: 2
+  committed_bins: 0.0976
+  cycles: 0.0018
+  iters_per_bin: 0.0988
+  mean_var: 0.0226
+n_replicates: 3
 rungs:
   committed_bins:
     field: tol_rel
@@ -32,3 +32,4 @@ rungs:
 source_runs:
 - '20260803_115320'
 - '20260803_190011'
+- '20260804_063827'

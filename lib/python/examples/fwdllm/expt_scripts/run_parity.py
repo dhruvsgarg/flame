@@ -56,9 +56,10 @@ def _discover(experiments_dir: str) -> dict:
     """{(baseline, trace): {'real': (ts, path), 'sim': (ts, path)}} keeping the
     latest ts per (baseline, trace, variant).
 
-    The real leg is the latest whose `jvp_eval_mode` MATCHES the sim's: taking
-    the latest outright grades an OFF control against an ON sim leg, i.e. the
-    flag rather than the code (simulate_fwdllm.md §A).
+    The real leg is the latest whose `jvp_eval_mode` AND `max_runtime_s` match
+    the sim's: taking the latest outright grades an OFF control against an ON sim
+    leg, i.e. the flag rather than the code, and a 4h real against a 2h sim,
+    i.e. the run length rather than the code (simulate_fwdllm.md §A).
     """
     out: dict = {}
     for path in glob.glob(os.path.join(experiments_dir, "run_*")):
@@ -79,8 +80,9 @@ def _discover(experiments_dir: str) -> dict:
         if reals:
             slot["real"] = reals[0]
         if sims and reals:
-            want = _jvp_eval_mode(sims[0][1])
-            match = next((r for r in reals if _jvp_eval_mode(r[1]) == want), None)
+            want = (_jvp_eval_mode(sims[0][1]), _max_runtime_s(sims[0][1]))
+            match = next((r for r in reals
+                          if (_jvp_eval_mode(r[1]), _max_runtime_s(r[1])) == want), None)
             if match is not None:
                 slot["real"] = match
             slot["_flag"] = want
@@ -104,6 +106,19 @@ def _jvp_eval_mode(run_dir: str) -> bool:
         except OSError:
             continue
     return False
+
+
+def _max_runtime_s(run_dir: str):
+    """The run length the leg was configured for — half of what makes two legs
+    comparable. A 4h real against a 2h sim grades the run length, not the code."""
+    cfg = os.path.join(run_dir, "aggregator_config.json")
+    if not os.path.exists(cfg):
+        return None
+    try:
+        h = json.load(open(cfg)).get("hyperparameters", {})
+        return h.get("max_runtime_s") or h.get("maxRuntimeS")
+    except (ValueError, OSError):
+        return None
 
 
 def _agg_goal(run_dir: str) -> int | None:
@@ -291,10 +306,14 @@ def main(argv=None) -> int:
         print(f"      real {rts}  {os.path.basename(rdir)}")
         print(f"      sim  {sts}  {os.path.basename(sdir)}")
         if flag is not None:
-            print(f"      jvp_eval_mode={flag} on both legs")
+            print(f"      jvp_eval_mode={flag[0]}, max_runtime_s={flag[1]} on both legs")
         for sts_, sdir_ in skipped:
+            got = (_jvp_eval_mode(sdir_), _max_runtime_s(sdir_))
+            why = " and ".join(
+                n for n, a, b in (("jvp_eval_mode", got[0], flag[0]),
+                                  ("max_runtime_s", got[1], flag[1])) if a != b)
             print(f"      [skipped newer real {sts_} {os.path.basename(sdir_)} "
-                  f"-- jvp_eval_mode differs]")
+                  f"-- {why} differs]")
     if not args.yes and sys.stdin.isatty():
         if input("\n  Proceed with these pairs? [y/N] ").strip().lower() not in ("y", "yes"):
             print("  Aborted.")

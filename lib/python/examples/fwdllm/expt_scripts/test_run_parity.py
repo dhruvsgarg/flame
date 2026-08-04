@@ -16,12 +16,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import run_parity as rp  # noqa: E402
 
 
-def _mk_run(tmp_path, name, n_bins=4, agg_goal=2, vclock=False, jvp=None):
+def _mk_run(tmp_path, name, n_bins=4, agg_goal=2, vclock=False, jvp=None,
+            max_runtime_s=None):
     d = tmp_path / name
     (d / "telemetry").mkdir(parents=True)
     if jvp is not None:                       # the knob lives only in the trainer log
         (d / "x_trainers.log").write_text(f"[JVP_EVAL_MODE] jvp_eval_mode={jvp}\n")
-    json.dump({"hyperparameters": {"aggGoal": agg_goal, "seed": 1234}},
+    json.dump({"hyperparameters": {"aggGoal": agg_goal, "seed": 1234,
+                                   "max_runtime_s": max_runtime_s}},
               open(d / "aggregator_config.json", "w"))
     with open(d / "telemetry" / "aggregator_a.jsonl", "w") as fh:
         for b in range(n_bins):
@@ -105,7 +107,7 @@ class TestDiscovery:
         _mk_run(tmp_path, "run_20260102_000000_felix_it_n10_smoke_syn_0_sim",
                 vclock=True, jvp=True)
         slot = rp._discover(str(tmp_path))[("felix_it", "syn_0")]
-        assert slot["real"][0] == "20260101_000000" and slot["_flag"] is True
+        assert slot["real"][0] == "20260101_000000" and slot["_flag"][0] is True
 
 
 class TestParallelGrading:
@@ -158,3 +160,31 @@ class TestCoverageIsSurfaced:
         rp.main(["--experiments-dir", str(tmp_path), "--yes",
                  "--baselines", "felix_round"])
         assert "LOW, windowed rungs unreliable" in capsys.readouterr().out
+
+
+class TestPairsMustMatchOnRunLength:
+    """A baseline can have real legs at two durations (fluxtune has 2h and 4h).
+    The latest real is then the WRONG pair for a 2h sim leg — it grades the run
+    length, and the budget coverage collapses to ~50%."""
+
+    def test_skips_a_newer_real_of_a_different_duration(self, tmp_path):
+        _mk_run(tmp_path, "run_20260101_000000_fluxtune_n10_smoke_syn_0_real",
+                jvp=True, max_runtime_s=7200)
+        _mk_run(tmp_path, "run_20260102_000000_fluxtune_n10_smoke_syn_0_sim",
+                vclock=True, jvp=True, max_runtime_s=7200)
+        _mk_run(tmp_path, "run_20260103_000000_fluxtune_n10_smoke_syn_0_real",
+                jvp=True, max_runtime_s=14400)
+        slot = rp._discover(str(tmp_path))[("fluxtune", "syn_0")]
+        assert slot["real"][0] == "20260101_000000"
+        assert [s[0] for s in slot["_flag_skipped"]] == ["20260103_000000"]
+
+    def test_takes_the_latest_real_at_the_same_duration(self, tmp_path):
+        _mk_run(tmp_path, "run_20260101_000000_fluxtune_n10_smoke_syn_0_real",
+                jvp=True, max_runtime_s=7200)
+        _mk_run(tmp_path, "run_20260102_000000_fluxtune_n10_smoke_syn_0_sim",
+                vclock=True, jvp=True, max_runtime_s=7200)
+        _mk_run(tmp_path, "run_20260103_000000_fluxtune_n10_smoke_syn_0_real",
+                jvp=True, max_runtime_s=7200)
+        slot = rp._discover(str(tmp_path))[("fluxtune", "syn_0")]
+        assert slot["real"][0] == "20260103_000000"
+        assert slot["_flag_skipped"] == []

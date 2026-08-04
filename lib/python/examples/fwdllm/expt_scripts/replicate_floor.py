@@ -204,6 +204,10 @@ def main(argv=None) -> int:
                     help="which side's replicates to pool (default real)")
     ap.add_argument("--min-duration", type=float, default=0.0,
                     help="skip groups whose max_runtime_s is below this")
+    ap.add_argument("--duration", type=float, default=None, metavar="S",
+                    help="grade ONLY groups at this max_runtime_s. Use it when a "
+                         "baseline has ON groups at two durations: the floor must "
+                         "come from the run length the rung grades (D-24/D-53)")
     ap.add_argument("--span-tol", type=float, default=0.05,
                     help="drop a leg whose ACHIEVED span is this far below the "
                          "group's longest (default 0.05 = 5%%); a truncated run "
@@ -217,6 +221,7 @@ def main(argv=None) -> int:
 
     groups = discover(args.experiments_dir, args.baselines, args.mode)
     report, profiles, any_group = {}, {}, False
+    on_durations: dict = {}     # baseline -> ON durations seen, for the ambiguity warning
     for key in sorted(groups, key=lambda k: (k[0], k[3] or 0, k[4])):
         baseline, trace, mode, maxrt, jvp_eval = key
         # Name the training config in the header: two groups of the same baseline
@@ -224,6 +229,8 @@ def main(argv=None) -> int:
         cfg = f"  jvp_eval_mode={jvp_eval}"
         runs = groups[key]
         if len(runs) < 2 or (maxrt or 0) < args.min_duration:
+            continue
+        if args.duration is not None and (maxrt or 0) != args.duration:
             continue
         rows = []
         for ts, path in runs:
@@ -288,6 +295,7 @@ def main(argv=None) -> int:
         # floor is what the CURRENT training config reproduces to, and duration
         # changes it (§D-24), so a short or OFF group must never win.
         if args.profile_out and mode == "real" and jvp_eval:
+            on_durations.setdefault(baseline, set()).add(maxrt or 0)
             prev = profiles.get(baseline)
             if prev is None or (maxrt or 0) >= prev["max_runtime_s"]:
                 profiles[baseline] = {
@@ -312,6 +320,11 @@ def main(argv=None) -> int:
     if args.profile_out:
         os.makedirs(args.profile_out, exist_ok=True)
         for baseline, prof in sorted(profiles.items()):
+            others = sorted(on_durations.get(baseline, set()) - {prof["max_runtime_s"]})
+            if others and args.duration is None:
+                print(f"⚠ {baseline}: ON groups at {others + [prof['max_runtime_s']]}s; "
+                      f"wrote the {prof['max_runtime_s']:.0f}s one. A floor must come "
+                      f"from the run length the rung grades — pass --duration.")
             path = os.path.join(args.profile_out, f"{baseline}.yaml")
             with open(path, "w") as fh:
                 fh.write(_PROFILE_HEADER)
