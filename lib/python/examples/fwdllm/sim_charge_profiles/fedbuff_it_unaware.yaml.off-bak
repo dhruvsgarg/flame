@@ -4,29 +4,27 @@
 drain_tail:
   _default:
     charge: true
-    mean_s: 0.2348
-    n: 5402
-    p90_s: 0.6216
-    profiled_at: '2026-08-03'
+    mean_s: 0.249
+    n: 364
+    p90_s: 0.6722
+    profiled_at: '2026-08-01'
     rationale: sim runs the same op under ~100 co-located trainer threads, so its
       live span is contention-inflated and folding it on the vclock injects sim-host
       noise (simulate_fwdllm.md D-18, F-1/F-20). Charged from this baseline's own
       real.
     source_runs:
-    - run_20260803_155743_fedbuff_it_oracular_n100_smoke_syn_0_real
-    - run_20260803_175959_fedbuff_it_oracular_n100_smoke_syn_0_real
+    - run_20260731_180442_fedbuff_it_unaware_n100_smoke_syn_0_real
 fedavg:
   _default:
     charge: true
-    mean_s: 0.0641
-    n: 5402
-    p90_s: 0.1879
-    profiled_at: '2026-08-03'
+    mean_s: 0.0664
+    n: 364
+    p90_s: 0.1956
+    profiled_at: '2026-08-01'
     rationale: same as drain_tail -- sim's own span is contention-inflated, so the
       charge comes from this baseline's own real.
     source_runs:
-    - run_20260803_155743_fedbuff_it_oracular_n100_smoke_syn_0_real
-    - run_20260803_175959_fedbuff_it_oracular_n100_smoke_syn_0_real
+    - run_20260731_180442_fedbuff_it_unaware_n100_smoke_syn_0_real
 redispatch_turnaround:
   var_bad:
     charge: false

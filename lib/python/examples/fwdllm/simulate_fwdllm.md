@@ -88,7 +88,7 @@ and its `min_abs` calibration rule, full wall-budget/timing rung table):
 
 Everything here is **`jvp_eval_mode` ON**. **An OFF row is a different training config and NEVER compares to
 an ON row** — §A.4's board, all nine tolerance sets and every charge profile older than the flag were measured
-dropout-live. §A.4 survives only because three baselines have no ON evidence at all.
+dropout-live. §A.4 survives only because `fwdllm_it_oracular` has no ON evidence at all.
 
 ### §A.1  Readiness ledger — what each baseline still needs
 
@@ -104,20 +104,21 @@ Five stages, in order, each feeding the next. **A parity row is readable only wh
 
 | baseline | R2 | FL | CH | SIM | GR | next stage |
 |---|---|---|---|---|---|---|
-| `felix_round` | ✓ | ✓ | ✓ | ✓ | ✓ **73/1/18** | — reference row |
-| `fwdllm` | ✓ | ✓ | ✓ | pre-CH | INVALID | **re-run SIM** |
-| `fedbuff_round` | ✓ | ✓ | ✓ | pre-CH | INVALID | **re-run SIM** |
-| `fluxtune` | ✓ | ✓ | ✓ | ✗ | — | **SIM** |
-| `felix_it` | ✓ | ✓ | ✓ | ✗ | — | **SIM** |
-| `fedbuff_it_unaware` | 1 leg | ✗ | ✗ | pre-CH | provisional 71/3/18 | 2nd real → FL → CH → re-run SIM |
-| `fedbuff_it_oracular` | ✗ | ✗ | ✗ | — | — | 2 ON reals |
-| `fwdllm_it_unaware` | ✗ | ✗ | ✗ | — | — | 2 ON reals |
-| `fwdllm_it_oracular` | ✗ | ✗ | ✗ | — | — | 2 ON reals |
+| `fluxtune` | ✓ | ✓ | ✓ | ✓ | ✓ **75/0/17** | — |
+| `felix_round` | ✓ | ✓ | ✓ | ✓ | ✓ **73/1/18** | — |
+| `fwdllm_it_unaware` | ✓ | ✓ | ✓ | ✓ | ✓ **69/0/23** | — |
+| `fwdllm` | ✓ | ✓ | ✓ | ✓ | ✓ **68/0/24** | — |
+| `fedbuff_round` | ✓ | ✓ | ✓ | ✓ | ✓ 72/3/18 | — |
+| `felix_it` | ✓ | ✓ | ✓ | ✓ | ✓ 72/4/17 | — |
+| `fedbuff_it_unaware` | ✓ | ✓ | ✓ | ✓ | ✓ 67/5/18 | — |
+| `fedbuff_it_oracular` | ✓ | ✓ | ✓ | ✓ | ✓ 64/9/18 | — |
+| `fwdllm_it_oracular` | ✗ | ✗ | ✗ | — | — | **2 ON reals → FL → CH → SIM** |
 
-**CH is the stage that gets skipped, and it is not cosmetic** — it is the only change between `felix_round`'s
-70/4 and 73/1 rows (§A.2). It is now enforced: the launch preflight BLOCKS a sim leg whose profile predates
-any real of that baseline trained under the SAME flag, and the comparator pairs on matching flag rather than
-on latest timestamp (§G). Neither guard can be satisfied by remembering to do something.
+**Eight of nine baselines now have all five stages.** Every CH came from that baseline's own two ON reals,
+every FL from a same-node replicate pair, every sim leg from a flag-matched real. The two mechanical guards
+(preflight blocks a stale profile; comparator pairs on matching flag) are what make that true without anyone
+remembering to do it — `felix_it` graded against its ON real and printed the two newer OFF controls it
+skipped (§G).
 
 ### §A.2  Parity rows, ON
 
@@ -126,39 +127,69 @@ on latest timestamp (§G). Neither guard can be satisfied by remembering to do s
 
 | baseline | real / sim | N | pass/fail/skip | cohort | vclock | K4 | slots | sbias | thru | commits | terminal | V1c | V1 | V2 | U3 | S2 | conv |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `fluxtune` | `20260803_042016` / `_170102` | 96 | **75/0/17** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | ✓ |
 | `felix_round` | `20260803_021757` / `_115430` | 196 | **73/1/18** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ |
-| `fedbuff_it_unaware` ⚠no FL | `20260803_115320` / `_135535` | 205 | 71/3/18 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ |
-| `fwdllm` ⚠no CH | `20260803_062233` / `_123938` | 36 | 58/10/24 | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✓ |
-| `fedbuff_round` ⚠no CH | `20260803_021819` / `_125016` | 174 | 64/10/18 | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ |
+| `fwdllm_it_unaware` | `20260803_175853` / `_200051` | 40 | **69/0/23** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `fwdllm` | `20260803_062233` / `_160414` | 41 | **68/0/24** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `fedbuff_round` | `20260803_021819` / `_161527` | 185 | 72/3/18 | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
+| `felix_it` | `20260803_062254` / `_174309` | 254 | 72/4/17 | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | – | ✓ | ✓ | ✓ |
+| `fedbuff_it_unaware` | `20260803_190011` / `_210301` | 190 | 67/5/18 | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✗ |
+| `fedbuff_it_oracular` | `20260803_175959` / `_200248` | 183 | 64/9/18 | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ |
 
-Budget coverage: 100.0/98.0 · 100.0/97.2 · 87.8/100.0 (N=36, thin) · 93.0/100.0. All four passed the validity
-gate — 100/100 trainers logged the knob, zero `False`, zero tracebacks, achieved span 6928-7193s.
+Budget coverage: 100.0/97.0 · 100.0/98.0 · 100.0/95.2 (N=40, thin) · 100.0/93.2 (N=41, thin) · 98.9/100.0 ·
+100.0/100.0 · 97.4/100.0 · 95.8/100.0. All eight passed the validity gate — every trainer that trained logged
+the knob, zero `False`, zero tracebacks, achieved span 6928-7194s. The only runtime source change inside the
+window is the OFF-by-default variance-pool audit, and both the clean and the dirty group straddle it, so the
+4/4 split below is not a code-version artifact.
 
-**`felix_round` is the reference row, and the ONLY thing that changed to produce it is the charge profile.**
-Same real leg, same checker, byte-identical config, no runtime source change — the sim leg was re-run against
-charges profiled from its own two ON reals:
+**The whole board is ONE residual — sim over-iterates per data-bin — and on seven of eight rows that residual
+is the pipeline's own replicate spread, not a sim defect.**
 
-| quantity | pre-CH | post-CH | real |
-|---|---|---|---|
-| iters/bin (`v1`) | 11.857 (−5.4%) | **12.536 (−0.0%)** | 12.531 |
-| cohorts (count gate) | 2324 (−5.4%) | **2457 (+0.0%)** | 2456 |
-| `v1b` cumulative | 5.37% | **0.04%** | — |
-| `throughput` / `terminal` / `commits`, matched window | 6.5% | **1.3%** | — |
-| `v2` mean var, matched window | 3.66% | 2.79% (tol 2%) | — |
+Measure `v1` on the `cycle_model_version` axis — never `data_id`, which wraps every lap (§F-2/§F-21) and
+pools laps into one bin. Then grade every row against its own real↔real control before reading it as a sim
+defect (§D-45, §D-55): both real legs are on disk for all seven, and the control is the same per-bin
+comparison run realA↔realB.
 
-That is §D-21 live — the charge is not neutral accounting, and a stale one moved sim's cadence by 5.4%. It is
-also what killed the grad-pool hypothesis (§E).
+| baseline | c vs agg_goal | grad bit-match real↔sim | `v1` real↔**sim** | `v1` real↔**real** | verdict |
+|---|---|---|---|---|---|
+| `fwdllm` | 10 = 10 | **420/420 all run** | +0.00% | 0.32% | **INSIDE floor** |
+| `fwdllm_it_unaware` | 10 = 10 | **410/410 all run** | +0.00% | — | **INSIDE floor** |
+| `fluxtune` | 30 > 10, capped | 26/71, then **0** | +0.00% | 0.83% | **INSIDE floor** |
+| `felix_round` | 30 > 10 | 14/143, then **0** | +0.04% | 1.47% | **INSIDE floor** |
+| `fedbuff_round` | 30 > 10 | 8/161, then **0** | +6.9% | **6.44%** | 1.1x floor |
+| `fedbuff_it_unaware` | 30 > 10 | 18/70, then **0** | +9.3% | **7.11%** | 1.3x floor |
+| `felix_it` | 30 > 10 | 4/116, then **0** | +8.2% | **4.80%** | 1.7x floor |
+| `fedbuff_it_oracular` | 30 > 10 | 27/67, then **0** | **+13.8%** | 2.70% | **5.1x — GENUINE** |
 
-**The two ⚠no-CH rows fail the same family in the OPPOSITE direction** — sim OVER-iterates (`v1` +18.0% on
-`fwdllm`, +12.8% on `fedbuff_round`) and is over-charged per round (199.8 vs 166.5s; 41.4 vs 37.1s). A
-sign-reversing residual across baselines is the signature of stale profiles, not of a shared code root, and it
-is why exit criteria 3-4 are still unanswerable.
+Every red cell in the score table reduces to `v1`. `cohort_sequence` fails only on its `count` gate, which is
+`v1` rolled up — its composition half is at the independent-draw floor and gated stochastic (§D-2).
+`selection_detail`'s failing term is `rel_diff_n_selections`, the same 13.8% on `fedbuff_it_oracular` (24600
+vs 28540 selections) with `chosen`/`inflight`/`effective_c` all exactly 0.0%. `v1b` is `v1` cumulative.
+`fedbuff_it_oracular`'s three EXACT fails are the extra iterations reaching the clock: `throughput` 7.6%,
+`terminal_state` and `total_commits` 11.9%. `convergence` follows the shifted curve.
 
-**`fedbuff_it_unaware` is provisional, not clean.** It has no replicate, so every DIST rung grades at NOMINAL
-tolerance — `v1` passes at 1.8% against a 15% gate that `felix_round` would fail. Its fails are `v2` (3.2% vs
-2%), `utility` (KS 0.383 vs 0.2) and `convergence` (5.45% vs a 5% `acc_tol` that has no floor behind it). It
-also has no CH (its profile is from a 1200s OFF leg) yet passes `throughput` at 0.8% — a stale profile bites
-where the cadence is variance-gated and feeds back into the clock, and this baseline is iteration-capped.
+**Seven of eight rows are at or near their own replicate floor. `fedbuff_it_oracular` is the one genuine
+sim-specific residual on the board.** The control is not a formality here: it carries the SAME late-run
+concentration the sim rows do (`felix_it` real↔real runs +15.3% in its last quintile, `fedbuff_it_unaware`
++7.7%), so the accumulation is a property of the variance→iteration feedback loop, not of sim. §B.0's first
+over-optimization tell is "chasing a rung whose residual is inside the replicate band" — four rows are
+squarely there and three more are within 1.7x.
+
+**Where the loop is removed, parity is EXACT, real↔real and real↔sim alike.** `fwdllm` matches 420/420
+gradient norms across modes and reads `v2` +0.00% between its two real legs. So nothing in the stack is
+irreducibly noisy: model init, data partition, JVP direction and training are bit-reproducible, and the whole
+spread is the async admission loop amplifying wall-clock luck. `c == agg_goal` removes it because all
+in-flight ends ARE the cohort; every `c > agg_goal` baseline loses bit-identity inside the first quintile and
+reads exactly 0 thereafter (§D-54).
+
+**Three mechanisms were proposed for the residual and all three are REFUTED on telemetry** — the boundary
+tie-break, the redispatch stagger, and cohort composition bias (§E). Sim already canonicalizes exact `sct`
+ties by end id, and cohort statistics are indistinguishable: mean modeled duration within 0.2%, staleness
+within 0.02, participation green on all eight.
+
+**The sign reversal is gone.** Sim is ≥ real on all eight, never below; re-profiling took `fwdllm` from
++18.0% to +0.00% and `fedbuff_round` from +12.8% to +7.4%. That confirms the stale-charge diagnosis and
+retires it as an explanation for what is left (§G, §D-50).
 
 ### §A.3  Replicate floors and accuracy bands, OFF → ON
 
@@ -174,7 +205,31 @@ than nominal, and SKIP once the floor swallows the tolerance. No profile ⇒ nom
 | `fedbuff_round` | old | 1.1 → 4.3% | 2.8 → **0.2%** | 3.9 → 4.1% | 4.7 → **1.5%** |
 | `felix_round` | new | 12.9 → **1.5%** | 0.1 → 0.5% | **13.3 → 0.6%** | 0.5 → 0.4% |
 | `felix_it` | new | 2.3 → 2.7% | 0.1 → 0.4% | 2.2 → 2.3% | 2.4 → 2.4% |
-| the four `*_it_*` | — | — | — | — | **UNMEASURED — no replicate exists** |
+| `fwdllm_it_unaware` | old | ON only **0.0%** | ON only 0.3% | ON only **0.3%** | ON only **0.1%** |
+| `fedbuff_it_oracular` | old | ON only 1.5% | ON only **0.0%** | ON only 1.5% | ON only 1.9% (tight) |
+| `fedbuff_it_unaware` | old | ON only 4.9% | ON only 0.1% | ON only 4.9% | ON only **0.6%** |
+| `fwdllm_it_oracular` | — | — | — | — | **UNMEASURED — no replicate exists** |
+
+The three ON-only rows have no OFF counterpart at this duration (their OFF legs are 1200s or single), so they
+carry no flag delta — they are floors, not a before/after.
+
+⚠ **These floors are measured on a window the rung does not grade, and they UNDERSTATE it.** `metrics()`
+takes each leg's run-level mean over its FULL run; `v1` grades the matched prefix the two legs share. Run the
+same two legs both ways (control = the shipped `metrics()`/`_spread()`, imported) and the matched-window floor
+is 1.0-2.6x larger — and it diverges *exactly* where the variance-cadence loop is free to run:
+
+| baseline | shipped floor | matched-window floor | ratio |
+|---|---|---|---|
+| `fwdllm` · `fluxtune` | 0.32% · 0.83% | 0.32% · 0.83% | **1.0x** — loop pinned, estimators agree |
+| `felix_round` | 0.58% | 1.47% | 2.6x |
+| `fedbuff_round` | 4.07% | 6.44% | 1.6x |
+| `felix_it` | 2.26% | 4.80% | 2.1x |
+| `fedbuff_it_unaware` | 4.92% | 7.11% | 1.4x |
+| `fedbuff_it_oracular` | 1.54% | 2.70% | 1.8x |
+
+The run-level mean averages the per-bin drift away against each leg's differing tail, so it reports a floor
+the rung's own window never sees. Fix `metrics()` to grade the matched prefix (§B.4); until then every DIST
+tolerance derived from these is too tight on exactly the baselines that need it loosest.
 
 **Eval mode collapsed the cadence floor only where one existed.** `felix_round` went 13.3% → 0.6%, a 22x
 drop, and it is the loss-derived-weight baseline; the integer-staleness ones had no floor to lose and did not
@@ -182,8 +237,9 @@ move. `felix_it` is also loss-derived and also did not move (2.2 → 2.3%) — s
 existed", not "every new-rate baseline". `fedbuff_round`'s bins floor moved the WRONG way (1.1 → 4.3%) — one
 metric against nine, re-check before trusting its `throughput`.
 
-`v2_var_trajectory` is gradeable on three of five: `fwdllm` 0.2%, `felix_round` 0.4%, `fedbuff_round` 1.5%
-(tight). `felix_it` 2.4% and `fluxtune` 6.6% are still above its 2% tolerance and SKIP.
+`v2_var_trajectory` is gradeable on six of eight: `fwdllm_it_unaware` 0.1%, `fwdllm` 0.2%, `felix_round` 0.4%,
+`fedbuff_it_unaware` 0.6%, `fedbuff_round` 1.5%, `fedbuff_it_oracular` 1.9% (tight). `felix_it` 2.4% and
+`fluxtune` 6.6% are above its 2% tolerance and SKIP.
 
 **Peak accuracy, ON vs the OFF band** (§D-44: both legs cut at the matched achieved span):
 
@@ -194,30 +250,27 @@ metric against nine, re-check before trusting its `throughput`.
 | `felix_round` | 77.17 / 66.01 | **75.87 / 81.12** | 11.16 → 5.25 | band halved, top end +3.9 pts |
 | `fwdllm` | 28.74 / 41.41 | 38.17 / 38.17 | 12.67 → **0.00** | inside the band; the band vanished |
 | `felix_it` | **84.72 / 83.28** | 81.30 / 82.29 | 1.44 → 0.99 | ON entirely BELOW OFF, −1.0 to −3.4 pts |
+| `fwdllm_it_unaware` | 39.70 (1 leg) | **47.43 / 47.43** | — → **0.00** | +7.7 pts over the one OFF leg; band vanished |
+| `fedbuff_it_oracular` | none at 7200s | 80.01 / 82.87 | — → 2.86 | ON only |
+| `fedbuff_it_unaware` | none at 7200s | 81.49 / 81.14 | — → 0.34 | ON only |
 
-Four of five match or beat their OFF band; `felix_it` is the flag's one measured accuracy cost, and it does
-not generalize by aggregation rate (`felix_round` is the same rate and improved). Open question in §B.3.
+Five of six comparable bands match or beat their OFF band; `felix_it` is the flag's one measured accuracy
+cost, and it does not generalize by aggregation rate (`felix_round` is the same rate and improved). Open
+question in §B.3. Both `fwdllm`-family baselines land at a band of exactly 0.00 ON — the same collapse, and
+they are the two whose cadence is barrier-pinned (§A.2).
 
 ### §A.4  Legacy OFF board — reference only
 
-**Never compare a row here to §A.2.** Mixed durations, so the rows do not compare to each other either. Kept
-because `fwdllm_it_*` and `fedbuff_it_oracular` have no ON evidence at all.
+**Never compare a row here to §A.2.** One baseline still has no ON evidence at all; every other OFF row is
+superseded and lives in `git log`.
 
 | baseline | run pair | dur | pass/fail/skip | N | notes |
 |---|---|---|---|---|---|
-| `fwdllm_it_unaware` | `20260802_172249`/`_192444` | 7200s | **69/0/23** | 39 | clean, unreplicated |
-| `fwdllm_it_oracular` | `20260802_193900`/`_214059` | 7200s | **69/0/23** | 39 | clean, unreplicated |
-| `fluxtune` | `20260802_172341`/`20260801_150819` | 7200s | 73/3/16 | 95 | superseded by ON reals |
-| `fedbuff_round` | `20260802_104607`/`20260801_155005` | 7200s | 72/3/18 | 178 | superseded |
-| `fwdllm` | `20260802_192556`/`20260801_145728` | 7200s | 64/3/24 | 39 | superseded |
-| `felix_round` | `20260802_104547`/`20260801_163513` | 7200s | 65/9/18 | 189 | superseded |
-| `felix_it` | `20260802_105134`/`20260802_130206` | 7200s | 67/10/16 | 259 | superseded |
-| `fedbuff_it_unaware` | `20260731_180442`/`_182654` | 1200s | 72/3/18 | 38 | superseded |
-| `fedbuff_it_oracular` | `20260731_184247`/`_190502` | 1200s | 73/2/18 | 38 | **the only row this baseline has**; 76.0% coverage trips the low-coverage flag |
+| `fwdllm_it_oracular` | `20260802_193900`/`_214059` | 7200s | **69/0/23** | 39 | clean, unreplicated, OFF — the only row this baseline has |
 
-⚠ **The cadence/convergence cells on the uncapped OFF rows are not evidence about sim.** Swapping only which
-real replicate they were graded against — no code change — moved `felix_round` 71/3 → 65/9 and `fedbuff_round`
-72/2 → 72/3 with *different* fails (§E). Read OFF rows for INV/un-windowed rungs only.
+⚠ **The cadence/convergence cells on an uncapped OFF row are not evidence about sim.** Swapping only which
+real replicate a row was graded against — no code change — moved `felix_round` 71/3 → 65/9 and `fedbuff_round`
+72/2 → 72/3 with *different* fails (§E). Read an OFF row for INV/un-windowed rungs only.
 
 ---
 
@@ -231,20 +284,22 @@ real replicate they were graded against — no code change — moved `felix_roun
 
 | # | criterion | status |
 |---|---|---|
-| 1 | Every INV/EXACT rung green on all nine | **MET on the one valid row** — `felix_round` has zero EXACT fails |
-| 2 | Convergence + terminal state inside each baseline's own replicate band | **MET there too** — `terminal`/`commits` at 1.3% |
-| 3 | Every remaining DIST residual is COMMON-MODE (same sign, spread smaller than the claimed effect) | **BLOCKED** — needs ≥3 valid ON rows; today the sign reverses between stale-profile rows |
-| 4 | No residual correlates with a baseline-DISTINGUISHING knob (agg rate, selector, iteration cap) | **BLOCKED, and it is the one that matters** — the only criterion that can silently flip a comparative result |
+| 1 | Every INV/EXACT rung green on all nine | **FAILS on 4 of 8** — `cohort_sequence` on the four unpinned baselines, plus `throughput`/`terminal`/`commits` on `fedbuff_it_oracular`. All are roll-ups of the one `v1` residual |
+| 2 | Convergence + terminal state inside each baseline's own replicate band | **PARTIAL** — `conv` green on 5 of 8, `terminal`/`commits` on 7 of 8. The three `fedbuff_*` rows fail `conv`; `fedbuff_it_oracular` fails `terminal`/`commits` too |
+| 3 | Every remaining DIST residual is COMMON-MODE (same sign, spread smaller than the claimed effect) | **MET on 7 of 8 once graded against each row's own control** — same sign everywhere, and every residual but one is at or within 1.7x its real↔real floor |
+| 4 | No residual correlates with a baseline-DISTINGUISHING knob (agg rate, selector, iteration cap) | **NOT SETTLED** — the raw residual tracks whether a barrier/cap pins the cadence, but so does the replicate FLOOR, by the same factor. The knob predicts the noise, not a bias |
 
-If 1-3 hold and 4 fails → fix it. If all four hold → ship, record the residual as a known bias, go run the
-real experiments.
+One genuine residual is left — `fedbuff_it_oracular` at 5.1x its own control (§B.2). Criterion 4 cannot be
+called until the floors are re-measured on the rung's own window (§A.3), because today the correlation it
+tests for is visible in the control as well as the test. If all four hold → ship, record the residual as a
+known bias, go run the real experiments.
 
 **Tells that this has tipped into over-optimization:** chasing a rung whose residual is inside the replicate
 band · the board getting worse from measurement changes rather than better from fixes · adding instrumentation
 faster than closing bugs · a session ending with more red rungs and no code fix. All four at once means stop.
 
-**Coverage beats polish.** Eight of nine baselines have no valid ON row. That gap matters more to the
-experiments than the last few percent of any rung.
+**Coverage is now nearly done — only `fwdllm_it_oracular` lacks an ON row.** Past that point polish is the
+work, and criterion 4 is what it is for.
 
 ### §B.1  The pipeline — one procedure, run it per baseline
 
@@ -286,106 +341,98 @@ python run_parity.py --yes --baselines <b>
 ~35-50 min, except `fwdllm`-family legs at ~10-15 min (few aggregations). A 6h node fits two real legs plus a
 sim chain, or four-to-five sim legs.
 
-### §B.2  Next up — the 3-node batch in flight
+### §B.2  In flight tonight, and where to resume
 
 > **Update in place after every batch.** Delete a leg the instant its artifact exists and §A reflects it.
 
-**Setup is DONE and verified:** CH re-derived for `fwdllm`/`fedbuff_round`/`fluxtune`/`felix_it` from their
-own ON reals; both guards landed and negative-controlled (the preflight fired on all four stale profiles, then
-went 21/21 green after re-profiling); `--dry-run` clean for every leg below; 1708 tests pass. The aborted
-`run_20260803_114907` felix_it launch is parked in `experiments/_aborted/`.
+Three mechanisms are REFUTED (§E) and the real↔real control puts seven of eight rows at their own floor
+(§A.2). Every verdict on this board now rests on a floor measured from ONE pair, which is n=1 for the
+quantity it estimates — that is what tonight buys down.
 
-| node | legs, in order | wall | leaves |
+**IN FLIGHT — 3 nodes, launched with the commands in `git log` on this file. Logs: `~/node{A,B,C}.log`.**
+
+| node | legs | wall | buys |
 |---|---|---|---|
-| **A** | `fwdllm_it_unaware` real ×2 → FL → CH → sim → parity | ~4h35 | that baseline COMPLETE, replicate pair same-node |
-| **B** | `fedbuff_it_oracular` real ×2 → FL → CH → sim → parity | ~5h10 | that baseline COMPLETE, replicate pair same-node |
-| **C** | the four ON sim legs + grading, then `fedbuff_it_unaware` real #2 → FL → CH → re-run sim → parity | ~5h35 | **first results in ~15 min**; four rows by ~2h30 |
+| **A** | `fluxtune` real ×2 @ **14400s**, `--server-update-audit` | ~8h15 | is the per-bin spread flat 2h→4h (the transfer claim, §A.3) · `fluxtune`'s floor at the paper's 3.9h peak (EXPTS_CHARTER E1 error bar) · I-1 evidence through the round boundary |
+| **B** | 3rd real leg, audit OFF: `fedbuff_it_oracular`, `fedbuff_round`, `felix_it`, `fedbuff_it_unaware` | ~8h20 | n=3 spread on the four baselines whose verdict hinges on it |
+| **C** | `fwdllm_it_oracular` real ×2 → FL → CH → sim → parity, then `felix_round` 3rd real leg | ~6h40 | the 9th baseline's ON row · a 3rd leg on a row that reads NULL today, as a negative control for the n=3 estimator |
 
-Node C is the fast-cycle node: it answers exit criteria 3-4 before either real node finishes a single leg.
-After this batch **8 of 9 baselines have a valid ON row**; only `fwdllm_it_oracular` is left (2 reals + a sim
-chain, one more node-night). Then the sign-off re-grade with every tolerance recalibrated against the ON
-floors (§B.4). Node C's `fedbuff_it_unaware` leg also completes that baseline's replicate pair.
+Node B deliberately runs NO `replicate_floor.py`/`profile_sim_charges.py`: re-profiling charges would
+invalidate the pairing of every sim leg already on disk (§D-50). Floors get recomputed by hand in step 1.
 
-**One command per node.** `conda activate dg_flame` first; each backgrounds itself and logs, so it survives
-a dropped ssh. Watch with `tail -f ~/node<X>.log`. Add `--dry-run` to the `run_sequential.sh` calls to
-rehearse without launching.
+**RESUME HERE, in order.**
 
-```bash
-# ---- node C: four ON sim legs, then close out fedbuff_it_unaware ----
-cd /home/dgarg39/flame/lib/python/examples/fwdllm/expt_scripts && nohup bash -c '
-set -u
-for b in fwdllm fedbuff_round fluxtune felix_it ; do
-  echo "=== [$(date +%F\ %H:%M)] SIM $b"
-  bash run_sequential.sh --mode sim --max-runtime-s 7200 --only "$b" --yes \
-    || { echo "!! $b sim leg FAILED, skipping its grade"; continue; }
-  python run_parity.py --yes --baselines "$b" || true
-done
-echo "=== [$(date +%F\ %H:%M)] REAL fedbuff_it_unaware"
-bash run_sequential.sh --mode real --max-runtime-s 7200 --only fedbuff_it_unaware --yes \
-  && python replicate_floor.py --mode real --baselines fedbuff_it_unaware --profile-out ../parity_floors \
-  && cp ../sim_charge_profiles/fedbuff_it_unaware.yaml ../sim_charge_profiles/fedbuff_it_unaware.yaml.off-bak \
-  && python profile_sim_charges.py $(ls -d ../experiments/*_fedbuff_it_unaware_n100_*_real | sort | tail -2 | sed "s|^|--real-run |") \
-       --out ../sim_charge_profiles/fedbuff_it_unaware.yaml --only-observed \
-  && bash run_sequential.sh --mode sim --max-runtime-s 7200 --only fedbuff_it_unaware --yes \
-  && { python run_parity.py --yes --baselines fedbuff_it_unaware || true; }
-echo "=== [$(date +%F\ %H:%M)] node C DONE"
-' > ~/nodeC.log 2>&1 &
+1. **Recompute floors from n=3** — `replicate_floor.py --mode real --baselines <b> --profile-out
+   ../parity_floors` for B's and C's baselines. `_spread` is max-pairwise, so a 3rd leg can only widen it.
+   Then re-grade: `run_parity.py --yes --baselines <the 8>`. Rows are expected to flip green with no runtime
+   change; **any row that does not flip is the real finding.**
+2. **Fix `replicate_floor.metrics()` to grade the rung's window** — code, no run. It measures each leg's
+   FULL run while `v1` grades the matched prefix, so every floor is 1.0-2.6x too small (§A.3). Compute over
+   the matched prefix exactly as `v1` does. `fwdllm`/`fluxtune` must stay identical between the two
+   estimators — that is the built-in negative control. Ship with a test pinning both on a barrier baseline.
+3. **Read node A** — `plot_server_update.py <run_dir>` for I-1, and the per-quintile spread at 4h against
+   the 2h numbers in §A.3. Flat ⇒ transfer to the 10h+ experiment runs is justified; growing ⇒ read the
+   shape and extrapolate rather than assume.
+4. **`fedbuff_it_oracular`, the one genuine residual** — +13.8% `v1` against a 2.70% control, and the only
+   row where `throughput`/`terminal_state`/`total_commits` fail. It is also the only oracular baseline with
+   an ON row, so `trackTrainerAvail` is untested against a sibling. **No run needed**: grade its two real
+   legs against each other on every rung. **FALSIFIED IF** the real↔real grade fails the same rungs — then
+   the baseline is noisier, not the mode.
+5. **The sign-off re-grade** with every tolerance recalibrated against the ON floors (§B.4).
 
-# ---- nodes A and B: same command, b=fwdllm_it_unaware on A, b=fedbuff_it_oracular on B ----
-cd /home/dgarg39/flame/lib/python/examples/fwdllm/expt_scripts && nohup bash -c '
-set -u
-b=fwdllm_it_unaware          # <-- node B: fedbuff_it_oracular
-echo "=== [$(date +%F\ %H:%M)] REAL $b leg 1/2"
-bash run_sequential.sh --mode real --max-runtime-s 7200 --only "$b" --yes \
-  && { echo "=== [$(date +%F\ %H:%M)] REAL $b leg 2/2"; \
-       bash run_sequential.sh --mode real --max-runtime-s 7200 --only "$b" --yes; } \
-  && python replicate_floor.py --mode real --baselines "$b" --profile-out ../parity_floors \
-  && cp ../sim_charge_profiles/$b.yaml ../sim_charge_profiles/$b.yaml.off-bak \
-  && python profile_sim_charges.py $(ls -d ../experiments/*_${b}_n100_*_real | sort | tail -2 | sed "s|^|--real-run |") \
-       --out ../sim_charge_profiles/$b.yaml --only-observed \
-  && bash run_sequential.sh --mode sim --max-runtime-s 7200 --only "$b" --yes \
-  && { python run_parity.py --yes --baselines "$b" || true; }
-echo "=== [$(date +%F\ %H:%M)] node done"
-' > ~/nodeA.log 2>&1 &
-```
+Then the experiment runs (`paper_expts_fluxtune/EXPERIMENTS.md`), sim-only, on fresh floors.
 
-⚠ **`run_parity.py` exits 1 whenever any rung fails** — the normal outcome on every current row. Never put it
-mid-`&&`-chain without `|| true`, or the rest of the night silently does not run. The `$(ls ...)` inside these
-chains is expanded when its own command runs, not at paste time, so it correctly sees the reals the earlier
-legs produced.
+⚠ **Do not re-run the refuted three (§E).** The tie-break, the redispatch stagger and cohort-composition
+bias each cost one telemetry pass to kill; none needs a run, none re-opens without a NEW signal.
 
-**What each node buys, and what would falsify it.** Node C's four rows are the criteria 3-4 read: same-sign
-residuals inside the floors ⇒ common-mode ⇒ stop; a residual tracking the aggregation rate or the iteration
-cap ⇒ criterion 4 fails and that becomes the one investigation worth running. Nodes A and B buy coverage —
-they have no hypothesis attached and cannot fail, only take time.
+⚠ **`run_parity.py` exits 1 whenever any rung fails** — the normal outcome on every current row (§D-51).
+Never put it mid-`&&`-chain without `|| true`. The `$(ls ...)` inside a chain expands when its own command
+runs, not at paste time, so it correctly sees the reals the earlier legs produced.
+
+⚠ **Moving run dirs off a node does NOT bring its `parity_floors/` and `sim_charge_profiles/` with them.**
+Both are re-derivable from the reals — `replicate_floor.py --profile-out`, then `profile_sim_charges.py`
+in place (an existing entry keeps its `charge:` flag; a fresh `--out` path writes `charge: false` and would
+silently disable the charge). Do that before grading, or every DIST rung grades at nominal tolerance.
 
 ### §B.3  Open questions — each with its falsifier
 
 State the prediction BEFORE the run; a hypothesis that can only be confirmed is not one (§D-9).
 
-- **The `fwdllm`/`fedbuff_round` cadence family is stale-charge artifact, not code.** Both over-charge per
-  round and over-iterate — the mirror of `felix_round` pre-CH. **FALSIFIED IF** re-profiling and re-running
-  leaves `v1` outside its floor-gated tolerance. Node C answers it; nothing else about those two is readable first.
+- **`fedbuff_it_oracular`'s residual is oracular availability tracking, not the async loop.** It is the only
+  row outside its own control (5.1x) and the only one carrying `trackTrainerAvail`. **FALSIFIED IF** its
+  real↔real grade fails the same rungs — then the baseline is just noisier (§B.2, no run needed).
 - **`felix_it`'s ON accuracy drop is baseline-specific.** Its ON band sits 1.0-3.4 pts below its OFF band
   while `felix_round` — same aggregation rate — improved. **FALSIFIED IF** a second loss-derived baseline
-  degrades ON. Low priority: n=2 per side, four other bands support the flag. Do not re-open the shared-mask
+  degrades ON. Low priority: n=2 per side, seven other bands support the flag. Do not re-open the shared-mask
   JVP on one baseline.
-- **`fedbuff_it_unaware`'s iteration-cap signature is unresolvable below 7200s, not absent.** **FALSIFIED IF**
-  the 7200s λ flips sign. Now has one 7200s ON real; needs the replicate PAIR (node C).
 
 ### §B.4  Tolerances and rung gaps
 
-- **Recalibrate every DIST tolerance against the ON floors (§A.3).** Some are far too loose — `v1`'s nominal
-  15% sits 25x above `felix_round`'s 0.6% ON floor, and it is what let `fedbuff_it_unaware` pass at 1.8%
-  — and `v2`'s 2% is still under two baselines' floors. Part of the sign-off re-grade, once every baseline has an ON floor.
+- **Recalibrate every DIST tolerance against the ON floors (§A.3).** `3x floor` is still too generous where
+  the floor is itself large: `fedbuff_it_unaware`'s `v1` floor of 4.9% buys a 14.8% gate, so its +10.3%
+  residual — the second worst on the board — PASSES while `felix_it` fails at +9.0% against 6.8%. The gate is
+  ranking floors, not residuals. `v2`'s 2% is still under two baselines' floors. Sign-off re-grade.
+- **`cohort_sequence.count` and `v1` grade ONE residual against two gates, and count's is the right one.**
+  `count_tol` is floor-gated on the `cycles` floor (0.0-0.8% everywhere, so it clamps to the 2% `min_abs`);
+  `v1`'s is gated on `iters_per_bin` (0.3-4.9%, so up to 14.8%). Same +6.9% on `fedbuff_round` therefore
+  fails count and passes `v1` by 5x. `cycles` is a whole-run count with a sub-1% replicate spread and `v1` is
+  a ratio of two noisy quantities, so the sensitive gate is the trustworthy one — `v1`'s nominal 15% is the
+  number to re-derive, not count's 2%.
+- **`v1c` is a bin short of the power to see the drift it exists to catch.** It fits 10 bins;
+  `fedbuff_it_oracular` reaches t = 3.11 against t_crit 3.36 and reads "flat" while its last quintile runs
+  +31%. Raise `n_bins` or drop α — but re-derive against a real↔real pair first (§E: its real↔real
+  calibration is already falsified on uncapped baselines).
 - **`convergence`'s 5% `acc_tol` has no floor behind it.** It was ungradeable OFF (below the real↔real
-  accuracy gap) and now fails `fedbuff_it_unaware` at 5.45%. ON bands are 0.99-5.25 pts — re-derive it.
+  accuracy gap) and now fails four rows (`fedbuff_round` 9.3%, `fedbuff_it_unaware` 7.2%,
+  `fedbuff_it_oracular` 6.8%). ON accuracy bands are 0.00-5.25 pts — re-derive it against those.
 - KS-only rungs unguarded against a level shift (same class as the `selection_bias` repair, §G; all clean on
   live data): `dk1_agg_goal_trajectory`, `dk2_dynamic_c`, `dk3_eligible_ends_metric`, `eligible_speed`,
   `v3_cached_v_pool`. `selector_score` is DIAG.
-- Thin ABSOLUTE budgets: `fwdllm_it_*` grade N=5 and `v1c` SKIPs; `fwdllm` ON grades N=36. Coverage
-  percentage cannot catch this; an absolute-N floor is proposed, threshold not chosen.
-- `cohort_sequence.count` is rolled-up V1 — never chase it separately; it fails exactly when `v1` does.
+- Thin ABSOLUTE budgets: the `fwdllm` family grades N=40-41 against 183-254 elsewhere, at 93-95% coverage.
+  Both rows are 0-fail, so nothing is masked today, but coverage percentage cannot catch thinness; an
+  absolute-N floor is proposed, threshold not chosen.
+- `cohort_sequence.count` is rolled-up V1 — never chase it separately. It does NOT fail only when `v1` does:
+  the two carry different floor-gated tolerances (above), so count fires first.
 - `step_timing_breakdown` / `agg_step_timing_breakdown` are REPORT-ONLY wherever the sim clock discards the
   span (§D-31) — the designed steady state. Residuals there are §D-1 contention that never reaches the vclock;
   watch `charge_coverage` instead.
@@ -409,6 +456,8 @@ State the prediction BEFORE the run; a hypothesis that can only be confirmed is 
   `config_overrides`, which the runner never dumps — the only record is 100 lines in the trainer log.
   `replicate_floor.py` greps that log, which works but is the wrong layer. Dump the resolved TRAINER config
   into the run dir and key off it. Same class as §F-18, and it is what makes the CH stage easy to skip.
+  Same root, second symptom: a run's floor and charge profile live outside the run dir, so moving run dirs
+  between nodes strands them (§B.2). Both should be run artifacts.
 - **Enforce §F-18 mechanically: a per-baseline knob CONTRACT.** Two correctness-path knobs went missing from
   yamls and were caught only days later by reading telemetry. The mechanism mostly EXISTS —
   `run_sequential.sh`'s preflight `checks[]` blocks a launch and ships both patterns; the gap is that
@@ -637,6 +686,18 @@ cadence (§D-21), so the run grades the profile, not the code, and the residual 
 **D-51.** A tool that exits nonzero to report FINDINGS, not failure, silently truncates any `&&` chain it sits
 in. Check a grader's exit-code contract before scripting it; `|| true` the ones that report.
 
+**D-52.** A pin (cap, barrier) suppresses the residual AND the replicate floor together. Before crediting the
+green or calling it masking, read the pinned baseline's own real↔real spread — it decides which it is.
+
+**D-53.** Measure a floor on the SAME window and axis the rung grades. A run-level mean averages away the
+per-bin drift the rung sees, and understates the floor most where the residual is largest.
+
+**D-54.** One divergent cohort is permanent: the weight trajectories separate and no later step is comparable
+again. Grade cross-mode bit-identity of a per-end quantity to find WHERE parity is lost, not whether.
+
+**D-55.** Before naming a mechanism for a residual, run the same comparison real↔real. A control carrying the
+residual's own shape and magnitude means there is nothing to fix, whatever the mechanism story predicts.
+
 ---
 
 ## §E  Dead ends — do NOT retry
@@ -669,6 +730,15 @@ in. Check a grader's exit-code contract before scripting it; `|| true` the ones 
   settle term** — all REFUTED as parity causes.
 
 **Cadence / trajectory**
+- **The agg-goal admission TIE-BREAK as the cohort-divergence root** — FALSIFIED on telemetry. Only 0.1% of
+  2628 divergent `fedbuff_round` cycles swap ends of equal modeled D; the first divergence swaps three ends at
+  D=4.294 for three at D=9.202. Sim already breaks exact `sct` ties by end id
+  (`SimReorderBuffer.pop_min`), so that half was never broken. Speed-class ties are real (51 ends, 18 classes,
+  largest holds 17) but they are not what moves membership.
+- **Redispatch STAGGER as the divergence root** — FALSIFIED: the per-cycle spread of `task_recv` after a
+  cohort closes is p50 8.5 ms in real and 63 ms in SIM, i.e. sim is the more staggered side.
+- **Cohort COMPOSITION bias (sim favouring fast ends)** — FALSIFIED: mean modeled D matches within 0.2%, mean
+  staleness within 0.02, distinct-ends-per-bin within 7%, and `participation` (S2) is green on all eight.
 - **A grad-pool accumulation bug behind `felix_round`'s cadence family** — FALSIFIED. Re-profiling the charges
   from the baseline's own ON reals closed `v1`/`v1b`/`cohort_sequence` with ZERO code change, and the residual
   reverses sign on baselines still carrying stale charges. Every summary statistic matching while the output
@@ -814,6 +884,34 @@ Moved to §D-3; stub kept because prior sessions cite "§F.2".
 > current depends on it — git log keeps it.
 
 **This batch**
+- **The real↔real CONTROL was run on all seven baselines and it collapsed the board.** Same per-bin
+  comparison, realA↔realB, from legs already on disk: seven of eight rows sit at or within 1.7x their own
+  floor, and the control carries the SAME late-run concentration (`felix_it` +15.3% in its last quintile
+  real↔real). `fedbuff_it_oracular` alone is outside, at 5.1x. Three mechanism hypotheses died on telemetry
+  first (§E) — the control is what should have run before any of them (§D-55).
+- **The floor estimator grades the wrong window, and it understates by 1.0-2.6x.**
+  `replicate_floor.metrics()` takes each leg's run-level mean; `v1` grades the matched prefix. A/B on the
+  same legs with the shipped code imported as the control: identical on `fwdllm`/`fluxtune` (loop pinned,
+  built-in negative control) and 1.4-2.6x larger everywhere the variance-cadence loop is free (§A.3, §D-53).
+- **Cross-mode gradient bit-identity is the localization tool that made this readable.** The two barrier
+  baselines are bit-identical for their whole run (`fwdllm` 420/420, `fwdllm_it_unaware` 410/410) and
+  `fwdllm` reads `v2` +0.00% real↔real too — the stack is bit-reproducible, so the whole spread is the async
+  admission loop amplifying wall-clock luck. Every `c > agg_goal` baseline matches for part of the first
+  quintile, then reads exactly 0 forever (§D-54).
+- **The 3-node batch landed: 8 of 9 baselines have a valid ON row, and the board collapsed to ONE residual.**
+  Sim over-iterates per data-bin by +7-16% on the four baselines where nothing pins the cadence, and by
+  0.00-0.04% on the four where a full-cohort barrier or an iteration cap does. Every remaining red rung —
+  `cohort_sequence.count`, `v1b`, `selection_detail`'s selection count, `fedbuff_it_oracular`'s
+  `throughput`/`terminal`/`commits`, `convergence` — is that number rolled up (§A.2). That answers exit
+  criterion 4 in the negative and named the one investigation worth running.
+- **The stale-charge hypothesis is CONFIRMED and closed.** Re-profiling took `fwdllm` from +18.0% to +0.00%
+  and `fedbuff_round` from +12.8% to +7.4%, and the sign reversal that made criteria 3-4 unanswerable is gone
+  — sim is now ≥ real on all eight rows. A stale charge was the whole residual on one baseline and half of it
+  on the other (§D-50, §E).
+- **`fedbuff_it_unaware`'s open λ question is retired — replaced by a better measurement.** With the
+  replicate pair on disk its `v1c` λ is +0.21/100 units at t=2.81, verdict flat; but the per-quintile split
+  shows +37.3% in the last fifth, so the rung's flat verdict is a power limit, not an answer. Grade the
+  quintiles, not λ.
 - **Two mechanical guards for the CH stage, both negative-controlled on live data.** (1) The launch preflight
   BLOCKS a sim leg whose charge profile predates any real of that baseline trained under the same
   `jvp_eval_mode` — it fired on all four stale profiles, then went 21/21 green after re-profiling, and does
@@ -859,8 +957,16 @@ Moved to §D-3; stub kept because prior sessions cite "§F.2".
   folds in the dispatched-not-yet-returned record — the half real's equivalent always carried, which is why
   real never had the bug. The ON sim leg's round-2 boundary reads 30 unique picks / 0 re-picks against c=30.
   3 tests (2 fail without).
-- **Watchdog runtime raised above the run budget on all eight real yamls** — a watchdog equal to the target
-  duration can kill the run it is meant to outlive.
+- **Watchdog now SCALES with the budget instead of being a constant.** The yamls' fixed 10800s was fine at
+  7200s and silently truncated anything longer — a 4h leg would stop at 3h while reporting it asked for 4h,
+  which is how a truncated leg poisons a floor (§D-44). `patch()` raises it to `budget + 1800s`, real mode
+  only (sim's wall cap is `sim_wall_ceiling_s`); 2h legs are unchanged, so replicate pairs stay strict.
+  Caught by `--dry-run`, not by a run. 6 tests, including that watchdog == budget is NOT safe.
+- **`server_update` telemetry for I-1** — per-commit `||Δ||`, `||w||` and their ratio, accumulated at the
+  CPU-sync site that already runs, behind `--server-update-audit` (default OFF: its wall cost perturbs async
+  arrival order, §D-45). `plot_server_update.py` overlays the ratio on test accuracy with round boundaries
+  marked. If I-1's undamped-optimizer root holds, the ratio climbs BEFORE accuracy falls; a flat ratio under
+  a collapse falsifies it. 9 tests.
 - **Two determinism knobs (fp32-outside-autocast, strict-determinism) exist, default OFF, byte-identical
   off.** Bench A/B across concurrent processes confirmed reduced precision AMPLIFIES the floor but is not its
   source; neither knob touches it. 23 tests. Don't re-run that bench (§E).
