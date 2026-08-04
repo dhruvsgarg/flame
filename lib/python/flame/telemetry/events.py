@@ -36,6 +36,7 @@ EVENT_VAR_CALC = "var_calc"          # fwdllm: grad-norm summary in/out of the v
 EVENT_REDISPATCH_DECOMP = "redispatch_decomp"  # fwdllm round-cadence: commit->next-dispatch wall split
 EVENT_SLOT_STARVATION = "slot_starvation"  # a freed dispatch slot had fewer eligible candidates than slots
 EVENT_VCLOCK_CHARGE = "vclock_charge"  # every charge_sim_vclock_overhead() call: measured span vs actually-charged
+EVENT_SERVER_UPDATE = "server_update"  # fwdllm: applied-update vs weight norm per commit (I-1 audit)
 
 KNOWN_EVENTS = frozenset(
     {
@@ -58,6 +59,7 @@ KNOWN_EVENTS = frozenset(
         EVENT_COMM,
         EVENT_VERSION_BUMP_CENSUS,
         EVENT_VAR_CALC,
+        EVENT_SERVER_UPDATE,
         EVENT_REDISPATCH_DECOMP,
         EVENT_SLOT_STARVATION,
         EVENT_VCLOCK_CHARGE,
@@ -272,6 +274,35 @@ def build_var_calc(
         "iteration_per_data_id": iteration,
         "input_grad_norms": input_grad_norms,
         "output_var": output_var,
+    }
+
+
+def build_server_update(
+    *,
+    round_num: Optional[int],
+    data_id: Optional[int],
+    iteration: Optional[int],
+    model_version: Optional[int],
+    update_delta_norm: float,
+    weight_norm: float,
+    learning_rate: float,
+) -> tuple[str, dict[str, Any]]:
+    """I-1 audit: L2 norm of the update actually SUBTRACTED from the server
+    weights, the resulting weight norm, and their ratio — one record per commit.
+
+    `update_ratio` is the diagnostic: an undamped optimizer random-walks, so a
+    collapse shows as the ratio climbing before accuracy falls (EXPTS_CHARTER
+    I-1). Gated at the call site — its wall cost perturbs arrival order (§D-45).
+    """
+    return EVENT_SERVER_UPDATE, {
+        "round": round_num,
+        "data_id": data_id,
+        "iteration_per_data_id": iteration,
+        "model_version": model_version,
+        "update_delta_norm": update_delta_norm,
+        "weight_norm": weight_norm,
+        "update_ratio": (update_delta_norm / weight_norm) if weight_norm else None,
+        "learning_rate": learning_rate,
     }
 
 
