@@ -2629,7 +2629,6 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY
     # Excludes real's inter-round transport artifact so rounds-per-genuine-second
     # compares like-for-like vs the sim's rounds-per-vclock-second. A leg carrying
     # a vclock reads THAT, so a sim↔sim control compares two virtual clocks.
-    real_coord = _real_intrinsic_clock(real["agg_rounds"])
     _a_time_fn, wall_elapsed = _algorithmic_clock(real["agg_rounds"],
                                                   _has_vclock(real["agg_rounds"]))
     if _a_time_fn is None:
@@ -2661,26 +2660,39 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY
         "rel_diff": round(rel_diff, 3),
         "tol": tol_rel,
     }
-    # sim_s_per_round averages sim's FULL round count, which legitimately outruns
-    # real's wall-capped one (sim skips real's transport tax). Matched window
-    # fixes that and gates `ok` when `real_coord` is available (sync baselines);
-    # falls back to raw `rel_diff` for async.
+    # Grade the SAME work on both sides. Each side's own full run is a different
+    # window: per-unit time RISES 2.1-2.7x from first to last quintile, so real's
+    # extra tail units -- the expensive ones sim never reached -- were inflating
+    # its mean and understating the residual (fedbuff_round 0.024 -> 0.080).
+    # §D-4/§F-2, the rule `terminal_state` already followed (§D-75).
     matched_n = min(n_sim_rounds, n_real_rounds)
     if matched_n >= 2:
+        real_adv = _per_round_advances(
+            real["agg_rounds"],
+            use_vclock=_has_vclock(real["agg_rounds"]))[: matched_n - 1]
         sim_adv = _per_round_advances(
             sim["agg_rounds"],
             use_vclock=_b_uses_vclock(sim["agg_rounds"], same_mode))[: matched_n - 1]
-        if sim_adv:
-            matched_sim_s_per_round = sum(sim_adv) / len(sim_adv)
-            matched_rel_diff = (
-                abs(matched_sim_s_per_round - real_s_per_round)
-                / max(matched_sim_s_per_round, real_s_per_round, 1e-9))
-            result["matched_window_n"] = len(sim_adv)
-            result["matched_window_sim_s_per_round"] = round(matched_sim_s_per_round, 2)
+        if real_adv and sim_adv:
+            r_mean = sum(real_adv) / len(real_adv)
+            s_mean = sum(sim_adv) / len(sim_adv)
+            matched_rel_diff = abs(s_mean - r_mean) / max(s_mean, r_mean, 1e-9)
+            result["matched_window_n"] = min(len(real_adv), len(sim_adv))
+            result["matched_window_real_s_per_round"] = round(r_mean, 2)
+            result["matched_window_sim_s_per_round"] = round(s_mean, 2)
             result["matched_window_rel_diff"] = round(matched_rel_diff, 3)
-            if real_coord is not None:
-                result["ok"] = matched_rel_diff <= tol_rel
-                result["decided_on"] = "matched_window_rel_diff"
+            # Per-unit time is right-skewed AND trending, so no single summary
+            # states the shape: sim can match real's MEDIAN to 1.0% and still run
+            # a 27.4% heavier p90 (fedbuff_it_oracular). Reported, NOT gated --
+            # a tail has no replicate floor yet, and a hand-typed one is the
+            # mistake this family just finished undoing (§D-55/§D-74).
+            def _pc(q):
+                rq, sq = percentile(real_adv, q), percentile(sim_adv, q)
+                return {"real": round(rq, 2), "sim": round(sq, 2),
+                        "rel_diff": round(abs(sq - rq) / max(rq, sq, 1e-9), 3)}
+            result["per_unit_s"] = {f"p{q}": _pc(q) for q in (50, 90, 99)}
+            result["ok"] = matched_rel_diff <= tol_rel
+            result["decided_on"] = "matched_window_rel_diff"
     return result
 
 
@@ -7639,6 +7651,148 @@ CHECK_META: dict = {
     # ── Stage F Starvation clock-advance ──
     "starvation_advance":      {"stage": 2, "role": "DIAG",     "deps": ("abandon_timeout",)},
 }
+
+# ═══════════════════════════════════════════════════════════════════
+#  Threshold provenance — WHERE each rung's number is allowed to come from
+# ═══════════════════════════════════════════════════════════════════
+#
+# One question decides it: DOES THIS QUANTITY DIFFER BETWEEN TWO RUNS THAT SHOULD
+# BE IDENTICAL?
+#
+#   INVARIANT  A structural property. Two identical runs give the identical
+#              answer, so the replicate floor is ZERO BY CONSTRUCTION and any
+#              nonzero reading is a defect. Threshold is exact or boolean.
+#              Floor-gating one would be actively wrong -- it would license drift
+#              in something that must never drift.
+#   CALIBRATED A paired real<->sim comparison of a quantity with genuine
+#              run-to-run variance. "Is this gap meaningful?" has no answer except
+#              relative to that variance, so the threshold MUST come from a
+#              measured floor (§D-24). The second entry names the floor metric;
+#              None means the rung IS calibrated in kind but has no floor yet --
+#              that is visible DEBT, not a decision.
+#   POLICY     A single-sided bound on ONE run ("vclock rate in [0.01,100]",
+#              "GPU overrun < 25%"). There is no paired comparison, so no
+#              replicate floor is definable. The number is an engineering choice
+#              and is legitimate -- but it must be stated as one.
+#
+# There is deliberately no "hand-typed" class: that is the FAILURE state, a
+# variable quantity whose variance nobody measured. It produced every defect this
+# batch fixed -- a 15% gate over a 0.6% floor (§D-24), a 5% trainers gate under a
+# 5.5% floor (§D-72), a 0.2 KS gate that passed a 27% tail gap (§D-76).
+#
+# `UNCLASSIFIED` is the backlog, and `test_threshold_provenance` RATCHETS it: it
+# may shrink, never grow, and a NEW rung must be classified to land at all.
+INVARIANT, CALIBRATED, POLICY = "INVARIANT", "CALIBRATED", "POLICY"
+
+THRESHOLD_PROVENANCE: dict = {
+    # ── INVARIANT: structural, zero-variance, must hold exactly ──
+    "vclock_telemetry":        (INVARIANT, None),   # sim must stamp vclock_now
+    "sim_send_ts":             (INVARIANT, None),   # real null, sim non-null, increasing
+    "sim_commit_monotone":     (INVARIANT, None),
+    "field_coverage":          (INVARIANT, None),   # required telemetry present
+    "agg_goal_cycles_real":    (INVARIANT, None),   # cycles == configured agg_goal
+    "agg_goal_cycles_sim":     (INVARIANT, None),
+    "concurrency_cap":         (INVARIANT, None),   # never exceed the configured cap
+    "retask_before_close":     (INVARIANT, None),   # ordering property
+    "budget_not_cap":          (INVARIANT, None),   # stopped by budget, not a rounds cap
+    "failsafe":                (INVARIANT, None),
+    "withheld_delivery":       (INVARIANT, None),   # every withheld commit delivered
+    "decision_determinism":    (INVARIANT, None),   # same seed => same decisions
+    "w1_compute_conservation": (INVARIANT, None),
+    "charge_coverage":         (INVARIANT, None),   # every charge modeled
+
+    # ── CALIBRATED, floor measured (the 10 that were firing) ──
+    "v1_iter_per_data_id":     (CALIBRATED, "iters_per_bin"),
+    "v1b_iters_moving_avg":    (CALIBRATED, "iters_ma_mean_dev"),
+    "v1c_iter_drift_rate":     (CALIBRATED, "iter_drift_lambda"),
+    "v2_var_trajectory":       (CALIBRATED, "mean_var"),
+    "cohort_sequence":         (CALIBRATED, "iters_per_bin"),
+    "selection_detail":        (CALIBRATED, "iters_per_bin"),
+    "convergence":             (CALIBRATED, "accuracy_diff"),
+    "throughput":              (CALIBRATED, "throughput_rel"),
+    "terminal_state":          (CALIBRATED, "time_to_n"),
+    "total_commits":           (CALIBRATED, "time_to_n"),
+
+    # ── CALIBRATED in kind, NO FLOOR YET -- the debt, measurable from n>=3 ──
+    "per_round_advance":       (CALIBRATED, None),  # KS 0.2 passed a 27% tail (§D-76)
+    "overhead_residual":       (CALIBRATED, None),
+    "overlap_factor":          (CALIBRATED, None),
+    "utility":                 (CALIBRATED, None),  # fires 3/28 real<->real
+    "staleness":               (CALIBRATED, None),
+    "participation":           (CALIBRATED, None),
+    "trainer_speed":           (CALIBRATED, None),
+    "trainer_speed_identity":  (CALIBRATED, None),
+    "avail_composition":       (CALIBRATED, None),
+    "avail_timebase":          (CALIBRATED, None),
+    "eligibility":             (CALIBRATED, None),
+    "eligible_speed":          (CALIBRATED, None),
+    "eligible_pool_reduction": (CALIBRATED, None),
+    "selection":               (CALIBRATED, None),
+    "selection_bias":          (CALIBRATED, None),
+    "selector_score":          (CALIBRATED, None),
+    "residence":               (CALIBRATED, None),
+    "preferred_duration":      (CALIBRATED, None),
+    "commit_visibility":       (CALIBRATED, None),
+    "aggregation_sequence":    (CALIBRATED, None),
+    "convergence_loss":        (CALIBRATED, None),
+    "training_budget":         (CALIBRATED, None),
+    "g1_grad_norm":            (CALIBRATED, None),
+    "g2_grad_pool_size":       (CALIBRATED, None),
+    "v2b_var_drift":           (CALIBRATED, None),
+    "v3_cached_v_pool":        (CALIBRATED, None),
+    "v4_force_commit_rate":    (CALIBRATED, None),
+    "v5_variance_pass_ratio":  (CALIBRATED, None),
+    "duty_cycle":              (CALIBRATED, None),
+    "duty_cycle_duration":     (CALIBRATED, None),
+    "inter_arrival_order":     (CALIBRATED, None),
+    "starvation_advance":      (CALIBRATED, None),
+    "modeled_compute_advance": (CALIBRATED, None),
+    "wall_disparity":          (CALIBRATED, None),
+    "aggregation_compute_wall": (CALIBRATED, None),
+    "step_timing_breakdown":   (CALIBRATED, None),
+    "agg_step_timing_breakdown": (CALIBRATED, None),
+    "trainer_phase":           (CALIBRATED, None),
+    "phase_pre_train":         (CALIBRATED, None),
+    "phase_gpu_compute":       (CALIBRATED, None),
+    "phase_mqtt_fetch":        (CALIBRATED, None),
+    "phase_post_train":        (CALIBRATED, None),
+    "phase_weights_to_gpu":    (CALIBRATED, None),
+    "phase_weights_to_ram":    (CALIBRATED, None),
+
+    # ── POLICY: one-sided bound on ONE run; no paired floor is definable ──
+    "sim_rate":                (POLICY, None),      # vclock rate sanity range
+    "gpu_budget_real":         (POLICY, None),      # overrun fraction bound
+    "gpu_budget_sim":          (POLICY, None),
+    "drain_wall_budget":       (POLICY, None),
+    "trainer_phase_wall_budget": (POLICY, None),
+    "slot_utilization":        (POLICY, None),
+    "matched_budget_coverage": (POLICY, None),      # how much run must overlap to trust it
+    "timing_overrun":          (POLICY, None),
+    "eval_commit_timeliness":  (POLICY, None),
+    "commit_promptness":       (POLICY, None),
+    "abandon_timeout":         (POLICY, None),
+    "sim_speedup":             (POLICY, None),      # sim must be a speedup, #13
+    "r1_inflight_overlap":     (POLICY, None),
+}
+
+#: Rungs not yet placed. Each needs its own rung read to decide; guessing is worse
+#: than saying so. `test_threshold_provenance` ratchets this list DOWNWARD only.
+UNCLASSIFIED_PROVENANCE: frozenset = frozenset({
+    "first_divergence_summary",
+    "dk1_agg_goal_trajectory", "dk2_dynamic_c", "dk3_eligible_ends_metric",
+    "trainer_trace_fidelity_real", "trainer_trace_fidelity_sim",
+    "agg_belief_fidelity_real_selection", "agg_belief_fidelity_real_commit",
+    "agg_belief_fidelity_sim_selection", "agg_belief_fidelity_sim_commit",
+    "send_gate_wait_fidelity_real",
+})
+
+
+def calibration_debt() -> list:
+    """CALIBRATED rungs with no measured floor — the gates still resting on a
+    number nobody derived. Shrinking this is what the replicate batches buy."""
+    return sorted(r for r, (c, f) in THRESHOLD_PROVENANCE.items()
+                  if c == CALIBRATED and f is None)
+
 
 # Checks whose FAIL is downgraded to WARN regardless of tier (expected-noisy) --
 # plus `total_commits`, which is not noisy but is `terminal_state`'s time half

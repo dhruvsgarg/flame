@@ -13,7 +13,7 @@ metrics:
   iters_ma_mean_dev: 1.1825
   iters_per_bin: 0.048
   mean_var: 0.0017
-  throughput_rel: 0.027
+  throughput_rel: 0.059
   time_to_n: 0.058
   trainers_at_n: 0.0
 n_replicates: 2

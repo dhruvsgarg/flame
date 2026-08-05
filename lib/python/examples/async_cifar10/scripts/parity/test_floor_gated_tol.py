@@ -246,17 +246,17 @@ class TestTheVclockTimeFamily:
         assert by_volume < by_time <= 0.08
 
     def test_the_rung_names_the_field_its_verdict_came_from(self):
-        """`throughput` decides on `matched_window_rel_diff` where real emits an
-        intrinsic clock and on `rel_diff` where it does not. A floor read off the
-        other one grades a window the rung never decided on (§D-71), so the rung
-        states which it used and `replicate_floor` reads that key."""
+        """`throughput` reports a full-run `rel_diff` and a matched-work one, and
+        decides on the matched-work figure (§D-75). A floor read off the other
+        grades a window the rung never decided on (§D-71), so it states which it
+        used and `replicate_floor` reads that key rather than guessing."""
         from parity.checks import throughput_parity
         a = {"agg_rounds": [{"event": "agg_round", "round": r, "ts": r * 10.0,
                              "contributing_trainers": ["1"]} for r in range(1, 8)]}
         b = {"agg_rounds": [{"event": "agg_round", "round": r, "ts": r * 12.0,
                              "contributing_trainers": ["1"]} for r in range(1, 8)]}
         res = throughput_parity(a, b, same_mode=True)
-        assert res["decided_on"] == "rel_diff"
+        assert res["decided_on"] == "matched_window_rel_diff"
         assert res["ok"] == (res[res["decided_on"]] <= res["tol"])
 
 
@@ -370,3 +370,153 @@ class TestTheSharedCadenceCountVotesOnce:
         assert tight["count"]["ok"] is False and loose["count"]["ok"] is True
         assert tight["ok"] == loose["ok"], "the count must not move the verdict"
         assert tight["count_owned_by"] == "v1_iter_per_data_id"
+
+
+class TestThroughputGradesMatchedWork:
+    """§D-75/§D-76: per-unit time rises 2.1-2.7x across quintiles, so each side's
+    OWN full run is a different window. Real finished 191 units to sim's 183 on
+    `fedbuff_it_oracular`; its 8 extra units are its most expensive, and averaging
+    them in understated the residual (fedbuff_round 0.024 -> 0.080)."""
+
+    @staticmethod
+    def _legs(real_units, sim_units, step):
+        """Both sides advance `step` s/unit, so a correct matched-work comparison
+        reads 0.0 however many units each side got to."""
+        def side(n, vclock):
+            out = []
+            for r in range(1, n + 1):
+                e = {"event": "agg_round", "round": r,
+                     "contributing_trainers": ["1"]}
+                # cost RISES with progress: r*step, the trend that makes an
+                # unequal-length mean the wrong number.
+                t = sum(i * step for i in range(1, r + 1))
+                e["ts"] = t
+                if vclock:
+                    e["vclock_now"] = t
+                out.append(e)
+            return {"agg_rounds": out}
+        return side(real_units, False), side(sim_units, True)
+
+    def test_a_longer_real_no_longer_biases_the_mean(self):
+        from parity.checks import throughput_parity
+        real, sim = self._legs(60, 40, step=1.0)
+        res = throughput_parity(real, sim)
+        assert res["decided_on"] == "matched_window_rel_diff"
+        # Same per-unit schedule on both sides -> matched work reads ~0 ...
+        assert res["matched_window_rel_diff"] < 0.01
+        # ... while each side's own full-run mean does NOT, because real ran on
+        # into the expensive tail. That gap is the defect this closes.
+        assert res["rel_diff"] > 0.2
+
+    def test_the_quantile_tuple_is_reported(self):
+        """A tail difference has to be visible to be measurable later."""
+        from parity.checks import throughput_parity
+        real, sim = self._legs(40, 40, step=1.0)
+        pu = throughput_parity(real, sim)["per_unit_s"]
+        assert set(pu) == {"p50", "p90", "p99"}
+        assert set(pu["p90"]) == {"real", "sim", "rel_diff"}
+
+    def test_a_pure_shape_difference_does_not_gate(self):
+        """Same mean, same median, sim's p90 30% heavier — the case the mean is
+        blind to. The rung must PASS and still expose the gap in the tuple: a tail
+        has no replicate floor yet, so gating it would be a hand-typed threshold,
+        the mistake this family just finished undoing (§D-74/§D-76)."""
+        from parity.checks import throughput_parity
+        # n units yield n-1 advances, so the leading step is dropped: build the
+        # advance sequences directly. Both mean 10 and median 10; sim's spread is
+        # symmetric, which moves only its tail.
+        real = {"agg_rounds": [{"event": "agg_round", "round": r, "ts": t,
+                                "contributing_trainers": ["1"]}
+                               for r, t in enumerate(_cum([10] + [10] * 19), 1)]}
+        sim = {"agg_rounds": [{"event": "agg_round", "round": r, "ts": t,
+                               "vclock_now": t, "contributing_trainers": ["1"]}
+                              for r, t in enumerate(
+                                  _cum([10] + [7] * 9 + [10] + [13] * 9), 1)]}
+        res = throughput_parity(real, sim)
+        assert res["matched_window_rel_diff"] < 0.01, "means are identical"
+        assert res["per_unit_s"]["p50"]["rel_diff"] < 0.02
+        assert res["per_unit_s"]["p90"]["rel_diff"] > 0.2
+        assert res["ok"] is True, "a tail alone must not fail an ungated bound"
+
+
+def _cum(steps):
+    t, out = 0.0, []
+    for s in steps:
+        t += s
+        out.append(t)
+    return out
+
+
+class TestThresholdProvenance:
+    """Every enforced threshold must declare WHERE its number came from.
+
+    The taxonomy is decided by one question — does this quantity differ between
+    two runs that should be identical? INVARIANT: no, so the floor is zero and the
+    gate is exact. CALIBRATED: yes, so the gate must come from a measured floor.
+    POLICY: there is no paired comparison at all, so no floor is definable and the
+    number is an engineering choice.
+
+    There is no "hand-typed" class because that is the FAILURE state, and it is
+    what produced every defect this batch fixed. This test is the ratchet that
+    stops the next one: a new rung cannot land unclassified."""
+
+    def test_every_rung_declares_its_provenance(self):
+        from parity.checks import (CHECK_META, THRESHOLD_PROVENANCE,
+                                   UNCLASSIFIED_PROVENANCE)
+        missing = set(CHECK_META) - set(THRESHOLD_PROVENANCE) - UNCLASSIFIED_PROVENANCE
+        assert not missing, (
+            f"new rung(s) {sorted(missing)} must declare INVARIANT / CALIBRATED / "
+            f"POLICY in THRESHOLD_PROVENANCE — or be named in "
+            f"UNCLASSIFIED_PROVENANCE with a reason")
+
+    def test_the_registry_has_no_phantom_rungs(self):
+        from parity.checks import (CHECK_META, THRESHOLD_PROVENANCE,
+                                   UNCLASSIFIED_PROVENANCE)
+        phantom = (set(THRESHOLD_PROVENANCE) | UNCLASSIFIED_PROVENANCE) - set(CHECK_META)
+        assert not phantom, f"registry names non-rungs: {sorted(phantom)}"
+
+    def test_unclassified_only_ever_shrinks(self):
+        """A ratchet, not a target. Classifying one is a one-line PR; letting the
+        list grow is how the backlog became 62 gates nobody had derived."""
+        from parity.checks import UNCLASSIFIED_PROVENANCE
+        assert len(UNCLASSIFIED_PROVENANCE) <= 11, (
+            "unclassified rungs must not grow — classify the new one instead")
+
+    def test_an_invariant_is_never_floor_gated(self):
+        """Floor-gating a structural property licenses drift in something that
+        must never drift: its floor is zero by construction, so a measured floor
+        could only ever loosen it."""
+        import inspect
+
+        from parity.checks import (INVARIANT, THRESHOLD_PROVENANCE,
+                                   run_all_parity)
+        src = inspect.getsource(run_all_parity)
+        import re
+        block = src[src.index("_floor_specs = {"):src.index("_tol, _ungradeable")]
+        gated = set(re.findall(r'"(\w+)":\s*\(', block))
+        bad = [r for r in gated
+               if THRESHOLD_PROVENANCE.get(r, (None, None))[0] == INVARIANT]
+        assert not bad, f"INVARIANT rungs must not be floor-gated: {bad}"
+
+    def test_every_floor_gated_rung_is_declared_calibrated(self):
+        """The registry and the wiring must not drift apart."""
+        import inspect
+        import re
+
+        from parity.checks import CALIBRATED, THRESHOLD_PROVENANCE, run_all_parity
+        src = inspect.getsource(run_all_parity)
+        block = src[src.index("_floor_specs = {"):src.index("_tol, _ungradeable")]
+        for rung in re.findall(r'"(\w+)":\s*\(', block):
+            cls, floor = THRESHOLD_PROVENANCE[rung]
+            assert cls == CALIBRATED, f"{rung} is floor-gated but declared {cls}"
+            assert floor is not None, f"{rung} is floor-gated but declares no metric"
+
+    def test_the_debt_is_reported_not_hidden(self):
+        """44 CALIBRATED rungs still have no measured floor. That is the honest
+        number, and the batches are what shrink it — a gate nobody derived is
+        either too tight (grades noise) or too loose (passes divergence), and
+        0-fail on a control cannot tell you which (§D-24)."""
+        from parity.checks import calibration_debt
+        debt = calibration_debt()
+        assert "per_round_advance" in debt, "its KS 0.2 passed a 27% tail gap"
+        assert len(debt) <= 44

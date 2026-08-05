@@ -130,15 +130,20 @@ All nine baselines carry all six on the REAL side. `fwdllm_it_oracular` closed o
 | `fluxtune` | **74/0/18** | — | +0.0% | 0.0% (n=2) | clean, same code |
 | `felix_it` | **75/0/18** | — | +0.0% | 3.0% (n=2) | clean, same code |
 | `felix_round` | 72/1/19 | `v2` | +0.0% | 1.9% (n=2) | v2 razor-thin vs the 4% cap |
-| `fedbuff_round` | 69/2/21 | `terminal` `conv` | +4.7% | 7.0% (n=2) | both outside their floors |
+| `fedbuff_round` | 68/3/21 | `thru` `terminal` `conv` | +4.7% | 7.0% (n=2) | thru/terminal are ONE number |
 | `fedbuff_it_unaware` | 68/1/21 | `v1` | **+9.3%** | 3.0% (n=3, pooled) | 3.1x the floor |
 | `fedbuff_it_oracular` | 65/4/21 | `thru` `v1` `v2` `terminal` | **+13.8%** | 3.0% (n=3, pooled) | 4.6x the floor |
 
-**8 fails, and every one of them is now outside 3x its own same-code replicate floor.** That is the number
+**9 fails, and every one of them is now outside 3x its own same-code replicate floor.** That is the number
 to carry into the run batch. It moved 10 → 12 → 8 across this batch and the path matters: enforcing same-code
 floors made the gates TIGHTER (fedbuff_it 13.8% → 3.0%, fedbuff_round accuracy 0.099 → 0.048) and pushed it
 to 12; collapsing the one cadence number that was voting on three rungs took it to 8. **No residual moved.
 Only the gates did** — every change here is a measurement fix, not a simulator fix.
+
+**At matched work `throughput` and `terminal_state.time` are the SAME number** (0.119/0.119 on
+`fedbuff_it_oracular`; floors 6.8% vs 6.7% on `fedbuff_round`). Both keep gating on purpose — unlike
+`total_commits`, the ladder's `deps` make `throughput` the ROOT and `terminal_state` DOWNSTREAM, which is
+localization, not double-counting. Read `overall_verdict`'s roots, not the flat fail count.
 
 ⚠ **The control cannot corroborate a floor-gated rung at this n (§D-74).** Its gate is 3x the worst pair it
 is then graded against, so 0-fail is near-tautological there. The control's independent value is the rungs
@@ -536,6 +541,29 @@ State the prediction BEFORE the run; a hypothesis that can only be confirmed is 
   `fedbuff_it_unaware` under full availability (§B.2). It earns a row only under a scarcity trace (Phase 2).
   Operator call, tracked in §B.3 #3.
 
+### §B.5  Threshold provenance — where every gate's number is allowed to come from
+
+One question classifies every rung: **does this quantity differ between two runs that should be identical?**
+
+| class | criterion | gate may be | count |
+|---|---|---|---|
+| **INVARIANT** | structural; two identical runs agree exactly, floor is ZERO by construction | exact/boolean — floor-gating one would license drift | 14 |
+| **CALIBRATED** | paired real↔sim comparison of a quantity with run-to-run variance | **must** come from a measured floor (§D-24) | 54 |
+| **POLICY** | one-sided bound on ONE run; no paired comparison, so no floor is definable | a documented engineering choice | 13 |
+| *unclassified* | needs its own rung read; guessing is worse than saying so | — | 11 |
+
+There is deliberately **no "hand-typed" class — that is the failure state**, and it produced every defect this
+batch fixed: a 15% gate over a 0.6% floor (§D-24), a 5% trainers gate under a 5.5% floor (§D-72), a 0.2 KS
+gate that passed a 27% tail gap (§D-76).
+
+⚠ **44 of the 54 CALIBRATED rungs still have NO measured floor** (`checks.calibration_debt()`). They are
+0-fail on the control, but **0-fail does not mean calibrated — it can mean blind**: a gate 10-20x above its
+noise never fires and never catches anything either. Shrinking this list is what each replicate batch buys,
+and it costs no node time — re-grading reads run dirs already on disk.
+
+`test_threshold_provenance` is a RATCHET: a new rung cannot land unclassified, an INVARIANT can never be
+floor-gated, and the unclassified list may only shrink.
+
 ### §B.5  Tolerances and rung gaps
 
 - **Every "recalibrate against the floor" item here is LANDED (§G).** `conv`/`v1b`/`v1c`/`cohort` are now
@@ -871,6 +899,12 @@ manufactures a residual out of a unit mismatch — 51% between two legs of one c
 
 **D-74.** A floor measured from the SAME legs the control then grades cannot fail: the gate is 3x the worst
 pair it is graded against. A floor-gated control is a consistency check, never independent evidence.
+
+**D-75.** Compare the same WORK, not each side's own full run. Where per-unit cost trends (2.1-2.7x across
+quintiles here), unequal unit counts are unequal windows and the longer side's tail biases its mean.
+
+**D-76.** One summary cannot state a skewed, trending distribution: sim matched real's MEDIAN to 1.0% while
+running a 27% heavier p90. Report the quantiles; gate only once a replicate floor exists for the one you gate.
 
 ---
 
