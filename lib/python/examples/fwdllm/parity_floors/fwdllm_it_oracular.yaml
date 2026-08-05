@@ -7,20 +7,33 @@ jvp_eval_mode: true
 max_runtime_s: 7200
 measured_at: '2026-08-04'
 metrics:
-  committed_bins: 0.0
-  cycles: 0.0027
-  iters_per_bin: 0.0026
-  mean_var: 0.0015
+  accuracy_diff: 0.0
+  iter_drift_lambda: 0.0
+  iters_ma_max_dev: 0.0
+  iters_ma_mean_dev: 0.0
+  iters_per_bin: 0.0
+  mean_var: 0.0
+  throughput_rel: 0.024
+  time_to_n: 0.0
+  trainers_at_n: 0.0
 n_replicates: 2
 rungs:
-  committed_bins:
-    field: tol_rel
+  accuracy_diff:
+    field: acc_tol
     nominal: 0.05
-    rung: throughput
-  cycles:
-    field: count_tol
+    rung: convergence
+  iter_drift_lambda:
+    field: lambda_floor_per_100
     nominal: 0.05
-    rung: cohort_sequence
+    rung: v1c_iter_drift_rate
+  iters_ma_max_dev:
+    field: ma_max_abs_tol
+    nominal: 0.75
+    rung: v1b_iters_moving_avg
+  iters_ma_mean_dev:
+    field: ma_mean_abs_tol
+    nominal: 0.25
+    rung: v1b_iters_moving_avg
   iters_per_bin:
     field: mean_tol_rel
     nominal: 0.15
@@ -29,6 +42,18 @@ rungs:
     field: mean_tol_rel
     nominal: 0.02
     rung: v2_var_trajectory
+  throughput_rel:
+    field: tol_rel
+    nominal: 0.08
+    rung: throughput
+  time_to_n:
+    field: time_tol
+    nominal: 0.08
+    rung: terminal_state
+  trainers_at_n:
+    field: trainers_tol
+    nominal: 0.05
+    rung: terminal_state
 source_runs:
 - '20260804_003210'
 - '20260804_023421'

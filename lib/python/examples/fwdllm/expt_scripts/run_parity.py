@@ -18,6 +18,8 @@ Usage:
     python run_parity.py --yes                 # skip the confirm prompt
     python run_parity.py --validate            # + live-run checks (staleness/vclock_now)
     python run_parity.py --jobs 1              # serial (default: one worker per pair)
+    python run_parity.py --control --baselines fedbuff_round --duration 7200
+                                               # real<->real CONTROL: no sim leg
 
 Pairs are graded in PARALLEL: each reads its own two run dirs and writes its own
 report, with no shared state. A pair costs ~17s, 77% of it file loading, so the
@@ -32,6 +34,7 @@ import os
 import re
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from itertools import combinations
 from pathlib import Path
 
 import yaml
@@ -81,11 +84,23 @@ def _discover(experiments_dir: str) -> dict:
             slot["real"] = reals[0]
         if sims and reals:
             want = (_jvp_eval_mode(sims[0][1]), _max_runtime_s(sims[0][1]))
-            match = next((r for r in reals
-                          if (_jvp_eval_mode(r[1]), _max_runtime_s(r[1])) == want), None)
+            comparable = [r for r in reals
+                          if (_jvp_eval_mode(r[1]), _max_runtime_s(r[1])) == want]
+            # Prefer a real that ran the SAME CODE as the sim (§D-70). A charge
+            # re-profile or a simulator change between the two legs is graded as
+            # a residual otherwise -- it moved `fwdllm` 18.4 points. Fall back to
+            # the latest comparable real and SAY the code differs, rather than
+            # grading nothing.
+            from replicate_floor import code_version
+            sim_sha = code_version(sims[0][1])[0]
+            same_code = [r for r in comparable if code_version(r[1])[0] == sim_sha]
+            match = (same_code or comparable or [None])[0]
             if match is not None:
                 slot["real"] = match
             slot["_flag"] = want
+            slot["_sim_sha"] = sim_sha
+            slot["_same_code"] = bool(same_code)
+            slot["_same_code_n"] = len(same_code)
             slot["_flag_skipped"] = [r for r in reals if r[0] > slot["real"][0]]
         if slot:
             paired[key] = slot
@@ -119,6 +134,11 @@ def _max_runtime_s(run_dir: str):
         return h.get("max_runtime_s") or h.get("maxRuntimeS")
     except (ValueError, OSError):
         return None
+
+
+def _code_sha(run_dir: str):
+    from replicate_floor import code_version
+    return code_version(run_dir)[0]
 
 
 def _agg_goal(run_dir: str) -> int | None:
@@ -211,8 +231,19 @@ def _floors(label: str) -> dict | None:
     Sizes the DIST tolerances (§D-24). Absent file => nominal tolerances, so a
     baseline with no replicate is graded exactly as before rather than silently
     on someone else's floor (§D-36).
+
+    A --control pair is labelled with its POOLED group name (§D-63), which has no
+    file of its own — the floor is written to each member. Members carry the same
+    pooled profile, so reading either is the same number; grading a control at
+    nominal while the board is floor-gated would make the two disagree by
+    construction (§D-65).
     """
-    path = _FLOOR_DIR / f"{label.split('/')[0]}.yaml"
+    from replicate_floor import pool_members
+    name = label.split("/")[0]
+    path = _FLOOR_DIR / f"{name}.yaml"
+    if not path.exists():
+        path = next((p for m in pool_members(name)
+                     if (p := _FLOOR_DIR / f"{m}.yaml").exists()), path)
     if not path.exists():
         return None
     prof = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -224,7 +255,11 @@ def _grade_pair(job):
     a worker process: takes paths, returns picklable primitives, writes its own
     JSON. Imports inside so a forked worker resolves them against the sys.path
     this module sets up at import time."""
-    label, rdir, sdir, goal, max_bin, json_dir, sts = job
+    label, rdir, sdir, goal, max_bin, json_dir, sts, prefix = job
+    # A CONTROL pair is two legs of the SAME mode, so the clock rungs must not
+    # demand a vclock on the B side (§D-56) -- that bail is what made all three
+    # unreadable real↔real. Each leg still reads its own vclock where it has one.
+    same_mode = prefix == "control"
     from parity.checks import load_run_dir, run_all_parity
     try:
         from parity.checks import _WARN_ONLY_CHECKS
@@ -233,8 +268,9 @@ def _grade_pair(job):
     real_agg, real_tr = load_run_dir(rdir)
     sim_agg, sim_tr = load_run_dir(sdir)
     res = run_all_parity(real_agg, sim_agg, real_tr, sim_tr, agg_goal=goal,
-                         max_bin=max_bin, floors=_floors(label))
-    jpath = os.path.join(json_dir, f"parity_{label.replace('/', '_')}_{sts}.json")
+                         max_bin=max_bin, floors=_floors(label),
+                         same_mode=same_mode)
+    jpath = os.path.join(json_dir, f"{prefix}_{label.replace('/', '_')}_{sts}.json")
     json.dump(res, open(jpath, "w"), indent=2, default=str)
     n_pass = sum(1 for v in res.values()
                  if isinstance(v, dict) and v.get("ok") and not v.get("status"))
@@ -245,6 +281,167 @@ def _grade_pair(job):
     n_skip = sum(1 for v in res.values()
                  if isinstance(v, dict) and v.get("status") == "SKIP")
     return label, res, jpath, (n_pass, len(fails), n_skip), fails
+
+
+# ── the CONTROL: same-mode replicate legs graded against each other ──────────
+#
+# A red rung is not evidence until the control says it is (§D-55): five rungs
+# fail between config-identical REAL legs, so their real<->sim "failure" measures
+# the pipeline's own noise. This is the primary reader of every DIST verdict.
+
+def _bailed_for_sim_field(res: dict) -> bool:
+    """Did this rung BAIL for want of a sim-only field rather than measure a
+    difference? (§D-56) The bail is shaped exactly like a fail.
+
+    Detected from the result, never a static list, because readability is a
+    property of the PAIR: `throughput` cannot be read with two real legs and can
+    be read with two sim ones. The tell is a narrative field naming the missing
+    stamp -- those fields carry a metric's name only when it is absent.
+    """
+    if res.get("ok") is not False:
+        return False
+    narrative = json.dumps([res.get(k) for k in
+                            ("note", "reason", "issues", "violations", "detail")],
+                           default=str)
+    return "vclock_now" in narrative or "sim_send_ts" in narrative
+
+
+def _control_groups(experiments_dir: str, baselines, mode: str, duration=None,
+                    span_tol: float = 0.05, jvp: str = "on",
+                    any_code: bool = False) -> list:
+    """[(key, kept, dropped, code_dropped), ...] per config with >= 2 comparable legs.
+
+    Grouping, the same-CODE filter and the truncated-leg drop all come from
+    `replicate_floor`, so a control pair and a floor are measured over exactly the
+    same set of legs (§D-44/§D-59/§D-70). They are the same measurement and must
+    not disagree (§D-65): without the code filter the control read 13.6% on
+    `fedbuff_it`'s time-to-N where the same-code floor read 3.0% -- the gap was
+    code drift, and the control was reporting it as pipeline noise.
+    `jvp` filters on the training flag: an OFF group is a different training
+    config, so pooling its pairs into the roll-up would grade the flag (§D-45).
+    """
+    from replicate_floor import discover, drop_truncated, largest_same_code
+    groups = discover(experiments_dir, baselines, mode)
+    out = []
+    for key in sorted(groups, key=lambda k: (k[0], k[3] or 0, k[4])):
+        if duration is not None and (key[3] or 0) != duration:
+            continue
+        if jvp != "any" and key[4] != (jvp == "on"):
+            continue
+        legs, code_dropped = groups[key], []
+        if not any_code:
+            legs, code_dropped, _sha = largest_same_code(legs)
+        kept, dropped = drop_truncated(legs, span_tol)
+        if len(kept) >= 2:
+            out.append((key, kept, dropped, code_dropped))
+    return out
+
+
+def _control_report(done: list, pair_keys: list, warn_only=frozenset()) -> dict:
+    """Per-rung fail counts over every control pair — §A.3's table, computed.
+
+    Returns {rung: {"fail": n, "pairs": n, "unreadable": n, "where": [...]}}.
+    A fail is counted exactly as the scoreboard counts one — not DIAG, not
+    warn-only — or the two tables would disagree about the same rung.
+    """
+    tally: dict = {}
+    for (_label, res, _jp, _t, _fails), (glabel, _a, _b) in zip(done, pair_keys):
+        for rung, r in res.items():
+            if not isinstance(r, dict):
+                continue
+            t = tally.setdefault(rung, {"fail": 0, "pairs": 0, "unreadable": 0,
+                                        "skip": 0, "where": []})
+            if _bailed_for_sim_field(r):
+                t["unreadable"] += 1
+                continue
+            if r.get("status") == "SKIP":
+                t["skip"] += 1
+                continue
+            t["pairs"] += 1
+            if (r.get("ok") is False and r.get("tier") != "DIAG"
+                    and rung not in warn_only):
+                t["fail"] += 1
+                t["where"].append(glabel)
+    return tally
+
+
+def _run_control(args, json_dir: str) -> int:
+    """Grade every pair of every config's replicate legs, same mode both sides."""
+    modes = ("real", "sim") if args.control_mode == "both" else (args.control_mode,)
+    groups = []
+    for mode in modes:
+        groups += [(mode, *g) for g in _control_groups(
+            args.experiments_dir, args.baselines, mode,
+            args.duration, args.span_tol, args.jvp_eval_mode, args.any_code)]
+    if not groups:
+        print("No replicate groups found — a control needs >= 2 legs of one "
+              "config in the SAME mode.")
+        return 1
+
+    work, pair_keys = [], []
+    print("\n  CONTROL pairs (same mode both sides — no sim leg involved):")
+    for mode, key, kept, dropped, code_dropped in groups:
+        baseline, trace, _m, maxrt, jvp = key
+        label = "/".join(x for x in (baseline, trace) if x)
+        legs = sorted(kept)
+        print(f"    {label}  mode={mode}  max_runtime_s={maxrt}  "
+              f"jvp_eval_mode={jvp}  n_legs={len(legs)} "
+              f"-> {len(legs) * (len(legs) - 1) // 2} pairs")
+        for ts, _p, span in dropped:
+            print(f"      [dropped {ts} — achieved span {span:.0f}s, truncated]")
+        for ts, _p in code_dropped:
+            print(f"      [dropped {ts} — ran other code (§D-70); --any-code pools]")
+        for (ts_a, dir_a, _sa), (ts_b, dir_b, _sb) in combinations(legs, 2):
+            work.append((label, dir_a, dir_b, _agg_goal(dir_a) or 0, args.max_bin,
+                         json_dir, f"{mode}_{ts_a}_{ts_b}", "control"))
+            pair_keys.append((f"{baseline}@{mode} {ts_a[4:]}~{ts_b[4:]}",
+                              dir_a, dir_b))
+
+    if not args.yes and sys.stdin.isatty():
+        if input(f"\n  Grade {len(work)} control pair(s)? [y/N] "
+                 ).strip().lower() not in ("y", "yes"):
+            print("  Aborted.")
+            return 0
+
+    jobs = args.jobs if args.jobs else _default_jobs(len(work))
+    print(f"\n  Grading {len(work)} control pair(s) with {jobs} worker(s)...")
+    if jobs <= 1:
+        done = [_grade_pair(w) for w in work]
+    else:
+        with ProcessPoolExecutor(max_workers=jobs) as pool:
+            done = list(pool.map(_grade_pair, work))
+
+    print("\n" + "=" * 78)
+    for (label, _res, jpath, tally, fails), (glabel, _a, _b) in zip(done, pair_keys):
+        p, f, s = tally
+        print(f"  {glabel}: {p} pass / {f} fail / {s} skip"
+              + (f"   FAILS={fails}" if fails else ""))
+    try:
+        from parity.checks import _WARN_ONLY_CHECKS
+    except ImportError:
+        _WARN_ONLY_CHECKS = set()
+    tally = _control_report(done, pair_keys, _WARN_ONLY_CHECKS)
+    print("\n  Per-rung fail rate on config-identical legs — a rung failing here "
+          "\n  measures the pipeline's own noise, not sim (§D-55):")
+    print(f"    {'rung':34s} {'fails/pairs':>12s}   where")
+    rows = sorted(tally.items(), key=lambda kv: (-kv[1]["fail"], kv[0]))
+    for rung, t in rows:
+        if not t["fail"]:
+            continue
+        print(f"    {rung:34s} {t['fail']:>5d}/{t['pairs']:<6d}   "
+              + ", ".join(sorted(set(t["where"]))))
+    # A rung that bailed on ANY pair is not "clean" — it is partly unmeasured,
+    # and listing it as 0-fail is the exact misreading §D-56 warns about.
+    clean = [r for r, t in rows if not t["fail"] and t["pairs"] and not t["unreadable"]]
+    print(f"\n    0-fail over every pair ({len(clean)}): " + ", ".join(sorted(clean)))
+    unread = sorted((r, t) for r, t in tally.items() if t["unreadable"])
+    if unread:
+        print("\n    UNREADABLE here — the rung reads a sim-only field and BAILS,"
+              "\n    which looks like a fail (§D-56): "
+              + ", ".join(f"{r} ({t['unreadable']}/{t['unreadable'] + t['pairs']})"
+                          for r, t in unread))
+    print("\n  The control is a MEASUREMENT, not a gate: exit 0 whatever it finds.")
+    return 0
 
 
 def main(argv=None) -> int:
@@ -265,13 +462,31 @@ def main(argv=None) -> int:
     ap.add_argument("--max-bin", type=int, default=None,
                     help="restrict fwdllm cadence rungs (cohort_sequence/V*) to "
                          "cycle_data_id <= MAX_BIN (first-data-bin logical parity)")
+    ap.add_argument("--control", action="store_true",
+                    help="real<->real (or sim<->sim) CONTROL instead of the "
+                         "real/sim pair: grade EVERY pair of a config's replicate "
+                         "legs and print the per-rung fail rate. A red rung is not "
+                         "evidence until this says it is (D-55); needs no sim leg")
+    ap.add_argument("--control-mode", choices=("real", "sim", "both"),
+                    default="real", help="which side to replicate (default real)")
+    ap.add_argument("--duration", type=float, default=None, metavar="S",
+                    help="--control: grade only legs at this max_runtime_s")
+    ap.add_argument("--span-tol", type=float, default=0.05,
+                    help="--control: drop a leg whose ACHIEVED span is this far "
+                         "below the group's longest (D-44)")
+    ap.add_argument("--any-code", action="store_true",
+                    help="--control: pair legs that ran DIFFERENT code. Off by "
+                         "default, matching replicate_floor: a control across code "
+                         "versions measures the diff, not the pipeline (D-70)")
+    ap.add_argument("--jvp-eval-mode", choices=("on", "off", "any"), default="on",
+                    help="--control: which training config to grade (default on; "
+                         "an OFF group never pools with an ON one, D-45)")
     args = ap.parse_args(argv)
 
-    from parity.checks import load_run_dir, run_all_parity  # noqa: E402
-    try:
-        from parity.checks import _WARN_ONLY_CHECKS  # noqa: E402
-    except ImportError:
-        _WARN_ONLY_CHECKS = set()
+    json_dir = args.json_dir or os.path.join(args.experiments_dir, "_parity_reports")
+    os.makedirs(json_dir, exist_ok=True)
+    if args.control:
+        return _run_control(args, json_dir)
 
     found = _discover(args.experiments_dir)
     # Build the ordered work list: one pair per requested (baseline, trace).
@@ -307,25 +522,34 @@ def main(argv=None) -> int:
         print(f"      sim  {sts}  {os.path.basename(sdir)}")
         if flag is not None:
             print(f"      jvp_eval_mode={flag[0]}, max_runtime_s={flag[1]} on both legs")
+            slot = found[key]
+            if slot.get("_same_code"):
+                print(f"      code {slot['_sim_sha']} on both legs "
+                      f"({slot['_same_code_n']} same-code real(s) available)")
+            else:
+                print(f"      ⚠ CODE DIFFERS — sim {slot.get('_sim_sha')} vs real "
+                      f"{_code_sha(rdir)}; residual includes the diff (§D-70)")
         for sts_, sdir_ in skipped:
             got = (_jvp_eval_mode(sdir_), _max_runtime_s(sdir_))
+            # Both flags matching means it was passed over for CODE (§D-70) --
+            # say so, or the line reads "-- differs" naming nothing.
             why = " and ".join(
-                n for n, a, b in (("jvp_eval_mode", got[0], flag[0]),
-                                  ("max_runtime_s", got[1], flag[1])) if a != b)
-            print(f"      [skipped newer real {sts_} {os.path.basename(sdir_)} "
-                  f"-- {why} differs]")
+                f"{n} differs" for n, a, b in (("jvp_eval_mode", got[0], flag[0]),
+                                               ("max_runtime_s", got[1], flag[1]))
+                if a != b)
+            why = why or (f"code differs ({_code_sha(sdir_)} vs sim's "
+                          f"{found[key]['_sim_sha']})")
+            print(f"      [skipped newer real {sts_} "
+                  f"{os.path.basename(sdir_)} -- {why}]")
     if not args.yes and sys.stdin.isatty():
         if input("\n  Proceed with these pairs? [y/N] ").strip().lower() not in ("y", "yes"):
             print("  Aborted.")
             return 0
 
-    json_dir = args.json_dir or os.path.join(args.experiments_dir, "_parity_reports")
-    os.makedirs(json_dir, exist_ok=True)
-
     # ── run + collect ──
     jobs = args.jobs if args.jobs else _default_jobs(len(pairs))
     work = [(("/".join(k for k in key if k)), rdir, sdir, _agg_goal(rdir) or 0,
-             args.max_bin, json_dir, sts)
+             args.max_bin, json_dir, sts, "parity")
             for key, (_rts, rdir), (sts, sdir), _flag, _skipped in pairs]
     print(f"\n  Grading {len(pairs)} pair(s) with {jobs} worker(s) "
           f"(~{_PAIR_RSS_GB:.0f} GB each)...")
