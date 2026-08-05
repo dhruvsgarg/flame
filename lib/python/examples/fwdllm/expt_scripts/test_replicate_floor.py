@@ -191,6 +191,21 @@ class TestCodeVersionGrouping:
             "lib/python/examples/fwdllm/parity_floors/fwdllm.yaml")
         assert rf._RUN_IRRELEVANT.search("lib/python/examples/fwdllm/README.md")
 
+    def test_a_charge_reprofile_does_not_split_REAL_legs(self):
+        # A charge profile only reaches a SIM run (§F-1), so committing one must
+        # not split a real-side group. bdbde72b7 -> f2b7de071 changed exactly the
+        # four block-1 charge profiles plus deny-listed analysis files.
+        differs_real, why = rf.code_differs("bdbde72b7", "f2b7de071", mode="real")
+        assert differs_real is False, why
+        assert "sim charges" in why
+
+    def test_the_same_pair_still_splits_SIM_legs(self):
+        differs_sim, why = rf.code_differs("bdbde72b7", "f2b7de071", mode="sim")
+        assert differs_sim is True, why
+
+    def test_mode_none_stays_conservative(self):
+        assert rf.code_differs("bdbde72b7", "f2b7de071")[0] is True
+
     def test_largest_same_code_keeps_the_biggest_cluster(self, tmp_path):
         def leg(name, sha):
             p = _run(5, 4, 0.9, tmp_path, name)

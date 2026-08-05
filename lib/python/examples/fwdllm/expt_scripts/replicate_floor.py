@@ -399,6 +399,11 @@ def code_version(run_dir: str) -> tuple:
 # run; everything else there is analysis run after the fact. `test_replicate_floor`
 # re-derives this list from `run_sequential.sh` so it cannot drift silently.
 LAUNCHER_INVOKES = ("profile_sim_charges", "extract_sanity_checks")
+# A charge profile reaches a SIM run and nothing else -- real never reads one
+# (§F-1). So it is run-affecting for sim legs and inert for real ones, and
+# splitting a real-side group on a re-profile grades a file that leg never
+# opened. Mode-dependent, hence separate from the flat list below.
+_SIM_ONLY_INPUT = re.compile(r"(/sim_charge_profiles/)")
 _RUN_IRRELEVANT = re.compile(
     r"(\.md$)"
     r"|(/parity_floors/)"
@@ -414,12 +419,16 @@ _RUN_IRRELEVANT = re.compile(
 _DIFF_CACHE: dict = {}
 
 
-def code_differs(sha_a, sha_b) -> tuple:
+def code_differs(sha_a, sha_b, mode: str | None = None) -> tuple:
     """(differs, why) — did any RUN-AFFECTING file change between two commits?
 
     Raw SHA inequality over-reports: a docs-only commit between two legs does not
     make them different runs, and this doc gets committed constantly. So diff the
     two trees and drop paths that cannot reach a run (§D-70).
+
+    `mode="real"` additionally drops `sim_charge_profiles/`, which only a sim leg
+    reads. Without it, committing a re-profile splits every REAL group across it
+    — legs that are byte-identical in every input they actually consumed.
 
     An unknown or unreachable SHA returns True: refusing to pool is the safe
     error. `git_info.clean=False` is NOT visible here — a same-SHA pair can still
@@ -429,7 +438,7 @@ def code_differs(sha_a, sha_b) -> tuple:
         return False, "same commit"
     if not sha_a or not sha_b:
         return True, "a leg records no commit"
-    key = tuple(sorted((sha_a, sha_b)))
+    key = tuple(sorted((sha_a, sha_b))) + (mode,)
     if key in _DIFF_CACHE:
         return _DIFF_CACHE[key]
     try:
@@ -439,23 +448,30 @@ def code_differs(sha_a, sha_b) -> tuple:
         if out.returncode != 0:
             res = (True, "commit not in this repo")
         else:
+            inert = ["docs/tests/floors"]
             changed = [f for f in out.stdout.splitlines()
                        if f.strip() and not _RUN_IRRELEVANT.search(f)]
+            if mode == "real":
+                keep = [f for f in changed if not _SIM_ONLY_INPUT.search(f)]
+                if len(keep) < len(changed):
+                    inert.append("sim charges (real never reads them)")
+                changed = keep
             res = ((True, f"{len(changed)} run-affecting file(s), e.g. "
                           f"{os.path.basename(changed[0])}") if changed
-                   else (False, "docs/tests/floors only"))
+                   else (False, " + ".join(inert) + " only"))
     except (OSError, subprocess.SubprocessError):
         res = (True, "git unavailable")
     _DIFF_CACHE[key] = res
     return res
 
 
-def largest_same_code(legs: list) -> tuple:
+def largest_same_code(legs: list, mode: str | None = None) -> tuple:
     """(kept, dropped, sha) — the biggest subset of `[(ts, path), ...]` that ran
     the same CODE, ties broken toward the NEWEST. Two SHAs count as the same code
     when nothing run-affecting changed between them (`code_differs`), so a
-    docs-only commit between two legs does not split them. Legs with no snapshot
-    group together under `None`, as they did before this existed."""
+    docs-only commit between two legs does not split them. `mode` narrows what
+    counts for that side. Legs with no snapshot group together under `None`, as
+    they did before this existed."""
     by: dict = {}
     for ts, path in legs:
         by.setdefault(code_version(path)[0], []).append((ts, path))
@@ -473,7 +489,7 @@ def largest_same_code(legs: list) -> tuple:
         return s
 
     for a, b in itertools.combinations(shas, 2):
-        if not code_differs(a, b)[0]:
+        if not code_differs(a, b, mode)[0]:
             parent[find(a)] = find(b)
     clusters: dict = {}
     for s in shas:
@@ -621,7 +637,7 @@ def main(argv=None) -> int:
         # a floor pooled across code versions measures the diff, not the pipeline.
         code_dropped, sha = [], None
         if not args.any_code:
-            runs, code_dropped, sha = largest_same_code(runs)
+            runs, code_dropped, sha = largest_same_code(runs, mode)
             if code_dropped:
                 hdr()
                 print(f"    keeping the {len(runs)} leg(s) on {sha}; dropped "

@@ -347,7 +347,7 @@ def _control_groups(experiments_dir: str, baselines, mode: str, duration=None,
             continue
         legs, code_dropped = groups[key], []
         if not any_code:
-            legs, code_dropped, _sha = largest_same_code(legs)
+            legs, code_dropped, _sha = largest_same_code(legs, mode)
         kept, dropped, axis = drop_truncated(legs, span_tol)
         if len(kept) >= 2:
             out.append((key, kept, dropped, code_dropped, axis))
