@@ -49,12 +49,19 @@ if [ -z "$DRY" ]; then
 fi
 
 # ---- S: three sim legs, AFTER the re-profile ----
+# A dry run SKIPS the re-profile above, so the sim preflight would still see the
+# old profile and block on it (correctly, D-50). That block is an artifact of the
+# dry run, not of the chain, so stop here rather than report a false failure.
+if [ -n "$DRY" ]; then
+  say "DRY-RUN OK — real legs feasible, charge sources resolve."
+  say "DRY-RUN: sim legs NOT checked; their preflight only clears after CH runs."
+  exit 0
+fi
 for i in 1 2 3; do
   say "SIM leg $i/3"
-  bash run_sequential.sh --mode sim --max-runtime-s "$DUR" --only "$B" --yes $DRY \
+  bash run_sequential.sh --mode sim --max-runtime-s "$DUR" --only "$B" --yes \
     || { say "ABORT — sim leg $i failed"; exit 1; }
 done
-[ -z "$DRY" ] || { say "DRY-RUN OK — chain is wired, nothing launched"; exit 0; }
 
 # ---- FL + GR + CTL: analysis. Never `&&` a grader that exits 1 on findings (D-51) ----
 say "FL real-side floor"
