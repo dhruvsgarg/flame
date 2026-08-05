@@ -80,6 +80,9 @@ python run_parity.py --control --duration 7200 --yes    # the real↔real CONTRO
 python replicate_floor.py --mode real --duration 7200   # replicate spread -> DIST floor (§D-24); --duration
                                             # is REQUIRED once a baseline has ON groups at two run lengths
 python replicate_floor.py --mode real --duration 7200 --profile-out ../parity_floors   # write the floors
+python replicate_floor.py --mode sim  --duration 7200 --profile-out ../parity_floors   # ...and the sim side;
+                                            # the gate takes the max of the two (§D-61). Run BOTH or it is
+                                            # sized on real's spread alone, i.e. assumes sim is deterministic
 python profile_sim_charges.py --real-run <real_dir> \
     --out ../sim_charge_profiles/<baseline>.yaml --only-observed   # re-profile ONE baseline's charges (§D-36)
 ```
@@ -341,7 +344,9 @@ python run_parity.py --control --control-mode sim --duration 7200 --yes  # reads
 
 # FL — from runs already on disk; no sim leg needed
 python replicate_floor.py --mode real --duration 7200 --baselines <b> --profile-out ../parity_floors
-python replicate_floor.py --mode sim  --duration 7200 --baselines <b>    # the sim-side floor, §B.3 #1
+python replicate_floor.py --mode sim  --duration 7200 --baselines <b> --profile-out ../parity_floors
+                                            # the sim side of the two-sided floor. --profile-out is
+                                            # REQUIRED: without it the gate silently stays one-sided
 
 # CH + SIM + GR — one chain, never split
 cp ../sim_charge_profiles/<b>.yaml ../sim_charge_profiles/<b>.yaml.bak && \
@@ -489,7 +494,7 @@ Not a stale-charge artifact (§D-50): all three sim legs ran under one profile v
        --out ../sim_charge_profiles/<b>.yaml --only-observed
    bash run_sequential.sh --mode sim  --max-runtime-s 7200 --only <b> --yes     # x3, 35-50 min
    python replicate_floor.py --mode real --duration 7200 --baselines <b> --profile-out ../parity_floors
-   python replicate_floor.py --mode sim  --duration 7200 --baselines <b>
+   python replicate_floor.py --mode sim  --duration 7200 --baselines <b> --profile-out ../parity_floors
    python run_parity.py --yes --baselines <b>  || true          # exits 1 on findings (§D-51)
    python run_parity.py --control --control-mode both --duration 7200 --yes --baselines <b>
    ```
