@@ -5,7 +5,7 @@
 # `replicate_floor.py --mode real --profile-out <dir>`; do not hand-edit.
 jvp_eval_mode: true
 max_runtime_s: 7200
-measured_at: '2026-08-04'
+measured_at: '2026-08-05'
 metrics:
   accuracy_diff: 0.0
   iter_drift_lambda: 0.0
@@ -16,7 +16,7 @@ metrics:
   throughput_rel: 0.0
   time_to_n: 0.0
   trainers_at_n: 0.0
-n_replicates: 2
+n_replicates: 3
 rungs:
   accuracy_diff:
     field: acc_tol
@@ -54,6 +54,23 @@ rungs:
     field: trainers_tol
     nominal: 0.05
     rung: terminal_state
+sim_measured_at: '2026-08-05'
+sim_metrics:
+  accuracy_diff: 0.0
+  iter_drift_lambda: 0.0
+  iters_ma_max_dev: 0.0
+  iters_ma_mean_dev: 0.0
+  iters_per_bin: 0.0
+  mean_var: 0.0
+  throughput_rel: 0.0
+  time_to_n: 0.0
+  trainers_at_n: 0.0
+sim_n_replicates: 3
+sim_source_runs:
+- '20260805_052653'
+- '20260805_053744'
+- '20260805_054835'
 source_runs:
-- '20260803_021842'
-- '20260803_062233'
+- '20260804_232119'
+- '20260805_012313'
+- '20260805_032503'

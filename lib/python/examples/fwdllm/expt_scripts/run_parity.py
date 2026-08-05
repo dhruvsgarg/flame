@@ -237,6 +237,13 @@ def _floors(label: str) -> dict | None:
     pooled profile, so reading either is the same number; grading a control at
     nominal while the board is floor-gated would make the two disagree by
     construction (§D-65).
+
+    TWO-SIDED (§D-61): a real↔sim residual draws one leg from each side, so a
+    gate sized on real's spread alone assumes sim is deterministic. `fedbuff_round`
+    reproduces to 0.7% real and 21.2% sim, and 3x the real floor failed a residual
+    well inside sim's own noise. Take the max — a residual below what EITHER side
+    reproduces to carries no information. NOT the spread pooled across both sides:
+    that would fold a genuine real↔sim bias into the floor and hide it (§D-5).
     """
     from replicate_floor import pool_members
     name = label.split("/")[0]
@@ -247,7 +254,11 @@ def _floors(label: str) -> dict | None:
     if not path.exists():
         return None
     prof = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return prof.get("metrics") or None
+    real, sim = prof.get("metrics") or {}, prof.get("sim_metrics") or {}
+    if not real and not sim:
+        return None
+    return {m: max(v for v in (real.get(m), sim.get(m)) if v is not None)
+            for m in set(real) | set(sim)}
 
 
 def _grade_pair(job):
@@ -337,9 +348,9 @@ def _control_groups(experiments_dir: str, baselines, mode: str, duration=None,
         legs, code_dropped = groups[key], []
         if not any_code:
             legs, code_dropped, _sha = largest_same_code(legs)
-        kept, dropped = drop_truncated(legs, span_tol)
+        kept, dropped, axis = drop_truncated(legs, span_tol)
         if len(kept) >= 2:
-            out.append((key, kept, dropped, code_dropped))
+            out.append((key, kept, dropped, code_dropped, axis))
     return out
 
 
@@ -386,7 +397,7 @@ def _run_control(args, json_dir: str) -> int:
 
     work, pair_keys = [], []
     print("\n  CONTROL pairs (same mode both sides — no sim leg involved):")
-    for mode, key, kept, dropped, code_dropped in groups:
+    for mode, key, kept, dropped, code_dropped, axis in groups:
         baseline, trace, _m, maxrt, jvp = key
         label = "/".join(x for x in (baseline, trace) if x)
         legs = sorted(kept)
@@ -394,7 +405,7 @@ def _run_control(args, json_dir: str) -> int:
               f"jvp_eval_mode={jvp}  n_legs={len(legs)} "
               f"-> {len(legs) * (len(legs) - 1) // 2} pairs")
         for ts, _p, span in dropped:
-            print(f"      [dropped {ts} — achieved span {span:.0f}s, truncated]")
+            print(f"      [dropped {ts} — achieved {axis} span {span:.0f}s, truncated]")
         for ts, _p in code_dropped:
             print(f"      [dropped {ts} — ran other code (§D-70); --any-code pools]")
         for (ts_a, dir_a, _sa), (ts_b, dir_b, _sb) in combinations(legs, 2):

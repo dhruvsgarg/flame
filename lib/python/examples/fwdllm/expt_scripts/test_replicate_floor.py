@@ -18,12 +18,15 @@ import replicate_floor as rf  # noqa: E402
 
 
 def _write_run(tmp_path, name, cycles, seed=1234, max_runtime_s=3600,
-               achieved_s=None):
+               achieved_s=None, vclock_s=None):
     """cycles: list of (round, data_id, iteration, var, committed).
 
     `ts` is WALL-CLOCK, as in real telemetry -- spread over `achieved_s`. Keying
     it to the cycle index would make a run that completed fewer bins look
     truncated, the exact distinction `achieved_span_s` draws.
+
+    `vclock_s` emits `vclock_now` spread over that span, as a SIM leg does. Real
+    legs leave it None, which is what makes the axis choice self-describing.
     """
     d = tmp_path / name
     (d / "telemetry").mkdir(parents=True)
@@ -31,12 +34,15 @@ def _write_run(tmp_path, name, cycles, seed=1234, max_runtime_s=3600,
               open(d / "aggregator_config.json", "w"))
     span = float(max_runtime_s if achieved_s is None else achieved_s)
     step = span / max(1, len(cycles) - 1)
+    vstep = None if vclock_s is None else float(vclock_s) / max(1, len(cycles) - 1)
     with open(d / "telemetry" / "aggregator_x.jsonl", "w") as fh:
         for i, (rd, did, it, var, committed) in enumerate(cycles):
-            fh.write(json.dumps({
-                "event": "agg_round", "round": rd, "ts": i * step,
-                "cycle_data_id": did, "iteration_per_data_id": it,
-                "var": var, "var_good_enough": committed}) + "\n")
+            e = {"event": "agg_round", "round": rd, "ts": i * step,
+                 "cycle_data_id": did, "iteration_per_data_id": it,
+                 "var": var, "var_good_enough": committed}
+            if vstep is not None:
+                e["vclock_now"] = i * vstep
+            fh.write(json.dumps(e) + "\n")
     return str(d)
 
 
@@ -326,6 +332,61 @@ class TestTruncatedLegIsNotAReplicate:
         assert "DROPPED" in out and "no floor for this group" in out
 
 
+class TestTruncationIsJudgedOnTheLegsOwnClock:
+    """A SIM leg's WALL span measures the host, not the work (§D-73). Judging
+    truncation on it drops a complete leg for running on a quieter node -- which
+    is what cost `fedbuff_round` its third sim replicate, on the one baseline
+    whose sim floor the run batch existed to measure."""
+
+    def _out(self, tmp_path, capsys, *args):
+        rf.main(["--experiments-dir", str(tmp_path), *args])
+        return capsys.readouterr().out
+
+    def test_wall_fast_sim_leg_is_kept_because_its_vclock_is_full_length(
+            self, tmp_path, capsys):
+        # The live case: three sim legs, all vclock 7200, one 6% faster in wall.
+        for i, wall in enumerate((2226, 2090, 2169)):
+            _run(9, 4, 0.9, tmp_path,
+                 f"run_2026010{i + 1}_000000_b_n10_smoke_syn_0_sim",
+                 max_runtime_s=7200, achieved_s=wall, vclock_s=7200)
+        out = self._out(tmp_path, capsys, "--mode", "sim")
+        assert "DROPPED" not in out
+        assert "n_replicates=3" in out
+
+    def test_a_genuinely_short_sim_leg_is_still_dropped(self, tmp_path, capsys):
+        # The guard must keep working on the axis that measures sim's work.
+        for i in (1, 2):
+            _run(9, 4, 0.9, tmp_path,
+                 f"run_2026010{i}_000000_b_n10_smoke_syn_0_sim",
+                 max_runtime_s=7200, achieved_s=2200, vclock_s=7200)
+        _run(5, 4, 0.9, tmp_path, "run_20260103_000000_b_n10_smoke_syn_0_sim",
+             max_runtime_s=7200, achieved_s=2200, vclock_s=3600)   # half the work
+        out = self._out(tmp_path, capsys, "--mode", "sim")
+        assert "20260103_000000  DROPPED" in out
+        assert "vclock span" in out
+        assert "n_replicates=2" in out
+
+    def test_real_legs_are_unaffected_and_still_read_wall(self, tmp_path, capsys):
+        # Real emits no vclock_now, so the axis and every existing verdict hold.
+        _run(9, 4, 0.9, tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_real")
+        _run(5, 4, 0.9, tmp_path, "run_20260102_000000_b_n10_smoke_syn_0_real",
+             achieved_s=1800)
+        out = self._out(tmp_path, capsys)
+        assert "20260102_000000  DROPPED" in out
+        assert "wall span" in out
+
+    def test_a_group_missing_one_vclock_falls_back_to_wall_for_all(self, tmp_path):
+        # Mixing axes would compare 7200 against 2200 and drop the wall leg every
+        # time, so the whole group must fall back rather than half-convert.
+        a = _run(9, 4, 0.9, tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_sim",
+                 max_runtime_s=7200, achieved_s=2200, vclock_s=7200)
+        b = _run(9, 4, 0.9, tmp_path, "run_20260102_000000_b_n10_smoke_syn_0_sim",
+                 max_runtime_s=7200, achieved_s=2200)          # legacy, no vclock
+        rows, axis = rf.leg_spans([("20260101_000000", a), ("20260102_000000", b)])
+        assert axis == "wall"
+        assert all(abs(s - 2200) < 1 for _, _, s in rows)
+
+
 class TestFloorDurationMustMatchTheRungsWindow:
     """A baseline can now have ON replicate groups at two durations (fluxtune has
     7200s and 14400s). The floor must come from the length the rung grades, so the
@@ -381,6 +442,53 @@ class TestFloorDurationMustMatchTheRungsWindow:
         rf.main(["--experiments-dir", str(tmp_path), "--mode", "real",
                  "--profile-out", str(tmp_path / "floors")])
         assert "ON groups at" not in capsys.readouterr().out
+
+
+class TestTheProfileCarriesBothSidesFloors:
+    """§D-61: the gate needs real's floor AND sim's. They are measured by separate
+    invocations, so writing one must not clobber the other."""
+
+    def _on(self, tmp_path, name, n_bins, iters, **kw):
+        p = _run(n_bins, iters, 0.9, tmp_path, name, **kw)
+        open(os.path.join(p, "x_trainers.log"), "w").write("jvp_eval_mode=True\n")
+        return p
+
+    def _both_modes(self, tmp_path, sim_iters=(4, 5)):
+        for i in (1, 2):
+            self._on(tmp_path, f"run_2026010{i}_000000_b_n10_smoke_syn_0_real", 9, 4)
+        # Sim legs disagree on the GRADED quantity, the way live sim legs do;
+        # differing only in bin count leaves iters/bin identical and floor 0.
+        for i, it in zip((3, 4), sim_iters):
+            self._on(tmp_path, f"run_2026010{i}_000000_b_n10_smoke_syn_0_sim", 9, it,
+                     vclock_s=3600)
+        out = str(tmp_path / "floors")
+        for mode in ("real", "sim"):
+            rf.main(["--experiments-dir", str(tmp_path), "--mode", mode,
+                     "--profile-out", out])
+        return yaml.safe_load(open(tmp_path / "floors" / "b.yaml"))
+
+    def test_sim_pass_keeps_the_real_floor(self, tmp_path, capsys):
+        prof = self._both_modes(tmp_path)
+        capsys.readouterr()
+        assert "metrics" in prof and "sim_metrics" in prof
+        assert prof["metrics"]["iters_per_bin"] == 0.0        # identical real legs
+        assert prof["source_runs"] == ["20260101_000000", "20260102_000000"]
+        assert prof["sim_source_runs"] == ["20260103_000000", "20260104_000000"]
+
+    def test_the_sim_side_records_its_own_spread(self, tmp_path, capsys):
+        prof = self._both_modes(tmp_path)
+        capsys.readouterr()
+        # Divergent sim legs must show a floor the real-only profile never had.
+        assert prof["sim_metrics"]["iters_per_bin"] > 0.0
+        assert prof["sim_n_replicates"] == 2
+
+    def test_real_pass_after_sim_keeps_the_sim_floor(self, tmp_path, capsys):
+        self._both_modes(tmp_path)
+        rf.main(["--experiments-dir", str(tmp_path), "--mode", "real",
+                 "--profile-out", str(tmp_path / "floors")])
+        capsys.readouterr()
+        prof = yaml.safe_load(open(tmp_path / "floors" / "b.yaml"))
+        assert "sim_metrics" in prof and "sim_source_runs" in prof
 
 
 class TestTheVclockTimeFamilyHasAMeasurableFloor:

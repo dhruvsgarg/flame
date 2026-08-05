@@ -5,18 +5,18 @@
 # `replicate_floor.py --mode real --profile-out <dir>`; do not hand-edit.
 jvp_eval_mode: true
 max_runtime_s: 7200
-measured_at: '2026-08-04'
+measured_at: '2026-08-05'
 metrics:
-  accuracy_diff: 0.0385
-  iter_drift_lambda: 0.0181
-  iters_ma_max_dev: 1.4
-  iters_ma_mean_dev: 0.4844
-  iters_per_bin: 0.016
-  mean_var: 0.0121
-  throughput_rel: 0.019
-  time_to_n: 0.019
-  trainers_at_n: 0.017
-n_replicates: 2
+  accuracy_diff: 0.0576
+  iter_drift_lambda: 0.1262
+  iters_ma_max_dev: 4.9
+  iters_ma_mean_dev: 2.0084
+  iters_per_bin: 0.159
+  mean_var: 0.0761
+  throughput_rel: 0.156
+  time_to_n: 0.156
+  trainers_at_n: 0.0
+n_replicates: 3
 rungs:
   accuracy_diff:
     field: acc_tol
@@ -54,6 +54,23 @@ rungs:
     field: trainers_tol
     nominal: 0.05
     rung: terminal_state
+sim_measured_at: '2026-08-05'
+sim_metrics:
+  accuracy_diff: 0.059
+  iter_drift_lambda: 0.0663
+  iters_ma_max_dev: 3.15
+  iters_ma_mean_dev: 0.9811
+  iters_per_bin: 0.082
+  mean_var: 0.0642
+  throughput_rel: 0.079
+  time_to_n: 0.079
+  trainers_at_n: 0.0
+sim_n_replicates: 3
+sim_source_runs:
+- '20260805_052804'
+- '20260805_061220'
+- '20260805_065608'
 source_runs:
-- '20260803_001541'
-- '20260803_021757'
+- '20260804_232108'
+- '20260805_012324'
+- '20260805_032540'

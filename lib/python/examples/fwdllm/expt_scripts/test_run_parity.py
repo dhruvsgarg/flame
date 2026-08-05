@@ -11,6 +11,7 @@ import os
 import sys
 
 import pytest
+import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import run_parity as rp  # noqa: E402
@@ -175,7 +176,7 @@ class TestControlIsSameModeBothSides:
     def test_every_pair_of_a_config_is_graded(self, tmp_path):
         for i in (1, 2, 3):
             self._leg(tmp_path, f"run_2026010{i}_000000_felix_it_n10_smoke_syn_0_real")
-        (key, kept, _dr, _cd), = rp._control_groups(str(tmp_path), ["felix_it"], "real")
+        (key, kept, _dr, _cd, _ax), = rp._control_groups(str(tmp_path), ["felix_it"], "real")
         assert len(kept) == 3          # 3 legs -> 3 pairs
 
     def test_a_lone_leg_is_not_a_control(self, tmp_path):
@@ -319,7 +320,7 @@ class TestControlAndFloorAreTheSameMeasurement:
     def test_a_leg_on_other_code_is_not_a_control_replicate(self, tmp_path):
         for i, sha in ((1, "aaaaaaaaa"), (2, "aaaaaaaaa"), (3, "bbbbbbbbb")):
             self._leg(tmp_path, f"run_2026010{i}_000000_felix_it_n10_smoke_syn_0_real", sha)
-        (_key, kept, _dr, code_dropped), = rp._control_groups(
+        (_key, kept, _dr, code_dropped, _ax), = rp._control_groups(
             str(tmp_path), ["felix_it"], "real")
         assert len(kept) == 2 and len(code_dropped) == 1
         assert code_dropped[0][0] == "20260103_000000"
@@ -327,6 +328,45 @@ class TestControlAndFloorAreTheSameMeasurement:
     def test_any_code_pools_them_back(self, tmp_path):
         for i, sha in ((1, "aaaaaaaaa"), (2, "aaaaaaaaa"), (3, "bbbbbbbbb")):
             self._leg(tmp_path, f"run_2026010{i}_000000_felix_it_n10_smoke_syn_0_real", sha)
-        (_key, kept, _dr, code_dropped), = rp._control_groups(
+        (_key, kept, _dr, code_dropped, _ax), = rp._control_groups(
             str(tmp_path), ["felix_it"], "real", any_code=True)
         assert len(kept) == 3 and not code_dropped
+
+
+class TestFloorGateIsTwoSided:
+    """A real↔sim residual draws one leg from each side, so a gate sized on the
+    real floor alone assumes sim is deterministic (§D-61). It is not: measured
+    same-code at n=3, `fedbuff_round` reproduces to 0.7% real and 21.2% sim."""
+
+    def _profile(self, tmp_path, monkeypatch, **prof):
+        monkeypatch.setattr(rp, "_FLOOR_DIR", tmp_path)
+        (tmp_path / "b.yaml").write_text(yaml.safe_dump(prof))
+        return rp._floors("b/syn_0")
+
+    def test_the_wider_side_sets_the_floor(self, tmp_path, monkeypatch):
+        f = self._profile(tmp_path, monkeypatch,
+                          metrics={"iters_per_bin": 0.007},
+                          sim_metrics={"iters_per_bin": 0.212})
+        assert f["iters_per_bin"] == pytest.approx(0.212)
+
+    def test_real_still_wins_where_it_is_the_wider_side(self, tmp_path, monkeypatch):
+        f = self._profile(tmp_path, monkeypatch,
+                          metrics={"iters_per_bin": 0.159},
+                          sim_metrics={"iters_per_bin": 0.082})
+        assert f["iters_per_bin"] == pytest.approx(0.159)
+
+    def test_a_profile_with_no_sim_side_grades_exactly_as_before(
+            self, tmp_path, monkeypatch):
+        # Every baseline outside the run batch is still real-only; none may move.
+        f = self._profile(tmp_path, monkeypatch, metrics={"iters_per_bin": 0.03})
+        assert f == {"iters_per_bin": 0.03}
+
+    def test_a_metric_measured_on_one_side_only_is_not_dropped(
+            self, tmp_path, monkeypatch):
+        f = self._profile(tmp_path, monkeypatch,
+                          metrics={"iters_per_bin": 0.03},
+                          sim_metrics={"mean_var": 0.09})
+        assert f == {"iters_per_bin": 0.03, "mean_var": 0.09}
+
+    def test_no_metrics_at_all_reads_as_no_floor(self, tmp_path, monkeypatch):
+        assert self._profile(tmp_path, monkeypatch, max_runtime_s=7200) is None

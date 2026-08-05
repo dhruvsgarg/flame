@@ -212,14 +212,47 @@ def _seed(run_dir: str):
         return None
 
 
+def _span(vals: list):
+    return (max(vals) - min(vals)) if len(vals) >= 2 else None
+
+
+def _wall_span_s(run_dir: str):
+    return _span([e["ts"] for e in _agg_events(run_dir)
+                  if isinstance(e.get("ts"), (int, float))])
+
+
+def _vclock_span_s(run_dir: str):
+    """Virtual-clock span, or None on a leg that emits no `vclock_now` (real)."""
+    return _span([e["vclock_now"] for e in _agg_events(run_dir)
+                  if isinstance(e.get("vclock_now"), (int, float))])
+
+
 def achieved_span_s(run_dir: str):
-    """Wall span the aggregator ACTUALLY covered.
+    """Span the aggregator ACTUALLY covered, on the leg's OWN clock.
 
     `max_runtime_s` is what the run was ASKED for; a run killed early still
     reports it, and pooling one reads its truncation as irreproducibility.
+
+    A SIM leg's wall span measures the host, not the work — sim skips real waits,
+    so identical work differs in wall time by whatever else the node was running.
+    Read `vclock_now` where the leg has one, as every clock rung does (§D-73);
+    real legs emit none and are unaffected.
     """
-    ts = [e["ts"] for e in _agg_events(run_dir) if isinstance(e.get("ts"), (int, float))]
-    return (max(ts) - min(ts)) if len(ts) >= 2 else None
+    v = _vclock_span_s(run_dir)
+    return _wall_span_s(run_dir) if v is None else v
+
+
+def leg_spans(legs: list) -> tuple:
+    """`([(ts, path, span)], axis)` — every leg of a group on ONE axis.
+
+    Mixing axes would compare a vclock span against a wall span and drop the
+    wall-measured leg every time, so a group falls back to wall unless EVERY
+    leg carries a vclock.
+    """
+    vspans = [(ts, path, _vclock_span_s(path)) for ts, path in legs]
+    if vspans and all(s is not None for _, _, s in vspans):
+        return vspans, "vclock"
+    return [(ts, path, _wall_span_s(path)) for ts, path in legs], "wall"
 
 
 def metrics(run_dir: str):
@@ -498,20 +531,20 @@ def rung_floors(paths: list, cache: dict | None = None) -> dict:
 
 
 def drop_truncated(legs: list, span_tol: float = 0.05) -> tuple:
-    """Split `[(ts, path), ...]` into (kept, dropped) on the ACHIEVED span (§D-44).
+    """Split `[(ts, path), ...]` into (kept, dropped, axis) on the ACHIEVED span (§D-44).
 
     A leg killed early is a shorter run wearing the same `max_runtime_s`, not a
     replicate. Items come back as `(ts, path, span)`. Shared with the real↔real
     control in `run_parity.py`, which must group legs by the same rule.
     """
-    legs = [(ts, path, achieved_span_s(path)) for ts, path in legs]
+    legs, axis = leg_spans(legs)
     spans = [s for _, _, s in legs if s]
     if not spans:
-        return legs, []
+        return legs, [], axis
     ref = max(spans)
     kept = [x for x in legs if x[2] is None or x[2] >= ref * (1.0 - span_tol)]
     dropped = [x for x in legs if x not in kept]
-    return kept, dropped
+    return kept, dropped, axis
 
 
 def _spread(vals: list) -> float:
@@ -595,7 +628,7 @@ def main(argv=None) -> int:
                       f"{len(code_dropped)} on other code — pass --any-code to pool")
                 for ts, path in code_dropped:
                     print(f"    {ts}  DROPPED — code {code_version(path)[0]}")
-        kept, dropped = drop_truncated(runs, args.span_tol)
+        kept, dropped, axis = drop_truncated(runs, args.span_tol)
         rows = [(ts, _seed(path), metrics(path), span, path)
                 for ts, path, span in kept]
         rows = [r for r in rows if r[2]]
@@ -605,8 +638,9 @@ def main(argv=None) -> int:
             ref = max(s for _, _, s in kept if s)
             hdr()
             for ts, _path, span in dropped:
-                print(f"    {ts}  DROPPED — achieved span {span:.0f}s is >{args.span_tol:.0%} "
-                      f"short of {ref:.0f}s (truncated run, not a replicate)")
+                print(f"    {ts}  DROPPED — achieved {axis} span {span:.0f}s is "
+                      f">{args.span_tol:.0%} short of {ref:.0f}s "
+                      f"(truncated run, not a replicate)")
         if len(rows) < 2:
             if dropped:
                 print(f"    only {len(rows)} full-length leg(s) left — no floor for this group")
@@ -619,7 +653,7 @@ def main(argv=None) -> int:
         for ts, seed, m, span, _p in rows:
             print(f"    {ts}  bins={m['committed_bins']:.0f}  cycles={m['cycles']:.0f}  "
                   f"iters/bin={m['iters_per_bin']:.2f}  var={m['mean_var']:.4f}"
-                  + (f"  span={span:.0f}s" if span else "  span=?"))
+                  + (f"  {axis}_span={span:.0f}s" if span else "  span=?"))
         graded = rung_floors([r[4] for r in rows]) if not args.run_level else {}
         print(f"    {'metric':18s} {'floor':>8s} {'run-lvl':>8s}   "
               f"{'rung':<22s} {'tol':>7s}  verdict")
@@ -652,22 +686,27 @@ def main(argv=None) -> int:
             "mode": mode, "jvp_eval_mode": jvp_eval,
             "n_replicates": len(rows), "seeds": sorted(seeds),
             "achieved_span_s": [s for _, _, _, s, _ in rows],
+            "achieved_span_axis": axis,
             "dropped_truncated": [t for t, _, _ in dropped], "metrics": entry}
         # Keep the longest ON group per baseline as that baseline's profile: the
         # floor is what the CURRENT training config reproduces to, and duration
         # changes it (§D-24), so a short or OFF group must never win.
-        if args.profile_out and mode == "real" and jvp_eval:
+        # Each mode writes its OWN side's keys and leaves the other's alone, so
+        # `--mode real` then `--mode sim` builds the two-sided floor (§D-61).
+        if args.profile_out and jvp_eval:
+            pfx = "" if mode == "real" else "sim_"
             on_durations.setdefault(baseline, set()).add(maxrt or 0)
             prev = profiles.get(baseline)
             if prev is None or (maxrt or 0) >= prev["max_runtime_s"]:
                 profiles[baseline] = {
                     "max_runtime_s": maxrt or 0, "jvp_eval_mode": True,
-                    "n_replicates": len(rows), "measured_at": _today(),
+                    f"{pfx}n_replicates": len(rows),
+                    f"{pfx}measured_at": _today(),
                     # Say so in the file: a reader finding six source runs under
                     # one baseline's name is owed the reason (D-63).
                     **({"pooled_from": members} if members != [baseline] else {}),
-                    "source_runs": [t for t, _, _, _, _ in rows],
-                    "metrics": {k: v["floor_rel"] for k, v in entry.items()},
+                    f"{pfx}source_runs": [t for t, _, _, _, _ in rows],
+                    f"{pfx}metrics": {k: v["floor_rel"] for k, v in entry.items()},
                     "rungs": {k: {"rung": v["rung"], "field": v["tolerance_field"],
                                   "nominal": v["tolerance"]}
                               for k, v in entry.items()},
@@ -694,12 +733,18 @@ def main(argv=None) -> int:
             # floor up by the baseline it is grading, and the rows stay separate.
             for member in pool_members(baseline):
                 path = os.path.join(args.profile_out, f"{member}.yaml")
+                # MERGE: one invocation measures one mode, so clobbering would
+                # drop the other side's floor and silently re-narrow the gate.
+                on_disk = {}
+                if os.path.exists(path):
+                    on_disk = yaml.safe_load(open(path).read()) or {}
+                on_disk.update(prof)
                 with open(path, "w") as fh:
                     fh.write(_PROFILE_HEADER)
-                    yaml.safe_dump(prof, fh, sort_keys=True)
+                    yaml.safe_dump(on_disk, fh, sort_keys=True)
                 print(f"floor profile: {path}")
         if not profiles:
-            print("no ON real groups -- no floor profile written")
+            print(f"no ON {args.mode} groups -- no floor profile written")
     return 0
 
 
