@@ -280,7 +280,13 @@ def _grade_pair(job):
              and v.get("tier") != "DIAG" and k not in _WARN_ONLY_CHECKS]
     n_skip = sum(1 for v in res.values()
                  if isinstance(v, dict) and v.get("status") == "SKIP")
-    return label, res, jpath, (n_pass, len(fails), n_skip), fails
+    # A fail on a rung whose gate was never derived from a measured floor is
+    # weaker evidence than one on a floor-gated rung -- and its 0-fail siblings
+    # may be blind rather than clean (§D-24, §B.5). Name them apart.
+    underived = [k for k in fails
+                 if res[k].get("threshold_provenance") == "CALIBRATED"
+                 and not res[k].get("gate_derived")]
+    return label, res, jpath, (n_pass, len(fails), n_skip), fails, underived
 
 
 # ── the CONTROL: same-mode replicate legs graded against each other ──────────
@@ -412,15 +418,16 @@ def _run_control(args, json_dir: str) -> int:
             done = list(pool.map(_grade_pair, work))
 
     print("\n" + "=" * 78)
-    for (label, _res, jpath, tally, fails), (glabel, _a, _b) in zip(done, pair_keys):
+    for (label, _res, jpath, tally, fails, underived), (glabel, _a, _b) in zip(done, pair_keys):
         p, f, s = tally
         print(f"  {glabel}: {p} pass / {f} fail / {s} skip"
-              + (f"   FAILS={fails}" if fails else ""))
+              + (f"   FAILS={fails}" if fails else "")
+              + (f"   [gate never derived: {underived}]" if underived else ""))
     try:
         from parity.checks import _WARN_ONLY_CHECKS
     except ImportError:
         _WARN_ONLY_CHECKS = set()
-    tally = _control_report(done, pair_keys, _WARN_ONLY_CHECKS)
+    tally = _control_report([d[:5] for d in done], pair_keys, _WARN_ONLY_CHECKS)
     print("\n  Per-rung fail rate on config-identical legs — a rung failing here "
           "\n  measures the pipeline's own noise, not sim (§D-55):")
     print(f"    {'rung':34s} {'fails/pairs':>12s}   where")
@@ -563,9 +570,12 @@ def main(argv=None) -> int:
         # this is close to linear until it saturates memory or disk.
         with ProcessPoolExecutor(max_workers=jobs) as pool:
             done = list(pool.map(_grade_pair, work))    # map preserves input order
-    for (label, res, jpath, tally, fails), (_key, (_rts, rdir), (_sts, sdir),
-                                            _flag, _skipped) in zip(done, pairs):
+    for (label, res, jpath, tally, fails, underived), (_key, (_rts, rdir),
+                                                      (_sts, sdir), _flag,
+                                                      _skipped) in zip(done, pairs):
         live = _live_checks(label, rdir, sdir) if args.validate else []
+        if underived:
+            live.append(f"⚠ gate never derived from a floor: {', '.join(underived)}")
         summary.append((label, res, jpath, tally, fails, live))
 
     # ── compact cross-baseline table ──

@@ -7516,6 +7516,19 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
             _res.update({"ok": True, "status": "SKIP",
                          "reason": _ungradeable[_rung]})
 
+    # Stamp WHERE each verdict's threshold came from. A fail on a CALIBRATED rung
+    # with no measured floor is not the same evidence as one on a floor-gated
+    # rung, and 0-fail on an underived gate can mean BLIND rather than clean
+    # (§D-24). Recording it is what stops the board being read as if they were.
+    for _name, _res in results.items():
+        if not isinstance(_res, dict):
+            continue
+        _cls, _metric = THRESHOLD_PROVENANCE.get(_name, (None, None))
+        if _cls is None:
+            continue
+        _res["threshold_provenance"] = _cls
+        if _cls == CALIBRATED:
+            _res["gate_derived"] = _metric is not None
     return results
 
 
@@ -7695,10 +7708,8 @@ THRESHOLD_PROVENANCE: dict = {
     "concurrency_cap":         (INVARIANT, None),   # never exceed the configured cap
     "retask_before_close":     (INVARIANT, None),   # ordering property
     "budget_not_cap":          (INVARIANT, None),   # stopped by budget, not a rounds cap
-    "failsafe":                (INVARIANT, None),
     "withheld_delivery":       (INVARIANT, None),   # every withheld commit delivered
     "decision_determinism":    (INVARIANT, None),   # same seed => same decisions
-    "w1_compute_conservation": (INVARIANT, None),
     "charge_coverage":         (INVARIANT, None),   # every charge modeled
 
     # ── CALIBRATED, floor measured (the 10 that were firing) ──
@@ -7758,9 +7769,11 @@ THRESHOLD_PROVENANCE: dict = {
     "phase_post_train":        (CALIBRATED, None),
     "phase_weights_to_gpu":    (CALIBRATED, None),
     "phase_weights_to_ram":    (CALIBRATED, None),
+    "w1_compute_conservation": (CALIBRATED, None),  # paired compute ratio, tol 0.25
 
     # ── POLICY: one-sided bound on ONE run; no paired floor is definable ──
     "sim_rate":                (POLICY, None),      # vclock rate sanity range
+    "failsafe":                (POLICY, None),      # budget overshoot bound, not exact
     "gpu_budget_real":         (POLICY, None),      # overrun fraction bound
     "gpu_budget_sim":          (POLICY, None),
     "drain_wall_budget":       (POLICY, None),

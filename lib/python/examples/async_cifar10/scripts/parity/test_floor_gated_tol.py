@@ -511,12 +511,28 @@ class TestThresholdProvenance:
             assert cls == CALIBRATED, f"{rung} is floor-gated but declared {cls}"
             assert floor is not None, f"{rung} is floor-gated but declares no metric"
 
+    def test_a_verdict_records_whether_its_gate_was_derived(self):
+        """0-fail on an underived gate can mean BLIND, not clean. The distinction
+        has to survive into the JSON or the board gets read as if it were one
+        thing (§D-24)."""
+        from parity.test_ladder import AGG_GOAL, _build_mode
+
+        from parity.checks import run_all_parity
+        ra, rt = _build_mode(20, advance=10.0, with_vclock=False)
+        sa, st = _build_mode(20, advance=10.0, with_vclock=True)
+        res = run_all_parity(ra, sa, rt, st, agg_goal=AGG_GOAL,
+                             floors={"iters_per_bin": 0.03})
+        assert res["v1_iter_per_data_id"]["gate_derived"] is True
+        assert res["per_round_advance"]["gate_derived"] is False
+        assert res["sim_rate"]["threshold_provenance"] == "POLICY"
+        assert "gate_derived" not in res["sim_rate"], "POLICY has no floor to derive"
+
     def test_the_debt_is_reported_not_hidden(self):
-        """44 CALIBRATED rungs still have no measured floor. That is the honest
+        """45 CALIBRATED rungs still have no measured floor. That is the honest
         number, and the batches are what shrink it — a gate nobody derived is
         either too tight (grades noise) or too loose (passes divergence), and
         0-fail on a control cannot tell you which (§D-24)."""
         from parity.checks import calibration_debt
         debt = calibration_debt()
         assert "per_round_advance" in debt, "its KS 0.2 passed a 27% tail gap"
-        assert len(debt) <= 44
+        assert len(debt) <= 45
