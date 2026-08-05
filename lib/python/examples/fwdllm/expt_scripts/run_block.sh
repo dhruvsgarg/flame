@@ -10,13 +10,26 @@
 # time: `run_sequential.sh` blocks until each finishes, and refuses to launch on
 # top of a prior run's stray workers.
 #
-# Usage:  bash run_block.sh <baseline> [--dry-run]
+# Usage:  bash run_block.sh <baseline> [--dry-run] [--add-real]
 # Detached, one node, one baseline:
 #   setsid nohup bash run_block.sh fwdllm > ~/block1_fwdllm.log 2>&1 &
+#
+# --add-real appends ONE real leg to a block that already ran, then re-floors
+# and re-grades. It deliberately SKIPS CH: the sim legs on disk ran under the
+# current charge profile, and re-profiling from a newer set of reals would
+# strand them (D-50). Use it to widen a real-side floor, never to start a block.
 set -u
 B="${1:-}"
-DRY="${2:-}"
-[ -n "$B" ] || { echo "usage: $0 <baseline> [--dry-run]" >&2; exit 2; }
+[ -n "$B" ] || { echo "usage: $0 <baseline> [--dry-run] [--add-real]" >&2; exit 2; }
+shift
+DRY=""; ADD_REAL=""
+for a in "$@"; do
+  case "$a" in
+    --dry-run)  DRY="--dry-run" ;;
+    --add-real) ADD_REAL=1 ;;
+    *) echo "unknown argument: $a" >&2; exit 2 ;;
+  esac
+done
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE" || exit 1
@@ -27,6 +40,29 @@ say() { echo "=== [$(date '+%F %T')] $B: $*"; }
 say "START  commit $(git rev-parse --short HEAD 2>/dev/null)  clean=$([ -z "$(git status --porcelain 2>/dev/null)" ] && echo true || echo FALSE)"
 if [ -z "$(git status --porcelain 2>/dev/null)" ]; then :; else
   say "ABORT — tree is dirty; the batch must record a real commit (D-70)"; exit 1
+fi
+
+# ---- FL + GR + CTL: analysis. Never `&&` a grader that exits 1 on findings (D-51) ----
+analysis() {
+  say "FL real-side floor"
+  "$PY" -u replicate_floor.py --mode real --duration "$DUR" --baselines "$B" --profile-out ../parity_floors
+  say "FL sim-side floor — the two-sided number this block exists to buy"
+  "$PY" -u replicate_floor.py --mode sim --duration "$DUR" --baselines "$B" --profile-out ../parity_floors
+  say "GR board"
+  "$PY" -u run_parity.py --yes --baselines "$B" || true
+  say "CTL control, both modes — sim<->sim reads the three vclock rungs (D-72)"
+  "$PY" -u run_parity.py --control --control-mode both --duration "$DUR" --yes --baselines "$B" || true
+  say "DONE"
+}
+
+# ---- --add-real: one more real leg onto an existing block, no CH, no sim ----
+if [ -n "$ADD_REAL" ]; then
+  say "ADD-REAL — one extra real leg; CH is SKIPPED so the sim legs on disk stay valid (D-50)"
+  bash run_sequential.sh --mode real --max-runtime-s "$DUR" --only "$B" --yes $DRY \
+    || { say "ABORT — real leg failed"; exit 1; }
+  [ -z "$DRY" ] || { say "DRY-RUN OK — extra real leg feasible."; exit 0; }
+  analysis
+  exit 0
 fi
 
 # ---- R: three real legs, one at a time ----
@@ -63,13 +99,4 @@ for i in 1 2 3; do
     || { say "ABORT — sim leg $i failed"; exit 1; }
 done
 
-# ---- FL + GR + CTL: analysis. Never `&&` a grader that exits 1 on findings (D-51) ----
-say "FL real-side floor"
-"$PY" -u replicate_floor.py --mode real --duration "$DUR" --baselines "$B" --profile-out ../parity_floors
-say "FL sim-side floor — the two-sided number this block exists to buy"
-"$PY" -u replicate_floor.py --mode sim  --duration "$DUR" --baselines "$B"
-say "GR board"
-"$PY" -u run_parity.py --yes --baselines "$B" || true
-say "CTL control, both modes — sim<->sim reads the three vclock rungs (D-72)"
-"$PY" -u run_parity.py --control --control-mode both --duration "$DUR" --yes --baselines "$B" || true
-say "DONE"
+analysis
