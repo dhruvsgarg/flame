@@ -593,6 +593,23 @@ class TestSyn0FloorPooling:
         assert rf.pool_name("fedbuff_round", "syn_0") == "fedbuff_round"
         assert rf.pool_members("fedbuff_round") == ["fedbuff_round"]
 
+    def test_the_fwdllm_it_pair_pools_the_same_way(self):
+        # Same §D-63 argument, and the stronger case: at syn_0 the two are
+        # metric-for-metric identical, which is what the oracle MUST be at 100%
+        # availability. Treating one family pooled and the other not would grade
+        # each fwdllm_it name against half its own replicate evidence.
+        assert rf.pool_name("fwdllm_it_unaware", "syn_0") == "fwdllm_it"
+        assert rf.pool_name("fwdllm_it_oracular", "syn_0") == "fwdllm_it"
+        assert rf.pool_name("fwdllm_it_oracular", "fedscale") == "fwdllm_it_oracular"
+        assert rf.pool_members("fwdllm_it") == ["fwdllm_it_oracular",
+                                                "fwdllm_it_unaware"]
+
+    def test_plain_fwdllm_is_not_swept_into_the_fwdllm_it_group(self):
+        # `fwdllm` is a different baseline, not a member -- prefix collisions are
+        # exactly the §B.1 glob trap in another form.
+        assert rf.pool_name("fwdllm", "syn_0") == "fwdllm"
+        assert rf.pool_members("fwdllm") == ["fwdllm"]
+
     def test_either_member_name_selects_the_whole_group(self, tmp_path):
         """A floor asked for by one name and answered from half its legs is the
         n=1 problem this exists to fix."""

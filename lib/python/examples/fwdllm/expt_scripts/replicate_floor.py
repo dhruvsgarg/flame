@@ -306,14 +306,17 @@ def _jvp_eval_mode(path: str) -> bool:
 
 
 # Baselines that are ONE config at syn_0, so their legs pool into one floor
-# (§D-63). `fedbuff_it_oracular` and `_unaware` differ in exactly one key,
+# (§D-63). Each `_oracular`/`_unaware` pair differs in exactly one key,
 # `trackTrainerAvail`, measured inert at syn_0 (§B.2: eligible_pool_reduction
-# 0.0/0.0 — the oracle removes nobody). Their 3x floor gap (13.8% vs 4.9%) is
-# which extremes landed under which name (§D-67), and unpooled `_unaware` has
-# n=1: no floor at all. Only the FLOOR pools; the parity rows stay separate.
+# 0.0/0.0 — the oracle removes nobody). The fwdllm_it pair is the stronger case
+# of the two: at syn_0 they are metric-for-metric identical (bins 40, cycles
+# 376, iters/bin 9.20, var 0.8512), which is what oracular tracking MUST do at
+# 100% availability. Only the FLOOR pools; the parity rows stay separate.
 # **Phase 2 deletes this** — once `trackTrainerAvail` bites they are two configs.
 _FLOOR_POOL_SYN0 = {"fedbuff_it_oracular": "fedbuff_it",
-                    "fedbuff_it_unaware": "fedbuff_it"}
+                    "fedbuff_it_unaware": "fedbuff_it",
+                    "fwdllm_it_oracular": "fwdllm_it",
+                    "fwdllm_it_unaware": "fwdllm_it"}
 
 
 def pool_name(baseline: str, trace: str, enabled: bool = True) -> str:
