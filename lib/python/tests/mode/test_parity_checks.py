@@ -501,15 +501,19 @@ class TestTerminalStateParity:
         assert r["ok"], r
 
     def test_diverged_fails(self):
-        # sim: 5 rounds in 130s vclock; real: 10 rounds in 100s wall
-        # V = min(130, 100) = 100; sim has 4 rounds ≤100, real has 10
+        # K8 fixes the WORK and measures the TIME (PARITY.md §1.5): at the
+        # matched budget N=5 the round COUNT is 5 both sides by construction, so
+        # the divergence surfaces on the clock -- sim needs 130s of vclock to
+        # reach N where real needs 40s.
         real = _agg(agg_rounds=[_round(r, ["a"], [0], ts=float(r * 10))
                                   for r in range(1, 11)])
         sim = _agg(agg_rounds=[_round(r, ["a"], [0], vclock=float(r * 26),
                                        ts=float(r))
                                  for r in range(1, 6)])
-        r = pc.terminal_state_parity(real, sim, rounds_tol=0.10)
+        r = pc.terminal_state_parity(real, sim)
         assert not r["ok"], r
+        assert r["matched_logical_budget_n"] == 5, r
+        assert r["time_rel_diff"] > r["time_tol"], r
 
 
 def _fwd_cycle(data_id, ts, vclock=None, round_=1, committed=True,
@@ -1375,12 +1379,28 @@ class TestSelectionDetailMatchedWindow:
     def test_redraw_COUNT_mismatch_fails_even_when_cohort_size_matches(self):
         """Rounds must match too: 1 re-draw vs 4, both of 30 trainers, is a
         divergence (`fedbuff_round`'s shape -- sim crossed the round boundary
-        inside the graded window and re-drew, real never did)."""
+        inside the graded window and re-drew, real never did).
+
+        The bins are identical, so `v1` reads 0.0 and explains none of it: the
+        gap is selector behaviour and this rung votes on it (§D-92)."""
         real = self._side([self._sd(30, 0.5)], n_bins=5)
         sim = self._side([self._sd(30, t) for t in (0.5, 1.5, 2.5, 3.5)], n_bins=5)
-        r = pc.selection_detail_parity(real, sim)
+        r = pc.selection_detail_parity(real, sim, volume_rel=0.0)
         assert not r["ok"] and r["rel_diff_n_selections"] == 0.75, r
+        assert r["n_selections_unexplained_by_volume"] == 0.75, r
         assert r["real_mean_chosen"] == r["sim_mean_chosen"] == 30.0, r
+
+    def test_redraw_COUNT_gap_that_work_VOLUME_explains_still_defers(self):
+        """The §D-64 case that must NOT regress: where the re-draw gap IS v1's
+        number (8 of 9 baselines read them equal to 3 d.p.), one measurement
+        must fail once -- this rung defers to v1 and does not vote."""
+        real = self._side([self._sd(30, 0.5)], n_bins=5)
+        sim = self._side([self._sd(30, t) for t in (0.5, 1.5, 2.5, 3.5)], n_bins=5)
+        r = pc.selection_detail_parity(real, sim, volume_rel=0.75)
+        assert r["ok"], r
+        assert r["n_selections_ok"] is False, r          # still measured
+        assert r["n_selections_owned_by"] == "v1_iter_per_data_id", r
+        assert r["n_selections_unexplained_by_volume"] == 0.0, r
 
     def test_full_run_counts_reported_so_the_window_hides_nothing(self):
         real = self._side([self._sd(30, 0.5)]
@@ -2361,7 +2381,10 @@ class TestCohortSequence:
 
     def test_async_stochastic_still_enforces_count(self):
         # Gating IDENTITY does not gate THROUGHPUT: a cohort-COUNT drift beyond
-        # tol still fails even for a stochastic async selector.
+        # tol is still caught for a stochastic async selector -- but by `v1`,
+        # which OWNS the count (§D-22: cohort count is v1's number rolled up, so
+        # grading it here too would fail one measurement on two rungs). This rung
+        # still measures and reports it; the coverage moved, it did not go away.
         base = [f"t{i}" for i in range(20)]
         sel = [_selc(1, base[:10], 20)]
         real = _agg(selection=sel, agg_rounds=[
@@ -2370,7 +2393,12 @@ class TestCohortSequence:
             _lcyc(0, i, base[0:10], 0.5, is_async=True, goal=10) for i in range(20)])
         r = pc.cohort_sequence_parity(real, sim)
         assert r["identity_gated"] is True
-        assert not r["ok"] and not r["count"]["ok"]
+        assert r["count_owned_by"] == "v1_iter_per_data_id", r
+        assert not r["count"]["ok"] and r["count"]["rel_diff"] == 0.9, r
+        # the owner must actually fail on the same data, or the delegation is a
+        # hole rather than a relocation
+        v1 = pc.iters_per_data_id_parity(real, sim)
+        assert not v1["ok"] and v1["mean_rel_diff"] == 0.9, v1
 
     def test_var_divergence_FAILS_even_with_matched_order(self):
         # Identical cohort+order, var off by >0.1% -> the RNG-desync tell.

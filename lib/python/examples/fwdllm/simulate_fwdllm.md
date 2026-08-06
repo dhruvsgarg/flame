@@ -576,18 +576,10 @@ floor-gated, and the unclassified list may only shrink.
 - Momentum (S1-S3) / server-optimizer — roadmap, not parity, but see §B.0: I-1 is now CONFIRMED and gates the
   experiment runs. S1's damping should also shrink the replicate floor — re-measure after it lands.
 - P3/infra: no automatic GPU skip-and-remap on a broken ordinal (manual `execution.gpu_ids` exclude works).
-- **Three RED tests, pre-existing and unrelated to parity calibration** — all confirmed by stashing this
-  batch's changes and re-running. ⚠ **Two suites, and `lib/python/tests` alone does not run both**:
-  `test_ladder.py` and the rest of the checker's tests live under
-  `async_cifar10/scripts/parity/`, so the pytest line in §C is the one to use.
-  - ~~`test_ladder.py`'s two~~ — **FIXED** (§G). `overhead_residual` DEPENDS on `overlap_factor`, so with
-    both mechanisms failing the root is `overlap_factor` by construction; the tests now pin both verdicts.
-  - `test_parity_checks.py::TestTerminalStateParity::test_diverged_fails` calls
-    `terminal_state_parity(rounds_tol=...)`, a kwarg the rung no longer takes.
-  - `::TestSelectionDetailMatchedWindow::test_redraw_COUNT_mismatch_...` and
-    `::TestCohortSequence::test_async_stochastic_still_enforces_count` both assert `not r["ok"]` on a COUNT
-    mismatch — exactly what "one cadence number stopped voting three times" removed (§G). Tests trailing a
-    landed change, not defects; fix the tests.
+- ~~Five RED tests~~ — **ALL FIVE CLOSED** (§G). ⚠ **Two suites, and `lib/python/tests` alone does not run
+  both**: `test_ladder.py` and the rest of the checker's tests live under `async_cifar10/scripts/parity/`, so
+  the pytest line in §C is the one to use. **588 green across all four suites.** Four were tests trailing a
+  landed change; the fifth was a real coverage hole and is now closed in the CHECKER, not the test (§D-92).
 
 **Standing rules.** A real↔real control needs NO sim leg — it is the cheapest evidence in this whole
 pipeline, and it should run BEFORE any mechanism hypothesis (§D-55). One mechanism per run. Never spend a run
@@ -924,6 +916,13 @@ charges values its SHA does not name: three `fedbuff_round` sim legs recorded `b
 profile committed one commit later, so a SHA check split three true replicates and would have silently
 discarded a fourth. Where the input leaves a trace in telemetry, that trace outranks the commit.
 
+**D-92.** "One measurement fails once" is right, but "same number on two rungs" must be CHECKED, not
+assumed — defer only the part the owner explains. `selection_detail`'s re-draw count was handed to `v1` as
+being v1's number; it is on 8 of 9 baselines, and on `felix_round` it reads 18.5% against v1's 1.6%, so 5
+extra cohort draws over identical iteration volume were graded nowhere. Subtract what the owner explains and
+vote on the remainder: coverage restored at ZERO change to all nine boards. **A red test is a hypothesis —
+confirm the code is right before you fix the test**; four of these five were stale, the fifth was not.
+
 ---
 
 ## §E  Dead ends — do NOT retry
@@ -1146,6 +1145,12 @@ Moved to §D-3; stub kept because prior sessions cite "§F.2".
 - **Two `_discover` defects fixed with it.** It matched reals on RAW SHA, excluding `fedbuff_round`'s 4th over
   a docs/floors/sim-charge diff a real leg never opens; now `code_differs(mode="real")`, as
   `largest_same_code` does. And a bailed rung carries no `ok`, which the first median ranked FAIL (§D-56).
+- **All five standing RED tests closed — and the fifth was a real hole, not a stale test (§D-92).**
+  `selection_detail`'s re-draw COUNT was deferred to `v1` as "the same number". It is, on 8 of 9 baselines;
+  on `felix_round` it reads **18.5% against v1's 1.6%** — 5 extra cohort draws over identical iteration
+  volume, graded by nothing. Fixed in the CHECKER: defer only the part `v1` explains, vote on the remainder.
+  **Zero change to all nine boards**, re-graded to confirm; `felix_round` now records the 16.9% unexplained
+  and SKIPs on its own measured floor instead of silently deferring. §D-64's case still defers.
 - **`test_ladder.py`'s two RED tests were trailing a landed change, not defects.** The clock family's floor
   gating made `overlap_factor` co-fail, and the ladder declares `overhead_residual` DEPENDS on it, so the
   root is `overlap_factor` by construction and overhead demotes. Detection never regressed — both read 0.7

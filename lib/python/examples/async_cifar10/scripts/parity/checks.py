@@ -1509,7 +1509,8 @@ def selection_parity(real: dict, sim: dict, max_rounds: Optional[int] = None,
 def selection_detail_parity(real: dict, sim: dict,
                               tol_chosen: float = 0.05,
                               tol_inflight: float = 0.15,
-                              tol_n_selections: float = 0.05) -> dict:
+                              tol_n_selections: float = 0.05,
+                              volume_rel: Optional[float] = None) -> dict:
     """S3/S4 [DIST]: num_chosen, in_flight, effective_c mean parity across modes.
 
     num_chosen and in_flight are enforced (DIST); effective_c is diagnostic only.
@@ -1601,17 +1602,29 @@ def selection_detail_parity(real: dict, sim: dict,
     # the SELECTOR, not how far each side got (`throughput` owns that).
     rel_events = (abs(len(r_ch) - len(s_ch)) / max(len(r_ch), len(s_ch))
                   if max(len(r_ch), len(s_ch)) > 0 else 0.0)
-    # `rel_events` is `v1_iter_per_data_id`'s number under the same floor-sized
-    # gate, so it reports a sub-verdict but does not vote -- one measurement fails
-    # once. The selector bounds are what this rung uniquely owns (§D-64).
+    # `rel_events` is usually `v1_iter_per_data_id`'s number, so it reports a
+    # sub-verdict and defers -- one measurement must not fail twice (§D-64).
+    # But "usually" is not "always": on `felix_round` it reads 18.5% against
+    # v1's 1.6%, i.e. 5 extra cohort re-draws over the SAME iteration volume.
+    # That excess is selector behaviour, not work volume, and deferring it
+    # graded it nowhere. So defer only the part v1 explains, and vote on the
+    # rest (§D-92). `volume_rel=None` keeps the old pure-deferral behaviour.
     n_selections_ok = rel_events <= tol_n_selections
+    unexplained = (None if volume_rel is None
+                   else max(0.0, rel_events - abs(volume_rel)))
+    votes = unexplained is not None and unexplained > tol_n_selections
     ok = rel_chosen <= tol_chosen and rel_inflight <= tol_inflight
+    if votes:
+        ok = ok and n_selections_ok
     result = {
         "ok": ok,
         "tier": "DIST",
         "rel_diff_n_selections": round(rel_events, 3),
         "n_selections_ok": n_selections_ok,
-        "n_selections_owned_by": "v1_iter_per_data_id",
+        "n_selections_unexplained_by_volume": (
+            None if unexplained is None else round(unexplained, 3)),
+        "n_selections_owned_by": (
+            None if votes else "v1_iter_per_data_id"),
         "real_mean_chosen": round(r_ch_m, 2) if not math.isnan(r_ch_m) else None,
         "sim_mean_chosen": round(s_ch_m, 2) if not math.isnan(s_ch_m) else None,
         "rel_diff_chosen": round(rel_chosen, 3),
@@ -7604,8 +7617,14 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         real_trainers, real_ground_truth)
 
     # ── Stage 3 Selection ──
+    # v1 is computed early (it is emitted below, in ladder order) so
+    # `selection_detail` can tell a re-draw COUNT gap that work VOLUME explains
+    # from one it does not -- only the latter is selector behaviour (§D-92).
+    _v1 = iters_per_data_id_parity(real_agg, sim_agg, max_bin=max_bin,
+                                   **_tol["v1_iter_per_data_id"])
     results["selection_detail"] = selection_detail_parity(
-        real_agg, sim_agg, **_tol["selection_detail"])
+        real_agg, sim_agg, volume_rel=_v1.get("mean_rel_diff"),
+        **_tol["selection_detail"])
     results["residence"] = inflight_residence_parity(real_agg, sim_agg)
     results["selection_bias"] = selection_speed_bias_parity(real_agg, sim_agg)
     results["selector_score"] = selector_score_parity(real_agg, sim_agg)
@@ -7656,8 +7675,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
                                                         **_tol["cohort_sequence"])
     results["v1c_iter_drift_rate"] = iter_drift_rate_parity(real_agg, sim_agg, max_bin=max_bin,
                                                             **_tol["v1c_iter_drift_rate"])
-    results["v1_iter_per_data_id"] = iters_per_data_id_parity(real_agg, sim_agg, max_bin=max_bin,
-                                                              **_tol["v1_iter_per_data_id"])
+    results["v1_iter_per_data_id"] = _v1
     results["v1b_iters_moving_avg"] = iters_per_data_id_moving_avg_parity(
         real_agg, sim_agg, **_tol["v1b_iters_moving_avg"])
     results["v2_var_trajectory"] = var_trajectory_parity(real_agg, sim_agg, max_bin=max_bin,
