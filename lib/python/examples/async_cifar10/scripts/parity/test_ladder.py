@@ -152,21 +152,34 @@ def test_verdict_summary_tally_schema():
     assert s2["passed"] is False
     assert s2["n_fail"] >= 1 and 0.0 <= s2["score"] < 1.0
     assert s2["n_enforced"] == s2["n_pass"] + s2["n_fail"]
-    assert "overhead_residual" in s2["roots"]
+    # the scoreboard surfaces the LOWEST broken rung, and the clock family's
+    # lowest mechanism is overlap_factor (overhead_residual depends on it)
+    assert s2["roots"] == ["overlap_factor"], f"roots={s2['roots']}"
+    assert results2["overhead_residual"]["ok"] is False
     # warn/skip never inflate the enforced denominator
     assert s2["n_enforced"] == s2["n_pass"] + s2["n_fail"]
 
 
-def test_overhead_residual_is_root():
-    """Sim under-charges the clock (no per-commit overhead) ⇒ Stage-1
-    overhead_residual is the root; throughput/per_round_advance demote to
-    downstream; the speed control (P3) still passes."""
+def test_clock_undercharge_roots_at_the_mechanism():
+    """Sim under-charges the clock (no per-commit overhead) ⇒ the root is the
+    LOWEST broken Stage-1 MECHANISM, and every EMERGENT consequence demotes.
+
+    `overlap_factor` is that mechanism, not `overhead_residual`: the ladder
+    declares overhead's deps as (trainer_speed, sim_commit_monotone,
+    overlap_factor), so when both mechanisms fail overhead is downstream BY
+    CONSTRUCTION. Both must still DETECT the under-charge -- a demotion that
+    let one of them pass would be the regression this guards.
+    """
     real_agg, real_tr = _build_mode(20, advance=10.0, with_vclock=False)
     sim_agg, sim_tr = _build_mode(20, advance=3.0, with_vclock=True)
     results, (passed, roots, downstream, warnings) = _verdict(
         real_agg, sim_agg, real_tr, sim_tr)
     assert not passed
-    assert "overhead_residual" in roots, f"roots={roots}"
+    assert roots == ["overlap_factor"], f"roots={roots}"
+    # both mechanisms detect it; only the ATTRIBUTION differs
+    assert results["overlap_factor"]["ok"] is False
+    assert results["overhead_residual"]["ok"] is False
+    assert "overhead_residual" in downstream, f"downstream={downstream}"
     assert results["trainer_speed"]["ok"], "P3 control must stay green"
     # emergent clock checks are consequences, not independent roots
     assert "per_round_advance" in downstream

@@ -576,12 +576,12 @@ floor-gated, and the unclassified list may only shrink.
 - Momentum (S1-S3) / server-optimizer — roadmap, not parity, but see §B.0: I-1 is now CONFIRMED and gates the
   experiment runs. S1's damping should also shrink the replicate floor — re-measure after it lands.
 - P3/infra: no automatic GPU skip-and-remap on a broken ordinal (manual `execution.gpu_ids` exclude works).
-- **Five RED tests, pre-existing and unrelated to parity calibration** — all confirmed by stashing this
+- **Three RED tests, pre-existing and unrelated to parity calibration** — all confirmed by stashing this
   batch's changes and re-running. ⚠ **Two suites, and `lib/python/tests` alone does not run both**:
   `test_ladder.py` and the rest of the checker's tests live under
   `async_cifar10/scripts/parity/`, so the pytest line in §C is the one to use.
-  - `test_ladder.py::test_overhead_residual_is_root` (roots come back `['overlap_factor']`) and
-    `::test_verdict_summary_tally_schema` — the ROOT-labelling logic is what to read first.
+  - ~~`test_ladder.py`'s two~~ — **FIXED** (§G). `overhead_residual` DEPENDS on `overlap_factor`, so with
+    both mechanisms failing the root is `overlap_factor` by construction; the tests now pin both verdicts.
   - `test_parity_checks.py::TestTerminalStateParity::test_diverged_fails` calls
     `terminal_state_parity(rounds_tol=...)`, a kwarg the rung no longer takes.
   - `::TestSelectionDetailMatchedWindow::test_redraw_COUNT_mismatch_...` and
@@ -1146,6 +1146,10 @@ Moved to §D-3; stub kept because prior sessions cite "§F.2".
 - **Two `_discover` defects fixed with it.** It matched reals on RAW SHA, excluding `fedbuff_round`'s 4th over
   a docs/floors/sim-charge diff a real leg never opens; now `code_differs(mode="real")`, as
   `largest_same_code` does. And a bailed rung carries no `ok`, which the first median ranked FAIL (§D-56).
+- **`test_ladder.py`'s two RED tests were trailing a landed change, not defects.** The clock family's floor
+  gating made `overlap_factor` co-fail, and the ladder declares `overhead_residual` DEPENDS on it, so the
+  root is `overlap_factor` by construction and overhead demotes. Detection never regressed — both read 0.7
+  against a 0.1 gate. The tests now pin BOTH verdicts plus the demotion, and are negative-controlled.
 - **A sim charge re-profile no longer splits legs that charged the same table (§D-91).** `largest_same_code`
   settles it from each leg's `vclock_charge` telemetry — the SHA check was not baseline-scoped, and the three
   `fedbuff_round` sim legs ran dirty on values their SHA does not name. Negative-controlled: a re-profiled
