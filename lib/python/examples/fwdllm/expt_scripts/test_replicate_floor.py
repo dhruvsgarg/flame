@@ -181,6 +181,12 @@ class TestCodeVersionGrouping:
             assert rf._RUN_IRRELEVANT.search(
                 f"lib/python/examples/fwdllm/expt_scripts/{name}.py")
 
+    def test_the_block_driver_is_not_run_affecting_but_the_launcher_is(self):
+        """`run_block.sh` only sequences the launcher; `run_sequential.sh` runs it."""
+        p = "lib/python/examples/fwdllm/expt_scripts/"
+        assert rf._RUN_IRRELEVANT.search(p + "run_block.sh")
+        assert not rf._RUN_IRRELEVANT.search(p + "run_sequential.sh")
+
     def test_charge_profiles_are_run_affecting(self):
         """The file that caused the 18-point artifact must never be filtered."""
         assert not rf._RUN_IRRELEVANT.search(
@@ -228,6 +234,112 @@ class TestCodeVersionGrouping:
                 for t in ("20260101_000000", "20260102_000000")]
         kept, dropped, _sha = rf.largest_same_code(legs)
         assert len(kept) == 2 and dropped == []
+
+
+class TestChargeProfileIsSettledByTelemetry:
+    """A re-profile is the one run-affecting difference a leg can DISPROVE from
+    its own telemetry (§D-70). Legs launched with the profile uncommitted charge
+    values their SHA does not name: all three `fedbuff_round` sim legs recorded
+    `bdbde72b7` yet charged the profile committed one commit later, so the SHA
+    split three true replicates and would have discarded a fourth.
+    """
+
+    def _leg(self, tmp_path, name, sha, charges, events=None):
+        p = _run(5, 4, 0.9, tmp_path, name)
+        yaml.safe_dump({"git_info": {"commit": sha, "clean": False}},
+                       open(os.path.join(p, "snapshot.yaml"), "w"))
+        with open(os.path.join(p, "telemetry", "aggregator_charges.jsonl"),
+                  "w") as fh:
+            for lbl, cs in charges.items():
+                fh.write(json.dumps({"event": "vclock_charge", "label": lbl,
+                                     "charged_s": cs,
+                                     "charge_source": "profiled"}) + "\n")
+            for e in events or []:
+                fh.write(json.dumps({"event": "vclock_charge", **e}) + "\n")
+        return p
+
+    def test_one_label_priced_per_payload_kind_is_not_collapsed(self, tmp_path):
+        # `redispatch_turnaround` is ON for `weights` and OFF for `var_bad`.
+        # Keyed on the label alone, the LAST event decides and two legs that ran
+        # the same profile read as two different charge tables -- which is what
+        # three config-identical `fedbuff_it_oracular` legs actually did.
+        rf._CHARGE_CACHE.clear()
+        kinds = [{"label": "redispatch_turnaround", "payload_kind": "weights",
+                  "charged_s": 0.0598, "charge_source": "profiled"},
+                 {"label": "redispatch_turnaround", "payload_kind": "var_bad",
+                  "charged_s": 0.0, "charge_source": "none"}]
+        a = self._leg(tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_sim",
+                      "bdbde72b7", {}, events=kinds)
+        b = self._leg(tmp_path, "run_20260102_000000_b_n10_smoke_syn_0_sim",
+                      "bdbde72b7", {}, events=list(reversed(kinds)))
+        assert rf.consumed_charges(a) == rf.consumed_charges(b)
+        assert len(rf.consumed_charges(a)) == 2
+
+    def test_charge_profile_only_is_true_for_a_pure_reprofile(self):
+        # bdbde72b7 -> ceb119c6c changed four charge profiles and nothing else
+        # that reaches a run.
+        assert rf.charge_profile_only("bdbde72b7", "ceb119c6c") is True
+
+    def test_a_real_code_change_is_not_charge_only(self):
+        assert rf.charge_profile_only("779cdee23", "09251f782") is False
+
+    def test_consumed_charges_reads_what_the_leg_actually_charged(self, tmp_path):
+        p = self._leg(tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_sim",
+                      "bdbde72b7", {"drain_tail": 0.1943})
+        assert rf.consumed_charges(p) == {("drain_tail", None): (0.1943,
+                                                                 "profiled")}
+
+    def test_no_telemetry_leaves_the_sha_verdict_standing(self, tmp_path):
+        d = tmp_path / "run_20260101_000000_b_n10_smoke_syn_0_sim"
+        (d / "telemetry").mkdir(parents=True)
+        assert rf.consumed_charges(str(d)) is None
+
+    def test_a_leg_that_charged_nothing_is_None_not_empty(self, tmp_path):
+        # Absence of evidence must not read as evidence of sameness: two silent
+        # legs would otherwise compare equal and pool across a real re-profile.
+        rf._CHARGE_CACHE.clear()
+        p = _run(5, 4, 0.9, tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_sim")
+        assert rf.consumed_charges(p) is None
+
+    def _three_and_a_fourth(self, tmp_path, fourth_charges):
+        """Three legs on the old SHA + one on the new, charge-profile apart."""
+        rf._CHARGE_CACHE.clear()
+        old = {"drain_tail": 0.1943, "fedavg": 0.0575}
+        legs = []
+        for i, ts in enumerate(["20260101_000000", "20260102_000000",
+                                "20260103_000000"]):
+            legs.append((ts, self._leg(
+                tmp_path, f"run_{ts}_b_n10_smoke_syn_0_sim", "bdbde72b7", old)))
+        legs.append(("20260104_000000", self._leg(
+            tmp_path, "run_20260104_000000_b_n10_smoke_syn_0_sim",
+            "ceb119c6c", fourth_charges)))
+        return legs
+
+    def test_a_fourth_leg_that_charged_the_same_table_pools(self, tmp_path):
+        legs = self._three_and_a_fourth(
+            tmp_path, {"drain_tail": 0.1943, "fedavg": 0.0575})
+        kept, dropped, _sha = rf.largest_same_code(legs, "sim")
+        assert len(kept) == 4 and dropped == []
+
+    def test_a_fourth_leg_that_charged_a_REPROFILE_still_splits(self, tmp_path):
+        # The negative control: this is the 18-point artifact §D-70 exists for.
+        legs = self._three_and_a_fourth(
+            tmp_path, {"drain_tail": 0.1963, "fedavg": 0.0553})
+        kept, dropped, _sha = rf.largest_same_code(legs, "sim")
+        assert len(kept) == 3 and len(dropped) == 1
+
+    def test_telemetry_never_rescues_a_real_code_change(self, tmp_path):
+        # Identical charges must NOT pool legs that differ by simulator code.
+        rf._CHARGE_CACHE.clear()
+        same = {"drain_tail": 0.1943}
+        legs = [("20260101_000000", self._leg(
+                    tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_sim",
+                    "779cdee23", same)),
+                ("20260102_000000", self._leg(
+                    tmp_path, "run_20260102_000000_b_n10_smoke_syn_0_sim",
+                    "09251f782", same))]
+        kept, dropped, _sha = rf.largest_same_code(legs, "sim")
+        assert len(kept) == 1 and len(dropped) == 1
 
 
 class TestGrouping:
@@ -593,16 +705,16 @@ class TestSyn0FloorPooling:
         assert rf.pool_name("fedbuff_round", "syn_0") == "fedbuff_round"
         assert rf.pool_members("fedbuff_round") == ["fedbuff_round"]
 
-    def test_the_fwdllm_it_pair_pools_the_same_way(self):
-        # Same §D-63 argument, and the stronger case: at syn_0 the two are
-        # metric-for-metric identical, which is what the oracle MUST be at 100%
-        # availability. Treating one family pooled and the other not would grade
-        # each fwdllm_it name against half its own replicate evidence.
-        assert rf.pool_name("fwdllm_it_unaware", "syn_0") == "fwdllm_it"
-        assert rf.pool_name("fwdllm_it_oracular", "syn_0") == "fwdllm_it"
-        assert rf.pool_name("fwdllm_it_oracular", "fedscale") == "fwdllm_it_oracular"
-        assert rf.pool_members("fwdllm_it") == ["fwdllm_it_oracular",
-                                                "fwdllm_it_unaware"]
+    def test_the_fwdllm_it_pair_is_NOT_pooled(self):
+        """Pooling needs the knob inert AND the groups comparable, and at n=3 per
+        name per side the fwdllm_it names measurably are not: real 38 bins /
+        9.64-9.67 iters-per-bin under `_unaware` vs 40 / 9.20-9.22 under
+        `_oracular`, sim 39 / 9.88 vs 42 / 9.21, each name exact to 4 s.f. in both
+        modes. Pooling reported that systematic offset as replicate noise and took
+        a PINNED baseline's floor from 0.0% to 5.1% (§D-86)."""
+        for name in ("fwdllm_it_unaware", "fwdllm_it_oracular"):
+            assert rf.pool_name(name, "syn_0") == name
+            assert rf.pool_members(name) == [name]
 
     def test_plain_fwdllm_is_not_swept_into_the_fwdllm_it_group(self):
         # `fwdllm` is a different baseline, not a member -- prefix collisions are

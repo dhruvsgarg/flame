@@ -47,6 +47,7 @@ import argparse
 import datetime
 import glob
 import itertools
+from concurrent.futures import ProcessPoolExecutor
 import json
 import os
 import re
@@ -74,6 +75,12 @@ _PROFILE_HEADER = """\
 # divergences, one below it grades noise. Regenerate with
 # `replicate_floor.py --mode real --profile-out <dir>`; do not hand-edit.
 """
+
+
+# Bump when a floor's MEANING changes (a new metric, a changed window, a rung
+# fix that moves the number). Stamped into every profile so a stale file is
+# visible rather than silently mixed with a fresh one.
+_FLOOR_TOOL_VERSION = 2
 
 
 def _today() -> str:
@@ -155,6 +162,30 @@ _CALIBRATES = {
                                     "lambda_per_100_units")),
     "accuracy_diff": ("convergence", "acc_tol", 0.05,
                       _rung_gap("convergence_parity", "avg_accuracy_diff")),
+    # K3's two bounds. `same_mode` is what makes them measurable at all: each
+    # side reads its own clock, so a sim↔sim pair stops comparing wall to vclock
+    # (§D-73) and a real↔real pair stops bailing (§D-72).
+    "round_advance_rel": ("per_round_advance", "mean_tol_rel", 0.15,
+                          _rung_gap("per_round_advance_parity", "mean_rel_diff",
+                                    same_mode=True)),
+    "round_advance_ks": ("per_round_advance", "ks_tol", 0.2,
+                         _rung_gap("per_round_advance_parity", "ks_stat",
+                                   same_mode=True)),
+    "mean_chosen": ("selection_detail", "tol_chosen", 0.05,
+                    _rung_gap("selection_detail_parity", "rel_diff_chosen")),
+    # A pooled KS over the matched window, in KS units. Its flat 0.2 was never a
+    # calibration -- and the max-over-N-trainers variant it used to report reaches
+    # 0.30-0.89 between config-identical legs, which is what an uncorrected
+    # extreme-value statistic looks like (§B.3).
+    "utility_ks": ("utility", "max_ks", 0.2,
+                   _rung_gap("utility_parity", "matched_window_pooled_ks_stat")),
+    # The last two of the clock family. Measurable only since each side reads its
+    # own clock (§D-73) — before that a same-mode pair reported sim's speedup.
+    "overhead_rel": ("overhead_residual", "tol_rel", 0.10,
+                     _rung_gap("overhead_residual", "matched_window_rel",
+                               same_mode=True)),
+    "overlap_rel": ("overlap_factor", "tol_rel", 0.10,
+                    _rung_gap("overlap_factor", "rel_diff", same_mode=True)),
 }
 
 
@@ -308,15 +339,30 @@ def _jvp_eval_mode(path: str) -> bool:
 # Baselines that are ONE config at syn_0, so their legs pool into one floor
 # (§D-63). Each `_oracular`/`_unaware` pair differs in exactly one key,
 # `trackTrainerAvail`, measured inert at syn_0 (§B.2: eligible_pool_reduction
-# 0.0/0.0 — the oracle removes nobody). The fwdllm_it pair is the stronger case
-# of the two: at syn_0 they are metric-for-metric identical (bins 40, cycles
-# 376, iters/bin 9.20, var 0.8512), which is what oracular tracking MUST do at
-# 100% availability. Only the FLOOR pools; the parity rows stay separate.
+# 0.0/0.0 — the oracle removes nobody). Only the FLOOR pools; the parity rows
+# stay separate. Pooling needs BOTH halves: the knob proven inert AND the two
+# groups actually comparable — same code, same duration, same node (§B.1).
 # **Phase 2 deletes this** — once `trackTrainerAvail` bites they are two configs.
+#
+# ⚠ **`fwdllm_it` is NO LONGER POOLED, and the reason is measured.** At n=3 per
+# name per side the two names do not produce the same numbers: real reads bins 38
+# / iters-per-bin 9.64-9.67 under `_unaware` against 40 / 9.20-9.22 under
+# `_oracular`, and sim 39 / 9.88 against 42 / 9.21 — each name reproducing itself
+# to 4 s.f. in BOTH modes. Pooling them therefore reports a SYSTEMATIC offset as
+# replicate noise and takes a pinned baseline's floor from **0.0% to 5.1%**
+# (§D-86). `fedbuff_it` keeps pooling because its legs INTERLEAVE (183/189/193
+# against 186/188/192) — no offset, just its own 9.2% spread.
+#
+# ⚠ Cause NOT established, and the leading candidate is the KNOB. The nodes are
+# identical hardware (operator ruling), which removes the host explanation, and
+# the two resolved configs differ in exactly `trackTrainerAvail`
+# (enabled False->True, type NONE->ORACULAR). Perfect 3/3 reproducibility on each
+# side also rules out background load, which is not repeatable.
+# The sim side cannot corroborate: each name carries its OWN charge profile and
+# they differ materially (drain_tail 0.147s vs 0.125s), which moves sim cadence
+# on its own (§D-50). Settled by ONE leg — §B.4.
 _FLOOR_POOL_SYN0 = {"fedbuff_it_oracular": "fedbuff_it",
-                    "fedbuff_it_unaware": "fedbuff_it",
-                    "fwdllm_it_oracular": "fwdllm_it",
-                    "fwdllm_it_unaware": "fwdllm_it"}
+                    "fedbuff_it_unaware": "fedbuff_it"}
 
 
 def pool_name(baseline: str, trace: str, enabled: bool = True) -> str:
@@ -372,6 +418,22 @@ def discover(experiments_dir: str, baselines, mode: str, pool: bool = True) -> d
     return groups
 
 
+def hostname_of(run_dir: str) -> str | None:
+    """The node a leg ran on, from `snapshot.yaml`.
+
+    Recorded in the floor profile because comparability is per-NODE as well as
+    per-code: pooling two config-identical groups that ran on different hosts
+    reported a systematic offset as replicate noise and inflated a pinned
+    baseline's floor from 0.0% to 5.1% (§D-86). A future re-calibration can now
+    see, from the file alone, whether its legs are comparable to these."""
+    try:
+        d = yaml.safe_load(open(os.path.join(run_dir, "snapshot.yaml"),
+                                encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    return d.get("hostname")
+
+
 def code_version(run_dir: str) -> tuple:
     """`(git_sha9, clean)` the run recorded for ITSELF, from `snapshot.yaml`.
 
@@ -417,9 +479,37 @@ _RUN_IRRELEVANT = re.compile(
     r"|(/plotlib/)"
     r"|((^|/)(plot_|preview_|make_paper_figs))"
     r"|(/expt_scripts/(?!" + "|".join(LAUNCHER_INVOKES) + r")[^/]*\.py$)"
+    # `run_block.sh` only SEQUENCES `run_sequential.sh` and the analysis tools;
+    # every parameter it can vary (baseline, mode, max_runtime_s) is already in
+    # the grouping key, so editing it cannot make two legs different runs.
+    # `run_sequential.sh` launches, and stays run-affecting.
+    r"|(/expt_scripts/run_block\.sh$)"
 )
 
 _DIFF_CACHE: dict = {}
+_CHARGE_CACHE: dict = {}
+
+
+def _run_affecting(sha_a, sha_b, mode: str | None) -> tuple:
+    """(paths, inert_summary) — run-affecting files changed between two commits.
+    `paths` is None when the diff is undecidable (unknown SHA, no git)."""
+    try:
+        out = subprocess.run(
+            ["git", "diff", "--name-only", sha_a, sha_b],
+            cwd=str(_HERE), capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None, "git unavailable"
+    if out.returncode != 0:
+        return None, "commit not in this repo"
+    inert = ["docs/tests/floors"]
+    changed = [f for f in out.stdout.splitlines()
+               if f.strip() and not _RUN_IRRELEVANT.search(f)]
+    if mode == "real":
+        keep = [f for f in changed if not _SIM_ONLY_INPUT.search(f)]
+        if len(keep) < len(changed):
+            inert.append("sim charges (real never reads them)")
+        changed = keep
+    return changed, " + ".join(inert)
 
 
 def code_differs(sha_a, sha_b, mode: str | None = None) -> tuple:
@@ -435,7 +525,8 @@ def code_differs(sha_a, sha_b, mode: str | None = None) -> tuple:
 
     An unknown or unreachable SHA returns True: refusing to pool is the safe
     error. `git_info.clean=False` is NOT visible here — a same-SHA pair can still
-    differ by uncommitted work, so this can only ever prove legs DIFFER.
+    differ by uncommitted work, so this can only ever prove legs DIFFER, and on
+    the charge dimension `largest_same_code` settles it from telemetry instead.
     """
     if sha_a == sha_b:
         return False, "same commit"
@@ -444,27 +535,64 @@ def code_differs(sha_a, sha_b, mode: str | None = None) -> tuple:
     key = tuple(sorted((sha_a, sha_b))) + (mode,)
     if key in _DIFF_CACHE:
         return _DIFF_CACHE[key]
-    try:
-        out = subprocess.run(
-            ["git", "diff", "--name-only", key[0], key[1]],
-            cwd=str(_HERE), capture_output=True, text=True, timeout=30)
-        if out.returncode != 0:
-            res = (True, "commit not in this repo")
-        else:
-            inert = ["docs/tests/floors"]
-            changed = [f for f in out.stdout.splitlines()
-                       if f.strip() and not _RUN_IRRELEVANT.search(f)]
-            if mode == "real":
-                keep = [f for f in changed if not _SIM_ONLY_INPUT.search(f)]
-                if len(keep) < len(changed):
-                    inert.append("sim charges (real never reads them)")
-                changed = keep
-            res = ((True, f"{len(changed)} run-affecting file(s), e.g. "
-                          f"{os.path.basename(changed[0])}") if changed
-                   else (False, " + ".join(inert) + " only"))
-    except (OSError, subprocess.SubprocessError):
-        res = (True, "git unavailable")
+    changed, why = _run_affecting(key[0], key[1], mode)
+    if changed is None:
+        res = (True, why)
+    elif changed:
+        res = (True, f"{len(changed)} run-affecting file(s), e.g. "
+                     f"{os.path.basename(changed[0])}")
+    else:
+        res = (False, why + " only")
     _DIFF_CACHE[key] = res
+    return res
+
+
+def charge_profile_only(sha_a, sha_b) -> bool:
+    """True when the ONLY run-affecting change between two commits is a sim charge
+    re-profile — the one difference a leg's own telemetry can settle. Covers every
+    baseline's profile, deliberately: `consumed_charges` then decides on what the
+    legs actually read, which is baseline-scoped by construction."""
+    changed, _ = _run_affecting(sha_a, sha_b, "sim")
+    return bool(changed) and all(_SIM_ONLY_INPUT.search(f) for f in changed)
+
+
+def consumed_charges(run_dir: str) -> dict | None:
+    """{(label, payload_kind): (charged_s, source)} the leg ACTUALLY read, from
+    its own `vclock_charge` telemetry rather than the profile committed with it.
+
+    A leg launched dirty charges values its SHA does not name: three
+    `fedbuff_round` sim legs recorded `bdbde72b7` yet charged the profile
+    committed one commit later, so a SHA check split three true replicates
+    (§D-91). Keyed on payload kind too, since a profile prices one label per kind
+    (`redispatch_turnaround` is ON for `weights`, OFF for `var_bad`) and the
+    label alone takes whichever fired last.
+
+    `None` when the run emitted no `vclock_charge` at all — the SHA verdict then
+    stands, since refusing to pool is the safe error (§D-70) and an empty dict
+    would pool two silent legs on the absence of evidence.
+    """
+    if run_dir in _CHARGE_CACHE:
+        return _CHARGE_CACHE[run_dir]
+    out: dict = {}
+    for path in sorted(glob.glob(os.path.join(run_dir, "telemetry",
+                                              "aggregator_*.jsonl"))):
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    if '"vclock_charge"' not in line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        continue
+                    if e.get("event") == "vclock_charge":
+                        out[(e.get("label"), e.get("payload_kind"))] = (
+                            e.get("charged_s"), e.get("charge_source"))
+        except OSError:
+            out = {}
+            break
+    res = out or None
+    _CHARGE_CACHE[run_dir] = res
     return res
 
 
@@ -492,7 +620,14 @@ def largest_same_code(legs: list, mode: str | None = None) -> tuple:
         return s
 
     for a, b in itertools.combinations(shas, 2):
-        if not code_differs(a, b, mode)[0]:
+        differs = code_differs(a, b, mode)[0]
+        # A charge re-profile is the one run-affecting difference a leg can
+        # DISPROVE from its own telemetry, so settle it on what was charged
+        # rather than on what was committed (§D-70, `consumed_charges`).
+        if differs and mode == "sim" and a and b and charge_profile_only(a, b):
+            ca, cb = consumed_charges(by[a][0][1]), consumed_charges(by[b][0][1])
+            differs = ca is None or cb is None or ca != cb
+        if not differs:
             parent[find(a)] = find(b)
     clusters: dict = {}
     for s in shas:
@@ -503,6 +638,28 @@ def largest_same_code(legs: list, mode: str | None = None) -> tuple:
                                         max(t for t, _ in clusters[s])))
     return (clusters[root],
             [x for s, v in clusters.items() if s != root for x in v], root)
+
+
+def largest_same_node(legs: list) -> tuple:
+    """(kept, dropped, host) — the biggest subset of `[(ts, path), ...]` that ran
+    on ONE node, ties broken toward the NEWEST.
+
+    DIAGNOSTIC ONLY — nothing calls this to filter. Operator ruling: shepherd,
+    jayne, wash and kaylee are identical hardware, so legs pool across them and a
+    cross-node split is NOT an explanation for a systematic offset. Kept because
+    the question "is this difference the host?" recurs, and answering it from the
+    profile's `nodes:` field beats re-deriving it from run dirs.
+
+    Legs with no recorded hostname group under `None`.
+    """
+    by: dict = {}
+    for ts, path in legs:
+        by.setdefault(hostname_of(path), []).append((ts, path))
+    if len(by) <= 1:
+        return legs, [], next(iter(by), None)
+    root = max(by, key=lambda h: (len(by[h]), max(t for t, _ in by[h])))
+    return (by[root],
+            [x for h, v in by.items() if h != root for x in v], root)
 
 
 def checker_agg(run_dir: str) -> dict:
@@ -572,6 +729,114 @@ def _spread(vals: list) -> float:
     return (hi - lo) / hi if hi else 0.0
 
 
+def _grade_group(job: tuple) -> dict:
+    """One group's whole floor computation, as a PROCESS-POOL job.
+
+    Returns printable lines plus the report/profile payloads rather than printing:
+    groups are graded concurrently, so output must be re-ordered by the parent or
+    a nine-baseline sweep interleaves into nonsense.
+
+    Group-level is the right grain. Each leg's aggregator log is ~1.5 GB and the
+    parsed form ~0.7 GB, so a worker must parse ITS OWN legs and hand back only
+    the small floor dict — shipping parsed telemetry between processes costs more
+    than the parse it saves.
+    """
+    key, runs, opts = job
+    baseline, trace, mode, maxrt, jvp_eval = key
+    out: dict = {"key": key, "lines": [], "report": None, "profile": None,
+                 "any_group": False}
+    lines = out["lines"]
+    label = "/".join(x for x in (baseline, trace) if x)
+    header = [f"\n=== {label}  mode={mode}  max_runtime_s={maxrt}"
+              f"  jvp_eval_mode={jvp_eval}"]
+
+    def hdr():
+        lines.extend(header)
+        header.clear()
+
+    def emit(line):
+        lines.append(line)
+
+    members = pool_members(baseline)
+    if members != [baseline]:
+        hdr()
+        emit(f"    POOLED — one config at {trace} (D-63): " + " + ".join(members))
+    code_dropped, sha = [], None
+    if not opts["any_code"]:
+        runs, code_dropped, sha = largest_same_code(runs, mode)
+        if code_dropped:
+            hdr()
+            emit(f"    keeping the {len(runs)} leg(s) on {sha}; dropped "
+                 f"{len(code_dropped)} on other code — pass --any-code to pool")
+            for ts, path in code_dropped:
+                emit(f"    {ts}  DROPPED — code {code_version(path)[0]}")
+    kept, dropped, axis = drop_truncated(runs, opts["span_tol"])
+    rows = [(ts, _seed(path), metrics(path), span, path)
+            for ts, path, span in kept]
+    rows = [r for r in rows if r[2]]
+    if dropped:
+        ref = max(s for _, _, s in kept if s)
+        hdr()
+        for ts, _path, span in dropped:
+            emit(f"    {ts}  DROPPED — achieved {axis} span {span:.0f}s is "
+                 f">{opts['span_tol']:.0%} short of {ref:.0f}s "
+                 f"(truncated run, not a replicate)")
+    if len(rows) < 2:
+        if dropped:
+            emit(f"    only {len(rows)} full-length leg(s) left — no floor for this group")
+        return out
+    seeds = {s for _, s, _, _, _ in rows}
+    out["any_group"] = True
+    hdr()
+    emit(f"    n_replicates={len(rows)}  seeds={sorted(seeds)}"
+         + ("   ⚠ MIXED SEEDS — not a reproducibility floor" if len(seeds) > 1 else ""))
+    for ts, seed, m, span, _p in rows:
+        emit(f"    {ts}  bins={m['committed_bins']:.0f}  cycles={m['cycles']:.0f}  "
+             f"iters/bin={m['iters_per_bin']:.2f}  var={m['mean_var']:.4f}"
+             + (f"  {axis}_span={span:.0f}s" if span else "  span=?"))
+    graded = rung_floors([r[4] for r in rows]) if not opts["run_level"] else {}
+    emit(f"    {'metric':18s} {'floor':>8s} {'run-lvl':>8s}   "
+         f"{'rung':<22s} {'tol':>7s}  verdict")
+    entry = {}
+    for metric, (rung, field, tol, _gap) in _CALIBRATES.items():
+        vals = [m[metric] for _, _, m, _, _ in rows if metric in m]
+        if any(v != v for v in vals):
+            continue
+        run_level = _spread(vals) if vals else None
+        floor = graded.get(metric, run_level)
+        if floor is None:
+            continue
+        verdict = ("OK" if tol > floor * 1.5 else
+                   "TIGHT — within 1.5x of the floor" if tol > floor else
+                   "BELOW FLOOR — grades noise")
+        fmt = _fmt_abs if metric in _ABSOLUTE else _fmt_rel
+        emit(f"    {metric:18s} {fmt(floor):>8s} {fmt(run_level):>8s}   "
+             f"{rung:<22s} {fmt(tol):>7s}  {verdict}")
+        entry[metric] = {"floor_rel": round(floor, 4),
+                         "run_level_rel": (None if run_level is None
+                                           else round(run_level, 4)),
+                         "windowed_by_rung": metric in graded,
+                         "rung": rung, "tolerance_field": field,
+                         "tolerance": tol, "verdict": verdict}
+    out["report"] = (label + f"@{maxrt}", {
+        "mode": mode, "jvp_eval_mode": jvp_eval,
+        "n_replicates": len(rows), "seeds": sorted(seeds),
+        "achieved_span_s": [s for _, _, _, s, _ in rows],
+        "achieved_span_axis": axis,
+        "dropped_truncated": [t for t, _, _ in dropped], "metrics": entry})
+    if opts["profile_out"] and jvp_eval:
+        paths = [r[4] for r in rows]
+        out["profile"] = {
+            "baseline": baseline, "maxrt": maxrt or 0, "mode": mode,
+            "members": members, "n_rows": len(rows),
+            "source_runs": [t for t, _, _, _, _ in rows], "entry": entry,
+            "trace": trace, "span_axis": axis,
+            "code": sha or (code_version(paths[0])[0] if paths else None),
+            "nodes": sorted({h for p in paths if (h := hostname_of(p))}),
+        }
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -601,6 +866,11 @@ def main(argv=None) -> int:
                     help="measure every floor as a run-level spread, the way this "
                          "tool did before it asked the rungs. Understates any "
                          "windowed rung's floor (D-53) — for comparison only")
+    ap.add_argument("--jobs", type=int, default=None, metavar="N",
+                    help="grade this many baseline groups concurrently "
+                         "(default: one per CPU). Each leg is a ~1.5 GB parse, so "
+                         "a serial nine-baseline sweep is ~10 min and a parallel "
+                         "one is bounded by the slowest single group")
     ap.add_argument("--json-out", default=None)
     ap.add_argument("--profile-out", default=None, metavar="DIR",
                     help="write per-baseline floor profiles the parity checker "
@@ -612,119 +882,51 @@ def main(argv=None) -> int:
                       pool=not args.no_pool)
     report, profiles, any_group = {}, {}, False
     on_durations: dict = {}     # baseline -> ON durations seen, for the ambiguity warning
-    for key in sorted(groups, key=lambda k: (k[0], k[3] or 0, k[4])):
-        baseline, trace, mode, maxrt, jvp_eval = key
-        # Name the training config in the header: two groups of the same baseline
-        # and duration now appear, and reading the wrong one inverts the verdict.
-        cfg = f"  jvp_eval_mode={jvp_eval}"
-        runs = groups[key]
-        if len(runs) < 2 or (maxrt or 0) < args.min_duration:
-            continue
-        if args.duration is not None and (maxrt or 0) != args.duration:
-            continue
-        label = "/".join(x for x in (baseline, trace) if x)
-        header = [f"\n=== {label}  mode={mode}  max_runtime_s={maxrt}{cfg}"]
+    jobs = [(key, groups[key],
+             {"any_code": args.any_code, "span_tol": args.span_tol,
+              "run_level": args.run_level, "profile_out": bool(args.profile_out)})
+            for key in sorted(groups, key=lambda k: (k[0], k[3] or 0, k[4]))
+            if len(groups[key]) >= 2
+            and (key[3] or 0) >= args.min_duration
+            and (args.duration is None or (key[3] or 0) == args.duration)]
 
-        def hdr():
-            """Print the group header once, whichever note reaches it first."""
-            for line in header:
-                print(line)
-            header.clear()
+    # Groups are independent and each is minutes of parsing, so grade them
+    # concurrently and re-order the output. One worker per group up to --jobs.
+    n_workers = max(1, min(args.jobs or os.cpu_count() or 1, len(jobs) or 1))
+    if n_workers > 1 and len(jobs) > 1:
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            results = list(pool.map(_grade_group, jobs))
+    else:
+        results = [_grade_group(j) for j in jobs]
 
-        members = pool_members(baseline)
-        if members != [baseline]:
-            hdr()
-            print(f"    POOLED — one config at {trace} (D-63): "
-                  + " + ".join(members))
-        # A leg that ran DIFFERENT code is not a replicate (§D-70). On by default:
-        # a floor pooled across code versions measures the diff, not the pipeline.
-        code_dropped, sha = [], None
-        if not args.any_code:
-            runs, code_dropped, sha = largest_same_code(runs, mode)
-            if code_dropped:
-                hdr()
-                print(f"    keeping the {len(runs)} leg(s) on {sha}; dropped "
-                      f"{len(code_dropped)} on other code — pass --any-code to pool")
-                for ts, path in code_dropped:
-                    print(f"    {ts}  DROPPED — code {code_version(path)[0]}")
-        kept, dropped, axis = drop_truncated(runs, args.span_tol)
-        rows = [(ts, _seed(path), metrics(path), span, path)
-                for ts, path, span in kept]
-        rows = [r for r in rows if r[2]]
-        # Report drops BEFORE the too-few-replicates bail, else a group that fell
-        # below 2 from a truncated leg reads as "no replicates found", unexplained.
-        if dropped:
-            ref = max(s for _, _, s in kept if s)
-            hdr()
-            for ts, _path, span in dropped:
-                print(f"    {ts}  DROPPED — achieved {axis} span {span:.0f}s is "
-                      f">{args.span_tol:.0%} short of {ref:.0f}s "
-                      f"(truncated run, not a replicate)")
-        if len(rows) < 2:
-            if dropped:
-                print(f"    only {len(rows)} full-length leg(s) left — no floor for this group")
-            continue
-        seeds = {s for _, s, _, _, _ in rows}
-        any_group = True
-        hdr()
-        print(f"    n_replicates={len(rows)}  seeds={sorted(seeds)}"
-              + ("   ⚠ MIXED SEEDS — not a reproducibility floor" if len(seeds) > 1 else ""))
-        for ts, seed, m, span, _p in rows:
-            print(f"    {ts}  bins={m['committed_bins']:.0f}  cycles={m['cycles']:.0f}  "
-                  f"iters/bin={m['iters_per_bin']:.2f}  var={m['mean_var']:.4f}"
-                  + (f"  {axis}_span={span:.0f}s" if span else "  span=?"))
-        graded = rung_floors([r[4] for r in rows]) if not args.run_level else {}
-        print(f"    {'metric':18s} {'floor':>8s} {'run-lvl':>8s}   "
-              f"{'rung':<22s} {'tol':>7s}  verdict")
-        entry = {}
-        for metric, (rung, field, tol, _gap) in _CALIBRATES.items():
-            vals = [m[metric] for _, _, m, _, _ in rows if metric in m]
-            if any(v != v for v in vals):     # NaN
-                continue
-            # The rung's own window where it has one; the run-level spread only
-            # where the rung does not window (§D-53). Metrics the rung alone can
-            # measure (an MA deviation, a slope, an accuracy gap) have no
-            # run-level counterpart at all.
-            run_level = _spread(vals) if vals else None
-            floor = graded.get(metric, run_level)
-            if floor is None:
-                continue
-            verdict = ("OK" if tol > floor * 1.5 else
-                       "TIGHT — within 1.5x of the floor" if tol > floor else
-                       "BELOW FLOOR — grades noise")
-            fmt = _fmt_abs if metric in _ABSOLUTE else _fmt_rel
-            print(f"    {metric:18s} {fmt(floor):>8s} {fmt(run_level):>8s}   "
-                  f"{rung:<22s} {fmt(tol):>7s}  {verdict}")
-            entry[metric] = {"floor_rel": round(floor, 4),
-                             "run_level_rel": (None if run_level is None
-                                               else round(run_level, 4)),
-                             "windowed_by_rung": metric in graded,
-                             "rung": rung, "tolerance_field": field,
-                             "tolerance": tol, "verdict": verdict}
-        report[label + f"@{maxrt}"] = {
-            "mode": mode, "jvp_eval_mode": jvp_eval,
-            "n_replicates": len(rows), "seeds": sorted(seeds),
-            "achieved_span_s": [s for _, _, _, s, _ in rows],
-            "achieved_span_axis": axis,
-            "dropped_truncated": [t for t, _, _ in dropped], "metrics": entry}
-        # Keep the longest ON group per baseline as that baseline's profile: the
-        # floor is what the CURRENT training config reproduces to, and duration
-        # changes it (§D-24), so a short or OFF group must never win.
-        # Each mode writes its OWN side's keys and leaves the other's alone, so
-        # `--mode real` then `--mode sim` builds the two-sided floor (§D-61).
-        if args.profile_out and jvp_eval:
+    for res in results:
+        for line in res["lines"]:
+            print(line)
+        any_group = any_group or res["any_group"]
+        if res["report"]:
+            report[res["report"][0]] = res["report"][1]
+        if res["profile"]:
+            pr = res["profile"]
+            baseline, maxrt, mode = pr["baseline"], pr["maxrt"], pr["mode"]
+            members, entry = pr["members"], pr["entry"]
             pfx = "" if mode == "real" else "sim_"
-            on_durations.setdefault(baseline, set()).add(maxrt or 0)
+            on_durations.setdefault(baseline, set()).add(maxrt)
             prev = profiles.get(baseline)
-            if prev is None or (maxrt or 0) >= prev["max_runtime_s"]:
+            if prev is None or maxrt >= prev["max_runtime_s"]:
                 profiles[baseline] = {
-                    "max_runtime_s": maxrt or 0, "jvp_eval_mode": True,
-                    f"{pfx}n_replicates": len(rows),
+                    "max_runtime_s": maxrt, "jvp_eval_mode": True,
+                    "trace": pr["trace"],
+                    f"{pfx}n_replicates": pr["n_rows"],
                     f"{pfx}measured_at": _today(),
-                    # Say so in the file: a reader finding six source runs under
-                    # one baseline's name is owed the reason (D-63).
+                    # PROVENANCE — what makes a future re-calibration comparable
+                    # to this one (§D-70, §D-86). Without these a floor file says
+                    # what the spread was but not what it was the spread OF.
+                    f"{pfx}code_commit": pr["code"],
+                    f"{pfx}nodes": pr["nodes"],
+                    f"{pfx}span_axis": pr["span_axis"],
+                    f"{pfx}floor_tool_version": _FLOOR_TOOL_VERSION,
                     **({"pooled_from": members} if members != [baseline] else {}),
-                    f"{pfx}source_runs": [t for t, _, _, _, _ in rows],
+                    f"{pfx}source_runs": pr["source_runs"],
                     f"{pfx}metrics": {k: v["floor_rel"] for k, v in entry.items()},
                     "rungs": {k: {"rung": v["rung"], "field": v["tolerance_field"],
                                   "nominal": v["tolerance"]}
@@ -757,6 +959,13 @@ def main(argv=None) -> int:
                 on_disk = {}
                 if os.path.exists(path):
                     on_disk = yaml.safe_load(open(path).read()) or {}
+                # Merge, so `--mode real` then `--mode sim` compose into a
+                # two-sided floor (§D-78). But keys that describe the CURRENT
+                # grouping must be dropped when they no longer apply, or an
+                # un-pooled baseline keeps advertising a `pooled_from` it no
+                # longer has — the file would then misdescribe its own legs.
+                if "pooled_from" not in prof:
+                    on_disk.pop("pooled_from", None)
                 on_disk.update(prof)
                 with open(path, "w") as fh:
                     fh.write(_PROFILE_HEADER)

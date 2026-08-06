@@ -3,20 +3,30 @@
 # this (simulate_fwdllm.md D-24) -- a tolerance far above the floor passes real
 # divergences, one below it grades noise. Regenerate with
 # `replicate_floor.py --mode real --profile-out <dir>`; do not hand-edit.
+code_commit: ceb119c6c
+floor_tool_version: 2
 jvp_eval_mode: true
 max_runtime_s: 7200
-measured_at: '2026-08-04'
+measured_at: '2026-08-06'
 metrics:
   accuracy_diff: 0.0
   iter_drift_lambda: 0.0
   iters_ma_max_dev: 0.0
   iters_ma_mean_dev: 0.0
   iters_per_bin: 0.0
+  mean_chosen: 0.0
   mean_var: 0.0
+  overhead_rel: 0.0
+  overlap_rel: 0.0
+  round_advance_ks: 0.0
+  round_advance_rel: 0.0
   throughput_rel: 0.0
   time_to_n: 0.0
   trainers_at_n: 0.0
-n_replicates: 2
+  utility_ks: 0.0
+n_replicates: 3
+nodes:
+- wash.cc.gatech.edu
 rungs:
   accuracy_diff:
     field: acc_tol
@@ -38,10 +48,30 @@ rungs:
     field: mean_tol_rel
     nominal: 0.15
     rung: v1_iter_per_data_id
+  mean_chosen:
+    field: tol_chosen
+    nominal: 0.05
+    rung: selection_detail
   mean_var:
     field: mean_tol_rel
     nominal: 0.02
     rung: v2_var_trajectory
+  overhead_rel:
+    field: tol_rel
+    nominal: 0.1
+    rung: overhead_residual
+  overlap_rel:
+    field: tol_rel
+    nominal: 0.1
+    rung: overlap_factor
+  round_advance_ks:
+    field: ks_tol
+    nominal: 0.2
+    rung: per_round_advance
+  round_advance_rel:
+    field: mean_tol_rel
+    nominal: 0.15
+    rung: per_round_advance
   throughput_rel:
     field: tol_rel
     nominal: 0.08
@@ -54,6 +84,40 @@ rungs:
     field: trainers_tol
     nominal: 0.05
     rung: terminal_state
+  utility_ks:
+    field: max_ks
+    nominal: 0.2
+    rung: utility
+sim_code_commit: ceb119c6c
+sim_floor_tool_version: 2
+sim_measured_at: '2026-08-06'
+sim_metrics:
+  accuracy_diff: 0.0
+  iter_drift_lambda: 0.0
+  iters_ma_max_dev: 0.0
+  iters_ma_mean_dev: 0.0
+  iters_per_bin: 0.0
+  mean_chosen: 0.0
+  mean_var: 0.0
+  overhead_rel: 0.0
+  overlap_rel: 0.0
+  round_advance_ks: 0.0
+  round_advance_rel: 0.0
+  throughput_rel: 0.0
+  time_to_n: 0.0
+  trainers_at_n: 0.0
+  utility_ks: 0.0
+sim_n_replicates: 3
+sim_nodes:
+- wash.cc.gatech.edu
+sim_source_runs:
+- '20260806_021708'
+- '20260806_023150'
+- '20260806_024614'
+sim_span_axis: vclock
 source_runs:
-- '20260804_003210'
-- '20260804_023421'
+- '20260805_201055'
+- '20260805_221258'
+- '20260806_001500'
+span_axis: wall
+trace: syn_0

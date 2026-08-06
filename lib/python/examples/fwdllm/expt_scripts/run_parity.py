@@ -59,10 +59,16 @@ def _discover(experiments_dir: str) -> dict:
     """{(baseline, trace): {'real': (ts, path), 'sim': (ts, path)}} keeping the
     latest ts per (baseline, trace, variant).
 
-    The real leg is the latest whose `jvp_eval_mode` AND `max_runtime_s` match
+    The real legs kept are those whose `jvp_eval_mode` AND `max_runtime_s` match
     the sim's: taking the latest outright grades an OFF control against an ON sim
     leg, i.e. the flag rather than the code, and a 4h real against a 2h sim,
     i.e. the run length rather than the code (simulate_fwdllm.md §A).
+
+    `_reals` is ALL of them, newest first: the sim leg is graded against every
+    one and the verdict is the median (§D-90). One real leg is a DRAW, and the
+    draw decided the board — `fedbuff_round` failed `utility` on 1 of 12 cells
+    and that cell was the board. `real` stays the newest, for display and for
+    the report filename.
     """
     out: dict = {}
     for path in glob.glob(os.path.join(experiments_dir, "run_*")):
@@ -86,17 +92,17 @@ def _discover(experiments_dir: str) -> dict:
             want = (_jvp_eval_mode(sims[0][1]), _max_runtime_s(sims[0][1]))
             comparable = [r for r in reals
                           if (_jvp_eval_mode(r[1]), _max_runtime_s(r[1])) == want]
-            # Prefer a real that ran the SAME CODE as the sim (§D-70). A charge
-            # re-profile or a simulator change between the two legs is graded as
-            # a residual otherwise -- it moved `fwdllm` 18.4 points. Fall back to
-            # the latest comparable real and SAY the code differs, rather than
-            # grading nothing.
-            from replicate_floor import code_version
+            # Same CODE as the sim (§D-70) by what the real leg READS, not by raw
+            # SHA: raw equality also UNDER-counts the pool, excluding a real over
+            # a docs/floors/sim-charge diff it never opens. Same rule as
+            # `largest_same_code`. Falls back to other-code and says so.
+            from replicate_floor import code_version, code_differs
             sim_sha = code_version(sims[0][1])[0]
-            same_code = [r for r in comparable if code_version(r[1])[0] == sim_sha]
-            match = (same_code or comparable or [None])[0]
-            if match is not None:
-                slot["real"] = match
+            same_code = [r for r in comparable
+                         if not code_differs(code_version(r[1])[0], sim_sha,
+                                             mode="real")[0]]
+            slot["_reals"] = same_code or comparable or [slot["real"]]
+            slot["real"] = slot["_reals"][0]
             slot["_flag"] = want
             slot["_sim_sha"] = sim_sha
             slot["_same_code"] = bool(same_code)
@@ -261,28 +267,65 @@ def _floors(label: str) -> dict | None:
             for m in set(real) | set(sim)}
 
 
-def _grade_pair(job):
-    """Grade one real/sim pair. Module-level and self-contained so it can run in
-    a worker process: takes paths, returns picklable primitives, writes its own
-    JSON. Imports inside so a forked worker resolves them against the sys.path
-    this module sets up at import time."""
-    label, rdir, sdir, goal, max_bin, json_dir, sts, prefix = job
-    # A CONTROL pair is two legs of the SAME mode, so the clock rungs must not
-    # demand a vclock on the B side (§D-56) -- that bail is what made all three
-    # unreadable real↔real. Each leg still reads its own vclock where it has one.
-    same_mode = prefix == "control"
-    from parity.checks import load_run_dir, run_all_parity
+# Severity order. SKIP sorts lowest: it is not a grade at all, and it depends on
+# the floor, which is a property of the baseline rather than of the drawn leg.
+_VERDICT_RANK = {"SKIP": 0, "PASS": 1, "FAIL": 2}
+
+
+def _rung_verdict(res):
+    """SKIP/PASS/FAIL for one rung, or None if it BAILED (no `ok`, §D-56) — a
+    bail is not a fail, and ranking it as one hands the median a cell that
+    measured nothing."""
+    if not isinstance(res, dict) or "ok" not in res:
+        return None
+    if res.get("status") == "SKIP":
+        return "SKIP"
+    return "PASS" if res.get("ok") else "FAIL"
+
+
+def _rung_stat(res):
+    """The number the rung decided on, so cells of equal verdict order by it and
+    the reported cell is the numerically median one."""
+    if isinstance(res, dict) and res.get("decided_on"):
+        v = res.get(res["decided_on"])
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return abs(v)
+    return 0.0
+
+
+def _median_over_reals(cells: list) -> dict:
+    """Merge `[(real_ts, {rung: result}), ...]` into one board, rung by rung.
+
+    Each rung takes the LOWER median cell by verdict, so it fails only on MORE
+    than half the config-identical real legs (§D-55, §D-69, §D-90). Moves no
+    tolerance — only the sample the residual is drawn from. Every cell stays
+    visible in `real_draws`.
+    """
+    out: dict = {}
+    for name in cells[0][1]:
+        graded = [(ts, res[name]) for ts, res in cells
+                  if _rung_verdict(res.get(name)) is not None]
+        if not graded:
+            out[name] = cells[0][1].get(name)
+            continue
+        ranked = sorted(graded,
+                        key=lambda c: (_VERDICT_RANK[_rung_verdict(c[1])],
+                                       _rung_stat(c[1])))
+        ts, res = ranked[(len(ranked) - 1) // 2]
+        res = dict(res)
+        res["real_leg"] = ts
+        res["n_real_legs"] = len(graded)
+        res["real_draws"] = {t: _rung_verdict(v) for t, v in graded}
+        out[name] = res
+    return out
+
+
+def _tally(res: dict) -> tuple:
+    """(n_pass, fails, n_skip, underived) over a graded board."""
     try:
         from parity.checks import _WARN_ONLY_CHECKS
     except ImportError:
         _WARN_ONLY_CHECKS = set()
-    real_agg, real_tr = load_run_dir(rdir)
-    sim_agg, sim_tr = load_run_dir(sdir)
-    res = run_all_parity(real_agg, sim_agg, real_tr, sim_tr, agg_goal=goal,
-                         max_bin=max_bin, floors=_floors(label),
-                         same_mode=same_mode)
-    jpath = os.path.join(json_dir, f"{prefix}_{label.replace('/', '_')}_{sts}.json")
-    json.dump(res, open(jpath, "w"), indent=2, default=str)
     n_pass = sum(1 for v in res.values()
                  if isinstance(v, dict) and v.get("ok") and not v.get("status"))
     # a real FAIL = not-ok, not a DIAG warn, not in the warn-only allowlist
@@ -297,6 +340,35 @@ def _grade_pair(job):
     underived = [k for k in fails
                  if res[k].get("threshold_provenance") == "CALIBRATED"
                  and not res[k].get("gate_derived")]
+    return n_pass, fails, n_skip, underived
+
+
+def _grade_pair(job):
+    """Grade one real/sim cell. Module-level and self-contained so it can run in
+    a worker process: takes paths, returns picklable primitives. Imports inside
+    so a forked worker resolves them against the sys.path this module sets up at
+    import time.
+
+    `prefix=None` grades without writing JSON -- the real×sim cells of one board
+    are merged by `_median_over_reals` and written once, under the sim leg's ts.
+    """
+    label, rdir, sdir, goal, max_bin, json_dir, sts, prefix = job
+    # A CONTROL pair is two legs of the SAME mode, so the clock rungs must not
+    # demand a vclock on the B side (§D-56) -- that bail is what made all three
+    # unreadable real↔real. Each leg still reads its own vclock where it has one.
+    same_mode = prefix == "control"
+    from parity.checks import load_run_dir, run_all_parity
+    real_agg, real_tr = load_run_dir(rdir)
+    sim_agg, sim_tr = load_run_dir(sdir)
+    res = run_all_parity(real_agg, sim_agg, real_tr, sim_tr, agg_goal=goal,
+                         max_bin=max_bin, floors=_floors(label),
+                         same_mode=same_mode)
+    jpath = None
+    if prefix is not None:
+        jpath = os.path.join(json_dir,
+                             f"{prefix}_{label.replace('/', '_')}_{sts}.json")
+        json.dump(res, open(jpath, "w"), indent=2, default=str)
+    n_pass, fails, n_skip, underived = _tally(res)
     return label, res, jpath, (n_pass, len(fails), n_skip), fails, underived
 
 
@@ -499,6 +571,11 @@ def main(argv=None) -> int:
     ap.add_argument("--jvp-eval-mode", choices=("on", "off", "any"), default="on",
                     help="--control: which training config to grade (default on; "
                          "an OFF group never pools with an ON one, D-45)")
+    ap.add_argument("--single-real", action="store_true",
+                    help="grade the sim leg against only the newest same-code "
+                         "real, as before the median rule. One real leg is a "
+                         "DRAW and the draw decided the board (D-69, D-90) -- "
+                         "for reproducing an old report, not for grading")
     args = ap.parse_args(argv)
 
     json_dir = args.json_dir or os.path.join(args.experiments_dir, "_parity_reports")
@@ -521,7 +598,10 @@ def main(argv=None) -> int:
                 print(f"  [SKIP] {'/'.join(k for k in key if k)}: "
                       f"missing a side (have: {have})")
                 continue
-            pairs.append((key, slot["real"], slot["sim"],
+            reals = slot.get("_reals") or [slot["real"]]
+            if args.single_real:
+                reals = reals[:1]
+            pairs.append((key, reals, slot["sim"],
                           slot.get("_flag"), slot.get("_flag_skipped") or []))
 
     if not pairs:
@@ -531,12 +611,17 @@ def main(argv=None) -> int:
     # ── confirmation: show exactly which dirs will be compared ──
     label_w = max(len("/".join(k for k in key if k)) for key, *_ in pairs)
     print("\n  Real<->sim pairs to check (latest per baseline, flag-matched):")
-    for key, (rts, rdir), (sts, sdir), flag, skipped in pairs:
+    for key, reals, (sts, sdir), flag, skipped in pairs:
+        (rts, rdir) = reals[0]
         goal_r, goal_s = _agg_goal(rdir), _agg_goal(sdir)
         goal = f"agg_goal={goal_r}" + (f"!={goal_s}⚠" if goal_s != goal_r else "")
         label = "/".join(k for k in key if k)
         print(f"    {label.ljust(label_w)}  {goal}")
-        print(f"      real {rts}  {os.path.basename(rdir)}")
+        for i, (ts_, dir_) in enumerate(reals):
+            print(f"      real {ts_}  {os.path.basename(dir_)}"
+                  + ("" if len(reals) == 1 else
+                     "   [median over %d real leg(s)]" % len(reals) if i == 0
+                     else ""))
         print(f"      sim  {sts}  {os.path.basename(sdir)}")
         if flag is not None:
             print(f"      jvp_eval_mode={flag[0]}, max_runtime_s={flag[1]} on both legs")
@@ -565,36 +650,63 @@ def main(argv=None) -> int:
             return 0
 
     # ── run + collect ──
-    jobs = args.jobs if args.jobs else _default_jobs(len(pairs))
-    work = [(("/".join(k for k in key if k)), rdir, sdir, _agg_goal(rdir) or 0,
-             args.max_bin, json_dir, sts, "parity")
-            for key, (_rts, rdir), (sts, sdir), _flag, _skipped in pairs]
-    print(f"\n  Grading {len(pairs)} pair(s) with {jobs} worker(s) "
-          f"(~{_PAIR_RSS_GB:.0f} GB each)...")
+    # A unit of work is a CELL (one real leg × the sim leg), not a board. Cells
+    # write no JSON; the merged board is written once under the sim leg's ts, so
+    # the report path is unchanged.
+    cells = [(("/".join(k for k in key if k)), rdir, sdir, _agg_goal(rdir) or 0,
+              args.max_bin, json_dir, sts, None)
+             for key, reals, (sts, sdir), _flag, _skipped in pairs
+             for (_rts, rdir) in reals]
+    jobs = args.jobs if args.jobs else _default_jobs(len(cells))
+    print(f"\n  Grading {len(pairs)} board(s) / {len(cells)} real×sim cell(s) "
+          f"with {jobs} worker(s) (~{_PAIR_RSS_GB:.0f} GB each)...")
 
     summary = []  # (label, {name: result}, json_path, tally, fails, live_notes)
     if jobs <= 1:
-        done = [_grade_pair(w) for w in work]
+        done = [_grade_pair(w) for w in cells]
     else:
-        # Pairs are independent: different input dirs, different output JSON, no
-        # shared state -- and a pair is 77% file-load wall (13.3s of 17.3s), so
-        # this is close to linear until it saturates memory or disk.
+        # Cells are independent: different input dirs, no shared state, no output
+        # file -- and a cell is 77% file-load wall (13.3s of 17.3s), so this is
+        # close to linear until it saturates memory or disk.
         with ProcessPoolExecutor(max_workers=jobs) as pool:
-            done = list(pool.map(_grade_pair, work))    # map preserves input order
-    for (label, res, jpath, tally, fails, underived), (_key, (_rts, rdir),
-                                                      (_sts, sdir), _flag,
-                                                      _skipped) in zip(done, pairs):
-        live = _live_checks(label, rdir, sdir) if args.validate else []
+            done = list(pool.map(_grade_pair, cells))   # map preserves input order
+    cursor = 0
+    for _key, reals, (sts, sdir), _flag, _skipped in pairs:
+        got = done[cursor:cursor + len(reals)]
+        cursor += len(reals)
+        label = got[0][0]
+        res = _median_over_reals([(ts, r[1]) for (ts, _d), r in zip(reals, got)])
+        jpath = os.path.join(json_dir,
+                             f"parity_{label.replace('/', '_')}_{sts}.json")
+        json.dump(res, open(jpath, "w"), indent=2, default=str)
+        n_pass, fails, n_skip, underived = _tally(res)
+        live = _live_checks(label, reals[0][1], sdir) if args.validate else []
         if underived:
             live.append(f"⚠ gate never derived from a floor: {', '.join(underived)}")
-        summary.append((label, res, jpath, tally, fails, live))
+        # A rung failing some cells but not the median is the draw talking; name
+        # it, or the median absorbs the evidence §D-69 says to read. Excludes
+        # DIAG/warn-only, which are not a fail on ANY cell.
+        try:
+            from parity.checks import _WARN_ONLY_CHECKS
+        except ImportError:
+            _WARN_ONLY_CHECKS = set()
+        split = sorted(
+            k for k, v in res.items()
+            if isinstance(v, dict) and k not in fails
+            and v.get("tier") != "DIAG" and k not in _WARN_ONLY_CHECKS
+            and "FAIL" in (v.get("real_draws") or {}).values())
+        if split:
+            live.append(f"draw-split (failed a minority of {len(reals)} real "
+                        f"legs, median passes): {', '.join(split)}")
+        summary.append((label, res, jpath, (n_pass, len(fails), n_skip),
+                        fails, live))
 
     # ── compact cross-baseline table ──
     print("\n" + "=" * 78)
     lab_w = max(len(s[0]) for s in summary)
     hdr = "  " + "baseline".ljust(lab_w) + "  " + "  ".join(lbl for _, lbl in _HEADLINE)
     print(hdr)
-    for label, res, _jp, _tally, _fails, _live in summary:
+    for label, res, _jp, _t, _fails, _live in summary:
         cells = []
         for name, lbl in _HEADLINE:
             cells.append(_status(res.get(name, {})).center(max(len(lbl), 1)))

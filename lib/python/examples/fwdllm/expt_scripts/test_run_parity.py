@@ -370,3 +370,115 @@ class TestFloorGateIsTwoSided:
 
     def test_no_metrics_at_all_reads_as_no_floor(self, tmp_path, monkeypatch):
         assert self._profile(tmp_path, monkeypatch, max_runtime_s=7200) is None
+
+
+class TestMedianOverRealLegs:
+    """One real leg is a DRAW, and the draw decided the board (§D-69, §D-90): on
+    `fedbuff_round` four rungs fail on 1-2 of the 12 real×sim cells and none
+    fails systematically, so `utility`'s standing fail was which legs
+    `_discover` picked. The verdict is the LOWER median over the real legs, so a
+    rung fails only when it fails MORE than half of them. This moves no
+    tolerance -- only the sample the residual is drawn from.
+    """
+
+    @staticmethod
+    def _cells(verdicts, stats=None):
+        """[(real_ts, {'r': result}), ...] from a list of PASS/FAIL/SKIP."""
+        out = []
+        for i, v in enumerate(verdicts):
+            res = {"tier": "DIST", "ok": v != "FAIL"}
+            if v == "SKIP":
+                res["status"] = "SKIP"
+            if stats is not None:
+                res["decided_on"] = "ks"
+                res["ks"] = stats[i]
+            out.append((f"ts{i}", {"r": res}))
+        return out
+
+    def _verdict(self, verdicts, stats=None):
+        return rp._rung_verdict(
+            rp._median_over_reals(self._cells(verdicts, stats))["r"])
+
+    def test_a_minority_fail_does_not_fail_the_rung(self):
+        # utility: 1 of 4 real legs failed, and that one was the drawn leg.
+        assert self._verdict(["PASS", "FAIL", "PASS", "PASS"]) == "PASS"
+
+    def test_a_unanimous_fail_still_fails(self):
+        # The negative control: the median must not launder a real divergence.
+        assert self._verdict(["FAIL", "FAIL", "FAIL", "FAIL"]) == "FAIL"
+
+    def test_a_majority_fail_still_fails(self):
+        assert self._verdict(["FAIL", "FAIL", "FAIL", "PASS"]) == "FAIL"
+
+    def test_a_tie_does_not_fail(self):
+        # 2 of 4 is not "more than half" -- the lower median is the PASS side,
+        # and `draw-split` reports it rather than the board swallowing it.
+        assert self._verdict(["FAIL", "FAIL", "PASS", "PASS"]) == "PASS"
+
+    def test_one_real_leg_grades_exactly_as_before(self):
+        assert self._verdict(["FAIL"]) == "FAIL"
+        assert self._verdict(["PASS"]) == "PASS"
+
+    def test_a_skipped_rung_stays_skipped(self):
+        # The floor is a property of the baseline, not of the drawn leg.
+        assert self._verdict(["SKIP", "SKIP", "SKIP"]) == "SKIP"
+
+    def test_it_reports_the_numerically_median_cell(self):
+        # Ties on verdict break on the rung's own decided statistic, so the
+        # number on the board is a real cell's and is the median one.
+        merged = rp._median_over_reals(
+            self._cells(["PASS"] * 4, stats=[0.170, 0.220, 0.159, 0.095]))["r"]
+        assert merged["ks"] == pytest.approx(0.159)
+
+    def test_every_draw_is_recorded(self):
+        # Nothing is masked: a 1-of-4 fail must stay visible on the rung.
+        merged = rp._median_over_reals(
+            self._cells(["PASS", "FAIL", "PASS", "PASS"]))["r"]
+        assert merged["n_real_legs"] == 4
+        assert list(merged["real_draws"].values()) == ["PASS", "FAIL",
+                                                       "PASS", "PASS"]
+
+    def test_a_non_dict_entry_survives_the_merge(self):
+        cells = [("ts0", {"r": {"tier": "DIST", "ok": True}, "note": "x"}),
+                 ("ts1", {"r": {"tier": "DIST", "ok": True}, "note": "x"})]
+        assert rp._median_over_reals(cells)["note"] == "x"
+
+
+class TestDiscoveryPoolsSameCodeReals:
+    def test_all_same_code_reals_are_kept(self, tmp_path):
+        for ts in ("20260101_000000", "20260102_000000", "20260103_000000"):
+            _mk_run(tmp_path, f"run_{ts}_b_n10_smoke_syn_0_real",
+                    jvp=True, max_runtime_s=7200)
+        _mk_run(tmp_path, "run_20260104_000000_b_n10_smoke_syn_0_sim",
+                vclock=True, jvp=True, max_runtime_s=7200)
+        slot = rp._discover(str(tmp_path))[("b", "syn_0")]
+        assert [t for t, _ in slot["_reals"]] == ["20260103_000000",
+                                                  "20260102_000000",
+                                                  "20260101_000000"]
+        assert slot["real"] == slot["_reals"][0]
+
+    def test_a_flag_mismatched_real_is_still_excluded(self, tmp_path):
+        _mk_run(tmp_path, "run_20260101_000000_b_n10_smoke_syn_0_real",
+                jvp=True, max_runtime_s=7200)
+        _mk_run(tmp_path, "run_20260102_000000_b_n10_smoke_syn_0_real",
+                jvp=False, max_runtime_s=7200)
+        _mk_run(tmp_path, "run_20260104_000000_b_n10_smoke_syn_0_sim",
+                vclock=True, jvp=True, max_runtime_s=7200)
+        slot = rp._discover(str(tmp_path))[("b", "syn_0")]
+        assert [t for t, _ in slot["_reals"]] == ["20260101_000000"]
+
+    def test_a_bail_is_not_a_fail(self):
+        # A bailed rung carries no `ok` (§D-56). Ranking it as FAIL would sort it
+        # above every real verdict and hand the median a cell that measured
+        # nothing -- so it is excluded, and the readable cells decide.
+        cells = [("ts0", {"r": {"tier": "INV", "note": "no vclock on the B side"}}),
+                 ("ts1", {"r": {"tier": "DIST", "ok": True}}),
+                 ("ts2", {"r": {"tier": "DIST", "ok": True}})]
+        merged = rp._median_over_reals(cells)["r"]
+        assert merged["ok"] is True and merged["n_real_legs"] == 2
+
+    def test_a_rung_that_bailed_everywhere_stays_bailed(self):
+        cells = [("ts0", {"r": {"tier": "INV", "note": "sim-only"}}),
+                 ("ts1", {"r": {"tier": "INV", "note": "sim-only"}})]
+        merged = rp._median_over_reals(cells)["r"]
+        assert "ok" not in merged and "real_draws" not in merged

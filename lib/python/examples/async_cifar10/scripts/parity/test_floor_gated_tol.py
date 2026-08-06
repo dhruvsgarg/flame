@@ -123,6 +123,171 @@ class TestBoundedLoosen:
             assert tol <= 0.04
 
 
+class TestEachSideReadsItsOwnClock:
+    """§D-73, on the three rungs that never got the `same_mode` fix.
+
+    `per_round_advance`, `overhead_residual` and `overlap_factor` all hardcoded
+    side A to wall and side B to vclock, so a sim↔sim CONTROL pair compared one
+    leg's process wall against the other's virtual clock. Sim's wall runs ~3.4x
+    its vclock, so every config-identical sim pair read a 64-74% "advance
+    divergence" (ratio median 2.8-4.0) and the whole family looked uncalibrated.
+    Measured on felix_round/fedbuff_round sim replicates, reading each side on its
+    own clock takes that to 2-20%.
+    """
+
+    @staticmethod
+    def _legs(advance_a, advance_b):
+        from parity.test_ladder import _build_mode
+        a, _ = _build_mode(20, advance=advance_a, with_vclock=True)
+        b, _ = _build_mode(20, advance=advance_b, with_vclock=True)
+        return a, b
+
+    def test_two_vclock_legs_are_compared_on_their_vclocks(self):
+        """Two identical sim legs must read ~0 apart, not sim's speedup ratio."""
+        from parity.checks import per_round_advance_parity
+        a, b = self._legs(10.0, 10.0)
+        r = per_round_advance_parity(a, b, same_mode=True)
+        assert r.get("status") != "SKIP"
+        assert r["mean_rel_diff"] < 0.01, r
+        assert r["ok"] is True
+
+    def test_a_genuine_advance_divergence_still_fails(self):
+        """The fix must not make the rung blind: 10s vs 20s per unit is real."""
+        from parity.checks import per_round_advance_parity
+        a, b = self._legs(10.0, 20.0)
+        r = per_round_advance_parity(a, b, same_mode=True)
+        assert r["ok"] is False and r["mean_rel_diff"] > 0.4, r
+
+    def test_two_real_legs_are_readable_rather_than_a_skip(self):
+        """Neither side has a vclock, so the rung used to bail (§D-56). Its
+        QUANTITY is measurable across replicates, which is its floor (§D-72)."""
+        from parity.test_ladder import _build_mode
+
+        from parity.checks import per_round_advance_parity
+        a, _ = _build_mode(20, advance=10.0, with_vclock=False)
+        b, _ = _build_mode(20, advance=10.0, with_vclock=False)
+        assert per_round_advance_parity(a, b).get("status") == "SKIP"
+        r = per_round_advance_parity(a, b, same_mode=True)
+        assert r.get("status") != "SKIP" and r["ok"] is True, r
+
+    def test_a_real_sim_pair_is_unchanged(self):
+        """Production pairing must be byte-identical: side A has no vclock, so
+        `_has_vclock` picks wall exactly as the hardcoded read did."""
+        from parity.test_ladder import _build_mode
+
+        from parity.checks import per_round_advance_parity
+        ra, _ = _build_mode(20, advance=10.0, with_vclock=False)
+        sa, _ = _build_mode(20, advance=10.0, with_vclock=True)
+        r = per_round_advance_parity(ra, sa)
+        assert r.get("status") != "SKIP"
+        assert r["ok"] is True and r["mean_rel_diff"] < 0.01, r
+
+    def test_the_other_two_of_the_family_take_the_flag_too(self):
+        import inspect
+
+        from parity.checks import overhead_residual, overlap_factor
+        for fn in (overhead_residual, overlap_factor):
+            assert "same_mode" in inspect.signature(fn).parameters, fn.__name__
+
+    # ── the sweep: what makes this fixable once rather than rung by rung ──
+
+    def test_every_paired_clock_rung_reads_each_side_on_its_own_clock(self):
+        """THE regression guard. Two IDENTICAL sim legs through the whole ladder:
+        every rung must read ~0 divergence.
+
+        The fixture's sim legs carry a vclock advancing 10s/round against a wall
+        advancing 1s/round, so ANY rung that hardcodes A=wall / B=vclock reports
+        that 10x as a divergence. Three rungs did, for a whole batch, and each was
+        found only by hand — this test is what makes the next one fail loudly.
+
+        A new time rung that trips this must route through `pair_clocks`, not
+        widen its gate."""
+        from parity.test_ladder import AGG_GOAL, _build_mode
+
+        from parity.checks import run_all_parity
+        a_agg, a_tr = _build_mode(20, advance=10.0, with_vclock=True)
+        b_agg, b_tr = _build_mode(20, advance=10.0, with_vclock=True)
+        res = run_all_parity(a_agg, b_agg, a_tr, b_tr, agg_goal=AGG_GOAL,
+                             same_mode=True)
+
+        offenders = []
+        for rung, r in res.items():
+            if not isinstance(r, dict) or r.get("status") == "SKIP":
+                continue
+            # Any rung reporting a per-side mean advance must agree across two
+            # identical legs; a wall-vs-vclock read shows the speedup ratio.
+            rm, sm = r.get("real_mean_advance_s"), r.get("sim_mean_advance_s")
+            if rm and sm and abs(rm - sm) / max(rm, sm) > 0.05:
+                offenders.append(f"{rung}: real={rm} sim={sm}")
+        assert not offenders, (
+            "rung(s) comparing one leg's wall to the other's vclock (§D-73); "
+            "route them through `pair_clocks`: " + "; ".join(offenders))
+
+    def test_the_sweep_actually_catches_a_regression(self):
+        """A guard nobody has seen fail is not a guard. Re-introduce the bug in
+        one rung and confirm the sweep's own predicate fires."""
+        from parity.test_ladder import _build_mode
+
+        from parity.checks import _per_round_advances
+        a_agg, _ = _build_mode(20, advance=10.0, with_vclock=True)
+        wall = _per_round_advances(a_agg["agg_rounds"], use_vclock=False)
+        vclk = _per_round_advances(a_agg["agg_rounds"], use_vclock=True)
+        rm, sm = sum(wall) / len(wall), sum(vclk) / len(vclk)
+        assert abs(rm - sm) / max(rm, sm) > 0.05, (
+            "fixture no longer separates wall from vclock — the sweep above is "
+            "vacuous; give the sim leg a wall clock that differs from its vclock")
+
+
+class TestUtilityGradesTheMatchedWindow:
+    """`utility`'s matched-budget truncation was gated on `_real_intrinsic_clock`
+    — a SYNC-only wall coordinate the matched window never reads. Async therefore
+    graded the FULL RUN: felix_round pooled 24420 real against 20710 sim samples
+    for KS 0.232, where the matched window reads 0.137 against a real↔real
+    matched-window floor of 0.135. Unequal prefixes are what the truncation is
+    for (§D-4, §D-75)."""
+
+    def test_an_async_pair_decides_on_the_matched_window(self):
+        from parity.test_ladder import _build_mode
+
+        from parity.checks import utility_parity
+        ra, _ = _build_mode(20, advance=10.0, with_vclock=False)
+        sa, _ = _build_mode(30, advance=10.0, with_vclock=True)
+        r = utility_parity(ra, sa)
+        if "matched_window_pooled_ks_stat" in r:
+            assert r["decided_on"] == "matched_window_pooled_ks_stat"
+
+
+class TestMatchedWindowIsNotGatedOnAClockItNeverReads:
+    """§D-84, swept rather than spot-fixed.
+
+    Three rungs computed a matched-budget window and then declined to USE it
+    unless `_real_intrinsic_clock` was available — a sync-only wall coordinate
+    none of those windows is built from. Async therefore graded the full run, i.e.
+    two unequal prefixes, which is the exact comparison the truncation exists to
+    prevent. `utility` read KS 0.232 that way against 0.137 on the window."""
+
+    def test_no_rung_gates_a_matched_window_on_real_coord(self):
+        import inspect
+        import re
+
+        from parity import checks
+        offenders = []
+        for name, fn in vars(checks).items():
+            if not callable(fn) or not hasattr(fn, "__code__"):
+                continue
+            try:
+                src = inspect.getsource(fn)
+            except (OSError, TypeError):
+                continue
+            if "matched_window_" not in src:
+                continue
+            if re.search(r"if\s+real_coord\s+is not None", src):
+                offenders.append(name)
+        assert not offenders, (
+            "matched-window verdict gated on a clock the window never reads "
+            "(§D-84): " + ", ".join(offenders))
+
+
 class TestSelectionCountIsWorkVolume:
     """`selection_detail` failed only on `rel_diff_n_selections` (7.5-13.8%) while
     `rel_diff_chosen` and `rel_diff_inflight` read EXACTLY 0.0 on the same pairs —
@@ -523,16 +688,24 @@ class TestThresholdProvenance:
         res = run_all_parity(ra, sa, rt, st, agg_goal=AGG_GOAL,
                              floors={"iters_per_bin": 0.03})
         assert res["v1_iter_per_data_id"]["gate_derived"] is True
-        assert res["per_round_advance"]["gate_derived"] is False
+        assert res["staleness"]["gate_derived"] is False
         assert res["sim_rate"]["threshold_provenance"] == "POLICY"
         assert "gate_derived" not in res["sim_rate"], "POLICY has no floor to derive"
 
     def test_the_debt_is_reported_not_hidden(self):
-        """45 CALIBRATED rungs still have no measured floor. That is the honest
-        number, and the batches are what shrink it — a gate nobody derived is
-        either too tight (grades noise) or too loose (passes divergence), and
-        0-fail on a control cannot tell you which (§D-24)."""
+        """CALIBRATED rungs with no measured floor. That is the honest number,
+        and the batches are what shrink it — a gate nobody derived is either too
+        tight (grades noise) or too loose (passes divergence), and 0-fail on a
+        control cannot tell you which (§D-24).
+
+        A RATCHET: the count may only fall. `per_round_advance` left this list
+        once each side read its own clock made its floor measurable (§D-73)."""
         from parity.checks import calibration_debt
         debt = calibration_debt()
-        assert "per_round_advance" in debt, "its KS 0.2 passed a 27% tail gap"
-        assert len(debt) <= 45
+        assert "staleness" in debt, "never derived, never controlled"
+        # The whole clock family left this list once each side read its own clock
+        # made their floors measurable at all (§D-73).
+        for left in ("per_round_advance", "utility", "overhead_residual",
+                     "overlap_factor"):
+            assert left not in debt, f"{left} is floor-gated now"
+        assert len(debt) <= 41
