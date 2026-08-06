@@ -54,6 +54,7 @@ yapf*.py
 
 # etc
 *.bak
+*.off-bak
 
 # fiab related
 mlruns
