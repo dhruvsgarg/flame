@@ -154,20 +154,26 @@ on every rung records each cell, and the CLI prints a `draw-split` line for any 
 | `fwdllm_it_oracular` | **69/0/23** | — | 0.0% / **0.0%** | pinned; its block completed this batch |
 | `fwdllm` | **68/0/24** | — | 0.0% / **0.0%** | pinned negative control; every leg identical to 4 s.f. |
 | `felix_it` | **66/0/27** | — | **18.9%** / 2.4% | clean, on the widest REAL floor on the board |
-| `fedbuff_it_unaware` | **66/0/26** | — | 9.2% / **8.2%** | its pre-batch `v1` fail was a one-sided gate |
-| `fedbuff_it_oracular` | 64/**1**/26 | `utility` | 9.2% / **8.2%** | fails 2 of 3 reals — a MAJORITY, below |
+| `fedbuff_round` | **63/0/30** | — | 15.4% / **21.2%** | n=4 both sides; `utility` ENFORCED and green at 0.111 |
+| `fedbuff_it_unaware` | **63/0/29** | — | 9.2% / **14.7%** | pooled n=6/7; 3 rungs went enforced → SKIP |
+| `fedbuff_it_oracular` | **62/0/29** | — | 9.2% / **14.7%** | same; its `utility` fail became a SKIP, not a pass |
 | `felix_round` | **62/0/30** | — | 15.9% / **8.2%** | its three fails were all checker defects (§G) |
-| `fedbuff_round` | **62/0/30** | — | 15.4% / **21.2%** | its `utility` fail was the DRAW (§D-90) |
 
-**`fedbuff_round`'s standing fail is CLOSED and was never about sim.** Over all 12 real×sim cells four rungs
-fail 1-2 cells each and none systematically; `utility`'s 0.220 was the worst cell of twelve (median 0.096),
-pairing the highest-loss sim leg with the lowest-loss real. Against the pooled real distribution the sim legs
-read 0.059 / 0.066 / 0.137 where real's own leave-one-out reads 0.016-0.114, and pooled-vs-pooled is **0.040**.
+**ZERO FAILS ON ALL NINE.** `fedbuff_round`'s standing fail was the DRAW and was never about sim: over all 12
+real×sim cells four rungs fail 1-2 cells each and none systematically, and pooled-sim vs pooled-real reads
+**0.040**. With a 4th sim leg its `utility` now reads **0.111 against a 0.2 gate, ENFORCED and unanimous over
+all four real legs** — the strongest form of green on the board.
 
-⚠ **The same rule surfaced a fail it was hiding: `fedbuff_it_oracular`'s `utility` fails 2 of 3 reals** —
-0.220 against a 0.185 floor and a 0.2 gate, the same knife-edge shape but a MAJORITY, so not the draw. One
-more sim leg (§B.3 #2), not a widened gate. ⚠ Its floor is the POOLED `fedbuff_it` row, premise under review
-in §B.3 #1.
+⚠ **`fedbuff_it_*`'s `utility` is a SKIP, not a pass — do not read it as one.** The 4th `_oracular` sim leg
+took the pooled sim floor 0.185 → **0.314**, past the 0.2 nominal, so the rung is now UNGRADEABLE: sim's own
+replicate spread on that statistic exceeds any residual it could report. The residual did also collapse
+(0.220 → 0.048), so nothing is hiding under the SKIP — but the rung no longer certifies anything.
+**The 0.314 is a WITHIN-name pair** (`_oracular`×`_oracular`, max cross-name 0.260), so it is genuine sim
+noise and does NOT rest on the pooling premise §B.3 #1 has under review.
+
+⚠ **Adding legs cost enforcement on that family**: `overhead_residual`, `per_round_advance` and `utility` all
+went enforced-PASS → SKIP on BOTH `fedbuff_it` names as the n=7 floors widened. That is the honest direction
+(§D-24) but it is six fewer enforced verdicts, and it is the reason those two rows lost rungs.
 
 **The board improved this batch by fixing MEASUREMENT, not the simulator.** Nine rungs' verdicts changed and
 **no simulator code was touched**: three rungs compared one leg's wall against another's vclock, three graded
@@ -225,10 +231,10 @@ All nine, real / **sim**. `fedbuff_it` shares a row (still pooled); `fwdllm_it` 
 
 | baseline | n r/s | `iters_per_bin` | `time_to_n` | `throughput` | `mean_var` |
 |---|---|---|---|---|---|
-| `fedbuff_round` | 4/3 | 15.4 / **21.2** | 14.5 / **19.9** | 14.6 / **20.0** | 6.3 / **9.8** |
+| `fedbuff_round` | 4/4 | 15.4 / **21.2** | 14.5 / **19.9** | 14.6 / **20.0** | 6.3 / **9.8** |
 | `felix_it` | 3/3 | **18.9** / 2.4 | **18.9** / 3.0 | **19.0** / 3.0 | **6.7** / 2.8 |
 | `felix_round` | 3/3 | **15.9** / 8.2 | **15.6** / 7.9 | **15.6** / 7.9 | **7.6** / 6.4 |
-| `fedbuff_it` (pooled) | 6/3 | **9.2** / 8.2 | **9.0** / 8.2 | **9.1** / 8.2 | **7.3** / 1.4 |
+| `fedbuff_it` (pooled) | 6/7 | 9.2 / **14.7** | 9.0 / **14.8** | 9.1 / **14.8** | 7.3 / 7.3 |
 | `fluxtune` (capped) | 3/3 | **2.3** / 1.4 | **2.1** / 1.1 | **2.1** / 1.2 | 4.9 / **7.7** |
 | `fwdllm` · `fwdllm_it_*` (pinned) | 3/2-3 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 | 0.0 / 0.0 |
 | nominal gate | | 15% | 8% | 8% | 2% |
@@ -289,7 +295,7 @@ suppresses residual and floor together (§D-52), and node A bought 4h evidence o
 
 | # | criterion | status |
 |---|---|---|
-| 1 | Every INV/EXACT rung green on all nine | **MET.** Every INV/EXACT rung is green on all NINE. The one remaining fail is DIST — `fedbuff_it_oracular`'s `utility` at 1.19x its own replicate floor, on a MAJORITY of real legs (§A.2) |
+| 1 | Every INV/EXACT rung green on all nine | **MET, and now with ZERO fails of any tier on all NINE** (§A.2). ⚠ `fedbuff_it_*`'s `utility` is a SKIP, not a pass — its floor swallowed the gate |
 | 2 | Convergence + terminal state inside each baseline's own replicate band | **MET, and enforced rather than argued** — `convergence`'s `acc_tol` is floor-gated, so "inside its own band" is what the rung tests |
 | 3 | Every remaining DIST residual is COMMON-MODE | **MET on 9 of 9** |
 | 4 | No residual correlates with a baseline-DISTINGUISHING knob | **MET** — the correlation §A.2 used to report was the replicate floor tracking the pin, not a sim bias |
@@ -443,15 +449,11 @@ commits (§E, §D-70). Block 1 replaced them with same-code n=3 on both sides (�
    ⚠ Only the PINNED family can resolve this: it is the one with a 0.0% floor, so a 5% systematic effect is
    visible instead of buried (§D-52 inverted).
 
-2. **One more `fedbuff_it_oracular` SIM leg** — the board's last fail, and the only one the median says is
-   not a draw (2 of 3 reals). `utility` reads 0.220 against a 0.185 pooled floor; n=3 → n=4 on the noisier
-   side either takes the floor past the 0.2 nominal, making the rung an honest SKIP, or leaves it gradeable
-   and the residual becomes a real question. 35-50 min. ⚠ Do NOT re-profile its charges first — that makes
-   the new leg a non-replicate of the other three (§D-91). Preflight will block on a newer real; `--force`
-   is correct here and only here.
-   ```bash
-   bash run_sequential.sh --mode sim --max-runtime-s 7200 --only fedbuff_it_oracular --yes --force
-   ```
+2. ~~One more `fedbuff_it_oracular` SIM leg~~ — **DONE**, and it landed the way §B.3 predicted: the floor
+   went past the nominal and the rung is an honest SKIP (§A.2, §G). `fedbuff_round`'s 4th sim leg landed with
+   it and took its `utility` to an ENFORCED 0.111. **The board is 0-fail on all nine.**
+   ⚠ **Re-enforcing `fedbuff_it_*`'s three SKIPped rungs is the successor task** — it needs a narrower sim
+   floor, i.e. why two `_oracular` legs differ by 0.314 on pooled utility KS, not more legs.
 
 3. ~~Grade a sim leg against the real DISTRIBUTION~~ — **DONE** (§G, §D-90). Every rung's verdict is now the
    median over all same-code real legs, and it moved the board in both directions.
@@ -1138,6 +1140,17 @@ Moved to §D-3; stub kept because prior sessions cite "§F.2".
 > current depends on it — git log keeps it.
 
 **This batch**
+- **THE BOARD IS 0-FAIL ON ALL NINE.** A 4th sim leg on `fedbuff_round` and `fedbuff_it_oracular` closed the
+  last one. `fedbuff_round`'s `utility` is ENFORCED and green at 0.111/0.2, unanimous over 4 real legs.
+  `fedbuff_it_*`'s is a **SKIP**: the pooled sim floor went 0.185 → 0.314 (a WITHIN-name pair, so genuine sim
+  noise, not the §B.3 #1 pooling premise) and swallowed the 0.2 gate. Its residual also fell 0.220 → 0.048,
+  so nothing hides under the SKIP — but ⚠ `overhead_residual`, `per_round_advance` and `utility` all went
+  enforced → SKIP on both `fedbuff_it` names. Six fewer enforced verdicts; re-narrowing that floor is next.
+- **A POOLED group split on cross-baseline charges, and it silently corrupted a floor.** `largest_same_code`
+  compared one representative leg per SHA cluster, which in a pooled group pits `_oracular`'s charge table
+  against `_unaware`'s — never equal. It dropped three `_oracular` legs and measured the `fedbuff_it` floor on
+  3 `_unaware` + 1 `_oracular` (the name-mixing §D-86 forbids), understating `utility_ks` as 0.175. Now
+  compared PER BASELINE over baselines present in both clusters: 7 legs kept, floor 0.314. Negative-controlled.
 - **`fedbuff_round`'s standing `utility` fail is CLOSED, and it was the DRAW, not the simulator (§D-90).**
   Every rung's verdict is now the median over all same-code real legs, each cell kept in `real_draws` with a
   `draw-split` CLI line. Symmetric, and it proved it: `fedbuff_it_oracular`'s `utility` fails 2 of 3 reals

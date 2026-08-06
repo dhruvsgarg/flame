@@ -89,7 +89,7 @@ rungs:
     field: max_ks
     nominal: 0.2
     rung: utility
-sim_code_commit: bdbde72b7
+sim_code_commit: ceb119c6c
 sim_floor_tool_version: 2
 sim_measured_at: '2026-08-06'
 sim_metrics:
@@ -101,20 +101,21 @@ sim_metrics:
   mean_chosen: 0.169
   mean_var: 0.0977
   overhead_rel: 0.2
-  overlap_rel: 0.014
+  overlap_rel: 0.019
   round_advance_ks: 0.324
   round_advance_rel: 0.2
   throughput_rel: 0.2
   time_to_n: 0.199
-  trainers_at_n: 0.038
+  trainers_at_n: 0.058
   utility_ks: 0.198
-sim_n_replicates: 3
+sim_n_replicates: 4
 sim_nodes:
 - wash.cc.gatech.edu
 sim_source_runs:
 - '20260805_052744'
 - '20260805_061421'
 - '20260805_065801'
+- '20260806_133306'
 sim_span_axis: vclock
 source_runs:
 - '20260804_232048'

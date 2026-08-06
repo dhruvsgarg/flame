@@ -96,28 +96,33 @@ sim_code_commit: ceb119c6c
 sim_floor_tool_version: 2
 sim_measured_at: '2026-08-06'
 sim_metrics:
-  accuracy_diff: 0.0863
-  iter_drift_lambda: 0.1106
-  iters_ma_max_dev: 4.25
-  iters_ma_mean_dev: 1.262
-  iters_per_bin: 0.082
+  accuracy_diff: 0.1027
+  iter_drift_lambda: 0.2609
+  iters_ma_max_dev: 9.6
+  iters_ma_mean_dev: 2.3836
+  iters_per_bin: 0.147
   mean_chosen: 0.0
-  mean_var: 0.014
-  overhead_rel: 0.082
+  mean_var: 0.0728
+  overhead_rel: 0.148
   overlap_rel: 0.004
-  round_advance_ks: 0.12
-  round_advance_rel: 0.082
-  throughput_rel: 0.082
-  time_to_n: 0.082
+  round_advance_ks: 0.244
+  round_advance_rel: 0.148
+  throughput_rel: 0.148
+  time_to_n: 0.148
   trainers_at_n: 0.0
-  utility_ks: 0.175
-sim_n_replicates: 3
+  utility_ks: 0.314
+sim_n_replicates: 7
 sim_nodes:
+- kaylee.cc.gatech.edu
 - wash.cc.gatech.edu
 sim_source_runs:
+- '20260805_052441'
+- '20260805_062304'
+- '20260805_072042'
 - '20260805_170730'
 - '20260805_180415'
 - '20260805_190123'
+- '20260806_135919'
 sim_span_axis: vclock
 source_runs:
 - '20260804_231723'

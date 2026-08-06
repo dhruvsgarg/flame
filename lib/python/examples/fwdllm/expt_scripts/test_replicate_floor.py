@@ -328,6 +328,54 @@ class TestChargeProfileIsSettledByTelemetry:
         kept, dropped, _sha = rf.largest_same_code(legs, "sim")
         assert len(kept) == 3 and len(dropped) == 1
 
+    def test_a_POOLED_group_compares_charges_per_baseline(self, tmp_path):
+        """A pooled group (§D-63) holds two baselines with two different charge
+        tables. Comparing one representative from each SHA cluster pits
+        `_oracular`'s charges against `_unaware`'s -- never equal, always
+        splitting. It dropped three `_oracular` legs and left the pooled floor
+        on 3 `_unaware` + 1 `_oracular`, the name-mixing §D-86 forbids."""
+        rf._CHARGE_CACHE.clear()
+        orac, unaw = {"drain_tail": 0.2452}, {"drain_tail": 0.1943}
+        legs = [("20260101_000000", self._leg(
+                    tmp_path, "run_20260101_000000_b_it_oracular_n10_smoke_syn_0_sim",
+                    "bdbde72b7", orac)),
+                ("20260102_000000", self._leg(
+                    tmp_path, "run_20260102_000000_b_it_oracular_n10_smoke_syn_0_sim",
+                    "ceb119c6c", orac)),
+                ("20260103_000000", self._leg(
+                    tmp_path, "run_20260103_000000_b_it_unaware_n10_smoke_syn_0_sim",
+                    "ceb119c6c", unaw))]
+        kept, dropped, _sha = rf.largest_same_code(legs, "sim")
+        assert len(kept) == 3 and dropped == []
+
+    def test_a_pooled_group_still_splits_on_a_real_reprofile(self, tmp_path):
+        # The negative control for the per-baseline comparison: the shared
+        # baseline's OWN charges moved, so the clusters must not merge.
+        rf._CHARGE_CACHE.clear()
+        legs = [("20260101_000000", self._leg(
+                    tmp_path, "run_20260101_000000_b_it_oracular_n10_smoke_syn_0_sim",
+                    "bdbde72b7", {"drain_tail": 0.2452})),
+                ("20260102_000000", self._leg(
+                    tmp_path, "run_20260102_000000_b_it_oracular_n10_smoke_syn_0_sim",
+                    "ceb119c6c", {"drain_tail": 0.2610})),
+                ("20260103_000000", self._leg(
+                    tmp_path, "run_20260103_000000_b_it_unaware_n10_smoke_syn_0_sim",
+                    "ceb119c6c", {"drain_tail": 0.1943}))]
+        kept, dropped, _sha = rf.largest_same_code(legs, "sim")
+        assert len(kept) == 2 and len(dropped) == 1
+
+    def test_no_shared_baseline_refuses_to_merge(self, tmp_path):
+        # No evidence either way => refusing to pool is the safe error (§D-70).
+        rf._CHARGE_CACHE.clear()
+        legs = [("20260101_000000", self._leg(
+                    tmp_path, "run_20260101_000000_b_it_oracular_n10_smoke_syn_0_sim",
+                    "bdbde72b7", {"drain_tail": 0.2452})),
+                ("20260102_000000", self._leg(
+                    tmp_path, "run_20260102_000000_b_it_unaware_n10_smoke_syn_0_sim",
+                    "ceb119c6c", {"drain_tail": 0.2452}))]
+        kept, dropped, _sha = rf.largest_same_code(legs, "sim")
+        assert len(kept) == 1 and len(dropped) == 1
+
     def test_telemetry_never_rescues_a_real_code_change(self, tmp_path):
         # Identical charges must NOT pool legs that differ by simulator code.
         rf._CHARGE_CACHE.clear()

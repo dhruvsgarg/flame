@@ -596,6 +596,41 @@ def consumed_charges(run_dir: str) -> dict | None:
     return res
 
 
+def _baseline_of(path: str):
+    m = _RUN_RE.match(os.path.basename(path))
+    return m["baseline"] if m else None
+
+
+def _charges_agree(legs_a: list, legs_b: list) -> bool:
+    """Did the two SHA clusters charge the same table, compared PER BASELINE?
+
+    A POOLED group (§D-63) holds two baselines with two different profiles, so a
+    single representative leg from each cluster compares `fedbuff_it_oracular`'s
+    charges against `fedbuff_it_unaware`'s -- always unequal, always splitting.
+    That dropped three `_oracular` legs and left the pooled floor measured on
+    3 `_unaware` + 1 `_oracular`, which is the name-mixing §D-86 forbids.
+
+    Compare only baselines present in BOTH clusters, and require at least one:
+    with no shared baseline there is no evidence, and refusing to merge is the
+    safe error (§D-70).
+    """
+    def by_base(legs):
+        out: dict = {}
+        for _ts, path in legs:
+            out.setdefault(_baseline_of(path), []).append(path)
+        return out
+
+    a, b = by_base(legs_a), by_base(legs_b)
+    shared = set(a) & set(b) - {None}
+    if not shared:
+        return False
+    for base in shared:
+        ca, cb = consumed_charges(a[base][0]), consumed_charges(b[base][0])
+        if ca is None or cb is None or ca != cb:
+            return False
+    return True
+
+
 def largest_same_code(legs: list, mode: str | None = None) -> tuple:
     """(kept, dropped, sha) — the biggest subset of `[(ts, path), ...]` that ran
     the same CODE, ties broken toward the NEWEST. Two SHAs count as the same code
@@ -625,8 +660,7 @@ def largest_same_code(legs: list, mode: str | None = None) -> tuple:
         # DISPROVE from its own telemetry, so settle it on what was charged
         # rather than on what was committed (§D-70, `consumed_charges`).
         if differs and mode == "sim" and a and b and charge_profile_only(a, b):
-            ca, cb = consumed_charges(by[a][0][1]), consumed_charges(by[b][0][1])
-            differs = ca is None or cb is None or ca != cb
+            differs = not _charges_agree(by[a], by[b])
         if not differs:
             parent[find(a)] = find(b)
     clusters: dict = {}
