@@ -259,10 +259,18 @@ for LR in 0.01 0.002 0.0005; do
   ./run_sequential.sh $A --learning-rate $LR --max-runtime-s 28800
 done
 
-# node 3 -- H-F, then the P arm (sim_rate 12.6 makes the fwdllm leg nearly free)
-./run_sequential.sh ${A/--only fluxtune/--only fwdllm} --max-runtime-s 28800
-./run_sequential.sh $A --perturbation-count 30 --max-runtime-s 14400
+# node 3 -- H-F, then the P arm (sim_rate 12.6 makes the fwdllm leg nearly free).
+# Not `&&`: the two arms are independent probes, so one failing must not cancel the other.
+for ARM in "fwdllm:28800:" "fluxtune:14400:--perturbation-count 30"; do
+  IFS=: read -r BL RT EXTRA <<< "$ARM"
+  ./run_sequential.sh ${A/--only fluxtune/--only $BL} --max-runtime-s $RT $EXTRA
+done
 ```
+
+Each `run_sequential.sh` call blocks until its runs finish and health-checks afterwards, so all three
+loops chain correctly in one tmux pane. **`P = 30` triples the forward passes per upload** (2P: 20 →
+60), so that leg costs ~2–3× the wall of the others and reaches fewer commits inside its budget —
+harmless, since `ρ` is per-commit and readable from the first ten.
 
 **Why sweeps, not single points.** At sim's wall cost a sweep is nearly the same price as one arm, and
 a predicted *slope* (`ρ ∝ 1/√K`, `ρ ∝ η`) is a far stronger test than a predicted value — it cannot be
