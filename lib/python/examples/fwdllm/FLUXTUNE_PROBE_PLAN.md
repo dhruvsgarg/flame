@@ -217,11 +217,24 @@ full-scale trajectory is what licenses that trade.
 ## 4b. Tonight — a 3-node sim portfolio that needs zero code
 
 The gating in §5 is about *fix* arms. **Falsification arms are not gated** — they test whether the
-handoff's model is right, and each is a config change the launcher already exposes
-(`--agg-goal`, `--c`, `--max-iter-per-data-id`, `--var-threshold`, `--max-runtime-s`; `learning_rate`
-and `perturbation_count` are trainer hyperparameters in the yaml). All arms run
+handoff's model is right, and every one is a launcher flag: `--agg-goal`, `--c`, `--learning-rate`,
+`--perturbation-count`, `--max-iter-per-data-id`, `--var-threshold`, `--max-runtime-s`. All arms run
 `--mode sim` (see §5 for why, and for the two caveats) with `--server-update-audit
 --pool-split-half-audit` so **A1** can score them.
+
+**Launcher gotchas, all of which cost a wasted run if missed:**
+
+- The baseline flag is **`--only`**, not `--baselines` (unknown args abort).
+- **`--yes`** — otherwise each invocation stops at an interactive `[y/N]` prompt.
+- **`--clean`** — back-to-back runs otherwise `DIRTY_ABORT` on a prior run's stray workers.
+- **`--force`** — the sim-charge-profile pre-flight blocks because the 2026-08-04/05 reals are newer
+  than the profile. They are audit-on runs, so **re-profiling from them would bake diagnostic
+  overhead into the vclock model** — force is correct here. Confirm with `--dry-run` that it is the
+  only `✗` first, since `--force` overrides every check.
+- **`--num-trainers 100`** pins `minInitialTrainers`, so varying `--c` does not move the warmup
+  threshold underneath a sweep.
+- The baseline → yaml map is **hardcoded** in `ALL_RUNS`; there is no custom-yaml flag, and
+  `fwdllm_plus` has no entry. Use the config flags above, never a hand-edited yaml.
 
 **Each arm makes a numeric prediction that is checkable at commit ~10, minutes into the run.**
 That is the point: if a prediction misses, §6 is wrong and no fix built on it is worth landing.
@@ -230,6 +243,26 @@ That is the point: if a prediction misses, §6 is wrong and no fix built on it i
 | **1** | **`K`-sweep: agg_goal 10 → 20 → 30 → 60** (c = 2K), 4 h vclock each, plus a **baseline replicate at K = 10** | `ρ ∝ 1/√N`: **0.115 → 0.081 → 0.066 → 0.047**, `cos ∝ √N`, `ρ/cos` improves ∝ K, norm doubling stretches ∝ K, **`ρ·cos` flat across the whole sweep** | a *curve* falsifies far harder than a point: if `ρ` does not track `1/√K`, the pooling identity — the most load-bearing claim in the document — is wrong and §6.3's ranking collapses |
 | **2** | **`η`-sweep: 0.01 → 0.002 → 0.0005**, 8 h vclock each | `ρ ∝ η` **on commit 1, exactly**: 0.115 → 0.023 → 0.0058. η = 0.002 lands *at* the boundary (no collapse in 4 h, ~5× slower climb); η = 0.0005 goes under it but **still random-walks** — divergence merely deferred, which is S-B's whole argument | if `ρ` does not scale 1:1 with `η`, the step model is wrong. If it does but collapse timing does not move as predicted, the boundary is mis-calibrated and every §12 sizing needs redoing |
 | **3** | **`fwdllm` 8 h (**H-F**), then `fwdllm_plus`, then a fluxtune `P = 30` arm** — this node is nearly free (`sim_rate` 12.6) | H-F: same random-walk signature ⇒ **shared defect, S-A/S-B are hygiene**; different ⇒ **fluxtune-specific, they are a contribution**. `P = 30`: §8.1 predicts `ρ/cos` **unchanged** and `E[v∥²]` up ⇒ *slightly faster* divergence | H-F has no "miss" — both outcomes are informative and both change the paper's claim structure. The `P` arm is the counterintuitive prediction: more probes must **not** help while selection discards them |
+
+```bash
+cd lib/python/examples/fwdllm/expt_scripts
+A="--only fluxtune --mode sim --yes --clean --force --server-update-audit \
+   --pool-split-half-audit --num-trainers 100 --num-gpus 8"
+
+# node 1 -- K-sweep (c must stay >= K and <= 100); first leg repeated as the anchor
+for KC in 10:30 10:30 20:40 30:60 50:100; do
+  ./run_sequential.sh $A --agg-goal ${KC%%:*} --c ${KC##*:} --max-runtime-s 14400
+done
+
+# node 2 -- eta-sweep
+for LR in 0.01 0.002 0.0005; do
+  ./run_sequential.sh $A --learning-rate $LR --max-runtime-s 28800
+done
+
+# node 3 -- H-F, then the P arm (sim_rate 12.6 makes the fwdllm leg nearly free)
+./run_sequential.sh ${A/--only fluxtune/--only fwdllm} --max-runtime-s 28800
+./run_sequential.sh $A --perturbation-count 30 --max-runtime-s 14400
+```
 
 **Why sweeps, not single points.** At sim's wall cost a sweep is nearly the same price as one arm, and
 a predicted *slope* (`ρ ∝ 1/√K`, `ρ ∝ η`) is a far stronger test than a predicted value — it cannot be
