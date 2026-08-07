@@ -24,7 +24,7 @@ import cloudpickle
 from contextlib import contextmanager
 
 import torch
-from flame.channel import VAL_CH_STATE_HTBT_SEND, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
+from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
@@ -60,7 +60,6 @@ logger = logging.getLogger(__name__)
 
 TAG_FETCH = "fetch"
 TAG_UPLOAD = "upload"
-TAG_HEARTBEAT = "heartbeat_send"
 
 
 class Trainer(Role, metaclass=ABCMeta):
@@ -360,35 +359,6 @@ class Trainer(Role, metaclass=ABCMeta):
         )
         if tag == TAG_UPLOAD:
             self._send_weights(tag)
-        elif tag == TAG_HEARTBEAT:
-            self._send_heartbeat_to_agg(tag)
-
-    def _send_heartbeat_to_agg(self, tag: str) -> None:
-        logger.debug(
-            f"### SEND heartbeat for tag: {tag} " f"and trainer_id: {self.trainer_id}"
-        )
-        channel = self.cm.get_by_tag(tag)
-        if not channel:
-            logger.debug(f"[_send_heartbeat] channel not found with {tag}")
-            return
-
-        # this call waits for at least one peer to join this channel
-        logger.debug(
-            f"_send_heartbeat: waiting for someone to join channel: {channel} "
-            f"for trainer_id: {self.trainer_id}"
-        )
-        channel.await_join()
-
-        # one aggregator is sufficient
-        end = channel.one_end(VAL_CH_STATE_HTBT_SEND)
-
-        msg = {
-            MessageType.HEARTBEAT: time.time(),
-        }
-        channel.send(end, msg)
-        logger.debug(f"sending heartbeat done for trainer_id: {self.trainer_id}")
-
-        return
 
     def _send_weights(self, tag: str) -> None:
         logger.debug(
@@ -712,10 +682,6 @@ class Trainer(Role, metaclass=ABCMeta):
         torch.cuda.empty_cache()  # Clear the CUDA cache again, just in case
         logger.debug(f"Evicted model from gpu for trainer_id: {self.trainer_id}")
 
-    def send_heartbeat_to_agg(self) -> None:
-        logger.debug("Inside trainer.py will call self.put(heartbeat)")
-        self.put(TAG_HEARTBEAT)
-
     # #### ADDED OORT RELATED FUNCTIONALITY
     def init_oort_variables(self) -> None:
         """Initialize Oort variables."""
@@ -885,4 +851,4 @@ class Trainer(Role, metaclass=ABCMeta):
     def get_func_tags(cls) -> list[str]:
         """Return a list of function tags defined in the trainer
         role."""
-        return [TAG_FETCH, TAG_UPLOAD, TAG_HEARTBEAT]
+        return [TAG_FETCH, TAG_UPLOAD]

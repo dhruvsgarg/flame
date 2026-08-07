@@ -16,10 +16,13 @@
 """selector abstract class."""
 
 from abc import ABC, abstractmethod
+from collections import deque
 from typing import Optional, Tuple, Union
 import hashlib
 import logging
 import time
+
+import numpy as np
 # Import classes directly: bare `import random` here resolves to the sibling
 # flame/selector/random.py submodule, not stdlib.
 from random import Random as _StdRandom
@@ -32,6 +35,7 @@ from ..telemetry.events import build_selection
 from .properties import (
     PROP_AVL_STATE,
     PROP_CLIENT_TASK_TRAIN_DURATION,
+    PROP_LAST_EVAL_ROUND,
     PROP_STAT_UTILITY,
 )
 
@@ -64,6 +68,7 @@ class AbstractSelector(ABC):
             setattr(self, key, value)
         self.selected_ends: set = set()
         self.ordered_updates_recv_ends: list = []
+        self._init_selector_stats()
         # Dedicated, seed-able RNGs insulated from the process-global np.random/
         # random. Selectors MUST draw from these (never bare np.random/random) so
         # selection is reproducible across real/sim. Always seeded (DEFAULT_SEED).
@@ -75,6 +80,94 @@ class AbstractSelector(ABC):
                 f"[SELECTOR_SEED] {type(self).__name__} dedicated RNGs seeded "
                 f"with seed={_seed} fingerprint={self.rng_fingerprint()}"
             )
+
+    # --- sliding-window selection stats -------------------------------------
+    # Purely observational: every selector kept a verbatim copy of the init
+    # block + compute_trainer_stat_summary + the ingest loop, so a change had
+    # to be made in four places. Lives here once; subclasses call
+    # record_selection_stats() then maybe_log_stat_summary().
+    STAT_WINDOWS = (50, 100, 200)
+    STAT_METRICS = ("util", "speed", "round")
+    STAT_LOG_EVERY = 5
+
+    def _init_selector_stats(self) -> None:
+        self._selector_stats = {
+            task: {
+                "data": {
+                    f"{metric}_last_{window}": deque(maxlen=window)
+                    for metric in self.STAT_METRICS
+                    for window in self.STAT_WINDOWS
+                },
+                "summary": {},
+            }
+            for task in ("train", "eval")
+        }
+        self._select_run_counter = 0
+
+    @staticmethod
+    def _summarize(values) -> dict:
+        vals = [v for v in (values or []) if v is not None]
+        if not vals:
+            return {k: None for k in ("min", "max", "p25", "p50", "p75")}
+        arr = np.array(vals, dtype=float)
+        return {
+            "min": float(np.min(arr)),
+            "max": float(np.max(arr)),
+            "p25": float(np.percentile(arr, 25)),
+            "p50": float(np.percentile(arr, 50)),
+            "p75": float(np.percentile(arr, 75)),
+        }
+
+    def compute_trainer_stat_summary(self) -> None:
+        for task, bucket in self._selector_stats.items():
+            for metric, values in bucket["data"].items():
+                # `util` keys carry a `stat_` prefix in the summary; kept for
+                # log/plot compatibility.
+                key = f"stat_{metric}" if "util" in metric else metric
+                bucket["summary"][key] = self._summarize(values)
+
+    def _reset_selector_stats(self) -> None:
+        self._selector_stats = {}
+
+    def record_selection_stats(
+        self, ends: dict[str, End], chosen_ids, task: str = "train"
+    ) -> None:
+        """Append the chosen ends' utility/speed/last-round into the windows."""
+        bucket = self._selector_stats.get(task)
+        if bucket is None:
+            return
+        for end_id in chosen_ids:
+            end = ends.get(end_id)
+            if end is None:  # in-flight id no longer in the eligible pool
+                continue
+            speed = end.get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
+            for metric, value in (
+                ("util", end.get_property(PROP_STAT_UTILITY)),
+                (
+                    "speed",
+                    speed.total_seconds()
+                    if hasattr(speed, "total_seconds")
+                    else speed,
+                ),
+                ("round", end.get_property(PROP_LAST_EVAL_ROUND)),
+            ):
+                if value is None:
+                    continue
+                for window in self.STAT_WINDOWS:
+                    bucket["data"][f"{metric}_last_{window}"].append(value)
+
+    def maybe_log_stat_summary(self) -> None:
+        """Recompute + log every STAT_LOG_EVERY selections; no-op otherwise."""
+        self._select_run_counter += 1
+        if self._select_run_counter % self.STAT_LOG_EVERY:
+            return
+        self.compute_trainer_stat_summary()
+        for task in ("train", "eval"):
+            logger.info(
+                f"{task.capitalize()} selector stats summary: "
+                f"{self._selector_stats[task]['summary']}"
+            )
+        self._select_run_counter = 0
 
     def rng_fingerprint(self) -> str:
         """Short hex digest of both dedicated RNGs' internal state.

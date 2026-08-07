@@ -1,0 +1,92 @@
+# Sim sibling of felix_round_n15_smoke.yaml (see its header for the
+# TIMING_OVERRUN-repro rationale) -- gives run_parity.py a real/sim pair at
+# the reduced scale (n=15, c=10, agg_goal=5, 360s), identical except
+# time_mode and sim-only knobs.
+#
+# Uses the `felix_round` baseline: Felix(P), the other published anchor
+# (this project's own Felix, async_oort oort-smart selection, ported onto
+# the forward-mode substrate) -- FeLiX staleness x utility rate (NOT
+# fluxtune's grad_aware C3), client_notify availability (NOT oracular), no
+# C1/C3. Round-level (reselect_each_iteration=false).
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/felix_round_n15_smoke_sim.yaml
+
+experiments:
+  - name: felix_round_n15_smoke_sim
+    description: "FedFwd SIM smoke (15 trainers, c=10/agg_goal=5, felix_round baseline: async async_oort+fedbuff FeLiX rate+client_notify, no C1/C3, round-level, time_mode=simulated). Reduced-scale TIMING_OVERRUN repro."
+
+    baseline: felix_round
+
+    example:
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 15
+      start_id: 1
+      dataset:
+        name: agnews
+        # Cosmetic-only for path-style (naming/snapshot), but kept in sync
+        # with the actual partition_method below (EXPTS_CHARTER A5: alpha=1).
+        dirichlet_alpha: 1
+        path_style: true
+      availability:
+        # Phase 1 is syn_0 (100% availability): client_notify then reports all
+        # trainers available. Switch to mobiperf_3st_50 (via --avail-trace) only
+        # for the Phase-2 unavailability runs, matching fluxtune's own smoke.
+        mode: syn_0
+      time_mode: simulated
+      enable_training_delays: false
+      # client_idx = (trainer_id - 1) % 100 -- unchanged: reuses the same
+      # 100-partition dataset, just the first 15 (0-14) of it.
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          seed: 1234
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          partition_method: niid_label_clients=100_alpha=1
+          # H13: dropout off during the JVP's two finite-difference passes.
+          # Code default ON (simulate_fwdllm.md §G); real and sim must match.
+          jvp_eval_mode: true
+          sim_straggler_spread_s: 0.0
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: async_oort
+      tracking_mode: client_notify
+      agg_goal: 5
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: felix_round_n15_smoke_sim
+        hyperparameters:
+          seed: 1234
+          rounds: 50
+          inflight_residence: true
+          send_timeout_wait_s: 300
+          sim_sct_ordered_drain: true
+          sim_staggered_redispatch: false
+          sim_model_dispatch_queue: true
+          sim_model_agg_compute_time: true
+          max_data_id_progress: 9999
+          max_runtime_s: 3600  # 60 minutes sim vclock
+          # Outer wall failsafe (code default 20x max_runtime_s is too loose).
+          sim_wall_ceiling_s: 7200
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          partition_method: niid_label_clients=100_alpha=1
+        selector:
+          kwargs:
+            c: 10
+            minInitialTrainers: 15
+
+    execution:
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false

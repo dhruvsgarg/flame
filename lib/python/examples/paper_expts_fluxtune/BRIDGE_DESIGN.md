@@ -90,11 +90,11 @@ ledger. A run-set may not be launched, not even at smoke scale, while any metric
 
 | tex label | Experiment id | Baselines needed | Run-set (`experiments.yaml`) | `Ready?` | Status today |
 |---|---|---|---|---|---|
-| `sec:eval:tta` | **E1** time-to-accuracy | fwdllm, fedbuff_round, felix_round, fluxtune | `main_v2` (NEW — 4-anchor) | ⚠ NOT READY | fwdllm/fluxtune landed (real); fedbuff_round/felix_round **unrun, baseline unwired**; E1's WS2 metric has reducer gap N3 (§2b row 1) |
-| `sec:eval:util` | **E2** resource utilization | same as E1 | reuses `main_v2` | ⚠ NOT READY | reducer gap N5 (§2b row 3) blocks `CODE-READY` |
+| `sec:eval:tta` | **E1** time-to-accuracy | fwdllm, fedbuff_round, felix_round, fluxtune | `main_v2` (NEW — 4-anchor) | ⚠ NOT READY | fwdllm/fluxtune landed (real); fedbuff_round/felix_round **unrun, baseline unwired**; reducer gap N3 **fixed** (§2b row 1), still blocked on the unrun baselines |
+| `sec:eval:util` | **E2** resource utilization | same as E1 | reuses `main_v2` | ⚠ NOT READY | reducer gap N5 **fixed** (§2b row 3); still blocked on the unrun baselines |
 | `sec:eval:compute` | **E3** compute effectiveness | same as E1 | reuses `main_v2` | ⚠ NOT READY (needs new-baseline validation) | reducer exists; numbers stale (old 3-baseline run); WS3-b needs re-validation on fedbuff_round/felix_round (§2b row 8) |
 | `sec:eval:comm` | **E4** communication | same as E1 | reuses `main_v2`, needs WS3-a | ⚠ NOT READY (needs new-baseline validation) | reducer exists; numbers stale; WS3-a needs re-validation per baseline (§2b row 9-10, per-baseline checklist) |
-| `sec:eval:sessions` | **E5** session length | same as E1 | reuses `main_v2` | ⚠ NOT READY | reducer gap N6 (§2b row 11-12) — sync should use one-round-span, not `contributor_intervals` |
+| `sec:eval:sessions` | **E5** session length | same as E1 | reuses `main_v2` | ⚠ NOT READY | reducer gap N6 **fixed** (§2b row 11-12) — sync now uses one-round-span (`round_span_durs`), not `contributor_intervals`; still blocked on the unrun baselines |
 | `sec:eval:attribution` | **A0** attribution (reuses E1–E4 metrics) | fluxtune vs `fwdllm_it_oracular` (rename of `fwdllm_plus`) | reuses `main_v2` once renamed | ⚠ blocked on E1-E4 | **this is exactly the old `fwdllm_plus` comparison, renamed** — closest to already-landed, same reducer gaps apply |
 | `sec:ablation:ladder` | **L-ladder** opt on/off ladder | fluxtune only, 4 configs (R1–R4) | `opt_ladder` (existing, informal) | ✅ landed / ⬜ L1-completion unrun | ✅ **landed** (`EXPTS_CHARTER.md` R1–R4, `commit_reason`+`grad_aware_gated_total` telemetry validated); `plannedexp` "L1 completion" (per-contribution C1/C2/C3 on/off) is a **separate, unrun** block, needs its own readiness pass |
 | `sec:ablation:c1alt` | **L3-c1alt** selection-policy sweep | fluxtune, selector ∈ {random, cosine, quasi, JVP-guided} | NEW run-set | ❌ NEEDS CODE | `quasi`/`random`/`cosine` selectors: code-existence unverified (deferred to build-time, §2b row 13) |
@@ -140,9 +140,9 @@ table's own row numbers, kept aligned so the two documents don't drift.
 
 | # | Metric | Telemetry event.field | Provenance | Status | Note |
 |---|---|---|---|---|---|
-| 1 | Experiment wall-time before exit | `converge.json` (WS2) | WS2 | REDUCER-GAP (N3) | E1 time-to-τ is *reconstructed* from `agg_eval`, doesn't read `converge.json` directly — can silently diverge from the watcher's own verdict. Fix before `main_v2` numbers are trusted. |
+| 1 | Experiment wall-time before exit | `converge.json` (WS2) | WS2 | CODE-READY (N3 fixed) | `expt1_time_to_target` now prefers `converge.json` (matched to the run via its `agg_telemetry` field — it lives in `expt_scripts/smoke_logs/`, not the run dir) when its target/window match the request, falling back to the `agg_eval` reconstruction otherwise (`source` field on the output records which). No real `--target-acc` run exists yet to validate against, so still `CODE-READY` not `VALIDATED` — first convergence-watched launch flips it. |
 | 2 | Aggregator active GPU time | `agg_round.aggregate_fedavg_s`+`eval_s` | DERIVE | VALIDATED (existing runs) | re-validate on fedbuff_round/felix_round once they exist — different aggregator config, same entrypoint |
-| 3 | Each client active GPU time | `trainer_round.gpu_compute_s` | EMIT | REDUCER-GAP (N5) | E2 idle is only `1−busy_frac`; `mqtt_fetch_s` emitted but unused; `barrier_wait_s`/`drain_tail_s` read ≈0 in sim — needs a real reducer, not a placeholder |
+| 3 | Each client active GPU time | `trainer_round.gpu_compute_s` | EMIT | CODE-READY (N5 fixed) | `expt2_utilization` now decomposes idle into `net_wait_frac` (from `mqtt_fetch_s`, previously emitted-but-unused) + a true residual `idle_frac`, instead of one undifferentiated `1−busy_frac` bucket. `barrier_wait_s`/`drain_tail_s` deliberately still excluded (agg-side, ≈0 in sim, not a trainer idle signal). Confirmed non-empty/firing on the existing `fwdllm`+`fluxtune` REAL runs; not yet the formal per-baseline SIM smoke validation §2b's `VALIDATED` requires (checklist step 6). |
 | 4 | Loss at first iteration | first `agg_eval.test-loss` | EMIT | VALIDATED | time-ordered (data_id-cycling bug already fixed per memory) |
 | 5 | Loss after training complete | last `agg_eval.test-loss` | EMIT | VALIDATED | same |
 | 6 | Updates used per iteration | `agg_round.agg_goal_count`/`updates_in_queue` | EMIT | VALIDATED, unused | not currently feeding any of E1-E5 directly |
@@ -151,7 +151,7 @@ table's own row numbers, kept aligned so the two documents don't drift.
 | 9 | Data sent from aggregator | `comm{direction=agg_to_trainer}.size_bytes` | WS3-a | VALIDATED (sync+async paths, existing 3 baselines) | new async baselines (fedbuff_round, felix_round) reuse fluxtune's already-instrumented async dispatch site — **still smoke-validate per baseline**, don't assume from fluxtune's pass |
 | 10 | Data sent from clients | `comm{direction=trainer_to_agg}.size_bytes` | WS3-a | VALIDATED (existing 3 baselines) | same caveat as #9 |
 | 11 | Client active: selected→next reselection (async) | `agg_round.contributor_intervals` | EMIT | VALIDATED | — |
-| 12 | Client active per round (sync reselect) | `trainer_round`/`agg_round` ts | EMIT | REDUCER-GAP (N6) | E5 sync sessions currently (mis)use `contributor_intervals` for *all* baselines; the one-round-span method for sync baselines is unimplemented |
+| 12 | Client active per round (sync reselect) | `trainer_round`/`agg_round` ts | EMIT | CODE-READY (N6 fixed) | New `round_span_durs`: groups consecutive same-`data_id` `agg_round` cycles (bounded on `is_async=False`) into one per-data_id span, first cycle's ts → commit ts — the actual multi-iteration "one round span" the label already claimed. `expt5_sessions` uses it for `is_async=False`, `session_durs` unchanged for async. On the real `fwdllm` run: old (mis-applied) computation gave 1490 per-cycle samples (p50≈11s); the fix gives 56 round-level samples (p50≈45s) — confirms the old number was undercounting by ~4x, not a cosmetic relabel. |
 | 13 | Participation counts (rounds/data_bins/iterations) | `trainer_round` + `contributing_trainers` | EMIT | VALIDATED, `contributing_trainers` unused | reducer only reads a subset |
 | 14 | `commit_reason` (natural/cap/plateau) | `agg_round.commit_reason` | EMIT | VALIDATED (R1–R4 opt-ladder) | feeds L-ladder only |
 | 15 | `grad_aware_gated_total` | aggregator telemetry | EMIT | VALIDATED (R1–R4) | feeds L-ladder / L1L3-c3 |
@@ -263,20 +263,30 @@ implementation, not now.
 
 Ordered so each step is independently testable before the next depends on it.
 
-- [ ] **1.** Rebuild `_metadata/baselines.yaml` — add/rename the 7 baseline entries (§3.1). Verify
-      `felix_round`'s LR against a smoke run before trusting it downstream.
-- [ ] **2.** Propagate rename into `experiments.yaml`, `run_sequential.sh`, tests, `plotlib/baselines.py`
-      (§3.2–3.6).
-- [ ] **3.** Instrumentation pre-check for `main_v2` (§4 gate 0): confirm metrics #1–13 in §2b are
+- [x] **1.** Rebuild `_metadata/baselines.yaml` — add/rename the 7 baseline entries (§3.1). Verify
+      `felix_round`'s LR against a smoke run before trusting it downstream. **DONE** — see "Handoff status"
+      below for exact state; LR verification still pending (needs a real smoke run).
+- [x] **2.** Propagate rename into `experiments.yaml`, `run_sequential.sh`, tests, `plotlib/baselines.py`
+      (§3.2–3.6). **DONE** — `run_sequential.sh` heredoc validated standalone (sync + 2 new async
+      baselines, exit 0, correct `is_async` resolution); `test_config_generator.py` rename fixed (29/29
+      pass); `plotlib/baselines.py` registers all 9 baselines with `(P)`/`+IT`/`+O` display names +
+      2 new CVD-safe family hues (fedbuff=green, felix=pink); `experiments.yaml`'s local `baselines:`
+      stanza deleted, run-sets reference keys only. Full `-k fwdllm` suite: 381 passed. See "Handoff
+      status" below for what's still deferred (BASELINES.md item #2's cosmetic comment sweep — separate,
+      later, mechanical).
+- [x] **3.** Instrumentation pre-check for `main_v2` (§4 gate 0): confirm metrics #1–13 in §2b are
       `CODE-READY` for fedbuff_round/felix_round specifically (not just "fluxtune already validated it") —
       read the async dispatch + selector code paths these two new baselines actually run through. Fix
       reducer gaps **N3** (E1 should read `converge.json`, not reconstruct), **N5** (E2 idle-fraction
       reducer), **N6** (E5 sync session should use one-round-span) — these block `Ready?` regardless of
-      telemetry status, so fixing them now avoids re-deriving numbers later.
-- [ ] **4.** Add `main_v2` run-set to `experiments.yaml` (4-anchor E1–E5 + attribution reuse), sim-mode.
-- [ ] **5.** Write the new Layer-0 tex-map + §2b instrumentation ledger into `EXPERIMENTS.md`, superseding
+      telemetry status, so fixing them now avoids re-deriving numbers later. **DONE** — see "Handoff
+      status" below.
+- [x] **4.** Add `main_v2` run-set to `experiments.yaml` (4-anchor E1–E5 + attribution reuse), sim-mode.
+      **DONE** — see "Handoff status" below.
+- [x] **5.** Write the new Layer-0 tex-map + §2b instrumentation ledger into `EXPERIMENTS.md`, superseding
       its old "Experiment 1–5" framing — keep the metric/reducer content (§4, §5 of `EXPERIMENTS.md`
-      today), re-anchor to tex labels, keep row numbers 1–13 aligned between the two docs.
+      today), re-anchor to tex labels, keep row numbers 1–13 aligned between the two docs. **DONE** — see
+      "Handoff status" below.
 - [ ] **6.** Smoke-test each new baseline (`fedbuff_round`, `felix_round`, and the `+IT`/`+O` rows) at
       N=10 sim. Two things happen in this step, not one: (a) confirm `run_parity.py` doesn't need new
       rungs for them (new *configs* of an already-parity-tested code path, but verify); (b) walk the §2b
@@ -305,5 +315,214 @@ turn into small feature work, not just config authoring.
 
 All open questions from the previous two rounds are resolved (baseline rebuild scope, registry location,
 sim mode, alpha conflict, M1/M2 naming + deferred-placeholder policy, no-duplication rule, and now the
-instrumentation-readiness gate: §2b ledger + §4 gate 0 + per-baseline validation checklist). Ready for
-implementation to begin at checklist step 1, pending your final read of this doc.
+instrumentation-readiness gate: §2b ledger + §4 gate 0 + per-baseline validation checklist).
+Implementation started (checklist step 1) and **checklist steps 1–5 are now complete** (rename fully
+propagated + validated; instrumentation pre-check done, N3/N5/N6 reducer gaps fixed; `main_v2` run-set
++ tex-anchored analyses added; `EXPERIMENTS.md` now carries the Layer-0 tex-map + §2b ledger, kept
+row-aligned with this doc) — see "Handoff status" below for exact state. Do not re-derive the
+round/iteration async design from scratch; it's settled (see below). Next up: checklist step 6
+(smoke-test each new baseline at N=10 sim).
+
+---
+
+## Handoff status (checklist step 5 complete, resume at step 6)
+
+**Session context you need before touching anything:** this implementation surfaced a real gap not
+anticipated when this doc was signed off — the `reselect_each_iteration` flag (round vs `+IT` baselines)
+only ever worked on the *sync* path; the async dispatch path (`_distribute_weights_async`) had zero
+caching and always behaved like `+IT`. Without fixing that, `fedbuff_round`/`felix_round` would have been
+byte-identical to their `+IT` siblings. This was found, scoped, and confirmed with the operator (two
+`AskUserQuestion` rounds — round-cache design confirmed: pin the async_oort/fedbuff-selected cohort for
+the span of `self._round`, only replacing departed members via the existing
+`_prune_departed_from_round_cache`; default `True` stays a byte-identical passthrough, zero risk to
+already-landed `fluxtune`/`felix` numbers) **and implemented and tested** — this is done, not a to-do.
+
+### Done and verified (tests green)
+
+1. **Async round-cache extension** (`lib/python/flame/mode/horizontal/syncfl/fwdllm_aggregator.py`) —
+   new `_select_ends_for_async_respecting_reselect_gate` method, wired into `_distribute_weights_async`.
+   Extended `__init__`'s comment. Tests: `TestAsyncReselectGate` (4 new tests) added to
+   `lib/python/tests/mode/test_fwdllm_reselection.py`; fixed 2 other test doubles
+   (`test_fwdllm_dispatch_queue.py`, `test_fwdllm_distribute_vclock_stamp.py`) that needed the new
+   method/attribute wired into their hand-rolled aggregator fakes. **Full `-k fwdllm` suite: 340 passed.**
+2. **`_metadata/baselines.yaml` rebuilt** — 18 baseline keys now present (was 12; `fwdllm_plus` retired).
+   Added `fwdllm_it_unaware` (new), renamed `fwdllm_plus`→`fwdllm_it_oracular`, added
+   `fedbuff_round`/`fedbuff_it_unaware`/`fedbuff_it_oracular`/`felix_round`/`felix_it` (all new). Verified
+   `python3 -c "import yaml; ..."` parses and lists all 18 keys correctly.
+   - **Known unverified placeholders left in the yaml (flagged inline with `TODO(verify)`)**: `felix_round`/
+     `felix_it`'s `learning_rate: 0.075` (ported from fluxtune, needs its own smoke-run retune — this is
+     literally checklist step 1's own explicit caveat); `fedbuff_round`/`fedbuff_it_*`'s same LR placeholder
+     (same reasoning, no dataset_name-table entry for agnews); `fedbuff_it_oracular`'s `trace: mobiperf_2st`
+     (2-tier, ported from `fwdllm_it_oracular` — unconfirmed whether the async eval-dispatch path needs a
+     3-tier trace instead).
+3. **`test_baselines.py`** (`lib/python/tests/launch/test_baselines.py`) updated: renamed/added cases in
+   `TestFwdllmBaselines`, new `TestNewAsyncFwdllmBaselines` class (7 tests) covering the 5 net-new async
+   baselines' invariants (selector sort, `is_async`, `reselect_each_iteration`, `agg_rate_conf.type`, no
+   accidental C1/C3 leakage). **All 31 tests in the file pass.**
+4. **Smoke yaml files** — renamed (via `git mv`) `fwdllm_plus_n100_smoke{,_sim}.yaml` →
+   `fwdllm_it_oracular_n100_smoke{,_sim}.yaml` (content + internal name/baseline/job-id fields updated).
+   Created 6 new sim-only yamls (BRIDGE_DESIGN.md decision #3: sim-only for new launches):
+   `fwdllm_it_unaware_n100_smoke_sim.yaml`, `fedbuff_round_n10_smoke_sim.yaml`,
+   `fedbuff_it_unaware_n10_smoke_sim.yaml`, `fedbuff_it_oracular_n10_smoke_sim.yaml`,
+   `felix_round_n10_smoke_sim.yaml`, `felix_it_n10_smoke_sim.yaml`. All 8 files verified to parse and
+   resolve to the correct `baseline:` key via a `yaml.safe_load` check. These yamls deliberately do NOT
+   copy fluxtune's own profiled sim-fidelity numbers (`sim_gate_compute_cap_s`, `sim_completion_leg_s`) —
+   those were measured for fluxtune's specific JVP-guided compute/payload cost, not these baselines'; left
+   at sim defaults (inert/off) with a `TODO(verify)` comment pointing at the still-needed profiling pass.
+
+### Done and verified this session (all of checklist step 2)
+
+5. **`run_sequential.sh`** — `bash -n` syntax-checked AND the embedded Python heredoc (the `python -
+   <<'PY' ... PY` block, ~line 320) exercised standalone (extracted, fed a representative `RUN_TSV` of
+   one sync + two new async baselines — `fwdllm`, `fedbuff_round`, `felix_it`). Confirmed: `--mode both`
+   correctly blocks on the expected missing-real-yaml checks for the 6 sim-only baselines (exit 2, by
+   design); `--mode sim` generates all 3 cfgs cleanly (exit 0), `is_async` resolves correctly per baseline
+   (fwdllm=sync, fedbuff_round/felix_it=async) in the tier-② table, and `patch()`/`_BL_INTERNALS` don't
+   throw. Prior content (header comment, `ALL_RUNS`, `BASELINE_DELAY_DEFAULTS`, the `is_async` hardcode
+   fix, the K-D20 comment fix) unchanged from earlier in the session — see git diff for full detail.
+6. **`experiments.yaml`** — local `baselines:` stanza deleted (decision #5; confirmed nothing in the repo
+   programmatically read it). `main` run-set's `baselines: [fwdllm, fwdllm_plus, fluxtune]` renamed to
+   `[fwdllm, fwdllm_it_oracular, fluxtune]` (plain rename of the same config, not a new baseline — kept
+   consistent with the rest of the rename rather than left stale). Cosmetic `fwdllm_plus` mentions in the
+   file header comment, the `1_time_to_target` takeaway string, and the `scale_n100` `_blocked_pending`
+   tag updated too. Parses clean (`yaml.safe_load` verified).
+7. **`plotlib/baselines.py`** — all 9 baselines now registered per `BASELINES.md`'s naming grammar
+   (`(P)`/`+IT`/`+O`): FwdLLM family (orange, unchanged) gets `fwdllm_it_unaware`/`fwdllm_it_oracular`
+   rows; two new CVD-safe family hues added — FedBuff(P) (green, `#009E73`/`#66C2A5`) and Felix(P) (pink,
+   `#CC79A7`/`#E8A5C7`) — for the 5 new baselines. Legend order (0–8) follows the paper's sync→async→ours
+   staircase narrative; ✅ EVAL rows are bold, ⚠ ABLATION `+IT`/`+IT+O` rows are italic (same convention
+   the old `fwdllm_plus` row used). `style_for()`'s unknown-key fallback extended to recognize
+   `fedbuff_`/`felix_` prefixes (previously only `fwdllm_`/`fluxtune_`, which would have mis-bucketed any
+   future ablation of the new families into the fluxtune-blue fallback). Verified by direct import +
+   `style_for()` calls on all 9 keys.
+8. **`test_config_generator.py`** — `fwdllm_plus` renamed to `fwdllm_it_oracular` in
+   `TestFwdllmEndToEndConfigGeneration`'s two parametrize lists and `TestFwdllmSmokeYamlsResolve`'s
+   yaml-filename/baseline-key pair (`fwdllm_plus_n100_smoke.yaml` → `fwdllm_it_oracular_n100_smoke.yaml`),
+   plus the class docstring. All 29 tests in the file pass.
+9. **Full affected suite re-run**: `pytest -k fwdllm` (excluding an unrelated pre-existing collection
+   error in `examples/async_cifar10/launch/test_monitor.py` — a `ModuleNotFoundError` on a `launch`
+   package that predates this session, from commit `9503cad4`, orthogonal to fwdllm) — **381 passed**
+   (up from the 340 noted earlier in the session, reflecting the tests added since). No regressions.
+
+### Done and verified this session (checklist step 3)
+
+10. **CODE-READY confirmation for fedbuff_round/felix_round** (§4 gate 0, read-only): traced the actual
+    code paths these two new async baselines exercise, not assumed from fluxtune's already-validated
+    pass. WS3-a comm (`build_comm` in both `_distribute_weights_sync`/`_distribute_weights_async`,
+    `flame/mode/horizontal/syncfl/fwdllm_aggregator.py`), WS3-b forward/perturbation counters
+    (`FedSgdTrainer.py`), and `contributor_intervals` (`_process_aggregation_goal_met`) are all emitted
+    from selector-agnostic code shared by every baseline — none of it branches on which selector
+    (`random`/`fedbuff`/`async_oort`) is active. §2b rows 1–13 confirmed `CODE-READY` (not re-derived
+    from "a similar baseline" — read directly).
+11. **N3 fixed** (`plotlib/reducers.py`, `compare_baselines.py`): `expt1_time_to_target` now prefers
+    `converge_watch.py`'s own `converge.json` verdict over the `agg_eval` reconstruction, when their
+    target/window match the request. New `RunResult.converge_json` + `_find_converge_json()` — matches
+    by `agg_telemetry` path (converge.json lives in `expt_scripts/smoke_logs/`, not the run dir, so
+    name-based discovery would be fragile; the payload's own `agg_telemetry` field names the run
+    unambiguously). Output now carries a `source` field (`"converge.json"` vs `"reconstructed"`) so a
+    future audit can tell which path produced a given number. No real `--target-acc` run exists yet to
+    validate end-to-end (no `converge_*.json` anywhere in the repo) — unit-tested only (match, mismatch,
+    absent cases); flips to `VALIDATED` on the first convergence-watched launch.
+12. **N5 fixed**: `expt2_utilization` decomposes idle into `net_wait_frac` (new, from `mqtt_fetch_s` —
+    emitted per `trainer_round` already, previously read by nothing) + a true residual `idle_frac =
+    1 - busy - net_wait`, instead of the old single `1-busy_frac` bucket. `barrier_wait_s`/`drain_tail_s`
+    deliberately still excluded (aggregator-side, ≈0 in sim, not a trainer idle signal — the gap note's
+    own diagnosis). Confirmed non-empty and firing on both existing REAL runs (`fwdllm`, `fluxtune`);
+    not yet the formal per-baseline SIM smoke validation §2b's `VALIDATED` requires (checklist step 6).
+13. **N6 fixed**: new `RunResult.round_span_durs` — groups consecutive same-`data_id` `agg_round` cycles
+    (`is_async=False` only) into one per-data_id span (first cycle's ts → commit ts), the actual
+    multi-iteration "one round span" the `session_def` label already claimed but `session_durs`
+    (per-cycle `contributor_intervals`, correct for async, wrong for sync) never computed. `is_async=False`
+    baselines now report `round_span_durs` in `expt5_sessions`; async is untouched (`session_durs`,
+    already validated). **Confirmed materially different on the real `fwdllm` run** — old (mis-applied)
+    per-cycle computation: 1490 samples, p50≈11s; fixed per-round computation: 56 samples, p50≈45s (~4x)
+    — this was a real undercounting bug, not a cosmetic relabel.
+14. **Bonus fix, found while wiring N6**: `compare_baselines.py`'s `main()` had `is_async = (b ==
+    "fluxtune")` — the exact same hardcoded-name bug class already fixed in `run_sequential.sh` this
+    session, silently mislabeling every new async baseline (`fedbuff_round/it_*`, `felix_round/it`) as
+    sync. Replaced with `_is_async(baseline)`, which reads `selector.kwargs.is_async` from
+    `_metadata/baselines.yaml` (warns on an unresolvable/unknown key rather than silently defaulting).
+15. **Tests**: two new colocated test files (repo convention — see `async_cifar10/scripts/parity/
+    test_*.py`): `plotlib/test_reducers.py` (8 tests: round-span grouping incl. edge cases, converge.json
+    discovery/matching) and `test_compare_baselines.py` (8 tests: `_is_async` resolution, N3 source
+    selection, N5 decomposition, N6 baseline switch). All 16 pass. Also re-ran the full `-k fwdllm` suite
+    (381 passed, unchanged) and re-imported `plot_run.py`/`make_paper_figs.py` to confirm the new
+    `RunResult` fields don't break their (untouched) call sites.
+
+### Done and verified this session (checklist step 4)
+
+16. **`main_v2` run-set added** (`experiments.yaml`) — same shared condition axes as `main` (N=100, K=10,
+    C={sync:10,async:30}, α=1, syn_0, delays on/factor=2, target 0.84/window 20), `baselines: [fwdllm,
+    fedbuff_round, felix_round, fluxtune, fwdllm_it_oracular]` (the 4-anchor set + `fwdllm_it_oracular`
+    folded in for A0 — resolved the design doc's "reuses the same run dirs, no new launch" as "gets its
+    own sim-mode launch as part of main_v2's normal batch, A0 just reuses those dirs like E2-E5 already
+    reuse E1's" — the alternative reading (reuse the OLD `main` real-mode fwdllm_it_oracular run) would
+    mode-mismatch A0's two sides (sim fluxtune vs real fwdllm_it_oracular), which the pre-flight gate
+    exists to catch, not reintroduce). `main`'s own run-set/analyses are untouched (decision #3).
+17. **Tex-anchored analyses added**: `e1_time_to_accuracy` .. `e5_session_length` + `a0_attribution`
+    (BRIDGE_DESIGN.md §2's own Layer-0 naming — `sec:eval:tta`/`util`/`compute`/`comm`/`sessions`/
+    `attribution`), all `run_set: main_v2`. `e2` also reports the new N5 metrics
+    (`trainer_net_wait_fraction`, `trainer_idle_fraction`) alongside the existing `trainer_busy_fraction`.
+    `a0_attribution` is scoped to `baselines: [fluxtune, fwdllm_it_oracular]` (a 2-baseline subset of
+    main_v2, not the full 4-anchor set) — matches §2's "this is exactly the old fwdllm_plus comparison,
+    renamed." The old `1_time_to_target`..`5_client_sessions` ids are untouched, still pointing at `main`.
+18. **Validated end-to-end**, not just yaml-parsed: `run_sequential.sh --run-set main_v2 --mode sim --only
+    fwdllm,fedbuff_round,felix_round,fluxtune,fwdllm_it_oracular --dry-run --show-all` — condition
+    resolves correctly through the real launcher (not just a yaml read), agg_goal fans to 10 for every
+    baseline, selector/optimizer/mode columns correct per baseline, delay_factor=2 applies uniformly
+    (main_v2's condition overrides each baseline's individual default, same as `main` already does),
+    pre-flight gate passes clean (11 ✓, 1 expected ⚠ for the unverifiable partition-group-exists check).
+19. **Tests**: new `lib/python/examples/fwdllm/test_experiments_yaml.py` (6 tests — no-local-baselines-
+    stanza regression, main_v2's 5-baseline list, condition-parity with `main`'s shared axes, e1-e5's
+    `run_set` pointer, a0's 2-baseline scoping, old `main` analyses untouched). Full `-k fwdllm` suite
+    re-run, unaffected (experiments.yaml isn't imported by any test module — only read at runtime by
+    `run_sequential.sh`/`compare_baselines.py`).
+
+### Done and verified this session (checklist step 5)
+
+20. **`EXPERIMENTS.md` restructured** (not rewritten from scratch — all existing prose/observed-results
+    preserved): title/intro updated for the rename + a pointer to this doc; §1's baseline table marked as
+    the historical 3-baseline view with a pointer to `BASELINES.md`'s 9-baseline catalog (no duplication);
+    §4's "Experiment 1–5" headers now carry tex `\label`s (E1 `sec:eval:tta` .. E5 `sec:eval:sessions`) and
+    its reducer-audit callout updated from "N3/N5/N6 — fix before claims land" to "FIXED, see §5"; §5
+    replaced wholesale with the full §2b instrumentation-readiness ledger (rows 1–19 + the per-baseline
+    validation checklist) — **row numbers 1–13 verified byte-identical to this doc's §2b** (metric name,
+    telemetry field, provenance, status all match; row 8's status string even independently caught a
+    `fwdllm_plus`→`fwdllm_it_oracular` inconsistency in a draft, since fixed in both copies); new §10a adds
+    the Layer-0 tex↔experiment map (this doc's §2, kept in sync) ahead of the renamed §10b (the existing
+    per-run ledger). Also fixed two real breakages the rename left behind: a stale §7 multi-node command
+    example (`--only fwdllm_plus`, would now fail — `run_sequential.sh`'s `ALL_RUNS` no longer has that
+    key) and a stale "Naming (being reframed)" blockquote in §1 promising a future rename that already
+    landed. Added a changelog entry summarizing checklist steps 1–5. Doc-only change — no code/tests
+    affected, nothing to re-run.
+
+### Deliberately deferred (separate, later checklist step — NOT step 2 or 3)
+
+BASELINES.md item #2's **cosmetic-comment sweep** (mentions of `fwdllm_plus` in code comments across
+`flame/config.py`, `flame/launch/runner.py`, `flame/mode/horizontal/syncfl/fwdllm_aggregator.py`,
+`flame/selector/random.py`) and item #4's **doc sweep** (`EXPERIMENTS.md`, `EXPTS_CHARTER.md`,
+`simulate_fwdllm.md`, `fluxtune_contributions.md`, `MIGRATION_TO_LAUNCHER_FWDLLM.md`,
+`compare_baselines.py`, `logical_parity.py`, `run_parity.py`, `telemetry_manifest.yaml`, `figs.yaml`) are
+this doc's own checklist **step 5** ("low priority, do last, mechanical") — a distinct, later step from
+checklist step 2 (rename propagation into the *registry/test* files), not part of what this session
+resumed. Old `run_*` experiment directories under `experiments/` also still carry the old
+`fwdllm_plus_*` name in their dirnames/snapshots — those are historical run artifacts, not renamed
+retroactively (matches decision #3's "already-landed numbers kept as-is" policy).
+
+### Git state (uncommitted, nothing pushed)
+
+Checklist steps 1–4 were committed earlier this session (`7062d35e`, `e4d1ff3d`, `bf0b1477`, `0f3eced8`).
+Checklist step 5's work is done but **not yet committed**. `git status --short`:
+```
+ M lib/python/examples/paper_expts_fluxtune/BRIDGE_DESIGN.md
+ M lib/python/examples/paper_expts_fluxtune/EXPERIMENTS.md
+```
+Per CLAUDE.md, ask the user before committing/pushing — checklist step 5 is doc-only (no code/config), a
+clean commit boundary before step 6 (an actual GPU smoke-test launch, a very different kind of action).
+
+### Next actions, in order
+
+1. Ask the user whether to commit checklist step 5 now.
+2. Checklist step 6: smoke-test each new baseline (`fedbuff_round`, `felix_round`, `+IT`/`+O` rows) at
+   N=10 sim — confirm `run_parity.py` doesn't need new rungs, and walk the §2b per-baseline checklist
+   (flip WS3-a/WS3-b from `smoke-pending` to `validated` per baseline by inspecting real telemetry).

@@ -55,8 +55,14 @@ class _Buf:
 
 class _Agg:
     _distribute_weights_async = TopAggregator._distribute_weights_async
+    _select_ends_for_async_respecting_reselect_gate = (
+        TopAggregator._select_ends_for_async_respecting_reselect_gate
+    )
     _should_send_full_weights = TopAggregator._should_send_full_weights
     _warn_if_redundant_weights_resend = TopAggregator._warn_if_redundant_weights_resend
+    _already_served_current_instruction = TopAggregator._already_served_current_instruction
+    _mark_instruction_served = TopAggregator._mark_instruction_served
+    _outstanding_dispatch_count = TopAggregator._outstanding_dispatch_count
 
     def __init__(self, dq):
         self.simulated = True
@@ -72,12 +78,14 @@ class _Agg:
         self._redundant_weights_suppressed_total = 0
         self._trainer_last_model_version = {}
         self._trainer_state_dict = {}
+        self._end_served_version_key = {}
         self._sim_inflight_expected = {}
         self._sim_known_delay_s = {"A": 5.0, "B": 5.0, "C": 5.0}
         self._sim_pending_commit = set()
         self._sim_dispatch_wall = {}
         self._sim_buffer = _Buf()
         self._sim_staggered_redispatch = False
+        self._reselect_each_iteration = True
         self.weights = None
         self.config = types.SimpleNamespace(hyperparameters=types.SimpleNamespace(
             sim_model_dispatch_queue=dq, sim_overhead_warn_s=5.0))
@@ -127,3 +135,39 @@ class TestSerialDispatchQueue:
         exp = agg._sim_inflight_expected
         assert exp["A"] < exp["B"] < exp["C"]
         assert exp["A"] == _FRONTIER + 5.0    # first trainer: frontier + its delay
+
+
+class _AggMutableVersion(_Agg):
+    """§F-25: version_key must advance mid-test -- a real subclass property,
+    since a bare @property rejects instance-attribute assignment."""
+
+    def __init__(self, dq):
+        super().__init__(dq)
+        self._vk = (1, 0)
+
+    @property
+    def version_key(self):
+        return self._vk
+
+
+class TestOneInstructionPerVersionKey:
+    """§F-25: the round-cache reuses the same cohort every distribute call, so
+    without this guard every call re-floods it (found as `fedbuff_round`'s
+    r1_inflight_overlap: ~90% same-version_key re-sends to a busy trainer)."""
+
+    def test_second_call_same_version_key_sends_nothing_new(self):
+        agg = _AggMutableVersion(dq=False)
+        agg._distribute_weights_async("t")
+        assert len(agg._chan.sent) == 3
+
+        agg._distribute_weights_async("t")
+        assert len(agg._chan.sent) == 3  # no new sends -- all 3 already served
+
+    def test_version_key_advance_re_serves(self):
+        agg = _AggMutableVersion(dq=False)
+        agg._distribute_weights_async("t")
+        assert len(agg._chan.sent) == 3
+
+        agg._vk = (2, 0)
+        agg._distribute_weights_async("t")
+        assert len(agg._chan.sent) == 6  # re-served under the new version_key

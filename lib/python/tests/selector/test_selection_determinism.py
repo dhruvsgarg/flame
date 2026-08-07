@@ -209,14 +209,37 @@ ends = {{f"t{{i}}": None for i in range(20)}}
 print(json.dumps(list(sel.select_random(ends, num_of_ends=5).keys())))
 """
 
-    def _order_under_hashseed(self, module, cls, kwargs, hashseed):
+    _CHOOSE_SNIPPET = """
+import json, torch  # noqa: F401 -- import marks ml framework in use as PYTORCH
+from flame.selector.{module} import {cls}
+from flame.selector.async_base import SelectContext
+sel = {cls}(_seed=7, **{kwargs!r})
+ends = {{f"t{{i}}": None for i in range(20)}}
+ctx = SelectContext(agg_version_key=(0, 0))
+print(json.dumps(list(sel._choose(ends, 5, ctx))))
+"""
+
+    # AsyncOortSelector.select_random returns a list (its `_choose` contract,
+    # post async_oort re-basing), not the dict the sync OortSelector's
+    # (unrelated class) select_random still returns -- no `.keys()` here.
+    _ASYNC_OORT_SNIPPET = """
+import json, torch  # noqa: F401 -- import marks ml framework in use as PYTORCH
+from flame.selector.{module} import {cls}
+sel = {cls}(_seed=7, **{kwargs!r})
+ends = {{f"t{{i}}": None for i in range(20)}}
+print(json.dumps(list(sel.select_random(ends, num_of_ends=5))))
+"""
+
+    def _order_under_hashseed(self, module, cls, kwargs, hashseed, snippet=None):
         import json
         import os
         import subprocess
         import sys
 
         env = dict(os.environ, PYTHONHASHSEED=hashseed)
-        code = self._SNIPPET.format(module=module, cls=cls, kwargs=kwargs)
+        code = (snippet or self._SNIPPET).format(
+            module=module, cls=cls, kwargs=kwargs
+        )
         out = subprocess.run(
             [sys.executable, "-c", code], env=env, capture_output=True, text=True,
         )
@@ -226,10 +249,10 @@ print(json.dumps(list(sel.select_random(ends, num_of_ends=5).keys())))
         last_line = [ln for ln in out.stdout.splitlines() if ln.strip()][-1]
         return json.loads(last_line)
 
-    def _assert_order_hashseed_invariant(self, module, cls, kwargs):
-        a = self._order_under_hashseed(module, cls, kwargs, "0")
-        b = self._order_under_hashseed(module, cls, kwargs, "1")
-        c = self._order_under_hashseed(module, cls, kwargs, "42")
+    def _assert_order_hashseed_invariant(self, module, cls, kwargs, snippet=None):
+        a = self._order_under_hashseed(module, cls, kwargs, "0", snippet)
+        b = self._order_under_hashseed(module, cls, kwargs, "1", snippet)
+        c = self._order_under_hashseed(module, cls, kwargs, "42", snippet)
         assert a == b == c, (
             f"{cls}.select_random order depends on PYTHONHASHSEED "
             f"(same seed=7, different hash seeds): {a} vs {b} vs {c}"
@@ -242,14 +265,24 @@ print(json.dumps(list(sel.select_random(ends, num_of_ends=5).keys())))
                 c=5, aggGoal=2, evalGoalFactor=0.5,
                 roundNudgeType="last_train", selectType="default",
             ),
+            snippet=self._ASYNC_OORT_SNIPPET,
         )
 
     def test_oort_order_reproducible(self):
         self._assert_order_hashseed_invariant("oort", "OortSelector", dict(aggr_num=5))
 
     def test_async_random_order_reproducible(self):
+        # AsyncRandom/FedBuff draw via AsyncSelectorBase._choose (_keyed_topk),
+        # not select_random -- same invariant, different entry point.
         self._assert_order_hashseed_invariant(
-            "async_random", "AsyncRandomSelector", dict(c=5, aggGoal=2)
+            "async_random", "AsyncRandomSelector", dict(c=5, aggGoal=2),
+            snippet=self._CHOOSE_SNIPPET,
+        )
+
+    def test_fedbuff_order_reproducible(self):
+        self._assert_order_hashseed_invariant(
+            "fedbuff", "FedBuffSelector", dict(c=5, aggGoal=2),
+            snippet=self._CHOOSE_SNIPPET,
         )
 
 
@@ -312,11 +345,11 @@ class TestKeyedTopkPopulationInvariance:
     def test_extra_non_winning_candidate_does_not_change_pick(self, make_ends):
         base = make_ends(count=70, prefix="t")
         winner = list(self._sel().select_random(
-            base, num_of_ends=1, agg_version_key=(0, 1)).keys())
+            base, num_of_ends=1, agg_version_key=(0, 1)))
 
         extended = dict(base, extra=None)
         winner_with_extra = list(self._sel().select_random(
-            extended, num_of_ends=1, agg_version_key=(0, 1)).keys())
+            extended, num_of_ends=1, agg_version_key=(0, 1)))
 
         # Either the extra candidate doesn't win (pick unchanged), or it does
         # win outright -- never a THIRD, different candidate.
@@ -335,9 +368,9 @@ class TestKeyedTopkPopulationInvariance:
         # Next call: pools match again on both sides -> must pick identically,
         # regardless of whether the previous call's pools (and picks) matched.
         next_a = list(sel_a.select_random(
-            pool_a, num_of_ends=1, agg_version_key=(0, 2)).keys())
+            pool_a, num_of_ends=1, agg_version_key=(0, 2)))
         next_b = list(sel_b.select_random(
-            pool_a, num_of_ends=1, agg_version_key=(0, 2)).keys())
+            pool_a, num_of_ends=1, agg_version_key=(0, 2)))
         assert next_a == next_b
 
     def test_different_agg_version_key_gives_independent_draw(self, make_ends):
@@ -356,12 +389,12 @@ class TestKeyedTopkPopulationInvariance:
         of a single bulk draw -- the consistent-priority-queue property."""
         ends = make_ends(count=20, prefix="t")
         sel = self._sel()
-        bulk = list(sel.select_random(ends, num_of_ends=2, agg_version_key=(0, 1)).keys())
+        bulk = list(sel.select_random(ends, num_of_ends=2, agg_version_key=(0, 1)))
 
         sel2 = self._sel()
-        first = list(sel2.select_random(ends, num_of_ends=1, agg_version_key=(0, 1)).keys())
+        first = list(sel2.select_random(ends, num_of_ends=1, agg_version_key=(0, 1)))
         remaining = {e: None for e in ends if e != first[0]}
-        second = list(sel2.select_random(remaining, num_of_ends=1, agg_version_key=(0, 1)).keys())
+        second = list(sel2.select_random(remaining, num_of_ends=1, agg_version_key=(0, 1)))
 
         assert bulk == [first[0], second[0]]
 
@@ -381,7 +414,7 @@ class TestKeyedTopkPopulationInvariance:
             " roundNudgeType='last_train', selectType='default')\n"
             "ends = {f't{i}': None for i in range(20)}\n"
             "print(json.dumps(list(sel.select_random(ends, num_of_ends=5,"
-            " agg_version_key=(0, 1)).keys())))\n"
+            " agg_version_key=(0, 1)))))\n"
         )
 
         def _run(hashseed):
@@ -394,3 +427,74 @@ class TestKeyedTopkPopulationInvariance:
 
         a, b, c = _run("0"), _run("1"), _run("42")
         assert a == b == c
+
+
+class TestKeyedWeightedTopkPopulationInvariance:
+    """`sample_by_util`'s exploitation draw used `np.random.choice(p=probs)`
+    -- pool-size/order dependent, the same anti-pattern `_keyed_topk` already
+    fixed for the plain uniform draw (`TestKeyedTopkPopulationInvariance`
+    above). Fixed via `_keyed_weighted_topk` (Efraimidis-Spirakis keys)."""
+
+    from flame.selector.properties import PROP_END_ID, PROP_UTILITY
+
+    def _sel(self, seed=1234):
+        from flame.selector.async_oort import AsyncOortSelector
+        return AsyncOortSelector(_seed=seed, c=30, aggGoal=10, evalGoalFactor=0.5,
+                                 roundNudgeType="last_train", selectType="default")
+
+    def _utility_list(self, n, seed=0):
+        rng = random.Random(seed)
+        return [
+            {self.PROP_END_ID: f"t{i:03d}", self.PROP_UTILITY: rng.uniform(0.1, 1.0)}
+            for i in range(n)
+        ]
+
+    def test_same_seed_reproducible(self):
+        ul = self._utility_list(20)
+        a = self._sel().sample_by_util(0.0, ul, 5, agg_version_key=(0, 1))
+        b = self._sel().sample_by_util(0.0, ul, 5, agg_version_key=(0, 1))
+        assert a == b
+
+    def test_extra_non_winning_candidate_does_not_change_pick(self):
+        ul = self._utility_list(20)
+        winner = self._sel().sample_by_util(0.0, ul, 1, agg_version_key=(0, 1))
+
+        extended = ul + [{self.PROP_END_ID: "extra", self.PROP_UTILITY: 1e-9}]
+        winner_with_extra = self._sel().sample_by_util(
+            0.0, extended, 1, agg_version_key=(0, 1)
+        )
+        assert winner_with_extra == winner
+
+    def test_next_draw_resyncs_regardless_of_prior_pool_difference(self):
+        ul_a = self._utility_list(20)
+        ul_b = ul_a + [{self.PROP_END_ID: "extra", self.PROP_UTILITY: 0.5}]
+
+        sel_a, sel_b = self._sel(), self._sel()
+        sel_a.sample_by_util(0.0, ul_a, 1, agg_version_key=(0, 1))
+        sel_b.sample_by_util(0.0, ul_b, 1, agg_version_key=(0, 1))
+
+        next_a = sel_a.sample_by_util(0.0, ul_a, 1, agg_version_key=(0, 2))
+        next_b = sel_b.sample_by_util(0.0, ul_a, 1, agg_version_key=(0, 2))
+        assert next_a == next_b
+
+    def test_different_agg_version_key_gives_independent_draw(self):
+        ul = self._utility_list(20)
+        sel = self._sel()
+        r1 = sel.sample_by_util(0.0, ul, 1, agg_version_key=(0, 1))
+        r2 = sel.sample_by_util(0.0, ul, 1, agg_version_key=(0, 2))
+        r3 = sel.sample_by_util(0.0, ul, 1, agg_version_key=(0, 1))
+        assert r1 == r3  # same key -> same pick, repeatable
+
+    def test_higher_utility_wins_more_often(self):
+        # Not a determinism test -- a sanity check that weight actually
+        # steers the draw (a uniform pool-independent-but-unweighted bug
+        # would still pass every test above).
+        ul = [
+            {self.PROP_END_ID: "hi", self.PROP_UTILITY: 100.0},
+            {self.PROP_END_ID: "lo", self.PROP_UTILITY: 0.01},
+        ]
+        wins = sum(
+            1 for vk in range(200)
+            if self._sel().sample_by_util(0.0, ul, 1, agg_version_key=(0, vk)) == ["hi"]
+        )
+        assert wins > 150  # heavily weighted toward "hi"

@@ -1,7 +1,14 @@
 #!/bin/bash
-# Drive the fwdllm real<->sim launcher pairs (fwdllm, fwdllm_plus, fluxtune) for
-# parity runs. Thin driver over examples/scripts/expt_runner.sh; owns the fwdllm
-# baseline->(real yaml, sim yaml) map, knob patching, and the pre-flight gate.
+# Drive the fwdllm real<->sim launcher pairs (9-baseline FluxTune matrix, see
+# BASELINES.md: fwdllm/fwdllm_it_unaware/fwdllm_it_oracular,
+# fedbuff_round/fedbuff_it_unaware/fedbuff_it_oracular, felix_round/felix_it,
+# fluxtune) for parity runs. Thin driver over examples/scripts/expt_runner.sh;
+# owns the fwdllm baseline->(real yaml, sim yaml) map, knob patching, and the
+# pre-flight gate. All 9 baselines now have BOTH a real and a sim yaml, so
+# --mode both works over the full set (the 6 net-new ones got their real yamls
+# in 1f419505; BRIDGE_DESIGN.md decision #3's sim-only rule applied only while
+# those were missing). The "source yaml exists" check below still blocks any
+# baseline whose side is absent.
 # --mode both pairs each baseline's real+sim (names tagged _real/_sim so
 # scripts.parity.cli globs the pair); --delays sets enable_training_delays
 # IDENTICALLY both sides (mismatched D = false divergence). Pre-flight prints a
@@ -30,8 +37,11 @@
 #                    round-robin and the aggregator's pinned GPU. Implies
 #                    num_gpus=len(list) unless --num-gpus is also given.
 #   --c              selector.kwargs.c (+ minInitialTrainers + agg_goal unless overridden).
-#   --c-async        selector.kwargs.c for the async baseline (fluxtune) only.
-#   --k / --agg-goal selector k / aggregator.agg_goal directly.
+#   --c-async        selector.kwargs.c for async baselines (fedbuff_round/it_*,
+#                    felix_round/it, fluxtune) only.
+#   --k / --agg-goal  BOTH set aggregator.agg_goal -- K and agg_goal are the same
+#                    knob (selector.kwargs.k is dead; nothing reads it).
+#                    --agg-goal wins over --k, which wins over --c's fallback.
 #   --min-initial-trainers / --min-initial-frac  join barrier before first selection:
 #                    absolute count, or floor(F*N). DEFAULT = N (wait for ALL trainers ->
 #                    set-exact initial cohort real<->sim). frac<1 tolerates stragglers but
@@ -83,11 +93,19 @@ AVAIL_TRACE=""
 AVAIL_TRACES=""
 PARTITION_METHOD=""
 VAR_THRESHOLD=""       # variance-pass gate threshold; varies with data heterogeneity -> review every run
+SERVER_UPDATE_AUDIT="" # I-1 audit: per-commit ||delta||/||w||. OFF by default -- never on a replicate leg
 MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
 VAR_STOPPING_POLICY=""   # Opt-2: off|fixed_cap|plateau (empty => baselines.yaml, fluxtune=plateau)
 AGG_RATE_TYPE=""         # Opt-3: grad_aware|new (empty => baselines.yaml, fluxtune=grad_aware; new=FeLiX)
 TARGET_ACC=""          # convergence stop: terminate when last --converge-window bins all >= this acc
 CONVERGE_WINDOW=""     # W-bin window for the convergence stop (default 20 when --target-acc set)
+SIM_WALL_CEILING_S=""  # sim-mode REAL-wall-clock outer safety (hyperparameters.sim_wall_ceiling_s).
+                        # unset => code default = max_runtime_s * 20 (fwdllm_aggregator.py
+                        # SIM_WALL_CEILING_FACTOR) -- with max_runtime_s in VIRTUAL/vclock seconds
+                        # (sim mode), that default is ~20x too loose to bound REAL run duration
+                        # (e.g. 48h vclock budget -> 40-DAY real-wall failsafe). Set this explicitly
+                        # whenever the vclock budget alone doesn't bound how long the run can
+                        # occupy GPUs in real time (e.g. an overnight launch).
 STALL_WINDOW_S=""      # stall guard: terminate EARLY if no progress within this many wall s (--stall-window-s/-h)
 STALL_MIN_DELTA=""     # accuracy gain that counts as progress (default 0.01 = 1%)
 STALL_ON=""            # signal that resets the idle clock: acc|loss|either (default either)
@@ -113,8 +131,12 @@ usage() {
   echo "          [--delay-floor F (floor on raw registry delay, applied before the divisor)]" >&2
   echo "    --delays/--delay-divisor/--delay-floor default to each baseline's settled value" >&2
   echo "          (BASELINE_DELAY_DEFAULTS in this script); pass explicitly only to override." >&2
+  echo "          [--server-update-audit]" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
+  echo "          [--sim-wall-ceiling-s S | --sim-wall-ceiling-h H]  REAL-wall-clock outer safety" >&2
+  echo "          (sim mode only; unset => max_runtime_s(vclock-s) * 20 -- far too loose to bound" >&2
+  echo "          REAL duration, e.g. 48h vclock => 40-day real failsafe. Set for an unattended run." >&2
   echo "          [--run-set NAME] [--avail-trace NAME | --avail-traces N1,N2] [--only n1,n2] [--stop-on-fail]" >&2
   echo "          [--dry-run] [--yes] [--force] [--show-all] [--clean]" >&2
   echo "    --clean  auto-kill stray FL workers from a prior/crashed run before each" >&2
@@ -141,6 +163,7 @@ while [[ $# -gt 0 ]]; do
     --avail-traces)         AVAIL_TRACES="$2"; shift 2 ;;
     --partition-method)     PARTITION_METHOD="$2"; shift 2 ;;
     --var-threshold)        VAR_THRESHOLD="$2"; shift 2 ;;
+    --server-update-audit)  SERVER_UPDATE_AUDIT=1; shift ;;
     --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
     --var-stopping-policy)  case "$2" in off|fixed_cap|plateau) ;; *) echo "ERROR: --var-stopping-policy must be off|fixed_cap|plateau (got '$2')" >&2; exit 2 ;; esac
                             VAR_STOPPING_POLICY="$2"; shift 2 ;;
@@ -148,6 +171,10 @@ while [[ $# -gt 0 ]]; do
                             AGG_RATE_TYPE="$2"; shift 2 ;;
     --target-acc)           TARGET_ACC="$2"; shift 2 ;;
     --converge-window)      CONVERGE_WINDOW="$2"; shift 2 ;;
+    --sim-wall-ceiling-s)   SIM_WALL_CEILING_S="$2"; shift 2 ;;
+    --sim-wall-ceiling-h)   # hours alias, mirrors --stall-window-h
+      case "$2" in ''|*[!0-9.]*|*.*.*) echo "ERROR: --sim-wall-ceiling-h needs a number of hours (got '$2')" >&2; exit 2 ;; esac
+      SIM_WALL_CEILING_S="$(awk "BEGIN{printf \"%d\", ($2)*3600}")"; shift 2 ;;
     --stall-window-s)       STALL_WINDOW_S="$2"; shift 2 ;;
     --stall-window-h)       # ergonomic hours alias -> seconds (e.g. --stall-window-h 6 => 21600)
       case "$2" in ''|*[!0-9.]*|*.*.*) echo "ERROR: --stall-window-h needs a number of hours (got '$2')" >&2; exit 2 ;; esac
@@ -244,10 +271,27 @@ if [ -n "$TARGET_ACC" ] && [ "$MAX_RUNTIME_S_SET" = "0" ] && [ "$MAX_RUNTIME_S" 
 fi
 
 # baseline -> (real yaml : sim yaml). Plain baseline names, independent of the
-# "n10" baked into each source filename.
+# "n10"/"n100" baked into each source filename. Every entry's two sides must
+# agree on the shared condition (partition_method above all) -- a mismatch is a
+# parity divergence with no clock cause. The pre-flight "source yaml exists"
+# check blocks a missing side rather than silently launching one-sided.
 ALL_RUNS=(
   "fwdllm:$SCRIPT_DIR/fwdllm_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_n100_smoke_sim.yaml"
-  "fwdllm_plus:$SCRIPT_DIR/fwdllm_plus_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_plus_n100_smoke_sim.yaml"
+  "fwdllm_it_unaware:$SCRIPT_DIR/fwdllm_it_unaware_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_it_unaware_n100_smoke_sim.yaml"
+  "fwdllm_it_oracular:$SCRIPT_DIR/fwdllm_it_oracular_n100_smoke.yaml:$SCRIPT_DIR/fwdllm_it_oracular_n100_smoke_sim.yaml"
+  # NAME IS MISLEADING: "n10" here does NOT mean 10 trainers -- these two files
+  # are the full n=100/c=30/agg_goal=10 production scale (matches every other
+  # baseline below), just never renamed. Don't swap these for the "n15" files:
+  # fedbuff_round_n15_smoke.yaml/felix_round_n15_smoke.yaml are a DELIBERATELY
+  # reduced-scale repro (n=15/c=10/agg_goal=5) built solely to cheaply debug the
+  # TIMING_OVERRUN/compute-contention question (see that file's own header) --
+  # a special-purpose debug tool this session used for fast iteration, not a
+  # replacement for the production condition every other baseline runs at.
+  "fedbuff_round:$SCRIPT_DIR/fedbuff_round_n10_smoke.yaml:$SCRIPT_DIR/fedbuff_round_n10_smoke_sim.yaml"
+  "fedbuff_it_unaware:$SCRIPT_DIR/fedbuff_it_unaware_n10_smoke.yaml:$SCRIPT_DIR/fedbuff_it_unaware_n10_smoke_sim.yaml"
+  "fedbuff_it_oracular:$SCRIPT_DIR/fedbuff_it_oracular_n10_smoke.yaml:$SCRIPT_DIR/fedbuff_it_oracular_n10_smoke_sim.yaml"
+  "felix_round:$SCRIPT_DIR/felix_round_n10_smoke.yaml:$SCRIPT_DIR/felix_round_n10_smoke_sim.yaml"
+  "felix_it:$SCRIPT_DIR/felix_it_n10_smoke.yaml:$SCRIPT_DIR/felix_it_n10_smoke_sim.yaml"
   "fluxtune:$SCRIPT_DIR/fluxtune_n10_smoke.yaml:$SCRIPT_DIR/fluxtune_n10_smoke_sim.yaml"
 )
 
@@ -292,16 +336,18 @@ NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" GPU_IDS="$GPU_IDS" SEL_C="$SEL
 SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" MIN_INIT_FRAC="$MIN_INIT_FRAC" \
 PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
+SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" \
 DELAY_FLOOR="$DELAY_FLOOR" \
 VAR_STOPPING_POLICY="$VAR_STOPPING_POLICY" AGG_RATE_TYPE="$AGG_RATE_TYPE" \
 TARGET_ACC="$TARGET_ACC" CONVERGE_WINDOW="$CONVERGE_WINDOW" \
+SIM_WALL_CEILING_S="$SIM_WALL_CEILING_S" \
 STALL_WINDOW_S="$STALL_WINDOW_S" STALL_MIN_DELTA="$STALL_MIN_DELTA" \
 STALL_ON="$STALL_ON" LOSS_MIN_REL_DELTA="$LOSS_MIN_REL_DELTA" \
 MODE_SET="$MODE_SET" DELAYS_SET="$DELAYS_SET" MAX_RUNTIME_S_SET="$MAX_RUNTIME_S_SET" MAX_DATA_ID_SET="$MAX_DATA_ID_SET" \
 LOGDIR="$LOGDIR" MANIFEST="$MANIFEST" RUN_TSV="$RUN_TSV" DRY_RUN="$DRY_RUN" SHOW_ALL="$SHOW_ALL" \
 EXAMPLE_DIR="$EXAMPLE_DIR" AC10_DIR="$AC10_DIR" \
 python - <<'PY'
-import os, sys, copy, yaml, json, hashlib
+import os, sys, copy, yaml, json, hashlib, glob
 sys.path.insert(0, os.environ["EXPT_RUNNER_DIR"])
 import expt_runner
 
@@ -316,11 +362,13 @@ AGG_GOAL = env("AGG_GOAL") or ""; MIN_INIT = env("MIN_INIT_TRAINERS") or ""
 MIN_INIT_FRAC = env("MIN_INIT_FRAC") or ""
 PART = env("PARTITION_METHOD") or ""
 VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID") or ""
+SERVER_UPDATE_AUDIT = env("SERVER_UPDATE_AUDIT") or ""
 VAR_STOPPING_POLICY = env("VAR_STOPPING_POLICY") or ""; AGG_RATE_TYPE = env("AGG_RATE_TYPE") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
 DELAY_FLOOR = env("DELAY_FLOOR") or ""
 STALL_ON = env("STALL_ON") or ""; LOSS_MIN_REL_DELTA = env("LOSS_MIN_REL_DELTA") or ""
 TARGET_ACC = env("TARGET_ACC") or ""; CONVERGE_WINDOW = env("CONVERGE_WINDOW") or ""
+SIM_WALL_CEILING_S = env("SIM_WALL_CEILING_S") or ""
 STALL_WINDOW_S = env("STALL_WINDOW_S") or ""; STALL_MIN_DELTA = env("STALL_MIN_DELTA") or ""
 # "was it passed on the command line?" (override -> green) for the defaulted flags
 MODE_SET = env("MODE_SET") == "1"; DELAYS_SET = env("DELAYS_SET") == "1"
@@ -333,15 +381,38 @@ delays_on = (DELAYS == "on")
 # Settled per-baseline training-delay condition so operators stop re-typing
 # --delays/--delay-divisor/--delay-floor every launch. CLI flags still win
 # when explicitly passed. `factor` is validated at 7200s scale (simulate_
-# fwdllm.md §A). fwdllm/fwdllm_plus's `floor` re-derived 07-19 pm (FWDLLM_
-# DESIGN.md §O, same 1.3x-over-observed-max-compute formula as fluxtune's
-# 7.0->4.0): the old 11.0 predated the harness-overhead-removal fix and was
-# never re-checked against post-fix compute (2.72s/3.18s max, floor >=
+# fwdllm.md §A). fwdllm/fwdllm_it_oracular's `floor` re-derived 07-19 pm
+# (FWDLLM_DESIGN.md §O, same 1.3x-over-observed-max-compute formula as
+# fluxtune's 7.0->4.0): the old 11.0 predated the harness-overhead-removal fix
+# and was never re-checked against post-fix compute (2.72s/3.18s max, floor >=
 # 1.3*1.63*3.18=6.74s) -- pending a validation run to confirm 0 TIMING_OVERRUN.
+# fwdllm_it_unaware reuses fwdllm's exact values, not a guess: FWDLLM_DESIGN.md
+# §O derives `factor` from select_perturbation_using_jvp (C1) forward-pass-unit
+# count -- fwdllm_it_unaware has C1 off (code default), same as fwdllm, unlike
+# fluxtune (C1 on) -- and `floor` from *observed compute under that baseline's
+# own concurrency* -- fwdllm_it_unaware is sync C=10, same regime fwdllm was
+# profiled at. Both axes match fwdllm exactly, so its number transfers cleanly.
+# The 5 async net-new baselines (fedbuff_round/it_*, felix_round/it) borrow
+# fwdllm's number (operator decision, 07-24): C1 (JVP) is off for all of them,
+# same as fwdllm, so per-update compute matches fwdllm, not fluxtune -- despite
+# their C=30 async concurrency matching fluxtune's regime, not fwdllm's C=10
+# sync one. No real-mode yaml exists for these to profile floor against
+# independently (sim-only per BRIDGE_DESIGN.md decision #3), so this is the
+# operator's considered choice, not a placeholder.
+# CAVEAT (07-26): fwdllm's 7.0 and fluxtune's 4.0 floors were profiled when
+# those two ran `uniform`; all 9 baselines are now niid alpha=1, which shifts
+# per-client partition size and hence observed compute. Re-derive both against
+# post-switch compute if TIMING_OVERRUN shows up.
 BASELINE_DELAY_DEFAULTS = {
-    "fluxtune":    {"delays": True, "factor": 0.48, "floor": 4.0},
-    "fwdllm":      {"delays": True, "factor": 1.63, "floor": 7.0},
-    "fwdllm_plus": {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fluxtune":           {"delays": True, "factor": 0.48, "floor": 4.0},
+    "fwdllm":             {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fwdllm_it_oracular": {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fwdllm_it_unaware":  {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fedbuff_round":      {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fedbuff_it_unaware": {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fedbuff_it_oracular": {"delays": True, "factor": 1.63, "floor": 7.0},
+    "felix_round":        {"delays": True, "factor": 1.63, "floor": 7.0},
+    "felix_it":           {"delays": True, "factor": 1.63, "floor": 7.0},
 }
 
 
@@ -395,6 +466,7 @@ with open(env("RUN_TSV")) as fh:
 
 manifest = []            # (name, cfg_path, variant, budget_s)
 per_baseline = {}        # baseline -> resolved knobs (for the tier ② rows)
+sim_profiles = {}        # baseline -> sim_charge_profile_path (provenance check)
 checks = []
 
 
@@ -402,6 +474,20 @@ def patch(exp, run_key, variant, trace):
     h = exp["aggregator"]["config_overrides"]["hyperparameters"]
     h["max_runtime_s"] = MAX_RUNTIME_S
     h["max_data_id_progress"] = MAX_DATA_ID
+    # The yamls' fixed 10800s watchdog silently TRUNCATES a longer real leg, which
+    # still reports the duration it asked for (§D-44). Keep it above the budget,
+    # never lower it. Real only -- sim's wall cap is sim_wall_ceiling_s.
+    if variant != "sim":
+        try:
+            _wd = float(h.get("max_experiment_runtime_s") or 0.0)
+        except (TypeError, ValueError):
+            _wd = 0.0
+        h["max_experiment_runtime_s"] = int(max(_wd, float(MAX_RUNTIME_S) + 1800.0))
+    # sim_wall_ceiling_s: REAL-wall-clock outer safety, sim mode only (max_runtime_s
+    # is VIRTUAL/vclock seconds there -- see the flag's own help text). Only set when
+    # the operator passes it; unset keeps the code default (max_runtime_s * 20).
+    if SIM_WALL_CEILING_S and variant == "sim":
+        h["sim_wall_ceiling_s"] = float(SIM_WALL_CEILING_S)
     # enable_training_delays: SAME on both sides of a pair (K-D8) -- resolve_delay_settings
     # is a pure function of run_key, so real/sim calls for one baseline always agree.
     _bl_delays_on, _bl_delay_factor, _bl_delay_floor = resolve_delay_settings(run_key)
@@ -422,6 +508,9 @@ def patch(exp, run_key, variant, trace):
     # so an unset run keeps the code/trainer default (surfaced as "(D)" below).
     if VAR_THRESHOLD:
         h["var_threshold"] = float(VAR_THRESHOLD)
+    # I-1 audit telemetry: opt-in per run, never on a leg that pairs into a floor (§D-45).
+    if SERVER_UPDATE_AUDIT:
+        h["server_update_audit"] = True
     if MAX_ITER:
         h["max_iterations_per_data_id"] = int(MAX_ITER)
     # Opt-2/Opt-3 ablation toggles (charter 4-run 2x2). Written into the per-run
@@ -453,17 +542,19 @@ def patch(exp, run_key, variant, trace):
         if not NUM_GPUS:  # keep the displayed n_gpus honest with the actual pool size
             exp["execution"]["num_gpus"] = len(_ids)
     kwargs = exp["aggregator"]["config_overrides"]["selector"]["kwargs"]
-    is_async = (run_key == "fluxtune")
+    is_async = _BL_INTERNALS.get(run_key, {}).get("async") == "async"
     if SEL_C:
         kwargs["c"] = int(SEL_C)
-        if not AGG_GOAL:
-            exp["aggregator"]["agg_goal"] = int(SEL_C)  # legacy: agg_goal matches c
     if SEL_C_ASYNC and is_async:
         kwargs["c"] = int(SEL_C_ASYNC)
-    if SEL_K:
-        kwargs["k"] = int(SEL_K)
-    if AGG_GOAL:
-        exp["aggregator"]["agg_goal"] = int(AGG_GOAL)
+    # K IS agg_goal. `selector.kwargs.k` is read by NOTHING in flame, so --k
+    # (and the registry's `K`) silently no-opped; agg_goal is the single source
+    # of truth the runner fans into hyperparameters.aggGoal + selector.kwargs
+    # aggGoal/aggr_num (runner.py:674). Precedence: --agg-goal > --k > the
+    # legacy "agg_goal follows --c" fallback.
+    _goal = AGG_GOAL or SEL_K or (SEL_C if SEL_C else "")
+    if _goal:
+        exp["aggregator"]["agg_goal"] = int(_goal)
     # minInitialTrainers join barrier. DEFAULT = N: the gate fires at
     # ends_count >= threshold, so threshold < N admits a nondeterministic surplus
     # (98 vs 99, join-vs-poll race) -> divergent seeded first cohort; threshold=N
@@ -516,9 +607,13 @@ for trace in traces:
             # record resolved knobs from the (first) patched experiment for display
             e0 = exps[0]
             h0 = e0["aggregator"]["config_overrides"]["hyperparameters"]
+            if variant == "sim":
+                sim_profiles[run_key] = h0.get("sim_charge_profile_path")
             kw0 = e0["aggregator"]["config_overrides"]["selector"]["kwargs"]
+            _t_hp0 = (e0["trainer"].get("config_overrides", {})
+                      .get("hyperparameters", {}))
             per_baseline.setdefault(run_key, {
-                "c": kw0.get("c"), "k": kw0.get("k"),
+                "c": kw0.get("c"),
                 "agg_goal": e0["aggregator"].get("agg_goal"),
                 "min_init": kw0.get("minInitialTrainers"),
                 "n_trainers": e0["trainer"].get("num_trainers"),
@@ -526,17 +621,23 @@ for trace in traces:
                 "gpu_ids": e0.get("execution", {}).get("gpu_ids"),
                 "partition": h0.get("partition_method"),
                 "delays": e0["trainer"].get("enable_training_delays"),
+                # H13 A/B knob: yaml-only, so condition_fp cannot see it (§F-18).
+                # Captured per variant and cross-checked below.
+                "jvp_eval_mode": {},
                 "delay_factor": e0["trainer"].get("hyperparameters", {}).get("training_delay_factor"),
                 "delay_floor": e0["trainer"].get("hyperparameters", {}).get("training_delay_floor_s"),
                 # RESOLVED availability mode read back from the PATCHED cfg (what
                 # actually launches), so the table can't show a stale default.
                 "avail": e0["trainer"].get("availability", {}).get("mode"),
-                "async": (run_key == "fluxtune"),
+                "async": _BL_INTERNALS.get(run_key, {}).get("async") == "async",
                 # baseline-distinguishing internals from the shared catalog
                 "selector": _BL_INTERNALS.get(run_key, {}).get("selector", "?"),
                 "optimizer": _BL_INTERNALS.get(run_key, {}).get("optimizer", "?"),
                 "sync_async": _BL_INTERNALS.get(run_key, {}).get("async", "?"),
             })
+
+            per_baseline[run_key]["jvp_eval_mode"][variant] = _t_hp0.get(
+                "jvp_eval_mode", "ABSENT")
 
 with open(MANIFEST, "w") as fh:
     for name, out, variant, budget in manifest:
@@ -588,6 +689,7 @@ _cond = {
     "stall_on": STALL_ON or "either", "loss_min_rel_delta": LOSS_MIN_REL_DELTA or "0.01",
     "converge_window": (CONVERGE_WINDOW or "20") if TARGET_ACC else "none",
     "max_runtime_s": MAX_RUNTIME_S, "max_data_id": MAX_DATA_ID,
+    "sim_wall_ceiling_s": SIM_WALL_CEILING_S or "default",
 }
 _cond_fp = hashlib.sha256(json.dumps(_cond, sort_keys=True).encode()).hexdigest()[:8]
 
@@ -631,7 +733,9 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
     mode_row,
     {"label": "baselines", "value": " ".join(rk for rk, *_ in runs)},
     # The two similarly-named-but-DIFFERENT knobs, disambiguated + on their own rows:
-    scalar_row("max_runtime_s", MAX_RUNTIME_S, MAX_RUNTIME_S_SET, note="wall/vclock cap (--max-runtime-s)"),
+    scalar_row("max_runtime_s", MAX_RUNTIME_S, MAX_RUNTIME_S_SET,
+               note=("--max-runtime-s: REAL mode = wall-clock seconds; SIM mode = VIRTUAL/vclock "
+                     "seconds, NOT wall -- see sim_wall_ceiling_s below for the real-wall cap")),
     scalar_row("max_data_id_progress", MAX_DATA_ID, MAX_DATA_ID_SET,
                note="STOP condition: stop when data_id reaches this (--max-data-id)"),
     scalar_row("trace", trace_val, trace_overridden,
@@ -661,6 +765,15 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
                bool(TARGET_ACC), review=True,
                note=("stop when last %s bins all >= target. unset ⇒ time/data-id bound only"
                      % (CONVERGE_WINDOW or "20"))),
+    # REAL-wall-clock outer safety for sim mode (max_runtime_s there is VIRTUAL
+    # seconds). unset ⇒ code default = max_runtime_s(vclock-s) * 20, which for a
+    # 48h vclock budget is a 40-DAY real failsafe -- effectively no bound. Always
+    # reviewed (not just when MODE includes sim) since --mode both patches both.
+    scalar_row("sim_wall_ceiling_s",
+               SIM_WALL_CEILING_S if SIM_WALL_CEILING_S
+               else f"unset ⇒ {int(MAX_RUNTIME_S) * 20}s (={MAX_RUNTIME_S}s*20)",
+               bool(SIM_WALL_CEILING_S), review=True,
+               note="REAL-wall-clock cap in sim mode (max_runtime_s there is vclock-seconds, not wall)"),
     # Stall guard: early-terminate a not-learning run before the wall ceiling.
     scalar_row("stall_guard",
                ((lambda _on, _h: {
@@ -680,7 +793,7 @@ tiers.append(tier1)
 # are the ones to eyeball); columns identical across all 3 stay dim (expected).
 tier2_cols = [
     ("sync_async", "mode"), ("selector", "selector"), ("optimizer", "optim"),
-    ("c", "c"), ("agg_goal", "agg_goal"), ("k", "k"),
+    ("c", "c"), ("agg_goal", "agg_goal (K)"),
     ("min_init", "minInit"), ("n_trainers", "n_trainers"),
     ("n_gpus", "n_gpus"), ("partition", "part"), ("avail", "avail"),
     ("delays", "delays (factor/floor)"),
@@ -689,8 +802,7 @@ if GPU_IDS:
     tier2_cols.append(("gpu_ids", "gpu_ids"))
 overridden2 = []
 if bool(SEL_C) or bool(SEL_C_ASYNC): overridden2.append("c")
-if bool(AGG_GOAL) or bool(SEL_C):    overridden2.append("agg_goal")
-if bool(SEL_K):        overridden2.append("k")
+if bool(AGG_GOAL) or bool(SEL_K) or bool(SEL_C): overridden2.append("agg_goal")
 if bool(MIN_INIT):     overridden2.append("min_init")
 if bool(NUM_TRAINERS): overridden2.append("n_trainers")
 if bool(NUM_GPUS):     overridden2.append("n_gpus")
@@ -706,7 +818,7 @@ for rk in (r[0] for r in runs):
     rows2.append({"name": rk, "cells": {
         "sync_async": b.get("sync_async"), "selector": b.get("selector"),
         "optimizer": b.get("optimizer"),
-        "c": b.get("c"), "agg_goal": b.get("agg_goal"), "k": b.get("k"),
+        "c": b.get("c"), "agg_goal": b.get("agg_goal"),
         "min_init": b.get("min_init"), "n_trainers": b.get("n_trainers"),
         "n_gpus": b.get("n_gpus"), "partition": b.get("partition"),
         "avail": b.get("avail"),
@@ -735,6 +847,120 @@ if MODE == "both":
         checks.append({"name": f"enable_training_delays matched across real/sim pair ({rk})",
                        "level": "ok",
                        "detail": f"D={'>0' if _don else '0'} both sides (factor={_dfac or 'base'}, floor={_dflr or '0.0'})"})
+# H13 `jvp_eval_mode` (simulate_fwdllm.md §B): a yaml-only knob, so `condition_fp`
+# cannot detect it going missing -- the exact §F-18 failure mode. It changes what is
+# TRAINED, so a real/sim pair that disagrees grades two different experiments.
+for rk in (r[0] for r in runs):
+    _jv = per_baseline.get(rk, {}).get("jvp_eval_mode", {})
+    _vals = set(_jv.values())
+    if not _jv:
+        pass
+    elif "ABSENT" in _vals and len(_vals) > 1:
+        checks.append({"name": f"jvp_eval_mode present on both legs ({rk})",
+                       "level": "error",
+                       "detail": f"declared on one leg only: {_jv}"})
+    elif len(_vals) > 1:
+        checks.append({"name": f"jvp_eval_mode matched across real/sim pair ({rk})",
+                       "level": "error", "detail": f"MISMATCH: {_jv}"})
+    elif _vals == {"ABSENT"}:
+        checks.append({"name": f"jvp_eval_mode ({rk})", "level": "warn",
+                       "detail": "not declared -> code default True (dropout off in the JVP)"})
+    elif _vals == {False}:
+        checks.append({"name": f"jvp_eval_mode ({rk})", "level": "warn",
+                       "detail": "explicitly OFF -> dropout LIVE in the JVP, the H13 defect"})
+    else:
+        checks.append({"name": f"jvp_eval_mode ({rk})", "level": "ok",
+                       "detail": f"{_vals.pop()} on every leg"})
+
+def leg_jvp_eval_mode(run_dir):
+    """Was this finished leg trained with dropout off inside the JVP? Only the
+    trainer log records it (simulate_fwdllm.md §B.6)."""
+    for lg in glob.glob(os.path.join(run_dir, "*trainers.log")):
+        try:
+            with open(lg, errors="ignore") as fh:
+                for i, line in enumerate(fh):
+                    if "jvp_eval_mode=" in line:
+                        return "jvp_eval_mode=True" in line
+                    if i > 50000:      # the knob logs at trainer init or never
+                        break
+        except OSError:
+            continue
+    return False
+
+
+# sim charge profile provenance: every charged entry must have been profiled from
+# a real run of THIS baseline. A shared family-wide profile silently mis-prices the
+# vclock -- one constant was 1.08-2.75x each baseline's own real drain_tail, i.e.
+# 0.6-3.4% of sim's clock, always making sim look slower (simulate_fwdllm.md §D-18).
+for rk in (r[0] for r in runs):
+    prof = sim_profiles.get(rk)
+    if not prof:
+        continue
+    _repo_root = os.path.abspath(os.path.join(env("EXAMPLE_DIR", ""), "..", "..", "..", ".."))
+    path = prof if os.path.isabs(prof) else os.path.join(_repo_root, prof)
+    if not os.path.exists(path):
+        checks.append({"name": f"sim charge profile exists ({rk})", "level": "error",
+                       "detail": f"missing: {prof}"})
+        continue
+    try:
+        _pf = yaml.safe_load(open(path, encoding="utf-8")) or {}
+    except Exception as _e:
+        checks.append({"name": f"sim charge profile readable ({rk})", "level": "error",
+                       "detail": f"{prof}: {_e}"})
+        continue
+    _foreign, _dates = [], set()
+    for _lbl, _entries in _pf.items():
+        for _pk, _e in (_entries or {}).items():
+            if not _e.get("charge"):
+                continue
+            _dates.add(_e.get("profiled_at"))
+            # `cross_baseline: true` is a DECLARED exemption, not an inferred one:
+            # `redispatch_turnaround.weights` is deliberately shared because its
+            # marginal is only valid under burst dispatch (§E). Declaring it keeps
+            # the gate meaningful for everything that must be self-sourced.
+            if _e.get("cross_baseline"):
+                continue
+            # `_<rk>_n` not a bare substring: "fwdllm" is a prefix of
+            # "fwdllm_it_unaware", so a plain `in` would accept a sibling's profile.
+            if not any(f"_{rk}_n" in str(s) for s in (_e.get("source_runs") or [])):
+                _foreign.append(f"{_lbl}.{_pk}")
+    if _foreign:
+        checks.append({"name": f"sim charge profile provenance ({rk})", "level": "error",
+                       "detail": f"{prof}: charged entries not profiled from a {rk} real run: "
+                                 f"{', '.join(sorted(_foreign))}"})
+    else:
+        checks.append({"name": f"sim charge profile provenance ({rk})", "level": "ok",
+                       "detail": f"{os.path.basename(path)} profiled {'/'.join(sorted(d for d in _dates if d))} from {rk} real"})
+
+    # ...and from its CURRENT reals. A profile from an older training config
+    # mis-prices the vclock, and sim selects work against that clock, so the leg
+    # grades the PROFILE not the code -- worth 5.4% of cadence on one baseline
+    # (§A.1 stage CH, §D-50). --force overrides.
+    _src = set()
+    for _lbl, _entries in _pf.items():
+        for _pk, _e in (_entries or {}).items():
+            if _e.get("charge") and not _e.get("cross_baseline"):
+                _src.update(str(s) for s in (_e.get("source_runs") or []))
+    _newest_src = max((s.split("run_")[-1][:15] for s in _src), default="")
+    _expt = os.path.join(env("EXAMPLE_DIR", ""), "experiments")
+    _reals = [d for d in glob.glob(os.path.join(_expt, f"run_*_{rk}_n*_real"))
+              if os.path.basename(d).split("run_")[-1][:15] > _newest_src]
+    # Only a same-config real can stale a profile; a deliberate flag-OFF control
+    # landing later is not a reason to re-profile.
+    _want = per_baseline.get(rk, {}).get("jvp_eval_mode", {}).get("sim", "ABSENT")
+    _want = True if _want == "ABSENT" else _want
+    _newer = sorted(os.path.basename(d) for d in _reals
+                    if leg_jvp_eval_mode(d) == _want)
+    if _newer and _newest_src:
+        checks.append({"name": f"sim charge profile is CURRENT ({rk})", "level": "error",
+                       "detail": f"{len(_newer)} real leg(s) newer than the profile "
+                                 f"(newest source {_newest_src}): {', '.join(_newer[-2:])}. "
+                                 f"Re-run profile_sim_charges.py, or --force if the newer "
+                                 f"reals are a different config on purpose."})
+    elif _newest_src:
+        checks.append({"name": f"sim charge profile is CURRENT ({rk})", "level": "ok",
+                       "detail": f"sourced from this baseline's newest real ({_newest_src})"})
+
 # agg_goal <= c (more required than concurrently selected -> stall).
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})
@@ -756,7 +982,7 @@ elif _gset:
                    "detail": f"all baselines agg_goal={next(iter(_gset))}"})
 # Availability liveness: BLOCK a full-participation sync barrier (agg_goal >=
 # n_trainers) under a non-syn_0 trace — it can never assemble if any trainer is
-# unavailable, so the barrier stalls to the wall cap (fwdllm_plus / K-D20).
+# unavailable, so the barrier stalls to the wall cap (fwdllm_it_oracular / K-D20).
 for rk in (r[0] for r in runs):
     b = per_baseline.get(rk, {})
     av, g, n, is_async = b.get("avail"), b.get("agg_goal"), b.get("n_trainers"), b.get("async")

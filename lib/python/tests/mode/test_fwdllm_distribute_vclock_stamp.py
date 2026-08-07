@@ -39,6 +39,9 @@ class _FakeChannel:
 
 class _FakeAggregator:
     _distribute_weights_async = TopAggregator._distribute_weights_async
+    _select_ends_for_async_respecting_reselect_gate = (
+        TopAggregator._select_ends_for_async_respecting_reselect_gate
+    )
 
     def __init__(self, vclock_now, channel, simulated=True):
         self.simulated = simulated
@@ -49,6 +52,7 @@ class _FakeAggregator:
         self.data_id = 0
         self._vclock_now = vclock_now
         self.weights = None
+        self._reselect_each_iteration = True
 
     @property
     def vclock_now(self):

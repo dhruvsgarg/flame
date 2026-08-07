@@ -1,0 +1,94 @@
+# FedFwd smoke test. Real sibling of fedbuff_it_oracular_n10_smoke_sim.yaml --
+# identical stack, but ORACULAR trainer-availability tracking instead of
+# unaware (per BASELINES.md, fedbuff_it_oracular's own catalog entry). Same
+# real/sim delta as fedbuff_round_n10_smoke.yaml (time_mode, job id, dropped
+# sim-only knobs).
+#
+# Uses the `fedbuff_it_oracular` baseline: FedBuff(P)+IT+O, the L2
+# attribution floor's availability-aware twin.
+#
+# TODO(verify): smoke-pending -- both the sim-fidelity knobs (see
+# fedbuff_round_n10_smoke.yaml) and the 2-tier mobiperf_2st ORACULAR trace
+# choice (ported from fwdllm_it_oracular; unconfirmed whether the async
+# eval-dispatch path needs a 3-tier trace instead, see baselines.yaml's
+# fedbuff_it_oracular entry). Unlike unaware tracking, ORACULAR reads
+# availability directly from _metadata -- no trainer-side client_notify
+# trace block needed (matches fwdllm_it_oracular's real yaml).
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/fedbuff_it_oracular_n10_smoke.yaml
+
+experiments:
+  - name: fedbuff_it_oracular_n10_smoke
+    description: "FedFwd smoke (100 trainers, c=30/agg_goal=10, fedbuff_it_oracular baseline: async FedBuffSelector+fedbuff uniform rate, ORACULAR, per-iteration reselect)."
+
+    baseline: fedbuff_it_oracular
+
+    example:
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 100
+      start_id: 1
+      dataset:
+        name: agnews
+        # Cosmetic-only for path-style (naming/snapshot), but kept in sync
+        # with the actual partition_method below (EXPTS_CHARTER A5: alpha=1).
+        dirichlet_alpha: 1
+        path_style: true
+      availability:
+        mode: syn_0
+      time_mode: real
+      enable_training_delays: false
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          seed: 1234
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          partition_method: niid_label_clients=100_alpha=1
+          # H13: dropout off during the JVP's two finite-difference passes.
+          # Code default ON (simulate_fwdllm.md §G); real and sim must match.
+          jvp_eval_mode: true
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: fedbuff
+      tracking_mode: oracular
+      agg_goal: 10
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fedbuff_it_oracular_n10_smoke
+        hyperparameters:
+          seed: 1234
+          rounds: 50
+          inflight_residence: true
+          real_drain_ready_ingest: true
+          real_distribute_settle_s: 0.0
+          send_timeout_wait_s: 300
+          max_data_id_progress: 9999
+          max_runtime_s: 3600  # ...or after 60 minutes wall time
+          # Eval cadence -- MUST match real/sim, else the two sample the accuracy
+          # curve at different points. Raise if the run warns about waiting.
+          eval_every_n_commits: 2
+          # Arms runner.py's watchdog (force-kill on hang); inert otherwise.
+          # Must exceed --max-runtime-s or the watchdog truncates a full-length run.
+          max_experiment_runtime_s: 10800
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          partition_method: niid_label_clients=100_alpha=1
+        selector:
+          kwargs:
+            c: 30
+            minInitialTrainers: 100
+
+    execution:
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false

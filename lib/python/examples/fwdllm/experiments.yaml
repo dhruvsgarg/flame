@@ -1,5 +1,5 @@
 # ============================================================================
-# FLUXTUNE vs FWDLLM / FWDLLM_PLUS — machine-readable experiment registry.
+# FLUXTUNE vs FWDLLM / FWDLLM_IT_ORACULAR — machine-readable experiment registry.
 #
 # Consumed by:
 #   * run_sequential.sh      -> launches a run_set's (baseline x condition) matrix
@@ -24,7 +24,7 @@ defaults:
   # stall guard: terminate EARLY (before 48h) if the run is clearly not learning —
   # no PROGRESS within stall_window_s on the armed signal (stall_on).
   # -> verdict STALLED (distinct from DID_NOT_CONVERGE). 0 window disables it.
-  stall_window_s: 7200         # 2h with no progress ⇒ stalled
+  stall_window_s: 3600         # 1h with no progress ⇒ stalled
   stall_min_delta: 0.01        # acc: 1% ABSOLUTE test-accuracy gain counts as progress
   stall_on: either             # acc | loss | either — 'either' keeps a run alive while EITHER
                                # accuracy OR test-loss is still improving (a run can plateau in
@@ -32,19 +32,16 @@ defaults:
   loss_min_rel_delta: 0.01     # loss: 1% RELATIVE drop vs running-best counts as progress
                                # (loss is unbounded, so progress is relative, not absolute)
 
-# ---- baselines (descriptive; substance lives in _metadata/baselines.yaml) ---
-baselines:
-  fwdllm:      { sync: true,  selector: random,     tracking: default,       agg_goal_default: 10 }
-  fwdllm_plus: { sync: true,  selector: random,     tracking: oracular,      agg_goal_default: 10 }
-  fluxtune:    { sync: false, selector: async_oort, tracking: client_notify, agg_goal_default: 3  }
-
 # ---- run-sets: the expensive GPU work, produced ONCE, reused by all analyses -
+# Run-sets reference baseline KEYS only; knobs (sync/selector/tracking/agg_goal)
+# resolve from _metadata/baselines.yaml, the single source of truth (no local
+# baselines: stanza here to drift out of sync with it).
 run_sets:
   main:
     description: >
       Canonical comparison run-set. Experiment 1 defines it; Experiments 2-5 are
       pure reducers over these run dirs (no new GPU runs). One run per baseline.
-    baselines: [fwdllm, fwdllm_plus, fluxtune]
+    baselines: [fwdllm, fwdllm_it_oracular, fluxtune]
     # Active condition = the real comparison (operator-signed-off 2026-07-06):
     # N=100, 84% target, syn_0 (Phase 1), data heterogeneity alpha=1, modeled
     # mobile-latency delays ON at delay_factor=2. agg_goal MATCHES across all three
@@ -68,10 +65,37 @@ run_sets:
       C: { sync: 10, async: 30 }
       partition_method: niid_label_clients=100_alpha=0.1
       avail_trace: mobiperf_2st
-      # NOTE: fwdllm_plus sync barrier cannot assemble under mobiperf unavailability
-      # (agg_goal >= available trainers). Needs a policy decision before this runs;
-      # the pre-flight gate will BLOCK it otherwise. See EXPERIMENTS.md sec 1.
-      _blocked_pending: fwdllm_plus_mobiperf_policy
+      # NOTE: fwdllm_it_oracular sync barrier cannot assemble under mobiperf
+      # unavailability (agg_goal >= available trainers). Needs a policy decision
+      # before this runs; the pre-flight gate will BLOCK it otherwise. See
+      # EXPERIMENTS.md sec 1.
+      _blocked_pending: fwdllm_it_oracular_mobiperf_policy
+
+  main_v2:
+    description: >
+      4-anchor sim-mode comparison (BRIDGE_DESIGN.md §2/§3): fwdllm, fedbuff_round,
+      felix_round, fluxtune -- the sync->async->ours staircase (BASELINES.md "Reads
+      as three staircases"). fwdllm_it_oracular folded in as a 5th baseline for the
+      A0 attribution reducer only (reuses these run dirs, no separate launch --
+      see the a0_attribution analysis below). Supersedes `main` for E1-E5+A0 going
+      forward; `main`'s real-mode numbers are KEPT AS-IS (decision #3), not
+      replaced or re-run.
+    baselines: [fwdllm, fedbuff_round, felix_round, fluxtune, fwdllm_it_oracular]
+    # Same shared condition as `main` (operator-signed-off 2026-07-06). All NEW
+    # launches are sim-mode per decision #3 (unlike `main`, which is real-mode).
+    # agg_goal fans from C.sync=10 for EVERY baseline (matched across baselines,
+    # per sign-off) -- fedbuff_round/felix_round/fluxtune's native async
+    # concurrency is C=30, agg_goal still forced to 10 for a fair comparison.
+    condition:
+      N: 100
+      K: 10
+      C: { sync: 10, async: 30 }
+      partition_method: niid_label_clients=100_alpha=1     # alpha=1 (charter A5 floor)
+      avail_trace: syn_0          # 100% available (Phase 1); -> mobiperf_* at Phase 2
+      delays: on                  # enable_training_delays, matched both sides (K-D8)
+      delay_factor: 2             # divides the yaml base compute-latency delay (full/2)
+      target_accuracy: 0.84       # convergence stop threshold
+      converge_window: 20         # W consecutive bins >= target
 
 # ---- analyses: every experiment is a view over a run_set --------------------
 # reuse: run_set analyses share the SAME run dirs. `metrics[].id` are implemented
@@ -81,7 +105,7 @@ run_sets:
 #   ws3b  = perturbation counter (new)
 analyses:
   - id: 1_time_to_target
-    takeaway: Fluxtune reaches target accuracy faster than FwdLLM and FwdLLM_Plus.
+    takeaway: Fluxtune reaches target accuracy faster than FwdLLM and FwdLLM+IT+O.
     run_set: main
     reuses: null                 # this analysis DEFINES the run-set
     metrics:
@@ -126,6 +150,83 @@ analyses:
     metrics:
       - { id: session_duration,      source: derive, report: [p50, p90, p99, histogram] }
       - { id: participation_counts,  source: derive, report: [rounds, data_bins, iterations] }
+
+  # ---- main_v2 analyses: tex-anchored ids (BRIDGE_DESIGN.md §2 Layer-0 map) --
+  # `main`'s 1_time_to_target..5_client_sessions above are the historical
+  # 3-baseline real-mode analyses (KEPT AS-IS, decision #3) -- these are the
+  # NEW 4/5-baseline sim-mode ones. Same metric ids/reducers, `main_v2` run dirs.
+  - id: e1_time_to_accuracy
+    tex_label: sec:eval:tta
+    takeaway: Fluxtune reaches target accuracy faster than FwdLLM, FedBuff(P), and Felix(P).
+    run_set: main_v2
+    reuses: null                 # this analysis DEFINES the run-set
+    metrics:
+      - { id: time_to_target,   source: ws2,    report: [wall_s, vclock_s, rounds, data_bins] }
+      - { id: max_accuracy,     source: derive, report: [accuracy] }
+
+  - id: e2_resource_utilization
+    tex_label: sec:eval:util
+    takeaway: Fluxtune cuts client idle/network-wait time (primary) and aggregator wait (secondary).
+    run_set: main_v2
+    reuses: main_v2               # NO new runs -- reuse e1's telemetry
+    approach: derived_time_fraction   # operator call: no hardware sampler
+    metrics:
+      - { id: trainer_busy_fraction,     source: derive, report: [p50, p90, p99] }
+      # N5 fix: idle is no longer a bare 1-busy_frac bucket -- mqtt_fetch_s
+      # (emitted, previously unused) splits out network-wait from true idle.
+      - { id: trainer_net_wait_fraction, source: derive, report: [p50, p90, p99] }
+      - { id: trainer_idle_fraction,     source: derive, report: [p50, p90, p99] }
+      - { id: agg_busy_vs_wait,          source: derive, report: [busy_frac, barrier_wait_frac, drain_frac] }
+
+  - id: e3_compute_effectiveness
+    tex_label: sec:eval:compute
+    takeaway: At constrained clients, Fluxtune yields more learning per unit compute.
+    run_set: main_v2
+    reuses: main_v2
+    metrics:
+      - { id: delta_loss,                 source: emit,   report: [first_loss, final_loss, delta] }
+      - { id: productivity_per_gpu_s,     source: derive, report: [delta_loss_per_gpu_s] }
+      - { id: productivity_per_fwd_pass,  source: ws3b,   report: [delta_loss_per_forward_pass] }
+
+  - id: e4_communication
+    tex_label: sec:eval:comm
+    takeaway: Fluxtune's total data overhead is lower despite more messages per round.
+    run_set: main_v2
+    reuses: main_v2               # requires ws3a telemetry present AT RUN TIME
+    requires_telemetry: [ws3a]
+    metrics:
+      - { id: total_messages,   source: ws3a, report: [agg_side, client_side] }
+      - { id: total_bytes,      source: ws3a, report: [agg_side, client_side] }
+      - { id: msg_size_dist,    source: ws3a, report: [p50, p90, p99, histogram] }
+
+  - id: e5_session_length
+    tex_label: sec:eval:sessions
+    takeaway: Fluxtune's client sessions are much shorter than the round-based baselines'.
+    run_set: main_v2
+    reuses: main_v2
+    session_def:                 # N6 fix -- see plotlib/reducers.py round_span_durs
+      async: dispatch_to_commit  # selected -> next reselection (contributor_intervals)
+      sync:  one_round_span      # per-data_id engagement span (first cycle -> commit)
+    metrics:
+      - { id: session_duration,      source: derive, report: [p50, p90, p99, histogram] }
+      - { id: participation_counts,  source: derive, report: [rounds, data_bins, iterations] }
+
+  - id: a0_attribution
+    tex_label: sec:eval:attribution
+    takeaway: >
+      Fluxtune's L2 contributions (C1+C3) improve on FwdLLM+IT+O beyond what
+      iteration-level control (L1) alone buys -- this is the old fwdllm_plus vs
+      fluxtune comparison, renamed (BRIDGE_DESIGN.md §2).
+    run_set: main_v2
+    reuses: main_v2               # fwdllm_it_oracular's run dir, produced by
+                                   # main_v2's own launch -- no separate launch
+    baselines: [fluxtune, fwdllm_it_oracular]   # subset of main_v2, not the 4-anchor set
+    metrics:                      # reuses e1-e4's metric ids, scoped to this pair
+      - { id: time_to_target,        source: ws2,    report: [wall_s, vclock_s, rounds, data_bins] }
+      - { id: max_accuracy,          source: derive, report: [accuracy] }
+      - { id: trainer_busy_fraction, source: derive, report: [p50, p90, p99] }
+      - { id: delta_loss,            source: emit,   report: [first_loss, final_loss, delta] }
+      - { id: total_bytes,           source: ws3a,   report: [agg_side, client_side] }
 
 # ---- outputs ----------------------------------------------------------------
 outputs:

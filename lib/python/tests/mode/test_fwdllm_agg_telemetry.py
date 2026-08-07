@@ -750,6 +750,7 @@ class _UtilityFakeAggregator:
     trainers is a no-op) since it's irrelevant to the telemetry under test."""
 
     process = TopAggregator._process_single_trainer_message
+    _round_cache_clock_now = TopAggregator._round_cache_clock_now
     _release_end_on_return = TopAggregator._release_end_on_return
 
     def __init__(self, model_version=5, data_id=3, iteration_per_data_id=0,

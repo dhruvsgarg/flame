@@ -1,0 +1,102 @@
+# FedFwd SIMULATED-clock smoke test: 100 trainers, agnews H5 partitions
+# (client_idx 0-99, the full 100-partition niid_label_clients=100_alpha=1
+# population). Sim sibling would be fwdllm_it_unaware_n100_smoke.yaml (not
+# created -- sim-only per BRIDGE_DESIGN.md decision #3, all new launches use
+# --mode sim). c=10 of the 100-trainer pool selected/round (agg_goal==c==10).
+#
+# Uses the `fwdllm_it_unaware` baseline (sync, random selector, fedavg,
+# unaware trainer availability, per-iteration reselection -- isolates L1
+# alone, BASELINES.md naming grammar). Sibling of fwdllm_n100_smoke_sim.yaml
+# (round-level) and fwdllm_it_oracular_n100_smoke_sim.yaml (the aware twin).
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/fwdllm_it_unaware_n100_smoke_sim.yaml
+
+experiments:
+  - name: fwdllm_it_unaware_n100_smoke_sim
+    description: "FedFwd SIM smoke (100 trainers, c=10, fwdllm_it_unaware baseline: sync random+fedavg+unaware+per-iteration reselect, time_mode=simulated)."
+
+    baseline: fwdllm_it_unaware
+
+    example:
+      # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
+      # ExampleConfig default (trainer/pytorch/main.py).
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 100
+      start_id: 1
+      dataset:
+        name: agnews
+        # Cosmetic-only for path-style (naming/snapshot), but kept in sync
+        # with the actual partition_method below (EXPTS_CHARTER A5: alpha=1).
+        dirichlet_alpha: 1
+        # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
+        # file exists (or ever will) for agnews; skips that lookup entirely.
+        path_style: true
+      availability:
+        mode: syn_0
+      # Batch 1: drive the simulated virtual clock instead of real sleeps.
+      time_mode: simulated
+      # Skip the registry's 4-18s artificial delay for a fast smoke run.
+      enable_training_delays: false
+      # client_idx = (trainer_id - 1) % 100 -- 1:1 onto all 100 H5 partitions
+      # (also the full §O trainer_registry.yaml speed-class population).
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          # Selector RNG seed — inert on the trainer (self-selects); logged for
+          # cross-role consistency with the aggregator (§F-18). Not the pert seed.
+          seed: 1234
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          partition_method: niid_label_clients=100_alpha=1
+          # H13: dropout off during the JVP's two finite-difference passes.
+          # Code default ON (simulate_fwdllm.md §G); real and sim must match.
+          jvp_eval_mode: true
+          sim_straggler_spread_s: 0.0  # per-trainer registry delays supply the completion spread instead
+          client_notify:
+            trace: syn_0
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: random
+      tracking_mode: default
+      agg_goal: 10
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fwdllm_it_unaware_n100_smoke_sim
+        hyperparameters:
+          seed: 1234  # deterministic selector RNG + model init; MUST match fwdllm_it_unaware_n100_smoke.yaml if a real sibling is added
+          rounds: 50  # short smoke run, not the full 300
+          inflight_residence: true
+          max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s
+          max_runtime_s: 3600  # ...or after 60 minutes sim vclock
+          # Eval cadence -- MUST match real/sim, else the two sample the accuracy
+          # curve at different points. Raise if the run warns about waiting.
+          eval_every_n_commits: 2
+          # §P: real-profiled vclock charges. Without it sim folds its own
+          # contention-inflated span onto the clock (§D-18/§F-1/§F-20).
+          sim_charge_profile_path: lib/python/examples/fwdllm/sim_charge_profiles/fwdllm_it_unaware.yaml
+          # Outer wall failsafe (code default 20x max_runtime_s is too loose).
+          sim_wall_ceiling_s: 7200
+          sim_model_agg_compute_time: true
+          sim_model_dispatch_queue: true   # MQTT serial-send stagger (#6)
+          sim_sct_ordered_drain: true      # drain buffered grads in sct order (#13)
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          partition_method: niid_label_clients=100_alpha=1
+        selector:
+          kwargs:
+            c: 10
+            minInitialTrainers: 100
+
+    execution:
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false

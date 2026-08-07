@@ -40,6 +40,9 @@ experiments:
         # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
         # file exists (or ever will) for agnews; skips that lookup entirely.
         path_style: true
+        # Cosmetic-only for path-style (naming/snapshot), but kept in sync
+        # with the actual partition_method below (EXPTS_CHARTER A5: alpha=1).
+        dirichlet_alpha: 1
       availability:
         mode: syn_0
       # Batch 1: drive the simulated virtual clock instead of real sleeps.
@@ -56,10 +59,13 @@ experiments:
           seed: 1234
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
-          # Uniform/IID partition for smoke tests -- the niid_label baseline
-          # default adds a data-skew confound we don't want while validating
-          # the launcher mechanics.
-          partition_method: uniform
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          # MUST match the real pair or parity sees a data-skew divergence
+          # with no clock cause.
+          partition_method: niid_label_clients=100_alpha=1
+          # H13: dropout off during the JVP's two finite-difference passes.
+          # Code default ON (simulate_fwdllm.md §G); real and sim must match.
+          jvp_eval_mode: true
           # Phase 4c (B2, #6): widen the sim barrier's k-th-smallest sct to
           # match real's per-trainer completion dispersion (banked real compute
           # std ~0.26s; uniform[0,spread) offset ⇒ spread ≈ 0.26·√12). Only
@@ -90,7 +96,15 @@ experiments:
           # (`rounds` alone is much too coarse, since one round is 150
           # data-id completions).
           max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
-          max_runtime_s: 1800  # ...or after 30 minutes wall time
+          max_runtime_s: 3600  # ...or after 60 minutes sim vclock
+          # Eval cadence -- MUST match real/sim, else the two sample the accuracy
+          # curve at different points. Raise if the run warns about waiting.
+          eval_every_n_commits: 2
+          # §P: real-profiled vclock charges. Without it sim folds its own
+          # contention-inflated span onto the clock (§D-18/§F-1/§F-20).
+          sim_charge_profile_path: lib/python/examples/fwdllm/sim_charge_profiles/fwdllm.yaml
+          # Outer wall failsafe (code default 20x max_runtime_s is too loose).
+          sim_wall_ceiling_s: 7200
           # Phase 4c (B1, #6, REMOVED §6 Part 6): sim_model_eval_time used to
           # charge the MEASURED server eval_s (~13s/data_id -- the syn_0 wall
           # dominator) onto the vclock -- removed once eval_model() was
@@ -106,7 +120,8 @@ experiments:
           sim_sct_ordered_drain: true      # drain buffered grads in sct order (#13)
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
-          partition_method: uniform
+          # alpha=1 (EXPTS_CHARTER A5); must match the real pair — see trainer side.
+          partition_method: niid_label_clients=100_alpha=1
         selector:
           kwargs:
             # RandomSelector has no `k` concept (matches oort/async_oort/fedbuff/

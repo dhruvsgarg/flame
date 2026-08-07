@@ -77,6 +77,18 @@ class FedSGDAggregator(TopAggregator):
         self.model = model_trainer.model
         self.dataset = None
         self.num_labels = num_labels
+        # H14 audit: per-contribution grad norms into the variance gate. Default
+        # OFF (costs a GPU->CPU sync per pool entry); flip on BOTH legs of a pair.
+        self._var_calc_audit = bool(getattr(self.args, "var_calc_audit", False))
+        if self._var_calc_audit:
+            logger.info("[VAR_CALC_AUDIT] emitting per-cycle grad-norm records")
+        # I-1 audit: per-commit applied-update vs weight norm. Default OFF — its
+        # wall cost perturbs the async arrival order that separates two legs (§D-45).
+        self._server_update_audit = bool(
+            getattr(self.args, "server_update_audit", False)
+        )
+        if self._server_update_audit:
+            logger.info("[SERVER_UPDATE_AUDIT] emitting per-commit update/weight norms")
 
         self.train_data_local_dict = train_data_local_dict
         self.test_data_local_dict = test_data_local_dict
@@ -240,8 +252,11 @@ class FedSGDAggregator(TopAggregator):
     def _compute_var(self):
         """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
         result = calculate_var(self.grad_for_var_check_list)
-        # Diagnostic telemetry (grad norms + var); DEBUG-gated to avoid taxing every prod run.
-        if logger.isEnabledFor(logging.DEBUG):
+        # Diagnostic telemetry (grad norms + var). Off by default: ~n_pool GPU->CPU
+        # syncs per cycle. `var_calc_audit` turns it on WITHOUT global DEBUG, which
+        # would also flood the log and perturb timing — the point is to diff the
+        # pool's dispersion real vs sim (H14), not to debug everything.
+        if getattr(self, "_var_calc_audit", False) or logger.isEnabledFor(logging.DEBUG):
             try:
                 from flame import telemetry
                 if telemetry.is_enabled():
@@ -296,6 +311,8 @@ class FedSGDAggregator(TopAggregator):
                                 learning_rate, training_num):
         """Timed separately; shared by both commit branches (natural / force-commit),
         was duplicated verbatim."""
+        _audit = getattr(self, "_server_update_audit", False)
+        _delta_sq = _weight_sq = 0.0
         for id, k in enumerate(weighted_gradient_sum):
             for i in range(0, len(model_list)):
                 local_sample_number, local_model_params = model_list[i]
@@ -307,11 +324,36 @@ class FedSGDAggregator(TopAggregator):
             # `.to("cpu")` syncs GPU->CPU; timed separately since it runs once
             # per param, not once per call.
             with _agg_sync_timer(self, "agg_apply_update_cpu_sync"):
-                next(old_param).detach().to("cpu").sub_(
-                    self._server_update_step(
-                        id, learning_rate * weighted_gradient_sum[id] / training_num
-                    )
+                _param = next(old_param).detach().to("cpu")
+                _update = self._server_update_step(
+                    id, learning_rate * weighted_gradient_sum[id] / training_num
                 )
+                _param.sub_(_update)
+                if _audit:
+                    _delta_sq += float(_update.pow(2).sum())
+                    _weight_sq += float(_param.pow(2).sum())
+        if _audit:
+            self._emit_server_update(_delta_sq**0.5, _weight_sq**0.5, learning_rate)
+
+    def _emit_server_update(self, delta_norm, weight_norm, learning_rate):
+        """One `server_update` record per commit (I-1). Never faults training."""
+        try:
+            from flame import telemetry
+            if telemetry.is_enabled():
+                from flame.telemetry.events import build_server_update
+                stage = getattr(self, "fwd_llm_stage", None)
+                ev, fields = build_server_update(
+                    round_num=getattr(stage, "round_id", None),
+                    data_id=getattr(stage, "data_id", None),
+                    iteration=getattr(stage, "iteration", None),
+                    model_version=getattr(self, "_model_version", None),
+                    update_delta_norm=delta_norm,
+                    weight_norm=weight_norm,
+                    learning_rate=learning_rate,
+                )
+                telemetry.emit(ev, **fields)
+        except Exception:  # pragma: no cover - telemetry must never fault training
+            logger.debug("server_update telemetry emit failed", exc_info=True)
 
     @timer_decorator
     def _prepare_round_state(self, current_round):

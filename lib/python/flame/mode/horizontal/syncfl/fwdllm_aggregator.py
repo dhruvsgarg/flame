@@ -30,7 +30,7 @@ import numpy as np
 import yaml
 from sortedcontainers import SortedDict
 import torch.nn.functional as F
-from flame.channel import VAL_CH_STATE_HTBT_RECV, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
+from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
 from flame.common.util import weights_to_device, weights_to_model_device
 from flame.config import OptimizerType, TrainerAvailState
@@ -40,7 +40,7 @@ import pickle
 from flame.mode.horizontal.syncfl.top_aggregator import (
     TAG_AGGREGATE,
     TAG_DISTRIBUTE,
-    TAG_HEARTBEAT,
+    TopAggregator as SyncTopAggregator,
 )
 from sklearn.metrics import (
     confusion_matrix,
@@ -55,6 +55,7 @@ from flame.mode.horizontal.asyncfl.top_aggregator import (
 )
 from flame.mode.message import MessageType
 from flame.mode.horizontal.client_duration import real_client_task_train_duration
+from flame.mode.horizontal.sim_charge_registry import get_profiled_charge_s
 from flame.mode.tasklet import Loop, Tasklet
 from flame.sim.virtual_clock import SimReorderBuffer
 from flame.optimizer.train_result import TrainResult
@@ -79,7 +80,7 @@ import math
 from flame import telemetry
 from flame.telemetry.events import (
     build_agg_eval, build_agg_round, build_utility_belief, build_comm,
-    build_version_bump_census,
+    build_version_bump_census, build_redispatch_decomp, build_vclock_charge,
 )
 
 
@@ -242,27 +243,58 @@ def recv_fifo_wrapper(channel, ends):
     logger.debug("Exiting recv_fifo_wrapper")
 
 
-def charge_sim_vclock_overhead(vclock, simulated, config, span_s, label: str) -> float:
-    """Fold a MEASURED aggregator-side wall span (`span_s`, seconds) into the
-    vclock -- dynamically, using the live number, never a pre-profiled constant
-    (#6). Sim-only and gated on `sim_model_agg_compute_time` (OFF -> no-op,
-    byte-identical). Warns when the span exceeds `sim_overhead_warn_s` (excess
-    sim-host overhead, not modeled deployment cost). Returns seconds charged."""
-    if not span_s or span_s <= 0.0:
-        return 0.0
-    hp = getattr(config, "hyperparameters", None)
-    _warn = getattr(hp, "sim_overhead_warn_s", None)
-    if _warn and span_s > float(_warn):
-        _now = f"{vclock.now:.1f}s" if vclock is not None else "n/a"
-        logger.warning(
-            f"[SIM_OVERHEAD] {label}={span_s:.3f}s > expected {float(_warn):.1f}s "
-            f"(vclock={_now}) -- excess sim-host overhead"
+def charge_sim_vclock_overhead(
+    vclock, simulated, config, span_s, label: str,
+    *, charge: bool = True, payload_kind: str | None = None,
+    profiled_s: float | None = None,
+) -> float:
+    """Fold an aggregator-side wall span into the vclock. Two independent
+    sources, both dynamic (never a hand-typed constant, #6):
+    - shared-compute categories (drain_tail/fedavg): sim runs the identical op
+      but its wall is contention-inflated at n=100, so the live `span_s` is NOT
+      the real cost (§D-18) -- these resolve `profiled_s` too, falling back to
+      the live path (gated on `sim_model_agg_compute_time`) with no registry.
+    - real-only-artifact categories (e.g. redispatch_turnaround): sim's own
+      span is near-zero by construction (it doesn't do the real work), so the
+      caller resolves `profiled_s` via `sim_charge_registry.get_profiled_charge_s`
+      and passes it here; charged whenever present, independent of the
+      live-span flag (see FWDLLM_DESIGN.md §P).
+    Sim-only. Warns when `span_s` exceeds `sim_overhead_warn_s` (excess
+    sim-host overhead, not modeled deployment cost). Returns seconds charged.
+
+    Emits a `vclock_charge` ledger event every call, both modes (§D-11) --
+    compare `span_s` real-vs-sim per `label` to spot an uncharged real cost.
+    `charge=False` still emits the event but never advances the vclock, for
+    measuring a candidate category before deciding whether to charge it."""
+    _charged = 0.0
+    _source = "none"
+    if span_s and span_s > 0.0:
+        hp = getattr(config, "hyperparameters", None)
+        _warn = getattr(hp, "sim_overhead_warn_s", None)
+        if _warn and span_s > float(_warn):
+            _now = f"{vclock.now:.1f}s" if vclock is not None else "n/a"
+            logger.warning(
+                f"[SIM_OVERHEAD] {label}={span_s:.3f}s > expected {float(_warn):.1f}s "
+                f"(vclock={_now}) -- excess sim-host overhead"
+            )
+        if charge and simulated and vclock is not None:
+            if profiled_s is not None:
+                vclock.advance(vclock.now + profiled_s)
+                _charged, _source = profiled_s, "profiled"
+            elif getattr(hp, "sim_model_agg_compute_time", False):
+                vclock.advance(vclock.now + span_s)
+                _charged, _source = span_s, "live"
+    try:
+        ev, f = build_vclock_charge(
+            label=label, span_s=(span_s or 0.0), charged_s=_charged,
+            time_mode="sim" if simulated else "real",
+            vclock_now=(vclock.now if (simulated and vclock is not None) else None),
+            payload_kind=payload_kind, charge_source=_source,
         )
-    if simulated and vclock is not None and getattr(
-            hp, "sim_model_agg_compute_time", False):
-        vclock.advance(vclock.now + span_s)
-        return span_s
-    return 0.0
+        telemetry.emit(ev, **f)
+    except Exception as e:
+        logger.debug(f"vclock_charge telemetry emit failed: {e}")
+    return _charged
 
 
 class _OrderedContributorList(list):
@@ -275,6 +307,60 @@ class _OrderedContributorList(list):
             self.remove(item)
         except ValueError:
             pass
+
+
+class _PendingCommitUnion:
+    """Real's `_agg_pending_commit_ref`: union of dispatched-not-yet-returned
+    (`_trainer_inflight_dispatch_version`) and returned-not-yet-committed
+    (`_per_agg_trainer_list`) ends -- mirrors sim's single `_sim_pending_commit`
+    (one set spanning dispatch-to-commit). Without the inflight half, a
+    round-cadence dispatch loop can't tell a still-training end from an idle
+    one and floods it every version_key advance -- the real-only unbounded
+    `staleness` (simulate_fwdllm.md U3)."""
+
+    def __init__(self, inflight_dispatch: dict, returned_pending: list):
+        self._inflight_dispatch = inflight_dispatch
+        self._returned_pending = returned_pending
+
+    def __contains__(self, end) -> bool:
+        return end in self._inflight_dispatch or end in self._returned_pending
+
+    def __bool__(self) -> bool:
+        return bool(self._inflight_dispatch) or bool(self._returned_pending)
+
+    def __iter__(self):
+        seen = set()
+        for end in self._returned_pending:
+            seen.add(end)
+            yield end
+        for end in self._inflight_dispatch:
+            if end not in seen:
+                yield end
+
+    def __len__(self) -> int:
+        """Deduped size across both halves (an end can sit in either, never
+        both at once, but don't rely on that) -- the IDENTITY-role size."""
+        return len(set(iter(self)))
+
+    def slot_holders(self) -> set:
+        """**CAPACITY role** -- real's half of `_slot_holders()` (§F-23), kept on
+        the class that owns both halves so they can't drift.
+
+        Only dispatched-not-yet-RETURNED holds a compute slot: once a trainer's
+        message arrives its GPU is idle, whatever the aggregator still owes it.
+        The returned half is the boundary-held re-pick guard (§D-15) -- identity,
+        not capacity (§D-27). Reading the union instead made `fluxtune` real
+        report 30->39 outstanding per cycle (max 52) against c=30, breaching the
+        `outstanding_at_dispatch` invariant on 90.4% of dispatches while true
+        peak concurrent training was 30. Invisible on the round baselines, which
+        dispatch after the boundary clear.
+        """
+        return set(self._inflight_dispatch)
+
+    def discard(self, end) -> None:
+        """R1 timeout eviction (`async_base.py`) drops a departed end from both halves."""
+        self._inflight_dispatch.pop(end, None)
+        self._returned_pending.discard(end)
 
 
 class TopAggregator(AsyncTopAgg):
@@ -301,9 +387,9 @@ class TopAggregator(AsyncTopAgg):
         # so comparisons can use the full key, not just its first component.
         self._trainer_last_version_key = {}
         # Diagnostic: end -> version_key this end was DISPATCHED at, for
-        # every outstanding send. Set in the dispatch loop, cleared on
-        # return. Lets a version-bump census count how many of the pool
-        # still carry stale-version work when model_version advances.
+        # every outstanding send. Set in the dispatch loop, cleared on return.
+        # Feeds the version-bump census AND real mode's pending-commit
+        # busy-guard below.
         self._trainer_inflight_dispatch_version = {}
 
         self._agg_goal_cnt = 0
@@ -313,6 +399,12 @@ class TopAggregator(AsyncTopAgg):
         self._updates_in_queue = 0
         self._updates_received = {}
         self._per_agg_trainer_list = _OrderedContributorList()
+        # Real's `_agg_pending_commit_ref` (bound at receipt, below). Sim reaches
+        # the same union in `_sim_hold_busy_slots`, which folds this dict in
+        # alongside `_sim_pending_commit`.
+        self._real_pending_commit = _PendingCommitUnion(
+            self._trainer_inflight_dispatch_version, self._per_agg_trainer_list
+        )
         # Parallel to _per_agg_trainer_list: buffered per-contribution material,
         # merged into self.grad in canonical order, not raw arrival order.
         self._pending_cohort_contribs = []
@@ -414,8 +506,7 @@ class TopAggregator(AsyncTopAgg):
         # and gets the identical payload again -- downgrade such a re-dispatch to
         # the tiny VAR=bad "keep training" message (the trainer caches its
         # weights). Unconditional invariant of the version-tracking logic, not
-        # an opt-in: validated 0% redundant sends on a live pair, vs ~88-90%
-        # before this landed as a flag.
+        # an opt-in.
         # Ends already sent the CURRENT model_version's full payload this data-bin
         # (cleared on every model_version advance). Separate from
         # _trainer_last_model_version so staleness accounting stays return-driven.
@@ -439,6 +530,33 @@ class TopAggregator(AsyncTopAgg):
         # end_id -> {dispatch_ts, commit_ts} of its last accepted contribution,
         # emitted per-cycle as contributor_intervals for the R1/W1 rungs (§L.3).
         self._sim_contrib_intervals = {}
+
+        # end_id -> wall time.time() of its last accepted commit, and the wall
+        # time.time() aggregate() last finished -- feeds the peer-wait/
+        # post-close-overhead split ([REDISPATCH_DECOMP]).
+        self._last_commit_wall_ts: dict = {}
+        self._last_round_close_wall_ts = None
+
+        # §F-23: "commit frees the compute SLOT immediately, but a version_key
+        # re-pick guard keeps the trainer un-pickable for the SAME version_key."
+        # Those are two different roles and sim served both from one set
+        # (`_sim_pending_commit`), so holding the guard past commit also held the
+        # SLOT -- blocking OTHER trainers from a slot that is logically free.
+        # Measured cost on fluxtune: real sits at 30/30 slots for 80.8% of the run,
+        # sim for 8.6%, mean in-flight 29.50 vs 24.66. Correctness fix, so ON by
+        # default; the flag is a kill-switch for A/B on the run node, not a feature
+        # gate. OFF restores the byte-identical conflated behaviour.
+        self._sim_commit_frees_slot = bool(getattr(
+            self.config.hyperparameters, "sim_commit_frees_slot", True))
+        logger.info(f"sim_commit_frees_slot = {self._sim_commit_frees_slot}")
+
+        # Real's twin of the same §F-23 split: RETURN frees the slot, the boundary
+        # releases the guard (`_PendingCommitUnion.slot_holders`). Only the
+        # `outstanding_at_dispatch` tripwire reads it on real today, so this is a
+        # measurement-truth fix. Kill-switch as above: OFF restores the union read.
+        self._real_commit_frees_slot = bool(getattr(
+            self.config.hyperparameters, "real_commit_frees_slot", True))
+        logger.info(f"real_commit_frees_slot = {self._real_commit_frees_slot}")
 
         # Real-side collect via streamer-free `drain_ready`, replacing recv_fifo
         # (§H, see _real_sync_recv_incremental). A/B flag, default OFF.
@@ -471,23 +589,24 @@ class TopAggregator(AsyncTopAgg):
         # end -> wall time its weights/VAR=bad payload was last sent (sim only).
         self._sim_dispatch_wall = {}
 
-        # Selection granularity for the sync path (fwdllm/fwdllm_plus):
-        # True (default, preserves pre-existing behavior) = re-select
-        # trainers on every SEND-state call, i.e. every iteration of every
-        # databin. False = select once per round and reuse that selection
-        # across all databins/iterations until self._round advances. The
-        # async path (fluxtune) is untouched by this flag.
-        self._reselect_each_iteration = bool(
-            getattr(
-                self.config.hyperparameters, "reselect_each_iteration", True
-            )
-        )
+        # Selection granularity, shared by both paths (round vs +IT baselines,
+        # BASELINES.md naming grammar). Cadence = how long a cohort stays
+        # pinned: `round` (a full total_data_bins lap), `data_bin` (one
+        # completed databin, unused so far -- wired for the ablation), or
+        # `iteration` (re-select every SEND call, the default). Keyed on the
+        # matching axis via _cohort_cache_key -- never data_id, which wraps
+        # each lap (§F-2).
+        self._reselect_cadence = self._resolve_reselect_cadence()
+        # Derived bool: hot-path predicate, and back-compat for call sites.
+        self._reselect_each_iteration = self._reselect_cadence == "iteration"
         self._round_selected_ends = None
-        self._round_selected_ends_round = None
-        # end_id -> time.time() of its last real accepted contribution (or
-        # of first entering the cache, if it hasn't contributed yet) -- lets
-        # _prune_departed_from_round_cache also evict a member that's stuck
-        # but not formally departed (see ROUND_CACHE_STUCK_TIMEOUT_S).
+        # Cadence-axis value the cohort was pinned under; a change invalidates.
+        self._pinned_cohort_key = None
+        # end_id -> _round_cache_clock_now() of its last real accepted
+        # contribution (or of first entering the cache, if it hasn't
+        # contributed yet) -- lets _prune_departed_from_round_cache also evict
+        # a member that's stuck but not formally departed (see
+        # ROUND_CACHE_STUCK_TIMEOUT_S).
         self._round_cache_activity_ts: dict = {}
         # reselect_each_iteration=True's selection cached per version_key
         # (mirrors the False branch's cache) -- fixes fwdllm_plus's
@@ -519,26 +638,6 @@ class TopAggregator(AsyncTopAgg):
                 f"Setting rate=1.0 for all updates because optimizer.sort is "
                 f"{self._optimizer_sort_value}; weighted aggregation only supported by {OPTIMIZERS_SUPPORTING_GRAD_AGGREGATION}."
             )
-        # variables related to checking trainer availability
-        self._per_trainer_last_heartbeat_ts = {}
-        if "heartbeat_freq_s" in self.config.hyperparameters.track_trainer_avail.keys():
-            self._trainer_heartbeat_freq_s = (
-                self.config.hyperparameters.track_trainer_avail["heartbeat_freq_s"]
-            )
-        else:
-            self._trainer_heartbeat_freq_s = 99999
-
-        if (
-            "max_allowed_miss_heartbeats"
-            in self.config.hyperparameters.track_trainer_avail.keys()
-        ):
-            self._trainer_max_miss_heartbeats = (
-                self.config.hyperparameters.track_trainer_avail[
-                    "max_allowed_miss_heartbeats"
-                ]
-            )
-        else:
-            self._trainer_max_miss_heartbeats = 99999
 
         logger.info(f"Experiment set to run in is_async: {self.is_async}")
 
@@ -571,7 +670,7 @@ class TopAggregator(AsyncTopAgg):
                 f"c_init={self.config.selector.kwargs.get('c', 1)}"
             )
 
-        # maintain a set of all trainers that have sent heartbeats previously
+        # every trainer seen so far
         self.all_trainers = set()
         self.minInitialTrainers = self.config.selector.kwargs.get("minInitialTrainers")
         if self.is_async and self.minInitialTrainers is None:
@@ -679,67 +778,6 @@ class TopAggregator(AsyncTopAgg):
             f"{self._agg_goal_weights}"
         )
 
-    # TODO: (DG) Need to update or delete, not used right now
-    def _read_heartbeat(self, tag: str) -> None:
-        """Receive trainer heartbeat messaages asynchronously.
-
-        This method is overriden from one in synchronous top aggregator
-        (..top_aggregator).
-        """
-        channel = self.cm.get_by_tag(tag)
-        if not channel:
-            logger.info("No channel found")
-            return
-
-        logger.debug(f"Channel {channel} found for tag {tag}")
-        # receive heartbeat message from trainers
-        msg, metadata = next(channel.recv_fifo(channel.ends(VAL_CH_STATE_HTBT_RECV), 1))
-        end, _ = metadata
-        if not msg:
-            logger.debug(f"No data from {end}; skipping it")
-            return
-
-        logger.debug(f"received heartbeat from {end}, will process further")
-        self._process_trainer_heartbeat(msg=msg, end=end)
-
-    def _process_trainer_heartbeat(self, msg, end) -> None:
-        if MessageType.HEARTBEAT in msg:
-            heartbeat_timestamp = msg[MessageType.HEARTBEAT]
-            logger.debug(
-                f"received heartbeat from {end} "
-                f"with timestamp {heartbeat_timestamp} "
-                f"at current time: {time.time()}"
-            )
-
-            # Add trainer to global_trainer set Used only to check unavailable
-            # trainers later
-            if end not in self.all_trainers:
-                self.all_trainers.add(end)
-                logger.debug(f"Added end {end} to all_trainers set")
-
-            # Add trainer to heartbeat dict if it isnt there Add only most
-            # recent heartbeat timestamp as value Discard stale heartbeats if
-            # received.
-            if end not in self._per_trainer_last_heartbeat_ts.keys():
-                self._per_trainer_last_heartbeat_ts[end] = heartbeat_timestamp
-                logger.debug(
-                    f"Added first timestamp for trainer {end} "
-                    f"with timestamp {heartbeat_timestamp}"
-                )
-            elif heartbeat_timestamp > self._per_trainer_last_heartbeat_ts[end]:
-                logger.debug(
-                    f"Will update timestamp for trainer {end} "
-                    f" (current={self._per_trainer_last_heartbeat_ts[end]})"
-                    f" with new timestamp {heartbeat_timestamp}"
-                )
-                self._per_trainer_last_heartbeat_ts[end] = heartbeat_timestamp
-            else:
-                logger.info(
-                    f"the heartbeat for {end} with timestamp "
-                    f"{heartbeat_timestamp} was stale"
-                )
-        else:
-            logger.warning(f"Got invalid {msg} while processing heartbeat")
 
     def read_trainer_unavailability(
         self, trace=None, base_dir: Optional[Union[str, Path]] = None
@@ -943,11 +981,14 @@ class TopAggregator(AsyncTopAgg):
                 else:
                     logger.warning(f"Gradient for {name} not found in trainer_grad.")
 
-        # Also accumulate var-check gradients with the same rate if provided.
-        # Assumption: grad_for_var_check is an iterable of tensors.
+        # Unscaled: the gate measures noise across comparable JVP samples, not
+        # the model-update rate. Round-cadence's carried-surplus trainers are
+        # genuinely stale (§F-17); scaling their sample toward zero shrank
+        # `var` toward 0 and caused premature convergence. `rate` still
+        # applies to `self.grad` above -- only this pool's input changes.
         if grad_for_var_check is not None:
             stacked = torch.stack(list(grad_for_var_check))
-            self.grad_for_var_check_list.append(stacked * rate)
+            self.grad_for_var_check_list.append(stacked)
             self.jvp_for_snr_check_list.append(jvp_for_snr_check)
 
         self.log_memory("end aggregate_grads_from_trainers", self.device)
@@ -1111,11 +1152,10 @@ class TopAggregator(AsyncTopAgg):
                     min_stuck, _stuck_end = exp, e
             # Cold-start gate: a trainer's FIRST contact has no
             # _sim_known_delay_s entry, so _sim_inflight_expected is never
-            # armed for it and earlier_stuck above is blind to it -- round 1
-            # used to commit whatever arrived first instead of the true
-            # sct-minimum. Unconditional: hold while a probed end is still
-            # unknown and within the compute cap of its own dispatch; clears
-            # once it reports or ages out.
+            # armed for it and earlier_stuck above is blind to it.
+            # Unconditional: hold while a probed end is still unknown and
+            # within the compute cap of its own dispatch; clears once it
+            # reports or ages out.
             unknown_stuck = any(
                 e not in self._sim_known_delay_s
                 and not self._sim_buffer.has(e) and e not in self._sim_committed
@@ -1166,20 +1206,18 @@ class TopAggregator(AsyncTopAgg):
             else max(_now, min(sct, _min_future + _SIM_ORDER_SLACK_S))
         )
         self._advance_sim_clock(_advance_to)
-        # Past-dated-commit tracking, ported from asyncfl._sim_recv_min
-        # (fwdllm's grad loop pops _sim_buffer directly, so it never had this
-        # bookkeeping). A "past-dated" commit is one the clock already lapped
-        # (sct < vclock by more than the gate slack). No withheld-delivery
-        # case here (fwdllm's grad loop has no availability-withhold path).
+        # Past-dated-commit tracking (ported from asyncfl._sim_recv_min): a
+        # commit is "past-dated" if the clock already lapped its sct by more
+        # than the gate slack. No withheld-delivery case here (fwdllm's grad
+        # loop has no availability-withhold path).
         _was_recommit = _end in self._sim_committed
         self._sim_committed.add(_end)
         self._sim_inflight_expected.pop(_end, None)
         _commit_gap = self._vclock.now - sct
-        # The shared visibility-lag primitive (syncfl/top_aggregator.py),
-        # never previously called in fwdllm -- same value as _commit_gap
-        # above, but emits the standardized update_ready_ts/
-        # update_committed_ts/update_visibility_lag_s fields matching
-        # felix's schema instead of a fwdllm-only ad hoc name.
+        # Shared visibility-lag primitive (syncfl/top_aggregator.py); same
+        # value as _commit_gap above, but emits the standardized
+        # update_ready_ts/update_committed_ts/update_visibility_lag_s fields
+        # (felix's schema).
         _vis_ready_ts, _vis_committed_ts, _vis_lag_s = self._update_visibility_lag(
             sct, md[1] if isinstance(md, tuple) and len(md) > 1 else None
         )
@@ -1234,9 +1272,14 @@ class TopAggregator(AsyncTopAgg):
         # stops holding for a batch of same-expected stragglers. Sim-only + gated.
         if getattr(self, "_sim_staggered_redispatch", False):
             self._sim_free_slot_ts.append(self._vclock.now)
-        # Grad committed -> trainer no longer in flight in virtual time -> drop it
-        # from pending so it is re-pickable (_sim_hold_busy_slots reconciles too).
-        self._sim_pending_commit.discard(_end)
+        # Under `inflight_residence`, slot release belongs at the AGG-GOAL
+        # BOUNDARY (`_release_sim_slots_at_agg_goal`, real's
+        # `cleanup_recvd_ends()` twin), not at this commit: per-commit release
+        # re-tasks the end mid-cycle under the `version_key` it just answered,
+        # before that cycle's variance check (§D-15). Flag off keeps the
+        # legacy per-commit release, byte-identical.
+        if not getattr(self, "_inflight_residence", False):
+            self._sim_pending_commit.discard(_end)
         # MODELED_DELAY_S was already learned into _sim_known_delay_s
         # at ingest time above.
         # Reassert selected_ends == the virtual-time in-flight set after this
@@ -1283,10 +1326,11 @@ class TopAggregator(AsyncTopAgg):
         """Sim slot release at the agg-goal boundary. Two policies (§L):
 
         - async + inflight_residence (fluxtune, c >> agg_goal): commit-then-
-          carry. Hold still-busy trainers before clearing and carry the surplus
-          buffer to the next fedbuff step. `_sim_hold_busy_slots` holds every
-          dispatched-but-not-committed trainer (computing ∪ carried) in both its
-          compute slot and re-pick guard until its grad commits.
+          carry. Release THIS cycle's committers (deferred from their own commit --
+          see `_sim_recv_min_grad`), hold the still-busy trainers, and carry the
+          surplus buffer to the next fedbuff step. `_sim_hold_busy_slots` holds
+          every dispatched-but-not-committed trainer (computing ∪ carried) in its
+          re-pick guard, and the not-yet-committed ones in a compute slot.
         - else (sync barriers c ≈ agg_goal, or residence off): legacy drop -- no
           surplus, so clearing is correct and flag-off is byte-identical.
 
@@ -1305,6 +1349,10 @@ class TopAggregator(AsyncTopAgg):
             _sim_sync_committed.clear()
         self._sim_sync_barrier_durs = []
         if is_async and getattr(self, "_inflight_residence", False):
+            # The cycle has closed and `version_key` is about to advance, so its
+            # committers are re-taskable now (and only now). In-place, never
+            # rebound -- the selector holds a live reference.
+            self._sim_pending_commit.difference_update(self._sim_committed)
             self._sim_hold_busy_slots(channel)   # reads buffer/in-flight -> hold before clear
             self._sim_committed.clear()
             return  # keep _sim_buffer / _sim_inflight_expected -> carry surplus
@@ -1319,20 +1367,25 @@ class TopAggregator(AsyncTopAgg):
             self._sim_hold_busy_slots(channel)
 
     def _sim_hold_busy_slots(self, channel) -> None:
-        """Assert `selected_ends` == the virtual-time in-flight set: every
-        dispatched-but-not-committed trainer (`_sim_inflight_expected` ∪ buffered
-        surplus ∪ `_sim_pending_commit`, the last covering first-ever dispatches
-        whose delay isn't learned yet -- see the `outstanding` comment below),
-        holding both its compute slot (`selected_ends`, drives
-        `extra = c − len(selected_ends)`) and its re-pick guard (`all_selected`)
-        until its grad commits.
+        """Reconcile the selector to the virtual-time in-flight set
+        `outstanding` = `_sim_inflight_expected` ∪ buffered surplus ∪
+        `_sim_pending_commit` (the last covering first-ever dispatches whose delay
+        isn't learned yet -- see the `outstanding` comment below), in its TWO
+        separate roles (§F-23, `_slot_holders`):
+
+        - re-pick guard (`all_selected`, `_agg_pending_commit_ref`): all of
+          `outstanding`, held until the agg-goal boundary releases it
+          (`inflight_residence`; else until its grad commits) -- §D-15.
+        - compute slot (`selected_ends`, drives `extra = c − len(selected_ends)`):
+          only `_sim_slot_holder_set()`, i.e. minus this cycle's committers. Their
+          grad is in, so the slot is anyone's.
 
         WHY: a returned-but-uncommitted trainer is still in flight in virtual time
         (its grad commits only when the vclock reaches its sct), so its slot is
         genuinely occupied. Freeing on physical RETURN collapsed `selected_ends`
         to the physically-computing few while many were truly in flight, so the
         in_flight telemetry undercounted and `extra` read false free capacity.
-        Holding to COMMIT also keeps one-in-flight-per-trainer across the carry
+        Holding past COMMIT also keeps one-in-flight-per-trainer across the carry
         boundary + variance-FAIL rollbacks. Idempotent -- safe per-commit and at
         the boundary. fwdllm-class override only (adds the triplet prune).
         """
@@ -1348,20 +1401,29 @@ class TopAggregator(AsyncTopAgg):
         # only holds an entry once a trainer's delay has been LEARNED from a
         # prior message, so a trainer's FIRST-EVER dispatch is invisible to it.
         # Folding in `_sim_pending_commit` (added unconditionally at dispatch,
-        # discarded only on commit) closes that gap: a first-time trainer now
-        # stays held until it genuinely commits, instead of being wiped from
-        # `all_selected` the instant any OTHER trainer's commit triggers this
-        # reconcile. Safe to read here because `_sim_pending_commit.discard(_end)`
-        # (commit path) always runs before this function for that same commit
-        # event -- see `_sim_recv_min_grad`, which calls both in that order.
+        # dropped at the agg-goal boundary under `inflight_residence`, else on
+        # commit) closes that gap: a first-time trainer now stays held until it
+        # genuinely commits, instead of being wiped from `all_selected` the instant
+        # any OTHER trainer's commit triggers this reconcile.
         #
-        # Do NOT subtract `_sim_committed`: it is a stale cross-cycle marker
-        # cleared only at the agg-goal boundary, so a trainer that committed then
-        # got re-picked + re-dispatched (re-added to `_sim_inflight_expected`/
-        # `_sim_pending_commit`) would be wrongly dropped -> re-pickable while its
-        # new dispatch is in flight -> R1 violation. One that committed THIS cycle
-        # is already absent from all three sets, so the subtraction was redundant.
-        outstanding = set(self._sim_inflight_expected) | buffered | set(self._sim_pending_commit)
+        # Do NOT subtract `_sim_committed` here -- the boundary owns that release
+        # (`_release_sim_slots_at_agg_goal` subtracts before calling this). Doing it
+        # per-commit re-tasks a contributor mid-cycle (§D-15), and drops a trainer
+        # that committed in an EARLIER cycle and was since re-dispatched ->
+        # re-pickable while in flight -> R1 violation.
+        #
+        # `_trainer_inflight_dispatch_version` (dispatched-not-yet-returned, both
+        # modes) is real's other `_PendingCommitUnion` half and the only in-flight
+        # record the legacy boundary drop does NOT clear. Without it that drop
+        # empties both sets before this reconcile, which then rebuilds the guard
+        # from nothing and strips `all_selected` -- so boundary top-ups would
+        # re-pick still-training ends.
+        outstanding = (
+            set(self._sim_inflight_expected)
+            | buffered
+            | set(self._sim_pending_commit)
+            | set(getattr(self, "_trainer_inflight_dispatch_version", None) or ())
+        )
         # `_sim_pending_commit` is the authoritative virtual in-flight set;
         # reconcile it to `outstanding` in place (clear+update, never rebind -- the
         # selector holds a live reference) so a committed trainer drops out
@@ -1371,6 +1433,12 @@ class TopAggregator(AsyncTopAgg):
         self._sim_pending_commit.clear()
         self._sim_pending_commit.update(outstanding)
         sel._agg_pending_commit_ref = self._sim_pending_commit
+        # CAPACITY view, published separately from the IDENTITY set above so the
+        # dispatch cap stops charging `c` for slots that are logically free
+        # (§F-23, `_slot_holders`). Rebound (not mutated in place) because it is
+        # a derived snapshot, not shared state anyone else edits.
+        slot_holders = TopAggregator._sim_slot_holder_set(self)
+        sel._agg_slot_holders_ref = slot_holders
         # Keep each trainer's contributed-tuple stamp until the aggregator
         # ADVANCES PAST that tuple (v != current), NOT until it commits. The
         # old `e in outstanding` filter dropped the stamp the instant a grad
@@ -1404,11 +1472,18 @@ class TopAggregator(AsyncTopAgg):
                 if eid not in all_selected:
                     all_selected[eid] = time.time()
 
-        # Compute slot: held by EVERY outstanding trainer (computing OR returned-
-        # but-uncommitted) — both are in flight in virtual time until commit.
+        # Compute slot: held by every trainer still IN FLIGHT (computing OR
+        # returned-but-uncommitted) — but NOT by one that already committed this
+        # cycle. Its grad is in; the slot is free for anyone else (§F-23), even
+        # though `all_selected` above still guards it from being re-picked itself
+        # until the version_key advances (§D-15). Serving both roles from
+        # `outstanding` left sim ~5 of 30 slots permanently idle.
         if isinstance(selected_ends, dict) and requester in selected_ends:
             for eid in outstanding:
-                selected_ends[requester].add(eid)
+                if eid in slot_holders:
+                    selected_ends[requester].add(eid)
+                else:
+                    selected_ends[requester].discard(eid)
 
     def _aggregate_grads_async(self, tag: str) -> None:
         """
@@ -1596,6 +1671,11 @@ class TopAggregator(AsyncTopAgg):
             # Wall of the most-recent accepted grad -> barrier_wait_s / drain_
             # tail_s in the per-round wall decomposition.
             self._last_grad_wall_ts = time.time()
+            # Per-end commit wall, for [REDISPATCH_DECOMP]'s peer-wait split.
+            # getattr-guarded: minimal test doubles without the dict are a
+            # no-op, matching _sim_contrib_intervals's own convention below.
+            if getattr(self, "_last_commit_wall_ts", None) is not None:
+                self._last_commit_wall_ts[end] = self._last_grad_wall_ts
 
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
@@ -1634,6 +1714,44 @@ class TopAggregator(AsyncTopAgg):
                     f"Set PROP_CLIENT_TASK_TRAIN_DURATION for {end}: {round_duration.total_seconds():.3f}s"
                 )
 
+                # [LAG_DECOMP] fwdllm's own per-message round-trip breakdown,
+                # ported from asyncfl/top_aggregator.py using fields fwdllm's
+                # trainer already stamps in BOTH modes (WALL_SEND_TS/
+                # WALL_RECV_TS, §D-3: fwdllm never inherited the shared
+                # base's logging or its structured `_sim_contrib_intervals`
+                # wall/vclock split). agg_to_trainer_s/mqtt_lag_s are the two
+                # network legs; compute_s is the trainer's own span (mirrors
+                # round_duration above -- sim's collapses to raw GPU, §F-1,
+                # since sim doesn't sleep the modeled delay). post_wait_s/
+                # queue_wait_s/process_s stay "-": fwdllm's trainer has no
+                # post-compute-wait stamp and the aggregator has no
+                # message-dequeue timestamp distinct from `timestamp`
+                # (unlike asyncfl's `_t_msg_start`) -- not fabricated.
+                # Same field order as `_LAG_DECOMP_RE`
+                # (scripts/analysis/analyze_run.py) so the existing parser/
+                # plots pick this up for fwdllm too, no new regex needed.
+                try:
+                    _wst = msg.get(MessageType.WALL_SEND_TS)
+                    _wrt = msg.get(MessageType.WALL_RECV_TS)
+                    _sent_unix = sent_ts.timestamp() if hasattr(sent_ts, "timestamp") else None
+                    _recv_unix = timestamp.timestamp() if hasattr(timestamp, "timestamp") else None
+                    _agg_to_trainer = (f"{float(_wrt) - _sent_unix:.3f}"
+                                       if (_wrt is not None and _sent_unix is not None) else "-")
+                    _compute = (f"{float(_wst) - float(_wrt):.3f}"
+                               if (_wst is not None and _wrt is not None) else "-")
+                    _mqtt_lag = (f"{_recv_unix - float(_wst):.3f}"
+                                if (_wst is not None and _recv_unix is not None) else "-")
+                    _wall_lag = (f"{_recv_unix - _sent_unix:.3f}"
+                                if (_recv_unix is not None and _sent_unix is not None) else "-")
+                    logger.info(
+                        f"[LAG_DECOMP] end={end} version={msg[MessageType.MODEL_VERSION]} "
+                        f"wall_lag_s={_wall_lag} agg_to_trainer_s={_agg_to_trainer} "
+                        f"compute_s={_compute} post_wait_s=- "
+                        f"mqtt_lag_s={_mqtt_lag} queue_wait_s=- process_s=-"
+                    )
+                except Exception as e:
+                    logger.debug(f"[LAG_DECOMP] compute failed for {end}: {e}")
+
             # Record this contribution's [dispatch, commit] interval for R1/W1
             # (§L.3): sim uses the vclock interval the trainer echoes back (exact
             # per contribution); real uses the wall interval (dispatch .. receipt).
@@ -1667,18 +1785,23 @@ class TopAggregator(AsyncTopAgg):
         # _prune_departed_from_round_cache). No-op if reselect_each_iteration
         # is True (that path never populates this dict) or end isn't
         # currently cached (dict grows a harmless extra key either way).
-        self._round_cache_activity_ts[end] = time.time()
+        self._round_cache_activity_ts[end] = self._round_cache_clock_now()
 
         channel._selector.ordered_updates_recv_ends.append(end)
         self._updates_in_queue += 1
         self._per_agg_trainer_list.append(end)
         # Exclude this trainer from re-selection until its grad commits.
-        # Real: live-rebind to `_per_agg_trainer_list`. Sim: NO add -- here runs
-        # at COMMIT (`_sim_recv_min_grad` already discarded `end`), so re-adding
-        # re-pins the committed trainer forever (§F.1-23). Dispatch add +
-        # `_trainer_state_dict` version_key guard already cover it.
+        # Real: live-rebind to `_real_pending_commit` (see _PendingCommitUnion).
+        # Sim: NO add -- here runs at COMMIT (`_sim_recv_min_grad` already
+        # discarded `end`), so re-adding re-pins the committed trainer forever
+        # (§F.1-23). Dispatch add + `_trainer_state_dict` version_key guard
+        # already cover it.
         if not getattr(self, "simulated", False):
-            channel._selector._agg_pending_commit_ref = self._per_agg_trainer_list
+            # getattr-guarded: minimal test doubles without `_real_pending_commit`
+            # fall back to the narrower (still correct pre-fix) list.
+            channel._selector._agg_pending_commit_ref = getattr(
+                self, "_real_pending_commit", self._per_agg_trainer_list
+            )
 
         # Canonical commit-order key: the trainer's pure modeled delay D
         # (deterministic from the registry) + str(end) as tie-break. Lets
@@ -2116,14 +2239,21 @@ class TopAggregator(AsyncTopAgg):
         _drain_tail_s = (_agg_start_wall - _lastg) if _lastg else None
         self.aggregate(self._round)
         _aggregate_fedavg_s = time.time() - _agg_start_wall
-        # #6: charge the measured drain-tail + FedAvg merge wall to the vclock --
-        # genuine server-step compute that runs every cycle but was never
-        # credited. See `charge_sim_vclock_overhead`.
+        # [REDISPATCH_DECOMP] peer-wait boundary: this micro-batch/round just
+        # closed at this wall instant (both modes -- see build_redispatch_decomp).
+        self._last_round_close_wall_ts = _agg_start_wall + _aggregate_fedavg_s
+        # #6: charge the drain-tail + FedAvg merge to the vclock -- genuine
+        # per-cycle server compute. PROFILED from real, not sim's own live span
+        # (§D-18): sim's wall is contention-inflated (1.77x on fluxtune) and
+        # charging it injects sim-host noise into the clock (§F-1/§F-20).
         _vc = getattr(self, "_vclock", None)
+        _prof_path = getattr(self.config.hyperparameters, "sim_charge_profile_path", None)
         charge_sim_vclock_overhead(
-            _vc, self.simulated, self.config, _drain_tail_s, "drain_tail")
+            _vc, self.simulated, self.config, _drain_tail_s, "drain_tail",
+            profiled_s=get_profiled_charge_s(_prof_path, "drain_tail"))
         charge_sim_vclock_overhead(
-            _vc, self.simulated, self.config, _aggregate_fedavg_s, "fedavg")
+            _vc, self.simulated, self.config, _aggregate_fedavg_s, "fedavg",
+            profiled_s=get_profiled_charge_s(_prof_path, "fedavg"))
         _agg_vclock_end = getattr(self, "vclock_now", None)
         _aggregate_fedavg_vclock_s = (
             _agg_vclock_end - _agg_vclock_start
@@ -2164,6 +2294,12 @@ class TopAggregator(AsyncTopAgg):
         # cycle worked on and its 0-based attempt index.
         _cycle_data_id = self.data_id
         _cycle_iteration = self.iteration_per_data_id
+        # `_round` MUST be snapshotted here too, not read live at emit time below.
+        # The emit sits after the pass/fail branch, which on the last bin of a lap
+        # has already bumped `_round` -- pairing a post-bump round with this
+        # pre-mutation `cycle_data_id` emitted `(2, 149)` between `(1, 148)` and
+        # `(2, 0)`, i.e. a NON-MONOTONE progress key that no consumer can sort.
+        _cycle_round = self._round
         # Same pre-mutation snapshot for model_version (bumped below on a
         # commit): the version this cycle worked ON, readable off agg_round
         # directly instead of cross-referencing the DK-controller status dict.
@@ -2209,34 +2345,21 @@ class TopAggregator(AsyncTopAgg):
                 f"Variance check {_pass_kind}. Evaluating model and advancing data_id."
             )
             self.iteration_per_data_id += 1
-            # eval_model() used to run synchronously, inline, here -- on the
-            # critical path in BOTH real and sim mode (the reason
-            # sim_model_eval_time's vclock fold existed: real paid this wall
-            # cost every commit, sim didn't, without the fold). Mirrors
-            # felix's own evaluate() pattern: snapshot now (cheap, main
-            # thread), run the actual test-set pass in a daemon thread so the
-            # aggregator's dispatch/commit loop never waits on it -- in
-            # EITHER mode, symmetrically, so the asymmetry the fold corrected
-            # for no longer exists. aggregate() itself is NOT backgrounded
-            # here or anywhere -- it produces the model trainers need
-            # immediately and must stay synchronous.
+            # Run eval in a daemon thread (mirrors felix's evaluate()) so the
+            # dispatch/commit loop never waits on it, in either mode.
+            # aggregate() itself stays synchronous -- it produces the model
+            # trainers need immediately.
             #
             # Snapshot the cycle identity BEFORE launching: the thread may
             # still be running once self.data_id/self._round/
             # self.iteration_per_data_id have moved on to a LATER cycle, so
-            # the emit closure must report what THIS cycle worked on. Kept as
-            # separate locals from _cycle_data_id/_cycle_iteration since
-            # _cycle_iteration is pre- the += 1 two lines up and the
-            # telemetry contract below is post-, matching the old
-            # synchronous numbers exactly.
+            # the emit closure must report what THIS cycle worked on.
             _eval_round_id = self._round
             _eval_data_id = self.data_id
             _eval_iteration = self.iteration_per_data_id
             _eval_model_snapshot = self._eval_snapshot_model()
             if _eval_model_snapshot is None:
-                logger.debug(
-                    "prior async fwdllm eval still running; skipping this cycle's eval"
-                )
+                logger.debug("eval stride skips this commit")
             else:
                 def _fwdllm_eval_job(
                     _model=_eval_model_snapshot, _round_id=_eval_round_id,
@@ -2278,12 +2401,40 @@ class TopAggregator(AsyncTopAgg):
                     except Exception as e:  # eval must never break training
                         logger.warning(f"[FWDLLM_EVAL] failed (non-fatal): {e}")
                     finally:
-                        self._eval_inflight = False
+                        SyncTopAggregator._eval_release(self)
 
                 threading.Thread(target=_fwdllm_eval_job, daemon=True).start()
             self.data_id += 1
             self.iteration_per_data_id = 0
             self._is_model_updated = True
+
+            # Wrap the lap IMMEDIATELY, before anything can observe `data_id`.
+            # Advancing off the last bin leaves it transiently == total_data_bins,
+            # i.e. out of range [0, total_data_bins-1]; anything reading it in that
+            # window records a bin that does not exist (`version_bump_census`
+            # emitted data_id=150 once per lap). The bump and the wrap are one
+            # atomic state transition -- keep them adjacent, and never insert a
+            # read of `self.data_id` between the `+= 1` and this block.
+            if self.data_id == self.total_data_bins:
+                logger.info(
+                    f"All data bins complete. Incrementing round to {self._round + 1}"
+                )
+                self._round += 1
+                self.data_id = 0
+                channel.set_property("round", self._round)
+
+                # fwdllm's TopAggregator extends the asyncfl base (not
+                # syncfl's), which has no rounds-based stop condition of its
+                # own -- self._work_done is otherwise never set here, so the
+                # composer loop (Loop(loop_check_fn=lambda: self._work_done))
+                # never exits and the aggregator process runs forever
+                # regardless of hyperparameters.rounds.
+                self._work_done = self._round > self.config.hyperparameters.rounds
+                if self._work_done:
+                    logger.info(
+                        f"rounds={self.config.hyperparameters.rounds} reached "
+                        f"at round {self._round}; stopping run."
+                    )
 
             # model_version bumps once per completed data-bin, unconditionally
             # (was gated by the now-purged inc_model_version_per_data_id flag;
@@ -2318,27 +2469,6 @@ class TopAggregator(AsyncTopAgg):
                 self._weights_sent_this_cycle.clear()
 
             self._log_and_reset_model_version_stats()
-
-            if self.data_id == self.total_data_bins:
-                logger.info(
-                    f"All data bins complete. Incrementing round to {self._round + 1}"
-                )
-                self._round += 1
-                self.data_id = 0
-                channel.set_property("round", self._round)
-
-                # fwdllm's TopAggregator extends the asyncfl base (not
-                # syncfl's), which has no rounds-based stop condition of its
-                # own -- self._work_done is otherwise never set here, so the
-                # composer loop (Loop(loop_check_fn=lambda: self._work_done))
-                # never exits and the aggregator process runs forever
-                # regardless of hyperparameters.rounds.
-                self._work_done = self._round > self.config.hyperparameters.rounds
-                if self._work_done:
-                    logger.info(
-                        f"rounds={self.config.hyperparameters.rounds} reached "
-                        f"at round {self._round}; stopping run."
-                    )
 
         else:
             logger.info(
@@ -2401,7 +2531,7 @@ class TopAggregator(AsyncTopAgg):
             )
             try:
                 ev, fields = build_agg_round(
-                    round_num=self._round,
+                    round_num=_cycle_round,
                     agg_goal=self._agg_goal,
                     agg_goal_count=self._agg_goal_cnt,
                     updates_in_queue=self._updates_in_queue,
@@ -2462,9 +2592,7 @@ class TopAggregator(AsyncTopAgg):
                         # run-cumulative past-dating counters. A healthy sim
                         # commits at/near its sct (commit_gap_s ~ 0, buf_depth
                         # trending to 0 between arrival bursts) and never
-                        # accumulates pastdated_commits. Feeds
-                        # plots/aggregation/{buffer_health_over_rounds,
-                        # commit_gap_cdf}.pdf and pastdated_commits_over_rounds.pdf.
+                        # accumulates pastdated_commits.
                         "commit_gap_s": (
                             getattr(self, "_sim_last_commit_gap_s", None)
                             if self.simulated else None
@@ -2473,21 +2601,13 @@ class TopAggregator(AsyncTopAgg):
                             getattr(self, "_sim_last_buf_depth", None)
                             if self.simulated else None
                         ),
-                        # Standardized visibility-lag triplet, matching felix's
-                        # own agg_round schema and the field name the shared
-                        # analyzer already reads. Two distinct sources, gated
-                        # on is_async since this dict is shared by both:
-                        # - async (fluxtune): per-commit scalar stashed in
-                        #   _sim_recv_min_grad (same number as commit_gap_s
-                        #   above, both vclock.now - sct).
-                        # - sync (fwdllm/fwdllm_plus): the barrier-anchored LIST
-                        #   already computed in sync_collect_and_accumulate_grads
-                        #   (_sync_barrier_lags_s). update_ready_ts/committed_ts
-                        #   have no per-item meaning for a batched barrier commit,
-                        #   so they stay None for sync.
-                        # Real mode: async has no equivalent stash; sync's
-                        # real-mode lag-anchor is an open question -- left None
-                        # rather than guessed at.
+                        # Visibility-lag triplet (felix's agg_round schema).
+                        # async (fluxtune): per-commit scalar from
+                        # _sim_recv_min_grad. sync (fwdllm/fwdllm_plus): the
+                        # barrier-anchored list (_sync_barrier_lags_s), so
+                        # update_ready_ts/committed_ts stay None (no per-item
+                        # meaning for a batched commit). Real mode: no defined
+                        # lag-anchor yet, left None.
                         "update_ready_ts": (
                             getattr(self, "_sim_last_update_ready_ts", None)
                             if self.simulated and is_async else None
@@ -2516,12 +2636,9 @@ class TopAggregator(AsyncTopAgg):
                             getattr(self, "_sim_pastdated_gap_max", 0.0)
                             if self.simulated else None
                         ),
-                        # Carried-surplus commits, tracked separately from the
-                        # primary pastdated_* counters above. Expected to step
-                        # up once per data_id boundary for the life of any
-                        # c >> agg_goal run -- non-alarming by design, NOT a
-                        # correctness signal (unlike pastdated_commits, which
-                        # should read ~0).
+                        # Carried-surplus commits: expected in any c >>
+                        # agg_goal run, tracked separately from
+                        # pastdated_commits (which should read ~0).
                         "carried_surplus_commits": (
                             getattr(self, "_sim_carried_surplus_commits", 0)
                             if self.simulated else None
@@ -2948,14 +3065,10 @@ class TopAggregator(AsyncTopAgg):
         num_eval_steps = 0
         test_sample_len = len(self.test_global.dataset)
 
-        # Move model to device before performing the eval. The
-        # fc.make_functional_with_buffers(self.model) call this line used to
-        # also do here was removed -- it deep-copies internally, so it never
-        # mutated self.model, and its output was never read elsewhere in this
-        # function; it only overwrote self.fmodel/self.params/self.buffers,
-        # the SAME attributes the main training path assigns right before
-        # self.aggregate() -- a race once this runs on a background thread.
-        # Dead code + race source, not a needed side effect.
+        # Move model to device before eval. (Removed a redundant
+        # fc.make_functional_with_buffers call here: it never mutated
+        # self.model, and it raced with the training path's own assignment to
+        # self.fmodel/params/buffers once eval runs on a background thread.)
         model.to(device)
         model.eval()
 
@@ -3073,67 +3186,12 @@ class TopAggregator(AsyncTopAgg):
             wrong,
         )
 
-    def hearbeat_trainer_avail_check(self, end: str) -> bool:
-        picked_trainer_is_available = True
-        last_acceptable_heartbeat_ts = time.time() - (
-            self._trainer_max_miss_heartbeats * self._trainer_heartbeat_freq_s
-        )
-
-        # return True if: heartbeat was received from trainer and it is within
-        # last_acceptable_heartbeat_ts
-
-        # return False if: if end isnt in heartbeat dict, means that the trainer
-        # hasn't given a heartbeat in a while and was removed based on
-        # last_acceptable_heartbeat_ts
-
-        # NOTE: During agg init, it might have registered a trainer, but not
-        # received heartbeat in such a scenario, we return True so that agg is
-        # able to send init_weights to trainer and start the training process
-        # this is when trainer not in all_trainers and not in dict
-
-        if (end not in self._per_trainer_last_heartbeat_ts.keys()) and (
-            end not in self.all_trainers
-        ):
-            picked_trainer_is_available = True
-            logger.info(
-                f"Might be trainer init(), trainer {end} hasnt sent any"
-                f" heartbeats yet, but we return True"
-            )
-        elif end not in self._per_trainer_last_heartbeat_ts.keys():
-            picked_trainer_is_available = False
-            logger.debug(f"Trainer {end} was already marked unavailable")
-        elif self._per_trainer_last_heartbeat_ts[end] < last_acceptable_heartbeat_ts:
-            del self._per_trainer_last_heartbeat_ts[end]
-            picked_trainer_is_available = False
-            logger.info(
-                f"Trainer {end} missed max_allowed_heartbeats, " f"marked unavailable"
-            )
-        elif self._per_trainer_last_heartbeat_ts[end] >= last_acceptable_heartbeat_ts:
-            picked_trainer_is_available = True
-            logger.debug(f"Trainer {end} is available")
-        else:
-            logger.error(f"Availability check failed, trainer {end}, returning True")
-
-        return picked_trainer_is_available
-
-    def get_unavailable_trainers(self) -> list:
-        # Works only for heartbeat based right now TODO: (DG) Extend for other
-        # trainer_avail_checks too
-        current_unavailable_trainers = [
-            end
-            for end in self.all_trainers
-            if end not in self._per_trainer_last_heartbeat_ts.keys()
-        ]
-        return current_unavailable_trainers
-
     def check_trainer_availability(self, end: str) -> bool:
         picked_trainer_is_available = True
         if self.track_trainer_avail["enabled"] == "False":
             return True
         elif self.track_trainer_avail["type"] == "ORACULAR":
             picked_trainer_is_available = self._trace_read_avail_check(end)
-        elif self.track_trainer_avail["type"] == "HEARTBEAT":
-            picked_trainer_is_available = self.hearbeat_trainer_avail_check(end)
 
         return picked_trainer_is_available
 
@@ -3223,10 +3281,98 @@ class TopAggregator(AsyncTopAgg):
         `channel.ends(VAL_CH_STATE_RECV)`. Each processed contribution
         removes its end from it via `cleanup_recvd_end(s)`; without this,
         it permanently empties out after one pass over the cached trainers.
+
+        Two incompatible selector conventions share this helper (called from
+        both the sync and async round-cache gates): sync selectors (random.py
+        in its post-select state) keep `selected_ends` as a bare `set`; async
+        selectors (fedbuff/async_random/async_oort) keep it as a
+        dict[requester, set] -- reassigning the whole attribute to a bare set
+        for those clobbers the dict and crashes the NEXT recv-state call with
+        `TypeError: 'set' object is not subscriptable` (found via the
+        felix_round smoke test -- async_oort.py:2146, first-ever exercise of
+        a round-cache HIT on an async selector). Branch on the actual type
+        instead of assuming one convention.
         """
         selector = getattr(channel, "_selector", None)
-        if selector is not None and hasattr(selector, "selected_ends"):
+        if selector is None or not hasattr(selector, "selected_ends"):
+            return
+        if isinstance(selector.selected_ends, dict):
+            requester = getattr(selector, "requester", None)
+            if requester is None:
+                return
+            existing = selector.selected_ends.get(requester, set())
+            selector.selected_ends[requester] = set(existing) | set(ends)
+        else:
             selector.selected_ends = set(selector.selected_ends) | set(ends)
+
+    @staticmethod
+    def _exclude_pending_commit(channel, ends):
+        """Drop ends still awaiting commit, mirroring `_eligible_candidates`'s
+        pending exclusion (`async_base.py`) -- the guard the round-cache
+        reuse branch above would otherwise skip, since it never calls
+        `select()`. No-op for selectors without `_agg_pending_commit_ref`
+        (e.g. sync's `RandomSelector`, whose busy-tracking lives in the
+        aggregator instead)."""
+        selector = getattr(channel, "_selector", None)
+        pending = getattr(selector, "_agg_pending_commit_ref", None) if selector else None
+        if not pending:
+            return ends
+        return [e for e in ends if e not in pending]
+
+    @staticmethod
+    def _cap_dispatch_to_concurrency(channel, ends):
+        """Trim a dispatch list so `slot_holders + dispatched <= c` -- BACKFILL
+        at a round boundary (operator call, 07-30). Re-drawing a full-`c` cohort
+        while the previous round is still in flight ran `c + stragglers` at once
+        (`fedbuff_round` sim 35 vs c=30, all inside the lap wrap, §D-20); real
+        fills freed slots as they free. The surplus goes out on a later tick.
+
+        This is a CAPACITY question, so it reads `_agg_slot_holders_ref`, NOT the
+        `_agg_pending_commit_ref` identity set `_exclude_pending_commit` uses --
+        counting a committed-but-guarded end against `c` denies its free slot to
+        every OTHER trainer (§F-23, the fluxtune under-fill). Falls back to the
+        pending ref when no slot ref is published, so real and any baseline that
+        doesn't split the roles stays byte-identical. No-op without a known `c`.
+
+        KNOWN GAP: real publishes no slot ref, so it falls back to the IDENTITY
+        set here -- the same conflation `slot_holders()` fixes for the tripwire.
+        Harmless today (the round cadences reaching this path dispatch after the
+        boundary clear, where the two sets coincide); publishing a real slot ref
+        would let real dispatch into slots it withholds, so it owes its own A/B.
+        """
+        selector = getattr(channel, "_selector", None)
+        pending = getattr(selector, "_agg_slot_holders_ref", None) if selector else None
+        if pending is None:
+            pending = getattr(selector, "_agg_pending_commit_ref", None) if selector else None
+        if pending is None:
+            return ends
+        c = channel.properties.get("dynamic_c")
+        if c is None:
+            c = channel.get_c()
+        try:
+            c = int(c)
+        except (TypeError, ValueError):
+            return ends
+        if c <= 0:
+            return ends
+        allowed = max(0, c - len(pending))
+        if len(ends) <= allowed:
+            return ends
+        logger.info(
+            f"[ConcurrencyBackfill] holding {len(ends) - allowed} of {len(ends)} "
+            f"cohort dispatches: {len(pending)} still in flight against c={c}"
+        )
+        return ends[:allowed]
+
+    def _round_cache_clock_now(self) -> float:
+        """Clock for the round-cache stuck timeout: vclock in sim, wall in real
+        (#1c, what `_abandon_clock_now` already fixed for the selector).
+        Stamping and checking on wall measured a virtual-time run in wall
+        seconds, so sim never reached ROUND_CACHE_STUCK_TIMEOUT_S: 0 stuck
+        evictions vs real's 6, and sim refilled one round more (R-C).
+        """
+        vclock_now = getattr(self, "vclock_now", None)
+        return vclock_now if vclock_now is not None else time.time()
 
     def _prune_departed_from_round_cache(self, channel):
         """Drop ends from `self._round_selected_ends` that have since
@@ -3254,7 +3400,7 @@ class TopAggregator(AsyncTopAgg):
         """
         if not self._round_selected_ends:
             return
-        now = time.time()
+        now = self._round_cache_clock_now()
         still_present = []
         for end in self._round_selected_ends:
             if not channel.has(end):
@@ -3284,22 +3430,85 @@ class TopAggregator(AsyncTopAgg):
         if len(still_present) != len(self._round_selected_ends):
             self._round_selected_ends = still_present
 
-    def _select_ends_respecting_reselect_gate(self, channel, task_to_perform: str):
-        """Return the SEND-state-selected ends, honoring
-        `self._reselect_each_iteration`.
+    RESELECT_CADENCES = ("round", "data_bin", "iteration")
 
-        True (default): cached per `self.version_key` -- repeated calls
-        within the SAME (model_version, iteration) reuse one channel.ends()
-        result; a version_key change invalidates and re-fetches. False:
-        accumulate selections into a per-round cache, re-invoking the
-        selector each call until the cache reaches `self._agg_goal`
-        (trainers join asynchronously, so one early call may only see a
-        few); then reuse until `self._round` advances.
+    def _resolve_reselect_cadence(self) -> str:
+        """`reselect_cadence`, else the deprecated boolean alias
+        (True->iteration, False->round), which every shipped baseline still
+        sets -- so they stay byte-identical while `data_bin` becomes sayable.
         """
-        if self._round_selected_ends_round != self._round:
+        hp = self.config.hyperparameters
+        cadence = getattr(hp, "reselect_cadence", None)
+        if cadence is not None:
+            if cadence not in self.RESELECT_CADENCES:
+                raise ValueError(
+                    f"reselect_cadence={cadence!r} is not one of "
+                    f"{self.RESELECT_CADENCES}"
+                )
+            return cadence
+        return (
+            "iteration"
+            if bool(getattr(hp, "reselect_each_iteration", True))
+            else "round"
+        )
+
+    def _cohort_cache_key(self):
+        """Axis value the cohort is keyed on. `data_bin` uses the monotone
+        `_model_version`, not `data_id`, which wraps each lap (§F-2)."""
+        return (
+            self._model_version
+            if self._reselect_cadence == "data_bin"
+            else self._round
+        )
+
+    def _invalidate_cohort_cache_if_stale(self) -> None:
+        """Drop the pinned cohort when its cadence axis has advanced."""
+        key = self._cohort_cache_key()
+        if self._pinned_cohort_key != key:
             self._round_selected_ends = None
-            self._round_selected_ends_round = self._round
+            self._pinned_cohort_key = key
             self._round_cache_activity_ts = {}
+
+    def _round_cohort_target(self, channel) -> Optional[int]:
+        """Cohort size = `c`, the promise to keep c trainers training;
+        `agg_goal` is only the aggregation trigger. Sizing by agg_goal left
+        c-agg_goal slots idle all round (fedbuff_round: c=30, agg_goal=10, 10
+        of 100 committers) -- wrong in real and sim alike, so parity passed
+        it. Honors `dynamic_c`; None -> legacy accumulate-forever path.
+        """
+        c = channel.properties.get("dynamic_c")
+        if c is None:
+            c = channel.get_c()
+        try:
+            c = int(c)
+        except (TypeError, ValueError):
+            return None
+        return c if c > 0 else None
+
+    def _trim_round_cohort(self, merged: list, target: Optional[int]) -> list:
+        """Cap at exactly `target`, dropping the newest surplus. The reuse
+        check runs before the merge, so one batch can overshoot and nothing
+        trimmed it back -- size then fell out of arrival timing (felix_round:
+        30 real vs 40 sim). Take-first is reproducible across modes.
+        """
+        if target is None or len(merged) <= target:
+            return merged
+        for end in merged[target:]:
+            self._round_cache_activity_ts.pop(end, None)
+        return merged[:target]
+
+    def _select_ends_respecting_reselect_gate(self, channel, task_to_perform: str):
+        """Return the SEND-state-selected ends, honoring `_reselect_cadence`.
+
+        `iteration` (default): cached per `self.version_key` -- repeated calls
+        within the SAME (model_version, iteration) reuse one channel.ends()
+        result; a version_key change invalidates and re-fetches. `round` /
+        `data_bin`: accumulate selections into a pinned cohort, re-invoking the
+        selector each call until it reaches `c` (trainers join asynchronously,
+        so one early call may only see a few); then reuse until the cadence
+        axis advances (`_cohort_cache_key`).
+        """
+        self._invalidate_cohort_cache_if_stale()
 
         if self._reselect_each_iteration:
             if (self._reselect_true_cache_ends is not None
@@ -3316,13 +3525,15 @@ class TopAggregator(AsyncTopAgg):
         if not self._reselect_each_iteration:
             self._prune_departed_from_round_cache(channel)
 
+        target = self._round_cohort_target(channel)
         if not self._reselect_each_iteration and self._round_selected_ends is not None:
-            target = getattr(self, "_agg_goal", len(self._round_selected_ends))
-            if len(self._round_selected_ends) >= target:
+            # target None (no discoverable `c`) -> reuse whenever non-empty,
+            # the pre-`c` fallback.
+            if target is None or len(self._round_selected_ends) >= target:
                 ends = list(self._round_selected_ends)
                 logger.info(
-                    f"[ReselectGate] reselect_each_iteration=False; reusing "
-                    f"cached per-round selection ends={ends} for round={self._round}"
+                    f"[ReselectGate] cadence={self._reselect_cadence}; reusing "
+                    f"pinned cohort ends={ends} at key={self._pinned_cohort_key}"
                 )
                 self._rearm_recv_eligibility(channel, ends)
                 return ends
@@ -3344,12 +3555,13 @@ class TopAggregator(AsyncTopAgg):
                     # First time this end enters the cache -- starts its
                     # stuck-timeout clock (reset again on each real accepted
                     # contribution, see _process_single_trainer_message).
-                    self._round_cache_activity_ts[end] = time.time()
+                    self._round_cache_activity_ts[end] = self._round_cache_clock_now()
+            merged = self._trim_round_cohort(merged, target)
             self._round_selected_ends = merged
             logger.info(
-                f"[ReselectGate] reselect_each_iteration=False; accumulated "
-                f"per-round selection ends={merged} "
-                f"({len(merged)}/{getattr(self, '_agg_goal', '?')}) for round={self._round}"
+                f"[ReselectGate] cadence={self._reselect_cadence}; accumulated "
+                f"pinned cohort ends={merged} "
+                f"({len(merged)}/{target}) at key={self._pinned_cohort_key}"
             )
             self._rearm_recv_eligibility(channel, merged)
             return merged
@@ -3360,6 +3572,78 @@ class TopAggregator(AsyncTopAgg):
             self._reselect_true_cache_ends = new_ends
             self._rearm_recv_eligibility(channel, new_ends)
         return new_ends
+
+    def _select_ends_for_async_respecting_reselect_gate(
+        self, channel, task_to_perform: str
+    ):
+        """Async-path counterpart of `_select_ends_respecting_reselect_gate`,
+        honoring `_reselect_cadence` (round vs +IT baselines).
+
+        `iteration` (default, preserves pre-existing behavior): re-invoke the
+        selector's full utility/availability-based scoring on every dispatch
+        call -- unlike the sync path, this one does NOT cache per version_key.
+        `round` / `data_bin`: pin a cohort of `c` ends for the span of the
+        cadence axis, reusing the same cache/prune-departed machinery as the
+        sync path -- lets a round-level baseline swap out a departed client but
+        not otherwise reselect on availability/utility churn.
+        """
+        if self._reselect_each_iteration:
+            return channel.ends(
+                state=VAL_CH_STATE_SEND,
+                task_to_perform=task_to_perform,
+                agg_version_key=self._curr_agg_version,
+                trainer_version_keys=self._trainer_state_dict,
+                data_id=self.data_id,
+            )
+
+        self._invalidate_cohort_cache_if_stale()
+        self._prune_departed_from_round_cache(channel)
+
+        target = self._round_cohort_target(channel)
+        if self._round_selected_ends and (
+            target is None or len(self._round_selected_ends) >= target
+        ):
+            ends = list(self._round_selected_ends)
+            logger.info(
+                f"[ReselectGate-async] cadence={self._reselect_cadence}; reusing "
+                f"pinned cohort ends={ends} at key={self._pinned_cohort_key}"
+            )
+            # Re-arm RECV for the whole cohort, but only DISPATCH to ends not
+            # still awaiting commit (§D-8) -- this branch skips select(), the
+            # only other place `_agg_pending_commit_ref` gets checked.
+            self._rearm_recv_eligibility(channel, ends)
+            return self._cap_dispatch_to_concurrency(
+                channel, self._exclude_pending_commit(channel, ends))
+
+        new_ends = channel.ends(
+            state=VAL_CH_STATE_SEND,
+            task_to_perform=task_to_perform,
+            agg_version_key=self._curr_agg_version,
+            trainer_version_keys=self._trainer_state_dict,
+            data_id=self.data_id,
+        )
+        if new_ends:
+            merged = list(self._round_selected_ends or [])
+            for end in new_ends:
+                if end not in merged:
+                    merged.append(end)
+                    self._round_cache_activity_ts[end] = self._round_cache_clock_now()
+            merged = self._trim_round_cohort(merged, target)
+            self._round_selected_ends = merged
+            logger.info(
+                f"[ReselectGate-async] cadence={self._reselect_cadence}; "
+                f"accumulated pinned cohort ends={merged} "
+                f"({len(merged)}/{target}) at key={self._pinned_cohort_key}"
+            )
+            # Roster is `c`; dispatchable NOW is `c` minus still-in-flight.
+            # This branch had neither guard, so a lap boundary re-dispatched
+            # live ends and pushed concurrency past `c` (§D-20).
+            return self._cap_dispatch_to_concurrency(
+                channel, self._exclude_pending_commit(channel, merged))
+        return self._cap_dispatch_to_concurrency(
+            channel,
+            self._exclude_pending_commit(channel,
+                                         list(self._round_selected_ends or [])))
 
     def _await_dispatchable_under_scarcity(self, task_to_perform: str) -> None:
         """Real-mode sync-barrier liveness under availability scarcity.
@@ -3408,13 +3692,105 @@ class TopAggregator(AsyncTopAgg):
         dispatched the CURRENT `version_key`, so re-sending this distribute pass
         would only queue a stale VAR=bad it will abort. Re-serves automatically
         on a version_key advance (the stored value stops matching), and a never-
-        served end (not in the map) always returns False."""
-        return self._end_served_version_key.get(end) == self.version_key
+        served end (not in the map) always returns False.
+
+        getattr-guarded: test doubles built via __new__ skip __init__."""
+        served = getattr(self, "_end_served_version_key", None)
+        return served is not None and served.get(end) == self.version_key
 
     def _mark_instruction_served(self, end) -> None:
         """Record that the CURRENT version_key's instruction was dispatched to
-        `end` (paired with `_already_served_current_instruction`)."""
-        self._end_served_version_key[end] = self.version_key
+        `end` (paired with `_already_served_current_instruction`).
+
+        getattr-guarded: test doubles built via __new__ skip __init__."""
+        served = getattr(self, "_end_served_version_key", None)
+        if served is not None:
+            served[end] = self.version_key
+
+    def _sim_slot_holder_set(self) -> set:
+        """THE rule for sim's CAPACITY view, in one place so the method below and
+        `_sim_hold_busy_slots` cannot drift (§F-26). Module-visible on the class
+        rather than a bound helper so test doubles that borrow single methods off
+        `TopAggregator` still resolve it.
+
+        An end holds a slot iff it has a LIVE, uncommitted dispatch:
+
+            (inflight ∪ buffered)  ∪  (pending − committed)
+
+        Both terms are needed. `_sim_committed` is a STALE cross-cycle marker
+        cleared only at the agg-goal boundary, so an end that committed earlier
+        this cycle and has since been re-picked and re-dispatched still carries
+        it -- subtracting blindly would free a slot that is genuinely occupied and
+        let the loop over-dispatch into an R1 overlap. The first term keeps it
+        held on the strength of its NEW dispatch. The second term covers a
+        first-ever dispatch, whose delay `_sim_inflight_expected` has not learned
+        yet, so it is invisible to the first term.
+        """
+        pending = set(getattr(self, "_sim_pending_commit", None) or ())
+        if not getattr(self, "_sim_commit_frees_slot", True):
+            return pending
+        live = set(getattr(self, "_sim_inflight_expected", None) or ())
+        buf = getattr(self, "_sim_buffer", None)
+        if buf is not None:
+            try:
+                live |= set(buf.pending_ends())
+            except (AttributeError, TypeError):
+                pass
+        return live | (pending - set(getattr(self, "_sim_committed", None) or ()))
+
+    def _slot_holders(self) -> set:
+        """**CAPACITY role** -- the ONE authoritative answer to "which ends occupy
+        a dispatch slot right now", for both modes. Every capacity computation
+        (`extra = c - len(selected_ends)`, `_cap_dispatch_to_concurrency`, the
+        `concurrency_cap` tripwire) must read this and nothing else.
+
+        Distinct from the **IDENTITY role** -- "which ends must not be re-picked"
+        -- which is `_sim_pending_commit` / `_real_pending_commit` and is
+        published to the selector as `_agg_pending_commit_ref`. The two sets
+        differ by exactly the ends that committed this cycle but whose re-pick
+        guard is still held to the agg-goal boundary (§D-15): their slot is free
+        (§F-23), their identity is not.
+
+        Sim: dispatched-not-committed. Real: the dispatched-not-yet-RETURNED
+        half of `_PendingCommitUnion` (`slot_holders()`) -- its returned half is
+        the boundary-held re-pick guard, so reading the union charged `c` for
+        trainers that had already stopped computing.
+        """
+        if self.simulated:
+            if getattr(self, "_sim_pending_commit", None) is None:
+                return set()
+            # Explicit unbound call: test doubles borrow individual methods off
+            # this class, so `self._sim_slot_holder_set` may not be bound.
+            return TopAggregator._sim_slot_holder_set(self)
+        pending = getattr(self, "_real_pending_commit", None)
+        if pending is None:
+            return set()
+        # Duck-typed: test doubles and the pre-`_PendingCommitUnion` fallback
+        # bind a plain list here, for which the two roles do coincide.
+        holders = getattr(pending, "slot_holders", None)
+        if not callable(holders) or not getattr(self, "_real_commit_frees_slot", True):
+            return set(pending)
+        return holders()
+
+    def _outstanding_dispatch_count(self, channel=None) -> int:
+        """Ends occupying a dispatch slot -- the `concurrency_cap` tripwire's
+        count. Thin wrapper so the tripwire and the dispatch cap can never drift
+        apart on what "in flight" means (§F-26).
+
+        `channel` (real only) excludes ends whose update has already ARRIVED but
+        is still queued: real clears `_trainer_inflight_dispatch_version` when
+        the drain loop PROCESSES a message, not when it lands, so the raw count
+        charges the aggregator's own drain lag to trainer concurrency. Sim has
+        no such lag -- it ingests straight off the End queue -- so its branch is
+        unchanged.
+        """
+        holders = TopAggregator._slot_holders(self)
+        if channel is not None and not self.simulated:
+            try:
+                holders = holders - channel.ends_with_pending_rx()
+            except AttributeError:  # channel double without the probe
+                pass
+        return len(holders)
 
     def _should_send_full_weights(self, end, is_stale: bool) -> bool:
         """Decide WEIGHTS vs the tiny VAR=bad 'keep training' message for one end.
@@ -3796,12 +4172,8 @@ class TopAggregator(AsyncTopAgg):
         # that consumes it (AsyncOortSelector); harmless no-op for
         # RandomSelector (fwdllm/fwdllm_plus, sync path).
         channel.properties["vclock_now"] = self.vclock_now
-        ends = channel.ends(
-            state=VAL_CH_STATE_SEND,
-            task_to_perform=task_to_perform,
-            agg_version_key=self._curr_agg_version,
-            trainer_version_keys=self._trainer_state_dict,
-            data_id=self.data_id,
+        ends = self._select_ends_for_async_respecting_reselect_gate(
+            channel, task_to_perform
         )
         logger.info(f"ends: {ends}")
 
@@ -3865,6 +4237,24 @@ class TopAggregator(AsyncTopAgg):
         _n_weights_sent = 0
         _n_var_bad_sent = 0
         for end in ends:
+            # §F-25: skip an end already served this version_key -- the round-cache
+            # re-invokes the whole cohort every tick; mirrors the sync path's guard
+            # (~3654), which async lacked (was flooding VAR=bad, r1_inflight_overlap).
+            if self._already_served_current_instruction(end):
+                continue
+            # Tripwire B [INV, both modes]: invariant 1 at DISPATCH level -- no
+            # re-tasking a still-OPEN cycle's contributor before `version_key`
+            # advances, since neither payload is legitimate until the variance check
+            # runs. The guard above can't see this: the end's serving key is ~2
+            # cycles stale by then, so it doesn't match and passes (§D-15).
+            _retask_before_close = end in (
+                getattr(self, "_per_agg_trainer_list", None) or ())
+            if _retask_before_close:
+                logger.warning(
+                    f"[RETASK_BEFORE_CLOSE] end={end} already contributed to the "
+                    f"open cycle version_key={self.version_key}; re-tasked before "
+                    f"that cycle closed"
+                )
             trainer_version = self._trainer_last_model_version.get(end, -1)
             is_stale = (trainer_version != self._model_version)
             # Opt-1: shared decision with the sync path (_should_send_full_weights).
@@ -3932,13 +4322,31 @@ class TopAggregator(AsyncTopAgg):
                     payload[MessageType.SIM_SEND_TS] = _sst
                 # Once dispatched a trainer is in flight in virtual time -> add to
                 # the pending-commit set so the selector's eligibility filter
-                # excludes it until its grad COMMITS (discarded in _sim_recv_min_grad).
+                # excludes it until its cycle closes (released in
+                # _release_sim_slots_at_agg_goal).
                 self._sim_pending_commit.add(end)
                 # NOTE: the async_oort re-pick triplet is stamped on grad RETURN,
                 # not here at dispatch -- stamping the whole cohort at the current
                 # _curr_agg_version froze the eligible pool before any commit could
                 # advance the version (re-dispatch deadlock). An in-flight trainer
                 # is already guarded by its compute slot.
+            # Diagnostic: this end now carries an outstanding dispatch at the CURRENT
+            # version_key until it returns (cleared in _process_single_trainer_message).
+            # Real's half of the pending-commit union -- kept adjacent to sim's `add`
+            # above so the cap tripwire counts this dispatch in either mode.
+            if getattr(self, "_trainer_inflight_dispatch_version", None) is not None:
+                self._trainer_inflight_dispatch_version[end] = self.version_key
+            # Tripwire A [INV, both modes]: outstanding dispatched-not-committed ends
+            # must never exceed the selector's `c`. Read off whichever pending-commit
+            # construct this mode owns -- no new state. Warning ungated: rare by
+            # construction, and if it isn't, that is the finding.
+            _outstanding = self._outstanding_dispatch_count(channel)
+            _conc_target = channel.get_c()
+            if _conc_target is not None and _outstanding > int(_conc_target):
+                logger.warning(
+                    f"[CONCURRENCY_CAP] outstanding={_outstanding} > c={_conc_target} "
+                    f"(end={end} version_key={self.version_key})"
+                )
             # One dispatch message onto the wire (async path).
             try:
                 _sz = _bytes_weights if _pk == "weights" else _bytes_var_bad
@@ -3952,13 +4360,62 @@ class TopAggregator(AsyncTopAgg):
                 telemetry.emit(ev, **f)
             except Exception as e:
                 logger.debug(f"comm telemetry emit failed (agg async send): {e}")
-            # Diagnostic: this end now carries an outstanding dispatch at the
-            # CURRENT version_key until it returns (cleared on return in
-            # _process_single_trainer_message).
-            if getattr(self, "_trainer_inflight_dispatch_version", None) is not None:
-                self._trainer_inflight_dispatch_version[end] = self.version_key
+            # [REDISPATCH_DECOMP]: split commit->next-dispatch wall gap into
+            # peer-wait vs post-close overhead. Covers both weights and
+            # VAR=bad (§D-11 -- the VAR=bad retries are most of the cycles).
+            # Skipped on this end's first-ever dispatch (no prior commit).
+            if (_pk in ("weights", "var_bad")
+                    and end in getattr(self, "_last_commit_wall_ts", {})):
+                _rd_now = time.time()
+                _rd_last_commit = self._last_commit_wall_ts[end]
+                _rd_gap = _rd_now - _rd_last_commit
+                _rd_close = getattr(self, "_last_round_close_wall_ts", None)
+                if _rd_close is not None and _rd_close >= _rd_last_commit:
+                    _rd_peer_wait = _rd_close - _rd_last_commit
+                    _rd_post_close = _rd_now - _rd_close
+                else:
+                    # This end's own commit closed its round (or none has
+                    # closed since) -- no peer-wait component to attribute.
+                    _rd_peer_wait = 0.0
+                    _rd_post_close = _rd_gap
+                try:
+                    ev, f = build_redispatch_decomp(
+                        end_id=str(end), round_num=int(self._round),
+                        data_id=self.data_id, iteration=self.iteration_per_data_id,
+                        redispatch_gap_wall_s=_rd_gap,
+                        peer_wait_wall_s=_rd_peer_wait,
+                        post_close_overhead_wall_s=_rd_post_close,
+                        time_mode="sim" if self.simulated else "real",
+                        payload_kind=_pk,
+                        outstanding_at_dispatch=_outstanding,
+                        concurrency_target=(
+                            int(_conc_target) if _conc_target is not None else None),
+                        retask_before_close=_retask_before_close,
+                    )
+                    telemetry.emit(ev, **f)
+                except Exception as e:
+                    logger.debug(f"redispatch_decomp telemetry emit failed: {e}")
+                logger.info(
+                    f"[REDISPATCH_DECOMP] end={end} payload_kind={_pk} "
+                    f"redispatch_gap_wall_s={_rd_gap:.3f} "
+                    f"peer_wait_wall_s={_rd_peer_wait:.3f} "
+                    f"post_close_overhead_wall_s={_rd_post_close:.3f}"
+                )
+                # [VCLOCK_CHARGE] real-only artifact -- charge sourced from
+                # sim_charge_registry (§P), not sim's own near-zero live span.
+                _rd_profiled = get_profiled_charge_s(
+                    getattr(self.config.hyperparameters, "sim_charge_profile_path", None),
+                    "redispatch_turnaround", _pk,
+                )
+                charge_sim_vclock_overhead(
+                    getattr(self, "_vclock", None), self.simulated, self.config,
+                    _rd_post_close, "redispatch_turnaround",
+                    charge=(_rd_profiled is not None),
+                    payload_kind=_pk, profiled_s=_rd_profiled,
+                )
             _send_t0 = time.time()
             channel.send(end, payload)
+            self._mark_instruction_served(end)
             _send_wall = time.time()
             # Serial-dispatch queue: accumulate this send's MEASURED wall (pickle +
             # publish) so the next trainer's sim_send_ts reflects waiting behind it.
@@ -4122,8 +4579,6 @@ class TopAggregator(AsyncTopAgg):
                     "aggregate", self._aggregate_weights, TAG_AGGREGATE
                 )
 
-                # task_get_heartbeat = Tasklet("heartbeat", self.get,
-                # TAG_HEARTBEAT)
                 task_init = Tasklet("initialize", self.initialize)
 
             c = self.composer
@@ -4171,7 +4626,6 @@ class TopAggregator(AsyncTopAgg):
                 # train and eval tasks. Will create a cleaner separation later.
                 task_get_weights = Tasklet("aggregate", self.get, TAG_AGGREGATE)
 
-                task_get_heartbeat = Tasklet("heartbeat", self.get, TAG_HEARTBEAT)
                 task_init = Tasklet("initialize", self.initialize)
 
                 task_aggregate_grads_sync = Tasklet(
@@ -4193,25 +4647,13 @@ class TopAggregator(AsyncTopAgg):
                 >> loop(
                     # task_reset_agg_goal_vars
                     task_put_train
-                    # >> asyncfl_loop(task_put >> task_get_weights >>
-                    # >> task_get_heartbeat
                     >> task_aggregate_grads_sync
                 )
                 >> c.tasklet("inform_end_of_training")
-                # >> c.tasklet("load_data") c.tasklet("initialize")
-                # >> task_get_heartbeat task_put_train c.tasklet("heartbeat") loop(
-                # >> task_reset_agg_goal_vars # >> asyncfl_loop(task_put >>
-                # >> task_get_weights >> c.tasklet("heartbeat") ) >>
-                # >> asyncfl_loop(task_put_train >> task_put_eval >>
-                # >> task_get_weights) >> c.tasklet("train") >>
-                #     c.tasklet("evaluate") >> c.tasklet("analysis") >>
-                #     c.tasklet("save_metrics") >> c.tasklet("inc_round") )
-                # >> c.tasklet("inform_end_of_training") c.tasklet("save_params")
-                # c.tasklet("save_model")
             )
 
     @classmethod
     def get_func_tags(cls) -> list[str]:
         """Return a list of function tags defined in the top level
         aggregator role."""
-        return [TAG_DISTRIBUTE, TAG_AGGREGATE, TAG_HEARTBEAT]
+        return [TAG_DISTRIBUTE, TAG_AGGREGATE]

@@ -1,4 +1,5 @@
 from operator import mod
+import os
 import random
 
 import numpy as np
@@ -153,9 +154,29 @@ def create_model(args, formulation="classification"):
     return config, model, tokenizer
 
 
+def strict_determinism_enabled() -> bool:
+    """`FWDLLM_STRICT_DETERMINISM=1` pins kernel/reduction choice, not just RNG.
+
+    `cudnn.deterministic` below covers cuDNN only, not autocast matmul kernel
+    selection or cuBLAS reduction order -- where same-seed real replicates were
+    measured diverging (H12, simulate_fwdllm.md). Env-gated so a standalone probe
+    can set it before torch does any work.
+    """
+    return os.environ.get(
+        "FWDLLM_STRICT_DETERMINISM", "").strip().lower() in ("1", "true", "yes")
+
+
 def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    if strict_determinism_enabled():
+        # cuBLAS workspace must be pinned before the first CUDA work, or
+        # `use_deterministic_algorithms` raises on the first GEMM.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        if hasattr(torch.backends.cuda, "matmul"):
+            torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)

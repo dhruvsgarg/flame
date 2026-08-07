@@ -2,7 +2,7 @@
 # full 100-partition niid_label_clients=100_alpha=1 population), real time_mode
 # (FedFwd has no simulated-clock support yet).
 #
-# Uses the `fwdllm_plus` baseline (sync, random selector, fedavg, ORACULAR
+# Uses the `fwdllm_it_oracular` baseline (sync, random selector, fedavg, ORACULAR
 # availability read from _metadata, per-iteration reselection). Sibling of
 # fwdllm_n10_smoke.yaml/fluxtune_n10_smoke.yaml; run all three for full
 # real/sim parity coverage across the taxonomy. c=10 of the 100-trainer pool
@@ -10,13 +10,13 @@
 #
 # Run:
 #   python -m flame.launch.run_experiment \
-#       lib/python/examples/fwdllm/expt_scripts/fwdllm_plus_n100_smoke.yaml
+#       lib/python/examples/fwdllm/expt_scripts/fwdllm_it_oracular_n100_smoke.yaml
 
 experiments:
-  - name: fwdllm_plus_n100_smoke
-    description: "FedFwd smoke (100 trainers, c=10, fwdllm_plus baseline: sync random+fedavg+ORACULAR). Validates the launcher port before a full-scale run."
+  - name: fwdllm_it_oracular_n100_smoke
+    description: "FedFwd smoke (100 trainers, c=10, fwdllm_it_oracular baseline: sync random+fedavg+ORACULAR). Validates the launcher port before a full-scale run."
 
-    baseline: fwdllm_plus
+    baseline: fwdllm_it_oracular
 
     example:
       # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
@@ -31,6 +31,9 @@ experiments:
         # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
         # file exists (or ever will) for agnews; skips that lookup entirely.
         path_style: true
+        # Cosmetic-only for path-style (naming/snapshot), but kept in sync
+        # with the actual partition_method below (EXPTS_CHARTER A5: alpha=1).
+        dirichlet_alpha: 1
       availability:
         # Phase 1 is syn_0 (100% availability); the ORACULAR aggregator then
         # reads all-available, so the sync barrier assembles the agg_goal=10
@@ -53,9 +56,13 @@ experiments:
           seed: 1234
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
-          # Uniform/IID partition for smoke tests -- avoids the niid_label
-          # baseline default's data-skew confound while validating mechanics.
-          partition_method: uniform
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          # MUST match the _sim pair's value or parity sees a data-skew
+          # divergence that has nothing to do with the clock.
+          partition_method: niid_label_clients=100_alpha=1
+          # H13: dropout off during the JVP's two finite-difference passes.
+          # Code default ON (simulate_fwdllm.md §G); real and sim must match.
+          jvp_eval_mode: true
 
     aggregator:
       config_template: configs/aggregator_base.json
@@ -65,9 +72,9 @@ experiments:
       log_to_wandb: false
       config_overrides:
         job:
-          id: fwdllm_plus_n100_smoke
+          id: fwdllm_it_oracular_n100_smoke
         hyperparameters:
-          seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs, see fwdllm_plus_n10_smoke_momentum.yaml)
+          seed: 1234  # deterministic selector RNG + model init
           rounds: 50  # short smoke run, not the full 300
           # Hold a returned trainer's re-pick guard to commit, not RETURN
           # (§R, 2026-07-11). No-op here (agg_goal == c, full-cohort barrier)
@@ -81,10 +88,17 @@ experiments:
           # (`rounds` alone is much too coarse, since one round is 150
           # data-id completions).
           max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
-          max_runtime_s: 1800  # ...or after 30 minutes wall time
+          max_runtime_s: 3600  # ...or after 60 minutes wall time
+          # Eval cadence -- MUST match real/sim, else the two sample the accuracy
+          # curve at different points. Raise if the run warns about waiting.
+          eval_every_n_commits: 2
+          # Arms runner.py's watchdog (force-kill on hang); inert otherwise.
+          # Must exceed --max-runtime-s or the watchdog truncates a full-length run.
+          max_experiment_runtime_s: 10800
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
-          partition_method: uniform
+          # alpha=1 (EXPTS_CHARTER A5); must match the _sim pair — see trainer side.
+          partition_method: niid_label_clients=100_alpha=1
         selector:
           kwargs:
             # RandomSelector has no `k` concept (matches oort/async_oort/fedbuff/

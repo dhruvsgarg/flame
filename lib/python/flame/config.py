@@ -191,7 +191,6 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     # None (unset) falls back to reject_stale_updates above, for examples
     # that only know that older boolean knob.
     staleness_policy: t.Optional[str] = Field(alias="stalenessPolicy", default=None)
-    heartbeats: t.Optional[dict] = Field(alias="heartbeats", default={})
     client_notify: t.Optional[dict] = Field(
         alias="clientAvailAwareNotify", default=None
     )
@@ -314,6 +313,11 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     # of the prior sends in its burst. Sim-only, default OFF, an A/B lever.
     sim_model_dispatch_queue: t.Optional[bool] = Field(
         alias="simModelDispatchQueue", default=False
+    )
+    # Repo-root-relative path to a sim_charge_registry YAML (FWDLLM_DESIGN.md
+    # §P) -- profiled real-only-cost charges. None -> no-op, byte-identical.
+    sim_charge_profile_path: t.Optional[str] = Field(
+        alias="simChargeProfilePath", default=None
     )
     sim_straggler_spread_s: t.Optional[float] = Field(
         alias="simStragglerSpreadS", default=0.0

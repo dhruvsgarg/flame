@@ -40,8 +40,6 @@ logger = logging.getLogger(__name__)
 KEY_CH_STATE = "state"
 VAL_CH_STATE_RECV = "recv"
 VAL_CH_STATE_SEND = "send"
-VAL_CH_STATE_HTBT_RECV = "heartbeat_recv"
-VAL_CH_STATE_HTBT_SEND = "heartbeat_send"
 
 KEY_CH_SELECT_REQUESTER = "requester"
 
@@ -175,8 +173,13 @@ class Channel(object):
         return result
 
     def one_end(self, state: Union[None, str] = None) -> Union[None, str]:
-        """Return one end out of all ends."""
-        end_list = self.ends(state)
+        """Return one end out of all ends.
+
+        Single-parent caller (e.g. trainer picking its aggregator): RECV is
+        protocol-guaranteed to precede SEND, so bootstrapping is safe -- see
+        `allow_recv_bootstrap` on `ends()`.
+        """
+        end_list = self.ends(state, allow_recv_bootstrap=True)
         return end_list[0] if len(end_list) > 0 else None
     
     def get_c(self):
@@ -193,6 +196,7 @@ class Channel(object):
         agg_version_key: tuple = None,  # (model_version, iteration)
         trainer_version_keys: dict[str, tuple] = None,
         data_id: int = None,
+        allow_recv_bootstrap: bool = False,
     ) -> list[str]:
         """Return a list of end ids.
 
@@ -202,6 +206,12 @@ class Channel(object):
             data_id: Progress axis for selection telemetry. Not part of
                 version_key (model_version already implies it); pass
                 explicitly when a caller needs it.
+            allow_recv_bootstrap: Let a RECV-state selector fabricate an
+                in-flight set when nothing was ever dispatched. Only safe for
+                a single-parent caller (`one_end()` sets this); a real
+                dispatcher (e.g. the aggregator) must never set it, or a
+                RECV racing its own first SEND fabricates phantom in-flight
+                ends that starve every real dispatch behind them.
         """
         logger.debug(
             f"ends() for channel name: {self._name}, "
@@ -231,10 +241,11 @@ class Channel(object):
                     agg_version_key=agg_version_key,
                     trainer_version_keys=trainer_version_keys,
                     data_id=data_id,
+                    allow_recv_bootstrap=allow_recv_bootstrap,
                 )
                 logger.debug(f"trainer unavail list available, selected: {selected}")
                 if len(selected) == 0:
-                    return
+                    return []
             else:
                 selected = self._selector.select(
                     ends=self._ends,
@@ -244,12 +255,13 @@ class Channel(object):
                     agg_version_key=agg_version_key,
                     trainer_version_keys=trainer_version_keys,
                     data_id=data_id,
+                    allow_recv_bootstrap=allow_recv_bootstrap,
                 )
                 logger.debug(
                     f"trainer unavail list not available, selected: {selected}"
                 )
                 if len(selected) == 0:
-                    return
+                    return []
             logger.debug(
                 f"selected for task {task_to_perform} and returned from select(): {selected}"
             )
@@ -565,8 +577,6 @@ class Channel(object):
                     f"msg of type MODEL_VERSION recvd for end {end_id}, "
                     f"model_version={msg[MessageType.MODEL_VERSION]}"
                 )
-            elif MessageType.HEARTBEAT in msg:
-                logger.debug(f"msg of type HEARTBEAT recvd for end {end_id}")
             else:
                 logger.debug(f"msg of type UNKNOWN recvd for end {end_id}")
         else:
@@ -780,6 +790,25 @@ class Channel(object):
         logger.debug(
             f"[RECV_FIFO] Merge stream completed, delivered {msg_count} messages from {len(runs)} tasks"
         )
+
+    def ends_with_pending_rx(self) -> set:
+        """Ends whose message has ARRIVED but the aggregator has not processed yet.
+
+        Queue depth only, never a deserialize, so it is safe on the dispatch
+        path (§F-19) -- `peek()` below cloudpickle-loads and must not be used
+        here. A trainer that has sent has an idle GPU whatever the drain loop is
+        doing, so real's capacity read excludes these: without it the count
+        charges real's own drain lag to concurrency (`felix_it` read 55 against
+        c=30 on 49.1% of dispatches; its trainers' spans peaked at exactly 30).
+        """
+        pending = set()
+        for end_id, end in list(self._ends.items()):
+            try:
+                if end.peek_buf is not None or end.rxq.qsize() > 0:
+                    pending.add(end_id)
+            except AttributeError:  # duck-typed test doubles
+                continue
+        return pending
 
     def peek(self, end_id):
         """Peek rxq of end_id and return data if queue is not

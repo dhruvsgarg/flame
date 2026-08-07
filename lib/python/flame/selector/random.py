@@ -19,8 +19,6 @@
 import logging
 import random
 import time
-from collections import deque
-import numpy as np
 
 from ..common.typing import Scalar
 from ..end import End
@@ -28,8 +26,6 @@ from . import AbstractSelector, SelectorReturnType
 from flame.channel import (
     KEY_CH_SELECT_REQUESTER,
     KEY_CH_STATE,
-    VAL_CH_STATE_HTBT_RECV,
-    VAL_CH_STATE_HTBT_SEND,
     VAL_CH_STATE_RECV,
     VAL_CH_STATE_SEND,
 )
@@ -84,66 +80,6 @@ class RandomSelector(AbstractSelector):
         # Tracks trainers that were selected but left training in between
         self.track_selected_trainers_which_left = dict()
 
-        # Track sliding window statistics for the selector
-        self._selector_stats = {}
-        for task in ["train", "eval"]:
-            self._selector_stats[task] = {"data": {}, "summary": {}}
-            for metric in ["util", "speed", "round"]:
-                for window in [50, 100, 200]:
-                    key = f"{metric}_last_{window}"
-                    self._selector_stats[task]["data"][key] = deque(maxlen=window)
-
-    def compute_trainer_stat_summary(self):
-        def compute_summary(values):
-            # Filter out None values
-            if values is None:
-                return {
-                    "min": None,
-                    "max": None,
-                    "p25": None,
-                    "p50": None,
-                    "p75": None,
-                }
-            values = [v for v in values if v is not None]
-            if not values:
-                return {
-                    "min": None,
-                    "max": None,
-                    "p25": None,
-                    "p50": None,
-                    "p75": None,
-                }
-
-            values = np.array(values, dtype=float)
-            return {
-                "min": float(np.min(values)),
-                "max": float(np.max(values)),
-                "p25": float(np.percentile(values, 25)),
-                "p50": float(np.percentile(values, 50)),
-                "p75": float(np.percentile(values, 75)),
-            }
-
-        tasks = ["train", "eval"]
-        metrics = [
-            "util_last_50",
-            "util_last_100",
-            "util_last_200",
-            "speed_last_50",
-            "speed_last_100",
-            "speed_last_200",
-            "round_last_50",
-            "round_last_100",
-            "round_last_200",
-        ]
-
-        for task in tasks:
-            for metric in metrics:
-                values = self._selector_stats[task]["data"].get(metric, [])
-                key = f"stat_{metric}" if "util" in metric else metric
-                self._selector_stats[task]["summary"][key] = compute_summary(values)
-
-    def _reset_selector_stats(self) -> None:
-        self._selector_stats = {}
 
     def select(
         self,

@@ -1,0 +1,113 @@
+# FedFwd smoke test: 100 trainers, agnews H5 partitions (client_idx 0-99, the
+# full 100-partition niid_label_clients=100_alpha=1 population), real time_mode
+# (FedFwd has no simulated-clock support yet). Real sibling of
+# felix_round_n10_smoke_sim.yaml -- IDENTICAL except time_mode: real, the job
+# id, and dropping the sim-only knobs (sim_straggler_spread_s,
+# sim_sct_ordered_drain, sim_staggered_redispatch, sim_model_dispatch_queue,
+# sim_model_agg_compute_time). c=30 concurrency pool, agg_goal=10.
+#
+# Uses the `felix_round` baseline: Felix(P), the other published anchor
+# (this project's own Felix, async_oort oort-smart selection, ported onto
+# the forward-mode substrate) -- FeLiX staleness x utility rate (NOT
+# fluxtune's grad_aware C3), client_notify availability (NOT oracular), no
+# C1/C3. Round-level (reselect_each_iteration=false).
+#
+# TODO(verify): smoke-pending (BRIDGE_DESIGN.md §2b per-baseline checklist).
+# Sim-fidelity knobs profiled for fluxtune (sim_gate_compute_cap_s,
+# sim_completion_leg_s) are deliberately NOT copied into the sim sibling --
+# felix_round has no C1 (no JVP-guided perturbation scoring), so its
+# per-iteration compute cost differs from fluxtune's; needs its own
+# profiling pass. Placeholder `learning_rate: 0.075` (baselines.yaml) also
+# needs retuning here.
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/felix_round_n10_smoke.yaml
+
+experiments:
+  - name: felix_round_n10_smoke
+    description: "FedFwd smoke (100 trainers, c=30/agg_goal=10, felix_round baseline: async async_oort+fedbuff FeLiX rate+client_notify, no C1/C3, round-level). Validates the launcher port before a full-scale run."
+
+    baseline: felix_round
+
+    example:
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 100
+      start_id: 1
+      dataset:
+        name: agnews
+        # Cosmetic-only for path-style (naming/snapshot), but kept in sync
+        # with the actual partition_method below (EXPTS_CHARTER A5: alpha=1).
+        dirichlet_alpha: 1
+        # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
+        # file exists (or ever will) for agnews; skips that lookup entirely.
+        path_style: true
+      availability:
+        # Phase 1 is syn_0 (100% availability): client_notify then reports all
+        # trainers available. Switch to mobiperf_3st_50 (via --avail-trace) only
+        # for the Phase-2 unavailability runs, matching fluxtune's own smoke.
+        mode: syn_0
+      # FedFwd has no simulated-clock support; always real.
+      time_mode: real
+      # Skip the registry's 4-18s artificial delay for a fast smoke run.
+      enable_training_delays: false
+      # client_idx = (trainer_id - 1) % 100 -- 1:1 onto all 100 H5 partitions
+      # (also the full §O trainer_registry.yaml speed-class population).
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          seed: 1234
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          partition_method: niid_label_clients=100_alpha=1
+          # H13: dropout off during the JVP's two finite-difference passes.
+          # Code default ON (simulate_fwdllm.md §G); real and sim must match.
+          jvp_eval_mode: true
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: async_oort
+      tracking_mode: client_notify
+      agg_goal: 10
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: felix_round_n10_smoke
+        hyperparameters:
+          seed: 1234  # deterministic selector RNG + model init; MUST match felix_round_n10_smoke_sim.yaml
+          rounds: 50  # short smoke run, not the full 300
+          inflight_residence: true
+          # §H fix: collect grads via streamer-free drain_ready, not recv_fifo
+          # (whose lingering per-end tasks stall a cohort ~30s). Code-default
+          # OFF; ON here for the validation leg. Must match sim yaml.
+          real_drain_ready_ingest: true
+          # §H A/B: real-only 0.1s post-distribute settle sleep sim skips +
+          # doesn't charge. 0.0 tests whether removing it closes the gap
+          # (code-default 0.1). Generic async transport knob, not fluxtune-
+          # specific -- kept identical to fluxtune's validated setting.
+          real_distribute_settle_s: 0.0
+          send_timeout_wait_s: 300
+          max_data_id_progress: 9999
+          max_runtime_s: 3600  # ...or after 60 minutes wall time
+          # Eval cadence -- MUST match real/sim, else the two sample the accuracy
+          # curve at different points. Raise if the run warns about waiting.
+          eval_every_n_commits: 2
+          # Arms runner.py's watchdog (force-kill on hang); inert otherwise.
+          max_experiment_runtime_s: 10800
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          partition_method: niid_label_clients=100_alpha=1
+        selector:
+          kwargs:
+            c: 30
+            minInitialTrainers: 100
+
+    execution:
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false

@@ -20,11 +20,15 @@ from __future__ import annotations
 
 import collections
 import glob
+import hashlib
+import inspect
 import json
 import math
 import os
+import pickle
 import re
 import statistics
+import tempfile
 from pathlib import Path
 
 from .avail_state_series import (
@@ -229,8 +233,91 @@ def spearman_rho(a: list, b: list) -> float:
 # §1  Loaders
 # ═══════════════════════════════════════════════════════════════════
 
+# Bump whenever `load_agg_jsonl` changes what it EXTRACTS, or every cached parse
+# silently serves the old event set. Part of the cache key, so a bump is a miss,
+# not a stale hit.
+_AGG_PARSE_VERSION = 1
+_AGG_CACHE_ENV = "FLAME_PARITY_CACHE_DIR"
+
+
+def _agg_cache_path(path: str) -> Optional[str]:
+    """Where this file's parsed form lives, or None if caching is off.
+
+    Keyed on (absolute path, size, mtime_ns, parser version): a re-run of the
+    same leg is a hit, an edited or regrown telemetry file is a miss. Runs are
+    immutable once finished, so this is safe and it is the difference between a
+    15s parse of a 1.45 GB aggregator log and a ~50 ms unpickle."""
+    root = os.environ.get(_AGG_CACHE_ENV)
+    if root in ("0", "off", "none"):
+        return None
+    if not root:
+        root = os.path.join(tempfile.gettempdir(), "flame_parity_cache")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = f"{os.path.abspath(path)}|{st.st_size}|{st.st_mtime_ns}|{_AGG_PARSE_VERSION}"
+    return os.path.join(root, hashlib.sha256(key.encode()).hexdigest()[:32] + ".pkl")
+
+
+# A single 2h leg pickles to ~0.7 GB, so an unbounded cache over a nine-baseline
+# sweep would want ~30 GB and eventually fill the disk. Evict oldest-first past
+# this; override with FLAME_PARITY_CACHE_GB.
+_CACHE_CAP_BYTES = float(os.environ.get("FLAME_PARITY_CACHE_GB", "24")) * 1e9
+
+
+def _evict_cache(root: str) -> None:
+    """Keep the cache under its cap, oldest access first. Best-effort: a failure
+    here must never take down a grading run."""
+    try:
+        entries = []
+        with os.scandir(root) as it:
+            for e in it:
+                if e.name.endswith(".pkl"):
+                    st = e.stat()
+                    entries.append((st.st_atime, st.st_size, e.path))
+        total = sum(sz for _, sz, _ in entries)
+        for _atime, sz, path in sorted(entries):
+            if total <= _CACHE_CAP_BYTES:
+                break
+            try:
+                os.remove(path)
+                total -= sz
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def load_agg_jsonl(path: str) -> dict:
-    """Parse an aggregator telemetry JSONL into typed, sorted lists."""
+    """Parse an aggregator telemetry JSONL into typed, sorted lists.
+
+    Disk-cached on file identity (`_agg_cache_path`): the aggregator log is ~1.5 GB
+    on a 2h leg and yields a few thousand events, so re-parsing it on every floor
+    pass, board re-grade and control run dominated every analysis in this pipeline.
+    Set `FLAME_PARITY_CACHE_DIR=off` to bypass."""
+    cache = _agg_cache_path(path)
+    if cache and os.path.exists(cache):
+        try:
+            with open(cache, "rb") as f:
+                return pickle.load(f)
+        except (OSError, pickle.UnpicklingError, EOFError, AttributeError):
+            pass                      # corrupt or stale-format entry: just re-parse
+    out = _load_agg_jsonl_uncached(path)
+    if cache:
+        try:
+            os.makedirs(os.path.dirname(cache), exist_ok=True)
+            tmp = f"{cache}.{os.getpid()}.tmp"
+            with open(tmp, "wb") as f:
+                pickle.dump(out, f, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp, cache)    # atomic: concurrent workers can't tear it
+            _evict_cache(os.path.dirname(cache))
+        except OSError:
+            pass
+    return out
+
+
+def _load_agg_jsonl_uncached(path: str) -> dict:
     selection_train: list = []
     agg_rounds: list = []
     eval_commits: list = []
@@ -241,6 +328,8 @@ def load_agg_jsonl(path: str) -> dict:
     agg_belief_changes: list = []
     step_timing: list = []
     comm_dispatch: list = []
+    redispatch_decomp: list = []
+    vclock_charges: list = []
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -276,6 +365,13 @@ def load_agg_jsonl(path: str) -> dict:
             elif ev == "step_timing":
                 # Per-function wall-duration from `timer_decorator` on aggregator methods.
                 step_timing.append(e)
+            elif ev == "redispatch_decomp":
+                # Per-dispatch wall split + the two dispatch-loop INV tripwires.
+                redispatch_decomp.append(e)
+            elif ev == "vclock_charge":
+                # What each overhead category folded onto the clock
+                # (`charged_s`) vs sim's own `span_s`, and which one it used.
+                vclock_charges.append(e)
     selection_train.sort(key=lambda x: (x["round"], x["ts"]))
     agg_rounds.sort(key=lambda x: (x["round"], x.get("agg_goal_count", 0), x["ts"]))
     eval_commits.sort(key=lambda x: (x["round"], x["ts"]))
@@ -300,10 +396,46 @@ def load_agg_jsonl(path: str) -> dict:
         # the selection checkpoint is already in selection_train.per_trainer.avl_state).
         "agg_belief_changes": agg_belief_changes,
         "step_timing": step_timing,
+        "redispatch_decomp": redispatch_decomp,
+        "vclock_charges": vclock_charges,
     }
 
 
 def load_trainer_jsonl_dir(telemetry_dir: Optional[str]) -> dict:
+    """Disk-cached wrapper: ~100 trainer logs per leg, re-parsed on every grade."""
+    if not telemetry_dir:
+        return {}
+    files = sorted(Path(telemetry_dir).glob("trainer_*.jsonl"))
+    if not files:
+        return {}
+    # Key on the whole SET (names + size + mtime), so adding or regrowing any
+    # trainer log misses rather than serving a partial leg.
+    sig = "|".join(f"{f.name}:{f.stat().st_size}:{f.stat().st_mtime_ns}"
+                   for f in files)
+    cache = _agg_cache_path(os.path.join(str(telemetry_dir), "__trainers__"))
+    if cache:
+        cache = cache[:-4] + "_" + hashlib.sha256(sig.encode()).hexdigest()[:16] + ".pkl"
+        if os.path.exists(cache):
+            try:
+                with open(cache, "rb") as fh:
+                    return pickle.load(fh)
+            except (OSError, pickle.UnpicklingError, EOFError, AttributeError):
+                pass
+    out = _load_trainer_jsonl_dir_uncached(telemetry_dir)
+    if cache:
+        try:
+            os.makedirs(os.path.dirname(cache), exist_ok=True)
+            tmp = f"{cache}.{os.getpid()}.tmp"
+            with open(tmp, "wb") as fh:
+                pickle.dump(out, fh, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp, cache)
+            _evict_cache(os.path.dirname(cache))
+        except OSError:
+            pass
+    return out
+
+
+def _load_trainer_jsonl_dir_uncached(telemetry_dir: Optional[str]) -> dict:
     """Load all trainer_*.jsonl from a telemetry dir.
 
     Returns {short_id: {"task_recv": [...], "trainer_round": [...],
@@ -374,7 +506,8 @@ def load_run_dir(run_dir: str) -> tuple:
     else:
         merged: dict = {"selection_train": [], "agg_rounds": [],
                         "eval_commits": [], "agg_evals": [], "residence": [],
-                        "step_timing": [], "comm_dispatch": []}
+                        "step_timing": [], "comm_dispatch": [],
+                        "redispatch_decomp": []}
         for f in agg_files:
             d = load_agg_jsonl(f)
             for k in merged:
@@ -426,6 +559,19 @@ def _per_round_last_event(agg_rounds: list) -> dict:
     return by_round
 
 
+# `round`-axis progress (async_cifar10) is self-verifying: `round` only
+# increments after a genuine close, so an event's presence already proves
+# completion -- no commit-evidence field needed. `data_id`-axis progress
+# (fwdllm-family) has no such guarantee (many retry attempts share one
+# data_id before it maybe commits), so `_per_progress_last_event` requires
+# this field == True per key (§D-13). Hardcoded, not a knob: every current
+# `data_id`-axis baseline shares one aggregator class (fwdllm_aggregator.py)
+# and this one field name. A future baseline on a NEW progress axis, or a
+# `data_id`-axis one from a different aggregator, needs its own commit
+# signal here -- check `_progress_axis` too, same assumption applies there.
+_DATA_ID_COMMIT_FIELD = "var_good_enough"
+
+
 def _progress_axis(agg_rounds: list) -> str:
     """The run's true progress axis. Normal FL advances FL `round`; fwdllm holds
     `round` static (one model, grads aggregated in place) and advances committed
@@ -454,10 +600,19 @@ def _per_progress_last_event(agg_rounds: list, axis: str) -> dict:
     `cycle_data_id` wraps mod `total_data_bins` each lap, so keying on the raw
     value alone collapses events from different laps onto the same key and
     produces out-of-order advances. The composite tuple sorts chronologically
-    without needing to know `total_data_bins`."""
+    without needing to know `total_data_bins`.
+
+    On the `data_id` axis, a key is dropped unless verified (see
+    `_DATA_ID_COMMIT_FIELD` above) -- a run stopped by `max_runtime_s` mid
+    variance-check can emit one event for a data bin it never finished, and
+    every consumer here treats a key's presence as "reached" (§D-13). Falls
+    back to unfiltered if NO key anywhere verifies (field absent, or a fixture
+    that never sets it) -- zero verified progress is more likely "field not
+    meaningful here" than a real run with zero progress."""
     if axis == "round":
         return _per_round_last_event(agg_rounds)
     out: dict = {}
+    verified: set = set()
     for e in agg_rounds:
         k = e.get("cycle_data_id")
         if k is None:
@@ -465,7 +620,11 @@ def _per_progress_last_event(agg_rounds: list, axis: str) -> dict:
         key = (e.get("round") or 0, k)
         if key not in out or e.get("ts", 0) > out[key].get("ts", 0):
             out[key] = e
-    return out
+        if e.get(_DATA_ID_COMMIT_FIELD) is True:
+            verified.add(key)
+    if not verified:
+        return out
+    return {k: v for k, v in out.items() if k in verified}
 
 
 def _per_round_max_speed(agg_rounds: list) -> dict:
@@ -478,6 +637,29 @@ def _per_round_max_speed(agg_rounds: list) -> dict:
         speeds = e.get("trainer_speed_s") or []
         if speeds:
             out[r] = max(out.get(r, 0.0), max(speeds))
+    return out
+
+
+def _per_cycle_barrier_s(agg_rounds: list) -> list:
+    """Per aggregation CYCLE: the barrier span = slowest committed trainer's
+    intrinsic duration. Emitted directly as `intrinsic_span_s` (both modes); falls
+    back to max(trainer_speed_s) on pre-instrumentation telemetry.
+
+    Not `_per_round_max_speed`: that keys on FL `round`, which fwdllm holds static
+    for a whole lap, so it collapses to ONE entry per lap holding the max over the
+    entire run -- both modes then read the same global-max trainer and any rung
+    built on it degenerates into a restatement of its own denominator.
+    """
+    out = []
+    for e in agg_rounds:
+        if e.get("event") not in (None, "agg_round"):
+            continue
+        span = e.get("intrinsic_span_s")
+        if span is None:
+            speeds = e.get("trainer_speed_s") or []
+            span = max(speeds) if speeds else None
+        if span is not None:
+            out.append(span)
     return out
 
 
@@ -506,9 +688,92 @@ def _real_intrinsic_clock(agg_rounds: list) -> Optional[dict]:
     return coord
 
 
+def _has_vclock(agg_rounds: list) -> bool:
+    return any(e.get("vclock_now") is not None for e in agg_rounds)
+
+
+def _b_uses_vclock(sim_agg_rounds: list, same_mode: bool) -> bool:
+    """Must the B side be read on its vclock?
+
+    Every leg reads its OWN clock; only a real↔sim B side is REQUIRED to have a
+    vclock, so a broken sim run bails loudly (§D-56) instead of being graded on
+    wall time. `same_mode` drops that, which is what lets a sim↔sim pair compare
+    two virtual clocks rather than one leg's wall time against the other's vclock
+    — a 51% residual that was pure unit mismatch (§D-73).
+    """
+    return not same_mode or _has_vclock(sim_agg_rounds)
+
+
+def pair_clocks(real: dict, sim: dict, same_mode: bool = False) -> tuple:
+    """`(a_uses_vclock, b_uses_vclock)` — the ONE place a rung decides which clock
+    each side of a pair is read on.
+
+    **Any rung comparing a time quantity across a pair must route through this.**
+    Hardcoding A=wall / B=vclock is correct for a production real↔sim pair and
+    silently wrong for every control pair: sim's wall runs ~3.4x its own vclock,
+    so a config-identical sim↔sim pair reads that ratio as a 64-74% divergence
+    and the rung looks uncalibrated rather than uncontrolled (§D-73). It cost
+    this project a whole batch of "9/10 control fails" on three rungs.
+
+    `test_every_paired_clock_rung_reads_each_side_on_its_own_clock` runs two
+    IDENTICAL sim legs through the whole ladder and fails any rung that does not.
+    """
+    return (_has_vclock(real["agg_rounds"]),
+            _b_uses_vclock(sim["agg_rounds"], same_mode))
+
+
+def _side_clock_fn(agg_rounds: list, use_vclock: bool):
+    """One side's per-event time reader, on the clock `pair_clocks` chose."""
+    if use_vclock:
+        return lambda e: e.get("vclock_now")
+    coord = _real_intrinsic_clock(agg_rounds)
+    return ((lambda e: coord.get(id(e))) if coord is not None
+            else (lambda e: e.get("ts")))
+
+
+def _algorithmic_clock(agg_rounds: list, use_vclock: bool):
+    """`(time_fn, elapsed)` on one side's own clock, or `(None, None)`.
+
+    `use_vclock=True` reads sim's vclock; False reads real's genuine algorithmic
+    clock — cumulative `intrinsic_span_s` when emitted, else 0-based wall `ts`.
+    The False branch is what lets a rung that BAILS for want of `vclock_now`
+    still grade two REAL legs against each other (§D-72): the rung is
+    uncontrollable, its quantity is not.
+    """
+    if use_vclock:
+        vals = [e.get("vclock_now") for e in agg_rounds
+                if e.get("vclock_now") is not None]
+        if not vals:
+            return None, None
+        return (lambda e: e.get("vclock_now")), max(vals)
+    coord = _real_intrinsic_clock(agg_rounds)
+    if coord:
+        return (lambda e: coord.get(id(e))), max(coord.values())
+    ts = [e["ts"] for e in agg_rounds if e.get("ts") is not None]
+    if len(ts) < 2:
+        return None, None
+    t0 = min(ts)
+    return ((lambda e: (e["ts"] - t0) if e.get("ts") is not None else None),
+            max(ts) - t0)
+
+
+def _verified_progress_order(agg_rounds: list, axis: str) -> list:
+    """The run's verified progress keys in CHRONOLOGICAL order.
+
+    Ordering is by the key's own last-event `ts`, never by sorting the keys
+    themselves: on the `data_id` axis `round` bumps one bin BEFORE `cycle_data_id`
+    wraps, so a lap runs `(1,148) -> (2,149) -> (2,0) -> (2,1) ...` and the tuple
+    `(round, cycle_data_id)` is NOT monotone across a lap boundary (`(2,149)`
+    sorts last but happens first). Events are emitted in time order, so `ts`
+    is the reliable sequencer on both axes.
+    """
+    last = _per_progress_last_event(agg_rounds, axis)
+    return [k for k, _ in sorted(last.items(), key=lambda kv: kv[1].get("ts") or 0.0)]
+
+
 def _matched_logical_budget(real_agg_rounds: list, sim_agg_rounds: list):
-    """Matched LOGICAL budget N = min(final_real_progress, final_sim_progress) on
-    the run's progress axis (fwdllm committed `data_id`, else FL `round`).
+    """Matched LOGICAL budget N -- the work BOTH sides actually did, on the run's
+    progress axis (fwdllm committed `data_id`, else FL `round`).
 
     Parity is "same work, differing only in wall-clock" (F-12): fix the WORK
     (progress <= N) and let TIME be the measured output, never fix a clock
@@ -516,21 +781,136 @@ def _matched_logical_budget(real_agg_rounds: list, sim_agg_rounds: list):
     the axis `sim_rate` tests. See PARITY.md §1.5.
 
     Returns (N, prog_fn) or (None, None). `prog_fn(event) -> progress_key or
-    None` -- a `round` int, or the `(round, cycle_data_id)` tuple that sorts
-    across laps; compare with N via `<=`.
+    None`; compare with N via `<=`. Events outside the matched work return None,
+    which every call site already guards.
+
+    **`round` axis** (async_cifar10): `round` is dense, monotone and
+    self-verifying, so N stays `min(final_round)` and `prog_fn` stays the raw
+    `round` -- byte-identical to before.
+
+    **`data_id` axis** (fwdllm family): a max-key ceiling is unsound twice over.
+    The key isn't monotone (see `_verified_progress_order`), so `max()` returns
+    the FIRST bin of the last lap and `<= N` then admits the whole lap; and even
+    within a lap "both sides reached key K" does not mean they committed the same
+    BINS -- `felix_round` had 9 bins sim committed and real never did, sitting
+    under a budget the checker called matched, so `total_commits` compared two
+    different workloads and graded 4.7% as a pass. N is therefore the length of
+    the position-wise COMMON PREFIX of the two chronological commit sequences,
+    and `prog_fn` maps a bin to its 1-based ordinal in that prefix. Same bins,
+    same order, same count on both sides, by construction.
     """
     axis = "data_id" if "data_id" in (_progress_axis(real_agg_rounds),
                                       _progress_axis(sim_agg_rounds)) else "round"
     if axis == "round":
-        prog_fn = lambda e: e.get("round")
-    else:
-        prog_fn = lambda e: ((e.get("round") or 0, e.get("cycle_data_id"))
-                             if e.get("cycle_data_id") is not None else None)
-    real_p = [p for e in real_agg_rounds if (p := prog_fn(e)) is not None]
-    sim_p = [p for e in sim_agg_rounds if (p := prog_fn(e)) is not None]
-    if not real_p or not sim_p:
+        real_keys = _per_progress_last_event(real_agg_rounds, axis)
+        sim_keys = _per_progress_last_event(sim_agg_rounds, axis)
+        if not real_keys or not sim_keys:
+            return None, None
+        return min(max(real_keys), max(sim_keys)), (lambda e: e.get("round"))
+    real_seq = _verified_progress_order(real_agg_rounds, axis)
+    sim_seq = _verified_progress_order(sim_agg_rounds, axis)
+    common = []
+    for r_key, s_key in zip(real_seq, sim_seq):
+        if r_key != s_key:
+            break
+        common.append(r_key)
+    if not common:
         return None, None
-    return min(max(real_p), max(sim_p)), prog_fn
+    ordinal = {k: i + 1 for i, k in enumerate(common)}
+    prog_fn = lambda e: (ordinal.get((e.get("round") or 0, e.get("cycle_data_id")))
+                         if e.get("cycle_data_id") is not None else None)
+    return len(common), prog_fn
+
+
+_BUDGET_COVERAGE_MIN = 0.50      # below this the windowed rungs are not gradeable
+_BUDGET_COVERAGE_DEGRADED = 0.80  # below this they are stamped low-confidence
+
+
+def _matched_budget_coverage(real_agg_rounds: list, sim_agg_rounds: list) -> dict:
+    """How much of each run the matched budget actually grades, and WHY it stops.
+
+    8 of the 88 rungs window on `_matched_logical_budget` (`selection_detail`,
+    `utility`, `overlap_factor`, `total_commits`, `terminal_state`,
+    `v1_iter_per_data_id`, `v2_var_trajectory`, `v2b_var_drift`). They all share
+    this one primitive, so a budget that silently covers a third of the run would
+    make all 8 read as clean parity on a prefix. Report the fraction on every one
+    of them, and gate it here.
+
+    The slower side is always 100% covered — parity fixes the WORK and measures
+    the TIME (§D-4), so the faster side's overrun has no counterpart to compare
+    against and is dropped by construction. `min_coverage` is therefore
+    `1 / throughput_ratio`, and reading it as "the graded fraction" is exact.
+
+    `truncation` distinguishes two very different reasons the budget ends:
+    - `overrun` — benign: the common prefix is complete for the shorter side and
+      only the faster side's tail was dropped.
+    - `sequence_divergence` — a real defect: the two sides committed DIFFERENT
+      progress units at some position, so the prefix broke before either side ran
+      out. `first_divergence` names the position and both keys.
+    """
+    axis = "data_id" if "data_id" in (_progress_axis(real_agg_rounds),
+                                      _progress_axis(sim_agg_rounds)) else "round"
+    real_seq = _verified_progress_order(real_agg_rounds, axis)
+    sim_seq = _verified_progress_order(sim_agg_rounds, axis)
+    N, _ = _matched_logical_budget(real_agg_rounds, sim_agg_rounds)
+    if N is None:
+        return {"n": None, "min_coverage": None, "truncation": "no_budget"}
+    n = N if axis == "data_id" else sum(1 for k in real_seq if k <= N)
+    r_tot, s_tot = len(real_seq), len(sim_seq)
+    r_cov = n / r_tot if r_tot else 0.0
+    s_cov = n / s_tot if s_tot else 0.0
+    out = {
+        "n": n,
+        "real_units_total": r_tot, "sim_units_total": s_tot,
+        "real_coverage": round(r_cov, 4), "sim_coverage": round(s_cov, 4),
+        "min_coverage": round(min(r_cov, s_cov), 4),
+        "axis": axis,
+    }
+    if n >= min(r_tot, s_tot) and r_tot == s_tot:
+        out["truncation"] = "none"
+    elif n >= min(r_tot, s_tot):
+        out["truncation"] = "overrun"
+    else:
+        out["truncation"] = "sequence_divergence"
+        pos = n            # 0-based index of the first mismatch
+        out["first_divergence"] = {
+            "position": pos + 1,
+            "real_unit": _prog_json(real_seq[pos]) if pos < r_tot else None,
+            "sim_unit": _prog_json(sim_seq[pos]) if pos < s_tot else None,
+        }
+    return out
+
+
+def matched_budget_coverage_parity(real: dict, sim: dict,
+                                   min_coverage: float = _BUDGET_COVERAGE_MIN) -> dict:
+    """CONTROL [EXACT]: is the matched budget a sound basis for the 8 rungs that
+    window on it? Fails on a sequence divergence (the two sides did different
+    work) or when it grades less than `min_coverage` of a run. When this fails,
+    every windowed rung is DOWNSTREAM of it by construction — read it first."""
+    cov = _matched_budget_coverage(real["agg_rounds"], sim["agg_rounds"])
+    if cov.get("n") is None:
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "no matched logical budget — run too short to measure",
+                **cov}
+    diverged = cov["truncation"] == "sequence_divergence"
+    ok = not diverged and cov["min_coverage"] >= min_coverage
+    return {
+        "ok": ok,
+        "tier": "EXACT",
+        "min_coverage_tol": min_coverage,
+        "degraded_below": _BUDGET_COVERAGE_DEGRADED,
+        "degraded": cov["min_coverage"] < _BUDGET_COVERAGE_DEGRADED,
+        **cov,
+        "interpretation": (
+            f"{cov['n']} matched units grade {cov['real_coverage']:.1%} of real / "
+            f"{cov['sim_coverage']:.1%} of sim ({cov['truncation']}). The slower "
+            f"side is always 100% — min_coverage is 1/throughput_ratio. "
+            + ("A sequence divergence means the two sides committed DIFFERENT "
+               "units: a real defect, not a windowing artifact."
+               if diverged else
+               "Overrun truncation is expected and benign.")
+        ),
+    }
 
 
 def _time_to_progress(agg_rounds: list, prog_fn, N, time_fn) -> Optional[float]:
@@ -562,7 +942,9 @@ def _per_round_advances(agg_rounds: list, use_vclock: bool) -> list:
     """
     axis = _progress_axis(agg_rounds)
     by_round = _per_progress_last_event(agg_rounds, axis)
-    rounds_sorted = sorted(by_round.keys())
+    # Chronological, not key-sorted -- the `data_id` key is non-monotone across a
+    # lap boundary (_verified_progress_order).
+    rounds_sorted = _verified_progress_order(agg_rounds, axis)
     if len(rounds_sorted) < 2:
         return []
     # Real: prefer real's intrinsic algorithmic clock over raw wall ts.
@@ -775,7 +1157,8 @@ def eligible_speed_composition_parity(real: dict, sim: dict, ks_tol: float = 0.2
     }
 
 
-def selection_speed_bias_parity(real: dict, sim: dict, ks_tol: float = 0.20) -> dict:
+def selection_speed_bias_parity(real: dict, sim: dict, ks_tol: float = 0.20,
+                                bias_tol: float = 0.10) -> dict:
     """A2c [DIST]: does the selector pick the same SPEED mix from its pool?
 
     A2b (eligible_speed) checks the *pool* composition; this checks the *selected*
@@ -825,14 +1208,31 @@ def selection_speed_bias_parity(real: dict, sim: dict, ks_tol: float = 0.20) -> 
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no selected per_trainer speed/delay in selection telemetry"}
     ks = ks_stat(r_sel, s_sel)
-    ok = not math.isnan(ks) and ks <= ks_tol
 
     def _m(x):
         return round(sum(x) / len(x), 2) if x else None
 
+    # Grade the BIAS -- this rung's own named quantity -- not just the KS of the
+    # selected distribution. KS is nearly blind to a uniform shift (the same
+    # blindness `v2_var_trajectory` documents), and the shift is exactly the
+    # signal here: on `fedbuff_round` real selects at +0.19s off a 12.51s pool
+    # while sim selects at +2.62s, i.e. sim is speed-biased against its own pool
+    # and real is not -- with KS a clean 0.187. Both sides draw from an IDENTICAL
+    # pool (`real_pool_mean_s == sim_pool_mean_s`), so the bias difference is
+    # attributable to the selector, not the input.
+    r_bias = (_m(r_sel) - _m(r_pool)) if (r_sel and r_pool) else None
+    s_bias = (_m(s_sel) - _m(s_pool)) if (s_sel and s_pool) else None
+    pool_scale = max(abs(_m(r_pool) or 0.0), abs(_m(s_pool) or 0.0), 1e-9)
+    bias_rel = (abs(s_bias - r_bias) / pool_scale
+                if r_bias is not None and s_bias is not None else None)
+    ok = (not math.isnan(ks) and ks <= ks_tol
+          and (bias_rel is None or bias_rel <= bias_tol))
+
     return {
         "ok": ok, "tier": "DIST",
         "ks_stat": round(ks, 3) if not math.isnan(ks) else None, "ks_tol": ks_tol,
+        "bias_rel_diff": round(bias_rel, 4) if bias_rel is not None else None,
+        "bias_tol": bias_tol,
         "speed_source": "training_delay_s" if used_metadata else "observed_speed_s",
         "real_selected_mean_s": _m(r_sel), "sim_selected_mean_s": _m(s_sel),
         "real_pool_mean_s": _m(r_pool), "sim_pool_mean_s": _m(s_pool),
@@ -1108,14 +1508,28 @@ def selection_parity(real: dict, sim: dict, max_rounds: Optional[int] = None,
 
 def selection_detail_parity(real: dict, sim: dict,
                               tol_chosen: float = 0.05,
-                              tol_inflight: float = 0.15) -> dict:
+                              tol_inflight: float = 0.15,
+                              tol_n_selections: float = 0.05,
+                              volume_rel: Optional[float] = None) -> dict:
     """S3/S4 [DIST]: num_chosen, in_flight, effective_c mean parity across modes.
 
     num_chosen and in_flight are enforced (DIST); effective_c is diagnostic only.
+
+    Both sides are truncated to the matched LOGICAL budget N before any mean is
+    taken (§D-4). Selection events carry no `cycle_data_id`, so the cut is the
+    wall ts at which each side reached N (`_time_to_progress`, §F-26). Without
+    it, a side that ran past N contributes events the other never had a chance
+    to emit: felix_round real emitted 21 of its 22 in a lap-boundary re-draw
+    after passing N, reading "real 2.73 vs sim 30.0" where the two are in fact
+    identical inside the window (1 draw of 30 each) -- §D-17.
     """
-    def collect(sel_events):
+    def collect(sel_events, cutoff_ts):
         chosen, inflight, eff_c = [], [], []
         for e in sel_events:
+            if cutoff_ts is not None:
+                ts = e.get("ts")
+                if ts is not None and ts > cutoff_ts:
+                    continue
             nc = e.get("num_chosen")
             inf = e.get("in_flight")
             ec = e.get("effective_c")
@@ -1127,8 +1541,44 @@ def selection_detail_parity(real: dict, sim: dict,
                 eff_c.append(ec)
         return chosen, inflight, eff_c
 
-    r_ch, r_inf, r_ec = collect(real["selection_train"])
-    s_ch, s_inf, s_ec = collect(sim["selection_train"])
+    def repicks_per_round(sel_events, cutoff_ts):
+        """(n_repicks, n_rounds): ends picked twice inside ONE boundary re-draw.
+        `mean_chosen` averages a bimodal burst (one draw of c, then 1-end
+        top-ups), so it reports how many top-ups fired, not who they went to:
+        felix_round read 2.41 vs 2.73 while the defect was 35 picks for 30 slots
+        (§D-32). DIAGNOSTIC -- under event-driven reselection `round` never
+        advances, collapsing the run to one bucket where every legitimate
+        re-pick counts (fluxtune: 18k both sides), hence the >=2-round guard.
+        Gating wants the finer predicate -- re-pick while still in flight --
+        which needs in-flight state this rung lacks.
+        """
+        by_round = collections.defaultdict(list)
+        for e in sel_events:
+            if cutoff_ts is not None:
+                ts = e.get("ts")
+                if ts is not None and ts > cutoff_ts:
+                    continue
+            by_round[e.get("round")].extend(e.get("chosen") or [])
+        if len(by_round) < 2:
+            return None, len(by_round)
+        return (sum(len(p) - len(set(p)) for p in by_round.values()),
+                len(by_round))
+
+    r_cut = s_cut = None
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+    if N is not None:
+        ts_of = lambda e: e.get("ts")
+        r_cut = _time_to_progress(real["agg_rounds"], prog_fn, N, ts_of)
+        s_cut = _time_to_progress(sim["agg_rounds"], prog_fn, N, ts_of)
+
+    r_ch, r_inf, r_ec = collect(real["selection_train"], r_cut)
+    s_ch, s_inf, s_ec = collect(sim["selection_train"], s_cut)
+    # Never let the window itself empty a side out -- fall back to the full run
+    # so a missing/degenerate budget can't manufacture a pass.
+    if (not r_ch or not s_ch) and (r_cut is not None or s_cut is not None):
+        r_cut = s_cut = N = None
+        r_ch, r_inf, r_ec = collect(real["selection_train"], None)
+        s_ch, s_inf, s_ec = collect(sim["selection_train"], None)
     if not r_ch:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no num_chosen in selection telemetry"}
@@ -1147,10 +1597,34 @@ def selection_detail_parity(real: dict, sim: dict,
     rel_inflight = abs(r_inf_m - s_inf_m) / max(r_inf_m, s_inf_m, 1) if (
         not math.isnan(r_inf_m) and not math.isnan(s_inf_m)) else 0.0
 
+    # "Same rounds, same cohorts" is the contract, so the event COUNT is graded
+    # too, not just cohort size. Counted at matched work (above) so this grades
+    # the SELECTOR, not how far each side got (`throughput` owns that).
+    rel_events = (abs(len(r_ch) - len(s_ch)) / max(len(r_ch), len(s_ch))
+                  if max(len(r_ch), len(s_ch)) > 0 else 0.0)
+    # `rel_events` is usually `v1_iter_per_data_id`'s number, so it reports a
+    # sub-verdict and defers -- one measurement must not fail twice (§D-64).
+    # But "usually" is not "always": on `felix_round` it reads 18.5% against
+    # v1's 1.6%, i.e. 5 extra cohort re-draws over the SAME iteration volume.
+    # That excess is selector behaviour, not work volume, and deferring it
+    # graded it nowhere. So defer only the part v1 explains, and vote on the
+    # rest (§D-92). `volume_rel=None` keeps the old pure-deferral behaviour.
+    n_selections_ok = rel_events <= tol_n_selections
+    unexplained = (None if volume_rel is None
+                   else max(0.0, rel_events - abs(volume_rel)))
+    votes = unexplained is not None and unexplained > tol_n_selections
     ok = rel_chosen <= tol_chosen and rel_inflight <= tol_inflight
-    return {
+    if votes:
+        ok = ok and n_selections_ok
+    result = {
         "ok": ok,
         "tier": "DIST",
+        "rel_diff_n_selections": round(rel_events, 3),
+        "n_selections_ok": n_selections_ok,
+        "n_selections_unexplained_by_volume": (
+            None if unexplained is None else round(unexplained, 3)),
+        "n_selections_owned_by": (
+            None if votes else "v1_iter_per_data_id"),
         "real_mean_chosen": round(r_ch_m, 2) if not math.isnan(r_ch_m) else None,
         "sim_mean_chosen": round(s_ch_m, 2) if not math.isnan(s_ch_m) else None,
         "rel_diff_chosen": round(rel_chosen, 3),
@@ -1161,7 +1635,28 @@ def selection_detail_parity(real: dict, sim: dict,
         "sim_mean_effective_c": round(s_ec_m, 2) if not math.isnan(s_ec_m) else None,
         "tol_chosen": tol_chosen,
         "tol_inflight": tol_inflight,
+        "n_real_selections": len(r_ch),
+        "n_sim_selections": len(s_ch),
     }
+    r_rep, r_nr = repicks_per_round(real["selection_train"], r_cut)
+    s_rep, s_nr = repicks_per_round(sim["selection_train"], s_cut)
+    result["real_repicks_in_round"] = r_rep
+    result["sim_repicks_in_round"] = s_rep
+    result["repick_n_selection_rounds"] = {"real": r_nr, "sim": s_nr}
+    if r_rep is None or s_rep is None:
+        result["repick_note"] = ("event-driven reselection: `round` does not advance, "
+                                 "so a burst is indistinguishable from the run -- N/A")
+    elif s_rep != r_rep:
+        result["repick_note"] = ("re-picks inside one round-boundary re-draw DIVERGE "
+                                 "(real %d, sim %d) -- diagnostic, does not gate" % (r_rep, s_rep))
+    if N is not None:
+        result["matched_logical_budget_n"] = _prog_json(N)
+        # Full-run counts alongside the graded ones, so the window hides
+        # nothing: a gap here with matched-work agreement is progress, which
+        # `throughput` grades, not selection.
+        result["full_run_n_real_selections"] = len(real["selection_train"])
+        result["full_run_n_sim_selections"] = len(sim["selection_train"])
+    return result
 
 
 def inflight_residence_parity(real: dict, sim: dict,
@@ -1509,6 +2004,13 @@ def inter_arrival_order_parity(real: dict, sim: dict,
 
     For each FL round present in both, compute Spearman ρ between real and sim
     per-trainer arrival rank.  Mean ρ across rounds is the metric.
+
+    Read `n_rounds` WITH ρ: on the fwdllm family `round` is coarse, so a 7200s
+    run reaches round 2 and ρ means TWO buckets of ~12k arrivals -- exposed via
+    `bucket_sizes`/`underpowered` so 0.66 does not read as a well-powered fail.
+    `participation_parity` re-keys on event position for this; NOT copied here,
+    since per-cycle buckets would correlate two ~10-end sets already at their
+    independent-draw floor (§D-2), manufacturing a fail. Settle the unit first.
     """
     def arrival_ranks(agg_rounds):
         by_round: dict = {}
@@ -1540,6 +2042,9 @@ def inter_arrival_order_parity(real: dict, sim: dict,
         "mean_spearman_rho": round(mean_rho, 3) if not math.isnan(mean_rho) else None,
         "n_rounds": len(rhos),
         "min_rho": min_rho,
+        "bucket_sizes": {"real": [len(r_arr[rd]) for rd in common],
+                         "sim": [len(s_arr[rd]) for rd in common]},
+        "underpowered": len(rhos) < 4,
     }
 
 
@@ -1957,8 +2462,10 @@ def utility_parity(real: dict, sim: dict, max_ks: float = 0.2,
     }
     # Truncate both to the matched LOGICAL budget N (progress <= N), not a clock
     # window: utility evolves, so pooling unequal prefixes shifts the dist even at
-    # zero divergence (PARITY.md §1.5). Gated for sync; async diagnostic.
-    real_coord = _real_intrinsic_clock(real["agg_rounds"])
+    # zero divergence (PARITY.md §1.5, §D-4/§D-75).
+    #
+    # Gates on `_matched_logical_budget`, not `_real_intrinsic_clock` (sync-only) —
+    # the latter silently graded the full unmatched run for async.
     r_events = utility_events(real["agg_rounds"])
     s_events = utility_events(sim["agg_rounds"])
     N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
@@ -1975,9 +2482,10 @@ def utility_parity(real: dict, sim: dict, max_ks: float = 0.2,
             result["matched_window_n_real"] = len(matched_r_pool)
             result["matched_window_n_sim"] = len(matched_s_pool)
             result["matched_window_pooled_ks_stat"] = round(matched_pooled_ks, 3)
-            if real_coord is not None:
-                matched_pooled_ok = matched_pooled_ks <= max_ks
-                result["ok"] = matched_pooled_ok if gated else (matched_pooled_ok and per_trainer_ok)
+            result["decided_on"] = "matched_window_pooled_ks_stat"
+            matched_pooled_ok = matched_pooled_ks <= max_ks
+            result["ok"] = (matched_pooled_ok if gated
+                            else (matched_pooled_ok and per_trainer_ok))
     return result
 
 
@@ -2189,7 +2697,63 @@ def failsafe_ok(sim: dict, budget_s: Optional[float] = None,
     }
 
 
-def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
+# Shared tolerance for the throughput family (K2 `throughput`, K8 `terminal_state`,
+# U2 `total_commits`) -- all three report the same clock-per-unit-work signal and
+# must agree. Calibrated to the measured real<->real REPRODUCIBILITY floor, not
+# chosen: `expt_scripts/replicate_floor.py` puts same-seed same-config replicate
+# spread at 3.4-4.5% on committed bins (fedbuff_round/felix_round, 3600s), so the
+# historical 5% bar sat inside the pipeline's own noise and could fire on a run
+# nobody could ever make pass. 8% clears the floor with margin while still
+# catching real regressions.
+# Re-run replicate_floor.py after any change to scale, hardware or run length.
+# This is now the NOMINAL only: each rung's effective gate is floor-gated per
+# baseline on the quantity it actually grades (a time ratio, not committed bins).
+_THROUGHPUT_FAMILY_TOL_REL = 0.08
+
+
+#: How many same-seed replicate spreads a residual must exceed to count as
+#: signal, and the tightest tolerance we will ever derive. Below ~2% these
+#: run-level means are quantization, not measurement.
+_FLOOR_TOL_K = 3.0
+_FLOOR_TOL_MIN_ABS = 0.02
+
+
+def floor_gated_tol(nominal: float, floor_rel: Optional[float],
+                    k: float = _FLOOR_TOL_K,
+                    min_abs: float = _FLOOR_TOL_MIN_ABS,
+                    loosen_cap: Optional[float] = None) -> tuple:
+    """Size a DIST tolerance against the baseline's measured replicate floor.
+
+    A tolerance far ABOVE the floor passes real divergences (a 15% gate over a
+    0.6% floor let a 5.4% gap read green); one BELOW it grades noise, and no code
+    change can ever close it (§D-24). So: tighten toward the floor but never past
+    `min_abs`, never loosen past the nominal, and refuse to grade at all once the
+    floor has swallowed the tolerance — an honest SKIP, not a coin-flip verdict.
+
+    Returns `(effective_tol, ungradeable_reason_or_None)`. No floor measured =>
+    nominal, unchanged: this can only ever tighten a rung that has evidence.
+    """
+    if floor_rel is None:
+        return nominal, None
+    if loosen_cap:
+        # `loosen_cap` opts a rung into WIDENING when its floor has caught up with
+        # a nominal that was never calibrated (v2: 1.9% floor, 2.0% nominal). A
+        # loose gate still catches a large regression; a SKIP catches nothing. The
+        # cap is what stops a degrading sim from widening its own gate without
+        # bound, so it is deliberately small.
+        eff = max(nominal, min(k * floor_rel, loosen_cap * nominal))
+        if floor_rel >= eff:
+            return eff, (f"replicate floor {floor_rel:.1%} >= tolerance "
+                         f"{eff:.1%} even after loosening; grades noise")
+        return eff, None
+    if floor_rel >= nominal:
+        return nominal, (f"replicate floor {floor_rel:.1%} >= tolerance "
+                         f"{nominal:.1%}; a verdict here grades noise")
+    return min(nominal, max(k * floor_rel, min_abs)), None
+
+
+def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY_TOL_REL,
+                      same_mode: bool = False) -> dict:
     """K2 [EXACT]: rounds-per-virtual-second parity.
 
     sim_throughput  = total_sim_rounds / final_vclock_sim
@@ -2198,17 +2762,23 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     On the motivating Felix run (410 vs 673 rounds in the same 3 h budget)
     rel_diff ≈ 40% → FAIL.
 
-    Tolerance 5%: the throughput family — K2 (this mechanism), K8 (rounds at
-    matched V), U2 (commits at matched V) — all measure the same rounds-per-virtual-time
-    signal and share ONE tolerance, set here. Tightened 10%->5% deliberately as the
-    throughput-fidelity bar. U2 == K8 == K2 on the identical quantity, so they must agree.
+    The throughput family — K2 (this mechanism), K8 (rounds at matched V), U2
+    (commits at matched V) — all measure the same rounds-per-virtual-time signal
+    and share ONE tolerance, `_THROUGHPUT_FAMILY_TOL_REL` (see its comment for the
+    replicate-floor calibration). U2 == K8 == K2 on the identical quantity, so
+    they must agree.
+
+    `same_mode` grades a second REAL leg as the B side, on real's own clock: the
+    rung cannot be controlled real↔real (§D-56) but its quantity is measurable
+    across replicates, which is where its floor comes from (§D-72).
     """
-    sim_vclock_vals = [e.get("vclock_now") for e in sim["agg_rounds"]
-                       if e.get("vclock_now") is not None]
-    if not sim_vclock_vals:
+    _b_time_fn, final_vclock = _algorithmic_clock(
+        sim["agg_rounds"], _b_uses_vclock(sim["agg_rounds"], same_mode))
+    if _b_time_fn is None:
         return {"ok": False, "tier": "EXACT",
-                "note": "K10: no vclock_now in sim agg_round events — cannot compute throughput"}
-    final_vclock = max(sim_vclock_vals)
+                "note": ("no usable clock in the B-side agg_round events"
+                         if same_mode else
+                         "K10: no vclock_now in sim agg_round events — cannot compute throughput")}
     # Progress-axis re-key: count units on the axis the run advances -- `round`
     # for normal FL, committed `data_id` for fwdllm (else n_rounds==1).
     axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
@@ -2220,16 +2790,13 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     # REAL denominator is real's genuine algorithmic time -- total intrinsic span
     # (barrier+fedavg+eval) when emitted, else wall ts span (async byte-identical).
     # Excludes real's inter-round transport artifact so rounds-per-genuine-second
-    # compares like-for-like vs the sim's rounds-per-vclock-second.
-    real_coord = _real_intrinsic_clock(real["agg_rounds"])
-    if real_coord is not None:
-        wall_elapsed = max(real_coord.values()) if real_coord else 0.0
-    else:
-        real_ts = [e["ts"] for e in real["agg_rounds"] if e.get("ts") is not None]
-        if not real_ts or len(real_ts) < 2:
-            return {"ok": True, "tier": "EXACT", "status": "SKIP",
-                    "note": "insufficient real ts data (< 2 agg_round events)"}
-        wall_elapsed = max(real_ts) - min(real_ts)
+    # compares like-for-like vs the sim's rounds-per-vclock-second. A leg carrying
+    # a vclock reads THAT, so a sim↔sim control compares two virtual clocks.
+    _a_time_fn, wall_elapsed = _algorithmic_clock(real["agg_rounds"],
+                                                  _has_vclock(real["agg_rounds"]))
+    if _a_time_fn is None:
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "insufficient real ts data (< 2 agg_round events)"}
     real_by_round = _per_progress_last_event(real["agg_rounds"], axis)
     n_real_rounds = len(real_by_round)
     real_throughput = n_real_rounds / wall_elapsed if wall_elapsed > 0 else 0.0
@@ -2243,6 +2810,10 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     result = {
         "ok": rel_diff <= tol_rel,
         "tier": "EXACT",
+        # WHICH field the verdict used: the branch below switches it by baseline,
+        # and a floor read off the other grades a window this rung never decided
+        # on (§D-71). `replicate_floor` reads this key.
+        "decided_on": "rel_diff",
         "sim_rounds": n_sim_rounds,
         "real_rounds": n_real_rounds,
         "final_vclock_s": round(final_vclock, 1),
@@ -2252,29 +2823,46 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
         "rel_diff": round(rel_diff, 3),
         "tol": tol_rel,
     }
-    # sim_s_per_round averages sim's FULL round count, which legitimately outruns
-    # real's wall-capped one (sim skips real's transport tax). Matched window
-    # fixes that and gates `ok` when `real_coord` is available (sync baselines);
-    # falls back to raw `rel_diff` for async.
+    # Grade the SAME work on both sides. Each side's own full run is a different
+    # window: per-unit time RISES 2.1-2.7x from first to last quintile, so real's
+    # extra tail units -- the expensive ones sim never reached -- were inflating
+    # its mean and understating the residual (fedbuff_round 0.024 -> 0.080).
+    # §D-4/§F-2, the rule `terminal_state` already followed (§D-75).
     matched_n = min(n_sim_rounds, n_real_rounds)
     if matched_n >= 2:
-        sim_adv = _per_round_advances(sim["agg_rounds"], use_vclock=True)[: matched_n - 1]
-        if sim_adv:
-            matched_sim_s_per_round = sum(sim_adv) / len(sim_adv)
-            matched_rel_diff = (
-                abs(matched_sim_s_per_round - real_s_per_round)
-                / max(matched_sim_s_per_round, real_s_per_round, 1e-9))
-            result["matched_window_n"] = len(sim_adv)
-            result["matched_window_sim_s_per_round"] = round(matched_sim_s_per_round, 2)
+        real_adv = _per_round_advances(
+            real["agg_rounds"],
+            use_vclock=_has_vclock(real["agg_rounds"]))[: matched_n - 1]
+        sim_adv = _per_round_advances(
+            sim["agg_rounds"],
+            use_vclock=_b_uses_vclock(sim["agg_rounds"], same_mode))[: matched_n - 1]
+        if real_adv and sim_adv:
+            r_mean = sum(real_adv) / len(real_adv)
+            s_mean = sum(sim_adv) / len(sim_adv)
+            matched_rel_diff = abs(s_mean - r_mean) / max(s_mean, r_mean, 1e-9)
+            result["matched_window_n"] = min(len(real_adv), len(sim_adv))
+            result["matched_window_real_s_per_round"] = round(r_mean, 2)
+            result["matched_window_sim_s_per_round"] = round(s_mean, 2)
             result["matched_window_rel_diff"] = round(matched_rel_diff, 3)
-            if real_coord is not None:
-                result["ok"] = matched_rel_diff <= tol_rel
+            # Per-unit time is right-skewed AND trending, so no single summary
+            # states the shape: sim can match real's MEDIAN to 1.0% and still run
+            # a 27.4% heavier p90 (fedbuff_it_oracular). Reported, NOT gated --
+            # a tail has no replicate floor yet, and a hand-typed one is the
+            # mistake this family just finished undoing (§D-55/§D-74).
+            def _pc(q):
+                rq, sq = percentile(real_adv, q), percentile(sim_adv, q)
+                return {"real": round(rq, 2), "sim": round(sq, 2),
+                        "rel_diff": round(abs(sq - rq) / max(rq, sq, 1e-9), 3)}
+            result["per_unit_s"] = {f"p{q}": _pc(q) for q in (50, 90, 99)}
+            result["ok"] = matched_rel_diff <= tol_rel
+            result["decided_on"] = "matched_window_rel_diff"
     return result
 
 
 def per_round_advance_parity(real: dict, sim: dict,
                               ks_tol: float = 0.2,
-                              mean_tol_rel: float = 0.15) -> dict:
+                              mean_tol_rel: float = 0.15,
+                              same_mode: bool = False) -> dict:
     """K3 [EXACT]: per-round virtual-advance distribution parity.
 
     sim Δvclock/round vs real Δwall/round — KS ≤ 0.2 AND mean diff ≤ 15%.
@@ -2289,13 +2877,21 @@ def per_round_advance_parity(real: dict, sim: dict,
     them; the mean-diff guard (≤ ``mean_tol_rel``) still catches a genuine advance
     divergence (felix sim 2.25 vs real 4.02 fails on the mean regardless). Raw KS
     kept as a diagnostic.
+
+    **Each side reads its OWN clock** (§D-73). The A side was hardcoded to wall, so
+    a sim↔sim control compared one leg's process wall against the other's vclock —
+    sim's wall runs ~3.4x its vclock, which read as a 64-74% "advance divergence"
+    on every config-identical sim pair and made this rung look uncalibrated.
+    `same_mode` additionally lets the B side fall back to wall, so a real↔real pair
+    is readable rather than a SKIP (§D-72).
     """
-    sim_adv = _per_round_advances(sim["agg_rounds"], use_vclock=True)
-    real_adv = _per_round_advances(real["agg_rounds"], use_vclock=False)
+    _a_vclock, _b_vclock = pair_clocks(real, sim, same_mode)
+    sim_adv = _per_round_advances(sim["agg_rounds"], use_vclock=_b_vclock)
+    real_adv = _per_round_advances(real["agg_rounds"], use_vclock=_a_vclock)
     if not sim_adv:
-        has_vclock = any(e.get("vclock_now") is not None for e in sim["agg_rounds"])
-        note = ("K10: no vclock_now advances in sim agg_round events" if not has_vclock
-                else "fewer than 2 sim rounds — run too short to measure advances")
+        note = ("fewer than 2 B-side units — run too short to measure advances"
+                if same_mode or _has_vclock(sim["agg_rounds"]) else
+                "K10: no vclock_now advances in sim agg_round events")
         return {"ok": True, "tier": "EXACT", "status": "SKIP", "note": note}
     if not real_adv:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
@@ -2320,9 +2916,8 @@ def per_round_advance_parity(real: dict, sim: dict,
         "n_real_rounds": len(real_adv),
     }
     # Same population-mismatch rationale as throughput_parity's matched_window_*.
-    # Gates `ok` when `real_coord` is available (sync baselines); falls back to
-    # raw grid_ks/mean for async.
-    real_coord = _real_intrinsic_clock(real["agg_rounds"])
+    # The override used to be gated on `_real_intrinsic_clock`, a SYNC-only wall
+    # coordinate `matched_n` never reads, so async graded the full run (§D-84).
     matched_n = min(len(sim_adv), len(real_adv))
     if matched_n >= 2:
         matched_sim = sim_adv[:matched_n]
@@ -2344,54 +2939,56 @@ def per_round_advance_parity(real: dict, sim: dict,
         if ratios:
             result["matched_window_ratio_median"] = round(ratio_med, 3)
             result["matched_window_ratio_max"] = round(max(ratios), 3)
-        if real_coord is not None:
-            # Central-tendency escape (§F: tolerate the tail on a matched central
-            # distribution). sim's per-round Δvclock is whole-second quantized
-            # while real's Δwall spreads continuously, so grid-KS can still trip
-            # on the shape (a cold round-1 GPU tail, matched_window_ratio_max ~5x)
-            # even when the mean AND the per-round ratio MEDIAN both match. Pass
-            # on the strict grid-KS gate OR on matched mean + ratio-median both
-            # within band -- the latter is what "same throughput, blips aside"
-            # means. A genuine advance divergence moves the median/mean and fails.
-            central_ok = (ratio_med is not None
-                          and abs(ratio_med - 1.0) <= mean_tol_rel
-                          and matched_mean_rel_diff <= mean_tol_rel)
-            result["central_escape_ok"] = central_ok
-            result["ok"] = ((matched_grid_ks <= ks_tol
-                             and matched_mean_rel_diff <= mean_tol_rel)
-                            or central_ok)
+        # Central-tendency escape (§F: tolerate the tail on a matched central
+        # distribution). sim's per-round Δvclock is whole-second quantized
+        # while real's Δwall spreads continuously, so grid-KS can still trip
+        # on the shape (a cold round-1 GPU tail, matched_window_ratio_max ~5x)
+        # even when the mean AND the per-round ratio MEDIAN both match. Pass
+        # on the strict grid-KS gate OR on matched mean + ratio-median both
+        # within band -- the latter is what "same throughput, blips aside"
+        # means. A genuine advance divergence moves the median/mean and fails.
+        central_ok = (ratio_med is not None
+                      and abs(ratio_med - 1.0) <= mean_tol_rel
+                      and matched_mean_rel_diff <= mean_tol_rel)
+        result["central_escape_ok"] = central_ok
+        result["ok"] = ((matched_grid_ks <= ks_tol
+                         and matched_mean_rel_diff <= mean_tol_rel)
+                        or central_ok)
     return result
 
 
-def wall_disparity(real: dict, sim: dict) -> dict:
+def wall_disparity(real: dict, sim: dict, same_mode: bool = False) -> dict:
     """wall_disparity [DIAG]: |real_genuine − sim_vclock| per matched progress
     unit -- the sanity metric to drive to ~0, surfaced every run without gating.
     Real's coordinate is the cumulative intrinsic span (barrier+fedavg+eval) when
     ``intrinsic_span_s`` is emitted -- NOT raw wall, which bundles the inter-round
     transport artifact the sim omits (chasing real's full wall would over-charge
     the vclock). Falls back to wall ts for async (byte-identical). Both clocks
-    cumulative from the first matched unit. Keyed on the progress axis. Never fails."""
+    cumulative from the first matched unit. Keyed on the progress axis. Never fails.
+
+    Each side on its own clock (`pair_clocks`): DIAG, but "the sanity metric to
+    drive to ~0" reading a leg's own speedup ratio on a control pair is the
+    opposite of a sanity metric."""
     axis = "data_id" if "data_id" in (_progress_axis(sim["agg_rounds"]),
                                        _progress_axis(real["agg_rounds"])) else "round"
     real_by = _per_progress_last_event(real["agg_rounds"], axis)
     sim_by = _per_progress_last_event(sim["agg_rounds"], axis)
-    # Real: genuine algorithmic clock when emitted, else raw wall ts.
-    real_coord = _real_intrinsic_clock(real["agg_rounds"])
-    _real_t = ((lambda e: real_coord.get(id(e))) if real_coord is not None
-               else (lambda e: e.get("ts")))
+    _a_vclock, _b_vclock = pair_clocks(real, sim, same_mode)
+    _real_t = _side_clock_fn(real["agg_rounds"], _a_vclock)
+    _sim_t = _side_clock_fn(sim["agg_rounds"], _b_vclock)
     matched = [k for k in sorted(set(real_by) & set(sim_by))
                if _real_t(real_by[k]) is not None
-               and sim_by[k].get("vclock_now") is not None]
+               and _sim_t(sim_by[k]) is not None]
     if len(matched) < 2:
         return {"ok": True, "tier": "DIAG", "status": "SKIP",
                 "note": "fewer than 2 matched units with both real time and "
                         "sim vclock_now"}
     ts0 = _real_t(real_by[matched[0]])
-    v0 = sim_by[matched[0]]["vclock_now"]
+    v0 = _sim_t(sim_by[matched[0]])
     residuals, per_unit = [], {}
     for k in matched:
         real_genuine = _real_t(real_by[k]) - ts0
-        sim_vclock = sim_by[k]["vclock_now"] - v0
+        sim_vclock = _sim_t(sim_by[k]) - v0
         resid = abs(real_genuine - sim_vclock)
         residuals.append(resid)
         # JSON-safe key: axis=="data_id" keys on (round, data_id) tuples, which
@@ -2402,7 +2999,9 @@ def wall_disparity(real: dict, sim: dict) -> dict:
         "ok": True,  # DIAG: informational, never gates the ladder
         "tier": "DIAG",
         "axis": axis,
-        "anchor": "intrinsic_span" if real_coord is not None else "wall_ts",
+        "anchor": ("vclock" if _a_vclock else
+                   "intrinsic_span" if _real_intrinsic_clock(real["agg_rounds"])
+                   else "wall_ts"),
         "mean_abs_disparity_s": round(mean_resid, 2),
         "max_abs_disparity_s": round(max(residuals), 2),
         "n_matched_units": len(residuals),
@@ -2461,58 +3060,98 @@ def sim_speedup(real: dict, sim: dict, min_rate: float = 0.98) -> dict:
     }
 
 
-def overlap_factor(real: dict, sim: dict, tol: float = 0.3) -> dict:
-    """K4 [DIAG]: async overlap factor diagnostic.
+def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
+                   tol_rel: float = 0.10, same_mode: bool = False) -> dict:
+    """K4 [MECHANISM/EXACT]: async pipelining depth — how many cycles' worth of
+    trainer compute each mode keeps in flight per unit of its own clock.
 
-    overlap = mean(max_trainer_speed) / mean(per_round_advance).
-    Real ≈ 1.8 (healthy async overlap); sim ≈ 1.06 (no inter-round overlap).
-    FAIL if |sim_overlap - real_overlap| > 0.3 — localizes the bug to
-    "sim does not model inter-round overlap".
+    ``overlap = mean(per-cycle barrier) / (clock span / cycles)`` per side, over
+    the matched logical budget. The barrier is `intrinsic_span_s` (the slowest
+    committed trainer of THAT cycle, emitted in both modes); the denominator is
+    that mode's own clock — real's wall, sim's vclock. 1.0 = fully serial, higher
+    = deeper async pipelining.
+
+    **This is the localizing rung for a throughput residual with matched cadence.**
+    `throughput`/`per_round_advance`/`overhead_residual` all report the same
+    clock-per-unit-work number, so they cannot say WHY it differs. Splitting it
+    against the barrier can: identical trainer speeds + identical cycles-per-bin
+    + a lower sim overlap means sim serializes work real pipelines, and no vclock
+    charge will fix it (charging more moves sim the wrong way). `fluxtune` reads
+    real 5.09 vs sim 3.93 while `fedbuff_round` (4.97/5.03) and `felix_round`
+    (4.94/4.87) sit at parity — the same throughput symptom, disjoint roots (§D-16).
+
+    Promoted from DIAG: as a DIAG on `_per_round_max_speed` it was inert twice
+    over — ungated, and its numerator collapsed to the run-global max trainer on
+    the `data_id` axis (see `_per_cycle_barrier_s`), making both sides read an
+    identical constant so the rung just restated `per_round_advance`.
+
+    Passes on an absolute band (`tol`, the historical async_cifar10 bar) OR a
+    relative one (`tol_rel`) — the factor is ~1.2 on async_cifar10 and ~5 on
+    fwdllm, so neither band alone is scale-appropriate for both.
     """
-    sim_adv = _per_round_advances(sim["agg_rounds"], use_vclock=True)
-    real_adv = _per_round_advances(real["agg_rounds"], use_vclock=False)
-    sim_speeds = _per_round_max_speed(sim["agg_rounds"])
-    real_speeds = _per_round_max_speed(real["agg_rounds"])
-    if not sim_adv or not real_adv:
-        return {"ok": True, "tier": "DIAG", "status": "SKIP",
-                "note": "insufficient advance data (K10 may be blocking)"}
-    sim_mean_adv = sum(sim_adv) / len(sim_adv)
-    real_mean_adv = sum(real_adv) / len(real_adv)
-    sim_mean_speed = (sum(sim_speeds.values()) / len(sim_speeds)
-                      if sim_speeds else float("nan"))
-    real_mean_speed = (sum(real_speeds.values()) / len(real_speeds)
-                       if real_speeds else float("nan"))
-    if sim_mean_adv == 0 or real_mean_adv == 0:
-        return {"ok": False, "tier": "DIAG", "note": "zero advance in one mode"}
-    sim_ov = sim_mean_speed / sim_mean_adv if not math.isnan(sim_mean_speed) else float("nan")
-    real_ov = real_mean_speed / real_mean_adv if not math.isnan(real_mean_speed) else float("nan")
-    if math.isnan(sim_ov) or math.isnan(real_ov):
-        return {"ok": True, "tier": "DIAG", "status": "SKIP",
-                "note": "no trainer_speed_s telemetry"}
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+
+    def side(agg_rounds: list, time_fn) -> Optional[dict]:
+        evs = [e for e in agg_rounds if e.get("event") in (None, "agg_round")]
+        if N is not None:
+            windowed = [e for e in evs
+                        if (p := prog_fn(e)) is not None and p <= N]
+            if windowed:
+                evs = windowed
+        barriers = _per_cycle_barrier_s(evs)
+        times = [t for e in evs if (t := time_fn(e)) is not None]
+        if not barriers or len(times) < 2:
+            return None
+        span = max(times) - min(times)
+        if span <= 0:
+            return None
+        adv = span / len(evs)
+        return {"barrier": sum(barriers) / len(barriers), "adv": adv,
+                "cycles": len(evs), "span": span}
+
+    # Each side on its OWN clock (§D-73): a leg carrying a vclock reads THAT, so a
+    # sim↔sim control compares two virtual clocks instead of one leg's process wall
+    # against the other's vclock. `same_mode` lets the B side fall back to wall so a
+    # real↔real pair is readable (§D-72).
+    _a_vclock, _b_vclock = pair_clocks(real, sim, same_mode)
+    r = side(real["agg_rounds"], _side_clock_fn(real["agg_rounds"], _a_vclock))
+    s = side(sim["agg_rounds"], _side_clock_fn(sim["agg_rounds"], _b_vclock))
+    if r is None or s is None:
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "insufficient barrier/clock data (K10 may be blocking)"}
+    real_ov = r["barrier"] / r["adv"]
+    sim_ov = s["barrier"] / s["adv"]
     abs_diff = abs(sim_ov - real_ov)
-    ok = abs_diff <= tol
+    rel_diff = abs_diff / max(sim_ov, real_ov, 1e-9)
     return {
-        "ok": ok,
-        "tier": "DIAG",
+        "ok": abs_diff <= tol or rel_diff <= tol_rel,
+        "tier": "EXACT",
         "sim_overlap_factor": round(sim_ov, 3),
         "real_overlap_factor": round(real_ov, 3),
         "abs_diff": round(abs_diff, 3),
+        "rel_diff": round(rel_diff, 3),
         "tol": tol,
-        "sim_mean_speed_s": round(sim_mean_speed, 2) if not math.isnan(sim_mean_speed) else None,
-        "real_mean_speed_s": round(real_mean_speed, 2) if not math.isnan(real_mean_speed) else None,
-        "sim_mean_advance_s": round(sim_mean_adv, 2),
-        "real_mean_advance_s": round(real_mean_adv, 2),
+        "tol_rel": tol_rel,
+        "matched_logical_budget_n": _prog_json(N) if N is not None else None,
+        "sim_mean_barrier_s": round(s["barrier"], 2),
+        "real_mean_barrier_s": round(r["barrier"], 2),
+        "sim_mean_advance_s": round(s["adv"], 3),
+        "real_mean_advance_s": round(r["adv"], 3),
+        "sim_cycles": s["cycles"],
+        "real_cycles": r["cycles"],
         "interpretation": (
-            f"sim: {sim_mean_speed:.1f}s speed / {sim_mean_adv:.1f}s advance = "
-            f"{sim_ov:.2f}x overlap; "
-            f"real: {real_mean_speed:.1f}s speed / {real_mean_adv:.1f}s advance = "
-            f"{real_ov:.2f}x overlap. "
-            f"1.0 = no inter-round overlap; higher = more async pipelining."
+            f"sim: {s['barrier']:.1f}s barrier / {s['adv']:.2f}s per-cycle clock = "
+            f"{sim_ov:.2f}x in flight; "
+            f"real: {r['barrier']:.1f}s barrier / {r['adv']:.2f}s per-cycle clock = "
+            f"{real_ov:.2f}x. 1.0 = fully serial; a sim deficit means sim "
+            f"serializes work real pipelines (not a missing vclock charge)."
         ),
     }
 
 
-def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
+def total_commits_parity(real: dict, sim: dict,
+                         tol_rel: float = _THROUGHPUT_FAMILY_TOL_REL,
+                         same_mode: bool = False) -> dict:
     """U2 [EXACT]: virtual TIME to reach the matched LOGICAL budget N.
 
     At a fixed logical budget N (min committed data_ids / FL rounds both sides
@@ -2522,28 +3161,28 @@ def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
     clock-parity deliverable directly instead of counting work at a clock
     window V that conflates the two clocks (PARITY.md §1.5). Kept as the
     commit-level cross-check of the K2 rate mechanism.
+
+    ⚠ This is `terminal_state`'s time half, computed identically — same N, same
+    clocks, same `rel_diff`. It reports, it does not gate: its verdict lives once,
+    on `terminal_state` (`_WARN_ONLY_CHECKS`, §D-64). `same_mode` as in K2.
     """
-    if not any(e.get("vclock_now") is not None for e in sim["agg_rounds"]):
+    real_time_fn, _ = _algorithmic_clock(real["agg_rounds"],
+                                         _has_vclock(real["agg_rounds"]))
+    sim_time_fn, _ = _algorithmic_clock(
+        sim["agg_rounds"], _b_uses_vclock(sim["agg_rounds"], same_mode))
+    if sim_time_fn is None:
         return {"ok": False, "tier": "EXACT",
-                "note": "K10: no vclock_now in sim events"}
-    real_ts = [e["ts"] for e in real["agg_rounds"] if e.get("ts") is not None]
-    if not real_ts:
-        return {"ok": False, "tier": "EXACT", "note": "no ts in real events"}
+                "note": ("no usable clock in the B-side events" if same_mode
+                         else "K10: no vclock_now in sim events")}
+    if real_time_fn is None:
+        return {"ok": False, "tier": "EXACT",
+                "note": "no usable clock in real events (needs >= 2 timestamps)"}
     N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
     if N is None:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "no matched logical budget — run too short to measure"}
-    # REAL time = genuine algorithmic clock (cumulative intrinsic span) when
-    # emitted, else raw 0-based wall ts (async byte-identical). SIM time = vclock.
-    real_coord = _real_intrinsic_clock(real["agg_rounds"])
-    real_t0 = min(real_ts)
-    if real_coord is not None:
-        real_time_fn = lambda e: real_coord.get(id(e))
-    else:
-        real_time_fn = lambda e: (e["ts"] - real_t0) if e.get("ts") is not None else None
     real_t = _time_to_progress(real["agg_rounds"], prog_fn, N, real_time_fn)
-    sim_t = _time_to_progress(sim["agg_rounds"], prog_fn, N,
-                              lambda e: e.get("vclock_now"))
+    sim_t = _time_to_progress(sim["agg_rounds"], prog_fn, N, sim_time_fn)
     if not real_t or not sim_t or max(real_t, sim_t) <= 0:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "zero time-to-N in one mode — run too short to measure"}
@@ -2561,8 +3200,9 @@ def total_commits_parity(real: dict, sim: dict, tol_rel: float = 0.05) -> dict:
 
 
 def terminal_state_parity(real: dict, sim: dict,
-                           rounds_tol: float = 0.05,
-                           trainers_tol: float = 0.05) -> dict:
+                           time_tol: float = _THROUGHPUT_FAMILY_TOL_REL,
+                           trainers_tol: float = 0.05,
+                           same_mode: bool = False) -> dict:
     """K8 [EXACT]: at the matched LOGICAL budget N, do the modes agree on the
     virtual TIME to reach N and on the set of unique contributing trainers?
 
@@ -2571,29 +3211,31 @@ def terminal_state_parity(real: dict, sim: dict,
     algorithmic-time-to-N vs sim's vclock-to-N (rel_diff ≤ 5%, = K2/U2). The
     trainer dimension stays a genuine count -- the unique trainers contributing
     across the first N units can diverge even at matched N. Graded on the progress
-    axis, never a clock window V (PARITY.md §1.5). `rounds_tol` bounds the time.
+    axis, never a clock window V (PARITY.md §1.5).
+
+    Both bounds are floor-gated: real's own time-to-N spread reaches 6.7% between
+    same-code replicate legs (13.6% pooled across code versions) and its
+    trainers-at-N 1.9%, against 8%/5% nominals nothing had ever measured (§D-72).
+    `same_mode` as in K2 — it is what measures those floors.
     """
-    if not any(e.get("vclock_now") is not None for e in sim["agg_rounds"]):
+    real_time_fn, _ = _algorithmic_clock(real["agg_rounds"],
+                                         _has_vclock(real["agg_rounds"]))
+    sim_time_fn, _ = _algorithmic_clock(
+        sim["agg_rounds"], _b_uses_vclock(sim["agg_rounds"], same_mode))
+    if sim_time_fn is None:
         return {"ok": False, "tier": "EXACT",
-                "note": "K10: no vclock_now in sim events — cannot compute terminal state parity"}
-    real_ts_all = [e["ts"] for e in real["agg_rounds"] if e.get("ts") is not None]
-    if not real_ts_all:
-        return {"ok": False, "tier": "EXACT", "note": "no ts in real events"}
+                "note": ("no usable clock in the B-side events" if same_mode else
+                         "K10: no vclock_now in sim events — cannot compute "
+                         "terminal state parity")}
+    if real_time_fn is None:
+        return {"ok": False, "tier": "EXACT",
+                "note": "no usable clock in real events (needs >= 2 timestamps)"}
     N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
     if N is None:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "no matched logical budget — run too short to measure"}
-    # REAL time = genuine algorithmic clock (cumulative intrinsic span) when
-    # emitted, else raw 0-based wall ts. SIM time = vclock.
-    real_coord = _real_intrinsic_clock(real["agg_rounds"])
-    real_t0 = min(real_ts_all)
-    if real_coord is not None:
-        real_time_fn = lambda e: real_coord.get(id(e))
-    else:
-        real_time_fn = lambda e: (e["ts"] - real_t0) if e.get("ts") is not None else None
     real_t = _time_to_progress(real["agg_rounds"], prog_fn, N, real_time_fn)
-    sim_t = _time_to_progress(sim["agg_rounds"], prog_fn, N,
-                              lambda e: e.get("vclock_now"))
+    sim_t = _time_to_progress(sim["agg_rounds"], prog_fn, N, sim_time_fn)
 
     def _trainers(agg_rounds):
         ts = set()
@@ -2611,7 +3253,7 @@ def terminal_state_parity(real: dict, sim: dict,
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "zero time-to-N in one mode — run too short to measure"}
     time_rel_diff = abs(sim_t - real_t) / max(sim_t, real_t)
-    ok = time_rel_diff <= rounds_tol and trainers_rel_diff <= trainers_tol
+    ok = time_rel_diff <= time_tol and trainers_rel_diff <= trainers_tol
     return {
         "ok": ok,
         "tier": "EXACT",
@@ -2619,7 +3261,7 @@ def terminal_state_parity(real: dict, sim: dict,
         "sim_vclock_to_n_s": round(sim_t, 1),
         "real_time_to_n_s": round(real_t, 1),
         "time_rel_diff": round(time_rel_diff, 3),
-        "time_tol": rounds_tol,
+        "time_tol": time_tol,
         "sim_trainers_at_n": n_st,
         "real_trainers_at_n": n_rt,
         "trainers_rel_diff": round(trainers_rel_diff, 3),
@@ -2917,13 +3559,17 @@ def field_coverage(real_agg: dict, sim_agg: dict,
 # §3.1  Clock-model decomposition  (K3a / K3b)  — Stage 1
 # ═══════════════════════════════════════════════════════════════════
 
-def modeled_compute_advance(real: dict, sim: dict) -> dict:
+def modeled_compute_advance(real: dict, sim: dict, same_mode: bool = False) -> dict:
     """K3a [DIAG]: per-mode, compare per-round advance to per-round max
     committed trainer_speed_s (the modeled *compute* component).
 
     advance − max_speed = the implied per-round overhead (real) or
     overlap/overhead net (sim).  Reporting both modes side-by-side isolates
     whether the gap K3/K2 see is compute-formula vs overhead vs overlap.
+
+    Each side on its own clock (`pair_clocks`): DIAG, but a control pair reporting
+    one sim leg's wall as "real_mean_advance_s" is a misleading number, not a
+    harmless one.
     """
     def _stats(agg: dict, use_vclock: bool):
         adv = _per_round_advances(agg["agg_rounds"], use_vclock=use_vclock)
@@ -2932,8 +3578,9 @@ def modeled_compute_advance(real: dict, sim: dict) -> dict:
             return None
         return sum(adv) / len(adv), sum(spd.values()) / len(spd)
 
-    s = _stats(sim, use_vclock=True)
-    r = _stats(real, use_vclock=False)
+    _a_vclock, _b_vclock = pair_clocks(real, sim, same_mode)
+    s = _stats(sim, use_vclock=_b_vclock)
+    r = _stats(real, use_vclock=_a_vclock)
     if not s or not r:
         return {"ok": True, "tier": "DIAG", "status": "SKIP",
                 "note": "insufficient advance/speed data (K10 may be blocking sim)"}
@@ -2949,21 +3596,24 @@ def modeled_compute_advance(real: dict, sim: dict) -> dict:
 
 
 def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
-                      agg_goal: int = 0) -> dict:
+                      agg_goal: int = 0, same_mode: bool = False) -> dict:
     """K3b [EXACT]: real_mean_advance − sim_mean_advance ≈ 0.
 
     The decisive Stage-1 mechanism check: the per-round wall→vclock residual
     is the per-commit MQTT/dispatch overhead the sim omits (CRITICAL-1).
     Reports implied per-commit overhead = residual / agg_goal.
+
+    Each side reads its OWN clock, and `same_mode` lets the B side fall back to
+    wall — same §D-73 / §D-72 rationale as `per_round_advance_parity`.
     """
-    sim_adv = _per_round_advances(sim["agg_rounds"], use_vclock=True)
-    real_adv = _per_round_advances(real["agg_rounds"], use_vclock=False)
+    _a_vclock, _b_vclock = pair_clocks(real, sim, same_mode)
+    sim_adv = _per_round_advances(sim["agg_rounds"], use_vclock=_b_vclock)
+    real_adv = _per_round_advances(real["agg_rounds"], use_vclock=_a_vclock)
     if not sim_adv:
-        has_vclock = any(e.get("vclock_now") is not None for e in sim["agg_rounds"])
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
-                "note": ("K10: no vclock advances in sim agg_round events"
-                         if not has_vclock
-                         else "fewer than 2 sim rounds — too short to measure")}
+                "note": ("fewer than 2 B-side units — too short to measure"
+                         if same_mode or _has_vclock(sim["agg_rounds"]) else
+                         "K10: no vclock advances in sim agg_round events")}
     if not real_adv:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "fewer than 2 real rounds — too short to measure"}
@@ -2986,9 +3636,7 @@ def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
     }
     # Same population-mismatch rationale as throughput_parity's matched_window_*:
     # sim's round count legitimately outruns real's wall-capped one, inflating
-    # the raw residual. Gates `ok` when `real_coord` is available (sync
-    # baselines); falls back to raw `rel` for async.
-    real_coord = _real_intrinsic_clock(real["agg_rounds"])
+    # the raw residual. Applies on every baseline, not just sync (§D-84).
     matched_n = min(len(sim_adv), len(real_adv))
     if matched_n >= 2:
         matched_sim = sim_adv[:matched_n]
@@ -3003,8 +3651,8 @@ def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
         result["matched_window_real_mean_s"] = round(matched_real_mean, 2)
         result["matched_window_residual_s"] = round(matched_residual, 2)
         result["matched_window_rel"] = round(matched_rel, 3)
-        if real_coord is not None:
-            result["ok"] = matched_rel <= tol_rel
+        result["decided_on"] = "matched_window_rel"
+        result["ok"] = matched_rel <= tol_rel
     return result
 
 
@@ -4054,16 +4702,18 @@ def trainer_phase_split(real_trainers: dict, sim_trainers: dict,
                "real_mean_s": round(rm, 3), "sim_mean_s": round(sm, 3)}
         if note:
             res["note"] = note
-        # mqtt_fetch is pure network-I/O wall time: the sim serves weights from
-        # an in-memory cache and folds the trainer cycle into budget+leg, so this
-        # phase is deliberately NOT part of the virtual clock.  Comparing it
-        # is apples-to-oranges (real MQTT round-trip vs in-mem read) — keep it as
-        # a DIAG so a divergence is reported but never enforced.  gpu_compute and
-        # the other modeled phases stay enforced DIST.
+        # mqtt_fetch is real wall-clock wait on channel.recv() in BOTH modes (sim
+        # runs the same MQTT channel path, not an in-memory shortcut) -- but it's
+        # not part of the vclock's schedule, which only models trainer-side
+        # device delay, not real/sim's differing dispatch cadence or aggregator-
+        # side serial overhead. Comparing it directly is apples-to-oranges for
+        # that reason, not because sim skips the network -- keep it DIAG so a
+        # divergence is reported but never enforced. gpu_compute and the other
+        # modeled phases stay enforced DIST.
         if f == "mqtt_fetch_s":
             res["tier"] = "DIAG"
-            res["note"] = ("wall-time network I/O; sim uses in-mem cache, "
-                           "excluded from the virtual clock (diagnostic only)")
+            res["note"] = ("wall-time channel wait, not vclock-modeled in either "
+                           "mode; dispatch cadence differs real vs sim (diagnostic only)")
         results[key] = res
     return results
 
@@ -4080,9 +4730,12 @@ def trainer_phase_wall_budget_ok(real_trainers: dict, sim_trainers: dict,
     """Trainer-side twin of `drain_wall_budget`: ONE-SIDED (`sim <=
     real*(1+tol_rel)`), never a two-sided KS/mean match -- sim must never cost
     more wall-clock than real on dispatch/local-copy phases it should collapse
-    to ~0. `mqtt_fetch_s` is reported but never gates `ok` (apples-to-oranges:
-    real network round-trip vs sim's in-memory cache). SKIPs cleanly with no
-    telemetry.
+    to ~0. `mqtt_fetch_s` is reported but never gates `ok` -- it's a real
+    wall-clock `channel.recv()` wait in BOTH modes (sim runs the same MQTT
+    path, not an in-memory shortcut), but dispatch cadence/aggregator-side
+    serial overhead differ real vs sim and aren't vclock-modeled in either
+    mode, so a direct compare is apples-to-oranges for that reason instead
+    (see `_step_timing_compare`). SKIPs cleanly with no telemetry.
     """
     def _vals(trainers: dict, field: str) -> list:
         out = []
@@ -4251,21 +4904,31 @@ def _step_timing_compare(r_by_func: dict, s_by_func: dict, ks_tol: float,
             entry["gates_ok"] = False
         by_func[func] = entry
 
-    _gating = [r for f, r in by_func.items() if r.get("gates_ok", True)]
+    _gating = {f: r for f, r in by_func.items() if r.get("gates_ok", True)}
+
+    def _worst(pool):
+        cand = [f for f in pool if pool[f].get("ks_stat") is not None]
+        return max(cand, key=lambda f: pool[f]["ks_stat"]) if cand else None
+
+    # `worst_func` must name a func that GATES. Ranking over all funcs put the
+    # exempted `_emulate_training_delay` (KS 1.0 by construction) atop a fail
+    # actually caused by `_make_model_functional` -- reads as a moving root
+    # cause. Raw winner kept as `worst_func_incl_exempt`.
     return {
-        "ok": all(r["ok"] for r in _gating),
+        "ok": all(r["ok"] for r in _gating.values()),
         "tier": "DIST",
         "ks_tol": ks_tol,
         "n_funcs": len(funcs),
-        "worst_func": (max(by_func, key=lambda f: by_func[f].get("ks_stat") or -1.0)
-                      if any(r.get("ks_stat") is not None for r in by_func.values())
-                      else None),
+        "worst_func": _worst(_gating),
+        "worst_func_incl_exempt": _worst(by_func),
+        "failing_gating_funcs": sorted(f for f, r in _gating.items() if not r["ok"]),
         "by_func": by_func,
     }
 
 
 def step_timing_breakdown_parity(real_trainers: dict, sim_trainers: dict,
-                                 ks_tol: float = 0.25) -> dict:
+                                 ks_tol: float = 0.25,
+                                 sim_agg: Optional[dict] = None) -> dict:
     """Fine-grained GPU-compute decomposition: one DISTRIBUTIONAL (KS + mean)
     check per `step_timing` function name. These are genuine shared compute
     (mode-invariant) -- the target is a MATCH, not a one-sided bound. Pinpoints
@@ -4292,9 +4955,22 @@ def step_timing_breakdown_parity(real_trainers: dict, sim_trainers: dict,
         return out
 
     r_by_func, s_by_func = _collect(real_trainers), _collect(sim_trainers)
-    return _step_timing_compare(
-        r_by_func, s_by_func, ks_tol,
-        _STEP_TIMING_REAL_ONLY_FUNCS | _STEP_TIMING_OFF_CRITICAL_PATH_FUNCS)
+    exempt = _STEP_TIMING_REAL_ONLY_FUNCS | _STEP_TIMING_OFF_CRITICAL_PATH_FUNCS
+    basis = sim_clock_basis(sim_agg, sim_trainers) if sim_agg is not None else None
+    # §D-31: trainer compute reaches the clock only when it BINDS
+    # `max(real_gpu_s, D)`, which it never does at D ~7-11s vs ~0.3-0.5s of JVP.
+    # The gap is then co-location contention (§D-1) -- `_make_model_functional`
+    # read KS 0.233/0.237/0.282/0.458 across four baselines for one physical
+    # effect. Report, don't gate; `timing_overrun` catches the binding case.
+    # `== 0.0` not falsy: an unmeasurable fraction is UNKNOWN and must keep grading.
+    if basis is not None and basis["compute_binds_frac"] == 0.0:
+        out = _step_timing_compare(r_by_func, s_by_func, ks_tol,
+                                   exempt | set(r_by_func) | set(s_by_func))
+        out["tier"] = "DIAG"
+        out["clock_basis"] = "discarded: sim compute never binds max(real_gpu_s, D)"
+        out["compute_binds_frac"] = basis["compute_binds_frac"]
+        return out
+    return _step_timing_compare(r_by_func, s_by_func, ks_tol, exempt)
 
 
 def agg_step_timing_breakdown_parity(real_agg: dict, sim_agg: dict,
@@ -4327,10 +5003,23 @@ def agg_step_timing_breakdown_parity(real_agg: dict, sim_agg: dict,
         return out
 
     r_by_func, s_by_func = _collect(real_agg), _collect(sim_agg)
-    return _step_timing_compare(
-        r_by_func, s_by_func, ks_tol,
-        _AGG_STEP_TIMING_REAL_ONLY_FUNCS | _AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS,
-        mean_tol_rel=mean_tol_rel)
+    exempt = _AGG_STEP_TIMING_REAL_ONLY_FUNCS | _AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS
+    basis = sim_clock_basis(sim_agg)
+    # §D-31: an aggregator span reaches the clock only via a `live` charge. Once
+    # every label resolves from a profile -- the designed steady state -- sim's
+    # own wall is a discarded §D-1 artifact, so the rung reports and stops
+    # gating. It flipped on all four baselines when the eval stride cut REAL's
+    # contention (`_compute_var` 0.0152 -> 0.0105) while sim's held: host load,
+    # not either model.
+    if not basis["agg_wall_gates"]:
+        out = _step_timing_compare(r_by_func, s_by_func, ks_tol,
+                                   exempt | set(r_by_func) | set(s_by_func),
+                                   mean_tol_rel=mean_tol_rel)
+        out["tier"] = "DIAG"
+        out["clock_basis"] = "discarded: every charged label resolves from a profile"
+        return out
+    return _step_timing_compare(r_by_func, s_by_func, ks_tol, exempt,
+                                mean_tol_rel=mean_tol_rel)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -4407,18 +5096,37 @@ def _fwd_cadence_cycles(agg: dict, max_bin: Optional[int] = None) -> list:
 
 
 def _iters_per_data_id(cycles: list) -> dict:
-    """{cycle_data_id -> #cycles spent on it} = realized dynamic-K per data_id.
+    """{data-bin VISIT -> #cycles spent on it} = realized dynamic-K per bin.
 
     Exact for both natural-pass and force-commit paths because each agg-goal
     boundary emits exactly one cadence event tagged with the data_id it worked
-    on (cycle_data_id), pre-advance."""
+    on (cycle_data_id), pre-advance.
+
+    Keyed on `(round, cycle_data_id)`, not raw `cycle_data_id`, which wraps each
+    lap -- a run that laps then sums two visits into one bin AND divides by too
+    few bins (§F-2). felix_round real completed 163 bins across 150 distinct
+    `data_id`s: the raw key read 11.98 vs sim's 12.54 (a 4.4% PASS) where the
+    true per-visit figures are 11.02 vs 12.54, +13.8%, matching its failing
+    `throughput` residual (§D-19). Same composite key as
+    `_per_progress_last_event`, same reason.
+
+    Counts a visit only if it COMPLETED (`_DATA_ID_COMMIT_FIELD`) -- a deadline
+    truncates the final visit, whose cycle count isn't "iterations to close"
+    (§D-13). Falls back to unfiltered when nothing verifies, as that helper
+    does."""
     out: dict = {}
+    completed: set = set()
     for e in cycles:
         d = e.get("cycle_data_id")
         if d is None:
             continue
-        out[d] = out.get(d, 0) + 1
-    return out
+        key = (e.get("round") or 0, d)
+        out[key] = out.get(key, 0) + 1
+        if e.get(_DATA_ID_COMMIT_FIELD) is True:
+            completed.add(key)
+    if not completed:
+        return out
+    return {k: v for k, v in out.items() if k in completed}
 
 
 def _moving_avg(seq: list, window: int) -> list:
@@ -4446,15 +5154,28 @@ def iters_per_data_id_parity(real: dict, sim: dict, ks_tol: float = 0.2,
                              max_bin: Optional[int] = None) -> dict:
     """V1 [DIST]: iterations-per-data_id distribution (realized dynamic K).
 
-    The number of accumulation cycles a data_id needs to pass the variance gate.
+    The number of accumulation cycles a data bin needs to pass the variance gate.
     A divergence means the contributing set/order (U5/U4 upstream) differs, so
     the accumulated grad-pool composition — and thus the variance trajectory —
-    differs. KS on the per-data_id iteration counts + a mean guard.
+    differs. KS on the per-visit iteration counts + a mean guard.
+
+    Counted per data-bin VISIT and only for visits that completed — see
+    `_iters_per_data_id`. Both sides are additionally truncated to the matched
+    logical budget N (§D-4), so a side that ran further contributes no extra
+    bins to the pooled distribution.
     """
     rc, sc = _fwd_cadence_cycles(real, max_bin), _fwd_cadence_cycles(sim, max_bin)
     if not rc or not sc:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no fwdllm cadence events (non-fwdllm run or telemetry absent)"}
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+    if N is not None:
+        w_rc = [e for e in rc if (p := prog_fn(e)) is not None and p <= N]
+        w_sc = [e for e in sc if (p := prog_fn(e)) is not None and p <= N]
+        if w_rc and w_sc:
+            rc, sc = w_rc, w_sc
+        else:
+            N = None
     r_iters = list(_iters_per_data_id(rc).values())
     s_iters = list(_iters_per_data_id(sc).values())
     if not r_iters or not s_iters:
@@ -4465,7 +5186,7 @@ def iters_per_data_id_parity(real: dict, sim: dict, ks_tol: float = 0.2,
     s_mean, _ = mean_std(s_iters)
     mean_rel = (abs(r_mean - s_mean) / max(r_mean, s_mean)
                 if max(r_mean, s_mean) > 0 else 0.0)
-    return {
+    result = {
         "ok": ks <= ks_tol and mean_rel <= mean_tol_rel,
         "tier": "DIST",
         "real_mean_iters": round(r_mean, 3),
@@ -4477,6 +5198,9 @@ def iters_per_data_id_parity(real: dict, sim: dict, ks_tol: float = 0.2,
         "n_real_data_ids": len(r_iters),
         "n_sim_data_ids": len(s_iters),
     }
+    if N is not None:
+        result["matched_logical_budget_n"] = _prog_json(N)
+    return result
 
 
 def iters_per_data_id_moving_avg_parity(real: dict, sim: dict, window: int = 20,
@@ -4500,7 +5224,10 @@ def iters_per_data_id_moving_avg_parity(real: dict, sim: dict, window: int = 20,
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no fwdllm cadence events (non-fwdllm run or telemetry absent)"}
     r_map, s_map = _iters_per_data_id(rc), _iters_per_data_id(sc)
-    # Align on data_ids BOTH legs reached (real may cap earlier on a wall budget).
+    # Align on the data-bin VISITS both legs completed (real may cap earlier on a
+    # wall budget). Keys are `(round, cycle_data_id)`, which sorts chronologically
+    # across laps, so a wrapped run's second visit to a bin no longer aligns
+    # against the other side's first (§D-19).
     common = sorted(set(r_map) & set(s_map))
     if len(common) < 2:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
@@ -4585,8 +5312,9 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
     }
     # Truncate both to the matched LOGICAL budget N (progress <= N), not a clock
     # window: sim's cycles beyond the shared prefix average a higher `var` and pull
-    # the pooled mean/KS (PARITY.md §1.5). Gated for sync; async diagnostic.
-    real_coord = _real_intrinsic_clock(real["agg_rounds"])
+    # the pooled mean/KS (PARITY.md §1.5, §D-4). Grades on EVERY baseline, unlike a
+    # clock-based gate, which is None for all async baselines by construction. The
+    # budget comes from `prog_fn`, which is axis-based and mode-agnostic.
     N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
     if N is not None:
         matched_r = [e["var"] for e in rc
@@ -4609,9 +5337,225 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
             result["matched_window_sim_mean_var"] = round(matched_s_mean, 6)
             result["matched_window_mean_rel_diff"] = round(matched_mean_rel, 4)
             result["matched_window_ks_stat"] = round(matched_ks, 3)
-            if real_coord is not None:
-                result["ok"] = matched_ks <= ks_tol and matched_mean_rel <= mean_tol_rel
+            result["ok"] = matched_ks <= ks_tol and matched_mean_rel <= mean_tol_rel
     return result
+
+
+def var_drift_parity(real: dict, sim: dict, n_bins: int = 10,
+                     drift_tol: float = 0.05,
+                     max_bin: Optional[int] = None) -> dict:
+    """V2b [DIAG]: is V2's `var` gap a LEVEL offset or a PROGRESSIVE drift?
+
+    Bins the matched-budget cycles by progress ordinal and reports the sim/real
+    mean-`var` ratio per bin. V2 pools the whole run into one mean, so a steady
+    per-cycle mechanism bug and a slowly-compounding trajectory divergence are
+    indistinguishable there — and they need opposite investigations:
+
+    - **flat ratio, nonzero offset** → a per-cycle mechanism (pool contents,
+      accumulation order, a scheduling divergence). Chase the mechanism.
+    - **ratio drifting monotonically with progress** → the two models are on
+      diverging training trajectories, and `var` is the readout, not the cause.
+      The cadence↔variance feedback loop (var gate -> iterations -> updates ->
+      model -> var) amplifies any small seed difference, so the question becomes
+      whether the drift exceeds the pipeline's own real<->real replicate floor —
+      not the per-cycle mechanism.
+
+    DIAG: routing information for the next investigation, never a gate.
+    """
+    rc, sc = _fwd_cadence_cycles(real, max_bin), _fwd_cadence_cycles(sim, max_bin)
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+    if N is None or not isinstance(N, int) or N < n_bins:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "no integer matched budget, or too few progress units to bin"}
+
+    def binned(cycles: list) -> dict:
+        acc: dict = {}
+        for e in cycles:
+            v = e.get("var")
+            p = prog_fn(e)
+            if v is None or p is None or p > N:
+                continue
+            acc.setdefault(min(n_bins - 1, (p - 1) * n_bins // N), []).append(v)
+        return {b: sum(vs) / len(vs) for b, vs in acc.items() if vs}
+
+    r_bins, s_bins = binned(rc), binned(sc)
+    shared = sorted(set(r_bins) & set(s_bins))
+    if len(shared) < 3:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "fewer than 3 shared progress bins with `var`"}
+    ratios = [s_bins[b] / r_bins[b] if r_bins[b] else float("nan") for b in shared]
+    ratios = [r for r in ratios if not math.isnan(r)]
+    if len(ratios) < 3:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
+                "note": "degenerate real `var` in the binned window"}
+    # Thirds, not first-vs-last bin: a single terminal bin is the noisiest
+    # estimate in the series and would decide the verdict on its own.
+    k = max(1, len(ratios) // 3)
+    first = sum(ratios[:k]) / k
+    last = sum(ratios[-k:]) / k
+    drift = abs(last - first)
+    rho = spearman_rho(list(range(len(ratios))), ratios)
+    progressive = drift > drift_tol and rho is not None and abs(rho) >= 0.6
+    return {
+        "ok": not progressive,
+        "tier": "DIAG",
+        "verdict": ("progressive_drift" if progressive
+                    else "level_offset" if abs(1.0 - sum(ratios) / len(ratios)) > 0.02
+                    else "flat"),
+        "n_bins": len(ratios),
+        "matched_logical_budget_n": N,
+        "first_third_ratio": round(first, 3),
+        "last_third_ratio": round(last, 3),
+        "drift": round(drift, 3),
+        "drift_tol": drift_tol,
+        "trend_rho": round(rho, 3) if rho is not None else None,
+        "mean_ratio": round(sum(ratios) / len(ratios), 3),
+        "per_bin_ratio": [round(r, 3) for r in ratios],
+        "interpretation": (
+            "sim/real mean-`var` ratio by progress bin. Monotone drift => the "
+            "models are on diverging trajectories (compare against the real<->real "
+            "replicate floor before chasing a mechanism); flat offset => a genuine "
+            "per-cycle mechanism divergence."
+        ),
+    }
+
+
+# Two-sided Student-t critical values by df, for the drift-slope test. A table,
+# not scipy: the rest of this module hand-rolls its statistics (`ks_stat`,
+# `spearman_rho`) and the checker should not grow a scipy dependency for one CDF.
+_T_CRIT_TWO_SIDED = {
+    0.05: {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+           8: 2.306, 9: 2.262, 10: 2.228, 12: 2.179, 15: 2.131, 20: 2.086,
+           25: 2.060, 30: 2.042},
+    0.01: {1: 63.657, 2: 9.925, 3: 5.841, 4: 4.604, 5: 4.032, 6: 3.707, 7: 3.499,
+           8: 3.355, 9: 3.250, 10: 3.169, 12: 3.055, 15: 2.947, 20: 2.845,
+           25: 2.787, 30: 2.750},
+}
+_T_CRIT_LARGE_DF = {0.05: 1.960, 0.01: 2.576}
+
+
+def _t_crit(df: int, alpha: float) -> float:
+    """Two-sided critical t for `df`, conservative between tabulated rows."""
+    table = _T_CRIT_TWO_SIDED[alpha]
+    if df >= 30:
+        return _T_CRIT_LARGE_DF[alpha]
+    return table[min((d for d in sorted(table) if d >= df), default=30)]
+
+
+def iter_drift_rate_parity(real: dict, sim: dict, n_bins: int = 10,
+                           alpha: float = 0.01,
+                           lambda_floor_per_100: float = 0.05,
+                           max_bin: Optional[int] = None) -> dict:
+    """V1c [MECHANISM/DIST]: is sim's iterations-per-data-bin DIVERGING from
+    real's, at a rate that is a property of the run rather than of its length?
+
+    Why a RATE and not a level. `iterations_per_data_id` is an algorithm OUTPUT
+    -- FwdLLM accumulates forward-gradient samples until their split-half
+    variance clears `var_threshold`, and legitimately needs more of them near
+    convergence. Parity does not claim a value for it; it claims real and sim
+    need the SAME value. But the variance gate is a positive feedback loop
+    (var -> iterations -> updates -> model -> var), so any divergence COMPOUNDS:
+    the pooled mean gap grows with N, and no fixed tolerance on it can be right
+    at two run lengths. Measured: `felix_round` read +1.1% at 3600s and +19.4%
+    at 7200s on unchanged code.
+
+    So gate the per-bin slope. Fit `ln(sim_iters / real_iters)` against the
+    progress ordinal and test the slope against zero: under compounding the
+    ratio is ~exp(lambda*k), and lambda is intrinsic -- it does not depend on
+    where the run stopped, and a longer run estimates it more precisely instead
+    of mis-scaling the tolerance.
+
+    Calibration (§D-24), measured over six real<->real replicate pairs: |lambda|
+    ranges to 0.38 per 100 units, but NONE is significant (max |t| 1.61 against
+    a 3.355 critical value) -- the large values are all short runs where the
+    slope is simply unresolved. The two well-powered pairs (N=107, N=111) sit at
+    |lambda| 0.003 and 0.033, which is what `lambda_floor_per_100` is set just
+    above. So the t-test does the duration-handling and the floor only guards
+    the very-long-run case where a physically negligible slope clears
+    significance; BOTH must trip for a fail.
+
+    Shape, not magnitude, is the discriminator. Real<->real replicate ratios
+    oscillate (quartiles 0.72-1.38, no trend) while a genuine divergence climbs
+    monotonically (`felix_round` 1.03 -> 1.50, t=5.69). This is the rung the
+    cadence LEVEL rungs (`v1`, `v1b`, `v2`) depend on: with a flat slope their
+    residual is accumulated noise and they are DOWNSTREAM, not roots.
+    """
+    N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
+    if N is None or not isinstance(N, int) or N < n_bins:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "no integer matched budget, or too few progress units to bin"}
+
+    def binned_iters(agg: dict) -> dict:
+        """{bin: mean iterations per completed data bin}. Counts CYCLES per
+        progress unit, which is what the variance gate spends."""
+        per_unit: dict = {}
+        for e in agg["agg_rounds"]:
+            if e.get("event") != "agg_round":
+                continue
+            p = prog_fn(e)
+            if p is None or p > N:
+                continue
+            per_unit[p] = per_unit.get(p, 0) + 1
+        acc: dict = {}
+        for p, c in per_unit.items():
+            acc.setdefault(min(n_bins - 1, (p - 1) * n_bins // N), []).append(c)
+        return {b: sum(v) / len(v) for b, v in acc.items() if v}
+
+    r_bins, s_bins = binned_iters(real), binned_iters(sim)
+    shared = sorted(set(r_bins) & set(s_bins))
+    pts = [(i, math.log(s_bins[b] / r_bins[b]))
+           for i, b in enumerate(shared) if r_bins[b] > 0 and s_bins[b] > 0]
+    if len(pts) < 4:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": "fewer than 4 usable progress bins"}
+
+    n = len(pts)
+    mx = sum(p[0] for p in pts) / n
+    my = sum(p[1] for p in pts) / n
+    sxx = sum((p[0] - mx) ** 2 for p in pts)
+    if sxx <= 0:
+        return {"ok": True, "tier": "DIST", "status": "SKIP", "note": "degenerate bins"}
+    slope = sum((p[0] - mx) * (p[1] - my) for p in pts) / sxx
+    intercept = my - slope * mx
+    resid = [p[1] - (intercept + slope * p[0]) for p in pts]
+    df = n - 2
+    se_resid = math.sqrt(sum(r * r for r in resid) / df) if df > 0 else 0.0
+    se_slope = se_resid / math.sqrt(sxx) if sxx > 0 else 0.0
+    t = (slope / se_slope) if se_slope > 1e-12 else 0.0
+    crit = _t_crit(df, alpha)
+    significant = abs(t) > crit
+
+    # Slope is per BIN; restate per 100 progress units so the number is
+    # comparable across run lengths and bin counts.
+    units_per_bin = N / n_bins
+    lam_per_100 = slope / units_per_bin * 100.0
+    above_floor = abs(lam_per_100) > lambda_floor_per_100
+    ratios = [math.exp(p[1]) for p in pts]
+    return {
+        "ok": not (significant and above_floor),
+        "tier": "DIST",
+        "verdict": ("diverging" if (significant and above_floor)
+                    else "significant_below_floor" if significant
+                    else "flat"),
+        "lambda_per_100_units": round(lam_per_100, 4),
+        "lambda_floor_per_100": lambda_floor_per_100,
+        "t_stat": round(t, 3),
+        "t_crit": crit,
+        "alpha": alpha,
+        "n_bins": n,
+        "matched_logical_budget_n": N,
+        "first_bin_ratio": round(ratios[0], 3),
+        "last_bin_ratio": round(ratios[-1], 3),
+        "per_bin_ratio": [round(r, 3) for r in ratios],
+        "real_mean_iters": round(sum(r_bins[b] for b in shared) / len(shared), 3),
+        "sim_mean_iters": round(sum(s_bins[b] for b in shared) / len(shared), 3),
+        "interpretation": (
+            "slope of ln(sim/real iterations-per-bin) vs progress, per 100 units. "
+            "Duration-invariant: a longer run estimates it more precisely rather "
+            "than inflating it. `flat` => the cadence LEVEL rungs are grading "
+            "accumulated noise; `diverging` => they are downstream of this."
+        ),
+    }
 
 
 def _cohort_expected_delay_map(real: dict, sim: dict,
@@ -5215,11 +6159,14 @@ def cohort_sequence_parity(real: dict, sim: dict, max_bin: Optional[int] = None,
         _draw_floor is not None and composition["mean_overlap"] is not None
         and composition["mean_overlap"] >= _draw_floor - 0.05)
     composition["gated_stochastic"] = identity_gated
-    ok = count_ok if identity_gated else (
-        composition_ok and count_ok and first_bin_logical_ok)
+    # `count` is `v1_iter_per_data_id`'s number under the same floor-sized gate:
+    # reported, not voted (§D-64). On an identity-gated async baseline it was this
+    # rung's ONLY enforced bound -- how one measurement produced three fails.
+    ok = True if identity_gated else (composition_ok and first_bin_logical_ok)
     return {
         "ok": ok,
         "tier": "EXACT",
+        "count_owned_by": "v1_iter_per_data_id",
         "identity_gated": identity_gated,
         "composition": composition,
         "count": count,
@@ -5422,7 +6369,8 @@ def eligible_ends_metric_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> d
     }
 
 
-def grad_norm_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
+def grad_norm_parity(real: dict, sim: dict, ks_tol: float = 0.2,
+                     mean_tol_rel: float = 0.10) -> dict:
     """G1 [DIST]: per-update grad/JVP norm distribution.
 
     Gradient values are mode-invariant given identical input + perturbation seed,
@@ -5447,10 +6395,19 @@ def grad_norm_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no grad_norm in cadence events (G1 emit deferred, §K-D10)"}
     ks = ks_stat(s_n, r_n)
+    r_mean, s_mean = sum(r_n) / len(r_n), sum(s_n) / len(s_n)
+    # Mean guard alongside KS: gradient values are mode-invariant given identical
+    # input + perturbation seed, so a systematic LEVEL shift is exactly the defect
+    # this rung exists to catch -- and it is what KS cannot see (a uniform shift
+    # barely moves the empirical CDFs; `fedbuff_round` reads 5.1% apart at KS
+    # 0.024). Same blindness `v2_var_trajectory` documents.
+    mean_rel = (abs(r_mean - s_mean) / max(abs(r_mean), abs(s_mean))
+                if max(abs(r_mean), abs(s_mean)) > 0 else 0.0)
     return {
-        "ok": ks <= ks_tol, "tier": "DIST",
-        "real_mean_grad_norm": round(sum(r_n) / len(r_n), 6),
-        "sim_mean_grad_norm": round(sum(s_n) / len(s_n), 6),
+        "ok": ks <= ks_tol and mean_rel <= mean_tol_rel, "tier": "DIST",
+        "real_mean_grad_norm": round(r_mean, 6),
+        "sim_mean_grad_norm": round(s_mean, 6),
+        "mean_rel_diff": round(mean_rel, 4), "mean_tol_rel": mean_tol_rel,
         "ks_stat": round(ks, 3), "ks_tol": ks_tol,
     }
 
@@ -5636,6 +6593,274 @@ def inflight_overlap_parity(real_agg: dict, sim_agg: dict,
     }
 
 
+def _dispatch_tripwire_stats(agg: dict) -> dict:
+    """Per-mode dispatch-loop tripwire rollup from `redispatch_decomp`.
+
+    {n, max_outstanding, target, n_over_cap, n_retask} -- `target` is the
+    `concurrency_target` (selector `c`) the run itself reported, so the cap is
+    graded against this run's own configuration, never a hardcoded number.
+    """
+    evs = agg.get("redispatch_decomp", []) or []
+    n = max_out = n_over = n_retask = 0
+    target = None
+    for e in evs:
+        out, tgt = e.get("outstanding_at_dispatch"), e.get("concurrency_target")
+        if out is None:
+            continue
+        n += 1
+        max_out = max(max_out, int(out))
+        if tgt is not None:
+            target = int(tgt) if target is None else max(target, int(tgt))
+            if int(out) > int(tgt):
+                n_over += 1
+        if e.get("retask_before_close"):
+            n_retask += 1
+    return {"n": n, "max_outstanding": max_out, "target": target,
+            "n_over_cap": n_over, "n_retask": n_retask}
+
+
+def _peak_inflight_overlap(agg: dict) -> dict:
+    """Peak simultaneously-in-flight DISTINCT ends, by sweeping each
+    contribution's [dispatch_ts, commit_ts] interval from `contributor_intervals`.
+
+    Measured on the mode's own axis (vclock in sim, wall in real) -- the axis `c`
+    is defined on. Symmetric, and read from telemetry both legs already emit, so
+    real is gradeable without the dispatch-time tripwire that only newer runs
+    carry.
+
+    DISTINCT ends, not intervals: an end with two concurrent dispatches is one
+    busy trainer in one slot, so counting intervals over-reports the cap
+    (fedbuff_round 61 intervals vs 35 ends). That second dispatch is its own
+    violation (§F-25), counted separately as `n_self_overlap`.
+    """
+    ev = []
+    for e in agg.get("agg_rounds", []):
+        for iv in (e.get("contributor_intervals") or []):
+            a, b = iv.get("dispatch_ts"), iv.get("commit_ts")
+            if a is None or b is None or b < a:
+                continue
+            ev.append((a, 1, iv.get("end")))
+            ev.append((b, -1, iv.get("end")))
+    if not ev:
+        return {"n": 0, "peak": None, "n_self_overlap": 0, "_ev": []}
+    # Close intervals before opening at the same instant: an end that commits and
+    # is re-dispatched at the same stamp holds one slot, not two.
+    ev.sort(key=lambda x: (x[0], x[1]))
+    per_end: dict = {}
+    peak = n = n_self = 0
+    # TIME-WEIGHTED occupancy, not per-event: how long the run actually sat at
+    # each level. PEAK alone is blind to chronic under-fill -- fluxtune reads
+    # peak 30/30 in BOTH modes while real sits at 30 for 80.8% of the run and sim
+    # for 8.6% (mean 29.50 vs 24.66). Peak was the wrong statistic (§D-20).
+    dwell: dict = {}
+    prev_t = ev[0][0]
+    for t, delta, end in ev:
+        if t > prev_t:
+            dwell[len(per_end)] = dwell.get(len(per_end), 0.0) + (t - prev_t)
+        prev_t = t
+        per_end[end] = per_end.get(end, 0) + delta
+        if per_end[end] <= 0:
+            per_end.pop(end, None)
+        if delta > 0:
+            n += 1
+            if per_end.get(end, 0) > 1:
+                n_self += 1
+        peak = max(peak, len(per_end))
+    span = sum(dwell.values())
+    mean_inflight = (sum(k * v for k, v in dwell.items()) / span) if span else None
+    median_inflight = None
+    if span:
+        acc = 0.0
+        for level in sorted(dwell):
+            acc += dwell[level]
+            if acc >= span / 2:
+                median_inflight = level
+                break
+    return {"n": n, "peak": peak, "n_self_overlap": n_self, "_ev": ev,
+            "mean_inflight": mean_inflight, "median_inflight": median_inflight,
+            "dwell": dwell, "span": span}
+
+
+def concurrency_cap_ok(real_agg: dict, sim_agg: dict) -> dict:
+    """[INV, per mode] ends in flight at any instant <= selector `c`.
+
+    A single-side invariant (§D-9): a mode that runs past its own `c` found free
+    capacity that doesn't exist, decidable without any real/sim diff. Graded
+    independently per mode; the failing side is named.
+
+    Measured as peak interval overlap on each mode's own clock, not the size of
+    the aggregator's pending set at dispatch instants. That set-size reading was
+    wrong in both directions (§D-20): it counted committed-but-not-yet-released
+    ends, inflating fluxtune to a phantom 31/30 once per cycle, and by sampling
+    only at dispatch instants it under-reported fedbuff_round. Tripwire counts
+    are still reported, but do not decide the verdict.
+    """
+    r_ov, s_ov = _peak_inflight_overlap(real_agg), _peak_inflight_overlap(sim_agg)
+    r, s = _dispatch_tripwire_stats(real_agg), _dispatch_tripwire_stats(sim_agg)
+    target = r["target"] if r["target"] is not None else s["target"]
+    if target is None or (r_ov["n"] == 0 and s_ov["n"] == 0):
+        return {"ok": True, "tier": "INV", "status": "SKIP",
+                "note": "no contributor_intervals / no concurrency target "
+                        "(non-fwdllm baseline or telemetry absent)"}
+    tgt = int(target)
+
+    def _over(ov):
+        if ov["n"] == 0:
+            return None, None
+        per_end: dict = {}
+        n_over = 0
+        for _, delta, end in ov["_ev"]:
+            per_end[end] = per_end.get(end, 0) + delta
+            if per_end[end] <= 0:
+                per_end.pop(end, None)
+            if delta > 0 and len(per_end) > tgt:
+                n_over += 1
+        return n_over, round(n_over / ov["n"], 4)
+
+    r_n_over, r_frac = _over(r_ov)
+    s_n_over, s_frac = _over(s_ov)
+    # Two separate INV violations, either of which fails: >`c` trainers at once,
+    # and two live dispatches to the SAME end (§F-25).
+    offending = sorted({m for m, n_over in (("real", r_n_over), ("sim", s_n_over))
+                        if n_over}
+                       | {m for m, ov in (("real", r_ov), ("sim", s_ov))
+                          if ov["n_self_overlap"]})
+    no_data = [m for m, ov in (("real", r_ov), ("sim", s_ov)) if ov["n"] == 0]
+    return {
+        "ok": not offending,
+        "tier": "INV",
+        "offending_modes": offending,
+        "ungraded_modes": no_data,
+        "target_c": tgt,
+        "real_peak_inflight": r_ov["peak"],
+        "sim_peak_inflight": s_ov["peak"],
+        # Peak decides the INV; mean/median are reported so a chronic under-fill
+        # can never again hide behind a matching peak (see `slot_utilization`).
+        "real_mean_inflight": (round(r_ov["mean_inflight"], 2)
+                               if r_ov.get("mean_inflight") is not None else None),
+        "sim_mean_inflight": (round(s_ov["mean_inflight"], 2)
+                              if s_ov.get("mean_inflight") is not None else None),
+        "real_median_inflight": r_ov.get("median_inflight"),
+        "sim_median_inflight": s_ov.get("median_inflight"),
+        "real_over_cap_frac": r_frac,
+        "sim_over_cap_frac": s_frac,
+        "real_n_self_overlap_dispatches": r_ov["n_self_overlap"],
+        "sim_n_self_overlap_dispatches": s_ov["n_self_overlap"],
+        "n_real_contributions": r_ov["n"], "n_sim_contributions": s_ov["n"],
+        # Dispatch-time tripwire, reported but not graded -- see docstring.
+        "tripwire_real_max_outstanding": r["max_outstanding"] if r["n"] else None,
+        "tripwire_sim_max_outstanding": s["max_outstanding"] if s["n"] else None,
+        "interpretation": (
+            f"peak distinct ends in flight: real {r_ov['peak']}, sim "
+            f"{s_ov['peak']}, against c={tgt}; >c means the dispatch loop saw "
+            f"capacity the concurrency model doesn't have. Same-end concurrent "
+            f"dispatches (§F-25): real {r_ov['n_self_overlap']}, sim "
+            f"{s_ov['n_self_overlap']}. Time-weighted MEAN in flight: real "
+            f"{r_ov.get('mean_inflight')}, sim {s_ov.get('mean_inflight')} "
+            f"(peak alone is blind to chronic under-fill -- `slot_utilization` "
+            f"grades the gap)."
+            + (f" UNGRADED (no contributor_intervals): {', '.join(no_data)}."
+               if no_data else "")
+        ),
+    }
+
+
+def slot_utilization_parity(real_agg: dict, sim_agg: dict,
+                            tol_rel: float = 0.05) -> dict:
+    """[MECHANISM] Do both modes keep the SAME fraction of their `c` dispatch
+    slots busy, time-weighted?
+
+    `concurrency_cap` grades PEAK occupancy against `c` and is a per-mode
+    invariant -- it answers "did anyone exceed capacity". It cannot answer "did
+    anyone fail to USE capacity", and those are different failures: fluxtune read
+    peak 30/30 on BOTH modes (a clean INV pass) while real sat at 30/30 for 80.8%
+    of the run and sim for 8.6%, mean 29.50 vs 24.66. That 16.4% concurrency
+    deficit was the whole of an 11.9% throughput residual, and no rung saw it.
+
+    A mode that under-fills its own slots with candidates available is broken on
+    its own terms, so the direction is diagnosable single-side (§D-9) -- but the
+    BAR is what the other mode achieves, so this is graded as a comparison.
+    """
+    r_ov, s_ov = _peak_inflight_overlap(real_agg), _peak_inflight_overlap(sim_agg)
+    r_mean, s_mean = r_ov.get("mean_inflight"), s_ov.get("mean_inflight")
+    if r_mean is None or s_mean is None or max(r_mean, s_mean) <= 0:
+        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+                "note": "no contributor_intervals on one or both sides"}
+    target = _dispatch_tripwire_stats(real_agg)["target"]
+    if target is None:
+        target = _dispatch_tripwire_stats(sim_agg)["target"]
+    rel = abs(r_mean - s_mean) / max(r_mean, s_mean)
+
+    def _frac_full(ov):
+        if not ov.get("span") or ov.get("peak") in (None, 0):
+            return None
+        full = sum(v for k, v in ov["dwell"].items() if k >= ov["peak"])
+        return round(full / ov["span"], 4)
+
+    under = "sim" if s_mean < r_mean else ("real" if r_mean < s_mean else None)
+    return {
+        "ok": rel <= tol_rel,
+        "tier": "EXACT",
+        "target_c": int(target) if target is not None else None,
+        "real_mean_inflight": round(r_mean, 2),
+        "sim_mean_inflight": round(s_mean, 2),
+        "real_median_inflight": r_ov.get("median_inflight"),
+        "sim_median_inflight": s_ov.get("median_inflight"),
+        "real_frac_at_peak": _frac_full(r_ov),
+        "sim_frac_at_peak": _frac_full(s_ov),
+        "rel_diff": round(rel, 4),
+        "tol_rel": tol_rel,
+        "under_filling_mode": under if rel > tol_rel else None,
+        "interpretation": (
+            f"time-weighted mean slots busy: real {r_mean:.2f}, sim {s_mean:.2f}"
+            + (f" against c={int(target)}" if target is not None else "")
+            + f"; {rel:.1%} apart. A deficit means that mode leaves slots idle "
+            f"it is entitled to use -- check `slot_starvation` to tell 'no "
+            f"eligible candidate' from 'believed itself full'."
+        ),
+    }
+
+
+def retask_before_close_ok(real_agg: dict, sim_agg: dict) -> dict:
+    """[INV, per mode] no end is re-tasked while the cycle it contributed to is
+    still open.
+
+    Invariant 1 at DISPATCH level, and the direct detector for the §D-15 root
+    cause: dispatching under the `version_key` an end just answered sends a
+    variance verdict the aggregator hasn't computed (VAR=bad) or weights that
+    haven't moved. Rate must be 0 in both modes. Distinct from
+    `r1_inflight_overlap`, which grades CONTRIBUTIONS -- those stay clean here
+    even while dispatch is violating, because the round-trip outruns the cycle
+    (simulate_fwdllm.md §D-15 measurement trap 3).
+    """
+    r, s = _dispatch_tripwire_stats(real_agg), _dispatch_tripwire_stats(sim_agg)
+    if r["n"] == 0 and s["n"] == 0:
+        return {"ok": True, "tier": "INV", "status": "SKIP",
+                "note": "no redispatch_decomp tripwire telemetry (pre-§D-15 run "
+                        "or non-fwdllm baseline)"}
+    r_frac = r["n_retask"] / r["n"] if r["n"] else None
+    s_frac = s["n_retask"] / s["n"] if s["n"] else None
+    offending = [m for m, f in (("real", r_frac), ("sim", s_frac)) if f]
+    # Ungraded, not a measured 0 -- see `concurrency_cap_ok`.
+    no_data = [m for m, d in (("real", r), ("sim", s)) if d["n"] == 0]
+    _pct = lambda f: f"{f:.1%}" if f is not None else "n/a"
+    return {
+        "ok": not offending,
+        "tier": "INV",
+        "offending_modes": offending,
+        "ungraded_modes": no_data,
+        "real_retask_frac": round(r_frac, 4) if r_frac is not None else None,
+        "sim_retask_frac": round(s_frac, 4) if s_frac is not None else None,
+        "n_real_dispatches": r["n"], "n_sim_dispatches": s["n"],
+        "interpretation": (
+            f"real {_pct(r_frac)} / sim {_pct(s_frac)} of dispatches re-task an end "
+            f"that already contributed to the still-open agg cycle; any nonzero "
+            f"rate is a dispatch under an unevaluated version_key."
+            + (f" UNGRADED (no telemetry): {', '.join(no_data)}." if no_data else "")
+        ),
+    }
+
+
 def _forward_passes(trainers: dict) -> int:
     """Total forward passes = trainer_round events across all trainers."""
     return sum(len(t.get("trainer_round", []) or []) for t in trainers.values())
@@ -5700,9 +6925,8 @@ def compute_conservation_parity(real: dict, sim: dict,
 def drain_wall_budget_parity(real: dict, sim: dict, tol_rel: float = 0.25,
                              min_abs_s: float = 0.5) -> dict:
     """Commit/ordering-stage invariant: sim must NEVER cost more real wall-
-    clock than real at this stage (generalizes #15's phantom drain-gate
-    stall, previously only visible via debug counters, into a standing
-    rung). Components:
+    clock than real at this stage (generalizes #15's drain-gate stall into a
+    standing rung). Components:
       - TRANSPORT one-sided (`barrier_wait_s`, `sim <= real*(1+tol_rel)`
         floored at `min_abs_s`): a real-only barrier wait the sim collapses
         toward zero -- any excess is unmodeled work/blocking.
@@ -5755,19 +6979,32 @@ def drain_wall_budget_parity(real: dict, sim: dict, tol_rel: float = 0.25,
     # drain_tail_s is NOT transport: it's the batched cohort-merge replay
     # (`_replay_buffered_cohort_contribs` -> `aggregate_grads_from_trainers`),
     # genuine shared compute that runs heavier on the sim host from GPU/memory
-    # contention. Its modeled cost is charged to the vclock separately
-    # (`charge_sim_vclock_overhead`), so grade this DISTRIBUTIONALLY on a
-    # central+P90/P95 band rather than a one-sided sim<=real budget (§F-10).
+    # contention. Where sim folds a real-PROFILED constant for it, that constant
+    # -- not sim's contended span -- is what the clock consumed, so grade it
+    # (§D-31, same rule as `aggregation_compute_wall`). Falls back to the
+    # central+P90/P95 band when the run charged `live` or nothing (§F-10).
     r_dt, s_dt = _phase_vals(real, "drain_tail_s"), _phase_vals(sim, "drain_tail_s")
     if r_dt and s_dt:
-        band = pctl_band_ok(r_dt, s_dt, qs=(50, 90, 95),
-                            tol_rel=0.5, min_abs=min_abs_s)
-        components["drain_tail_s"] = {
-            "ok": band["ok"], "tier": "DIST",
-            "real_mean_s": round(sum(r_dt) / len(r_dt), 3),
-            "sim_mean_s": round(sum(s_dt) / len(s_dt), 3),
-            "pctl_band": band,
-        }
+        rm_dt, sm_dt = sum(r_dt) / len(r_dt), sum(s_dt) / len(s_dt)
+        charged_dt = _profiled_charge_means(sim).get(_AGG_PHASE_CHARGE_LABEL["drain_tail_s"])
+        if charged_dt is not None:
+            rel = abs(rm_dt - charged_dt) / max(abs(rm_dt), abs(charged_dt), 1e-9)
+            components["drain_tail_s"] = {
+                "ok": rel <= tol_rel, "tier": "DIST", "graded_basis": "sim_charged",
+                "real_mean_s": round(rm_dt, 3), "sim_mean_s": round(sm_dt, 3),
+                "sim_charged_mean_s": round(charged_dt, 4),
+                "mean_rel_diff": round(rel, 3), "mean_tol_rel": tol_rel,
+                "sim_wall_inflation_x": (round(sm_dt / charged_dt, 2)
+                                         if charged_dt > 1e-9 else None),
+            }
+        else:
+            band = pctl_band_ok(r_dt, s_dt, qs=(50, 90, 95),
+                                tol_rel=0.5, min_abs=min_abs_s)
+            components["drain_tail_s"] = {
+                "ok": band["ok"], "tier": "DIST", "graded_basis": "sim_wall",
+                "real_mean_s": round(rm_dt, 3), "sim_mean_s": round(sm_dt, 3),
+                "pctl_band": band,
+            }
     else:
         components["drain_tail_s"] = {"ok": True, "status": "SKIP",
                                       "note": "no drain_tail_s in telemetry"}
@@ -5797,6 +7034,150 @@ def drain_wall_budget_parity(real: dict, sim: dict, tol_rel: float = 0.25,
     }
 
 
+# agg_round wall field -> the `vclock_charge` label that funds it, for the
+# phases where sim folds a real-profiled constant instead of its own span.
+_AGG_PHASE_CHARGE_LABEL = {"aggregate_fedavg_s": "fedavg", "drain_tail_s": "drain_tail"}
+
+
+def sim_clock_basis(sim: dict, sim_trainers: Optional[dict] = None) -> dict:
+    """§D-31 primitive: what the SIM VCLOCK actually consumed, per charge label.
+
+    Sim's clock advances from exactly two sources -- `sct` on the trainer side
+    (`sim_send_ts + max(real_gpu_s, D) + leg`) and `charge_sim_vclock_overhead`
+    on the aggregator side. A span outside both never reaches the clock, so
+    comparing sim's own wall for it grades a discarded quantity and fails as a
+    function of host contention rather than of either model. Per label:
+
+      profiled -- sim folded a real-PROFILED constant; grade `charged_mean_s`,
+                  and drop KS (a constant has no shape).
+      live     -- sim folded its OWN span; that span IS what the clock saw, so
+                  grade it as an ordinary shared-compute comparison.
+      none     -- charged nothing. Report with the inflation factor, never gate.
+
+    `agg_wall_gates` answers the same question for the aggregator as a whole:
+    false once every charged label resolves from a profile, which is the
+    designed steady state and makes the agg-side wall rungs report-only.
+
+    `compute_binds_frac` is the trainer-side analog: sim's measured compute
+    reaches the clock only when it BINDS `max(real_gpu_s, D)`. With D ~7-11s
+    against ~0.3-0.5s of JVP it never binds, so trainer step spans are
+    clock-discarded too -- the regime `_emulate_training_delay`'s
+    [TIMING_OVERRUN] warns about leaving.
+    """
+    # Keyed (label, payload_kind) exactly as the registry is: one label can carry
+    # a charged kind and an uncharged one (`redispatch_turnaround` is `weights`
+    # charge:true + `var_bad` charge:false), and pooling them reports the whole
+    # label as uncharged.
+    tot: dict = {}
+    for e in sim.get("vclock_charges", []) or []:
+        if e.get("event") != "vclock_charge":
+            continue
+        label = e.get("label")
+        if label is None:
+            continue
+        key = label if not e.get("payload_kind") else f"{label}.{e['payload_kind']}"
+        src = e.get("charge_source") or "none"
+        agg = tot.setdefault(key, {"sources": {}, "charged": 0.0, "span": 0.0, "n": 0})
+        agg["sources"][src] = agg["sources"].get(src, 0) + 1
+        agg["charged"] += float(e.get("charged_s") or 0.0)
+        agg["span"] += float(e.get("span_s") or 0.0)
+        agg["n"] += 1
+
+    by_label = {}
+    for key, a in tot.items():
+        src = max(a["sources"], key=lambda k: a["sources"][k])
+        by_label[key] = {
+            "source": src,
+            "n": a["n"],
+            "span_mean_s": round(a["span"] / a["n"], 4) if a["n"] else None,
+            "charged_mean_s": (round(a["charged"] / a["n"], 4)
+                               if a["n"] and src != "none" else None),
+        }
+
+    binds = None
+    if sim_trainers:
+        d_vals = [s for e in sim.get("agg_rounds", [])
+                  if e.get("event") == "agg_round"
+                  for s in (e.get("trainer_speed_s") or [])
+                  if isinstance(s, (int, float))]
+        gpu = [float(t["duration_s"]) for d in sim_trainers.values()
+               for t in d.get("step_timing", [])
+               if t.get("func") == "train_with_data_id"
+               and isinstance(t.get("duration_s"), (int, float))]
+        if d_vals and gpu:
+            d_mean = sum(d_vals) / len(d_vals)
+            binds = sum(1 for g in gpu if g > d_mean) / len(gpu)
+
+    return {
+        "by_label": by_label,
+        "has_ledger": bool(by_label),
+        # No ledger at all means the basis is UNKNOWN, not "profiled" -- a
+        # non-fwdllm or pre-instrumentation run must keep grading sim's wall
+        # rather than be silently demoted to report-only.
+        "agg_wall_gates": (any(v["source"] == "live" for v in by_label.values())
+                           if by_label else True),
+        "compute_binds_frac": (round(binds, 4) if binds is not None else None),
+    }
+
+
+def _profiled_charge_means(sim: dict) -> dict:
+    """{label: mean charged_s} for the labels sim funds from a PROFILE."""
+    return {k: v["charged_mean_s"] for k, v in sim_clock_basis(sim)["by_label"].items()
+            if v["source"] == "profiled" and v["charged_mean_s"] is not None}
+
+
+def charge_coverage(real: dict, sim: dict, sim_trainers: Optional[dict] = None,
+                    mispricing_warn_x: float = 1.25) -> dict:
+    """[DIAG] Per label: what sim SPENT in wall vs what reached its vclock, and
+    how the charge compares to REAL's own span for the same label.
+
+    Exists so an uncharged or mispriced span announces itself on the run that
+    introduces it, instead of surfacing later as a rung that flipped for reasons
+    nobody can reconstruct. A profiled charge is only as good as the real leg it
+    came from: one family-wide constant sat at 1.08-2.75x each baseline's own
+    real `drain_tail`, i.e. 0.6-3.4% of sim's clock, always making sim look
+    slower. `charge_vs_real_x` is that ratio; far from 1.0 means re-profile
+    against THIS baseline's real (`profile_sim_charges.py`), never re-tune.
+    """
+    basis = sim_clock_basis(sim, sim_trainers)
+    real_span = {k: v["span_mean_s"] for k, v in sim_clock_basis(real)["by_label"].items()}
+
+    labels, worst, worst_x = {}, None, 1.0
+    for label, v in basis["by_label"].items():
+        rs, cm = real_span.get(label), v["charged_mean_s"]
+        # `redispatch_turnaround`'s registry value is a first-difference MARGINAL
+        # (§D-12); its raw spans are cumulative-per-batch, so a raw ratio against
+        # them is meaningless. Report the spans, skip the pricing verdict.
+        comparable = not label.startswith("redispatch_turnaround")
+        x = (round(cm / rs, 2) if (comparable and cm and rs and rs > 1e-9) else None)
+        labels[label] = {
+            "source": v["source"], "n": v["n"],
+            "sim_span_mean_s": v["span_mean_s"],
+            "charged_mean_s": cm,
+            "real_span_mean_s": rs,
+            "charge_vs_real_x": x,
+            "sim_wall_inflation_x": (round(v["span_mean_s"] / cm, 2)
+                                     if (cm and cm > 1e-9 and v["span_mean_s"]) else None),
+        }
+        if not comparable:
+            labels[label]["note"] = "cumulative-per-batch spans; charge is a marginal (§D-12)"
+        if x is not None and max(x, 1 / x) > max(worst_x, 1 / worst_x):
+            worst, worst_x = label, x
+
+    uncharged = sorted(k for k, v in basis["by_label"].items() if v["source"] == "none")
+    return {
+        "ok": True, "tier": "DIAG",
+        "by_label": labels,
+        "uncharged_labels": uncharged,
+        "worst_mispriced_label": worst,
+        "worst_charge_vs_real_x": worst_x if worst else None,
+        "mispriced": bool(worst and max(worst_x, 1 / worst_x) > mispricing_warn_x),
+        "mispricing_warn_x": mispricing_warn_x,
+        "agg_wall_gates": basis["agg_wall_gates"],
+        "compute_binds_frac": basis["compute_binds_frac"],
+    }
+
+
 def aggregation_compute_wall_parity(real: dict, sim: dict, ks_tol: float = 0.3,
                                     mean_tol_rel: float = 0.35) -> dict:
     """Aggregation-stage wall-clock EQUALITY check (DIAG, TWO-SIDED) -- the
@@ -5820,6 +7201,13 @@ def aggregation_compute_wall_parity(real: dict, sim: dict, ks_tol: float = 0.3,
         return [e[field] for e in agg["agg_rounds"]
                 if e.get("event") == "agg_round" and e.get(field) is not None]
 
+    # Where sim charges a REAL-PROFILED constant (§D-18) its own span is a §D-1
+    # contention artifact the vclock discards, so grading it compares a quantity
+    # the design threw away. Measured: sim's raw `aggregate_fedavg_s` sat at a
+    # flat 0.088-0.097s on all nine while real tracked 0.051-0.098s, failing 8
+    # of 9 purely on how fast each real was. Grade what reached the clock.
+    charged = _profiled_charge_means(sim)
+
     components = {}
     for field in ("aggregate_fedavg_s", "eval_s"):
         rv, sv = _vals(real, field), _vals(sim, field)
@@ -5829,13 +7217,27 @@ def aggregation_compute_wall_parity(real: dict, sim: dict, ks_tol: float = 0.3,
             continue
         ks = ks_stat(rv, sv)
         rm, sm = sum(rv) / len(rv), sum(sv) / len(sv)
-        mean_rel = abs(rm - sm) / max(abs(rm), abs(sm), 1e-9)
-        components[field] = {
-            "ok": ks <= ks_tol and mean_rel <= mean_tol_rel,
+        graded_sim, basis = sm, "sim_wall"
+        cm = charged.get(_AGG_PHASE_CHARGE_LABEL.get(field))
+        if cm is not None:
+            graded_sim, basis = cm, "sim_charged"
+        mean_rel = abs(rm - graded_sim) / max(abs(rm), abs(graded_sim), 1e-9)
+        comp = {
+            # KS stays on the raw spans (a shape test); a profiled charge is a
+            # constant with no shape, so gate on the graded mean alone there.
+            "ok": (mean_rel <= mean_tol_rel if basis == "sim_charged"
+                   else (ks <= ks_tol and mean_rel <= mean_tol_rel)),
+            "graded_basis": basis,
             "ks_stat": round(ks, 3), "ks_tol": ks_tol,
             "real_mean_s": round(rm, 3), "sim_mean_s": round(sm, 3),
             "mean_rel_diff": round(mean_rel, 3), "mean_tol_rel": mean_tol_rel,
         }
+        if basis == "sim_charged":
+            comp["sim_charged_mean_s"] = round(graded_sim, 4)
+            # Co-location inflation, reported so §D-1 stays visible.
+            comp["sim_wall_inflation_x"] = (round(sm / graded_sim, 2)
+                                            if graded_sim > 1e-9 else None)
+        components[field] = comp
 
     if all(c.get("status") == "SKIP" for c in components.values()):
         return {"ok": True, "tier": "DIAG", "status": "SKIP",
@@ -6013,7 +7415,9 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
                    budget_s: Optional[float] = None,
                    real_ground_truth: Optional[dict] = None,
                    sim_ground_truth: Optional[dict] = None,
-                   max_bin: Optional[int] = None) -> dict:
+                   max_bin: Optional[int] = None,
+                   floors: Optional[dict] = None,
+                   same_mode: bool = False) -> dict:
     """Run the full parity + invariant battery; returns {name: result_dict}.
 
     Ordered HIGH → MID → LOW so coarse failures surface first:
@@ -6029,6 +7433,121 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     """
     results: dict = {}
 
+    # DIST tolerances sized against THIS baseline's measured replicate floor
+    # (§D-24). The nominal gates were calibrated when the floor was 10-20x larger,
+    # so they passed divergences well above noise; with no floor file they are
+    # unchanged, which keeps every other example inert.
+    #
+    # `min_abs` is per FIELD, not global: it is the tightest tolerance worth
+    # deriving in that field's own UNITS, and three of these are absolute
+    # (iterations, accuracy points, slope per 100 units) rather than relative.
+    _floor_specs = {
+        # The vclock/time family. All three BAIL real↔real for want of `vclock_now`
+        # (§D-56), so they were left on hand-typed gates -- but the RUNG bails, the
+        # QUANTITY does not (§D-72): measured same-code, real's own time-to-N
+        # spreads 0.0% pinned to 6.7% unpinned, against gates nothing had sized.
+        # `throughput` was floor-gated on `committed_bins`, work VOLUME, while it
+        # grades a time RATIO -- now measured on its own window by its own rung.
+        "throughput": (throughput_parity,
+                       [("tol_rel", "throughput_rel", 0.02)]),
+        # `trainers_tol` may LOOSEN to 2x nominal, as v2 does: fedbuff_round's floor
+        # (5.5%) already EXCEEDS the 5% nominal, and one ungradeable field takes the
+        # whole rung down -- a SKIP here would stop grading the time half too.
+        "terminal_state": (terminal_state_parity,
+                           [("time_tol", "time_to_n", 0.02),
+                            ("trainers_tol", "trainers_at_n", 0.02, 2.0)]),
+        # U2 is K8's time half recomputed -- same N, same clocks, same number. It
+        # shares the gate by construction (same metric, same nominal) and reports
+        # without gating (`_WARN_ONLY_CHECKS`), so one measurement fails once.
+        "total_commits": (total_commits_parity,
+                          [("tol_rel", "time_to_n", 0.02)]),
+        "cohort_sequence": (cohort_sequence_parity,
+                            [("count_tol", "iters_per_bin", 0.02)]),
+        "v1_iter_per_data_id": (iters_per_data_id_parity,
+                                [("mean_tol_rel", "iters_per_bin", 0.02)]),
+        # v2 may LOOSEN to at most 2x nominal (4%): its floor (1.8-1.9% on the
+        # loss-derived baselines) had caught up with the 2% nominal, so it was
+        # grading its own noise.
+        "v2_var_trajectory": (var_trajectory_parity,
+                              [("mean_tol_rel", "mean_var", 0.02, 2.0)]),
+        # `rel_diff_n_selections` is work volume, not selector behaviour: chosen
+        # and in-flight means read EXACTLY 0.0 apart on every failing pair while
+        # this reads 7.5-13.8%, which is `v1`'s number. Gate it on the cadence
+        # floor; the two behavioural bounds keep their own gates (§D-64).
+        # `mean_chosen` averages a BIMODAL burst -- one draw of c, then 1-end
+        # top-ups -- so it reports how many top-ups fired, not who they went to
+        # (§D-32, and this rung's own docstring says so). It was left on a
+        # hand-typed 5% while the behaviour it is meant to catch is reported by
+        # `..._repicks_in_round`. Floor-gate it like every other CALIBRATED
+        # quantity; where the floor swallows 5% the rung SKIPs and the re-pick
+        # counts remain the thing to read.
+        "selection_detail": (selection_detail_parity,
+                             [("tol_n_selections", "iters_per_bin", 0.02),
+                              ("tol_chosen", "mean_chosen", 0.02)]),
+        # K3's two bounds. Never floor-derived, and its sim↔sim control was a
+        # §D-73 unit mismatch, so "fails its own control" was never evidence.
+        # `ks_tol` is an absolute KS statistic, hence its own min_abs.
+        "per_round_advance": (per_round_advance_parity,
+                              [("mean_tol_rel", "round_advance_rel", 0.02),
+                               ("ks_tol", "round_advance_ks", 0.05)]),
+        "v1b_iters_moving_avg": (iters_per_data_id_moving_avg_parity,
+                                 [("ma_mean_abs_tol", "iters_ma_mean_dev", 0.25),
+                                  ("ma_max_abs_tol", "iters_ma_max_dev", 0.75),
+                                  ("cum_mean_rel_tol", "iters_per_bin", 0.02)]),
+        "v1c_iter_drift_rate": (iter_drift_rate_parity,
+                                [("lambda_floor_per_100", "iter_drift_lambda",
+                                  0.05)]),
+        "convergence": (convergence_parity,
+                        [("acc_tol", "accuracy_diff", 0.02)]),
+        # A pooled KS over the matched window. Never floor-derived, and a flat 0.2
+        # is not a calibration: measured across config-identical legs the same
+        # statistic spreads 0.115-0.135 on felix_round alone. `min_abs` is in KS
+        # units, not relative.
+        "utility": (utility_parity, [("max_ks", "utility_ks", 0.05)]),
+        # §B.3 #2: the last two clock rungs on hand-typed gates. Grading the
+        # matched window (§D-84) made `overhead_residual` fail on two baselines
+        # with a 10% gate nobody derived — the honest fix is a floor, not a widen.
+        "overhead_residual": (overhead_residual,
+                              [("tol_rel", "overhead_rel", 0.02)]),
+        "overlap_factor": (overlap_factor, [("tol_rel", "overlap_rel", 0.02)]),
+    }
+    _tol, _ungradeable, _floor_of = {}, {}, {}
+    _ungradeable_field: dict = {}
+    for _rung, (_fn, _fields) in _floor_specs.items():
+        _tol[_rung], _ungradeable[_rung], _floor_of[_rung] = {}, None, []
+        for _field, _metric, _min_abs, *_cap in _fields:
+            _floor = (floors or {}).get(_metric)
+            _nominal = inspect.signature(_fn).parameters[_field].default
+            _eff, _why = floor_gated_tol(_nominal, _floor, min_abs=_min_abs,
+                                         loosen_cap=(_cap[0] if _cap else None))
+            _tol[_rung][_field] = _eff
+            # One ungradeable field makes the whole rung ungradeable: its verdict
+            # is an AND over its bounds, so a coin-flip on one decides it. Tracked
+            # per FIELD as well, because `selection_detail` below drops exactly one
+            # field's reason and must not drop the others' with it.
+            _ungradeable[_rung] = _ungradeable[_rung] or _why
+            _ungradeable_field[(_rung, _field)] = _why
+            _floor_of[_rung].append((_metric, _floor, _nominal, _eff))
+
+    # ONE quantity, ONE tolerance. `cohort_sequence.count` and `v1b`'s cumulative
+    # mean are `v1`'s number rolled up -- verified identical to 3 decimals on all
+    # nine baselines across 19 real<->real control pairs -- so grading them at
+    # their own hand-typed 5% while `v1` is floor-gated fails the SAME measurement
+    # on one rung and passes it on another (§D-22). Same precedent as the
+    # throughput family sharing `_THROUGHPUT_FAMILY_TOL_REL`. The set/order/
+    # composition bounds of `cohort_sequence` and the MA bounds of `v1b` are
+    # independent measurements and keep their own gates.
+    _v1_tol = _tol["v1_iter_per_data_id"]["mean_tol_rel"]
+    _tol["cohort_sequence"]["count_tol"] = _v1_tol
+    _tol["v1b_iters_moving_avg"]["cum_mean_rel_tol"] = _v1_tol
+    _tol["selection_detail"]["tol_n_selections"] = _v1_tol
+    # Only its COUNT is re-gated onto v1, so only the COUNT's own "grades noise"
+    # reason is discarded. `tol_chosen` is floor-gated in its own right and its
+    # reason must survive: felix_round's `mean_chosen` floor is 11.7% against a 5%
+    # nominal, and clearing the whole rung's flag graded that 5% anyway.
+    _ungradeable["selection_detail"] = _ungradeable_field.get(
+        ("selection_detail", "tol_chosen"))
+
     # ── Stage 0 Telemetry coverage (gate) ──
     results["field_coverage"] = field_coverage(
         real_agg, sim_agg, real_trainers, sim_trainers)
@@ -6039,13 +7558,20 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["sim_rate"] = sim_rate_ok(sim_agg)
     results["trainer_speed"] = trainer_speed_parity(real_agg, sim_agg)
     results["trainer_speed_identity"] = trainer_speed_identity_parity(real_agg, sim_agg)
-    results["modeled_compute_advance"] = modeled_compute_advance(real_agg, sim_agg)
+    results["modeled_compute_advance"] = modeled_compute_advance(
+        real_agg, sim_agg, same_mode=same_mode)
     results["overhead_residual"] = overhead_residual(
-        real_agg, sim_agg, agg_goal=agg_goal)
-    results["overlap_factor"] = overlap_factor(real_agg, sim_agg)
-    results["per_round_advance"] = per_round_advance_parity(real_agg, sim_agg)
-    results["throughput"] = throughput_parity(real_agg, sim_agg)
-    results["wall_disparity"] = wall_disparity(real_agg, sim_agg)
+        real_agg, sim_agg, agg_goal=agg_goal, same_mode=same_mode,
+        **_tol["overhead_residual"])
+    results["overlap_factor"] = overlap_factor(real_agg, sim_agg,
+                                               same_mode=same_mode,
+                                               **_tol["overlap_factor"])
+    results["per_round_advance"] = per_round_advance_parity(
+        real_agg, sim_agg, same_mode=same_mode, **_tol["per_round_advance"])
+    results["throughput"] = throughput_parity(real_agg, sim_agg, same_mode=same_mode,
+                                              **_tol["throughput"])
+    results["wall_disparity"] = wall_disparity(real_agg, sim_agg,
+                                               same_mode=same_mode)
     results["sim_speedup"] = sim_speedup(real_agg, sim_agg)
 
     # ── Stage 2 Availability ──
@@ -6074,7 +7600,14 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         real_trainers, real_ground_truth)
 
     # ── Stage 3 Selection ──
-    results["selection_detail"] = selection_detail_parity(real_agg, sim_agg)
+    # v1 is computed early (it is emitted below, in ladder order) so
+    # `selection_detail` can tell a re-draw COUNT gap that work VOLUME explains
+    # from one it does not -- only the latter is selector behaviour (§D-92).
+    _v1 = iters_per_data_id_parity(real_agg, sim_agg, max_bin=max_bin,
+                                   **_tol["v1_iter_per_data_id"])
+    results["selection_detail"] = selection_detail_parity(
+        real_agg, sim_agg, volume_rel=_v1.get("mean_rel_diff"),
+        **_tol["selection_detail"])
     results["residence"] = inflight_residence_parity(real_agg, sim_agg)
     results["selection_bias"] = selection_speed_bias_parity(real_agg, sim_agg)
     results["selector_score"] = selector_score_parity(real_agg, sim_agg)
@@ -6089,7 +7622,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["trainer_phase_wall_budget"] = trainer_phase_wall_budget_ok(
         real_trainers, sim_trainers)
     results["step_timing_breakdown"] = step_timing_breakdown_parity(
-        real_trainers, sim_trainers)
+        real_trainers, sim_trainers, sim_agg=sim_agg)
     results["trainer_phase"] = trainer_phase_parity(real_trainers, sim_trainers)
     results["gpu_budget_real"] = gpu_budget_ok(real_trainers)
     results["gpu_budget_sim"] = gpu_budget_ok(sim_trainers)
@@ -6112,6 +7645,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         real_agg, sim_agg, max_rounds)
     results["drain_wall_budget"] = drain_wall_budget_parity(real_agg, sim_agg)
     results["aggregation_compute_wall"] = aggregation_compute_wall_parity(real_agg, sim_agg)
+    results["charge_coverage"] = charge_coverage(real_agg, sim_agg, sim_trainers)
     results["agg_step_timing_breakdown"] = agg_step_timing_breakdown_parity(real_agg, sim_agg)
     results["phase_vclock_bottlenecks"] = phase_vclock_bottlenecks(
         real_agg, sim_agg, real_trainers, sim_trainers)
@@ -6120,10 +7654,16 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     # Pure functions over the per-cycle agg_round series; SKIP cleanly on
     # non-fwdllm runs (no cadence fields emitted). V/G rungs feed off Stage-5
     # ordering + Stage-1 clock; DK rungs are inert unless DynamicKC is enabled.
-    results["cohort_sequence"] = cohort_sequence_parity(real_agg, sim_agg, max_bin=max_bin)
-    results["v1_iter_per_data_id"] = iters_per_data_id_parity(real_agg, sim_agg, max_bin=max_bin)
-    results["v1b_iters_moving_avg"] = iters_per_data_id_moving_avg_parity(real_agg, sim_agg)
-    results["v2_var_trajectory"] = var_trajectory_parity(real_agg, sim_agg, max_bin=max_bin)
+    results["cohort_sequence"] = cohort_sequence_parity(real_agg, sim_agg, max_bin=max_bin,
+                                                        **_tol["cohort_sequence"])
+    results["v1c_iter_drift_rate"] = iter_drift_rate_parity(real_agg, sim_agg, max_bin=max_bin,
+                                                            **_tol["v1c_iter_drift_rate"])
+    results["v1_iter_per_data_id"] = _v1
+    results["v1b_iters_moving_avg"] = iters_per_data_id_moving_avg_parity(
+        real_agg, sim_agg, **_tol["v1b_iters_moving_avg"])
+    results["v2_var_trajectory"] = var_trajectory_parity(real_agg, sim_agg, max_bin=max_bin,
+                                                         **_tol["v2_var_trajectory"])
+    results["v2b_var_drift"] = var_drift_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v3_cached_v_pool"] = cached_v_pool_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v4_force_commit_rate"] = force_commit_rate_parity(real_agg, sim_agg, max_bin=max_bin)
     results["v5_variance_pass_ratio"] = variance_pass_ratio_parity(real_agg, sim_agg, max_bin=max_bin)
@@ -6137,17 +7677,23 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     # R1 is the finest residence check (per-trainer interval overlap); W1 is the
     # coarse compute-conservation tell that feeds V1/K2. Both SKIP cleanly when
     # contributor_intervals is absent (sync baselines / non-fwdllm runs).
+    results["concurrency_cap"] = concurrency_cap_ok(real_agg, sim_agg)
+    results["slot_utilization"] = slot_utilization_parity(real_agg, sim_agg)
+    results["retask_before_close"] = retask_before_close_ok(real_agg, sim_agg)
     results["r1_inflight_overlap"] = inflight_overlap_parity(real_agg, sim_agg)
     results["w1_compute_conservation"] = compute_conservation_parity(
         real_agg, sim_agg, real_trainers, sim_trainers)
 
     # ── Stage 7 Statistical utility ──
-    results["utility"] = utility_parity(real_agg, sim_agg)
+    results["utility"] = utility_parity(real_agg, sim_agg, **_tol["utility"])
 
     # ── Stage 8 Emergent outcomes ──
-    results["terminal_state"] = terminal_state_parity(real_agg, sim_agg)
-    results["total_commits"] = total_commits_parity(real_agg, sim_agg)
-    results["convergence"] = convergence_parity(real_agg, sim_agg, budget_s=budget_s)
+    results["terminal_state"] = terminal_state_parity(
+        real_agg, sim_agg, same_mode=same_mode, **_tol["terminal_state"])
+    results["total_commits"] = total_commits_parity(
+        real_agg, sim_agg, same_mode=same_mode, **_tol["total_commits"])
+    results["convergence"] = convergence_parity(real_agg, sim_agg, budget_s=budget_s,
+                                                **_tol["convergence"])
     results["convergence_loss"] = convergence_loss_parity(
         real_agg, sim_agg, budget_s=budget_s)
 
@@ -6156,6 +7702,53 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         real_agg, sim_agg, rounds_cap=rounds_cap, budget_s=budget_s)
     results["failsafe"] = failsafe_ok(sim_agg, budget_s=budget_s)
 
+    # ── Budget coverage: graded once, then stamped on every rung that windows ──
+    # 8 of the 88 rungs share `_matched_logical_budget`. Rather than have each
+    # re-derive (and re-word) what fraction of the run it graded, compute it once
+    # and attach it wherever a `matched_logical_budget_n` appears, so no windowed
+    # number can be read without its coverage. `low_budget_coverage` marks a rung
+    # whose verdict rests on too little of the run to trust.
+    results["matched_budget_coverage"] = matched_budget_coverage_parity(
+        real_agg, sim_agg)
+    _cov = _matched_budget_coverage(real_agg["agg_rounds"], sim_agg["agg_rounds"])
+    if _cov.get("min_coverage") is not None:
+        for _res in results.values():
+            if isinstance(_res, dict) and _res.get("matched_logical_budget_n") is not None:
+                _res["budget_coverage"] = {
+                    "real": _cov["real_coverage"], "sim": _cov["sim_coverage"],
+                    "min": _cov["min_coverage"], "truncation": _cov["truncation"],
+                }
+                if _cov["min_coverage"] < _BUDGET_COVERAGE_DEGRADED:
+                    _res["low_budget_coverage"] = True
+
+    # Record what the floor did to each gated rung, and refuse to grade the ones
+    # whose floor has swallowed their tolerance — a SKIP naming the floor beats a
+    # verdict that is a coin flip either way (§D-24).
+    for _rung, _fields in _floor_of.items():
+        _res = results.get(_rung)
+        _measured = [f for f in _fields if f[1] is not None]
+        if not isinstance(_res, dict) or not _measured:
+            continue
+        _res["replicate_floor_rel"] = {m: round(f, 4) for m, f, _n, _e in _measured}
+        _res["floor_gated_tol"] = {m: round(e, 4) for m, _f, _n, e in _measured}
+        _res["nominal_tol"] = {m: n for m, _f, n, _e in _measured}
+        if _ungradeable[_rung]:
+            _res.update({"ok": True, "status": "SKIP",
+                         "reason": _ungradeable[_rung]})
+
+    # Stamp WHERE each verdict's threshold came from. A fail on a CALIBRATED rung
+    # with no measured floor is not the same evidence as one on a floor-gated
+    # rung, and 0-fail on an underived gate can mean BLIND rather than clean
+    # (§D-24). Recording it is what stops the board being read as if they were.
+    for _name, _res in results.items():
+        if not isinstance(_res, dict):
+            continue
+        _cls, _metric = THRESHOLD_PROVENANCE.get(_name, (None, None))
+        if _cls is None:
+            continue
+        _res["threshold_provenance"] = _cls
+        if _cls == CALIBRATED:
+            _res["gate_derived"] = _metric is not None
     return results
 
 
@@ -6173,6 +7766,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
 CHECK_META: dict = {
     # ── Stage 0 Telemetry coverage ──
     "field_coverage":          {"stage": 0, "role": "CONTROL",  "deps": ()},
+    "matched_budget_coverage": {"stage": 0, "role": "CONTROL",  "deps": ("field_coverage",)},
     "vclock_telemetry":        {"stage": 0, "role": "CONTROL",  "deps": ("field_coverage",)},
     # ── Stage 1 Clock model ──
     "sim_commit_monotone":     {"stage": 1, "role": "MECHANISM", "deps": ("vclock_telemetry",)},
@@ -6180,8 +7774,8 @@ CHECK_META: dict = {
     "trainer_speed":           {"stage": 1, "role": "CONTROL",  "deps": ()},
     "trainer_speed_identity":  {"stage": 1, "role": "CONTROL",  "deps": ("trainer_speed",)},
     "modeled_compute_advance": {"stage": 1, "role": "DIAG",     "deps": ("trainer_speed", "sim_commit_monotone")},
-    "overhead_residual":       {"stage": 1, "role": "MECHANISM", "deps": ("trainer_speed", "sim_commit_monotone")},
-    "overlap_factor":          {"stage": 1, "role": "DIAG",     "deps": ("trainer_speed", "sim_commit_monotone")},
+    "overlap_factor":          {"stage": 1, "role": "MECHANISM", "deps": ("trainer_speed", "sim_commit_monotone")},
+    "overhead_residual":       {"stage": 1, "role": "MECHANISM", "deps": ("trainer_speed", "sim_commit_monotone", "overlap_factor")},
     "per_round_advance":       {"stage": 1, "role": "EMERGENT", "deps": ("overhead_residual",)},
     "throughput":              {"stage": 1, "role": "EMERGENT", "deps": ("per_round_advance",)},
     "wall_disparity":          {"stage": 1, "role": "DIAG",     "deps": ("throughput",)},
@@ -6241,6 +7835,7 @@ CHECK_META: dict = {
     "drain_wall_budget":       {"stage": 6, "role": "MECHANISM", "deps": ("vclock_telemetry", "commit_visibility")},
     "aggregation_compute_wall": {"stage": 6, "role": "DIAG",     "deps": ("drain_wall_budget",)},
     "agg_step_timing_breakdown": {"stage": 6, "role": "DIAG",    "deps": ("aggregation_compute_wall",)},
+    "charge_coverage":          {"stage": 6, "role": "DIAG",    "deps": ("vclock_telemetry",)},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
     "cohort_sequence":         {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order", "r1_inflight_overlap", "v1_iter_per_data_id")},
     "first_divergence_summary": {"stage": 6, "role": "DIAG",    "deps": ()},
@@ -6248,12 +7843,24 @@ CHECK_META: dict = {
     # R1 is the residence INV; W1 the compute-conservation DIAG that first flags a
     # violation and localizes to R1. V1's cadence divergence is DOWNSTREAM of R1
     # (a residence violation changes the contributing set/order), so V1 deps on it.
-    "r1_inflight_overlap":     {"stage": 3, "role": "MECHANISM", "deps": ("participation",)},
+    # The two dispatch-loop tripwires sit UPSTREAM of R1: both are single-side INVs
+    # on the send path, so they have no real/sim deps of their own, and R1 (a
+    # contribution-level view) is only meaningful once dispatch itself is legal.
+    "concurrency_cap":         {"stage": 4, "role": "CONTROL",   "deps": ()},
+    "slot_utilization":        {"stage": 4, "role": "MECHANISM", "deps": ("concurrency_cap",)},
+    "retask_before_close":     {"stage": 4, "role": "MECHANISM", "deps": ("concurrency_cap",)},
+    "r1_inflight_overlap":     {"stage": 3, "role": "MECHANISM", "deps": ("participation", "retask_before_close")},
     "w1_compute_conservation": {"stage": 3, "role": "DIAG",      "deps": ("r1_inflight_overlap",)},
     # ── Stage 6' FwdLLM variance-gated aggregation cadence (PARITY.md §F.4) ──
-    "v1_iter_per_data_id":     {"stage": 6, "role": "MECHANISM", "deps": ("inter_arrival_order", "r1_inflight_overlap")},
+    # The RATE sits BELOW the cadence level rungs: a compounding divergence makes
+    # every level a function of run length, so `v1c` is the root and `v1`/`v1b`/
+    # `v2` are its readouts. A flat rate with a failing level means the level is
+    # grading accumulated noise -- calibrate its tolerance, don't chase it (§D-24).
+    "v1c_iter_drift_rate":     {"stage": 6, "role": "MECHANISM", "deps": ("inter_arrival_order", "r1_inflight_overlap")},
+    "v1_iter_per_data_id":     {"stage": 6, "role": "MECHANISM", "deps": ("v1c_iter_drift_rate",)},
     "v1b_iters_moving_avg":    {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},
-    "v2_var_trajectory":       {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},
+    "v2_var_trajectory":       {"stage": 6, "role": "MECHANISM", "deps": ("v1c_iter_drift_rate", "v1_iter_per_data_id")},
+    "v2b_var_drift":           {"stage": 6, "role": "DIAG",      "deps": ("v2_var_trajectory",)},
     "v3_cached_v_pool":        {"stage": 6, "role": "DIAG",      "deps": ("v1_iter_per_data_id",)},
     "v4_force_commit_rate":    {"stage": 6, "role": "MECHANISM", "deps": ("v1_iter_per_data_id",)},
     "v5_variance_pass_ratio":  {"stage": 6, "role": "EMERGENT", "deps": ("v1_iter_per_data_id", "v2_var_trajectory")},
@@ -6278,8 +7885,151 @@ CHECK_META: dict = {
     "starvation_advance":      {"stage": 2, "role": "DIAG",     "deps": ("abandon_timeout",)},
 }
 
-# Checks whose FAIL is downgraded to WARN regardless of tier (expected-noisy).
-_WARN_ONLY_CHECKS = {"budget_not_cap", "inter_arrival_order"}
+# ═══════════════════════════════════════════════════════════════════
+#  Threshold provenance — WHERE each rung's number is allowed to come from
+# ═══════════════════════════════════════════════════════════════════
+#
+# One question decides it: DOES THIS QUANTITY DIFFER BETWEEN TWO RUNS THAT SHOULD
+# BE IDENTICAL?
+#
+#   INVARIANT  A structural property. Two identical runs give the identical
+#              answer, so the replicate floor is ZERO BY CONSTRUCTION and any
+#              nonzero reading is a defect. Threshold is exact or boolean.
+#              Floor-gating one would be actively wrong -- it would license drift
+#              in something that must never drift.
+#   CALIBRATED A paired real<->sim comparison of a quantity with genuine
+#              run-to-run variance. "Is this gap meaningful?" has no answer except
+#              relative to that variance, so the threshold MUST come from a
+#              measured floor (§D-24). The second entry names the floor metric;
+#              None means the rung IS calibrated in kind but has no floor yet --
+#              that is visible DEBT, not a decision.
+#   POLICY     A single-sided bound on ONE run ("vclock rate in [0.01,100]",
+#              "GPU overrun < 25%"). There is no paired comparison, so no
+#              replicate floor is definable. The number is an engineering choice
+#              and is legitimate -- but it must be stated as one.
+#
+# There is deliberately no "hand-typed" class: that is the FAILURE state, a
+# variable quantity whose variance nobody measured -- exactly how the historical
+# mis-calibrated gates (§D-24, §D-72, §D-76) went undetected.
+#
+# `UNCLASSIFIED` is the backlog, and `test_threshold_provenance` RATCHETS it: it
+# may shrink, never grow, and a NEW rung must be classified to land at all.
+INVARIANT, CALIBRATED, POLICY = "INVARIANT", "CALIBRATED", "POLICY"
+
+THRESHOLD_PROVENANCE: dict = {
+    # ── INVARIANT: structural, zero-variance, must hold exactly ──
+    "vclock_telemetry":        (INVARIANT, None),   # sim must stamp vclock_now
+    "sim_send_ts":             (INVARIANT, None),   # real null, sim non-null, increasing
+    "sim_commit_monotone":     (INVARIANT, None),
+    "field_coverage":          (INVARIANT, None),   # required telemetry present
+    "agg_goal_cycles_real":    (INVARIANT, None),   # cycles == configured agg_goal
+    "agg_goal_cycles_sim":     (INVARIANT, None),
+    "concurrency_cap":         (INVARIANT, None),   # never exceed the configured cap
+    "retask_before_close":     (INVARIANT, None),   # ordering property
+    "budget_not_cap":          (INVARIANT, None),   # stopped by budget, not a rounds cap
+    "withheld_delivery":       (INVARIANT, None),   # every withheld commit delivered
+    "decision_determinism":    (INVARIANT, None),   # same seed => same decisions
+    "charge_coverage":         (INVARIANT, None),   # every charge modeled
+
+    # ── CALIBRATED, floor measured (the 10 that were firing) ──
+    "v1_iter_per_data_id":     (CALIBRATED, "iters_per_bin"),
+    "v1b_iters_moving_avg":    (CALIBRATED, "iters_ma_mean_dev"),
+    "v1c_iter_drift_rate":     (CALIBRATED, "iter_drift_lambda"),
+    "v2_var_trajectory":       (CALIBRATED, "mean_var"),
+    "cohort_sequence":         (CALIBRATED, "iters_per_bin"),
+    "selection_detail":        (CALIBRATED, "iters_per_bin"),
+    "convergence":             (CALIBRATED, "accuracy_diff"),
+    "throughput":              (CALIBRATED, "throughput_rel"),
+    "terminal_state":          (CALIBRATED, "time_to_n"),
+    "total_commits":           (CALIBRATED, "time_to_n"),
+
+    # ── CALIBRATED in kind, NO FLOOR YET -- the debt, measurable from n>=3 ──
+    "per_round_advance":       (CALIBRATED, "round_advance_rel"),
+    "overhead_residual":       (CALIBRATED, "overhead_rel"),
+    "overlap_factor":          (CALIBRATED, "overlap_rel"),
+    "utility":                 (CALIBRATED, "utility_ks"),
+    "staleness":               (CALIBRATED, None),
+    "participation":           (CALIBRATED, None),
+    "trainer_speed":           (CALIBRATED, None),
+    "trainer_speed_identity":  (CALIBRATED, None),
+    "avail_composition":       (CALIBRATED, None),
+    "avail_timebase":          (CALIBRATED, None),
+    "eligibility":             (CALIBRATED, None),
+    "eligible_speed":          (CALIBRATED, None),
+    "eligible_pool_reduction": (CALIBRATED, None),
+    "selection":               (CALIBRATED, None),
+    "selection_bias":          (CALIBRATED, None),
+    "selector_score":          (CALIBRATED, None),
+    "residence":               (CALIBRATED, None),
+    "preferred_duration":      (CALIBRATED, None),
+    "commit_visibility":       (CALIBRATED, None),
+    "aggregation_sequence":    (CALIBRATED, None),
+    "convergence_loss":        (CALIBRATED, None),
+    "training_budget":         (CALIBRATED, None),
+    "g1_grad_norm":            (CALIBRATED, None),
+    "g2_grad_pool_size":       (CALIBRATED, None),
+    "v2b_var_drift":           (CALIBRATED, None),
+    "v3_cached_v_pool":        (CALIBRATED, None),
+    "v4_force_commit_rate":    (CALIBRATED, None),
+    "v5_variance_pass_ratio":  (CALIBRATED, None),
+    "duty_cycle":              (CALIBRATED, None),
+    "duty_cycle_duration":     (CALIBRATED, None),
+    "inter_arrival_order":     (CALIBRATED, None),
+    "starvation_advance":      (CALIBRATED, None),
+    "modeled_compute_advance": (CALIBRATED, None),
+    "wall_disparity":          (CALIBRATED, None),
+    "aggregation_compute_wall": (CALIBRATED, None),
+    "step_timing_breakdown":   (CALIBRATED, None),
+    "agg_step_timing_breakdown": (CALIBRATED, None),
+    "trainer_phase":           (CALIBRATED, None),
+    "phase_pre_train":         (CALIBRATED, None),
+    "phase_gpu_compute":       (CALIBRATED, None),
+    "phase_mqtt_fetch":        (CALIBRATED, None),
+    "phase_post_train":        (CALIBRATED, None),
+    "phase_weights_to_gpu":    (CALIBRATED, None),
+    "phase_weights_to_ram":    (CALIBRATED, None),
+    "w1_compute_conservation": (CALIBRATED, None),  # paired compute ratio, tol 0.25
+
+    # ── POLICY: one-sided bound on ONE run; no paired floor is definable ──
+    "sim_rate":                (POLICY, None),      # vclock rate sanity range
+    "failsafe":                (POLICY, None),      # budget overshoot bound, not exact
+    "gpu_budget_real":         (POLICY, None),      # overrun fraction bound
+    "gpu_budget_sim":          (POLICY, None),
+    "drain_wall_budget":       (POLICY, None),
+    "trainer_phase_wall_budget": (POLICY, None),
+    "slot_utilization":        (POLICY, None),
+    "matched_budget_coverage": (POLICY, None),      # how much run must overlap to trust it
+    "timing_overrun":          (POLICY, None),
+    "eval_commit_timeliness":  (POLICY, None),
+    "commit_promptness":       (POLICY, None),
+    "abandon_timeout":         (POLICY, None),
+    "sim_speedup":             (POLICY, None),      # sim must be a speedup, #13
+    "r1_inflight_overlap":     (POLICY, None),
+}
+
+#: Rungs not yet placed. Each needs its own rung read to decide; guessing is worse
+#: than saying so. `test_threshold_provenance` ratchets this list DOWNWARD only.
+UNCLASSIFIED_PROVENANCE: frozenset = frozenset({
+    "first_divergence_summary",
+    "dk1_agg_goal_trajectory", "dk2_dynamic_c", "dk3_eligible_ends_metric",
+    "trainer_trace_fidelity_real", "trainer_trace_fidelity_sim",
+    "agg_belief_fidelity_real_selection", "agg_belief_fidelity_real_commit",
+    "agg_belief_fidelity_sim_selection", "agg_belief_fidelity_sim_commit",
+    "send_gate_wait_fidelity_real",
+})
+
+
+def calibration_debt() -> list:
+    """CALIBRATED rungs with no measured floor — the gates still resting on a
+    number nobody derived. Shrinking this is what the replicate batches buy."""
+    return sorted(r for r, (c, f) in THRESHOLD_PROVENANCE.items()
+                  if c == CALIBRATED and f is None)
+
+
+# Checks whose FAIL is downgraded to WARN regardless of tier (expected-noisy) --
+# plus `total_commits`, which is not noisy but is `terminal_state`'s time half
+# recomputed, so gating both counts one measurement twice (§D-64).
+_WARN_ONLY_CHECKS = {"budget_not_cap", "inter_arrival_order", "total_commits"}
 
 
 def check_stage(name: str) -> int:

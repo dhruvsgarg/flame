@@ -1,0 +1,97 @@
+# FedFwd SIMULATED-clock smoke test. Sibling of
+# fedbuff_it_unaware_n10_smoke_sim.yaml -- identical stack, but ORACULAR
+# trainer-availability tracking instead of unaware (per BASELINES.md,
+# fedbuff_it_oracular's own catalog entry). Sim-only per BRIDGE_DESIGN.md
+# decision #3.
+#
+# Uses the `fedbuff_it_oracular` baseline: FedBuff(P)+IT+O, the L2
+# attribution floor's availability-aware twin.
+#
+# TODO(verify): smoke-pending -- both the sim-fidelity knobs (see
+# fedbuff_round_n10_smoke_sim.yaml) and the 2-tier mobiperf_2st ORACULAR
+# trace choice (ported from fwdllm_it_oracular; unconfirmed whether the
+# async eval-dispatch path needs a 3-tier trace instead, see baselines.yaml's
+# fedbuff_it_oracular entry).
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/fedbuff_it_oracular_n10_smoke_sim.yaml
+
+experiments:
+  - name: fedbuff_it_oracular_n10_smoke_sim
+    description: "FedFwd SIM smoke (100 trainers, c=30/agg_goal=10, fedbuff_it_oracular baseline: async FedBuffSelector+fedbuff uniform rate, ORACULAR, per-iteration reselect, time_mode=simulated)."
+
+    baseline: fedbuff_it_oracular
+
+    example:
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 100
+      start_id: 1
+      dataset:
+        name: agnews
+        # Cosmetic-only for path-style (naming/snapshot), but kept in sync
+        # with the actual partition_method below (EXPTS_CHARTER A5: alpha=1).
+        dirichlet_alpha: 1
+        path_style: true
+      availability:
+        mode: syn_0
+      time_mode: simulated
+      enable_training_delays: false
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          seed: 1234
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          partition_method: niid_label_clients=100_alpha=1
+          # H13: dropout off during the JVP's two finite-difference passes.
+          # Code default ON (simulate_fwdllm.md §G); real and sim must match.
+          jvp_eval_mode: true
+          sim_straggler_spread_s: 0.0
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: fedbuff
+      tracking_mode: oracular
+      agg_goal: 10
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fedbuff_it_oracular_n10_smoke_sim
+        hyperparameters:
+          seed: 1234
+          rounds: 50
+          inflight_residence: true
+          send_timeout_wait_s: 300
+          sim_sct_ordered_drain: true
+          sim_staggered_redispatch: false
+          sim_model_dispatch_queue: true
+          sim_model_agg_compute_time: true
+          max_data_id_progress: 9999
+          max_runtime_s: 3600  # ...or after 60 minutes sim vclock
+          # Eval cadence -- MUST match real/sim, else the two sample the accuracy
+          # curve at different points. Raise if the run warns about waiting.
+          eval_every_n_commits: 2
+          # §P: real-profiled vclock charges. Without it sim folds its own
+          # contention-inflated span onto the clock (§D-18/§F-1/§F-20).
+          sim_charge_profile_path: lib/python/examples/fwdllm/sim_charge_profiles/fedbuff_it_oracular.yaml
+          # Outer wall failsafe (code default 20x max_runtime_s is too loose).
+          sim_wall_ceiling_s: 7200
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          partition_method: niid_label_clients=100_alpha=1
+        selector:
+          kwargs:
+            c: 30
+            minInitialTrainers: 100
+
+    execution:
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false

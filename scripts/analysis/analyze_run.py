@@ -52,12 +52,14 @@ try:
         EVENT_AGG_ROUND,
         EVENT_AVAIL_CHANGE,
         EVENT_INFLIGHT_RESIDENCE,
+        EVENT_REDISPATCH_DECOMP,
         EVENT_SELECTION,
         EVENT_STEP_TIMING,
         EVENT_TASK_SEND,
         EVENT_TRAINER_ROUND,
         EVENT_UTIL_DISPARITY,
         EVENT_UTILITY_BELIEF,
+        EVENT_VCLOCK_CHARGE,
         EVENT_WITHHELD_DELIVERY,
     )
 except Exception:  # pragma: no cover
@@ -73,6 +75,8 @@ except Exception:  # pragma: no cover
     EVENT_TASK_SEND = "task_send"
     EVENT_WITHHELD_DELIVERY = "withheld_delivery"
     EVENT_INFLIGHT_RESIDENCE = "inflight_residence"
+    EVENT_REDISPATCH_DECOMP = "redispatch_decomp"
+    EVENT_VCLOCK_CHARGE = "vclock_charge"
 
 # Batch 3 T3.2 (UNAVAILABILITY_DESIGN.md): the A6 trainer_trace_fidelity ground-
 # truth lookups live under the async_cifar10 example's parity checker package
@@ -2030,6 +2034,148 @@ def agg_step_timing_plots(records, out, stamp, tdir):
     return out_paths
 
 
+def redispatch_decomp_plots(records, out, stamp, tdir):
+    """`redispatch_decomp` events (fwdllm round-cadence, §D-11/§F-8 dark-data
+    fix): a committed trainer's commit->next-dispatch WALL gap split into
+    peer_wait (waiting on round-mates) vs post_close_overhead (genuine
+    server-side redispatch turnaround -- the span `sim_charge_registry`'s
+    `redispatch_turnaround.weights`/`.var_bad` entries profile from)."""
+    d = _sub(out, "aggregation")
+    rd = by_event(records, EVENT_REDISPATCH_DECOMP)
+    if not rd:
+        p = ph.no_data_plot(
+            "redispatch_decomp (no telemetry)", d, "redispatch_decomp_cdf.pdf",
+            note="round-cadence baselines only (fedbuff_round/felix_round)", stamp=stamp)
+        return [p] if p else []
+
+    out_paths = []
+    for field, stub in (
+        ("post_close_overhead_wall_s", "post_close_overhead"),
+        ("peer_wait_wall_s", "peer_wait"),
+        ("redispatch_gap_wall_s", "redispatch_gap"),
+    ):
+        series = defaultdict(list)
+        for r in rd:
+            v = r.get(field)
+            if v is None:
+                continue
+            key = f"{r.get('time_mode', '?')}/{r.get('payload_kind', '?')}"
+            series[key].append(float(v))
+        p = ph.cdf_multi(series, f"{stub} (s)",
+                         f"redispatch_decomp: {stub} by mode/payload_kind",
+                         d, f"redispatch_decomp_{stub}_cdf.pdf", stamp=stamp)
+        if p:
+            out_paths.append(p)
+
+    grouped = defaultdict(list)
+    for r in rd:
+        v = r.get("post_close_overhead_wall_s")
+        if v is None:
+            continue
+        grouped[f"{r.get('time_mode', '?')}/{r.get('payload_kind', '?')}"].append(float(v))
+    if grouped:
+        cats = sorted(grouped)
+        means = [sum(grouped[k]) / len(grouped[k]) for k in cats]
+        p = ph.bar_plot(cats, means, "mean post_close_overhead_wall_s (s)",
+                        "redispatch_decomp: mean post-close overhead by mode/payload_kind",
+                        d, "redispatch_decomp_post_close_mean_bar.pdf", stamp=stamp)
+        if p:
+            out_paths.append(p)
+
+    # §D-15 tripwires: peak outstanding per time-bin against the run's own `c`
+    # (dashed target), and the fraction of dispatches handed to an end whose agg
+    # cycle hadn't closed yet (must be 0).
+    conc = defaultdict(lambda: ([], []))
+    target = None
+    retask = defaultdict(lambda: [0, 0])
+    t0 = min((float(r["ts"]) for r in rd if r.get("ts") is not None), default=None)
+    for r in rd:
+        mode = r.get("time_mode", "?")
+        out_n, ts = r.get("outstanding_at_dispatch"), r.get("ts")
+        if out_n is not None and ts is not None and t0 is not None:
+            xs, ys = conc[mode]
+            xs.append(float(ts) - t0)
+            ys.append(float(out_n))
+            if r.get("concurrency_target") is not None:
+                target = max(target or 0, int(r["concurrency_target"]))
+        if r.get("retask_before_close") is not None:
+            retask[mode][0] += 1
+            retask[mode][1] += 1 if r["retask_before_close"] else 0
+    if conc:
+        p = ph.binned_line(dict(conc), "wall elapsed (s)", "outstanding at dispatch",
+                           "redispatch_decomp: dispatched-not-committed vs c",
+                           d, "redispatch_decomp_outstanding_line.pdf", stamp=stamp,
+                           reducer="max", target=target)
+        if p:
+            out_paths.append(p)
+    if retask:
+        cats = sorted(retask)
+        p = ph.bar_plot(cats, [retask[k][1] / retask[k][0] for k in cats],
+                        "fraction of dispatches",
+                        "redispatch_decomp: re-task before cycle close (must be 0)",
+                        d, "redispatch_decomp_retask_bar.pdf", stamp=stamp)
+        if p:
+            out_paths.append(p)
+    return out_paths
+
+
+def vclock_charge_plots(records, out, stamp, tdir):
+    """`vclock_charge` ledger (every `charge_sim_vclock_overhead()` call, both
+    modes -- simulate_fwdllm.md §P/§F-8 dark-data fix): measured `span_s` vs
+    what actually landed on the vclock (`charged_s`), per (label,
+    payload_kind). A real `span_s` that `charged_s` never reflects is the
+    §F-1/§D-11 unmodeled-cost signature this ledger exists to surface."""
+    d = _sub(out, "aggregation")
+    vc = by_event(records, EVENT_VCLOCK_CHARGE)
+    if not vc:
+        p = ph.no_data_plot(
+            "vclock_charge (no telemetry)", d, "vclock_charge_span_cdf.pdf",
+            note="emitted by charge_sim_vclock_overhead() -- fwdllm-family baselines only",
+            stamp=stamp)
+        return [p] if p else []
+
+    out_paths = []
+    span_series = defaultdict(list)
+    for r in vc:
+        v = r.get("span_s")
+        if v is None:
+            continue
+        key = f"{r.get('label', '?')}.{r.get('payload_kind') or '_default'}/{r.get('time_mode', '?')}"
+        span_series[key].append(float(v))
+    p = ph.cdf_multi(span_series, "span_s (s)",
+                     "vclock_charge: measured span by label.payload_kind/mode",
+                     d, "vclock_charge_span_cdf.pdf", stamp=stamp)
+    if p:
+        out_paths.append(p)
+
+    # Real's measured span vs what sim actually charged, per (label,
+    # payload_kind) -- positive = sim under-charging relative to real.
+    by_key = defaultdict(lambda: {"real_span": [], "sim_charged": []})
+    for r in vc:
+        key = f"{r.get('label', '?')}.{r.get('payload_kind') or '_default'}"
+        mode, span, charged = r.get("time_mode"), r.get("span_s"), r.get("charged_s")
+        if mode == "real" and span is not None:
+            by_key[key]["real_span"].append(float(span))
+        elif mode == "sim" and charged is not None:
+            by_key[key]["sim_charged"].append(float(charged))
+    cats, gaps = [], []
+    for k in sorted(by_key):
+        b = by_key[k]
+        if not (b["real_span"] and b["sim_charged"]):
+            continue
+        cats.append(k)
+        gaps.append(sum(b["real_span"]) / len(b["real_span"])
+                    - sum(b["sim_charged"]) / len(b["sim_charged"]))
+    if cats:
+        p = ph.signed_bar(cats, gaps, "label.payload_kind",
+                          "real mean span_s - sim mean charged_s",
+                          "vclock_charge: uncharged gap (real span vs sim charged)",
+                          d, "vclock_charge_uncharged_gap_bar.pdf", stamp=stamp)
+        if p:
+            out_paths.append(p)
+    return out_paths
+
+
 def phase_vclock_plots(records, out, stamp, tdir):
     """Per-function (`step_timing`) vclock-vs-wall ratio -- the fine-grained
     companion to sim_speedup_plots' round-level view. `vclock_s`/`vclock_now_s`
@@ -3254,6 +3400,7 @@ _PLOT_GROUPS = (
     perf_plots, sanity_plots, selection_plots, insights_plots,
     system_plots, sim_speedup_plots, phase_vclock_plots, phase_wall_vclock_plots,
     train_batch_phase_plots, agg_step_timing_plots,
+    redispatch_decomp_plots, vclock_charge_plots,
     mqtt_delivery_plots,
     availability_plots, trace_fidelity_plots, agg_belief_fidelity_plots,
     send_gate_wait_plots, commit_promptness_plots,

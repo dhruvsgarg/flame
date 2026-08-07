@@ -1,0 +1,126 @@
+# Measured same-seed replicate floor: the spread two config-identical real legs
+# show with NO code change. The parity checker sizes its DIST tolerances from
+# this (simulate_fwdllm.md D-24) -- a tolerance far above the floor passes real
+# divergences, one below it grades noise. Regenerate with
+# `replicate_floor.py --mode real --profile-out <dir>`; do not hand-edit.
+code_commit: ceb119c6c
+floor_tool_version: 2
+jvp_eval_mode: true
+max_runtime_s: 7200
+measured_at: '2026-08-06'
+metrics:
+  accuracy_diff: 0.0546
+  iter_drift_lambda: 0.167
+  iters_ma_max_dev: 7.95
+  iters_ma_mean_dev: 1.9876
+  iters_per_bin: 0.154
+  mean_chosen: 0.0
+  mean_var: 0.0635
+  overhead_rel: 0.146
+  overlap_rel: 0.028
+  round_advance_ks: 0.212
+  round_advance_rel: 0.146
+  throughput_rel: 0.146
+  time_to_n: 0.145
+  trainers_at_n: 0.057
+  utility_ks: 0.156
+n_replicates: 4
+nodes:
+- shepherd.cc.gatech.edu
+- wash.cc.gatech.edu
+rungs:
+  accuracy_diff:
+    field: acc_tol
+    nominal: 0.05
+    rung: convergence
+  iter_drift_lambda:
+    field: lambda_floor_per_100
+    nominal: 0.05
+    rung: v1c_iter_drift_rate
+  iters_ma_max_dev:
+    field: ma_max_abs_tol
+    nominal: 0.75
+    rung: v1b_iters_moving_avg
+  iters_ma_mean_dev:
+    field: ma_mean_abs_tol
+    nominal: 0.25
+    rung: v1b_iters_moving_avg
+  iters_per_bin:
+    field: mean_tol_rel
+    nominal: 0.15
+    rung: v1_iter_per_data_id
+  mean_chosen:
+    field: tol_chosen
+    nominal: 0.05
+    rung: selection_detail
+  mean_var:
+    field: mean_tol_rel
+    nominal: 0.02
+    rung: v2_var_trajectory
+  overhead_rel:
+    field: tol_rel
+    nominal: 0.1
+    rung: overhead_residual
+  overlap_rel:
+    field: tol_rel
+    nominal: 0.1
+    rung: overlap_factor
+  round_advance_ks:
+    field: ks_tol
+    nominal: 0.2
+    rung: per_round_advance
+  round_advance_rel:
+    field: mean_tol_rel
+    nominal: 0.15
+    rung: per_round_advance
+  throughput_rel:
+    field: tol_rel
+    nominal: 0.08
+    rung: throughput
+  time_to_n:
+    field: time_tol
+    nominal: 0.08
+    rung: terminal_state
+  trainers_at_n:
+    field: trainers_tol
+    nominal: 0.05
+    rung: terminal_state
+  utility_ks:
+    field: max_ks
+    nominal: 0.2
+    rung: utility
+sim_code_commit: ceb119c6c
+sim_floor_tool_version: 2
+sim_measured_at: '2026-08-06'
+sim_metrics:
+  accuracy_diff: 0.0598
+  iter_drift_lambda: 0.2944
+  iters_ma_max_dev: 10.2
+  iters_ma_mean_dev: 2.8297
+  iters_per_bin: 0.212
+  mean_chosen: 0.169
+  mean_var: 0.0977
+  overhead_rel: 0.2
+  overlap_rel: 0.019
+  round_advance_ks: 0.324
+  round_advance_rel: 0.2
+  throughput_rel: 0.2
+  time_to_n: 0.199
+  trainers_at_n: 0.058
+  utility_ks: 0.198
+sim_n_replicates: 4
+sim_nodes:
+- wash.cc.gatech.edu
+sim_source_runs:
+- '20260805_052744'
+- '20260805_061421'
+- '20260805_065801'
+- '20260806_133306'
+sim_span_axis: vclock
+source_runs:
+- '20260804_232048'
+- '20260805_012304'
+- '20260805_032520'
+- '20260805_201139'
+span_axis: wall
+trace: syn_0

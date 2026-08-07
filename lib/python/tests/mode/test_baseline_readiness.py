@@ -101,3 +101,46 @@ def test_serialize_once_roundtrip():
     restored = cloudpickle.loads(cloudpickle.dumps(msg))
     assert restored["ROUND"] == 7 and restored["SIM_SEND_TS"] == 12.5
     assert torch.allclose(restored["WEIGHTS"]["w"], msg["WEIGHTS"]["w"])
+
+
+# --- launcher: the watchdog must never sit below the run budget -------------
+# The yamls carry a fixed `max_experiment_runtime_s: 10800`. A real leg longer
+# than 3h was silently TRUNCATED at 3h while still reporting the duration it
+# asked for (simulate_fwdllm.md §D-44) — which is exactly how a truncated leg
+# poisons a replicate floor. `patch()` now raises it; these pin the rule.
+_RUN_SH = (pathlib.Path(__file__).resolve().parents[2] / "examples" / "fwdllm"
+           / "expt_scripts" / "run_sequential.sh")
+
+
+def _watchdog_for(budget_s: float, yaml_value: float, variant: str) -> float:
+    """The rule `patch()` applies, restated for the boundary cases below."""
+    if variant == "sim":
+        return yaml_value
+    return int(max(float(yaml_value or 0.0), float(budget_s) + 1800.0))
+
+
+@pytest.mark.parametrize("budget,yaml_value,variant,expected", [
+    (7200, 10800, "real", 10800),    # 2h legs: unchanged, so they stay strict
+    (14400, 10800, "real", 16200),   # 4h legs: raised above the budget
+    (10800, 10800, "real", 12600),   # equal is NOT safe — a watchdog at the
+                                     # target kills the run it should outlive
+    (14400, 10800, "sim", 10800),    # sim budget is vclock seconds, not wall
+])
+def test_watchdog_rule(budget, yaml_value, variant, expected):
+    assert _watchdog_for(budget, yaml_value, variant) == expected
+
+
+def test_launcher_implements_the_watchdog_rule():
+    src = _RUN_SH.read_text(encoding="utf-8")
+    assert 'h["max_experiment_runtime_s"] = int(max(_wd, float(MAX_RUNTIME_S) + 1800.0))' in src
+    assert 'if variant != "sim":' in src
+
+
+def test_every_real_yaml_still_declares_a_watchdog():
+    """The rule takes a max() against the yaml value — a missing key would make
+    the budget the only bound and re-open the truncation hole from the other side."""
+    d = _RUN_SH.parent
+    yamls = [p for p in d.glob("*_n100_smoke.yaml")]
+    assert yamls, "no n100 real yamls found"
+    for p in yamls:
+        assert "max_experiment_runtime_s" in p.read_text(encoding="utf-8"), p.name

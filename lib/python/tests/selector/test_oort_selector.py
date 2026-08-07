@@ -7,12 +7,27 @@ from datetime import timedelta
 
 import pytest
 
+from flame.selector.async_base import SelectContext
 from flame.selector.oort import OortSelector
 from flame.selector.async_oort import AsyncOortSelector
 from flame.selector.properties import (
     PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_STAT_UTILITY,
 )
+
+
+def _ctx(*, task_to_perform="train", channel_props=None, connected_ends=None,
+         trainer_unavail_list=None, agg_version_key=None, trainer_version_keys=None):
+    """`_handle_send_state` now takes a `SelectContext` (base's shared
+    mechanism, post async_oort re-basing) instead of discrete kwargs."""
+    return SelectContext(
+        task_to_perform=task_to_perform,
+        agg_version_key=agg_version_key,
+        trainer_version_keys=trainer_version_keys,
+        channel_props=channel_props or {},
+        connected_ends=connected_ends,
+        trainer_unavail_list=trainer_unavail_list,
+    )
 
 
 @pytest.fixture
@@ -566,8 +581,7 @@ class TestChallenge13SendStateCleanup:
         connected = make_ends(["t1", "t2", "t3"])   # all still connected
         eligible = {}                               # all currently unavailable
         out = async_oort._handle_send_state(
-            ends=eligible, concurrency=2, channel_props={},
-            connected_ends=connected,
+            eligible, 2, _ctx(connected_ends=connected),
         )
         assert out == {}
         # t1/t2 unavailable but connected → in-flight tracking preserved.
@@ -577,10 +591,7 @@ class TestChallenge13SendStateCleanup:
         async_oort.requester = "agg"
         async_oort.selected_ends = {"agg": {"t1", "t2"}}
         connected = make_ends(["t1"])               # t2 genuinely gone
-        async_oort._handle_send_state(
-            ends={}, concurrency=1, channel_props={},
-            connected_ends=connected,
-        )
+        async_oort._handle_send_state({}, 1, _ctx(connected_ends=connected))
         assert async_oort.selected_ends["agg"] == {"t1"}
 
     def test_fallback_to_eligible_when_no_connected_pool(
@@ -590,9 +601,7 @@ class TestChallenge13SendStateCleanup:
         # `ends` — the pre-fix behavior. Guards the default-arg contract.
         async_oort.requester = "agg"
         async_oort.selected_ends = {"agg": {"t1"}}
-        async_oort._handle_send_state(
-            ends=make_ends(["t1"]), concurrency=1, channel_props={},
-        )
+        async_oort._handle_send_state(make_ends(["t1"]), 1, _ctx())
         assert async_oort.selected_ends["agg"] == {"t1"}
 
 
@@ -623,14 +632,14 @@ class TestRecvStateNeverWritesNewSelections:
     def test_empty_selected_ends_returns_empty_even_with_real_state(
         self, async_oort, make_ends
     ):
-        from flame.end import KEY_END_STATE, VAL_END_STATE_HEARTBEAT_RECVD
+        from flame.end import KEY_END_STATE, VAL_END_STATE_NONE
 
         async_oort.requester = "agg"
         async_oort.selected_ends = {"agg": set()}
         async_oort.all_selected = {}
         ends = make_ends(count=3, prefix="t")
         for e in ends.values():
-            e.set_property(KEY_END_STATE, VAL_END_STATE_HEARTBEAT_RECVD)
+            e.set_property(KEY_END_STATE, VAL_END_STATE_NONE)
 
         result = async_oort._handle_recv_state(ends=ends, concurrency=3)
 
@@ -679,10 +688,10 @@ class TestPendingCommitExcludedFromSelection:
         ends = make_ends(count=5, prefix="t")
 
         result = async_oort._handle_send_state(
-            ends=ends, concurrency=5, channel_props={"round": 1},
-            trainer_unavail_list=[], task_to_perform="train",
-            agg_version_key=(1, 0, 0), trainer_version_keys={},
-            connected_ends=ends,
+            ends, 5,
+            _ctx(channel_props={"round": 1}, trainer_unavail_list=[],
+                 agg_version_key=(1, 0, 0), trainer_version_keys={},
+                 connected_ends=ends),
         )
 
         # t3 is still outstanding in virtual time -> must not be re-picked.
@@ -699,10 +708,10 @@ class TestPendingCommitExcludedFromSelection:
         async_oort._agg_pending_commit_ref = set(ends)  # every trainer in flight
 
         result = async_oort._handle_send_state(
-            ends=ends, concurrency=4, channel_props={"round": 1},
-            trainer_unavail_list=[], task_to_perform="train",
-            agg_version_key=(1, 0, 0), trainer_version_keys={},
-            connected_ends=ends,
+            ends, 4,
+            _ctx(channel_props={"round": 1}, trainer_unavail_list=[],
+                 agg_version_key=(1, 0, 0), trainer_version_keys={},
+                 connected_ends=ends),
         )
         assert result == {}   # nobody eligible -> no re-dispatch-while-in-flight
 
@@ -715,10 +724,10 @@ class TestPendingCommitExcludedFromSelection:
         ends = make_ends(count=5, prefix="t")
 
         result = async_oort._handle_send_state(
-            ends=ends, concurrency=5, channel_props={"round": 1},
-            trainer_unavail_list=[], task_to_perform="train",
-            agg_version_key=(1, 0, 0), trainer_version_keys={},
-            connected_ends=ends,
+            ends, 5,
+            _ctx(channel_props={"round": 1}, trainer_unavail_list=[],
+                 agg_version_key=(1, 0, 0), trainer_version_keys={},
+                 connected_ends=ends),
         )
         assert len(result) >= 1
         assert set(result).issubset(set(ends))

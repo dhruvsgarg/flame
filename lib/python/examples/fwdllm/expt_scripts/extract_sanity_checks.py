@@ -16,29 +16,37 @@ import re
 import sys
 from pathlib import Path
 
+
+# Current log format (flame.telemetry logging, since well before this repo's
+# earliest surviving run): "TS | module.py:line | LEVEL | thread | func | msg".
+# No per-line PID prefix -- spawner.py's "combined log file with trainer ID
+# prefix" comment is stale; stdout is written to the shared file handle
+# unprefixed, so trainer attribution instead goes through the [PIN] line's
+# pid->client_idx mapping (see check_client_partitions).
+_TS = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}"
+
 SELECTED_ENDS_RE = re.compile(
-    r"(?P<ts>\d{4}-\d{2}-\d{2},\d{2}:\d{2}:\d{2}\.\d{3}) - "
-    r"\{random\.py \(\d+\)\} - select\(\): new selected ends: (?P<ends>\{.*\})"
+    rf"(?P<ts>{_TS}) \| random\.py:\d+ \| \w+ \| [^|]+ \| select \| "
+    r"new selected ends: (?P<ends>\{.*\})"
 )
 OORT_HEADER_RE = re.compile(
-    r"(?P<ts>\d{4}-\d{2}-\d{2},\d{2}:\d{2}:\d{2}\.\d{3}) - "
-    r"\{async_oort\.py \(\d+\)\} - _select_candidates_using_default\(\): "
-    r"Candidates selected with utilities"
+    rf"(?P<ts>{_TS}) \| async_oort\.py:\d+ \| \w+ \| [^|]+ \| "
+    r"_select_candidates_using_default \| Candidates selected with utilities"
 )
 OORT_CANDIDATE_RE = re.compile(
-    r"\{async_oort\.py \(\d+\)\} - _select_candidates_using_default\(\): "
+    r"async_oort\.py:\d+ \| \w+ \| [^|]+ \| _select_candidates_using_default \| "
     r"(?P<end_id>[0-9a-f]+), (?P<utility>[\d.eE+-]+)"
 )
 
 DATA_ID_RE = re.compile(
-    r"(?P<ts>\d{4}-\d{2}-\d{2},\d{2}:\d{2}:\d{2}\.\d{3}) - .*"
+    rf"(?P<ts>{_TS}) \| .*"
     r"(?:_distribute_weights_(?:a?sync)|_prepare_distribution_payload).*?"
     r"data_id[=:]\s*(?P<data_id>\d+)"
 )
 
 EVAL_RE = re.compile(
-    r"(?P<ts>\d{4}-\d{2}-\d{2},\d{2}:\d{2}:\d{2}\.\d{3}) - "
-    r"\{fwdllm_aggregator\.py \(\d+\)\} - eval_model\(\): results after eval are: "
+    rf"(?P<ts>{_TS}) \| fwdllm_aggregator\.py:\d+ \| \w+ \| [^|]+ \| eval_model \| "
+    r"results after eval are: "
     r"(?P<results>\{.*?\}), len\(wrong\) is: (?P<n_wrong>\d+), "
     r"'data_id_iterations': (?P<iters>\d+)"
 )
@@ -46,20 +54,25 @@ ACC_IN_RESULTS_RE = re.compile(r"'acc': ([\d.eE+-]+)")
 MCC_IN_RESULTS_RE = re.compile(r"'mcc': ([\d.eE+-]+)")
 
 TRAINER_PID_RE = re.compile(
-    r"\{main\.py \(\d+\)\} - <module>\(\): \[Trainer (?P<trainer_id>[0-9a-f]+)\] "
-    r"PID: (?P<pid>\d+)"
+    r"main\.py:\d+ \| \w+ \| [^|]+ \| <module> \| "
+    r"\[Trainer (?P<trainer_id>[0-9a-f]+)\] PID: (?P<pid>\d+)"
+)
+# "[PIN] pid=<pid> client_idx=<client_idx> ..." -- the only line that ties a
+# trainer's OS pid to its client_idx now that stdout isn't pid-prefixed.
+PIN_RE = re.compile(
+    r"main\.py:\d+ \| \w+ \| [^|]+ \| <module> \| "
+    r"\[PIN\] pid=(?P<pid>\d+) client_idx=(?P<client_idx>\d+)"
 )
 CLIENT_HASH_RE = re.compile(
-    r"(?P<pid>\d+) (?P<ts>\d{4}-\d{2}-\d{2},\d{2}:\d{2}:\d{2}\.\d{3}) - "
-    r"\{base_data_manager\.py \(\d+\)\} - _load_federated_data_local\(\): "
+    rf"(?P<ts>{_TS}) \| base_data_manager\.py:\d+ \| \w+ \| [^|]+ \| "
+    r"_load_federated_data_local \| "
     r"CLIENT (?P<client_idx>\d+) DATA HASH: (?P<data_hash>[0-9a-f]+)"
 )
 CLIENT_SAMPLES_RE = re.compile(
-    r"(?P<pid>\d+) (?P<ts>\d{4}-\d{2}-\d{2},\d{2}:\d{2}:\d{2}\.\d{3}) - "
-    r"\{FedSgdTrainer\.py \(\d+\)\} - _write_client_data_to_file\(\): "
+    rf"(?P<ts>{_TS}) \| FedSgdTrainer\.py:\d+ \| \w+ \| [^|]+ \| "
+    r"_write_client_data_to_file \| "
     r"Successfully wrote (?P<n_samples>\d+) samples to .*?flame_client_(?P<client_idx>\d+)_"
 )
-PID_PREFIX_RE = re.compile(r"(?P<pid>\d+) ")
 
 
 def find_logs(run_dir: Path):
@@ -144,30 +157,39 @@ def check_accuracy(agg_text: str) -> list[str]:
 
 
 def check_client_partitions(trainer_text: str) -> list[str]:
-    """Section 4: per-client data partition (client_idx, hash, sample count)."""
+    """Section 4: per-client data partition (client_idx, hash, sample count).
+
+    Trainer stdout is interleaved into one file with no per-line pid prefix
+    (spawner.py's "combined log file with trainer ID prefix" comment is
+    stale), so attribution chains pid -> client_idx via the [PIN] line, then
+    pid -> trainer_id via the startup PID line. CLIENT_HASH_RE/CLIENT_SAMPLES_RE
+    already carry client_idx directly in their own message text.
+    """
     pid_to_trainer = {}
     for m in TRAINER_PID_RE.finditer(trainer_text):
         pid_to_trainer[m.group("pid")] = m.group("trainer_id")
 
-    hashes = {}  # pid -> (client_idx, data_hash, ts)
-    samples = {}  # pid -> (client_idx, n_samples, ts)
-    for line in trainer_text.splitlines():
-        m = CLIENT_HASH_RE.search(line)
-        if m:
-            hashes[m.group("pid")] = (m.group("client_idx"), m.group("data_hash"), m.group("ts"))
-            continue
-        m = CLIENT_SAMPLES_RE.search(line)
-        if m:
-            samples[m.group("pid")] = (m.group("client_idx"), m.group("n_samples"), m.group("ts"))
+    client_to_trainer = {}
+    for m in PIN_RE.finditer(trainer_text):
+        trainer_id = pid_to_trainer.get(m.group("pid"))
+        if trainer_id:
+            client_to_trainer[m.group("client_idx")] = trainer_id
 
-    pids = sorted(set(pid_to_trainer) | set(hashes) | set(samples))
-    out = [f"Total trainer processes found: {len(pids)}", ""]
-    for pid in pids:
-        trainer_id = pid_to_trainer.get(pid, "?")
-        client_idx, data_hash, _ = hashes.get(pid, ("?", "?", None))
-        _, n_samples, _ = samples.get(pid, ("?", "?", None))
+    hashes = {}  # client_idx -> (data_hash, ts)
+    samples = {}  # client_idx -> (n_samples, ts)
+    for m in CLIENT_HASH_RE.finditer(trainer_text):
+        hashes[m.group("client_idx")] = (m.group("data_hash"), m.group("ts"))
+    for m in CLIENT_SAMPLES_RE.finditer(trainer_text):
+        samples[m.group("client_idx")] = (m.group("n_samples"), m.group("ts"))
+
+    client_idxs = sorted(set(client_to_trainer) | set(hashes) | set(samples), key=int)
+    out = [f"Total trainer processes found: {len(client_idxs)}", ""]
+    for client_idx in client_idxs:
+        trainer_id = client_to_trainer.get(client_idx, "?")
+        data_hash, _ = hashes.get(client_idx, ("?", None))
+        n_samples, _ = samples.get(client_idx, ("?", None))
         out.append(
-            f"trainer_id={trainer_id} pid={pid} client_idx={client_idx} "
+            f"trainer_id={trainer_id} client_idx={client_idx} "
             f"n_samples={n_samples} data_hash={data_hash}"
         )
     return out

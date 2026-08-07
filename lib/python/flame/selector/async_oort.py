@@ -13,40 +13,33 @@
 # permissions and limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""OortSelector class."""
+"""AsyncOortSelector class.
+
+Re-based onto `AsyncSelectorBase` (simulate_fwdllm.md known gap): this file
+used to carry its own copy of the send/recv concurrency mechanism, drifted
+from fixes since landed only on the base (R1 pending-commit guard,
+recv-bootstrap gate). Now holds Oort POLICY only -- utility scoring, pacer,
+exploration/exploitation, the `select_type` strategies. Eval-task support
+(`eval_goal_factor`/`curr_round_eval_slots_left`) is genuine extra state the
+base doesn't have, threaded through the `_concurrency_for_task`/
+`_task_extra_eligible`/`_choose`/`_cleanup_recvd_ends` hooks instead.
+"""
 
 import logging
 import math
-import random
-import time
 from datetime import timedelta
-from collections import deque
-# Explicit class import: bare `random.Random` risks resolving to this
-# package's own selector/random.py submodule (see flame/selector/__init__.py).
-from random import Random as _StdRandom
 
-from flame.config import TrainerAvailState
-import numpy as np
-from flame.channel import (
-    KEY_CH_SELECT_REQUESTER,
-    KEY_CH_STATE,
-    VAL_CH_STATE_RECV,
-    VAL_CH_STATE_SEND,
-)
 from flame.common.typing import Scalar
 from flame.common.util import MLFramework, get_ml_framework_in_use
-from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD, End
-from flame.selector import AbstractSelector, SelectorReturnType
+from flame.end import End
 from flame.selector import scoring
-
+from flame.selector.async_base import AsyncSelectorBase, SelectContext
 from flame.selector.properties import (
-    PROP_AVL_STATE,
+    PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_DATASET_SIZE,
     PROP_END_ID,
     PROP_LAST_EVAL_ROUND,
     PROP_LAST_SELECTED_ROUND,
-    PROP_CLIENT_TASK_TRAIN_DURATION,
-    PROP_ROUND_START_TIME,
     PROP_SELECTED_COUNT,
     PROP_STAT_UTILITY,
     PROP_TOTAL_UNAVAIL_DURATION,
@@ -56,20 +49,14 @@ from flame.selector.properties import (
 
 logger = logging.getLogger(__name__)
 
-SEND_TIMEOUT_WAIT_S = 90
 
+class AsyncOortSelector(AsyncSelectorBase):
+    """An AsyncFL selector class based on Oort."""
 
-class AsyncOortSelector(AbstractSelector):
-    """A AsyncFL selector class based on Oort."""
+    CHOOSE_SALT = "async_oort"
 
     def __init__(self, **kwargs):
-        """Initailize instance."""
         super().__init__(**kwargs)
-
-        # #1c: the abandon-timeout clock — set per-select() from
-        # channel_props["vclock_now"] (sim) or left None (real -> wall). See
-        # _abandon_clock_now.
-        self._sim_now_s = None
 
         ml_framework_in_use = get_ml_framework_in_use()
         if ml_framework_in_use != MLFramework.PYTORCH:
@@ -77,12 +64,10 @@ class AsyncOortSelector(AbstractSelector):
                 "FedBalancer is currently only implemented in PyTorch;"
             )
 
-        self.round = 0
-        # Last round pacer() actually ran for, so a same-round dispatch
-        # burst can't re-fire it.
+        # Last round pacer() actually ran for, so a same-round dispatch burst
+        # can't re-fire it.
         self._last_pacer_round = None
 
-        # CONFIG CHANGES FOR ASYNCFL WITH OORT
         try:
             self.is_async = kwargs["is_async"]
         except KeyError:
@@ -92,27 +77,19 @@ class AsyncOortSelector(AbstractSelector):
             self.is_async = False
 
         try:
-            self.c = kwargs["c"]
-        except KeyError:
-            raise KeyError("c (concurrency level) is not specified in config")
-
-        try:
-            self.agg_goal = kwargs["aggGoal"]
-        except KeyError:
-            raise KeyError("aggGoal is not specified in config")
-
-        try:
             self.eval_goal_factor = kwargs["evalGoalFactor"]
         except KeyError:
             raise KeyError(
-                "evalGoalFactor is not specified in config. It is the decimal multiplicative factor wrt agg goal for eval"
+                "evalGoalFactor is not specified in config. It is the decimal "
+                "multiplicative factor wrt agg goal for eval"
             )
 
         try:
             self.round_nudge_type = kwargs["roundNudgeType"]
         except KeyError:
             raise KeyError(
-                "roundNudgeType is not specified in config. It is last_train or last_eval based on the selector nudging critera"
+                "roundNudgeType is not specified in config. It is last_train or "
+                "last_eval based on the selector nudging critera"
             )
 
         try:
@@ -123,16 +100,13 @@ class AsyncOortSelector(AbstractSelector):
                 "fastest, or maxSamples"
             )
 
-        if self.agg_goal < 0:
-            self.agg_goal = 1
-
         # With Oort, we select 1.3 * k ends and wait until k ends to
         # complete at a round
         self.overcommitment = 1.3
         self.num_of_ends = int(self.agg_goal * self.overcommitment)
 
-        # Algorithm hyperparameters default to the Oort paper (scoring.OORT_PAPER_DEFAULTS),
-        # overridable via selector.kwargs (see OortSelector).
+        # Algorithm hyperparameters default to the Oort paper
+        # (scoring.OORT_PAPER_DEFAULTS), overridable via selector.kwargs.
         _d = scoring.OORT_PAPER_DEFAULTS
         self.exploration_factor = kwargs.get("exploration_factor", _d["exploration_factor"])
         self.exploration_factor_decay = kwargs.get("exploration_decay", _d["exploration_decay"])
@@ -155,355 +129,222 @@ class AsyncOortSelector(AbstractSelector):
         self.clip_bound = kwargs.get("clip_bound", _d["clip_bound"])
         self.cut_off_util = kwargs.get("cut_off_util", _d["cut_off_util"])  # breadth factor
 
-        # #### CHANGES BASED OFF FEDBUFF FOR ASYNCFL
-        # Tracking selected ends to ensure selection correctness for
-        # each round (a trainer can participate only once per round).
-        self.all_selected = dict()
-        self.selected_ends = dict()
-
-        # Tracks weight updates received from trainers and makes them
-        # available to select again
-        self.ordered_updates_recv_ends = list()
-
-        # Tracks eval updates received from trainers and makes them
-        # available to select again
+        # Tracks eval updates received from trainers and makes them available
+        # to select again. Populated externally (duck-typed hasattr check) by
+        # top_aggregator.py; not a base-mechanism concept.
         self.trainer_eval_recv_ends = list()
         self.curr_round_eval_slots_left = int(self.eval_goal_factor * self.agg_goal)
 
-        # Tracks timeouted trainers and number of times it happened to
-        # a trainer
-        self.track_trainer_timeouts = dict()
+    # ------------------------------------------------------------------ hooks
 
-        # In-flight abandon timeout: a bare 90s evicted a genuinely-busy (not
-        # dead) fwdllm trainer, since forward-grad rounds run longer than the
-        # CNN/speech rounds this was tuned for. Now a workload knob
-        # (hyperparameters.send_timeout_wait_s, threaded in by
-        # channel_manager.py); defaults to the original constant.
-        self.send_timeout_wait_s = kwargs.get(
-            "send_timeout_wait_s", SEND_TIMEOUT_WAIT_S
-        )
+    def _concurrency_for_task(self, task_to_perform, num_ends, effective_c):
+        if task_to_perform == "eval":
+            if self.eval_goal_factor <= 0.0:
+                return 0
+            # Maximum possible concurrency for eval; narrowed later in
+            # `_choose` based on eval tasks already sent/received this round.
+            return min(num_ends, effective_c + self.curr_round_eval_slots_left)
+        return min(num_ends, effective_c)
 
-        # Tracks trainers that were selected but left training in
-        # between
-        self.track_selected_trainers_which_left = dict()
-        self.check_three_state_avl = True  # kept for backward compat; superseded by _task_eligible_states
+    def _pre_choose(self, ctx: SelectContext) -> None:
+        """Run the pacer that controls `round_threshold`. TRAIN-ONLY: felix's
+        eval hand leaves self.round/exploitation_util_history unchanged, so
+        firing on eval would re-adjust off a stale round. ONCE-PER-ROUND:
+        unlike Oort's reference (called once/round by construction), `select`
+        fires many times per model_version (once per freed slot) -- without
+        this guard every call re-fires the pacer, ratcheting round_threshold
+        to 100 in one dispatch burst."""
+        if ctx.task_to_perform == "train" and ctx.model_version != self._last_pacer_round:
+            self.pacer(ctx.model_version)
+            self._last_pacer_round = ctx.model_version
 
-        # Configurable task → eligible-state map; override via selector.kwargs["task_eligible_states"].
-        _default_eligible_states = {
-            "train": [TrainerAvailState.AVL_TRAIN.value],
-            "eval": [
-                TrainerAvailState.AVL_EVAL.value,
-                TrainerAvailState.AVL_TRAIN.value,
-            ],
+    def _task_extra_eligible(self, end_id, end, ctx: SelectContext) -> bool:
+        """Eval-only staleness gate: only consider trainers that have trained
+        before AND whose last eval is at least 35 model-versions old."""
+        if ctx.task_to_perform != "eval":
+            return True
+        last_eval = end.get_property(PROP_LAST_EVAL_ROUND)
+        return last_eval is not None and ctx.model_version - last_eval >= 35
+
+    def _choose(self, candidates: dict[str, End], k: int, ctx: SelectContext) -> list:
+        if ctx.task_to_perform == "eval":
+            return self._choose_eval(candidates, k)
+        return self._choose_train(candidates, k, ctx)
+
+    def _choose_eval(self, candidates: dict[str, End], k: int) -> list:
+        """Pick the `k` (capped by remaining eval headroom) candidates whose
+        eval participation is stalest (ascending last_eval_round)."""
+        feasible_extra = min(k, self.curr_round_eval_slots_left)
+        end_to_last_eval = {
+            end_id: end.get_property(PROP_LAST_EVAL_ROUND) or 0
+            for end_id, end in candidates.items()
         }
-        raw_eligible = kwargs.get("task_eligible_states", _default_eligible_states)
-        _valid_states = {v.value for v in TrainerAvailState}
-        for task_name, states in raw_eligible.items():
-            for s in states:
-                if s not in _valid_states:
-                    raise ValueError(
-                        f"task_eligible_states['{task_name}'] contains unknown state "
-                        f"'{s}'. Valid states: {sorted(_valid_states)}"
-                    )
-        self._task_eligible_states: dict = raw_eligible
-        logger.info(
-            f"[TaskEligibility] task_eligible_states = {self._task_eligible_states}"
+        sorted_end_ids = sorted(end_to_last_eval, key=end_to_last_eval.get)
+        chosen = sorted_end_ids[:feasible_extra]
+        self.curr_round_eval_slots_left -= len(chosen)
+        return chosen
+
+    def _choose_train(self, candidates: dict[str, End], k: int, ctx: SelectContext) -> list:
+        model_version = ctx.model_version
+        agg_version_key = ctx.agg_version_key
+        feasible_extra = k
+
+        blocklist_end_ids = self.find_blocklists(candidates)
+        trainer_unavail_list = ctx.trainer_unavail_list or []
+        utility_list, unexplored_end_ids = self.fetch_statistical_utility(
+            candidates, blocklist_end_ids, trainer_unavail_list
+        )
+        exploration_len, exploitation_len = self.calculate_num_of_exploration_exploitation(
+            num_of_ends=feasible_extra, unexplored_end_ids=unexplored_end_ids
         )
 
-        # Track sliding window statistics for the selector
-        self._selector_stats = {}
-        for task in ["train", "eval"]:
-            self._selector_stats[task] = {"data": {}, "summary": {}}
-            for metric in ["util", "speed", "round"]:
-                for window in [50, 100, 200]:
-                    key = f"{metric}_last_{window}"
-                    self._selector_stats[task]["data"][key] = deque(maxlen=window)
-
-        self._select_run_counter = 0
-
-    def compute_trainer_stat_summary(self):
-        def compute_summary(values):
-            # Filter out None values
-            if values is None:
-                return {
-                    "min": None,
-                    "max": None,
-                    "p25": None,
-                    "p50": None,
-                    "p75": None,
-                }
-            values = [v for v in values if v is not None]
-            if not values:
-                return {
-                    "min": None,
-                    "max": None,
-                    "p25": None,
-                    "p50": None,
-                    "p75": None,
-                }
-
-            values = np.array(values, dtype=float)
-            return {
-                "min": float(np.min(values)),
-                "max": float(np.max(values)),
-                "p25": float(np.percentile(values, 25)),
-                "p50": float(np.percentile(values, 50)),
-                "p75": float(np.percentile(values, 75)),
-            }
-
-        tasks = ["train", "eval"]
-        metrics = [
-            "util_last_50",
-            "util_last_100",
-            "util_last_200",
-            "speed_last_50",
-            "speed_last_100",
-            "speed_last_200",
-            "round_last_50",
-            "round_last_100",
-            "round_last_200",
-        ]
-
-        for task in tasks:
-            for metric in metrics:
-                values = self._selector_stats[task]["data"].get(metric, [])
-                key = f"stat_{metric}" if "util" in metric else metric
-                self._selector_stats[task]["summary"][key] = compute_summary(values)
-
-    def _reset_selector_stats(self) -> None:
-        self._selector_stats = {}
-
-    def select(
-        self,
-        ends: dict[str, End],
-        channel_props: dict[str, Scalar],
-        trainer_unavail_list: list,
-        task_to_perform: str = "train",
-        **kwargs,
-    ) -> SelectorReturnType:
-        """Return k number of ends from the given ends.
-
-        NOTE: It incorporates the same send/recv mechanism from
-        fedbuff. [From fedbuff selector]: Select ends from the given
-        ends to meet concurrency level. This select method chooses
-        ends differently depending on what state a channel is in. In
-        'send' state, it chooses ends that are not in
-        self.selected_ends. In 'recv' state, it chooses all ends from
-        self.selected_ends. Essentially, if an end is in
-        self.selected_ends, it means that we sent some message already
-        to that end. For such an end, we exclude it from send and
-        include it for recv in return.
-        """
-        logger.debug("calling async oort select")
-        # Extract aggregator version and trainer version states for staleness tracking
-        agg_version_key = kwargs.get("agg_version_key")
-        trainer_version_keys = kwargs.get("trainer_version_keys")
-        logger.debug(
-            f"Aggregator version_key: {agg_version_key}"
-        )
-        logger.debug(f"Trainer version states: {trainer_version_keys}")
-
-        # TEMP DEBUG: full-input snapshot per select() call, tagged with a
-        # monotonic seq so real/sim logs diff call-for-call (`grep
-        # SELECT_TRACE`). Delete once localized.
-        self._select_trace_seq = getattr(self, "_select_trace_seq", 0) + 1
-        logger.info(
-            f"[SELECT_TRACE seq={self._select_trace_seq}] ENTRY "
-            f"ends={sorted(ends.keys())} n_ends={len(ends)} "
-            f"task_to_perform={task_to_perform} "
-            f"channel_props={channel_props} "
-            f"trainer_unavail_list={trainer_unavail_list} "
-            f"agg_version_key={agg_version_key} "
-            f"trainer_version_keys={trainer_version_keys} "
-            f"selected_ends={self.selected_ends} all_selected={sorted(self.all_selected.keys())} "
-            f"rng_fp={self.rng_fingerprint()}"
-        )
-
-        if self.enforce_min_start(len(ends)):
-            return {}
-
-        # Use dynamic_c pushed by DynamicKCController if present; fall back to static self.c.
-        effective_c = int(channel_props.get("dynamic_c", self.c))
-        if effective_c != self.c:
-            logger.info(
-                f"[DynamicKC] Using dynamic_c={effective_c} (static self.c={self.c})"
+        # First round: no end's utility has been measured yet -- random.
+        if model_version == 0:
+            self.round = model_version
+            return self.select_random(
+                candidates, num_of_ends=feasible_extra, agg_version_key=agg_version_key
             )
 
-        if task_to_perform == "train":
-            concurrency = min(len(ends), effective_c)
-        elif task_to_perform == "eval":
-            # Select ends for eval only if eval-goal is set in 3-state
-            # availability tracking. Else, don't select any eval ends-
-            # this would be for 2-state tracking.
-            if self.eval_goal_factor > 0.0:
-                # this is set to maximum possible concurrency for
-                # eval. It will be adjusted later based on eval tasks
-                # already sent and received for the round.
-                concurrency = min(len(ends), effective_c + self.curr_round_eval_slots_left)
-            else:
-                concurrency = 0
+        # The percentile must see the FULL registered client population, not
+        # this call's transient candidate pool -- reference Oort computes it
+        # from ALL tracked arms, not just this dispatch's feasible set. Async's
+        # candidate pool is almost always a singleton, so the percentile would
+        # trivially return that one candidate's own duration and the speed
+        # penalty could never bind. `connected_ends` is safe: only used for
+        # lookups on ids already in utility_list, plus this percentile calc.
+        _duration_pool = ctx.connected_ends if ctx.connected_ends is not None else candidates
+        utility_list = self.calculate_total_utility(utility_list, _duration_pool, model_version)
 
-        logger.info(
-            f"Task: {task_to_perform}, len(ends): {len(ends)}, "
-            f"c: {self.c}, effective_c: {effective_c}, chosen concurrency: {concurrency}"
-        )
+        cutoff_utility = self.cutoff_util(utility_list, num_of_ends=feasible_extra)
 
-        if concurrency == 0:
-            logger.debug("ends is empty")
-            return {}
-
-        if KEY_CH_STATE not in channel_props:
-            raise KeyError(f"channel property doesn't have {KEY_CH_STATE}")
-
-        self.requester = channel_props[KEY_CH_SELECT_REQUESTER]
-        if self.requester not in self.selected_ends:
-            self.selected_ends[self.requester] = set()
-
-        # #1c: the in-flight abandon-timeout (SEND_TIMEOUT_WAIT_S) must run on the
-        # same clock the trainer commits on -- the virtual clock in sim
-        # (vclock_now via channel_props), physical wall in real. In a slow sim a
-        # wall-keyed timeout evicts a still-outstanding trainer -> re-dispatch ->
-        # R1 residence violation. Stash it so the dispatch STAMP and the CHECK
-        # (_handle_send_state) use it consistently; None in real -> time.time().
-        self._sim_now_s = channel_props.get("vclock_now")
-
-        # TODO: (DG) Is explicit round tracking required here? round =
-        # channel_props["round"] if "round" in channel_props else 0
-        # logger.debug(f"let's select {num_of_ends} ends for new round
-        # {round}")
-
-        # default, availability unaware way of using ends
-        eligible_ends = ends
-
-        # Make a filter of unavailable ends, update eligible_ends
-        # given trainer_unavail_list
-        if trainer_unavail_list != [] and trainer_unavail_list is not None:
-            # Updating passed ends and filtering out unavailable ones
-            # before passing
-            eligible_ends = {
-                end_id: end
-                for end_id, end in ends.items()
-                if end_id not in trainer_unavail_list
-            }
-            logger.debug(
-                f"Fedbuff select got non-empty trainer_unavail_list, "
-                f"populated eligible_ends: {eligible_ends}"
+        if len(utility_list) == 0:
+            self.round = model_version
+            return self.select_random(
+                candidates, num_of_ends=feasible_extra, agg_version_key=agg_version_key
             )
 
-        if channel_props[KEY_CH_STATE] == VAL_CH_STATE_SEND:
-            logger.debug(
-                f"Inside send state: aggregator version_key: {agg_version_key}"
-            )
-            logger.debug(
-                f"Inside send state: trainer version states: {trainer_version_keys}"
-            )
-            results = self._handle_send_state(
-                ends=eligible_ends,
-                concurrency=concurrency,
-                channel_props=channel_props,
-                trainer_unavail_list=trainer_unavail_list,
-                task_to_perform=task_to_perform,
+        if self.select_type == "default":
+            chosen, exploit_end_ids = self._select_candidates_using_default(
+                cutoff_utility=cutoff_utility,
+                utility_list=utility_list,
+                exploitation_len=exploitation_len,
+                exploration_len=exploration_len,
+                unexplored_end_ids=unexplored_end_ids,
                 agg_version_key=agg_version_key,
-                trainer_version_keys=trainer_version_keys,
-                connected_ends=ends,  # Challenge 13: full pool for cleanup
+            )
+        elif self.select_type == "fastest":
+            chosen, exploit_end_ids = self._select_candidates_fastest(
+                ends=candidates, num_of_ends=feasible_extra
+            )
+        elif self.select_type == "maxSamples":
+            chosen, exploit_end_ids = self._select_candidates_maxSamples(
+                ends=candidates, num_of_ends=feasible_extra
+            )
+        elif self.select_type == "prioritiseUnavail":
+            chosen, exploit_end_ids = self._select_candidates_prioritiseUnavail(
+                ends=candidates, num_of_ends=feasible_extra
+            )
+        elif self.select_type == "fairShare":
+            chosen, exploit_end_ids = self._select_candidates_fairShare(
+                ends=candidates, num_of_ends=feasible_extra
             )
 
-            if len(results) is not 0:
-                self._select_run_counter += 1
+        if self.select_type == "default":
+            self.save_exploited_utility_history(candidates, exploit_end_ids)
+            self.update_exploration_factor()
 
-            for selected_end_id in results.keys():
-                end_stat_util = ends[selected_end_id].get_property(PROP_STAT_UTILITY)
-                end_speed = ends[selected_end_id].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
-                end_last_round = ends[selected_end_id].get_property(
-                    PROP_LAST_EVAL_ROUND
-                )
-                # Insert to queues tracking stat_util, speed, round
-                # data
-                for window in [50, 100, 200]:
-                    if end_stat_util is not None:
-                        self._selector_stats[task_to_perform]["data"][
-                            f"util_last_{window}"
-                        ].append(end_stat_util)
-                    if end_speed is not None:
-                        self._selector_stats[task_to_perform]["data"][
-                            f"speed_last_{window}"
-                        ].append(end_speed.total_seconds())
-                    if end_last_round is not None:
-                        self._selector_stats[task_to_perform]["data"][
-                            f"round_last_{window}"
-                        ].append(end_last_round)
+        self.increment_selected_count_on_selected_ends(
+            candidates, {end_id: candidates[end_id] for end_id in chosen}
+        )
+        self.round = model_version
+        return chosen
 
-            if self._select_run_counter % 5 == 0:
-                self.compute_trainer_stat_summary()
-                logger.info(
-                    f"Train selector stats summary: {self._selector_stats['train']['summary']}"
-                )
-                logger.info(
-                    f"Eval selector stats summary: {self._selector_stats['eval']['summary']}"
-                )
-                self._select_run_counter = 0
+    def _selection_extra(self, ctx: SelectContext, results) -> dict:
+        _pref = getattr(self, "round_preferred_duration", None)
+        return {
+            "exploration_factor": self.exploration_factor,
+            "round_preferred_duration_s": (
+                _pref.total_seconds() if hasattr(_pref, "total_seconds") else _pref
+            ),
+            "round_threshold": getattr(self, "round_threshold", None),
+            "alpha": getattr(self, "alpha", None),
+            **self._system_util_summary(results.keys()),
+        }
 
-            _audit = getattr(self, "_audit_components", {}) or {}
-            per_trainer_extra = {
-                eid: {
-                    "in_all_selected": eid in self.all_selected,
-                    "in_pending_commit": eid in getattr(self, "_agg_pending_commit_ref", set()),
-                    "last_eval_round": ends[eid].get_property(PROP_LAST_EVAL_ROUND),
-                    # last TRAIN selection round; with last_eval_round this shows
-                    # whether Felix's believed I_m was refreshed by eval vs train
-                    # (the freshness mechanism the staleness audit measures).
-                    "last_train_round": ends[eid].get_property(PROP_LAST_SELECTED_ROUND),
-                    # score components (believed_I, temporal, system_util) for the
-                    # offline counterfactual replay.
-                    **(_audit.get(eid, {})),
-                }
-                for eid in ends
+    def _per_trainer_selection_extra(self, ends: dict[str, End]) -> dict:
+        audit = getattr(self, "_audit_components", {}) or {}
+        return {
+            end_id: {
+                "in_all_selected": end_id in self.all_selected,
+                "in_pending_commit": end_id in getattr(self, "_agg_pending_commit_ref", set()),
+                "last_eval_round": end.get_property(PROP_LAST_EVAL_ROUND),
+                # last TRAIN selection round; with last_eval_round this shows
+                # whether Felix's believed I_m was refreshed by eval vs train
+                # (the freshness mechanism the staleness audit measures).
+                "last_train_round": end.get_property(PROP_LAST_SELECTED_ROUND),
+                # score components (believed_I, temporal, system_util) for the
+                # offline counterfactual replay.
+                **(audit.get(end_id, {})),
             }
-            # Emit round_preferred_duration (the per-round percentile that drives
-            # the system_util speed penalty) so a divergence localizes to target
-            # vs input -- mirrors oort.py's (sync) equivalent emission.
-            _pref = getattr(self, "round_preferred_duration", None)
-            self.emit_selection(
-                channel_props.get("round", 0),
-                task_to_perform,
-                ends,
-                eligible_ends.keys(),
-                list(results.keys()),
-                per_trainer_extra=per_trainer_extra,
-                extra={
-                    "concurrency": concurrency,
-                    "effective_c": effective_c,
-                    "requester": self.requester,
-                    "vclock_now": channel_props.get("vclock_now"),
-                    "exploration_factor": self.exploration_factor,
-                    "round_preferred_duration_s": _pref.total_seconds()
-                    if hasattr(_pref, "total_seconds") else _pref,
-                    # pacer state: the percentile that sets pref (read pref divergence directly).
-                    "round_threshold": getattr(self, "round_threshold", None),
-                    "alpha": getattr(self, "alpha", None),
-                    # per-round speed-penalty summary over this round's selected
-                    # ends (see _system_util_summary).
-                    **self._system_util_summary(results.keys()),
-                },
+            for end_id, end in ends.items()
+        }
+
+    # ---------------------------------------------------------- eval cleanup
+
+    def _cleanup_recvd_ends(self, ends: dict[str, End]) -> None:
+        """Fold eval-recv'd ends into the same drain as train commits (both
+        free their concurrency slot) and reset the per-round eval-slot
+        counter. Gated on `ordered_updates_recv_ends` being non-empty first --
+        matching the original: an eval-only cycle with no train commit this
+        tick does not reset eval slots or drain `trainer_eval_recv_ends`."""
+        if not self.ordered_updates_recv_ends:
+            return
+        self.ordered_updates_recv_ends = (
+            self.ordered_updates_recv_ends + self.trainer_eval_recv_ends
+        )
+        self.trainer_eval_recv_ends = []
+        self.curr_round_eval_slots_left = int(self.eval_goal_factor * self.agg_goal)
+        super()._cleanup_recvd_ends(ends)
+
+    def _cleanup_removed_ends(self, end_id: str) -> None:
+        """Release an end that left the channel -- and, unlike the base
+        (which only touches `self.requester`'s in-flight set), sweep it as a
+        ghost from EVERY requester's `selected_ends`. A departed end must not
+        linger in any requester's in-flight set, else that aggregator waits on
+        a gone trainer and wastes a concurrency slot."""
+        if (end_id in self.all_selected) and (end_id not in self.ordered_updates_recv_ends):
+            # Remove end from all_selected if we haven't got an update from it
+            # yet. It would have flushed the agg-weights after initiating
+            # channel.leave().
+            selected_ends = self.selected_ends[self.requester]
+            if end_id in selected_ends:
+                selected_ends.remove(end_id)
+                self.selected_ends[self.requester] = selected_ends
+
+            self.track_selected_trainers_which_left[end_id] = (
+                self.track_selected_trainers_which_left.get(end_id, 0) + 1
+            )
+            if end_id in self.all_selected.keys():
+                del self.all_selected[end_id]
+        elif (end_id in self.all_selected) and (end_id in self.ordered_updates_recv_ends):
+            # Update was already received before it left -- participation is
+            # complete, don't touch all_selected now.
+            logger.debug(
+                f"Update was already received from {end_id} before it left "
+                f"the channel. Not deleting from all_ends now."
+            )
+        else:
+            logger.warning(
+                f"End_id {end_id} remove check from all_selected failed. "
+                f"Need to check"
             )
 
-        elif channel_props[KEY_CH_STATE] == VAL_CH_STATE_RECV:
-            # TODO: (DG) See if eligible_ends should be passed here
-            # too in place of ends
-            results = self._handle_recv_state(ends, concurrency)
+        for _req, _ends in self.selected_ends.items():
+            if end_id in _ends:
+                _ends.discard(end_id)
+                logger.debug(f"Removed ghost end_id {end_id} from selected_ends[{_req}]")
 
-        else:
-            state = channel_props[KEY_CH_STATE]
-            raise ValueError(f"unkown channel state: {state}")
-
-        logger.debug(
-            f"requester: {self.requester}, selected ends: {self.selected_ends}"
-        )
-        logger.debug(
-            f"channel state: {channel_props[KEY_CH_STATE]}, results: {results}"
-        )
-
-        return results
+    # ------------------------------------------------------------ Oort policy
 
     def cutoff_util(
         self,
@@ -527,17 +368,21 @@ class AsyncOortSelector(AbstractSelector):
         cutoff_utility: float,
         utility_list: list[dict[str, Scalar]],
         num_of_ends: int,
+        agg_version_key=None,
     ) -> list[str]:
-        """Sample num_of_ends clients by utility."""
+        """Sample num_of_ends clients by utility.
 
+        `_keyed_weighted_topk`, not `np.random.choice(p=...)` -- the latter is
+        pool-size/order-dependent, same anti-pattern `_keyed_topk` already
+        fixed for the plain uniform draw (see its docstring).
+        """
         over_cutoff_utility_end_ids = []
         over_cutoff_utility_probs = []
         over_cutoff_utility_sum = 0
 
         under_cutoff_utility_list = []
 
-        # Divide ends on whether its utility exceeds cutoff_loss or
-        # not
+        # Divide ends on whether its utility exceeds cutoff_loss or not
         for utility_pair in utility_list:
             if utility_pair[PROP_UTILITY] >= cutoff_utility:
                 over_cutoff_utility_end_ids.append(utility_pair[PROP_END_ID])
@@ -546,12 +391,12 @@ class AsyncOortSelector(AbstractSelector):
             else:
                 under_cutoff_utility_list.append(utility_pair)
 
-        # Select clients on the probability based on the utility
-        # divided by the utility sum
+        # Select clients on the probability based on the utility divided by
+        # the utility sum
         for prob_idx in range(len(over_cutoff_utility_probs)):
             over_cutoff_utility_probs[prob_idx] /= over_cutoff_utility_sum
 
-        # Exclude zero-probability entries; np.random.choice(replace=False) requires ≥size non-zero.
+        # Exclude zero-weight entries; A-ExpJ's key formula divides by weight.
         nz_pairs = [
             (e, p)
             for e, p in zip(over_cutoff_utility_end_ids, over_cutoff_utility_probs)
@@ -559,18 +404,11 @@ class AsyncOortSelector(AbstractSelector):
         ]
         if not nz_pairs:
             return []
-        nz_ends, nz_probs = zip(*nz_pairs)
-        nz_total = sum(nz_probs)
-        nz_probs = [p / nz_total for p in nz_probs]
 
-        selected_ends = self._rng.choice(
-            list(nz_ends),
-            size=min(len(nz_ends), num_of_ends),
-            replace=False,
-            p=nz_probs,
+        return self._keyed_weighted_topk(
+            nz_pairs, min(len(nz_pairs), num_of_ends), agg_version_key,
+            "sample_by_util",
         )
-
-        return selected_ends
 
     def _system_util_summary(self, selected_ids) -> dict:
         """Per-round speed-penalty summary over selected ends, for telemetry.
@@ -597,24 +435,6 @@ class AsyncOortSelector(AbstractSelector):
             "pref_binds": penalized > 0,
         }
 
-    def _keyed_topk(self, candidate_ids, k: int, agg_version_key, salt: str) -> list[str]:
-        """Order-sample top-k: each id's rank key depends only on its own
-        (seed, salt, agg_version_key, id), never on pool membership/size/call
-        order. Replaces index-based random.sample()/np.random.choice(), where
-        one trainer's incidental presence/absence shifts every other
-        candidate's draw and permanently desyncs later calls.
-
-        Seed material is a str, not a raw tuple -- Random() hashes non-str/
-        int/bytes seeds, and str hash() is PYTHONHASHSEED-randomized per
-        process, which would silently break real/sim parity.
-        """
-        def _key(c: str) -> float:
-            material = f"{self._seed}|{salt}|{agg_version_key}|{c}"
-            return _StdRandom(material).random()
-
-        ranked = sorted(candidate_ids, key=_key, reverse=True)
-        return ranked[:k]
-
     def sample_by_speed(
         self, unexplored_end_ids: list[str], num_of_ends: int, agg_version_key=None
     ) -> list[str]:
@@ -625,6 +445,22 @@ class AsyncOortSelector(AbstractSelector):
         """
         return self._keyed_topk(unexplored_end_ids, num_of_ends, agg_version_key,
                                 "sample_by_speed")
+
+    def _keyed_weighted_topk(
+        self, candidate_weights: list[tuple], k: int, agg_version_key, salt: str
+    ) -> list[str]:
+        """Weighted counterpart of `_keyed_topk`, same `_keyed_draw` primitive:
+        Efraimidis-Spirakis (A-ExpJ) keys `u_i ** (1/w_i)` turn the pool-
+        independent uniform draw into weighted sampling without replacement.
+        Replaces `np.random.choice(p=probs)`, whose output for every
+        candidate shifts when the pool's size/order changes.
+        """
+        def _key(item: tuple) -> float:
+            end_id, weight = item
+            return self._keyed_draw(end_id, agg_version_key, salt) ** (1.0 / weight)
+
+        ranked = sorted(candidate_weights, key=_key, reverse=True)
+        return [end_id for end_id, _weight in ranked[:k]]
 
     def pacer(self, current_round: int) -> None:
         """Adapt `round_threshold` from the exploited-utility trend — faithful to
@@ -637,14 +473,6 @@ class AsyncOortSelector(AbstractSelector):
         and must only invoke this once per genuine round change -- takes an
         explicit param since `self.round` lags until the caller sets it after
         this returns.
-
-        The async selector has no async-Oort reference, but the pacer's adaptation
-        is the SAME concept — so it must match the reference's two-branch logic.
-        The prior async port (like the old sync base) raised on ANY dip
-        (`last > curr`) and never lowered → a monotonic ratchet to 100 that turned
-        the speed penalty off; this only "passed" because felix's penalty was thus
-        rendered largely inert (PARITY.md §S.pacer). felix is a SEPARATE class
-        (AbstractSelector), so this in-place fix keeps it self-contained.
         """
         if not (
             self.pacer_step > 0
@@ -667,7 +495,6 @@ class AsyncOortSelector(AbstractSelector):
 
     def find_blocklists(self, ends: dict[str, End]) -> list[str]:
         """Make a filter of blocklist ends."""
-
         blocklist_end_ids = []
         if self.blocklist_threshold != -1:
             for end_id in ends.keys():
@@ -681,12 +508,9 @@ class AsyncOortSelector(AbstractSelector):
     def calculate_num_of_exploration_exploitation(
         self, num_of_ends: int, unexplored_end_ids: list[str]
     ) -> tuple[int, int]:
-        """
-        Calculate number of ends to select for exploration and
-        exploitation; Add 1 to exploration_len to avoid not exploring
-        0 ends while unexplored ends exist.
-        """
-
+        """Calculate number of ends to select for exploration and
+        exploitation; Add 1 to exploration_len to avoid not exploring 0 ends
+        while unexplored ends exist."""
         exploration_len = min(
             int(num_of_ends * self.exploration_factor) + 1,
             len(unexplored_end_ids),
@@ -701,13 +525,9 @@ class AsyncOortSelector(AbstractSelector):
         blocklist_end_ids: list[str],
         trainer_unavail_list: list[str],
     ) -> tuple[list[tuple[str, float]], list[str]]:
-        """
-        Make a list of tuple (end_id, end_utility) as an utility_list
-        As unexplored ends that are not selected before do not have
-        utility value, collect them separately with unexplored_end_ids
-        list
-        """
-
+        """Make a list of tuple (end_id, end_utility) as an utility_list. As
+        unexplored ends that are not selected before do not have utility
+        value, collect them separately with unexplored_end_ids list."""
         utility_list = []
         unexplored_end_ids = []
 
@@ -729,34 +549,20 @@ class AsyncOortSelector(AbstractSelector):
         return utility_list, unexplored_end_ids
 
     def calculate_round_preferred_duration(self, ends: dict[str, End]) -> float:
-        """
-        Calculate round preferred duration based on round_threshold
-        and end_round_duration of trainers. round_threshold is
-        controlled by pacer.
-        """
-        logger.debug(f"calculate_round_pref_duration ends.keys(): {ends.keys()}")
+        """Calculate round preferred duration based on round_threshold and
+        end_round_duration of trainers. round_threshold is controlled by
+        pacer."""
         if self.round_threshold < 100.0:
             sorted_round_duration = []
             for end_id in ends.keys():
                 end_round_duration = ends[end_id].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
-                logger.debug(
-                    f"end_id: {end_id}, end_round_duration: {end_round_duration}"
-                )
                 if end_round_duration is not None:
                     sorted_round_duration.append(end_round_duration)
                 elif end_round_duration is None:
-                    # (DG) HACK. Comes here if the trainer
-                    # participates in eval, so technically doesnt have
-                    # a round duration. Can set it to 60 seconds since
-                    # that is the max round duration for training.
-                    # TODO: Eval is half of round duration so can use
-                    # that information to set correct round duration.
-                    # But it might break other code, so leaving it for
-                    # later.
+                    # Comes here if the trainer participates in eval, so
+                    # technically doesn't have a round duration. Set it to 60
+                    # seconds since that is the max round duration for training.
                     sorted_round_duration.append(timedelta(seconds=60))
-            logger.debug(
-                f"after for loop, sorted_round_duration: {sorted_round_duration}"
-            )
             # pref = round_threshold-th PERCENTILE -> sort first (ref Oort oort.py:272)
             sorted_round_duration.sort()
             round_preferred_duration = timedelta(
@@ -768,45 +574,23 @@ class AsyncOortSelector(AbstractSelector):
                 ].total_seconds()
             )
         else:
-            # Assuming a max round duration of 99999 seconds (~1.2
-            # days)
+            # Assuming a max round duration of 99999 seconds (~1.2 days)
             round_preferred_duration = timedelta(seconds=99999)
 
-        logger.debug(f"returning round_preferred_duration: {round_preferred_duration}")
         return round_preferred_duration
 
     def calculate_temporal_uncertainty_of_trainer(
         self, ends: dict[str, End], end_id: str, model_version: int
     ) -> float:
-        """
-        Calculate temporal uncertainty term based on the end's last
-        selected round.
-        """
-
-        # OPTION 1: nudge temporal rank of trainer based on last
-        # trained round. This value might be stale based on when the
-        # trainer was last selected for training. It represents the
-        # original OORT style.
-
-        # OPTION 2: nudge temporal rank of trainer based on last
-        # evaluated round. This means that the value will be updated
-        # for each train or eval task given to the trainer. It helps
-        # track the utility to a fresher extent.
-
+        """Calculate temporal uncertainty term based on the end's last
+        selected round."""
         if self.round_nudge_type == "last_train":
             end_last_selected_round = ends[end_id].get_property(
                 PROP_LAST_SELECTED_ROUND
-            )  # TODO(GD): Fix the misnomer: This should actually be PROP_LAST_SELECTED_MODEL_VERSION
+            )
         elif self.round_nudge_type == "last_eval":
             end_last_selected_round = ends[end_id].get_property(PROP_LAST_EVAL_ROUND)
 
-        logger.debug(
-            f"using round_nudge_type: {self.round_nudge_type} for end_id: {end_id}, end_last_selected_round: {end_last_selected_round}"
-        )
-
-        # TODO: (DG) Enable a flag to use or not use temporal
-        # uncertainty as 0 based on our solution. We might want to
-        # disable it in the final selection process in FeLiX.
         if (
             model_version == 0
             or model_version == end_last_selected_round
@@ -817,42 +601,30 @@ class AsyncOortSelector(AbstractSelector):
         trainer_temporal_uncertainty = math.sqrt(
             0.1 * math.log(model_version) / end_last_selected_round
         )
-        logger.debug(
-            f"model_version: {model_version}, end_last_selected_round: {end_last_selected_round}, trainer_temporal_uncertainty: {trainer_temporal_uncertainty}"
-        )
         return trainer_temporal_uncertainty
 
     def calculate_global_system_utility_of_trainer(
         self, ends: dict[str, End], end_id: str
     ) -> float:
-        """
-        Calculate global system utility based on the end's round
-        duration.
-        """
-
+        """Calculate global system utility based on the end's round duration."""
         end_round_duration = ends[end_id].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
 
-        # In normal training, the util of trainer is 1 if it is faster
-        # than preferred round duration. This is a multiplier to the
-        # trainer utility. Thus, if the trainer is slower than
-        # preferred round duration, the multiplier is (0, 1) which
-        # means that the utility of the trainer decreases.
-
-        # For eval-enabled training, it is possible that the trainer
-        # hasn't trained yet but has only pushed an eval update. For
-        # these trainers, we retain the multiplicative factor as 1 so
-        # as to incentivise them to be picked whenever available to
-        # train.
-
-        # TODO:(DG) Make it configurable via flag for Felix selection
-        # policy.
+        # In normal training, the util of trainer is 1 if it is faster than
+        # preferred round duration. This is a multiplier to the trainer
+        # utility. Thus, if the trainer is slower than preferred round
+        # duration, the multiplier is (0, 1) which means that the utility of
+        # the trainer decreases.
+        #
+        # For eval-enabled training, it is possible that the trainer hasn't
+        # trained yet but has only pushed an eval update. For these trainers,
+        # we retain the multiplicative factor as 1 so as to incentivise them
+        # to be picked whenever available to train.
         if end_round_duration is None:
             return 1
 
         if end_round_duration <= self.round_preferred_duration:
             return 1
         else:
-            # Get both into datetime seconds before division
             return math.pow(
                 self.round_preferred_duration.total_seconds()
                 / end_round_duration.total_seconds(),
@@ -862,10 +634,7 @@ class AsyncOortSelector(AbstractSelector):
     def save_exploited_utility_history(
         self, ends: dict[str, End], exploit_end_ids: list[str]
     ) -> None:
-        """
-        Save the history of exploited utility at this round for pacer.
-        """
-
+        """Save the history of exploited utility at this round for pacer."""
         if len(exploit_end_ids) > 0:
             exploited_utility = 0
             for exploit_end_id in exploit_end_ids:
@@ -877,19 +646,15 @@ class AsyncOortSelector(AbstractSelector):
 
     def update_exploration_factor(self) -> None:
         """Update the exploration_factor."""
-
         self.exploration_factor = max(
             self.exploration_factor * self.exploration_factor_decay,
             self.min_exploration_factor,
         )
 
     def increment_selected_count_on_selected_ends(
-        self, ends: dict[str, End], candidates: list[str]
+        self, ends: dict[str, End], candidates: dict[str, End]
     ) -> None:
         """Increment the round selected count on selected ends."""
-
-        # TODO: (DG): Using self.requester here since it is a
-        # dict->list mapping now. Check
         for end_id in candidates:
             if ends[end_id].get_property(PROP_SELECTED_COUNT) is None:
                 ends[end_id].set_property(PROP_SELECTED_COUNT, 1)
@@ -900,22 +665,11 @@ class AsyncOortSelector(AbstractSelector):
                 )
 
     def select_random(self, ends: dict[str, End], num_of_ends: int,
-                       agg_version_key=None) -> dict[str, None]:
+                       agg_version_key=None) -> list[str]:
         """Select num_of_ends ends via _keyed_topk -- population-size-
         independent, unlike random.sample() (see _keyed_topk docstring)."""
-        sorted_ends = sorted(ends)
-        _seq = getattr(self, "_select_trace_seq", -1)
-        chosen = self._keyed_topk(sorted_ends, num_of_ends, agg_version_key,
-                                  "select_random")
-        selected_random_ends = dict.fromkeys(chosen)
-        logger.info(
-            f"[SELECT_TRACE seq={_seq}] SELECT_RANDOM "
-            f"candidates_sorted={sorted_ends} n_candidates={len(sorted_ends)} "
-            f"num_of_ends={num_of_ends} chosen={list(selected_random_ends.keys())}"
-        )
-        logger.debug(f"selected_random_ends: {selected_random_ends}")
-
-        return {key: None for key in selected_random_ends}
+        return self._keyed_topk(sorted(ends), num_of_ends, agg_version_key,
+                                "select_random")
 
     def calculate_total_utility(
         self,
@@ -923,32 +677,16 @@ class AsyncOortSelector(AbstractSelector):
         ends: dict[str, End],
         model_version: int,
     ) -> list[tuple[str, float]]:
-        """
-        Calculate the total utility value of trainers with applying
-        temporal uncertainty and global system utility, based on the
-        Oort algorithm.
-        """
+        """Calculate the total utility value of trainers with applying
+        temporal uncertainty and global system utility, based on the Oort
+        algorithm."""
         if utility_list == []:
-            logger.debug(
-                "Got empty utility_list in calculate_total_utility. " "Returning empty"
-            )
             return []
 
-        # Calculate preferred round duration TODO: (DG) Since we
-        # return at the top, we don't have anything to do here?
         self.round_preferred_duration = self.calculate_round_preferred_duration(ends)
 
-        # Calculate the final utility value of a trainer by adding the
-        # temporal uncertainty and multiplying the global system
-        # utility
-
-        # TODO (GD): Change this back to DEBUG
-        logger.info(f"Total utilities")
-        logger.info(
-            f"stat_utility, temporal_uncertainty, global_system_utility, final_utility, end_id"
-        )
-        # Normalize+clip the statistical reward across candidates (reference Oort
-        # get_norm) so the temporal term is meaningful.
+        # Normalize+clip the statistical reward across candidates (reference
+        # Oort get_norm) so the temporal term is meaningful.
         if self.normalize_reward:
             _min, _range, _clip = scoring.oort_norm_stats(
                 [u[PROP_UTILITY] for u in utility_list], self.clip_bound
@@ -970,15 +708,9 @@ class AsyncOortSelector(AbstractSelector):
                     stat_utility, _min, _range, _clip
                 )
 
-            # Add temproal uncertainty term
             temporal_uncertainty = self.calculate_temporal_uncertainty_of_trainer(
                 ends, curr_end_id, model_version
             )
-            logger.debug(
-                f"end_id: {curr_end_id}, temporal_uncertainty: {temporal_uncertainty}"
-            )
-
-            # Multiply global system utility
             global_system_utility = self.calculate_global_system_utility_of_trainer(
                 ends, curr_end_id
             )
@@ -993,277 +725,13 @@ class AsyncOortSelector(AbstractSelector):
                 stat_utility, temporal_uncertainty, global_system_utility
             )
 
-            # Per-candidate, fires up to `c` times/call -- was left at INFO
-            # despite its own TODO.
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    f"{stat_utility}, {temporal_uncertainty}, {global_system_utility}, {utility_list[utility_idx][PROP_UTILITY]}, {utility_list[utility_idx][PROP_END_ID]}"
-                )
-
         # Explicit end_id tie-break: pre-sort order is already canonical
         # (sorted(ends.keys())), making the existing stable-sort tie-break
         # explicit instead of incidental.
         return sorted(utility_list, key=lambda x: (x[PROP_UTILITY], x[PROP_END_ID]))
 
-    def _cleanup_provided_ends(
-        self, ends_to_cleanup: dict[str, End], ends: dict[str, End]
-    ):
-        """Clean-up a specific end so it becomes eligible for sampling again - reject stale updates in FwdLLM (async)"""
-
-        selected_ends = self.selected_ends.get(self.requester, set())
-        for end_id, _ in ends_to_cleanup.items():
-            state = ends[end_id].get_property(KEY_END_STATE)
-            logger.info(f"Cleaning end {end_id}, current state: {state}")
-
-            # reset only if it's in received state
-            if state == VAL_END_STATE_RECVD:
-                ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
-                logger.debug(
-                    f"Setting {end_id} state to {VAL_END_STATE_NONE}, "
-                    f"and"
-                    f" removing from selected_ends and all_selected"
-                )
-
-            # remove from active selection tracking
-            if end_id in selected_ends:
-                selected_ends.remove(end_id)
-                logger.debug(f"Removed {end_id} from selected_ends")
-
-            if end_id in self.all_selected:
-                del self.all_selected[end_id]
-                logger.debug(f"Removed {end_id} from all_selected")
-
-        # update the mapping back
-        self.selected_ends[self.requester] = selected_ends
-        logger.info(
-            f"Cleanup complete. Freed [{ends}] end(s) for resampling; state set to {VAL_END_STATE_NONE}."
-        )
-
-    # #### CHANGES BASED OFF FEDBUFF FOR ASYNCFL
-    def _cleanup_recvd_ends(self, ends: dict[str, End]):
-        """Clean up ends whose a message was received, from selected
-        ends.
-
-        Note: It sets the end state to none which makes it eligible to
-        be sampled again. This can cause problems if sampled in the
-        same round. Thus, for aggregator, the _cleanup_recvd_ends
-        should be triggered only after aggregation of weights succeeds
-        on meeting agg_goal."""
-        logger.debug(
-            f"clean up recvd ends. selected_ends: {self.selected_ends}, ends: {ends.keys()}"
-        )
-
-        selected_ends = self.selected_ends[self.requester]
-        logger.debug(
-            f"self.requester: {self.requester} and selected_ends: "
-            f"{selected_ends} before processing"
-        )
-
-        # Drain all received ends; min(N, agg_goal) deadlocks when K changes dynamically.
-        num_ends_to_remove = len(self.ordered_updates_recv_ends)
-        if num_ends_to_remove != 0:
-            ends_to_remove = self.ordered_updates_recv_ends[:num_ends_to_remove]
-            logger.debug(
-                f"Will remove these ends from "
-                f"ordered_updates_recv_ends: {ends_to_remove}"
-                f" and selected_ends and all_selected"
-            )
-
-            # removing the first agg-goal number of ends to free them
-            # to participate in the next round
-            self.ordered_updates_recv_ends = self.ordered_updates_recv_ends[
-                num_ends_to_remove:
-            ]
-            logger.debug(
-                f"self.ordered_updates_recv_ends after removing first "
-                f"num_ends_to_remove: {num_ends_to_remove} "
-                f"elements: {self.ordered_updates_recv_ends}"
-            )
-
-            logger.debug(
-                f"Ends to remove based on trainer updates received: {ends_to_remove}"
-            )
-
-            # Adding trainer_eval_recv_ends to accoount for trainers
-            # that have finished eval updates. These trainers also
-            # need to be freed up to participate in the next round.
-            logger.debug(
-                f"Ends to remove based on eval updates received: {self.trainer_eval_recv_ends}"
-            )
-            ends_to_remove = ends_to_remove + self.trainer_eval_recv_ends
-
-            logger.debug(f"All ends to remove (train + eval): {ends_to_remove}")
-
-            self.trainer_eval_recv_ends = []
-            logger.debug(
-                f"Cleared trainer_eval_recv_ends: {self.trainer_eval_recv_ends}"
-            )
-
-            self.curr_round_eval_slots_left = int(self.eval_goal_factor * self.agg_goal)
-            logger.debug(
-                f"Reset curr_round_eval_slots_left: {self.curr_round_eval_slots_left}"
-            )
-
-            for end_id in ends_to_remove:
-                if end_id not in ends:
-                    # something happened to end of end_id (e.g.,
-                    # connection loss) let's remove it from
-                    # selected_ends
-                    logger.debug(
-                        f"no end id {end_id} in ends, removing "
-                        f"from selected_ends and all_selected"
-                    )
-                    # NOTE: it is not a guarantee that selected_ends
-                    # will still contain the end_id. Thats because it
-                    # might have got disconnected/ rejoined in the
-                    # middle of a round
-                    if end_id in selected_ends:
-                        selected_ends.remove(end_id)
-                        logger.debug(
-                            f"No end id {end_id} in ends, removed from "
-                            f"selected_ends: "
-                            f"{selected_ends}"
-                        )
-                    if end_id in self.all_selected:
-                        del self.all_selected[end_id]
-                        logger.debug(
-                            f"No end id {end_id} in ends, removed from "
-                            f"self.all_selected: {self.all_selected}"
-                        )
-                else:
-                    state = ends[end_id].get_property(KEY_END_STATE)
-                    logger.debug(
-                        f"End_id {end_id} found in selected_ends in state: {state}, "
-                        f"selected_ends: {selected_ends} and self.all_selected: "
-                        f"{self.all_selected}"
-                    )
-                    if state == VAL_END_STATE_RECVD:
-                        ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
-                        logger.debug(
-                            f"Setting {end_id} state to {VAL_END_STATE_NONE}, "
-                            f"and"
-                            f" removing from selected_ends and all_selected"
-                        )
-                        if end_id in selected_ends:
-                            selected_ends.remove(end_id)
-                            logger.debug(
-                                f"FOUND end id {end_id} in state: {state}.. "
-                                f"removed from "
-                                f"selected_ends: {selected_ends}"
-                            )
-                        if end_id in self.all_selected:
-                            del self.all_selected[end_id]
-                            logger.debug(
-                                f"FOUND end id {end_id} in state: {state}.. "
-                                f"removed from "
-                                f"self.all_selected: "
-                                f"{self.all_selected}"
-                            )
-                    elif state == VAL_END_STATE_NONE:
-                        # TODO: (DG) Recheck if it needs to be deleted
-                        # from here as well. Is the failure scenario
-                        # being handled correctly if the trainer
-                        # contributes, fails and then comes back
-                        # within the same round.
-                        logger.debug(
-                            f"Found end {end_id} in state {VAL_END_STATE_NONE}. Might have "
-                            f"left/rejoined. Need to remove it from "
-                            f"selected_ends and self.all_selected "
-                            f"if it was selected"
-                        )
-                        if end_id in selected_ends:
-                            selected_ends.remove(end_id)
-                            logger.debug(
-                                f"FOUND end id {end_id} in state: {state}.. "
-                                f"removed from "
-                                f"selected_ends: {selected_ends}"
-                            )
-                        if end_id in self.all_selected:
-                            del self.all_selected[end_id]
-                            logger.debug(
-                                f"FOUND end id {end_id} in state: {state}.. "
-                                f"removed from "
-                                f"self.all_selected: "
-                                f"{self.all_selected} too"
-                            )
-                    else:
-                        logger.debug(
-                            f"FOUND end id {end_id} in state: {state}. "
-                            f"Not doing anything"
-                        )
-        else:
-            logger.debug("No ends to remove so far")
-
-    def _cleanup_removed_ends(self, end_id):
-        logger.debug(
-            f"Going to cleanup selector state for "
-            f"end_id {end_id} since it has left the channel"
-        )
-        if (end_id in self.all_selected) and (
-            end_id not in self.ordered_updates_recv_ends
-        ):
-            # remove end from all_selected if we havent got an update
-            # from it yet. It would have flushed the agg-weights after
-            # initiating channel.leave().
-            logger.debug(
-                f"Removing end_id {end_id} from all_selected"
-                f" since no update received before it left the channel."
-            )
-            selected_ends = self.selected_ends[self.requester]
-            if end_id in selected_ends:
-                selected_ends.remove(end_id)
-                logger.debug(f"Also removing end_id {end_id} from selected_ends")
-                self.selected_ends[self.requester] = selected_ends
-
-            # Track trainers that were sent weights but dropped off
-            # before sending back an update
-            if end_id in self.track_selected_trainers_which_left:
-                self.track_selected_trainers_which_left[end_id] += 1
-            else:
-                self.track_selected_trainers_which_left[end_id] = 1
-
-            total_trainers_dropped_off = 0
-            for k, v in self.track_selected_trainers_which_left.items():
-                total_trainers_dropped_off += v
-
-            logger.debug(
-                f"Trainer: {end_id} with count "
-                f"{self.track_selected_trainers_which_left[end_id]}, left "
-                f"before returning update. "
-                f"total_trainers_dropped_off: {total_trainers_dropped_off} "
-                f"self.track_selected_trainers_which_left: "
-                f"{self.track_selected_trainers_which_left}"
-            )
-            if end_id in self.all_selected.keys():
-                del self.all_selected[end_id]
-        elif (end_id in self.all_selected) and (
-            end_id in self.ordered_updates_recv_ends
-        ):
-            # Dont remove it if it was in all_selected and we have got
-            # an update from it before it did channel.leave(). It has
-            # completed its participation for this round.
-            logger.debug(
-                f"Update was alreacy received from {end_id} before it left "
-                f"the channel. Not deleting from all_ends now."
-            )
-        else:
-            logger.warning(
-                f"End_id {end_id} remove check from all_selected failed. "
-                f"Need to check"
-            )
-
-        # A departed end must not linger in selected_ends (the in-flight set
-        # returned for recv), else the aggregator waits on a gone trainer and
-        # wastes a concurrency slot. selected_ends is {requester: set(ends)}.
-        for _req, _ends in self.selected_ends.items():
-            if end_id in _ends:
-                _ends.discard(end_id)
-                logger.debug(
-                    f"Removed ghost end_id {end_id} from selected_ends[{_req}]"
-                )
-
-    # Invoked when selection mode is default i.e. of oort which trades
-    # off exploitation/exploration and speed/stat_utility
+    # Invoked when selection mode is oort's default (tradeoff between
+    # exploitation/exploration and speed/stat_utility)
     def _select_candidates_using_default(
         self,
         cutoff_utility,
@@ -1273,66 +741,37 @@ class AsyncOortSelector(AbstractSelector):
         unexplored_end_ids,
         agg_version_key=None,
     ):
-        logger.debug("Asyncoort selection using default (tradeoff)")
-        logger.debug(
-            f"Invoking sample_by_util() with cutoff_utility: {cutoff_utility}"
-            f", utility_list: {utility_list}, exploitation_len: "
-            f"{exploitation_len}"
-        )
         exploit_end_ids = self.sample_by_util(
-            cutoff_utility, utility_list, exploitation_len
+            cutoff_utility, utility_list, exploitation_len,
+            agg_version_key=agg_version_key,
         )
-        logger.debug(f"exploit_end_ids: {exploit_end_ids}")
 
         # sample exploration_len of unexplored clients
         explore_end_ids = []
         if self.exploration_factor > 0.0 and len(unexplored_end_ids) > 0:
-            logger.debug(
-                f"Invoking sample_by_speed(): with unexplored_end_ids: "
-                f"{unexplored_end_ids}, exploration_len: {exploration_len}"
-            )
             explore_end_ids = self.sample_by_speed(
                 unexplored_end_ids, exploration_len, agg_version_key=agg_version_key
             )
-        logger.debug(f"explore_end_ids: {explore_end_ids}")
 
         candidates = [*explore_end_ids, *exploit_end_ids]
-
-        logger.info("Candidates selected with utilities")
-        logger.info("end_id, utility")
-        for candidate in candidates:
-            for utility_pair in utility_list:
-                if utility_pair[PROP_END_ID] == candidate:
-                    logger.info(f"{candidate}, {utility_pair[PROP_UTILITY]}")
-
         return candidates, exploit_end_ids
 
-    # Invoked when selection mode is maxSamples i.e. select clients
-    # with largest local datasets
+    # Invoked when selection mode is maxSamples i.e. select clients with
+    # largest local datasets
     def _select_candidates_maxSamples(
         self,
         ends: dict[str, End],
         num_of_ends: int,
     ) -> tuple[list[str], list[str]]:
-        logger.debug("Asyncoort selection using maxSamples")
-        logger.debug(
-            f"Will select num_ends: {num_of_ends} " f"from ends of length: {len(ends)}"
-        )
-
         # get the end properties
         end_id_to_samples = {}
         for key, val in ends.items():
-            # if the PROP_DATASET_SIZE is None, it means the trainer
-            # hasnt trained even once till now. So we set it to 99999
-            # to prioritize it to get picked up atleast once.
+            # if the PROP_DATASET_SIZE is None, it means the trainer hasnt
+            # trained even once till now. So we set it to 99999 to prioritize
+            # it to get picked up atleast once.
             end_num_samples = val.get_property(PROP_DATASET_SIZE)
             if end_num_samples is None:
                 end_num_samples = 99999
-                logger.debug(
-                    f"Num_samples for end_id: {key} was None, "
-                    f"set to {end_num_samples} to incentivise getting picked"
-                )
-
             end_id_to_samples[key] = end_num_samples
 
         # sort it in descending order of number of samples
@@ -1344,45 +783,28 @@ class AsyncOortSelector(AbstractSelector):
             ).keys()
         )
 
-        # currently returning blank exploit_end_ids TODO: (DG) check
-        # later about why it is needed
         exploit_end_ids = []
-
-        # pick first k elements as candidates and return
         candidates = sorted_end_ids[:num_of_ends]
-        logger.debug(f"Selected candidates being returned: {candidates}")
-
         return candidates, exploit_end_ids
 
-    # Invoked when selection mode is fastest i.e. select fastest
-    # clients
+    # Invoked when selection mode is fastest i.e. select fastest clients
     def _select_candidates_fastest(
         self,
         ends: dict[str, End],
         num_of_ends: int,
     ) -> tuple[list[str], list[str]]:
-        logger.debug("Asyncoort selection using fastestClients")
-        logger.debug(
-            f"Will select num_ends: {num_of_ends} " f"from ends of length: {len(ends)}"
-        )
-
         # get the end properties
         end_id_to_round_durations = {}
         for key, val in ends.items():
-            # if the PROP_CLIENT_TASK_TRAIN_DURATION is None, it means the trainer
-            # hasnt trained even once till now. So we set it to
-            # 00:00:00.000000 (upto microseconds) to prioritize it to
-            # get picked up atleast once.
+            # if the PROP_CLIENT_TASK_TRAIN_DURATION is None, it means the
+            # trainer hasnt trained even once till now. So we set it to
+            # 00:00:00.000000 (upto microseconds) to prioritize it to get
+            # picked up atleast once.
             round_duration = val.get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
             if round_duration is None:
                 round_duration = timedelta(
                     hours=0, minutes=0, seconds=0, microseconds=0
                 )
-                logger.debug(
-                    f"Round_duration for end_id: {key} was None, "
-                    f"set to {round_duration} to incentivise getting picked"
-                )
-
             end_id_to_round_durations[key] = round_duration
 
         # sort it in ascending order of durations
@@ -1396,42 +818,26 @@ class AsyncOortSelector(AbstractSelector):
             ).keys()
         )
 
-        # currently returning blank exploit_end_ids TODO: (DG) check
-        # later about why it is needed
         exploit_end_ids = []
-
-        # pick first k elements as candidates and return
         candidates = sorted_end_ids[:num_of_ends]
-        logger.debug(f"Selected candidates being returned: {candidates}")
-
         return candidates, exploit_end_ids
 
-    # Invoked when selection mode is fair-share i.e. select clients
-    # such that all clients participate almost equally
+    # Invoked when selection mode is fair-share i.e. select clients such that
+    # all clients participate almost equally
     def _select_candidates_fairShare(
         self,
         ends: dict[str, End],
         num_of_ends: int,
     ) -> tuple[list[str], list[str]]:
-        logger.debug("Asyncoort selection using fairShare")
-        logger.debug(
-            f"Will select num_ends: {num_of_ends} " f"from ends of length: {len(ends)}"
-        )
-
         # get the end properties
         end_id_to_update_count = {}
         for key, val in ends.items():
-            # if the PROP_UPDATE_COUNT is None, it means the trainer
-            # hasnt trained even once till now. So we set it to 0 to
-            # prioritize it to get picked up atleast once.
+            # if the PROP_UPDATE_COUNT is None, it means the trainer hasnt
+            # trained even once till now. So we set it to 0 to prioritize it
+            # to get picked up atleast once.
             update_count = val.get_property(PROP_UPDATE_COUNT)
             if update_count is None:
                 update_count = 0
-                logger.debug(
-                    f"Update_count for end_id: {key} was None, "
-                    f"set to {update_count} to incentivise getting picked"
-                )
-
             end_id_to_update_count[key] = update_count
 
         # sort it in ascending order of durations
@@ -1445,52 +851,30 @@ class AsyncOortSelector(AbstractSelector):
             ).keys()
         )
 
-        # currently returning blank exploit_end_ids TODO: (DG) check
-        # later about why it is needed
         exploit_end_ids = []
-
-        # pick first k elements as candidates and return
         candidates = sorted_end_ids[:num_of_ends]
-        logger.debug(f"Selected candidates being returned: {candidates}")
-
         return candidates, exploit_end_ids
 
     # Invoked when selection mode is prioritiseUnavail i.e. select and
-    # prioritize clients that have been unavailable for long durations
-    # of the training time
+    # prioritize clients that have been unavailable for long durations of the
+    # training time
     def _select_candidates_prioritiseUnavail(
         self,
         ends: dict[str, End],
         num_of_ends: int,
     ) -> tuple[list[str], list[str]]:
-        logger.debug("Asyncoort selection using prioritiseUnavail")
-        logger.debug(
-            f"Will select num_ends: {num_of_ends} " f"from ends of length: {len(ends)}"
-        )
-
         # get the end properties
         end_id_to_unavail_durations = {}
         for key, val in ends.items():
             # if the PROP_TOTAL_UNAVAIL_DURATION is None, it means the
             # trainer hasnt failed even once till now. So we set it to
-            # 00:00:00.000000 (upto microseconds) to allow it to get
-            # picked whenever there are no other unavailable clients
-            # to pick.
+            # 00:00:00.000000 (upto microseconds) to allow it to get picked
+            # whenever there are no other unavailable clients to pick.
             unavail_duration = val.get_property(PROP_TOTAL_UNAVAIL_DURATION)
             if unavail_duration is None:
                 unavail_duration = timedelta(
                     hours=0, minutes=0, seconds=0, microseconds=0
                 )
-                logger.debug(
-                    f"Unavail_duration for end_id: {key} was None, "
-                    f"set to {unavail_duration} to allow  getting picked"
-                )
-            else:
-                logger.debug(
-                    f"Unavail_duration for end_id: {key} was set "
-                    f"to {unavail_duration}"
-                )
-
             end_id_to_unavail_durations[key] = unavail_duration
 
         # sort it in ascending order of durations
@@ -1504,745 +888,6 @@ class AsyncOortSelector(AbstractSelector):
             ).keys()
         )
 
-        # currently returning blank exploit_end_ids TODO: (DG) check
-        # later about why it is needed
         exploit_end_ids = []
-
-        # pick first k elements as candidates and return
         candidates = sorted_end_ids[:num_of_ends]
-        logger.debug(f"Selected candidates being returned: {candidates}")
-
         return candidates, exploit_end_ids
-
-    def _abandon_clock_now(self) -> float:
-        """Clock for the in-flight abandon-timeout (SEND_TIMEOUT_WAIT_S): the
-        virtual clock in sim (vclock_now stashed per-select), physical wall in
-        real. Keeping the STAMP (all_selected[end]) and the CHECK on the same
-        clock makes the timeout mean virtual seconds in sim, so a slow sim no
-        longer evicts a still-outstanding trainer from the re-pick guard (#1c)."""
-        sim_now = getattr(self, "_sim_now_s", None)
-        return sim_now if sim_now is not None else time.time()
-
-    def _handle_send_state(
-        self,
-        ends: dict[str, End],
-        concurrency: int,
-        channel_props: dict[str, Scalar],
-        trainer_unavail_list: list = None,
-        task_to_perform: str = "train",
-        agg_version_key=None,  # aggregator-defined version_key (shape varies by aggregator)
-        trainer_version_keys: dict[str, tuple] = None,
-        connected_ends: dict[str, End] = None,
-    ) -> SelectorReturnType:
-        selected_ends = self.selected_ends[self.requester]
-        logger.debug(
-            f"Inside handle send state: aggregator version state {agg_version_key}"
-        )
-        logger.debug(
-            f"Inside handle send state: trainer version states {trainer_version_keys}"
-        )
-
-        # Invalidate previous all_selected entry if you don't get an
-        # update in SEND_TIMEOUT_WAIT_S. The client might have dropped
-        # the message with transient unavailability. Must run before
-        # extra (below) is computed and before the extra==0 early
-        # return -- a reclaim gated behind the very slot-exhaustion
-        # check it's supposed to relieve can never fire once
-        # concurrency saturates. Must also free selected_ends, not just
-        # all_selected: extra is computed from len(selected_ends), so a
-        # reclaim that only touches all_selected leaves the concurrency
-        # slot stuck occupied forever (see
-        # examples/MIGRATING_TO_LAUNCHER.md's aggregator gotchas for the
-        # deadlock this caused).
-        # getattr-guarded: test doubles built via __new__ skip __init__.
-        _send_timeout_wait_s = getattr(
-            self, "send_timeout_wait_s", SEND_TIMEOUT_WAIT_S
-        )
-        curr_all_selected_ends = list(self.all_selected.keys())
-        for end in curr_all_selected_ends:
-            current_time_s = self._abandon_clock_now()  # vclock in sim, wall in real (#1c)
-            if end in self.all_selected.keys():
-                # Check again to avoid possible case of race condition
-                # when all_selected has been updated from another
-                # thread
-                trainer_weight_send_timestamp_s = self.all_selected[end]
-                if (
-                    trainer_weight_send_timestamp_s
-                    < (current_time_s - _send_timeout_wait_s)
-                ) and (end not in self.ordered_updates_recv_ends):
-                    # trainer hasn't returned with an update in
-                    # send_timeout_wait_s delete it from
-                    # self.all_selected so that it is eligible to be
-                    # sampled again
-                    logger.info(
-                        f"Removing end {end} from self.all_selected "
-                        f"since havent "
-                        f"got its update in {_send_timeout_wait_s}. "
-                        f"Last weight send timestamp was: {trainer_weight_send_timestamp_s}"
-                    )
-
-                    # Tracking timeouts and time spend waiting TODO:
-                    # (DG) Check if it is okay to have it triggered
-                    # for oracular too? TODO: (DG) pass
-                    # timeout_duration as a flag from config, also
-                    # pass enable/disable it?
-                    if end in self.track_trainer_timeouts:
-                        self.track_trainer_timeouts[end] += 1
-                    else:
-                        self.track_trainer_timeouts[end] = 1
-
-                    # Capture total time spent in timeouts
-                    num_of_timeouts_occured = 0
-                    for k, v in self.track_trainer_timeouts.items():
-                        num_of_timeouts_occured += v
-
-                    total_time_spent_timeouts_s = (
-                        num_of_timeouts_occured * _send_timeout_wait_s
-                    )
-
-                    logger.debug(
-                        f"Timeout for trainer: {end} with count "
-                        f"{self.track_trainer_timeouts[end]}. "
-                        f"num_of_timeouts_occured : "
-                        f"{num_of_timeouts_occured}, "
-                        f"total_time_spent_timeouts_s: "
-                        f"{total_time_spent_timeouts_s}, "
-                        f"Timeout frequency: {self.track_trainer_timeouts}"
-                    )
-
-                    # delete the end from self.all_selected AND from
-                    # selected_ends -- the latter is what extra's
-                    # concurrency accounting actually counts, so this is
-                    # the fix that lets a timed-out slot actually reopen.
-                    if end in self.all_selected.keys():
-                        del self.all_selected[end]
-                    selected_ends.discard(end)
-                    # R1: also drop it from the pending-commit set (bound via
-                    # _agg_pending_commit_ref -- sim's `_sim_pending_commit` or
-                    # real's `_per_agg_trainer_list`), or it stays un-re-pickable
-                    # forever despite the timeout reclaim above.
-                    _pending_ref = getattr(self, "_agg_pending_commit_ref", None)
-                    if _pending_ref is not None:
-                        _pending_ref.discard(end)
-
-        # Challenge 13: cleanup must check CONNECTED membership, not availability-
-        # eligibility — an in-flight trainer that merely went UN_AVL (or is the
-        # wrong task-type) is absent from the filtered `ends` but still connected;
-        # removing it makes the aggregator forget it is waiting. An empty eligible
-        # pool would otherwise wipe ALL shared selected_ends → hang. Use the full
-        # connected pool when provided; fall back to `ends` for backward compat.
-        _connected = connected_ends if connected_ends is not None else ends
-        # Check for invalid selections and remove them
-        for end_id in list(selected_ends):
-            if end_id not in _connected:
-                # something happened to end of end_id (e.g.,
-                # connection loss) let's remove it from selected_ends
-                # so that you can fill that spot with another trainer
-                logger.info(
-                    f"Removing invalid prior selection! "
-                    f"No end id {end_id} in ends, "
-                    f"removing from selected_ends. "
-                    f"NOT from all_selected right now "
-                    f"cause aggregation for that "
-                    f"round hasnt completed yet"
-                )
-                selected_ends.remove(end_id)
-                # NOTE: Not removing end_id from all_selected since it
-                # might have already participated in the same round
-                # (if it is still in all_ends)
-
-        logger.debug(f"Current selected_ends: {selected_ends}")
-
-        # Cooling (committed, not-yet-redispatched) ends hold a concurrency slot so
-        # the idle pool can't refill it — else the redispatch gap is inert.
-        cooling_count = int(channel_props.get("sim_cooling_count", 0))
-        extra = max(0, concurrency - len(selected_ends) - cooling_count)
-
-        logger.debug(
-            f"c: {concurrency}, "
-            f"len(selected_ends): {len(selected_ends)}, extra: {extra}, selected_ends: {selected_ends},"
-            f"len(ends): {len(ends)}"
-        )
-        candidates = []
-
-        # ### From Oort selector
-        # num_of_ends = min(len(ends), self.num_of_ends) if
-        # num_of_ends == 0: logger.debug("ends is empty") return {}
-        if extra == 0:
-            logger.debug(f"extra: {extra}, nothing to select")
-            return {}
-
-        if agg_version_key is not None and agg_version_key[0] is not None:
-            model_version = agg_version_key[0]
-        else:
-            logger.warning(
-                "Passing agg_version_key to select() will soon be made mandatory. Using channel_props['round'] or self.round to determine model_version for now"
-            )
-            model_version = (
-                channel_props["round"] if "round" in channel_props else self.round
-            )
-
-        logger.debug(f"let's select {extra} ends for model_version {model_version}")
-
-        if model_version % 100 == 0:
-            # Log to info level the property of LAST_EVAL_ROUND for
-            # all the ends
-            for end_id, end in ends.items():
-                logger.debug(
-                    f"End ID: {end_id}, Last Eval Round: {end.get_property(PROP_LAST_EVAL_ROUND)}, Statistical Utility: {end.get_property(PROP_STAT_UTILITY)}"
-                )
-
-        # NOTE: (DG) Assuming that shuffled_end_ids is not needed
-
-        # Run pacer that controls round_threshold. TRAIN-ONLY: felix's eval
-        # hand leaves self.round/exploitation_util_history unchanged, so
-        # firing on eval would re-adjust off a stale round. ONCE-PER-ROUND:
-        # unlike Oort's reference (called once/round by construction), this
-        # select() fires many times per model_version (once per freed slot)
-        # -- without the guard each call re-fires the pacer, ratcheting
-        # round_threshold to 100 in one dispatch burst.
-        if task_to_perform == "train" and model_version != self._last_pacer_round:
-            self.pacer(model_version)
-            self._last_pacer_round = model_version
-
-        # TODO: (DG) Add code to allow only those ends (not in
-        # all_selected) to be passed. filtered_ends consists of ends
-        # that are not in all_selected and can be picked in this round
-        # i.e. avoids repeating a trainer in the same round
-        filtered_ends = dict()
-
-        # track the ends that are eligible vs ineligible based on
-        # their state
-        count_avl_train = 0
-        count_avl_eval = 0
-        count_ineligible = 0
-
-        # R1 guard: exclude the aggregator's pending-commit set (bound via
-        # `_agg_pending_commit_ref`) so a trainer stays un-re-pickable until its
-        # grad COMMITS -- `all_selected`/channel state alone isn't enough once
-        # `_release_end_on_return`'s buffered=True releases the channel slot
-        # early. Real binds `_per_agg_trainer_list`; sim binds the richer
-        # `_sim_pending_commit` (also covers dispatched-but-not-returned, which
-        # real doesn't need -- an in-flight real message hasn't arrived yet).
-        _pending = getattr(self, "_agg_pending_commit_ref", None) or set()
-
-        # Check the eligible set first. Out of the ends, how many are
-        # not in all_selected? Only those are eligible since the rest
-        # have weights already sent to them for either train/eval
-        # task.
-        count_eligible_set_to_check = [
-            end for end in ends
-            if end not in self.all_selected and end not in _pending
-        ]
-        logger.debug(
-            f"Before creating filtered_ends. count_eligible_set_to_check: {len(count_eligible_set_to_check)} from total {len(ends)} ends."
-        )
-
-        for end_id in ends:
-            if end_id not in self.all_selected.keys() and end_id not in _pending:
-                logger.debug(
-                    f"Creating filtered ends. Checking end id {end_id}, avl_state = {ends[end_id].get_property(PROP_AVL_STATE)}"
-                )
-
-                # If check_three_state_avl=False, no more checks,
-                # directly add end to filtered_ends
-
-                # If check_three_state_avl=True, filtered ends needs
-                # to be populated based on the following conditions:
-                # For task_to_perform=train, eligible ends are in
-                # states {avl_train, None} For task_to_perform=eval,
-                # eligible ends are in states {avl_train, avl_eval
-                # None}
-
-                curr_end_id_avl_state = ends[end_id].get_property(PROP_AVL_STATE)
-                eligible_states_for_task = self._task_eligible_states.get(
-                    task_to_perform, []
-                )
-                # None avl_state means no heartbeat state set — always eligible,
-                # matching prior behaviour for trainers without availability tracking.
-                state_eligible = (
-                    curr_end_id_avl_state is None
-                    or curr_end_id_avl_state in eligible_states_for_task
-                )
-
-                # For eval tasks, keep the existing staleness gate:
-                # only consider trainers that have trained before AND whose
-                # last eval is at least 35 model-versions old.
-                if task_to_perform == "eval":
-                    last_eval = ends[end_id].get_property(PROP_LAST_EVAL_ROUND)
-                    eval_staleness_ok = (
-                        last_eval is not None
-                        and model_version - last_eval >= 35
-                    )
-                    state_eligible = state_eligible and eval_staleness_ok
-
-                if state_eligible:
-                    filtered_ends[end_id] = ends[end_id]
-                    if task_to_perform == "train":
-                        count_avl_train += 1
-                    else:
-                        count_avl_eval += 1
-                    logger.debug(
-                        f"Adding end {end_id} to filtered_ends: "
-                        f"task={task_to_perform}, avl_state={curr_end_id_avl_state}, "
-                        f"eligible_states={eligible_states_for_task}"
-                    )
-                else:
-                    count_ineligible += 1
-                    logger.debug(
-                        f"Skipping end {end_id}: task={task_to_perform}, "
-                        f"avl_state={curr_end_id_avl_state} not eligible "
-                        f"(eligible_states={eligible_states_for_task})"
-                    )
-
-        logger.info(
-            f"Filtered ends created. count_avl_train: {count_avl_train}, count_avl_eval: {count_avl_eval}, count_ineligible: {count_ineligible}"
-        )
-
-        if agg_version_key is not None and trainer_version_keys is not None:
-            logger.info(f"Trainer version keys: {trainer_version_keys}")
-            logger.info(
-                f"Handle send state: aggregator version_key {agg_version_key}"
-            )
-            # Filter out trainers who already contributed to this same version_key.
-            eligible_filtered_ends = {}
-            logger.debug(f"Filtered ends: {filtered_ends.items()}")
-            for end_id, end in filtered_ends.items():
-                prev_key = trainer_version_keys.get(end_id)
-                logger.debug(f"Prev version_key: {prev_key}")
-
-                if prev_key != agg_version_key:
-                    logger.debug(f"Not skipping trainer: {end_id}")
-                    eligible_filtered_ends[end_id] = end
-                else:
-                    logger.debug(
-                        f"Skipping trainer: {end_id} already has same "
-                        f"version_key={agg_version_key}"
-                    )
-            filtered_ends = eligible_filtered_ends
-
-        # extra informs about maximum possible available ends that can
-        # be picked to meet the concurrency target. But it might count
-        # infeasible ends too (ends that have already particpated in
-        # the round). It is essentially a superset of feasible and
-        # infeasible. Maximum feasible comes from filtered_ends. We
-        # define and henceforth use feasible_extra to (i) use extra's
-        # knowledge of how many to pick and (ii) use filtered_ends
-        # knowledge of what is feasible to pick Eg scenarios:
-        # (extra=1, filtered=3),  (extra=2, filtered=2), (extra=3,
-        # filtered=1)
-        feasible_extra = min(extra, len(filtered_ends))
-        logger.info(
-            f"desired extra: {extra}, len(filtered_ends): {len(filtered_ends)}, feasible_extra: {feasible_extra}"
-        )
-        # TEMP DEBUG (see [SELECT_TRACE] above): filtered_ends is the free
-        # pool select_random draws from; diff here to localize composition drift.
-        logger.info(
-            f"[SELECT_TRACE seq={getattr(self, '_select_trace_seq', -1)}] "
-            f"FILTERED_ENDS sorted={sorted(filtered_ends.keys())} "
-            f"n_filtered={len(filtered_ends)} extra={extra} "
-            f"feasible_extra={feasible_extra} concurrency={concurrency} "
-            f"cooling_count={cooling_count}"
-        )
-
-        # Early exit if filtered_ends is none (can happen when all
-        # ends available are less than concurrency requirement)
-        if len(filtered_ends) == 0:
-            logger.debug(
-                f"len(filtered_ends): {len(filtered_ends)}, hence returning "
-                f"with empty candidates"
-            )
-            return {}
-
-        # TODO: (DG) Clean up this implementation later. Candidates
-        # are being selected differently based on the train or eval
-        # tasks.
-        if task_to_perform == "train":
-            # Make a filter of blocklist ends
-            blocklist_end_ids = self.find_blocklists(filtered_ends)
-
-            # TODO: (DG) Move trainer unavail list to inside select()
-            # instead? Make a filter of unavailable ends
-            if trainer_unavail_list != []:
-                logger.debug(
-                    "### Oort select got non-empty trainer_unavail_list, will "
-                    "remove unavail trainers from round"
-                )
-
-            # get the list of unavailable_ends and pass to
-            # fetch_statistical_utility treat unavailable_ends like
-            # blocklist_ends inside fetch_statistical_utility
-
-            # Make a list of tuple (end_id, end_utility) as an
-            # utility_list As unexplored ends that are not selected
-            # before do not have utility value, collect them
-            # separately with unexplored_end_ids list TODO: (DG) Check
-            # inside fetch_statistical_utility to see if we can
-            # directly pass eligible_ends or a subset of ends, that
-            # take into account unavailable ends too.
-            logger.debug(
-                f"Invoking fetch_statistical_utility(): with filtered_ends: "
-                f"{filtered_ends}, blocklist_end_ids: {blocklist_end_ids}, "
-                f"trainer_unavail_list: {trainer_unavail_list}"
-            )
-            utility_list, unexplored_end_ids = self.fetch_statistical_utility(
-                filtered_ends, blocklist_end_ids, trainer_unavail_list
-            )
-            logger.debug(
-                f"After fetch_statistical_utility(): utility_list: "
-                f"{utility_list}, unexplored_end_ids: {unexplored_end_ids}"
-            )
-
-            logger.debug(f"Going into stat_util calculation: {model_version}")
-            # Not the first round, performing Oort-based selection
-            # Calculate number of ends to select for exploration and
-            # exploitation
-            logger.debug(
-                f"Invoking calculate_num_of_exploration_exploitation() "
-                f"with num_of_ends: {feasible_extra}, "
-                f"unexplored_end_ids: {unexplored_end_ids}"
-            )
-            exploration_len, exploitation_len = (
-                self.calculate_num_of_exploration_exploitation(
-                    num_of_ends=feasible_extra, unexplored_end_ids=unexplored_end_ids
-                )
-            )
-            # TODO (GD): Change this back to DEBUG
-            logger.info(
-                f"After calculate_num_of_exploration_exploitation(), "
-                f"exploration_len: {exploration_len}, exploitation_len: "
-                f"{exploitation_len}"
-            )
-
-            # DG: Removed old check for first round This indicates the
-            # first round, where no end's utility has been measured;
-            # Then, perform random selection
-            if model_version == 0:
-                self.round = model_version
-
-                logger.debug(
-                    f"Round: {self.round}, will sample feasible_extra: "
-                    f"{feasible_extra} from len(filtered_ends): "
-                    f"{len(filtered_ends)}"
-                )
-                candidates_dict = self.select_random(
-                    filtered_ends, num_of_ends=feasible_extra,
-                    agg_version_key=agg_version_key,
-                )
-                # Invoke process_chosen_candidate_dict(). It will
-                # appropriately add candidates to selected_ends and
-                # all_selected
-                self.process_chosen_candidate_dict(
-                    candidates_dict=candidates_dict, selected_ends=selected_ends
-                )
-
-                logger.debug(
-                    f"handle_send_state returning "
-                    f"candidates_dict: {candidates_dict}"
-                )
-
-                return candidates_dict
-
-            # Calculate the total utility value of trainers with
-            # applying temporal uncertainty and global system utility
-            logger.debug(
-                f"Invoking calculate_total_utility() with utility_list: "
-                f"{utility_list}, filtered_ends: {filtered_ends}, round: {model_version}"
-            )
-            # The percentile must see the FULL registered client population,
-            # not this call's transient filtered_ends -- reference Oort
-            # computes it from ALL tracked arms, not just this dispatch's
-            # feasible set. Async's filtered_ends is almost always a
-            # singleton, so the percentile would trivially return that one
-            # candidate's own duration and the speed penalty could never
-            # bind. `connected_ends` is safe here: only used for lookups on
-            # ids already in utility_list, plus this percentile calc.
-            _duration_pool = connected_ends if connected_ends is not None else ends
-            utility_list = self.calculate_total_utility(
-                utility_list, _duration_pool, model_version
-            )
-
-            logger.debug(f"After calculate_total_utility, utility_list: {utility_list}")
-
-            # cutOfUtil from Oort algorithm
-            logger.debug(
-                f"Invoking cutoff_util() with utility_list: {utility_list}, "
-                f"num_of_ends: {feasible_extra}"
-            )
-            cutoff_utility = self.cutoff_util(utility_list, num_of_ends=feasible_extra)
-            logger.debug(f"After cutoff_util(), cutoff_utility: {cutoff_utility}")
-
-            # perform random if cutoff_utility == 0 TODO: (DG) Check.
-            # Removed "and len(self.selected_ends) == 0 from the if
-            # condition"
-            if len(utility_list) == 0:
-                self.round = model_version
-                logger.debug(
-                    f"len(utility_list) = {len(utility_list)}, will invoke "
-                    f"select_random() with filtered_ends: {filtered_ends} and "
-                    f"feasible_extra: {feasible_extra}"
-                )
-                # TEMP DEBUG (see [SELECT_TRACE] above): branch taken, model_version window.
-                logger.info(
-                    f"[SELECT_TRACE seq={getattr(self, '_select_trace_seq', -1)}] "
-                    f"BRANCH=select_random model_version={model_version} "
-                    f"len(utility_list)=0 feasible_extra={feasible_extra}"
-                )
-                candidates_dict = self.select_random(
-                    filtered_ends, num_of_ends=feasible_extra,
-                    agg_version_key=agg_version_key,
-                )
-                # Invoke process_chosen_candidate_dict(). It will
-                # appropriately add candidates to selected_ends and
-                # all_selected
-                self.process_chosen_candidate_dict(
-                    candidates_dict=candidates_dict, selected_ends=selected_ends
-                )
-
-                logger.debug(
-                    f"handle_send_state returning "
-                    f"candidates_dict: {candidates_dict}"
-                )
-
-                return candidates_dict
-
-            # TODO: (DG) Separate this out based on the async_oort
-            # selection mode. Keep one for default, one for fastest
-            # and one for maxSamples
-            if self.select_type == "default":
-                candidates, exploit_end_ids = self._select_candidates_using_default(
-                    cutoff_utility=cutoff_utility,
-                    utility_list=utility_list,
-                    exploitation_len=exploitation_len,
-                    exploration_len=exploration_len,
-                    unexplored_end_ids=unexplored_end_ids,
-                    agg_version_key=agg_version_key,
-                )
-            elif self.select_type == "fastest":
-                candidates, exploit_end_ids = self._select_candidates_fastest(
-                    ends=filtered_ends, num_of_ends=feasible_extra
-                )
-            elif self.select_type == "maxSamples":
-                candidates, exploit_end_ids = self._select_candidates_maxSamples(
-                    ends=filtered_ends, num_of_ends=feasible_extra
-                )
-            elif self.select_type == "prioritiseUnavail":
-                candidates, exploit_end_ids = self._select_candidates_prioritiseUnavail(
-                    ends=filtered_ends, num_of_ends=feasible_extra
-                )
-            elif self.select_type == "fairShare":
-                candidates, exploit_end_ids = self._select_candidates_fairShare(
-                    ends=filtered_ends, num_of_ends=feasible_extra
-                )
-
-            # Converting list of candidates to candidate_dict so that
-            # it can be passed to a function to process it
-            candidates_dict = {key: None for key in candidates}
-
-            # TEMP DEBUG (see [SELECT_TRACE] above): explore/exploit branch
-            # outcome + cutoff_utility, its ranking input.
-            logger.info(
-                f"[SELECT_TRACE seq={getattr(self, '_select_trace_seq', -1)}] "
-                f"BRANCH=explore_exploit model_version={model_version} "
-                f"select_type={self.select_type} cutoff_utility={cutoff_utility} "
-                f"feasible_extra={feasible_extra} candidates={candidates} "
-                f"exploit_end_ids={exploit_end_ids} rng_fp={self.rng_fingerprint()}"
-            )
-
-            # Invoke process_chosen_candidate_dict(). It will
-            # appropriately add candidates to selected_ends and
-            # all_selected
-            self.process_chosen_candidate_dict(
-                candidates_dict=candidates_dict, selected_ends=selected_ends
-            )
-
-            # save the history of exploited utility at this round for
-            # pacer TODO: (DG) check if ends needs to be passed or
-            # filtered_ends
-            if self.select_type == "default":
-                logger.debug(
-                    f"Invoking save_exploited_utility_history() with ends: {ends},"
-                    f" exploit_end_ids: {exploit_end_ids}"
-                )
-                self.save_exploited_utility_history(ends, exploit_end_ids)
-
-                # update the exploration_factor
-                logger.debug("Invoking update_exploration_factor()")
-                self.update_exploration_factor()
-
-            # increment the round selected count on selected ends
-            # TODO: (DG) simplify the code here
-            candidate_ends = dict()
-            for end_id in candidates:
-                candidate_ends[end_id] = ends[end_id]
-
-            logger.debug(
-                f"Invoking increment_selected_count_on_selected_ends() "
-                f"with ends: {ends}, candidate_ends: {candidate_ends}"
-            )
-            self.increment_selected_count_on_selected_ends(ends, candidate_ends)
-
-            self.round = model_version
-
-        elif task_to_perform == "eval":
-            # Here we populate a mapping between all items in
-            # filtered_ends and the last eval round they participated
-            # in. We then sort this list in ascending order of the
-            # eval rounds and pick the first feasible_extra items from
-            # it. This ensures that the clients that have not been
-            # picked for evaluation for the longest time are picked up
-            # first.
-
-            # feasible_extra is the number of ends that can be picked
-            # in this round for eval.
-            original_feasible_extra = feasible_extra
-            feasible_extra = min(feasible_extra, self.curr_round_eval_slots_left)
-            logger.debug(
-                f"feasible_extra: {feasible_extra} after min with original_feasible_extra: {original_feasible_extra} and curr_round_eval_slots_left: {self.curr_round_eval_slots_left}"
-            )
-
-            end_id_to_last_eval_round = {
-                end_id: ends[end_id].get_property(PROP_LAST_EVAL_ROUND) or 0
-                for end_id in filtered_ends
-            }
-
-            sorted_end_ids = sorted(
-                end_id_to_last_eval_round, key=end_id_to_last_eval_round.get
-            )
-
-            candidates = sorted_end_ids[:feasible_extra]
-
-            # Adjust eval slots left based on candidate list chosen
-            self.curr_round_eval_slots_left -= len(candidates)
-
-            logger.debug(
-                f"Selected candidates with last_eval_rounds for eval: {[(end_id, end_id_to_last_eval_round[end_id]) for end_id in candidates]}, curr_round_eval_slots_left: {self.curr_round_eval_slots_left} for round {model_version}"
-            )
-
-            candidates_dict = {key: None for key in candidates}
-
-            # Invoke process_chosen_candidate_dict(). It will
-            # appropriately add candidates to selected_ends and
-            # all_selected
-            self.process_chosen_candidate_dict(
-                candidates_dict=candidates_dict, selected_ends=selected_ends
-            )
-
-        logger.debug(
-            f"handle_send_state returning candidates_dict: {candidates_dict} for task_to_perform: {task_to_perform}"
-        )
-
-        return candidates_dict
-
-    def _handle_recv_state(
-        self, ends: dict[str, End], concurrency: int
-    ) -> SelectorReturnType:
-        """Read-only over `selected_ends`: reports who is outstanding, minus
-        replies received. Never assigns new selections -- that's
-        `_handle_send_state`'s job; a prior version that resampled here raced
-        send-state dispatch and could deadlock. Returns {} if empty; the next
-        send-state tick dispatches normally.
-        """
-        selected_ends = self.selected_ends[self.requester]
-
-        # from the selected ends, remove those that are in recv state
-        # already This is done to avoid waiting on trainers that you
-        # have already heard from.
-        for end_id in list(selected_ends):
-            # trainer might have become unavailable, check if it is
-            # still available first
-            if end_id in ends:
-                curr_end_state = ends[end_id].get_property(KEY_END_STATE)
-                if curr_end_state == VAL_END_STATE_RECVD:
-                    selected_ends.remove(end_id)
-                    logger.debug(
-                        f"Removed end_id {end_id} from selected ends since it "
-                        f"was already in {curr_end_state} state"
-                    )
-                # TODO: (DG) Remove ends from send state also here for
-                # the trainer side? But how will it impact the
-                # aggregator?
-            else:
-                # TODO: (DG) Should we not remove it from selected
-                # ends here?
-                logger.debug(
-                    f"Tried to check state of end {end_id} but it is no "
-                    f"longer in self._ends"
-                )
-
-        logger.debug(f"handle_recv_state returning selected_ends: {selected_ends}")
-
-        # sorted(): process-stable order so real and sim agree.
-        return {key: None for key in sorted(selected_ends)}
-
-    def reset_end_state_to_none(self, ends: dict[str, End], end_id: str) -> None:
-        """Reset's the state of end_id from send/recv to none"""
-        if end_id in ends.keys():
-            curr_end_state = ends[end_id].get_property(KEY_END_STATE)
-            ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
-            new_end_state = ends[end_id].get_property(KEY_END_STATE)
-            logger.debug(
-                f"Successfully reset state for end "
-                f"{end_id} from previous: {curr_end_state} to "
-                f"current: {new_end_state}"
-            )
-        else:
-            logger.debug(
-                f"Attempted to reset end {end_id} state " f"but it wasnt in ends"
-            )
-
-    def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
-        """Remove an end from selected ends"""
-        selected_ends = self.selected_ends[self.requester]
-        if end_id in ends.keys():
-            if end_id in selected_ends:
-                logger.debug(
-                    f"Going to remove end_id {end_id} from selected_ends "
-                    f"{selected_ends}"
-                )
-                selected_ends.remove(end_id)
-                self.selected_ends[self.requester] = selected_ends
-                logger.debug(
-                    f"self.selected_ends: {self.selected_ends} after "
-                    f"removing end_id: {end_id}"
-                )
-            else:
-                logger.debug(
-                    f"Attempted to remove end {end_id} from "
-                    f"self.selected_ends {self.selected_ends}, but it wasnt present"
-                )
-        else:
-            logger.debug(
-                f"Attempted to remove end {end_id} from "
-                f"self.selected_ends {self.selected_ends}, but it wasnt in ends"
-            )
-
-    def process_chosen_candidate_dict(
-        self,
-        candidates_dict: dict[str, None],
-        selected_ends: set[str],
-    ):
-        candidates = list(candidates_dict.keys())
-        logger.debug(
-            f"Got candidates_dict as {candidates_dict} after " f"select_random"
-        )
-        logger.debug(f"candidates: {candidates}")
-
-        # add candidates to selected ends
-        selected_ends = selected_ends.union(candidates)
-        self.selected_ends[self.requester] = selected_ends
-        logger.debug(
-            f"added candidates to selected_ends: {candidates}, selected_ends: "
-            f"{selected_ends}, "
-            f"self.selected_ends[req]: {self.selected_ends[self.requester]}"
-        )
-
-        for candidate_end in candidates:
-            # Add to all_selected. {key: end, val: TS epoch (s)}
-            self.all_selected[candidate_end] = self._abandon_clock_now()  # #1c
-        logging.debug(
-            f"self.all_selected {self.all_selected} after combining"
-            f" with candidates {candidates}"
-        )
-
-        logger.debug("finished processing candidates_dict")

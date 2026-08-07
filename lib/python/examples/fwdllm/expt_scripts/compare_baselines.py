@@ -35,6 +35,50 @@ _RUN_RE = re.compile(
 )
 _DEFAULT_BASELINES = ["fwdllm", "fwdllm_plus", "fluxtune"]
 
+_BASELINES_YAML = os.path.join(HERE, "..", "..", "_metadata", "baselines.yaml")
+_EXPERIMENTS_YAML = os.path.join(HERE, "..", "experiments.yaml")
+
+
+def _load_run_set(name: str) -> dict:
+    """Resolve a run_set's baseline list + target_accuracy/converge_window from
+    experiments.yaml (mirrors run_sequential.sh's --run-set condition load) —
+    lets `--run-set main_v2` stand in for hand-typing all 5+ baseline names."""
+    import yaml
+    reg = yaml.safe_load(open(_EXPERIMENTS_YAML, encoding="utf-8"))
+    rs = (reg.get("run_sets") or {}).get(name)
+    if not rs:
+        valid = sorted((reg.get("run_sets") or {}).keys())
+        raise SystemExit(f"ERROR: run_set '{name}' not in {_EXPERIMENTS_YAML}. Valid: {valid}")
+    cond = rs.get("condition", {}) or {}
+    return {
+        "baselines": rs.get("baselines") or [],
+        "target_accuracy": cond.get("target_accuracy"),
+        "converge_window": cond.get("converge_window"),
+    }
+
+
+def _is_async(baseline: str) -> bool:
+    """selector.kwargs.is_async from _metadata/baselines.yaml (single source of
+    truth) — NOT a hardcoded `baseline == "fluxtune"` guess, which silently
+    mislabeled every new async baseline (fedbuff_round/it_*, felix_round/it) as
+    sync (same bug class run_sequential.sh's `_BL_INTERNALS` lookup already
+    fixed this session). Unreadable/missing key -> False (safe default: a sync
+    baseline mislabeled async is the more visible failure of the two)."""
+    try:
+        import yaml
+        bl = yaml.safe_load(open(_BASELINES_YAML, encoding="utf-8"))
+        bl = bl.get("baselines", bl)
+        if baseline not in bl:
+            print(f"  [compare] WARN baseline '{baseline}' not in {_BASELINES_YAML} "
+                  f"— defaulting to sync", file=sys.stderr)
+            return False
+        sel = (bl.get(baseline) or {}).get("aggregator", {}).get("selector", {})
+        return bool((sel.get("kwargs", {}) or {}).get("is_async"))
+    except Exception as e:
+        print(f"  [compare] WARN could not resolve is_async for '{baseline}' "
+              f"from {_BASELINES_YAML}: {e} — defaulting to sync", file=sys.stderr)
+        return False
+
 
 # --------------------------------------------------------------------------- #
 # discovery
@@ -80,6 +124,23 @@ def _p(values):
 # --------------------------------------------------------------------------- #
 def expt1_time_to_target(rr: R.RunResult, target: float, window: int) -> dict:
     max_acc, final_acc = rr.max_accuracy(), rr.final_accuracy()
+    # N3: prefer converge_watch.py's own verdict over the agg_eval reconstruction
+    # below -- the watcher is the process that actually decided WHEN to stop the
+    # run, so it can't silently diverge from what gets reported. Only trusted
+    # when its target/window match what's being asked for here (a converge.json
+    # from a different --target-acc/--window is not this metric).
+    cj = rr.converge_json
+    if cj is not None and cj.get("converged") and \
+            cj.get("target_accuracy") == target and cj.get("window") == window:
+        return {
+            "reached": True, "target": target, "window": window,
+            "wall_s": cj.get("time_to_converge_wall_s"),
+            "vclock_s": cj.get("time_to_converge_vclock_s"),
+            "rounds": cj.get("rounds_at_converge"),
+            "data_bins": cj.get("n_bins_completed"),
+            "max_accuracy": max_acc, "final_accuracy": final_acc,
+            "source": "converge.json",
+        }
     e = rr.target_event(target, window)
     if e is not None:
         return {
@@ -89,21 +150,35 @@ def expt1_time_to_target(rr: R.RunResult, target: float, window: int) -> dict:
             # cumulative bin-evals to convergence (monotonic; data_id cycles per round)
             "data_bins": rr.evals.index(e) + 1,
             "max_accuracy": max_acc, "final_accuracy": final_acc,
+            "source": "reconstructed",
         }
     return {
         "reached": False, "target": target, "window": window,
         "wall_s": None, "vclock_s": None, "rounds": None, "data_bins": None,
         "max_accuracy": max_acc, "final_accuracy": final_acc,
+        "source": "reconstructed",
     }
 
 
 def expt2_utilization(rr: R.RunResult) -> dict:
     tp = _p(rr.busy_frac)
+    # N5: mqtt_fetch_s (emitted per trainer_round, previously unread) splits the
+    # old single "idle = 1-busy_frac" bucket into network-wait (waiting on the
+    # aggregator's weight payload) vs. the true residual idle (waiting to be
+    # selected again) -- barrier_wait_s/drain_tail_s stay agg-side-only (real ~0
+    # in sim), so they're not a trainer idle signal and aren't used here.
+    nwp = _p(rr.net_wait_frac)
+    idle_frac = [max(0.0, 1.0 - b - n) for b, n in zip(rr.busy_frac, rr.net_wait_frac)]
+    ip = _p(idle_frac)
     w = rr.agg_wall_s
     frac = lambda x: (round(x / w, 4) if (w and w > 0 and x is not None) else None)
     return {
         "trainer_busy_frac_p50": tp["p50"], "trainer_busy_frac_p90": tp["p90"],
         "trainer_busy_frac_p99": tp["p99"], "n_trainers_measured": len(rr.busy_frac),
+        "trainer_net_wait_frac_p50": nwp["p50"], "trainer_net_wait_frac_p90": nwp["p90"],
+        "trainer_net_wait_frac_p99": nwp["p99"],
+        "trainer_idle_frac_p50": ip["p50"], "trainer_idle_frac_p90": ip["p90"],
+        "trainer_idle_frac_p99": ip["p99"],
         "agg_busy_frac": frac(rr.agg_compute_s), "agg_barrier_wait_frac": frac(rr.agg_barrier_s),
         "agg_drain_frac": frac(rr.agg_drain_s),
         "agg_wall_s": round(w, 2) if w else None,
@@ -144,11 +219,17 @@ def expt4_network(rr: R.RunResult) -> dict:
 
 
 def expt5_sessions(rr: R.RunResult, is_async: bool) -> dict:
-    sp = _p(rr.session_durs)
+    # N6: sync baselines report round_span_durs (per-data_id engagement, the
+    # actual "one round span" the label already claimed) instead of
+    # session_durs (per-contribution dispatch->commit, which for a
+    # multi-iteration sync round only measured the LAST iteration's trip, not
+    # the cohort's full time-in-round). Async is untouched (already validated).
+    durs = rr.session_durs if is_async else rr.round_span_durs
+    sp = _p(durs)
     return {
         "session_def": "dispatch_to_commit" if is_async else "one_round_span",
         "session_s_p50": sp["p50"], "session_s_p90": sp["p90"], "session_s_p99": sp["p99"],
-        "n_sessions": len(rr.session_durs),
+        "n_sessions": len(durs),
         "part_rounds_p50": _pct(rr.part_rounds, 50), "part_rounds_p90": _pct(rr.part_rounds, 90),
         "part_databins_p50": _pct(rr.part_bins, 50), "part_databins_p90": _pct(rr.part_bins, 90),
         "part_iters_p50": _pct(rr.part_iters, 50), "part_iters_p90": _pct(rr.part_iters, 90),
@@ -191,11 +272,23 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--experiments-dir", default=os.path.join(HERE, "..", "experiments"))
     ap.add_argument("--variant", choices=["real", "sim"], default="real")
-    ap.add_argument("--baselines", default=",".join(_DEFAULT_BASELINES))
-    ap.add_argument("--target-acc", type=float, default=0.84)
-    ap.add_argument("--window", type=int, default=20)
+    ap.add_argument("--run-set", default=None,
+                    help="load baselines + target-acc/window from experiments.yaml's "
+                         "run_sets[NAME] (e.g. main_v2's 5-baseline sim set); "
+                         "--baselines/--target-acc/--window still override")
+    ap.add_argument("--baselines", default=None)
+    ap.add_argument("--target-acc", type=float, default=None)
+    ap.add_argument("--window", type=int, default=None)
     ap.add_argument("--out", default=None, help="output dir for CSV (+plots); default = experiments/_compare")
     ap.add_argument("--plots", action="store_true", help="also write paper overlay plots (via plotlib)")
+    ap.add_argument("--baseline-key", default="fwdllm",
+                    help="'true baseline' for the E1/E3 speedup callouts")
+    ap.add_argument("--champion-key", default="fluxtune",
+                    help="our system for the E1/E3 speedup callouts")
+    ap.add_argument("--savings-from", default="fwdllm",
+                    help="E4 bandwidth-savings-factor callout: from this baseline...")
+    ap.add_argument("--savings-to", default="felix_round",
+                    help="...to this one (default FwdLLM->Felix(P))")
     ap.add_argument("--smooth", type=float, default=0.7,
                     help="EMA smoothing factor for overlay learning curves (0 = raw)")
     ap.add_argument("--loss-plateau-rel", type=float, default=0.01,
@@ -207,8 +300,17 @@ def main() -> int:
     args = ap.parse_args()
     grace_s = None if args.no_cutoff else args.post_peak_grace_min * 60.0
 
+    rs = _load_run_set(args.run_set) if args.run_set else {}
+    baselines_arg = args.baselines if args.baselines is not None else \
+        (",".join(rs["baselines"]) if rs.get("baselines") else ",".join(_DEFAULT_BASELINES))
+    target_acc = args.target_acc if args.target_acc is not None else \
+        (rs.get("target_accuracy") if rs.get("target_accuracy") is not None else 0.84)
+    window = args.window if args.window is not None else \
+        (rs.get("converge_window") if rs.get("converge_window") is not None else 20)
+    args.target_acc, args.window = target_acc, window
+
     exp_dir = os.path.abspath(args.experiments_dir)
-    baselines = [b.strip() for b in args.baselines.split(",") if b.strip()]
+    baselines = [b.strip() for b in baselines_arg.split(",") if b.strip()]
     out_dir = os.path.abspath(args.out) if args.out else os.path.join(exp_dir, "_compare")
     os.makedirs(out_dir, exist_ok=True)
 
@@ -225,7 +327,7 @@ def main() -> int:
             print(f"  [compare] WARN empty aggregator telemetry for '{b}' ({path}) — skipping", file=sys.stderr)
             continue
         results[b] = rr
-        is_async = (b == "fluxtune")
+        is_async = _is_async(b)
         rows[b] = {
             "run_dir": os.path.basename(path), "N": n, "trace": trace or "syn_0",
             **{f"e1_{k}": v for k, v in expt1_time_to_target(rr, args.target_acc, args.window).items()},
@@ -283,12 +385,16 @@ def main() -> int:
     print(f"\nCSV:   {csv_path}")
 
     if args.plots:
-        _plots(results, out_dir, args.target_acc, args.smooth)
+        _plots(results, out_dir, args.target_acc, args.smooth,
+              baseline_key=args.baseline_key, champion_key=args.champion_key,
+              savings_from=args.savings_from, savings_to=args.savings_to)
     print(f"Out:   {out_dir}")
     return 0
 
 
-def _plots(results: dict, out_dir: str, target, smooth: float = 0.0):
+def _plots(results: dict, out_dir: str, target, smooth: float = 0.0,
+           baseline_key: str = "fwdllm", champion_key: str = "fluxtune",
+           savings_from: str = "fwdllm", savings_to: str = "felix_round"):
     """Overlay plots via the shared plotlib (same look as the paper figures)."""
     try:
         from plotlib import baselines as B
@@ -301,7 +407,9 @@ def _plots(results: dict, out_dir: str, target, smooth: float = 0.0):
     ordered = [results[k] for k in B.ordered(results.keys())]
     n = 0
     for name, builder in F.FIG_BUILDERS.items():
-        fig = builder(ordered, target=target, smooth=smooth)
+        fig = builder(ordered, target=target, smooth=smooth,
+                      baseline_key=baseline_key, champion_key=champion_key,
+                      savings_from=savings_from, savings_to=savings_to)
         if fig is None:
             continue
         S.save_pdf(fig, out_dir, name)

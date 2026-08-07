@@ -1,4 +1,7 @@
 __pycache__/
 *.pyc
+palette_preview/
 paper_figs/
 paper_figs_ablation/
+paper_figs_main_v2/
+paper_figs_attribution/

@@ -731,6 +731,7 @@ class _LoopAgg(_FakeGradAgg):
         _OrderedContributorList as _OCL,
     )
     _process = TopAggregator._process_single_trainer_message
+    _round_cache_clock_now = TopAggregator._round_cache_clock_now
 
     def __init__(self):
         super().__init__()
@@ -749,17 +750,20 @@ class _LoopAgg(_FakeGradAgg):
 
 class TestCommitThenProcessFreesTheSlot:
     """Regression (simulate_fwdllm.md §F.1-23). In sim, _aggregate_grads_async
-    calls _sim_recv_min_grad (COMMIT: discards the end from _sim_pending_commit
-    at its sct) and THEN _process_single_trainer_message on that same grad. The
-    latter must NOT re-add to _sim_pending_commit -- doing so re-pins every
-    committed trainer, `selected_ends` never shrinks, distribute finds no free
-    slot, and re-dispatch across variance-retry iterations deadlocks. The unit
-    test checks _process in isolation; this drives the full seam and asserts the
-    slot actually frees."""
+    calls _sim_recv_min_grad (COMMIT) and THEN _process_single_trainer_message on
+    that same grad. The latter must NOT re-add to _sim_pending_commit -- doing so
+    re-pins every committed trainer, `selected_ends` never shrinks, distribute
+    finds no free slot, and re-dispatch across variance-retry iterations
+    deadlocks. The unit test checks _process in isolation; this drives the full
+    seam and asserts the slot actually frees.
 
-    def _dispatched(self, ends, scts):
+    WHERE the release happens depends on the declared contract (§D-15):
+    `inflight_residence` on -> the agg-goal boundary owns it (real's
+    `cleanup_recvd_ends()` twin); off -> legacy per-commit release."""
+
+    def _dispatched(self, ends, scts, residence=False):
         agg = _LoopAgg()
-        agg._inflight_residence = True
+        agg._inflight_residence = residence
         ch = _LoopChannel(ends)
         agg._sim_pending_commit = set(ends)            # dispatch pinned them
         agg._sim_inflight_expected = dict(zip(ends, scts))
@@ -787,6 +791,78 @@ class TestCommitThenProcessFreesTheSlot:
         for _ in range(2):
             msg, md = agg._sim_recv_min_grad(ch, ["X", "Y"])
             agg._process(ch, msg, md[0], md[1])
+
+        assert agg._sim_pending_commit == set()
+        assert ch._selector.selected_ends["agg"] == set()
+
+
+class TestResidenceHoldsCommitterToCycleClose:
+    """§D-15 root-cause fix, in its two SEPARATE roles (§F-23).
+
+    IDENTITY (`_sim_pending_commit` / `all_selected`): with `inflight_residence`
+    declared (both fwdllm configs do), a commit does not free the trainer's
+    re-pick guard -- it stays pinned to the agg-goal boundary, so it cannot be
+    re-tasked mid-cycle under the very `version_key` it just answered, before
+    that cycle's variance check has run. Real already behaved this way
+    (`_release_end_on_return` defers to `channel.cleanup_recvd_ends()`).
+
+    CAPACITY (`selected_ends` / `_slot_holders`): the committer's slot IS freed
+    at commit -- its grad is in, so the slot belongs to anyone else. Serving both
+    roles from one set left sim at 24.66/30 mean in-flight against real's
+    29.50/30."""
+
+    def _dispatched(self, ends, scts):
+        agg = _LoopAgg()
+        agg._inflight_residence = True
+        ch = _LoopChannel(ends)
+        agg._sim_pending_commit = set(ends)
+        agg._sim_inflight_expected = dict(zip(ends, scts))
+        for e, s in zip(ends, scts):
+            ch._msgs[e] = _full_grad_msg(sct=s)
+        return agg, ch
+
+    def test_commit_frees_the_slot_but_not_the_repick_guard(self):
+        agg, ch = self._dispatched(["X", "Y"], [10.0, 20.0])
+
+        msg, md = agg._sim_recv_min_grad(ch, ["X", "Y"])   # commit X (min sct)
+        agg._process(ch, msg, md[0], md[1])
+        agg._sim_hold_busy_slots(ch)
+
+        # IDENTITY: X's cycle hasn't closed -> still pinned, so the selector's
+        # `_agg_pending_commit_ref` filter keeps excluding it from re-selection
+        # (§D-15: no mid-cycle re-task under the version_key it just answered).
+        assert agg._sim_pending_commit == {"X", "Y"}
+        assert set(ch._selector.all_selected) == {"X", "Y"}
+        # CAPACITY: X's grad is in, so its compute slot is free for anyone else
+        # (§F-23); only still-in-flight Y holds one.
+        assert ch._selector.selected_ends["agg"] == {"Y"}
+        assert TopAggregator._sim_slot_holder_set(agg) == {"Y"}
+        assert ch._selector._agg_slot_holders_ref == {"Y"}
+
+    def test_boundary_releases_only_this_cycle_s_committers(self):
+        agg, ch = self._dispatched(["X", "Y"], [10.0, 20.0])
+
+        msg, md = agg._sim_recv_min_grad(ch, ["X", "Y"])
+        agg._process(ch, msg, md[0], md[1])
+        agg._release_sim_slots_at_agg_goal(ch, is_async=True)
+
+        # X committed into the closed cycle -> re-taskable now; Y is still in
+        # flight (carried surplus) -> keeps its pin and its slot.
+        assert agg._sim_pending_commit == {"Y"}
+        assert ch._selector.selected_ends["agg"] == {"Y"}
+        assert agg._sim_committed == set()
+
+    def test_full_cycle_drains_the_pool_at_the_boundary(self):
+        """The deadlock guard restated for the deferred release: nothing may stay
+        pinned once every dispatched grad has committed AND the cycle closed."""
+        agg, ch = self._dispatched(["X", "Y"], [10.0, 20.0])
+
+        for _ in range(2):
+            msg, md = agg._sim_recv_min_grad(ch, ["X", "Y"])
+            agg._process(ch, msg, md[0], md[1])
+        assert agg._sim_pending_commit == {"X", "Y"}       # held to the boundary
+
+        agg._release_sim_slots_at_agg_goal(ch, is_async=True)
 
         assert agg._sim_pending_commit == set()
         assert ch._selector.selected_ends["agg"] == set()
@@ -841,6 +917,100 @@ class TestChargeSimVclockOverhead:
         with caplog.at_level(logging.WARNING):
             chg(VirtualClock(), True, self._cfg(warn_s=1.0), 2.5, "drain_tail")
         assert any("SIM_OVERHEAD" in r.getMessage() for r in caplog.records)
+
+    @staticmethod
+    def _events(tmp_path, event_name):
+        import json
+        path = tmp_path / "aggregator.jsonl"
+        if not path.exists():
+            return []
+        lines = path.read_text().splitlines()
+        return [e for e in (json.loads(l) for l in lines) if e["event"] == event_name]
+
+    def test_emits_vclock_charge_ledger_event(self, tmp_path):
+        """Every call emits `vclock_charge`, both modes -- one shared ledger
+        for any label, no per-call-site plumbing (simulate_fwdllm.md §D-11)."""
+        from flame import telemetry
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            vc = VirtualClock()
+            chg(vc, True, self._cfg(), 0.8, "fedavg")
+            evs = self._events(tmp_path, "vclock_charge")
+            assert len(evs) == 1
+            assert evs[0]["label"] == "fedavg"
+            assert evs[0]["span_s"] == 0.8
+            assert evs[0]["charged_s"] == 0.8
+            assert evs[0]["time_mode"] == "sim"
+            assert evs[0]["vclock_now"] == 0.8
+        finally:
+            telemetry.shutdown()
+
+    def test_measurement_only_mode_never_charges_but_still_emits(self, tmp_path):
+        """`charge=False` never advances the vclock, even with the flag on,
+        but still logs `span_s` for a not-yet-decided candidate category."""
+        from flame import telemetry
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            vc = VirtualClock()
+            result = chg(vc, True, self._cfg(), 3.0, "redispatch_turnaround",
+                         charge=False, payload_kind="var_bad")
+            assert result == 0.0
+            assert vc.now == 0.0
+
+            evs = self._events(tmp_path, "vclock_charge")
+            assert len(evs) == 1
+            assert evs[0]["label"] == "redispatch_turnaround"
+            assert evs[0]["span_s"] == 3.0
+            assert evs[0]["charged_s"] == 0.0
+            assert evs[0]["payload_kind"] == "var_bad"
+        finally:
+            telemetry.shutdown()
+
+    def test_real_mode_ledger_has_no_vclock_now(self, tmp_path):
+        from flame import telemetry
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            chg(None, False, self._cfg(), 1.5, "drain_tail")
+            evs = self._events(tmp_path, "vclock_charge")
+            assert len(evs) == 1
+            assert evs[0]["time_mode"] == "real"
+            assert evs[0]["charged_s"] == 0.0
+            assert evs[0]["vclock_now"] is None
+        finally:
+            telemetry.shutdown()
+
+    def test_profiled_s_charges_instead_of_live_span(self):
+        """§P: a real-only-artifact category charges the REGISTRY value, not
+        sim's own (near-zero) live span -- independent of `sim_model_agg_
+        compute_time` (that flag only gates the live-span path)."""
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        vc = VirtualClock()
+        charged = chg(vc, True, self._cfg(flag=False), 0.03,
+                      "redispatch_turnaround", profiled_s=0.4365)
+        assert charged == 0.4365 and abs(vc.now - 0.4365) < 1e-9
+
+    def test_charge_source_recorded_in_ledger(self, tmp_path):
+        from flame import telemetry
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
+            charge_sim_vclock_overhead as chg)
+        telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+        try:
+            chg(VirtualClock(), True, self._cfg(), 0.8, "fedavg")
+            chg(VirtualClock(), True, self._cfg(flag=False), 0.03,
+                "redispatch_turnaround", profiled_s=0.4365)
+            chg(VirtualClock(), True, self._cfg(), 3.0,
+                "redispatch_turnaround", charge=False, payload_kind="var_bad")
+            evs = self._events(tmp_path, "vclock_charge")
+            assert [e["charge_source"] for e in evs] == ["live", "profiled", "none"]
+        finally:
+            telemetry.shutdown()
 
 
 class TestColdStartUnknownDelayGate:

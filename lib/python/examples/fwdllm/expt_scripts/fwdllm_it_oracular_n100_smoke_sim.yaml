@@ -1,10 +1,10 @@
 # FedFwd SIMULATED-clock smoke test: 100 trainers, agnews H5 partitions
 # (client_idx 0-99, the full 100-partition niid_label_clients=100_alpha=1
-# population). Sim sibling of fwdllm_plus_n100_smoke.yaml -- IDENTICAL except
+# population). Sim sibling of fwdllm_it_oracular_n100_smoke.yaml -- IDENTICAL except
 # time_mode: simulated and the job id (so run dirs don't collide). c=10 of
 # the 100-trainer pool selected/round (agg_goal==c==10).
 #
-# fwdllm_plus is SYNC (random selector, fedavg, ORACULAR availability read,
+# fwdllm_it_oracular is SYNC (random selector, fedavg, ORACULAR availability read,
 # per-iteration reselection), so this variant exercises the Batch-1 sync
 # barrier sim drive (_sync_sim_recv_first_k: commit k-smallest-sct, advance the
 # virtual clock to the k-th). Trainers still do real forward-grad compute
@@ -16,13 +16,13 @@
 #
 # Run:
 #   python -m flame.launch.run_experiment \
-#       lib/python/examples/fwdllm/expt_scripts/fwdllm_plus_n100_smoke_sim.yaml
+#       lib/python/examples/fwdllm/expt_scripts/fwdllm_it_oracular_n100_smoke_sim.yaml
 
 experiments:
-  - name: fwdllm_plus_n100_smoke_sim
-    description: "FedFwd SIM smoke (100 trainers, c=10, fwdllm_plus baseline: sync random+fedavg+ORACULAR, time_mode=simulated). Validates the Batch-1 sync barrier sim drive."
+  - name: fwdllm_it_oracular_n100_smoke_sim
+    description: "FedFwd SIM smoke (100 trainers, c=10, fwdllm_it_oracular baseline: sync random+fedavg+ORACULAR, time_mode=simulated). Validates the Batch-1 sync barrier sim drive."
 
-    baseline: fwdllm_plus
+    baseline: fwdllm_it_oracular
 
     example:
       # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
@@ -34,6 +34,9 @@ experiments:
       start_id: 1
       dataset:
         name: agnews
+        # Cosmetic-only for path-style (naming/snapshot), but kept in sync
+        # with the actual partition_method below (EXPTS_CHARTER A5: alpha=1).
+        dirichlet_alpha: 1
         # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
         # file exists (or ever will) for agnews; skips that lookup entirely.
         path_style: true
@@ -59,9 +62,11 @@ experiments:
           seed: 1234
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
-          # Uniform/IID partition for smoke tests -- avoids the niid_label
-          # baseline default's data-skew confound while validating mechanics.
-          partition_method: uniform
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          partition_method: niid_label_clients=100_alpha=1
+          # H13: dropout off during the JVP's two finite-difference passes.
+          # Code default ON (simulate_fwdllm.md §G); real and sim must match.
+          jvp_eval_mode: true
           # Phase 4c (B2, #6): sim barrier straggler spread to match real's
           # per-trainer completion dispersion (uniform[0,spread), spread ≈
           # real-compute-std·√12). Active with --delays on; calibrate to
@@ -76,9 +81,9 @@ experiments:
       log_to_wandb: false
       config_overrides:
         job:
-          id: fwdllm_plus_n100_smoke_sim
+          id: fwdllm_it_oracular_n100_smoke_sim
         hyperparameters:
-          seed: 1234  # deterministic selector RNG + model init; MUST match fwdllm_plus_n100_smoke.yaml
+          seed: 1234  # deterministic selector RNG + model init; MUST match fwdllm_it_oracular_n100_smoke.yaml
           rounds: 50  # short smoke run, not the full 300
           # Hold a returned trainer's re-pick guard to commit, not RETURN
           # (§R, 2026-07-11). No-op here (agg_goal == c, full-cohort barrier)
@@ -88,7 +93,15 @@ experiments:
           # (`rounds` alone is much too coarse, since one round is 150
           # data-id completions).
           max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
-          max_runtime_s: 1800  # ...or after 30 minutes wall time
+          max_runtime_s: 3600  # ...or after 60 minutes sim vclock
+          # Eval cadence -- MUST match real/sim, else the two sample the accuracy
+          # curve at different points. Raise if the run warns about waiting.
+          eval_every_n_commits: 2
+          # §P: real-profiled vclock charges. Without it sim folds its own
+          # contention-inflated span onto the clock (§D-18/§F-1/§F-20).
+          sim_charge_profile_path: lib/python/examples/fwdllm/sim_charge_profiles/fwdllm_it_oracular.yaml
+          # Outer wall failsafe (code default 20x max_runtime_s is too loose).
+          sim_wall_ceiling_s: 7200
           # Phase 4c (B1, #6, REMOVED §6 Part 6): sim_model_eval_time used to
           # charge the measured server eval_s onto the vclock -- removed once
           # eval_model() was backgrounded (no longer a synchronous critical-path
@@ -103,7 +116,7 @@ experiments:
           sim_sct_ordered_drain: true      # drain buffered grads in sct order (#13)
           data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
           partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
-          partition_method: uniform
+          partition_method: niid_label_clients=100_alpha=1
         selector:
           kwargs:
             # RandomSelector has no `k` concept (matches oort/async_oort/fedbuff/

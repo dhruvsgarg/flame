@@ -22,7 +22,7 @@ import time
 from contextlib import contextmanager
 
 import torch
-from flame.channel import VAL_CH_STATE_HTBT_SEND, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
+from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
@@ -59,7 +59,6 @@ logger = logging.getLogger(__name__)
 
 TAG_FETCH = "fetch"
 TAG_UPLOAD = "upload"
-TAG_HEARTBEAT = "heartbeat_send"
 
 
 @timer_decorator
@@ -496,37 +495,6 @@ class Trainer(Role, metaclass=ABCMeta):
         logging.info(f"Put is invoked for {self.trainer_id}")
         if tag == TAG_UPLOAD:
             self._send_grads(tag)
-        elif tag == TAG_HEARTBEAT:
-            logger.info("calling send heartbeat")
-            self._send_heartbeat_to_agg(tag)
-
-    @timer_decorator
-    def _send_heartbeat_to_agg(self, tag: str) -> None:
-        logger.debug(
-            f"### SEND heartbeat for tag: {tag} " f"and trainer_id: {self.trainer_id}"
-        )
-        channel = self.cm.get_by_tag(tag)
-        if not channel:
-            logger.debug(f"[_send_heartbeat] channel not found with {tag}")
-            return
-
-        # this call waits for at least one peer to join this channel
-        logger.debug(
-            f"_send_heartbeat: waiting for someone to join channel: {channel} "
-            f"for trainer_id: {self.trainer_id}"
-        )
-        channel.await_join()
-
-        # one aggregator is sufficient
-        end = channel.one_end(VAL_CH_STATE_HTBT_SEND)
-
-        msg = {
-            MessageType.HEARTBEAT: time.time(),
-        }
-        channel.send(end, msg)
-        logger.info(f"sending heartbeat done for trainer_id: {self.trainer_id}")
-
-        return
 
     @timer_decorator
     def _send_grads(self, tag: str) -> None:
@@ -826,10 +794,6 @@ class Trainer(Role, metaclass=ABCMeta):
         self.model = self.model_arch().to(self.device)
         logger.debug(f"Loaded model on gpu for trainer_id: {self.trainer_id}")
 
-    def send_heartbeat_to_agg(self) -> None:
-        logger.debug("Inside trainer.py will call self.put(heartbeat)")
-        self.put(TAG_HEARTBEAT)
-
     # #### ADDED OORT RELATED FUNCTIONALITY
     def init_oort_variables(self) -> None:
         """Initialize Oort variables."""
@@ -941,7 +905,6 @@ class Trainer(Role, metaclass=ABCMeta):
             task_pause_exec = Tasklet("pause_exec", self.pause_execution)
 
             # task_save_metrics = Tasklet("save_metrics", self.save_metrics)
-            task_send_heartbeat = Tasklet("upload", self.put, TAG_HEARTBEAT)
 
             # create a loop object with loop exit condition function
             loop = Loop(loop_check_fn=lambda: self._work_done)
@@ -955,8 +918,6 @@ class Trainer(Role, metaclass=ABCMeta):
                     >> task_train
                     # >> task_pause_exec
                     >> task_put_grad
-                    # >> asyncfl_loop(task_put >> task_get_weights >>
-                    # >> task_get_heartbeat
                     >> task_pause_exec
                 )
                 # >> task_init_oort_variables Added code here to check for the
@@ -967,7 +928,6 @@ class Trainer(Role, metaclass=ABCMeta):
                 #     task_sleep_after_put_weight >> task_save_metrics >>
                 #     task_sleep_after_save_metrics
                 # # )
-                # >> loop( task_send_heartbeat )
             )
 
     def run(self) -> None:
@@ -978,4 +938,4 @@ class Trainer(Role, metaclass=ABCMeta):
     def get_func_tags(cls) -> list[str]:
         """Return a list of function tags defined in the trainer
         role."""
-        return [TAG_FETCH, TAG_UPLOAD, TAG_HEARTBEAT]
+        return [TAG_FETCH, TAG_UPLOAD]

@@ -17,6 +17,7 @@
 
 import logging
 import os
+import threading
 import time
 from copy import deepcopy
 from datetime import datetime, timedelta
@@ -82,7 +83,6 @@ class MemCache(dict):
 
 TAG_DISTRIBUTE = "distribute"
 TAG_AGGREGATE = "aggregate"
-TAG_HEARTBEAT = "heartbeat_recv"
 
 # Simulated-mode receive bounds (sync): how long to keep draining selected ends
 # before committing, and the per-probe wait. In simulated mode trainers do not
@@ -107,6 +107,9 @@ MIN_TRAINERS_JOIN_TIMEOUT_S = 180
 
 class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
     """Top level Aggregator implements an ML aggregation role."""
+
+    # Wedged eval thread degrades to a skip rather than stalling training.
+    _EVAL_WAIT_TIMEOUT_S = 300.0
 
     @abstract_attribute
     def config(self) -> Config:
@@ -319,42 +322,6 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 f"invoking _aggregate_weights({tag})"
             )
             self._aggregate_weights(tag)
-        elif tag == TAG_HEARTBEAT:
-            logger.debug(
-                f"In get(), got message for tag {tag},"
-                f" will invoke _read_heartbeat({tag})"
-            )
-            self._read_heartbeat(tag)
-
-    def _read_heartbeat(self, tag: str) -> None:
-        logger.debug("In syncfl _read_heartbeat()")
-        channel = self.cm.get_by_tag(tag)
-        if not channel:
-            logger.debug("No channel found for read_heartbeat")
-            return
-
-        logger.debug(f"Channel {channel} found for _read_heartbeat and tag {tag}")
-        logger.debug(f"channel.ends(): {channel.ends()}")
-        # receive heartbeat message from trainers TODO: (DG) Check if
-        # it processes all heartbeats at once before proceeding to the
-        # next sampling?
-        for msg, metadata in channel.recv_fifo(channel.ends()):
-            end, timestamp = metadata
-            if not msg:
-                logger.debug(f"No data from {end}; skipping it")
-                continue
-
-            if MessageType.HEARTBEAT in msg:
-                heartbeat_timestamp = msg[MessageType.HEARTBEAT]
-                logger.debug(
-                    f"received heartbeat from {end} "
-                    f"at timestamp {heartbeat_timestamp}"
-                )
-            else:
-                logger.warm(
-                    f"Tried to read message in _read_heartbeat()"
-                    f"but got message of type {msg}"
-                )
 
     def _advance_sim_clock(self, sct: float) -> None:
         """Advance vclock to a commit's sim_completion_ts + per-commit overhead."""
@@ -1382,26 +1349,74 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             ev, fields = build_agg_eval(round_num=self._round, metrics=metrics)
             telemetry.emit(ev, **fields)
 
+    def _eval_stride(self) -> int:
+        """Commits per eval -- the DETERMINISTIC eval cadence, identical in both
+        modes. Read and logged once (§F-18). Duck-typed on config so test
+        doubles can borrow this method or pin `_eval_every_n_commits` directly."""
+        n = getattr(self, "_eval_every_n_commits", None)
+        if n is None:
+            hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+            n = max(1, int(getattr(hp, "eval_every_n_commits", 2) or 1))
+            self._eval_every_n_commits = n
+            logger.info(f"eval_every_n_commits = {n}")
+        return n
+
     def _eval_snapshot_model(self):
         """Snapshot current weights into a reused eval model (main thread, cheap)
         so the full test-set forward pass can run OFF the aggregator's critical
         path. The synchronous eval was a per-round pause that penalised async
-        baselines (more rounds -> more pauses). Returns the eval model, or None to
-        skip when a prior async eval is still running (no thread pile-up)."""
-        if getattr(self, "_eval_inflight", False):
-            logger.debug("prior async eval still running; skipping this eval")
+        baselines (more rounds -> more pauses). Returns the eval model, or None
+        on a commit the stride skips.
+
+        Call once per commit. WHICH commits evaluate is decided by the commit
+        INDEX, never by whether the eval thread is free: gating on
+        `_eval_inflight` made the cadence a wall-clock race sim lost
+        structurally (it compresses the inter-commit gap; the test-set pass
+        costs the same wall). Measured at 3600s -- real kept 99-100% of its
+        evals, sim 49-60% on seven of nine baselines, so the two modes sampled
+        the accuracy trajectory at different, host-speed-dependent points
+        (§F-12) and `_check_target_stop` saw a subsampled series in sim.
+        """
+        self._eval_commit_seq = getattr(self, "_eval_commit_seq", 0) + 1
+        # Explicit unbound call: test doubles borrow individual methods off this
+        # class (same pattern as `_slot_holders` -> `_sim_slot_holder_set`).
+        stride = TopAggregator._eval_stride(self)
+        # Phase on the FIRST commit (1, 1+N, 1+2N ...), so stride 1 is exactly
+        # "every commit" and both modes land on the same progress indices.
+        if (self._eval_commit_seq - 1) % stride != 0:
             return None
+        if getattr(self, "_eval_inflight", False):
+            # Stride too small for this config. Wait it out and warn -- never
+            # silently drop, which is the race this method exists to remove.
+            logger.warning(
+                f"eval still running at commit {self._eval_commit_seq}; "
+                f"waiting (raise eval_every_n_commits above {stride} "
+                f"for this baseline)"
+            )
+            done = getattr(self, "_eval_done", None)
+            if done is not None and not done.wait(timeout=self._EVAL_WAIT_TIMEOUT_S):
+                logger.warning("eval wait timed out; skipping this eval")
+                return None
         try:
             import copy
             if getattr(self, "_eval_model", None) is None:
                 self._eval_model = copy.deepcopy(self.model)
             self._eval_model.load_state_dict(self.model.state_dict())
+            self._eval_done = threading.Event()
             self._eval_inflight = True
             return self._eval_model
         except Exception as e:  # eval must never break training
             logger.warning(f"eval snapshot failed (non-fatal): {e}")
             self._eval_inflight = False
             return None
+
+    def _eval_release(self) -> None:
+        """Mark the in-flight eval finished. Must run in the eval thread's
+        `finally`, so a failed eval can never wedge the cadence."""
+        self._eval_inflight = False
+        done = getattr(self, "_eval_done", None)
+        if done is not None:
+            done.set()
 
     def _eval_emit(self, round_num, test_loss, test_accuracy):
         """Emit agg_eval telemetry (tagged with the captured round) + wandb from
@@ -1427,7 +1442,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                     pass
             self._check_target_stop(round_num, test_accuracy)
         finally:
-            self._eval_inflight = False
+            TopAggregator._eval_release(self)
 
     def _check_target_stop(self, round_num, test_accuracy):
         """Stop after `stable_evals_above_target` consecutive evals >= target.
@@ -1480,8 +1495,6 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
             task_get_weights = Tasklet("aggregate", self.get, TAG_AGGREGATE)
 
-            task_get_heartbeat = Tasklet("heartbeat_recv", self.get, TAG_HEARTBEAT)
-
             task_train = Tasklet("train", self.train)
 
             task_eval = Tasklet("evaluate", self.evaluate)
@@ -1517,7 +1530,6 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 >> task_save_metrics
                 >> task_checkpoint
                 >> task_increment_round
-                >> task_get_heartbeat
             )
             >> task_end_of_training
             >> task_save_params
@@ -1532,4 +1544,4 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
     def get_func_tags(cls) -> list[str]:
         """Return a list of function tags defined in the top level
         aggregator role."""
-        return [TAG_DISTRIBUTE, TAG_AGGREGATE, TAG_HEARTBEAT]
+        return [TAG_DISTRIBUTE, TAG_AGGREGATE]

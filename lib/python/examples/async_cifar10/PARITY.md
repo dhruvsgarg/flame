@@ -741,7 +741,9 @@ selector still gets exact enforcement via `DETERMINISTIC_SELECTORS`.
   `DETERMINISTIC_SELECTORS` still get exact identity enforcement. Tell it's identity-not-bias:
   A2c/K8 pass and the mode-specific cores are speed-matched.
 - **F1-3 utility** → pooled KS (per-trainer KS=1.0 was mechanical for n≤2; means identical).
-- **phase_mqtt_fetch** → DIAG (in-mem cache wall time, deliberately off the virtual clock).
+- **phase_mqtt_fetch** → DIAG (real wall-clock `channel.recv()` wait in BOTH modes, not an
+  in-mem shortcut; dispatch cadence/aggregator-side overhead differ real vs sim and aren't
+  vclock-modeled in either, so deliberately off the virtual clock and non-gating).
 - **trainer_speed / eligible_speed / selection_bias** → integer-grid / metadata-pool.
 
 ## Discrepancy ledger — flame vs reference Oort

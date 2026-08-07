@@ -33,6 +33,10 @@ EVENT_STEP_TIMING = "step_timing"    # per-function wall duration of a timed com
 EVENT_COMM = "comm"                  # one message put on the wire (byte-size accounting)
 EVENT_VERSION_BUMP_CENSUS = "version_bump_census"  # #S1: pool-wide in-flight state at a model_version bump
 EVENT_VAR_CALC = "var_calc"          # fwdllm: grad-norm summary in/out of the variance gate (DEBUG-only audit)
+EVENT_REDISPATCH_DECOMP = "redispatch_decomp"  # fwdllm round-cadence: commit->next-dispatch wall split
+EVENT_SLOT_STARVATION = "slot_starvation"  # a freed dispatch slot had fewer eligible candidates than slots
+EVENT_VCLOCK_CHARGE = "vclock_charge"  # every charge_sim_vclock_overhead() call: measured span vs actually-charged
+EVENT_SERVER_UPDATE = "server_update"  # fwdllm: applied-update vs weight norm per commit (I-1 audit)
 
 KNOWN_EVENTS = frozenset(
     {
@@ -55,6 +59,10 @@ KNOWN_EVENTS = frozenset(
         EVENT_COMM,
         EVENT_VERSION_BUMP_CENSUS,
         EVENT_VAR_CALC,
+        EVENT_SERVER_UPDATE,
+        EVENT_REDISPATCH_DECOMP,
+        EVENT_SLOT_STARVATION,
+        EVENT_VCLOCK_CHARGE,
     }
 )
 
@@ -269,6 +277,35 @@ def build_var_calc(
     }
 
 
+def build_server_update(
+    *,
+    round_num: Optional[int],
+    data_id: Optional[int],
+    iteration: Optional[int],
+    model_version: Optional[int],
+    update_delta_norm: float,
+    weight_norm: float,
+    learning_rate: float,
+) -> tuple[str, dict[str, Any]]:
+    """I-1 audit: L2 norm of the update actually SUBTRACTED from the server
+    weights, the resulting weight norm, and their ratio — one record per commit.
+
+    `update_ratio` is the diagnostic: an undamped optimizer random-walks, so a
+    collapse shows as the ratio climbing before accuracy falls (EXPTS_CHARTER
+    I-1). Gated at the call site — its wall cost perturbs arrival order (§D-45).
+    """
+    return EVENT_SERVER_UPDATE, {
+        "round": round_num,
+        "data_id": data_id,
+        "iteration_per_data_id": iteration,
+        "model_version": model_version,
+        "update_delta_norm": update_delta_norm,
+        "weight_norm": weight_norm,
+        "update_ratio": (update_delta_norm / weight_norm) if weight_norm else None,
+        "learning_rate": learning_rate,
+    }
+
+
 def build_comm(
     *,
     direction: str,
@@ -310,6 +347,146 @@ def build_comm(
         if v is not None:
             fields[k] = v
     return EVENT_COMM, fields
+
+
+def build_redispatch_decomp(
+    *,
+    end_id: str,
+    round_num: int,
+    data_id: int,
+    iteration: int,
+    redispatch_gap_wall_s: float,
+    peer_wait_wall_s: float,
+    post_close_overhead_wall_s: float,
+    time_mode: str,
+    payload_kind: str = "weights",
+    outstanding_at_dispatch: Optional[int] = None,
+    concurrency_target: Optional[int] = None,
+    retask_before_close: Optional[bool] = None,
+) -> tuple[str, dict[str, Any]]:
+    """fwdllm round-cadence: split a trainer's commit->next-dispatch WALL gap
+    into peer-wait vs post-close overhead.
+
+    Round-cadence (`fedbuff_round`/`felix_round`) pins a fixed cohort and only
+    re-dispatches a committed trainer once the WHOLE `agg_goal`-sized
+    micro-batch's `version_key` advances (§D-8/F-25) -- so most of the gap is
+    this trainer waiting on its round-mates, not idle server time. This event
+    disambiguates the two, using ``self._last_round_close_wall_ts`` (wall
+    ``aggregate()`` finished, real time in BOTH modes -- see §F-1) as the
+    boundary:
+
+    ``redispatch_gap_wall_s`` = now - this end's own last commit wall ts.
+    ``peer_wait_wall_s``      = round-close wall ts - this end's own commit wall ts
+                                 (0 if this end's own commit WAS the round-closer,
+                                 or no round has closed since its commit).
+    ``post_close_overhead_wall_s`` = now - round-close wall ts: genuine
+                                 server-side redispatch turnaround, free of
+                                 peer-wait -- the residual to actually calibrate
+                                 `sim_redispatch_gap_s` against, if non-trivial.
+
+    Emitted for both `send_weights` and `VAR=bad` dispatches (``payload_kind``
+    distinguishes them) -- both share the same channel-send call, and VAR=bad
+    retries are the majority of cycles (§D-11), so excluding them hid most of
+    the signal. Wall-clock (`time.time()`) in BOTH modes: sim doesn't sleep to
+    emulate the modeled training delay (§F-1), so a genuine sim/real gap here
+    means the SIMULATOR's own wall-clock redispatch loop is faster, not that a
+    cost is unmodeled on the vclock -- compare against `overhead_residual`/
+    `per_round_advance` (vclock-based) before concluding a vclock gap exists.
+
+    Two per-dispatch INVARIANT tripwires ride this event, both single-side
+    decidable (no real/sim diff needed):
+
+    ``outstanding_at_dispatch`` / ``concurrency_target`` -- dispatched-not-yet-
+    committed ends after this dispatch vs the selector's `c`. Above `c` = the
+    dispatch loop found free capacity that doesn't exist.
+
+    ``retask_before_close`` -- this end had ALREADY contributed to the still-OPEN
+    agg cycle, so the payload asserts a variance verdict the aggregator hasn't
+    computed (simulate_fwdllm.md §D-15). Must always be False;
+    `_already_served_current_instruction` can't see it (the end's serving key is
+    cycles stale by then, so it doesn't match and the guard passes).
+    """
+    fields: dict[str, Any] = {
+        "end_id": end_id,
+        "round": round_num,
+        "data_id": data_id,
+        "iteration_per_data_id": iteration,
+        "redispatch_gap_wall_s": redispatch_gap_wall_s,
+        "peer_wait_wall_s": peer_wait_wall_s,
+        "post_close_overhead_wall_s": post_close_overhead_wall_s,
+        "time_mode": time_mode,
+        "payload_kind": payload_kind,
+    }
+    for k, v in (
+        ("outstanding_at_dispatch", outstanding_at_dispatch),
+        ("concurrency_target", concurrency_target),
+        ("retask_before_close", retask_before_close),
+    ):
+        if v is not None:
+            fields[k] = v
+    return EVENT_REDISPATCH_DECOMP, fields
+
+
+def build_vclock_charge(
+    *,
+    label: str,
+    span_s: float,
+    charged_s: float,
+    time_mode: str,
+    vclock_now: Optional[float] = None,
+    payload_kind: Optional[str] = None,
+    charge_source: str = "none",
+) -> tuple[str, dict[str, Any]]:
+    """One record per `charge_sim_vclock_overhead()` call, both modes -- the
+    shared ledger of what wall-time got charged onto the vclock, per baseline.
+
+    ``span_s`` = measured wall duration passed in (both modes, comparable).
+    ``charged_s`` = what actually landed on the vclock (0.0 in real always;
+    0.0 in sim if the flag's off or `charge=False`, else the charged amount).
+    ``vclock_now`` = sim's clock after this call (None in real).
+    ``charge_source`` = "live" (span_s itself charged, shared-compute
+    categories), "profiled" (a `sim_charge_registry` value charged instead,
+    real-only-artifact categories), or "none" (not charged).
+
+    A real-vs-sim `span_s` gap that `charged_s` never reflects is the §F-1
+    unmodeled-cost signature (simulate_fwdllm.md §D-11).
+    """
+    return EVENT_VCLOCK_CHARGE, {
+        "label": label,
+        "span_s": span_s,
+        "charged_s": charged_s,
+        "time_mode": time_mode,
+        "vclock_now": vclock_now,
+        "payload_kind": payload_kind,
+        "charge_source": charge_source,
+    }
+
+
+def build_slot_starvation(
+    *,
+    concurrency: int,
+    extra: int,
+    n_filtered: int,
+    feasible_extra: int,
+    model_version: Optional[int] = None,
+) -> tuple[str, dict[str, Any]]:
+    """A dispatch slot just freed up (`extra > 0`) but fewer eligible
+    candidates existed than slots to fill (`feasible_extra < extra`,
+    `async_oort.py::handle_send_state`) -- the candidate-POOL side of D-10
+    (simulate_fwdllm.md): round cadence's pinned cohort can run out of
+    not-yet-contributed-to-this-version_key members before its `agg_goal`
+    batch closes, iteration cadence draws from the whole trainer pool
+    instead. Emitted ONLY on a starved tick (`feasible_extra < extra`), not
+    every `select()` call, to stay low-volume across a baseline sweep.
+    """
+    return EVENT_SLOT_STARVATION, {
+        "concurrency": concurrency,
+        "extra": extra,
+        "n_filtered": n_filtered,
+        "feasible_extra": feasible_extra,
+        "starved": extra - feasible_extra,
+        "model_version": model_version,
+    }
 
 
 def build_version_bump_census(

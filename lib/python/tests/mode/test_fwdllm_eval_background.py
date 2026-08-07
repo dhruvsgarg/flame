@@ -48,6 +48,9 @@ class _FakeEvalAggregator:
 
     eval_model = TopAggregator.eval_model
     _eval_snapshot_model = TopAggregator._eval_snapshot_model
+    _eval_stride = TopAggregator._eval_stride
+    _eval_release = TopAggregator._eval_release
+    _EVAL_WAIT_TIMEOUT_S = TopAggregator._EVAL_WAIT_TIMEOUT_S
     compute_metrics = TopAggregator.compute_metrics
 
     def _force_cuda_memory_cleanup(self):
@@ -91,6 +94,10 @@ class _FakeEvalAggregator:
         self._cached_test_data = None
         self._eval_inflight = False
         self._eval_model = None
+        # These cases each snapshot once per instance and assert on the model
+        # they get back, so pin the every-commit stride; the stride's own
+        # behaviour is covered in test_fwdllm_eval_cadence.py.
+        self._eval_every_n_commits = 1
         self.iteration_per_data_id = 0  # eval_model() logs this, unrelated to the race
         # Sentinel "training-path" state -- eval_model() must never touch these
         # (the actual race: the main thread assigns these same three names

@@ -206,10 +206,11 @@ class ClientAvailability:
             for tid, trace in self.trainer_event_dict.items()
             if state_at(trace, now) == TrainerAvailState.UN_AVL
         ]
-        logger.info(
-            f"[TRACE_READ] unavail={len(unavail)}/{len(self.trainer_event_dict)} "
-            f"@ t={now:.1f}s"
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"[TRACE_READ] unavail={len(unavail)}/{len(self.trainer_event_dict)} "
+                f"@ t={now:.1f}s"
+            )
         return unavail
 
     def get_curr_task_ineligible_trainers(self, task: str) -> list:
@@ -242,10 +243,11 @@ class ClientAvailability:
             if state_at(trace, now) == TrainerAvailState.UN_AVL
             or (excluded_state is not None and state_at(trace, now) == excluded_state)
         ]
-        logger.info(
-            f"[TRACE_READ] task={task!r} ineligible="
-            f"{len(ineligible)}/{len(self.trainer_event_dict)} @ t={now:.1f}s"
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"[TRACE_READ] task={task!r} ineligible="
+                f"{len(ineligible)}/{len(self.trainer_event_dict)} @ t={now:.1f}s"
+            )
         return ineligible
 
     def _avail_stamp_end_states(self, channel) -> None:

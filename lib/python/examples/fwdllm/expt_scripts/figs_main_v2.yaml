@@ -1,0 +1,34 @@
+# SOCC-2026 paper-figure manifest for the `main_v2` run-set (BRIDGE_DESIGN.md §2 /
+# EXPERIMENTS.md §10a — the sim-mode 4-anchor + attribution comparison: fwdllm,
+# fedbuff_round, felix_round, fluxtune, fwdllm_it_oracular). Supersedes figs.yaml
+# for E1-E5/A0 going forward; figs.yaml's real-mode 3-baseline numbers are kept
+# as-is (decision #3), not replaced.
+#
+# Paths resolve relative to the fwdllm example dir (…/examples/fwdllm) or absolute.
+# SCAFFOLD ONLY — fill entries as logs land under experiments/ (see EXPERIMENTS.md
+# §7.3 for the run-dir naming convention multi-node launches must match). Missing
+# baselines are skipped, not fatal. Override a single entry without editing this
+# file via:  make_paper_figs.py --manifest figs_main_v2.yaml --run KEY=PATH
+#
+# Keys are INTERNAL baseline names (telemetry keys); paper display names/colors
+# live in plotlib/baselines.py.
+
+# First landed 2026-07-24 (sim, N=100, alpha=1 -- verified from the loaded-partition
+# log line, NOT the dir/log-filename, which mislabels fluxtune/fwdllm as alpha0p1 --
+# known footgun, EXPERIMENTS.md §7.0). These are first-landed, not yet the checklist
+# step 6 per-baseline telemetry validation pass -- treat as SMOKE until that's done.
+runs:
+  fwdllm:              experiments/run_20260724_023627_fwdllm_n100_smoke_syn_0_sim
+  fedbuff_round:       experiments/run_20260724_093607_fedbuff_round_n100_smoke_syn_0_sim
+  # earlier fedbuff_round attempt (run_20260724_000757_...) is DEAD (0 agg_eval
+  # events, no live process) -- superseded by the 093607 relaunch above, which
+  # has landed 445 evals / peak 85.5% as of 2026-07-24 14:2x sync.
+  felix_round:         experiments/run_20260724_042943_felix_round_n100_smoke_syn_0_sim
+  fluxtune:            experiments/run_20260724_023501_fluxtune_n100_smoke_syn_0_sim
+  # fwdllm_it_oracular: -- intentionally not run under syn_0 (confirmed by
+  #   operator 2026-07-25): oracular availability-tracking is inert at 100%
+  #   availability (identical behavior to fwdllm_it_unaware), so this run
+  #   isn't needed for this condition -- not a gap, don't launch it here.
+
+target_acc: 0.84
+window: 20
