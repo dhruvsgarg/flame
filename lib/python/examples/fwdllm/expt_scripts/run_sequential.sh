@@ -94,6 +94,7 @@ AVAIL_TRACES=""
 PARTITION_METHOD=""
 VAR_THRESHOLD=""       # variance-pass gate threshold; varies with data heterogeneity -> review every run
 SERVER_UPDATE_AUDIT="" # I-1 audit: per-commit ||delta||/||w||. OFF by default -- never on a replicate leg
+POOL_SPLIT_HALF_AUDIT="" # L1 audit: per-commit pool split-half cosine. OFF -- adds a pass over (params x uploads)
 MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
 VAR_STOPPING_POLICY=""   # Opt-2: off|fixed_cap|plateau (empty => baselines.yaml, fluxtune=plateau)
 AGG_RATE_TYPE=""         # Opt-3: grad_aware|new (empty => baselines.yaml, fluxtune=grad_aware; new=FeLiX)
@@ -131,7 +132,7 @@ usage() {
   echo "          [--delay-floor F (floor on raw registry delay, applied before the divisor)]" >&2
   echo "    --delays/--delay-divisor/--delay-floor default to each baseline's settled value" >&2
   echo "          (BASELINE_DELAY_DEFAULTS in this script); pass explicitly only to override." >&2
-  echo "          [--server-update-audit]" >&2
+  echo "          [--server-update-audit] [--pool-split-half-audit]" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
   echo "          [--sim-wall-ceiling-s S | --sim-wall-ceiling-h H]  REAL-wall-clock outer safety" >&2
@@ -164,6 +165,7 @@ while [[ $# -gt 0 ]]; do
     --partition-method)     PARTITION_METHOD="$2"; shift 2 ;;
     --var-threshold)        VAR_THRESHOLD="$2"; shift 2 ;;
     --server-update-audit)  SERVER_UPDATE_AUDIT=1; shift ;;
+    --pool-split-half-audit) POOL_SPLIT_HALF_AUDIT=1; shift ;;
     --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
     --var-stopping-policy)  case "$2" in off|fixed_cap|plateau) ;; *) echo "ERROR: --var-stopping-policy must be off|fixed_cap|plateau (got '$2')" >&2; exit 2 ;; esac
                             VAR_STOPPING_POLICY="$2"; shift 2 ;;
@@ -336,7 +338,7 @@ NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" GPU_IDS="$GPU_IDS" SEL_C="$SEL
 SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" MIN_INIT_FRAC="$MIN_INIT_FRAC" \
 PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
-SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" \
+SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" POOL_SPLIT_HALF_AUDIT="$POOL_SPLIT_HALF_AUDIT" \
 DELAY_FLOOR="$DELAY_FLOOR" \
 VAR_STOPPING_POLICY="$VAR_STOPPING_POLICY" AGG_RATE_TYPE="$AGG_RATE_TYPE" \
 TARGET_ACC="$TARGET_ACC" CONVERGE_WINDOW="$CONVERGE_WINDOW" \
@@ -363,6 +365,7 @@ MIN_INIT_FRAC = env("MIN_INIT_FRAC") or ""
 PART = env("PARTITION_METHOD") or ""
 VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID") or ""
 SERVER_UPDATE_AUDIT = env("SERVER_UPDATE_AUDIT") or ""
+POOL_SPLIT_HALF_AUDIT = env("POOL_SPLIT_HALF_AUDIT") or ""
 VAR_STOPPING_POLICY = env("VAR_STOPPING_POLICY") or ""; AGG_RATE_TYPE = env("AGG_RATE_TYPE") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
 DELAY_FLOOR = env("DELAY_FLOOR") or ""
@@ -511,6 +514,9 @@ def patch(exp, run_key, variant, trace):
     # I-1 audit telemetry: opt-in per run, never on a leg that pairs into a floor (§D-45).
     if SERVER_UPDATE_AUDIT:
         h["server_update_audit"] = True
+    # L1 pool-agreement audit: a second pass over the pool, so its own flag.
+    if POOL_SPLIT_HALF_AUDIT:
+        h["pool_split_half_audit"] = True
     if MAX_ITER:
         h["max_iterations_per_data_id"] = int(MAX_ITER)
     # Opt-2/Opt-3 ablation toggles (charter 4-run 2x2). Written into the per-run

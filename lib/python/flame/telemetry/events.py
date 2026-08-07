@@ -286,6 +286,12 @@ def build_server_update(
     update_delta_norm: float,
     weight_norm: float,
     learning_rate: float,
+    trainable_weight_norm: Optional[float] = None,
+    trainable_delta_norm: Optional[float] = None,
+    pool_size: Optional[int] = None,
+    split_half_dot: Optional[float] = None,
+    split_half_norm_a: Optional[float] = None,
+    split_half_norm_b: Optional[float] = None,
 ) -> tuple[str, dict[str, Any]]:
     """I-1 audit: L2 norm of the update actually SUBTRACTED from the server
     weights, the resulting weight norm, and their ratio — one record per commit.
@@ -293,8 +299,16 @@ def build_server_update(
     `update_ratio` is the diagnostic: an undamped optimizer random-walks, so a
     collapse shows as the ratio climbing before accuracy falls (EXPTS_CHARTER
     I-1). Gated at the call site — its wall cost perturbs arrival order (§D-45).
+
+    `trainable_*` (L3) isolate the adapter/head slice from the frozen backbone, so
+    `rho` is measured rather than reconstructed from a measured init constant.
+
+    `split_half_*` (L1) are the RAW dot and norms, not the ratio: one commit's
+    cosine is buried in 1/sqrt(p) noise (~1e-3 at p=1e6, vs a ~3e-4 signal), so
+    pool sum(dot)/sum(|a||b|) across commits. For two halves sharing one signal,
+    cos(a,b) = cos_half^2, hence cos(G,g) ~= sqrt(2 * cos(a,b)).
     """
-    return EVENT_SERVER_UPDATE, {
+    fields: dict[str, Any] = {
         "round": round_num,
         "data_id": data_id,
         "iteration_per_data_id": iteration,
@@ -304,6 +318,22 @@ def build_server_update(
         "update_ratio": (update_delta_norm / weight_norm) if weight_norm else None,
         "learning_rate": learning_rate,
     }
+    if trainable_weight_norm is not None:
+        fields["trainable_weight_norm"] = trainable_weight_norm
+        fields["trainable_delta_norm"] = trainable_delta_norm
+        fields["rho"] = (
+            (trainable_delta_norm / trainable_weight_norm)
+            if trainable_weight_norm else None
+        )
+    if split_half_dot is not None:
+        _den = (split_half_norm_a or 0.0) * (split_half_norm_b or 0.0)
+        fields["pool_size"] = pool_size
+        fields["split_half_dot"] = split_half_dot
+        fields["split_half_norm_a"] = split_half_norm_a
+        fields["split_half_norm_b"] = split_half_norm_b
+        # Per-commit convenience only; pool the raw components for a usable number.
+        fields["split_half_cos"] = (split_half_dot / _den) if _den else None
+    return EVENT_SERVER_UPDATE, fields
 
 
 def build_comm(

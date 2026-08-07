@@ -30,6 +30,98 @@ Every claim is tagged:
 
 ---
 
+## 0.5 The mental model, and every symbol used below
+
+### 0.5.1 What this optimizer is actually doing
+
+Backprop hands the trainer the exact steepest-descent direction. **This system cannot compute that.**
+All it can do is *ask one question per probe*: "if I nudge every trainable weight along a random
+direction `v`, how fast does the loss change?" The answer is a single number `d` (the directional
+derivative, a.k.a. the JVP). The trainer then guesses the gradient is `ĝ = d·v` — pointing wherever
+it happened to ask, scaled by how strongly the loss responded.
+
+That guess is correct **on average** (`E[d·v] = g`) and almost entirely wrong **individually**. Fog
+on a hillside: backprop is a compass; this is stepping in a random direction, feeling whether you
+went down, and declaring "downhill is that way." One reading is noise. A thousand averaged readings
+are a compass. **Everything in this document is about how many readings you must average before you
+are allowed to take a step of a given size.**
+
+### 0.5.2 Four intuitions that generate all the math
+
+**(a) The parameter count is the adversary.** A random direction in `p` dimensions overlaps any
+fixed target direction by only ≈ `1/√p`. At `p = 1.04M`, one probe is **0.1% signal, 99.9% noise**.
+No tuning removes this — it is the price of not having backprop, and it is why `p` appears in every
+formula below. It is also why `p` is a *lever* (§8.5): fewer trainable dimensions ⇒ better aim.
+
+**(b) Averaging is the only real lever, and it pays twice.** Average `n` independent guesses: the
+signal component is identical in all of them so it adds **linearly** (`×n`); the noise components
+are near-orthogonal so they add **in quadrature** (`×√n`). Two things happen at once — the average
+is **better aimed** *and* **shorter**. That double benefit is why pooling improves the safety margin
+as `1/n`, not `1/√n`, and it is the single most important line in §6.3.
+
+**(c) Aim matters more than step size, because misaim never cancels in length.** Every step is part
+useful, part random kick. Useful parts point the same way every time, so they accumulate
+**linearly** in `T`. Random kicks point differently each time, so as *displacement* they only
+accumulate as `√T` — but as **length** they always add, because a kick perpendicular to where you
+currently stand makes you longer (Pythagoras: `‖θ+Δ‖² = ‖θ‖² + ‖Δ‖²`). So there is a race: does the
+useful part reach a good solution before the accumulated kicks inflate the weights past usefulness?
+**`ρ ≤ cos` is that race, written down.**
+
+**(d) Inflated weights destroy a classifier in a specific, recognisable way.** Logits are roughly
+linear in the weights, so doubling `‖θ‖` doubles the logits and softmax saturates — the model
+becomes maximally **confident**. Confidence is harmless when the direction is right; here the
+direction is random, so the model becomes confidently *arbitrary*. Test loss above
+`ln(num_classes) = ln 4 = 1.386` is the fingerprint: **worse than answering "I don't know."** That
+is exactly what §3 measures (2.37).
+
+### 0.5.3 Symbol table
+
+Everything below is per-commit unless stated. "Dimensionless" means the quantity is a pure ratio, so
+comparing it against a fixed constant is legitimate — that property is the whole fix (§4, root cause).
+
+| symbol | what it is | value here | read it as |
+|---|---|---|---|
+| `θ` | the full weight vector | 67.4M entries | — |
+| `θ_tr` | the **trainable** slice (adapters + heads); the rest is frozen and never moves | `p` = 1,040,932; `‖θ_tr‖` = 20.36 at init | the only thing that can diverge |
+| `p` | number of trainable dimensions = the probe dimension | 1,040,932 | "how many directions I could have asked about" |
+| `v` | one random probe direction, a raw Gaussian draw, **not** normalised | `‖v‖ = √p ≈ 1020` | the question being asked |
+| `h` | finite-difference spacing | 0.01 → real displacement `h‖v‖ = 10.2` | **not** a learning rate |
+| `d` | the JVP: a **scalar** per probe, `d ≈ ⟨g,v⟩` | rms 3.6 → 21.5 over the run | "how much the loss moved" |
+| `ĝ = d·v` | one trainer's gradient **guess** — a `p`-vector | — | unbiased, enormous variance |
+| `g` | the true gradient at `θ` (only a probe can see it, §13) | measured by §13 | the target |
+| `u_k` | one trainer's uploaded update | — | one pooled reading |
+| `G` | server's pooled update before the step | — | the direction actually taken |
+| `P` | probes computed **per trainer per iteration** | 10 | trainer-side pool |
+| `K` | trainers pooled per commit (`agg_goal`) | 10 | cohort-side pool |
+| `I` | iterations over a data bin before committing | ≈18.5 | gate-side pool |
+| `N = K × I` | **total individual uploads pooled into one commit** | ≈185 | **not** the client population (100) |
+| `C` | concurrency pool (`c`) — caps how large `K` can be | 30 | — |
+| `η` | server learning rate (a **knob**) | 0.01 | — |
+| `ω` | per-upload aggregation weight | 0.70–0.87 | a re-weighting, not a step size |
+| **`ρ`** | **relative step: `‖Δθ‖ / ‖θ_tr‖`** — an **outcome**, not a knob | **0.115, flat all run** | "what fraction of myself do I move each commit" |
+| **`cos(G,g)`** | **fraction of the taken step that is actually aligned with the true gradient** | **0.0231** | "how well-aimed is the step" — **not** model accuracy |
+| `E[v∥²]` | selection gain, normalised so *random* = 1.000 | 2.991 shipped | dimensionless multiplier, not a probability |
+| `a`, `b` | shape constants of the estimator: `E[u] = a·g`, `‖u‖ ≈ b‖g‖√p` | `a/b`, `b²/a` are what matter | properties of the **rule**, not of the data |
+| `var` | the commit gate's statistic: spread **across probes**, not across data | drifts 0.4 → 15 | has units of `‖θ‖²` — that is the bug |
+| `ρ*` | the relative step an operator would *set* under S-A | proposed | the knob `ρ` should have been |
+
+### 0.5.4 Five traps — the confusions that actually bite here
+
+1. **`ρ` is not `η`.** `η` is a number in a config file. `ρ` is what the system *ends up* doing, and
+   it is pinned at 0.115 by a feedback loop (§4 Leg 2) — turning `η` down moves `ρ` for a while and
+   the loop pulls it back. The whole of S-A is "make `ρ` the knob instead of `η`."
+2. **`cos(G,g)` is not a quality score for the model.** It is the aim of *one server step*. It can be
+   0.023 while accuracy climbs happily — that is exactly §5.
+3. **"Unbiased" does not mean "accurate."** `ĝ = d·v` has the right *average* and catastrophic
+   *variance*. Selection (`top-1 of P`) makes it lower-variance-looking but **biased in scale** by
+   ≈3×, which is the unmatched-effective-LR confound in every guided-vs-random A/B so far.
+4. **`N` is a pooling count, not a population.** `N ≈ 185` uploads per commit; the client population
+   is 100 and is irrelevant to the noise arithmetic. `N = K × I` is the *only* thing that sets aim.
+5. **The 36× variance drift is not a data effect.** `var` measures spread of `d`, and `d ∝ ‖θ_tr‖`,
+   so the gate's own ruler grows as `‖θ‖²`. Nothing about the data changed (§4 Leg 3).
+
+---
+
 ## 1. Scope — the runs this is based on
 
 | run | mode | duration | commits | outcome |
@@ -134,8 +226,27 @@ Three observations rule out the obvious explanations:
 
 ### Leg 1 — the committed update is a pure random walk. **MEASURED.**
 
-If a step `Δθ` were doing useful descent it would have a component along `θ`. Test: does `‖W‖²` grow
-by exactly `‖Δθ‖²`? (That happens **iff** `Δθ ⊥ θ`.)
+> **The idea in one line:** if the steps were going *somewhere*, the weight vector would get shorter
+> or longer in a correlated way; instead it lengthens by exactly the amount Pythagoras predicts for
+> steps taken at right angles to wherever the model currently is.
+
+**Q: what norm, and what does the ratio mean?** `‖·‖` is the **L2 (Euclidean) norm** throughout:
+stack all trainable weights into one long vector and take `√(Σ wᵢ²)` — the *length* of that vector,
+i.e. how far the model sits from the origin in 1.04M-dimensional space. Not L1, and not per-layer.
+
+The ratio comes from expanding one step: `‖θ+Δ‖² = ‖θ‖² + 2⟨θ,Δ⟩ + ‖Δ‖²`. So
+
+```
+observed growth / step energy  =  d(||W||^2) / ||dTheta||^2  =  1 + 2<theta,dTheta>/||dTheta||^2
+```
+
+- **ratio = 1** ⇒ `⟨θ,Δθ⟩ = 0` ⇒ the step is **perpendicular** to where the model currently is.
+- **ratio < 1** ⇒ steps lean back toward the origin — what shrinking/regularizing would look like.
+- **ratio > 1** ⇒ steps lean **outward**, actively pushing the model away from the origin.
+
+Measured **1.032**: perpendicular, with a slight outward tilt. `‖W‖` is the *full* weight vector, but
+the frozen backbone is a constant, so all of the change is `θ_tr`. Note this is a statement about
+*correlation*, not about magnitude — it is why the test is assumption-free.
 
 ```
 sum over all commits of observed d(||W||^2)  /  sum of ||dTheta||^2
@@ -151,6 +262,10 @@ fixed vector to within `1/√p ≈ 0.001`, so `Δθ ⊥ θ` is exactly what "ran
 systematic descent would show as a deficit in this ratio. There is none.
 
 ### Leg 2 — the *relative* step is pinned, so the norm inflates geometrically. **MEASURED + DERIVED.**
+
+> **The idea in one line:** each commit moves the model by a *fixed percentage of its own size*, at
+> right angles — so `‖θ‖` compounds like an interest rate, and nothing in the system pays the
+> interest back.
 
 Reconstruct `‖θ_tr,t‖` from telemetry using only *differences* of `‖W‖`, anchored at the measured
 init (this cancels the frozen-norm constant; both runs independently imply `‖θ_fz‖ = 415.929`,
@@ -185,11 +300,42 @@ inflation.** Multiplicative, exponential, unstable at initialization (ρ₀ = 0.
 anywhere in the system. **Why** `|d| ∝ ‖θ_tr‖` is the one part not yet proven — see H-B in §9; the
 §13 probe settles it for free.
 
+**Q: nobody set ρ = 0.115 — so where does it come from?** Correct: `ρ` is **emergent, not
+configured**. The only step knob anyone set is `η = 0.01`. `ρ = ‖Δθ‖/‖θ_tr‖` is what the system
+*ends up doing*, and the feedback loop above pins it: `‖Δθ‖ ∝ |d| ∝ ‖θ_tr‖`, so numerator and
+denominator grow together and their ratio is a constant of the system. Turning `η` down moves `ρ`
+proportionally and *immediately* — but the loop then compounds at the new constant rate, so it delays
+divergence rather than removing it (§12, S-B). Making `ρ` the knob instead of `η` is the whole of S-A.
+
+**Q: is a growing adapter norm bad?** Growth by itself is normal — adapters initialize near zero, so
+`‖θ_tr‖` *must* rise for anything to be learned. Three things make this growth pathological:
+
+1. **It is geometric, not saturating.** Healthy training grows the norm quickly early and then flattens,
+   because gradients shrink as the loss flattens. Here `ρ` is constant, so `‖θ‖` compounds forever.
+2. **It is 100% of the step.** Leg 1 says none of the motion is descent — growth *is* the update.
+3. **Nothing opposes it.** No weight decay, no normalization layer on the adapter path, no optimizer
+   state. Compare a healthy model: the same 4.2× would be fine if it were the model finding a scale
+   and stopping. This does not stop.
+
+**Q: "divergence is present at commit 1" — how is that bad if accuracy climbs for 3 hours?** It is bad
+in *mechanism*, not in *symptom*. `ρ₀ = 0.113` already exceeds `cos = 0.023` at commit 1, so the
+system is over the stability budget before any training has happened; the exponential simply needs
+~110 commits to become visible (§5). Practically this is **good news**: the defect is measurable at
+commit 1, so a config can be scored in minutes instead of 4 hours, and no seed or schedule change can
+rescue it.
+
 > **This retro-explains the S1 NaN.** Heavy-ball at β = 0.9 multiplies the effective relative step by
 > `1/(1−β) = 10` → ρ_eff = 1.13 → the norm doubles *every step*. S1 was not the wrong idea; it was
 > applied to an already multiplicatively-unstable process. The lesson is ordering, not rejection.
 
 ### Leg 3 — the variance gate is dimensionally wrong and 100% dead. **MEASURED.**
+
+> **The idea in one line:** the gate is a thermostat set to "0.3" whose thermometer's scale grows 36×
+> during the run. It never fires, so the two emergency exits (plateau, iteration cap) *are* the
+> policy.
+
+`var` is the spread of the `d` values in the pool — the gate's way of asking "have I pooled enough
+probes to trust this direction yet?" A sensible question, asked in the wrong units.
 
 From 3,441 `[IterProgress]` lines covering all 186 bins:
 
@@ -221,6 +367,13 @@ measurement scale grows as `‖θ‖²` while `var_threshold` stays at 0.3.
 the gate (`var ∝ |d|²`) all inflate together, so no quantity anywhere can be meaningfully compared
 against a fixed constant. All three legs are one defect seen from three places.
 
+> **Why "scale-free" is the right word.** A well-posed training rule should behave the same if you
+> re-parameterised the model to make `‖θ‖` twice as large — the *shape* of the loss surface would be
+> unchanged, so the trajectory should be too. Here, doubling `‖θ‖` doubles `|d|`, doubles `‖Δθ‖`, and
+> quadruples `var`, while `η = 0.01` and `var_threshold = 0.3` sit still. Every constant in the
+> system silently means something different at commit 150 than it meant at commit 1. The fix is not
+> to find better constants; it is to make every controlled quantity a **ratio**, which cannot drift.
+
 ---
 
 ## 5. Why it looks like it's working for three hours
@@ -242,6 +395,11 @@ But exponential eventually beats everything. Once the norm has inflated enough t
 the model becomes confidently wrong, and the loss goes above ln 4. The curve's shape — smooth rise,
 rounded peak, accelerating fall — is the signature of a linear term overtaken by an exponential one.
 
+> **How to read a fluxtune learning curve from now on.** The accuracy climb is *not* evidence that
+> the configuration is sound, and the collapse is *not* a late-appearing bug. Both are the same two
+> terms, in the order arithmetic requires. The only honest health indicator is `ρ` vs `cos` measured
+> at commit 1 — and `‖θ_tr‖`, which is monotone and visible from the start.
+
 **Numerically:** signal overtakes noise only after `T ≈ 1/cos² = 1881` commits; the norm doubles every
 109. **The system needs ~17× more time than it has before it destroys itself. Divergence is not a
 risk here — it is arithmetic.**
@@ -252,20 +410,43 @@ risk here — it is arithmetic.**
 
 ### 6.1 Derivation
 
-Per commit, `G = (1/N) Σ_k ω_k u_k` where `u_k` is one trainer's uploaded update and `N` = number of
-individual uploads accumulated (**MEASURED: N ≈ 185** = K=10 × 18.5 iterations/bin).
+**What we are computing and why.** We want one number that says whether the shipped configuration is
+in a safe regime. That number is `ρ/cos`: *how big a step we take, divided by how much of that step
+is aimed correctly*. Under 1 is safe, over 1 diverges. Everything here is bookkeeping to get it.
 
-Write each upload as `E[u] = a·g` and `‖u‖ ≈ b·‖g‖·√p`. Then, since `p ≫ N` (noise-dominated):
+Per commit the server forms `G = (1/N) Σ_k ω_k u_k` — the average of `N` uploaded updates. `u_k` is
+one trainer's uploaded guess; `N` is how many such guesses got pooled before the commit
+(**MEASURED: N ≈ 185** = `K` = 10 trainers × 18.5 iterations per bin).
+
+Two shape constants summarise any estimator rule. `a` says how much true gradient survives in an
+average upload; `b` says how long the upload is relative to the gradient. They are properties of the
+**rule**, not of the data:
 
 ```
-||G||       ~ b * ||g|| * sqrt(p/N)          aligned part ~ a * ||g||
-cos(G, g)   = (a/b) * sqrt(N/p)
-rho         ~ eta * ||G|| / ||theta||     ->    rho / cos  ~  (b^2/a) * p / N
+E[u] = a * g                 <- the useful part of one upload  (a = "aim gain")
+||u|| ~ b * ||g|| * sqrt(p)  <- the total length of one upload (b = "length gain")
+                                the sqrt(p) is intuition (a) of §0.5: one probe is mostly noise
 ```
 
-**These two ratios `a/b` and `b²/a` are the whole game** — every design choice in §8 is a choice of
-`a` and `b`. For the shipped rule (select one probe of P by `|JVP|`): `a = E[v∥²]`, `b = √(E[v∥²])`,
-so `a/b = √(E[v∥²])` and **`b²/a = 1`**.
+Now pool `N` of them. Signal adds linearly, noise in quadrature (intuition (b) of §0.5), and since
+`p ≫ N` the pooled vector is still noise-dominated:
+
+```
+aligned part of G  ~  a * ||g||                    <- unchanged by pooling: every upload has it
+||G||              ~  b * ||g|| * sqrt(p/N)        <- shrinks as 1/sqrt(N): the noise partly cancels
+cos(G, g)          =  aligned / total = (a/b) * sqrt(N/p)
+rho                ~  eta * ||G|| / ||theta||
+  =>  rho / cos    ~  (b^2/a) * p / N
+```
+
+Read the last line as: **safety = (a property of the combination rule) × (dimensions per pooled
+reading)**. You improve it by choosing a better rule (`b²/a`), probing fewer dimensions (`p`, §8.5),
+or pooling more readings (`N`, §6.3).
+
+**`a/b` and `b²/a` are the whole game** — every design choice in §8 is a choice of `a` and `b`. For
+the shipped rule (select one probe of `P` by `|JVP|`): `a = E[v∥²]`, `b = √(E[v∥²])`, so
+`a/b = √(E[v∥²])` and **`b²/a = 1`**. That `1` is the punchline of §8.1: selection changes `a` and
+`b` in lockstep, so it cannot move safety at all.
 
 `E[v∥²]` is now **MEASURED**, not assumed — from the 34,447 logged selection events, normalising
 within each event (§14):
@@ -284,12 +465,40 @@ cos(G, g) = sqrt(2.991 * 185 / 1040932) = 0.0231      <- ANALYSIS only in the is
 ```
 
 Composing with Leg 1 (`Δθ ⊥ θ`, so `‖θ‖² ← ‖θ‖²(1+ρ²)`): over `T` commits signal accumulates as
-`T·ρ·cos` and noise as `√T·ρ`, so signal dominates only after `T ≳ 1/cos²`, and the norm must survive
-that long, requiring `ρ²·T ≲ 1`. Substituting:
+`T·ρ·cos` and noise as `√T·ρ`, so signal dominates only after `T ≳ 1/cos²` commits — that is the
+*deadline*. The norm must still be intact when the deadline arrives, which needs `ρ²·T ≲ 1` — that
+is the *budget*. Deadline ≤ budget gives:
 
 > ## ρ ≤ cos(G, g)
 > **The relative step must not exceed the fraction of it that is actually aligned with the gradient.**
 > Take a step bigger than you can aim, and the norm blows up before the aim pays off.
+
+**Q: what exactly are `G` and `g`?**
+
+- **`g` — the true gradient** at the current weights: what backprop would return. The direction we
+  *want* to go. **It is not observable in production** — the whole point of forward-gradient FL is
+  that nobody ever computes it. That is why §13 has to manufacture one on a held-out probe batch.
+- **`G` — the pooled update the server actually applies** (before scaling by `η`): the average of the
+  `N` noisy uploads. The direction we *do* go. Fully known server-side.
+- **`cos(G,g)`** — the cosine of the angle between them, in `[-1,1]`: **what fraction of the step we
+  took was real.** 0.0231 means 2.3% of every step is progress and 97.7% is a random kick. It is a
+  property of the *step*, not of the model — accuracy can climb happily at cos = 0.023 (§5).
+
+**Q: is this criterion standard ML? Where does it come from?** As written, **`ρ ≤ cos` is ours** — it
+is derived in this document, not quoted. But none of its ingredients are new, and it should be
+presented as a repackaging rather than a discovery:
+
+| ingredient | where it is standard |
+|---|---|
+| a random probe in `p` dims aligns with a target only as `1/√p`, so zeroth-order methods pay a dimension penalty | classical ZO / forward-gradient analysis (Nesterov–Spokoiny; Duchi et al.; Baydin et al. on forward gradients) |
+| signal accumulates linearly, noise as `√T` | the standard SGD noise-ball argument |
+| convergence needs `Σρ_t = ∞`, `Σρ_t² < ∞` | Robbins–Monro stochastic approximation (1951) — this is S-B |
+| bound the step **relative to `‖θ‖`**, not in absolute units | trust-region methods; LARS/LAMB in deep learning |
+
+**What is actually ours** is the packaging: collapsing those into **a single inequality between two
+quantities the server already logs**, which turns an asymptotic rate statement into an *online control
+law* — a gate can literally evaluate "is `ρ ≤ cos` right now?" That is what makes S-E and S-C possible
+and is the honest form of the contribution claim. Do not write it up as a new theorem.
 
 ### 6.2 Where the shipped config sits
 
@@ -302,8 +511,14 @@ rho / cos              = 5.0x  OVER BUDGET
 
 ### 6.3 The scaling table — this ranks every possible fix
 
+Two columns, and they answer different questions. **`ρ/cos` is "will this survive"** (under 1 = safe).
+**`ρ·cos` is "how fast does it learn"** — the useful displacement per commit. A good lever improves
+the first without hurting the second; a bad one trades them 1:1.
+
 The core identity: **averaging `n` near-orthogonal estimates shrinks the noise as `1/√n` but leaves
-the aligned part untouched.** Hence `ρ ∝ 1/√n`, `cos ∝ √n`, product constant:
+the aligned part untouched.** So the step gets `√n` shorter *and* `√n` better aimed — `ρ ∝ 1/√n`,
+`cos ∝ √n`. Their **ratio improves by `n`** while their **product is unchanged**: pooling buys
+safety for free and is the only lever that does.
 
 | lever | `ρ/cos` (stability) | `ρ·cos` (per-commit progress) | who owns it |
 |---|---|---|---|
@@ -343,7 +558,18 @@ being a contribution rather than a tuning detail.
 Computing P probes is worth up to a 10× stability gain; selecting one of them and discarding the rest
 captures **none** of it. This section is the evidence.
 
+**Q: what counts as "one probe"?** One probe = one random direction `v` = the **two** forward passes
+at `θ+hv` and `θ−hv` = one scalar `d`. So `P = 10` probes cost `2P = 20` forward passes and produce
+**10 scalars and 10 directions**. The trainer then has 10 independent gradient guesses `d_i·v_i` in
+hand — and today uploads exactly one of them.
+
 ### 8.1 What selection provably can and cannot buy
+
+> **The intuition:** picking the probe with the largest `|d|` finds the direction that happened to
+> overlap the gradient most — better aim. But `|d|` is also the *scale factor* on the uploaded
+> vector `ĝ = d·v`, so the same pick makes the step proportionally longer. You aim 3× better and
+> step 3× further: the two cancel exactly. Averaging instead keeps all the aim and *shortens* the
+> step, which is why it is not merely better but on a different footing.
 
 From §6.1, a rule that selects one probe has `a = E[v∥²]`, `b = √(E[v∥²])`, therefore:
 
@@ -384,7 +610,10 @@ non-linear truncation term is small enough not to show up as non-Gaussianity.)
 config knob). **It does not need to run** — the objective is computable from the already-logged JVPs.
 
 For a rule that *averages* the top-k of P: `a = E_k`, `b = √(E_k/k)`, so `a/b = √(E_k·k)` and
-`b²/a = 1/k`. That is, **`cos ∝ √(E_k·k)` and `ρ/cos ∝ 1/k`**:
+`b²/a = 1/k`. Here `E_k` = the mean `v∥²` gain of the k selected probes (normalised so a random probe
+= 1). The `√(1/k)` in `b` is just intuition (b) of §0.5 — averaging k readings shortens the result by
+`√k`. So **`cos ∝ √(E_k·k)` and `ρ/cos ∝ 1/k`**. Note the tension: raising `k` *lowers* `E_k` (you
+start including weaker probes) but the `×k` from averaging always wins:
 
 ```
   k   E[v_par^2|top-k]   E_k*k   cos gain   rho/cos improvement
@@ -486,7 +715,7 @@ already paid for:
 
 | metric | why it is interesting | cost |
 |---|---|---|
-| **curvature `vᵀHv`, from the sum of the two FD passes** | the central difference computes `L(θ+hv)` and `L(θ−hv)` and uses only their **difference**. `L(+)+L(−)−2L(θ) ≈ h²vᵀHv` — **the curvature is already computed and thrown away.** Select for high `|d|` *and* low `vᵀHv` = directions supporting a large safe step. Directly serves the trust-region step (S-A) | **≈ free** — one extra `L(θ)` per iteration, amortised over all P |
+| **curvature `vᵀHv`, from the sum of the two FD passes** (`H` = Hessian; `vᵀHv` = how sharply the loss curves along `v` — small means a long straight valley, large means a narrow one you overshoot) | the central difference computes `L(θ+hv)` and `L(θ−hv)` and uses only their **difference**. Their **sum** is the second derivative: `L(+)+L(−)−2L(θ) ≈ h²vᵀHv` — **the curvature is already computed and thrown away.** Select for high `|d|` *and* low `vᵀHv` = steep *and* safe to travel far along. Directly serves the trust-region step (S-A) | **≈ free** — one extra `L(θ)` per iteration, amortised over all P |
 | **split-half SNR within the bin** | CE is mean-reduced, but a forward pass yields per-sample losses at no extra cost. Compute `d` on each half of the 8-sample bin and select on *agreement*, not magnitude → selects directions that generalise rather than fit bin noise. Trainer-level analogue of S-E's split-half cosine gate | **free** |
 | **actual loss decrease at the step scale** — pick `v` minimising `L(θ − ρ*‖θ‖v̂)` | under S-A the step size is known in advance, so select the probe that genuinely lowers the loss *at the displacement you will take*. Trust-region selection rather than derivative selection — more honest when `h‖v‖` is 50% of `‖θ‖` | 1 extra pass per candidate |
 
@@ -501,7 +730,60 @@ already paid for:
 | **momentum in the probe distribution** — bias `v` toward the EMA of committed updates | elegant in principle (momentum where it helps aim, not where it inflates the step — sidestepping exactly why S1 NaN'd), **but it does not pay**: the accumulated trajectory has `cos ≈ √T·0.023 ≈ 0.23` after 100 commits, so as a control variate it removes only `1−cos² ≈ 5%` of the variance. **Computed negative — do not chase** |
 | **cross-trainer probe coordination** (server assigns disjoint subspaces to the K trainers) | **near no-op** — at `K·P = 500 ≪ p = 10⁶` the probes are already effectively disjoint |
 
-### 8.7 The stand to take on C1
+### 8.7 Should `P` be larger, and should it be adaptive?
+
+**Q: if averaging is good, does buying more probes buy more?** **Yes, linearly.** `ρ/cos ∝ 1/P` with
+no diminishing returns in this regime — because `P ≪ p`, every new probe is essentially orthogonal to
+the ones already drawn, so it contributes fresh information rather than a duplicate. `P = 30` is a 3×
+stability gain over `P = 10`; `P = 100` is 10×. Contrast with `η`, which pays 1:1, and with selection,
+which pays 0:1.
+
+**Where it stops paying** — one real ceiling, stated honestly: `P` reduces **probe noise only**. The
+`P` probes share one data bin (8 samples) and one `θ`, so they cannot see that the bin is
+unrepresentative. `K` and `I` pool over *different data* and reduce both. Probe noise currently
+dominates data noise by ~40× (§8.4, ANALYSIS), so we are far from the crossover — but the crossover
+exists, and past it `P` stops helping while `K` keeps going.
+
+**Q: can `P` be a controlled knob rather than a constant?** Yes, and this is the strongest surviving
+form of C1. Note the ordering constraint: **`P` is only worth controlling once the probes are
+averaged.** Under today's select-one rule, changing `P` moves `cos` and `ρ` by the same factor and
+does nothing for stability (§8.1) — so a `P` sweep on the shipped code would measure nothing. **S-H is
+a prerequisite for adaptive `P`, not a parallel idea.**
+
+**Q: start high and decrease as learning plateaus?** **The static prior points the other way, and the
+reason is worth internalising.**
+
+- The intuition "far from the optimum ⇒ coarse aim is fine; near it ⇒ need precision" is the standard
+  argument for **increasing** the pool late, not decreasing it. In deep learning this is the
+  batch-size ramp-up result (*"Don't decay the learning rate, increase the batch size"*).
+- In our model `cos` is **independent of `‖g‖`** — both the signal and the probe noise scale with the
+  gradient magnitude, so they cancel. Probe noise does *not* get relatively worse near a minimum.
+- But **data noise does**: as `‖g‖` shrinks, sample-to-sample gradient disagreement stops shrinking
+  with it. So the late-stage response is **more `K`/`I`** (data pooling), not more `P`.
+- Decreasing `P` late is nonetheless defensible — **but as a consequence of annealing `ρ`, not of the
+  plateau.** Under S-B, `ρ*_t` falls, the budget `ρ ≤ cos` gets easier, and the pool required to meet
+  it shrinks. The schedule is then *derived* from the criterion rather than hand-designed, which is
+  exactly what S-C automates.
+
+> **The stand:** do not hand-write a `P` schedule. Measure the pooling adequacy and let it set `P`.
+> A hand-designed decreasing schedule and a measured controller may produce similar curves here; only
+> the controller survives a change of model, dataset, or `p`.
+
+**Q: what would we track to decide `P` per client?** Three candidates, in order of preference. All
+must be **dimensionless** — Leg 3 is the standing warning against anything with units.
+
+| statistic | how | why it is the right one |
+|---|---|---|
+| **split-half cosine across the `P` probes** | split the `P` guesses into two halves, average each, take the cosine between the two averages | a direct, gradient-free estimate of how well-pooled the estimate is; **free** (the probes are already computed); per-client and per-bin, so it naturally answers "how many does *this* client need"; and it is an estimator of the same `cos` the criterion is written in. **Stopping rule: raise `P` until split-half cosine ≥ `ρ*`.** |
+| **relative spread of the `d_i`** — `var(d)/mean(d²)` | already computed by the gate's machinery | cheapest, but weaker: it sees only the scalars, not the directions. Must be the *normalised* form — the absolute `var` is exactly what drifted 36× |
+| **server-side `ρ` and measured `cos`** | already logged / §13 | the ground truth, but it arrives one commit late and is global, not per-client |
+
+The per-client angle is the genuinely interesting one: heterogeneous clients (α = 1 Dirichlet) have
+bins of very different difficulty, so a fixed `P = 10` is over-spending on easy bins and under-spending
+on hard ones. **Adaptive `P` gated on a dimensionless per-client statistic is C1 redirected into a
+contribution** — same probe budget, allocated where it pays.
+
+### 8.8 The stand to take on C1
 
 **Do not abandon C1 — redirect it.** Three claims, in descending confidence:
 
@@ -638,10 +920,11 @@ it points at adaptive `N` per bin: **commit when the measured split-half cosine 
 | QA §D2 "the k sweep cannot run today" | **Answered offline** (§8.3) — the objective is computable from already-logged JVPs. Monotone; optimum k = P |
 | QA §E1 "measuring `cos(G,g)` needs `v_k` uploaded" | **Not for this quantity** (§13) — a backprop gradient on a probe batch suffices, no protocol change |
 
-**Telemetry bug — fix before any selection ablation reads this field:**
-`tc_transformer_trainer_distribute.py:485` logs `jvp_all_perturbations[sorted_indices[-1]]` (the
-argmax) but labels it `chosen jvp`, while the actual pick is the coin-flip result `best_idx`
-(`:481-483`). The coin flip itself is real and matches `FLUXTUNE_CODE_QA.md` §D2.
+**Telemetry bug — FIXED 2026-08-07.** `tc_transformer_trainer_distribute.py:485` used to log the
+argmax under the label `chosen jvp` while the actual pick is the coin-flip result. It now logs the
+coin-flip winner as `chosen jvp`, the argmax as `max jvp`, and the index as `chosen idx`. **Runs
+before that date carry the old, mislabelled field** — see §14. The coin flip itself is real and
+matches `FLUXTUNE_CODE_QA.md` §D2.
 
 ---
 
@@ -667,6 +950,17 @@ currently contaminates every guided-vs-random comparison.
 - Also fixes the `P=1` crash (`sorted_indices[-2]` on a 1-element list) and the RNG-stream mismatch
   that `FLUXTUNE_CODE_QA` §C3 flags as blocking the C1 ablation — `mean` consumes all P draws.
 
+### S-J. Adaptive `P` per client, gated on split-half cosine — **SELECTION · C1 redirected** (§8.7)
+
+Raise `P` until the trainer's own split-half cosine across its `P` guesses reaches `ρ*`, then stop.
+Same probe budget, spent where the bin is hard instead of uniformly. `ρ/cos ∝ 1/P` with no diminishing
+returns while `P ≪ p`, and the stopping statistic is dimensionless, free, and per-client.
+
+- **Strictly after S-H.** Under select-one, `P` is stability-neutral, so an adaptive-`P` arm on the
+  shipped rule would measure nothing.
+- Do **not** hand-write a decreasing schedule; let the statistic set it (§8.7). If `P` should fall
+  late, it falls because S-B lowered `ρ*`, not because accuracy plateaued.
+
 ### S-I. Shrink `p` — freeze `pre_classifier` — **MODEL DESIGN · cheapest 2.31× available**
 
 `ρ/cos ∝ p`, and one 768×768 layer is **56.7%** of the trainable dimension (§8.5). Freezing it gives
@@ -684,8 +978,11 @@ now:      theta <- theta - eta * G / N_acc
 proposed: theta <- theta - rho_star * ||theta_tr|| * G / ||G||
 ```
 
-Makes ρ an **operator constant** rather than an emergent quantity, removing the `|JVP|` scale from
-the update entirely — which is why it works **regardless of how H-B resolves**.
+Read the proposed line as: *take a step of a fixed fraction `ρ*` of my own size, in the direction
+`G` points* — `G/‖G‖` keeps only the direction and throws away the magnitude. Makes `ρ` an
+**operator constant** rather than an emergent quantity, removing the `|JVP|` scale from the update
+entirely — which is why it works **regardless of how H-B resolves**. (This is the same idea as LARS
+/ trust-region methods: bound how far you move relative to where you are, not in absolute units.)
 
 - Site: `FedSgdAggregator.py:322-336` (`_server_update_step`).
 - Flag: `server_step_rule: {raw_sgd | trust_ratio}`, default `raw_sgd`.
@@ -699,6 +996,13 @@ the update entirely — which is why it works **regardless of how H-B resolves**
 Measured ρ is **constant**, so `Σρ² = ∞`. A stochastic-approximation method with a
 non-square-summable step sequence **provably cannot converge** — it can only random-walk. This is
 *the* convergence condition, and the telemetry measures the exact quantity it is about.
+
+> **What the two conditions mean.** `Σρ_t = ∞`: the steps must not shrink so fast that their total
+> length is finite — otherwise you stall before reaching the minimum, wherever it is. `Σρ_t² < ∞`:
+> the *noise* contributions (which add as squares, §0.5 (c)) must total to something finite —
+> otherwise the accumulated jitter never settles. Together: **go far enough, but eventually go
+> quietly.** A constant `ρ` satisfies the first and fails the second, which is precisely a random
+> walk that never converges. `ρ*_t = ρ_0/√t` is the standard choice that satisfies both.
 
 Set `ρ*_t` with `Σρ_t = ∞, Σρ_t² < ∞` (e.g. `ρ*_t = ρ_0/√t`). Composes with S-A.
 
@@ -735,7 +1039,21 @@ argument for running this sweep **in sim**, where parity is established (`simula
 
 ### S-E. Scale-free commit gate, identical to the controller's statistic — **THE SEAM**
 
-Replace `var < var_threshold` with the **split-half cosine** of the pool:
+Replace `var < var_threshold` with the **split-half cosine** of the pool: split the pooled uploads
+into two halves, average each, and take the cosine between the two averages. If the halves agree, the
+pool has found a real direction; if they don't, you are still averaging noise. It needs no access to
+the true gradient — the two halves check each other.
+
+> **Measurability constraint — S-E cannot land first.** Two independent halves sharing one signal
+> satisfy `cos(a,b) = cos_half²`, hence **`cos(G,g) ≈ √(2·cos(a,b))`**. But the sampling noise on a
+> *single* commit's split-half cosine is `≈ 1/√p = 1.0e-3`, while at today's `cos = 0.023` the signal
+> is only `cos_half² ≈ 2.7e-4` — **SNR ≈ 0.3, so one commit measures nothing** (verified by
+> simulation, which also reproduces `cos = √(N/p)` to 0.1%). The statistic is meaningful only pooled
+> over ~100 commits, which is fine for *analysis* and useless for a *per-commit gate*.
+>
+> After S-H (`cos ×3.16`) and S-I (`×1.52`), `cos ≈ 0.11` ⇒ signal `≈ 6e-3` vs the same 1e-3 floor ⇒
+> **SNR ≈ 6, and the gate becomes measurable.** So S-E is gated on S-H + S-I — not a scheduling
+> preference but an arithmetic prerequisite. Ordering in §16 already puts it after both; this is why.
 
 - **Dimensionless** → immune to the 36× drift that kills any absolute threshold (Leg 3).
 - It **is** an estimator of `cos(G,g)`, so the gate and the ρ-controller read the *same* measurement
@@ -743,7 +1061,7 @@ Replace `var < var_threshold` with the **split-half cosine** of the pool:
 - Gives **adaptive N per bin** instead of a static target, and retires plateau + cap from being the
   de-facto policy. Three heuristics collapse into the criterion itself.
 
-### S-F. Restate C1: direction, not magnitude — **BOTH** (see §8.7)
+### S-F. Restate C1: direction, not magnitude — **BOTH** (see §8.8)
 
 Under S-A the magnitude is discarded by construction. If a selection stage is retained, select on
 **curvature (free from the discarded FD sum) or split-half SNR (free from per-sample losses)** — not
@@ -828,10 +1146,12 @@ candidates per selection:
 
 ```bash
 grep 'All JVPs sorted by magnitude' $RUN/*trainers.log   # 34,447 lines
-# format: "All JVPs sorted by magnitude: [tensor(...), ...] and chosen jvp: X
-#          for trainer : T for model version: R data-id: D. iteration: I"
+# format (runs from 2026-08-07): "All JVPs sorted by magnitude: [...] and chosen
+#          jvp: X and max jvp: Y and chosen idx: I for trainer : T for model
+#          version: R data-id: D. iteration: I"
 # GOTCHAS: "model version" here is actually the ROUND.
-#          "chosen jvp" is the argmax, NOT the coin-flip winner (telemetry bug, §11).
+#          In runs BEFORE 2026-08-07 there is no `max jvp`/`chosen idx`, and
+#          `chosen jvp` holds the ARGMAX, not the coin-flip winner (§11 bug).
 #
 # per (round,data_id): rms|d| 3.59 -> 21.5 ; mean(max|d|)/rms|d| = 1.81 flat
 # per EVENT, normalise the 10 values by that event's own rms, then:
@@ -907,6 +1227,11 @@ takes a bounded relative move in that direction; the controller keeps pool size 
 ---
 
 ## 16. Suggested next actions, in order
+
+> **How to execute this list without spending a GPU-day per question: `FLUXTUNE_PROBE_PLAN.md`.**
+> It splits the work into four independent workstreams — log replay (no GPU), an offline measurement
+> rig, a single-process trajectory replica, and real runs — and shows that 9 of the 10 open questions
+> below are answerable without the launcher. Items 1–7 here map to its workstreams B and C.
 
 1. **Land the `cos(G,g)` probe** (§13). Everything is sized off it, it resolves H-B and H-C for free,
    no protocol change.

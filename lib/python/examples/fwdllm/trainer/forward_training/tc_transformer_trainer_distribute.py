@@ -482,7 +482,10 @@ class ForwardTextClassificationTrainer:
                     pick = int(torch.randint(0, 2, (1,), generator=self.torch_rng).item())
                     best_idx = pair[pick]
                     self.databin_best_jvp_val = abs(sorted_jvps[-1])
-                    logging.info(f"All JVPs sorted by magnitude: {sorted_jvps} and chosen jvp: {jvp_all_perturbations[sorted_indices[-1]]} for trainer : {self.trainer_id} for model version: {logging_state.get('round_id')} data-id: {logging_state.get('data_id')}. iteration: {logging_state.get('iteration')}")
+                    # `chosen jvp` is now the coin-flip winner actually used; it used
+                    # to be the argmax, so selection analyses read the wrong probe.
+                    # Argmax kept as `max jvp`.
+                    logging.info(f"All JVPs sorted by magnitude: {sorted_jvps} and chosen jvp: {jvp_all_perturbations[best_idx]} and max jvp: {jvp_all_perturbations[sorted_indices[-1]]} and chosen idx: {best_idx} for trainer : {self.trainer_id} for model version: {logging_state.get('round_id')} data-id: {logging_state.get('data_id')}. iteration: {logging_state.get('iteration')}")
   
                 return v_buffer, best_idx # v_buffer here contains all perturbations
 

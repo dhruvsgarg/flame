@@ -89,6 +89,14 @@ class FedSGDAggregator(TopAggregator):
         )
         if self._server_update_audit:
             logger.info("[SERVER_UPDATE_AUDIT] emitting per-commit update/weight norms")
+        # L1 audit: pool split-half cosine. Own flag, not server_update_audit's:
+        # it adds a pass over (params x uploads), which would change that flag's
+        # cost profile and with it the arrival order (§D-45).
+        self._pool_split_half_audit = bool(
+            getattr(self.args, "pool_split_half_audit", False)
+        )
+        if self._pool_split_half_audit:
+            logger.info("[POOL_SPLIT_HALF_AUDIT] emitting per-commit pool agreement")
 
         self.train_data_local_dict = train_data_local_dict
         self.test_data_local_dict = test_data_local_dict
@@ -312,7 +320,11 @@ class FedSGDAggregator(TopAggregator):
         """Timed separately; shared by both commit branches (natural / force-commit),
         was duplicated verbatim."""
         _audit = getattr(self, "_server_update_audit", False)
+        # Before the loop: it aliases weighted_gradient_sum[id] to model_list[0]'s
+        # tensor at i==0, then accumulates into it in place.
+        _split = self._pool_split_half_stats(model_list)
         _delta_sq = _weight_sq = 0.0
+        _tr_delta_sq = _tr_weight_sq = 0.0
         for id, k in enumerate(weighted_gradient_sum):
             for i in range(0, len(model_list)):
                 local_sample_number, local_model_params = model_list[i]
@@ -324,24 +336,80 @@ class FedSGDAggregator(TopAggregator):
             # `.to("cpu")` syncs GPU->CPU; timed separately since it runs once
             # per param, not once per call.
             with _agg_sync_timer(self, "agg_apply_update_cpu_sync"):
-                _param = next(old_param).detach().to("cpu")
+                _param_src = next(old_param)
+                _trainable = bool(_param_src.requires_grad)  # read before detach()
+                _param = _param_src.detach().to("cpu")
                 _update = self._server_update_step(
                     id, learning_rate * weighted_gradient_sum[id] / training_num
                 )
                 _param.sub_(_update)
                 if _audit:
-                    _delta_sq += float(_update.pow(2).sum())
-                    _weight_sq += float(_param.pow(2).sum())
+                    _d = float(_update.pow(2).sum())
+                    _w = float(_param.pow(2).sum())
+                    _delta_sq += _d
+                    _weight_sq += _w
+                    if _trainable:  # L3: the slice that can actually diverge
+                        _tr_delta_sq += _d
+                        _tr_weight_sq += _w
         if _audit:
-            self._emit_server_update(_delta_sq**0.5, _weight_sq**0.5, learning_rate)
+            self._emit_server_update(
+                _delta_sq**0.5, _weight_sq**0.5, learning_rate,
+                trainable_delta_norm=_tr_delta_sq**0.5,
+                trainable_weight_norm=_tr_weight_sq**0.5,
+                split=_split,
+            )
 
-    def _emit_server_update(self, delta_norm, weight_norm, learning_rate):
+    def _pool_split_half_stats(self, model_list):
+        """L1 audit: raw components of the committed pool's SPLIT-HALF COSINE.
+
+        Sum the uploads into even/odd halves (interleaved -- arrival order tracks
+        trainer speed and staleness) and return `(<a,b>, ||a||, ||b||, pool_size)`.
+        The halves share one true-gradient component and carry independent probe
+        noise, so their agreement measures pooling adequacy without needing the
+        true gradient: S-E's gate statistic and S-C's setpoint.
+
+        Raw components, never a per-commit ratio: at p~1e6 one commit's cosine is
+        under the 1/sqrt(p) ~ 1e-3 sampling floor, so only sum(dot)/sum(|a||b|)
+        pooled over ~100 commits is meaningful.
+
+        Returns None when disabled or the pool is too small to split.
+        """
+        if not getattr(self, "_pool_split_half_audit", False):
+            return None
+        try:
+            n = len(model_list)
+            if n < 2:
+                return None
+            dot = a_sq = b_sq = 0.0
+            for id in range(len(model_list[0][1])):
+                sum_a = sum_b = None
+                for i in range(n):
+                    t = model_list[i][1][id]
+                    if i % 2 == 0:
+                        sum_a = t.clone() if sum_a is None else sum_a + t
+                    else:
+                        sum_b = t.clone() if sum_b is None else sum_b + t
+                if sum_a is None or sum_b is None:
+                    continue
+                # float64 accumulation: the per-param dots are tiny and many.
+                dot += float((sum_a.double() * sum_b.double()).sum())
+                a_sq += float(sum_a.double().pow(2).sum())
+                b_sq += float(sum_b.double().pow(2).sum())
+            return (dot, a_sq**0.5, b_sq**0.5, n)
+        except Exception:  # pragma: no cover - audit must never fault training
+            logger.debug("pool split-half audit failed", exc_info=True)
+            return None
+
+    def _emit_server_update(self, delta_norm, weight_norm, learning_rate,
+                            trainable_delta_norm=None, trainable_weight_norm=None,
+                            split=None):
         """One `server_update` record per commit (I-1). Never faults training."""
         try:
             from flame import telemetry
             if telemetry.is_enabled():
                 from flame.telemetry.events import build_server_update
                 stage = getattr(self, "fwd_llm_stage", None)
+                _dot, _na, _nb, _psize = split if split else (None, None, None, None)
                 ev, fields = build_server_update(
                     round_num=getattr(stage, "round_id", None),
                     data_id=getattr(stage, "data_id", None),
@@ -350,6 +418,12 @@ class FedSGDAggregator(TopAggregator):
                     update_delta_norm=delta_norm,
                     weight_norm=weight_norm,
                     learning_rate=learning_rate,
+                    trainable_delta_norm=trainable_delta_norm,
+                    trainable_weight_norm=trainable_weight_norm,
+                    pool_size=_psize,
+                    split_half_dot=_dot,
+                    split_half_norm_a=_na,
+                    split_half_norm_b=_nb,
                 )
                 telemetry.emit(ev, **fields)
         except Exception:  # pragma: no cover - telemetry must never fault training

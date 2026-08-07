@@ -2380,6 +2380,10 @@ class TopAggregator(AsyncTopAgg):
                                     "test-loss": result.get("eval_loss"),
                                     "test-accuracy": result.get("acc"),
                                     "mcc": result.get("mcc"),
+                                    # L4 collapse signature (see eval_model).
+                                    "logit_norm": result.get("logit_norm"),
+                                    "pred_entropy": result.get("pred_entropy"),
+                                    "top_class_share": result.get("top_class_share"),
                                     # fwdllm's round is coarse (advances only once
                                     # all total_data_bins data_ids finish) --
                                     # data_id/iteration_per_data_id let the
@@ -3140,6 +3144,26 @@ class TopAggregator(AsyncTopAgg):
         log_margin_distribution(probs)
         compute_metrics_with_logging(probs, preds, out_label_ids, self.test_global)
         log_error_distribution(probs, out_label_ids)
+
+        # L4 collapse signature: an inflated weight norm shows up as larger logits,
+        # then saturated softmax (entropy -> 0) massed on one class -- which is why
+        # loss climbs ABOVE ln(num_labels) instead of settling at it. preds is
+        # already on CPU, so this is free.
+        try:
+            _p = probs.double()
+            result["logit_norm"] = float(
+                torch.linalg.norm(torch.tensor(preds).double(), dim=1).mean()
+            )
+            result["pred_entropy"] = float(
+                (-(_p * torch.log(_p.clamp_min(1e-12))).sum(dim=1)).mean()
+            )
+            # 1/num_labels = uniform predictions; 1.0 = every sample one class.
+            result["top_class_share"] = float(
+                np.bincount(preds_argmax, minlength=self.num_labels).max()
+                / max(1, len(preds_argmax))
+            )
+        except Exception:  # pragma: no cover - diagnostics must never fault eval
+            logging.debug("eval collapse-signature stats failed", exc_info=True)
 
         result["eval_loss"] = eval_loss
         results.update(result)
