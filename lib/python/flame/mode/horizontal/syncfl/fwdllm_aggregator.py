@@ -506,8 +506,7 @@ class TopAggregator(AsyncTopAgg):
         # and gets the identical payload again -- downgrade such a re-dispatch to
         # the tiny VAR=bad "keep training" message (the trainer caches its
         # weights). Unconditional invariant of the version-tracking logic, not
-        # an opt-in: validated 0% redundant sends on a live pair, vs ~88-90%
-        # before this landed as a flag.
+        # an opt-in.
         # Ends already sent the CURRENT model_version's full payload this data-bin
         # (cleared on every model_version advance). Separate from
         # _trainer_last_model_version so staleness accounting stays return-driven.
@@ -533,9 +532,8 @@ class TopAggregator(AsyncTopAgg):
         self._sim_contrib_intervals = {}
 
         # end_id -> wall time.time() of its last accepted commit, and the wall
-        # time.time() aggregate() last finished -- [REDISPATCH_DECOMP]'s
-        # peer-wait/post-close-overhead split (§B fedbuff_round/felix_round
-        # throughput investigation, 2026-07-27).
+        # time.time() aggregate() last finished -- feeds the peer-wait/
+        # post-close-overhead split ([REDISPATCH_DECOMP]).
         self._last_commit_wall_ts: dict = {}
         self._last_round_close_wall_ts = None
 
@@ -1154,11 +1152,10 @@ class TopAggregator(AsyncTopAgg):
                     min_stuck, _stuck_end = exp, e
             # Cold-start gate: a trainer's FIRST contact has no
             # _sim_known_delay_s entry, so _sim_inflight_expected is never
-            # armed for it and earlier_stuck above is blind to it -- round 1
-            # used to commit whatever arrived first instead of the true
-            # sct-minimum. Unconditional: hold while a probed end is still
-            # unknown and within the compute cap of its own dispatch; clears
-            # once it reports or ages out.
+            # armed for it and earlier_stuck above is blind to it.
+            # Unconditional: hold while a probed end is still unknown and
+            # within the compute cap of its own dispatch; clears once it
+            # reports or ages out.
             unknown_stuck = any(
                 e not in self._sim_known_delay_s
                 and not self._sim_buffer.has(e) and e not in self._sim_committed
@@ -1209,20 +1206,18 @@ class TopAggregator(AsyncTopAgg):
             else max(_now, min(sct, _min_future + _SIM_ORDER_SLACK_S))
         )
         self._advance_sim_clock(_advance_to)
-        # Past-dated-commit tracking, ported from asyncfl._sim_recv_min
-        # (fwdllm's grad loop pops _sim_buffer directly, so it never had this
-        # bookkeeping). A "past-dated" commit is one the clock already lapped
-        # (sct < vclock by more than the gate slack). No withheld-delivery
-        # case here (fwdllm's grad loop has no availability-withhold path).
+        # Past-dated-commit tracking (ported from asyncfl._sim_recv_min): a
+        # commit is "past-dated" if the clock already lapped its sct by more
+        # than the gate slack. No withheld-delivery case here (fwdllm's grad
+        # loop has no availability-withhold path).
         _was_recommit = _end in self._sim_committed
         self._sim_committed.add(_end)
         self._sim_inflight_expected.pop(_end, None)
         _commit_gap = self._vclock.now - sct
-        # The shared visibility-lag primitive (syncfl/top_aggregator.py),
-        # never previously called in fwdllm -- same value as _commit_gap
-        # above, but emits the standardized update_ready_ts/
-        # update_committed_ts/update_visibility_lag_s fields matching
-        # felix's schema instead of a fwdllm-only ad hoc name.
+        # Shared visibility-lag primitive (syncfl/top_aggregator.py); same
+        # value as _commit_gap above, but emits the standardized
+        # update_ready_ts/update_committed_ts/update_visibility_lag_s fields
+        # (felix's schema).
         _vis_ready_ts, _vis_committed_ts, _vis_lag_s = self._update_visibility_lag(
             sct, md[1] if isinstance(md, tuple) and len(md) > 1 else None
         )
@@ -1277,12 +1272,12 @@ class TopAggregator(AsyncTopAgg):
         # stops holding for a batch of same-expected stragglers. Sim-only + gated.
         if getattr(self, "_sim_staggered_redispatch", False):
             self._sim_free_slot_ts.append(self._vclock.now)
-        # Under the declared `inflight_residence` contract the release belongs to the
-        # AGG-GOAL BOUNDARY (`_release_sim_slots_at_agg_goal`, real's
-        # `cleanup_recvd_ends()` twin), not to this commit: releasing here re-tasked
-        # the end mid-cycle under the `version_key` it had just answered, before that
-        # cycle's variance check (§D-15, the throughput root cause). Flag off keeps
-        # the legacy per-commit release, byte-identical.
+        # Under `inflight_residence`, slot release belongs at the AGG-GOAL
+        # BOUNDARY (`_release_sim_slots_at_agg_goal`, real's
+        # `cleanup_recvd_ends()` twin), not at this commit: per-commit release
+        # re-tasks the end mid-cycle under the `version_key` it just answered,
+        # before that cycle's variance check (§D-15). Flag off keeps the
+        # legacy per-commit release, byte-identical.
         if not getattr(self, "_inflight_residence", False):
             self._sim_pending_commit.discard(_end)
         # MODELED_DELAY_S was already learned into _sim_known_delay_s
@@ -1421,8 +1416,8 @@ class TopAggregator(AsyncTopAgg):
         # modes) is real's other `_PendingCommitUnion` half and the only in-flight
         # record the legacy boundary drop does NOT clear. Without it that drop
         # empties both sets before this reconcile, which then rebuilds the guard
-        # from nothing and strips `all_selected` -- so boundary top-ups re-pick
-        # still-training ends (H11).
+        # from nothing and strips `all_selected` -- so boundary top-ups would
+        # re-pick still-training ends.
         outstanding = (
             set(self._sim_inflight_expected)
             | buffered
@@ -2350,26 +2345,15 @@ class TopAggregator(AsyncTopAgg):
                 f"Variance check {_pass_kind}. Evaluating model and advancing data_id."
             )
             self.iteration_per_data_id += 1
-            # eval_model() used to run synchronously, inline, here -- on the
-            # critical path in BOTH real and sim mode (the reason
-            # sim_model_eval_time's vclock fold existed: real paid this wall
-            # cost every commit, sim didn't, without the fold). Mirrors
-            # felix's own evaluate() pattern: snapshot now (cheap, main
-            # thread), run the actual test-set pass in a daemon thread so the
-            # aggregator's dispatch/commit loop never waits on it -- in
-            # EITHER mode, symmetrically, so the asymmetry the fold corrected
-            # for no longer exists. aggregate() itself is NOT backgrounded
-            # here or anywhere -- it produces the model trainers need
-            # immediately and must stay synchronous.
+            # Run eval in a daemon thread (mirrors felix's evaluate()) so the
+            # dispatch/commit loop never waits on it, in either mode.
+            # aggregate() itself stays synchronous -- it produces the model
+            # trainers need immediately.
             #
             # Snapshot the cycle identity BEFORE launching: the thread may
             # still be running once self.data_id/self._round/
             # self.iteration_per_data_id have moved on to a LATER cycle, so
-            # the emit closure must report what THIS cycle worked on. Kept as
-            # separate locals from _cycle_data_id/_cycle_iteration since
-            # _cycle_iteration is pre- the += 1 two lines up and the
-            # telemetry contract below is post-, matching the old
-            # synchronous numbers exactly.
+            # the emit closure must report what THIS cycle worked on.
             _eval_round_id = self._round
             _eval_data_id = self.data_id
             _eval_iteration = self.iteration_per_data_id
@@ -2608,9 +2592,7 @@ class TopAggregator(AsyncTopAgg):
                         # run-cumulative past-dating counters. A healthy sim
                         # commits at/near its sct (commit_gap_s ~ 0, buf_depth
                         # trending to 0 between arrival bursts) and never
-                        # accumulates pastdated_commits. Feeds
-                        # plots/aggregation/{buffer_health_over_rounds,
-                        # commit_gap_cdf}.pdf and pastdated_commits_over_rounds.pdf.
+                        # accumulates pastdated_commits.
                         "commit_gap_s": (
                             getattr(self, "_sim_last_commit_gap_s", None)
                             if self.simulated else None
@@ -2619,21 +2601,13 @@ class TopAggregator(AsyncTopAgg):
                             getattr(self, "_sim_last_buf_depth", None)
                             if self.simulated else None
                         ),
-                        # Standardized visibility-lag triplet, matching felix's
-                        # own agg_round schema and the field name the shared
-                        # analyzer already reads. Two distinct sources, gated
-                        # on is_async since this dict is shared by both:
-                        # - async (fluxtune): per-commit scalar stashed in
-                        #   _sim_recv_min_grad (same number as commit_gap_s
-                        #   above, both vclock.now - sct).
-                        # - sync (fwdllm/fwdllm_plus): the barrier-anchored LIST
-                        #   already computed in sync_collect_and_accumulate_grads
-                        #   (_sync_barrier_lags_s). update_ready_ts/committed_ts
-                        #   have no per-item meaning for a batched barrier commit,
-                        #   so they stay None for sync.
-                        # Real mode: async has no equivalent stash; sync's
-                        # real-mode lag-anchor is an open question -- left None
-                        # rather than guessed at.
+                        # Visibility-lag triplet (felix's agg_round schema).
+                        # async (fluxtune): per-commit scalar from
+                        # _sim_recv_min_grad. sync (fwdllm/fwdllm_plus): the
+                        # barrier-anchored list (_sync_barrier_lags_s), so
+                        # update_ready_ts/committed_ts stay None (no per-item
+                        # meaning for a batched commit). Real mode: no defined
+                        # lag-anchor yet, left None.
                         "update_ready_ts": (
                             getattr(self, "_sim_last_update_ready_ts", None)
                             if self.simulated and is_async else None
@@ -2662,12 +2636,9 @@ class TopAggregator(AsyncTopAgg):
                             getattr(self, "_sim_pastdated_gap_max", 0.0)
                             if self.simulated else None
                         ),
-                        # Carried-surplus commits, tracked separately from the
-                        # primary pastdated_* counters above. Expected to step
-                        # up once per data_id boundary for the life of any
-                        # c >> agg_goal run -- non-alarming by design, NOT a
-                        # correctness signal (unlike pastdated_commits, which
-                        # should read ~0).
+                        # Carried-surplus commits: expected in any c >>
+                        # agg_goal run, tracked separately from
+                        # pastdated_commits (which should read ~0).
                         "carried_surplus_commits": (
                             getattr(self, "_sim_carried_surplus_commits", 0)
                             if self.simulated else None
@@ -3094,14 +3065,10 @@ class TopAggregator(AsyncTopAgg):
         num_eval_steps = 0
         test_sample_len = len(self.test_global.dataset)
 
-        # Move model to device before performing the eval. The
-        # fc.make_functional_with_buffers(self.model) call this line used to
-        # also do here was removed -- it deep-copies internally, so it never
-        # mutated self.model, and its output was never read elsewhere in this
-        # function; it only overwrote self.fmodel/self.params/self.buffers,
-        # the SAME attributes the main training path assigns right before
-        # self.aggregate() -- a race once this runs on a background thread.
-        # Dead code + race source, not a needed side effect.
+        # Move model to device before eval. (Removed a redundant
+        # fc.make_functional_with_buffers call here: it never mutated
+        # self.model, and it raced with the training path's own assignment to
+        # self.fmodel/params/buffers once eval runs on a background thread.)
         model.to(device)
         model.eval()
 

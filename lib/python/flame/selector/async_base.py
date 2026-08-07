@@ -18,9 +18,9 @@ asyncfl selector (fedbuff, async_random, async_oort).
 
 Extracted from `async_oort.py`, the only copy hardened against real<->sim
 divergence. These ~600 lines existed three times over with silent drift:
-`fedbuff.py` lacked the version_key re-pick guard, the virtual-clock timeout,
-the R1 pending-commit guard and the availability filter -- which is why
-`fedbuff_it_*` re-picked the same trainer on 34% of real commits vs 0.9% in sim.
+`fedbuff.py`/`async_random.py` lacked the version_key re-pick guard, the
+virtual-clock timeout, the R1 pending-commit guard and the availability
+filter.
 
 BASE owns the mechanism (concurrency accounting, in-flight bookkeeping,
 abandon-timeout reclaim, eligibility, the `_cleanup_*` family, telemetry).

@@ -2,10 +2,10 @@
 """H13 probe: is the forward-gradient pipeline reproducible, and what breaks it?
 Minutes on one GPU, NO FL run.
 
-Two same-seed real replicates of `felix_round` disagree by 13.3% on iters/bin and
-11.2 accuracy points at peak, with data, dispatch order, iteration, model_version
-and the per-client perturbation RNG all verified identical. Runs 1-2 falsified
-arithmetic as the source (§E). What is left is DROPOUT: `create_model` +
+Motivated by same-seed real replicates disagreeing significantly at peak
+accuracy, with data, dispatch order, iteration, model_version and the
+per-client perturbation RNG all verified identical; arithmetic was ruled out
+as the source (§E). What is left is DROPOUT: `create_model` +
 `train_adapter` leaves 13 of DistilBERT's 20 `nn.Dropout` modules in training mode
 at p=0.1, so `calculate_jvp` evaluates its two finite-difference passes under
 DIFFERENT masks drawn from the process-global RNG -- which nothing seeds per task.
@@ -31,8 +31,8 @@ ones: dropout shows up in the first, kernel selection only in the second.
 
 Calls the REAL `calculate_jvp`, so whatever the trainer does, this does. Builds
 the model in the mode production ACTUALLY runs it -- `--eval-mode` (arm
-`evalmode`) is the A/B, not the default. Runs 1-2 forced `.eval()` and so read
-bit-exact on every arm; that is what made them inconclusive.
+`evalmode`) is the A/B, not the default. Forcing `.eval()` reads bit-exact on
+every arm and is therefore inconclusive by itself.
 `--model real` loads the actual DistilBERT+adapter stack; default `--model proxy`
 is a small transformer on the same autocast/GEMM/dropout path. Results print as a
 table and land in `probe_out/` as JSON (`sweep.json` = the merged comparison).
@@ -290,11 +290,11 @@ def _report(rows: list) -> None:
     fp32 = next((r for r in rows if r["arm"] == "fp32"), None)
     # The AMPLIFIER isolates the central difference's condition number by moving
     # ONE thing (fp16 -> fp32). Live dropout moves a second, so the ratio is only
-    # readable with dropout off -- runs 1-2 measured it clean at 189x.
+    # readable with dropout off.
     if base and fp32 and base.get("live_dropout"):
         print("\n  AMPLIFIER: not readable -- dropout is live, so base and fp32 do "
               "not share an input.\n    Re-read it from the `evalmode` arm, or "
-              "cite the 189x already on record (§B).")
+              "from a prior clean measurement (§B).")
     elif base and fp32:
         dl = abs(base["losses"][0] - fp32["losses"][0]) / max(abs(fp32["losses"][0]), 1e-30)
         dj = abs(base["jvps"][0] - fp32["jvps"][0]) / max(abs(fp32["jvps"][0]), 1e-30)
@@ -322,9 +322,9 @@ def _report(rows: list) -> None:
     if not base or base[key] == 0.0:
         print(f"  INCONCLUSIVE: the `base` arm is already bit-exact ({scope}), so "
               "this run did not reproduce\n  the phenomenon and no arm can be "
-              "credited with fixing it. Check `live drop` above: 0 there means the "
-              "model was built in eval mode and dropout, the standing source (H13), "
-              "was silenced.")
+              "credited with fixing it. Check `live drop` above: 0 there means "
+              "dropout (the known nondeterminism source) was silenced by eval "
+              "mode.")
         return
     for r in rows:
         if r["arm"] == "base":

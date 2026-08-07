@@ -245,10 +245,11 @@ def _floors(label: str) -> dict | None:
     construction (§D-65).
 
     TWO-SIDED (§D-61): a real↔sim residual draws one leg from each side, so a
-    gate sized on real's spread alone assumes sim is deterministic. `fedbuff_round`
-    reproduces to 0.7% real and 21.2% sim, and 3x the real floor failed a residual
-    well inside sim's own noise. Take the max — a residual below what EITHER side
-    reproduces to carries no information. NOT the spread pooled across both sides:
+    gate sized on real's spread alone assumes sim is deterministic -- real and
+    sim can have very different noise floors, and sizing off real alone risks
+    failing a residual well inside sim's own noise. Take the max — a residual
+    below what EITHER side reproduces to carries no information. NOT the spread
+    pooled across both sides:
     that would fold a genuine real↔sim bias into the floor and hide it (§D-5).
     """
     from replicate_floor import pool_members
@@ -403,9 +404,8 @@ def _control_groups(experiments_dir: str, baselines, mode: str, duration=None,
     Grouping, the same-CODE filter and the truncated-leg drop all come from
     `replicate_floor`, so a control pair and a floor are measured over exactly the
     same set of legs (§D-44/§D-59/§D-70). They are the same measurement and must
-    not disagree (§D-65): without the code filter the control read 13.6% on
-    `fedbuff_it`'s time-to-N where the same-code floor read 3.0% -- the gap was
-    code drift, and the control was reporting it as pipeline noise.
+    not disagree (§D-65): without the code filter, code drift between legs can
+    masquerade as pipeline noise.
     `jvp` filters on the training flag: an OFF group is a different training
     config, so pooling its pairs into the roll-up would grade the flag (§D-45).
     """

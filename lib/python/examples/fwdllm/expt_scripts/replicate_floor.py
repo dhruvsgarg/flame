@@ -7,9 +7,8 @@ Why this exists: a parity rung compares real against sim and calls a gap a bug.
 But the fwdllm cadence loop is a feedback system (variance gate -> iterations ->
 model updates -> variance), so two runs of the SAME mode with the SAME seed do
 not land on the same numbers either. Until that self-variance is measured, a
-rung tolerance is a guess, and a rung tighter than the floor manufactures fails
-nobody can ever fix (`v2_var_trajectory` shipped at 2% against a ~2% floor).
-This is §D-5's "absolute, mode-independent sanity check", instantiated.
+rung tolerance is a guess, and a rung tighter than the floor manufactures
+unfixable fails (a tolerance at or below the floor).
 
 Reads only telemetry already on disk — no runs required. Compare its output
 against the corresponding rung tolerance in
@@ -108,11 +107,8 @@ def _rung_gap(call, field: str, same_mode: bool = False):
         if r.get("status") == "SKIP":
             return None
         name = field.split(".")[-1]
-        # Take the value the rung's VERDICT uses. `v2` reports the pooled figure
-        # under `mean_rel_diff` but decides on `matched_window_mean_rel_diff`,
-        # and reading the pooled one understated its floor by up to 2.3x -- §D-53
-        # a second time, on the tool that exists to prevent it. A rung that
-        # switches field by baseline says so in `decided_on`; trust that first.
+        # Use the field the rung's verdict actually reads (`decided_on`), not
+        # the pooled figure -- they can diverge (§D-53).
         v = (r.get(r["decided_on"]) if r.get("decided_on")
              else r.get(f"matched_window_{name}", r.get(name)))
         return None if v is None else abs(v)
@@ -122,21 +118,16 @@ def _rung_gap(call, field: str, same_mode: bool = False):
 # Metric -> the parity rung it calibrates, that rung's tolerance field and
 # nominal value, and how the RUNG measures the gap between two legs.
 #
-# A floor must be measured on the SAME window and axis the rung grades (§D-53).
-# Most of these rungs truncate both sides to the matched logical budget, so a
-# run-level mean over each leg's FULL run understates their floor -- most where
-# the residual is largest. Asking the rung is the only way to be sure the two
-# agree: there is nothing left to reimplement, and no window to get wrong.
+# A floor must be measured on the SAME window/axis the rung grades (§D-53);
+# asking the rung directly guarantees that, rather than reimplementing it.
 #
 # `iters_per_bin` has three consumers, because `cohort_sequence.count` and
 # `v1b`'s cumulative mean ARE `v1`'s number rolled up (§D-22). Measured here
 # once, under `v1`, and shared by the checker.
 #
-# The three `same_mode=True` entries are the vclock/time family: they bail on two
-# real legs for want of `vclock_now`, so they went uncalibrated -- but the bail is
-# the RUNG's, not the quantity's (§D-72), and real's own time-to-N reaches 6.7%
-# same-code under an 8% gate. `throughput` replaces its `committed_bins` floor:
-# that is work VOLUME, and the rung grades a time RATIO.
+# The three `same_mode=True` entries are the vclock/time family: they bail on
+# two real legs for want of `vclock_now` (§D-72). `throughput` replaces its
+# `committed_bins` floor: that is work VOLUME, and the rung grades a time RATIO.
 _CALIBRATES = {
     "throughput_rel": ("throughput", "tol_rel", 0.08,
                        _rung_gap("throughput_parity", "rel_diff",
@@ -344,23 +335,11 @@ def _jvp_eval_mode(path: str) -> bool:
 # groups actually comparable — same code, same duration, same node (§B.1).
 # **Phase 2 deletes this** — once `trackTrainerAvail` bites they are two configs.
 #
-# ⚠ **`fwdllm_it` is NO LONGER POOLED, and the reason is measured.** At n=3 per
-# name per side the two names do not produce the same numbers: real reads bins 38
-# / iters-per-bin 9.64-9.67 under `_unaware` against 40 / 9.20-9.22 under
-# `_oracular`, and sim 39 / 9.88 against 42 / 9.21 — each name reproducing itself
-# to 4 s.f. in BOTH modes. Pooling them therefore reports a SYSTEMATIC offset as
-# replicate noise and takes a pinned baseline's floor from **0.0% to 5.1%**
-# (§D-86). `fedbuff_it` keeps pooling because its legs INTERLEAVE (183/189/193
-# against 186/188/192) — no offset, just its own 9.2% spread.
-#
-# ⚠ Cause NOT established, and the leading candidate is the KNOB. The nodes are
-# identical hardware (operator ruling), which removes the host explanation, and
-# the two resolved configs differ in exactly `trackTrainerAvail`
-# (enabled False->True, type NONE->ORACULAR). Perfect 3/3 reproducibility on each
-# side also rules out background load, which is not repeatable.
-# The sim side cannot corroborate: each name carries its OWN charge profile and
-# they differ materially (drain_tail 0.147s vs 0.125s), which moves sim cadence
-# on its own (§D-50). Settled by ONE leg — §B.4.
+# ⚠ **`fwdllm_it` is intentionally NOT pooled**: its two names reproduce
+# internally but differ from each other systematically (~5% offset on a pinned
+# baseline's floor), likely `trackTrainerAvail` (§D-86, §B.4 for the open
+# question on cause). `fedbuff_it` stays pooled -- its legs interleave with no
+# offset, just its own spread.
 _FLOOR_POOL_SYN0 = {"fedbuff_it_oracular": "fedbuff_it",
                     "fedbuff_it_unaware": "fedbuff_it"}
 
@@ -421,11 +400,10 @@ def discover(experiments_dir: str, baselines, mode: str, pool: bool = True) -> d
 def hostname_of(run_dir: str) -> str | None:
     """The node a leg ran on, from `snapshot.yaml`.
 
-    Recorded in the floor profile because comparability is per-NODE as well as
-    per-code: pooling two config-identical groups that ran on different hosts
-    reported a systematic offset as replicate noise and inflated a pinned
-    baseline's floor from 0.0% to 5.1% (§D-86). A future re-calibration can now
-    see, from the file alone, whether its legs are comparable to these."""
+    Recorded because comparability is per-NODE as well as per-code: cross-host
+    pooling has previously masked a real offset as noise (§D-86). A future
+    re-calibration can now see, from the file alone, whether its legs are
+    comparable to these."""
     try:
         d = yaml.safe_load(open(os.path.join(run_dir, "snapshot.yaml"),
                                 encoding="utf-8")) or {}
@@ -437,10 +415,9 @@ def hostname_of(run_dir: str) -> str | None:
 def code_version(run_dir: str) -> tuple:
     """`(git_sha9, clean)` the run recorded for ITSELF, from `snapshot.yaml`.
 
-    Two legs are replicates only if they ran the SAME code (§D-70). Nothing read
-    this before, and the cost was silent: `fwdllm`'s two sim legs sit on either
-    side of a charge re-profile and pooled to an 18% "floor" on a baseline whose
-    real floor is 0.0%. `(None, None)` when a run predates the snapshot.
+    Two legs are replicates only if they ran the SAME code (§D-70); unchecked,
+    a code-version mismatch (e.g. either side of a charge re-profile) silently
+    inflates the floor. `(None, None)` when a run predates the snapshot.
 
     `clean=False` means uncommitted changes at launch, so the SHA is necessary
     but not sufficient — it can only ever prove two legs DIFFER.
@@ -560,10 +537,9 @@ def consumed_charges(run_dir: str) -> dict | None:
     """{(label, payload_kind): (charged_s, source)} the leg ACTUALLY read, from
     its own `vclock_charge` telemetry rather than the profile committed with it.
 
-    A leg launched dirty charges values its SHA does not name: three
-    `fedbuff_round` sim legs recorded `bdbde72b7` yet charged the profile
-    committed one commit later, so a SHA check split three true replicates
-    (§D-91). Keyed on payload kind too, since a profile prices one label per kind
+    A leg can charge a profile committed after its own SHA, so trust what it
+    actually charged, not its commit (§D-91). Keyed on payload kind too, since
+    a profile prices one label per kind
     (`redispatch_turnaround` is ON for `weights`, OFF for `var_bad`) and the
     label alone takes whichever fired last.
 
@@ -606,9 +582,8 @@ def _charges_agree(legs_a: list, legs_b: list) -> bool:
 
     A POOLED group (§D-63) holds two baselines with two different profiles, so a
     single representative leg from each cluster compares `fedbuff_it_oracular`'s
-    charges against `fedbuff_it_unaware`'s -- always unequal, always splitting.
-    That dropped three `_oracular` legs and left the pooled floor measured on
-    3 `_unaware` + 1 `_oracular`, which is the name-mixing §D-86 forbids.
+    charges against `fedbuff_it_unaware`'s -- always unequal, always splitting,
+    and risks mixing names unevenly (the name-mixing §D-86 forbids).
 
     Compare only baselines present in BOTH clusters, and require at least one:
     with no shared baseline there is no evidence, and refusing to merge is the

@@ -2464,12 +2464,8 @@ def utility_parity(real: dict, sim: dict, max_ks: float = 0.2,
     # window: utility evolves, so pooling unequal prefixes shifts the dist even at
     # zero divergence (PARITY.md §1.5, §D-4/§D-75).
     #
-    # This used to gate on `_real_intrinsic_clock` being available, i.e. sync only —
-    # but the matched window is built from `_matched_logical_budget`, which never
-    # reads that clock, so async fell back to grading the FULL RUN: felix_round
-    # pooled 24420 real against 20710 sim samples and read KS 0.232 where the
-    # matched window reads 0.137, against a real↔real matched-window floor of 0.135.
-    # An unequal-prefix comparison is exactly what the truncation exists to prevent.
+    # Gates on `_matched_logical_budget`, not `_real_intrinsic_clock` (sync-only) —
+    # the latter silently graded the full unmatched run for async.
     r_events = utility_events(real["agg_rounds"])
     s_events = utility_events(sim["agg_rounds"])
     N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
@@ -2707,8 +2703,8 @@ def failsafe_ok(sim: dict, budget_s: Optional[float] = None,
 # chosen: `expt_scripts/replicate_floor.py` puts same-seed same-config replicate
 # spread at 3.4-4.5% on committed bins (fedbuff_round/felix_round, 3600s), so the
 # historical 5% bar sat inside the pipeline's own noise and could fire on a run
-# nobody could ever make pass. 8% clears the floor with margin while leaving every
-# open residual (fluxtune 11.9%, fedbuff_round 16.4%) firmly outside it.
+# nobody could ever make pass. 8% clears the floor with margin while still
+# catching real regressions.
 # Re-run replicate_floor.py after any change to scale, hardware or run length.
 # This is now the NOMINAL only: each rung's effective gate is floor-gated per
 # baseline on the quantity it actually grades (a time ratio, not committed bins).
@@ -3640,12 +3636,7 @@ def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
     }
     # Same population-mismatch rationale as throughput_parity's matched_window_*:
     # sim's round count legitimately outruns real's wall-capped one, inflating
-    # the raw residual.
-    #
-    # This used to gate the override on `_real_intrinsic_clock` — a SYNC-only wall
-    # coordinate that `matched_n` never reads, so async silently graded the full
-    # run and the comparison it makes was between unequal populations (§D-84, the
-    # same dead guard `utility_parity` carried).
+    # the raw residual. Applies on every baseline, not just sync (§D-84).
     matched_n = min(len(sim_adv), len(real_adv))
     if matched_n >= 2:
         matched_sim = sim_adv[:matched_n]
@@ -5321,12 +5312,9 @@ def var_trajectory_parity(real: dict, sim: dict, ks_tol: float = 0.2,
     }
     # Truncate both to the matched LOGICAL budget N (progress <= N), not a clock
     # window: sim's cycles beyond the shared prefix average a higher `var` and pull
-    # the pooled mean/KS (PARITY.md §1.5, §D-4). Grades on EVERY baseline: this
-    # used to gate on `_real_intrinsic_clock() is not None`, a clock coordinate
-    # that is None for all async baselines by construction, so async graded the
-    # un-truncated pool -- fluxtune failed on 6.52% pooled against a 1.79%
-    # matched window, i.e. real's 94 bins vs sim's 99. The budget comes from
-    # `prog_fn`, which is axis-based and mode-agnostic.
+    # the pooled mean/KS (PARITY.md §1.5, §D-4). Grades on EVERY baseline, unlike a
+    # clock-based gate, which is None for all async baselines by construction. The
+    # budget comes from `prog_fn`, which is axis-based and mode-agnostic.
     N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
     if N is not None:
         matched_r = [e["var"] for e in rc
@@ -5367,14 +5355,10 @@ def var_drift_parity(real: dict, sim: dict, n_bins: int = 10,
       accumulation order, a scheduling divergence). Chase the mechanism.
     - **ratio drifting monotonically with progress** → the two models are on
       diverging training trajectories, and `var` is the readout, not the cause.
-      Chasing a per-cycle mechanism here burns sessions; the cadence↔variance
-      feedback loop (var gate -> iterations -> updates -> model -> var) amplifies
-      any small seed difference, so the question becomes whether the drift
-      exceeds the pipeline's own real<->real replicate floor.
-
-    `fedbuff_round` reads 0.95 -> 0.65 across the run (real's `var@it1` climbing
-    3.02 -> 5.94 while sim's stays ~3), i.e. progressive; `felix_round` and
-    `fluxtune` oscillate around 1.0 with no trend.
+      The cadence↔variance feedback loop (var gate -> iterations -> updates ->
+      model -> var) amplifies any small seed difference, so the question becomes
+      whether the drift exceeds the pipeline's own real<->real replicate floor —
+      not the per-cycle mechanism.
 
     DIAG: routing information for the next investigation, never a gate.
     """
@@ -6941,9 +6925,8 @@ def compute_conservation_parity(real: dict, sim: dict,
 def drain_wall_budget_parity(real: dict, sim: dict, tol_rel: float = 0.25,
                              min_abs_s: float = 0.5) -> dict:
     """Commit/ordering-stage invariant: sim must NEVER cost more real wall-
-    clock than real at this stage (generalizes #15's phantom drain-gate
-    stall, previously only visible via debug counters, into a standing
-    rung). Components:
+    clock than real at this stage (generalizes #15's drain-gate stall into a
+    standing rung). Components:
       - TRANSPORT one-sided (`barrier_wait_s`, `sim <= real*(1+tol_rel)`
         floored at `min_abs_s`): a real-only barrier wait the sim collapses
         toward zero -- any excess is unmodeled work/blocking.
@@ -7483,8 +7466,8 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         "v1_iter_per_data_id": (iters_per_data_id_parity,
                                 [("mean_tol_rel", "iters_per_bin", 0.02)]),
         # v2 may LOOSEN to at most 2x nominal (4%): its floor (1.8-1.9% on the
-        # loss-derived baselines) had caught up with a 2% nominal, so it graded
-        # its own noise and fired on 3 of 9 config-identical real pairs.
+        # loss-derived baselines) had caught up with the 2% nominal, so it was
+        # grading its own noise.
         "v2_var_trajectory": (var_trajectory_parity,
                               [("mean_tol_rel", "mean_var", 0.02, 2.0)]),
         # `rel_diff_n_selections` is work volume, not selector behaviour: chosen
@@ -7926,9 +7909,8 @@ CHECK_META: dict = {
 #              and is legitimate -- but it must be stated as one.
 #
 # There is deliberately no "hand-typed" class: that is the FAILURE state, a
-# variable quantity whose variance nobody measured. It produced every defect this
-# batch fixed -- a 15% gate over a 0.6% floor (§D-24), a 5% trainers gate under a
-# 5.5% floor (§D-72), a 0.2 KS gate that passed a 27% tail gap (§D-76).
+# variable quantity whose variance nobody measured -- exactly how the historical
+# mis-calibrated gates (§D-24, §D-72, §D-76) went undetected.
 #
 # `UNCLASSIFIED` is the backlog, and `test_threshold_provenance` RATCHETS it: it
 # may shrink, never grow, and a NEW rung must be classified to land at all.

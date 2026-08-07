@@ -575,9 +575,9 @@ class TestMatchedBudgetLapWrap:
         assert by_key[(2, 10)] == 3 and by_key[(2, 0)] == 4 and by_key[(2, 1)] == 5
 
     def test_time_to_n_stops_at_the_shared_prefix(self):
-        # The regression this fixes: sim's clock was read at ITS deadline rather
-        # than at the last shared bin, so `total_commits` compared full run
-        # lengths and called a 4.7% deadline artifact a throughput measurement.
+        # Guards against reading sim's clock at its own deadline instead of the
+        # last shared bin, which previously inflated the diff as a false
+        # throughput regression.
         real = _agg(agg_rounds=self._lap(2))
         sim = _agg(agg_rounds=self._lap(6, vclock=True))
         r = pc.total_commits_parity(real, sim)
@@ -2316,8 +2316,8 @@ class TestCohortSequence:
         assert r["order_gates_ok"] is False
 
     def test_reordered_cohort_same_set_FAILS_for_async(self):
-        # #N: the same reorder DOES fail when the cycle is ASYNC -- order is
-        # only SOFT for sync.
+        # The same reorder DOES fail when the cycle is ASYNC -- order is only
+        # SOFT for sync.
         real = _agg(agg_rounds=[_lcyc(0, 1, ["a", "b", "c"], 0.9, is_async=True)])
         sim = _agg(agg_rounds=[_lcyc(0, 1, ["c", "a", "b"], 0.9, is_async=True)])
         r = pc.cohort_sequence_parity(real, sim)
