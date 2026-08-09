@@ -168,6 +168,7 @@ class FedSGDAggregator(TopAggregator):
         self.jvp_for_snr_check_list = []
         self.var_good_enough = True
         self.var_prev_iter_list = []
+        self._n_eff_scalar = None
         self.snr = None
         self.snr_prev_iter_list = []
         self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
@@ -255,6 +256,27 @@ class FedSGDAggregator(TopAggregator):
             buf = buf.mul(self.server_momentum).add_(raw_update)
         self._server_momentum_buf[param_idx] = buf
         return buf
+
+    def _compute_n_eff(self, var_scalar):
+        """S-K (handoff §15.13): how much pooling the commit actually got.
+
+        calculate_var averages over the check layer's m coords, so
+        var = ||G_A - G_B||^2 / (2m); each upload is u_k = d_k*v_k with
+        ||v_k||^2 ~= m, so m cancels and n_eff = 2*mean_k(||u_k||^2)/(m*var).
+        Dimensionless and rule-agnostic: ||g||^2 and the estimator constant b^2
+        cancel too. Anything that makes uploads disagree -- heterogeneity,
+        staleness, correlated probes -- inflates var without inflating
+        mean||u_k||^2, so it registers here as n_eff below the nominal pool.
+        """
+        lst = self.grad_for_var_check_list
+        n = len(lst)
+        if n < 2 or not var_scalar or var_scalar <= 0:
+            return None
+        m = lst[0].numel()
+        if m == 0:
+            return None
+        mean_sq = sum(float(t.pow(2).sum()) for t in lst) / n
+        return 2.0 * mean_sq / (m * var_scalar)
 
     @timer_decorator
     def _compute_var(self):
@@ -424,6 +446,8 @@ class FedSGDAggregator(TopAggregator):
                     split_half_dot=_dot,
                     split_half_norm_a=_na,
                     split_half_norm_b=_nb,
+                    var_at_commit=getattr(self, "_var_scalar", None),
+                    n_eff=getattr(self, "_n_eff_scalar", None),
                 )
                 telemetry.emit(ev, **fields)
         except Exception:  # pragma: no cover - telemetry must never fault training
@@ -442,6 +466,13 @@ class FedSGDAggregator(TopAggregator):
             self._var_scalar = self.var.item()
         self.var_prev_iter_list.append(self._var_scalar)
         logger.info(f"self.var = {self._var_scalar}")
+        # S-K sensor: rides on server_update_audit since it lands in that record.
+        if getattr(self, "_server_update_audit", False):
+            self._n_eff_scalar = self._compute_n_eff(self._var_scalar)
+            logger.info(
+                f"[n_eff] n_eff={self._n_eff_scalar} pool={len(self.grad_for_var_check_list)} "
+                f"var={self._var_scalar}"
+            )
         if logger.isEnabledFor(logging.DEBUG):
             var_jvp = calculate_real_var(self.jvp_for_snr_check_list)
             self.snr = calculate_snr(self.jvp_for_snr_check_list)

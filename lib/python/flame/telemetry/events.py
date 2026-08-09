@@ -292,6 +292,8 @@ def build_server_update(
     split_half_dot: Optional[float] = None,
     split_half_norm_a: Optional[float] = None,
     split_half_norm_b: Optional[float] = None,
+    var_at_commit: Optional[float] = None,
+    n_eff: Optional[float] = None,
 ) -> tuple[str, dict[str, Any]]:
     """I-1 audit: L2 norm of the update actually SUBTRACTED from the server
     weights, the resulting weight norm, and their ratio — one record per commit.
@@ -333,6 +335,14 @@ def build_server_update(
         fields["split_half_norm_b"] = split_half_norm_b
         # Per-commit convenience only; pool the raw components for a usable number.
         fields["split_half_cos"] = (split_half_dot / _den) if _den else None
+    if n_eff is not None:
+        # S-K: pooling actually achieved, vs the nominal pool_size. Unlike
+        # split_half_cos this is a ratio of two noise energies, so it is O(n)
+        # rather than 1+O(1e-4) and carries no 1/sqrt(p) floor. n_eff < pool_size
+        # is the shortfall from heterogeneity/staleness/correlated uploads.
+        fields["var_at_commit"] = var_at_commit
+        fields["n_eff"] = n_eff
+        fields["n_eff_ratio"] = (n_eff / pool_size) if pool_size else None
     return EVENT_SERVER_UPDATE, fields
 
 

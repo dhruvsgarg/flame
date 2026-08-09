@@ -27,14 +27,16 @@ schedule (S-A + S-B), and to measure `cos` directly (§15.1) before any sizing n
 **The open question this leaves — and the answer.** Every replacement so far still ends in an operator
 constant, so the method would keep needing a per-model, per-dataset re-tune; `var_threshold` already had
 to move 0.1 → 0.3 when the data went heterogeneous. Reading the gate's actual code settles why:
-`var = ‖G_A−G_B‖²/(2p) ≈ 2b²‖g‖²/n`, so 0.3 is absorbing **two** unrelated drifts at once — an absolute
-gradient scale and a heterogeneity floor (§9.3). Inverting that same identity yields
-**`n_eff = 2·mean‖u_k‖²/(p·var)`** (§15.13): dimensionless, rule-agnostic, computable from telemetry
-already in the aggregator, and error `~1/√n` with no `p` in it — so it escapes the wall that killed the
-split-half cosine. With `n_eff` measured, `ρ* = s·cos` is *derived* rather than set, heterogeneity and
-staleness self-absorb without ever being named (§5.1), and the only surviving constants are `s ≈ 0.3–0.5`
-and the anneal margin `ε` — both O(1) from the derivation, plus a pooling budget, which is a resource,
-not a knob.
+`var = ‖G_A−G_B‖²/(2m) ≈ 2b²‖g‖²/n`, so the setpoint is really a **gradient-scale** constant, and both
+`‖θ‖` drift within a run and α across configs move it (§9.3). Inverting that identity yields
+**`n_eff = 2·mean(d²)/var`** (§15.13): dimensionless, rule-agnostic, free of `p` *and* of the check
+layer, computable from telemetry already in the aggregator. Synthetic pools with known `n` confirm it
+recovers `n` to 3%, detects redundancy, and stays **flat over a 100× spread in `‖g‖`** — exactly the
+dependence that makes `var_threshold` non-portable. **Measured limit:** it is blind to *directional*
+client disagreement (`O(n/p)` on `var`), so it closes the correlation half of the problem and leaves the
+≥2.4× `cos` shortfall to §15.1. What it buys is a **scale-free setpoint**: every unit-carrying constant
+dies, and the survivors are `s ≈ 0.3–0.5` and the anneal margin `ε` — both O(1) from the derivation —
+plus a pooling budget, which is a resource, not a knob.
 
 ---
 
@@ -326,12 +328,16 @@ against that, because anything not thought of can enter through exactly **two** 
 - it changes the step actually taken → shows up in **`ρ`**, logged exactly, every commit;
 - it degrades the pool → shows up as **`n_eff < n`**, hence in `cos`.
 
-Data heterogeneity, staleness, correlated clients, bin difficulty, fp16 noise, a different model or
-adapter rank are all channel 2. **They never have to be named, modelled, or swept** — but only if `cos`
-is *measured* rather than predicted from `(a/b)√(N/p)`, which assumes homogeneous independent pooling
-and is therefore blind to every one of them. Predicting `cos` re-introduces α as an unmodelled
-calibration error inside `ρ*`: the same tuning constant one level up. **Measuring `n_eff` is what makes
-the law self-tuning, and §15.13 is how.**
+**Channel 2 is only half-covered, and the limit is measured (§15.13).** `n_eff` detects *correlation*
+among uploads — duplicated, stale, or otherwise redundant readings — and is exactly invariant to
+gradient **scale**. It does **not** detect *directional* disagreement between clients: at `p = 10⁶` the
+signal is `1/√p` of an upload's length, so differing `g_k` move `var` by `O(n/p)` and are invisible.
+Synthetic pools with 4, 20 and 100 distinct gradient directions all return `n_eff/n ≈ 1.00`.
+
+So the honest scope: **`ρ` is exact, `n_eff` closes the correlation half of channel 2 and makes every
+setpoint scale-free, and the disagreement half is still open** — it needs `cos` measured directly
+(§15.1), because it is the same signal-under-noise problem that makes the split-half cosine unusable.
+Predicting `cos` from `(a/b)√(N/p)` assumes homogeneous independent pooling and is blind to both halves.
 
 ## 6. Traps
 
@@ -598,15 +604,20 @@ drift and the accidental anneal); `var ∝ 1/n` is why it is an `N`-controller a
 L1 measures their **angle**. One statistic, two readings, and only the un-normalised one is measurable
 (§15.13).
 
-**The threshold absorbs a second, independent confound: data heterogeneity.** `‖G_A − G_B‖²` contains a
-between-client gradient-disagreement term that does **not** shrink as `1/n`, because the two halves hold
-different clients with different `g_k`. A heterogeneous pool therefore has a higher `var` floor at the
-same true pooling adequacy — which is why moving from homogeneous to `α = 1` data forced
-`var_threshold` **0.1 → 0.3**. So `0.3` is compensating for two unrelated things at once: an absolute
-gradient scale that drifts 36× *within* a run, and a heterogeneity floor that shifts *across* configs.
-Neither is visible in the constant. **This is the concrete reason a re-tuned threshold cannot port
-across `N`, `C`, `K`, dataset, or model** — and it is the same phenomenon as the ≥2.4× `n_eff` shortfall
-in §9.5 and §12, seen from the other side.
+**The threshold absorbs data heterogeneity too — through scale, not disagreement.** The tempting story
+is that `‖G_A − G_B‖²` picks up a between-client disagreement term when the halves hold different `g_k`.
+**That is measured false** (§15.13): at `p = 10⁶` the signal is `1/√p` of an upload's length, so
+disagreement moves `var` by `O(n/p)`; synthetic pools with 4, 20 or 100 distinct gradient directions are
+indistinguishable from one. What actually happens is simpler: `var ≈ 2b²‖g‖²/n`, and a client holding
+one of four classes has a **larger local gradient** than a near-IID one, so heterogeneity raises `var`
+by raising `‖g‖`. Same conclusion, different mechanism — and a more useful one, because a scale effect
+is exactly what a dimensionless statistic cancels.
+
+So `0.3` is compensating for two expressions of one thing: a gradient scale that drifts 36× *within* a
+run (via `‖θ‖`) and shifts *across* configs (via α). **That is why a re-tuned threshold cannot port
+across `N`, `C`, `K`, dataset, or model, and why `n_eff` — invariant to `‖g‖` over 100× in test — is the
+replacement.** Note this is *not* the same phenomenon as the ≥2.4× shortfall in §9.5 and §12: that one
+is about disagreement degrading `cos`, which `var` cannot see at all.
 
 **But "dead" is only true at `K = 10`:**
 
@@ -1254,39 +1265,45 @@ Only these can beat the `√(n/p)` barrier; neither is ready to build.
 ### 15.13 S-K. Measure `n_eff` — the sensor that removes the last threshold — **AGGREGATION · server-side, ~3 lines**
 
 Everything above still needs *one* number the system cannot see: how much pooling it actually got.
-`cos = (a/b)√(N/p)` assumes it equals `N`; §9.5 measures a ≥2.4× shortfall and §9.3 shows heterogeneity
-is one cause. **Invert the §9.3 identity and the shortfall becomes directly observable:**
+`cos = (a/b)√(N/p)` assumes it equals `N`. **Invert the §9.3 identity and it becomes observable:**
 
 ```
-n_eff  =  2 * mean_k( ||u_k||^2 ) / ( p * var )          # var is the gate's existing statistic
-cos    =  (a/b) * sqrt( n_eff / p )                      # a/b known in closed form from the rule
-rho*   =  s * cos                                        # s ~ 0.3-0.5 (3.3), the only free constant
+n_eff  =  2 * mean_k( ||u_k||^2 ) / ( m * var )  =  2 * mean_k( d_k^2 ) / var
 ```
+
+`m` is the numel of the **check layer** — `calculate_var` averages over that layer's coordinates, and
+`grad_for_var_check` carries one layer only (`tc_transformer_trainer_distribute.py:633`), not the whole
+trainable slice. Since `u_k = d_k·v_k` with `‖v_k‖² ≈ m`, `m` cancels: **the sensor is independent of
+which layer is checked, and `p` never enters.**
 
 **Why this escapes §15.5's wall.** The split-half *cosine* fails because it extracts a `1e-4` signal
 from `O(1)` noise, floored at `1/√p`. `n_eff` is a ratio of **two noise energies** — per-upload against
 pooled-difference — which is `O(n)`, not `1 + O(1e-4)`. Relative error is `~1/√n ≈ 7%` per commit, with
 no `p` in it. Same two half-means; a different, well-conditioned functional of them.
 
-**Properties, in the order they matter:**
+**Properties — MEASURED on synthetic pools with known `n`, before any run:**
 
-- **Dimensionless.** `‖g‖²` cancels between numerator and denominator, so the `‖θ‖²` drift that forces
-  `var_threshold` to be a per-model constant cancels too. No setpoint carries units anywhere.
-- **The `b²` cancels as well**, so the estimator is *rule-agnostic* — valid under `select`, `mean`, or
-  any top-k, with no constant to re-derive when S-H lands.
-- **Heterogeneity self-absorbs.** Disagreeing `g_k` inflate `‖G_A−G_B‖²` without inflating
-  `mean‖u_k‖²`, so `n_eff` falls, `cos` falls, the controller pools more or steps less. **α appears in
-  no formula and needs no sweep to calibrate** (§5.1). Identically for staleness (H-E) and any other
-  channel-2 effect.
+| property | result |
+|---|---|
+| recovers true `n` on an iid pool | **holds** — 198.7/200, 413.5/400 |
+| detects redundancy (duplicated uploads) | **holds** — ×2 → 0.49, ×4 → 0.26 |
+| invariant to gradient **scale** | **holds** — `n_eff` flat over a 100× spread in `‖g‖` while `var` moves |
+| detects **directional** client disagreement | **FAILS** — 4/20/100 distinct gradient directions all give `n_eff/n ≈ 1.00` |
+
+Row 3 is the one that matters for portability: it is exactly the `‖g‖²` dependence that makes
+`var_threshold` a per-model, per-α constant, and `n_eff` cancels it. `b²` cancels too, so the estimator
+is **rule-agnostic** — valid under `select`, `mean` or any top-k with no constant to re-derive when S-H
+lands.
+
+**Row 4 is a real limit and bounds the claim.** At `p = 10⁶` the signal is `1/√p` of an upload's length,
+so between-client disagreement perturbs `var` by `O(n/p)` — the same signal-under-noise wall that makes
+the split-half cosine unusable (§15.5). **`n_eff` therefore closes the *correlation* half of channel 2,
+not the *disagreement* half.** The ≥2.4× shortfall in §9.5 lives in the half `n_eff` cannot see, so
+§15.1 is still needed to explain it; `n_eff` does not substitute for B1.
+
 - **Zero new plumbing.** `var` is already computed at `FedSgdAggregator.py:438`; the `u_k` are already
   in `grad_for_var_check_list`. Server-side, no protocol change, no trainer change, no backward pass —
   so unlike §15.1 it does **not** trade away the inference-only-operator-set claim.
-
-**Back-of-envelope against numbers already in hand.** Inverting at the §9.3 bin 0–20 var floor of 0.415
-with `N = 185` implies `rms|d| ≈ 6.2` against the measured 3.35 — pooling short by ~3×. §9.5's
-independent split-half bound says ≥2.4×. **Two unrelated measurements agreeing on the shortfall**, which
-is the first corroboration §12's caveat has had. Not proof — 0.415 is a per-bin *minimum*, not the value
-at the committed `n` — but the statistic is clearly live and already discriminating.
 
 - Flag: `n_eff_audit` (emit-only) → then `rho_target_source: {predicted | n_eff}` for the controller.
 - **Validate by log replay before trusting it**: `n_eff` must reproduce the measured `ρ·√N` invariant
@@ -1372,8 +1389,8 @@ arms look identical to a fix and are an 8× deferral.
 | **H-H** | The FD's discarded curvature term `vᵀHv` carries usable signal | **OPEN** | log `L(+)+L(−)−2L(θ)` per candidate; correlate with realised loss decrease | If true, unlocks the only probe-selection metric that is free and not stability-neutral |
 | **H-I** | The orthogonality ratio is **stationary within a run** | **RESOLVED: stationary**, 1.000 ± 0.005 per block in every arm | done | The ratio is *not* a defect signature — healthy arms score identically |
 | **H-J** | The `K ≥ 20` arms **defer** collapse rather than prevent it; `‖θ_tr‖²` linear ⇒ collapse at commit 1,200–1,700 | **PREDICTED** from measured `d(‖θ_tr‖²)/dcommit` | one `K = 50` arm at ≥32 h vclock | If it holds past ~2,000 commits, the `‖θ‖`-threshold model is wrong and the fix ordering changes |
-| **H-K** | Data heterogeneity enters the dynamics **only** through `n_eff`, so a controller with `ρ*` derived from measured `n_eff` needs **no re-tuning across α** | **OPEN** — the mechanism is derived (§9.3), the claim is not tested | B12: α = 1 / 10 / 100 at one fixed `ρ*`; realised `N` self-adjusts, peak accuracy holds | If true, **the last per-dataset constant is gone** and §5.1's closure argument is demonstrated, not asserted. If false, `cos` has an α-dependence outside `n_eff` and the criterion needs a heterogeneity term |
-| **H-L** | `n_eff` from §15.13 is a sound pooling-adequacy estimate (not just an identity) | **OPEN** | B11 replay: does `n_eff` reproduce `ρ·√N` = 1.68–1.81 and fall as `K` rises | If true, the control law is fully paid for without §15.1. If false, `ρ*` stays a set constant and B1 is the only route |
+| **H-K** | α raises `var` by raising `‖g‖` (scale), not by client disagreement — so `n_eff` is **flat across α** and a setpoint expressed in `n_eff` needs no per-dataset re-tune | **NARROWED**: the disagreement leg is REFUTED synthetically (§15.13 row 4); the scale leg is confirmed synthetically and untested on real data | B12: α = 0.1 / 1 / 100 at K = 10 and 20. `var` tracks `mean(d²)`; `n_eff` invariant | If `n_eff` is flat over a 1000× α span, **the last per-dataset constant is gone**. If it drifts, something outside gradient scale is moving `var` and the sensor is incomplete |
+| **H-L** | `n_eff` from §15.13 is a sound pooling-adequacy estimate (not just an identity) | **PARTLY RESOLVED**: recovers `n` to 3% and detects redundancy on synthetic pools; blind to directional disagreement | B11 replay: does `n_eff` reproduce `ρ·√N` = 1.68–1.81 and fall as `K` rises | Sound ⇒ every setpoint becomes scale-free. It does **not** explain the §9.5 shortfall, so B1 stays on the critical path |
 
 **E-1 — REWRITTEN.** The original hypothesis (*the gate is inert; (a) ≈ (b)*) is **falsified at `K ≥ 20`**
 and holds only at `K = 10`. The question now is the opposite one — *how good an `N`-controller is it, and
