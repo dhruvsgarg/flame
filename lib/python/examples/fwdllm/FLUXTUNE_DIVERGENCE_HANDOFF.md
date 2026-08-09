@@ -1665,18 +1665,46 @@ working surface from here on. The running verdict in §25 is what eventually get
 
 | # | Feature | Flag (default = old) | Site | Prediction to check at commit ~10 | Status |
 |---|---|---|---|---|---|
-| B1 | `cos(G,g)` ground-truth probe | `cos_ground_truth_audit` | `FedSgdAggregator._emit_server_update` | `cos` lands at 0.023 **or** 0.008–0.015; §15.1's two branches diverge from there | **TODO** — blocks every sizing |
-| B2 | S-H · average all `P` probes | `probe_combine: {select\|mean}` | `tc_transformer_trainer_distribute.py:456-487`, `:625-631` | `ρ` drops **5.5×** on commit 1 (`√(E·P)`); `‖G‖` by the same factor | **TODO** |
-| B3 | S-A + S-B · trust-ratio step with a `t^{-(1/2+ε)}` anneal | `server_step_rule: {raw_sgd\|trust_ratio}` + `rho_schedule` | `FedSgdAggregator._server_update_step` | logged `ρ` **equals** `ρ*_t` every commit; `‖θ_tr‖²` grows **sub-linearly** | **TODO** — must land together (§15.4) |
-| B4 | S-C · explicit `N`-controller | `dynamic_kc.policy: rho_target` | `selector/dynamic_kc_policy.py` | realised `N` tracks `N_now·(ρ_now/ρ*)²`; `ρ` converges to `ρ*` within ~20 commits | **TODO** |
-| B5 | S-I · freeze `pre_classifier` (+ `h` rescale) | `trainable_scope: {adapters_head\|adapters_only}` | model builder | `p` 1,040,932 → 450,340; `cos ×1.52`; **peak accuracy unchanged** is the real test (H-G) | **TODO** |
-| B6 | H-J · long `K=50` arm, ≥32 h vclock | none (runtime only) | — | degradation onset commit 400–560, collapse 1,200–1,700 | **TODO** |
+| B1 | `cos(G,g)` ground-truth probe | `cos_ground_truth_audit` | `FedSgdAggregator._emit_server_update` | `cos` lands at 0.023 **or** 0.008–0.015; §15.1's two branches diverge from there | **TODO** — still blocks every sizing. B11 does **not** substitute: `n_eff` is blind to the disagreement half (§15.13) |
+| B2 | S-H · average all `P` probes | `probe_combine: {select\|mean}`, default `select` | `tc_transformer_trainer_distribute.py` (`_accumulate_mean_over_probes`) | `ρ` drops **5.45×** on commit 1 (`√(E·P)`); `‖G‖` by the same factor | **WIP** — landed `198a675f3`, launched node 3. Synthetic check reproduces 5.451 vs 5.465 predicted, and `E`=2.987 vs the 2.988 measured on 37k real events |
+| B3 | S-A + S-B · trust-ratio step with a `t^{-(1/2+ε)}` anneal | `server_step_rule: {raw_sgd\|trust_ratio}` + `rho_star` / `rho_schedule` / `rho_exp`, default `raw_sgd` | `FedSgdAggregator._apply_weighted_update` (pool-then-apply) | logged `ρ` **equals** `ρ*_t` every commit; `‖θ_tr‖²` grows **sub-linearly** under `rm`, super-linearly under `const` | **WIP** — landed `0bfaa9562`, launched node 4. Stub test gives `ρ = ρ*` to 8 dp and `t^{-0.55}` decay exact |
+| B4 | S-C · explicit `N`-controller | `dynamic_kc.policy: rho_target` | `selector/dynamic_kc_policy.py` | realised `N` tracks `N_now·(ρ_now/ρ*)²`; `ρ` converges to `ρ*` within ~20 commits | **TODO** — now unblocked: B11 supplies the scale-free sensor and B3 the actuator |
+| B5 | S-I · freeze `pre_classifier` (+ FD rescale) | `trainable_scope: {adapters_head\|adapters_only}` + `FWDLLM_FD_SCALE_INVARIANT`, both default old | `expts/initializer.create_model`, `fwdgrad_utils._fd_spacing` | `p` 1,040,932 → 450,340; `ρ/cos ×0.433`; **peak accuracy unchanged** is the real test (H-G) | **WIP** — landed `404fdbb4d`, launched node 2 |
+| B6 | H-J · long `K=50` arm, ≥32 h vclock | none (runtime only) | — | degradation onset commit 400–560, collapse 1,200–1,700 | **TODO** — deferred: the `p`-ladder was judged the higher-consequence use of a node (it is the only out-of-sample test of `cos ∝ 1/√p`) |
 | B7 | S-G · weight decay `λ ≈ ρ²/2` (control arm) | `server_weight_decay` | `_apply_weighted_update` | `‖θ_tr‖` plateaus instead of growing | **TODO** — the bar the stack must beat |
 | B8 | H-E · staleness histogram from the K-sweep | none (log replay) | `agg_round` telemetry | staleness > 1 appears at `c = 100` | **TODO** — free, data on disk |
 | B9 | S-E · split-half commit gate | `commit_gate: {var\|cos}` | gate | — | **PARKED** — unmeasurable at `p = 10⁶` (§15.5) |
 | B10 | S-J · adaptive `P` per client | `probe_budget: adaptive` | trainer | — | **PARKED** — same wall as B9, worse (§15.9) |
-| B11 | S-K · `n_eff` sensor, emit-only | `n_eff_audit` | `FedSgdAggregator` (var site, `:438`) | `n_eff` reproduces `ρ·√N` = 1.68–1.81 across the K-sweep; `n_eff/N` ≈ 0.3–0.4, matching the §9.5 shortfall | **TODO** — replay first (no GPU), then wire |
-| B12 | H-K · α-sweep 1 → 10 → 100 at one fixed setpoint | `--partition-method niid_label_clients=100_alpha={1,10,100}` | launcher only | under the **var gate**: achievable var floor rises with heterogeneity ⇒ commit behaviour shifts. Under `n_eff`: `n_eff/N` falls with α ⇒ **the sensor absorbs it with no knob change** | **TODO** — partitions confirmed present in `agnews_partition.h5` |
+| B11 | S-K · `n_eff` sensor | rides on `server_update_audit` (same record, negligible marginal cost) | `FedSgdAggregator._compute_n_eff`, `telemetry/events.build_server_update` | `n_eff` reproduces `ρ·√N` = 1.68–1.81; `n_eff/N` ≈ 0.3–0.4 | **WIP** — landed `9755c4703`, on in every arm. Synthetic pools: recovers `n` to 3%, ×2 duplication → 0.49, flat over 100× in `‖g‖`, **but `n_eff/n ≈ 1.00` for 4/20/100 distinct gradient directions** (§15.13 row 4) |
+| B12 | H-K · α-sweep at one fixed setpoint | `--partition-method niid_label_clients=100_alpha={0.1,1,100}` | launcher only | `var` tracks `mean(d²)`; **`n_eff` flat across α**. At `K=10` the gate is cap-bound so α moves nothing; at `K=20` α=100 commits soonest | **WIP** — launched node 1. Measured top-class share 0.966 / 0.734 / 0.311 at α = 0.1 / 1 / 100 |
+
+## 22.1 The 2026-08-08 overnight portfolio — first FIX arms
+
+Four nodes, one command each (`expt_scripts/nodes/run_node{1..4}_*.sh`), 4 arms per node at 4 h vclock
+(~1.25 h wall). **Unlike 08-07, these are fix arms, not falsification arms.** All carry
+`--server-update-audit --pool-split-half-audit`, so `n_eff` is on everywhere.
+
+| node | script | arms | tests |
+|---|---|---|---|
+| 1 | `run_node1_alpha.sh` | α = 0.1, 100 × K = 10, 20 | **H-K, B12** — with the 08-07 α=1 arms, a 3×2 grid over 1000× in α |
+| 2 | `run_node2_p.sh` | `p` full / 450k ± FD rescale, at K = 10, 20 | **H-G, B5** — `cos ∝ 1/√p` out of sample; arm 3 isolates the `h√p` confound |
+| 3 | `run_node3_probe.sh` | `select` / `mean` / `mean`+P=30 / `mean`@α=0.1 | **B2** — the 10× lever; P=30 must now *help* where it hurt under `select` |
+| 4 | `run_node4_stack.sh` | `const` ρ*=0.01 / `rm` ρ*=0.02 / `rm` ρ*=0.005 / full stack @ α=0.1 | **B3, H-K** — arm 1 vs 2 separates S-A from S-B; arm 4 is the portability test |
+
+**Read the enactment checks before the science.** Each has a distinctive log line and a commit-1 number,
+so a mis-enacted arm is caught in minutes rather than at scoring time:
+
+```bash
+grep -m1 '\[ServerStep\] trust_ratio' $RUN/*aggregator.log   # rho* must equal the logged rho
+grep -m1 '\[probe_combine=mean\]'     $RUN/*trainers.log     # trainer-side; NOT in aggregator_config.json
+grep -m1 '\[TrainableScope\]'         $RUN/*.log             # trainable_p 1040932 vs 450340
+grep -m1 '\[FD\] scale-invariant'     $RUN/*trainers.log     # only in the +FDfix arms
+grep -m1 '\[n_eff\]'                  $RUN/*aggregator.log   # present in every arm
+```
+
+**Sizing note for node 4.** Measured `cos ≤ 0.015` with `s ≈ 0.3–0.5` (§3.3) puts `ρ*` at 0.005–0.0075
+under `select`; under `mean` `cos ≈ 0.027`, so `ρ* ≈ 0.01`. The three ρ* values straddle that boundary
+deliberately — 0.02 is *above* it, and is expected to survive only because S-B anneals.
 
 ## 23. What worked, and why
 
@@ -1710,6 +1738,13 @@ working surface from here on. The running verdict in §25 is what eventually get
 - **Treating `‖θ_tr‖` orthogonality as the defect.** The ratio is 1.000 in the arms that *work* too.
   **Why:** `g` is itself near-perpendicular to `θ` at `p = 10⁶`; the test says the norm grows by the full
   step length, not that the step is noise. The defect is `ρ` vs `cos`, and only that.
+- **`n_eff` as a heterogeneity sensor.** It was built on the argument that disagreeing `g_k` inflate
+  `‖G_A−G_B‖²` without inflating `mean‖u_k‖²`. **Synthetic pools refute that**: 4, 20 and 100 distinct
+  gradient directions all return `n_eff/n ≈ 1.00`. **Why:** the signal is `1/√p` of an upload's length,
+  so disagreement perturbs `var` by `O(n/p)` — the same wall that killed the split-half cosine. What
+  survives is the *scale* invariance (flat over 100× in `‖g‖`), which is what actually makes a setpoint
+  portable. Caught by a 40-line test before it cost a GPU-hour; the cost of not testing it would have
+  been a wrong claim in the paper, not a wasted run.
 - **`K ≥ 20` as a fix.** `Σρ_t²` diverges logarithmically under the accidental `1/√t`, and `‖θ_tr‖²` grows
   linearly at 4.2/commit — collapse at commit ~1,200–1,700, an 8× deferral. **Why it must not ship as the
   answer:** `var_threshold = 0.3` hard-codes the trajectory and does not port across model, `p`, or
