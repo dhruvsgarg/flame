@@ -151,6 +151,19 @@ def create_model(args, formulation="classification"):
     # print("after lora after lora after lora after lora after lora")
     # print(model)
     # print(sum(p.numel() for p in model.parameters() if p.requires_grad))
+
+    # S-I (handoff §11.5): for forward gradients cos ~ 1/sqrt(p), so the trainable
+    # set is a gradient-QUALITY knob, not just a memory one. pre_classifier is one
+    # 768x768 layer carrying 56.7% of p and is trainable by HuggingFace default,
+    # not by design. Freezing it must ship with FWDLLM_FD_SCALE_INVARIANT=1, or
+    # the probe displacement h*sqrt(p) silently shrinks with p (§2.4).
+    _scope = str(getattr(args, "trainable_scope", "adapters_head") or "adapters_head")
+    if _scope == "adapters_only":
+        for n, p in model.named_parameters():
+            if "pre_classifier" in n:
+                p.requires_grad = False
+    _p = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logging.info(f"[TrainableScope] scope={_scope} trainable_p={_p}")
     return config, model, tokenizer
 
 

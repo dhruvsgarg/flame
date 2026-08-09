@@ -132,6 +132,9 @@ if __name__ == "__main__":
         {
             "fl_algorithm": config.hyperparameters.fl_algorithm,
             "freeze_layers": config.hyperparameters.freeze_layers,
+            # S-I: adapters_head (default) or adapters_only (freeze pre_classifier).
+            "trainable_scope": getattr(
+                config.hyperparameters, "trainable_scope", "adapters_head"),
             "epochs": config.hyperparameters.epochs,
             "learning_rate": config.hyperparameters.learning_rate,
             "gradient_accumulation_steps": config.hyperparameters.gradient_accumulation_steps,
@@ -158,7 +161,6 @@ if __name__ == "__main__":
             "peft_method": config.hyperparameters.peft_method,
             "var_control": config.hyperparameters.var_control,
             "perturbation_sampling": config.hyperparameters.perturbation_sampling,
-            "select_perturbation_using_jvp": config.hyperparameters.select_perturbation_using_jvp,
             "client_idx": config.hyperparameters.client_idx,
         }
     )

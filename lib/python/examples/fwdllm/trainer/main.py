@@ -111,6 +111,9 @@ if __name__ == "__main__":
         {
             "fl_algorithm": config.hyperparameters.fl_algorithm,
             "freeze_layers": config.hyperparameters.freeze_layers,
+            # S-I: adapters_head (default) or adapters_only (freeze pre_classifier).
+            "trainable_scope": getattr(
+                config.hyperparameters, "trainable_scope", "adapters_head"),
             "epochs": config.hyperparameters.epochs,
             "learning_rate": config.hyperparameters.learning_rate,
             "gradient_accumulation_steps": config.hyperparameters.gradient_accumulation_steps,
