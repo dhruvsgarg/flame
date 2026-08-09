@@ -355,7 +355,7 @@ MODE_SET="$MODE_SET" DELAYS_SET="$DELAYS_SET" MAX_RUNTIME_S_SET="$MAX_RUNTIME_S_
 LOGDIR="$LOGDIR" MANIFEST="$MANIFEST" RUN_TSV="$RUN_TSV" DRY_RUN="$DRY_RUN" SHOW_ALL="$SHOW_ALL" \
 EXAMPLE_DIR="$EXAMPLE_DIR" AC10_DIR="$AC10_DIR" \
 python - <<'PY'
-import os, sys, copy, yaml, json, hashlib, glob
+import os, sys, copy, yaml, json, hashlib, glob, re
 sys.path.insert(0, os.environ["EXPT_RUNNER_DIR"])
 import expt_runner
 
@@ -514,6 +514,15 @@ def patch(exp, run_key, variant, trace):
     if PART:
         h["partition_method"] = PART
         exp["trainer"]["config_overrides"]["hyperparameters"]["partition_method"] = PART
+        # dirichlet_alpha is cosmetic for path-style data (nothing trainer-side
+        # reads it) but it names the run, so an alpha sweep would emit N runs all
+        # tagged alpha1. Re-derive it from the group actually selected.
+        _m = re.search(r"alpha=([0-9.]+)", PART)
+        if _m:
+            _a = float(_m.group(1))
+            exp["trainer"].setdefault("dataset", {})["dirichlet_alpha"] = (
+                int(_a) if _a.is_integer() else _a  # 100 -> alpha100, not alpha100p0
+            )
     # Variance-cadence knobs (review-every-run). Only patched when explicitly set,
     # so an unset run keeps the code/trainer default (surfaced as "(D)" below).
     if VAR_THRESHOLD:
