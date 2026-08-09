@@ -97,6 +97,7 @@ SERVER_UPDATE_AUDIT="" # I-1 audit: per-commit ||delta||/||w||. OFF by default -
 POOL_SPLIT_HALF_AUDIT="" # L1 audit: per-commit pool split-half cosine. OFF -- adds a pass over (params x uploads)
 LEARNING_RATE=""       # server step size (aggregator hyperparameters); empty => trainer_base.yaml (0.01)
 PERTURBATION_COUNT=""  # P: probes per trainer per iteration (trainer hyperparameters); empty => code default 10
+PROBE_COMBINE=""       # S-H: select|mean -- how the P probes become one upload; empty => code default select
 MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
 VAR_STOPPING_POLICY=""   # Opt-2: off|fixed_cap|plateau (empty => baselines.yaml, fluxtune=plateau)
 AGG_RATE_TYPE=""         # Opt-3: grad_aware|new (empty => baselines.yaml, fluxtune=grad_aware; new=FeLiX)
@@ -135,7 +136,7 @@ usage() {
   echo "    --delays/--delay-divisor/--delay-floor default to each baseline's settled value" >&2
   echo "          (BASELINE_DELAY_DEFAULTS in this script); pass explicitly only to override." >&2
   echo "          [--server-update-audit] [--pool-split-half-audit]" >&2
-  echo "          [--learning-rate F] [--perturbation-count N]" >&2
+  echo "          [--learning-rate F] [--perturbation-count N] [--probe-combine select|mean]" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
   echo "          [--sim-wall-ceiling-s S | --sim-wall-ceiling-h H]  REAL-wall-clock outer safety" >&2
@@ -171,6 +172,7 @@ while [[ $# -gt 0 ]]; do
     --pool-split-half-audit) POOL_SPLIT_HALF_AUDIT=1; shift ;;
     --learning-rate)        LEARNING_RATE="$2"; shift 2 ;;
     --perturbation-count)   PERTURBATION_COUNT="$2"; shift 2 ;;
+    --probe-combine)        PROBE_COMBINE="$2"; shift 2 ;;
     --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
     --var-stopping-policy)  case "$2" in off|fixed_cap|plateau) ;; *) echo "ERROR: --var-stopping-policy must be off|fixed_cap|plateau (got '$2')" >&2; exit 2 ;; esac
                             VAR_STOPPING_POLICY="$2"; shift 2 ;;
@@ -345,6 +347,7 @@ PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
 SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" POOL_SPLIT_HALF_AUDIT="$POOL_SPLIT_HALF_AUDIT" \
 LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
+  PROBE_COMBINE="$PROBE_COMBINE" \
 DELAY_FLOOR="$DELAY_FLOOR" \
 VAR_STOPPING_POLICY="$VAR_STOPPING_POLICY" AGG_RATE_TYPE="$AGG_RATE_TYPE" \
 TARGET_ACC="$TARGET_ACC" CONVERGE_WINDOW="$CONVERGE_WINDOW" \
@@ -373,6 +376,7 @@ VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID
 SERVER_UPDATE_AUDIT = env("SERVER_UPDATE_AUDIT") or ""
 POOL_SPLIT_HALF_AUDIT = env("POOL_SPLIT_HALF_AUDIT") or ""
 LEARNING_RATE = env("LEARNING_RATE") or ""; PERTURBATION_COUNT = env("PERTURBATION_COUNT") or ""
+PROBE_COMBINE = env("PROBE_COMBINE") or ""
 VAR_STOPPING_POLICY = env("VAR_STOPPING_POLICY") or ""; AGG_RATE_TYPE = env("AGG_RATE_TYPE") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
 DELAY_FLOOR = env("DELAY_FLOOR") or ""
@@ -541,6 +545,10 @@ def patch(exp, run_key, variant, trace):
         h["learning_rate"] = float(LEARNING_RATE)
     if PERTURBATION_COUNT:
         exp["trainer"]["config_overrides"]["hyperparameters"]["perturbation_count"] = int(PERTURBATION_COUNT)
+    # S-H: trainer-side, so it must go in the TRAINER copy -- the aggregator's
+    # copy of probe knobs is never read (same trap as select_perturbation_using_jvp).
+    if PROBE_COMBINE:
+        exp["trainer"]["config_overrides"]["hyperparameters"]["probe_combine"] = PROBE_COMBINE
     if MAX_ITER:
         h["max_iterations_per_data_id"] = int(MAX_ITER)
     # Opt-2/Opt-3 ablation toggles (charter 4-run 2x2). Written into the per-run

@@ -141,6 +141,9 @@ if __name__ == "__main__":
             # forward-pass count knob (default 10 = historical behavior).
             "perturbation_count": getattr(
                 config.hyperparameters, "perturbation_count", 10),
+            # S-H: select one probe of P (default, historical) or average all P.
+            "probe_combine": getattr(
+                config.hyperparameters, "probe_combine", "select"),
             # fluxtune JVP perf-opt (§L, bit-identical). Default False =
             # byte-identical; enabled only in the fluxtune yamls.
             "jvp_perf_opt": getattr(

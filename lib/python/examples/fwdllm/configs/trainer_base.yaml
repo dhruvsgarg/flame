@@ -87,6 +87,10 @@ hyperparameters:
   # scripts/profile_jvp_opt.py). Default false = byte-identical; the fluxtune
   # yamls set it true. Must match real<->sim (both read this config).
   jvp_perf_opt: false
+  # S-H (FLUXTUNE_DIVERGENCE_HANDOFF §11.3): how the P probes become one upload.
+  # select = keep one (historical); mean = average all P, same passes and bytes
+  # but b^2/a drops from 1 to 1/P. Must match real<->sim.
+  probe_combine: select
   evaluate_during_training_steps: 100
   frequency_of_the_test: 1
   is_debug_mode: 0

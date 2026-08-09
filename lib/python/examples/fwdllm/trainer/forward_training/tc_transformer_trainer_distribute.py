@@ -243,6 +243,19 @@ class ForwardTextClassificationTrainer:
         except (TypeError, ValueError):
             self.perturbation_count = 10
 
+        # S-H (handoff §11.3, §15.2). `select` uploads one probe of P; `mean`
+        # uploads their average, at the same 2P passes and the same bytes.
+        # Selecting on |d| raises aim and step length by the same sqrt(E), so
+        # b^2/a = 1 and stability is untouched; averaging gives b^2/a = 1/P.
+        self.probe_combine = str(
+            getattr(self.args, "probe_combine", "select") or "select"
+        ).lower()
+        if self.probe_combine not in ("select", "mean"):
+            logging.warning(
+                f"unknown probe_combine={self.probe_combine!r}; falling back to 'select'"
+            )
+            self.probe_combine = "select"
+
         # Fluxtune JVP perf optimizations (simulate_fwdllm.md §L) — all
         # bit-identical to the current grads:
         #   (a) trainable-only finite difference (skip frozen p-h*0=p);
@@ -633,6 +646,45 @@ class ForwardTextClassificationTrainer:
                 if self.args.var_control and j == self.layer_id_for_check:
                     self.grad_for_var_check = updated.detach().cpu() # Move to CPU only for check
 
+        @timer_decorator
+        def _accumulate_mean_over_probes(device, x, labels, v_buffer):
+            """S-H: assimilate all P probes -- ghat = (1/P) * sum_i d_i * v_i.
+
+            One probe is materialised at a time and discarded, so peak memory is
+            independent of P. Returns (mean loss, rms jvp) so the caller's
+            downstream logging/telemetry is unchanged; grad_for_var_check gets
+            the AVERAGED check-layer slice, keeping var/n_eff consistent with
+            what is actually uploaded.
+            """
+            P = self.perturbation_count
+            inv = 1.0 / P
+            losses, sq = [], 0.0
+            check_acc = None
+            for i in range(P):
+                v_params_i = _prepare_perturbation_tensors(device, v_buffer, i)
+                cached = getattr(self, "_sel_jvp_cache", {}).get(i)
+                if cached is not None:
+                    loss_i, jvp_i = cached
+                else:
+                    loss_i, jvp_i = _compute_forward_jvp(device, x, labels, v_params_i)
+                losses.append(float(loss_i))
+                sq += float(jvp_i) ** 2
+                for j, fg in enumerate(self.grad):
+                    updated = ((inv * jvp_i) * v_params_i[j])
+                    fg.add_(updated)
+                    if self.args.var_control and j == self.layer_id_for_check:
+                        check_acc = updated if check_acc is None else check_acc + updated
+                del v_params_i
+            if check_acc is not None:
+                self.grad_for_var_check = check_acc.detach().cpu()
+            logging.info(
+                f"[probe_combine=mean] P={P} rms_jvp={(sq / P) ** 0.5:.6g} "
+                f"for trainer : {self.trainer_id} for model version: "
+                f"{logging_state.get('round_id')} data-id: {logging_state.get('data_id')}. "
+                f"iteration: {logging_state.get('iteration')}"
+            )
+            return sum(losses) / P, (sq / P) ** 0.5
+
         curr_client_idx = self.args.client_idx
         if batch_idx == 0 and epoch == 0 and not batch[2].is_cuda:
             # batch[2] is typically the attention_mask. Summing it gives the count of non-padding tokens.
@@ -656,6 +708,20 @@ class ForwardTextClassificationTrainer:
             _compute_batch_stat_utility(device, x, labels)
         with _stage_timer(self, "tb_setup_training_state"):
             v_buffer, best_idx = _setup_training_state(device, logging_state, x, labels)
+
+        if self.probe_combine == "mean" and self.args.perturbation_sampling and v_buffer:
+            # S-H: skip the winner-only path entirely -- no v_params to prepare,
+            # no best-v deepcopy to carry, since every probe is assimilated.
+            with _stage_timer(self, "tb_accumulate_grads"):
+                loss, jvp = _accumulate_mean_over_probes(device, x, labels, v_buffer)
+            self.jvp_for_snr_check = abs(jvp)
+            v_params = None
+            self.base_trainer.normalize_stat_utility(epoch)
+            logging.debug(
+                f"stat_utility - normalized for trainerId: {self.trainer_id} = {self.base_trainer._stat_utility}"
+            )
+            del x, labels, jvp, v_params
+            return loss
 
         if best_idx == -1 and self.databin_best_v_params is not None:
             v_params = self.databin_best_v_params
