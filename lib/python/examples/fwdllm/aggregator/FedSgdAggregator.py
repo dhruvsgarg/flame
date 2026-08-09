@@ -139,6 +139,32 @@ class FedSGDAggregator(TopAggregator):
                 f"for model_type={self.args.model_type}"
             )
 
+        # S-A + S-B (handoff §15.4, §15.6). raw_sgd = theta -= eta*G/N (historical).
+        # trust_ratio = theta -= rho*_t * ||theta_tr|| * G/||G||, making rho an
+        # operator constant instead of an emergent one. They must ship together:
+        # a CONSTANT rho* still grows ||theta|| geometrically, so boundedness comes
+        # from the anneal. rm = rho*_0 * t^-rho_exp with rho_exp > 0.5, strictly
+        # inside Robbins-Monro rather than on its edge (1/sqrt(t) only defers).
+        self._server_step_rule = str(
+            getattr(self.args, "server_step_rule", "raw_sgd") or "raw_sgd"
+        ).lower()
+        if self._server_step_rule not in ("raw_sgd", "trust_ratio"):
+            logger.warning(
+                f"unknown server_step_rule={self._server_step_rule!r}; using raw_sgd"
+            )
+            self._server_step_rule = "raw_sgd"
+        self._rho_star = float(getattr(self.args, "rho_star", 0.01) or 0.01)
+        self._rho_schedule = str(
+            getattr(self.args, "rho_schedule", "const") or "const"
+        ).lower()
+        self._rho_exp = float(getattr(self.args, "rho_exp", 0.55) or 0.55)
+        self._commit_count = 0
+        if self._server_step_rule == "trust_ratio":
+            logger.info(
+                f"[ServerStep] trust_ratio rho_star={self._rho_star} "
+                f"schedule={self._rho_schedule} exp={self._rho_exp}"
+            )
+
         self.track_trainer_avail = (
             self.config.hyperparameters.track_trainer_avail or None
         )
@@ -347,6 +373,10 @@ class FedSGDAggregator(TopAggregator):
         _split = self._pool_split_half_stats(model_list)
         _delta_sq = _weight_sq = 0.0
         _tr_delta_sq = _tr_weight_sq = 0.0
+        # Pass 1 pools the uploads. Under raw_sgd this stays fused with the write
+        # below (byte-identical); trust_ratio needs ||G|| and ||theta_tr|| over the
+        # WHOLE trainable slice before any tensor is touched, so it is split out.
+        _trust = self._server_step_rule == "trust_ratio"
         for id, k in enumerate(weighted_gradient_sum):
             for i in range(0, len(model_list)):
                 local_sample_number, local_model_params = model_list[i]
@@ -355,16 +385,52 @@ class FedSGDAggregator(TopAggregator):
                     weighted_gradient_sum[id] = local_model_params[id]
                 else:
                     weighted_gradient_sum[id] += local_model_params[id]
-            # `.to("cpu")` syncs GPU->CPU; timed separately since it runs once
-            # per param, not once per call.
-            with _agg_sync_timer(self, "agg_apply_update_cpu_sync"):
-                _param_src = next(old_param)
-                _trainable = bool(_param_src.requires_grad)  # read before detach()
-                _param = _param_src.detach().to("cpu")
-                _update = self._server_update_step(
-                    id, learning_rate * weighted_gradient_sum[id] / training_num
-                )
-                _param.sub_(_update)
+            if not _trust:
+                # `.to("cpu")` syncs GPU->CPU; timed separately since it runs once
+                # per param, not once per call.
+                with _agg_sync_timer(self, "agg_apply_update_cpu_sync"):
+                    _param_src = next(old_param)
+                    _trainable = bool(_param_src.requires_grad)  # read before detach()
+                    _param = _param_src.detach().to("cpu")
+                    _update = self._server_update_step(
+                        id, learning_rate * weighted_gradient_sum[id] / training_num
+                    )
+                    _param.sub_(_update)
+                    if _audit:
+                        _d = float(_update.pow(2).sum())
+                        _w = float(_param.pow(2).sum())
+                        _delta_sq += _d
+                        _weight_sq += _w
+                        if _trainable:  # L3: the slice that can actually diverge
+                            _tr_delta_sq += _d
+                            _tr_weight_sq += _w
+        if _trust:
+            _rho_t = self._rho_star_now()
+            _g_sq = _t_sq = 0.0
+            for id, _p in zip(range(len(weighted_gradient_sum)),
+                              self.trainer.model.parameters()):
+                if not _p.requires_grad:
+                    continue
+                _g_sq += float((weighted_gradient_sum[id] / training_num).pow(2).sum())
+                _t_sq += float(_p.detach().pow(2).sum())
+            _gn, _tn = _g_sq ** 0.5, _t_sq ** 0.5
+            # ||G||=0 means an empty/degenerate pool: skip rather than divide.
+            _scale = (_rho_t * _tn / _gn) if _gn > 0 else 0.0
+            logger.info(
+                f"[ServerStep] trust_ratio commit={self._commit_count} rho*={_rho_t:.6g} "
+                f"||G||={_gn:.6g} ||theta_tr||={_tn:.6g} scale={_scale:.6g}"
+            )
+            for id, _param_src in zip(range(len(weighted_gradient_sum)),
+                                      self.trainer.model.parameters()):
+                with _agg_sync_timer(self, "agg_apply_update_cpu_sync"):
+                    _trainable = bool(_param_src.requires_grad)
+                    _param = _param_src.detach().to("cpu")
+                    # Frozen tensors probe as zeros, so their pooled sum is already
+                    # zero -- no branch needed, same as raw_sgd.
+                    _update = self._server_update_step(
+                        id, (_scale / training_num) * weighted_gradient_sum[id]
+                    )
+                    _param.sub_(_update)
                 if _audit:
                     _d = float(_update.pow(2).sum())
                     _w = float(_param.pow(2).sum())
@@ -373,6 +439,7 @@ class FedSGDAggregator(TopAggregator):
                     if _trainable:  # L3: the slice that can actually diverge
                         _tr_delta_sq += _d
                         _tr_weight_sq += _w
+        self._commit_count += 1
         if _audit:
             self._emit_server_update(
                 _delta_sq**0.5, _weight_sq**0.5, learning_rate,
@@ -380,6 +447,19 @@ class FedSGDAggregator(TopAggregator):
                 trainable_weight_norm=_tr_weight_sq**0.5,
                 split=_split,
             )
+
+    def _rho_star_now(self):
+        """S-B: the relative step this commit is allowed to take.
+
+        `const` holds the setpoint -- which isolates S-A but still grows
+        ||theta|| geometrically as (1+rho*^2)^(T/2). `rm` anneals as
+        rho*_0 * t^-rho_exp; rho_exp must exceed 0.5, since sum (1/sqrt(t))^2
+        diverges logarithmically and merely defers the blow-up (handoff §15.6).
+        """
+        t = max(1, self._commit_count + 1)
+        if self._rho_schedule == "rm":
+            return self._rho_star * (t ** -self._rho_exp)
+        return self._rho_star
 
     def _pool_split_half_stats(self, model_list):
         """L1 audit: raw components of the committed pool's SPLIT-HALF COSINE.
