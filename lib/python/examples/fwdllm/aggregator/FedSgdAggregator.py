@@ -555,13 +555,19 @@ class FedSGDAggregator(TopAggregator):
         if _trust:
             _rho_t = self._rho_star_now()
             _g_sq = _t_sq = 0.0
+            _dirs = {}
             for id, _p in zip(range(len(weighted_gradient_sum)),
                               self.trainer.model.parameters()):
+                _pooled = weighted_gradient_sum[id] / training_num
+                # Momentum BEFORE normalisation, so the trust-ratio scale still
+                # pins rho at rho*. Applied after it (the raw_sgd path) heavy-ball
+                # multiplies the step by 1/(1-beta) -- which is the arithmetic
+                # behind the original S1 NaN, and would confound any momentum A/B.
+                _dirs[id] = self._server_update_step(id, _pooled)
                 if not _p.requires_grad:
                     continue
-                _pooled = weighted_gradient_sum[id] / training_num
-                _cos_accumulate(id, _pooled)
-                _g_sq += float(_pooled.pow(2).sum())
+                _cos_accumulate(id, _dirs[id])
+                _g_sq += float(_dirs[id].pow(2).sum())
                 _t_sq += float(_p.detach().pow(2).sum())
             _gn, _tn = _g_sq ** 0.5, _t_sq ** 0.5
             # ||G||=0 means an empty/degenerate pool: skip rather than divide.
@@ -577,9 +583,7 @@ class FedSGDAggregator(TopAggregator):
                     _param = _param_src.detach().to("cpu")
                     # Frozen tensors probe as zeros, so their pooled sum is already
                     # zero -- no branch needed, same as raw_sgd.
-                    _update = self._server_update_step(
-                        id, (_scale / training_num) * weighted_gradient_sum[id]
-                    )
+                    _update = _scale * _dirs[id]
                     _param.sub_(_update)
                     self._apply_weight_decay(_param, _trainable, _wd_lam)
                 if _audit:

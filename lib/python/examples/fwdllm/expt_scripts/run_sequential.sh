@@ -128,6 +128,7 @@ GATE_RHO_REF=""        # S-C: annealed|setpoint -- which rho sizes the pool; emp
 COS_GROUND_TRUTH_AUDIT="" # B1: per-commit cos(G,g) vs a real backward pass on a fixed held-out batch
 COS_PROBE_BATCH_SIZE=""   # B1: size of that batch; empty => code default 1024 (B17)
 SERVER_WEIGHT_DECAY=""    # Q2: decay the trainable slice after the step; "auto" = rho^2/2
+SERVER_MOMENTUM=""        # S1: heavy-ball on the pooled DIRECTION (rho stays rho* under trust_ratio)
 ADAPTER_RF=""          # S-I: adapter bottleneck reduction_factor -- the real p knob; empty => code default 16
 MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
 VAR_STOPPING_POLICY=""   # Opt-2: off|fixed_cap|plateau (empty => baselines.yaml, fluxtune=plateau)
@@ -173,6 +174,7 @@ usage() {
   echo "          [--gate-rho-ref annealed|setpoint]  (setpoint stops S-C's pool vanishing with S-B's anneal)" >&2
   echo "          [--cos-ground-truth-audit] [--cos-probe-batch-size N]  (B1: real cos(G,g), aggregator-side)" >&2
   echo "          [--server-weight-decay auto|FLOAT]  (Q2: pins Phi=1 at auto=rho^2/2)" >&2
+  echo "          [--server-momentum BETA]  (S1: temporal pooling; needs trust_ratio)" >&2
   echo "          [--adapter-reduction-factor N]  (768/N per adapter; the real p knob)" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
@@ -223,6 +225,7 @@ while [[ $# -gt 0 ]]; do
     --cos-ground-truth-audit) COS_GROUND_TRUTH_AUDIT=1; shift ;;
     --cos-probe-batch-size) COS_PROBE_BATCH_SIZE="$2"; shift 2 ;;
     --server-weight-decay) SERVER_WEIGHT_DECAY="$2"; shift 2 ;;
+    --server-momentum) SERVER_MOMENTUM="$2"; shift 2 ;;
     --adapter-reduction-factor) ADAPTER_RF="$2"; shift 2 ;;
     --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
     --var-stopping-policy)  case "$2" in off|fixed_cap|plateau) ;; *) echo "ERROR: --var-stopping-policy must be off|fixed_cap|plateau (got '$2')" >&2; exit 2 ;; esac
@@ -403,7 +406,7 @@ LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
   TRAINABLE_SCOPE="$TRAINABLE_SCOPE" COMMIT_GATE="$COMMIT_GATE" GATE_SAFETY_S="$GATE_SAFETY_S" \
   GATE_RHO_REF="$GATE_RHO_REF" COS_GROUND_TRUTH_AUDIT="$COS_GROUND_TRUTH_AUDIT" \
   COS_PROBE_BATCH_SIZE="$COS_PROBE_BATCH_SIZE" \
-  SERVER_WEIGHT_DECAY="$SERVER_WEIGHT_DECAY" \
+  SERVER_WEIGHT_DECAY="$SERVER_WEIGHT_DECAY" SERVER_MOMENTUM="$SERVER_MOMENTUM" \
   ADAPTER_RF="$ADAPTER_RF" \
 DELAY_FLOOR="$DELAY_FLOOR" \
 VAR_STOPPING_POLICY="$VAR_STOPPING_POLICY" AGG_RATE_TYPE="$AGG_RATE_TYPE" \
@@ -442,6 +445,7 @@ GATE_RHO_REF = env("GATE_RHO_REF") or ""
 COS_GROUND_TRUTH_AUDIT = env("COS_GROUND_TRUTH_AUDIT") or ""
 COS_PROBE_BATCH_SIZE = env("COS_PROBE_BATCH_SIZE") or ""
 SERVER_WEIGHT_DECAY = env("SERVER_WEIGHT_DECAY") or ""
+SERVER_MOMENTUM = env("SERVER_MOMENTUM") or ""
 ADAPTER_RF = env("ADAPTER_RF") or ""
 VAR_STOPPING_POLICY = env("VAR_STOPPING_POLICY") or ""; AGG_RATE_TYPE = env("AGG_RATE_TYPE") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
@@ -636,6 +640,8 @@ def patch(exp, run_key, variant, trace):
         h["cos_probe_batch_size"] = int(COS_PROBE_BATCH_SIZE)
     if SERVER_WEIGHT_DECAY:
         h["server_weight_decay"] = SERVER_WEIGHT_DECAY
+    if SERVER_MOMENTUM:
+        h["server_momentum"] = float(SERVER_MOMENTUM)
     # S-I: BOTH sides build the model, so both need the bottleneck or the
     # aggregator's eval model has a different shape than the trainers'.
     if ADAPTER_RF:
