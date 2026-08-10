@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rung-2 rig: how good is a held-out batch as a gradient reference?
 
-Built to diagnose B1 (fl_fwd_ft_solution.md §3.9) and to size its fix. Imports
+Built to diagnose B1 (fl_fwd_ft_solution.md §6) and to size its fix. Imports
 the production model and data path; no FL stack, no MQTT, no run.
 
     python probe_reference_quality.py --config <aggregator_config.json> [--train]

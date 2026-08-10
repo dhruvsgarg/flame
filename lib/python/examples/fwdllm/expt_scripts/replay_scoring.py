@@ -7,7 +7,7 @@ Reads only `server_update` and `agg_eval` from a run's aggregator telemetry.
     ./replay_scoring.py RUN_DIR [RUN_DIR ...]           # score arms
     ./replay_scoring.py --cos RUN_DIR [RUN_DIR ...]     # + cos-probe audit
 
-Scoring (fl_fwd_ft_solution.md §3.4). B is summed over t = 0 .. T-2 -- exactly
+Scoring (fl_fwd_ft_solution.md §4.1). B is summed over t = 0 .. T-2 -- exactly
 the steps lying between tw[0] and tw[-1]. The t = 1 .. T-1 window drops commit
 0's step and includes a last step that is not in the norm; it fits Phi_obs
 worse (mean |err| 1.21% vs 0.77% over 25 arms).

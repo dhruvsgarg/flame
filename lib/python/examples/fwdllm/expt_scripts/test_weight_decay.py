@@ -1,7 +1,7 @@
 """Q2 preflight: `server_weight_decay` must pin Phi = 1.00 by construction.
 
 Q2 asks whether ||theta_tr|| is CAUSAL or a symptom of directional misaim
-(fl_fwd_ft_solution.md §6.1). The arm is only interpretable if the decay
+(fl_fwd_ft_solution.md §7.2). The arm is only interpretable if the decay
 actually cancels Leg 1's inflation, so this checks the arithmetic rather than
 the outcome:
 

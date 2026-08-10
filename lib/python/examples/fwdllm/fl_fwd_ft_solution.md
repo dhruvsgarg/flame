@@ -1,150 +1,128 @@
-# Forward-gradient fine-tuning — the divergence problem, the model, and the state of the fix
+# Forward-gradient fine-tuning — the problem, the model, and where it stands
 
-> **Scope.** The measurements here are FL (FluxTune / FwdLLM on agnews + DistilBERT), but the object of
-> study is **backprop-free fine-tuning by directional derivatives**, of which FL is one deployment.
-> Parts 1–6 are the FL instance; **Part 7 is the extension path** to single-device, centralized-ZO and
-> datacenter settings, with the assumptions that must be re-checked to get there.
+> **This is one of two documents.** Here: *why* — the failure, its mechanism, the symbols, the model
+> that predicts it, and what is still unknown. Companion: **[fl_fwd_ft_practice.md](fl_fwd_ft_practice.md)**
+> — *what and how*: the shipped configuration, every knob and arm measured, dead ends, instruments,
+> launch and reproduction. Its sections are `P1…P9`; **every number a run produced is owned there**,
+> and this document cites rather than restates it.
 >
-> Supersedes and replaces `FLUXTUNE_DIVERGENCE_HANDOFF.md` and `FLUXTUNE_PROBE_PLAN.md` (both deleted
-> 2026-08-10; all content carried here — the probe plan's durable half is the instrument ladder in §6.2,
-> and its superseded constants are listed in §4.5).
+> **Scope.** The measurements are FL (FluxTune / FwdLLM on agnews + DistilBERT), but the object of
+> study is **backprop-free fine-tuning by directional derivatives**, of which FL is one deployment.
+> §1–§7 are the FL instance; **§8 is the extension path** to single-device, centralized-ZO and
+> datacenter settings.
 
 ---
 
-## §0 — How this document works
-
-**Read order.** **§0.1 is the scoreboard — start there, and read nothing else unless it points you
-somewhere.** Then: §1 what we are trying to solve · §2 what the shipped system measurably does · §3 the
-model that explains it · §4 every arm and knob ever tried, with verdicts · §5 the fix as it currently
-stands · §6 what runs next · §7 generality beyond FL.
-
-**§3, §4 and §5 move together.** Evidence changes the model, the model changes the recommended
-solution. Any edit that adds a finding to §4 must, in the same edit, update §3 if the model moved and
-re-check §5 if the recommendation moved. Never leave a corrected model beside a stale recommendation.
-
-**Maintenance rules.**
-
-| # | rule |
-|---|---|
-| **R1** | **Edit in place.** Rewrite the row or paragraph that changed. No changelogs, no dated "update:" notes, no appended addenda. Git holds history. |
-| **R2** | **One number, one home.** Every quantity has exactly one owning section; everywhere else cites `§x.y`. If you find yourself restating a number, delete the copy. |
-| **R3** | **Status lives in three places, each with one job.** §0.1 is the scoreboard — one line per question, no owned numbers, updated by *every* edit elsewhere. §4.1 is every arm run (once each, with its run id). §4.3 is every feature built. No status tags anywhere else. |
-| **R4** | **Tag every claim** `MEASURED` (telemetry + run id) · `DERIVED` (arithmetic on measured inputs) · `ANALYSIS` (rests on a stated assumption) · `HYPOTHESIS` (§6.3). Untagged prose is not evidence. |
-| **R5** | **Dead ends are permanent.** §4.4 is append-only and is the first thing to read before proposing anything. A knob that failed does not get re-proposed elsewhere in the doc; it gets a §4.4 row citing why. |
-| **R6** | **Prediction before run.** An arm enters §6.4 with a number and a *sinking condition* written down first. No prediction ⇒ not ready to launch. |
-| **R7** | **Cheapest instrument first** (§6.2). Log replay beats an offline rig beats a single-process replica beats a sim run beats a real run — by ~3 orders of magnitude in cost each step. A full run is what *confirms* a hypothesis, never what explores it. |
-| **R8** | **Supersede by overwriting**, and add a row to §4.5 only if the stale number is quoted in another document or a paper draft. §4.5 is a quote-checking aid, not a history. |
-| **R9** | **§7 is frozen** until §6.1 closes. Add to it only when something in Parts 1–6 forces a generality caveat. |
-| **R10** | **Prose budget.** A paragraph that does not change a decision is deleted. No section summarises another section. Accuracy is a *result*, never the stability evidence (§2.7). |
-
----
-
-## §0.1 Scoreboard — where the work actually stands
-
-*An index, not a source of truth: one line per question, a state, and a pointer. It carries no number
-that is not owned by the section it points at (R2). **Every edit elsewhere updates a row here.***
+## §0 — Where the work stands
 
 **In one line:** *we know why it diverges and we have four fixes that work; what we still cannot do is
-compute the right step size from the config rather than reading it off a curve.*
-
-### In flight — launched, not yet landed
-
-*Delete a row the moment its run lands: the result moves to §4.1 and its question
-moves to Settled or Dead above. A row here with a finished run is stale (R1).*
-
-| node | arm | settles | prediction, registered before launch | early kill check |
-|---|---|---|---|---|
-| **3** | `select`/`rf`=16, then `mean`/`rf`=64 — both at `ρ*`=0.06, `exp`=0.25, `N` pinned 200 | **Q3** (`Λ` out of sample) + **H-P** (first valid `cos`) | peaks **≈0.70** and **≈0.857** against the 0.801 anchor (`035045`). `cos` should now come back ≈0.036 / 0.067 and stop drifting within an arm | `[CosProbe]` dominant-class share ≈0.25, not 0.75 |
-| **4** | `K`=30/`c`=60, then `K`=50/`c`=100, `n_target`+`setpoint` | **C2** (cohort width) + **H-E** (staleness) | `N_req` = 1,013 is now reachable, so the gate should finally produce a contrast instead of sitting at the `I` cap | `[CommitGate]` `n_have` must rise above the cap |
-| **2** | `mean`, `ρ*`=0.06, `exp`=0.25, `N` pinned 200, **`β` = 0.5** | **S1** (momentum as temporal pooling) | `B` **unchanged at 0.060**; `cos` **×1.41**; peak **0.801 → ≈0.84**. Control is `035045`, byte-identical at `β`=0 | `B` at commit ~20: if it moved, `ρ` is not pinned — kill the arm |
-
-**S1's sinking condition:** peak ≤ 0.81 at unchanged `B` ⇒ no gradient component persists across
-commits, and temporal pooling is dead for this method. Note `Λ` as defined is computed from config and
-**will not move** with `β`; if accuracy rises at unchanged formula-`Λ`, the progress law needs a
-`√(1/(1−β))` term.
+compute the right step size from the config rather than reading it off a dose-response curve.*
 
 ### Settled — do not re-measure
 
-| what | state | where |
-|---|---|---|
-| Root cause: nothing in the pipeline is scale-invariant — estimator, step and gate all inflate together | **SETTLED** | §2.3 |
-| The step is orthogonal to `θ`, so the norm grows by the full `‖Δθ‖` every commit | **SETTLED** | §2.2 Leg 1 |
-| `ρ ∝ η` and `ρ ∝ 1/√(K·I)` | **SETTLED** | §2.2 Leg 2 |
-| The variance gate is a dimensionally-wrong `N`-controller, and is the *accidental* stabiliser | **SETTLED** | §2.2 Leg 3 |
-| The defect is **shared with sync `fwdllm`** — not a FluxTune bug | **SETTLED** | §2.4 |
-| Heterogeneity (α) acts *only* as a step-size multiplier, via the gradient scale | **SETTLED** | §2.5 |
-| Collapse is **directional degeneracy** of the head, not logit saturation | **SETTLED** | §2.6 |
-| `\|d\|` growth is genuine gradient growth, not an FD artifact | **SETTLED** | §2.2 |
-| **Norm law** `‖θ_T‖/‖θ_0‖ = e^B` — closed form, no free parameter | **SETTLED** (accuracy is `ρ`-dependent) | §3.4 |
-| **Progress law** — peak accuracy is monotone in `Λ` and saturates | **SETTLED** in-sample + 4 out-of-sample arms | §3.4, §4.1 |
-| Probe selection by `\|d\|` is stability-neutral **by construction**, and the candidates carry no other signal | **SETTLED** | §4.2 |
-| **Fix 1** — average all `P` probes instead of selecting one | **WORKS**, 5/5 arms | §4.2, §4.3 B2 |
-| **Fix 2** — trust-ratio step: `ρ` becomes an operator constant, α multiplier disappears | **WORKS** | §4.2, §4.3 B3 |
-| **Fix 3** — Robbins–Monro anneal at `exp` = 0.25 | **WORKS** | §4.2, §4.3 B3 |
-| **Fix 4** — shrink `p` via adapter rank; `p` is a *gradient-quality* knob | **WORKS**, 3/3 | §4.2, §4.3 B5 |
-| The `cos` probe's reference batch was one client's non-IID shard — every `cos` it logged is void | **CAUSE FOUND, FIX SHIPPED** | §3.9, §4.3 B17 |
-| Weight decay on the trainable slice (Q2's instrument) pins `Φ` = 1 by construction | **BUILT**, arm not yet run | §4.3 B7/B15 |
-| **Q1** — the collapse budget is **RELATIVE** (`Φ`), not absolute (`‖θ_tr‖`) | **SETTLED on the rig**, two `p` values | §3.4a |
-| **Q2** — `‖θ_tr‖` is mostly a **SYMPTOM**; decay recovers only 20–25% of the damage | **SETTLED on the rig**; prediction confirmed | §3.4a |
-| Backprop reaches **0.90** on the same model/`p`/data where the best forward-gradient arm is **0.865** | **MEASURED** — the cost of going backward-free | §3.4a |
+| what | where |
+|---|---|
+| **Root cause:** nothing in the pipeline is scale-invariant — estimator, step and gate all inflate together | §2.4 |
+| Every step is orthogonal to `θ`, so the norm grows by the full `‖Δθ‖` every commit — this makes the norm law *exact* | §2.1 |
+| `ρ ∝ η` and `ρ ∝ 1/√(K·I)`; the naive `ρ ∝ 1/√K` is false because the gate hands a `K` rise back as fewer iterations | §2.2 |
+| The variance gate is a dimensionally-wrong `N`-controller — and is the *accidental* stabiliser | §2.3 |
+| The defect is **shared with sync `fwdllm`**, not a FluxTune bug | §2.5 |
+| Heterogeneity (α) acts **only** as a step-size multiplier, through the gradient scale | §2.6 |
+| Collapse is **directional degeneracy** of the head, not logit saturation | §2.7 |
+| **Norm law** `‖θ_T‖/‖θ_0‖ = e^B` — closed form, no free parameter, 21 arms | §4.1 |
+| **Progress law** — peak accuracy is monotone in `Λ` and saturates | §4.2 |
+| Probe selection by `\|d\|` is stability-neutral **by construction**; the candidates carry no other signal | §3.2 |
+| **Fix 1** — average all `P` probes instead of selecting one (5/5 arms) | §5.1, [P3](fl_fwd_ft_practice.md#p3--knob-ledger--what-each-lever-actually-did) |
+| **Fix 2** — trust-ratio step: `ρ` becomes an operator constant, the α multiplier disappears | §5.1, [P3](fl_fwd_ft_practice.md#p3--knob-ledger--what-each-lever-actually-did) |
+| **Fix 3** — Robbins–Monro anneal at `exp` = 0.25 | §5.1, [P3](fl_fwd_ft_practice.md#p3--knob-ledger--what-each-lever-actually-did) |
+| **Fix 4** — shrink `p` via adapter rank; `p` is a *gradient-quality* knob (3/3) | §5.2, [P3](fl_fwd_ft_practice.md#p3--knob-ledger--what-each-lever-actually-did) |
+| The `cos` probe's reference batch was one client's non-IID shard — every `cos` it logged is void | §6 |
+| **Q1** — the collapse budget is **relative** (`Φ`), not absolute (`‖θ_tr‖`) | §7.1 |
+| **Q2** — `‖θ_tr‖` is mostly a **symptom**; perfect decay recovers only 20–25% of the damage | §7.2 |
+| Backprop reaches **0.90** where the best forward-gradient arm reaches **0.865** — the cost of going backward-free | §7.3 |
 
 ### Dead — refuted, do not re-propose
 
-| what | why it died | where |
-|---|---|---|
-| "There is a critical `ρ` ≈ 0.09" | horizon artifact; every `ρ > 0` inflates geometrically | §3.4(a) |
-| "`ρ ∝ 1/√K`" (the naive form) | the gate hands a `K` rise back as fewer iterations | §2.2 Leg 2 |
-| Safety factor `s` = 0.3–0.5 | derived wrong; the two laws give 2.6–4.3 | §3.5 |
-| Lowering `η` as the fix | pays 1:1 in progress and still has `Σρ² = ∞` | §4.4 |
-| Split-half cosine as a gate or online `cos` estimator | measurability wall at this `p` | §4.4 |
-| `n_eff` as a controller input | an identity, blind to disagreement | §4.2 |
-| The `‖θ‖²` log-log slope as a stability score | bounded by 1 under trust-ratio *by construction* | §3.4(b) |
-| **Client disagreement** as the cause of the `cos` shortfall | would need <1 effective upload — impossible | §3.9 |
-| **Reference noise** as the cause of the `cos` shortfall | two-batch control gives 1.1–1.6×, not 25–80× | §3.9 |
-| Every `cos_ground_truth` number ever logged | **VOID** — probe reference was one client's non-IID shard | §3.9, §4.5 |
-| "`Φ` decides whether *any* arm holds its peak" | true only for arms that actually learned | §3.4 |
+| what | why it died |
+|---|---|
+| "There is a critical `ρ` ≈ 0.09" | horizon artifact; **every** `ρ > 0` inflates geometrically (§4.3) |
+| Safety factor `s` = 0.3–0.5 | derived wrong; the two laws give 2.6–4.3 (§4.4) |
+| Lowering `η` as the fix | pays 1:1 in progress and still has `Σρ² = ∞` |
+| Split-half cosine as a gate or an online `cos` estimator | measurability wall at this `p` |
+| `n_eff` as a controller input | an identity, blind to directional disagreement (§5.4) |
+| The `‖θ‖²` log-log slope as a stability score | bounded by 1 under trust-ratio *by construction* (§4.3) |
+| Client disagreement, and reference noise, as the cause of the `cos` shortfall | both quantitatively excluded (§6) |
+| Every `cos_ground_truth` number ever logged | **void** — broken probe reference (§6) |
+| "`Φ` decides whether *any* arm holds its peak" | true only for arms that actually learned (§4.2) |
+
+Full reasoning and the rest of the list: [P6 · dead ends](fl_fwd_ft_practice.md#p6--dead-ends--do-not-retry).
 
 ### Open — and this is the entire list
 
 | # | question | blocking what | how it closes |
 |---|---|---|---|
-| **H-P** | With a clean reference, does measured `cos` match the closed form? | whether `ρ ≤ cos` is a real control law or only a design rule | the probe is fixed; rides free on any arm |
-| **Q3** | Does `Λ` predict **in the steep region**? | turning `Λ` from fitted into predictive | 3 arms at pinned `ρ*`, `N` |
-| **C2** | Cohort width: the commit gate has never produced a clean A/B | the async/controller contribution | gate re-run at `K` = 30 |
-| **H-E** | Does high `K`/`C` produce real staleness? | whether ω-freshness matters | K/C sweep (**old logs deleted**) |
-| **S1** | Does a gradient component persist across commits, so momentum pools in time? | the only lever that raises `Λ` at zero `B` | node 2, in flight |
-| **M1** | "probe noise dominates data noise by ~40×" is **ANALYSIS, never measured** — and it is what justifies spending compute on `P` before `K` (§5.2) | the whole priority order | rig: split-half over probes vs over data. Minutes, no node |
+| **H-P** | With a clean reference, does measured `cos` match the closed form? | whether `ρ ≤ s·cos` is a real *control law* or only a *design rule* | probe is fixed; rides free on any arm |
+| **Q3** | Does `Λ` predict **in the steep region** (it is currently fitted where accuracy has saturated)? | turning `Λ` from fitted into predictive | 3 arms at pinned `ρ*`, `N` |
+| **C2** | Cohort width — the commit gate has never produced a clean A/B | the async/controller contribution | gate re-run at `K` = 30 |
+| **H-E** | Does high `K`/`C` produce real staleness? | whether ω-freshness matters | K/C sweep (old logs deleted) |
+| **S1** | Does a gradient component persist across commits, so momentum pools *in time*? | the only lever that raises `Λ` at zero `B` cost | in flight |
+| **M1** | "probe noise dominates data noise by ~40×" is **analysis, never measured** — and it is what puts `P` ahead of `K` in the priority order | the whole priority order (§5.5) | rig: split-half over probes vs over data |
 | — | **No convergence-detection rule exists**, and no eval-side monitor works as one | knowing when to stop | unowned |
 
-**What is *not* open:** the optimizer. The four fixes enact to spec and the dynamics are closed by the
+**What is *not* open: the optimizer.** The four fixes enact to spec and the dynamics are closed by the
 two laws. Everything above is about the *constants* those laws are scored against.
+
+### How to maintain these two documents
+
+| # | rule |
+|---|---|
+| **R1** | **Edit in place.** Rewrite the row or paragraph that changed. No changelogs, no dated "update:" notes. Git holds history. |
+| **R2** | **One number, one home.** Model and mechanism live here; run results, flags and commands live in the practice doc. If you restate a number across the two, delete the copy and cite. |
+| **R3** | **Evidence, model and recommendation move together.** A new finding updates the model here *and* re-checks the recommended stack ([P2](fl_fwd_ft_practice.md#p2--the-recommended-stack)) in the same edit. Never leave a corrected model beside a stale recommendation. |
+| **R4** | **Tag claims** `MEASURED` (telemetry + run id) · `DERIVED` (arithmetic on measured inputs) · `ANALYSIS` (rests on a stated assumption) · `HYPOTHESIS`. Untagged prose is not evidence. |
+| **R5** | **Dead ends are permanent.** [P6](fl_fwd_ft_practice.md#p6--dead-ends--do-not-retry) is append-only and is the first thing to read before proposing anything. |
+| **R6** | **Prediction before run.** An arm enters the queue with a number *and* a sinking condition written down first. |
+| **R7** | **Cheapest instrument first** ([P7](fl_fwd_ft_practice.md#p7--the-instrument-ladder)). A full run *confirms* a hypothesis; it never explores one. |
+| **R8** | **§8 is frozen** until the open questions close. |
+| **R9** | **Prose budget.** A paragraph that does not change a decision is deleted. Accuracy is a *result*, never the stability evidence. |
 
 ---
 
 # Part 1 — The problem
 
-## §1.1 What FluxTune is for
+## §1.1 What the method is, and what it costs
 
 Fine-tune an LLM across federated clients **without a backward pass**. Each client perturbs the
 trainable weights along random directions, measures the loss change with forward passes only, and
 uploads a scalar-scaled direction. The server pools them and steps. Nothing stores an activation
 graph, so peak memory is a forward pass and the operator set is inference-only — that is the whole
-point, and it is the part of the system nobody disputes (§5.5).
+point, and the part nobody disputes.
 
-The cost of giving up backprop is that one measurement returns **one number instead of `p`** (§3.1).
-Everything in this document is about whether enough of those numbers can be averaged, fast enough, to
-train — and about the specific way our implementation fails to.
+The price is that **one measurement returns one number instead of `p`**:
+
+| | backprop | forward-gradient |
+|---|---|---|
+| cost of one measurement | 1 fwd + 1 bwd ≈ 3 forward-equivalents | **2 forward passes**, no backward |
+| what it returns | all `p` components of `g`, exactly | **one scalar** `d = ⟨g,v⟩` — the slope along `v` |
+| memory | stores activations | nothing beyond a forward pass |
+| the update produced | `−η·g` — right direction, known length | `−η·d·v` — right **on average**, ~0.1% aligned individually |
+| noise sources | data sampling | data sampling **+ which direction you asked about** |
+
+`ĝ = d·v` is unbiased (`E[d·v] = g`) with enormous variance. *On a hillside in fog:* backprop feels
+the slope in every direction at once; forward-gradient picks one random direction, takes a test step,
+feels whether it went up or down, steps back. **One reading is nearly worthless; a thousand averaged
+readings are a slope meter.** Everything here is about whether enough readings can be averaged, fast
+enough, to train — and about the specific way our implementation failed to.
 
 ## §1.2 The failure
 
-`run_20260804_003042` (real, 3.93 h, 189 commits), agnews / DistilBERT-base + AdapterHub adapters:
+Real 3.93 h run, 189 commits, agnews / DistilBERT-base + AdapterHub adapters:
 
 ```
- 0.00h r1 did=  0   acc 0.398  loss 1.380     <- init, ln(4) = 1.386
- 2.13h r1 did=106   acc 0.846  loss 0.554     <- PEAK
- 2.95h r1 did=146   acc 0.738  loss 0.692     <- degradation starts INSIDE round 1
- 3.34h r2 did= 14   acc 0.527  loss 1.464     <- knee
- 3.87h r2 did= 38   acc 0.250  mcc 0.000  loss 2.371
+ 0.00h  acc 0.398  loss 1.380     <- init, ln(4) = 1.386
+ 2.13h  acc 0.846  loss 0.554     <- PEAK
+ 2.95h  acc 0.738  loss 0.692     <- degradation starts INSIDE round 1
+ 3.87h  acc 0.250  loss 2.371     <- one class, worse than chance
 ```
 
 **Rise, peak, collapse to a single class.** A second 4 h run agrees on every derived constant, so this
@@ -155,378 +133,278 @@ intermittent for months.
 
 | ruled out | evidence |
 |---|---|
-| overfitting | **train** loss diverges too: `stat_utility` 10.84 → 5.31 → 13.74, i.e. train loss 1.355 → 0.66 → 1.72 |
-| losing signal / plateauing | final loss **2.37 > ln 4 = 1.386** — answering *wrongly and systematically*, worse than "I don't know" |
+| overfitting | **train** loss diverges too (1.355 → 0.66 → 1.72) |
+| plateauing / running out of signal | final loss **2.37 > ln 4** — answering *wrongly and systematically*, worse than "I don't know" |
 | a round-boundary or data-order effect | degradation starts inside round 1 |
-| the finite-difference approximation | the FD displacement gets *relatively smaller* over the run (`h‖v‖/‖θ_tr‖`: 0.50 → 0.07) while the failure gets worse (H-C, §4.4) |
-| a bad seed / flaky infra | two independent 4 h runs agree on every constant |
-| something specific to async FluxTune | `fwdllm` (sync) shows the identical signature (§2.4) |
+| the finite-difference approximation | the FD displacement gets *relatively smaller* over the run while the failure gets worse |
+| a bad seed or flaky infra | two independent 4 h runs agree on every constant |
+| something specific to async FluxTune | sync `fwdllm` shows the identical signature (§2.5) |
 
 ## §1.4 Definition of done
 
-1. An arm reaches **peak ≥ 0.86** on agnews/DistilBERT and **ends within 0.015 of its peak** at ≥300
-   commits, without hand-tuning per model or per α.
+1. An arm reaches **peak ≥ 0.86** and **ends within 0.015 of its peak** at ≥300 commits, without
+   hand-tuning per model or per α.
 2. The setpoint that achieves it is **computed, not searched** — from the config, before the run.
-3. Stability is readable in **~20 commits** from `B` and `Λ` (§3.4), not from a 4 h accuracy curve.
-4. Every constant in the loop is dimensionless (§3.7), so nothing needs retuning when `p`, α, `K` or
+3. Stability is readable in **~20 commits** from `B` and `Λ` (§4), not from a 4 h accuracy curve.
+4. Every constant in the loop is dimensionless (§5.3), so nothing needs retuning when `p`, α, `K` or
    the round index changes.
 
-Items 1 and 3 are met by several arms today (§4.1). **Item 2 is the open one** — the sizing formula's
-`cos` has never been cleanly measured — the one probe built to do it was reading a broken reference
-(§3.9) — so `ρ*` is currently read off a dose-response
-curve. Item 4 is met for the step rule and unmet for the commit gate.
+Items 1 and 3 are met by several arms today. **Item 2 is the open one** — the sizing formula's `cos`
+has never been cleanly measured (§6), so `ρ*` is read off a dose-response curve. Item 4 is met for the
+step rule and unmet for the commit gate.
 
 ---
 
-# Part 2 — Diagnosis of the shipped system
+# Part 2 — Mechanism: why it diverges
 
-## §2.1 The system under test
-
-**MEASURED**, from `aggregator_config.json` + `expt_scripts/fluxtune_n10_smoke.yaml`:
-
-```
-population N_clients=100, alpha=1 (Dirichlet), agnews, DistilBERT-base + AdapterHub adapters
-trainable p = 450,340  (0.67% of 67.4M; backbone frozen AND pre_classifier dropped)
-train_batch_size = 8          -> one "data bin" = 8 samples, 150 bins per round
-perturbation_count P = 10, h = 0.01, central finite difference, fp16/autocast, no_grad
-probe selection: rank by |JVP|, coin-flip between top-2  (tc_transformer_trainer_distribute.py:481-483)
-client selection: async_oort, c = 30, agg_goal K = 10, dynamic_kc.enabled = FALSE
-commit gate: var_threshold = 0.3, var_stopping_policy = plateau (patience 3, rel_delta 0.15),
-             max_iterations_per_data_id = 20
-server step: theta <- theta - eta * (1/N_acc) * sum_k omega_k * d_k * v_k   (raw in-place SGD)
-             eta = 0.01, constant to 4 digits for the whole run; no optimizer state of any kind
-omega: grad_aware / base=new / align_gate=true / scale=0.4 [measured 0.702..0.865, median 0.818]
-```
-
-**Where the probe dimensions actually live** (**MEASURED**), and it matters everywhere (§4.2 `p` row).
-`create_model` builds 1,040,932 trainable params, but for distilbert the trainer's `__init__` then runs
-`self.model.add_module("pre_classifier", nn.Sequential())`
-(`tc_transformer_trainer_distribute.py:217`) — **replacing that layer with an empty module before any
-probe is drawn** — and `self.params` comes from `make_functional_with_buffers` *after* that:
-
-```
-                         create_model     PRODUCTION (post-:217)
-pre_classifier              590,592          0        <- dropped, not frozen
-adapters                    447,264    447,264
-classifier                    3,076      3,076
-p                         1,040,932    450,340        <- the number every cos uses
-||theta_tr|| at init          20.33        13.33
-h*||v|| = h*sqrt(p)          10.203        6.711
-```
-
-Consequences: `trainable_scope: adapters_only` is a **no-op** (the layer is already gone); the FD
-displacement is 50% of `‖θ_tr‖`, not 76%; every `cos` prediction rose ×1.52 when this was found.
-
-**`h` is pinned.** At fp16 the two forward losses agree to 1–2 significant figures at `h = 0.01`, so
-`h` sits between truncation error above and catastrophic cancellation below. It cannot be reduced.
-
-## §2.2 The defect, in three legs
-
-### Leg 1 — every step is orthogonal to `θ`. **MEASURED.**
+## §2.1 Every step is orthogonal to `θ`. **MEASURED.**
 
 `‖θ+Δ‖² = ‖θ‖² + 2⟨θ,Δ⟩ + ‖Δ‖²`, so the ratio of observed norm growth to step energy has an exact null
 at **1.000 = the step carries no component toward or away from where the model stands**. Measured per
 25-commit block: **1.000 ± 0.005 in every block of every arm** — including arms that reach 0.86 and
 hold it.
 
-**Orthogonality is not itself the defect** (`g` is nearly perpendicular to `θ` at high `p`; any
-optimizer shows this). What it establishes is that the norm grows by the *full* `‖Δθ‖` every commit,
-with no cancellation — which turns the trajectory into the exact difference equation integrated in
-§3.4. Growth per se is normal (adapters init near zero); what is atypical at `K = 10` is that it is
-geometric and unbounded.
+**Orthogonality is not itself the defect** — `g` is nearly perpendicular to `θ` at high `p`; any
+optimizer shows this. What it establishes is that the norm grows by the *full* `‖Δθ‖` every commit,
+with no cancellation, which turns the trajectory into an **exact difference equation** (§4.1). Growth
+per se is normal (adapters init near zero); what is atypical is that it is geometric and unbounded.
 
-### Leg 2 — `ρ ∝ η/√N`, and nothing anneals it. **MEASURED.**
+## §2.2 The step never anneals, and it feeds itself. **MEASURED.**
 
-```
-rho ∝ eta   (commit 1):   eta .01 -> .002 -> .0005
-            rho              0.2004    0.0404    0.0101
-            predicted        0.2004    0.0401    0.0100        <- 1% and 0%
+`ρ ∝ η` holds to 1% across a 20× sweep in `η`. `ρ ∝ 1/√N` holds to 4% over a 1.9× range in `N`, where
+`N = K·I` is the *pooled upload count*, not the cohort width. **`ρ ∝ 1/√(K·I)` is the most load-bearing
+measured law here.** The naive `ρ ∝ 1/√K` is **falsified**, because raising `K` makes the gate commit
+sooner and cuts `I` — it is `N`, not `K`, that sets the aim (§2.3).
 
-rho ∝ 1/sqrt(N)  (commits 40-80, N = K * pool_size):
-            K                10        20        30        50
-            N               182       322       299       339
-            rho * sqrt(N)   1.68      1.80      1.70      1.81  <- invariant to 4% over 1.9x in N
-```
+Whether growth is geometric or arithmetic is decided by the *absolute* step. At `K = 50` the absolute
+step is flat, so `‖θ‖²` grows linearly and safely. At `K = 10` it grows, so `‖θ‖²` is geometric with a
+doubling time of ~68 commits. **Divergence is present at commit 1** and takes ~150 commits to become
+visible: steps do not become more wrongly aimed over time; what grows is the absolute step and the norm
+it is applied to.
 
-**`ρ ∝ 1/√(K·I)` is the most load-bearing measured law here.** The naive `ρ ∝ 1/√K` is **FALSIFIED**
-(0.16 → 0.14 over `K` 10 → 50, not 0.07) because raising `K` makes the gate commit sooner, cutting `I`
-from 18.5 to 8.2. It is `N`, not `K`, that sets the aim.
+**Why the absolute step grows: the gradient genuinely grows.** A backprop probe on a fixed batch shows
+`‖g‖` tracking `‖θ_tr‖` with exponent ≈0.9 in the rising phase, matching the ≈0.8 inferred from `rms|d|`
+through a completely different instrument. So the loop
 
-Geometric vs arithmetic growth is decided by the *absolute* step, visible in one column
-(`‖θ_{t+1}‖² = ‖θ_t‖² + ‖Δθ_t‖²` from Leg 1):
+> *noise inflates the norm → bigger gradient → bigger absolute step → more noise*
 
-```
-K=50   2.04  2.04  2.03  2.05  2.03  2.02     <- constant to 1%  => ||theta||^2 linear, +4.16/commit
-K=10   2.49  2.53  2.95  4.22  4.81  6.77  11.4  12.4   <- grows  => geometric, doubling ~68 commits
-```
+is **real and closed**. Norm control is therefore potentially **curative, not cosmetic** — which is what
+raised the bar for the weight-decay question (§7.2). In the stable `mean` arms this loop is absent:
+`‖θ_tr‖` and `‖g‖` both sit flat for the whole run.
 
-Divergence is **present at commit 1** and takes ~150 commits to become visible. Steps do not become
-more wrongly aimed over time; what grows is the absolute step and the norm it is applied to.
-
-**Why `|d|` grows — the gradient genuinely grows** (**MEASURED**, B1 probe). Backprop gradient norm on
-a fixed batch tracks `‖θ_tr‖` with exponent ≈0.9 in the rising phase:
-
-```
-||theta_tr|| / ||g_backprop||, 50-commit block means:
-  select N=200 (diverging) 18/3.20  27/4.11  40/5.04  59/8.78  92/13.93   then 113/11.26 125/10.95 (post-collapse)
-  mean   N=200 (stable)    14/3.09  14/3.05  14/3.00  15/3.00  15/3.00  15/3.14
-  mean   free  (mid)       16/3.16  22/3.37  28/4.00  33/4.92  40/4.94  47/4.61   <- saturating
-```
-
-This matches the ≈0.8 inferred from `rms|d|` through a completely different instrument. So the loop
-*noise inflates the norm → bigger gradient → bigger absolute step* is **real**, and norm control is
-potentially **curative, not cosmetic** (which raises the bar for the weight-decay control arm, §6.1 Q2).
-
-### Leg 3 — the variance gate is dimensionally wrong, and is the accidental stabiliser. **MEASURED.**
+## §2.3 The variance gate is dimensionally wrong — and is the accidental stabiliser. **MEASURED.**
 
 The gate asks the right question — *have I pooled enough readings to trust this direction?* — with a
-statistic that carries units. From 3,441 `[IterProgress]` lines over the reference run at `K = 10`:
-
-```
-commit reasons:  natural (var < 0.3) = 0     plateau = 105     cap(max_iter=20) = 81
-bins that EVER reached var < 0.3:  0 of 186
-achievable variance floor (median per-bin minimum): 0.415 (bins 0-20) -> 14.97 (bins 180-186)  = 36x drift
-```
-
-**36× is exactly (6.0×)².** What `var` computes (`fwdgrad_utils.py:186-211`) is the per-coordinate
-variance between two half-means, which for two samples is exactly `‖G_A − G_B‖²/(2p)`; with `u = d·v`
-and `‖v‖² ≈ p`:
+statistic that carries units. What `var` computes is the per-coordinate variance between two half-means,
+which for two samples is exactly `‖G_A − G_B‖²/(2p)`; with `u = d·v` and `‖v‖² ≈ p`:
 
 ```
 var  =  ||G_A - G_B||^2 / (2p)   ~=   2 * b^2 * ||g||^2 / n
 ```
 
-**Both legs of the gate's behaviour fall out of that one line.** `var ∝ ‖g‖²` is the units bug (hence
-the `‖θ‖²` drift); `var ∝ 1/n` is why it is an `N`-controller at all.
+**Both legs of the gate's behaviour fall out of that one line.**
 
-```
-                       K=10    K=20    K=30    K=50   |  eta=.002 (K=10)   |  K=10, a=100
-natural (var<0.3)         0      77     128     148   |      1             |     96
-plateau                  67      20       4       1   |     31             |    102
-cap (max_iter=20)        83      28       0       0   |    118             |     38
-mean commit iteration  17.8    15.4    11.1     7.2   |   18.7             |    8.7
-```
-
-1. **The gate targets `N`, not `I`.** Early in every K-arm realised `N = K·I` lands at 264–296
-   regardless of whether `K` is 20, 30 or 50 — it hands back most of a `K` increase as fewer
-   iterations. At `K = 10` the target is unreachable, `max_iter` binds, `N` pins at 185.
-2. **Because the ruler has units of `‖θ‖²`, holding `var ≤ 0.3` forces `N ∝ ‖θ‖²`, hence `ρ ∝ 1/‖θ‖`,
-   hence a constant absolute step.** Measured at `K = 50`: `I` 5.9 → 10.3, `N` 296 → 513 as `‖θ_tr‖`
-   goes 15.2 → 27.3, with `‖Δθ‖` flat at 2.03.
+1. **`var ∝ 1/n` is why it is an `N`-controller at all.** Across `K` = 20/30/50 the realised
+   `N = K·I` lands in a narrow band regardless of `K` — the gate hands most of a `K` increase back as
+   fewer iterations. At `K` = 10 the target is unreachable, `max_iter` binds, and `N` pins low.
+2. **`var ∝ ‖g‖²` is the units bug.** The achievable variance floor drifts 36× over a run — *exactly*
+   `(6.0×)²`, the square of the `‖θ‖` growth. Because the ruler carries units of `‖θ‖²`, holding
+   `var ≤ 0.3` forces `N ∝ ‖θ‖²`, hence `ρ ∝ 1/‖θ‖`, hence a **constant absolute step**.
 
 > **The dimensional bug is the stabiliser.** Wrong units are exactly what turn a fixed threshold into a
-> `ρ ∝ 1/‖θ‖` anneal — which, since `‖θ‖ ∝ √t` under a constant absolute step, is Robbins–Monro
-> `ρ_t ∝ 1/√t` by accident. **It is not a fix:** `Σρ_t² = Σc/t` diverges *logarithmically*, so growth is
-> deferred, not stopped (extrapolated collapse at commit 1,200–1,700), and `0.3` hard-codes one
+> `ρ ∝ 1/‖θ‖` anneal — and since `‖θ‖ ∝ √t` under a constant absolute step, that is Robbins–Monro
+> `ρ_t ∝ 1/√t` *by accident*. **It is not a fix:** `Σρ_t² = Σc/t` diverges logarithmically, so collapse
+> is deferred (extrapolated to commit 1,200–1,700), not prevented — and the threshold hard-codes one
 > trajectory. Three objections stand against the statistic itself: it has units, it cannot see
-> directions (it is computed from scalars), and it does not reference the step.
+> directions (it is computed from scalars), and it never references the step.
 
-This is the precise departure from FwdLLM, whose central pooling mechanism this is: the replacement is
+This is the precise departure from FwdLLM, whose central pooling mechanism this is. The replacement is
 not "a better commit test" but **an explicit `N`-controller with `ρ` as its sensor** — which is what the
 var gate turns out to have been all along.
 
-## §2.3 The single defect
+## §2.4 The single defect
 
 **Nothing in the pipeline is scale-invariant.** The estimator (`|d|` tracks `‖θ‖`), the step
-(`‖Δθ‖ ∝ |d|`) and the gate (`var ∝ |d|²`) all inflate together, so no quantity anywhere can be
-meaningfully compared against a fixed constant. All three legs are one violation of the ratio principle
-(§3.7), with the twist that decides the fix: **the third violation partly cancels the first two**, so
-the replacement must supply that anneal *deliberately* rather than merely remove the bug.
+(`‖Δθ‖ ∝ |d|`) and the gate (`var ∝ |d|²`) all inflate together, so **no quantity anywhere can be
+meaningfully compared against a fixed constant.** All three legs are one violation of the ratio
+principle (§5.3), with the twist that decides the fix: **the third violation partly cancels the first
+two**, so the replacement must supply that anneal *deliberately* rather than merely remove the bug.
 
-## §2.4 It is cross-baseline, not FluxTune-specific. **MEASURED — closes H-F.**
+## §2.5 It is cross-baseline, not FluxTune-specific. **MEASURED.**
 
-`fwdllm` (sync, `K = 10`, `c = 10`) over 131 commits: orthogonality ratio **1.000 ± 0.008**, `ρ`
-**0.175** at commit 1, `‖θ_tr‖` 13.55 → 31.8 with `‖Δθ‖` growing — geometric, doubling every ~106
-commits. **Same signature, same magnitude, shared `_server_update_step`.**
+Sync `fwdllm` over 131 commits: orthogonality ratio 1.000 ± 0.008, same `ρ` magnitude at commit 1,
+geometric norm growth with a ~106-commit doubling time. **Same signature, same magnitude, shared
+`_server_update_step`.** So the step rule and the anneal are **cross-baseline hygiene, not a FluxTune
+contribution** (§7.4).
 
-So the step rule and the anneal are **cross-baseline hygiene, not a FluxTune contribution** (§5.5). One
-consolation prize: at matched commits `ρ·√N` is 1.68 for fluxtune vs 1.01 for fwdllm, which at matched
-`‖g‖` (**ANALYSIS**) puts FluxTune's `|JVP|` selection at `G_rule ≈ 3` and **FwdLLM's cosine-similarity
-probe selection at `G_rule ≈ 1`, i.e. no better than random.**
+One consolation prize (**ANALYSIS**): at matched commits `ρ·√N` is 1.68 for fluxtune vs 1.01 for
+fwdllm, which at matched `‖g‖` puts FluxTune's `|JVP|` selection at `G_rule ≈ 3` and **FwdLLM's
+cosine-similarity probe selection at `G_rule ≈ 1`, i.e. no better than random.**
 
-## §2.5 Heterogeneity is a step-size multiplier. **MEASURED**, 1000× in α.
+## §2.6 Heterogeneity is a step-size multiplier, and nothing more. **MEASURED over 1000× in α.**
 
-Means over commits 40–80:
+**(a) α enters through the gradient scale, and only through it.** At the same `‖θ_tr‖`, `rms|d|` spans
+2.5× across α = 0.1 / 1 / 100, propagating straight into `ρ`. **Under raw SGD, heterogeneity is a hidden
+×1.6 on the relative step** — and the diverging arms are exactly the low-α ones.
 
-| arm | run | `I` | `N` | `ρ` c1 | `ρ`·√N | `‖Δθ‖` | `‖θ_tr‖` end | `var` floor | nat/plat/cap | peak | final |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| α=0.1 K=10 | `225718` | 18.9 | 190 | 0.237 | 1.95 | 4.39 | **149.7** | 1.33 | 0/108/87 | 0.828 | **0.250** |
-| α=1 K=10 | `004203` | 18.2 | 182 | 0.200 | 1.67 | 3.07 | 91.4 | 0.64 | 0/114/85 | 0.853 | **0.250** |
-| α=100 K=10 | `012201` | 8.7 | 87 | 0.147 | 0.91 | 2.02 | 45.7 | 0.28 | 96/102/38 | **0.865** | 0.838 |
-| α=0.1 K=20 | `001241` | 19.4 | 388 | 0.163 | 2.13 | 2.38 | 28.6 | 0.38 | 1/38/67 | 0.848 | 0.848 |
-| α=1 K=20 | `031606` | 16.1 | 322 | 0.157 | 1.79 | 2.11 | 28.8 | 0.30 | 76/20/29 | 0.860 | 0.858 |
-| α=100 K=20 | `023623` | 4.6 | 92 | 0.148 | 0.93 | 1.95 | 31.8 | 0.26 | 205/3/2 | **0.868** | 0.865 |
-
-**(a) α enters through the gradient scale, and only through it.** At commits 0–10, where
-`‖θ_tr‖ = 13.5` in every arm, `rms|d|` is **7.7 / 6.1 / 3.1** at α = 0.1 / 1 / 100 — a 2.5× spread from
-data alone, propagating straight into `ρ` (0.237 / 0.200 / 0.147). **Under raw SGD, heterogeneity is a
-hidden ×1.6 on the relative step.**
-
-**(b) The invariant is not `ρ·√N`** (that spans 0.91–2.13 across α). What is invariant to ±1.5% across
-all seven arms is the form with the gradient scale divided out:
+**(b) The pooling invariant is not `ρ·√N`** (it spans 2.3× across α). What is invariant to ±1.5% across
+all seven α×K arms is the form with the gradient scale divided out:
 
 ```
 rho * sqrt(N) * ||theta_tr|| / ( eta * rms|d| * sqrt(p) )  =  0.53 +- 0.01
-      a=0.1/1/100 x K=10/20:  0.533 0.535 0.535 0.527 0.538 0.537 0.523
 ```
 
 **(c) The gate's liveness is set by `‖g‖`, so α decides it as much as `K` does.** `var_threshold = 0.3`
-sits *exactly* on the α=1, `K`=20 floor — tuned to one point of a two-dimensional surface. `K = 10`
-survives at α = 100 and `K = 20` does **not** stabilise at α = 0.1, so **"`K ≥ 20` is safe" is false as
-stated**; the true statement is "the gate is safe while it can reach its threshold".
+sits *exactly* on the α=1, `K`=20 floor — tuned to one point of a two-dimensional surface. `K` = 10
+survives at α = 100 while `K` = 20 does **not** stabilise at α = 0.1, so **"`K ≥ 20` is safe" is false
+as stated**; the true statement is *"the gate is safe while it can reach its threshold"*.
 
-**(d) The trust-ratio step removes the α multiplier by construction — MEASURED.** At `ρ* = 0.06`,
-α = 1 vs α = 0.1 give `ρ` **identical to six significant figures at every commit** (0.059892 vs
-0.059882 at c1; 0.014404 vs 0.014404 at c300) while `var` still shows the 1.6× gradient-scale ratio
-(0.0122 vs 0.0195). **The mechanism is still there; the step no longer feels it.** The residual 3-point
-accuracy gap (0.775 vs 0.804) is data difficulty at a matched step — what a portable optimizer should
-look like.
+**(d) The trust-ratio step removes the α multiplier by construction.** At a pinned `ρ*`, α = 1 and
+α = 0.1 give `ρ` **identical to six significant figures at every commit**, while `var` still shows the
+1.6× gradient-scale ratio. **The mechanism is still there; the step no longer feels it.** The residual
+3-point accuracy gap is data difficulty at a matched step — what a portable optimizer should look like.
 
-## §2.6 Why it looks healthy for three hours, and what the collapse is
+## §2.7 Why it looks healthy for three hours, and what the collapse is
 
 Early on the coherent term (`T·ρ·cos`) beats the `√T` noise, so **the accuracy climb is real learning**;
 the inflation term is exponential the whole time but invisible until it is not. `cos` does not degrade
 over time. **We never reached a minimum and walked back out** — accuracy peaked because a rising linear
-term and a falling term crossed. *A convergence-detection rule still does not exist* (§6.3).
+term and a falling term crossed. (*A convergence-detection rule still does not exist.*)
 
-**The collapse is directional degeneracy, not logit saturation** (**MEASURED** — revises H-D). At
-collapse `top_class_share → 1.00` but `logit_norm` is 2.5–3.6 — *the same as the healthy `K = 50` arm at
-2.86* — and prediction entropy stays high at 0.8–1.3 vs `ln 4 = 1.386`. **The head's decision direction
-is destroyed while its scale is unremarkable.** The objection *"some of the weight increase was in the
-right direction"* is answered by arithmetic: ≤1.5% of each step is aligned, so the coherent part
-accumulates to a fraction of one norm over ~190 commits while the norm grows 7×.
+**The collapse is directional degeneracy, not logit saturation.** **MEASURED:** at collapse
+`top_class_share → 1.00`, but `logit_norm` is the *same* as in the healthy arm and prediction entropy
+stays high. **The head's decision direction is destroyed while its scale is unremarkable.** The
+objection *"some of the weight increase was in the right direction"* is answered by arithmetic: ≤1.5% of
+each step is aligned, so the coherent part accumulates to a fraction of one norm over ~190 commits while
+the norm grows 7×.
 
-## §2.7 The three production monitors
+## §2.8 The three production monitors
 
-**MEASURED**, α-independent across all six §2.5 arms and every arm in §4.1:
+α-independent across every arm measured:
 
 | monitor | reading |
 |---|---|
 | **`‖θ_tr‖`** | peak accuracy at **28–39**; −5 points at **47–52**; `top_class_share > 0.9` at **62–73**. *The one worth wiring to an alarm.* |
-| **`ρ = ‖Δθ‖/‖θ_tr‖`** | exact per commit, logged in `server_update`. Feeds `B` and `Λ` (§3.4) |
+| **`ρ = ‖Δθ‖/‖θ_tr‖`** | exact per commit; feeds `B` and `Λ` (§4) |
 | **`top_class_share`** | 1.00 is the collapse fingerprint; `logit_norm` does **not** discriminate |
 
-Scoring rule: **`B` and `Λ` (§3.4), never accuracy, never the `‖θ‖²` log-log slope** (dead, §4.4).
-Both are exact at any horizon and readable in ~20 commits.
+**Score `B` and `Λ` — never accuracy, never the `‖θ‖²` log-log slope.** Both are exact at any horizon
+and readable in ~20 commits.
 
 ---
 
-# Part 3 — The model
+# Part 3 — Symbols and estimator shape
 
-*This is the current model, incorporating everything in §4. It is scored against, not decorated with,
-history — corrections are folded in, not annotated.*
-
-## §3.1 One probe, one scalar
-
-| | backprop | forward-gradient (here) |
-|---|---|---|
-| cost of one measurement | 1 fwd + 1 bwd ≈ 3 forward-equivalents | **2 forward passes**, no backward |
-| what it returns | all `p` components of `g`, exactly | **one scalar** `d = ⟨g,v⟩` — the slope along `v` |
-| memory | stores activations | nothing beyond a forward pass |
-| the update it produces | `−η·g` — right direction, known length | `−η·d·v` — right **on average**, ~0.1% aligned individually |
-| noise sources | data sampling | data sampling **+ which direction you asked about** |
-
-`ĝ = d·v` is unbiased (`E[d·v] = g`) with enormous variance. *The image:* on a hillside in fog,
-backprop feels the slope in every direction at once; forward-gradient picks one random direction, takes
-a test step, feels whether it went up or down, steps back. **One reading is nearly worthless; a thousand
-averaged readings are a slope meter.**
-
-Four consequences:
-
-**(a) The parameter count is the adversary.** A random direction in `p` dimensions overlaps any fixed
-target by ≈ `1/√p`; at `p = 450,340` one probe is ~0.15% signal. No tuning removes this — and `p` is
-itself a *lever* (§4.2).
-
-**(b) Averaging is the only free lever, and it pays twice.** Over `n` independent readings the signal
-adds **linearly** while near-orthogonal noise adds **in quadrature**. The average is simultaneously
-**better aimed** *and* **shorter** — safety improves as `1/n`, not `1/√n`.
-
-**(c) Misaim never cancels in length.** A step `Δ` perpendicular to `θ` gives `√(‖θ‖²+‖Δ‖²) > ‖θ‖` for
-**every** perpendicular direction; sign does not matter, only length. This is Leg 1 (§2.2) and it is
-what makes §3.4 exact.
-
-**(d) Inflated weights destroy a classifier by randomising which class wins, not by saturating it** —
-see §2.6.
-
-## §3.2 Symbols
+## §3.1 Symbols
 
 Per-commit unless stated. "Dimensionless" means a pure ratio, so comparing it against a fixed constant
-is legitimate — that property is the whole fix (§3.7).
+is legitimate — that property is the whole fix (§5.3).
 
 | symbol | what it is | value here |
 |---|---|---|
-| `θ_tr` | the **trainable** slice (adapters + classifier; `pre_classifier` is dropped, §2.1) | `p` = **450,340**; `‖θ_tr‖` = **13.35** at init |
+| `θ_tr` | the **trainable** slice (adapters + classifier) | `‖θ_tr‖` = **13.35** at init |
 | `p` | trainable dims = probe dimension | **450,340** (`rf`=16); 229,012 (`rf`=32); 118,348 (`rf`=64) |
 | `v` | one probe direction, raw Gaussian draw, **not** normalised | `‖v‖ = √p ≈ 671` |
 | `h` | finite-difference spacing | 0.01 → displacement `h‖v‖ = 6.71` — **an instrument, not a step size** |
-| `d` | the JVP: a **scalar** per probe, `d ≈ ⟨g,v⟩` | rms 3.4 → 15.9 over a diverging run |
-| `g` | true gradient at `θ` | measured by the B1 probe (§3.9) |
+| `d` | the JVP: **one scalar** per probe, `d ≈ ⟨g,v⟩` | rms 3.4 → 15.9 over a diverging run |
+| `g` | true gradient at `θ` | measured by the server-side backprop probe (§6) |
 | `G` | server's pooled update before the step | the direction actually taken |
 | `P` | probes per trainer per iteration | 10 |
-| `K` | trainers pooled per commit (`agg_goal`) | 10 |
-| `I` | iterations over the **same data bin** before committing; equals `pool_size` exactly | 18.5 at `K`=10 (capped), 8.2 at `K`=50 |
-| `N = K·I` | uploads pooled server-side | 185 at `K`=10; 300–500 at `K`≥20. **Not** the client population (100) |
-| `C` | concurrency pool (`c`) — caps `K` | 30 |
+| `K` | trainers pooled per commit (`agg_goal`) | 10 shipped; ≥30 required (§5.5) |
+| `I` | iterations over the **same data bin** before committing | 18.5 at `K`=10 (capped), 8.2 at `K`=50 |
+| `N = K·I` | uploads pooled server-side. **Not** the client population | 185 at `K`=10; 300–500 at `K`≥20 |
+| `C` | concurrency pool — caps `K` | 30 |
 | `η` | server learning rate (a **knob**, superseded by `ρ*`) | 0.01 |
-| `ω` | per-upload aggregation weight | 0.70–0.87 — a re-weighting, not a step size |
-| **`ρ`** | **relative step `‖Δθ‖/‖θ_tr‖`** — an **outcome** under raw SGD, a **knob** under trust-ratio | **0.16 at commit 1** shipped |
+| `ω` | per-upload aggregation weight | 0.70–0.87 — a re-weighting, **not** a step size |
+| **`ρ`** | **relative step `‖Δθ‖/‖θ_tr‖`** — an *outcome* under raw SGD, a *knob* under trust-ratio | **0.16 at commit 1** shipped |
 | `ρ*` | the relative step an operator *sets* under the trust-ratio rule | the knob `ρ` should have been |
-| **`cos(G,g)`** | fraction of the step aligned with the true gradient | **0.036–0.067 closed form; 0.0004–0.003 measured** (§3.9) |
-| `E[v∥²]` | probe-selection gain (§3.3) | 2.988 at `P`=10, 4.744 at `P`=30 |
+| **`cos(G,g)`** | fraction of the step aligned with the true gradient | **0.036–0.067 closed form; never validly measured** (§6) |
+| `E[v∥²]` | probe-selection gain | 2.988 at `P`=10, 4.744 at `P`=30 |
 | `G_rule` | pooling gain of the combination rule: `E[v∥²]` if selecting, `P` if averaging | 2.988 → 10 |
-| `a`, `b` | estimator shape constants (§3.3) | properties of the **rule**, not the data |
-| **`B`** | **budget spent** = `½Σln(1+ρ_t²)`; `‖θ_T‖/‖θ_0‖ = e^B` | §3.4 |
-| **`Λ`** | **progress banked** = `Σρ_t·cos_t` | §3.4 |
-| `Φ` | inflation `= e^B` | ≤3.63 holds, ≥4.2 degrades (§3.4) |
-| `var` | commit gate's statistic: spread of `d` across the pool | drifts with `‖θ‖²` (§2.2 Leg 3) |
+| `a`, `b` | estimator shape constants (§3.2) | properties of the **rule**, not the data |
+| **`B`** | **budget spent** = `½Σln(1+ρ_t²)`; `‖θ_T‖/‖θ_0‖ = e^B` | §4.1 |
+| **`Λ`** | **progress banked** = `Σρ_t·cos_t` | §4.2 |
+| `Φ` | inflation `= e^B` | ≤3.63 holds, ≥4.2 degrades (§4.2) |
+| `var` | commit gate's statistic: spread of `d` across the pool | drifts with `‖θ‖²` (§2.3) |
 
-**`v` is a raw Gaussian draw** — each coordinate `N(0,1)`, `torch.randn_like`, never normalised
-(`tc_transformer_trainer_distribute.py:416`). Three consequences: `‖v‖` concentrates at `√p` to 0.07%,
-so **normalising `v` is a no-op for `cos`**; it sets the probe displacement `h√p = 6.71`, so **changing
-`p` silently changes the FD spacing** (controlled by `FWDLLM_FD_SCALE_INVARIANT=1`); and **isotropy is
-exact by construction**, which licenses `1/√p` above.
+**`v` is a raw Gaussian draw**, never normalised. Three consequences: `‖v‖` concentrates at `√p` to
+0.07%, so **normalising `v` is a no-op for `cos`**; `v` sets the probe displacement `h√p`, so **changing
+`p` silently changes the FD spacing** (hence the `FWDLLM_FD_SCALE_INVARIANT` rescale); and **isotropy is
+exact by construction**, which licenses the `1/√p` overlap below.
 
-## §3.3 Estimator shape, and pooling
+Where the dimensions actually live matters, and cost a revision: `create_model` builds 1.04M trainable
+params, but the trainer replaces `pre_classifier` with an empty module *before any probe is drawn*, so
+production `p` is **450,340** and `‖θ_tr‖` is 13.35, not 20.36. Consequences: `trainable_scope:
+adapters_only` is a **no-op**, the FD displacement is 50% of `‖θ_tr‖` rather than 76%, and every `cos`
+prediction rose ×1.52 when this was found. (**`h` itself is pinned** between truncation error above and
+fp16 catastrophic cancellation below; it cannot be reduced.)
+
+## §3.2 Estimator shape: why "pick the best probe" cannot work
 
 Split any upload `u` into its component along `ĝ = g/‖g‖` and the rest: `u = α·ĝ + u⊥`.
 
-- **`a` measures the shadow**: `E[α] = a·‖g‖`.
+- **`a` measures the shadow**: `E[α] = a·‖g‖` — how much of the true gradient survives.
 - **`b` measures the total length**: `E‖u‖ = b·‖g‖·√p`, so **`b = 1` is "as long as one raw probe"**.
 
-A single upload's aim is `cos(u,g) = (a/b)/√p`. For the three rules that matter (setting `‖g‖ = 1`):
+A single upload's aim is `cos(u,g) = (a/b)/√p`. For the three rules that matter:
 
-| rule | shadow `⟨u,ĝ⟩` | length `‖u‖` | `a` | `b` | `a/b` | `b²/a` |
-|---|---|---|---|---|---|---|
-| one raw probe `d·v` | `v∥²` | `\|v∥\|·√p` | 1 | 1 | 1 | 1 |
-| **select best of P by `\|d\|`** | `v∥²` of winner | `\|v∥\|·√p` of winner | `E` | `√E` | `√E` | **1** |
-| **average all P** | `1` (unbiased) | `√(p/P)` | 1 | `1/√P` | `√P` | **1/P** |
+| rule | `a` (shadow) | `b` (length) | aim `a/b` | **stability `b²/a`** |
+|---|---|---|---|---|
+| one raw probe `d·v` | 1 | 1 | 1 | 1 |
+| **select best of `P` by `\|d\|`** | `E` | `√E` | `√E` | **1** |
+| **average all `P`** | 1 | `1/√P` | `√P` | **1/P** |
 
-The middle row answers *"why doesn't picking the best probe help?"* — selecting on `|d|` raises the
-shadow **quadratically** (`a = E`) and the length **linearly** (`b = √E`). Aim `a/b = √E` genuinely
-improves, but stability depends on `b²/a`, in which the two cancel **exactly, for any `E`**. `a` and `b`
-are properties of the rule, **known in closed form before the run**; the one empirical input is that `d`
-is Gaussian, verified in §4.2.
+The middle row answers *"why doesn't picking the best probe help?"* Selecting on `|d|` raises the
+shadow **quadratically** and the length **linearly**. Aim genuinely improves — but stability depends on
+`b²/a`, in which the two cancel **exactly, for any `E`**. `a` and `b` are properties of the rule, known
+in closed form before the run; the one empirical input is that `d` is Gaussian, which is verified
+(**MEASURED** — see [P3](fl_fwd_ft_practice.md#p3--knob-ledger--what-each-lever-actually-did)).
 
 **Pooling `n` uploads:** the shadow is identical in each and survives untouched; the perpendicular junk
 shrinks by `√n`.
 
 ```
-shadow of the pooled G   ~  a * ||g||                    <- unchanged by pooling
-||G||                    ~  b * ||g|| * sqrt(p/n)        <- shrinks as 1/sqrt(n)
-cos(G, g)                =  shadow / length = (a/b) * sqrt(n/p)
-rho                      ~  eta * ||G|| / ||theta||      <- also shrinks as 1/sqrt(n)
-  =>  rho / cos          ~  (b^2/a) * p / n
+shadow of pooled G  ~  a * ||g||                    <- unchanged by pooling
+||G||               ~  b * ||g|| * sqrt(p/n)        <- shrinks as 1/sqrt(n)
+cos(G, g)           =  (a/b) * sqrt(n/p)
+rho                 ~  eta * ||G|| / ||theta||      <- also shrinks as 1/sqrt(n)
+  =>  rho / cos     ~  (b^2/a) * p / n
 ```
 
 Read the last line as **safety = (a property of the rule) × (dimensions per pooled reading)**. Improve
-it via a better rule (`b²/a`), fewer dimensions (`p`), or more readings (`n`).
+it via a better rule (`b²/a`), fewer dimensions (`p`), or more readings (`n`). This is the whole lever
+table (§5.2).
 
-**Status: the length half is MEASURED and holds; the shadow half does not** — §3.9.
+**Status: the length half is MEASURED and holds; the shadow half has never been validly measured** (§6).
 
-## §3.4 The two conserved quantities. **MEASURED, 21 arms — the core of the model.**
+Four consequences of the estimator worth stating plainly:
 
-Leg 1 (§2.2) is an exact difference equation: `‖θ_{t+1}‖² = ‖θ_t‖²(1+ρ_t²)`. Integrating it gives, with
-no free parameter:
+**(a) The parameter count is the adversary.** A random direction in `p` dimensions overlaps a fixed
+target by ≈ `1/√p`; at `p = 450k` one probe is ~0.15% signal. No tuning removes this — and `p` is itself
+a *lever*.
+
+**(b) Averaging is the only free lever, and it pays twice.** Over `n` independent readings signal adds
+**linearly** while near-orthogonal noise adds **in quadrature**. The average is simultaneously **better
+aimed** *and* **shorter** — safety improves as `1/n`, not `1/√n`.
+
+**(c) Misaim never cancels in length.** A step perpendicular to `θ` gives `√(‖θ‖²+‖Δ‖²) > ‖θ‖` for
+*every* perpendicular direction; sign does not matter, only length. This is §2.1, and it is what makes
+§4.1 exact.
+
+**(d) Inflated weights destroy a classifier by randomising which class wins**, not by saturating it
+(§2.7).
+
+---
+
+# Part 4 — The model: two conserved quantities
+
+*This is the current model, incorporating all evidence. It is scored against, not decorated with,
+history.*
+
+## §4.1 The norm law — how much budget a trajectory spends
+
+§2.1 makes the trajectory an exact difference equation `‖θ_{t+1}‖² = ‖θ_t‖²(1+ρ_t²)`. Integrating gives,
+with **no free parameter**:
 
 ```
 INFLATION   Phi = ||theta_T|| / ||theta_0||  =  exp( B ),   B = (1/2) * sum_t ln(1 + rho_t^2)
@@ -535,38 +413,39 @@ EFFICIENCY  Lambda / B  =  2 * cos / rho      <- exact by construction
 ```
 
 **The norm law holds across 21 arms** spanning `ρ` 0.0002–0.22, `N` 10–200, α 0.1–1, both combination
-rules, both step rules, both gates, `p` 118k–450k, and 177–1,273 commits (§4.1). **It contains no `cos`,
-no `N`, no rule, no α and no `p`: `‖θ_T‖` is a function of the `ρ` trajectory and nothing else.** The
-sharpest case is `013917`, where `N` fell 200 → 40 under the annealed gate and the law still fit to
-0.02%.
+rules, both step rules, both gates, `p` 118k–450k, and 177–1,273 commits. **It contains no `cos`, no
+`N`, no rule, no α and no `p`: `‖θ_T‖` is a function of the `ρ` trajectory and nothing else.** The
+sharpest case is an arm where `N` fell 200 → 40 under an annealed gate and the law still fit to 0.02%.
 
-> **Its accuracy is `ρ`-dependent — the flat "<0.3%" once claimed here is wrong.** Replayed over all 21
-> arms plus 4 α arms: **<0.3% on the low-`ρ` trust-ratio arms**, **~2% on the high-`ρ` raw-SGD arms**,
-> and **−5.8% on the collapsed α=0.1 arm** (`225718`). Leg 1's ratio drifts as `ρ` grows and the error
-> compounds over `T`. **Sum `B` over `t = 0 … T−2`** — the steps that actually lie between `tw[0]` and
-> `tw[-1]`. The `t = 1 … T−1` window (once printed in §6.2) drops commit 0's step and includes a last
-> step that is not in the norm: mean |error| **1.21% vs 0.77%** for the aligned window.
+> **Its accuracy is `ρ`-dependent** — the flat "<0.3%" once claimed is wrong. Replayed over all arms:
+> **<0.3% on the low-`ρ` trust-ratio arms**, **~2% on the high-`ρ` raw-SGD arms**, **−5.8% on the
+> collapsed α=0.1 arm.** §2.1's ratio drifts as `ρ` grows and the error compounds over `T`. Sum `B` over
+> the steps that actually lie between the first and last norm sample — the mis-aligned window costs 1.2%
+> vs 0.8% mean error.
 
-**The progress law** is the same 21 arms sorted by `Λ`: peak accuracy is monotone from 0.377 to 0.865
-with no exception outside replicate noise, and saturates at `Λ ≈ 0.95`. Read `Λ` as **the accumulated
-aligned displacement, in units of `‖θ_tr‖`** — you must travel about 0.6 of your own length in the right
-direction to reach 0.85, and about one length to saturate. Calibration for agnews/DistilBERT:
-`Λ` 0.07 → 0.49, 0.20 → 0.70, 0.40 → 0.80, 0.60 → 0.85, 0.95 → 0.865.
+## §4.2 The progress law — how much learning a trajectory banks
+
+The same 21 arms sorted by `Λ`: **peak accuracy is monotone from 0.377 to 0.865 with no exception
+outside replicate noise**, saturating at `Λ ≈ 0.95`. Read `Λ` as **the accumulated aligned displacement,
+in units of `‖θ_tr‖`** — you must travel about 0.6 of your own length in the right direction to reach
+0.85, and about one length to saturate.
+
+Calibration (agnews/DistilBERT): `Λ` 0.07 → 0.49 · 0.20 → 0.70 · 0.40 → 0.80 · 0.60 → 0.85 · 0.95 → 0.865.
 
 **Among arms that learned, whether an arm *holds* its peak is decided by `Φ` and nothing else.** Every
 arm with peak ≥ 0.80 and `Φ ≤ 3.63` ends within 0.015 of its peak; every arm at `Φ ≥ 4.2` degrades,
-monotonically in `Φ`: 0.672 (4.23), 0.761 (4.47), 0.353 (5.74), 0.251 (9.47). **The two failure modes
-are separately diagnosable before a run ends: too little `Λ` = never learned; too much `B` = learned and
-then lost it.**
+monotonically in `Φ`.
 
 > **The "peak ≥ 0.80" qualifier is load-bearing and was missing.** Four arms sit at `Φ` = 1.00–1.01 —
-> *no* norm inflation — and still fall **0.06–0.12** below their peak: `001008` 0.388→0.264, `220627`
-> 0.394→0.274, `200209` 0.377→0.282, `211736` 0.488→0.429. All four have `Λ ≤ 0.068`; their "peak" is
-> barely the init accuracy (0.398) and what follows is directional drift at constant norm. **`Φ` governs
-> *losing what you learned*; it says nothing about arms that never learned.** Independently, this is
-> direct evidence that accuracy loss does **not** require norm growth — see Q2/H-O (§6.1).
+> *no* norm inflation — and still fall 0.06–0.12 below their peak. All four have `Λ ≤ 0.068`; their
+> "peak" is barely the init accuracy and what follows is directional drift at constant norm. **`Φ`
+> governs *losing what you learned*; it says nothing about arms that never learned.** Independently,
+> this is direct evidence that accuracy loss does **not** require norm growth (§7.2).
 
-Three consequences that restructure everything downstream:
+**The two failure modes are separately diagnosable ~20 commits in: too little `Λ` = never learned; too
+much `B` = learned and then lost it.**
+
+## §4.3 Three consequences that restructure everything downstream
 
 **(a) There is no critical `ρ`.** Under a pinned `ρ`, `Φ = (1+ρ*²)^{T/2}` for *any* `ρ* > 0` — geometric
 always, with doubling time `1.4/ρ*²`. The apparent boundary at `ρ ≈ 0.09` was **a horizon artifact**:
@@ -574,90 +453,30 @@ the locus where doubling time falls below run length. **`ρ` is not a threshold;
 a fixed budget is spent.**
 
 **(b) The `‖θ‖²` log-log slope carries no stability information under trust-ratio** — it is bounded
-above by 1 *by construction*, so every "sub-linear ⇒ safe" reading on such an arm is vacuous. Under
-`raw_sgd` a slope > 1 does mean something: the absolute step is outgrowing `‖θ‖`, i.e. the `|JVP|`
-feedback of Leg 2 is live.
+above by 1 *by construction*, so every "sub-linear ⇒ safe" reading on such an arm is vacuous. Under raw
+SGD a slope > 1 *does* mean something: the absolute step is outgrowing `‖θ‖`, i.e. the `|JVP|` feedback
+of §2.2 is live.
 
 **(c) The closed-form `cos` is functionally validated, and the probe that appeared to contradict it was
-broken (§3.9).**
-`Λ` is built from the *predicted* `cos` and it collapses arms spanning `G_rule` 2.988 vs 10, `p`
-118k–450k and `N` 10–200. **A formula that wrong could not order 21 arms** — which raises the prior
-sharply that the probe's reference is the problem, not the formula (§3.9). *Caveat that sets the next
+broken.** `Λ` is built from the *predicted* `cos`, and it collapses arms spanning `G_rule` 2.988 vs 10,
+`p` 118k–450k and `N` 10–200. **A formula that wrong could not order 21 arms** — which raises the prior
+sharply that the probe's reference was the problem, not the formula (§6). *Caveat that sets the next
 experiment:* the rule and `p` variation all sits at `Λ > 0.8`, where accuracy has saturated, so
-**`Λ`'s rule- and `p`-scaling is untested in the steep region** (§6.1 Q3).
+**`Λ`'s rule- and `p`-scaling is untested in the steep region** (Q3).
 
-## §3.4a What inflation does — Q1 and Q2, settled on the rig. **MEASURED 2026-08-10.**
+## §4.4 The criterion
 
-Both blockers reduce to one question: what does growing `‖θ_tr‖` do to a *trained* model? The
-inflation is a sum of steps in random directions, so it can be **injected** rather than waited for
-(`scripts/probe_inflation_damage.py`): train to a realistic peak, add Gaussian noise to the trainable
-slice scaled so `‖θ_tr‖` grows by `Φ`, read accuracy back.
-
-**Q1 — the budget is RELATIVE.** The knee sits at the same `Φ` in two models whose norms differ 1.77×:
-
-```
-rf=16  p=450k  ||theta_0||=18.4 : acc 0.900 -> 0.856 (Phi 2.5) -> 0.608 (3.0) -> 0.262 (3.6)
-rf=64  p=118k  ||theta_0||=10.4 : acc 0.897 -> 0.834 (Phi 2.5) -> 0.612 (3.0) -> 0.410 (3.6)
-```
-
-Absolute norms at the knee are 46–55 vs 26–31 — exactly the ratio of the base norms — while `Φ` is
-identical. **`B_max` transfers across `p`**, as §3.7's ratio principle predicted. Combined with the 21
-real arms, which already calibrate the threshold *in `Φ`* (≤3.63 holds, ≥4.2 degrades), Q1 is closed:
-**`B_max` ≈ 3.6–4.2, relative.**
-
-> **The rig's own threshold is lower (`Φ`≈3.0) than the real arms' 3.6–4.2**, because it dumps noise on
-> a model that never adapted while real training re-fits continuously. That bias applies to both `p`
-> equally, so it cancels in the comparison — **take the *relative* verdict from the rig and the
-> *number* from §4.1.**
-
-**Q2 — `‖θ_tr‖` is mostly a symptom, and decay will not rescue it.** Weight decay scales the whole
-vector, preserving direction. Renormalizing an inflated model back to its original norm is exactly what
-perfect decay leaves behind:
-
-| `Φ` | noise (norm grows) | noise + renorm (norm pinned) | recovered |
-|---|---|---|---|
-| 2.5 | 0.856 | 0.803 | — |
-| 3.0 | 0.608 | 0.685 | +0.08 |
-| 3.6 | 0.262 | 0.403 | +0.14 |
-
-**~20–25% of the damage is magnitude; ~75–80% is the junk:signal ratio, which decay cannot touch.** The
-mechanism is visible in the renormalized rows: `logit_norm` falls to 0.3–0.45 and entropy rises to 1.40
-≈ `ln 4` — the signal has been diluted below the noise and the model predicts nearly uniformly.
-**§6.1's registered prediction is confirmed**, and the weight-decay arm drops to an optional
-real-trajectory confirmation.
-
-**Two controls separate the mechanisms, and only one matches reality.** `noise` reproduces the observed
-collapse signature (`top_class_share`→1.0 at `logit_norm` 2.7–3.7, §2.6); `scale` (norm growth, no junk)
-does not (`logit_norm` 18–48, entropy→0) and `signal` (coherent displacement) destroys accuracy at
-`Φ`=1.2 already. **Isotropic junk accumulation is the right model of the real mechanism.**
-
-**Incidental, and worth having:** backprop on the same model, `p` and data reaches **0.90** where the
-best forward-gradient arm ever recorded is **0.865**. That 3.5-point gap is the measured cost of going
-backward-free at this scale.
-
-*Caveat on all of the above: injection jumps to the endpoint instead of walking there, and omits the
-learning happening alongside. It settles the comparisons; it does not replace a trajectory for
-calibration.*
-
-## §3.5 The criterion
-
-Two clocks. **The deadline:** coherent progress grows as `T·ρ·cos`, noise displacement as `√T·ρ`; signal
-overtakes noise at `T ≈ 1/cos²`. **The budget:** the norm inflates by `(1+ρ²)^{T/2}`, doubling at
+Two clocks. **The deadline:** coherent progress grows as `T·ρ·cos`, noise displacement as `√T·ρ`;
+signal overtakes noise at `T ≈ 1/cos²`. **The budget:** the norm inflates by `(1+ρ²)^{T/2}`, doubling at
 `T ≈ 1.4/ρ²`. You survive iff `1/cos² ≤ 1.4/ρ²`:
 
 > ## ρ ≲ s · cos(G, g)
 > **The relative step must not exceed the fraction of it that is actually aligned with the gradient.**
 
-The O(1) constants that derivation drops are now measured. Eliminating `T` between the two laws of §3.4
-gives `B = Λ·ρ/(2cos)`, so fitting a target `Λ_req` inside a budget `B_max` requires
-
-```
-rho / cos  <=  2 * B_max / Lambda_req   =   2.6 .. 4.3       (B_max = 1.22-1.28, Lambda_req = 0.6-0.95)
-```
-
-**`s = 2.6–4.3`, not the 0.3–0.5 originally derived** — a factor of ~8, which is exactly the 5–10×
-measured empirically (§4.5). Progress per commit is `ρ·cos`, increasing in `ρ`, so you want `ρ` as large
-as the budget allows; but per §3.4(a) there is no cliff, only an exchange rate.
+The O(1) constants that derivation drops are now measured. Eliminating `T` between the two laws gives
+`B = Λ·ρ/(2cos)`, so fitting a target `Λ_req` inside a budget `B_max` requires
+`ρ/cos ≤ 2·B_max/Λ_req` = **2.6–4.3** — not the 0.3–0.5 originally derived, a factor of ~8 that is
+exactly the 5–10× seen empirically.
 
 **The design rule.** For a fixed learning target `Λ_req` over `T` commits, Cauchy–Schwarz makes constant
 `ρ = Λ_req/(T·cos)` the budget-minimising trajectory, at cost `B = Λ_req²/(2T·cos²)`:
@@ -666,81 +485,13 @@ as the budget allows; but per §3.4(a) there is no cliff, only an exchange rate.
 > `ρ` whose commit count you can afford.** There is nothing to tune — `ρ` is the exchange rate between
 > wall clock and safety margin, and `cos` (via `P`, `K`, `I`, `p`) sets the exchange rate itself.
 
-## §3.6 The lever table — this ranks every possible fix
+Note what (a) already killed: *"walk `ρ*` up until it breaks"* is withdrawn. There is no cliff to find,
+only an exchange rate to pick.
 
-**`ρ/cos` is "will this survive"; `ρ·cos` is "how fast does it learn".** A good lever improves the first
-without hurting the second. Pooling is the only free lever, because it shortens the step and improves
-the aim by the same `√n`.
-
-| lever | `ρ/cos` (stability) | `ρ·cos` (progress) | who owns it |
-|---|---|---|---|
-| **P-averaging** (trainer pooling) | **∝ 1/P** | **invariant — and free in wall clock** | trainer |
-| **K** (cohort width) | **∝ 1/K** | invariant — parallel across devices | client selection |
-| **I** (iterations per bin) | **∝ 1/I** | invariant — **but serial: one round trip each** | aggregation gate |
-| **p** (trainable dimension) | **∝ √p** | ∝ 1/p | model/PEFT design |
-| `η` learning rate | ∝ η | ∝ η — **pays 1:1** | aggregation |
-| probe-selection gain `E[v∥²]` | **invariant** (`b²/a = 1`) | ∝ E | trainer probe selection |
-| step normalization | sets `ρ` to an operator constant | decoupled | aggregation |
-
-Per unit of **compute**: progress ∝ `C/n`, inflation ∝ `C/n²`, so the ratio improves ∝ `n`. **Larger
-pools are strictly better for stability per FLOP and slower only in absolute wall-clock progress.**
-
-**The `p` row is `√p`, not `p`** (**MEASURED**, §4.2): `ρ` does not fall as `√p` because both halves of
-`ρ = ‖Δθ‖/‖θ_tr‖` scale as `√p` and cancel. **`ρ` is already dimensionless in `p`**, so shrinking `p`
-buys `cos` alone.
-
-**Three pooling stages, and who owns each:**
-
-| stage | owner | cost structure | reduces |
-|---|---|---|---|
-| `P` probes per iteration | **trainer** | on-device, parallel, free in wall clock | probe noise |
-| `K` trainers per commit | **client selection** (`agg_goal`, `c`) | parallel across devices | probe + data noise |
-| `I` iterations per bin | **aggregation** (commit gate, `FedSgdAggregator.py:450-534`) | **serial round trips** | probe noise only |
-| the step itself | **aggregation** | free | — |
-| `p` | **model/PEFT design**, upstream of all three | negative | — |
-
-`P` and `I` are *substitutes* — both pool over the same bin at the same `θ`, both reduce probe noise
-only — at wildly different cost. **Raise `P`, lower `I`, hold `n = P·K·I`: commits get strictly faster
-and no less well-aimed.** And wall-clock per commit is set by `I` (serial), not `K` (parallel), so
-**choose the smallest `I` the gate allows and buy the rest with `K`**.
-
-> **In one line: pooling sets how large `ρ` is *allowed* to be; aggregation *spends* within that budget.
-> Aggregation can only shrink `ρ`; it can never raise `cos`.**
-
-The natural reading — *"it's an aggregation bug"* — is **half right, and acting on that half alone costs
-a ≥10× slowdown**: `K` ≥ 20 reaches **0.860** while `η` = 0.002 reaches **0.601 at commit 120 / 0.815
-after 327** — same stability, one at zero progress cost and one at the full 1:1 cost. **And pooling
-alone runs out**: at `K` ≥ 20 it buys ~500 commits before the linearly-growing norm walks back out
-(§6.3 H-J).
-
-**Why the controller spans two subsystems.** `N = K × I` is a client-selection knob times an aggregation
-knob, so the gate (which decides `I`) is a client-selection decision made from aggregation telemetry —
-**the controller's sensor and actuator sit on opposite sides.** A pure-selection controller has nothing
-to measure (which is why today's `dynamic_kc_policy.py` targets `target_iter_per_data_id: 15`, a
-heuristic unconnected to the estimator); a pure-aggregation controller can clamp `ρ` but cannot tell
-whether it is clamping too hard.
-
-## §3.7 The ratio principle
-
-Every quantity compared against a fixed constant must be **scale-invariant**, because anything with
-units silently changes meaning as training proceeds. The test: *re-parameterise so `‖θ‖` doubles; the
-loss surface shape is unchanged, so the trajectory should be.* Any rule that fails needs re-tuning every
-time the model, adapter rank, or round index changes. Three replacements follow: absolute step `η` →
-relative step `ρ*`; absolute variance threshold → an `N` target; absolute iteration cap → a measured
-adequacy condition.
-
-**Why the criterion does not have to enumerate its failure modes.** Anything not thought of enters
-through exactly **two** channels: it changes the step taken → shows up in **`ρ`**, logged exactly; or it
-degrades the pool → shows up as **`n_eff < n`**, hence in `cos`. **Channel 2 is the unpaid half.**
-`n_eff` detects *correlation* among uploads and returns `1.00 ± 0.01` in every arm ever replayed, so it
-carries no information; it does **not** detect *directional* disagreement, because at `p = 4.5e5`
-differing `g_k` move `var` by `O(n/p)` and are invisible. **Scale-free setpoints therefore come from the
-step rule, not from channel 2.**
-
-## §3.8 Sizing a configuration
+## §4.5 Sizing a configuration — the formula, and why it is not yet usable
 
 ```
-G_rule = E[v_par^2]   for select-one-of-P     (P does not appear -- see 4.2)
+G_rule = E[v_par^2]   for select-one-of-P     (P does not appear -- sec 3.2)
 G_rule = P            for average-all-P
 
 cos           = sqrt( G_rule * N / p )        N = K*I uploads pooled server-side
@@ -754,366 +505,123 @@ N_req( rho* ) = p * (rho*/s)^2 / G_rule       <- pool needed to make rho* safe
 | + average + adapter `rf`=64 | 10 | 118,348 | 303 | **30** | 5 |
 
 > **The absolute values in this table are unverified.** The direct `cos` measurement that appeared to
-> refute them was an instrument artifact (§3.9), so the formula is *unrefuted but unconfirmed*.
-> **Ratios between rows survive (`ρ ∝ 1/√N` is measured to 5%); treat absolute `N_req` as untested**
-> until H-P closes. Size `ρ*` from the §4.1 dose-response curve
-> until §6.1 Q3 closes.
-
-## §3.9 `cos` has never been validly measured. **MEASURED 2026-08-10.**
-
-*This is the one open hole in the model. Everything else in Part 3 is either
-closed-form or measured; `cos` is neither.*
-
-**What was built.** B1: a fp32 backward pass on a fixed held-out batch, server-side, at `θ_t` before
-the step, emitting `cos_ground_truth` / `pooled_norm` / `probe_grad_norm` per commit
-(`FedSgdAggregator._cos_probe_gradient`). Index alignment is unit-tested (`test_cos_probe.py`: pool =
-±`g` → cos = ±1.0000). Three arms carried it: `013806` (`select`, `N`=200), `042027` (`mean`, `N`=200),
-`065837` (`mean`, free gate).
-
-**What survives.** `‖G‖/‖g_probe‖` matches `b·√(p/N)` **to 5–10% in all three arms**, across 6× in `b`
-and 6.7× in `N`. That is a ratio of *norms* and does not depend on the reference's direction, so it
-stands: **the length half of §3.3 is measured and holds**, and so does the assumption that client
-gradients have roughly the norm of a held-out one. It also resolved H-B (§2.2).
-
-**What does not.** Every `cos` value the probe reported is **void**, because the reference batch was
-wrong. `_cos_probe_gradient` cached `test_global.dataset.tensors[1][:n]` — the first `n` rows of the raw
-tensor, bypassing the DataLoader's sampler. `test_index_list` is built by iterating clients in partition
-order and extending with each client's test shard, with **no shuffle**
-(`base_data_manager.py:204-216`). Under `niid_label_clients=100_alpha=1` that is 100 Dirichlet-skewed
-blocks of 76, so the probe's 64-sample "global reference" was **one client's shard** — 48/4/5/7 over the
-four classes, against a test set that is exactly balanced 1900 each.
-
-Measured on the offline rig at a backprop-trained model (acc 0.900), `cos(g_batch, g_ALL7600)`:
-
-| `n` | **first `n` (what shipped)** | random `n` (the fix) | attenuation, random |
-|---|---|---|---|
-| 64 | **−0.4573** | 0.480 | 2.09× |
-| 256 | +0.4928 | 0.794 | 1.26× |
-| 1024 | +0.6129 | 0.935 | 1.07× |
-| 2048 | +0.6280 | **0.975** | **1.03×** |
-
-**The shipped reference was anti-correlated with held-out truth** (−0.46 trained, −0.42 at init, +0.69
-at acc 0.38): **its sign swings with model state.** That one fact reproduces everything the probe
-appeared to show — a near-zero pooled magnitude, an 11× drift at fixed `N`/`p`/rule, and an
-anti-ordering of the arms — with none of it being real. Both rival explanations are dead: **client
-disagreement** would need fewer than one effective upload (`n_dir = r²N ≤ 0.442` in every climbing-phase
-block, `expt_scripts/replay_scoring.py --cos`), and **reference noise** is only a 1.1–1.6× effect
-(two-batch control, `scripts/probe_reference_quality.py --train`).
-
-**Fixed (B17, landed).** The probe now draws a fixed-seed shuffled batch over the whole test set and
-defaults to `cos_probe_batch_size` = 1024; `test_cos_probe.py` fails the launch if the reference is ever
-class-skewed again. **Nothing has been re-measured with it yet — that is H-P (§6.3), and it rides free
-on any arm.**
-
-**Operative reading.** There is **no trustworthy measurement of `cos` in either direction.** The closed
-form is *unrefuted* — §3.4(c) shows `Λ` built from it orders 21 arms across both rules, 3.8× in `p` and
-20× in `N` — and the instrument that appeared to contradict it was broken. So: size `ρ*` from §4.1's
-dose-response curve, not from §3.8. `ρ` is exact per commit, but the quantity it must be compared against
-has **no usable online estimator** (the gradient-free split-half route is dead, §4.4). **Closing that gap
-is the difference between a design rule and a control law** — still the most valuable open problem here.
-
-**What is and is not assumed.** Isotropy of `v` is exact by construction and is **not** the caveat. The
-caveat is **independent, homogeneous pooling**: `cos = (a/b)√(n/p)` assumes the `n` readings are
-independent and share one target `g`. They do not — the `I` iterations share a bin's gradient and the `K`
-trainers have different gradients. `n_eff` excludes the *correlation* half (§4.2) and §3.9's replay now
-excludes the *disagreement* half, so **neither half of the pooling model is currently suspect.**
-
-
-## §3.10 What is standard, and what is ours
-
-`ρ ≤ cos` as a single inequality is **ours**. None of its ingredients are: `1/√p` probe overlap
-(classical ZO — Nesterov–Spokoiny, Duchi et al., Baydin et al.); signal linear / noise `√T` (standard
-SGD noise ball); `Σρ_t = ∞`, `Σρ_t² < ∞` (Robbins–Monro 1951); step relative to `‖θ‖` (trust-region;
-LARS/LAMB); a pool size beyond which pooling buys nothing (critical batch size, McCandlish et al.).
-
-**Ours is the packaging:** collapsing those into an inequality between two quantities the server already
-logs or can estimate, turning an asymptotic rate statement into an *online control law*. **Do not write
-it up as a new theorem**, and do not claim the control law while §3.9 is open.
+> refute them was an instrument artifact (§6), so the formula is *unrefuted but unconfirmed*. **Ratios
+> between rows survive** (`ρ ∝ 1/√N` is measured to 5%); **treat absolute `N_req` as untested** until
+> H-P closes, and size `ρ*` from the dose-response curve in
+> [P4](fl_fwd_ft_practice.md#p4--arm-ledger--every-arm-ever-run) instead.
 
 ---
 
-# Part 4 — Evidence: everything tried, and how it scored
-
-## §4.1 Master arm ledger — every arm ever run
-
-**The single source of truth for run results (R3).** Sorted by `Λ` (progress banked, §3.4), which is the
-ordering that predicts peak accuracy. `Φ` pred is `e^B`; `Φ` obs is `‖θ_T‖/‖θ_0‖` — their agreement is
-the norm law. `‖θ_0‖` = 13.35 (`rf`=16), 9.6 (`rf`=32), 6.86 (`rf`=64). All arms are α=1, `mean`/`rf`=16
-unless the row says otherwise.
-
-| `Λ` | arm | run | `T` | `ρ` c1 | `ρ` c40-80 | `B` | `Φ` pred → obs | `‖θ_tr‖` end | peak | final |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 0.008 | `n_target` rm ρ*=.01 e=.55 **@ α=0.1** | `001008` | 1263 | 0.0100 | 0.0011 | 0.0002 | 1.000 → 1.000 | 13.35 | 0.388 | 0.264 |
-| 0.008 | `n_target` s=0.4 rm ρ*=.01 | `220627` | 1273 | 0.0100 | 0.0011 | 0.0002 | 1.000 → 1.000 | 13.35 | 0.394 | 0.274 |
-| 0.009 | `var` gate, rm ρ*=.01 | `200209` | 1249 | 0.0100 | 0.0011 | 0.0002 | 1.000 → 1.000 | 13.35 | 0.377 | 0.282 |
-| 0.016 | `rm` ρ*=.02 e=.55 | `223510` | 186 | 0.0200 | 0.0021 | 0.0007 | 1.001 → 1.001 | 13.36 | 0.379 | 0.329 |
-| 0.068 | `const` ρ*=.01 | `211736` | 186 | 0.0100 | 0.0100 | 0.0092 | 1.009 → 1.009 | 13.47 | 0.488 | 0.429 |
-| 0.199 | `rm` ρ*=.03 e=.25 | `013843` | 318 | 0.0300 | 0.0108 | 0.0150 | 1.015 → 1.015 | 13.55 | 0.695 | 0.662 |
-| 0.369 | `mean` raw, N=200 | `211800` | 179 | 0.0346 | 0.0317 | 0.0850 | 1.089 → 1.088 | 14.53 | 0.804 | 0.793 |
-| 0.393 | gate `setpoint` ρ*=.06 | `035557` | 312 | 0.0599 | 0.0216 | 0.0592 | 1.061 → 1.061 | 14.18 | 0.804 | 0.804 |
-| 0.398 | `rm` ρ*=.06 e=.25 **(Q3 anchor)** | `035045` | 317 | 0.0599 | 0.0216 | 0.0597 | 1.061 → 1.062 | 14.20 | 0.801 | 0.799 |
-| 0.398 | gate `setpoint` ρ*=.06 **@ α=0.1** | `062213` | 317 | 0.0599 | 0.0216 | 0.0597 | 1.062 → 1.062 | 14.19 | 0.775 | 0.770 |
-| 0.460 | gate `annealed` ρ*=.06 (`N` 200→40) | `013917` | 707 | 0.0599 | 0.0216 | 0.0913 | 1.096 → 1.096 | 14.65 | 0.821 | 0.819 |
-| 0.591 | `rm` ρ*=.09 e=.25 | `060834` | 313 | 0.0896 | 0.0324 | 0.1332 | 1.142 → 1.145 | 15.34 | 0.846 | 0.843 |
-| 0.631 | `mean` raw, N=200 **+cos** | `042027` | 312 | 0.0344 | 0.0317 | 0.1434 | 1.154 → 1.158 | 15.46 | 0.849 | 0.849 |
-| 0.819 | `raw_sgd` control (`select`) | `200325` | 177 | 0.1837 | 0.1167 | 1.4172 | 4.12 → 4.23 | 57.43 | 0.855 | **0.672** |
-| 0.837 | `select` raw, N=200 | `200242` | 179 | 0.1861 | 0.1225 | 1.4687 | 4.34 → 4.47 | 60.72 | 0.853 | **0.761** |
-| 0.891 | `select` `rf`=16 (`p` ladder) | `200358` | 195 | 0.2008 | 0.1228 | 1.7146 | 5.55 → 5.74 | 78.11 | 0.852 | **0.353** |
-| 0.937 | **`mean` raw, free gate +cos** | `065837` | 715 | 0.1202 | 0.0859 | 1.2810 | 3.60 → 3.63 | 48.83 | **0.865** | **0.862** |
-| 0.953 | `mean` raw, free gate (replicate) | `223446` | 693 | 0.1202 | 0.0859 | 1.2776 | 3.59 → 3.62 | 48.60 | 0.864 | 0.850 |
-| 1.014 | `select` `rf`=32 `p`=229012 | `212009` | 187 | 0.1941 | 0.1099 | 1.1647 | 3.20 → 3.28 | 31.59 | 0.857 | 0.851 |
-| 1.353 | `select` raw, N=200 **+cos** | `013806` | 328 | 0.1861 | 0.1207 | 2.2086 | 9.10 → 9.47 | 128.59 | 0.855 | **0.251** |
-| 1.368 | `select` `rf`=64 `p`=118348 | `222817` | 188 | 0.1863 | 0.1072 | 1.0939 | 2.99 → 3.04 | 20.83 | **0.859** | 0.852 |
-
-*The 4 surviving α-sweep arms were replayed in `Λ`/`B` as an out-of-sample test of both laws (H3):
-`225718` Λ=1.021 peak 0.828 (pred 0.865), `012201` Λ=0.685 peak 0.865 (pred 0.854), `001241` Λ=0.634
-peak 0.848 (pred 0.851), `023623` Λ=0.605 peak 0.868 (pred 0.850) — **mean |peak error| 0.017**, the
-one large miss being α=0.1, which carries the known 3-point α penalty. All four sit at Λ ≥ 0.6, so
-this confirms the law where it was already strong and does not touch the steep region. `004203` and
-`031606` and the whole 08-07 K/η/P portfolio were deleted from disk and cannot be replayed.*
-
-**Read three things off it:**
-
-1. **Peak accuracy is monotone in `Λ`**, saturating at ≈0.865 by `Λ ≈ 0.95`, with no exception outside
-   the ±0.005 replicate band.
-2. **Whether an arm holds its peak is decided by `Φ`, and by nothing else** (§3.4).
-3. **Efficiency `Λ/B = 2cos/ρ` spans 20× across the portfolio.** `mean` at `N`=200, `ρ`=0.03 banks
-   `Λ` = 0.63 for `B` = 0.14 (11% of budget); `mean` under a free gate at `ρ`=0.086 spends **9× the
-   budget for +0.016 accuracy**. **The best arm in the portfolio is the least efficient one** — only
-   visible in these coordinates.
-
-**Replicate spread** (`200242` vs `200325` are byte-identical configs; `223446` was repeated as
-`065837`):
-
-| | `ρ` c1 | `ρ` c40-80 | `‖θ_tr‖` end | peak acc | final acc |
-|---|---|---|---|---|---|
-| `200242` vs `200325` | 1.3% | 5.0% | 5.7% | **±0.0009** | **±0.045** |
-| `223446` vs `065837` | 0.0% | 0.0% | 0.5% | **±0.0007** | ±0.012 |
-
-**Score A/Bs on peak accuracy and the stability columns, never on final accuracy of a diverging arm** —
-post-turnover trajectories are chaotic and the spread is 50× wider there than at the peak.
-
-## §4.2 Knob ledger — what each lever does, and what it measured
-
-One row per concept. `ρ/cos` and `ρ·cos` columns are the §3.6 predictions; "measured" is what happened.
-
-| knob | predicted effect | **measured** | verdict |
-|---|---|---|---|
-| **`η` server LR** | `ρ ∝ η`, pays 1:1 in progress | `ρ` 0.2004 → 0.0404 → 0.0101 over `η` .01/.002/.0005, **to 1%**. `η`=0.002 reaches 0.601 @ c120 / 0.815 @ c327 vs `K`≥20's 0.860 | **works as physics, FAILED as a fix** — full 1:1 cost, and `Σρ²` still diverges (§4.4) |
-| **`K` cohort width** | `ρ/cos ∝ 1/K`, progress invariant | `ρ·√N` invariant to 4% over `K` 10→50; the *naive* `ρ ∝ 1/√K` **falsified** (gate returns the gain as fewer `I`). `K`≥20 holds **0.860** where `K`=10 collapses | **works**, but `K` is not a knob on `N` — the gate absorbs it. Set `K` and the gate together |
-| **`I` iterations/bin** | `ρ/cos ∝ 1/I`, but serial | at `K`=50 the gate cut `I` 18.5 → 5.9 — 3× fewer round trips at slightly larger `N`, best peak of the 08-07 portfolio (0.861), held | **works — buy `N` with `K`, not `I`** |
-| **`P` probes, under selection** | stability-**neutral** (`b²/a = 1`); more `E` ⇒ *faster divergence* | `E` 2.988 (P=10) → 4.744 (P=30) over 37k events; predicted `ρ` ratio `√(4.744/2.988)`=1.260, **measured 1.236 (2%)**. `P`=30 learns faster per commit (0.79 @ c40 vs 0.58–0.66) and **collapses sooner** (doubling 57 vs 68) | **prediction confirmed, including its harmful direction.** Never sweep `P` under selection again (§4.4) |
-| **combination rule** (`select` → `mean`) | `ρ/cos ∝ 1/P`; `ρ` down `√(E·P)` = 5.466× | at matched `N`=200: `ρ` **5.386×**, `‖Δθ‖` **5.430×** (1.5%). `‖θ_tr‖` end 60.7 → 14.5; `‖θ‖²` growth rate **106×** lower (prediction was 30×; the effect compounds — 5.4× at c1-10, 15.0× by c140) | **WORKS — 10× in `ρ/cos` for zero extra compute, bytes, or `η`/`N`/`p` change** |
-| **top-k averaging** | `a = E_k`, `b = √(E_k/k)` ⇒ `b²/a = 1/k`; monotone, optimum `k = P` | offline over 34,447 events: random 1.00× / coin-top-2 1.73× / top-1 1.95× / top-3 2.72× / **all-10 3.16×** in `cos` gain, at `ρ/cos` 1× / 1× / 1× / 3× / **10×**. All cost the same 20 passes | **settled offline — use all `P`.** The shipped rule is k=1 with E=2.991, i.e. **zero** stability gain |
-| **probe distribution** | is there a "good probe" to find? | `d_i` indistinguishable from iid `N(0,‖g‖²)`: top-1 of 10 → 3.811 observed / 3.798 synthetic; coin top-2 → 2.991 / 2.987 | **NO — closes off all cleverer `|d|`-based selection**, and double-duty validates FD linearity at the large chord |
-| **`p` (adapter `rf`)** | `cos ∝ 1/√p`; `ρ/cos ∝ √p` (`ρ` is `p`-invariant) | `rf` 16/32/64: peak **0.852 / 0.857 / 0.859**, `‖θ_tr‖` end 78.1 / 31.6 / **20.8**, `Φ` 5.74 / 3.28 / **3.04**. `ρ` ratio measured **1.00 / 0.967 / 0.928** (the `0.71/0.51` prediction is **falsified** — hence `√p`, §3.6) | **WORKS — best cost/benefit in the stack.** A quarter of `p` learns agnews at least as well. Must run with `FWDLLM_FD_SCALE_INVARIANT=1` |
-| **step rule** (`raw_sgd` → `trust_ratio`) | makes `ρ` an operator constant; removes `|JVP|` scale and the α multiplier | `ρ = ρ*` to **8.7e-5** (`const`); `(1+ρ*²)^{T/2}` predicts `‖θ_tr‖` 13.4696 vs 13.4714 observed (**0.013%**); **α moves `ρ` by 0 to 6 s.f.** (§2.5d) | **WORKS.** But **alone it does not bound `‖θ‖`** — constant `ρ*` is still geometric. Ships with the anneal |
-| **anneal** (`rho_schedule=rm`, `t^-exp`) | Robbins–Monro: `Σρ=∞`, `Σρ²<∞` | enacts to **4.5e-4** over 318 commits. `exp`=0.55 takes `ρ` **17× below setpoint** by c186 → arm flat at 0.34. **`exp`=0.25 is measured adequate** despite being formally outside the RM window — log-log 0.01/0.05/0.12 over three arms, 313–318 commits | **WORKS; `exp`=0.25.** The RM bound is conservative at `T`≈300. Size the exponent to the **horizon** |
-| **`ρ*` setpoint** | peak monotone in `ρ*` | 0.03/0.06/0.09 → peak **0.695 / 0.801 / 0.846**, all still climbing at cutoff, all stable (`Φ` ≤ 1.145). **The anneal spends most of the setpoint**: realised mid-run `ρ` is 0.011/0.022/0.032, an order of magnitude below the 0.086 of the best free-gate arm | **band not closed.** Read `ρ*` off §4.1 by `Λ`, not by `ρ` — and note §3.4(a): the old "walk `ρ*` up" conclusion is withdrawn (§4.4) |
-| **commit gate** (`var` → `n_target`) | scale-free `N` target replaces a unit-carrying threshold | `N_req` closed form **exact** (28.1 at ρ*=.01; **1,013.3** at ρ*=.06 = `450,340·(0.06/0.4)²/10`). Both `setpoint` arms sat at the `I` cap for all 312 commits ⇒ byte-equivalent to a hard pin | **INCONCLUSIVE twice.** `s` and `K` are **coupled**: at ρ*=.06 the criterion demands 5× what `K`=10 can pool. That is a **cohort-width requirement**, not a gate parameter. Re-run at `K`=30 |
-| **gate `ρ` reference** | — | **composition bug**: `N_req ∝ ρ_t²`, so annealing `ρ` makes the gate demand *less* pooling and progress `ρ·cos` decays as `ρ²`. Observed: `N_req` 28.1 → **0.0** by c20, `I` floored at 1 on 1,271/1,273 commits, peak 0.394 *decaying* to 0.274 — **reproduced identically at α=0.1** over 1,263 commits | **fixed by `gate_rho_ref=setpoint`** (sizes `N_req` from `ρ*₀`). No-op under `const` and `raw_sgd` |
-| **`annealed` vs `setpoint` gate** | — | at **matched commits** `setpoint` wins every column (c312: acc 0.804 vs 0.759, `I` 20 vs 6); over the same **vclock** `annealed` gets 2.3× more commits and ends higher (0.821 vs 0.804) | **not right vs wrong** — `annealed` is progress-per-wall-clock, `setpoint` is progress-per-commit. Belongs to the controller, not the gate |
-| **α heterogeneity** | enters via `‖g‖` only | §2.5 — 1000× in α, `var` floor 1.33/0.64/0.28, new invariant 0.53 ± 0.01, both `K` predictions falsified | **understood and neutralised** by the step rule |
-| **`n_eff` sensor** | dimensionless pooling-adequacy sensor | `n_eff = 2·mean(d²)/var`. Synthetic: recovers true `n` (198.7/200), detects redundancy (×2 → 0.49), scale-invariant over 100× in `‖g‖`, **FAILS on directional disagreement** (4/20/100 distinct directions all → 1.00). In 17 real arms: **`n_eff/N` = 1.00 ± 0.01** | **an identity, not a measurement.** In a gate it reduces to a counter. It excluded pool *correlation*; §3.9 now excludes pool *disagreement* as well (`n_dir` ≤ 0.442 < 1 effective uploads), so **neither half of the pooling model is at fault** |
-
-## §4.3 Feature ledger — what is built
-
-**The single source of truth for implementation status (R3).** Every feature is flag-gated, default =
-old / byte-identical off. Terminal state (`PERMANENT` / `FLAGGED` / `REVERTED`) is the **operator's**
-call — ask, with the A/B evidence. Nothing reaches `WORKS` without predicted-vs-observed numbers and a
-run id.
-
-| # | feature | flag (default = old) | status |
-|---|---|---|---|
-| **B1** | `cos(G,g)` ground-truth probe | `cos_ground_truth_audit` + `cos_probe_batch_size` | **BROKEN AS SHIPPED · must be re-run** (§3.9). `‖G‖/‖g‖` and H-B survive (norm ratios, reference-direction-free). **Every `cos_ground_truth` value is void:** the reference is `tensors[1][:n]`, i.e. one client's non-IID shard, anti-correlated with held-out truth (−0.46 trained). **Fix = fixed-seed shuffle + `cos_probe_batch_size` ≥ 1024**, then re-measure |
-| **B2** | average all `P` probes | `probe_combine: {select\|mean}` | **WORKS · 5/5 arms** (§4.2). Site: `_accumulate_mean_over_probes`. Also fixes the `P=1` crash (`sorted_indices[-2]` on a 1-element list) and the RNG-stream mismatch that blocked the C1 ablation |
-| **B3** | trust-ratio step + `t^-exp` anneal | `server_step_rule` + `rho_star`/`rho_schedule`/`rho_exp` | **WORKS mechanically and portably; setpoint open** (§4.2). Site: `FedSgdAggregator._apply_weighted_update` (pool-then-apply). Subsumes S3: ω can no longer influence step magnitude |
-| **B4** | scale-free `n_target` commit gate | `commit_gate: {var\|n_target}` + `gate_safety_s` + `gate_rho_ref` | **INCONCLUSIVE, twice** (§4.2). Closed form exact; composition bug found and fixed; both A/Bs cap-bound. **Re-run at `K` = 30** |
-| **B5** | shrink `p` via adapter bottleneck | `adapter_reduction_factor` (16) + `FWDLLM_FD_SCALE_INVARIANT` | **WORKS · 3/3 · H-G YES** (§4.2). Read by `expts/initializer.create_model` on **both** sides; `trainable_scope` stays, inert, so old configs parse |
-| **B6** | long `K`=50 arm, ≥32 h vclock | none (runtime only) | **DEMOTED** — `B` now extrapolates the answer exactly (§3.4). Confirmation, not an open question |
-| **B7/B15** | weight decay `λ ≈ ρ²/2` (Q2's arm) | `server_weight_decay: auto\|FLOAT` (default off) | **BUILT, ARM NOT RUN.** Decoupled decay on the trainable slice after the step; `auto` = `ρ²/2` from the realised `ρ`. `test_weight_decay.py` (preflight): `Φ` = **1.029 with decay vs 2.258 without** over 200 commits at `ρ`=0.09, frozen params untouched, disabled path byte-identical. **Demoted to an optional confirmation** — §3.4a answered Q2 on the rig |
-| **B8** | staleness histogram from the K-sweep | none (log replay) | **BLOCKED — data deleted.** The 08-07 K-sweep is gone; surviving runs emit `staleness`/`inflight_staleness` but only at `K`=10/`c`=30. Needs the node-4 re-run |
-| **B9** | split-half commit gate | `commit_gate: {var\|cos}` | **DEAD** at `p`=450k (§4.4) |
-| **B10** | adaptive `P` per client | `probe_budget: adaptive` | **PARKED** — same wall as B9, worse (§4.4) |
-| **B11** | `n_eff` sensor | rides on `server_update_audit` (emit-only) | **FAILED as a sensor, KEPT as an audit** (§4.2). Do not wire it to a controller |
-| **B12** | α-sweep | `--partition-method ...alpha={0.1,1,100}` | **WORKS · 4/4** (§2.5) |
-| **B13** | two-batch `cos` control | — | **CANCELLED — answered offline** (§3.9, `scripts/probe_reference_quality.py`). `cos(g_A,g_B)` = 0.39–0.78 at n=64 ⇒ noise attenuation 1.1–1.6×, not 25–80×. Superseded by **B17** |
-| **B17** | fix the `cos` probe reference — fixed-seed shuffle + bigger batch | `cos_probe_batch_size` (**default now 1024**, was 64) | **BUILT** (§3.9). `_cos_probe_gradient` draws a fixed-seed permutation over the whole test set; logs the dominant-class share and warns above 0.5. `test_cos_probe.py` fails the launch on a class-skewed reference (0.30 vs 1.00 for the old head slice). Emit-only. **Unblocks H-P; nothing re-measured yet** |
-| **B18** | S1 · heavy-ball on the pooled **direction** | `server_momentum: BETA` (default 0.0 = byte-identical) | **BUILT, ARM IN FLIGHT.** Was applied to the already-scaled update, inflating `ρ` by `1/(1-β)` — the arithmetic behind the original S1 NaN. Now applied before the trust-ratio scale, so `ρ` = `ρ*` to **1e-7 at β up to 0.9** (`test_server_step_rule.py`). Node 2 |
-| **B14** | `rf`=64 to `Φ` = 6.6 | `adapter_reduction_factor=64` + runtime | **TODO · TOP BLOCKER** — this is §6.1 Q1 |
-| **B16** | `Λ` out of sample: rule × `p` at pinned `ρ*`,`N` | `probe_combine` × `adapter_reduction_factor` | **TODO** — this is §6.1 Q3, pre-registered |
-
-## §4.4 Dead ends — do not retry
-
-**Append-only (R5). Read before proposing anything.**
-
-| do not | why it is dead |
-|---|---|
-| **Lower `η` alone** | Pays 1:1 in progress and does not restore square-summability — a constant `ρ` of any size has `Σρ² = ∞` |
-| **Retune `var_threshold`** | Not because it is inert (it controls `N` whenever reachable) but because its units make the setpoint a per-model constant *and* it simultaneously absorbs a heterogeneity floor that moves 1.33 → 0.28 across α. Any retune fits one corner of an (α,`K`) grid |
-| **Sweep `P` under the shipped selection rule** | Measures `E` and nothing else; and raising `P` under selection is *harmful* (§4.2) |
-| **Keep selecting probes by `\|d\|`** | Stability-neutral by construction (`b²/a = 1`, measured); candidates provably carry no other structure in `\|d\|`. Top-k average with k < P is strictly worse |
-| **Split-half cosine as a gate or a `cos` estimator (S-E / S-J)** | **Measurability wall, measured.** Per-commit sd 1.5e-3 against a 1e-4 signal (SNR 0.07); at matched `N`=200 over 491 commits it returns **−3e-5 ± 1.1e-4**. Even `mean` + `rf`=64 at the measured `cos` gives SNR ≈ 2. The wall is specific to the *cosine*, not the split-half pair: normalising the same statistic gives `1 − cos(G_A,G_B) ≈ 1 − 1e-4` against the same 1.5e-3 floor. Revisit only if `p` falls by orders of magnitude |
-| **Wire `n_eff` to a controller** | An identity (`n_eff/N` = 1.00 ± 0.01 in 17 arms), blind to directional disagreement (§4.2) |
-| **Retry momentum before `ρ` is bounded** | `ρ_eff = ρ/(1−β)`; at β=0.9 that is `ρ_eff` = 1.6 and the norm doubles *every step* — the historical NaN is arithmetic, not a bad idea. **Now unblocked** by the trust-ratio step: at `ρ*`=0.06, β ≤ 0.5 is the testable range |
-| **Build the least-squares / min-norm gradient solve** over `{(v_i,d_i)}` | At `P,N ≪ p` it equals the average up to scale — no gain in `cos` |
-| **Orthogonalise the `P` probes, or coordinate probes across trainers** | No-ops: random probes are already orthogonal to `1/√p`, and `K·P` = 500 ≪ `p` |
-| **Normalise `v` expecting a variance win** | `‖v‖` concentrates to 0.07%. *Do* rescale `h` when `p` changes — hygiene (§3.2), not a fix |
-| **Chase momentum in the probe distribution** | Computed negative: the accumulated trajectory has `cos ≈ 0.1–0.23` after 100 commits, so as a control variate it removes ~5% of the variance |
-| **Invest further in ω-direction / inverse-variance weighting** | Two orders of magnitude below the problem, and the trust-ratio step removes ω from magnitude entirely. ω-*freshness* is different and still open (§6.3 H-E) |
-| **Shrink `h`** | Pinned between truncation error and fp16 catastrophic cancellation (§2.1) |
-| **Size `N` from §3.8's table** | unverified — the only direct `cos` measurement was instrumental (§3.9). Size `ρ*` from §4.1 until H-P closes |
-| **Slice `test_global.dataset.tensors[:n]` for a reference batch** | Bypasses the DataLoader sampler and returns *one client's* Dirichlet-skewed shard: `test_index_list` is per-client blocks concatenated in client order, never shuffled (`base_data_manager.py:204-216`). This is what broke B1 (§3.9). Draw any reference with a fixed-seed shuffle over the full set, sized ≥1024 |
-| **Use `top_class_share` as a turnover alarm** | Fires on 4/4 degrading arms with median lead +61 evals but **15 false positives across 17 holding arms** — an untrained model is already single-class and the statistic re-crosses mid-training. `loss > ln(num_classes)` has zero false positives but fires ~27 evals *after* the 5-point drop: a post-mortem fingerprint, not a monitor |
-| **Score stability by the `‖θ‖²` log-log slope** | Bounded above by 1 under trust-ratio **by construction** (§3.4b) — every "sub-linear ⇒ safe" reading on such an arm is vacuous. Score `B` and `Λ` |
-| **Walk `ρ*` up to 0.12 / 0.15 / 0.20** | This document's own recommendation one revision ago, **withdrawn**: budget cost for fixed `Λ` is ∝ `ρ`, so raising `ρ*` buys wall clock and spends safety. Pick `ρ = Λ_req/(T·cos)` from the commit budget |
-| **`trainable_scope: adapters_only` as a `p` lever** | No-op — `pre_classifier` is already dropped at `:217` (§2.1). The remaining `p` lever is adapter width |
-| **H1 shuffle / H3 bin-order permutation** | Do not address the mechanism. Parked |
-| **H2 bin size / M1 sweep** | Settled: spend compute on probes, not bigger bins — probe noise dominates data noise by ~40× (**ANALYSIS**) |
-
-**Not costed, not dead — the only two ideas that beat the `√(n/p)` barrier.** **Block-coordinate
-probing** (one adapter layer at a time, `p → p/L` per probe) improves `ρ/cos` by ~`L` while each commit
-updates `1/L` of the params; known in ZO optimisation, needs analysis first. **Low-rank / subspace
-probing** needs a good subspace *and* a way to broadcast it.
-
-## §4.5 Superseded numbers — quote check
-
-Only numbers that were quoted in other documents or drafts before being corrected (R8). If you see one
-of these in `fluxtune_contributions.md`, `FLUXTUNE_CODE_QA.md`, or a paper draft, it is wrong.
-
-| superseded | replaced by |
-|---|---|
-| `p = 1,040,932`, `‖θ_tr‖` init 20.356 | **`p` = 450,340, `‖θ_tr‖` = 13.35** — the trainer drops `pre_classifier` before probing (§2.1) |
-| "freezing `pre_classifier` buys 2.31×" | **already banked** — the layer is not in `p` |
-| `ρ` = 0.115 flat all run; orthogonality ratio 1.032 | **`ρ` = 0.16 at commit 1**, falling iff `N` grows; ratio **1.000 ± 0.005**. Both earlier numbers were reconstruction artifacts of using total `‖W‖` |
-| "the variance gate is 100% dead" / "live at `K` ≥ 20" | **live wherever `2b²‖g‖²/n` can reach 0.3**: live at `K`=10/α=100, cap-bound at `K`=20/α=0.1 (§2.5c) |
-| `ρ·√N` = 1.68–1.81 is the pooling invariant | true **only at fixed α**; the invariant is `ρ√N‖θ_tr‖/(η·rms\|d\|·√p)` = 0.53 ± 0.01 (§2.5b) |
-| `n_eff` is the scale-free replacement for `var_threshold` | **an identity** — the step rule carries the portability claim (§2.5d, §4.2) |
-| `cos` = 0.0351 predicted; `cos ≤ 0.015` from split-half | both retired; so is their replacement — next row |
-| `cos` measured 0.0004–0.003; shortfall **25–80×**; `a` = 0.007–0.09; "`cos` rises 11× at fixed `N`,`p`,rule"; "`ρ/cos` anti-orders the arms" | **ALL VOID — instrument defect** (§3.9). Measured against `tensors[1][:n]` = one client's non-IID shard, anti-correlated (−0.46) with held-out truth and sign-swinging with model state. **No trustworthy `cos` measurement exists yet** |
-| `ρ/cos ≥ 10×` over budget | the "does not order the arms" evidence came from the broken probe (§3.9). Against the **closed-form** `cos`, `ρ/cos` is the efficiency `2cos/ρ` and it does order them (§3.4) |
-| `ρ/cos ∝ p` | **∝ √p** — `ρ` is `p`-invariant (§3.6) |
-| `s = 0.3–0.5` | **`s` = 2.6–4.3**, derived from the two conserved laws (§3.5) |
-| "there is a critical `ρ ≈ 0.09`" | **debunked by arithmetic** (§3.4a) — a horizon artifact. Every `ρ > 0` inflates geometrically |
-| `exp = 0.55` (strictly inside Robbins–Monro) | **0.25** — sized to the horizon; 0.55 spends the whole budget in the dead zone (§4.2) |
-| "4 h minimum or the result is uninformative" | score `B` and `Λ` — exact at any horizon, readable in ~20 commits |
-| collapse = logit saturation | **directional degeneracy**; `logit_norm` does not discriminate (§2.6) |
-| "never converges — it *oscillates*" (`fluxtune_contributions.md` §8) | at 4 h it is a **monotone rise then monotone divergence** |
-| QA §D2 "the k sweep cannot run today" | answered offline from logged JVPs — monotone, optimum `k = P` (§4.2) |
-| QA §E1 "measuring `cos(G,g)` needs `v_k` uploaded" | not for this quantity — a server-side backprop gradient on a probe batch suffices, and it is built (B1) |
-
-**Telemetry gotcha.** Before 2026-08-07, `tc_transformer_trainer_distribute.py:485` logged the argmax
-under the label `chosen jvp` while the actual pick is the coin-flip result. It now logs the coin-flip
-winner as `chosen jvp`, the argmax as `max jvp`, and the index as `chosen idx`. **Runs before that date
-carry the old, mislabelled field** — any parser must handle both.
-
-## §4.6 Process lessons — how to run the work
-
-*Only entries about **method**. Results live in §4.1–§4.3.*
-
-**Worked:**
-
-- **Sweeps over single points.** Every surviving law was confirmed by a *slope*; the one claim that died
-  (`ρ ∝ 1/√K`) died because a curve exposed feedback a single point would have hidden. A slope cannot be
-  rescued by a fudge factor.
-- **Pinning `N`.** Every fix moves a quantity the var gate immediately re-spends (§4.7), so an unpinned
-  A/B measures the gate, not the fix.
-- **Varying the axis every earlier sweep held fixed.** The α-sweep cost four arms and no code, and moved
-  three things — two of them falsifications of our own predictions.
-- **Measuring norms rather than cosines.** `‖G‖/‖g‖` and `‖g‖`-vs-`‖θ_tr‖` are `O(1)` ratios and gave
-  clean answers from the same probe whose headline cosine is still contested. **At `p` = 4.5e5, build
-  the instrument that reads an `O(1)` quantity.**
-- **Pre-registering a sinking condition, not just a point prediction.** The ρ* node missed both point
-  predictions and the read was still unambiguous, because "arm 3 diverges AND arm 1 under 0.6" was
-  written down first.
-- **Scoring `‖θ_tr‖²` and `‖Δθ‖` instead of accuracy.** Turned a 4-hour verdict into a 20-commit one
-  (now superseded by `B`/`Λ`, which are better still).
-
-**Did not work:**
-
-- **Scale-free-by-measurement as a strategy.** The plan was to make each unit-carrying constant portable
-  by measuring the units away; for the gate that produced an identity (`n_eff`), and for `cos` a number
-  that fails its own consistency checks. **At this `p` the informative content of pool statistics is
-  `O(1/√p)` below their noise, so the portable quantity has to come from the *step rule*, where `ρ` is
-  exact.**
-- **Deriving a setpoint from theory, twice.** `s` = 0.3–0.5 was never calibrated and was silently
-  absorbing a shortfall of unknown size *and direction*. **A third re-derivation would repeat the
-  error** — the operating point comes from §4.1 until H-P closes.
-- **Scoring features without scoring compositions.** The gate and the anneal are each correct and
-  multiply into a stall (`N_req ∝ ρ_t²`, §4.2). Nothing in either feature's own prediction could have
-  caught it.
-- **Launching a portability test without a napkin check on its own operating point.** `N_req` = 1,013
-  against a cohort ceiling of 200 was computable in one line, and the risk was named before launch.
-- **Final accuracy as an A/B statistic.** ±0.045 between byte-identical replicates vs ±0.0009 at the
-  peak (§4.1).
-- **Trusting a new instrument because it was unit-tested.** B1's index alignment was unit-tested and
-  correct; its *reference batch* was one client's non-IID shard, and nothing tested that (§3.9). The
-  three consistency checks in §3.9 all failed and were written up as findings about the optimizer for
-  a full revision before anyone asked what the reference actually contained. **A probe needs a test
-  that its input is what you think it is, not only that its arithmetic is right** — here, one
-  `Counter(labels[:64])` would have caught it.
-- **A missing attribute costing a full night on three nodes** (08-08): twelve of sixteen arms died ~30 s
-  in with `AttributeError: 'ClassificationArgs' object has no attribute
-  'select_perturbation_using_jvp'` while the chain marched on. **08-09 was the same class, quieter:** a
-  feature that emits a *wrong number* rather than crashing. Both are now preflighted (§6.5).
-
-## §4.7 The interaction that shapes every A/B
-
-`var ∝ b²‖g‖²/n`, so averaging's 30× cut in `b²` puts `var` under `var_threshold` = 0.3 at iteration 1:
-the gate commits at `I ≈ 1–2` instead of 18.5 and `N` collapses from 185 to ~10–20. Since
-`cos = √(G_rule·N/p)`, the 10× gain in `G_rule` and the ~10× loss in `N` **cancel** — what averaging
-buys under the shipped gate is **wall clock (~6.5× fewer serial round trips), not aim.**
-
-1. **"`ρ` drops 5.45×" holds only at matched `N`.** Score **`ρ·√N`**, which is `N`-free.
-2. **`mean` and the var gate cannot both be free.** Either pin the pool (`--var-threshold 0
-   --max-iter-per-data-id 20 --var-stopping-policy off` ⇒ `I` = 20, `N` = 200 exactly) or the arms are
-   unmatched by ~10× in `N`.
-
-**Scoring gotcha:** `_pool_split_half_stats` returns `None` for a pool of one, so at `I = 1` the
-`server_update` record carries **no `pool_size` and no split-half components**. Reconstruct
-`N = K·(iteration_per_data_id + 1)`, which is always present.
-
----
-
-# Part 5 — The FluxTune approach as it currently stands
-
-*Grounded in §3 and §4. Every element here is either measured to work or explicitly marked open.*
+# Part 5 — What the model prescribes
 
 ## §5.1 The algorithm
 
-**(a) Perturbation-based training on one device.**
+**(a) On one device — the general form, nothing federated:**
 
 ```
 given: theta, trainable slice theta_tr of dimension p, step schedule rho*_t, budget P
 loop t:
   draw P Gaussian probes v_1..v_P            # scale h by sqrt(p) so h||v|| is p-independent
-  for each i: d_i <- ( L(theta + h v_i) - L(theta - h v_i) ) / (2h)     # 2 forward passes, no_grad
-  u <- (1/P) * sum_i d_i * v_i               # ASSIMILATE ALL -- never select on |d| (4.2, 4.4)
-  theta_tr <- theta_tr - rho*_t * ||theta_tr|| * u / ||u||              # TRUST-RATIO step (3.5)
-  rho*_{t+1} <- rho*_0 * t^-exp              # exp = 0.25, sized to the HORIZON (4.2)
+  for each i: d_i <- ( L(theta + h v_i) - L(theta - h v_i) ) / (2h)   # 2 fwd passes, no_grad
+  u <- (1/P) * sum_i d_i * v_i               # ASSIMILATE ALL -- never select on |d|  (3.2)
+  theta_tr <- theta_tr - rho*_t * ||theta_tr|| * u / ||u||            # TRUST-RATIO step (4.4)
+  rho*_{t+1} <- rho*_0 * t^-exp              # exp = 0.25, sized to the HORIZON
 ```
 
-**(b) The same loop in FL.**
+**(b) The same loop in FL:**
 
 ```
 SIZING (offline, before the run):
-  choose rho*_0 from the DOSE-RESPONSE CURVE (4.1), not from p*(rho/s)^2/G_rule   <- 3.8 is unusable
+  choose rho*_0 from the DOSE-RESPONSE CURVE (P4), not from p*(rho/s)^2/G_rule   <- 4.5 unusable
   pick I as small as the gate allows, then K = n_req/(P*I);  require C >= K
 
 PER COMMIT (server):
   dispatch to C clients, wait for K uploads   # async: K arrives, stragglers roll into the next
   G <- sum_k omega_k u_k / sum_k omega_k      # omega re-weights; it must NOT set magnitude
-  commit when the pool reaches N_target       # NOT a cos_hat test -- unmeasurable today (4.4)
+  commit when the pool reaches N_target       # NOT a cos_hat test -- unmeasurable today (P6)
   theta_tr <- theta_tr - rho*_t * ||theta_tr|| * G / ||G||
-  log rho = ||dTheta||/||theta_tr||, ||theta_tr||, top_class_share   # the three monitors (2.7)
+  log rho, ||theta_tr||, top_class_share      # the three monitors (2.8)
   rho*_{t+1} <- rho*_0 * t^-exp
 ```
 
-## §5.2 Priority order for any new configuration
+Flags, defaults and status for each element: [P1](fl_fwd_ft_practice.md#p1--what-is-built)
+and [P2](fl_fwd_ft_practice.md#p2--the-recommended-stack).
+
+## §5.2 The lever table — this ranks every possible fix
+
+**`ρ/cos` is "will this survive"; `ρ·cos` is "how fast does it learn".** A good lever improves the first
+without hurting the second.
+
+| lever | `ρ/cos` (stability) | `ρ·cos` (progress) | who owns it |
+|---|---|---|---|
+| **P-averaging** (trainer pooling) | **∝ 1/P** | **invariant — and free in wall clock** | trainer |
+| **K** (cohort width) | **∝ 1/K** | invariant — parallel across devices | client selection |
+| **I** (iterations per bin) | **∝ 1/I** | invariant — **but serial: one round trip each** | aggregation gate |
+| **p** (trainable dimension) | **∝ √p** | ∝ 1/p | model/PEFT design |
+| `η` learning rate | ∝ η | ∝ η — **pays 1:1** | aggregation |
+| probe-selection gain `E[v∥²]` | **invariant** (`b²/a = 1`) | ∝ E | trainer probe selection |
+| step normalization | sets `ρ` to an operator constant | decoupled | aggregation |
+
+Per unit of **compute**: progress ∝ `C/n`, inflation ∝ `C/n²`, so the ratio improves ∝ `n`. **Larger
+pools are strictly better for stability per FLOP, and slower only in absolute wall-clock progress.**
+
+**The `p` row is `√p`, not `p`** (**MEASURED**): `ρ` does not fall as `√p`, because both halves of
+`ρ = ‖Δθ‖/‖θ_tr‖` scale as `√p` and cancel. **`ρ` is already dimensionless in `p`**, so shrinking `p`
+buys `cos` alone — which is still the best cost/benefit in the stack, since it costs *negative* compute.
+
+**Three pooling stages, and who owns each:**
+
+| stage | owner | cost structure | reduces |
+|---|---|---|---|
+| `P` probes per iteration | **trainer** | on-device, parallel, free in wall clock | probe noise |
+| `K` trainers per commit | **client selection** | parallel across devices | probe + data noise |
+| `I` iterations per bin | **aggregation** (commit gate) | **serial round trips** | probe noise only |
+| `p` | **model/PEFT design**, upstream of all three | negative | — |
+
+`P` and `I` are *substitutes* — both pool over the same bin at the same `θ`, both reduce probe noise
+only — at wildly different cost. **Raise `P`, lower `I`, hold `n = P·K·I`: commits get strictly faster
+and no less well-aimed.** Wall clock per commit is set by `I` (serial), not `K` (parallel), so **choose
+the smallest `I` the gate allows and buy the rest with `K`.**
+
+> **In one line: pooling sets how large `ρ` is *allowed* to be; aggregation *spends* within that budget.
+> Aggregation can only shrink `ρ`; it can never raise `cos`.**
+
+The natural reading — *"it's an aggregation bug"* — is **half right, and acting on that half alone costs
+a ≥10× slowdown**: `K` ≥ 20 reaches 0.860 while `η` = 0.002 reaches 0.601 at commit 120 — same
+stability, one at zero progress cost and one at the full 1:1 cost. **And pooling alone runs out**: at
+`K` ≥ 20 it buys ~500 commits before the linearly-growing norm walks back out.
+
+**Why the controller spans two subsystems.** `N = K × I` is a client-selection knob times an aggregation
+knob, so the gate (which decides `I`) is a client-selection decision made from aggregation telemetry —
+**the controller's sensor and actuator sit on opposite sides.** A pure-selection controller has nothing
+to measure; a pure-aggregation controller can clamp `ρ` but cannot tell whether it is clamping too hard.
+
+## §5.3 The ratio principle
+
+Every quantity compared against a fixed constant must be **scale-invariant**, because anything carrying
+units silently changes meaning as training proceeds. The test: *re-parameterise so `‖θ‖` doubles; the
+loss surface shape is unchanged, so the trajectory should be.* Any rule that fails needs re-tuning every
+time the model, adapter rank or round index changes. Three replacements follow:
+
+| unit-carrying | scale-free replacement |
+|---|---|
+| absolute step `η` | relative step `ρ*` |
+| absolute variance threshold | an `N` target |
+| absolute iteration cap | a measured adequacy condition |
+
+**Why the criterion does not have to enumerate its failure modes.** Anything not thought of enters
+through exactly **two** channels: it changes the step taken → shows up in **`ρ`**, logged exactly; or it
+degrades the pool → shows up as **`n_eff < n`**, hence in `cos`. **Channel 2 is the unpaid half.**
+`n_eff` detects *correlation* among uploads and returns 1.00 ± 0.01 in every arm ever replayed, so it
+carries no information; it does **not** detect *directional* disagreement, because at `p = 4.5e5`
+differing `g_k` move `var` by `O(n/p)` and are invisible. **Scale-free setpoints therefore have to come
+from the step rule, not from channel 2.**
+
+## §5.4 Priority order for any new configuration
 
 Every decision reduces to *how to reach the required `n` most cheaply*:
 
-1. **`p` first** — the only lever that improves aim at *negative* cost (§4.2).
+1. **`p` first** — the only lever that improves aim at *negative* cost.
 2. **then `P`** — free in wall clock, and only pays off if all `P` are assimilated.
 3. **then `K`** — the only stage that touches data noise.
 4. **`I` last**, and only what the gate demands — it is the one that costs serial round trips.
@@ -1122,343 +630,203 @@ Then two rules: **set `ρ*` from the dose-response curve, not from `η`, and ann
 enough to be safe now is not safe 1,000 commits later; and **never let probe selection set step
 magnitude.**
 
-## §5.3 The recommended stack, and what each element rests on
+*Caveat, and it is open:* the `P`-before-`K` ordering rests on "probe noise dominates data noise by
+~40×", which is **ANALYSIS and has never been measured** (M1).
 
-| element | setting | rests on | confidence |
-|---|---|---|---|
-| combination rule | `probe_combine=mean` | §4.2, 5/5 arms, prediction hit to 1.5% | **settled** |
-| step rule | `server_step_rule=trust_ratio` | §4.2, enacts to 8.7e-5; α-portable to 6 s.f. | **settled** |
-| anneal | `rho_schedule=rm`, `rho_exp=0.25` | §4.2, three arms, 313–318 commits | **settled** |
-| `p` | `adapter_reduction_factor=64` **+ `FWDLLM_FD_SCALE_INVARIANT=1`** | §4.2, 3/3, 0.859 at a quarter of `p` | **settled**; headroom question is §6.1 Q1 |
-| `ρ*₀` | read off §4.1 by target `Λ`, then `ρ = Λ_req/(T·cos)` | §3.5 design rule | **empirical** — the formula route is blocked on §3.9 |
-| commit gate | `commit_gate=n_target`, `gate_rho_ref=setpoint`, `s`=0.4 | closed form exact; A/B inconclusive twice | **open** — needs `K`=30 (§6.4) |
-| `K`, `C` | `K` ≥ 30, `C` ≥ `K` | §4.2 — `N_req` at ρ*=0.06 is 1,013, five times what `K`=10 can pool | **open**, and it is a *requirement*, not a preference |
-| monitors | `‖θ_tr‖`, `ρ`, `top_class_share`; score `B` and `Λ` | §2.7, §3.4 | **settled** |
-| `cos` audit | `cos_ground_truth_audit` on; `cos_probe_batch_size` ≥ 1024 (default) | §3.9 sizing | **fixed, unvalidated** — H-P |
-
-## §5.4 What is finalized, and what is not
+## §5.5 What is settled, and what is not
 
 **Settled — do not re-measure.** The step rule, the anneal, the combination rule and the `p` lever all
-enact to ≤4e-3 with mechanisms measured (§4.2). On top of them, §3.4 closes the *dynamics*: `‖θ_T‖` is a
+enact to ≤4e-3 with mechanisms measured. On top of them, §4 closes the *dynamics*: `‖θ_T‖` is a
 closed-form function of the `ρ` trajectory alone, and peak accuracy is a monotone function of `Λ`.
 
 **The remaining unknowns are not about the optimizer.** They are about the two constants those laws are
-scored against — `B_max` and `Λ_req` — and about whether the closed-form `cos` inside `Λ` is real. That
-is exactly §6.1.
+scored against — `B_max` and `Λ_req` — and about whether the closed-form `cos` inside `Λ` is real (§6).
 
-**Two structural gaps with no owner yet:** no convergence-detection rule exists, even in §5.1; and the
-`h`/`p` coupling is unanalysed beyond the `FWDLLM_FD_SCALE_INVARIANT` interaction.
+**Two structural gaps with no owner:** no convergence-detection rule exists, even in §5.1; and the
+`h`/`p` coupling is unanalysed beyond the FD-rescale interaction.
 
-## §5.5 Claim status
-
-Two naming schemes are in play: `C1–C3` (this doc, `FLUXTUNE_CODE_QA.md`) and `S1–S3`
-(`fluxtune_contributions.md` §8.2). Not yet landed in that file.
-
-| claim | as written today | after the portfolios | what would settle it |
-|---|---|---|---|
-| **C1 · informed JVP-magnitude probe selection** | "keeps the steepest — a better gradient estimate per round" | **Refuted as a contribution.** At matched `N`=200, `mean` beats `select` by 5.386× in `ρ` and 106× in `‖θ‖²` growth rate, at equal or better accuracy. `b²/a = 1` is measured, so the `2P` budget is justified by **averaging alone**. **Do not abandon C1 — redirect it: the *combination* rule is the contribution, not the probe-selection rule.** "Compute `P` directional derivatives and assimilate all of them" is the **trainer-side analogue of server-side pooling**. Rewrite C1 as a compute-budget claim | **DONE** |
-| **C2 · async aggregation / K-C control** | "async, straggler-tolerant; `agg_goal < K` commits as stragglers arrive" | **Reframed; the controller is still not demonstrated.** `ρ ∝ 1/√(K·I)` is measured and only the async path has a free `N` to spend, but the gate A/B has failed to produce a contrast twice. **The honest current form is a cohort-width *requirement*, which is a stronger claim than a gate parameter** | gate re-run at `K`=30 |
-| **C3 · aggregation weighting (ω)** | grad-aware rate, align gate, staleness weighting | **Direction: park** — ω spans 0.70–0.87 against a ≥10× gap, and the trust-ratio step removes it from magnitude. **Freshness: open and testable** | B8 (free replay), then the K-sweep |
-| **S1 · server momentum** | "REFUTED as-designed" | **Re-framed, and now testable.** `ρ_eff = ρ/(1−β)` explained the NaN as arithmetic — and the *same bug was still in the code* until B18 moved momentum before the trust-ratio scale (§4.3). The hypothesis is temporal pooling: junk is fresh each commit, signal persists, so averaging raises `cos` by `√(1/(1−β))` at **zero** cost in `B` | node 2, in flight |
-| **S2 · variance-gate recalibration** | "commit on the plateau, not a noise dip" | **Superseded.** The gate is a working `N`-controller whose setpoint carries units. Replace the loop, do not re-tune the threshold | B4 |
-| **S3 · aggregation-rate tempering** | "cap rate ≤ 1; damp, not amplify" | **Subsumed and measured.** Under trust-ratio, `ρ` = `ρ*_t` to 8.7e-5 regardless of ω | **DONE** |
-| **Systems: flat memory, inference-only operator set** | structural claims about the absence of an autograd graph | **Untouched and the strongest part of the paper.** *B1 uses a server-side backward pass — it is an audit flag, off by default, and does not touch the operator-set claim* | — |
-| **Cost framing** | "10× sync compute at P=10, collapsing to parity at P=1" | **Needs rewriting.** Under selection, raising `P` is *harmful*; under averaging the same `2P` buys `ρ/cos ∝ P` | **DONE** |
-
-**Net effect on the contributions:** all three ML claims move. **C1 shrinks** to a compute-budget
-justification that only averaging redeems; **C2 grows** but relocates from "async" to "the controller
-that async makes possible", now blocked on a cohort-width measurement rather than a gate design; **C3
-splits** into a parked half and an untested half. The systems contributions are unaffected.
-
-**What the portfolios added that was not on the list:**
-
-- **`p` is a gradient-quality parameter, not just a memory knob** (§4.2) — measured, 0.859 peak at a
-  quarter of `p`. The strongest ML result here, and the only one about the *model* rather than the
-  optimizer, so it does not compete with FwdLLM's execution primitives. **Contribution-grade general
-  statement:** for backprop FL, PEFT rank is a memory/communication knob and gradient quality is
-  unaffected; for forward-gradient FL, **`cos ∝ 1/√p` — PEFT rank is the primary determinant of
-  gradient quality.**
-- **Scale-invariance as a design principle** (§3.7) with its cleanest demonstration: under the
-  trust-ratio step, heterogeneity moves `ρ` by **zero to six significant figures** while still moving
-  `var` by 1.6× (§2.5d).
-- **The `ρ ≤ cos` criterion is *unpaid*, not refuted.** `ρ` is exact and every fix built on it enacts to
-  1e-4, but the quantity it must be compared against **has never been measured**: B1's apparent 25–80×
-  shortfall, 11× drift and anti-ordering were all produced by a reference batch that was one client's
-  non-IID shard (§3.9). **Write it up as a design rule with a measured dose-response curve, and do not
-  claim the control law until H-P closes.**
+**One requirement, not a preference:** `K` ≥ 30 with `C` ≥ `K`. At `ρ*` = 0.06 the criterion demands
+five times what `K` = 10 can pool, which is why the commit-gate A/B has come back inconclusive twice.
 
 ---
 
-# Part 6 — What runs next
+# Part 6 — The open hole: `cos` has never been validly measured
 
-*In-place section. When an item resolves, move its finding into §3/§4 and delete the row here.*
+*Everything else in the model is either closed-form or measured. `cos` is neither. This section is
+also the sharpest methodological lesson in the program.*
 
-## §6.1 The three questions that block finalizing
+**What was built.** A fp32 backward pass on a fixed held-out batch, server-side, at `θ_t` before the
+step, emitting `cos_ground_truth` per commit. Index alignment was unit-tested (pool = ±`g` → cos = ±1).
+Three arms carried it.
 
-| # | question | why it blocks | decisive experiment |
-|---|---|---|---|
-| **Q1** | Is the collapse threshold **absolute** (`‖θ_tr‖ ≈ 45`) or **relative** (`Φ ≈ 3.6`)? | It *is* `B_max`, so it sets every sizing number in §3.4, and it decides what the `p` lever actually buys — headroom, or only `cos` | **`rf`=64 (`p`=118k, `‖θ_0‖`=6.86) run to `Φ` = 6.6.** Relative predicts degradation at `‖θ_tr‖` ≈ 24.7, absolute predicts it holds to 45. `B` = 1.89 at `ρ` ≈ 0.107 ⇒ **~330 commits**. The `p` ladder is the *only* lever that separates them, and §3.7 predicts the relative answer |
-| **Q2** | Is `‖θ_tr‖` **causal**, or a symptom of accumulated misaim? | If causal, weight decay removes `B_max` and **uncaps `Λ`** — the largest available result in this program. If symptom, the budget is real and permanent and every fix must live inside it | **Weight decay, `λ = ρ²/2`** (3 lines), at `ρ*` = 0.09 with a no-decay control. Holds `Φ` = 1.00 exactly by construction. **Prediction: it does not help** — §2.6 makes the failure *directional*, and direction is scale-invariant, so rescaling `‖θ‖` cannot undo it. **A null is as valuable as a positive**, and it is the cheapest arm in the plan |
-| **Q3** | Does `Λ` predict **out of sample in the steep region**? | `Λ` is the deliverable and it is currently *fitted*, not *predicted*; its `G_rule` and `p` scaling only appears where accuracy has saturated (§3.4c) | **Three arms, pinned `ρ*`=0.06 / `exp`=0.25 / `N`=200, varying only the rule and `p`** — pre-registered below |
+**What survives.** `‖G‖/‖g_probe‖` matches `b·√(p/N)` **to 5–10% in all three arms**, across 6× in `b`
+and 6.7× in `N`. That is a ratio of *norms* and does not depend on the reference's direction, so it
+stands: **the length half of §3.2 is measured and holds**, and so does the assumption that client
+gradients have roughly the norm of a held-out one.
 
-**Q3's pre-registered predictions** (written before launch; `Λ` from `Σρ_t·√(G_rule·N/p)`, peak from
-§4.1's calibration):
+**What does not.** **Every `cos` value the probe reported is void**, because the reference batch was
+wrong. The probe sliced the first `n` rows of the raw test tensor, bypassing the DataLoader's sampler.
+The test index list is built by iterating clients in partition order and extending with each client's
+shard, **with no shuffle** — so under a Dirichlet partition the probe's 64-sample "global reference" was
+**one client's shard**, 48/4/5/7 across four classes against a test set that is exactly balanced.
 
-| arm | `G_rule` | `p` | `Λ` | **predicted peak** | status |
-|---|---|---|---|---|---|
-| `mean`, `rf`=16 | 10 | 450,340 | 0.398 | 0.801 | **anchor — already measured at 0.801** (`035045`) |
-| **`select`, `rf`=16** | 2.988 | 450,340 | **0.218** | **≈ 0.70** | a −0.10 swing from the *rule alone*, at pinned `ρ` and `N` |
-| **`mean`, `rf`=64** | 10 | 118,348 | **0.776** | **≈ 0.857** | a +0.056 swing from `p` alone, at pinned `ρ` and `N` |
+Measured offline at a backprop-trained model, `cos(g_batch, g_full_test)`:
 
-**Sinking conditions.** Q1: none — either answer is a result. Q2: none — a null is the informative
-branch. **Q3: if `select` lands near 0.80 rather than 0.70, `G_rule` does not enter progress**, `Λ` is
-`Σρ_t·√(N/p)` at best, the `2P` probe budget buys nothing measurable, and averaging loses its
-quantitative case.
-
-## §6.2 The instrument ladder — test before you run
-
-**R7 in practice.** Each rung is ~3 orders of magnitude cheaper than the next. *Every* new hypothesis
-starts at the highest rung that can falsify it; a sim run is what **confirms** a hypothesis that already
-survived a cheaper instrument.
-
-| rung | what it is | cost | what it can answer |
-|---|---|---|---|
-| **1 · log replay** | Python over `aggregator_*.jsonl` and trainer logs already on disk. No GPU | minutes | anything expressible in `ρ`, `‖θ_tr‖`, `N`, `var`, `B`, `Λ`, the JVP distribution, staleness, commit reasons. **The k-sweep, `E[v∥²]`, `n_eff`, the norm law and the progress law were all settled here** |
-| **2 · offline rig** | one GPU, real model + real JVP math, **no FL stack**. Import `build_model` (`scripts/profile_jvp_opt.py:64`), `calculate_jvp` / `functional_get_loss` (`fwdgrad_utils.py:105,66`), `stage1_vmap_fd` (batches all `P` probes, verified bit-identical to the production loop), the real agnews H5 partitions | minutes–1 h | anything needing a backprop ground truth or a scaled-`‖θ‖` sweep: `cos(G,g)` vs `N`, `‖G‖/‖g‖`, H-B, the collapse endpoint, curvature `vᵀHv`. **B1's design came from here** |
-| **3 · single-process replica** | the whole optimization loop in one process — draw probes, compute JVPs, pool `K` uploads, run the real gate, commit with the real server arithmetic (`_server_update_step` / `_apply_weighted_update`, ~15 lines). No MQTT, no selector, no sim clock | hours per trajectory | **interactions**: the feedback loop, the gate drifting out from under itself, A/B ranking of fixes, and the `K`/`P` ablations that are structurally impossible in production because `ρ` and `cos` move at once. **Validation gate is non-negotiable:** reproduce the shipped arm's `ρ`, orthogonality ratio, doubling time and rise-peak-collapse first, or nothing downstream counts |
-| **4 · sim run** | the real stack with the virtual clock. `sim_rate` 3.33 (fluxtune) / 12.6 (fwdllm) virtual-s per wall-s ⇒ 4 h vclock ≈ 1.2 h wall | ~1–3 h wall per arm | end-to-end confirmation, genuine staleness, anything needing real concurrency or real timing |
-| **5 · real run** | the 8-GPU emulation harness | ~4 h wall per arm | confirming a *winner* only. Discover in sim, confirm on real |
-
-**Two standing rules for rungs 2–3.** (1) **Probes import the production code** — never reimplement the
-math. The discipline is `scripts/profile_jvp_opt.py`, which reuses `expts.initializer.create_model` and
-`fwdgrad_utils.calculate_jvp`, so a validated result transfers into the trainer as a **config flag, not
-a rewrite**. (2) **Nothing on rungs 1–3 modifies `trainer/`, `aggregator/`, or any yaml on the critical
-path**, and no probe result lands as a production change until two independent instruments agree on the
-number it produces.
-
-**Reuse handles that already exist** — this is why rungs 2 and 3 are affordable at all:
-
-| handle | where | what it buys |
+| `n` | **first `n` (what shipped)** | random `n` (the fix) |
 |---|---|---|
-| `create_model` | `expts/initializer.py:61` | the exact production DistilBERT + AdapterHub model, backbone frozen |
-| `build_model(num_labels, seq)` | `scripts/profile_jvp_opt.py:64` | that call wrapped with the real `ClassificationArgs` (adapter PEFT, fp16, seq 192, batch 8) |
-| `calculate_jvp`, `functional_get_loss` | `trainer/forward_training/fwdgrad_utils.py:105,66` | the *real* central-FD JVP math, importable standalone |
-| `stage1_vmap_fd` | `scripts/profile_jvp_opt.py:143` | all `P` probes in one batched pass — **verified bit-identical** to the production loop, and the reason a replica is affordable |
-| `calculate_var`, `calculate_snr`, `calculate_cos_sim` | `fwdgrad_utils.py:186,243,349` | the real commit-gate statistics |
-| `TextClassificationDataManager.load_federated_data` | `data_manager/text_classification_data_manager.py` | the real agnews H5 partitions at `niid_label_clients=100_alpha=1` |
-| `_server_update_step` / `_apply_weighted_update` | `aggregator/FedSgdAggregator.py:238,311` | the exact server arithmetic (~15 lines) to mirror in a replica |
-| `_emit_server_update` | `FedSgdAggregator.py:338` | `‖Δθ‖`, `‖W‖`, `η` per commit under `server_update_audit` |
-| `characterize_variance_curve.py`, `audit_weight_redundancy.py`, `plot_run.py` | `expt_scripts/` | the streaming-telemetry idiom to copy — **including the `data_id`-cycling workaround**: `data_id` cycles per round, so it must never be used as a reducer key |
+| 64 | **−0.457** | 0.480 |
+| 256 | +0.493 | 0.794 |
+| 1024 | +0.613 | 0.935 |
+| 2048 | +0.628 | **0.975** |
 
-> **Rungs 1 and 2 now have standing tooling; rung 3 still does not.**
-> `expt_scripts/replay_scoring.py` scores any run dir in `B`/`Λ`/`Φ` and audits the cos probe
-> (`--cos`); `scripts/probe_reference_quality.py` is the offline rig that found the §3.9 defect.
-> **Rung 3 has never existed**, which is why every A/B in §4.1 cost a sim run — build it before the
-> next fix, not after.
+**The shipped reference was anti-correlated with held-out truth** (−0.46 trained, −0.42 at init, +0.69
+at accuracy 0.38): **its sign swings with model state.** That one fact reproduces everything the probe
+appeared to show — a near-zero pooled magnitude, an 11× drift at fixed `N`/`p`/rule, and an
+anti-ordering of the arms — with none of it being real. Both rival explanations are dead: **client
+disagreement** would need fewer than one effective upload, and **reference noise** is only a 1.1–1.6×
+effect by a two-batch control.
 
-**Rung 3 cost, stated honestly.** Per upload the trainer does `2P` = 20 forward passes (batch 8, seq
-192); one commit pools `N ≈ 185` ⇒ **≈ 3,700 passes/commit, ≈ 700k for a 189-commit trajectory.** Two
-things make that tractable: `stage1_vmap_fd` batches all `P` probes into ~2 effective passes, and there
-is no orchestration overhead (the reference run spent 75 s/commit across 8 GPUs). If it is still too
-slow, shorten `seq` and/or reduce `N` and accept the trade explicitly: **the replica's constants will
-shift, its mechanism and its ranking of fixes will not** — which is exactly what the validation gate
-licenses.
+**Fixed and shipped:** fixed-seed shuffled batch over the whole test set, default size 1024, plus a
+preflight that fails the launch if the reference is ever class-skewed again. **Nothing has been
+re-measured with it yet — that is H-P, and it rides free on any arm.**
 
-**Sim caveats that survive.** Trainers do real forward-grad compute (gradient values are mode-invariant);
-what sim removes is the *waiting*. (a) **Compare sim to sim** — include a sim baseline replicate, since
-several reference constants were measured on real runs. (b) Ordering differs between modes, so pool
-composition differs commit-to-commit; harmless for `ρ`, `cos`, `B` and `Λ` (aggregates over 100+
-commits), **not** safe for a claimed A/B win of a few percent.
+**Operative reading.** There is **no trustworthy measurement of `cos` in either direction.** The closed
+form is *unrefuted* — §4.3(c) shows `Λ` built from it orders 21 arms across both rules, 3.8× in `p` and
+20× in `N` — and the instrument that appeared to contradict it was broken. So: **size `ρ*` from the
+dose-response curve, not from §4.5.** `ρ` is exact per commit, but the quantity it must be compared
+against **has no usable online estimator** (the gradient-free split-half route is dead). **Closing that
+gap is the difference between a design rule and a control law** — still the most valuable open problem
+here.
 
-**Reproducing any number from logs.** All from `lib/python/examples/fwdllm/experiments/`; nothing needs
-a GPU. **Everything in Parts 2–4 comes from two telemetry events**, `server_update` and `agg_eval`:
+**What is and is not assumed.** Isotropy of `v` is exact by construction and is **not** the caveat. The
+caveat is **independent, homogeneous pooling**: `cos = (a/b)√(n/p)` assumes the `n` readings are
+independent and share one target `g`. They do not — the `I` iterations share a bin's gradient and the
+`K` trainers have different gradients. `n_eff` excludes the *correlation* half and the replay above
+excludes the *disagreement* half, so **neither half of the pooling model is currently suspect.**
 
-```
-server_update : trainable_weight_norm, trainable_delta_norm, rho, pool_size, var_at_commit,
-                n_eff_ratio, split_half_dot, split_half_norm_a, split_half_norm_b,
-                cos_ground_truth, pooled_norm, probe_grad_norm
-agg_eval      : acc, mcc, loss, logit_norm, pred_entropy, top_class_share
-```
-
-Emit flags, all off by default, emit-only, wrapped so they cannot fault training:
-**`--server-update-audit`** (the base record) · **`--pool-split-half-audit`** (the split-half
-components; its own flag because it adds a pass over params × uploads and must not change the base
-record's cost profile) · **`--cos-ground-truth-audit`** (B1's backward pass). `logit_norm`,
-`pred_entropy`, `top_class_share` and the direct `‖θ_tr‖` are correctness-or-free and **on by default
-since 2026-08-07** — runs older than that lack them.
-
-```bash
-RUN=run_20260810_042027_fluxtune_n100_smoke_syn_0_sim   # the cos-probe mean/N=200 arm
-# telemetry is ~700 MB per run; slice first (~1 min):
-grep -hE '"event": "(server_update|agg_eval)"' $RUN/telemetry/aggregator_*.jsonl > /tmp/$RUN.jsonl
-
-grep 'All JVPs sorted by magnitude' $RUN/*trainers.log     # all P candidates, per selection event
-#   "model version" in that line is actually the ROUND; count `tensor(` to read P (a trainer override,
-#   never in aggregator_config.json). Normalise each event by its own rms, then:
-#   E[v_par^2 | coin top-2] = mean( (d1^2+d2^2)/2 / mean(d^2) )   -> 2.988 (P=10) / 4.744 (P=30)
-#   top-k average objective = mean( mean(top-k d^2)/mean(d^2) )*k -> monotone, 3.81 .. 10.00
-
-grep -o '\[IterProgress\] data_id=.* force_commit_planned=[A-Za-z]*' $RUN/*aggregator.log
-#   split on data_id change; last row of each bin is the commit.
-#   reason = CAP if iter >= max_iter-1 else natural if var < 0.3 else plateau
-```
-
-```python
-ortho  = (tw[b]**2 - tw[a]**2) / sum(dn[a+1:b+1]**2)   # per 25-commit block; expect 1.000 +- 0.005
-rho_t  = dn[t] / tw[t]                                 # == the logged `rho`
-step   = dn[t]                                         # flat => ||theta||^2 linear
-N_t    = K * pool_size[t]                              # pool_size == iterations, exactly, every record
-cos_gt = mean(cos_ground_truth)   # SEM = sd/sqrt(n); sd ~ 3e-3 => ~300 commits for 3 sig figs
-GG     = pooled_norm / probe_grad_norm    # vs b*sqrt(p/N); b = sqrt(E) select, 1/sqrt(P) mean
-
-# NEVER average per-commit split-half cosines: one commit's cosine sits under the 1/sqrt(p) ~ 1e-3
-# sampling floor while the signal is ~3e-4. The record carries the RAW components for this reason
-# (split_half_dot, split_half_norm_a, split_half_norm_b, pool_size) -- pool them per ARM:
-cos_sh = sqrt( 2 * sum(split_half_dot) / sum(split_half_norm_a * split_half_norm_b) )
-# Simulation at the real p, N confirms this identity and cos = sqrt(N/p) to 0.1%. It is also why the
-# split-half GATE is dead (sec 4.4) -- the same arithmetic, one commit at a time, has SNR 0.07.
-
-# THE TWO SCORING NUMBERS (sec 3.4). Both exact at any horizon; G_rule = 2.988 select / P mean.
-B   = 0.5*sum(log1p(rho[t]**2) for t in range(1,T))       # budget spent
-Phi = exp(B)                                              # == tw[-1]/tw[0] to <0.3% on 21 arms
-Lam = sum(rho[t]*sqrt(G_rule*N[t]/p) for t in range(T))   # progress banked
-# N[t] = 10*(pool_size or iteration_per_data_id+1) -- pool_size is absent when I == 1 (sec 4.7)
-```
-
-**The `p` census** (needs the `test_fwdllm` env, ~1 min) — for `p` and the layer split only. In-run,
-`[ProbeDim]` logs the same `p` from `self.params`, so this is usually unnecessary:
-
-```bash
-cd /home/dgarg39/flame/lib/python
-/coc/scratch/dgarg/miniconda3/envs/test_fwdllm/bin/python -c "
-import sys, torch, math; sys.path.insert(0,'.')
-from examples.fwdllm.scripts.profile_jvp_opt import build_model
-m = build_model(4, 192)
-m.add_module('pre_classifier', torch.nn.Sequential())   # the line the trainer runs at :217
-tr = [x for _,x in m.named_parameters() if x.requires_grad]
-p = sum(x.numel() for x in tr)
-print(p, torch.sqrt(sum((x.detach().float()**2).sum() for x in tr)).item(), 0.01*math.sqrt(p))"
-# -> 450340  13.325  6.711   <- production. Without the add_module line: 1040932 / 20.356 / 10.203
-```
-
-## §6.3 Open hypotheses
-
-*Resolved hypotheses are folded into §2–§4 and deleted from here. Resolved so far: H-A (root cause is
-the scale-invariance violation — refined: it is the *absolute* step failing to be held, §2.2), H-B
-(`|d|` growth is **genuine** gradient growth, §2.2), H-C (the FD is not the driver — confirmed by H-B),
-H-D (collapse is **directional degeneracy**, not logit saturation, §2.6), H-F (the defect is **shared**
-with sync fwdllm, §2.4), H-G (`p` can be cut without costing accuracy — **yes**, §4.2), H-I (the
-orthogonality ratio is stationary, not a defect signature, §2.2), H-K (α raises `var` through `‖g‖`, not
-disagreement — and the portability constant dies in the *step rule*, not the gate, §2.5), H-L (`n_eff`
-is an identity, §4.2).*
-
-| ID | hypothesis | how it gets tested | rung (§6.2) |
-|---|---|---|---|
-| **H-N** | The collapse threshold is **relative** (`Φ ≈ 3.6`), not absolute (`‖θ_tr‖ ≈ 45`) | **Q1.** Every arm to date is at `p` = 450k, where the two are indistinguishable; §3.7 predicts relative | 4 |
-| **H-O** | `‖θ_tr‖` is a **symptom** of accumulated directional misaim, not the causal variable | **Q2.** Predicted not to help. If it *does*, `B_max` disappears and `Λ` is uncapped | 4 |
-| **H-P** | With a shuffled, ≥1024-sample reference, the measured `cos` matches `(a/b)√(N/p)` — i.e. the closed form was right all along and §3.9's shortfall was entirely instrumental | **B17.** Re-run one `mean` and one `select` arm at pinned `N`=200 with the fixed probe. Predicted: `cos` ≈ 0.067 / 0.036, `ρ/cos` orders the arms, and the 11× within-arm drift disappears. If `cos` is still ≪ closed form with a clean reference, the shortfall is real and §3.3's shadow model needs rebuilding | 4 (rides on any arm) |
-| **H-J** | `K ≥ 20` **defers** collapse rather than preventing it; collapse at commit 1,200–1,700 | Largely *predicted* now — `B` extrapolates exactly (§3.4). **Demoted to a confirmation** unless a cheap node is free | 1 (extrapolation), 4 to confirm |
-| **H-E** | Staleness stays ≤ 1 **only because `N` is small**; raising `K`/`C` produces genuine staleness | **The 08-07 K-sweep logs were deleted, so the free replay is gone.** `staleness` / `inflight_staleness` *are* emitted by the surviving 08-08→08-10 runs, but those are all `K`=10, `c`=30 — no `K`/`C` variation, so they can only establish the baseline. **The K/C sweep has to be re-run** (node 4) | 1 for the baseline, 4 for the sweep |
-| **H-H** | The FD's discarded curvature term `vᵀHv` carries usable signal | The central difference uses only the *difference* of `L(θ±hv)`; their **sum** is `L(+)+L(−)−2L(θ) ≈ h²vᵀHv` — **already computed and thrown away.** Log it, correlate with realised loss decrease at the step scale actually taken. Unlocks the only probe-selection metric that is free and *not* stability-neutral | 2 |
-
-**If a probe-selection stage is retained at all**, select on something other than `|d|` — three
-candidates, all already paid for: **curvature `vᵀHv`** (≈free, one extra `L(θ)` amortised over `P`);
-**split-half SNR within the bin** (compute `d` on each half of the 8-sample bin, select on agreement —
-free); **loss decrease at the step scale** (under trust-ratio the step size is known in advance, so pick
-the `v` minimising `L(θ − ρ*‖θ‖v̂)` — trust-region rather than derivative selection; 1 pass per
-candidate).
-
-## §6.4 Run queue
-
-**Order of operations**, cheapest-decisive first:
-
-0. ~~B17 — fix the `cos` probe reference.~~ **Landed** (§4.3); every arm below now carries a valid
-   reference, so H-P comes free with them.
-1. **Q2 (weight decay).** 3 lines, one node-hour, and a null result reshapes Part 5. Cheapest decisive
-   arm — and §3.4's four `Φ`≈1.0 arms that still lost 0.06–0.12 already lean toward the null.
-2. **Q1 (`rf`=64 to `Φ` = 6.6).** ~330 commits, one arm. Sets `B_max` for everything.
-3. **Q3 (rule × `p` at pinned `ρ`, `N`).** Three arms, pre-registered (§6.1). Converts `Λ` from fitted
-   to predictive. Still required: the 4 α arms replayed for H3 all sit at `Λ` ≥ 0.6, in the saturated
-   region, so they do **not** test the steep region.
-4. **H-P** (§6.3) rides free on Q1/Q2/Q3 once B17 has landed — no arm of its own.
-5. **Then:** the K/C sweep, which now carries **both** the gate re-run at `K` = 30 (a throughput
-   question) **and** the staleness histogram H-E lost when the 08-07 logs were deleted; the curvature
-   probe (H-H); `fwdllm_plus`, which has never launched.
-
-**Every arm reports `B` and `Λ`** (§3.4), `B` as a fraction of `B_max` and `Λ` against §4.1's
-calibration. Both are exact at any horizon, so the two failure modes are diagnosable before the run
-ends: **too little `Λ` = never learned; too much `B` = learned and then lost it.**
-
-## §6.5 Preflight and launch
-
-**Three preflights run in `run_sequential.sh`** (CPU-only, ~4 s total, refuses to launch on failure);
-`_node_lib.sh` aborts a node on any arm producing <5 commits:
-
-- `test_model_args_parity.py` — every arg the trainer reads unguarded is supplied by **both**
-  `trainer/main.py` and `aggregator/main_fedfwd_agg.py`.
-- `test_commit_gate.py` — `N_req`'s closed form and its annealed-vs-setpoint divergence.
-- `test_cos_probe.py` — cos = ±1 on a pool built from `g` itself, **and** the reference batch is not
-  class-skewed (B17 regression guard).
-- `test_weight_decay.py` — `auto` = `ρ²/2`, pins `Φ` = 1, leaves frozen params and the disabled
-  path untouched.
-
-**Read the enactment checks before the science:**
-
-```bash
-grep -m1 '\[ServerStep\]'    $RUN/*aggregator.log   # rho* must equal the logged rho
-grep -m1 '\[CommitGate\]'    $RUN/*aggregator.log   # n_have vs n_req per iteration
-grep -m1 '\[CosProbe\]'      $RUN/*aggregator.log   # batch size, then per-commit cos
-grep -m1 '\[probe_combine'   $RUN/*trainers.log     # trainer-side; NOT in aggregator_config.json
-grep -m1 '\[ProbeDim\]'      $RUN/*trainers.log     # THE p (post pre_classifier drop)
-grep -m1 '\[FD\] spacing'    $RUN/*trainers.log     # THE h -- read h*sqrt(p) HERE, not off ProbeDim
-```
-
-> **`[ProbeDim]`'s `h*sqrt(p)` is not the FD spacing** — it prints the *nominal* `h`, so the `p` ladder
-> read 6.71 / 4.79 / 3.44 and looked like the FD had silently shrunk with `p`. It had not: `[FD]` showed
-> `h` rescaled to 0.01 / 0.014023 / 0.019507, holding `h√p` at 6.7107 on all three arms.
-
-**Launcher gotchas, each of which costs a wasted run:**
-
-- The baseline flag is **`--only`**, not `--baselines` (unknown args abort).
-- **`--yes`** — otherwise each invocation stops at an interactive `[y/N]` prompt.
-- **`--clean`** — back-to-back runs otherwise `DIRTY_ABORT` on a prior run's stray workers.
-- **`--force`** — the sim-charge-profile pre-flight blocks when audit-on reals are newer than the
-  profile; re-profiling from them would bake diagnostic overhead into the vclock model. Confirm with
-  **`--dry-run`** that it is the only `✗` first, since `--force` overrides every check.
-- **`--num-trainers 100`** pins `minInitialTrainers`, so varying `--c` does not move the warmup
-  threshold underneath a sweep.
-- The baseline → yaml map is **hardcoded** in `ALL_RUNS`; there is no custom-yaml flag, and
-  `fwdllm_plus` has no entry. Use config flags, never a hand-edited yaml.
-- **Pin the pool for any A/B** — `--var-threshold 0 --max-iter-per-data-id 20 --var-stopping-policy
-  off` ⇒ `I` = 20, `N` = 200 exactly (§4.7).
+**The lesson, which generalises:** the probe's arithmetic was unit-tested and correct; nothing tested
+that its *input* was what we thought. Three consistency checks failed and were written up as findings
+about the optimizer for a full revision before anyone asked what the reference batch actually contained.
+One `Counter(labels[:64])` would have caught it.
 
 ---
 
-# Part 7 — Generality
+# Part 7 — What inflation actually does
 
-*Speculative relative to Parts 1–6, and **frozen** (R9): revisit only when §6.1 closes. The question it
-answers is whether this transfers from FL LLM fine-tuning to backprop-free fine-tuning in general —
-including the datacenter, where the argument must be speed and memory rather than device constraints.*
+Both of the old blockers reduce to one question: what does growing `‖θ_tr‖` do to a *trained* model?
+The inflation is a sum of steps in random directions, so it can be **injected** rather than waited for:
+train to a realistic peak, add Gaussian noise to the trainable slice scaled so `‖θ_tr‖` grows by `Φ`,
+read accuracy back. **MEASURED on the offline rig, 2026-08-10.**
 
-## §7.1 The model is general; the controller is where the paradigm enters
+## §7.1 The budget is relative, not absolute (Q1 — settled)
+
+The accuracy knee sits at the **same `Φ`** in two models whose norms differ 1.77× (`rf`=16 vs `rf`=64):
+both hold near 0.9 up to `Φ` ≈ 2.5, break at 3.0, and are destroyed by 3.6. Absolute norms at the knee
+differ by exactly the ratio of the base norms. **`B_max` transfers across `p`**, as the ratio principle
+predicted.
+
+> The rig's own threshold (`Φ`≈3.0) is lower than the real arms' 3.6–4.2, because it dumps noise on a
+> model that never adapted while real training re-fits continuously. That bias applies to both `p`
+> equally, so it cancels in the comparison — **take the *relative* verdict from the rig and the
+> *number* from the arm ledger: `B_max` ≈ 3.6–4.2 in `Φ`.**
+
+## §7.2 The norm is mostly a symptom, and decay will not rescue it (Q2 — settled)
+
+Weight decay scales the whole vector, preserving direction. Renormalizing an inflated model back to its
+original norm is exactly what perfect decay leaves behind:
+
+| `Φ` | noise (norm grows) | noise + renorm (norm pinned) | recovered |
+|---|---|---|---|
+| 2.5 | 0.856 | 0.803 | — |
+| 3.0 | 0.608 | 0.685 | +0.08 |
+| 3.6 | 0.262 | 0.403 | +0.14 |
+
+**~20–25% of the damage is magnitude; ~75–80% is the junk:signal ratio, which decay cannot touch.** The
+mechanism is visible in the renormalized rows: `logit_norm` falls and entropy rises to ≈ `ln 4` — the
+signal has been diluted below the noise and the model predicts nearly uniformly. This confirms the
+pre-registered prediction and demotes the weight-decay arm to an optional confirmation.
+
+**Two controls separate the mechanisms, and only one matches reality.** Isotropic *noise* reproduces the
+observed collapse signature (`top_class_share`→1.0 at unremarkable `logit_norm`, §2.7); pure *scale*
+growth does not (`logit_norm` explodes, entropy → 0), and *coherent* displacement destroys accuracy at
+`Φ` = 1.2 already. **Isotropic junk accumulation is the right model of the real mechanism.**
+
+## §7.3 The cost of going backward-free
+
+Backprop on the same model, `p` and data reaches **0.90** where the best forward-gradient arm ever
+recorded is **0.865**. That 3.5-point gap is the measured price at this scale.
+
+*Caveat on all of Part 7:* injection jumps to the endpoint instead of walking there, and omits the
+learning happening alongside. It settles the comparisons; it does not replace a trajectory for
+calibration.
+
+## §7.4 What is standard, what is ours, and what to claim
+
+`ρ ≤ s·cos` **as a single inequality is ours**. None of its ingredients are: `1/√p` probe overlap
+(classical ZO — Nesterov–Spokoiny, Duchi et al., Baydin et al.); signal linear / noise `√T` (standard
+SGD noise ball); `Σρ_t = ∞`, `Σρ_t² < ∞` (Robbins–Monro 1951); step relative to `‖θ‖` (trust-region;
+LARS/LAMB); a pool size beyond which pooling buys nothing (critical batch size, McCandlish et al.).
+
+**Ours is the packaging:** collapsing those into an inequality between two quantities the server already
+logs or can estimate, turning an asymptotic rate statement into an *online control law*. **Do not write
+it up as a new theorem**, and **do not claim the control law while §6 is open.**
+
+Where that leaves the paper claims:
+
+| claim | verdict |
+|---|---|
+| **C1 · informed JVP-magnitude probe selection** | **Refuted as written; redirect it.** `b²/a = 1` is measured — selection is stability-neutral by construction. The **combination rule** is the contribution: "compute `P` directional derivatives and assimilate all of them" is the *trainer-side analogue of server-side pooling*. Rewrite C1 as a compute-budget claim |
+| **C2 · async aggregation / K-C control** | **Reframed; controller still not demonstrated.** `ρ ∝ 1/√(K·I)` is measured and only the async path has a free `N` to spend, but the gate A/B has failed to produce a contrast twice. Honest current form: a cohort-width **requirement** — a stronger claim than a gate parameter |
+| **C3 · aggregation weighting (ω)** | **Magnitude half: park** — ω spans 0.70–0.87 against a ≥10× gap, and the trust-ratio step removes it from magnitude entirely. **Freshness half: open and testable** (H-E) |
+| **S1 · server momentum** | **Re-framed and now testable.** The historical NaN was arithmetic (`ρ_eff = ρ/(1−β)`), and the same bug sat in the code until momentum was moved *before* the trust-ratio scale. Hypothesis: junk is fresh each commit, signal persists, so temporal pooling raises `cos` by `√(1/(1−β))` at **zero** cost in `B` |
+| **S2 · variance-gate recalibration** | **Superseded.** The gate is a working `N`-controller whose setpoint carries units. Replace the loop; do not re-tune the threshold |
+| **S3 · aggregation-rate tempering** | **Subsumed and measured.** Under trust-ratio, `ρ` = `ρ*_t` regardless of ω |
+| **Systems: flat memory, inference-only operator set** | **Untouched, and the strongest part of the paper.** The `cos` probe's backward pass is an audit flag, off by default, and does not touch the operator-set claim |
+| **Cost framing** ("10× sync compute at P=10") | **Needs rewriting.** Under selection, raising `P` is *harmful*; under averaging the same `2P` buys `ρ/cos ∝ P` |
+
+**Net effect:** all three ML claims move. **C1 shrinks** to a compute-budget justification that only
+averaging redeems; **C2 grows** but relocates from "async" to "the controller that async makes
+possible"; **C3 splits** into a parked half and an untested half. The systems contributions are
+unaffected.
+
+**Three things the work added that were not on the claim list:**
+
+1. **`p` is a gradient-quality parameter, not just a memory knob.** For backprop FL, PEFT rank is a
+   memory/communication knob and gradient quality is unaffected; for forward-gradient FL, **`cos ∝ 1/√p`
+   — PEFT rank is the primary determinant of gradient quality.** Measured, and the only result here
+   about the *model* rather than the optimizer, so it does not compete with FwdLLM's execution
+   primitives.
+2. **Scale-invariance as a design principle** (§5.3), with its cleanest demonstration: under the
+   trust-ratio step, heterogeneity moves `ρ` by *zero to six significant figures* while still moving
+   `var` by 1.6×.
+3. **The `ρ ≤ s·cos` criterion is *unpaid*, not refuted.** What is publishable today is the **empirical
+   dose-response curve**, which was not planned.
+
+---
+
+# Part 8 — Generality beyond FL
+
+*Speculative relative to Parts 1–7, and **frozen** (R8): revisit only when the open questions close.*
+
+## §8.1 The model is general; the controller is where the paradigm enters
 
 ```
-cos = sqrt( G_rule * n / p )        n = product of all INDEPENDENT pooling stages
-rho <= s * cos                      the step must not exceed the aim
+cos   = sqrt( G_rule * n / p )      n = product of all INDEPENDENT pooling stages
+rho  <= s * cos                     the step must not exceed the aim
 n_req = p * (rho*/s)^2 / G_rule     what any configuration must pool
 ```
 
 **Nothing in those three lines is federated.** They apply to any optimizer estimating a gradient from
 directional derivatives. FL enters only in *how `n` decomposes and what each factor costs*: single
 device `P` × accumulation (wall clock); centralized ZO `P` × accumulation (no comms); data-parallel
-`P` × workers × accumulation (all-reduce); **federated `P` × `K` × `I`**, where `I` costs round trips and
-`K` costs staleness and heterogeneity.
+`P` × workers × accumulation (all-reduce); **federated `P` × `K` × `I`**, where `I` costs round trips
+and `K` costs staleness and heterogeneity.
 
-Likewise §3.4's two conserved quantities contain nothing federated — `B` is a property of the `ρ`
+Likewise §4's two conserved quantities contain nothing federated — `B` is a property of the `ρ`
 trajectory alone, and `Λ` needs only `ρ_t` and `cos_t`. **If they hold outside FL, they are the
 transferable result.**
 
-## §7.2 A testable prediction against centralized ZO
+## §8.2 A testable prediction against centralized ZO
 
 Centralized ZO fine-tuning uses `P = 1` and a very small fixed learning rate. The criterion predicts
 *why*: with `G_rule = 1` and no `K` or `I`, `cos = √(1/p)`, so the stable relative step is ~10⁻³ and the
@@ -1466,44 +834,43 @@ method needs ~`p` steps for coherent progress — matching the very long step co
 **A falsifiable prediction about an existing published method, derivable with no new experiments.**
 Check published curves before claiming it.
 
-## §7.3 What must be checked before generalizing
+## §8.3 What must be checked before generalizing
 
 | # | assumption this work rests on | why it might not survive outside our setting |
 |---|---|---|
-| 1 | **Leg 1 (steps orthogonal to `θ`)**, which makes `B` exact | measured only at `p` ≥ 118k on adapter+head slices. At small `p`, or when the trainable slice includes layers with large initial norm and structured gradients, `⟨θ,Δθ⟩` need not vanish. **Check the orthogonality ratio first on any new model — it is one line of replay** |
-| 2 | **`Λ`'s calibration** (0.6 → 0.85, saturating at 0.95) | fitted on agnews/DistilBERT. The *monotonicity* should transfer; the numbers are task- and model-specific. Recalibrate per (model, task) before using `Λ` as a target |
-| 3 | **`B_max` ≈ 1.22–1.28** | this is §6.1 Q1 and is unresolved even here. If it is relative (`Φ`), it may transfer; if absolute (`‖θ_tr‖`), it certainly will not |
-| 4 | **isotropic probes and the `1/√p` overlap** | exact by construction *given* Gaussian `v` over the whole trainable slice. Structured or block probes (§4.4) break it deliberately — that is their point, and they need their own analysis |
-| 5 | **probe noise dominates data noise by ~40×** (**ANALYSIS**) | this is what justifies "spend compute on `P`, not on bigger bins". At larger batch sizes or lower `p` the balance moves, and `K`/batch may become the better spend |
-| 6 | **`h` pinned by fp16 cancellation** | a precision property, not a math one. bf16, fp32 or a different loss scale move the usable `h` window and therefore the FD's faithfulness |
-| 7 | **The closed-form `cos` (§3.9)** | functionally validated (`Λ` orders 21 arms); the probe that appeared to contradict it was broken, so it is **unrefuted but still never cleanly measured**. **No generalization claim about `cos` until H-P closes** |
+| 1 | **Orthogonality of steps to `θ`** (§2.1), which makes `B` exact | measured only at `p` ≥ 118k on adapter+head slices. At small `p`, or with layers of large initial norm and structured gradients, `⟨θ,Δθ⟩` need not vanish. **Check the orthogonality ratio first on any new model — one line of replay** |
+| 2 | **`Λ`'s calibration** (0.6 → 0.85, saturating at 0.95) | fitted on agnews/DistilBERT. The *monotonicity* should transfer; the numbers are task- and model-specific |
+| 3 | **`B_max`** | settled as *relative* here (§7.1), but its value is calibrated on one model family |
+| 4 | **isotropic probes and the `1/√p` overlap** | exact by construction *given* Gaussian `v` over the whole trainable slice. Structured or block probes break it deliberately — that is their point, and they need their own analysis |
+| 5 | **probe noise dominates data noise by ~40×** (**ANALYSIS**, M1) | this is what justifies "spend compute on `P`, not on bigger bins". At larger batch sizes or lower `p` the balance moves |
+| 6 | **`h` pinned by fp16 cancellation** | a precision property, not a math one. bf16/fp32 move the usable `h` window and therefore the FD's faithfulness |
+| 7 | **The closed-form `cos`** | functionally validated but never cleanly measured (§6). **No generalization claim about `cos` until H-P closes** |
 
-## §7.4 Larger models and datacenter fine-tuning
+## §8.4 Larger models and datacenter fine-tuning
 
 **The case changes from memory to throughput.** On-device, forward-gradient wins because it stores no
 activations. In a datacenter with backprop available, the only argument is that 2 forward passes are
 cheaper than 1 fwd + 1 bwd and need no activation memory — real, but much narrower, and **`cos ∝ 1/√p`
-makes it *worse* at scale** unless `p` is aggressively constrained (which is what PEFT does, and §4.2
-says that is now a gradient-quality decision, not an efficiency one).
+makes it *worse* at scale** unless `p` is aggressively constrained (which is what PEFT does — and that
+is now a gradient-quality decision, not an efficiency one).
 
 **MoE is structurally interesting:** only active experts contribute to a forward pass, so `p_effective`
 is per-token active parameters — **block-coordinate probing for free**, the one structural idea that
 beats the `√(n/p)` barrier. Unanalysed, and the most interesting extension on this list.
 
-## §7.5 Is there a general ML contribution here
+## §8.5 Is there a general ML contribution here
 
 In descending confidence:
 
-1. **Yes: `p` is a gradient-quality parameter, not just a memory knob** (§4.2). Inverts the standard
-   PEFT intuition; measured. The strongest ML result here and the only one about the *model*.
-2. **Yes: the scale-invariance requirement for forward-gradient training** (§3.7) — the step, gate and
-   estimator must all be ratios, or the method needs re-tuning per model. With a direct demonstration
-   (§2.5d).
-3. **Maybe: the two conserved quantities** (§3.4). `B` is exact and parameter-free; `Λ` orders 21 arms.
-   Their transfer outside agnews/DistilBERT is untested — §7.3 rows 1–3.
+1. **Yes: `p` is a gradient-quality parameter, not just a memory knob.** Inverts the standard PEFT
+   intuition; measured.
+2. **Yes: the scale-invariance requirement for forward-gradient training** (§5.3) — step, gate and
+   estimator must all be ratios, or the method needs re-tuning per model.
+3. **Maybe: the two conserved quantities** (§4). `B` is exact and parameter-free; `Λ` orders 21 arms.
+   Transfer outside agnews/DistilBERT is untested (§8.3 rows 1–3).
 4. **Maybe: the online control law** — `ρ ≤ s·cos` with a gradient-free estimator for `cos`. Novel as
-   *packaging*, not theory, and **weakened by B1**: what is publishable today is the *dose-response
-   curve*, which is empirical and was not planned.
+   *packaging*, not theory, and **weakened by the probe defect**: what is publishable today is the
+   dose-response curve.
 5. **No: the scaling law itself.** `cos ∝ √(n/p)` is known ZO analysis.
 
 A standalone paper needs three things we do not have: the criterion predicting the divergence point

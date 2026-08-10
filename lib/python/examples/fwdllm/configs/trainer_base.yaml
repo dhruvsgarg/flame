@@ -87,7 +87,7 @@ hyperparameters:
   # scripts/profile_jvp_opt.py). Default false = byte-identical; the fluxtune
   # yamls set it true. Must match real<->sim (both read this config).
   jvp_perf_opt: false
-  # fl_fwd_ft_solution.md §4.2: how the P probes become one upload.
+  # fl_fwd_ft_practice.md P3: how the P probes become one upload.
   # select = keep one (historical); mean = average all P, same passes and bytes
   # but b^2/a drops from 1 to 1/P. Must match real<->sim.
   probe_combine: select
