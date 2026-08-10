@@ -121,8 +121,13 @@ def fd_scale_invariant_enabled() -> bool:
 
 
 def _fd_spacing(v, trainable_idx):
-    if not fd_scale_invariant_enabled():
-        return 0.01
+    """The FD spacing `h`, and the ONE place the effective `h*sqrt(p)` is logged.
+
+    Logged in both modes, on purpose: `[ProbeDim]` prints the nominal h, so a
+    p-ladder arm reads as if the FD had silently shrunk with p when it had not
+    (handoff §22.1). Read the spacing here.
+    """
+    on = fd_scale_invariant_enabled()
     idx = tuple(trainable_idx) if trainable_idx is not None else None
     key = (len(v), idx)
     p = _fd_p_cache.get(key)
@@ -130,11 +135,13 @@ def _fd_spacing(v, trainable_idx):
         rng = range(len(v)) if idx is None else idx
         p = sum(v[i].numel() for i in rng)
         _fd_p_cache[key] = p
+        h = _FD_REF_DISPLACEMENT / math.sqrt(p) if on else 0.01
         logger.info(
-            f"[FD] scale-invariant spacing: p={p} h={_FD_REF_DISPLACEMENT / math.sqrt(p):.6g} "
-            f"(h*sqrt(p) held at {_FD_REF_DISPLACEMENT:.4f}; h was 0.01 at p={_FD_REF_P})"
+            f"[FD] spacing: p={p} h={h:.6g} h*sqrt(p)={h * math.sqrt(p):.4f} "
+            + (f"(scale_invariant=on, held at {_FD_REF_DISPLACEMENT:.4f} from p={_FD_REF_P})"
+               if on else "(scale_invariant=off, h fixed -- displacement moves with p)")
         )
-    return _FD_REF_DISPLACEMENT / math.sqrt(p)
+    return _FD_REF_DISPLACEMENT / math.sqrt(p) if on else 0.01
 
 
 def calculate_jvp(func, params, v, trainable_idx=None):

@@ -77,6 +77,17 @@ python3 "$SCRIPT_DIR/test_model_args_parity.py" >/dev/null || {
   echo "ERROR: model_args parity check failed -- the aggregator would crash at startup." >&2
   exit 2
 }
+# Same reasoning for the two server-side features that produce a NUMBER rather
+# than a crash when they break: a misaligned cos probe returns a plausible small
+# cosine forever, and a mis-referenced gate silently floors the pool at I=1
+# (the 08-09 node-1 loss). Both are CPU-only stubs, ~4s together.
+for _t in test_commit_gate test_cos_probe; do
+  python3 "$SCRIPT_DIR/$_t.py" >/dev/null 2>&1 || {
+    python3 "$SCRIPT_DIR/$_t.py"
+    echo "ERROR: $_t failed -- server-side audit/gate would emit wrong numbers." >&2
+    exit 2
+  }
+done
 
 # defaults
 MODE="both"
@@ -113,6 +124,9 @@ RHO_EXP=""             # S-B: anneal exponent, must exceed 0.5
 TRAINABLE_SCOPE=""     # S-I: adapters_head|adapters_only -- adapters_only freezes pre_classifier (56.7% of p)
 COMMIT_GATE=""         # S-C: var|n_target -- n_target sizes the pool from rho_t (aggregator); empty => code default var
 GATE_SAFETY_S=""       # S-C: safety factor s in rho <= s*cos; empty => code default 0.4
+GATE_RHO_REF=""        # S-C: annealed|setpoint -- which rho sizes the pool; empty => code default annealed
+COS_GROUND_TRUTH_AUDIT="" # B1: per-commit cos(G,g) vs a real backward pass on a fixed held-out batch
+COS_PROBE_BATCH_SIZE=""   # B1: size of that batch; empty => code default 64
 ADAPTER_RF=""          # S-I: adapter bottleneck reduction_factor -- the real p knob; empty => code default 16
 MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
 VAR_STOPPING_POLICY=""   # Opt-2: off|fixed_cap|plateau (empty => baselines.yaml, fluxtune=plateau)
@@ -155,6 +169,8 @@ usage() {
   echo "          [--learning-rate F] [--perturbation-count N] [--probe-combine select|mean]" >&2
   echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho-schedule const|rm] [--rho-exp F]" >&2
   echo "          [--trainable-scope adapters_head|adapters_only] [--commit-gate var|n_target] [--gate-safety-s F]" >&2
+  echo "          [--gate-rho-ref annealed|setpoint]  (setpoint stops S-C's pool vanishing with S-B's anneal)" >&2
+  echo "          [--cos-ground-truth-audit] [--cos-probe-batch-size N]  (B1: real cos(G,g), aggregator-side)" >&2
   echo "          [--adapter-reduction-factor N]  (768/N per adapter; the real p knob)" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
@@ -200,6 +216,10 @@ while [[ $# -gt 0 ]]; do
     --commit-gate)          case "$2" in var|n_target) ;; *) echo "ERROR: --commit-gate must be var|n_target (got '$2')" >&2; exit 2 ;; esac
                             COMMIT_GATE="$2"; shift 2 ;;
     --gate-safety-s)        GATE_SAFETY_S="$2"; shift 2 ;;
+    --gate-rho-ref)         case "$2" in annealed|setpoint) ;; *) echo "ERROR: --gate-rho-ref must be annealed|setpoint (got '$2')" >&2; exit 2 ;; esac
+                            GATE_RHO_REF="$2"; shift 2 ;;
+    --cos-ground-truth-audit) COS_GROUND_TRUTH_AUDIT=1; shift ;;
+    --cos-probe-batch-size) COS_PROBE_BATCH_SIZE="$2"; shift 2 ;;
     --adapter-reduction-factor) ADAPTER_RF="$2"; shift 2 ;;
     --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
     --var-stopping-policy)  case "$2" in off|fixed_cap|plateau) ;; *) echo "ERROR: --var-stopping-policy must be off|fixed_cap|plateau (got '$2')" >&2; exit 2 ;; esac
@@ -378,6 +398,8 @@ LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
   PROBE_COMBINE="$PROBE_COMBINE" SERVER_STEP_RULE="$SERVER_STEP_RULE" \
   RHO_STAR="$RHO_STAR" RHO_SCHEDULE="$RHO_SCHEDULE" RHO_EXP="$RHO_EXP" \
   TRAINABLE_SCOPE="$TRAINABLE_SCOPE" COMMIT_GATE="$COMMIT_GATE" GATE_SAFETY_S="$GATE_SAFETY_S" \
+  GATE_RHO_REF="$GATE_RHO_REF" COS_GROUND_TRUTH_AUDIT="$COS_GROUND_TRUTH_AUDIT" \
+  COS_PROBE_BATCH_SIZE="$COS_PROBE_BATCH_SIZE" \
   ADAPTER_RF="$ADAPTER_RF" \
 DELAY_FLOOR="$DELAY_FLOOR" \
 VAR_STOPPING_POLICY="$VAR_STOPPING_POLICY" AGG_RATE_TYPE="$AGG_RATE_TYPE" \
@@ -412,6 +434,9 @@ SERVER_STEP_RULE = env("SERVER_STEP_RULE") or ""; RHO_STAR = env("RHO_STAR") or 
 RHO_SCHEDULE = env("RHO_SCHEDULE") or ""; RHO_EXP = env("RHO_EXP") or ""
 TRAINABLE_SCOPE = env("TRAINABLE_SCOPE") or ""
 COMMIT_GATE = env("COMMIT_GATE") or ""; GATE_SAFETY_S = env("GATE_SAFETY_S") or ""
+GATE_RHO_REF = env("GATE_RHO_REF") or ""
+COS_GROUND_TRUTH_AUDIT = env("COS_GROUND_TRUTH_AUDIT") or ""
+COS_PROBE_BATCH_SIZE = env("COS_PROBE_BATCH_SIZE") or ""
 ADAPTER_RF = env("ADAPTER_RF") or ""
 VAR_STOPPING_POLICY = env("VAR_STOPPING_POLICY") or ""; AGG_RATE_TYPE = env("AGG_RATE_TYPE") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
@@ -594,6 +619,16 @@ def patch(exp, run_key, variant, trace):
         h["commit_gate"] = COMMIT_GATE
     if GATE_SAFETY_S:
         h["gate_safety_s"] = float(GATE_SAFETY_S)
+    # S-C x S-B: `annealed` (shipped) sizes the pool from rho_t, which goes to
+    # zero with the anneal and floors the gate at I=1 (§22.3a). `setpoint` sizes
+    # from rho*_0, so the anneal shrinks the step and the gate holds the aim.
+    if GATE_RHO_REF:
+        h["gate_rho_ref"] = GATE_RHO_REF
+    # B1: server-side ground-truth cos(G,g). Aggregator-only, no trainer cost.
+    if COS_GROUND_TRUTH_AUDIT:
+        h["cos_ground_truth_audit"] = True
+    if COS_PROBE_BATCH_SIZE:
+        h["cos_probe_batch_size"] = int(COS_PROBE_BATCH_SIZE)
     # S-I: BOTH sides build the model, so both need the bottleneck or the
     # aggregator's eval model has a different shape than the trainers'.
     if ADAPTER_RF:

@@ -294,6 +294,9 @@ def build_server_update(
     split_half_norm_b: Optional[float] = None,
     var_at_commit: Optional[float] = None,
     n_eff: Optional[float] = None,
+    cos_ground_truth: Optional[float] = None,
+    pooled_norm: Optional[float] = None,
+    probe_grad_norm: Optional[float] = None,
 ) -> tuple[str, dict[str, Any]]:
     """I-1 audit: L2 norm of the update actually SUBTRACTED from the server
     weights, the resulting weight norm, and their ratio — one record per commit.
@@ -343,6 +346,14 @@ def build_server_update(
         fields["var_at_commit"] = var_at_commit
         fields["n_eff"] = n_eff
         fields["n_eff_ratio"] = (n_eff / pool_size) if pool_size else None
+    if cos_ground_truth is not None:
+        # B1: cos(G, g) against a REAL backward-pass gradient on a fixed held-out
+        # batch. Unlike split_half_cos this is not noise-limited -- `g` is exact
+        # for that batch -- so it is usable per commit. `pooled_norm/probe_grad_norm`
+        # tests the independent-pooling assumption (§12) and resolves H-B.
+        fields["cos_ground_truth"] = cos_ground_truth
+        fields["pooled_norm"] = pooled_norm
+        fields["probe_grad_norm"] = probe_grad_norm
     return EVENT_SERVER_UPDATE, fields
 
 

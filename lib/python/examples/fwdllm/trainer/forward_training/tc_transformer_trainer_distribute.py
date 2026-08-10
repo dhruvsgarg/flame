@@ -396,7 +396,12 @@ class ForwardTextClassificationTrainer:
         if not getattr(self, "_probe_dim_logged", False):
             self._probe_dim_logged = True
             _p = sum(p.numel() for p in self.params if p.requires_grad)
-            logging.info(f"[ProbeDim] p={_p} h*sqrt(p)={0.01 * _p ** 0.5:.4f}")
+            # h at the NOMINAL setting; under FWDLLM_FD_SCALE_INVARIANT it is
+            # rescaled per-p, and only `[FD] spacing` reports the effective value.
+            logging.info(
+                f"[ProbeDim] p={_p} nominal h*sqrt(p)={0.01 * _p ** 0.5:.4f} "
+                f"-- effective spacing is on the [FD] line"
+            )
 
     # Removed dead code: `_select_optimal_perturbations`/`_setup_training_state`
     # were unreachable, stale forks -- `_train_one_batch` uses its own live

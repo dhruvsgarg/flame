@@ -6,6 +6,7 @@ import time
 import math
 import numpy as np
 import torch
+from torch.nn import CrossEntropyLoss
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
 from examples.fwdllm.trainer.forward_training.fwdgrad_utils import calculate_var, calculate_snr, calculate_cv, calculate_real_var, calculate_snr_gradients
 from flame.monitor.runtime import timer_decorator, FwdLLMStage
@@ -102,6 +103,21 @@ class FedSGDAggregator(TopAggregator):
         )
         if self._pool_split_half_audit:
             logger.info("[POOL_SPLIT_HALF_AUDIT] emitting per-commit pool agreement")
+        # B1 (§15.1): ground-truth cos(G,g). The split-half estimator returns zero
+        # within noise even at matched N (§22.3e), so manufacture a real `g` with a
+        # backward pass -- server-side, one fixed held-out batch, once per commit.
+        self._cos_ground_truth_audit = bool(
+            getattr(self.args, "cos_ground_truth_audit", False)
+        )
+        self._cos_probe_batch = None
+        self._cos_probe_batch_size = int(
+            getattr(self.args, "cos_probe_batch_size", 64) or 64
+        )
+        if self._cos_ground_truth_audit:
+            logger.info(
+                "[COS_GROUND_TRUTH_AUDIT] emitting per-commit cos(G,g) against a "
+                f"fixed held-out batch of {self._cos_probe_batch_size}"
+            )
 
         self.train_data_local_dict = train_data_local_dict
         self.test_data_local_dict = test_data_local_dict
@@ -181,6 +197,18 @@ class FedSGDAggregator(TopAggregator):
             logger.warning(f"unknown commit_gate={self._commit_gate!r}; using var")
             self._commit_gate = "var"
         self._gate_safety_s = float(getattr(self.args, "gate_safety_s", 0.4) or 0.4)
+        # Which rho sizes the pool. `annealed` (shipped) uses rho_t, which under
+        # S-B drives N_req -> 0, floors the gate at I=1 and decays progress as
+        # rho^2 (§22.3a). `setpoint` sizes from rho*_0, so the anneal shrinks the
+        # step while the gate holds the aim.
+        self._gate_rho_ref = str(
+            getattr(self.args, "gate_rho_ref", "annealed") or "annealed"
+        ).lower()
+        if self._gate_rho_ref not in ("annealed", "setpoint"):
+            logger.warning(
+                f"unknown gate_rho_ref={self._gate_rho_ref!r}; using annealed"
+            )
+            self._gate_rho_ref = "annealed"
         self._last_rho = None
         self._p_trainable = self._g_rule = None
         if self._commit_gate == "n_target":
@@ -194,7 +222,8 @@ class FedSGDAggregator(TopAggregator):
             self._g_rule = float(_P) if _pc == "mean" else _E_SELECT_COIN_TOP2
             logger.info(
                 f"[CommitGate] n_target s={self._gate_safety_s} p={self._p_trainable} "
-                f"probe_combine={_pc} P={_P} G_rule={self._g_rule}"
+                f"probe_combine={_pc} P={_P} G_rule={self._g_rule} "
+                f"rho_ref={self._gate_rho_ref}"
             )
 
         self.track_trainer_avail = (
@@ -336,14 +365,24 @@ class FedSGDAggregator(TopAggregator):
         mean_sq = sum(float(t.pow(2).sum()) for t in lst) / n
         return 2.0 * mean_sq / (m * var_scalar)
 
-    def _n_required(self):
-        """S-C: pool this commit's step needs, N_req = p*(rho_t/s)^2 / G_rule.
+    def _gate_rho(self):
+        """The rho the gate sizes against — see `_gate_rho_ref`.
 
-        `rho_t` is exact under trust_ratio (it IS the setpoint), else the last
-        realised rho, which lags a commit. None until one exists -> the cap fires.
+        Under trust_ratio it is exact (it IS the setpoint); under raw SGD it is the
+        last realised rho, which lags a commit. None until one exists.
         """
-        rho = (self._rho_star_now() if self._server_step_rule == "trust_ratio"
-               else self._last_rho)
+        if self._server_step_rule != "trust_ratio":
+            return self._last_rho
+        if getattr(self, "_gate_rho_ref", "annealed") == "setpoint":
+            return self._rho_star
+        return self._rho_star_now()
+
+    def _n_required(self):
+        """S-C: pool this commit's step needs, N_req = p*(rho/s)^2 / G_rule.
+
+        None when no rho exists yet (raw_sgd, first commit) -> the cap fires.
+        """
+        rho = self._gate_rho()
         if not rho or not self._p_trainable or not self._g_rule:
             return None
         return self._p_trainable * (rho / self._gate_safety_s) ** 2 / self._g_rule
@@ -361,8 +400,7 @@ class FedSGDAggregator(TopAggregator):
         ok = n_have >= n_req
         logger.info(
             f"[CommitGate] n_have={n_have:.1f} n_req={n_req:.1f} "
-            f"rho_t={self._rho_star_now() if self._server_step_rule == 'trust_ratio' else self._last_rho} "
-            f"-> {'COMMIT' if ok else 'POOL'}"
+            f"rho_t={self._gate_rho()} -> {'COMMIT' if ok else 'POOL'}"
         )
         return ok
 
@@ -435,6 +473,24 @@ class FedSGDAggregator(TopAggregator):
         _split = self._pool_split_half_stats(model_list)
         _delta_sq = _weight_sq = 0.0
         _tr_delta_sq = _tr_weight_sq = 0.0
+        # B1: `g` must be taken at theta_t, BEFORE the loops below mutate it --
+        # cos(G,g) is the aim of the step about to be taken, not of the next one.
+        _cos_probe = (self._cos_probe_gradient()
+                      if getattr(self, "_cos_ground_truth_audit", False) else None)
+        _cos_dot = _cos_g_sq = 0.0
+
+        def _cos_accumulate(idx, pooled):
+            """Fold one pooled per-param block of G into <G,g> and ||G||^2."""
+            nonlocal _cos_dot, _cos_g_sq
+            if _cos_probe is None:
+                return
+            _g = _cos_probe[0][idx]
+            if _g is None:
+                return
+            _blk = pooled.detach().to("cpu", torch.float32)
+            _cos_dot += float((_blk * _g).sum())
+            _cos_g_sq += float(_blk.pow(2).sum())
+
         # Pass 1 pools the uploads. Under raw_sgd this stays fused with the write
         # below (byte-identical); trust_ratio needs ||G|| and ||theta_tr|| over the
         # WHOLE trainable slice before any tensor is touched, so it is split out.
@@ -448,6 +504,7 @@ class FedSGDAggregator(TopAggregator):
                 else:
                     weighted_gradient_sum[id] += local_model_params[id]
             if not _trust:
+                _cos_accumulate(id, weighted_gradient_sum[id] / training_num)
                 # `.to("cpu")` syncs GPU->CPU; timed separately since it runs once
                 # per param, not once per call.
                 with _agg_sync_timer(self, "agg_apply_update_cpu_sync"):
@@ -473,7 +530,9 @@ class FedSGDAggregator(TopAggregator):
                               self.trainer.model.parameters()):
                 if not _p.requires_grad:
                     continue
-                _g_sq += float((weighted_gradient_sum[id] / training_num).pow(2).sum())
+                _pooled = weighted_gradient_sum[id] / training_num
+                _cos_accumulate(id, _pooled)
+                _g_sq += float(_pooled.pow(2).sum())
                 _t_sq += float(_p.detach().pow(2).sum())
             _gn, _tn = _g_sq ** 0.5, _t_sq ** 0.5
             # ||G||=0 means an empty/degenerate pool: skip rather than divide.
@@ -507,12 +566,20 @@ class FedSGDAggregator(TopAggregator):
             self._last_rho = _rho_t
         elif _audit and _tr_weight_sq > 0:
             self._last_rho = (_tr_delta_sq / _tr_weight_sq) ** 0.5
+        _cos_gt = None
+        if _cos_probe is not None and _cos_g_sq > 0 and _cos_probe[1] > 0:
+            _cos_gt = (_cos_dot / (_cos_g_sq ** 0.5 * _cos_probe[1]),
+                       _cos_g_sq ** 0.5, _cos_probe[1])
+            logger.info(
+                f"[CosProbe] commit={self._commit_count} cos={_cos_gt[0]:.6g} "
+                f"||G||={_cos_gt[1]:.6g} ||g||={_cos_gt[2]:.6g}"
+            )
         if _audit:
             self._emit_server_update(
                 _delta_sq**0.5, _weight_sq**0.5, learning_rate,
                 trainable_delta_norm=_tr_delta_sq**0.5,
                 trainable_weight_norm=_tr_weight_sq**0.5,
-                split=_split,
+                split=_split, cos_gt=_cos_gt,
             )
 
     def _rho_star_now(self):
@@ -569,9 +636,69 @@ class FedSGDAggregator(TopAggregator):
             logger.debug("pool split-half audit failed", exc_info=True)
             return None
 
+    def _cos_probe_gradient(self):
+        """B1 (§15.1): a REAL gradient at the current theta, for one fixed batch.
+
+        `G` is already server-side, so the only missing half of cos(G,g) is some
+        `g`. A backward pass on a fixed held-out batch is one: biased toward that
+        batch, but the SAME batch every commit, so trend and scale are comparable
+        across commits and arms. fp32, no autocast -- a reference, not a step.
+
+        Returns `([g_i or None per model param], ||g||)` on CPU, or None.
+        """
+        try:
+            model = self.trainer.model
+            device = next(model.parameters()).device
+            if self._cos_probe_batch is None:
+                tensors = self.test_global.dataset.tensors
+                n = min(self._cos_probe_batch_size, tensors[0].shape[0])
+                self._cos_probe_batch = (
+                    tensors[1][:n].to(device),  # input_ids   (eval_model's layout)
+                    tensors[4][:n].to(device),  # labels
+                )
+                logger.info(f"[CosProbe] fixed held-out batch of {n} cached")
+            x, labels = self._cos_probe_batch
+            was_training = model.training
+            model.eval()
+            model.zero_grad(set_to_none=True)
+            output = model(x)
+            if hasattr(output, "logits"):
+                logits = output.logits
+            elif isinstance(output, (tuple, list)):
+                logits = output[0]
+            else:
+                logits = output
+            loss = CrossEntropyLoss()(
+                logits.view(-1, self.num_labels), labels.view(-1)
+            )
+            loss.backward()
+            grads, g_sq = [], 0.0
+            for p in model.parameters():
+                if not p.requires_grad or p.grad is None:
+                    grads.append(None)
+                    continue
+                g = p.grad.detach().to("cpu", torch.float32).clone()
+                grads.append(g)
+                g_sq += float(g.pow(2).sum())
+            model.zero_grad(set_to_none=True)
+            if was_training:
+                model.train()
+            # A dead probe emits nothing, which at scoring time is indistinguishable
+            # from "audit off". Say so once.
+            if g_sq <= 0 and not getattr(self, "_cos_probe_warned", False):
+                self._cos_probe_warned = True
+                logger.warning(
+                    "[CosProbe] backward produced no trainable gradient -- B1 is "
+                    "emitting nothing. Check requires_grad on the aggregator model."
+                )
+            return grads, g_sq ** 0.5
+        except Exception:  # pragma: no cover - audit must never fault training
+            logger.debug("cos ground-truth probe failed", exc_info=True)
+            return None
+
     def _emit_server_update(self, delta_norm, weight_norm, learning_rate,
                             trainable_delta_norm=None, trainable_weight_norm=None,
-                            split=None):
+                            split=None, cos_gt=None):
         """One `server_update` record per commit (I-1). Never faults training."""
         try:
             from flame import telemetry
@@ -579,6 +706,7 @@ class FedSGDAggregator(TopAggregator):
                 from flame.telemetry.events import build_server_update
                 stage = getattr(self, "fwd_llm_stage", None)
                 _dot, _na, _nb, _psize = split if split else (None, None, None, None)
+                _cos, _gn, _pgn = cos_gt if cos_gt else (None, None, None)
                 ev, fields = build_server_update(
                     round_num=getattr(stage, "round_id", None),
                     data_id=getattr(stage, "data_id", None),
@@ -595,6 +723,7 @@ class FedSGDAggregator(TopAggregator):
                     split_half_norm_b=_nb,
                     var_at_commit=getattr(self, "_var_scalar", None),
                     n_eff=getattr(self, "_n_eff_scalar", None),
+                    cos_ground_truth=_cos, pooled_norm=_gn, probe_grad_norm=_pgn,
                 )
                 telemetry.emit(ev, **fields)
         except Exception:  # pragma: no cover - telemetry must never fault training

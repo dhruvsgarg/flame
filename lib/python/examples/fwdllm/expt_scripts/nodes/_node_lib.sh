@@ -40,11 +40,12 @@ node_run () {  # node_run <node-label> <arm-label> [launcher flags...]
   echo "--- [$node] $label -> $(basename "$run"), commits=$commits"
   # Enactment lines: cheap, and the only way to catch a knob that did not take.
   grep -m1 -h '\[ProbeDim\]'      "$run"/*trainers.log   2>/dev/null
-  grep -m1 -h '\[FD\] scale'      "$run"/*trainers.log   2>/dev/null
+  grep -m1 -h '\[FD\] spacing'    "$run"/*trainers.log   2>/dev/null
   grep -m1 -h '\[probe_combine'   "$run"/*trainers.log   2>/dev/null
   grep -m1 -h '\[TrainableScope\]' "$run"/*trainers.log  2>/dev/null
   grep -m1 -h '\[ServerStep\]'    "$run"/*aggregator.log 2>/dev/null
   grep -m1 -h '\[CommitGate\]'    "$run"/*aggregator.log 2>/dev/null
+  grep -m1 -h '\[CosProbe\]'      "$run"/*aggregator.log 2>/dev/null
   if [ "$commits" -lt 5 ]; then
     echo "!!! [$node] $label committed $commits times -- systemic fault, aborting node." >&2
     grep -m1 -A12 Traceback "$run"/*aggregator.log >&2 2>/dev/null
