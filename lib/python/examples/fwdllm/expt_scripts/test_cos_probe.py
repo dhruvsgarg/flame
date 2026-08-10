@@ -68,6 +68,7 @@ def make(audit=True, seed=0):
     a._server_step_rule = "raw_sgd"
     a._commit_count = 0
     a._last_rho = None
+    a._weight_decay = None
     a.server_momentum = 0.0
     a._server_momentum_buf = {}
     a._var_scalar = None
@@ -160,3 +161,50 @@ a_on, model_on = make()
 a_on._cos_probe_gradient()
 assert all(p.grad is None for p in model_on.parameters()), "probe must clear grads"
 print("  probe hygiene        : model left with no .grad, eval/train mode restored")
+
+# ---------------------------------------------------------------- B17 (§3.9)
+# The reference batch must be REPRESENTATIVE. test_index_list is per-client test
+# shards concatenated in client order and never shuffled, so under niid_label
+# partitioning the head of the tensor is one client's Dirichlet-skewed shard.
+# Slicing [:n] there gave a 75%-single-class reference whose gradient is
+# ANTI-correlated (-0.46) with the true held-out one, voiding every cos ever
+# logged. This asserts the probe no longer reads the head of the tensor.
+class _ClusteredDS:
+    """Labels sorted into contiguous per-class blocks -- the pathological case."""
+
+    def __init__(self, n=400):
+        ids = torch.randint(0, VOCAB, (n, SEQ))
+        labels = torch.arange(n) * NUM_LABELS // n      # 0000...1111...2222...
+        pad = torch.zeros(n, SEQ, dtype=torch.long)
+        self.tensors = (pad, ids, pad, pad, labels)
+
+
+def _dominant_share(labels):
+    lab = labels.view(-1).tolist()
+    return max(lab.count(c) for c in set(lab)) / len(lab)
+
+
+a_sk, _ = make()
+a_sk.test_global = type("G", (), {"dataset": _ClusteredDS()})()
+a_sk._cos_probe_batch_size = 64
+a_sk._cos_probe_gradient()
+share = _dominant_share(a_sk._cos_probe_batch[1])
+head_share = _dominant_share(_ClusteredDS().tensors[4][:64])
+assert head_share == 1.0, "the fixture must actually be pathological"
+assert share < 0.5, (
+    f"probe reference is class-skewed at {share:.2f} -- it is reading the head "
+    f"of an unshuffled, client-ordered test tensor (B17 regression)"
+)
+print(f"  B17 reference batch  : dominant-class share {share:.2f} "
+      f"(unshuffled head would be {head_share:.2f})")
+
+# and it must be the SAME batch every commit, or trends are not comparable
+first = a_sk._cos_probe_batch[1].clone()
+a_sk._cos_probe_gradient()
+assert torch.equal(a_sk._cos_probe_batch[1], first), "reference batch must be fixed"
+a_sk2, _ = make()
+a_sk2.test_global = type("G", (), {"dataset": _ClusteredDS()})()
+a_sk2._cos_probe_batch_size = 64
+a_sk2._cos_probe_gradient()
+assert torch.equal(a_sk2._cos_probe_batch[1], first), "must match across arms"
+print("  B17 reference batch  : identical across commits and across arms")

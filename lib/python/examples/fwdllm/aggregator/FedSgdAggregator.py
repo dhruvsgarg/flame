@@ -16,6 +16,9 @@ import functorch as fc
 
 import hashlib
 
+# B17: fixed so the cos probe reads the SAME batch every commit and across arms.
+_COS_PROBE_SEED = 20260810
+
 
 def _calculate_hash(tensor):
     if tensor is None:
@@ -110,8 +113,10 @@ class FedSGDAggregator(TopAggregator):
             getattr(self.args, "cos_ground_truth_audit", False)
         )
         self._cos_probe_batch = None
+        # B17: even shuffled, n=64 aligns with the true held-out gradient at
+        # only 0.48; 1024 reaches 0.94 (§3.9).
         self._cos_probe_batch_size = int(
-            getattr(self.args, "cos_probe_batch_size", 64) or 64
+            getattr(self.args, "cos_probe_batch_size", 1024) or 1024
         )
         if self._cos_ground_truth_audit:
             logger.info(
@@ -180,6 +185,23 @@ class FedSGDAggregator(TopAggregator):
         ).lower()
         self._rho_exp = float(getattr(self.args, "rho_exp", 0.55) or 0.55)
         self._commit_count = 0
+        # Q2 (§6.1). Decay the trainable slice after the step. `auto` = rho^2/2
+        # cancels Leg 1's inflation exactly, pinning Phi = 1 by construction, which
+        # is what separates "||theta_tr|| is causal" from "it is a symptom".
+        _wd = getattr(self.args, "server_weight_decay", None)
+        self._weight_decay = None
+        if _wd is not None and str(_wd).strip() != "":
+            self._weight_decay = (
+                "auto" if str(_wd).lower() == "auto" else float(_wd)
+            )
+            if self._weight_decay != "auto" and self._weight_decay < 0:
+                logger.warning(
+                    f"negative server_weight_decay={self._weight_decay}; disabling"
+                )
+                self._weight_decay = None
+        if self._weight_decay is not None:
+            logger.info(f"[WeightDecay] server_weight_decay={self._weight_decay} "
+                        "(trainable slice only, applied after the step)")
         if self._server_step_rule == "trust_ratio":
             logger.info(
                 f"[ServerStep] trust_ratio rho_star={self._rho_star} "
@@ -495,6 +517,12 @@ class FedSGDAggregator(TopAggregator):
         # below (byte-identical); trust_ratio needs ||G|| and ||theta_tr|| over the
         # WHOLE trainable slice before any tensor is touched, so it is split out.
         _trust = self._server_step_rule == "trust_ratio"
+        # Q2: trust_ratio knows rho before the step; raw_sgd only after, so
+        # `auto` falls back to the previous commit's realised rho.
+        _wd_lam = self._wd_lambda(self._rho_star_now() if _trust else None)
+        if _wd_lam:
+            logger.info(f"[WeightDecay] commit={self._commit_count} "
+                        f"lambda={_wd_lam:.6g}")
         for id, k in enumerate(weighted_gradient_sum):
             for i in range(0, len(model_list)):
                 local_sample_number, local_model_params = model_list[i]
@@ -515,6 +543,7 @@ class FedSGDAggregator(TopAggregator):
                         id, learning_rate * weighted_gradient_sum[id] / training_num
                     )
                     _param.sub_(_update)
+                    self._apply_weight_decay(_param, _trainable, _wd_lam)
                     if _audit:
                         _d = float(_update.pow(2).sum())
                         _w = float(_param.pow(2).sum())
@@ -552,6 +581,7 @@ class FedSGDAggregator(TopAggregator):
                         id, (_scale / training_num) * weighted_gradient_sum[id]
                     )
                     _param.sub_(_update)
+                    self._apply_weight_decay(_param, _trainable, _wd_lam)
                 if _audit:
                     _d = float(_update.pow(2).sum())
                     _w = float(_param.pow(2).sum())
@@ -581,6 +611,26 @@ class FedSGDAggregator(TopAggregator):
                 trainable_weight_norm=_tr_weight_sq**0.5,
                 split=_split, cos_gt=_cos_gt,
             )
+
+    def _wd_lambda(self, rho_hint):
+        """Q2: the decay coefficient for this commit, or None if disabled.
+
+        `auto` = rho^2/2, the value that exactly cancels Leg 1's inflation
+        (||theta||^2 grows by 1+rho^2 per commit; (1-rho^2/2)^2 ~= 1-rho^2).
+        """
+        wd = getattr(self, "_weight_decay", None)
+        if wd is None:
+            return None
+        if wd != "auto":
+            return wd
+        rho = rho_hint if rho_hint else (getattr(self, "_last_rho", 0.0) or 0.0)
+        return 0.5 * float(rho) ** 2 if rho else None
+
+    def _apply_weight_decay(self, param, trainable, lam):
+        """Shrink the TRAINABLE slice in place, after the step. Frozen params are
+        left alone: decaying them would change the backbone, not the budget."""
+        if lam and trainable:
+            param.mul_(1.0 - lam)
 
     def _rho_star_now(self):
         """S-B: the relative step this commit is allowed to take.
@@ -651,12 +701,33 @@ class FedSGDAggregator(TopAggregator):
             device = next(model.parameters()).device
             if self._cos_probe_batch is None:
                 tensors = self.test_global.dataset.tensors
-                n = min(self._cos_probe_batch_size, tensors[0].shape[0])
+                total = tensors[0].shape[0]
+                n = min(self._cos_probe_batch_size, total)
+                # B17. NEVER slice [:n]: test_index_list is per-client shards
+                # concatenated in client order, never shuffled
+                # (base_data_manager.py:204-216), so the head is ONE client's
+                # skewed shard -- 75% single-class, and its gradient came out
+                # ANTI-correlated (-0.46) with the true one. A fixed-seed
+                # permutation keeps the batch identical across commits and arms.
+                idx = torch.randperm(
+                    total, generator=torch.Generator().manual_seed(_COS_PROBE_SEED)
+                )[:n]
+                idx, _ = torch.sort(idx)  # locality; order is irrelevant to the sum
                 self._cos_probe_batch = (
-                    tensors[1][:n].to(device),  # input_ids   (eval_model's layout)
-                    tensors[4][:n].to(device),  # labels
+                    tensors[1][idx].to(device),  # input_ids (eval_model's layout)
+                    tensors[4][idx].to(device),  # labels
                 )
-                logger.info(f"[CosProbe] fixed held-out batch of {n} cached")
+                _lab = tensors[4][idx].view(-1).tolist()
+                _share = max(_lab.count(c) for c in set(_lab)) / max(len(_lab), 1)
+                logger.info(
+                    f"[CosProbe] shuffled held-out batch of {n} cached "
+                    f"(seed={_COS_PROBE_SEED}, dominant-class share={_share:.2f})"
+                )
+                if _share > 0.5:
+                    logger.warning(
+                        "[CosProbe] reference batch is still class-skewed at "
+                        f"{_share:.2f}; raise cos_probe_batch_size"
+                    )
             x, labels = self._cos_probe_batch
             was_training = model.training
             model.eval()
