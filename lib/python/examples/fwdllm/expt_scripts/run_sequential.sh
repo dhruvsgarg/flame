@@ -598,7 +598,7 @@ def patch(exp, run_key, variant, trace):
     # L1 pool-agreement audit: a second pass over the pool, so its own flag.
     if POOL_SPLIT_HALF_AUDIT:
         h["pool_split_half_audit"] = True
-    # Divergence sweeps (FLUXTUNE_PROBE_PLAN.md §4b). Both default to the
+    # Divergence sweeps (fl_fwd_ft_solution.md §6.5). Both default to the
     # inherited value, so an unset run is byte-identical to today.
     # learning_rate is read aggregator-side (FedSgdAggregator._prepare_round_state);
     # perturbation_count is P, read trainer-side (trainer/main.py).
