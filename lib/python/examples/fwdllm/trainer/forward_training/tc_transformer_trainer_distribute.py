@@ -228,9 +228,11 @@ class ForwardTextClassificationTrainer:
         if self.args.perturbation_sampling and self.args.var_control:
             self.old_grad = None
 
-        self.select_perturbation_using_jvp = False
-        if self.args.select_perturbation_using_jvp:
-            self.select_perturbation_using_jvp = self.args.select_perturbation_using_jvp
+        # Trainer-side knob; the aggregator builds this class for eval and does
+        # not carry it, so read it defensively like the knobs below.
+        self.select_perturbation_using_jvp = bool(
+            getattr(self.args, "select_perturbation_using_jvp", False)
+        )
 
         # Number of candidate perturbations sampled per param. Drives the
         # forward-pass count: the select_perturbation_using_jvp path does 2 JVP
@@ -389,6 +391,12 @@ class ForwardTextClassificationTrainer:
         )
         self.params = [p.to(device) for p in self.params]    # In case it was moved to CPU for serialization before being sent over the channel
         self.buffers = [b.to(device) for b in self.buffers]
+        # The authoritative p: create_model counts before :217 drops
+        # pre_classifier, so every cos ~ sqrt(n/p) must use this one.
+        if not getattr(self, "_probe_dim_logged", False):
+            self._probe_dim_logged = True
+            _p = sum(p.numel() for p in self.params if p.requires_grad)
+            logging.info(f"[ProbeDim] p={_p} h*sqrt(p)={0.01 * _p ** 0.5:.4f}")
 
     # Removed dead code: `_select_optimal_perturbations`/`_setup_training_state`
     # were unreachable, stale forks -- `_train_one_batch` uses its own live

@@ -131,7 +131,10 @@ def create_model(args, formulation="classification"):
             "mh_adapter": False,
             "output_adapter": True,
             "non_linearity": "relu",
-            "reduction_factor": 16,
+            # S-I: adapters ARE p (447,264 of 450,340), so the bottleneck is the
+            # only real p knob; 16->32->64 roughly halves p each step. Under
+            # cos ~ 1/sqrt(p) that is gradient quality, not just capacity.
+            "reduction_factor": int(getattr(args, "adapter_reduction_factor", 16) or 16),
             "inv_adapter": None,
             "inv_adapter_reduction_factor": None,
             "cross_adapter": False,
@@ -152,11 +155,10 @@ def create_model(args, formulation="classification"):
     # print(model)
     # print(sum(p.numel() for p in model.parameters() if p.requires_grad))
 
-    # S-I (handoff §11.5): for forward gradients cos ~ 1/sqrt(p), so the trainable
-    # set is a gradient-QUALITY knob, not just a memory one. pre_classifier is one
-    # 768x768 layer carrying 56.7% of p and is trainable by HuggingFace default,
-    # not by design. Freezing it must ship with FWDLLM_FD_SCALE_INVARIANT=1, or
-    # the probe displacement h*sqrt(p) silently shrinks with p (§2.4).
+    # INERT on distilbert (handoff §7): the trainer replaces pre_classifier with
+    # nn.Sequential() before probing, so its params are gone either way and
+    # production p is 450,340. Kept so existing configs parse; the live p knob is
+    # adapter_reduction_factor above, and `[ProbeDim]` logs the p that matters.
     _scope = str(getattr(args, "trainable_scope", "adapters_head") or "adapters_head")
     if _scope == "adapters_only":
         for n, p in model.named_parameters():

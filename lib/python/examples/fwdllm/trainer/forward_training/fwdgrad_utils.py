@@ -107,8 +107,11 @@ def jvp_fp32_enabled() -> bool:
 # Changing p therefore moves the finite difference as a side effect, which would
 # confound any p sweep. Holding h*sqrt(p) at its reference value makes the FD
 # scale-invariant. Default OFF => h stays the historical 0.01, byte-identical.
-_FD_REF_P = 1040932            # fluxtune trainable p, where h was 0.01
-_FD_REF_DISPLACEMENT = 0.01 * math.sqrt(_FD_REF_P)   # 10.203
+# PRODUCTION p, not the census's 1,040,932: the trainer drops pre_classifier
+# before the probe is drawn (tc_transformer_trainer_distribute.py:217). Anchoring
+# on the census value rescaled h by 1.52x in arms meant to hold it fixed.
+_FD_REF_P = 450340             # fluxtune trainable p, where h was 0.01
+_FD_REF_DISPLACEMENT = 0.01 * math.sqrt(_FD_REF_P)   # 6.711
 _fd_p_cache = {}
 
 

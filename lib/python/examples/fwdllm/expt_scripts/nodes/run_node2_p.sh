@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# VOID 2026-08-09 -- `trainable_scope` is a NO-OP (pre_classifier is already dropped,
+# handoff §7). The real p ladder is run_node4_p.sh. Do not relaunch this.
 # Node 2 -- S-I / H-G: is p a gradient-QUALITY parameter? (handoff §11.5, §15.3)
 #
 # The only lever in the document never tested, the only one that improves

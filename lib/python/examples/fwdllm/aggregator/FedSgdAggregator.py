@@ -50,6 +50,11 @@ def _agg_sync_timer(owner, name: str):
                 logger.debug("agg_sync_timer telemetry emit failed", exc_info=True)
 
 
+# E[v_par^2] for coin-flip-top-2-of-10: 2.988 over 37k events, 2.987 synthetic
+# (handoff §11.2). A property of the rule, so a constant and not a knob.
+_E_SELECT_COIN_TOP2 = 2.988
+
+
 class FedSGDAggregator(TopAggregator):
 
     def __init__(
@@ -163,6 +168,33 @@ class FedSGDAggregator(TopAggregator):
             logger.info(
                 f"[ServerStep] trust_ratio rho_star={self._rho_star} "
                 f"schedule={self._rho_schedule} exp={self._rho_exp}"
+            )
+
+        # S-C (handoff §15.7). Scale-free commit gate: `rho <= s*cos` solved for
+        # the pool, N >= p*(rho_t/s)^2 / G_rule. No unit-carrying constant -- p is
+        # read off the model, G_rule is closed form, s is O(1) -- so the setpoint
+        # survives a change of alpha, K, ||theta|| or anneal. Default `var` = old.
+        self._commit_gate = str(
+            getattr(self.args, "commit_gate", "var") or "var"
+        ).lower()
+        if self._commit_gate not in ("var", "n_target"):
+            logger.warning(f"unknown commit_gate={self._commit_gate!r}; using var")
+            self._commit_gate = "var"
+        self._gate_safety_s = float(getattr(self.args, "gate_safety_s", 0.4) or 0.4)
+        self._last_rho = None
+        self._p_trainable = self._g_rule = None
+        if self._commit_gate == "n_target":
+            self._p_trainable = sum(
+                p.numel() for p in self.trainer.model.parameters() if p.requires_grad
+            )
+            # G_rule = E[v_par^2] under `select`, P under `mean` (§3.5). Needs the
+            # aggregator's copy of two trainer knobs; logged so a mismatch shows.
+            _pc = str(getattr(self.args, "probe_combine", "select") or "select").lower()
+            _P = int(getattr(self.args, "perturbation_count", 10) or 10)
+            self._g_rule = float(_P) if _pc == "mean" else _E_SELECT_COIN_TOP2
+            logger.info(
+                f"[CommitGate] n_target s={self._gate_safety_s} p={self._p_trainable} "
+                f"probe_combine={_pc} P={_P} G_rule={self._g_rule}"
             )
 
         self.track_trainer_avail = (
@@ -304,6 +336,36 @@ class FedSGDAggregator(TopAggregator):
         mean_sq = sum(float(t.pow(2).sum()) for t in lst) / n
         return 2.0 * mean_sq / (m * var_scalar)
 
+    def _n_required(self):
+        """S-C: pool this commit's step needs, N_req = p*(rho_t/s)^2 / G_rule.
+
+        `rho_t` is exact under trust_ratio (it IS the setpoint), else the last
+        realised rho, which lags a commit. None until one exists -> the cap fires.
+        """
+        rho = (self._rho_star_now() if self._server_step_rule == "trust_ratio"
+               else self._last_rho)
+        if not rho or not self._p_trainable or not self._g_rule:
+            return None
+        return self._p_trainable * (rho / self._gate_safety_s) ** 2 / self._g_rule
+
+    def _gate_satisfied(self):
+        """Has this pool earned a commit? `var` = fixed threshold; `n_target` = S-C."""
+        if self._commit_gate != "n_target":
+            return bool(self.var <= self.var_threshold)
+        n_req = self._n_required()
+        if n_req is None:
+            return False
+        # n_eff is the MEASURED pool (§15.13): the count while uploads are
+        # independent, below it if they ever stop being.
+        n_have = float(self._n_eff_scalar or len(self.grad_for_var_check_list))
+        ok = n_have >= n_req
+        logger.info(
+            f"[CommitGate] n_have={n_have:.1f} n_req={n_req:.1f} "
+            f"rho_t={self._rho_star_now() if self._server_step_rule == 'trust_ratio' else self._last_rho} "
+            f"-> {'COMMIT' if ok else 'POOL'}"
+        )
+        return ok
+
     @timer_decorator
     def _compute_var(self):
         """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
@@ -440,6 +502,11 @@ class FedSGDAggregator(TopAggregator):
                         _tr_delta_sq += _d
                         _tr_weight_sq += _w
         self._commit_count += 1
+        # S-C sensor: the step just taken sizes the next commit's pool.
+        if _trust:
+            self._last_rho = _rho_t
+        elif _audit and _tr_weight_sq > 0:
+            self._last_rho = (_tr_delta_sq / _tr_weight_sq) ** 0.5
         if _audit:
             self._emit_server_update(
                 _delta_sq**0.5, _weight_sq**0.5, learning_rate,
@@ -546,8 +613,9 @@ class FedSGDAggregator(TopAggregator):
             self._var_scalar = self.var.item()
         self.var_prev_iter_list.append(self._var_scalar)
         logger.info(f"self.var = {self._var_scalar}")
-        # S-K sensor: rides on server_update_audit since it lands in that record.
-        if getattr(self, "_server_update_audit", False):
+        # S-K sensor: rides on server_update_audit since it lands in that record --
+        # and is mandatory under commit_gate=n_target, which reads it.
+        if getattr(self, "_server_update_audit", False) or self._commit_gate == "n_target":
             self._n_eff_scalar = self._compute_n_eff(self._var_scalar)
             logger.info(
                 f"[n_eff] n_eff={self._n_eff_scalar} pool={len(self.grad_for_var_check_list)} "
@@ -634,7 +702,7 @@ class FedSGDAggregator(TopAggregator):
         
         if self.args.var_control:
             _force_commit = getattr(self, "_force_commit_this_cycle", False)
-            if self.var <= self.var_threshold:
+            if self._gate_satisfied():
             # Use different stopping conditions if necessary
             # if self.var_within_epsilon(): 
             # if self.snr_within_epsilon_and_var_under(var_jvp):

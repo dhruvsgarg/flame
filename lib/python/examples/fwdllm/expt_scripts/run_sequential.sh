@@ -70,6 +70,14 @@ source "$REPO_ROOT/lib/python/examples/scripts/expt_runner.sh"
 expt_activate_conda            # no default env: require an active env / FLAME_CONDA_ENV
 expt_pin_pythonpath "$REPO_ROOT"
 
+# Static preflight: a knob missing from the AGGREGATOR's ClassificationArgs kills it
+# at startup, ~30s in, after 100 trainers are up (the 08-08 node 2-4 loss). Costs ms.
+python3 "$SCRIPT_DIR/test_model_args_parity.py" >/dev/null || {
+  python3 "$SCRIPT_DIR/test_model_args_parity.py"
+  echo "ERROR: model_args parity check failed -- the aggregator would crash at startup." >&2
+  exit 2
+}
+
 # defaults
 MODE="both"
 DELAYS="off"    # placeholder when DELAYS_SET=0 -- python resolves the real
@@ -103,6 +111,9 @@ RHO_STAR=""            # S-A: target relative step under trust_ratio
 RHO_SCHEDULE=""        # S-B: const|rm -- rm anneals rho* as t^-RHO_EXP
 RHO_EXP=""             # S-B: anneal exponent, must exceed 0.5
 TRAINABLE_SCOPE=""     # S-I: adapters_head|adapters_only -- adapters_only freezes pre_classifier (56.7% of p)
+COMMIT_GATE=""         # S-C: var|n_target -- n_target sizes the pool from rho_t (aggregator); empty => code default var
+GATE_SAFETY_S=""       # S-C: safety factor s in rho <= s*cos; empty => code default 0.4
+ADAPTER_RF=""          # S-I: adapter bottleneck reduction_factor -- the real p knob; empty => code default 16
 MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
 VAR_STOPPING_POLICY=""   # Opt-2: off|fixed_cap|plateau (empty => baselines.yaml, fluxtune=plateau)
 AGG_RATE_TYPE=""         # Opt-3: grad_aware|new (empty => baselines.yaml, fluxtune=grad_aware; new=FeLiX)
@@ -143,7 +154,8 @@ usage() {
   echo "          [--server-update-audit] [--pool-split-half-audit]" >&2
   echo "          [--learning-rate F] [--perturbation-count N] [--probe-combine select|mean]" >&2
   echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho-schedule const|rm] [--rho-exp F]" >&2
-  echo "          [--trainable-scope adapters_head|adapters_only]" >&2
+  echo "          [--trainable-scope adapters_head|adapters_only] [--commit-gate var|n_target] [--gate-safety-s F]" >&2
+  echo "          [--adapter-reduction-factor N]  (768/N per adapter; the real p knob)" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
   echo "          [--sim-wall-ceiling-s S | --sim-wall-ceiling-h H]  REAL-wall-clock outer safety" >&2
@@ -185,6 +197,10 @@ while [[ $# -gt 0 ]]; do
     --rho-schedule)         RHO_SCHEDULE="$2"; shift 2 ;;
     --rho-exp)              RHO_EXP="$2"; shift 2 ;;
     --trainable-scope)      TRAINABLE_SCOPE="$2"; shift 2 ;;
+    --commit-gate)          case "$2" in var|n_target) ;; *) echo "ERROR: --commit-gate must be var|n_target (got '$2')" >&2; exit 2 ;; esac
+                            COMMIT_GATE="$2"; shift 2 ;;
+    --gate-safety-s)        GATE_SAFETY_S="$2"; shift 2 ;;
+    --adapter-reduction-factor) ADAPTER_RF="$2"; shift 2 ;;
     --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
     --var-stopping-policy)  case "$2" in off|fixed_cap|plateau) ;; *) echo "ERROR: --var-stopping-policy must be off|fixed_cap|plateau (got '$2')" >&2; exit 2 ;; esac
                             VAR_STOPPING_POLICY="$2"; shift 2 ;;
@@ -361,7 +377,8 @@ SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" POOL_SPLIT_HALF_AUDIT="$POOL_SPLIT_HA
 LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
   PROBE_COMBINE="$PROBE_COMBINE" SERVER_STEP_RULE="$SERVER_STEP_RULE" \
   RHO_STAR="$RHO_STAR" RHO_SCHEDULE="$RHO_SCHEDULE" RHO_EXP="$RHO_EXP" \
-  TRAINABLE_SCOPE="$TRAINABLE_SCOPE" \
+  TRAINABLE_SCOPE="$TRAINABLE_SCOPE" COMMIT_GATE="$COMMIT_GATE" GATE_SAFETY_S="$GATE_SAFETY_S" \
+  ADAPTER_RF="$ADAPTER_RF" \
 DELAY_FLOOR="$DELAY_FLOOR" \
 VAR_STOPPING_POLICY="$VAR_STOPPING_POLICY" AGG_RATE_TYPE="$AGG_RATE_TYPE" \
 TARGET_ACC="$TARGET_ACC" CONVERGE_WINDOW="$CONVERGE_WINDOW" \
@@ -394,6 +411,8 @@ PROBE_COMBINE = env("PROBE_COMBINE") or ""
 SERVER_STEP_RULE = env("SERVER_STEP_RULE") or ""; RHO_STAR = env("RHO_STAR") or ""
 RHO_SCHEDULE = env("RHO_SCHEDULE") or ""; RHO_EXP = env("RHO_EXP") or ""
 TRAINABLE_SCOPE = env("TRAINABLE_SCOPE") or ""
+COMMIT_GATE = env("COMMIT_GATE") or ""; GATE_SAFETY_S = env("GATE_SAFETY_S") or ""
+ADAPTER_RF = env("ADAPTER_RF") or ""
 VAR_STOPPING_POLICY = env("VAR_STOPPING_POLICY") or ""; AGG_RATE_TYPE = env("AGG_RATE_TYPE") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
 DELAY_FLOOR = env("DELAY_FLOOR") or ""
@@ -560,12 +579,26 @@ def patch(exp, run_key, variant, trace):
     # perturbation_count is P, read trainer-side (trainer/main.py).
     if LEARNING_RATE:
         h["learning_rate"] = float(LEARNING_RATE)
+    # P and the combination rule are ENACTED trainer-side, but S-C's gate needs
+    # them aggregator-side too (G_rule = E[v_par^2] under select, P under mean),
+    # so both copies are written and must agree -- the aggregator logs its G_rule.
     if PERTURBATION_COUNT:
         exp["trainer"]["config_overrides"]["hyperparameters"]["perturbation_count"] = int(PERTURBATION_COUNT)
-    # S-H: trainer-side, so it must go in the TRAINER copy -- the aggregator's
-    # copy of probe knobs is never read (same trap as select_perturbation_using_jvp).
+        h["perturbation_count"] = int(PERTURBATION_COUNT)
     if PROBE_COMBINE:
         exp["trainer"]["config_overrides"]["hyperparameters"]["probe_combine"] = PROBE_COMBINE
+        h["probe_combine"] = PROBE_COMBINE
+    # S-C: scale-free commit gate. n_target sizes the pool from the step it is
+    # about to take instead of comparing var against a tuned constant.
+    if COMMIT_GATE:
+        h["commit_gate"] = COMMIT_GATE
+    if GATE_SAFETY_S:
+        h["gate_safety_s"] = float(GATE_SAFETY_S)
+    # S-I: BOTH sides build the model, so both need the bottleneck or the
+    # aggregator's eval model has a different shape than the trainers'.
+    if ADAPTER_RF:
+        h["adapter_reduction_factor"] = int(ADAPTER_RF)
+        exp["trainer"]["config_overrides"]["hyperparameters"]["adapter_reduction_factor"] = int(ADAPTER_RF)
     # S-A/S-B: aggregator-side step rule. S-A alone leaves ||theta|| geometric,
     # so an arm that sets trust_ratio without rho_schedule=rm is testing S-A only.
     if SERVER_STEP_RULE:

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SUPERSEDED 2026-08-09 by run_node2_probe.sh -- a free var gate moves N by ~10x
+# alongside b^2, so these arms could not have isolated S-H (handoff §22.2).
 # Node 3 -- S-H: assimilate all P probes instead of selecting one (handoff §11.3, §15.2)
 #
 # The largest single lever in the document for zero extra compute, zero extra

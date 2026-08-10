@@ -18,7 +18,10 @@ from examples.fwdllm.data_preprocessing.text_classification_preprocessor import 
 from examples.fwdllm.trainer.forward_training.tc_transformer_trainer_distribute import (
     ForwardTextClassificationTrainer,
 )
-from examples.fwdllm.trainer.model.transformer.model_args import ClassificationArgs
+from examples.fwdllm.trainer.model_args_builder import (
+    build_model_args,
+    require_trainer_knobs,
+)
 from examples.fwdllm.data_manager.text_classification_data_manager import (
     TextClassificationDataManager,
 )
@@ -100,64 +103,9 @@ if __name__ == "__main__":
     attributes = BaseDataManager.load_attributes(config.hyperparameters.data_file_path)
     num_labels = len(attributes["label_vocab"])
 
-    # create the model
-    model_args = ClassificationArgs()
-    model_args.model_name = config.hyperparameters.model_name
-    model_args.model_type = config.hyperparameters.model_type
-    model_args.load(model_args.model_name)
-    model_args.num_labels = num_labels
-    model_args.client_idx = config.hyperparameters.client_idx
-    model_args.update_from_dict(
-        {
-            "fl_algorithm": config.hyperparameters.fl_algorithm,
-            "freeze_layers": config.hyperparameters.freeze_layers,
-            # S-I: adapters_head (default) or adapters_only (freeze pre_classifier).
-            "trainable_scope": getattr(
-                config.hyperparameters, "trainable_scope", "adapters_head"),
-            "epochs": config.hyperparameters.epochs,
-            "learning_rate": config.hyperparameters.learning_rate,
-            "gradient_accumulation_steps": config.hyperparameters.gradient_accumulation_steps,
-            "do_lower_case": config.hyperparameters.do_lower_case,
-            "manual_seed": config.hyperparameters.manual_seed,
-            # for ignoring the cache features.
-            "reprocess_input_data": False,
-            "overwrite_output_dir": True,
-            "max_seq_length": config.hyperparameters.max_seq_length,
-            "train_batch_size": config.hyperparameters.train_batch_size,
-            "eval_batch_size": config.hyperparameters.eval_batch_size,
-            "evaluate_during_training": False,  # Disabled for FedAvg.
-            "evaluate_during_training_steps": config.hyperparameters.evaluate_during_training_steps,
-            "fp16": config.hyperparameters.fp16,
-            "data_file_path": config.hyperparameters.data_file_path,
-            "partition_file_path": config.hyperparameters.partition_file_path,
-            "partition_method": config.hyperparameters.partition_method,
-            "dataset": config.hyperparameters.dataset,
-            "output_dir": config.hyperparameters.output_dir,
-            "is_debug_mode": config.hyperparameters.is_debug_mode,
-            "fedprox_mu": config.hyperparameters.fedprox_mu,
-            "use_adapter": config.hyperparameters.use_adapter,
-            "comm_round": config.hyperparameters.comm_round,
-            "peft_method": config.hyperparameters.peft_method,
-            "var_control": config.hyperparameters.var_control,
-            "perturbation_sampling": config.hyperparameters.perturbation_sampling,
-            "select_perturbation_using_jvp": config.hyperparameters.select_perturbation_using_jvp,
-            # forward-pass count knob (default 10 = historical behavior).
-            "perturbation_count": getattr(
-                config.hyperparameters, "perturbation_count", 10),
-            # S-H: select one probe of P (default, historical) or average all P.
-            "probe_combine": getattr(
-                config.hyperparameters, "probe_combine", "select"),
-            # fluxtune JVP perf-opt (§L, bit-identical). Default False =
-            # byte-identical; enabled only in the fluxtune yamls.
-            "jvp_perf_opt": getattr(
-                config.hyperparameters, "jvp_perf_opt", False),
-            # H13: dropout off during the finite difference. Default ON (a
-            # correctness fix); real and sim must match (same config).
-            "jvp_eval_mode": getattr(
-                config.hyperparameters, "jvp_eval_mode", True),
-        }
-    )
-    model_args.config["num_labels"] = num_labels
+    # create the model (one builder, shared with the aggregator -- handoff §22.1)
+    require_trainer_knobs(config.hyperparameters)
+    model_args = build_model_args(config.hyperparameters, num_labels)
     model_config, client_model, tokenizer = create_model(
         model_args, formulation="classification"
     )

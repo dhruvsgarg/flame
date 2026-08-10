@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SUPERSEDED 2026-08-09 by run_node3_step.sh -- same arms with the pool pinned, so
+# the step rule is attributable. Its rho* sizing predates the p correction (§7).
 # Node 4 -- S-A + S-B, and the portability test (handoff §15.4, §15.6, H-K)
 #
 # S-A makes rho an OPERATOR constant instead of an emergent one; S-B supplies the

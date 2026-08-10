@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SUPERSEDED 2026-08-09 -- ran 08-08, scored in handoff §9.7. Kept as the record.
 # Node 1 -- H-K: does data heterogeneity enter only through n_eff? (handoff sec 9.3, 15.13)
 #
 # No code needed. With the 08-07 alpha=1 arms this gives a 3x2 grid spanning
