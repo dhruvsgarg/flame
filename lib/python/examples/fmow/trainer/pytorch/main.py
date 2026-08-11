@@ -111,12 +111,14 @@ class PyTorchFMoWTrainer(Trainer):
         self.use_oort_loss_fn = self.config.hyperparameters.use_oort_loss_fn
         self.trainer_start_ts = time.time()
 
-        if "enabled" in self.config.hyperparameters.heartbeats:
+        heartbeats = getattr(self.config.hyperparameters, "heartbeats", {})
+        
+        if "enabled" in heartbeats:
             self.heartbeats_enabled = self.config.hyperparameters.heartbeats["enabled"]
         else:
             self.heartbeats_enabled = False
 
-        if "frequency_s" in self.config.hyperparameters.heartbeats:
+        if "frequency_s" in heartbeats:
             self.heartbeats_second_freq = self.config.hyperparameters.heartbeats[
                 "frequency_s"
             ]
