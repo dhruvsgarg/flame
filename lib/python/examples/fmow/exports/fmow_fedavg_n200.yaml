@@ -38,6 +38,7 @@ experiments:
           rounds: 500
           fmow_config_path: "lib/python/examples/fmow/configs/fmow_config.yaml"
           eval_every_n_rounds: 10
+          eval_every_n_commits: 1
           checkpoint:
             enabled: 'True'
             every_n_rounds: 10
