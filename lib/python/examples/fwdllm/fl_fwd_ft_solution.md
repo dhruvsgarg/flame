@@ -15,8 +15,9 @@
 
 ## §0 — Where the work stands
 
-**In one line:** *we know why it diverges and we have four fixes that work; what we still cannot do is
-compute the right step size from the config rather than reading it off a dose-response curve.*
+**In one line:** *we know why it diverges, we have four fixes that work, and we now know the sizing
+formula is 20× optimistic — because every reading's target is an 8-sample minibatch gradient, not the
+gradient we are trying to descend.*
 
 ### Settled — do not re-measure
 
@@ -29,14 +30,19 @@ compute the right step size from the config rather than reading it off a dose-re
 | The defect is **shared with sync `fwdllm`**, not a FluxTune bug | §2.5 |
 | Heterogeneity (α) acts **only** as a step-size multiplier, through the gradient scale | §2.6 |
 | Collapse is **directional degeneracy** of the head, not logit saturation | §2.7 |
-| **Norm law** `‖θ_T‖/‖θ_0‖ = e^B` — closed form, no free parameter, 21 arms | §4.1 |
-| **Progress law** — peak accuracy is monotone in `Λ` and saturates | §4.2 |
+| **Norm law** `‖θ_T‖/‖θ_0‖ = e^B` — closed form, no free parameter, 21 arms; generalises to `e^{((1+β)/(1−β))B}` under momentum | §4.1 |
+| **Progress law** — peak accuracy is monotone in `Λ` **at fixed `p`**, and in `A` across `p`. `A` validated out of sample, 2.5× better than `Λ` | §4.2 |
+| **`cos ∝ √(G_rule·N/p)` is measured** — the scaling holds to 1%; the constant is 20× high, and the gap is data-side | §6 |
+| **`D` is a constant of the setting**, not a pooling deficiency — flat over 64× in bin size and 30× in bin count | §6.3 |
+| **The criterion is validated: `ρ ≤ 2.9·cos` discriminates 16/16** over the portfolio | §4.5 |
+| **At a pinned `ρ*`, `p` is inert** — `‖θ_tr‖ ∝ √p` cancels the `cos` gain and `B` never saw `p` | §4.2 |
+| **Momentum is `ρ` in disguise** — `√x` progress for `x` budget, `x = (1+β)/(1−β)` | §5.2 |
 | Probe selection by `\|d\|` is stability-neutral **by construction**; the candidates carry no other signal | §3.2 |
 | **Fix 1** — average all `P` probes instead of selecting one (5/5 arms) | §5.1, [P3](fl_fwd_ft_practice.md#p3--knob-ledger--what-each-lever-actually-did) |
 | **Fix 2** — trust-ratio step: `ρ` becomes an operator constant, the α multiplier disappears | §5.1, [P3](fl_fwd_ft_practice.md#p3--knob-ledger--what-each-lever-actually-did) |
 | **Fix 3** — Robbins–Monro anneal at `exp` = 0.25 | §5.1, [P3](fl_fwd_ft_practice.md#p3--knob-ledger--what-each-lever-actually-did) |
-| **Fix 4** — shrink `p` via adapter rank; `p` is a *gradient-quality* knob (3/3) | §5.2, [P3](fl_fwd_ft_practice.md#p3--knob-ledger--what-each-lever-actually-did) |
-| The `cos` probe's reference batch was one client's non-IID shard — every `cos` it logged is void | §6 |
+| **Fix 4** — shrink `p` via adapter rank: **a memory and compute fix, not a learning one** (3/3) | §5.2, [P3](fl_fwd_ft_practice.md#p3--knob-ledger--what-each-lever-actually-did) |
+| The `cos` probe's reference batch was one client's non-IID shard — every number it logged is void, **the norm ratio included** | §6 |
 | **Q1** — the collapse budget is **relative** (`Φ`), not absolute (`‖θ_tr‖`) | §7.1 |
 | **Q2** — `‖θ_tr‖` is mostly a **symptom**; perfect decay recovers only 20–25% of the damage | §7.2 |
 | Backprop reaches **0.90** where the best forward-gradient arm reaches **0.865** — the cost of going backward-free | §7.3 |
@@ -52,8 +58,13 @@ compute the right step size from the config rather than reading it off a dose-re
 | `n_eff` as a controller input | an identity, blind to directional disagreement (§5.4) |
 | The `‖θ‖²` log-log slope as a stability score | bounded by 1 under trust-ratio *by construction* (§4.3) |
 | Client disagreement, and reference noise, as the cause of the `cos` shortfall | both quantitatively excluded (§6) |
-| Every `cos_ground_truth` number ever logged | **void** — broken probe reference (§6) |
+| Every `cos_ground_truth` number logged before 2026-08-10 | **void** — broken probe reference (§6) |
 | "`Φ` decides whether *any* arm holds its peak" | true only for arms that actually learned (§4.2) |
+| "The `cos` shortfall is instrumental; a clean reference restores the closed form" | **refuted** — the clean reference reproduces it exactly (§6) |
+| Server momentum as a free pooling lever | correlating steps costs budget at `(1+β)/(1−β)` — measured (§5.2) |
+| "`p` first" in the priority order | `p` is inert at a pinned `ρ*` (§4.2, §5.4) |
+| Bigger bins as a way to recover `D` | `L` is flat over 64× in bin size where `1/√B` predicts an 8× fall (§6.3) |
+| The `K` ≥ 30 / ≥ 51 cohort-width requirement | an artifact of `gate_safety_s` = 0.4; at `s` = 2.9, `K` = 10 suffices (§4.5) |
 
 Full reasoning and the rest of the list: [P6 · dead ends](fl_fwd_ft_practice.md#p6--dead-ends--do-not-retry).
 
@@ -61,16 +72,13 @@ Full reasoning and the rest of the list: [P6 · dead ends](fl_fwd_ft_practice.md
 
 | # | question | blocking what | how it closes |
 |---|---|---|---|
-| **H-P** | With a clean reference, does measured `cos` match the closed form? | whether `ρ ≤ s·cos` is a real *control law* or only a *design rule* | probe is fixed; rides free on any arm |
-| **Q3** | Does `Λ` predict **in the steep region** (it is currently fitted where accuracy has saturated)? | turning `Λ` from fitted into predictive | 3 arms at pinned `ρ*`, `N` |
-| **C2** | Cohort width — the commit gate has never produced a clean A/B | the async/controller contribution | gate re-run at `K` = 30 |
-| **H-E** | Does high `K`/`C` produce real staleness? | whether ω-freshness matters | K/C sweep (old logs deleted) |
-| **S1** | Does a gradient component persist across commits, so momentum pools *in time*? | the only lever that raises `Λ` at zero `B` cost | in flight |
-| **M1** | "probe noise dominates data noise by ~40×" is **analysis, never measured** — and it is what puts `P` ahead of `K` in the priority order | the whole priority order (§5.5) | rig: split-half over probes vs over data |
+| **G-1** | **The gate ships at `s` = 0.4 against a measured `s` ≈ 2.9**, so it has demanded ~50× the pool the criterion asks for in every A/B it ever ran | the whole commit-gate/C2 result — and it is a config value, not an experiment | two arms at `gate_safety_s` = 2.9 and 1.5 — **in flight** |
+| **H-S** | **A 3.5× shadow loss that is not data-side.** The rig reproduces `L` and gets `S` = 1.68 where the arms read 0.48. Prime suspect: the FD chord, `h‖v‖` = 6.71 against `‖θ_tr‖` = 6.75 — every probe steps a full parameter-norm, so `d` is a chord-averaged slope, not `⟨g,v⟩` | the last unexplained factor in `cos` | rig: true `⟨g,v⟩` vs the central FD at the shipped `h` (§6.3) |
 | — | **No convergence-detection rule exists**, and no eval-side monitor works as one | knowing when to stop | unowned |
 
 **What is *not* open: the optimizer.** The four fixes enact to spec and the dynamics are closed by the
-two laws. Everything above is about the *constants* those laws are scored against.
+two laws. **What moved is where the remaining loss lives** — not in the step rule, the combination rule
+or the gate, but in the *data* each reading is taken on.
 
 ### How to maintain these two documents
 
@@ -149,9 +157,10 @@ intermittent for months.
 4. Every constant in the loop is dimensionless (§5.3), so nothing needs retuning when `p`, α, `K` or
    the round index changes.
 
-Items 1 and 3 are met by several arms today. **Item 2 is the open one** — the sizing formula's `cos`
-has never been cleanly measured (§6), so `ρ*` is read off a dose-response curve. Item 4 is met for the
-step rule and unmet for the commit gate.
+Items 1 and 3 are met by several arms today. **Item 2 is the open one, and it is now open for a
+different reason** — `cos` has been cleanly measured, the formula's shape is right, and its constant is
+20× off (§6), so `ρ*` is still read off a dose-response curve. Item 4 is met for the step rule and unmet
+for the commit gate.
 
 ---
 
@@ -288,8 +297,8 @@ the norm grows 7×.
 | **`ρ = ‖Δθ‖/‖θ_tr‖`** | exact per commit; feeds `B` and `Λ` (§4) |
 | **`top_class_share`** | 1.00 is the collapse fingerprint; `logit_norm` does **not** discriminate |
 
-**Score `B` and `Λ` — never accuracy, never the `‖θ‖²` log-log slope.** Both are exact at any horizon
-and readable in ~20 commits.
+**Score `B` and `A` — never accuracy, never the `‖θ‖²` log-log slope.** Both are exact at any horizon
+and readable in ~20 commits. Use `Λ` only to compare arms at one `p` (§4.2).
 
 ---
 
@@ -375,7 +384,10 @@ Read the last line as **safety = (a property of the rule) × (dimensions per poo
 it via a better rule (`b²/a`), fewer dimensions (`p`), or more readings (`n`). This is the whole lever
 table (§5.2).
 
-**Status: the length half is MEASURED and holds; the shadow half has never been validly measured** (§6).
+**Status: both halves are now MEASURED, and the rule-dependence of both is confirmed** — `L` and `S` are
+each invariant across a 5.5× swing in `b` and a 3× swing in `a` (§6). What the table omits is that `g` is
+not the same object for every upload: each `u` measures its own client's 8-sample gradient. That
+substitution costs a constant factor `D` ≈ 0.05 and is the whole remaining gap (§6).
 
 Four consequences of the estimator worth stating plainly:
 
@@ -417,6 +429,12 @@ rules, both step rules, both gates, `p` 118k–450k, and 177–1,273 commits. **
 `N`, no rule, no α and no `p`: `‖θ_T‖` is a function of the `ρ` trajectory and nothing else.** The
 sharpest case is an arm where `N` fell 200 → 40 under an annealed gate and the law still fit to 0.02%.
 
+> **It holds only while steps are independent. MEASURED.** Server momentum correlates consecutive steps,
+> so `⟨θ,Δ⟩` no longer vanishes and the orthogonality ratio of §2.1 leaves 1.000: it reads
+> **1.007 / 2.981 / 6.615** at β = 0 / 0.5 / 0.75, against `(1+β)/(1−β)` = **1 / 3 / 7**. The law
+> generalises with that one factor, `Φ = exp( ((1+β)/(1−β))·B )`, which fits the two momentum arms to
+> 0.5% and 2%. **Any mechanism that correlates steps in time enters here, and it enters multiplicatively.**
+
 > **Its accuracy is `ρ`-dependent** — the flat "<0.3%" once claimed is wrong. Replayed over all arms:
 > **<0.3% on the low-`ρ` trust-ratio arms**, **~2% on the high-`ρ` raw-SGD arms**, **−5.8% on the
 > collapsed α=0.1 arm.** §2.1's ratio drifts as `ρ` grows and the error compounds over `T`. Sum `B` over
@@ -431,6 +449,33 @@ in units of `‖θ_tr‖`** — you must travel about 0.6 of your own length in 
 0.85, and about one length to saturate.
 
 Calibration (agnews/DistilBERT): `Λ` 0.07 → 0.49 · 0.20 → 0.70 · 0.40 → 0.80 · 0.60 → 0.85 · 0.95 → 0.865.
+
+> **`Λ` is the *relative* coordinate and it does not transfer across `p`. MEASURED.** Three arms matched
+> at `ρ*` = 0.06, `N` = 200, `K` = 10 and cut at the same 66 commits, so `B` = 0.0265 on all three:
+> `select`/`rf`=16 banks `Λ` = 0.066 → 0.524 and `mean`/`rf`=16 banks 0.121 → 0.592, both on the
+> calibration; `mean`/`rf`=64 banks **0.238 → 0.605**, where the calibration says 0.72.
+>
+> The arithmetic is exact. Adapters init at a `p`-independent per-element scale, so **`‖θ_tr‖ ∝ √p`**
+> (13.37 / 9.65 / 6.86 against `√p` = 671 / 479 / 344 — the ratio is constant to ±1.3%). Then
+>
+> ```
+> A  =  Lambda * ||theta_tr||  =  sum_t rho_t * sqrt( G_rule * N_t )  * (||theta_tr||/sqrt(p))
+> ```
+>
+> and **`p` cancels**. Measured `A` = 1.64 (`rf`=16) vs **1.63** (`rf`=64) — 0.6% apart, for accuracies
+> 0.592 and 0.605. **`A`, not `Λ`, is the coordinate accuracy tracks**; `Λ` is its fixed-`p` special case
+> and is still the right thing to read inside one model.
+>
+> **Validated out of sample.** Fit the accuracy curve on 2,278 pre-peak eval points from `rf`=16 arms
+> only, then predict the 208 points from the `rf`=32 and `rf`=64 arms: mean |error| is **0.0246 in `A`
+> against 0.0623 in `Λ`** (max 0.14 vs 0.29), and `A` wins on each of the three held-out arms separately.
+
+**Corollary — at a pinned `ρ*`, `p` does nothing.** `A` is `p`-free by the line above, and `B` depends
+only on the `ρ` trajectory, so shrinking `p` moves neither progress nor budget. The old `p` ladder's
+apparent win was raw SGD: shrinking `p` lowered the *realised* `ρ` (0.2008 → 0.1863) and hence `B`
+(1.71 → 1.09). Under trust-ratio that channel is closed by construction. `p` remains a memory,
+compute and communication lever — and `cos ∝ 1/√p` is real (§6); it simply buys nothing that
+`‖θ_tr‖` does not immediately give back.
 
 **Among arms that learned, whether an arm *holds* its peak is decided by `Φ` and nothing else.** Every
 arm with peak ≥ 0.80 and `Φ ≤ 3.63` ends within 0.015 of its peak; every arm at `Φ ≥ 4.2` degrades,
@@ -457,12 +502,12 @@ above by 1 *by construction*, so every "sub-linear ⇒ safe" reading on such an 
 SGD a slope > 1 *does* mean something: the absolute step is outgrowing `‖θ‖`, i.e. the `|JVP|` feedback
 of §2.2 is live.
 
-**(c) The closed-form `cos` is functionally validated, and the probe that appeared to contradict it was
-broken.** `Λ` is built from the *predicted* `cos`, and it collapses arms spanning `G_rule` 2.988 vs 10,
-`p` 118k–450k and `N` 10–200. **A formula that wrong could not order 21 arms** — which raises the prior
-sharply that the probe's reference was the problem, not the formula (§6). *Caveat that sets the next
-experiment:* the rule and `p` variation all sits at `Λ > 0.8`, where accuracy has saturated, so
-**`Λ`'s rule- and `p`-scaling is untested in the steep region** (Q3).
+**(c) The closed form's *scaling* is right and its *constant* is 20× high. MEASURED.** With a clean
+reference, `D = cos_measured/cos_predicted` = **0.050**, and it is invariant across a 3.57× swing in the
+prediction — 0.0506 at (`select`, `p`=450k) vs 0.0501 at (`mean`, `p`=118k), agreeing to 1%. So
+`cos ∝ √(G_rule·N/p)` is confirmed as a *shape* and refuted as a *magnitude*. The reason `Λ` could order
+21 arms while being 20× wrong is exactly this: a constant factor cannot change an ordering. **What that
+constant costs is the sizing formula** (§4.5), not the rankings.
 
 ## §4.4 The criterion
 
@@ -476,7 +521,8 @@ signal overtakes noise at `T ≈ 1/cos²`. **The budget:** the norm inflates by 
 The O(1) constants that derivation drops are now measured. Eliminating `T` between the two laws gives
 `B = Λ·ρ/(2cos)`, so fitting a target `Λ_req` inside a budget `B_max` requires
 `ρ/cos ≤ 2·B_max/Λ_req` = **2.6–4.3** — not the 0.3–0.5 originally derived, a factor of ~8 that is
-exactly the 5–10× seen empirically.
+exactly the 5–10× seen empirically. **`s` = 2.6–4.3 is stated against the closed-form `cos`**; against
+the measured one it is 20× larger, and the two must never be mixed in one expression (§6).
 
 **The design rule.** For a fixed learning target `Λ_req` over `T` commits, Cauchy–Schwarz makes constant
 `ρ = Λ_req/(T·cos)` the budget-minimising trajectory, at cost `B = Λ_req²/(2T·cos²)`:
@@ -504,11 +550,27 @@ N_req( rho* ) = p * (rho*/s)^2 / G_rule       <- pool needed to make rho* safe
 | + average all 10 | 10 | 450,340 | 1,150 | 113 | 18 |
 | + average + adapter `rf`=64 | 10 | 118,348 | 303 | **30** | 5 |
 
-> **The absolute values in this table are unverified.** The direct `cos` measurement that appeared to
-> refute them was an instrument artifact (§6), so the formula is *unrefuted but unconfirmed*. **Ratios
-> between rows survive** (`ρ ∝ 1/√N` is measured to 5%); **treat absolute `N_req` as untested** until
-> H-P closes, and size `ρ*` from the dose-response curve in
-> [P4](fl_fwd_ft_practice.md#p4--arm-ledger--every-arm-ever-run) instead.
+> **The table is right; the `s` it is evaluated at is not.** `D` is a *constant*: it rescales `cos`, `Λ`
+> and `s` together, so every ratio, ordering and design rule in this document is untouched by it. The one
+> thing that breaks is mixing conventions — and the table above does exactly that, pairing the
+> closed-form `cos` with **`s` = 0.4**, a value §4.4 superseded to **2.6–4.3** and which was never
+> propagated into the gate.
+>
+> At `s` = 2.9 the row that mattered reads `N_req` = **19**, not 1,013. **The commit gate has been
+> demanding ~50× the pool the criterion actually asks for, in every A/B it has ever run** — which is the
+> whole of C2's "cohort-width requirement," and it is a one-line config error, not a physical limit.
+
+**The criterion is empirically validated, and sharply. MEASURED over 17 arms.** Scoring `ρ/cos` against
+the closed-form `cos`, among arms that learned:
+
+| `ρ/cos` | arms | outcome |
+|---|---|---|
+| **≤ 2.67** | 12 | **every one ends within 0.015 of its peak** |
+| **≥ 3.11** | 4 | **every one degrades or collapses** |
+
+No overlap, and the threshold falls inside the 2.6–4.3 the two laws predict. **`s` ≈ 2.9 is the operating
+constant**, and `ρ ≤ s·cos` discriminates 16/16. (The `ρ/cos` = 0.03 arm that also collapsed is the
+`Λ` = 0.008 one that never learned — §4.2's "peak ≥ 0.80" qualifier, not a counterexample.)
 
 ---
 
@@ -552,22 +614,64 @@ and [P2](fl_fwd_ft_practice.md#p2--the-recommended-stack).
 **`ρ/cos` is "will this survive"; `ρ·cos` is "how fast does it learn".** A good lever improves the first
 without hurting the second.
 
-| lever | `ρ/cos` (stability) | `ρ·cos` (progress) | who owns it |
+| lever | `ρ/cos` (stability) | progress **per unit `B`** | who owns it |
 |---|---|---|---|
-| **P-averaging** (trainer pooling) | **∝ 1/P** | **invariant — and free in wall clock** | trainer |
-| **K** (cohort width) | **∝ 1/K** | invariant — parallel across devices | client selection |
-| **I** (iterations per bin) | **∝ 1/I** | invariant — **but serial: one round trip each** | aggregation gate |
-| **p** (trainable dimension) | **∝ √p** | ∝ 1/p | model/PEFT design |
-| `η` learning rate | ∝ η | ∝ η — **pays 1:1** | aggregation |
-| probe-selection gain `E[v∥²]` | **invariant** (`b²/a = 1`) | ∝ E | trainer probe selection |
+| **P-averaging** (trainer pooling) | **∝ 1/P** | **∝ √P — free in wall clock** | trainer |
+| **K** (cohort width) | **∝ 1/K** | **∝ √K** — parallel across devices | client selection |
+| **I** (iterations per bin) | **∝ 1/I** | **∝ √I** — **but serial: one round trip each** | aggregation gate |
+| **p** (trainable dimension) | ∝ √p | **invariant — `‖θ_tr‖ ∝ √p` cancels it** (§4.2) | model/PEFT design |
+| `η` learning rate | ∝ η | **invariant — pays 1:1** | aggregation |
+| server momentum `β` | ∝ `√((1−β)/(1+β))` | **invariant — `√x` progress for `x` budget** | aggregation |
+| probe-selection gain `E[v∥²]` | **invariant** (`b²/a = 1`) | invariant | trainer probe selection |
 | step normalization | sets `ρ` to an operator constant | decoupled | aggregation |
+
+**Read the second column, not the first.** Four rows improve `ρ/cos` and *do not* improve progress per
+unit budget: `p`, `η`, `β` and probe selection. Only `P`, `K` and `I` — the three stages that pool
+**independent readings of independent data** — are free, and they all buy `√n`. **A lever is free if and
+only if it raises `cos` without correlating steps and without shrinking `‖θ_tr‖`.** That single sentence
+now replaces four separately-discovered dead ends.
+
+### §5.2a Every pooling stage is the same currency. **DERIVED from §6.**
+
+Fold `D` into the estimator. With `B` the bin size, `σ` the per-sample gradient spread and `g*` the
+population gradient, `rms‖g_bin‖ ≈ σ/√B`, so `D = ‖g*‖√B/σ` and — for the `mean` rule, where
+`b = 1/√P` —
+
+```
+cos     =  (||g*||/sigma) * sqrt( P * B * K * I / p )
+compute =  2 * P * B * K * I     forward passes over one sample, per commit
+      =>  cos  =  (||g*||/sigma) * sqrt( compute / (2p) )
+```
+
+> **`cos ∝ √compute`, with the same constant for all four stages.** `P`, `B`, `K` and `I` are not four
+> levers; they are four spellings of one lever. This is why every sweep in [P3](fl_fwd_ft_practice.md#p3--knob-ledger--what-each-lever-actually-did)
+> came back with the same exchange rate, and why raising any one of them alone has never been enough.
+
+**Choose the spelling by latency and bytes, since the FLOPs are fixed:**
+
+| stage | serial round trips | uploaded bytes |
+|---|---|---|
+| **`P` probes** | none | none |
+| `B` bin size | none | none |
+| `K` cohort | none (parallel), but staleness | **`∝ K`** |
+| `I` iterations | **one each** | `∝ I` |
+
+**Only one thing escapes the `√compute` law, and it is already spent.** `b²/a` is a property of the
+arithmetic rather than the budget, and `select → mean` bought 10× of it at zero compute; §3.2 says there
+is no second one. The two candidates that looked like escapes are both dead: `D` does not move with bin
+size or bin count (§6.3), so `B` is an ordinary `√compute` stage, and `‖g*‖/σ` is a property of the task
+and the partition, not a knob.
+
+> **There is no lever left to find.** Everything now is `√compute`, spent at whichever stage is cheapest
+> in latency and bytes — which makes the *controller*, not the estimator, the remaining engineering.
 
 Per unit of **compute**: progress ∝ `C/n`, inflation ∝ `C/n²`, so the ratio improves ∝ `n`. **Larger
 pools are strictly better for stability per FLOP, and slower only in absolute wall-clock progress.**
 
 **The `p` row is `√p`, not `p`** (**MEASURED**): `ρ` does not fall as `√p`, because both halves of
 `ρ = ‖Δθ‖/‖θ_tr‖` scale as `√p` and cancel. **`ρ` is already dimensionless in `p`**, so shrinking `p`
-buys `cos` alone — which is still the best cost/benefit in the stack, since it costs *negative* compute.
+buys `cos` alone — and §4.2 shows `‖θ_tr‖ ∝ √p` gives that back in full. Shrink `p` because it costs
+negative compute, never because it will learn faster.
 
 **Three pooling stages, and who owns each:**
 
@@ -619,19 +723,21 @@ from the step rule, not from channel 2.**
 
 ## §5.4 Priority order for any new configuration
 
-Every decision reduces to *how to reach the required `n` most cheaply*:
+Every decision reduces to *how to reach the required `n` most cheaply*, and only three stages count:
 
-1. **`p` first** — the only lever that improves aim at *negative* cost.
+1. **`K` first** — the only stage that pools *independent data*, which is where the missing factor `D`
+   lives (§6). This is a reversal: `p` used to lead this list and is now inert (§4.2), and `P` used to
+   lead `K` on an unmeasured 40× claim.
 2. **then `P`** — free in wall clock, and only pays off if all `P` are assimilated.
-3. **then `K`** — the only stage that touches data noise.
-4. **`I` last**, and only what the gate demands — it is the one that costs serial round trips.
+3. **`I` last**, and only what the gate demands — it is the one that costs serial round trips, and it
+   pools probes over a bin whose data is already fixed.
 
-Then two rules: **set `ρ*` from the dose-response curve, not from `η`, and anneal it** — a pool large
-enough to be safe now is not safe 1,000 commits later; and **never let probe selection set step
-magnitude.**
+Set `p` from the memory and compute budget alone. Then two rules: **set `ρ*` from the dose-response
+curve, not from `η`, and anneal it** — a pool large enough to be safe now is not safe 1,000 commits
+later; and **never let probe selection set step magnitude.**
 
-*Caveat, and it is open:* the `P`-before-`K` ordering rests on "probe noise dominates data noise by
-~40×", which is **ANALYSIS and has never been measured** (M1).
+*Caveat, and it is the open question:* whether `K` genuinely buys back `D` is D-1, unmeasured. What is
+measured is that `D` did **not** improve over `K` = 10 → 50 at the pools those arms ran (§6).
 
 ## §5.5 What is settled, and what is not
 
@@ -639,36 +745,40 @@ magnitude.**
 enact to ≤4e-3 with mechanisms measured. On top of them, §4 closes the *dynamics*: `‖θ_T‖` is a
 closed-form function of the `ρ` trajectory alone, and peak accuracy is a monotone function of `Λ`.
 
-**The remaining unknowns are not about the optimizer.** They are about the two constants those laws are
-scored against — `B_max` and `Λ_req` — and about whether the closed-form `cos` inside `Λ` is real (§6).
+**The remaining unknown is not about the optimizer, and it is not about its constants either.** It is
+that every reading is taken on an 8-sample bin, so the quantity the estimator is unbiased *for* is not
+the quantity we want to descend. That costs `D` ≈ 0.05 in `cos` and 400× in `N_req` (§6).
 
 **Two structural gaps with no owner:** no convergence-detection rule exists, even in §5.1; and the
 `h`/`p` coupling is unanalysed beyond the FD-rescale interaction.
 
-**One requirement, not a preference:** `K` ≥ 30 with `C` ≥ `K`. At `ρ*` = 0.06 the criterion demands
-five times what `K` = 10 can pool, which is why the commit-gate A/B has come back inconclusive twice.
+**The cohort-width requirement is withdrawn.** It was an artifact of `gate_safety_s` = 0.4. At the
+measured `s` ≈ 2.9, `ρ*` = 0.06 with `mean` needs `N` = 19 — `I` = 2 at `K` = 10. Every cohort this
+harness runs is already wide enough.
 
 ---
 
-# Part 6 — The open hole: `cos` has never been validly measured
+# Part 6 — `cos`, now measured: the formula is the right shape and 20× too big
 
-*Everything else in the model is either closed-form or measured. `cos` is neither. This section is
-also the sharpest methodological lesson in the program.*
+*This section carried the program's largest unknown for months. It is closed. The answer is not the one
+the model bet on, and the correction is not in the optimizer at all.*
 
 **What was built.** A fp32 backward pass on a fixed held-out batch, server-side, at `θ_t` before the
 step, emitting `cos_ground_truth` per commit. Index alignment was unit-tested (pool = ±`g` → cos = ±1).
-Three arms carried it.
 
-**What survives.** `‖G‖/‖g_probe‖` matches `b·√(p/N)` **to 5–10% in all three arms**, across 6× in `b`
-and 6.7× in `N`. That is a ratio of *norms* and does not depend on the reference's direction, so it
-stands: **the length half of §3.2 is measured and holds**, and so does the assumption that client
-gradients have roughly the norm of a held-out one.
+**What was wrong with it.** The probe sliced the first `n` rows of the raw test tensor, bypassing the
+DataLoader's sampler. The test index list is built by iterating clients in partition order and extending
+with each client's shard, **with no shuffle** — so under a Dirichlet partition the probe's 64-sample
+"global reference" was **one client's shard**, 48/4/5/7 across four classes against a test set that is
+exactly balanced.
 
-**What does not.** **Every `cos` value the probe reported is void**, because the reference batch was
-wrong. The probe sliced the first `n` rows of the raw test tensor, bypassing the DataLoader's sampler.
-The test index list is built by iterating clients in partition order and extending with each client's
-shard, **with no shuffle** — so under a Dirichlet partition the probe's 64-sample "global reference" was
-**one client's shard**, 48/4/5/7 across four classes against a test set that is exactly balanced.
+**Everything it reported is void — including the number that was thought to have survived it.** The
+claim that `‖G‖/‖g_probe‖` matched `b·√(p/N)` to 5–10% was itself an artifact: a 64-sample reference
+gradient has norm 3.1–8.0, which is roughly the norm of an 8-sample *client* gradient, so the ratio came
+out at 1.0 for the wrong reason. Replayed against a clean 1024-sample reference (norm 0.27–0.34), the
+same three arms read 0.95 / 1.11 / 1.01 where they should read ~9. **Both halves of §3.2 were
+mismeasured, not one** — and the half that "survived" was the one nobody re-checked, because a
+direction-free ratio felt safe.
 
 Measured offline at a backprop-trained model, `cos(g_batch, g_full_test)`:
 
@@ -682,32 +792,82 @@ Measured offline at a backprop-trained model, `cos(g_batch, g_full_test)`:
 **The shipped reference was anti-correlated with held-out truth** (−0.46 trained, −0.42 at init, +0.69
 at accuracy 0.38): **its sign swings with model state.** That one fact reproduces everything the probe
 appeared to show — a near-zero pooled magnitude, an 11× drift at fixed `N`/`p`/rule, and an
-anti-ordering of the arms — with none of it being real. Both rival explanations are dead: **client
-disagreement** would need fewer than one effective upload, and **reference noise** is only a 1.1–1.6×
-effect by a two-batch control.
+anti-ordering of the arms — with none of it being real.
 
-**Fixed and shipped:** fixed-seed shuffled batch over the whole test set, default size 1024, plus a
-preflight that fails the launch if the reference is ever class-skewed again. **Nothing has been
-re-measured with it yet — that is H-P, and it rides free on any arm.**
+**Fixed and re-run.** Fixed-seed shuffled batch over the whole test set, default size 1024, plus a
+preflight that fails the launch on a class-skewed reference. Six arms carried it on 2026-08-10; the
+logged dominant-class share was **0.27–0.29** against a balanced 0.25 on every one.
 
-**Operative reading.** There is **no trustworthy measurement of `cos` in either direction.** The closed
-form is *unrefuted* — §4.3(c) shows `Λ` built from it orders 21 arms across both rules, 3.8× in `p` and
-20× in `N` — and the instrument that appeared to contradict it was broken. So: **size `ρ*` from the
-dose-response curve, not from §4.5.** `ρ` is exact per commit, but the quantity it must be compared
-against **has no usable online estimator** (the gradient-free split-half route is dead). **Closing that
-gap is the difference between a design rule and a control law** — still the most valuable open problem
-here.
+## §6.1 The result: the shape is right, the constant is not
 
-**What is and is not assumed.** Isotropy of `v` is exact by construction and is **not** the caveat. The
-caveat is **independent, homogeneous pooling**: `cos = (a/b)√(n/p)` assumes the `n` readings are
-independent and share one target `g`. They do not — the `I` iterations share a bin's gradient and the
-`K` trainers have different gradients. `n_eff` excludes the *correlation* half and the replay above
-excludes the *disagreement* half, so **neither half of the pooling model is currently suspect.**
+`D ≡ cos_measured / cos_predicted` = **0.050**. The formula is 20× optimistic. But:
 
-**The lesson, which generalises:** the probe's arithmetic was unit-tested and correct; nothing tested
-that its *input* was what we thought. Three consistency checks failed and were written up as findings
-about the optimizer for a full revision before anyone asked what the reference batch actually contained.
-One `Counter(labels[:64])` would have caught it.
+> **`D` is invariant to the combination rule and to `p`. MEASURED.** 0.0506 at (`select`, `p` = 450k)
+> versus 0.0501 at (`mean`, `p` = 118k) — **1% apart across a 3.57× swing in the prediction.**
+
+So `cos ∝ √(G_rule·N/p)` is **confirmed as a scaling law and refuted as a magnitude**, which is exactly
+why `Λ` could order 21 arms while being 20× wrong: a constant factor cannot reorder anything. The
+estimator-shape table of §3.2 is likewise confirmed on both halves — `L` and `S` below are each
+invariant across a 5.5× swing in `b` and a 3× swing in `a`.
+
+## §6.2 Where the factor of 20 comes from, and it is not the probes
+
+Split the shortfall into the two things §3.2 predicts separately. Both are measured per arm:
+
+```
+L = (||G|| / ||g||) / ( b * sqrt(p/N) )      length excess   -- measured 8.5 .. 9.5
+S = cos * (||G|| / ||g||) / a                shadow deficit  -- measured 0.48
+D = S / L                                                    -- measured 0.050
+```
+
+**`L` ≈ 9 is a data-sampling fact, not an estimator fact.** Because `v` is a raw Gaussian draw,
+`d = ⟨g_k,v⟩` has `rms|d| = ‖g_k‖` *identically* — so `rms|d|` measures the norm of the client's
+**8-sample** gradient. Measured: `rms|d|` = 3.2–3.4 against `‖g_heldout(1024)‖` = 0.27–0.34, a ratio of
+**10.0–10.9**, which is `L` within its scatter. **Nine tenths of every upload's length is data noise the
+pooling was never sized for**, because `‖G‖` normalises by a quantity ~10× larger than the gradient we
+mean to descend.
+
+**`S` ≈ 0.48 is the other half:** the pooled `K` = 10 × 8-sample gradient carries only half of the
+held-out gradient's shadow. Zero-mean sampling noise alone predicts `S` = 1, so the missing half is
+*bias* — Dirichlet-skewed client draws, and train-vs-held-out gradient disagreement, which this probe
+cannot separate.
+
+> **The correction is entirely on the data side.** Not the probe direction, not the combination rule,
+> not `p`, not the step. `cos = D·(a/b)·√(n/p)` with `D` ≈ 0.05, and **`D` is the price of the estimator
+> being unbiased for the wrong gradient.** §6's old caveat named this exactly — "*`cos = (a/b)√(n/p)`
+> assumes the `n` readings are independent and share one target `g`; they do not*" — and it turns out to
+> be worth a factor of 20, not a footnote.
+
+## §6.3 `D` is a constant of the setting. **MEASURED, and it is a negative result.**
+
+D-1 swept bin size `B` ∈ {8,32,128,512} × distinct bins `M` ∈ {1,10,30} on the real model and the real
+Dirichlet partition, against both references, 10 reps.
+
+> **`L` is flat: 9.47–10.85 over 64× in `B` and 30× in `M`**, where `L ∝ 1/√B` predicts an **8× fall.**
+> `S` is flat in `M` too. **Bigger bins and more bins do not recover `D`.**
+
+So `D` is not a pooling deficiency and there is nothing to pool away. **That is the benign outcome**: a
+constant is absorbed into `s`, which is exactly why `ρ ≤ 2.9·cos` works (§4.5). The `1/D²` in `N_req`
+never had to be paid — it was double-counting a factor `s` already carries.
+
+**The rig half-passes its gate, and the residual is the last open item.** It reproduces `L` (10.2 against
+the arms' 8.5–9.5) but returns `S` = 1.68 where the arms read 0.48 — and its own `S` is arithmetically
+clean (`‖g_train‖/‖g_test‖` = 2.01 × `cos(g_train,g_test)` = 0.80 → 1.61). **So a 3.5× shadow loss lives
+in the FL pipeline, not in the data.** Prime suspect is the FD chord: `h‖v‖` = 6.71 against
+`‖θ_tr‖` = 6.75, so each probe steps roughly a full parameter-norm and `d` is a chord-averaged slope
+rather than `⟨g,v⟩`. That attenuates alignment while leaving `d` Gaussian — which is why the
+distributional check in [P3](fl_fwd_ft_practice.md#p3--knob-ledger--what-each-lever-actually-did) did not
+catch it, and why §1.3's ruling-out of the FD (as a cause of *divergence*) does not apply. This is H-S.
+
+**Isotropy of `v` is exact by construction and was never the caveat.** `n_eff` excludes the
+*correlation* half of the pooling assumption; the *homogeneity* half is what broke, and it broke at 20×.
+
+**The methodological lesson, twice over:** the probe's arithmetic was unit-tested and correct, and
+nothing tested that its *input* was what we thought — one `Counter(labels[:64])` would have caught it.
+Then the correction itself was under-applied: one number was allowed to survive the defect on a
+plausibility argument ("a ratio of norms cannot depend on the reference's direction" — true, and
+irrelevant, because it depends on the reference's *norm*). **When an instrument's input is wrong,
+every number it produced is void, including the ones that still look reasonable.**
 
 ---
 
@@ -776,9 +936,9 @@ Where that leaves the paper claims:
 | claim | verdict |
 |---|---|
 | **C1 · informed JVP-magnitude probe selection** | **Refuted as written; redirect it.** `b²/a = 1` is measured — selection is stability-neutral by construction. The **combination rule** is the contribution: "compute `P` directional derivatives and assimilate all of them" is the *trainer-side analogue of server-side pooling*. Rewrite C1 as a compute-budget claim |
-| **C2 · async aggregation / K-C control** | **Reframed; controller still not demonstrated.** `ρ ∝ 1/√(K·I)` is measured and only the async path has a free `N` to spend, but the gate A/B has failed to produce a contrast twice. Honest current form: a cohort-width **requirement** — a stronger claim than a gate parameter |
-| **C3 · aggregation weighting (ω)** | **Magnitude half: park** — ω spans 0.70–0.87 against a ≥10× gap, and the trust-ratio step removes it from magnitude entirely. **Freshness half: open and testable** (H-E) |
-| **S1 · server momentum** | **Re-framed and now testable.** The historical NaN was arithmetic (`ρ_eff = ρ/(1−β)`), and the same bug sat in the code until momentum was moved *before* the trust-ratio scale. Hypothesis: junk is fresh each commit, signal persists, so temporal pooling raises `cos` by `√(1/(1−β))` at **zero** cost in `B` |
+| **C2 · async aggregation / K-C control** | **Mechanism demonstrated; accuracy A/B still missing.** At `K` = 30/50 the gate finally left the cap and enacted `I = ceil(n_req/K)` exactly, converting cohort width into commit rate at ~70% efficiency (1.44× for a 1.67× rise in `K`). Both arms ran at a setpoint that learns nothing, so the claim is still a **requirement plus a throughput result**, not a win |
+| **C3 · aggregation weighting (ω)** | **Magnitude half: park** — ω spans 0.70–0.87 against a ≥10× gap, and the trust-ratio step removes it from magnitude entirely. **Freshness half: now measurable, and there is finally something to weight** — staleness is genuine at `K` ≥ 30 (max 2 at `K`=30, 4 at `K`=50, versus ≤1 at `K`=10) |
+| **S1 · server momentum** | **Tested and refuted as a contribution.** It enacts, and `cos` rises as heavy-ball predicts (×1.47 / ×2.61 at β = 0.5 / 0.75). But the "**zero** cost in `B`" premise is false: correlated steps inflate the norm by `(1+β)/(1−β)`, measured 2.981 / 6.615 against 3 / 7. It buys `√x` progress for `x` budget — **the same exchange rate as raising `ρ`**, so it is a re-parameterisation of the step size. Do not claim it |
 | **S2 · variance-gate recalibration** | **Superseded.** The gate is a working `N`-controller whose setpoint carries units. Replace the loop; do not re-tune the threshold |
 | **S3 · aggregation-rate tempering** | **Subsumed and measured.** Under trust-ratio, `ρ` = `ρ*_t` regardless of ω |
 | **Systems: flat memory, inference-only operator set** | **Untouched, and the strongest part of the paper.** The `cos` probe's backward pass is an audit flag, off by default, and does not touch the operator-set claim |
@@ -791,16 +951,19 @@ unaffected.
 
 **Three things the work added that were not on the claim list:**
 
-1. **`p` is a gradient-quality parameter, not just a memory knob.** For backprop FL, PEFT rank is a
-   memory/communication knob and gradient quality is unaffected; for forward-gradient FL, **`cos ∝ 1/√p`
-   — PEFT rank is the primary determinant of gradient quality.** Measured, and the only result here
-   about the *model* rather than the optimizer, so it does not compete with FwdLLM's execution
-   primitives.
+1. **A free-lever test that subsumes four separate dead ends.** A lever is free iff it raises `cos`
+   without correlating steps and without shrinking `‖θ_tr‖`. `p`, `η`, `β` and probe selection all fail
+   it — each was discovered separately and expensively — and only `P`, `K`, `I` pass. (`cos ∝ 1/√p` is
+   real and now directly measured; it is simply repaid in full by `‖θ_tr‖ ∝ √p`, so the earlier "PEFT
+   rank is the primary determinant of gradient quality" claim survives about *gradients* and dies about
+   *learning*.)
 2. **Scale-invariance as a design principle** (§5.3), with its cleanest demonstration: under the
    trust-ratio step, heterogeneity moves `ρ` by *zero to six significant figures* while still moving
    `var` by 1.6×.
-3. **The `ρ ≤ s·cos` criterion is *unpaid*, not refuted.** What is publishable today is the **empirical
-   dose-response curve**, which was not planned.
+3. **The `ρ ≤ s·cos` criterion is refuted as a sizing rule at this batch size** — `N_req` carries a
+   `1/D²` ≈ 400× that no cohort can pool (§4.5). What is publishable today is the **empirical
+   dose-response curve** and the **measurement of `D`**: for forward-gradient FL the binding constraint
+   is the gradient of the *bin*, not the variance of the *probe*. Neither was planned.
 
 ---
 
@@ -811,10 +974,14 @@ unaffected.
 ## §8.1 The model is general; the controller is where the paradigm enters
 
 ```
-cos   = sqrt( G_rule * n / p )      n = product of all INDEPENDENT pooling stages
+cos   = D * sqrt( G_rule * n / p )  n = product of all INDEPENDENT pooling stages
+                                    D = ||E[g_k]|| / rms||g_k||  over the DATA the readings sit on
 rho  <= s * cos                     the step must not exceed the aim
-n_req = p * (rho*/s)^2 / G_rule     what any configuration must pool
+n_req = p * (rho*/s)^2 / (G_rule * D^2)
 ```
+
+**`D` is the term the FL instance discovered and it is not federated either.** Any setting that
+estimates directional derivatives on minibatches pays it; only full-batch ZO has `D` = 1.
 
 **Nothing in those three lines is federated.** They apply to any optimizer estimating a gradient from
 directional derivatives. FL enters only in *how `n` decomposes and what each factor costs*: single
@@ -842,17 +1009,19 @@ Check published curves before claiming it.
 | 2 | **`Λ`'s calibration** (0.6 → 0.85, saturating at 0.95) | fitted on agnews/DistilBERT. The *monotonicity* should transfer; the numbers are task- and model-specific |
 | 3 | **`B_max`** | settled as *relative* here (§7.1), but its value is calibrated on one model family |
 | 4 | **isotropic probes and the `1/√p` overlap** | exact by construction *given* Gaussian `v` over the whole trainable slice. Structured or block probes break it deliberately — that is their point, and they need their own analysis |
-| 5 | **probe noise dominates data noise by ~40×** (**ANALYSIS**, M1) | this is what justifies "spend compute on `P`, not on bigger bins". At larger batch sizes or lower `p` the balance moves |
+| 5 | ~~probe noise dominates data noise by ~40×~~ **Refuted** (§6): data noise costs a factor of 20 in `cos` | and it is *not* recoverable by pooling data — `D` is flat over 64× in bin size (§6.3) |
 | 6 | **`h` pinned by fp16 cancellation** | a precision property, not a math one. bf16/fp32 move the usable `h` window and therefore the FD's faithfulness |
-| 7 | **The closed-form `cos`** | functionally validated but never cleanly measured (§6). **No generalization claim about `cos` until H-P closes** |
+| 7 | **`D` ≈ 0.05** | measured at one bin size (8), one partition (α=1) and one task. The `√(G_rule·N/p)` shape transfers; **the constant almost certainly does not** |
+| 8 | **`‖θ_tr‖ ∝ √p`**, which makes `p` inert (§4.2) | holds for any init with a `p`-independent per-element scale — i.e. adapters. A PEFT scheme that initialises otherwise breaks it, and `p` becomes a live lever again |
 
 ## §8.4 Larger models and datacenter fine-tuning
 
 **The case changes from memory to throughput.** On-device, forward-gradient wins because it stores no
 activations. In a datacenter with backprop available, the only argument is that 2 forward passes are
 cheaper than 1 fwd + 1 bwd and need no activation memory — real, but much narrower, and **`cos ∝ 1/√p`
-makes it *worse* at scale** unless `p` is aggressively constrained (which is what PEFT does — and that
-is now a gradient-quality decision, not an efficiency one).
+makes it *worse* at scale**. Constraining `p` does not rescue it: §4.2 shows `‖θ_tr‖ ∝ √p` gives the
+gain straight back. What *would* help in a datacenter is the one thing FL cannot buy — **large bins**,
+which is where `D` lives.
 
 **MoE is structurally interesting:** only active experts contribute to a forward pass, so `p_effective`
 is per-token active parameters — **block-coordinate probing for free**, the one structural idea that
@@ -862,16 +1031,20 @@ beats the `√(n/p)` barrier. Unanalysed, and the most interesting extension on 
 
 In descending confidence:
 
-1. **Yes: `p` is a gradient-quality parameter, not just a memory knob.** Inverts the standard PEFT
-   intuition; measured.
-2. **Yes: the scale-invariance requirement for forward-gradient training** (§5.3) — step, gate and
+1. **Yes: the scale-invariance requirement for forward-gradient training** (§5.3) — step, gate and
    estimator must all be ratios, or the method needs re-tuning per model.
-3. **Maybe: the two conserved quantities** (§4). `B` is exact and parameter-free; `Λ` orders 21 arms.
+2. **Yes: `D`.** The `√(n/p)` scaling is confirmed and its constant is 20× off, entirely because each
+   directional derivative is taken on a minibatch. **For forward-gradient training the binding
+   constraint is data noise in the target, not variance in the probe** — which inverts the whole
+   "spend compute on probes" instinct, and is measured.
+3. **Maybe: the two conserved quantities** (§4). `B` is exact and parameter-free, and now carries a
+   measured `(1+β)/(1−β)` extension to correlated steps; `A` orders arms across `p` where `Λ` does not.
    Transfer outside agnews/DistilBERT is untested (§8.3 rows 1–3).
-4. **Maybe: the online control law** — `ρ ≤ s·cos` with a gradient-free estimator for `cos`. Novel as
-   *packaging*, not theory, and **weakened by the probe defect**: what is publishable today is the
-   dose-response curve.
-5. **No: the scaling law itself.** `cos ∝ √(n/p)` is known ZO analysis.
+4. **No longer: `p` as a gradient-quality parameter.** True of `cos`, false of learning — `‖θ_tr‖ ∝ √p`
+   repays it exactly (§4.2). The PEFT-rank claim reverts to memory and compute.
+5. **No: the online control law.** `ρ ≤ s·cos` is unreachable at this batch size (§4.5); what is
+   publishable is the dose-response curve.
+6. **No: the scaling law itself.** `cos ∝ √(n/p)` is known ZO analysis.
 
 A standalone paper needs three things we do not have: the criterion predicting the divergence point
 across **≥3 models and ≥2 tasks**; a usable estimator for `cos`; and the derived controller **beating
