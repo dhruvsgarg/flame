@@ -60,9 +60,10 @@ ask, with the A/B evidence. Nothing reaches `WORKS` without predicted-vs-observe
 | **B2** | **average all `P` probes** | `probe_combine: {select\|mean}` | **WORKS · 5/5 arms** (P3). Site: `_accumulate_mean_over_probes`. Also fixes the `P=1` crash (`sorted_indices[-2]` on a 1-element list) and the RNG-stream mismatch that blocked the C1 ablation |
 | **B3** | **trust-ratio step + `t^-exp` anneal** | `server_step_rule` + `rho_star` / `rho_schedule` / `rho_exp` | **WORKS mechanically and portably; setpoint open** (P3). Site: `FedSgdAggregator._apply_weighted_update` (pool-then-apply). Subsumes S3: ω can no longer influence step magnitude |
 | **B5** | **shrink `p` via adapter bottleneck** | `adapter_reduction_factor` (16) + `FWDLLM_FD_SCALE_INVARIANT` | **WORKS as built; DEMOTED as a lever** (P3). Enacts 3/3 and `cos ∝ 1/√p` is now directly measured — but at a pinned `ρ*` it moves neither progress nor budget (model §4.2). Keep for memory/compute; do not spend it for accuracy |
-| **B4** | scale-free `n_target` commit gate | `commit_gate: {var\|n_target}` + `gate_safety_s` + `gate_rho_ref` | **CONTRAST ACHIEVED at `K` ≥ 30** (P3): `I = ceil(n_req/K)` exactly, off the cap, `natural` on 100% of commits. **Never yet an accuracy A/B** — every run to date used `gate_safety_s` = 0.4, ~50× the pool the criterion asks for. That is G-1 (P5.1) |
+| **B4** | scale-free `n_target` commit gate | `commit_gate: {var\|n_target}` + `gate_safety_s` + `gate_rho_ref` | **WORKS · G-1 scored** (P5.2). At `s` = 2.9 / 1.5 the gate enacts `n_req` = 19.3 / 72.1 ⇒ `I` = 2 / 8 off the cap, and nets **2.13× / 1.33×** the control's progress per vclock-hour against a registered 2.2× / 1.4×. **The `s` *value* is still open** — the anneal decays `ρ/cos` off the boundary within ~10 commits. Run at 1.5, change no default until G-1b (P5.1) |
 | **B1** | `cos(G,g)` ground-truth probe | `cos_ground_truth_audit` + `cos_probe_batch_size` | **RE-RUN, VALID, 6 arms** (model §6). Everything it reported under the 64-sample reference is void — **including the norm ratio**, which only appeared to survive because a 64-sample reference gradient has roughly the norm of an 8-sample client one |
-| **B17** | **fix the `cos` probe reference** | `cos_probe_batch_size` (**default now 1024**, was 64) | **WORKS · 6/6.** Fixed-seed permutation over the whole test set; logged dominant-class share **0.27–0.29** against a balanced 0.25 on every arm. `test_cos_probe.py` fails the launch on a class-skewed reference. **H-P closed** (model §6) |
+| **B19** | **cos-probe stride** | `cos_probe_every` (default **1** = byte-identical) | **BUILT, ARM NOT RUN.** Gates `_cos_probe_gradient()` on `_commit_count % k` at `FedSgdAggregator.py:500`. Cuts the audit's ~85 s/commit to ~3 s amortised at `k` = 25 without touching what it measures. `test_cos_probe.py` case (f) asserts it fires on 0, k, 2k. Ships with G-1b |
+| **B17** | **fix the `cos` probe reference** | `cos_probe_batch_size` (**default now 1024**, was 64) | **WORKS · 8/8, and it costs.** Fixed-seed permutation over the whole test set; logged dominant-class share **0.27–0.29** against a balanced 0.25 on every arm. `test_cos_probe.py` fails the launch on a class-skewed reference. **H-P closed** (model §6). **Open defect:** the probe fwd+bwds its whole reference every commit at **77–81 ms per sample**, so it costs **~85 s/commit** against 1.64 s for the rest of the commit path — 16.8× its batch-64 predecessor for 16× the samples, i.e. **linear, not a memory cliff**. The fix is a stride, not chunking (G-1b item 1) |
 | **B18** | S1 · heavy-ball on the pooled **direction** | `server_momentum: BETA` (default 0.0 = byte-identical) | **WORKS mechanically, REFUTED as a lever** (P3). `ρ = ρ*` holds and `cos` rises as heavy-ball predicts, but correlated steps cost budget at `(1+β)/(1−β)` — the same exchange rate as raising `ρ`. Leave at 0.0 |
 | **B7/B15** | weight decay `λ ≈ ρ²/2` | `server_weight_decay: auto\|FLOAT` (default off) | **BUILT, ARM NOT RUN — demoted.** Decoupled decay on the trainable slice after the step; `auto` = `ρ²/2` from the realised `ρ`. Preflight: `Φ` = 1.029 with decay vs 2.258 without at `ρ`=0.09. **Model §7.2 answered Q2 on the rig**, so this is an optional confirmation |
 | **B11** | `n_eff` sensor | rides on `server_update_audit` (emit-only) | **FAILED as a sensor, KEPT as an audit** (P3). Do not wire it to a controller |
@@ -86,10 +87,11 @@ ask, with the A/B evidence. Nothing reaches `WORKS` without predicted-vs-observe
 | `p` | `adapter_reduction_factor=64` **+ `FWDLLM_FD_SCALE_INVARIANT=1`** | P3, 3/3; free in memory and compute | **settled as a cost knob**, inert as a learning knob (model §4.2) |
 | server momentum | `server_momentum=0.0` | P3 — buys `cos ∝ √x` for budget `∝ x` | **settled: leave off** |
 | `ρ*₀` | read off P4 by target `A`, then `ρ = A_req/(T·cos·‖θ_tr‖)` | model §4.4 design rule | **empirical** — the formula route still blocked on `D` (model §6) |
-| commit gate | `commit_gate=n_target`, `gate_rho_ref=setpoint`, **`s`=2.9 or 1.5** | `s`=0.4 was superseded by model §4.4 and never propagated; at 2.9, `n_req` = 19 not 1,013 | **under test — G-1** (P5.1). Do not run another gate A/B at 0.4 |
-| `K`, `C` | `K` = 10, `C` = 30 is sufficient | `n_req` = 19 at `ρ*`=0.06 ⇒ `I` = 2 | **the cohort-width requirement is withdrawn** |
+| commit gate | `commit_gate=n_target`, `gate_rho_ref=setpoint` | G-1 (P5.2): the gate nets **2.13×** the control's progress per vclock-hour and the `√N` price is exact | **settled as a mechanism** |
+| `gate_safety_s` | **run at 1.5**; 0.4 is refuted (P6) and 2.9 is unconfirmed | both enact and both beat the control per vclock-hour; 1.5 carries 2× margin and has nothing against it, while 2.9 sits on a boundary G-1 never actually visited | **interim — use 1.5, change no default until G-1b** (P5.1) |
+| `K`, `C` | `K` = 10, `C` = 30 is sufficient | `n_req` = 19 at `ρ*`=0.06 ⇒ `I` = 2, **measured** | **the cohort-width requirement is withdrawn, and now empirically** |
 | monitors | `‖θ_tr‖`, `ρ`, `top_class_share`; score `B` and `A` | model §2.8, §4 | **settled** |
-| `cos` audit | `cos_ground_truth_audit` on; `cos_probe_batch_size` ≥ 1024 (default) | model §6 | **settled — validated on 6 arms**, and it is how `D` is read |
+| `cos` audit | `cos_ground_truth_audit` on; `cos_probe_batch_size` ≥ 1024 (default) | model §6 | **settled — validated on 8 arms**, and it is how `D` is read. **Put it on a stride before any long arm** (P9.2) |
 
 ---
 
@@ -112,7 +114,8 @@ One row per concept. "predicted" is the model §5.2 lever table; **"measured" is
 | **step rule** (`raw_sgd`→`trust_ratio`) | makes `ρ` an operator constant; removes `\|JVP\|` scale and the α multiplier | `ρ = ρ*` to **8.7e-5**; `(1+ρ*²)^{T/2}` predicts `‖θ_tr‖` to **0.013%**; **α moves `ρ` by 0 to 6 s.f.** | **WORKS.** But **alone it does not bound `‖θ‖`** — constant `ρ*` is still geometric. Ships with the anneal |
 | **anneal** (`rho_schedule=rm`, `t^-exp`) | Robbins–Monro: `Σρ=∞`, `Σρ²<∞` | enacts to **4.5e-4** over 318 commits. `exp`=0.55 takes `ρ` **17× below setpoint** by c186 → arm flat at 0.34. **`exp`=0.25 is measured adequate** despite being formally outside the RM window | **WORKS; `exp`=0.25.** The RM bound is conservative at `T`≈300. Size the exponent to the **horizon** |
 | **`ρ*` setpoint** | peak monotone in `ρ*` | 0.03/0.06/0.09 → peak **0.695 / 0.801 / 0.846**, all still climbing at cutoff, all stable (`Φ` ≤ 1.145). **The anneal spends most of the setpoint**: realised mid-run `ρ` is an order of magnitude below the best free-gate arm's | **band not closed.** Read `ρ*` off P4 by `Λ`, not by `ρ` — and note model §4.3(a): "walk `ρ*` up" is withdrawn |
-| **commit gate** (`var`→`n_target`) | scale-free `N` target replaces a unit-carrying threshold | `N_req` closed form **exact** (28.1 `mean`/1,013.3 at ρ*=.06; 94.2 `select` at ρ*=.01). At `K` = 30/50 the gate **left the cap for the first time**: `I` = ceil(94.2/`K`) = **4 / 2**, `N` = 120 / 100, `commit_reason=natural` on 100% of commits vs `cap` on 100% at `K`=10 | **MECHANISM SETTLED** — it is an `N`-controller and it enacts. **Accuracy A/B still not run**: both arms took the default ρ*=.01, banked `Λ`=0.009, peak 0.382 |
+| **commit gate** (`var`→`n_target`) | scale-free `N` target replaces a unit-carrying threshold | `N_req` closed form **exact** (28.1 `mean`/1,013.3 at ρ*=.06; 94.2 `select` at ρ*=.01). At `K` = 30/50 the gate **left the cap for the first time**: `I` = ceil(94.2/`K`) = **4 / 2**, `N` = 120 / 100, `commit_reason=natural` on 100% of commits vs `cap` on 100% at `K`=10 | **MECHANISM SETTLED** — it is an `N`-controller and it enacts |
+| **gate `s`, at a reachable `n_req`** (G-1) | commit rate ∝ 1/`I`, progress/commit ∝ `√N`, net gain per vclock-hour | `s` = 2.9 / 1.5 ⇒ `n_req` = 19.3 / 72.1, `I` = **2 / 8** off the cap on 100% of commits. Commits per vclock-hour **11.3× / 2.6×** the control; progress per commit **0.316 / 0.632** against `√(N/200)` = 0.316 / 0.632 (**exact**); **net `A` per vclock-hour 2.13× / 1.33×** against a registered 2.2× / 1.4× | **WORKS — the gate converts pool into commit rate at a net gain, and the progress law prices the trade exactly.** But `s` itself is **still untested as an operating point**: under `rm` the realised `ρ/cos` decays 2.84 → 0.95 in 79 commits (P5.2) |
 | **cohort width `K` at a fixed `n_req`** | `I ∝ 1/K`, wall clock `∝ I` | `K` 30→50: `I` 4→2 (2×) but vclock per round trip 8.9→12.3 s (1.38×) ⇒ commits/vclock-h **101.6 → 146.4 (1.44×)**, progress/vclock-h ×1.32. Staleness ≥1 on **0.143 / 0.458 / 0.408** of uploads at `K` = 10/30/50, max **1 / 2 / 4**, `pastdated_commits` max 1 / 0 / **34** | **WORKS at ~70% efficiency** — wider cohorts do buy commit rate, and **do produce genuine staleness** (H-E). The round trip gets dearer as `K` grows |
 | **gate `ρ` reference** | — | **composition bug**: `N_req ∝ ρ_t²`, so annealing `ρ` makes the gate demand *less* pooling and progress decays as `ρ²`. Observed: `N_req` → 0 by c20, `I` floored at 1 on 1,271/1,273 commits, peak 0.394 *decaying* to 0.274 — reproduced identically at α=0.1 | **fixed by `gate_rho_ref=setpoint`** (sizes `N_req` from `ρ*₀`). No-op under `const` and `raw_sgd` |
 | **`annealed` vs `setpoint` gate** | — | at **matched commits** `setpoint` wins every column; over the same **vclock** `annealed` gets 2.3× more commits and ends higher (0.821 vs 0.804) | **not right vs wrong** — `annealed` is progress-per-wall-clock, `setpoint` is progress-per-commit. Belongs to the controller, not the gate |
@@ -136,10 +139,12 @@ row says otherwise.
 | 0.008 | `n_target` s=0.4 rm ρ*=.01 | `220627` | 1273 | 0.0100 | 0.0002 | 1.000 → 1.000 | 0.394 | 0.274 |
 | 0.009 | `var` gate, rm ρ*=.01 | `200209` | 1249 | 0.0100 | 0.0002 | 1.000 → 1.000 | 0.377 | 0.282 |
 | 0.016 | `rm` ρ*=.02 e=.55 | `223510` | 186 | 0.0200 | 0.0007 | 1.001 → 1.001 | 0.379 | 0.329 |
+| 0.044 | **`n_target` `s`=2.9 ρ*=.06 (G-1; `I`=2, `N`=20)** | `002208` | 79 | 0.0599 | 0.0292 | 1.030 → 1.027 | 0.448 | 0.432 |
 | 0.066 | **`select` `rf`=16 ρ*=.06 (Q3)** | `151530` | 66 | 0.0599 | 0.0265 | 1.027 → 1.025 | 0.524 | 0.516 |
 | 0.066 | `select` ρ*=.06 **+ `β`=0.5** (S1) | `160547` | 66 | 0.0599 | 0.0264 | 1.027 → **1.077** | 0.594 | 0.572 |
 | 0.066 | `select` ρ*=.06 **+ `β`=0.75** (S1) | `160614` | 66 | 0.0599 | 0.0263 | 1.027 → **1.176** | 0.626 | 0.626 |
 | 0.068 | `const` ρ*=.01 | `211736` | 186 | 0.0100 | 0.0092 | 1.009 → 1.009 | 0.488 | 0.429 |
+| 0.083 | **`n_target` `s`=1.5 ρ*=.06 (G-1; `I`=8, `N`=80)** | `022448` | 73 | 0.0599 | 0.0280 | 1.028 → 1.026 | 0.508 | 0.433 |
 | 0.238 | **`mean` `rf`=64 ρ*=.06 (Q3)** | `171950` | 67 | 0.0599 | 0.0267 | 1.027 → 1.025 | 0.605 | 0.595 |
 | 0.199 | `rm` ρ*=.03 e=.25 | `013843` | 318 | 0.0300 | 0.0150 | 1.015 → 1.015 | 0.695 | 0.662 |
 | 0.369 | `mean` raw, N=200 | `211800` | 179 | 0.0346 | 0.0850 | 1.089 → 1.088 | 0.804 | 0.793 |
@@ -165,9 +170,13 @@ large miss being α=0.1, which carries the known 3-point α penalty. All four si
 confirms the law where it was already strong and does **not** touch the steep region (that is Q3). The
 whole 08-07 K/η/P portfolio was deleted from disk and cannot be replayed.*
 
-**The six 08-10 arms were cut by a 2 h wall cap at 66–74 commits and were all still climbing**, so their
-`peak` is accuracy-at-cutoff. Score them only against each other and against the anchor cut at the same
-commit — never against a full-horizon row.
+**The six 08-10 arms and the two G-1 arms were cut at 66–79 commits and were all still climbing**, so
+their `peak` is accuracy-at-cutoff. Score them only against each other and against the anchor cut at the
+same commit — never against a full-horizon row. **The cause was never the wall cap**: at
+`cos_probe_batch_size` = 1024 the audit costs ~85 s of real wall per commit against 1.64 s for the whole
+rest of the commit path (P9.2), so every cos-carrying arm since B17 has burned its real-wall ceiling at
+4–15% of its vclock budget. `002208` and `022448` died on the `[SIM_WALL_CEILING]` runaway safety at
+vclock 633 s and 2,218 s against a 14,400 s budget.
 
 **Read four things off this table:**
 
@@ -221,18 +230,66 @@ buys under the shipped gate is **wall clock (~6.5× fewer serial round trips), n
 *Delete a row the moment its run lands: the result moves to P4 and its question moves to Settled or Dead
 in the model doc's §0.*
 
-| node | arm | settles | prediction, registered before launch | early kill check |
+*Nothing is in flight. G-1 landed 2026-08-11 and is scored in P5.2.*
+
+**G-1b is built and ready to launch.** All four corrections are in:
+
+| # | correction | how | status |
+|---|---|---|---|
+| **1** | **run the cos probe on a stride** — `--cos-probe-every 25` | `_cos_probe_gradient()` was called unconditionally at `FedSgdAggregator.py:500`; now gated on `_commit_count % k`. **Microbatching does not help**: cost is linear in the reference — 4.9 s at 64 and 82.8 s at 1024, i.e. **77–81 ms per sample at both** — so chunking cuts peak memory and nothing else. `D` is read in 50-commit blocks, so `k` = 25 costs no resolution | **BUILT**, default `k` = 1 (byte-identical off). Guarded by `test_cos_probe.py` case (f) |
+| **2** | **`rho_schedule=const`** on both arms | under `rm` the realised `ρ/cos` decays 2.84 → 0.95 in 79 commits, so the criterion binds for ~10 commits and the arm never visits the boundary it was built to test | **BUILT** — existing B3 flag, no code |
+| **3** | sinking condition becomes **"peak ≥ 0.80 *and then* falls > 0.015"** | as written it fired on both G-1 arms at `Φ` = 1.03 and `Λ` ≤ 0.083 — §4.2's "peak ≥ 0.80" qualifier, i.e. arms that never learned | **a reading rule**, written into the node header |
+| **4** | horizon from the prediction: `--max-runtime-s 28800`, `--sim-wall-ceiling-h 6.0` | ~3,600 commits at `I`=2. P9.3's own lesson, violated twice before | **BUILT** — config only |
+
+*Launch:* `expt_scripts/nodes/run_node_g1b_gate_s.sh` (~6 h wall ceiling per arm).
+**`run_node_g1_gate_s.sh` is superseded — do not re-run it.**
+
+### P5.2 G-1, Q3, S1 and H-P — pre-registered predictions, scored
+
+**G-1.** Two arms at `ρ*`=0.06, `K`=10, `C`=30, `n_target`+`setpoint`, `s` = 2.9 / 1.5, against control
+`035045` (`I`=20, `N`=200 pinned, 317 commits over its full 8 h vclock budget).
+
+*Enactment.* `n_req` = **19.3 / 72.1** exactly as predicted, `I` = **2 / 8** off the cap on **100%** of
+commits. The gate has now been given a reachable target for the first time.
+
+| | registered | **observed** |
+|---|---|---|
+| commits per vclock-hour | 7× / 2.2× control | **11.3× / 2.6×** (455.0 / 118.9 vs 40.3) |
+| progress per commit, at matched commits | `√(N/200)` = 0.316 / 0.632 | **0.316 / 0.632** ✓✓ |
+| **net `A` per vclock-hour** | **2.2× / 1.4×** | **2.13× / 1.33×** ✓ |
+
+**The headline prediction hit within 5%.** Commit rate beat its own prediction because the ~70%
+round-trip discount was imported from the K-sweep, where `K` rose; here `K` is pinned and only `I` moves,
+so the round trip never got dearer. Control commit rate is flat over its run (40.3 / 45.6 / 39.7 per
+vclock-h), so the matched-window comparison is fair. `Λ` reconstructed from `ρ_t = ρ*₀·t^-0.25` alone
+reproduces observed `Λ` to **0.3% on all three arms**, which is what licenses the extrapolation below.
+
+**What it did *not* settle, and why.** Both arms died on the `[SIM_WALL_CEILING]` runaway safety at 4.4%
+and 15.4% of their vclock budget (P9.2), so peak 0.448 / 0.508 against the control's 0.801 **is not a
+comparison** — it is the arms being stopped 46× and 13× earlier in federated time. Extrapolating the
+validated `ρ` model to the control's 8 vclock-hours:
+
+| arm | `T` | `Λ` | `Φ` | acc (P4 calibration) |
 |---|---|---|---|---|
-| **g1** | `mean`, `ρ*`=0.06, `K`=10, `C`=30, `n_target`+`setpoint`, **`s` = 2.9** then **`s` = 1.5** | **G-1** — the gate at the `s` the model derived, rather than the 0.4 it shipped with | `n_req` **19.3 → `I`=2** and **72.1 → `I`=8**; ~7× and ~2.2× the control's commit rate; `√N` less progress per commit; net ~2.2× and ~1.4× progress per vclock-hour. Both should pass the control's 0.801 in the same wall clock. Control is `035045`, on disk | `[CommitGate]` `n_req` ≈ 19 / 72 with `n_have` **off the cap**. If `I` sits at 20 the flag did not land |
+| `s`=2.9 | 3,642 | 0.789 | **1.24** | ~0.858 |
+| `s`=1.5 | 951 | 0.576 | 1.11 | ~0.844 |
+| control | 316 | 0.397 | 1.06 | 0.798 |
 
-**G-1's sinking condition:** arm 1 falling >0.015 from its peak ⇒ `s` = 2.9 is the collapse *boundary*
-and not an operating point, the gate ships at `s` ≈ 1.5, and C2's claim becomes "a correctly-sized gate"
-rather than "a gate at the criterion". If both hold and beat the control per wall clock, `gate_safety_s`
-changes default from 0.4 to the surviving value.
+**The sinking condition fired and is uninterpretable.** Arm 1 fell 0.448 → 0.432 (−0.016, just past the
+trigger) and arm 2 0.508 → 0.433 — but both sit at `Φ` = 1.03 with `Λ` ≤ 0.083, the same regime as the
+four arms that fall 0.06–0.12 at `Φ` = 1.00–1.01 with no norm inflation at all. **It was registered
+without its precondition** (§4.2's "peak ≥ 0.80"); R6 was followed and the condition itself was wrong.
 
-*Launch:* `expt_scripts/nodes/run_node_g1_gate_s.sh` (~2 h wall per arm).
+**And the node never visited the boundary anyway.** `gate_rho_ref=setpoint` sizes `N` from a fixed `ρ*₀`
+while `rho_schedule=rm` anneals the step, so realised `ρ/cos` on arm 1 runs **2.84 → 1.90 → 1.60 → 1.35
+→ 1.13 → 0.95** across commits 1/5/10/20/40/79. The criterion held for ~10 commits, and the
+extrapolation's `Φ` = 1.24 says the anneal spends the setpoint long before `B_max` ≈ 3.6–4.2 can bind.
+**Under the shipped anneal `s` = 2.9 is not merely untested as an operating point — it is close to
+untestable at these horizons.** That is G-1b's item 2.
 
-### P5.2 Q3, S1 and H-P — pre-registered predictions, scored
+**Free confirmation.** `D` = **0.0506** at `N`=20 and **0.0454** at `N`=80. `D` was already invariant to
+rule and `p`; it is now invariant to ~10% across a **10× swing in `N`** (20 / 80 / 200). `n_dir` = 0.049
+/ 0.162, both < 1, again falsifying client disagreement as the shortfall's cause (model §6).
 
 **Q3.** Three arms matched at `ρ*`=0.06, `exp`=0.25, `N`=200, `K`=10, cut at `T`=66 so `B` = 0.0265
 on all three. The anchor is `035045` replayed to the same commit.
@@ -265,8 +322,11 @@ like escapes from the `√compute` law — bigger bins and more bins do not touc
 is no lever left to find and no reason to spend a node looking. Everything below is either a
 confirmation or a loose end.
 
-1. **G-1 — in flight** (P5.1). The C2 A/B that failed three times, run for the first time at a reachable
-   `n_req`.
+0. **Put the cos probe on a stride** (rung 0 — a code fix, ~30 min, no GPU). It gates every arm that
+   carries the audit, and every such arm since B17 has reached ~5% of its intended horizon (P9.2).
+   Nothing below is worth launching before it lands.
+1. **G-1b** (P5.1). G-1 settled the gate's *throughput* claim and left its *setpoint* claim untouched;
+   the re-run needs `rho_schedule=const` and a horizon sized to ~3,600 commits.
 2. **H-S — the residual 3.5×** (rung 2, ~10 min, no node). The rig reproduces `L` but not `S`, so a
    3.5× shadow loss sits in the FL pipeline. Compute the true `⟨g,v⟩` and the shipped central FD at
    `h‖v‖` = 6.71 on the same `v` and correlate. If they disagree by ~3×, the FD chord is the last
@@ -491,7 +551,9 @@ carry the old, mislabelled field** — any parser must handle both.
 ### P8.1 Superseded numbers — quote check
 
 Only numbers that were quoted in other documents or drafts before being corrected. If you see one of
-these in `fluxtune_contributions.md`, `FLUXTUNE_CODE_QA.md`, or a paper draft, **it is wrong**.
+these in `fluxtune_contributions.md`, `FLUXTUNE_CODE_QA.md`, or a paper draft, **it is wrong**. This is a
+lookup table for *numbers*; the refuted *ideas*, and what each one cost, are
+[model §0 · Dead](fl_fwd_ft_solution.md#dead--what-we-tried-and-abandoned-do-not-re-propose).
 
 | superseded | replaced by |
 |---|---|
@@ -533,6 +595,12 @@ these in `fluxtune_contributions.md`, `FLUXTUNE_CODE_QA.md`, or a paper draft, *
 - `test_weight_decay.py` — `auto` = `ρ²/2`, pins `Φ` = 1, leaves frozen params and the disabled path
   untouched.
 
+**Missing, and it has now cost eight arms: a wall-clock budget check.** Preflight should time one commit
+path with the audit flags the run actually requests, multiply by `n_req/K` commits per vclock-hour, and
+refuse the launch when the projected real wall exceeds `sim_wall_ceiling_s`. It is the same shape as the
+`ceil(n_req/K) ≤ max_iter` assertion added after 08-10 — an arithmetic check on the operating point,
+made before a GPU is touched.
+
 **Read the enactment checks before the science:**
 
 ```bash
@@ -562,10 +630,21 @@ grep -m1 '\[FD\] spacing'    $RUN/*trainers.log     # THE h -- read h*sqrt(p) HE
   `fwdllm_plus` has no entry. Use config flags, never a hand-edited yaml.
 - **Pin the pool for any A/B** — `--var-threshold 0 --max-iter-per-data-id 20 --var-stopping-policy off`
   ⇒ `I` = 20, `N` = 200 exactly (P4.2).
+- **Budget the cos audit into the wall clock, or stride it first.** The probe backprops its whole
+  1024-sample reference in one fp32 pass, per commit: **~85 s**, against **1.64 s** for the entire rest
+  of the commit path and **6.5 s** at its old batch of 64. **The cost is linear in the reference** —
+  77–81 ms per sample at both sizes — so chunking the backward buys peak memory and nothing else; the
+  lever is a **stride**, not a smaller graph. Measured
+  `_apply_weighted_update` per commit — `035045` 1.64 s (audit off) · `042027`/`065837` 6.5 s (batch 64)
+  · `151530`/`171950`/`002208`/`022448` **85 s** (batch 1024). On `002208` that is **96% of the run's
+  real wall**, and it kills the run through `[SIM_WALL_CEILING]` while the vclock still reads healthy —
+  633 s of a 14,400 s budget. **A low `I` makes it worse linearly**, because the cost is per *commit*:
+  the arm that commits 10× more often pays 10× more real wall for the same federated time.
 
 ### P9.3 Process lessons
 
-*Only entries about **method**. Results live in P3–P4.*
+*Only entries about **method**. Results live in P3–P4; the beliefs these lessons came from, and what each
+cost, are [model §0 · Dead](fl_fwd_ft_solution.md#dead--what-we-tried-and-abandoned-do-not-re-propose).*
 
 **Worked:**
 
@@ -609,7 +688,25 @@ grep -m1 '\[FD\] spacing'    $RUN/*trainers.log     # THE h -- read h*sqrt(p) HE
   assert `ceil(n_req/K) ≤ max_iter` and echo the `s` it used.
 - **A wall cap chosen without reference to the question.** Six arms at 66–74 commits answered every
   *matched-commit* question cleanly and no *peak* question at all. Set the cap from the commit count the
-  prediction needs, not from the node's convenience.
+  prediction needs, not from the node's convenience. **And the cap was not even the binding constraint**
+  — see the next entry.
+- **An audit whose cost was never re-costed after it was made correct.** B17 fixed the `cos` probe by
+  growing its reference 64 → 1024, which multiplied its per-commit wall cost by exactly the same 16×.
+  Nobody propagated that into a wall budget, so eight arms across two nights ran at 4–15% of their vclock
+  budget and were written up as "cut by the 2 h wall cap". The failure is invisible on the axis everyone
+  reads: **the vclock looks healthy right up to the moment the runaway safety fires.** Two rules follow —
+  **an emit-only flag has to be costed as a per-commit tax before it is defaulted on**, and **a correctness
+  fix that changes a cost is two changes; land the cost half in the same edit.** Sibling of the
+  `gate_safety_s` = 0.4 lesson: there a superseded constant lived on in a config, here a superseded
+  *cost* lived on in a launcher.
+- **A sinking condition without its precondition.** G-1's read was "arm 1 falls > 0.015 from its peak",
+  which fired on both arms — at `Φ` = 1.03 and `Λ` ≤ 0.083, where §4.2 already says the statistic is
+  meaningless. R6 was satisfied and the node was still unreadable on that axis. **Register the
+  precondition with the condition**: for anything scored on peak retention, "peak ≥ 0.80 *and then*".
+- **Testing a setpoint through a schedule that spends it.** `gate_rho_ref=setpoint` sizes the pool from
+  `ρ*₀` while `rho_schedule=rm` anneals the step, so the arm built to test `s` = 2.9 sat at
+  `ρ/cos` = 2.84 for ~10 commits and finished at 0.95. **A node that tests a boundary must hold the run
+  at that boundary** — pin the schedule, or the anneal answers a question nobody asked.
 - **Final accuracy as an A/B statistic.** ±0.045 between byte-identical replicates vs ±0.0009 at the
   peak (P4.1).
 - **Reaching a rig's operating point by the wrong road.** D-1's first cut backprop-trained the rig to the

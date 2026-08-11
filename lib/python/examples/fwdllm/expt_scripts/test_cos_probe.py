@@ -10,6 +10,7 @@ return a plausible-looking small cosine forever. So this drives the REAL
   (c) pool orthogonal    -> cos = 0
   (d) random pool        -> |cos| ~ 1/sqrt(p), the isotropy floor
   (e) audit off          -> no probe, no cost, and the update is unchanged
+  (f) stride k           -> fires on commits 0, k, 2k and skips the rest
 
 Runs on a 2-layer net with a TensorDataset shaped like agnews' (index 1 = input
 ids, index 4 = labels), CPU only, no GPU/model/data downloads.
@@ -155,6 +156,35 @@ assert a_off._cos_probe_batch is None, "audit off must not even cache a batch"
 for b, p_ in zip(before, model_off.parameters()):
     assert torch.allclose(p_.detach(), b - 0.5), "update must be unchanged"
 print("  audit off            : no cos emitted, batch not cached, update unchanged")
+
+# (f) the stride. A dead probe emits nothing, which at scoring time is
+#     indistinguishable from "audit off" -- so assert which commits it fires on.
+a_st, model_st = make()
+a_st._cos_probe_every = 3
+emitted = []
+a_st._emit_server_update = lambda *args, **kw: emitted.append(kw.get("cos_gt"))
+for _ in range(7):
+    a_st._apply_weighted_update(
+        model_list=[(1, [torch.ones_like(p) for p in model_st.parameters()])],
+        weighted_gradient_sum=[torch.zeros_like(p) for p in model_st.parameters()],
+        old_param=iter(list(model_st.parameters())),
+        learning_rate=1.0, training_num=1,
+    )
+fired = [i for i, c in enumerate(emitted) if c is not None]
+assert fired == [0, 3, 6], f"stride=3 must fire on commits 0,3,6 -- got {fired}"
+assert a_st._cos_probe_every == 3 and len(emitted) == 7
+a_st1, model_st1 = make()
+emitted1 = []
+a_st1._emit_server_update = lambda *a_, **kw: emitted1.append(kw.get("cos_gt"))
+for _ in range(3):
+    a_st1._apply_weighted_update(
+        model_list=[(1, [torch.ones_like(p) for p in model_st1.parameters()])],
+        weighted_gradient_sum=[torch.zeros_like(p) for p in model_st1.parameters()],
+        old_param=iter(list(model_st1.parameters())),
+        learning_rate=1.0, training_num=1,
+    )
+assert all(c is not None for c in emitted1), "default stride must fire every commit"
+print("  cos stride           : k=3 fires on 0,3,6; default k=1 fires every commit")
 
 # the probe must leave no grads behind on the live model
 a_on, model_on = make()

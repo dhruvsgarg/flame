@@ -127,6 +127,7 @@ GATE_SAFETY_S=""       # S-C: safety factor s in rho <= s*cos; empty => code def
 GATE_RHO_REF=""        # S-C: annealed|setpoint -- which rho sizes the pool; empty => code default annealed
 COS_GROUND_TRUTH_AUDIT="" # B1: per-commit cos(G,g) vs a real backward pass on a fixed held-out batch
 COS_PROBE_BATCH_SIZE=""   # B1: size of that batch; empty => code default 1024 (B17)
+COS_PROBE_EVERY=""        # B1: run the probe every k-th commit; empty => 1 (it costs ~83s/commit at 1024)
 SERVER_WEIGHT_DECAY=""    # Q2: decay the trainable slice after the step; "auto" = rho^2/2
 SERVER_MOMENTUM=""        # S1: heavy-ball on the pooled DIRECTION (rho stays rho* under trust_ratio)
 ADAPTER_RF=""          # S-I: adapter bottleneck reduction_factor -- the real p knob; empty => code default 16
@@ -172,7 +173,7 @@ usage() {
   echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho-schedule const|rm] [--rho-exp F]" >&2
   echo "          [--trainable-scope adapters_head|adapters_only] [--commit-gate var|n_target] [--gate-safety-s F]" >&2
   echo "          [--gate-rho-ref annealed|setpoint]  (setpoint stops S-C's pool vanishing with S-B's anneal)" >&2
-  echo "          [--cos-ground-truth-audit] [--cos-probe-batch-size N]  (B1: real cos(G,g), aggregator-side)" >&2
+  echo "          [--cos-ground-truth-audit] [--cos-probe-batch-size N] [--cos-probe-every K]  (B1: real cos(G,g), aggregator-side)" >&2
   echo "          [--server-weight-decay auto|FLOAT]  (Q2: pins Phi=1 at auto=rho^2/2)" >&2
   echo "          [--server-momentum BETA]  (S1: temporal pooling; needs trust_ratio)" >&2
   echo "          [--adapter-reduction-factor N]  (768/N per adapter; the real p knob)" >&2
@@ -224,6 +225,7 @@ while [[ $# -gt 0 ]]; do
                             GATE_RHO_REF="$2"; shift 2 ;;
     --cos-ground-truth-audit) COS_GROUND_TRUTH_AUDIT=1; shift ;;
     --cos-probe-batch-size) COS_PROBE_BATCH_SIZE="$2"; shift 2 ;;
+    --cos-probe-every)      COS_PROBE_EVERY="$2"; shift 2 ;;
     --server-weight-decay) SERVER_WEIGHT_DECAY="$2"; shift 2 ;;
     --server-momentum) SERVER_MOMENTUM="$2"; shift 2 ;;
     --adapter-reduction-factor) ADAPTER_RF="$2"; shift 2 ;;
@@ -405,7 +407,7 @@ LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
   RHO_STAR="$RHO_STAR" RHO_SCHEDULE="$RHO_SCHEDULE" RHO_EXP="$RHO_EXP" \
   TRAINABLE_SCOPE="$TRAINABLE_SCOPE" COMMIT_GATE="$COMMIT_GATE" GATE_SAFETY_S="$GATE_SAFETY_S" \
   GATE_RHO_REF="$GATE_RHO_REF" COS_GROUND_TRUTH_AUDIT="$COS_GROUND_TRUTH_AUDIT" \
-  COS_PROBE_BATCH_SIZE="$COS_PROBE_BATCH_SIZE" \
+  COS_PROBE_BATCH_SIZE="$COS_PROBE_BATCH_SIZE" COS_PROBE_EVERY="$COS_PROBE_EVERY" \
   SERVER_WEIGHT_DECAY="$SERVER_WEIGHT_DECAY" SERVER_MOMENTUM="$SERVER_MOMENTUM" \
   ADAPTER_RF="$ADAPTER_RF" \
 DELAY_FLOOR="$DELAY_FLOOR" \
@@ -444,6 +446,7 @@ COMMIT_GATE = env("COMMIT_GATE") or ""; GATE_SAFETY_S = env("GATE_SAFETY_S") or 
 GATE_RHO_REF = env("GATE_RHO_REF") or ""
 COS_GROUND_TRUTH_AUDIT = env("COS_GROUND_TRUTH_AUDIT") or ""
 COS_PROBE_BATCH_SIZE = env("COS_PROBE_BATCH_SIZE") or ""
+COS_PROBE_EVERY = env("COS_PROBE_EVERY") or ""
 SERVER_WEIGHT_DECAY = env("SERVER_WEIGHT_DECAY") or ""
 SERVER_MOMENTUM = env("SERVER_MOMENTUM") or ""
 ADAPTER_RF = env("ADAPTER_RF") or ""
@@ -638,6 +641,8 @@ def patch(exp, run_key, variant, trace):
         h["cos_ground_truth_audit"] = True
     if COS_PROBE_BATCH_SIZE:
         h["cos_probe_batch_size"] = int(COS_PROBE_BATCH_SIZE)
+    if COS_PROBE_EVERY:
+        h["cos_probe_every"] = int(COS_PROBE_EVERY)
     if SERVER_WEIGHT_DECAY:
         h["server_weight_decay"] = SERVER_WEIGHT_DECAY
     if SERVER_MOMENTUM:

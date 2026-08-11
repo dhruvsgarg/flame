@@ -118,9 +118,16 @@ class FedSGDAggregator(TopAggregator):
         self._cos_probe_batch_size = int(
             getattr(self.args, "cos_probe_batch_size", 1024) or 1024
         )
+        # ~80 ms per reference sample = 83 s/commit at 1024, against 1.6 s for
+        # the rest of the commit path. Cost is LINEAR in the reference, so only
+        # a stride helps; D is read in 50-commit blocks and loses no resolution.
+        self._cos_probe_every = max(
+            1, int(getattr(self.args, "cos_probe_every", 1) or 1)
+        )
         if self._cos_ground_truth_audit:
             logger.info(
-                "[COS_GROUND_TRUTH_AUDIT] emitting per-commit cos(G,g) against a "
+                "[COS_GROUND_TRUTH_AUDIT] emitting cos(G,g) every "
+                f"{self._cos_probe_every} commit(s) against a "
                 f"fixed held-out batch of {self._cos_probe_batch_size}"
             )
 
@@ -497,8 +504,11 @@ class FedSGDAggregator(TopAggregator):
         _tr_delta_sq = _tr_weight_sq = 0.0
         # B1: `g` must be taken at theta_t, BEFORE the loops below mutate it --
         # cos(G,g) is the aim of the step about to be taken, not of the next one.
-        _cos_probe = (self._cos_probe_gradient()
-                      if getattr(self, "_cos_ground_truth_audit", False) else None)
+        _cos_due = (
+            getattr(self, "_cos_ground_truth_audit", False)
+            and self._commit_count % getattr(self, "_cos_probe_every", 1) == 0
+        )
+        _cos_probe = self._cos_probe_gradient() if _cos_due else None
         _cos_dot = _cos_g_sq = 0.0
 
         def _cos_accumulate(idx, pooled):
