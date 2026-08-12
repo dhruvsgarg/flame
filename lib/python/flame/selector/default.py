@@ -38,6 +38,9 @@ class DefaultSelector(AbstractSelector):
     def _cleanup_send_ends(self) -> None:
         pass
 
+    def _cleanup_removed_ends(self, end_id) -> None:
+        self.selected_ends.discard(end_id)
+
     def select(
         self, ends: dict[str, End], channel_props: dict[str, Scalar], **kwargs
     ) -> SelectorReturnType:

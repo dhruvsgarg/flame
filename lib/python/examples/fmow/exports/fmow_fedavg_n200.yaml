@@ -1,0 +1,60 @@
+# FMoW FedAvg fullw test: 200 trainers, capture-driven data (no dirichlet
+# index split -- path_style: true).
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/FMoW/expt_scripts_2026/fmow_fedavg_n200.yaml
+
+experiments:
+  - name: fmow_fedavg_n200
+    description: "FMoW FedAvg sync experiment (200 trainers, syn_0, capture-driven data)."
+
+    baseline: fedavg
+
+    trainer:
+      num_trainers: 200
+      start_id: 1
+      dataset:
+        path_style: true
+      availability:
+        mode: syn_0
+      enable_training_delays: true
+      hyperparameters:
+        batchSize: 16
+        learningRate: 0.0004
+
+    aggregator:
+      config_template: metadata/aggregator_base.json
+      selector: random
+      tracking_mode: default
+      agg_goal: 175
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fmow_fedavg_smoke_n10
+        hyperparameters:
+          batchSize: 16
+          learningRate: 0.0004
+          rounds: 500
+          fmow_config_path: "lib/python/examples/fmow/configs/fmow_config.yaml"
+          eval_every_n_rounds: 10
+          eval_every_n_commits: 1
+          checkpoint:
+            enabled: 'True'
+            every_n_rounds: 10
+          sim_unavailability: 'True'
+          availability_trace: syn_0
+          min_trainers_to_start: 200
+          min_trainers_join_timeout_s: 600
+          
+        selector:
+          kwargs:
+            k: 5
+            c: 200
+
+    execution:
+      num_gpus: 8
+      sleep_between_spawns: 0.3
+      aggregator_warmup_time: 15
+      monitoring:
+        enabled: false
