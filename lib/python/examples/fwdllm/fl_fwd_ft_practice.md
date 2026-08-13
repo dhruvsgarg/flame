@@ -380,7 +380,8 @@ neither invariant nor monotone in `num_labels` (agnews ~3.0–3.3; yahoo and yel
 being at opposite ends of the class-count range). Yahoo's low base accuracy checked against an
 undertraining confound (9-epoch rerun) and ruled out — more training overfits, doesn't help, and the
 early knee holds regardless. Per this task's own decision table, **3.1 (the online injection probe) is
-now mandatory infrastructure**, not a fallback.
+now mandatory infrastructure**, not a fallback. **Replicated same day** — 2 independent runs per dataset,
+all agreeing tightly (agnews knee 3.0–3.5 both times; yelp-p's normalized knee at Φ=2.0–2.5 both times).
 
 #### Phase 2 — launch K-1, P-1, G-2 · overnight · *state: per node in [P5.1](#p51-registered-nodes)*
 

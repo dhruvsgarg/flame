@@ -992,9 +992,10 @@ DistilBERT/yahoo accuracy the FwdLLM paper itself reports (peak reported ~0.76) 
 is in the right ballpark, not a broken one. **On the B-1 decision table
 (P5.1), this is the "erratic" outcome: the online injection probe (3.1) is not optional infrastructure,
 it is now the load-bearing path** — a fixed or `num_labels`-derived `B_max` would misprice the budget on
-at least two of three datasets tested. Caveat: one training run per dataset (yahoo replicated, agnews/
-yelp-p not yet) — treat as a strong preliminary signal pending replication, not fully settled per this
-doc's own bar (P4.1 needed 10 arms).
+at least two of three datasets tested. **Replicated 2026-08-13: 2 independent training runs per dataset,
+all agreeing tightly.** agnews knee 3.0–3.5 both runs (normalized 0.732→0.003 / 0.752→0.021 at Φ=3.0→3.5);
+yelp-p crosses 0.5-normalized at Φ=2.0–2.5 both runs (0.567→0.405 / 0.517→0.409); yahoo agrees across a
+3-epoch and a 9-epoch run. Below this doc's 10-arm bar (P4.1) but no longer single-run.
 > ledger.**
 
 ## §7.2 The norm is mostly a symptom, and decay will not rescue it (Q2 — settled)

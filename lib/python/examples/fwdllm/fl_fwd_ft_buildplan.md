@@ -246,9 +246,10 @@ class-count range. `expts/prep_b1_configs.py` (new) generates the per-dataset co
 result and its "3.1 now mandatory" implication: model §7.1/§5.5b, P10, `fl_fwd_ft_practice.md` P5.2
 Phase 1.
 
-**Caveat carried forward:** one training run per dataset (yahoo replicated at 9 epochs to rule out
-undertraining — ruled out, more epochs overfit and if anything sharpen the early knee; agnews/yelp-p not
-yet replicated). Treat as strong preliminary signal, not fully settled per this doc's own 10-arm bar.
+**Replicated 2026-08-13** — 2 independent runs per dataset now, all agreeing tightly (agnews knee 3.0–3.5
+both times; yelp-p crosses its normalized-0.5 knee at Φ=2.0–2.5 both times; yahoo agrees across a 3- and
+9-epoch run, the latter ruling out undertraining as the driver). Below this doc's 10-arm bar (P4.1), but
+no longer single-run.
 
 ---
 
