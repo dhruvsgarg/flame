@@ -270,11 +270,6 @@ pin the pool for any A/B: --var-threshold 0 --max-iter-per-data-id 20 --var-stop
 echo the enactment lines: [ServerStep] [CommitGate] [CosProbe] [probe_combine] [ProbeDim] [FD] spacing
 ```
 
-**K-1 leads** — it is the only node that changes a phase-3 design decision (which knob 3.4 climbs), and
-task 0.6 sizes it. `K` ∈ {10,20,30} at fixed `n_req`, **`C` = 30 on all three** — the first arm ever to
-move `K` without `C`. Needs **≥1000 commits/arm** for ~40 cos fires, which at stride 25 is affordable.
-Kill immediately if `n_req` ≠ 72, `ρ` ≠ 0.06, or `C` ≠ 30 on any arm.
-
 **P-1** is a build prerequisite, not an ablation — 3.4 needs `τ(P)`. `P` ∈ {10,30} under
 **`probe_combine=mean`**, `N` pinned. `P` is a **trainer-side** override: verify via
 `[probe_combine=mean] P=…` in the trainer log, not in `aggregator_config.json`. Report and stop if
@@ -293,6 +288,15 @@ at `ρ*` ≤ 0.01** — `220627`'s dead zone.
 byte-identical until its A/B scores. **Build 3.3 first**: the whole P4.1 gain (0.141 → 0.005) is there and
 it depends on nothing else.
 
+**3.1 + 3.2 + 3.3 are one closed-loop controller, not three independent features — read all three specs
+below together before building any of them** (2026-08-13; implementation starts a later session). 3.2 is
+the continuous per-commit throttle, 3.1 is the strided re-sense feeding it, and 3.3's stop is the discrete
+backstop for when the throttle's `T_res` estimate turns out wrong (edge case (f) below) — it is not
+redundant with a working anneal, it is what the anneal fails safe into. Live proof the backstop is needed:
+G-2's annealed leg (`003648`) hit `[SIM_WALL_CEILING]` at vclock 26,026 of its intended 40,000 (real wall
+4.6× over the preflight's estimate) on 2026-08-13 — cut short before it could land, exactly the case the
+backstop exists for.
+
 ### 3.3 — budget-landing anneal + `Φ` stop
 
 **Sensed from `B`**, which is exact and free (`B = ½Σlog(1+ρ_t²)`, already computable per commit).
@@ -301,7 +305,8 @@ it depends on nothing else.
   (model §4.6a), recomputed each commit from remaining budget and remaining control resolution.
 - **Stop:** halt when smoothed `Φ` crosses the threshold. **The rule needs no eval, no accuracy history
   and no task constant** — that is its whole value. Threshold default 2.7 (P4.1: 0.0054 given up, worst
-  arm 0.0139); its value on an unseen task is what B-1 settles.
+  arm 0.0139); its value on an unseen task is what B-1 settles, and is what 3.1's sensed `B_max` should
+  eventually replace the fixed constant with.
 
 **State to carry:** cumulative `B`, commit count, `Φ` smoothed over the same 11-eval window the replay
 uses. **Emit per commit:** `B`, `B_max`, `B/B_max`, `Φ`, `rho_star_t`, and the stop reason when it fires.
@@ -311,31 +316,86 @@ first commit divides by zero. (b) Under `β > 0` the `Φ` law changes; either re
 with momentum or use the momentum-corrected form. (c) A run that reaches `B_max` before its eval cadence
 fires must still stop — the trigger is `B`, not accuracy. (d) `Φ` from `ρ` is exact; **never** re-derive
 it from `‖θ‖` ratios, which carry the audit's own noise. (e) Stopping is not the same as ending the run:
-decide and document whether the aggregator halts, freezes `θ`, or keeps evaluating.
+decide and document whether the aggregator halts, freezes `θ`, or keeps evaluating. (f) **New:** a `T_res`
+that runs out mid-training while commits keep flowing (the G-2 scenario above) must not silently divide by
+zero or blow `ρ*_t` up — decide whether hitting `T_res`=0 itself becomes a stop trigger, or whether a
+re-sense (3.1) extends the horizon and recomputes `T_res` before that point.
 
-### 3.1 — two-phase `B_max`
+### 3.1 — two-phase `B_max`, continuously re-sensed
 
-Prior `ln 2` → injection probe on a **copy** of `θ_tr`, ~6 evals, on a stride. **Phase 1 decides whether
-this is needed at all** — if `Φ_knee` is invariant or derivable from `num_labels`, ship the constant.
+Prior `ln 2` → injection probe on a **copy** of `θ_tr`, ~6 evals, on a stride — **and re-fired on that same
+stride for the life of the run**, not just once at the Phase A→B handoff (see the framing note above).
+Phase 1 (B-1) already decided this is needed at all: `Φ_knee` is neither invariant nor derivable from
+`num_labels` (agnews ≈3.0–3.5 vs yahoo/yelp-p ≈2.0–2.3, B-1, 2026-08-13).
 
 **Edge cases.** The probe must be strided and budgeted (0.7); on a copy, never the live model; and its
-cost must be reported as a fraction of the commit path before it defaults on.
+cost must be reported as a fraction of the commit path before it defaults on. A re-sense landing *mid-anneal*
+changes `B_max` under `ρ*_t`'s feet — decide whether a re-sense also resets the remaining-`T_res` landing
+target (most consistent: recompute both together) or only `B_max` moves while `T_res` keeps counting down
+from the original horizon. Whether `B_max` actually drifts materially within one run's lifetime, or is
+roughly stationary once the first real probe lands, is itself untested — emit it per re-sense rather than
+assume either answer going in.
 
 ### 3.2 — `ρ*` = `√(2·B_max/T_res)`
 
-Trivial once 3.1 lands. Replaces P4's dose-response lookup. **Do not walk `ρ*` up** — P6.
+Trivial once 3.1 lands. Replaces P4's dose-response lookup. **Do not walk `ρ*` up** — P6. Recomputed every
+commit from the *remaining* `B_max − B` and *remaining* `T_res`, never the original constants — that's what
+makes it a landing law instead of a horizon-sized `rm` schedule wearing a new formula.
 
-### 3.5 — saturation stop on `dAcc/dΛ`
+### 3.5 — saturation stop, replacing the raw `dAcc/dΛ` slope test (revised 2026-08-13, not yet implemented)
 
-The second stop; 3.3's `Φ` stop covers the destructive case alone, so this one only buys wall clock.
-Window ≥ 100 commits. **Edge case:** eval cadence and commit cadence are different clocks — resample onto
-`Λ` before differencing, and never onto `comm_round`.
+**What it's for, and why it is not a duplicate of 3.3.** 3.3's `Φ` stop catches noise-driven collapse:
+random-walk displacement in log-norm space (§6's `D` = 0.050 — most of every commit's step is noise, not
+signal) accumulating past the point where the local structure the forward-difference estimate relies on
+still holds. That failure is FwdLLM-specific and can be catastrophic (0.874→0.296 on `003601`, K-1's K=20
+leg, 2026-08-13), and needs no eval history at all. 3.5 catches something structurally different and far
+more ordinary: **the model has extracted the generalizable signal the task and capacity allow, full
+stop.** Training loss can keep falling past that point (classic overfitting), while held-out accuracy has
+flattened or started drifting down. This is the standard ML early-stopping problem, not a FwdLLM one — and
+critically, **training loss cannot detect it by construction**, since training loss keeps improving under
+overfitting. That's why the field never uses it for this and always uses a held-out metric instead; this
+system already computes one (`test-accuracy` via `agg_eval`), so the right ingredient exists, only the
+criterion applied to it needs fixing.
+
+**Original spec, superseded by this section:** `dAcc/dΛ` flattens over a ≥100-commit window, resampled
+onto `Λ`. Problem: a raw derivative of a noisy signal is itself noisy, and held-out accuracy here *is*
+noisy near a turn — ±0.045 between byte-identical replicates vs ±0.0009 at peak (P4.4). A slope test over
+noisy points can both false-trigger on a dip and miss a real plateau masked by sampling noise on either
+side of the window — the same failure mode P4.2/task 0.5 already found and fixed for raw `Φ` crossings.
+
+**Revised design: a Prechelt-style generalization-loss / patience criterion** (Prechelt, *"Early Stopping —
+But When?"* — the standard reference for exactly this problem), applied to smoothed held-out
+`test-accuracy`, smoothed the same way `Φ` already is (11-eval trailing window, task 0.5) rather than a raw
+per-eval slope.
+
+- Track `Acc_best`, the running max of smoothed held-out accuracy so far — monotone by construction, so a
+  single noisy good point can only raise it, never get fooled into resetting the clock the way a two-point
+  slope can.
+- Generalization loss `GL_t = (Acc_best − Acc_t) / Acc_best` (sign/normalisation TBD at implementation —
+  keep it reported alongside `Φ` in the same units family).
+- Stop when `GL_t` exceeds a threshold **for a patience window** — both the threshold and the patience are
+  parameters to size empirically by replay against the arms already on disk (P4's portfolio plus
+  2026-08-13's K-1/P-1/G-2 arms), the same way task 0.5 sized `Φ`'s smoothing window and P4.1 sized its
+  threshold.
+- **Also the citable, standard formulation** for a paper's methodology section, rather than a bespoke slope
+  test that needs its own justification from scratch.
+
+**Edge cases (carried over, still apply).** Eval cadence and commit cadence are different clocks —
+resample onto `Λ`, never onto `comm_round`. Combine with 3.3 as `stop = Φ-cross OR saturation`, whichever
+fires first (model §5.5f D2) — the two are answering different questions and neither supersedes the other.
+
+**Not yet sized: the smoothing window, the `GL` threshold, and the patience count. Size all three by replay
+before this ships — in the implementing session, not now.**
 
 ### 3.4 — adaptive `K`/`C` and `P`
 
-**Blocked on K-1 (which knob) and P-1 (`τ(P)`).** Needs a **mid-run `P` change**, which no code path
-supports today — that is the real engineering here, and it also forces 0.4's per-commit `G_rule`.
-`dynamic_kc`'s `k_max` = 15 is backwards and must not be reused as a starting point.
+**K-1 landed (2026-08-13): hill-climb `C`, not `K`** — commit throughput flat in `K` at fixed `C` (P3),
+confirming model §5.2's own prediction that `K`'s effect on wall clock is "open — `∝1/K` only if `C=K`".
+Still **blocked on P-1** (`τ(P)`, in progress) and on a **mid-run `P` change**, which no code path supports
+today — that is the real remaining engineering here, and it also forces 0.4's per-commit `G_rule`.
+`dynamic_kc`'s `k_max` = 15 is backwards and must not be reused as a starting point. Whether `K` needs to
+be dynamic anyway under *variable* device availability, or matters more for forward- than backprop-trained
+gradients, is untested — H-T (`fl_fwd_ft_practice.md` P5.3), not blocking this task.
 
 **Do not wire `n_eff` to any of this** (P6: it is an identity, 1.00 ± 0.01 over 17 arms).
 
