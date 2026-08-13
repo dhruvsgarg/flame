@@ -95,7 +95,7 @@ forward-gradient arm reaches **0.876** (§7.3).
 | **D-2** | **`D` is 2–3× larger on the two arms that trained than near init** — but it is not "training state": pooled across both it is *non-monotone* in accuracy, and its highest-accuracy bin reads the **lowest** `D` while pre-turn steps to post-turn. `const` vs `rm` is the leading confound. Numbers: §6.3 | the sizing formula and §8's generality — `N_req ∝ 1/D²`, so 2× is 4× in pool | **on the rig, not on an arm**: single-commit `cos` has SNR ≈ 1, so only a fixed **trained checkpoint** with unlimited probes can separate `const` from `rm` |
 | **H-S** | **A 3.5× shadow loss that is not data-side.** The rig reproduces `L` but gets `S` = 1.68 where the arms read 0.48. Prime suspect: the FD chord — `h‖v‖` ≈ `‖θ_tr‖`, so `d` is a chord-averaged slope, not `⟨g,v⟩` | the last unexplained factor in `cos` | rig: true `⟨g,v⟩` vs the shipped central FD at the shipped `h` (§6.3) |
 | **C-1** | **The controller — implementation, not research.** The stopping rule is **validated on replay**: a `Φ` trigger at 2.7–3.0 banks the peak to 0.005 mean / 0.014 worst over 10 arms, against **0.141 / 0.595** for running to the end ([P4.1](fl_fwd_ft_practice.md#p41-the-φ-stop-counterfactual)). What remains is wiring | every arm's ending, and metric 1 | build it — §5.5's four `not built` rows; none needs new science |
-| **B-1** | **Does `B_max` transfer?** The **one** constant left on the operating path; `ρ*`, `s`, `N` and the stop all follow from it by arithmetic. Three arguments for transfer (§5.5b), **zero cross-model measurements** | whether any of this is a method rather than a result | `probe_inflation_damage.py` on a second model and task — ~6 evals each, forward-only |
+| **3.1** | **`B_max` transfers across model capacity but NOT across task** (B-1, MEASURED — §7.1/§5.5b): agnews/yahoo/yelp-p knees are neither invariant nor monotone in `num_labels`. The mechanism is geometric and general; the value is not derivable in advance | whether `ρ*`, `s`, `N` and the stop can ship as a fixed constant — they cannot | build the injection probe (§5.5b) — now the load-bearing path, not a fallback |
 | **K-C** | **Is `K` a speed lever at all, and who pays for staleness?** `t ∝ 1/K` counts **gate iterations**, which are serial wall-clock waits only when `C = K`; the dispatcher refills to `C`, never to `K`. Staleness in commits is `C/n_req` — `K`-free. Both time and staleness may belong to `C` | which knob the controller hill-climbs (§5.5e, phase 3.4), and whether `K` is free in bytes | **K-1, with `C` held at 30** — every measurement to date moved `C` with `K` (`C/K` = 3/2/2) and cannot discriminate |
 
 **What is *not* open: the optimizer, or any pooling knob.** The four fixes enact to spec and the dynamics
@@ -793,14 +793,20 @@ never run *inside* a live run. It runs on the model being trained, so it calibra
 than a proxy, and it is **biased conservative** — it noises a model that cannot re-fit, reading the knee
 ~0.6–1.2 low (§7.1), so it under-spends budget, never over-spends.
 
-**Why `B_max` is the right constant to bet on.** *(1)* It is **geometric, not task-shaped** — `Φ_peak` ≈
-2.7 says a head fails past ~68° off the direction that earned its accuracy. *(2)* It **already
-transferred** across the one axis tested: two models differing 1.77× in norm share a knee at the same `Φ`
-(§7.1). *(3)* It **held over the whole portfolio unfitted** — 7/7 turned arms at `Φ` = 2.41–3.11, and as a
-stopping rule it gives up 0.005 of peak on average (P4.1). Falsified by a model family where
-`‖θ_tr‖ ∝ √p` fails, or a head that is not a linear readout — both checkable in one probe. **What this
-does not solve:** transfer has three arguments and zero cross-model measurements (B-1), the conservative
-bias is uncalibrated, and the controller does not exist (C-1).
+**Why `B_max` is the right constant to bet on — and why it must still be sensed, not shipped fixed.**
+*(1)* It is **geometric, not task-shaped in its mechanism** — `Φ_peak` ≈ 2.7 says a head fails past ~68°
+off the direction that earned its accuracy; the collapse floor confirms this (B-1: every dataset's
+post-collapse accuracy lands at its own chance level `1/K`, the same directional-degeneracy signature
+everywhere). *(2)* It **transfers across model capacity** — two models differing 1.77× in norm share a
+knee at the same `Φ` (§7.1). *(3)* It **held over the whole agnews portfolio unfitted** — 7/7 turned arms
+at `Φ` = 2.41–3.11, and as a stopping rule it gives up 0.005 of peak on average (P4.1). **It does NOT
+transfer across task** (§7.1, B-1 MEASURED 2026-08-13): agnews/yahoo/yelp-p knees are neither invariant
+nor monotone in `num_labels` — yahoo and yelp-p (10 and 2 classes) land at nearly the same, earlier knee
+than agnews (4 classes). So the *mechanism* is geometric and general; the *value* is not derivable from a
+dataset property known in advance. **This settles B-1's own decision table: the injection probe (3.1) is
+mandatory, not a fallback** — a fixed or `num_labels`-derived constant would misprice the budget on at
+least two of the three datasets tested. The conservative bias is still uncalibrated per-task, and the
+controller does not exist yet (C-1).
 
 ### §5.5e Adaptive `K` and `P` — the same rule twice
 
@@ -962,6 +968,31 @@ predicted.
 > The rig's threshold (`Φ` ≈ 3.0) is lower than the real arms' 3.6–4.2 because it dumps noise on a model
 > that never adapted while real training re-fits continuously. That bias applies to both `p` equally, so
 > it cancels in the comparison — **take the *relative* verdict from the rig and the *number* from the arm
+> ledger.**
+
+**It does NOT transfer across task (B-1, MEASURED 2026-08-13, `probe_inflation_damage.py`, rf=16,
+agnews/yahoo/yelp-p, mode=noise, reps≥3).** Reading the knee on chance-normalized accuracy
+(`(acc−1/K)/(base−1/K)`, since post-collapse every dataset floors at its own chance level `1/K` — 0.24/4,
+0.11/10, 0.51/2, confirming the collapse mechanism itself is identical, just the floor differs):
+
+| dataset | classes `K` | normalized knee (`Φ`) |
+|---|---|---|
+| agnews | 4 | ~3.0–3.3 |
+| yelp-p | 2 | ~2.1–2.3 |
+| yahoo | 10 | ~2.0–2.3 |
+
+**Neither invariant nor monotone in `K`.** The pre-registered prediction (§P5.1) was monotone-in-classes
+(yelp-p latest, agnews middle, yahoo earliest); what landed instead is agnews alone at the late end, with
+yelp-p and yahoo — opposite ends of the class-count range — landing at nearly the *same*, earlier knee.
+Yahoo's low base accuracy (0.73 at 3 epochs) is not an undertraining artifact: a 9-epoch confirmatory run
+peaked at epoch 2 (0.732) and *degraded* with more training (0.692 at epoch 8, overfitting the 30k-example
+proxy set) while collapsing if anything earlier (Φ=2.0 already at 0.084 vs the 3-epoch run's 0.485) — the
+early knee is robust to the training-budget confound, not an artifact of it. **On the B-1 decision table
+(P5.1), this is the "erratic" outcome: the online injection probe (3.1) is not optional infrastructure,
+it is now the load-bearing path** — a fixed or `num_labels`-derived `B_max` would misprice the budget on
+at least two of three datasets tested. Caveat: one training run per dataset (yahoo replicated, agnews/
+yelp-p not yet) — treat as a strong preliminary signal pending replication, not fully settled per this
+doc's own bar (P4.1 needed 10 arms).
 > ledger.**
 
 ## §7.2 The norm is mostly a symptom, and decay will not rescue it (Q2 — settled)

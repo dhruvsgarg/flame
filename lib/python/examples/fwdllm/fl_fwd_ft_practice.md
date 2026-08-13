@@ -329,12 +329,12 @@ hypotheses.
 
 ### P5.1 Registered nodes
 
-*Four registered 2026-08-11, none launched. Each carries its prediction and sinking condition from
-before launch (R6). Delete a row when its run lands.*
+*Four registered 2026-08-11; B-1 landed 2026-08-13 (erratic — result in model §7.1/§5.5b, R3). Each
+remaining row carries its prediction and sinking condition from before launch (R6). Delete a row when its
+run lands.*
 
 | node | arm | prediction | sinking condition / kill |
 |---|---|---|---|
-| **B-1** | `probe_inflation_damage.py`, DistilBERT + adapters, **yahoo (10 classes)** and **yelp-p (2)** vs agnews (4). ~6 evals each, no training, no FL stack. Settles whether `B_max` transfers | **`Φ_peak` falls as class count rises**: yelp-p > agnews (2.7) > yahoo — collapse is head degeneracy, so more classes ⇒ narrower decision regions | **Either outcome advances the method.** Invariant ±0.3 across 5× in classes ⇒ `B_max` is *more* universal than claimed. Monotone ⇒ `B_max` is **derivable from `num_labels`** |
 | **K-1** | `K` ∈ {10,20,30} at fixed `n_req`, **`C` = 30 on all three** — the first arm to move `K` without `C`. `mean`, `trust_ratio`, `n_target` `s`=1.5, `ρ*`=0.06, stride 25. Settles `τ(K)`, **`D(K)`** and **K-C** | **Two rival predictions, and the arm separates them.** *Pooling model (P2 as written):* `τ ∝ K^0.63` ⇒ commits/vclock-h improves as `K^0.37` (**×1.5** over 10→30) and `D` falls with `K` ⇒ `D(30)/D(10)` ≈ **0.63**. *Throughput model (K-C):* commit rate is set by `C/n_req` ⇒ **flat in `K` within ±15%**, and `D` **flat** too, since staleness = `C/n_req` = 0.42 on all three | **Flat commit rate ⇒ `K` is not a time lever**, the controller hill-climbs `C`, and model §4.6(c)/§5.2/§5.5e are rewritten around `C`. **`D` flat within ±20% ⇒ staleness is free at these levels** and `dynamic_kc`'s `k_max`=15 is far too conservative. Kill if `n_req` ≠ 72, `ρ` ≠ 0.06, or `C` ≠ 30 on any arm. Needs **≥1000 commits/arm** for ~40 fires |
 | **P-1** | `P` ∈ {10,30}, **`probe_combine=mean`**, `N` pinned. **A build prerequisite, not an ablation** — D4 makes `P` sensed, so the controller needs `τ(P)` | `cos` **×1.73**, `Λ`/commit ×1.73, round trips **÷3**, bytes **÷3**, total client compute **invariant** | **`τ(30)/τ(10)` ≥ 2.5 ⇒ compute-bound, the gain cancels** — report and stop. `P` is a **trainer-side** override; verify via `[probe_combine=mean] P=…` in the trainer log |
 | **G-2** | `gate_rho_ref` **`annealed` vs `setpoint`**, `ρ*`=0.06, `rm`, matched vclock. P2 was changed on a re-read of two old arms, not an A/B | `annealed` achieves the time bound to **≤2%** (as `013917` did); `setpoint` misses by **~8%** (as `035045` did). At matched vclock `annealed` ends higher | **`setpoint` as tight as `annealed` ⇒ the `s`-constant claim is wrong and P2 reverts.** Never run `annealed` at `ρ*` ≤ 0.01 — `220627`'s dead zone |
@@ -372,22 +372,15 @@ the phase's rows are deleted once its result has landed in [P3](#p3--knob-ledger
 | **0.9** | **niid partitions for yahoo and yelp-p.** Neither had *any* niid group; yahoo's `uniform_client_1000` also draws test from inside the train range (31,689 overlapping) and samples train with replacement | 6 checks in `check_partitions.py` pass for α=1/100 at `C`=100 and 1000 | **done** — see buildplan §1 |
 | **0.10** | **The dataset-switch checklist** — sweep out every remaining agnews-shaped constant (`N_CLASSES = 4`, `450340`, `0.25`, seq 192, the 20 hardcoded yaml path pairs) | the grep in buildplan §2 returns only registry lookups and arm names | **done (2026-08-12)** — see buildplan §1. One real bug found+fixed: `diagnose_partition_binning.py`'s collapse detector compared to a hardcoded `0.25`, which would miss collapses on yahoo/yelp-p |
 
-#### Phase 1 — B-1 · 1 GPU, no FL stack · ~2 h · **the decision gate** · *state: todo*
+#### Phase 1 — B-1 · **done (2026-08-13)** — see model §7.1/§5.5b
 
-1. **Validation gate first (P7, non-negotiable):** run `probe_inflation_damage.py` unchanged on agnews
-   and reproduce model §7.1 — knee at `Φ` ≈ 3.0 plus the three-mode separation. **Record how the base
-   model is obtained** (P9.3: matching a rig on *accuracy* is not matching it). **If it does not
-   reproduce, stop.**
-2. Wire **yahoo** and **yelp-p** through `expts/dataset_registry.py`; data, partitions and every
-   dataset constant are on disk (buildplan §1). Confirm `p` = 454,954 / 448,802 against `[ProbeDim]`.
-3. Sweep `Φ` ∈ {1.5, 2, 2.5, 3, 3.5, 4} × 3 datasets, reps ≥ 3, mode = `noise`.
-4. Score `Φ_knee` vs `num_labels`; write into model §5.5b, §7.1 and P10 (R3).
-
-| outcome | meaning | what changes |
-|---|---|---|
-| **invariant** ±0.3 | the head-geometry story is wrong, `B_max` is universal | ship a fixed `Φ` target |
-| **monotone** in classes | `B_max` derivable from `num_labels` | still zero-profiling |
-| **erratic** | neither | the injection probe becomes **mandatory online infrastructure** |
+Validation gate reproduced model §7.1 on agnews unchanged (knee at `Φ`≈3.0, three-mode separation exact).
+Yahoo/yelp-p wired through the registry, `p` confirmed against `[ProbeDim]`. Outcome: **erratic** — knees
+neither invariant nor monotone in `num_labels` (agnews ~3.0–3.3; yahoo and yelp-p both ~2.0–2.3 despite
+being at opposite ends of the class-count range). Yahoo's low base accuracy checked against an
+undertraining confound (9-epoch rerun) and ruled out — more training overfits, doesn't help, and the
+early knee holds regardless. Per this task's own decision table, **3.1 (the online injection probe) is
+now mandatory infrastructure**, not a fallback.
 
 #### Phase 2 — launch K-1, P-1, G-2 · overnight · *state: per node in [P5.1](#p51-registered-nodes)*
 
@@ -406,7 +399,7 @@ Design in model §5.5f.
 | # | component | sensed from | replaces | state |
 |---|---|---|---|---|
 | **3.3** | Budget-landing anneal + `Φ` stop | `B` — exact, free | `rm` at a horizon-sized exponent | todo — **build first**: the whole P4.1 gain (0.141 → 0.005) is here, and it needs nothing from 3.1 |
-| **3.1** | Two-phase `B_max`: prior ln 2 → injection probe on a **copy** of `θ_tr`, ~6 evals, on a stride | the model being trained | a profiled constant | todo — phase 1 decides whether the online probe is even needed |
+| **3.1** | Two-phase `B_max`: prior ln 2 → injection probe on a **copy** of `θ_tr`, ~6 evals, on a stride | the model being trained | a profiled constant | todo — **mandatory, not optional**: B-1 (2026-08-13) found `B_max` erratic across datasets, so a fixed/derived constant is ruled out |
 | **3.2** | `ρ*` = `√(2·B_max/T_res)` | 3.1 + control resolution | P4's dose-response lookup | todo — trivial once 3.1 lands |
 | **3.5** | Saturation stop on `dAcc/dΛ` over a 100+ commit window | eval slope | a fixed `comm_round` | todo — the second stop; 3.3's `Φ` stop covers the destructive case alone |
 | **3.4** | Adaptive `K`/`C` and `P` — needs a mid-run `P` change, which nothing supports today | `τ` measured; availability | `aggGoal`, `perturbation_count` fixed offline | **blocked on K-1** (which knob) and P-1 (`τ(P)`) |
@@ -764,13 +757,13 @@ died. This answers what has **never been tried**, and which findings are federat
 | **adaptive `P`** | trainer | GEN | same hill-climb as `K`, but `P` also cuts bytes. Needs a **mid-run `P` change**, which no code path supports, and a per-commit `G_rule` | model §5.5e · P5.2 phase 3.4 |
 | **adaptive `K` / `C`** | selection | **FL** | hill-climb the pair. `τ` half-measured **with `C` and `K` moving together**; `D(·)` never measured against either; which one buys the wall clock is **K-C**. `dynamic_kc`'s `k_max` = 15 is backwards | **K-1** |
 | **staleness / freshness weighting** | aggregation | **FL** | genuine at `C` ≥ 60. The **only** cost of running the cohort wide, so its price — `D(·)` — is what caps it | **C3's freshness half**, the one untried paper claim |
-| **`B_max` across models** | — | GEN | the one constant a new deployment must discover; ~6 evals, forward-only | **B-1** |
+| **`B_max` across models** | — | GEN | transfers across model capacity (`rf`=16 vs 64, §7.1), does NOT transfer across task (B-1, 2026-08-13: agnews/yahoo/yelp-p erratic, not monotone in `num_labels`) | **3.1**, now mandatory |
 | **probe selection on anything but `\|d\|`** — curvature `vᵀHv` · split-half SNR · trust-region | trainer | GEN | the three candidates that are *not* stability-neutral, all already paid for; specified in [P5.3](#p53-open-hypotheses) | **H-H**, then future work |
 | **block-coordinate probing** | trainer | GEN | costed on paper and predicted inert (P5.3), needs `L`× the commits | model §8 — free in MoE |
 | **low-rank / subspace probing** | trainer | GEN | needs a good subspace *and* a way to broadcast it | the other `√(n/p)` escape |
 | **precision (bf16 / fp32)** | trainer | GEN | sets the usable `h` window, so it gates H-S | future work |
 | **adapter placement / PEFT family** | model | GEN | `‖θ_tr‖ ∝ √p` is what makes `p` inert, and it holds for *adapter-style* init | **the assumption most likely to break elsewhere** |
-| **model / task** | — | GEN | every constant is fitted on DistilBERT/agnews — but **only `B_max` is on the operating path** | **B-1** |
+| **model / task** | — | GEN | every OTHER constant is fitted on DistilBERT/agnews — `B_max`, the one constant on the operating path, is now measured erratic across task (B-1) | **3.1** covers `B_max`; the rest is future work |
 | **ω / freshness magnitude** | aggregation | **FL** | ω spans 0.70–0.87 against a ≥10× gap; trust-ratio removes it from magnitude | **C3's magnitude half — parked** |
 | **`C` concurrency** | selection | **FL** | caps `K`; **never varied independently, and every `K` result is confounded with it** | the axis K-1 must **hold fixed** |
 

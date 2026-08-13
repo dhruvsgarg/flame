@@ -233,35 +233,22 @@ launcher exits 0 — all four against their real historical fate (P4/P9.2).
 
 ---
 
-## §3 — Phase 1 · B-1 · 1 GPU, no FL stack · the decision gate
+## §3 — Phase 1 · B-1 · 1 GPU, no FL stack · the decision gate *(landed 2026-08-13)*
 
-**This is the highest-value GPU work in the queue and it needs no FL stack.** It decides whether the
-controller can ship a fixed `Φ` target or needs an online probe (3.1).
+Validation gate reproduced model §7.1 unchanged. Yahoo/yelp-p wired through `dataset_registry`, `p`
+confirmed against `[ProbeDim]` (454,954 / 448,802). Swept `Φ` ∈ {1.5,2,2.5,3,3.5,4} × 3 datasets,
+reps≥3, mode=noise.
 
-1. **Validation gate first, non-negotiable.** Run `scripts/probe_inflation_damage.py` **unchanged** on
-   agnews and reproduce model §7.1: knee at `Φ` ≈ 3.0 plus the three-mode separation. **Record how the
-   base model is obtained** — matching a rig on *accuracy* is not matching it (P9.3: at acc 0.57 a
-   backprop model reads `‖g_test‖` = 1.95 against every arm's 0.25–0.32; match on the quantity the
-   measurement depends on). **If it does not reproduce, stop and fix the rig.**
-2. Wire yahoo and yelp-p through `dataset_registry`. `num_labels` from `label_vocab`; assert `p` =
-   454,954 / 448,802 against `[ProbeDim]`.
-3. Sweep `Φ` ∈ {1.5, 2, 2.5, 3, 3.5, 4} × 3 datasets, **reps ≥ 3**, mode = `noise`.
-4. Score `Φ_knee` vs `num_labels`; write into model §5.5b, §7.1 and P10.
+**Pre-registered prediction refuted.** Predicted monotone in classes (yelp-p > agnews > yahoo); landed
+**erratic** instead — agnews knee ~3.0–3.3, yahoo and yelp-p both ~2.0–2.3 despite opposite ends of the
+class-count range. `expts/prep_b1_configs.py` (new) generates the per-dataset configs; a
+`--phis`/tmp-config-race fix landed in `probe_inflation_damage.py` for the multi-dataset launch. Full
+result and its "3.1 now mandatory" implication: model §7.1/§5.5b, P10, `fl_fwd_ft_practice.md` P5.2
+Phase 1.
 
-**Pre-registered prediction (do not edit after seeing data):** `Φ_peak` falls as class count rises —
-yelp-p > agnews (2.7) > yahoo.
-
-| outcome | what changes |
-|---|---|
-| invariant ±0.3 | `B_max` is universal — ship a fixed `Φ` target, 3.1 becomes unnecessary |
-| monotone in classes | `B_max` derivable from `num_labels` — still zero-profiling |
-| erratic | the injection probe becomes **mandatory online infrastructure** (3.1 is on the critical path) |
-
-**Edge cases.** (a) The injection is on a **copy** of `θ_tr` — the probe must not perturb the model under
-test. (b) `h` must be rescaled when `p` changes (P9.1: `[ProbeDim]` prints nominal `h`, `[FD]` prints the
-real one — read `h√p` off `[FD]`). (c) yelp-p's 2 classes make `loss > ln(num_classes)` a much tighter
-bound; do not reuse agnews' absolute loss thresholds. (d) Report `Φ_knee` with its rep spread — a
-single-rep knee is not a knee.
+**Caveat carried forward:** one training run per dataset (yahoo replicated at 9 epochs to rule out
+undertraining — ruled out, more epochs overfit and if anything sharpen the early knee; agnews/yelp-p not
+yet replicated). Treat as strong preliminary signal, not fully settled per this doc's own 10-arm bar.
 
 ---
 
