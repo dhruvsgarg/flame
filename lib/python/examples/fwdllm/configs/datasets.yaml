@@ -1,0 +1,45 @@
+# Per-dataset facts, in one place. Switching datasets is a flag, not an edit.
+#
+# Read by `expts/dataset_registry.py`; used by run_sequential.sh (--dataset),
+# the partition builder/checker, and the CPU-only preflights. `num_labels` is a
+# CROSS-CHECK only -- the run itself derives it from the data h5's `label_vocab`
+# (trainer/main.py:104, aggregator/main_fedfwd_agg.py:123). The registry refuses
+# to load a dataset whose h5 disagrees.
+#
+# root: override with FWDLLM_DATA_ROOT for a different machine.
+root: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data
+
+datasets:
+  agnews:
+    num_labels: 4
+    # DistilBERT token length over a 20k random sample (scripts/calculate_seq_len_cdf.py):
+    #             p50   p90   p95   p99   max
+    #   agnews     41    57    70   116   340    -> 192 covers ~p99.9
+    #   yahoo      84   267   367   727  2165    -> 256 covers ~p89
+    #   yelp-p    137   374   493   818  1379    -> 256 covers ~p82
+    # 256 is a COST choice, not a coverage one: trainer wall clock is ~linear in
+    # seq length and eight arms have already died on the wall ceiling, so this
+    # buys yahoo/yelp-p most of their mass at 1.33x agnews's per-pass cost
+    # rather than 2.7x (512 = DistilBERT's cap, which would cover ~p99).
+    max_seq_length: 192
+    partition_method: niid_label_clients=100_alpha=1
+    # Index ranges of the official split inside the data h5. agnews states them
+    # in its `attributes` (train_index_list / test_index_list); yahoo and yelp-p
+    # carry no such attribute, so theirs are recovered from the index ranges of
+    # the shipped uniform partitions and confirmed by per-class balance.
+    train_range: [0, 120000]
+    test_range: [120000, 127600]
+
+  yahoo:
+    num_labels: 10
+    max_seq_length: 256
+    partition_method: niid_label_clients=100_alpha=1
+    train_range: [0, 1400000]
+    test_range: [1400000, 1460000]
+
+  yelp-p:
+    num_labels: 2
+    max_seq_length: 256
+    partition_method: niid_label_clients=100_alpha=1
+    train_range: [0, 520000]
+    test_range: [520000, 560000]

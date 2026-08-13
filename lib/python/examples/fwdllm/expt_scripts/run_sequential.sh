@@ -23,7 +23,7 @@
 #   run_sequential.sh [--mode sim|real|both] [--delays on|off]
 #       [--max-runtime-s 600] [--max-data-id 10] [--num-trainers N] [--num-gpus N] [--gpu-ids N1,N2,...]
 #       [--c C] [--c-async C] [--k K] [--agg-goal N] [--min-initial-trainers N]
-#       [--partition-method NAME] [--avail-trace NAME | --avail-traces N1,N2]
+#       [--dataset NAME] [--partition-method NAME] [--avail-trace NAME | --avail-traces N1,N2]
 #       [--only name1,name2] [--stop-on-fail] [--dry-run] [--yes] [--force]
 #       [--show-all]
 #
@@ -46,7 +46,10 @@
 #                    absolute count, or floor(F*N). DEFAULT = N (wait for ALL trainers ->
 #                    set-exact initial cohort real<->sim). frac<1 tolerates stragglers but
 #                    reintroduces a pool-size race; N blocks forever if a trainer never joins.
-#   --partition-method  hyperparameters.partition_method (agnews_partition.h5 group; default uniform/IID).
+#   --dataset         switch dataset: writes expts/dataset_registry.py's data_file_path,
+#                    partition_file_path, max_seq_length, dataset name into BOTH override
+#                    blocks (task 0.8, buildplan §2). Unset ⇒ each yaml's baked (agnews) paths.
+#   --partition-method  hyperparameters.partition_method (<dataset>_partition.h5 group; default uniform/IID).
 #   --var-threshold / --max-iter-per-data-id  variance gate / force-commit cap (review each run, tier ①).
 #   --avail-trace / --avail-traces  availability trace(s); Phase 1 uses syn_0.
 #   --only           baseline subset (default all three).
@@ -110,6 +113,8 @@ MIN_INIT_TRAINERS=""
 MIN_INIT_FRAC=""
 AVAIL_TRACE=""
 AVAIL_TRACES=""
+DATASET=""             # --dataset NAME: registry-derived data_file_path/partition_file_path/
+                        # max_seq_length/name into both override blocks. unset => yaml default (agnews)
 PARTITION_METHOD=""
 VAR_THRESHOLD=""       # variance-pass gate threshold; varies with data heterogeneity -> review every run
 SERVER_UPDATE_AUDIT="" # I-1 audit: per-commit ||delta||/||w||. OFF by default -- never on a replicate leg
@@ -163,7 +168,7 @@ CLEAN=0           # --clean: auto-kill stray workers from a prior run (default: 
 usage() {
   echo "usage: $0 [--mode sim|real|both] [--delays on|off] [--max-runtime-s S] [--max-data-id N]" >&2
   echo "          [--num-trainers N] [--num-gpus N] [--gpu-ids N1,N2,...] [--c C] [--c-async C] [--k K] [--agg-goal N]" >&2
-  echo "          [--min-initial-trainers N] [--partition-method NAME]" >&2
+  echo "          [--min-initial-trainers N] [--dataset NAME] [--partition-method NAME]" >&2
   echo "          [--var-threshold F] [--max-iter-per-data-id N] [--delay-divisor F (=--delay-factor; DIVISOR, <1 lengthens)]" >&2
   echo "          [--delay-floor F (floor on raw registry delay, applied before the divisor)]" >&2
   echo "    --delays/--delay-divisor/--delay-floor default to each baseline's settled value" >&2
@@ -206,6 +211,7 @@ while [[ $# -gt 0 ]]; do
     --min-initial-frac)     MIN_INIT_FRAC="$2"; shift 2 ;;
     --avail-trace)          AVAIL_TRACE="$2"; shift 2 ;;
     --avail-traces)         AVAIL_TRACES="$2"; shift 2 ;;
+    --dataset)              DATASET="$2"; shift 2 ;;
     --partition-method)     PARTITION_METHOD="$2"; shift 2 ;;
     --var-threshold)        VAR_THRESHOLD="$2"; shift 2 ;;
     --server-update-audit)  SERVER_UPDATE_AUDIT=1; shift ;;
@@ -291,6 +297,7 @@ if isinstance(C, dict):
 elif C not in (None, {}):
     emit("C_SYNC", C); emit("C_ASYNC", C)
 emit("PART", c.get("partition_method")); emit("TRACE", c.get("avail_trace"))
+emit("DATASET", c.get("dataset"))
 _dl = c.get("delays")
 if _dl is not None:
     emit("DELAYS", "on" if _dl in (True, "on", "ON", "true", 1) else "off")
@@ -312,6 +319,7 @@ PY
   [ -z "$SEL_C" ]             && [ -n "${REG_C_SYNC:-}" ]          && SEL_C="$REG_C_SYNC"
   [ -z "$SEL_C_ASYNC" ]       && [ -n "${REG_C_ASYNC:-}" ]         && SEL_C_ASYNC="$REG_C_ASYNC"
   [ -z "$PARTITION_METHOD" ]  && [ -n "${REG_PART:-}" ]            && PARTITION_METHOD="$REG_PART"
+  [ -z "$DATASET" ]           && [ -n "${REG_DATASET:-}" ]         && DATASET="$REG_DATASET"
   [ -z "$AVAIL_TRACE" ] && [ -z "$AVAIL_TRACES" ] && [ -n "${REG_TRACE:-}" ] && AVAIL_TRACE="$REG_TRACE"
   [ -z "$TARGET_ACC" ]        && [ -n "${REG_TARGET_ACC:-}" ]      && TARGET_ACC="$REG_TARGET_ACC"
   [ -z "$CONVERGE_WINDOW" ]   && [ -n "${REG_CONVERGE_WINDOW:-}" ] && CONVERGE_WINDOW="$REG_CONVERGE_WINDOW"
@@ -399,7 +407,7 @@ EXPT_RUNNER_DIR="$EXPT_RUNNER_DIR" \
 MODE="$MODE" DELAYS="$DELAYS" MAX_RUNTIME_S="$MAX_RUNTIME_S" MAX_DATA_ID="$MAX_DATA_ID" \
 NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" GPU_IDS="$GPU_IDS" SEL_C="$SEL_C" SEL_C_ASYNC="$SEL_C_ASYNC" \
 SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" MIN_INIT_FRAC="$MIN_INIT_FRAC" \
-PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
+DATASET="$DATASET" PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
 SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" POOL_SPLIT_HALF_AUDIT="$POOL_SPLIT_HALF_AUDIT" \
 LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
@@ -423,9 +431,19 @@ python - <<'PY'
 import os, sys, copy, yaml, json, hashlib, glob, re
 sys.path.insert(0, os.environ["EXPT_RUNNER_DIR"])
 import expt_runner
+# PYTHONPATH already carries REPO_ROOT/lib/python (expt_pin_pythonpath), so the
+# registry imports as a normal package -- no extra sys.path needed.
+from examples.fwdllm.expts import dataset_registry as dsreg
+from examples.fwdllm.expts import wall_clock_preflight as wcp
 
 env = os.environ.get
 MODE = env("MODE"); DELAYS = env("DELAYS")
+DATASET = env("DATASET") or ""
+if DATASET and DATASET not in dsreg.names():
+    # exit 3, not 2: 2 means "blocking check, --force can override" (render_and_gate's
+    # code), which is wrong here -- --force cannot rescue an unknown dataset name.
+    sys.stderr.write(f"ERROR: --dataset '{DATASET}' unknown; known: {dsreg.names()}\n")
+    sys.exit(3)
 MAX_RUNTIME_S = int(env("MAX_RUNTIME_S")); MAX_DATA_ID = int(env("MAX_DATA_ID"))
 NUM_TRAINERS = env("NUM_TRAINERS") or ""
 NUM_GPUS = env("NUM_GPUS") or ""
@@ -588,6 +606,17 @@ def patch(exp, run_key, variant, trace):
     if _bl_delay_floor:
         exp["trainer"].setdefault("hyperparameters", {})
         exp["trainer"]["hyperparameters"]["training_delay_floor_s"] = float(_bl_delay_floor)
+    # --dataset (task 0.8): registry's 4 keys into BOTH override blocks, same
+    # pattern as --partition-method below. Applied first so an explicit
+    # --partition-method still wins on partition_method specifically.
+    if DATASET:
+        _ov = dsreg.hyperparameter_overrides(DATASET)
+        for _k, _v in _ov.items():
+            h[_k] = _v
+            exp["trainer"]["config_overrides"]["hyperparameters"][_k] = _v
+        # names the run for the data it used (0.8 spec); cosmetic for path-style
+        # data, same as dirichlet_alpha below.
+        exp["trainer"].setdefault("dataset", {})["name"] = DATASET
     if PART:
         h["partition_method"] = PART
         exp["trainer"]["config_overrides"]["hyperparameters"]["partition_method"] = PART
@@ -733,7 +762,10 @@ def patch(exp, run_key, variant, trace):
         h.setdefault("trackTrainerAvail", {})["trace"] = trace
     # name / job id: carry a _real|_sim tag so scripts.parity.cli can glob the pair.
     n = int(NUM_TRAINERS) if NUM_TRAINERS else exp["trainer"].get("num_trainers", 10)
-    parts = [run_key, f"n{n}", "smoke"]
+    parts = [run_key]
+    if DATASET:
+        parts.append(DATASET)
+    parts += [f"n{n}", "smoke"]
     if trace:
         parts.append(trace)
     parts.append(variant)
@@ -776,6 +808,8 @@ for trace in traces:
                 "n_gpus": e0.get("execution", {}).get("num_gpus"),
                 "gpu_ids": e0.get("execution", {}).get("gpu_ids"),
                 "partition": h0.get("partition_method"),
+                "dataset": h0.get("dataset"),
+                "partition_file_path": h0.get("partition_file_path"),
                 "delays": e0["trainer"].get("enable_training_delays"),
                 # H13 A/B knob: yaml-only, so condition_fp cannot see it (§F-18).
                 # Captured per variant and cross-checked below.
@@ -794,6 +828,47 @@ for trace in traces:
 
             per_baseline[run_key]["jvp_eval_mode"][variant] = _t_hp0.get(
                 "jvp_eval_mode", "ABSENT")
+
+            # Task 0.7: wall-clock budget preflight (fl_fwd_ft_buildplan.md 0.7) --
+            # the cos audit taxes every COMMIT, so a vclock-healthy budget can still
+            # blow the REAL wall ceiling; this has cost eight arms (P4/P9.2). Only
+            # defined under commit_gate=n_target, whose N_req closed form this
+            # mirrors (aggregator/FedSgdAggregator.py:418) -- `var` has no such form.
+            if h0.get("commit_gate") == "n_target" and e0["aggregator"].get("agg_goal"):
+                _p_wc = dsreg.get(h0.get("dataset") or "agnews").probe_dim(
+                    int(h0.get("adapter_reduction_factor") or 16))
+                # (c)/(d): sim's REAL-wall cap is sim_wall_ceiling_s (code default
+                # max_runtime_s*20); real mode has no such knob -- its outer safety
+                # is max_experiment_runtime_s (patch()'s own default, above).
+                if variant == "sim":
+                    _ceiling = float(h0.get("sim_wall_ceiling_s") or (MAX_RUNTIME_S * 20))
+                else:
+                    _ceiling = float(h0.get("max_experiment_runtime_s")
+                                      or (MAX_RUNTIME_S + 1800.0))
+                try:
+                    _proj = wcp.project(
+                        p=_p_wc, rho_star=h0.get("rho_star"),
+                        gate_safety_s=h0.get("gate_safety_s"),
+                        rule=h0.get("probe_combine"),
+                        perturbation_count=(_t_hp0.get("perturbation_count")
+                                             or h0.get("perturbation_count")),
+                        K=int(e0["aggregator"]["agg_goal"]),
+                        vclock_budget_s=float(MAX_RUNTIME_S), real_wall_ceiling_s=_ceiling,
+                        cos_audit_on=bool(h0.get("cos_ground_truth_audit")),
+                        cos_probe_every=h0.get("cos_probe_every"),
+                        cos_probe_batch_size=h0.get("cos_probe_batch_size"))
+                except ValueError as _e:
+                    checks.append({"name": f"wall-clock budget preflight ({run_key} {variant})",
+                                   "level": "error", "detail": str(_e)})
+                else:
+                    # (e): print the three factors, not just a verdict.
+                    if _proj.breach:
+                        checks.append({"name": f"wall-clock budget preflight ({run_key} {variant})",
+                                       "level": "error",
+                                       "detail": f"projected real wall exceeds the ceiling: {_proj.explain()}"})
+                    else:
+                        checks.append({"name": f"wall-clock budget preflight ({run_key} {variant})",
+                                       "level": "ok", "detail": _proj.explain()})
 
 with open(MANIFEST, "w") as fh:
     for name, out, variant, budget in manifest:
@@ -838,6 +913,7 @@ _res_delays = sorted(
 _cond = {
     "N": NUM_TRAINERS or "yaml", "K": SEL_K or "yaml",
     "C_sync": SEL_C or "yaml", "C_async": SEL_C_ASYNC or SEL_C or "yaml",
+    "dataset": DATASET or "yaml",
     "partition": _res_parts, "trace": _res_traces,
     "delays": _res_delays,
     "target_acc": TARGET_ACC or "none",
@@ -888,6 +964,9 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
              "(N/K/C/partition/trace/delays/caps). Differs ⇒ mistyped knob."},
     mode_row,
     {"label": "baselines", "value": " ".join(rk for rk, *_ in runs)},
+    scalar_row("dataset", DATASET if DATASET else "agnews (yaml default)", bool(DATASET),
+               note="registry-derived data_file_path/partition_file_path/max_seq_length, "
+                    "both roles. unset ⇒ each yaml's baked (agnews) paths"),
     # The two similarly-named-but-DIFFERENT knobs, disambiguated + on their own rows:
     scalar_row("max_runtime_s", MAX_RUNTIME_S, MAX_RUNTIME_S_SET,
                note=("--max-runtime-s: REAL mode = wall-clock seconds; SIM mode = VIRTUAL/vclock "
@@ -1064,6 +1143,17 @@ for rk in (r[0] for r in runs):
         checks.append({"name": f"sim charge profile readable ({rk})", "level": "error",
                        "detail": f"{prof}: {_e}"})
         continue
+    # 0.8 edge case (d): every existing profile was sourced from agnews reals
+    # (no per-dataset tag on the profile yet). Per-pass cost scales with
+    # max_seq_length, so charging a non-agnews sim leg against it silently
+    # mis-prices the vclock -- refuse explicitly rather than reuse it quietly.
+    if DATASET and DATASET != "agnews":
+        checks.append({"name": f"sim charge profile matches dataset ({rk})", "level": "error",
+                       "detail": f"{prof} was profiled on agnews (max_seq_length 192); "
+                                 f"--dataset {DATASET} runs at max_seq_length "
+                                 f"{dsreg.get(DATASET).max_seq_length}, so per-pass cost differs "
+                                 f"and this profile mis-prices the vclock. Profile {DATASET} "
+                                 f"first (profile_sim_charges.py), or --force to proceed anyway."})
     _foreign, _dates = [], set()
     for _lbl, _entries in _pf.items():
         for _pk, _e in (_entries or {}).items():
@@ -1183,10 +1273,42 @@ for rk in (r[0] for r in runs):
     if isinstance(n, int) and isinstance(mi, int) and n < mi:
         checks.append({"name": f"num_trainers >= minInitialTrainers ({rk})", "level": "error",
                        "detail": f"num_trainers={n} < minInitialTrainers={mi} — join barrier never clears"})
-# non-uniform partition: can't verify the H5 group from here.
-if PART and PART != "uniform":
-    checks.append({"name": "partition group exists in agnews_partition.h5", "level": "warn",
-                   "detail": f"verify group '{PART}' exists"})
+# non-uniform partition: assert the group actually exists in the RESOLVED
+# partition file (0.8 edge case a). Gated on the RESOLVED partition_method/
+# partition_file_path (read back from the patched cfg), not on whether --partition-
+# -method was passed this invocation -- a --dataset switch alone inherits the
+# yaml's baked group name against a NEW file, which is exactly the silent
+# wrong-dataset-file risk this check exists to catch.
+import h5py as _h5py
+_pf_seen = {}
+for rk in (r[0] for r in runs):
+    b = per_baseline.get(rk, {})
+    resolved_part = b.get("partition")
+    if not resolved_part or resolved_part == "uniform":
+        continue
+    pfp = b.get("partition_file_path")
+    if not pfp:
+        checks.append({"name": f"partition group exists ({rk})", "level": "warn",
+                       "detail": f"no resolved partition_file_path -- verify group '{resolved_part}' exists"})
+        continue
+    if pfp not in _pf_seen:
+        try:
+            with _h5py.File(pfp, "r") as _f:
+                _pf_seen[pfp] = set(_f.keys())
+        except OSError as _e:
+            _pf_seen[pfp] = None
+            checks.append({"name": f"partition file readable ({rk})", "level": "error",
+                           "detail": f"{pfp}: {_e}"})
+            continue
+    _groups = _pf_seen[pfp]
+    if _groups is None:
+        continue
+    if resolved_part in _groups:
+        checks.append({"name": f"partition group exists ({rk})", "level": "ok",
+                       "detail": f"'{resolved_part}' found in {os.path.basename(pfp)}"})
+    else:
+        checks.append({"name": f"partition group exists ({rk})", "level": "error",
+                       "detail": f"'{resolved_part}' NOT in {pfp} -- wrong dataset's partition file?"})
 # parity pairing naming (only meaningful for a both-mode matrix).
 if MODE == "both":
     ok_pair = all(any(n.endswith("_real") for n, *_ in manifest) and

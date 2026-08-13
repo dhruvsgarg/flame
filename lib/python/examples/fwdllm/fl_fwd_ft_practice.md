@@ -4,12 +4,14 @@
 > Cited here as "model §x". **This document owns every number a run produced**, plus the flags, arms,
 > dead ends, instruments and launch procedure.
 >
-> **Two ledgers are the source of truth: [P3](#p3--knob-ledger) (knobs, incl. build status) and
-> [P4](#p4--arm-ledger) (arms). No status tags anywhere else.**
+> **Three ledgers are the source of truth: [P3](#p3--knob-ledger) (knobs), [P4](#p4--arm-ledger) (arms)
+> and [P5.2](#p52-execution-plan--to-a-zero-input-run) (the build — every task, with its state).
+> No status tags anywhere else.**
 
 | you want… | go to |
 |---|---|
 | **what to do next** | **[P5](#p5--the-queue)** |
+| **how to build any P5 row** | **[fl_fwd_ft_buildplan.md](fl_fwd_ft_buildplan.md)** — specs, edge cases, gates |
 | what to launch an arm with · what defaults to change | [P2](#p2--the-shipped-stack) · [P2.1](#p21-ship-checklist) |
 | what a lever did, and its flag | [P3](#p3--knob-ledger) |
 | what an arm scored | [P4](#p4--arm-ledger) |
@@ -72,8 +74,9 @@ cos_ground_truth_audit = on, cos_probe_batch_size >= 1024, cos_probe_every = 25
 monitors             = ||theta_tr||, rho, top_class_share;  score B and A
 ```
 
-**`K`/`C` is not a setting but a standing instruction: hill-climb `K/τ(K)` against availability.** 10/30
-is the tested point, `D(K)` is unmeasured — the top time lever and the least explored (model §5.5e).
+**`K`/`C` is not a setting but a standing instruction: hill-climb the pair against availability.** 10/30
+is the tested point; `D(·)` is unmeasured against either, and **which of the two carries the wall clock is
+itself open** (model K-C, §5.5e). The least-explored corner of the stack.
 
 ### P2.1 Ship checklist
 
@@ -89,9 +92,9 @@ operator signs off.*
 | **5** | `gate_safety_s` | 0.4 → **1.5** | G-1b: 2× efficiency at matched `B` | ready — ask |
 | **5b** | `gate_rho_ref` | `setpoint` → **`annealed`** | model §4.6 | **blocked — G-2 registered** |
 | **6** | `cos_probe_every` | 1 → **25** with the audit on | B19; emit-only, so a cost default | ready, with item 9 |
-| **7** | **a controller** replacing the one-shot setpoint | fixed schedule → two-phase `B_max`, budget-landing anneal, adaptive `K`+`P`, saturation stop | model §1.4 item 5 | **not started — top of the queue** |
+| **7** | **a controller** replacing the one-shot setpoint | fixed schedule → two-phase `B_max`, budget-landing anneal, adaptive `K`/`C`+`P`, saturation stop | model §1.4 item 5 | **not started — tracked as [P5.2](#p52-execution-plan--to-a-zero-input-run) phase 3** |
 | **8** | `adapter_reduction_factor` | 16 → **64** + `FWDLLM_FD_SCALE_INVARIANT=1` | 3/3; cost knob only | ready |
-| **9** | `replay_scoring.py` `BLOCK` = 50 | → block by **probe fires** | at stride 25 a 50-commit block holds 2 fires; the `len(blk) < 5` guard drops every row | one-line tool fix |
+| **9** | `replay_scoring.py` `BLOCK` = 50 | → block by **probe fires** | at stride 25 a 50-commit block holds 2 fires; the `len(blk) < 5` guard drops every row | **landed (2026-08-12)**, `--cos-block-fires` |
 
 **Items 1–6, 8 are decisions waiting on you; 9 is a tool fix. Item 7 is the only genuine engineering** —
 G-1b promoted it from "needed" to "the only remaining route", since `s` cannot bound `Φ`.
@@ -117,7 +120,7 @@ Nothing reaches a verdict without predicted-vs-observed numbers and a run id.
 | **`annealed` vs `setpoint`** | at matched **commits** `setpoint` wins every column; over matched **vclock** `annealed` gets 2.3× more commits and ends higher (0.821 vs 0.804) | **not right vs wrong** — progress-per-wall-clock vs per-commit. Model §4.6 favours `annealed`; **G-2 is the A/B** |
 | **`p`** · `adapter_reduction_factor` + `FWDLLM_FD_SCALE_INVARIANT` | `cos ∝ 1/√p` confirmed directly. But `‖θ_tr‖` 13.37/9.65/6.86 against `√p` 671/479/344 — ratio constant to **±1.3%** — so `A` is `p`-free. At matched `ρ*`,`N`,`T`: `A` = 1.64 (`rf`=16) vs **1.63** (`rf`=64), acc 0.592 vs 0.605 | **WORKS as built; INERT at a pinned `ρ*`.** The old ladder's win was raw SGD lowering `ρ` (0.2008→0.1863). Keep `rf`=64 for memory only |
 | **`K` cohort width** | `ρ·√N` invariant to 4% over `K` 10→50; naive `ρ ∝ 1/√K` **falsified** (the gate returns the gain as fewer `I`). `K`≥20 holds **0.860** where `K`=10 collapses | **works**, but `K` is not a knob on `N` — set `K` and the gate together |
-| **`K` at fixed `n_req`** | `K` 30→50: `I` 4→2 but vclock/round trip 8.9→12.3 s ⇒ commits/vclock-h **101.6 → 146.4 (1.44×)**, progress/vclock-h ×1.32. Staleness ≥1 on **0.143/0.458/0.408** of uploads at `K` = 10/30/50, max **1/2/4**; `pastdated_commits` max 1/0/**34** | **WORKS at ~70% efficiency**, and wide cohorts **do** produce genuine staleness (H-E answered) |
+| **`K` at fixed `n_req`** | `K` 30→50: `I` 4→2 but vclock/round trip 8.9→12.3 s ⇒ commits/vclock-h **101.6 → 146.4 (1.44×)**, progress/vclock-h ×1.32. Staleness ≥1 on **0.143/0.458/0.408** of uploads at `K` = 10/30/50, max **1/2/4**; `pastdated_commits` max 1/0/**34** | **WORKS at ~70% efficiency**, and wide cohorts **do** produce genuine staleness (H-E answered). **`C` moved with `K` on all three arms** (30/60/100, `C/K` = 3/2/2), so neither the 1.44× nor the staleness rise is attributable to `K`: model K-C, and staleness tracks `C`, not `C/K` |
 | **`I` iterations/bin** | at `K`=50 the gate cut `I` 18.5 → 5.9 — 3× fewer round trips at slightly larger `N`, best peak of the 08-07 portfolio (0.861), held | **works — buy `N` with `K`, not `I`** |
 | **`η` server LR** | `ρ` 0.2004 → 0.0404 → 0.0101 over `η` .01/.002/.0005, **to 1%**. `η`=0.002 reaches 0.601 @ c120 / 0.815 @ c327 vs `K`≥20's 0.860 | **works as physics, FAILED as a fix** — 1:1 cost, and `Σρ²` still diverges |
 | **`P` under selection** | `E` 2.988 (P=10) → 4.744 (P=30) over 37k events; predicted `ρ` ratio 1.260, **measured 1.236 (2%)**. `P`=30 learns faster per commit and **collapses sooner** (doubling 57 vs 68) | **prediction confirmed, including its harmful direction.** Never sweep `P` under selection again. `P` under `mean` is untried — P-1 |
@@ -320,7 +323,9 @@ shipped gate, averaging buys **wall clock (~6.5× fewer round trips), not aim.**
 ## P5 — The queue
 
 **The estimator is finished; what is left is the controller.** Every row is scored on whether it removes
-a profiling dependency or moves `t`.
+a profiling dependency or moves `t`. **[P5.2](#p52-execution-plan--to-a-zero-input-run) is the build
+ledger** — task state lives there and nowhere else; P5.1 holds the registered arms, P5.3 the open
+hypotheses.
 
 ### P5.1 Registered nodes
 
@@ -330,7 +335,7 @@ before launch (R6). Delete a row when its run lands.*
 | node | arm | prediction | sinking condition / kill |
 |---|---|---|---|
 | **B-1** | `probe_inflation_damage.py`, DistilBERT + adapters, **yahoo (10 classes)** and **yelp-p (2)** vs agnews (4). ~6 evals each, no training, no FL stack. Settles whether `B_max` transfers | **`Φ_peak` falls as class count rises**: yelp-p > agnews (2.7) > yahoo — collapse is head degeneracy, so more classes ⇒ narrower decision regions | **Either outcome advances the method.** Invariant ±0.3 across 5× in classes ⇒ `B_max` is *more* universal than claimed. Monotone ⇒ `B_max` is **derivable from `num_labels`** |
-| **K-1** | `K` ∈ {10,20,30} at fixed `n_req`, `C`=30, `mean`, `trust_ratio`, `n_target` `s`=1.5, `ρ*`=0.06, stride 25. Settles `τ(K)` and **`D(K)`** | `τ ∝ K^0.63`, so `K/τ(K)` still improves as `K^0.37`. **`D` falls with `K`**: staleness ≥1 on 14%/46% of uploads at `K` = 10/30 ⇒ `D(30)/D(10)` ≈ **0.63** | **`D` flat within ±20% ⇒ staleness is free at these levels** and `dynamic_kc`'s `k_max`=15 is far too conservative. Kill if `n_req` ≠ 72 or `ρ` ≠ 0.06. Needs **≥1000 commits/arm** for ~40 fires |
+| **K-1** | `K` ∈ {10,20,30} at fixed `n_req`, **`C` = 30 on all three** — the first arm to move `K` without `C`. `mean`, `trust_ratio`, `n_target` `s`=1.5, `ρ*`=0.06, stride 25. Settles `τ(K)`, **`D(K)`** and **K-C** | **Two rival predictions, and the arm separates them.** *Pooling model (P2 as written):* `τ ∝ K^0.63` ⇒ commits/vclock-h improves as `K^0.37` (**×1.5** over 10→30) and `D` falls with `K` ⇒ `D(30)/D(10)` ≈ **0.63**. *Throughput model (K-C):* commit rate is set by `C/n_req` ⇒ **flat in `K` within ±15%**, and `D` **flat** too, since staleness = `C/n_req` = 0.42 on all three | **Flat commit rate ⇒ `K` is not a time lever**, the controller hill-climbs `C`, and model §4.6(c)/§5.2/§5.5e are rewritten around `C`. **`D` flat within ±20% ⇒ staleness is free at these levels** and `dynamic_kc`'s `k_max`=15 is far too conservative. Kill if `n_req` ≠ 72, `ρ` ≠ 0.06, or `C` ≠ 30 on any arm. Needs **≥1000 commits/arm** for ~40 fires |
 | **P-1** | `P` ∈ {10,30}, **`probe_combine=mean`**, `N` pinned. **A build prerequisite, not an ablation** — D4 makes `P` sensed, so the controller needs `τ(P)` | `cos` **×1.73**, `Λ`/commit ×1.73, round trips **÷3**, bytes **÷3**, total client compute **invariant** | **`τ(30)/τ(10)` ≥ 2.5 ⇒ compute-bound, the gain cancels** — report and stop. `P` is a **trainer-side** override; verify via `[probe_combine=mean] P=…` in the trainer log |
 | **G-2** | `gate_rho_ref` **`annealed` vs `setpoint`**, `ρ*`=0.06, `rm`, matched vclock. P2 was changed on a re-read of two old arms, not an A/B | `annealed` achieves the time bound to **≤2%** (as `013917` did); `setpoint` misses by **~8%** (as `035045` did). At matched vclock `annealed` ends higher | **`setpoint` as tight as `annealed` ⇒ the `s`-constant claim is wrong and P2 reverts.** Never run `annealed` at `ρ*` ≤ 0.01 — `220627`'s dead zone |
 
@@ -340,26 +345,41 @@ before launch (R6). Delete a row when its run lands.*
 the same binary and the same flags**, no operator input beyond model / PEFT / `p`. **If the second run
 needs one edit, the method is not general.**
 
+**How this table is kept.** It is the **build ledger** — one row per task, `state` ∈ `todo` · `wip` ·
+`done` · `blocked` · `dropped`, edited in place (R1). A row goes `done` only when its sanity gate passes;
+the phase's rows are deleted once its result has landed in [P3](#p3--knob-ledger),
+[P4](#p4--arm-ledger) or the model doc (R3). **Order within a phase is by impact, not by number.**
+
+> **[fl_fwd_ft_buildplan.md](fl_fwd_ft_buildplan.md) owns the *how* for every row below** — files,
+> algorithm, edge cases and sanity gate, one spec per task, plus the conventions (§0) every spec
+> inherits. **State stays here; specs stay there.** Its §1 holds the dataset substrate table (`p`, split,
+> shards, bins/round, sequence length per dataset) that phases 1–4 read.
+
 #### Phase 0 — unblock the instruments · no GPU · ~90 min
 
 *Three are latent bugs that only fire once the dataset changes.*
 
-| # | task | sanity gate |
-|---|---|---|
-| **0.1** | Fix `replay_scoring.py --cos` block sizing — `BLOCK` = 50 commits with a `len(blk) < 5` guard yields **zero rows** at stride 25. Block by *probe fires* | reproduces P4.2: `112201` → 0.1485 ± 0.0200, `145729` → 0.1035 ± 0.0172 |
-| **0.2** | Make `p` **dataset-derived**. `P_BY_RF` pins 450,340 = agnews' 4-label classifier; classifier = `768·num_labels + num_labels`, so **yahoo → 454,954**, **yelp-p → 448,802**. Read from `[ProbeDim]`, keep the table as fallback | agnews still 450,340; every P4 number unchanged |
-| **0.3** | Generalise the class-skew preflight. `test_cos_probe.py:223` asserts `share < 0.5`, encoding "balanced = 0.25" — an agnews fact. **With 2 classes balanced *is* 0.50, so it refuses to launch yelp-p.** Use `share < max(0.5, 2/num_labels)` | passes balanced 2/4/10, **still fails** the single-class fixture |
-| **0.4** | Make `G_rule` **per-commit** in the scorer — D4 makes `P` adaptive, so `Λ = Σρ_t·√(G_rule_t·N_t/p)` and the time law's pooling variable becomes `Σ G_rule_t·N_t` | constant-`P` arms score identically to today |
-| **0.5** | Commit the Φ-stop replay as `expt_scripts/replay_phi_stop.py` — C-1's acceptance test | reproduces P4.1: 0.0054 at `Φ`=2.7 vs 0.1408 for no stop |
+| # | task | sanity gate | state |
+|---|---|---|---|
+| **0.1** | Fix `replay_scoring.py --cos` block sizing — `BLOCK` = 50 commits with a `len(blk) < 5` guard yields **zero rows** at stride 25. Block by *probe fires* | reproduces P4.2: `112201` → 0.1485 ± 0.0200, `145729` → 0.1035 ± 0.0172 | **done (2026-08-12)** — see buildplan §2 |
+| **0.2** | Make `p` **dataset-derived**. `P_BY_RF` pins 450,340 = agnews' 4-label classifier; classifier = `768·num_labels + num_labels`, so **yahoo → 454,954**, **yelp-p → 448,802**. Read from `[ProbeDim]`, keep the table as fallback | agnews still 450,340; every P4 number unchanged | **done (2026-08-12)** — see buildplan §2 |
+| **0.3** | Generalise the class-skew preflight. `test_cos_probe.py:223` asserts `share < 0.5`, encoding "balanced = 0.25" — an agnews fact. **With 2 classes balanced *is* 0.50, so it refuses to launch yelp-p.** | passes balanced 2/4/10, **still fails** the single-class fixture | **done** — `max_dominant_share(K)` = `1/K + 0.25`, shared by the test and the aggregator's own warning |
+| **0.4** | Make `G_rule` **per-commit** in the scorer — D4 makes `P` adaptive, so `Λ = Σρ_t·√(G_rule_t·N_t/p)` and the time law's pooling variable becomes `Σ G_rule_t·N_t` | constant-`P` arms score identically to today | **done (2026-08-12)** — see buildplan §2 |
+| **0.5** | Commit the Φ-stop replay as `expt_scripts/replay_phi_stop.py` — C-1's acceptance test | reproduces P4.1: 0.0054 at `Φ`=2.7 vs 0.1408 for no stop | **done (2026-08-12)** — see buildplan §2 (no-stop worst arm exact; two mean-only cells 20-35% high, traced to a deleted-from-disk α=0.1 arm, not re-derivable) |
+| **0.6** | **K-C, rung 1.** Replay commits/vclock-h and staleness on the three existing `K`/`C` arms against both models (`C/(n_req·τ)` vs `K/τ(K)`). Confounded by construction, so it **falsifies arithmetic, never decides** — it sizes K-1 | the `C`-model reproduces 101.6 / 146.4 commits/vclock-h to ≤15%, or K-1's prediction is rewritten before launch | **done (2026-08-12)** — see buildplan §2 (100.7/144.4, staleness/pastdated exact; `K`=10 leg not on disk) |
+| **0.7** | **The wall-clock budget preflight** ([P9.1](#p91-preflight)) — projected real wall vs `sim_wall_ceiling_s`, refuse on breach. **Has cost eight arms**; every phase-2 arm is exposed to it | refuses `002208`'s config (85 s/commit × 1,000 commits ≫ 14,400 s), passes a stride-25 arm | **done (2026-08-12)** — see buildplan §2 |
+| **0.8** | **`--dataset NAME` in `run_sequential.sh`**, threaded like `--partition-method`, writing the registry's 4 keys into **both** override blocks. Today the paths are hardcoded in 2 blocks of ~20 yamls | `--dry-run --dataset yahoo` shows yahoo paths + seq 256 in both roles; unset is byte-identical | **done (2026-08-12)** — see buildplan §1; sanity script `expt_scripts/test_dataset_launcher.py` (17/17 checks) |
+| **0.9** | **niid partitions for yahoo and yelp-p.** Neither had *any* niid group; yahoo's `uniform_client_1000` also draws test from inside the train range (31,689 overlapping) and samples train with replacement | 6 checks in `check_partitions.py` pass for α=1/100 at `C`=100 and 1000 | **done** — see buildplan §1 |
+| **0.10** | **The dataset-switch checklist** — sweep out every remaining agnews-shaped constant (`N_CLASSES = 4`, `450340`, `0.25`, seq 192, the 20 hardcoded yaml path pairs) | the grep in buildplan §2 returns only registry lookups and arm names | **done (2026-08-12)** — see buildplan §1. One real bug found+fixed: `diagnose_partition_binning.py`'s collapse detector compared to a hardcoded `0.25`, which would miss collapses on yahoo/yelp-p |
 
-#### Phase 1 — B-1 · 1 GPU, no FL stack · ~2 h · **the decision gate**
+#### Phase 1 — B-1 · 1 GPU, no FL stack · ~2 h · **the decision gate** · *state: todo*
 
 1. **Validation gate first (P7, non-negotiable):** run `probe_inflation_damage.py` unchanged on agnews
    and reproduce model §7.1 — knee at `Φ` ≈ 3.0 plus the three-mode separation. **Record how the base
    model is obtained** (P9.3: matching a rig on *accuracy* is not matching it). **If it does not
    reproduce, stop.**
-2. Wire **yahoo** and **yelp-p**; both `.h5` files and partitions are on disk, `num_labels` comes from
-   `len(attributes["label_vocab"])`. Confirm `p` = 454,954 / 448,802.
+2. Wire **yahoo** and **yelp-p** through `expts/dataset_registry.py`; data, partitions and every
+   dataset constant are on disk (buildplan §1). Confirm `p` = 454,954 / 448,802 against `[ProbeDim]`.
 3. Sweep `Φ` ∈ {1.5, 2, 2.5, 3, 3.5, 4} × 3 datasets, reps ≥ 3, mode = `noise`.
 4. Score `Φ_knee` vs `num_labels`; write into model §5.5b, §7.1 and P10 (R3).
 
@@ -369,29 +389,29 @@ needs one edit, the method is not general.**
 | **monotone** in classes | `B_max` derivable from `num_labels` | still zero-profiling |
 | **erratic** | neither | the injection probe becomes **mandatory online infrastructure** |
 
-#### Phase 2 — launch K-1, P-1, G-2 · overnight
+#### Phase 2 — launch K-1, P-1, G-2 · overnight · *state: per node in [P5.1](#p51-registered-nodes)*
 
-Predictions and kills in [P5.1](#p51-registered-nodes).
+Predictions and kills in [P5.1](#p51-registered-nodes). **K-1 leads**: it is the only one that changes a
+design decision in phase 3 (which knob 3.4 climbs), and phase 0.6 sizes it.
 
 > **Preflight, do not skip.** `--dry-run`, then `--only --yes --clean --force`; `--num-trainers 100`;
-> assert `⌈n_req/K⌉ ≤ max_iter`. **The wall-clock budget check is still unbuilt (P9.1) and has cost eight
-> arms** — do it by hand: stride-25 audit ≈ 3.4 s/commit amortised × projected commits vs
-> `sim_wall_ceiling_s`.
+> assert `⌈n_req/K⌉ ≤ max_iter`. **The wall-clock budget check (task 0.7) now runs inside `--dry-run`
+> itself** and refuses on breach — no longer by hand.
 
 #### Phase 3 — build the controller · multi-day
 
 Each component flag-gated, default-off, byte-identical until its A/B scores. **None needs new science.**
 Design in model §5.5f.
 
-| # | component | sensed from | replaces |
-|---|---|---|---|
-| **3.1** | Two-phase `B_max`: prior ln 2 → injection probe on a **copy** of `θ_tr`, ~6 evals, on a stride | the model being trained | a profiled constant |
-| **3.2** | `ρ*` = `√(2·B_max/T_res)` | 3.1 + control resolution | P4's dose-response lookup |
-| **3.3** | Budget-landing anneal + `Φ` stop | `B` — exact, free | `rm` at a horizon-sized exponent |
-| **3.4** | Adaptive `K` and `P` — needs a mid-run `P` change, which nothing supports today | `τ` measured; availability | `aggGoal`, `perturbation_count` fixed offline |
-| **3.5** | Saturation stop on `dAcc/dΛ` over a 100+ commit window | eval slope | a fixed `comm_round` |
+| # | component | sensed from | replaces | state |
+|---|---|---|---|---|
+| **3.3** | Budget-landing anneal + `Φ` stop | `B` — exact, free | `rm` at a horizon-sized exponent | todo — **build first**: the whole P4.1 gain (0.141 → 0.005) is here, and it needs nothing from 3.1 |
+| **3.1** | Two-phase `B_max`: prior ln 2 → injection probe on a **copy** of `θ_tr`, ~6 evals, on a stride | the model being trained | a profiled constant | todo — phase 1 decides whether the online probe is even needed |
+| **3.2** | `ρ*` = `√(2·B_max/T_res)` | 3.1 + control resolution | P4's dose-response lookup | todo — trivial once 3.1 lands |
+| **3.5** | Saturation stop on `dAcc/dΛ` over a 100+ commit window | eval slope | a fixed `comm_round` | todo — the second stop; 3.3's `Φ` stop covers the destructive case alone |
+| **3.4** | Adaptive `K`/`C` and `P` — needs a mid-run `P` change, which nothing supports today | `τ` measured; availability | `aggGoal`, `perturbation_count` fixed offline | **blocked on K-1** (which knob) and P-1 (`τ(P)`) |
 
-#### Phase 4 — the two zero-input runs
+#### Phase 4 — the two zero-input runs · *state: todo*
 
 **4.1** agnews · **4.2** yahoo, *same binary, same flags*.
 
@@ -412,6 +432,7 @@ calibration — both exact at any horizon, so both failure modes are diagnosable
 | **H-S** | The residual 3.5× between the rig's `S` (1.68) and the arms' (0.48) is the **FD chord** — at `h‖v‖` = 6.71 vs `‖θ_tr‖` = 6.75 each probe steps a full parameter-norm, so `d` is a chord-averaged slope | Rig: same `v`, true `⟨g,v⟩` by backprop vs the shipped central FD, correlated over many draws. `cos(d_FD, d_true)` ≈ 0.3 if this is the cause, ≈ 1 if not. A chord-averaged slope is **still Gaussian**, which is why P3's distribution check passed it | 2 |
 | **H-H** | The FD's discarded curvature term `vᵀHv` carries usable signal | The central difference uses only the *difference* of `L(θ±hv)`; their **sum** ≈ `h²vᵀHv`, **already computed and thrown away**. Log it, correlate with realised loss decrease at the step scale taken | 2 |
 | **H-J** | `K ≥ 20` **defers** collapse rather than preventing it (commit 1,200–1,700) | `B` extrapolates it exactly — **demoted to a confirmation** unless a cheap node is free | 1, then 4 |
+| **K-C** | **`C`, not `K`, carries both the wall clock and the staleness.** The dispatcher refills to `C` and never reads `agg_goal` (`async_base.py:405`), and a contributor is held from re-dispatch until a release boundary (`_agg_pending_commit_ref`), so commits/hour ≈ `C/(n_req·τ)` and staleness ≈ `C/n_req` — both `K`-free | **Rung 1 first, free:** replay the three existing `K`/`C` arms for commits/vclock-h against `C/n_req` vs `K/τ(K)` — they cannot discriminate (`C/K` = 3/2/2) but they *can* falsify the arithmetic. Then **K-1** at fixed `C`; predictions and kill in [P5.1](#p51-registered-nodes) | 1, then 4 |
 
 **If a probe-selection stage is retained**, select on something other than `|d|` — three candidates,
 all already paid for: **curvature `vᵀHv`** (≈free, one extra `L(θ)` amortised over `P`); **split-half
@@ -741,8 +762,8 @@ died. This answers what has **never been tried**, and which findings are federat
 |---|---|---|---|---|
 | **`P` under `mean` beyond 10** | trainer | GEN | every `P` sweep ran under *selection*, where raising `P` is harmful. Under averaging `t ∝ 1/P` — **3× less wall clock and 3× fewer bytes at invariant compute** | **P-1**, a build prerequisite |
 | **adaptive `P`** | trainer | GEN | same hill-climb as `K`, but `P` also cuts bytes. Needs a **mid-run `P` change**, which no code path supports, and a per-commit `G_rule` | model §5.5e · P5.2 phase 3.4 |
-| **adaptive `K` / `C`** | selection | **FL** | hill-climb `K/τ(K)`. `τ(K)` half-measured; **`D(K)` never measured**. `dynamic_kc`'s `k_max` = 15 is backwards | **K-1** |
-| **staleness / freshness weighting** | aggregation | **FL** | genuine at `K` ≥ 30. The **only** cost of the top time lever, so its price — `D(K)` — is what caps `K` | **C3's freshness half**, the one untried paper claim |
+| **adaptive `K` / `C`** | selection | **FL** | hill-climb the pair. `τ` half-measured **with `C` and `K` moving together**; `D(·)` never measured against either; which one buys the wall clock is **K-C**. `dynamic_kc`'s `k_max` = 15 is backwards | **K-1** |
+| **staleness / freshness weighting** | aggregation | **FL** | genuine at `C` ≥ 60. The **only** cost of running the cohort wide, so its price — `D(·)` — is what caps it | **C3's freshness half**, the one untried paper claim |
 | **`B_max` across models** | — | GEN | the one constant a new deployment must discover; ~6 evals, forward-only | **B-1** |
 | **probe selection on anything but `\|d\|`** — curvature `vᵀHv` · split-half SNR · trust-region | trainer | GEN | the three candidates that are *not* stability-neutral, all already paid for; specified in [P5.3](#p53-open-hypotheses) | **H-H**, then future work |
 | **block-coordinate probing** | trainer | GEN | costed on paper and predicted inert (P5.3), needs `L`× the commits | model §8 — free in MoE |
@@ -751,7 +772,7 @@ died. This answers what has **never been tried**, and which findings are federat
 | **adapter placement / PEFT family** | model | GEN | `‖θ_tr‖ ∝ √p` is what makes `p` inert, and it holds for *adapter-style* init | **the assumption most likely to break elsewhere** |
 | **model / task** | — | GEN | every constant is fitted on DistilBERT/agnews — but **only `B_max` is on the operating path** | **B-1** |
 | **ω / freshness magnitude** | aggregation | **FL** | ω spans 0.70–0.87 against a ≥10× gap; trust-ratio removes it from magnitude | **C3's magnitude half — parked** |
-| **`C` concurrency** | selection | **FL** | caps `K`; never varied independently | folds into K-1 |
+| **`C` concurrency** | selection | **FL** | caps `K`; **never varied independently, and every `K` result is confounded with it** | the axis K-1 must **hold fixed** |
 
 **Two reads.** *(1)* **The trainer-side knobs are the generic ones, and the most interesting are
 untried** — curvature selection and `P` under averaging; both rung 1–2, neither needs the FL stack.

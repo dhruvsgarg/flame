@@ -23,13 +23,15 @@ import glob
 import json
 import math
 import os
+import re
+import statistics
 import subprocess
 import sys
 
-E_SELECT = 2.988          # E[v_par^2] for coin-flip top-2 of P=10
-P_PROBES = 10
+P_PROBES = 10              # today's only shipped perturbation_count
+E_SELECT_BY_P = {10: 2.988, 30: 4.744}   # measured, not derived -- do not interpolate
 P_BY_RF = {16: 450340, 32: 229012, 64: 118348}
-BLOCK = 50
+COS_BLOCK_FIRES = 10      # cos_probe_every=25 means a 50-commit BLOCK held only 2 fires
 EVENTS = r'"event": "(server_update|agg_eval)"'
 
 
@@ -48,7 +50,47 @@ def slice_run(run_dir, cache):
     return rid, out, (json.load(open(cfg)) if os.path.exists(cfg) else {})
 
 
-def meta(cfg):
+def resolve_p(cfg, rf, run_dir=None):
+    """`p` for this run, most authoritative source first.
+
+    P_BY_RF pins agnews' 4-label classifier, so it is silently 4,614 low on
+    yahoo and 1,538 high on yelp-p -- and `p` is under a square root in every
+    cos, so a wrong one biases D, L and S without ever looking wrong.
+
+      1. `[ProbeDim]` in the trainer log -- the p the run actually probed
+      2. derived: adapters(rf) + classifier(num_labels of the run's dataset)
+      3. the rf table (agnews), for a run whose config predates the registry
+    """
+    if run_dir:
+        for log in glob.glob(os.path.join(run_dir, "*trainers.log")):
+            try:
+                with open(log, errors="ignore") as fh:
+                    for line in fh:
+                        if "[ProbeDim]" in line:
+                            m = re.search(r"trainable_p[= ]+(\d+)", line) or \
+                                re.search(r"\bp[= ]+(\d+)", line)
+                            if m:
+                                return int(m.group(1)), "ProbeDim"
+            except OSError:
+                pass
+    name = str(cfg.get("hyperparameters", {}).get("dataset", "") or "")
+    try:
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+        from examples.fwdllm.expts.dataset_registry import get as _get, probe_dim
+        return probe_dim(_get(name).num_labels, rf), f"registry({name})"
+    except Exception:
+        # Silently correct for agnews (every P4 arm); silently WRONG for any
+        # other dataset a config just predates the `dataset` field for -- p
+        # sits under a sqrt in every cos, so a wrong one biases D/L/S without
+        # ever looking wrong. Never pass this tier silently.
+        print(f"WARNING: p resolved via P_BY_RF(agnews) fallback (no [ProbeDim] "
+              f"line, dataset={name!r} not in registry) -- correct only if this "
+              f"run is agnews", file=sys.stderr)
+        return P_BY_RF.get(rf, 450340), "P_BY_RF(agnews)"
+
+
+def meta(cfg, run_dir=None):
     h = cfg.get("hyperparameters", {})
     rf = int(h.get("adapter_reduction_factor", 16))
     rule = h.get("probe_combine", "select")
@@ -59,9 +101,26 @@ def meta(cfg):
             alpha = float(pm.split("alpha=")[1].split("_")[0])
         except ValueError:
             pass
-    return dict(rf=rf, p=P_BY_RF.get(rf, 450340), rule=rule, alpha=alpha,
+    p, p_src = resolve_p(cfg, rf, run_dir)
+    return dict(rf=rf, p=p, p_source=p_src, rule=rule, alpha=alpha,
                 K=int(h.get("aggGoal", 10)),
-                G_rule=(P_PROBES if rule == "mean" else E_SELECT))
+                P_default=int(h.get("perturbation_count", P_PROBES)))
+
+
+def g_rule_of(rule, p_t):
+    """G_rule_t: P_t under `mean`, measured E_select(P_t) under `select`.
+
+    E_select is measured per P, never derived -- an unmeasured P under
+    `select` must refuse rather than interpolate (buildplan 0.4).
+    """
+    if rule == "mean":
+        return p_t
+    e = E_SELECT_BY_P.get(p_t)
+    if e is None:
+        raise SystemExit(
+            f"E_select unmeasured for P={p_t} under `select` -- only "
+            f"{sorted(E_SELECT_BY_P)} are measured; refusing to interpolate")
+    return e
 
 
 def load(path):
@@ -86,10 +145,14 @@ def enrich(m, commits):
         I = r.get("pool_size") or ((r.get("iteration_per_data_id") or 0) + 1)
         N = m["K"] * I
         rho = r["rho"]
-        cos_pred = math.sqrt(m["G_rule"] * N / m["p"])
+        # per-commit P: `p_probes` on the record once 3.4 lands, else the
+        # run's constant perturbation_count -- a one-line switch either way
+        P_t = r.get("p_probes") or m["P_default"]
+        G_rule = g_rule_of(m["rule"], P_t)
+        cos_pred = math.sqrt(G_rule * N / m["p"])
         Lam += rho * cos_pred
         out.append(dict(i=i, ts=r["ts"], rho=rho, N=N, Lam=Lam, cos_pred=cos_pred,
-                        cos_meas=r.get("cos_ground_truth"),
+                        G_rule=G_rule, cos_meas=r.get("cos_ground_truth"),
                         tw=r.get("trainable_weight_norm")))
     for j, row in enumerate(out):           # B over t = 0 .. T-2
         B += 0.5 * math.log1p(row["rho"] ** 2) if j < len(out) - 1 else 0.0
@@ -109,16 +172,34 @@ def score(rid, m, rows, evals):
           f"{rows[-1]['Lam']:8.3f}{peak:8.3f}{final:8.3f}")
 
 
-def cos_audit(rid, m, rows, evals):
+def cos_audit(rid, m, rows, evals, block_fires=COS_BLOCK_FIRES):
+    """Block by probe FIRES, not commits -- at cos_probe_every=25 a 50-commit
+    BLOCK held only 2 fires and the old `len(blk) < 5` guard dropped every row.
+
+    Per-block rows are for joining Phi/accuracy onto a commit range; the
+    summary D is the mean +- SEM of the per-FIRE ratio (not block-averaged --
+    per-fire sd is ~= the mean, SNR ~= 1, so only the arm-level mean is
+    meaningful; see fl_fwd_ft_practice.md P4.2/D-2).
+    """
     have = [r for r in rows if r["cos_meas"] is not None]
     if not have:
+        print(f"\n  --- {rid} cos audit: no cos fires ---")
         return
-    print(f"\n  --- {rid} cos audit ({m['rule']}, p={m['p']}) ---")
+    fires_r = [x["cos_meas"] / x["cos_pred"] for x in have]
+    d_mean = statistics.mean(fires_r)
+    d_sem = (statistics.stdev(fires_r) / math.sqrt(len(fires_r))
+              if len(fires_r) > 1 else float("nan"))
+    spacings = [b["i"] - a["i"] for a, b in zip(have, have[1:])]
+    spacing = statistics.median(spacings) if spacings else float("nan")
+
+    print(f"\n  --- {rid} cos audit ({m['rule']}, p={m['p']}, p_source={m['p_source']}) ---")
     print(f"  {'commit':>7s}{'N':>6s}{'acc':>7s}{'cos_meas':>11s}{'cos_pred':>10s}"
           f"{'r':>9s}{'n_dir':>8s}")
-    for s in range(0, len(rows), BLOCK):
-        blk = [x for x in rows[s:s + BLOCK] if x["cos_meas"] is not None]
-        if len(blk) < 5:
+    for s in range(0, len(have), block_fires):
+        blk = have[s:s + block_fires]
+        if len(blk) < block_fires / 2:
+            print(f"  ... dropped last partial block ({len(blk)} fires < "
+                  f"half of {block_fires})")
             continue
         cm = sum(x["cos_meas"] for x in blk) / len(blk)
         cp = sum(x["cos_pred"] for x in blk) / len(blk)
@@ -126,14 +207,18 @@ def cos_audit(rid, m, rows, evals):
         r = cm / cp
         inb = [e for e in evals if blk[0]["ts"] <= e["ts"] <= blk[-1]["ts"]]
         a = (sum(e["test-accuracy"] for e in inb) / len(inb)) if inb else float("nan")
-        print(f"  {blk[0]['i']:7d}{N:6.0f}{a:7.3f}{cm:11.5f}{cp:10.4f}{r:9.4f}"
-              f"{r * r * N:8.3f}")
+        print(f"  {blk[0]['i']:4d}-{blk[-1]['i']:<2d}{N:6.0f}{a:7.3f}{cm:11.5f}"
+              f"{cp:10.4f}{r:9.4f}{r * r * N:8.3f}")
+    print(f"  D = {d_mean:.4f} +/- {d_sem:.4f}  (n={len(fires_r)} fires, "
+          f"median spacing {spacing:g} commits)")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("runs", nargs="+")
     ap.add_argument("--cos", action="store_true", help="also audit the cos probe")
+    ap.add_argument("--cos-block-fires", type=int, default=COS_BLOCK_FIRES,
+                     help="cos fires per reported block (default %(default)s)")
     ap.add_argument("--cache", default="/tmp/fwd_replay_cache")
     a = ap.parse_args()
 
@@ -146,7 +231,7 @@ def main():
         if not path:
             print(f"{rid:9s}  no telemetry", file=sys.stderr)
             continue
-        m = meta(cfg)
+        m = meta(cfg, run)
         commits, evals = load(path)
         if not commits:
             print(f"{rid:9s}  no server_update records", file=sys.stderr)
@@ -156,7 +241,7 @@ def main():
         audits.append((rid, m, rows, evals))
     if a.cos:
         for args in audits:
-            cos_audit(*args)
+            cos_audit(*args, block_fires=a.cos_block_fires)
 
 
 if __name__ == "__main__":

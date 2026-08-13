@@ -35,9 +35,11 @@ has never seen**, sensing every quantity it needs from the workload and the runt
 | **3** | **overheads** — communication, then compute | uploads `= K·t = Λ²·p/(2·B·G_rule)` |
 
 §4.6 puts all three in one expression, so they need no hand-trading: everything that makes a run faster
-also makes it cheaper in bytes, except `K`, which is free in bytes and paid for only in staleness. Metric
-2 is not a trade against metric 1 but a **ceiling on it**. **The method reduces to one decision — how
-close to `B_max` to run — and `B_max` is sensed, not supplied.**
+also makes it cheaper in bytes. **The cohort pair is the one exception, and not in the way this document
+used to claim it** (K-C): `K` is free in *total* bytes only while `K ≤ n_req`, it is never free in *peak*
+rate, and its price is **not** staleness — staleness is set by `C/n_req`, which contains no `K` (§5.4).
+Metric 2 is not a trade against metric 1 but a **ceiling on it**. **The method reduces to one decision —
+how close to `B_max` to run — and `B_max` is sensed, not supplied.**
 
 **The autonomy requirement, as a test.** *Every constant in the loop must be either (a) exact arithmetic
 on quantities the run already logs, (b) a hill-climb on something the runtime measures, or (c) a property
@@ -94,6 +96,7 @@ forward-gradient arm reaches **0.876** (§7.3).
 | **H-S** | **A 3.5× shadow loss that is not data-side.** The rig reproduces `L` but gets `S` = 1.68 where the arms read 0.48. Prime suspect: the FD chord — `h‖v‖` ≈ `‖θ_tr‖`, so `d` is a chord-averaged slope, not `⟨g,v⟩` | the last unexplained factor in `cos` | rig: true `⟨g,v⟩` vs the shipped central FD at the shipped `h` (§6.3) |
 | **C-1** | **The controller — implementation, not research.** The stopping rule is **validated on replay**: a `Φ` trigger at 2.7–3.0 banks the peak to 0.005 mean / 0.014 worst over 10 arms, against **0.141 / 0.595** for running to the end ([P4.1](fl_fwd_ft_practice.md#p41-the-φ-stop-counterfactual)). What remains is wiring | every arm's ending, and metric 1 | build it — §5.5's four `not built` rows; none needs new science |
 | **B-1** | **Does `B_max` transfer?** The **one** constant left on the operating path; `ρ*`, `s`, `N` and the stop all follow from it by arithmetic. Three arguments for transfer (§5.5b), **zero cross-model measurements** | whether any of this is a method rather than a result | `probe_inflation_damage.py` on a second model and task — ~6 evals each, forward-only |
+| **K-C** | **Is `K` a speed lever at all, and who pays for staleness?** `t ∝ 1/K` counts **gate iterations**, which are serial wall-clock waits only when `C = K`; the dispatcher refills to `C`, never to `K`. Staleness in commits is `C/n_req` — `K`-free. Both time and staleness may belong to `C` | which knob the controller hill-climbs (§5.5e, phase 3.4), and whether `K` is free in bytes | **K-1, with `C` held at 30** — every measurement to date moved `C` with `K` (`C/K` = 3/2/2) and cannot discriminate |
 
 **What is *not* open: the optimizer, or any pooling knob.** The four fixes enact to spec and the dynamics
 are closed by the two laws. What moved is *where the remaining loss lives* — not in the step rule, the
@@ -320,7 +323,7 @@ legitimate — that property is the whole fix (§5.3).
 | `K` | trainers pooled per commit (`agg_goal`) | 10 shipped, and sufficient — the ≥30 requirement is withdrawn (§5.6) |
 | `I` | iterations over the **same data bin** before committing | 18.5 at `K`=10 (capped), 8.2 at `K`=50 |
 | `N = K·I` | uploads pooled server-side. **Not** the client population | 185 at `K`=10; 300–500 at `K`≥20 |
-| `C` | concurrency pool — caps `K` | 30 |
+| `C` | uploads in flight — caps `K`, and sets throughput and staleness (§5.4) | 30 |
 | `η` | server learning rate (a **knob**, superseded by `ρ*`) | 0.01 |
 | `ω` | per-upload aggregation weight | 0.70–0.87 — a re-weighting, **not** a step size |
 | **`ρ`** | **relative step `‖Δθ‖/‖θ_tr‖`** — an *outcome* under raw SGD, a *knob* under trust-ratio | **0.16 at commit 1** shipped |
@@ -574,9 +577,12 @@ fixed together — and missed by exactly the arms whose `s` drifted:
 is capped at `B_max`, so there is no speed-versus-stability trade *except* through `B_max`. **(b) `ρ` and
 `N` are degenerate**: given `(Λ, B)`, every split costs the same round trips **and the same bytes**
 (`Σ N_t = K·t = Λ²p/(2·B·G_rule)`, which is `ρ`-free), so choose `ρ` for control resolution and `N` for
-gate reachability. **(c) The speed levers are `K` and `G_rule`, and `K` is free in bytes** — `t ∝ 1/K`
-while total uploads are `K`-independent, and `t ∝ 1/G_rule` makes `select → mean` a **3.35×** cut in
-time-to-accuracy (10 / 2.988), reframing C1 as a *speed* result. **(d) `p` remains inert** — a fixed
+gate reachability. **(c) `G_rule` is a speed lever; `K` is open (K-C).** `t ∝ 1/G_rule` makes
+`select → mean` a **3.35×** cut in time-to-accuracy (10 / 2.988), reframing C1 as a *speed* result, and
+that half is untouched. The `K` half is not: `t` counts **gate iterations**, which are serial wall-clock
+waits only when `C = K`. The dispatcher refills to `C` and never consults `K`
+(`flame/selector/async_base.py:405`), so at `C > K` the run is arrival-limited and `t_wall ∝ Σ N·τ/C` —
+`K`-free. Total uploads are `K`-independent either way. **(d) `p` remains inert** — a fixed
 accuracy needs fixed `A`, and `‖θ_tr‖ ∝ √p` means `Λ ∝ 1/√p`, so `Λ²p` is `p`-free.
 
 ### §4.6a The setpoint, and why `T` is not an input
@@ -625,7 +631,7 @@ SIZING (from the model and the runtime -- NOTHING profiled):
            run ~150 commits -- spends B ~ 0.21, Phi ~ 1.23, negligible
   PHASE B: B_max  <- noise-injection probe, ~6 evals, forward-only        (5.5b)  [NOT BUILT]
            rho*   <- re-derived from the measured B_max
-  K, P            <- hill-climb K/tau(K) and P/tau(P)                     (5.5e)  [NOT BUILT]
+  K/C, P          <- hill-climb (K,C)/tau and P/tau(P)                    (5.5e)  [NOT BUILT]
   N               <- from the gate, holding s constant = time-optimal     (4.6)
 
 PER COMMIT (server):
@@ -652,7 +658,8 @@ the §0.0 autonomy requirement, and why `s`, `ρ`, `N`, `I` and `p` are no longe
 | lever | `ρ/cos` | progress per unit `B` | effect on `t` | bytes | who decides it |
 |---|---|---|---|---|---|
 | **`P`-averaging** | **∝ 1/P** | **∝ √P** | **∝ 1/P** | **∝ 1/P** | **sensed** — hill-climb `P/τ(P)` |
-| **`K`** (cohort width) | **∝ 1/K** | **∝ √K** | **∝ 1/K** | **free — uploads are `K`-independent** | **sensed** — hill-climb `K/τ(K)` |
+| **`K`** (cohort width) | **∝ 1/K** | **∝ √K** | **open — `∝ 1/K` only if `C = K`** (K-C) | total free while `K ≤ n_req`; peak rate ∝ `K` | the gate, for reachability |
+| **`C`** (uploads in flight) | — | — | **∝ 1/C** while arrival-limited | none | **sensed** — hill-climb `C/τ(C)` against `D(C)` and availability |
 | **`I`** (iterations/bin) | **∝ 1/I** | **∝ √I** | none — degenerate with `ρ` | none | the gate, for reachability |
 | **`B`** (budget spent) | — | — | **∝ 1/B** | ∝ 1/B | spend to `B_max`, which is sensed |
 | `p` | ∝ √p | **invariant** — `‖θ_tr‖ ∝ √p` cancels it | **none** | ∝ p | operator: memory/comms |
@@ -661,9 +668,10 @@ the §0.0 autonomy requirement, and why `s`, `ρ`, `N`, `I` and `p` are no longe
 | probe selection `E[v∥²]` | **invariant** (`b²/a` = 1) | invariant | none | none | eliminated (§3.2) |
 | step normalization | sets `ρ` to an operator constant | decoupled | — | — | shipped |
 
-**Read the second and third columns, not the first.** Four rows improve `ρ/cos` and *do not* improve
-progress per unit budget: `p`, `η`, `β` and probe selection. Only `P`, `K` and `I` — the three stages that
-pool **independent readings of independent data** — are free, and they all buy `√n`. **A lever is free if
+**Read the second and third columns, not the first.** `C` is in the table for the third column only — it
+pools nothing, it just decides how fast the same uploads arrive. Four rows improve `ρ/cos` and *do not*
+improve progress per unit budget: `p`, `η`, `β` and probe selection. Only `P`, `K` and `I` — the three
+stages that pool **independent readings of independent data** — are free, and they all buy `√n`. **A lever is free if
 and only if it raises `cos` without correlating steps and without shrinking `‖θ_tr‖`.** That one sentence
 replaces four separately-discovered dead ends.
 
@@ -711,13 +719,15 @@ invisible. **Scale-free setpoints therefore have to come from the step rule, not
 objective rather than a fixed rank. **Two things the old ranked list got wrong.** `I` was ranked "last,
 and only what the gate demands" — but `I` and `K` are the *same* quantity `N` split two ways, and §4.6
 shows the split is free. And "`K` first because it pools independent data, which is where `D` lives" was a
-conjecture **refuted** by D-1: `D` is flat over 64× in bin size (§6.3). `K` still leads, for a different
-and now-measured reason — it is the only lever that buys wall clock at zero communication cost.
+conjecture **refuted** by D-1: `D` is flat over 64× in bin size (§6.3).
 
-**The one unmeasured cost is staleness.** The time law assumes every pooled upload reads the *current* `θ`;
-stale uploads read an older one, so the cost should appear as a fall in `D` with `K`. **`D(K)` has never
-been measured**, and it is what turns the `K` hill-climb from a heuristic into an optimum:
-**`t ∝ τ(K)/(D(K)²·K)`**.
+**The one unmeasured cost is staleness, and it is priced against `C`, not `K`. ANALYSIS.** The time law
+assumes every pooled upload reads the *current* `θ`; a stale one reads an older `θ`, and its staleness in
+commits is its flight time over the commit interval — with `C` uploads in flight and a commit consuming
+`n_req` of them, that is **`C/n_req`**, in which `K` does not appear. Raising `K` at fixed `C` cannot add
+staleness and may remove it, since a contributor is parked from re-dispatch until a release boundary. So
+the hill-climb the controller wants is **`t ∝ τ(C)/(D(C)²·C)`**, `K`'s remaining job is gate
+reachability, and **`D(·)` has never been measured against either.** This is K-C; K-1 is its test.
 
 ## §5.5 Deploying without a profiling run
 
@@ -739,7 +749,7 @@ with and no longer has to set.
 | `s`, hence `n_req` | (a) | held constant — the time-optimality condition. `n_req = p(ρ*/s)²/G_rule` | **built** |
 | `ρ*` | (a) | `√(2·B_max/T_res)` (§4.6a). *The anneal exponent folds in once `B` is tracked* | **not wired** |
 | **`B_max`** | **(b)** | **noise-injection probe, ~6 evals, forward-only, periodic** (§5.5b) | **offline only** |
-| **`K`, `C`** | **(b)** | **hill-climb `K/τ(K)`** against availability (§5.5e) | **not built** |
+| **`K`, `C`** | **(b)** | **hill-climb the pair** against availability (§5.5e). *Which one carries the wall clock is K-C* | **not built** |
 | **`P`, bin size** | **(b)** | **hill-climb `P/τ(P)`** — *one lever, not four: `cos ∝ √compute`* | **not built** |
 | `dAcc/dΛ` | (b) | eval slope over a 100+ commit window — the stopping signal | **not built** |
 | `D` | (b) | `cos` audit on a stride. **Forecast-only** (§5.5a) | **built** |
@@ -795,17 +805,17 @@ bias is uncalibrated, and the controller does not exist (C-1).
 ### §5.5e Adaptive `K` and `P` — the same rule twice
 
 ```
-minimise   t_wall  ~  tau(K) / ( D(K)^2 * K )        <- both factors MEASURED at runtime
+minimise   t_wall  ~  tau(X) / ( D(X)^2 * X )        X = C if arrival-limited, K if C == K  (K-C)
 ```
 
-**`τ(K)` is measured directly** — it rises with `K` because the server waits for `K` of `C`: 8.9 → 12.3 s
-for `K` = 30 → 50, so `K/τ(K)` improves **sublinearly**, roughly `K^0.7`. **`D(K)` is the staleness price
-and has never been measured**; staleness is genuine at `K` ≥ 30 (max 2 at 30, 4 at 50), so there is
-finally something to weigh. **Availability sets the ceiling**, not a config: `K ≤ C ≤` trainers actually
-available. Uploads are `K`-independent, so this hill-climb spends no communication budget — it trades
-staleness for wall clock and nothing else, which makes `K` the **first** thing the controller should move
-and the **last** thing it should be conservative about; the opposite of `dynamic_kc` (`k_max` = 15,
-disabled).
+**The variable is not yet known to be `K`.** The 8.9 → 12.3 s round trip at `K` = 30 → 50 was measured on
+arms that moved `C` 60 → 100 alongside, holding `C/K` = 2, so it prices `K` and `C` together and cannot
+separate them; the same is true of every staleness reading (max 1/2/4 at `C` = 30/60/100). **`D(·)` has
+never been measured against either.** **Availability sets the ceiling**, not a config:
+`K ≤ C ≤` trainers actually available. Uploads are `K`-independent, so this hill-climb spends no total
+communication budget — it trades staleness for wall clock and nothing else, which makes the pair the
+**first** thing the controller should move and the **last** thing it should be conservative about; the
+opposite of `dynamic_kc` (`k_max` = 15, disabled). **K-1 settles which of the two it is climbing.**
 
 **`P` takes the identical rule, and it also cuts bytes.** `G_rule = P` under `mean`, so `t ∝ 1/P` *and*
 uploads `∝ 1/P` at invariant total client compute. The only thing that can cancel it is the round trip
@@ -821,7 +831,7 @@ use the *current* value: `Λ = Σ ρ_t·√(G_rule_t·N_t/p)`, and the time law'
 |---|---|---|---|
 | **D1** | `B_max` needs a partly-trained model to measure, but `ρ*` needs `B_max` to start | **Two-phase from a safe prior.** Phase A at `B_max` = **ln 2** — *"the model survives its weights doubling"* — giving `ρ*` = 0.053 at `T_res` = 500; after ~150 commits that has spent `B` ≈ 0.21 (`Φ` = 1.23). Phase B injection-probes and re-derives `ρ*` | ln 2 is the **weakest non-trivial claim**, not a fitted number, and Phase A's spend is negligible against *any* plausible `B_max` |
 | **D2** | what is "the target accuracy"? | **No target.** Stop when `dAcc/dΛ` flattens over a 100+ commit window, or `B → γ·B_max` | a supplied target is itself an operator input, and §0.0 admits none |
-| **D3** | is the communication budget a constraint? | **A tiebreak.** Minimise bytes *subject to* time-first | spending `B` and raising `P` cut time and bytes together; `K` is free in bytes outright |
+| **D3** | is the communication budget a constraint? | **A tiebreak.** Minimise bytes *subject to* time-first | spending `B` and raising `P` cut time and bytes together; `K` is free in *total* bytes while `K ≤ n_req` (K-C) |
 | **D4** | which knobs may the operator still supply? | **Model, PEFT scheme and `p` only.** `P` is **sensed** by hill-climbing `P/τ(P)` | the strongest autonomy claim the evidence supports. `p` stays operator-owned because it is measurably **inert** |
 
 > **What D4 costs.** It promotes **P-1** from an ablation to a **build prerequisite**, and it requires the
@@ -994,7 +1004,7 @@ online control law. Do not write it up as a new theorem.
 |---|---|
 | **C1 · `\|JVP\|` probe selection** | **Refuted as written** (`b²/a` = 1). The **combination rule** is the contribution, and §4.6 makes it a *speed* result: **3.35× less wall clock** at zero extra cost |
 | **C2 · async aggregation / gate** | **A measured win, stronger than throughput.** holding `s` constant is the **time-optimality condition** (§4.6), not merely a throughput heuristic. What C2 is *not* is a stability mechanism |
-| **C3 · aggregation weighting (ω)** | **Magnitude half: park** (ω spans 0.70–0.87 against a ≥10× gap). **Freshness half: on the critical path** — staleness is the only cost of `K`, and `D(K)` has never been measured |
+| **C3 · aggregation weighting (ω)** | **Magnitude half: park** (ω spans 0.70–0.87 against a ≥10× gap). **Freshness half: on the critical path** — staleness is the only cost of running the cohort wide, and `D(·)` has never been measured against `C` or `K` (K-C) |
 | **S1 · server momentum** | **Refuted.** `√x` progress for `x` budget — a re-parameterisation of `ρ` |
 | **S2 · variance-gate recalibration** | **Superseded** — replace the loop, do not re-tune the threshold |
 | **S3 · aggregation-rate tempering** | **Subsumed** — under trust-ratio `ρ` = `ρ*_t` regardless of ω |

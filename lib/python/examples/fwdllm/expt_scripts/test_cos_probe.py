@@ -23,6 +23,7 @@ import torch.nn as nn
 
 sys.path.insert(0, "/home/dgarg39/flame/lib/python")
 from examples.fwdllm.aggregator.FedSgdAggregator import FedSGDAggregator as A
+from examples.fwdllm.expts.dataset_registry import max_dominant_share
 
 torch.manual_seed(0)
 NUM_LABELS, VOCAB, SEQ, N = 4, 50, 8, 32
@@ -202,9 +203,9 @@ print("  probe hygiene        : model left with no .grad, eval/train mode restor
 class _ClusteredDS:
     """Labels sorted into contiguous per-class blocks -- the pathological case."""
 
-    def __init__(self, n=400):
+    def __init__(self, n=400, k=NUM_LABELS):
         ids = torch.randint(0, VOCAB, (n, SEQ))
-        labels = torch.arange(n) * NUM_LABELS // n      # 0000...1111...2222...
+        labels = torch.arange(n) * k // n               # 0000...1111...2222...
         pad = torch.zeros(n, SEQ, dtype=torch.long)
         self.tensors = (pad, ids, pad, pad, labels)
 
@@ -214,21 +215,38 @@ def _dominant_share(labels):
     return max(lab.count(c) for c in set(lab)) / len(lab)
 
 
+# Run the guard at 2, 4 and 10 classes: balanced is 1/K, so a fixed 0.5 ceiling
+# encodes agnews and REFUSES a balanced 2-class reference (yelp-p). The ceiling
+# is dataset_registry.max_dominant_share; the single-class fixture must still
+# fail at every K.
+for _k in (2, NUM_LABELS, 10):
+    # each class block must be at least a probe batch long, or the head of the
+    # tensor spans two classes and the fixture stops being pathological
+    _n = max(400, 128 * _k)
+    a_sk, _ = make()
+    a_sk.num_labels = _k
+    a_sk.test_global = type("G", (), {"dataset": _ClusteredDS(n=_n, k=_k)})()
+    a_sk._cos_probe_batch_size = 64
+    a_sk._cos_probe_gradient()
+    share = _dominant_share(a_sk._cos_probe_batch[1])
+    ceiling = max_dominant_share(_k)
+    head_share = _dominant_share(_ClusteredDS(n=_n, k=_k).tensors[4][:64])
+    assert head_share == 1.0, "the fixture must actually be pathological"
+    assert share < ceiling, (
+        f"probe reference is class-skewed at {share:.2f} (K={_k}, ceiling "
+        f"{ceiling:.2f}) -- it is reading the head of an unshuffled, "
+        f"client-ordered test tensor (B17 regression)"
+    )
+    assert not head_share < ceiling, f"single-class fixture must fail at K={_k}"
+    print(f"  B17 reference batch  : K={_k:2d} dominant-class share {share:.2f} "
+          f"< ceiling {ceiling:.2f} (unshuffled head would be {head_share:.2f})")
+
+# and it must be the SAME batch every commit, or trends are not comparable
+# (own aggregator on the default fixture -- the loop above left `a_sk` at K=10)
 a_sk, _ = make()
 a_sk.test_global = type("G", (), {"dataset": _ClusteredDS()})()
 a_sk._cos_probe_batch_size = 64
 a_sk._cos_probe_gradient()
-share = _dominant_share(a_sk._cos_probe_batch[1])
-head_share = _dominant_share(_ClusteredDS().tensors[4][:64])
-assert head_share == 1.0, "the fixture must actually be pathological"
-assert share < 0.5, (
-    f"probe reference is class-skewed at {share:.2f} -- it is reading the head "
-    f"of an unshuffled, client-ordered test tensor (B17 regression)"
-)
-print(f"  B17 reference batch  : dominant-class share {share:.2f} "
-      f"(unshuffled head would be {head_share:.2f})")
-
-# and it must be the SAME batch every commit, or trends are not comparable
 first = a_sk._cos_probe_batch[1].clone()
 a_sk._cos_probe_gradient()
 assert torch.equal(a_sk._cos_probe_batch[1], first), "reference batch must be fixed"

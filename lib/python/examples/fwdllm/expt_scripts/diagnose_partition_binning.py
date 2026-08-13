@@ -30,16 +30,20 @@ from collections import Counter
 
 import numpy as np
 
-# ---- defaults resolved from the run's aggregator_config.json (the /coc/scratch h5s) ----
-DEF_PART = "/coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5"
-DEF_DATA = "/coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+from examples.fwdllm.expts import dataset_registry as dsreg  # noqa: E402
+
 # cache lives with the datasets on scratch; override with --cache-dir if elsewhere.
 DEF_CACHE = "/coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/cache_dir"
 DEF_RUN = ("/home/dgarg39/flame/lib/python/examples/fwdllm/experiments/"
            "run_20260708_025543_fluxtune_n100_smoke_syn_0_real")
-CACHE_TMPL = ("distilbert_distilbert-base-uncased_cached_192_ClassificationModel_"
-              "agnews_niid_label_clients=100_alpha={alpha}_{cid}")
-N_CLASSES = 4  # AG News
+CACHE_TMPL_FMT = ("distilbert_distilbert-base-uncased_cached_{seq}_ClassificationModel_"
+                   "{dataset}_niid_label_clients=100_alpha={{alpha}}_{{cid}}")
+# N_CLASSES/CACHE_TMPL are set from --dataset in main() (default agnews, byte-identical
+# to the old hardcode) -- module-level so the existing helpers (norm_entropy, dom_frac,
+# client_labels_faithful) don't need a threaded-through parameter.
+N_CLASSES = 4
+CACHE_TMPL = CACHE_TMPL_FMT.format(seq=192, dataset="agnews")
 
 
 def norm_entropy(counts):
@@ -178,7 +182,9 @@ def observed_collapse(run_dir):
                 continue
             did, a, m = d.get("data_id"), d["test-accuracy"], d.get("mcc", 0.0)
             acc_by_did[did] = a
-            if abs(a - 0.25) < 0.006 and abs(m) < 0.02:
+            # single-class-collapse signature is chance level = 1/N_CLASSES, not the
+            # agnews-specific 0.25 (yahoo's is 0.10, yelp-p's is 0.50).
+            if abs(a - 1.0 / N_CLASSES) < 0.006 and abs(m) < 0.02:
                 collapse.add(did)
     return acc_by_did, collapse
 
@@ -189,9 +195,13 @@ def pct(vals, p):
 
 
 def main():
+    global N_CLASSES, CACHE_TMPL
     ap = argparse.ArgumentParser()
-    ap.add_argument("--partition", default=DEF_PART)
-    ap.add_argument("--data", default=DEF_DATA)
+    ap.add_argument("--dataset", default="agnews", choices=dsreg.names(),
+                    help="registry dataset; drives --partition/--data defaults, N_CLASSES "
+                         "and the cache filename template. default agnews (old behaviour)")
+    ap.add_argument("--partition", default=None, help="default: this dataset's partition h5")
+    ap.add_argument("--data", default=None, help="default: this dataset's data h5")
     ap.add_argument("--cache-dir", default=DEF_CACHE)
     ap.add_argument("--run-dir", default=DEF_RUN, help="run for the alpha=1 collapse overlay (Layer C)")
     ap.add_argument("--alphas", default="0.1,1,100")
@@ -205,6 +215,12 @@ def main():
     ap.add_argument("--dist", action="store_true",
                     help="sample→trainer→bin distribution report + heatmaps (heterogeneity study)")
     args = ap.parse_args()
+
+    ds = dsreg.get(args.dataset)
+    args.partition = args.partition or ds.partition_file_path
+    args.data = args.data or ds.data_file_path
+    N_CLASSES = ds.num_labels
+    CACHE_TMPL = CACHE_TMPL_FMT.format(seq=ds.max_seq_length, dataset=ds.name)
 
     alphas = [a.strip() for a in args.alphas.split(",")]
     out = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)), "_diag_partition")
@@ -272,7 +288,7 @@ def main():
             # rank correlation (low pooled entropy should co-occur with low accuracy)
             from scipy.stats import spearmanr
             rho, pval = spearmanr(pe, ac)
-            print(f"  observed round-1 collapse data_ids (acc~0.25 & mcc~0): {sorted(collapse)}")
+            print(f"  observed round-1 collapse data_ids (acc~{1.0/N_CLASSES:.3f} & mcc~0): {sorted(collapse)}")
             # predicted-biased = lowest-entropy quartile
             thr = np.percentile(pe, 25)
             predicted = set(d for d in common if pooled[d]["entropy"] <= thr)
@@ -383,7 +399,7 @@ def make_plots(summary, pooled_all, args, out):
         ax1.set_xlabel("data_id"); ax1.set_ylabel("pooled entropy", color="tab:blue")
         ax2 = ax1.twinx()
         ax2.plot(ks, [acc[k] for k in ks], color="tab:red", alpha=.6, label="observed accuracy")
-        ax2.axhline(0.25, ls="--", color="grey", lw=.8)
+        ax2.axhline(1.0 / N_CLASSES, ls="--", color="grey", lw=.8)  # chance-level (collapse) line
         for k in collapse:
             ax2.axvline(k, color="tab:red", alpha=.08)
         ax2.set_ylabel("round-1 accuracy", color="tab:red")

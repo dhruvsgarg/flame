@@ -9,6 +9,7 @@ import torch
 from torch.nn import CrossEntropyLoss
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
 from examples.fwdllm.trainer.forward_training.fwdgrad_utils import calculate_var, calculate_snr, calculate_cv, calculate_real_var, calculate_snr_gradients
+from examples.fwdllm.expts.dataset_registry import max_dominant_share
 from flame.monitor.runtime import timer_decorator, FwdLLMStage
 
 logger = logging.getLogger(__name__)
@@ -737,10 +738,14 @@ class FedSGDAggregator(TopAggregator):
                     f"[CosProbe] shuffled held-out batch of {n} cached "
                     f"(seed={_COS_PROBE_SEED}, dominant-class share={_share:.2f})"
                 )
-                if _share > 0.5:
+                # threshold is 1/K + margin, not a fixed 0.5: balanced IS 0.50 on
+                # a 2-class task and 0.10 on a 10-class one.
+                _skew_max = max_dominant_share(self.num_labels)
+                if _share > _skew_max:
                     logger.warning(
                         "[CosProbe] reference batch is still class-skewed at "
-                        f"{_share:.2f}; raise cos_probe_batch_size"
+                        f"{_share:.2f} (>{_skew_max:.2f} for {self.num_labels} "
+                        f"classes); raise cos_probe_batch_size"
                     )
             x, labels = self._cos_probe_batch
             was_training = model.training

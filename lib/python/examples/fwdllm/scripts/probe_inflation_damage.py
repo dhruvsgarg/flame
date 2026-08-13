@@ -35,7 +35,9 @@ import argparse
 import collections
 import json
 import math
+import os
 import sys
+import tempfile
 
 import torch
 from torch.nn import CrossEntropyLoss
@@ -115,14 +117,20 @@ def main():
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--modes", nargs="+", default=["noise", "scale", "signal"])
+    ap.add_argument("--phis", default=",".join(str(p) for p in PHIS),
+                     help="comma-separated Phi grid (default: today's byte-identical list)")
     a = ap.parse_args()
+    phis = [float(x) for x in a.phis.split(",")]
 
     torch.manual_seed(0)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
 
     cfg = json.load(open(a.config))
     cfg["hyperparameters"]["adapter_reduction_factor"] = a.rf
-    tmp = f"/tmp/rig_cfg_rf{a.rf}.json"
+    # unique per invocation -- a fixed /tmp/rig_cfg_rf{rf}.json collides when
+    # two datasets at the same rf run concurrently (B-1's 3-dataset sweep).
+    fd, tmp = tempfile.mkstemp(prefix=f"rig_cfg_rf{a.rf}_", suffix=".json")
+    os.close(fd)
     json.dump(cfg, open(tmp, "w"))
 
     model, tg, nl = build(tmp)
@@ -160,7 +168,7 @@ def main():
         print(f"{'Phi':>6s}{'||theta_tr||':>13s}{'acc':>18s}{'d_acc':>8s}"
               f"{'top_cls':>9s}{'entropy':>9s}{'logit_n':>9s}")
         gen = torch.Generator().manual_seed(11)
-        for phi in PHIS:
+        for phi in phis:
             reps = a.reps if mode.startswith("noise") and phi > 1.0 else 1
             accs, st = [], None
             for _ in range(reps):
