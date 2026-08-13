@@ -987,7 +987,9 @@ yelp-p and yahoo — opposite ends of the class-count range — landing at nearl
 Yahoo's low base accuracy (0.73 at 3 epochs) is not an undertraining artifact: a 9-epoch confirmatory run
 peaked at epoch 2 (0.732) and *degraded* with more training (0.692 at epoch 8, overfitting the 30k-example
 proxy set) while collapsing if anything earlier (Φ=2.0 already at 0.084 vs the 3-epoch run's 0.485) — the
-early knee is robust to the training-budget confound, not an artifact of it. **On the B-1 decision table
+early knee is robust to the training-budget confound, not an artifact of it. `~0.73` also matches the
+DistilBERT/yahoo accuracy the FwdLLM paper itself reports (peak reported ~0.76) — this rig's base model
+is in the right ballpark, not a broken one. **On the B-1 decision table
 (P5.1), this is the "erratic" outcome: the online injection probe (3.1) is not optional infrastructure,
 it is now the load-bearing path** — a fixed or `num_labels`-derived `B_max` would misprice the budget on
 at least two of three datasets tested. Caveat: one training run per dataset (yahoo replicated, agnews/
