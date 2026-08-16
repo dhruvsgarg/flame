@@ -1,0 +1,150 @@
+# FedFwd smoke test: 100 trainers, agnews H5 partitions (client_idx 0-99, the
+# full 100-partition niid_label_clients=100_alpha=1 population), real time_mode
+# (FedFwd has no simulated-clock support yet).
+#
+# Uses the `fluxtune_v1` baseline -- FluxTune's ORIGINAL spec (async,
+# async_oort selector, fedbuff with an explicit learning_rate, 3-tier
+# client_notify, fixed K/C), preserved unmodified since 2026-08-15 when
+# `fluxtune_v2` (the estimator-layer-optimized version) became the new
+# default `fluxtune` (BASELINES.md). This is the version whose runs peak
+# near the 84% target then oscillate and collapse (EXPTS_CHARTER.md Issue
+# I-1) -- launch this explicitly only for the pre-estimator-fix ablation;
+# for everything else use `fluxtune` (now == `fluxtune_v2`).
+# Sibling of fwdllm_n10_smoke.yaml/fwdllm_plus_n10_smoke.yaml; run all three
+# for full real/sim parity coverage across the taxonomy. c=30 concurrency
+# pool out of the 100-trainer population (agg_goal=10, c-async only -- see §O:
+# fluxtune's JVP cost per commit is ~4x fwdllm/plus's, hence the higher c).
+# agg_goal raised 3->10 (simulate_fwdllm.md §B item 1, 07-16): at K=3 the
+# committed set is dominated by sub-1s arrival jitter in a near-degenerate
+# fast class; K=10 dilutes that. Must match fluxtune_v1_n10_smoke_sim.yaml.
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/fluxtune_v1_n10_smoke.yaml
+
+experiments:
+  - name: fluxtune_v1_n10_smoke
+    description: "FedFwd smoke (100 trainers, c=30/agg_goal=10, fluxtune_v1 baseline: the original pre-estimator-fix spec -- async async_oort+fedbuff+JVP+3-tier). Ablation-only; use `fluxtune` (== v2) for the default."
+
+    baseline: fluxtune_v1
+
+    example:
+      # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
+      # ExampleConfig default (trainer/pytorch/main.py).
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 100
+      start_id: 1
+      dataset:
+        name: agnews
+        # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
+        # file exists (or ever will) for agnews; skips that lookup entirely.
+        path_style: true
+        # Cosmetic-only for path-style (naming/snapshot), but kept in sync
+        # with the actual partition_method below (EXPTS_CHARTER A5: alpha=1).
+        dirichlet_alpha: 1
+      availability:
+        # Phase 1 is syn_0 (100% availability): client_notify then reports all
+        # trainers available. Switch to mobiperf_3st_50 (via --avail-trace) only
+        # for the Phase-2 unavailability runs. run_sequential.sh's --avail-trace
+        # patches trainer mode + client_notify + trackTrainerAvail together.
+        mode: syn_0
+      # FedFwd has no simulated-clock support; always real.
+      time_mode: real
+      # Skip the registry's 4-18s artificial delay for a fast smoke run.
+      enable_training_delays: false
+      # client_idx = (trainer_id - 1) % 100 -- 1:1 onto all 100 H5 partitions
+      # (also the full §O trainer_registry.yaml speed-class population).
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          # Fluxtune JVP perf optimizations (simulate_fwdllm.md §L) — all
+          # BIT-IDENTICAL to the grads (scripts/profile_jvp_opt.py). Cuts
+          # fluxtune's per-batch forward passes ~37% (25->20) + trainable-only
+          # FD, so GPU drops under the modeled mobile delay. Set true on BOTH
+          # real+sim (must match). Set false to revert to the un-optimized path.
+          jvp_perf_opt: true
+          # Selector RNG seed — inert on the trainer (self-selects); logged for
+          # cross-role consistency with the aggregator (§F-18). Not the pert seed.
+          seed: 1234
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          # MUST match the _sim pair or parity sees a data-skew divergence
+          # with no clock cause.
+          partition_method: niid_label_clients=100_alpha=1
+          # H13: dropout off during the JVP's two finite-difference passes.
+          # Code default ON (simulate_fwdllm.md §G); real and sim must match.
+          jvp_eval_mode: true
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: async_oort
+      tracking_mode: client_notify
+      agg_goal: 10
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fluxtune_v1_n10_smoke
+        hyperparameters:
+          seed: 1234  # deterministic selector RNG + model init (same seed both A/B legs, see fluxtune_n10_smoke_momentum.yaml)
+          rounds: 50  # short smoke run, not the full 300
+          # Hold a busy trainer's re-pick guard to commit, not RETURN (§R,
+          # 2026-07-11 -- real used to release early). Must match sim yaml.
+          inflight_residence: true
+          # Streamer-free async grad collect (drain_ready). Cleaner collect path
+          # (drops recv_fifo's streamer churn) but INERT on the parity gap — the
+          # ~9% is the distribute settle below, not recv (§H). Code-default OFF.
+          real_drain_ready_ingest: true
+          # §H A/B: real-only 0.1s post-distribute settle sleep sim skips +
+          # doesn't charge (~1.08s/cohort real distribute vs sim 0.34). 0.0 tests
+          # whether removing it closes the gap. Code-default 0.1 (old behavior).
+          real_distribute_settle_s: 0.0
+          # 90s default evicted a genuinely-busy trainer (rounds incl.
+          # warmup up to ~108s). Workload knob, not a parity lever; must
+          # match sim yaml (§R, 2026-07-11).
+          send_timeout_wait_s: 300
+          # Async fedbuff: accept stale grads + down-weight by (V'-V), not reject
+          # (K-D13). Set identically real+sim; never a parity lever. camelCase
+          # MUST match the base key to override it — snake_case is a dead key
+          # that loses at pydantic resolution (K-D15).
+          stalenessPolicy: fedbuff
+          # Smoke-test stop bar: whichever of these fires first ends the run
+          # (`rounds` alone is much too coarse, since one round is 150
+          # data-id completions).
+          max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
+          max_runtime_s: 3600  # ...or after 60 minutes wall time
+          # Eval cadence -- MUST match real/sim, else the two sample the accuracy
+          # curve at different points. Raise if the run warns about waiting.
+          eval_every_n_commits: 2
+          # Arms runner.py's watchdog (force-kill on hang); inert otherwise.
+          max_experiment_runtime_s: 10800
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5); must match the _sim pair — see trainer side.
+          partition_method: niid_label_clients=100_alpha=1
+        selector:
+          kwargs:
+            # c=30 concurrency pool out of the 100-trainer population (§O:
+            # fluxtune's JVP cost/commit is ~4x fwdllm/plus's, so a larger
+            # pool keeps enough in-flight surplus for the c-agg_goal=20
+            # rotating cohort, §F#17). aggGoal is set once via the top-level
+            # `agg_goal: 10` above -- the runner fans it into both this
+            # kwarg and hyperparameters.aggGoal so they can't drift apart;
+            # don't duplicate it here.
+            # minInitialTrainers=N=100, not c (07-17, simulate_fwdllm.md
+            # §G): c<N raced sim's faster cycle cadence vs real's for
+            # post-barrier joiners, diverging cohort_sequence.
+            c: 30
+            minInitialTrainers: 100
+
+    execution:
+      # 8, not 1 -- this yaml's own default is 100 trainers now; cramming
+      # 100 trainer processes onto 1 GPU OOMs almost immediately (see
+      # fluxtune_n10_smoke run 20260629_221116).
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false

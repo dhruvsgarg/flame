@@ -24,6 +24,16 @@ dir name mislabels an α=1 run — **verify α from the loaded-partition log lin
 config `examples/_metadata/baselines.yaml`; tools `expt_scripts/{characterize_variance_curve,
 audit_weight_redundancy}.py`; tests `tests/mode/test_fwdllm_*`.
 
+**Naming update (2026-08-15):** this is all about the async-execution/aggregation contribution layer
+(L0/L1/C1-C3) — an axis orthogonal to `fluxtune`'s forward-gradient **estimator**, which now has its own
+versioning (`BASELINES.md` "FluxTune estimator versions"). `fluxtune` (plain name, everywhere in this doc
+too) now resolves to `fluxtune_v2` — the original spec plus `fl_fwd_ft_practice.md` P2.1's validated
+estimator fixes (`mean` probe combine, `trust_ratio` step rule, an anneal, `n_target`/`setpoint` commit
+gate, `rf`=64). Every number and run id in this charter predates that split and used what is now
+`fluxtune_v1`; nothing here is invalidated by it (the split is additive), but a **new** run intended as
+"the fluxtune baseline" now means v2 by default — pin `fluxtune_v1` explicitly for anything comparing
+against this charter's existing numbers apples-to-apples.
+
 **Remaining opts:** Opt-4 dynamic C (wired, unenabled) · Opt-5 finer staleness clock (bundle w/ Opt-3) ·
 Opt-1 cross-databin delta-cache (larger comm piece). **Parked** (measured dead-ends): dynamic-K to lower
 the floor (floor is structural non-IID) and staleness-based-C (staleness too low at syn_0).

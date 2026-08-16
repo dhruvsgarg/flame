@@ -446,9 +446,23 @@ baselines:
           enabled: "False"
           trace: syn_0
 
-  fluxtune:
+  # --- FluxTune estimator versions (fl_fwd_ft_practice.md P2.1) ---
+  # `fluxtune_v1` = the original spec (async execution/selection/aggregation
+  # contributions only; the forward-gradient ESTIMATOR itself is untouched --
+  # coin-flip probe selection, raw in-place SGD, no anneal, sample-variance
+  # commit gate). This is the version whose runs peak near the target then
+  # oscillate and collapse (EXPTS_CHARTER.md Issue I-1).
+  # `fluxtune_v2` = v1 + the validated estimator-layer fixes from
+  # fl_fwd_ft_practice.md's P2.1 ship checklist (items 1,2,3,4,5,6,8 --
+  # validated 2026-08-09..2026-08-15, see P3/P4 there for every number).
+  # `fluxtune` (plain name, below) is an alias for `fluxtune_v2` -- the
+  # default going forward. Use `fluxtune_v1` explicitly only for the
+  # pre-estimator-fix ablation. A future `fluxtune_v3` follows the same
+  # pattern: copy `fluxtune_v2`'s block, layer in the next validated fixes,
+  # and re-point the `fluxtune` alias once it's validated.
+  fluxtune_v1:
     description: >-
-      FedFwd's asyncfl baseline (owner's "fluxtune" spec, for LLM
+      FluxTune v1 -- the ORIGINAL fluxtune spec (owner's "fluxtune" spec, for LLM
       fine-tuning -- as opposed to felix, which is for the CNN/speech
       family): async_oort selector (selection axis intentionally
       parameterized the same as felix's, per the owner's "should be
@@ -468,6 +482,13 @@ baselines:
       is selector-agnostic (it pushes channel_props["dynamic_c"], which
       async_oort.py already reads, falling back to static self.c when
       absent), so no code fork is needed for either mode.
+      Preserved verbatim as of 2026-08-15, the day `fluxtune_v2` (below)
+      became the new default `fluxtune`: this is the version whose runs peak
+      near the 84% target then oscillate and collapse (EXPTS_CHARTER.md Issue
+      I-1; fl_fwd_ft_practice.md P4 arms like `112201`/`145729`/`200325` run
+      this exact estimator config to the point of collapse). Kept for
+      explicit ablation against the estimator-layer fixes in `fluxtune_v2`
+      -- launch with `--only fluxtune_v1`.
     example:
       aggregator_main: aggregator/main_fedfwd_agg.py
     aggregator:
@@ -589,6 +610,146 @@ baselines:
         client_notify:
           enabled: "True"
           trace: mobiperf_3st_50
+
+  fluxtune_v2: &fluxtune_v2_def
+    description: >-
+      FluxTune v2 -- `fluxtune_v1` plus the validated forward-gradient-estimator
+      fixes from fl_fwd_ft_practice.md's P2.1 ship checklist (items 1,2,3,4,5,6,8;
+      validated 2026-08-09..2026-08-15, every number in fl_fwd_ft_practice.md P3/P4).
+      Same async_oort selector, fedbuff optimizer + grad_aware C3, and Opt-1/Opt-2
+      var-stop as v1 -- only the estimator layer (how the JVP probes become an
+      update, and how the server applies/paces it) changes. New here, all
+      aggregator-side except the two marked dual:
+        - probe_combine=mean (DUAL: trainer + aggregator) -- combine all P probes
+          by mean instead of coin-flip top-2 select; ~10x rho/cos gain for zero
+          extra compute, bytes or eta/N/p (P3 "combination rule").
+        - server_step_rule=trust_ratio -- pool-then-apply the step, bounding
+          ||theta_tr|| growth instead of raw in-place SGD (P3 "step rule").
+        - rho_schedule=rm, rho_exp=0.25 -- anneal rho toward the setpoint over the
+          horizon instead of holding it constant (P3 "anneal").
+        - rho_star=0.06 -- the operating point used across the validated
+          portfolio; NOT yet the derived landing law
+          (rho*=sqrt(2*B_max/T_res), buildplan §5 task 3.2, still unbuilt) --
+          revisit once 3.2 lands.
+        - commit_gate=n_target, gate_rho_ref=setpoint -- size the commit pool
+          from a closed form on rho instead of the raw sample-variance gate (P3
+          "commit gate"). Stays on `setpoint`, not `annealed` -- see the
+          gate_rho_ref note below.
+        - gate_safety_s=1.5 -- an efficiency constant in that closed form, not a
+          safety bound (fl_fwd_ft_practice.md P4.2 "G-1b").
+        - cos_ground_truth_audit=true, cos_probe_batch_size=1024,
+          cos_probe_every=25 -- emit-only ground-truth cos audit on a fixed
+          1024-sample reference (B17), strided every 25 commits to bound its real
+          -wall cost (B19).
+        - adapter_reduction_factor=64 (DUAL: trainer + aggregator) -- a
+          memory/compute-only knob, inert at a pinned rho* (P3 "p").
+      gate_rho_ref note: G-2 (fl_fwd_ft_practice.md P4.5, landed 2026-08-15)
+      confirmed `annealed` beats `setpoint` on progress-per-vclock, but that same
+      `annealed` arm died on `[SIM_WALL_CEILING]` getting there -- unsafe as a
+      default until 3.3 (the budget-landing anneal + Phi-stop backstop) ships. v2
+      stays on `setpoint`; flipping to `annealed` is tracked as P2.1 item 5b, not
+      part of this version.
+      REQUIRES an environment variable this schema cannot express: `export
+      FWDLLM_FD_SCALE_INVARIANT=1` before launch, so the FD probe step h rescales
+      with adapter_reduction_factor and h*sqrt(p) stays constant
+      (trainer/forward_training/fwdgrad_utils.py reads it from os.environ
+      directly, never from config) -- forgetting it silently runs rf=64 at the
+      wrong h. See BASELINES.md Remaining work for tracking a config-level fix.
+      Validated end-to-end as exactly this config in run `084554`
+      (fl_fwd_ft_practice.md P4.5's G-2 `setpoint` leg, matched vclock).
+    example:
+      aggregator_main: aggregator/main_fedfwd_agg.py
+    aggregator:
+      selector:
+        sort: async_oort
+        kwargs:
+          c: 15  # override per experiment to scale with num_trainers
+          aggGoal: 5  # override per experiment to scale with num_trainers
+          evalGoalFactor: 0
+          selectType: default
+          roundNudgeType: last_train
+          minInitialTrainers: 15  # override per experiment to scale with num_trainers
+          k: 5
+          is_async: true
+          task_eligible_states:
+            train: [AVL_TRAIN, AVL_EVAL]
+            eval: [AVL_EVAL, AVL_TRAIN]
+          dynamic_kc:
+            enabled: false
+            policy: adaptive_k_var_tracking
+            policy_kwargs:
+              target_iter_per_data_id: 15
+              k_step: 2
+              window: 6
+            k_min: 5
+            k_max: 15
+            c_min: 15
+            c_max: 15
+            update_every_n_aggs: 1
+            history_window: 20
+      optimizer:
+        sort: fedbuff
+        kwargs:
+          use_oort_lr: "True"
+          dataset_name: agnews
+          learning_rate: 0.075
+          agg_rate_conf:
+            type: grad_aware
+            base: new
+            align_gate: true
+            align_floor: 0.0
+            inverse_var: false
+            var_ref: 0.3
+            scale: 0.4
+            a_exp: 0.25
+            b_exp: 0.1
+      hyperparameters:
+        trackTrainerAvail:
+          enabled: "False"
+          type: "NA"
+        stalenessPolicy: none
+        var_threshold: 0.3
+        var_stopping_policy: plateau
+        var_plateau_patience: 3
+        var_plateau_rel_delta: 0.15
+        max_iterations_per_data_id: 20
+        # --- estimator layer, new in v2 (fl_fwd_ft_practice.md P2.1) ---
+        probe_combine: mean                # item 1, DUAL -- also under trainer: below
+        server_step_rule: trust_ratio      # item 2
+        rho_schedule: rm                   # item 3
+        rho_exp: 0.25                      # item 3
+        rho_star: 0.06                     # operating point; see note above re: 3.2
+        commit_gate: n_target              # item 4
+        gate_rho_ref: setpoint             # item 4 (NOT annealed -- see note above, item 5b)
+        gate_safety_s: 1.5                 # item 5
+        cos_ground_truth_audit: true       # item 6
+        cos_probe_batch_size: 1024         # item 6 (B17 fixed reference)
+        cos_probe_every: 25                # item 6 (B19 stride)
+        adapter_reduction_factor: 64       # item 8, DUAL -- also under trainer: below
+    trainer:
+      hyperparameters:
+        select_perturbation_using_jvp: true
+        client_notify:
+          enabled: "True"
+          trace: mobiperf_3st_50
+        probe_combine: mean                # item 1, dual-read -- must agree w/ aggregator above
+        adapter_reduction_factor: 64       # item 8, dual-read -- must agree w/ aggregator above
+
+  # Plain, unversioned name -- the default `fluxtune` everywhere. Byte-identical
+  # to `fluxtune_v2` via YAML anchor (`<<: *fluxtune_v2_def`, no re-typed config
+  # to drift out of sync); only the description differs so `--only fluxtune`
+  # readers land on an explanation instead of the raw knob list. To move the
+  # default (e.g. once `fluxtune_v3` validates), re-point the anchor here and
+  # leave `fluxtune_v2`'s own block untouched for explicit ablation.
+  fluxtune:
+    <<: *fluxtune_v2_def
+    description: >-
+      FluxTune, the default -- currently an alias for `fluxtune_v2` (see the
+      comment above this baseline family for the full versioning scheme). Use
+      `fluxtune_v1` explicitly for the pre-estimator-fix ablation (the version
+      that peaks near target then collapses, EXPTS_CHARTER.md Issue I-1); use
+      `fluxtune_v2` explicitly when a config needs to name this exact version
+      even after the default moves on to `fluxtune_v3`.
 
   fedbuff_round:
     description: >-

@@ -26,6 +26,15 @@ the memory/inference-only-NPU thesis — a motivation/design claim, not an eval 
 figure-manifest (`figs_main_v2.yaml`/`figs_attribution.yaml`) baseline readiness —
 which run dir backs each baseline, how far it's progressed, what's still missing.
 
+**Naming update (2026-08-15):** `fluxtune` now means `fluxtune_v2` — the original spec (this doc's `fluxtune`
+throughout, including every run in §10b) plus a validated forward-gradient-**estimator** layer (`mean` probe
+combine, `trust_ratio` step, an anneal, a closed-form commit gate; `fl_fwd_ft_practice.md` P2.1) that is
+orthogonal to this doc's L0/L1/C1-C3 async-execution story. **Every `fluxtune` mention below predates this
+split and describes what is now `fluxtune_v1`** — read it that way; nothing here needed to change since the
+split is purely additive (`BASELINES.md` "FluxTune estimator versions"). New work should default to
+`fluxtune`/`fluxtune_v2` unless the estimator layer is itself what's under test, in which case pin
+`fluxtune_v1` explicitly.
+
 ---
 
 ## 0. Architecture: runs vs. analyses (the anti-redundancy backbone)

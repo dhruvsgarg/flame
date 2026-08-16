@@ -36,12 +36,23 @@ EVENTS = r'"event": "(server_update|agg_eval)"'
 
 
 def slice_run(run_dir, cache):
-    """grep the two events out of ~GBs of telemetry, once, into a cache."""
+    """grep the two events out of ~GBs of telemetry, once, into a cache.
+
+    Keyed by run-id only, so a run still growing when first scored (still
+    running, or hung post-completion before its process was reaped) leaves a
+    truncated cache that a later re-score would silently keep serving forever.
+    Invalidate on source mtime, not just presence.
+    """
     rid = os.path.basename(run_dir.rstrip("/")).split("_")[2]
     out = os.path.join(cache, f"{rid}.jsonl")
-    if not os.path.exists(out) or os.path.getsize(out) == 0:
+    src = glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl"))
+    stale = (
+        not os.path.exists(out)
+        or os.path.getsize(out) == 0
+        or (src and os.path.getmtime(out) < max(os.path.getmtime(s) for s in src))
+    )
+    if stale:
         os.makedirs(cache, exist_ok=True)
-        src = glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl"))
         if not src:
             return rid, None, None
         with open(out, "w") as fh:
