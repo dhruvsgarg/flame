@@ -538,6 +538,24 @@ finish to be a control. **Task 0.7's `const`/`rm` branch does not catch this** �
 decaying `n_req`, so it projects ~0.6 h for that 7.5 h arm. Extending it is the standing follow-up before
 any `rm`+`annealed` arm runs unattended again.
 
+**All four arms are pinned to `rf=16` (2026-08-16), and `rf=64` will not carry `annealed` at any `T_res`.**
+T5 settled law C's constants against `p=450,340`; the v1/v2 split (2026-08-15) repointed the `fluxtune`
+alias to `rf=64`, `p=118,348`, so every projection above silently described a model 3.8× the one that
+would have launched. Re-derived at `rf=64`, the `Λ ≥ 0.95` and `trips/commit ≥ 3` floors close against
+each other on the prior phase — a 9-unit window at `T_res` 82–90 where `Λ` clears by 0.001–0.007 and 28%
+of commits still floor to `I=1` — and the two-phase trajectory reads **1.71** trips/commit on agnews,
+**1.43** on yahoo. `setpoint` composes at every `T_res`, but `annealed` is what P4 exists to test (item 5b
+ships it *contingent on 3.3*, and 3.3's backstop is this controller), so `rf` moves instead, on both arms.
+P4 therefore compares law C against v2's iteration-control policy **at `rf=16`**, not against v2 entire.
+**That `rf=64` cannot carry `annealed` is a standing blocker on item 5b**, independent of P4.
+
+**Two launcher defects found the same day, both fixed.** (a) The Task 0.7 preflight read its knobs from
+the `config_overrides` layer alone, so every catalog-set value — `rf` above all — silently took a code
+default; it now resolves catalog → overrides. (b) `cos_ground_truth_audit` is *on* in v2's catalog and
+`--cos-ground-truth-audit` was opt-in only, so the audit-off design above was not expressible;
+`--no-cos-ground-truth-audit` now exists. `replay_landing_law.py` took `p` from a hardcoded `rf=16` table
+and now takes `--rf` from the registry.
+
 **Infrastructure (measured 2026-08-16, `jayne`).** Datasets *and* the `test_fwdllm` conda env are on
 `/coc/scratch` (NFS, shared by every machine); **only the repo is machine-local** (`/home` is `/dev/md1`,
 ext4, not NFS — and it is a different directory from the NFS `/nethome`). So a new node needs a `git

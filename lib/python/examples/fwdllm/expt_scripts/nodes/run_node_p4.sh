@@ -35,6 +35,17 @@
 # Lambda and A, every one of which is exact from rho; only `D` needs the audit,
 # and the audit is 3.40s of a 7.81s commit (T5) -- the tax that killed G-2's
 # annealed leg. Same setting on treatment and control, so the pair stays matched.
+# Takes an EXPLICIT `--no-cos-ground-truth-audit`: v2's catalog sets it on.
+#
+# ALL FOUR ARMS ARE PINNED TO rf=16, not v2's catalog rf=64. T5 settled law C's
+# constants against p=450,340; the v1/v2 split (2026-08-15) moved the `fluxtune`
+# alias to p=118,348. Law C + `annealed` does not compose with the gate there
+# under ANY T_res -- the Lambda>=0.95 and trips/commit>=3 floors leave a 9-unit
+# window (T_res 82-90), and the two-phase trajectory reads 1.71 trips/commit on
+# agnews against rf=16's 5.01. `annealed` is not negotiable (item 5b ships it
+# CONTINGENT on 3.3, and 3.3 is this controller), so rf moves instead, on both
+# arms: P4 scores law C against v2's iteration-control policy at rf=16, not
+# against v2 entire. rf=64 refusing `annealed` is a standing blocker on 5b.
 #
 # Budget: T5 projects agnews 899 commits / 4,817 trips (~2.1 h) and yahoo 898 /
 # 3,374 (~1.8 h) audit-off, against a 10 h slot. The vclock target is sized off
@@ -47,8 +58,7 @@ set -u
 DATASET="${1:?usage: run_node_p4.sh <agnews|yahoo> <controller|control>}"
 ARM="${2:?usage: run_node_p4.sh <agnews|yahoo> <controller|control>}"
 
-# fluxtune_v2 is rf=64; without this the FD step is not rescaled for it and the
-# launcher refuses (baselines.yaml cannot express an env var).
+# Identity at the pinned rf=16 (_FD_REF_P is 450,340); set so the pin is safe to lift.
 export FWDLLM_FD_SCALE_INVARIANT=1
 
 # --force is required for a non-agnews SIM arm (every sim_charge_profiles/*.yaml
@@ -61,11 +71,11 @@ FORCE=()
 
 COMMON=(--only fluxtune --mode sim --yes --clean "${FORCE[@]}"
         --dataset "$DATASET"
-        --server-update-audit
+        --server-update-audit --no-cos-ground-truth-audit
         --num-trainers 100 --num-gpus 8 --agg-goal 10 --c 30
         --probe-combine mean --commit-gate n_target
         --server-step-rule trust_ratio --gate-safety-s 1.5
-        --max-iter-per-data-id 20
+        --adapter-reduction-factor 16 --max-iter-per-data-id 20
         --max-runtime-s 40000 --sim-wall-ceiling-h 10.0)
 
 case "$ARM" in

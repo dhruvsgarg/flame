@@ -37,13 +37,24 @@ import statistics
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..")))
 from replay_scoring import slice_run, meta, load, enrich   # noqa: E402
+from examples.fwdllm.expts import dataset_registry as dsreg   # noqa: E402
 
 # B-1 (2026-08-13, model S7.1): knees are erratic across task, so each dataset
 # carries its own sensed value. ln 2 is D1's Phase-A prior -- the weakest
 # non-trivial claim ("the model survives its weights doubling"), not a fit.
 B_MAX = {"prior": math.log(2.0), "agnews": math.log(3.15), "yahoo": math.log(2.15)}
-P_OF = {"prior": 450340, "agnews": 450340, "yahoo": 454954}
+
+
+def p_of(rf):
+    """`p` per dataset at this rf, from the registry -- never a literal. T5 baked
+    in rf=16, so every constant it settled is an rf=16 number; v2 shipped rf=64 on
+    2026-08-15 and moved p 3.8x. `prior` is agnews before the re-sense."""
+    return {"prior": dsreg.get("agnews").probe_dim(rf),
+            "agnews": dsreg.get("agnews").probe_dim(rf),
+            "yahoo": dsreg.get("yahoo").probe_dim(rf)}
 
 
 def gate(rho, s, p, g_rule, K, max_iter):
@@ -229,7 +240,7 @@ def part_bc(args):
         for ds in ("prior", "agnews", "yahoo"):
             for t_res in args.t_res:
                 rho0, rows, trips = simulate(
-                    law, B_MAX[ds], t_res, args.s, P_OF[ds], args.g_rule,
+                    law, B_MAX[ds], t_res, args.s, p_of(args.rf)[ds], args.g_rule,
                     args.K, args.max_iter, args.f, args.gate_rho_ref, args.t_cap)
                 tag = f"{ds} B_max={B_MAX[ds]:.3f} T_res={t_res}"
                 r = summarise(tag, rho0, rows, trips, B_MAX[ds], args.s, args.K)
@@ -251,7 +262,7 @@ def part_f(args, t_res):
     for ds in ("agnews", "yahoo"):
         for f in args.f_sweep:
             rho0, rows, trips = simulate(
-                "C", B_MAX[ds], t_res, args.s, P_OF[ds], args.g_rule, args.K,
+                "C", B_MAX[ds], t_res, args.s, p_of(args.rf)[ds], args.g_rule, args.K,
                 args.max_iter, f, args.gate_rho_ref, args.t_cap)
             summarise(f"{ds} f={f}", rho0, rows, trips, B_MAX[ds], args.s, args.K)
 
@@ -286,7 +297,7 @@ def part_e(args, t_res):
     for ds in ("agnews", "yahoo"):
         for at in args.resense_at:
             rho0, rows, trips = simulate(
-                "C", B_MAX[ds], t_res, args.s, P_OF[ds], args.g_rule, args.K,
+                "C", B_MAX[ds], t_res, args.s, p_of(args.rf)[ds], args.g_rule, args.K,
                 args.max_iter, args.f, args.gate_rho_ref, args.t_cap,
                 prior=B_MAX["prior"], resense_at=at)
             r = summarise(f"{ds} re-sense @ commit {at}", rho0, rows, trips,
@@ -346,6 +357,9 @@ def main():
     ap.add_argument("--max-iter", type=int, default=20)
     ap.add_argument("--f", type=float, default=0.95,
                     help="stop at B >= f*B_max (law C never reaches B_max)")
+    ap.add_argument("--rf", type=int, default=16,
+                    help="adapter_reduction_factor -> p. 16 reproduces T5's "
+                         "published numbers; fluxtune_v2 ships 64")
     ap.add_argument("--t-res", type=int, nargs="+", default=[200, 500])
     ap.add_argument("--f-sweep", type=float, nargs="+",
                     default=[0.70, 0.80, 0.85, 0.90, 0.95])

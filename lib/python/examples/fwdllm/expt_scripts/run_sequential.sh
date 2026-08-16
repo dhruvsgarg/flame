@@ -138,7 +138,7 @@ TRAINABLE_SCOPE=""     # S-I: adapters_head|adapters_only -- adapters_only freez
 COMMIT_GATE=""         # S-C: var|n_target -- n_target sizes the pool from rho_t (aggregator); empty => code default var
 GATE_SAFETY_S=""       # S-C: safety factor s in rho <= s*cos; empty => code default 0.4
 GATE_RHO_REF=""        # S-C: annealed|setpoint -- which rho sizes the pool; empty => code default annealed
-COS_GROUND_TRUTH_AUDIT="" # B1: per-commit cos(G,g) vs a real backward pass on a fixed held-out batch
+COS_GROUND_TRUTH_AUDIT="" # B1: per-commit cos(G,g) vs a real backward pass on a fixed held-out batch. 1=on, 0=off, empty=inherit the catalog (v2 sets it ON)
 COS_PROBE_BATCH_SIZE=""   # B1: size of that batch; empty => code default 1024 (B17)
 COS_PROBE_EVERY=""        # B1: run the probe every k-th commit; empty => 1 (it costs ~83s/commit at 1024)
 SERVER_WEIGHT_DECAY=""    # Q2: decay the trainable slice after the step; "auto" = rho^2/2
@@ -188,7 +188,7 @@ usage() {
   echo "          [--b-max-probe-every N] [--b-max-probe-n N] [--b-max-probe-phis L]" >&2
   echo "          [--trainable-scope adapters_head|adapters_only] [--commit-gate var|n_target] [--gate-safety-s F]" >&2
   echo "          [--gate-rho-ref annealed|setpoint]  (setpoint stops S-C's pool vanishing with S-B's anneal)" >&2
-  echo "          [--cos-ground-truth-audit] [--cos-probe-batch-size N] [--cos-probe-every K]  (B1: real cos(G,g), aggregator-side)" >&2
+  echo "          [--cos-ground-truth-audit | --no-cos-ground-truth-audit] [--cos-probe-batch-size N] [--cos-probe-every K]  (B1: real cos(G,g), aggregator-side; unset inherits the catalog)" >&2
   echo "          [--server-weight-decay auto|FLOAT]  (Q2: pins Phi=1 at auto=rho^2/2)" >&2
   echo "          [--server-momentum BETA]  (S1: temporal pooling; needs trust_ratio)" >&2
   echo "          [--adapter-reduction-factor N]  (768/N per adapter; the real p knob)" >&2
@@ -248,6 +248,7 @@ while [[ $# -gt 0 ]]; do
     --gate-rho-ref)         case "$2" in annealed|setpoint) ;; *) echo "ERROR: --gate-rho-ref must be annealed|setpoint (got '$2')" >&2; exit 2 ;; esac
                             GATE_RHO_REF="$2"; shift 2 ;;
     --cos-ground-truth-audit) COS_GROUND_TRUTH_AUDIT=1; shift ;;
+    --no-cos-ground-truth-audit) COS_GROUND_TRUTH_AUDIT=0; shift ;;
     --cos-probe-batch-size) COS_PROBE_BATCH_SIZE="$2"; shift 2 ;;
     --cos-probe-every)      COS_PROBE_EVERY="$2"; shift 2 ;;
     --server-weight-decay) SERVER_WEIGHT_DECAY="$2"; shift 2 ;;
@@ -604,6 +605,8 @@ try:
             "adapter_reduction_factor": int(
                 (_agg.get("hyperparameters", {}) or {}).get("adapter_reduction_factor", 16) or 16
             ),
+            # Whole catalog hp block: `h0` below is the OVERRIDES layer only.
+            "agg_hp": (_agg.get("hyperparameters", {}) or {}),
         }
 except Exception:
     _BL_INTERNALS = {}
@@ -712,8 +715,10 @@ def patch(exp, run_key, variant, trace):
     if GATE_RHO_REF:
         h["gate_rho_ref"] = GATE_RHO_REF
     # B1: server-side ground-truth cos(G,g). Aggregator-only, no trainer cost.
+    # Written only when the CLI said so, either way -- unset inherits the catalog,
+    # which is why `--no-` exists: v2 sets it ON and nothing could turn it off.
     if COS_GROUND_TRUTH_AUDIT:
-        h["cos_ground_truth_audit"] = True
+        h["cos_ground_truth_audit"] = COS_GROUND_TRUTH_AUDIT != "0"
     if COS_PROBE_BATCH_SIZE:
         h["cos_probe_batch_size"] = int(COS_PROBE_BATCH_SIZE)
     if COS_PROBE_EVERY:
@@ -898,38 +903,46 @@ for trace in traces:
             # blow the REAL wall ceiling; this has cost eight arms (P4/P9.2). Only
             # defined under commit_gate=n_target, whose N_req closed form this
             # mirrors (aggregator/FedSgdAggregator.py:418) -- `var` has no such form.
-            if h0.get("commit_gate") == "n_target" and e0["aggregator"].get("agg_goal"):
-                _p_wc = dsreg.get(h0.get("dataset") or "agnews").probe_dim(
-                    int(h0.get("adapter_reduction_factor") or 16))
+            # RESOLVED value, in the launcher's own merge order (flame/launch/
+            # experiment_config.py): catalog, then config_overrides on top. `h0`
+            # alone defaults every catalog knob -- that read v2's rf=64 as 16,
+            # pricing a model 3.8x the one that launches.
+            def _hp(key, default=None, _rk=run_key, _h=h0):
+                _cat = _BL_INTERNALS.get(_rk, {}).get("agg_hp", {})
+                return _h.get(key, _cat.get(key, default))
+
+            if _hp("commit_gate") == "n_target" and e0["aggregator"].get("agg_goal"):
+                _p_wc = dsreg.get(_hp("dataset") or "agnews").probe_dim(
+                    int(_hp("adapter_reduction_factor") or 16))
                 # (c)/(d): sim's REAL-wall cap is sim_wall_ceiling_s (code default
                 # max_runtime_s*20); real mode has no such knob -- its outer safety
                 # is max_experiment_runtime_s (patch()'s own default, above).
                 if variant == "sim":
-                    _ceiling = float(h0.get("sim_wall_ceiling_s") or (MAX_RUNTIME_S * 20))
+                    _ceiling = float(_hp("sim_wall_ceiling_s") or (MAX_RUNTIME_S * 20))
                 else:
-                    _ceiling = float(h0.get("max_experiment_runtime_s")
+                    _ceiling = float(_hp("max_experiment_runtime_s")
                                       or (MAX_RUNTIME_S + 1800.0))
                 try:
                     _proj = wcp.project(
-                        p=_p_wc, rho_star=h0.get("rho_star"),
-                        gate_safety_s=h0.get("gate_safety_s"),
-                        rule=h0.get("probe_combine"),
+                        p=_p_wc, rho_star=_hp("rho_star"),
+                        gate_safety_s=_hp("gate_safety_s"),
+                        rule=_hp("probe_combine"),
                         perturbation_count=(_t_hp0.get("perturbation_count")
-                                             or h0.get("perturbation_count")),
+                                             or _hp("perturbation_count")),
                         K=int(e0["aggregator"]["agg_goal"]),
                         vclock_budget_s=float(MAX_RUNTIME_S), real_wall_ceiling_s=_ceiling,
-                        cos_audit_on=bool(h0.get("cos_ground_truth_audit")),
-                        cos_probe_every=h0.get("cos_probe_every"),
-                        cos_probe_batch_size=h0.get("cos_probe_batch_size"),
+                        cos_audit_on=bool(_hp("cos_ground_truth_audit")),
+                        cos_probe_every=_hp("cos_probe_every"),
+                        cos_probe_batch_size=_hp("cos_probe_batch_size"),
                         # C-1: law C's commit count comes from (B_max, T_res, f),
                         # not from a constant-rho round-trip rate. Without these
                         # the projection reads `rho_star` -- unset under landing --
                         # and refuses every launch on a phantom 45k-commit run.
-                        rho_schedule=h0.get("rho_schedule"),
-                        b_max=h0.get("b_max"), t_res=h0.get("t_res"),
-                        budget_stop_frac=h0.get("budget_stop_frac"),
-                        max_iter=h0.get("max_iterations_per_data_id"),
-                        gate_rho_ref=h0.get("gate_rho_ref"))
+                        rho_schedule=_hp("rho_schedule"),
+                        b_max=_hp("b_max"), t_res=_hp("t_res"),
+                        budget_stop_frac=_hp("budget_stop_frac"),
+                        max_iter=_hp("max_iterations_per_data_id"),
+                        gate_rho_ref=_hp("gate_rho_ref"))
                 except ValueError as _e:
                     checks.append({"name": f"wall-clock budget preflight ({run_key} {variant})",
                                    "level": "error", "detail": str(_e)})

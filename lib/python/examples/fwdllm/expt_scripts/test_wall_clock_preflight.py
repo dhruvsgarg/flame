@@ -103,11 +103,13 @@ def find_check(spec, name_substr):
     return None
 
 
+# rf PINNED to 16: all four replayed arms ran at p=450,340, which part 1 passes
+# explicitly. Unpinned, part 2 rides the `fluxtune` alias -- now v2's rf=64.
 COMMON = ["--only", "fluxtune", "--mode", "sim", "--dry-run",
           "--cos-ground-truth-audit", "--num-trainers", "100", "--num-gpus", "8",
           "--agg-goal", "10", "--c", "30", "--probe-combine", "mean",
           "--commit-gate", "n_target", "--server-step-rule", "trust_ratio",
-          "--rho-star", "0.06"]
+          "--rho-star", "0.06", "--adapter-reduction-factor", "16"]
 
 if os.environ.get("SKIP_LAUNCHER_CASES"):
     print("part 2: skipped (SKIP_LAUNCHER_CASES set)")
