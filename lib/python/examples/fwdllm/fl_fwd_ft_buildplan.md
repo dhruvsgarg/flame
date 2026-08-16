@@ -225,6 +225,27 @@ project a breach (145,288 s / 38,870 s vs their 7,200 s ceiling) and the live la
 `112201`/`145729` (stride 25) project under their ceiling (16,903 s / 7,380 s vs 21,600 s) and the
 launcher exits 0 — all four against their real historical fate (P4/P9.2).
 
+### 0.7a — the preflight, extended for law C *(landed 2026-08-15, with 3.2/3.3)*
+
+Task 0.7's projection prices a **constant-`ρ`** arm: `commits = (vclock/τ(K))·K/n_req` with `n_req` from
+`rho_star`. Under `rho_schedule=landing` that is meaningless — `rho_star` is unset, so it falls back to the
+0.01 code default and projects a phantom **45,000-commit** run, refusing every launch. Law C's commit count
+comes from `(B_max, T_res, f)` instead, so `project()` now takes `rho_schedule`/`b_max`/`t_res`/
+`budget_stop_frac`/`max_iter`/`gate_rho_ref` and, under `landing`, walks the real trajectory via
+`expts/landing_law.simulate` and costs it with **T5's two-term fit**
+(`4.41 s/commit + audit/stride + 0.77 s/trip`). **The const/rm branch is untouched** — it stays the model
+already validated against four historical arms.
+
+**It also carries the new gate.** `Projection.gate_starved` refuses when round trips/commit falls below 3 —
+the metric `003648` died on while looking vclock-healthy, which no wall projection could have caught
+(that arm's *total* wall was in budget right up until it wasn't).
+
+**Sanity gate reproduced:** the preflight's own numbers now equal `replay_landing_law.py`'s exactly —
+agnews 899 commits / 4,817 trips (5.36 per commit), yahoo 898 / 3,374 (3.76) at `T_res`=300, both passing;
+yahoo at `T_res`=500 refused with `gate starved ... 2.46 per commit`. All four historical arms
+(`002208`/`022448`/`112201`/`145729`) still score exactly as before, and `test_wall_clock_preflight.py`
+passes end to end.
+
 ### 0.8 — `--dataset` in the launcher *(landed — see §1)*
 
 ### 0.9 — partitions for yahoo / yelp-p *(landed — see §1)*
@@ -253,12 +274,13 @@ no longer single-run.
 
 ---
 
-## §4 — Phase 2 · the three registered nodes
+## §4 — Phase 2 · registered-node launch shape
 
-**Predictions and kills are in [P5.1](fl_fwd_ft_practice.md#p51-registered-nodes) and are pre-registered
-(R6) — implement against them, do not restate or soften them.** Common launch shape:
-`expt_scripts/nodes/run_node_*.sh` built on `_node_lib.sh` (which aborts a node on any arm producing
-< 5 commits); `run_node_g1b_gate_s.sh` is the current best template.
+**All three registered nodes (K-1, P-1, G-2) landed 2026-08-13/15 — their specs are deleted per §0 rule 6;
+results are in `fl_fwd_ft_practice.md` P3/P4.** Kept below: the launch shape and standing preflight, reusable
+for the next registered node. Common launch shape: `expt_scripts/nodes/run_node_*.sh` built on
+`_node_lib.sh` (which aborts a node on any arm producing < 5 commits); `run_node_g1b_gate_s.sh` is the
+current best template.
 
 **Standing preflight for every arm here** (do not skip; this list is what the eight dead arms were missing):
 
@@ -270,15 +292,14 @@ pin the pool for any A/B: --var-threshold 0 --max-iter-per-data-id 20 --var-stop
 echo the enactment lines: [ServerStep] [CommitGate] [CosProbe] [probe_combine] [ProbeDim] [FD] spacing
 ```
 
-**P-1** is a build prerequisite, not an ablation — 3.4 needs `τ(P)`. `P` ∈ {10,30} under
-**`probe_combine=mean`**, `N` pinned. `P` is a **trainer-side** override: verify via
-`[probe_combine=mean] P=…` in the trainer log, not in `aggregator_config.json`. Report and stop if
-`τ(30)/τ(10)` ≥ 2.5 — compute-bound, the gain cancels.
-
-**G-2** re-tests a P2 default that was changed on a re-read of two old arms rather than an A/B:
-`gate_rho_ref` `annealed` vs `setpoint` at `ρ*`=0.06, `rm`, **matched vclock** (not matched commits — the
-two rules order differently under the two clocks, which is the entire question). **Never run `annealed`
-at `ρ*` ≤ 0.01** — `220627`'s dead zone.
+**Note from G-2, corrected by T5 (2026-08-15):** the wall-clock preflight above did not stop `annealed`'s
+`[SIM_WALL_CEILING]` death, and the reason is **not** "a schedule that spends its budget unevenly" — that
+was a plausible mechanism, never a measured one. Replay says `003648` ran with the gate's `I` **floored at
+1 on 98% of its commits** (3,353 commits against 3,429 round trips), so every commit paid the full
+server-side path with a single round trip's worth of trainer work amortising it: **8.40 s/round-trip
+against `145729`'s 1.75**. The preflight's `τ(K)` model prices round trips, so a run that converts its
+budget into commits instead is invisible to it. **Add round-trips-per-commit to the preflight** (task 0.7)
+and do not treat a clean `--dry-run` as a guarantee for `gate_rho_ref=annealed` until 3.3 ships.
 
 ---
 
@@ -289,58 +310,173 @@ byte-identical until its A/B scores. **Build 3.3 first**: the whole P4.1 gain (0
 it depends on nothing else.
 
 **3.1 + 3.2 + 3.3 are one closed-loop controller, not three independent features — read all three specs
-below together before building any of them** (2026-08-13; implementation starts a later session). 3.2 is
+below together before building any of them** (2026-08-13). **Both open design decisions were resolved
+2026-08-15 by T5's replay** (law C for the anneal; `halt` for the stop) — the specs below carry the
+decisions and the numbers behind them, so implementation is unblocked. 3.2 is
 the continuous per-commit throttle, 3.1 is the strided re-sense feeding it, and 3.3's stop is the discrete
 backstop for when the throttle's `T_res` estimate turns out wrong (edge case (f) below) — it is not
 redundant with a working anneal, it is what the anneal fails safe into. Live proof the backstop is needed:
 G-2's annealed leg (`003648`) hit `[SIM_WALL_CEILING]` at vclock 26,026 of its intended 40,000 (real wall
 4.6× over the preflight's estimate) on 2026-08-13 — cut short before it could land, exactly the case the
-backstop exists for.
+backstop exists for. **G-2 landed 2026-08-15** against a completed `setpoint` counterpart at the same
+40,000-vclock target (`084554`): `annealed` still won on accuracy-per-vclock despite dying early, confirming
+P2's default, but the death itself stands — full readout `fl_fwd_ft_practice.md` P4.5.
+
+### T5 — the landing law replayed against the gate *(landed 2026-08-15, no GPU)*
+
+**`expt_scripts/replay_landing_law.py`.** Run before any Phase-3 code, and it moved three defaults and
+found one new mechanism. Parts A–E: arm validation, the two candidate laws, an `f` sweep, D1's two-phase
+trajectory, and a wall projection.
+
+**`Λ = 2B/s` is an identity wherever the gate holds `s`** — because `N = p(ρ/s)²/G_rule` makes
+`cos = ρ/s`, so `Λ = Σρ·cos = Σρ²/s = 2B/s`. Confirmed out of sample to **−0.3%** on both `s`-pinned arms
+(`145729` 2.385 vs 2.379; `112201` 1.722 vs 1.717) and missing **+21.5 to +23.3%** on the three whose `s`
+drifts (`035045`/`003648`/`084554`) — the same arms, in the same order, as §4.6's time-law miss table.
+**Consequence: the `ρ` schedule is `Λ`-neutral at fixed `B`.** Law A and law C bank the same `Λ`; they
+differ only in how many commits they take to spend the budget. Any claim that one schedule "learns more"
+is an artifact of comparing them at unequal `B`.
+
+**Cost model, fitted over 5 arms to ±1%:** `real_wall = 7.81·commits + 0.77·round_trips` (cos audit on,
+stride 25). Separable only because the portfolio spans 1.02–20 round trips/commit. The audit is charged
+per *commit* (85 s / 25), so an audit-off arm costs **4.41 s/commit + 0.77 s/trip**.
+
+**Sanity gate reproduced:** the fit predicts all five arms' measured real wall to ≤1%
+(`035045` 2.03→2.05 h · `145729` 3.67→3.67 · `112201` 3.57→3.55 · `003648` 8.00→8.01 · `084554` 3.13→3.11).
+
+**What T5 could not settle — verify these on the Phase-4 arms, not by argument.** Every one is a number
+the overnight run produces for free; none blocks the build.
+
+| open | why replay can't close it | what closes it | if it comes out wrong |
+|---|---|---|---|
+| **`Λ` → accuracy on yahoo.** T5 clears yahoo at `Λ` = 1.04 against a **≥0.95 floor read off P4's agnews curve** | P4 read 2 already says `Λ` doesn't transfer across `p`; across *task* it has never been tested at all. `p` differs only 1% here, but the task differs entirely | node 3/4's own accuracy-vs-`Λ` curve — the first ever measured off agnews | the floor moves, `f` rises, and yahoo needs more budget than 0.95·`B_max`. Cheap: wall headroom is 4× |
+| **Does `B_max` drift within one run?** (3.1 question 2, still open) | needs the probe to fire repeatedly inside a live loop, which is the thing being built | `B_max_old → B_max_new` per fire on nodes 1/3 | if it drifts a lot, the stride shortens; law C already self-corrects, so control is unaffected |
+| **trips/commit ≥ 3** is calibrated on **one death and two survivals** | three arms is not a curve; the true knee could be anywhere in 1–8 | every Phase-4 arm reports it per commit; the gate gets re-sized once there are ten | a config passes preflight and still burns wall — the same failure the preflight exists to stop |
+| **4.41 s/commit audit-off** is `7.81 − 85/25`, a **subtraction, not a measurement** | no audit-off arm at this operating point exists on disk | node 1's own `wall / commits`, read ~50 commits in | projections shift; the 4× headroom absorbs a 2× miss |
+| **`f` = 0.95** rests on the `Λ` floor, with **no accuracy evidence** | `f` only ever moves the last few percent of budget, which no arm on disk isolates | replay nodes 1/3 at every `f` after the fact — the curve is free once the arm exists | a smaller `f` ends runs sooner at the same peak, which is a win, not a loss |
 
 ### 3.3 — budget-landing anneal + `Φ` stop
 
 **Sensed from `B`**, which is exact and free (`B = ½Σlog(1+ρ_t²)`, already computable per commit).
 
-- **Anneal:** replace the horizon-sized `rm` exponent with the landing law `ρ* = √(2·B_max/T_res)`
-  (model §4.6a), recomputed each commit from remaining budget and remaining control resolution.
-- **Stop:** halt when smoothed `Φ` crosses the threshold. **The rule needs no eval, no accuracy history
-  and no task constant** — that is its whole value. Threshold default 2.7 (P4.1: 0.0054 given up, worst
-  arm 0.0139); its value on an unseen task is what B-1 settles, and is what 3.1's sensed `B_max` should
-  eventually replace the fixed constant with.
+- **Anneal:** the landing law, **law C — `T_res` is a rate, not a deadline** (decided 2026-08-15, below).
+  `ρ*_t = min(ρ_max, √(2·(B_max_t − B_t)/T_res))` with `T_res` a **constant that is never decremented**.
+- **Stop:** `B ≥ f·B_max`, `f` = 0.95. **`Φ`-stop and budget-exhausted are the same trigger, not two** —
+  `Φ = e^B` and `B` is monotone, so `Φ ≥ Φ_thresh ⟺ B ≥ ln Φ_thresh`, and 3.1's `B_max = ln Φ_peak`. The
+  fixed `Φ` = 2.7 constant (P4.1: 0.0054 given up, worst arm 0.0139) survives only as the fallback for an
+  arm with no sensed `B_max`. **The rule needs no eval, no accuracy history and no task constant.**
 
-**State to carry:** cumulative `B`, commit count, `Φ` smoothed over the same 11-eval window the replay
-uses. **Emit per commit:** `B`, `B_max`, `B/B_max`, `Φ`, `rho_star_t`, and the stop reason when it fires.
+**Decided 2026-08-15 — `T_res` is a rate (law C), and the re-sense question dissolves.** `B_max` is
+*measured* and drifts; `T_res` is *chosen* and no probe returns evidence about it. Three candidate
+denominators, and only one is well-posed:
 
-**Edge cases.** (a) `T_res` (remaining control resolution) must be finite and positive — floor it, or the
-first commit divides by zero. (b) Under `β > 0` the `Φ` law changes; either refuse to combine the stop
-with momentum or use the momentum-corrected form. (c) A run that reaches `B_max` before its eval cadence
-fires must still stop — the trigger is `B`, not accuracy. (d) `Φ` from `ρ` is exact; **never** re-derive
-it from `‖θ‖` ratios, which carry the audit's own noise. (e) Stopping is not the same as ending the run:
-decide and document whether the aggregator halts, freezes `θ`, or keeps evaluating. (f) **New:** a `T_res`
-that runs out mid-training while commits keep flowing (the G-2 scenario above) must not silently divide by
-zero or blow `ρ*_t` up — decide whether hitting `T_res`=0 itself becomes a stop trigger, or whether a
-re-sense (3.1) extends the horizon and recomputes `T_res` before that point.
+| law | denominator | `B(t)` | terminates | on re-sense |
+|---|---|---|---|---|
+| **A** fixed-horizon | `T_res − t` | linear, lands at `t = T_res` | at `T_res` | ill-posed at the edges |
+| **B** receding horizon | resets to `T_res` per re-sense | piecewise | **never** — each reset defers the landing | pathological |
+| **C** fixed-rate ✅ | `T_res`, never decremented | `B_max(1 − e^{−t/T_res})` | on the stop rule | **nothing to reset** |
+
+**Law C, for five reasons, the third decisive.** (1) It dissolves the re-sense question — `B_max` moves,
+`ρ*` re-derives in one commit, no horizon bookkeeping exists to be inconsistent. (2) Under law A, perfect
+tracking makes `ρ*` *exactly constant* and `B_rem` deplete linearly — it is a constant-`ρ` policy with a
+deadline, not an anneal at all. (3) **Law A smuggles `T` back in as an input**, and §4.6a is titled *"why
+`T` is not an input"*; D4 admits only model/PEFT/`p`. A run that ends when a commit counter hits an
+operator-set number has a horizon input wearing a new name. (4) Every edge case below dissolves rather
+than needing a guard. (5) `B → B_max` monotonically **from below**, so the controller is safe by
+construction and the stop is a genuine backstop — versus `rm`, whose `Σρ²` diverges logarithmically so it
+*always* eventually needs the stop.
+
+**Price, measured not estimated (T5):** law C takes **3.1× the commits** of law A for the *same* `Λ`
+(1,498 vs 477 at `T_res`=500, `Λ` 1.565 vs 1.523). Commits cost 4.41 s each with the audit off, so on the
+Phase-4 arms this is **~0.6 h against a 10 h slot** — the right thing to buy.
+
+**Constants, all settled on replay (T5), none fitted to an accuracy curve:**
+
+| constant | value | why, and what refuted the alternative |
+|---|---|---|
+| `T_res` | **300** | **`T_res` = 500 is refuted** — 2.46 round trips/commit on yahoo and 2.26 on the `ln 2` prior, against the ≥3 gate. 300 passes on both datasets and in the two-phase trajectory |
+| `f` | **0.95** | yahoo needs `f` ≥ 0.90 to clear `Λ` ≥ 0.95; agnews clears at 0.70. 0.95 is free given the wall headroom |
+| `ρ_max` | `s·√(max_iter·K·G_rule/p)` ≈ **0.0999** | gate reachability, `⌈n_req/K⌉ ≤ max_iter` solved for `ρ` — mechanical, no operator input. **This replaces a `ρ* ≤ ρ*₀` clamp, which is wrong**: `ρ*₀` comes from the `ln 2` prior, so that clamp would block 3.1's re-sense from ever spending the budget it just found. Law C is monotone non-increasing at fixed `B_max` anyway, so only a re-sense can raise `ρ*` — exactly when it should |
+| `B_max` prior | `ln 2` | D1, unchanged |
+
+**Decided 2026-08-15 — edge case (e), what the stop does: `halt`, through the existing exit path.**
+`FedSGDAggregator` subclasses `TopAggregator`, so `self._work_done = True` routes the stop through the
+identical shutdown `max_runtime_s` and `[SIM_WALL_CEILING]` already use
+(`fwdllm_aggregator.py:_check_early_stop_conditions`). **Halting is one line into a tested path; freezing
+`θ` is new lifecycle state in a component that has none.** And freeze-and-keep-evaluating is *dominated*,
+not a trade-off: a frozen `θ` has a fixed accuracy, so re-evaluating it measures eval noise and returns
+nothing, at real GPU cost. On fire: latch (a re-sensed `B_max` can move the threshold, so the predicate
+can flip even though `Φ` cannot) · skip this commit's update · discard in-flight uploads · checkpoint `θ`
+· one final eval · `_work_done = True` with `stop_reason` in telemetry.
+
+> **This makes Phase 4's "end within 0.015 of peak" mechanically satisfiable** — final *is* the stop,
+> which is what P4.4's peak-vs-final rule has been working around all along.
+
+**But halting alone destroys the evidence that validated the rule** — P4.1's 0.0054-vs-0.1408 came from
+arms that ran *past* their stop. So ship three states: **`phi_stop: off`** (default, byte-identical) ·
+**`log_only`** (emit the crossing and the would-be stop commit, keep training — zero cost, and how the
+rule gets validated on an unseen task) · **`halt`**.
+
+**State to carry:** cumulative `B`, commit count, latest sensed `B_max`. **Emit per commit:** `B`,
+`B_max`, `B/B_max`, `Φ`, `rho_star_t`, `n_req`, `I`, and the stop reason when it fires.
+
+**Edge cases.** (a) **dissolved by law C** — the denominator is a constant, so nothing divides by zero.
+(b) Under `β > 0` the `Φ` law changes: **refuse to launch** (`β` = 0 on every shipped arm). (c) A run that
+reaches `f·B_max` before its eval cadence fires must still stop — the trigger is `B`, not accuracy.
+(d) `Φ` from `ρ` is exact; **never** re-derive it from `‖θ‖` ratios, which carry the audit's own noise.
+(f) **dissolved by law C** — `T_res` never runs out. `B_max` re-sensed *below* `B_spent` clamps `B_rem`
+to 0 ⇒ `ρ*` = 0, which is itself the correct stop, not a `sqrt` of a negative.
+
+**Three stop reasons, one predicate, one code path:** `budget` (`B ≥ f·B_max`) · `phi_fixed` (the
+pre-3.1 constant, for an arm with no sensed `B_max`) · `saturation` (3.5, later).
 
 ### 3.1 — two-phase `B_max`, continuously re-sensed
 
-Prior `ln 2` → injection probe on a **copy** of `θ_tr`, ~6 evals, on a stride — **and re-fired on that same
-stride for the life of the run**, not just once at the Phase A→B handoff (see the framing note above).
-Phase 1 (B-1) already decided this is needed at all: `Φ_knee` is neither invariant nor derivable from
-`num_labels` (agnews ≈3.0–3.5 vs yahoo/yelp-p ≈2.0–2.3, B-1, 2026-08-13).
+**Corrected 2026-08-15 (see P9.3 process note below) — the METHOD is not new.** It's fully specified
+(model §5.5b) and **already coded and validated**: isotropic Gaussian noise on a **copy** of `θ_tr`,
+scaled so `‖θ_tr‖` grows by `Φ`, read accuracy at `Φ` ∈ {1.5…4}, knee = `Φ_peak`, `B_max = ln(Φ_peak)`.
+This is exactly `expt_scripts/probe_inflation_damage.py`, already run standalone for the whole B-1 sweep
+(agnews/yahoo/yelp-p, 2026-08-13). **What's actually unbuilt is wiring that same probe to fire repeatedly,
+on a stride, from inside `FedSgdAggregator`'s live commit loop** — not just once, offline, before a run —
+and feeding its `B_max` into 3.2/3.3 live. Phase 1 (B-1) already decided this is needed at all: `Φ_knee` is
+neither invariant nor derivable from `num_labels` (agnews ≈3.0–3.5 vs yahoo/yelp-p ≈2.0–2.3).
 
-**Edge cases.** The probe must be strided and budgeted (0.7); on a copy, never the live model; and its
-cost must be reported as a fraction of the commit path before it defaults on. A re-sense landing *mid-anneal*
-changes `B_max` under `ρ*_t`'s feet — decide whether a re-sense also resets the remaining-`T_res` landing
-target (most consistent: recompute both together) or only `B_max` moves while `T_res` keeps counting down
-from the original horizon. Whether `B_max` actually drifts materially within one run's lifetime, or is
-roughly stationary once the first real probe lands, is itself untested — emit it per re-sense rather than
-assume either answer going in.
+**Question 1 answered by 3.3's law-C decision (2026-08-15): a re-sense moves `B_max` and nothing else.**
+`T_res` is not run state — it never counts down, so there is nothing to reset. Reset-on-re-sense (law B)
+is a *receding horizon*: each reset defers the landing, `ρ*` asymptotes to zero and the run burns wall
+clock at vanishing step size, reaching `220627`'s dead zone by a different road.
 
-### 3.2 — `ρ*` = `√(2·B_max/T_res)`
+**Question 2 (does `B_max` drift materially within one run?) stays open and is what this task measures** —
+emit `B_max_old → B_max_new` per fire rather than assume either answer. **T5's two-phase simulation says
+the answer barely matters for control**: re-sensing at commit 50 / 150 / 300 gives 920 / 967 / 1,054
+commits and `Λ` 1.528 / 1.531 / 1.538 on agnews. Law C self-corrects, so a late or noisy first sense costs
+almost nothing — which is the property that made law C the choice.
 
-Trivial once 3.1 lands. Replaces P4's dose-response lookup. **Do not walk `ρ*` up** — P6. Recomputed every
-commit from the *remaining* `B_max − B` and *remaining* `T_res`, never the original constants — that's what
-makes it a landing law instead of a horizon-sized `rm` schedule wearing a new formula.
+**Predicted enactment (T5, pre-registered).** Prior `ln 2` → sensed, re-sense at commit 150, `T_res`=300:
+agnews `ρ*` 0.0530 → **0.0764**, `I` 6 → 12; yahoo `ρ*` 0.0530 → **0.0573**, `I` 6 → 7. **The divergence
+between the two datasets, with nothing supplied by anyone, *is* Phase 4's acceptance criterion** — so this
+is the line to grep for first on nodes 1 and 3.
+
+**Edge cases (mechanical).** The probe must be strided and budgeted (0.7) — the extra `~6 evals` per fire
+is real cost, report it as a fraction of the commit path before this defaults on; it runs on a copy, never
+the live model. Reuse the cos probe's fixed-seed reference batch **and its class-skew guard** — with the
+cos audit off on the Phase-4 arms, that guard is otherwise not running at all (P6: slicing
+`test_global.dataset.tensors[:n]` returns one client's Dirichlet shard).
+
+### 3.2 — `ρ*_t` = `min(ρ_max, √(2·(B_max_t − B_t)/T_res))`
+
+Trivial once 3.1 lands. Replaces P4's dose-response lookup. Recomputed every commit from the *remaining*
+budget `B_max_t − B_t`, never the original constant — that's what makes it a landing law rather than a
+horizon-sized `rm` schedule wearing a new formula. `T_res` is fixed at **300** and is *not* part of the
+remainder (3.3's law-C decision); `ρ_max` is the gate-reachability cap, **not** `ρ*₀` (that clamp is
+refuted — 3.3's constants table).
+
+**Composition with the commit gate — checked on replay (T5), and it is the thing that nearly broke this.**
+`N_req ∝ ρ_t²` under `gate_rho_ref=annealed`, so an annealing `ρ` demands monotonically *less* pooling
+until `I` floors at 1 (§8 failure mode 5). **Flooring is safe but expensive**: `N > n_req` means
+`ρ/cos < s`, conservative — what it costs is that the server-side per-commit path loses the trainer work
+that was amortising it. **Score round trips per commit, not the floored fraction.** At `T_res`=300 the
+two-phase trajectory holds 5.01 (agnews) / 3.69 (yahoo) against a ≥3 gate; at `T_res`=500 yahoo falls to
+2.44 and the config is refused.
 
 ### 3.5 — saturation stop, replacing the raw `dAcc/dΛ` slope test (revised 2026-08-13, not yet implemented)
 
@@ -391,8 +527,10 @@ before this ships — in the implementing session, not now.**
 
 **K-1 landed (2026-08-13): hill-climb `C`, not `K`** — commit throughput flat in `K` at fixed `C` (P3),
 confirming model §5.2's own prediction that `K`'s effect on wall clock is "open — `∝1/K` only if `C=K`".
-Still **blocked on P-1** (`τ(P)`, in progress) and on a **mid-run `P` change**, which no code path supports
-today — that is the real remaining engineering here, and it also forces 0.4's per-commit `G_rule`.
+**P-1 landed (2026-08-15): compute-bound**, `τ(30)/τ(10)`=2.56 — report and stop (P3/P4.6). Adaptive `P` is
+no longer motivated as a throughput lever; a **mid-run `P` change**, which no code path supports today, is
+the real remaining engineering here if a bandwidth case ever revives it, and it also forces 0.4's per-commit
+`G_rule`.
 `dynamic_kc`'s `k_max` = 15 is backwards and must not be reused as a starting point. Whether `K` needs to
 be dynamic anyway under *variable* device availability, or matters more for forward- than backprop-trained
 gradients, is untested — H-T (`fl_fwd_ft_practice.md` P5.3), not blocking this task.

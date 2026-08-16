@@ -15,6 +15,9 @@ def make(rule, rho_star=0.02, sched="const", exp=0.55):
     a = object.__new__(A)
     a._server_step_rule = rule; a._rho_star = rho_star
     a._rho_schedule = sched; a._rho_exp = exp; a._commit_count = 0
+    a._last_rho = None
+    a._B, a._stop_fired, a._phi_stop = 0.0, None, "off"   # C-1, stop disabled
+    a._b_max_probe_every = 0                              # 3.1 re-sense off
     a.server_momentum = 0.0; a._server_momentum_buf = {}
     a._server_update_audit = False
     a._pool_split_half_stats = lambda ml: None

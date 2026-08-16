@@ -10,6 +10,7 @@ every run produces the same columns.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Optional
 
 # ---- Event type constants -------------------------------------------------
@@ -297,6 +298,11 @@ def build_server_update(
     cos_ground_truth: Optional[float] = None,
     pooled_norm: Optional[float] = None,
     probe_grad_norm: Optional[float] = None,
+    budget_b: Optional[float] = None,
+    budget_b_max: Optional[float] = None,
+    rho_star: Optional[float] = None,
+    n_req: Optional[float] = None,
+    stop_reason: Optional[str] = None,
 ) -> tuple[str, dict[str, Any]]:
     """I-1 audit: L2 norm of the update actually SUBTRACTED from the server
     weights, the resulting weight norm, and their ratio — one record per commit.
@@ -354,6 +360,20 @@ def build_server_update(
         fields["cos_ground_truth"] = cos_ground_truth
         fields["pooled_norm"] = pooled_norm
         fields["probe_grad_norm"] = probe_grad_norm
+    if budget_b is not None:
+        # C-1: the controller's own state. `budget_b` is exact from rho and free,
+        # so it is emitted on every commit whatever the schedule -- it is what
+        # makes both Phase-4 failure modes diagnosable ~20 commits in, without
+        # waiting for the accuracy curve. `rho_star`/`n_req` are the enactment
+        # pair: rho_star is what the schedule ASKED for (rho above is what was
+        # realised), n_req what the gate demanded of the pool.
+        fields["budget_b"] = budget_b
+        fields["budget_b_max"] = budget_b_max
+        fields["budget_frac"] = (budget_b / budget_b_max) if budget_b_max else None
+        fields["phi"] = math.exp(budget_b)
+        fields["rho_star"] = rho_star
+        fields["n_req"] = n_req
+        fields["stop_reason"] = stop_reason
     return EVENT_SERVER_UPDATE, fields
 
 

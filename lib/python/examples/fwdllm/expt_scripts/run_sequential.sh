@@ -124,8 +124,16 @@ PERTURBATION_COUNT=""  # P: probes per trainer per iteration (trainer hyperparam
 PROBE_COMBINE=""       # S-H: select|mean -- how the P probes become one upload; empty => code default select
 SERVER_STEP_RULE=""    # S-A: raw_sgd|trust_ratio (aggregator); empty => code default raw_sgd
 RHO_STAR=""            # S-A: target relative step under trust_ratio
-RHO_SCHEDULE=""        # S-B: const|rm -- rm anneals rho* as t^-RHO_EXP
+RHO_SCHEDULE=""        # S-B: const|rm|landing -- `landing` = C-1 law C
 RHO_EXP=""             # S-B: anneal exponent, must exceed 0.5
+B_MAX=""               # C-1: budget ceiling, ln(Phi_peak). Unset = D1's ln 2 prior
+T_RES=""               # C-1: control resolution as a RATE, never decremented (300)
+BUDGET_STOP_FRAC=""    # C-1: stop at B >= f*B_max (0.95)
+PHI_STOP=""            # C-1: off|log_only|halt -- what the stop DOES
+PHI_STOP_THRESHOLD=""  # C-1: fixed Phi fallback when no B_max is sensed (2.7)
+B_MAX_PROBE_EVERY=""   # 3.1: re-sense B_max every N commits. 0/unset = off
+B_MAX_PROBE_N=""       # 3.1: held-out samples per probe eval (512)
+B_MAX_PROBE_PHIS=""    # 3.1: comma-separated Phi grid (1.5,2,2.5,3,3.5,4)
 TRAINABLE_SCOPE=""     # S-I: adapters_head|adapters_only -- adapters_only freezes pre_classifier (56.7% of p)
 COMMIT_GATE=""         # S-C: var|n_target -- n_target sizes the pool from rho_t (aggregator); empty => code default var
 GATE_SAFETY_S=""       # S-C: safety factor s in rho <= s*cos; empty => code default 0.4
@@ -175,7 +183,9 @@ usage() {
   echo "          (BASELINE_DELAY_DEFAULTS in this script); pass explicitly only to override." >&2
   echo "          [--server-update-audit] [--pool-split-half-audit]" >&2
   echo "          [--learning-rate F] [--perturbation-count N] [--probe-combine select|mean]" >&2
-  echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho-schedule const|rm] [--rho-exp F]" >&2
+  echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho-schedule const|rm|landing] [--rho-exp F]" >&2
+  echo "          [--b-max F] [--t-res F] [--budget-stop-frac F] [--phi-stop off|log_only|halt] [--phi-stop-threshold F]" >&2
+  echo "          [--b-max-probe-every N] [--b-max-probe-n N] [--b-max-probe-phis L]" >&2
   echo "          [--trainable-scope adapters_head|adapters_only] [--commit-gate var|n_target] [--gate-safety-s F]" >&2
   echo "          [--gate-rho-ref annealed|setpoint]  (setpoint stops S-C's pool vanishing with S-B's anneal)" >&2
   echo "          [--cos-ground-truth-audit] [--cos-probe-batch-size N] [--cos-probe-every K]  (B1: real cos(G,g), aggregator-side)" >&2
@@ -223,6 +233,14 @@ while [[ $# -gt 0 ]]; do
     --rho-star)             RHO_STAR="$2"; shift 2 ;;
     --rho-schedule)         RHO_SCHEDULE="$2"; shift 2 ;;
     --rho-exp)              RHO_EXP="$2"; shift 2 ;;
+    --b-max)                B_MAX="$2"; shift 2 ;;
+    --t-res)                T_RES="$2"; shift 2 ;;
+    --budget-stop-frac)     BUDGET_STOP_FRAC="$2"; shift 2 ;;
+    --phi-stop)             PHI_STOP="$2"; shift 2 ;;
+    --phi-stop-threshold)   PHI_STOP_THRESHOLD="$2"; shift 2 ;;
+    --b-max-probe-every)    B_MAX_PROBE_EVERY="$2"; shift 2 ;;
+    --b-max-probe-n)        B_MAX_PROBE_N="$2"; shift 2 ;;
+    --b-max-probe-phis)     B_MAX_PROBE_PHIS="$2"; shift 2 ;;
     --trainable-scope)      TRAINABLE_SCOPE="$2"; shift 2 ;;
     --commit-gate)          case "$2" in var|n_target) ;; *) echo "ERROR: --commit-gate must be var|n_target (got '$2')" >&2; exit 2 ;; esac
                             COMMIT_GATE="$2"; shift 2 ;;
@@ -366,6 +384,11 @@ ALL_RUNS=(
   "felix_round:$SCRIPT_DIR/felix_round_n10_smoke.yaml:$SCRIPT_DIR/felix_round_n10_smoke_sim.yaml"
   "felix_it:$SCRIPT_DIR/felix_it_n10_smoke.yaml:$SCRIPT_DIR/felix_it_n10_smoke_sim.yaml"
   "fluxtune:$SCRIPT_DIR/fluxtune_n10_smoke.yaml:$SCRIPT_DIR/fluxtune_n10_smoke_sim.yaml"
+  # "fluxtune" (above) is an alias for fluxtune_v2 as of 2026-08-15
+  # (baselines.yaml) -- these two exist so a config can pin the version
+  # explicitly instead of riding the alias. See BASELINES.md.
+  "fluxtune_v1:$SCRIPT_DIR/fluxtune_v1_n10_smoke.yaml:$SCRIPT_DIR/fluxtune_v1_n10_smoke_sim.yaml"
+  "fluxtune_v2:$SCRIPT_DIR/fluxtune_v2_n10_smoke.yaml:$SCRIPT_DIR/fluxtune_v2_n10_smoke_sim.yaml"
 )
 
 if [ -n "$ONLY" ]; then
@@ -413,6 +436,10 @@ SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" POOL_SPLIT_HALF_AUDIT="$POOL_SPLIT_HA
 LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
   PROBE_COMBINE="$PROBE_COMBINE" SERVER_STEP_RULE="$SERVER_STEP_RULE" \
   RHO_STAR="$RHO_STAR" RHO_SCHEDULE="$RHO_SCHEDULE" RHO_EXP="$RHO_EXP" \
+  B_MAX="$B_MAX" T_RES="$T_RES" BUDGET_STOP_FRAC="$BUDGET_STOP_FRAC" \
+  PHI_STOP="$PHI_STOP" PHI_STOP_THRESHOLD="$PHI_STOP_THRESHOLD" \
+  B_MAX_PROBE_EVERY="$B_MAX_PROBE_EVERY" B_MAX_PROBE_N="$B_MAX_PROBE_N" \
+  B_MAX_PROBE_PHIS="$B_MAX_PROBE_PHIS" \
   TRAINABLE_SCOPE="$TRAINABLE_SCOPE" COMMIT_GATE="$COMMIT_GATE" GATE_SAFETY_S="$GATE_SAFETY_S" \
   GATE_RHO_REF="$GATE_RHO_REF" COS_GROUND_TRUTH_AUDIT="$COS_GROUND_TRUTH_AUDIT" \
   COS_PROBE_BATCH_SIZE="$COS_PROBE_BATCH_SIZE" COS_PROBE_EVERY="$COS_PROBE_EVERY" \
@@ -459,6 +486,12 @@ LEARNING_RATE = env("LEARNING_RATE") or ""; PERTURBATION_COUNT = env("PERTURBATI
 PROBE_COMBINE = env("PROBE_COMBINE") or ""
 SERVER_STEP_RULE = env("SERVER_STEP_RULE") or ""; RHO_STAR = env("RHO_STAR") or ""
 RHO_SCHEDULE = env("RHO_SCHEDULE") or ""; RHO_EXP = env("RHO_EXP") or ""
+B_MAX = env("B_MAX") or ""; T_RES = env("T_RES") or ""
+BUDGET_STOP_FRAC = env("BUDGET_STOP_FRAC") or ""
+PHI_STOP = env("PHI_STOP") or ""; PHI_STOP_THRESHOLD = env("PHI_STOP_THRESHOLD") or ""
+B_MAX_PROBE_EVERY = env("B_MAX_PROBE_EVERY") or ""
+B_MAX_PROBE_N = env("B_MAX_PROBE_N") or ""
+B_MAX_PROBE_PHIS = env("B_MAX_PROBE_PHIS") or ""
 TRAINABLE_SCOPE = env("TRAINABLE_SCOPE") or ""
 COMMIT_GATE = env("COMMIT_GATE") or ""; GATE_SAFETY_S = env("GATE_SAFETY_S") or ""
 GATE_RHO_REF = env("GATE_RHO_REF") or ""
@@ -510,6 +543,15 @@ delays_on = (DELAYS == "on")
 # post-switch compute if TIMING_OVERRUN shows up.
 BASELINE_DELAY_DEFAULTS = {
     "fluxtune":           {"delays": True, "factor": 0.48, "floor": 4.0},
+    # fluxtune_v1 is byte-identical to the profiled fluxtune (no rf/estimator
+    # change) -- same numbers, not a guess.
+    "fluxtune_v1":        {"delays": True, "factor": 0.48, "floor": 4.0},
+    # fluxtune_v2 (now == fluxtune, see the alias above) reuses fluxtune's
+    # numbers too -- NOT re-profiled at adapter_reduction_factor=64 (fewer
+    # trainable params -> compute is if anything a bit lower, so this is a
+    # conservative placeholder, not validated). Re-derive if TIMING_OVERRUN
+    # shows up on a v2 run (same caveat as the sim_charge_profile one).
+    "fluxtune_v2":        {"delays": True, "factor": 0.48, "floor": 4.0},
     "fwdllm":             {"delays": True, "factor": 1.63, "floor": 7.0},
     "fwdllm_it_oracular": {"delays": True, "factor": 1.63, "floor": 7.0},
     "fwdllm_it_unaware":  {"delays": True, "factor": 1.63, "floor": 7.0},
@@ -558,6 +600,10 @@ try:
             "selector": _sel.get("sort", "?"),
             "optimizer": _opt.get("sort", "?"),
             "async": "async" if _is_async else "sync",
+            # catalog default; CLI --adapter-rf (ADAPTER_RF, below) wins if set.
+            "adapter_reduction_factor": int(
+                (_agg.get("hyperparameters", {}) or {}).get("adapter_reduction_factor", 16) or 16
+            ),
         }
 except Exception:
     _BL_INTERNALS = {}
@@ -691,6 +737,24 @@ def patch(exp, run_key, variant, trace):
         h["rho_schedule"] = RHO_SCHEDULE
     if RHO_EXP:
         h["rho_exp"] = float(RHO_EXP)
+    # C-1 (buildplan §5). Aggregator-only -- the trainer reads none of these,
+    # so they stay out of the trainer override block and out of the parity test.
+    if B_MAX:
+        h["b_max"] = float(B_MAX)
+    if T_RES:
+        h["t_res"] = float(T_RES)
+    if BUDGET_STOP_FRAC:
+        h["budget_stop_frac"] = float(BUDGET_STOP_FRAC)
+    if PHI_STOP:
+        h["phi_stop"] = PHI_STOP
+    if PHI_STOP_THRESHOLD:
+        h["phi_stop_threshold"] = float(PHI_STOP_THRESHOLD)
+    if B_MAX_PROBE_EVERY:
+        h["b_max_probe_every"] = int(B_MAX_PROBE_EVERY)
+    if B_MAX_PROBE_N:
+        h["b_max_probe_n"] = int(B_MAX_PROBE_N)
+    if B_MAX_PROBE_PHIS:
+        h["b_max_probe_phis"] = B_MAX_PROBE_PHIS
     # S-I: BOTH sides build the model, so both need the scope or the aggregator's
     # requires_grad mask disagrees with the trainer's probe mask.
     if TRAINABLE_SCOPE:
@@ -856,7 +920,16 @@ for trace in traces:
                         vclock_budget_s=float(MAX_RUNTIME_S), real_wall_ceiling_s=_ceiling,
                         cos_audit_on=bool(h0.get("cos_ground_truth_audit")),
                         cos_probe_every=h0.get("cos_probe_every"),
-                        cos_probe_batch_size=h0.get("cos_probe_batch_size"))
+                        cos_probe_batch_size=h0.get("cos_probe_batch_size"),
+                        # C-1: law C's commit count comes from (B_max, T_res, f),
+                        # not from a constant-rho round-trip rate. Without these
+                        # the projection reads `rho_star` -- unset under landing --
+                        # and refuses every launch on a phantom 45k-commit run.
+                        rho_schedule=h0.get("rho_schedule"),
+                        b_max=h0.get("b_max"), t_res=h0.get("t_res"),
+                        budget_stop_frac=h0.get("budget_stop_frac"),
+                        max_iter=h0.get("max_iterations_per_data_id"),
+                        gate_rho_ref=h0.get("gate_rho_ref"))
                 except ValueError as _e:
                     checks.append({"name": f"wall-clock budget preflight ({run_key} {variant})",
                                    "level": "error", "detail": str(_e)})
@@ -1216,6 +1289,25 @@ for rk in (r[0] for r in runs):
                        "detail": f"agg_goal={g} > c={c} — selected trainers would be stranded"})
     else:
         checks.append({"name": f"agg_goal <= c ({rk})", "level": "ok", "detail": f"agg_goal={g} c={c}"})
+
+# adapter_reduction_factor != 16 (catalog default or --adapter-reduction-factor)
+# needs FWDLLM_FD_SCALE_INVARIANT=1 in the environment -- this schema has no way
+# to set an env var from config, so a resolved non-default rf with the var unset
+# is silently the WRONG FD step size, not a crash (fl_fwd_ft_practice.md P1;
+# BASELINES.md "FluxTune estimator versions" Remaining work #7) -- same class of
+# footgun as the wall-clock/sim-charge-profile checks above, so same treatment:
+# error, --force-able, not just a warning.
+_fd_var_set = bool(os.environ.get("FWDLLM_FD_SCALE_INVARIANT", "").strip())
+for rk in (r[0] for r in runs):
+    _rf = int(ADAPTER_RF) if ADAPTER_RF else _BL_INTERNALS.get(rk, {}).get("adapter_reduction_factor", 16)
+    if _rf != 16 and not _fd_var_set:
+        checks.append({"name": f"FWDLLM_FD_SCALE_INVARIANT ({rk})", "level": "error",
+                       "detail": f"adapter_reduction_factor={_rf} (!=16) but FWDLLM_FD_SCALE_INVARIANT is "
+                                 f"unset -- FD step h will NOT be rescaled for this rf. Run "
+                                 f"`export FWDLLM_FD_SCALE_INVARIANT=1` first, or --force if deliberate."})
+    elif _rf != 16:
+        checks.append({"name": f"FWDLLM_FD_SCALE_INVARIANT ({rk})", "level": "ok",
+                       "detail": f"adapter_reduction_factor={_rf}, var is set"})
 # agg_goal MATCHES across baselines: identical batch size for a fair head-to-head;
 # a mismatch is usually an unintended --c/--c-async fan. Warn, don't block.
 _goals = {rk: per_baseline.get(rk, {}).get("agg_goal") for rk in (r[0] for r in runs)}

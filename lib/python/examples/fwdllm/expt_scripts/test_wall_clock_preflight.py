@@ -77,7 +77,12 @@ except ValueError:
 # ---------------- part 2: end to end through the real launcher ----------------
 def run_launcher(args, timeout=180):
     before = set(glob.glob(os.path.join(SMOKE_LOGS, "*")))
-    p = subprocess.run(["bash", RUN_SEQ] + args, capture_output=True, text=True, timeout=timeout)
+    # fluxtune runs at rf=64, so the FD-rescale preflight (which landed after
+    # this test) refuses without it. This test is about the WALL-CLOCK check --
+    # leaving it unset makes every case exit 2 for an unrelated reason.
+    env = dict(os.environ, FWDLLM_FD_SCALE_INVARIANT="1")
+    p = subprocess.run(["bash", RUN_SEQ] + args, capture_output=True, text=True,
+                       timeout=timeout, env=env)
     after = set(glob.glob(os.path.join(SMOKE_LOGS, "*")))
     new_dirs = sorted(after - before)
     logdir = new_dirs[-1] if new_dirs else None

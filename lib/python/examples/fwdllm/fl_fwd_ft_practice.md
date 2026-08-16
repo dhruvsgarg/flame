@@ -64,9 +64,12 @@ h*||v|| = h*sqrt(p)          10.203        6.711
 probe_combine        = mean
 server_step_rule     = trust_ratio
 rho_schedule / exp   = rm / 0.25                  # mechanism settled; the LANDING law is C-1, unbuilt
-rho*                 = sqrt(2*B_max/T_res)        # derived (model §4.6a); ~0.062 at T_res=500
+rho*                 = min(rho_max, sqrt(2*(B_max-B)/T_res))   # law C; T_res=300 FIXED, never
+                                                   # decremented. ~0.068 at the ln2 prior (T5)
 commit_gate          = n_target
-gate_rho_ref         = annealed                   # if the objective is time-to-accuracy; G-2 is the A/B
+gate_rho_ref         = annealed                   # if the objective is time-to-accuracy; G-2 confirmed
+                                                    # 2026-08-15 (P4.5) -- but died on wall-ceiling getting
+                                                    # there, so safe only once 3.3's backstop lands
 gate_safety_s        = 1.5                        # an EFFICIENCY value, not a safety one
 adapter_reduction_factor = 64  + FWDLLM_FD_SCALE_INVARIANT=1    # memory/compute only
 server_momentum      = 0.0
@@ -90,7 +93,7 @@ operator signs off.*
 | **3** | `rho_schedule`/`rho_exp` | none → **`rm` / 0.25** | 3 arms, 313–318 commits | ready, but item 7 may supersede the schedule |
 | **4** | `commit_gate`/`gate_rho_ref` | `var` → **`n_target`/`setpoint`** | G-1: 2.13× per vclock-hour | ready — ask |
 | **5** | `gate_safety_s` | 0.4 → **1.5** | G-1b: 2× efficiency at matched `B` | ready — ask |
-| **5b** | `gate_rho_ref` | `setpoint` → **`annealed`** | model §4.6 | **blocked — G-2 registered** |
+| **5b** | `gate_rho_ref` | `setpoint` → **`annealed`** | model §4.6; **G-2 confirmed 2026-08-15** (P4.5) | **decided, ask — but contingent on item 7/3.3 landing first.** `annealed` won decisively (peak 0.847 @ 65% vclock vs `setpoint`'s 0.833 @ 100%) but its own arm died on `[SIM_WALL_CEILING]` getting there — unsafe as a default without 3.3's backstop |
 | **6** | `cos_probe_every` | 1 → **25** with the audit on | B19; emit-only, so a cost default | ready, with item 9 |
 | **7** | **a controller** replacing the one-shot setpoint | fixed schedule → two-phase `B_max`, budget-landing anneal, adaptive `K`/`C`+`P`, saturation stop | model §1.4 item 5 | **not started — tracked as [P5.2](#p52-execution-plan--to-a-zero-input-run) phase 3** |
 | **8** | `adapter_reduction_factor` | 16 → **64** + `FWDLLM_FD_SCALE_INVARIANT=1` | 3/3; cost knob only | ready |
@@ -117,14 +120,17 @@ Nothing reaches a verdict without predicted-vs-observed numbers and a run id.
 | **gate `s`, throughput** (G-1) · `gate_safety_s` | `s` = 2.9/1.5 ⇒ `n_req` = 19.3/72.1, `I` = **2/8** off the cap 100%. Commits/vclock-h **11.3×/2.6×** the control; progress/commit **0.316/0.632** vs `√(N/200)` (**exact**); net `A`/vclock-h **2.13×/1.33×** vs a registered 2.2×/1.4× | **WORKS — the gate converts pool into commit rate at a net gain.** But `A`/vclock-h is **not** accuracy/vclock-h (P4.3) |
 | **gate `s`, as safety** (G-1b) | at `ρ` = 0.06 `const`, `s` = 2.9/1.5 give `B`/commit **0.001789 on both**. Both turn: sustained −0.015 at `Φ` = **3.43/3.79**, peak **0.849/0.876**, `Λ`/`B` **0.706/1.411** (= `√(N₂/N₁)` = 2.000 exactly) | **REFUTED as safety, CONFIRMED as efficiency.** `B` has no `N`, `cos` or `s` in it, so no `s` can bound `Φ`. **`s` = 1.5 settled as a value** |
 | **gate `ρ` reference** · `gate_rho_ref` | composition bug: `N_req ∝ ρ_t²`, so annealing `ρ` demands *less* pooling. `N_req` → 0 by c20, `I` floored at 1 on 1,271/1,273 commits, peak 0.394 decaying to 0.274; identical at α=0.1 | **fixed by `gate_rho_ref=setpoint`** (sizes from `ρ*₀`). No-op under `const` + `raw_sgd` |
-| **`annealed` vs `setpoint`** | at matched **commits** `setpoint` wins every column; over matched **vclock** `annealed` gets 2.3× more commits and ends higher (0.821 vs 0.804) | **not right vs wrong** — progress-per-wall-clock vs per-commit. Model §4.6 favours `annealed`; **G-2 is the A/B** |
+| **`annealed` vs `setpoint`** (G-2, 2026-08-15) | matched config, matched **vclock budget** (40,000): `setpoint` (`084554`) spent its **entire** budget and reached peak 0.833; `annealed` (`003648`) was killed by `[SIM_WALL_CEILING]` at only 65% of the same budget (vclock 26,026) and was *already* at peak 0.847 — ahead on 65% of the vclock `setpoint` needed 100% of. `annealed` landed 4.2× the commits (3,353 vs 799) at 4× the real-wall cost per vclock-second. **Death mechanism corrected by T5 (2026-08-15): the gate's `I` was floored at 1 on 98% of `003648`'s commits** — 3,429 round trips for 3,353 commits, i.e. **8.40 s/round-trip vs `145729`'s 1.75** | **G-2 decided: `annealed` confirmed, sinking condition refuted.** Full readout in [P4.5](#p45-g-2--annealed-confirmed-but-real-wall-bound). Ships **contingent on 3.3** — this is the second `annealed` arm to die on the wall ceiling, and T5 names why: `N_req ∝ ρ_t²`, so annealing `ρ` demands less pooling until each commit is one round trip and the per-commit server path has nothing amortising it |
+| **`Λ = 2B/s`** (T5, 2026-08-15, replay) | `N = p(ρ/s)²/G_rule` ⇒ `cos = ρ/s` ⇒ `Λ = Σρ²/s = 2B/s`. Out of sample: **−0.3%** on both `s`-pinned arms (`145729` 2.385 vs 2.379; `112201` 1.722 vs 1.717), **+21.5 to +23.3%** on the three whose `s` drifts (`035045`/`084554`/`003648`) — the same arms in the same order as §4.6's time-law miss table | **CONFIRMED as an identity wherever the gate holds `s`.** Consequence: **the `ρ` schedule is `Λ`-neutral at fixed `B`** — two schedules differ only in commits spent, never in learning banked. Any "this schedule learns more" claim is a comparison at unequal `B` |
+| **real-wall cost model** (T5, 2026-08-15, replay) | `wall = 7.81·commits + 0.77·round_trips` (cos audit on, stride 25), least squares over 5 arms, **every one predicted to ≤1%**. The audit is charged per *commit* (85 s / 25), so audit-off is **4.41 s/commit + 0.77 s/trip** | **WORKS — the first cost model that separates the two terms**, possible only because the portfolio spans 1.02–20 round trips/commit. Feeds task 0.7's preflight; supersedes projecting from `s/commit` alone, which mis-prices any arm whose `I` floors |
 | **`p`** · `adapter_reduction_factor` + `FWDLLM_FD_SCALE_INVARIANT` | `cos ∝ 1/√p` confirmed directly. But `‖θ_tr‖` 13.37/9.65/6.86 against `√p` 671/479/344 — ratio constant to **±1.3%** — so `A` is `p`-free. At matched `ρ*`,`N`,`T`: `A` = 1.64 (`rf`=16) vs **1.63** (`rf`=64), acc 0.592 vs 0.605 | **WORKS as built; INERT at a pinned `ρ*`.** The old ladder's win was raw SGD lowering `ρ` (0.2008→0.1863). Keep `rf`=64 for memory only |
 | **`K` cohort width** | `ρ·√N` invariant to 4% over `K` 10→50; naive `ρ ∝ 1/√K` **falsified** (the gate returns the gain as fewer `I`). `K`≥20 holds **0.860** where `K`=10 collapses | **works**, but `K` is not a knob on `N` — set `K` and the gate together |
 | **`K` at fixed `n_req`** | `K` 30→50: `I` 4→2 but vclock/round trip 8.9→12.3 s ⇒ commits/vclock-h **101.6 → 146.4 (1.44×)**, progress/vclock-h ×1.32. Staleness ≥1 on **0.143/0.458/0.408** of uploads at `K` = 10/30/50, max **1/2/4**; `pastdated_commits` max 1/0/**34** | **WORKS at ~70% efficiency**, and wide cohorts **do** produce genuine staleness (H-E answered). **`C` moved with `K` on all three arms** (30/60/100, `C/K` = 3/2/2), so neither the 1.44× nor the staleness rise is attributable to `K`: model K-C, and staleness tracks `C`, not `C/K` |
 | **`K` at fixed `C` (K-1, 2026-08-13)** | First arm to move `K` without `C`: `K`=10/20/30, `C`=30 fixed (`145729`/`003601`/`054321`, `mean`/`trust_ratio`/`n_target`/`s`=1.5/`ρ*`=0.06/stride 25). Commits/vclock-h **72.4 / 64.9 / 65.6** (≤10% spread, inside the ±15% gate); stale≥1 frac **0.359 / 0.359 / 0.321** (also flat). `n_req`=72.1 and `C`=30 exact on all three — kill clean | **DECIDES K-C: throughput is flat in `K`, refuting the `K^0.37` pooling model (predicted ×1.5 over 10→30) — `C` is the wall-clock lever, `K` is not.** Only raw commit throughput was tested; sync↔async trainer-utilization shape and per-gradient staleness tolerance were not — see H-T (P5.3) for why `K`/`C` may still need to be dynamic under variable availability |
 | **`I` iterations/bin** | at `K`=50 the gate cut `I` 18.5 → 5.9 — 3× fewer round trips at slightly larger `N`, best peak of the 08-07 portfolio (0.861), held | **works — buy `N` with `K`, not `I`** |
 | **`η` server LR** | `ρ` 0.2004 → 0.0404 → 0.0101 over `η` .01/.002/.0005, **to 1%**. `η`=0.002 reaches 0.601 @ c120 / 0.815 @ c327 vs `K`≥20's 0.860 | **works as physics, FAILED as a fix** — 1:1 cost, and `Σρ²` still diverges |
-| **`P` under selection** | `E` 2.988 (P=10) → 4.744 (P=30) over 37k events; predicted `ρ` ratio 1.260, **measured 1.236 (2%)**. `P`=30 learns faster per commit and **collapses sooner** (doubling 57 vs 68) | **prediction confirmed, including its harmful direction.** Never sweep `P` under selection again. `P` under `mean` is untried — P-1 |
+| **`P` under selection** | `E` 2.988 (P=10) → 4.744 (P=30) over 37k events; predicted `ρ` ratio 1.260, **measured 1.236 (2%)**. `P`=30 learns faster per commit and **collapses sooner** (doubling 57 vs 68) | **prediction confirmed, including its harmful direction.** Never sweep `P` under selection again |
+| **`P` under `mean`** (P-1, 2026-08-15) | matched `mean`/`const`/`setpoint`/`ρ*`=.06/`s`=1.5/`K`=10, same 10,800 vclock budget: round trips fell exactly as predicted (median `I` 3→1, floored), `T` 288→585, `Λ` 0.727→1.566, peak 0.858→0.873. But median trainer `τ` (real GPU time/round) **0.525s → 1.342s, ratio 2.56** — over the registered 2.5× kill line — so `P`=30 cost 54% more real wall (6,694s vs 4,342s) to spend the same vclock | **P-1 decided: `τ(30)/τ(10)` ≥ 2.5 ⇒ compute-bound, report and stop.** `bytes ÷3` is still real if bandwidth ever binds, but raising `P` is not a free throughput lever — do not build adaptive `P` (3.4) on that premise. Full readout [P4.6](#p46-p-1--p-under-mean-is-compute-bound-report-and-stop) |
 | **top-k averaging** | offline over 34,447 events: random 1.00× / coin-top-2 1.73× / top-1 1.95× / top-3 2.72× / **all-10 3.16×** in `cos` gain, at `ρ/cos` 1×/1×/1×/3×/**10×**. All cost the same 20 passes | **settled offline — use all `P`.** The shipped rule is k=1: **zero** stability gain |
 | **probe distribution** | `d_i` indistinguishable from iid `N(0,‖g‖²)`: top-1 of 10 → 3.811 observed / 3.798 synthetic; coin top-2 → 2.991 / 2.987 | **No "good probe" exists** — closes off all `\|d\|`-based selection; also validates FD linearity at the large chord |
 | **server momentum** · `server_momentum` | β 0/0.5/0.75 at matched `ρ*`,`N`,`T`=66: `S` 0.479/0.747/2.059, `cos` ×1.00/1.47/2.61 (heavy-ball predicts 1.73/2.65), acc **0.524/0.594/0.626**. Orthogonality ratio **1.007/2.981/6.615** vs `(1+β)/(1−β)` = 1/3/7 | **WORKS mechanically, REFUTED as a lever** — `√x` progress for `x` budget, identical to raising `ρ`. **Leave at 0.0** |
@@ -174,8 +180,11 @@ their agreement *is* the norm law. `‖θ_0‖` = 13.35 (`rf`=16), 9.6 (`rf`=32)
 | 0.398 | `rm` ρ*=.06 e=.25 **(Q3 anchor)** | `035045` | 317 | 0.0599 | 0.0597 | 1.061 → 1.062 | 0.801 | 0.799 |
 | 0.398 | gate `setpoint` ρ*=.06 **@ α=0.1** | `062213` | 317 | 0.0599 | 0.0597 | 1.062 → 1.062 | 0.775 | 0.770 |
 | 0.460 | gate `annealed` ρ*=.06 (`N` 200→40) | `013917` | 707 | 0.0599 | 0.0913 | 1.096 → 1.096 | 0.821 | 0.819 |
+| 0.505 | gate `setpoint` ρ*=.06 `rm`, matched vclock **(G-2, completed 40,000/40,000)** | `084554` | 799 | 0.0599 | 0.0990 | 1.10 → 1.10 | 0.833 | 0.833 |
+| 0.538 | gate `annealed` ρ*=.06 `rm`, matched vclock **(G-2, killed `[SIM_WALL_CEILING]` @ 26,026/40,000)** | `003648` | 3353 | 0.0599 | 0.2057 | 1.23 → 1.23 | 0.847 | 0.846 |
 | 0.591 | `rm` ρ*=.09 e=.25 | `060834` | 313 | 0.0896 | 0.1332 | 1.142 → 1.145 | 0.846 | 0.843 |
 | 0.631 | `mean` raw, N=200 **+cos** | `042027` | 312 | 0.0344 | 0.1434 | 1.154 → 1.158 | 0.849 | 0.849 |
+| 0.727 | `mean` `const` ρ*=.06, **`P`=10 (P-1)** | `003628` | 288 | 0.0599 | 0.5138 | 1.67 → 1.67 | 0.858 | 0.854 |
 | 0.819 | `raw_sgd` control (`select`) | `200325` | 177 | 0.1837 | 1.4172 | 4.12 → 4.23 | 0.855 | **0.672** |
 | 0.837 | `select` raw, N=200 | `200242` | 179 | 0.1861 | 1.4687 | 4.34 → 4.47 | 0.853 | **0.761** |
 | 0.891 | `select` `rf`=16 (`p` ladder) | `200358` | 195 | 0.2008 | 1.7146 | 5.55 → 5.74 | 0.852 | **0.353** |
@@ -183,6 +192,7 @@ their agreement *is* the norm law. `‖θ_0‖` = 13.35 (`rf`=16), 9.6 (`rf`=32)
 | 0.953 | `mean` raw, free gate (replicate) | `223446` | 693 | 0.1202 | 1.2776 | 3.59 → 3.62 | 0.864 | 0.850 |
 | 1.014 | `select` `rf`=32 `p`=229012 | `212009` | 187 | 0.1941 | 1.1647 | 3.20 → 3.28 | 0.857 | 0.851 |
 | 1.353 | `select` raw, N=200 **+cos** | `013806` | 328 | 0.1861 | 2.2086 | 9.10 → 9.47 | 0.855 | **0.251** |
+| 1.566 | `mean` `const` ρ*=.06, **`P`=30 (P-1)** | `015455` | 585 | 0.0599 | 1.0455 | 2.84 → 2.86 | 0.873 | 0.869 |
 | 1.722 | **`n_target` `s`=2.9 `const` ρ*=.06 (G-1b arm 1)** | `112201` | 1364 | 0.0599 | 2.4402 | 11.48 → 11.61 | **0.849** | **0.250** |
 | 1.368 | `select` `rf`=64 `p`=118348 | `222817` | 188 | 0.1863 | 1.0939 | 2.99 → 3.04 | **0.859** | 0.852 |
 | 2.385 | **`n_target` `s`=1.5 `const` ρ*=.06 (G-1b arm 2)** | `145729` | 945 | 0.0599 | 1.6901 | 5.42 → 5.46 | **0.876** | 0.793 |
@@ -319,6 +329,79 @@ shipped gate, averaging buys **wall clock (~6.5× fewer round trips), not aim.**
 3. `_pool_split_half_stats` returns `None` for a pool of one, so at `I` = 1 the record carries **no
    `pool_size` and no split-half components**. Reconstruct `N = K·(iteration_per_data_id + 1)`.
 
+### P4.5 G-2 — annealed confirmed, but real-wall-bound
+
+**Registered node, landed 2026-08-15.** `gate_rho_ref` `annealed` (`003648`) vs `setpoint` (`084554`),
+otherwise identical: `ρ*`=0.06, `rm`/0.25, `K`=10, `s`=1.5, `max_runtime_s`=40,000 (the shared vclock
+target), `sim_wall_ceiling_s`=28,800. Both start `ρ` c1 = 0.0599; neither arm turns — `trainable_weight_norm`
+is still rising at cutoff on both, so peak ≈ final on both and `Φ` (1.10–1.23) never nears a stop threshold.
+
+| | `annealed` `003648` | `setpoint` `084554` |
+|---|---|---|
+| vclock reached | 26,026 / 40,000 (65%) — killed by `[SIM_WALL_CEILING]` | **39,998 / 40,000 (100%) — completed** |
+| real wall used | 28,803 s (100% of ceiling) | 11,255 s (39% of ceiling) |
+| `T` (commits) | 3,353 | 799 |
+| peak / final acc | **0.847** / 0.846 | 0.833 / 0.833 |
+| `Λ` | 0.538 | 0.505 |
+| `D` | 0.1145 ± 0.0125 (n=135 fires) | 0.0765 ± 0.0108 (n=32 fires) |
+
+**Sinking condition refuted — G-2 confirms the shipped default.** `setpoint` spent its *entire* vclock
+budget and still landed below where `annealed` sat when it was killed at only 65% of the same budget. This
+is a tighter result than the earlier `013917`/`035045` pair it replaces as the registered evidence: same
+config modulo the one flag, same target vclock, and `setpoint` still lost despite a 54%-larger effective
+allowance. **P2's `gate_rho_ref=annealed` stands.**
+
+**Real wall, not vclock, is the actual constraint.** `annealed` banked 4.2× the commits (3,353 vs 799) in
+less vclock — that's what burned the ceiling: 4.2 vclock-s per real-wall-s vs `setpoint`'s 3.55. **This is
+the second `annealed` arm to die this way** (buildplan §5 already flagged this same `003648` run when it
+first hit the ceiling). Confirms 3.3's backstop is not optional before `annealed` ships as a default.
+
+**Why it happened — corrected 2026-08-15 by T5's replay, and the first version was wrong.** This section
+originally attributed the death to the cos-audit stride tax, and buildplan §4 to "a schedule that spends
+its budget unevenly". Both were plausible; neither was measured. **`003648` ran with the commit gate's `I`
+floored at 1 on 98% of its commits** — 3,429 round trips for 3,353 commits, against `145729`'s 7,560 for
+945. The audit tax is real but it is a *per-commit* charge, so the mechanism is the commit count, and the
+commit count blew up because `N_req ∝ ρ_t²` under `gate_rho_ref=annealed`: annealing `ρ` demands
+monotonically less pooling until every commit is a single round trip with nothing amortising the
+server-side path. Per round trip that is **8.40 s against `145729`'s 1.75 — 4.8×**.
+
+| arm | commits | round trips | trips/commit | s/round-trip | fate |
+|---|---|---|---|---|---|
+| `003648` `annealed` | 3,353 | 3,429 | **1.02** | **8.40** | `[SIM_WALL_CEILING]` |
+| `084554` `setpoint` | 799 | 6,392 | 8.00 | 1.76 | completed |
+| `145729` `const` | 945 | 7,560 | 8.00 | 1.75 | completed |
+
+**Round trips per commit is therefore the metric a preflight has to carry**, not commits and not the
+floored fraction — flooring is *safe* (`N > n_req` ⇒ `ρ/cos < s`, conservative), it is merely the point at
+which per-commit cost stops being amortised. T5 pre-registered **≥3** as the gate and used it to refute
+`T_res` = 500 for the landing law (buildplan §5).
+
+### P4.6 P-1 — `P` under `mean` is compute-bound, report and stop
+
+**Registered node, landed 2026-08-15.** `P` ∈ {10, 30} under `probe_combine=mean`, otherwise matched:
+`rho_schedule=const`, `gate_rho_ref=setpoint`, `ρ*`=0.06, `s`=1.5, `K`=10, same 10,800 vclock budget (both
+completed cleanly, no wall-ceiling kill, `sim_wall_ceiling_s`=14,400 with 46–70% headroom used).
+
+| | `P`=10 `003628` | `P`=30 `015455` |
+|---|---|---|
+| median trainer `τ` (real GPU s/round) | 0.525 s | **1.342 s — ratio 2.56** |
+| median round trips/commit `I` | 3 | 1 (floor) |
+| real wall used (same 10,800 vclock) | 4,342 s | 6,694 s (**+54%**) |
+| `T` (commits) | 288 | 585 |
+| `Λ` | 0.727 | 1.566 |
+| peak / final acc | 0.858 / 0.854 | 0.873 / 0.869 |
+
+**Round-trip mechanism predicted exactly** — median `I` fell 3→1 (floored), matching `÷3`. But
+`τ(30)/τ(10)` = 2.56 (mean 2.69) sits over the registered **≥2.5 kill line**: batching does not make the
+extra probes near-free, so `P`=30 cost 54% more real wall to spend the identical vclock budget. `Λ`/commit
+only rose 1.06× (not the naive 1.73×) — `I` floors at 1 well before `N_req` would ask it to, so part of the
+predicted per-commit gain is capped by the pool-size floor rather than realised.
+
+**P-1 decided: `τ(30)/τ(10)` ≥ 2.5 ⇒ compute-bound — report and stop.** The accuracy numbers are not a
+wash (`P`=30 does land more commits and a higher peak in the same vclock window), but per the
+pre-registered kill test, raising `P` is not a free throughput lever. `bytes ÷3` is still real if bandwidth
+ever binds, but **do not build 3.4's adaptive `P` on the premise that `τ(P)` is nearly flat — it isn't.**
+
 ---
 
 ## P5 — The queue
@@ -330,14 +413,13 @@ hypotheses.
 
 ### P5.1 Registered nodes
 
-*Four registered 2026-08-11; B-1 landed 2026-08-13 (erratic — result in model §7.1/§5.5b, R3); K-1 landed
-2026-08-13 (flat in `K` — result in P3's "`K` at fixed `C`" row). Each remaining row carries its
-prediction and sinking condition from before launch (R6). Delete a row when its run lands.*
-
-| node | arm | prediction | sinking condition / kill |
-|---|---|---|---|
-| **P-1** | `P` ∈ {10,30}, **`probe_combine=mean`**, `N` pinned. **A build prerequisite, not an ablation** — D4 makes `P` sensed, so the controller needs `τ(P)` | `cos` **×1.73**, `Λ`/commit ×1.73, round trips **÷3**, bytes **÷3**, total client compute **invariant** | **`τ(30)/τ(10)` ≥ 2.5 ⇒ compute-bound, the gain cancels** — report and stop. `P` is a **trainer-side** override; verify via `[probe_combine=mean] P=…` in the trainer log |
-| **G-2** | `gate_rho_ref` **`annealed` vs `setpoint`**, `ρ*`=0.06, `rm`, matched vclock. P2 was changed on a re-read of two old arms, not an A/B | `annealed` achieves the time bound to **≤2%** (as `013917` did); `setpoint` misses by **~8%** (as `035045` did). At matched vclock `annealed` ends higher | **`setpoint` as tight as `annealed` ⇒ the `s`-constant claim is wrong and P2 reverts.** Never run `annealed` at `ρ*` ≤ 0.01 — `220627`'s dead zone |
+*Four registered 2026-08-11; all four now landed. B-1 landed 2026-08-13 (erratic — result in model
+§7.1/§5.5b, R3); K-1 landed 2026-08-13 (flat in `K` — result in P3's "`K` at fixed `C`" row); **P-1 landed
+2026-08-15 (compute-bound, report and stop — result in P3's "`P` under `mean`" row and
+[P4.6](#p46-p-1--p-under-mean-is-compute-bound-report-and-stop))**; **G-2 landed 2026-08-15 (`annealed`
+confirmed, ships contingent on 3.3 — result in P3's "`annealed` vs `setpoint`" row and
+[P4.5](#p45-g-2--annealed-confirmed-but-real-wall-bound))**. Table intentionally empty — no node currently
+registered (R3).*
 
 ### P5.2 Execution plan — to a zero-input run
 
@@ -383,34 +465,81 @@ early knee holds regardless. Per this task's own decision table, **3.1 (the onli
 now mandatory infrastructure**, not a fallback. **Replicated same day** — 2 independent runs per dataset,
 all agreeing tightly (agnews knee 3.0–3.5 both times; yelp-p's normalized knee at Φ=2.0–2.5 both times).
 
-#### Phase 2 — launch K-1, P-1, G-2 · overnight · *state: per node in [P5.1](#p51-registered-nodes)*
+#### Phase 2 — K-1, P-1, G-2 · **done (2026-08-15)**
 
-Predictions and kills in [P5.1](#p51-registered-nodes). **K-1 leads**: it is the only one that changes a
-design decision in phase 3 (which knob 3.4 climbs), and phase 0.6 sizes it.
+All three registered nodes landed: K-1 (2026-08-13, `C` not `K` carries the wall clock — P3), P-1
+(2026-08-15, compute-bound at `τ(30)/τ(10)`=2.56 — report and stop, P3/[P4.6](#p46-p-1--p-under-mean-is-compute-bound-report-and-stop)),
+G-2 (2026-08-15, `annealed` confirmed but real-wall-bound — P3/[P4.5](#p45-g-2--annealed-confirmed-but-real-wall-bound)).
+**K-1 was the one that changed a phase-3 design decision** (which knob 3.4 climbs); P-1 and G-2 each
+resolved a ship-checklist item without changing 3.x's design.
 
-> **Preflight, do not skip.** `--dry-run`, then `--only --yes --clean --force`; `--num-trainers 100`;
-> assert `⌈n_req/K⌉ ≤ max_iter`. **The wall-clock budget check (task 0.7) now runs inside `--dry-run`
-> itself** and refuses on breach — no longer by hand.
+> **Preflight, do not skip, still applies to any future node.** `--dry-run`, then `--only --yes --clean
+> --force`; `--num-trainers 100`; assert `⌈n_req/K⌉ ≤ max_iter`. **The wall-clock budget check (task 0.7)
+> now runs inside `--dry-run` itself** and refuses on breach — no longer by hand. Note G-2's `annealed` leg
+> still died on `[SIM_WALL_CEILING]` despite this preflight: the preflight catches a *gross* breach, it
+> does not replace 3.3's runtime backstop for a schedule that spends its budget unevenly.
 
 #### Phase 3 — build the controller · multi-day
 
-Each component flag-gated, default-off, byte-identical until its A/B scores. **None needs new science.**
-Design in model §5.5f.
+Each component flag-gated, default-off, byte-identical until its A/B scores. **None needs new science** —
+the *methods* are settled (3.1's probe = model §5.5b, already coded and validated at B-1; 3.2 is arithmetic;
+3.3's stop threshold is replay-validated, P4.1). **What's actually unbuilt is the live wiring** — none of
+the three has ever run *inside* `FedSgdAggregator`'s commit loop — **plus a small number of open design
+decisions that should be answered before any code is written**, listed under 3.1/3.3 below. Design in
+model §5.5f.
+
+**Session note, 2026-08-15 evening.** Scoped for implementation, then paused before writing any code:
+first mis-scoped 3.1 as blocked on an undesigned algorithm (corrected — see P9.3 and buildplan §5's 3.1
+section), then, correctly scoped, found two real open design decisions (3.1's re-sense/`T_res` question,
+3.3's edge case (e)). **Both resolved 2026-08-15 by argument plus T5's replay**, which also moved three
+constants and corrected G-2's death mechanism — see the T5 row above and buildplan §5. **Phase 3 is
+unblocked. Nothing in `aggregator/` has changed yet.**
 
 | # | component | sensed from | replaces | state |
 |---|---|---|---|---|
-| **3.3** | Budget-landing anneal + `Φ` stop | `B` — exact, free | `rm` at a horizon-sized exponent | todo — **build first**: the whole P4.1 gain (0.141 → 0.005) is here, and it needs nothing from 3.1. **3.1+3.2+3.3 are one closed-loop controller (continuous throttle + strided re-sense + discrete backstop) — read buildplan §5's framing note before building any one** |
-| **3.1** | Two-phase `B_max`: prior ln 2 → injection probe on a **copy** of `θ_tr`, ~6 evals, on a stride, **re-fired on that stride for the life of the run** | the model being trained | a profiled constant | todo — **mandatory, not optional**: B-1 (2026-08-13) found `B_max` erratic across datasets. Revised (2026-08-13): periodic re-sensing is now part of the spec, not a one-shot Phase A→B handoff — see buildplan §5 |
-| **3.2** | `ρ*` = `√(2·B_max/T_res)`, recomputed every commit from *remaining* budget/resolution | 3.1 + control resolution | P4's dose-response lookup | todo — trivial once 3.1 lands. Its overshoot risk when `T_res` is mis-estimated is exactly what 3.3's stop backstops — see buildplan §5 |
+| **T5** | **Replay the landing law against the commit gate** — does law C compose, and at what `T_res`/`f`? | arms on disk, no GPU | guessing the controller constants | **done (2026-08-15)** — `expt_scripts/replay_landing_law.py`. Settled `T_res`=300, `f`=0.95, `ρ_max` cap; refuted `T_res`=500 and the `ρ*≤ρ*₀` clamp; confirmed `Λ`=2B/s (P3); found `003648`'s real death mechanism ([P4.5](#p45-g-2--annealed-confirmed-but-real-wall-bound)). Full result: buildplan §5 |
+| **3.3** | Budget-landing anneal (**law C**) + `B ≥ f·B_max` stop | `B` — exact, free | `rm` at a horizon-sized exponent | **done (2026-08-15)** — `rho_schedule=landing` + `phi_stop: off\|log_only\|halt` in `FedSgdAggregator`, law in `expts/landing_law.py`, budget accounting always on and emitted (`budget_b`/`phi`/`rho_star`/`n_req`/`stop_reason`). Gate: `expt_scripts/test_landing_law.py`, 8 checks, reproducing T5's pre-registered enactment to 4 d.p. **Not yet scored on an arm — that is Phase 4** |
+| **3.1** | Two-phase `B_max`: prior ln 2 → injection probe on a **copy** of `θ_tr`, ~6 evals, on a stride, **re-fired on that stride for the life of the run** | the model being trained | a profiled constant | **done (2026-08-15)** — `b_max_probe_every` (0 = off) in `FedSgdAggregator._resense_b_max`, knee arithmetic in `expts/bmax_probe.py`, reading the **same** fixed-seed reference batch as the cos probe (`_reference_batch`, skew guard included). Emits `[BmaxProbe]` per fire with the whole `Φ` curve, `B_max` old→new and elapsed. **Mandatory, not optional**: B-1 (2026-08-13) found `B_max` erratic across datasets. **The probe itself is not new** — model §5.5b, already coded as `probe_inflation_damage.py`, already used for the whole B-1 sweep; unbuilt = wiring it to re-fire on a stride from inside the live commit loop. **Re-sense moves `B_max` only; `T_res` is not run state.** Two guards the gate proves: the weights are restored **exactly** (max drift 0.0) on both the normal and the mid-probe-exception paths, and a head still at chance refuses to size `B_max` at all rather than pricing a budget off a degenerate curve. **Not yet fired on a real model** — the live `Φ` curve is what nodes 1/3 measure |
+| **3.2** | `ρ*_t` = `min(ρ_max, √(2·(B_max_t − B_t)/T_res))`, recomputed every commit from *remaining* budget | 3.1 + control resolution | P4's dose-response lookup | **done (2026-08-15)**, shipped with 3.3. `T_res`=**300** fixed (T5; 500 refuted), `ρ_max` = `s·√(max_iter·K·G_rule/p)` ≈ 0.0999. Reads `self._b_max`, which 3.1 will move — no further change needed there |
 | **3.5** | **Revised (2026-08-13): a Prechelt-style generalization-loss/patience criterion on smoothed held-out accuracy**, replacing the original raw `dAcc/dΛ` slope test | smoothed `test-accuracy` (`agg_eval`), running-best-referenced | a fixed `comm_round`, and the raw-slope design | todo — not yet implemented, not urgent. Full reasoning (why raw slope is fragile, why GL/patience is the standard fix, what's unsized) in buildplan §5 |
-| **3.4** | Adaptive `K`/`C` and `P` — needs a mid-run `P` change, which nothing supports today | `τ` measured; availability | `aggGoal`, `perturbation_count` fixed offline | **K-1 landed: `C` is the knob, not `K`** (P3). Still **blocked on P-1** (`τ(P)`, in progress) |
+| **3.4** | Adaptive `K`/`C` and `P` — needs a mid-run `P` change, which nothing supports today | `τ` measured; availability | `aggGoal`, `perturbation_count` fixed offline | **K-1 landed: `C` is the knob, not `K`** (P3). **P-1 landed: compute-bound** (P3/P4.6) — its `τ(P)` no longer motivates adaptive `P` as a throughput lever; only the mid-run-`P`-change engineering (still unbuilt) and a bandwidth-driven case remain live reasons to build this |
 
-#### Phase 4 — the two zero-input runs · *state: todo*
+**Both resolved 2026-08-15 — reasoning and evidence in buildplan §5, decisions here:**
+1. **3.1 re-sense:** **`B_max` moves; `T_res` does not.** `T_res` is a chosen controller constant, not run
+   state, so it never counts down and there is nothing to reset (**law C**). Resetting it per re-sense is a
+   receding horizon that never lands; counting it down makes `T` an operator input again, which §4.6a's own
+   title forbids. Price, measured: 3.1× the commits of a fixed-horizon law for the **same** `Λ`.
+2. **3.3 edge case (e):** **halt**, via `self._work_done = True` — the path `max_runtime_s` already uses.
+   Freeze-and-keep-evaluating is dominated, not a trade-off: a frozen `θ` has fixed accuracy, so further
+   evals measure eval noise at real GPU cost. The counterfactual that P4.1 needs is preserved by a
+   `phi_stop: log_only` state rather than by not halting.
+
+#### Phase 4 — the two zero-input runs · *state: todo, **unblocked** (Phase 3's 3.1/3.2/3.3 landed 2026-08-15)*
+
+**Launch:** `expt_scripts/nodes/run_node_p4.sh <agnews|yahoo> <controller|control>`, four invocations,
+one per node, all four at the same 40,000-vclock target with the **cos audit off** (Phase 4 scores `B`,
+`Φ`, `Λ`, `A`, every one exact from `ρ`; only `D` needs the audit, and the audit is 3.40 s of a 7.81 s
+commit — the tax that killed G-2's annealed leg). `control` = today's shipped fluxtune_v2 at
+`--phi-stop log_only`, which keeps measuring the past-the-stop counterfactual P4.1 was built from instead
+of destroying it.
+
+**Read `[BmaxProbe]` before anything else — that line is the result.** T5 pre-registered the divergence at
+the commit-150 re-sense: agnews `ρ*` 0.0530 → **0.0764** (`I` 6 → 12) against yahoo's 0.0530 → **0.0573**
+(`I` 6 → 7). **A controller arm that ends on `max_runtime_s` rather than
+`[BudgetStop] reason=budget` is void** — the law did not land.
 
 **4.1** agnews · **4.2** yahoo, *same binary, same flags*.
 
 > **Acceptance:** both reach their plateau and **end within 0.015 of peak**, with sensed `B_max`, `ρ*`,
 > `K`, `P` logged per run and **differing between datasets without anyone having supplied them**.
+
+**Not the same as "run `fluxtune` on yahoo."** A full-stack `fluxtune_v2` run on yahoo with today's *fixed*
+knobs (no live sensing) doesn't meet the acceptance bar above, but it's independent of Phase 3 and already
+validated launchable: `--only fluxtune --dataset yahoo --mode real --num-trainers 10 --dry-run` passed
+6/6 preflight (2026-08-15, `FWDLLM_FD_SCALE_INVARIANT=1` set), yahoo's h5 files exist on disk, and all 8
+GPUs were idle. Useful as a smoke check that the estimator-layer fixes behave on a 10-class, longer-sequence
+task — not scored, since none of P4's `Λ`/`Φ`/`A` machinery has been validated on yahoo either. **Not yet
+launched** — a fine thing to kick off independent of the Phase 3 decisions above.
 
 **Phase 0 and Phase 1 are the two that matter and neither needs the FL stack.** Nothing below them
 should be launched first. Every arm reports `B` as a fraction of `B_max` and `A` against P4's
@@ -468,6 +597,10 @@ Process lessons: [P9.3](#p93-process-lessons).
 | **Run `annealed` at `ρ*` ≤ 0.01** | `220627`'s dead zone: `N_req` → 0 by c20, `I` floored at 1, peak 0.394 decaying to 0.274 |
 | **Extrapolate `A` per vclock-hour into an accuracy ranking** | `A` accumulates *through* the turn while accuracy falls — G-1's projection ordered its arms backwards |
 | **Score stability by the `‖θ‖²` log-log slope** | Bounded above by 1 under trust-ratio **by construction**. Score `B` and `Λ` |
+| **Reset `T_res` when `B_max` is re-sensed**, or count it down at all | A receding horizon that never lands (`ρ*`→0 forever); counting down makes `T` an operator input, which §4.6a forbids. `T_res` is a **rate**, not a deadline — buildplan §5, T5 |
+| **Clamp `ρ*_t ≤ ρ*₀` under the landing law** | `ρ*₀` is computed from the `ln 2` **prior**, so the clamp pins `ρ*` there and blocks 3.1's re-sense from spending the budget it just measured — it defeats the probe. The correct cap is gate reachability, `s·√(max_iter·K·G_rule/p)` |
+| **`T_res` = 500 as the landing-law constant** | Refuted on replay (T5): 2.46 round trips/commit on yahoo, 2.26 on the `ln 2` prior, against a ≥3 gate. **300** passes both. 500 was only ever chosen to reproduce the portfolio's empirical `ρ*`=0.06 (§4.6a), never derived |
+| **Judge a landing schedule by how much `Λ` it banks** | `Λ = 2B/s` wherever the gate holds `s` (P3, T5), so **every** schedule banks the same `Λ` at the same `B`. Schedules differ in commits spent, nothing else. Compare at matched `B` or the comparison is empty |
 | **Use `top_class_share` as a turnover alarm** | 4/4 degrading arms with median lead +61 evals, but **15 false positives across 17 holding arms**. `loss > ln(num_classes)` has none but fires ~27 evals *after* the drop — a post-mortem, not a monitor |
 | **Believe `Φ` decides whether *any* arm holds its peak** | True only for arms that learned; the missing "peak ≥ 0.80" qualifier made G-1's sinking condition unreadable |
 | **Slice `test_global.dataset.tensors[:n]` for a reference** | Returns *one client's* Dirichlet shard — `test_index_list` is per-client blocks in client order, never shuffled (`base_data_manager.py:204-216`). Anti-correlated (−0.46) with held-out truth; broke B1, and three failed consistency checks were written up as findings about the optimizer. **Draw with a fixed-seed shuffle over the full set, ≥1024** |
@@ -672,6 +805,16 @@ wrong.** A lookup table for *numbers*; the refuted *ideas* are [P6](#p6--dead-en
   class-skewed (the B17 guard).
 - `test_weight_decay.py` — `auto` = `ρ²/2`, pins `Φ` = 1, leaves frozen params and the disabled path
   untouched.
+- `test_landing_law.py` — C-1's law C and its stop: `const`/`rm` byte-identical, `B(t)` tracks
+  `B_max(1−e^{−t/T_res})` to ≤1%, the `ρ_max` cap holds `⌈n_req/K⌉ ≤ max_iter`, a `B_max` re-sensed below
+  the spend gives `ρ*`=0, the stop latches, and only `halt` sets `_work_done`. **Its last check is the
+  cross-instrument one:** the live aggregator reproduces `replay_landing_law.py`'s pre-registered
+  two-phase enactment on both datasets to 4 d.p.
+
+> **Two environment requirements, both of which have cost a debugging session.** These scripts shell out
+> to `run_sequential.sh`, which needs **`FLAME_CONDA_ENV=test_fwdllm`** (base lacks `h5py`) and
+> **`FWDLLM_FD_SCALE_INVARIANT=1`** (fluxtune is `rf`=64, so the FD-rescale preflight refuses without it).
+> Without either, every case exits 2 for a reason that has nothing to do with what is being tested.
 
 **Missing, and it has cost eight arms: a wall-clock budget check.** Time one commit path with the audit
 flags the run requests, multiply by `n_req/K` commits per vclock-hour, refuse the launch when projected
@@ -749,6 +892,22 @@ Each costs a wasted run.
 - **Reaching a rig's operating point by the wrong road** — at acc 0.57 a backprop model reads `‖g_test‖` = 1.95 against every arm's 0.25–0.32; match on the quantity the measurement depends on.
 - **Trusting a new instrument because it was unit-tested** — a probe needs a test that its *input* is what you think it is.
 - **A missing attribute costing a full night**, then a quieter repeat that emitted a wrong number instead of crashing — both now preflighted.
+- **Attributing a run's death to a plausible mechanism instead of a measured one.** `003648`'s
+  `[SIM_WALL_CEILING]` was written up twice — as the cos-audit tax (P4.5) and as "a schedule that spends
+  its budget unevenly" (buildplan §4) — before anyone counted its round trips. Both were wrong: `I` was
+  floored at 1 on 98% of commits, and one `grep` of `pool_size` on telemetry already on disk would have
+  said so on the day. **A death gets a ratio, like every other claim in this document, before it gets a
+  sentence.**
+- **Sizing a controller constant to reproduce an empirical value.** `T_res` = 500 exists only because it
+  returns `ρ*` = 0.062 against the 0.06 the portfolio found by search (§4.6a) — a back-fit, and it failed
+  the first composition test it ever faced. A constant that has never been checked against anything but
+  the number it was chosen to match is not evidence.
+- **Scoping a task from its pseudocode summary tag alone.** §5.1's `[NOT BUILT]` on 3.1's `PHASE B` line
+  reads as "no method exists" if you stop there — it doesn't, until you also read §5.5b two sections down,
+  which says the method is fully specified *and already coded* (`probe_inflation_damage.py`, used for the
+  whole B-1 sweep). What's actually unbuilt is the live-loop wiring, a materially smaller task. Almost
+  scoped Phase 3 as blocked-on-undesigned-research on this alone (2026-08-15) — read the full section a
+  pseudocode line points at before sizing the work behind it.
 
 ---
 
@@ -760,7 +919,7 @@ died. This answers what has **never been tried**, and which findings are federat
 
 | knob | stage | scope | what is known | next |
 |---|---|---|---|---|
-| **`P` under `mean` beyond 10** | trainer | GEN | every `P` sweep ran under *selection*, where raising `P` is harmful. Under averaging `t ∝ 1/P` — **3× less wall clock and 3× fewer bytes at invariant compute** | **P-1**, a build prerequisite |
+| **`P` under `mean` beyond 10** | trainer | GEN | **P-1 landed (2026-08-15): compute-bound**, not invariant — `τ(30)/τ(10)`=2.56 crosses the registered kill line. Round trips did fall `÷3` as predicted (`I` 3→1, floored); the "3× less wall clock" half of the old prediction does not hold | report and stop — do not build adaptive `P` (3.4) on a free-compute premise; a bandwidth case for `bytes÷3` remains open |
 | **adaptive `P`** | trainer | GEN | same hill-climb as `K`, but `P` also cuts bytes. Needs a **mid-run `P` change**, which no code path supports, and a per-commit `G_rule` | model §5.5e · P5.2 phase 3.4 |
 | **adaptive `K` / `C`** | selection | **FL** | **K-C landed (K-1, 2026-08-13, see P3): `C` buys the wall clock, `K` doesn't** at fixed availability. `dynamic_kc`'s `k_max` = 15 is backwards regardless. Whether `K` matters under *variable* availability, or more for forward- vs backprop-trained gradients, is untested — H-T (P5.3) | hill-climb `C` (3.4); H-T for the availability/forward-vs-backprop split |
 | **staleness / freshness weighting** | aggregation | **FL** | genuine at `C` ≥ 60. The **only** cost of running the cohort wide, so its price — `D(·)` — is what caps it | **C3's freshness half**, the one untried paper claim |

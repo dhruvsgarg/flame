@@ -70,6 +70,8 @@ def make(audit=True, seed=0):
     a._server_step_rule = "raw_sgd"
     a._commit_count = 0
     a._last_rho = None
+    a._B, a._stop_fired, a._phi_stop = 0.0, None, "off"   # C-1, stop disabled
+    a._b_max_probe_every = 0                              # 3.1 re-sense off
     a._weight_decay = None
     a.server_momentum = 0.0
     a._server_momentum_buf = {}

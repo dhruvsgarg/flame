@@ -594,13 +594,34 @@ gets to decide over. Setting `B = B_max` in `B ≈ ½Tρ²`:
 rho*  = sqrt( 2 * B_max / T_res )    T_res = commits of resolution wanted, NOT a budget
 ```
 
-At `B_max` = ln 2.7 and `T_res` = 500 this returns **0.062**, against the 0.06 the portfolio reached by
-search. **`T` was never a budget input; it is a controller hyperparameter with an obvious default.**
+At `B_max` = ln 2.7 this returns 0.062 at `T_res` = 500 and **0.081 at `T_res` = 300**, against the 0.06
+the portfolio reached by search. **`T` was never a budget input; it is a controller hyperparameter with an
+obvious default.** *`T_res` = 500 was chosen only to reproduce that searched 0.06 and was refuted on
+replay (T5, 2026-08-15) — it floors the commit gate. **The shipped value is 300**; both the value and the
+sense in which `T_res` is used (a rate, not a deadline) are settled in `fl_fwd_ft_buildplan.md` §5.*
 
 Two `s`-side readings. `Λ_peak = 2·ln(Φ_peak)/s` scores `s`=2.9 → 0.63 against **0.72** observed and
 `s`=1.5 → 1.22 against **1.30**. And `T_peak = 2·ln(Φ_peak)/ρ²` contains **no `s`**, so a lower `s` buys
 better commits, never more of them. The floor is gate reachability, `I = ⌈n_req/K⌉ ≤ max_iter`, which at
 `K` = 10 is **`s` ≥ 0.90**.
+
+**`Λ = 2B/s` is an identity, not an approximation — MEASURED out of sample (T5, 2026-08-15).** Under the
+`n_target` gate `N = p(ρ/s)²/G_rule`, so `cos = √(G_rule·N/p) = ρ/s` and `Λ = Σρ·cos = Σρ²/s = 2B/s`.
+Replayed over five arms it holds to **−0.3%** on the two that pin `s` (`145729`, `112201`) and misses
+**+21.5 to +23.3%** on the three whose `s` drifts (`035045`, `084554`, `003648`) — the same arms, in the
+same order, as the miss table above. Three consequences:
+
+- **The `ρ` schedule is `Λ`-neutral at fixed `B`.** Two landing laws that spend the same budget bank the
+  same learning; they differ only in how many commits they take. Comparing schedules on `Λ` without
+  matching `B` compares nothing.
+- **`s`, not the schedule, is the only lever on `Λ` per unit budget** — which is why G-1b's `s` verdict
+  (efficiency, not safety) is load-bearing and the anneal's shape is not.
+- **`T_res` is therefore free to be chosen for well-posedness rather than for yield.** That is what settles
+  the landing law: `T_res` is a **rate** (`ρ*_t = √(2·(B_max − B_t)/T_res)`, `T_res` never decremented),
+  not a deadline. A decrementing `T_res` would make `T` an operator input again — the thing this section is
+  named for — and buys nothing, since `Λ` does not depend on it. Full decision, the two refuted
+  alternatives, and the constants (`T_res` = 300, `f` = 0.95, `ρ_max` = `s·√(max_iter·K·G_rule/p)`):
+  `fl_fwd_ft_buildplan.md` §5.
 
 ---
 
@@ -627,10 +648,13 @@ loop t:
 SIZING (from the model and the runtime -- NOTHING profiled):
   p, ||theta_tr|| <- read off the model
   PHASE A: B_max  <- ln 2      # safe prior: "weights may double". NOT a fitted number (5.5f D1)
-           rho*   <- sqrt( 2 * B_max / T_res ),  T_res ~ 500 = control resolution (4.6a)
+           rho*   <- min( rho_max, sqrt( 2*(B_max - B) / T_res ) )     # law C (4.6a, D5)
+                     T_res = 300, a RATE never decremented; rho_max = s*sqrt(max_iter*K*G_rule/p)
            run ~150 commits -- spends B ~ 0.21, Phi ~ 1.23, negligible
-  PHASE B: B_max  <- noise-injection probe, ~6 evals, forward-only        (5.5b)  [NOT BUILT]
-           rho*   <- re-derived from the measured B_max
+  PHASE B: B_max  <- noise-injection probe, ~6 evals, forward-only        (5.5b)  [METHOD BUILT +
+           rho*   <- re-derived from the measured B_max                   VALIDATED (probe_inflation_
+                                                                            damage.py, B-1) -- LIVE-LOOP
+                                                                            WIRING NOT BUILT, see below]
   K/C, P          <- hill-climb (K,C)/tau and P/tau(P)                    (5.5e)  [NOT BUILT]
   N               <- from the gate, holding s constant = time-optimal     (4.6)
 
@@ -642,10 +666,20 @@ PER COMMIT (server):
   log rho, ||theta_tr||, top_class_share      # the three monitors (2.8)
   B += 0.5*ln(1 + rho_t^2)                    # exact, no free parameter (4.1)
   anneal rho so that B LANDS on B_max         # not Robbins-Monro: unspent budget = wasted time (4.6a)
-  stop when dAcc/dLambda flattens, or B -> gamma*B_max, whichever first    [NOT BUILT]
-  periodically re-sense B_max, re-climb K and P   # 5.5b, 5.5e             [NOT BUILT]
+  stop when smoothed Phi crosses a threshold, default 2.7  # SUPERSEDES the dAcc/dLambda line this
+                                               # pseudocode had -- replay-VALIDATED (P4.1: 0.0054 given up)
+                                               # but never wired live [NOT BUILT] -- practice.md P5.2 3.3
+  periodically re-sense B_max, re-climb K and P   # 5.5b, 5.5e             [NOT BUILT -- see above: the
+                                                                            5.5b probe itself IS built,
+                                                                            only the live re-fire isn't]
   # NO accuracy target: the run finds its own ceiling (5.5f D2)
 ```
+
+**2026-08-15 note:** the two `[NOT BUILT]` tags above meant "not wired into the live commit loop," not "no
+method exists" — both the `B_max` probe (5.5b) and the stop rule (`Φ` threshold, superseding the
+`dAcc/dΛ` line originally here) are fully specified and already validated offline/by replay. See
+`fl_fwd_ft_practice.md` P9.3's newest process-lesson entry and P5.2's Phase 3 section for the actual
+remaining work (live wiring + two open design decisions), and `fl_fwd_ft_buildplan.md` §5 for the specs.
 
 **The four `[NOT BUILT]` lines are the entire remaining build (C-1).** Everything above them enacts to
 spec. They are the only places a *decision* is made from *sensed* state rather than arithmetic — which is
@@ -747,11 +781,11 @@ with and no longer has to set.
 | `τ` round-trip time | (a) | the aggregator already times every round trip | **built, unused** |
 | `N`, `I` | (a) | the gate's closed form given `s`. *`var_threshold` replaced by an `N` target* | **built** |
 | `s`, hence `n_req` | (a) | held constant — the time-optimality condition. `n_req = p(ρ*/s)²/G_rule` | **built** |
-| `ρ*` | (a) | `√(2·B_max/T_res)` (§4.6a). *The anneal exponent folds in once `B` is tracked* | **not wired** |
+| `ρ*` | (a) | `min(ρ_max, √(2·(B_max−B)/T_res))`, `T_res`=300 fixed (§4.6a, D5). *The anneal exponent folds in once `B` is tracked* | **not wired** |
 | **`B_max`** | **(b)** | **noise-injection probe, ~6 evals, forward-only, periodic** (§5.5b) | **offline only** |
 | **`K`, `C`** | **(b)** | **hill-climb the pair** against availability (§5.5e). *Which one carries the wall clock is K-C* | **not built** |
 | **`P`, bin size** | **(b)** | **hill-climb `P/τ(P)`** — *one lever, not four: `cos ∝ √compute`* | **not built** |
-| `dAcc/dΛ` | (b) | eval slope over a 100+ commit window — the stopping signal | **not built** |
+| `dAcc/dΛ` | (b) | eval slope over a 100+ commit window — the saturation stopping signal. **Revised 2026-08-13**: raw slope superseded by a Prechelt-style generalization-loss/patience criterion on smoothed accuracy (buildplan §5, task 3.5) — same role, different statistic | **not built** |
 | `D` | (b) | `cos` audit on a stride. **Forecast-only** (§5.5a) | **built** |
 | `p` / PEFT rank | (c) | device memory budget; inert for learning and for time | operator |
 | model, PEFT scheme | (c) | the deployment. α is **neutralised**, not sensed | operator |
@@ -835,13 +869,25 @@ use the *current* value: `Λ = Σ ρ_t·√(G_rule_t·N_t/p)`, and the time law'
 
 | # | question | **decision** | why |
 |---|---|---|---|
-| **D1** | `B_max` needs a partly-trained model to measure, but `ρ*` needs `B_max` to start | **Two-phase from a safe prior.** Phase A at `B_max` = **ln 2** — *"the model survives its weights doubling"* — giving `ρ*` = 0.053 at `T_res` = 500; after ~150 commits that has spent `B` ≈ 0.21 (`Φ` = 1.23). Phase B injection-probes and re-derives `ρ*` | ln 2 is the **weakest non-trivial claim**, not a fitted number, and Phase A's spend is negligible against *any* plausible `B_max` |
-| **D2** | what is "the target accuracy"? | **No target.** Stop when `dAcc/dΛ` flattens over a 100+ commit window, or `B → γ·B_max` | a supplied target is itself an operator input, and §0.0 admits none |
+| **D1** | `B_max` needs a partly-trained model to measure, but `ρ*` needs `B_max` to start | **Two-phase from a safe prior.** Phase A at `B_max` = **ln 2** — *"the model survives its weights doubling"* — giving `ρ*` = **0.068 at `T_res` = 300**; after ~150 commits that has spent `B` ≈ 0.27 (`Φ` = 1.31). Phase B injection-probes and re-derives `ρ*` | ln 2 is the **weakest non-trivial claim**, not a fitted number, and Phase A's spend is negligible against *any* plausible `B_max` |
+| **D2** | what is "the target accuracy"? | **No target.** Stop when `B → B_max` (the `Φ`-threshold rule, 3.3, replay-validated P4.1) crosses first, **or** the saturation criterion (3.5, revised 2026-08-13 to Prechelt GL/patience — this row originally said raw `dAcc/dΛ`) does, whichever fires first — model §5.5f, buildplan §5 | a supplied target is itself an operator input, and §0.0 admits none |
 | **D3** | is the communication budget a constraint? | **A tiebreak.** Minimise bytes *subject to* time-first | spending `B` and raising `P` cut time and bytes together; `K` is free in *total* bytes while `K ≤ n_req` (K-C) |
 | **D4** | which knobs may the operator still supply? | **Model, PEFT scheme and `p` only.** `P` is **sensed** by hill-climbing `P/τ(P)` | the strongest autonomy claim the evidence supports. `p` stays operator-owned because it is measurably **inert** |
 
 > **What D4 costs.** It promotes **P-1** from an ablation to a **build prerequisite**, and it requires the
 > trainer to accept a **mid-run `P` change**, which nothing does today.
+
+**Two further decisions, settled 2026-08-15 by T5's replay** (`expt_scripts/replay_landing_law.py`):
+
+| # | question | **decision** | why |
+|---|---|---|---|
+| **D5** | when the periodic re-sense (3.1) moves `B_max` mid-run, does the landing target `T_res` move with it? | **No — `T_res` is a rate, never run state.** `ρ*_t = min(ρ_max, √(2·(B_max_t − B_t)/T_res))` with `T_res` constant, so `B → B_max` as `B_max(1 − e^{−t/T_res})` | `B_max` is *measured* and drifts; `T_res` is *chosen* and no probe speaks to it. Resetting per re-sense recedes the horizon forever; decrementing reinstates `T` as an input (§4.6a). Costs 3.1× the commits of a fixed-horizon law for **identical `Λ`** — cheap, because §4.6a's identity makes `Λ` schedule-free |
+| **D6** | what does the run *do* when the stop fires? | **Halt** — `_work_done = True`, the path `max_runtime_s` already takes. Gated `phi_stop: off \| log_only \| halt` | freezing `θ` and continuing to evaluate is dominated: a frozen model's accuracy is fixed, so further evals cost GPU and return eval noise. `log_only` preserves the past-the-stop counterfactual that validated the rule (P4.1) without keeping a bad run alive |
+
+**Both make the controller safe by construction rather than by backstop.** Under D5, `B` approaches
+`B_max` monotonically *from below* and never crosses it — so the `Φ` stop fires only when `B_max` was
+re-sensed downward or the momentum correction applies, which is what "backstop" was always supposed to
+mean. Contrast `rm`, whose `Σρ²` diverges logarithmically and therefore *always* eventually needs it.
 
 ## §5.6 The cohort-width requirement is withdrawn
 

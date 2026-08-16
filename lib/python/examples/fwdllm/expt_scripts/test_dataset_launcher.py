@@ -48,7 +48,11 @@ def check(cond, msg):
 def run_launcher(args, timeout=180):
     """bash run_sequential.sh <args>, returns (returncode, stdout+stderr, new_logdir_or_None)."""
     before = set(glob.glob(os.path.join(SMOKE_LOGS, "*")))
-    p = subprocess.run(["bash", RUN_SEQ] + args, capture_output=True, text=True, timeout=timeout)
+    # fluxtune runs at rf=64, so the FD-rescale preflight (which landed after
+    # this test) refuses without it, turning every case into an unrelated exit 2.
+    env = dict(os.environ, FWDLLM_FD_SCALE_INVARIANT="1")
+    p = subprocess.run(["bash", RUN_SEQ] + args, capture_output=True, text=True,
+                       timeout=timeout, env=env)
     after = set(glob.glob(os.path.join(SMOKE_LOGS, "*")))
     new_dirs = sorted(after - before)
     logdir = new_dirs[-1] if new_dirs else None

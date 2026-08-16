@@ -49,6 +49,8 @@ def make(weight_decay=None, rho=RHO):
     a._rho_star, a._rho_schedule, a._rho_exp = rho, "const", 0.0
     a._commit_count = 0
     a._last_rho = None
+    a._B, a._stop_fired, a._phi_stop = 0.0, None, "off"   # C-1, stop disabled
+    a._b_max_probe_every = 0                              # 3.1 re-sense off
     a._weight_decay = weight_decay
     a.server_momentum = 0.0
     a._server_momentum_buf = {}
