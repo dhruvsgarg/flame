@@ -517,11 +517,31 @@ unblocked. Nothing in `aggregator/` has changed yet.**
 #### Phase 4 — the two zero-input runs · *state: todo, **unblocked** (Phase 3's 3.1/3.2/3.3 landed 2026-08-15)*
 
 **Launch:** `expt_scripts/nodes/run_node_p4.sh <agnews|yahoo> <controller|control>`, four invocations,
-one per node, all four at the same 40,000-vclock target with the **cos audit off** (Phase 4 scores `B`,
+one per machine, all four at the same 40,000-vclock target with the **cos audit off** (Phase 4 scores `B`,
 `Φ`, `Λ`, `A`, every one exact from `ρ`; only `D` needs the audit, and the audit is 3.40 s of a 7.81 s
-commit — the tax that killed G-2's annealed leg). `control` = today's shipped fluxtune_v2 at
-`--phi-stop log_only`, which keeps measuring the past-the-stop counterfactual P4.1 was built from instead
-of destroying it.
+commit — the tax that killed G-2's annealed leg). `control` = fluxtune_v2 at `--phi-stop log_only`, which
+keeps measuring the past-the-stop counterfactual P4.1 was built from instead of destroying it.
+
+**Projected, audit-off, from T5's cost fit:**
+
+| arm | commits | trips | trips/commit | wall |
+|---|---|---|---|---|
+| agnews controller (law C) | 967 | 4,848 | 5.01 | 2.2 h |
+| yahoo controller (law C) | 916 | 3,382 | 3.69 | 1.9 h |
+| control, `gate_rho_ref=setpoint` | 799 | 6,390 | 8.00 | 2.4 h |
+| ~~control, shipped `annealed`~~ | 5,196 | 5,271 | **1.01** | **7.5 h** |
+
+**The control runs `setpoint`, not the shipped `annealed`, and the last row is why:** `rm`/0.25 +
+`annealed` is bit-for-bit `003648`'s config, and it reproduces that arm's gate starvation exactly
+(1.01 trips/commit). `setpoint` is also the only G-2 leg that completed (`084554`), and a control has to
+finish to be a control. **Task 0.7's `const`/`rm` branch does not catch this** — it has no model of `rm`
+decaying `n_req`, so it projects ~0.6 h for that 7.5 h arm. Extending it is the standing follow-up before
+any `rm`+`annealed` arm runs unattended again.
+
+**Infrastructure (measured 2026-08-16, `jayne`).** Datasets *and* the `test_fwdllm` conda env are on
+`/coc/scratch` (NFS, shared by every machine); **only the repo is machine-local** (`/home` is `/dev/md1`,
+ext4, not NFS — and it is a different directory from the NFS `/nethome`). So a new node needs a `git
+clone` and nothing else. Run output must stay on local `/home`: telemetry is ~700 MB/run.
 
 **Read `[BmaxProbe]` before anything else — that line is the result.** T5 pre-registered the divergence at
 the commit-150 re-sense: agnews `ρ*` 0.0530 → **0.0764** (`I` 6 → 12) against yahoo's 0.0530 → **0.0573**

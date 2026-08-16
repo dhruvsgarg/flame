@@ -20,6 +20,17 @@
 # counterfactual that P4.1 was built from keeps being measured instead of being
 # destroyed by the controller shipping.
 #
+# THE CONTROL USES gate_rho_ref=setpoint, NOT the shipped `annealed`. Not a
+# preference -- `rm`/0.25 + `annealed` is bit-for-bit 003648's config, and T5
+# says why that arm died: N_req ~ rho_t^2, so an annealing rho demands less
+# pooling every commit until I floors at 1 and the per-commit server path has no
+# trainer work amortising it. Projected here at 5,196 commits / 5,271 trips =
+# 1.01 per commit and 7.5 h, versus `setpoint`'s 799 / 6,390 = 8.00 and 2.4 h
+# for the SAME vclock. `setpoint` is also the only leg of G-2 that completed
+# (084554), so it is the last configuration known to finish -- which is what a
+# control has to do to be a control. P2.1 item 5b already makes `annealed`
+# contingent on 3.3, and 3.3 is what the treatment arm is testing.
+#
 # THE COS AUDIT IS OFF ON ALL FOUR ARMS, deliberately. Phase 4 scores B, Phi,
 # Lambda and A, every one of which is exact from rho; only `D` needs the audit,
 # and the audit is 3.40s of a 7.81s commit (T5) -- the tax that killed G-2's
@@ -54,7 +65,7 @@ COMMON=(--only fluxtune --mode sim --yes --clean "${FORCE[@]}"
         --num-trainers 100 --num-gpus 8 --agg-goal 10 --c 30
         --probe-combine mean --commit-gate n_target
         --server-step-rule trust_ratio --gate-safety-s 1.5
-        --gate-rho-ref annealed --max-iter-per-data-id 20
+        --max-iter-per-data-id 20
         --max-runtime-s 40000 --sim-wall-ceiling-h 10.0)
 
 case "$ARM" in
@@ -62,13 +73,13 @@ case "$ARM" in
     # Zero input: no --rho-star and no --b-max. rho* is derived from the ln 2
     # prior until 3.1's first probe lands, then from the sensed B_max.
     node_run "p4-$DATASET" "controller (law C, T_res=300, sensed B_max)" \
-      "${COMMON[@]}" \
+      "${COMMON[@]}" --gate-rho-ref annealed \
       --rho-schedule landing --t-res 300 --budget-stop-frac 0.95 \
       --phi-stop halt --b-max-probe-every 150 --b-max-probe-n 512
     ;;
   control)
-    node_run "p4-$DATASET" "control (shipped fluxtune_v2: rm/0.25, rho*=0.06)" \
-      "${COMMON[@]}" \
+    node_run "p4-$DATASET" "control (fluxtune_v2: rm/0.25, rho*=0.06, setpoint)" \
+      "${COMMON[@]}" --gate-rho-ref setpoint \
       --rho-schedule rm --rho-exp 0.25 --rho-star 0.06 \
       --phi-stop log_only
     ;;
