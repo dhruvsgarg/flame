@@ -133,6 +133,8 @@ PHI_STOP=""            # C-1: off|log_only|halt -- what the stop DOES
 PHI_STOP_THRESHOLD=""  # C-1: fixed Phi fallback when no B_max is sensed (2.7)
 B_MAX_PROBE_EVERY=""   # 3.1: re-sense B_max every N commits. 0/unset = off
 B_MAX_PROBE_N=""       # 3.1: held-out samples per probe eval (512)
+B_MAX_POLICY=""        # 3.1: mean|ratchet|anchor -- how successive senses combine
+EVAL_MAX_SAMPLES=""    # agg eval on a fixed subsample of the test set. Unset = full set
 B_MAX_PROBE_PHIS=""    # 3.1: comma-separated Phi grid (1.5,2,2.5,3,3.5,4)
 TRAINABLE_SCOPE=""     # S-I: adapters_head|adapters_only -- adapters_only freezes pre_classifier (56.7% of p)
 COMMIT_GATE=""         # S-C: var|n_target -- n_target sizes the pool from rho_t (aggregator); empty => code default var
@@ -186,6 +188,7 @@ usage() {
   echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho-schedule const|rm|landing] [--rho-exp F]" >&2
   echo "          [--b-max F] [--t-res F] [--budget-stop-frac F] [--phi-stop off|log_only|halt] [--phi-stop-threshold F]" >&2
   echo "          [--b-max-probe-every N] [--b-max-probe-n N] [--b-max-probe-phis L]" >&2
+  echo "          [--b-max-policy mean|ratchet|anchor] [--eval-max-samples N]" >&2
   echo "          [--trainable-scope adapters_head|adapters_only] [--commit-gate var|n_target] [--gate-safety-s F]" >&2
   echo "          [--gate-rho-ref annealed|setpoint]  (setpoint stops S-C's pool vanishing with S-B's anneal)" >&2
   echo "          [--cos-ground-truth-audit | --no-cos-ground-truth-audit] [--cos-probe-batch-size N] [--cos-probe-every K]  (B1: real cos(G,g), aggregator-side; unset inherits the catalog)" >&2
@@ -241,6 +244,9 @@ while [[ $# -gt 0 ]]; do
     --b-max-probe-every)    B_MAX_PROBE_EVERY="$2"; shift 2 ;;
     --b-max-probe-n)        B_MAX_PROBE_N="$2"; shift 2 ;;
     --b-max-probe-phis)     B_MAX_PROBE_PHIS="$2"; shift 2 ;;
+    --b-max-policy)         case "$2" in mean|ratchet|anchor) ;; *) echo "ERROR: --b-max-policy must be mean|ratchet|anchor (got '$2')" >&2; exit 2 ;; esac
+                            B_MAX_POLICY="$2"; shift 2 ;;
+    --eval-max-samples)     EVAL_MAX_SAMPLES="$2"; shift 2 ;;
     --trainable-scope)      TRAINABLE_SCOPE="$2"; shift 2 ;;
     --commit-gate)          case "$2" in var|n_target) ;; *) echo "ERROR: --commit-gate must be var|n_target (got '$2')" >&2; exit 2 ;; esac
                             COMMIT_GATE="$2"; shift 2 ;;
@@ -441,6 +447,8 @@ LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
   PHI_STOP="$PHI_STOP" PHI_STOP_THRESHOLD="$PHI_STOP_THRESHOLD" \
   B_MAX_PROBE_EVERY="$B_MAX_PROBE_EVERY" B_MAX_PROBE_N="$B_MAX_PROBE_N" \
   B_MAX_PROBE_PHIS="$B_MAX_PROBE_PHIS" \
+  B_MAX_POLICY="$B_MAX_POLICY" \
+  EVAL_MAX_SAMPLES="$EVAL_MAX_SAMPLES" \
   TRAINABLE_SCOPE="$TRAINABLE_SCOPE" COMMIT_GATE="$COMMIT_GATE" GATE_SAFETY_S="$GATE_SAFETY_S" \
   GATE_RHO_REF="$GATE_RHO_REF" COS_GROUND_TRUTH_AUDIT="$COS_GROUND_TRUTH_AUDIT" \
   COS_PROBE_BATCH_SIZE="$COS_PROBE_BATCH_SIZE" COS_PROBE_EVERY="$COS_PROBE_EVERY" \
@@ -493,6 +501,8 @@ PHI_STOP = env("PHI_STOP") or ""; PHI_STOP_THRESHOLD = env("PHI_STOP_THRESHOLD")
 B_MAX_PROBE_EVERY = env("B_MAX_PROBE_EVERY") or ""
 B_MAX_PROBE_N = env("B_MAX_PROBE_N") or ""
 B_MAX_PROBE_PHIS = env("B_MAX_PROBE_PHIS") or ""
+B_MAX_POLICY = env("B_MAX_POLICY") or ""
+EVAL_MAX_SAMPLES = env("EVAL_MAX_SAMPLES") or ""
 TRAINABLE_SCOPE = env("TRAINABLE_SCOPE") or ""
 COMMIT_GATE = env("COMMIT_GATE") or ""; GATE_SAFETY_S = env("GATE_SAFETY_S") or ""
 GATE_RHO_REF = env("GATE_RHO_REF") or ""
@@ -760,6 +770,10 @@ def patch(exp, run_key, variant, trace):
         h["b_max_probe_n"] = int(B_MAX_PROBE_N)
     if B_MAX_PROBE_PHIS:
         h["b_max_probe_phis"] = B_MAX_PROBE_PHIS
+    if B_MAX_POLICY:
+        h["b_max_policy"] = B_MAX_POLICY
+    if EVAL_MAX_SAMPLES:
+        h["eval_max_samples"] = int(EVAL_MAX_SAMPLES)
     # S-I: BOTH sides build the model, so both need the scope or the aggregator's
     # requires_grad mask disagrees with the trainer's probe mask.
     if TRAINABLE_SCOPE:

@@ -62,6 +62,10 @@ class _FakeAggregator:
         self._is_model_updated = False
         self._model_version = 0
         self._round = round_
+        # The real aggregator initialises this in internal_init; the fake must
+        # too, now that the rounds check ORs into it rather than assigning over
+        # it (a bare assignment used to create the attribute as a side effect).
+        self._work_done = False
         self._updates_in_queue = 2
         self._updates_received = {}
         self._n_aggs_completed = 0
@@ -116,6 +120,19 @@ class TestRoundsBasedTermination:
         assert agg._round == 11
         assert agg._work_done is False
 
+    def test_fired_stop_survives_a_rounds_lap(self, _mock_ffb):
+        """A stop set elsewhere (C-1's budget stop) must not be un-set by the
+        lap. The rounds check used to ASSIGN `self._round > rounds`, which is
+        False for every arm ever run, so `phi_stop=halt` was silently voided."""
+        agg = _FakeAggregator(round_=10, rounds=50)
+        agg._work_done = True          # as if [BudgetStop] had just fired
+        channel = _FakeChannel()
+
+        agg.process("tag", channel)
+
+        assert agg._round == 11
+        assert agg._work_done is True
+
     def test_work_done_not_touched_when_round_not_complete(self, _mock_ffb):
         """data_id hasn't reached total_data_bins yet -- the round-rollover
         branch (and therefore the rounds check) must not run at all."""
@@ -126,7 +143,7 @@ class TestRoundsBasedTermination:
         agg.process("tag", channel)
 
         assert agg._round == 49
-        assert not hasattr(agg, "_work_done")
+        assert agg._work_done is False
 
     def test_work_done_not_touched_when_variance_check_fails(self, _mock_ffb):
         """var_good_enough=False takes the retry branch, which never
@@ -137,4 +154,4 @@ class TestRoundsBasedTermination:
         agg.process("tag", channel)
 
         assert agg._round == 49
-        assert not hasattr(agg, "_work_done")
+        assert agg._work_done is False

@@ -52,6 +52,22 @@
 # G-2's measured 6.26 vclock-s per round trip, so the BUDGET stop fires well
 # before max_runtime_s does -- if a controller arm dies on max_runtime_s instead
 # of `[BudgetStop] reason=budget`, the law did not land and the arm is void.
+#
+# THE FIRST FOUR ARMS (2026-08-16) WERE VOID BY EXACTLY THAT RULE. Four defects,
+# all fixed; readout in fl_fwd_ft_practice.md P4.7. Check all four inside the
+# first 200 commits before leaving an arm unattended:
+#
+#   grep '\[DataBins\]'   -> 1750 on yahoo, 150 on agnews, and 'confirmed by trainer'
+#   grep '\[BmaxProbe\]'  -> B_max moves UP from the ln 2 prior, never below B
+#   no server_update with rho_star == 0 (was 23% of commits on agnews, 48% yahoo)
+#   round trips / commit >= 3 in EVERY quintile, not just the launch projection
+#
+# Yahoo additionally needs `profile_sim_charges.py` (its vclock is priced off an
+# agnews profile -- 0.658 real-s/vclock-s vs agnews' 0.255, hence the --force
+# below) and a budget well above 40,000 vclock: its control was still climbing
+# monotonically at 0.296 when it was killed at 86% of that budget, against a
+# 0.73 backprop reference. See P4.8 and buildplan §9 before reading a yahoo arm
+# as a controller result -- the dataset is under-trained, not broken.
 set -u
 . "$(dirname "$0")/_node_lib.sh"
 

@@ -9,7 +9,9 @@ import torch
 from torch.nn import CrossEntropyLoss
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
 from examples.fwdllm.trainer.forward_training.fwdgrad_utils import calculate_var, calculate_snr, calculate_cv, calculate_real_var, calculate_snr_gradients
-from examples.fwdllm.expts.dataset_registry import max_dominant_share
+from examples.fwdllm.expts.dataset_registry import (
+    data_coverage, max_dominant_share, total_data_bins,
+)
 from examples.fwdllm.expts.landing_law import (
     B_MAX_PRIOR, BUDGET_STOP_FRAC_DEFAULT, T_RES_DEFAULT,
     rho_gate_cap, rho_star_now,
@@ -340,11 +342,25 @@ class FedSGDAggregator(TopAggregator):
         self._b_max_probe_n = int(
             getattr(self.args, "b_max_probe_n", 0) or 512
         )
+        # How successive senses combine. P4.1's fixed-Phi stop holding over 10
+        # arms says the boundary is a property of TOTAL inflation, so the fires
+        # estimate ONE lifetime budget: `mean` is the estimator for a constant,
+        # and it terminates (B_max settles, law C drives B to it) where `anchor`
+        # (latest only) need not -- on 125619's six fires B/B_max ran 0.52 0.48
+        # 0.33 0.42 0.47 0.64. `ratchet` (min) stops sooner but compounds the
+        # probe's conservative bias. First sense always replaces the ln 2 prior.
+        self._b_max_policy = str(
+            getattr(self.args, "b_max_policy", "") or "mean"
+        ).lower()
+        if self._b_max_policy not in ("mean", "ratchet", "anchor"):
+            logger.warning(f"unknown b_max_policy={self._b_max_policy!r}; using mean")
+            self._b_max_policy = "mean"
+        self._b_max_senses = []
         if self._b_max_probe_every:
             logger.info(
                 f"[BmaxProbe] re-sensing every {self._b_max_probe_every} commits "
                 f"on {self._b_max_probe_n} held-out samples, "
-                f"Phi grid {self._b_max_phis}"
+                f"policy={self._b_max_policy}, Phi grid {self._b_max_phis}"
             )
         if self._rho_schedule == "landing":
             if self.server_momentum:
@@ -373,6 +389,55 @@ class FedSGDAggregator(TopAggregator):
                 f"[Landing] phi_stop={self._phi_stop} "
                 f"threshold={self._phi_stop_threshold} (no sensed B_max)"
             )
+
+    def internal_init(self) -> None:
+        """Base init, then size `data_id`'s range to THIS dataset's shards.
+
+        The base falls back to agnews' 150; an explicit `total_data_bins`
+        hyperparameter still wins.
+        """
+        super().internal_init()
+        if getattr(self.config.hyperparameters, "total_data_bins", 0):
+            src = "hyperparameter"
+        else:
+            try:
+                self.total_data_bins = total_data_bins(
+                    self.args.dataset,
+                    int(self.config.hyperparameters.client_num_in_total),
+                    int(self.args.train_batch_size),
+                )
+                src = "registry"
+            except Exception:
+                logger.warning(
+                    "[DataBins] cannot derive bins for "
+                    f"dataset={getattr(self.args, 'dataset', None)!r}; keeping "
+                    f"{self.total_data_bins}", exc_info=True
+                )
+                src = "fallback"
+        logger.info(
+            f"[DataBins] total_data_bins={self.total_data_bins} source={src} "
+            f"dataset={getattr(self.args, 'dataset', None)} "
+            f"C={getattr(self.config.hyperparameters, 'client_num_in_total', None)} "
+            f"batch={getattr(self.args, 'train_batch_size', None)}"
+        )
+        # Full coverage is what the bin count exists to give -- state it, don't
+        # assume it. Needs equal shards AND shard % batch == 0.
+        try:
+            cov = data_coverage(
+                self.args.dataset,
+                int(self.config.hyperparameters.client_num_in_total),
+                int(self.args.train_batch_size),
+            )
+            (logger.info if cov["exact"] else logger.warning)(
+                f"[DataBins] coverage {cov['reached']:,} of {cov['n_train']:,} "
+                f"train rows ({100.0 * cov['reached'] / cov['n_train']:.2f}%) "
+                f"= {cov['bins']} bins x {cov['batch']} x {cov['clients']}"
+                + ("" if cov["exact"] else
+                   f"  UNDERCOUNT: shard%batch={cov['batch_remainder']}, "
+                   f"n_train%C={cov['shard_remainder']}")
+            )
+        except Exception:
+            logger.debug("[DataBins] coverage check skipped", exc_info=True)
 
     def var_within_epsilon(self):
         if self.var < self.var_threshold:
@@ -486,9 +551,14 @@ class FedSGDAggregator(TopAggregator):
         """S-C: pool this commit's step needs, N_req = p*(rho/s)^2 / G_rule.
 
         None when no rho exists yet (raw_sgd, first commit) -> the cap fires.
+
+        `rho == 0` is a requirement of ZERO, not an absent one -- pooling cannot
+        make a zero-length step safer. Folding it into the None branch left the
+        gate unsatisfiable, so the commit landed only via the max_iter bypass:
+        20 round trips for a step of length 0 (125713's last quintile).
         """
         rho = self._gate_rho()
-        if not rho or not self._p_trainable or not self._g_rule:
+        if rho is None or not self._p_trainable or not self._g_rule:
             return None
         return self._p_trainable * (rho / self._gate_safety_s) ** 2 / self._g_rule
 
@@ -843,9 +913,10 @@ class FedSGDAggregator(TopAggregator):
         """3.1: re-sense `B_max` by INJECTING inflation instead of waiting for it.
 
         Isotropic Gaussian noise on the trainable slice, scaled so `||theta_tr||`
-        grows by `Phi`; the knee of chance-normalized accuracy is `Phi_peak` and
-        `B_max = ln Phi_peak` (model §5.5b, `expts/bmax_probe.py`). Forward passes
-        only -- no gradients, no training.
+        grows by `Phi`; the knee of chance-normalized accuracy is `Phi_peak`
+        (model §5.5b, `expts/bmax_probe.py`). Forward passes only -- no
+        gradients, no training. The knee is measured from the CURRENT theta, so
+        `ln Phi_peak` is the REMAINING budget and `B_max = B + ln Phi_peak`.
 
         B-1 (2026-08-13) made this mandatory rather than optional: knees are
         neither invariant nor monotone in `num_labels` (agnews ~3.0-3.5 vs
@@ -909,10 +980,23 @@ class FedSGDAggregator(TopAggregator):
             )
             return
         old = self._b_max
-        self._b_max = new
+        # The probe inflates the CURRENT theta, so `ln Phi_knee` is the budget
+        # remaining FROM HERE while `_B` accumulates from theta_0. Read as a
+        # total it made B_max < B on the first fire of every arm, clamping B_rem
+        # to 0 and pinning rho* at 0 for 23% (125619) / 48% (125713) of commits.
+        cand = self._B + new
+        self._b_max_senses.append(cand)
+        if self._b_max_policy == "mean":
+            self._b_max = sum(self._b_max_senses) / len(self._b_max_senses)
+        elif self._b_max_policy == "ratchet":
+            self._b_max = min(self._b_max_senses)
+        else:
+            self._b_max = cand
         logger.info(
-            f"[BmaxProbe] commit={self._commit_count} B_max {old:.6g} -> {new:.6g} "
-            f"(Phi_knee={phi_knee:.3f}) base_acc={base_acc:.3f} B={self._B:.6g} "
+            f"[BmaxProbe] commit={self._commit_count} B_max {old:.6g} -> "
+            f"{self._b_max:.6g} (sensed={cand:.6g} n={len(self._b_max_senses)} "
+            f"B_rem={new:.6g} Phi_knee={phi_knee:.3f} policy={self._b_max_policy}) "
+            f"base_acc={base_acc:.3f} B={self._B:.6g} "
             f"rho*={self._rho_star_now():.6g} took={time.time() - t0:.1f}s  "
             f"curve[{curve}]"
         )

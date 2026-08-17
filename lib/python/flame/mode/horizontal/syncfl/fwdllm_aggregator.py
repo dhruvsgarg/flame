@@ -437,7 +437,13 @@ class TopAggregator(AsyncTopAgg):
         self._prev_distribute_weights_success = False
 
         self.data_id = 0
-        self.total_data_bins = 150
+        # One client's batch count, and the trainer's own batch index. 150 is
+        # agnews' 1,200/8, hardcoded -- so yahoo trained on 8.6% of its data,
+        # silently, since a list longer than the index raises nothing.
+        # FedSGDAggregator.internal_init derives it; this is the override.
+        self.total_data_bins = int(
+            getattr(self.config.hyperparameters, "total_data_bins", 0) or 150
+        )
         self._is_model_updated = False
         self._model_version = 0
 
@@ -1883,6 +1889,24 @@ class TopAggregator(AsyncTopAgg):
             count = msg[MessageType.DATASET_SIZE]
             channel.set_end_property(end, PROP_DATASET_SIZE, count)
 
+        # The trainer's own `len(train_local[0])` is ground truth for the data_id
+        # range and has been on the wire, discarded, all along. Cross-check once:
+        # too low silently drops every shard's tail, too high is an IndexError.
+        _bins = (msg[MessageType.TOTAL_DATA_BINS]
+                 if MessageType.TOTAL_DATA_BINS in msg else None)
+        if _bins and not getattr(self, "_data_bins_checked", False):
+            self._data_bins_checked = True
+            if int(_bins) != int(self.total_data_bins):
+                logger.warning(
+                    f"[DataBins] MISMATCH: aggregator has {self.total_data_bins}, "
+                    f"trainer {end} reports {int(_bins)} batches. data_id indexes "
+                    f"the trainer's list, so the shard tail is unreachable."
+                )
+            else:
+                logger.info(
+                    f"[DataBins] confirmed by trainer {end}: {int(_bins)} batches"
+                )
+
         if MessageType.STAT_UTILITY in msg:
             # Believed (PROP_STAT_UTILITY before this overwrite, i.e. the
             # value from this end's PREVIOUS contribution) vs actual (this
@@ -2433,8 +2457,11 @@ class TopAggregator(AsyncTopAgg):
                 # composer loop (Loop(loop_check_fn=lambda: self._work_done))
                 # never exits and the aggregator process runs forever
                 # regardless of hyperparameters.rounds.
-                self._work_done = self._round > self.config.hyperparameters.rounds
-                if self._work_done:
+                # OR, never assign: a bare assignment un-sets any stop set
+                # elsewhere. That voided phi_stop=halt on 125619/125713 -- both
+                # logged [BudgetStop] at commit 150 and ran to the ceiling.
+                if self._round > self.config.hyperparameters.rounds:
+                    self._work_done = True
                     logger.info(
                         f"rounds={self.config.hyperparameters.rounds} reached "
                         f"at round {self._round}; stopping run."
@@ -3067,7 +3094,6 @@ class TopAggregator(AsyncTopAgg):
 
         eval_loss_total = torch.tensor(0.0, device=device)
         num_eval_steps = 0
-        test_sample_len = len(self.test_global.dataset)
 
         # Move model to device before eval. (Removed a redundant
         # fc.make_functional_with_buffers call here: it never mutated
@@ -3079,12 +3105,32 @@ class TopAggregator(AsyncTopAgg):
         # One-time GPU data transfer for caching test data
         if not hasattr(self, "_cached_test_data") or self._cached_test_data is None:
             logger.info("One-time GPU data transfer for evaluation dataset")
-            self._cached_test_data = [
-                t.to(device) for t in self.test_global.dataset.tensors
-            ]
+            tensors = list(self.test_global.dataset.tensors)
+            # `eval_max_samples`: a FIXED subsample instead of the whole test
+            # set; 0 = full, byte-identical. yahoo's 60,000 at seq 256 costs 89 s
+            # under contention against a ~91 s inter-eval gap at stride 2, so the
+            # main thread blocked on `_eval_done.wait()` for 359 of 359 evals.
+            # FIXED so the sampling error is a constant offset, not per-eval
+            # noise (P4.4 compares peak vs final); SHUFFLED, never `[:n]`, since
+            # test_index_list is per-client shards in client order (B17).
+            n_max = int(getattr(self.config.hyperparameters, "eval_max_samples", 0) or 0)
+            n_have = tensors[0].shape[0]
+            if 0 < n_max < n_have:
+                g = torch.Generator().manual_seed(20260810)
+                idx = torch.randperm(n_have, generator=g)[:n_max]
+                tensors = [t[idx] for t in tensors]
+                share = torch.bincount(tensors[4].view(-1)).max().item() / n_max
+                logger.info(
+                    f"[EvalSubsample] {n_max} of {n_have} test rows "
+                    f"(fixed seed, shuffled; dominant-class share={share:.3f})"
+                )
+            self._cached_test_data = [t.to(device) for t in tensors]
 
         input_ids_all = self._cached_test_data[1]
         labels_all = self._cached_test_data[4]
+        # Off the CACHE, not the dataset -- `eval_max_samples` makes them differ,
+        # and this sizes the prediction buffers and the loop bound.
+        test_sample_len = input_ids_all.shape[0]
 
         # Accumulate predictions on GPU
         preds_gpu = torch.empty((test_sample_len, self.num_labels), device=device)

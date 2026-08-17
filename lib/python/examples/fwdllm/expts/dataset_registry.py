@@ -69,6 +69,43 @@ def probe_dim(num_labels: int, reduction_factor: int = 16) -> int:
     return ADAPTER_P[reduction_factor] + 768 * num_labels + num_labels
 
 
+def total_data_bins(name: str, num_clients: int, train_batch_size: int) -> int:
+    """Data bins one client holds: `ceil(shard / batch)` with equal shards.
+
+    The aggregator's `data_id` range AND the trainer's own batch index
+    (`FedSgdTrainer:520`), so too low silently drops every shard's tail -- the
+    list is merely longer than the index. Hardcoded at agnews' 150, which gave
+    yahoo 1,200 of each client's 14,000 rows (8.6%).
+
+    **Batch stays 8 and the bin count moves**: the batch is the unit each JVP is
+    estimated on, the bin count is pure addressing. agnews 150 / yahoo 1,750 /
+    yelp-p 650 at C=100 -- buildplan §1's table.
+    """
+    if num_clients <= 0 or train_batch_size <= 0:
+        raise ValueError(f"num_clients={num_clients} train_batch_size={train_batch_size}")
+    shard = get(name).n_train // num_clients
+    return -(-shard // train_batch_size)          # ceil; the loaders drop_last=False
+
+
+def data_coverage(name: str, num_clients: int, train_batch_size: int) -> dict:
+    """Does `bins x batch x C` equal the training set? Not automatic -- it needs
+    equal shards AND `shard % batch == 0`; a short last batch undercounts by up
+    to `C*(batch-1)` rows. True for all three datasets at C=100 and 1,000 today.
+    Returns the pieces for the caller to report; raises nothing.
+    """
+    ds = get(name)
+    shard = ds.n_train // num_clients
+    bins = total_data_bins(name, num_clients, train_batch_size)
+    reached = bins * train_batch_size * num_clients
+    return {
+        "dataset": ds.name, "n_train": ds.n_train, "clients": num_clients,
+        "batch": train_batch_size, "shard": shard, "bins": bins,
+        "reached": reached, "exact": reached == ds.n_train,
+        "shard_remainder": ds.n_train - shard * num_clients,
+        "batch_remainder": shard % train_batch_size,
+    }
+
+
 def max_dominant_share(num_labels: int) -> float:
     """Ceiling on a reference batch's dominant-class share before it counts as
     class-skewed. Balanced is 1/K, so the old fixed 0.5 encoded agnews' K=4: it

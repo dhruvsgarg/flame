@@ -821,8 +821,16 @@ number in advance. That is the right thing to lose.
 
 **Inflation can be injected instead of waited for** (the method that settled §7). Add isotropic Gaussian
 noise to the trainable slice scaled so `‖θ_tr‖` grows by `Φ`, read accuracy back at `Φ` ∈ {1.5 … 4}. The
-knee is `Φ_peak`; set `B_max = ln Φ_peak`. **~6 evals on a copy** — no training, no gradients, the same
-operator set the method already restricts itself to. **Already built** as `probe_inflation_damage.py`,
+knee is `Φ_peak`. **~6 evals on a copy** — no training, no gradients, the same
+operator set the method already restricts itself to.
+
+> **The probe measures a REMAINING budget, so `B_max = B + ln Φ_peak`** (corrected 2026-08-16). `Φ` is
+> read against the norm of the model *as it stands now*, while `B` accumulates from `θ_0`; taking
+> `ln Φ_peak` as the total makes the two incomparable, and in practice makes `B_max` land *below* the
+> spend on the first fire — `ρ*` = 0 for 23–48% of commits on all four P-4 arms
+> ([P4.7](fl_fwd_ft_practice.md#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects)).
+> Anchored this way `B_max` > `B` by construction, so a re-sense can only ever move the landing point, not
+> stop the run — which is what makes 3.3's stop a genuine backstop rather than a race with the sensor. **Already built** as `probe_inflation_damage.py`,
 never run *inside* a live run. It runs on the model being trained, so it calibrates the deployment rather
 than a proxy, and it is **biased conservative** — it noises a model that cannot re-fit, reading the knee
 ~0.6–1.2 low (§7.1), so it under-spends budget, never over-spends.

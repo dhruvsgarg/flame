@@ -153,6 +153,28 @@ def main():
     check(spec is not None and check_level(spec, "sim charge profile matches dataset") == "error",
           "sim charge profile / dataset mismatch is flagged, not silently reused from agnews")
 
+    # ---- 7. data bins are the dataset's own, not agnews' hardcoded 150 -------
+    # The aggregator's data_id range IS the trainer's batch index, so a value
+    # below the true batch count silently trains on a prefix of every shard:
+    # yahoo ran on 1,200 of each client's 14,000 samples (8.6%) on 125713/125753.
+    print("case: total_data_bins per dataset")
+    sys.path.insert(0, os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", "..")))
+    from examples.fwdllm.expts.dataset_registry import data_coverage, total_data_bins
+    for ds, want in (("agnews", 150), ("yahoo", 1750), ("yelp-p", 650)):
+        got = total_data_bins(ds, 100, 8)
+        check(got == want, f"{ds} at C=100/batch=8 -> {want} bins (got {got})")
+    check(total_data_bins("agnews", 100, 8) == 150,
+          "agnews still resolves to today's hardcoded 150 (byte-identical)")
+    # The property the bin count exists to give: bins x batch x C == n_train,
+    # at BOTH client counts on disk. Batch is pinned at 8 (it is the unit each
+    # JVP is estimated on); the bin count is what moves per dataset.
+    for ds in ("agnews", "yahoo", "yelp-p"):
+        for C in (100, 1000):
+            cov = data_coverage(ds, C, 8)
+            check(cov["exact"],
+                  f"{ds} C={C}: {cov['bins']}x8x{C} = {cov['reached']:,} "
+                  f"== n_train {cov['n_train']:,}")
+
     for d in _cleanup_dirs:
         if d and os.path.isdir(d):
             shutil.rmtree(d, ignore_errors=True)

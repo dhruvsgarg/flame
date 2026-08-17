@@ -138,6 +138,9 @@ Nothing reaches a verdict without predicted-vs-observed numbers and a run id.
 | **α heterogeneity** · `--partition-method ...alpha=` | 4/4 arms over 1000× in α: `var` floor 1.33/0.64/0.28, invariant 0.53 ± 0.01, both `K` predictions falsified | **understood and neutralised** by the step rule (model §2.6) |
 | **`n_eff` sensor** · rides on `server_update_audit` | synthetic: recovers true `n`, scale-invariant over 100× in `‖g‖`, but **FAILS on directional disagreement** (4/20/100 distinct directions all → 1.00). 17 real arms: `n_eff/N` = **1.00 ± 0.01** | **FAILED as a sensor, KEPT as an audit.** An identity — in a gate it is a counter. Do not wire it to a controller |
 | **split-half commit gate** · `commit_gate: cos` | per-commit SNR 0.07 | **DEAD** at `p`=450k (P6). **adaptive `P`** (`probe_budget: adaptive`) is PARKED behind the same wall |
+| **`B_max` combiner** · `b_max_policy: {mean\|ratchet\|anchor}` (new 2026-08-16) | consequence of the origin fix: every anchored sense lands *above* the spend, so `anchor` (latest-only) walks `B_max` up with `B` and may never stop — on `125619`'s six fires `B/B_max` = 0.52 0.48 0.33 0.42 0.47 0.64, no crossing. The anchored quantity `B+R` is far more stable than raw `R` (CV ≈25% vs a 2.4× spread on agnews; ±6% on yahoo), i.e. it behaves like one constant measured six times | **`mean`, and the reasoning is the point:** P4.1's fixed-`Φ` stop holding across 10 arms with different schedules says the collapse boundary is a property of *total* inflation, so the fires estimate **one lifetime budget** and the estimator for a constant is the mean. It terminates (`B_max` settles, law C drives `B` to it) where `anchor` need not, and it does not compound the probe's documented conservative bias the way `ratchet` does. `ratchet`/`anchor` kept for the free after-the-fact A/B — every policy emits `sensed=` per fire |
+| **eval subsample** · `eval_max_samples` (new 2026-08-16) | the eval is backgrounded but blocks the main thread when the prior one is unfinished: **359/359** evals on the yahoo control, 0/400 on the agnews control. 60,000 rows at seq 256 = ~30 GPU-s idle, **89.2 s under contention**, vs a ~91 s gap at stride 2. Batch 8 → 128 buys only **1.23×** (compute-bound, measured) | **fewer rows, not bigger batches.** Default 0 = full set, byte-identical. Fixed, fixed-seed *shuffled* subsample so error is a constant offset, not per-eval noise — and never `[:n]`, which is one client's shard (B17). **10,000 on yahoo** |
+| **data bins** · `total_data_bins` (new 2026-08-16) | was hardcoded 150 = agnews' `1,200/8`, and the trainer indexes its own batch list by `data_id`, so **yahoo trained on 8.6% of its data and yelp-p on 23%** — silently, since the list is merely longer than the index | **CORRECTNESS FIX, ships enabled.** Derived from `dataset_registry.total_data_bins` (150 / 1,750 / 650 at `C`=100, batch 8); agnews byte-identical. The hyperparameter is the manual override. Echoed as `[DataBins]` |
 
 ### P3.1 Instruments and audits
 
@@ -196,6 +199,10 @@ their agreement *is* the norm law. `‖θ_0‖` = 13.35 (`rf`=16), 9.6 (`rf`=32)
 | 1.722 | **`n_target` `s`=2.9 `const` ρ*=.06 (G-1b arm 1)** | `112201` | 1364 | 0.0599 | 2.4402 | 11.48 → 11.61 | **0.849** | **0.250** |
 | 1.368 | `select` `rf`=64 `p`=118348 | `222817` | 188 | 0.1863 | 1.0939 | 2.99 → 3.04 | **0.859** | 0.852 |
 | 2.385 | **`n_target` `s`=1.5 `const` ρ*=.06 (G-1b arm 2)** | `145729` | 945 | 0.0599 | 1.6901 | 5.42 → 5.46 | **0.876** | 0.793 |
+| 0.709 | **law C, sensed `B_max`, `halt` (P-4 agnews controller)** | `125619` | 975 | 0.0678 | 0.4911 | 1.63 → 1.63 | **0.857** | 0.854 |
+| 0.506 | **`rm`/.25 `setpoint` `log_only` (P-4 agnews control)** | `130614` | 801 | 0.0599 | 0.0992 | 1.10 → 1.10 | 0.835 | 0.834 |
+| 0.404 | law C, sensed `B_max`, `halt` (P-4 **yahoo**, `p`=454,954) | `125713` | 580 | 0.0678 | 0.2838 | 1.33 → 1.33 | 0.299 | 0.268 |
+| 0.464 | `rm`/.25 `setpoint` (P-4 **yahoo** control, killed at 34,441/40,000) | `125753` | 719 | 0.0599 | 0.0938 | 1.10 → 1.10 | 0.302 | 0.296 |
 
 *The 4 surviving α-sweep arms, replayed as an **out-of-sample test of both laws**: `225718` Λ=1.021 peak
 0.828 (pred 0.865), `012201` Λ=0.685 peak 0.865 (pred 0.854), `001241` Λ=0.634 peak 0.848 (pred 0.851),
@@ -402,6 +409,120 @@ wash (`P`=30 does land more commits and a higher peak in the same vclock window)
 pre-registered kill test, raising `P` is not a free throughput lever. `bytes ÷3` is still real if bandwidth
 ever binds, but **do not build 3.4's adaptive `P` on the premise that `τ(P)` is nearly flat — it isn't.**
 
+### P4.7 P-4 — the law beats the control; the implementation had four defects
+
+**First controller arms, run 2026-08-16, all four scored 2026-08-16. The direction is confirmed and the
+arms are VOID as an acceptance test** — every controller arm ended on `max_runtime_s`, which
+[P5.2](#p52-execution-plan--to-a-zero-input-run) already defines as void. Four defects, all now fixed
+(regression checks in `test_landing_law.py` / `test_dataset_launcher.py`).
+
+**What the law did, defects and all.** Law C beat the `rm`/`setpoint` control at the same 40,000 vclock on
+both datasets, and beat it hardest on time-to-accuracy — the comparison the controller exists to win:
+
+| | agnews law C `125619` | agnews control `130614` | yahoo law C `125713` | yahoo control `125753` |
+|---|---|---|---|---|
+| peak / final | **0.857** / 0.854 | 0.835 / 0.834 | 0.299 / 0.268 | 0.302 / 0.296 |
+| `Λ` · `B` | 0.709 · 0.491 | 0.506 · 0.099 | 0.404 · 0.284 | 0.464 · 0.094 |
+| commits per 40k vclock | **975** | 801 | 580 | 719 @ 34,441 |
+| reached 0.83 / 0.28 at | **62%** of budget | 92% | **23%** of budget | 76% |
+| trips/commit, by quintile | 10.7 11.1 **2.9 2.1** 8.4 | 8.0 flat | 8.3 16.1 12.0 **3.5** 20.0 | 8.0 flat |
+
+Both law-C arms did that while **23% (agnews) / 48% (yahoo) of their commits took a step of length zero**
+— so the margin is a floor on the effect, not a ceiling.
+
+**(1) `halt` did not halt.** `[BudgetStop] reason=budget action=halt commit=150` fired on both law-C arms;
+both ran on to the vclock ceiling. `_check_budget_stop` sets `_work_done`, and the data-bin lap in
+`fwdllm_aggregator.py` *assigned* it `self._round > rounds` — `7 > 50` is False, so the lap silently
+un-set the stop on the very next event (the stop fired at `data_id` 149 of 150). `_stop_fired` stays
+latched, which is why it is logged once and never again while `stop_reason: budget` is stamped on all 826
+following records. **Fixed: the lap ORs, never assigns.**
+
+**(2) `B_max` was sensed in the wrong origin.** The probe inflates the *current* `θ`, so `ln Φ_knee` is the
+budget remaining **from here**; `_B` accumulates **from `θ_0`**. Law C subtracted one from the other, so
+the first re-sense returned `B_max` < `B` on every arm and `B_rem` clamped to 0:
+
+| commit | sensed `B_max` | `B` | `B_rem` | `ρ*` |
+|---|---|---|---|---|
+| 149 | 0.248 | 0.273 | **0** | **0** |
+| 299 | 0.298 | 0.273 | 0.025 | 0.013 |
+| 449 | 0.586 | 0.283 | 0.303 | 0.045 |
+| 899 | 0.281 | 0.492 | **0** | **0** |
+
+**Fixed: `B_max = B + ln Φ_knee`**, which is monotone above the spend by construction, so a re-sense can
+never zero `ρ*` on its own. Under it, commit 149 would have set `ρ*` = √(2·0.248/300) = **0.041**.
+
+**(3) `ρ*` = 0 cost the *most* round trips, not the fewest.** `_n_required` folded `ρ`=0 into its "no `ρ`
+yet" None branch, so `_gate_satisfied` was False forever and the commit landed only through the
+`max_iterations_per_data_id` bypass: **20 round trips to move `‖θ_tr‖` not at all** (frozen at 17.847 for
+`125713`'s last 131 commits). **Fixed: `ρ`=0 ⇒ `n_req`=0 ⇒ commit in one trip.** Note the mid-run
+quintiles at **2.1 / 2.9 / 3.5** trips/commit — under T5's ≥3 gate, which the preflight passed because it
+priced law C off the `ln 2` prior rather than the sensed value.
+
+**(4) `total_data_bins` was hardcoded at agnews' 150** (`fwdllm_aggregator.py`), and the trainer indexes
+its own batch list with `data_id`. agnews' shard is exactly 150 batches, so agnews was right by
+coincidence; **yahoo trained on 1,200 of each client's 14,000 samples — 8.6% of the dataset, the same
+1,200 every lap**, and yelp-p would have used 23%. Nothing raises: the list is merely longer than the
+index. **Fixed: derived from `dataset_registry.total_data_bins` (150 / 1,750 / 650 at `C`=100, batch 8 —
+the numbers buildplan §1 already states); agnews byte-identical.**
+
+**Fixes verified on GPU, `225224`** (agnews, `--b-max 0.05 --t-res 20` to force the stop early, probe off,
+~13 min): `[DataBins] total_data_bins=150 source=registry` · `[BudgetStop] reason=budget action=halt
+commit=59` and the run **ended there** — 59 commits, `stop_reason` on **1** record against `125619`'s 826,
+`inform_end_of_training` reached instead of `max_runtime_s` · **0 zero-`ρ` commits** · 218 trips / 59
+commits = **3.69**. Defect 4's derivation is confirmed live; the trainer-side cross-check
+(`[DataBins] confirmed by trainer`) landed after this smoke launched and is compile-checked only.
+
+**Two standing caveats on the yahoo pair, neither a defect.** (a) Both yahoo arms ran
+`sim_charge_profiles/fluxtune.yaml`, profiled on agnews — 0.255 real-s/vclock-s on agnews against 0.658 on
+yahoo, so **yahoo-vs-agnews per-vclock comparisons are invalid** until `profile_sim_charges.py` runs for
+yahoo. Yahoo-vs-yahoo is fine.
+
+**(b) The eval is backgrounded, and it still serialises into the critical path.** `_eval_snapshot_model`
+blocks the main thread when the previous eval is still running, and it was — `eval still running at commit`
+fired on **359 of 359** evals on the yahoo control, 286/289 on the yahoo controller, 287/488 on the agnews
+controller, and **0/400** on the agnews control. Yahoo's 60,000 rows at seq 256 cost ~30 GPU-s on an idle
+A40 and **89.2 s measured under trainer contention**, against a ~91 s inter-eval gap at stride 2. **Batch
+size is not the lever** — measured 1.23× from batch 8 → 128, because the pass is compute-bound rather than
+launch-bound. Fewer rows is: `eval_max_samples` (new, default 0 = full set = byte-identical) takes a
+**fixed, fixed-seed shuffled** subsample, so the sampling error is a constant offset rather than per-eval
+noise and peak-vs-final stays as precise as the full set. Shuffled because `test_index_list` is per-client
+shards in client order — a head slice is one client's Dirichlet shard (B17). **10,000 for yahoo.**
+
+**Why yahoo sits at 0.30 — see [P4.8](#p48-yahoo-is-under-trained-not-broken).**
+
+### P4.8 Yahoo is under-trained, not broken
+
+B-1's backprop reference reaches **0.73** on yahoo (model §7.1, matching FwdLLM's own ~0.76); these arms
+reach **0.30**. Every collapse fingerprint says the gap is optimization budget, not a broken pipeline:
+
+| | agnews control | yahoo control | reads as |
+|---|---|---|---|
+| prediction entropy (final) | 1.342 vs `ln 4`=1.386 | 2.297 vs `ln 10`=**2.303** | yahoo's softmax is still ~uniform |
+| logit norm | 0.573 | 0.337 | the head has barely left its init |
+| MCC | 0.780 | **0.227** | but it is real signal, not chance |
+| accuracy trajectory | monotone to 0.834 | **monotone to 0.296, still rising when killed** | no turn, no collapse |
+| `top_class_share` | 0.279 (balanced 0.25) | 0.304 (balanced **0.10**) | early-training skew, not collapse |
+
+A *collapsed* model has low entropy and high `top_class_share`; yahoo has the opposite. **Λ is the
+quantitative version of the same statement:** T5 needs `Λ` ≥ 0.95 for yahoo and these arms banked
+**0.40–0.46** — under half. Defect (2) is most of that gap on the law-C arm (it spent `B`=0.284 of a
+`ln 2`=0.693 prior before `ρ*` was zeroed; law C run to its asymptote banks `Λ` = 2`B`/`s` ≈ 0.92).
+
+**Checked and cleared as explanations:** `p` reads 454,954 from `[ProbeDim]` (10-way head, correct);
+`max_seq_length`=256 and `num_labels`=10 are both plumbed on both sides; the run evaluates on the full
+60,000-row official test set, which is label-balanced to ±2%. **One caveat on the reference number
+itself:** `probe_inflation_damage.py` reads accuracy off `test_global[:2000]`, and `test_index_list` is
+per-client shards concatenated in client order — so B-1's 0.73 is measured on a mildly Dirichlet-skewed
+slice (top class 20.7% against a balanced 10%), not the balanced 60,000 the FL arms use. Not enough to
+explain 0.73 → 0.30, but the two numbers are not measured on the same distribution and the comparison
+should not be quoted as if they were.
+
+**The discriminating test has not been run** (buildplan §9): centralized AdamW on the **FL rig's own data
+path** — one client's `TextClassificationDataManager` loader, not the B-1 rig's test-global half —
+evaluated on the same 60,000. ~0.70 there clears the whole data path and makes the gap purely
+optimization; ~0.30 indicts the path. Everything above is consistent with the former and none of it is
+proof.
+
 ---
 
 ## P5 — The queue
@@ -437,22 +558,13 @@ the phase's rows are deleted once its result has landed in [P3](#p3--knob-ledger
 > inherits. **State stays here; specs stay there.** Its §1 holds the dataset substrate table (`p`, split,
 > shards, bins/round, sequence length per dataset) that phases 1–4 read.
 
-#### Phase 0 — unblock the instruments · no GPU · ~90 min
+#### Phase 0 — unblock the instruments · **all 10 done (2026-08-12/15)**
 
-*Three are latent bugs that only fire once the dataset changes.*
+Specs and gates: buildplan §2. Two have known gaps, both live: **0.7**'s projection prices law C off the
+`ln 2` prior, so an arm can pass the ≥3 trips/commit check at launch and breach it in flight
+([P4.7](#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects) defect 3); **0.10**'s
+grep never covered `lib/python/flame/`, which is where defect 4 lived.
 
-| # | task | sanity gate | state |
-|---|---|---|---|
-| **0.1** | Fix `replay_scoring.py --cos` block sizing — `BLOCK` = 50 commits with a `len(blk) < 5` guard yields **zero rows** at stride 25. Block by *probe fires* | reproduces P4.2: `112201` → 0.1485 ± 0.0200, `145729` → 0.1035 ± 0.0172 | **done (2026-08-12)** — see buildplan §2 |
-| **0.2** | Make `p` **dataset-derived**. `P_BY_RF` pins 450,340 = agnews' 4-label classifier; classifier = `768·num_labels + num_labels`, so **yahoo → 454,954**, **yelp-p → 448,802**. Read from `[ProbeDim]`, keep the table as fallback | agnews still 450,340; every P4 number unchanged | **done (2026-08-12)** — see buildplan §2 |
-| **0.3** | Generalise the class-skew preflight. `test_cos_probe.py:223` asserts `share < 0.5`, encoding "balanced = 0.25" — an agnews fact. **With 2 classes balanced *is* 0.50, so it refuses to launch yelp-p.** | passes balanced 2/4/10, **still fails** the single-class fixture | **done** — `max_dominant_share(K)` = `1/K + 0.25`, shared by the test and the aggregator's own warning |
-| **0.4** | Make `G_rule` **per-commit** in the scorer — D4 makes `P` adaptive, so `Λ = Σρ_t·√(G_rule_t·N_t/p)` and the time law's pooling variable becomes `Σ G_rule_t·N_t` | constant-`P` arms score identically to today | **done (2026-08-12)** — see buildplan §2 |
-| **0.5** | Commit the Φ-stop replay as `expt_scripts/replay_phi_stop.py` — C-1's acceptance test | reproduces P4.1: 0.0054 at `Φ`=2.7 vs 0.1408 for no stop | **done (2026-08-12)** — see buildplan §2 (no-stop worst arm exact; two mean-only cells 20-35% high, traced to a deleted-from-disk α=0.1 arm, not re-derivable) |
-| **0.6** | **K-C, rung 1.** Replay commits/vclock-h and staleness on the three existing `K`/`C` arms against both models (`C/(n_req·τ)` vs `K/τ(K)`). Confounded by construction, so it **falsifies arithmetic, never decides** — it sizes K-1 | the `C`-model reproduces 101.6 / 146.4 commits/vclock-h to ≤15%, or K-1's prediction is rewritten before launch | **done (2026-08-12)** — see buildplan §2 (100.7/144.4, staleness/pastdated exact; `K`=10 leg not on disk) |
-| **0.7** | **The wall-clock budget preflight** ([P9.1](#p91-preflight)) — projected real wall vs `sim_wall_ceiling_s`, refuse on breach. **Has cost eight arms**; every phase-2 arm is exposed to it | refuses `002208`'s config (85 s/commit × 1,000 commits ≫ 14,400 s), passes a stride-25 arm | **done (2026-08-12)** — see buildplan §2 |
-| **0.8** | **`--dataset NAME` in `run_sequential.sh`**, threaded like `--partition-method`, writing the registry's 4 keys into **both** override blocks. Today the paths are hardcoded in 2 blocks of ~20 yamls | `--dry-run --dataset yahoo` shows yahoo paths + seq 256 in both roles; unset is byte-identical | **done (2026-08-12)** — see buildplan §1; sanity script `expt_scripts/test_dataset_launcher.py` (17/17 checks) |
-| **0.9** | **niid partitions for yahoo and yelp-p.** Neither had *any* niid group; yahoo's `uniform_client_1000` also draws test from inside the train range (31,689 overlapping) and samples train with replacement | 6 checks in `check_partitions.py` pass for α=1/100 at `C`=100 and 1000 | **done** — see buildplan §1 |
-| **0.10** | **The dataset-switch checklist** — sweep out every remaining agnews-shaped constant (`N_CLASSES = 4`, `450340`, `0.25`, seq 192, the 20 hardcoded yaml path pairs) | the grep in buildplan §2 returns only registry lookups and arm names | **done (2026-08-12)** — see buildplan §1. One real bug found+fixed: `diagnose_partition_binning.py`'s collapse detector compared to a hardcoded `0.25`, which would miss collapses on yahoo/yelp-p |
 
 #### Phase 1 — B-1 · **done (2026-08-13)** — see model §7.1/§5.5b
 
@@ -479,42 +591,50 @@ resolved a ship-checklist item without changing 3.x's design.
 > still died on `[SIM_WALL_CEILING]` despite this preflight: the preflight catches a *gross* breach, it
 > does not replace 3.3's runtime backstop for a schedule that spends its budget unevenly.
 
-#### Phase 3 — build the controller · multi-day
+#### Phase 3 — the controller · **built 2026-08-15, corrected 2026-08-16 by its first arms**
 
-Each component flag-gated, default-off, byte-identical until its A/B scores. **None needs new science** —
-the *methods* are settled (3.1's probe = model §5.5b, already coded and validated at B-1; 3.2 is arithmetic;
-3.3's stop threshold is replay-validated, P4.1). **What's actually unbuilt is the live wiring** — none of
-the three has ever run *inside* `FedSgdAggregator`'s commit loop — **plus a small number of open design
-decisions that should be answered before any code is written**, listed under 3.1/3.3 below. Design in
-model §5.5f.
+All five shipped components are live in `FedSgdAggregator`; the two that are not built are 3.5 and 3.4's
+mid-run `P` change. Decisions, constants and the open questions a re-run must answer: **buildplan §5**.
 
-**Session note, 2026-08-15 evening.** Scoped for implementation, then paused before writing any code:
-first mis-scoped 3.1 as blocked on an undesigned algorithm (corrected — see P9.3 and buildplan §5's 3.1
-section), then, correctly scoped, found two real open design decisions (3.1's re-sense/`T_res` question,
-3.3's edge case (e)). **Both resolved 2026-08-15 by argument plus T5's replay**, which also moved three
-constants and corrected G-2's death mechanism — see the T5 row above and buildplan §5. **Phase 3 is
-unblocked. Nothing in `aggregator/` has changed yet.**
+| # | component | state |
+|---|---|---|
+| **T5** | replay the landing law against the gate | **done (2026-08-15)** — `replay_landing_law.py`. Settled `T_res`=300, `f`=0.95, `ρ_max`; refuted `T_res`=500 and the `ρ*≤ρ*₀` clamp; confirmed `Λ`=2B/s; found `003648`'s real death mechanism ([P4.5](#p45-g-2--annealed-confirmed-but-real-wall-bound)) |
+| **3.3** | law-C anneal + `B ≥ f·B_max` stop, `phi_stop: off\|log_only\|halt` | **done (2026-08-15); `halt` fixed 2026-08-16** (P4.7 defect 1) and verified on GPU (`225224`) |
+| **3.1** | `B_max` re-sensed on a stride by injection probe on a copy of `θ_tr` | **done (2026-08-15); origin + combiner fixed 2026-08-16** (defect 2). `B_max = B + ln Φ_knee`, combined across fires by `b_max_policy=mean` |
+| **3.2** | `ρ*_t` from *remaining* budget, every commit | **done (2026-08-15)**; the `ρ`=0 gate stall fixed 2026-08-16 (defect 3) |
+| **3.5** | Prechelt GL/patience stop on smoothed held-out accuracy | **todo, not urgent.** Window, threshold and patience all unsized — size by replay before it ships. Buildplan §5 |
+| **3.4** | adaptive `K`/`C` and `P` | **K-1: `C` is the knob, not `K`** (P3). **P-1: compute-bound** (P3/[P4.6](#p46-p-1--p-under-mean-is-compute-bound-report-and-stop)). Only the mid-run-`P`-change engineering and a bandwidth-driven case remain live |
 
-| # | component | sensed from | replaces | state |
-|---|---|---|---|---|
-| **T5** | **Replay the landing law against the commit gate** — does law C compose, and at what `T_res`/`f`? | arms on disk, no GPU | guessing the controller constants | **done (2026-08-15)** — `expt_scripts/replay_landing_law.py`. Settled `T_res`=300, `f`=0.95, `ρ_max` cap; refuted `T_res`=500 and the `ρ*≤ρ*₀` clamp; confirmed `Λ`=2B/s (P3); found `003648`'s real death mechanism ([P4.5](#p45-g-2--annealed-confirmed-but-real-wall-bound)). Full result: buildplan §5 |
-| **3.3** | Budget-landing anneal (**law C**) + `B ≥ f·B_max` stop | `B` — exact, free | `rm` at a horizon-sized exponent | **done (2026-08-15)** — `rho_schedule=landing` + `phi_stop: off\|log_only\|halt` in `FedSgdAggregator`, law in `expts/landing_law.py`, budget accounting always on and emitted (`budget_b`/`phi`/`rho_star`/`n_req`/`stop_reason`). Gate: `expt_scripts/test_landing_law.py`, 8 checks, reproducing T5's pre-registered enactment to 4 d.p. **Not yet scored on an arm — that is Phase 4** |
-| **3.1** | Two-phase `B_max`: prior ln 2 → injection probe on a **copy** of `θ_tr`, ~6 evals, on a stride, **re-fired on that stride for the life of the run** | the model being trained | a profiled constant | **done (2026-08-15)** — `b_max_probe_every` (0 = off) in `FedSgdAggregator._resense_b_max`, knee arithmetic in `expts/bmax_probe.py`, reading the **same** fixed-seed reference batch as the cos probe (`_reference_batch`, skew guard included). Emits `[BmaxProbe]` per fire with the whole `Φ` curve, `B_max` old→new and elapsed. **Mandatory, not optional**: B-1 (2026-08-13) found `B_max` erratic across datasets. **The probe itself is not new** — model §5.5b, already coded as `probe_inflation_damage.py`, already used for the whole B-1 sweep; unbuilt = wiring it to re-fire on a stride from inside the live commit loop. **Re-sense moves `B_max` only; `T_res` is not run state.** Two guards the gate proves: the weights are restored **exactly** (max drift 0.0) on both the normal and the mid-probe-exception paths, and a head still at chance refuses to size `B_max` at all rather than pricing a budget off a degenerate curve. **Not yet fired on a real model** — the live `Φ` curve is what nodes 1/3 measure |
-| **3.2** | `ρ*_t` = `min(ρ_max, √(2·(B_max_t − B_t)/T_res))`, recomputed every commit from *remaining* budget | 3.1 + control resolution | P4's dose-response lookup | **done (2026-08-15)**, shipped with 3.3. `T_res`=**300** fixed (T5; 500 refuted), `ρ_max` = `s·√(max_iter·K·G_rule/p)` ≈ 0.0999. Reads `self._b_max`, which 3.1 will move — no further change needed there |
-| **3.5** | **Revised (2026-08-13): a Prechelt-style generalization-loss/patience criterion on smoothed held-out accuracy**, replacing the original raw `dAcc/dΛ` slope test | smoothed `test-accuracy` (`agg_eval`), running-best-referenced | a fixed `comm_round`, and the raw-slope design | todo — not yet implemented, not urgent. Full reasoning (why raw slope is fragile, why GL/patience is the standard fix, what's unsized) in buildplan §5 |
-| **3.4** | Adaptive `K`/`C` and `P` — needs a mid-run `P` change, which nothing supports today | `τ` measured; availability | `aggGoal`, `perturbation_count` fixed offline | **K-1 landed: `C` is the knob, not `K`** (P3). **P-1 landed: compute-bound** (P3/P4.6) — its `τ(P)` no longer motivates adaptive `P` as a throughput lever; only the mid-run-`P`-change engineering (still unbuilt) and a bandwidth-driven case remain live reasons to build this |
+**The three design decisions, all now settled.** (1) A re-sense moves `B_max` and nothing else — `T_res` is
+a chosen rate, not run state, so there is nothing to reset (**law C**). (2) The stop **halts**, via
+`_work_done`; the counterfactual P4.1 needs is preserved by `log_only`, not by declining to halt. (3) The
+`B_max` fires are noisy estimates of **one lifetime budget**, so they combine by **mean** — P4.1's fixed-`Φ`
+stop working across 10 arms with different schedules is the evidence, and `anchor` (latest-only) may never
+terminate. `ratchet` and `anchor` remain available for the after-the-fact A/B.
 
-**Both resolved 2026-08-15 — reasoning and evidence in buildplan §5, decisions here:**
-1. **3.1 re-sense:** **`B_max` moves; `T_res` does not.** `T_res` is a chosen controller constant, not run
-   state, so it never counts down and there is nothing to reset (**law C**). Resetting it per re-sense is a
-   receding horizon that never lands; counting it down makes `T` an operator input again, which §4.6a's own
-   title forbids. Price, measured: 3.1× the commits of a fixed-horizon law for the **same** `Λ`.
-2. **3.3 edge case (e):** **halt**, via `self._work_done = True` — the path `max_runtime_s` already uses.
-   Freeze-and-keep-evaluating is dominated, not a trade-off: a frozen `θ` has fixed accuracy, so further
-   evals measure eval noise at real GPU cost. The counterfactual that P4.1 needs is preserved by a
-   `phi_stop: log_only` state rather than by not halting.
 
-#### Phase 4 — the two zero-input runs · *state: todo, **unblocked** (Phase 3's 3.1/3.2/3.3 landed 2026-08-15)*
+#### Phase 4 — the two zero-input runs · *state: **run 2026-08-16, VOID as an acceptance test; re-run after the four fixes** — full readout [P4.7](#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects)*
+
+> **Where this stands (2026-08-16).** Four arms ran. Law C beat the control on both datasets and by 1.5–3×
+> on time-to-accuracy, but **both controller arms ended on `max_runtime_s` rather than
+> `[BudgetStop] reason=budget`, which the rule below already defines as void** — and they did so because
+> `halt` could not halt (P4.7 defect 1). The pre-registered acceptance criterion — sensed `ρ*` diverging
+> by dataset at the commit-150 re-sense (agnews 0.0764 vs yahoo 0.0573) — is **not met**: both went to
+> **0**, from defect 2. Worth registering before the re-run: with the origin fixed, the two knees at
+> commit 150 were 0.248 (agnews) and 0.237 (yahoo) ⇒ `ρ*` 0.0407 vs 0.0397, so **the divergence may not
+> reproduce even on a correct run** — the live knee tracks how far the model sits above chance, and yahoo's
+> base was 0.311 against agnews' 0.809. If it does not, that is a finding about the sensor, not a failure
+> of the law, and it moves T5's first open row.
+>
+> **Re-run gate — all four must hold before the next launch is scored:** (a) `[DataBins]` reads 1,750 on
+> yahoo and 100% coverage; (b) no commit reports `rho_star` = 0; (c) the controller arm ends on
+> `[BudgetStop]`; (d) trips/commit ≥ 3 at every quintile. And **yahoo needs `profile_sim_charges.py`, a
+> bigger vclock, and `--eval-max-samples 10000`** — its control was still climbing monotonically when
+> killed at 86% of budget, and its eval blocked the commit loop on 359 of 359 fires.
+>
+> **Ordered task list for the next session: [buildplan §-1](fl_fwd_ft_buildplan.md).** Task A (the
+> centralized-backprop control on the FL data path) gates C and D — both yahoo arms are worthless if it
+> comes back at 0.30.
 
 **Launch:** `expt_scripts/nodes/run_node_p4.sh <agnews|yahoo> <controller|control>`, four invocations,
 one per machine, all four at the same 40,000-vclock target with the **cos audit off** (Phase 4 scores `B`,
@@ -923,6 +1043,11 @@ Each costs a wasted run.
 - **A wall cap chosen without reference to the question** — six arms at 66–74 commits answered every matched-commit question and no peak question.
 - **An emit-only flag never re-costed after being made correct** — B17 multiplied the audit's per-commit wall by 16×, and the vclock looks healthy right up to the moment the runaway safety fires.
 - **A sinking condition without its precondition** — G-1's fired on arms at `Φ` = 1.03 that never learned.
+- **Subtracting two accumulated quantities without checking they share an origin** — `B_max` was measured from `θ_t` and `B` from `θ_0`; the expression type-checks, runs, and is meaningless (P4.7 defect 2). Write the origin next to the formula.
+- **Adding a writer to shared run state without grepping the existing ones** — one of `_work_done`'s two writers *assigned* where it should have OR'd, and silently un-set a stop that had already fired (P4.7 defect 1).
+- **Treating a special value as a missing value** — `ρ` = 0 meant "no `ρ` yet" to the gate, so the cheapest possible commit became the most expensive one, 20 round trips for a zero-length step (P4.7 defect 3).
+- **Trusting a dataset sweep that greps for the dataset's name** — `total_data_bins` = 150 is agnews' `1,200/8`, correct by coincidence and invisible to `grep agnews`, and it fed yahoo 8.6% of its data for a whole node (P4.7 defect 4). Grep the *derived* constants, and grep `lib/python/flame/` too.
+- **Reading a preflight as a guarantee rather than a prior** — trips/commit passed the launch check off the `ln 2` prior and then breached the same ≥3 gate mid-run once `B_max` was sensed. A gate that matters is a run-time metric, not only a launch-time one.
 - **A sinking condition without a smoothing rule** — raw crossings put both G-1b turns at `Φ` ≈ 2.95; smoothed, 3.43 / 3.79.
 - **Testing a setpoint through a schedule that spends it** — a node testing a boundary must hold the run at it.
 - **Extrapolating a progress rate as an accuracy rate** — extrapolate `A` only alongside `Φ`.

@@ -34,6 +34,8 @@ def make(schedule="landing", b_max=B_PRIOR, p=P_AGNEWS, t_res=T_RES,
     a._commit_count = 0
     a._B = 0.0
     a._b_max = b_max
+    a._b_max_policy = "mean"
+    a._b_max_senses = []
     a._t_res = t_res
     a._budget_stop_frac = 0.95
     a._phi_stop = phi_stop
@@ -285,5 +287,102 @@ _post = [p.detach().clone() for p in _boom.parameters() if p.requires_grad]
 assert max(float((x - y).abs().max()) for x, y in zip(_pre, _post)) == 0.0
 assert a2._b_max == B_PRIOR, a2._b_max
 print("    mid-probe exception : swallowed, weights restored, B_max unchanged")
+
+# ---- (i) the re-sense ANCHORS: B_max = B_spent + ln Phi_knee -----------------
+# The probe inflates the CURRENT theta, so its knee is the budget remaining from
+# here. Reading it as a total made B_max < B on the first fire of every
+# 2026-08-16 arm, pinning rho* at 0 (125619 23% of commits, 125713 48%).
+_CURVE = [0.86, 0.84, 0.80, 0.62, 0.35, 0.25]      # agnews-shaped, knee 3.0-3.5
+a3 = make(b_max=B_PRIOR)
+a3.trainer = type("T", (), {"model": _Net()})()
+a3.test_global = type("G", (), {"dataset": _DS()})()
+a3.num_labels, a3._cos_probe_batch, a3._b_max_probe_n = _NL, None, _N
+a3._b_max_phis = PHIS
+a3._B = 0.30                                        # already spent, mid-run
+_scripted = iter([0.88] + _CURVE)
+a3._probe_accuracy = lambda *_a, **_k: next(_scripted)
+a3._resense_b_max()
+_want = 0.30 + math.log(knee(PHIS, _CURVE, 0.88, _NL))
+assert abs(a3._b_max - _want) < 1e-12, (a3._b_max, _want)
+assert a3._b_max > a3._B, "an anchored B_max can never land below the spend"
+assert a3._rho_star_now() > 0, "and so can never zero rho* on its own"
+print(f"\n  re-sense anchoring   : B={a3._B:.2f} + ln(Phi_knee) -> "
+      f"B_max={a3._b_max:.4f}, rho*={a3._rho_star_now():.4f} (> 0)")
+
+
+def _sense(a, curve, base=0.88):
+    """Fire the probe with a scripted accuracy curve."""
+    it = iter([base] + list(curve))
+    a._probe_accuracy = lambda *_x, **_k: next(it)
+    a._resense_b_max()
+
+
+def _armed(policy):
+    a = make(b_max=B_PRIOR)
+    a.trainer = type("T", (), {"model": _Net()})()
+    a.test_global = type("G", (), {"dataset": _DS()})()
+    a.num_labels, a._cos_probe_batch, a._b_max_probe_n = _NL, None, _N
+    a._b_max_phis, a._b_max_policy = PHIS, policy
+    return a
+
+
+# Combining senses. The FIRST replaces the ln 2 prior under every policy (D1 is
+# a prior, not a measurement); the policies differ only from the second on.
+# `mean` is the default: repeated senses are noisy estimates of ONE lifetime
+# budget (P4.1's fixed-Phi stop over 10 arms is the evidence), so the estimator
+# for a constant is the right combiner -- and unlike `anchor` it terminates,
+# because B_max settles while law C drives B up to it.
+_lo, _hi = [0.60, 0.45, 0.30, 0.20, 0.15, 0.12], _CURVE   # small then large knee
+_seen = {}
+for _pol in ("mean", "ratchet", "anchor"):
+    a6 = _armed(_pol)
+    a6._B = 0.30
+    _sense(a6, _lo)
+    _first = a6._b_max
+    a6._B = 0.35
+    _sense(a6, _hi)                      # reports MORE headroom than the first
+    _seen[_pol] = (_first, a6._b_max)
+    print(f"  b_max_policy={_pol:<8}: first {_first:.4f} -> second {a6._b_max:.4f}")
+# all three agree on the first sense, and order strictly on the second
+_firsts = {v[0] for v in _seen.values()}
+assert len(_firsts) == 1, _seen
+assert _seen["ratchet"][1] == _seen["ratchet"][0], "ratchet holds the min"
+assert _seen["anchor"][1] > _seen["mean"][1] > _seen["ratchet"][1], _seen
+assert abs(_seen["mean"][1]
+           - (_seen["ratchet"][1] + _seen["anchor"][1]) / 2) < 1e-12, _seen
+print("  policies order        : ratchet <= mean <= anchor, first sense identical")
+
+# ---- (j) rho* == 0 requires a pool of ZERO, not an absent one ---------------
+# Folding 0 into the None branch left the gate unsatisfiable, so the commit
+# landed only through the max_iterations_per_data_id bypass: 20 round trips for
+# a step of length 0 (125713's last quintile, 20.00 trips/commit).
+a4 = make(b_max=B_PRIOR)
+a4._b_max, a4._B = 0.20, 0.50                       # re-sensed below the spend
+assert a4._rho_star_now() == 0.0
+assert a4._n_required() == 0.0, a4._n_required()
+a4._n_eff_scalar, a4.grad_for_var_check_list = None, []
+assert a4._gate_satisfied() is True, "a zero-length step must not pool to max_iter"
+a5 = make(schedule="const")                          # no rho yet -> still None
+a5._server_step_rule, a5._last_rho = "raw_sgd", None
+assert a5._n_required() is None and a5._gate_satisfied() is False
+print("  rho*=0 gate          : n_req=0 commits in 1 trip; 'no rho yet' still pools")
+
+# ---- (k) the budget stop must survive a rounds lap --------------------------
+# `halt` sets _work_done, and the data-bin lap in fwdllm_aggregator used to
+# ASSIGN it `self._round > rounds` -- False for every arm, so it silently
+# un-set the stop. Both 2026-08-16 landing arms logged [BudgetStop] at commit
+# 150 and ran to the vclock ceiling anyway.
+# (read the file, not inspect.getsource: timer_decorator has no functools.wraps,
+# so getsource returns the wrapper).
+from flame.mode.horizontal.syncfl import fwdllm_aggregator as _fa  # noqa: E402
+
+_src = open(_fa.__file__).read()
+assert "self._work_done = self._round >" not in _src, (
+    "the rounds lap must OR into _work_done, never assign over it")
+for _line in _src.splitlines():
+    _s = _line.strip()
+    if _s.startswith("self._work_done ="):
+        assert _s == "self._work_done = True", f"un-settable assignment: {_s}"
+print("  rounds lap           : ORs into _work_done, cannot un-set a fired stop")
 
 print("\nALL LANDING-LAW CHECKS PASS")
