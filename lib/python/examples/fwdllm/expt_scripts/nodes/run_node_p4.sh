@@ -159,7 +159,14 @@ FORCE=()
 [ -f "$FW/sim_charge_profiles/fluxtune_$DATASET.yaml" ] || \
   [ "$DATASET" = "agnews" ] || FORCE=(--force)
 
-COMMON=(--only fluxtune --mode sim --yes --clean "${FORCE[@]}"
+# --allow-stale-profile, NOT --force: the staleness check globs the LOCAL
+# experiments dir, so the same profile passes on a node with no old reals and
+# fails on one that has them -- kaylee blocked where jayne did not. Keeping
+# fluxtune.yaml is also what makes these arms comparable to every historical
+# agnews arm and to P4's calibration; re-profiling now would re-price them all.
+# --force would additionally disable the dataset-match check, which is
+# config-derived and is the one that actually protects the vclock.
+COMMON=(--only fluxtune --mode sim --yes --clean --allow-stale-profile "${FORCE[@]}"
         --dataset "$DATASET" "${EVAL[@]}"
         --server-update-audit --no-cos-ground-truth-audit
         --num-trainers 100 --num-gpus 8 --agg-goal 10 --c 30

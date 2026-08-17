@@ -734,6 +734,20 @@ deliberately too small — so gate 4 reads WARN and only the long run settles it
 `--force`, since its profile is in `smoke/`; the force-drop path was verified separately against a
 tagged stub (`--force` count 0, profile row `ok`, zero non-ok checks).
 
+### §11.1a-ter The profile-staleness check is node-dependent — `--allow-stale-profile`
+
+The `sim charge profile is CURRENT` preflight globs the **local** `experiments/run_*_<baseline>_n*_real`
+directory to find reals newer than the profile's own source runs. That directory is **machine-local
+disk**, so the same profile, config and code pass on a node with no old reals and **block** on one that
+has them — `kaylee` blocked on two 2026-08-04 agnews reals where `jayne` (which has none) passed.
+Profile validity is a property of the profile and the config, not of which box holds which run dirs.
+
+**`run_node_p4.sh` passes `--allow-stale-profile`, which downgrades that one check to a warn and leaves
+the other nine armed.** Not `--force`, which would also disable `sim charge profile matches dataset` —
+the config-derived check that actually protects the vclock. And **not** a re-profile: `fluxtune.yaml` is
+what every historical agnews arm and P4's own calibration were priced against, so re-profiling now would
+re-price the comparison these arms exist to make.
+
 ### §11.1a-bis The rate constant, and why the smoke sizes the real run
 
 **Measured, 2026-08-16 arms** (first commit to last, so the pre-commit-1 tokenization stall is excluded

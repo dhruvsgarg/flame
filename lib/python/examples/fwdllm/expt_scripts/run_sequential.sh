@@ -118,6 +118,7 @@ DATASET=""             # --dataset NAME: registry-derived data_file_path/partiti
 PARTITION_METHOD=""
 VAR_THRESHOLD=""       # variance-pass gate threshold; varies with data heterogeneity -> review every run
 SERVER_UPDATE_AUDIT="" # I-1 audit: per-commit ||delta||/||w||. OFF by default -- never on a replicate leg
+ALLOW_STALE_PROFILE="" # --allow-stale-profile: downgrade ONLY the profile-staleness check to a warn
 POOL_SPLIT_HALF_AUDIT="" # L1 audit: per-commit pool split-half cosine. OFF -- adds a pass over (params x uploads)
 LEARNING_RATE=""       # server step size (aggregator hyperparameters); empty => trainer_base.yaml (0.01)
 PERTURBATION_COUNT=""  # P: probes per trainer per iteration (trainer hyperparameters); empty => code default 10
@@ -189,6 +190,7 @@ usage() {
   echo "          [--b-max F] [--t-res F] [--budget-stop-frac F] [--phi-stop off|log_only|halt] [--phi-stop-threshold F]" >&2
   echo "          [--b-max-probe-every N] [--b-max-probe-n N] [--b-max-probe-phis L]" >&2
   echo "          [--b-max-policy mean|ratchet|anchor] [--eval-max-samples N]" >&2
+  echo "          [--allow-stale-profile]  warn (not error) when local reals postdate the sim profile" >&2
   echo "          [--trainable-scope adapters_head|adapters_only] [--commit-gate var|n_target] [--gate-safety-s F]" >&2
   echo "          [--gate-rho-ref annealed|setpoint]  (setpoint stops S-C's pool vanishing with S-B's anneal)" >&2
   echo "          [--cos-ground-truth-audit | --no-cos-ground-truth-audit] [--cos-probe-batch-size N] [--cos-probe-every K]  (B1: real cos(G,g), aggregator-side; unset inherits the catalog)" >&2
@@ -255,6 +257,7 @@ while [[ $# -gt 0 ]]; do
                             GATE_RHO_REF="$2"; shift 2 ;;
     --cos-ground-truth-audit) COS_GROUND_TRUTH_AUDIT=1; shift ;;
     --no-cos-ground-truth-audit) COS_GROUND_TRUTH_AUDIT=0; shift ;;
+    --allow-stale-profile)  ALLOW_STALE_PROFILE=1; shift ;;
     --cos-probe-batch-size) COS_PROBE_BATCH_SIZE="$2"; shift 2 ;;
     --cos-probe-every)      COS_PROBE_EVERY="$2"; shift 2 ;;
     --server-weight-decay) SERVER_WEIGHT_DECAY="$2"; shift 2 ;;
@@ -440,6 +443,7 @@ SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" MIN_I
 DATASET="$DATASET" PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
 SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" POOL_SPLIT_HALF_AUDIT="$POOL_SPLIT_HALF_AUDIT" \
+ALLOW_STALE_PROFILE="$ALLOW_STALE_PROFILE" \
 LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
   PROBE_COMBINE="$PROBE_COMBINE" SERVER_STEP_RULE="$SERVER_STEP_RULE" \
   RHO_STAR="$RHO_STAR" RHO_SCHEDULE="$RHO_SCHEDULE" RHO_EXP="$RHO_EXP" \
@@ -1326,11 +1330,18 @@ for rk in (r[0] for r in runs):
     _newer = sorted(os.path.basename(d) for d in _reals
                     if leg_jvp_eval_mode(d) == _want)
     if _newer and _newest_src:
-        checks.append({"name": f"sim charge profile is CURRENT ({rk})", "level": "error",
+        # NODE-DEPENDENT BY CONSTRUCTION: this globs the LOCAL experiments dir,
+        # which is machine-local disk, so the same profile + config can pass on one
+        # node and fail on another purely from which old run dirs that box happens
+        # to hold. --allow-stale-profile is the scoped acknowledgement; --force
+        # would also disable the dataset-match check, which is config-derived and
+        # is the one that actually protects the vclock.
+        _stale_lvl = "warn" if env("ALLOW_STALE_PROFILE") else "error"
+        checks.append({"name": f"sim charge profile is CURRENT ({rk})", "level": _stale_lvl,
                        "detail": f"{len(_newer)} real leg(s) newer than the profile "
                                  f"(newest source {_newest_src}): {', '.join(_newer[-2:])}. "
-                                 f"Re-run profile_sim_charges.py, or --force if the newer "
-                                 f"reals are a different config on purpose."})
+                                 f"Re-run profile_sim_charges.py, or --allow-stale-profile to "
+                                 f"keep the pricing every historical arm of this baseline used."})
     elif _newest_src:
         checks.append({"name": f"sim charge profile is CURRENT ({rk})", "level": "ok",
                        "detail": f"sourced from this baseline's newest real ({_newest_src})"})
