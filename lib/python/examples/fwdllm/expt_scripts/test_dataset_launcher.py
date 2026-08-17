@@ -17,7 +17,9 @@ edge case:
                                       (edge case a: don't silently read the wrong file)
   6. --dataset yahoo, --mode sim, no --force
                                    -> "sim charge profile matches dataset" is
-                                      level=error (edge case d: profile is agnews-only)
+                                      level=error (edge case d: the resolved profile
+                                      was profiled on a different dataset)
+  6b. cold vs warm feature cache -> "feature cache warm" preflight fires (§10 F3)
 
 Needs an active conda env with the fluxtune deps (same requirement as
 run_sequential.sh itself) -- set FLAME_CONDA_ENV if none is active.
@@ -85,6 +87,12 @@ def yaml_text(logdir, pattern):
 _cleanup_dirs = []
 
 
+def cache_root():
+    sys.path.insert(0, os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", "..")))
+    from examples.fwdllm.expts.dataset_registry import cache_root as _cr
+    return _cr()
+
+
 def main():
     if not os.environ.get("FLAME_CONDA_ENV") and not os.environ.get("CONDA_DEFAULT_ENV"):
         print("ERROR: no conda env active and FLAME_CONDA_ENV unset (same requirement as "
@@ -104,6 +112,11 @@ def main():
     check(bool(txt) and "max_seq_length" not in txt,
           "unset --dataset does not inject max_seq_length (inherits the 192 code default)")
     check(bool(txt) and "name: agnews" in txt, "unset --dataset keeps trainer.dataset.name: agnews")
+    # §10 F1: cache_dir joins the registry's override block, so unset must not
+    # inject it either -- the relative "cache_dir/" default is what byte-identical
+    # means here, cwd-dependent and all.
+    check(bool(txt) and "cache_dir" not in txt,
+          "unset --dataset does not inject cache_dir (keeps the relative default)")
 
     # ---- 2/3. --dataset yahoo / yelp-p: both override blocks patched ----
     for ds, seq in (("yahoo", 256), ("yelp-p", 256)):
@@ -120,6 +133,11 @@ def main():
             check(n_part == 2, f"--dataset {ds}: partition_file_path in both override blocks (found {n_part})")
             check(n_seq == 2, f"--dataset {ds}: max_seq_length={seq} in both override blocks (found {n_seq})")
             check(f"name: {ds}" in txt, f"--dataset {ds}: trainer.dataset.name set")
+            n_cache = txt.count(f"cache_dir: {cache_root()}")
+            check(n_cache == 2,
+                  f"--dataset {ds}: absolute cache_dir in both override blocks "
+                  f"(found {n_cache}) -- §10 F1, so the launch directory stops "
+                  f"deciding which cache a process gets")
         spec = load_spec(logdir) if logdir else None
         check(spec is not None and check_level(spec, "partition group exists") == "ok",
               f"--dataset {ds}: partition group verified against {ds}'s own partition h5")
@@ -152,6 +170,22 @@ def main():
     check(rc == 2, f"non-agnews sim dry-run without --force is BLOCKED (got rc={rc})")
     check(spec is not None and check_level(spec, "sim charge profile matches dataset") == "error",
           "sim charge profile / dataset mismatch is flagged, not silently reused from agnews")
+
+    # ---- 6b. the cold-cache preflight (§10 F3) reads the resolved key ----------
+    # Cold is a WARN, not an error: the run tokenizes its way out. But it does so
+    # inside its OWN wall budget (32 of 234931's 44 minutes), which nothing else
+    # at launch time can see.
+    print("case: feature cache warm/cold preflight")
+    for ds, want_level in (("yahoo", "ok"), ("yelp-p", "warn")):
+        rc, out, logdir = run_launcher(["--dry-run", "--only", "fluxtune",
+                                        "--dataset", ds, "--force"])
+        _cleanup_dirs.append(logdir)
+        spec = load_spec(logdir) if logdir else None
+        lvl = check_level(spec, "feature cache warm") if spec else None
+        check(lvl is not None, f"--dataset {ds}: the cache preflight ran")
+        if lvl is not None and lvl != want_level:
+            print(f"  [note] {ds} cache preflight is '{lvl}', expected "
+                  f"'{want_level}' -- run pretokenize_dataset.py --dataset {ds}")
 
     # ---- 7. data bins are the dataset's own, not agnews' hardcoded 150 -------
     # The aggregator's data_id range IS the trainer's batch index, so a value

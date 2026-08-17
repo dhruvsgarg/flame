@@ -52,6 +52,23 @@ from datetime import date
 import yaml
 
 
+# Top-level key holding provenance rather than charges. Readers skip it; it is
+# underscored so it can never collide with a telemetry label.
+_META = "_meta"
+
+
+def _source_datasets(run_dirs) -> set:
+    """What each source run was actually trained on, off its own config."""
+    out = set()
+    for d in run_dirs:
+        try:
+            with open(os.path.join(d, "aggregator_config.json")) as fh:
+                out.add(json.load(fh)["hyperparameters"].get("dataset") or "unknown")
+        except (OSError, ValueError, KeyError):
+            out.add("unknown")
+    return out
+
+
 def _load_real_spans(run_dir: str) -> dict:
     """{(label, payload_kind or '_default'): [span_s, ...]} from one real run.
     Excludes `redispatch_turnaround` -- see `_load_real_redispatch_marginal`."""
@@ -216,9 +233,16 @@ def main():
         keep = set(pooled) | contaminated      # a kept-prior entry is still observed
         registry = {
             label: {pk: e for pk, e in entries.items() if (label, pk) in keep}
-            for label, entries in registry.items()
+            for label, entries in registry.items() if label != _META
         }
         registry = {label: e for label, e in registry.items() if e}
+
+    # Which dataset these charges price. Per-pass cost scales with max_seq_length,
+    # so charging a yahoo sim leg against agnews numbers mis-prices its vclock --
+    # run_sequential.sh's preflight reads this tag to refuse exactly that, and an
+    # untagged (pre-2026-08-17) profile is treated as agnews, which every one is.
+    registry[_META] = {"datasets": sorted(_source_datasets(args.real_runs)),
+                       "profiled_at": today}
 
     with open(args.out, "w") as f:
         f.write(

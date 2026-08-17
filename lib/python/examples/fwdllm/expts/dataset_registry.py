@@ -123,6 +123,44 @@ def root() -> str:
     return os.environ.get("FWDLLM_DATA_ROOT") or _load()["root"]
 
 
+def cache_root() -> str:
+    """Tokenized features. Absolute + shared: `model_args.cache_dir`'s own default
+    is relative, so the launch directory used to pick the cache (§10)."""
+    return os.environ.get("FWDLLM_CACHE_ROOT") or _load()["cache_root"]
+
+
+def cache_file(name: str, client_id: int, partition_method: str = None,
+               model_type: str = "distilbert",
+               model_name: str = "distilbert-base-uncased",
+               model_class: str = "ClassificationModel") -> str:
+    """The path `_load_data_loader_from_cache` builds (`base_data_manager.py:583`);
+    `client_id=-1` is the server's global test set. The key is everything that
+    changes the tensors, so a seq-length or partition switch MISSES rather than
+    silently reusing another group's shard."""
+    ds = get(name)
+    return os.path.join(cache_root(), "_".join([
+        model_type, model_name.split("/")[-1], "cached", str(ds.max_seq_length),
+        model_class, ds.name, partition_method or ds.partition_method,
+        str(client_id),
+    ]))
+
+
+def sim_charge_profile(current: str, name: str = None) -> str:
+    """The `<current>_<dataset>.yaml` sibling when it exists, else `current`.
+
+    Per-pass cost scales with `max_seq_length`, so an agnews-profiled file
+    mis-prices a yahoo vclock. Keyed off the yaml's own value, not the baseline
+    name, because `fluxtune_v1`/`v2` share `fluxtune.yaml`. The fallback is
+    agnews-profiled, which the launcher's preflight then refuses elsewhere."""
+    if not current or not name:
+        return current
+    stem, ext = os.path.splitext(current)
+    per_ds = f"{stem}_{name}{ext}"
+    repo = os.path.abspath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", ".."))
+    return per_ds if os.path.exists(os.path.join(repo, per_ds)) else current
+
+
 def names():
     return sorted(_load()["datasets"])
 
@@ -163,6 +201,8 @@ def hyperparameter_overrides(name: str) -> dict:
         "data_file_path": ds.data_file_path,
         "partition_file_path": ds.partition_file_path,
         "max_seq_length": ds.max_seq_length,
+        # §10. Dual-read: both mains build model_args from this block.
+        "cache_dir": cache_root(),
     }
 
 

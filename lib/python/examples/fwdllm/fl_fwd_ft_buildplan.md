@@ -19,8 +19,9 @@
 
 ## §-1 — Status board
 
-*Updated in place. State read **2026-08-17 morning**: nothing running, 8 GPUs idle, tree clean at
-`5441db34a`.*
+*Updated in place. State read **2026-08-17 afternoon**: nothing running, 8 GPUs idle. **Task F landed
+this session** (F1–F3 + the pre-tokenizer + task B's profile plumbing + the in-flight gate reader);
+the queue below is what is left.*
 
 **Where the program is.** Phases 0–2 landed. **The Phase-3 controller is built and, as of 2026-08-16,
 correct** — its first four arms found four defects, all fixed and now verified live on both datasets
@@ -35,35 +36,63 @@ The law beat its control on both datasets, so the controller was never in questi
 |---|---|---|---|
 | registry row, partitions, `--dataset` | **done** | **done** | **done** |
 | `check_partitions.py`, exact bin coverage | **6/6, exact** | **6/6, exact** | **6/6, exact** |
-| tokenizer cache — **local** `/home/…/flame/cache_dir`, what FL runs use (§10) | α=0.1/α=1/uniform | **all 101 @ seq 256** | **none** |
-| tokenizer cache — shared `/coc/scratch`, what probes use (§10) | 0–29 @ seq 192 | 0–9 @ seq 256 | global only |
+| tokenizer cache — **one** shared `/coc/scratch/…/cache_dir`, runs *and* probes (§10 F1, landed) | **101/101 @ 192** | **101/101 @ 256** | **101/101 @ 256** |
 | has ever run the FL stack | many arms | 3 arms | **never launched** |
 | sim charge profile | `fluxtune.yaml` | **missing** (task B) | **missing** |
 | scored under the fixed controller | **no — task C** | **no — task D** | **no — task H** |
 | backprop ceiling (§9 rung 1) | **0.850** | **launched, result lost** (task A) | not run |
 
-### Ordered queue
+### Ordered queue — and the wave it runs in
 
-| # | task | cost | done when |
-|---|---|---|---|
-| **A** | **§9 rung 1 — `probe_backprop_ceiling.py --dataset yahoo`.** Launched 2026-08-16 ~00:05, tokenized all 10 shards by 00:49 — **stdout was never captured and the number is lost.** Re-run, `tee` to a file | 1 GPU; **minutes — clients 0–9 are warm** | a number. **≈0.70 ⇒ the data path is clean and yahoo is purely under-trained; ≈0.30 ⇒ the path is at fault and D/H are moot** |
-| **F0** | **Diagnostic: does a warm cache remove the stall at all?** Short yahoo arm from the repo root against the 101 local caches, timed to first commit — §10. **Only runnable on `jayne`**, the one machine with a complete yahoo cache | ~10 min | a time-to-first-commit. **Minutes ⇒ F1–F3 are worth building; ~30 min again ⇒ the cache read path is broken and that is the bug to fix instead** |
-| **F** | **Absolute shared `cache_dir` + `pretokenize_dataset.py` + a cold-cache preflight** — §10 F1–F3, gated on F0. Removes ~30 min of startup from *every* run on *every* node, and is the onboarding step yelp-p (H) should be the first to use | 1 CPU box, hours, **once per dataset** | 100 client caches on `/coc/scratch` per dataset, and a `--num-trainers 100` arm reaching commit 1 in minutes |
-| **B** | **A real-mode yahoo run, then `profile_sim_charges.py --real-run <dir> --out ../sim_charge_profiles/fluxtune_yahoo.yaml --only-observed`.** It pools `vclock_charge` events with `time_mode == "real"`, so a sim run cannot feed it — the cost is the real run, not the script | 1 GPU real-mode run + minutes | `sim_charge_profiles/fluxtune_yahoo.yaml` exists and the sim-profile preflight passes **without** `--force` |
-| **C** | **Re-run P-4 agnews** (`run_node_p4.sh agnews controller` + `control`) | 2 × ~2.5 h | the four in-flight checks in §6 hold and the controller arm ends on `[BudgetStop]`. **This is the arm that decides whether agnews learns effectively in the new regime — nothing to date does** |
-| **D** | **Re-run P-4 yahoo**, `--eval-max-samples 10000`, vclock ≫ 40,000, after A/B/F | 2 × ~6 h | same four checks; then score accuracy vs `Λ` against §5's first open row |
-| **H** | **yelp-p bring-up** — first FL arm on the third dataset, after F. Registry/partitions are already done; what is untested is the *stack*, and a 2-class task is the opposite corner from yahoo's 10 | 1 real-mode run (profile) + 2 × ~4 h | same four checks; `A` and per-vclock-hour comparable against the other two |
-| **E** | 3.5's saturation stop — size window/threshold/patience by replay first | CPU | replay reproduces a sensible stop commit on the arms already on disk |
+| # | wave · slot | task | cost | done when |
+|---|---|---|---|---|
+| **A** | 1 · node 1 | **§9 rung 1, `probe_backprop_ceiling.py --dataset yahoo`.** The 2026-08-16 attempt tokenized all ten shards and **its stdout was never captured** — `tee` it | 1 GPU, **~10 min**, all 101 shards warm | a number. **≈0.70 ⇒ the data path is clean and yahoo is purely under-trained; ≈0.30 ⇒ the path is at fault and D/H are moot** |
+| **B** | 1 · nodes 1, 2 | **A real-mode run per dataset, then `profile_sim_charges.py`.** It pools `vclock_charge` events with `time_mode == "real"`, so a sim run cannot feed it — the cost is the real run, not the script. The launcher plumbing is done; the artifact is the whole remaining step and `--force` lifts by itself once it exists | 1 GPU real run + minutes, per dataset | `sim_charge_profiles/fluxtune_{yahoo,yelp-p}.yaml` exist and the sim-profile preflight passes **without** `--force` |
+| **C** | 1 · nodes 3, 4 | **Re-run P-4 agnews** | 2 × ~2.5 h | §6's four gates hold and the controller ends on `[BudgetStop]`. **This is the arm that decides whether agnews learns effectively in the new regime — nothing to date does** |
+| **D** | 2 · nodes 1, 2 | **Re-run P-4 yahoo** at 80,000 vclock | 2 × ~6 h | same four gates; then score accuracy vs `Λ` against §5's first open row |
+| **H** | 2 · nodes 3, 4 | **yelp-p bring-up** — first FL arm on the third dataset. Registry, partitions and cache are all done; what is untested is the *stack*, and 2 classes is the opposite corner from yahoo's 10 | 2 × ~4 h | same four gates; `A` and per-vclock-hour comparable against the other two |
+| **E** | any time, CPU | 3.5's saturation stop — **not built.** Size window/threshold/patience by replay against the arms on disk before it ships | CPU | replay reproduces a sensible stop commit |
+| **G** | **after** wave 2, CPU | **`read_instance_from_h5` returns rows in thread-completion order**, so a shard's row order — and therefore its bin composition — is not reproducible across tokenizations, and `guid` names the wrong row (§10). No ledger number is affected. It waits because it re-orders every future shard against the caches waves 1–2 run on | CPU, minutes | two tokenizations of one client agree byte-for-byte, and `guid` round-trips |
+| **F** | — | **done 2026-08-17** — shared absolute `cache_dir`, `pretokenize_dataset.py`, cold-cache preflight (§10) | — | 101/101 shards per dataset on `/coc/scratch` |
 
-> **The exact command for every row above is [§11](#11--runbook--the-exact-invocation-for-every-queued-task).**
-> Read the task's own section for *why*; §11 is only the *how*.
+### How to run it, and what to expect
 
-**Do A before C/D/H if only one slot is free.** They are the expensive arms and all are worthless if A
-comes back at 0.30 — that would mean the yahoo *data path*, not the controller, needs fixing, and every
-non-agnews arm to date measured the wrong thing.
+**Step 1 — smoke all four nodes, ~15-25 min.** Nothing below has ever run live: `_node_lib.sh` now
+backgrounds the launcher under `set -m` (that changed how *every* arm launches), `watch_arm.py` has only
+been tested against finished logs, the profile publish/fetch barrier is new, **real mode has never run on
+yahoo or yelp-p**, and **yelp-p has never launched the FL stack at all**. A clean `--dry-run` is a prior,
+not a guarantee — each of the four P4.7 defects passed one and cost a node.
 
-**F is the cheapest multiplier in the queue.** Every yahoo arm to date paid its startup twice over: see
-§10.
+```bash
+S=<1|2|3|4>                                   # this node's slot
+cd $REPO && git pull
+tmux new -s smoke "SMOKE=1 $FW/expt_scripts/nodes/run_wave.sh 1 $S && \
+                   SMOKE=1 $FW/expt_scripts/nodes/run_wave.sh 2 $S 2>&1 | tee ~/smoke_slot$S.log"
+```
+
+**Smoke pass condition:** every slot exits 0 · every arm ≥ 5 commits · no `arm_stall.json` · and
+`check_arm_health` shows `[DataBins]` right per dataset (150 / 1,750 / 650, `source=registry`,
+trainer-confirmed) with **0 zero-steps**. Gate 4 reads WARN on a smoke controller — its budget is
+deliberately too small to reach `[BudgetStop]` — and that is the one gate only the long run settles.
+
+**The smoke also produces the number that sizes wave 2:** each arm's `rate` and `budget sizing` lines
+(§11.1a-bis). Read them before launching the long runs.
+
+**Step 2 — the real waves**, once the smoke is clean:
+
+```bash
+tmux new -s p4 "$FW/expt_scripts/nodes/run_wave.sh 1 $S && \
+                $FW/expt_scripts/nodes/run_wave.sh 2 $S 2>&1 | tee ~/p4_slot$S.log"
+```
+
+**Expected outcome of the whole programme, stated up front so it is not re-litigated later.** These runs
+give the first scored arms under the fixed code on three datasets, which closes hole 1 of §-0's four.
+**They do not complete the zero-input claim.** Hole 2 (the `B_max` sensor is unexercised below chance on
+yahoo) closes only if yahoo clears chance. Hole 3 (`rf`=64 cannot carry `annealed`, so `T_res`=300 and
+`f`=0.95 are pinned to `p`=450,340) is **untouched** — all six arms are pinned rf=16. Hole 4 (`f`=0.95
+has no accuracy evidence) is partly addressed by D's accuracy-vs-`Λ` curve. And §5 already pre-registers
+that the agnews-vs-yahoo `ρ*` divergence **may not reproduce** — the two knees at commit 150 were 0.248
+and 0.237. A clean run showing no divergence is a finding about the *sensor*, not a failure.
 
 **Two decisions already made, so nobody re-opens them:** `b_max_policy` defaults to **`mean`** (§5's
 constants table has the argument), and databin **size stays 8 while the bin count moves per dataset** (§1).
@@ -169,50 +198,37 @@ across `p`.
   Budget the wall-clock preflight (task 0.7) against that, not against agnews' constants.
 - **`Λ` does not transfer across `p`** (P4 read 2) and `p` now differs by dataset. **Use `A`.**
 
-**`--dataset NAME` (task 0.8, landed 2026-08-12).** `run_sequential.sh` writes the registry's 4 keys
-(`dataset`, `data_file_path`, `partition_file_path`, `max_seq_length`) into **both** the aggregator and
-trainer override blocks, plus `trainer.dataset.name`, exactly like `--partition-method`. Unset ⇒
-byte-identical to today (agnews, no `max_seq_length` line — inherits the 192 code default). Also landed
-with it: the partition-group-exists check now verifies against the **resolved** dataset's own partition
-h5 (not just whichever group name was typed) even when `--dataset` alone changed which file is in play;
-and a sim-mode dry-run on any non-agnews dataset is **blocked** unless `--force` — every
-`sim_charge_profiles/*.yaml` today was profiled on agnews only, and per-pass cost scales with
-`max_seq_length`, so reusing one for yahoo/yelp-p silently mis-prices the vclock. **Sanity gate
-(`expt_scripts/test_dataset_launcher.py`, CPU-only, ~30-60s): 17/17 checks pass** — yahoo/yelp-p paths in
-both roles, unset is byte-identical, an unknown name fails fast (exit 3, not the `--force`-able exit 2), a
-group absent from the resolved dataset's h5 is caught, and the sim-profile mismatch is caught.
+**Landed here, one line each — read the code, not a re-derivation.**
 
-**Task 0.10 (dataset-switch checklist), landed 2026-08-12.** `diagnose_partition_binning.py` was the one
-real bug the sweep found: `N_CLASSES = 4`, agnews-only default paths, and an agnews-only cache-filename
-template were all hardcoded, and — the actual correctness bug — the single-class-collapse detector
-compared accuracy to a hardcoded `0.25` (agnews' `1/K`), which would have silently missed collapses on
-yahoo (`1/10`) and yelp-p (`1/2`). Now takes `--dataset` (default agnews, byte-identical) and derives all
-four from the registry. Verified inert (registry lookups / comments / arm-name references, not bugs):
-`test_commit_gate.py`'s `P_TRAIN=450340` (a synthetic stub-aggregator fixture, not a live config read);
-`replay_scoring.py`'s `P_BY_RF` table (the documented fallback tier, task 0.2); `fwdgrad_utils.py`'s
-`_FD_REF_P`/`probe_fd_chord.py`'s `450340` (the FD scale-invariance reference anchor — deliberately fixed
-regardless of the running dataset, this *is* the h-rescaling machinery P9.1(b) asks for); the two
-`nodes/run_node*.sh` comments (historical arm predictions). `scripts/calculate_seq_len_cdf.py` (named in
-the original suspect list) does not exist in the repo — stale reference, nothing to fix; the token-length
-numbers it once produced are already the source-of-truth values in `configs/datasets.yaml`.
-**Sanity gate reproduced:** `grep -rn "agnews\|450340\|N_CLASSES = 4" expt_scripts scripts aggregator
-trainer` (excluding `*.yaml` and `smoke_logs/`, which are the 20 intentionally-agnews-default yaml pairs
-and generated run logs) returns only the inert set above.
+- **0.8 `--dataset NAME`** (2026-08-12): `run_sequential.sh` fans `dataset_registry.hyperparameter_overrides()`
+  into **both** override blocks plus `trainer.dataset.name`; unset ⇒ byte-identical. The
+  partition-group check verifies against the **resolved** dataset's own h5, and a sim leg is blocked
+  against a profile taken on another dataset.
+- **0.10 dataset-switch sweep** (2026-08-12): `diagnose_partition_binning.py` was the one real bug —
+  its single-class-collapse detector compared accuracy to a hardcoded `0.25`, agnews' `1/K`, and would
+  have silently missed collapses on yahoo and yelp-p. Everything else the sweep flagged is inert
+  (registry lookups, the deliberately-fixed `_FD_REF_P` anchor, comments).
+- **F, the shared tokenized cache** (2026-08-17): §10.
+- **Sanity gate for all of the above: `expt_scripts/test_dataset_launcher.py`, CPU-only, ~60 s,
+  23/23.**
 
-**The sweep missed one, found 2026-08-16 (P4.7 defect 4).** `total_data_bins = 150` was hardcoded in
-`flame/mode/horizontal/syncfl/fwdllm_aggregator.py` — outside the `expt_scripts scripts aggregator
-trainer` paths task 0.10 grepped, and not matched by `agnews|450340|N_CLASSES = 4` even if it had been.
-It is agnews' `1,200/8` exactly, and the trainer indexes its **own** batch list with `data_id`
-(`FedSgdTrainer.py:520`), so yahoo trained on the first 1,200 of each client's 14,000 samples — **8.6% of
-the dataset, the same 1,200 every lap** — and yelp-p would have used 23%. Nothing raises: the list is
-merely longer than the index. Now derived from `dataset_registry.total_data_bins(name, C, batch)`
-(150 / 1,750 / 650 — the table above), echoed as `[DataBins]`, agnews byte-identical.
-**Lesson for the next dataset switch: grep `lib/python/flame/` too, and grep for the derived agnews
-constants (150, 1200, 7600, 192), not just the dataset's name.**
+**The one the sweep missed, and the lesson (P4.7 defect 4).** `total_data_bins = 150` was hardcoded in
+`flame/mode/horizontal/syncfl/fwdllm_aggregator.py` — outside the paths 0.10 grepped, and not matched by
+`agnews|450340|N_CLASSES = 4` even if it had been. It is agnews' `1,200/8` exactly, and the trainer
+indexes its **own** batch list with `data_id`, so yahoo trained on the first 1,200 of each client's
+14,000 rows — **8.6% of the dataset, the same 1,200 every lap.** Nothing raises; the list is merely
+longer than the index. **Next dataset switch: grep `lib/python/flame/` too, and grep for the *derived*
+agnews constants (150 / 1,200 / 7,600 / 192), not just the dataset's name.**
 
 **Still not done:** `profile_sim_charges.py` has never run for yahoo or yelp-p, so every non-agnews sim
-arm to date mis-prices its vclock and needed `--force` to launch (all three 2026-08-16 yahoo arms did).
-It profiles from a **real-mode** run's `vclock_charge` telemetry, so the blocker is a real yahoo run (§-1 B).
+arm mis-prices its vclock and needs `--force`. It profiles from a **real-mode** run's `vclock_charge`
+telemetry, so the blocker is a real run per dataset (§-1 B). The plumbing around it landed 2026-08-17 —
+the launcher resolves `fluxtune_<dataset>.yaml` when it exists and gates on the profile's own
+`_meta.datasets` tag — so only the artifact is missing.
+
+**The onboarding sequence for the next dataset, in order:** a `configs/datasets.yaml` row →
+`build_niid_partitions.py` → `check_partitions.py` → **`pretokenize_dataset.py`** (§10 F2) → a real-mode
+run → `profile_sim_charges.py` → the arm.
 
 ---
 
@@ -233,7 +249,8 @@ It profiles from a **real-mode** run's `vclock_charge` telemetry, so the blocker
 
 **Two of these have known gaps, both live:** 0.7's projection prices law C off the `ln 2` prior, so a
 run can pass the ≥3 trips/commit check at launch and breach it in flight once `B_max` is sensed (P4.7
-defect 3) — read trips/commit **per quintile at run time**, not once. And 0.10's sweep did not cover
+defect 3) — read trips/commit **per quintile at run time**, which is what `check_arm_health.py` now
+does; the projection itself is still priced off the prior. And 0.10's sweep did not cover
 `lib/python/flame/`, which is where the `total_data_bins` bug lived (§1).
 
 ---
@@ -417,7 +434,8 @@ itself won on both datasets (agnews peak 0.857 vs the control's 0.835, and it re
 vclock budget against 92%) while **23–48% of its commits took a step of length zero**, so that margin is a
 floor. All four defects are fixed; the specs they invalidated are corrected in place below.
 
-**Re-launch gate — check all four in the first 200 commits, before letting an arm run unattended:**
+**Re-launch gate — check all four in the first 200 commits, before letting an arm run unattended.**
+`expt_scripts/check_arm_health.py <run_dir> --expect-controller` is these four, and exits 1 on a breach:
 
 ```
 [DataBins] total_data_bins=1750 source=registry dataset=yahoo   # not 150
@@ -431,23 +449,23 @@ budget expired): `[DataBins] total_data_bins=1750 source=registry`, 100% coverag
 1750**; 0/31 commits with `rho_star` = 0; `n_req` = 93.4 at ~10 trips/commit. Only the `[BudgetStop]`
 ending is untested on yahoo — that one needs a full-length arm.
 
-Plus three that are not defects but invalidate the scoring:
+**Three more that are not defects but invalidate the scoring — all now enacted by `run_node_p4.sh`, so
+they need no operator action; kept because they are the *reasons* its constants are what they are:**
 
-- **Run `profile_sim_charges.py` for yahoo.** Every `sim_charge_profiles/*.yaml` is agnews-profiled; yahoo
-  burns **0.658 real-s per vclock-s against agnews' 0.255**, so it needs `--force` to launch and no
-  yahoo-vs-agnews per-vclock comparison is valid until it is profiled. Yahoo-vs-yahoo is fine.
-- **Budget yahoo far above 40,000 vclock.** Its control was still climbing monotonically at 0.296 when
-  killed at 86% of that budget, against a 0.73 backprop reference (§9).
-- **Set `--eval-max-samples 10000` on yahoo.** The eval *is* backgrounded, but `_eval_snapshot_model`
-  blocks the main thread when the previous eval is still running — and it was, on **359 of 359** evals on
-  the yahoo control and 286 of 289 on the yahoo controller (agnews: 287/488 and 0/400). 60,000 rows at seq
-  256 costs ~30 GPU-s idle and **89.2 s measured under trainer contention**, against a ~91 s inter-eval gap
-  at stride 2. Batch size is not the lever — measured 1.23× from batch 8 → 128 on an idle A40, because the
-  pass is compute-bound, not launch-bound. The subsample is **fixed and shuffled** (seed 20260810), so its
-  sampling error is a constant offset rather than per-eval noise and peak-vs-final stays as precise as the
-  full set — which is what P4.4's 0.015 bar compares.
+- **A per-dataset sim charge profile.** yahoo burns **0.658 real-s per vclock-s against agnews' 0.255**,
+  so no cross-dataset per-vclock comparison is valid until each is profiled. Yahoo-vs-yahoo is fine.
+- **A vclock budget far above 40,000 on yahoo** (now 80,000). Its control was still climbing
+  monotonically at 0.296 when killed at 86% of 40,000, against a 0.73 backprop reference (§9).
+- **`--eval-max-samples 10000` on both seq-256 datasets.** The eval *is* backgrounded, but
+  `_eval_snapshot_model` blocks the main thread when the previous eval is still running — and it was, on
+  **359 of 359** evals on the yahoo control (agnews: 287/488). 60,000 rows at seq 256 costs **89.2 s
+  measured under trainer contention** against a ~91 s inter-eval gap. Batch size is not the lever (1.23×
+  from batch 8 → 128 — the pass is compute-bound). The subsample is **fixed and shuffled** (seed
+  20260810), so its sampling error is a constant offset rather than per-eval noise and peak-vs-final
+  stays as precise as the full set, which is what P4.4's 0.015 bar compares.
 
-**4.1** agnews · **4.2** yahoo — *same binary, same flags*, no operator input beyond model / PEFT / `p`.
+**4.1** agnews · **4.2** yahoo · **4.3** yelp-p — *same binary, same flags*, no operator input beyond
+model / PEFT / `p`. The only per-dataset arguments are a compute budget and a sim-harness artifact (§-0).
 
 **Acceptance:** both reach their plateau and **end within 0.015 of peak**, with sensed `B_max`, `ρ*`, `K`,
 `P` logged per run and **differing between datasets without anyone having supplied them**.
@@ -536,36 +554,19 @@ returns both remainders and the aggregator warns rather than assumes. **Batch st
 moves per dataset** — the batch is the unit each JVP is estimated on, so changing it changes the
 estimator, while the bin count is pure addressing.
 
-**Rung 1 — the discriminating test · `expt_scripts/probe_backprop_ceiling.py` (new 2026-08-16) · 1 GPU.
+**Rung 1 — the discriminating test · `expt_scripts/probe_backprop_ceiling.py` · 1 GPU, ~10 min.
 Run this first if only one rung fits.** Centralized AdamW on the **FL rig's own data path** — client
-shards through `TextClassificationDataManager`, the exact call `trainer/main.py` makes, capped at
-`total_data_bins` so it sees exactly the rows an FL arm can reach — evaluated on the **same**
-`test_global` `agg_eval` uses, plus the fixed 10k subsample so its offset is measured rather than assumed.
-It instantiates `ForwardTextClassificationTrainer` purely to drop `pre_classifier`, which is what makes
-`p` **450,340 rather than 1,040,932** — without it the rig trains a bigger model than any arm runs. Not
-`probe_inflation_damage.py`'s rig, which trains on half the *test-global* tensor and reads accuracy off
-`test_global[:2000]` (per-client shards in client order, so a skewed slice — top class 20.7% against a
-balanced 10%).
+shards through `TextClassificationDataManager`, capped at `total_data_bins` so it sees exactly the rows
+an FL arm can reach, evaluated on the **same** `test_global` `agg_eval` uses. It instantiates
+`ForwardTextClassificationTrainer` purely to drop `pre_classifier`, which is what makes `p` **450,340
+rather than 1,040,932**. The one change from an arm is an exact gradient instead of pooled forward
+differences. (Not `probe_inflation_damage.py`'s rig, which reads accuracy off a Dirichlet-skewed slice.)
 
-```
-./probe_backprop_ceiling.py --config <a yahoo run's aggregator_config.json> --clients 10 --epochs 3
-```
-
-**Pre-register: ≈0.70 clears the entire data path — tokenization, label vocab, `max_seq_length`=256, the
-h5 ranges, the partition, the loader — and makes the gap purely optimization. ≈0.30 indicts the path and
-every rung below is moot.**
-
-**Calibrated on agnews first (2026-08-16):** 3 client shards, 3,600 rows, **one** epoch → **0.850** on the
-full 7,600-row test set, against the FL control's 0.835 after 801 commits and 2.3 h. Same data path, same
-`p`, same test set; the only change is an exact gradient instead of pooled forward differences. That is
-the scale of the optimization-budget gap yahoo's number has to be read against. The subsample offset
-measured **−0.0089** at 2,000 rows — small, and constant by construction.
-
-> **Cost note, now settled by the 2026-08-16 attempt:** tokenization dominates, not training. The 10 yahoo
-> client shards cached at **~4.5 min each, 00:10 → 00:49** — and the cache
-> (`cache_dir/..._256_..._yahoo_..._<client_idx>`, clients 0–9) **is now written**, shared with the FL
-> runs, so a re-run costs minutes. **That run's stdout was never captured, so its number is lost; the
-> script only prints. `tee` the re-run.**
+**Pre-register: ≈0.70 clears the entire data path** — tokenization, label vocab, `max_seq_length`, the
+h5 ranges, the partition, the loader — **and makes the gap purely optimization; ≈0.30 indicts the path**
+and every rung below is moot. **Calibrated on agnews (2026-08-16): 3,600 rows, one epoch → 0.850**
+against that dataset's FL control at 0.835 after 801 commits and 2.3 h. Command: [§11.3](#113-individual-invocations-if-a-wave-has-to-be-taken-apart).
+**`tee` it** — the script only prints, and the 2026-08-16 number was lost to a closed terminal.
 
 **Rung 2 — is the estimator itself weaker on yahoo? · 1 GPU · ~1 h.** Only if rung 1 clears.
 - **cos audit on yahoo**, `cos_ground_truth_audit` on for ~100 commits, `replay_scoring.py --cos`. Compare
@@ -591,99 +592,72 @@ data path.
 
 ---
 
-## §10 — Task F · pre-tokenize every client shard, once, to `/coc/scratch`
+## §10 — The tokenized-feature cache *(task F, landed 2026-08-17)*
 
-**The cost being paid.** `234931` spent **32 of its 44 wall minutes before commit 1**, and the trainer log
-says exactly where: **100 trainers each tokenizing their own 14,000-row shard in parallel**, progress bars
-running `x/14000` at 5–25 rows/s for **14–17 minutes apiece**. The runner charges its wall budget from
-launch, so that arm was force-killed 120 s past a 2,500 s budget having *trained* for ~11 minutes. Yahoo
-is the worst case (14,000-row shards at seq 256) but agnews pays it too, and yelp-p will.
+**One shared cache, `/coc/scratch/dgarg/fl_datasets/fwdllm/cache_dir`, 101/101 shards for all three
+datasets.** Absolute, so the launch directory no longer decides which cache a process gets, and on
+`/coc/scratch` so every node and every probe reads the same bytes.
 
-### The root cause: `cache_dir` is a **relative** path
+### How it is addressed — the part that matters when you add a dataset or an α
 
-**`trainer/model/transformer/model_args.py:26` — `cache_dir: str = "cache_dir/"`, and nothing anywhere
-overrides it.** It resolves against each process's **current working directory**, so *where you launch
-from* decides which cache you get, and `_load_data_loader_from_cache` `os.mkdir`s a fresh empty one
-(`base_data_manager.py:581`) rather than failing. Two separate caches exist on `jayne` today:
+A cache file is one client's tokenized shard, keyed by everything that changes its tensors:
 
-| launched from | cache used | contents |
-|---|---|---|
-| `/home/dgarg39/flame` (repo root — how the FL stack runs) | `/home/dgarg39/flame/cache_dir` — **machine-local `/home`, 15 GB, 393 files** | agnews α=0.1/α=1/uniform + **yahoo, all 101** (100 clients + `-1`), written 00:05–00:21 by `234931` |
-| `lib/python/examples/fwdllm` (how the §9 probe ran) | `cache_dir` → **symlink** → `/coc/scratch/…/cache_dir` — shared, 43 files | agnews 0–29 @192, yahoo 0–9 @256, the three `-1` globals |
+```
+{model_type}_{model_name}_cached_{max_seq_length}_{model_class}_{dataset}_{partition_method}_{client_id}
+    distilbert_distilbert-base-uncased_cached_256_ClassificationModel_yahoo_niid_label_clients=100_alpha=1_37
+```
 
-**Three consequences, and the third is the one that matters.** (1) The 15 GB the FL runs actually depend
-on is on `/home`, which P5.2 already records as **machine-local, not NFS** — so it is not shared with any
-other node. (2) A new node gets a `git clone` with no `cache_dir/`, so it silently starts cold and pays
-the full tokenization on its first run of every dataset. (3) The two caches drift, and a probe and an arm
-can be reading different tokenizations of the same shard without anything saying so.
+- **`partition_method` carries both `C` and α**, so **α=1 and α=100 are different files** and a
+  `--partition-method` switch is a MISS, never a stale hit. Tokenized today: agnews `alpha=1` + `uniform`
+  (101 each) and `alpha=0.1` (90, partial); yahoo and yelp-p `alpha=1` (101 each). **An α ablation must
+  be pre-tokenized first** or it pays the ~30 min inside its own wall budget.
+- **`client_id` is the trainer's `client_idx`, not its trainer id.** `runner.py:389` sets
+  `client_idx = (trainer_id - 1) % client_idx_modulo` (100 in every fwdllm yaml), so trainer 1 → shard 0
+  … trainer 100 → shard 99, and 200 trainers would wrap onto the same 100 shards.
+- `client_id = -1` is the aggregator's global test set, which `agg_eval` needs.
 
-**What is NOT established:** whether a warm cache actually removes the stall. `234931` logged
-**100 × "Loading features from cached file"** *and* ran 100 × 14-minute tokenization progress bars *and*
-wrote all 101 cache files during that same window — the three cannot all describe one pass, and the
-midday `125753` logged cache hits too while leaving no files behind. **Do not write a mechanism for this
-from the logs** (P9.3: a death gets a ratio before it gets a sentence). The yahoo cache is complete on
-`jayne` right now, which makes the controlled test free — see the diagnostic below.
+**So yes: at startup a trainer resolves `(dataset, seq, partition_method, client_idx)` to one file and
+`pickle.load`s it** — no h5 read, no tokenization, no `alpha` lookup beyond the group name already in
+its config.
 
-### Spec
+### Using it
 
-**F0 — the diagnostic, first, and it is nearly free.** Launch a short yahoo arm **from the repo root**,
-with the 101 local caches in place, and time to first commit. **Minutes ⇒ the read path works and F is a
-one-time chore plus a relocation. Another ~30 min ⇒ the read path has a real bug and F1–F2 are premature.**
-This is the only cheap test that discriminates, and it cannot be run anywhere but here, because `jayne` is
-the only machine holding a complete yahoo cache.
+```bash
+$PY expt_scripts/pretokenize_dataset.py --dataset NAME --clients 100 --dry-run   # missing + size
+$PY expt_scripts/pretokenize_dataset.py --dataset NAME --clients 100 --jobs 16   # ~9 s/client @ seq 256
+$PY expt_scripts/pretokenize_dataset.py --dataset agnews --partition-method niid_label_clients=100_alpha=100 ...
+```
 
-**F1 — make the location explicit and shared.** Four edits, and **the launcher needs none of them**:
+Idempotent, drives the production loader so the bytes are the trainer's own, writes the `-1` global.
+Every `--dry-run` now carries a `feature cache warm (<baseline>)` row — `ok` at 101/101, or a `warn`
+naming this command. Override the location with `FWDLLM_CACHE_ROOT`.
 
-| file | change |
-|---|---|
-| `configs/datasets.yaml` | new top-level `cache_root:` next to the existing `root:` — `/coc/scratch/dgarg/fl_datasets/fwdllm/cache_dir` |
-| `expts/dataset_registry.py` | a `cache_root()` beside `root()`, honouring **`FWDLLM_CACHE_ROOT`** exactly as `root()` honours `FWDLLM_DATA_ROOT`; then add `"cache_dir": cache_root()` to **`hyperparameter_overrides()`**'s returned dict |
-| `trainer/model_args_builder.py` | add `"cache_dir": "cache_dir/"` to **`_OPTIONAL`** (`:26`) so `build_model_args` passes it through, with today's relative string as the default |
-| `expt_scripts/test_model_args_parity.py` | add `cache_dir` — **both roles read it**, which §0 rule 2 requires the parity test to enforce |
+### The three findings this task produced, none of which needed a run
 
-**Why the launcher is untouched:** `run_sequential.sh:668-677` already loops
-`dsreg.hyperparameter_overrides(DATASET).items()` into **both** override blocks. Adding a key to that dict
-is the whole plumbing change. Unset `--dataset` ⇒ `_OPTIONAL`'s relative default ⇒ **byte-identical**.
+1. **F0 answered off the code.** `_load_federated_data_local` ran its load-or-tokenize block **twice**
+   (`base_data_manager.py:324` and `:438`) and the *second* result reached the loader — which is exactly
+   why one run's log showed 100 cache hits, 100 tokenization bars and 101 cache writes in the same
+   window. Duplicate removed; a warm cache does skip tokenization entirely.
+2. **The cache does not change a number.** Cold vs warm tensors are byte-identical within a process, and
+   the shard `(input_ids, label)` multiset matches the pre-dedup cache across three independent draws
+   (`7ee980d0fccc63d2`).
+3. **But a shard's row ORDER is not reproducible across tokenizations** — queue row **G**.
+   `read_instance_from_h5` fans the h5 reads over a 20-thread pool appending to shared `X`/`y` **in
+   completion order** (and the whole body is inside the lock, so the threads buy no parallelism), while
+   `transform_examples` pairs `X[i]`/`y[i]` with `index_list[i]` as the **guid**. `X`/`y` stay paired
+   under one lock and nothing reads `guid`, so **no ledger number is wrong** — but which 8 rows form a
+   given `data_id` bin changes if you re-tokenize. That makes the frozen shared cache the thing that
+   makes an A/B byte-comparable, and it is why row G waits until after the P-4 arms.
 
-**Migration, not re-tokenization.** `rsync -av --ignore-existing /home/dgarg39/flame/cache_dir/
-/coc/scratch/dgarg/fl_datasets/fwdllm/cache_dir/` — ~15 GB, and `--ignore-existing` keeps the scratch
-copies (written by the probe through the same production loader) authoritative where both exist. Verify by
-**filename key**, not by count or size: the key is
-`{model_type}_{model_name}_cached_{seq}_{model_class}_{dataset}_{partition_method}_{client_id}`.
-
-**F2 — `expt_scripts/pretokenize_dataset.py --dataset NAME [--clients 100] [--jobs N]`.**
-
-1. Drives the **production** loader — `TextClassificationDataManager(...).load_federated_data(process_id=1,
-   client_idx=c)` for each `c`, exactly the call `trainer/main.py:158-176` makes, populating the cache as a
-   side effect. **Do not reimplement the tokenizer** (§0 rule 4); a cache that differs by one byte from
-   what the trainer would write is worse than no cache.
-2. Idempotent: skip any `c` whose cache file already exists unless `--force`. Print per-client seconds and
-   file size so the next run can be budgeted from it.
-3. Parallel over `--jobs`; the work is CPU tokenization, not GPU. 100-way concurrency is already known
-   survivable — that is what every run does today.
-4. **Also materialise the `-1` global test set**, which the aggregator's `agg_eval` needs.
-5. Report total bytes before writing: ~123 MB × 100 ≈ **12 GB/dataset** against 6.3 TB free on scratch.
-6. **This is the onboarding step for a new dataset**, and it belongs in the §1 dataset-switch checklist
-   next to `build_niid_partitions.py` and `check_partitions.py`: build partitions → check them →
-   pre-tokenize → launch. yelp-p (task H) is the first dataset to go through it in that order.
-
-**F3 — a preflight that refuses to launch cold.** `run_sequential.sh` already resolves the dataset; have
-it count cache files for the resolved `(dataset, max_seq_length, partition_method)` and **warn loudly when
-fewer than `--num-trainers` are present**, naming `pretokenize_dataset.py`. Same shape as the existing
-partition-group-exists check (§1). This is what turns "the run stalled 30 minutes" into a launch-time
-message.
-
-**Sanity gate.** After F on yahoo: a `--num-trainers 100` yahoo arm reaches commit 1 in **minutes, not
-32**; `[DataBins] confirmed by trainer … 1750 batches` still holds; and the first commit's `ρ` matches
-`234931`'s **0.0678** — the cache must not change a number.
+**Sanity gate, standing:** a `--num-trainers 100` yahoo arm reaches commit 1 in minutes, `[DataBins]
+confirmed by trainer … 1750 batches` holds, and the first commit's `ρ` still reads `234931`'s **0.0678**.
 
 ---
 
-## §11 — Runbook · the exact invocation for every queued task
+## §11 — Runbook · two waves, four nodes, one command per node
 
-**One place for the commands, so a session starting cold does not re-derive them.** Every block below is
-copy-pasteable. Task state stays in [§-1](#-1--status-board); the reasoning stays in the section each
-block names.
+**Every slot below is longer than a login survives — run each inside `tmux`.** The 2026-08-16 backprop
+ceiling was lost to a closed terminal; that is the whole reason this section says so twice.
 
 ### §11.0 Environment — required by everything
 
@@ -695,168 +669,191 @@ REPO=/home/dgarg39/flame
 FW=$REPO/lib/python/examples/fwdllm
 ```
 
-> **`cd` decides which tokenizer cache you get, until F1 lands** (§10). `cache_dir` is *relative*
-> (`model_args.py:26`). **FL runs: launch from `$REPO`** — that is `/home/dgarg39/flame/cache_dir`, the
-> 15 GB local one holding all 101 yahoo shards. **Probes: launch from `$FW`** — that is the `cache_dir`
-> symlink onto `/coc/scratch`, holding yahoo 0–9. Launch from anywhere else and it silently
-> `os.mkdir`s an empty cache and re-tokenizes.
+**`/home/dgarg39/flame` is LOCAL disk on each node; `/coc/scratch` is the shared one.** So every node
+needs its own `git pull` for code, and a `sim_charge_profiles/*.yaml` written on one node must be
+committed and pulled to reach the others. **The tokenizer cache needs no propagating** — it is on
+`/coc/scratch` and all three datasets are 101/101 there (§10).
 
-### §11.1 Task A — the backprop ceiling on yahoo *(§9 rung 1; gates C/D/H)*
+### §11.1 The two waves
 
 ```bash
-cd $FW                                    # MUST be $FW: clients 0-9 are warm on scratch, not local
-mkdir -p $FW/experiments/_probe_logs
-CFG=$FW/experiments/run_20260816_234931_fluxtune_yahoo_n100_smoke_syn_0_sim/aggregator_config.json
-$PY expt_scripts/probe_backprop_ceiling.py --config $CFG --clients 10 --epochs 3 2>&1 \
-  | tee $FW/experiments/_probe_logs/backprop_ceiling_yahoo_$(date +%Y%m%d_%H%M).log
+S=<1|2|3|4>                                     # this node's slot
+cd $REPO && git pull
+tmux new -s p4 "$FW/expt_scripts/nodes/run_wave.sh 1 $S && \
+                $FW/expt_scripts/nodes/run_wave.sh 2 $S 2>&1 | tee ~/p4_slot$S.log"
 ```
 
-**Read:** the `epoch N: acc=` lines on the full 60,000-row `test_global`, plus the `10000 subsample
-acc=` offset. **Pre-registered: ≈0.70 clears the data path** (tokenization, label vocab, seq 256, h5
-ranges, partition, loader) **and makes the yahoo gap purely optimization; ≈0.30 indicts the path** and
-D/H are moot until it is fixed. Calibration: the same script on agnews returned **0.850** off 3,600 rows
-in one epoch, against that dataset's FL control at 0.835 after 801 commits.
+**The `&&` is safe: there is no manual step between the waves.** Wave 1 publishes each sim charge
+profile to `/coc/scratch/…/sim_charge_profiles/`; wave 2 fetches both and *waits* for whichever node is
+still producing one (`WAVE2_WAIT_PROFILES_MIN`, default 180). That barrier exists because
+`/home/dgarg39/flame` is **local disk per node** — only `/coc/scratch` is shared. The tokenizer cache
+needs no such handling; it is already shared and 101/101 for all three datasets (§10).
 
-**Why it must be `tee`d:** the script only prints. The 2026-08-16 run tokenized all ten shards and its
-number was lost to a closed terminal.
+| | node 1 | node 2 | node 3 | node 4 |
+|---|---|---|---|---|
+| **wave 1** | **A** yahoo backprop ceiling (~10 min) → real yahoo → `fluxtune_yahoo.yaml` | real yelp-p → `fluxtune_yelp-p.yaml` | **C** agnews **controller** | **C** agnews **control** |
+| | ~1 h | ~1 h | ~2 h | ~2.5 h |
+| **wave 2** | **D** yahoo controller | **D** yahoo control | **H** yelp-p controller | **H** yelp-p control |
+| | ~2 h | **~10 h ← long pole** | ~2 h | ~8 h |
 
-### §11.2 Task F0 — does a warm cache remove the stall? *(§10; gates F1–F3)*
+**Why the two arms of a pair cost so differently.** The **controller stops itself** at `B ≥ f·B_max`, and
+law C's length comes from `(B_max, T_res, f)` — not from the budget. T5 projects **898 commits ≈ 2 h on
+all three datasets** at the `ln 2` prior, and that is the *whole point*: the arm ends on `[BudgetStop]`.
+The **control has no stop** (`--phi-stop log_only`, deliberately, so P4.1's past-the-stop counterfactual
+keeps being measured), so it runs its vclock budget out — agnews measured **0.255 real-s per vclock-s**
+(2.3 h at 40,000), yahoo **0.658**.
+
+### §11.1a Smoke the four nodes first — `SMOKE=1`, ~15 min per slot
+
+**Do this before the real waves.** `SMOKE=1` runs the *identical* code path at a 2,500 vclock budget and
+a 0.4 h ceiling, so four nodes prove they survive unattended before hours are committed to them:
 
 ```bash
-cd $REPO                                  # MUST be $REPO: the complete yahoo cache is the local one
-BEFORE=$(ls $REPO/cache_dir | wc -l)
-$FW/expt_scripts/run_sequential.sh --only fluxtune --mode sim --dataset yahoo \
-  --yes --clean --force --num-trainers 100 --num-gpus 8 --agg-goal 10 --c 30 \
-  --server-update-audit --no-cos-ground-truth-audit --adapter-reduction-factor 16 \
-  --max-runtime-s 2500 --sim-wall-ceiling-h 1.0 --eval-max-samples 10000
+S=<1|2|3|4>
+SMOKE=1 $FW/expt_scripts/nodes/run_wave.sh 1 $S && \
+SMOKE=1 $FW/expt_scripts/nodes/run_wave.sh 2 $S
 ```
 
-Then, against the new `experiments/run_*/`:
+Its profiles come from a 10-minute real run and are **not** fit to price an arm, so they go to
+`sim_charge_profiles/smoke/` and a smoke shared dir and never overwrite the production ones. The
+watchdog tightens to a 7-minute stall window and a 25-commit grace so it is actually armed inside the
+horizon.
+
+**What a smoke covers:** the `set -m` backgrounding and watcher teardown (new, and it changed how every
+arm launches) · the watchdog attaching to a live run without false-firing · the publish → shared →
+fetch barrier · real mode on yahoo and yelp-p (**never run before**) · yelp-p's first-ever FL arm ·
+`check_arm_health` at the end of each arm.
+
+**What it cannot cover, and why that is fine:** a smoke controller arm ends on `max_runtime_s`, not
+`[BudgetStop]` — the budget is deliberately too small — so gate 4 reads WARN and only the long run
+settles it. And the smoke uses `--force`, since its profile is in `smoke/`; the force-drop path was
+verified separately against a tagged stub (`--force` count 0, profile row `ok`, zero non-ok checks).
+
+**Pass condition:** every slot exits 0, every arm reports ≥ 5 commits, no `arm_stall.json`, and
+`check_arm_health` shows `[DataBins]` correct per dataset with 0 zero-steps.
+
+### §11.1a-bis The rate constant, and why the smoke sets wave 2's budgets
+
+**Measured, 2026-08-16 arms** (first commit to last, so the pre-commit-1 tokenization stall is excluded
+by construction):
+
+| arm | commits/h | vclock/h | 898 commits would need |
+|---|---|---|---|
+| agnews `130614` | 351 | 17,523 | 44,839 vclock · 2.6 h |
+| agnews `125619` | 345 | 14,138 | — |
+| **yahoo `125713`** | **79** | **5,470** | **61,932 vclock · 11.3 h** |
+
+**The wall-clock preflight cannot see this.** It prices every commit at a dataset-independent 4.41 s;
+yahoo measured **45.4 s**, so the projection under-books the seq-256 datasets ~10×. Budgets are now sized
+off measured rate instead, and `check_arm_health.py` prints a `budget sizing` line that converts any
+short arm's rate into the vclock 898 commits will cost.
+
+**Yahoo's 4.4× is not the tokenization stall** — checked: the rate is flat across all four commit
+quartiles (84/71/91/73 against agnews' 347/354/348/352), and a startup stall would show as a slow first
+quartile. It is sustained, and two things make it so: seq 256 costs ~1.33× per pass, and
+`_eval_snapshot_model` **blocked the commit loop on 359 of 359 yahoo evals** (agnews 287/488) at 89.2 s
+against a ~91 s inter-eval gap.
+
+> **Pre-registered:** `--eval-max-samples 10000` attacks that second term directly — 10,000 rows instead
+> of 60,000 — and **has never been measured on a full arm.** If the eval tax is the dominant term, the
+> smoke's yahoo rate should land well above 79 commits/h, and wave 2's yahoo budget comes down with it.
+> If it stays near 79, the cost is intrinsic to seq 256 and the yahoo arms are ~11 h each. **Read the
+> smoke's `rate` and `budget sizing` lines before launching wave 2 — that is what they are for.**
+
+### §11.1b Can this be shorter?
+
+**The controller arms cannot, and that is not a scheduling problem — it is the measurement.** Their
+length *is* "how long law C takes to reach 0.95·`B_max`", and `T_res`=300 / `f`=0.95 are the constants
+under test (§5). Shorten them by shrinking the budget and the arm dies on `max_runtime_s`, which voids
+it by the project's own rule — that is exactly how all four 2026-08-16 arms were lost. At ~2 h each they
+are already the cheap half.
+
+**The control arms can, and the yahoo one should be re-cut.** Its 60,000 vclock is a judgement call: its
+predecessor was still climbing at 86% of 40,000 (P4.8), so the budget went up 1.5×, and at yahoo's
+**mis-priced** 0.658 real-s/vclock-s that is ~10 h. Two things follow. (1) 80,000 would have breached the
+ceiling outright, which is why it is 60,000. (2) That 0.658 comes from charging yahoo against an
+**agnews** profile — the exact error task B fixes — so **once `fluxtune_yahoo.yaml` exists the number is
+worth re-reading, and the budget re-cut against it.** The `--sim-wall-ceiling-h 12` backstop is set so the
+ceiling does not clip before the budget does.
+
+**Cheaper still, if a slot is scarce:** the controller arms alone (wave 2 slots 1 and 3) answer the
+acceptance question — the controls are the comparison, and agnews already has one on disk from
+2026-08-16 to compare against.
+
+### §11.1c Stalling and early termination
+
+`_node_lib.sh` runs `expt_scripts/watch_arm.py` as a side-car for every arm and **kills the run** on:
+
+| predicate | default | why this and not accuracy |
+|---|---|---|
+| no new commit | 20 min | a genuine hang; the only unambiguous one |
+| trips/commit over the last 200 commits < 3 | after 200 commits | `N_req ∝ ρ_t²` under `annealed`, so an annealing `ρ` demands less pooling every commit until `I` floors at 1. **This is how G-2's `003648` died**, and the launch projection cannot see it because it prices law C off the `ln 2` prior (P4.7 defect 3) |
+| any `rho_star == 0` | after 200 commits | a requirement of *zero*, not an absent one (defect 2) |
+
+**Deliberately NOT the harness's own stall guard.** `converge_watch.py` arms on held-out accuracy and
+requires `--target-acc`, which would end the arm on convergence — and an arm that does not end on
+`[BudgetStop]` is void. Worse, its signal is backwards here: **reaching a plateau and holding it is what
+the controller is supposed to do**, so an accuracy stall guard would kill the success case.
+
+`NODE_WATCH=0` disables it; `NODE_WATCH_ARGS="--stall-window-s 600"` retunes it. A killed arm leaves
+`arm_stall.json` in its run dir and the node prints it.
+
+### §11.2 Reading an arm — the only command needed
 
 ```bash
-RUN=$(ls -dt $FW/experiments/run_*yahoo* | head -1)
-head -1 $RUN/*aggregator.log                                  # launch timestamp
-grep -m1 -o '^[0-9:, -]*.*commit=0' $RUN/*aggregator.log      # first commit timestamp
-grep -c -o "Loading features from cached file" $RUN/*trainers.log   # want 100
-[ "$BEFORE" -eq "$(ls $REPO/cache_dir | wc -l)" ] && echo "no cache files rewritten"
+RUN=$(ls -dt $FW/experiments/run_* | head -1)
+$PY $FW/expt_scripts/check_arm_health.py $RUN --expect-controller   # exit 1 = a gate is breached
+$PY $FW/expt_scripts/replay_scoring.py $RUN                         # B, Lambda, Phi, A
 ```
 
-**The number that decides it is launch → first commit.** `234931` took **32 minutes** cold.
+`check_arm_health.py` is §6's four gates as one command — `[DataBins]` (value vs the registry, `source=`,
+coverage, trainer confirmation) · `rho_star == 0` count · **trips/commit per quintile** against the ≥3
+floor · the `[BudgetStop]` reason — plus the `[BmaxProbe]` trajectory including its **first firing
+commit**, which on yahoo is itself a result. `_node_lib.sh` already runs it after every arm, so a chained
+node reports its own gates; run it by hand to check a live arm at ~200 commits. **A controller arm that
+ends on `max_runtime_s` instead of `[BudgetStop] reason=budget` is void** — that rule voided all four
+2026-08-16 arms.
 
-- **Minutes, 100 cache hits, no files rewritten ⇒ the read path works.** F1–F3 are a relocation plus a
-  one-time chore; build them.
-- **~30 minutes again ⇒ the cache read path is broken**, and *that* is the bug to fix — do not build
-  F2 on top of a cache nothing reads. Start from `base_data_manager.py:600`'s hit condition and the two
-  `_load_data_loader_from_cache` call sites (`:324`, `:438`).
+Scoring, from [P4.4](fl_fwd_ft_practice.md#p44-scoring-rules-for-any-ab): score **peak**, never final of
+a diverging arm. Compare across datasets on **`A` and per-vclock-hour**, never on `Λ` (different `p`)
+and never per round (11.7× different bins/round).
 
-**This test is free only here.** `jayne` is the one machine with a complete yahoo cache.
-
-### §11.3 Task F — shared cache, pre-tokenizer, preflight *(§10 F1–F3, after F0)*
-
-Order: **F1 → migrate → F2 → F3**, and re-run the F0 measurement after each of F1 and F2 — the sanity
-gate is that the first commit's `ρ` still reads **0.0678** and `[DataBins] confirmed by trainer … 1750
-batches` still holds. A cache must not change a number.
+### §11.3 Individual invocations, if a wave has to be taken apart
 
 ```bash
-# after F1, before anything reads the new location:
-rsync -av --ignore-existing $REPO/cache_dir/ /coc/scratch/dgarg/fl_datasets/fwdllm/cache_dir/
-$PY $FW/expt_scripts/test_model_args_parity.py        # cache_dir is now dual-read (§0 rule 2)
+# task A alone
+cd $FW && $PY expt_scripts/probe_backprop_ceiling.py \
+  --config $(ls -1dt $FW/experiments/run_*yahoo*/aggregator_config.json | head -1) \
+  --dataset yahoo --clients 10 --epochs 3 2>&1 | tee $FW/experiments/_probe_logs/bpc_yahoo.log
 
-# F2, once per dataset -- this is the onboarding step (§1 checklist):
-cd $FW
-$PY expt_scripts/pretokenize_dataset.py --dataset yelp-p --clients 100 --jobs 16
-$PY expt_scripts/pretokenize_dataset.py --dataset agnews --clients 100 --jobs 16   # fills 30->100
-```
-
-### §11.4 Task B — a real-mode yahoo run, then its sim charge profile
-
-```bash
-cd $REPO
-$FW/expt_scripts/run_sequential.sh --only fluxtune --mode real --dataset yahoo \
+# task B / a yelp-p profile alone: real mode is the ONLY source -- profile_sim_charges.py
+# pools vclock_charge events with time_mode == "real" and finds nothing in a sim run
+cd $REPO && $FW/expt_scripts/run_sequential.sh --only fluxtune --mode real --dataset yahoo \
   --yes --clean --num-trainers 100 --num-gpus 8 --agg-goal 10 --c 30 \
   --adapter-reduction-factor 16 --max-runtime-s 3000
-RUN=$(ls -dt $FW/experiments/run_*yahoo*real* | head -1)
-cd $FW/expt_scripts
-$PY profile_sim_charges.py --real-run $RUN \
+cd $FW/expt_scripts && $PY profile_sim_charges.py \
+  --real-run $(ls -1dt $FW/experiments/run_*yahoo*real* | head -1) \
   --out ../sim_charge_profiles/fluxtune_yahoo.yaml --only-observed
-```
 
-**Why a real run and not a sim one:** the script pools `vclock_charge` events with `time_mode == "real"`
-and finds nothing in a sim run. **The real run is the cost of task B, not the script.**
-
-**A plumbing gap this task exposes, and it must be closed for the profile to be usable.**
-`sim_charge_profile_path` is set by the baseline catalog to `fluxtune.yaml` and **there is no launcher
-flag to change it** — while `run_sequential.sh:1246-1256` *already* hard-errors any non-agnews `--dataset`
-against an agnews-profiled file, which is exactly why every yahoo arm to date needed `--force`. So B
-also needs the path made dataset-aware: **add `sim_charge_profile_path` to
-`dataset_registry.hyperparameter_overrides()`** the same way F1 adds `cache_dir`, defaulting to
-`fluxtune.yaml` when a dataset has no profile of its own, and **narrow that preflight to fire only when
-the resolved profile was not profiled on the resolved dataset** rather than on "dataset != agnews".
-Until then a yahoo arm still needs `--force` and no yahoo-vs-agnews per-vclock comparison is valid.
-
-### §11.5 Task C — re-run P-4 agnews *(the arm that scores the controller)*
-
-```bash
-cd $REPO
-$FW/expt_scripts/nodes/run_node_p4.sh agnews controller     # node 1
-$FW/expt_scripts/nodes/run_node_p4.sh agnews control        # node 2
+# any P-4 pair
+$FW/expt_scripts/nodes/run_node_p4.sh <agnews|yahoo|yelp-p> <controller|control>
 ```
 
 `run_node_p4.sh` pins everything: `rf`=16, cos audit **off**, `--num-trainers 100 --c 30 --agg-goal 10`,
-`--max-runtime-s 40000`, controller = law C at `T_res`=300 with **no `--rho-star` and no `--b-max`**
-(that is what makes it zero-input), control = `rm`/0.25 at `ρ*`=0.06 with `gate_rho_ref=setpoint` and
-`--phi-stop log_only`. **Run `--dry-run` first** and confirm the only `✗` is one you understand (P9.2).
+per-dataset vclock (agnews 40,000 · yahoo 80,000 · yelp-p 60,000) and `--eval-max-samples 10000` on both
+seq-256 datasets; controller = law C at `T_res`=300 with **no `--rho-star` and no `--b-max`** (that is
+what makes it zero-input), control = `rm`/0.25 at `ρ*`=0.06 with `gate_rho_ref=setpoint` and
+`--phi-stop log_only`. **`NODE_DRY_RUN=1` runs every arm's preflight in seconds without burning a node**
+— do that after any `git pull` and confirm the only `✗` is one you understand (P9.2).
 
-**Read these inside the first 200 commits, before leaving it unattended** (§6):
-
-```bash
-RUN=$(ls -dt $FW/experiments/run_*agnews* | head -1)
-grep -o '\[DataBins\][^|]*'  $RUN/*aggregator.log | head -3   # 150, source=registry, confirmed by trainer
-grep -o '\[BmaxProbe\][^|]*' $RUN/*aggregator.log             # B_max moves UP from ln 2, never below B
-$PY -c "import json,glob,sys; r=[json.loads(l) for f in glob.glob(sys.argv[1]+'/telemetry/aggregator_*.jsonl') for l in open(f) if '\"server_update\"' in l]; print(len(r),'commits;',sum(1 for x in r if x.get('rho_star')==0),'with rho_star==0 (must be 0)')" $RUN
-$PY $FW/expt_scripts/replay_scoring.py $RUN                   # B, Lambda, Phi, A
-```
-
-Plus **trips/commit ≥ 3 in every quintile** — a launch-time projection is a prior, not a guarantee
-(P4.7 defect 3). **A controller arm that ends on `max_runtime_s` instead of `[BudgetStop] reason=budget`
-is void**; that rule voided all four of the 2026-08-16 arms.
-
-### §11.6 Task D — re-run P-4 yahoo *(after A, B and F)*
-
-Same launcher, `yahoo`, and **three things the agnews pair does not need**: `--eval-max-samples 10000`
-(the eval blocked the commit loop on 359 of 359 fires), a vclock budget **well above 40,000** (its control
-was still climbing monotonically when killed at 86% of that), and task B's profile (or `--force`, with
-per-vclock comparisons against agnews then invalid). Score against §5's first open row: does the
-`Λ ≥ 0.95` floor read off agnews transfer to a second task?
-
-**Expect the `B_max` probe to decline early** — `base_acc` at chance keeps law C on the `ln 2` prior
-(P4.8). **Read the first firing commit off `[BmaxProbe]`; that index is itself a result.**
-
-### §11.7 Task H — yelp-p bring-up *(the third dataset, after F)*
-
-Sequence, and it is the first end-to-end exercise of the onboarding path in §10 F2.7:
-
-1. Registry row and partitions **already exist** — re-confirm with
-   `$PY $FW/expt_scripts/check_partitions.py --datasets yelp-p` (6/6) and
-   `$PY -m examples.fwdllm.expts.dataset_registry` (`p`=448,802 at `rf`=16, 650 bins at `C`=100).
-2. **Pre-tokenize** (§11.3) — yelp-p has *no* client caches at all, so this is the step that keeps its
-   first arm from stalling ~35 min (5,200-row shards at seq 256).
-3. **Real-mode run + `profile_sim_charges.py --out ../sim_charge_profiles/fluxtune_yelp-p.yaml`**, per
-   §11.4, including that section's plumbing gap.
-4. **`run_node_p4.sh` accepts only `agnews|yahoo` today** — its `DATASET` argument is unvalidated but its
-   `--force` branch and header assume two datasets. Add `yelp-p` and re-read the header's budget
-   arithmetic against 650 bins/round.
-5. Then the controller/control pair, read exactly as §11.5.
-
-**What makes yelp-p worth the slot:** at 2 classes it is the *opposite* corner from yahoo's 10, so it is
-the cheapest test of whether the sensed `B_max` tracks task rather than class count — B-1 measured its
-knee at 2.0–2.3, indistinguishable from yahoo's, which is what refuted the monotone-in-classes
-prediction in the first place. Note `max_dominant_share` already handles `K`=2 (the old fixed 0.5 fired
-on every *balanced* 2-class reference and refused to launch).
-
-### §11.8 Task E — the saturation stop *(§5's 3.5; CPU only, unblocked)*
+### §11.4 Task E — the saturation stop *(§5's 3.5; CPU only, no node needed)*
 
 No launch. Size the three unsized constants — smoothing window, `GL` threshold, patience — by replay
 against the arms already on disk (P4's portfolio plus 2026-08-13's K-1/P-1/G-2 arms), the same way task
 0.5 sized `Φ`'s window and P4.1 sized its threshold. `replay_phi_stop.py` is the model to copy.
-Spec, including why a Prechelt GL/patience criterion replaced the raw `dAcc/dΛ` slope test: **§5's 3.5**.
+
+### §11.5 Task G — the shard row-order fix *(§10; CPU, minutes, AFTER the P-4 arms)*
+
+Preserve `index_list` order in `read_instance_from_h5` so `guid` names its own row and two tokenizations
+of one client agree byte-for-byte. It re-orders every future shard against the caches wave 1 and 2 run
+on, which is the only reason it is not done already.

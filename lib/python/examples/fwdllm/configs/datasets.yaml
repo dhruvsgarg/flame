@@ -9,6 +9,12 @@
 # root: override with FWDLLM_DATA_ROOT for a different machine.
 root: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data
 
+# Tokenized-feature cache (buildplan §10). `model_args.cache_dir` is RELATIVE, so
+# the launch directory used to decide which cache a process got. Absolute + shared
+# so every node reads the same bytes. Fill with pretokenize_dataset.py; override
+# with FWDLLM_CACHE_ROOT.
+cache_root: /coc/scratch/dgarg/fl_datasets/fwdllm/cache_dir
+
 datasets:
   agnews:
     num_labels: 4

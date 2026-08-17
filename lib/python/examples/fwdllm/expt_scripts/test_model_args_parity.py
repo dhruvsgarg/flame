@@ -15,10 +15,17 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRAINER = f"{ROOT}/trainer/forward_training/tc_transformer_trainer_distribute.py"
 BUILDER = f"{ROOT}/trainer/model_args_builder.py"
+REGISTRY = f"{ROOT}/expts/dataset_registry.py"
 MAINS = [f"{ROOT}/trainer/main.py", f"{ROOT}/aggregator/main_fedfwd_agg.py"]
 
 # Set on the args object outside the dicts, by the builder itself.
 PRESET = {"model_name", "model_type", "num_labels", "client_idx", "config"}
+
+# Knobs BOTH roles enact (§0 rule 2), so they must be written to both override
+# blocks and must agree. `run_sequential.sh` fans `hyperparameter_overrides()` to
+# both blocks verbatim, so registry membership is what makes them agree.
+DUAL_READ_FROM_REGISTRY = {"dataset", "data_file_path", "partition_file_path",
+                           "max_seq_length", "cache_dir"}
 
 
 def unguarded_args_reads(path):
@@ -65,13 +72,30 @@ def builder_supplies():
     return out
 
 
+def registry_override_keys():
+    """Keys of the dict `hyperparameter_overrides` returns."""
+    tree = ast.parse(open(REGISTRY).read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+              and n.name == "hyperparameter_overrides")
+    out = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Dict):
+            out |= {k.value for k in node.keys if isinstance(k, ast.Constant)}
+    return out
+
+
 needed = unguarded_args_reads(TRAINER) - PRESET
 supplied = builder_supplies()
 missing = sorted(needed - supplied)
 print(f"  trainer __init__ reads unguarded : {len(needed)}   builder supplies: {len(supplied)}")
 print(f"  missing from build_model_args    : {missing or 'none'}")
 
-fail = bool(missing)
+unfanned = sorted(DUAL_READ_FROM_REGISTRY - registry_override_keys())
+unbuilt = sorted(DUAL_READ_FROM_REGISTRY - supplied)
+print(f"  dual-read, not in hyperparameter_overrides : {unfanned or 'none'}")
+print(f"  dual-read, not supplied by the builder     : {unbuilt or 'none'}")
+
+fail = bool(missing or unfanned or unbuilt)
 for main in MAINS:
     src = open(main).read()
     if "ClassificationArgs()" in src:

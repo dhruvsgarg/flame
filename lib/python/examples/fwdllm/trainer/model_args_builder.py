@@ -30,6 +30,7 @@ _OPTIONAL = {
     "probe_combine": "select",            # S-H
     "jvp_perf_opt": False,                # §L perf, bit-identical
     "jvp_eval_mode": True,                # H13 dropout fix
+    "cache_dir": "cache_dir/",            # §10 F1; relative default = today's bytes
     # Enacted trainer-side only; the aggregator's trainer object never probes, so
     # the default is inert there and the key stays out of aggregator_base.json.
     # `require_trainer_knobs` keeps it from silently defaulting on a real trainer.

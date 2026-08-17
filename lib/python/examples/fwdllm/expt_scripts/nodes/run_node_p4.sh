@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Phase 4 -- the zero-input runs (fl_fwd_ft_practice.md P5.2 phase 4).
 #
-#   run_node_p4.sh <agnews|yahoo> <controller|control>
+#   run_node_p4.sh <agnews|yahoo|yelp-p> <controller|control>
 #
-# Four invocations, one per node, all four at the SAME vclock budget:
+# Six invocations. Within a dataset the pair is at the SAME vclock budget, which
+# is what a controller-vs-control comparison needs; ACROSS datasets the budget
+# moves, because bins/round differ 11.7x (150/1750/650) and yahoo's control was
+# still climbing monotonically when killed at 86% of 40,000 (§6, P4.8):
 #   node 1: run_node_p4.sh agnews controller     node 2: run_node_p4.sh agnews control
 #   node 3: run_node_p4.sh yahoo  controller     node 4: run_node_p4.sh yahoo  control
+#   then:   run_node_p4.sh yelp-p controller  /  run_node_p4.sh yelp-p control
 #
 # ACCEPTANCE (P5.2): both controller arms reach their plateau and END WITHIN
 # 0.015 OF PEAK -- which a `halt` stop makes mechanically true, so the real test
@@ -62,40 +66,114 @@
 #   no server_update with rho_star == 0 (was 23% of commits on agnews, 48% yahoo)
 #   round trips / commit >= 3 in EVERY quintile, not just the launch projection
 #
-# Yahoo additionally needs `profile_sim_charges.py` (its vclock is priced off an
-# agnews profile -- 0.658 real-s/vclock-s vs agnews' 0.255, hence the --force
-# below) and a budget well above 40,000 vclock: its control was still climbing
-# monotonically at 0.296 when it was killed at 86% of that budget, against a
-# 0.73 backprop reference. See P4.8 and buildplan §9 before reading a yahoo arm
-# as a controller result -- the dataset is under-trained, not broken.
+# Yahoo and yelp-p each still need `profile_sim_charges.py` off a real run of
+# their own (yahoo burns 0.658 real-s/vclock-s against agnews' 0.255, hence the
+# --force below, which lifts automatically once the profile exists). See P4.8 and
+# buildplan §9 before reading a yahoo arm as a controller result -- the dataset is
+# under-trained, not broken.
+#
+# BEFORE THE FIRST ARM ON A DATASET, pre-tokenize it: 100 trainers each tokenizing
+# their own shard cost `234931` 32 of its 44 wall minutes, inside the arm's own
+# budget (§10). `run_sequential.sh` warns when the cache is cold; the fix is
+# `pretokenize_dataset.py --dataset $DATASET --clients 100`.
 set -u
 . "$(dirname "$0")/_node_lib.sh"
 
-DATASET="${1:?usage: run_node_p4.sh <agnews|yahoo> <controller|control>}"
-ARM="${2:?usage: run_node_p4.sh <agnews|yahoo> <controller|control>}"
+DATASET="${1:?usage: run_node_p4.sh <agnews|yahoo|yelp-p> <controller|control>}"
+ARM="${2:?usage: run_node_p4.sh <agnews|yahoo|yelp-p> <controller|control>}"
 
 # Identity at the pinned rf=16 (_FD_REF_P is 450,340); set so the pin is safe to lift.
 export FWDLLM_FD_SCALE_INVARIANT=1
 
-# --force is required for a non-agnews SIM arm (every sim_charge_profiles/*.yaml
-# was profiled on agnews, and per-pass cost scales with max_seq_length). It
-# overrides EVERY check, so per P9.2 run --dry-run WITHOUT it first and confirm
-# the sim-charge-profile mismatch is the ONLY x -- in particular that the
-# wall-clock/gate-starved check reads ok.
+FW="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# Per-dataset budget, eval cost and real-wall ceiling. VCLOCK differs across a
+# pair's datasets, never within a pair -- a controller-vs-control comparison is at
+# equal vclock.
+#
+# THE CONTROL ARM IS THE LONG POLE, and the vclock budget is what sets it. The
+# CONTROLLER stops at f*B_max -- T5 projects ~898 commits / ~2 h on all three,
+# independent of the budget, because law C's length comes from (B_max, T_res, f).
+# The control has no stop (`--phi-stop log_only`), so it runs the budget out:
+# agnews measured 0.255 real-s per vclock-s (2.3 h at 40,000), yahoo 0.658 -- and
+# that 0.658 is priced off an AGNEWS profile, so it is exactly what task B fixes.
+#   yahoo   60,000: 1.5x the budget its control was still climbing through at 86%
+#           (P4.8), and ~10 h at the mis-priced rate -- 80,000 would have blown
+#           the ceiling. Re-cut it once fluxtune_yahoo.yaml prices it properly.
+#   yelp-p  50,000: 650 bins/round against agnews' 150, at seq-256 cost per pass.
+#   CEIL is the real-wall backstop; 12 h so it does NOT clip before the budget,
+#   which would end the arm on the ceiling instead of on its own terms.
+#   EVAL is a COST knob, not a learning one -- the seq-256 datasets' full test sets
+#   blocked the commit loop on 359 of 359 fires (§6).
+#
+# SIZED FROM MEASURED RATE, not from the wall-clock preflight -- that prices every
+# commit at a dataset-independent 4.41 s, and yahoo measured 45.4 (79 commits/h
+# against agnews' 351), so it under-books the seq-256 datasets ~10x. Law C needs
+# ~898 commits, and `check_arm_health.py`'s `budget sizing` line converts a short
+# arm's rate into the vclock that buys them:
+#   agnews  48,000: 130614 measured 17,523 vclock/h => 898 commits want 44,839.
+#           40,000 was UNDER that -- the controller would have ended on
+#           max_runtime_s, which is void.
+#   yahoo   60,000: 125713 measured 5,470 vclock/h => 61,932 for 898 commits, at
+#           11.3 h. But that arm ran WITHOUT --eval-max-samples and blocked on eval
+#           359 of 359 times, so its rate is a floor. Re-read the smoke's own
+#           `budget sizing` line before committing wave 2.
+#   yelp-p  50,000: no arm has ever run -- this is a placeholder the smoke replaces.
+case "$DATASET" in
+  agnews) VCLOCK=48000; CEIL=10.0; EVAL=() ;;
+  yahoo)  VCLOCK=60000; CEIL=14.0; EVAL=(--eval-max-samples 10000) ;;
+  yelp-p) VCLOCK=50000; CEIL=14.0; EVAL=(--eval-max-samples 10000) ;;
+  *) echo "unknown dataset '$DATASET' (want agnews|yahoo|yelp-p)" >&2; exit 2 ;;
+esac
+
+# Runaway cap: the watchdog kills the arm an hour past its own ceiling, so a
+# mis-priced vclock cannot silently eat a node for a day.
+export NODE_WATCH_ARGS="${NODE_WATCH_ARGS:---max-hours $(awk "BEGIN{print $CEIL+1}")}"
+
+# SMOKE=1: the SAME code path at ~15 min, to prove four nodes survive unattended
+# before committing hours to them. A smoke controller arm ends on max_runtime_s,
+# not [BudgetStop] -- that is expected here and is the one gate a smoke cannot
+# check. Everything else (DataBins, rho_star, trips/commit, the watchdog, the
+# profile barrier) reads exactly as it will on the long run.
+#
+# The VCLOCK budget is what cuts a smoke short; the CEILING must stay ABOVE law C's
+# own projection or the preflight refuses the arm outright. That projection is
+# ~898 commits / 1.76 h of REAL wall and is independent of the vclock budget --
+# law C's length comes from (B_max, T_res, f) -- so a small ceiling does not make
+# a small run, it makes a blocked one. 2 h clears it honestly, with no --force.
+if [ "${SMOKE:-0}" = "1" ]; then
+  CEIL=2.0
+  case "$DATASET" in
+    agnews) VCLOCK=2500 ;;               # ~0.255 real-s/vclock-s => ~11 min
+    *)      VCLOCK=1500 ;;               # seq 256 costs ~0.66 => ~16 min
+  esac
+  echo "### SMOKE: vclock=$VCLOCK ceiling=${CEIL}h -- plumbing check, NOT a result"
+fi
+
+# --force only while this dataset has no sim charge profile of its own: per-pass
+# cost scales with max_seq_length, so an agnews-profiled file mis-prices the
+# vclock (task B). It overrides EVERY check, so per P9.2 run --dry-run WITHOUT it
+# first and confirm the sim-charge-profile mismatch is the ONLY x -- in particular
+# that the wall-clock/gate-starved check reads ok.
 FORCE=()
-[ "$DATASET" = "agnews" ] || FORCE=(--force)
+[ -f "$FW/sim_charge_profiles/fluxtune_$DATASET.yaml" ] || \
+  [ "$DATASET" = "agnews" ] || FORCE=(--force)
 
 COMMON=(--only fluxtune --mode sim --yes --clean "${FORCE[@]}"
-        --dataset "$DATASET"
+        --dataset "$DATASET" "${EVAL[@]}"
         --server-update-audit --no-cos-ground-truth-audit
         --num-trainers 100 --num-gpus 8 --agg-goal 10 --c 30
         --probe-combine mean --commit-gate n_target
         --server-step-rule trust_ratio --gate-safety-s 1.5
         --adapter-reduction-factor 16 --max-iter-per-data-id 20
-        --max-runtime-s 40000 --sim-wall-ceiling-h 10.0)
+        --max-runtime-s "$VCLOCK" --sim-wall-ceiling-h "$CEIL")
 
+# Tells _node_lib.sh's post-arm gate reader whether to require a [BudgetStop]
+# ending -- gate 4 of §6, which applies to the controller only.
+export NODE_ARM_KIND
 case "$ARM" in
   controller)
+    NODE_ARM_KIND=controller
     # Zero input: no --rho-star and no --b-max. rho* is derived from the ln 2
     # prior until 3.1's first probe lands, then from the sensed B_max.
     node_run "p4-$DATASET" "controller (law C, T_res=300, sensed B_max)" \

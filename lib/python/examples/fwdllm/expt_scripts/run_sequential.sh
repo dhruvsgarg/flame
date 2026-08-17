@@ -676,6 +676,14 @@ def patch(exp, run_key, variant, trace):
         # names the run for the data it used (0.8 spec); cosmetic for path-style
         # data, same as dirichlet_alpha below.
         exp["trainer"].setdefault("dataset", {})["name"] = DATASET
+        # sim charge profile follows the dataset when one has been profiled for it
+        # (task B): per-pass cost scales with max_seq_length. Only rewritten where
+        # the yaml already carries the key -- i.e. sim legs -- so real is untouched,
+        # and it falls back to the baseline's own agnews-profiled file, which the
+        # preflight below then refuses for a non-agnews run.
+        if h.get("sim_charge_profile_path"):
+            h["sim_charge_profile_path"] = dsreg.sim_charge_profile(
+                h["sim_charge_profile_path"], DATASET)
     if PART:
         h["partition_method"] = PART
         exp["trainer"]["config_overrides"]["hyperparameters"]["partition_method"] = PART
@@ -893,6 +901,16 @@ for trace in traces:
                 "partition": h0.get("partition_method"),
                 "dataset": h0.get("dataset"),
                 "partition_file_path": h0.get("partition_file_path"),
+                "cache_dir": h0.get("cache_dir"),
+                "max_seq_length": h0.get("max_seq_length"),
+                # None unless a yaml overrides them; the F3 check below falls back
+                # to configs/aggregator_base.json, which is where they really live.
+                "model_type": h0.get("model_type"),
+                "model_name": h0.get("model_name"),
+                # trainer tid -> client_idx is `(tid-1) % client_idx_modulo`
+                # (runner.py:389), so this and NOT num_trainers bounds how many
+                # distinct shards a run can touch.
+                "client_idx_modulo": e0["trainer"].get("client_idx_modulo"),
                 "delays": e0["trainer"].get("enable_training_delays"),
                 # H13 A/B knob: yaml-only, so condition_fp cannot see it (§F-18).
                 # Captured per variant and cross-checked below.
@@ -1243,19 +1261,27 @@ for rk in (r[0] for r in runs):
         checks.append({"name": f"sim charge profile readable ({rk})", "level": "error",
                        "detail": f"{prof}: {_e}"})
         continue
-    # 0.8 edge case (d): every existing profile was sourced from agnews reals
-    # (no per-dataset tag on the profile yet). Per-pass cost scales with
-    # max_seq_length, so charging a non-agnews sim leg against it silently
-    # mis-prices the vclock -- refuse explicitly rather than reuse it quietly.
-    if DATASET and DATASET != "agnews":
+    # 0.8 edge case (d): per-pass cost scales with max_seq_length, so charging a
+    # sim leg against a profile taken on a DIFFERENT dataset silently mis-prices
+    # the vclock. Gated on the profile's own `_meta.datasets` tag rather than on
+    # "dataset != agnews": task B gives yahoo its own profile, and that profile
+    # must then pass. An untagged profile predates the tag and is agnews.
+    _prof_ds = set((_pf.get("_meta") or {}).get("datasets") or ["agnews"])
+    _run_ds = DATASET or "agnews"
+    if _run_ds not in _prof_ds:
         checks.append({"name": f"sim charge profile matches dataset ({rk})", "level": "error",
-                       "detail": f"{prof} was profiled on agnews (max_seq_length 192); "
-                                 f"--dataset {DATASET} runs at max_seq_length "
-                                 f"{dsreg.get(DATASET).max_seq_length}, so per-pass cost differs "
-                                 f"and this profile mis-prices the vclock. Profile {DATASET} "
+                       "detail": f"{prof} was profiled on {'/'.join(sorted(_prof_ds))}; "
+                                 f"this run is {_run_ds} at max_seq_length "
+                                 f"{dsreg.get(_run_ds).max_seq_length}, so per-pass cost differs "
+                                 f"and this profile mis-prices the vclock. Profile {_run_ds} "
                                  f"first (profile_sim_charges.py), or --force to proceed anyway."})
+    else:
+        checks.append({"name": f"sim charge profile matches dataset ({rk})", "level": "ok",
+                       "detail": f"{os.path.basename(path)} profiled on {_run_ds}"})
     _foreign, _dates = [], set()
     for _lbl, _entries in _pf.items():
+        if _lbl == "_meta":
+            continue
         for _pk, _e in (_entries or {}).items():
             if not _e.get("charge"):
                 continue
@@ -1284,6 +1310,8 @@ for rk in (r[0] for r in runs):
     # (§A.1 stage CH, §D-50). --force overrides.
     _src = set()
     for _lbl, _entries in _pf.items():
+        if _lbl == "_meta":
+            continue
         for _pk, _e in (_entries or {}).items():
             if _e.get("charge") and not _e.get("cross_baseline"):
                 _src.update(str(s) for s in (_e.get("source_runs") or []))
@@ -1428,6 +1456,51 @@ for rk in (r[0] for r in runs):
     else:
         checks.append({"name": f"partition group exists ({rk})", "level": "error",
                        "detail": f"'{resolved_part}' NOT in {pfp} -- wrong dataset's partition file?"})
+
+# §10 F3: tokenized-feature cache, warm or cold. A cold cache is not an error --
+# the run tokenizes its way out of it -- but it costs ~30 min of the arm's OWN wall
+# budget (234931 spent 32 of 44 minutes before commit 1), which the vclock projection
+# above cannot see. Warn loudly and name the fixer.
+try:
+    with open(os.path.join(env("EXAMPLE_DIR", ""), "configs",
+                           "aggregator_base.json"), encoding="utf-8") as _fh:
+        _AGG_BASE = json.load(_fh).get("hyperparameters", {})
+except (OSError, ValueError):
+    _AGG_BASE = {}
+for rk in (r[0] for r in runs):
+    b = per_baseline.get(rk, {})
+    cdir, ds_name = b.get("cache_dir"), b.get("dataset")
+    if not cdir or not ds_name:
+        continue                      # no --dataset -> relative default, cwd decides
+    # Distinct shards this run touches: trainers wrap onto partitions modulo
+    # client_idx_modulo, so 200 trainers still read only 100 caches.
+    n_tr = int(b.get("n_trainers") or 0)
+    n_shards = min(n_tr, int(b.get("client_idx_modulo") or n_tr))
+    want = list(range(n_shards)) + [-1]   # -1 is the aggregator's global test set
+    # The key `_load_data_loader_from_cache` builds (base_data_manager.py:583).
+    # Model identity comes off the run, not a constant -- a hardcoded `distilbert`
+    # here is the same shape of bug as the hardcoded 150 was (§8 item 9).
+    _mt = b.get("model_type") or _AGG_BASE.get("model_type")
+    _mn = b.get("model_name") or _AGG_BASE.get("model_name")
+    if not _mt or not _mn:
+        continue
+    key = "_".join([str(_mt), str(_mn).split("/")[-1], "cached",
+                    str(b.get("max_seq_length")), "ClassificationModel",
+                    ds_name, str(b.get("partition"))])
+    have = [c for c in want if os.path.exists(os.path.join(cdir, f"{key}_{c}"))]
+    if len(have) == len(want):
+        checks.append({"name": f"feature cache warm ({rk})", "level": "ok",
+                       "detail": f"{len(have)}/{len(want)} in {cdir}"})
+    else:
+        checks.append({"name": f"feature cache warm ({rk})", "level": "warn",
+                       "detail": f"only {len(have)}/{len(want)} tokenized shards in "
+                                 f"{cdir} -- the run will tokenize the other "
+                                 f"{len(want) - len(have)} inside its own wall budget "
+                                 f"(~30 min at seq {b.get('max_seq_length')}). Fix: "
+                                 f"pretokenize_dataset.py --dataset {ds_name} "
+                                 f"--clients {n_shards} --partition-method "
+                                 f"{b.get('partition')}"})
+
 # parity pairing naming (only meaningful for a both-mode matrix).
 if MODE == "both":
     ok_pair = all(any(n.endswith("_real") for n, *_ in manifest) and
