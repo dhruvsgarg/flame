@@ -94,9 +94,40 @@ profile_dataset () {
   local run
   run="$(ls -1dt "$FW"/experiments/run_*"$ds"*real* 2>/dev/null | head -1)"
   [ -n "$run" ] || { echo "!!! [node$NODE] no real $ds run dir -- cannot profile." >&2; return 1; }
-  echo "--- [node$NODE] profiling from $(basename "$run")"
+
+  # REFUSE to profile a truncated run. A killed real arm still has telemetry, and
+  # profiling it wrote a yelp-p file off n=7 samples against a healthy n=3601
+  # (2026-08-17) -- a garbage profile that then LOOKS present and skips the real
+  # run on every retry. Better no profile than a plausible wrong one.
+  if [ -f "$run/arm_stall.json" ]; then
+    echo "!!! [node$NODE] the real $ds arm was killed by the watchdog -- NOT profiling." >&2
+    cat "$run/arm_stall.json" >&2; return 1
+  fi
+  local _n
+  _n="$(grep -ho '"event": "vclock_charge"' "$run"/telemetry/aggregator_*.jsonl 2>/dev/null | wc -l)"
+  if [ "${_n:-0}" -lt "${MIN_CHARGE_SAMPLES:-200}" ]; then
+    echo "!!! [node$NODE] only $_n vclock_charge samples in $(basename "$run") " >&2
+    echo "!!!   (want >= ${MIN_CHARGE_SAMPLES:-200}) -- too short to price a vclock. NOT profiling." >&2
+    return 1
+  fi
+
+  # Seed from the baseline profile so the `charge:` flags and rationales carry
+  # over. profile_sim_charges.py writes a BRAND-NEW entry with `charge: false`
+  # ("review before enabling"), so a from-scratch per-dataset profile charges
+  # NOTHING -- which would silently un-price the very arms task B exists to price.
+  [ -f "$out" ] || cp -f "$FW/sim_charge_profiles/fluxtune.yaml" "$out"
+  echo "--- [node$NODE] profiling from $(basename "$run") ($_n charge samples)"
   ( cd "$FW/expt_scripts" && python profile_sim_charges.py --real-run "$run" \
       --out "../sim_charge_profiles/fluxtune_$ds.yaml" --only-observed ) || return 1
+  # Prove the charges survived the reseed -- an all-false profile is inert.
+  python - "$out" <<'PYCHK'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])) or {}
+on = [f"{l}.{k}" for l, e in d.items() if l != "_meta"
+      for k, v in (e or {}).items() if (v or {}).get("charge")]
+print("  [profile] charging %d entries: %s" % (len(on), ", ".join(on) or "NONE -- inert!"))
+sys.exit(0 if on else 1)
+PYCHK
   # The tag the launcher gates on: if it does not name this dataset the profile is
   # refused for it and the arm silently falls back to needing --force.
   grep -A3 '^_meta' "$out"

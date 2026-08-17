@@ -90,7 +90,12 @@ def main():
                     help="actually signal on a breach (default: report only)")
     ap.add_argument("--poll", type=float, default=60.0)
     ap.add_argument("--stall-window-s", type=float, default=1200.0,
-                    help="no new commit for this long => hang")
+                    help="no new commit for this long => hang (once commit 1 lands)")
+    ap.add_argument("--first-commit-grace-s", type=float, default=2700.0,
+                    help="separate, much longer budget for reaching commit 1: a "
+                         "REAL-mode arm at seq 256 legitimately takes tens of "
+                         "minutes to its first commit, and the steady-state stall "
+                         "window is far too tight for it")
     ap.add_argument("--grace-commits", type=int, default=200,
                     help="rate checks only apply past this many commits")
     ap.add_argument("--trips-floor", type=float, default=3.0)
@@ -126,9 +131,15 @@ def main():
 
         if a.max_hours and (time.time() - t0) > a.max_hours * 3600:
             return _fire(a, run, f"exceeded --max-hours {a.max_hours}")
-        if idle > a.stall_window_s:
+        # Before commit 1 there is no cadence to be "stalled" against -- the arm
+        # is still spinning up 100 trainers. Killing on the steady-state window
+        # here false-positived a real yelp-p run at commit 0 (2026-08-17).
+        _budget = a.stall_window_s if commits > 0 else a.first_commit_grace_s
+        if idle > _budget:
             return _fire(a, run, f"no new commit for {idle / 60:.0f} min "
-                                 f"(hang; last commit #{commits})")
+                                 f"(limit {_budget / 60:.0f} min"
+                                 f"{'' if commits else ', pre-first-commit'}; "
+                                 f"last commit #{commits})")
         if commits >= a.grace_commits:
             if zero:
                 return _fire(a, run, f"{zero} commits took a step of length zero "

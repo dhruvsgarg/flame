@@ -765,6 +765,25 @@ the config-derived check that actually protects the vclock. And **not** a re-pro
 what every historical agnews arm and P4's own calibration were priced against, so re-profiling now would
 re-price the comparison these arms exist to make.
 
+### §11.1a-quater What the first smoke found (2026-08-17)
+
+Three defects, none visible to any dry-run, all in code added the same day:
+
+1. **The watchdog killed a legitimate real-mode arm at commit 0.** The stall check was not gated on
+   having *reached* commit 1, so the 7-minute smoke window applied to spin-up — and a real yelp-p arm at
+   seq 256 with 100 trainers takes far longer than that to its first commit. Fixed: a separate
+   `--first-commit-grace-s` (default 45 min) applies until commit 1 lands.
+2. **A killed run was still profiled.** `profile_dataset` wrote `fluxtune_yelp-p.yaml` from **n=7**
+   `vclock_charge` samples against a healthy **n=3601** — and a bad profile is worse than none, because
+   it then *looks present* and skips the real run on every retry. Fixed: refuse to profile when
+   `arm_stall.json` exists or when fewer than `MIN_CHARGE_SAMPLES` (200) samples were collected.
+3. **A from-scratch per-dataset profile charges NOTHING.** `profile_sim_charges.py` writes a brand-new
+   entry with `charge: false` ("review before enabling"), so `fluxtune_yelp-p.yaml` came out inert —
+   silently *un*-pricing the very arms task B exists to price, which is the opposite of the intent.
+   Fixed: seed the new file from `fluxtune.yaml` first so the `charge:` flags and rationales carry over,
+   then assert at least one entry is charging. Verified: `NONE -- inert` becomes
+   `drain_tail._default, fedavg._default` with the dataset tag intact.
+
 ### §11.1a-bis The rate constant, and why the smoke sizes the real run
 
 **Measured, 2026-08-16 arms** (first commit to last, so the pre-commit-1 tokenization stall is excluded
