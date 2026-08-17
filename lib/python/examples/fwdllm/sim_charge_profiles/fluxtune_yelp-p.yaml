@@ -1,0 +1,27 @@
+# Real-profiled vclock charges for sim-only costs sim can't measure
+# live (FWDLLM_DESIGN.md §P). Regenerate via expt_scripts/
+# profile_sim_charges.py -- hand-edit only `charge:`/`rationale:`.
+_meta:
+  datasets:
+  - yelp-p
+  profiled_at: '2026-08-17'
+drain_tail:
+  _default:
+    charge: false
+    mean_s: 0.2011
+    n: 7
+    p90_s: 0.5221
+    profiled_at: '2026-08-17'
+    rationale: new candidate -- review before enabling
+    source_runs:
+    - run_20260817_170528_fluxtune_yelp-p_n100_smoke_syn_0_real
+fedavg:
+  _default:
+    charge: false
+    mean_s: 0.0378
+    n: 7
+    p90_s: 0.0491
+    profiled_at: '2026-08-17'
+    rationale: new candidate -- review before enabling
+    source_runs:
+    - run_20260817_170528_fluxtune_yelp-p_n100_smoke_syn_0_real

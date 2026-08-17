@@ -688,6 +688,15 @@ def patch(exp, run_key, variant, trace):
         if h.get("sim_charge_profile_path"):
             h["sim_charge_profile_path"] = dsreg.sim_charge_profile(
                 h["sim_charge_profile_path"], DATASET)
+    # ABSOLUTE, always: the aggregator resolves this with a bare open() against
+    # its OWN cwd (sim_charge_registry.py:19), which spawner.py inherits from the
+    # launching shell -- and a miss is a WARNING plus an empty dict, so the vclock
+    # silently loses every charge. Repo-root-relative only worked when you
+    # happened to launch from the repo root.
+    if h.get("sim_charge_profile_path") and not os.path.isabs(h["sim_charge_profile_path"]):
+        h["sim_charge_profile_path"] = os.path.abspath(
+            os.path.join(env("EXAMPLE_DIR", ""), "..", "..", "..", "..",
+                         h["sim_charge_profile_path"]))
     if PART:
         h["partition_method"] = PART
         exp["trainer"]["config_overrides"]["hyperparameters"]["partition_method"] = PART

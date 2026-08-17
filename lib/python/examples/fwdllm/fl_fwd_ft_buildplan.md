@@ -697,7 +697,14 @@ FW=$REPO/lib/python/examples/fwdllm
 ```
 
 **`/home/dgarg39/flame` is LOCAL disk on each node; `/coc/scratch` is the shared one.** So every node
-needs its own `git pull` for code. **Nothing else crosses nodes** — each node produces the sim charge
+needs its own `git pull` for code.
+
+**Launch directory no longer matters** (fixed 2026-08-17). Two things used to resolve against the
+launching shell's cwd, and only one was obvious. `cache_dir` was the known one (§10). The other was
+`sim_charge_profile_path`, emitted repo-root-relative and opened by the aggregator with a bare `open()`
+against **its own** cwd — `spawner.py` starts every process with no `cwd=`, so it inherits the shell's.
+A miss there is a `[SIM_CHARGE_PROFILE] failed to load` **warning** and an empty dict, so the vclock
+silently loses every profiled charge and nothing fails. It is now emitted absolute. **Nothing else crosses nodes** — each node produces the sim charge
 profile it consumes (§-1), and the tokenizer cache is already on `/coc/scratch` at 101/101 for all three
 datasets (§10).
 
