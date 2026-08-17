@@ -1,0 +1,59 @@
+_meta:
+  datasets:
+  - yahoo
+  profiled_at: smoke
+drain_tail:
+  _default:
+    charge: true
+    mean_s: 0.2783
+    n: 3601
+    p90_s: 0.5722
+    profiled_at: '2026-08-03'
+    rationale: sim runs the same op under ~100 co-located trainer threads, so its
+      live span is contention-inflated and folding it on the vclock injects sim-host
+      noise (simulate_fwdllm.md D-18, F-1/F-20). Charged from this baseline's own
+      real.
+    source_runs:
+    - run_20260803_001625_fluxtune_n100_smoke_syn_0_real
+    - run_20260803_042016_fluxtune_n100_smoke_syn_0_real
+fedavg:
+  _default:
+    charge: true
+    mean_s: 0.0563
+    n: 3601
+    p90_s: 0.0525
+    profiled_at: '2026-08-03'
+    rationale: same as drain_tail -- sim's own span is contention-inflated, so the
+      charge comes from this baseline's own real.
+    source_runs:
+    - run_20260803_001625_fluxtune_n100_smoke_syn_0_real
+    - run_20260803_042016_fluxtune_n100_smoke_syn_0_real
+redispatch_turnaround:
+  var_bad:
+    charge: false
+    mean_s: 0.0036
+    n: 27209
+    p90_s: 0.0077
+    profiled_at: '2026-07-29'
+    rationale: OFF. Directly measured, sim performs the SAME `_distribute_weights_*`
+      call and pays the same wall (real 0.016-0.032s vs sim 0.018-0.029s), so there
+      is no skipped cost to charge. The 0.12-0.32s readings that argued for turning
+      it on were the same waiting-not-work artifact as `weights` (simulate_fwdllm.md
+      section E).
+    source_runs:
+    - run_20260729_034223_fedbuff_round_n100_smoke_syn_0_real
+  weights:
+    charge: true
+    cross_baseline: true
+    mean_s: 0.0598
+    n: 3264
+    p90_s: 0.0742
+    profiled_at: '2026-07-29'
+    rationale: NOT per-baseline. The first-difference marginal is only valid where
+      dispatch is a serial BURST (round cadence, cohort pinned); under event-driven
+      dispatch it measures inter-arrival waiting, 10-40x the real work (simulate_fwdllm.md
+      section E). This value comes from the round baselines, where the burst assumption
+      holds, and is the one with a live validation behind it.
+    source_runs:
+    - run_20260728_151722_fedbuff_round_n100_smoke_syn_0_real
+    - run_20260728_151831_felix_round_n100_smoke_syn_0_real

@@ -52,47 +52,64 @@ The law beat its control on both datasets, so the controller was never in questi
 | **D** | 2 · nodes 1, 2 | **Re-run P-4 yahoo** at 80,000 vclock | 2 × ~6 h | same four gates; then score accuracy vs `Λ` against §5's first open row |
 | **H** | 2 · nodes 3, 4 | **yelp-p bring-up** — first FL arm on the third dataset. Registry, partitions and cache are all done; what is untested is the *stack*, and 2 classes is the opposite corner from yahoo's 10 | 2 × ~4 h | same four gates; `A` and per-vclock-hour comparable against the other two |
 | **E** | any time, CPU | 3.5's saturation stop — **not built.** Size window/threshold/patience by replay against the arms on disk before it ships | CPU | replay reproduces a sensible stop commit |
-| **G** | **after** wave 2, CPU | **`read_instance_from_h5` returns rows in thread-completion order**, so a shard's row order — and therefore its bin composition — is not reproducible across tokenizations, and `guid` names the wrong row (§10). No ledger number is affected. It waits because it re-orders every future shard against the caches waves 1–2 run on | CPU, minutes | two tokenizations of one client agree byte-for-byte, and `guid` round-trips |
+| **G** | **after** the P-4 arms, CPU | **`read_instance_from_h5` returns rows in thread-completion order**, so a shard's row order — and therefore its bin composition — is not reproducible across tokenizations, and `guid` names the wrong row (§10). No ledger number is affected. It waits because it re-orders every future shard against the caches those arms run on | CPU, minutes | two tokenizations of one client agree byte-for-byte, and `guid` round-trips |
 | **F** | — | **done 2026-08-17** — shared absolute `cache_dir`, `pretokenize_dataset.py`, cold-cache preflight (§10) | — | 101/101 shards per dataset on `/coc/scratch` |
 
 ### How to run it, and what to expect
 
-**Step 1 — smoke all four nodes, ~15-25 min.** Nothing below has ever run live: `_node_lib.sh` now
-backgrounds the launcher under `set -m` (that changed how *every* arm launches), `watch_arm.py` has only
-been tested against finished logs, the profile publish/fetch barrier is new, **real mode has never run on
-yahoo or yelp-p**, and **yelp-p has never launched the FL stack at all**. A clean `--dry-run` is a prior,
-not a guarantee — each of the four P4.7 defects passed one and cost a node.
+**One command per node. No waves, no barrier, no cross-node dependency.** Each node owns one dataset
+end to end:
+
+| node | chain | needs from other nodes |
+|---|---|---|
+| **1** | agnews controller → agnews control | nothing |
+| **2** | real yahoo → `fluxtune_yahoo.yaml` → controller → control | nothing |
+| **3** | real yelp-p → `fluxtune_yelp-p.yaml` → controller → control | nothing |
+| **4** | backprop ceilings, yahoo then yelp-p (§9 rung 1, ~10 min each) | nothing |
+
+**Why a pair stays on one node.** `/home/dgarg39/flame` is local disk per node; only `/coc/scratch` is
+shared. Splitting a pair across nodes forces either a cross-node handoff of the sim charge profile or
+two independently-profiled runs — and the profile is what converts vclock into real work, so a
+controller and control charged from *different* profiles are no longer compared at equal vclock. This
+project already rejected a shared profile over a 0.6–3.4% clock effect. One node per dataset makes the
+pair identically priced **by construction**.
+
+**Step 1 — smoke all four, ~20–30 min each.** Nothing below has run live: `_node_lib.sh` now backgrounds
+the launcher under `set -m` (that changed how *every* arm launches), `watch_arm.py` has only been tested
+against finished logs, **real mode has never run on yahoo or yelp-p**, and **yelp-p has never launched
+the FL stack at all**. A clean `--dry-run` is a prior, not a guarantee — each of the four P4.7 defects
+passed one and cost a node.
 
 ```bash
-S=<1|2|3|4>                                   # this node's slot
+N=<1|2|3|4>
 cd $REPO && git pull
-tmux new -s smoke "SMOKE=1 $FW/expt_scripts/nodes/run_wave.sh 1 $S && \
-                   SMOKE=1 $FW/expt_scripts/nodes/run_wave.sh 2 $S 2>&1 | tee ~/smoke_slot$S.log"
+tmux new -s smoke "SMOKE=1 $FW/expt_scripts/nodes/run_node.sh $N 2>&1 | tee ~/smoke_node$N.log"
 ```
 
-**Smoke pass condition:** every slot exits 0 · every arm ≥ 5 commits · no `arm_stall.json` · and
-`check_arm_health` shows `[DataBins]` right per dataset (150 / 1,750 / 650, `source=registry`,
-trainer-confirmed) with **0 zero-steps**. Gate 4 reads WARN on a smoke controller — its budget is
-deliberately too small to reach `[BudgetStop]` — and that is the one gate only the long run settles.
+**Smoke pass condition:** exit 0 · every arm ≥ 5 commits · no `arm_stall.json` · `[DataBins]` right per
+dataset (150 / 1,750 / 650, `source=registry`, trainer-confirmed) · **0 zero-steps**. Gate 4 reads WARN
+on a smoke controller — its budget is deliberately too small to reach `[BudgetStop]`, and that is the one
+gate only the long run settles. **The smoke also prints the `rate` and `budget sizing` lines that size
+the real run** (§11.1a-bis) — read them before step 2.
 
-**The smoke also produces the number that sizes wave 2:** each arm's `rate` and `budget sizing` lines
-(§11.1a-bis). Read them before launching the long runs.
-
-**Step 2 — the real waves**, once the smoke is clean:
+**Step 2 — the real run**, same command without `SMOKE=1`:
 
 ```bash
-tmux new -s p4 "$FW/expt_scripts/nodes/run_wave.sh 1 $S && \
-                $FW/expt_scripts/nodes/run_wave.sh 2 $S 2>&1 | tee ~/p4_slot$S.log"
+tmux new -s p4 "$FW/expt_scripts/nodes/run_node.sh $N 2>&1 | tee ~/p4_node$N.log"
 ```
 
-**Expected outcome of the whole programme, stated up front so it is not re-litigated later.** These runs
-give the first scored arms under the fixed code on three datasets, which closes hole 1 of §-0's four.
-**They do not complete the zero-input claim.** Hole 2 (the `B_max` sensor is unexercised below chance on
-yahoo) closes only if yahoo clears chance. Hole 3 (`rf`=64 cannot carry `annealed`, so `T_res`=300 and
-`f`=0.95 are pinned to `p`=450,340) is **untouched** — all six arms are pinned rf=16. Hole 4 (`f`=0.95
-has no accuracy evidence) is partly addressed by D's accuracy-vs-`Λ` curve. And §5 already pre-registers
-that the agnews-vs-yahoo `ρ*` divergence **may not reproduce** — the two knees at commit 150 were 0.248
-and 0.237. A clean run showing no divergence is a finding about the *sensor*, not a failure.
+Node 1 is ~5.5 h. Nodes 2 and 3 are the long poles and their length is **unknown until the smoke
+measures it** — at the pre-eval-fix yahoo rate a pair would be ~23 h, and `--eval-max-samples 10000` is
+aimed squarely at the term that caused it. Node 4 finishes in ~20 min and is then free for task E.
+
+**Expected outcome, stated up front so it is not re-litigated later.** These runs give the first scored
+arms under the fixed code on three datasets, closing **hole 1 of §-0's four**. They do **not** complete
+the zero-input claim. Hole 2 (the `B_max` sensor is unexercised below chance on yahoo) closes only if
+yahoo clears chance. Hole 3 (`rf`=64 cannot carry `annealed`, pinning `T_res`=300 and `f`=0.95 to
+`p`=450,340) is **untouched** — every arm is pinned rf=16. Hole 4 (`f`=0.95 has no accuracy evidence) is
+partly addressed by node 2's accuracy-vs-`Λ` curve. And §5 already pre-registers that the agnews-vs-yahoo
+`ρ*` divergence **may not reproduce** — the two knees at commit 150 were 0.248 and 0.237. A clean run
+showing no divergence is a finding about the *sensor*, not a failure.
 
 **Two decisions already made, so nobody re-opens them:** `b_max_policy` defaults to **`mean`** (§5's
 constants table has the argument), and databin **size stays 8 while the bin count moves per dataset** (§1).
@@ -654,7 +671,7 @@ confirmed by trainer … 1750 batches` holds, and the first commit's `ρ` still 
 
 ---
 
-## §11 — Runbook · two waves, four nodes, one command per node
+## §11 — Runbook · one command per node, no cross-node dependency
 
 **Every slot below is longer than a login survives — run each inside `tmux`.** The 2026-08-16 backprop
 ceiling was lost to a closed terminal; that is the whole reason this section says so twice.
@@ -670,69 +687,54 @@ FW=$REPO/lib/python/examples/fwdllm
 ```
 
 **`/home/dgarg39/flame` is LOCAL disk on each node; `/coc/scratch` is the shared one.** So every node
-needs its own `git pull` for code, and a `sim_charge_profiles/*.yaml` written on one node must be
-committed and pulled to reach the others. **The tokenizer cache needs no propagating** — it is on
-`/coc/scratch` and all three datasets are 101/101 there (§10).
+needs its own `git pull` for code. **Nothing else crosses nodes** — each node produces the sim charge
+profile it consumes (§-1), and the tokenizer cache is already on `/coc/scratch` at 101/101 for all three
+datasets (§10).
 
-### §11.1 The two waves
+### §11.1 One command per node
 
 ```bash
-S=<1|2|3|4>                                     # this node's slot
+N=<1|2|3|4>
 cd $REPO && git pull
-tmux new -s p4 "$FW/expt_scripts/nodes/run_wave.sh 1 $S && \
-                $FW/expt_scripts/nodes/run_wave.sh 2 $S 2>&1 | tee ~/p4_slot$S.log"
+tmux new -s p4 "$FW/expt_scripts/nodes/run_node.sh $N 2>&1 | tee ~/p4_node$N.log"
 ```
 
-**The `&&` is safe: there is no manual step between the waves.** Wave 1 publishes each sim charge
-profile to `/coc/scratch/…/sim_charge_profiles/`; wave 2 fetches both and *waits* for whichever node is
-still producing one (`WAVE2_WAIT_PROFILES_MIN`, default 180). That barrier exists because
-`/home/dgarg39/flame` is **local disk per node** — only `/coc/scratch` is shared. The tokenizer cache
-needs no such handling; it is already shared and 101/101 for all three datasets (§10).
-
-| | node 1 | node 2 | node 3 | node 4 |
-|---|---|---|---|---|
-| **wave 1** | **A** yahoo backprop ceiling (~10 min) → real yahoo → `fluxtune_yahoo.yaml` | real yelp-p → `fluxtune_yelp-p.yaml` | **C** agnews **controller** | **C** agnews **control** |
-| | ~1 h | ~1 h | ~2 h | ~2.5 h |
-| **wave 2** | **D** yahoo controller | **D** yahoo control | **H** yelp-p controller | **H** yelp-p control |
-| | ~2 h | **~10 h ← long pole** | ~2 h | ~8 h |
+Node 1 = the agnews pair · node 2 = real yahoo → profile → pair · node 3 = the same for yelp-p ·
+node 4 = the two backprop ceilings, then free. The per-node table and the reasoning for keeping a pair
+together are in [§-1](#-1--status-board).
 
 **Why the two arms of a pair cost so differently.** The **controller stops itself** at `B ≥ f·B_max`, and
-law C's length comes from `(B_max, T_res, f)` — not from the budget. T5 projects **898 commits ≈ 2 h on
-all three datasets** at the `ln 2` prior, and that is the *whole point*: the arm ends on `[BudgetStop]`.
-The **control has no stop** (`--phi-stop log_only`, deliberately, so P4.1's past-the-stop counterfactual
-keeps being measured), so it runs its vclock budget out — agnews measured **0.255 real-s per vclock-s**
-(2.3 h at 40,000), yahoo **0.658**.
+law C's length comes from `(B_max, T_res, f)` — not from the budget, so its ~898 commits cost what they
+cost. That is the *whole point*: the arm ends on `[BudgetStop]`. The **control has no stop**
+(`--phi-stop log_only`, deliberately, so P4.1's past-the-stop counterfactual keeps being measured), so it
+runs its vclock budget out.
 
-### §11.1a Smoke the four nodes first — `SMOKE=1`, ~15 min per slot
+### §11.1a Smoke every node first — `SMOKE=1`, ~20-30 min
 
-**Do this before the real waves.** `SMOKE=1` runs the *identical* code path at a 2,500 vclock budget and
-a 0.4 h ceiling, so four nodes prove they survive unattended before hours are committed to them:
+**Do this before the real run.** `SMOKE=1` runs the *identical* chain at a small vclock budget (agnews
+2,500 / seq-256 1,500) against a 2.0 h ceiling — the ceiling must stay **above** law C's own ~1.76 h
+projection or the preflight refuses the arm outright, so a small ceiling makes a blocked run, not a
+short one.
 
 ```bash
-S=<1|2|3|4>
-SMOKE=1 $FW/expt_scripts/nodes/run_wave.sh 1 $S && \
-SMOKE=1 $FW/expt_scripts/nodes/run_wave.sh 2 $S
+SMOKE=1 $FW/expt_scripts/nodes/run_node.sh $N
 ```
 
-Its profiles come from a 10-minute real run and are **not** fit to price an arm, so they go to
-`sim_charge_profiles/smoke/` and a smoke shared dir and never overwrite the production ones. The
-watchdog tightens to a 7-minute stall window and a 25-commit grace so it is actually armed inside the
-horizon.
+Smoke profiles come from a 10-minute real run and are **not** fit to price an arm, so they are written
+under `sim_charge_profiles/smoke/` and never overwrite the production ones. The watchdog tightens to a
+7-minute stall window and a 25-commit grace so it is armed inside the horizon.
 
-**What a smoke covers:** the `set -m` backgrounding and watcher teardown (new, and it changed how every
-arm launches) · the watchdog attaching to a live run without false-firing · the publish → shared →
-fetch barrier · real mode on yahoo and yelp-p (**never run before**) · yelp-p's first-ever FL arm ·
-`check_arm_health` at the end of each arm.
+**What a smoke covers:** the `set -m` backgrounding and watcher teardown (new — it changed how every arm
+launches) · the watchdog attaching to a live run without false-firing · real mode on yahoo and yelp-p
+(**never run before**) · yelp-p's first-ever FL arm · `check_arm_health` after each arm · and the `rate`
+line that sizes the real run.
 
-**What it cannot cover, and why that is fine:** a smoke controller arm ends on `max_runtime_s`, not
-`[BudgetStop]` — the budget is deliberately too small — so gate 4 reads WARN and only the long run
-settles it. And the smoke uses `--force`, since its profile is in `smoke/`; the force-drop path was
-verified separately against a tagged stub (`--force` count 0, profile row `ok`, zero non-ok checks).
+**What it cannot cover:** a smoke controller ends on `max_runtime_s`, not `[BudgetStop]` — its budget is
+deliberately too small — so gate 4 reads WARN and only the long run settles it. The smoke also uses
+`--force`, since its profile is in `smoke/`; the force-drop path was verified separately against a
+tagged stub (`--force` count 0, profile row `ok`, zero non-ok checks).
 
-**Pass condition:** every slot exits 0, every arm reports ≥ 5 commits, no `arm_stall.json`, and
-`check_arm_health` shows `[DataBins]` correct per dataset with 0 zero-steps.
-
-### §11.1a-bis The rate constant, and why the smoke sets wave 2's budgets
+### §11.1a-bis The rate constant, and why the smoke sizes the real run
 
 **Measured, 2026-08-16 arms** (first commit to last, so the pre-commit-1 tokenization stall is excluded
 by construction):
@@ -756,9 +758,9 @@ against a ~91 s inter-eval gap.
 
 > **Pre-registered:** `--eval-max-samples 10000` attacks that second term directly — 10,000 rows instead
 > of 60,000 — and **has never been measured on a full arm.** If the eval tax is the dominant term, the
-> smoke's yahoo rate should land well above 79 commits/h, and wave 2's yahoo budget comes down with it.
+> smoke's yahoo rate should land well above 79 commits/h, and node 2's budget comes down with it.
 > If it stays near 79, the cost is intrinsic to seq 256 and the yahoo arms are ~11 h each. **Read the
-> smoke's `rate` and `budget sizing` lines before launching wave 2 — that is what they are for.**
+> smoke's `rate` and `budget sizing` lines before launching the real run — that is what they are for.**
 
 ### §11.1b Can this be shorter?
 
@@ -776,7 +778,7 @@ ceiling outright, which is why it is 60,000. (2) That 0.658 comes from charging 
 worth re-reading, and the budget re-cut against it.** The `--sim-wall-ceiling-h 12` backstop is set so the
 ceiling does not clip before the budget does.
 
-**Cheaper still, if a slot is scarce:** the controller arms alone (wave 2 slots 1 and 3) answer the
+**Cheaper still, if a slot is scarce:** the controller arms alone (nodes 2 and 3) answer the
 acceptance question — the controls are the comparison, and agnews already has one on disk from
 2026-08-16 to compare against.
 
@@ -855,5 +857,5 @@ against the arms already on disk (P4's portfolio plus 2026-08-13's K-1/P-1/G-2 a
 ### §11.5 Task G — the shard row-order fix *(§10; CPU, minutes, AFTER the P-4 arms)*
 
 Preserve `index_list` order in `read_instance_from_h5` so `guid` names its own row and two tokenizations
-of one client agree byte-for-byte. It re-orders every future shard against the caches wave 1 and 2 run
-on, which is the only reason it is not done already.
+of one client agree byte-for-byte. It re-orders every future shard against the caches the P-4 arms
+run on, which is the only reason it is not done already.
