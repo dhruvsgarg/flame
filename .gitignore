@@ -123,3 +123,7 @@ lib/python/examples/async_cifar10/parity_*.json
 # Stray trainer log + local Claude Code project dir
 temp_trainer.log
 .claude/
+
+# Smoke-mode sim charge profiles: built from 10-minute real runs, never valid
+# for a scored arm (expt_scripts/nodes/run_node.sh).
+lib/python/examples/fwdllm/sim_charge_profiles/smoke/
