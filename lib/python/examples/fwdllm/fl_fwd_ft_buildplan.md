@@ -585,6 +585,16 @@ and every rung below is moot. **Calibrated on agnews (2026-08-16): 3,600 rows, o
 against that dataset's FL control at 0.835 after 801 commits and 2.3 h. Command: [§11.3](#113-individual-invocations-if-a-wave-has-to-be-taken-apart).
 **`tee` it** — the script only prints, and the 2026-08-16 number was lost to a closed terminal.
 
+> **No attention mask anywhere in the stack** (seen 2026-08-17 on node 4's own log:
+> *"We strongly recommend passing in an `attention_mask` since your input_ids may be padded"*).
+> `tc_transformer_trainer_distribute.py:713` and `:950` both do `x = batch[1]` then `self.model(x)`,
+> dropping `batch[2]`, and `probe_backprop_ceiling.py` does the same — so the probe is **faithful to
+> production** and rung 1 stays a valid test. But the model attends to PAD tokens on every arm, which
+> depresses absolute accuracy everywhere and plausibly hurts yahoo most: its length *variance* is far
+> higher (p50 84 / p95 367 truncated at 256, against agnews' 41 / 70 at 192), so how much of each
+> sequence is real content swings much more. **If rung 1 comes back ≈0.30, this is the first thing to
+> test** — it is the cheapest candidate for a data-path fault and it has never been examined.
+
 **Rung 2 — is the estimator itself weaker on yahoo? · 1 GPU · ~1 h.** Only if rung 1 clears.
 - **cos audit on yahoo**, `cos_ground_truth_audit` on for ~100 commits, `replay_scoring.py --cos`. Compare
   `D` against agnews' 0.10–0.15 ([P4.2](fl_fwd_ft_practice.md#p42-g-1b--s-is-efficiency-not-safety)). A
