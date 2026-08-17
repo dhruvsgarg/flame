@@ -1,17 +1,17 @@
 # Forward-gradient fine-tuning — implementation, evidence, and how to run it
 
-> **Companion to [fl_fwd_ft_solution.md](fl_fwd_ft_solution.md)** (`§0…§8`), which owns the *why*.
-> Cited here as "model §x". **This document owns every number a run produced**, plus the flags, arms,
-> dead ends, instruments and launch procedure.
+> **This document owns every number a run produced**, plus the flags, arms, dead ends, instruments and
+> launch procedure. **[P3](#p3--knob-ledger) (knobs) and [P4](#p4--arm-ledger) (arms) are the two
+> ledgers, and they are the source of truth for evidence.**
 >
-> **Three ledgers are the source of truth: [P3](#p3--knob-ledger) (knobs), [P4](#p4--arm-ledger) (arms)
-> and [P5.2](#p52-execution-plan--to-a-zero-input-run) (the build — every task, with its state).
-> No status tags anywhere else.**
+> **Status and next steps are NOT here — they live in
+> [fl_fwd_ft_buildplan.md §-1](fl_fwd_ft_buildplan.md), the one status board, updated in place.**
+> [fl_fwd_ft_solution.md](fl_fwd_ft_solution.md) (`§0…§8`) owns the *why*; cited here as "model §x".
 
 | you want… | go to |
 |---|---|
-| **what to do next** | **[P5](#p5--the-queue)** |
-| **how to build any P5 row** | **[fl_fwd_ft_buildplan.md](fl_fwd_ft_buildplan.md)** — specs, edge cases, gates |
+| **status · what to do next · how to build it** | **[fl_fwd_ft_buildplan.md](fl_fwd_ft_buildplan.md)** — status board, queue, specs |
+| **the generality claim, as a checklist** | **[buildplan §-0](fl_fwd_ft_buildplan.md)** |
 | what to launch an arm with · what defaults to change | [P2](#p2--the-shipped-stack) · [P2.1](#p21-ship-checklist) |
 | what a lever did, and its flag | [P3](#p3--knob-ledger) |
 | what an arm scored | [P4](#p4--arm-ledger) |
@@ -469,8 +469,23 @@ the numbers buildplan §1 already states); agnews byte-identical.**
 ~13 min): `[DataBins] total_data_bins=150 source=registry` · `[BudgetStop] reason=budget action=halt
 commit=59` and the run **ended there** — 59 commits, `stop_reason` on **1** record against `125619`'s 826,
 `inform_end_of_training` reached instead of `max_runtime_s` · **0 zero-`ρ` commits** · 218 trips / 59
-commits = **3.69**. Defect 4's derivation is confirmed live; the trainer-side cross-check
-(`[DataBins] confirmed by trainer`) landed after this smoke launched and is compile-checked only.
+commits = **3.69**. Defect 4's derivation is confirmed live.
+
+**And on yahoo, `234931`** (2026-08-16 23:49, law C + `annealed` + `halt`, `--eval-max-samples 10000`,
+audit off; force-killed by the runner 120 s past a 2,500 s **wall** budget with 31 commits): `[DataBins]
+total_data_bins=1750 source=registry dataset=yahoo`, coverage **1,400,000/1,400,000 = 100%**, and the
+trainer-side cross-check now confirms live — **`[DataBins] confirmed by trainer …: 1750 batches`**, which
+`225224` could only compile-check. Also `n_req` = 93.4 at `iteration_per_data_id` ≈ 9 (**~10 trips/commit**,
+against the ≥3 gate), `ρ` 0.0678 → 0.0645 monotone, **0/31 zero-`ρ` commits**. **Defects 2, 3 and 4 are
+therefore verified on the dataset they were found on.** Defect 1's `[BudgetStop]` ending is verified on
+agnews only — it needs a full-length yahoo arm.
+
+**One new behaviour this run exposed, not a defect:** `[BmaxProbe] commit=25 base_acc=0.105 too close to
+chance 0.100; keeping B_max=0.693147`. See [P4.8](#p48-yahoo-is-under-trained-not-broken).
+
+**Cost note for any short yahoo arm:** `234931` spent **32 of its 44 minutes before commit 1** — test set
+plus 100 client shards tokenized cold — and the runner charges its budget from launch, not from the first
+commit. Warm caches remove most of it; budget wall-from-launch regardless.
 
 **Two standing caveats on the yahoo pair, neither a defect.** (a) Both yahoo arms ran
 `sim_charge_profiles/fluxtune.yaml`, profiled on agnews — 0.255 real-s/vclock-s on agnews against 0.658 on
@@ -517,20 +532,33 @@ slice (top class 20.7% against a balanced 10%), not the balanced 60,000 the FL a
 explain 0.73 → 0.30, but the two numbers are not measured on the same distribution and the comparison
 should not be quoted as if they were.
 
+**Under-training also disables the `B_max` sensor on yahoo, which is new (`234931`, 2026-08-16).** 3.1's
+probe refuses to read a knee off a model that is at chance — `[BmaxProbe] commit=25 base_acc=0.105 too
+close to chance 0.100; keeping B_max=0.693147`, the guard at `FedSgdAggregator.py:978`, with the whole
+`Φ` grid (1.5…4.0) returning 0.078–0.145 — noise around chance, no knee to find. **Consequence: early
+yahoo commits run law C off the `ln 2` prior rather than a sensed budget.** The controller is unharmed —
+a prior is exactly what law C carries for this case, and `ρ*` annealed cleanly all 31 commits — but the
+**pre-registered agnews-vs-yahoo `ρ*` divergence cannot be measured until yahoo clears chance**, so the
+sensor's first firing commit is itself a result to read off the re-run. This is the *same* under-training
+statement as the table above, now visible in the controller's own instrument.
+
 **The discriminating test has not been run** (buildplan §9): centralized AdamW on the **FL rig's own data
 path** — one client's `TextClassificationDataManager` loader, not the B-1 rig's test-global half —
 evaluated on the same 60,000. ~0.70 there clears the whole data path and makes the gap purely
 optimization; ~0.30 indicts the path. Everything above is consistent with the former and none of it is
-proof.
+proof. `expt_scripts/probe_backprop_ceiling.py` is written and calibrated (agnews **0.850** off 3,600 rows
+in one epoch); the yahoo leg was launched 2026-08-16 and **its output was never captured**, so the number
+is still missing — but the tokenizer cache it paid for is warm, so the re-run is minutes (buildplan §-1 A).
 
 ---
 
 ## P5 — The queue
 
-**The estimator is finished; what is left is the controller.** Every row is scored on whether it removes
-a profiling dependency or moves `t`. **[P5.2](#p52-execution-plan--to-a-zero-input-run) is the build
-ledger** — task state lives there and nowhere else; P5.1 holds the registered arms, P5.3 the open
-hypotheses.
+**The estimator is finished; what is left is the controller.**
+
+> **The queue itself moved.** What to do next, in order, with costs and done-when, is
+> **[buildplan §-1](fl_fwd_ft_buildplan.md)** — one status board, updated in place. What remains here is
+> the *record*: P5.1's registered arms, P5.2's phase outcomes, P5.3's open hypotheses.
 
 ### P5.1 Registered nodes
 
@@ -548,15 +576,13 @@ registered (R3).*
 the same binary and the same flags**, no operator input beyond model / PEFT / `p`. **If the second run
 needs one edit, the method is not general.**
 
-**How this table is kept.** It is the **build ledger** — one row per task, `state` ∈ `todo` · `wip` ·
-`done` · `blocked` · `dropped`, edited in place (R1). A row goes `done` only when its sanity gate passes;
-the phase's rows are deleted once its result has landed in [P3](#p3--knob-ledger),
-[P4](#p4--arm-ledger) or the model doc (R3). **Order within a phase is by impact, not by number.**
+**How this section is kept.** One block per phase, recording its *outcome*; a phase's rows are deleted
+once the result has landed in [P3](#p3--knob-ledger), [P4](#p4--arm-ledger) or the model doc (R3).
 
-> **[fl_fwd_ft_buildplan.md](fl_fwd_ft_buildplan.md) owns the *how* for every row below** — files,
-> algorithm, edge cases and sanity gate, one spec per task, plus the conventions (§0) every spec
-> inherits. **State stays here; specs stay there.** Its §1 holds the dataset substrate table (`p`, split,
-> shards, bins/round, sequence length per dataset) that phases 1–4 read.
+> **Live task state, ordering and specs are all in [fl_fwd_ft_buildplan.md](fl_fwd_ft_buildplan.md)** —
+> §-1 the status board, §-0 the generality checklist, §0 the conventions every spec inherits, §1 the
+> dataset substrate table (`p`, split, shards, bins/round, sequence length per dataset) that phases 1–4
+> read.
 
 #### Phase 0 — unblock the instruments · **all 10 done (2026-08-12/15)**
 
@@ -600,7 +626,7 @@ mid-run `P` change. Decisions, constants and the open questions a re-run must an
 |---|---|---|
 | **T5** | replay the landing law against the gate | **done (2026-08-15)** — `replay_landing_law.py`. Settled `T_res`=300, `f`=0.95, `ρ_max`; refuted `T_res`=500 and the `ρ*≤ρ*₀` clamp; confirmed `Λ`=2B/s; found `003648`'s real death mechanism ([P4.5](#p45-g-2--annealed-confirmed-but-real-wall-bound)) |
 | **3.3** | law-C anneal + `B ≥ f·B_max` stop, `phi_stop: off\|log_only\|halt` | **done (2026-08-15); `halt` fixed 2026-08-16** (P4.7 defect 1) and verified on GPU (`225224`) |
-| **3.1** | `B_max` re-sensed on a stride by injection probe on a copy of `θ_tr` | **done (2026-08-15); origin + combiner fixed 2026-08-16** (defect 2). `B_max = B + ln Φ_knee`, combined across fires by `b_max_policy=mean` |
+| **3.1** | `B_max` re-sensed on a stride by injection probe on a copy of `θ_tr` | **done (2026-08-15); origin + combiner fixed 2026-08-16** (defect 2). `B_max = B + ln Φ_knee`, combined across fires by `b_max_policy=mean`. **Open, new 2026-08-16:** the chance guard declines to fire on an at-chance model, so on yahoo the controller runs the `ln 2` prior until the model clears chance ([P4.8](#p48-yahoo-is-under-trained-not-broken)) |
 | **3.2** | `ρ*_t` from *remaining* budget, every commit | **done (2026-08-15)**; the `ρ`=0 gate stall fixed 2026-08-16 (defect 3) |
 | **3.5** | Prechelt GL/patience stop on smoothed held-out accuracy | **todo, not urgent.** Window, threshold and patience all unsized — size by replay before it ships. Buildplan §5 |
 | **3.4** | adaptive `K`/`C` and `P` | **K-1: `C` is the knob, not `K`** (P3). **P-1: compute-bound** (P3/[P4.6](#p46-p-1--p-under-mean-is-compute-bound-report-and-stop)). Only the mid-run-`P`-change engineering and a bandwidth-driven case remain live |
@@ -615,22 +641,24 @@ terminate. `ratchet` and `anchor` remain available for the after-the-fact A/B.
 
 #### Phase 4 — the two zero-input runs · *state: **run 2026-08-16, VOID as an acceptance test; re-run after the four fixes** — full readout [P4.7](#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects)*
 
-> **Where this stands (2026-08-16).** Four arms ran. Law C beat the control on both datasets and by 1.5–3×
-> on time-to-accuracy, but **both controller arms ended on `max_runtime_s` rather than
-> `[BudgetStop] reason=budget`, which the rule below already defines as void** — and they did so because
-> `halt` could not halt (P4.7 defect 1). The pre-registered acceptance criterion — sensed `ρ*` diverging
-> by dataset at the commit-150 re-sense (agnews 0.0764 vs yahoo 0.0573) — is **not met**: both went to
-> **0**, from defect 2. Worth registering before the re-run: with the origin fixed, the two knees at
-> commit 150 were 0.248 (agnews) and 0.237 (yahoo) ⇒ `ρ*` 0.0407 vs 0.0397, so **the divergence may not
-> reproduce even on a correct run** — the live knee tracks how far the model sits above chance, and yahoo's
-> base was 0.311 against agnews' 0.809. If it does not, that is a finding about the sensor, not a failure
-> of the law, and it moves T5's first open row.
+> **Where this stands (2026-08-17).** Four arms ran 2026-08-16 and are void: law C beat the control on
+> both datasets and by 1.5–3× on time-to-accuracy, but both controller arms ended on `max_runtime_s`
+> rather than `[BudgetStop]`, which the rule below defines as void. All four defects are fixed
+> (`5441db34a`) and **verified live on both datasets** — agnews `225224`, yahoo `234931`
+> ([P4.7](#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects)). **No scored arm
+> exists yet under the fixed code.**
 >
 > **Re-run gate — all four must hold before the next launch is scored:** (a) `[DataBins]` reads 1,750 on
 > yahoo and 100% coverage; (b) no commit reports `rho_star` = 0; (c) the controller arm ends on
-> `[BudgetStop]`; (d) trips/commit ≥ 3 at every quintile. And **yahoo needs `profile_sim_charges.py`, a
-> bigger vclock, and `--eval-max-samples 10000`** — its control was still climbing monotonically when
-> killed at 86% of budget, and its eval blocked the commit loop on 359 of 359 fires.
+> `[BudgetStop]`; (d) trips/commit ≥ 3 at every quintile. **(a), (b), (d) already hold on yahoo**
+> (`234931`, 31 commits); (c) is verified on agnews only. Yahoo also needs `profile_sim_charges.py`, a
+> bigger vclock, and `--eval-max-samples 10000`.
+>
+> **The pre-registered acceptance criterion — `ρ*` diverging by dataset at the commit-150 re-sense — may
+> not be measurable on yahoo at all.** With the origin fixed the two knees at commit 150 were 0.248 vs
+> 0.237 (`ρ*` 0.0407 vs 0.0397), nearly identical; and `234931` showed the probe *declining to fire* on
+> yahoo while the model sits at chance ([P4.8](#p48-yahoo-is-under-trained-not-broken)). Either way that
+> is a finding about the sensor, not a failure of the law, and it moves T5's first open row.
 >
 > **Ordered task list for the next session: [buildplan §-1](fl_fwd_ft_buildplan.md).** Task A (the
 > centralized-backprop control on the FL data path) gates C and D — both yahoo arms are worthless if it
@@ -691,17 +719,8 @@ the commit-150 re-sense: agnews `ρ*` 0.0530 → **0.0764** (`I` 6 → 12) again
 > **Acceptance:** both reach their plateau and **end within 0.015 of peak**, with sensed `B_max`, `ρ*`,
 > `K`, `P` logged per run and **differing between datasets without anyone having supplied them**.
 
-**Not the same as "run `fluxtune` on yahoo."** A full-stack `fluxtune_v2` run on yahoo with today's *fixed*
-knobs (no live sensing) doesn't meet the acceptance bar above, but it's independent of Phase 3 and already
-validated launchable: `--only fluxtune --dataset yahoo --mode real --num-trainers 10 --dry-run` passed
-6/6 preflight (2026-08-15, `FWDLLM_FD_SCALE_INVARIANT=1` set), yahoo's h5 files exist on disk, and all 8
-GPUs were idle. Useful as a smoke check that the estimator-layer fixes behave on a 10-class, longer-sequence
-task — not scored, since none of P4's `Λ`/`Φ`/`A` machinery has been validated on yahoo either. **Not yet
-launched** — a fine thing to kick off independent of the Phase 3 decisions above.
-
-**Phase 0 and Phase 1 are the two that matter and neither needs the FL stack.** Nothing below them
-should be launched first. Every arm reports `B` as a fraction of `B_max` and `A` against P4's
-calibration — both exact at any horizon, so both failure modes are diagnosable before the run ends.
+**Every arm reports `B` as a fraction of `B_max` and `A` against P4's calibration** — both exact at any
+horizon, so both failure modes are diagnosable ~20 commits in, before the accuracy curve resolves.
 
 ### P5.3 Open hypotheses
 
@@ -974,9 +993,11 @@ wrong.** A lookup table for *numbers*; the refuted *ideas* are [P6](#p6--dead-en
 > **`FWDLLM_FD_SCALE_INVARIANT=1`** (fluxtune is `rf`=64, so the FD-rescale preflight refuses without it).
 > Without either, every case exits 2 for a reason that has nothing to do with what is being tested.
 
-**Missing, and it has cost eight arms: a wall-clock budget check.** Time one commit path with the audit
-flags the run requests, multiply by `n_req/K` commits per vclock-hour, refuse the launch when projected
-real wall exceeds `sim_wall_ceiling_s`. Same shape as the `ceil(n_req/K) ≤ max_iter` assertion.
+**The wall-clock budget check that cost eight arms now exists** — `expts/wall_clock_preflight.py`, task
+0.7, run from inside `--dry-run`, refusing the launch when projected real wall exceeds
+`sim_wall_ceiling_s`. **It is a prior, not a guarantee:** it prices law C off the `ln 2` prior, so an arm
+can clear the ≥3 trips/commit gate at launch and breach it in flight once `B_max` is sensed (P4.7 defect
+3). Read trips/commit **per quintile at run time**.
 
 **Read the enactment checks before the science:**
 
