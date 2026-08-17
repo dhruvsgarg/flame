@@ -21,9 +21,10 @@
 # THE ONLY CROSS-NODE DEPENDENCY, and this script handles it. `/home/.../flame` is
 # LOCAL disk per node; `/coc/scratch` is shared. So a profile written on node 1
 # would not exist on node 2. Wave 1 PUBLISHES each profile to the shared dir
-# below, and wave 2 FETCHES both and WAITS for them (--wait-profiles-min, default
-# 180) before launching. The tokenizer cache needs none of this -- it is already
-# on /coc/scratch, 101/101 for all three datasets (buildplan §10).
+# below, and wave 2 WAITS for the one ITS OWN dataset needs -- scoped to one
+# dataset so a failure on the yelp-p node cannot stall the yahoo arms
+# (WAVE2_WAIT_PROFILES_MIN, default 180; 30 under SMOKE). The tokenizer cache
+# needs none of this: it is already on /coc/scratch, 101/101 (buildplan §10).
 set -u
 . "$(dirname "$0")/_node_lib.sh"
 
@@ -95,33 +96,31 @@ profile_dataset () {
   cp -f "$out" "$SHARED_PROFILES/" && echo "--- published to $SHARED_PROFILES"
 }
 
-# Wave 2's barrier: pull both profiles out of the shared dir, waiting for whichever
-# node is still producing one. Without this the arm launches on an agnews-priced
-# profile (needing --force) and its vclock is wrong.
-fetch_profiles () {
-  local deadline=$(( $(date +%s) + WAIT_MIN * 60 )) missing
+# Wave 2's barrier: wait for THIS slot's own dataset profile and copy it in.
+# Scoped to one dataset on purpose -- waiting on both would make a failure on the
+# yelp-p node stall the yahoo arms, which need nothing from it, and vice versa.
+# Without the profile the arm launches agnews-priced (needing --force) and its
+# vclock is wrong. yahoo comes from wave 1 slot 1, yelp-p from slot 2.
+fetch_profile () {
+  local ds="$1" src="$SHARED_PROFILES/fluxtune_$1.yaml"
+  local deadline=$(( $(date +%s) + WAIT_MIN * 60 )) poll=60
+  [ "${SMOKE:-0}" = "1" ] || poll=300
   while :; do
-    missing=""
-    for ds in yahoo yelp-p; do
-      local src="$SHARED_PROFILES/fluxtune_$ds.yaml"
-      if [ -f "$src" ]; then
-        cp -f "$src" "$PROF_DIR/"
-      else
-        missing="$missing $ds"
-      fi
-    done
-    [ -z "$missing" ] && { echo "--- [wave2-$SLOT] both profiles in place"; return 0; }
+    if [ -f "$src" ]; then
+      cp -f "$src" "$PROF_DIR/" && echo "--- [wave2-$SLOT] $ds profile in place"
+      return 0
+    fi
     if [ "$DRY" = "1" ]; then
-      echo "--- [wave2-$SLOT] NODE_DRY_RUN: would wait for$missing (up to ${WAIT_MIN}m)"
+      echo "--- [wave2-$SLOT] NODE_DRY_RUN: would wait for $ds (up to ${WAIT_MIN}m)"
       return 0
     fi
     if [ "$(date +%s)" -ge "$deadline" ]; then
-      echo "!!! [wave2-$SLOT] waited ${WAIT_MIN}m and still missing:$missing" >&2
-      echo "!!! Wave 1 slot 1 (yahoo) / slot 2 (yelp-p) must finish first." >&2
+      echo "!!! [wave2-$SLOT] waited ${WAIT_MIN}m for fluxtune_$ds.yaml in" >&2
+      echo "!!!   $SHARED_PROFILES -- wave 1 slot $([ "$ds" = yahoo ] && echo 1 || echo 2) must finish first." >&2
       return 1
     fi
-    echo "--- [wave2-$SLOT] waiting for$missing in $SHARED_PROFILES ($(date +%H:%M))"
-    sleep 300
+    echo "--- [wave2-$SLOT] waiting for $ds profile ($(date +%H:%M), deadline ${WAIT_MIN}m)"
+    sleep "$poll"
   done
 }
 
@@ -148,10 +147,10 @@ case "$WAVE/$SLOT" in
   1/4) "$P4" agnews control ;;
 
   # ---- wave 2 --------------------------------------------------------------
-  2/1) fetch_profiles && "$P4" yahoo  controller ;;
-  2/2) fetch_profiles && "$P4" yahoo  control ;;
-  2/3) fetch_profiles && "$P4" yelp-p controller ;;
-  2/4) fetch_profiles && "$P4" yelp-p control ;;
+  2/1) fetch_profile yahoo  && "$P4" yahoo  controller ;;
+  2/2) fetch_profile yahoo  && "$P4" yahoo  control ;;
+  2/3) fetch_profile yelp-p && "$P4" yelp-p controller ;;
+  2/4) fetch_profile yelp-p && "$P4" yelp-p control ;;
 
   *) echo "unknown wave/slot '$WAVE/$SLOT' (want wave 1|2, slot 1|2|3|4)" >&2; exit 2 ;;
 esac
