@@ -1307,7 +1307,12 @@ for rk in (r[0] for r in runs):
                 continue
             # `_<rk>_n` not a bare substring: "fwdllm" is a prefix of
             # "fwdllm_it_unaware", so a plain `in` would accept a sibling's profile.
-            if not any(f"_{rk}_n" in str(s) for s in (_e.get("source_runs") or [])):
+            # A run dir also carries its dataset (`_fluxtune_yelp-p_n100_`), so accept
+            # that form too -- enumerated from the registry, never a bare wildcard,
+            # which would re-admit the sibling this check exists to reject.
+            _ok = [f"_{rk}_n"] + [f"_{rk}_{_d}_n" for _d in dsreg.names()]
+            if not any(any(_m in str(s) for _m in _ok)
+                       for s in (_e.get("source_runs") or [])):
                 _foreign.append(f"{_lbl}.{_pk}")
     if _foreign:
         checks.append({"name": f"sim charge profile provenance ({rk})", "level": "error",

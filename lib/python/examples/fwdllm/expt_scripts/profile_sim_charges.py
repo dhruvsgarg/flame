@@ -139,6 +139,11 @@ def _pctl(vals: list, q: float) -> float:
 # per-dispatch cost is inter-arrival waiting, not work. 3x leaves room for the
 # queueing/serialisation the step_timing span excludes.
 _REDISPATCH_MARGINAL_MAX_X = 3.0
+# A single sample may carry at most this share of a category's pooled total before
+# its mean is a stall rather than a cost. Floored at 4/n so tiny pools aren't flagged
+# for arithmetic alone (at n=8 any sample can be 1/8 of the total).
+_OUTLIER_MAX_SHARE = 0.25
+_OUTLIER_MIN_N = 8
 
 
 def _load_real_dispatch_cost(run_dir: str) -> float | None:
@@ -211,6 +216,24 @@ def main():
                           f"{m / direct_mean:.1f}x the measured per-dispatch cost "
                           f"{direct_mean:.4f}s -- event-driven dispatch, so this is "
                           f"inter-arrival waiting. Keeping the prior value.")
+
+    # `mean_s` is what gets charged, so one warmup stall in a short run prices the
+    # whole category. Score the mass the largest sample carries: ~1/n steady-state,
+    # near 1 when a stall dominates. 2026-08-17 yelp-p `fedavg` = 2.6127s off ONE
+    # 114.44s sample (91% of the total), median 0.0476s, a ~50x over-charge. NOT a
+    # mean>p90 test -- that fires on the healthy agnews entry too (0.0563 > 0.0525).
+    for key, spans in pooled.items():
+        if key in contaminated or len(spans) < _OUTLIER_MIN_N:
+            continue
+        _total = sum(spans)
+        _share = (max(spans) / _total) if _total > 0 else 0.0
+        if _share > max(_OUTLIER_MAX_SHARE, 4.0 / len(spans)):
+            contaminated.add(key)
+            print(f"WARN {key[0]}.{key[1]}: one {max(spans):.4f}s sample is "
+                  f"{_share:.0%} of the pooled total (n={len(spans)}, "
+                  f"mean {st.mean(spans):.4f}s, median {st.median(spans):.4f}s) -- "
+                  f"outlier-dominated, not a steady-state cost. Keeping the prior "
+                  f"value; re-profile off a longer real run.")
 
     today = date.today().isoformat()
     enable = set(args.enable)

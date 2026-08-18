@@ -40,14 +40,14 @@ The law beat its control on both datasets, so the controller was never in questi
 | has ever run the FL stack | many arms | 3 arms | **never launched** |
 | sim charge profile | `fluxtune.yaml` | **missing** (task B) | **missing** |
 | scored under the fixed controller | **no — task C** | **no — task D** | **no — task H** |
-| backprop ceiling (§9 rung 1) | **0.850** | **launched, result lost** (task A) | not run |
+| backprop ceiling (§9 rung 1) | **0.850** | **0.734** (2026-08-17) | **0.874** (2026-08-17) |
 
 ### Ordered queue — and the wave it runs in
 
 | # | wave · slot | task | cost | done when |
 |---|---|---|---|---|
-| **A** | 1 · node 1 | **§9 rung 1, `probe_backprop_ceiling.py --dataset yahoo`.** The 2026-08-16 attempt tokenized all ten shards and **its stdout was never captured** — `tee` it | 1 GPU, **~10 min**, all 101 shards warm | a number. **≈0.70 ⇒ the data path is clean and yahoo is purely under-trained; ≈0.30 ⇒ the path is at fault and D/H are moot** |
-| **B** | 1 · nodes 1, 2 | **A real-mode run per dataset, then `profile_sim_charges.py`.** It pools `vclock_charge` events with `time_mode == "real"`, so a sim run cannot feed it — the cost is the real run, not the script. The launcher plumbing is done; the artifact is the whole remaining step and `--force` lifts by itself once it exists | 1 GPU real run + minutes, per dataset | `sim_charge_profiles/fluxtune_{yahoo,yelp-p}.yaml` exist and the sim-profile preflight passes **without** `--force` |
+| **A** | — | **done 2026-08-17** — §9 rung 1 on yahoo **0.734** (and yelp-p 0.874), against a pre-registered ≈0.70. The data path is clean and the gap is optimization budget; D/H stand | — | a number, `tee`'d this time |
+| **B** | 1 · nodes 2, 3 | **A real-mode run per dataset, then `profile_sim_charges.py`.** It pools `vclock_charge` events with `time_mode == "real"`, so a sim run cannot feed it — the cost is the real run, not the script. yahoo done; **yelp-p must re-profile off a full-budget real arm** — a 600 s smoke priced `fedavg` at 2.61 s off one 114 s warmup stall (91% of the pooled total), now refused by the profiler | 1 GPU real run + minutes, per dataset | `sim_charge_profiles/fluxtune_{yahoo,yelp-p}.yaml` exist and the sim-profile preflight passes **without** `--force` |
 | **C** | 1 · nodes 3, 4 | **Re-run P-4 agnews** | 2 × ~2.5 h | §6's four gates hold and the controller ends on `[BudgetStop]`. **This is the arm that decides whether agnews learns effectively in the new regime — nothing to date does** |
 | **D** | 2 · nodes 1, 2 | **Re-run P-4 yahoo** at 80,000 vclock | 2 × ~6 h | same four gates; then score accuracy vs `Λ` against §5's first open row |
 | **H** | 2 · nodes 3, 4 | **yelp-p bring-up** — first FL arm on the third dataset. Registry, partitions and cache are all done; what is untested is the *stack*, and 2 classes is the opposite corner from yahoo's 10 | 2 × ~4 h | same four gates; `A` and per-vclock-hour comparable against the other two |
@@ -65,7 +65,7 @@ end to end:
 | **1** | agnews controller → agnews control | nothing |
 | **2** | real yahoo → `fluxtune_yahoo.yaml` → controller → control | nothing |
 | **3** | real yelp-p → `fluxtune_yelp-p.yaml` → controller → control | nothing |
-| **4** | backprop ceilings, yahoo then yelp-p (§9 rung 1, ~10 min each) | nothing |
+| **4** | backprop ceilings, yahoo then yelp-p (§9 rung 1, ~10 min each) — **done 2026-08-17, node then free** | nothing |
 
 **Why a pair stays on one node.** `/home/dgarg39/flame` is local disk per node; only `/coc/scratch` is
 shared. Splitting a pair across nodes forces either a cross-node handoff of the sim charge profile or
@@ -585,6 +585,13 @@ and every rung below is moot. **Calibrated on agnews (2026-08-16): 3,600 rows, o
 against that dataset's FL control at 0.835 after 801 commits and 2.3 h. Command: [§11.3](#113-individual-invocations-if-a-wave-has-to-be-taken-apart).
 **`tee` it** — the script only prints, and the 2026-08-16 number was lost to a closed terminal.
 
+> **ANSWERED 2026-08-17 — the data path clears.** yahoo **0.7333 / 0.7263 / 0.7339** over three epochs
+> (untrained 0.1018, chance 0.100), matching B-1's 0.73 reference; yelp-p **0.8603 / 0.8596 / 0.8736**
+> (untrained 0.4917, chance 0.500). Both are flat from epoch 1, so ~0.73 **is** yahoo's ceiling on this
+> path, not a truncated curve. Rung 0 (2026-08-16) and rung 1 both hold, so **the gap is optimization,
+> not plumbing** — and rung 2 is now *unlocked but unrun*: it is still open whether the estimator itself
+> is weaker at 10 classes. Rung 3 is the budget answer.
+
 > **No attention mask anywhere in the stack** (seen 2026-08-17 on node 4's own log:
 > *"We strongly recommend passing in an `attention_mask` since your input_ids may be padded"*).
 > `tc_transformer_trainer_distribute.py:713` and `:950` both do `x = batch[1]` then `self.model(x)`,
@@ -592,8 +599,9 @@ against that dataset's FL control at 0.835 after 801 commits and 2.3 h. Command:
 > production** and rung 1 stays a valid test. But the model attends to PAD tokens on every arm, which
 > depresses absolute accuracy everywhere and plausibly hurts yahoo most: its length *variance* is far
 > higher (p50 84 / p95 367 truncated at 256, against agnews' 41 / 70 at 192), so how much of each
-> sequence is real content swings much more. **If rung 1 comes back ≈0.30, this is the first thing to
-> test** — it is the cheapest candidate for a data-path fault and it has never been examined.
+> sequence is real content swings much more. **Rung 1 came back 0.734, so the mask is not the fault** —
+> it depresses the ceiling on both sides of every comparison equally. It stays a candidate for absolute
+> accuracy, and nothing more.
 
 **Rung 2 — is the estimator itself weaker on yahoo? · 1 GPU · ~1 h.** Only if rung 1 clears.
 - **cos audit on yahoo**, `cos_ground_truth_audit` on for ~100 commits, `replay_scoring.py --cos`. Compare

@@ -214,22 +214,32 @@ def log_margin_distribution(probs):
 
 
 def compute_metrics_with_logging(probs, preds, out_label_ids, examples):
+    # Debug-only, and it pairs `examples` row-for-row with `preds` -- true for a
+    # full-set eval, false under `eval_max_samples` (a shuffled subsample), where it
+    # ran off the end of `preds` and failed EVERY eval on yahoo/yelp-p (2026-08-17).
+    if not logging.getLogger().isEnabledFor(logging.DEBUG):
+        return
+    _ds = getattr(examples, "dataset", None)
+    if _ds is not None and len(_ds) != len(preds):
+        logging.debug("[metrics] eval ran on a subsample -- skipping the per-row dump")
+        return
 
     logging.debug(f"'Hash' |  'Prob'  | 'Pred' | 'Actual'")
 
-    for i, batch in enumerate(examples):
+    k = 0  # running, not i*8+j: the last batch need not be full
+    for batch in examples:
         batch = tuple(t.to("cpu") for t in batch)
-        for j, example in enumerate(batch[1]):
-
-            pred = preds[i * 8 + j]
-            actual = out_label_ids[i * 8 + j]
-            prob = probs[i * 8 + j]
+        for example in batch[1]:
+            if k >= len(preds):
+                return
 
             # 2. Print the row
             # We slice the hash to [:10] for better readability in the console
             logging.debug(
-                f"{_calculate_hash(example)}... | {prob} | {pred} | {actual} "
+                f"{_calculate_hash(example)}... | {probs[k]} | {preds[k]} "
+                f"| {out_label_ids[k]} "
             )
+            k += 1
 
     return
 

@@ -508,7 +508,9 @@ shards in client order — a head slice is one client's Dirichlet shard (B17). *
 ### P4.8 Yahoo is under-trained, not broken
 
 B-1's backprop reference reaches **0.73** on yahoo (model §7.1, matching FwdLLM's own ~0.76); these arms
-reach **0.30**. Every collapse fingerprint says the gap is optimization budget, not a broken pipeline:
+reach **0.30**. **Confirmed 2026-08-17 (§9 rung 1): 0.734 on the FL rig's own data path** — same client
+shards, same `test_global`, exact gradient instead of pooled forward differences — so the pipeline is
+cleared and the gap is budget. Every collapse fingerprint already said so:
 
 | | agnews control | yahoo control | reads as |
 |---|---|---|---|
@@ -542,13 +544,44 @@ a prior is exactly what law C carries for this case, and `ρ*` annealed cleanly 
 sensor's first firing commit is itself a result to read off the re-run. This is the *same* under-training
 statement as the table above, now visible in the controller's own instrument.
 
-**The discriminating test has not been run** (buildplan §9): centralized AdamW on the **FL rig's own data
-path** — one client's `TextClassificationDataManager` loader, not the B-1 rig's test-global half —
-evaluated on the same 60,000. ~0.70 there clears the whole data path and makes the gap purely
-optimization; ~0.30 indicts the path. Everything above is consistent with the former and none of it is
-proof. `expt_scripts/probe_backprop_ceiling.py` is written and calibrated (agnews **0.850** off 3,600 rows
-in one epoch); the yahoo leg was launched 2026-08-16 and **its output was never captured**, so the number
-is still missing — but the tokenizer cache it paid for is warm, so the re-run is minutes (buildplan §-1 A).
+**The discriminating test now HAS been run** (buildplan §9 rung 1, 2026-08-17): centralized AdamW on the
+**FL rig's own data path** — one client's `TextClassificationDataManager` loader, not the B-1 rig's
+test-global half — evaluated on the same 60,000. **yahoo 0.734** (0.7333 / 0.7263 / 0.7339 over three
+epochs, untrained 0.1018), **yelp-p 0.874**, against a pre-registered ≈0.70-clears / ≈0.30-indicts. The
+path is clean and the gap is budget. Both curves are flat from epoch 1, so 0.73 is the ceiling itself.
+
+### P4.9 The 2026-08-17 smoke — four defects, two of them silent
+
+The smoke that was meant only to size the long runs found four, none of which fail loudly:
+
+**(1) `eval_max_samples` destroyed every evaluation it touched.** `compute_metrics_with_logging` walked
+the *full* test loader while indexing `preds[i*8+j]`, but under subsampling `preds` holds 10,000 rows —
+`index 10000 is out of bounds`. It is caught as non-fatal, so training continued and the arm looked
+healthy while emitting **zero `agg_eval` records**. Perfect correlation: every run with `eval_max_samples`
+set produced no accuracy data at all (yahoo controller 20/20 evals failed, control 23/23, yelp-p 11/11).
+**Fixed:** the dump is debug-only, so it now returns early unless DEBUG is on *and* the row counts match,
+and counts rows with a running index (the old `i*8+j` also assumed every batch was full).
+
+**(2) The sim-profile provenance gate rejected every per-dataset profile.** It required `_fluxtune_n` in
+the source-run name; dataset-suffixed run dirs read `_fluxtune_yelp-p_n100_`. The yelp-p profile was
+correct and the gate simply could not recognise it, so **the entire yelp-p pair never launched**.
+**Fixed:** `_{baseline}_{dataset}_n` is accepted too, enumerated from the registry — never a bare
+wildcard, which would re-admit the sibling baselines (`fwdllm` ⊂ `fwdllm_it_unaware`) the gate exists to
+reject.
+
+**(3) The commit counter double-counted zero and disabled its own guard.** `grep -c … || echo 0` emits
+`0` *and* runs the fallback, so `commits` became `"0\n0"`, making `[ "$commits" -lt 5 ]` a syntax error —
+the "under 5 commits ⇒ systemic fault, abort" check silently never fired. Compounding it, `server_update`
+only exists under `server_update_audit`, which the real profiling arm does not set. **Fixed:** counts
+`[ServerStep] … commit=` as a mode-independent fallback; the two sources agree exactly on all six sim runs.
+
+**(4) A 600 s real arm cannot price a vclock.** yelp-p's profile charged `fedavg` **2.61 s** off a single
+114.44 s warmup stall — 91% of the pooled total — against a 0.0476 s median and agnews' healthy 0.0563 s
+(n=3601): a ~50× over-charge on a number that converts vclock into real work. **Fixed:** the profiler now
+refuses any category whose largest sample carries >25% of the pooled total. Note the criterion is *not*
+mean > p90 — that fires on the good agnews entry too (0.0563 > 0.0525). `drain_tail` is a second warning:
+its spans ramp 0.13 s → 1.9 s across the smoke and never reach steady state. **Profile off a full-budget
+real arm, never a smoke.**
 
 ---
 

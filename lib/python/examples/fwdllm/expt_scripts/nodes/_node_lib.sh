@@ -52,13 +52,18 @@ node_run () {  # node_run <node-label> <arm-label> [launcher flags...]
     kill "$watch_pid" 2>/dev/null; wait "$watch_pid" 2>/dev/null
   fi
 
-  local run commits
+  local run commits c_ev c_log
   run="$(ls -1dt "$RUNS"/run_* 2>/dev/null | head -1)"
   if [ -z "$run" ] || [ "$run" = "$before" ]; then
     echo "!!! [$node] $label produced NO RUN DIRECTORY -- aborting node." >&2
     exit 1
   fi
-  commits="$(grep -c '"event": "server_update"' "$run"/telemetry/aggregator_*.jsonl 2>/dev/null || echo 0)"
+  # Larger of two sources: `server_update` needs `server_update_audit`, which the
+  # real profiling arm never sets. `grep -o | wc -l`, not `grep -c ... || echo 0`
+  # -- that emitted "0\n0" on no match, making the `-lt 5` guard a syntax error.
+  c_ev="$(grep -ho '"event": "server_update"' "$run"/telemetry/aggregator_*.jsonl 2>/dev/null | wc -l)"
+  c_log="$(grep -ho '\[ServerStep\] trust_ratio commit=' "$run"/*aggregator.log 2>/dev/null | wc -l)"
+  commits=$(( c_ev > c_log ? c_ev : c_log ))
   echo "--- [$node] $label -> $(basename "$run"), commits=$commits"
   if [ -f "$run/arm_stall.json" ]; then
     echo "!!! [$node] $label was KILLED BY THE WATCHDOG:" >&2
