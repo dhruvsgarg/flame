@@ -581,7 +581,9 @@ only exists under `server_update_audit`, which the real profiling arm does not s
 refuses any category whose largest sample carries >25% of the pooled total. Note the criterion is *not*
 mean > p90 — that fires on the good agnews entry too (0.0563 > 0.0525). `drain_tail` is a second warning:
 its spans ramp 0.13 s → 1.9 s across the smoke and never reach steady state. **Profile off a full-budget
-real arm, never a smoke.**
+real arm, never a smoke.** `SMOKE=1` now writes to the gitignored
+`sim_charge_profiles/smoke/`, so a plumbing check exercises the profiler without ever pricing a scored
+arm — which is what `d5b10a2` asked for and nothing enforced.
 
 ---
 

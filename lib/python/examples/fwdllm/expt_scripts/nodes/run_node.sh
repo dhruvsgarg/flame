@@ -75,8 +75,16 @@ ceiling () {
 profile_dataset () {
   local ds="$1"
   local out="$FW/sim_charge_profiles/fluxtune_$ds.yaml"
+  # A smoke's REAL_BUDGET=600 cannot price a vclock -- it charged fedavg 50x high off
+  # one warmup stall (P4.9 defect 4) -- and a profile that LOOKS present skips the real
+  # run forever after. Exercise the path, write to the gitignored smoke/ dir, price
+  # nothing: "smoke profiles must never price a scored arm" (d5b10a2).
+  if [ "${SMOKE:-0}" = "1" ]; then
+    mkdir -p "$FW/sim_charge_profiles/smoke"
+    out="$FW/sim_charge_profiles/smoke/fluxtune_$ds.yaml"
+  fi
   if [ -f "$out" ]; then
-    echo "--- [node$NODE] $(basename "$out") exists -- skipping the real run"; return 0
+    echo "--- [node$NODE] ${out#$FW/} exists -- skipping the real run"; return 0
   fi
   echo "=== [node$NODE] real-mode $ds for its sim charge profile  $(date -Is) ==="
   local args=(--only fluxtune --mode real --dataset "$ds"
@@ -85,7 +93,7 @@ profile_dataset () {
   if [ "$DRY" = "1" ]; then
     "$FW/expt_scripts/run_sequential.sh" "${args[@]}" --dry-run \
       | grep -E 'generated cfgs|✗|ERROR' || true
-    echo "--- [node$NODE] NODE_DRY_RUN: would profile into $(basename "$out")"
+    echo "--- [node$NODE] NODE_DRY_RUN: would profile into ${out#$FW/}"
     return 0
   fi
   node_run "node$NODE" "real-mode $ds (for its sim charge profile)" \
@@ -118,7 +126,7 @@ profile_dataset () {
   [ -f "$out" ] || cp -f "$FW/sim_charge_profiles/fluxtune.yaml" "$out"
   echo "--- [node$NODE] profiling from $(basename "$run") ($_n charge samples)"
   ( cd "$FW/expt_scripts" && python profile_sim_charges.py --real-run "$run" \
-      --out "../sim_charge_profiles/fluxtune_$ds.yaml" --only-observed ) || return 1
+      --out "$out" --only-observed ) || return 1
   # Prove the charges survived the reseed -- an all-false profile is inert.
   python - "$out" <<'PYCHK'
 import sys, yaml
