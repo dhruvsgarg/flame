@@ -25,10 +25,11 @@ so "I did not find it on this node" is never evidence that it was not run. This 
 | registry row · partitions · `check_partitions.py` | done · 6/6 exact | done · 6/6 exact | done · 6/6 exact |
 | bins/round at `C`=100 | 150 | 1,750 | 650 |
 | arms ever run on the FL stack | many | 6 | 3 |
-| **scored pair under the fixed code** | control **valid**, controller **void** (2026-08-20) | none | none |
+| **scored pair under the fixed code** | control **valid**; controller live | controller **void** x2, both watchdog | **controller VALID** — first `[BudgetStop]` ever; control live |
 
-**Known-broken, currently unfixed:** nothing blocking. **Recently fixed, do not re-diagnose:** see the
-dated rows in [§-1](#-1--status-board).
+**Known-broken, currently unfixed:** the watchdog's `I`-floor kill voids healthy landing controllers
+(queue row **W**); launch with `--i-floor-frac 1.01` until it lands. **Recently fixed, do not
+re-diagnose:** see the dated rows in [§-1](#-1--status-board).
 
 ## How to update this doc — UPDATE IN PLACE, never append
 
@@ -56,26 +57,29 @@ answer under its own history.
 
 ## §-1 — Status board
 
-*State read **2026-08-20**, after the first full-length attempt on all four nodes. Nothing running.
-**Three of the four arms launched that night were destroyed by the watchdog, none of them faulty** — the
-run itself is now the thing that has been debugged, not the science. All four defects are fixed and
-replayed against the arms on disk (§11.6). Nothing in the queue is blocked.*
+*State read **2026-08-20 16:10**. **The first valid controller arm exists**: node 3's yelp-p ended on
+`[BudgetStop] reason=budget action=halt` at commit 1,348, `B`=0.9721/1.0231 (95.0%), every bin visited,
+no zero steps. It is also the arm the `I`-floor kill would have destroyed at ~900 commits.*
 
-**What the 2026-08-20 night actually produced.**
+**The blocker — the watchdog's `I`-floor kill voids healthy landing controllers.** Same defect class as
+the `trips/commit` floor it replaced: `n_req ~ ρ²`, so a landing `ρ` drives `I` to 1 **by design**. It
+killed node 2's yahoo controller at commit 964 / **86.0% of `B_max`** with pool demand met on *every*
+commit, and node 3 reproduced the climb live (`I==1` 12% → 44% in 9 min while `B` rose). Fix is row
+**W**, landed. **Live arms still hold the old module in memory** — a running watcher is not fixed by
+the patch, so an armed arm launched before it needs `kill $(pgrep -f watch_arm.py)` or a relaunch.
 
-| node | arm | outcome |
+| node | arm | state |
 |---|---|---|
-| 1 | agnews **controller** | **void** — killed at commit 577, 80.7% of `B_max` on **29%** of its vclock, by a `trips/commit` floor that no landing controller can satisfy. Re-run it |
-| 4 | agnews **control** | **VALID, keep** — ran the 48,000 vclock out cleanly, 938 commits, `B` 15.5% of `B_max`, every gate holds |
-| 2, 3 | yahoo / yelp-p profiling arms | killed at 45 min of a 50-min budget by a commit counter blind to non-audit arms. 61 and 63 commits, healthy throughout. Their pairs never launched |
+| 1 | agnews **controller** | live 15:22, `condition_fp c2ef1528` matches the valid control. **Watchdog armed — exposed to W** |
+| 2 | yahoo **control** | live 15:16, ends ~22:15. `setpoint`, trips/commit ~7.9, so **immune to W**. `condition_fp 7174b984` |
+| 2 | yahoo **controller** | **void** — killed 15:15 by the `I` floor. Never budget-starved: ~20,600 of 60,000 vclock used. Re-run is row **D** |
+| 3 | yelp-p **controller** | **VALID** — `[BudgetStop]` at commit 1,348, 95.0% of `B_max`, 8 `BmaxProbe` fires (0.693 → **1.023**). Gate 3 FAILs at Q5=1.34 with `I==1` on 100% and demand met on every commit: annealing on plan, read §11.7 |
+| 3 | yelp-p **control** | live 16:08 on the **fixed** watcher, ends ~21:00 (row **H**) |
+| 4 | — | **idle and usable** — take row **D** there rather than queue it behind node 2's control |
 
-**The one number to take from it:** the controller reached **80.7% of `B_max` on 29% of its vclock**
-against the control's **15.5% on 100%**. That is the effect, visible in the first pair — and the arm
-showing it is void on a technicality, which is why C is re-cut below rather than scored.
-
-**Four defects, all fixed 2026-08-20** — two in the watchdog's commit counting and kill predicates
-([§11.6](#116-stalling-and-early-termination)), two in how the profiling arm is configured and guarded
-([§11.8](#118-individual-invocations-if-a-wave-has-to-be-taken-apart)). Postmortem belongs in P4.
+**The one number to take from 2026-08-20's night arms:** the controller reached **80.7% of `B_max` on
+29% of its vclock** against the control's **15.5% on 100%**. That is the effect, visible in the first
+pair — and the arm showing it is void on a technicality, which is why C is re-cut below rather than scored.
 
 **Where the program is.** Phases 0–2 landed. The Phase-3 controller is built and correct as of
 2026-08-16 — the law beat its control on both datasets, so the controller was never in question, its
@@ -84,20 +88,18 @@ plumbing was ([P4.7](fl_fwd_ft_practice.md#p47-p-4--the-law-beats-the-control-th
 
 ### Ordered queue
 
-**Sanity first, then length.** Every long arm below depends on artifacts and predicates that were wrong
-on 2026-08-20, so the short rungs are not optional caution — they are the cheapest way to find the next
-one. **S1–S3 are ~2 h total across three nodes, run concurrently.**
+**W first, then length.** Every controller row below is voided in its endgame by the bug W fixes, so
+W is not optional caution — it is the difference between an arm and a void arm. The S1-S3 sanity rungs
+passed 2026-08-20 and are retired.
 
 | # | node | task | cost | done when |
 |---|---|---|---|---|
-| **S1** | 2, 3 | **Short profiling arm**, `REAL_BUDGET=1200 run_node.sh <N>`. Exercises the fixed watchdog end to end on a non-audit arm *and* produces a candidate profile. The cos probe and the eval cap are now matched to the scored arms, so this is the first profile measured under the configuration it prices | ~20 min ×2 | the arm ends on its own budget, **not** `arm_stall.json`; `profile_sim_charges.py` prints no `WARN`; per-quintile spread on `drain_tail`/`fedavg` under ~20% |
-| **S2** | 1 | **Short agnews controller**, `VCLOCK_OVERRIDE=6000 run_node_p4.sh agnews controller` (~250 commits at the arm's measured 24 vclock/commit). Only needs to pass **commit 200**, where the rate predicates arm — that is where 2026-08-20 died. Void by construction; it is a watchdog test, not an arm | ~30 min | no `arm_stall.json` past commit 250, and `check_arm_health.py` gate 3 prints the `G-2 signature` line with `I==1` well under 90% |
-| **S3** | any | **`NODE_DRY_RUN=1 run_node.sh <N>`** on each node after `git pull` | seconds | 7 ✓ preflight, and the generated cfg carries `cos_ground_truth_audit: false` + `eval_max_samples: 10000` |
-| **C** | 1 | **P-4 agnews — controller only.** The 2026-08-20 control is valid and on disk; do not re-run it. Confirm `condition_fp` still prints `c2ef1528` so the pair matches | ~2 h | §6's gates hold **and** it ends on `[BudgetStop] reason=budget` — the rule that voids it otherwise |
-| **D** | 2 | **P-4 yahoo** at **60,000** vclock. Profiles itself first (S1's profile is reused if it passed) | ~6.4 h control + ~3.2 h controller | same gates; then score accuracy vs `Λ` against §5's first open row |
-| **H** | 3 | **P-4 yelp-p** at **50,000** vclock. 2 classes is the opposite corner from yahoo's 10 | ~5.3 h + ~3.0 h | same gates; `A` and per-vclock-hour comparable against the other two |
+| **W** | — | **LANDED.** `I`-floor kill now needs a progress conjunct: fire only when `I` is floored **and** `B/B_max` gained ≤ `--b-advance-min` (0.005) across the window ([§11.6](#116-stalling-and-early-termination)). Replayed silent on node 3's yelp-p (**`I==1` on 100%** of its last 200 commits, `ΔB`=0.0339, would have been killed by the old rule) and on the agnews smoke. **Still open:** the G-2 side is unverified — `003648`'s run dir is node-local and not on jayne | CPU, minutes | replay `003648` and confirm it still fires |
+| **C** | 1 | **P-4 agnews — controller only.** Live from 15:22 at `condition_fp c2ef1528`; the 2026-08-20 control is valid on disk, do not re-run it | ~2.3 h | §6's gates hold **and** it ends on `[BudgetStop] reason=budget` — the rule that voids it otherwise |
+| **D** | **4** | **P-4 yahoo controller re-run** at 60,000 vclock. Node 2 is busy with the valid half of the pair, so run this on the idle node — copy node 2's `sim_charge_profiles/fluxtune_yahoo.yaml` across **first**, since one profile on both arms is the only reason `run_node.sh` keeps a pair on one node | ~3.2 h | ends on `[BudgetStop]`; pairs with node 2's control at `condition_fp 7174b984`; then score accuracy vs `Λ` against §5's first open row |
+| **H** | 3 | **P-4 yelp-p control** at **50,000** vclock — **running since 16:08**, auto-started behind the valid controller. 2 classes is the opposite corner from yahoo's 10 | ~4.9 h | same gates; `A` and per-vclock-hour comparable against the other two |
 | **E** | 4, or any CPU | 3.5's saturation stop — **not built.** Size window/threshold/patience by replay against the arms on disk before it ships | CPU | replay reproduces a sensible stop commit |
-| **B4** | any CPU | **`budget_stop_frac` needs a margin against a moving `B_max`.** `mean` is damping well — raw senses 0.5272 / 0.8216 / 0.7428 (1.56× spread) combine to 0.5272 → 0.6744 → 0.6972, i.e. **+3.4% by n=3** — and re-sensing is *correct*, `base_acc` rose 0.805 → 0.846 across the same probes. The exposure is the **first** sense: it replaces the `ln 2` prior outright at n=1, maximum variance, and it came in **below** the prior (0.5272 vs 0.6931). Had `B` been past 0.95·0.5272 at commit 150 the arm would have stopped on the spot. Candidate: do not arm the stop until n ≥ 2 senses | CPU, replay | a rule with a stated margin, replayed against `021735` and 2026-08-16's arms; `ratchet` is **not** it — it is `min`, which stops even sooner |
+| **B4** | any CPU | **`budget_stop_frac` needs a margin against a moving `B_max`.** `mean` is damping well — raw senses 0.5272 / 0.8216 / 0.7428 (1.56× spread) combine to 0.5272 → 0.6744 → 0.6972, i.e. **+3.4% by n=3** — and re-sensing is *correct*, `base_acc` rose 0.805 → 0.846 across the same probes. The exposure is the **first** sense: it replaces the `ln 2` prior outright at n=1, maximum variance, and it came in **below** the prior (0.5272 vs 0.6931). Had `B` been past 0.95·0.5272 at commit 150 the arm would have stopped on the spot. Candidate: do not arm the stop until n ≥ 2 senses. **yelp-p 2026-08-20 confirms the exposure**: n=1 sensed 0.5223, then 0.7440 / 0.8961 / 0.9425 / 0.9598 by n=5 — the first sense was 46% low | CPU, replay | a rule with a stated margin, replayed against `021735` and 2026-08-16's arms; `ratchet` is **not** it — it is `min`, which stops even sooner |
 | **G** | **after** the P-4 arms, CPU | **`read_instance_from_h5` returns rows in thread-completion order**, so a shard's row order — and its bin composition — is not reproducible across tokenizations, and `guid` names the wrong row (§10). No ledger number is affected. It waits because it re-orders every future shard against the caches those arms run on | CPU, minutes | two tokenizations of one client agree byte-for-byte, and `guid` round-trips |
 
 **The profile is still the one hard gate on D and H:** each is scored against its own dataset's `vclock`
@@ -166,6 +168,29 @@ to test, and **it has not been tested yet.**
    and it is a standing blocker on ship-checklist item 5b.
 4. **`f` = 0.95 was sized against the pre-fix `B_max` semantics** and rests on a `Λ` ≥ 0.95 floor read off
    the agnews curve. `Λ` has never been tested across task. Re-derive both (§5's open table).
+
+### Scoreboard — what is still missing before the sentence is earned
+
+> *FluxTune's law-C controller reaches and holds a plateau on a new dataset with no learning knob tuned
+> by hand — same DistilBERT + adapters, three datasets, controller vs control at equal vclock.*
+
+A pair counts only if **both** arms are valid at the **same** `condition_fp` and the controller ended on
+`[BudgetStop] reason=budget` ([§11.7](#117-reading-an-arm--the-only-command-needed-and-the-scoring-rules)).
+
+| what the sentence needs | agnews | yahoo | yelp-p |
+|---|---|---|---|
+| backprop ceiling clears ≈0.70 (§9) | **yes** 0.850 | **yes** 0.734 | **yes** 0.874 |
+| its own sim charge profile | `fluxtune.yaml` | built, **node 2 local** | built, node 3 local |
+| **control** arm valid | **yes**, 938 commits | live, ends ~22:15 | live, ends ~21:00 (row **H**) |
+| **controller** ends on `[BudgetStop]` | live (row **C**) | **void x2** — row **D** | **yes** — commit 1,348, 95.0% of `B_max` |
+| ends within 0.015 of peak | no valid arm yet | no | **score it** — `replay_scoring.py`, first arm that can be |
+| `B_max` / `ρ*` **differ across datasets, unsupplied** | sensed **down**, 0.693 → 0.510 | — | sensed **up**, 0.693 → **1.023** over 8 probes |
+| no learning knob supplied by hand | **yes**, by construction (table above) | **yes** | **yes** |
+
+**Where that leaves it: not yet, and the gap is arms, not code — except W.** The divergence row is the
+one already paying: agnews and yelp-p sensed `B_max` in **opposite directions** with nobody supplying it,
+which is what §5 pre-registered as possibly failing to reproduce. Every other empty cell is one
+completed arm away, and three of the four are blocked behind the same watchdog bug.
 
 ---
 
@@ -456,10 +481,11 @@ controller ends on [BudgetStop] reason=budget, not max_runtime_s # defect 1
 trips/commit >= 3 at every quintile                             # defect 3 + T5's gate
 ```
 
-**All four gates now hold live except the ending** — six clean arms across yahoo and yelp-p on
-2026-08-18 (§11.2, [P4.10](fl_fwd_ft_practice.md#p410-the-2026-08-18-smoke--clean-and-what-it-settled)).
-`[BudgetStop]` is untested anywhere but agnews' forced `225224`; it needs a full-length arm, which is the
-whole point of the queue.
+**All four gates now hold live, the ending included** — yelp-p's `125010` ended on
+`[BudgetStop] reason=budget action=halt` at commit 1,348 (2026-08-20), which is the first full-length
+arm to reach its own stop. Gate 3 FAILs there at Q5=1.34 **by design**: `I==1` on 100% of the last 200
+commits with pool demand met on every one of them. Read the `G-2 signature` line, not gate 3 alone
+(§11.7); the arm is valid.
 
 **Three more that are not defects but invalidate the scoring — all enacted by `run_node_p4.sh`, so they
 need no operator action; kept because they are the *reasons* its constants are what they are:**
@@ -774,7 +800,7 @@ controls are the comparison, and agnews already has one on disk from 2026-08-16.
 | predicate | default | why this and not accuracy |
 |---|---|---|
 | no new commit | 20 min steady-state, 45 min pre-first-commit | a genuine hang; the only unambiguous one |
-| `I` floored at 1 over the last 200 commits | ≥ 90% | **G-2's `003648` died at 98%.** The direct test. Needs `--server-update-audit`, so it reads *unavailable* — never *passing* — on an arm without it |
+| `I` floored at 1 over the last 200 commits **and `B` not advancing** (`--b-advance-min`, default 0.005) | ≥ 90% | **G-2's `003648` died at 98%**, but the `I` share alone is not that death — it voided a healthy yahoo controller at 86% of `B_max`. `B` is the exact progress measure and rides on the same record. Needs `--server-update-audit`, so it reads *unavailable* — never *passing* — on an arm without it |
 | trips/commit < 3 **and** pool demand unmet > 50% | after 200 commits | the conjunction is the predicate. `trips/commit` alone is `n_req/K`, and law C drives `n_req` down **by design** |
 | any `rho_star == 0` | after 200 commits | a requirement of *zero*, not an absent one (P4.7 defect 2) |
 
@@ -792,6 +818,14 @@ its own 0.95 stop** — the floor voids every controller arm at any setting abov
 at `n_req`=18 of 100 trainers with the demand met on **every one of its 577 commits**. Starving means the
 gate is *not being met*; asking for less is the controller working.
 
+**The same argument voids `I` as a solo kill — row W, landed.** `I` is the iteration count
+that same gate drives, so it floors at 1 for the same reason `n_req` shrinks — not because the arm is
+dying. On 2026-08-20 it killed node 2's yahoo controller at commit 964 / **86.0% of `B_max`** with the
+demand met on every commit, and node 3's yelp-p arm climbed `I==1` 12% → 44% in nine minutes while `B`
+rose toward its stop; by 1,080 commits that arm read `I==1` on **100%** of its window while still
+gaining 0.034 of `B_max` per 200 commits. **Kill on `B` not advancing, never on the shape of a healthy
+landing.**
+
 > **Open, and a real question rather than a bug (queue row B4):** a commit pooled from ~5 of 100 trainers
 > at the landing point is what the n_target gate says is correct for a tiny step, but it is also the
 > regime where the server path has little trainer work amortising it — the sim-fidelity worry the old
@@ -803,7 +837,11 @@ requires `--target-acc`, which would end the arm on convergence — and an arm t
 the controller is supposed to do.**
 
 `NODE_WATCH=0` disables it; `NODE_WATCH_ARGS="--stall-window-s 600"` retunes it. A killed arm leaves
-`arm_stall.json` in its run dir and the node prints it.
+`arm_stall.json` in its run dir and the node prints it. **An arm launched before W landed is not fixed
+by it** — the watcher holds the old module in memory. Either relaunch, or drop that predicate alone with
+`NODE_WATCH_ARGS="--max-hours <CEIL+1> --i-floor-frac 1.01"` (`1.01` is unreachable; setting
+`NODE_WATCH_ARGS` replaces `run_node_p4.sh`'s `--max-hours` default, so pass both), or as a last resort
+`kill $(pgrep -f watch_arm.py)`, which drops the hang guard too.
 
 ### §11.7 Reading an arm — the only command needed, and the scoring rules
 

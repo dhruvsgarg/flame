@@ -82,6 +82,7 @@ class Scan:
         self._pending = {"audit": 0, "census": 0}
         self._recent_i = []          # iteration_per_data_id, last _CAP commits
         self._recent_starved = []    # n_eff < n_req, i.e. gate not met
+        self._recent_bfrac = []      # budget_frac, i.e. B/B_max -- exact progress
 
     def g2_signature(self):
         """(I-floored fraction, gate-unmet fraction, n) over the recent window.
@@ -160,6 +161,22 @@ class Scan:
             self._recent_starved.append(n_eff < n_req)
             if len(self._recent_starved) > self._CAP:
                 self._recent_starved.pop(0)
+        if d.get("budget_frac") is not None:
+            self._recent_bfrac.append(d["budget_frac"])
+            if len(self._recent_bfrac) > self._CAP:
+                self._recent_bfrac.pop(0)
+
+    def b_advance(self):
+        """B/B_max gained across the recent window; None if unreadable.
+
+        The only signal separating G-2's death from a landing controller: both floor
+        `I` at 1, but G-2 had nothing left to converge on while a controller on plan
+        walks B to its 0.95 stop. yelp-p `125010` gained 0.035 per 200 commits at 90%
+        of B_max -- ~7x the default floor -- and went on to reach that stop.
+        """
+        if len(self._recent_bfrac) < 2:
+            return None
+        return self._recent_bfrac[-1] - self._recent_bfrac[0]
 
 
 def main():
@@ -189,8 +206,15 @@ def main():
                          "controller arm at any setting above ~0.5.")
     ap.add_argument("--i-floor-frac", type=float, default=0.9,
                     help="kill when iteration_per_data_id is 1 on this fraction of "
-                         "the recent window -- G-2's actual death (98%). Direct, "
-                         "where --trips-floor is a proxy. Needs --server-update-audit.")
+                         "the recent window AND B has stopped advancing -- G-2's "
+                         "actual death (98%). Direct, where --trips-floor is a "
+                         "proxy. Needs --server-update-audit. 1.01 disables it.")
+    ap.add_argument("--b-advance-min", type=float, default=0.005,
+                    help="B/B_max gain across the window that counts as progress. "
+                         "The I floor alone is NOT a death -- it voided a healthy "
+                         "yahoo controller at 86%% of B_max on 2026-08-20, because "
+                         "the n_target gate drives I to 1 at the landing point BY "
+                         "DESIGN, exactly as it drives n_req down.")
     ap.add_argument("--max-hours", type=float, default=0.0,
                     help="hard cap on this arm's wall clock; 0 = none")
     a = ap.parse_args()
@@ -200,6 +224,7 @@ def main():
     run, scanner = None, None
     print(f"[watch] exp_dir={a.exp_dir} stall={a.stall_window_s / 60:.0f}m "
           f"grace={a.grace_commits} trips_floor={a.trips_floor} "
+          f"i_floor={a.i_floor_frac:g}/dB>{a.b_advance_min:g} "
           f"kill={'on' if a.kill else 'off (report only)'}", flush=True)
 
     while True:
@@ -241,10 +266,15 @@ def main():
                                      f"(P4.7 defect 2)")
             # G-2's death, tested directly rather than through trips/commit.
             i_frac, starved, n_i = scanner.g2_signature()
-            if n_i >= a.grace_commits and i_frac is not None and i_frac >= a.i_floor_frac:
+            d_b = scanner.b_advance()
+            if (n_i >= a.grace_commits and i_frac is not None
+                    and i_frac >= a.i_floor_frac
+                    and d_b is not None and d_b <= a.b_advance_min):
                 return _fire(a, run, f"iteration_per_data_id floored at 1 on "
                                      f"{i_frac:.0%} of the last {n_i} commits "
-                                     f"(limit {a.i_floor_frac:.0%})"
+                                     f"(limit {a.i_floor_frac:.0%}) AND B/B_max "
+                                     f"gained only {d_b:.4f} across them "
+                                     f"(limit {a.b_advance_min:g})"
                                      + (f", pool demand unmet on {starved:.0%}"
                                         if starved else "")
                                      + " -- P4.7 defect 3, G-2's death")
