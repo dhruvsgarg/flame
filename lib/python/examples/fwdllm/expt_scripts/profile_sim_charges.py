@@ -286,9 +286,20 @@ def main():
         )
         yaml.safe_dump(registry, f, sort_keys=True, default_flow_style=False)
 
-    for (label, pk), spans in pooled.items():
+    # Is this run long enough to have priced the leg, or did it just sample a phase?
+    # A steady-state cost is flat across the run; one that drifts means the arm was
+    # still warming up, or something periodic is inside the span. Read this before
+    # trusting a profile taken off a short arm.
+    for (label, pk), spans in sorted(pooled.items()):
+        q = [spans[i * len(spans) // 5:(i + 1) * len(spans) // 5] for i in range(5)]
+        q = [st.mean(b) for b in q if b]
+        spread = (max(q) / min(q)) if q and min(q) > 0 else float("inf")
+        flag = "" if spread <= 1.2 else (
+            "  <-- %.1fx across the run: still warming up, or something periodic "
+            "is inside the span" % spread)
         print(f"{label}.{pk}: n={len(spans)} mean_s={st.mean(spans):.4f} "
-              f"p90_s={_pctl(spans, 0.9):.4f}")
+              f"p90_s={_pctl(spans, 0.9):.4f} median_s={st.median(spans):.4f}")
+        print("    quintile means: " + " ".join(f"{v:.4f}" for v in q) + flag)
 
 
 if __name__ == "__main__":
