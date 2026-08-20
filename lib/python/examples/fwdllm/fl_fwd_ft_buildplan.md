@@ -74,7 +74,7 @@ the patch, so an armed arm launched before it needs `kill $(pgrep -f watch_arm.p
 | 2 | yahoo **control** | live 15:16, ends ~22:15. `setpoint`, trips/commit ~7.9, so **immune to W**. `condition_fp 7174b984` |
 | 2 | yahoo **controller** | **void** — killed 15:15 by the `I` floor. Never budget-starved: ~20,600 of 60,000 vclock used. Re-run is row **D** |
 | 3 | yelp-p **controller** | **VALID** — `[BudgetStop]` at commit 1,348, 95.0% of `B_max`, 8 `BmaxProbe` fires (0.693 → **1.023**). Gate 3 FAILs at Q5=1.34 with `I==1` on 100% and demand met on every commit: annealing on plan, read §11.7 |
-| 3 | yelp-p **control** | **not started as of 16:12** — 16:08 was the controller's `[BudgetStop]`, and its post-arm gate reader is still running. `run_node.sh 3` starts the control behind it (row **H**), on the **old** watcher: the launcher was up before W landed |
+| 3 | yelp-p **control** | **not started as of 16:12** — 16:08 was the controller's `[BudgetStop]`, and its post-arm gate reader is still running. `run_node.sh 3` starts the control behind it (row **H**) on the **fixed** watcher — `node_run` execs a new `watch_arm.py` per arm (`_node_lib.sh:45`), so only the arm that was ALREADY running keeps the old module |
 | 4 | — | **idle and usable** — take row **D** there rather than queue it behind node 2's control |
 
 **The one number to take from 2026-08-20's night arms:** the controller reached **80.7% of `B_max` on
