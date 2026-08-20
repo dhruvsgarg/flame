@@ -94,8 +94,8 @@ forward-gradient arm reaches **0.876** (§7.3).
 |---|---|---|---|
 | **D-2** | **`D` is 2–3× larger on the two arms that trained than near init** — but it is not "training state": pooled across both it is *non-monotone* in accuracy, and its highest-accuracy bin reads the **lowest** `D` while pre-turn steps to post-turn. `const` vs `rm` is the leading confound. Numbers: §6.3 | the sizing formula and §8's generality — `N_req ∝ 1/D²`, so 2× is 4× in pool | **on the rig, not on an arm**: single-commit `cos` has SNR ≈ 1, so only a fixed **trained checkpoint** with unlimited probes can separate `const` from `rm` |
 | **H-S** | **A 3.5× shadow loss that is not data-side.** The rig reproduces `L` but gets `S` = 1.68 where the arms read 0.48. Prime suspect: the FD chord — `h‖v‖` ≈ `‖θ_tr‖`, so `d` is a chord-averaged slope, not `⟨g,v⟩` | the last unexplained factor in `cos` | rig: true `⟨g,v⟩` vs the shipped central FD at the shipped `h` (§6.3) |
-| **C-1** | **The controller — implementation, not research.** The stopping rule is **validated on replay**: a `Φ` trigger at 2.7–3.0 banks the peak to 0.005 mean / 0.014 worst over 10 arms, against **0.141 / 0.595** for running to the end ([P4.1](fl_fwd_ft_practice.md#p41-the-φ-stop-counterfactual)). What remains is wiring | every arm's ending, and metric 1 | build it — §5.5's four `not built` rows; none needs new science |
-| **3.1** | **`B_max` transfers across model capacity but NOT across task** (B-1, MEASURED — §7.1/§5.5b): agnews/yahoo/yelp-p knees are neither invariant nor monotone in `num_labels`. The mechanism is geometric and general; the value is not derivable in advance | whether `ρ*`, `s`, `N` and the stop can ship as a fixed constant — they cannot | build the injection probe (§5.5b) — now the load-bearing path, not a fallback |
+| **C-1** | **The controller — implementation, not research.** The stopping rule is **validated on replay**: a `Φ` trigger at 2.7–3.0 banks the peak to 0.005 mean / 0.014 worst over 10 arms, against **0.141 / 0.595** for running to the end ([P4.1](fl_fwd_ft_practice.md#p41-the-φ-stop-counterfactual)). What remains is wiring | every arm's ending, and metric 1 | **built, and verified end to end on all three datasets — plumbing only, no scored arm yet.** It closes on the arms in [buildplan §-1](fl_fwd_ft_buildplan.md), whose first unproven signal is a controller ending on `[BudgetStop]` |
+| **3.1** | **`B_max` transfers across model capacity but NOT across task** (B-1, MEASURED — §7.1/§5.5b): agnews/yahoo/yelp-p knees are neither invariant nor monotone in `num_labels`. The mechanism is geometric and general; the value is not derivable in advance | whether `ρ*`, `s`, `N` and the stop can ship as a fixed constant — they cannot | the injection probe (§5.5b) is **mandatory, not a fallback** — built and wired, but every in-run firing on record predates the `B_max = B + ln Φ_peak` correction, so **the long arms are its first honest exercise** |
 | **K-C** | **Is `K` a speed lever at all, and who pays for staleness?** `t ∝ 1/K` counts **gate iterations**, which are serial wall-clock waits only when `C = K`; the dispatcher refills to `C`, never to `K`. Staleness in commits is `C/n_req` — `K`-free. Both time and staleness may belong to `C` | which knob the controller hill-climbs (§5.5e, phase 3.4), and whether `K` is free in bytes | **K-1, with `C` held at 30** — every measurement to date moved `C` with `K` (`C/K` = 3/2/2) and cannot discriminate |
 
 **What is *not* open: the optimizer, or any pooling knob.** The four fixes enact to spec and the dynamics
@@ -675,11 +675,9 @@ PER COMMIT (server):
   # NO accuracy target: the run finds its own ceiling (5.5f D2)
 ```
 
-**2026-08-15 note:** the two `[NOT BUILT]` tags above meant "not wired into the live commit loop," not "no
-method exists" — both the `B_max` probe (5.5b) and the stop rule (`Φ` threshold, superseding the
-`dAcc/dΛ` line originally here) are fully specified and already validated offline/by replay. See
-`fl_fwd_ft_practice.md` P9.3's newest process-lesson entry and P5.2's Phase 3 section for the actual
-remaining work (live wiring + two open design decisions), and `fl_fwd_ft_buildplan.md` §5 for the specs.
+**`[NOT BUILT]` means "not wired into the live commit loop", never "no method exists"** — both the `B_max`
+probe (§5.5b) and the stop rule are fully specified and validated offline. Reading the tag the other way
+almost mis-scoped Phase 3 as blocked-on-research ([P9.3](fl_fwd_ft_practice.md#p93-process-lessons)).
 
 **The four `[NOT BUILT]` lines are the entire remaining build (C-1).** Everything above them enacts to
 spec. They are the only places a *decision* is made from *sensed* state rather than arithmetic — which is
@@ -798,9 +796,9 @@ with and no longer has to set.
 **What follows for the controller, and it changed the shipped recommendation.** *Hold `s` constant* — the
 Cauchy–Schwarz equality condition, which under an anneal means `N` must fall **with** `ρ`
 (`gate_rho_ref=annealed`). *Anneal to **land** on `B_max`*, never to stay under it: Robbins–Monro
-converges to some `B_∞` and `t ∝ 1/B_∞`, so unspent budget is wall clock given away. *Stop on saturation,
-not on a schedule* — `dAcc/dΛ` over a 100+ commit window, the only regime where these statistics are
-readable. **The `const` arms did not need an anneal; they needed a stop** — `145729` peaked 0.876 at
+converges to some `B_∞` and `t ∝ 1/B_∞`, so unspent budget is wall clock given away. *Stop on saturation, not on a
+schedule* — a Prechelt GL/patience criterion on smoothed held-out accuracy, superseding the raw `dAcc/dΛ`
+slope this section once named (§5.5f D2). **The `const` arms did not need an anneal; they needed a stop** — `145729` peaked 0.876 at
 commit 514 and ran 431 further commits into the ground.
 
 ### §5.5a The operation / prediction split — where `D` actually bites
@@ -830,9 +828,11 @@ operator set the method already restricts itself to.
 > spend on the first fire — `ρ*` = 0 for 23–48% of commits on all four P-4 arms
 > ([P4.7](fl_fwd_ft_practice.md#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects)).
 > Anchored this way `B_max` > `B` by construction, so a re-sense can only ever move the landing point, not
-> stop the run — which is what makes 3.3's stop a genuine backstop rather than a race with the sensor. **Already built** as `probe_inflation_damage.py`,
-never run *inside* a live run. It runs on the model being trained, so it calibrates the deployment rather
-than a proxy, and it is **biased conservative** — it noises a model that cannot re-fit, reading the knee
+> stop the run — which is what makes 3.3's stop a genuine backstop rather than a race with the sensor.
+
+**Built** as `probe_inflation_damage.py` and wired into the aggregator as `[BmaxProbe]`
+(`b_max_probe_every`), though every in-run firing on record predates the correction above. It runs on the
+model being trained, so it calibrates the deployment rather than a proxy, and it is **biased conservative** — it noises a model that cannot re-fit, reading the knee
 ~0.6–1.2 low (§7.1), so it under-spends budget, never over-spends.
 
 **Why `B_max` is the right constant to bet on — and why it must still be sensed, not shipped fixed.**
@@ -842,13 +842,10 @@ post-collapse accuracy lands at its own chance level `1/K`, the same directional
 everywhere). *(2)* It **transfers across model capacity** — two models differing 1.77× in norm share a
 knee at the same `Φ` (§7.1). *(3)* It **held over the whole agnews portfolio unfitted** — 7/7 turned arms
 at `Φ` = 2.41–3.11, and as a stopping rule it gives up 0.005 of peak on average (P4.1). **It does NOT
-transfer across task** (§7.1, B-1 MEASURED 2026-08-13): agnews/yahoo/yelp-p knees are neither invariant
-nor monotone in `num_labels` — yahoo and yelp-p (10 and 2 classes) land at nearly the same, earlier knee
-than agnews (4 classes). So the *mechanism* is geometric and general; the *value* is not derivable from a
-dataset property known in advance. **This settles B-1's own decision table: the injection probe (3.1) is
-mandatory, not a fallback** — a fixed or `num_labels`-derived constant would misprice the budget on at
-least two of the three datasets tested. The conservative bias is still uncalibrated per-task, and the
-controller does not exist yet (C-1).
+transfer across task** — B-1's three knees are neither invariant nor monotone in `num_labels` (§7.1 has
+the numbers). So the *mechanism* is geometric and general; the *value* is not derivable from a dataset
+property known in advance, which is what makes the probe mandatory rather than a fallback. The
+conservative bias is still uncalibrated per-task.
 
 ### §5.5e Adaptive `K` and `P` — the same rule twice
 
@@ -1050,7 +1047,6 @@ at least two of three datasets tested. **Replicated 2026-08-13: 2 independent tr
 all agreeing tightly.** agnews knee 3.0–3.5 both runs (normalized 0.732→0.003 / 0.752→0.021 at Φ=3.0→3.5);
 yelp-p crosses 0.5-normalized at Φ=2.0–2.5 both runs (0.567→0.405 / 0.517→0.409); yahoo agrees across a
 3-epoch and a 9-epoch run. Below this doc's 10-arm bar (P4.1) but no longer single-run.
-> ledger.**
 
 ## §7.2 The norm is mostly a symptom, and decay will not rescue it (Q2 — settled)
 

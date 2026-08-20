@@ -158,9 +158,9 @@ Nothing reaches a verdict without predicted-vs-observed numbers and a run id.
 
 ## P4 — Arm ledger
 
-Sorted by `Λ`, the ordering that predicts peak accuracy. `Φ` pred is `e^B`; `Φ` obs is `‖θ_T‖/‖θ_0‖` —
-their agreement *is* the norm law. `‖θ_0‖` = 13.35 (`rf`=16), 9.6 (`rf`=32), 6.86 (`rf`=64). All arms
-α=1, `mean`/`rf`=16 unless the row says otherwise.
+Sorted by `Λ`, the ordering that predicts peak accuracy — except the four P-4 arms, grouped last as
+pairs. `Φ` pred is `e^B`; `Φ` obs is `‖θ_T‖/‖θ_0‖` — their agreement *is* the norm law. `‖θ_0‖` = 13.35
+(`rf`=16), 9.6 (`rf`=32), 6.86 (`rf`=64). All arms α=1, `mean`/`rf`=16 unless the row says otherwise.
 
 | `Λ` | arm | run | `T` | `ρ` c1 | `B` | `Φ` pred → obs | peak | final |
 |---|---|---|---|---|---|---|---|---|
@@ -176,8 +176,8 @@ their agreement *is* the norm law. `‖θ_0‖` = 13.35 (`rf`=16), 9.6 (`rf`=32)
 | 0.066 | `select` ρ*=.06 **+ `β`=0.75** (S1) | `160614` | 66 | 0.0599 | 0.0263 | 1.027 → **1.176** | 0.626 | 0.626 |
 | 0.068 | `const` ρ*=.01 | `211736` | 186 | 0.0100 | 0.0092 | 1.009 → 1.009 | 0.488 | 0.429 |
 | 0.083 | **`n_target` `s`=1.5 ρ*=.06 (G-1; `I`=8, `N`=80)** | `022448` | 73 | 0.0599 | 0.0280 | 1.028 → 1.026 | 0.508 | 0.433 |
-| 0.238 | **`mean` `rf`=64 ρ*=.06 (Q3)** | `171950` | 67 | 0.0599 | 0.0267 | 1.027 → 1.025 | 0.605 | 0.595 |
 | 0.199 | `rm` ρ*=.03 e=.25 | `013843` | 318 | 0.0300 | 0.0150 | 1.015 → 1.015 | 0.695 | 0.662 |
+| 0.238 | **`mean` `rf`=64 ρ*=.06 (Q3)** | `171950` | 67 | 0.0599 | 0.0267 | 1.027 → 1.025 | 0.605 | 0.595 |
 | 0.369 | `mean` raw, N=200 | `211800` | 179 | 0.0346 | 0.0850 | 1.089 → 1.088 | 0.804 | 0.793 |
 | 0.393 | gate `setpoint` ρ*=.06 | `035557` | 312 | 0.0599 | 0.0592 | 1.061 → 1.061 | 0.804 | 0.804 |
 | 0.398 | `rm` ρ*=.06 e=.25 **(Q3 anchor)** | `035045` | 317 | 0.0599 | 0.0597 | 1.061 → 1.062 | 0.801 | 0.799 |
@@ -195,9 +195,9 @@ their agreement *is* the norm law. `‖θ_0‖` = 13.35 (`rf`=16), 9.6 (`rf`=32)
 | 0.953 | `mean` raw, free gate (replicate) | `223446` | 693 | 0.1202 | 1.2776 | 3.59 → 3.62 | 0.864 | 0.850 |
 | 1.014 | `select` `rf`=32 `p`=229012 | `212009` | 187 | 0.1941 | 1.1647 | 3.20 → 3.28 | 0.857 | 0.851 |
 | 1.353 | `select` raw, N=200 **+cos** | `013806` | 328 | 0.1861 | 2.2086 | 9.10 → 9.47 | 0.855 | **0.251** |
+| 1.368 | `select` `rf`=64 `p`=118348 | `222817` | 188 | 0.1863 | 1.0939 | 2.99 → 3.04 | **0.859** | 0.852 |
 | 1.566 | `mean` `const` ρ*=.06, **`P`=30 (P-1)** | `015455` | 585 | 0.0599 | 1.0455 | 2.84 → 2.86 | 0.873 | 0.869 |
 | 1.722 | **`n_target` `s`=2.9 `const` ρ*=.06 (G-1b arm 1)** | `112201` | 1364 | 0.0599 | 2.4402 | 11.48 → 11.61 | **0.849** | **0.250** |
-| 1.368 | `select` `rf`=64 `p`=118348 | `222817` | 188 | 0.1863 | 1.0939 | 2.99 → 3.04 | **0.859** | 0.852 |
 | 2.385 | **`n_target` `s`=1.5 `const` ρ*=.06 (G-1b arm 2)** | `145729` | 945 | 0.0599 | 1.6901 | 5.42 → 5.46 | **0.876** | 0.793 |
 | 0.709 | **law C, sensed `B_max`, `halt` (P-4 agnews controller)** | `125619` | 975 | 0.0678 | 0.4911 | 1.63 → 1.63 | **0.857** | 0.854 |
 | 0.506 | **`rm`/.25 `setpoint` `log_only` (P-4 agnews control)** | `130614` | 801 | 0.0599 | 0.0992 | 1.10 → 1.10 | 0.835 | 0.834 |
@@ -492,16 +492,13 @@ commit. Warm caches remove most of it; budget wall-from-launch regardless.
 yahoo, so **yahoo-vs-agnews per-vclock comparisons are invalid** until `profile_sim_charges.py` runs for
 yahoo. Yahoo-vs-yahoo is fine.
 
-**(b) The eval is backgrounded, and it still serialises into the critical path.** `_eval_snapshot_model`
-blocks the main thread when the previous eval is still running, and it was — `eval still running at commit`
-fired on **359 of 359** evals on the yahoo control, 286/289 on the yahoo controller, 287/488 on the agnews
-controller, and **0/400** on the agnews control. Yahoo's 60,000 rows at seq 256 cost ~30 GPU-s on an idle
-A40 and **89.2 s measured under trainer contention**, against a ~91 s inter-eval gap at stride 2. **Batch
-size is not the lever** — measured 1.23× from batch 8 → 128, because the pass is compute-bound rather than
-launch-bound. Fewer rows is: `eval_max_samples` (new, default 0 = full set = byte-identical) takes a
-**fixed, fixed-seed shuffled** subsample, so the sampling error is a constant offset rather than per-eval
-noise and peak-vs-final stays as precise as the full set. Shuffled because `test_index_list` is per-client
-shards in client order — a head slice is one client's Dirichlet shard (B17). **10,000 for yahoo.**
+**(b) The eval serialises into the critical path even though it is backgrounded.**
+`_eval_snapshot_model` blocks the main thread when the previous eval is unfinished, and it was — on
+**359 of 359** evals of the yahoo control, 286/289 on the yahoo controller, 287/488 on the agnews
+controller, **0/400** on the agnews control. Yahoo's 60,000 rows at seq 256 cost **89.2 s under trainer
+contention** against a ~91 s inter-eval gap. The fix is fewer rows, not a bigger batch (P3's
+`eval_max_samples` row has the numbers); it was also, measured later, the dominant cost term in the whole
+stack ([P4.10](#p410-the-2026-08-18-smoke--clean-and-what-it-settled)).
 
 **Why yahoo sits at 0.30 — see [P4.8](#p48-yahoo-is-under-trained-not-broken).**
 
@@ -544,11 +541,10 @@ a prior is exactly what law C carries for this case, and `ρ*` annealed cleanly 
 sensor's first firing commit is itself a result to read off the re-run. This is the *same* under-training
 statement as the table above, now visible in the controller's own instrument.
 
-**The discriminating test now HAS been run** (buildplan §9 rung 1, 2026-08-17): centralized AdamW on the
-**FL rig's own data path** — one client's `TextClassificationDataManager` loader, not the B-1 rig's
-test-global half — evaluated on the same 60,000. **yahoo 0.734** (0.7333 / 0.7263 / 0.7339 over three
-epochs, untrained 0.1018), **yelp-p 0.874**, against a pre-registered ≈0.70-clears / ≈0.30-indicts. The
-path is clean and the gap is budget. Both curves are flat from epoch 1, so 0.73 is the ceiling itself.
+**Rung 1's numbers, since they are the ones that closed it:** yahoo 0.7333 / 0.7263 / 0.7339 over three
+epochs (untrained 0.1018), yelp-p 0.8603 / 0.8596 / 0.8736 (untrained 0.4917), both flat from epoch 1 — so
+0.73 is the ceiling itself, not a truncated curve. Detail and the attention-mask caveat: [buildplan
+§9](fl_fwd_ft_buildplan.md#9--the-yahoo-gap--a-sanity-ladder-cheapest-first).
 
 ### P4.9 The 2026-08-17 smoke — four defects, two of them silent
 
@@ -585,6 +581,47 @@ real arm, never a smoke.** `SMOKE=1` now writes to the gitignored
 `sim_charge_profiles/smoke/`, so a plumbing check exercises the profiler without ever pricing a scored
 arm — which is what `d5b10a2` asked for and nothing enforced.
 
+### P4.10 The 2026-08-18 smoke — clean, and what it settled
+
+Nodes 2 (yahoo, `wash`) and 3 (yelp-p, `jayne`) ran the whole chain under the P4.9 fixes. Six arms, all
+COMPLETED, `[VERDICT] every readable gate holds` on each: `[DataBins]` 1,750 / 650 registry-confirmed and
+trainer-confirmed, **zero** `rho_star == 0` steps, trips/commit 9.36 / 9.29 on the controllers and
+8.06 / 8.02 on the controls with the floor of 3 held in every quintile. Gate 4 reads WARN on the
+controllers by construction — a smoke budget cannot reach `[BudgetStop]`.
+
+**The eval fix is the result.** P4.9 defect (1) is fixed live: **24 `agg_eval` records per arm** against
+**zero** on every pre-fix arm that set `eval_max_samples`. It was also the dominant cost term, not a
+correctness fix that happened to be cheap — `eval_wall_s` reads **12.5 s** per eval against the pre-fix
+**89.2 s**, taking yahoo from **79 to 282 commits/h** (yelp-p 296). [Buildplan
+§11.3](fl_fwd_ft_buildplan.md#113-the-rate-constant--why-the-smoke-sizes-the-real-run)
+pre-registered both branches; the seq-256 cost is **not** intrinsic, and node 2's 898-commit projection
+falls from 11.3 h to ~3.2 h. Eval is still the largest single tax at ~30% of arm wall (24 × 12.5 s of a
+994 s arm, one eval per two commits) — a cadence choice now, not a defect.
+
+**yelp-p's first-ever FL arm learns.** `test-accuracy` 0.5475 → 0.5945 across the control's 49 commits,
+against a 0.5 chance floor on 2 classes. yahoo over the same 49 reads 0.1028 → 0.1104 against 0.10 — at
+chance, consistent with [P4.8](#p48-yahoo-is-under-trained-not-broken). Neither settles anything: 49
+commits is 3.3% of `B_max`, and both are priced off the agnews profile under `--force`.
+
+**The `fedavg` warmup stall is deterministic — a longer real arm will not clear it.** Both nodes refused
+`fedavg` for the same reason: one 113.29 s (yahoo) / 114.70 s (yelp-p) sample carrying 87% of a 47-sample
+pool. It is not noise. On yelp-p it is sample 8 of 47, and the whole span sits inside a single **round-1**
+`_apply_weighted_update` — `_process_aggregation_goal_met` 115.04 s, `aggregate` 114.70 s, every other
+`step_timing` in the window under 0.6 s. It is a first-commit cost, and it recurs.
+`profile_sim_charges.py` has no warmup drop and `_OUTLIER_MAX_SHARE` is a *share* test, so at
+`REAL_BUDGET`=3000 (~235 samples, median 0.19 / 0.05 s ⇒ pooled ~45 / ~14 s) that one sample is still
+**72–89% of the pool: the production profile will keep agnews' `fedavg` 0.0563 s.** Accepting it is cheap
+— `drain_tail` is the term that moves (1.55 s against agnews' 0.278 s) and prices correctly. The fix, if
+it is ever worth one, is to drop round-1 samples in the profiler, not to lengthen the arm.
+
+**The provenance gate now has a live check, not a Python one.** Method, on the node itself: copy the smoke
+profile to the production path, run `run_sequential.sh --dry-run` with the p4 flag set and **without**
+`--force`, read the preflight, delete the file. Both hosts return **10 ✓ / 0 ⚠ / 0 ✗** — `matches dataset`
+(`profiled on yahoo` / `on yelp-p`), `provenance` (`from fluxtune real`), `CURRENT` (sourced from the
+newest real). One caveat the green row does not state: `_ok` accepts the bare `_fluxtune_n` form, so a
+`fedavg` entry carried over from agnews passes provenance on a yahoo-tagged file. **Provenance ok ≠ every
+charged entry priced on this dataset** — read `source_runs` and `profiled_at` per entry when that matters.
+
 ---
 
 ## P5 — The queue
@@ -619,38 +656,25 @@ once the result has landed in [P3](#p3--knob-ledger), [P4](#p4--arm-ledger) or t
 > dataset substrate table (`p`, split, shards, bins/round, sequence length per dataset) that phases 1–4
 > read.
 
-#### Phase 0 — unblock the instruments · **all 10 done (2026-08-12/15)**
+#### Phases 0, 1 and 2 — **all landed (2026-08-12/15)**
 
-Specs and gates: buildplan §2. Two have known gaps, both live: **0.7**'s projection prices law C off the
-`ln 2` prior, so an arm can pass the ≥3 trips/commit check at launch and breach it in flight
-([P4.7](#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects) defect 3); **0.10**'s
-grep never covered `lib/python/flame/`, which is where defect 4 lived.
+Specs and gates: buildplan §2–§4. Outcomes, each already in a ledger: **Phase 0**, all 10 instrument tasks
+(§2's table maps each to its result). **Phase 1**, B-1 — knees *erratic*, neither invariant nor monotone
+in `num_labels`, which is what makes 3.1 mandatory infrastructure (model §7.1/§5.5b); replicated same day,
+2 independent runs per dataset. **Phase 2**, the three registered nodes — K-1 (`C` not `K` carries the
+wall clock), P-1 (compute-bound at `τ(30)/τ(10)`=2.56, report and stop, [P4.6](#p46-p-1--p-under-mean-is-compute-bound-report-and-stop)),
+G-2 (`annealed` confirmed but real-wall-bound, [P4.5](#p45-g-2--annealed-confirmed-but-real-wall-bound)).
+**K-1 is the one that changed a phase-3 design decision** — which knob 3.4 climbs; P-1 and G-2 each
+resolved a ship-checklist item without touching 3.x's design.
 
+**Two known gaps survive Phase 0, both live.** 0.7's projection prices law C off the `ln 2` prior, so an
+arm can pass the ≥3 trips/commit check at launch and breach it in flight ([P4.7](#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects)
+defect 3) — read trips/commit per quintile at run time. And 0.10's dataset-switch grep never covered
+`lib/python/flame/`, which is where defect 4 lived.
 
-#### Phase 1 — B-1 · **done (2026-08-13)** — see model §7.1/§5.5b
-
-Validation gate reproduced model §7.1 on agnews unchanged (knee at `Φ`≈3.0, three-mode separation exact).
-Yahoo/yelp-p wired through the registry, `p` confirmed against `[ProbeDim]`. Outcome: **erratic** — knees
-neither invariant nor monotone in `num_labels` (agnews ~3.0–3.3; yahoo and yelp-p both ~2.0–2.3 despite
-being at opposite ends of the class-count range). Yahoo's low base accuracy checked against an
-undertraining confound (9-epoch rerun) and ruled out — more training overfits, doesn't help, and the
-early knee holds regardless. Per this task's own decision table, **3.1 (the online injection probe) is
-now mandatory infrastructure**, not a fallback. **Replicated same day** — 2 independent runs per dataset,
-all agreeing tightly (agnews knee 3.0–3.5 both times; yelp-p's normalized knee at Φ=2.0–2.5 both times).
-
-#### Phase 2 — K-1, P-1, G-2 · **done (2026-08-15)**
-
-All three registered nodes landed: K-1 (2026-08-13, `C` not `K` carries the wall clock — P3), P-1
-(2026-08-15, compute-bound at `τ(30)/τ(10)`=2.56 — report and stop, P3/[P4.6](#p46-p-1--p-under-mean-is-compute-bound-report-and-stop)),
-G-2 (2026-08-15, `annealed` confirmed but real-wall-bound — P3/[P4.5](#p45-g-2--annealed-confirmed-but-real-wall-bound)).
-**K-1 was the one that changed a phase-3 design decision** (which knob 3.4 climbs); P-1 and G-2 each
-resolved a ship-checklist item without changing 3.x's design.
-
-> **Preflight, do not skip, still applies to any future node.** `--dry-run`, then `--only --yes --clean
-> --force`; `--num-trainers 100`; assert `⌈n_req/K⌉ ≤ max_iter`. **The wall-clock budget check (task 0.7)
-> now runs inside `--dry-run` itself** and refuses on breach — no longer by hand. Note G-2's `annealed` leg
-> still died on `[SIM_WALL_CEILING]` despite this preflight: the preflight catches a *gross* breach, it
-> does not replace 3.3's runtime backstop for a schedule that spends its budget unevenly.
+> **Preflight still applies to any future node — the list is [P9.1](#p91-preflight).** Note G-2's
+> `annealed` leg died on `[SIM_WALL_CEILING]` despite it: the preflight catches a *gross* breach, it does
+> not replace 3.3's runtime backstop.
 
 #### Phase 3 — the controller · **built 2026-08-15, corrected 2026-08-16 by its first arms**
 
@@ -674,88 +698,48 @@ stop working across 10 arms with different schedules is the evidence, and `ancho
 terminate. `ratchet` and `anchor` remain available for the after-the-fact A/B.
 
 
-#### Phase 4 — the two zero-input runs · *state: **run 2026-08-16, VOID as an acceptance test; re-run after the four fixes** — full readout [P4.7](#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects)*
+#### Phase 4 — the two zero-input runs · *state: **run 2026-08-16, VOID as an acceptance test; re-run pending** — full readout [P4.7](#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects)*
 
-> **Where this stands (2026-08-17).** Four arms ran 2026-08-16 and are void: law C beat the control on
-> both datasets and by 1.5–3× on time-to-accuracy, but both controller arms ended on `max_runtime_s`
-> rather than `[BudgetStop]`, which the rule below defines as void. All four defects are fixed
-> (`5441db34a`) and **verified live on both datasets** — agnews `225224`, yahoo `234931`
-> ([P4.7](#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects)). **No scored arm
-> exists yet under the fixed code.**
->
-> **Re-run gate — all four must hold before the next launch is scored:** (a) `[DataBins]` reads 1,750 on
-> yahoo and 100% coverage; (b) no commit reports `rho_star` = 0; (c) the controller arm ends on
-> `[BudgetStop]`; (d) trips/commit ≥ 3 at every quintile. **(a), (b), (d) already hold on yahoo**
-> (`234931`, 31 commits); (c) is verified on agnews only. Yahoo also needs `profile_sim_charges.py`, a
-> bigger vclock, and `--eval-max-samples 10000`.
->
-> **The pre-registered acceptance criterion — `ρ*` diverging by dataset at the commit-150 re-sense — may
-> not be measurable on yahoo at all.** With the origin fixed the two knees at commit 150 were 0.248 vs
-> 0.237 (`ρ*` 0.0407 vs 0.0397), nearly identical; and `234931` showed the probe *declining to fire* on
-> yahoo while the model sits at chance ([P4.8](#p48-yahoo-is-under-trained-not-broken)). Either way that
-> is a finding about the sensor, not a failure of the law, and it moves T5's first open row.
->
-> **Ordered task list for the next session: [buildplan §-1](fl_fwd_ft_buildplan.md).** Task A (the
-> centralized-backprop control on the FL data path) gates C and D — both yahoo arms are worthless if it
-> comes back at 0.30.
+Four arms ran 2026-08-16 and are void: law C beat the control on both datasets and by 1.5–3× on
+time-to-accuracy, but both controller arms ended on `max_runtime_s` rather than `[BudgetStop]`. All four
+defects are fixed (`5441db34a`) and verified live on both datasets — agnews `225224`, yahoo `234931` —
+and the whole chain smoked clean on all three datasets 2026-08-18 ([P4.10](#p410-the-2026-08-18-smoke--clean-and-what-it-settled)).
+**No scored arm exists yet under the fixed code.** The re-run gate, launch commands and acceptance
+criterion are [buildplan §6 and §11](fl_fwd_ft_buildplan.md); what stays here is the two design decisions
+those arms are pinned to.
 
-**Launch:** `expt_scripts/nodes/run_node_p4.sh <agnews|yahoo> <controller|control>`, four invocations,
-one per machine, all four at the same 40,000-vclock target with the **cos audit off** (Phase 4 scores `B`,
-`Φ`, `Λ`, `A`, every one exact from `ρ`; only `D` needs the audit, and the audit is 3.40 s of a 7.81 s
-commit — the tax that killed G-2's annealed leg). `control` = fluxtune_v2 at `--phi-stop log_only`, which
-keeps measuring the past-the-stop counterfactual P4.1 was built from instead of destroying it.
+**(1) The control runs `setpoint`, not the shipped `annealed`.** `rm`/0.25 + `annealed` is bit-for-bit
+`003648`'s config and reproduces its gate starvation exactly (1.01 trips/commit, 7.5 h projected against
+the `setpoint` control's 2.4 h). `setpoint` is also the only G-2 leg that completed (`084554`), and a
+control has to finish to be a control. **Task 0.7's `const`/`rm` branch does not catch this** — it has no
+model of `rm` decaying `n_req`, so it projects ~0.6 h for that 7.5 h arm. Extending it is the standing
+follow-up before any `rm`+`annealed` arm runs unattended again.
 
-**Projected, audit-off, from T5's cost fit:**
+**(2) Every arm is pinned to `rf`=16, and `rf`=64 will not carry `annealed` at any `T_res`.** T5 settled
+law C's constants against `p`=450,340; the v1/v2 split (2026-08-15) repointed the `fluxtune` alias to
+`rf`=64, `p`=118,348, so every projection silently described a model 3.8× the one that would have
+launched. Re-derived at `rf`=64 the `Λ ≥ 0.95` and `trips/commit ≥ 3` floors close against each other — a
+9-unit window at `T_res` 82–90 where `Λ` clears by 0.001–0.007 and 28% of commits still floor to `I`=1 —
+and the two-phase trajectory reads **1.71** trips/commit on agnews, **1.43** on yahoo. `setpoint` composes
+at every `T_res`, but `annealed` is what P4 exists to test, so `rf` moves instead. P4 therefore compares
+law C against v2's iteration-control policy **at `rf`=16**, not against v2 entire. **That `rf`=64 cannot
+carry `annealed` is a standing blocker on ship-checklist item 5b**, independent of P4.
 
-| arm | commits | trips | trips/commit | wall |
-|---|---|---|---|---|
-| agnews controller (law C) | 967 | 4,848 | 5.01 | 2.2 h |
-| yahoo controller (law C) | 916 | 3,382 | 3.69 | 1.9 h |
-| control, `gate_rho_ref=setpoint` | 799 | 6,390 | 8.00 | 2.4 h |
-| ~~control, shipped `annealed`~~ | 5,196 | 5,271 | **1.01** | **7.5 h** |
-
-**The control runs `setpoint`, not the shipped `annealed`, and the last row is why:** `rm`/0.25 +
-`annealed` is bit-for-bit `003648`'s config, and it reproduces that arm's gate starvation exactly
-(1.01 trips/commit). `setpoint` is also the only G-2 leg that completed (`084554`), and a control has to
-finish to be a control. **Task 0.7's `const`/`rm` branch does not catch this** — it has no model of `rm`
-decaying `n_req`, so it projects ~0.6 h for that 7.5 h arm. Extending it is the standing follow-up before
-any `rm`+`annealed` arm runs unattended again.
-
-**All four arms are pinned to `rf=16` (2026-08-16), and `rf=64` will not carry `annealed` at any `T_res`.**
-T5 settled law C's constants against `p=450,340`; the v1/v2 split (2026-08-15) repointed the `fluxtune`
-alias to `rf=64`, `p=118,348`, so every projection above silently described a model 3.8× the one that
-would have launched. Re-derived at `rf=64`, the `Λ ≥ 0.95` and `trips/commit ≥ 3` floors close against
-each other on the prior phase — a 9-unit window at `T_res` 82–90 where `Λ` clears by 0.001–0.007 and 28%
-of commits still floor to `I=1` — and the two-phase trajectory reads **1.71** trips/commit on agnews,
-**1.43** on yahoo. `setpoint` composes at every `T_res`, but `annealed` is what P4 exists to test (item 5b
-ships it *contingent on 3.3*, and 3.3's backstop is this controller), so `rf` moves instead, on both arms.
-P4 therefore compares law C against v2's iteration-control policy **at `rf=16`**, not against v2 entire.
-**That `rf=64` cannot carry `annealed` is a standing blocker on item 5b**, independent of P4.
-
-**Two launcher defects found the same day, both fixed.** (a) The Task 0.7 preflight read its knobs from
+**Two launcher defects found the same day, both fixed.** (a) The task-0.7 preflight read its knobs from
 the `config_overrides` layer alone, so every catalog-set value — `rf` above all — silently took a code
 default; it now resolves catalog → overrides. (b) `cos_ground_truth_audit` is *on* in v2's catalog and
-`--cos-ground-truth-audit` was opt-in only, so the audit-off design above was not expressible;
-`--no-cos-ground-truth-audit` now exists. `replay_landing_law.py` took `p` from a hardcoded `rf=16` table
+`--cos-ground-truth-audit` was opt-in only, so the audit-off design was not expressible;
+`--no-cos-ground-truth-audit` now exists. `replay_landing_law.py` took `p` from a hardcoded `rf`=16 table
 and now takes `--rf` from the registry.
+
+**The cos audit stays off on every Phase-4 arm.** Phase 4 scores `B`, `Φ`, `Λ`, `A`, all exact from `ρ`;
+only `D` needs the audit, and the audit is 3.40 s of a 7.81 s commit — the tax that killed G-2's annealed
+leg.
 
 **Infrastructure (measured 2026-08-16, `jayne`).** Datasets *and* the `test_fwdllm` conda env are on
 `/coc/scratch` (NFS, shared by every machine); **only the repo is machine-local** (`/home` is `/dev/md1`,
-ext4, not NFS — and it is a different directory from the NFS `/nethome`). So a new node needs a `git
-clone` and nothing else. Run output must stay on local `/home`: telemetry is ~700 MB/run.
-
-**Read `[BmaxProbe]` before anything else — that line is the result.** T5 pre-registered the divergence at
-the commit-150 re-sense: agnews `ρ*` 0.0530 → **0.0764** (`I` 6 → 12) against yahoo's 0.0530 → **0.0573**
-(`I` 6 → 7). **A controller arm that ends on `max_runtime_s` rather than
-`[BudgetStop] reason=budget` is void** — the law did not land.
-
-**4.1** agnews · **4.2** yahoo, *same binary, same flags*.
-
-> **Acceptance:** both reach their plateau and **end within 0.015 of peak**, with sensed `B_max`, `ρ*`,
-> `K`, `P` logged per run and **differing between datasets without anyone having supplied them**.
-
-**Every arm reports `B` as a fraction of `B_max` and `A` against P4's calibration** — both exact at any
-horizon, so both failure modes are diagnosable ~20 commits in, before the accuracy curve resolves.
+ext4 — a different directory from the NFS `/nethome`). A new node needs a `git clone` and nothing else.
+Run output must stay on local `/home`: telemetry is ~700 MB/run.
 
 ### P5.3 Open hypotheses
 
@@ -1000,6 +984,7 @@ wrong.** A lookup table for *numbers*; the refuted *ideas* are [P6](#p6--dead-en
 | QA §D2 "the k sweep cannot run today" | answered offline from logged JVPs — monotone, optimum `k = P` |
 | QA §E1 "measuring `cos(G,g)` needs `v_k` uploaded" | a server-side backprop gradient on a probe batch suffices |
 | the accuracy plateau is ≈0.865 | **≈0.876** (P4 read 1) |
+| yahoo runs at **79 commits/h** / 45.4 s per commit, ~4.4× slower than agnews | **282 commits/h** / 12.7 s under `--eval-max-samples 10000` — the gap was the eval tax, not seq 256 (P4.10) |
 
 ---
 
