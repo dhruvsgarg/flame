@@ -48,36 +48,84 @@ def newest_run(exp_dir, since):
     return best
 
 
-def scan(run_dir):
-    """(commits, trips, zero_rho, trips_in_last_window) from one pass of the log.
+class Scan:
+    """Running commit/trip counts for ONE run, read incrementally.
+
+    TWO commit signals. `server_update` exists only under `--server-update-audit`,
+    which the real profiling arm deliberately does not set -- the audit's per-commit
+    work lands inside the `fedavg` span that arm exists to price. Reading it alone
+    saw commits=0 on a healthy 61-commit yahoo arm and killed it at the
+    pre-first-commit grace, 82% into its budget (2026-08-20). `version_bump_census`
+    is unconditional and fires once per commit in the same `var_good_enough` branch,
+    so it is the signal that is always there.
+
+    The LARGER stream wins, never their sum: with the audit on both fire once per
+    commit, and max() is then still the commit count.
 
     Both events come off the same file in emission order, so trips-per-commit
     needs no counter of its own -- the interleaving is the measurement.
+
+    INCREMENTAL, because re-reading the file each poll is O(run^2): the aggregator
+    writes ~4.5 MB/min, so a 14 h scored arm (run_node_p4.sh's CEIL) ends at ~4 GB
+    and 60 s polls would re-read ~1.6 TB, contending with the run's own I/O. Keep a
+    per-file offset and consume only whole lines that are new.
     """
-    commits = trips = zero = 0
-    tail = []          # trips between each of the last commits
-    pending = 0
-    for f in sorted(glob.glob(os.path.join(run_dir, "telemetry",
-                                           "aggregator_*.jsonl"))):
-        try:
-            fh = open(f, errors="ignore")
-        except OSError:
-            continue
-        with fh:
-            for line in fh:
-                if '"agg_round"' in line:
-                    trips += 1
-                    pending += 1
-                elif '"server_update"' in line:
-                    commits += 1
-                    tail.append(pending)
-                    pending = 0
-                    if len(tail) > 200:
-                        tail.pop(0)
-                    if '"rho_star": 0,' in line or '"rho_star": 0.0,' in line:
-                        zero += 1
-    recent = (sum(tail) / len(tail)) if tail else None
-    return commits, trips, zero, recent
+
+    _CAP = 200                       # trips-per-commit window, in commits
+
+    def __init__(self, run_dir):
+        self.run_dir = run_dir
+        self._off = {}               # path -> bytes already consumed
+        self.trips = self.zero = 0
+        self.commits = {"audit": 0, "census": 0}
+        self._tail = {"audit": [], "census": []}
+        self._pending = {"audit": 0, "census": 0}
+
+    def update(self):
+        """(commits, trips, zero_rho, trips_in_last_window, signal) as of now."""
+        for f in sorted(glob.glob(os.path.join(self.run_dir, "telemetry",
+                                               "aggregator_*.jsonl"))):
+            off = self._off.get(f, 0)
+            try:
+                if os.path.getsize(f) < off:      # rotated/truncated: start over
+                    off = 0
+                with open(f, "rb") as fh:
+                    fh.seek(off)
+                    data = fh.read()
+            except OSError:
+                continue
+            # Whole lines only; a half-written record waits for the next poll.
+            cut = data.rfind(b"\n")
+            if cut < 0:
+                continue
+            self._off[f] = off + cut + 1
+            for line in data[:cut].split(b"\n"):
+                self._consume(line)
+        k = ("audit" if self.commits["audit"] >= self.commits["census"]
+             else "census")
+        tail = self._tail[k]
+        recent = (sum(tail) / len(tail)) if tail else None
+        return self.commits[k], self.trips, self.zero, recent, k
+
+    def _consume(self, line):
+        if b'"agg_round"' in line:
+            self.trips += 1
+            self._pending["audit"] += 1
+            self._pending["census"] += 1
+            return
+        if b'"server_update"' in line:
+            k = "audit"
+            if b'"rho_star": 0,' in line or b'"rho_star": 0.0,' in line:
+                self.zero += 1
+        elif b'"version_bump_census"' in line:
+            k = "census"
+        else:
+            return
+        self.commits[k] += 1
+        self._tail[k].append(self._pending[k])
+        self._pending[k] = 0
+        if len(self._tail[k]) > self._CAP:
+            self._tail[k].pop(0)
 
 
 def main():
@@ -105,7 +153,7 @@ def main():
 
     t0 = time.time()
     last_commits, last_change = 0, time.time()
-    run = None
+    run, scanner = None, None
     print(f"[watch] exp_dir={a.exp_dir} stall={a.stall_window_s / 60:.0f}m "
           f"grace={a.grace_commits} trips_floor={a.trips_floor} "
           f"kill={'on' if a.kill else 'off (report only)'}", flush=True)
@@ -121,11 +169,14 @@ def main():
                 return _fire(a, None, "no run directory appeared")
             continue
 
-        commits, trips, zero, recent = scan(run)
+        if scanner is None or scanner.run_dir != run:
+            scanner = Scan(run)          # a new run dir invalidates every counter
+        commits, trips, zero, recent, signal = scanner.update()
         if commits > last_commits:
             last_commits, last_change = commits, time.time()
         idle = time.time() - last_change
-        print(f"[watch] {os.path.basename(run)} commits={commits} trips={trips} "
+        print(f"[watch] {os.path.basename(run)} commits={commits}({signal}) "
+              f"trips={trips} "
               f"trips/commit(recent)={recent if recent is None else round(recent, 2)} "
               f"rho_star==0:{zero} idle={idle / 60:.0f}m", flush=True)
 
@@ -141,7 +192,7 @@ def main():
                                  f"{'' if commits else ', pre-first-commit'}; "
                                  f"last commit #{commits})")
         if commits >= a.grace_commits:
-            if zero:
+            if zero:   # audit-only signal; vacuous under signal="census"
                 return _fire(a, run, f"{zero} commits took a step of length zero "
                                      f"(P4.7 defect 2)")
             if recent is not None and recent < a.trips_floor:

@@ -41,13 +41,23 @@ OK, WARN, BAD = "ok  ", "WARN", "FAIL"
 
 
 def _events(run_dir):
-    """server_update and agg_round, in file order (which is commit order)."""
-    su, rounds, last_v = [], 0, 0.0
+    """server_update, version_bump_census and agg_round, in file order (= commit order).
+
+    `server_update` carries every per-commit field below, but only exists under
+    `--server-update-audit` -- which the scored arms set and the real profiling arm
+    deliberately does not (its per-commit work would land in the `fedavg` span that
+    arm exists to price). `version_bump_census` is unconditional and fires once per
+    commit, so it is what tells a genuinely committing arm apart from a dead one:
+    without it this script read 0 commits on a healthy 61-commit yahoo arm and still
+    printed a green verdict (2026-08-20).
+    """
+    su, vb, rounds, last_v = [], [], 0, 0.0
     for f in sorted(glob.glob(os.path.join(run_dir, "telemetry",
                                            "aggregator_*.jsonl"))):
         with open(f, errors="ignore") as fh:
             for line in fh:
-                if '"server_update"' not in line and '"agg_round"' not in line:
+                if ('"server_update"' not in line and '"agg_round"' not in line
+                        and '"version_bump_census"' not in line):
                     continue
                 try:
                     d = json.loads(line)
@@ -55,12 +65,14 @@ def _events(run_dir):
                     continue
                 if d.get("event") == "server_update":
                     su.append(d)
+                elif d.get("event") == "version_bump_census":
+                    vb.append(d)
                 elif d.get("event") == "agg_round":
                     rounds += 1
                     last_v = d.get("vclock_now") or last_v
     for d in su:                       # stamp each commit with the vclock it saw
         d.setdefault("vclock_now", None)
-    return su, rounds, last_v
+    return su, vb, rounds, last_v
 
 
 def _log_lines(run_dir, tag):
@@ -76,15 +88,21 @@ def _trips_per_commit(run_dir, n_quintiles):
 
     Both come off the same file in emission order, so the split is exact without
     needing either side's own counter."""
-    seq = []
+    both = {"audit": [], "census": []}
     for f in sorted(glob.glob(os.path.join(run_dir, "telemetry",
                                            "aggregator_*.jsonl"))):
         with open(f, errors="ignore") as fh:
             for line in fh:
                 if '"agg_round"' in line:
-                    seq.append("r")
+                    both["audit"].append("r")
+                    both["census"].append("r")
                 elif '"server_update"' in line:
-                    seq.append("c")
+                    both["audit"].append("c")
+                elif '"version_bump_census"' in line:
+                    both["census"].append("c")
+    # Larger stream, never the sum -- see _events(); with the audit on both fire
+    # once per commit, so the max is still the commit count.
+    seq = max(both.values(), key=lambda v: v.count("c"))
     commits = seq.count("c")
     if commits < n_quintiles:
         return None, commits, seq.count("r")
@@ -157,11 +175,17 @@ def main():
         fails.append("DataBins")
 
     # --- gate 2: no rho_star == 0 -------------------------------------------
-    su, _, vclock_last = _events(run)
+    su, vb, _, vclock_last = _events(run)
     zeros = [d for d in su if d.get("rho_star") == 0]
-    lvl = OK if not zeros else BAD
-    print(f"  [{lvl}] 2. rho_star != 0   {len(zeros)}/{len(su)} commits took a "
-          f"step of length zero (must be 0)")
+    if not su and vb:
+        # Unreadable, not passing: rho_star only exists on the audit record.
+        print(f"  [{WARN}] 2. rho_star != 0   UNREADABLE -- arm ran without "
+              f"--server-update-audit ({len(vb)} commits seen via "
+              f"version_bump_census)")
+    else:
+        lvl = OK if not zeros else BAD
+        print(f"  [{lvl}] 2. rho_star != 0   {len(zeros)}/{len(su)} commits took a "
+              f"step of length zero (must be 0)")
     if zeros:
         fails.append("rho_star==0")
 
@@ -220,17 +244,21 @@ def main():
     # 4.41 s; yahoo measured 45.6 (79 commits/h against agnews' 350), so a budget
     # sized off the projection alone under-books the seq-256 datasets ~10x. Read
     # the rate off a SHORT arm and size the long one from it.
-    if len(su) > 5:
-        span_h = (su[-1]["ts"] - su[0]["ts"]) / 3600.0
+    # Either record carries `ts`, so the rate reads off an un-audited arm too --
+    # and the profiling arm, which is the SHORT arm this line exists to size from,
+    # is exactly the one that never sets the audit flag.
+    rate_src = su if len(su) > 5 else vb
+    if len(rate_src) > 5:
+        span_h = (rate_src[-1]["ts"] - rate_src[0]["ts"]) / 3600.0
         vmax = vclock_last
         if span_h > 0:
-            print(f"  [    ] +  rate            {len(su) / span_h:.0f} commits/h"
+            print(f"  [    ] +  rate            {len(rate_src) / span_h:.0f} commits/h"
                   + (f", {vmax / span_h:,.0f} vclock/h" if vmax else "")
-                  + f"  ({3600 * span_h / len(su):.1f} s/commit)")
+                  + f"  ({3600 * span_h / len(rate_src):.1f} s/commit)")
             if vmax:
                 print(f"  [    ] +  budget sizing   a {a.target_commits}-commit arm "
-                      f"needs ~{a.target_commits * vmax / len(su):,.0f} vclock "
-                      f"and ~{a.target_commits / (len(su) / span_h):.1f} h at this rate")
+                      f"needs ~{a.target_commits * vmax / len(rate_src):,.0f} vclock "
+                      f"and ~{a.target_commits / (len(rate_src) / span_h):.1f} h at this rate")
 
     # --- progress, exact at any horizon -------------------------------------
     if su:
@@ -243,6 +271,15 @@ def main():
               f"({100.0 * (last.get('budget_frac') or 0):.1f}% of B_max) "
               f"Phi={math.exp(B):.4g} rho_last={rho[-1]:.4g}")
         if got:
+            print(f"  [{OK if maxbin == got - 1 else WARN}] +  bin sweep       "
+                  f"max data_id={maxbin} of {got - 1} "
+                  f"({'every bin visited' if maxbin == got - 1 else 'still lapping'})")
+    elif vb:
+        # B/rho live on the audit record only; commits and the bin sweep do not.
+        print(f"  [    ] +  progress        commits={len(vb)} "
+              f"(no B/rho -- arm ran without --server-update-audit)")
+        if got:
+            maxbin = max((d.get("data_id") or 0) for d in vb)
             print(f"  [{OK if maxbin == got - 1 else WARN}] +  bin sweep       "
                   f"max data_id={maxbin} of {got - 1} "
                   f"({'every bin visited' if maxbin == got - 1 else 'still lapping'})")

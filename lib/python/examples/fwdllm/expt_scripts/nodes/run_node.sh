@@ -87,7 +87,18 @@ profile_dataset () {
     echo "--- [node$NODE] ${out#$FW/} exists -- skipping the real run"; return 0
   fi
   echo "=== [node$NODE] real-mode $ds for its sim charge profile  $(date -Is) ==="
+  # Both flags MATCH THE SCORED ARMS (run_node_p4.sh's COMMON/EVAL). A profile is
+  # only valid for the configuration it was measured under, and this arm differed
+  # from the arms it prices in two ways that both land in the charged spans:
+  #   --no-cos-ground-truth-audit: the B1 probe runs an exact backward pass INSIDE
+  #     _apply_weighted_update, i.e. inside `fedavg`. Every 25 commits it put three
+  #     ~116s samples into yahoo's 489 and lifted the charge 0.42s -> 1.13s.
+  #   --eval-max-samples 10000: uncapped, agg eval ran the full 60k test set at
+  #     64.9s a time and held the GPU 91% of the run, against 54% on the scored
+  #     arms -- so every span measured here was read under contention they never
+  #     see. (2026-08-20)
   local args=(--only fluxtune --mode real --dataset "$ds"
+              --no-cos-ground-truth-audit --eval-max-samples 10000
               --num-trainers 100 --num-gpus 8 --agg-goal 10 --c 30
               --adapter-reduction-factor 16 --max-runtime-s "$REAL_BUDGET")
   if [ "$DRY" = "1" ]; then
