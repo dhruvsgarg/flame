@@ -17,7 +17,7 @@
 second statement of it. Replace, do not accumulate — a measurement carries its value and its date, the old
 value is deleted. No changelog, no session log, no dated append sections; chronology lives in git and P4.
 **When a queue row lands, delete it** — what survives is one sentence in §5 if the fact still binds, and
-its number in P3/P4. **§1–§3 stay under ~115 lines**; if an edit
+its number in P3/P4. **§1–§3 stay under ~120 lines** — two screens; if an edit
 pushes past that, something in it has stopped being status.
 
 ---
