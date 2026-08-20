@@ -57,12 +57,10 @@ A pair counts only if **both** arms are valid at the **same** `condition_fp` and
 | `B_max`/`ρ*` **diverge across datasets, unsupplied** | sensed **down** 0.693 → 0.510 | — | sensed **up** 0.693 → **1.023** over 8 probes |
 | no learning knob supplied | **yes**, by construction | **yes** | **yes** |
 
-**The effect is not in doubt — its acceptance is.** The 2026-08-16 arms are void as an acceptance test,
-but the law beat its control on both datasets while **23–48% of its commits took a step of length zero**,
-so that margin is a floor: agnews `125619` peaked 0.857 against the control's 0.835 and reached 0.83 at
-**62%** of the vclock budget against 92%, and 2026-08-20's controller reached **80.7% of `B_max` on 29%**
-of its vclock against the control's 15.5% on 100%
-([P4.7](fl_fwd_ft_practice.md#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects)).
+**The effect is not in doubt — its acceptance is.** On void arms the law still beat its control while
+**23–48% of its commits took a step of length zero**, so that margin is a floor: `125619` peaked 0.857 vs
+0.835 and hit 0.83 at **62%** of budget against 92%; 2026-08-20's controller reached **80.7% of `B_max` on
+29%** of its vclock against 15.5% on 100% ([P4.7](fl_fwd_ft_practice.md#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects)).
 What is missing is an arm that ends on its own stop with every gate clean.
 
 **Four axes of generality, and only one of them is being exercised right now:**
