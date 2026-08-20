@@ -57,6 +57,14 @@ A pair counts only if **both** arms are valid at the **same** `condition_fp` and
 | `B_max`/`ρ*` **diverge across datasets, unsupplied** | sensed **down** 0.693 → 0.510 | — | sensed **up** 0.693 → **1.023** over 8 probes |
 | no learning knob supplied | **yes**, by construction | **yes** | **yes** |
 
+**The effect is not in doubt — its acceptance is.** The 2026-08-16 arms are void as an acceptance test,
+but the law beat its control on both datasets while **23–48% of its commits took a step of length zero**,
+so that margin is a floor: agnews `125619` peaked 0.857 against the control's 0.835 and reached 0.83 at
+**62%** of the vclock budget against 92%, and 2026-08-20's controller reached **80.7% of `B_max` on 29%**
+of its vclock against the control's 15.5% on 100%
+([P4.7](fl_fwd_ft_practice.md#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects)).
+What is missing is an arm that ends on its own stop with every gate clean.
+
 **Four axes of generality, and only one of them is being exercised right now:**
 
 | axis | coverage | status |
@@ -73,7 +81,7 @@ directions** with nobody supplying either — which §5.4 pre-registered as poss
 
 1. **The dataset axis is one arm short of closed.** yelp-p is the only valid controller; agnews is live and
    yahoo needs re-running. Nothing structural is in the way.
-2. **The sensor does not fire below chance.** On yahoo it declined at commit 25 (`base_acc`=0.105 against
+2. **The sensor does not fire below chance.** On yahoo `234931`'s first probe declined at commit 25 (`base_acc`=0.105 against
    chance 0.100), so the controller ran the `ln 2` prior. The machinery is universal; the *sensing* half is
    unexercised on the dataset that most needs it ([P4.8](fl_fwd_ft_practice.md#p48-yahoo-is-under-trained-not-broken)).
 3. **The MODEL axis is untested, and its one probe came back negative.** Every arm on record is DistilBERT
@@ -119,7 +127,7 @@ gather the run dirs before scoring.
 | **W′** | node holding `003648` | **Close out the watchdog fix.** The `I`-floor kill now needs `ΔB ≤ --b-advance-min` (0.005) across the window; replayed silent on yelp-p `125010` (`I==1` 100%, `ΔB`=0.0339, which the old rule would have killed) and on the agnews smoke. **Unverified: that it still fires on a true death.** `003648`'s run dir is node-local and was not on jayne | replay `003648`, confirm it fires |
 | **Score** | any CPU | **All three pairs, once D and C land.** `replay_scoring.py` per arm; peak accuracy and the 0.015-of-peak bar; accuracy-vs-`Λ` on yahoo, which closes §5.4's first open row and is §1 hole 2's answer | a scored table for all three datasets |
 | **B4** | any CPU | **`budget_stop_frac` needs a margin against a moving `B_max`.** The exposure is the **first** sense: it replaces the `ln 2` prior outright at n=1, at maximum variance. yelp-p 2026-08-20 confirms it — n=1 sensed 0.5223, then 0.7440 / 0.8961 / 0.9425 / 0.9598, i.e. the first sense was **46% low**; agnews' only sense went the other way to 0.5102. Had `B` been past 0.95·(first sense) at commit 150 the arm would have stopped on the spot. Candidate: do not arm the stop until n ≥ 2 | a rule with a stated margin, replayed against `021735` and 2026-08-16's arms. `ratchet` is **not** it — it is `min`, which stops sooner |
-| **E** | any CPU | **3.5's saturation stop — not built.** Prechelt generalization-loss / patience on *smoothed* held-out accuracy (11-eval trailing window, as `Φ` already is — a raw `dAcc/dΛ` slope false-triggers on a dip and misses a masked plateau). Track `Acc_best` as a running max; `GL_t = (Acc_best − Acc_t)/Acc_best`; stop when `GL_t` holds above a threshold for a patience window. **Not a duplicate of the `Φ` stop** — that one catches noise-driven collapse (0.874→0.296 on `003601`); this catches the model having extracted the signal the task allows. Combine as `stop = Φ-cross OR saturation`. Resample onto `Λ`, never `comm_round` | window, threshold and patience all sized **by replay** against the arms on disk, the way task 0.5 sized `Φ`'s window |
+| **E** | any CPU | **3.5's saturation stop — not built.** Prechelt generalization-loss / patience on *smoothed* held-out accuracy (11-eval trailing window, as `Φ` already is — a raw `dAcc/dΛ` slope false-triggers on a dip and misses a masked plateau). Track `Acc_best` as a running max; `GL_t = (Acc_best − Acc_t)/Acc_best`; stop when `GL_t` holds above a threshold for a patience window. **Not a duplicate of the `Φ` stop** — that one catches noise-driven collapse (0.874→0.296 on `003601`); this catches the model having extracted the signal the task allows. Combine as `stop = Φ-cross OR saturation`. Resample onto `Λ`, never `comm_round` | window, threshold and patience all sized **by replay** against the arms on disk, the way task 0.5 sized `Φ`'s window. `replay_phi_stop.py` is the model to copy |
 | **R2** | 1 GPU, ~1 h | **Is the estimator itself weaker on yahoo?** cos audit for ~100 commits + `replay_scoring.py --cos`; a `D` materially below agnews' 0.10–0.15 means the forward estimate degrades with 10 classes / seq 256 — an FwdLLM-layer finding, not a controller one. Plus H-S on yahoo (`probe_fd_chord.py`) | a `D` for yahoo against agnews' band |
 | **G** | any CPU, **after** the P-4 arms | **`read_instance_from_h5` returns rows in thread-completion order**, so a shard's row order — and its bin composition — is not reproducible across tokenizations, and `guid` names the wrong row. `X`/`y` stay paired under one lock and nothing reads `guid`, so **no ledger number is wrong**. It waits because it re-orders every future shard against the caches the P-4 arms run on | two tokenizations of one client agree byte-for-byte, and `guid` round-trips |
 
@@ -269,7 +277,7 @@ without `--server-update-audit`, gate 2 reads `UNREADABLE`, not `ok`. The `[Bmax
 
 ### §4.5 Sizing a budget, and the profile
 
-**Size off measured rate, never off the wall-clock preflight** — it prices every commit at a
+**Size off measured rate, never off `expts/wall_clock_preflight.py`** — it prices every commit at a
 dataset-independent 4.41 s, and pre-fix yahoo measured 45.4 s. `check_arm_health.py` prints a
 `budget sizing` line converting any short arm's rate into the vclock 898 commits will cost.
 
@@ -483,6 +491,6 @@ across `p`.
    to its formula.
 8. A flag whose writer is not its only writer.
 9. **A dataset constant that is right on agnews by arithmetic coincidence.** `total_data_bins = 150` lived
-   in `lib/python/flame/`, outside the example tree, and is agnews' `1,200/8` exactly — yahoo trained on
+   in `lib/python/flame/mode/horizontal/syncfl/fwdllm_aggregator.py`, outside the example tree, and is agnews' `1,200/8` exactly — yahoo trained on
    **8.6% of its data, the same 1,200 rows every lap**, and nothing raised. **Grep the *derived* agnews
    numbers (150 / 1,200 / 7,600 / 192), not just the name, and grep `lib/python/flame/` too.**
