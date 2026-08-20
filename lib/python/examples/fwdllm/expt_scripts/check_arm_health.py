@@ -174,8 +174,9 @@ def main():
     if lvl == BAD:
         fails.append("DataBins")
 
-    # --- gate 2: no rho_star == 0 -------------------------------------------
     su, vb, _, vclock_last = _events(run)
+
+    # --- gate 2: no rho_star == 0 -------------------------------------------
     zeros = [d for d in su if d.get("rho_star") == 0]
     if not su and vb:
         # Unreadable, not passing: rho_star only exists on the audit record.
@@ -202,6 +203,22 @@ def main():
               f"   (floor {a.trips_floor:g}; overall {trips / commits:.2f})")
         if lvl == BAD:
             fails.append("trips/commit")
+
+    # trips/commit is n_req/agg_goal, so at K=10 a floor of 3 demands n_req>=30 --
+    # a bound a landing controller must cross on its way down. G-2's actual death was
+    # `I` floored at 1 on 98% of commits with the pool demand unmet; print that
+    # directly so a gate-3 FAIL can be told apart from a controller annealing on plan.
+    _i = [d.get("iteration_per_data_id") for d in su[-200:]]
+    _g = [(d.get("n_eff"), d.get("n_req")) for d in su[-200:]]
+    _g = [(e, r) for e, r in _g if e is not None and r is not None]
+    if _i:
+        _fl = sum(1 for i in _i if i is not None and i <= 1) / len(_i)
+        _st = (sum(1 for e, r in _g if e < r) / len(_g)) if _g else None
+        print(f"  [    ] +  G-2 signature   I==1 on {_fl:.0%} of the last {len(_i)} "
+              f"commits (G-2: 98%)"
+              + (f"; pool demand unmet on {_st:.0%}" if _st is not None else "")
+              + (f"; n_req {su[-1]['n_req']:.1f}"
+                 if su[-1].get("n_req") is not None else ""))
 
     # --- gate 4: how it ended -----------------------------------------------
     stop = _log_lines(run, "[BudgetStop]")

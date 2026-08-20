@@ -80,6 +80,24 @@ class Scan:
         self.commits = {"audit": 0, "census": 0}
         self._tail = {"audit": [], "census": []}
         self._pending = {"audit": 0, "census": 0}
+        self._recent_i = []          # iteration_per_data_id, last _CAP commits
+        self._recent_starved = []    # n_eff < n_req, i.e. gate not met
+
+    def g2_signature(self):
+        """(I-floored fraction, gate-unmet fraction, n) over the recent window.
+
+        The DIRECT test for G-2's death, which `trips/commit` only proxies: G-2
+        floored `I` at 1 on 98% of its commits with the pool demand unmet. Both
+        fields ride on `server_update`, so this reads (None, None, 0) on an arm
+        without --server-update-audit -- unread, never silently passing.
+        """
+        n = len(self._recent_i)
+        if not n:
+            return None, None, 0
+        floored = sum(1 for i in self._recent_i if i is not None and i <= 1) / n
+        starved = ((sum(self._recent_starved) / len(self._recent_starved))
+                   if self._recent_starved else None)
+        return floored, starved, n
 
     def update(self):
         """(commits, trips, zero_rho, trips_in_last_window, signal) as of now."""
@@ -117,6 +135,7 @@ class Scan:
             k = "audit"
             if b'"rho_star": 0,' in line or b'"rho_star": 0.0,' in line:
                 self.zero += 1
+            self._note_gate(line)
         elif b'"version_bump_census"' in line:
             k = "census"
         else:
@@ -126,6 +145,21 @@ class Scan:
         self._pending[k] = 0
         if len(self._tail[k]) > self._CAP:
             self._tail[k].pop(0)
+
+    def _note_gate(self, line):
+        """Keep this commit's I and whether the pool demand was met."""
+        try:
+            d = json.loads(line)
+        except ValueError:
+            return
+        self._recent_i.append(d.get("iteration_per_data_id"))
+        if len(self._recent_i) > self._CAP:
+            self._recent_i.pop(0)
+        n_eff, n_req = d.get("n_eff"), d.get("n_req")
+        if n_eff is not None and n_req is not None:
+            self._recent_starved.append(n_eff < n_req)
+            if len(self._recent_starved) > self._CAP:
+                self._recent_starved.pop(0)
 
 
 def main():
@@ -146,7 +180,17 @@ def main():
                          "window is far too tight for it")
     ap.add_argument("--grace-commits", type=int, default=200,
                     help="rate checks only apply past this many commits")
-    ap.add_argument("--trips-floor", type=float, default=3.0)
+    ap.add_argument("--trips-floor", type=float, default=3.0,
+                    help="trips/commit below this AND the pool demand unmet => the "
+                         "gate is starving. The conjunction is the point: "
+                         "trips/commit is n_req/agg_goal, and a landing controller "
+                         "drives n_req down BY DESIGN (agnews 2026-08-20 projects to "
+                         "n_req~5 at its stop), so on its own this floor voids every "
+                         "controller arm at any setting above ~0.5.")
+    ap.add_argument("--i-floor-frac", type=float, default=0.9,
+                    help="kill when iteration_per_data_id is 1 on this fraction of "
+                         "the recent window -- G-2's actual death (98%). Direct, "
+                         "where --trips-floor is a proxy. Needs --server-update-audit.")
     ap.add_argument("--max-hours", type=float, default=0.0,
                     help="hard cap on this arm's wall clock; 0 = none")
     a = ap.parse_args()
@@ -195,10 +239,25 @@ def main():
             if zero:   # audit-only signal; vacuous under signal="census"
                 return _fire(a, run, f"{zero} commits took a step of length zero "
                                      f"(P4.7 defect 2)")
-            if recent is not None and recent < a.trips_floor:
+            # G-2's death, tested directly rather than through trips/commit.
+            i_frac, starved, n_i = scanner.g2_signature()
+            if n_i >= a.grace_commits and i_frac is not None and i_frac >= a.i_floor_frac:
+                return _fire(a, run, f"iteration_per_data_id floored at 1 on "
+                                     f"{i_frac:.0%} of the last {n_i} commits "
+                                     f"(limit {a.i_floor_frac:.0%})"
+                                     + (f", pool demand unmet on {starved:.0%}"
+                                        if starved else "")
+                                     + " -- P4.7 defect 3, G-2's death")
+            # Starving means the gate is NOT BEING MET, not merely that it asks
+            # for less. A commit with n_eff < n_req is one the pool could not
+            # satisfy (a force-commit); low trips/commit with the demand met is
+            # just a small step correctly costed by the n_target gate.
+            if (recent is not None and recent < a.trips_floor
+                    and starved is not None and starved > 0.5):
                 return _fire(a, run, f"trips/commit {recent:.2f} over the last "
                                      f"{min(commits, 200)} commits is below "
-                                     f"{a.trips_floor:g} -- the gate is starving "
+                                     f"{a.trips_floor:g} AND the pool demand went "
+                                     f"unmet on {starved:.0%} -- the gate is starving "
                                      f"(P4.7 defect 3, G-2's death)")
 
 
