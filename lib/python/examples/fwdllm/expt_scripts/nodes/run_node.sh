@@ -37,13 +37,16 @@ mkdir -p "$PROBE_LOGS"
 export FWDLLM_FD_SCALE_INVARIANT=1
 DRY="${NODE_DRY_RUN:-0}"
 
-REAL_BUDGET=3000
+_BUDGET_DEFAULT=3000
 if [ "${SMOKE:-0}" = "1" ]; then
   export SMOKE=1
-  REAL_BUDGET=600
+  _BUDGET_DEFAULT=600
   # Armed inside a smoke's horizon; the production defaults are 20 min / 200.
   export NODE_WATCH_ARGS="${NODE_WATCH_ARGS:---stall-window-s 420 --grace-commits 25}"
 fi
+# Env wins over both, so the sanity ladder (buildplan S1) can cut a short profiling
+# arm without the SMOKE path, which deliberately writes to smoke/ and prices nothing.
+REAL_BUDGET="${REAL_BUDGET:-$_BUDGET_DEFAULT}"
 
 # shellcheck disable=SC1091
 . "$FW/../scripts/expt_runner.sh"

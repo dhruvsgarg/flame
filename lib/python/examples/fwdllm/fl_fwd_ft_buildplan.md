@@ -90,8 +90,8 @@ one. **S1–S3 are ~2 h total across three nodes, run concurrently.**
 
 | # | node | task | cost | done when |
 |---|---|---|---|---|
-| **S1** | 2, 3 | **Short profiling arm**, `REAL_BUDGET=1200`. Exercises the fixed watchdog end to end on a non-audit arm *and* produces a candidate profile. The cos probe and the eval cap are now matched to the scored arms, so this is the first profile measured under the configuration it prices | ~20 min ×2 | the arm ends on its own budget, **not** `arm_stall.json`; `profile_sim_charges.py` prints no `WARN`; per-quintile spread on `drain_tail`/`fedavg` under ~20% |
-| **S2** | 1 | **Short agnews controller**, `--max-runtime-s 4000` vclock. Only needs to pass **commit 200**, where the rate predicates arm — that is where 2026-08-20 died. Void by construction; it is a watchdog test, not an arm | ~30 min | no `arm_stall.json` past commit 250, and `check_arm_health.py` gate 3 prints the `G-2 signature` line with `I==1` well under 90% |
+| **S1** | 2, 3 | **Short profiling arm**, `REAL_BUDGET=1200 run_node.sh <N>`. Exercises the fixed watchdog end to end on a non-audit arm *and* produces a candidate profile. The cos probe and the eval cap are now matched to the scored arms, so this is the first profile measured under the configuration it prices | ~20 min ×2 | the arm ends on its own budget, **not** `arm_stall.json`; `profile_sim_charges.py` prints no `WARN`; per-quintile spread on `drain_tail`/`fedavg` under ~20% |
+| **S2** | 1 | **Short agnews controller**, `VCLOCK_OVERRIDE=6000 run_node_p4.sh agnews controller` (~250 commits at the arm's measured 24 vclock/commit). Only needs to pass **commit 200**, where the rate predicates arm — that is where 2026-08-20 died. Void by construction; it is a watchdog test, not an arm | ~30 min | no `arm_stall.json` past commit 250, and `check_arm_health.py` gate 3 prints the `G-2 signature` line with `I==1` well under 90% |
 | **S3** | any | **`NODE_DRY_RUN=1 run_node.sh <N>`** on each node after `git pull` | seconds | 7 ✓ preflight, and the generated cfg carries `cos_ground_truth_audit: false` + `eval_max_samples: 10000` |
 | **C** | 1 | **P-4 agnews — controller only.** The 2026-08-20 control is valid and on disk; do not re-run it. Confirm `condition_fp` still prints `c2ef1528` so the pair matches | ~2 h | §6's gates hold **and** it ends on `[BudgetStop] reason=budget` — the rule that voids it otherwise |
 | **D** | 2 | **P-4 yahoo** at **60,000** vclock. Profiles itself first (S1's profile is reused if it passed) | ~6.4 h control + ~3.2 h controller | same gates; then score accuracy vs `Λ` against §5's first open row |
@@ -859,6 +859,14 @@ cd $FW/expt_scripts && $PY profile_sim_charges.py \
 
 # any P-4 pair, or one arm of one
 $FW/expt_scripts/nodes/run_node_p4.sh <agnews|yahoo|yelp-p> <controller|control>
+
+# a SHORT arm on the PRODUCTION path -- what the buildplan's S1/S2 rungs use.
+# Unset, all three are byte-identical to the built-in budgets. Prefer these over
+# SMOKE=1 for a sanity arm: SMOKE also swaps the watch config and routes profiles
+# to smoke/, which price nothing by design.
+REAL_BUDGET=1200 $FW/expt_scripts/nodes/run_node.sh 2               # real-mode SECONDS
+VCLOCK_OVERRIDE=6000 CEIL_OVERRIDE=2.0 \
+  $FW/expt_scripts/nodes/run_node_p4.sh agnews controller           # vclock SECONDS, wall HOURS
 ```
 
 **Read `profile_sim_charges.py`'s `WARN` lines, never `--force` past them.** A refused entry keeps its

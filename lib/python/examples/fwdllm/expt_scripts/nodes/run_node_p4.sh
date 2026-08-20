@@ -126,10 +126,6 @@ case "$DATASET" in
   *) echo "unknown dataset '$DATASET' (want agnews|yahoo|yelp-p)" >&2; exit 2 ;;
 esac
 
-# Runaway cap: the watchdog kills the arm an hour past its own ceiling, so a
-# mis-priced vclock cannot silently eat a node for a day.
-export NODE_WATCH_ARGS="${NODE_WATCH_ARGS:---max-hours $(awk "BEGIN{print $CEIL+1}")}"
-
 # SMOKE=1: the SAME code path at ~15 min, to prove four nodes survive unattended
 # before committing hours to them. A smoke controller arm ends on max_runtime_s,
 # not [BudgetStop] -- that is expected here and is the one gate a smoke cannot
@@ -149,6 +145,19 @@ if [ "${SMOKE:-0}" = "1" ]; then
   esac
   echo "### SMOKE: vclock=$VCLOCK ceiling=${CEIL}h -- plumbing check, NOT a result"
 fi
+
+# Last word, so the sanity ladder can cut a SHORT arm on the PRODUCTION path --
+# SMOKE is a different ceiling and a different watch config, which is not what
+# buildplan S2 is testing. Unset => the table above, byte-identical.
+VCLOCK="${VCLOCK_OVERRIDE:-$VCLOCK}"
+CEIL="${CEIL_OVERRIDE:-$CEIL}"
+[ -n "${VCLOCK_OVERRIDE:-}${CEIL_OVERRIDE:-}" ] && \
+  echo "### OVERRIDE: vclock=$VCLOCK ceiling=${CEIL}h"
+
+# Runaway cap: the watchdog kills the arm an hour past its own ceiling, so a
+# mis-priced vclock cannot silently eat a node for a day. Computed here, AFTER
+# every branch that can move CEIL.
+export NODE_WATCH_ARGS="${NODE_WATCH_ARGS:---max-hours $(awk "BEGIN{print $CEIL+1}")}"
 
 # --force only while this dataset has no sim charge profile of its own: per-pass
 # cost scales with max_seq_length, so an agnews-profiled file mis-prices the
