@@ -393,6 +393,14 @@ The "ends within 0.015 of peak" check is therefore weaker than it looks: **an ar
 passes it trivially**, because its peak is its last point. It demonstrates *no divergence*; it does not
 demonstrate convergence.
 
+**One qualifier that cuts the other way, and it matters.** yelp-p halted at **`Φ` = 2.643**, against an
+independent safety stop at `Φ` = 2.7 that would have fired within ~30–60 more commits. The two nearly
+coincided, so the arm was at the ceiling the *model* imposes, not at an arbitrary early cut. Simply
+running it longer is therefore not available — the budget really is nearly spent. Since `Λ = 2B/s`, the
+only lever on learning **per unit budget** is `s` (1.5 here, with a gate-reachability floor near 0.9);
+running past `Φ` ≈ 2.7 is the regime every arm on record says destroys the head. Whether that ceiling is
+real on yelp-p is an open experiment, not a settled fact.
+
 Two further caveats on the reference itself: it is a 10-client, 3-epoch backprop run, loose by an unknown
 and probably unequal amount per dataset — agnews' controller **exceeded** it — so "93% of reference" and
 "90% of reference" are not comparable statements across columns.
