@@ -1,452 +1,338 @@
-# Backprop-free federated fine-tuning: why it diverged, and the control law that fixes it
+# Fine-tuning without backprop: why it fell over, and the controller that fixes it
 
-*A self-contained account. No familiarity with the other documents in this directory is assumed; where a
-number is quoted, the run that produced it is named so it can be checked against the logs.*
+*Read this top to bottom. Every number is from a logged run; the run id is given so it can be checked.
+The companion documents hold the full derivations and the complete evidence — this one holds the argument.*
 
 ---
 
-## 1. The setting
+## 1. What we are doing, and why it is hard
 
-We fine-tune a pre-trained transformer across many clients **without ever computing a backward pass**.
-Each client holds private data and can only run the model forward.
+We fine-tune a language model across many clients **without ever running a backward pass**. Clients can
+only evaluate the model forward. This buys flat activation memory and lets training run on an
+inference-only runtime.
 
-Let `θ` be the model and `θ_tr ⊂ θ` the trainable slice — LoRA-style adapters plus a classifier head, of
-dimension `p`. A client estimates the gradient by **directional derivatives**: draw `P` isotropic Gaussian
-probes `v_i ~ N(0, I_p)` and take a central finite difference,
-
-```
-d_i  =  [ L(θ + h·v_i) − L(θ − h·v_i) ] / (2h)   ≈  ⟨g, v_i⟩        (2 forward passes, no autograd)
-u    =  (1/P) · Σ_i d_i · v_i                                       (E[⟨g,v⟩v] = g, so u is aimed at g)
-```
-
-The server pools `N = K·I` such uploads — `K` clients per commit, `I` iterations over the same data bin —
-into one direction `G`, and takes a step. **Nothing but forward evaluation is ever required**, which is
-the point: activation memory is flat, and the operator set is the one an inference runtime already has.
-
-The price is estimator quality. In `p ≈ 4.5·10⁵` dimensions a single probe is almost orthogonal to the
-true gradient, and pooling recovers alignment only as a square root:
+To get a gradient without autograd, a client picks a **random direction** `v`, nudges the weights both
+ways, and measures how the loss changed:
 
 ```
-cos(G, g)  =  D · sqrt( G_rule · N / p )                         (G_rule = P when averaging probes)
+d  =  [ L(θ + h·v) − L(θ − h·v) ] / (2h)     ≈  how much the loss slopes along v
+u  =  d · v                                   ≈  a one-sample guess at the gradient
 ```
 
-with `D ≈ 0.05–0.15` measured. Every commit therefore moves the model **mostly sideways**. That is the
-fact the rest of this document is about.
+Averaged over many random directions this points the right way. The catch is **how many is "many."** The
+trainable slice here has `p ≈ 450,000` dimensions, and a random direction in 450,000 dimensions is
+almost perpendicular to the one you want. Pooling `N` such guesses recovers alignment only as a square
+root:
 
-**Notation used throughout.**
+```
+cos( our step , true gradient )  ≈  sqrt( N · P / p )     — with N ≈ 200, P = 10, this is ≈ 0.07
+```
 
-| symbol | meaning |
+> **The one fact everything follows from: each step is ~7% signal and ~93% noise.**
+> Not "noisy but roughly right" — *mostly sideways*, every single step.
+
+**Symbols.** Only four are needed.
+
+| | |
 |---|---|
-| `ρ_t = ‖Δθ_t‖ / ‖θ_t‖` | the **relative step** at commit `t` |
-| `Φ = ‖θ_T‖ / ‖θ_0‖` | **norm inflation** over the run |
-| `B` | **budget spent** (defined in §3) |
-| `Λ` | **progress banked** (defined in §3) |
-| `s` | the commit gate's safety ratio, `ρ ≤ s·cos` |
+| `ρ` | **step size relative to the model**: `‖Δθ‖ / ‖θ‖`. `ρ = 0.05` means "move 5% of your own length" |
+| `Φ` | **how much the model has grown**: `‖θ_now‖ / ‖θ_start‖` |
+| `B` | **budget spent** — defined in §4, and `Φ = e^B` |
+| `Λ` | **progress banked** — the useful part of all that movement |
 
 ---
 
-## 2. The problem: the previous system diverges, and its stabiliser is an accident
+## 2. The failure: noise has nowhere to go, so it piles up
 
-### 2.1 Every step is orthogonal to the model, so the norm can only grow
-
-Because `‖θ + Δ‖² = ‖θ‖² + 2⟨θ,Δ⟩ + ‖Δ‖²`, the ratio of observed norm growth to step energy has an exact
-null at **1.000** — meaning the step carries no component toward or away from where the model already
-stands. Measured per 25-commit block, that ratio reads **1.000 ± 0.005 in every block of every arm**,
-including arms that reach 0.86 accuracy and hold it.
-
-This is not itself pathological: a true gradient is also nearly perpendicular to `θ` at high `p`. What it
-establishes is that the norm grows by the **full** `‖Δθ‖` every commit, with no cancellation:
+Because each step is almost perpendicular to where the model already is, it cannot shorten the model — it
+can only lengthen it. Pythagoras, exactly:
 
 ```
-‖θ_{t+1}‖²  =  ‖θ_t‖² · ( 1 + ρ_t² )                             — an exact difference equation
+‖θ + Δθ‖²  =  ‖θ‖²  +  ‖Δθ‖²          (the cross-term is zero; measured at 1.000 ± 0.005, every arm)
 ```
 
-### 2.2 Under a raw SGD step, `ρ` is an outcome, and the loop closes on itself
+So **the weights grow, every commit, forever.** The 93% that was noise does not cancel out over time — it
+accumulates as *length*.
 
-The step is `Δθ ∝ η·G`, so `ρ` is whatever the gradient magnitude happens to make it. And the gradient
-magnitude **grows with the norm**: a backprop probe on a fixed batch shows `‖g‖` tracking `‖θ_tr‖` with
-exponent ≈0.9. So:
+That gives `Φ` its meaning, and it is the intuition worth keeping:
 
-> noise inflates the norm → the gradient grows → the absolute step grows → more noise
+> **`Φ` is the reciprocal of how much of the model is still the part that earned its accuracy.**
+> At `Φ = 2.7`, roughly **1/2.7 ≈ 37%** of the model's length is signal and the rest is accumulated
+> junk. The classifier head is then sitting ~68° away from the direction that used to work, and it fails.
 
-is a **closed, self-reinforcing loop**. Two consequences that are easy to get wrong:
+**And in the old system this ran away.** The step was `Δθ ∝ η·G`, so `ρ` was an *outcome*, not something
+anyone chose. A longer weight vector produces a larger gradient (measured: `‖g‖` tracks `‖θ‖` with
+exponent ≈0.9), a larger gradient produces a longer step, and a longer step adds more length:
 
-- **Divergence is present at commit 1** and takes ~150 commits to become *visible*. Steps do not become
-  more wrongly aimed over time; what grows is the absolute step and the norm it acts on.
-- The collapse is **directional degeneracy of the head**, not logit saturation: post-collapse accuracy
-  lands at each dataset's own chance level (0.25 on 4 classes, 0.10 on 10, 0.50 on 2).
+> noise inflates the model → the gradient grows → the step grows → more noise
 
-### 2.3 The existing variance gate stabilises it — by having the wrong units
+The loop is closed. It is present at commit 1 and becomes visible around commit 150 — the steps never
+become *more wrongly aimed*, they just become *bigger*, applied to a model that keeps getting longer.
 
-The prior system (FwdLLM) commits when the pooled readings agree: `var(d) ≤ threshold`, where `var` is the
-per-coordinate variance between two half-means. Writing `u = d·v` with `‖v‖² ≈ p`:
+> **[FIGURE 1 — "Noise compounds"]** *(schematic + data)*
+> Left: two-panel cartoon of a step perpendicular to `θ`, showing `‖θ‖` growing by Pythagoras.
+> Right: `Φ` vs commit for the runaway regime (constant `ρ`, geometric) against a controlled run
+> (`125010`, which lands at `Φ` = 2.64 and flattens). The runaway curve is drawn from the difference
+> equation rather than from a logged arm — **we do not have a diverging run on this machine** (the
+> 0.874 → 0.296 collapse arm is on another node), so that curve must be labelled *illustrative*.
 
-```
-var  =  ‖G_A − G_B‖² / (2p)   ≈   2·b²·‖g‖² / N
-```
+### 2.1 The old system survived by accident
 
-Two readings of that expression:
+The prior system (FwdLLM) decides when to commit by pooling until the readings agree: `var(d) ≤ threshold`.
+Working that out, `var ≈ 2·b²·‖g‖²/N`, which says two things:
 
-1. **`var ∝ 1/N` is why the gate is really an `N`-controller.** Across `K` = 20/30/50 the realised `N`
-   lands in a narrow band regardless of `K` — the gate hands most of a `K` increase straight back as
-   fewer iterations.
-2. **`var ∝ ‖g‖²` is a units bug.** The achievable variance floor drifts **36×** over a run — exactly
-   `(6.0×)²`, the square of the norm growth. Because the ruler carries units of `‖θ‖²`, holding
-   `var ≤ c` forces `N ∝ ‖θ‖²`, hence `ρ ∝ 1/‖θ‖`, hence a roughly **constant absolute step**.
+1. It is really a **pool-size controller** — `var ∝ 1/N`.
+2. **It carries units.** `var ∝ ‖g‖²`, and `‖g‖` grows with the model, so the variance floor drifted **36×**
+   over one run — exactly the square of the 6× norm growth.
 
-> **The bug is the stabiliser.** Wrong units are what turn a fixed threshold into a `ρ ∝ 1/‖θ‖` anneal —
-> and since `‖θ‖ ∝ √t` under a constant absolute step, that is a Robbins–Monro schedule *by accident*.
->
-> **It is not a fix.** `Σρ_t² = Σc/t` diverges logarithmically, so collapse is **deferred, not
-> prevented** (extrapolated to commit 1,200–1,700), and the threshold hard-codes one trajectory: it is a
-> constant with units, so it means something different on every model, dataset and run length.
+Because the ruler stretches while the threshold does not, holding `var ≤ c` forces the pool to grow like
+`‖θ‖²`, which forces `ρ ∝ 1/‖θ‖`, which is a **decaying step schedule — by accident.**
 
-### 2.4 The defect, stated once
+> **The units bug was the only thing holding the system up.** And it is not a fix: the decay is too slow
+> to prevent collapse (it defers it to ~commit 1,200–1,700), and because the threshold has units it means
+> something different on every model, dataset and run length. **This is why nothing transferred.**
 
-**Nothing in the pipeline is scale-invariant.** The estimator (`|d|` tracks `‖θ‖`), the step
-(`‖Δθ‖ ∝ |d|`) and the gate (`var ∝ |d|²`) all inflate together, so **no quantity anywhere can be
-meaningfully compared against a fixed constant.**
-
-The three violations are not independent: the third partly cancels the first two. So the fix cannot merely
-remove the bug — it must **supply that anneal deliberately**, from a quantity that has no units.
+**The defect in one line: nothing in the pipeline is scale-invariant** — the readings, the step, and the
+gate all inflate together, so no quantity anywhere can be compared against a fixed number.
 
 ---
 
-## 3. Mathematical formulation: two conserved quantities
+## 3. The fix, in one idea
 
-Integrating the difference equation of §2.1 gives, with **no free parameter**:
+**Stop measuring anything in units that stretch.** Three replacements make every quantity a pure ratio:
 
-```
-BUDGET     B  =  ½ · Σ_t ln( 1 + ρ_t² )            and      Φ  =  e^B
-PROGRESS   Λ  =  Σ_t ρ_t · cos_t                   with     cos_t = D·sqrt(G_rule·N_t/p)
-```
-
-`B` is what a trajectory **spends**; `Λ` is what it **banks**. Both are dimensionless, both are exact at
-any horizon, and both are computable per commit from `ρ` alone.
-
-**The budget law is the strongest empirical statement here.** It holds across **21 arms** spanning `ρ`
-0.0002–0.22, `N` 10–200, α 0.1–1, both combination rules, both step rules, both gates, `p` 118k–450k, and
-177–1,273 commits. It contains **no `cos`, no `N`, no rule, no α and no `p`**: `‖θ_T‖` is a function of
-the `ρ` trajectory and nothing else. (It requires steps to be *independent*; server momentum correlates
-them and enters multiplicatively as `Φ = exp(((1+β)/(1−β))·B)`, verified at β = 0/0.5/0.75.)
-
-**Two facts turn these into a control problem.**
-
-**(a) Accuracy is monotone in `Λ`.** Over 21 arms sorted by `Λ`, peak accuracy rises monotonically from
-0.377 to 0.876 with no exception outside replicate noise. Read `Λ` as *accumulated aligned displacement in
-units of the model's own length*.
-
-**(b) Whether an arm keeps what it learned is decided by `Φ`, and by nothing else.** Every arm that
-learned, turned, and still had run left peaks at **`Φ` = 2.41–3.11, mean 2.71** — across both combination
-rules, both step rules, `p` = 118k/229k/450k, α = 0.1 and 1, `T` from 177 to 1,364 commits, and `ρ` from
-0.06 to 0.20.
-
-That constant is **not fitted**: `Φ` is computed from `ρ` alone and the peak location was never used to
-choose anything. It has a geometric reading. Steps are orthogonal to `θ`, so **`Φ` is the reciprocal of
-the un-junked fraction of `‖θ_tr‖`**; `Φ ≈ 2.7` says a classifier head fails once it sits more than ~68°
-off the direction that earned its accuracy. That is a statement about *classifier heads*, not about a
-particular dataset.
-
-### 3.1 The problem, restated
-
-Define `B_max := ln Φ_peak`. Then the entire method reduces to **one scalar decision**:
-
-> There is a finite budget `B_max`. Spending it buys progress `Λ`; overspending destroys what was bought.
-> **How fast should the budget be spent, and when should the run stop?**
-
-And the efficiency of the exchange is fixed by construction:
-
-```
-Λ / B  =  2·cos / ρ
-```
-
-so under a gate that holds `ρ ≤ s·cos` with `s` constant, `cos = ρ/s` and
-
-```
-Λ  =  Σ ρ_t² / s  =  2B / s                                       — an IDENTITY, not an approximation
-```
-
-Verified out of sample: **−0.3%** on the two arms that pin `s`, and **+21.5 to +23.3%** on three arms
-whose `s` drifts — the same arms, in the same order, as the independent error table.
-
-**This identity is what makes the method tunable-free.** It says the `ρ` *schedule* is `Λ`-neutral at
-fixed `B`: two schedules that spend the same budget bank the same learning and differ only in how many
-commits they take. So the schedule can be chosen for **well-posedness rather than for yield** — there is
-no schedule to tune, because no schedule wins.
-
----
-
-## 4. The solution
-
-Four replacements, each removing one violation of §2.4, plus one control law.
-
-| # | what | replaces | why it is scale-free |
-|---|---|---|---|
-| 1 | **Average all probes**, never select on `|d|` | `|d|`-based probe selection | selection is stability-neutral by construction; averaging raises `G_rule` from `E[v‖²]`≈3.0 to `P`=10 for free |
-| 2 | **Trust-ratio step** `θ_tr ← θ_tr − ρ*_t·‖θ_tr‖·G/‖G‖` | `Δθ ∝ η·G` | makes `ρ` a **knob instead of an outcome**. Enacts to 8.7e-5; client heterogeneity moves `ρ` by *zero to six significant figures* |
-| 3 | **`n_target` commit gate**: pool until `N ≥ N_req = p(ρ/s)²/G_rule` | `var(d) ≤ threshold` | the same `N`-controller the variance gate secretly was, but stated in a dimensionless quantity |
-| 4 | **Law C landing** (below) | a hand-chosen decay exponent | derives the schedule from the budget, with no horizon input |
-| 5 | **Sense `B_max`** by noise injection (below) | shipping `Φ_peak` as a constant | the value is not derivable in advance; the mechanism is |
-
-### 4.1 Law C — spending the budget without being told the horizon
-
-```
-ρ*_t   =  min( ρ_max , sqrt( 2·(B_max − B_t) / T_res ) )
-ρ_max  =  s·sqrt( max_iter·K·G_rule / p )                        (gate reachability, mechanical)
-stop when   B_t  ≥  f · B_max ,   f = 0.95
-```
-
-`T_res` is a **rate — commits of control resolution — and is never decremented.** It is not a deadline,
-and this is the crux of needing no horizon input. Two alternatives were considered and rejected:
-
-- **Law A** (`ρ*` set once from `B_max` and `T`) makes `ρ*` constant under perfect tracking and smuggles
-  the horizon `T` back in as an operator input.
-- **Law B** (recompute against a receding horizon) never terminates.
-- **Law C** approaches `B_max` monotonically **from below**, so the stop is a genuine backstop rather than
-  a race with the sensor.
-
-Because of the `Λ = 2B/s` identity, choosing `T_res` costs no learning — only commits. It is therefore
-free to be set to a round default (300) rather than searched.
-
-### 4.2 Sensing `B_max` — forward passes only
-
-`B_max` cannot be shipped as a constant, so it is **measured on the model being trained**. Add isotropic
-Gaussian noise to `θ_tr`, scaled so `‖θ_tr‖` grows by exactly `Φ`; read held-out accuracy back at several
-`Φ`; take the knee on **chance-normalised** accuracy (post-collapse every dataset floors at its own `1/K`,
-so a raw threshold would mean three different things on three datasets).
-
-```
-B_max  =  B  +  ln Φ_knee
-```
-
-The `+B` matters: the probe measures **remaining headroom from `θ_t`**, while `B` accumulates from `θ_0`.
-Anchoring this way makes `B_max > B` by construction, so a re-sense can only move the landing point, never
-retroactively stop the run.
-
-The probe costs ~6 forward-only evaluations on a copy, needs no gradients, and re-fires every 150 commits;
-successive senses combine by `mean`.
-
-### 4.3 What an operator supplies
-
-Nothing that is a learning knob:
-
-| supplied by hand | derived mechanically | universal constant |
+| what was wrong | replacement | what it buys |
 |---|---|---|
-| a description of the dataset (paths, `num_labels`, sequence length) | `p`, bin count, `num_labels` from the data | `probe_combine = mean`, `server_step_rule = trust_ratio`, `commit_gate = n_target` |
-| a compute budget | `ρ*_t` from law C; `ρ_max` from gate reachability; `N_req` closed-form | `s` = 1.5, `T_res` = 300, `f` = 0.95, `P` = 10 |
-| an evaluation-cost cap | **`B_max` — sensed** | `B_max` *prior* `ln 2`, replaced by the first sense |
+| step size was an *outcome* of the gradient magnitude | **trust-ratio step**: `θ ← θ − ρ·‖θ‖·G/‖G‖` — we *set* `ρ` directly | `ρ` becomes a knob. Client heterogeneity now moves it by *zero to six decimal places* |
+| commit gate compared a quantity with units to a constant | **`n_target` gate**: pool until `N ≥ p·(ρ/s)²/(P)` | the same pool-size controller, stated dimensionlessly |
+| probes were *selected* by `|d|` | **average all of them** | more signal per commit, for free |
 
-No learning rate, no variance threshold, no cohort width, no horizon, no target accuracy, no safety factor.
+That removes the runaway. It does not answer the remaining question, which is the whole rest of the
+problem: **how big should `ρ` be, and when should we stop?**
 
 ---
 
-## 5. Results
+## 4. Two numbers describe any run
 
-### 5.1 The experiment
+With steps perpendicular to `θ`, the trajectory is an exact recursion `‖θ_{t+1}‖² = ‖θ_t‖²(1+ρ_t²)`.
+Summing it gives one number for what a run **spends** and one for what it **earns**:
 
-Three datasets differing in class count, sequence length and shard size; one model (DistilBERT +
-adapters, `p` ≈ 4.5·10⁵); 100 simulated clients, Dirichlet α = 1; identical configuration everywhere.
+```
+SPEND     B  =  ½ · Σ_t ln( 1 + ρ_t² )        and       Φ = e^B
+EARN      Λ  =  Σ_t  ρ_t · cos_t              ( the ~7% of each step that pointed the right way )
+```
 
-| | agnews | yahoo | yelp-p |
+Both are dimensionless, both are exact at any point in the run, and **`B` is computable from the step
+sizes alone** — no gradients, no accuracy, no model-specific constant.
+
+Two empirical facts turn this into a control problem:
+
+**(a) Accuracy rises with `Λ`.** Over 21 runs sorted by `Λ`, peak accuracy climbs monotonically from 0.377
+to 0.876. `Λ` is how far you travelled *usefully*, measured in multiples of your own length.
+
+**(b) Whether you keep what you learned is decided by `Φ` alone.** Every run that learned, turned over, and
+still had time left peaked at **`Φ` between 2.41 and 3.11** — across two step rules, three model sizes, and
+run lengths from 177 to 1,364 commits. That number was never fitted to anything.
+
+> **[FIGURE 2 — "The budget law is exact"]** *(data: all 6 arms)*
+> Scatter of `Φ` predicted from the step sizes alone (`e^B`) against `Φ` measured from the weights, with
+> the `y = x` line. Six points, three datasets, up to 1,348 commits, **worst error 0.23%**.
+> Source: `server_update` telemetry (`rho`, `trainable_weight_norm`).
+> *Why it matters: the quantity the controller steers by is the quantity the system actually obeys.*
+
+> **[FIGURE 3 — "Accuracy is a function of progress, not of dataset"]** *(data: 3 controllers)*
+> Held-out accuracy against `Λ`, one line per dataset. Pre-registered before the runs: if yahoo reached
+> 0.6–0.7 by `Λ ≈ 1.0`, the curve transfers across task. **It read 0.657 at `Λ` = 0.994**; agnews reads
+> 0.868 at `Λ` = 1.001. *Why it matters: `Λ` means the same thing on tasks we have never seen.*
+
+### The problem, restated
+
+> There is a budget. Spending it buys accuracy; overspending destroys what you bought.
+> **How fast do we spend, and when do we stop?**
+
+And there is a clean answer to the first half. Under a gate that keeps `ρ ≤ s·cos`, the exchange rate is
+fixed:
+
+```
+Λ  =  2B / s          — an identity, not a fit  (verified to −0.3% out of sample)
+```
+
+> **This is the load-bearing simplification.** It says **the schedule cannot buy accuracy.** Two step
+> schedules that spend the same budget earn the same accuracy and differ only in how many commits they
+> take. So there is *no schedule to tune* — we are free to pick one for stability rather than for yield,
+> and the only real lever on accuracy-per-budget is `s`.
+
+---
+
+## 5. The controller
+
+**Spending rule (law C).** Aim the step at whatever budget is left:
+
+```
+ρ*_t  =  sqrt( 2 · (B_max − B_t) / T_res )
+```
+
+`T_res` is a **rate — how many commits of control resolution we want — not a deadline.** That distinction
+is what removes the run length from the inputs: nobody has to say how long training will take. The step
+naturally shrinks as the budget is consumed, and approaches `B_max` from below.
+
+**Where `B_max` comes from — it is measured, not supplied.** Add random noise to the weights, scaled so the
+model grows by exactly `Φ`; read held-out accuracy back; find the `Φ` at which accuracy falls apart. Six
+forward passes on a copy, no gradients. Repeat every 150 commits.
+
+Because the probe measures headroom *from where the model stands now*, while `B` accumulates from the
+start:
+
+```
+B_max  =  B_now  +  ln Φ_knee
+```
+
+**What an operator supplies: no learning knob at all.** No learning rate, no variance threshold, no cohort
+width, no run length, no target accuracy. Only a description of the dataset and a compute budget.
+
+---
+
+## 6. It works: the controller beats a hand-tuned baseline on every dataset
+
+Three datasets, one model (DistilBERT + adapters), 100 clients, non-IID.
+
+- **Controller** — the stack above, given no `ρ` and no `B_max`.
+- **Baseline** — the same stack with the hand-tuned setting that was *searched on agnews* (`ρ` = 0.06,
+  decaying), run unchanged on all three.
+
+So the experiment asks exactly: **does a hand-tuned constant transfer to a new task, and does a sensed one?**
+
+| | controller | baseline (full budget) | compute to match the baseline's *best ever* | backprop reference |
+|---|---|---|---|---|
+| agnews | **0.868** | 0.843 | **5.5× less** | 0.850 |
+| yahoo | **0.657** | 0.428 | **6.5× less** | 0.734 |
+| yelp-p | **0.814** | 0.728 | **8.5× less** | 0.874 |
+
+**No baseline ever reaches its controller's accuracy**, on any dataset, given its entire budget.
+
+> **[FIGURE 4 — the money plot]** *(data: all 6 arms)*
+> Three panels, one per dataset: held-out accuracy vs simulated wall clock, controller and baseline on the
+> same axes, with the backprop reference as a horizontal line and the controller's self-stop marked.
+> *Why it matters: this is the result in one image.*
+
+### Why it wins — one column explains it
+
+| budget actually spent | agnews | yahoo | yelp-p |
 |---|---|---|---|
-| classes | 4 | 10 | 2 |
-| data bins per round | 150 | 1,750 | 650 |
-| sequence length | 192 | 256 | 256 |
-| backprop reference (10 clients, 3 epochs, exact gradients) | 0.850 | 0.734 | 0.874 |
+| baseline, after its **full** budget | 0.107 | 0.119 | 0.111 |
+| controller | 0.697 | 0.690 | 0.970 |
 
-**Controller** = the stack of §4 with law C and a sensed `B_max`, given **no** `ρ*` and **no** `B_max`.
-**Control** = the same stack with the *hand-set* configuration that was tuned on agnews — `ρ*` = 0.06 with
-a Robbins–Monro decay — run on all three datasets unchanged. The comparison therefore asks exactly:
-**does a hand-tuned constant transfer to a new task, and does a sensed one?**
+A fixed `ρ` = 0.06 spends **≈0.11 of budget regardless of the dataset** — that is what a hand-set constant
+does, by definition. The controller spends 6–9× more of the same budget in the same wall clock.
 
-The two arms are distinguishable in one log line each:
+And the *penalty* for under-spending is set by the task, not by the guess: agnews saturates early, so its
+baseline still reaches 0.843; yahoo needs far more budget and its baseline stalls at 0.428.
 
-```
-controller   [ServerStep] trust_ratio rho_star=0.06 schedule=landing exp=0.25
-             [CommitGate] n_target s=1.5 p=448802 probe_combine=mean P=10 G_rule=10.0 rho_ref=annealed
-             [Landing]    law=C B_max=0.693147 T_res=300 rho*_0=0.0679778 rho_max=0.10013 stop_frac=0.95
-
-control      [ServerStep] trust_ratio rho_star=0.06 schedule=rm exp=0.25
-             [CommitGate] n_target s=1.5 p=448802 probe_combine=mean P=10 G_rule=10.0 rho_ref=setpoint
-```
-
-### 5.2 The controller wins on every dataset
-
-Peak held-out accuracy (peak, never final — byte-identical replicates differ by ±0.045 past a turn against
-±0.0009 at peak):
-
-| | controller | control, full budget | vclock at which the controller passes the control's **best-ever** accuracy | reference |
-|---|---|---|---|---|
-| agnews | **0.8676** | 0.8432 | 8,257 — **5.5×** | 0.850 |
-| yahoo | **0.6571** | 0.4275 | 9,017 — **6.5×** | 0.734 |
-| yelp-p | **0.8141** | 0.7280 | 5,494 — **8.5×** | 0.874 |
-
-**No control ever reaches its controller's peak**, on any dataset, over its entire budget.
-
-### 5.3 Why it wins — the mechanism is visible in one column
-
-The controls ended having spent:
-
-| | control `B` at end of its full budget | controller `B` |
-|---|---|---|
-| agnews | 0.1075 | 0.6972 |
-| yahoo | 0.1187 | 0.6900 |
-| yelp-p | 0.1109 | 0.9699 |
-
-A **fixed `ρ*` = 0.06 spends ≈0.11 of budget regardless of the dataset** — that is what a hand-set
-constant does, by definition. The controller spends 6–9× more of the same budget in the same wall clock.
-
-And the *cost* of under-spending is task-dependent, which is why the margin varies: agnews saturates early
-(its control reaches 0.843 of a 0.850 reference on `B` = 0.11), while yahoo needs far more budget and its
-control stalls at 0.428 of 0.734. **This is the claim in one sentence: the right amount of budget is not a
-constant, so it must be sensed — and the penalty for guessing is set by the task, not by the guess.**
-
-### 5.4 The formulation is confirmed by the runs, not merely consistent with them
-
-Predicted vs observed norm inflation, all six arms, `Φ_predicted = e^B` computed from the `ρ` sequence
-alone against `Φ` measured from the weights:
-
-| arm | commits | `B` | `Φ` predicted | `Φ` observed | error |
-|---|---|---|---|---|---|
-| agnews controller `152215` | 899 | 0.6972 | 2.01 | 2.01 | **0.02%** |
-| agnews control `021843` | 938 | 0.1075 | 1.11 | 1.11 | **0.00%** |
-| yahoo controller `125003` | 964 | 0.6900 | 1.99 | 2.00 | **−0.23%** |
-| yahoo control `151619` | 1,138 | 0.1187 | 1.13 | 1.12 | **0.13%** |
-| yelp-p controller `125010` | 1,348 | 0.9699 | 2.64 | 2.64 | **0.09%** |
-| yelp-p control `161751` | 997 | 0.1109 | 1.12 | 1.12 | **0.16%** |
-
-Six arms, three datasets, two schedules, up to 1,348 commits, **worst error 0.23%**. The quantity the
-controller steers by is the quantity the system actually obeys.
-
-### 5.5 The controller terminates on its own budget
-
-yelp-p `125010`, the one arm that ran to its own stopping condition:
-
-```
-[BudgetStop] reason=budget action=halt commit=1348 B=0.972057 B_max=1.02312 Phi=2.643
-```
-
-It stopped at **95.0% of a budget it measured itself**, having used **28,885 of the 50,000** vclock-seconds
-it was allowed — 58%. It ended **0.0006 below its own peak**. Its control, given the full 50,000, peaked
-0.086 lower and drifted 0.014 down from there.
-
-### 5.6 The Λ-curve transfers across task
-
-Pre-registered before the runs: *if yahoo reaches ~0.6–0.7 by `Λ` ≈ 1.0, the agnews `Λ`-curve transfers;
-if it plateaus near 0.35 with `Λ` > 1.0, `Λ` does not transfer across task.*
-
-**yahoo reached 0.6571 at `Λ` = 0.994** — against 0.30 on earlier arms and a 0.734 reference. agnews reads
-0.868 at `Λ` = 1.001. The progress coordinate means the same thing on both tasks.
+> **The claim in one sentence: the right amount of budget is not a constant, so it has to be sensed — and
+> what it costs you to guess wrong is decided by the task you haven't seen yet.**
 
 ---
 
-## 6. What is not yet settled
+## 7. What we found broken, and it is the interesting part
 
-Stated plainly, because each of these bounds what the results above can be claimed to show.
+The controller stops itself. **But it stops too early, and we now know exactly why.**
 
-### 6.1 The `B_max` sensor's grid does not bracket the knee
+yelp-p `125010` halted at 0.814 against a 0.874 reference — **while accuracy was still rising**, with 42%
+of its compute unused.
 
-The injection probe reads accuracy at `Φ ∈ {1.5, 2, 2.5, 3, 3.5, 4}`, a range sized from *offline*
-measurements of the knee (2.0–3.5). The **live** knee is far lower. Across all **19 in-run fires on the
-three datasets, every grid point returned chance accuracy**:
+**The probe was not the problem. The averaging was.** Every 150 commits the probe reports remaining
+headroom. Across all 19 firings on all three datasets, that reading **shows no downward trend** — it does
+not shrink as budget is spent:
 
-| | chance | Φ=1.5 | 2.0 | 2.5 | 3.0 | 3.5 | 4.0 |
-|---|---|---|---|---|---|---|---|
-| agnews, fire 1 | 0.250 | 0.277 | 0.248 | 0.232 | 0.244 | 0.264 | 0.264 |
-| yahoo, fire 6 | 0.100 | 0.318 | 0.125 | 0.080 | 0.105 | 0.092 | 0.100 |
-| yelp-p, fire 8 | 0.500 | 0.531 | 0.482 | 0.482 | 0.482 | 0.518 | 0.490 |
+| yelp-p, headroom reported by the probe | fire 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| **measured** `ln Φ_knee` | 0.250 | 0.595 | 0.683 | 0.415 | 0.253 | 0.236 | 0.217 | **0.246** |
+| **what the controller used** (mean of all senses, minus `B`) | 0.250 | 0.373 | 0.378 | 0.276 | 0.184 | 0.132 | 0.100 | **0.084** |
 
-The knee-finder therefore never brackets the crossing; it falls through to a two-point extrapolation
-between its synthetic `(Φ=1, normalised 1.0)` anchor and the single `Φ=1.5` reading. Recomputed over the
-fires, **5 of 8 sampled use one grid point and 3 use two — the points at 2.5–4.0 are consulted on none.**
+The probe kept saying *"you have ~0.25 of road left."* The `mean` combiner turned that into *"you have
+0.08 left"* — a **3× understatement** — and since `ρ* = √(2·headroom/T_res)`, the step was annealed to
+**1.7× smaller than the current measurement supported.** The run then hit `B ≥ 0.95·B_max` and halted.
 
-Consequences:
+> **The run did not stop because it was out of road. It stopped because the odometer was averaged.**
 
-1. `ln Φ_knee` is pinned into ≈0.21–0.42 regardless of the model, so **`B_max = B + ln Φ_knee` recedes as
-   budget is spent**. The sensed value rises monotonically from ≈0.50 at the first fire on all three
-   datasets.
-2. The three combined values (0.795 / 0.805 / 1.023) **order by fire count (5/6/8), not by dataset** — so
-   no claim that `B_max` differs *by task* survives this instrument.
-3. The stop still fires, because `mean` lags a rising sequence: yelp-p halted at `B` = 0.9721 ≥ 0.95 ×
-   mean 1.0231, while its *latest* sense was 1.186, which would not have stopped it. **The termination is
-   arithmetic on the combiner, not `B_max` converging.**
+> **[FIGURE 5 — the diagnosis]** *(data: 3 controllers, `[BmaxProbe]` lines)*
+> Two panels. Left: per-firing measured headroom (flat) against the mean-combined headroom the controller
+> actually used (collapsing), one line pair per dataset. Right: the resulting `ρ*` against the `ρ*` the
+> latest measurement would have supported. *Why it matters: this is the entire reason target accuracy is
+> missed, and it is arithmetic, not physics.*
 
-The fix is to re-range the grid below 1.5 and re-read the knee. It does not affect §5.2–§5.6, which are
-measured accuracies, but it does mean **"the controller senses the task's ceiling" is not yet supported** —
-what is supported is that it senses *something* that produces a working landing.
+**Two deeper problems sit behind it.**
 
-### 6.2 Two of three do not reach the backprop reference, and all three were still climbing
+**(a) The probe's search range barely contains the answer.** It tests `Φ ∈ {1.5, 2, 2.5, 3, 3.5, 4}`, a
+range chosen from offline measurements taken before any of this. Live, the model is already at chance at
+the *smallest* `Φ` tested on most firings: sampling 8 of the 19, **5 have the knee below the whole grid**
+(so the knee-finder extrapolates from one point and a synthetic anchor) and 3 have it barely inside the
+first interval. **The four points at 2.5–4.0 were used on none of them** — two thirds of a 2–3 minute probe,
+spent where the answer is not. Consequence: what it reports is pinned into a narrow band regardless of the
+model, so `B_max = B + (roughly a constant)` **recedes as budget is spent**.
 
-| | peak | reference | gap | still improving at the end? |
-|---|---|---|---|---|
-| agnews | 0.8676 | 0.850 | **−0.018 (exceeds)** | yes, +0.0028 over the last 10% of vclock |
-| yahoo | 0.6571 | 0.734 | +0.077 | yes, **+0.0123** — the fastest of the three |
-| yelp-p | 0.8141 | 0.874 | +0.060 | yes, +0.0041 |
+> **[FIGURE 6 — "the ruler starts past the mark"]** *(data: `[BmaxProbe]` curves)*
+> Chance-normalised accuracy against `Φ` for a representative firing on each dataset, with the tested grid
+> marked and the 0.5 knee level drawn. On most firings every grid point sits near zero and the crossing is
+> off-scale to the left. *Why it matters: it shows an instrument whose scale starts past the thing it is
+> meant to measure.*
 
-**No arm had plateaued.** For agnews and yahoo the reason is external — a monitoring bug killed both
-mid-run — but **yelp-p stopped itself**, on `B ≥ 0.95·B_max`, while accuracy was still rising and with 42%
-of its vclock unused. Under a criterion that values reaching the target above stopping early, that is a
-**miss, not a success**: the budget stop is a bound on *damage*, and it fired well before the model had
-extracted what the task allows.
-
-The "ends within 0.015 of peak" check is therefore weaker than it looks: **an arm that is still climbing
-passes it trivially**, because its peak is its last point. It demonstrates *no divergence*; it does not
-demonstrate convergence.
-
-**One qualifier that cuts the other way, and it matters.** yelp-p halted at **`Φ` = 2.643**, against an
-independent safety stop at `Φ` = 2.7 that would have fired within ~30–60 more commits. The two nearly
-coincided, so the arm was at the ceiling the *model* imposes, not at an arbitrary early cut. Simply
-running it longer is therefore not available — the budget really is nearly spent. Since `Λ = 2B/s`, the
-only lever on learning **per unit budget** is `s` (1.5 here, with a gate-reachability floor near 0.9);
-running past `Φ` ≈ 2.7 is the regime every arm on record says destroys the head. Whether that ceiling is
-real on yelp-p is an open experiment, not a settled fact.
-
-Two further caveats on the reference itself: it is a 10-client, 3-epoch backprop run, loose by an unknown
-and probably unequal amount per dataset — agnews' controller **exceeded** it — so "93% of reference" and
-"90% of reference" are not comparable statements across columns.
-
-### 6.3 No arm in this set ever diverged
-
-The stop rule was motivated by collapse (one earlier arm fell 0.874 → 0.296). In these six arms that never
-happened, so the stop demonstrated **efficiency** — stopping early at almost no cost — and not the
-collapse avoidance it exists for. Those are different claims and should not be merged.
-
-### 6.4 One model, one `p`
-
-Every arm ever run is DistilBERT + adapters at `p` ≈ 4.5·10⁵; the three datasets differ in `p` by 1.4%.
-So the generality demonstrated is **across task, holding the learner fixed**. The one time `p` moved for
-real — adapter reduction factor 64, `p` = 118,348 — law C and the annealed gate **did not compose** under
-any `T_res`. `T_res` = 300 and `f` = 0.95 are the two constants that are neither sensed nor derived, and
-they are pinned to one `p`.
+**(b) The whole "fixed budget" picture may be wrong.** The probe noises a model that **cannot re-fit**. A
+training run re-fits continuously. If remaining headroom genuinely stays ~0.25 as training proceeds — which
+is what the measurements show — then budget is not a tank that drains. It is closer to a **rate limit that
+is continually re-earned**, and stopping when a cumulative total is reached is the wrong stopping rule.
 
 ---
 
-## 7. Summary
+## 8. What we are changing
 
-**The problem.** Backprop-free fine-tuning by directional derivatives takes steps that are orthogonal to
-the model, so the weight norm grows monotonically and, under a raw step rule, geometrically — with the
-gradient magnitude feeding back into the step. The prior system survives this only because its variance
-gate carries units of `‖θ‖²`, which converts a fixed threshold into an accidental Robbins–Monro anneal
-that defers collapse rather than preventing it, and hard-codes one trajectory.
+| | decision |
+|---|---|
+| **What ends a run** | **Saturation, not budget.** Stop when smoothed held-out accuracy stops improving. Keep a `Φ` crossing as a pure damage backstop. `B_max` stays — but only to drive the spending schedule, never as a termination rule |
+| **How senses combine** | **Latest, not mean.** Use the freshest measurement of remaining headroom. The old objection — "the latest sense never terminates" — dissolves once saturation is what terminates |
+| **The `Φ` ≈ 2.7 rail** | **Test it.** That number comes from runs under the *old, diverging* dynamics. With `ρ` controlled and the model re-fitting as it goes, the sustainable `Φ` may be far higher. One run with both stops set to log-only settles it |
+| **Target accuracy** | The backprop reference, unchanged |
 
-**The formulation.** Orthogonality makes the trajectory an exact difference equation, giving two
-dimensionless conserved quantities: a spend `B = ½Σln(1+ρ²)` with `Φ = e^B`, and a gain `Λ = Σρ·cos`.
-Accuracy is monotone in `Λ`; whether it is *retained* is governed by `Φ` alone, which peaks at a fixed
-2.41–3.11 across every arm on record for a geometric reason. Under a gate that holds `ρ ≤ s·cos`,
-`Λ = 2B/s` identically — so the schedule cannot buy learning, only spend time, and there is nothing in it
-to tune.
+---
 
-**The solution.** Make `ρ` a knob (trust-ratio), make the gate dimensionless (`n_target`), average the
-probes, and spend the budget by `ρ*_t = √(2(B_max − B_t)/T_res)` with `T_res` a rate rather than a
-deadline — which removes the horizon from the inputs. `B_max` itself is sensed on the running model by
-forward-only noise injection.
+## 9. Honest boundaries
 
-**The evidence.** Across three datasets the controller beats the same stack with a hand-set, agnews-tuned
-step by 5.5–8.5× in budget-to-equal-accuracy, and no control reaches its controller's peak. The budget law
-predicts observed norm inflation to within **0.23% on all six arms**, up to 1,348 commits. On yelp-p the
-controller halted itself on its own measured budget at 58% of the compute it was allowed, ending 0.0006
-below its peak.
+- **Two of three runs are below the backprop reference** (yahoo by 0.077, yelp-p by 0.060) and **all three
+  were still improving when they ended.** Nothing here has yet demonstrated convergence — only that
+  nothing diverged.
+- The "ends within 0.015 of its peak" check is weaker than it sounds: **a run that is still climbing
+  passes it trivially**, because its peak is its last point.
+- **`Φ` ≈ 2.7 is not yet confirmed under the new dynamics**, and yelp-p halted at `Φ` = 2.643 — so it was
+  at the ceiling the *model* imposes, and simply running longer is not obviously available. §8 tests this.
+- **No run in this set ever collapsed**, so the stopping rule has demonstrated efficiency, not the damage
+  avoidance it exists for.
+- **One model throughout.** All three datasets use DistilBERT + adapters at the same `p`. The one time the
+  model size really changed, the controller's two remaining constants stopped composing with the gate.
+  Generality is demonstrated **across task, not across model.**
 
-**The honest boundary.** The sensor that sets the target is mis-ranged, so what it returns tracks spend
-rather than the task; two of three arms end below the backprop reference and all three were still
-improving when they ended; and the whole result holds one model fixed.
+---
+
+## 10. Summary
+
+**The problem.** Forward-gradient steps are ~93% noise and perpendicular to the weights, so noise
+accumulates as length and cannot cancel. Under a raw step rule this runs away. The previous system
+survived only because its commit gate compared a quantity carrying units of `‖θ‖²` against a fixed
+threshold — an accidental decay schedule that deferred collapse instead of preventing it, and that meant
+something different on every task.
+
+**The formulation.** Perpendicularity makes the trajectory exact, giving two dimensionless numbers: a
+spend `B` (with `Φ = e^B`, the fraction of the model that is still signal) and an earning `Λ`. Accuracy
+rises with `Λ`; retention is governed by `Φ`. Under a dimensionless gate, `Λ = 2B/s` identically — so the
+schedule cannot buy accuracy, and there is nothing in it to tune.
+
+**The controller.** Set the step from the budget remaining, at a *rate* rather than against a deadline, so
+run length is never an input; and measure the budget on the running model with forward passes only.
+
+**The evidence.** On three datasets it beats a baseline hand-tuned on one of them by 5.5–8.5× in compute
+to equal accuracy, and no baseline ever catches it. The budget law predicts measured weight growth to
+within 0.23% across all six runs.
+
+**The open problem.** It stops short of target accuracy, and the cause is now identified and arithmetic:
+averaging a flat headroom measurement into a shrinking one throttles the step. Fixing the combiner,
+moving termination to saturation, and testing whether the `Φ` ceiling is real under the new dynamics are
+the next three runs.

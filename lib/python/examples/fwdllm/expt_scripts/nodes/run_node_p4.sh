@@ -201,10 +201,17 @@ case "$ARM" in
     NODE_ARM_KIND=controller
     # Zero input: no --rho-star and no --b-max. rho* is derived from the ln 2
     # prior until 3.1's first probe lands, then from the sensed B_max.
-    node_run "p4-$DATASET" "controller (law C, T_res=300, sensed B_max)" \
+    # Two overrides, both defaulting to the shipped behaviour. `anchor` uses the
+    # LATEST sense instead of the mean: across 19 fires the probe reports a flat
+    # B_rem (~0.25) while the mean turns it into headroom that vanishes, which
+    # anneals rho* to 1.7x below what the current measurement supports.
+    # `log_only` makes BOTH stops emit and keep training -- the only way to see
+    # past the Phi=2.7 rail.
+    node_run "p4-$DATASET" "controller (law C, T_res=300, sensed B_max, ${P4_BMAX_POLICY:-mean}/${P4_PHI_STOP:-halt})" \
       "${COMMON[@]}" --gate-rho-ref annealed \
       --rho-schedule landing --t-res 300 --budget-stop-frac 0.95 \
-      --phi-stop halt --b-max-probe-every 150 --b-max-probe-n 512
+      --b-max-policy "${P4_BMAX_POLICY:-mean}" \
+      --phi-stop "${P4_PHI_STOP:-halt}" --b-max-probe-every 150 --b-max-probe-n 512
     ;;
   control)
     node_run "p4-$DATASET" "control (fluxtune_v2: rm/0.25, rho*=0.06, setpoint)" \

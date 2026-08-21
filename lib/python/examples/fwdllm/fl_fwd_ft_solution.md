@@ -99,6 +99,7 @@ hand-set control on all three datasets and lands on its own peak (§1.4 item 5) 
 | **D-2** | **`D` is 2–3× larger on the two arms that trained than near init** — but it is not "training state": pooled across both it is *non-monotone* in accuracy, and its highest-accuracy bin reads the **lowest** `D` while pre-turn steps to post-turn. `const` vs `rm` is the leading confound. Numbers: §6.3 | the sizing formula and §8's generality — `N_req ∝ 1/D²`, so 2× is 4× in pool | **on the rig, not on an arm**: single-commit `cos` has SNR ≈ 1, so only a fixed **trained checkpoint** with unlimited probes can separate `const` from `rm` |
 | **H-S** | **A 3.5× shadow loss that is not data-side.** The rig reproduces `L` but gets `S` = 1.68 where the arms read 0.48. Prime suspect: the FD chord — `h‖v‖` ≈ `‖θ_tr‖`, so `d` is a chord-averaged slope, not `⟨g,v⟩` | the last unexplained factor in `cos` | rig: true `⟨g,v⟩` vs the shipped central FD at the shipped `h` (§6.3) |
 | **3.1** | **The `B_max` sensor is mis-ranged, so what it senses is mostly `B`.** Its Φ grid starts at 1.5 and the live knee is below that on **every one of 19 fires across three datasets**, so `knee()` extrapolates from its synthetic `Φ`=1 anchor to one reading, `ln Φ_knee` is pinned into 0.21–0.42, and `B_max = B + ln Φ_knee` recedes as budget is spent. Numbers: [P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid) | **the central claim** — that `B_max` is a task property the run discovers. The controller still works without it, but "it senses the task's ceiling" is unsupported until this closes | **re-range the grid** below 1.5 and re-read the knee (buildplan row **P**, ~30 min). Nothing on disk answers it: no arm checkpoints a model |
+| **3.1c** | **Is `B_max` a fixed total at all?** The probe reads headroom *from `θ_t`* on a model that cannot re-fit; a run re-fits continuously, and measured `B_rem` does not shrink as budget is spent. That is the signature of a **rate limit that is re-earned**, not a tank that drains | the shape of the whole method: if budget is a rate, "spend `B_max` then stop" is the wrong stopping rule and only the `Φ` rail is load-bearing | buildplan rows **F′** (run past the rail with nothing halting) and **P** |
 | **3.1b** | **Does `B_max` differ by task at all?** The three combined values (0.795 / 0.805 / 1.023) order by **fire count, not dataset**, so B-1's "neither invariant nor monotone in `num_labels`" is not confirmed by the live probe | whether `ρ*`, `s`, `N` and the stop could ever ship as a fixed constant | falls out of **3.1** — with a grid that brackets the knee, one fire per dataset settles it |
 | **G-1** | **Every arm ever run is DistilBERT + adapters at `rf`=16, `p`≈4.5e5.** The three datasets vary the *task*; `p` varies by 1.4% across them. The one time `p` moved for real — `rf`=64, `p`=118,348 — law C + the annealed gate did not compose under **any** `T_res` | "same controller, new model", the §8 extension, and `T_res`=300 / `f`=0.95, which are pinned to one `p` | a second model. Not started; [buildplan §1 hole 3](fl_fwd_ft_buildplan.md) holds the `rf`=64 numbers |
 
@@ -663,7 +664,7 @@ SIZING (from the model and the runtime -- NOTHING profiled):
            run ~150 commits -- spends B ~ 0.21, Phi ~ 1.23, negligible
   PHASE B: B_max  <- noise-injection probe, ~6 evals, forward-only        (5.5b)  [BUILT + LIVE;
            rho*   <- re-derived from the measured B_max                            its GRID is wrong, 3.1]
-           re-fires every 150 commits; senses combine by `mean`
+           re-fires every 150 commits; senses combine by `anchor` (latest)
   K/C, P          <- hill-climb (K,C)/tau and P/tau(P)                    (5.5e)  [NOT BUILT]
   N               <- from the gate, holding s constant = time-optimal     (4.6)
 
@@ -675,9 +676,9 @@ PER COMMIT (server):
   log rho, ||theta_tr||, top_class_share      # the three monitors (2.8)
   B += 0.5*ln(1 + rho_t^2)                    # exact, no free parameter (4.1)
   anneal rho so that B LANDS on B_max         # not Robbins-Monro: unspent budget = wasted time (4.6a)
-  stop when B >= f*B_max, f = 0.95            # LIVE: [BudgetStop] reason=budget action=halt
-  stop when smoothed Phi crosses 2.7          # LIVE: the collapse backstop (P4.1)
-  # saturation stop (Prechelt GL/patience)      [NOT BUILT -- buildplan row E]
+  stop when held-out accuracy SATURATES        # PRIMARY [NOT BUILT -- buildplan row E]
+  stop when smoothed Phi crosses 2.7           # the damage rail (P4.1); is 2.7 right? row F'
+  # B >= f*B_max is NO LONGER a termination rule -- B_max drives rho* only
   # NO accuracy target: the run finds its own ceiling (5.5f D2)
 ```
 
@@ -687,9 +688,17 @@ lands and terminates correctly without either. Every place a *decision* is made 
 than arithmetic is the §0.0 autonomy requirement being met, and is why `s`, `ρ`, `N`, `I` and `p` are no
 longer decisions at all.
 
-**The one sensed quantity that is not yet sound is `B_max`** (3.1). The probe fires and the loop lands and
-stops on what it returns, but its grid does not bracket the knee, so what it returns tracks `B` rather
-than the task. **The controller's behaviour is validated; its target is not.**
+**The one sensed quantity that is not yet sound is `B_max`** (3.1). The probe fires and the loop lands on
+what it returns, but its grid does not bracket the knee, so what it returns tracks `B` rather than the
+task. **The controller's behaviour is validated; its target is not.**
+
+**Two decisions follow from that, taken 2026-08-20** and reflected above. *(1)* Senses combine by
+**`anchor`**, not `mean`: across 19 fires the measured headroom `ln Φ_knee` shows **no downward trend**
+while `mean`-minus-`B` collapses (yelp-p 0.246 measured against 0.084 used), which annealed `ρ*` to
+**1.7× below** what the current measurement supported and is why that arm halted 0.060 short of its
+reference while still climbing. *(2)* **Termination moves to saturation**; `B ≥ f·B_max` is demoted, and
+`B_max` survives only as the input to law C's `ρ*`. `anchor`'s standing objection — that it never
+terminates — is void once saturation is what terminates.
 
 ## §5.2 The lever table — this ranks every possible fix
 
