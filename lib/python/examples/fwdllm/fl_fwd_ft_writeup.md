@@ -1,7 +1,12 @@
-# Fine-tuning without backprop: why it fell over, and the controller that fixes it
+# FluxTune: fine-tuning without backprop, and the controller that makes it hold
 
 *Read this top to bottom. Every number is from a logged run; the run id is given so it can be checked.
 The companion documents hold the full derivations and the complete evidence — this one holds the argument.*
+
+**Three systems appear throughout.** **FwdLLM** is the prior work whose failure §2 explains.
+**FluxTune-v2** is the previous version of our system — right step rule, but a step *size* hand-searched
+on one dataset. **FluxTune** is this work: the same stack with the step size set from a budget it measures
+for itself. The target is a **backprop reference** — exact gradients on the same rig.
 
 ---
 
@@ -177,7 +182,7 @@ fixed:
 
 ---
 
-## 5. The controller
+## 5. FluxTune
 
 **Spending rule (law C).** Aim the step at whatever budget is left:
 
@@ -205,38 +210,44 @@ width, no run length, no target accuracy. Only a description of the dataset and 
 
 ---
 
-## 6. It works: the controller beats a hand-tuned baseline on every dataset
+## 6. It works: FluxTune beats its hand-tuned predecessor on every dataset
 
-Three datasets, one model (DistilBERT + adapters), 100 clients, non-IID.
+Three datasets, one model (DistilBERT + adapters), 100 clients, non-IID. Three systems in the comparison,
+and it is worth being precise about which is which:
 
-- **Controller** — the stack above, given no `ρ` and no `B_max`.
-- **Baseline** — the same stack with the hand-tuned setting that was *searched on agnews* (`ρ` = 0.06,
-  decaying), run unchanged on all three.
+| name | what it is |
+|---|---|
+| **FwdLLM** | the prior system — variance-gate commits, raw SGD step. §2 is about why it falls over |
+| **FluxTune-v2** | the previous FluxTune: trust-ratio step and dimensionless gate, but a **static step size `ρ` = 0.06 hand-searched on agnews**, decayed on a fixed schedule |
+| **FluxTune** | this work: the same stack with `ρ` set by law C from a **sensed** budget. No `ρ`, no `B_max`, no run length supplied |
+| **backprop reference** | exact gradients on the same rig — the target |
 
-So the experiment asks exactly: **does a hand-tuned constant transfer to a new task, and does a sensed one?**
+v2 is run unchanged on all three datasets, so the experiment asks exactly: **does a hand-tuned constant
+transfer to a new task, and does a sensed one?**
 
-| | controller | baseline (full budget) | compute to match the baseline's *best ever* | backprop reference |
+| | FluxTune | FluxTune-v2 (full budget) | compute to match v2's *best ever* | backprop reference |
 |---|---|---|---|---|
-| agnews | **0.868** | 0.843 | **5.5× less** | 0.850 |
+| agnews | **0.868** | 0.843 | **5.5× less** | 0.850 — **cleared** |
 | yahoo | **0.657** | 0.428 | **6.5× less** | 0.734 |
 | yelp-p | **0.814** | 0.728 | **8.5× less** | 0.874 |
 
-**No baseline ever reaches its controller's accuracy**, on any dataset, given its entire budget.
+**v2 never reaches FluxTune's accuracy**, on any dataset, given its entire budget. And on agnews FluxTune
+is already **past the backprop reference**.
 
-![Controller versus a hand-tuned baseline](figs/fig4_controller_vs_baseline.png)
+![FluxTune versus FluxTune-v2](figs/fig4_fluxtune_vs_v2.png)
 
 ### Why it wins — one column explains it
 
 | budget actually spent | agnews | yahoo | yelp-p |
 |---|---|---|---|
-| baseline, after its **full** budget | 0.107 | 0.119 | 0.111 |
-| controller | 0.697 | 0.690 | 0.970 |
+| FluxTune-v2, after its **full** budget | 0.107 | 0.119 | 0.111 |
+| FluxTune | 0.697 | 0.690 | 0.970 |
 
 A fixed `ρ` = 0.06 spends **≈0.11 of budget regardless of the dataset** — that is what a hand-set constant
-does, by definition. The controller spends 6–9× more of the same budget in the same wall clock.
+does, by definition. FluxTune spends 6–9× more of the same budget in the same wall clock.
 
-And the *penalty* for under-spending is set by the task, not by the guess: agnews saturates early, so its
-baseline still reaches 0.843; yahoo needs far more budget and its baseline stalls at 0.428.
+And the *penalty* for under-spending is set by the task, not by the guess: agnews saturates early, so v2
+still reaches 0.843; yahoo needs far more budget and v2 stalls at 0.428.
 
 > **The claim in one sentence: the right amount of budget is not a constant, so it has to be sensed — and
 > what it costs you to guess wrong is decided by the task you haven't seen yet.**
@@ -245,29 +256,50 @@ baseline still reaches 0.843; yahoo needs far more budget and its baseline stall
 
 ## 7. What we found broken, and it is the interesting part
 
-The controller stops itself. **But it stops too early, and we now know exactly why.**
-
-yelp-p `125010` halted at 0.814 against a 0.874 reference — **while accuracy was still rising**, with 42%
-of its compute unused.
+FluxTune stops itself. **But it throttles its own step on the way there, and we now know exactly why.**
 
 **The probe was not the problem. The averaging was.** Every 150 commits the probe reports remaining
-headroom. Across all 19 firings on all three datasets, that reading **shows no downward trend** — it does
+headroom. Across all 19 firings on all three datasets that reading **shows no downward trend** — it does
 not shrink as budget is spent:
 
 | yelp-p, headroom reported by the probe | fire 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
 |---|---|---|---|---|---|---|---|---|
 | **measured** `ln Φ_knee` | 0.250 | 0.595 | 0.683 | 0.415 | 0.253 | 0.236 | 0.217 | **0.246** |
-| **what the controller used** (mean of all senses, minus `B`) | 0.250 | 0.373 | 0.378 | 0.276 | 0.184 | 0.132 | 0.100 | **0.084** |
+| **what FluxTune used** (mean of all senses, minus `B`) | 0.250 | 0.373 | 0.378 | 0.276 | 0.184 | 0.132 | 0.100 | **0.084** |
 
 The probe kept saying *"you have ~0.25 of road left."* The `mean` combiner turned that into *"you have
-0.08 left"* — a **3× understatement** — and since `ρ* = √(2·headroom/T_res)`, the step was annealed to
-**1.7× smaller than the current measurement supported.** The run then hit `B ≥ 0.95·B_max` and halted.
+0.08 left"* — a **2.9× understatement** — and since `ρ* = √(2·headroom/T_res)`, the step was annealed to
+**1.7× below what the current measurement supported.** `B` then crossed `0.95·B_max` and the run halted.
 
 > **The run did not stop because it was out of road. It stopped because the odometer was averaged.**
 
 ![The combiner throttles the step](figs/fig5_the_combiner_throttles.png)
 
-**Two deeper problems sit behind it.**
+### 7.1 What that costs is not the same on every dataset
+
+This is the question that decides what to fix. `Λ = 2B/s` says the schedule cannot buy accuracy — so
+un-throttling `ρ*` buys **commits**, not learning. It raises accuracy only if the run was stopping while
+accuracy still had slope in `B`. So: **did it?**
+
+![Does more budget still buy accuracy?](figs/fig7_does_more_budget_help.png)
+
+| | accuracy at the end | tail slope `dAcc/dB` | verdict |
+|---|---|---|---|
+| **agnews** | 0.868 vs a 0.850 reference | 0.06 | **already past it, and flat.** Fixing the throttle buys time only |
+| **yahoo** | 0.657 vs 0.734 | **0.23** | **still climbing.** Needs only `ΔB` ≈ 0.33 → `Φ` ≈ 2.8. The throttle cost it *accuracy* |
+| **yelp-p** | 0.814 vs 0.874 | 0.03 | **saturated.** Closing 0.060 at this slope would take `Φ` ≈ 17. Not a budget problem at all |
+
+Three conclusions follow, and they are different from what the stopping behaviour alone suggested:
+
+1. **Un-throttling `ρ*` makes FluxTune reach its plateau faster on every dataset** — same `Λ` for the same
+   `B`, in fewer commits.
+2. **On yahoo it also raises the accuracy reached**, because that curve still has slope. yahoo is the one
+   dataset where the bug cost a result rather than a few hours.
+3. **yelp-p's 0.060 gap is not a stopping problem and not a budget problem.** Its curve is flat. That gap
+   is a property of the estimator or of adapter capacity on that task, and no controller change addresses
+   it. Saying otherwise would be the easiest mistake in this document to make.
+
+### 7.2 Two deeper problems, and a rail that is probably too tight
 
 **(a) The probe's search range barely contains the answer.** It tests `Φ ∈ {1.5, 2, 2.5, 3, 3.5, 4}`, a
 range sized from offline measurements taken before any of this. Live, **the very first point it tests is
@@ -285,33 +317,37 @@ training run re-fits continuously. If remaining headroom genuinely stays ~0.25 a
 is what the measurements show — then budget is not a tank that drains. It is closer to a **rate limit that
 is continually re-earned**, and stopping when a cumulative total is reached is the wrong stopping rule.
 
-**(c) And the rail may be far too tight.** yelp-p halted at `Φ` = 2.643 against a shipped backstop of 2.7 —
-but the portfolio says arms hold their peak up to `Φ` = 3.63 and only lose it past 4.23. That gap is
-roughly **0.3 of extra budget `B`** that the current design never spends. Whether the headroom is real
-under the new dynamics is exactly what the next run tests.
-
----
+**(c) And the rail is probably too tight — which is exactly what yahoo needs.** The shipped damage
+backstop is `Φ` = 2.7. The portfolio says arms hold their peak up to `Φ` = 3.63 and only lose it past
+4.23 (Figure 1). yahoo's projected landing is `Φ` ≈ 2.8 — **just past the shipped rail, and far inside the
+measured cliff.** So the rail, set from the old diverging dynamics, is the second thing standing between
+FluxTune and the backprop reference on yahoo.
 
 ## 8. What we are changing
 
-| | decision |
-|---|---|
-| **What ends a run** | **Saturation, not budget.** Stop when smoothed held-out accuracy stops improving. Keep a `Φ` crossing as a pure damage backstop. `B_max` stays — but only to drive the spending schedule, never as a termination rule |
-| **How senses combine** | **Latest, not mean.** Use the freshest measurement of remaining headroom. The old objection — "the latest sense never terminates" — dissolves once saturation is what terminates |
-| **The `Φ` ≈ 2.7 rail** | **Test it.** That number comes from runs under the *old, diverging* dynamics. With `ρ` controlled and the model re-fitting as it goes, the sustainable `Φ` may be far higher. One run with both stops set to log-only settles it |
-| **Target accuracy** | The backprop reference, unchanged |
+| | decision | why |
+|---|---|---|
+| **What ends a run** | **Saturation, not budget.** Stop when smoothed held-out accuracy stops improving. `B_max` stays, but only to drive `ρ*` — never as a termination rule | the run must end because *learning* stopped, not because a running total was reached. §7.1 shows all three datasets do saturate; the rule should detect that rather than approximate it |
+| **How senses combine** | **Latest, not mean** (`b_max_policy=anchor`) | §7's table. `anchor`'s standing objection — it never terminates — is void once saturation is what terminates |
+| **The `Φ` ≈ 2.7 rail** | **Raise it toward the measured cliff, after testing.** One run with both stops in log-only mode passes straight through 2.7 and shows whether the head turns | 2.7 comes from the old diverging dynamics; the portfolio puts the cliff at 3.63–4.23, and yahoo's projected landing at 2.8 falls in that gap |
+| **Target accuracy** | The backprop reference, unchanged — **and never an input** | stopping *at* a supplied target would make the target a knob and break the zero-input claim. The rule stops on saturation; whether saturation lands at or above the reference is then a **result**, not a setting |
 
----
+**On that last row, explicitly.** The goal is not "terminate once the backprop number is reached." It is
+"terminate when the model has stopped learning, and *then observe* where that lands." agnews lands above
+the reference; yahoo is projected to land at it; yelp-p lands 0.060 below it and no stopping rule changes
+that. Building the target into the stop would hide exactly the fact that is most worth reporting.
 
 ## 9. Honest boundaries
 
-- **Two of three runs are below the backprop reference** (yahoo by 0.077, yelp-p by 0.060) and **all three
-  were still improving when they ended.** Nothing here has yet demonstrated convergence — only that
-  nothing diverged.
+- **Two of three runs are below the backprop reference** (yahoo by 0.077, yelp-p by 0.060). Of those, only
+  yahoo has slope left; yelp-p has saturated (§7.1), so its gap is a statement about forward-gradient
+  estimation on that task, not about the controller.
 - The "ends within 0.015 of its peak" check is weaker than it sounds: **a run that is still climbing
-  passes it trivially**, because its peak is its last point.
-- **`Φ` ≈ 2.7 is not yet confirmed under the new dynamics**, and yelp-p halted at `Φ` = 2.643 — so it was
-  at the ceiling the *model* imposes, and simply running longer is not obviously available. §8 tests this.
+  passes it trivially**, because its peak is its last point. It shows *no divergence*, not convergence.
+- **`Φ` ≈ 2.7 is not confirmed under the new dynamics.** It comes from the old, diverging regime; nothing
+  on record tests it under a controlled `ρ`. §8 tests it directly.
+- **The tail-slope projections in §7.1 are extrapolations**, fitted over the last 20% of each run. They
+  are the basis for a pre-registered prediction, not a result.
 - **No run in *this* set collapsed**, so on these six arms the stopping rule demonstrated efficiency —
   stopping early at almost no cost — rather than the damage avoidance it exists for. The damage itself is
   not in doubt: six arms in the wider portfolio lost 0.083–0.604 of accuracy past `Φ` = 4.23 (Figure 1).
@@ -334,14 +370,16 @@ spend `B` (with `Φ = e^B`, the fraction of the model that is still signal) and 
 rises with `Λ`; retention is governed by `Φ`. Under a dimensionless gate, `Λ = 2B/s` identically — so the
 schedule cannot buy accuracy, and there is nothing in it to tune.
 
-**The controller.** Set the step from the budget remaining, at a *rate* rather than against a deadline, so
+**FluxTune.** Set the step from the budget remaining, at a *rate* rather than against a deadline, so
 run length is never an input; and measure the budget on the running model with forward passes only.
 
-**The evidence.** On three datasets it beats a baseline hand-tuned on one of them by 5.5–8.5× in compute
-to equal accuracy, and no baseline ever catches it. The budget law predicts measured weight growth to
+**The evidence.** On three datasets FluxTune beats FluxTune-v2 — the same stack with a step size
+hand-searched on agnews — by 5.5–8.5× in compute to equal accuracy, and v2 never catches it. The budget law predicts measured weight growth to
 within 0.23% across all six runs.
 
-**The open problem.** It stops short of target accuracy, and the cause is now identified and arithmetic:
-averaging a flat headroom measurement into a shrinking one throttles the step. Fixing the combiner,
-moving termination to saturation, and testing whether the `Φ` ceiling is real under the new dynamics are
-the next three runs.
+**The open problem, and it is smaller than it looked.** FluxTune throttles its own step, because a flat
+headroom measurement is averaged into a shrinking one. That costs *time* on agnews and yelp-p, both of
+which have saturated — agnews above its reference. It costs *accuracy* on yahoo alone, which still has
+slope and is projected to reach its reference with `ΔB` ≈ 0.33. yelp-p's remaining 0.060 is not a
+controller problem at all. The next runs fix the combiner, move termination to saturation, and test
+whether the `Φ` rail can move out to the measured cliff.

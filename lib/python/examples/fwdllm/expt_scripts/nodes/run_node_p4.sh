@@ -189,7 +189,7 @@ COMMON=(--only fluxtune --mode sim --yes --clean --allow-stale-profile "${FORCE[
         --server-update-audit --no-cos-ground-truth-audit
         --num-trainers 100 --num-gpus 8 --agg-goal 10 --c 30
         --probe-combine mean --commit-gate n_target
-        --server-step-rule trust_ratio --gate-safety-s 1.5
+        --server-step-rule trust_ratio --gate-safety-s "${P4_GATE_S:-1.5}"
         --adapter-reduction-factor 16 --max-iter-per-data-id 20
         --max-runtime-s "$VCLOCK" --sim-wall-ceiling-h "$CEIL")
 
@@ -206,12 +206,14 @@ case "$ARM" in
     # B_rem (~0.25) while the mean turns it into headroom that vanishes, which
     # anneals rho* to 1.7x below what the current measurement supports.
     # `log_only` makes BOTH stops emit and keep training -- the only way to see
-    # past the Phi=2.7 rail.
+    # past the Phi=2.7 rail. P4_BMAX_PHIS re-ranges the probe grid; P4_GATE_S
+    # moves `s`, the only lever the model allows on progress per unit budget.
     node_run "p4-$DATASET" "controller (law C, T_res=300, sensed B_max, ${P4_BMAX_POLICY:-mean}/${P4_PHI_STOP:-halt})" \
       "${COMMON[@]}" --gate-rho-ref annealed \
       --rho-schedule landing --t-res 300 --budget-stop-frac 0.95 \
       --b-max-policy "${P4_BMAX_POLICY:-mean}" \
-      --phi-stop "${P4_PHI_STOP:-halt}" --b-max-probe-every 150 --b-max-probe-n 512
+      --phi-stop "${P4_PHI_STOP:-halt}" --b-max-probe-every 150 --b-max-probe-n 512 \
+      ${P4_BMAX_PHIS:+--b-max-probe-phis "$P4_BMAX_PHIS"}
     ;;
   control)
     node_run "p4-$DATASET" "control (fluxtune_v2: rm/0.25, rho*=0.06, setpoint)" \

@@ -186,12 +186,12 @@ def fig3():
                  if r["dataset"] == ds and r["role"] == "controller")
         ax.scatter([a["lam"]], [a["peak"]], s=170, marker="*",
                    color=DATASET_COLOR[ds], edgecolor="white", linewidth=1.0, zorder=5)
-        ax.annotate(f"{ds}\ncontroller", xy=(a["lam"], a["peak"]),
+        ax.annotate(f"FluxTune\n{ds}", xy=(a["lam"], a["peak"]),
                     xytext=(a["lam"] + dx, a["peak"] + dy), fontsize=8, color=INK2,
                     arrowprops=dict(arrowstyle="-", color=DATASET_COLOR[ds], lw=0.8,
                                     shrinkA=0, shrinkB=5))
     ax.scatter([], [], s=170, marker="*", color=INK3, edgecolor="white",
-               label="2026-08-20 controllers")
+               label="FluxTune (2026-08-20)")
 
     ax.axhline(0.876, color=INK3, lw=1.0, ls=(0, (5, 3)))
     ax.text(2.46, 0.884, "best agnews arm on record 0.876", ha="right", fontsize=8,
@@ -209,14 +209,14 @@ def fig3():
                  "sit off their curve because Λ is a relative coordinate and does not "
                  "transfer across p. The two low yahoo points are that task's own curve, "
                  "not exceptions to agnews': the shape transfers, the absolute level is a "
-                 "property of the task. yahoo's controller reads 0.657 at Λ=0.994 — the "
+                 "property of the task. FluxTune on yahoo reads 0.657 at Λ=0.994 — the "
                  "value pre-registered for 'the curve transfers across task'.")
     save(fig, "fig3_accuracy_vs_progress")
 
 
 # ----------------------------------------------------------------- figure 4
 def fig4():
-    """Controller vs the hand-tuned baseline, per dataset, on the simulated clock."""
+    """FluxTune vs FluxTune-v2, per dataset, on the simulated clock."""
     fig, axes = plt.subplots(1, 3, figsize=(12.6, 4.2))
     for ax, ds in zip(axes, DATASETS):
         ctl, base = arm(f"{ds}_controller"), arm(f"{ds}_control")
@@ -265,9 +265,9 @@ def fig4():
 
         # A note in the empty lower-right, with no leader crossing the data. The
         # bullet carries the identity, so the text does not have to.
-        txt = ("controller stopped itself on its own budget, 42% of compute unused"
+        txt = ("FluxTune stopped itself on its own budget, 42% of compute unused"
                if ds == "yelp-p" else
-               "controller killed by a monitoring bug, still climbing")
+               "FluxTune killed by a monitoring bug, still climbing")
         ax.text(0.0, 1.015, txt, transform=ax.transAxes, va="bottom",
                 fontsize=7.5, color=INK3)
         ax.set_xlim(-1.5, max(bx.max(), cx.max()) * 1.14)
@@ -275,16 +275,16 @@ def fig4():
         ax.set_xlabel("simulated wall clock  (1000 s)")
         despine(ax)
     axes[0].set_ylabel("held-out accuracy")
-    for c, lbl in ((BLUE, "controller — no learning knob supplied"),
-                   (ORANGE, "baseline — step size hand-searched on agnews")):
+    for c, lbl in ((BLUE, "FluxTune — no learning knob supplied"),
+                   (ORANGE, "FluxTune-v2 — static step, hand-searched on agnews")):
         axes[0].plot([], [], color=c, lw=2.2, label=lbl)
     fig.legend(*axes[0].get_legend_handles_labels(), loc="lower left",
                bbox_to_anchor=(0.0, 1.0), ncol=2, frameon=False, fontsize=8.5)
-    caption(fig, "Same stack on both arms. The arrow spans from where the controller first "
-                 "reaches the baseline's best-ever accuracy to where the baseline finally "
-                 "reaches it. No baseline ever reaches its controller's peak, on any dataset, "
+    caption(fig, "Same stack on both arms; only the step rule differs. The arrow spans from "
+                 "where FluxTune first reaches FluxTune-v2's best-ever accuracy to where v2 "
+                 "finally reaches it. v2 never reaches FluxTune's accuracy, on any dataset, "
                  "given its entire budget.")
-    save(fig, "fig4_controller_vs_baseline")
+    save(fig, "fig4_fluxtune_vs_v2")
 
 
 # ----------------------------------------------------------------- figure 5
@@ -311,7 +311,7 @@ def fig5():
     axl.set_ylim(0, 0.78)
     axl.text(5.6, 0.40, "measured by the probe\n(solid, filled circles)",
              fontsize=8, color=INK2)
-    axl.text(1.35, 0.055, "used by the controller\n(dashed, open squares)",
+    axl.text(1.35, 0.055, "used by FluxTune\n(dashed, open squares)",
              fontsize=8, color=INK2)
     axl.annotate("", xy=(8, 0.246), xytext=(8, 0.084),
                  arrowprops=dict(arrowstyle="<|-|>", color=CRITICAL, lw=1.4))
@@ -329,7 +329,7 @@ def fig5():
     for ds in DATASETS:
         axl.plot([], [], color=DATASET_COLOR[ds], lw=2.2, label=ds)
     axl.legend(loc="upper right", ncol=3, columnspacing=1.0)
-    caption(fig, "All 19 probe firings across the three controllers. Solid: what the probe "
+    caption(fig, "All 19 probe firings across the three FluxTune arms. Solid: what the probe "
                  "measured. Dashed: what the mean-of-all-senses combiner reported to the "
                  "step rule. Since ρ* = √(2·headroom/T_res), a 2.9× understatement in "
                  "headroom is a 1.7× understatement in step size.")
@@ -371,7 +371,7 @@ def fig6():
                      xy=(1.28, 0.5), xytext=(1.5, 0.80), fontsize=7.5, color=CRITICAL,
                      arrowprops=dict(arrowstyle="-", color=CRITICAL, lw=0.8,
                                      shrinkA=0, shrinkB=6))
-    caption(fig, "The last firing of each controller. The probe searches Φ ∈ {1.5 … 4}, a "
+    caption(fig, "The last firing of each FluxTune arm. The probe searches Φ ∈ {1.5 … 4}, a "
                  "range sized from offline measurements. Live, the very first point it tests "
                  "is already below the knee level, so the crossing lies to the LEFT of the "
                  "whole grid and the reported knee is an extrapolation between the synthetic "
@@ -380,7 +380,75 @@ def fig6():
     save(fig, "fig6_ruler_starts_past_the_mark")
 
 
-FIGURES = {1: fig1, 2: fig2, 3: fig3, 4: fig4, 5: fig5, 6: fig6}
+
+
+# ----------------------------------------------------------------- figure 7
+TAIL_FRAC = 0.20          # window for the tail-slope fit -- the most recent
+                          # fifth of the run, the most conservative choice
+
+
+def fig7():
+    """Does more budget still buy accuracy, at the point each run ended?"""
+    fig, axes = plt.subplots(1, 3, figsize=(12.6, 4.3))
+    for ax, ds in zip(axes, DATASETS):
+        rows = np.array(arm(f"{ds}_controller")["acc_budget"], dtype=float)
+        B, acc = rows[:, 1], rows[:, 3]
+        ref, c = ledger.REFERENCE[ds], DATASET_COLOR[ds]
+        ax.plot(B, acc, color=c, lw=1.0, alpha=0.35)
+
+        edges = np.linspace(0, B.max(), 11)
+        mids, means = [], []
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            seg = acc[(B > lo) & (B <= hi)]
+            if seg.size:
+                mids.append((lo + hi) / 2); means.append(seg.mean())
+        ax.plot(mids, means, color=c, lw=2.4, marker="o", ms=5)
+
+        m = B > B.max() * (1 - TAIL_FRAC)
+        slope, icept = np.polyfit(B[m], acc[m], 1)
+        gap = ref - acc.max()
+        ax.axhline(ref, color=INK3, lw=1.1, ls=(0, (5, 3)))
+        ax.text(0.02, ref, "backprop reference", fontsize=7.5, color=INK2,
+                va="bottom" if acc.max() <= ref else "top",
+                transform=ax.get_yaxis_transform())
+
+        if gap <= 0:
+            lines = [f"tail slope  dAcc/dB = {slope:.2f}", "already past the reference"]
+            col, xmax = GOOD, B.max() * 1.10
+        else:
+            need = gap / slope
+            phi = np.exp(B.max() + need)
+            reach = phi < PHI_CLIFF_LO
+            col = GOOD if reach else CRITICAL
+            lines = [f"tail slope  dAcc/dB = {slope:.2f}",
+                     f"needs $\\Delta B$ = {need:.2f}  \u2192  $\\Phi$ = {phi:.1f}",
+                     ("inside the cliff at $\\Phi$=3.63" if reach
+                      else "far beyond any safe $\\Phi$")]
+            xmax = B.max() * 1.10
+            if reach:
+                xs = np.array([B.max(), B.max() + need])
+                ax.plot(xs, icept + slope * xs, color=col, lw=1.6, ls=(0, (2, 2)))
+                ax.scatter([B.max() + need], [ref], s=64, marker="*", color=col,
+                           edgecolor="white", linewidth=0.9, zorder=6)
+                xmax = B.max() + need * 1.25
+        ax.text(0.985, 0.035, "\n".join(lines), transform=ax.transAxes,
+                ha="right", va="bottom", fontsize=8, color=col)
+        ax.set_title(ds, loc="left")
+        ax.set_xlabel("$B$ — budget spent")
+        ax.set_xlim(-0.03, xmax)
+        despine(ax)
+    axes[0].set_ylabel("held-out accuracy")
+    caption(fig, "Held-out accuracy against budget spent, for the three FluxTune arms. Faint: "
+                 "every eval. Bold: the mean in ten equal-width bands of B. The slope is fitted "
+                 "by least squares over the last 20% of each run — the most recent, and the most "
+                 "conservative, window. agnews is already past its reference. yahoo needs only "
+                 "ΔB≈0.33, which lands at Φ≈2.8: past the shipped 2.7 rail but far inside the "
+                 "Φ=3.63 cliff. yelp-p has flattened, so no amount of extra budget closes its "
+                 "0.060 gap — that one is not a stopping problem at all.")
+    save(fig, "fig7_does_more_budget_help")
+
+
+FIGURES = {1: fig1, 2: fig2, 3: fig3, 4: fig4, 5: fig5, 6: fig6, 7: fig7}
 
 if __name__ == "__main__":
     use_style()

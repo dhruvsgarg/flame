@@ -69,6 +69,36 @@ def acc_vs_vclock(agg_jsonl):
     return [[round(to_vclock(t), 1), a] for t, a in ev]
 
 
+def acc_vs_budget(agg_jsonl, s_gate=1.5):
+    """(commit, B, Lambda, accuracy) at every eval.
+
+    Walks the file in emission order tracking the running commit count, so each
+    `agg_eval` lands on an exact commit -- hence an exact B. Joining on wall
+    timestamps would be approximate; this is not.
+    """
+    import math
+    commits, B, lam, out = 0, 0.0, 0.0, []
+    with open(agg_jsonl, errors="replace") as fh:
+        for line in fh:
+            if '"server_update"' in line:
+                try:
+                    r = json.loads(line).get("rho")
+                except Exception:
+                    continue
+                if r is None:
+                    continue
+                commits += 1
+                B += 0.5 * math.log(1 + r * r)
+                lam += r * r / s_gate          # cos = rho/s under the n_target gate
+            elif '"agg_eval"' in line:
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                out.append([commits, round(B, 6), round(lam, 6), d["test-accuracy"]])
+    return out
+
+
 def budget_trace(agg_jsonl):
     """(commit, rho, B/B_max, trainable_weight_norm) per commit."""
     rows = []
@@ -129,6 +159,7 @@ def main():
         payload = dict(
             run=os.path.basename(run),
             acc=acc_vs_vclock(agg_jsonl),
+            acc_budget=acc_vs_budget(agg_jsonl),
             budget=budget_trace(agg_jsonl),
             probes=probes(agg_log),
         )
