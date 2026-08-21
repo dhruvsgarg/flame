@@ -24,111 +24,110 @@ pushes past that, something in it has stopped being status.
 
 ## §1 — The claim, and what is missing
 
-> **FluxTune's law-C controller reaches and holds a plateau on a new dataset with no learning knob tuned
-> by hand — same DistilBERT + adapters, three datasets, controller vs control at equal vclock.**
+> **FluxTune reaches and holds a plateau on a new dataset with no learning knob tuned by hand — same
+> DistilBERT + adapters, three datasets, against a version of itself whose step size was hand-searched.**
 
-**Why it is plausible:** every constant on the operating path is universal machinery, mechanically derived
-from the data, or **sensed online**. B-1 is why the third category exists — `B_max` measured *erratic
-across task* (agnews knee ≈3.0–3.5, yahoo and yelp-p both ≈2.0–2.3, non-monotone in class count), so it
-cannot be shipped as a constant.
+**Three systems; use these names everywhere, figures included.** **FwdLLM** — prior work, variance gate,
+raw SGD. **FluxTune-v2** — trust-ratio + `n_target`, but a **static `ρ*`=0.06 hand-searched on agnews**,
+RM-decayed (`rm`/`setpoint`; the code already calls it `fluxtune_v2`). **FluxTune** — this work, `ρ*` from
+law C on a **sensed** `B_max`. **backprop reference** — exact gradients, same rig, 10 clients × 3 epochs.
+
+**Why sensing is required:** B-1's *offline* sweep measured `B_max` erratic across task (agnews knee
+≈3.0–3.5, yahoo and yelp-p ≈2.0–2.3, non-monotone in class count), so it cannot ship as a constant. **The
+live probe has not reproduced that** — hole 2.
 
 **What a new dataset costs the operator. Only the first column is input, and none of it is a learning knob:**
 
 | supplied by hand | mechanically derived | universal constant |
 |---|---|---|
 | a `configs/datasets.yaml` row (h5 paths, `num_labels`, `max_seq_length`, split sizes) — a *description of the data* | `dataset` / `data_file_path` / `partition_file_path` / `max_seq_length` into both override blocks (`--dataset`) | `probe_combine=mean` · `server_step_rule=trust_ratio` · `commit_gate=n_target` · `gate_rho_ref=annealed` |
-| a partition build (`build_niid_partitions.py`) + `check_partitions.py` | `num_labels` from the h5 label vocab | `s`=1.5 · `T_res`=300 · `f`=0.95 |
-| **a compute budget** (`max_runtime_s`, `sim_wall_ceiling_s`) | `p` from `[ProbeDim]`; `total_data_bins` from the registry | `P`=10 · `K`/`C`=10/30 · `b_max_policy=mean` |
-| `eval_max_samples` — a **cost** knob, not a learning one | `ρ*_t` from law C · `ρ_max` from gate reachability · `n_req` closed-form | `B_max` **prior** `ln 2`, replaced outright by the first sense |
+| a partition build (`build_niid_partitions.py`) + `check_partitions.py` | `num_labels` from the h5 label vocab | `s`=1.5 · `T_res`=300 · `b_max_policy=anchor` |
+| **a compute budget** (`max_runtime_s`, `sim_wall_ceiling_s`) | `p` from `[ProbeDim]`; `total_data_bins` from the registry | `P`=10 · `K`/`C`=10/30 |
+| `eval_max_samples` — a **cost** knob, not a learning one | `ρ*_t` from law C · `ρ_max` from gate reachability · `n_req` closed-form | `B_max` **prior** `ln 2`, replaced by the first sense |
 | a sim charge profile (**sim-only artifact**, needs a real run) | `B_max` itself — **sensed** by the 3.1 probe | — |
 
 ### Scoreboard
 
-A pair counts only if **both** arms are valid at the **same** `condition_fp` and the controller ended on
-`[BudgetStop] reason=budget` (§4.4).
-
 | what the claim needs | agnews | yahoo | yelp-p |
 |---|---|---|---|
-| backprop ceiling clears ≈0.70 | **0.850** | **0.734** | **0.874** |
-| its own sim charge profile | `fluxtune.yaml` | built, **node 2 local disk only** — row **D** | `fluxtune_yelp-p.yaml`, in git |
-| **control** arm valid | **yes** — 938 commits, peak 0.843 | **yes** — 1,138 commits, peak 0.428 | **yes** — 997 commits, peak 0.728 |
-| **controller** ends on `[BudgetStop]` | **void** — row **C** | **void ×2** — row **D** | **yes** — commit 1,348, 95.0% of `B_max` |
-| ends within 0.015 of peak | — | — | **yes — 0.0006**, but see below |
-| **reaches the reference** | **yes — 0.868 > 0.850** | no — 0.657 of 0.734 | **no — 0.814 of 0.874** |
-| **controller beats its control** | 0.868 vs 0.843, **5.5×** | 0.657 vs 0.428, **6.5×** | 0.814 vs 0.728, **8.5×** |
-| `B_max` **sensed, not supplied** | 0.795, 5 fires | 0.805, 6 fires | 1.023, 8 fires — **but see hole 2** |
-| no learning knob supplied | **yes**, by construction | **yes** | **yes** |
+| backprop reference | **0.850** | **0.734** | **0.874** |
+| its own sim charge profile | `fluxtune.yaml` | built, **node-2 local only** — row **D0** | `fluxtune_yelp-p.yaml`, in git |
+| **FluxTune-v2** arm valid | **yes** — 938 commits, peak 0.843 | **yes** — 1,138 commits, peak 0.428 | **yes** — 997 commits, peak 0.728 |
+| **FluxTune** ends on its own stop | **void** (watchdog) | **void ×2** (watchdog) | **yes** — `[BudgetStop]`, commit 1,348 |
+| **reaches the reference** | **YES — 0.868 > 0.850** | no — 0.657 of 0.734 | no — 0.814 of 0.874 |
+| **beats FluxTune-v2** | 0.868 vs 0.843, **5.5×** | 0.657 vs 0.428, **6.5×** | 0.814 vs 0.728, **8.5×** |
+| accuracy still has slope in `B`? | **no** — 0.06, saturated | **YES — 0.23** | **no** — 0.03, saturated |
+| `B_max` sensed, not supplied | 0.795, 5 fires | 0.805, 6 fires | 1.023, 8 fires — **but hole 2** |
 
-**×** is the vclock at which the controller passes the control's *own full-budget peak*; no control ever
-reaches its controller's peak, and both void controllers were still climbing when killed, so those rows
-are floors ([P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid)).
+**×** is the vclock at which FluxTune passes v2's *own full-budget peak*; **v2 never reaches FluxTune's
+accuracy on any dataset**, and both void arms were still gaining when killed, so those rows are floors
+([P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid)).
 
-**The effect is not in doubt — its acceptance is.** yelp-p is the whole claim on one dataset. What is
-missing is the same arm on the other two, and both of those controllers were killed by a watchdog bug
-they predate (rows **C**, **D**), not by anything the law did.
+### The finding that reorders everything — §5.5
 
-**"Ends within 0.015 of peak" is weaker than it looks — a still-climbing arm passes it trivially.** All
-three controllers were still gaining when they ended (+0.0028 agnews, **+0.0123** yahoo, +0.0041 yelp-p
-over their last 10% of vclock), and yelp-p's 0.060 shortfall is self-inflicted: it stopped with 42% of its
-budget unspent. **But yelp-p halted at `Φ`=2.643 against a `Φ`=2.7 safety stop** — the two nearly
-coincided, so it was at its designed ceiling. Running longer at this `s` is not available: the budget is
-spent. `Λ = 2B/s` says the only lever on learning per unit budget is **`s`** (1.5 now, floor ~0.9). Rows
-**F** and **E**.
+**FluxTune throttles its own step**: the `mean` combiner turns a flat headroom measurement into a
+shrinking one and anneals `ρ*` **1.7× below** what the probe currently supports (§5.3). But `Λ = 2B/s`
+means un-throttling buys **commits, not learning** — it raises accuracy only where accuracy still had
+slope in `B`. It does on **yahoo alone**:
 
-**Four axes of generality, and only one of them is exercised:**
+| | tail `dAcc/dB` | what the throttle cost | what more budget buys |
+|---|---|---|---|
+| **agnews** | 0.06 | time only | nothing — already past its reference |
+| **yahoo** | **0.23** | **accuracy** | `ΔB`≈0.33 → `Φ`≈2.8 → **≈0.734, its reference** |
+| **yelp-p** | 0.03 | time only | nothing — closing 0.060 would take `Φ`≈17 |
+
+> **yelp-p's 0.060 gap is not a stopping problem, not a budget problem, and not an `s` problem.** Its
+> accuracy-vs-`B` curve is flat, and `Λ = 2B/s` only rescales that axis. It is an estimator-quality or
+> adapter-capacity limit — row **R2** is the diagnostic. *This retracts the earlier reading that yelp-p
+> "stopped early while still climbing"; the +0.0041 tail is real but two orders of magnitude short.*
+
+**Four axes of generality, and only one is exercised:**
 
 | axis | coverage | status |
 |---|---|---|
-| **datasets** | 3 of 3 run, 3 valid controls | 1 valid controller (yelp-p); agnews and yahoo need a re-run only |
-| **models** | **0** | every arm on record is DistilBERT + adapters. No second model has ever been tried |
-| **PEFT capacity within that model** | `rf` 16 vs 64 | **negative** — see hole 3 |
+| **datasets** | 3 of 3 run, 3 valid v2 arms | agnews clears its reference; yahoo projected to; yelp-p saturated below |
+| **models** | **0** | every arm on record is DistilBERT + adapters. No second model ever tried |
+| **PEFT capacity within that model** | `rf` 16 vs 64 | **negative** — hole 3 |
 | **heterogeneity** | α = 1 only | ablations go **up** to α = 10/100, never below 1. Not started |
 
-**The `B_max` row is the one under repair.** All three arms moved off the `ln 2` prior with nobody
-supplying anything, which is the mechanism the claim needs. What cannot be said yet is that they moved to
-*different* places **because the datasets differ** — hole 2.
+### The holes
 
-### The holes — one closed, three live
-
-1. **The dataset axis is two arms short of closed, and both are re-runs.** yelp-p is the only valid
-   controller; agnews `152215` and yahoo `125003` were killed at 87.9% and 86.0% of `B_max` by the
-   pre-fix watcher. Nothing structural is in the way and each is a ~2 h slot (§4.5).
-2. **The `B_max` probe's Φ grid does not bracket the knee, so it mostly senses `B` itself.** The grid
-   `(1.5, 2, 2.5, 3, 3.5, 4)` was sized off B-1's knees of 2.0–3.5. **All 19 fires across the three arms
-   read chance at every grid point**, so the knee lands at or below 1.5 and `knee()` returns a two-point
-   extrapolation from its synthetic `(Φ=1, 1.0)` anchor to the lone Φ=1.5 reading — 2.5–4.0 were never
-   consulted once. `B_rem = ln Φ_knee` is thus pinned into ≈0.21–0.42 and `B_max = B + B_rem` **recedes as
-   `B` is spent**: sensed rises monotonically from ≈0.50 on all three, and the three `B_max` above order
-   by **fire count (5/6/8), not by dataset**. The stop still fires — `mean` lags a rising sequence — but by
-   arithmetic, not convergence. The probe's docstring predicted this ("reads the knee ~0.6–1.2 low");
-   nobody moved the grid. **Row P.**
-3. **The MODEL axis is untested, and its one probe came back negative.** Every arm on record is DistilBERT
-   + adapters at `rf`=16, `p`=450,340. The only portability evidence is *within* that model: at `rf`=64
-   (`p`=118,348) law C + `annealed` does not compose with the gate under **any** `T_res` — the `Λ`≥0.95 and
-   trips/commit≥3 floors leave a 9-unit window (`T_res` 82–90), and the two-phase trajectory reads 1.71
-   trips/commit on agnews against `rf`=16's 5.01. So `T_res`=300 and `f`=0.95 are **pinned to one `p`**,
-   and "same controller, new model" has no evidence behind it. Standing blocker on ship-checklist item 5b.
-4. **`f`=0.95 was sized against the pre-fix `B_max` semantics**, and rests on a `Λ`≥0.95 floor read off the
-   agnews curve. The floor itself now survives yahoo (§5.4 row 1), but `f` still has **no accuracy
-   evidence** behind it — re-derive it by replaying the valid arms at every `f`.
+1. **Termination is being rebuilt.** `B ≥ f·B_max` is demoted; **saturation** becomes primary and `Φ`
+   the rail (§5.3). The detector is **not built** — row **E** — and must be sized on N1–N3's curves.
+2. **The `B_max` probe's Φ grid does not bracket the knee, so it mostly senses `B` itself.** Sized off
+   B-1's *offline* knees; **all 19 live fires read below the knee level at the very first point**, so
+   `knee()` extrapolates from its `(Φ=1, 1.0)` anchor to the lone Φ=1.5 reading and 2.5–4.0 do no work.
+   `B_rem` is pinned into ≈0.21–0.42, `B_max = B + B_rem` **recedes as `B` is spent**, and the three
+   `B_max` order by **fire count (5/6/8), not by dataset**. **Row N4a.**
+3. **The MODEL axis is untested and its one probe came back negative.** Every arm is DistilBERT + adapters
+   at `rf`=16; the three datasets differ in `p` by 1.4%. At `rf`=64 law C + `annealed` does not compose with
+   the gate under **any** `T_res` (§5.3), so `T_res`=300 and `f`=0.95 are **pinned to one `p`**. Blocker on
+   ship item 5b.
+4. **The `Φ`=2.7 rail is probably too tight.** P4 says arms hold their peak to `Φ`=3.63 and only lose it
+   past 4.23 (§5.5) — and yahoo's projected landing is `Φ`≈2.8, in that gap. 2.7 comes from the *old
+   diverging* dynamics and has never been tested under a controlled `ρ`. **Rows N1–N3.**
 
 ---
 
 ## §2 — Now · what is running
 
-*Read 2026-08-20 22:10. **Nothing is running** — every node is free.* All six arms are on node 3's disk.
+*Read 2026-08-21 00:30. **Nothing is running** — all four nodes are free and N1–N4 are ready to launch
+(§4.7).* All six 2026-08-20 arms are on node 3's disk; their extracted curves are cached in
+`expt_scripts/writeup_figs/data/*.json`, so nothing needs to re-scan `experiments/`.
 
 | arm | state |
 |---|---|
-| yelp-p **controller** `125010` | **VALID** — `[BudgetStop] reason=budget action=halt`, commit 1,348, 95.0% of `B_max`, stopped itself at 28,885 of 50,000 vclock, peak 0.8141, ends 0.0006 below it |
-| yelp-p **control** `161751` | **VALID** — full 50,000 vclock, 997 commits, peak 0.7280, every gate holds |
-| yahoo **control** `151619` | **VALID** — full 60,000 vclock, 1,138 commits, peak 0.4275. Its `arm_stall.json` is **false** — see §4.3 |
-| agnews **control** `021843` | **VALID** — 938 commits, peak 0.8432 |
-| agnews **controller** `152215` | **VOID** — killed 17:12 by the **pre-fix** watcher at 87.9% of `B_max`, n_req 12.8, demand met on all 899 commits, at 13% of its 48,000 vclock. `condition_fp c2ef1528`. Row **C** |
-| yahoo **controller** `125003` | **VOID** — same kill, 964 commits / 86.0% of `B_max`. Row **D** |
+| yelp-p **FluxTune** `125010` | **VALID** — `[BudgetStop] reason=budget action=halt`, commit 1,348, stopped itself at 28,885 of 50,000 vclock, peak 0.8141, ends 0.0006 below it. **Saturated** (§5.5) |
+| **v2** arms `161751` / `151619` / `021843` | **all VALID** — full budgets, peaks 0.7280 / 0.4275 / 0.8432. `151619`'s `arm_stall.json` is **false** (§4.3) |
+| agnews **FluxTune** `152215` | **VOID** — killed by the **pre-fix** watcher at 87.9% of `B_max`, 899 commits, peak 0.8676 (**past its reference**) |
+| yahoo **FluxTune** `125003` | **VOID** — same kill, 964 commits / 86.0% of `B_max`, peak 0.6571, **still climbing hard** |
 
-**Both void kills replay clean under the fix** (ΔB 0.0701 and 0.0628 against a 0.005 floor). Three healthy
-arms now say the conjunct is right; **a true death has never been replayed** — row **W′**.
+**Both void kills replay clean under the fix** (ΔB 0.0701 and 0.0628 against a 0.005 floor); a true death
+has never been replayed — row **W′**. **The watchdog is fixed and pushed**: the `I`-floor kill now needs
+`ΔB ≤ 0.005`, and the watcher exits when the arm prints its own terminal line (§4.3).
+
+**[fl_fwd_ft_writeup.md](fl_fwd_ft_writeup.md)** is the prose account with seven rendered figures — the
+doc to hand to anyone outside this work. Regenerate with `writeup_figs/make_figures.py` (§4.8).
 
 ---
 
@@ -141,12 +140,12 @@ arms now say the conjunct is right; **a true death has never been replayed** —
 | **N3** | node 3 · yelp-p | **FluxTune, `anchor` + `log_only`, 50,000 vclock.** **Predicted: no accuracy gain.** Its curve is flat (tail `dAcc/dB`=0.03), so budget past `Φ`=2.7 buys nothing and only `B` climbs. **Falsified if** accuracy rises above 0.83 — which would overturn the saturation reading and make the gap a budget problem after all | whether a saturated curve gains anything from a raised rail |
 | **N4a** | node 4 · agnews, ~40 min | **Re-range the `B_max` probe grid** — `P4_BMAX_PHIS="1.05,1.1,1.2,1.3,1.5,2.0"`, short arm to ~200 commits so one probe fires. **Predicted:** the knee lands **below 1.5** and the honest `B_rem` comes out **smaller** than the ~0.25 today's grid reports — a correct sensor *tightens* the budget, it does not loosen it. Nothing on disk answers this: no arm checkpoints a model | a knee bracketed by real grid points |
 | **N4b** | node 4 · agnews, after N4a | **FluxTune at `s`=1.0** (`P4_GATE_S=1.0`), `anchor` + `log_only`. Tests the claim the design rests on: `Λ = 2B/s` says lowering `s` raises progress per unit budget but **does not move the accuracy-vs-`Λ` curve**. **Predicted:** the same plateau (≈0.865) reached at lower `B`. **Falsified if** the plateau is higher — `s` would then be a real accuracy lever and the first thing to try on yelp-p | whether `s` moves along the curve or shifts it |
-| **E** | any CPU, **while N1–N4 run** | **Build the saturation stop — it is now the primary termination rule.** Prechelt generalization-loss / patience on *smoothed* held-out accuracy (11-eval trailing window, as `Φ` already is — a raw `dAcc/dΛ` slope false-triggers on a dip and misses a masked plateau). Track `Acc_best` as a running max; `GL_t = (Acc_best − Acc_t)/Acc_best`; stop when `GL_t` holds above a threshold for a patience window. Ships as `stop = saturation OR Φ-cross`. Resample onto `Λ`, never `comm_round`. **Size it on N1–N3's curves** — the first arms that will have run past their own plateau | window, threshold and patience sized **by replay**, reproducing a stop on F′ at its plateau. `replay_phi_stop.py` is the model to copy |
+| **E** | any CPU, **while N1–N4 run** | **Build the saturation stop — it is now the primary termination rule.** Prechelt generalization-loss / patience on *smoothed* held-out accuracy (11-eval trailing window, as `Φ` already is — a raw `dAcc/dΛ` slope false-triggers on a dip and misses a masked plateau). Track `Acc_best` as a running max; `GL_t = (Acc_best − Acc_t)/Acc_best`; stop when `GL_t` holds above a threshold for a patience window. Ships as `stop = saturation OR Φ-cross`. Resample onto `Λ`, never `comm_round`. **Size it on N1–N3's curves** — the first arms that will have run past their own plateau | window, threshold and patience sized **by replay**, reproducing a stop on each of N1–N3 at its own plateau, and **not** firing early on yahoo, which climbs longest. `replay_phi_stop.py` is the model to copy |
 | **C** | any GPU node, **after** N1–N4 + E | **agnews controller**, 48,000 vclock, on the new stack (`anchor`, saturation-primary). `condition_fp` will no longer read `c2ef1528` — that is expected and correct; control `021843` does not run the probe, so it stays the valid partner. `152215` reached 87.9% of `B_max` in 1.85 h | ends on `[BudgetStop] reason=saturation`, at or above 0.850 |
 | **D0** | node 2 | **Commit `sim_charge_profiles/fluxtune_yahoo.yaml` to git**, the way `fluxtune_yelp-p.yaml` already is. It exists only on node 2's local disk, so row **D** cannot run anywhere else — and `run_node_p4.sh` now *refuses* rather than silently pricing yahoo on agnews (§4.5) | the file is in git and its md5 matches node 2's |
 | **D** | any GPU node, after **D0** + N2 + E | **yahoo controller**, 60,000 vclock, same new stack. The dataset furthest from its reference (0.657 of 0.734) and the one climbing fastest when killed, so it has the most to gain from `anchor` | ends on saturation, at or above 0.734 |
 | **W′** | node holding `003648` | **The last unverified half of the watchdog fix.** The `I`-floor kill needs `ΔB ≤ --b-advance-min` (0.005) across the window, and three healthy arms now replay silent (`125010` 0.0339, `152215` 0.0701, `125003` 0.0628). **Unverified: that it still fires on a true death.** `003648`'s run dir is node-local and is not on node 3 | replay `003648`, confirm it fires |
-| **Score** | any CPU | **The two remaining pairs, once C and D land.** yelp-p is scored ([P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid)); repeat it — peak, the 0.015-of-peak bar, the vclock at which the controller passes the control's full-budget peak | a scored table for all three datasets |
+| **Score** | any CPU | **The two remaining pairs, once C and D land.** yelp-p is scored ([P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid)); repeat it — peak, whether it clears the backprop reference, and the vclock at which FluxTune passes v2's full-budget peak. **Drop the 0.015-of-peak bar as a headline** — §1 shows a still-climbing arm passes it trivially | a scored table for all three datasets |
 | **B4** | any CPU | ~~**`budget_stop_frac` needs a margin**~~ **MOOT** once the budget stop is not a termination rule. The underlying fact survives and belongs to `anchor`: the **first** sense replaces the `ln 2` prior at n=1, at maximum variance, and was **46% low** on yelp-p (0.5223 against a later 1.19). Under `anchor` that first sense sets `ρ*` alone with no averaging to cushion it, so **arm the probe's influence only from n ≥ 2**, keeping the `ln 2` prior for the first 150 commits | a stated rule for n=1, replayed against `021735` and the three 2026-08-20 controllers |
 | **R2** | 1 GPU, ~1 h | **Is the estimator itself weaker on yahoo?** cos audit for ~100 commits + `replay_scoring.py --cos`; a `D` materially below agnews' 0.10–0.15 means the forward estimate degrades with 10 classes / seq 256 — an FwdLLM-layer finding, not a controller one. Plus H-S on yahoo (`probe_fd_chord.py`) | a `D` for yahoo against agnews' band |
 | **G** | any CPU, **after** the P-4 arms | **`read_instance_from_h5` returns rows in thread-completion order**, so a shard's row order — and its bin composition — is not reproducible across tokenizations, and `guid` names the wrong row. `X`/`y` stay paired under one lock and nothing reads `guid`, so **no ledger number is wrong**. It waits because it re-orders every future shard against the caches the P-4 arms run on | two tokenizations of one client agree byte-for-byte, and `guid` round-trips |
@@ -192,10 +191,22 @@ them on two nodes is safe only if you copy the profile and check the md5 (row **
 
 `run_node_p4.sh` pins everything: `rf`=16, cos audit **off**, `--num-trainers 100 --c 30 --agg-goal 10`,
 per-dataset vclock and real-wall ceiling (agnews 48,000 · 10 h; yahoo 60,000 · 14 h; yelp-p 50,000 · 14 h),
-`--eval-max-samples 10000` on both seq-256 datasets. **Controller** = law C at `T_res`=300 with **no
-`--rho-star` and no `--b-max`** — that is what makes it zero-input. **Control** = `rm`/0.25 at `ρ*`=0.06
-with `gate_rho_ref=setpoint` and `--phi-stop log_only`, deliberately, so P4.1's past-the-stop
-counterfactual keeps being measured instead of being destroyed by the controller shipping.
+`--eval-max-samples 10000` on both seq-256 datasets. `controller` = **FluxTune**: law C at `T_res`=300 with
+**no `--rho-star` and no `--b-max`** — that is what makes it zero-input. `control` = **FluxTune-v2**:
+`rm`/0.25 at `ρ*`=0.06 with `gate_rho_ref=setpoint` and `--phi-stop log_only`, deliberately, so P4.1's
+past-the-stop counterfactual keeps being measured.
+
+**Four env hooks, all defaulting to the shipped behaviour** — nothing below needs a code change:
+
+| var | default | what it does |
+|---|---|---|
+| `P4_BMAX_POLICY` | `mean` | `anchor` uses the **latest** sense instead of the mean (§5.3). **The new arms want `anchor`** |
+| `P4_PHI_STOP` | `halt` | `log_only` makes **both** stops emit and keep training — the only way to see past the `Φ`=2.7 rail |
+| `P4_GATE_S` | `1.5` | moves `s`, the only lever `Λ = 2B/s` allows on progress per unit budget. Floor ≈0.9 at `K`=10 |
+| `P4_BMAX_PHIS` | *(module default `1.5,2,2.5,3,3.5,4`)* | re-ranges the probe grid. **`condition_fp` does not cover it** — same blind spot the sim profile had |
+
+`P4_ALLOW_AGNEWS_PRICING=1` overrides the missing-profile refusal (§4.5). `VCLOCK_OVERRIDE` /
+`CEIL_OVERRIDE` shorten an arm (§4.2).
 
 **Why the two arms cost so differently.** The controller stops *itself* at `B ≥ f·B_max` and law C's length
 comes from `(B_max, T_res, f)`, not from the budget. The control has no stop, so it runs its budget out.
@@ -214,6 +225,37 @@ Prefer the two overrides over `SMOKE=1` for a sanity arm: `SMOKE` also swaps the
 profiles to `smoke/`, which price nothing by design. **A short controller arm ends on `max_runtime_s`, not
 `[BudgetStop]` — expected, and the one gate a short arm cannot check.** It also cannot fire a `[BmaxProbe]`
 (cadence 150 commits). Everything else reads exactly as it will on the long run.
+
+### §4.2b The four overnight launches — copy these
+
+All four need only `git pull`; **no code change is pending for any of them.**
+
+```bash
+cd $REPO && git pull
+export FLAME_CONDA_ENV=test_fwdllm FWDLLM_FD_SCALE_INVARIANT=1
+NODES=$FW/expt_scripts/nodes
+
+# --- node 1 (agnews) / node 2 (yahoo) / node 3 (yelp-p): one line each, per node
+tmux new -s p4 "P4_BMAX_POLICY=anchor P4_PHI_STOP=log_only \
+  $NODES/run_node_p4.sh <agnews|yahoo|yelp-p> controller 2>&1 | tee ~/p4_N.log"
+
+# --- node 4: N4a (~40 min) then N4b, sequentially
+tmux new -s p4 "P4_BMAX_POLICY=anchor P4_PHI_STOP=log_only \
+    P4_BMAX_PHIS='1.05,1.1,1.2,1.3,1.5,2.0' VCLOCK_OVERRIDE=6000 CEIL_OVERRIDE=1.5 \
+    $NODES/run_node_p4.sh agnews controller 2>&1 | tee ~/p4_N4a.log ; \
+  P4_BMAX_POLICY=anchor P4_PHI_STOP=log_only P4_GATE_S=1.0 \
+    $NODES/run_node_p4.sh agnews controller 2>&1 | tee ~/p4_N4b.log"
+```
+
+**yahoo must run on node 2** — its sim charge profile is node-2-local and the launcher now *refuses*
+elsewhere rather than silently pricing it on agnews (§4.5). Fix that permanently with row **D0**.
+
+**Prefix every launch with `NODE_DRY_RUN=1` once** — seconds, no GPU, and it prints the generated config so
+`b_max_policy`, `phi_stop`, `gate_safety_s` and `b_max_probe_phis` can be read back before the slot is spent.
+
+**Expect `log_only` arms to run their full vclock ceiling** — nothing halts them, by design. That is the
+point: they measure what lies *past* the stop. A `log_only` arm ending on `max_runtime_s` is **correct**,
+not void; the §4.4 gate-4 rule applies only to an arm whose stop is armed.
 
 ### §4.3 The watchdog
 
@@ -379,6 +421,42 @@ A cache file is one client's tokenized shard, keyed by everything that changes i
 was lost to a closed terminal. ≈0.70 clears the data path; ≈0.30 indicts it and that dataset's arms measure
 nothing.
 
+### §4.7 Reading the new arms — what to look for first
+
+For every `log_only` arm, in this order:
+
+```bash
+RUN=$(ls -dt $FW/experiments/run_* | head -1)
+grep -ao "\[BmaxProbe\][^|]*" $RUN/*aggregator.log | tail -20   # sensed trajectory + the curve
+grep -ao "\[BudgetStop\][^|]*" $RUN/*aggregator.log             # crossings, logged not halted
+$PY $FW/expt_scripts/check_arm_health.py $RUN                    # gate 4 will WARN -- expected here
+```
+
+Then rebuild the accuracy-vs-`B` picture, which is what the predictions are stated against:
+
+```bash
+cd $FW/expt_scripts/writeup_figs
+# add the new run to ARMS in extract.py, then:
+python3 extract.py --force && python3 make_figures.py 7
+```
+
+**The question each arm answers is in its §3 row, with a falsifier.** Read the falsifier first — an arm
+that fails its prediction is worth more than one that confirms it, and the failure modes are all
+informative (the cliff moved · saturation was mis-read · `s` is a real lever · the knee is above 1.5).
+
+### §4.8 The figure pipeline
+
+`expt_scripts/writeup_figs/` renders every figure in the writeup. It exists so numbers are never copied:
+
+| file | what it does |
+|---|---|
+| `ledger.py` | **parses P4's arm ledger out of `fl_fwd_ft_practice.md`** — the ledger stays the one source of truth, and a figure can never drift from it |
+| `extract.py` | one pass over the ~12 GB of aggregator telemetry into `data/*.json` (accuracy-vs-vclock, accuracy-vs-`B`, per-commit `ρ`/`B_frac`, every `[BmaxProbe]` fire + its curve). `--force` re-scans |
+| `figstyle.py` | palette + rcParams. Three-slot categorical, validated all-pairs; colour means **dataset** |
+| `make_figures.py` | `./make_figures.py` for all seven, `./make_figures.py 4 7` for individual ones |
+
+**To add an arm:** put it in `extract.py`'s `ARMS` dict, `./extract.py --force`, re-render. Nothing else.
+
 ---
 
 ## §5 — Standing facts · do not re-derive any of these
@@ -417,7 +495,7 @@ accuracy, nothing more.
 
 ### §5.2 The yahoo gap — it is budget, not plumbing
 
-**Settled 2026-08-20: it was budget.** Controller `125003` reached **0.657 at `Λ`=0.994**, and its
+**Settled 2026-08-20: it was budget, and yahoo is the one dataset where budget still binds** (§5.5). Controller `125003` reached **0.657 at `Λ`=0.994**, and its
 control read 0.428 over a full 60,000 vclock. The paragraphs below are the derivation, kept because
 suspects (a)–(c) still bound yahoo's *absolute* accuracy against its 0.734 ceiling.
 
@@ -446,9 +524,10 @@ need a larger relative step to leave its init — the sensed `B_max` is supposed
 | `B_max` prior | `ln 2` | replaced outright by the first sense, never averaged into it |
 | `B_max` origin | **`B + ln Φ_knee`** | the probe measures headroom from `θ_t`; `B` accumulates from `θ_0` |
 | `B_max` combiner | **`anchor`** — the latest sense *(decision 2026-08-20; was `mean`)* | `mean` assumed the fires estimate **one constant**. 19 fires say otherwise: measured `B_rem` shows **no downward trend** on any dataset while `mean`-minus-`B` collapses — yelp-p 0.246 measured against 0.084 used at fire 8, a **2.9×** understatement that anneals `ρ*` **1.7× below** what the current measurement supports. `anchor`'s known defect — it does not terminate — is void once **saturation** terminates instead. `b_max_policy=anchor`, no code change |
-| what the stop does | **`halt`** via `_work_done` | one line into a tested path. Three states ship: `off` · `log_only` (emit the crossing, keep training) · `halt` |
+| what the stop does | **`halt`** via `_work_done` | one line into a tested path. Three states ship: `off` · `log_only` (emit the crossing, keep training) · `halt`. **`log_only` applies to BOTH stops**, which is what makes the past-the-rail arms possible |
+| `Φ` rail | **2.7**, and **probably too tight** | it is the collapse backstop, and it comes from the *old diverging* dynamics. P4 puts the cliff at **3.63 / 4.23** (§5.5) — a gap of ~0.3 in `B` that the current design never spends, and yahoo's projected landing sits inside it. Never tested under a controlled `ρ` |
 | stop reasons | **`saturation` primary · `phi_fixed` as the rail · `budget` demoted** *(decision 2026-08-20)* | The run must end because **learning** stopped, not because a cumulative total was reached. `B ≥ f·B_max` is no longer a termination rule — `B_max` stays only to drive law C's `ρ*`. Rationale: yelp-p halted 0.060 below its reference while still climbing, and the cause was the combiner above, not the road running out |
-| is `B_max` a fixed total at all? | **open — the sensor says no** | The probe measures headroom *from `θ_t`* on a model that **cannot re-fit**; a run re-fits continuously. A flat `B_rem` across a run means budget behaves like a **rate limit that is re-earned**, not a tank that drains. If that holds, "spend `B_max` then stop" is the wrong shape and only the `Φ` rail is load-bearing. Rows **F′** and **P** |
+| is `B_max` a fixed total at all? | **open — the sensor says no** | The probe measures headroom *from `θ_t`* on a model that **cannot re-fit**; a run re-fits continuously. A flat `B_rem` across a run means budget behaves like a **rate limit that is re-earned**, not a tank that drains. If that holds, "spend `B_max` then stop" is the wrong shape and only the `Φ` rail is load-bearing. Rows **N1–N3** and **N4a** |
 
 **`Λ = 2B/s` is an identity wherever the gate holds `s`** (−0.3% out of sample on both `s`-pinned arms,
 +21.5–23.3% where `s` drifts). **So the `ρ` schedule is `Λ`-neutral at fixed `B`** — law A and law C bank
@@ -470,21 +549,47 @@ must not be reused as a starting point.
 compute-bound (`τ(30)/τ(10)`=2.56), so adaptive `P` is no longer motivated as a throughput lever — a
 **mid-run `P` change**, which no code path supports, is the only engineering left there.
 
-### §5.4 What the P-4 arms still have to answer
+### §5.4 What the arms still have to answer
 
 | open | closes on | if it comes out wrong |
 |---|---|---|
-| ~~**`Λ` → accuracy on yahoo**~~ **CLOSED 2026-08-20**: `125003` reached **0.657 at `Λ`=0.994**, against a 0.734 ceiling and 0.30 on the old P-4 arms. The `Λ`-curve transfers across task and the ≥0.95 floor stands on yahoo | — | — |
-| **Does `B_max` drift within one run?** | `sensed=` per fire — yelp-p already says **yes, upward**, 0.522 → 1.023 over 8 | if it drifts a lot, `mean` lags and an EWMA is the fallback; law C self-corrects, so control is unaffected |
-| **Is `mean` the right combiner?** | replay the valid arms under all three policies — free, after the fact | `ratchet` stops sooner, `anchor` may not stop. Terminal-flag call |
+| **Does the `Φ` rail move under law C?** 2.7 is from the diverging regime; P4's cliff is 3.63/4.23 | N1–N3 run past 2.7 with nothing halting | if an arm turns below `Φ`=3.0 the cliff moved and 2.7 is right after all |
+| **Does `s` shift the accuracy-vs-`Λ` curve, or only move along it?** `Λ = 2B/s` says *along* | N4b at `s`=1.0 against the `s`=1.5 arms at matched `Λ` | a higher plateau makes `s` a real accuracy lever — and the first thing to try on yelp-p |
+| **Where is the knee really?** | N4a, on a grid that brackets it from below | a knee *above* 1.5 would mean the live probe was right and hole 2 is wrong |
 | **trips/commit ≥ 3** is calibrated on one death and two survivals | every arm reports it per quintile; re-size once there are ten | a config passes preflight and still burns wall |
-| **`f`=0.95** rests on the `Λ` floor with **no accuracy evidence** | replay the valid arms at every `f` | a smaller `f` ends runs sooner at the same peak, which is a win |
+| **Is yelp-p's 0.060 gap the estimator?** | row **R2**: cos audit + `D` for yelp-p against agnews' 0.10–0.15 | if `D` matches agnews, the limit is adapter capacity, not the estimator |
 
-**Pre-registered before the re-runs:** with the origin fixed, the two knees at commit 150 were 0.248 /
-0.237 ⇒ `ρ*` 0.0407 / 0.0397 — nearly identical, so **the agnews-vs-yahoo divergence may not reproduce**.
-The live knee tracks how far the model sits above chance, which is a property of the *sensor*, not the
-task. **yelp-p and agnews have since diverged strongly and in opposite directions** (§1), so this row is
-now about yahoo specifically.
+**Closed 2026-08-20/21, do not re-open:** `Λ`→accuracy transfers across task (yahoo 0.657 at `Λ`=0.994) ·
+`B_max` **does** drift within a run, upward, on all three · the combiner is **`anchor`**, not `mean` ·
+`f`=0.95 is **moot** as a termination rule (§5.3) and survives only as an input to `ρ*`.
+
+### §5.5 Saturation — what more budget actually buys *(landed 2026-08-21)*
+
+**Method, so it is reproducible.** Accuracy is joined to `B` by walking the aggregator jsonl **in emission
+order**, incrementing the commit count on each `server_update` and stamping every `agg_eval` with the
+running `B = ½Σln(1+ρ²)` — exact, where a timestamp join would be approximate. Slope is OLS over the **last
+20% of `B`**, the most recent and most conservative window (`writeup_figs/extract.py:acc_vs_budget`).
+
+| | accuracy at end | reference | tail `dAcc/dB` | `ΔB` to the reference | lands at |
+|---|---|---|---|---|---|
+| **agnews** | 0.868 | 0.850 | 0.06 | — **already past** | — |
+| **yahoo** | 0.657 | 0.734 | **0.23** | **0.33** | **`Φ`≈2.8** |
+| **yelp-p** | 0.814 | 0.874 | 0.03 | 1.86 | `Φ`≈17 — out of reach |
+
+**Three consequences, and they are the reason the queue looks the way it does.**
+
+1. **Un-throttling `ρ*` buys commits, not learning** — `Λ = 2B/s` is schedule-neutral. It raises accuracy
+   only where accuracy still had slope in `B`.
+2. **yahoo is the only dataset where the combiner bug cost a result.** Everywhere else it cost hours.
+3. **yelp-p is saturated**, so its gap is not addressable by the controller at all — not by budget, not by
+   the rail, and not by `s` (which only rescales the `Λ` axis of a flat curve). Row **R2**.
+
+**The `Φ` cliff, from P4's ledger, 22 arms that learned (peak ≥ 0.80):** every arm at **`Φ` ≤ 3.63 held its
+peak** (worst loss 0.014); every arm at **`Φ` ≥ 4.23 lost it** (0.083–0.604, two ending at half their peak).
+Arms that never learned are excluded — `Φ` governs *losing* what you learned, not failing to learn.
+
+**Do not confuse the two `Φ` numbers.** Peak accuracy *occurs* at `Φ`=2.41–3.11; accuracy is *lost* past
+`Φ`≈3.6–4.2. The shipped 2.7 rail sits below both.
 
 ---
 
