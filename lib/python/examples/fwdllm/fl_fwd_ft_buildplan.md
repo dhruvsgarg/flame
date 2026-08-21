@@ -53,7 +53,8 @@ A pair counts only if **both** arms are valid at the **same** `condition_fp` and
 | its own sim charge profile | `fluxtune.yaml` | built, **node 2 local disk only** — row **D** | `fluxtune_yelp-p.yaml`, in git |
 | **control** arm valid | **yes** — 938 commits, peak 0.843 | **yes** — 1,138 commits, peak 0.428 | **yes** — 997 commits, peak 0.728 |
 | **controller** ends on `[BudgetStop]` | **void** — row **C** | **void ×2** — row **D** | **yes** — commit 1,348, 95.0% of `B_max` |
-| ends within 0.015 of peak | — | — | **yes — 0.0006**, at 93% of the ceiling |
+| ends within 0.015 of peak | — | — | **yes — 0.0006**, but see below |
+| **reaches the reference** | **yes — 0.868 > 0.850** | no — 0.657 of 0.734 | **no — 0.814 of 0.874** |
 | **controller beats its control** | 0.868 vs 0.843, **5.5×** | 0.657 vs 0.428, **6.5×** | 0.814 vs 0.728, **8.5×** |
 | `B_max` **sensed, not supplied** | 0.795, 5 fires | 0.805, 6 fires | 1.023, 8 fires — **but see hole 2** |
 | no learning knob supplied | **yes**, by construction | **yes** | **yes** |
@@ -65,6 +66,11 @@ are floors ([P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law
 **The effect is not in doubt — its acceptance is.** yelp-p is the whole claim on one dataset. What is
 missing is the same arm on the other two, and both of those controllers were killed by a watchdog bug
 they predate (rows **C**, **D**), not by anything the law did.
+
+**"Ends within 0.015 of peak" is weaker than it looks — a still-climbing arm passes it trivially.** All
+three controllers were still gaining when they ended (+0.0028 agnews, **+0.0123** yahoo, +0.0041 yelp-p
+over their last 10% of vclock), and yelp-p's 0.060 shortfall is self-inflicted: it stopped with 42% of its
+budget unspent. Row **F** settles whether the stop costs accuracy or only time.
 
 **Four axes of generality, and only one of them is exercised:**
 
@@ -131,6 +137,7 @@ arms now say the conjunct is right; **a true death has never been replayed** —
 | **D0** | node 2 | **Commit `sim_charge_profiles/fluxtune_yahoo.yaml` to git**, the way `fluxtune_yelp-p.yaml` already is. It exists only on node 2's local disk, so row **D** cannot run anywhere else — and `run_node_p4.sh` now *refuses* rather than silently pricing yahoo on agnews (§4.5) | the file is in git and its md5 matches node 2's |
 | **D** | any GPU node, after **D0** | **yahoo controller re-run**, 60,000 vclock. **~3.5–4.5 h** — `125003` reached 86.0% in 2.4 h, ~450 commits more at 414 commits/h. **Budget the upper end**: its sensed `B_max` was still rising monotonically at fire 6 where yelp-p's had flattened by fire 4, and a rising target lengthens the landing | ends on `[BudgetStop]`; `condition_fp` matches control `151619` |
 | **P** | 1 GPU, ~30 min | **Re-range the `B_max` probe's Φ grid** (hole 2). One short agnews arm at `--b-max-probe-every 150` with a dense low grid — `1.05,1.1,1.2,1.3,1.5,2.0` — reaching ~200 commits fires one probe and reads where the knee actually is. Nothing is saved to disk that can answer this offline: no arm checkpoints a model. `b_max_probe_phis` is already read from `args` and set nowhere, so it needs plumbing — and note **`condition_fp` does not cover it**, the same blind spot the sim-charge profile had (§4.5) | a knee bracketed by real grid points, and a grid sized by that measurement rather than by B-1's |
+| **F** | 1 GPU, ~4 h | **How much accuracy does the stop leave on the table?** yelp-p `125010` halted 0.060 below the backprop reference **while still climbing** (+0.0041 over its last 10% of vclock) with 42% of its budget unused. Re-run it byte-identical but `--phi-stop log_only`: the arm logs the `[BudgetStop]` crossing and keeps training to 50,000 vclock. **This is the experiment that answers "can a zero-input run reach target accuracy if given the time"** — which ranks above stopping early | an accuracy-vs-vclock curve past the stop, and the `f` that would have captured it |
 | **W′** | node holding `003648` | **The last unverified half of the watchdog fix.** The `I`-floor kill needs `ΔB ≤ --b-advance-min` (0.005) across the window, and three healthy arms now replay silent (`125010` 0.0339, `152215` 0.0701, `125003` 0.0628). **Unverified: that it still fires on a true death.** `003648`'s run dir is node-local and is not on node 3 | replay `003648`, confirm it fires |
 | **Score** | any CPU | **The two remaining pairs, once C and D land.** yelp-p is scored ([P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid)); repeat it — peak, the 0.015-of-peak bar, the vclock at which the controller passes the control's full-budget peak | a scored table for all three datasets |
 | **B4** | any CPU | **`budget_stop_frac` needs a margin against a moving `B_max`.** The exposure is the **first** sense: it replaces the `ln 2` prior outright at n=1, at maximum variance. yelp-p 2026-08-20 confirms it — n=1 sensed 0.5223, then 0.7440 / 0.8961 / 0.9425 / 0.9598, i.e. the first sense was **46% low**; agnews' only sense went the other way to 0.5102. Had `B` been past 0.95·(first sense) at commit 150 the arm would have stopped on the spot. Candidate: do not arm the stop until n ≥ 2 | a rule with a stated margin, replayed against `021735` and 2026-08-16's arms. `ratchet` is **not** it — it is `min`, which stops sooner |
