@@ -50,38 +50,44 @@ A pair counts only if **both** arms are valid at the **same** `condition_fp` and
 | what the claim needs | agnews | yahoo | yelp-p |
 |---|---|---|---|
 | backprop ceiling clears ≈0.70 | **0.850** | **0.734** | **0.874** |
-| its own sim charge profile | `fluxtune.yaml` | built (node 2, local disk) | built (node 3, local disk) |
-| **control** arm valid | **yes** — 938 commits | live, ends ~22:15 | starting (row **H**) |
-| **controller** ends on `[BudgetStop]` | live (row **C**) | **void ×2** — row **D** | **yes** — commit 1,348, 95.0% of `B_max` |
-| ends within 0.015 of peak | — | — | **score it** (§4.4), first arm that can be |
-| `B_max`/`ρ*` **diverge across datasets, unsupplied** | sensed **down** 0.693 → 0.510 | — | sensed **up** 0.693 → **1.023** over 8 probes |
+| its own sim charge profile | `fluxtune.yaml` | built, **node 2 local disk only** — row **D** | `fluxtune_yelp-p.yaml`, in git |
+| **control** arm valid | **yes** — 938 commits, peak 0.843 | **yes** — 1,138 commits, peak 0.428 | **yes** — 997 commits, peak 0.728 |
+| **controller** ends on `[BudgetStop]` | **void** — row **C** | **void ×2** — row **D** | **yes** — commit 1,348, 95.0% of `B_max` |
+| ends within 0.015 of peak | — | — | **yes — 0.0006**, at 93% of the ceiling |
+| **controller beats its control** | 0.868 vs 0.843, **5.5×** | 0.657 vs 0.428, **6.5×** | 0.814 vs 0.728, **8.5×** |
+| `B_max` **diverges across datasets, unsupplied** | **down** 0.693 → 0.510 | **up** → **0.805**, 6 fires | **up** → **1.023**, 8 fires |
 | no learning knob supplied | **yes**, by construction | **yes** | **yes** |
 
-**The effect is not in doubt — its acceptance is.** On void arms the law still beat its control while
-**23–48% of its commits took a step of length zero**, so that margin is a floor: `125619` peaked 0.857 vs
-0.835 and hit 0.83 at **62%** of budget against 92%; 2026-08-20's controller reached **80.7% of `B_max` on
-29%** of its vclock against 15.5% on 100% ([P4.7](fl_fwd_ft_practice.md#p47-p-4--the-law-beats-the-control-the-implementation-had-four-defects)).
-What is missing is an arm that ends on its own stop with every gate clean.
+**×** is the vclock at which the controller passes the control's *own full-budget peak*; no control ever
+reaches its controller's peak, and both void controllers were still climbing when killed, so those rows
+are floors ([P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid)).
 
-**Four axes of generality, and only one of them is being exercised right now:**
+**The effect is not in doubt — its acceptance is.** yelp-p is the whole claim on one dataset. What is
+missing is the same arm on the other two, and both of those controllers were killed by a watchdog bug
+they predate (rows **C**, **D**), not by anything the law did.
+
+**Four axes of generality, and only one of them is exercised:**
 
 | axis | coverage | status |
 |---|---|---|
-| **datasets** | 3 of 3 launched | 1 valid controller (yelp-p); agnews live, yahoo re-running |
+| **datasets** | 3 of 3 run, 3 valid controls | 1 valid controller (yelp-p); agnews and yahoo need a re-run only |
 | **models** | **0** | every arm on record is DistilBERT + adapters. No second model has ever been tried |
 | **PEFT capacity within that model** | `rf` 16 vs 64 | **negative** — see hole 3 |
 | **heterogeneity** | α = 1 only | ablations go **up** to α = 10/100, never below 1. Not started |
 
-**The divergence row is the one already paying.** agnews and yelp-p sensed `B_max` in **opposite
-directions** with nobody supplying either — which §5.4 pre-registered as possibly failing to reproduce.
+**The divergence row is the one already paying**: three datasets sensed **three different** `B_max`
+with nobody supplying any of them, and agnews went the opposite way from the other two — which §5.4
+pre-registered as possibly failing to reproduce.
 
-### The four holes, all live
+### The holes — one closed, three live
 
-1. **The dataset axis is one arm short of closed.** yelp-p is the only valid controller; agnews is live and
-   yahoo needs re-running. Nothing structural is in the way.
-2. **The sensor does not fire below chance.** On yahoo `234931`'s first probe declined at commit 25 (`base_acc`=0.105 against
-   chance 0.100), so the controller ran the `ln 2` prior. The machinery is universal; the *sensing* half is
-   unexercised on the dataset that most needs it ([P4.8](fl_fwd_ft_practice.md#p48-yahoo-is-under-trained-not-broken)).
+1. **The dataset axis is two arms short of closed, and both are re-runs.** yelp-p is the only valid
+   controller; agnews `152215` and yahoo `125003` were killed at 87.9% and 86.0% of `B_max` by the
+   pre-fix watcher. Nothing structural is in the way and each is a ~2 h slot (§4.5).
+2. ~~**The sensor does not fire below chance.**~~ **CLOSED 2026-08-20.** `234931`'s probe declined at
+   commit 25 because the model sat at chance (`base_acc`=0.105 of 0.100). `125003` reached 0.657 and its
+   probe fired **6 times from commit 150, none declined**, sensing `B_max` **up** to 0.805. The sensing
+   half is exercised on all three datasets.
 3. **The MODEL axis is untested, and its one probe came back negative.** Every arm on record is DistilBERT
    + adapters at `rf`=16, `p`=450,340. The only portability evidence is *within* that model: at `rf`=64
    (`p`=118,348) law C + `annealed` does not compose with the gate under **any** `T_res` — the `Λ`≥0.95 and
@@ -89,29 +95,27 @@ directions** with nobody supplying either — which §5.4 pre-registered as poss
    trips/commit on agnews against `rf`=16's 5.01. So `T_res`=300 and `f`=0.95 are **pinned to one `p`**,
    and "same controller, new model" has no evidence behind it. Standing blocker on ship-checklist item 5b.
 4. **`f`=0.95 was sized against the pre-fix `B_max` semantics**, and rests on a `Λ`≥0.95 floor read off the
-   agnews curve. `Λ` has never been tested across task. Re-derive both (§5.4's open table).
+   agnews curve. The floor itself now survives yahoo (§5.4 row 1), but `f` still has **no accuracy
+   evidence** behind it — re-derive it by replaying the valid arms at every `f`.
 
 ---
 
 ## §2 — Now · what is running
 
-*Read 2026-08-20 16:20.*
+*Read 2026-08-20 22:10. **Nothing is running** — every node is free.* All six arms are on node 3's disk.
 
-| node | arm | state |
-|---|---|---|
-| 1 | agnews **controller** | live 15:22, `condition_fp c2ef1528`. **Old watcher armed — restart it, see row C** |
-| 2 | yahoo **control** | live 15:16, ends ~22:15. `setpoint`, trips/commit ~8, **immune** to the W bug. `condition_fp 7174b984` |
-| 2 | yahoo **controller** | **void** — killed 15:15 by the `I` floor at 964 commits / 86.0% of `B_max`. Never budget-starved (~20,600 of 60,000 vclock). Row **D** |
-| 3 | yelp-p **controller** | **VALID** — `[BudgetStop] reason=budget action=halt`, commit 1,348, 95.0% of `B_max`, every bin visited, zero null steps, 8 `BmaxProbe` fires |
-| 3 | yelp-p **control** | auto-starts behind it on the **fixed** watcher (`node_run` execs a new `watch_arm.py` per arm) |
-| 4 | — | **idle** — take row **D** there rather than queue it behind node 2 |
+| arm | state |
+|---|---|
+| yelp-p **controller** `125010` | **VALID** — `[BudgetStop] reason=budget action=halt`, commit 1,348, 95.0% of `B_max`, stopped itself at 28,885 of 50,000 vclock, peak 0.8141, ends 0.0006 below it |
+| yelp-p **control** `161751` | **VALID** — full 50,000 vclock, 997 commits, peak 0.7280, every gate holds |
+| yahoo **control** `151619` | **VALID** — full 60,000 vclock, 1,138 commits, peak 0.4275. Its `arm_stall.json` is **false** — see §4.3 |
+| agnews **control** `021843` | **VALID** — 938 commits, peak 0.8432 |
+| agnews **controller** `152215` | **VOID** — killed 17:12 by the **pre-fix** watcher at 87.9% of `B_max`, n_req 12.8, demand met on all 899 commits, at 13% of its 48,000 vclock. `condition_fp c2ef1528`. Row **C** |
+| yahoo **controller** `125003` | **VOID** — same kill, 964 commits / 86.0% of `B_max`. Row **D** |
 
-**Gate 3 FAILs on every healthy controller and that is correct.** yelp-p's valid arm read Q5=1.34 with
-`I==1` on **100%** of its last 200 commits and pool demand met on every one. Read the `G-2 signature` line
-beneath it, never gate 3 alone (§4.4).
-
-**The pairs end up split across nodes** (agnews 1/4, yahoo 4/2, yelp-p 3) and `/home` is node-local —
-gather the run dirs before scoring.
+**Both void kills replay clean under the fix**: ΔB = **0.0701** (agnews) and **0.0628** (yahoo) over their
+last 200 commits against the 0.005 floor. Three healthy arms now say the conjunct is right; **a true death
+has still never been replayed** (row **W′**).
 
 ---
 
@@ -119,11 +123,11 @@ gather the run dirs before scoring.
 
 | # | node | task | done when |
 |---|---|---|---|
-| **C** | 1 | **agnews controller.** Restart on the fixed watcher: the running arm loaded `watch_arm.py` before the W fix and its endgame is where the bug bites. `condition_fp` must read `c2ef1528`; the 2026-08-20 control is valid on disk, do not re-run it | ends on `[BudgetStop] reason=budget` |
-| **D** | 4 | **yahoo controller re-run**, 60,000 vclock, on the idle node. **Copy node 2's `sim_charge_profiles/fluxtune_yahoo.yaml` across first** and check the md5 — one profile on both arms is the only reason a pair normally stays on one node | ends on `[BudgetStop]`; `condition_fp 7174b984` matches node 2's control |
-| **H** | 3 | **yelp-p control**, 50,000 vclock — auto-started behind the valid controller | same gates |
-| **W′** | node holding `003648` | **Close out the watchdog fix.** The `I`-floor kill now needs `ΔB ≤ --b-advance-min` (0.005) across the window; replayed silent on yelp-p `125010` (`I==1` 100%, `ΔB`=0.0339, which the old rule would have killed) and on the agnews smoke. **Unverified: that it still fires on a true death.** `003648`'s run dir is node-local and was not on jayne | replay `003648`, confirm it fires |
-| **Score** | any CPU | **All three pairs, once D and C land.** `replay_scoring.py` per arm; peak accuracy and the 0.015-of-peak bar; accuracy-vs-`Λ` on yahoo, which closes §5.4's first open row and is §1 hole 2's answer | a scored table for all three datasets |
+| **C** | any GPU node | **agnews controller re-run**, 48,000 vclock, on the fixed watcher. `condition_fp` must read `c2ef1528`; control `021843` is valid on disk, do not re-run it. `152215` was at 87.9% of `B_max` at 13% of its vclock, so budget on ~2 h | ends on `[BudgetStop] reason=budget` |
+| **D0** | node 2 | **Commit `sim_charge_profiles/fluxtune_yahoo.yaml` to git**, the way `fluxtune_yelp-p.yaml` already is. It exists only on node 2's local disk, so row **D** cannot run anywhere else — and `run_node_p4.sh` now *refuses* rather than silently pricing yahoo on agnews (§4.5) | the file is in git and its md5 matches node 2's |
+| **D** | any GPU node, after **D0** | **yahoo controller re-run**, 60,000 vclock. `125003` was at 86.0% of `B_max` at 964 commits | ends on `[BudgetStop]`; `condition_fp` matches control `151619` |
+| **W′** | node holding `003648` | **The last unverified half of the watchdog fix.** The `I`-floor kill needs `ΔB ≤ --b-advance-min` (0.005) across the window, and three healthy arms now replay silent (`125010` 0.0339, `152215` 0.0701, `125003` 0.0628). **Unverified: that it still fires on a true death.** `003648`'s run dir is node-local and is not on node 3 | replay `003648`, confirm it fires |
+| **Score** | any CPU | **The two remaining pairs, once C and D land.** yelp-p is scored ([P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid)); repeat it — peak, the 0.015-of-peak bar, the vclock at which the controller passes the control's full-budget peak | a scored table for all three datasets |
 | **B4** | any CPU | **`budget_stop_frac` needs a margin against a moving `B_max`.** The exposure is the **first** sense: it replaces the `ln 2` prior outright at n=1, at maximum variance. yelp-p 2026-08-20 confirms it — n=1 sensed 0.5223, then 0.7440 / 0.8961 / 0.9425 / 0.9598, i.e. the first sense was **46% low**; agnews' only sense went the other way to 0.5102. Had `B` been past 0.95·(first sense) at commit 150 the arm would have stopped on the spot. Candidate: do not arm the stop until n ≥ 2 | a rule with a stated margin, replayed against `021735` and 2026-08-16's arms. `ratchet` is **not** it — it is `min`, which stops sooner |
 | **E** | any CPU | **3.5's saturation stop — not built.** Prechelt generalization-loss / patience on *smoothed* held-out accuracy (11-eval trailing window, as `Φ` already is — a raw `dAcc/dΛ` slope false-triggers on a dip and misses a masked plateau). Track `Acc_best` as a running max; `GL_t = (Acc_best − Acc_t)/Acc_best`; stop when `GL_t` holds above a threshold for a patience window. **Not a duplicate of the `Φ` stop** — that one catches noise-driven collapse (0.874→0.296 on `003601`); this catches the model having extracted the signal the task allows. Combine as `stop = Φ-cross OR saturation`. Resample onto `Λ`, never `comm_round` | window, threshold and patience all sized **by replay** against the arms on disk, the way task 0.5 sized `Φ`'s window. `replay_phi_stop.py` is the model to copy |
 | **R2** | 1 GPU, ~1 h | **Is the estimator itself weaker on yahoo?** cos audit for ~100 commits + `replay_scoring.py --cos`; a `D` materially below agnews' 0.10–0.15 means the forward estimate degrades with 10 classes / seq 256 — an FwdLLM-layer finding, not a controller one. Plus H-S on yahoo (`probe_fd_chord.py`) | a `D` for yahoo against agnews' band |
@@ -208,6 +212,13 @@ profiles to `smoke/`, which price nothing by design. **A short controller arm en
 | trips/commit < 3 **and** pool demand unmet > 50% | after 200 commits | same argument: `trips/commit` is `n_req/K`, and law C drives `n_req` down **by design** |
 | any `rho_star == 0` | after 200 commits | a requirement of *zero*, not an absent one |
 
+**The watcher stops watching once the arm reaches its OWN end** — `stopping run.` or `[BudgetStop]
+action=halt` in the last 256 KB of the aggregator log. `--pgid` clears only when the whole launcher group
+exits, which lags the aggregator by the teardown: yahoo `151619` finished cleanly at 19:02 and its watcher
+fired the hang guard at 19:22, writing a false `arm_stall.json` and killing the teardown. That is the same
+failure that cost the two 03:04 real-mode arms their profiles. **A stall file on an arm that also has
+`plots/` is that false positive, not a death.**
+
 **Both rate predicates need their conjunct, and this is the lesson.** Fitting the 2026-08-20 agnews
 controller's last 150 commits gives `n_req ≈ 89.4 − 88.4·B_frac`, i.e. `n_req` ≈ 5 at its own 0.95 stop —
 a bare floor voids every controller arm at any setting above ~0.5. That arm was killed at `n_req`=18 with
@@ -259,8 +270,10 @@ controller ends on [BudgetStop] reason=budget, not max_runtime_s  # voided all f
 `[probe_combine]` `[TrainableScope]` `[ServerStep]` `[CommitGate]` `[CosProbe]` `[DataBins]` `[Landing]`
 `[BmaxProbe]`. They are cheap and they are the only way to catch a knob that did not take.
 
-**Gate 3 is not decisive on its own.** The `G-2 signature` line beneath it (`I==1` share, pool demand unmet,
-`n_req`) is what separates a controller annealing on plan from a starving gate. Read both. On an arm
+**Gate 3 is not decisive on its own, and FAILs on every healthy controller.** The `G-2 signature` line
+beneath it (`I==1` share, pool demand unmet, `n_req`) is what separates a controller annealing on plan
+from a starving gate — yelp-p's *valid* arm read Q5=1.34 with `I==1` on 100% of its last 200 commits and
+the pool demand met on every one. Read both. On an arm
 without `--server-update-audit`, gate 2 reads `UNREADABLE`, not `ok`. The `[BmaxProbe]` trajectory and its
 **first firing commit** are printed too — on yahoo that index is itself a result.
 
@@ -303,6 +316,13 @@ cd $FW/expt_scripts && $PY profile_sim_charges.py \
   --real-run $(ls -1dt $FW/experiments/run_*yahoo*real* | head -1) \
   --out ../sim_charge_profiles/fluxtune_yahoo.yaml --only-observed
 ```
+
+**A missing profile is now a refusal, not a fallback.** `run_node_p4.sh` used to add `--force` for any
+non-agnews dataset lacking its own profile — which also disables `matches dataset`, so the arm ran priced
+on agnews' **0.255** real-s per vclock-s against yahoo's **0.658**. `condition_fp` does not cover the
+profile: a yahoo arm launched on node 3 with no profile reads the same `7174b984` as node 2's correctly
+priced control, so nothing downstream catches the mismatch. It now exits 2 and names the file;
+`P4_ALLOW_AGNEWS_PRICING=1` restores the old behaviour with two warning lines.
 
 **Read its `WARN` lines, never `--force` past them.** A refused entry keeps its prior (agnews) value — a
 *known* mis-pricing rather than a plausible wrong one. The guard scores the mass carried by the top 1% of
@@ -383,6 +403,10 @@ accuracy, nothing more.
 
 ### §5.2 The yahoo gap — it is budget, not plumbing
 
+**Settled 2026-08-20: it was budget.** Controller `125003` reached **0.657 at `Λ`=0.994**, and its
+control read 0.428 over a full 60,000 vclock. The paragraphs below are the derivation, kept because
+suspects (a)–(c) still bound yahoo's *absolute* accuracy against its 0.734 ceiling.
+
 B-1's backprop reference reaches **0.73** on yahoo; the P-4 arms reached **0.30**. Data plumbing and the
 data path both cleared (bins exact; centralized AdamW on the FL rig's own path returns 0.7333 / 0.7263 /
 0.7339 over three epochs, flat from epoch 1, against untrained 0.1018). **So the gap is optimization
@@ -435,7 +459,7 @@ compute-bound (`τ(30)/τ(10)`=2.56), so adaptive `P` is no longer motivated as 
 
 | open | closes on | if it comes out wrong |
 |---|---|---|
-| **`Λ` → accuracy on yahoo.** Cleared at `Λ`=1.04 against a ≥0.95 floor **read off agnews**; never tested across task | yahoo's own accuracy-vs-`Λ` curve | the floor moves and yahoo needs more than 0.95·`B_max` |
+| ~~**`Λ` → accuracy on yahoo**~~ **CLOSED 2026-08-20**: `125003` reached **0.657 at `Λ`=0.994**, against a 0.734 ceiling and 0.30 on the old P-4 arms. The `Λ`-curve transfers across task and the ≥0.95 floor stands on yahoo | — | — |
 | **Does `B_max` drift within one run?** | `sensed=` per fire — yelp-p already says **yes, upward**, 0.522 → 1.023 over 8 | if it drifts a lot, `mean` lags and an EWMA is the fallback; law C self-corrects, so control is unaffected |
 | **Is `mean` the right combiner?** | replay the valid arms under all three policies — free, after the fact | `ratchet` stops sooner, `anchor` may not stop. Terminal-flag call |
 | **trips/commit ≥ 3** is calibrated on one death and two survivals | every arm reports it per quintile; re-size once there are ten | a config passes preflight and still burns wall |

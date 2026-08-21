@@ -622,6 +622,61 @@ newest real). One caveat the green row does not state: `_ok` accepts the bare `_
 `fedavg` entry carried over from agnews passes provenance on a yahoo-tagged file. **Provenance ok ≠ every
 charged entry priced on this dataset** — read `source_runs` and `profiled_at` per entry when that matters.
 
+### P4.11 The 2026-08-20 P-4 pairs — the law wins on all three, one pair is valid
+
+Six arms, one per dataset per side. **The controller beats its control on every dataset**, scored
+per §P4.4 (peak, never final) against the §5.1 backprop ceilings:
+
+| | controller peak | control peak (full budget) | vclock to the control's *own* peak | ceiling |
+|---|---|---|---|---|
+| agnews `152215` / `021843` | **0.8676** @ vclock 19,594 | 0.8432 @ 47,908 | 8,257 — **5.5×** | 0.850 |
+| yahoo `125003` / `151619` | **0.6571** @ 20,002 | 0.4275 @ 59,914 | 9,017 — **6.5×** | 0.734 |
+| yelp-p `125010` / `161751` | **0.8141** @ 28,885 | 0.7280 @ 49,996 | 5,494 — **8.5×** | 0.874 |
+
+**No control ever reaches its controller's peak**, on any dataset, over its full budget. Both killed
+controllers were still climbing when they died, so their columns are floors.
+
+**yelp-p `125010` is the first valid pair.** `[BudgetStop] reason=budget action=halt commit=1348
+B=0.9721 B_max=1.0231`, 8 `BmaxProbe` fires, zero null steps, every bin visited, and it **stopped itself
+at 28,885 of a 50,000 vclock ceiling** — 58%. It ends **0.0006 below its peak** against the 0.015 bar
+(§4.4), 93% of the ceiling. Its control `161751` ran the full 50,000 and returns
+`[VERDICT] every readable gate holds`.
+
+**yahoo's `B_max` sensor works.** `125003` fired **6 `BmaxProbe`s from commit 150, none declined at
+chance**, and sensed `B_max` **up** from the `ln 2` prior to **0.8048** — the failure mode of P4.8's
+`234931`, whose first probe declined at commit 25 with the model still at chance, does not recur once the
+arm learns. Three datasets now sense three different `B_max` unsupplied — 0.510 / 0.805 / 1.023 — and
+agnews is the only one that went down.
+
+**§5.2's yahoo pre-registration resolved, in the good direction.** It read: yahoo reaching ~0.6–0.7 by
+`Λ` ≈ 1.0 means the agnews `Λ`-curve transfers. **yahoo `125003` reached 0.6571 at `Λ`=0.994** —
+against 0.30 on the P-4 arms and a 0.734 ceiling. The `Λ`→accuracy relation transfers across task, the
+`Λ`≥0.95 floor stands on yahoo, and yahoo's old gap was **optimization budget**, as P4.8 held. agnews
+reads 0.868 at `Λ`=1.001 and yelp-p 0.814 at `Λ`=1.402; both killed arms died at 86–88% of `B_max`.
+
+**Two controllers were voided by a watchdog bug they predate.** `152215` (launched 15:22) and `125003`
+(12:50) both loaded `watch_arm.py` before the `ΔB` conjunct landed at 16:10, and both were killed on the
+bare `I` floor at a healthy landing — `152215` at 87.9% of `B_max` with n_req 12.8 and the pool demand
+met on **all 899** commits, at **13% of its 48,000 vclock**. Replaying the fixed rule over their last 200
+commits gives **ΔB = 0.0701** and **0.0628** against the 0.005 kill floor — a 12–14× margin, both SPARED.
+With yelp-p's 0.0339 that is three healthy arms the conjunct keeps, and **still no replay of a true
+death** (`003648` is node-local and not on this host).
+
+**A third watchdog defect, found here and fixed:** the hang guard fires on an arm that has *already
+finished*. yahoo `151619`'s aggregator ended cleanly at 19:02:03 on `max_runtime_s=60000s reached`; its
+watcher kept polling static telemetry and fired at 19:22:07 — "no new commit for 20 min (last commit
+#1138)" — writing a false `arm_stall.json` and killing the teardown. `--pgid` clears only when the whole
+launcher group exits, which lags the aggregator by the teardown. `watch_arm.run_ended()` now tails 256 KB
+of the aggregator log for `stopping run.` or `[BudgetStop] action=halt` and exits 0; replayed over all
+seven arms on disk it fires on the four that ended and stays silent on the three that were killed. The
+markers sit 24–42 KB from EOF, so the tail carries 6–10× margin. **The arm itself is intact** — every
+gate holds — but this is the same failure that cost the two 03:04 real-mode profiling arms their profiles.
+
+**Controller arms cost far less than they are budgeted.** yelp-p stopped at 58% of its ceiling and agnews
+was at 87.9% of `B_max` at 13% of its own; a controller re-run is a ~2 h slot, not a 10 h one. **The
+budget still must not be shrunk** (§4.1): law C's length comes from `(B_max, T_res, f)`, so a smaller
+ceiling does not shorten the arm, it voids it.
+
 ---
 
 ## P5 — The queue

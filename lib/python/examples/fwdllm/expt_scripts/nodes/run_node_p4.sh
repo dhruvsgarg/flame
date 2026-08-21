@@ -159,14 +159,23 @@ CEIL="${CEIL_OVERRIDE:-$CEIL}"
 # every branch that can move CEIL.
 export NODE_WATCH_ARGS="${NODE_WATCH_ARGS:---max-hours $(awk "BEGIN{print $CEIL+1}")}"
 
-# --force only while this dataset has no sim charge profile of its own: per-pass
-# cost scales with max_seq_length, so an agnews-profiled file mis-prices the
-# vclock (task B). It overrides EVERY check, so per P9.2 run --dry-run WITHOUT it
-# first and confirm the sim-charge-profile mismatch is the ONLY x -- in particular
-# that the wall-clock/gate-starved check reads ok.
+# A missing profile REFUSES; it does not fall back. `--force` also disables
+# `matches dataset`, so it would price yahoo on agnews' 0.255 real-s/vclock-s
+# against its own 0.658 -- and `condition_fp` does not cover the profile, so a
+# split pair reads one fp either way. `/home` is node-local: bring the file here.
+# The override still overrides EVERY check, so per P9.2 --dry-run without it first.
 FORCE=()
-[ -f "$FW/sim_charge_profiles/fluxtune_$DATASET.yaml" ] || \
-  [ "$DATASET" = "agnews" ] || FORCE=(--force)
+if [ ! -f "$FW/sim_charge_profiles/fluxtune_$DATASET.yaml" ] && [ "$DATASET" != "agnews" ]; then
+  if [ "${P4_ALLOW_AGNEWS_PRICING:-0}" = "1" ]; then
+    echo "!!! [p4-$DATASET] NO fluxtune_$DATASET.yaml -- pricing this arm on AGNEWS." >&2
+    echo "!!! [p4-$DATASET] Its vclock is NOT comparable to an arm priced on $DATASET." >&2
+    FORCE=(--force)
+  else
+    echo "!!! [p4-$DATASET] $FW/sim_charge_profiles/fluxtune_$DATASET.yaml is MISSING on this node." >&2
+    echo "!!! [p4-$DATASET] Copy it here (md5-check it) or commit it; \$P4_ALLOW_AGNEWS_PRICING=1 overrides." >&2
+    exit 2
+  fi
+fi
 
 # --allow-stale-profile, NOT --force: the staleness check globs the LOCAL
 # experiments dir, so the same profile passes on a node with no old reals and

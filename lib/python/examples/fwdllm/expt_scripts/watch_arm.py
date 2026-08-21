@@ -30,6 +30,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -46,6 +47,35 @@ def newest_run(exp_dir, since):
         if m >= best_m:
             best, best_m = d, m
     return best
+
+
+_TAIL_BYTES = 262144             # the terminal line sits 25-42 KB from EOF on
+                                 # every completed arm on disk; 256 KB is 6-10x
+
+
+def run_ended(run_dir):
+    """Has the arm already reached its OWN end? Tail of the aggregator log only.
+
+    `--pgid` clears only when the whole launcher group exits, which lags the
+    aggregator by the teardown: yahoo `151619` finished cleanly at 19:02 and its
+    watcher fired the hang guard at 19:22, writing a false `arm_stall.json`.
+    `action=halt` is required -- a control arm runs `--phi-stop log_only` and
+    emits `[BudgetStop] action=log_only` mid-run by design.
+    """
+    for f in glob.glob(os.path.join(run_dir, "*aggregator.log")):
+        try:
+            with open(f, "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                fh.seek(max(0, fh.tell() - _TAIL_BYTES))
+                tail = fh.read()
+        except OSError:
+            continue
+        if b"stopping run." in tail:
+            return "reached its own runtime ceiling"
+        for m in re.finditer(rb"\[BudgetStop\][^\n]*", tail):
+            if b"action=halt" in m.group(0):
+                return m.group(0).decode("utf-8", "replace").strip()
+    return None
 
 
 class Scan:
@@ -238,6 +268,10 @@ def main():
                 return _fire(a, None, "no run directory appeared")
             continue
 
+        ended = run_ended(run)
+        if ended:
+            print(f"[watch] run ended on its own ({ended}) -- done", flush=True)
+            return 0
         if scanner is None or scanner.run_dir != run:
             scanner = Scan(run)          # a new run dir invalidates every counter
         commits, trips, zero, recent, signal = scanner.update()
