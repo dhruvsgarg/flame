@@ -68,13 +68,16 @@ exponent ≈0.9), a larger gradient produces a longer step, and a longer step ad
 
 The loop is closed. It is present at commit 1 and becomes visible around commit 150 — the steps never
 become *more wrongly aimed*, they just become *bigger*, applied to a model that keeps getting longer.
+Left alone it ends the same way every time: an arm reaches 0.85 and then **hands it all back**, landing at
+its dataset's chance level.
 
-> **[FIGURE 1 — "Noise compounds"]** *(schematic + data)*
-> Left: two-panel cartoon of a step perpendicular to `θ`, showing `‖θ‖` growing by Pythagoras.
-> Right: `Φ` vs commit for the runaway regime (constant `ρ`, geometric) against a controlled run
-> (`125010`, which lands at `Φ` = 2.64 and flattens). The runaway curve is drawn from the difference
-> equation rather than from a logged arm — **we do not have a diverging run on this machine** (the
-> 0.874 → 0.296 collapse arm is on another node), so that curve must be labelled *illustrative*.
+![Noise compounds](figs/fig1_noise_compounds.png)
+
+**And when it grows too far, the run gives everything back.** Of the 22 arms on record that actually
+learned, **every one below `Φ` = 3.63 held its peak** — worst loss 0.014 — and **every one above
+`Φ` = 4.23 lost it**, by 0.083 to 0.604. Two arms ended at half the accuracy they had reached
+(`112201`: 0.849 → 0.250; `013806`: 0.855 → 0.251). The cliff is real, it is sharp, and it is located
+in a quantity computable from the step sizes alone.
 
 ### 2.1 The old system survived by accident
 
@@ -130,20 +133,30 @@ Two empirical facts turn this into a control problem:
 **(a) Accuracy rises with `Λ`.** Over 21 runs sorted by `Λ`, peak accuracy climbs monotonically from 0.377
 to 0.876. `Λ` is how far you travelled *usefully*, measured in multiples of your own length.
 
-**(b) Whether you keep what you learned is decided by `Φ` alone.** Every run that learned, turned over, and
-still had time left peaked at **`Φ` between 2.41 and 3.11** — across two step rules, three model sizes, and
-run lengths from 177 to 1,364 commits. That number was never fitted to anything.
+**(b) Whether you keep what you learned is decided by `Φ` alone.** Two readings of the same portfolio,
+and it is worth keeping them apart:
 
-> **[FIGURE 2 — "The budget law is exact"]** *(data: all 6 arms)*
-> Scatter of `Φ` predicted from the step sizes alone (`e^B`) against `Φ` measured from the weights, with
-> the `y = x` line. Six points, three datasets, up to 1,348 commits, **worst error 0.23%**.
-> Source: `server_update` telemetry (`rho`, `trainable_weight_norm`).
-> *Why it matters: the quantity the controller steers by is the quantity the system actually obeys.*
+- **where accuracy peaks** — every run that learned, turned over, and still had time left peaked at
+  **`Φ` = 2.41–3.11** (mean 2.71), across two step rules, three model sizes, α from 0.1 to 1, and run
+  lengths from 177 to 1,364 commits;
+- **where it is lost** — below **`Φ` = 3.63** every such run held its peak to within 0.014; above
+  **`Φ` = 4.23** not one did (Figure 1).
 
-> **[FIGURE 3 — "Accuracy is a function of progress, not of dataset"]** *(data: 3 controllers)*
-> Held-out accuracy against `Λ`, one line per dataset. Pre-registered before the runs: if yahoo reached
-> 0.6–0.7 by `Λ ≈ 1.0`, the curve transfers across task. **It read 0.657 at `Λ` = 0.994**; agnews reads
-> 0.868 at `Λ` = 1.001. *Why it matters: `Λ` means the same thing on tasks we have never seen.*
+Neither number was fitted to anything: `Φ` is computed from the step sizes, and the peak location was
+never used to choose a single constant.
+
+![The budget law is exact](figs/fig2_budget_law.png)
+
+**`B` is not a model — it is an identity that the runs obey.** Predicting `Φ` from the step sizes alone,
+across every arm on record, the median miss is **0.09%**. The one visible exception is the pair of
+server-momentum arms: correlated steps inflate faster, exactly as the law says they must
+(`Φ = exp(((1+β)/(1−β))·B)`, checked at β = 0.5 and 0.75).
+
+![Accuracy rises with progress banked](figs/fig3_accuracy_vs_progress.png)
+
+The relationship was **pre-registered before the three-dataset runs**: if yahoo reached 0.6–0.7 by
+`Λ ≈ 1.0`, the curve transfers across task; if it stalled near 0.35 with `Λ > 1.0`, it does not.
+**yahoo read 0.657 at `Λ` = 0.994.** agnews reads 0.868 at `Λ` = 1.001.
 
 ### The problem, restated
 
@@ -210,10 +223,7 @@ So the experiment asks exactly: **does a hand-tuned constant transfer to a new t
 
 **No baseline ever reaches its controller's accuracy**, on any dataset, given its entire budget.
 
-> **[FIGURE 4 — the money plot]** *(data: all 6 arms)*
-> Three panels, one per dataset: held-out accuracy vs simulated wall clock, controller and baseline on the
-> same axes, with the backprop reference as a horizontal line and the controller's self-stop marked.
-> *Why it matters: this is the result in one image.*
+![Controller versus a hand-tuned baseline](figs/fig4_controller_vs_baseline.png)
 
 ### Why it wins — one column explains it
 
@@ -255,32 +265,30 @@ The probe kept saying *"you have ~0.25 of road left."* The `mean` combiner turne
 
 > **The run did not stop because it was out of road. It stopped because the odometer was averaged.**
 
-> **[FIGURE 5 — the diagnosis]** *(data: 3 controllers, `[BmaxProbe]` lines)*
-> Two panels. Left: per-firing measured headroom (flat) against the mean-combined headroom the controller
-> actually used (collapsing), one line pair per dataset. Right: the resulting `ρ*` against the `ρ*` the
-> latest measurement would have supported. *Why it matters: this is the entire reason target accuracy is
-> missed, and it is arithmetic, not physics.*
+![The combiner throttles the step](figs/fig5_the_combiner_throttles.png)
 
 **Two deeper problems sit behind it.**
 
 **(a) The probe's search range barely contains the answer.** It tests `Φ ∈ {1.5, 2, 2.5, 3, 3.5, 4}`, a
-range chosen from offline measurements taken before any of this. Live, the model is already at chance at
-the *smallest* `Φ` tested on most firings: sampling 8 of the 19, **5 have the knee below the whole grid**
-(so the knee-finder extrapolates from one point and a synthetic anchor) and 3 have it barely inside the
-first interval. **The four points at 2.5–4.0 were used on none of them** — two thirds of a 2–3 minute probe,
-spent where the answer is not. Consequence: what it reports is pinned into a narrow band regardless of the
-model, so `B_max = B + (roughly a constant)` **recedes as budget is spent**.
+range sized from offline measurements taken before any of this. Live, **the very first point it tests is
+already below the knee**, so the crossing lies to the left of the entire grid: sampling 8 of the 19
+firings, **5 put the knee below the whole grid** — the knee-finder then extrapolates between a synthetic
+anchor at `Φ`=1 and that single reading — and 3 put it barely inside the first interval. **The four points
+at 2.5–4.0 do no work on any of them**, two thirds of a 2–3 minute probe spent where the answer is not.
+Consequence: what it reports is pinned into a narrow band regardless of the model, so
+`B_max = B + (roughly a constant)` **recedes as budget is spent**.
 
-> **[FIGURE 6 — "the ruler starts past the mark"]** *(data: `[BmaxProbe]` curves)*
-> Chance-normalised accuracy against `Φ` for a representative firing on each dataset, with the tested grid
-> marked and the 0.5 knee level drawn. On most firings every grid point sits near zero and the crossing is
-> off-scale to the left. *Why it matters: it shows an instrument whose scale starts past the thing it is
-> meant to measure.*
+![The ruler starts past the mark](figs/fig6_ruler_starts_past_the_mark.png)
 
 **(b) The whole "fixed budget" picture may be wrong.** The probe noises a model that **cannot re-fit**. A
 training run re-fits continuously. If remaining headroom genuinely stays ~0.25 as training proceeds — which
 is what the measurements show — then budget is not a tank that drains. It is closer to a **rate limit that
 is continually re-earned**, and stopping when a cumulative total is reached is the wrong stopping rule.
+
+**(c) And the rail may be far too tight.** yelp-p halted at `Φ` = 2.643 against a shipped backstop of 2.7 —
+but the portfolio says arms hold their peak up to `Φ` = 3.63 and only lose it past 4.23. That gap is
+roughly **0.3 of extra budget `B`** that the current design never spends. Whether the headroom is real
+under the new dynamics is exactly what the next run tests.
 
 ---
 
@@ -304,8 +312,9 @@ is continually re-earned**, and stopping when a cumulative total is reached is t
   passes it trivially**, because its peak is its last point.
 - **`Φ` ≈ 2.7 is not yet confirmed under the new dynamics**, and yelp-p halted at `Φ` = 2.643 — so it was
   at the ceiling the *model* imposes, and simply running longer is not obviously available. §8 tests this.
-- **No run in this set ever collapsed**, so the stopping rule has demonstrated efficiency, not the damage
-  avoidance it exists for.
+- **No run in *this* set collapsed**, so on these six arms the stopping rule demonstrated efficiency —
+  stopping early at almost no cost — rather than the damage avoidance it exists for. The damage itself is
+  not in doubt: six arms in the wider portfolio lost 0.083–0.604 of accuracy past `Φ` = 4.23 (Figure 1).
 - **One model throughout.** All three datasets use DistilBERT + adapters at the same `p`. The one time the
   model size really changed, the controller's two remaining constants stopped composing with the gate.
   Generality is demonstrated **across task, not across model.**
