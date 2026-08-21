@@ -55,7 +55,7 @@ A pair counts only if **both** arms are valid at the **same** `condition_fp` and
 | **controller** ends on `[BudgetStop]` | **void** — row **C** | **void ×2** — row **D** | **yes** — commit 1,348, 95.0% of `B_max` |
 | ends within 0.015 of peak | — | — | **yes — 0.0006**, at 93% of the ceiling |
 | **controller beats its control** | 0.868 vs 0.843, **5.5×** | 0.657 vs 0.428, **6.5×** | 0.814 vs 0.728, **8.5×** |
-| `B_max` **diverges across datasets, unsupplied** | **down** 0.693 → 0.510 | **up** → **0.805**, 6 fires | **up** → **1.023**, 8 fires |
+| `B_max` **sensed, not supplied** | 0.795, 5 fires | 0.805, 6 fires | 1.023, 8 fires — **but see hole 2** |
 | no learning knob supplied | **yes**, by construction | **yes** | **yes** |
 
 **×** is the vclock at which the controller passes the control's *own full-budget peak*; no control ever
@@ -75,19 +75,24 @@ they predate (rows **C**, **D**), not by anything the law did.
 | **PEFT capacity within that model** | `rf` 16 vs 64 | **negative** — see hole 3 |
 | **heterogeneity** | α = 1 only | ablations go **up** to α = 10/100, never below 1. Not started |
 
-**The divergence row is the one already paying**: three datasets sensed **three different** `B_max`
-with nobody supplying any of them, and agnews went the opposite way from the other two — which §5.4
-pre-registered as possibly failing to reproduce.
+**The `B_max` row is the one under repair.** All three arms moved off the `ln 2` prior with nobody
+supplying anything, which is the mechanism the claim needs. What cannot be said yet is that they moved to
+*different* places **because the datasets differ** — hole 2.
 
 ### The holes — one closed, three live
 
 1. **The dataset axis is two arms short of closed, and both are re-runs.** yelp-p is the only valid
    controller; agnews `152215` and yahoo `125003` were killed at 87.9% and 86.0% of `B_max` by the
    pre-fix watcher. Nothing structural is in the way and each is a ~2 h slot (§4.5).
-2. ~~**The sensor does not fire below chance.**~~ **CLOSED 2026-08-20.** `234931`'s probe declined at
-   commit 25 because the model sat at chance (`base_acc`=0.105 of 0.100). `125003` reached 0.657 and its
-   probe fired **6 times from commit 150, none declined**, sensing `B_max` **up** to 0.805. The sensing
-   half is exercised on all three datasets.
+2. **The `B_max` probe's Φ grid does not bracket the knee, so it mostly senses `B` itself.** The grid
+   `(1.5, 2, 2.5, 3, 3.5, 4)` was sized off B-1's knees of 2.0–3.5. **All 19 fires across the three arms
+   read chance at every grid point**, so the knee lands at or below 1.5 and `knee()` returns a two-point
+   extrapolation from its synthetic `(Φ=1, 1.0)` anchor to the lone Φ=1.5 reading — 2.5–4.0 were never
+   consulted once. `B_rem = ln Φ_knee` is thus pinned into ≈0.21–0.42 and `B_max = B + B_rem` **recedes as
+   `B` is spent**: sensed rises monotonically from ≈0.50 on all three, and the three `B_max` above order
+   by **fire count (5/6/8), not by dataset**. The stop still fires — `mean` lags a rising sequence — but by
+   arithmetic, not convergence. The probe's docstring predicted this ("reads the knee ~0.6–1.2 low");
+   nobody moved the grid. **Row P.**
 3. **The MODEL axis is untested, and its one probe came back negative.** Every arm on record is DistilBERT
    + adapters at `rf`=16, `p`=450,340. The only portability evidence is *within* that model: at `rf`=64
    (`p`=118,348) law C + `annealed` does not compose with the gate under **any** `T_res` — the `Λ`≥0.95 and
@@ -113,9 +118,8 @@ pre-registered as possibly failing to reproduce.
 | agnews **controller** `152215` | **VOID** — killed 17:12 by the **pre-fix** watcher at 87.9% of `B_max`, n_req 12.8, demand met on all 899 commits, at 13% of its 48,000 vclock. `condition_fp c2ef1528`. Row **C** |
 | yahoo **controller** `125003` | **VOID** — same kill, 964 commits / 86.0% of `B_max`. Row **D** |
 
-**Both void kills replay clean under the fix**: ΔB = **0.0701** (agnews) and **0.0628** (yahoo) over their
-last 200 commits against the 0.005 floor. Three healthy arms now say the conjunct is right; **a true death
-has still never been replayed** (row **W′**).
+**Both void kills replay clean under the fix** (ΔB 0.0701 and 0.0628 against a 0.005 floor). Three healthy
+arms now say the conjunct is right; **a true death has never been replayed** — row **W′**.
 
 ---
 
@@ -123,9 +127,10 @@ has still never been replayed** (row **W′**).
 
 | # | node | task | done when |
 |---|---|---|---|
-| **C** | any GPU node | **agnews controller re-run**, 48,000 vclock, on the fixed watcher. `condition_fp` must read `c2ef1528`; control `021843` is valid on disk, do not re-run it. `152215` was at 87.9% of `B_max` at 13% of its vclock, so budget on ~2 h | ends on `[BudgetStop] reason=budget` |
+| **C** | any GPU node | **agnews controller re-run**, 48,000 vclock, on the fixed watcher. `condition_fp` must read `c2ef1528`; control `021843` is valid on disk, do not re-run it. **~2.5–3 h** — `152215` reached 87.9% of `B_max` in 1.85 h and yelp-p took 448 commits to climb 86.5% → 95.0%, ~0.8 h more at agnews' 515 commits/h. Ends near 29,000 of its 48,000 vclock | ends on `[BudgetStop] reason=budget` |
 | **D0** | node 2 | **Commit `sim_charge_profiles/fluxtune_yahoo.yaml` to git**, the way `fluxtune_yelp-p.yaml` already is. It exists only on node 2's local disk, so row **D** cannot run anywhere else — and `run_node_p4.sh` now *refuses* rather than silently pricing yahoo on agnews (§4.5) | the file is in git and its md5 matches node 2's |
-| **D** | any GPU node, after **D0** | **yahoo controller re-run**, 60,000 vclock. `125003` was at 86.0% of `B_max` at 964 commits | ends on `[BudgetStop]`; `condition_fp` matches control `151619` |
+| **D** | any GPU node, after **D0** | **yahoo controller re-run**, 60,000 vclock. **~3.5–4.5 h** — `125003` reached 86.0% in 2.4 h, ~450 commits more at 414 commits/h. **Budget the upper end**: its sensed `B_max` was still rising monotonically at fire 6 where yelp-p's had flattened by fire 4, and a rising target lengthens the landing | ends on `[BudgetStop]`; `condition_fp` matches control `151619` |
+| **P** | 1 GPU, ~30 min | **Re-range the `B_max` probe's Φ grid** (hole 2). One short agnews arm at `--b-max-probe-every 150` with a dense low grid — `1.05,1.1,1.2,1.3,1.5,2.0` — reaching ~200 commits fires one probe and reads where the knee actually is. Nothing is saved to disk that can answer this offline: no arm checkpoints a model. `b_max_probe_phis` is already read from `args` and set nowhere, so it needs plumbing — and note **`condition_fp` does not cover it**, the same blind spot the sim-charge profile had (§4.5) | a knee bracketed by real grid points, and a grid sized by that measurement rather than by B-1's |
 | **W′** | node holding `003648` | **The last unverified half of the watchdog fix.** The `I`-floor kill needs `ΔB ≤ --b-advance-min` (0.005) across the window, and three healthy arms now replay silent (`125010` 0.0339, `152215` 0.0701, `125003` 0.0628). **Unverified: that it still fires on a true death.** `003648`'s run dir is node-local and is not on node 3 | replay `003648`, confirm it fires |
 | **Score** | any CPU | **The two remaining pairs, once C and D land.** yelp-p is scored ([P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid)); repeat it — peak, the 0.015-of-peak bar, the vclock at which the controller passes the control's full-budget peak | a scored table for all three datasets |
 | **B4** | any CPU | **`budget_stop_frac` needs a margin against a moving `B_max`.** The exposure is the **first** sense: it replaces the `ln 2` prior outright at n=1, at maximum variance. yelp-p 2026-08-20 confirms it — n=1 sensed 0.5223, then 0.7440 / 0.8961 / 0.9425 / 0.9598, i.e. the first sense was **46% low**; agnews' only sense went the other way to 0.5102. Had `B` been past 0.95·(first sense) at commit 150 the arm would have stopped on the spot. Candidate: do not arm the stop until n ≥ 2 | a rule with a stated margin, replayed against `021735` and 2026-08-16's arms. `ratchet` is **not** it — it is `min`, which stops sooner |
@@ -133,15 +138,11 @@ has still never been replayed** (row **W′**).
 | **R2** | 1 GPU, ~1 h | **Is the estimator itself weaker on yahoo?** cos audit for ~100 commits + `replay_scoring.py --cos`; a `D` materially below agnews' 0.10–0.15 means the forward estimate degrades with 10 classes / seq 256 — an FwdLLM-layer finding, not a controller one. Plus H-S on yahoo (`probe_fd_chord.py`) | a `D` for yahoo against agnews' band |
 | **G** | any CPU, **after** the P-4 arms | **`read_instance_from_h5` returns rows in thread-completion order**, so a shard's row order — and its bin composition — is not reproducible across tokenizations, and `guid` names the wrong row. `X`/`y` stay paired under one lock and nothing reads `guid`, so **no ledger number is wrong**. It waits because it re-orders every future shard against the caches the P-4 arms run on | two tokenizations of one client agree byte-for-byte, and `guid` round-trips |
 
-**Two standing conclusions, so they are not re-proposed.** *If probe selection is ever revived*, select
-on something other than `|d|` (P6 closed that): curvature `vᵀHv` (≈free), split-half SNR within the bin
-(free, orthogonal to `|d|`), or loss decrease at the step scale. *Block-coordinate probing is predicted
-inert on paper* — progress/commit falls as `1/√L` while budget/commit falls as `1/L`, so progress per unit
-`B` is unchanged and it needs `L`× the commits; it escapes `√(n/p)` only if the gradient is *unevenly*
-spread.
-
-**Open hypotheses do not block any of this.** H-S, H-H, H-T and H-J are specs + discriminating numbers in
-[P5.3](fl_fwd_ft_practice.md#p53-open-hypotheses); all are rung 1–2 and none needs a node. K-C is closed.
+**Nothing above is blocked by an open hypothesis.** H-S, H-H, H-T and H-J are specs + discriminating
+numbers in [P5.3](fl_fwd_ft_practice.md#p53-open-hypotheses); all are rung 1–2 and none needs a node. K-C
+is closed. Two ideas are **standing-refused** and must not be re-proposed — probe selection by `|d|`, and
+block-coordinate probing ([P6](fl_fwd_ft_practice.md#p6--dead-ends--do-not-retry) has both, with the
+replacements worth trying if selection is ever revived).
 
 ---
 

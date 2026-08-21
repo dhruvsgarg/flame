@@ -5,9 +5,10 @@
 > how*: every number a run produced, every flag, every arm, the dead ends, the launch procedure.
 > **Numbers are cited here, never restated** (R2, appendix).
 >
-> **Scope.** The measurements are FL (FluxTune / FwdLLM on agnews + DistilBERT), but the object of study
-> is **backprop-free fine-tuning by directional derivatives**. §1–§7 are the FL instance; §8 is the
-> extension path.
+> **Scope.** The measurements are FL (FluxTune / FwdLLM, DistilBERT + adapters, on agnews / yahoo /
+> yelp-p), but the object of study is **backprop-free fine-tuning by directional derivatives**. §1–§7 are
+> the FL instance; §8 is the extension path. **One model, one PEFT scheme, one `p`** — the three datasets
+> vary the task, nothing else (§0).
 
 | you want… | go to |
 |---|---|
@@ -35,11 +36,11 @@ has never seen**, sensing every quantity it needs from the workload and the runt
 | **3** | **overheads** — communication, then compute | uploads `= K·t = Λ²·p/(2·B·G_rule)` |
 
 §4.6 puts all three in one expression, so they need no hand-trading: everything that makes a run faster
-also makes it cheaper in bytes. **The cohort pair is the one exception, and not in the way this document
-used to claim it** (K-C): `K` is free in *total* bytes only while `K ≤ n_req`, it is never free in *peak*
-rate, and its price is **not** staleness — staleness is set by `C/n_req`, which contains no `K` (§5.4).
-Metric 2 is not a trade against metric 1 but a **ceiling on it**. **The method reduces to one decision —
-how close to `B_max` to run — and `B_max` is sensed, not supplied.**
+also makes it cheaper in bytes. **The cohort pair is the one exception** (K-C, closed): `K` is
+free in *total* bytes only while `K ≤ n_req`, it is never free in *peak* rate, and its price is **not**
+staleness — staleness is set by `C/n_req`, which contains no `K` (§5.4). Metric 2 is not a trade against
+metric 1 but a **ceiling on it**. **The method reduces to one decision — how close to `B_max` to run —
+and `B_max` is sensed, not supplied** (which is why 3.1, the sensor's grid, is now the top open item).
 
 **The autonomy requirement, as a test.** *Every constant in the loop must be either (a) exact arithmetic
 on quantities the run already logs, (b) a hill-climb on something the runtime measures, or (c) a property
@@ -58,12 +59,12 @@ of the deployment the operator genuinely owns.* Anything else is a profiling dep
 
 **In one line:** *we know why it diverges, we have four fixes that work, the sizing formula's shape is
 right and its constant is 20× high because every reading's target is an 8-sample minibatch gradient —
-and G-1b closed the last route by which a **pooling** knob could have bought stability, leaving the
-controller as the only open engineering.*
+and the controller is now **built and run**: it beats its hand-set control on all three datasets, and on
+yelp-p it stopped itself at its own peak. What is not yet sound is the sensor that sets its target.*
 
 ### Load-bearing — the eight every decision is checked against
 
-*Index only. Each is stated, derived and evidenced where it points.*
+*Index only. Each is stated, derived and evidenced where it points. Numbers live in the practice doc (R2).*
 
 | what | where |
 |---|---|
@@ -74,7 +75,8 @@ controller as the only open engineering.*
 | **Time law** — `t ≥ Λ²p/(2·B·G_rule·K)`, equality **iff `s` is constant** | §4.6 |
 | **Criterion** — `ρ ≤ s·cos` at `s` ≈ 2.9. **Sizes a pool; does not bound a trajectory** | §4.4, §4.5 |
 | **Estimator** — `cos = D·√(G_rule·N/p)`: shape right, constant 20× high, shortfall entirely data-side | §6 |
-| **Shipped stack** — mean-combine · trust-ratio step · RM anneal `exp` = 0.25 · `p` for memory only | §5.1, [P2](fl_fwd_ft_practice.md#p2--the-shipped-stack) |
+| **Shipped stack** — mean-combine · trust-ratio step · **law-C landing** on a sensed `B_max` · `p` for memory only | §5.1, [P2](fl_fwd_ft_practice.md#p2--the-shipped-stack) |
+| **The result it produced** — controller vs hand-set control, three datasets | [P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid) |
 
 ### Also settled — do not re-measure
 
@@ -86,7 +88,9 @@ construction** (§3.2) · at a pinned `ρ*`, **`p` is inert** (§4.2) · **momen
 · the commit gate converts pool into commit rate at a net gain, and **`s` is an efficiency knob, not a
 safety one** (§4.5) · the collapse budget is **relative**, not absolute (§7.1) · `‖θ_tr‖` is mostly a
 **symptom** — perfect decay recovers 20–25% (§7.2) · backprop reaches **0.90** where the best
-forward-gradient arm reaches **0.876** (§7.3).
+forward-gradient arm reaches **0.876** (§7.3) · **the controller is built and run** — it beats its
+hand-set control on all three datasets and lands on its own peak (§1.4 item 5) · hill-climb **`C`, not
+`K`**: commit throughput is flat in `K` at fixed `C` (closes K-C).
 
 ### Open — and this is the entire list
 
@@ -94,15 +98,16 @@ forward-gradient arm reaches **0.876** (§7.3).
 |---|---|---|---|
 | **D-2** | **`D` is 2–3× larger on the two arms that trained than near init** — but it is not "training state": pooled across both it is *non-monotone* in accuracy, and its highest-accuracy bin reads the **lowest** `D` while pre-turn steps to post-turn. `const` vs `rm` is the leading confound. Numbers: §6.3 | the sizing formula and §8's generality — `N_req ∝ 1/D²`, so 2× is 4× in pool | **on the rig, not on an arm**: single-commit `cos` has SNR ≈ 1, so only a fixed **trained checkpoint** with unlimited probes can separate `const` from `rm` |
 | **H-S** | **A 3.5× shadow loss that is not data-side.** The rig reproduces `L` but gets `S` = 1.68 where the arms read 0.48. Prime suspect: the FD chord — `h‖v‖` ≈ `‖θ_tr‖`, so `d` is a chord-averaged slope, not `⟨g,v⟩` | the last unexplained factor in `cos` | rig: true `⟨g,v⟩` vs the shipped central FD at the shipped `h` (§6.3) |
-| **C-1** | **The controller — implementation, not research.** The stopping rule is **validated on replay**: a `Φ` trigger at 2.7–3.0 banks the peak to 0.005 mean / 0.014 worst over 10 arms, against **0.141 / 0.595** for running to the end ([P4.1](fl_fwd_ft_practice.md#p41-the-φ-stop-counterfactual)). What remains is wiring | every arm's ending, and metric 1 | **built, and verified end to end on all three datasets — plumbing only, no scored arm yet.** It closes on the arms in [buildplan §-1](fl_fwd_ft_buildplan.md), whose first unproven signal is a controller ending on `[BudgetStop]` |
-| **3.1** | **`B_max` transfers across model capacity but NOT across task** (B-1, MEASURED — §7.1/§5.5b): agnews/yahoo/yelp-p knees are neither invariant nor monotone in `num_labels`. The mechanism is geometric and general; the value is not derivable in advance | whether `ρ*`, `s`, `N` and the stop can ship as a fixed constant — they cannot | the injection probe (§5.5b) is **mandatory, not a fallback** — built and wired, but every in-run firing on record predates the `B_max = B + ln Φ_peak` correction, so **the long arms are its first honest exercise** |
-| **K-C** | **Is `K` a speed lever at all, and who pays for staleness?** `t ∝ 1/K` counts **gate iterations**, which are serial wall-clock waits only when `C = K`; the dispatcher refills to `C`, never to `K`. Staleness in commits is `C/n_req` — `K`-free. Both time and staleness may belong to `C` | which knob the controller hill-climbs (§5.5e, phase 3.4), and whether `K` is free in bytes | **K-1, with `C` held at 30** — every measurement to date moved `C` with `K` (`C/K` = 3/2/2) and cannot discriminate |
+| **3.1** | **The `B_max` sensor is mis-ranged, so what it senses is mostly `B`.** Its Φ grid starts at 1.5 and the live knee is below that on **every one of 19 fires across three datasets**, so `knee()` extrapolates from its synthetic `Φ`=1 anchor to one reading, `ln Φ_knee` is pinned into 0.21–0.42, and `B_max = B + ln Φ_knee` recedes as budget is spent. Numbers: [P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid) | **the central claim** — that `B_max` is a task property the run discovers. The controller still works without it, but "it senses the task's ceiling" is unsupported until this closes | **re-range the grid** below 1.5 and re-read the knee (buildplan row **P**, ~30 min). Nothing on disk answers it: no arm checkpoints a model |
+| **3.1b** | **Does `B_max` differ by task at all?** The three combined values (0.795 / 0.805 / 1.023) order by **fire count, not dataset**, so B-1's "neither invariant nor monotone in `num_labels`" is not confirmed by the live probe | whether `ρ*`, `s`, `N` and the stop could ever ship as a fixed constant | falls out of **3.1** — with a grid that brackets the knee, one fire per dataset settles it |
+| **G-1** | **Every arm ever run is DistilBERT + adapters at `rf`=16, `p`≈4.5e5.** The three datasets vary the *task*; `p` varies by 1.4% across them. The one time `p` moved for real — `rf`=64, `p`=118,348 — law C + the annealed gate did not compose under **any** `T_res` | "same controller, new model", the §8 extension, and `T_res`=300 / `f`=0.95, which are pinned to one `p` | a second model. Not started; [buildplan §1 hole 3](fl_fwd_ft_buildplan.md) holds the `rf`=64 numbers |
 
-**What is *not* open: the optimizer, or any pooling knob.** The four fixes enact to spec and the dynamics
-are closed by the two laws. What moved is *where the remaining loss lives* — not in the step rule, the
-combination rule or the gate, but in the **data** each reading is taken on. G-1b sharpens it: **every
-pooling stage buys progress per unit budget and none of them buys budget**, so the only quantities that
-can stop a collapse are `ρ` and `T`. That is C-1.
+**What is *not* open: the optimizer, any pooling knob, or the controller.** The four fixes enact to spec,
+the dynamics are closed by the two laws, and the controller is built and beating its control. What moved
+is *where the remaining loss lives* — not in the step rule, the combination rule or the gate, but in the
+**data** each reading is taken on, and in the **instrument** that sets the budget (3.1). G-1b sharpens the
+first: **every pooling stage buys progress per unit budget and none of them buys budget**, so the only
+quantities that can stop a collapse are `ρ` and `T`.
 
 ---
 
@@ -159,16 +164,21 @@ for months.
 
 | # | criterion | status |
 |---|---|---|
-| **1** | peak ≥ **0.86** and ends within **0.015** of it at ≥300 commits, without hand-tuning per model or α | **MET** — `065837` peaks 0.865, ends 0.862 over 715 commits. `145729` sets the best peak (0.876) but ends 0.793 |
+| **1** | peak ≥ **0.86** and ends within **0.015** of it at ≥300 commits, without hand-tuning per model or α | **MET, and now on a controller arm across task** — yelp-p `125010` ends **0.0006** below its peak over 1,348 commits; agnews `152215` peaks 0.868 |
 | **2** | the setpoint is **computed, not searched** | **MET for `ρ*`** by a different route: `ρ* = √(2·B_max/T_res)` needs no `cos` and no `D` (§4.6a). **Open for the *forecast*** — predicting the accuracy `ρ*` reaches needs `D` (§5.5a) |
 | **3** | stability readable in **~20 commits** from `B` and `A` | **MET** — both exact at any horizon; `B` predicted `112201`'s `Φ` to 1.1% over 1,364 commits |
 | **4** | every constant in the loop is dimensionless (§5.3) | **PARTIAL** — met for the step rule; the gate is dimensionless in form but its `s` is still empirical |
-| **5** | the controller **holds** the trajectory rather than sizing it once | **OPEN, rule validated.** `Φ = e^B` is exact per commit from `ρ` alone; replayed as a stop it gives up 0.005 of peak on average (P4.1). **Unbuilt, not unknown** — and never yet run *as* a controller |
+| **5** | the controller **holds** the trajectory rather than sizing it once | **MET 2026-08-20.** Run as a controller on all three datasets. yelp-p `125010` halted itself on `[BudgetStop] reason=budget` at commit 1,348 — 58% of the vclock it was given — ending 0.0006 below peak, above a control that spent its whole budget and never got there |
 
-**Item 5 is the one this program circled without naming.** Every arm to date either anneals on a schedule
-chosen offline or holds `ρ` fixed, and §4.4's design rule assumes the horizon `T` is known in advance. The
-two `const` arms demonstrate that a *correct* one-shot setpoint still collapses if the horizon outruns it,
-**at any pool size**.
+**Item 5 was the one this program circled without naming, and it is the one that just closed.** Every
+earlier arm either annealed on a schedule chosen offline or held `ρ` fixed, and §4.4's design rule assumes
+the horizon `T` is known in advance; the two `const` arms showed that a *correct* one-shot setpoint still
+collapses if the horizon outruns it, **at any pool size**. Law C removes the horizon from the inputs.
+
+**Two things item 5 does not yet show.** *(a)* **Holding is demonstrated once.** agnews and yahoo were
+killed mid-climb by a watchdog bug, so "reaches and holds" has n=1 (buildplan §2). *(b)* **No arm in this
+set ever diverged**, so the stop demonstrated *efficiency* — stopping early at no cost — not the collapse
+avoidance that motivated it. Those are different claims and should not be merged.
 
 ---
 
@@ -651,10 +661,9 @@ SIZING (from the model and the runtime -- NOTHING profiled):
            rho*   <- min( rho_max, sqrt( 2*(B_max - B) / T_res ) )     # law C (4.6a, D5)
                      T_res = 300, a RATE never decremented; rho_max = s*sqrt(max_iter*K*G_rule/p)
            run ~150 commits -- spends B ~ 0.21, Phi ~ 1.23, negligible
-  PHASE B: B_max  <- noise-injection probe, ~6 evals, forward-only        (5.5b)  [METHOD BUILT +
-           rho*   <- re-derived from the measured B_max                   VALIDATED (probe_inflation_
-                                                                            damage.py, B-1) -- LIVE-LOOP
-                                                                            WIRING NOT BUILT, see below]
+  PHASE B: B_max  <- noise-injection probe, ~6 evals, forward-only        (5.5b)  [BUILT + LIVE;
+           rho*   <- re-derived from the measured B_max                            its GRID is wrong, 3.1]
+           re-fires every 150 commits; senses combine by `mean`
   K/C, P          <- hill-climb (K,C)/tau and P/tau(P)                    (5.5e)  [NOT BUILT]
   N               <- from the gate, holding s constant = time-optimal     (4.6)
 
@@ -666,22 +675,21 @@ PER COMMIT (server):
   log rho, ||theta_tr||, top_class_share      # the three monitors (2.8)
   B += 0.5*ln(1 + rho_t^2)                    # exact, no free parameter (4.1)
   anneal rho so that B LANDS on B_max         # not Robbins-Monro: unspent budget = wasted time (4.6a)
-  stop when smoothed Phi crosses a threshold, default 2.7  # SUPERSEDES the dAcc/dLambda line this
-                                               # pseudocode had -- replay-VALIDATED (P4.1: 0.0054 given up)
-                                               # but never wired live [NOT BUILT] -- practice.md P5.2 3.3
-  periodically re-sense B_max, re-climb K and P   # 5.5b, 5.5e             [NOT BUILT -- see above: the
-                                                                            5.5b probe itself IS built,
-                                                                            only the live re-fire isn't]
+  stop when B >= f*B_max, f = 0.95            # LIVE: [BudgetStop] reason=budget action=halt
+  stop when smoothed Phi crosses 2.7          # LIVE: the collapse backstop (P4.1)
+  # saturation stop (Prechelt GL/patience)      [NOT BUILT -- buildplan row E]
   # NO accuracy target: the run finds its own ceiling (5.5f D2)
 ```
 
-**`[NOT BUILT]` means "not wired into the live commit loop", never "no method exists"** — both the `B_max`
-probe (§5.5b) and the stop rule are fully specified and validated offline. Reading the tag the other way
-almost mis-scoped Phase 3 as blocked-on-research ([P9.3](fl_fwd_ft_practice.md#p93-process-lessons)).
+**Everything above enacts to spec and has run end to end on three datasets.** The two remaining
+`[NOT BUILT]` lines — the `K`/`P` hill-climb and the saturation stop — are *additions*, not gaps: the loop
+lands and terminates correctly without either. Every place a *decision* is made from *sensed* state rather
+than arithmetic is the §0.0 autonomy requirement being met, and is why `s`, `ρ`, `N`, `I` and `p` are no
+longer decisions at all.
 
-**The four `[NOT BUILT]` lines are the entire remaining build (C-1).** Everything above them enacts to
-spec. They are the only places a *decision* is made from *sensed* state rather than arithmetic — which is
-the §0.0 autonomy requirement, and why `s`, `ρ`, `N`, `I` and `p` are no longer decisions at all.
+**The one sensed quantity that is not yet sound is `B_max`** (3.1). The probe fires and the loop lands and
+stops on what it returns, but its grid does not bracket the knee, so what it returns tracks `B` rather
+than the task. **The controller's behaviour is validated; its target is not.**
 
 ## §5.2 The lever table — this ranks every possible fix
 
@@ -779,11 +787,11 @@ with and no longer has to set.
 | `τ` round-trip time | (a) | the aggregator already times every round trip | **built, unused** |
 | `N`, `I` | (a) | the gate's closed form given `s`. *`var_threshold` replaced by an `N` target* | **built** |
 | `s`, hence `n_req` | (a) | held constant — the time-optimality condition. `n_req = p(ρ*/s)²/G_rule` | **built** |
-| `ρ*` | (a) | `min(ρ_max, √(2·(B_max−B)/T_res))`, `T_res`=300 fixed (§4.6a, D5). *The anneal exponent folds in once `B` is tracked* | **not wired** |
+| `ρ*` | (a) | `min(ρ_max, √(2·(B_max−B)/T_res))`, `T_res`=300 fixed (§4.6a, D5). *The anneal exponent folds in once `B` is tracked* | **live** |
 | **`B_max`** | **(b)** | **noise-injection probe, ~6 evals, forward-only, periodic** (§5.5b) | **offline only** |
 | **`K`, `C`** | **(b)** | **hill-climb the pair** against availability (§5.5e). *Which one carries the wall clock is K-C* | **not built** |
 | **`P`, bin size** | **(b)** | **hill-climb `P/τ(P)`** — *one lever, not four: `cos ∝ √compute`* | **not built** |
-| `dAcc/dΛ` | (b) | eval slope over a 100+ commit window — the saturation stopping signal. **Revised 2026-08-13**: raw slope superseded by a Prechelt-style generalization-loss/patience criterion on smoothed accuracy (buildplan §5, task 3.5) — same role, different statistic | **not built** |
+| saturation signal | (b) | Prechelt generalization-loss / patience on *smoothed* held-out accuracy — a raw `dAcc/dΛ` slope false-triggers on a dip and misses a masked plateau (buildplan §3 row E) | **not built** |
 | `D` | (b) | `cos` audit on a stride. **Forecast-only** (§5.5a) | **built** |
 | `p` / PEFT rank | (c) | device memory budget; inert for learning and for time | operator |
 | model, PEFT scheme | (c) | the deployment. α is **neutralised**, not sensed | operator |
@@ -818,11 +826,19 @@ number in advance. That is the right thing to lose.
 ### §5.5b Sensing `B_max` — one shot, forward passes only
 
 **Inflation can be injected instead of waited for** (the method that settled §7). Add isotropic Gaussian
-noise to the trainable slice scaled so `‖θ_tr‖` grows by `Φ`, read accuracy back at `Φ` ∈ {1.5 … 4}. The
-knee is `Φ_peak`. **~6 evals on a copy** — no training, no gradients, the same
+noise to the trainable slice scaled so `‖θ_tr‖` grows by `Φ`, read accuracy back on a grid of `Φ`, and take
+the knee on **chance-normalized** accuracy. **~6 evals on a copy** — no training, no gradients, the same
 operator set the method already restricts itself to.
 
-> **The probe measures a REMAINING budget, so `B_max = B + ln Φ_peak`** (corrected 2026-08-16). `Φ` is
+> **The shipped grid `Φ` ∈ {1.5 … 4} is wrong, and this is open question 3.1.** It was sized off B-1's
+> knees (2.0–3.5), measured offline. The *live* knee is far below 1.5 — this section already said so
+> ("biased conservative … reads the knee ~0.6–1.2 low") and the grid was never moved to match. Across 19
+> in-run fires on three datasets, **every point read chance**, so `knee()` falls through to a two-point
+> extrapolation from its synthetic `(Φ=1, 1.0)` anchor to the Φ=1.5 reading alone. The grid must bracket
+> the knee from **below**; until it does, `B_max = B + ln Φ_knee` recedes as `B` is spent and the sensed
+> value is not a task property.
+
+> **The probe measures a REMAINING budget, so `B_max = B + ln Φ_peak`.** `Φ` is
 > read against the norm of the model *as it stands now*, while `B` accumulates from `θ_0`; taking
 > `ln Φ_peak` as the total makes the two incomparable, and in practice makes `B_max` land *below* the
 > spend on the first fire — `ρ*` = 0 for 23–48% of commits on all four P-4 arms
@@ -831,9 +847,11 @@ operator set the method already restricts itself to.
 > stop the run — which is what makes 3.3's stop a genuine backstop rather than a race with the sensor.
 
 **Built** as `probe_inflation_damage.py` and wired into the aggregator as `[BmaxProbe]`
-(`b_max_probe_every`), though every in-run firing on record predates the correction above. It runs on the
+(`b_max_probe_every`); it fires live every 150 commits and 19 fires are on record. It runs on the
 model being trained, so it calibrates the deployment rather than a proxy, and it is **biased conservative** — it noises a model that cannot re-fit, reading the knee
-~0.6–1.2 low (§7.1), so it under-spends budget, never over-spends.
+~0.6–1.2 low (§7.1), so it under-spends budget, never over-spends. **`b_max_probe_phis` is read from
+`args` and set by nothing**, so the grid is the module constant in practice — and `condition_fp` does not
+cover it.
 
 **Why `B_max` is the right constant to bet on — and why it must still be sensed, not shipped fixed.**
 *(1)* It is **geometric, not task-shaped in its mechanism** — `Φ_peak` ≈ 2.7 says a head fails past ~68°
@@ -842,10 +860,11 @@ post-collapse accuracy lands at its own chance level `1/K`, the same directional
 everywhere). *(2)* It **transfers across model capacity** — two models differing 1.77× in norm share a
 knee at the same `Φ` (§7.1). *(3)* It **held over the whole agnews portfolio unfitted** — 7/7 turned arms
 at `Φ` = 2.41–3.11, and as a stopping rule it gives up 0.005 of peak on average (P4.1). **It does NOT
-transfer across task** — B-1's three knees are neither invariant nor monotone in `num_labels` (§7.1 has
-the numbers). So the *mechanism* is geometric and general; the *value* is not derivable from a dataset
-property known in advance, which is what makes the probe mandatory rather than a fallback. The
-conservative bias is still uncalibrated per-task.
+transfer across task** — B-1's three *offline* knees are neither invariant nor monotone in `num_labels`
+(§7.1 has the numbers). So the *mechanism* is geometric and general; the *value* is not derivable from a
+dataset property known in advance, which is what makes the probe mandatory rather than a fallback.
+**The live probe has not yet confirmed the across-task difference** (3.1b): its three combined values
+order by fire count, not by dataset — which is exactly what 3.1 predicts a mis-ranged grid would do.
 
 ### §5.5e Adaptive `K` and `P` — the same rule twice
 
@@ -875,7 +894,7 @@ use the *current* value: `Λ = Σ ρ_t·√(G_rule_t·N_t/p)`, and the time law'
 | # | question | **decision** | why |
 |---|---|---|---|
 | **D1** | `B_max` needs a partly-trained model to measure, but `ρ*` needs `B_max` to start | **Two-phase from a safe prior.** Phase A at `B_max` = **ln 2** — *"the model survives its weights doubling"* — giving `ρ*` = **0.068 at `T_res` = 300**; after ~150 commits that has spent `B` ≈ 0.27 (`Φ` = 1.31). Phase B injection-probes and re-derives `ρ*` | ln 2 is the **weakest non-trivial claim**, not a fitted number, and Phase A's spend is negligible against *any* plausible `B_max` |
-| **D2** | what is "the target accuracy"? | **No target.** Stop when `B → B_max` (the `Φ`-threshold rule, 3.3, replay-validated P4.1) crosses first, **or** the saturation criterion (3.5, revised 2026-08-13 to Prechelt GL/patience — this row originally said raw `dAcc/dΛ`) does, whichever fires first — model §5.5f, buildplan §5 | a supplied target is itself an operator input, and §0.0 admits none |
+| **D2** | what is "the target accuracy"? | **No target.** Stop when `B → B_max` (the `Φ`-threshold rule, 3.3, replay-validated P4.1) crosses first, **or** the saturation criterion (3.5, Prechelt GL/patience) does, whichever fires first — model §5.5f, buildplan §3 row E | a supplied target is itself an operator input, and §0.0 admits none |
 | **D3** | is the communication budget a constraint? | **A tiebreak.** Minimise bytes *subject to* time-first | spending `B` and raising `P` cut time and bytes together; `K` is free in *total* bytes while `K ≤ n_req` (K-C) |
 | **D4** | which knobs may the operator still supply? | **Model, PEFT scheme and `p` only.** `P` is **sensed** by hill-climbing `P/τ(P)` | the strongest autonomy claim the evidence supports. `p` stays operator-owned because it is measurably **inert** |
 
@@ -1087,8 +1106,8 @@ online control law. Do not write it up as a new theorem.
 | claim | verdict |
 |---|---|
 | **C1 · `\|JVP\|` probe selection** | **Refuted as written** (`b²/a` = 1). The **combination rule** is the contribution, and §4.6 makes it a *speed* result: **3.35× less wall clock** at zero extra cost |
-| **C2 · async aggregation / gate** | **A measured win, stronger than throughput.** holding `s` constant is the **time-optimality condition** (§4.6), not merely a throughput heuristic. What C2 is *not* is a stability mechanism |
-| **C3 · aggregation weighting (ω)** | **Magnitude half: park** (ω spans 0.70–0.87 against a ≥10× gap). **Freshness half: on the critical path** — staleness is the only cost of running the cohort wide, and `D(·)` has never been measured against `C` or `K` (K-C) |
+| **C2 · async aggregation / gate** | **A measured win, stronger than throughput.** Holding `s` constant is the **time-optimality condition** (§4.6), not merely a throughput heuristic. Now carried by a controller that beats its hand-set control on three datasets. What C2 is *not* is a stability mechanism |
+| **C3 · aggregation weighting (ω)** | **Magnitude half: park** (ω spans 0.70–0.87 against a ≥10× gap). **Freshness half: on the critical path** — staleness is the only cost of running the cohort wide, and `D(·)` has never been measured against `C` or `K` |
 | **S1 · server momentum** | **Refuted.** `√x` progress for `x` budget — a re-parameterisation of `ρ` |
 | **S2 · variance-gate recalibration** | **Superseded** — replace the loop, do not re-tune the threshold |
 | **S3 · aggregation-rate tempering** | **Subsumed** — under trust-ratio `ρ` = `ρ*_t` regardless of ω |

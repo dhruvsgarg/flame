@@ -5,13 +5,13 @@
 > ledgers, and they are the source of truth for evidence.**
 >
 > **Status and next steps are NOT here — they live in
-> [fl_fwd_ft_buildplan.md §-1](fl_fwd_ft_buildplan.md), the one status board, updated in place.**
+> [fl_fwd_ft_buildplan.md §1–§3](fl_fwd_ft_buildplan.md), the one status board, updated in place.**
 > [fl_fwd_ft_solution.md](fl_fwd_ft_solution.md) (`§0…§8`) owns the *why*; cited here as "model §x".
 
 | you want… | go to |
 |---|---|
 | **status · what to do next · how to build it** | **[fl_fwd_ft_buildplan.md](fl_fwd_ft_buildplan.md)** — status board, queue, specs |
-| **the generality claim, as a checklist** | **[buildplan §-0](fl_fwd_ft_buildplan.md)** |
+| **the generality claim, and its scoreboard** | **[buildplan §1](fl_fwd_ft_buildplan.md)** |
 | what to launch an arm with · what defaults to change | [P2](#p2--the-shipped-stack) · [P2.1](#p21-ship-checklist) |
 | what a lever did, and its flag | [P3](#p3--knob-ledger) |
 | what an arm scored | [P4](#p4--arm-ledger) |
@@ -63,7 +63,7 @@ h*||v|| = h*sqrt(p)          10.203        6.711
 ```
 probe_combine        = mean
 server_step_rule     = trust_ratio
-rho_schedule / exp   = rm / 0.25                  # mechanism settled; the LANDING law is C-1, unbuilt
+rho_schedule / exp   = rm / 0.25                  # the CONTROL arm's rule; a controller runs law C
 rho*                 = min(rho_max, sqrt(2*(B_max-B)/T_res))   # law C; T_res=300 FIXED, never
                                                    # decremented. ~0.068 at the ln2 prior (T5)
 commit_gate          = n_target
@@ -114,7 +114,7 @@ Nothing reaches a verdict without predicted-vs-observed numbers and a run id.
 |---|---|---|
 | **combination rule** · `probe_combine: {select\|mean}` | at matched `N`=200: `ρ` **5.386×** down, `‖Δθ‖` **5.430×**, against a predicted 5.466× (1.5%). `‖θ_tr‖` end 60.7 → 14.5; `‖θ‖²` growth rate **106×** lower (predicted 30×) | **WORKS · 5/5 — 10× in `ρ/cos` for zero extra compute, bytes or `η`/`N`/`p`.** Site `_accumulate_mean_over_probes`; also fixes the `P=1` crash (`sorted_indices[-2]`) and an RNG-stream mismatch |
 | **step rule** · `server_step_rule` | `ρ = ρ*` to **8.7e-5**; `(1+ρ*²)^{T/2}` predicts `‖θ_tr‖` to **0.013%**; α moves `ρ` by **0 to 6 s.f.** | **WORKS.** Alone it does not bound `‖θ‖` — constant `ρ*` is still geometric. Ships with the anneal. Site `_apply_weighted_update` (pool-then-apply). Subsumes S3 |
-| **anneal** · `rho_schedule`/`rho_exp` | enacts to **4.5e-4** over 318 commits. `exp`=0.55 drives `ρ` **17× below setpoint** by c186 → arm flat at 0.34; **`exp`=0.25 adequate** though formally outside the RM window | **WORKS; `exp`=0.25**, sized to the horizon. Superseded in principle by the budget-landing law (model §4.6a), unbuilt |
+| **anneal** · `rho_schedule`/`rho_exp` | enacts to **4.5e-4** over 318 commits. `exp`=0.55 drives `ρ` **17× below setpoint** by c186 → arm flat at 0.34; **`exp`=0.25 adequate** though formally outside the RM window | **WORKS; `exp`=0.25**, sized to the horizon. **Superseded on a controller arm** by the budget-landing law (model §4.6a), which is live; `rm` is what the control arm runs |
 | **`ρ*` setpoint** | 0.03/0.06/0.09 → peak **0.695 / 0.801 / 0.846**, all still climbing at cutoff, all stable (`Φ` ≤ 1.145) | **band not closed.** The anneal spends most of the setpoint. Prefer the derivation (model §4.6a); read P4 by `Λ`, not by `ρ` |
 | **commit gate** · `commit_gate: {var\|n_target}` | `N_req` closed form **exact** (28.1 `mean` / 1,013.3 at ρ*=.06; 94.2 `select` at ρ*=.01). At `K` = 30/50 it left the cap for the first time: `I` = **4 / 2**, `N` = 120 / 100, `commit_reason=natural` 100% vs `cap` 100% at `K`=10 | **MECHANISM SETTLED** — an `N`-controller, and it enacts |
 | **gate `s`, throughput** (G-1) · `gate_safety_s` | `s` = 2.9/1.5 ⇒ `n_req` = 19.3/72.1, `I` = **2/8** off the cap 100%. Commits/vclock-h **11.3×/2.6×** the control; progress/commit **0.316/0.632** vs `√(N/200)` (**exact**); net `A`/vclock-h **2.13×/1.33×** vs a registered 2.2×/1.4× | **WORKS — the gate converts pool into commit rate at a net gain.** But `A`/vclock-h is **not** accuracy/vclock-h (P4.3) |
@@ -360,11 +360,11 @@ allowance. **P2's `gate_rho_ref=annealed` stands.**
 
 **Real wall, not vclock, is the actual constraint.** `annealed` banked 4.2× the commits (3,353 vs 799) in
 less vclock — that's what burned the ceiling: 4.2 vclock-s per real-wall-s vs `setpoint`'s 3.55. **This is
-the second `annealed` arm to die this way** (buildplan §5 already flagged this same `003648` run when it
+the second `annealed` arm to die this way** (buildplan §3 row W′ already flagged this same `003648` run when it
 first hit the ceiling). Confirms 3.3's backstop is not optional before `annealed` ships as a default.
 
 **Why it happened — corrected 2026-08-15 by T5's replay, and the first version was wrong.** This section
-originally attributed the death to the cos-audit stride tax, and buildplan §4 to "a schedule that spends
+originally attributed the death to the cos-audit stride tax, and the buildplan to "a schedule that spends
 its budget unevenly". Both were plausible; neither was measured. **`003648` ran with the commit gate's `I`
 floored at 1 on 98% of its commits** — 3,429 round trips for 3,353 commits, against `145729`'s 7,560 for
 945. The audit tax is real but it is a *per-commit* charge, so the mechanism is the commit count, and the
@@ -381,7 +381,7 @@ server-side path. Per round trip that is **8.40 s against `145729`'s 1.75 — 4.
 **Round trips per commit is therefore the metric a preflight has to carry**, not commits and not the
 floored fraction — flooring is *safe* (`N > n_req` ⇒ `ρ/cos < s`, conservative), it is merely the point at
 which per-commit cost stops being amortised. T5 pre-registered **≥3** as the gate and used it to refute
-`T_res` = 500 for the landing law (buildplan §5).
+`T_res` = 500 for the landing law (buildplan §5.3).
 
 ### P4.6 P-1 — `P` under `mean` is compute-bound, report and stop
 
@@ -463,7 +463,7 @@ its own batch list with `data_id`. agnews' shard is exactly 150 batches, so agne
 coincidence; **yahoo trained on 1,200 of each client's 14,000 samples — 8.6% of the dataset, the same
 1,200 every lap**, and yelp-p would have used 23%. Nothing raises: the list is merely longer than the
 index. **Fixed: derived from `dataset_registry.total_data_bins` (150 / 1,750 / 650 at `C`=100, batch 8 —
-the numbers buildplan §1 already states); agnews byte-identical.**
+the numbers buildplan §5.1 already states); agnews byte-identical.**
 
 **Fixes verified on GPU, `225224`** (agnews, `--b-max 0.05 --t-res 20` to force the stop early, probe off,
 ~13 min): `[DataBins] total_data_bins=150 source=registry` · `[BudgetStop] reason=budget action=halt
@@ -593,7 +593,7 @@ controllers by construction — a smoke budget cannot reach `[BudgetStop]`.
 **zero** on every pre-fix arm that set `eval_max_samples`. It was also the dominant cost term, not a
 correctness fix that happened to be cheap — `eval_wall_s` reads **12.5 s** per eval against the pre-fix
 **89.2 s**, taking yahoo from **79 to 282 commits/h** (yelp-p 296). [Buildplan
-§11.3](fl_fwd_ft_buildplan.md#113-the-rate-constant--why-the-smoke-sizes-the-real-run)
+§4.5](fl_fwd_ft_buildplan.md#45-sizing-a-budget-and-the-profile)
 pre-registered both branches; the seq-256 cost is **not** intrinsic, and node 2's 898-commit projection
 falls from 11.3 h to ~3.2 h. Eval is still the largest single tax at ~30% of arm wall (24 × 12.5 s of a
 994 s arm, one eval per two commits) — a cadence choice now, not a defect.
@@ -642,11 +642,33 @@ at 28,885 of a 50,000 vclock ceiling** — 58%. It ends **0.0006 below its peak*
 (§4.4), 93% of the ceiling. Its control `161751` ran the full 50,000 and returns
 `[VERDICT] every readable gate holds`.
 
-**yahoo's `B_max` sensor works.** `125003` fired **6 `BmaxProbe`s from commit 150, none declined at
-chance**, and sensed `B_max` **up** from the `ln 2` prior to **0.8048** — the failure mode of P4.8's
-`234931`, whose first probe declined at commit 25 with the model still at chance, does not recur once the
-arm learns. Three datasets now sense three different `B_max` unsupplied — 0.510 / 0.805 / 1.023 — and
-agnews is the only one that went down.
+**The `B_max` probe fires on all three now — and its Φ grid is mis-ranged.** 19 fires across the three
+controllers (5 / 6 / 8), none declined at chance, so P4.8's `234931` failure — first probe declining at
+commit 25 with the model still at chance — does not recur once the arm learns. But **every grid point on
+every fire came back at chance**:
+
+| | chance | Φ=1.5 | 2.0 | 2.5 | 3.0 | 3.5 | 4.0 |
+|---|---|---|---|---|---|---|---|
+| agnews fire 1 | 0.250 | 0.277 | 0.248 | 0.232 | 0.244 | 0.264 | 0.264 |
+| yahoo fire 6 | 0.100 | 0.318 | 0.125 | 0.080 | 0.105 | 0.092 | 0.100 |
+| yelp-p fire 8 | 0.500 | 0.531 | 0.482 | 0.482 | 0.482 | 0.518 | 0.490 |
+
+`PHI_GRID = (1.5, 2, 2.5, 3, 3.5, 4)` was sized off B-1's knees of 2.0–3.5, but the **live** knee is far
+lower — `bmax_probe.py`'s own docstring says the probe "reads the knee ~0.6–1.2 low" and the grid was
+never moved to match. So `knee()` never brackets it: it falls through to a two-point extrapolation between
+its synthetic `(Φ=1, normalized 1.0)` anchor and the single Φ=1.5 reading. Recomputed over the fires,
+**5 of 8 sampled use one grid point and 3 use two; 2.5–4.0 are consulted on none** — 4 of 6 evaluations
+in a 120–210 s probe do nothing.
+
+**The consequence is that `B_max` tracks `B`.** `Φ_knee` is pinned into 1.23–1.98 and `B_rem = ln Φ_knee`
+into 0.21–0.42 regardless of the model, so `B_max = B + B_rem` recedes as budget is spent. Sensed rises
+monotonically from ≈0.50 at fire 1 on **all three** datasets — agnews 0.507 → 0.939, yahoo 0.483 → 1.012,
+yelp-p 0.522 → 1.186 — and the combined `B_max` (0.795 / 0.805 / 1.023) orders by **fire count, not
+dataset**. The stop still terminates, because `mean` lags a rising sequence: yelp-p halted at
+`B`=0.9721 ≥ 0.95 × mean 1.0231, while its **latest** sense was 1.186, which would not have stopped it.
+**So the termination is arithmetic on the combiner, not `B_max` converging** — and no claim that the three
+datasets have *different* `B_max` survives this. Buildplan row **P** re-ranges the grid; nothing on disk
+can answer it offline, because no arm checkpoints a model.
 
 **§5.2's yahoo pre-registration resolved, in the good direction.** It read: yahoo reaching ~0.6–0.7 by
 `Λ` ≈ 1.0 means the agnews `Λ`-curve transfers. **yahoo `125003` reached 0.6571 at `Λ`=0.994** —
@@ -684,7 +706,7 @@ ceiling does not shorten the arm, it voids it.
 **The estimator is finished; what is left is the controller.**
 
 > **The queue itself moved.** What to do next, in order, with costs and done-when, is
-> **[buildplan §-1](fl_fwd_ft_buildplan.md)** — one status board, updated in place. What remains here is
+> **[buildplan §1–§3](fl_fwd_ft_buildplan.md)** — one status board, updated in place. What remains here is
 > the *record*: P5.1's registered arms, P5.2's phase outcomes, P5.3's open hypotheses.
 
 ### P5.1 Registered nodes
@@ -713,7 +735,7 @@ once the result has landed in [P3](#p3--knob-ledger), [P4](#p4--arm-ledger) or t
 
 #### Phases 0, 1 and 2 — **all landed (2026-08-12/15)**
 
-Specs and gates: buildplan §2–§4. Outcomes, each already in a ledger: **Phase 0**, all 10 instrument tasks
+Specs and gates: buildplan §4–§6. Outcomes, each already in a ledger: **Phase 0**, all 10 instrument tasks
 (§2's table maps each to its result). **Phase 1**, B-1 — knees *erratic*, neither invariant nor monotone
 in `num_labels`, which is what makes 3.1 mandatory infrastructure (model §7.1/§5.5b); replicated same day,
 2 independent runs per dataset. **Phase 2**, the three registered nodes — K-1 (`C` not `K` carries the
@@ -734,7 +756,7 @@ defect 3) — read trips/commit per quintile at run time. And 0.10's dataset-swi
 #### Phase 3 — the controller · **built 2026-08-15, corrected 2026-08-16 by its first arms**
 
 All five shipped components are live in `FedSgdAggregator`; the two that are not built are 3.5 and 3.4's
-mid-run `P` change. Decisions, constants and the open questions a re-run must answer: **buildplan §5**.
+mid-run `P` change. Decisions, constants and the open questions a re-run must answer: **buildplan §5.3–§5.4**.
 
 | # | component | state |
 |---|---|---|
@@ -760,7 +782,7 @@ time-to-accuracy, but both controller arms ended on `max_runtime_s` rather than 
 defects are fixed (`5441db34a`) and verified live on both datasets — agnews `225224`, yahoo `234931` —
 and the whole chain smoked clean on all three datasets 2026-08-18 ([P4.10](#p410-the-2026-08-18-smoke--clean-and-what-it-settled)).
 **No scored arm exists yet under the fixed code.** The re-run gate, launch commands and acceptance
-criterion are [buildplan §6 and §11](fl_fwd_ft_buildplan.md); what stays here is the two design decisions
+criterion are [buildplan §1 and §4](fl_fwd_ft_buildplan.md); what stays here is the two design decisions
 those arms are pinned to.
 
 **(1) The control runs `setpoint`, not the shipped `annealed`.** `rm`/0.25 + `annealed` is bit-for-bit
@@ -848,7 +870,7 @@ Process lessons: [P9.3](#p93-process-lessons).
 | **Run `annealed` at `ρ*` ≤ 0.01** | `220627`'s dead zone: `N_req` → 0 by c20, `I` floored at 1, peak 0.394 decaying to 0.274 |
 | **Extrapolate `A` per vclock-hour into an accuracy ranking** | `A` accumulates *through* the turn while accuracy falls — G-1's projection ordered its arms backwards |
 | **Score stability by the `‖θ‖²` log-log slope** | Bounded above by 1 under trust-ratio **by construction**. Score `B` and `Λ` |
-| **Reset `T_res` when `B_max` is re-sensed**, or count it down at all | A receding horizon that never lands (`ρ*`→0 forever); counting down makes `T` an operator input, which §4.6a forbids. `T_res` is a **rate**, not a deadline — buildplan §5, T5 |
+| **Reset `T_res` when `B_max` is re-sensed**, or count it down at all | A receding horizon that never lands (`ρ*`→0 forever); counting down makes `T` an operator input, which §4.6a forbids. `T_res` is a **rate**, not a deadline — buildplan §5.3 |
 | **Clamp `ρ*_t ≤ ρ*₀` under the landing law** | `ρ*₀` is computed from the `ln 2` **prior**, so the clamp pins `ρ*` there and blocks 3.1's re-sense from spending the budget it just measured — it defeats the probe. The correct cap is gate reachability, `s·√(max_iter·K·G_rule/p)` |
 | **`T_res` = 500 as the landing-law constant** | Refuted on replay (T5): 2.46 round trips/commit on yahoo, 2.26 on the `ln 2` prior, against a ≥3 gate. **300** passes both. 500 was only ever chosen to reproduce the portfolio's empirical `ρ*`=0.06 (§4.6a), never derived |
 | **Judge a landing schedule by how much `Λ` it banks** | `Λ = 2B/s` wherever the gate holds `s` (P3, T5), so **every** schedule banks the same `Λ` at the same `B`. Schedules differ in commits spent, nothing else. Compare at matched `B` or the comparison is empty |
@@ -1153,7 +1175,7 @@ Each costs a wasted run.
 - **A missing attribute costing a full night**, then a quieter repeat that emitted a wrong number instead of crashing — both now preflighted.
 - **Attributing a run's death to a plausible mechanism instead of a measured one.** `003648`'s
   `[SIM_WALL_CEILING]` was written up twice — as the cos-audit tax (P4.5) and as "a schedule that spends
-  its budget unevenly" (buildplan §4) — before anyone counted its round trips. Both were wrong: `I` was
+  its budget unevenly" — before anyone counted its round trips. Both were wrong: `I` was
   floored at 1 on 98% of commits, and one `grep` of `pool_size` on telemetry already on disk would have
   said so on the day. **A death gets a ratio, like every other claim in this document, before it gets a
   sentence.**
@@ -1161,6 +1183,15 @@ Each costs a wasted run.
   returns `ρ*` = 0.062 against the 0.06 the portfolio found by search (§4.6a) — a back-fit, and it failed
   the first composition test it ever faced. A constant that has never been checked against anything but
   the number it was chosen to match is not evidence.
+- **An instrument sized offline, never re-ranged when the online reading moved.** The `B_max` probe's Φ
+  grid was sized on B-1's *offline* knees (2.0–3.5). Its own docstring says the live probe reads the knee
+  "~0.6–1.2 low", and nobody moved the grid, so for 19 fires it reported a knee at the edge of a range
+  that never contained it. **The tell was in every log line and read as normal**: a curve whose points are
+  all equal is not a curve. Print the fraction of a grid the estimator actually consumed.
+- **A guard that can kill must know when its subject has finished.** `watch_arm.py` watched by process
+  group, which outlives the aggregator by the teardown, so it fired a hang predicate on a run that had
+  already ended cleanly — killing the teardown and writing a stall file that says the arm died. Any
+  watchdog needs a positive completion signal, not just the absence of one.
 - **Scoping a task from its pseudocode summary tag alone.** §5.1's `[NOT BUILT]` on 3.1's `PHASE B` line
   reads as "no method exists" if you stop there — it doesn't, until you also read §5.5b two sections down,
   which says the method is fully specified *and already coded* (`probe_inflation_damage.py`, used for the
@@ -1182,18 +1213,21 @@ died. This answers what has **never been tried**, and which findings are federat
 | **adaptive `P`** | trainer | GEN | same hill-climb as `K`, but `P` also cuts bytes. Needs a **mid-run `P` change**, which no code path supports, and a per-commit `G_rule` | model §5.5e · P5.2 phase 3.4 |
 | **adaptive `K` / `C`** | selection | **FL** | **K-C landed (K-1, 2026-08-13, see P3): `C` buys the wall clock, `K` doesn't** at fixed availability. `dynamic_kc`'s `k_max` = 15 is backwards regardless. Whether `K` matters under *variable* availability, or more for forward- vs backprop-trained gradients, is untested — H-T (P5.3) | hill-climb `C` (3.4); H-T for the availability/forward-vs-backprop split |
 | **staleness / freshness weighting** | aggregation | **FL** | genuine at `C` ≥ 60. The **only** cost of running the cohort wide, so its price — `D(·)` — is what caps it | **C3's freshness half**, the one untried paper claim |
-| **`B_max` across models** | — | GEN | transfers across model capacity (`rf`=16 vs 64, §7.1), does NOT transfer across task (B-1, 2026-08-13: agnews/yahoo/yelp-p erratic, not monotone in `num_labels`) | **3.1**, now mandatory |
+| **`B_max` across models** | — | GEN | transfers across model capacity (`rf`=16 vs 64, §7.1). **Does not transfer across task per B-1's OFFLINE sweep** — but the live in-run probe has not reproduced that: its three values order by fire count, not dataset ([P4.11](#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid)) | **3.1** — re-range the Φ grid before believing either reading |
 | **probe selection on anything but `\|d\|`** — curvature `vᵀHv` · split-half SNR · trust-region | trainer | GEN | the three candidates that are *not* stability-neutral, all already paid for; specified in [P5.3](#p53-open-hypotheses) | **H-H**, then future work |
 | **block-coordinate probing** | trainer | GEN | costed on paper and predicted inert (P5.3), needs `L`× the commits | model §8 — free in MoE |
 | **low-rank / subspace probing** | trainer | GEN | needs a good subspace *and* a way to broadcast it | the other `√(n/p)` escape |
 | **precision (bf16 / fp32)** | trainer | GEN | sets the usable `h` window, so it gates H-S | future work |
 | **adapter placement / PEFT family** | model | GEN | `‖θ_tr‖ ∝ √p` is what makes `p` inert, and it holds for *adapter-style* init | **the assumption most likely to break elsewhere** |
-| **model / task** | — | GEN | every OTHER constant is fitted on DistilBERT/agnews — `B_max`, the one constant on the operating path, is now measured erratic across task (B-1) | **3.1** covers `B_max`; the rest is future work |
+| **model / task** | — | GEN | **the task axis now has three points; the model axis still has none.** Every arm ever run is DistilBERT + adapters at `rf`=16, and the three datasets differ in `p` by 1.4%. `T_res`=300 and `f`=0.95 are pinned to that `p` — at `rf`=64 law C does not compose with the gate under any `T_res` | a second model. Nothing smaller settles it |
 | **ω / freshness magnitude** | aggregation | **FL** | ω spans 0.70–0.87 against a ≥10× gap; trust-ratio removes it from magnitude | **C3's magnitude half — parked** |
 | **`C` concurrency** | selection | **FL** | caps `K`; **never varied independently, and every `K` result is confounded with it** | the axis K-1 must **hold fixed** |
 | **sim compute-vs-delay crossover (SCT parity)** | trainer | **FL, sim-only** | `FedSgdTrainer.py:683-685` charges vclock as `max(real_gpu_time_s, delay_s)` per round — the availability-delay model (floor `training_delay_floor_s`=4.0s) currently dominates and hides real GPU compute (`compute_s`≈0.6–1.6s at `P`=10/30, measured on `003628`/`015455`) inside it, so `sct` (the simulated-completion timestamp the aggregator orders updates by) tracks the delay model, not raw compute. **Untested: once real compute exceeds the delay floor** (higher `P`, a bigger model, or a tighter/lower-floor availability trace), `sct` starts tracking real GPU time directly instead — whether aggregator ordering, `commit_gate`, and `wall_clock_preflight.py`'s flat `τ(K)` model still hold in that regime is unknown. Not a bug today; flagged for whenever `P` is raised past the P-1 default | revisit before raising `P` in production, or when moving to a tighter availability trace. Not urgent — parked |
 
-**Two reads.** *(1)* **The trainer-side knobs are the generic ones, and the most interesting are
+**Three reads.** *(1)* **The trainer-side knobs are the generic ones, and the most interesting are
 untried** — curvature selection and `P` under averaging; both rung 1–2, neither needs the FL stack.
-*(2)* **Everything calibrated rather than derived is calibrated on one model and one task** — but D4 and
-the time law shrank that debt to **one constant, `B_max`**, the cheapest to measure.
+*(2)* **Everything calibrated rather than derived is calibrated on one model** — D4 and the time law
+shrank that debt to **one constant, `B_max`**, and the task axis now has three points under it.
+*(3)* **`T_res` and `f` are the debt that did not shrink.** They are not sensed, they were sized on
+agnews, and the one time `p` moved they stopped composing. They travel across *task* on this evidence;
+nothing says they travel across *model*.
