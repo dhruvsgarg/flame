@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Pull the 2026-08-20 arms out of `experiments/` into a small JSON cache.
+"""Pull the 2026-08-20 runs out of `experiments/` into a small JSON cache.
 
-The aggregator telemetry is 1.7-2.8 GB per arm, so every figure reading it
+The aggregator telemetry is 1.7-2.8 GB per run, so every figure reading it
 directly would re-scan tens of gigabytes. One pass here, cached; the figure
 script never touches `experiments/`.
 
@@ -19,13 +19,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS = os.path.normpath(os.path.join(HERE, "..", "..", "experiments"))
 OUT = os.path.join(HERE, "data")
 
-ARMS = {
+RUNS = {
     "agnews_controller": "run_20260820_152215_fluxtune_agnews*",
     "agnews_control":    "run_20260820_021843_fluxtune_agnews*",
     "yahoo_controller":  "run_20260820_125003_fluxtune_yahoo*",
     "yahoo_control":     "run_20260820_151619_fluxtune_yahoo*",
     "yelp-p_controller": "run_20260820_125010_fluxtune_yelp-p*",
     "yelp-p_control":    "run_20260820_161751_fluxtune_yelp-p*",
+    # N1-N3: anchor + log_only, run straight through the Phi=2.7 rail
+    "agnews_anchor":     "run_20260821_014242_fluxtune_agnews*",
+    "yahoo_anchor":      "run_20260821_014328_fluxtune_yahoo*",
+    "yelp-p_anchor":     "run_20260821_014406_fluxtune_yelp-p*",
 }
 
 # [BmaxProbe] commit=150 B_max 0.693147 -> 0.507491 (sensed=... n=1 B_rem=0.234791
@@ -143,7 +147,7 @@ def main():
     a = ap.parse_args()
     os.makedirs(OUT, exist_ok=True)
 
-    for name, pattern in ARMS.items():
+    for name, pattern in RUNS.items():
         dest = os.path.join(OUT, f"{name}.json")
         if os.path.exists(dest) and not a.force:
             print(f"  [skip] {name}")

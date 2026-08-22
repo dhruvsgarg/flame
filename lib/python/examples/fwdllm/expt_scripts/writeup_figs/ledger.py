@@ -1,8 +1,8 @@
-"""Parse P4's arm ledger out of `fl_fwd_ft_practice.md`.
+"""Parse P4's run ledger out of `fl_fwd_ft_practice.md`.
 
 The ledger is the source of truth for every historical number (R2: one number,
 one home), so the figures read it rather than carrying a second copy that can
-drift. Columns: Lambda | arm | run | T | rho_c1 | B | Phi pred -> obs | peak | final
+drift. Columns: Lambda | rule | run | T | rho_c1 | B | Phi pred -> obs | peak | final
 """
 import os
 import re
@@ -11,7 +11,7 @@ DOC = os.path.join(os.path.dirname(__file__), "..", "..", "fl_fwd_ft_practice.md
 
 _ROW = re.compile(
     r"^\|\s*([\d.]+)\s*\|"          # Lambda
-    r"\s*(.+?)\s*\|"                # arm description
+    r"\s*(.+?)\s*\|"                # run description
     r"\s*`(\w+)`\s*\|"              # run id
     r"\s*(\d+)\s*\|"                # T (commits)
     r"\s*([\d.]+)\s*\|"             # rho at commit 1
@@ -32,7 +32,7 @@ def load():
     with open(os.path.normpath(DOC), encoding="utf-8") as fh:
         inside = False
         for line in fh:
-            if line.startswith("## P4 — Arm ledger"):
+            if line.startswith("## P4 — Run ledger"):
                 inside = True
                 continue
             if inside and line.startswith("### "):
@@ -64,7 +64,7 @@ def load():
 
 # The 2026-08-20 P-4 pairs (P4.11). Not in the ledger table above, which predates
 # them; measured this session from `server_update` telemetry and replay_scoring.
-ARMS_2026_08_20 = [
+RUNS_2026_08_20 = [
     # dataset,  role,        run,      commits, B,      Phi_pred, Phi_obs, Lambda, peak,   final
     ("agnews", "controller", "152215",  899, 0.6972, 2.01, 2.01, 1.001, 0.8676, 0.8661),
     ("agnews", "control",    "021843",  938, 0.1075, 1.11, 1.11, 0.570, 0.8432, 0.8430),
@@ -74,14 +74,19 @@ ARMS_2026_08_20 = [
     ("yelp-p", "control",    "161751",  997, 0.1109, 1.12, 1.12, 0.597, 0.7280, 0.7139),
 ]
 
-# Backprop reference per dataset (exact-gradient, 10 clients x 3 epochs) -- §5.1.
+# What the FL task is expected to reach: 100 non-IID clients, forward-only,
+# adapters. THIS is the bar the runs are scored against -- build plan §1.
+FL_TARGET = {"agnews": 0.880, "yahoo": 0.660, "yelp-p": 0.820}
+
+# Centralized exact-gradient run, 10 clients x 3 epochs (§5.1). A check that the
+# data path works, NOT a target -- it does not share the federated setting.
 REFERENCE = {"agnews": 0.850, "yahoo": 0.734, "yelp-p": 0.874}
 
 
 def recent():
     keys = ("dataset", "role", "run", "T", "B", "phi_pred", "phi_obs", "lam",
             "peak", "final")
-    return [dict(zip(keys, r)) for r in ARMS_2026_08_20]
+    return [dict(zip(keys, r)) for r in RUNS_2026_08_20]
 
 
 if __name__ == "__main__":
