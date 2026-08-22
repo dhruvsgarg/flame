@@ -26,6 +26,7 @@ from dataclasses import dataclass
 B_MAX_PRIOR = math.log(2.0)          # D1's Phase-A prior: "the weights may double"
 T_RES_DEFAULT = 300.0                # T5: 500 floors the gate on yahoo and the prior
 BUDGET_STOP_FRAC_DEFAULT = 0.95      # stop at B >= f*B_max; law C never reaches B_max
+PHI_RAIL_DEFAULT = 3.0               # the retention floor; peaks land at 2.82-3.00 (§5.5)
 TRIPS_PER_COMMIT_MIN = 3.0           # 003648 died at 1.02; 145729 survived at 8.0
 
 

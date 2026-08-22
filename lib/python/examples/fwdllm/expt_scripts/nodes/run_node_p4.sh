@@ -184,9 +184,15 @@ fi
 # agnews arm and to P4's calibration; re-profiling now would re-price them all.
 # --force would additionally disable the dataset-match check, which is
 # config-derived and is the one that actually protects the vclock.
+# Row M1: 100 of 100 is a quorum with ZERO tolerance -- one trainer that never
+# registers and the selector returns `ends: []` forever, which is how N4b burned
+# a node for 45 min at 0 commits. 0.9 tolerates ten. The cost is real and stated:
+# a threshold below N admits a join-vs-poll surplus, so the seeded first cohort is
+# no longer set-exact across replicates. P4_MIN_INIT_FRAC=1.0 restores it.
 COMMON=(--only fluxtune --mode sim --yes --clean --allow-stale-profile "${FORCE[@]}"
         --dataset "$DATASET" "${EVAL[@]}"
         --server-update-audit --no-cos-ground-truth-audit
+        --min-initial-frac "${P4_MIN_INIT_FRAC:-0.9}"
         --num-trainers 100 --num-gpus 8 --agg-goal 10 --c 30
         --probe-combine mean --commit-gate n_target
         --server-step-rule trust_ratio --gate-safety-s "${P4_GATE_S:-1.5}"
@@ -208,12 +214,21 @@ case "$ARM" in
     # `log_only` makes BOTH stops emit and keep training -- the only way to see
     # past the Phi=2.7 rail. P4_BMAX_PHIS re-ranges the probe grid; P4_GATE_S
     # moves `s`, the only lever the model allows on progress per unit budget.
-    node_run "p4-$DATASET" "controller (law C, T_res=300, sensed B_max, ${P4_BMAX_POLICY:-mean}/${P4_PHI_STOP:-halt})" \
+    # THE STACK, as settled 2026-08-21 (buildplan §5.3): `anchor` is the
+    # combiner (`mean` collapsed B_rem and annealed rho* 1.7x below the live
+    # measurement), the rail is 3.0 and reachable as an OR rather than the
+    # unreachable `else` it was (row S), and `saturation` is the PRIMARY stop --
+    # the run ends because learning stopped, not because a total was reached
+    # (row E). P4_SAT_STOP=0 reverts to the old stop set for an A/B.
+    SAT=(--saturation-stop)
+    [ "${P4_SAT_STOP:-1}" = "0" ] && SAT=()
+    node_run "p4-$DATASET" "controller (law C, T_res=300, sensed B_max, ${P4_BMAX_POLICY:-anchor}/${P4_PHI_STOP:-halt}, sat=${P4_SAT_STOP:-1})" \
       "${COMMON[@]}" --gate-rho-ref annealed \
       --rho-schedule landing --t-res 300 --budget-stop-frac 0.95 \
-      --b-max-policy "${P4_BMAX_POLICY:-mean}" \
+      --b-max-policy "${P4_BMAX_POLICY:-anchor}" "${SAT[@]}" \
       --phi-stop "${P4_PHI_STOP:-halt}" --b-max-probe-every 150 --b-max-probe-n 512 \
-      ${P4_BMAX_PHIS:+--b-max-probe-phis "$P4_BMAX_PHIS"}
+      ${P4_BMAX_PHIS:+--b-max-probe-phis "$P4_BMAX_PHIS"} \
+      ${P4_RETENTION_EVERY:+--retention-probe-every "$P4_RETENTION_EVERY"}
     ;;
   control)
     node_run "p4-$DATASET" "control (fluxtune_v2: rm/0.25, rho*=0.06, setpoint)" \

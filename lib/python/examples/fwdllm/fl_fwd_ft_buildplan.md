@@ -87,7 +87,7 @@ What `Φ` is and what it is a property of: **§5.6**.
 
 | axis | coverage | status | rows |
 |---|---|---|---|
-| **datasets** | 3 of 3 run, 3 valid v2 runs | **all three land within 0.008 of the FL target**, yahoo clears it; all three saturate, so no gap left is a budget problem. **But none of them terminated** — the peak is demonstrated, the plateau is not | S · E · E2 · C · D · **Y** · Score |
+| **datasets** | 3 of 3 run, 3 valid v2 runs | **all three land within 0.008 of the FL target**, yahoo clears it; all three saturate, so no gap left is a budget problem. **But none of them terminated** — the peak is demonstrated, the plateau is not | C · D · **Y** · Score |
 | **models** | **0** | every run on record is DistilBERT + adapters. No second model ever tried | **N5a** → **N5b** → **N5c**, gated on P1 |
 | **PEFT capacity within that model** | `rf` 16 vs 64 | **negative** — hole 3, and it is what N5b re-derives against a measured `Φ*` | N5a · N5b · P1 |
 | **heterogeneity** | α = 1 only | ablations go **up** to α = 10/100, never below 1. Not started | — |
@@ -106,13 +106,13 @@ arrives. Everything the three runs did wrong follows from that single number.
    ⇒ constant ρ ⇒ Σρ² = ∞ ⇒ Φ grows without bound ⇒ past the cliff, every time
 ```
 
-1. **A FluxTune run neither slows down nor stops.** *(a)* Law C degenerated into a **constant step** —
+1. **A FluxTune run does not slow down. It can now stop — untested on a run.** *(a)* Law C degenerated into a **constant step** —
    measured ρ flat at **0.034 ± 0.002** over the last 70% of every run, a sawtooth reset upward at every
    probe fire, drifting only −0.007/1,000 commits. **That is exactly FluxTune-v1's failure mode**, reached
-   from the opposite direction. *(b)* **Neither stop can fire**: `B ≥ f·B_max` is unreachable as above, and
-   the `Φ` rail is the `else` branch of `_maybe_stop` (`aggregator/FedSgdAggregator.py:802`), so `landing`
-   takes the `if` and **2.7 has never run on any controller run**. Detail §5.3, §5.5. Rows **N4a′** (the
-   cause), **S** and **E** (the backstops that must hold regardless).
+   from the opposite direction. *(b)* **Both stops now can fire, as of 2026-08-22** — the three predicates
+   are an `OR` at the settled 3.0 rail and the saturation stop ships behind `--saturation-stop`
+   (§5.3, §5.5). **No run has ended on either yet**: rows **C**, **D** and **Y** are what test that. The
+   anneal half of this hole is untouched — row **N4a′** is still the cause, row **A** the fallback.
 2. **The `B_max` probe reports its own grid floor. Confirmed on 40 fires, and now explained.** `knee()`
    interpolates from an implicit `(Φ=1, normalized 1.0)` anchor to the first grid point. When the model is
    already below half-accuracy at `Φ`=1.5 — which it is on **all 40 fires** — the answer is
@@ -141,9 +141,12 @@ arrives. Everything the three runs did wrong follows from that single number.
 
 ## §2 — Now · what is running
 
-*Read 2026-08-21 11:00. **Nothing is running** — all four nodes are free.* N1–N3 landed; node 4 produced
+*Read 2026-08-22 18:00. **Nothing is running** — all four nodes are free.* N1–N3 landed; node 4 produced
 nothing and both its rows must be re-launched (§3). All nine runs are on this node's disk and their curves
 are cached in `expt_scripts/writeup_figs/data/*.json`, so nothing needs to re-scan `experiments/`.
+
+**Rows S · E · E2 · M1 · M2 · D0 landed as code on 2026-08-22, each gated offline; nothing on the queue is
+blocked on a node any more.** What a launch looks like now is §4.1's table and §4.2b's commands.
 
 | run | state |
 |---|---|
@@ -163,13 +166,14 @@ hand to anyone outside this work. Regenerate with `writeup_figs/make_figures.py`
 ## §3 — Next · the ordered queue
 
 **This table is the single source of next steps.** [fl_fwd_ft_writeup.md](fl_fwd_ft_writeup.md) §8 names
-the same work in prose and points here; nothing is queued there. **P1, P1′ and N4a′ come first** — they
-are the one defect behind everything the 08-21 runs did wrong (§1 holes 1, 2 and 5) — and **S**, **E** and
-**E2** are the backstops that must hold whatever those three find.
+the same work in prose and points here; nothing is queued there. **The backstops landed 2026-08-22** — the
+stop is an `OR`, the saturation detector is sized and gated, the two launcher guards are armed — so the
+queue is now *runs*, not code. **C, D and Y are the ones the claim needs**; **P1, P1′ and N4a′** are the
+one defect behind everything the 08-21 runs did wrong (§1 holes 1, 2 and 5) and are independent of them.
 
 > **The queue tracks two generality axes, and they are in very different states.** **Task** (same model,
 > new dataset) is demonstrated on three datasets but **not yet terminated on any of them** — that is
-> S · E · E2 · C · D · Y · Score, and it is the shorter half. **Model** (same dataset, new model) has
+> C · D · Y · Score, and it is the shorter half. **Model** (same dataset, new model) has
 > **zero runs and one negative probe**, and is N5a → N5b → N5c walking §5.8's porting order, gated on P1
 > for the one constant that might not be a constant. **A row that ships a hand-fitted number is not
 > progress on either axis** — that is why E2 exists.
@@ -182,24 +186,18 @@ are the one defect behind everything the 08-21 runs did wrong (§1 holes 1, 2 an
 
 | # | node | task | done when |
 |---|---|---|---|
-| **P1** | 1 GPU, ~1 h, **no training run needed** | **Is `Φ*` a property of the MODEL or of the TASK?** The deepest open question in the work, and the cheapest to answer — `scripts/probe_inflation_damage.py` already does it (its docstring registers this as "Q1: absolute vs relative"). Train to peak, inject noise, read accuracy back, **on a grid that brackets**: `--phis 1.5,2,2.5,3,3.5,4 --rf 16` then `--rf 32` and `--rf 64`, on all three datasets. **Predicted (§5.6):** `Φ_knee` clusters near **2.9 across datasets** and moves — if at all — with `rf`. **Falsified if** the three datasets disagree by more than the 0.18 the runs show. Ledger support already: the `p`-ladder held its peak at `Φ` 3.04 (`rf`=64) and 3.28 (`rf`=32) across a 3.8× range in `p` | a `Φ_knee` per (dataset × `rf`), and a statement of which factor it tracks |
-| **P1′** | 1 GPU, ~2 h, **after P1** | **Noise-then-refit probe — the instrument `B_max` actually needs.** The shipped probe injects at `Φ` and reads a **frozen** model; a run re-fits between every increment, and §5.9 measures that difference at **~1.8× in `Φ`**. Change one thing: inject at `Φ`, run **`m` ordinary commits**, *then* read held-out accuracy. Sweep `m` ∈ {0, 10, 50, 150} × `Φ` ∈ {1.5, 2, 2.5, 3, 3.5, 4} on agnews. `m`=0 must reproduce the shipped probe's chance readings — that is the positive control. **Predicted:** the knee moves up with `m` and lands near **2.9** by `m`≈50, and stops moving after. **Falsified if** the knee is still ≤1.6 at `m`=150 — then the trajectory's junk is *not* isotropic and §5.9's mechanism is wrong, which would make `Φ*` unmeasurable without a training run | a knee-vs-`m` curve, and a stated `m` at which it saturates |
+| **P1** | 1 GPU, ~1 h, **no training run needed** | **Is `Φ*` a property of the MODEL or of the TASK?** The deepest open question in the work, and the cheapest to answer — `scripts/probe_inflation_damage.py` does it and now prints a `Φ_knee` per mode with `expts/bmax_probe.knee` — the same arithmetic the live sensor uses, so its number is directly comparable to a `[BmaxProbe] Phi_knee=` line. Train to peak, inject noise, read accuracy back, **on a grid that brackets**: `--phis 1.5,2,2.5,3,3.5,4 --rf 16` then `--rf 32` and `--rf 64`, on all three datasets. **Predicted (§5.6):** `Φ_knee` clusters near **2.9 across datasets** and moves — if at all — with `rf`. **Falsified if** the three datasets disagree by more than the 0.18 the runs show. Ledger support already: the `p`-ladder held its peak at `Φ` 3.04 (`rf`=64) and 3.28 (`rf`=32) across a 3.8× range in `p` | a `Φ_knee` per (dataset × `rf`), and a statement of which factor it tracks |
+| **P1′** | 1 GPU, ~2 h, **after P1** | **Noise-then-refit probe — the instrument `B_max` actually needs.** The shipped probe injects at `Φ` and reads a **frozen** model; a run re-fits between every increment, and §5.9 measures that difference at **~1.8× in `Φ`**. **Built 2026-08-22: `scripts/probe_inflation_refit.py`** — inject at `Φ`, run **`m` steps**, *then* read. (`m` is the rig's own AdamW steps at batch 32, not FL commits: the question is whether the damage is re-fittable at all.) Sweep `m` ∈ {0, 10, 50, 150} × `Φ` ∈ {1.5, 2, 2.5, 3, 3.5, 4} on agnews. `m`=0 must reproduce the shipped probe's chance readings — that is the positive control. **Predicted:** the knee moves up with `m` and lands near **2.9** by `m`≈50, and stops moving after. **Falsified if** the knee is still ≤1.6 at `m`=150 — then the trajectory's junk is *not* isotropic and §5.9's mechanism is wrong, which would make `Φ*` unmeasurable without a training run | a knee-vs-`m` curve, and a stated `m` at which it saturates |
 | **P2′** | 1 GPU, ~1 h | **Is `Φ*` an FL number or a training-geometry number?** Run the **same forward-gradient estimator centralized** (1 client, IID, same `p`, same `s`, same law C) on agnews and read `Φ` at peak. The model doc's §2.6 says heterogeneity is a step-size multiplier only, so `Φ*` should not move; the 22-run ledger already spans α 0.1–1 at 2.41–3.11 without moving. **Predicted:** peak at `Φ` = 2.8–3.0, i.e. inside the FL band. **Falsified if** centralized peaks below 2.4 or above 3.3 — then `Φ*` carries a federated component and every "property of the model" claim in §5.6 is wrong. **Do not run backprop as the comparator here** — backprop's steps are not ⟂ `θ`, so it reaches target accuracy at `Φ`≈1 and has no `Φ*` to compare (§5.6c) | a centralized forward-gradient `Φ` at peak, against 2.82 |
-| **P3′** | any CPU, one line | **Log `cos(θ_t, θ_0)` and confirm it equals `1/Φ`.** §4.1a of the model doc *derives* retention `= 1/Φ` from the same perpendicularity that makes the norm law exact, and the whole angular reading of `Φ` (peak at ≈70° of drift) rests on it. It has never been measured. Stash `θ_0` at init, emit one dot product per commit alongside `trainable_weight_norm`. **Predicted:** `cos(θ_t,θ_0)·Φ` = 1.00 ± 0.02, matching the cross-term's 1.000 ± 0.005. **Falsified if** it runs materially above 1 — that means the aligned ~7% of each step overlaps `θ_0`, retention is better than `Φ` says, and `Φ` overstates the damage | the ratio logged over one full run |
+| **P3′** | any GPU node, rides on any run | **Log `cos(θ_t, θ_0)` and confirm it equals `1/Φ`.** §4.1a of the model doc *derives* retention `= 1/Φ` from the same perpendicularity that makes the norm law exact, and the whole angular reading of `Φ` (peak at ≈70° of drift) rests on it. It has never been measured. **Landed 2026-08-22 as `--retention-probe-every N`** (0 = off, byte-identical); `[Retention]` carries `cos`, `Φ`, `cos*Φ` and the drift angle, and `check_arm_health.py` scores the ratio. **Needs a run to carry it.** **Predicted:** `cos(θ_t,θ_0)·Φ` = 1.00 ± 0.02, matching the cross-term's 1.000 ± 0.005. **Falsified if** it runs materially above 1 — that means the aligned ~7% of each step overlaps `θ_0`, retention is better than `Φ` says, and `Φ` overstates the damage | the ratio logged over one full run |
 | **N4a′** | node 4 · agnews, ~35 min | **Re-range the `B_max` probe grid.** *(Demoted 2026-08-21: this is necessary, not sufficient — hole 5 says no grid range makes this probe return `Φ*`.)* `P4_BMAX_PHIS="1.05,1.1,1.2,1.3,1.5,2.0"`. **Budgets, corrected:** `VCLOCK_OVERRIDE=12000` (6,000 gave ~120 commits — under the 150-commit probe cadence, so no probe could fire even had it launched) and `CEIL_OVERRIDE=2.0` (the preflight prices law C's full 898-commit length at 6,322 s regardless of the vclock, so any ceiling under 1.8 h is refused). **Predicted:** the knee lands **below 1.5**, `B_rem` comes out **smaller than 0.22 and shrinking with `B`**, and law C therefore **anneals again on its own**. **Falsified if** `B_rem` is still flat on a bracketing grid — then budget really is re-earned and the anneal must be imposed another way (row **A**) | a knee bracketed by real grid points, and a `B_rem` that falls as `B` rises |
 | **A** | any CPU, **after N4a′** | **Restore the anneal — only if N4a′ does not.** Measured ρ is flat at 0.034 ± 0.002 over the last 70% of every run, so law C is running as a constant-step rule and `Σρ²` diverges. If a bracketing grid gives a shrinking `B_rem`, this row closes for free. If not, law C needs a term that cannot be defeated by a receding target — the obvious candidate is to anneal against **`Φ*` from row P1** rather than against a per-fire sense, which also removes the sawtooth | ρ falls monotonically over a run, and `Σρ²` converges |
-| **S** | any CPU, **independent of P1/N4a′** | **Wire the `Φ` rail as an `OR`, not an `else`** (`FedSgdAggregator.py:802-812`). Today `landing` returns on the budget test and the fixed-`Φ` test is never reached, so the shipped 2.7 backstop has never run on a single controller run. **Correctness fix ⇒ ships enabled, code-level default too** (§6.1). Set the threshold to **3.0** (§5.5), not 2.7 and not 4.23 | a replay of `014242` emits `[BudgetStop] reason=phi_fixed` at commit 1,152, and `phi_stop=halt` halts there |
-| **E** | any CPU, with **S** | **Build the saturation stop — now sized by replay, no new run needed.** Prechelt GL on an 11-eval trailing mean of held-out accuracy: `GL_t = (Acc_best − Acc_t)/Acc_best`, **threshold 0.005**, **patience 20 evals**, **armed only after commit 400**. Fires at commit 1,184 / 1,084 / 1,126 on N1 / N2 / N3 — **within 0.008 of each peak**, saving 38% / 55% / 40% of the run. **The warm-up is load-bearing:** at 300 it false-fires on yahoo's early 0.24 plateau at commit 346. Ships as `stop = saturation OR Φ-cross`; resample onto `Λ`, never `comm_round`. **This must land whatever N4a′ finds** — a stop that depends on the sensor being right is not a backstop | the three fire commits above reproduce, and none fires before 400 |
-| **E2** | any CPU, replay, **with E** | **Derive E's warm-up from the probe cadence instead of fitting it to three curves.** As sized, `warm-up`=400 is a constant read off N1–N3 — the runs it will be scored on — which is a hand-set constant by another name and voids the zero-input claim for a fourth dataset (§5.4). Express it as a multiple of `b_max_probe_every` (150) and re-replay. **Predicted:** `3 × cadence` = **450** reproduces the same three fire commits, because 400 and 600 already fire identically (§5.5), so the setting sits on a plateau and the multiple is what is real. **Falsified if** 450 moves any fire commit — then the 400–600 plateau is narrower than §5.5 claims and the warm-up *is* fitted, in which case E ships with the debt stated in §5.7's operator table rather than hidden in it | the warm-up expressed as a multiple of the probe cadence with no free parameter, and the three fire commits reproduced |
-| **M1** | any GPU node | **Give `minInitialTrainers` slack.** 100 of 100 is a quorum with zero tolerance: one dead trainer and the selector never releases an end, which is how N4b burned a node for 45 min at `ends: []`. Set it to ~90 and make the shortfall a loud line, not silence | a run with 10 trainers killed at startup still commits |
-| **M2** | any CPU | **Two fail-fast guards, both from N4b.** (a) The launcher's resident-GPU-memory check is a `WARNING` — make it a **refusal** above ~2 GB, with an override var, since a peer job at 43.7 GB of 46 GB guarantees OOM. (b) Add a watchdog predicate on **trainer deaths**: `CRITICAL .* Uncaught exception` in the trainers log above a small count kills in ~2 min instead of 45 | a re-run of N4b's condition dies inside 3 min naming the cause |
-| **N4b′** | node 4 · agnews, after **M1**+**M2** | **FluxTune at `s`=1.0** (`P4_GATE_S=1.0`), `anchor` + `log_only`. Untouched by N4b — its config was correct (`gate_safety_s=1.0`, `rho_max` 0.0666, `n_req` ≈2.2× the `s`=1.5 run) and the node killed it. `Λ = 2B/s` says lowering `s` moves *along* the accuracy-vs-`Λ` curve, not up it. **Predicted:** the same peak (≈0.872) at the same `Λ`≈1.4, reached at lower `B`. **Falsified if** the peak is higher | whether `s` moves along the curve or shifts it |
-| **C** | any GPU node, **after S + E** | **agnews controller**, 48,000 vclock, on the new stack (`anchor`, saturation-primary, rail at 3.0). `condition_fp` will no longer read `c2ef1528` — expected and correct; control `021843` does not run the probe, so it stays the valid partner | ends on `[BudgetStop] reason=saturation` near commit 1,180, at or above 0.850 |
-| **D0** | node 2 | **Commit `sim_charge_profiles/fluxtune_yahoo.yaml` to git**, the way `fluxtune_yelp-p.yaml` already is. It exists only on node 2's local disk, so row **D** cannot run anywhere else — and `run_node_p4.sh` now *refuses* rather than silently pricing yahoo on agnews (§4.5) | the file is in git and its md5 matches node 2's |
-| **D** | any GPU node, after **D0** + **S** + **E** | **yahoo controller**, 60,000 vclock, same new stack | ends on saturation near commit 1,080, at or above 0.657 |
-| **Y** | any GPU node, **after S + E** | **yelp-p controller**, 50,000 vclock, same new stack. **This row was missing and the claim needs it:** yelp-p's only self-terminating run is `125010`, which ran the *old* `mean` combiner and the *old* budget stop — and hole 1 now explains that termination as `mean` lagging a rising sequence, i.e. **arithmetic on the combiner, not a run reaching its budget**. It is not evidence for the shipped stack. Its profile is already in git, so unlike **D** there is no D0-style blocker; control `161751` ran the full 50,000 clean and stays the valid partner | ends on `[BudgetStop] reason=saturation` near commit 1,126, at or above 0.807 |
+| **N4b′** | node 4 · agnews | **FluxTune at `s`=1.0** (`P4_GATE_S=1.0`), `anchor` + `log_only`. Untouched by N4b — its config was correct (`gate_safety_s=1.0`, `rho_max` 0.0666, `n_req` ≈2.2× the `s`=1.5 run) and the node killed it. `Λ = 2B/s` says lowering `s` moves *along* the accuracy-vs-`Λ` curve, not up it. **Predicted:** the same peak (≈0.872) at the same `Λ`≈1.4, reached at lower `B`. **Falsified if** the peak is higher | whether `s` moves along the curve or shifts it |
+| **C** | any GPU node | **agnews controller**, 48,000 vclock, on the new stack (`anchor`, saturation-primary, rail at 3.0). `condition_fp` will no longer read `c2ef1528` — expected and correct; control `021843` does not run the probe, so it stays the valid partner | ends on `[BudgetStop] reason=saturation` near commit 1,180, at or above 0.850 |
+| **D** | any GPU node | **yahoo controller**, 60,000 vclock, same new stack | ends on saturation near commit 1,080, at or above 0.657 |
+| **Y** | any GPU node | **yelp-p controller**, 50,000 vclock, same new stack. **This row was missing and the claim needs it:** yelp-p's only self-terminating run is `125010`, which ran the *old* `mean` combiner and the *old* budget stop — and hole 1 now explains that termination as `mean` lagging a rising sequence, i.e. **arithmetic on the combiner, not a run reaching its budget**. It is not evidence for the shipped stack. Control `161751` ran the full 50,000 clean and stays the valid partner | ends on `[BudgetStop] reason=saturation` near commit 1,126, at or above 0.807 |
 | **R2** | 1 GPU, ~1 h | **Is the estimator the limit on yahoo AND yelp-p?** Both saturate below their reference (−0.071, −0.062) with flat accuracy-vs-`B`, so this is no longer a yelp-p-only question. cos audit for ~100 commits + `replay_scoring.py --cos`; a `D` materially below agnews' 0.10–0.15 means the forward estimate degrades with class count or seq 256 — an FwdLLM-layer finding, not a controller one. Plus H-S (`probe_fd_chord.py`) | a `D` for each against agnews' band |
-| **N5a** | any CPU, replay, **free** | **Audit the FD chord ratio across `p` — step 2 of §5.8's porting order, and the least-audited thing in the stack.** `FWDLLM_FD_SCALE_INVARIANT` rescales `h` to hold the **absolute** chord `h√p` fixed at 6.7107 across the ladder (`h` = 0.01 / 0.014023 / 0.019507, [P9.1](fl_fwd_ft_practice.md#p91-preflight)) — but `‖θ_tr‖` is 13.35 / 9.6 / 6.86, so the **relative** chord `h√p/‖θ_tr‖` computes to **0.50 / 0.70 / 0.98**. If that holds, the flag holds the *united* quantity fixed and lets the dimensionless one nearly double, which is §5.3's ratio principle violated by the one knob that exists to enforce it. **Predicted:** the three `[FD]`/`[ProbeDim]` pairs on the ladder runs confirm 0.50 / 0.70 / 0.98. **Falsified if** the logs show `h√p/‖θ_tr‖` constant — then the flag is already right and only the docs are wrong. Either way this also feeds **H-S**, which names the chord as prime suspect for the 3.5× shadow deficit | the ratio read off the three ladder runs, and a statement of which quantity the flag should hold fixed |
+| **N5a** | the node holding the `rf` 32/64 runs, replay, **free** | **Audit the FD chord ratio across `p` — step 2 of §5.8's porting order, and the least-audited thing in the stack.** `FWDLLM_FD_SCALE_INVARIANT` rescales `h` to hold the **absolute** chord `h√p` fixed at 6.7107 across the ladder (`h` = 0.01 / 0.014023 / 0.019507, [P9.1](fl_fwd_ft_practice.md#p91-preflight)) — but `‖θ_tr‖` is 13.35 / 9.6 / 6.86, so the **relative** chord `h√p/‖θ_tr‖` computes to **0.50 / 0.70 / 0.98**. If that holds, the flag holds the *united* quantity fixed and lets the dimensionless one nearly double, which is §5.3's ratio principle violated by the one knob that exists to enforce it. **`expt_scripts/audit_fd_chord.py` reads it off any run dir (built 2026-08-22); rf=16 confirms 0.503 here, and the rf=32/64 ladder runs are node-local.** **Predicted:** they read 0.70 and 0.98. **Falsified if** the logs show `h√p/‖θ_tr‖` constant — then the flag is already right and only the docs are wrong. Either way this also feeds **H-S**, which names the chord as prime suspect for the 3.5× shadow deficit | the ratio read off the three ladder runs, and a statement of which quantity the flag should hold fixed |
 | **N5b** | any CPU + 1 short GPU run, **after P1 + N5a** | **Re-derive `T_res` at a second `p` — step 4 of §5.8, and hole 3 stated as a task.** At `rf`=64 the `Λ ≥ 0.95` and `trips/commit ≥ 3` floors close against each other: a 9-unit window at `T_res` 82–90 where `Λ` clears by 0.001–0.007 while 28% of commits still floor to `I`=1 ([P5.2](fl_fwd_ft_practice.md#p52-execution-plan--to-a-zero-input-run) phase 4). **That derivation assumed `B_max` = the `ln 2.7` prior**, so it is worth redoing once **P1** supplies a measured `Φ*` at that `p` — `ρ_max` and `n_req` both move with it. **Predicted:** with a measured `Φ*` the window opens to ≥50 units and law C composes. **Falsified if** it stays ≤10 or stays empty — then `T_res` cannot be re-derived from the same closed form at a new `p`, and the gate's reachability floor, not the anneal, is what does not port | a `T_res` at a second `p` holding trips/commit ≥3 in every quintile at `Λ` ≥ 0.95 — **or** a statement of which floor binds and why no `T_res` satisfies both |
 | **N5c** | 1 GPU, **after N5a + N5b + P1** | **The second-model run — the largest hole in the claim, and the only row that closes it.** Every run on record is DistilBERT + adapters at `rf`=16 and the three datasets differ in `p` by 1.4%, so **nothing in this work has been tested across `p`**, while `T_res`, the `Φ` rail, the probe cadence, the saturation warm-up, `h`'s chord ratio and `Φ*` itself are all sized at that one `p` (§5.8). Run FluxTune unchanged on a second architecture, supplying only model + PEFT scheme + compute budget. **Predicted:** the peak lands inside the `Φ` = 2.4–3.3 band and no learning knob is set by hand beyond N5b's re-derived `T_res`. **Falsified if** the peak lands outside that band — then `Φ*` is not a property of the model family either, the rail must be sensed per model, and §5.6's hypothesis fails on the axis it was proposed for | a scored run on a second architecture, and a `Φ` at peak against 2.82–3.00 |
 | **W′** | node holding `003648` | **The unverified half of the watchdog fix.** The `I`-floor kill needs `ΔB ≤ 0.005` and three healthy runs now replay silent; **that it still fires on a true death is unverified**. `003648`'s run dir is node-local | replay `003648`, confirm it fires |
@@ -257,10 +255,13 @@ past-the-stop counterfactual keeps being measured.
 
 | var | default | what it does |
 |---|---|---|
-| `P4_BMAX_POLICY` | `mean` | `anchor` uses the **latest** sense instead of the mean (§5.3). **The new runs want `anchor`** |
-| `P4_PHI_STOP` | `halt` | `log_only` makes **both** stops emit and keep training — the only way to see past the `Φ`=2.7 rail |
+| `P4_BMAX_POLICY` | **`anchor`** *(was `mean`; flipped 2026-08-22 to the settled combiner)* | the **latest** sense instead of the mean (§5.3) |
+| `P4_SAT_STOP` | **`1`** | row **E**'s saturation stop. `0` reverts to the old stop set for an A/B |
+| `P4_PHI_STOP` | `halt` | `log_only` makes **all three** stop reasons emit and keep training — the only way to see past the rail |
 | `P4_GATE_S` | `1.5` | moves `s`, the only lever `Λ = 2B/s` allows on progress per unit budget. Floor ≈0.9 at `K`=10 |
 | `P4_BMAX_PHIS` | *(module default `1.5,2,2.5,3,3.5,4`)* | re-ranges the probe grid. **`condition_fp` does not cover it** — same blind spot the sim profile had |
+| `P4_RETENTION_EVERY` | *(unset = off)* | row **P3′**: emit `[Retention] cos(θ_t,θ_0)` every N commits |
+| `P4_MIN_INIT_FRAC` | **`0.9`** | the join barrier. `1.0` restores the set-exact first cohort at the cost of zero straggler tolerance |
 
 `P4_ALLOW_AGNEWS_PRICING=1` overrides the missing-profile refusal (§4.5). `VCLOCK_OVERRIDE` /
 `CEIL_OVERRIDE` shorten a run (§4.2).
@@ -291,11 +292,12 @@ export FLAME_CONDA_ENV=test_fwdllm FWDLLM_FD_SCALE_INVARIANT=1
 NODES=$FW/expt_scripts/nodes
 
 # --- a full-length run (this is what N1-N3 ran)
-tmux new -s p4 "P4_BMAX_POLICY=anchor P4_PHI_STOP=log_only \
-  $NODES/run_node_p4.sh <agnews|yahoo|yelp-p> controller 2>&1 | tee ~/p4_N.log"
+tmux new -s p4 "$NODES/run_node_p4.sh <agnews|yahoo|yelp-p> controller 2>&1 | tee ~/p4_N.log"
+# ^ anchor + saturation + rail 3.0 are the DEFAULTS now; add P4_PHI_STOP=log_only
+#   only when the point is to measure past the stop.
 
 # --- a SHORT controller run (row N4a'). Both overrides are load-bearing; see below.
-tmux new -s p4 "P4_BMAX_POLICY=anchor P4_PHI_STOP=log_only \
+tmux new -s p4 "P4_PHI_STOP=log_only \
     P4_BMAX_PHIS='1.05,1.1,1.2,1.3,1.5,2.0' VCLOCK_OVERRIDE=12000 CEIL_OVERRIDE=2.0 \
     $NODES/run_node_p4.sh agnews controller 2>&1 | tee ~/p4_N4a.log"
 ```
@@ -316,12 +318,14 @@ elsewhere rather than silently pricing it on agnews (§4.5). Fix that permanentl
 **Prefix every launch with `NODE_DRY_RUN=1` once** — seconds, no GPU, and it prints the generated config so
 `b_max_policy`, `phi_stop`, `gate_safety_s` and `b_max_probe_phis` can be read back before the slot is spent.
 
-**Never launch past the resident-GPU warning.** `a GPU shows NNNNN MB used (> 500MB) — a peer job may be
-resident` is currently a `WARNING`, and on 2026-08-21 a peer job at **43.7 GB of 46 GB** let the run start
+**The resident-GPU check now refuses above 2 GB** (`EXPT_GPU_REFUSE_MB`, override `EXPT_GPU_ALLOW_PEER=1`);
+between 500 MB and 2 GB it still only warns. On 2026-08-21 a peer job at **43.7 GB of 46 GB** let the run start
 and then killed **85 of 100 trainers on CUDA OOM inside 90 s** — in `pin_memory` at
 `base_data_manager.py:453`, before a single forward pass. Because `minInitialTrainers` equals
 `--num-trainers`, the selector then returned `ends: []` on **12,937 consecutive** distribute cycles and the
-run sat at 0 commits for its full 45-min grace. `nvidia-smi` first; rows **M1**/**M2** make this fail fast.
+run sat at 0 commits for its full 45-min grace. **Both halves now fail fast**: the join barrier is at 90 of
+100 and logs a `WARNING` naming the shortfall, and the watchdog kills on 10 uncaught trainer exceptions —
+which on N4b's own log is reached **52 s** after the first line, against 45 min.
 
 **Expect `log_only` runs to run their full vclock ceiling** — nothing halts them, by design. That is the
 point: they measure what lies *past* the stop. A `log_only` run ending on `max_runtime_s` is **correct**,
@@ -338,12 +342,11 @@ controller run**, armed or not, until row **S** lands — hole 1.
 | `I` floored at 1 over the last 200 commits **and `B` not advancing** (`--b-advance-min`, 0.005) | ≥ 90% | G-2's `003648` died at 98% — but the `I` share **alone** is not that death: the n_target gate drives `I` to 1 at the landing point by design, and it voided a healthy yahoo controller at 86% of `B_max`. `B` is the exact progress measure and rides on the same record |
 | trips/commit < 3 **and** pool demand unmet > 50% | after 200 commits | same argument: `trips/commit` is `n_req/K`, and law C drives `n_req` down **by design** |
 | any `rho_star == 0` | after 200 commits | a requirement of *zero*, not an absent one |
+| `CRITICAL .* Uncaught exception` in the trainers log (`--trainer-deaths-max`) | ≥ 10, **from the first poll** | the one failure every predicate above is blind to — they all read the aggregator's record, where a run whose trainers never started looks like one that is merely slow. Reads 85 on N4b and 0 on N1–N3 |
 
-**The one failure it cannot see is a dead trainer.** Every predicate above reads the *aggregator's* record,
-so a run whose trainers never started looks identical to one that is merely slow: N4b lost 85 of 100
-trainers to CUDA OOM in 90 s and the watcher spent its full **45-min pre-first-commit grace** before
-calling it. The signal is in the trainers log (`CRITICAL .* Uncaught exception`) and is unambiguous within
-2 min. **Row M2.**
+**The dead-trainer predicate does not wait for the grace**, which is the whole point: N4b lost 85 of 100
+trainers to CUDA OOM in 90 s and the watcher spent its full 45-min pre-first-commit grace before calling
+it. Its tenth death lands 52 s into the trainers log.
 
 **The watcher stops watching once the run reaches its OWN end** — `stopping run.` or `[BudgetStop]
 action=halt` in the last 256 KB of the aggregator log. `--pgid` clears only when the whole launcher group
@@ -396,7 +399,7 @@ every run.
 [DataBins] from the registry, 100% coverage, trainer-confirmed   # 150 hardcoded gave yahoo 8.6% of its data
 no server_update with rho_star == 0                              # a step of length zero
 trips/commit >= 3 per quintile                                   # FAILs on a healthy landing -- read G-2 signature
-controller ends on [BudgetStop], not max_runtime_s               # NO RUN CAN PASS THIS -- hole 1, row S
+controller ends on [BudgetStop] reason=saturation|phi_fixed      # now passable; no run has passed it yet
 ```
 
 `_node_lib.sh` also echoes the enactment lines after every run — `[ProbeDim]` `[FD] spacing`
@@ -407,8 +410,8 @@ controller ends on [BudgetStop], not max_runtime_s               # NO RUN CAN PA
 beneath it (`I==1` share, pool demand unmet, `n_req`) is what separates a controller annealing on plan
 from a starving gate — yelp-p's *valid* run read Q5=1.34 with `I==1` on 100% of its last 200 commits and
 the pool demand met on every one. Read both. On a run
-without `--server-update-audit`, gate 2 reads `UNREADABLE`, not `ok`. **Gate 4 is currently unpassable by
-construction** and its `WARN` carries no information until row **S** lands. The `[BmaxProbe]` trajectory and
+without `--server-update-audit`, gate 2 reads `UNREADABLE`, not `ok`. **Gate 4 became passable on 2026-08-22** and
+`reason=budget` is now a `WARN` in its own right — the budget rule reads the sensor §5.9 retired. The `[BmaxProbe]` trajectory and
 its **first firing commit** are printed too — on yahoo that index is itself a result.
 
 **Scoring rules** (derivation: [P4.4](fl_fwd_ft_practice.md#p44-scoring-rules-for-any-ab)):
@@ -506,14 +509,15 @@ For every `log_only` run, in this order:
 ```bash
 RUN=$(ls -dt $FW/experiments/run_* | head -1)
 grep -ao "\[BmaxProbe\][^|]*" $RUN/*aggregator.log | tail -20   # sensed trajectory + the curve
-grep -ao "\[BudgetStop\][^|]*" $RUN/*aggregator.log             # EMPTY today -- hole 1, row S
+grep -ao "\[BudgetStop\][^|]*" $RUN/*aggregator.log   # reason=saturation|phi_fixed|budget
+grep -ao "\[SatStop\][^|]*"    $RUN/*aggregator.log   # row E's detector, armed at 3x the cadence
 grep -ac "Uncaught exception" $RUN/*trainers.log                  # >0 means trainers died; see 4.2b
-$PY $FW/expt_scripts/check_arm_health.py $RUN                    # gate 4 will WARN -- expected here
+$PY $FW/expt_scripts/check_arm_health.py $RUN                    # gate 4 is now decisive
 ```
 
-**`[BudgetStop]` comes back empty on every `landing` run and that is the bug, not the run** — the fixed-`Φ`
-test is the `else` of the budget test, so `log_only` never emitted the 2.7 crossing it was launched to
-measure. Recover it offline from `acc_budget` (`Φ = e^B`) until row **S** lands.
+**`[BudgetStop]` came back empty on every pre-08-22 `landing` run and that was the bug, not the run** — the
+fixed-`Φ` test was the `else` of the budget test, so `log_only` never emitted the crossing it was launched
+to measure. Recover it offline from `acc_budget` (`Φ = e^B`) for those runs; new runs emit it.
 
 Then rebuild the accuracy-vs-`B` picture, which is what the predictions are stated against:
 
@@ -608,9 +612,9 @@ yahoo documents. Row **R2** is the diagnostic and it is no longer urgent.
 | `B_max` prior | `ln 2` | replaced outright by the first sense, never averaged into it |
 | `B_max` origin | **`B + ln Φ_knee`** | the probe measures headroom from `θ_t`; `B` accumulates from `θ_0` |
 | `B_max` combiner | **`anchor`** — the latest sense *(decision 2026-08-20, run 2026-08-21)* | `mean` assumed the fires estimate **one constant**; 40 fires say otherwise — `B_rem` is flat at 0.21–0.30 on all three, so `mean`-minus-`B` collapsed and annealed `ρ*` **1.7× below** the live measurement. **Confirmed as a fix and as a non-event:** it roughly doubled `B_max` (0.795→1.694 on agnews) and bought **+0.006 / +0.005 / −0.002** accuracy and no speed-up (§5.5). Its known defect — it does not terminate — is now the load-bearing one. `b_max_policy=anchor`, no code change |
-| what the stop does | **`halt`** via `_work_done` | one line into a tested path. Three states ship: `off` · `log_only` (emit the crossing, keep training) · `halt`. **`log_only` was supposed to apply to BOTH stops and does not** — `_maybe_stop` is `if landing: budget-test else: Φ-test`, so on a controller run the Φ branch is unreachable and N1–N3 emitted no crossing at all. Row **S** |
-| `Φ` rail | **3.0** *(decision 2026-08-21; was 2.7, and 2.7 has never actually run)* | measured under law C: peaks land at **2.82 / 3.00 / 2.91**, so 2.7 costs 0.005 on all three and 3.63 costs 0.008–0.015. 3.0 sits on the peak band and coincides with where the sized saturation stop fires (§5.5). **Only meaningful once row S makes the branch reachable** |
-| stop reasons | **`saturation` primary · `phi_fixed` as the rail · `budget` demoted** *(decision 2026-08-20, sized 2026-08-21)* | The run must end because **learning** stopped, not because a cumulative total was reached. `B ≥ f·B_max` is no longer a termination rule — `B_max` stays only to drive law C's `ρ*`. The two survivors must compose as an **`OR`**, which is exactly what the code does not do today (row **S**) |
+| what the stop does | **`halt`** via `_work_done` | one line into a tested path. Three states ship: `off` · `log_only` (emit the crossing, keep training) · `halt`, and as of 2026-08-22 all three stop REASONS honour it. Until then `_check_budget_stop` was `if landing: budget-test else: Φ-test`, so on a controller run the Φ branch was unreachable and N1–N3 emitted no crossing at all |
+| `Φ` rail | **3.0** — `PHI_RAIL_DEFAULT`, the code default *(2026-08-21; was 2.7, and 2.7 never actually ran)* | measured under law C: peaks land at **2.82 / 3.00 / 2.91**, so 2.7 costs 0.005 on all three and 3.63 costs 0.008–0.015. 3.0 sits on the peak band and coincides with where the sized saturation stop fires (§5.5). Replaying N1's budget, it crosses at **commit 1,152** |
+| stop reasons | **`saturation` primary · `phi_fixed` as the rail · `budget` demoted** *(decided 2026-08-20, sized 2026-08-21, shipped 2026-08-22)* | The run must end because **learning** stopped, not because a cumulative total was reached. `B ≥ f·B_max` is no longer a termination rule — `B_max` stays only to drive law C's `ρ*`. The three are an **`OR`** tested in that order; `saturation` is behind `--saturation-stop` (default off in code, **on** in `run_node_p4.sh`'s controller arm) and the other two ship enabled |
 | is `B_max` a fixed total at all? | **no — as the sensor currently reads it** | `B_rem` is flat at 0.21–0.30 over 40 fires, so `B_max` is `B` + a constant and "spend `B_max` then stop" has no fixed point. **The cause is the instrument, not the world (§5.9)** — it measures tolerance to *unearned* noise on a frozen model, ~1.8× below where a re-fitting model peaks. Row **N4a′** makes it honest; rows **P1**/**P1′** make it right |
 
 **`Λ = 2B/s` is an identity wherever the gate holds `s`** (−0.3% out of sample on both `s`-pinned runs,
@@ -646,8 +650,12 @@ compute-bound (`τ(30)/τ(10)`=2.56), so adaptive `P` is no longer motivated as 
 | **Does a bracketing grid make `B_rem` shrink with `B`?** If yes, hole 1 closes with hole 2 | row **N4a′** | a still-flat `B_rem` means budget really is re-earned, and the anneal must be imposed rather than sensed (row **A**) |
 | **Does `s` shift the accuracy-vs-`Λ` curve, or only move along it?** `Λ = 2B/s` says *along* | N4b′ at `s`=1.0 against N1 at matched `Λ` | a higher peak than 0.872 makes `s` a real accuracy lever — and the first thing to try on yahoo and yelp-p |
 | **Is the residual gap to the *centralized ceiling* the estimator?** Not urgent — all three now sit within 0.008 of their FL targets | row **R2**: cos audit + `D` against agnews' 0.10–0.15 | if `D` matches agnews, the limit is adapter capacity, not the estimator |
-| **Does the sized saturation stop hold on a fourth dataset?** thr 0.005 / patience 20 / warm-up 400 is fitted to the same three curves it will be scored on | row **E2** first — restate the warm-up as a multiple of the probe cadence so nothing is fitted; then **C**, **D**, **Y**, then any new dataset | a warm-up tuned to three tasks is a hand-set constant by another name, and it would be the only one left in the loop |
+| **Does the sized saturation stop hold on a fourth dataset?** The warm-up is no longer fitted — it is `3 ×` the probe cadence and 400/450/600 fire identically (E2, closed 2026-08-22) — but thr 0.005 and patience 20 are still read off three curves | **C**, **D**, **Y** first: no run has ever ended on it. Then any new dataset | a threshold tuned to three tasks is a hand-set constant by another name, and it would be the only one left in the loop |
 | **trips/commit ≥ 3** is calibrated on one death and two survivals | every run reports it per quintile; re-size once there are ten | a config passes preflight and still burns wall |
+
+**Closed 2026-08-22:** the saturation warm-up is a multiple of the probe cadence, not a fit — 400, 450 and
+600 give the same three fire commits (row E2) · the three stop reasons are an `OR`, so the rail is
+reachable on a `landing` arm and crosses N1's budget at commit 1,152 (row S).
 
 **Closed 2026-08-20/21, do not re-open:** `Λ`→accuracy transfers across task (yahoo 0.657 at `Λ`=0.994) ·
 the combiner is **`anchor`**, not `mean` · `f`=0.95 is **moot** as a termination rule (§5.3) · **the `Φ`
@@ -705,9 +713,11 @@ transferable number in this work.**
 0.880 / 0.660 / 0.820, so the controller is **within 0.008 everywhere and over on yahoo**. What the missing
 stop costs is not the target — it is the 0.03–0.14 given back afterwards, and 40–60% of the wall clock.
 
-**The saturation stop, sized by replay on these three curves** (row **E**): 11-eval trailing mean ·
-`GL_t = (Acc_best − Acc_t)/Acc_best` · **threshold 0.005** · **patience 20 evals** · **armed only after
-commit 400**.
+**The saturation stop, sized by replay on these three curves** (row **E**, shipped 2026-08-22 as
+`expts/saturation_stop.py`): 11-eval trailing mean · `GL_t = (Acc_best − Acc_t)/Acc_best` ·
+**threshold 0.005** · **patience 20 evals** · **armed after `3 × b_max_probe_every` = 450 commits**.
+Reproduce the table below with `expt_scripts/replay_saturation_stop.py`; `test_saturation_stop.py` is
+the gate.
 
 | | fires at | `Φ` | vs peak | run saved |
 |---|---|---|---|---|
@@ -718,9 +728,10 @@ commit 400**.
 **The warm-up is load-bearing and is not a free parameter to shrink.** At 300 the detector false-fires on
 yahoo's early plateau at commit 346 and 0.24 accuracy — yahoo sits near chance for ~350 commits before it
 takes off, so a running-max GL has a real maximum to compare against long before the run has learned
-anything. At 400 and at 600 all three fire identically, and thresholds 0.005 with patience 10 / 20 / 40 all
-land within 0.010 of peak, so the setting is a plateau and not a fit. **Tie the warm-up to the probe
-cadence (150) rather than to these curves** before it ships as a constant — §5.4.
+anything. **400, 450 and 600 fire identically on all three**, and thresholds 0.005 with patience 10 / 20 /
+40 all land within 0.010 of peak, so the setting is a plateau and not a fit. **It therefore ships as
+`3 × b_max_probe_every`, not as a number read off these curves** — row E2's prediction, confirmed on
+replay 2026-08-22.
 
 **Note the two stops now agree.** Saturation fires at `Φ` 2.76–3.27 and the re-derived rail is 3.0. That is
 the argument for shipping them as an `OR`: on these runs either one alone would have been nearly right, and
@@ -735,7 +746,7 @@ together they cover the case where a curve is noisy near its peak.
 | a `configs/datasets.yaml` row (h5 paths, `num_labels`, `max_seq_length`, split sizes) — a *description of the data* | `dataset` / `data_file_path` / `partition_file_path` / `max_seq_length` into both override blocks (`--dataset`) | `probe_combine=mean` · `server_step_rule=trust_ratio` · `commit_gate=n_target` · `gate_rho_ref=annealed` |
 | a partition build (`build_niid_partitions.py`) + `check_partitions.py` | `num_labels` from the h5 label vocab | `s`=1.5 · `T_res`=300 · `b_max_policy=anchor` |
 | **a compute budget** (`max_runtime_s`, `sim_wall_ceiling_s`) | `p` from `[ProbeDim]`; `total_data_bins` from the registry | `P`=10 · `K`/`C`=10/30 |
-| `eval_max_samples` — a **cost** knob, not a learning one | `ρ*_t` from law C · `ρ_max` from gate reachability · `n_req` closed-form | `B_max` **prior** `ln 2`, replaced by the first sense |
+| `eval_max_samples` — a **cost** knob, not a learning one | `ρ*_t` from law C · `ρ_max` from gate reachability · `n_req` closed-form · the saturation warm-up as `3 ×` the probe cadence | `B_max` **prior** `ln 2`, replaced by the first sense · the `Φ` rail **3.0** |
 | a sim charge profile (**sim-only artifact**, needs a real run) | `B_max` itself — **sensed** by the 3.1 probe | — |
 
 

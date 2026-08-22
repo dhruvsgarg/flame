@@ -13,7 +13,8 @@ node, and none is visible at launch:
      until `I` floors at 1 and the server path has no trainer work amortising it.
      The launch projection prices law C off the `ln 2` prior, so an arm can pass at
      launch and breach in flight (defect 3);
-  4. a controller arm ends on `[BudgetStop] reason=budget`, never `max_runtime_s`
+  4. a controller arm ends on `[BudgetStop] reason=saturation|phi_fixed`, never
+     `max_runtime_s` -- `budget` is demoted and is no longer a termination rule
      -- that rule alone voided all four 2026-08-16 arms (defect 1).
 
 Plus the `[BmaxProbe]` trajectory, whose FIRST FIRING COMMIT is itself a result on
@@ -227,7 +228,11 @@ def main():
     action = next((m.group(1) for ln in stop
                    if (m := re.search(r"action=(\w+)", ln))), None)
     if reason:
-        lvl = OK if (reason == "budget" or not a.expect_controller) else WARN
+        # `saturation` is primary and `phi_fixed` is the rail behind it (§5.3);
+        # `budget` still ends a run but the sensor it reads is the one §5.9
+        # retired, so it is a WARN even though the arm did terminate.
+        lvl = OK if (reason in ("saturation", "phi_fixed")
+                     or not a.expect_controller) else WARN
         print(f"  [{lvl}] 4. ending          [BudgetStop] reason={reason} "
               f"action={action}")
         if lvl != OK:
@@ -237,6 +242,23 @@ def main():
               f"arm that ends on max_runtime_s instead is VOID")
     else:
         print(f"  [{OK}] 4. ending          no [BudgetStop] (not expected on a control)")
+
+    # --- rows E and P3': the two new instruments ----------------------------
+    sat = _log_lines(run, "[SatStop]")
+    sat_fire = next((ln for ln in sat if "saturated at" in ln), None)
+    if sat:
+        print(f"  [{'ok  ' if sat_fire else '    '}] +  SatStop         "
+              + (sat_fire.split("[SatStop]")[-1].strip() if sat_fire
+                 else "armed, has not fired"))
+    ret = _log_lines(run, "[Retention]")
+    if ret:
+        _r = [float(m.group(1)) for ln in ret
+              if (m := re.search(r"cos\*Phi=([\d.]+)", ln))]
+        if _r:
+            _bad = sum(1 for v in _r if abs(v - 1.0) > 0.02)
+            print(f"  [{'ok  ' if not _bad else 'WARN'}] +  Retention       "
+                  f"cos*Phi = {sum(_r) / len(_r):.4f} mean over {len(_r)} commits "
+                  f"(P3' gate: 1.00 +/- 0.02); {_bad} outside")
 
     # --- the B_max sensor ---------------------------------------------------
     probes = _log_lines(run, "[BmaxProbe]")

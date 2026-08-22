@@ -9,7 +9,10 @@ Checks (a) every existing schedule is byte-identical -- `landing` is additive,
     than taking a sqrt of a negative (edge case f),
 (e) a re-sense moves rho* and leaves T_res alone -- the whole law-C decision,
 (f) the stop latches, fires at f*B_max, and only `halt` sets _work_done,
-(g) momentum is refused at construction (edge case b), and
+(g) momentum is refused at construction (edge case b),
+(i) ROW S: the stop's three predicates compose as an OR -- the fixed-Phi rail is
+    reachable on a `landing` arm, which it was not when it was the `else` of the
+    budget test, and `saturation` outranks both, and
 (h) THE SANITY GATE: the live code reproduces replay_landing_law.py's
     pre-registered two-phase enactment on agnews and yahoo to 4 decimals.
 """
@@ -18,6 +21,7 @@ import sys
 
 sys.path.insert(0, "/home/dgarg39/flame/lib/python")
 from examples.fwdllm.aggregator.FedSgdAggregator import FedSGDAggregator as A  # noqa: E402
+from examples.fwdllm.expts.landing_law import PHI_RAIL_DEFAULT  # noqa: E402
 
 P_AGNEWS, P_YAHOO = 450340, 454954
 S, K, G_RULE, MAX_ITER, T_RES = 1.5, 10, 10.0, 20, 300.0
@@ -25,7 +29,7 @@ B_PRIOR, B_AGNEWS, B_YAHOO = math.log(2.0), math.log(3.15), math.log(2.15)
 
 
 def make(schedule="landing", b_max=B_PRIOR, p=P_AGNEWS, t_res=T_RES,
-         phi_stop="off", cap=True, rho_star=0.06):
+         phi_stop="off", cap=True, rho_star=0.06, phi_rail=2.7, sat=None):
     """A stub carrying only what _rho_star_now / _n_required / the stop read."""
     a = object.__new__(A)
     a._rho_schedule = schedule
@@ -39,7 +43,8 @@ def make(schedule="landing", b_max=B_PRIOR, p=P_AGNEWS, t_res=T_RES,
     a._t_res = t_res
     a._budget_stop_frac = 0.95
     a._phi_stop = phi_stop
-    a._phi_stop_threshold = 2.7
+    a._phi_stop_threshold = phi_rail
+    a._sat_det = sat
     a._stop_fired = None
     a._work_done = False
     a._rho_max = (S * math.sqrt(MAX_ITER * K * G_RULE / p)) if cap else None
@@ -123,7 +128,10 @@ print(f"  re-sense            : rho* {before:.4f} -> {after:.4f}, "
 
 # (f) the stop: fires at f*B_max, latches, and only `halt` ends the run
 for mode, ends in (("off", False), ("log_only", False), ("halt", True)):
-    a = make(b_max=B_AGNEWS, phi_stop=mode)
+    # at the settled 3.0 rail the budget test binds first here (Phi=2.97 at
+    # 0.95*B_max); at the old 2.7 the rail fires at commit 603 instead -- which
+    # is row S working, not a regression.
+    a = make(b_max=B_AGNEWS, phi_stop=mode, phi_rail=PHI_RAIL_DEFAULT)
     for _ in range(1500):
         step(a)
     fired = a._stop_fired is not None
@@ -133,7 +141,7 @@ for mode, ends in (("off", False), ("log_only", False), ("halt", True)):
         assert a._stop_fired == "budget"
         assert a._B >= 0.95 * B_AGNEWS
     print(f"  phi_stop={mode:<9}  : fired={fired} work_done={a._work_done}")
-a = make(b_max=B_AGNEWS, phi_stop="halt")
+a = make(b_max=B_AGNEWS, phi_stop="halt", phi_rail=PHI_RAIL_DEFAULT)
 for _ in range(1500):
     step(a)
 a._b_max = B_AGNEWS * 4                  # threshold moves out from under it
@@ -148,6 +156,25 @@ while not a._stop_fired and a._commit_count < 5000:
 assert a._stop_fired == "phi_fixed" and abs(math.exp(a._B) - 2.7) < 0.01
 print(f"  no sensed B_max     : phi_fixed at Phi={math.exp(a._B):.3f}, "
       f"commit {a._commit_count}")
+
+# (i) ROW S: the three predicates are an OR, not an if/else
+# The rail was the `else` of the budget test, so on a `landing` arm it was
+# unreachable -- which is why the shipped 2.7 never ran on any controller run.
+a = make(b_max=math.log(50.0), phi_stop="halt", phi_rail=PHI_RAIL_DEFAULT)
+while not a._stop_fired and a._commit_count < 20000:
+    step(a)
+assert a._stop_fired == "phi_fixed", a._stop_fired
+assert abs(math.exp(a._B) - PHI_RAIL_DEFAULT) < 0.01, math.exp(a._B)
+print(f"  rail on a landing arm: phi_fixed at Phi={math.exp(a._B):.3f}, "
+      f"commit {a._commit_count} -- unreachable before row S")
+
+# saturation outranks both, and only needs its latch set
+class _Latched:
+    fired_at = 900
+a = make(b_max=B_AGNEWS, phi_stop="halt", sat=_Latched())
+step(a)
+assert a._stop_fired == "saturation" and a._work_done
+print("  saturation primary  : outranks the rail and the budget test")
 
 # (h) SANITY GATE -- reproduce replay_landing_law.py's pre-registered enactment
 print("\n  two-phase enactment vs replay_landing_law.py (T5, pre-registered):")

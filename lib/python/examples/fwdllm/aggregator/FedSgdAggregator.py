@@ -13,11 +13,14 @@ from examples.fwdllm.expts.dataset_registry import (
     data_coverage, max_dominant_share, total_data_bins,
 )
 from examples.fwdllm.expts.landing_law import (
-    B_MAX_PRIOR, BUDGET_STOP_FRAC_DEFAULT, T_RES_DEFAULT,
+    B_MAX_PRIOR, BUDGET_STOP_FRAC_DEFAULT, PHI_RAIL_DEFAULT, T_RES_DEFAULT,
     rho_gate_cap, rho_star_now,
 )
 from examples.fwdllm.expts.bmax_probe import (
     PHI_GRID, b_max_from_knee, knee, noise_scale,
+)
+from examples.fwdllm.expts.saturation_stop import (
+    SAT_GL_THRESHOLD, SAT_PATIENCE, SaturationDetector, warmup_commits,
 )
 from flame.monitor.runtime import timer_decorator, FwdLLMStage
 
@@ -327,9 +330,25 @@ class FedSGDAggregator(TopAggregator):
         if self._phi_stop not in ("off", "log_only", "halt"):
             logger.warning(f"unknown phi_stop={self._phi_stop!r}; using off")
             self._phi_stop = "off"
+        # 3.0, not 2.7: measured under law C, peaks land at 2.82/3.00/2.91, so
+        # 2.7 gives up 0.005 on all three (buildplan §5.3, decision 2026-08-21).
         self._phi_stop_threshold = float(
-            getattr(self.args, "phi_stop_threshold", 0.0) or 2.7
+            getattr(self.args, "phi_stop_threshold", 0.0) or PHI_RAIL_DEFAULT
         )
+        # Row E. Flag-gated, default off => byte-identical (§6.1). `saturation`
+        # is the PRIMARY stop once on: the run must end because learning stopped,
+        # never because a cumulative total was reached.
+        self._sat_stop = bool(
+            getattr(self.args, "saturation_stop", False) or False
+        )
+        self._sat_det = None
+        self._eval_commit = 0
+        # P3': cos(theta_t, theta_0) against 1/Phi. 0 = off, byte-identical.
+        self._retention_every = max(
+            0, int(getattr(self.args, "retention_probe_every", 0) or 0)
+        )
+        self._theta_0 = None
+        self._theta_0_norm = 0.0
         # 3.1: re-sense B_max on a stride. 0 = off (byte-identical); the probe
         # costs len(phis)+1 forward passes over b_max_probe_n samples per fire,
         # so it is strided and its elapsed time is logged per fire (task 0.7).
@@ -356,6 +375,17 @@ class FedSGDAggregator(TopAggregator):
             logger.warning(f"unknown b_max_policy={self._b_max_policy!r}; using mean")
             self._b_max_policy = "mean"
         self._b_max_senses = []
+        # Row E. Armed off the PROBE CADENCE, never off a constant fitted to the
+        # runs it will be scored on (row E2): 3 x 150 = 450, and 400/450/600 all
+        # give the same three fire commits, so the multiple is what is real.
+        if self._sat_stop and self._phi_stop != "off":
+            self._sat_det = SaturationDetector(
+                warmup_commits(self._b_max_probe_every)
+            )
+            logger.info(
+                f"[SatStop] GL>{SAT_GL_THRESHOLD} for {SAT_PATIENCE} evals on an "
+                f"11-eval trailing mean, armed after commit {self._sat_det.warmup}"
+            )
         if self._b_max_probe_every:
             logger.info(
                 f"[BmaxProbe] re-sensing every {self._b_max_probe_every} commits "
@@ -643,6 +673,7 @@ class FedSGDAggregator(TopAggregator):
         """Timed separately; shared by both commit branches (natural / force-commit),
         was duplicated verbatim."""
         _audit = getattr(self, "_server_update_audit", False)
+        self._stash_theta_0()
         # Before the loop: it aliases weighted_gradient_sum[id] to model_list[0]'s
         # tensor at i==0, then accumulates into it in place.
         _split = self._pool_split_half_stats(model_list)
@@ -761,6 +792,7 @@ class FedSGDAggregator(TopAggregator):
         # ~900, and the conservative direction for a controller.
         if self._last_rho:
             self._B += 0.5 * math.log1p(self._last_rho ** 2)
+        self._log_retention()
         # 3.1 fires BEFORE the stop is tested, so a re-sense that lowers B_max
         # can stop the run on the same commit it lands rather than one later.
         if (self._b_max_probe_every
@@ -784,12 +816,20 @@ class FedSGDAggregator(TopAggregator):
             )
 
     def _check_budget_stop(self):
-        """C-1's stop (buildplan §5). One predicate, three reasons, one exit.
+        """C-1's stop (buildplan §5). Three predicates ORed, one exit.
 
-        `Phi = e^B` and `B` is monotone, so "Phi crossed a threshold" and "the
-        budget is spent" are the SAME test up to a log -- with a sensed B_max
-        they are literally the same number, since B_max = ln Phi_peak. The fixed
-        Phi threshold survives only for an arm with no sensed B_max.
+        **They are an OR, not an if/else** (row S). Collapsing them was correct
+        only for a `B_max` that stands still: `Phi = e^B` and `B_max = ln
+        Phi_peak` made "Phi crossed a threshold" and "the budget is spent" the
+        same test up to a log. `anchor` broke that -- `B_max` tracks `B` upward,
+        so the budget test is unreachable AND it was the `if`, which is why the
+        shipped rail never ran on a single controller run (§5.3 note (d)).
+
+        Order is by authority, not by cost. `saturation` is primary: the run
+        must end because LEARNING stopped, which is the only thing termination
+        is actually about. `phi_fixed` is the retention floor behind it, and
+        `budget` is demoted to a diagnostic reason -- `B_max` stays only to
+        drive law C's `rho*`.
 
         LATCHED, not level-triggered: B cannot fall, but 3.1 can re-sense B_max
         downward and move the threshold under it, so the predicate can flip.
@@ -801,14 +841,17 @@ class FedSGDAggregator(TopAggregator):
         """
         if self._phi_stop == "off" or self._stop_fired:
             return
-        if self._rho_schedule == "landing":
-            if self._B < self._budget_stop_frac * self._b_max:
-                return
+        # The detector runs on the eval thread; this only reads its latch.
+        _sat = getattr(self, "_sat_det", None)
+        if _sat is not None and _sat.fired_at is not None:
+            reason = "saturation"
+        elif math.exp(self._B) >= self._phi_stop_threshold:
+            reason = "phi_fixed"
+        elif (self._rho_schedule == "landing"
+                and self._B >= self._budget_stop_frac * self._b_max):
             reason = "budget"
         else:
-            if math.exp(self._B) < self._phi_stop_threshold:
-                return
-            reason = "phi_fixed"
+            return
         self._stop_fired = reason
         logger.warning(
             f"[BudgetStop] reason={reason} action={self._phi_stop} "
@@ -896,6 +939,70 @@ class FedSGDAggregator(TopAggregator):
         except Exception:  # pragma: no cover - audit must never fault training
             logger.debug("pool split-half audit failed", exc_info=True)
             return None
+
+    @torch.no_grad()
+    def _stash_theta_0(self):
+        """P3': keep the trainable slice at init, once, for the retention probe.
+
+        Taken at the top of the FIRST commit, before anything mutates the model,
+        so it is theta_0 and not theta_1. ~1.8 MB at p=450k in fp32.
+        """
+        # getattr, not attribute access: test doubles borrow this method off a
+        # bare `object.__new__` stub (the `_slot_holders` pattern), and a probe
+        # that is simply absent is the same as one that is off.
+        if not getattr(self, "_retention_every", 0) or self._theta_0 is not None:
+            return
+        if self._commit_count:      # too late to be theta_0; do not pretend
+            self._retention_every = 0
+            logger.warning("[Retention] first commit already taken; probe off")
+            return
+        try:
+            self._theta_0 = [p.detach().to("cpu", torch.float32).clone()
+                             for p in self.trainer.model.parameters()
+                             if p.requires_grad]
+            self._theta_0_norm = math.sqrt(
+                sum(float(t.pow(2).sum()) for t in self._theta_0))
+        except Exception:  # pragma: no cover - a probe must never fault training
+            self._retention_every = 0
+            logger.warning("[Retention] theta_0 stash failed; probe off",
+                           exc_info=True)
+
+    @torch.no_grad()
+    def _log_retention(self):
+        """P3': measure `cos(theta_t, theta_0)` and check it against `1/Phi`.
+
+        Model §4.1a DERIVES retention = 1/Phi from the same perpendicularity that
+        makes `Phi = e^B` exact, and the whole angular reading of `Phi` (peak at
+        ~70 degrees of drift) rests on it -- but it has never been measured. The
+        gate is `cos*Phi = 1.00 +/- 0.02`; materially above 1 means the aligned
+        ~7% of each step overlaps `theta_0` and `Phi` OVERSTATES the damage.
+
+        One dot over the trainable slice, strided (§6.3: emit-only is not free).
+        """
+        if not getattr(self, "_retention_every", 0) or self._theta_0 is None:
+            return
+        if self._commit_count % self._retention_every:
+            return
+        try:
+            dot = t_sq = 0.0
+            for p, t0 in zip((q for q in self.trainer.model.parameters()
+                              if q.requires_grad), self._theta_0):
+                _p = p.detach().to("cpu", torch.float32)
+                dot += float((_p * t0).sum())
+                t_sq += float(_p.pow(2).sum())
+            n_t = t_sq ** 0.5
+            if n_t <= 0 or self._theta_0_norm <= 0:
+                return
+            cos = dot / (n_t * self._theta_0_norm)
+            phi = math.exp(self._B)
+            logger.info(
+                f"[Retention] commit={self._commit_count} cos={cos:.6g} "
+                f"Phi={phi:.6g} cos*Phi={cos * phi:.4f} "
+                f"drift_deg={math.degrees(math.acos(max(-1.0, min(1.0, cos)))):.1f} "
+                f"||theta_t||/||theta_0||={n_t / self._theta_0_norm:.6g}"
+            )
+        except Exception:  # pragma: no cover - a probe must never fault training
+            logger.debug("[Retention] probe failed", exc_info=True)
 
     @torch.no_grad()
     def _probe_accuracy(self, x, labels, chunk=256):
@@ -1448,6 +1555,41 @@ class FedSGDAggregator(TopAggregator):
 
     def train(self) -> None:
         pass
+
+    def _eval_snapshot_model(self):
+        """Base snapshot, plus the commit this eval will speak for.
+
+        Stamped on the MAIN thread, right where the snapshot is taken -- the eval
+        itself runs on a daemon thread that may not finish for several commits,
+        and a fire commit read off `_commit_count` there would lag by however long
+        the test-set pass took.
+        """
+        model = super()._eval_snapshot_model()
+        if model is not None:
+            self._eval_commit = self._commit_count
+        return model
+
+    def eval_model(self, *args, **kwargs):
+        """Base eval, then feed row E's saturation detector.
+
+        Reads accuracy only to ask whether it is still RISING -- never against a
+        level, which would make the target a knob and void the zero-input claim
+        (§6.7). At most one eval is ever in flight (`_eval_inflight`), so the
+        detector sees the series in order.
+        """
+        out = super().eval_model(*args, **kwargs)
+        if self._sat_det is not None:
+            try:
+                acc = (out[0] or {}).get("acc")
+                if acc is not None and self._sat_det.update(self._eval_commit, acc):
+                    logger.warning(
+                        f"[SatStop] saturated at commit {self._sat_det.fired_at} "
+                        f"acc={acc:.4f} best={self._sat_det.best:.4f} "
+                        f"Phi={math.exp(self._B):.4g}"
+                    )
+            except Exception:  # pragma: no cover - the detector must never fault eval
+                logger.debug("saturation detector update failed", exc_info=True)
+        return out
 
     def evaluate(self) -> None:
         pass

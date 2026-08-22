@@ -17,7 +17,13 @@ mechanical, and all three modes have already cost a node:
     with `I` floored on 98% of its commits, and the launch projection could not
     see it because it prices law C off the `ln 2` prior (defect 3);
   * **zero steps** -- `rho_star == 0`, a requirement of zero rather than an absent
-    one, which was 23-48% of the 2026-08-16 arms (defect 2).
+    one, which was 23-48% of the 2026-08-16 arms (defect 2);
+  * **dead trainers** -- the one failure every predicate above is blind to, because
+    they all read the AGGREGATOR's record, where a run whose trainers never started
+    looks identical to one that is merely slow. `N4b` lost 85 of 100 trainers to
+    CUDA OOM in 90 s and the watcher spent its full 45-min pre-first-commit grace
+    before calling it. The signal is in the trainers log and is unambiguous within
+    two minutes.
 
 Both rate checks wait out `--grace-commits` (default 200, the horizon §6 already
 says to read) so early noise cannot trip them.
@@ -209,6 +215,41 @@ class Scan:
         return self._recent_bfrac[-1] - self._recent_bfrac[0]
 
 
+class TrainerDeaths:
+    """Counts `CRITICAL ... Uncaught exception` in the trainers log, incrementally.
+
+    Deliberately NOT on the aggregator's record: a trainer that died in
+    `pin_memory` before its first forward pass never appears there at all, which
+    is exactly why this predicate exists. Same per-file byte offsets as `Scan`
+    -- the trainers log is the larger of the two on a 100-trainer arm.
+    """
+
+    _PAT = re.compile(rb"CRITICAL.*Uncaught exception")
+
+    def __init__(self, run_dir):
+        self.run_dir = run_dir
+        self._off = {}
+        self.deaths = 0
+
+    def update(self):
+        for f in sorted(glob.glob(os.path.join(self.run_dir, "*trainers.log"))):
+            off = self._off.get(f, 0)
+            try:
+                if os.path.getsize(f) < off:
+                    off = 0
+                with open(f, "rb") as fh:
+                    fh.seek(off)
+                    data = fh.read()
+            except OSError:
+                continue
+            cut = data.rfind(b"\n")
+            if cut < 0:
+                continue
+            self._off[f] = off + cut + 1
+            self.deaths += len(self._PAT.findall(data[:cut]))
+        return self.deaths
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exp-dir", required=True)
@@ -245,16 +286,22 @@ def main():
                          "yahoo controller at 86%% of B_max on 2026-08-20, because "
                          "the n_target gate drives I to 1 at the landing point BY "
                          "DESIGN, exactly as it drives n_req down.")
+    ap.add_argument("--trainer-deaths-max", type=int, default=10,
+                    help="uncaught trainer exceptions tolerated before the arm is "
+                         "called dead. 100 of 100 trainers is the quorum, so 10 "
+                         "deaths already means the selector will never release an "
+                         "end; N4b lost 85. 0 disables.")
     ap.add_argument("--max-hours", type=float, default=0.0,
                     help="hard cap on this arm's wall clock; 0 = none")
     a = ap.parse_args()
 
     t0 = time.time()
     last_commits, last_change = 0, time.time()
-    run, scanner = None, None
+    run, scanner, deaths = None, None, None
     print(f"[watch] exp_dir={a.exp_dir} stall={a.stall_window_s / 60:.0f}m "
           f"grace={a.grace_commits} trips_floor={a.trips_floor} "
           f"i_floor={a.i_floor_frac:g}/dB>{a.b_advance_min:g} "
+          f"trainer_deaths_max={a.trainer_deaths_max} "
           f"kill={'on' if a.kill else 'off (report only)'}", flush=True)
 
     while True:
@@ -274,14 +321,25 @@ def main():
             return 0
         if scanner is None or scanner.run_dir != run:
             scanner = Scan(run)          # a new run dir invalidates every counter
+            deaths = TrainerDeaths(run)
         commits, trips, zero, recent, signal = scanner.update()
+        n_dead = deaths.update() if a.trainer_deaths_max else 0
         if commits > last_commits:
             last_commits, last_change = commits, time.time()
         idle = time.time() - last_change
         print(f"[watch] {os.path.basename(run)} commits={commits}({signal}) "
               f"trips={trips} "
               f"trips/commit(recent)={recent if recent is None else round(recent, 2)} "
-              f"rho_star==0:{zero} idle={idle / 60:.0f}m", flush=True)
+              f"rho_star==0:{zero} dead_trainers={n_dead} "
+              f"idle={idle / 60:.0f}m", flush=True)
+
+        # First, and independent of commits: this is the failure the arm can hit
+        # before commit 1, where every other predicate is still inside its grace.
+        if a.trainer_deaths_max and n_dead >= a.trainer_deaths_max:
+            return _fire(a, run, f"{n_dead} trainers died with an uncaught "
+                                 f"exception (limit {a.trainer_deaths_max}) -- "
+                                 f"check the trainers log for CUDA OOM; the "
+                                 f"selector will never reach its quorum")
 
         if a.max_hours and (time.time() - t0) > a.max_hours * 3600:
             return _fire(a, run, f"exceeded --max-hours {a.max_hours}")

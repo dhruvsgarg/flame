@@ -43,6 +43,7 @@ import torch
 from torch.nn import CrossEntropyLoss
 
 sys.path.insert(0, "/home/dgarg39/flame/lib/python")
+from examples.fwdllm.expts.bmax_probe import knee  # noqa: E402
 from examples.fwdllm.scripts.probe_reference_quality import (  # noqa: E402
     build, accuracy, grad_over, CHUNK,
 )
@@ -162,12 +163,14 @@ def main():
           f"top_class_share={b['top_class_share']:.3f}")
     gdir = grad_over(model, X, Y, torch.arange(X.shape[0]), nl, dev)
 
+    knees = {}
     for mode in a.modes:
         print(f"\n=== mode = {mode} "
               f"({'isotropic junk' if mode == 'noise' else mode}) ===")
         print(f"{'Phi':>6s}{'||theta_tr||':>13s}{'acc':>18s}{'d_acc':>8s}"
               f"{'top_cls':>9s}{'entropy':>9s}{'logit_n':>9s}")
         gen = torch.Generator().manual_seed(11)
+        curve = []
         for phi in phis:
             reps = a.reps if mode.startswith("noise") and phi > 1.0 else 1
             accs, st = [], None
@@ -176,11 +179,29 @@ def main():
                 st = head_stats(model, X, Y, dev)
                 accs.append(st["acc"])
             m = sum(accs) / len(accs)
+            curve.append(m)
             spread = f"+-{(max(accs) - min(accs)) / 2:.3f}" if reps > 1 else "      "
             shown = tr_norm(model)   # noise_renorm pins this back at n0
             print(f"{phi:6.1f}{shown:13.2f}{m:12.4f} {spread:>5s}"
                   f"{m - b['acc']:+8.3f}{st['top_class_share']:9.3f}"
                   f"{st['entropy']:9.3f}{st['logit_norm']:9.2f}")
+        # Row P1's deliverable: the same arithmetic the LIVE sensor uses, so a
+        # number here is directly comparable to a `[BmaxProbe] Phi_knee=` line.
+        # Grid points at or below 1.0 are the unperturbed model and carry no
+        # information about where the knee is; knee() supplies that anchor itself.
+        _pts = [(f, c) for f, c in zip(phis, curve) if f > 1.0]
+        knees[mode] = (knee([f for f, _ in _pts], [c for _, c in _pts],
+                            b["acc"], nl) if _pts else None)
+
+    print(f"\n[rig] rf={a.rf}  p={p_count}  num_labels={nl}  "
+          f"base_acc={b['acc']:.4f}")
+    for mode, k in knees.items():
+        print(f"  Phi_knee ({mode:<12}) = "
+              + (f"{k:.3f}" if k else "n/a -- never crossed the 0.5 level")
+              + ("   <-- BRACKETED" if k and phis[0] < k < phis[-1]
+                 else "   <-- NOT bracketed: re-range --phis"))
+    print("  compare against Phi* = 2.82 / 3.00 / 2.91 on agnews / yahoo / yelp-p")
+
     # leave the model as trained, not perturbed
     perturb(model, base, 1.0, "noise", torch.Generator())
 
