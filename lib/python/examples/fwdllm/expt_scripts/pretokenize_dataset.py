@@ -35,19 +35,26 @@ BASE_CONFIG = os.path.join(HERE, "..", "configs", "aggregator_base.json")
 _W = {}
 
 
-def _hyperparameters(config_path, dataset, partition_method):
+def _hyperparameters(config_path, dataset, partition_method, model=None):
     """The launcher's own merge order: the shipped base config, then the registry's
-    per-dataset overrides on top (run_sequential.sh:671)."""
+    per-dataset overrides on top (run_sequential.sh:671).
+
+    `model` overrides (model_type, model_name) last. The cache filename leads with
+    both, so a second architecture is a 100% miss and needs its own fill -- an
+    override here beats a copied base config, which is failure mode 1 waiting.
+    """
     import json
     import types
     hp = json.load(open(config_path))["hyperparameters"]
     hp.update(dsreg.hyperparameter_overrides(dataset))
     if partition_method:
         hp["partition_method"] = partition_method
+    if model:
+        hp["model_type"], hp["model_name"] = model
     return types.SimpleNamespace(**hp)
 
 
-def _init_worker(config_path, dataset, partition_method):
+def _init_worker(config_path, dataset, partition_method, model=None):
     # The loader's per-row tqdm bars and the preprocessor's `print(df)` are one
     # trainer's debug output; 16 of them interleaved bury this script's own report.
     os.environ["TQDM_DISABLE"] = "1"
@@ -58,7 +65,7 @@ def _init_worker(config_path, dataset, partition_method):
     from examples.fwdllm.expts.initializer import create_model
     from examples.fwdllm.trainer.model_args_builder import build_model_args
 
-    hp = _hyperparameters(config_path, dataset, partition_method)
+    hp = _hyperparameters(config_path, dataset, partition_method, model)
     attrs = BaseDataManager.load_attributes(hp.data_file_path)
     margs = build_model_args(hp, len(attrs["label_vocab"]))
     # create_model also loads the classifier we never use; it is how the trainer
@@ -97,6 +104,11 @@ def main():
                     help="client shards to cache; must be >= a run's --num-trainers")
     ap.add_argument("--jobs", type=int, default=8,
                     help="parallel workers. CPU tokenization -- no GPU is used")
+    ap.add_argument("--model-type", default=None,
+                    help="override the config's model_type (e.g. roberta-large). "
+                         "The cache is keyed by it, so a new model needs its own fill")
+    ap.add_argument("--model-name", default=None,
+                    help="override the config's model_name; defaults to --model-type")
     ap.add_argument("--partition-method", default=None,
                     help="override the registry's group (the cache key includes it)")
     ap.add_argument("--config", default=BASE_CONFIG,
@@ -113,7 +125,14 @@ def main():
     part = a.partition_method or spec.partition_method
     root = dsreg.cache_root()
     ids = ([] if a.no_global else [-1]) + list(range(a.clients))
-    paths = {c: dsreg.cache_file(a.dataset, c, part) for c in ids}
+    # The model has to reach cache_file too, or a second architecture reads
+    # DistilBERT's shards as already-cached and this script writes nothing.
+    mkw = {}
+    if a.model_type:
+        mkw = {"model_type": a.model_type,
+               "model_name": a.model_name or a.model_type}
+    model = (mkw["model_type"], mkw["model_name"]) if mkw else None
+    paths = {c: dsreg.cache_file(a.dataset, c, part, **mkw) for c in ids}
 
     have = {c: os.path.getsize(p) for c, p in paths.items() if os.path.exists(p)}
     todo = ids if a.force else [c for c in ids if c not in have]
@@ -144,7 +163,7 @@ def main():
     os.makedirs(root, exist_ok=True)
     t0, done = time.time(), 0
     with ProcessPoolExecutor(max_workers=max(1, a.jobs), initializer=_init_worker,
-                             initargs=(a.config, a.dataset, part)) as pool:
+                             initargs=(a.config, a.dataset, part, model)) as pool:
         futs = {pool.submit(_tokenize, c): c for c in todo}
         for f in as_completed(futs):
             c, secs = f.result()
