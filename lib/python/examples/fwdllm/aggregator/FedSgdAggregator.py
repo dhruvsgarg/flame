@@ -20,7 +20,8 @@ from examples.fwdllm.expts.bmax_probe import (
     PHI_GRID, b_max_from_knee, knee, noise_scale,
 )
 from examples.fwdllm.expts.saturation_stop import (
-    SAT_GL_THRESHOLD, SAT_PATIENCE, SaturationDetector, warmup_commits,
+    SAT_GL_THRESHOLD, SAT_PATIENCE, SaturationDetector,
+    slope_horizon_commits, warmup_commits,
 )
 from flame.monitor.runtime import timer_decorator, FwdLLMStage
 
@@ -375,16 +376,18 @@ class FedSGDAggregator(TopAggregator):
             logger.warning(f"unknown b_max_policy={self._b_max_policy!r}; using mean")
             self._b_max_policy = "mean"
         self._b_max_senses = []
-        # Row E. Armed off the PROBE CADENCE, never off a constant fitted to the
-        # runs it will be scored on (row E2): 3 x 150 = 450, and 400/450/600 all
-        # give the same three fire commits, so the multiple is what is real.
+        # Row E. Both horizons come off the probe cadence (warm-up 3x, progress
+        # 1x) and are passed separately so neither can move the other.
         if self._sat_stop and self._phi_stop != "off":
             self._sat_det = SaturationDetector(
-                warmup_commits(self._b_max_probe_every)
+                warmup_commits(self._b_max_probe_every),
+                slope_horizon=slope_horizon_commits(self._b_max_probe_every),
             )
             logger.info(
                 f"[SatStop] GL>{SAT_GL_THRESHOLD} for {SAT_PATIENCE} evals on an "
-                f"11-eval trailing mean, armed after commit {self._sat_det.warmup}"
+                f"11-eval trailing mean, while not still rising over "
+                f"{self._sat_det.slope_horizon} commits; armed after commit "
+                f"{self._sat_det.warmup}"
             )
         if self._b_max_probe_every:
             logger.info(

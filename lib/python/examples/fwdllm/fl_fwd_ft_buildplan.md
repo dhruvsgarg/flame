@@ -261,6 +261,7 @@ past-the-stop counterfactual keeps being measured.
 | `P4_GATE_S` | `1.5` | moves `s`, the only lever `Λ = 2B/s` allows on progress per unit budget. Floor ≈0.9 at `K`=10 |
 | `P4_BMAX_PHIS` | *(module default `1.5,2,2.5,3,3.5,4`)* | re-ranges the probe grid. **`condition_fp` does not cover it** — same blind spot the sim profile had |
 | `P4_RETENTION_EVERY` | *(unset = off)* | row **P3′**: emit `[Retention] cos(θ_t,θ_0)` every N commits |
+| `P4_BMAX_EVERY` | `150` | the probe cadence — **and both saturation horizons ride it** (warm-up 3×, progress 1×), so lowering it is the only way a SHORT run reaches the stop. Pair with `P4_PHI_STOP=log_only` |
 | `P4_MIN_INIT_FRAC` | **`0.9`** | the join barrier. `1.0` restores the set-exact first cohort at the cost of zero straggler tolerance |
 
 `P4_ALLOW_AGNEWS_PRICING=1` overrides the missing-profile refusal (§4.5). `VCLOCK_OVERRIDE` /
@@ -614,7 +615,7 @@ yahoo documents. Row **R2** is the diagnostic and it is no longer urgent.
 | `B_max` combiner | **`anchor`** — the latest sense *(decision 2026-08-20, run 2026-08-21)* | `mean` assumed the fires estimate **one constant**; 40 fires say otherwise — `B_rem` is flat at 0.21–0.30 on all three, so `mean`-minus-`B` collapsed and annealed `ρ*` **1.7× below** the live measurement. **Confirmed as a fix and as a non-event:** it roughly doubled `B_max` (0.795→1.694 on agnews) and bought **+0.006 / +0.005 / −0.002** accuracy and no speed-up (§5.5). Its known defect — it does not terminate — is now the load-bearing one. `b_max_policy=anchor`, no code change |
 | what the stop does | **`halt`** via `_work_done` | one line into a tested path. Three states ship: `off` · `log_only` (emit the crossing, keep training) · `halt`, and as of 2026-08-22 all three stop REASONS honour it. Until then `_check_budget_stop` was `if landing: budget-test else: Φ-test`, so on a controller run the Φ branch was unreachable and N1–N3 emitted no crossing at all |
 | `Φ` rail | **3.0** — `PHI_RAIL_DEFAULT`, the code default *(2026-08-21; was 2.7, and 2.7 never actually ran)* | measured under law C: peaks land at **2.82 / 3.00 / 2.91**, so 2.7 costs 0.005 on all three and 3.63 costs 0.008–0.015. 3.0 sits on the peak band and coincides with where the sized saturation stop fires (§5.5). Replaying N1's budget, it crosses at **commit 1,152** |
-| stop reasons | **`saturation` primary · `phi_fixed` as the rail · `budget` demoted** *(decided 2026-08-20, sized 2026-08-21, shipped 2026-08-22)* | The run must end because **learning** stopped, not because a cumulative total was reached. `B ≥ f·B_max` is no longer a termination rule — `B_max` stays only to drive law C's `ρ*`. The three are an **`OR`** tested in that order; `saturation` is behind `--saturation-stop` (default off in code, **on** in `run_node_p4.sh`'s controller arm) and the other two ship enabled |
+| stop reasons | **`saturation` primary · `phi_fixed` as the rail · `budget` demoted** *(decided 2026-08-20, sized 2026-08-21, shipped 2026-08-22)* | The run must end because **learning** stopped, not because a cumulative total was reached. `B ≥ f·B_max` is no longer a termination rule — `B_max` stays only to drive law C's `ρ*`. The three are an **`OR`** tested in that order; `saturation` is behind `--saturation-stop` (default off in code, **on** in `run_node_p4.sh`'s controller arm) and the other two ship enabled. The detector is **GL + Prechelt's progress term**; GL alone gave up 0.153 out of sample (§5.5) |
 | is `B_max` a fixed total at all? | **no — as the sensor currently reads it** | `B_rem` is flat at 0.21–0.30 over 40 fires, so `B_max` is `B` + a constant and "spend `B_max` then stop" has no fixed point. **The cause is the instrument, not the world (§5.9)** — it measures tolerance to *unearned* noise on a frozen model, ~1.8× below where a re-fitting model peaks. Row **N4a′** makes it honest; rows **P1**/**P1′** make it right |
 
 **`Λ = 2B/s` is an identity wherever the gate holds `s`** (−0.3% out of sample on both `s`-pinned runs,
@@ -650,7 +651,7 @@ compute-bound (`τ(30)/τ(10)`=2.56), so adaptive `P` is no longer motivated as 
 | **Does a bracketing grid make `B_rem` shrink with `B`?** If yes, hole 1 closes with hole 2 | row **N4a′** | a still-flat `B_rem` means budget really is re-earned, and the anneal must be imposed rather than sensed (row **A**) |
 | **Does `s` shift the accuracy-vs-`Λ` curve, or only move along it?** `Λ = 2B/s` says *along* | N4b′ at `s`=1.0 against N1 at matched `Λ` | a higher peak than 0.872 makes `s` a real accuracy lever — and the first thing to try on yahoo and yelp-p |
 | **Is the residual gap to the *centralized ceiling* the estimator?** Not urgent — all three now sit within 0.008 of their FL targets | row **R2**: cos audit + `D` against agnews' 0.10–0.15 | if `D` matches agnews, the limit is adapter capacity, not the estimator |
-| **Does the sized saturation stop hold on a fourth dataset?** The warm-up is no longer fitted — it is `3 ×` the probe cadence and 400/450/600 fire identically (E2, closed 2026-08-22) — but thr 0.005 and patience 20 are still read off three curves | **C**, **D**, **Y** first: no run has ever ended on it. Then any new dataset | a threshold tuned to three tasks is a hand-set constant by another name, and it would be the only one left in the loop |
+| **Does the saturation stop hold on a fourth dataset?** Both horizons are multiples of the probe cadence and neither moves any fire commit (E2, closed 2026-08-22), and the rule now survives six curves it was not sized on — but **thr 0.005 and patience 20 are still read off three curves** | **C**, **D**, **Y** first: no run has ever ended on it. Then any new dataset | a threshold tuned to three tasks is a hand-set constant by another name, and it would be the only one left in the loop |
 | **trips/commit ≥ 3** is calibrated on one death and two survivals | every run reports it per quintile; re-size once there are ten | a config passes preflight and still burns wall |
 
 **Closed 2026-08-22:** the saturation warm-up is a multiple of the probe cadence, not a fit — 400, 450 and
@@ -719,19 +720,31 @@ stop costs is not the target — it is the 0.03–0.14 given back afterwards, an
 Reproduce the table below with `expt_scripts/replay_saturation_stop.py`; `test_saturation_stop.py` is
 the gate.
 
-| | fires at | `Φ` | vs peak | run saved |
-|---|---|---|---|---|
-| **agnews** | commit 1,184 | 3.05 | −0.005 | 38% |
-| **yahoo** | commit 1,084 | 2.76 | −0.008 | 55% |
-| **yelp-p** | commit 1,126 | 3.27 | −0.005 | 40% |
+| | fires at | vs peak | run saved |
+|---|---|---|---|
+| **agnews** | commit 1,194 | −0.005 | 38% |
+| **yahoo** | commit 1,084 | −0.008 | 55% |
+| **yelp-p** | commit 1,179 | −0.007 | 37% |
 
-**The warm-up is load-bearing and is not a free parameter to shrink.** At 300 the detector false-fires on
-yahoo's early plateau at commit 346 and 0.24 accuracy — yahoo sits near chance for ~350 commits before it
-takes off, so a running-max GL has a real maximum to compare against long before the run has learned
-anything. **400, 450 and 600 fire identically on all three**, and thresholds 0.005 with patience 10 / 20 /
-40 all land within 0.010 of peak, so the setting is a plateau and not a fit. **It therefore ships as
-`3 × b_max_probe_every`, not as a number read off these curves** — row E2's prediction, confirmed on
-replay 2026-08-22.
+**It was re-derived on 2026-08-22 against six curves it had never seen, and the
+first version failed them.** GL alone fires on `yahoo_control` at commit 597 and
+**0.153 below that run's eventual peak** — a run still crawling at 0.27 accuracy
+that went on to 0.42. A running-max GL is scale-free but not slope-aware: it
+cannot tell a plateau at the top from a slow noisy climb, because both sit below
+their own running max for 20 straight evals. Adding **Prechelt's own progress
+term** — do not stop while the trailing mean is still above where it was one
+probe-cadence ago — removes that fire and every other out-of-sample one, at a cost
+of 0.000 / 0.000 / 0.002 on the three curves that sized it. **Neither constant is
+fitted now: warm-up = 3 × cadence, progress horizon = 1 × cadence**, and 1× / 1.5×
+/ 2× all give the same out-of-sample verdict.
+
+**The warm-up stopped being load-bearing when the progress term landed, and the honest statement is that
+it is now inert.** It used to be the only thing preventing a false fire — at 300 the detector fired on
+yahoo's early plateau at commit 346 and 0.24 accuracy. The slope test now catches that case, and the
+warm-up moves no fire commit on any of the nine cached curves **at any setting from 0 to 600**. It ships
+anyway, as `3 × b_max_probe_every`, because it costs nothing and a pathological curve could still need it —
+but do not cite it as the reason the rule does not false-fire. **What still is fitted: the 0.005 threshold
+and the 20-eval patience**, and the six out-of-sample curves are the only evidence they generalise.
 
 **Note the two stops now agree.** Saturation fires at `Φ` 2.76–3.27 and the re-derived rail is 3.0. That is
 the argument for shipping them as an `OR`: on these runs either one alone would have been nearly right, and

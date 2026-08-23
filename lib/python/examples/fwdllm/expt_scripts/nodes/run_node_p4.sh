@@ -211,9 +211,12 @@ case "$ARM" in
     # LATEST sense instead of the mean: across 19 fires the probe reports a flat
     # B_rem (~0.25) while the mean turns it into headroom that vanishes, which
     # anneals rho* to 1.7x below what the current measurement supports.
-    # `log_only` makes BOTH stops emit and keep training -- the only way to see
-    # past the Phi=2.7 rail. P4_BMAX_PHIS re-ranges the probe grid; P4_GATE_S
+    # `log_only` makes ALL THREE stop reasons emit and keep training -- the only
+    # way to see past the rail. P4_BMAX_PHIS re-ranges the probe grid; P4_GATE_S
     # moves `s`, the only lever the model allows on progress per unit budget.
+    # P4_BMAX_EVERY moves the probe cadence, and both saturation horizons ride
+    # it -- lowering it is how a SHORT run reaches the stop. Pair with
+    # P4_PHI_STOP=log_only: halting on a rule armed early proves nothing.
     # THE STACK, as settled 2026-08-21 (buildplan §5.3): `anchor` is the
     # combiner (`mean` collapsed B_rem and annealed rho* 1.7x below the live
     # measurement), the rail is 3.0 and reachable as an OR rather than the
@@ -226,7 +229,8 @@ case "$ARM" in
       "${COMMON[@]}" --gate-rho-ref annealed \
       --rho-schedule landing --t-res 300 --budget-stop-frac 0.95 \
       --b-max-policy "${P4_BMAX_POLICY:-anchor}" "${SAT[@]}" \
-      --phi-stop "${P4_PHI_STOP:-halt}" --b-max-probe-every 150 --b-max-probe-n 512 \
+      --phi-stop "${P4_PHI_STOP:-halt}" --b-max-probe-n 512 \
+      --b-max-probe-every "${P4_BMAX_EVERY:-150}" \
       ${P4_BMAX_PHIS:+--b-max-probe-phis "$P4_BMAX_PHIS"} \
       ${P4_RETENTION_EVERY:+--retention-probe-every "$P4_RETENTION_EVERY"}
     ;;

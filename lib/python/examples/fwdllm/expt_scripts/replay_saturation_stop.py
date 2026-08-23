@@ -11,15 +11,13 @@ re-scans the ~25 GB in `experiments/`. `--runs` re-extracts from run dirs.
 
 The gate this script IS (buildplan §3, rows E and E2):
 
-  * fires at commit 1,184 / 1,084 / 1,126 on N1 / N2 / N3, within 0.008 of peak
-  * warm-up 450 = 3 x the 150-commit probe cadence reproduces all three, so the
-    warm-up is a multiple with no free parameter and not a constant fitted to
-    these curves
-  * warm-up 300 false-fires on yahoo at commit 346 and 0.24 accuracy -- the
-    reason the warm-up exists at all
+  * fires at commit 1,194 / 1,084 / 1,179 on N1 / N2 / N3, within 0.008 of peak
+  * on the six curves the rule was NOT sized on it never fires before that run's
+    own peak -- without the progress term it fires 0.153 below on yahoo_control
+  * both horizons are multiples of the probe cadence (warm-up 3x, progress 1x)
+    and are independent: sweeping one must not move the other
 
-Also prints the fixed-Phi rail (row S) on the same curves, since the two stops
-ship as an OR and the argument for that is that either alone is nearly right.
+Also prints the fixed-Phi rail (row S), since the two stops ship as an OR.
 """
 import argparse
 import json
@@ -31,12 +29,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from fwdllm.expts.saturation_stop import (  # noqa: E402
     SAT_GL_THRESHOLD, SAT_PATIENCE, SAT_SMOOTH_WINDOW,
-    SaturationDetector, warmup_commits,
+    SaturationDetector, slope_horizon_commits, warmup_commits,
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "writeup_figs", "data")
 DATASETS = ("agnews", "yahoo", "yelp-p")
+# `_anchor` sized the rule; `_controller` and `_control` are the six curves it has
+# never seen, and the progress term exists because of what they said (§5.5).
+TAGS = ("anchor", "controller", "control")
 PROBE_CADENCE = 150          # b_max_probe_every on every P-4 controller run
 PHI_RAIL = 3.0               # row S's re-derived rail
 
@@ -53,8 +54,11 @@ def smooth(v, w=SAT_SMOOTH_WINDOW):
             for i in range(len(v))]
 
 
-def replay(rows, warmup, threshold, patience):
-    det = SaturationDetector(warmup, threshold, patience)
+def replay(rows, warmup, threshold, patience, horizon=None):
+    # `horizon` is held FIXED while `warmup` sweeps -- both ride the cadence, and
+    # letting one move with the other is what E2's gate exists to catch.
+    det = SaturationDetector(warmup, threshold, patience,
+                             slope_horizon=horizon)
     for commit, _B, _lam, acc in rows:
         if det.update(commit, acc):
             return det.fired_at
@@ -85,16 +89,21 @@ def main():
     else:
         curves = []
         for ds in DATASETS:
-            run, rows = load_cached(ds)
-            curves.append((ds, rows))
+            for tag in TAGS:
+                try:
+                    _run, rows = load_cached(ds, tag)
+                except FileNotFoundError:
+                    continue
+                curves.append((f"{ds}_{tag}", rows))
 
     warmups = [int(w) for w in args.warmups.split(",")]
     tied = warmup_commits(args.cadence)
+    horizon = slope_horizon_commits(args.cadence)
     print(f"threshold={args.threshold} patience={args.patience} "
-          f"window={SAT_SMOOTH_WINDOW}  warm-up tied to cadence: "
-          f"3 x {args.cadence} = {tied}\n")
+          f"window={SAT_SMOOTH_WINDOW}  cadence {args.cadence} => "
+          f"warm-up 3x = {tied}, progress horizon 1x = {horizon}\n")
 
-    hdr = f"{'run':<10} {'peak':>7} {'@commit':>8} {'end':>7} " + \
+    hdr = f"{'run':<20} {'peak':>7} {'@commit':>8} {'end':>7} " + \
           " ".join(f"{'warm ' + str(w):>12}" for w in warmups) + f" {'Phi>=3':>8}"
     print(hdr)
     print("-" * len(hdr))
@@ -106,17 +115,18 @@ def main():
         ip = max(range(len(sm)), key=lambda i: sm[i])
         cells = []
         for w in warmups:
-            c = replay(rows, w, args.threshold, args.patience)
+            c = replay(rows, w, args.threshold, args.patience, horizon)
             if c is None:
                 cells.append(f"{'never':>12}")
                 continue
             j = min(range(len(commits)), key=lambda i: abs(commits[i] - c))
             cells.append(f"{c:>6} {sm[j] - sm[ip]:>+6.3f}")
-        print(f"{name:<10} {sm[ip]:>7.4f} {commits[ip]:>8.0f} {sm[-1]:>7.4f} "
+        print(f"{name:<20} {sm[ip]:>7.4f} {commits[ip]:>8.0f} {sm[-1]:>7.4f} "
               + " ".join(cells) + f" {str(phi_cross(rows)):>8}")
         # E2's gate: the tied warm-up must not move any fire commit.
-        if tied in warmups and replay(rows, tied, args.threshold, args.patience) \
-                != replay(rows, 400, args.threshold, args.patience):
+        if tied in warmups and replay(rows, tied, args.threshold, args.patience,
+                                      horizon) \
+                != replay(rows, 400, args.threshold, args.patience, horizon):
             ok = False
             print(f"  !! {name}: warm-up {tied} moves the fire commit off 400's")
     print("\nRow E2 gate:", "PASS -- the warm-up is a multiple, not a fit" if ok
