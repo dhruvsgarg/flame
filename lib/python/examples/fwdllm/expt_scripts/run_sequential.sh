@@ -113,6 +113,8 @@ MIN_INIT_TRAINERS=""
 MIN_INIT_FRAC=""
 AVAIL_TRACE=""
 AVAIL_TRACES=""
+MODEL_TYPE=""          # --model-type NAME: second architecture (row N5c). Cache key leads
+MODEL_NAME=""          #   with model_type+model_name, so a new model needs its own pretokenize.
 DATASET=""             # --dataset NAME: registry-derived data_file_path/partition_file_path/
                         # max_seq_length/name into both override blocks. unset => yaml default (agnews)
 PARTITION_METHOD=""
@@ -230,6 +232,8 @@ while [[ $# -gt 0 ]]; do
     --avail-trace)          AVAIL_TRACE="$2"; shift 2 ;;
     --avail-traces)         AVAIL_TRACES="$2"; shift 2 ;;
     --dataset)              DATASET="$2"; shift 2 ;;
+    --model-type)           MODEL_TYPE="$2"; shift 2 ;;
+    --model-name)           MODEL_NAME="$2"; shift 2 ;;
     --partition-method)     PARTITION_METHOD="$2"; shift 2 ;;
     --var-threshold)        VAR_THRESHOLD="$2"; shift 2 ;;
     --server-update-audit)  SERVER_UPDATE_AUDIT=1; shift ;;
@@ -445,7 +449,7 @@ EXPT_RUNNER_DIR="$EXPT_RUNNER_DIR" \
 MODE="$MODE" DELAYS="$DELAYS" MAX_RUNTIME_S="$MAX_RUNTIME_S" MAX_DATA_ID="$MAX_DATA_ID" \
 NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" GPU_IDS="$GPU_IDS" SEL_C="$SEL_C" SEL_C_ASYNC="$SEL_C_ASYNC" \
 SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" MIN_INIT_FRAC="$MIN_INIT_FRAC" \
-DATASET="$DATASET" PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
+DATASET="$DATASET" MODEL_TYPE="$MODEL_TYPE" MODEL_NAME="$MODEL_NAME" PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
 SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" POOL_SPLIT_HALF_AUDIT="$POOL_SPLIT_HALF_AUDIT" \
 ALLOW_STALE_PROFILE="$ALLOW_STALE_PROFILE" \
@@ -485,6 +489,8 @@ from examples.fwdllm.expts import wall_clock_preflight as wcp
 env = os.environ.get
 MODE = env("MODE"); DELAYS = env("DELAYS")
 DATASET = env("DATASET") or ""
+MODEL_TYPE = env("MODEL_TYPE") or ""   # row N5c: second architecture
+MODEL_NAME = env("MODEL_NAME") or ""
 if DATASET and DATASET not in dsreg.names():
     # exit 3, not 2: 2 means "blocking check, --force can override" (render_and_gate's
     # code), which is wrong here -- --force cannot rescue an unknown dataset name.
@@ -696,6 +702,15 @@ def patch(exp, run_key, variant, trace):
         if h.get("sim_charge_profile_path"):
             h["sim_charge_profile_path"] = dsreg.sim_charge_profile(
                 h["sim_charge_profile_path"], DATASET)
+    # --model-type/--model-name (row N5c): same both-blocks pattern as --dataset.
+    # The feature cache key leads with model_type+model_name, so a second
+    # architecture is a 100% miss until pretokenize_dataset.py --model-type runs.
+    if MODEL_TYPE:
+        h["model_type"] = MODEL_TYPE
+        exp["trainer"]["config_overrides"]["hyperparameters"]["model_type"] = MODEL_TYPE
+        _mn = MODEL_NAME or MODEL_TYPE
+        h["model_name"] = _mn
+        exp["trainer"]["config_overrides"]["hyperparameters"]["model_name"] = _mn
     # ABSOLUTE, always: the aggregator resolves this with a bare open() against
     # its OWN cwd (sim_charge_registry.py:19), which spawner.py inherits from the
     # launching shell -- and a miss is a WARNING plus an empty dict, so the vclock

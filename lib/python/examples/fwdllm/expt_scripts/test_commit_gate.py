@@ -85,3 +85,26 @@ for sched in ("const",):
 a = make(rule="raw_sgd", rho_ref="setpoint"); a._last_rho = 0.005
 assert abs(a._n_required() - P_TRAIN * (0.005 / S) ** 2 / 2.988) < 1e-6
 print("  gate_rho_ref no-ops : identical under const, and under raw_sgd (no setpoint exists)")
+
+# (g) THE CAP BOUNDARY. rho_max is the rho where n_req == max_iter*K exactly, so a
+#     run pinned there satisfies the gate only at equality -- and `>=` lost it to
+#     float rounding. 145932 sat at rho_max for all 80 commits (B/B_max=6%, so the
+#     anneal never lifted it off) and committed via the bypass: 0 COMMIT / 1603 POOL.
+import math
+MAX_ITER, K, G = 20, 10, 10.0
+print("  cap boundary (rho=rho_max, n_have=max_iter*K exactly):")
+def at_cap(p, n):
+    """A stub at rho_max for this p -- `make` pins _p_trainable, so override it."""
+    rho_max = S * math.sqrt(MAX_ITER * K * G / p)
+    a = make(rho=rho_max, g_rule=G, n=n)
+    a._p_trainable = p
+    return a, rho_max
+
+
+for name, p in (("distilbert   ", 450340), ("roberta-large", 4225540)):
+    a, rho_max = at_cap(p, MAX_ITER * K)
+    n_req = a._n_required()
+    assert abs(n_req - MAX_ITER * K) < 1e-6, (name, n_req)
+    assert a._gate_satisfied() is True, f"{name}: gate must fire AT the cap"
+    assert at_cap(p, MAX_ITER * K - 1)[0]._gate_satisfied() is False
+    print(f"    {name} p={p:>9} rho_max={rho_max:.6f} n_req={n_req:.10f} -> COMMIT")

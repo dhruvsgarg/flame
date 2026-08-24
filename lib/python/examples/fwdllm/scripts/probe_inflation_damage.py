@@ -117,6 +117,8 @@ def main():
     ap.add_argument("--rf", type=int, default=16)
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--reps", type=int, default=3)
+    ap.add_argument("--lr", type=float, default=1e-3,
+                    help="rig AdamW lr; 1e-3 fits distilbert, roberta-large collapses on it")
     ap.add_argument("--modes", nargs="+", default=["noise", "scale", "signal"])
     ap.add_argument("--phis", default=",".join(str(p) for p in PHIS),
                      help="comma-separated Phi grid (default: today's byte-identical list)")
@@ -142,7 +144,7 @@ def main():
 
     # train to a realistic peak, on a disjoint half so the eval head is untouched
     tr = torch.arange(X.shape[0] // 2, X.shape[0])
-    opt = torch.optim.AdamW(tr_params(model), lr=1e-3)
+    opt = torch.optim.AdamW(tr_params(model), lr=a.lr)
     g2 = torch.Generator().manual_seed(1)
     model.train()
     for ep in range(a.epochs):
@@ -161,7 +163,9 @@ def main():
     b = head_stats(model, X, Y, dev)
     print(f"[rig] trained: acc={b['acc']:.4f}  ||theta_tr||={n0:.3f}  "
           f"top_class_share={b['top_class_share']:.3f}")
-    gdir = grad_over(model, X, Y, torch.arange(X.shape[0]), nl, dev)
+    # only `signal` uses it, and the full backward OOMs roberta-large at 24 layers
+    gdir = (grad_over(model, X, Y, torch.arange(X.shape[0]), nl, dev)
+            if "signal" in a.modes else None)
 
     knees = {}
     for mode in a.modes:

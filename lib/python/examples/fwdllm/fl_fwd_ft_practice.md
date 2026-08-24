@@ -8,6 +8,14 @@
 > [fl_fwd_ft_buildplan.md §1–§3](fl_fwd_ft_buildplan.md), the one status board, updated in place.**
 > [fl_fwd_ft_solution.md](fl_fwd_ft_solution.md) (`§0…§8`) owns the *why*; cited here as "model §x".
 
+> **⚠ THE FOUR DOCS ARE ONE CORPUS — no inconsistency, no staleness, no redundancy.** Any session that
+> measures something updates **every** doc the measurement touches, in the same session. One fact has one
+> home: [buildplan](fl_fwd_ft_buildplan.md) owns status + the queue, [practice](fl_fwd_ft_practice.md) owns
+> numbers (P3 knobs, P4 runs), [solution](fl_fwd_ft_solution.md) owns mechanism, [writeup](fl_fwd_ft_writeup.md)
+> owns the prose account. Elsewhere a fact is **cited, never restated**. A measurement that contradicts a
+> standing claim **deletes** that claim — it is never left standing beside its refutation, and never
+> softened into "some evidence suggests". Retractions replace the retracted text and say what killed it.
+
 | you want… | go to |
 |---|---|
 | **status · what to do next · how to build it** | **[fl_fwd_ft_buildplan.md](fl_fwd_ft_buildplan.md)** — status board, queue, specs |
@@ -626,6 +634,183 @@ newest real). One caveat the green row does not state: `_ok` accepts the bare `_
 `fedavg` entry carried over from agnews passes provenance on a yahoo-tagged file. **Provenance ok ≠ every
 charged entry priced on this dataset** — read `source_runs` and `profiled_at` per entry when that matters.
 
+### P4.15 The roberta-large smoke — ports clean, and prices N5c at ~50 h *(2026-08-23, `run_20260823_145932`)*
+
+`P4_MODEL_TYPE=roberta-large P4_NUM_TRAINERS=50 P4_PHI_STOP=log_only P4_BMAX_EVERY=50
+P4_RETENTION_EVERY=10 VCLOCK_OVERRIDE=12000 CEIL_OVERRIDE=2.0`, agnews controller, `rf`=16, seq 192.
+**80 commits in 2 h · 40.1 commits/h · 89.9 s/commit · `Φ`=1.0435 · `B`=0.0426/0.693 · acc 0.250 → 0.295
+against chance 0.250 · 0 trainer deaths, 0 OOM.**
+
+| gate | reading |
+|---|---|
+| 1 DataBins | 150 from registry, 100% coverage, trainer-confirmed |
+| 2 `ρ*` ≠ 0 | 0/80 zero-length steps — but **all 80 pinned at `ρ_max`=0.0326336**, the anneal never moved |
+| 3 trips/commit | **20.00 in every quintile** — pinned at the `max_iter` ceiling, not above the floor of 3 |
+| 4 ending | **WARN — no `[BudgetStop]`**; ended on the wall ceiling, correct under `log_only` |
+| + Retention | **`cos·Φ` = 1.0000 over 8 fires**, `cos` 0.9686 → 0.9583, drift 14.4° → 16.6° |
+| + BmaxProbe | 1 fire at commit 50, **declined** (`base_acc=0.258` too close to chance 0.250) — correct refusal |
+| + ProbeDim | `[TrainableScope] trainable_p=4225540`, matching the init port exactly |
+
+**What ported.** Everything mechanical: the model builds with adapters under the FL stack, `p` reads the
+production count, all 150 bins are visited, no trainer dies at 50×roberta-large on 8×46 GB, the retention
+probe carries to a second architecture, and the `B_max` probe correctly refuses to sense off a
+near-chance curve. **P3′ now holds at a 9.4× larger `p`** — `cos·Φ` = 1.0000, same as [P4.14](#p414-stage-2-smoke--wiring-clean-p3-answered-stop-unreached-2026-08-23-run_20260823_123727).
+
+**What did not.** Accuracy is at chance and `Φ` reached 1.04 of the 2.9 the phenomenon needs. Two numbers
+explain both, and neither is a defect:
+
+1. **`ρ_max ∝ 1/√p` starves the budget.** `ρ_max = s√(max_iter·K·G_rule/p)` falls 3.06× at roberta's `p`
+   (0.1000 → 0.0326), so `B` banks `½ln(1+ρ²)` = 5.33e-4 per commit against DistilBERT's 5.0e-3.
+   `B/B_max` reached **6%** in 2 h, so law C's anneal never engaged and `ρ` sat at the cap the whole run.
+2. **At the cap, `n_req` = `max_iter·K` = 200 exactly**, which costs **20 round trips per commit** — the
+   ceiling, every commit, in every quintile. DistilBERT annealed off the cap within a few commits and ran
+   at 5.05 trips/commit.
+
+Together: **`ln(2.9)/5.33e-4 ≈ 2,000 commits at 40.1 commits/h ≈ 50 h** to reach `Φ*`, against DistilBERT's
+~3 h. A 3.5 h arm reaches `Φ`≈1.08; a 12 h overnight reaches `Φ`≈1.29. Sizing consequence:
+[buildplan §5.11](fl_fwd_ft_buildplan.md).
+
+**The gate never fired: 0 COMMIT / 1,603 POOL.** All 80 commits landed through the `max_iter` bypass.
+`ρ_max` is *defined* as the `ρ` where `n_req` = `max_iter·K`, so a run pinned at the cap can satisfy
+`n_have >= n_req` only at exact equality — and the live `n_req` computed to **200.00000000000006**, losing
+to `n_have`=200.0 by 6e-14. Fixed 2026-08-24 with a 1e-9 relative tolerance, regression case (g) in
+`expt_scripts/test_commit_gate.py`. **It does not recover throughput** — the gate now fires at the same
+200-upload pool it was already waiting for — it corrects the accounting, so gate 3 reads a satisfied gate
+instead of a bypass and the watchdog's `I`-floor logic sees the truth.
+
+**This run is not scoreable and was never meant to be.** `P4_NUM_TRAINERS=50` maps tid → `client_idx =
+(tid−1) % modulo`, so it read only the **first 50 of 100 shards**. Valid as a smoke, void as a result.
+
+### P4.14 Stage-2 smoke — wiring clean, P3′ answered, stop unreached *(2026-08-23, `run_20260823_123727`)*
+
+`P4_PHI_STOP=log_only P4_BMAX_EVERY=50 P4_RETENTION_EVERY=10 VCLOCK_OVERRIDE=12000 CEIL_OVERRIDE=2.0`,
+agnews controller. **426 commits in 2 h · 363 commits/h · 9.9 s/commit · `Φ`=1.636 · `B`=0.4921/1.045 ·
+acc 0.859 still rising · 0 trainer deaths.**
+
+| gate | reading |
+|---|---|
+| 1 DataBins | 150 from registry, 100% coverage, trainer-confirmed |
+| 2 `ρ*` ≠ 0 | 0/426 zero-length steps |
+| 3 trips/commit | Q1 6.59 · Q2 3.02 · Q3 3.86 · Q4 4.48 · Q5 7.32 (floor 3; overall 5.05) |
+| 4 ending | **WARN — no `[BudgetStop]`**; ended on the wall ceiling |
+| + Retention | **`cos·Φ` = 0.9999 mean over 42 commits, 0 outside 1.00 ± 0.02** |
+| + BmaxProbe | 8 fires, 0 declined; `Φ_knee` = 1.255 — the grid floor, exactly as [§5.6](fl_fwd_ft_buildplan.md) predicts |
+
+**Row P3′ is answered.** `cos` runs 0.977560 → 0.629649 as `Φ` runs 1.02297 → 1.58704, product pinned at
+1.0000 ± 0.0002. Retention **is** `1/Φ`; the drift-angle reading of `Φ` is measured, not derived. Verified
+only to `Φ`=1.64 — carry the probe on every long run to confirm past `Φ`=2.9.
+
+**The stop did not fire, and that was a sizing error, not a defect.** The detector arms at 3× the probe
+cadence (commit 150) but cannot *fire* until accuracy has plateaued for patience-20 evals. agnews peaks near
+commit 1,050; at 363 commits/h that is ~3 h plus patience. A 2 h ceiling was chosen from §4.2b's **preflight**
+floor (1.8 h), which is what the launcher needs to accept a run — not what the run needs to reach the
+phenomenon. **Trap written up as [buildplan §5.10](fl_fwd_ft_buildplan.md).**
+
+### P4.13 Row A — the sensed anneal candidate, replayed *(2026-08-23)*
+
+**Why it exists.** P1 closed `B_max`-by-sensing ([P4.12](#p412-p1--the-offline-knee-sweep-that-closed-b_max-by-sensing-2026-08-23)),
+which left law C with no target to anneal against and pointed at a hand-set rail
+(`B_max = ln 3.0`). This is the sensed alternative: **drive the anneal from measured
+progress**, which the saturation detector already computes and then discards.
+
+```
+m_t     = 11-eval trailing mean of held-out accuracy       (row E's own smoother)
+g_t     = (m_t - m_{t-h}) / m_t        h = one probe cadence  -> SCALE-FREE
+sigma_t = sd of the trailing-mean steps over a 30-eval window -> SENSED
+g_eff   = max(0, g_t - 1*sigma_t)
+rho*_t  = rho_max * sqrt(clip(g_eff / running_max(g_eff), 0, 1))
+```
+
+`ρ_max` is **derived**, not set — gate reachability `s·√(max_iter·K·G_rule/p)`,
+measured at **0.0678** on all three anchor runs. The running max is causal. **The one
+constant is the dimensionless 1σ noise floor**; k = 0 / 1 / 2 were replayed and only
+k ≥ 1 drives `ρ` to exactly zero (k=0 leaves a floor of 0.004–0.014; k=2 starts eating
+real progress).
+
+**Replay, nine cached curves** (`writeup_figs/data/*.json`, no re-scan):
+
+| curve | Σρ² actual | Σρ² sim | Q1 | Q2 | Q3 | Q4 | final `Φ` | self-stops |
+|---|---|---|---|---|---|---|---|---|
+| **agnews_anchor** | 3.08 | 0.983 | 0.969 | 0.014 | 0.000 | 0.000 | 1.63 | commit 1,062 |
+| **yahoo_anchor** | 3.59 | 1.905 | 1.675 | 0.228 | 0.001 | 0.000 | 2.59 | commit 1,301 |
+| **yelp-p_anchor** | 3.29 | 1.482 | 1.344 | 0.138 | 0.000 | 0.000 | 2.10 | commit 807 |
+| yahoo_control *(never saturated)* | 0.24 | 2.212 | 1.051 | 0.590 | 0.239 | 0.333 | 3.02 | — |
+
+**What it gets right.** `ρ` reaches **exactly 0** on every saturated run and `Σρ²` stops
+growing — against the shipped behaviour of `ρ` pinned flat at **0.034** over the last 70%
+of every run. It also **discriminates**: on `yahoo_control`, which was still climbing at
+0.42, it keeps stepping instead of annealing. And when `B_rem`→0 the *original* budget
+stop becomes reachable (`B ≥ 0.95·B` is true), which hole 1b showed needed `Φ`≈116 — so
+rows **A** and **E** collapse into one rule driven by one signal.
+
+**Three open problems. None is cosmetic.**
+
+1. **The replay is OPEN-LOOP and its budget is a lower bound, not an estimate.** It feeds
+   the new (slower) rule an accuracy curve generated by the old (faster) rule, so progress
+   reads as flat where under the rule's own dynamics it would still be rising. Simulated
+   final `Φ` = **1.63 / 2.59 / 2.10** against `Φ*` = **2.82 / 3.00 / 2.91**. The bias
+   direction is known; its size is not. **Only a live run settles this** — buildplan row A.
+2. **`Σρ² < ∞` is empirical, not proven.** The hoped-for telescoping bound
+   (`Σ(Δm/m) ≈ ln(m_end/m_0) < ∞` because accuracy is bounded) **fails**: rectified `Σg⁺`
+   runs **57–113×** that bound, because `max(0,·)` converts eval noise into fake progress.
+   Convergence survives only because the 1σ floor zeroes the late signal on curves that
+   actually saturate. On a curve that plateaus without saturating, `ρ` settles near 0.013
+   and `Σρ²` still grows linearly — 7× slower than today, but not convergent.
+3. **The rejected first draft shows how this family hides defects.** `B_rem = B_t·(g_eff/g_max)`
+   looked good on the same replay (Σρ² 0.34/0.99/0.69, `ρ`→0) and is **broken**: it is
+   multiplicative in `B_t`, so at `B_t`≈0 the step is ≈0 and a real run can never start.
+   The replay concealed it by supplying the *real* run's `B_t`. Final `Φ` would have been
+   **1.18 / 1.64 / 1.41**. **Any candidate in this family must be checked for a bootstrap
+   path, and open-loop replay will not reveal one.**
+
+**Reproduce:** the replay scripts are working files, not shipped instruments — the shipped
+detector stays `expts/saturation_stop.py`, and nothing in `trainer/` or `aggregator/`
+changed ([§6 rule 4](fl_fwd_ft_buildplan.md)).
+
+### P4.12 P1 — the offline knee sweep that closed `B_max`-by-sensing *(2026-08-23)*
+
+`scripts/probe_inflation_damage.py --modes noise --phis 1.5,2,2.5,3,3.5,4`, AdamW 3 epochs on the held-out
+half, knee read with `expts/bmax_probe.knee` (chance-normalized, level 0.5) — **the same arithmetic the live
+`[BmaxProbe]` uses**, so these are directly comparable to a `Phi_knee=` log line. ~90 s/cell on agnews,
+~7 min on yelp-p, ~10 min on yahoo; 10 cells fanned over 8 GPUs. **~28 min of GPU closed three queue rows.**
+
+| `Φ_knee` | rf=16 | rf=32 | rf=64 | within-dataset spread | base_acc | lr |
+|---|---|---|---|---|---|---|
+| **agnews** DistilBERT | 3.146 | 3.363 | 3.139 | 0.22 | 0.90 | 1e-3 |
+| **yelp-p** DistilBERT | 2.447 | 2.348 | 2.368 | 0.10 | 0.86 | 1e-3 |
+| **yahoo** DistilBERT | 2.186 | 2.065 | 2.094 | 0.12 | 0.73 | 1e-3 |
+| **agnews roberta-large** `p`=4,225,540, `‖θ_tr‖`init 41.001 | **2.065** | — | — | — | 0.859 | 3e-4 |
+| — same, lr 1e-4 | 1.746 | — | — | — | 0.815 | 1e-4 |
+| — same, lr 3e-5 | *1.435* ⚠ | — | — | — | 0.821 | 3e-5 |
+
+All bracketed by real grid points **except** the lr-3e-5 cell, which falls below the 1.5 grid floor and is
+therefore an anchor extrapolation — read it as "below 1.5". **At lr 1e-3 roberta-large does not train at
+all** (0.210, below agnews' 0.25 chance, single-class collapse), so `--lr` was added to the probe; the
+default stays 1e-3 and the nine DistilBERT cells are byte-identical to the pre-flag script.
+
+**Between-dataset spread 1.10** (means: agnews 3.216 / yelp-p 2.388 / yahoo 2.115) against a **≤0.22**
+spread from `rf` over a **3.8× range in `p`**. Row P1's registered falsifier was "the three datasets
+disagree by more than 0.18"; they disagree by 1.10.
+
+**Three nested falsifications.** *(1)* Not a model constant — dataset dominates `rf` by 5×. *(2)* Not a task
+constant — agnews reads **3.15** on DistilBERT and **2.07** on roberta-large. *(3)* Not stable at fixed model
+*and* task — learning rate alone moves it **1.44 → 1.75 → 2.07** at essentially equal accuracy
+(0.821 / 0.815 / 0.859), which also kills the `base_acc` confound.
+
+**It anti-correlates with `Φ*`.** `Φ_knee` ranks agnews > yelp-p > yahoo; `Φ*` ranks yahoo (3.00) >
+yelp-p (2.91) > agnews (2.82). Perfectly reversed on n=3 — suggestive, not proven, but there is no positive
+signal about the peak.
+
+**P1′ `m`=0 positive control: 3.175 on agnews rf=16** (`probe_inflation_refit.py --ms 0`), against a
+predicted 1.25. It agrees with the damage probe's 3.146 to 0.03 — the two scripts are independent — and it
+**falsified the frozen-vs-re-fit mechanism** before the `m`-sweep was worth a slot. Ruled out by direct code
+reading, not inference: live and offline use the identical injection formula `‖eps‖ = ‖θ_tr‖√(Φ²−1)` and the
+identical `knee()`; the live probe **does** restore `p.copy_(b)` between grid points; and `_reference_batch`
+is a fixed-seed permutation, so the old B1 head-slice skew is genuinely gone.
+
+⇒ **rows P1, P1′ and N4a′ closed; `B_max`-by-sensing closed as unbuildable ([P6](#p6--dead-ends--do-not-retry));
+row E's saturation stop promoted from backstop to primary sensor.**
+
 ### P4.11 The 2026-08-20 P-4 pairs — the law wins on all three, one pair is valid
 
 Six runs, one per dataset per side. **The controller beats its control on every dataset**, scored
@@ -671,8 +856,9 @@ yelp-p 0.522 → 1.186 — and the combined `B_max` (0.795 / 0.805 / 1.023) orde
 dataset**. The stop still terminates, because `mean` lags a rising sequence: yelp-p halted at
 `B`=0.9721 ≥ 0.95 × mean 1.0231, while its **latest** sense was 1.186, which would not have stopped it.
 **So the termination is arithmetic on the combiner, not `B_max` converging** — and no claim that the three
-datasets have *different* `B_max` survives this. Buildplan row **N4a′** re-ranges the grid — and rows
-**P1**/**P1′** are why re-ranging it is necessary and not sufficient.
+datasets have *different* `B_max` survives this. **Row N4a′ (re-range the grid) is closed unrun as of
+2026-08-23**: P1 showed the quantity behind `Φ_knee` is trajectory-dependent, so an honest grid would return
+an honest reading of something law C still cannot anneal against ([buildplan §5.6](fl_fwd_ft_buildplan.md)).
 
 **The yahoo pre-registration resolved, in the good direction.** It read: yahoo reaching ~0.6–0.7 by
 `Λ` ≈ 1.0 means the agnews `Λ`-curve transfers. **yahoo `125003` reached 0.6571 at `Λ`=0.994** — against
@@ -766,7 +952,7 @@ mid-run `P` change. Decisions, constants and the open questions a re-run must an
 |---|---|---|
 | **T5** | replay the landing law against the gate | **done (2026-08-15)** — `replay_landing_law.py`. Settled `T_res`=300, `f`=0.95, `ρ_max`; refuted `T_res`=500 and the `ρ*≤ρ*₀` clamp; confirmed `Λ`=2B/s; found `003648`'s real death mechanism ([P4.5](#p45-g-2--annealed-confirmed-but-real-wall-bound)) |
 | **3.3** | law-C anneal + `B ≥ f·B_max` stop, `phi_stop: off\|log_only\|halt` | **done (2026-08-15); `halt` fixed 2026-08-16** (P4.7 defect 1) and verified on GPU (`225224`) |
-| **3.1** | `B_max` re-sensed on a stride by injection probe on a copy of `θ_tr` | **built, and it is the one component that does not work.** Origin fixed 2026-08-16 (defect 2): `B_max = B + ln Φ_knee`. Combiner moved `mean` → **`anchor`** 2026-08-20 (P3). **Still open and now the top item:** the probe reads a *frozen* model, ~1.8× below where a re-fitting one peaks, on a grid that never brackets the knee — so `B_max` recedes and law C stops annealing. [Buildplan §1 holes 1/2/5](fl_fwd_ft_buildplan.md), rows N4a′/P1/P1′ |
+| **3.1** | `B_max` re-sensed on a stride by injection probe on a copy of `θ_tr` | **built, and CLOSED AS UNFIXABLE 2026-08-23.** Origin fixed 2026-08-16 (defect 2): `B_max = B + ln Φ_knee`. Combiner moved `mean` → **`anchor`** 2026-08-20 (P3). The live knee is the grid floor, so `B_max` recedes and law C stops annealing — and row **P1** showed the underlying quantity is a property of the **trajectory** (moves with dataset, architecture and optimizer path; anti-correlates with `Φ*`), so **no grid, cadence or refit variant fixes it**. Rows N4a′/P1/P1′ all closed. [Buildplan §1 holes 2/4/5 and §5.6](fl_fwd_ft_buildplan.md) |
 | **3.2** | `ρ*_t` from *remaining* budget, every commit | **done (2026-08-15)**; the `ρ`=0 gate stall fixed 2026-08-16 (defect 3) |
 | **3.5** | Prechelt GL/patience stop on smoothed held-out accuracy | **todo, and now urgent — it is the only stop that does not depend on the `B_max` sensor.** Sized by replay 2026-08-21 (11-eval mean, threshold 0.005, patience 20, armed after commit 400): buildplan §5.5, row **E** |
 | **3.4** | adaptive `K`/`C` and `P` | **K-1: `C` is the knob, not `K`** (P3). **P-1: compute-bound** (P3/[P4.6](#p46-p-1--p-under-mean-is-compute-bound-report-and-stop)). Only the mid-run-`P`-change engineering and a bandwidth-driven case remain live |
@@ -851,6 +1037,8 @@ Process lessons: [P9.3](#p93-process-lessons).
 | do not — or, we believed | why it is dead |
 |---|---|
 | **Lower `η` alone** | Pays 1:1 in progress; a constant `ρ` of any size has `Σρ² = ∞` |
+| **Set `B_max` from any forward-only probe** *(closed 2026-08-23, row P1)* | `Φ_knee` is a property of the **trajectory**, not of the model or the task: it moves with dataset (spread 1.10 over three), with architecture (agnews 3.15 DistilBERT vs 2.07 roberta-large) and with the optimizer path at fixed model, task and accuracy (1.44→2.07 on learning rate alone), and it **anti-correlates** with `Φ*`. A quantity that depends on the trajectory cannot size that trajectory's budget — **at any grid range, cadence or refit variant.** Re-ranging the grid (N4a′), the noise-then-refit probe (P1′) and "measure `Φ*` once per model" (P1) are all dead by the same fact. [Buildplan §5.6](fl_fwd_ft_buildplan.md) |
+| **Explain the probe/trajectory gap as "frozen vs re-fitting", or as a ~1.8× offset** *(retracted 2026-08-23)* | The refit probe at `m`=0 **is** a frozen read and returns 3.175 on agnews, not 1.25. Frozen-vs-re-fit is not the variable and there is no conversion factor. The live 1.25 is `knee()` extrapolating off its synthetic `Φ`=1 anchor |
 | **Treat it as an aggregation bug — pool harder** | `K` ≥ 20 reaches 0.860 where `η` = 0.002 reaches 0.601 at the same commit: same stability, one free |
 | **Retune `var_threshold`** | Its units make the setpoint a per-model constant, *and* it absorbs a heterogeneity floor moving 1.33 → 0.28 across α. Any retune fits one corner of an (α,`K`) grid |
 | **Believe the gate is dead, or live only at `K` ≥ 20** | `var ∝ b²‖g‖²/n` — live wherever it can reach its threshold |
@@ -1040,6 +1228,9 @@ wrong.** A lookup table for *numbers*; the refuted *ideas* are [P6](#p6--dead-en
 
 | superseded | replaced by |
 |---|---|
+| "the probe reads the knee ~1.8× low" / "biased conservative by 0.6–1.2 in `Φ`" | **No offset exists.** The offline knee on a bracketing grid spans **2.07–3.36** and moves with the trajectory; the live 1.25–1.28 is `knee()`'s grid floor. Never convert between probe and trajectory (P6, [buildplan §5.6](fl_fwd_ft_buildplan.md)) |
+| "B-1's offline knee spread is a badly calibrated instrument" | **B-1 was right.** Row P1 reproduced it on a bracketing grid: agnews **3.14–3.36**, yahoo **2.07–2.19**, yelp-p **2.35–2.45**. Precise and repeatable — it just is not `Φ*` |
+| "`Φ*` is a property of the model + PEFT scheme" (working hypothesis) | **Falsified.** `Φ_knee` is a property of neither model nor task; `rf` over a 3.8× range in `p` moves it ≤0.22 while dataset moves it 1.10. `Φ*` itself stays 2.82–3.00 and is visible **only after a run** |
 | `p = 1,040,932`, `‖θ_tr‖` init 20.356 | **450,340 / 13.35** — the trainer drops `pre_classifier` before probing (P1) |
 | "freezing `pre_classifier` buys 2.31×" | **already banked** — the layer is not in `p` |
 | `ρ` = 0.115 flat all run; orthogonality ratio 1.032 | **`ρ` = 0.16 at commit 1**, falling iff `N` grows; ratio **1.000 ± 0.005**. Both were artifacts of using total `‖W‖` |
@@ -1255,9 +1446,10 @@ does the system work out for itself, what does it measure while running, and wha
 | **sensed during the run** | `ρ*` (law C) · `B`, `Φ`, `Λ` (arithmetic on `ρ`, free) · `N`, `I` (the gate) · `B_max` (the injection probe, every 150 commits) ⚠ | the same |
 | **must be re-derived OFFLINE — and has not been** | **nothing** | `T_res` = 300 · the `Φ` rail = 3.0 and `Φ*` ≈ 2.9 behind it · probe cadence 150 · saturation warm-up 400 · `h`'s chord ratio `h√p/‖θ_tr‖` (0.50 here, and it **moves with `p`**) · `s` = 1.5, which folds in a `D` measured in this setting. **All six were sized at one `p` on one architecture** |
 
-⚠ **`B_max` is the one sensed quantity and it is the one that does not work** — the probe reads a *frozen*
-model's tolerance to injected noise, ~1.8× below where a re-fitting run peaks (model §5.5c). It is live and
-it drives law C; treat its output as diagnostic until **P1**/**P1′**/**N4a′** land.
+⚠ **`B_max` is the one sensed quantity, it does not work, and as of 2026-08-23 it cannot be made to.**
+`Φ_knee` is a property of the **trajectory** — it moves with dataset, architecture and optimizer path, and
+anti-correlates with `Φ*` ([buildplan §5.6](fl_fwd_ft_buildplan.md)). It is live and it drives law C;
+**treat its output as diagnostic only**, and read the stopping decision off row **E**'s saturation detector.
 
 ### P11.2 The probe: in-run today, offline in the fix
 
@@ -1268,11 +1460,12 @@ knee on chance-normalized accuracy. ~6 forward passes, no gradients, no clients,
 fire on an at-chance model (`FedSgdAggregator.py:978`), which is why an under-trained run holds the
 `ln 2` prior for its first commits ([P4.8](#p48-yahoo-is-under-trained-not-broken)).
 
-**The corrected instrument cannot be in-run.** A noise-**then-refit** probe (row P1′) costs `m` ≈ 50
-commits *per grid point*, so it becomes an **offline, once-per-model** measurement — and if row **P1**
-holds (`Φ*` is a property of the model, not the task) the in-run sensor disappears altogether: measure
-`Φ*` once per model, set `B_max = ln Φ*`, and a new dataset then needs **no sensing at all**. That is the
-intended end state and it is one GPU-hour of work; see [buildplan §3](fl_fwd_ft_buildplan.md).
+**There is no corrected instrument. Both candidates are closed** *(2026-08-23)*. The noise-**then-refit**
+probe (`scripts/probe_inflation_refit.py`, row P1′) was built; its `m`=0 positive control was supposed to
+reproduce the live sensor's 1.25 and read **3.175**, falsifying the frozen-vs-re-fit premise outright. And
+row **P1** answered "is `Φ*` a property of the model?" with **neither model nor task** — the knee moves with
+the trajectory. ⇒ **the in-run sensor cannot be replaced by an offline one**; what replaces it is row **E**'s
+saturation stop, promoted from backstop to primary sensor. See [buildplan §5.6](fl_fwd_ft_buildplan.md).
 
 ### P11.3 Sequence — a new dataset
 
@@ -1295,8 +1488,11 @@ intended end state and it is one GPU-hour of work; see [buildplan §3](fl_fwd_ft
 1. Read `p` and `‖θ_tr‖` at init — free, `[ProbeDim]`.
 2. Check the FD chord ratio `h√p/‖θ_tr‖` against this model's **0.50**, and `FWDLLM_FD_SCALE_INVARIANT`
    with it — the chord scales with `p`, and this is the least-audited constant in the stack (row **N5a**).
-3. **Measure `Φ*`** on a bracketing grid — forward-only, ~1 GPU-hour, no training run needed (row **P1**,
-   or **P1′** for the refit variant). This is the step that decides whether the rail and `B_max` port.
+3. ~~**Measure `Φ*`** on a bracketing grid~~ — **deleted 2026-08-23.** Row **P1** ran it (DistilBERT ×3
+   datasets ×3 `rf`, plus roberta-large) and the knee is a property of the *trajectory*, not of the model:
+   it cannot tell you whether the rail ports. **The rail ports or it does not, and only step 5's run says
+   which.** *(Run the probe anyway if you want a cheap sanity check that the model trains at all — note
+   roberta-large needs `--lr 3e-4`; at 1e-3 it collapses to one class.)*
 4. Re-derive `T_res` at the new `p` from gate reachability (row **N5b**). At `rf`=64 law C and the annealed
    gate stopped composing under **any** `T_res` — that is the one negative data point on record.
 5. Only then a run (row **N5c**).

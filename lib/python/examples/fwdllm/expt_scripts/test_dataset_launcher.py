@@ -16,9 +16,12 @@ edge case:
                                    -> "partition group exists" check is level=error
                                       (edge case a: don't silently read the wrong file)
   6. --dataset yahoo, --mode sim, no --force
-                                   -> "sim charge profile matches dataset" is
-                                      level=error (edge case d: the resolved profile
-                                      was profiled on a different dataset)
+                                   -> launches (rc=0): fluxtune_yahoo.yaml landed
+                                      2026-08-22, so there is no agnews fallback
+                                      left to refuse (edge case d)
+  6c. sim_charge_profile contract  -> a profiled name gets its sibling; an
+                                      unprofiled one falls back to the agnews
+                                      baseline, the state the preflight refuses
   6b. cold vs warm feature cache -> "feature cache warm" preflight fires (§10 F3)
 
 Needs an active conda env with the fluxtune deps (same requirement as
@@ -162,14 +165,29 @@ def main():
     check(spec is not None and check_level(spec, "partition group exists") == "error",
           "a partition group absent from the resolved dataset's h5 is caught, not silently launched")
 
-    # ---- 6. --dataset yahoo, sim mode, no --force: sim charge profile mismatch blocks ----
+    # ---- 6. --dataset yahoo, sim mode, no --force: the profile RESOLVES ----------
+    # Was exit 2, when yahoo fell back to agnews-profiled fluxtune.yaml. fluxtune_yahoo.yaml
+    # landed 2026-08-22, so rc=0 is now correct; 6c still covers the guard's fallback.
     print("case: --dataset yahoo, sim mode, no --force")
     rc, out, logdir = run_launcher(["--dry-run", "--only", "fluxtune", "--dataset", "yahoo", "--mode", "sim"])
     _cleanup_dirs.append(logdir)
     spec = load_spec(logdir) if logdir else None
-    check(rc == 2, f"non-agnews sim dry-run without --force is BLOCKED (got rc={rc})")
-    check(spec is not None and check_level(spec, "sim charge profile matches dataset") == "error",
-          "sim charge profile / dataset mismatch is flagged, not silently reused from agnews")
+    check(rc == 0, f"yahoo sim dry-run launches on its OWN profile, no --force (got rc={rc})")
+    check(spec is not None and check_level(spec, "sim charge profile matches dataset") != "error",
+          "sim charge profile resolves to yahoo's own, so nothing is flagged")
+
+    # ---- 6c. the fallback the guard exists for, at the resolver ------------------
+    # Every registry dataset is profiled now, so no real name reaches the fallback.
+    # Assert the resolver's contract directly instead.
+    print("case: sim_charge_profile fallback contract")
+    sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "..", "..", ".."))
+    from examples.fwdllm.expts import dataset_registry as dsreg
+    base = "lib/python/examples/fwdllm/sim_charge_profiles/fluxtune.yaml"
+    for name, want in (("yahoo", "fluxtune_yahoo.yaml"), ("yelp-p", "fluxtune_yelp-p.yaml")):
+        got = dsreg.sim_charge_profile(base, name)
+        check(got.endswith(want), f"--dataset {name} resolves to {want} (got {os.path.basename(got)})")
+    check(dsreg.sim_charge_profile(base, "not_a_dataset") == base,
+          "an unprofiled dataset falls back to the agnews baseline -- what the preflight refuses")
 
     # ---- 6b. the cold-cache preflight (§10 F3) reads the resolved key ----------
     # Cold is a WARN, not an error: the run tokenizes its way out. But it does so

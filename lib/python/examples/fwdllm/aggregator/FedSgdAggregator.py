@@ -605,7 +605,10 @@ class FedSGDAggregator(TopAggregator):
         # n_eff is the MEASURED pool (§15.13): the count while uploads are
         # independent, below it if they ever stop being.
         n_have = float(self._n_eff_scalar or len(self.grad_for_var_check_list))
-        ok = n_have >= n_req
+        # rho_max is DEFINED as the rho where n_req == max_iter*K, so at the cap the
+        # gate is satisfiable only at equality and float rounding lost it: 145932 sat
+        # there for all 80 commits (n_have=n_req=200) and never fired.
+        ok = n_have >= n_req * (1.0 - 1e-9)
         logger.info(
             f"[CommitGate] n_have={n_have:.1f} n_req={n_req:.1f} "
             f"rho_t={self._gate_rho()} -> {'COMMIT' if ok else 'POOL'}"

@@ -189,11 +189,21 @@ fi
 # a node for 45 min at 0 commits. 0.9 tolerates ten. The cost is real and stated:
 # a threshold below N admits a join-vs-poll surplus, so the seeded first cohort is
 # no longer set-exact across replicates. P4_MIN_INIT_FRAC=1.0 restores it.
+# Row N5c: a second architecture. Cache is keyed by model, so P4_MODEL_TYPE needs
+# `pretokenize_dataset.py --model-type <m>` first or every trainer tokenizes cold.
+# P4_NUM_TRAINERS is a MEMORY lever for big models -- and it is NOT free: trainer
+# tid maps to client_idx (tid-1) % client_idx_modulo, so N < 100 reads only the
+# first N of 100 shards. Valid for a smoke, NOT for a scored run (see buildplan).
+MODEL_ARGS=()
+[[ -n "${P4_MODEL_TYPE:-}" ]] && MODEL_ARGS+=(--model-type "$P4_MODEL_TYPE")
+[[ -n "${P4_MODEL_NAME:-}" ]] && MODEL_ARGS+=(--model-name "$P4_MODEL_NAME")
+
 COMMON=(--only fluxtune --mode sim --yes --clean --allow-stale-profile "${FORCE[@]}"
         --dataset "$DATASET" "${EVAL[@]}"
         --server-update-audit --no-cos-ground-truth-audit
         --min-initial-frac "${P4_MIN_INIT_FRAC:-0.9}"
-        --num-trainers 100 --num-gpus 8 --agg-goal 10 --c 30
+        --num-trainers "${P4_NUM_TRAINERS:-100}" --num-gpus 8 --agg-goal 10 --c 30
+        "${MODEL_ARGS[@]}"
         --probe-combine mean --commit-gate n_target
         --server-step-rule trust_ratio --gate-safety-s "${P4_GATE_S:-1.5}"
         --adapter-reduction-factor 16 --max-iter-per-data-id 20

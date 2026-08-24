@@ -10,6 +10,14 @@
 > the FL instance; §8 is the extension path. **One model, one PEFT scheme, one `p`** — the three datasets
 > vary the task, nothing else (§0).
 
+> **⚠ THE FOUR DOCS ARE ONE CORPUS — no inconsistency, no staleness, no redundancy.** Any session that
+> measures something updates **every** doc the measurement touches, in the same session. One fact has one
+> home: [buildplan](fl_fwd_ft_buildplan.md) owns status + the queue, [practice](fl_fwd_ft_practice.md) owns
+> numbers (P3 knobs, P4 runs), [solution](fl_fwd_ft_solution.md) owns mechanism, [writeup](fl_fwd_ft_writeup.md)
+> owns the prose account. Elsewhere a fact is **cited, never restated**. A measurement that contradicts a
+> standing claim **deletes** that claim — it is never left standing beside its refutation, and never
+> softened into "some evidence suggests". Retractions replace the retracted text and say what killed it.
+
 | you want… | go to |
 |---|---|
 | **the goal, and the autonomy test** | **§0.0** |
@@ -104,7 +112,7 @@ flat in `K` at fixed `C` (closes K-C).
 |---|---|---|---|
 | **D-2** | **`D` is 2–3× larger on the two runs that trained than near init** — but it is not "training state": pooled across both it is *non-monotone* in accuracy, and its highest-accuracy bin reads the **lowest** `D` while pre-turn steps to post-turn. `const` vs `rm` is the leading confound. Numbers: §6.3 | the sizing formula and §8's generality — `N_req ∝ 1/D²`, so 2× is 4× in pool | **on the rig, not on a run**: single-commit `cos` has SNR ≈ 1, so only a fixed **trained checkpoint** with unlimited probes can separate `const` from `rm` |
 | **H-S** | **A 3.5× shadow loss that is not data-side.** The rig reproduces `L` but gets `S` = 1.68 where the runs read 0.48. Prime suspect: the FD chord — `h‖v‖` ≈ `‖θ_tr‖`, so `d` is a chord-averaged slope, not `⟨g,v⟩` | the last unexplained factor in `cos` | rig: true `⟨g,v⟩` vs the shipped central FD at the shipped `h` (§6.3) |
-| **3.1** | **The `B_max` sensor measures a different quantity than the budget is** *(§5.5c, measured 2026-08-21)*. It injects noise into a **frozen** model; a run re-fits between every increment. At `Φ`=2.0 injection reads chance on all three datasets while the trajectory at `Φ`=2.0 is within 3% of peak — a gap of **~1.8× in `Φ`**, not the 0.6–1.2 offset previously assumed. Two consequences follow and are one defect: *(a)* the grid `{1.5…4}` starts past the knee, so `knee()` extrapolates off its synthetic `Φ`=1 anchor and pins `ln Φ_knee` at 0.21–0.30 on all 40 fires, making `B_max = B + ln Φ_knee` **recede** as budget is spent; *(b)* re-ranging the grid fixes the receding target and **not** the calibration | **law C's anneal target**, hence everything: `ρ*` degenerates to a constant, and `B ≥ f·B_max` can never fire. Also the central claim that `B_max` is a property the run discovers — the three combined values order by fire count, not dataset | three cheap forward-only rows, all in [buildplan §3](fl_fwd_ft_buildplan.md): **N4a′** re-ranges the grid (necessary, not sufficient) · **P1′** a noise-**then-refit** probe (inject at `Φ`, run `m`≈50 commits, *then* read) · **P1** measures `Φ*` once per model, which would remove the in-run sensor entirely |
+| **3.1** | **`B_max` cannot be sensed by any forward-only probe** *(§5.5c; settled by buildplan row P1, 2026-08-23)*. The shipped probe's live `Φ_knee` is its own grid floor (1.25–1.28 on all 40 fires, an extrapolation off `knee()`'s synthetic `Φ`=1 anchor), so `B_max = B + ln Φ_knee` **recedes** as budget is spent. On a bracketing grid the probe is precise and repeatable — and what it measures is a property of the **trajectory**: it moves with dataset (spread 1.10), with architecture (agnews 3.15 DistilBERT vs 2.07 roberta-large) and with the optimizer path at fixed model and task (1.44→2.07 on learning rate alone), and it **anti-correlates** with `Φ*`. *(The earlier reading — a frozen-vs-re-fit gap of ~1.8× — is retracted; the `m`=0 frozen control reads 3.175, not 1.25.)* | **law C's anneal target**, hence everything: `ρ*` degenerates to a constant and `B ≥ f·B_max` can never fire. Also the central claim that `B_max` is a property the run discovers — it is not a property of anything stable | **no probe row survives.** `B_max`-by-sensing is closed; what ships instead is row **E**'s saturation stop as the *primary* sensor and row **A**'s openly hand-set anneal target, both in [buildplan §3](fl_fwd_ft_buildplan.md) |
 | **G-1** | **Every run ever run is DistilBERT + adapters at `rf`=16, `p`≈4.5e5.** The three datasets vary the *task*; `p` varies by 1.4% across them. The one time `p` moved for real — `rf`=64, `p`=118,348 — law C + the annealed gate did not compose under **any** `T_res` | "same controller, new model", the §8 extension, and `T_res`=300 / `f`=0.95, which are pinned to one `p` | a second model. Not started; [buildplan §1 hole 3](fl_fwd_ft_buildplan.md) holds the `rf`=64 numbers |
 
 **What is *not* open: the optimizer, any pooling knob, or the controller.** The four fixes enact to spec,
@@ -594,8 +602,9 @@ scale-free quantity (§3.1a); the novelty split is audited in §7.4.
 | `B_t`, `Φ_t` | **yes, monotonically up** | `B += ½ln(1+ρ_t²)` | `Δ⟂θ` ⇒ Pythagoras ⇒ **`‖θ‖` can only grow.** There is no step that shortens the model, so `Φ` has no reverse gear. This is the failure mode, restated as a state variable |
 | `Λ_t` | **yes, monotonically up** | `Λ += ρ_t·cos_t` | the earning coordinate. `Λ = 2B/s` under a held gate, so it is not independent of `B` |
 | `N_t` | **yes** | the gate: `N ≥ p(ρ_t/s)²/P` | it is a *function* of `ρ_t`, not a second knob. Bigger step ⇒ more readings to justify it — that is the whole safety argument |
-| `B_max` | **it should not, and that is the bug** | the injection probe, every 150 commits | `B_max` is meant to be a **fixed property of the model** that `B` approaches from below. Measured, it recedes at exactly the rate `B` advances (§5.5c), which is what turns law C into a constant-step rule |
-| `Φ*`, `Φ_knee` | **no — by hypothesis** | a property of model + PEFT scheme (§5.6 of the build plan) | if it moved with training state there would be nothing to aim at. Held at 2.41–3.11 across 22 runs, 2 step rules, α 0.1–1 and a 3.8× range in `p` |
+| `B_max` | **it should not, and no instrument can stop it** | the injection probe, every 150 commits | `B_max` was meant to be a **fixed property of the model** that `B` approaches from below. Measured, it recedes at exactly the rate `B` advances (§5.5c) — and since `Φ_knee` is trajectory-dependent, **no forward-only probe can supply a fixed one**. That is what turns law C into a constant-step rule |
+| `Φ*` | **no, empirically** | read off a completed run | 2.82 / 3.00 / 2.91, and 2.41–3.11 across 22 runs, 2 step rules, α 0.1–1 and a 3.8× range in `p`. **Why it is this tight is open** |
+| `Φ_knee` | **YES — it moves with the trajectory, and that is why sensing failed** | the injection probe | measured 2026-08-23: moves with dataset (1.10), architecture (3.15 vs 2.07 on one dataset) and optimizer path (1.44→2.07 on lr alone), and anti-correlates with `Φ*`. **There is nothing here to aim at** ([buildplan §5.6](fl_fwd_ft_buildplan.md)) |
 | `s`, `T_res`, `P`, `p` | **no** | set once | `s` is derived (Cauchy–Schwarz equality); `T_res` is a *rate* and `Λ=2B/s` proves it cannot affect accuracy; `p` is measurably inert for learning |
 
 > **Read the table as one sentence: exactly two things are supposed to move on their own — the step and
@@ -774,6 +783,17 @@ Two `s`-side readings. `Λ_peak = 2·ln(Φ_peak)/s` scores `s`=2.9 → 0.63 agai
 better commits, never more of them. The floor is gate reachability, `I = ⌈n_req/K⌉ ≤ max_iter`, which at
 `K` = 10 is **`s` ≥ 0.90**.
 
+**The cap is an equality, and that has two consequences.** `ρ_max = s√(max_iter·K·G_rule/p)` is the `ρ` at
+which `n_req = p(ρ_max/s)²/G_rule` equals **`max_iter·K` exactly** — a quantity with **no `p` in it**. So
+*(a)* a run pinned at `ρ_max` pays the maximum `max_iter` round trips for every commit, whatever the model
+size; and *(b)* the gate is satisfiable there only at exact equality, which float arithmetic does not
+deliver — the live value computes to `200.00000000000006` against a pool of `200.0`. `_gate_satisfied`
+therefore carries a 1e-9 relative tolerance; without it a capped run commits solely through the `max_iter`
+bypass, which is what roberta-large's `145932` did for all 80 of its commits. **Larger `p` makes this the
+normal case, not the edge case**: `ρ_max ∝ 1/√p` means `B` accrues `∝ 1/p`, so a big model stays pinned at
+the cap for proportionally longer before law C's anneal lifts it off — the wall-time consequence is
+`fl_fwd_ft_buildplan.md` §5.11.
+
 **`Λ = 2B/s` is an identity, not an approximation — MEASURED out of sample (T5, 2026-08-15).** Under the
 `n_target` gate `N = p(ρ/s)²/G_rule`, so `cos = √(G_rule·N/p) = ρ/s` and `Λ = Σρ·cos = Σρ²/s = 2B/s`.
 Replayed over five runs it holds to **−0.3%** on the two that pin `s` (`145729`, `112201`) and misses
@@ -934,9 +954,13 @@ which is the argument for sensing the budget rather than shipping it.
    only in commit count. It is why there is nothing left to tune once `ρ` is set from a budget (§4.6a).
 5. **Law C: aim at the budget that remains, at a rate rather than to a deadline** — which is what removes
    run length from the inputs (§4.6a).
-6. **Sense the wall on the running model with forward passes only** (§5.5b) — *the one piece that is built
-   and does not work: it measures a frozen model's tolerance to injected noise, not the wall a re-fitting
-   run actually meets (§5.5c), and every failure in the 08-21 runs traces to that.*
+6. ~~**Sense the wall on the running model with forward passes only**~~ (§5.5b) — **withdrawn 2026-08-23.**
+   *The one piece that was built and cannot work: what the probe reads is a property of the trajectory, not
+   of the model, so there is no wall to sense in advance (§5.5c). Every failure in the 08-21 runs traces to
+   this.* **The replacement senses the other end of the problem**: not *how far can I go* but *am I still
+   getting anything* — read off the accuracy curve the run already produces. That one signal drives both the
+   stop (row E) and the anneal (row A), which is why `B_max` stops being load-bearing rather than being
+   replaced by a constant. Replay evidence and its open problems: [practice P4.13](fl_fwd_ft_practice.md).
 
 **What is standard, what is borrowed and what is ours is audited in §7.4** — including the parts of this
 list that are re-framings of known quantities rather than new ones.
@@ -1159,8 +1183,8 @@ operator set the method already restricts itself to.
 **Built** as `probe_inflation_damage.py` and wired into the aggregator as `[BmaxProbe]`
 (`b_max_probe_every`); it fires live every 150 commits, 40 fires on record. It runs on the model being
 trained, so it calibrates the deployment rather than a proxy — and it was believed *biased conservative*
-by 0.6–1.2 in `Φ`. **§5.5c measures that gap and it is not an offset: it is ~1.8× in `Φ`, a different
-quantity.** **`b_max_probe_phis` is read from `args` and set by nothing**, so the grid is the module
+by a fixed offset in `Φ`. **Both versions of that belief are dead (§5.5c): there is no offset, because what
+it reads is a property of the trajectory, not of the model.** **`b_max_probe_phis` is read from `args` and set by nothing**, so the grid is the module
 constant in practice — and `condition_fp` does not cover it.
 
 **Why `B_max` is the right constant to bet on — and why it must still be sensed, not shipped fixed.**
@@ -1173,14 +1197,16 @@ at `Φ` = 2.41–3.11, and as a stopping rule it gives up 0.005 of peak on avera
 transfer across task** — B-1's three *offline* knees are neither invariant nor monotone in `num_labels`
 (§7.1 has the numbers), which is the entire argument for sensing it rather than shipping it fixed.
 
-> ⚠ **That argument is now in doubt from both ends.** The live probe has never reproduced the across-task
-> difference — its three combined values order by **fire count, not dataset** — and §5.5c says the
-> instrument measures the wrong quantity, ~1.8× low, which would make B-1's 2.0–2.3 / 3.0–3.5 spread
-> consistent with **one** `Φ*` seen through a badly calibrated ruler. If it is one constant, the probe
-> stops being mandatory infrastructure and becomes a once-per-model measurement:
-> [buildplan §5.6](fl_fwd_ft_buildplan.md), row **P1**.
+> ✅ **Settled 2026-08-23, and B-1 was right.** P1 re-ran the offline sweep on a *bracketing* grid and
+> reproduced B-1 almost exactly — agnews 3.14–3.36, yahoo 2.07–2.19, yelp-p 2.35–2.45. The earlier
+> suspicion that this spread was "one `Φ*` seen through a badly calibrated ruler" is **retracted**: the
+> ruler is precise and repeatable. It simply measures a quantity that depends on the **trajectory** — it
+> moves with architecture (agnews: 3.15 DistilBERT vs 2.07 roberta-large) and with the optimizer path at
+> fixed model and task (1.44→2.07 on learning rate alone), and it **anti-correlates** with `Φ*`. ⇒ the
+> probe cannot become a once-per-model measurement, and `B_max` cannot be sensed at all:
+> [buildplan §5.6](fl_fwd_ft_buildplan.md).
 
-### §5.5c Injected inflation is not earned inflation — the probe measures a different quantity *(measured 2026-08-21, N1–N3)*
+### §5.5c The probe measures a different quantity — and it is not a fixed offset *(measured 2026-08-21; mechanism retracted 2026-08-23)*
 
 **This supersedes "biased conservative, reads the knee 0.6–1.2 low."** The bias is not an offset. Held-out
 accuracy under **injected** noise and held-out accuracy at the **same `Φ` reached by training** are not the
@@ -1189,31 +1215,34 @@ same curve and do not have the same shape. **Measurement, 40 fires across three 
 the run at `Φ`=2 is within **3% of its peak**, on all three datasets, and every injected point at
 `Φ` ≥ 2.0 reads chance.
 
-**The mechanism is re-fitting, and it is the *only* difference between the two protocols.** Injection adds
-`‖θ‖√(Φ²−1)` of isotropic noise **in one shot** to a model then evaluated frozen. Training adds the same
-total length **in ~1,000 increments, with the head re-fitting between every one**. The two end at the same
-`‖θ‖` and the same drift angle from `θ_0`; they differ only in whether the classifier was allowed to
-follow. **The gap therefore measures how much of the wall is re-fittable, and it is most of it:** 60° of
-injected drift is fatal, 70° of earned drift is optimal.
+> ⚠ **RETRACTED 2026-08-23 — "the mechanism is re-fitting, a ~1.8× gap in `Φ`".** The refit probe run at
+> **`m`=0** is a frozen read, the *same* protocol as the live sensor, and it returns **3.175** on agnews,
+> not 1.25. Frozen-vs-re-fit is therefore **not** what separates the two instruments, and there is **no
+> conversion factor** between them: the offline knee ranges 2.07–3.36 with the trajectory
+> ([buildplan §5.6](fl_fwd_ft_buildplan.md)). The live 1.25 is the grid floor, an artefact of `knee()`
+> extrapolating off its synthetic `Φ`=1 anchor, not a measurement. **Do not restate the 1.8× figure.**
 
-**Two consequences.** *(a)* `Φ_knee`'s pinning at 1.25–1.28 is doubly explained — 35 of 40 fires sit below
-the half-accuracy level at the *first* grid point, so `knee()` returns its own extrapolation floor; that is
-the arithmetic, and this section is why the first point is low. *(b)* **Re-ranging the grid (row N4a′)
-fixes the pinning and not the calibration** — a bracketing grid returns an honest 1.2–1.6, still ~1.8×
-below the `Φ*`≈2.9 the same runs peak at. N4a′ is the difference between a target that recedes with `B`
-and one that does not, and nothing more.
+**What survives the retraction.** The measured table still stands as a table: at `Φ`=2 the live probe reads
+chance while the trajectory is within 3% of peak. A trajectory really is more robust than a one-shot
+injection at matched `Φ`. What is *not* licensed is treating that gap as a fixed, invertible offset.
 
-> **What the probe as built can and cannot be used for.** It **can** rank two models' tolerance to
-> unearned perturbation, cheaply and forward-only. It **cannot** return `Φ*`, at any grid resolution,
-> because the quantity it measures saturates at chance a full 1.4 in `Φ` below where `Φ*` sits.
-> **`B_max` must not be set from it** — and since `B_max` is what law C anneals against, that is the
-> deepest cause of hole 1, one level below the grid range.
+**One consequence survives.** `Φ_knee`'s live pinning at 1.25–1.28 is arithmetic: 35 of 40 fires sit below
+the half-accuracy level at the *first* grid point, so `knee()` returns its own extrapolation floor.
+**Re-ranging the grid (row N4a′) is closed unrun** — it would return an honest number for a quantity that
+is not constant, so it buys nothing law C can anneal against.
 
-**The corrected instrument — a noise-then-refit probe.** Inject at `Φ`, then run `m` ordinary commits and
-*then* read accuracy back. That measures the quantity `Φ*` is. It costs `m` commits per grid point instead
-of one eval, so it is an **offline, once-per-model** measurement, not an in-run sensor — which is
-consistent with §5.6's hypothesis and with what row **P1** was already trying to establish. Buildplan row
-**P1′**; `m` ≈ 50 is one probe cadence's worth and is itself the first thing to sweep.
+> **What the probe as built can and cannot be used for.** It **can** rank one trajectory's tolerance to
+> unearned perturbation, cheaply and forward-only. It **cannot** return `Φ*` at any grid resolution — not
+> because it is miscalibrated, but because what it measures is a property of the trajectory and therefore
+> is not available before the trajectory exists. **`B_max` must not be set from it, and cannot be set from
+> any forward-only probe** — which makes hole 1 unfixable by sensing and hands the job to the peak
+> detector (row **E**) and to row **A**, whose anneal target is **also sensed** — driven off measured
+> progress on the accuracy curve rather than off a wall ([practice P4.13](fl_fwd_ft_practice.md)).
+
+**The proposed corrected instrument — a noise-then-refit probe — was built and is closed unrun.** Its
+`m`=0 positive control was supposed to reproduce the live sensor's 1.25 and instead read 3.175, which
+falsified the premise before the sweep was worth a slot. `scripts/probe_inflation_refit.py` remains in the
+tree; buildplan row **P1′** is closed. **There is no known forward-only instrument for `Φ*`.**
 
 ### §5.5e Adaptive `K` and `P` — the same rule twice
 
@@ -1387,10 +1416,10 @@ both hold near 0.9 up to `Φ` ≈ 2.5, break at 3.0, and are destroyed by 3.6. A
 differ by exactly the ratio of base norms. **`B_max` transfers across `p`**, as the ratio principle
 predicted.
 
-> The rig's threshold (`Φ` ≈ 3.0) is lower than the real runs' because it dumps noise on a model that
-> never adapted while real training re-fits continuously — **a ~1.8× gap, not a small one (§5.5c)**. It
-> applies to both `p` equally, so it cancels in the comparison: **take the *relative* verdict from the rig
-> and the *number* from the run ledger.**
+> The rig's threshold is not the run's, and the difference is **not a fixed factor** (§5.5c). It does
+> appear to apply to both `p` similarly here, so it largely cancels in *this* comparison — but that is an
+> observation about these two cells, not a conversion rule. **Take the *relative* verdict from the rig and
+> the *number* from the run ledger, and never convert between them.**
 
 **It does NOT transfer across task (B-1, MEASURED 2026-08-13, `probe_inflation_damage.py`, rf=16,
 agnews/yahoo/yelp-p, mode=noise, reps≥3).** Reading the knee on chance-normalized accuracy
@@ -1410,11 +1439,13 @@ confirmatory run peaked at epoch 2 (0.732) and *degraded* after, while collapsin
 `~0.73` matches the DistilBERT/yahoo accuracy FwdLLM's own paper reports. **Replicated 2026-08-13**, 2
 independent training runs per dataset, agreeing tightly on all three knees.
 
-**This "erratic" outcome is the whole argument that `B_max` must be sensed rather than shipped fixed** —
-and §5.5c puts it in doubt, because these knees are read on the *injected* quantity while the runs peak on
-the *earned* one, and the two are ~1.8× apart. The runs themselves peak at `Φ` = 2.82 / 3.00 / 2.91 — a
-band of 0.18 where this sweep spans 1.2. **Which reading survives is row P1**, one GPU-hour on a
-bracketing grid across datasets; see [buildplan §5.6](fl_fwd_ft_buildplan.md).
+**This "erratic" outcome was the whole argument that `B_max` must be sensed rather than shipped fixed, and
+2026-08-23 turned it into the argument that `B_max` cannot be sensed at all.** Row **P1** re-ran this sweep
+on a bracketing grid and **reproduced it** — agnews 3.14–3.36, yahoo 2.07–2.19, yelp-p 2.35–2.45. So these
+knees are real and repeatable; they are simply not `Φ*`, which stays at 2.82 / 3.00 / 2.91 in a band of
+0.18 and in the **opposite rank order**. P1 further showed the knee moves with architecture and with the
+optimizer path at fixed model and task. ⇒ **sensing is out; the peak detector is the only `Φ*` instrument.**
+See [buildplan §5.6](fl_fwd_ft_buildplan.md).
 
 ## §7.2 The norm is mostly a symptom, and decay will not rescue it (Q2 — settled)
 
