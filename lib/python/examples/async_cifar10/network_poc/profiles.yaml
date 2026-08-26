@@ -1,0 +1,18 @@
+profiles:
+  - name: lan
+    down: {latency_ms: 1, jitter_ms: 0, bandwidth_mbps: 1000}
+  - name: wifi
+    down: {latency_ms: 10, jitter_ms: 2, bandwidth_mbps: 100}
+  - name: lte
+    down: {latency_ms: 40, jitter_ms: 8, bandwidth_mbps: 30}
+    up:   {latency_ms: 40, jitter_ms: 8, bandwidth_mbps: 8}
+  - name: congested_3g
+    down: {latency_ms: 150, jitter_ms: 30, bandwidth_mbps: 2}
+    up:   {latency_ms: 150, jitter_ms: 30, bandwidth_mbps: 0.5}
+  - name: satellite
+    down: {latency_ms: 600, jitter_ms: 50, bandwidth_mbps: 5}
+
+payload_sizes_bytes:
+  - {label: control_msg,      bytes: 4096}
+  - {label: model_update_1mb, bytes: 1048576}
+  - {label: model_update_10mb, bytes: 10485760}
