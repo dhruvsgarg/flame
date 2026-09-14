@@ -170,6 +170,8 @@ class PyTorchCifar10Trainer(Trainer):
         if (coords_path):
              self.coords = np.load(coords_path)["coords"]
 
+        self._init_link_gate()
+
         # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
         # (buffer-residence queue_wait + re-dispatch latency) that the sim sct omitted, so sim's
         # cycle was short and advance under-charged. sct = send_ts + max(gpu, D) + leg; staleness
@@ -330,6 +332,56 @@ class PyTorchCifar10Trainer(Trainer):
     def check_and_sleep(self):
         """Induce transient unavailability"""
         pass
+
+    def _init_link_gate(self) -> None:
+        """LEO satellite-side RF link-budget self-check (req #6). Off by
+        default (hyperparameters.link_budget.enabled); self-reported only --
+        the aggregator's own recompute in main_asyncfl_agg.py is
+        authoritative for drop/eligibility decisions (req #5/#7).
+        """
+        hp = self.config.hyperparameters
+        link_budget_cfg = getattr(hp, "link_budget", None) or {}
+        self.link_gate = None
+
+        from pathlib import Path
+        from examples.async_cifar10.leo.ground_station import (
+            SatelliteLinkGate,
+            link_budget_enabled,
+        )
+
+        if not link_budget_enabled(link_budget_cfg):
+            return
+
+        ground_station_cfg = getattr(hp, "ground_station", None) or {}
+        coords_path = self.config.hyperparameters.satellite_coordinates_path
+        ecef_path = Path(
+            link_budget_cfg.get("ecef_path")
+            or str(Path(coords_path).with_name("ecef.npz"))
+        )
+        self.link_gate = SatelliteLinkGate.from_config_for_satellite(
+            ecef_path=ecef_path,
+            ground_station_dict=ground_station_cfg,
+            link_budget_dict=link_budget_cfg,
+        )
+
+    def _compute_own_throughput_loss(self):
+        """Self-estimated throughput-loss fraction from this satellite's own
+        ephemeris, for cross-check telemetry only (req #6)."""
+        if self.link_gate is None:
+            return None
+        metrics = self.link_gate.evaluate_index(self.satellite_index, self._sim_now())
+        return metrics.throughput_loss_frac
+
+    def _extra_send_fields(self) -> dict:
+        """Attach the self-computed link estimate to the upload message."""
+        if self.link_gate is None:
+            return {}
+        from flame.mode.message import MessageType
+
+        loss_frac = self._compute_own_throughput_loss()
+        if loss_frac is None:
+            return {}
+        return {MessageType.LINK_THROUGHPUT_LOSS_SELF: loss_frac}
 
     def _sim_now(self) -> float:
         """Wall-elapsed since the aggregator's trace-read origin (real) or

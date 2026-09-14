@@ -103,3 +103,8 @@ class MessageType(Enum):
     # trainer_id) identically in real and sim. None when delays are disabled
     # (aggregator then falls back to arrival order).
     MODELED_DELAY_S = 43
+
+    # Trainer's own FSPL+atmospheric+ionospheric throughput-loss estimate
+    # (self-reported cross-check; the aggregator's own recompute at commit
+    # time is authoritative -- see flame.availability.rf_link_budget).
+    LINK_THROUGHPUT_LOSS_SELF = 44

@@ -665,6 +665,16 @@ class TopAggregator(SyncTopAgg):
                 channel.cleanup_provided_ends(end)
                 return
 
+            # Extension point for example-specific drop gates (e.g.
+            # async_cifar10's authoritative RF link-budget recheck at
+            # arrival time). Default False, so this is a no-op for every
+            # existing baseline. A dropped update never reaches optimizer.do()
+            # and never increments agg_goal_cnt; the trainer is naturally
+            # excluded again next round by _extra_ineligible_trainers.
+            if self._extra_drop_update(msg, end):
+                channel.cleanup_provided_ends(end)
+                return
+
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
             )
@@ -1452,6 +1462,15 @@ class TopAggregator(SyncTopAgg):
             # expose cooling count so the selector holds those slots (no refill).
             channel.properties["sim_cooling_count"] = len(_cooling)
 
+        # Extension point for example-specific eligibility gates (e.g.
+        # async_cifar10's RF link-budget gate). Empty list when unused, so
+        # this is a no-op for every existing baseline.
+        _extra_ineligible = self._extra_ineligible_trainers(channel, task_to_perform)
+        if _extra_ineligible:
+            curr_unavail_trainer_list = list(
+                set(curr_unavail_trainer_list) | set(_extra_ineligible)
+            )
+
         # One-in-flight-per-trainer is enforced by _sim_hold_busy_slots (commit-side):
         # a busy trainer holds its concurrency slot in selected_ends until its update
         # commits, NOT the unavailable list (which is for UN_AVL trainers that can't
@@ -1650,3 +1669,24 @@ class TopAggregator(SyncTopAgg):
         """Return a list of function tags defined in the top level
         aggregator role."""
         return [TAG_DISTRIBUTE, TAG_AGGREGATE]
+
+    def _extra_ineligible_trainers(self, channel, task_to_perform: str) -> list:
+        """Extension hook: extra trainer ends ineligible for this round's
+        dispatch, on top of the oracular availability gate.
+
+        Default no-op (returns []). An example overrides this to add its own
+        eligibility gate (e.g. async_cifar10's RF link-budget gate) without
+        touching the shared distribute path.
+        """
+        return []
+
+    def _extra_drop_update(self, msg: dict, end: str) -> bool:
+        """Extension hook: True if this received update should be dropped
+        before it reaches the optimizer, on top of the duplicate-contribution
+        check.
+
+        Default no-op (returns False). An example overrides this to add its
+        own drop gate (e.g. async_cifar10's authoritative RF link-budget
+        recheck at arrival time) without touching the shared aggregate path.
+        """
+        return False

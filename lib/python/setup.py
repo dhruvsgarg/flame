@@ -51,6 +51,7 @@ setup(
             "torchaudio",  # async_google_speech (audio feature extraction)
             "sortedcontainers",
             "wandb",
+            "pyproj",  # async_cifar10/leo: ECEF<->geodetic for the LEO link-budget gate
             # --- fwdllm: DistilBERT forward-mode FL on agnews ---
             # Modern mainline `transformers` + the standalone `adapters` add-on
             # (the maintained successor to the un-buildable `adapter-transformers`

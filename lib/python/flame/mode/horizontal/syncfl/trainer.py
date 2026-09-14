@@ -360,6 +360,16 @@ class Trainer(Role, metaclass=ABCMeta):
         if tag == TAG_UPLOAD:
             self._send_weights(tag)
 
+    def _extra_send_fields(self) -> dict:
+        """Extension hook: extra fields merged into the upload message.
+
+        Default no-op (returns {}). An example overrides this to attach
+        example-specific self-reported telemetry (e.g. async_cifar10's
+        satellite link-budget self-check) without touching this shared
+        method.
+        """
+        return {}
+
     def _send_weights(self, tag: str) -> None:
         logger.debug(
             f"### SEND WEIGHTS for tag: {tag} "
@@ -490,6 +500,11 @@ class Trainer(Role, metaclass=ABCMeta):
         # Stamp wall-clock send time so aggregator can decompose wall_lag_s.
         _wall_send_ts = time.time()
         msg[MessageType.WALL_SEND_TS] = _wall_send_ts
+
+        # Extension point for example-specific fields (e.g. async_cifar10's
+        # satellite link self-check); empty dict when unused, so this is a
+        # no-op for every existing example.
+        msg.update(self._extra_send_fields())
 
         with self._phase("mqtt_send_s"):
             channel.send(end, msg)

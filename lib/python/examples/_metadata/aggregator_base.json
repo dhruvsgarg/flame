@@ -24,7 +24,24 @@
         "batchSize": 32,
         "learningRate": 0.01,
         "rounds": 1000,
-        "aggGoal": 10
+        "aggGoal": 10,
+        "ground_station": {
+            "lat_deg": 47.6062,
+            "lon_deg": -122.3321,
+            "alt_m": 50.0
+        },
+        "link_budget": {
+            "enabled": false,
+            "downlink_freq_mhz": 12000.0,
+            "channel_bandwidth_hz": 240000000,
+            "ref_snr_db": 20.0,
+            "ref_distance_km": 550.0,
+            "ref_elevation_deg": 40.0,
+            "atmo_zenith_db": 0.2,
+            "tec_tecu": 50.0,
+            "throughput_loss_threshold": 0.5,
+            "min_elevation_deg": 5.0
+        }
     },
     "baseModel": {"name": "", "version": 2},
     "job": {"id": "PLACEHOLDER", "name": "cifar-10"},

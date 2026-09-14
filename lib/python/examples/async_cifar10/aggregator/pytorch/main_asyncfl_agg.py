@@ -33,6 +33,7 @@ import torchvision.transforms as transforms
 
 # wandb setup
 import wandb
+from flame import telemetry
 from flame.config import Config
 from flame.dataset import Dataset
 from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator
@@ -42,6 +43,12 @@ import sys as _sys, os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from oracle_utility import OracleInjectMixin  # noqa: E402
 from sortedcontainers import SortedDict
+
+from pathlib import Path as _Path
+from examples.async_cifar10.leo.ground_station import (  # noqa: E402
+    SatelliteLinkGate,
+    link_budget_enabled,
+)
 
 
 def initialize_wandb(run_name=None):
@@ -138,6 +145,87 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
         self._init_oracle_util(
             _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
                           "..", "..", "data"))
+        self._init_link_gate()
+
+    def _init_link_gate(self) -> None:
+        """LEO satellite/ground-station RF link-budget gate (req: FSPL +
+        atmospheric + ionospheric path loss -> throughput-loss threshold).
+
+        Off by default (hyperparameters.link_budget.enabled, default False)
+        so every existing baseline/parity run is byte-identical unless a
+        config explicitly opts in.
+        """
+        hp = self.config.hyperparameters
+        link_budget_cfg = getattr(hp, "link_budget", None) or {}
+        self.link_gate = None
+        if not link_budget_enabled(link_budget_cfg):
+            return
+
+        examples_dir = _Path(__file__).resolve().parents[3]  # .../lib/python/examples
+        metadata_dir = examples_dir / "_metadata"
+        ground_station_cfg = getattr(hp, "ground_station", None) or {}
+        ecef_path = _Path(
+            link_budget_cfg.get("ecef_path")
+            or (metadata_dir / "leo" / "ecef.npz")
+        )
+        registry_path = _Path(
+            link_budget_cfg.get("registry_path")
+            or (metadata_dir / "trainer_registry.yaml")
+        )
+        self.link_gate = SatelliteLinkGate.from_config(
+            ecef_path=ecef_path,
+            registry_path=registry_path,
+            ground_station_dict=ground_station_cfg,
+            link_budget_dict=link_budget_cfg,
+        )
+        logger.info(
+            f"[LINK_GATE] enabled: threshold={self.link_gate.config.throughput_loss_threshold} "
+            f"ref_snr_db={self.link_gate.config.ref_snr_db} "
+            f"freq_mhz={self.link_gate.config.downlink_freq_mhz}"
+        )
+
+    def _extra_ineligible_trainers(self, channel, task_to_perform: str) -> list:
+        """Link-budget eligibility gate (req #5/#7): exclude satellites whose
+        modeled throughput loss exceeds the configured threshold from this
+        round's dispatch, so they never receive the new global weights."""
+        if self.link_gate is None:
+            return []
+        now = self._avail_now()
+        ineligible = [
+            end_id
+            for end_id in list(channel._ends.keys())
+            if not self.link_gate.is_eligible(end_id, now)
+        ]
+        if ineligible:
+            logger.debug(f"[LINK_GATE] ineligible this round: {len(ineligible)}")
+        return ineligible
+
+    def _extra_drop_update(self, msg: dict, end: str) -> bool:
+        """Authoritative link-budget recheck at arrival time (req #5/#7):
+        drop the update -- never call the optimizer on it -- if the modeled
+        throughput loss exceeds the threshold."""
+        if self.link_gate is None:
+            return False
+        metrics = self.link_gate.evaluate(end, self._avail_now())
+        if not metrics.eligible:
+            logger.info(
+                f"[LINK_GATE_DROP] end={str(end)[-4:]} reason={metrics.reason} "
+                f"distance_km={metrics.distance_km} elevation_deg={metrics.elevation_deg} "
+                f"path_loss_db={metrics.path_loss_db} "
+                f"throughput_loss_frac={metrics.throughput_loss_frac}"
+            )
+            if telemetry.is_enabled():
+                telemetry.emit(
+                    "link_loss_dropped",
+                    round_num=self._round,
+                    end_id=str(end),
+                    reason=metrics.reason,
+                    distance_km=metrics.distance_km,
+                    elevation_deg=metrics.elevation_deg,
+                    path_loss_db=metrics.path_loss_db,
+                    throughput_loss_frac=metrics.throughput_loss_frac,
+                )
+        return not metrics.eligible
 
     def load_data(self) -> None:
         """Load a test dataset."""
