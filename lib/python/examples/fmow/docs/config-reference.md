@@ -1,99 +1,149 @@
-# FMoW configuration reference
+# FMoW configuration and availability
 
-[`fmow_config.yaml`](../configs/fmow_config.yaml) describes FMoW input locations,
-capture settings, and ground-station visibility settings. Both setup and the
-FMoW training roles read it. The experiment YAML separately selects the
-availability source and sets trainer count, aggregation, GPUs, and training
-hyperparameters. Setup generates inputs for all orbital satellites. Coverage alone accepts
-`--num-satellites`, defaulting to the number of trainers in FMoW's registry. The experiment
-trainer count should match; the launcher is not modified by setup.
+[fmow_config.yaml](../configs/fmow_config.yaml) supplies dataset, orbit, capture,
+and ground-station settings to setup and both training roles. The experiment
+YAML separately chooses trainer count, GPUs, aggregation, and availability mode.
 
-For setup commands and prerequisites, see [Getting started](getting-started.md).
+## Configuration at a glance
 
-## Complete example
+This example shows every supported field, using the checked-in settings with
+omitted defaults made explicit. Edit these values in `fmow_config.yaml`.
 
 ```yaml
 dataset:
   root_dir: lib/python/examples/fmow/data/fmow
   num_classes: 62
-  image_size: 224
+  image_size: 224             # Pixels
 
 satellites:
   leo_dir: lib/python/examples/fmow/metadata/leo
 
 capture:
-  radius: 15.0
+  radius: 15.0               # Kilometers
 
-ground_stations:
-  num_stations: 8
-  seed: 0
-  elevation_angle: 10.0
-  min_window: 90.0
+ground_stations:             # Omit this section to keep existing stations and contacts
+  num_stations: 1            # Checked-in value; schema default is 8
+  seed: 0                   # Station placement seed
+  elevation_angle: 10.0      # Degrees above the horizon
+  min_window: 90.0           # Required remaining contact time in seconds
 
 availability:
   trace_path: lib/python/examples/fmow/metadata/availability_traces/satellite_traces.yaml
 ```
 
-Dataset, orbital, and availability paths resolve to absolute paths when the
-config loads. Relative values are anchored to the Flame repository root,
-regardless of the working directory or YAML location. Absolute paths and `~`
-paths are also supported. An explicitly supplied `--config` path follows normal
-command-line path rules.
+See [fields and defaults](#fields-and-defaults) for optional-section behavior.
+Trainer count, GPUs, rounds, and learning rate are set separately in an
+[experiment YAML](../exports/fmow_fedavg_n200.yaml).
+
+## Satellite availability
+
+Satellite availability is a saved schedule of usable ground-station contacts.
+[generate_satellite_availability.py](../setup/generate_satellite_availability.py)
+combines `ecef.npz` and `ground_stations.yaml`: a satellite is eligible when at
+least one station meets the elevation threshold and remaining-window requirement.
+
+The generated `satellite_traces.yaml` stores generation settings and per-trainer
+`[time, state]` events, for example:
+
+```yaml
+trainers:
+  trainer_001:
+    - [0, UN_AVL]
+    - [120, AVL_TRAIN]
+    - [300, UN_AVL]
+```
+
+Here, satellite 0 has a usable contact from second 120 up to, but excluding,
+second 300. `AVL_TRAIN` means eligible; `UN_AVL` means unavailable.
+Availability does not guarantee that a trainer is selected or has captured data.
+
+### Which file contains what?
+
+| Input | Meaning | Reader or generator |
+| --- | --- | --- |
+| `leo/geodetic.npz`, `leo/ecef.npz` | Precomputed satellite positions. | [captures.py](../setup/captures.py), [availability generator](../setup/generate_satellite_availability.py) |
+| `leo/captures.npz` | First capture time for each image on each satellite; arrays `events`, `offsets`, `sat_names`. | [Trainer](../trainer/pytorch/main.py) |
+| `leo/ground_stations.yaml` | Station coordinates. | [Station generator](../setup/generate_ground_stations.py), availability generator |
+| `availability_traces/satellite_traces.yaml` | Available/unavailable contact events. No latency or bandwidth values. | [SatelliteAvailability](../dependencies/satellite_availability.py) |
+| [trainer_registry.yaml](../../_metadata/trainer_registry.yaml) | Trainer identity and configured compute delay, including `training_delay_s`. | [Launcher](../../../flame/launch/spawner.py) |
+| [trainer_base.yaml](../configs/trainer_base.yaml) and experiment export | Broker, training settings, and selected availability mode. | Launcher and runtime roles |
+
+The first three `leo/` paths use `satellites.leo_dir`; the trace path is configured
+separately. Defaults resolve through `fmow/metadata` to shared `examples/_metadata`.
+
+The current FMoW path uses MQTT for message transport. Satellite availability
+does not calculate radio-link latency, bandwidth, or transfer duration.
+Configured compute delay is also separate from contact availability.
+
+### Runtime wiring and limits
+
+The [200-trainer export](../exports/fmow_fedavg_n200.yaml) selects
+`trainer.availability.mode: satellite` and sets aggregator
+`sim_unavailability: 'True'` and `availability_trace: satellite`.
+Both roles load `availability.trace_path` through their `fmow_config_path`.
+The reader maps satellite index 0 to `trainer_001`; the aggregator resolves
+endpoint IDs through the trainer registry. Missing trace/registry entries fail
+rather than defaulting to available. The reader does not repeat the schedule.
+
+The [smoke export](../exports/fmow_fedavg_smoke_n10.yaml) uses synthetic `syn_0`
+instead of the geometric trace.
+
+The generator uses sample indices as seconds and truncates `min_window` to an
+integer sample count. Use one-second samples starting at zero. Capture generation
+uses `time_s`; trainer position lookup also assumes one-second indexing.
+`min_window` trims the end of each station's visible interval. With the default
+90 seconds, that final portion is ineligible even if the satellite remains visible.
+Every usable interval ends with `UN_AVL`, including at the trace horizon.
+Setting elevation to `-90` and minimum window to `0` covers all input samples,
+but does not create an infinite trace.
 
 ## Fields and defaults
 
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `dataset.root_dir` | `lib/python/examples/fmow/data/fmow` | Dataset download destination and runtime dataset location. |
-| `dataset.num_classes` | `62` | Number of output classes for the model. Does not change the downloaded dataset. |
-| `dataset.image_size` | `224` | Image transform size used at runtime. Does not change visibility or capture generation. |
-| `satellites.leo_dir` | `lib/python/examples/fmow/metadata/leo` | Contains orbital inputs and generated capture and ground-station files. |
-| `capture.radius` | `15.0` | Capture radius in kilometers. Controls which images enter each satellite's capture schedule, not ground-station connectivity. |
-| `ground_stations.num_stations` | `8` | Number of randomly generated stations. Use a positive integer. |
-| `ground_stations.seed` | `0` | Random seed for station placement. Optional even when `ground_stations` is present. |
-| `ground_stations.elevation_angle` | `10.0` | Minimum elevation, in degrees, for a satellite to be visible from a station. |
-| `ground_stations.min_window` | `90.0` | Required remaining visibility window, in seconds, at a station. Use `0` to disable this cutoff. |
-| `availability.trace_path` | `lib/python/examples/fmow/metadata/availability_traces/satellite_traces.yaml` | Output file for generated availability and input file for the runtime satellite reader. |
+Paths below resolve from the repository root, regardless of config location or
+working directory. Absolute and `~` paths also work. The CLI `--config` argument
+follows normal command-line path rules.
 
-Station coordinates are sampled uniformly over the sphere. A satellite is
-available if at least one station has a qualifying visibility window.
-`min_window` shortens the usable end of each station's visible interval; it does
-not merely discard short passes. With the default value, the final 90 seconds
-of a visible interval are not eligible for starting a task.
+Omitted fields use the [schema defaults](../setup/config.py) below; `{}` is a
+valid config.
 
-## Optional sections
+#### Dataset
 
-- Omitted fields use the defaults above. An empty config can be written as `{}`.
-- Omitting `ground_stations`, or setting it to `null`, skips both station and
-  availability generation during `all`. Existing files are left alone.
-- `ground_stations: {}` enables both generation steps using all defaults.
-- Omitting `availability`, or just its `trace_path`, uses the default trace path.
-  Specifying a trace path alone does not enable generation.
-- Changing `satellites.leo_dir` does not change the default availability output
-  path. Override `availability.trace_path` separately if needed.
+- `root_dir`: Download destination and runtime dataset directory.
+  Default: `lib/python/examples/fmow/data/fmow`.
+- `num_classes`: Number of model output classes. Default: `62`.
+- `image_size`: Runtime image transform size in pixels. Default: `224`.
 
-For example, this enables generation with eight stations, seed zero, and
-visibility unrestricted by angle or minimum window:
+#### Satellites
 
-```yaml
-ground_stations:
-  elevation_angle: -90
-  min_window: 0
-```
+- `leo_dir`: Directory containing orbital inputs, captures, and the station file.
+  Default: `lib/python/examples/fmow/metadata/leo`.
 
-This makes satellites eligible throughout the sampled orbital data, but the
-generator still emits an unavailable event at the end of the trace. It does not
-produce an infinite always-available schedule. Increasing the elevation threshold
-reduces visibility; an infinite positive threshold makes no satellites visible.
+Changing `leo_dir` does not update `availability.trace_path` or the trainer's
+`satellite_coordinates_path` hyperparameter; align them explicitly.
 
-## How runtime uses this config
+#### Capture
 
-The trainer and aggregator receive the config location through their
-`fmow_config_path` hyperparameter. When satellite availability is selected in the
-experiment, both read `availability.trace_path` from this config.
+- `radius`: Image capture radius in kilometers. Default: `15.0`.
+  This is independent of ground-station contact.
 
-Setup does not change the experiment's selected availability mode or start
-training. If using a custom config file or orbital directory, also align the
-runtime `fmow_config_path` and trainer `satellite_coordinates_path` settings.
-The latter is a separate Flame hyperparameter and is not automatically updated
-by `satellites.leo_dir`.
+#### Ground stations
+
+- `num_stations`: Positive station count, with coordinates sampled uniformly
+  over the sphere. Default: `8`; the checked-in config uses `1`.
+- `seed`: Station placement seed. Default: `0`.
+- `elevation_angle`: Minimum elevation for visibility, in degrees. Default: `10.0`.
+- `min_window`: Required remaining visibility at a station, in seconds. Default: `90.0`.
+
+Omit this section or set it to `null` to skip station and availability generation.
+Use `ground_stations: {}` to enable both with defaults.
+
+#### Availability
+
+- `trace_path`: Output file for the generated availability trace and input file for runtime
+  availability. Default:
+  `lib/python/examples/fmow/metadata/availability_traces/satellite_traces.yaml`.
+
+Omit this section, set it to `null`, or omit `trace_path` to use the default path.
+A path alone does not enable generation.
+
+For commands and required orbital array shapes, see [Getting started](getting-started.md).
