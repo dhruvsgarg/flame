@@ -764,8 +764,6 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 self._agg_cache_store_s = (
                     getattr(self, "_agg_cache_store_s", 0.0) + time.time() - _cs0)
 
-                if channel._selector is not None:
-                    channel._selector.on_update_received(end, msg, self._round)
 
                 update_staleness_val = self._round - tres.version
 
@@ -792,6 +790,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                     _rd.total_seconds() if _rd is not None else 0.0
                 )
 
+            if channel._selector is not None:
+                channel._selector.on_update_received(end, msg, self._round)
+                
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
         # [U6 real barrier-anchor] Finalize real visibility lag against the single round barrier:
@@ -851,6 +852,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self._agg_cache_store_s = 0.0
         if global_weights is None:
             logger.debug("failed model aggregation")
+            if channel._selector is not None:
+                channel._selector.on_round_completed(channel._ends, self._round)
             time.sleep(1)
             return
 
@@ -1057,7 +1060,12 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                     logger.info(
                         f"[SIM_STARVATION] trace horizon or budget reached at "
                         f"vclock={self._vclock.now:.1f}s (nxt={_nxt}, "
-                        f"budget={_budget:.0f}s, round={self._round}); stopping run."
+                        f"budget={_budget:.0f}s, round={self._round}); stopping run. "
+                        f"num_eligible={num_eligible} threshold={_threshold} "
+                        f"total_ends={len(channel._ends)} "
+                        f"unavail={len(curr_unavail_trainer_list)} "
+                        f"in_flight={len(_in_flight)} "
+                        f"in_flight_ids={sorted(_in_flight)}"
                     )
             else:
                 _max_rt = getattr(self.config.hyperparameters, "max_experiment_runtime_s", None)

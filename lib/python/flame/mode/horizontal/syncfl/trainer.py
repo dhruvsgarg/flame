@@ -414,7 +414,7 @@ class Trainer(Role, metaclass=ABCMeta):
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_SEND)
 
-        if self.task_to_perform == "train":
+        if self.task_to_perform == "train" and self.dataset_size > 0:
             # trainer is expected to train and it is also available to
             # train - best case
             with self._phase("weights_from_gpu_s"):
@@ -428,6 +428,17 @@ class Trainer(Role, metaclass=ABCMeta):
 
                 delta_weights = self.privacy.apply_dp_fn(delta_weights)
 
+                # Skip frozen layers
+                if hasattr(self.model, "named_parameters"):
+                    _frozen = {
+                        n for n, p in self.model.named_parameters() if not p.requires_grad
+                    }
+
+                    if _frozen:
+                        delta_weights = {
+                            k: v for k, v in delta_weights.items() if k not in _frozen
+                        }
+
                 self.regularizer.update()
 
                 self.finalize_local_accuracy()
@@ -440,6 +451,13 @@ class Trainer(Role, metaclass=ABCMeta):
                     MessageType.STAT_UTILITY: self._stat_utility,
                     MessageType.LOCAL_ACCURACY: self._local_accuracy,
                 }
+        elif self.task_to_perform == "train":
+            msg = {
+                MessageType.MODEL_VERSION: self._round,
+                MessageType.DATASET_SIZE: self.dataset_size,
+                MessageType.STAT_UTILITY: self._stat_utility,
+                MessageType.LOCAL_ACCURACY: self._local_accuracy
+            }
         else:
             msg = {
                 MessageType.MODEL_VERSION: self._round,

@@ -26,6 +26,7 @@ import sys
 import threading
 import time
 import math
+import random
 
 import numpy as np
 import torch
@@ -110,12 +111,14 @@ class PyTorchFMoWTrainer(Trainer):
         self.use_oort_loss_fn = self.config.hyperparameters.use_oort_loss_fn
         self.trainer_start_ts = time.time()
 
-        if "enabled" in self.config.hyperparameters.heartbeats:
+        heartbeats = getattr(self.config.hyperparameters, "heartbeats", {})
+        
+        if "enabled" in heartbeats:
             self.heartbeats_enabled = self.config.hyperparameters.heartbeats["enabled"]
         else:
             self.heartbeats_enabled = False
 
-        if "frequency_s" in self.config.hyperparameters.heartbeats:
+        if "frequency_s" in heartbeats:
             self.heartbeats_second_freq = self.config.hyperparameters.heartbeats[
                 "frequency_s"
             ]
@@ -714,6 +717,8 @@ class PyTorchFMoWTrainer(Trainer):
 
         if not self.simulated and _remaining_time > 0:
             time.sleep(_remaining_time)
+        elif self.simulated:
+            time.sleep(random.uniform(0, 1))
 
         _cycle_elapsed = time.time() - _cycle_start
         if self.simulated:

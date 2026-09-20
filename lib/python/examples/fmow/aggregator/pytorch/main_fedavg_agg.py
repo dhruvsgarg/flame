@@ -86,7 +86,12 @@ class PyTorchFMoWAggregator(TopAggregator):
 
     def initialize(self):
         """Initialize role."""
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        else:
+            self.device = torch.device("cpu")
         self.model = build_model(self.fmow_cfg.dataset.num_classes).to(self.device)
 
 
@@ -122,36 +127,51 @@ class PyTorchFMoWAggregator(TopAggregator):
         eval_every = (
             getattr(self.config.hyperparameters, "eval_every_n_rounds", 10) or 10
         )
-        if self._round != 1 and (self._round % eval_every != 0):
+        is_last_round = self._round >= self._rounds
+        if self._round != 1 and (self._round % eval_every != 0) and not is_last_round:
             return
         # Off the critical path: snapshot weights now, run the test-set forward
         # pass in a daemon thread so the aggregator keeps progressing.
         eval_model = self._eval_snapshot_model()
         if eval_model is None:
-            return  # prior async eval still running
+            return
         round_num = self._round
         test_loader, device = self.test_loader, self.device
+
+        max_batches = None if is_last_round else 5
 
         def _job():
             try:
                 eval_model.eval()
+                total_batches = len(test_loader) if max_batches is None else max_batches
+                logger.info(f"[EVAL_START] round={round_num} total_batches={total_batches} device={device}")
                 test_loss = 0
                 correct = 0
+                total = 0
                 with torch.no_grad():
-                    for data, target in test_loader:
+                    for i, (data, target) in enumerate(test_loader):
+                        if max_batches is not None and i >= max_batches:
+                            break
                         data, target = data.to(device), target.to(device)
                         output = eval_model(data)
                         test_loss += F.cross_entropy(output, target, reduction="sum").item()
                         pred = output.argmax(dim=1, keepdim=True)
                         correct += pred.eq(target.view_as(pred)).sum().item()
-                total = len(test_loader.dataset)
+                        total += data.size(0)
+                        if i % 100 == 0:
+                            logger.info(f"[EVAL_PROGRESS] round={round_num} batch={i}/{total_batches} samples={total}")
+                        
                 self._eval_emit(round_num, test_loss / total, correct / total)
+                self._eval_inflight = False
             except Exception as e:  # eval must never break training
                 logger.warning(f"[ASYNC_EVAL] failed (non-fatal): {e}")
                 self._eval_inflight = False
 
-        import threading
-        threading.Thread(target=_job, daemon=True).start()
+        if is_last_round:
+            _job()
+        else:
+            import threading
+            threading.Thread(target=_job, daemon=True).start()
 
         # print to save to file
         logger.debug(f"loss list at fmow agg: {self.loss_list}")

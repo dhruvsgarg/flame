@@ -16,12 +16,13 @@
 """ChunkStore."""
 
 import logging
+import time
 from typing import Tuple, Union
 
 from ..common.constants import EMPTY_PAYLOAD
 from ..proto import backend_msg_pb2 as msg_pb2
 
-DEFAULT_CHUNK_SIZE = 1048576  # 1MB
+DEFAULT_CHUNK_SIZE = 4 * 1024 * 1024  # 4MB
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,9 @@ class ChunkStore(object):
         self.cidx = DEFAULT_CHUNK_SIZE
 
         # for assemble
-        self.recv_buf = list()
+        self.recv_buf = {}
+        self.eom_seqno = None
+        self._first_chunk_ts = None
 
         # for both fragment and assemble
         self.data = EMPTY_PAYLOAD
@@ -95,18 +98,31 @@ class ChunkStore(object):
         This method pushes message payload into a receive buffer. If eom (end of
         message) is set, bytes in the array are joined.
         """
-        # out of order delivery
-        if self.seqno + 1 != msg.seqno:
-            logger.warning(f"out-of-order seqno from {msg.end_id}")
-            return False
+
+        if msg.seqno in self.recv_buf:
+            logger.debug(f"duplicate seqno {msg.seqno} from {msg.end_id}, ignoring")
+            return True
+            
+        if self._first_chunk_ts is None:
+            self._first_chunk_ts = time.time()
 
         logger.debug(f"chunk {msg.seqno}: {len(msg.payload)}")
         # add payload to a recv buf
-        self.recv_buf.append(msg.payload)
-        self.seqno = msg.seqno
-        self.eom = msg.eom
+        self.recv_buf[msg.seqno] = msg.payload
 
-        if self.eom:
-            self.data = EMPTY_PAYLOAD.join(self.recv_buf)
+        if (msg.eom):
+            self.eom_seqno = msg.seqno
+            
+        if self.eom_seqno is not None and len(self.recv_buf) == self.eom_seqno + 1:
+            self.data = EMPTY_PAYLOAD.join(self.recv_buf[i] for i in range(self.eom_seqno + 1))
+            self.eom = True
 
         return True
+
+    def is_stale(self, timeout_s: float) -> bool:
+        return (
+            bool(self.recv_buf)
+            and not self.eom
+            and self._first_chunk_ts is not None
+            and (time.time() - self._first_chunk_ts) > timeout_s
+        )
