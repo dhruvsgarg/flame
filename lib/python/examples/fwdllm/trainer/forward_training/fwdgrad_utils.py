@@ -102,6 +102,48 @@ def jvp_fp32_enabled() -> bool:
     return os.environ.get("FWDLLM_JVP_FP32", "").strip().lower() in ("1", "true", "yes")
 
 
+# S-I (handoff §2.4): `v` is a raw Gaussian draw, so the probe DISPLACEMENT is
+# h*||v|| = h*sqrt(p) -- nobody chose it, it fell out of the parameter count.
+# Changing p therefore moves the finite difference as a side effect, which would
+# confound any p sweep. Holding h*sqrt(p) at its reference value makes the FD
+# scale-invariant. Default OFF => h stays the historical 0.01, byte-identical.
+# PRODUCTION p, not the census's 1,040,932: the trainer drops pre_classifier
+# before the probe is drawn (tc_transformer_trainer_distribute.py:217). Anchoring
+# on the census value rescaled h by 1.52x in arms meant to hold it fixed.
+_FD_REF_P = 450340             # fluxtune trainable p, where h was 0.01
+_FD_REF_DISPLACEMENT = 0.01 * math.sqrt(_FD_REF_P)   # 6.711
+_fd_p_cache = {}
+
+
+def fd_scale_invariant_enabled() -> bool:
+    return os.environ.get("FWDLLM_FD_SCALE_INVARIANT", "").strip().lower() in (
+        "1", "true", "yes")
+
+
+def _fd_spacing(v, trainable_idx):
+    """The FD spacing `h`, and the ONE place the effective `h*sqrt(p)` is logged.
+
+    Logged in both modes, on purpose: `[ProbeDim]` prints the nominal h, so a
+    p-ladder arm reads as if the FD had silently shrunk with p when it had not
+    (handoff §22.1). Read the spacing here.
+    """
+    on = fd_scale_invariant_enabled()
+    idx = tuple(trainable_idx) if trainable_idx is not None else None
+    key = (len(v), idx)
+    p = _fd_p_cache.get(key)
+    if p is None:
+        rng = range(len(v)) if idx is None else idx
+        p = sum(v[i].numel() for i in rng)
+        _fd_p_cache[key] = p
+        h = _FD_REF_DISPLACEMENT / math.sqrt(p) if on else 0.01
+        logger.info(
+            f"[FD] spacing: p={p} h={h:.6g} h*sqrt(p)={h * math.sqrt(p):.4f} "
+            + (f"(scale_invariant=on, held at {_FD_REF_DISPLACEMENT:.4f} from p={_FD_REF_P})"
+               if on else "(scale_invariant=off, h fixed -- displacement moves with p)")
+        )
+    return _FD_REF_DISPLACEMENT / math.sqrt(p) if on else 0.01
+
+
 def calculate_jvp(func, params, v, trainable_idx=None):
     """
     Calculations Jacobian-vector product using numerical differentiation.
@@ -114,7 +156,7 @@ def calculate_jvp(func, params, v, trainable_idx=None):
     global _FWD_PASSES, _JVP_EVALS
     _FWD_PASSES += 2   # loss + terbulence_loss forward passes below
     _JVP_EVALS += 1
-    h = 0.01
+    h = _fd_spacing(v, trainable_idx)
     _cast = _nullcontext() if jvp_fp32_enabled() else autocast()
     with torch.no_grad(), _cast:
         if trainable_idx is None:

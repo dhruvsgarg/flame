@@ -52,6 +52,23 @@ from datetime import date
 import yaml
 
 
+# Top-level key holding provenance rather than charges. Readers skip it; it is
+# underscored so it can never collide with a telemetry label.
+_META = "_meta"
+
+
+def _source_datasets(run_dirs) -> set:
+    """What each source run was actually trained on, off its own config."""
+    out = set()
+    for d in run_dirs:
+        try:
+            with open(os.path.join(d, "aggregator_config.json")) as fh:
+                out.add(json.load(fh)["hyperparameters"].get("dataset") or "unknown")
+        except (OSError, ValueError, KeyError):
+            out.add("unknown")
+    return out
+
+
 def _load_real_spans(run_dir: str) -> dict:
     """{(label, payload_kind or '_default'): [span_s, ...]} from one real run.
     Excludes `redispatch_turnaround` -- see `_load_real_redispatch_marginal`."""
@@ -122,6 +139,14 @@ def _pctl(vals: list, q: float) -> float:
 # per-dispatch cost is inter-arrival waiting, not work. 3x leaves room for the
 # queueing/serialisation the step_timing span excludes.
 _REDISPATCH_MARGINAL_MAX_X = 3.0
+# A single sample may carry at most this share of a category's pooled total before
+# its mean is a stall rather than a cost. Floored at 4/n so tiny pools aren't flagged
+# for arithmetic alone (at n=8 any sample can be 1/8 of the total).
+_OUTLIER_MAX_SHARE = 0.25
+_OUTLIER_MIN_N = 8
+# Share of the pool the concentration test looks at, so a repeating stall cannot be
+# diluted below the threshold just by running longer.
+_OUTLIER_TOP_FRAC = 0.01
 
 
 def _load_real_dispatch_cost(run_dir: str) -> float | None:
@@ -195,6 +220,32 @@ def main():
                           f"{direct_mean:.4f}s -- event-driven dispatch, so this is "
                           f"inter-arrival waiting. Keeping the prior value.")
 
+    # `mean_s` is what gets charged, so one warmup stall in a short run prices the
+    # whole category. Score the mass the TOP 1% of samples carry: ~1% steady-state,
+    # near 1 when stalls dominate. 2026-08-17 yelp-p `fedavg` = 2.6127s off ONE
+    # 114.44s sample (91% of the total), median 0.0476s, a ~50x over-charge. NOT a
+    # mean>p90 test -- that fires on the healthy agnews entry too (0.0563 > 0.0525).
+    #
+    # Top-k, not top-1, because a longer run LAUNDERS a repeating stall: yahoo's
+    # every-25-commit cos probe put three ~116s samples in 489, each 21% of the
+    # total, so a top-1 test at 25% passed a 2.7x overcharge that it had caught at
+    # n=47 (2026-08-20). k scales with n, so what fires is concentration, not size.
+    for key, spans in pooled.items():
+        if key in contaminated or len(spans) < _OUTLIER_MIN_N:
+            continue
+        _total = sum(spans)
+        _k = max(1, int(len(spans) * _OUTLIER_TOP_FRAC))
+        _top = sorted(spans, reverse=True)[:_k]
+        _share = (sum(_top) / _total) if _total > 0 else 0.0
+        if _share > max(_OUTLIER_MAX_SHARE, 4.0 * _k / len(spans)):
+            contaminated.add(key)
+            print(f"WARN {key[0]}.{key[1]}: the top {_k} sample(s) "
+                  f"(max {max(spans):.4f}s) carry {_share:.0%} of the pooled total "
+                  f"(n={len(spans)}, mean {st.mean(spans):.4f}s, "
+                  f"median {st.median(spans):.4f}s) -- outlier-dominated, not a "
+                  f"steady-state cost. Keeping the prior value; re-profile off a "
+                  f"real run that does not do that work.")
+
     today = date.today().isoformat()
     enable = set(args.enable)
     for (label, payload_kind), spans in pooled.items():
@@ -216,9 +267,16 @@ def main():
         keep = set(pooled) | contaminated      # a kept-prior entry is still observed
         registry = {
             label: {pk: e for pk, e in entries.items() if (label, pk) in keep}
-            for label, entries in registry.items()
+            for label, entries in registry.items() if label != _META
         }
         registry = {label: e for label, e in registry.items() if e}
+
+    # Which dataset these charges price. Per-pass cost scales with max_seq_length,
+    # so charging a yahoo sim leg against agnews numbers mis-prices its vclock --
+    # run_sequential.sh's preflight reads this tag to refuse exactly that, and an
+    # untagged (pre-2026-08-17) profile is treated as agnews, which every one is.
+    registry[_META] = {"datasets": sorted(_source_datasets(args.real_runs)),
+                       "profiled_at": today}
 
     with open(args.out, "w") as f:
         f.write(
@@ -228,9 +286,20 @@ def main():
         )
         yaml.safe_dump(registry, f, sort_keys=True, default_flow_style=False)
 
-    for (label, pk), spans in pooled.items():
+    # Is this run long enough to have priced the leg, or did it just sample a phase?
+    # A steady-state cost is flat across the run; one that drifts means the arm was
+    # still warming up, or something periodic is inside the span. Read this before
+    # trusting a profile taken off a short arm.
+    for (label, pk), spans in sorted(pooled.items()):
+        q = [spans[i * len(spans) // 5:(i + 1) * len(spans) // 5] for i in range(5)]
+        q = [st.mean(b) for b in q if b]
+        spread = (max(q) / min(q)) if q and min(q) > 0 else float("inf")
+        flag = "" if spread <= 1.2 else (
+            "  <-- %.1fx across the run: still warming up, or something periodic "
+            "is inside the span" % spread)
         print(f"{label}.{pk}: n={len(spans)} mean_s={st.mean(spans):.4f} "
-              f"p90_s={_pctl(spans, 0.9):.4f}")
+              f"p90_s={_pctl(spans, 0.9):.4f} median_s={st.median(spans):.4f}")
+        print("    quintile means: " + " ".join(f"{v:.4f}" for v in q) + flag)
 
 
 if __name__ == "__main__":

@@ -189,11 +189,27 @@ class AbstractSelector(ABC):
             else -1
         )
         if ends_count < threshold:
+            # LOUD, not silent, and rate-limited to once a minute. At 100 of 100
+            # the quorum has zero tolerance: one dead trainer and this branch is
+            # taken forever, which on 2026-08-21 returned `ends: []` on 12,937
+            # consecutive distribute cycles while the run sat at 0 commits for
+            # its whole grace, with only a DEBUG line to say why.
+            now = time.time()
+            self._min_start_waits = getattr(self, "_min_start_waits", 0) + 1
+            if now - getattr(self, "_min_start_last_warn", 0.0) > 60.0:
+                self._min_start_last_warn = now
+                logger.warning(
+                    f"selection BLOCKED on the join barrier: {ends_count} of "
+                    f"{threshold} trainers registered "
+                    f"({self._min_start_waits} waits so far). Trainers that "
+                    f"died at startup never register -- check the trainers log."
+                )
             logger.debug(
                 f"Not enough ends to start selection, need at least {threshold}"
             )
             time.sleep(0.1)
             return True
+        self._min_start_waits = 0
         return False
 
     @abstractmethod

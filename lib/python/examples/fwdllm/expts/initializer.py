@@ -131,7 +131,10 @@ def create_model(args, formulation="classification"):
             "mh_adapter": False,
             "output_adapter": True,
             "non_linearity": "relu",
-            "reduction_factor": 16,
+            # S-I: adapters ARE p (447,264 of 450,340), so the bottleneck is the
+            # only real p knob; 16->32->64 roughly halves p each step. Under
+            # cos ~ 1/sqrt(p) that is gradient quality, not just capacity.
+            "reduction_factor": int(getattr(args, "adapter_reduction_factor", 16) or 16),
             "inv_adapter": None,
             "inv_adapter_reduction_factor": None,
             "cross_adapter": False,
@@ -151,6 +154,18 @@ def create_model(args, formulation="classification"):
     # print("after lora after lora after lora after lora after lora")
     # print(model)
     # print(sum(p.numel() for p in model.parameters() if p.requires_grad))
+
+    # INERT on distilbert (handoff §7): the trainer replaces pre_classifier with
+    # nn.Sequential() before probing, so its params are gone either way and
+    # production p is 450,340. Kept so existing configs parse; the live p knob is
+    # adapter_reduction_factor above, and `[ProbeDim]` logs the p that matters.
+    _scope = str(getattr(args, "trainable_scope", "adapters_head") or "adapters_head")
+    if _scope == "adapters_only":
+        for n, p in model.named_parameters():
+            if "pre_classifier" in n:
+                p.requires_grad = False
+    _p = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logging.info(f"[TrainableScope] scope={_scope} trainable_p={_p}")
     return config, model, tokenizer
 
 

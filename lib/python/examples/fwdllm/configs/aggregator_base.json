@@ -39,7 +39,6 @@
         "gradient_accumulation_steps": 1,
         "var_control": true,
         "perturbation_sampling": true,
-        "select_perturbation_using_jvp": false,
         "evaluate_during_training_steps": 100,
         "is_debug_mode": 0,
         "fedprox_mu": 1,

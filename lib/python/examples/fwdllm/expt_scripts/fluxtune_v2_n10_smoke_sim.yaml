@@ -1,0 +1,215 @@
+# FedFwd SIMULATED-clock smoke test: 100 trainers, agnews H5 partitions
+# (client_idx 0-99, the full 100-partition niid_label_clients=100_alpha=1
+# population). Sim sibling of fluxtune_v2_n10_smoke.yaml -- IDENTICAL except
+# time_mode: simulated and the job id (so run dirs don't collide). c=30
+# concurrency pool out of the 100-trainer population (agg_goal=10 --
+# simulate_fwdllm.md §B item 1, 07-16: must match fluxtune_v2_n10_smoke.yaml).
+#
+# Uses the `fluxtune_v2` baseline -- see fluxtune_v2_n10_smoke.yaml's header
+# for the version-naming context (BASELINES.md); this is also what `--only
+# fluxtune` resolves to (the `fluxtune` alias in baselines.yaml).
+# REQUIRES `export FWDLLM_FD_SCALE_INVARIANT=1` before launch (see the real
+# yaml's header).
+#
+# CAVEAT (not yet resolved, see BASELINES.md Remaining work): the
+# sim_charge_profile_path below is `fluxtune.yaml`, profiled at
+# adapter_reduction_factor=16 (v1's shape). v2 runs at rf=64 (fewer
+# trainable params), so the per-pass compute charge this profile applies is
+# probably a slight OVER-estimate for v2's actual JVP cost -- conservative
+# direction (sim vclock runs a bit slower than real would), not validated
+# either way. Re-profile (`expt_scripts/profile_sim_charges.py`) against an
+# rf=64 real run before trusting v2's sim timing to better than "roughly
+# right," the same caveat task 0.8 already tracks for a dataset switch.
+#
+# fluxtune is the ASYNC baseline (async_oort selector, fedbuff), so this
+# variant exercises the Batch-1 async grad-loop sim drive: _sim_recv_min_grad
+# (sct-ordered reorder buffer + in-flight gate + virtual-clock advance) with
+# agg-goal-boundary slot release. Trainers still do real forward-grad compute
+# (gradient VALUES mode-invariant); only the clock/ordering differ.
+#
+# enable_training_delays stays false (as in the real smoke) for direct
+# comparability; modeled-delay-on (D>0) is for later parity runs, enabled in
+# BOTH real reference and sim run together (see simulate_fwdllm.md §K-D8).
+#
+# Run:
+#   export FWDLLM_FD_SCALE_INVARIANT=1
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fwdllm/expt_scripts/fluxtune_v2_n10_smoke_sim.yaml
+
+experiments:
+  - name: fluxtune_v2_n10_smoke_sim
+    description: "FedFwd SIM smoke (100 trainers, c=30/agg_goal=10, fluxtune_v2 baseline: estimator-optimized, time_mode=simulated). Default `fluxtune` as of 2026-08-15."
+
+    baseline: fluxtune_v2
+
+    example:
+      # fwdllm's trainer entrypoint has no pytorch/ subdirectory, unlike the
+      # ExampleConfig default (trainer/pytorch/main.py).
+      trainer_main: trainer/main.py
+
+    trainer:
+      num_trainers: 100
+      start_id: 1
+      dataset:
+        name: agnews
+        # H5 path-style dataset -- no _metadata/dataset_splits/ index-list
+        # file exists (or ever will) for agnews; skips that lookup entirely.
+        path_style: true
+        # Cosmetic-only for path-style (naming/snapshot), but kept in sync
+        # with the actual partition_method below (EXPTS_CHARTER A5: alpha=1).
+        dirichlet_alpha: 1
+      availability:
+        # Phase 1 is syn_0 (100% availability): client_notify then reports all
+        # trainers available. Switch to mobiperf_3st_50 (via --avail-trace) only
+        # for the Phase-2 unavailability runs. run_sequential.sh's --avail-trace
+        # patches trainer mode + client_notify + trackTrainerAvail together.
+        mode: syn_0
+      # Batch 1: drive the simulated virtual clock instead of real sleeps.
+      time_mode: simulated
+      # Skip the registry's 4-18s artificial delay for a fast smoke run.
+      enable_training_delays: false
+      # client_idx = (trainer_id - 1) % 100 -- 1:1 onto all 100 H5 partitions
+      # (also the full §O trainer_registry.yaml speed-class population).
+      client_idx_modulo: 100
+      config_overrides:
+        hyperparameters:
+          # Fluxtune JVP perf optimizations (simulate_fwdllm.md §L) — BIT-IDENTICAL
+          # grads; MUST match the real yaml (both sides read this config, so the
+          # optimization keeps real<->sim parity). Set false to revert.
+          jvp_perf_opt: true
+          # Selector RNG seed — inert on the trainer (self-selects); logged for
+          # cross-role consistency with the aggregator (§F-18). Not the pert seed.
+          seed: 1234
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5, decided value for all experiments).
+          # MUST match the real pair or parity sees a data-skew divergence
+          # with no clock cause.
+          partition_method: niid_label_clients=100_alpha=1
+          # H13: dropout off during the JVP's two finite-difference passes.
+          # Code default ON (simulate_fwdllm.md §G); real and sim must match.
+          jvp_eval_mode: true
+          # Phase 4c (B2, #6): sim barrier straggler spread to match real's
+          # per-trainer completion dispersion (uniform[0,spread), spread ≈
+          # real-compute-std·√12). Active with --delays on; calibrate to
+          # wall_disparity→~0 at the sign-off run.
+          sim_straggler_spread_s: 0.0   # P2-3/K-D29: per-trainer registry delays now supply the completion spread (remainder-wait max(gpu,D)); the crc32 offset would re-noise the deterministic order
+          # #6 MQTT transport leg added to the trainer sct (sct = sim_send_ts +
+          # compute + leg): agg->trainer weight delivery + trainer->agg grad
+          # delivery. OFFLINE-PROFILED from a real run's send/receive wall stamps
+          # (expt_scripts/profile_transport_leg.py on run_20260721_222706: weights
+          # 0.030s + grad 0.093s ≈ 0.12s median). Sim-only (real uses physical
+          # arrival). Re-profile if the payload size or host/broker changes.
+          sim_completion_leg_s: 0.12
+
+    aggregator:
+      config_template: configs/aggregator_base.json
+      selector: async_oort
+      tracking_mode: client_notify
+      agg_goal: 10
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fluxtune_v2_n10_smoke_sim
+        hyperparameters:
+          seed: 1234  # deterministic selector RNG + model init; MUST match fluxtune_v2_n10_smoke.yaml
+          rounds: 50  # short smoke run, not the full 300
+          # With c=30 >> agg_goal=10, commit-then-carry the surplus grads +
+          # hold busy trainers across the boundary (K-D12). Applies to real
+          # too (§R, 2026-07-11) -- must match the real yaml.
+          inflight_residence: true
+          # 90s default evicted a genuinely-busy trainer (rounds incl.
+          # warmup up to ~108s). Workload knob, not a parity lever; must
+          # match real yaml (§R, 2026-07-11).
+          send_timeout_wait_s: 300
+          # #13 step 3: drain each in-flight end's rxq DIRECTLY (channel.drain_ready)
+          # instead of the recv_fifo streamer. The streamer blocks the full recv
+          # grace PER not-ready end (the 4-10s inter-burst gaps that dominated the
+          # post-step-2 wall) and can strand a delivered grad out of the buffer's
+          # view (past-dated commit). drain_ready sweeps ready rxqs non-blocking and
+          # returns on the first arrival. SIM-only (real never enters _sim_recv_min_grad).
+          sim_sct_ordered_drain: true
+          # #13 step 4: freed-slot staggered re-dispatch. INVESTIGATED + DISABLED
+          # (K-D28d, run_..._034550): neutral-to-slightly-worse for fwdllm (sim_rate
+          # 0.289->0.274, the 11-12s holds persisted). The holds are the drain
+          # correctly waiting (strict sct order) for the earliest-sct in-flight
+          # straggler, NOT a dispatch-bunching artifact; staggering feeds an OLD
+          # freed-slot vclock as send_ts, making the gate expect trainers even
+          # earlier -> more holds. Code kept (flag-gated) for a possible reworked
+          # attempt; see §H. Leave OFF -> validated steps 1-3 drain.
+          sim_staggered_redispatch: false
+          # #15: compute-truthful commit gate. The earlier_stuck gate blocks real
+          # wall on `_sim_inflight_expected` entries stamped at DISPATCH; a trainer
+          # whose payload was sent long ago but hasn't returned is idle-in-recv
+          # (not computing) behind the single-threaded drain, so waiting for it
+          # burns the grace floor / 30s failsafe and throttles commits -> via
+          # hold-to-commit, starves re-dispatch (sim concurrency 1.65 vs real 7.69).
+          # When on, the gate only blocks on a trainer still within its modeled
+          # compute window (sim_gate_compute_cap_s). Hold-to-commit UNTOUCHED; this
+          # only unblocks the commit path so held trainers are freed promptly.
+          # SIM-only; must not move cohort/var/staleness parity (PARITY_LOGICAL_TASKS.md #15).
+          sim_compute_truthful_gate: true
+          sim_gate_compute_cap_s: 11.0  # re-derived 07-16 (was 16.0/07-15, stale pre-overhead-removal): max(real,sim) _perform_training=7.274s/5.241s x 1.5 -- run_20260716_202633/_212850
+          # #6 sct-model overhead levers -- charge the aggregator's MEASURED wall
+          # to the vclock so sim stops under-counting real's per-round time:
+          # serial dispatch queue (per-trainer sim_send_ts stagger) + commit-side
+          # (drain+FedAvg). Dynamic (live spans, not pre-profiled). Enabled here to
+          # A/B at 2h vs real; code default stays OFF (agg-compute is shared with
+          # the sync baselines, which currently PASS without it -- don't globally
+          # enable until validated). Flip the code default only if parity improves
+          # without over-charging (sim_rate must stay >= 1).
+          sim_model_dispatch_queue: true
+          sim_model_agg_compute_time: true
+          # §P: profiled redispatch_turnaround charge. Was MISSING here (§D-15) --
+          # every ledger row read `charge_source: none`, charging 0s for a cost the
+          # round-cadence pair charges. The entry is server-side dispatch
+          # turnaround, not baseline-specific. NOT yet re-profiled for v2's rf=64
+          # shape -- see the CAVEAT in this file's header.
+          sim_charge_profile_path: lib/python/examples/fwdllm/sim_charge_profiles/fluxtune.yaml
+          # Async fedbuff: accept stale carried grads + down-weight by (V'-V),
+          # not reject (K-D13). Set identically in the real sibling; never a
+          # parity lever. camelCase MUST match the base key to override it —
+          # snake_case is a dead key that loses at pydantic resolution (K-D15).
+          stalenessPolicy: fedbuff
+          # Smoke-test stop bar: whichever of these fires first ends the run
+          # (`rounds` alone is much too coarse, since one round is 150
+          # data-id completions).
+          max_data_id_progress: 9999  # effectively unbounded; runs governed by max_runtime_s (pass --max-data-id for a short run)
+          max_runtime_s: 3600  # ...or after 60 minutes sim vclock
+          # Eval cadence -- MUST match real/sim, else the two sample the accuracy
+          # curve at different points. Raise if the run warns about waiting.
+          eval_every_n_commits: 2
+          # Outer wall failsafe (code default 20x max_runtime_s is too loose).
+          sim_wall_ceiling_s: 7200
+          # #15: also charge the measured aggregate()-call wall (every cycle,
+          # not just committed ones) -- was the dominant uncredited real-wall
+          # driver of sim_rate<1, not a trainer-side compute floor.
+          sim_model_agg_compute_time: true
+          data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+          partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+          # alpha=1 (EXPTS_CHARTER A5); must match the real pair — see trainer side.
+          partition_method: niid_label_clients=100_alpha=1
+        selector:
+          kwargs:
+            # c=30 concurrency pool out of the 100-trainer population (§O:
+            # fluxtune's JVP cost/commit is ~4x fwdllm/plus's, so a larger
+            # pool keeps enough in-flight surplus for the c-agg_goal=20
+            # rotating cohort, §F#17). aggGoal is set once via the top-level
+            # `agg_goal: 10` above -- the runner fans it into both this
+            # kwarg and hyperparameters.aggGoal so they can't drift apart;
+            # don't duplicate it here.
+            # minInitialTrainers=N=100, not c (07-17, simulate_fwdllm.md
+            # §G): c<N raced sim's faster cycle cadence vs real's for
+            # post-barrier joiners, diverging cohort_sequence.
+            c: 30
+            minInitialTrainers: 100
+
+    execution:
+      # 8, not 1 -- this yaml's own default is 100 trainers now; cramming
+      # 100 trainer processes onto 1 GPU OOMs almost immediately (see
+      # fluxtune_n10_smoke run 20260629_221116).
+      num_gpus: 8
+      sleep_between_spawns: 2.0
+      aggregator_warmup_time: 20
+      monitoring:
+        enabled: false

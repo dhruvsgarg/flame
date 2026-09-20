@@ -431,62 +431,14 @@ class BaseDataManager(ABC):
 
         #     for t in thread_list:
         #         t.join()
-        # 测试一下是否有cache的data，没有就多线程处理
-        # state, res = self._load_data_loader_from_cache(0)
-        # if not state:
-        #     mutiProcess_load(50)
-        state, res = self._load_data_loader_from_cache(client_idx)
-        if state:
-            (
-                train_examples,
-                train_features,
-                train_dataset,
-                test_examples,
-                test_features,
-                test_dataset,
-            ) = res
-        else:
-            train_index_list = partition_file[partition_method]["partition_data"][
-                str(client_idx)
-            ]["train"][()]
-            test_index_list = partition_file[partition_method]["partition_data"][
-                str(client_idx)
-            ]["test"][()]
-            logging.info(f"NRL: len of train_index_list: {len(train_index_list)}")
-            logging.info(f"NRL: len of test_index_list: {len(test_index_list)}")
-            train_data = self.read_instance_from_h5(
-                data_file,
-                train_index_list,
-                desc=" train data of client_id=%d [_load_federated_data_local] "
-                % client_idx,
-            )
-            test_data = self.read_instance_from_h5(
-                data_file,
-                test_index_list,
-                desc=" test data of client_id=%d [_load_federated_data_local] "
-                % client_idx,
-            )
-
-            train_examples, train_features, train_dataset = self.preprocessor.transform(
-                **train_data, index_list=train_index_list
-            )
-            test_examples, test_features, test_dataset = self.preprocessor.transform(
-                **test_data, index_list=test_index_list, evaluate=True
-            )
-
-            with open(res, "wb") as handle:
-                pickle.dump(
-                    (
-                        train_examples,
-                        train_features,
-                        train_dataset,
-                        test_examples,
-                        test_features,
-                        test_dataset,
-                    ),
-                    handle,
-                )
-
+        # The load-or-tokenize block above ran a SECOND, identical time here, and
+        # its result -- not the first's -- was what reached the loader. On a cold
+        # cache that meant tokenize, write, then immediately pickle-load the file
+        # just written; on a warm one, two full ~123 MB reads per trainer. It is
+        # also why one run's log shows 100 cache hits, 100 tokenization progress
+        # bars AND 101 cache writes in the same window (buildplan §10). Removed:
+        # the surviving block is the one whose index lists honour the
+        # `client_idx % num_partitions` wrap above, so the tensors are unchanged.
         train_loader = BaseDataLoader(
             train_examples,
             train_features,
@@ -578,8 +530,9 @@ class BaseDataManager(ABC):
         """
         args = self.args
         model_args = self.model_args
-        if not os.path.exists(model_args.cache_dir):
-            os.mkdir(model_args.cache_dir)
+        # makedirs, not mkdir: cache_dir is now an absolute shared path (§10 F1)
+        # whose parents may not exist, and 100 trainers race to create it.
+        os.makedirs(model_args.cache_dir, exist_ok=True)
         cached_features_file = os.path.join(
             model_args.cache_dir,
             args.model_type

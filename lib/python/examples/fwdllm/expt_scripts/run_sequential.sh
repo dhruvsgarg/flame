@@ -23,7 +23,7 @@
 #   run_sequential.sh [--mode sim|real|both] [--delays on|off]
 #       [--max-runtime-s 600] [--max-data-id 10] [--num-trainers N] [--num-gpus N] [--gpu-ids N1,N2,...]
 #       [--c C] [--c-async C] [--k K] [--agg-goal N] [--min-initial-trainers N]
-#       [--partition-method NAME] [--avail-trace NAME | --avail-traces N1,N2]
+#       [--dataset NAME] [--partition-method NAME] [--avail-trace NAME | --avail-traces N1,N2]
 #       [--only name1,name2] [--stop-on-fail] [--dry-run] [--yes] [--force]
 #       [--show-all]
 #
@@ -46,7 +46,10 @@
 #                    absolute count, or floor(F*N). DEFAULT = N (wait for ALL trainers ->
 #                    set-exact initial cohort real<->sim). frac<1 tolerates stragglers but
 #                    reintroduces a pool-size race; N blocks forever if a trainer never joins.
-#   --partition-method  hyperparameters.partition_method (agnews_partition.h5 group; default uniform/IID).
+#   --dataset         switch dataset: writes expts/dataset_registry.py's data_file_path,
+#                    partition_file_path, max_seq_length, dataset name into BOTH override
+#                    blocks (task 0.8, buildplan §2). Unset ⇒ each yaml's baked (agnews) paths.
+#   --partition-method  hyperparameters.partition_method (<dataset>_partition.h5 group; default uniform/IID).
 #   --var-threshold / --max-iter-per-data-id  variance gate / force-commit cap (review each run, tier ①).
 #   --avail-trace / --avail-traces  availability trace(s); Phase 1 uses syn_0.
 #   --only           baseline subset (default all three).
@@ -70,6 +73,25 @@ source "$REPO_ROOT/lib/python/examples/scripts/expt_runner.sh"
 expt_activate_conda            # no default env: require an active env / FLAME_CONDA_ENV
 expt_pin_pythonpath "$REPO_ROOT"
 
+# Static preflight: a knob missing from the AGGREGATOR's ClassificationArgs kills it
+# at startup, ~30s in, after 100 trainers are up (the 08-08 node 2-4 loss). Costs ms.
+python3 "$SCRIPT_DIR/test_model_args_parity.py" >/dev/null || {
+  python3 "$SCRIPT_DIR/test_model_args_parity.py"
+  echo "ERROR: model_args parity check failed -- the aggregator would crash at startup." >&2
+  exit 2
+}
+# Same reasoning for the two server-side features that produce a NUMBER rather
+# than a crash when they break: a misaligned cos probe returns a plausible small
+# cosine forever, and a mis-referenced gate silently floors the pool at I=1
+# (the 08-09 node-1 loss). Both are CPU-only stubs, ~4s together.
+for _t in test_commit_gate test_cos_probe test_weight_decay; do
+  python3 "$SCRIPT_DIR/$_t.py" >/dev/null 2>&1 || {
+    python3 "$SCRIPT_DIR/$_t.py"
+    echo "ERROR: $_t failed -- server-side audit/gate would emit wrong numbers." >&2
+    exit 2
+  }
+done
+
 # defaults
 MODE="both"
 DELAYS="off"    # placeholder when DELAYS_SET=0 -- python resolves the real
@@ -91,9 +113,44 @@ MIN_INIT_TRAINERS=""
 MIN_INIT_FRAC=""
 AVAIL_TRACE=""
 AVAIL_TRACES=""
+MODEL_TYPE=""          # --model-type NAME: second architecture (row N5c). Cache key leads
+MODEL_NAME=""          #   with model_type+model_name, so a new model needs its own pretokenize.
+DATASET=""             # --dataset NAME: registry-derived data_file_path/partition_file_path/
+                        # max_seq_length/name into both override blocks. unset => yaml default (agnews)
 PARTITION_METHOD=""
 VAR_THRESHOLD=""       # variance-pass gate threshold; varies with data heterogeneity -> review every run
 SERVER_UPDATE_AUDIT="" # I-1 audit: per-commit ||delta||/||w||. OFF by default -- never on a replicate leg
+ALLOW_STALE_PROFILE="" # --allow-stale-profile: downgrade ONLY the profile-staleness check to a warn
+POOL_SPLIT_HALF_AUDIT="" # L1 audit: per-commit pool split-half cosine. OFF -- adds a pass over (params x uploads)
+LEARNING_RATE=""       # server step size (aggregator hyperparameters); empty => trainer_base.yaml (0.01)
+PERTURBATION_COUNT=""  # P: probes per trainer per iteration (trainer hyperparameters); empty => code default 10
+PROBE_COMBINE=""       # S-H: select|mean -- how the P probes become one upload; empty => code default select
+SERVER_STEP_RULE=""    # S-A: raw_sgd|trust_ratio (aggregator); empty => code default raw_sgd
+RHO_STAR=""            # S-A: target relative step under trust_ratio
+RHO_SCHEDULE=""        # S-B: const|rm|landing -- `landing` = C-1 law C
+RHO_EXP=""             # S-B: anneal exponent, must exceed 0.5
+B_MAX=""               # C-1: budget ceiling, ln(Phi_peak). Unset = D1's ln 2 prior
+T_RES=""               # C-1: control resolution as a RATE, never decremented (300)
+BUDGET_STOP_FRAC=""    # C-1: stop at B >= f*B_max (0.95)
+PHI_STOP=""            # C-1: off|log_only|halt -- what the stop DOES
+PHI_STOP_THRESHOLD=""  # C-1: fixed Phi fallback when no B_max is sensed (2.7)
+B_MAX_PROBE_EVERY=""   # 3.1: re-sense B_max every N commits. 0/unset = off
+B_MAX_PROBE_N=""       # 3.1: held-out samples per probe eval (512)
+B_MAX_POLICY=""        # 3.1: mean|ratchet|anchor -- how successive senses combine
+EVAL_MAX_SAMPLES=""    # agg eval on a fixed subsample of the test set. Unset = full set
+B_MAX_PROBE_PHIS=""    # 3.1: comma-separated Phi grid (1.5,2,2.5,3,3.5,4)
+SATURATION_STOP=""     # E: 1 = stop when held-out accuracy stops rising (Prechelt GL). Unset = off
+RETENTION_PROBE_EVERY="" # P3': log cos(theta_t,theta_0) every N commits. 0/unset = off
+TRAINABLE_SCOPE=""     # S-I: adapters_head|adapters_only -- adapters_only freezes pre_classifier (56.7% of p)
+COMMIT_GATE=""         # S-C: var|n_target -- n_target sizes the pool from rho_t (aggregator); empty => code default var
+GATE_SAFETY_S=""       # S-C: safety factor s in rho <= s*cos; empty => code default 0.4
+GATE_RHO_REF=""        # S-C: annealed|setpoint -- which rho sizes the pool; empty => code default annealed
+COS_GROUND_TRUTH_AUDIT="" # B1: per-commit cos(G,g) vs a real backward pass on a fixed held-out batch. 1=on, 0=off, empty=inherit the catalog (v2 sets it ON)
+COS_PROBE_BATCH_SIZE=""   # B1: size of that batch; empty => code default 1024 (B17)
+COS_PROBE_EVERY=""        # B1: run the probe every k-th commit; empty => 1 (it costs ~83s/commit at 1024)
+SERVER_WEIGHT_DECAY=""    # Q2: decay the trainable slice after the step; "auto" = rho^2/2
+SERVER_MOMENTUM=""        # S1: heavy-ball on the pooled DIRECTION (rho stays rho* under trust_ratio)
+ADAPTER_RF=""          # S-I: adapter bottleneck reduction_factor -- the real p knob; empty => code default 16
 MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
 VAR_STOPPING_POLICY=""   # Opt-2: off|fixed_cap|plateau (empty => baselines.yaml, fluxtune=plateau)
 AGG_RATE_TYPE=""         # Opt-3: grad_aware|new (empty => baselines.yaml, fluxtune=grad_aware; new=FeLiX)
@@ -126,12 +183,25 @@ CLEAN=0           # --clean: auto-kill stray workers from a prior run (default: 
 usage() {
   echo "usage: $0 [--mode sim|real|both] [--delays on|off] [--max-runtime-s S] [--max-data-id N]" >&2
   echo "          [--num-trainers N] [--num-gpus N] [--gpu-ids N1,N2,...] [--c C] [--c-async C] [--k K] [--agg-goal N]" >&2
-  echo "          [--min-initial-trainers N] [--partition-method NAME]" >&2
+  echo "          [--min-initial-trainers N] [--dataset NAME] [--partition-method NAME]" >&2
   echo "          [--var-threshold F] [--max-iter-per-data-id N] [--delay-divisor F (=--delay-factor; DIVISOR, <1 lengthens)]" >&2
   echo "          [--delay-floor F (floor on raw registry delay, applied before the divisor)]" >&2
   echo "    --delays/--delay-divisor/--delay-floor default to each baseline's settled value" >&2
   echo "          (BASELINE_DELAY_DEFAULTS in this script); pass explicitly only to override." >&2
-  echo "          [--server-update-audit]" >&2
+  echo "          [--server-update-audit] [--pool-split-half-audit]" >&2
+  echo "          [--learning-rate F] [--perturbation-count N] [--probe-combine select|mean]" >&2
+  echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho-schedule const|rm|landing] [--rho-exp F]" >&2
+  echo "          [--b-max F] [--t-res F] [--budget-stop-frac F] [--phi-stop off|log_only|halt] [--phi-stop-threshold F]" >&2
+  echo "          [--b-max-probe-every N] [--b-max-probe-n N] [--b-max-probe-phis L]" >&2
+  echo "          [--b-max-policy mean|ratchet|anchor] [--eval-max-samples N]" >&2
+  echo "          [--saturation-stop] [--retention-probe-every N]  (E: the saturation stop; P3': cos(theta_t,theta_0))" >&2
+  echo "          [--allow-stale-profile]  warn (not error) when local reals postdate the sim profile" >&2
+  echo "          [--trainable-scope adapters_head|adapters_only] [--commit-gate var|n_target] [--gate-safety-s F]" >&2
+  echo "          [--gate-rho-ref annealed|setpoint]  (setpoint stops S-C's pool vanishing with S-B's anneal)" >&2
+  echo "          [--cos-ground-truth-audit | --no-cos-ground-truth-audit] [--cos-probe-batch-size N] [--cos-probe-every K]  (B1: real cos(G,g), aggregator-side; unset inherits the catalog)" >&2
+  echo "          [--server-weight-decay auto|FLOAT]  (Q2: pins Phi=1 at auto=rho^2/2)" >&2
+  echo "          [--server-momentum BETA]  (S1: temporal pooling; needs trust_ratio)" >&2
+  echo "          [--adapter-reduction-factor N]  (768/N per adapter; the real p knob)" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
   echo "          [--sim-wall-ceiling-s S | --sim-wall-ceiling-h H]  REAL-wall-clock outer safety" >&2
@@ -161,9 +231,47 @@ while [[ $# -gt 0 ]]; do
     --min-initial-frac)     MIN_INIT_FRAC="$2"; shift 2 ;;
     --avail-trace)          AVAIL_TRACE="$2"; shift 2 ;;
     --avail-traces)         AVAIL_TRACES="$2"; shift 2 ;;
+    --dataset)              DATASET="$2"; shift 2 ;;
+    --model-type)           MODEL_TYPE="$2"; shift 2 ;;
+    --model-name)           MODEL_NAME="$2"; shift 2 ;;
     --partition-method)     PARTITION_METHOD="$2"; shift 2 ;;
     --var-threshold)        VAR_THRESHOLD="$2"; shift 2 ;;
     --server-update-audit)  SERVER_UPDATE_AUDIT=1; shift ;;
+    --pool-split-half-audit) POOL_SPLIT_HALF_AUDIT=1; shift ;;
+    --learning-rate)        LEARNING_RATE="$2"; shift 2 ;;
+    --perturbation-count)   PERTURBATION_COUNT="$2"; shift 2 ;;
+    --probe-combine)        PROBE_COMBINE="$2"; shift 2 ;;
+    --server-step-rule)     SERVER_STEP_RULE="$2"; shift 2 ;;
+    --rho-star)             RHO_STAR="$2"; shift 2 ;;
+    --rho-schedule)         RHO_SCHEDULE="$2"; shift 2 ;;
+    --rho-exp)              RHO_EXP="$2"; shift 2 ;;
+    --b-max)                B_MAX="$2"; shift 2 ;;
+    --t-res)                T_RES="$2"; shift 2 ;;
+    --budget-stop-frac)     BUDGET_STOP_FRAC="$2"; shift 2 ;;
+    --phi-stop)             PHI_STOP="$2"; shift 2 ;;
+    --phi-stop-threshold)   PHI_STOP_THRESHOLD="$2"; shift 2 ;;
+    --b-max-probe-every)    B_MAX_PROBE_EVERY="$2"; shift 2 ;;
+    --b-max-probe-n)        B_MAX_PROBE_N="$2"; shift 2 ;;
+    --b-max-probe-phis)     B_MAX_PROBE_PHIS="$2"; shift 2 ;;
+    --b-max-policy)         case "$2" in mean|ratchet|anchor) ;; *) echo "ERROR: --b-max-policy must be mean|ratchet|anchor (got '$2')" >&2; exit 2 ;; esac
+                            B_MAX_POLICY="$2"; shift 2 ;;
+    --eval-max-samples)     EVAL_MAX_SAMPLES="$2"; shift 2 ;;
+    --saturation-stop)      SATURATION_STOP=1; shift ;;
+    --retention-probe-every) RETENTION_PROBE_EVERY="$2"; shift 2 ;;
+    --trainable-scope)      TRAINABLE_SCOPE="$2"; shift 2 ;;
+    --commit-gate)          case "$2" in var|n_target) ;; *) echo "ERROR: --commit-gate must be var|n_target (got '$2')" >&2; exit 2 ;; esac
+                            COMMIT_GATE="$2"; shift 2 ;;
+    --gate-safety-s)        GATE_SAFETY_S="$2"; shift 2 ;;
+    --gate-rho-ref)         case "$2" in annealed|setpoint) ;; *) echo "ERROR: --gate-rho-ref must be annealed|setpoint (got '$2')" >&2; exit 2 ;; esac
+                            GATE_RHO_REF="$2"; shift 2 ;;
+    --cos-ground-truth-audit) COS_GROUND_TRUTH_AUDIT=1; shift ;;
+    --no-cos-ground-truth-audit) COS_GROUND_TRUTH_AUDIT=0; shift ;;
+    --allow-stale-profile)  ALLOW_STALE_PROFILE=1; shift ;;
+    --cos-probe-batch-size) COS_PROBE_BATCH_SIZE="$2"; shift 2 ;;
+    --cos-probe-every)      COS_PROBE_EVERY="$2"; shift 2 ;;
+    --server-weight-decay) SERVER_WEIGHT_DECAY="$2"; shift 2 ;;
+    --server-momentum) SERVER_MOMENTUM="$2"; shift 2 ;;
+    --adapter-reduction-factor) ADAPTER_RF="$2"; shift 2 ;;
     --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
     --var-stopping-policy)  case "$2" in off|fixed_cap|plateau) ;; *) echo "ERROR: --var-stopping-policy must be off|fixed_cap|plateau (got '$2')" >&2; exit 2 ;; esac
                             VAR_STOPPING_POLICY="$2"; shift 2 ;;
@@ -226,6 +334,7 @@ if isinstance(C, dict):
 elif C not in (None, {}):
     emit("C_SYNC", C); emit("C_ASYNC", C)
 emit("PART", c.get("partition_method")); emit("TRACE", c.get("avail_trace"))
+emit("DATASET", c.get("dataset"))
 _dl = c.get("delays")
 if _dl is not None:
     emit("DELAYS", "on" if _dl in (True, "on", "ON", "true", 1) else "off")
@@ -247,6 +356,7 @@ PY
   [ -z "$SEL_C" ]             && [ -n "${REG_C_SYNC:-}" ]          && SEL_C="$REG_C_SYNC"
   [ -z "$SEL_C_ASYNC" ]       && [ -n "${REG_C_ASYNC:-}" ]         && SEL_C_ASYNC="$REG_C_ASYNC"
   [ -z "$PARTITION_METHOD" ]  && [ -n "${REG_PART:-}" ]            && PARTITION_METHOD="$REG_PART"
+  [ -z "$DATASET" ]           && [ -n "${REG_DATASET:-}" ]         && DATASET="$REG_DATASET"
   [ -z "$AVAIL_TRACE" ] && [ -z "$AVAIL_TRACES" ] && [ -n "${REG_TRACE:-}" ] && AVAIL_TRACE="$REG_TRACE"
   [ -z "$TARGET_ACC" ]        && [ -n "${REG_TARGET_ACC:-}" ]      && TARGET_ACC="$REG_TARGET_ACC"
   [ -z "$CONVERGE_WINDOW" ]   && [ -n "${REG_CONVERGE_WINDOW:-}" ] && CONVERGE_WINDOW="$REG_CONVERGE_WINDOW"
@@ -293,6 +403,11 @@ ALL_RUNS=(
   "felix_round:$SCRIPT_DIR/felix_round_n10_smoke.yaml:$SCRIPT_DIR/felix_round_n10_smoke_sim.yaml"
   "felix_it:$SCRIPT_DIR/felix_it_n10_smoke.yaml:$SCRIPT_DIR/felix_it_n10_smoke_sim.yaml"
   "fluxtune:$SCRIPT_DIR/fluxtune_n10_smoke.yaml:$SCRIPT_DIR/fluxtune_n10_smoke_sim.yaml"
+  # "fluxtune" (above) is an alias for fluxtune_v2 as of 2026-08-15
+  # (baselines.yaml) -- these two exist so a config can pin the version
+  # explicitly instead of riding the alias. See BASELINES.md.
+  "fluxtune_v1:$SCRIPT_DIR/fluxtune_v1_n10_smoke.yaml:$SCRIPT_DIR/fluxtune_v1_n10_smoke_sim.yaml"
+  "fluxtune_v2:$SCRIPT_DIR/fluxtune_v2_n10_smoke.yaml:$SCRIPT_DIR/fluxtune_v2_n10_smoke_sim.yaml"
 )
 
 if [ -n "$ONLY" ]; then
@@ -334,9 +449,25 @@ EXPT_RUNNER_DIR="$EXPT_RUNNER_DIR" \
 MODE="$MODE" DELAYS="$DELAYS" MAX_RUNTIME_S="$MAX_RUNTIME_S" MAX_DATA_ID="$MAX_DATA_ID" \
 NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" GPU_IDS="$GPU_IDS" SEL_C="$SEL_C" SEL_C_ASYNC="$SEL_C_ASYNC" \
 SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" MIN_INIT_FRAC="$MIN_INIT_FRAC" \
-PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
+DATASET="$DATASET" MODEL_TYPE="$MODEL_TYPE" MODEL_NAME="$MODEL_NAME" PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
-SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" \
+SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" POOL_SPLIT_HALF_AUDIT="$POOL_SPLIT_HALF_AUDIT" \
+ALLOW_STALE_PROFILE="$ALLOW_STALE_PROFILE" \
+LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
+  PROBE_COMBINE="$PROBE_COMBINE" SERVER_STEP_RULE="$SERVER_STEP_RULE" \
+  RHO_STAR="$RHO_STAR" RHO_SCHEDULE="$RHO_SCHEDULE" RHO_EXP="$RHO_EXP" \
+  B_MAX="$B_MAX" T_RES="$T_RES" BUDGET_STOP_FRAC="$BUDGET_STOP_FRAC" \
+  PHI_STOP="$PHI_STOP" PHI_STOP_THRESHOLD="$PHI_STOP_THRESHOLD" \
+  B_MAX_PROBE_EVERY="$B_MAX_PROBE_EVERY" B_MAX_PROBE_N="$B_MAX_PROBE_N" \
+  B_MAX_PROBE_PHIS="$B_MAX_PROBE_PHIS" \
+  B_MAX_POLICY="$B_MAX_POLICY" \
+  SATURATION_STOP="$SATURATION_STOP" RETENTION_PROBE_EVERY="$RETENTION_PROBE_EVERY" \
+  EVAL_MAX_SAMPLES="$EVAL_MAX_SAMPLES" \
+  TRAINABLE_SCOPE="$TRAINABLE_SCOPE" COMMIT_GATE="$COMMIT_GATE" GATE_SAFETY_S="$GATE_SAFETY_S" \
+  GATE_RHO_REF="$GATE_RHO_REF" COS_GROUND_TRUTH_AUDIT="$COS_GROUND_TRUTH_AUDIT" \
+  COS_PROBE_BATCH_SIZE="$COS_PROBE_BATCH_SIZE" COS_PROBE_EVERY="$COS_PROBE_EVERY" \
+  SERVER_WEIGHT_DECAY="$SERVER_WEIGHT_DECAY" SERVER_MOMENTUM="$SERVER_MOMENTUM" \
+  ADAPTER_RF="$ADAPTER_RF" \
 DELAY_FLOOR="$DELAY_FLOOR" \
 VAR_STOPPING_POLICY="$VAR_STOPPING_POLICY" AGG_RATE_TYPE="$AGG_RATE_TYPE" \
 TARGET_ACC="$TARGET_ACC" CONVERGE_WINDOW="$CONVERGE_WINDOW" \
@@ -347,12 +478,24 @@ MODE_SET="$MODE_SET" DELAYS_SET="$DELAYS_SET" MAX_RUNTIME_S_SET="$MAX_RUNTIME_S_
 LOGDIR="$LOGDIR" MANIFEST="$MANIFEST" RUN_TSV="$RUN_TSV" DRY_RUN="$DRY_RUN" SHOW_ALL="$SHOW_ALL" \
 EXAMPLE_DIR="$EXAMPLE_DIR" AC10_DIR="$AC10_DIR" \
 python - <<'PY'
-import os, sys, copy, yaml, json, hashlib, glob
+import os, sys, copy, yaml, json, hashlib, glob, re
 sys.path.insert(0, os.environ["EXPT_RUNNER_DIR"])
 import expt_runner
+# PYTHONPATH already carries REPO_ROOT/lib/python (expt_pin_pythonpath), so the
+# registry imports as a normal package -- no extra sys.path needed.
+from examples.fwdllm.expts import dataset_registry as dsreg
+from examples.fwdllm.expts import wall_clock_preflight as wcp
 
 env = os.environ.get
 MODE = env("MODE"); DELAYS = env("DELAYS")
+DATASET = env("DATASET") or ""
+MODEL_TYPE = env("MODEL_TYPE") or ""   # row N5c: second architecture
+MODEL_NAME = env("MODEL_NAME") or ""
+if DATASET and DATASET not in dsreg.names():
+    # exit 3, not 2: 2 means "blocking check, --force can override" (render_and_gate's
+    # code), which is wrong here -- --force cannot rescue an unknown dataset name.
+    sys.stderr.write(f"ERROR: --dataset '{DATASET}' unknown; known: {dsreg.names()}\n")
+    sys.exit(3)
 MAX_RUNTIME_S = int(env("MAX_RUNTIME_S")); MAX_DATA_ID = int(env("MAX_DATA_ID"))
 NUM_TRAINERS = env("NUM_TRAINERS") or ""
 NUM_GPUS = env("NUM_GPUS") or ""
@@ -363,6 +506,30 @@ MIN_INIT_FRAC = env("MIN_INIT_FRAC") or ""
 PART = env("PARTITION_METHOD") or ""
 VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID") or ""
 SERVER_UPDATE_AUDIT = env("SERVER_UPDATE_AUDIT") or ""
+POOL_SPLIT_HALF_AUDIT = env("POOL_SPLIT_HALF_AUDIT") or ""
+LEARNING_RATE = env("LEARNING_RATE") or ""; PERTURBATION_COUNT = env("PERTURBATION_COUNT") or ""
+PROBE_COMBINE = env("PROBE_COMBINE") or ""
+SERVER_STEP_RULE = env("SERVER_STEP_RULE") or ""; RHO_STAR = env("RHO_STAR") or ""
+RHO_SCHEDULE = env("RHO_SCHEDULE") or ""; RHO_EXP = env("RHO_EXP") or ""
+B_MAX = env("B_MAX") or ""; T_RES = env("T_RES") or ""
+BUDGET_STOP_FRAC = env("BUDGET_STOP_FRAC") or ""
+PHI_STOP = env("PHI_STOP") or ""; PHI_STOP_THRESHOLD = env("PHI_STOP_THRESHOLD") or ""
+B_MAX_PROBE_EVERY = env("B_MAX_PROBE_EVERY") or ""
+B_MAX_PROBE_N = env("B_MAX_PROBE_N") or ""
+B_MAX_PROBE_PHIS = env("B_MAX_PROBE_PHIS") or ""
+B_MAX_POLICY = env("B_MAX_POLICY") or ""
+SATURATION_STOP = env("SATURATION_STOP") or ""
+RETENTION_PROBE_EVERY = env("RETENTION_PROBE_EVERY") or ""
+EVAL_MAX_SAMPLES = env("EVAL_MAX_SAMPLES") or ""
+TRAINABLE_SCOPE = env("TRAINABLE_SCOPE") or ""
+COMMIT_GATE = env("COMMIT_GATE") or ""; GATE_SAFETY_S = env("GATE_SAFETY_S") or ""
+GATE_RHO_REF = env("GATE_RHO_REF") or ""
+COS_GROUND_TRUTH_AUDIT = env("COS_GROUND_TRUTH_AUDIT") or ""
+COS_PROBE_BATCH_SIZE = env("COS_PROBE_BATCH_SIZE") or ""
+COS_PROBE_EVERY = env("COS_PROBE_EVERY") or ""
+SERVER_WEIGHT_DECAY = env("SERVER_WEIGHT_DECAY") or ""
+SERVER_MOMENTUM = env("SERVER_MOMENTUM") or ""
+ADAPTER_RF = env("ADAPTER_RF") or ""
 VAR_STOPPING_POLICY = env("VAR_STOPPING_POLICY") or ""; AGG_RATE_TYPE = env("AGG_RATE_TYPE") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
 DELAY_FLOOR = env("DELAY_FLOOR") or ""
@@ -405,6 +572,15 @@ delays_on = (DELAYS == "on")
 # post-switch compute if TIMING_OVERRUN shows up.
 BASELINE_DELAY_DEFAULTS = {
     "fluxtune":           {"delays": True, "factor": 0.48, "floor": 4.0},
+    # fluxtune_v1 is byte-identical to the profiled fluxtune (no rf/estimator
+    # change) -- same numbers, not a guess.
+    "fluxtune_v1":        {"delays": True, "factor": 0.48, "floor": 4.0},
+    # fluxtune_v2 (now == fluxtune, see the alias above) reuses fluxtune's
+    # numbers too -- NOT re-profiled at adapter_reduction_factor=64 (fewer
+    # trainable params -> compute is if anything a bit lower, so this is a
+    # conservative placeholder, not validated). Re-derive if TIMING_OVERRUN
+    # shows up on a v2 run (same caveat as the sim_charge_profile one).
+    "fluxtune_v2":        {"delays": True, "factor": 0.48, "floor": 4.0},
     "fwdllm":             {"delays": True, "factor": 1.63, "floor": 7.0},
     "fwdllm_it_oracular": {"delays": True, "factor": 1.63, "floor": 7.0},
     "fwdllm_it_unaware":  {"delays": True, "factor": 1.63, "floor": 7.0},
@@ -453,6 +629,12 @@ try:
             "selector": _sel.get("sort", "?"),
             "optimizer": _opt.get("sort", "?"),
             "async": "async" if _is_async else "sync",
+            # catalog default; CLI --adapter-rf (ADAPTER_RF, below) wins if set.
+            "adapter_reduction_factor": int(
+                (_agg.get("hyperparameters", {}) or {}).get("adapter_reduction_factor", 16) or 16
+            ),
+            # Whole catalog hp block: `h0` below is the OVERRIDES layer only.
+            "agg_hp": (_agg.get("hyperparameters", {}) or {}),
         }
 except Exception:
     _BL_INTERNALS = {}
@@ -501,9 +683,55 @@ def patch(exp, run_key, variant, trace):
     if _bl_delay_floor:
         exp["trainer"].setdefault("hyperparameters", {})
         exp["trainer"]["hyperparameters"]["training_delay_floor_s"] = float(_bl_delay_floor)
+    # --dataset (task 0.8): registry's 4 keys into BOTH override blocks, same
+    # pattern as --partition-method below. Applied first so an explicit
+    # --partition-method still wins on partition_method specifically.
+    if DATASET:
+        _ov = dsreg.hyperparameter_overrides(DATASET)
+        for _k, _v in _ov.items():
+            h[_k] = _v
+            exp["trainer"]["config_overrides"]["hyperparameters"][_k] = _v
+        # names the run for the data it used (0.8 spec); cosmetic for path-style
+        # data, same as dirichlet_alpha below.
+        exp["trainer"].setdefault("dataset", {})["name"] = DATASET
+        # sim charge profile follows the dataset when one has been profiled for it
+        # (task B): per-pass cost scales with max_seq_length. Only rewritten where
+        # the yaml already carries the key -- i.e. sim legs -- so real is untouched,
+        # and it falls back to the baseline's own agnews-profiled file, which the
+        # preflight below then refuses for a non-agnews run.
+        if h.get("sim_charge_profile_path"):
+            h["sim_charge_profile_path"] = dsreg.sim_charge_profile(
+                h["sim_charge_profile_path"], DATASET)
+    # --model-type/--model-name (row N5c): same both-blocks pattern as --dataset.
+    # The feature cache key leads with model_type+model_name, so a second
+    # architecture is a 100% miss until pretokenize_dataset.py --model-type runs.
+    if MODEL_TYPE:
+        h["model_type"] = MODEL_TYPE
+        exp["trainer"]["config_overrides"]["hyperparameters"]["model_type"] = MODEL_TYPE
+        _mn = MODEL_NAME or MODEL_TYPE
+        h["model_name"] = _mn
+        exp["trainer"]["config_overrides"]["hyperparameters"]["model_name"] = _mn
+    # ABSOLUTE, always: the aggregator resolves this with a bare open() against
+    # its OWN cwd (sim_charge_registry.py:19), which spawner.py inherits from the
+    # launching shell -- and a miss is a WARNING plus an empty dict, so the vclock
+    # silently loses every charge. Repo-root-relative only worked when you
+    # happened to launch from the repo root.
+    if h.get("sim_charge_profile_path") and not os.path.isabs(h["sim_charge_profile_path"]):
+        h["sim_charge_profile_path"] = os.path.abspath(
+            os.path.join(env("EXAMPLE_DIR", ""), "..", "..", "..", "..",
+                         h["sim_charge_profile_path"]))
     if PART:
         h["partition_method"] = PART
         exp["trainer"]["config_overrides"]["hyperparameters"]["partition_method"] = PART
+        # dirichlet_alpha is cosmetic for path-style data (nothing trainer-side
+        # reads it) but it names the run, so an alpha sweep would emit N runs all
+        # tagged alpha1. Re-derive it from the group actually selected.
+        _m = re.search(r"alpha=([0-9.]+)", PART)
+        if _m:
+            _a = float(_m.group(1))
+            exp["trainer"].setdefault("dataset", {})["dirichlet_alpha"] = (
+                int(_a) if _a.is_integer() else _a  # 100 -> alpha100, not alpha100p0
+            )
     # Variance-cadence knobs (review-every-run). Only patched when explicitly set,
     # so an unset run keeps the code/trainer default (surfaced as "(D)" below).
     if VAR_THRESHOLD:
@@ -511,6 +739,98 @@ def patch(exp, run_key, variant, trace):
     # I-1 audit telemetry: opt-in per run, never on a leg that pairs into a floor (§D-45).
     if SERVER_UPDATE_AUDIT:
         h["server_update_audit"] = True
+    # L1 pool-agreement audit: a second pass over the pool, so its own flag.
+    if POOL_SPLIT_HALF_AUDIT:
+        h["pool_split_half_audit"] = True
+    # Divergence sweeps (fl_fwd_ft_practice.md P9). Both default to the
+    # inherited value, so an unset run is byte-identical to today.
+    # learning_rate is read aggregator-side (FedSgdAggregator._prepare_round_state);
+    # perturbation_count is P, read trainer-side (trainer/main.py).
+    if LEARNING_RATE:
+        h["learning_rate"] = float(LEARNING_RATE)
+    # P and the combination rule are ENACTED trainer-side, but S-C's gate needs
+    # them aggregator-side too (G_rule = E[v_par^2] under select, P under mean),
+    # so both copies are written and must agree -- the aggregator logs its G_rule.
+    if PERTURBATION_COUNT:
+        exp["trainer"]["config_overrides"]["hyperparameters"]["perturbation_count"] = int(PERTURBATION_COUNT)
+        h["perturbation_count"] = int(PERTURBATION_COUNT)
+    if PROBE_COMBINE:
+        exp["trainer"]["config_overrides"]["hyperparameters"]["probe_combine"] = PROBE_COMBINE
+        h["probe_combine"] = PROBE_COMBINE
+    # S-C: scale-free commit gate. n_target sizes the pool from the step it is
+    # about to take instead of comparing var against a tuned constant.
+    if COMMIT_GATE:
+        h["commit_gate"] = COMMIT_GATE
+    if GATE_SAFETY_S:
+        h["gate_safety_s"] = float(GATE_SAFETY_S)
+    # S-C x S-B: `annealed` (shipped) sizes the pool from rho_t, which goes to
+    # zero with the anneal and floors the gate at I=1 (§22.3a). `setpoint` sizes
+    # from rho*_0, so the anneal shrinks the step and the gate holds the aim.
+    if GATE_RHO_REF:
+        h["gate_rho_ref"] = GATE_RHO_REF
+    # B1: server-side ground-truth cos(G,g). Aggregator-only, no trainer cost.
+    # Written only when the CLI said so, either way -- unset inherits the catalog,
+    # which is why `--no-` exists: v2 sets it ON and nothing could turn it off.
+    if COS_GROUND_TRUTH_AUDIT:
+        h["cos_ground_truth_audit"] = COS_GROUND_TRUTH_AUDIT != "0"
+    if COS_PROBE_BATCH_SIZE:
+        h["cos_probe_batch_size"] = int(COS_PROBE_BATCH_SIZE)
+    if COS_PROBE_EVERY:
+        h["cos_probe_every"] = int(COS_PROBE_EVERY)
+    if SERVER_WEIGHT_DECAY:
+        h["server_weight_decay"] = SERVER_WEIGHT_DECAY
+    if SERVER_MOMENTUM:
+        h["server_momentum"] = float(SERVER_MOMENTUM)
+    # S-I: BOTH sides build the model, so both need the bottleneck or the
+    # aggregator's eval model has a different shape than the trainers'.
+    if ADAPTER_RF:
+        h["adapter_reduction_factor"] = int(ADAPTER_RF)
+        exp["trainer"]["config_overrides"]["hyperparameters"]["adapter_reduction_factor"] = int(ADAPTER_RF)
+    # S-A/S-B: aggregator-side step rule. S-A alone leaves ||theta|| geometric,
+    # so an arm that sets trust_ratio without rho_schedule=rm is testing S-A only.
+    if SERVER_STEP_RULE:
+        h["server_step_rule"] = SERVER_STEP_RULE
+    if RHO_STAR:
+        h["rho_star"] = float(RHO_STAR)
+    if RHO_SCHEDULE:
+        h["rho_schedule"] = RHO_SCHEDULE
+    if RHO_EXP:
+        h["rho_exp"] = float(RHO_EXP)
+    # C-1 (buildplan §5). Aggregator-only -- the trainer reads none of these,
+    # so they stay out of the trainer override block and out of the parity test.
+    if B_MAX:
+        h["b_max"] = float(B_MAX)
+    if T_RES:
+        h["t_res"] = float(T_RES)
+    if BUDGET_STOP_FRAC:
+        h["budget_stop_frac"] = float(BUDGET_STOP_FRAC)
+    if PHI_STOP:
+        h["phi_stop"] = PHI_STOP
+    if PHI_STOP_THRESHOLD:
+        h["phi_stop_threshold"] = float(PHI_STOP_THRESHOLD)
+    if B_MAX_PROBE_EVERY:
+        h["b_max_probe_every"] = int(B_MAX_PROBE_EVERY)
+    if B_MAX_PROBE_N:
+        h["b_max_probe_n"] = int(B_MAX_PROBE_N)
+    if B_MAX_PROBE_PHIS:
+        h["b_max_probe_phis"] = B_MAX_PROBE_PHIS
+    if B_MAX_POLICY:
+        h["b_max_policy"] = B_MAX_POLICY
+    # E: the PRIMARY stop -- the run ends because learning stopped, never
+    # because a total was reached. Reads only the SHAPE of the accuracy
+    # curve, never its level (§6.7). Needs phi_stop != off to have an action.
+    if SATURATION_STOP:
+        h["saturation_stop"] = True
+    # P3': aggregator-only, one dot per strided commit.
+    if RETENTION_PROBE_EVERY:
+        h["retention_probe_every"] = int(RETENTION_PROBE_EVERY)
+    if EVAL_MAX_SAMPLES:
+        h["eval_max_samples"] = int(EVAL_MAX_SAMPLES)
+    # S-I: BOTH sides build the model, so both need the scope or the aggregator's
+    # requires_grad mask disagrees with the trainer's probe mask.
+    if TRAINABLE_SCOPE:
+        h["trainable_scope"] = TRAINABLE_SCOPE
+        exp["trainer"]["config_overrides"]["hyperparameters"]["trainable_scope"] = TRAINABLE_SCOPE
     if MAX_ITER:
         h["max_iterations_per_data_id"] = int(MAX_ITER)
     # Opt-2/Opt-3 ablation toggles (charter 4-run 2x2). Written into the per-run
@@ -577,7 +897,10 @@ def patch(exp, run_key, variant, trace):
         h.setdefault("trackTrainerAvail", {})["trace"] = trace
     # name / job id: carry a _real|_sim tag so scripts.parity.cli can glob the pair.
     n = int(NUM_TRAINERS) if NUM_TRAINERS else exp["trainer"].get("num_trainers", 10)
-    parts = [run_key, f"n{n}", "smoke"]
+    parts = [run_key]
+    if DATASET:
+        parts.append(DATASET)
+    parts += [f"n{n}", "smoke"]
     if trace:
         parts.append(trace)
     parts.append(variant)
@@ -620,6 +943,18 @@ for trace in traces:
                 "n_gpus": e0.get("execution", {}).get("num_gpus"),
                 "gpu_ids": e0.get("execution", {}).get("gpu_ids"),
                 "partition": h0.get("partition_method"),
+                "dataset": h0.get("dataset"),
+                "partition_file_path": h0.get("partition_file_path"),
+                "cache_dir": h0.get("cache_dir"),
+                "max_seq_length": h0.get("max_seq_length"),
+                # None unless a yaml overrides them; the F3 check below falls back
+                # to configs/aggregator_base.json, which is where they really live.
+                "model_type": h0.get("model_type"),
+                "model_name": h0.get("model_name"),
+                # trainer tid -> client_idx is `(tid-1) % client_idx_modulo`
+                # (runner.py:389), so this and NOT num_trainers bounds how many
+                # distinct shards a run can touch.
+                "client_idx_modulo": e0["trainer"].get("client_idx_modulo"),
                 "delays": e0["trainer"].get("enable_training_delays"),
                 # H13 A/B knob: yaml-only, so condition_fp cannot see it (§F-18).
                 # Captured per variant and cross-checked below.
@@ -638,6 +973,64 @@ for trace in traces:
 
             per_baseline[run_key]["jvp_eval_mode"][variant] = _t_hp0.get(
                 "jvp_eval_mode", "ABSENT")
+
+            # Task 0.7: wall-clock budget preflight (fl_fwd_ft_buildplan.md 0.7) --
+            # the cos audit taxes every COMMIT, so a vclock-healthy budget can still
+            # blow the REAL wall ceiling; this has cost eight arms (P4/P9.2). Only
+            # defined under commit_gate=n_target, whose N_req closed form this
+            # mirrors (aggregator/FedSgdAggregator.py:418) -- `var` has no such form.
+            # RESOLVED value, in the launcher's own merge order (flame/launch/
+            # experiment_config.py): catalog, then config_overrides on top. `h0`
+            # alone defaults every catalog knob -- that read v2's rf=64 as 16,
+            # pricing a model 3.8x the one that launches.
+            def _hp(key, default=None, _rk=run_key, _h=h0):
+                _cat = _BL_INTERNALS.get(_rk, {}).get("agg_hp", {})
+                return _h.get(key, _cat.get(key, default))
+
+            if _hp("commit_gate") == "n_target" and e0["aggregator"].get("agg_goal"):
+                _p_wc = dsreg.get(_hp("dataset") or "agnews").probe_dim(
+                    int(_hp("adapter_reduction_factor") or 16))
+                # (c)/(d): sim's REAL-wall cap is sim_wall_ceiling_s (code default
+                # max_runtime_s*20); real mode has no such knob -- its outer safety
+                # is max_experiment_runtime_s (patch()'s own default, above).
+                if variant == "sim":
+                    _ceiling = float(_hp("sim_wall_ceiling_s") or (MAX_RUNTIME_S * 20))
+                else:
+                    _ceiling = float(_hp("max_experiment_runtime_s")
+                                      or (MAX_RUNTIME_S + 1800.0))
+                try:
+                    _proj = wcp.project(
+                        p=_p_wc, rho_star=_hp("rho_star"),
+                        gate_safety_s=_hp("gate_safety_s"),
+                        rule=_hp("probe_combine"),
+                        perturbation_count=(_t_hp0.get("perturbation_count")
+                                             or _hp("perturbation_count")),
+                        K=int(e0["aggregator"]["agg_goal"]),
+                        vclock_budget_s=float(MAX_RUNTIME_S), real_wall_ceiling_s=_ceiling,
+                        cos_audit_on=bool(_hp("cos_ground_truth_audit")),
+                        cos_probe_every=_hp("cos_probe_every"),
+                        cos_probe_batch_size=_hp("cos_probe_batch_size"),
+                        # C-1: law C's commit count comes from (B_max, T_res, f),
+                        # not from a constant-rho round-trip rate. Without these
+                        # the projection reads `rho_star` -- unset under landing --
+                        # and refuses every launch on a phantom 45k-commit run.
+                        rho_schedule=_hp("rho_schedule"),
+                        b_max=_hp("b_max"), t_res=_hp("t_res"),
+                        budget_stop_frac=_hp("budget_stop_frac"),
+                        max_iter=_hp("max_iterations_per_data_id"),
+                        gate_rho_ref=_hp("gate_rho_ref"))
+                except ValueError as _e:
+                    checks.append({"name": f"wall-clock budget preflight ({run_key} {variant})",
+                                   "level": "error", "detail": str(_e)})
+                else:
+                    # (e): print the three factors, not just a verdict.
+                    if _proj.breach:
+                        checks.append({"name": f"wall-clock budget preflight ({run_key} {variant})",
+                                       "level": "error",
+                                       "detail": f"projected real wall exceeds the ceiling: {_proj.explain()}"})
+                    else:
+                        checks.append({"name": f"wall-clock budget preflight ({run_key} {variant})",
+                                       "level": "ok", "detail": _proj.explain()})
 
 with open(MANIFEST, "w") as fh:
     for name, out, variant, budget in manifest:
@@ -682,6 +1075,7 @@ _res_delays = sorted(
 _cond = {
     "N": NUM_TRAINERS or "yaml", "K": SEL_K or "yaml",
     "C_sync": SEL_C or "yaml", "C_async": SEL_C_ASYNC or SEL_C or "yaml",
+    "dataset": DATASET or "yaml",
     "partition": _res_parts, "trace": _res_traces,
     "delays": _res_delays,
     "target_acc": TARGET_ACC or "none",
@@ -732,6 +1126,9 @@ tier1 = {"name": "① REVIEW EVERY RUN", "rows": [
              "(N/K/C/partition/trace/delays/caps). Differs ⇒ mistyped knob."},
     mode_row,
     {"label": "baselines", "value": " ".join(rk for rk, *_ in runs)},
+    scalar_row("dataset", DATASET if DATASET else "agnews (yaml default)", bool(DATASET),
+               note="registry-derived data_file_path/partition_file_path/max_seq_length, "
+                    "both roles. unset ⇒ each yaml's baked (agnews) paths"),
     # The two similarly-named-but-DIFFERENT knobs, disambiguated + on their own rows:
     scalar_row("max_runtime_s", MAX_RUNTIME_S, MAX_RUNTIME_S_SET,
                note=("--max-runtime-s: REAL mode = wall-clock seconds; SIM mode = VIRTUAL/vclock "
@@ -908,8 +1305,27 @@ for rk in (r[0] for r in runs):
         checks.append({"name": f"sim charge profile readable ({rk})", "level": "error",
                        "detail": f"{prof}: {_e}"})
         continue
+    # 0.8 edge case (d): per-pass cost scales with max_seq_length, so charging a
+    # sim leg against a profile taken on a DIFFERENT dataset silently mis-prices
+    # the vclock. Gated on the profile's own `_meta.datasets` tag rather than on
+    # "dataset != agnews": task B gives yahoo its own profile, and that profile
+    # must then pass. An untagged profile predates the tag and is agnews.
+    _prof_ds = set((_pf.get("_meta") or {}).get("datasets") or ["agnews"])
+    _run_ds = DATASET or "agnews"
+    if _run_ds not in _prof_ds:
+        checks.append({"name": f"sim charge profile matches dataset ({rk})", "level": "error",
+                       "detail": f"{prof} was profiled on {'/'.join(sorted(_prof_ds))}; "
+                                 f"this run is {_run_ds} at max_seq_length "
+                                 f"{dsreg.get(_run_ds).max_seq_length}, so per-pass cost differs "
+                                 f"and this profile mis-prices the vclock. Profile {_run_ds} "
+                                 f"first (profile_sim_charges.py), or --force to proceed anyway."})
+    else:
+        checks.append({"name": f"sim charge profile matches dataset ({rk})", "level": "ok",
+                       "detail": f"{os.path.basename(path)} profiled on {_run_ds}"})
     _foreign, _dates = [], set()
     for _lbl, _entries in _pf.items():
+        if _lbl == "_meta":
+            continue
         for _pk, _e in (_entries or {}).items():
             if not _e.get("charge"):
                 continue
@@ -922,7 +1338,12 @@ for rk in (r[0] for r in runs):
                 continue
             # `_<rk>_n` not a bare substring: "fwdllm" is a prefix of
             # "fwdllm_it_unaware", so a plain `in` would accept a sibling's profile.
-            if not any(f"_{rk}_n" in str(s) for s in (_e.get("source_runs") or [])):
+            # A run dir also carries its dataset (`_fluxtune_yelp-p_n100_`), so accept
+            # that form too -- enumerated from the registry, never a bare wildcard,
+            # which would re-admit the sibling this check exists to reject.
+            _ok = [f"_{rk}_n"] + [f"_{rk}_{_d}_n" for _d in dsreg.names()]
+            if not any(any(_m in str(s) for _m in _ok)
+                       for s in (_e.get("source_runs") or [])):
                 _foreign.append(f"{_lbl}.{_pk}")
     if _foreign:
         checks.append({"name": f"sim charge profile provenance ({rk})", "level": "error",
@@ -938,6 +1359,8 @@ for rk in (r[0] for r in runs):
     # (§A.1 stage CH, §D-50). --force overrides.
     _src = set()
     for _lbl, _entries in _pf.items():
+        if _lbl == "_meta":
+            continue
         for _pk, _e in (_entries or {}).items():
             if _e.get("charge") and not _e.get("cross_baseline"):
                 _src.update(str(s) for s in (_e.get("source_runs") or []))
@@ -952,11 +1375,18 @@ for rk in (r[0] for r in runs):
     _newer = sorted(os.path.basename(d) for d in _reals
                     if leg_jvp_eval_mode(d) == _want)
     if _newer and _newest_src:
-        checks.append({"name": f"sim charge profile is CURRENT ({rk})", "level": "error",
+        # NODE-DEPENDENT BY CONSTRUCTION: this globs the LOCAL experiments dir,
+        # which is machine-local disk, so the same profile + config can pass on one
+        # node and fail on another purely from which old run dirs that box happens
+        # to hold. --allow-stale-profile is the scoped acknowledgement; --force
+        # would also disable the dataset-match check, which is config-derived and
+        # is the one that actually protects the vclock.
+        _stale_lvl = "warn" if env("ALLOW_STALE_PROFILE") else "error"
+        checks.append({"name": f"sim charge profile is CURRENT ({rk})", "level": _stale_lvl,
                        "detail": f"{len(_newer)} real leg(s) newer than the profile "
                                  f"(newest source {_newest_src}): {', '.join(_newer[-2:])}. "
-                                 f"Re-run profile_sim_charges.py, or --force if the newer "
-                                 f"reals are a different config on purpose."})
+                                 f"Re-run profile_sim_charges.py, or --allow-stale-profile to "
+                                 f"keep the pricing every historical arm of this baseline used."})
     elif _newest_src:
         checks.append({"name": f"sim charge profile is CURRENT ({rk})", "level": "ok",
                        "detail": f"sourced from this baseline's newest real ({_newest_src})"})
@@ -970,6 +1400,25 @@ for rk in (r[0] for r in runs):
                        "detail": f"agg_goal={g} > c={c} — selected trainers would be stranded"})
     else:
         checks.append({"name": f"agg_goal <= c ({rk})", "level": "ok", "detail": f"agg_goal={g} c={c}"})
+
+# adapter_reduction_factor != 16 (catalog default or --adapter-reduction-factor)
+# needs FWDLLM_FD_SCALE_INVARIANT=1 in the environment -- this schema has no way
+# to set an env var from config, so a resolved non-default rf with the var unset
+# is silently the WRONG FD step size, not a crash (fl_fwd_ft_practice.md P1;
+# BASELINES.md "FluxTune estimator versions" Remaining work #7) -- same class of
+# footgun as the wall-clock/sim-charge-profile checks above, so same treatment:
+# error, --force-able, not just a warning.
+_fd_var_set = bool(os.environ.get("FWDLLM_FD_SCALE_INVARIANT", "").strip())
+for rk in (r[0] for r in runs):
+    _rf = int(ADAPTER_RF) if ADAPTER_RF else _BL_INTERNALS.get(rk, {}).get("adapter_reduction_factor", 16)
+    if _rf != 16 and not _fd_var_set:
+        checks.append({"name": f"FWDLLM_FD_SCALE_INVARIANT ({rk})", "level": "error",
+                       "detail": f"adapter_reduction_factor={_rf} (!=16) but FWDLLM_FD_SCALE_INVARIANT is "
+                                 f"unset -- FD step h will NOT be rescaled for this rf. Run "
+                                 f"`export FWDLLM_FD_SCALE_INVARIANT=1` first, or --force if deliberate."})
+    elif _rf != 16:
+        checks.append({"name": f"FWDLLM_FD_SCALE_INVARIANT ({rk})", "level": "ok",
+                       "detail": f"adapter_reduction_factor={_rf}, var is set"})
 # agg_goal MATCHES across baselines: identical batch size for a fair head-to-head;
 # a mismatch is usually an unintended --c/--c-async fan. Warn, don't block.
 _goals = {rk: per_baseline.get(rk, {}).get("agg_goal") for rk in (r[0] for r in runs)}
@@ -1027,10 +1476,87 @@ for rk in (r[0] for r in runs):
     if isinstance(n, int) and isinstance(mi, int) and n < mi:
         checks.append({"name": f"num_trainers >= minInitialTrainers ({rk})", "level": "error",
                        "detail": f"num_trainers={n} < minInitialTrainers={mi} — join barrier never clears"})
-# non-uniform partition: can't verify the H5 group from here.
-if PART and PART != "uniform":
-    checks.append({"name": "partition group exists in agnews_partition.h5", "level": "warn",
-                   "detail": f"verify group '{PART}' exists"})
+# non-uniform partition: assert the group actually exists in the RESOLVED
+# partition file (0.8 edge case a). Gated on the RESOLVED partition_method/
+# partition_file_path (read back from the patched cfg), not on whether --partition-
+# -method was passed this invocation -- a --dataset switch alone inherits the
+# yaml's baked group name against a NEW file, which is exactly the silent
+# wrong-dataset-file risk this check exists to catch.
+import h5py as _h5py
+_pf_seen = {}
+for rk in (r[0] for r in runs):
+    b = per_baseline.get(rk, {})
+    resolved_part = b.get("partition")
+    if not resolved_part or resolved_part == "uniform":
+        continue
+    pfp = b.get("partition_file_path")
+    if not pfp:
+        checks.append({"name": f"partition group exists ({rk})", "level": "warn",
+                       "detail": f"no resolved partition_file_path -- verify group '{resolved_part}' exists"})
+        continue
+    if pfp not in _pf_seen:
+        try:
+            with _h5py.File(pfp, "r") as _f:
+                _pf_seen[pfp] = set(_f.keys())
+        except OSError as _e:
+            _pf_seen[pfp] = None
+            checks.append({"name": f"partition file readable ({rk})", "level": "error",
+                           "detail": f"{pfp}: {_e}"})
+            continue
+    _groups = _pf_seen[pfp]
+    if _groups is None:
+        continue
+    if resolved_part in _groups:
+        checks.append({"name": f"partition group exists ({rk})", "level": "ok",
+                       "detail": f"'{resolved_part}' found in {os.path.basename(pfp)}"})
+    else:
+        checks.append({"name": f"partition group exists ({rk})", "level": "error",
+                       "detail": f"'{resolved_part}' NOT in {pfp} -- wrong dataset's partition file?"})
+
+# §10 F3: tokenized-feature cache, warm or cold. A cold cache is not an error --
+# the run tokenizes its way out of it -- but it costs ~30 min of the arm's OWN wall
+# budget (234931 spent 32 of 44 minutes before commit 1), which the vclock projection
+# above cannot see. Warn loudly and name the fixer.
+try:
+    with open(os.path.join(env("EXAMPLE_DIR", ""), "configs",
+                           "aggregator_base.json"), encoding="utf-8") as _fh:
+        _AGG_BASE = json.load(_fh).get("hyperparameters", {})
+except (OSError, ValueError):
+    _AGG_BASE = {}
+for rk in (r[0] for r in runs):
+    b = per_baseline.get(rk, {})
+    cdir, ds_name = b.get("cache_dir"), b.get("dataset")
+    if not cdir or not ds_name:
+        continue                      # no --dataset -> relative default, cwd decides
+    # Distinct shards this run touches: trainers wrap onto partitions modulo
+    # client_idx_modulo, so 200 trainers still read only 100 caches.
+    n_tr = int(b.get("n_trainers") or 0)
+    n_shards = min(n_tr, int(b.get("client_idx_modulo") or n_tr))
+    want = list(range(n_shards)) + [-1]   # -1 is the aggregator's global test set
+    # The key `_load_data_loader_from_cache` builds (base_data_manager.py:583).
+    # Model identity comes off the run, not a constant -- a hardcoded `distilbert`
+    # here is the same shape of bug as the hardcoded 150 was (§8 item 9).
+    _mt = b.get("model_type") or _AGG_BASE.get("model_type")
+    _mn = b.get("model_name") or _AGG_BASE.get("model_name")
+    if not _mt or not _mn:
+        continue
+    key = "_".join([str(_mt), str(_mn).split("/")[-1], "cached",
+                    str(b.get("max_seq_length")), "ClassificationModel",
+                    ds_name, str(b.get("partition"))])
+    have = [c for c in want if os.path.exists(os.path.join(cdir, f"{key}_{c}"))]
+    if len(have) == len(want):
+        checks.append({"name": f"feature cache warm ({rk})", "level": "ok",
+                       "detail": f"{len(have)}/{len(want)} in {cdir}"})
+    else:
+        checks.append({"name": f"feature cache warm ({rk})", "level": "warn",
+                       "detail": f"only {len(have)}/{len(want)} tokenized shards in "
+                                 f"{cdir} -- the run will tokenize the other "
+                                 f"{len(want) - len(have)} inside its own wall budget "
+                                 f"(~30 min at seq {b.get('max_seq_length')}). Fix: "
+                                 f"pretokenize_dataset.py --dataset {ds_name} "
+                                 f"--clients {n_shards} --partition-method "
+                                 f"{b.get('partition')}"})
+
 # parity pairing naming (only meaningful for a both-mode matrix).
 if MODE == "both":
     ok_pair = all(any(n.endswith("_real") for n, *_ in manifest) and

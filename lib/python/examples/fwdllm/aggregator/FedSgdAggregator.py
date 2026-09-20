@@ -6,14 +6,32 @@ import time
 import math
 import numpy as np
 import torch
+from torch.nn import CrossEntropyLoss
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
 from examples.fwdllm.trainer.forward_training.fwdgrad_utils import calculate_var, calculate_snr, calculate_cv, calculate_real_var, calculate_snr_gradients
+from examples.fwdllm.expts.dataset_registry import (
+    data_coverage, max_dominant_share, total_data_bins,
+)
+from examples.fwdllm.expts.landing_law import (
+    B_MAX_PRIOR, BUDGET_STOP_FRAC_DEFAULT, PHI_RAIL_DEFAULT, T_RES_DEFAULT,
+    rho_gate_cap, rho_star_now,
+)
+from examples.fwdllm.expts.bmax_probe import (
+    PHI_GRID, b_max_from_knee, knee, noise_scale,
+)
+from examples.fwdllm.expts.saturation_stop import (
+    SAT_GL_THRESHOLD, SAT_PATIENCE, SaturationDetector,
+    slope_horizon_commits, warmup_commits,
+)
 from flame.monitor.runtime import timer_decorator, FwdLLMStage
 
 logger = logging.getLogger(__name__)
 import functorch as fc
 
 import hashlib
+
+# B17: fixed so the cos probe reads the SAME batch every commit and across arms.
+_COS_PROBE_SEED = 20260810
 
 
 def _calculate_hash(tensor):
@@ -48,6 +66,11 @@ def _agg_sync_timer(owner, name: str):
                     telemetry.emit(ev, **fields)
             except Exception:  # pragma: no cover - telemetry must never fault training
                 logger.debug("agg_sync_timer telemetry emit failed", exc_info=True)
+
+
+# E[v_par^2] for coin-flip-top-2-of-10: 2.988 over 37k events, 2.987 synthetic
+# (handoff §11.2). A property of the rule, so a constant and not a knob.
+_E_SELECT_COIN_TOP2 = 2.988
 
 
 class FedSGDAggregator(TopAggregator):
@@ -89,6 +112,38 @@ class FedSGDAggregator(TopAggregator):
         )
         if self._server_update_audit:
             logger.info("[SERVER_UPDATE_AUDIT] emitting per-commit update/weight norms")
+        # L1 audit: pool split-half cosine. Own flag, not server_update_audit's:
+        # it adds a pass over (params x uploads), which would change that flag's
+        # cost profile and with it the arrival order (§D-45).
+        self._pool_split_half_audit = bool(
+            getattr(self.args, "pool_split_half_audit", False)
+        )
+        if self._pool_split_half_audit:
+            logger.info("[POOL_SPLIT_HALF_AUDIT] emitting per-commit pool agreement")
+        # B1 (§15.1): ground-truth cos(G,g). The split-half estimator returns zero
+        # within noise even at matched N (§22.3e), so manufacture a real `g` with a
+        # backward pass -- server-side, one fixed held-out batch, once per commit.
+        self._cos_ground_truth_audit = bool(
+            getattr(self.args, "cos_ground_truth_audit", False)
+        )
+        self._cos_probe_batch = None
+        # B17: even shuffled, n=64 aligns with the true held-out gradient at
+        # only 0.48; 1024 reaches 0.94 (§3.9).
+        self._cos_probe_batch_size = int(
+            getattr(self.args, "cos_probe_batch_size", 1024) or 1024
+        )
+        # ~80 ms per reference sample = 83 s/commit at 1024, against 1.6 s for
+        # the rest of the commit path. Cost is LINEAR in the reference, so only
+        # a stride helps; D is read in 50-commit blocks and loses no resolution.
+        self._cos_probe_every = max(
+            1, int(getattr(self.args, "cos_probe_every", 1) or 1)
+        )
+        if self._cos_ground_truth_audit:
+            logger.info(
+                "[COS_GROUND_TRUTH_AUDIT] emitting cos(G,g) every "
+                f"{self._cos_probe_every} commit(s) against a "
+                f"fixed held-out batch of {self._cos_probe_batch_size}"
+            )
 
         self.train_data_local_dict = train_data_local_dict
         self.test_data_local_dict = test_data_local_dict
@@ -131,6 +186,89 @@ class FedSGDAggregator(TopAggregator):
                 f"for model_type={self.args.model_type}"
             )
 
+        # S-A + S-B (handoff §15.4, §15.6). raw_sgd = theta -= eta*G/N (historical).
+        # trust_ratio = theta -= rho*_t * ||theta_tr|| * G/||G||, making rho an
+        # operator constant instead of an emergent one. They must ship together:
+        # a CONSTANT rho* still grows ||theta|| geometrically, so boundedness comes
+        # from the anneal. rm = rho*_0 * t^-rho_exp with rho_exp > 0.5, strictly
+        # inside Robbins-Monro rather than on its edge (1/sqrt(t) only defers).
+        self._server_step_rule = str(
+            getattr(self.args, "server_step_rule", "raw_sgd") or "raw_sgd"
+        ).lower()
+        if self._server_step_rule not in ("raw_sgd", "trust_ratio"):
+            logger.warning(
+                f"unknown server_step_rule={self._server_step_rule!r}; using raw_sgd"
+            )
+            self._server_step_rule = "raw_sgd"
+        self._rho_star = float(getattr(self.args, "rho_star", 0.01) or 0.01)
+        self._rho_schedule = str(
+            getattr(self.args, "rho_schedule", "const") or "const"
+        ).lower()
+        self._rho_exp = float(getattr(self.args, "rho_exp", 0.55) or 0.55)
+        self._commit_count = 0
+        # Q2 (§6.1). Decay the trainable slice after the step. `auto` = rho^2/2
+        # cancels Leg 1's inflation exactly, pinning Phi = 1 by construction, which
+        # is what separates "||theta_tr|| is causal" from "it is a symptom".
+        _wd = getattr(self.args, "server_weight_decay", None)
+        self._weight_decay = None
+        if _wd is not None and str(_wd).strip() != "":
+            self._weight_decay = (
+                "auto" if str(_wd).lower() == "auto" else float(_wd)
+            )
+            if self._weight_decay != "auto" and self._weight_decay < 0:
+                logger.warning(
+                    f"negative server_weight_decay={self._weight_decay}; disabling"
+                )
+                self._weight_decay = None
+        if self._weight_decay is not None:
+            logger.info(f"[WeightDecay] server_weight_decay={self._weight_decay} "
+                        "(trainable slice only, applied after the step)")
+        if self._server_step_rule == "trust_ratio":
+            logger.info(
+                f"[ServerStep] trust_ratio rho_star={self._rho_star} "
+                f"schedule={self._rho_schedule} exp={self._rho_exp}"
+            )
+
+        # S-C (handoff §15.7). Scale-free commit gate: `rho <= s*cos` solved for
+        # the pool, N >= p*(rho_t/s)^2 / G_rule. No unit-carrying constant -- p is
+        # read off the model, G_rule is closed form, s is O(1) -- so the setpoint
+        # survives a change of alpha, K, ||theta|| or anneal. Default `var` = old.
+        self._commit_gate = str(
+            getattr(self.args, "commit_gate", "var") or "var"
+        ).lower()
+        if self._commit_gate not in ("var", "n_target"):
+            logger.warning(f"unknown commit_gate={self._commit_gate!r}; using var")
+            self._commit_gate = "var"
+        self._gate_safety_s = float(getattr(self.args, "gate_safety_s", 0.4) or 0.4)
+        # Which rho sizes the pool. `annealed` (shipped) uses rho_t, which under
+        # S-B drives N_req -> 0, floors the gate at I=1 and decays progress as
+        # rho^2 (§22.3a). `setpoint` sizes from rho*_0, so the anneal shrinks the
+        # step while the gate holds the aim.
+        self._gate_rho_ref = str(
+            getattr(self.args, "gate_rho_ref", "annealed") or "annealed"
+        ).lower()
+        if self._gate_rho_ref not in ("annealed", "setpoint"):
+            logger.warning(
+                f"unknown gate_rho_ref={self._gate_rho_ref!r}; using annealed"
+            )
+            self._gate_rho_ref = "annealed"
+        self._last_rho = None
+        self._p_trainable = self._g_rule = None
+        if self._commit_gate == "n_target":
+            self._p_trainable = sum(
+                p.numel() for p in self.trainer.model.parameters() if p.requires_grad
+            )
+            # G_rule = E[v_par^2] under `select`, P under `mean` (§3.5). Needs the
+            # aggregator's copy of two trainer knobs; logged so a mismatch shows.
+            _pc = str(getattr(self.args, "probe_combine", "select") or "select").lower()
+            _P = int(getattr(self.args, "perturbation_count", 10) or 10)
+            self._g_rule = float(_P) if _pc == "mean" else _E_SELECT_COIN_TOP2
+            logger.info(
+                f"[CommitGate] n_target s={self._gate_safety_s} p={self._p_trainable} "
+                f"probe_combine={_pc} P={_P} G_rule={self._g_rule} "
+                f"rho_ref={self._gate_rho_ref}"
+            )
+
         self.track_trainer_avail = (
             self.config.hyperparameters.track_trainer_avail or None
         )
@@ -160,6 +298,7 @@ class FedSGDAggregator(TopAggregator):
         self.jvp_for_snr_check_list = []
         self.var_good_enough = True
         self.var_prev_iter_list = []
+        self._n_eff_scalar = None
         self.snr = None
         self.snr_prev_iter_list = []
         self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
@@ -172,6 +311,166 @@ class FedSGDAggregator(TopAggregator):
             getattr(self.config.hyperparameters, "server_momentum", 0.0) or 0.0
         )
         self._server_momentum_buf = {}
+
+        # C-1 (buildplan §5, T5 2026-08-15). B = 1/2*sum log1p(rho^2) depends on
+        # rho alone, so accounting is exact, free and always on; everything that
+        # READS it -- the anneal and the stop -- is flag-gated off.
+        self._B = 0.0
+        self._stop_fired = None
+        self._rho_max = None
+        # `landing` = law C, with T_res a fixed RATE never decremented, so B
+        # approaches B_max as B_max*(1-e^{-t/T_res}), always from below.
+        # Decrementing it would reinstate T as an operator input (§4.6a) and buy
+        # nothing: Lambda = 2B/s is schedule-free. b_max starts at D1's ln 2.
+        self._b_max = float(getattr(self.args, "b_max", 0.0) or B_MAX_PRIOR)
+        self._t_res = float(getattr(self.args, "t_res", 0.0) or T_RES_DEFAULT)
+        self._budget_stop_frac = float(
+            getattr(self.args, "budget_stop_frac", 0.0) or BUDGET_STOP_FRAC_DEFAULT
+        )
+        self._phi_stop = str(getattr(self.args, "phi_stop", "off") or "off").lower()
+        if self._phi_stop not in ("off", "log_only", "halt"):
+            logger.warning(f"unknown phi_stop={self._phi_stop!r}; using off")
+            self._phi_stop = "off"
+        # 3.0, not 2.7: measured under law C, peaks land at 2.82/3.00/2.91, so
+        # 2.7 gives up 0.005 on all three (buildplan §5.3, decision 2026-08-21).
+        self._phi_stop_threshold = float(
+            getattr(self.args, "phi_stop_threshold", 0.0) or PHI_RAIL_DEFAULT
+        )
+        # Row E. Flag-gated, default off => byte-identical (§6.1). `saturation`
+        # is the PRIMARY stop once on: the run must end because learning stopped,
+        # never because a cumulative total was reached.
+        self._sat_stop = bool(
+            getattr(self.args, "saturation_stop", False) or False
+        )
+        self._sat_det = None
+        self._eval_commit = 0
+        # P3': cos(theta_t, theta_0) against 1/Phi. 0 = off, byte-identical.
+        self._retention_every = max(
+            0, int(getattr(self.args, "retention_probe_every", 0) or 0)
+        )
+        self._theta_0 = None
+        self._theta_0_norm = 0.0
+        # 3.1: re-sense B_max on a stride. 0 = off (byte-identical); the probe
+        # costs len(phis)+1 forward passes over b_max_probe_n samples per fire,
+        # so it is strided and its elapsed time is logged per fire (task 0.7).
+        self._b_max_probe_every = max(
+            0, int(getattr(self.args, "b_max_probe_every", 0) or 0)
+        )
+        _phis = getattr(self.args, "b_max_probe_phis", None)
+        self._b_max_phis = ([float(x) for x in str(_phis).split(",")]
+                            if _phis else list(PHI_GRID))
+        self._b_max_probe_n = int(
+            getattr(self.args, "b_max_probe_n", 0) or 512
+        )
+        # How successive senses combine. P4.1's fixed-Phi stop holding over 10
+        # arms says the boundary is a property of TOTAL inflation, so the fires
+        # estimate ONE lifetime budget: `mean` is the estimator for a constant,
+        # and it terminates (B_max settles, law C drives B to it) where `anchor`
+        # (latest only) need not -- on 125619's six fires B/B_max ran 0.52 0.48
+        # 0.33 0.42 0.47 0.64. `ratchet` (min) stops sooner but compounds the
+        # probe's conservative bias. First sense always replaces the ln 2 prior.
+        self._b_max_policy = str(
+            getattr(self.args, "b_max_policy", "") or "mean"
+        ).lower()
+        if self._b_max_policy not in ("mean", "ratchet", "anchor"):
+            logger.warning(f"unknown b_max_policy={self._b_max_policy!r}; using mean")
+            self._b_max_policy = "mean"
+        self._b_max_senses = []
+        # Row E. Both horizons come off the probe cadence (warm-up 3x, progress
+        # 1x) and are passed separately so neither can move the other.
+        if self._sat_stop and self._phi_stop != "off":
+            self._sat_det = SaturationDetector(
+                warmup_commits(self._b_max_probe_every),
+                slope_horizon=slope_horizon_commits(self._b_max_probe_every),
+            )
+            logger.info(
+                f"[SatStop] GL>{SAT_GL_THRESHOLD} for {SAT_PATIENCE} evals on an "
+                f"11-eval trailing mean, while not still rising over "
+                f"{self._sat_det.slope_horizon} commits; armed after commit "
+                f"{self._sat_det.warmup}"
+            )
+        if self._b_max_probe_every:
+            logger.info(
+                f"[BmaxProbe] re-sensing every {self._b_max_probe_every} commits "
+                f"on {self._b_max_probe_n} held-out samples, "
+                f"policy={self._b_max_policy}, Phi grid {self._b_max_phis}"
+            )
+        if self._rho_schedule == "landing":
+            if self.server_momentum:
+                # Edge case (b): under beta > 0, Phi = exp((1+beta)/(1-beta)*B),
+                # so B no longer measures the inflation the budget is denominated
+                # in. Refuse rather than silently misprice it.
+                raise ValueError(
+                    "rho_schedule=landing is incompatible with server_momentum="
+                    f"{self.server_momentum} -- Phi != e^B under momentum"
+                )
+            # Gate reachability, ceil(n_req/K) <= max_iter solved for rho.
+            # NOT a rho* <= rho*_0 clamp: rho*_0 is the ln 2 prior, so that
+            # would block 3.1 from spending the budget it just measured.
+            _K = int(getattr(self.args, "aggregation_goal", 10) or 10)
+            self._rho_max = rho_gate_cap(
+                self._gate_safety_s, self._p_trainable, self._g_rule, _K,
+                getattr(self.args, "max_iterations_per_data_id", None),
+            )
+            logger.info(
+                f"[Landing] law=C B_max={self._b_max:.6g} T_res={self._t_res:g} "
+                f"rho*_0={self._rho_star_now():.6g} rho_max={self._rho_max} "
+                f"stop_frac={self._budget_stop_frac} phi_stop={self._phi_stop}"
+            )
+        elif self._phi_stop != "off":
+            logger.info(
+                f"[Landing] phi_stop={self._phi_stop} "
+                f"threshold={self._phi_stop_threshold} (no sensed B_max)"
+            )
+
+    def internal_init(self) -> None:
+        """Base init, then size `data_id`'s range to THIS dataset's shards.
+
+        The base falls back to agnews' 150; an explicit `total_data_bins`
+        hyperparameter still wins.
+        """
+        super().internal_init()
+        if getattr(self.config.hyperparameters, "total_data_bins", 0):
+            src = "hyperparameter"
+        else:
+            try:
+                self.total_data_bins = total_data_bins(
+                    self.args.dataset,
+                    int(self.config.hyperparameters.client_num_in_total),
+                    int(self.args.train_batch_size),
+                )
+                src = "registry"
+            except Exception:
+                logger.warning(
+                    "[DataBins] cannot derive bins for "
+                    f"dataset={getattr(self.args, 'dataset', None)!r}; keeping "
+                    f"{self.total_data_bins}", exc_info=True
+                )
+                src = "fallback"
+        logger.info(
+            f"[DataBins] total_data_bins={self.total_data_bins} source={src} "
+            f"dataset={getattr(self.args, 'dataset', None)} "
+            f"C={getattr(self.config.hyperparameters, 'client_num_in_total', None)} "
+            f"batch={getattr(self.args, 'train_batch_size', None)}"
+        )
+        # Full coverage is what the bin count exists to give -- state it, don't
+        # assume it. Needs equal shards AND shard % batch == 0.
+        try:
+            cov = data_coverage(
+                self.args.dataset,
+                int(self.config.hyperparameters.client_num_in_total),
+                int(self.args.train_batch_size),
+            )
+            (logger.info if cov["exact"] else logger.warning)(
+                f"[DataBins] coverage {cov['reached']:,} of {cov['n_train']:,} "
+                f"train rows ({100.0 * cov['reached'] / cov['n_train']:.2f}%) "
+                f"= {cov['bins']} bins x {cov['batch']} x {cov['clients']}"
+                + ("" if cov["exact"] else
+                   f"  UNDERCOUNT: shard%batch={cov['batch_remainder']}, "
+                   f"n_train%C={cov['shard_remainder']}")
+            )
+        except Exception:
+            logger.debug("[DataBins] coverage check skipped", exc_info=True)
 
     def var_within_epsilon(self):
         if self.var < self.var_threshold:
@@ -248,6 +547,74 @@ class FedSGDAggregator(TopAggregator):
         self._server_momentum_buf[param_idx] = buf
         return buf
 
+    def _compute_n_eff(self, var_scalar):
+        """S-K (handoff §15.13): how much pooling the commit actually got.
+
+        calculate_var averages over the check layer's m coords, so
+        var = ||G_A - G_B||^2 / (2m); each upload is u_k = d_k*v_k with
+        ||v_k||^2 ~= m, so m cancels and n_eff = 2*mean_k(||u_k||^2)/(m*var).
+        Dimensionless and rule-agnostic: ||g||^2 and the estimator constant b^2
+        cancel too. Anything that makes uploads disagree -- heterogeneity,
+        staleness, correlated probes -- inflates var without inflating
+        mean||u_k||^2, so it registers here as n_eff below the nominal pool.
+        """
+        lst = self.grad_for_var_check_list
+        n = len(lst)
+        if n < 2 or not var_scalar or var_scalar <= 0:
+            return None
+        m = lst[0].numel()
+        if m == 0:
+            return None
+        mean_sq = sum(float(t.pow(2).sum()) for t in lst) / n
+        return 2.0 * mean_sq / (m * var_scalar)
+
+    def _gate_rho(self):
+        """The rho the gate sizes against — see `_gate_rho_ref`.
+
+        Under trust_ratio it is exact (it IS the setpoint); under raw SGD it is the
+        last realised rho, which lags a commit. None until one exists.
+        """
+        if self._server_step_rule != "trust_ratio":
+            return self._last_rho
+        if getattr(self, "_gate_rho_ref", "annealed") == "setpoint":
+            return self._rho_star
+        return self._rho_star_now()
+
+    def _n_required(self):
+        """S-C: pool this commit's step needs, N_req = p*(rho/s)^2 / G_rule.
+
+        None when no rho exists yet (raw_sgd, first commit) -> the cap fires.
+
+        `rho == 0` is a requirement of ZERO, not an absent one -- pooling cannot
+        make a zero-length step safer. Folding it into the None branch left the
+        gate unsatisfiable, so the commit landed only via the max_iter bypass:
+        20 round trips for a step of length 0 (125713's last quintile).
+        """
+        rho = self._gate_rho()
+        if rho is None or not self._p_trainable or not self._g_rule:
+            return None
+        return self._p_trainable * (rho / self._gate_safety_s) ** 2 / self._g_rule
+
+    def _gate_satisfied(self):
+        """Has this pool earned a commit? `var` = fixed threshold; `n_target` = S-C."""
+        if self._commit_gate != "n_target":
+            return bool(self.var <= self.var_threshold)
+        n_req = self._n_required()
+        if n_req is None:
+            return False
+        # n_eff is the MEASURED pool (§15.13): the count while uploads are
+        # independent, below it if they ever stop being.
+        n_have = float(self._n_eff_scalar or len(self.grad_for_var_check_list))
+        # rho_max is DEFINED as the rho where n_req == max_iter*K, so at the cap the
+        # gate is satisfiable only at equality and float rounding lost it: 145932 sat
+        # there for all 80 commits (n_have=n_req=200) and never fired.
+        ok = n_have >= n_req * (1.0 - 1e-9)
+        logger.info(
+            f"[CommitGate] n_have={n_have:.1f} n_req={n_req:.1f} "
+            f"rho_t={self._gate_rho()} -> {'COMMIT' if ok else 'POOL'}"
+        )
+        return ok
+
     @timer_decorator
     def _compute_var(self):
         """Timed separately to localize aggregate()'s sim/real cost gap (simulate_fwdllm.md §B)."""
@@ -312,7 +679,43 @@ class FedSGDAggregator(TopAggregator):
         """Timed separately; shared by both commit branches (natural / force-commit),
         was duplicated verbatim."""
         _audit = getattr(self, "_server_update_audit", False)
+        self._stash_theta_0()
+        # Before the loop: it aliases weighted_gradient_sum[id] to model_list[0]'s
+        # tensor at i==0, then accumulates into it in place.
+        _split = self._pool_split_half_stats(model_list)
         _delta_sq = _weight_sq = 0.0
+        _tr_delta_sq = _tr_weight_sq = 0.0
+        # B1: `g` must be taken at theta_t, BEFORE the loops below mutate it --
+        # cos(G,g) is the aim of the step about to be taken, not of the next one.
+        _cos_due = (
+            getattr(self, "_cos_ground_truth_audit", False)
+            and self._commit_count % getattr(self, "_cos_probe_every", 1) == 0
+        )
+        _cos_probe = self._cos_probe_gradient() if _cos_due else None
+        _cos_dot = _cos_g_sq = 0.0
+
+        def _cos_accumulate(idx, pooled):
+            """Fold one pooled per-param block of G into <G,g> and ||G||^2."""
+            nonlocal _cos_dot, _cos_g_sq
+            if _cos_probe is None:
+                return
+            _g = _cos_probe[0][idx]
+            if _g is None:
+                return
+            _blk = pooled.detach().to("cpu", torch.float32)
+            _cos_dot += float((_blk * _g).sum())
+            _cos_g_sq += float(_blk.pow(2).sum())
+
+        # Pass 1 pools the uploads. Under raw_sgd this stays fused with the write
+        # below (byte-identical); trust_ratio needs ||G|| and ||theta_tr|| over the
+        # WHOLE trainable slice before any tensor is touched, so it is split out.
+        _trust = self._server_step_rule == "trust_ratio"
+        # Q2: trust_ratio knows rho before the step; raw_sgd only after, so
+        # `auto` falls back to the previous commit's realised rho.
+        _wd_lam = self._wd_lambda(self._rho_star_now() if _trust else None)
+        if _wd_lam:
+            logger.info(f"[WeightDecay] commit={self._commit_count} "
+                        f"lambda={_wd_lam:.6g}")
         for id, k in enumerate(weighted_gradient_sum):
             for i in range(0, len(model_list)):
                 local_sample_number, local_model_params = model_list[i]
@@ -321,27 +724,503 @@ class FedSGDAggregator(TopAggregator):
                     weighted_gradient_sum[id] = local_model_params[id]
                 else:
                     weighted_gradient_sum[id] += local_model_params[id]
-            # `.to("cpu")` syncs GPU->CPU; timed separately since it runs once
-            # per param, not once per call.
-            with _agg_sync_timer(self, "agg_apply_update_cpu_sync"):
-                _param = next(old_param).detach().to("cpu")
-                _update = self._server_update_step(
-                    id, learning_rate * weighted_gradient_sum[id] / training_num
-                )
-                _param.sub_(_update)
+            if not _trust:
+                _cos_accumulate(id, weighted_gradient_sum[id] / training_num)
+                # `.to("cpu")` syncs GPU->CPU; timed separately since it runs once
+                # per param, not once per call.
+                with _agg_sync_timer(self, "agg_apply_update_cpu_sync"):
+                    _param_src = next(old_param)
+                    _trainable = bool(_param_src.requires_grad)  # read before detach()
+                    _param = _param_src.detach().to("cpu")
+                    _update = self._server_update_step(
+                        id, learning_rate * weighted_gradient_sum[id] / training_num
+                    )
+                    _param.sub_(_update)
+                    self._apply_weight_decay(_param, _trainable, _wd_lam)
+                    if _audit:
+                        _d = float(_update.pow(2).sum())
+                        _w = float(_param.pow(2).sum())
+                        _delta_sq += _d
+                        _weight_sq += _w
+                        if _trainable:  # L3: the slice that can actually diverge
+                            _tr_delta_sq += _d
+                            _tr_weight_sq += _w
+        if _trust:
+            _rho_t = self._rho_star_now()
+            _g_sq = _t_sq = 0.0
+            _dirs = {}
+            for id, _p in zip(range(len(weighted_gradient_sum)),
+                              self.trainer.model.parameters()):
+                _pooled = weighted_gradient_sum[id] / training_num
+                # Momentum BEFORE normalisation, so the trust-ratio scale still
+                # pins rho at rho*. Applied after it (the raw_sgd path) heavy-ball
+                # multiplies the step by 1/(1-beta) -- which is the arithmetic
+                # behind the original S1 NaN, and would confound any momentum A/B.
+                _dirs[id] = self._server_update_step(id, _pooled)
+                if not _p.requires_grad:
+                    continue
+                _cos_accumulate(id, _dirs[id])
+                _g_sq += float(_dirs[id].pow(2).sum())
+                _t_sq += float(_p.detach().pow(2).sum())
+            _gn, _tn = _g_sq ** 0.5, _t_sq ** 0.5
+            # ||G||=0 means an empty/degenerate pool: skip rather than divide.
+            _scale = (_rho_t * _tn / _gn) if _gn > 0 else 0.0
+            logger.info(
+                f"[ServerStep] trust_ratio commit={self._commit_count} rho*={_rho_t:.6g} "
+                f"||G||={_gn:.6g} ||theta_tr||={_tn:.6g} scale={_scale:.6g}"
+            )
+            for id, _param_src in zip(range(len(weighted_gradient_sum)),
+                                      self.trainer.model.parameters()):
+                with _agg_sync_timer(self, "agg_apply_update_cpu_sync"):
+                    _trainable = bool(_param_src.requires_grad)
+                    _param = _param_src.detach().to("cpu")
+                    # Frozen tensors probe as zeros, so their pooled sum is already
+                    # zero -- no branch needed, same as raw_sgd.
+                    _update = _scale * _dirs[id]
+                    _param.sub_(_update)
+                    self._apply_weight_decay(_param, _trainable, _wd_lam)
                 if _audit:
-                    _delta_sq += float(_update.pow(2).sum())
-                    _weight_sq += float(_param.pow(2).sum())
+                    _d = float(_update.pow(2).sum())
+                    _w = float(_param.pow(2).sum())
+                    _delta_sq += _d
+                    _weight_sq += _w
+                    if _trainable:  # L3: the slice that can actually diverge
+                        _tr_delta_sq += _d
+                        _tr_weight_sq += _w
+        self._commit_count += 1
+        # S-C sensor: the step just taken sizes the next commit's pool.
+        if _trust:
+            self._last_rho = _rho_t
+        elif _audit and _tr_weight_sq > 0:
+            self._last_rho = (_tr_delta_sq / _tr_weight_sq) ** 0.5
+        # C-1: bank this step. Counts EVERY step, unlike replay_scoring.py's
+        # t = 0..T-2 (which brackets Phi_obs between two norms) -- one commit in
+        # ~900, and the conservative direction for a controller.
+        if self._last_rho:
+            self._B += 0.5 * math.log1p(self._last_rho ** 2)
+        self._log_retention()
+        # 3.1 fires BEFORE the stop is tested, so a re-sense that lowers B_max
+        # can stop the run on the same commit it lands rather than one later.
+        if (self._b_max_probe_every
+                and self._commit_count % self._b_max_probe_every == 0):
+            self._resense_b_max()
+        self._check_budget_stop()
+        _cos_gt = None
+        if _cos_probe is not None and _cos_g_sq > 0 and _cos_probe[1] > 0:
+            _cos_gt = (_cos_dot / (_cos_g_sq ** 0.5 * _cos_probe[1]),
+                       _cos_g_sq ** 0.5, _cos_probe[1])
+            logger.info(
+                f"[CosProbe] commit={self._commit_count} cos={_cos_gt[0]:.6g} "
+                f"||G||={_cos_gt[1]:.6g} ||g||={_cos_gt[2]:.6g}"
+            )
         if _audit:
-            self._emit_server_update(_delta_sq**0.5, _weight_sq**0.5, learning_rate)
+            self._emit_server_update(
+                _delta_sq**0.5, _weight_sq**0.5, learning_rate,
+                trainable_delta_norm=_tr_delta_sq**0.5,
+                trainable_weight_norm=_tr_weight_sq**0.5,
+                split=_split, cos_gt=_cos_gt,
+            )
 
-    def _emit_server_update(self, delta_norm, weight_norm, learning_rate):
+    def _check_budget_stop(self):
+        """C-1's stop (buildplan §5). Three predicates ORed, one exit.
+
+        **They are an OR, not an if/else** (row S). Collapsing them was correct
+        only for a `B_max` that stands still: `Phi = e^B` and `B_max = ln
+        Phi_peak` made "Phi crossed a threshold" and "the budget is spent" the
+        same test up to a log. `anchor` broke that -- `B_max` tracks `B` upward,
+        so the budget test is unreachable AND it was the `if`, which is why the
+        shipped rail never ran on a single controller run (§5.3 note (d)).
+
+        Order is by authority, not by cost. `saturation` is primary: the run
+        must end because LEARNING stopped, which is the only thing termination
+        is actually about. `phi_fixed` is the retention floor behind it, and
+        `budget` is demoted to a diagnostic reason -- `B_max` stays only to
+        drive law C's `rho*`.
+
+        LATCHED, not level-triggered: B cannot fall, but 3.1 can re-sense B_max
+        downward and move the threshold under it, so the predicate can flip.
+
+        `halt` routes through `_work_done` -- the same exit max_runtime_s and
+        [SIM_WALL_CEILING] already take. Freezing theta and continuing to
+        evaluate is dominated, not a trade-off: a frozen model's accuracy is
+        fixed, so further evals cost GPU and return eval noise (D6).
+        """
+        if self._phi_stop == "off" or self._stop_fired:
+            return
+        # The detector runs on the eval thread; this only reads its latch.
+        _sat = getattr(self, "_sat_det", None)
+        if _sat is not None and _sat.fired_at is not None:
+            reason = "saturation"
+        elif math.exp(self._B) >= self._phi_stop_threshold:
+            reason = "phi_fixed"
+        elif (self._rho_schedule == "landing"
+                and self._B >= self._budget_stop_frac * self._b_max):
+            reason = "budget"
+        else:
+            return
+        self._stop_fired = reason
+        logger.warning(
+            f"[BudgetStop] reason={reason} action={self._phi_stop} "
+            f"commit={self._commit_count} B={self._B:.6g} "
+            f"B_max={self._b_max:.6g} Phi={math.exp(self._B):.4g}"
+        )
+        if self._phi_stop == "halt":
+            self._work_done = True
+
+    def _wd_lambda(self, rho_hint):
+        """Q2: the decay coefficient for this commit, or None if disabled.
+
+        `auto` = rho^2/2, the value that exactly cancels Leg 1's inflation
+        (||theta||^2 grows by 1+rho^2 per commit; (1-rho^2/2)^2 ~= 1-rho^2).
+        """
+        wd = getattr(self, "_weight_decay", None)
+        if wd is None:
+            return None
+        if wd != "auto":
+            return wd
+        rho = rho_hint if rho_hint else (getattr(self, "_last_rho", 0.0) or 0.0)
+        return 0.5 * float(rho) ** 2 if rho else None
+
+    def _apply_weight_decay(self, param, trainable, lam):
+        """Shrink the TRAINABLE slice in place, after the step. Frozen params are
+        left alone: decaying them would change the backbone, not the budget."""
+        if lam and trainable:
+            param.mul_(1.0 - lam)
+
+    def _rho_star_now(self):
+        """S-B: the relative step this commit is allowed to take.
+
+        `const` holds the setpoint -- which isolates S-A but still grows
+        ||theta|| geometrically as (1+rho*^2)^(T/2). `rm` anneals as
+        rho*_0 * t^-rho_exp; rho_exp must exceed 0.5, since sum (1/sqrt(t))^2
+        diverges logarithmically and merely defers the blow-up (handoff §15.6).
+        """
+        t = max(1, self._commit_count + 1)
+        if self._rho_schedule == "landing":
+            # Law C. B_rem clamps at 0, so a B_max re-sensed below the spend
+            # gives rho* = 0 -- the correct stop, not a sqrt of a negative
+            # (edge case f). T_res being constant kills edge case (a) too.
+            return rho_star_now(self._b_max, self._B, self._t_res, self._rho_max)
+        if self._rho_schedule == "rm":
+            return self._rho_star * (t ** -self._rho_exp)
+        return self._rho_star
+
+    def _pool_split_half_stats(self, model_list):
+        """L1 audit: raw components of the committed pool's SPLIT-HALF COSINE.
+
+        Sum the uploads into even/odd halves (interleaved -- arrival order tracks
+        trainer speed and staleness) and return `(<a,b>, ||a||, ||b||, pool_size)`.
+        The halves share one true-gradient component and carry independent probe
+        noise, so their agreement measures pooling adequacy without needing the
+        true gradient: S-E's gate statistic and S-C's setpoint.
+
+        Raw components, never a per-commit ratio: at p~1e6 one commit's cosine is
+        under the 1/sqrt(p) ~ 1e-3 sampling floor, so only sum(dot)/sum(|a||b|)
+        pooled over ~100 commits is meaningful.
+
+        Returns None when disabled or the pool is too small to split.
+        """
+        if not getattr(self, "_pool_split_half_audit", False):
+            return None
+        try:
+            n = len(model_list)
+            if n < 2:
+                return None
+            dot = a_sq = b_sq = 0.0
+            for id in range(len(model_list[0][1])):
+                sum_a = sum_b = None
+                for i in range(n):
+                    t = model_list[i][1][id]
+                    if i % 2 == 0:
+                        sum_a = t.clone() if sum_a is None else sum_a + t
+                    else:
+                        sum_b = t.clone() if sum_b is None else sum_b + t
+                if sum_a is None or sum_b is None:
+                    continue
+                # float64 accumulation: the per-param dots are tiny and many.
+                dot += float((sum_a.double() * sum_b.double()).sum())
+                a_sq += float(sum_a.double().pow(2).sum())
+                b_sq += float(sum_b.double().pow(2).sum())
+            return (dot, a_sq**0.5, b_sq**0.5, n)
+        except Exception:  # pragma: no cover - audit must never fault training
+            logger.debug("pool split-half audit failed", exc_info=True)
+            return None
+
+    @torch.no_grad()
+    def _stash_theta_0(self):
+        """P3': keep the trainable slice at init, once, for the retention probe.
+
+        Taken at the top of the FIRST commit, before anything mutates the model,
+        so it is theta_0 and not theta_1. ~1.8 MB at p=450k in fp32.
+        """
+        # getattr, not attribute access: test doubles borrow this method off a
+        # bare `object.__new__` stub (the `_slot_holders` pattern), and a probe
+        # that is simply absent is the same as one that is off.
+        if not getattr(self, "_retention_every", 0) or self._theta_0 is not None:
+            return
+        if self._commit_count:      # too late to be theta_0; do not pretend
+            self._retention_every = 0
+            logger.warning("[Retention] first commit already taken; probe off")
+            return
+        try:
+            self._theta_0 = [p.detach().to("cpu", torch.float32).clone()
+                             for p in self.trainer.model.parameters()
+                             if p.requires_grad]
+            self._theta_0_norm = math.sqrt(
+                sum(float(t.pow(2).sum()) for t in self._theta_0))
+        except Exception:  # pragma: no cover - a probe must never fault training
+            self._retention_every = 0
+            logger.warning("[Retention] theta_0 stash failed; probe off",
+                           exc_info=True)
+
+    @torch.no_grad()
+    def _log_retention(self):
+        """P3': measure `cos(theta_t, theta_0)` and check it against `1/Phi`.
+
+        Model §4.1a DERIVES retention = 1/Phi from the same perpendicularity that
+        makes `Phi = e^B` exact, and the whole angular reading of `Phi` (peak at
+        ~70 degrees of drift) rests on it -- but it has never been measured. The
+        gate is `cos*Phi = 1.00 +/- 0.02`; materially above 1 means the aligned
+        ~7% of each step overlaps `theta_0` and `Phi` OVERSTATES the damage.
+
+        One dot over the trainable slice, strided (§6.3: emit-only is not free).
+        """
+        if not getattr(self, "_retention_every", 0) or self._theta_0 is None:
+            return
+        if self._commit_count % self._retention_every:
+            return
+        try:
+            dot = t_sq = 0.0
+            for p, t0 in zip((q for q in self.trainer.model.parameters()
+                              if q.requires_grad), self._theta_0):
+                _p = p.detach().to("cpu", torch.float32)
+                dot += float((_p * t0).sum())
+                t_sq += float(_p.pow(2).sum())
+            n_t = t_sq ** 0.5
+            if n_t <= 0 or self._theta_0_norm <= 0:
+                return
+            cos = dot / (n_t * self._theta_0_norm)
+            phi = math.exp(self._B)
+            logger.info(
+                f"[Retention] commit={self._commit_count} cos={cos:.6g} "
+                f"Phi={phi:.6g} cos*Phi={cos * phi:.4f} "
+                f"drift_deg={math.degrees(math.acos(max(-1.0, min(1.0, cos)))):.1f} "
+                f"||theta_t||/||theta_0||={n_t / self._theta_0_norm:.6g}"
+            )
+        except Exception:  # pragma: no cover - a probe must never fault training
+            logger.debug("[Retention] probe failed", exc_info=True)
+
+    @torch.no_grad()
+    def _probe_accuracy(self, x, labels, chunk=256):
+        """Held-out accuracy at the current weights. Forward only, eval mode."""
+        model = self.trainer.model
+        ok = 0
+        for s in range(0, x.shape[0], chunk):
+            out = model(x[s:s + chunk])
+            logits = (out.logits if hasattr(out, "logits")
+                      else out[0] if isinstance(out, (tuple, list)) else out)
+            ok += int((logits.argmax(-1) == labels[s:s + chunk].view(-1)).sum())
+        return ok / max(1, x.shape[0])
+
+    def _resense_b_max(self):
+        """3.1: re-sense `B_max` by INJECTING inflation instead of waiting for it.
+
+        Isotropic Gaussian noise on the trainable slice, scaled so `||theta_tr||`
+        grows by `Phi`; the knee of chance-normalized accuracy is `Phi_peak`
+        (model §5.5b, `expts/bmax_probe.py`). Forward passes only -- no
+        gradients, no training. The knee is measured from the CURRENT theta, so
+        `ln Phi_peak` is the REMAINING budget and `B_max = B + ln Phi_peak`.
+
+        B-1 (2026-08-13) made this mandatory rather than optional: knees are
+        neither invariant nor monotone in `num_labels` (agnews ~3.0-3.5 vs
+        yahoo/yelp-p ~2.0-2.3), so a fixed or `num_labels`-derived constant
+        misprices the budget on at least two of three datasets tested.
+
+        `T_res` is NOT touched -- it is a rate, not run state, so there is no
+        horizon for a re-sense to reset (buildplan §5, D5). Only `_b_max` moves,
+        and 3.2 picks it up on the very next commit with no other bookkeeping.
+
+        The weights are perturbed IN PLACE against a cloned baseline and restored
+        in a `finally`. That clone is the "copy" the spec asks for; cloning the
+        whole model instead would double resident memory for no added safety,
+        since anything that could skip the restore also ends the run.
+        """
+        params = [p for p in self.trainer.model.parameters() if p.requires_grad]
+        if not params:
+            return
+        model = self.trainer.model
+        was_training = model.training
+        base = [p.detach().clone() for p in params]
+        t0 = time.time()
+        try:
+            x, labels = self._reference_batch(self._b_max_probe_n)
+            model.eval()
+            base_acc = self._probe_accuracy(x, labels)
+            n0 = math.sqrt(sum(float(p.detach().pow(2).sum()) for p in params))
+            gen = torch.Generator().manual_seed(_COS_PROBE_SEED + self._commit_count)
+            accs = []
+            for phi in self._b_max_phis:
+                with torch.no_grad():
+                    for p, b in zip(params, base):
+                        p.copy_(b)
+                    eps = [torch.randn(p.shape, generator=gen) for p in params]
+                    en = math.sqrt(sum(float(e.pow(2).sum()) for e in eps))
+                    target = n0 * noise_scale(phi)
+                    for p, e in zip(params, eps):
+                        p.add_(e.to(p.device, p.dtype) * (target / en))
+                accs.append(self._probe_accuracy(x, labels))
+        except Exception:  # pragma: no cover - the probe must never fault training
+            logger.warning("[BmaxProbe] failed; keeping current B_max",
+                           exc_info=True)
+            return
+        finally:
+            with torch.no_grad():
+                for p, b in zip(params, base):
+                    p.copy_(b)
+            if was_training:
+                model.train()
+
+        phi_knee = knee(self._b_max_phis, accs, base_acc, self.num_labels)
+        new = b_max_from_knee(phi_knee)
+        curve = " ".join(f"{p:g}:{a:.3f}" for p, a in zip(self._b_max_phis, accs))
+        if new is None:
+            # A head at chance has no readable curve -- sizing a budget off it
+            # would be worse than keeping a prior that is merely conservative.
+            logger.warning(
+                f"[BmaxProbe] commit={self._commit_count} base_acc={base_acc:.3f} "
+                f"too close to chance {1.0 / self.num_labels:.3f}; keeping "
+                f"B_max={self._b_max:.6g}  curve[{curve}]"
+            )
+            return
+        old = self._b_max
+        # The probe inflates the CURRENT theta, so `ln Phi_knee` is the budget
+        # remaining FROM HERE while `_B` accumulates from theta_0. Read as a
+        # total it made B_max < B on the first fire of every arm, clamping B_rem
+        # to 0 and pinning rho* at 0 for 23% (125619) / 48% (125713) of commits.
+        cand = self._B + new
+        self._b_max_senses.append(cand)
+        if self._b_max_policy == "mean":
+            self._b_max = sum(self._b_max_senses) / len(self._b_max_senses)
+        elif self._b_max_policy == "ratchet":
+            self._b_max = min(self._b_max_senses)
+        else:
+            self._b_max = cand
+        logger.info(
+            f"[BmaxProbe] commit={self._commit_count} B_max {old:.6g} -> "
+            f"{self._b_max:.6g} (sensed={cand:.6g} n={len(self._b_max_senses)} "
+            f"B_rem={new:.6g} Phi_knee={phi_knee:.3f} policy={self._b_max_policy}) "
+            f"base_acc={base_acc:.3f} B={self._B:.6g} "
+            f"rho*={self._rho_star_now():.6g} took={time.time() - t0:.1f}s  "
+            f"curve[{curve}]"
+        )
+
+    def _reference_batch(self, n_want):
+        """The fixed held-out batch both server-side probes read (B17).
+
+        Cached once and shared: `_cos_probe_gradient` needs a gradient on it and
+        3.1's `B_max` probe needs accuracy on it, and they MUST be the same
+        draw -- otherwise the two instruments disagree for a reason that has
+        nothing to do with the model.
+
+        NEVER slice `[:n]`: `test_index_list` is per-client shards concatenated
+        in client order, never shuffled (`base_data_manager.py:204-216`), so the
+        head is ONE client's skewed shard -- 75% single-class, and its gradient
+        came out ANTI-correlated (-0.46) with the true one. A fixed-seed
+        permutation keeps the batch identical across commits and across arms.
+        """
+        if self._cos_probe_batch is not None:
+            return self._cos_probe_batch
+        device = next(self.trainer.model.parameters()).device
+        tensors = self.test_global.dataset.tensors
+        total = tensors[0].shape[0]
+        n = min(n_want, total)
+        idx = torch.randperm(
+            total, generator=torch.Generator().manual_seed(_COS_PROBE_SEED)
+        )[:n]
+        idx, _ = torch.sort(idx)  # locality; order is irrelevant to either probe
+        self._cos_probe_batch = (
+            tensors[1][idx].to(device),   # input_ids (eval_model's layout)
+            tensors[4][idx].to(device),   # labels
+        )
+        _lab = tensors[4][idx].view(-1).tolist()
+        _share = max(_lab.count(c) for c in set(_lab)) / max(len(_lab), 1)
+        logger.info(
+            f"[RefBatch] shuffled held-out batch of {n} cached "
+            f"(seed={_COS_PROBE_SEED}, dominant-class share={_share:.2f})"
+        )
+        # threshold is 1/K + margin, not a fixed 0.5: balanced IS 0.50 on a
+        # 2-class task and 0.10 on a 10-class one.
+        _skew_max = max_dominant_share(self.num_labels)
+        if _share > _skew_max:
+            logger.warning(
+                f"[RefBatch] reference batch is still class-skewed at "
+                f"{_share:.2f} (>{_skew_max:.2f} for {self.num_labels} classes); "
+                f"raise cos_probe_batch_size"
+            )
+        return self._cos_probe_batch
+
+    def _cos_probe_gradient(self):
+        """B1 (§15.1): a REAL gradient at the current theta, for one fixed batch.
+
+        `G` is already server-side, so the only missing half of cos(G,g) is some
+        `g`. A backward pass on a fixed held-out batch is one: biased toward that
+        batch, but the SAME batch every commit, so trend and scale are comparable
+        across commits and arms. fp32, no autocast -- a reference, not a step.
+
+        Returns `([g_i or None per model param], ||g||)` on CPU, or None.
+        """
+        try:
+            model = self.trainer.model
+            x, labels = self._reference_batch(self._cos_probe_batch_size)
+            was_training = model.training
+            model.eval()
+            model.zero_grad(set_to_none=True)
+            output = model(x)
+            if hasattr(output, "logits"):
+                logits = output.logits
+            elif isinstance(output, (tuple, list)):
+                logits = output[0]
+            else:
+                logits = output
+            loss = CrossEntropyLoss()(
+                logits.view(-1, self.num_labels), labels.view(-1)
+            )
+            loss.backward()
+            grads, g_sq = [], 0.0
+            for p in model.parameters():
+                if not p.requires_grad or p.grad is None:
+                    grads.append(None)
+                    continue
+                g = p.grad.detach().to("cpu", torch.float32).clone()
+                grads.append(g)
+                g_sq += float(g.pow(2).sum())
+            model.zero_grad(set_to_none=True)
+            if was_training:
+                model.train()
+            # A dead probe emits nothing, which at scoring time is indistinguishable
+            # from "audit off". Say so once.
+            if g_sq <= 0 and not getattr(self, "_cos_probe_warned", False):
+                self._cos_probe_warned = True
+                logger.warning(
+                    "[CosProbe] backward produced no trainable gradient -- B1 is "
+                    "emitting nothing. Check requires_grad on the aggregator model."
+                )
+            return grads, g_sq ** 0.5
+        except Exception:  # pragma: no cover - audit must never fault training
+            logger.debug("cos ground-truth probe failed", exc_info=True)
+            return None
+
+    def _emit_server_update(self, delta_norm, weight_norm, learning_rate,
+                            trainable_delta_norm=None, trainable_weight_norm=None,
+                            split=None, cos_gt=None):
         """One `server_update` record per commit (I-1). Never faults training."""
         try:
             from flame import telemetry
             if telemetry.is_enabled():
                 from flame.telemetry.events import build_server_update
                 stage = getattr(self, "fwd_llm_stage", None)
+                _dot, _na, _nb, _psize = split if split else (None, None, None, None)
+                _cos, _gn, _pgn = cos_gt if cos_gt else (None, None, None)
                 ev, fields = build_server_update(
                     round_num=getattr(stage, "round_id", None),
                     data_id=getattr(stage, "data_id", None),
@@ -350,6 +1229,18 @@ class FedSGDAggregator(TopAggregator):
                     update_delta_norm=delta_norm,
                     weight_norm=weight_norm,
                     learning_rate=learning_rate,
+                    trainable_delta_norm=trainable_delta_norm,
+                    trainable_weight_norm=trainable_weight_norm,
+                    pool_size=_psize,
+                    split_half_dot=_dot,
+                    split_half_norm_a=_na,
+                    split_half_norm_b=_nb,
+                    var_at_commit=getattr(self, "_var_scalar", None),
+                    n_eff=getattr(self, "_n_eff_scalar", None),
+                    cos_ground_truth=_cos, pooled_norm=_gn, probe_grad_norm=_pgn,
+                    budget_b=self._B, budget_b_max=self._b_max,
+                    rho_star=self._rho_star_now(), n_req=self._n_required(),
+                    stop_reason=self._stop_fired,
                 )
                 telemetry.emit(ev, **fields)
         except Exception:  # pragma: no cover - telemetry must never fault training
@@ -368,6 +1259,14 @@ class FedSGDAggregator(TopAggregator):
             self._var_scalar = self.var.item()
         self.var_prev_iter_list.append(self._var_scalar)
         logger.info(f"self.var = {self._var_scalar}")
+        # S-K sensor: rides on server_update_audit since it lands in that record --
+        # and is mandatory under commit_gate=n_target, which reads it.
+        if getattr(self, "_server_update_audit", False) or self._commit_gate == "n_target":
+            self._n_eff_scalar = self._compute_n_eff(self._var_scalar)
+            logger.info(
+                f"[n_eff] n_eff={self._n_eff_scalar} pool={len(self.grad_for_var_check_list)} "
+                f"var={self._var_scalar}"
+            )
         if logger.isEnabledFor(logging.DEBUG):
             var_jvp = calculate_real_var(self.jvp_for_snr_check_list)
             self.snr = calculate_snr(self.jvp_for_snr_check_list)
@@ -449,7 +1348,7 @@ class FedSGDAggregator(TopAggregator):
         
         if self.args.var_control:
             _force_commit = getattr(self, "_force_commit_this_cycle", False)
-            if self.var <= self.var_threshold:
+            if self._gate_satisfied():
             # Use different stopping conditions if necessary
             # if self.var_within_epsilon(): 
             # if self.snr_within_epsilon_and_var_under(var_jvp):
@@ -662,6 +1561,41 @@ class FedSGDAggregator(TopAggregator):
 
     def train(self) -> None:
         pass
+
+    def _eval_snapshot_model(self):
+        """Base snapshot, plus the commit this eval will speak for.
+
+        Stamped on the MAIN thread, right where the snapshot is taken -- the eval
+        itself runs on a daemon thread that may not finish for several commits,
+        and a fire commit read off `_commit_count` there would lag by however long
+        the test-set pass took.
+        """
+        model = super()._eval_snapshot_model()
+        if model is not None:
+            self._eval_commit = self._commit_count
+        return model
+
+    def eval_model(self, *args, **kwargs):
+        """Base eval, then feed row E's saturation detector.
+
+        Reads accuracy only to ask whether it is still RISING -- never against a
+        level, which would make the target a knob and void the zero-input claim
+        (§6.7). At most one eval is ever in flight (`_eval_inflight`), so the
+        detector sees the series in order.
+        """
+        out = super().eval_model(*args, **kwargs)
+        if self._sat_det is not None:
+            try:
+                acc = (out[0] or {}).get("acc")
+                if acc is not None and self._sat_det.update(self._eval_commit, acc):
+                    logger.warning(
+                        f"[SatStop] saturated at commit {self._sat_det.fired_at} "
+                        f"acc={acc:.4f} best={self._sat_det.best:.4f} "
+                        f"Phi={math.exp(self._B):.4g}"
+                    )
+            except Exception:  # pragma: no cover - the detector must never fault eval
+                logger.debug("saturation detector update failed", exc_info=True)
+        return out
 
     def evaluate(self) -> None:
         pass

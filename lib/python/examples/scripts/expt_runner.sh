@@ -114,12 +114,22 @@ expt_assert_clean_slate() {
       return 1
     fi
   fi
-  # Residual GPU memory here is a peer's job (your workers are gone) -> warn only.
+  # Residual GPU memory here is a peer's job (your workers are gone). A little is
+  # noise; a lot is a guaranteed OOM. 2026-08-21: a peer at 43.7 GB of 46 GB let
+  # a 100-trainer run start and killed 85 trainers in `pin_memory` inside 90 s,
+  # before a single forward pass, and the run then sat at 0 commits for its full
+  # 45-min grace. Warn above EXPT_GPU_FREE_MB, REFUSE above EXPT_GPU_REFUSE_MB.
   if command -v nvidia-smi >/dev/null 2>&1; then
     local maxused; maxused="$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | sort -n | tail -1)"
     local thresh="${EXPT_GPU_FREE_MB:-500}"
+    local refuse="${EXPT_GPU_REFUSE_MB:-2048}"
     if [ -n "$maxused" ] && [ "$maxused" -gt "$thresh" ] 2>/dev/null; then
       echo "  [$label] WARNING: a GPU shows ${maxused}MB used (> ${thresh}MB) — a peer job may be resident." >&2
+      if [ "$maxused" -gt "$refuse" ] 2>/dev/null && [ "${EXPT_GPU_ALLOW_PEER:-0}" != "1" ]; then
+        echo "  [$label] REFUSING: ${maxused}MB > ${refuse}MB leaves too little for this run's trainers." >&2
+        echo "  [$label] Wait for the peer, or override with EXPT_GPU_ALLOW_PEER=1." >&2
+        return 1
+      fi
       if [ "${EXPT_GPU_STRICT:-0}" = "1" ]; then
         echo "  [$label] EXPT_GPU_STRICT=1 → aborting." >&2; return 1
       fi

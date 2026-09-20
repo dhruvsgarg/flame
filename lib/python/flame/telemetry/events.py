@@ -10,6 +10,7 @@ every run produces the same columns.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Optional
 
 # ---- Event type constants -------------------------------------------------
@@ -286,6 +287,22 @@ def build_server_update(
     update_delta_norm: float,
     weight_norm: float,
     learning_rate: float,
+    trainable_weight_norm: Optional[float] = None,
+    trainable_delta_norm: Optional[float] = None,
+    pool_size: Optional[int] = None,
+    split_half_dot: Optional[float] = None,
+    split_half_norm_a: Optional[float] = None,
+    split_half_norm_b: Optional[float] = None,
+    var_at_commit: Optional[float] = None,
+    n_eff: Optional[float] = None,
+    cos_ground_truth: Optional[float] = None,
+    pooled_norm: Optional[float] = None,
+    probe_grad_norm: Optional[float] = None,
+    budget_b: Optional[float] = None,
+    budget_b_max: Optional[float] = None,
+    rho_star: Optional[float] = None,
+    n_req: Optional[float] = None,
+    stop_reason: Optional[str] = None,
 ) -> tuple[str, dict[str, Any]]:
     """I-1 audit: L2 norm of the update actually SUBTRACTED from the server
     weights, the resulting weight norm, and their ratio — one record per commit.
@@ -293,8 +310,16 @@ def build_server_update(
     `update_ratio` is the diagnostic: an undamped optimizer random-walks, so a
     collapse shows as the ratio climbing before accuracy falls (EXPTS_CHARTER
     I-1). Gated at the call site — its wall cost perturbs arrival order (§D-45).
+
+    `trainable_*` (L3) isolate the adapter/head slice from the frozen backbone, so
+    `rho` is measured rather than reconstructed from a measured init constant.
+
+    `split_half_*` (L1) are the RAW dot and norms, not the ratio: one commit's
+    cosine is buried in 1/sqrt(p) noise (~1e-3 at p=1e6, vs a ~3e-4 signal), so
+    pool sum(dot)/sum(|a||b|) across commits. For two halves sharing one signal,
+    cos(a,b) = cos_half^2, hence cos(G,g) ~= sqrt(2 * cos(a,b)).
     """
-    return EVENT_SERVER_UPDATE, {
+    fields: dict[str, Any] = {
         "round": round_num,
         "data_id": data_id,
         "iteration_per_data_id": iteration,
@@ -304,6 +329,52 @@ def build_server_update(
         "update_ratio": (update_delta_norm / weight_norm) if weight_norm else None,
         "learning_rate": learning_rate,
     }
+    if trainable_weight_norm is not None:
+        fields["trainable_weight_norm"] = trainable_weight_norm
+        fields["trainable_delta_norm"] = trainable_delta_norm
+        fields["rho"] = (
+            (trainable_delta_norm / trainable_weight_norm)
+            if trainable_weight_norm else None
+        )
+    if split_half_dot is not None:
+        _den = (split_half_norm_a or 0.0) * (split_half_norm_b or 0.0)
+        fields["pool_size"] = pool_size
+        fields["split_half_dot"] = split_half_dot
+        fields["split_half_norm_a"] = split_half_norm_a
+        fields["split_half_norm_b"] = split_half_norm_b
+        # Per-commit convenience only; pool the raw components for a usable number.
+        fields["split_half_cos"] = (split_half_dot / _den) if _den else None
+    if n_eff is not None:
+        # S-K: pooling actually achieved, vs the nominal pool_size. Unlike
+        # split_half_cos this is a ratio of two noise energies, so it is O(n)
+        # rather than 1+O(1e-4) and carries no 1/sqrt(p) floor. n_eff < pool_size
+        # is the shortfall from heterogeneity/staleness/correlated uploads.
+        fields["var_at_commit"] = var_at_commit
+        fields["n_eff"] = n_eff
+        fields["n_eff_ratio"] = (n_eff / pool_size) if pool_size else None
+    if cos_ground_truth is not None:
+        # B1: cos(G, g) against a REAL backward-pass gradient on a fixed held-out
+        # batch. Unlike split_half_cos this is not noise-limited -- `g` is exact
+        # for that batch -- so it is usable per commit. `pooled_norm/probe_grad_norm`
+        # tests the independent-pooling assumption (§12) and resolves H-B.
+        fields["cos_ground_truth"] = cos_ground_truth
+        fields["pooled_norm"] = pooled_norm
+        fields["probe_grad_norm"] = probe_grad_norm
+    if budget_b is not None:
+        # C-1: the controller's own state. `budget_b` is exact from rho and free,
+        # so it is emitted on every commit whatever the schedule -- it is what
+        # makes both Phase-4 failure modes diagnosable ~20 commits in, without
+        # waiting for the accuracy curve. `rho_star`/`n_req` are the enactment
+        # pair: rho_star is what the schedule ASKED for (rho above is what was
+        # realised), n_req what the gate demanded of the pool.
+        fields["budget_b"] = budget_b
+        fields["budget_b_max"] = budget_b_max
+        fields["budget_frac"] = (budget_b / budget_b_max) if budget_b_max else None
+        fields["phi"] = math.exp(budget_b)
+        fields["rho_star"] = rho_star
+        fields["n_req"] = n_req
+        fields["stop_reason"] = stop_reason
+    return EVENT_SERVER_UPDATE, fields
 
 
 def build_comm(

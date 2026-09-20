@@ -71,7 +71,7 @@ that's in `EXPTS_CHARTER.md`, not restated per occurrence. **Status:** ✅ EVAL 
 | FedBuff(P)+IT+O | `fedbuff_it_oracular` | ⚠ ABLATION | async, random select | L1 alone, aware twin | L2 floor's aware twin |
 | **Felix(P)** | `felix_round` | ✅ EVAL | async, oort-smart (ported) | L1, smart-selection substrate | published anchor (Felix, this project's own async substrate paper — preprint public): does availability-aware smart selection alone already close most of the gap before any of our L2 contributions? |
 | Felix(P)+IT | `felix_it` | ⚠ ABLATION | async, oort-smart (ported) | L1 (smart) + C1+C3 | **not Felix's native behavior** — grafts FluxTune's own iteration-level reselect cadence onto Felix's selector, done only to isolate L1's contribution and show iteration-level control *alone* isn't enough (motivating C1+C3); never headlined, since crediting a published baseline with our own mechanism in the EVAL row would be an unearned advantage to that baseline. `→ FluxTune` isolates **exactly C1+C3** (not C2 — see ᵖ) — FluxTune's own delta over Felix's contributions, no raw Felix needed |
-| **FluxTune** | `fluxtune` | ✅ EVAL (ours) | async, oort-smart (ours) | L0+L1+C1+C2ᵖ+C3 | the headline result |
+| **FluxTune** | `fluxtune` ⁿ | ✅ EVAL (ours) | async, oort-smart (ours) | L0+L1+C1+C2ᵖ+C3 | the headline result |
 
 **ᵖ C2 (dynamic K/C) is pending, not landed in the headline config.** `Opt-4 dynamic_kc.enabled` is
 wired but **off by default** — `fluxtune`'s current run does *not* include C2 (`EXPTS_CHARTER.md`'s
@@ -84,6 +84,45 @@ Remaining work #3).
 *(`fluxtune_dynkc` — dynamic_kc enabled, ⛔ RESEARCH, not part of the paper matrix yet — this *is* the
 flag path that lands C2 into the headline `fluxtune` config once it's validated; parked pending that
 decision, not slated for removal — see Remaining work.)*
+
+### FluxTune estimator versions (ⁿ) — `fluxtune_v1` / `fluxtune_v2`, landed 2026-08-15
+
+**Orthogonal to the C1/C2/C3 async-execution story above.** The table's `fluxtune` row (L0+L1+C1+C2ᵖ+C3)
+describes *which async-execution/selection/aggregation contributions are on* — it says nothing about the
+forward-gradient **estimator** itself (how the JVP probes become an update, and how the server paces the
+step). That estimator layer is a **separate versioning axis**, tracked in `fl_fwd_ft_practice.md`
+(P2/P3/P4) and reconciled here so it stays runnable from the catalog:
+
+| version | yaml key | estimator layer | fate |
+|---|---|---|---|
+| v1 (original) | `fluxtune_v1` | coin-flip top-2 probe select, raw in-place SGD, no anneal, sample-variance commit gate (all code defaults, unset in the catalog) | peaks near target then oscillates and collapses (`EXPTS_CHARTER.md` Issue I-1) |
+| **v2 (default)** | `fluxtune_v2`, aliased as plain **`fluxtune`** | + `probe_combine=mean`, `server_step_rule=trust_ratio`, `rho_schedule=rm`/`0.25`, `commit_gate=n_target`/`gate_rho_ref=setpoint`, `gate_safety_s=1.5`, cos ground-truth audit (stride 25), `adapter_reduction_factor=64` — `fl_fwd_ft_practice.md` P2.1 items 1,2,3,4,5,6,8, validated 2026-08-09…2026-08-15 | current default for everything not explicitly ablating the estimator |
+
+**The plain, unversioned `fluxtune` name now means v2**, everywhere in this repo and in
+`EXPERIMENTS.md`/`EXPTS_CHARTER.md` going forward — use `fluxtune_v1` explicitly only when the ablation
+target *is* the pre-estimator-fix behavior. `EXPERIMENTS.md`'s existing run ledger (R1–R4, the
+`run_2026070…` entries) predates this split by five weeks and ran what is now called `fluxtune_v1` — those
+rows are unchanged/correct as historical fact, just read "fluxtune" there as "fluxtune_v1" mentally, or see
+the dated note added at the top of that doc's run ledger.
+
+`fluxtune` is a YAML merge-key alias for `fluxtune_v2` (`<<: *fluxtune_v2_def`) — not a copy-pasted
+duplicate — so the two can never drift apart; `flame/launch/baselines.py`'s `deep_merge` deep-copies before
+any mutation, so the shared reference is safe across concurrent/sequential experiment launches (verified).
+A future **`fluxtune_v3`** follows the same pattern once its knobs validate: copy `fluxtune_v2`'s block,
+layer in the new fixes, then re-point the `fluxtune` alias.
+
+**Two known gaps, not yet resolved (see Remaining work #7, #8):**
+- `fluxtune_v2` requires `export FWDLLM_FD_SCALE_INVARIANT=1` before launch — this schema has no way to
+  express an environment variable, so it's a manual step, documented in the yaml/smoke-yaml comments but
+  not enforced.
+- `sim_charge_profiles/fluxtune.yaml` was profiled before the estimator-layer changes (i.e. against v1's
+  behavior, notably *without* the cos ground-truth audit's real-wall cost). The launcher's sim-mode
+  provenance preflight correctly blocks `--only fluxtune_v1`/`--only fluxtune_v2` over this (profile name
+  doesn't match baseline name) — but **cannot catch it for plain `--only fluxtune`**, since the name still
+  literally says "fluxtune" even though what it resolves to changed underneath it. Real-mode runs are
+  unaffected (the sim charge model isn't in that path); a **sim** run of `fluxtune`/`fluxtune_v2` should be
+  treated as unvalidated at the vclock level until `sim_charge_profiles/fluxtune.yaml` is re-profiled
+  against a v2 real run.
 
 Exact per-baseline selector/optimizer/avail-tracking knobs live in `baselines.yaml`, not repeated here.
 **Opt flags (fluxtune, flag-gated, byte-identical off):** Opt-1 `suppress_redundant_weights` (all
@@ -225,3 +264,17 @@ Naming is finalized (this doc); none of it is propagated to code/tests/yaml file
    marked `TODO(verify)` in `baselines.yaml`) against a smoke run.
 6. **Verification pass**: repo-wide grep for every old key name (zero non-historical hits expected),
    `test_baselines.py` + `test_config_generator.py` green.
+7. ~~`fluxtune_v2`'s `FWDLLM_FD_SCALE_INVARIANT=1` requirement is a manual env-var export, not enforced by
+   config.~~ **Done (2026-08-15).** Still a manual export (the schema has no env-var mechanism to auto-set
+   it), but `run_sequential.sh` now has a preflight check: any resolved `adapter_reduction_factor != 16`
+   with the var unset is `level: error`, `--force`-able, same treatment as the wall-clock/sim-charge-profile
+   checks. Verified: blocks `--only fluxtune --mode real --dry-run` without the export, passes with it,
+   and is silent for `fluxtune_v1` (rf=16, doesn't need the var).
+8. **Re-profile `sim_charge_profiles/fluxtune.yaml` against a `fluxtune_v2` real run.** It predates the
+   estimator-layer changes (2026-08-15) and in particular has no charge for the cos ground-truth audit's
+   real-wall cost — a **sim**-mode `fluxtune`/`fluxtune_v2` run's vclock should be treated as unvalidated
+   until this lands (real-mode is unaffected). The launcher's provenance preflight blocks `--only
+   fluxtune_v1`/`--only fluxtune_v2` on this already (correctly); it cannot block plain `--only fluxtune`
+   since the profile's recorded name still string-matches. Once re-profiled, decide whether `fluxtune_v1`
+   needs its own profile too or can keep sharing `fluxtune.yaml` (it's byte-identical to what that profile
+   was originally profiled against, so sharing is currently correct for v1, not v2).
