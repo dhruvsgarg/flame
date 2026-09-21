@@ -103,3 +103,10 @@ class MessageType(Enum):
     # trainer_id) identically in real and sim. None when delays are disabled
     # (aggregator then falls back to arrival order).
     MODELED_DELAY_S = 43
+
+    # This trainer's index into the shared satellite position file
+    # (flame.link), stamped so the aggregator can compute its own
+    # ground-station-side link budget for this trainer without a priori
+    # knowledge of the end_id -> satellite_index mapping (end_id carries no
+    # such information -- see flame.mode.horizontal.syncfl.top_aggregator).
+    SATELLITE_INDEX = 44

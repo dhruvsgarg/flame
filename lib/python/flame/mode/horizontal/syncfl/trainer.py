@@ -487,6 +487,12 @@ class Trainer(Role, metaclass=ABCMeta):
         if _wrt is not None:
             msg[MessageType.WALL_RECV_TS] = float(_wrt)
 
+        # This trainer's satellite_index (flame.link), so the aggregator can
+        # compute its own ground-station-side link budget for this end. 
+        _sat_idx = getattr(self, "satellite_index", None)
+        if _sat_idx is not None:
+            msg[MessageType.SATELLITE_INDEX] = int(_sat_idx)
+
         # Stamp wall-clock send time so aggregator can decompose wall_lag_s.
         _wall_send_ts = time.time()
         msg[MessageType.WALL_SEND_TS] = _wall_send_ts
