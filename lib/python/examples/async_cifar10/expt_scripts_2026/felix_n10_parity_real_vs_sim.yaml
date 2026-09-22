@@ -23,6 +23,7 @@ experiments:
     baseline: felix
     trainer:
       num_trainers: 10
+      split_num_trainers: 300
       start_id: 1
       dataset:
         name: cifar10
@@ -70,6 +71,7 @@ experiments:
     baseline: felix
     trainer:
       num_trainers: 10
+      split_num_trainers: 300
       start_id: 1
       dataset:
         name: cifar10
