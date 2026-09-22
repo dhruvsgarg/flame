@@ -134,15 +134,14 @@ class PyTorchCifar10Trainer(Trainer):
         self.trainer_indices_list = self.config.hyperparameters.trainer_indices_list
         self.trainer_start_ts = time.time()
 
-        if "enabled" in self.config.hyperparameters.heartbeats:
-            self.heartbeats_enabled = self.config.hyperparameters.heartbeats["enabled"]
+        heartbeats = getattr(self.config.hyperparameters, "heartbeats", {})
+        if "enabled" in heartbeats:
+            self.heartbeats_enabled = heartbeats["enabled"]
         else:
             self.heartbeats_enabled = False
 
-        if "frequency_s" in self.config.hyperparameters.heartbeats:
-            self.heartbeats_second_freq = self.config.hyperparameters.heartbeats[
-                "frequency_s"
-            ]
+        if "frequency_s" in heartbeats:
+            self.heartbeats_second_freq = heartbeats["frequency_s"]
         else:
             self.heartbeats_second_freq = 99999
 
