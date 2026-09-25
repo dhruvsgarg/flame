@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# harness_overnight.sh — the unattended no-GPU harness campaign (ROBUST_FL_READINESS S1).
+# harness_campaign.sh — the unattended no-GPU harness campaign (ROBUST_FL_READINESS S1).
 #
 # Runs the P00 smoke gate (aborts in ~5m if broken), pytest, then a fixed list of harness_suite.sh phases (baselines x traces x
 # harness modes), each step under a hard timeout; a failed or hung step is recorded
@@ -9,9 +9,9 @@
 # Needs a node with NO other FL workers of yours (the suite's timeout path kills
 # stray trainers/aggregators by name). CPU only; GPUs untouched.
 #
-#   bash lib/python/examples/async_cifar10/scripts/harness_overnight.sh [--deadline-h 5.5] [--phases 'P0 P1 ...'] [--dry-run]
+#   bash lib/python/examples/async_cifar10/scripts/harness_campaign.sh [--deadline-h 5.5] [--phases 'P0 P1 ...'] [--dry-run]
 #
-# Read afterwards: experiments/overnight_<ts>/SUMMARY.txt (+ per-phase dirs).
+# Read afterwards: experiments/campaign_<launch ts>/SUMMARY.txt (+ per-phase dirs).
 # ============================================================================
 set -uo pipefail
 
@@ -34,9 +34,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-ROOT="$EX_DIR/experiments/overnight_$(date +%Y%m%d_%H%M%S)"
+ROOT="$EX_DIR/experiments/campaign_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$ROOT"
-exec > >(tee -a "$ROOT/overnight.log") 2>&1
+exec > >(tee -a "$ROOT/campaign.log") 2>&1
 T0=$(date +%s)
 DEADLINE_S=$(python3 -c "print(int($DEADLINE_H * 3600))")
 
@@ -58,7 +58,7 @@ PHASE_TABLE=(
   "P5|25|--baselines 'felix refl' --traces syn_20 --runtime-s 450 --trace-scale 4"
   "P6|17|--harness tiny_cpu --baselines 'felix oort' --traces syn_0 --runtime-s 300"
 )
-echo "overnight root: $ROOT  host=$(hostname)  deadline=${DEADLINE_H}h  phases='$PHASES'  commit=$(git -C "$LIB_DIR" rev-parse --short HEAD)$(git -C "$LIB_DIR" diff --quiet || echo '+dirty')"
+echo "campaign root: $ROOT  host=$(hostname)  deadline=${DEADLINE_H}h  phases='$PHASES'  commit=$(git -C "$LIB_DIR" rev-parse --short HEAD)$(git -C "$LIB_DIR" diff --quiet || echo '+dirty')"
 echo "P0 pytest ~15m | P1 syn_0 x6 ~50m | P2 syn_50 x6 ~75m | P3 mobiperf_3st x6 ~75m | P4 cold-start A/B ~17m | P5 syn_20 ~25m | P6 tiny_cpu ~17m"
 
 _elapsed() { echo $(( $(date +%s) - T0 )); }
@@ -73,7 +73,7 @@ if [ -z "$DRY" ]; then
     || { echo "ABORT P00: pytest collection failed -- $ROOT/P00_collect.txt"; exit 4; }
   timeout --kill-after=60 600 bash "$SCRIPT_DIR/harness_suite.sh" --baselines felix --traces syn_0 \
       --runtime-s 120 --output-dir "$ROOT/P00" > "$ROOT/P00.log" 2>&1
-  _bad="$(tail -n +2 "$ROOT/P00/summary.tsv" 2>/dev/null | awk -F'\t' '$3 ~ /MISSING|EV1/ || $4 ~ /MISSING|EV1/ || $5 == "CHECKER_ERROR" || $5 == "MISSING" || $10 == 1')"
+  _bad="$(tail -n +2 "$ROOT/P00/summary.tsv" 2>/dev/null | awk -F'\t' '$3 ~ /MISSING|[:,]EV1(,|$)/ || $4 ~ /MISSING|[:,]EV1(,|$)/ || $5 == "CHECKER_ERROR" || $5 == "MISSING" || $10 == 1')"
   if [ "$(tail -n +2 "$ROOT/P00/summary.tsv" 2>/dev/null | wc -l)" = 0 ] || [ -n "$_bad" ]; then
     echo "ABORT P00: smoke pair made no progress -- $ROOT/P00.log"; echo "$_bad"; exit 4
   fi
@@ -107,7 +107,7 @@ done
 
 # One table across phases.
 {
-  echo "overnight $ROOT  total=$(( $(_elapsed) / 60 ))m"
+  echo "campaign $ROOT  total=$(( $(_elapsed) / 60 ))m"
   [ -f "$ROOT/P0_pytest.txt" ] && echo "P0 pytest: $(tail -1 "$ROOT/P0_pytest.txt")"
   echo
   printf 'phase\t'; head -1 "$(ls "$ROOT"/P*/summary.tsv 2>/dev/null | head -1)" 2>/dev/null | cut -f1-10

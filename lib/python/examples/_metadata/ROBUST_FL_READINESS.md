@@ -94,7 +94,7 @@ section already says.
   When shared code is complex or a nuisance to maintain, simplify or reimplement it instead of stacking
   special cases onto it.
 - **R14 Harness first.** Every code change is validated on the no-GPU harness before any GPU run:
-  `scripts/harness_overnight.sh` (unattended, all baselines x traces, ~4.5h) or a targeted
+  `scripts/harness_campaign.sh` (unattended, all baselines x traces, ~4.5h) or a targeted
   `scripts/harness_suite.sh`. It grades each leg against the paradigm's ground-truth events
   (`scripts/parity/event_invariants.py`) and each pair for parity. GPU real/sim runs come only after the
   harness is green for the affected baselines and traces. Every scripted step carries a hard timeout so one
@@ -109,7 +109,7 @@ section already says.
   trainer's pin block, parallel analysis). Never oversubscribe cores or share a broker/node between graded legs.
 - **R19 Smoke before hand-off; fail in minutes.** Before handing over any long script, Claude runs its ≤5-min
   smoke itself (the one R4 exception: foreground, hard timeout, one script): `pytest --collect-only` plus one
-  short real/sim pair showing commits on both legs. Every long script opens with that gate (overnight: P00)
+  short real/sim pair showing commits on both legs. Every long script opens with that gate (campaign: P00)
   and aborts when it fails. Never hand over a command that has not run end-to-end once at small scale.
   Every run and test uses the `dg_flame` env (`FLAME_CONDA_ENV`), never the active shell's.
 - **R13 Commits:** follow CLAUDE.md (crisp comments, minimal diff, short title and body). Confirm before any
@@ -227,10 +227,10 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
 Cross-cutting work that serves both tracks. Felix drives it now (R12); each item must leave FluxTune
 green (R10).
 
-- **S1 · No-GPU local harness · wip (Felix half landed, FX-N1; overnight re-run pending).** Landed:
+- **S1 · No-GPU local harness · wip (Felix half landed, FX-N1; campaign re-run pending).** Landed:
   stub/tiny_cpu modes, `FLAME_TRACE_TIME_SCALE` (compresses availability traces by the delay factor, all
   consumers via `load_trace`), the single-run event checker (EV0-EV14), `harness_suite.sh`,
-  `harness_overnight.sh`. Harness caveat: absolute timeouts (90s abandon, join) are not scaled. A trainer with two switchable modes. *Stub mode:* no training, seeded
+  `harness_campaign.sh`. Harness caveat: absolute timeouts (90s abandon, join) are not scaled. A trainer with two switchable modes. *Stub mode:* no training, seeded
   fake weights/grads, seeded synthetic per-trainer loss/utility, honours `D`. *Tiny-CPU mode:* a small model
   actually trained on CPU. Real MQTT and sim paths, n ≤ 50, pair piped through the parity checker; a pytest
   marker runs a short smoke per baseline. Plus a **scenario library** of fast deterministic cases:
