@@ -346,6 +346,7 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     )
     satellite_coordinates_path: t.Optional[str]=None
     satellite_index: t.Optional[int]=None
+    link_layer: t.Optional[dict] = Field(alias="linkLayer", default=None)
 
 
 class Groups(FlameSchema):

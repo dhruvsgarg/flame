@@ -21,6 +21,7 @@ import threading
 import time
 from copy import deepcopy
 from datetime import datetime, timedelta
+from typing import Optional
 import cloudpickle
 import numpy as np
 
@@ -40,6 +41,7 @@ from flame.common.util import (
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.config import Config
 from flame.datasamplers import datasampler_provider
+from flame.link import LinkRuntime
 from flame.mode.composer import Composer
 from flame.mode.message import MessageType
 from flame.mode.horizontal.client_duration import real_client_task_train_duration
@@ -55,12 +57,14 @@ from flame.selector.properties import (
     PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_ROUND_END_TIME,
     PROP_ROUND_START_TIME,
+    PROP_SATELLITE_INDEX,
     PROP_STAT_UTILITY,
 )
 from flame import telemetry
 from flame.telemetry.events import (
     build_agg_eval,
     build_agg_round,
+    build_dispatch,
     build_utility_belief,
 )
 from flame.sim import VirtualClock, SimReorderBuffer
@@ -253,6 +257,74 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # TODO Add "wt_contrib_stats" as a key later but cannot
         # directly populate it here since it is only in the optimizer.
         # For now, do it in post-proc script.
+
+        # Configurable ground-station <-> satellite RF link budget (see
+        # flame.link), symmetric to the trainer-side wiring. Disabled by
+        # default; enable via hyperparameters.linkLayer.enabled. Telemetry
+        # only -- computed on the SAME LinkRuntime.result_for(satellite_index,
+        # timestep) call the trainer side uses (linkLayer.computeMode picks
+        # "precompute" vs "per_round" identically), just from the ground
+        # station's two directions instead of one:
+        #   link_runtime_uplink   -- aggregator dispatching the model down to
+        #     a satellite is the uplink leg (ground -> satellite).
+        #   link_runtime_downlink -- a trainer's weight update arriving here
+        #     is the downlink leg (satellite -> ground); recomputing it here
+        #     (rather than trusting the trainer's own report) is a second,
+        #     independent measurement of the same pass.
+        # satellite_index for each end is unknown until that end's first
+        # uplink message (MessageType.SATELLITE_INDEX) arrives -- see
+        # _aggregate_weights, which caches it via PROP_SATELLITE_INDEX.
+        self.link_runtime_uplink = None
+        self.link_runtime_downlink = None
+        try:
+            self.link_runtime_uplink = LinkRuntime.from_link_layer_dict(
+                getattr(self.config.hyperparameters, "link_layer", None),
+                direction="uplink",
+            )
+        except Exception as e:
+            logger.warning(
+                f"Aggregator: link layer enabled but failed to load satellite "
+                f"positions ({e}); link budget will be skipped this run."
+            )
+        if self.link_runtime_uplink is not None:
+            self.link_runtime_downlink = LinkRuntime(
+                self.link_runtime_uplink.cfg,
+                self.link_runtime_uplink.ecef_km,
+                direction="downlink",
+            )
+
+    def _link_timestep_now(self) -> int:
+        """Aggregator's own "now", as a timestep index into the satellite
+        position file -- mirrors the trainer's `_sim_now()` /
+        `timestep = min(int(elapsed_s), N - 1)` pattern (see
+        examples/*/trainer/pytorch/main.py's train())."""
+        elapsed_s = (
+            self._vclock.now if self.simulated else time.time() - self.agg_start_time_ts
+        )
+        return max(int(elapsed_s), 0)
+
+    def _link_extra(self, channel, end: str, runtime) -> Optional[dict]:
+        """link_* telemetry fields for `end` via `runtime` (one of
+        self.link_runtime_uplink/downlink), or None if the link layer is
+        disabled or `end`'s satellite_index isn't cached yet (before its
+        first uplink message -- see _aggregate_weights)."""
+        if runtime is None:
+            return None
+        sat_idx = channel.get_end_property(end, PROP_SATELLITE_INDEX)
+        if sat_idx is None:
+            return None
+        r = runtime.result_for(int(sat_idx), self._link_timestep_now())
+        return {
+            "link_elevation_deg": r.elevation_deg,
+            "link_slant_range_km": r.slant_range_km,
+            "link_visible": r.visible,
+            "link_fspl_db": r.fspl_db,
+            "link_atmospheric_loss_db": r.atmospheric_loss_db,
+            "link_ionospheric_loss_db": r.ionospheric_loss_db,
+            "link_sinr_degradation_db": r.sinr_degradation_db,
+            "link_throughput_mbps": r.throughput_mbps,
+            "link_throughput_loss_pct": r.throughput_loss_pct,
+        }
 
     @property
     def version_key(self) -> tuple[int, int]:
@@ -613,6 +685,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # aggregation instant, so each update's true visibility lag is measured
         # against that single barrier — collected here, finalized after the loop.
         _real_round_durs: list = []
+        # end -> downlink-direction link_* fields (flame.link), for whichever
+        # contributing trainers had a cached satellite_index this round.
+        _round_link_extras: dict = {}
         for msg, metadata in updates:
             end, timestamp = metadata
             _t_msg_start = datetime.now()  # start of per-message processing (vii)
@@ -628,6 +703,13 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
             logger.debug(f"received data from {end}")
             channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
+            _sat_idx = msg.get(MessageType.SATELLITE_INDEX)
+            if _sat_idx is not None:
+                channel.set_end_property(end, PROP_SATELLITE_INDEX, int(_sat_idx))
+            if self.link_runtime_downlink is not None:
+                _le = self._link_extra(channel, end, self.link_runtime_downlink)
+                if _le is not None:
+                    _round_link_extras[end] = _le
 
             # Send→recv lag: mirrors asyncFL's [SEND_RECV_LAG] so the same
             # post-processing/plots work for both sync and async baselines.
@@ -825,6 +907,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                     "update_visibility_lag_s": list(
                         self._round_update_values.get("update_visibility_lag_s", [])
                     ),
+                    **({"link": _round_link_extras} if _round_link_extras else {}),
                 },
             )
             telemetry.emit(ev, **fields)
@@ -1121,6 +1204,17 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             channel.set_end_property(
                 end, PROP_ROUND_START_TIME, (round, datetime.now())
             )
+            if telemetry.is_enabled() and self.link_runtime_uplink is not None:
+                _le = self._link_extra(channel, end, self.link_runtime_uplink)
+                if _le is not None:
+                    ev, fields = build_dispatch(
+                        round_num=self._round,
+                        end_id=end,
+                        task=task_to_perform,
+                        time_mode=self.time_mode,
+                        extra=_le,
+                    )
+                    telemetry.emit(ev, **fields)
         if selected_ends:
             logger.info(
                 f"[DISTRIBUTE_TIMING] round={self._round} n_sends={len(selected_ends)} "
