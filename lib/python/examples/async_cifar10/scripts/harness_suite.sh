@@ -64,6 +64,8 @@ done
 if [ -n "$TRACE_SCALE" ]; then export FLAME_TRACE_TIME_SCALE="$TRACE_SCALE"; else unset FLAME_TRACE_TIME_SCALE; fi
 
 PY="$(conda run -n "$FLAME_CONDA_ENV" which python 2>/dev/null | tail -1)"
+# Ctrl+C/SIGTERM stops the suite; a running leg is torn down by expt_timed_run's own trap.
+trap 'echo "[$(date "+%F %T")] INTERRUPT — harness_suite stopped" >&2; exit 130' INT TERM
 [ -x "$PY" ] || { echo "cannot resolve python for env $FLAME_CONDA_ENV" >&2; exit 2; }
 
 mkdir -p "$OUT/parity" "$OUT/events" "$OUT/runs"
@@ -123,7 +125,7 @@ for trace in $TRACES; do
     ev_json="$OUT/events/${label}.json"
     legs=(); [ -n "$real_dir" ] && legs+=("$real_dir"); [ -n "$sim_dir" ] && legs+=("$sim_dir")
     if [ "${#legs[@]}" -gt 0 ]; then
-      ( cd "$EX_DIR" && timeout "$CHECK_TIMEOUT_S" "$PY" -u scripts/parity/event_invariants.py "${legs[@]}" \
+      ( cd "$EX_DIR" && timeout --foreground "$CHECK_TIMEOUT_S" "$PY" -u scripts/parity/event_invariants.py "${legs[@]}" \
           --json-out "$ev_json" ) > "$OUT/events/${label}.txt" 2>&1 || true
       i=0
       if [ -n "$real_dir" ]; then ev_real="$(_event_verdict "$ev_json" $i)"; i=$((i + 1)); fi
@@ -133,7 +135,7 @@ for trace in $TRACES; do
     verdict=MISSING; score=""; nfail=""; roots=""
     if [ -n "$real_dir" ] && [ -n "$sim_dir" ]; then
       json="$OUT/parity/${label}.json"
-      ( cd "$EX_DIR" && PYTHONIOENCODING=utf-8 timeout "$CHECK_TIMEOUT_S" "$PY" -u scripts/parity_check.py \
+      ( cd "$EX_DIR" && PYTHONIOENCODING=utf-8 timeout --foreground "$CHECK_TIMEOUT_S" "$PY" -u scripts/parity_check.py \
           --real "$real_dir" --sim "$sim_dir" --agg-goal 10 --budget-s "$RUNTIME_S" --json-out "$json" ) \
           > "$OUT/parity/${label}.txt" 2>&1 || true
       if [ -f "$json" ]; then

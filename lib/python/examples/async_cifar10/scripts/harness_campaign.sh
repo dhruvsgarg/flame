@@ -36,9 +36,14 @@ done
 
 ROOT="$EX_DIR/experiments/campaign_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$ROOT"
-exec > >(tee -a "$ROOT/campaign.log") 2>&1
+exec > >(trap '' INT TERM; exec tee -a "$ROOT/campaign.log") 2>&1   # tee outlives Ctrl+C to log the stop
 T0=$(date +%s)
 DEADLINE_S=$(python3 -c "print(int($DEADLINE_H * 3600))")
+
+PY="$(conda run -n "$FLAME_CONDA_ENV" which python 2>/dev/null | tail -1)"
+[ -x "$PY" ] || { echo "cannot resolve python for env $FLAME_CONDA_ENV" >&2; exit 2; }
+# Ctrl+C/SIGTERM reaches every foreground step (each layer tears down its subtree); then stop.
+trap 'echo "[$(date "+%F %T")] INTERRUPT — campaign stopped: $ROOT"; exit 130' INT TERM
 
 # Refuse to start next to someone else's FL run: autoclean would kill it.
 STRAYS="$(pgrep -u "$(id -u)" -af 'trainer/pytorch/main.py|trainer/forward_training|aggregator/pytorch/main_|flame.launch.run_experiment' | grep -v pgrep || true)"
@@ -67,11 +72,11 @@ _want() { [[ " $PHASES " == *" $1 "* ]]; }
 # P00 gate (R19): collect every test + one short real/sim pair; a broken pipeline aborts in minutes, not hours.
 if [ -z "$DRY" ]; then
   echo "=== [$(date '+%F %T')] P00 smoke gate (~5m)"
-  ( cd "$LIB_DIR" && timeout 300 "$(conda run -n "$FLAME_CONDA_ENV" which python | tail -1)" -m pytest -q \
+  ( cd "$LIB_DIR" && timeout --foreground 300 "$PY" -m pytest -q \
       --collect-only -p no:cacheprovider tests examples/async_cifar10/scripts/parity \
       examples/async_cifar10/trainer/pytorch examples/fwdllm/expt_scripts ) > "$ROOT/P00_collect.txt" 2>&1 \
     || { echo "ABORT P00: pytest collection failed -- $ROOT/P00_collect.txt"; exit 4; }
-  timeout --kill-after=60 600 bash "$SCRIPT_DIR/harness_suite.sh" --baselines felix --traces syn_0 \
+  timeout --foreground --kill-after=60 600 bash "$SCRIPT_DIR/harness_suite.sh" --baselines felix --traces syn_0 \
       --runtime-s 120 --output-dir "$ROOT/P00" > "$ROOT/P00.log" 2>&1
   _bad="$(tail -n +2 "$ROOT/P00/summary.tsv" 2>/dev/null | awk -F'\t' '$3 ~ /MISSING|[:,]EV1(,|$)/ || $4 ~ /MISSING|[:,]EV1(,|$)/ || $5 == "CHECKER_ERROR" || $5 == "MISSING" || $10 == 1')"
   if [ "$(tail -n +2 "$ROOT/P00/summary.tsv" 2>/dev/null | wc -l)" = 0 ] || [ -n "$_bad" ]; then
@@ -83,7 +88,7 @@ fi
 if _want P0; then
   echo "=== [$(date '+%F %T')] P0 pytest"
   if [ -z "$DRY" ]; then
-    ( cd "$LIB_DIR" && timeout 2400 conda run --no-capture-output -n "$FLAME_CONDA_ENV" python -m pytest -q \
+    ( cd "$LIB_DIR" && timeout --foreground 2400 "$PY" -m pytest -q \
         -p no:cacheprovider tests examples/async_cifar10/scripts/parity examples/async_cifar10/trainer/pytorch \
         examples/fwdllm/expt_scripts ) > "$ROOT/P0_pytest.txt" 2>&1
     echo "  P0 rc=$? :: $(tail -1 "$ROOT/P0_pytest.txt")"
@@ -98,7 +103,7 @@ for row in "${PHASE_TABLE[@]}"; do
   fi
   echo "=== [$(date '+%F %T')] $pid (~${est}m): harness_suite.sh $args"
   # Hard ceiling per phase: 2x its estimate, so one wedged phase can't eat the night.
-  eval timeout --kill-after=60 $(( est * 120 )) bash "$SCRIPT_DIR/harness_suite.sh" $args \
+  eval timeout --foreground --kill-after=60 $(( est * 120 )) bash "$SCRIPT_DIR/harness_suite.sh" $args \
       --output-dir "$ROOT/$pid" $DRY > "$ROOT/${pid}.log" 2>&1
   rc=$?
   echo "  $pid rc=$rc elapsed=$(( $(_elapsed) / 60 ))m"

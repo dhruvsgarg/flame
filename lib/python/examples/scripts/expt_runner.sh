@@ -374,6 +374,27 @@ expt_assert_run() {
   [ "$agg" -gt 0 ] && [ "$wall" -eq 0 ] && [ "$crash" -eq 0 ]
 }
 
+# Kill every FL worker of this user by name (the last-resort sweep after a group kill).
+_expt_sweep_workers() {
+  pkill -9 -u "$(id -u)" -f 'flame.launch.run_experiment' 2>/dev/null || true
+  pkill -9 -u "$(id -u)" -f 'trainer/pytorch/main.py'     2>/dev/null || true
+  pkill -9 -u "$(id -u)" -f 'trainer/forward_training'    2>/dev/null || true
+  pkill -9 -u "$(id -u)" -f 'aggregator/pytorch/main_'    2>/dev/null || true
+}
+
+# _expt_timed_teardown label pgid grace_s -- TERM the group (its own traps clean up), then KILL + sweep.
+_expt_timed_teardown() {
+  trap - INT TERM
+  echo "" >&2
+  echo "[$(date '+%F %T')] INTERRUPT — tearing down '$1' (pgid=$2) ..." >&2
+  kill -TERM -"$2" 2>/dev/null || true
+  local i
+  for (( i = 0; i < $3; i++ )); do kill -0 -"$2" 2>/dev/null || break; sleep 1; done
+  kill -KILL -"$2" 2>/dev/null || true
+  _expt_sweep_workers
+  echo "[$(date '+%F %T')] INTERRUPT — '$1' torn down." >&2
+}
+
 # expt_timed_run label runtime_s buffer_s shell_log -- cmd... -- run a command in
 # its OWN process group under a wall-clock timeout, killing the whole tree
 # (SIGTERM grace -> SIGKILL) on overrun, then sweeping stragglers so no orphan
@@ -392,6 +413,9 @@ expt_timed_run() {
   "$@" > "$shell_log" 2>&1 &
   local pid=$!
   set +m
+  # Ctrl+C/SIGTERM: the child's own group never sees a terminal signal, so tear it down here.
+  local saved_trap; saved_trap="$(trap -p INT TERM)"
+  trap '_expt_timed_teardown "$label" "$pid" "$grace_s"; exit 130' INT TERM
   local ela kin
   while kill -0 "$pid" 2>/dev/null; do
     sleep 5
@@ -414,10 +438,9 @@ expt_timed_run() {
   printf '\n' >&2
   [ "$timed_out" = "0" ] && wait "$pid" 2>/dev/null
   local rc=$?
+  trap - INT TERM; eval "$saved_trap"
   if [ "$timed_out" = "1" ]; then
-    pkill -9 -f "trainer/pytorch/main.py"    2>/dev/null || true
-    pkill -9 -f "trainer/forward_training"   2>/dev/null || true
-    pkill -9 -f "aggregator/pytorch/main_"   2>/dev/null || true
+    _expt_sweep_workers
     sleep "$settle_s"
     EXPT_LAST_RC=124; return 124
   fi

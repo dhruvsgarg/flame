@@ -112,6 +112,10 @@ section already says.
   short real/sim pair showing commits on both legs. Every long script opens with that gate (campaign: P00)
   and aborts when it fails. Never hand over a command that has not run end-to-end once at small scale.
   Every run and test uses the `dg_flame` env (`FLAME_CONDA_ENV`), never the active shell's.
+- **R20 One Ctrl+C stops everything.** Every script layer that puts a child in its own process group
+  (`set -m`, `setsid`, bare `timeout`) traps INT/TERM, tears that group down (TERM → grace → KILL → name sweep),
+  and exits 130 rather than advancing. Otherwise use `timeout --foreground`. Test it with a scripted SIGINT to the
+  script's process group before hand-off.
 - **R13 Commits:** follow CLAUDE.md (crisp comments, minimal diff, short title and body). Confirm before any
   push.
 
