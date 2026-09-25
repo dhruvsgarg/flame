@@ -184,3 +184,39 @@ class TestSendGateWaitSimMode:
         fields = _task_send_fields(captured_events)
         assert fields["send_gate_sct"] is None
         assert fields["send_gate_wait_s"] is None
+
+
+class TestSendGateBoolConfig:
+    """Config coerces wait_until_next_avl to bool; the gate must wait (not drop) on True."""
+
+    @pytest.mark.parametrize("flag", [True, "True", "true"])
+    def test_truthy_config_waits_then_sends(self, monkeypatch, captured_events, flag):
+        import flame.mode.horizontal.syncfl.trainer as trainer_mod
+
+        t = _make_trainer()
+        t.wait_until_next_avl = flag
+        t.simulated = False
+        t.avl_state = TrainerAvailState.UN_AVL
+        t._sim_now = lambda: 1.0
+        t.cm = types.SimpleNamespace(get_by_tag=lambda tag: _make_channel())
+        clock = _FakeClock()
+
+        def _sleep(s):
+            clock.sleep(s)
+            t.avl_state = TrainerAvailState.AVL_TRAIN
+
+        monkeypatch.setattr(trainer_mod.time, "time", clock.time)
+        monkeypatch.setattr(trainer_mod.time, "sleep", _sleep)
+        t._send_weights("tag")
+        assert _task_send_fields(captured_events)["send_gate_wait_s"] == pytest.approx(1.0)
+
+    @pytest.mark.parametrize("flag", [False, "False"])
+    def test_falsy_config_skips_send(self, monkeypatch, captured_events, flag):
+        t = _make_trainer()
+        t.wait_until_next_avl = flag
+        t.simulated = False
+        t.avl_state = TrainerAvailState.UN_AVL
+        t._sim_now = lambda: 1.0
+        t.cm = types.SimpleNamespace(get_by_tag=lambda tag: _make_channel())
+        t._send_weights("tag")
+        assert not [ev for ev, _ in captured_events if ev == "task_send"]

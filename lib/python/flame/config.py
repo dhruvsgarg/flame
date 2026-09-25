@@ -250,6 +250,14 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_sct_ordered_drain: t.Optional[bool] = Field(
         alias="simSctOrderedDrain", default=False
     )
+    # Async sim: first-contact trainers (no known delay) gate commits and hold their slot.
+    sim_cold_start_gate: t.Optional[bool] = Field(
+        alias="simColdStartGate", default=False
+    )
+    # Wall seconds a dispatched task may still be computing (cold-start / phantom gates); None = 10.
+    sim_gate_compute_cap_s: t.Optional[float] = Field(
+        alias="simGateComputeCapSeconds", default=None
+    )
     # Real-only settle sleep before selection (hit 2x/commit). 0 = compute-bound.
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1

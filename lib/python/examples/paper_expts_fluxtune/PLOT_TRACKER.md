@@ -1,5 +1,7 @@
 # FluxTune paper — plot tracker (living doc)
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../_metadata/ROBUST_FL_READINESS.md) → [FLUXTUNE_READINESS.md](../_metadata/FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 **Purpose.** Per-figure-set readiness: which baselines a paper figure needs, which
 run dirs currently back them, how far each has progressed, and what's still
 missing. This is the single place to check "what's left before I can regenerate

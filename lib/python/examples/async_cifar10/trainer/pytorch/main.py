@@ -47,6 +47,7 @@ from flame.telemetry.events import (
     build_util_disparity,
 )
 from torchvision.datasets import CIFAR10
+from flame import harness
 from memory_profiler import MemoryProfiler
 
 logger = logging.getLogger(__name__)
@@ -161,7 +162,10 @@ class PyTorchCifar10Trainer(Trainer):
         self.training_delay_enabled = (
             _tde if isinstance(_tde, bool) else str(_tde).strip().lower() == "true"
         )
-        self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
+        self.training_delay_s = self._effective_delay_s(
+            float(self.config.hyperparameters.training_delay_s)
+        )
+        self.harness_mode = harness.harness_mode(self.config.hyperparameters)
 
         # Add satellite coordinates
         self.satellite_index = int(self.config.hyperparameters.satellite_index)
@@ -231,7 +235,11 @@ class PyTorchCifar10Trainer(Trainer):
             self.config.hyperparameters.avl_events_syn_50
         )
 
-        if self.client_notify["trace"] == "mobiperf_3st":
+        if self.client_notify["trace"] in ("mobiperf_3st", "mobiperf_3st_50", "mobiperf_3st_75"):
+            if self.client_notify["trace"] == "mobiperf_3st_75":
+                self.avl_events_3_state = parse_trace(
+                    self.config.hyperparameters.avl_events_mobiperf_3st_75
+                )
             self.state_avl_event_ts = self.avl_events_3_state
             logger.info(
                 f"Set avl_events_3_state for trainer id {self.trainer_id} using battery threshold {self.event_battery_threshold}"
@@ -329,6 +337,14 @@ class PyTorchCifar10Trainer(Trainer):
     def check_and_sleep(self):
         """Induce transient unavailability"""
         pass
+
+    def _effective_delay_s(self, raw_s: float) -> float:
+        """Registry D with the optional floor, then divided by trainingDelayFactor (unset = raw)."""
+        hp = self.config.hyperparameters
+        floor_s = float(getattr(hp, "training_delay_floor_s", 0.0) or 0.0)
+        factor = getattr(hp, "training_delay_factor", None)
+        d = max(raw_s, floor_s)
+        return d / float(factor) if factor else d
 
     def _sim_now(self) -> float:
         """Wall-elapsed since the aggregator's trace-read origin (real) or
@@ -433,7 +449,7 @@ class PyTorchCifar10Trainer(Trainer):
             f"gpu={_gpu_env} cpu_cores={_cpu_cores}"
         )
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = harness.device_for(self.harness_mode)
 
         self.model = Net().to(self.device)
         
@@ -467,17 +483,30 @@ class PyTorchCifar10Trainer(Trainer):
             ]
         )
 
-        dataset = CIFAR10(
-            "lib/python/examples/async_cifar10/data",
-            train=True,
-            download=True,
-            transform=transform_train,
+        hp_n = harness.harness_samples(self.config.hyperparameters, self.harness_mode)
+        if self.harness_mode == "stub":
+            n = min(len(self.trainer_indices_list), hp_n)
+            dataset = harness.synthetic_dataset(n, (3, 32, 32), 10, seed_key=self.trainer_id)
+            indices = torch.arange(n)
+        else:
+            dataset = CIFAR10(
+                "lib/python/examples/async_cifar10/data",
+                train=True,
+                download=True,
+                transform=transform_train,
+            )
+
+            # create indices into a list and convert to tensor
+            idx_list = self.trainer_indices_list
+            if self.harness_mode == "tiny_cpu":
+                idx_list = harness.prefix_indices(idx_list, hp_n)
+            indices = torch.tensor(idx_list)
+
+            dataset = data_utils.Subset(dataset, indices)
+        logger.info(
+            f"[HARNESS] trainer={self.trainer_id} mode={self.harness_mode} "
+            f"samples={len(indices)} device={self.device} delay_s={self.training_delay_s:.2f}"
         )
-
-        # create indices into a list and convert to tensor
-        indices = torch.tensor(self.trainer_indices_list)
-
-        dataset = data_utils.Subset(dataset, indices)
 
         # GPU pre-load for small datasets (cuts CPU RAM). Full pool is retained;
         # the loader is (re)built from a prefix in _rebuild_stream_loader.

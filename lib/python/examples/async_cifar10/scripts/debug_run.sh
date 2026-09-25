@@ -47,6 +47,9 @@ SIM_WALL_CEILING_S=""  # empty = max_experiment_runtime_s (1×, tight guard; sim
 MODE="both"            # sim | real | both — which time_mode variant(s) of each baseline to run
 NUM_TRAINERS=""        # empty = use whatever's in the parity config (300); non-smoke override only
 ALPHA=""               # empty = use the parity config's dirichlet_alpha (0.1); e.g. 100 for homogeneous
+HARNESS=""             # stub | tiny_cpu: no-GPU local harness (flame/harness.py); empty = production path
+DELAY_FACTOR=""        # trainingDelayFactor: divides every trainer's D (both modes); empty = unscaled
+AGG_HP=""              # --agg-hp 'k=v k2=v2': extra aggregator hyperparameters (A/B a sim flag)
 DRY_RUN=0              # --dry-run: show the pre-flight table + checks, generate cfg, DON'T launch
 SHOW_ALL=0             # --show-all: expand tier ③ + list passing checks
 STRICT=0               # --strict: a BLOCKING pre-flight check aborts (default: warn + continue, so
@@ -74,6 +77,11 @@ usage() {
   echo "                        smoke). Use this instead of 'smoke' when you need a real --runtime-s"
   echo "                        budget (e.g. a vclock floor for an availability trace) that smoke's"
   echo "                        hardcoded rounds=4/runtime=240 would cut short."
+  echo "  --harness             stub|tiny_cpu: run on CPU with synthetic (stub) or a small real-data"
+  echo "                        prefix (tiny_cpu) per trainer; every FL code path stays live."
+  echo "  --delay-factor        divide every trainer's modeled delay D by this (both modes), e.g. 4"
+  echo "                        for short local real legs."
+  echo "  --agg-hp              'k=v ...' extra aggregator hyperparameters, e.g. 'simColdStartGate=true'."
   echo "  --alpha               Dirichlet alpha override (default: parity config's 0.1). Supported"
   echo "                        values have an n300 split: 0.1 / 1.0 / 10.0 / 100.0 (100=homogeneous)."
   echo "                        When set, the split lookup uses the n300 partition for that alpha."
@@ -99,6 +107,9 @@ if [ "${1:-}" = "smoke" ]; then
       --mode)      MODE="$2"; shift 2 ;;
       --trace)     TRACE="$2"; shift 2 ;;
       --alpha)     ALPHA="$2"; shift 2 ;;
+      --harness)   HARNESS="$2"; shift 2 ;;
+      --delay-factor) DELAY_FACTOR="$2"; shift 2 ;;
+      --agg-hp)    AGG_HP="$2"; shift 2 ;;
       --dry-run)   DRY_RUN=1; shift ;;
       --show-all)  SHOW_ALL=1; shift ;;
       --strict)    STRICT=1; shift ;;
@@ -118,6 +129,9 @@ else
       --trace)               TRACE="$2"; shift 2 ;;
       --num-trainers)        NUM_TRAINERS="$2"; shift 2 ;;
       --alpha)               ALPHA="$2"; shift 2 ;;
+      --harness)             HARNESS="$2"; shift 2 ;;
+      --delay-factor)        DELAY_FACTOR="$2"; shift 2 ;;
+      --agg-hp)              AGG_HP="$2"; shift 2 ;;
       --dry-run)             DRY_RUN=1; shift ;;
       --show-all)            SHOW_ALL=1; shift ;;
       --strict)              STRICT=1; shift ;;
@@ -294,6 +308,25 @@ for e_src in cfg.get("experiments", []):
             # Rewrite syn_<digits> or syn<digits> in the name so run dirs are identifiable.
             import re
             e["name"] = re.sub(r"syn_?[0-9]+", trace_override, e["name"])
+        # --harness / --delay-factor: same values on both roles (runner fans the factor).
+        harness_mode = os.environ.get("HARNESS", "").strip()
+        delay_factor = os.environ.get("DELAY_FACTOR", "").strip()
+        if harness_mode:
+            e["trainer"].setdefault("hyperparameters", {})["harness_mode"] = harness_mode
+            h["harness_mode"] = harness_mode
+            e["name"] = f"h{harness_mode}_{e['name']}"
+            # CPU trainers start in ms: shrink the GPU-era spawn pacing.
+            ex = e.setdefault("execution", {})
+            ex["sleep_between_spawns"] = 0.2
+            ex["aggregator_warmup_time"] = 20
+        # FLAME_TRACE_TIME_SCALE (env, read by flame.availability.trace): recorded for provenance.
+        if os.environ.get("FLAME_TRACE_TIME_SCALE", "").strip():
+            h["trace_time_scale"] = float(os.environ["FLAME_TRACE_TIME_SCALE"])
+        if delay_factor:
+            e["trainer"].setdefault("hyperparameters", {})["training_delay_factor"] = float(delay_factor)
+        for kv in os.environ.get("AGG_HP", "").split():
+            k, v = kv.split("=", 1)
+            h[k] = yaml.safe_load(v)
         e["aggregator"]["config_overrides"]["job"]["id"] = e["name"]
         kept.append(e)
 
@@ -381,6 +414,15 @@ tiers = [
         {"label": "logdir", "value": env("LOGDIR")},
     ]},
 ]
+# A GPU run whose torch can't see CUDA silently trains on CPU (e.g. a cu130 wheel on a 12.x driver).
+if not any((e.get("trainer", {}).get("hyperparameters") or {}).get("harness_mode") for e in cfg["experiments"]):
+    try:
+        import torch
+        cuda_ok, why = torch.cuda.is_available(), f"torch {torch.__version__} (cuda {torch.version.cuda})"
+    except Exception as ex:  # noqa: BLE001
+        cuda_ok, why = False, f"torch import failed: {ex}"
+    checks.append({"name": "torch sees CUDA (non-harness run)", "level": "ok" if cuda_ok else "error",
+                   "detail": why + ("" if cuda_ok else " -- would silently run on CPU")})
 checks.append({"name": "run names carry _real/_sim tags for parity glob", "level": "ok",
                "detail": "make_debug_yaml keeps the parity config's _sim/_real suffixes"})
 spec = {"title": "CIFAR DEBUG RUN", "subtitle": f"{len(exps)} experiment(s)",
@@ -434,7 +476,7 @@ if [ "$SMOKE" = "1" ]; then
   # Clear any stale config from a previous invocation so a no-match run is
   # skipped (not silently re-running a leftover config).
   rm -f "$cfg"
-  make_debug_yaml "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "" "$ALPHA"
+  HARNESS="$HARNESS" DELAY_FACTOR="$DELAY_FACTOR" AGG_HP="$AGG_HP" make_debug_yaml "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "" "$ALPHA"
   if [ -f "$cfg" ]; then
     _n=$(_count_exps "$cfg")
     cifar_preflight "$cfg"; gate_or_continue $?
@@ -460,7 +502,7 @@ cfg="$LOGDIR/debug_run.yaml"
 # Clear any stale config so a no-match run is skipped (not silently re-running
 # a previous baseline's leftover config).
 rm -f "$cfg"
-make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "$NUM_TRAINERS" "$ALPHA"
+HARNESS="$HARNESS" DELAY_FACTOR="$DELAY_FACTOR" AGG_HP="$AGG_HP" make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "$NUM_TRAINERS" "$ALPHA"
 
 if [ ! -f "$cfg" ]; then
   echo "No experiments matched for baselines='$BASELINES'. Nothing to run."

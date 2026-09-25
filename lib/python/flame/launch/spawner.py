@@ -69,7 +69,9 @@ class MetadataLoader:
         (flame.availability.trace.load_trace) the aggregator already uses.
         """
         if trainer_id is None:
-            return self.synthetic_traces["traces"][trace_name]["pattern"]
+            from flame.availability.trace import scale_events
+
+            return scale_events(self.synthetic_traces["traces"][trace_name]["pattern"])
         from flame.availability.trace import load_trace
 
         trainer_key = f"trainer_{trainer_id:03d}"
@@ -80,8 +82,10 @@ class MetadataLoader:
 
     def get_mobiperf_trace(self, trainer_id: int, variant: str = "2st") -> List:
         """Get mobiperf trace for a trainer."""
+        from flame.availability.trace import scale_events
+
         device_id = f"device_{trainer_id:03d}"
-        return self.mobiperf_traces["traces"][device_id][f"states_{variant}"]
+        return scale_events(self.mobiperf_traces["traces"][device_id][f"states_{variant}"])
 
 
 class ConfigGenerator:
@@ -160,6 +164,7 @@ class ConfigGenerator:
         # Add availability traces
         if availability_mode.startswith("mobiperf"):
             variant = availability_mode.replace("mobiperf_", "")
+            variant = "3st_50" if variant == "3st" else variant
             config["hyperparameters"][f"avl_events_mobiperf_{variant}"] = (
                 self.metadata.get_mobiperf_trace(trainer_id, variant)
             )

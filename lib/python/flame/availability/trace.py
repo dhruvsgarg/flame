@@ -10,6 +10,7 @@ check_and_update_state_avl (trainer/pytorch/main.py:336).
 
 import logging
 import math
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -62,6 +63,32 @@ def _raw_synthetic(trace_dir: str) -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 
+_TRACE_SCALE_ENV = "FLAME_TRACE_TIME_SCALE"
+_scale_logged = False
+
+
+def trace_time_scale() -> float:
+    """Divisor on every trace timestamp (harness only: compresses availability time by the
+    same factor as trainingDelayFactor). Unset/1 = production timeline."""
+    global _scale_logged
+    raw = os.environ.get(_TRACE_SCALE_ENV, "").strip()
+    scale = float(raw) if raw else 1.0
+    if scale <= 0:
+        raise ValueError(f"{_TRACE_SCALE_ENV}={raw!r} must be > 0")
+    if scale != 1.0 and not _scale_logged:
+        logger.warning(f"[TRACE_SCALE] availability trace timestamps divided by {scale} ({_TRACE_SCALE_ENV})")
+        _scale_logged = True
+    return scale
+
+
+def scale_events(events):
+    """[[ts, state], ...] with ts divided by trace_time_scale()."""
+    scale = trace_time_scale()
+    if scale == 1.0:
+        return events
+    return [[float(ts) / scale, state] for ts, state in events]
+
+
 def _canonical_trace_name(trace_name: str) -> str:
     """Normalize a configured trace name to a canonical store key.
 
@@ -72,8 +99,9 @@ def _canonical_trace_name(trace_name: str) -> str:
     traces and the gate silently turns OFF.
     """
     if trace_name and trace_name.startswith("avl_events_"):
-        return trace_name[len("avl_events_"):]
-    return trace_name
+        trace_name = trace_name[len("avl_events_"):]
+    # Bare 3-state name (what the trainer's client_notify uses) = the 50% battery variant.
+    return "mobiperf_3st_50" if trace_name == "mobiperf_3st" else trace_name
 
 
 def load_trace(
@@ -114,7 +142,7 @@ def load_trace(
         raise KeyError(f"unsupported trace name: {trace_name!r}")
 
     result = SortedDict()
-    for ts, state in events:
+    for ts, state in scale_events(events):
         result[float(ts)] = state
     return result
 

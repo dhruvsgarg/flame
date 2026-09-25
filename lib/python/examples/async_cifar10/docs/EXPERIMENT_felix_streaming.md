@@ -10,6 +10,8 @@
 
 # Felix Update 11-Jun-26 — Streaming Misprioritization Experiment
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../../_metadata/ROBUST_FL_READINESS.md) → [FELIX_READINESS.md](../../_metadata/FELIX_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 > Does stale, whole-dataset client prioritization cost you time-to-accuracy under
 > streaming data, and does Felix's eval-driven utility refresh recover it?
 >

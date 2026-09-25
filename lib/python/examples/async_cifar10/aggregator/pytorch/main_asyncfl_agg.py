@@ -37,6 +37,7 @@ from flame.config import Config
 from flame.dataset import Dataset
 from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator
 from torchvision.datasets import CIFAR10
+from flame import harness
 
 import sys as _sys, os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
@@ -132,7 +133,8 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
 
     def initialize(self):
         """Initialize role."""
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.harness_mode = harness.harness_mode(self.config.hyperparameters)
+        self.device = harness.device_for(self.harness_mode)
 
         self.model = Net().to(self.device)
         self._init_oracle_util(
@@ -150,12 +152,18 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
             ]
         )
 
-        dataset = CIFAR10(
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data"),
-            train=False,
-            download=True,
-            transform=transform_test,
-        )
+        n_test = harness.harness_test_samples(self.config.hyperparameters, self.harness_mode)
+        if self.harness_mode == "stub":
+            dataset = harness.synthetic_dataset(n_test, (3, 32, 32), 10, seed_key="agg_test", label_skew=0.0)
+        else:
+            dataset = CIFAR10(
+                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data"),
+                train=False,
+                download=True,
+                transform=transform_test,
+            )
+            if self.harness_mode == "tiny_cpu":
+                dataset = torch.utils.data.Subset(dataset, list(range(n_test)))
 
         test_kwargs = {
             "batch_size": self.batch_size,

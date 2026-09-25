@@ -386,7 +386,8 @@ class Trainer(Role, metaclass=ABCMeta):
             not getattr(self, "simulated", False)
             and self.avl_state == TrainerAvailState.UN_AVL
         ):
-            if self.wait_until_next_avl == "True":
+            # bool-coerced config flag (T13, FX-D5)
+            if str(self.wait_until_next_avl).strip().lower() == "true":
                 logger.warning(
                     f"Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again"
                 )

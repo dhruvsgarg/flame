@@ -154,3 +154,36 @@ class TestBusyNeverMarkedUnavailable:
         agg._distribute_weights("tag", "train")
         assert agg._sim_inflight_expected["e1"] == 150.0  # only a commit pops it
         assert "e1" not in ch.sent                        # not re-dispatched
+
+
+class TestHoldColdStart:
+    """sim_cold_start_gate: a first-contact end (no known delay) still computing is busy too."""
+
+    def _agg(self, gate, dispatched_ago=0.0):
+        import time as _t
+        agg = _make_hold_agg(buffered=[], inflight_expected={"k1": 120.0}, residence=True)
+        agg._sim_buffer = types.SimpleNamespace(pending_ends=lambda: [], has=lambda e: False)
+        agg._sim_known_delay_s = {"k1": 5.0}
+        agg._sim_committed = set()
+        agg._sim_cold_start_gate = gate
+        agg._sim_gate_compute_cap_s = 10.0
+        agg._sim_dispatch_wall = {"k1": _t.time(), "new1": _t.time() - dispatched_ago}
+        return agg
+
+    def test_first_contact_end_keeps_its_slot(self):
+        ch = _HoldChannel(["k1", "new1"], selected=["k1", "new1"],
+                          all_selected={"k1": 1.0, "new1": 1.0})
+        self._agg(gate=True)._sim_hold_busy_slots(ch)
+        assert _slot(ch) == {"k1", "new1"}
+
+    def test_flag_off_releases_first_contact_end(self):
+        ch = _HoldChannel(["k1", "new1"], selected=["k1", "new1"],
+                          all_selected={"k1": 1.0, "new1": 1.0})
+        self._agg(gate=False)._sim_hold_busy_slots(ch)
+        assert _slot(ch) == {"k1"}  # the overlap hole the gate closes
+
+    def test_past_compute_cap_is_released(self):
+        ch = _HoldChannel(["k1", "new1"], selected=["k1", "new1"],
+                          all_selected={"k1": 1.0, "new1": 1.0})
+        self._agg(gate=True, dispatched_ago=60.0)._sim_hold_busy_slots(ch)
+        assert _slot(ch) == {"k1"}

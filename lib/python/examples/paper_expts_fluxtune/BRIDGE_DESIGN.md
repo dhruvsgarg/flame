@@ -1,5 +1,7 @@
 # FluxTune paper⇄code bridge — design doc (DRAFT, pre-implementation)
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../_metadata/ROBUST_FL_READINESS.md) → [FLUXTUNE_READINESS.md](../_metadata/FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 **Purpose of this file.** Not the bridge itself — the plan for building it. We iterate here until
 signed off, then this doc's checklist becomes the implementation order. Once landed, its content
 folds into `EXPERIMENTS.md` (the living bridge) and this file is deleted.

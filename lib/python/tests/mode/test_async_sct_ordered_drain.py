@@ -325,3 +325,57 @@ class TestSctOrderedDrainCommit:
             c_on, tv_on = _drain(on, FakeChannel(set(self.SCENARIO), list(arrival)))
             assert c_on == c_off == self.COMPLETION_ORDER
             assert tv_on == tv_off == 25.0
+
+
+# --------------------------------------------------------------------------- #
+# 3. Cold-start gate (sim_cold_start_gate): first-contact ends have no known delay
+# --------------------------------------------------------------------------- #
+class _TimedChannel(FakeChannel):
+    """drain_ready releases each end's message only from its `release_pass` call on."""
+
+    def __init__(self, inflight, arrivals):
+        super().__init__(inflight, [(e, sct) for e, sct, _ in arrivals])
+        self._release = {e: rp for e, _, rp in arrivals}
+        self._calls = 0
+
+    def drain_ready(self, end_ids, timeout=None):
+        self._calls += 1
+        ready = [e for e in end_ids if self._release.get(e, 0) < self._calls]
+        return super().drain_ready(ready, timeout)
+
+
+class TestColdStartGate:
+    def _agg(self, gate, cap=10.0, dispatched=("A", "B"), dispatched_ago=0.0):
+        agg = _make_agg(sct_ordered_drain=True)
+        agg._sim_cold_start_gate = gate
+        agg._sim_gate_compute_cap_s = cap
+        now = time.time()
+        agg._sim_dispatch_wall = {e: now - dispatched_ago for e in dispatched}
+        return agg
+
+    def test_holds_for_unknown_earlier_trainer(self):
+        # A arrives first but B (unknown delay, still computing) completes earlier.
+        agg = self._agg(gate=True)
+        ch = _TimedChannel({"A", "B"}, [("A", 100.0, 0), ("B", 50.0, 1)])
+        msg, (end, _) = agg._sim_recv_min(ch, ["A", "B"])
+        assert end == "B" and msg[MessageType.SIM_COMPLETION_TS] == 50.0
+        assert agg._sim_cold_start_holds >= 1
+
+    def test_flag_off_is_legacy_behaviour(self):
+        agg = self._agg(gate=False)
+        ch = _TimedChannel({"A", "B"}, [("A", 100.0, 0), ("B", 50.0, 1)])
+        _msg, (end, _) = agg._sim_recv_min(ch, ["A", "B"])
+        assert end == "A"  # the blind spot the gate closes
+
+    def test_releases_after_compute_cap(self):
+        agg = self._agg(gate=True, cap=0.05, dispatched=("A", "GHOST"), dispatched_ago=1.0)
+        ch = _TimedChannel({"A", "GHOST"}, [("A", 100.0, 0)])
+        _msg, (end, _) = agg._sim_recv_min(ch, ["A", "GHOST"])
+        assert end == "A" and getattr(agg, "_sim_gate_failsafe", 0) == 0
+
+    def test_known_delay_end_not_held_by_cold_start(self):
+        agg = self._agg(gate=True)
+        agg._sim_known_delay_s = {"B": 5.0}
+        ch = _TimedChannel({"A", "B"}, [("A", 100.0, 0), ("B", 50.0, 3)])
+        _msg, (end, _) = agg._sim_recv_min(ch, ["A", "B"])
+        assert end == "A"  # B is known: earlier_stuck owns it, not the cold-start gate

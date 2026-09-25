@@ -176,6 +176,12 @@ class TopAggregator(SyncTopAgg):
         # recv_fifo path. Supersedes staggered re-dispatch, so the two aren't enabled together.
         _drain = getattr(self.config.hyperparameters, "sim_sct_ordered_drain", False)
         self._sim_sct_ordered_drain: bool = bool(_drain) if _drain is not None else False
+        # Cold-start gate (FX-D4); default off.
+        self._sim_cold_start_gate: bool = bool(
+            getattr(self.config.hyperparameters, "sim_cold_start_gate", False))
+        _cap = getattr(self.config.hyperparameters, "sim_gate_compute_cap_s", 10.0)
+        self._sim_gate_compute_cap_s: float = float(_cap) if _cap is not None else 10.0
+        self._sim_dispatch_wall: dict = {}  # end -> wall time of its last sim dispatch
         # One-in-flight-per-trainer invariant (§3.resid, felix async). A trainer with an update
         # still outstanding must NOT be re-selected — real keeps it out of VAL_CH_STATE_SEND
         # until its update returns and is aggregated. Default off ⇒ unchanged selection.
@@ -233,6 +239,26 @@ class TopAggregator(SyncTopAgg):
     # stack rides the identical logic. The asyncfl gate tracker (_sim_inflight_expected)
     # is reached via the mixin's guarded _avail_drop_inflight hook.
 
+    def _sim_cold_start_inflight(self) -> set:
+        """First-contact ends (no known delay) dispatched within the compute cap and not yet
+        buffered or committed -- invisible to _sim_inflight_expected. Empty when the flag is off."""
+        if not getattr(self, "_sim_cold_start_gate", False):
+            return set()
+        cap = getattr(self, "_sim_gate_compute_cap_s", 10.0)
+        now = time.time()
+        return {
+            e for e, w in getattr(self, "_sim_dispatch_wall", {}).items()
+            if e not in self._sim_known_delay_s and now - w <= cap
+            and not self._sim_buffer.has(e) and e not in self._sim_committed
+        }
+
+    def _sim_unknown_stuck(self, pending_ends) -> bool:
+        """Cold-start gate: hold while a pending first-contact end may still be computing."""
+        stuck = bool(self._sim_cold_start_inflight() & set(pending_ends))
+        if stuck:
+            self._sim_cold_start_holds = getattr(self, "_sim_cold_start_holds", 0) + 1
+        return stuck
+
     def _sim_recv_min(self, channel, recv_ends):
         """Barrier: drain the in-flight set, then commit the smallest
         sim_completion_ts. The virtual clock advances TO each committed completion
@@ -286,6 +312,7 @@ class TopAggregator(SyncTopAgg):
             # commit past it (past-dated, staleness drift).
             live_inflight = [
                 e for e in set(recv_ends) | set(self._sim_inflight_expected)
+                | self._sim_cold_start_inflight()
                 if channel.has(e)
                 and not self._sim_buffer.has(e) and e not in self._sim_committed
             ]
@@ -352,6 +379,8 @@ class TopAggregator(SyncTopAgg):
                     and not self._sim_buffer.has(e) and e not in self._sim_committed
                     and (self._sim_end_has_ready_msg(channel, e) or exp <= _probe_ceiling)
                 ]
+                to_probe += [e for e in self._sim_cold_start_inflight()
+                             if e not in _seen and e not in to_probe and channel.has(e)]
                 _pending_ends = to_probe
                 if to_probe:
                     probed = max(probed, len(to_probe))
@@ -380,16 +409,18 @@ class TopAggregator(SyncTopAgg):
                     min_stuck, _stuck_end = exp, e
             earlier_stuck = (buffered_min is not None and min_stuck is not None
                              and min_stuck + _SIM_ORDER_SLACK_S < buffered_min)
+            unknown_stuck = self._sim_unknown_stuck(_pending_ends)
             if buffered_min is None and not _pending_ends:
                 break  # nothing to commit and nothing in flight
-            if not earlier_stuck:
+            if not earlier_stuck and not unknown_stuck:
                 break  # the buffered minimum is the true next completion
             if time.time() >= deadline:
                 # A stuck trainer never arrived within the failsafe; stop waiting
                 # for it (treat as lost so it can't block future commits too) and
                 # commit the buffered min.
                 self._sim_gate_failsafe = getattr(self, "_sim_gate_failsafe", 0) + 1
-                self._sim_inflight_expected.pop(_stuck_end, None)
+                if _stuck_end is not None:
+                    self._sim_inflight_expected.pop(_stuck_end, None)
                 break
             # else: HOLD — an in-flight trainer is expected to complete before the
             # buffered min, so committing now would lap it (the past-dating source).
@@ -471,6 +502,7 @@ class TopAggregator(SyncTopAgg):
         # Gate bookkeeping: trainer no longer in flight; its MODELED_DELAY_S
         # was already learned into _sim_known_delay_s by _ingest above.
         self._sim_inflight_expected.pop(_end, None)
+        getattr(self, "_sim_dispatch_wall", {}).pop(_end, None)
         _commit_gap = self._vclock.now - sct
         # a "past-dated" commit is one the clock already lapped
         # (sct < vclock by more than the gate slack) — exactly what inflates
@@ -534,6 +566,7 @@ class TopAggregator(SyncTopAgg):
                 f"inflight_tracked={len(self._sim_inflight_expected)} "
                 f"gate_holds={getattr(self, '_sim_gate_holds', 0)} "
                 f"gate_failsafe={getattr(self, '_sim_gate_failsafe', 0)} "
+                f"cold_start_holds={getattr(self, '_sim_cold_start_holds', 0)} "
                 f"pastdated_commits={getattr(self, '_sim_pastdated_commits', 0)} "
                 f"pastdated_gap_cum={getattr(self, '_sim_pastdated_gap_cum', 0.0):.0f} "
                 f"pastdated_gap_max={getattr(self, '_sim_pastdated_gap_max', 0.0):.0f} "
@@ -1358,6 +1391,7 @@ class TopAggregator(SyncTopAgg):
         held = pending_in_buffer
         if self._inflight_residence:
             held = pending_in_buffer | set(self._sim_inflight_expected)
+            held |= self._sim_cold_start_inflight()  # first-contact ends are busy too
 
         # Release trainers no longer busy (committed, or — residence off — dispatched
         # with no buffer entry yet); they refill next round's fill pass.
@@ -1556,6 +1590,9 @@ class TopAggregator(SyncTopAgg):
                 _delay = self._sim_known_delay_s.get(end)
                 if _delay is not None:
                     self._sim_inflight_expected[end] = _sst + _delay
+                if not hasattr(self, "_sim_dispatch_wall"):  # bare-init guard (tests)
+                    self._sim_dispatch_wall = {}
+                self._sim_dispatch_wall[end] = time.time()
                 if _staggered:
                     _m = dict(base_msg)
                     _m[MessageType.SIM_SEND_TS] = _sst

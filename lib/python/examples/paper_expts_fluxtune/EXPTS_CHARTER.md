@@ -1,5 +1,7 @@
 # FLUXTUNE evaluation charter (living doc)
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../_metadata/ROBUST_FL_READINESS.md) → [FLUXTUNE_READINESS.md](../_metadata/FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 **Purpose.** Current state + resolved decisions for the fluxtune eval, reconciling the paper
 (`05-evaluation.tex`) with the code (`EXPERIMENTS.md`, telemetry, plots). History lives in git; this doc
 holds only what's *current* plus rationale a diff wouldn't explain. Run ledger: `EXPERIMENTS.md` §10.

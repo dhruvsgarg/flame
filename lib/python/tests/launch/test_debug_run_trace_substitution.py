@@ -174,3 +174,32 @@ class TestMultiTraceSubstitution:
         exps = _run_generator(generator_source, tmp_path, "felix", trace="syn_20 syn_50")
         names = [e["name"] for e in exps]
         assert len(names) == len(set(names)), f"duplicate names: {names}"
+
+
+class TestHarnessFlags:
+    """--harness / --delay-factor reach both roles; unset leaves configs untouched."""
+
+    def test_harness_and_factor_reach_both_roles(self, generator_source, tmp_path, monkeypatch):
+        monkeypatch.setenv("HARNESS", "stub")
+        monkeypatch.setenv("DELAY_FACTOR", "4")
+        exps = _run_generator(generator_source, tmp_path, "felix refl", "")
+        assert exps
+        for e in exps:
+            assert e["trainer"]["hyperparameters"]["harness_mode"] == "stub"
+            assert e["trainer"]["hyperparameters"]["training_delay_factor"] == 4.0
+            assert e["aggregator"]["config_overrides"]["hyperparameters"]["harness_mode"] == "stub"
+            assert e["name"].startswith("hstub_")
+
+    def test_unset_is_production_path(self, generator_source, tmp_path, monkeypatch):
+        monkeypatch.delenv("HARNESS", raising=False)
+        monkeypatch.delenv("DELAY_FACTOR", raising=False)
+        for e in _run_generator(generator_source, tmp_path, "felix", ""):
+            assert "harness_mode" not in (e["trainer"].get("hyperparameters") or {})
+            assert "training_delay_factor" not in (e["trainer"].get("hyperparameters") or {})
+            assert "harness_mode" not in e["aggregator"]["config_overrides"]["hyperparameters"]
+
+    def test_agg_hp_passthrough_parses_yaml_scalars(self, generator_source, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGG_HP", "simColdStartGate=true simGateComputeCapSeconds=4.5")
+        for e in _run_generator(generator_source, tmp_path, "felix", ""):
+            h = e["aggregator"]["config_overrides"]["hyperparameters"]
+            assert h["simColdStartGate"] is True and h["simGateComputeCapSeconds"] == 4.5

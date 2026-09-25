@@ -1,5 +1,7 @@
 # Parity checker — implementation reference
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../../../_metadata/ROBUST_FL_READINESS.md) → [FELIX_READINESS.md](../../../_metadata/FELIX_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 Scope: **how `checks.py` grades a rung**, not the methodology or any example's live
 status. For those, read first:
 - [`../../PARITY.md`](../../PARITY.md) §1/§2 — the causal ladder, roles (CONTROL/

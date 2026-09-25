@@ -180,7 +180,8 @@ class Channel(object):
         `allow_recv_bootstrap` on `ends()`.
         """
         end_list = self.ends(state, allow_recv_bootstrap=True)
-        return end_list[0] if len(end_list) > 0 else None
+        # None once the peer has left (shutdown race); send() then no-ops.
+        return end_list[0] if end_list else None
     
     def get_c(self):
         try:
