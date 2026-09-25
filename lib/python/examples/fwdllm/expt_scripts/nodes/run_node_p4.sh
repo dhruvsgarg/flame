@@ -194,9 +194,15 @@ fi
 # P4_NUM_TRAINERS is a MEMORY lever for big models -- and it is NOT free: trainer
 # tid maps to client_idx (tid-1) % client_idx_modulo, so N < 100 reads only the
 # first N of 100 shards. Valid for a smoke, NOT for a scored run (see buildplan).
+# P4_PARTITION points the run at a different client count. This is the SUPPORTED
+# way to run N < 100 trainers and still read every shard: build the matching group
+# (`build_niid_partitions.py --n-clients N`), pass it here, and `client_num_in_total`
+# -- hence `total_data_bins` -- derives itself from the group (main_fedfwd_agg:170).
+# Set P4_NUM_TRAINERS to the SAME N, or trainers past N alias back onto shard 0.
 MODEL_ARGS=()
 [[ -n "${P4_MODEL_TYPE:-}" ]] && MODEL_ARGS+=(--model-type "$P4_MODEL_TYPE")
 [[ -n "${P4_MODEL_NAME:-}" ]] && MODEL_ARGS+=(--model-name "$P4_MODEL_NAME")
+[[ -n "${P4_PARTITION:-}" ]] && MODEL_ARGS+=(--partition-method "$P4_PARTITION")
 
 COMMON=(--only fluxtune --mode sim --yes --clean --allow-stale-profile "${FORCE[@]}"
         --dataset "$DATASET" "${EVAL[@]}"
@@ -233,9 +239,14 @@ case "$ARM" in
     # unreachable `else` it was (row S), and `saturation` is the PRIMARY stop --
     # the run ends because learning stopped, not because a total was reached
     # (row E). P4_SAT_STOP=0 reverts to the old stop set for an A/B.
+    # Row E': the stall trigger beside the decay one. The 08-22 rule fires only
+    # once a run drops BELOW its own best, so a run that plateaus AT it is
+    # invisible -- 2 of 4 arms on 2026-08-24 were (buildplan §5.13). Unset keeps
+    # the 08-22 behaviour byte-identical; 0.003 is the replayed sizing (P4.17).
     SAT=(--saturation-stop)
     [ "${P4_SAT_STOP:-1}" = "0" ] && SAT=()
-    node_run "p4-$DATASET" "controller (law C, T_res=300, sensed B_max, ${P4_BMAX_POLICY:-anchor}/${P4_PHI_STOP:-halt}, sat=${P4_SAT_STOP:-1})" \
+    [[ -n "${P4_SAT_STALL_FRAC:-}" ]] && SAT+=(--sat-stall-frac "$P4_SAT_STALL_FRAC")
+    node_run "p4-$DATASET" "controller (law C, T_res=300, sensed B_max, ${P4_BMAX_POLICY:-anchor}/${P4_PHI_STOP:-halt}, sat=${P4_SAT_STOP:-1}${P4_SAT_STALL_FRAC:+/stall=$P4_SAT_STALL_FRAC})" \
       "${COMMON[@]}" --gate-rho-ref annealed \
       --rho-schedule landing --t-res 300 --budget-stop-frac 0.95 \
       --b-max-policy "${P4_BMAX_POLICY:-anchor}" "${SAT[@]}" \

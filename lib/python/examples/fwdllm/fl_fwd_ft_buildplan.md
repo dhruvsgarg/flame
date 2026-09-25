@@ -14,7 +14,7 @@
 second statement of it. Replace, do not accumulate — a measurement carries its value and its date, the old
 value is deleted. No changelog, no session log, no dated append sections; chronology lives in git and P4.
 **When a queue row lands, delete it** — what survives is one sentence in §5 if the fact still binds, and
-its number in P3/P4. **§1–§3 are the status budget: ~180 lines at 24 live queue rows.** If it grows without
+its number in P3/P4. **§1–§3 are the status budget: ~250 lines at 9 live queue rows.** If it grows without
 the queue growing, something in it has stopped being status and belongs in §5 — that is how §5.7 got there.
 
 > **⚠ THE FOUR DOCS ARE ONE CORPUS — no inconsistency, no staleness, no redundancy.** Any session that
@@ -39,13 +39,14 @@ the queue growing, something in it has stopped being status and belongs in §5 �
 
 | axis | where it stands | what closes it |
 |---|---|---|
-| **datasets** | 3 of 3 land within 0.008 of their FL target — but **none terminated on its own stop** | C · D · Y · **E firing live** |
-| **models** | **ZERO FL runs on a second architecture.** Every number in this corpus is DistilBERT + adapters at `p`≈450k | **N5c**, and it is the single largest hole |
+| **datasets** | **CLOSED 2026-08-24.** 3 of 3 land within 0.010 of their FL target **and all three ended on their own stop** — saturation on agnews and yahoo, the `Φ` rail on yelp-p (§5.12) | — |
+| **models** | **ZERO FL runs on a second architecture.** Every number in this corpus is DistilBERT + adapters at `p`≈450k | **N5c**, and it is now the *only* hole in §0 |
 
-**Read the second row as the priority.** A fourth dataset on DistilBERT adds a data point to an axis that is
-already demonstrated. A first *run* on roberta-large tests whether the self-derivation — `ρ_max` from gate
-reachability, `n_req` in closed form, `T_res`, law C, the `Φ` rail, the saturation stop — survives a **9.4×
-change in `p`** and a different architecture. **That is the claim.** Everything else is supporting evidence.
+**Read the second row as the priority — it is now the whole queue.** With the dataset axis closed, a fourth
+dataset on DistilBERT adds nothing. A first *run* on roberta-large tests whether the self-derivation —
+`ρ_max` from gate reachability, `n_req` in closed form, `T_res`, law C, the `Φ` rail, the saturation stop —
+survives a **9.4× change in `p`** and a different architecture. **That is the claim.** Everything else is
+supporting evidence.
 
 **How to plan against this.** Prefer one run that tests many things over many runs that each test one.
 Every launched run should carry every free instrument it can (`P4_RETENTION_EVERY`, the probe, the health
@@ -57,8 +58,9 @@ while the model axis reads zero.**
 
 ## §1 — The claim, and what is missing
 
-> **FluxTune reaches and holds a plateau on a new dataset with no learning knob tuned by hand — same
-> DistilBERT + adapters, three datasets, against a version of itself whose step size was hand-searched.**
+> **FluxTune reaches a plateau, decides on its own that it has, and stops there — on a new dataset with no
+> learning knob tuned by hand. Same DistilBERT + adapters, three datasets, against a version of itself whose
+> step size was hand-searched.** *(The second clause became evidence on 2026-08-24; §5.12.)*
 
 **Three systems; use these names everywhere, figures included.** **FwdLLM** — prior work, variance gate,
 raw SGD. **FluxTune-v2** — trust-ratio + `n_target`, but a **static `ρ*`=0.06 hand-searched on agnews**,
@@ -77,7 +79,9 @@ only sensor left** — hole 5, row **E**.
 
 ### Scoreboard
 
-*FluxTune column = the 2026-08-21 `anchor` + `log_only` runs (N1–N3); **peak** accuracy, per [P4.4](fl_fwd_ft_practice.md#p44-scoring-rules-for-any-ab).*
+*FluxTune column = the **2026-08-24 C · D · Y runs**, which each ended on their own stop; **peak** accuracy,
+per [P4.4](fl_fwd_ft_practice.md#p44-scoring-rules-for-any-ab). The 08-21 N1–N3 runs are the same
+controller with nothing armed to halt it and reproduce these peaks to 0.002 (§5.12).*
 
 **Only the first row is the goal.** The **FL target** is what the task should reach *in the federated
 setting* — 100 non-IID clients, forward-only, adapters. The **backprop ceiling** is centralized and
@@ -90,23 +94,26 @@ target for a 100-client non-IID run.
 | backprop ceiling *(plumbing diagnostic only)* | 0.850 | 0.734 | 0.874 |
 | its own sim charge profile | `fluxtune.yaml` | `fluxtune_yahoo.yaml`, in git | `fluxtune_yelp-p.yaml`, in git |
 | **FluxTune-v2** run valid | **yes** — 938 commits, peak 0.843 | **yes** — 1,138 commits, peak 0.428 | **yes** — 997 commits, peak 0.728 |
-| **FluxTune** ends on its own stop | **no — no stop exists** | **no — same** | **no — same** |
-| **reaches the FL target** | **−0.007** (0.873) | **YES — +0.003** (0.663) | **−0.008** (0.812) |
-| **beats FluxTune-v2** | 0.873 vs 0.843, **5.3×** | 0.663 vs 0.428, **6.2×** | 0.812 vs 0.728, **7.9×** |
+| **FluxTune** ends on its own stop | **YES — `saturation`, commit 1,103** | **YES — `saturation`, commit 1,203** | **YES — `phi_fixed`, commit 1,005** |
+| **reaches the FL target** | **−0.008** (0.872) | **YES — +0.004** (0.664) | **−0.010** (0.810) |
+| accuracy where it stopped | 0.868 — **0.004 under its own peak** | 0.656 — **0.008 under** | 0.803 — **0.007 under** |
+| `Φ` where it stopped | **2.85** | **2.82** | **3.00** (the rail) |
+| vclock spent of its ceiling | 30,558 / 48,000 — **36% saved** | 31,218 / 60,000 — **48% saved** | 30,374 / 50,000 — **39% saved** |
+| **beats FluxTune-v2** | 0.872 vs 0.843, **5.3×** | 0.664 vs 0.428, **6.2×** | 0.810 vs 0.728, **7.9×** |
 | v2 against the FL target | −0.037 | **−0.233** | −0.092 |
 | accuracy still has slope in `B`? | **no** | **no — retracted** | **no** |
-| `B_max` sensed, not supplied | 1.694, 12 fires | 2.017, 16 fires | 1.847, 12 fires — **every fire is the grid floor, and sensing is now known to be impossible (§5.6). This row cannot be made to pass; the claim must rest on row E instead** |
+| `B_max` sensed, not supplied | 1.230, 7 fires | 1.302, 8 fires | 1.265, 6 fires — **every fire still returns the grid floor and sensing is impossible (§5.6). This row is retired: `B_max` is a diagnostic, and termination rests on row E, which now has live evidence** |
 
-**FluxTune lands within 0.008 of the FL target on all three and clears it on yahoo; v2 clears none.** The
-sized saturation stop (row **E**) would land at 0.867 / 0.652 / 0.807 — 0.013 / 0.008 / 0.018 under target,
-in **45% / 55% / 60%** of the wall clock these runs actually spent.
+**FluxTune lands within 0.010 of the FL target on all three, clears it on yahoo, and stops itself within
+0.008 of its own peak on all three** — in 52–64% of the compute the same controller burns with nothing
+armed to halt it. **v2 clears no target on any dataset.**
 
 **×** is the vclock at which FluxTune passes v2's *own full-budget peak*. The 08-20 pairs read 5.5 / 6.5 /
 8.5, so the headline **replicates under a different combiner** — marginally *worse* under `anchor`, which is
 what schedule-neutrality predicts
 ([P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid)).
 
-### The finding that reorders everything — §5.5
+### The finding that reorders everything — §5.5, and what closed it — §5.12
 
 **All three datasets are saturated, and every run peaks at the same `Φ`.** N1–N3 ran `anchor` + `log_only`
 with nothing halting them, straight past the rail to `Φ` = 4.65 / 6.00 / 5.17. They peak at
@@ -114,50 +121,57 @@ with nothing halting them, straight past the rail to `Φ` = 4.65 / 6.00 / 5.17. 
 **give it back**: −0.03 / −0.14 / −0.11 by the end. Curves and the saturation-stop sizing: **§5.5**.
 What `Φ` is and what it is a property of: **§5.6**.
 
+**And on 2026-08-24 the same controller stopped itself in that band on all three, without being told where
+it was** — `saturation` at `Φ` 2.85 / 2.82, the `Φ` rail at 3.00 — keeping the peak to within 0.008 and
+handing back **none** of the 0.03–0.14 the un-halted runs did. **§5.12.**
+
 > **Two readings are retracted with it** (numbers in §5.5). *(1)* The tail-slope extrapolation over-predicted
 > the extra budget's gain by 3.4× on agnews, **17× on yahoo** and got the sign wrong on yelp-p — **no
 > dataset has slope left in `B`**, and yahoo's "still climbing" status goes with it. *(2)* The combiner
 > throttle **cost hours and cost accuracy nowhere**; un-throttling did not even shorten time-to-v2's-peak.
 > `Λ = 2B/s` is schedule-neutral, now measured twice on independent runs.
 
-**Four axes of generality, and only one is exercised:**
-
-| axis | coverage | status | rows |
-|---|---|---|---|
-| **datasets** | 3 of 3 run, 3 valid v2 runs | **all three land within 0.008 of the FL target**, yahoo clears it; all three saturate, so no gap left is a budget problem. **But none of them terminated** — the peak is demonstrated, the plateau is not | C · D · **Y** · Score |
-| **models** | **0 runs**, but P1 has now probed roberta-large offline | every *run* on record is DistilBERT + adapters. The offline knee differs by 1.08 between the two architectures on one dataset (§5.6) | **N5b** → **N5c** |
-| **PEFT capacity within that model** | `rf` 16 vs 64 | **negative** — hole 3. N5b must re-derive `T_res` against the `ln 2.7` prior, since P1 showed no measured `Φ*` is available in advance | N5a · N5b |
-| **heterogeneity** | α = 1 only | ablations go **up** to α = 10/100, never below 1. Not started | — |
+**Generality, in one line each.** **Datasets** — closed (§0, §5.12). **Models** — zero scored runs, and the
+only open axis; rows N5b → N5c. **PEFT capacity within a model** — negative at `rf`=64, hole 3.
+**Heterogeneity** — α=1 only; ablations go *up* to α=10/100, never below 1, not started.
+**Gate safety `s`** — 1.0 / 1.5 / 2.9 measured; it moves *along* the accuracy-vs-`Λ` curve (§5.12), so it
+is a compute knob, not a learning one.
 
 ### The holes
 
-**Holes 1, 2 and 5 are one defect, and hole 5 is its root.** The probe's grid floor pins `B_rem` at ≈0.22, which makes `B_max` a
-*receding* target, and a receding target breaks law C in two places at once — it never anneals and it never
-arrives. Everything the three runs did wrong follows from that single number.
+**Holes 1a and 2 are one defect, and hole 2 is its root.** *(There were five; 1b and 5 closed, and what was hole 5 is folded into hole 2 below.)* The probe's grid floor pins `B_rem` at ≈0.22,
+which makes `B_max` a *receding* target, and a receding target breaks law C: it never anneals. **Hole 1b —
+"and it never arrives" — is closed:** the stop no longer routes through `B_max` at all (§5.12).
 
 ```
 Φ_knee pinned at 1.25   ⇒  B_rem = ln 1.25 = 0.223, constant       (hole 2, the cause)
    ⇒ B_max = B + 0.223, RECEDING, never a fixed point
-   ⇒ ρ* = √(2·0.223/300) = 0.0386  CONSTANT — law C stops annealing   (hole 1a)
-   ⇒ B ≥ f·B_max needs B ≥ f·r/(1−f) = 4.75, i.e. Φ≈116 — never fires (hole 1b)
-   ⇒ constant ρ ⇒ Σρ² = ∞ ⇒ Φ grows without bound ⇒ past the cliff, every time
+   ⇒ ρ* = √(2·0.223/300) = 0.0386  CONSTANT — law C stops annealing   (hole 1a, OPEN)
+   ⇒ B ≥ f·B_max needs B ≥ f·r/(1−f) = 4.75, i.e. Φ≈116 — never fires (hole 1b, ROUTED AROUND)
+   ⇒ constant ρ ⇒ Σρ² = ∞ ⇒ Φ grows without bound — bounded now only by the stop, not by the step
 ```
 
-1. **A FluxTune run does not slow down. It can now stop — untested on a run.** *(a)* Law C degenerated into a **constant step** —
-   measured ρ flat at **0.034 ± 0.002** over the last 70% of every run, a sawtooth reset upward at every
-   probe fire, drifting only −0.007/1,000 commits. **That is exactly FluxTune-v1's failure mode**, reached
-   from the opposite direction. *(b)* **Both stops now can fire, as of 2026-08-22** — the three predicates
-   are an `OR` at the settled 3.0 rail and the saturation stop ships behind `--saturation-stop`
-   (§5.3, §5.5). **No run has ended on either yet**: rows **C**, **D** and **Y** are what test that. The
-   anneal half of this hole is untouched, and **row A is now the only fix** — N4a′ is closed unrun (hole 2),
-   so nothing will restore the anneal by making the sensor honest.
-2. **The `B_max` probe reports its own grid floor — and re-ranging it would not help, because the quantity
-   it measures is not fixed.** *(closed 2026-08-23 by P1; §5.6)* The arithmetic is as stated: `knee()`
-   interpolates from an implicit `(Φ=1, normalized 1.0)` anchor to the first grid point, so a model already
-   below half-accuracy at `Φ`=1.5 — all 40 fires — returns `1 + 0.5·(1−0.5)/(1−n₁)` → **1.25**. But the
-   defect is deeper than the range: **`Φ_knee` is a property of the training trajectory**, moving 1.44→2.07
-   on one model and one dataset when only the rig's learning rate changed. **No grid makes a trajectory-
-   dependent quantity available before the trajectory.** Row **N4a′ is closed unrun.**
+1. **A FluxTune run still does not slow down. It now stops, measured on three runs.** *(a)* **OPEN.** Law C
+   degenerated into a **constant step** — measured ρ flat at **0.034 ± 0.002** over the last 70% of every
+   run, a sawtooth reset upward at every probe fire, drifting only −0.007/1,000 commits, and the 08-24 runs
+   reproduce it exactly (`ρ_last` 0.0349 / 0.0420 / 0.0333 against `ρ` at commit 1 of 0.0678). **That is
+   FluxTune-v1's failure mode**, reached from the opposite direction, and **row A is the only fix** — N4a′
+   is closed unrun (hole 2), so nothing will restore the anneal by making the sensor honest. *(b)*
+   **CLOSED 2026-08-24.** All three arms ended on `[BudgetStop]` — `saturation` on agnews and yahoo, the
+   `Φ` rail on yelp-p — the first terminations in this corpus under the shipped stack (§5.12). A constant
+   `ρ` is still `Σρ² = ∞`, so **the stop, not the step, is what now bounds `Φ`** — an `OR` of two rules that
+   both fired, rather than a schedule that converges.
+2. **`B_max` cannot be sensed by any forward-only probe. The sensing architecture is dead, not broken.**
+   *(closed 2026-08-23 by P1; §5.6. This was holes 2 and 5, which were always one defect.)* The live
+   arithmetic is as stated: `knee()` interpolates from an implicit `(Φ=1, 1.0)` anchor to the first grid
+   point, so a model already below half-accuracy at `Φ`=1.5 returns 1.25 — and the 08-24 runs reproduce it,
+   21 fires at knee 1.22–1.88, `B_rem` 0.20–0.63, no trend. But **re-ranging the grid would not help**:
+   `Φ_knee` is a property of the *training trajectory*, moving with dataset (spread 1.10), architecture
+   (agnews 3.15 DistilBERT vs 2.07 roberta-large) and optimizer path (1.44→2.07 on the rig's learning rate
+   alone, at equal accuracy), while `rf` over a 3.8× range in `p` moves it ≤0.22. It **anti-correlates**
+   with `Φ*`. The earlier "frozen-vs-re-fit gap of ~1.8×" reading is retracted — the `m`=0 frozen control
+   reads 3.175, not 1.25. ⇒ rows **P1′** and **N4a′** closed unrun, **row E is the primary sensor**, and
+   **the consequence that survives is hole 1a alone**: nothing anneals `ρ`.
 3. **The MODEL axis is untested and its one probe came back negative.** Every run is DistilBERT + adapters
    at `rf`=16; the three datasets differ in `p` by 1.4%. At `rf`=64 law C + `annealed` does not compose with
    the gate under **any** `T_res` (§5.3), so `T_res`=300 and `f`=0.95 are **pinned to one `p`**. Rows
@@ -170,83 +184,63 @@ arrives. Everything the three runs did wrong follows from that single number.
    (`rf`=64) and 3.28 (`rf`=32) across a **3.8× range in `p`**. **P1 tested whether a forward-only probe can
    read it in advance and the answer is no** (§5.6): `Φ_knee` is not a property of the model, of the task,
    or of the pair. So "measure `Φ*` once, then spend to it" is **dead**, and the saturation stop is the only
-   instrument that ever sees `Φ*`. Why `Φ*` itself stays so tight across tasks is now the open question.
-5. **No forward-only probe can supply `B_max` before a run. The sensing architecture is dead.**
-   *(measured 2026-08-23; §5.6)* The previous statement of this hole — injection reads a **frozen** model, a
-   run **re-fits**, the gap is **~1.8× in `Φ`** — is **retracted**: the offline probe at `m`=0 *is* frozen
-   and reads **3.175**, not 1.25, so frozen-vs-re-fit is not what separates the instruments. What P1 measured
-   instead is that `Φ_knee` moves with **dataset** (spread 1.10), with **architecture** (agnews: 3.15
-   DistilBERT vs 2.07 roberta-large), and with the **optimizer path** (1.44→2.07 at fixed model, dataset and
-   accuracy) — while `rf` across a 3.8× range in `p` moves it ≤0.22. It also **anti-correlates** with `Φ*`.
-   ⇒ rows **P1′** and **N4a′** are closed unrun, and **row E's saturation stop is the primary sensor**, not
-   a backstop.
+   instrument that ever sees `Φ*` — **and on 2026-08-24 it saw it, live, on two of three tasks** (§5.12).
+   Why `Φ*` itself stays so tight across tasks is now the open question. **It also survived an `s` sweep:**
+   agnews peaks at `Φ` 2.59 (`s`=1.5) and ≥2.41 (`s`=1.0, truncated) while `Λ*` moves 1.27 → 1.76 over the
+   same pair. **`Φ*` is the invariant and `Λ* = 2 lnΦ*/s` is the quantity that moves** — which is what
+   "damage is a rotation" predicts, and why the rail is written in `Φ` and not in `Λ`.
+
 
 
 ---
 
-## §2 — Now · what is running
+## §2 — Now · nothing is running
 
-*Read 2026-08-24 01:00. **Rows C · D · Y launch tonight on nodes 1–3**; node 4 is free and its arm is a
-decision, see §3.1.* All ten runs are on this node's disk and their curves are cached in
-`expt_scripts/writeup_figs/data/*.json`, so nothing needs to re-scan `experiments/`.
+*Read 2026-08-24 10:00. **All four overnight arms COMPLETED**; every node is free. The next launch is a
+decision, not a queue item — see §3.* All fourteen runs are on this node's disk and their curves are cached
+in `/tmp/fwd_replay_cache/*.jsonl`, so nothing needs to re-scan `experiments/`.
 
-### What is running overnight, and the hypothesis each arm tests
+### What the overnight arms answered
 
-**One hypothesis, three datasets: `FluxTune ends itself at the right place, without being told where.`**
-No run in this corpus has ever ended on `[BudgetStop] reason=saturation` under the shipped stack — the peak
-is demonstrated on all three datasets and the *plateau* is not, which is the second half of §0's dataset
-axis and the last thing standing between §1's claim and its evidence.
+**One hypothesis, three datasets: `FluxTune ends itself at the right place, without being told where.`
+CONFIRMED on all three.** Numbers, curves and the two caveats: **§5.12** ·
+[P4.16](fl_fwd_ft_practice.md#p416-the-2026-08-24-termination-runs--the-stop-fires-on-all-three).
 
-| arm | node | dataset | budget | **predicted** | **falsified if** |
-|---|---|---|---|---|---|
-| **C** | 1 | agnews | 48,000 vclock / 10 h | `[BudgetStop] reason=saturation` near commit **1,180**, acc **≥ 0.850**, `Φ` in **2.4–3.3** | it runs to the ceiling, or stops below `Φ`=2.4 |
-| **D** | 2 | yahoo | 60,000 vclock / 14 h | saturation near commit **1,080**, acc **≥ 0.657** | same |
-| **Y** | 3 | yelp-p | 50,000 vclock / 14 h | saturation near commit **1,126**, acc **≥ 0.807** | same |
+| arm | dataset | predicted | **measured** | verdict |
+|---|---|---|---|---|
+| **C** `020537` | agnews | `saturation` near commit 1,180, acc ≥ 0.850, `Φ` ∈ 2.4–3.3 | **`saturation` @ commit 1,103**, `Φ`=2.85, peak **0.872**, ended 0.868 | **HELD** — 77 commits early, 0.022 over |
+| **D** `020547` | yahoo | `saturation` near commit 1,080, acc ≥ 0.657 | **`saturation` @ commit 1,203**, `Φ`=2.82, peak **0.664**, ended 0.656 | **HELD** — 123 commits late, peak 0.007 over |
+| **Y** `020555` | yelp-p | `saturation` near commit 1,126, acc ≥ 0.807 | **`phi_fixed` @ commit 1,005**, `Φ`=3.00, peak **0.810**, ended 0.803 | **HELD on the fallback** — the rail beat the detector to it by ~170 commits, which is what an `OR` is for |
+| **N4b′** `020603` | agnews `s`=1.0 | same peak (≈0.872) at the same `Λ`≈1.4, reached at lower `B` | **no stop** — ran its 48,000 vclock out at commit 723, `Φ`=2.55, still climbing at peak **0.878** | **ANSWERED, arm incomplete** — `s` moves *along* the accuracy-vs-`Λ` curve (≤0.006 at matched `Λ`), so the higher peak is more `Λ` banked, not a better curve |
 
-**Why these three and not the roberta arms.** §3.1's M-DAY plan is **withdrawn as written**: the 08-23
-roberta smoke prices N5c at **~50 h**, so a 3.5 h arm reaches `Φ`≈1.08 and a 12 h arm `Φ`≈1.29 — neither
-reaches the phenomenon (**§5.11**). C · D · Y are correctly sized at 10–14 h, run on the stack stage 2
-smoked clean, and each carries `P4_RETENTION_EVERY=10` so **P3′ is confirmed past `Φ`=2.9** for free.
+**The two caveats, stated where they are read.** *(1)* **The detector did not fire on yelp-p, and the
+reason is a defect in its shape, not a tuning miss.** GL only breaches when a run drops below its own best;
+yelp-p plateaued *at* its best for 426 commits. **The rail is therefore load-bearing, not decorative** —
+and row **E′** (§5.13) replaces GL as the trigger with a stall test that catches this case. *(2)*
+**trips/commit breached its floor of 3 in the last quintile on yahoo (2.94) and yelp-p (3.00)** — marginal,
+0 trainer deaths, but §5.4's "re-size once there are ten" now has three more data points.
 
-**Three secondary readings ride these arms at no cost:** whether saturation's `thr`=0.005 / `patience`=20
-survive out of sample on the three curves they were sized on; whether the `anchor` combiner's n=1 rule
-(row **B4**) matters in a run that actually terminates; and the first `[CommitGate] -> COMMIT` counts under
-the 2026-08-24 boundary fix.
+**Two readings rode along free and both hold.** **P3′ is confirmed past `Φ`=2.9**: `cos(θ_t,θ_0)·Φ` =
+**0.9982 / 0.9956 / 1.0005** over 110 / 120 / 100 logged commits, 0 outside 1.00 ± 0.02, out to `Φ`=3.00 —
+against the stage-2 smoke's 0.9999 to only `Φ`=1.64. And **the budget law holds through the stop**:
+`Φ` predicted from step sizes alone misses the observed norm by **0.16% / 0.06% / 0.41%**.
 
-**Stages 1 and 2 both ran 2026-08-23, and a third smoke followed.** Stage 1 (~28 min GPU) closed **P1, P1′
-and N4a′**: `Φ_knee` is a property of the trajectory, not of the model or the task, and it anti-correlates
-with `Φ*` (**§5.6**; consequences in **§1 holes 2/4/5**). Stage 2 (2 h, run `123727`) proved the wiring and
-**answered P3′** — `cos·Φ`=0.9999 — but **did not fire the stop** (**§5.10**). The roberta-large smoke
-(2 h, run `145932`) then **ported the stack to a second architecture cleanly** — `p`=4,225,540, 0 deaths,
-`cos·Φ`=1.0000 at the new `p` — **and priced N5c at ~50 h**, which is what withdrew M-DAY (**§5.11**).
-
-**One correctness fix landed 2026-08-24, enabled by default per §6 rule 1.** `_gate_satisfied` compared
-`n_have >= n_req` exactly; `ρ_max` is *defined* as the `ρ` where `n_req` = `max_iter·K`, so a run pinned at
-the cap is satisfiable only at equality and float rounding lost it (live `n_req` = 200.00000000000006
-against `n_have` = 200.0). Roberta's smoke committed **0 times through the gate and 80 times through the
-`max_iter` bypass**. Now a 1e-9 relative tolerance; regression case (g) in `expt_scripts/test_commit_gate.py`
-covers both architectures at the cap. **It corrects accounting, not throughput** — the gate fires on the
-same 200-upload pool it was already waiting for.
-
-**Rows S · E · E2 · M1 · M2 · D0 landed as code on 2026-08-22 and N5a closed the same day**, each gated
-offline; nothing on the queue is blocked on a node. Launch commands are §4.1 and §4.2b; the stage order is
-§3. **roberta-large is ported through step 3 and has now RUN** — see §5.11 for what that cost. Note the
-offline rig needs `--lr 3e-4`; at the DistilBERT default 1e-3 roberta-large collapses to one class.
-
-**Two probe-script changes landed 2026-08-23, both default-preserving:** `grad_over` is computed only when
-`--modes` includes `signal` (it OOM'd roberta-large and was unused otherwise), and `--lr` is exposed on
-`probe_inflation_damage.py` (default 1e-3, so the nine DistilBERT cells are byte-identical).
+**Everything queued as code has landed and nothing is blocked on a node.** Rows S · E · E2 · M1 · M2 · D0
+(2026-08-22), N5a, the two default-preserving probe-script changes and the `_gate_satisfied` float-tolerance
+fix (2026-08-24, `test_commit_gate.py` case (g)) are all in. The three 08-23 stages are written up where
+their numbers live: P1/P1′/N4a′ in **§5.6**, the stage-2 smoke in **§5.10**, the roberta-large port and its
+~50 h price in **§5.11**. Launch commands are §4.1 and §4.2b.
 
 | run | state |
 |---|---|
-| **N1** agnews `014242` · **N2** yahoo `014328` · **N3** yelp-p `014406` | **all three COMPLETED** on their vclock ceiling — 1,913 / 2,400 / 1,863 commits, 12 / 16 / 12 probe fires, `s`=1.5, `anchor`, `log_only`. **Correct, not void**: `log_only` runs have nothing to halt them (§4.2b). Peaks 0.873 / 0.663 / 0.812 |
-| **N4a** re-range the probe grid | **NEVER LAUNCHED** — preflight `BLOCKED` on the shortened ceiling. Corrected overrides in §3 row N4a′; why the floors exist, §4.2b |
-| **roberta-large smoke** `145932` | **COMPLETED, not scoreable** — 80 commits in 2 h, `Φ`=1.0435, acc 0.295 at chance 0.250. Ported clean (0 deaths, `p`=4,225,540, `cos·Φ`=1.0000); `n50` read only 50 of 100 shards, so it is a smoke by construction. **Prices N5c at ~50 h — §5.11** |
-| **N4b** `s`=1.0 | **VOID, environment** — a peer job at 43.7 GB, the launcher warned and launched anyway, 85 of 100 trainers died on CUDA OOM, 0 commits. Rows **M1**/**M2**; the launch rule is §4.2b |
+| **C** `020537` · **D** `020547` · **Y** `020555` | **all three COMPLETED ON THEIR OWN STOP** — the first terminations in this corpus under the shipped stack. 1,103 / 1,203 / 1,005 commits, 7 / 8 / 6 probe fires, `s`=1.5, `anchor`, `halt`. **§5.12** |
+| **N4b′** `020603` agnews `s`=1.0 | **COMPLETED, arm incomplete but scoreable** — 723 commits, ended on `max_runtime_s` at `Φ`=2.55 still climbing, so it has **no `Φ*` and no stop**. Its accuracy-vs-`Λ` curve is valid and answers §5.4's `s` question (§5.12) |
+| **N1** agnews `014242` · **N2** yahoo `014328` · **N3** yelp-p `014406` | **all three COMPLETED** on their vclock ceiling — 1,913 / 2,400 / 1,863 commits, `s`=1.5, `anchor`, `log_only`. **Correct, not void**: `log_only` runs have nothing to halt them (§4.2b). Peaks 0.873 / 0.663 / 0.812. **They are now the past-the-stop counterfactual for C · D · Y** |
+| **roberta-large smoke** `145932` | **COMPLETED, not scoreable** — 80 commits in 2 h, `Φ`=1.0435, acc at chance. Ported clean (0 deaths, `p`=4,225,540, `cos·Φ`=1.0000). **Prices N5c at ~50 h — §5.11** |
 
-**The 08-20 runs keep their status**: the two void watchdog kills (`152215`, `125003`) replay clean under
-the fix; the three v2 runs are valid; `125010` is the only run that ever ended on `[BudgetStop]`, and hole 1
-now explains why no run since has.
+**Older runs keep their status and are not restated here** — the 08-20 pairs in
+[P4.11](fl_fwd_ft_practice.md#p411-the-2026-08-20-p-4-pairs--the-law-wins-on-all-three-one-pair-is-valid),
+the void `N4b`/`N4a` slots in §4.2b's launch rules, `125010`'s combiner-arithmetic termination in hole 1.
 
 **[fl_fwd_ft_writeup.md](fl_fwd_ft_writeup.md)** is the prose account with twelve rendered figures — the doc to
 hand to anyone outside this work. Regenerate with `writeup_figs/make_figures.py` (§4.8).
@@ -256,69 +250,35 @@ hand to anyone outside this work. Regenerate with `writeup_figs/make_figures.py`
 ## §3 — Next · the ordered queue
 
 **This table is the single source of next steps.** [fl_fwd_ft_writeup.md](fl_fwd_ft_writeup.md) §8 names
-the same work in prose and points here; nothing is queued there. **The backstops landed 2026-08-22** — the
-stop is an `OR`, the saturation detector is sized and gated out of sample, the two launcher guards are
-armed — so the queue is now *runs*, not code.
+the same work in prose and points here; nothing is queued there. **The dataset axis closed 2026-08-24**
+(§5.12), so **the queue is now one expensive row and a fringe of cheap ones**.
 
-**Run them in stages, cheapest falsifier first.** Stage 2 was meant to show the stop firing before stage 3
-spent 38 h; it showed the *wiring* clean but never reached saturation (§5.10), so **C · D · Y are both the
-termination evidence and its own smoke** — the first of them to fire the stop retires the risk for the
-other two, and all three are cheap enough to run in parallel rather than in series.
+**The shape of the queue changed with it.** Everything up to now was "make the controller terminate";
+that is done and measured on three tasks. What is left is **§0's model axis**, which is a single ~50 h run,
+plus the rows that were always going to ride alongside it.
 
-| stage | what | tier (§4.2a) | cost | why first |
+| stage | what | tier (§4.2a) | cost | why |
 |---|---|---|---|---|
-| ~~1~~ | ~~P1 + P1′~~ | T0 | **DONE 08-23, 28 min** | `Φ_knee` is trajectory-dependent (§5.6). Closed P1, P1′, N4a′ |
-| ~~2~~ | ~~P3′ + smoke~~ | T1 | **DONE 08-23, 2 h** | wiring clean on all 4 gates, 0 deaths; **P3′ holds at `cos·Φ`=0.9999**. Stop did NOT fire — the 2 h ceiling never reached saturation (§5.10) |
-| ~~3~~ | ~~M-DAY: roberta-large × 3 datasets, 4 nodes~~ | T1 | **WITHDRAWN 08-23** | the roberta smoke (`145932`) ported clean and priced N5c at **~50 h**; a 3.5 h arm reaches `Φ`≈1.08 and cannot answer it. **§5.11** re-sizes N5c and lists the three ways to make it affordable |
-| **3′** | **C · D · Y** overnight, 3 nodes in parallel | T2 | 10–14 h each | **RUNNING.** The termination evidence — no run has ever ended on its own stop under the shipped stack, and it is the last thing between §1's claim and its evidence. Each arm carries `P4_RETENTION_EVERY=10`, so **P3′ past `Φ`=2.9** rides along free |
-| **4** | **N5c re-sized**, most likely at `s`=2.9 (~13 h) | T2 | 13–50 h, 1 node | §0's other axis. Gated on **§5.11**'s `s` lever being scored — the DistilBERT `s`=1.0 arm (**N4b′**) is the cheap read on whether `s` moves along the curve or shifts it |
+| **4** | **E′ — the stall trigger** (§5.13). **CODE SHIPPED 2026-08-24** behind `P4_SAT_STALL_FRAC`, default off. Needs one agnews arm to confirm live | T2 | 10 h | **The stop can only fire on decay, and 2 of 4 runs proved it.** Last fitted thing in the loop, and **the single biggest risk to any long run** — a run whose stop needs decay may never stop |
+| **5** | **N5c-lite — roberta-large · agnews, 50 clients, `s`=2.9** | T2 | **~13 h** | §0's only open axis. `s`=2.9 puts `Φ`≈2.9 in reach overnight (§5.11); it under-trains the model, so it answers **"does the self-derivation compose and where does the peak land in `Φ`"**, not "what accuracy does roberta reach". **Carries E′**, which is what makes an unfamiliar curve stoppable |
+| **6** | the cheap fringe, on the spare nodes | T0/T1 | 1–2 h each | **P2′** (is `Φ*` federated?) · **R2** (`D` on yahoo + yelp-p) · **F** (the FD chord flag). None blocks anything; they fill nodes that would otherwise idle |
+| **7** | **N5c full** — roberta-large at `s`=1.5, run to its own stop | T2 | **~50 h** | The scored second-model run. **Gated on stage 5**: do not spend 50 h until `s`=2.9 has shown the stack composes at `p`=4.2M and the stop fires there |
+| **8** | **row A live** — the sensed anneal, on agnews | T2 | 10 h | Hole 1a, the last unsensed piece. Now an *efficiency* row: E′ already handles termination |
 
-### §3.1 M-DAY — **WITHDRAWN 2026-08-23**, and what replaced it
+**Completed, newest first — kept only as the record of what each stage bought.**
 
-> **The three roberta arms below cannot answer N5c in 3.5 h** — the smoke measured 40.1 commits/h against
-> the ~2,000 commits `Φ*` needs (**§5.11**). Nodes 1–3 run **C · D · Y** instead (§2). **Node 4 is free**
-> and its arm is a live decision: the DistilBERT IID control below (partition and cache exist, costs a
-> config flag, closes the α→∞ end of the heterogeneity axis) or **N4b′** at `s`=1.0, which is the cheap
-> read on the `s` lever that §5.11 needs before N5c can be re-sized. **Prefer N4b′** — it gates a 50 h run.
->
-> *Kept below for the record: the arm table is still the right shape once N5c is affordable.*
+| stage | what | outcome |
+|---|---|---|
+| ~~3′~~ | **C · D · Y** + **N4b′**, 4 nodes | **DONE 08-24, 8.5–14 h.** All three arms self-terminated in the `Φ` band within 0.008 of their own peak; N4b′ answered the `s` question. **§5.12** — and exposed the stop's decay-only defect, **§5.13** |
+| ~~3~~ | M-DAY: roberta-large × 3 datasets, 4 nodes | **WITHDRAWN 08-23** — the smoke (`145932`) priced N5c at ~50 h; a 3.5 h arm reaches `Φ`≈1.08. **§5.11** |
+| ~~2~~ | P3′ + stage-2 smoke | **DONE 08-23, 2 h.** Wiring clean on all 4 gates, 0 deaths; P3′ holds at `cos·Φ`=0.9999. Stop did not fire — 2 h never reached saturation (§5.10) |
+| ~~1~~ | P1 + P1′ | **DONE 08-23, 28 min.** `Φ_knee` is trajectory-dependent (§5.6). Closed P1, P1′, N4a′ |
 
-#### The original plan (for reference)
+### §3.1 N5c — the launch plan
 
-**One run should answer many rows.** Each arm below carries the retention probe and the health gates for
-free, so a single slot closes several queue rows at once.
-
-| node | arm | rows it advances | why this one |
-|---|---|---|---|
-| **1** | **roberta-large · agnews** `rf`=16, seq 192 | **N5c** · N5b · F · P3′@new `p` | cleanest first cross-model run — warmest cache, shortest sequence |
-| **2** | **roberta-large · yelp-p** seq 256, 2 classes | **N5c** · R2 | model × dataset jointly; 2-class is the easiest transfer |
-| **3** | **roberta-large · yahoo** seq 256, 10 classes | **N5c** · R2 | the hardest task on the new model — where `T_res` should break first if it breaks |
-| **4** | **DistilBERT · agnews · `uniform` (IID)** | **P2′-lite** · heterogeneity axis | the α→∞ end of the only untouched axis. Partition **and cache already exist** — costs a config flag |
-
-**Gate it on a 15-minute smoke first (§4.2a rule 1).** roberta-large has never run under the FL stack; if
-it OOMs or the config path is wrong, an ungated launch wastes three nodes. Smoke one arm, read
-`[ProbeDim] p=4225540` and `trips/commit`, then launch the rest.
-
-**What M-DAY cannot answer, and that is fine.** `ρ_max = s√(max_iter·K·G_rule/p)` falls **3.06×** at
-roberta's `p` (0.1000 → 0.0326), so reaching `Φ`≈2.9 takes **~2,000 commits** against DistilBERT's ~214 at
-the same ceiling — a **10 h+** run at best. **A 3.5 h roberta arm will not reach `Φ*` and will not fire the
-stop.** It is not meant to: it answers *does the self-derivation compose at a new `p`* — memory, `p`
-threading, gate reachability, `trips/commit` ≥ 3, law C's shape, retention. Those are exactly the things
-that would void an overnight run, and they cost 3.5 h to learn instead of 14.
-
-**Memory is the live risk and it sets `--num-trainers`.** roberta-large is 355M params; at the shipped
-12.5 trainers/GPU that is **17.8 GB of weights and ~35.5 GB with the forward-mode tangent**, against a
-46 GB card *before activations*. **Launch roberta arms at `--num-trainers 50`** (6.25/GPU → ~17.8 GB with
-tangent) and confirm on the smoke. `run_node_p4.sh` hardcodes `--num-trainers 100` and the model, so both
-need to become overrides — that is the one build task M-DAY depends on.
-
-**The roberta port runs alongside, not after.** Steps 1–2 are already done (§5.8); pre-tokenization is
-CPU-bound and competes with nothing.
-
-> **Two generality axes.** **Task** is demonstrated on three datasets but **terminated on none** —
-> C · D · Y · Score. **Model** has **zero runs**; §5.8's porting order is through step 2 for roberta-large,
-> and F → N5b → N5c is the rest, gated on P1. **A row that ships a hand-fitted number is progress on
-> neither.**
+**M-DAY is deleted** (withdrawn 2026-08-23, §5.11; its nodes went to C · D · Y, which closed the dataset
+axis). N5c is **one arm on one node for ~50 h at `s`=1.5**. Sizing, memory, the smoke gate and the
+pre-tokenization step: **§5.11a**.
 
 > **P1, P1′ and N4a′ are closed as of 2026-08-23 and must not be re-proposed.** `Φ_knee` is a property of
 > the *trajectory* — it moves with dataset, with architecture, and with the optimizer path at fixed model
@@ -327,21 +287,23 @@ CPU-bound and competes with nothing.
 > row **E** (the peak detector, now the primary sensor) and row **A**, whose anneal target is **also sensed**
 > — driven from measured progress, not a rail ([P4.13](fl_fwd_ft_practice.md#p413-row-a--the-sensed-anneal-candidate-replayed-2026-08-23)).
 
+> **Rows C, D, Y, N4b′, P3′ and Score landed 2026-08-24 and are deleted from this table** — the facts they
+> produced live in **§5.12** and [P4.16](fl_fwd_ft_practice.md#p416-the-2026-08-24-termination-runs--the-stop-fires-on-all-three).
+> **Row E is closed with them**: the saturation stop fired live on two of three tasks and the `Φ` rail caught
+> the third, which is the `OR` doing exactly what row S shipped it to do. **Do not re-queue "prove the stop
+> fires."** What is still open about it is one line in §5.4: `thr`=0.005 and `patience`=20 are read off three
+> curves, and the fourth dataset that would test them does not exist yet.
+
 | # | node | task | done when |
 |---|---|---|---|
+| **E′** | 1 CPU **(sized — 0 GPU)**, then 1 node 10 h to confirm | **Make the stop a STALL detector, not a decay detector.** §5.12 found GL fires only once a run drops below its own running max, so a run that plateaus *at* its best is invisible — **2 of the 4 runs on 2026-08-24 were** (yelp-p: 18/277 evals breached, max GL 0.0121; `s`=1.0: **0/136**, max 0.00256). Add a trigger on `r_t = (m_t − m_{t−h})/(m_t − chance) ≤ frac`, `chance` **derived** from the label vocab, keeping the GL branch and its progress term untouched. **Already replayed on 11 curves at `frac`=0.005** ([P4.17](fl_fwd_ft_practice.md#p417-row-e--the-stall-trigger-replayed)): **every self-terminating run lands closer to its peak than the shipped rule managed** (−0.0014 / −0.0051 / −0.0077 / −0.0025 against −0.0043 / −0.0078 / never / never), the two it could not stop now stop, and **no still-climbing control fires**. `frac` sits on a plateau over 0.003–0.008. **Do not normalise by `running_max(g)`** — tried, worse than shipped (§5.13). **Predicted:** a live agnews arm fires on `stall` near commit 900 at ≥0.870. **Falsified if** it fires before commit 700 or below 0.865 — then the replay's open-loop bias is load-bearing | shipped behind a flag, and one live arm ending on `reason=stall` inside the `Φ` band |
 | **P2′** | 1 GPU, ~2 h, **promoted** | **Is `Φ*` an FL number or a training-geometry number?** *(the only surviving cheap question about `Φ*`; needs a short centralized RUN, not a probe — P1 showed probes cannot see `Φ*`)* Run the **same forward-gradient estimator centralized** (1 client, IID, same `p`, same `s`, same law C) on agnews and read `Φ` at peak. The model doc's §2.6 says heterogeneity is a step-size multiplier only, so `Φ*` should not move; the 22-run ledger already spans α 0.1–1 at 2.41–3.11 without moving. **Predicted:** peak at `Φ` = 2.8–3.0, i.e. inside the FL band. **Falsified if** centralized peaks below 2.4 or above 3.3 — then `Φ*` carries a federated component and every "property of the model" claim in §5.6 is wrong. **Do not run backprop as the comparator here** — backprop's steps are not ⟂ `θ`, so it reaches target accuracy at `Φ`≈1 and has no `Φ*` to compare (§5.6c) | a centralized forward-gradient `Φ` at peak, against 2.82 |
-| **P3′** | rides any run — **now default-on** | ~~Log `cos(θ_t,θ_0)`~~ **ANSWERED 2026-08-23.** `cos·Φ` = **0.9999** over 42 commits on the stage-2 smoke, 0 outside 1.00 ± 0.02, `cos` 0.9776→0.6296 as `Φ` 1.02→1.59. Retention **is** `1/Φ`; the ≈70° drift reading is measured, not derived. **Still open:** only verified to `Φ`=1.64 — **carry `P4_RETENTION_EVERY` on every M-DAY arm** to confirm it past `Φ`=2.9 and at roberta's `p` | confirmed past `Φ`=2.9 and on a second architecture |
-| **A** | 1 CPU to finish sizing, then it rides stage 3 | **Restore the anneal from SENSED progress — no hand-set target.** *(candidate drafted + replayed 2026-08-23; see [P4.13](fl_fwd_ft_practice.md#p413-row-a--the-sensed-anneal-candidate-replayed-2026-08-23))* `ρ*_t = ρ_max·√(clip(g_eff/running_max(g_eff), 0, 1))` with `g_t = (m_t − m_{t−h})/m_t` on row E's own 11-eval trailing mean, `h` = one probe cadence, and `g_eff = max(0, g − 1·σ)` where **σ is sensed from the curve's own step scatter**. `ρ_max` is *derived* (gate reachability, measured 0.0678 on all three runs), so the only constant is the dimensionless **1σ** noise floor. **This replaces the `B_max = ln 3.0` rail** — rows A and E become one rule off one signal, and `B_rem`→0 makes the *original* budget stop reachable for the first time (hole 1b needed `Φ`≈116). **Replayed on 9 cached curves:** `ρ` reaches **exactly 0** on all three saturated runs (Σρ² 0.98/1.91/1.48 against the runs' own 3.08/3.59/3.29), self-stops at commit 1062/1301/807, and correctly keeps stepping on the runs that had not saturated. **Three open problems, all stated in P4.13:** the replay is **open-loop** so its budget is a *lower bound* (simulated final `Φ` 1.63/2.59/2.10 against `Φ*` 2.82/3.00/2.91); `Σρ² < ∞` is **empirical, not proven** — the telescoping bound fails by 57–113× under noise rectification; and the rejected first draft (`B_rem = B_t·frac`) shows how easily this family hides a bootstrap defect. **Predicted:** a live run stops on its own between `Φ` 2.4 and 3.3. **Falsified if** it stops below 2.4 — then the normalisation under-spends and `g_eff/running_max` is the wrong shape | ρ falls monotonically to 0, `Σρ²` stops growing, and the run ends on its own stop inside the `Φ` band |
-| **N4b′** | node 4 · agnews | **FluxTune at `s`=1.0** (`P4_GATE_S=1.0`), `anchor` + `log_only`. Untouched by N4b — its config was correct (`gate_safety_s=1.0`, `rho_max` 0.0666, `n_req` ≈2.2× the `s`=1.5 run) and the node killed it. `Λ = 2B/s` says lowering `s` moves *along* the accuracy-vs-`Λ` curve, not up it. **Predicted:** the same peak (≈0.872) at the same `Λ`≈1.4, reached at lower `B`. **Falsified if** the peak is higher | whether `s` moves along the curve or shifts it |
-| **C** | any GPU node | **agnews controller**, 48,000 vclock, on the new stack (`anchor`, saturation-primary, rail at 3.0). `condition_fp` will no longer read `c2ef1528` — expected and correct; control `021843` does not run the probe, so it stays the valid partner | ends on `[BudgetStop] reason=saturation` near commit 1,180, at or above 0.850 |
-| **D** | any GPU node | **yahoo controller**, 60,000 vclock, same new stack | ends on saturation near commit 1,080, at or above 0.657 |
-| **Y** | any GPU node | **yelp-p controller**, 50,000 vclock, same new stack. **This row was missing and the claim needs it:** yelp-p's only self-terminating run is `125010`, which ran the *old* `mean` combiner and the *old* budget stop — and hole 1 now explains that termination as `mean` lagging a rising sequence, i.e. **arithmetic on the combiner, not a run reaching its budget**. It is not evidence for the shipped stack. Control `161751` ran the full 50,000 clean and stays the valid partner | ends on `[BudgetStop] reason=saturation` near commit 1,126, at or above 0.807 |
+| **A** | 1 node, 10 h — **stage 6, after N5c is launched** | **Restore the anneal from SENSED progress — no hand-set target.** *(candidate drafted + replayed 2026-08-23; see [P4.13](fl_fwd_ft_practice.md#p413-row-a--the-sensed-anneal-candidate-replayed-2026-08-23))* `ρ*_t = ρ_max·√(clip(g_eff/running_max(g_eff), 0, 1))` with `g_t = (m_t − m_{t−h})/m_t` on row E's own 11-eval trailing mean, `h` = one probe cadence, and `g_eff = max(0, g − 1·σ)` where **σ is sensed from the curve's own step scatter**. `ρ_max` is *derived* (gate reachability, measured 0.0678 on all three 08-24 runs too), so the only constant is the dimensionless **1σ** noise floor. **Its framing changed on 2026-08-24 and this is the important edit:** A was written to *replace* the `Φ` rail, on the premise that nothing else could stop a run. Row E now stops runs, live, on three tasks — so **A is no longer the termination fix, it is the efficiency fix**. Hole 1a is what is left: `ρ` is flat at 0.034 to the last commit, so every commit past the knee costs full price. **Predicted:** a live run stops on its own between `Φ` 2.4 and 3.3 having spent materially less `B` per unit `Λ` than C did. **Falsified if** it stops below 2.4 — the normalisation under-spends — or if `Σρ²` still grows linearly. **Three open problems stand (P4.13):** the replay is **open-loop** so its budget is a *lower bound* (simulated final `Φ` 1.63/2.59/2.10); `Σρ² < ∞` is empirical, not proven; and the rejected first draft shows how easily this family hides a bootstrap defect | ρ falls monotonically to 0, `Σρ²` stops growing, and the run still ends inside the `Φ` band |
 | **R2** | 1 GPU, ~1 h | **Is the estimator the limit on yahoo AND yelp-p?** Both saturate below their reference (−0.071, −0.062) with flat accuracy-vs-`B`, so this is no longer a yelp-p-only question. cos audit for ~100 commits + `replay_scoring.py --cos`; a `D` materially below agnews' 0.10–0.15 means the forward estimate degrades with class count or seq 256 — an FwdLLM-layer finding, not a controller one. Plus H-S (`probe_fd_chord.py`) | a `D` for each against agnews' band |
 | **F** | 1 GPU, ~1 h | **`FWDLLM_FD_SCALE_INVARIANT` holds the wrong quantity fixed — decide what it costs.** N5a measured `‖θ_tr‖/√p` constant at 0.0196–0.0199 across a **35.7× range in `p` and two architectures**, which makes the flag's effect mechanical: holding the *absolute* chord `h√p` fixed (flag **ON**, what every P-4 run sets and the preflight *refuses* to launch without) sends the *dimensionless* chord as `1/√p` — **0.503 / 0.709 / 0.997 / 0.164** on distilbert rf 16/32/64 and roberta-large rf=16, **6.1×**. Flag **OFF** (`h`=0.01) holds it at **0.501–0.511, 1.02×**. So the knob that exists to enforce scale invariance is the one that breaks it (§5.3's ratio principle). **This is measured at INIT and says only that the flag misses its stated intent — not what it costs.** Run H-S (`scripts/probe_fd_chord.py`) at both flag states on one `p`, and read `D` against agnews' 0.10–0.15. **Predicted:** flag OFF gives the better `D` at `rf`=64, where the ON chord is 2× the reference. **Falsified if** `D` is flat in the chord over 0.5–1.0 — then the ratio is not what the estimator is sensitive to and the flag is merely mislabelled | a `D` per flag state, and a decision on which quantity `h` should hold fixed |
-| **N5b** | any CPU + 1 short GPU run, **partly answered by `145932`** | **Re-derive `T_res` at a second `p` — step 4 of §5.8, and hole 3 stated as a task.** At `rf`=64 the `Λ ≥ 0.95` and `trips/commit ≥ 3` floors close against each other: a 9-unit window at `T_res` 82–90 where `Λ` clears by 0.001–0.007 while 28% of commits still floor to `I`=1 ([P5.2](fl_fwd_ft_practice.md#p52-execution-plan--to-a-zero-input-run) phase 4). **That derivation assumed `B_max` = the `ln 2.7` prior, and P1 has shown no probe can improve on it** (§5.6), so the re-derivation must run against that prior or against a `Φ*` read off a completed run. **Predicted:** with a measured `Φ*` the window opens to ≥50 units and law C composes. **Falsified if** it stays ≤10 or stays empty — then `T_res` cannot be re-derived from the same closed form at a new `p`, and the gate's reachability floor, not the anneal, is what does not port | a `T_res` at a second `p` holding trips/commit ≥3 in every quintile at `Λ` ≥ 0.95 — **or** a statement of which floor binds and why no `T_res` satisfies both. **The second half is answered: gate reachability binds**, and it binds by pinning the run at `ρ_max` (trips/commit = 20.00, the ceiling, in every quintile) rather than by closing a `T_res` window — §5.11 |
-| **N5c** | 1 GPU, **after N5b** | **The second-model run — the largest hole in the claim, and the only row that closes it.** Every run on record is DistilBERT + adapters at `rf`=16 and the three datasets differ in `p` by 1.4%, so **nothing in this work has been tested across `p`**, while `T_res`, the `Φ` rail, the probe cadence, the saturation warm-up, `h`'s chord ratio and `Φ*` itself are all sized at that one `p` (§5.8). Run FluxTune unchanged on a second architecture, supplying only model + PEFT scheme + compute budget. **roberta-large is ported through step 3 and has now run** (§5.11): it builds with adapters, `p`=4,225,540, `‖θ_tr‖`=40.99, knee 2.065 from P1 (not usable as `B_max`, §5.6), and the `145932` smoke cleared the **memory check empirically** — 50 trainers × 358M params on 8×46 GB, 0 OOM, 0 deaths. A scored run needs 100 trainers, which is the one memory question left. Pre-tokenize first — the cache is keyed by model name, so it is a 100% miss (`pretokenize_dataset.py --model-type roberta-large`, ~0.8 GB and ~15 min per dataset). **RE-SIZED 2026-08-23 by the `145932` smoke: this is a ~50 h run at `rf`=16, `s`=1.5, not an overnight one** — `ρ_max ∝ 1/√p` makes `B` accrue `∝ 1/p`, so the run sits pinned at `ρ_max` paying 20 trips/commit for ~2,000 commits (**§5.11**, which also lists the three levers; `s`=2.9 is the only one that is both cheap and answers the same question). Everything mechanical already ported: 0 deaths, `p`=4,225,540, `cos·Φ`=1.0000. **Predicted:** the peak lands inside the `Φ` = 2.4–3.3 band and no learning knob is set by hand beyond N5b's re-derived `T_res`. **Falsified if** the peak lands outside that band — then `Φ*` is not a property of the model family either, the rail must be sensed per model, and §5.6's hypothesis fails on the axis it was proposed for | a scored run on a second architecture, and a `Φ` at peak against 2.82–3.00 |
+| **N5b** | any CPU — **not a blocker for N5c any more** | **Re-derive `T_res` at a second `p` — step 4 of §5.8, and hole 3 stated as a task.** At `rf`=64 the `Λ ≥ 0.95` and `trips/commit ≥ 3` floors close against each other: a 9-unit window at `T_res` 82–90 ([P5.2](fl_fwd_ft_practice.md#p52-execution-plan--to-a-zero-input-run) phase 4). **Its second half is already answered: gate reachability binds**, and it binds by pinning the run at `ρ_max` (trips/commit = 20.00 in every quintile) rather than by closing a `T_res` window — §5.11. **So N5c does not wait on it:** a run pinned at `ρ_max` never consults `T_res` at all, which is why stage 4 launches without it. What N5b still buys is the *statement* of which floor binds at a new `p`, on paper | a `T_res` at a second `p` holding trips/commit ≥3 in every quintile at `Λ` ≥ 0.95 — **or** the statement that no `T_res` satisfies both, and why |
+| **N5c** | 1 GPU, **~50 h — the whole queue** | **The second-model run — the only hole left in §0, now that the dataset axis is closed.** Every scored run on record is DistilBERT + adapters at `rf`=16 and the three datasets differ in `p` by 1.4%, so **nothing here has been tested across `p`**, while `T_res`, the `Φ` rail, the probe cadence, the saturation warm-up, `h`'s chord ratio and `Φ*` itself are all sized at that one `p` (§5.8). Run FluxTune unchanged on roberta-large · agnews, supplying only model + PEFT scheme + compute budget. Everything mechanical already ported on `145932`: `p`=4,225,540, `‖θ_tr‖`=40.99, 0 deaths at 50 trainers, `cos·Φ`=1.0000. **Run it at `s`=1.5 and budget 50 h** — §5.11's `s`=2.9 shortcut is now scored and rejected for this row (§5.12): it does cut the run to ~13 h and would still show a `Φ` at peak, but `Λ* = 2lnΦ*/s` halves the banked progress, so it would test the controller while under-training the deployment. Launch plan, memory and smoke gate: **§3.1**. **Predicted:** the peak lands inside `Φ` = 2.4–3.3 and the run ends on its own stop, with no learning knob set by hand. **Falsified if** the peak lands outside that band — then `Φ*` is not a property of the model family and the rail must be sensed per model | a scored run on a second architecture, a `Φ` at peak against 2.82–3.00, and a `[BudgetStop]` |
 | **W′** | node holding `003648` | **The unverified half of the watchdog fix.** The `I`-floor kill needs `ΔB ≤ 0.005` and three healthy runs now replay silent; **that it still fires on a true death is unverified**. `003648`'s run dir is node-local | replay `003648`, confirm it fires |
-| **Score** | any CPU | **Score all three pairs once C, D and Y land** — peak, whether it clears the **FL target**, the vclock at which FluxTune passes v2's full-budget peak, **and whether the run ended on its own stop**, which no run has yet done under the shipped stack. **Drop the 0.015-of-peak bar as a headline**: N1–N3 all end 0.03–0.15 below peak, and a still-climbing run passes it trivially | a scored table for all three datasets, every row ending on `[BudgetStop] reason=saturation` |
 | **B4** | any CPU | **The n=1 rule for `anchor`.** The first sense replaces the `ln 2` prior at maximum variance and was **46% low** on yelp-p; under `anchor` it sets `ρ*` alone. **Arm the probe's influence only from n ≥ 2**, keeping `ln 2` for the first 150 commits. *(The old `budget_stop_frac` margin framing is moot — the budget stop is not a termination rule.)* | a stated n=1 rule, replayed against `021735` and the three 08-20 controllers |
 | **G** | any CPU, **after** the P-4 runs | **`read_instance_from_h5` returns rows in thread-completion order**, so shard row order is not reproducible across tokenizations and `guid` names the wrong row. `X`/`y` stay paired under one lock and nothing reads `guid`, so **no ledger number is wrong**; it waits because it re-orders every future shard against the caches the P-4 runs used | two tokenizations of one client agree byte-for-byte, and `guid` round-trips |
 
@@ -397,6 +359,10 @@ past-the-stop counterfactual keeps being measured.
 |---|---|---|
 | `P4_BMAX_POLICY` | **`anchor`** *(was `mean`; flipped 2026-08-22 to the settled combiner)* | the **latest** sense instead of the mean (§5.3) |
 | `P4_SAT_STOP` | **`1`** | row **E**'s saturation stop. `0` reverts to the old stop set for an A/B |
+| `P4_SAT_STALL_FRAC` | *(unset = off)* | row **E′**: adds the STALL trigger beside the decay one. `0.003` is the replayed sizing (§5.13). Unset keeps the 08-22 behaviour byte-identical |
+| `P4_PARTITION` | *(unset)* | the partition group, e.g. `niid_label_clients=50_alpha=1`. **The supported way to run N<100 trainers and still read every shard** — build the group first and set `P4_NUM_TRAINERS` to the same N (§3.1) |
+| `P4_MODEL_TYPE` / `P4_MODEL_NAME` | *(unset = distilbert)* | row **N5c**. Pre-tokenize first — the cache is keyed by model |
+| `P4_NUM_TRAINERS` | `100` | a MEMORY lever. **Alone it reads only the first N of 100 shards**; pair it with `P4_PARTITION` for a scored run |
 | `P4_PHI_STOP` | `halt` | `log_only` makes **all three** stop reasons emit and keep training — the only way to see past the rail |
 | `P4_GATE_S` | `1.5` | moves `s`, the only lever `Λ = 2B/s` allows on progress per unit budget. Floor ≈0.9 at `K`=10 |
 | `P4_BMAX_PHIS` | *(module default `1.5,2,2.5,3,3.5,4`)* | re-ranges the probe grid. **`condition_fp` does not cover it** — same blind spot the sim profile had |
@@ -581,7 +547,7 @@ every run.
 [DataBins] from the registry, 100% coverage, trainer-confirmed   # 150 hardcoded gave yahoo 8.6% of its data
 no server_update with rho_star == 0                              # a step of length zero
 trips/commit >= 3 per quintile                                   # FAILs on a healthy landing -- read G-2 signature
-controller ends on [BudgetStop] reason=saturation|phi_fixed      # now passable; no run has passed it yet
+controller ends on [BudgetStop] reason=saturation|phi_fixed      # PASSED on all three, 2026-08-24 (§5.12)
 ```
 
 `_node_lib.sh` also echoes the enactment lines after every run — `[ProbeDim]` `[FD] spacing`
@@ -834,11 +800,11 @@ compute-bound (`τ(30)/τ(10)`=2.56), so adaptive `P` is no longer motivated as 
 | **Is `Φ*` the same in centralized forward-gradient training?** §2.6 says heterogeneity is a step-size multiplier only, so it should be. **Now the only cheap open question about `Φ*`** | row **P2′** — same estimator, 1 client, IID, and it needs a short *run* (P1 showed probes cannot see `Φ*`) | a centralized peak outside [2.4, 3.3] makes `Φ*` partly federated. Inside it, `Φ*`'s tightness is a training-geometry fact and the next question is why |
 | ~~**Is retention really `1/Φ`?**~~ **YES — measured 2026-08-23** | row **P3′**: `cos·Φ` = **0.9999** over 42 commits, 0 outside 1.00 ± 0.02 | the ≈70° drift reading is measured. **Residual:** verified only to `Φ`=1.64 and at one `p` — carry the probe on every M-DAY arm |
 | ~~**Does a bracketing grid make `B_rem` shrink with `B`?**~~ **MOOT 2026-08-23** | closed by §5.6, unrun | the sensed quantity is trajectory-dependent, so the anneal cannot be driven by `B_max`. **It can still be sensed — from progress rather than from a wall** (row **A**, [P4.13](fl_fwd_ft_practice.md#p413-row-a--the-sensed-anneal-candidate-replayed-2026-08-23)) |
-| **Does `s` shift the accuracy-vs-`Λ` curve, or only move along it?** `Λ = 2B/s` says *along* | N4b′ at `s`=1.0 against N1 at matched `Λ` | a higher peak than 0.872 makes `s` a real accuracy lever — and the first thing to try on yahoo and yelp-p |
+| ~~**Does `s` shift the accuracy-vs-`Λ` curve, or only move along it?**~~ **ANSWERED 2026-08-24: along** | N4b′ (`s`=1.0) against C (`s`=1.5), agnews, matched `Λ`: **0.856/0.862 at `Λ`=0.8 · 0.866/0.864 at 1.0 · 0.870/0.870 at 1.2** — ≤0.006 apart with no consistent sign (§5.12) | `s` is an **exchange rate between compute and accuracy-inside-the-`Φ`-rail**, not an accuracy lever. Lower `s` banks more `Λ` per unit `Φ` and costs proportionally more round trips; the peak it reaches is higher only because it got further along the same curve |
 | **Is the residual gap to the *centralized ceiling* the estimator?** Not urgent — all three now sit within 0.008 of their FL targets | row **R2**: cos audit + `D` against agnews' 0.10–0.15 | if `D` matches agnews, the limit is adapter capacity, not the estimator |
-| **Does the saturation stop hold on a fourth dataset?** Both horizons are multiples of the probe cadence and neither moves any fire commit (E2, closed 2026-08-22), and the rule now survives six curves it was not sized on — but **thr 0.005 and patience 20 are still read off three curves** | **C**, **D**, **Y** first: no run has ever ended on it. Then any new dataset | a threshold tuned to three tasks is a hand-set constant by another name, and it would be the only one left in the loop |
+| **Does the saturation stop hold on a fourth dataset?** It has now **fired live on two of three** (§5.12) and the `Φ` rail caught the third — but **thr 0.005 and patience 20 are still read off three curves**, and yelp-p is the standing reminder that the detector can stay silent through 426 commits of a flat curve because the progress term sees a creep of +0.0006 | any new dataset — or **N5c**, which is a fourth *curve* even though it is not a fourth task | a threshold tuned to three tasks is a hand-set constant by another name, and it would be the only one left in the loop |
 | **What does the FD chord ratio cost?** The flag holds the absolute chord fixed and the dimensionless one moves 6.1× across `p` and two models (§5.8) — measured, but only at init, and only as a mismatch with its own stated intent | row **F**: H-S at both flag states, `D` against agnews' 0.10–0.15 | if `D` is flat in the chord over 0.5–1.0 the flag is merely mislabelled; if not, every `p`-ladder and cross-model comparison ran at a different effective probe step |
-| **trips/commit ≥ 3** is calibrated on one death and two survivals | every run reports it per quintile; re-size once there are ten | a config passes preflight and still burns wall |
+| **trips/commit ≥ 3** is calibrated on one death and two survivals — **now with three more points, two of them marginal breaches** | 08-24 last-quintile reads: agnews 3.13, yahoo **2.94**, yelp-p **3.00**, all with 0 trainer deaths and every gate but this one green. The floor is either slightly high or the right value with no margin | re-size once there are ten; until then a marginal Q5 breach on a healthy arm is a note, not a void |
 
 **Closed 2026-08-22:** the saturation warm-up is a multiple of the probe cadence, not a fit — 400, 450 and
 600 give the same three fire commits (row E2) · the three stop reasons are an `OR`, so the rail is
@@ -891,10 +857,12 @@ transferable number in this work.**
 2. **Un-throttling `ρ*` bought commits, not learning, exactly as `Λ = 2B/s` requires** — and not even
    speed: time to v2's own peak went 8,257 → 8,604 vclock on agnews. The combiner throttle cost **hours on
    all three and accuracy on none**. Schedule-neutrality is now measured twice, on independent runs.
-3. **Slowing down and stopping are the whole remaining problem, and they are one problem.** The runs
-   neither annealed (ρ flat at 0.034 over the last 70%, `Σρ²` after commit 400 = 2.09 / 2.72 / 2.23
-   against 0.51 / 0.53 / 0.99 for the `mean` runs) nor stopped (both rules inert), and **both follow from
-   the pinned `B_rem`** — §1's holes. Nothing else on the queue is worth more.
+3. **Slowing down and stopping looked like one problem. They were two, and only one is solved.** These
+   runs neither annealed (ρ flat at 0.034 over the last 70%, `Σρ²` after commit 400 = 2.09 / 2.72 / 2.23
+   against 0.51 / 0.53 / 0.99 for the `mean` runs) nor stopped, and both were traced to the pinned `B_rem`.
+   **Stopping was fixed without fixing `B_rem` at all** — by taking the stop off `B_max` and putting it on
+   the accuracy curve and the `Φ` rail (§5.12, 2026-08-24). **Annealing was not**, and it is hole 1a: `ρ`
+   is still flat at the last commit of every run. Row **A**.
 
 **Against the FL targets this reads very differently.** Peaks are 0.873 / 0.663 / 0.812 against
 0.880 / 0.660 / 0.820, so the controller is **within 0.008 everywhere and over on yahoo**. What the missing
@@ -906,11 +874,16 @@ stop costs is not the target — it is the 0.03–0.14 given back afterwards, an
 Reproduce the table below with `expt_scripts/replay_saturation_stop.py`; `test_saturation_stop.py` is
 the gate.
 
-| | fires at | vs peak | run saved |
-|---|---|---|---|
-| **agnews** | commit 1,194 | −0.005 | 38% |
-| **yahoo** | commit 1,084 | −0.008 | 55% |
-| **yelp-p** | commit 1,179 | −0.007 | 37% |
+| | replay: fires at | vs peak | **LIVE 2026-08-24: fires at** | vs peak | vclock saved |
+|---|---|---|---|---|---|
+| **agnews** | commit 1,194 | −0.005 | **1,101** *(8% early)* | −0.004 | **36%** |
+| **yahoo** | commit 1,084 | −0.008 | **1,201** *(11% late)* | −0.008 | **48%** |
+| **yelp-p** | commit 1,179 | −0.007 | **never — the `Φ` rail halted the run at 1,005 first** | −0.007 | **39%** |
+
+**The live column is the out-of-sample test of `thr`=0.005 and `patience`=20, and they held on the two
+tasks that reached them.** The yelp-p silence is not a miss: replayed on that run's own curve the detector
+ends with 0 of 20 breaches, because the trailing mean was still creeping up over the progress horizon.
+**Sizing this rule on three curves and then running it is what §5.12 reports; nothing here is retracted.**
 
 **It was re-derived on 2026-08-22 against six curves it had never seen, and the
 first version failed them.** GL alone fires on `yahoo_control` at commit 597 and
@@ -932,9 +905,11 @@ anyway, as `3 × b_max_probe_every`, because it costs nothing and a pathological
 but do not cite it as the reason the rule does not false-fire. **What still is fitted: the 0.005 threshold
 and the 20-eval patience**, and the six out-of-sample curves are the only evidence they generalise.
 
-**Note the two stops now agree.** Saturation fires at `Φ` 2.76–3.27 and the re-derived rail is 3.0. That is
-the argument for shipping them as an `OR`: on these runs either one alone would have been nearly right, and
-together they cover the case where a curve is noisy near its peak.
+**Note the two stops now agree — and one of them had to cover for the other.** Saturation fires at
+`Φ` 2.76–3.27 and the re-derived rail is 3.0. That was the argument for shipping them as an `OR`: on these
+runs either one alone would have been nearly right. **On 2026-08-24 that stopped being a symmetry
+argument** — the detector ended agnews and yahoo, and the rail ended yelp-p on a curve where the detector
+was correctly silent for 426 commits. **Neither rule alone would have stopped all three.** §5.12.
 
 ---
 
@@ -1225,13 +1200,180 @@ refuted. **It says N5c is a ~50 h single-node run at `rf`=16, and must be planne
 
 | lever | effect on the 50 h | what it costs |
 |---|---|---|
-| **raise `s`** (1.5 → 2.9) | `ρ_max ∝ s`, so `B`/commit `∝ s²` — **÷3.7, to ~13 h** | `Λ = 2B/s` says a higher `s` moves *along* the accuracy-vs-`Λ` curve; G-1b already scored `s` as efficiency, not safety. **The cheapest lever and the one to try first** |
+| **raise `s`** (1.5 → 2.9) | `ρ_max ∝ s`, so `B`/commit `∝ s²` — **÷3.7, to ~13 h**, and `n_req` = `max_iter·K` at the cap regardless of `s`, so the saving is real | **MEASURED 2026-08-24 and it is not free (§5.12).** `s` moves *along* the accuracy-vs-`Λ` curve, confirmed to ≤0.006 at matched `Λ` — but `Φ*` is the invariant, so `Λ* = 2lnΦ*/s` and `s`=2.9 arrives at its `Φ` rail having banked **half** the progress `s`=1.5 does. It buys the 13 h by under-training the deployment. **Use it only if the question is "does the controller compose at a new `p`", never if the question is "what accuracy does this model reach"** |
 | **raise `max_iter`** (20 → 60) | `ρ_max ∝ √max_iter` — ÷3, but trips/commit rises the same 3× at the cap | **net zero in wall time.** Buys a larger step per commit at exactly proportional cost. Not a lever |
 | **drop `rf`** (16 → 4) | `p` ÷~4, so ÷4 in commits | changes the deployment being tested, and hole 3 says PEFT capacity does not compose. **Answers a different question** |
 
-**Row N5c is re-sized on this table; row N5b's question is answered in passing** — at roberta's `p` the
+**Row N5c is sized on this table at `s`=1.5 / ~50 h — the `s` shortcut was scored on 2026-08-24 and rejected for that row (§5.12, §3 stage 4). Row N5b's question is answered in passing** — at roberta's `p` the
 floor that binds is **gate reachability**, exactly as the `rf`=64 failure predicted, and it binds not by
 closing a `T_res` window but by pinning the run at `ρ_max` for its whole affordable length.
+
+#### §5.11a Launching N5c
+
+**Sizing, re-derived (§5.11).** `ρ_max = s√(max_iter·K·G_rule/p)` falls **3.06×** at roberta's `p`
+(0.1000 → 0.0326), so `B` accrues `∝ 1/p` and reaching `Φ`≈2.9 takes **~2,000 commits** against
+DistilBERT's ~214, at a measured **40.1 commits/h**. **Budget the run at 50 h and a vclock ceiling to
+match**; do not truncate it (§4.2a rule 2 — a truncated controller arm is void, not partial, and N4b′ is
+the fresh instance: it ran out of vclock at `Φ`=2.55 and has no `Φ*`).
+
+**Memory sets `--num-trainers`, and the smoke settled it empirically.** roberta-large is 355M params; at
+the shipped 12.5 trainers/GPU that is ~17.8 GB of weights and ~35.5 GB with the forward-mode tangent
+against a 46 GB card *before* activations. `145932` ran **50 trainers with 0 OOM and 0 deaths**. **A scored
+run needs 100** — that is the one memory question left, and it is what the 15-minute smoke must read.
+
+**Gate on a 15-minute smoke first (§4.2a rule 1)**, reading `[ProbeDim] p=4225540`, `trips/commit`, and
+0 deaths at 100 trainers. `run_node_p4.sh` hardcodes `--num-trainers 100` and the model, so the model
+must become an override — the one build task N5c depends on.
+
+**Pre-tokenize first.** The cache is keyed by model name, so roberta-large is a 100% miss:
+`pretokenize_dataset.py --model-type roberta-large`, ~0.8 GB and ~15 min per dataset, CPU-bound and
+competing with nothing. The offline rig needs `--lr 3e-4`; at the DistilBERT default 1e-3 roberta-large
+collapses to one class.
+
+### §5.12 The controller stops itself, on all three tasks *(measured 2026-08-24, runs `020537` / `020547` / `020555` / `020603`)*
+
+**This is the section §0's dataset axis closes on.** Numbers:
+[P4.16](fl_fwd_ft_practice.md#p416-the-2026-08-24-termination-runs--the-stop-fires-on-all-three).
+
+**Four arms, one stack** — `anchor`, saturation-primary, rail 3.0, `phi_stop=halt`, `T_res`=300, `rf`=16,
+100 trainers, `P4_RETENTION_EVERY=10`. Three at `s`=1.5, one at `s`=1.0.
+
+| | stop reason | commit | `Φ` at stop | `B`/`B_max` | peak | at stop | vs peak | vclock / ceiling |
+|---|---|---|---|---|---|---|---|---|
+| **agnews** `020537` | **`saturation`** | 1,103 | **2.85** | 1.048/1.230 | 0.872 | 0.868 | **−0.004** | 30,558 / 48,000 |
+| **yahoo** `020547` | **`saturation`** | 1,203 | **2.82** | 1.038/1.302 | 0.664 | 0.656 | **−0.008** | 31,218 / 60,000 |
+| **yelp-p** `020555` | **`phi_fixed`** | 1,005 | **3.00** | 1.099/1.265 | 0.810 | 0.803 | **−0.007** | 30,374 / 50,000 |
+| agnews `s`=1.0 `020603` | *(none — `max_runtime_s`)* | 723 | 2.55 | 0.938/1.165 | 0.878 | 0.874 | still climbing | 48,001 / 48,000 |
+
+**Read four things off it.**
+
+1. **The stop works, and it is efficient.** All three self-terminated inside the `Φ` band and within 0.008
+   of their own peak, on 52–64% of the compute the same controller burns with nothing armed to halt it.
+   Against the un-halted N1–N3 the difference is the whole point: those peaked at the same place and then
+   **handed back 0.03 / 0.14 / 0.11**. These hand back 0.004 / 0.008 / 0.007.
+2. **The `OR` is load-bearing, and yelp-p exposes WHY the detector is the wrong shape.** It **never fired**
+   on yelp-p, and the cause is not the progress term — it is **GL itself**. `GL = (best−m)/best` breached
+   0.005 on only **18 of 277** post-warm-up evals, max 0.0121, never 20 in a row; the smoothed curve sat
+   *at its own running max* almost throughout (`gl` = 0.0000 in the final evals). **GL is a decay detector:
+   it can only fire on a run that goes backwards.** yelp-p plateaued at 0.802–0.810 for 426 commits without
+   decaying, and the rule has no way to say so. **N4b′ is the same case, worse** — GL breached **0 of 136**
+   evals, max 0.00256, half the threshold. **Two of four runs are invisible to the shipped detector**, and
+   only the `Φ` rail stopped one of them. Row **E′** is the fix and it is replay-validated: §5.13.
+3. **The predictions held, and the two misses are the right size.** The replay that sized the detector said
+   commit 1,194 / 1,084 / 1,179; live it fired at **1,103 / 1,203 / never**. On agnews that is 8% early, on
+   yahoo 11% late, and the accuracy consequence of both is under 0.008. **The peaks reproduce N1–N3 to
+   0.002** (0.872/0.664/0.810 against 0.873/0.663/0.812) on an independently seeded run.
+4. **The budget law and the retention identity both hold through the stop.** `Φ` predicted from step sizes
+   alone misses by **0.16% / 0.06% / 0.41%**, and `cos(θ_t,θ_0)·Φ` reads **0.9982 / 0.9956 / 1.0005** over
+   110 / 120 / 100 logged commits with 0 outside 1.00 ± 0.02 — **now measured out to `Φ`=3.00**, against the
+   stage-2 smoke's `Φ`=1.64. **Row P3′ is closed on this axis** (a second architecture is still open).
+
+**What did NOT change: hole 1a.** `B_rem` is still pinned — `Φ_knee` came back 1.22–1.88 across all 21
+fires, `B_rem` 0.20–0.63 with no downward trend — so law C still does not anneal. `ρ` ran flat, ending at
+**0.0349 / 0.0420 / 0.0333** against 0.0678 at commit 1, and the budget stop `B ≥ 0.95·B_max` was never
+approached (85% / 80% / 87%). **The runs stopped because a rule outside law C told them to, not because the
+step schedule converged.** Row **A** is what closes that, and its framing changed with this result: it is
+now the *efficiency* fix, not the termination fix.
+
+**`s` is an exchange rate, and this settles §5.4's question.** N4b′ at `s`=1.0 against C at `s`=1.5, agnews,
+compared at matched `Λ` — the only fair comparison, since `Λ = 2B/s`:
+
+| `Λ` | 0.8 | 1.0 | 1.2 |
+|---|---|---|---|
+| `s`=1.5 (C) | 0.862 | 0.864 | 0.870 |
+| `s`=1.0 (N4b′) | 0.856 | 0.866 | 0.870 |
+
+**≤0.006 apart, no consistent sign: `s` moves ALONG the curve.** So N4b′'s higher peak (0.878 vs 0.872) is
+not a better curve — it is more `Λ` banked, reached at *lower* `Φ` (2.41 vs 2.59). The mechanism is the
+identity: `Φ*` is the invariant, so `Λ* = 2lnΦ*/s` and a smaller `s` banks more progress inside the same
+rail, at more pooling per commit — `n_req` 68.2 vs 24.3 and 12.2 vs 4.3 trips/commit, against the 2.25× that `n_req ∝ (ρ/s)²` predicts.
+**It is not free in compute:** N4b′ spent 48,000 vclock to reach 0.878 and never terminated; C spent 30,558
+to reach 0.872 and did. **Consequence for N5c: do not buy the 50 h down to 13 h with `s`=2.9** — it works
+mechanically, but it arrives at the rail with half the `Λ`, testing the controller while under-training the
+model (§5.11, §3 stage 4).
+
+**One caveat carried forward.** `trips/commit` breached its floor of 3 in the last quintile on yahoo
+(**2.94**) and yelp-p (**3.00**), with 0 trainer deaths and every other gate green. Marginal, and it is the
+third and fourth data point on a floor calibrated from one death — §5.4.
+
+### §5.13 The stop is a decay detector and needs to be a stall detector *(sized 2026-08-24, row E′)*
+
+**§5.12 point 2 is the finding: GL only fires on a run that goes backwards.** Two of the four 08-24 runs
+plateaued *at* their own running max and were structurally invisible to it. Numbers:
+[P4.17](fl_fwd_ft_practice.md#p417-row-e--the-stall-trigger-replayed).
+
+**The rule, and it adds a trigger rather than replacing one.**
+
+```
+r_t = (m_t - m_{t-h}) / (m_t - chance)     h = 1 x probe cadence,  chance = 1/num_labels (DERIVED)
+FIRE when r_t <= frac              for patience evals      <- NEW: progress has stalled
+     OR   GL_t > 0.005 AND m_t <= m_{t-h}  for patience     <- shipped decay rule, UNCHANGED
+```
+
+`r_t` reads *"what fraction of everything I have learned did the last horizon add?"* — dimensionless, and
+referenced to **learning achieved**, not to a rate. **One new constant: `frac` = 0.005**, on a plateau
+(0.003–0.008 move worst-case give-up by 0.002).
+
+| `frac`=0.005 | shipped | **E′** |
+|---|---|---|
+| agnews | 1,102, −0.0043 | **901, −0.0014** |
+| yahoo | 1,202, −0.0078 | **1,150, −0.0051** |
+| yelp-p | never *(rail at 1,005)* | **802, −0.0077** |
+| agnews `s`=1.0 | never *(out of vclock)* | **593, −0.0025** |
+| 3 still-climbing v2 controls | never | **never** ✓ |
+
+**Strictly better on every curve it was replayed on**, and it stops the two the shipped rule cannot.
+**Do not normalise by `running_max(g)`** — tried, and it is worse than shipped (fires at the warm-up
+boundary on 7 of 11 curves, gives up 0.013–0.066), because peak `g` is a transient of the early rise.
+
+**Why this is the top of the queue and not a nicety.** *(1)* It is the last **fitted** thing in the loop
+and the one instrument the whole zero-input claim now rests on (§1 hole 4). *(2)* **It de-risks N5c
+directly**: a 50 h run whose stop can only fire on decay is a 50 h run that plausibly never stops, and
+roberta's curve shape at a new `p` is exactly what nobody has seen. *(3)* It costs **no GPU to size** — it
+is already sized — and one 10 h agnews arm to confirm live.
+
+**What is NOT established.** The replay reads curves produced by a controller that ran *past* every E′ fire
+commit. That is sound for "would it have given up accuracy" and unsound for anything downstream of
+stopping earlier. **Only a live run settles it.**
+
+**SHIPPED 2026-08-24, default off.** `expts/saturation_stop.py` takes `stall_frac` (None = the 08-22 rule,
+byte-identical); the aggregator reads `sat_stall_frac`; the launcher exposes `P4_SAT_STALL_FRAC` and
+`run_sequential.sh` `--sat-stall-frac`. `[SatStop]`/`[BudgetStop]` report `stall` or `decay` **only when the
+trigger is armed**, so an unarmed run's logs are unchanged. Regression case (g) in
+`test_saturation_stop.py` covers all of it, including a synthesised plateau-at-the-best that the decay rule
+provably cannot stop. **One bug found while writing the test and fixed:** `g` is undefined until the history
+spans a full horizon, and without that guard the trigger breaches on a run that has barely started — hidden
+at the shipped cadence, live at a short one.
+
+### §5.14 Two defects found while implementing E′ *(2026-08-24)*
+
+**(a) `probe_dim` was DistilBERT-only, so every cross-model preflight was priced at the wrong `p`.**
+`dataset_registry.ADAPTER_P` held one adapter table and `probe_dim()` ignored `model_type`, returning
+**450,340 for every model**. The first roberta-large dry-run was therefore priced at **9.4× too small a
+`p`** and **BLOCKED a valid config** on a `gate starved: 1.37 trips/commit` projection that belongs to
+DistilBERT at `s`=2.9. At the true `p` the same config reads **7.82 trips/commit**. Fixed: `ADAPTER_P_BY_MODEL`
++ `HIDDEN_SIZE` keyed by model, `probe_dim(num_labels, rf, model_type)`, threaded at the preflight call
+site. **It raises on an unmeasured (model, rf) rather than falling back** — `p` sits under a square root in
+every `cos`, `ρ_max` and `n_req`, so a wrong one is wrong everywhere and looks fine. Only rows read off a
+`[ProbeDim]` line are in the table: distilbert rf 16/32/64, roberta-large rf 16.
+
+> **It would have failed the other way too.** A blocked launch is the benign direction; the same bug would
+> have *passed* a genuinely starved roberta config. This is §6's "grep the derived constants" failure mode
+> with a second instance.
+
+**(b) `s` composes at roberta's `p` where it does not at DistilBERT's — the opposite of hole 3.**
+`n_req ∝ p(ρ/s)²`, so a 9.4× larger `p` carries a much larger `s` before the gate starves. Projected
+trips/commit over the `ln 2` prior:
+
+| `s` | 1.0 | 1.5 | 2.0 | 2.5 | 2.9 |
+|---|---|---|---|---|---|
+| **roberta-large** `p`=4.23M | 19.60 | 17.09 | 13.39 | 9.95 | **7.82** ✓ |
+| **DistilBERT** `p`=450k | 7.12 | 3.42 | **2.16** ✗ | **1.61** ✗ | **1.37** ✗ |
+
+**So `s`=2.9 is launchable on roberta and is not on DistilBERT**, which is the reverse of what §5.11's lever
+table assumed and the reason stage 5 is affordable at all. The accuracy cost stands unchanged
+(`Λ* = 2lnΦ*/s` ⇒ ~half the banked progress), so stage 5 answers *where `Φ*` lands on a second
+architecture*, not *what accuracy roberta reaches*.
 
 ## §6 — Rules any change inherits, and the failure modes behind them
 

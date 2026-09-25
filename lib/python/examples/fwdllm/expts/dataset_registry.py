@@ -22,11 +22,25 @@ import yaml
 _CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "..", "configs", "datasets.yaml")
 
-# Adapter params at reduction_factor rf, DistilBERT-base, measured off the
-# production model (fl_fwd_ft_practice.md P1). The classifier is dataset-sized
-# and the pre_classifier is dropped by the trainer at :217, so
-#   p = ADAPTER_P[rf] + 768*num_labels + num_labels.
-ADAPTER_P = {16: 447264, 32: 225936, 64: 115272}
+# Adapter params at reduction_factor rf, MEASURED off each production model
+# (fl_fwd_ft_practice.md P1 for distilbert, P4.15/N5a for roberta-large). The
+# classifier is dataset-sized and the pre_classifier is dropped by the trainer at
+# :217, so   p = ADAPTER_P[model][rf] + hidden*num_labels + num_labels.
+#
+# **Model-keyed since 2026-08-24, and that was a live defect.** The table used to
+# be DistilBERT-only, so `probe_dim` returned 450,340 for EVERY model. A
+# roberta-large arm was priced at 9.4x too small a `p`, which made the wall-clock
+# preflight refuse a valid config -- and would as happily have passed an invalid
+# one. Never add a row that has not been read off `[ProbeDim]`.
+ADAPTER_P_BY_MODEL = {
+    "distilbert": {16: 447264, 32: 225936, 64: 115272},
+    # p=4,225,540 at rf=16 measured on run_20260823_145932 ([ProbeDim]); the
+    # classifier is 1024*4+4 for agnews, so the adapter half is 4,221,440.
+    "roberta-large": {16: 4221440},
+}
+HIDDEN_SIZE = {"distilbert": 768, "roberta-large": 1024}
+# Back-compat alias: the bare name still means DistilBERT.
+ADAPTER_P = ADAPTER_P_BY_MODEL["distilbert"]
 
 
 @dataclass(frozen=True)
@@ -48,8 +62,8 @@ class DatasetSpec:
     def n_test(self) -> int:
         return self.test_range[1] - self.test_range[0]
 
-    def probe_dim(self, reduction_factor: int = 16) -> int:
-        return probe_dim(self.num_labels, reduction_factor)
+    def probe_dim(self, reduction_factor: int = 16, model_type: str = "distilbert") -> int:
+        return probe_dim(self.num_labels, reduction_factor, model_type)
 
     def label_vocab(self) -> dict:
         """The h5's own label map -- what the run actually derives num_labels from."""
@@ -59,14 +73,29 @@ class DatasetSpec:
             return json.loads(f["attributes"][()])["label_vocab"]
 
 
-def probe_dim(num_labels: int, reduction_factor: int = 16) -> int:
-    """Trainable `p` after the trainer drops pre_classifier. Dataset-dependent
-    through the classifier alone: agnews 450,340 / yahoo 454,954 / yelp-p 448,802
-    at rf=16."""
-    if reduction_factor not in ADAPTER_P:
-        raise KeyError(f"no adapter param count for reduction_factor={reduction_factor}; "
-                       f"known: {sorted(ADAPTER_P)}")
-    return ADAPTER_P[reduction_factor] + 768 * num_labels + num_labels
+def probe_dim(num_labels: int, reduction_factor: int = 16,
+              model_type: str = "distilbert") -> int:
+    """Trainable `p` after the trainer drops pre_classifier.
+
+    Dataset-dependent through the classifier alone -- distilbert rf=16 gives
+    agnews 450,340 / yahoo 454,954 / yelp-p 448,802; roberta-large rf=16 gives
+    agnews 4,225,540.
+
+    **Raises on an unmeasured (model, rf) rather than guessing.** `p` sits under a
+    square root in every `cos`, `rho_max` and `n_req`, so a wrong one is wrong
+    everywhere and looks fine -- which is exactly what a silent DistilBERT
+    fallback did to the first roberta-large preflight.
+    """
+    m = (model_type or "distilbert").lower()
+    if m not in ADAPTER_P_BY_MODEL:
+        raise KeyError(f"no adapter param counts measured for model_type={m!r}; "
+                       f"known: {sorted(ADAPTER_P_BY_MODEL)}. Read p off a "
+                       f"[ProbeDim] line and add a row -- do not interpolate.")
+    table = ADAPTER_P_BY_MODEL[m]
+    if reduction_factor not in table:
+        raise KeyError(f"no adapter param count for model_type={m!r} "
+                       f"reduction_factor={reduction_factor}; known: {sorted(table)}")
+    return table[reduction_factor] + HIDDEN_SIZE[m] * num_labels + num_labels
 
 
 def total_data_bins(name: str, num_clients: int, train_batch_size: int) -> int:
