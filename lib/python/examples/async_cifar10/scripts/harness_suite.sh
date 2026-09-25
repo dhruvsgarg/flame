@@ -28,7 +28,7 @@ LIB_DIR="$(cd "$EX_DIR/../.." && pwd)"
 # shellcheck source=../../scripts/expt_runner.sh
 source "$LIB_DIR/examples/scripts/expt_runner.sh"
 export FLAME_CONDA_ENV="${FLAME_CONDA_ENV:-dg_flame}"   # an active `base` shell must not win
-export OMP_NUM_THREADS=1   # n CPU trainers on one host: no per-process thread fan-out
+export CUDA_VISIBLE_DEVICES=""   # CPU only, even on a node whose driver/torch mismatch (S0)
 
 HARNESS=stub
 BASELINES="felix fedbuff oort oort_star refl feddance"

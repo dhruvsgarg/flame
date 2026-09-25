@@ -48,11 +48,11 @@ on the launcher, no sim support.
 
 ## Next steps (persistent queue — top item is next)
 
-- **FX-N0 · Commit the 2026-09-25 session · awaiting operator OK.** All of FX-D4/FX-D5, parent S1 and the doc
-  restructure are uncommitted on `dg/pending_fl_baselines`; the overnight ran on that dirty tree (its log records
-  `+dirty`). Commit before any GPU run so run dirs map to a SHA.
-- **FX-N1 · Read the first overnight harness (`experiments/overnight_<ts>/SUMMARY.txt`) · blocked: operator
-  run.** P1 syn_0 x6 · P2 syn_50 x6 · P3 mobiperf_3st x6 (first live 3-state run ever) · P4 simColdStartGate
+- **FX-N0 · Commit the 2026-09-25 fixes, then launch the overnight · awaiting operator OK.** Commit before any
+  run so run dirs map to a SHA.
+- **FX-N1 · Read the overnight harness (`experiments/overnight_<ts>/SUMMARY.txt`) · blocked: operator run.** Run 1
+  was void (pre-spawn GPU probe; aggregator `harness_mode` read before init; trainer cwd-relative LEO path; P0
+  import-time `sys.exit`) — all fixed; the 120s felix smoke now runs clean (real 13/13; sim EV5/EV10/EV11 = FX-N14). P1 syn_0 x6 · P2 syn_50 x6 · P3 mobiperf_3st x6 (first live 3-state run ever) · P4 simColdStartGate
   A/B · P5 syn_20 · P6 tiny_cpu. Triage every EV FAIL as checker-gap vs bug (FX-D5 method); then the injected-
   bug checks (parent S1 exit).
 - **FX-N14 · Sim one-in-flight leak under unavailability · todo.** EV10 on the stored Jul-2 syn_50 sims:

@@ -2,7 +2,7 @@
 # ============================================================================
 # harness_overnight.sh — the unattended no-GPU harness campaign (ROBUST_FL_READINESS S1).
 #
-# Runs pytest, then a fixed list of harness_suite.sh phases (baselines x traces x
+# Runs the P00 smoke gate (aborts in ~5m if broken), pytest, then a fixed list of harness_suite.sh phases (baselines x traces x
 # harness modes), each step under a hard timeout; a failed or hung step is recorded
 # and the campaign moves on. Stops launching new phases past --deadline-h.
 #
@@ -63,6 +63,22 @@ echo "P0 pytest ~15m | P1 syn_0 x6 ~50m | P2 syn_50 x6 ~75m | P3 mobiperf_3st x6
 
 _elapsed() { echo $(( $(date +%s) - T0 )); }
 _want() { [[ " $PHASES " == *" $1 "* ]]; }
+
+# P00 gate (R19): collect every test + one short real/sim pair; a broken pipeline aborts in minutes, not hours.
+if [ -z "$DRY" ]; then
+  echo "=== [$(date '+%F %T')] P00 smoke gate (~5m)"
+  ( cd "$LIB_DIR" && timeout 300 "$(conda run -n "$FLAME_CONDA_ENV" which python | tail -1)" -m pytest -q \
+      --collect-only -p no:cacheprovider tests examples/async_cifar10/scripts/parity \
+      examples/async_cifar10/trainer/pytorch examples/fwdllm/expt_scripts ) > "$ROOT/P00_collect.txt" 2>&1 \
+    || { echo "ABORT P00: pytest collection failed -- $ROOT/P00_collect.txt"; exit 4; }
+  timeout --kill-after=60 600 bash "$SCRIPT_DIR/harness_suite.sh" --baselines felix --traces syn_0 \
+      --runtime-s 120 --output-dir "$ROOT/P00" > "$ROOT/P00.log" 2>&1
+  _bad="$(tail -n +2 "$ROOT/P00/summary.tsv" 2>/dev/null | awk -F'\t' '$3 ~ /MISSING|EV1/ || $4 ~ /MISSING|EV1/ || $5 == "CHECKER_ERROR" || $5 == "MISSING" || $10 == 1')"
+  if [ "$(tail -n +2 "$ROOT/P00/summary.tsv" 2>/dev/null | wc -l)" = 0 ] || [ -n "$_bad" ]; then
+    echo "ABORT P00: smoke pair made no progress -- $ROOT/P00.log"; echo "$_bad"; exit 4
+  fi
+  echo "  P00 ok :: $(tail -n +2 "$ROOT/P00/summary.tsv" | cut -f3-5 | tr '\t' ' ')"
+fi
 
 if _want P0; then
   echo "=== [$(date '+%F %T')] P0 pytest"

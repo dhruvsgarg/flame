@@ -319,6 +319,7 @@ for e_src in cfg.get("experiments", []):
             ex = e.setdefault("execution", {})
             ex["sleep_between_spawns"] = 0.2
             ex["aggregator_warmup_time"] = 20
+            ex["num_gpus"], ex["gpu_ids"] = 0, None   # CPU only: no GPU pool, no health probe
         # FLAME_TRACE_TIME_SCALE (env, read by flame.availability.trace): recorded for provenance.
         if os.environ.get("FLAME_TRACE_TIME_SCALE", "").strip():
             h["trace_time_scale"] = float(os.environ["FLAME_TRACE_TIME_SCALE"])

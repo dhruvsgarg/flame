@@ -149,6 +149,9 @@ class PyTorchFMoWTrainer(Trainer):
         self.satellite_index = int(self.config.hyperparameters.satellite_index)
         coords_path = self.config.hyperparameters.satellite_coordinates_path
         if (coords_path):
+             # Config paths are repo-root-relative; trainers don't run from the root.
+             if not os.path.isabs(coords_path):
+                 coords_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *[".."] * 6, coords_path)
              self.coords = np.load(coords_path)["coords"]
 
         # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute

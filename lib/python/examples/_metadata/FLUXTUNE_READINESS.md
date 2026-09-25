@@ -41,6 +41,9 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 
 ## Next steps (persistent queue — resumes after Felix)
 
+- **FT-N11 · 6 red fwdllm tests (R10) · todo.** `tests/mode/test_fwdllm_{probe_report,server_update_audit,eval_background}`
+  (source drift: moved strings, a `config`-less fake) and `test_replicate_floor` (`pretokenize_dataset.py` not in
+  `LAUNCHER_INVOKES`). *Exit:* full pytest green.
 - **FT-N1 · Re-profile `sim_charge_profiles/fluxtune.yaml` against v2 real legs · todo.** Decide whether v1
   keeps its own profile. *Exit:* a v2 sim block graded 0-fail against v2 reals.
 - **FT-N2 · Settle whether `trackTrainerAvail` is inert at syn_0 · todo.** One `fwdllm_it_unaware` real leg

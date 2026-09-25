@@ -39,39 +39,40 @@ def check(cond, msg):
 
 
 # ---------------- part 1: the pure function against the four known arms -------
-print("part 1: wall_clock_preflight.project() vs the four historical arms")
-CASES = [
-    # rid, s, vclock_budget, ceiling, stride, expect_breach
-    ("002208", 2.9, 14400, 7200.0, None, True),
-    ("022448", 1.5, 14400, 7200.0, None, True),
-    ("112201", 2.9, 28800, 21600.0, 25, False),
-    ("145729", 1.5, 47000, 21600.0, 25, False),
-]
-for rid, s, vb, ceiling, stride, expect in CASES:
-    proj = wcp.project(p=450340, rho_star=0.06, gate_safety_s=s, rule="mean",
-                        perturbation_count=10, K=10, vclock_budget_s=vb,
-                        real_wall_ceiling_s=ceiling, cos_audit_on=True,
-                        cos_probe_every=stride, cos_probe_batch_size=None)
-    check(proj.breach == expect,
-          f"{rid}: breach={proj.breach} (want {expect}) -- {proj.explain()}")
+def part1():
+    print("part 1: wall_clock_preflight.project() vs the four historical arms")
+    CASES = [
+        # rid, s, vclock_budget, ceiling, stride, expect_breach
+        ("002208", 2.9, 14400, 7200.0, None, True),
+        ("022448", 1.5, 14400, 7200.0, None, True),
+        ("112201", 2.9, 28800, 21600.0, 25, False),
+        ("145729", 1.5, 47000, 21600.0, 25, False),
+    ]
+    for rid, s, vb, ceiling, stride, expect in CASES:
+        proj = wcp.project(p=450340, rho_star=0.06, gate_safety_s=s, rule="mean",
+                            perturbation_count=10, K=10, vclock_budget_s=vb,
+                            real_wall_ceiling_s=ceiling, cos_audit_on=True,
+                            cos_probe_every=stride, cos_probe_batch_size=None)
+        check(proj.breach == expect,
+              f"{rid}: breach={proj.breach} (want {expect}) -- {proj.explain()}")
 
-# edge case (a): zero cos fires / audit off -> no audit tax, per_commit_cost = base only
-p_off = wcp.project(p=450340, rho_star=0.06, gate_safety_s=2.9, rule="mean",
-                     perturbation_count=10, K=10, vclock_budget_s=14400,
-                     real_wall_ceiling_s=7200.0, cos_audit_on=False,
-                     cos_probe_every=None, cos_probe_batch_size=None)
-check(p_off.per_commit_cost == wcp.AUDIT_BASE_S,
-      f"audit off -> per_commit_cost is base only ({p_off.per_commit_cost})")
+    # edge case (a): zero cos fires / audit off -> no audit tax, per_commit_cost = base only
+    p_off = wcp.project(p=450340, rho_star=0.06, gate_safety_s=2.9, rule="mean",
+                         perturbation_count=10, K=10, vclock_budget_s=14400,
+                         real_wall_ceiling_s=7200.0, cos_audit_on=False,
+                         cos_probe_every=None, cos_probe_batch_size=None)
+    check(p_off.per_commit_cost == wcp.AUDIT_BASE_S,
+          f"audit off -> per_commit_cost is base only ({p_off.per_commit_cost})")
 
-# select rule with an unmeasured P must refuse, not interpolate
-try:
-    wcp.project(p=450340, rho_star=0.06, gate_safety_s=2.9, rule="select",
-                perturbation_count=20, K=10, vclock_budget_s=14400,
-                real_wall_ceiling_s=7200.0, cos_audit_on=True,
-                cos_probe_every=None, cos_probe_batch_size=None)
-    check(False, "select at unmeasured P=20 should have raised")
-except ValueError:
-    check(True, "select at unmeasured P=20 refuses (no interpolation)")
+    # select rule with an unmeasured P must refuse, not interpolate
+    try:
+        wcp.project(p=450340, rho_star=0.06, gate_safety_s=2.9, rule="select",
+                    perturbation_count=20, K=10, vclock_budget_s=14400,
+                    real_wall_ceiling_s=7200.0, cos_audit_on=True,
+                    cos_probe_every=None, cos_probe_batch_size=None)
+        check(False, "select at unmeasured P=20 should have raised")
+    except ValueError:
+        check(True, "select at unmeasured P=20 refuses (no interpolation)")
 
 
 # ---------------- part 2: end to end through the real launcher ----------------
@@ -81,6 +82,7 @@ def run_launcher(args, timeout=180):
     # this test) refuses without it. This test is about the WALL-CLOCK check --
     # leaving it unset makes every case exit 2 for an unrelated reason.
     env = dict(os.environ, FWDLLM_FD_SCALE_INVARIANT="1")
+    env.setdefault("FLAME_CONDA_ENV", os.path.basename(sys.prefix))  # launch in this interpreter's env
     p = subprocess.run(["bash", RUN_SEQ] + args, capture_output=True, text=True,
                        timeout=timeout, env=env)
     after = set(glob.glob(os.path.join(SMOKE_LOGS, "*")))
@@ -111,35 +113,48 @@ COMMON = ["--only", "fluxtune", "--mode", "sim", "--dry-run",
           "--commit-gate", "n_target", "--server-step-rule", "trust_ratio",
           "--rho-star", "0.06", "--adapter-reduction-factor", "16"]
 
-if os.environ.get("SKIP_LAUNCHER_CASES"):
-    print("part 2: skipped (SKIP_LAUNCHER_CASES set)")
-else:
-    print("part 2: end to end through run_sequential.sh --dry-run")
-    rc, out, logdir = run_launcher(COMMON + [
-        "--max-runtime-s", "14400", "--sim-wall-ceiling-h", "2.0",
-        "--rho-schedule", "rm", "--rho-exp", "0.25", "--gate-rho-ref", "annealed",
-        "--gate-safety-s", "2.9"])
-    spec = load_spec(logdir)
-    c = find_check(spec, "wall-clock budget preflight")
-    check(rc == 2, f"002208-equivalent (stride 1): launcher exit 2 (got {rc})")
-    check(c is not None and c["level"] == "error",
-          f"002208-equivalent: check is level=error (got {c})")
-    check(c is not None and "commits_projected" in c.get("detail", "")
-          and "per_commit_cost" in c.get("detail", ""),
-          "002208-equivalent: refusal prints the three factors (edge case e)")
+def part2():
+    if os.environ.get("SKIP_LAUNCHER_CASES"):
+        print("part 2: skipped (SKIP_LAUNCHER_CASES set)")
+    else:
+        print("part 2: end to end through run_sequential.sh --dry-run")
+        rc, out, logdir = run_launcher(COMMON + [
+            "--max-runtime-s", "14400", "--sim-wall-ceiling-h", "2.0",
+            "--rho-schedule", "rm", "--rho-exp", "0.25", "--gate-rho-ref", "annealed",
+            "--gate-safety-s", "2.9"])
+        spec = load_spec(logdir)
+        c = find_check(spec, "wall-clock budget preflight")
+        check(rc == 2, f"002208-equivalent (stride 1): launcher exit 2 (got {rc})")
+        check(c is not None and c["level"] == "error",
+              f"002208-equivalent: check is level=error (got {c})")
+        check(c is not None and "commits_projected" in c.get("detail", "")
+              and "per_commit_cost" in c.get("detail", ""),
+              "002208-equivalent: refusal prints the three factors (edge case e)")
 
-    rc, out, logdir = run_launcher(COMMON + [
-        "--max-runtime-s", "28800", "--sim-wall-ceiling-h", "6.0",
-        "--rho-schedule", "const", "--gate-rho-ref", "setpoint",
-        "--cos-probe-every", "25", "--gate-safety-s", "2.9"])
-    spec = load_spec(logdir)
-    c = find_check(spec, "wall-clock budget preflight")
-    check(rc == 0, f"112201-equivalent (stride 25): launcher exit 0 (got {rc})")
-    check(c is not None and c["level"] == "ok",
-          f"112201-equivalent: check is level=ok (got {c})")
+        rc, out, logdir = run_launcher(COMMON + [
+            "--max-runtime-s", "28800", "--sim-wall-ceiling-h", "6.0",
+            "--rho-schedule", "const", "--gate-rho-ref", "setpoint",
+            "--cos-probe-every", "25", "--gate-safety-s", "2.9"])
+        spec = load_spec(logdir)
+        c = find_check(spec, "wall-clock budget preflight")
+        check(rc == 0, f"112201-equivalent (stride 25): launcher exit 0 (got {rc})")
+        check(c is not None and c["level"] == "ok",
+              f"112201-equivalent: check is level=ok (got {c})")
 
-print()
-if failures:
-    print(f"{len(failures)} FAILURE(S)")
-    sys.exit(1)
-print("all checks passed")
+
+def test_wall_clock_preflight():
+    # Work runs in the test, not at import: xdist imports the module in every worker.
+    failures.clear()
+    part1()
+    part2()
+    assert not failures, failures
+
+
+if __name__ == "__main__":
+    part1()
+    part2()
+    print()
+    if failures:
+        print(f"{len(failures)} FAILURE(S)")
+        sys.exit(1)
+    print("all checks passed")

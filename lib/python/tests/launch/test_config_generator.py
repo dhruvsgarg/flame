@@ -370,6 +370,38 @@ class TestTrainerSpawnerForwardsDatasetIdentity:
         ]
 
 
+class TestTrainerSpawnerPlacement:
+    """CPU harness: an empty GPU pool hides every GPU; spare cores widen each trainer's pin block."""
+
+    def _spawn(self, tmp_path, monkeypatch, n_trainers, usable, **kw):
+        import subprocess
+        from flame.launch.spawner import TrainerSpawner
+
+        seen = []
+        monkeypatch.setattr(subprocess, "Popen",
+                            lambda *a, **k: seen.append(k) or type("P", (), {"pid": 1})())
+        gen = TestTrainerSpawnerForwardsDatasetIdentity._RecordingConfigGenerator()
+        sp = TrainerSpawner(gen, cpu_pinning=False, **kw)
+        sp.cpu_pinning, sp._usable_cores = True, list(usable)
+        for tid in range(1, n_trainers + 1):
+            sp.spawn_trainer(trainer_id=tid, alpha=0.1, availability_mode="syn_0",
+                             trainer_main_path=tmp_path / "main.py", num_trainers=n_trainers)
+        return seen
+
+    def test_empty_gpu_pool_hides_gpus(self, tmp_path, monkeypatch):
+        seen = self._spawn(tmp_path, monkeypatch, 2, range(4), num_gpus=0)
+        assert all(k["env"]["CUDA_VISIBLE_DEVICES"] == "" for k in seen)
+
+    def test_spare_cores_split_into_disjoint_blocks(self, tmp_path, monkeypatch):
+        seen = self._spawn(tmp_path, monkeypatch, 3, range(7), num_gpus=1)
+        assert [k["env"]["OMP_NUM_THREADS"] for k in seen] == ["2"] * 3
+
+    def test_oversubscribed_keeps_one_core_each(self, tmp_path, monkeypatch):
+        seen = self._spawn(tmp_path, monkeypatch, 10, range(4), num_gpus=1)
+        assert {k["env"]["OMP_NUM_THREADS"] for k in seen} == {"1"}
+        assert seen[0]["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+
+
 class TestSyntheticTracePerTrainer:
     """Regression for Open B (UNAVAILABILITY_DESIGN.md): get_synthetic_trace used
     to always return the shared `pattern` entry regardless of trainer_id,

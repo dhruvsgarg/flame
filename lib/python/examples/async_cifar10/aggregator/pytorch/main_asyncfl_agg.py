@@ -111,6 +111,8 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
     ) -> None:
         """Initialize a class instance."""
         self.config = config
+        # Before load_data, which runs ahead of initialize.
+        self.harness_mode = harness.harness_mode(self.config.hyperparameters)
         self.model = None
         self.dataset: Dataset = None
 
@@ -133,7 +135,6 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
 
     def initialize(self):
         """Initialize role."""
-        self.harness_mode = harness.harness_mode(self.config.hyperparameters)
         self.device = harness.device_for(self.harness_mode)
 
         self.model = Net().to(self.device)

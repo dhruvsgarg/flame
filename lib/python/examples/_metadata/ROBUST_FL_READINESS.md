@@ -105,6 +105,13 @@ section already says.
   docstring or its doc row); code comments cite the ID only.
 - **R17 No redundancy.** Define once, fix once, and refer to it (file:symbol, test, commit, doc ID) everywhere
   else. Never restate a fact across docs and code; the readiness docs point, they don't copy.
+- **R18 Fast, never at correctness' cost.** Use every idle core (pytest `-n auto`, spare cores widen each
+  trainer's pin block, parallel analysis). Never oversubscribe cores or share a broker/node between graded legs.
+- **R19 Smoke before hand-off; fail in minutes.** Before handing over any long script, Claude runs its ≤5-min
+  smoke itself (the one R4 exception: foreground, hard timeout, one script): `pytest --collect-only` plus one
+  short real/sim pair showing commits on both legs. Every long script opens with that gate (overnight: P00)
+  and aborts when it fails. Never hand over a command that has not run end-to-end once at small scale.
+  Every run and test uses the `dg_flame` env (`FLAME_CONDA_ENV`), never the active shell's.
 - **R13 Commits:** follow CLAUDE.md (crisp comments, minimal diff, short title and body). Confirm before any
   push.
 
@@ -208,6 +215,8 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
   wall rungs.
 - **T13** Don't compare a config flag to a string (`== "True"`); pydantic coerces it to bool. Normalize
   with `str(x).lower() == "true"`.
+- **T14** Don't run module-level code that calls `sys.exit` in a `test_*.py`; it aborts xdist collection for
+  the whole suite. Wrap it in a test function plus `__main__`.
 - **T12** Don't add a fix to one copy of a shared concept (pacer, drain, residence) without checking every
   copy.
 
@@ -218,10 +227,7 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
 Cross-cutting work that serves both tracks. Felix drives it now (R12); each item must leave FluxTune
 green (R10).
 
-- **S0 · GPU env on jayne · blocked: operator.** `dg_flame` has torch 2.12+cu130; jayne's driver is CUDA 12.9,
-  so `torch.cuda.is_available()` is False and a production run silently trains on CPU. `debug_run.sh`
-  preflight now flags it (✗). Fix: a cu12x torch in `dg_flame` (or a separate env); check the other nodes.
-- **S1 · No-GPU local harness · wip (Felix half landed, FX-N1; awaiting the first overnight).** Landed:
+- **S1 · No-GPU local harness · wip (Felix half landed, FX-N1; overnight re-run pending).** Landed:
   stub/tiny_cpu modes, `FLAME_TRACE_TIME_SCALE` (compresses availability traces by the delay factor, all
   consumers via `load_trace`), the single-run event checker (EV0-EV14), `harness_suite.sh`,
   `harness_overnight.sh`. Harness caveat: absolute timeouts (90s abandon, join) are not scaled. A trainer with two switchable modes. *Stub mode:* no training, seeded
@@ -266,6 +272,8 @@ green (R10).
   gating) but land per example, harness-green each time.
 
 ## Shared Done
+- **S0** `dg_flame` → torch 2.12.1+cu129 / torchvision 0.27.1+cu129 (driver 12.9); cu13 libs removed; jayne 8/8 GPUs
+  verified (matmul, cuDNN, ResNet). Other nodes unchecked.
 - Parity methodology (causal ladder, roles/tiers, dependency gating), availability substrate v1, and the
   fwdllm floor/control/median grading all landed — derivations in PARITY.md §1-§5, UNAVAILABILITY_DESIGN.md,
   simulate_fwdllm.md §A-§D.
