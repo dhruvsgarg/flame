@@ -71,10 +71,11 @@ of the deployment the operator genuinely owns.* Anything else is a profiling dep
 
 **In one line:** *we know why it diverges, we have four fixes that work, the sizing formula's shape is
 right and its constant is 20× high because every reading's target is an 8-sample minibatch gradient —
-and the controller is now **built and run**: it lands within 0.008 of the FL target on all three datasets
-and beats its hand-set control on every one. What is not sound is the sensor that sets its target — it
-measures a different quantity than the budget is (§5.5c), so law C stopped annealing and neither stop
-could fire.*
+and the controller is now **built, run, and self-terminating**: it lands within 0.010 of the FL target on
+all three datasets, beats its hand-set control on every one, and **ends itself within 0.008 of its own peak
+on all three** (2026-08-24, buildplan §5.12). What is still not sound is the sensor that sets law C's
+target — it measures a different quantity than the budget is (§5.5c), so **law C still does not anneal**.
+That was routed around rather than fixed: the stop no longer reads `B_max` at all.*
 
 ### Load-bearing — the eight every decision is checked against
 
@@ -177,21 +178,25 @@ for months.
 
 | # | criterion | status |
 |---|---|---|
-| **1** | peak ≥ **0.86** and ends within **0.015** of it at ≥300 commits, without hand-tuning per model or α | **PEAK MET across task** — 0.873 / 0.663 / 0.812, within 0.008 of each FL target. **"Ends within 0.015" is not met and the bar is withdrawn**: it passes trivially on a still-climbing run, and the runs that could have tested it had no working stop (buildplan §1 hole 1) |
+| **1** | peak ≥ **0.86** and ends within **0.015** of it at ≥300 commits, without hand-tuning per model or α | **MET across task, 2026-08-24** — peaks 0.872 / 0.664 / 0.810 within 0.010 of each FL target, and each run **ends on its own stop 0.004 / 0.008 / 0.007 below its own peak** at 1,103 / 1,203 / 1,005 commits (buildplan §5.12). *The "ends within 0.015" half is met non-trivially for the first time — these runs terminate, so the bar is no longer passable by still climbing.* |
 | **2** | the setpoint is **computed, not searched** | **MET for `ρ*`** by a different route: `ρ* = √(2·B_max/T_res)` needs no `cos` and no `D` (§4.6a). **Open for the *forecast*** — predicting the accuracy `ρ*` reaches needs `D` (§5.5a) |
 | **3** | stability readable in **~20 commits** from `B` and `A` | **MET** — both exact at any horizon; `B` predicted `112201`'s `Φ` to 1.1% over 1,364 commits |
 | **4** | every constant in the loop is dimensionless (§5.3) | **PARTIAL** — met for the step rule; the gate is dimensionless in form but its `s` is still empirical |
-| **5** | the controller **holds** the trajectory rather than sizing it once | **PARTIAL.** Law C runs on all three datasets and removes the horizon from the inputs — but under a receding `B_max` it degenerated to a constant step and **neither stop could fire**, so every 2026-08-21 run ran past its peak and gave back 0.03–0.14. *Sizing* is solved; *holding* is not yet demonstrated (buildplan §1 holes 1, 2, 5) |
+| **5** | the controller **holds** the trajectory rather than sizing it once | **MET for stopping, OPEN for annealing.** Law C runs on all three datasets and removes the horizon from the inputs. Under a receding `B_max` it still degenerates to a constant step — `ρ` ends at 0.033–0.042 against 0.068 at commit 1 — so the *anneal* is not demonstrated. But **stopping no longer depends on it**: the saturation detector and the `Φ` rail ended all three 2026-08-24 runs inside the band, handing back nothing (buildplan §5.12). *Sizing* is solved, *stopping* is solved, *slowing down* is buildplan hole 1a — row **A** |
 
 **Item 5 is the one this program circled without naming.** Every earlier run either annealed on a schedule
 chosen offline or held `ρ` fixed, and §4.4's design rule assumes the horizon `T` is known in advance; the
 two `const` runs showed that a *correct* one-shot setpoint still collapses if the horizon outruns it, **at
 any pool size**. Law C removes the horizon — and then only anneals to the extent its target stands still,
-which §5.5c says it does not.
+which §5.5c says it does not. **The 2026-08-24 result is that the horizon problem and the anneal problem
+were separable after all**: a run that never slows down still lands correctly if something independent of
+its step schedule tells it to stop.
 
-**One thing item 5 will not show even once it lands.** No run in the controller set ever diverged, so the
-stop demonstrates *efficiency* — stopping early at no cost — not the collapse avoidance that motivated it.
-Those are different claims and should not be merged.
+**One thing item 5 does not show, now that it has landed.** No run in the controller set ever diverged, so
+the stop demonstrates *efficiency* — stopping early at no cost, 36–48% of the compute saved and 0.03–0.14
+of accuracy not handed back — **not** the collapse avoidance that motivated it. Those are different claims
+and should not be merged. What the damage evidence rests on is still the six wider-portfolio runs that lost
+0.083–0.604 past `Φ`=4.23, none of which were controller runs.
 
 ---
 
@@ -1004,10 +1009,10 @@ PER COMMIT (server):
   log rho, ||theta_tr||, top_class_share      # the three monitors (2.8)
   B += 0.5*ln(1 + rho_t^2)                    # exact, no free parameter (4.1)
   anneal rho so that B LANDS on B_max         # not Robbins-Monro: unspent budget = wasted time (4.6a)
-  stop when held-out accuracy SATURATES        # PRIMARY [NOT BUILT -- buildplan row E]
+  stop when held-out accuracy SATURATES        # PRIMARY -- SHIPPED 08-22, FIRED LIVE 08-24 (agnews, yahoo)
   stop when smoothed Phi crosses 3.0           # the damage rail, re-derived from where runs peak
-                                               # [UNREACHABLE as coded -- it is the `else` of the
-                                               #  budget test, buildplan row S]
+                                               # SHIPPED 08-22 as an OR, FIRED LIVE 08-24 (yelp-p, where
+                                               # the detector's progress term correctly stayed silent)
   # B >= f*B_max is NO LONGER a termination rule -- B_max drives rho* only
   # NO accuracy target: the run finds its own ceiling (5.5f D2)
 ```
@@ -1016,11 +1021,17 @@ PER COMMIT (server):
 made from *sensed* state rather than arithmetic is the §0.0 autonomy requirement being met, and is why
 `s`, `ρ`, `N`, `I` and `p` are no longer decisions at all.
 
-**But the loop does not yet terminate, and the cause is upstream of every `[NOT BUILT]` line above.** The
-one sensed quantity is `B_max` (3.1), and it measures the wrong wall (§5.5c). A `B_max` that recedes at
-the rate `B` advances turns law C's anneal into a constant step and puts `B ≥ f·B_max` out of reach, so
-the saturation stop is not an *addition* to a loop that already lands — it is the only stopping rule that
-does not depend on the broken sensor. **The controller's arithmetic is validated; its target is not.**
+**The loop terminates, and it does so without the broken sensor** *(measured 2026-08-24 on all three
+datasets; buildplan §5.12)*. The one sensed quantity is `B_max` (3.1), and it measures the wrong wall
+(§5.5c). A `B_max` that recedes at the rate `B` advances turns law C's anneal into a constant step and puts
+`B ≥ f·B_max` out of reach — so the fix was **not** to repair the sensor but to take the stop off it
+entirely. Saturation reads the accuracy curve; the rail reads `Φ`, which is exact arithmetic on the step
+sizes. Neither consults `B_max`.
+
+**What that leaves open is the anneal, and only the anneal.** `ρ` still runs flat to the last commit
+(0.033–0.042 against 0.068 at commit 1), so the run pays full price per commit right through the plateau.
+**The controller's arithmetic is validated, its stopping is validated, and its target is still not** —
+buildplan hole 1a, row **A**, now an efficiency row rather than a termination one.
 
 **Two decisions follow, taken 2026-08-20.** *(1)* Senses combine by **`anchor`** (latest), not `mean` —
 the fires do not estimate one constant, so averaging them under-reports headroom and throttles `ρ*`.
@@ -1128,19 +1139,23 @@ with and no longer has to set.
 | **`B_max`** | **(b)** | **noise-injection probe, ~6 evals, forward-only, every 150 commits** (§5.5b) | **live — and measuring the wrong wall (§5.5c)** |
 | **`K`, `C`** | **(b)** | **hill-climb the pair** against availability (§5.5e). *Which one carries the wall clock is K-C* | **not built** |
 | **`P`, bin size** | **(b)** | **hill-climb `P/τ(P)`** — *one lever, not four: `cos ∝ √compute`* | **not built** |
-| saturation signal | (b) | Prechelt generalization-loss / patience on *smoothed* held-out accuracy — a raw `dAcc/dΛ` slope false-triggers on a dip and misses a masked plateau (buildplan §3 row E) | **not built** |
+| saturation signal | (b) | Prechelt generalization-loss / patience on *smoothed* held-out accuracy, **with his progress term** — a raw `dAcc/dΛ` slope false-triggers on a dip and misses a masked plateau | **BUILT and FIRED LIVE** — `expts/saturation_stop.py`, ended the agnews and yahoo runs of 2026-08-24 within 0.008 of peak (buildplan §5.12) |
 | `D` | (b) | `cos` audit on a stride. **Forecast-only** (§5.5a) | **built** |
 | `p` / PEFT rank | (c) | device memory budget; inert for learning and for time | operator |
 | model, PEFT scheme | (c) | the deployment. α is **neutralised**, not sensed | operator |
 | *probe selection rule* · *momentum `β`* | — | **eliminated** — `b²/a` = 1 · `√x` progress for `x` budget | — |
 
-> **Three gaps, and they are the entire remaining build**: the `B_max` sensor measures the wrong quantity
-> (§5.5c), neither `K` nor `P` is adaptive, and there is no saturation stop. **Nothing else in the loop
-> needs a number an operator has to know.**
+> **Two gaps left, and they are the entire remaining build**: the `B_max` sensor measures the wrong
+> quantity (§5.5c), so law C never anneals, and neither `K` nor `P` is adaptive. **The third gap — no
+> saturation stop — closed on 2026-08-24**, which is what took termination off `B_max` entirely.
+> **Nothing else in the loop needs a number an operator has to know.**
 
 **What follows for the controller, and it changed the shipped recommendation.** *Hold `s` constant* — the
 Cauchy–Schwarz equality condition, which under an anneal means `N` must fall **with** `ρ`
-(`gate_rho_ref=annealed`). *Anneal to **land** on `B_max`*, never to stay under it: Robbins–Monro
+(`gate_rho_ref=annealed`). *Which value of `s`* is a compute decision, not a learning one, and that is now
+measured: at matched `Λ` the `s`=1.0 and `s`=1.5 accuracy curves agree to ≤0.006, so `s` sets how much `Λ`
+you bank inside a given `Φ` rail (`Λ* = 2 lnΦ*/s`) at `∝ s^{-2}` round trips per commit
+([P4.16a](fl_fwd_ft_practice.md#p416a-s-moves-along-the-accuracy-vs-λ-curve--n4b-against-c)). *Anneal to **land** on `B_max`*, never to stay under it: Robbins–Monro
 converges to some `B_∞` and `t ∝ 1/B_∞`, so unspent budget is wall clock given away. *Stop on saturation, not on a
 schedule* — a Prechelt GL/patience criterion on smoothed held-out accuracy, superseding the raw `dAcc/dΛ`
 slope this section once named (§5.5f D2). **The `const` runs did not need an anneal; they needed a stop** — `145729` peaked 0.876 at
@@ -1292,7 +1307,13 @@ momentum correction — which is what "backstop" was supposed to mean.
 
 > ⚠ **That argument holds only for a `B_max` that stands still, and the sensed one does not** (§5.5c). A
 > target that recedes at the rate `B` advances makes the approach never arrive, so the `Φ` rail and the
-> saturation stop are **primary**, not backstops — buildplan rows **S** and **E**.
+> saturation stop are **primary**, not backstops.
+>
+> **Confirmed in the strongest form on 2026-08-24.** All three runs ended on those two rules at
+> `B/B_max` = 85% / 80% / 87%, i.e. **nowhere near** `f`=0.95, and they landed 0.004–0.008 below their own
+> peaks. `f` is not a tuned-too-tight constant; it is a rule that no longer participates. **D6's `halt`
+> path is the one that executed** — and `log_only` is what kept the past-the-stop counterfactual (N1–N3)
+> that makes those numbers scoreable. Buildplan §5.12.
 
 ## §5.6 The cohort-width requirement is withdrawn
 
@@ -1300,8 +1321,9 @@ momentum correction — which is what "backstop" was supposed to mean.
 `N` = 19 — `I` = 2 at `K` = 10, which G-1 then ran off the cap on 100% of commits, netting **2.13×** the
 control's progress per unit federated time. **Every cohort this harness runs is already wide enough.**
 
-Two structural gaps remain: the controller (C-1), and the `h`/`p` coupling, unanalysed beyond the
-FD-rescale interaction and owned by nobody.
+One structural gap remains — the `h`/`p` coupling, unanalysed beyond the FD-rescale interaction and owned
+by nobody (buildplan row **F**). *The controller (C-1) is built, run and self-terminating on three tasks;
+what is left of it is the anneal, buildplan hole 1a.*
 
 ---
 

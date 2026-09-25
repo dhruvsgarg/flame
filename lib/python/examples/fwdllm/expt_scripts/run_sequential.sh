@@ -140,6 +140,8 @@ B_MAX_POLICY=""        # 3.1: mean|ratchet|anchor -- how successive senses combi
 EVAL_MAX_SAMPLES=""    # agg eval on a fixed subsample of the test set. Unset = full set
 B_MAX_PROBE_PHIS=""    # 3.1: comma-separated Phi grid (1.5,2,2.5,3,3.5,4)
 SATURATION_STOP=""     # E: 1 = stop when held-out accuracy stops rising (Prechelt GL). Unset = off
+SAT_STALL_FRAC=""      # E': stall trigger. g=(m_t-m_{t-h})/m_t <= this for `patience` evals.
+                       # Unset = the 08-22 decay-only rule, byte-identical. 0.003 = shipped sizing.
 RETENTION_PROBE_EVERY="" # P3': log cos(theta_t,theta_0) every N commits. 0/unset = off
 TRAINABLE_SCOPE=""     # S-I: adapters_head|adapters_only -- adapters_only freezes pre_classifier (56.7% of p)
 COMMIT_GATE=""         # S-C: var|n_target -- n_target sizes the pool from rho_t (aggregator); empty => code default var
@@ -257,6 +259,7 @@ while [[ $# -gt 0 ]]; do
                             B_MAX_POLICY="$2"; shift 2 ;;
     --eval-max-samples)     EVAL_MAX_SAMPLES="$2"; shift 2 ;;
     --saturation-stop)      SATURATION_STOP=1; shift ;;
+    --sat-stall-frac)       SAT_STALL_FRAC="$2"; shift 2 ;;
     --retention-probe-every) RETENTION_PROBE_EVERY="$2"; shift 2 ;;
     --trainable-scope)      TRAINABLE_SCOPE="$2"; shift 2 ;;
     --commit-gate)          case "$2" in var|n_target) ;; *) echo "ERROR: --commit-gate must be var|n_target (got '$2')" >&2; exit 2 ;; esac
@@ -461,7 +464,8 @@ LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
   B_MAX_PROBE_EVERY="$B_MAX_PROBE_EVERY" B_MAX_PROBE_N="$B_MAX_PROBE_N" \
   B_MAX_PROBE_PHIS="$B_MAX_PROBE_PHIS" \
   B_MAX_POLICY="$B_MAX_POLICY" \
-  SATURATION_STOP="$SATURATION_STOP" RETENTION_PROBE_EVERY="$RETENTION_PROBE_EVERY" \
+  SATURATION_STOP="$SATURATION_STOP" SAT_STALL_FRAC="$SAT_STALL_FRAC" \
+  RETENTION_PROBE_EVERY="$RETENTION_PROBE_EVERY" \
   EVAL_MAX_SAMPLES="$EVAL_MAX_SAMPLES" \
   TRAINABLE_SCOPE="$TRAINABLE_SCOPE" COMMIT_GATE="$COMMIT_GATE" GATE_SAFETY_S="$GATE_SAFETY_S" \
   GATE_RHO_REF="$GATE_RHO_REF" COS_GROUND_TRUTH_AUDIT="$COS_GROUND_TRUTH_AUDIT" \
@@ -519,6 +523,7 @@ B_MAX_PROBE_N = env("B_MAX_PROBE_N") or ""
 B_MAX_PROBE_PHIS = env("B_MAX_PROBE_PHIS") or ""
 B_MAX_POLICY = env("B_MAX_POLICY") or ""
 SATURATION_STOP = env("SATURATION_STOP") or ""
+SAT_STALL_FRAC = env("SAT_STALL_FRAC") or ""
 RETENTION_PROBE_EVERY = env("RETENTION_PROBE_EVERY") or ""
 EVAL_MAX_SAMPLES = env("EVAL_MAX_SAMPLES") or ""
 TRAINABLE_SCOPE = env("TRAINABLE_SCOPE") or ""
@@ -821,6 +826,10 @@ def patch(exp, run_key, variant, trace):
     # curve, never its level (§6.7). Needs phi_stop != off to have an action.
     if SATURATION_STOP:
         h["saturation_stop"] = True
+    # E': adds the "stopped going forwards" trigger beside the decay one. Reads
+    # only the curve -- no target, no chance level, no num_labels (buildplan §5.13).
+    if SAT_STALL_FRAC:
+        h["sat_stall_frac"] = float(SAT_STALL_FRAC)
     # P3': aggregator-only, one dot per strided commit.
     if RETENTION_PROBE_EVERY:
         h["retention_probe_every"] = int(RETENTION_PROBE_EVERY)
@@ -988,8 +997,12 @@ for trace in traces:
                 return _h.get(key, _cat.get(key, default))
 
             if _hp("commit_gate") == "n_target" and e0["aggregator"].get("agg_goal"):
+                # model_type matters: the adapter table is per model, and reading
+                # it DistilBERT-only priced a roberta-large arm at 9.4x too small
+                # a `p` and refused a valid config (2026-08-24).
                 _p_wc = dsreg.get(_hp("dataset") or "agnews").probe_dim(
-                    int(_hp("adapter_reduction_factor") or 16))
+                    int(_hp("adapter_reduction_factor") or 16),
+                    str(_hp("model_type") or "distilbert"))
                 # (c)/(d): sim's REAL-wall cap is sim_wall_ceiling_s (code default
                 # max_runtime_s*20); real mode has no such knob -- its outer safety
                 # is max_experiment_runtime_s (patch()'s own default, above).

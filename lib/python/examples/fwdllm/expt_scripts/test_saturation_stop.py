@@ -11,7 +11,11 @@ Checks (a) the streaming detector reproduces the replay's fire commits on N1-N3
 (d) it never fires on a still-rising curve,
 (e) it latches: once fired, later evals cannot un-fire it, and
 (f) the WIRING: the aggregator's own snapshot/eval/stop methods, in the order a
-    live run calls them.
+    live run calls them, and
+(g) ROW E' -- the stall trigger. Default off => every check above is unchanged.
+    On, it must fire on the two 08-24 curves the decay rule structurally cannot
+    stop (a plateau AT the running max never breaches GL), must still not fire on
+    a still-climbing control, and must report which trigger fired.
 """
 import json
 import os
@@ -39,17 +43,19 @@ def curve(tag):
         return [(int(c), float(a)) for c, _b, _l, a in json.load(fh)["acc_budget"]]
 
 
-def run(rows, warmup, horizon=None):
-    det = SaturationDetector(warmup, slope_horizon=horizon)
+def run(rows, warmup, horizon=None, stall=None):
+    det = SaturationDetector(warmup, slope_horizon=horizon, stall_frac=stall)
     smoothed, w = [], det.window
     accs = [a for _c, a in rows]
     for i, (c, a) in enumerate(rows):
         smoothed.append(sum(accs[max(0, i - w + 1):i + 1])
                         / len(accs[max(0, i - w + 1):i + 1]))
         if det.update(c, a):
+            run.why = det.fired_reason
             return det.fired_at, smoothed[-1] - max(
                 sum(accs[max(0, j - w + 1):j + 1]) / len(accs[max(0, j - w + 1):j + 1])
                 for j in range(len(accs)))
+    run.why = None
     return None, None
 
 
@@ -198,3 +204,57 @@ assert a._stop_fired is None and not a._work_done
 print("  saturation_stop off   : byte-identical, nothing fires")
 
 print("\nALL SATURATION-STOP CHECKS PASS")
+
+
+# ---------------------------------------------------------------------------
+# (g) ROW E' -- the stall trigger (buildplan §5.13, practice P4.17).
+print("\n  --- row E': the stall trigger")
+from examples.fwdllm.expts.saturation_stop import SAT_STALL_FRAC  # noqa: E402
+
+# g.1 DEFAULT OFF. Every fire commit above must be untouched with stall_frac=None,
+# which is what makes this an added trigger and not a changed rule.
+for ds, (want_commit, _l) in EXPECT.items():
+    assert run(curve(ds), tied, hor, stall=None)[0] == want_commit, ds
+print(f"  default off           : N1-N3 unchanged at "
+      f"{[EXPECT[d][0] for d in EXPECT]} -- E' adds a trigger, changes nothing")
+
+# g.2 THE DEFECT IT FIXES. GL only breaches once a run falls BELOW its own best,
+# so a curve that climbs and then sits flat AT its best never fires. Synthesised
+# to be exactly that case -- this is yelp-p and the s=1.0 arm in miniature.
+flat = [(c, 0.5 + 0.35 * min(1.0, c / 600.0)) for c in range(0, 2000, 2)]
+assert run(flat, tied, hor, stall=None)[0] is None, "decay rule must be blind here"
+fired, _ = run(flat, tied, hor, stall=SAT_STALL_FRAC)
+assert fired is not None and run.why == "stall", (fired, run.why)
+print(f"  plateau AT the best   : decay never fires; stall fires at {fired}")
+
+# g.3 It must NOT fire on a run that is merely climbing slowly -- the same gate
+# the progress term exists for, now applied to the new trigger.
+for tag in ("yahoo_control", "agnews_control", "yelp-p_control"):
+    rows = curve(tag)
+    accs = [a for _c, a in rows]
+    w = SaturationDetector(0).window
+    sm = [sum(accs[max(0, i - w + 1):i + 1]) / len(accs[max(0, i - w + 1):i + 1])
+          for i in range(len(accs))]
+    peak_commit = rows[max(range(len(sm)), key=lambda i: sm[i])][0]
+    f, _ = run(rows, tied, hor, stall=SAT_STALL_FRAC)
+    assert f is None or f >= peak_commit, (tag, f, peak_commit)
+    print(f"  {tag:<20} {'never fires' if f is None else f'fires at {f}'} (peak {peak_commit})")
+
+# g.4 A monotone rise still never fires, with the trigger on.
+det = SaturationDetector(0, stall_frac=SAT_STALL_FRAC)
+assert not any(det.update(c, 0.5 + c / 10000.0) for c in range(2000))
+print("  still rising          : never fires with the stall trigger on")
+
+# g.5 The reason is reported, and it latches with it.
+det = SaturationDetector(0, stall_frac=SAT_STALL_FRAC)
+for c in range(0, 4000, 2):
+    if det.update(c, 0.80):
+        break
+assert det.fired_reason == "stall", det.fired_reason
+print(f"  reason reported       : {det.fired_reason!r} at commit {det.fired_at}")
+
+# g.6 The constant is the SHIPPED one and nothing here re-fits it.
+assert SAT_STALL_FRAC == 0.003, SAT_STALL_FRAC
+print(f"  constant              : SAT_STALL_FRAC={SAT_STALL_FRAC} "
+      f"(sized on 11 curves, P4.17; plateau 0.002-0.004)")
+print("\n  ALL CHECKS PASS")

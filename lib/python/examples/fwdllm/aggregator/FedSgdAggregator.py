@@ -20,7 +20,7 @@ from examples.fwdllm.expts.bmax_probe import (
     PHI_GRID, b_max_from_knee, knee, noise_scale,
 )
 from examples.fwdllm.expts.saturation_stop import (
-    SAT_GL_THRESHOLD, SAT_PATIENCE, SaturationDetector,
+    SAT_GL_THRESHOLD, SAT_PATIENCE, SAT_STALL_FRAC, SaturationDetector,
     slope_horizon_commits, warmup_commits,
 )
 from flame.monitor.runtime import timer_decorator, FwdLLMStage
@@ -342,6 +342,12 @@ class FedSGDAggregator(TopAggregator):
         self._sat_stop = bool(
             getattr(self.args, "saturation_stop", False) or False
         )
+        # Row E'. The 08-22 rule fires only on DECAY, so a run that plateaus AT
+        # its own best is invisible to it -- 2 of the 4 runs on 2026-08-24 were
+        # (buildplan §5.13). `stall_frac` adds the "stopped going forwards" test.
+        # None => the 08-22 behaviour, byte-identical (§6.1).
+        _sf = getattr(self.args, "sat_stall_frac", None)
+        self._sat_stall_frac = None if _sf in (None, "", 0, "0") else float(_sf)
         self._sat_det = None
         self._eval_commit = 0
         # P3': cos(theta_t, theta_0) against 1/Phi. 0 = off, byte-identical.
@@ -382,12 +388,15 @@ class FedSGDAggregator(TopAggregator):
             self._sat_det = SaturationDetector(
                 warmup_commits(self._b_max_probe_every),
                 slope_horizon=slope_horizon_commits(self._b_max_probe_every),
+                stall_frac=self._sat_stall_frac,
             )
+            _stall = (f"STALL g<={self._sat_stall_frac} OR "
+                      if self._sat_stall_frac is not None else "")
             logger.info(
-                f"[SatStop] GL>{SAT_GL_THRESHOLD} for {SAT_PATIENCE} evals on an "
-                f"11-eval trailing mean, while not still rising over "
-                f"{self._sat_det.slope_horizon} commits; armed after commit "
-                f"{self._sat_det.warmup}"
+                f"[SatStop] {_stall}DECAY GL>{SAT_GL_THRESHOLD} while not still "
+                f"rising -- either for {SAT_PATIENCE} evals on an 11-eval trailing "
+                f"mean over {self._sat_det.slope_horizon} commits; armed after "
+                f"commit {self._sat_det.warmup}"
             )
         if self._b_max_probe_every:
             logger.info(
@@ -850,7 +859,11 @@ class FedSGDAggregator(TopAggregator):
         # The detector runs on the eval thread; this only reads its latch.
         _sat = getattr(self, "_sat_det", None)
         if _sat is not None and _sat.fired_at is not None:
-            reason = "saturation"
+            # "stall" and "decay" are both saturation; the word says WHICH test
+            # fired, which is the only thing distinguishing E' from the 08-22 rule
+            # in a log. Falls back to the old string when the trigger is off.
+            # getattr: a duck-typed detector need only carry `fired_at`.
+            reason = getattr(_sat, "fired_reason", None) or "saturation"
         elif math.exp(self._B) >= self._phi_stop_threshold:
             reason = "phi_fixed"
         elif (self._rho_schedule == "landing"
@@ -1588,8 +1601,12 @@ class FedSGDAggregator(TopAggregator):
             try:
                 acc = (out[0] or {}).get("acc")
                 if acc is not None and self._sat_det.update(self._eval_commit, acc):
+                    _g = self._sat_det.progress
+                    _why = getattr(self._sat_det, "fired_reason", None)
                     logger.warning(
-                        f"[SatStop] saturated at commit {self._sat_det.fired_at} "
+                        f"[SatStop] saturated{f' ({_why})' if _why else ''} at "
+                        f"commit {self._sat_det.fired_at} "
+                        f"g={'n/a' if _g is None else format(_g, '.5f')} "
                         f"acc={acc:.4f} best={self._sat_det.best:.4f} "
                         f"Phi={math.exp(self._B):.4g}"
                     )
