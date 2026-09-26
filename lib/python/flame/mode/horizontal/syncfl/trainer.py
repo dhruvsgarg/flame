@@ -47,7 +47,7 @@ from flame.optimizers import optimizer_provider
 from flame.privacies import privacy_provider
 from flame.registries import registry_provider
 from flame import telemetry
-from flame.telemetry.events import build_task_recv, build_task_send
+from flame.telemetry.events import EVENT_TASK_DISCARD, build_task_recv, build_task_send
 
 # TODO: (DG) torch is needed for asyncoort in oort_loss() function,
 # but need to comment / uncomment based on the backend used. If it is
@@ -132,6 +132,7 @@ class Trainer(Role, metaclass=ABCMeta):
         # for tracking trainer round progress and checking before
         # sending updates
         self._updates_returned_upto_round = 0
+        self._responded_version: dict = {}  # task -> last model version answered (FX-D9)
         self._trainer_online_channel_status = True
 
         self.task_to_perform = "train"
@@ -233,43 +234,29 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.debug(f"New message received for trainer_id {self.trainer_id}")
 
+        # FX-D9: drop an already-answered request (same task, version <=); before any state change.
+        _req_task = msg.get(MessageType.TASK_TO_PERFORM, self.task_to_perform)
+        _req_ver = msg.get(MessageType.ROUND)
+        _answered = getattr(self, "_responded_version", {}).get(_req_task)
+        if (MessageType.EOT not in msg and _req_ver is not None and _answered is not None
+                and _req_ver <= _answered):
+            logger.info(
+                f"[TRAINER_TASK_DISCARD] trainer_id={self.trainer_id} task={_req_task} "
+                f"model_version={_req_ver} already answered up to {_answered}"
+            )
+            if telemetry.is_enabled():
+                telemetry.emit(EVENT_TASK_DISCARD, round=int(_req_ver), trainer_id=str(self.trainer_id),
+                               task_to_perform=_req_task, answered_upto=int(_answered))
+            channel._selector.ordered_updates_recv_ends.append(end)
+            channel.cleanup_recvd_ends()
+            return
+
         if MessageType.ROUND in msg:
             prev_round = self._round
             self._round = msg[MessageType.ROUND]
             logger.debug(f"[TRAINER_FETCH] Updated round from {prev_round} to {self._round} for trainer_id {self.trainer_id}")
 
         if MessageType.WEIGHTS in msg:
-            # Before proceeding, check if this model version is newer
-            # than previously processed NOTE: The condition could have
-            # been round <= updates_retuned. But there are scenarios
-            # where the channel.leave() executes before the aggregator
-            # processes the weight update. Hence, with <= condition,
-            # the trainer would never make progress. We allow to
-            # trainer to re-train for == round condition if the
-            # message was dropped.
-            if self._round <= self._updates_returned_upto_round:
-                logger.info(
-                    f"[TRAINER_FETCH_ABORT] Fetch weights aborted for given model version "
-                    f"{self._round} while trainer_id {self.trainer_id} has "
-                    f"already sent updates "
-                    f"upto round: {self._updates_returned_upto_round}"
-                )
-
-                # Received old data but still allow aggregator cleanup
-                # state to occur so as to receive the next update
-                logger.debug(
-                    f"Cleaning up recvd ends for trainer_id {self.trainer_id}"
-                    f" to allow fetch from aggregator "
-                    "again and returning from function"
-                )
-                channel._selector.ordered_updates_recv_ends.append(end)
-                logger.debug(
-                    f"After appending {end} to ordered_updates_recv_ends: "
-                    f"{channel._selector.ordered_updates_recv_ends}"
-                )
-                channel.cleanup_recvd_ends()
-                return
-
             # Load the model onto GPU if self.model is None:
             # self._load_model_onto_gpu()
 
@@ -534,6 +521,9 @@ class Trainer(Role, metaclass=ABCMeta):
             )
             telemetry.emit(ev, **fields)
 
+        if not hasattr(self, "_responded_version"):
+            self._responded_version = {}
+        self._responded_version[self.task_to_perform] = self._round
         if self.task_to_perform == "train":
             # To allow the trainer to participate in eval AND train in
             # the same round, we set _updates_returned_upto_round only

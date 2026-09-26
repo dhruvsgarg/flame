@@ -103,6 +103,10 @@ class TopAggregator(SyncTopAgg):
         # otherwise lacks. See examples/MIGRATING_TO_LAUNCHER.md's
         # aggregator gotchas (§2).
         self._agg_cycle_contributed_ends: set = set()
+        # FX-D9: (end, model_version) of every committed train update; an update's identity.
+        self._contributed_versions: set = set()
+        # FX-D9: (end, task) -> [version, dispatch_ts, retries at that version] of its last dispatch.
+        self._task_ledger: dict = {}
 
         self._updates_in_queue = 0
         self._updates_recevied = {}
@@ -176,9 +180,9 @@ class TopAggregator(SyncTopAgg):
         # recv_fifo path. Supersedes staggered re-dispatch, so the two aren't enabled together.
         _drain = getattr(self.config.hyperparameters, "sim_sct_ordered_drain", False)
         self._sim_sct_ordered_drain: bool = bool(_drain) if _drain is not None else False
-        # Cold-start gate (FX-D4); default off.
-        self._sim_cold_start_gate: bool = bool(
-            getattr(self.config.hyperparameters, "sim_cold_start_gate", False))
+        # Cold-start gate (FX-D4); default on (FX-D8).
+        _csg = getattr(self.config.hyperparameters, "sim_cold_start_gate", True)
+        self._sim_cold_start_gate: bool = True if _csg is None else bool(_csg)
         _cap = getattr(self.config.hyperparameters, "sim_gate_compute_cap_s", 10.0)
         self._sim_gate_compute_cap_s: float = float(_cap) if _cap is not None else 10.0
         self._sim_dispatch_wall: dict = {}  # end -> wall time of its last sim dispatch
@@ -249,6 +253,17 @@ class TopAggregator(SyncTopAgg):
         return {
             e for e, w in getattr(self, "_sim_dispatch_wall", {}).items()
             if e not in self._sim_known_delay_s and now - w <= cap
+            and not self._sim_buffer.has(e) and e not in self._sim_committed
+        }
+
+    def _sim_cold_start_busy(self) -> set:
+        """First-contact ends dispatched and not yet buffered/committed/freed. Uncapped: busy
+        (slot identity) lasts until commit; the wall cap only bounds the commit-order wait."""
+        if not getattr(self, "_sim_cold_start_gate", False):
+            return set()
+        return {
+            e for e in getattr(self, "_sim_dispatch_wall", {})
+            if e not in self._sim_known_delay_s
             and not self._sim_buffer.has(e) and e not in self._sim_committed
         }
 
@@ -456,9 +471,8 @@ class TopAggregator(SyncTopAgg):
             if _min_future_exp is not None:
                 _advance_to = max(_now, min(sct, _min_future_exp + _SIM_ORDER_SLACK_S))
         self._advance_sim_clock(_advance_to)
-        # Re-dispatch tell: captured BEFORE the add, since _sim_committed already
-        # holds _end on a second commit. Drives the past-dating source breakdown.
-        _was_recommit = _end in self._sim_committed
+        # Re-dispatch tell (second contribution this cycle). Drives the past-dating source breakdown.
+        _was_recommit = _end in getattr(self, "_agg_cycle_contributed_ends", ())
         if not hasattr(self, "_sim_commit_count"):
             self._sim_commit_count = {}
         self._sim_commit_count[_end] = self._sim_commit_count.get(_end, 0) + 1
@@ -689,10 +703,13 @@ class TopAggregator(SyncTopAgg):
                 f"agg_current_version={self._round}"
             )
 
-            if end in self._agg_cycle_contributed_ends:
+            if not hasattr(self, "_contributed_versions"):  # bare-init guard (tests)
+                self._contributed_versions = set()
+            if (end, msg[MessageType.MODEL_VERSION]) in self._contributed_versions:
                 logger.info(
-                    f"Duplicate contribution from {end} for agg cycle "
-                    f"round={self._round} (agg_goal_cnt={self._agg_goal_cnt}); "
+                    f"Duplicate contribution from {end} for model_version="
+                    f"{msg[MessageType.MODEL_VERSION]} (round={self._round}, "
+                    f"agg_goal_cnt={self._agg_goal_cnt}); "
                     f"ignoring."
                 )
                 channel.cleanup_provided_ends(end)
@@ -1075,6 +1092,7 @@ class TopAggregator(SyncTopAgg):
             _cs0 = time.time()
             self.cache[end] = tres   # in-memory (MemCache)
             self._agg_cycle_contributed_ends.add(end)
+            self._contributed_versions.add((end, version))
             self._agg_cache_store_s = time.time() - _cs0
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
             update_staleness_val = self._round - tres.version
@@ -1366,6 +1384,38 @@ class TopAggregator(SyncTopAgg):
         ts = float(q.popleft())
         return min(ts, float(round_now)) if round_now is not None else ts
 
+    def _record_task_dispatch(self, end, task) -> None:
+        """FX-D9 ledger: a re-dispatch at the same version counts as a retry."""
+        ledger = getattr(self, "_task_ledger", None)
+        if ledger is None:
+            ledger = self._task_ledger = {}
+        prev = ledger.get((end, task))
+        retries = prev[2] + 1 if prev is not None and prev[0] == self._round else 0
+        ledger[(end, task)] = [self._round, self._avail_now(), retries]
+
+    def _task_version_keys(self, channel, task) -> dict:
+        """FX-D9: ends already given `task` at this model version, for the selector's no-repeat
+        guard. A timeout-reclaimed end is released per task_retry_policy; nothing else is."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        policy = str(getattr(hp, "task_retry_policy", None) or "none").lower()
+        if policy not in ("none", "fixed", "exponential"):
+            raise ValueError(f"task_retry_policy={policy!r}: expected none|fixed|exponential")
+        base = float(getattr(hp, "task_retry_backoff_s", None) or 0.0)
+        timed_out = dict(getattr(getattr(channel, "_selector", None), "timed_out_at", None) or {})
+        timed_out.update(getattr(self, "_task_timeout_at", None) or {})
+        now = self._avail_now()
+        keys = {}
+        for (end, t), (ver, disp_ts, retries) in getattr(self, "_task_ledger", {}).items():
+            if t != task or ver != self._round:
+                continue
+            to = timed_out.get(end)
+            if policy != "none" and to is not None and to >= disp_ts:
+                wait = base * (2 ** retries if policy == "exponential" else 1)
+                if now - to >= wait:
+                    continue  # retry allowed
+            keys[end] = self.version_key
+        return keys
+
     def _sim_hold_busy_slots(self, channel) -> None:
         """Hold BUSY trainers (a compute task still outstanding) in their
         concurrency slot until their update commits.
@@ -1391,7 +1441,7 @@ class TopAggregator(SyncTopAgg):
         held = pending_in_buffer
         if self._inflight_residence:
             held = pending_in_buffer | set(self._sim_inflight_expected)
-            held |= self._sim_cold_start_inflight()  # first-contact ends are busy too
+            held |= self._sim_cold_start_busy()  # first-contact ends are busy too
 
         # Release trainers no longer busy (committed, or — residence off — dispatched
         # with no buffer entry yet); they refill next round's fill pass.
@@ -1512,23 +1562,19 @@ class TopAggregator(SyncTopAgg):
         # cifar10 has no intra-round iteration axis). No trainer_version_keys
         # passed, so the selector's no-repeat guard stays inert, as before.
         ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
-                            agg_version_key=self.version_key)
+                            agg_version_key=self.version_key,
+                            trainer_version_keys=self._task_version_keys(channel, task_to_perform))
         if not ends:
             logger.debug(f"No trainers found for tag {tag}")
             return
 
-        # Filter to ends we actually dispatch to (skip already-sent-this-round).
+        # Same-version re-tasking is excluded at selection (FX-D9); a post-selection skip here
+        # would leave the selector holding a slot nothing was sent to.
         _send_ends = []
         for end in list(ends):
             if end in self._track_trainer_version_duration_s:
                 sent_versions = self._track_trainer_version_duration_s[end]["sent_wts_version_ts"]
                 recv_versions = self._track_trainer_version_duration_s[end]["recv_wts_version_ts"]
-                if self._round in sent_versions and self._round not in recv_versions:
-                    logger.warning(
-                        f"[SELECTION_CHECK] Skipping {end}: already sent model_version={self._round} "
-                        f"but no response received yet."
-                    )
-                    continue
                 unreturned = [v for v in sent_versions if v not in recv_versions]
                 if unreturned:
                     logger.warning(
@@ -1582,6 +1628,7 @@ class TopAggregator(SyncTopAgg):
             channel.set_end_property(
                 end, PROP_ROUND_START_TIME, (self._round, datetime.now())
             )
+            self._record_task_dispatch(end, task_to_perform)
             if self.simulated:
                 _sst = _end_send_ts[end]
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sst)
@@ -1590,6 +1637,8 @@ class TopAggregator(SyncTopAgg):
                 _delay = self._sim_known_delay_s.get(end)
                 if _delay is not None:
                     self._sim_inflight_expected[end] = _sst + _delay
+                # A new outstanding update: ingest it even if `end` committed earlier this cycle (FX-D6).
+                getattr(self, "_sim_committed", set()).discard(end)
                 if not hasattr(self, "_sim_dispatch_wall"):  # bare-init guard (tests)
                     self._sim_dispatch_wall = {}
                 self._sim_dispatch_wall[end] = time.time()
@@ -1660,7 +1709,7 @@ class TopAggregator(SyncTopAgg):
         loop = Loop(loop_check_fn=lambda: self._work_done)
         # create a loop object for asyncfl to manage concurrency as
         # well as aggregation goal
-        asyncfl_loop = Loop(loop_check_fn=lambda: self._agg_goal_cnt == self._agg_goal)
+        asyncfl_loop = Loop(loop_check_fn=self._async_inner_loop_done)
 
         # chain them again with new tasklets introduced in this class
         (
@@ -1681,6 +1730,12 @@ class TopAggregator(SyncTopAgg):
             >> c.tasklet("save_params")
             >> c.tasklet("save_model")
         )
+
+    def _async_inner_loop_done(self) -> bool:
+        """Inner loop exit: agg goal met, or the run is stopping (starvation stop, sim
+        wall ceiling) -- else a stop set mid-cycle spins until the goal (as fwdllm)."""
+        self._check_sim_wall_ceiling()
+        return self._agg_goal_cnt == self._agg_goal or self._work_done
 
     @classmethod
     def get_func_tags(cls) -> list[str]:

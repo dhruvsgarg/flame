@@ -440,7 +440,7 @@ def code_version(run_dir: str) -> tuple:
 # `LAUNCHER_INVOKES` is the ONLY reason an `expt_scripts` python file can reach a
 # run; everything else there is analysis run after the fact. `test_replicate_floor`
 # re-derives this list from `run_sequential.sh` so it cannot drift silently.
-LAUNCHER_INVOKES = ("profile_sim_charges", "extract_sanity_checks")
+LAUNCHER_INVOKES = ("profile_sim_charges", "extract_sanity_checks", "pretokenize_dataset")
 # A charge profile reaches a SIM run and nothing else -- real never reads one
 # (§F-1). So it is run-affecting for sim legs and inert for real ones, and
 # splitting a real-side group on a re-profile grades a file that leg never

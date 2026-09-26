@@ -79,6 +79,26 @@ class TestIdempotentWithinRound:
         assert set(r1.keys()) == set(r2.keys())
 
 
+class TestRecvNeverSelects:
+    """FX-D6: a RECV ends() call with no SEND this round must not fabricate in-flight picks."""
+
+    def test_recv_without_send_returns_empty(self, feddance, make_ends, channel_props):
+        from flame.channel import KEY_CH_STATE, VAL_CH_STATE_RECV
+        ends = make_ends(count=10, prefix="t")
+        props = {**channel_props, KEY_CH_STATE: VAL_CH_STATE_RECV}
+        assert feddance.select(ends, props, trainer_unavail_list=[], task_to_perform="train") == {}
+        assert feddance.selected_ends == set()
+
+    def test_recv_after_send_returns_this_rounds_picks(self, feddance, make_ends, channel_props):
+        from flame.channel import KEY_CH_STATE, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
+        ends = make_ends(count=10, prefix="t")
+        sent = feddance.select(ends, {**channel_props, KEY_CH_STATE: VAL_CH_STATE_SEND},
+                               trainer_unavail_list=[], task_to_perform="train")
+        recv = feddance.select(ends, {**channel_props, KEY_CH_STATE: VAL_CH_STATE_RECV},
+                               trainer_unavail_list=[], task_to_perform="train")
+        assert set(recv) == set(sent) and sent
+
+
 class TestOnUpdateReceived:
     def test_captures_loss_and_accuracy(self, feddance):
         feddance.on_update_received(

@@ -157,6 +157,21 @@ class TestRealChannelDrainReady:
         finally:
             ch._backend.stop()
 
+    def test_end_leaving_mid_poll_is_skipped(self):
+        # A trainer departing while drain_ready polls must not KeyError the aggregator.
+        ch = _make_channel(["a", "b"])
+        try:
+            def _leave_then_send():
+                time.sleep(0.05)
+                ch._backend.loop().call_soon_threadsafe(ch._ends.pop, "a")
+                time.sleep(0.05)
+                _put(ch, "b", {MessageType.SIM_COMPLETION_TS: 4.0})
+            threading.Thread(target=_leave_then_send, daemon=True).start()
+            out = ch.drain_ready(["a", "b"], timeout=1.0)
+            assert [md[0] for _, md in out] == ["b"]
+        finally:
+            ch._backend.stop()
+
     def test_timeout_none_returns_immediately_does_not_block(self):
         # drain_ready(timeout=None) returns immediately (poll guard falsy),
         # unlike recv_fifo, which genuinely blocks.
@@ -379,3 +394,27 @@ class TestColdStartGate:
         ch = _TimedChannel({"A", "B"}, [("A", 100.0, 0), ("B", 50.0, 3)])
         _msg, (end, _) = agg._sim_recv_min(ch, ["A", "B"])
         assert end == "A"  # B is known: earlier_stuck owns it, not the cold-start gate
+
+
+class TestRedispatchWithinCycle:
+    """FX-D6: an end re-dispatched after committing in the same agg cycle stays ingestible."""
+
+    @pytest.fixture(autouse=True)
+    def _identity_weights(self, monkeypatch):
+        import flame.mode.horizontal.asyncfl.top_aggregator as async_mod
+        monkeypatch.setattr(async_mod, "weights_to_device", lambda w, d: w)
+
+    def test_second_update_commits_instead_of_stranding(self):
+        from tests.mode.test_async_staggered_redispatch import _DistChannel, _make_dist_agg
+        agg = _make_dist_agg(_DistChannel(["e1"]), staggered=False)
+        agg._sim_buffer = SimReorderBuffer()
+        agg._sim_committed = set()
+        agg._sim_pending_commit = set()
+        agg._sim_sct_ordered_drain = True
+        rx = FakeChannel({"e1"}, [("e1", 101.0)])
+        _msg, (end, _) = agg._sim_recv_min(rx, ["e1"])
+        assert end == "e1" and "e1" in agg._sim_committed
+        agg._distribute_weights("tag", "train")  # same cycle: _sim_committed not reset
+        rx._queue.append(("e1", 103.0))
+        msg, (end, _) = agg._sim_recv_min(rx, ["e1"])
+        assert end == "e1" and msg[MessageType.SIM_COMPLETION_TS] == 103.0

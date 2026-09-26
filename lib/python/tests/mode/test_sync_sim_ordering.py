@@ -546,6 +546,39 @@ class TestStaleRejectRecordsPropsIntegration:
         assert "slow" not in sel.selected_ends
 
 
+class TestAllStaleRoundFreesSlotsAndKeepsVersion(TestStaleRejectRecordsPropsIntegration):
+    """FX-D10 (P3 oort_star 0397): every consumed update stale-rejected -> optimizer returns
+    None; the slot must still be freed and the model version must not advance."""
+
+    def test_slot_freed_and_round_not_committed(self, monkeypatch):
+        import flame.mode.horizontal.oort.top_aggregator as oort_mod
+        monkeypatch.setattr(oort_mod.time, "sleep", lambda s: None)
+        agg, chan, sel = self._build_agg()
+        agg.optimizer.do = lambda weights, cache, total=0: None if not cache else weights
+        agg._aggregate_weights("tag")
+        assert "slow" not in sel.selected_ends
+        assert agg._round_committed is False
+
+
+class TestRoundAdvancesOnlyOnCommit:
+    def _agg(self, committed):
+        from types import SimpleNamespace
+        a = _ConcreteSyncAgg.__new__(_ConcreteSyncAgg)
+        a._round, a._rounds, a.simulated, a._work_done = 4, 100, False, False
+        a.config = SimpleNamespace(hyperparameters=SimpleNamespace(max_experiment_runtime_s=None))
+        a.cm = SimpleNamespace(get_by_tag=lambda t: None)
+        a.dist_tag = "d"
+        if committed is not None:
+            a._round_committed = committed
+        return a
+
+    @pytest.mark.parametrize("committed,want", [(True, 5), (False, 4), (None, 5)])
+    def test_increment(self, committed, want):
+        a = self._agg(committed)
+        a.increment_round()
+        assert a._round == want
+
+
 # --- U6 real barrier-anchored visibility lag (feddance/fedavg sync barrier) ----
 from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator as _SyncAgg
 

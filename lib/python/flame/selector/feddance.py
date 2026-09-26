@@ -19,6 +19,7 @@ from collections import deque
 from typing import Optional
 
 from flame.availability.feddance_predictor import FedDancePredictor
+from flame.channel import KEY_CH_STATE, VAL_CH_STATE_RECV
 from flame.common.typing import Scalar
 from flame.end import End
 from flame.selector import AbstractSelector, SelectorReturnType
@@ -103,6 +104,8 @@ class FedDanceSelector(AbstractSelector):
 
         if round_num <= self.round and len(self.newly_selected_this_round) != 0:
             return {key: None for key in self.newly_selected_this_round}
+        if channel_props.get(KEY_CH_STATE) == VAL_CH_STATE_RECV:
+            return {}  # no SEND this round (starvation return): nothing to receive (FX-D6)
 
         unavail = set(trainer_unavail_list or [])
 

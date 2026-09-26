@@ -312,6 +312,10 @@ class AsyncSelectorBase(AbstractSelector):
             )
             del self.all_selected[end]
             selected_ends.discard(end)
+            # FX-D9: timeout stamp, read by the aggregator's task_retry_policy.
+            if not hasattr(self, "timed_out_at"):
+                self.timed_out_at = {}
+            self.timed_out_at[end] = now_s
             # R1: also drop it from the pending-commit set (sim's
             # `_sim_pending_commit` or real's `_per_agg_trainer_list`), or it
             # stays un-re-pickable forever despite the reclaim above.

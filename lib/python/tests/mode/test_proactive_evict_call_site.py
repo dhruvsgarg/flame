@@ -241,3 +241,42 @@ class TestProactiveEvictBothModes:
         agg._distribute_weights("tag", "train")
         assert calls["evict"] == 1
         assert calls["abandon"] == 1
+
+
+class TestOortResidenceStarvationWakeup:
+    """FX-D6: at syn_0, residence-held (still computing) trainers are the only wake-up;
+    the starvation branch must advance to the earliest held sct, not stop the run."""
+
+    def _agg(self, residence):
+        from sortedcontainers import SortedDict
+        from flame.sim import SimReorderBuffer, VirtualClock
+
+        ch = _DistChannel(["e1", "e2"])
+        calls, evict_spy, abandon_spy = _spies()
+        agg = _make_oort_agg(ch, simulated=True, evict_spy=evict_spy, abandon_spy=abandon_spy)
+        agg.config.selector.kwargs["aggr_num"] = 2  # desired 2 > eligible 1
+        agg.config.hyperparameters.inflight_residence = residence
+        agg.config.hyperparameters.max_experiment_runtime_s = 300
+        agg._vclock = VirtualClock()
+        agg._vclock.advance(10.0)
+        agg._avail_now = lambda: agg._vclock.now
+        agg.trainer_event_dict = {e: SortedDict({0.0: "AVL_TRAIN"}) for e in ("e1", "e2")}
+        agg._trace_has_avl_eval = False
+        agg.pending_withheld = {}
+        agg._work_done = False
+        agg._sim_buffer = SimReorderBuffer()
+        agg._sim_buffer.add("e1", 50.0)  # still computing at vclock 10
+        return agg
+
+    def test_advances_to_held_sct(self):
+        agg = self._agg(residence=True)
+        agg._distribute_weights("tag", "train")
+        assert agg._vclock.now == 50.0 and agg._work_done is False
+
+    def test_residence_off_keeps_legacy_stop(self):
+        from sortedcontainers import SortedDict
+
+        agg = self._agg(residence=False)
+        agg.trainer_event_dict["e2"] = SortedDict({0.0: "UN_AVL"})  # starve, never recovers
+        agg._distribute_weights("tag", "train")
+        assert agg._vclock.now == 10.0 and agg._work_done is True

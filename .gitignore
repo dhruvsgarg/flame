@@ -112,6 +112,7 @@ specs/*
 # Experiment run outputs (telemetry / plots / logs) — generated, not source
 lib/python/examples/async_cifar10/experiments/run_*/
 lib/python/examples/async_cifar10/experiments/smoke_*/
+lib/python/examples/async_cifar10/experiments/campaign_*/
 lib/python/examples/fmow/experiments/run_*/
 lib/python/examples/fmow/experiments/smoke_*/
 lib/python/examples/fwdllm/experiments/

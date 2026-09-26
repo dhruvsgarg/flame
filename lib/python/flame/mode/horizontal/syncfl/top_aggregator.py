@@ -549,6 +549,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
     def _aggregate_weights(self, tag: str) -> None:
         logger.debug("Agg weights inside top_aggregator syncfl")
+        self._round_committed = False  # FX-D10
         channel = self.cm.get_by_tag(tag)
         if not channel:
             return
@@ -804,7 +805,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 self._barrier_anchored_lags(_real_round_durs)
             )
 
-        if telemetry.is_enabled():
+        if telemetry.is_enabled() and self.cache:  # empty cache = no round (FX-D10)
             agg_obs = {}
             for eid in list(self.cache):
                 _rd = channel.get_end_property(end_id=eid, key=PROP_CLIENT_TASK_TRAIN_DURATION)
@@ -859,6 +860,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
         self.weights = global_weights
         self._update_model()
+        self._round_committed = True
 
         if channel._selector is not None:
             channel._selector.on_round_completed(channel._ends, self._round)
@@ -1173,6 +1175,33 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             logger.debug("saving metrics done")
         self.metrics = dict()
 
+    def _check_sim_wall_ceiling(self) -> None:
+        """Sim failsafe (iii-b): stop once wall time exceeds sim_wall_ceiling_s (else
+        max_wall_runtime_s, else 1x max_experiment_runtime_s). Round-independent,
+        so a run that stops advancing rounds still hits it."""
+        _max_rt = getattr(self.config.hyperparameters, "max_experiment_runtime_s", None)
+        if not (self.simulated and _max_rt) or self._work_done:
+            return
+        _sim_wall_ceil = getattr(self.config.hyperparameters, "sim_wall_ceiling_s", None)
+        _max_wall_rt = getattr(self.config.hyperparameters, "max_wall_runtime_s", None)
+        _wall_elapsed = time.time() - self.agg_start_time_ts
+        if _sim_wall_ceil:
+            _failsafe_s = float(_sim_wall_ceil)
+        elif _max_wall_rt:
+            _failsafe_s = float(_max_wall_rt)
+        else:
+            _failsafe_s = float(_max_rt)  # default: 1× virtual budget
+        if _wall_elapsed > _failsafe_s:
+            logger.warning(
+                f"[SIM_WALL_CEILING] sim_wall_ceiling={_failsafe_s:.0f}s reached "
+                f"(wall_elapsed={_wall_elapsed:.0f}s, "
+                f"vclock={self._vclock.now:.0f}s, max_experiment_runtime_s={_max_rt}s) "
+                f"at round {self._round}. "
+                f"Sim is slower than real — investigate per-round parity (bug iii-c). "
+                f"Stopping run."
+            )
+            self._work_done = True
+
     def increment_round(self):
         """Increment the round counter."""
         self._trainers_used_in_curr_round = []
@@ -1181,8 +1210,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             f"cleared self._trainers_used_in_curr_round "
             f"{self._trainers_used_in_curr_round}"
         )
-        self._round += 1
-        self._work_done = self._round > self._rounds
+        # FX-D10: version counts committed aggregations (None = stack doesn't track it).
+        if getattr(self, "_round_committed", None) is not False:
+            self._round += 1
+            self._work_done = self._round > self._rounds
 
         # Optional runtime cap: stop once max_experiment_runtime_s has elapsed.
         # Clock interpretation is mode-dependent:
@@ -1191,13 +1222,6 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # This lets one YAML value govern both modes: the same 1800s means
         # "30 wall-clock minutes" in real and "1800 virtual seconds" in sim.
         _max_rt = getattr(self.config.hyperparameters, "max_experiment_runtime_s", None)
-        # sim_wall_ceiling_s: tight wall-clock guard for sim mode (iii-b).
-        # A sim run should finish in <= max_experiment_runtime_s wall (it runs
-        # faster than real when the parity bug is fixed). Default = 1× budget.
-        # Separate from max_wall_runtime_s (kept for backward compat, used as
-        # secondary fallback if sim_wall_ceiling_s is absent).
-        _sim_wall_ceil = getattr(self.config.hyperparameters, "sim_wall_ceiling_s", None)
-        _max_wall_rt = getattr(self.config.hyperparameters, "max_wall_runtime_s", None)
         if _max_rt:
             if self.simulated and hasattr(self, "_vclock"):
                 elapsed = float(self._vclock.now)
@@ -1211,27 +1235,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                     f"at round {self._round}; stopping run."
                 )
                 self._work_done = True
-            # Failsafe: in sim mode the primary check is virtual time.
-            # sim_wall_ceiling_s (default = max_experiment_runtime_s × 1) caps the
-            # wall time a sim may use — well-behaved sim finishes in ≤ real wall time.
-            if self.simulated and not self._work_done:
-                _wall_elapsed = time.time() - self.agg_start_time_ts
-                if _sim_wall_ceil:
-                    _failsafe_s = float(_sim_wall_ceil)
-                elif _max_wall_rt:
-                    _failsafe_s = float(_max_wall_rt)
-                else:
-                    _failsafe_s = float(_max_rt)  # default: 1× virtual budget
-                if _wall_elapsed > _failsafe_s:
-                    logger.warning(
-                        f"[SIM_WALL_CEILING] sim_wall_ceiling={_failsafe_s:.0f}s reached "
-                        f"(wall_elapsed={_wall_elapsed:.0f}s, "
-                        f"vclock={self._vclock.now:.0f}s, max_experiment_runtime_s={_max_rt}s) "
-                        f"at round {self._round}. "
-                        f"Sim is slower than real — investigate per-round parity (bug iii-c). "
-                        f"Stopping run."
-                    )
-                    self._work_done = True
+            self._check_sim_wall_ceiling()
 
         # Periodic virtual-clock progress log (sim mode only).
         # sim_rate = vclock/wall (virtual-seconds per wall-second; < 1 when sim is slow).

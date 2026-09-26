@@ -182,8 +182,13 @@ class TestHoldColdStart:
         self._agg(gate=False)._sim_hold_busy_slots(ch)
         assert _slot(ch) == {"k1"}  # the overlap hole the gate closes
 
-    def test_past_compute_cap_is_released(self):
+    def test_past_compute_cap_stays_busy_until_freed(self):
+        # FX-D8: the wall cap bounds the commit-order wait only; busy lasts until commit/free.
         ch = _HoldChannel(["k1", "new1"], selected=["k1", "new1"],
                           all_selected={"k1": 1.0, "new1": 1.0})
-        self._agg(gate=True, dispatched_ago=60.0)._sim_hold_busy_slots(ch)
+        agg = self._agg(gate=True, dispatched_ago=60.0)
+        agg._sim_hold_busy_slots(ch)
+        assert _slot(ch) == {"k1", "new1"}
+        agg._avail_drop_inflight("new1")  # abandon / evict frees it
+        agg._sim_hold_busy_slots(ch)
         assert _slot(ch) == {"k1"}

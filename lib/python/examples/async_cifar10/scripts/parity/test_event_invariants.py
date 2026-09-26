@@ -42,7 +42,8 @@ def _clean_run():
                                                     T2: {"in_pending_commit": False, "avl_state": "AVL_TRAIN"}}})
         for t in (T1, T2):
             ts += 0.1
-            agg.append({"event": "dispatch", "task": "train", "end_id": t, "ts": ts, "sim_send_ts": vclock})
+            agg.append({"event": "dispatch", "task": "train", "end_id": t, "ts": ts, "sim_send_ts": vclock,
+                        "round": rnd})
             trainers[t] += [
                 {"event": "task_recv", "round": rnd, "ts": ts + 0.01},
                 {"event": "trainer_round", "round": rnd, "ts": ts + 0.02, "task_to_perform": "train",
@@ -126,6 +127,17 @@ def test_ev9_chosen_while_pending_fails(tmp_path):
     assert _status(_write_run(tmp_path, agg, tr), "EV9_selector_state") == "FAIL"
 
 
+def test_ev9_carried_unavail_straggler_passes(tmp_path):
+    agg, tr = _clean_run()
+    agg[0]["per_trainer"][T2]["avl_state"] = "UN_AVL"
+    agg[0].update(exploit_ids=[T1], explore_ids=[])  # T2 is carried in flight, not a new pick
+    run = _write_run(tmp_path, agg, tr, hp={"avail_select_filter": True})
+    assert _status(run, "EV9_selector_state") == "PASS"
+    agg[0]["exploit_ids"] = [T1, T2]
+    assert _status(_write_run(tmp_path / "b", agg, tr, hp={"avail_select_filter": True}),
+                   "EV9_selector_state") == "FAIL"
+
+
 def test_ev10_redispatch_while_outstanding_fails(tmp_path):
     agg, tr = _clean_run()
     d = next(e for e in agg if e["event"] == "dispatch")
@@ -157,3 +169,49 @@ def test_broken_check_is_error_not_crash(tmp_path, monkeypatch):
     monkeypatch.setattr(ev, "CHECKS", [boom])
     r = ev.check_run(_write_run(tmp_path, *_clean_run()))
     assert r["checks"]["boom"]["status"] == "ERROR" and not r["passed"]
+
+
+@pytest.mark.parametrize("hp,want", [({}, "FAIL"),
+                                     ({"trackTrainerAvail": {"trace": "syn_50"}}, "WARN"),
+                                     ({"client_notify": {"trace": "mobiperf_3st"}}, "WARN")])
+def test_ev13_stall_is_warn_off_syn_0_for_either_trace_key(tmp_path, hp, want):
+    agg, tr = _clean_run()
+    [e for e in agg if e["event"] == "agg_round"][-1]["ts"] += 1000
+    assert _status(_write_run(tmp_path, agg, tr, hp=hp), "EV13_no_stall") == want
+
+
+def test_ev15_duplicate_send_fails(tmp_path):
+    agg, tr = _clean_run()
+    tr[T1].append({"event": "task_send", "round": 1, "ts": 99, "task_to_perform": "train"})
+    assert _status(_write_run(tmp_path, agg, tr), "EV15_one_task_per_version") == "FAIL"
+
+
+def test_ev15_same_version_redispatch_needs_timeout_and_policy(tmp_path):
+    agg, tr = _clean_run()
+    d = [e for e in agg if e["event"] == "dispatch"][-1]
+    agg.append({"event": "abandon_timeout", "end_id": d["end_id"], "reason": "abandon_90s_vclock", "ts": 50})
+    agg.append({**d, "ts": 51})
+    assert _status(_write_run(tmp_path, agg, tr), "EV15_one_task_per_version") == "FAIL"
+    run = _write_run(tmp_path / "b", agg, tr, hp={"task_retry_policy": "fixed"})
+    assert _status(run, "EV15_one_task_per_version") == "PASS"
+
+
+def test_ev15_duplicate_commit_fails(tmp_path):
+    agg, tr = _clean_run()
+    c = next(e for e in agg if e["event"] == "agg_round")
+    agg.append({**c, "ts": 98, "round": c["round"] + 1, "staleness": [1]})  # same (end, version)
+    assert _status(_write_run(tmp_path, agg, tr), "EV15_one_task_per_version") == "FAIL"
+
+
+def test_ev7_sync_empty_round_fails(tmp_path):
+    agg, tr = _clean_run()
+    c = [e for e in agg if e["event"] == "agg_round"][-1]
+    agg.append({**c, "ts": 99, "round": 3, "contributing_trainers": [], "staleness": []})
+    assert _status(_write_run(tmp_path, agg, tr, optimizer="fedavg"), "EV7_agg_goal_cadence") == "FAIL"
+
+
+def test_ev5_sends_after_last_commit_are_not_lost(tmp_path):
+    agg, tr = _clean_run()
+    for r in (8, 9):  # two uploads cut off by the stop
+        tr[T1].append({"event": "task_send", "round": r, "ts": 1e9 + r, "task_to_perform": "train"})
+    assert _status(_write_run(tmp_path, agg, tr), "EV5_commit_accounting") == "PASS"

@@ -484,6 +484,9 @@ class ClientAvailability:
         ie = getattr(self, "_sim_inflight_expected", None)
         if isinstance(ie, dict):
             ie.pop(end, None)
+        dw = getattr(self, "_sim_dispatch_wall", None)  # cold-start busy set (FX-D8)
+        if isinstance(dw, dict):
+            dw.pop(end, None)
 
     def _avail_inflight_ends(self, channel) -> set:
         """In-flight (slot-ledger) ends, generic over both selector shapes."""
@@ -687,6 +690,9 @@ class ClientAvailability:
             self.free_stalled_slot(
                 channel, end, reason="abandon_90s_vclock", sct=now
             )
+            if not hasattr(self, "_task_timeout_at"):
+                self._task_timeout_at = {}
+            self._task_timeout_at[end] = now  # FX-D9: timeout, not an aware eviction
             logger.info(
                 f"[ABANDON_90S] end={str(end)[-4:]} sim_send_ts={float(sst):.1f} "
                 f"vclock={now:.1f} age={now - float(sst):.1f}s"
@@ -771,5 +777,5 @@ class ClientAvailability:
                 candidates.append(nxt)
         pw = getattr(self, "pending_withheld", None)
         if pw:
-            candidates.extend(pw.values())
+            candidates.extend(ts for ts in pw.values() if ts > now)  # a due entry is no wake-up
         return min(candidates) if candidates else None

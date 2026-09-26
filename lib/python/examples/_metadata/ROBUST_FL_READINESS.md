@@ -132,10 +132,10 @@ measurement edits rather than fixes; instrumentation growing faster than bugs cl
 **Test inventory** (generated, never hand-kept): `python lib/python/examples/scripts/test_inventory.py
 [--ref <git-ref>]`: test counts per suite and track.
 
-**Full pytest** (three suites; the checker's tests live beside it):
+**Full pytest** (four suites, = campaign P0; the checker's and trainer's tests live beside them):
 ```bash
 conda run -n dg_flame python -m pytest lib/python/tests lib/python/examples/fwdllm/expt_scripts \
-    lib/python/examples/async_cifar10/scripts/parity -q
+    lib/python/examples/async_cifar10/scripts/parity lib/python/examples/async_cifar10/trainer/pytorch -q -n auto
 ```
 
 ---
@@ -197,6 +197,10 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
   parser). A string `"True"` fixture hid a bool-coerced flag that dropped every real withheld update.
 - **L25 `[measure]`** Grade a single run against the paradigm's own ground truth (registry D, lifecycle
   order, cadence), not just against its twin: two runs can agree on a bug the absolute check catches.
+- **L26 `[ops]`** Every inner composer loop exits on `_work_done`, and the sim wall ceiling is checked
+  without a round advance; else a mid-cycle stop spins until the goal (fwdllm had it, asyncfl lacked it).
+- **L27 `[measure]`** Grade update loss by version identity (a sent version never committed while a later one
+  of that trainer did), never by send−commit counts: the stop cuts off queued tails (FX-D11).
 - **L22 `[measure]`** A borderline EXACT rung can become the root once an upstream DIST rung converges with
   run length. That is the next rung surfacing, not a regression.
 
@@ -231,17 +235,12 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
 Cross-cutting work that serves both tracks. Felix drives it now (R12); each item must leave FluxTune
 green (R10).
 
-- **S1 · No-GPU local harness · wip (Felix half landed, FX-N1; campaign re-run pending).** Landed:
-  stub/tiny_cpu modes, `FLAME_TRACE_TIME_SCALE` (compresses availability traces by the delay factor, all
-  consumers via `load_trace`), the single-run event checker (EV0-EV14), `harness_suite.sh`,
-  `harness_campaign.sh`. Harness caveat: absolute timeouts (90s abandon, join) are not scaled. A trainer with two switchable modes. *Stub mode:* no training, seeded
-  fake weights/grads, seeded synthetic per-trainer loss/utility, honours `D`. *Tiny-CPU mode:* a small model
-  actually trained on CPU. Real MQTT and sim paths, n ≤ 50, pair piped through the parity checker; a pytest
-  marker runs a short smoke per baseline. Plus a **scenario library** of fast deterministic cases:
-  syn_0/20/50 and 3-state traces, scarcity/starvation, stragglers, mid-flight drop-off, eval hand, lap/round
-  boundaries. *Exit:* all six Felix baselines + the fwdllm family (stub) run end-to-end real+sim locally, and
-  each of three injected bugs (drop the one-in-flight hold; order by `sct` instead of delivery time;
-  freeze the trainer clock) is caught by an INV/EXACT rung.
+- **S1 · No-GPU local harness · wip (Felix half landed; campaign 3 = FX-N1).** Landed: stub/tiny_cpu modes
+  (`flame/harness.py`), `FLAME_TRACE_TIME_SCALE`, event checker EV0-EV15, `harness_suite.sh`,
+  `harness_campaign.sh`. Caveat: absolute timeouts (90s abandon, join) are not scaled. Still to do: a fwdllm-family
+  stub, a scenario library (scarcity, stragglers, mid-flight drop, lap boundaries). *Exit:* all six Felix
+  baselines + the fwdllm family run real+sim locally, and three injected bugs (drop the one-in-flight hold; order
+  by `sct` not delivery time; freeze the trainer clock) are each caught by an INV/EXACT rung.
 - **S2 · One parity pipeline for every example · todo.** Generalise fwdllm's `run_parity.py` /
   `replicate_floor.py` / `profile_sim_charges.py` / preflight so they drive async_cifar10 and google_speech
   too: auto-pairing on flag + length + commit, two-sided floors, median-over-real-legs, `--control`,
@@ -271,6 +270,10 @@ green (R10).
   JSONL, pipeline the serial per-commit aggregator path. Every perf commit re-runs the harness and a 90-min
   parity pass on all baselines.
 
+- **S8 · Port one-task-per-version to FluxTune · todo (after Felix campaign 3).** FX-D9 landed it for asyncfl +
+  the syncfl trainer: dispatch ledger → selector no-repeat guard, `taskRetryPolicy`, (trainer, version) commit
+  dedup, trainer-side discard, EV15. fwdllm today holds committers to cycle close and keys its trainer guard on
+  `_updates_returned_upto_round`; unify on the same rule and checker. *Exit:* EV15 green on the fwdllm board.
 - **S7 · Logging hygiene, all examples and baselines · todo.** Replace every `print` with the module logger at
   the right level; the default file log carries INFO+ that matters, DEBUG is opt-in. Fold into S6 (diag
   gating) but land per example, harness-green each time.

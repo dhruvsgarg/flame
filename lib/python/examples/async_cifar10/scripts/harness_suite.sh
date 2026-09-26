@@ -18,7 +18,7 @@
 # Usage:
 #   harness_suite.sh [--harness stub] [--baselines 'felix oort ...'] [--traces 'syn_0 syn_50']
 #                    [--runtime-s 300] [--num-trainers 60] [--delay-factor 4] [--trace-scale 4]
-#                    [--timeout-buffer-s 300] [--output-dir DIR] [--agg-hp 'k=v ...'] [--dry-run]
+#                    [--timeout-buffer-s 300] [--output-dir DIR] [--agg-hp 'k=v ...'] [--trainer-hp 'k=v ...'] [--dry-run]
 # ============================================================================
 set -uo pipefail
 
@@ -42,6 +42,7 @@ CHECK_TIMEOUT_S=900
 OUT="$EX_DIR/experiments/harness_$(date +%Y%m%d_%H%M%S)"
 DRY_RUN=0
 AGG_HP=""
+TRAINER_HP=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -55,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --timeout-buffer-s) TIMEOUT_BUFFER_S="$2"; shift 2 ;;
     --output-dir)       OUT="$2"; shift 2 ;;
     --agg-hp)           AGG_HP="$2"; shift 2 ;;
+    --trainer-hp)       TRAINER_HP="$2"; shift 2 ;;
     --dry-run)          DRY_RUN=1; shift ;;
     -h|--help)          sed -n 2,23p "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -72,7 +74,7 @@ mkdir -p "$OUT/parity" "$OUT/events" "$OUT/runs"
 SUMMARY_TSV="$OUT/summary.tsv"
 printf 'trace\tbaseline\tev_real\tev_sim\tparity\tscore\tn_fail\troots\tcrash_lines\ttimeout\treal_dir\tsim_dir\n' > "$SUMMARY_TSV"
 echo "harness=$HARNESS baselines='$BASELINES' traces='$TRACES' runtime_s=$RUNTIME_S n=$NUM_TRAINERS" \
-     "delay_factor=$DELAY_FACTOR trace_scale=${TRACE_SCALE:-1} agg_hp='$AGG_HP' env=$FLAME_CONDA_ENV" \
+     "delay_factor=$DELAY_FACTOR trace_scale=${TRACE_SCALE:-1} agg_hp='$AGG_HP' trainer_hp='$TRAINER_HP' env=$FLAME_CONDA_ENV" \
   | tee "$OUT/suite.cfg"
 
 _find_dir() {  # $1 marker, $2 baseline, $3 real|sim -- newest matching run dir after the marker
@@ -108,6 +110,7 @@ for trace in $TRACES; do
     args=(--baselines "$b" --mode both --runtime-s "$RUNTIME_S" --num-trainers "$NUM_TRAINERS"
           --harness "$HARNESS" --delay-factor "$DELAY_FACTOR" --trace "$trace")
     [ -n "$AGG_HP" ] && args+=(--agg-hp "$AGG_HP")
+    [ -n "$TRAINER_HP" ] && args+=(--trainer-hp "$TRAINER_HP")
     echo "=== [$(date '+%F %T')] [$label] debug_run.sh ${args[*]}"
     if [ "$DRY_RUN" = 1 ]; then
       env FLAME_LOGDIR="$run_dir" bash "$SCRIPT_DIR/debug_run.sh" "${args[@]}" --dry-run > "$run_dir/shell.log" 2>&1

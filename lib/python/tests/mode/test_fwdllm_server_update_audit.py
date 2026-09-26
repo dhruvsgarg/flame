@@ -13,6 +13,7 @@ otherwise identical legs (simulate_fwdllm.md §D-45). And with it off, the
 applied update must be byte-identical to what the un-instrumented code applied.
 """
 import math
+import re
 from pathlib import Path
 
 import pytest
@@ -32,11 +33,13 @@ class TestGatedOff:
         is a wall cost on every run."""
         src = _AGG.read_text(encoding="utf-8")
         body = src.split("def _apply_weighted_update", 1)[1].split("\n    def ", 1)[0]
-        for line in body.splitlines():
-            if ".pow(2).sum()" in line:
-                assert line.startswith(" " * 20), (
-                    "norm accumulation must sit under `if _audit:`, not at loop level"
-                )
+        audit = [ln for ln in body.splitlines()
+                 if re.match(r"\s*_[dw] = float\(.*\.pow\(2\)\.sum\(\)", ln)]
+        assert len(audit) >= 4  # _d/_w in both the raw_sgd and trust_ratio branches
+        for line in audit:
+            assert line.startswith(" " * 20), (
+                "norm accumulation must sit under `if _audit:`, not at loop level"
+            )
 
     def test_emit_is_a_separate_never_faulting_helper(self):
         src = _AGG.read_text(encoding="utf-8")

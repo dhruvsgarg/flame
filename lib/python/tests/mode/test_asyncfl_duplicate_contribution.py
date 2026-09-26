@@ -127,6 +127,16 @@ class TestAsyncflDuplicateContributionGuard:
         assert agg._agg_goal_cnt == 1
         assert channel.cleaned_up == ["t1"]
 
+    def test_same_end_different_versions_both_counted(self):
+        # FX-D9: identity is (end, version); P2 fedbuff real lost 0417's v160 behind its v159.
+        agg = _make_agg()
+        channel = _FakeChannel([_msg_for("t1", version=1), _msg_for("t1", version=2)])
+        agg.cm = SimpleNamespace(get_by_tag=lambda tag: channel)
+        agg._round = 2
+        agg._aggregate_weights("param-channel")
+        agg._aggregate_weights("param-channel")
+        assert agg._agg_goal_cnt == 2 and channel.cleaned_up == []
+
     def test_different_ends_both_counted(self):
         agg = _make_agg()
         channel = _FakeChannel([_msg_for("t1"), _msg_for("t2")])

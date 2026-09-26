@@ -18,6 +18,9 @@ import torch.utils.data as data_utils
 MODES = ("off", "stub", "tiny_cpu")
 DEFAULT_SAMPLES = {"stub": 32, "tiny_cpu": 64}
 DEFAULT_TEST_SAMPLES = {"stub": 256, "tiny_cpu": 512}
+# Stub GPU-compute charge: lognormal fit to run_20260702_125743 real_gpu_time_s (p10/50/90 .026/.10/.25s).
+DEFAULT_STUB_COMPUTE_MEDIAN_S = 0.10
+DEFAULT_STUB_COMPUTE_SIGMA = 0.9
 
 
 def _hp(hp, *keys, default=None):
@@ -75,3 +78,18 @@ def synthetic_dataset(n: int, shape, num_classes: int, seed_key, label_skew: flo
 def prefix_indices(indices, k: int):
     """First k of a trainer's split (deterministic real-data subset)."""
     return list(indices)[: max(1, k)]
+
+
+def stub_compute_s(hp, mode: str, key) -> float:
+    """Seeded modeled GPU-compute seconds for one stub task (0 outside stub). Same key ->
+    same draw in both legs, so real/sim phase rungs compare one distribution."""
+    if mode != "stub":
+        return 0.0
+    median = float(_hp(hp, "harness_stub_compute_median_s", "harnessStubComputeMedianS",
+                       default=DEFAULT_STUB_COMPUTE_MEDIAN_S))
+    sigma = float(_hp(hp, "harness_stub_compute_sigma", "harnessStubComputeSigma",
+                      default=DEFAULT_STUB_COMPUTE_SIGMA))
+    if median <= 0:
+        return 0.0
+    g = torch.Generator().manual_seed(stable_seed(("stub_compute", key)))
+    return float(median * torch.exp(sigma * torch.randn(1, generator=g)).item())

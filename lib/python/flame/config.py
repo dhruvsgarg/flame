@@ -250,14 +250,17 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_sct_ordered_drain: t.Optional[bool] = Field(
         alias="simSctOrderedDrain", default=False
     )
-    # Async sim: first-contact trainers (no known delay) gate commits and hold their slot.
+    # Async sim: first-contact trainers (no known delay) gate commits and hold their slot (FX-D8: on).
     sim_cold_start_gate: t.Optional[bool] = Field(
-        alias="simColdStartGate", default=False
+        alias="simColdStartGate", default=True
     )
     # Wall seconds a dispatched task may still be computing (cold-start / phantom gates); None = 10.
     sim_gate_compute_cap_s: t.Optional[float] = Field(
         alias="simGateComputeCapSeconds", default=None
     )
+    # FX-D9: same-version re-task only after a timeout: none | fixed (backoff) | exponential (backoff*2**retries).
+    task_retry_policy: t.Optional[str] = Field(alias="taskRetryPolicy", default="none")
+    task_retry_backoff_s: t.Optional[float] = Field(alias="taskRetryBackoffSeconds", default=30.0)
     # Real-only settle sleep before selection (hit 2x/commit). 0 = compute-bound.
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1

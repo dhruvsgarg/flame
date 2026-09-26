@@ -190,6 +190,7 @@ class TopAggregator(BaseTopAggregator):
         This method is overriden from one in horizontal top aggregator
         (..top_aggregator).
         """
+        self._round_committed = False  # FX-D10
         channel = self.cm.get_by_tag(tag)
         if not channel:
             return
@@ -502,7 +503,8 @@ class TopAggregator(BaseTopAggregator):
         # and otherwise emits none). Emit BEFORE optimizer.do, which consumes the
         # cache. Read from the cached TrainResult objects (staleness / stat_utility
         # / round_duration), and agg_observed_s = aggregator-side send->recv wall.
-        if telemetry.is_enabled():
+        # An empty cache commits nothing, so it is no round (FX-D10).
+        if telemetry.is_enabled() and self.cache:
             contrib = list(self.cache)
             stale, sutil, speeds, agg_obs, vis_lag = [], [], [], {}, []
             for eid in contrib:
@@ -548,6 +550,8 @@ class TopAggregator(BaseTopAggregator):
         self._agg_cache_store_s = 0.0
         if global_weights is None:
             logger.debug("failed model aggregation")
+            # Consumed (stale-rejected) updates still free their slots (FX-D10).
+            channel.cleanup_recvd_ends()
             time.sleep(1)
             return
 
@@ -561,6 +565,7 @@ class TopAggregator(BaseTopAggregator):
 
         # update model with global weights
         self._update_model()
+        self._round_committed = True
 
         # CRITICAL: Clean up trainers who returned updates, freeing them from in-flight set
         # This must happen immediately after aggregation to prevent race condition where
@@ -777,6 +782,14 @@ class TopAggregator(BaseTopAggregator):
         if num_eligible < _starv_threshold:
             if self.simulated and self.trainer_event_dict is not None:
                 _nxt = self._next_avail_vclock()
+                # A [SIM_RESIDENCE]-held trainer frees up at its sct: also a wake-up (FX-D6).
+                _buf = getattr(self, "_sim_buffer", None)
+                if _buf is not None and getattr(
+                    self.config.hyperparameters, "inflight_residence", False
+                ):
+                    _rel = _buf.next_after(self._vclock.now)
+                    if _rel is not None:
+                        _nxt = _rel if _nxt is None else min(_nxt, _rel)
                 _budget = float(
                     getattr(self.config.hyperparameters, "max_experiment_runtime_s", float("inf"))
                 )

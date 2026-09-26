@@ -9,7 +9,7 @@
 # Needs a node with NO other FL workers of yours (the suite's timeout path kills
 # stray trainers/aggregators by name). CPU only; GPUs untouched.
 #
-#   bash lib/python/examples/async_cifar10/scripts/harness_campaign.sh [--deadline-h 5.5] [--phases 'P0 P1 ...'] [--dry-run]
+#   bash lib/python/examples/async_cifar10/scripts/harness_campaign.sh [--deadline-h 7] [--phases 'P0 P1 ...'] [--dry-run]
 #
 # Read afterwards: experiments/campaign_<launch ts>/SUMMARY.txt (+ per-phase dirs).
 # ============================================================================
@@ -21,8 +21,8 @@ LIB_DIR="$(cd "$EX_DIR/../.." && pwd)"
 export FLAME_CONDA_ENV="${FLAME_CONDA_ENV:-dg_flame}"
 export EXPT_AUTOCLEAN=1   # a timed-out leg's leftovers must not block the next launch
 
-DEADLINE_H=5.5
-PHASES="P0 P1 P2 P3 P4 P5 P6"
+DEADLINE_H=7
+PHASES="P0 P1 P2 P3 P4 P5 P6 P7 P7o P8"
 DRY=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -54,17 +54,24 @@ if [ -n "$STRAYS" ] && [ -z "$DRY" ]; then
 fi
 
 B6="felix fedbuff oort oort_star refl feddance"
-# id | est min | harness_suite args
+# FX-N13 streaming smoke: data fully unlocked by 240 sim-s; P7o adds the online oracle (FX-D11).
+STREAM_T="--trainer-hp 'data_streaming={\"enabled\":\"True\",\"full_data_available_after_s\":240}'"
+STREAM_A="data_streaming={\"enabled\":\"True\",\"full_data_available_after_s\":240} checkpoint={\"enabled\":\"True\",\"every_n_rounds\":10}"
+ORACLE_A="oracle_utility_injection={\"enabled\":\"True\",\"alpha\":0.1,\"num_trainers\":300,\"sample_size\":64}"
+# id | est min (observed, run 2) | harness_suite args
 PHASE_TABLE=(
-  "P1|50|--baselines '$B6' --traces syn_0 --runtime-s 300"
+  "P1|65|--baselines '$B6' --traces syn_0 --runtime-s 300"
   "P2|75|--baselines '$B6' --traces syn_50 --runtime-s 450 --trace-scale 4"
-  "P3|75|--baselines '$B6' --traces mobiperf_3st --runtime-s 450 --trace-scale 4"
-  "P4|17|--baselines 'felix fedbuff' --traces syn_0 --runtime-s 300 --agg-hp 'simColdStartGate=true'"
+  "P3|90|--baselines '$B6' --traces mobiperf_3st --runtime-s 450 --trace-scale 4"
+  "P4|20|--baselines 'felix fedbuff' --traces syn_0 --runtime-s 300 --agg-hp 'simColdStartGate=false'"
   "P5|25|--baselines 'felix refl' --traces syn_20 --runtime-s 450 --trace-scale 4"
-  "P6|17|--harness tiny_cpu --baselines 'felix oort' --traces syn_0 --runtime-s 300"
+  "P6|25|--harness tiny_cpu --baselines 'felix oort' --traces syn_0 --runtime-s 300"
+  "P7|15|--harness tiny_cpu --baselines felix --traces syn_0 --runtime-s 300 $STREAM_T --agg-hp '$STREAM_A'"
+  "P7o|15|--harness tiny_cpu --baselines felix --traces syn_0 --runtime-s 300 $STREAM_T --agg-hp '$STREAM_A $ORACLE_A'"
+  "P8|25|--baselines fedbuff --traces syn_50 --runtime-s 450 --trace-scale 4 --agg-hp 'taskRetryPolicy=exponential taskRetryBackoffSeconds=10'"
 )
 echo "campaign root: $ROOT  host=$(hostname)  deadline=${DEADLINE_H}h  phases='$PHASES'  commit=$(git -C "$LIB_DIR" rev-parse --short HEAD)$(git -C "$LIB_DIR" diff --quiet || echo '+dirty')"
-echo "P0 pytest ~15m | P1 syn_0 x6 ~50m | P2 syn_50 x6 ~75m | P3 mobiperf_3st x6 ~75m | P4 cold-start A/B ~17m | P5 syn_20 ~25m | P6 tiny_cpu ~17m"
+echo "P0 pytest ~5m | P1 syn_0 x6 ~65m | P2 syn_50 x6 ~75m | P3 mobiperf_3st x6 ~90m | P4 cold-start OFF control ~20m | P5 syn_20 ~25m | P6 tiny_cpu ~25m | P7/P7o streaming (+oracle) ~30m | P8 retry policy ~25m"
 
 _elapsed() { echo $(( $(date +%s) - T0 )); }
 _want() { [[ " $PHASES " == *" $1 "* ]]; }

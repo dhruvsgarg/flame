@@ -50,6 +50,7 @@ ALPHA=""               # empty = use the parity config's dirichlet_alpha (0.1); 
 HARNESS=""             # stub | tiny_cpu: no-GPU local harness (flame/harness.py); empty = production path
 DELAY_FACTOR=""        # trainingDelayFactor: divides every trainer's D (both modes); empty = unscaled
 AGG_HP=""              # --agg-hp 'k=v k2=v2': extra aggregator hyperparameters (A/B a sim flag)
+TRAINER_HP=""          # --trainer-hp 'k=v ...': extra trainer config_overrides hyperparameters (YAML/JSON values)
 DRY_RUN=0              # --dry-run: show the pre-flight table + checks, generate cfg, DON'T launch
 SHOW_ALL=0             # --show-all: expand tier ③ + list passing checks
 STRICT=0               # --strict: a BLOCKING pre-flight check aborts (default: warn + continue, so
@@ -82,6 +83,7 @@ usage() {
   echo "  --delay-factor        divide every trainer's modeled delay D by this (both modes), e.g. 4"
   echo "                        for short local real legs."
   echo "  --agg-hp              'k=v ...' extra aggregator hyperparameters, e.g. 'simColdStartGate=true'."
+  echo "  --trainer-hp          'k=v ...' extra trainer hyperparameters (JSON values, no spaces)."
   echo "  --alpha               Dirichlet alpha override (default: parity config's 0.1). Supported"
   echo "                        values have an n300 split: 0.1 / 1.0 / 10.0 / 100.0 (100=homogeneous)."
   echo "                        When set, the split lookup uses the n300 partition for that alpha."
@@ -110,6 +112,7 @@ if [ "${1:-}" = "smoke" ]; then
       --harness)   HARNESS="$2"; shift 2 ;;
       --delay-factor) DELAY_FACTOR="$2"; shift 2 ;;
       --agg-hp)    AGG_HP="$2"; shift 2 ;;
+      --trainer-hp) TRAINER_HP="$2"; shift 2 ;;
       --dry-run)   DRY_RUN=1; shift ;;
       --show-all)  SHOW_ALL=1; shift ;;
       --strict)    STRICT=1; shift ;;
@@ -132,6 +135,7 @@ else
       --harness)             HARNESS="$2"; shift 2 ;;
       --delay-factor)        DELAY_FACTOR="$2"; shift 2 ;;
       --agg-hp)              AGG_HP="$2"; shift 2 ;;
+      --trainer-hp)          TRAINER_HP="$2"; shift 2 ;;
       --dry-run)             DRY_RUN=1; shift ;;
       --show-all)            SHOW_ALL=1; shift ;;
       --strict)              STRICT=1; shift ;;
@@ -328,6 +332,10 @@ for e_src in cfg.get("experiments", []):
         for kv in os.environ.get("AGG_HP", "").split():
             k, v = kv.split("=", 1)
             h[k] = yaml.safe_load(v)
+        _thp = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
+        for kv in os.environ.get("TRAINER_HP", "").split():
+            k, v = kv.split("=", 1)
+            _thp[k] = yaml.safe_load(v)
         e["aggregator"]["config_overrides"]["job"]["id"] = e["name"]
         kept.append(e)
 
@@ -477,7 +485,7 @@ if [ "$SMOKE" = "1" ]; then
   # Clear any stale config from a previous invocation so a no-match run is
   # skipped (not silently re-running a leftover config).
   rm -f "$cfg"
-  HARNESS="$HARNESS" DELAY_FACTOR="$DELAY_FACTOR" AGG_HP="$AGG_HP" make_debug_yaml "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "" "$ALPHA"
+  HARNESS="$HARNESS" DELAY_FACTOR="$DELAY_FACTOR" AGG_HP="$AGG_HP" TRAINER_HP="$TRAINER_HP" make_debug_yaml "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "" "$ALPHA"
   if [ -f "$cfg" ]; then
     _n=$(_count_exps "$cfg")
     cifar_preflight "$cfg"; gate_or_continue $?
@@ -503,7 +511,7 @@ cfg="$LOGDIR/debug_run.yaml"
 # Clear any stale config so a no-match run is skipped (not silently re-running
 # a previous baseline's leftover config).
 rm -f "$cfg"
-HARNESS="$HARNESS" DELAY_FACTOR="$DELAY_FACTOR" AGG_HP="$AGG_HP" make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "$NUM_TRAINERS" "$ALPHA"
+HARNESS="$HARNESS" DELAY_FACTOR="$DELAY_FACTOR" AGG_HP="$AGG_HP" TRAINER_HP="$TRAINER_HP" make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "$NUM_TRAINERS" "$ALPHA"
 
 if [ ! -f "$cfg" ]; then
   echo "No experiments matched for baselines='$BASELINES'. Nothing to run."

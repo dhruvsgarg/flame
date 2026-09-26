@@ -88,6 +88,10 @@ class SimReorderBuffer:
         out of the eligible pool until ``vclock >= sct``."""
         return {e for e, (sct, _) in self._items.items() if sct > ts}
 
+    def next_after(self, ts: float) -> Optional[float]:
+        """Earliest completion time still in the future (> ``ts``); ``None`` if none."""
+        return min((sct for sct, _ in self._items.values() if sct > ts), default=None)
+
     def pop_min(self) -> Optional[tuple[str, float, Any]]:
         """Remove and return ``(end_id, sim_completion_ts, payload)`` with the
         smallest completion time (ties by end id). ``None`` if empty."""

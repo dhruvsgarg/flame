@@ -32,6 +32,8 @@ import torch
 import torch.nn as nn
 import yaml
 
+from flame import harness
+
 logger = logging.getLogger(__name__)
 
 CIFAR_MEAN = (0.4914, 0.4822, 0.4465)
@@ -98,7 +100,11 @@ class OracleUtilityProvider:
         self.rate_jitter = float(stg.get("rate_jitter", 0.0) or 0.0)
         self.min_visible = int(stg.get("min_visible", 1) or 1)
         self.data_root = data_root
+        # Harness: rebuild the data the trainer holds (trainer load_data).
+        self.harness_mode = harness.harness_mode(hp) if hp is not None else "off"
+        self.harness_k = harness.harness_samples(hp, self.harness_mode) if hp is not None else 0
         self._table = None        # task_id -> {arrival_global_idx, total, onset_s, span_s}
+        self._memo = {}           # task_id -> (model_version, visible, util, acc)
         self._imgs = self._targets = None
         if self.enabled:
             logger.info(
@@ -137,16 +143,24 @@ class OracleUtilityProvider:
                 continue
             tid = str(info["task_id"])
             idx = list(splits[tkey])
+            if self.harness_mode == "tiny_cpu":
+                idx = harness.prefix_indices(idx, self.harness_k)
+            n = min(len(idx), self.harness_k) if self.harness_mode == "stub" else len(idx)
             seed = int(hashlib.sha256(tid.encode()).hexdigest(), 16) % (2 ** 31)
-            order = torch.randperm(len(idx), generator=torch.Generator().manual_seed(seed))
-            gidx = torch.tensor(idx, dtype=torch.long)[order]
+            order = torch.randperm(n, generator=torch.Generator().manual_seed(seed))
+            local = None
+            if self.harness_mode == "stub":
+                local = harness.synthetic_dataset(n, (3, 32, 32), 10, seed_key=tid).tensors
+                gidx = order  # positions into this trainer's own synthetic pool
+            else:
+                gidx = torch.tensor(idx, dtype=torch.long)[order]
             if self.stg_on:
                 onset, span = _stagger_params(tid, self.onset_max_s,
                                               self.full_after_s, self.rate_jitter)
             else:
                 onset, span = 0.0, self.full_after_s
-            table[tid] = {"arrival_global_idx": gidx, "total": len(idx),
-                          "onset_s": onset, "span_s": span}
+            table[tid] = {"arrival_global_idx": gidx, "total": n,
+                          "onset_s": onset, "span_s": span, "local": local}
         return table
 
     def _build_pool(self):
@@ -160,7 +174,8 @@ class OracleUtilityProvider:
     def _ensure(self, alpha, num_trainers):
         if self._table is None:
             self._table = self._build_table(alpha, num_trainers)
-            self._imgs, self._targets = self._build_pool()
+            if self.harness_mode != "stub":
+                self._imgs, self._targets = self._build_pool()
             logger.info(f"[ORACLE_INJECT] table built: {len(self._table)} trainers")
 
     # --- per-round injection ------------------------------------------------
@@ -181,10 +196,18 @@ class OracleUtilityProvider:
                     continue
                 vis = _visible_count(sim_now, info["onset_s"], info["span_s"],
                                      info["total"], self.min_visible)
-                g = info["arrival_global_idx"][:vis]
-                util, acc = _oort_utility_acc(
-                    model, self._imgs[g], self._targets[g], norm_n=vis,
-                    device=device, sample_size=self.sample_size)
+                # True utility is a function of (model version, visible data) only.
+                ver = getattr(agg, "_round", None)
+                memo = self._memo.get(str(eid))
+                if memo is not None and memo[:2] == (ver, vis):
+                    util, acc = memo[2], memo[3]
+                else:
+                    g = info["arrival_global_idx"][:vis]
+                    imgs, targets = info["local"] or (self._imgs, self._targets)
+                    util, acc = _oort_utility_acc(
+                        model, imgs[g], targets[g], norm_n=vis,
+                        device=device, sample_size=self.sample_size)
+                    self._memo[str(eid)] = (ver, vis, util, acc)
                 channel.set_end_property(str(eid), PROP_STAT_UTILITY, util)
                 if self.inject_accuracy:
                     channel.set_end_property(str(eid), PROP_LOCAL_ACCURACY, acc)
@@ -210,4 +233,5 @@ class OracleInjectMixin:
         prov = getattr(self, "_oracle_util", None)
         if prov is None or not prov.enabled:
             return
-        prov.inject(self, channel, list(channel.ends() or []), task_to_perform)
+        # all_ends(): the candidate pool; ends() would run the selector (FX-T21).
+        prov.inject(self, channel, list(channel.all_ends() or []), task_to_perform)

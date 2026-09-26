@@ -52,3 +52,15 @@ def test_synthetic_dataset_is_label_skewed():
 def test_prefix_indices():
     assert harness.prefix_indices([5, 6, 7, 8], 2) == [5, 6]
     assert harness.prefix_indices([5], 0) == [5]
+
+
+def test_stub_compute_is_seeded_realistic_and_stub_only():
+    from types import SimpleNamespace
+    from flame import harness
+    hp = SimpleNamespace()
+    draws = [harness.stub_compute_s(hp, "stub", ("t", r)) for r in range(400)]
+    assert draws[:5] == [harness.stub_compute_s(hp, "stub", ("t", r)) for r in range(5)]
+    q = sorted(draws)
+    assert 0.015 < q[40] < 0.045 and 0.07 < q[200] < 0.14 and 0.17 < q[360] < 0.4  # GPU p10/50/90
+    assert harness.stub_compute_s(hp, "tiny_cpu", ("t", 1)) == 0.0
+    assert harness.stub_compute_s(SimpleNamespace(harness_stub_compute_median_s=0), "stub", 1) == 0.0

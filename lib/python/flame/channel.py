@@ -632,8 +632,9 @@ class Channel(object):
             def _sweep():
                 pulled = []
                 for end_id in live:
-                    while True:
-                        payload = self._ends[end_id].get_ready_nowait()
+                    end = self._ends.get(end_id)  # may have left during the poll
+                    while end is not None:
+                        payload = end.get_ready_nowait()
                         if payload is None:
                             break
                         pulled.append((end_id, payload))

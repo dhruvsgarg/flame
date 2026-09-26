@@ -48,40 +48,39 @@ on the launcher, no sim support.
 
 ## Next steps (persistent queue — top item is next)
 
-- **FX-N1 · Read the harness campaign (`experiments/campaign_<launch ts>/SUMMARY.txt`) · blocked: operator run.** Run 1
-  was void (pre-spawn GPU probe; aggregator `harness_mode` read before init; trainer cwd-relative LEO path; P0
-  import-time `sys.exit`) — all fixed; the 120s felix smoke now runs clean (real 13/13; sim EV5/EV10/EV11 = FX-N14). P1 syn_0 x6 · P2 syn_50 x6 · P3 mobiperf_3st x6 (first live 3-state run ever) · P4 simColdStartGate
-  A/B · P5 syn_20 · P6 tiny_cpu. Triage every EV FAIL as checker-gap vs bug (FX-D5 method); then the injected-
-  bug checks (parent S1 exit).
-- **FX-N14 · Sim one-in-flight leak under unavailability · todo.** EV10 on the stored Jul-2 syn_50 sims:
-  felix re-dispatched 6/8590 and fedbuff 2/8030 train tasks to a trainer whose update had ARRIVED but was not
-  yet committed; both updates commit later (0 at syn_0). Find the path that frees the slot between arrival and
-  commit when the trainer is withheld/evicted; the harness P2/P3 legs should reproduce it.
+- **FX-N1 · Run campaign 3 (`harness_campaign.sh`, P0-P8, ~7h), then read it · blocked: operator run.**
+  *Exit:* every EV FAIL triaged checker-gap vs bug; EV15 green everywhere; P3 felix/fedbuff reach the real leg;
+  P7/P7o commit with checkpoints and oracle injection; P8 re-dispatches only after a timeout. Then the
+  injected-bug checks (parent S1 exit).
+- **FX-N14 · Confirm one-in-flight holds off syn_0 with the gate on (now default) · blocked: FX-N1.**
+  *Exit:* P2/P3 felix/fedbuff sims show EV10 redispatch_while_outstanding = 0; P4 (gate off) stays the control.
+- **FX-N18 · Real asyncfl consumes an end's updates seconds late (`recv_fifo` streamer) · todo.** Smoke
+  `smoke_20260925_235128` real: 0407's v123/v124 sat in its rxq 11s ("already has active task") while 179 others
+  committed. fwdllm already runs `drain_ready` on its real path (`test_fwdllm_real_drain_ready.py`); port it to
+  asyncfl real behind a flag (R9, R12). *Exit:* real SEND_RECV_LAG queue_wait ≈ 0 at n=60 stub.
+- **FX-N19 · K4 overlap factor tolerance · todo.** Absolute 0.3 at ~25x in flight fails every harness pair;
+  it is labelled diagnostic. Make it relative (or DIAG) with the replicate floor as evidence (L12).
 - **FX-N15 · fedbuff sim diverges to NaN at syn_50 · todo.** Stored Jul-2 sim: test-loss 8.3 at round 550,
   NaN from 600 (EV14). Training health, not timing: check fedbuff's `agg_rate_conf` (`old`) staleness weight
   against the withheld-delivery staleness (~160) it now sees.
-- **FX-N16 · Trainer availability thread crashes at shutdown · todo.** `notify_trainer_avail` outlives the
-  channel (EV0 WARN, 6 per syn_50 run). Stop the thread on shutdown; then drop EV0's benign-signature case.
 - **FX-N2 · Parent S2 (parity pipeline) for async_cifar10 · todo.** *Exit:* re-grading the stored Jun 23-24
   pairs through the new pipeline reproduces the old scores to within the floor, or each difference is
   explained.
-- **FX-N3 · A/B `simColdStartGate` on the harness, then on felix · todo.** The flag closes the first-contact
-  blind spot in both the commit gate and the busy-slot hold (FX-D4). Harness: syn_0 felix + fedbuff, off vs
-  on; compare `cold_start_holds`, past-dating and R1 overlap. Promote into the felix/fedbuff parity YAML only
-  on evidence (R9). Remaining audit: one-instruction-per-version on async dispatch (simulate_fwdllm.md §F 25).
 - **FX-N4 · syn_0 cluster block, async first: felix, fedbuff · todo.** Real n=3 + sim n=3 at one length and
   commit → floors → grade. A 90-min block for mechanisms, then 3h for sign-off. *Exit:* INV/EXACT green,
   convergence inside the replicate band, DIST residuals common-mode.
 - **FX-N5 · syn_0 cluster block: oort, oort_star, refl, feddance · todo.** Same protocol. oort's open root:
   per-round `relative_change` of the exploited utility, binned by quartile, in both modes (don't touch the
   pacer). refl: confirm at 3h. *Exit:* as FX-N4.
-- **FX-N13 · Streaming motivation experiment (heterogeneous, α=0.1) · blocked: FX-N4, FX-N5 for felix, oort,
-  refl, feddance.** Show empirically that (a) per-trainer statistical utility changes over time as data
+- **FX-N13 · Streaming motivation experiment (heterogeneous, α=0.1) · wip (harness); sweep blocked: FX-N4,
+  FX-N5.** Show empirically that (a) per-trainer statistical utility changes over time as data
   streams in and is trained on, (b) an unaware aggregator mis-selects, and (c) one that tracks utility but
-  mis-estimates it still mis-selects. Code is on HEAD (per-baseline `*_oracle` injection, target-accuracy stop,
-  `scripts/run_felix_streaming.sh`, `oracle_misselection.py`, `felix_streaming_figures.py`); it has never been run.
-  Steps: local smoke (harness) → calibrate the streaming horizon → sweep → analyze. Exact design comes from the
-  operator before the sweep. *Exit:* utility-over-time and mis-selection figures for each baseline.
+  mis-estimates it still mis-selects. Harness smoke is wired (FX-D11: campaign P7 felix vs P7o felix+oracle,
+  tiny_cpu, 240s horizon). Next: run `oracle_misselection.py` + `felix_streaming_figures.py` on the P7/P7o dirs
+  (both still assume the full split: make them harness-aware like `oracle_utility.py`); move the arms from the
+  deprecated `run_felix_streaming.sh`/`gen_n50_experiment.py` onto the launcher (S3); calibrate the horizon;
+  sweep. Exact design comes from the operator before the sweep. *Exit:* utility-over-time and mis-selection
+  figures for each baseline.
 - **FX-N6 · Unavailability design re-audit · todo.** Keep v1 semantics; check them against the fwdllm
   invariants (FX-N3b), logical-budget grading and the drain primitives. Record decisions in
   UNAVAILABILITY_DESIGN.md; any semantic change needs operator sign-off. *Exit:* one audit table (item ·
@@ -145,10 +144,22 @@ on the launcher, no sim support.
   for it rather than subtracting the jumps.
 - **FX-L14** In-flight count differs per baseline (oort over-selects, async is bound by concurrency, refl
   and feddance clear each round). Size n ≈ threshold / (1 − unavailable fraction).
+- **FX-L25** A sim starvation wake-up is the earliest FUTURE event that frees a slot: availability
+  transition, withheld delivery, residence-held `sct`. A due entry is no wake-up (it stops the run).
 - **FX-L15** The ramp is syn_0 (byte-identical to availability off) → syn_20 → syn_50 → mobiperf. 2-state
   traces collapse AVL_EVAL (`_trace_has_avl_eval`); only mobiperf exercises it.
 
+**One task per version, rounds**
+- **FX-L26** One task per (trainer, task, model version): a dispatch ledger feeds the selector's no-repeat guard;
+  only a timeout reclaim may re-task at the same version (`taskRetryPolicy` none|fixed|exponential, default none).
+- **FX-L27** Identity of an update is (trainer, version): dedup commits on it; the trainer drops a request it
+  already answered (same task, same or older version).
+- **FX-L28** A sync round advances the model version only when an aggregation committed; a starved or all-stale
+  iteration keeps it and still frees every consumed slot.
+
 **Reading the checker**
+- **FX-L29** Stub legs charge a seeded GPU-fitted compute span (`flame.harness.stub_compute_s`, fit to
+  run_20260702 real); refit it when GPU hardware or model changes (L17).
 - **FX-L16** A2 failing (KS) while S3/4 passes is one in-flight gap graded at two tolerances; walk to
   residence, not eligibility.
 - **FX-L17** U6 KS on a sub-ms point mass is signal-free; read `mean_diff`. P3 sub-second opposite-sign
@@ -195,12 +206,39 @@ on the launcher, no sim support.
 - **FX-T17** Don't expect oort carry-over decay to be a run-length transient (structural), or the felix
   min-budget seed alone to fix past-dating.
 - **FX-T18** Don't add a scalar fudge for P3's ~1s `mean_overhead` offset (wall-capture).
+- **FX-T20** Don't gate sim ingestion on "committed this agg cycle"; a re-dispatch starts a new outstanding
+  update. Stranding it livelocked P3 felix/fedbuff (FX-D6).
+- **FX-T21** Don't call `ends()` for anything but a real dispatch: RECV or state-less calls run the selector
+  (feddance phantom picks, oracle crash). List the pool with `all_ends()`.
+- **FX-T22** Don't skip a trainer after the selector chose it; the selector keeps a slot nothing was sent to.
+  Exclude at eligibility (the removed `[SELECTION_CHECK] Skipping`, 46-143 per felix run).
 - **FX-T19** Don't fork withhold/abandon logic per stack (one shared `ClientAvailability`), or grade A4 on
   the bare transition fraction (use A4dur).
 
 ---
 
 ## Done
+- **FX-D11** Streaming harness: oracle rebuilds the harness data (tiny_cpu prefix, stub synthetic), lists the
+  pool via `all_ends()`, memoizes per (version, visible); `--trainer-hp`; campaign P7/P7o/P8; stub compute
+  charge; trainer SIGTERM does no I/O and is one-shot; EV0 case-insensitive; EV5 graded by version —
+  `tests/harness/test_oracle_harness_alignment.py`, `smoke_20260926_002023` real 14/14, sim 15/15.
+- **FX-D10** Sync rounds advance only on a committed aggregation; an all-stale round frees its slots (P3
+  oort_star 0397 leak — FX-N17's stranding hypothesis refuted: the update was consumed and stale-skipped);
+  EV7 flags empty rounds/gaps — `test_sync_sim_ordering.py::TestAllStaleRound*`, `::TestRoundAdvances*`.
+- **FX-D9** One task per (trainer, task, version): ledger + selector guard, retry policy, (end, version) commit
+  dedup (P2 fedbuff real had dropped 0417's v160), trainer discard, post-selection skip removed, EV15 —
+  `tests/mode/test_asyncfl_one_task_per_version.py`.
+- **FX-D8** `simColdStartGate` default on (operator OK; P4 A/B: felix/fedbuff sim EV5/10/11 → 0); busy hold
+  uncapped (L5), freed on abandon/evict — `smoke_20260925_235128` sim 15/15.
+- **FX-D7** Trainer avail thread stops at EOT, tolerates the teardown race only after it; EV0 benign case
+  dropped — `trainer/pytorch/test_avail_thread_shutdown.py`; `smoke_20260925_225708` real 13/13, 0 crash lines.
+- **FX-D6** Campaign run 2 triaged (`campaign_20260925_141043`). Bugs fixed, each with a failing-first test:
+  asyncfl `_sim_committed` stranded a same-cycle re-dispatch (P3 felix/fedbuff livelock, 412MB log); asyncfl
+  inner loop ignored `_work_done` and the sim wall ceiling needed a round advance; refl residence hold had no
+  starvation wake-up (P1 stop at vclock 20/300s); `_next_avail_vclock` returned a due withheld entry (P3
+  feddance/oort_star early stop); feddance picked on RECV; `drain_ready` KeyError on a departing end; tiny_cpu
+  trainer CIFAR root was cwd-relative (P6: every trainer downloaded). Checker gaps: EV13 read only
+  `client_notify.trace`; EV9 counted carried stragglers as picks. Six stale FluxTune tests updated. P0 set 2074/0.
 - **FX-D5** Single-run event checker (EV0-EV14) run on the stored Jul-2 runs found: (1) real send-gate
   compared the bool `wait_until_next_avl` to `"True"`, so every real withheld update was DROPPED (felix 43,
   fedbuff 137 trainers) — fixed in `syncfl/trainer.py` + bool tests; (2) `channel.one_end` crashed on a
@@ -221,3 +259,7 @@ on the launcher, no sim support.
 - google_speech reference: adopt the FX-N10 settings (n=100, α=1, ResNet, 60% target), or move to n=300 / α=0.1 to
   match async_cifar10?
 - Felix paper experiment list, and the exact streaming-experiment design (FX-N13), when ready.
+- Default `taskRetryPolicy` for unaware baselines under unavailability: keep `none`, or `exponential`
+  (P8 exercises it)?
+- Per-task keying lets felix dispatch eval at version v to a trainer that trained at v (keeps the trainer's
+  "eval AND train in the same round" intent). Keep, or one task of any kind per version?

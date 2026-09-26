@@ -493,7 +493,7 @@ class PyTorchCifar10Trainer(Trainer):
             indices = torch.arange(n)
         else:
             dataset = CIFAR10(
-                "lib/python/examples/async_cifar10/data",
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data"),
                 train=True,
                 download=True,
                 transform=transform_train,
@@ -834,6 +834,11 @@ class PyTorchCifar10Trainer(Trainer):
             total_batches_processed += epoch_batches
             if epoch_loss is not None:
                 final_loss = epoch_loss
+        # Stub: charge a realistic GPU-compute span (flame.harness.stub_compute_s).
+        _stub_s = harness.stub_compute_s(self.config.hyperparameters, self.harness_mode,
+                                         (self.trainer_id, self._round))
+        if _stub_s > 0:
+            time.sleep(max(0.0, _stub_s - (time.time() - _gpu_start)))
         # real GPU/compute time for this round, excluding any simulated delay
         _real_gpu_time_s = time.time() - _gpu_start
         # Post-compute overhead (cleanup, delta-l2, telemetry) starts here.
@@ -1160,9 +1165,15 @@ class PyTorchCifar10Trainer(Trainer):
             self.send_heartbeat_to_agg()
 
     def notify_trainer_avail(self) -> None:
-        while True:
+        # Stops at EOT (_work_done is set before channel.leave; absent until run()), FX-D7.
+        while not getattr(self, "_work_done", False):
             time.sleep(1)  # Will check every 1 second
-            self.check_and_update_state_avl()
+            try:
+                self.check_and_update_state_avl()
+            except Exception:
+                if not getattr(self, "_work_done", False):
+                    raise
+                return  # channel torn down mid-update at shutdown
 
 
 def main():
@@ -1267,11 +1278,11 @@ def main():
     
     atexit.register(cleanup_and_report)
     
-    # Handle SIGTERM gracefully
+    # No I/O in the handler (reentrant stdout); atexit writes the report; repeat signals ignored.
     def signal_handler(signum, frame):
-        logger.info(f"Trainer {t.trainer_id} received signal {signum}, generating report...")
-        cleanup_and_report()
-        sys.exit(0)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        raise SystemExit(0)
     
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)

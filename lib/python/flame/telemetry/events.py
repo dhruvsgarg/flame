@@ -38,6 +38,7 @@ EVENT_REDISPATCH_DECOMP = "redispatch_decomp"  # fwdllm round-cadence: commit->n
 EVENT_SLOT_STARVATION = "slot_starvation"  # a freed dispatch slot had fewer eligible candidates than slots
 EVENT_VCLOCK_CHARGE = "vclock_charge"  # every charge_sim_vclock_overhead() call: measured span vs actually-charged
 EVENT_SERVER_UPDATE = "server_update"  # fwdllm: applied-update vs weight norm per commit (I-1 audit)
+EVENT_TASK_DISCARD = "task_discard"  # trainer dropped a request it already answered (FX-D9)
 
 KNOWN_EVENTS = frozenset(
     {
@@ -64,6 +65,7 @@ KNOWN_EVENTS = frozenset(
         EVENT_REDISPATCH_DECOMP,
         EVENT_SLOT_STARVATION,
         EVENT_VCLOCK_CHARGE,
+        EVENT_TASK_DISCARD,
     }
 )
 

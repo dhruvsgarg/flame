@@ -123,33 +123,32 @@ def _effective_d(run, raw: float) -> float:
     return d / float(factor) if factor else d
 
 
+def _trace(run) -> str:
+    """Availability trace name: asyncfl stacks use client_notify, oort/refl/feddance trackTrainerAvail."""
+    for key in ("client_notify", "trackTrainerAvail"):
+        block = _hp(run, key, default={})
+        if isinstance(block, dict) and block.get("trace"):
+            return str(block["trace"])
+    return "syn_0"
+
+
 def _res(status, detail="", **kw):
     return {"status": status, "detail": detail, **kw}
 
 
 # ── checks ──────────────────────────────────────────────────────────────────
-# Known shutdown-only crash (FX-N: availability thread outlives the channel); WARN, not FAIL.
-_BENIGN_THREAD_EXC = re.compile(r"Exception in thread .*\(notify_trainer_avail\)")
-
-
 def ev0_clean_exit(run):
-    """No tracebacks in any log (bar the known shutdown race); the aggregator logged its budget stop."""
-    tb = benign = 0
+    """No tracebacks in any log; the aggregator logged its budget stop."""
+    tb = 0
     for p in run["logs"]:
         with open(p, errors="replace") as f:
-            for line in f:
-                if "Traceback (most recent call last)" in line:
-                    tb += 1
-                elif _BENIGN_THREAD_EXC.search(line):
-                    benign += 1
+            tb += sum(1 for line in f if "Traceback (most recent call last)" in line)
     stopped = False
     if run["agg_log"]:
         with open(run["agg_log"], errors="replace") as f:
-            stopped = any("stopping run" in line for line in f)
-    real_tb = max(0, tb - benign)
-    status = "FAIL" if (real_tb or not stopped) else ("WARN" if benign else "PASS")
-    return _res(status, f"tracebacks={real_tb} shutdown_avail_thread={benign} stopping_run={stopped}",
-                tracebacks=real_tb, stopped=stopped)
+            stopped = any("stopping run" in line.lower() for line in f)  # incl. [SIM_WALL_CEILING]
+    status = "FAIL" if (tb or not stopped) else "PASS"
+    return _res(status, f"tracebacks={tb} stopping_run={stopped}", tracebacks=tb, stopped=stopped)
 
 
 def ev1_progress(run):
@@ -258,23 +257,33 @@ def ev4_real_sleep(run):
 
 def ev5_commit_accounting(run):
     """Every committed train update was sent by that trainer (commits <= sends), and
-    (async) no update is lost: sends - commits <= 1 (+abandons/withheld) per trainer."""
-    sends = Counter()
+    (async) none is lost: a sent version never committed while a LATER version of the
+    same trainer did (trailing ones were cut off by the stop). Abandons/withholds excuse one each."""
+    sends, sent_v = Counter(), defaultdict(set)
     for tid, evs in run["trainers"].items():
-        sends[tid] = sum(1 for e in evs if e.get("event") == "task_send" and e.get("task_to_perform") == "train")
+        for e in evs:
+            if e.get("event") == "task_send" and e.get("task_to_perform") == "train":
+                sends[tid] += 1
+                sent_v[tid].add(e.get("round"))
     if not sends:
         return _res("SKIP", "no trainer telemetry")
-    commits = Counter()
+    commits, commit_v = Counter(), defaultdict(set)
     for e in _train_commits(run):
-        for t in e.get("contributing_trainers") or []:
+        for t, st in zip(e.get("contributing_trainers") or [], e.get("staleness") or [None] * 99):
             commits[t] += 1
+            if st is not None and e.get("round") is not None:
+                commit_v[t].add(e["round"] - st)
     excused = Counter(e.get("end_id") for e in run["agg"]
                       if e.get("event") in ("abandon_timeout", "withheld_delivery"))
     over = {t: (commits[t], sends[t]) for t in commits if commits[t] > sends.get(t, 0)}
     lost = {}
     if _is_async(run):
-        lost = {t: (sends[t], commits[t]) for t in sends
-                if sends[t] - commits[t] > 1 + excused[t]}
+        for t, vs in sent_v.items():
+            top = max(commit_v[t], default=None)
+            gone = sorted(v for v in vs if v is not None and v not in commit_v[t]
+                          and top is not None and v < top)
+            if len(gone) > excused[t]:
+                lost[t] = gone[:5]
     ok = not over and not lost
     return _res("PASS" if ok else "FAIL",
                 f"trainers={len(sends)} commits>sends={len(over)} lost(async)={len(lost)}"
@@ -292,8 +301,8 @@ def ev6_staleness(run):
 
 
 def ev7_agg_goal_cadence(run):
-    """Async: every closed round aggregated exactly agg_goal train updates, and round
-    indices advance by one with no gaps."""
+    """Async: every closed round aggregated exactly agg_goal train updates; both: round
+    indices advance by one with no gaps (sync: no empty rounds, none over agg_goal)."""
     k = _agg_goal(run)
     commits = _train_commits(run)
     if not k or not commits:
@@ -301,10 +310,14 @@ def ev7_agg_goal_cadence(run):
     per_round = Counter(e.get("round") for e in commits)
     rounds = sorted(r for r in per_round if r is not None)
     if not _is_async(run):
+        # A sync round commits >=1 update and indices advance by one (FX-D10: no empty rounds).
         over = {r: c for r, c in per_round.items() if c > k}
-        return _res("PASS" if not over else "FAIL",
-                    f"sync rounds={len(rounds)} rounds_over_agg_goal={len(over)}",
-                    over=dict(list(over.items())[:5]))
+        empty = [e.get("round") for e in commits if not (e.get("contributing_trainers") or [])]
+        gaps = [(a, b) for a, b in zip(rounds, rounds[1:]) if b - a != 1]
+        return _res("PASS" if not (over or empty or gaps) else "FAIL",
+                    f"sync rounds={len(rounds)} rounds_over_agg_goal={len(over)} "
+                    f"empty={len(empty)} gaps={len(gaps)}",
+                    over=dict(list(over.items())[:5]), empty=empty[:5], gaps=gaps[:5])
     closed = rounds[:-1]
     wrong = {r: per_round[r] for r in closed if per_round[r] != k}
     gaps = [(a, b) for a, b in zip(rounds, rounds[1:]) if b - a != 1]
@@ -329,8 +342,15 @@ def ev8_concurrency_cap(run):
                 f"(held>c, chose 0: {held_over})", examples=over[:10])
 
 
+def _newly_chosen(sel):
+    """Oort-family `chosen` also lists carried in-flight stragglers; new picks are explore+exploit."""
+    if "exploit_ids" in sel or "explore_ids" in sel:
+        return (sel.get("explore_ids") or []) + (sel.get("exploit_ids") or [])
+    return sel.get("chosen") or []
+
+
 def ev9_selector_state(run):
-    """State snapshot at selection: a chosen trainer was not holding an uncommitted
+    """State snapshot at selection: a newly chosen trainer was not holding an uncommitted
     update, and (availability-aware) was not believed UN_AVL."""
     aware = _truthy(_hp(run, "avail_select_filter", default=False))
     busy = unavail = n = 0
@@ -339,7 +359,7 @@ def ev9_selector_state(run):
         pt = e.get("per_trainer")
         if not isinstance(pt, dict):
             continue
-        for t in e.get("chosen") or []:
+        for t in _newly_chosen(e):
             s = pt.get(t) or {}
             n += 1
             if s.get("in_pending_commit") is True:
@@ -437,8 +457,7 @@ def ev13_no_stall(run):
     med = gaps[len(gaps) // 2]
     limit = max(60.0 if _simulated(run) else 120.0, 20 * med)
     worst = gaps[-1]
-    trace = str((_hp(run, "client_notify", default={}) or {}).get("trace", "syn_0")) \
-        if isinstance(_hp(run, "client_notify", default={}), dict) else "syn_0"
+    trace = _trace(run)
     status = "PASS" if worst <= limit else ("WARN" if trace != "syn_0" else "FAIL")
     return _res(status, f"max_gap={worst:.1f}s median={med:.2f}s limit={limit:.0f}s trace={trace}")
 
@@ -453,10 +472,44 @@ def ev14_eval_sane(run):
     return _res("PASS" if not bad else "FAIL", f"evals={len(evs)} bad={len(bad)}", examples=bad[:10])
 
 
+def ev15_one_task_per_version(run):
+    """FX-D9: each (trainer, task, model version) is answered once and committed once; the sim
+    aggregator re-dispatches the same one only after a timeout under a retry policy."""
+    dup_send = 0
+    for tid, evs in run["trainers"].items():
+        seen = Counter((e.get("task_to_perform"), e.get("round")) for e in evs if e.get("event") == "task_send")
+        dup_send += sum(c - 1 for c in seen.values() if c > 1)
+    discards = sum(1 for evs in run["trainers"].values() for e in evs if e.get("event") == "task_discard")
+    commits = Counter()
+    for e in _train_commits(run):
+        for t, st in zip(e.get("contributing_trainers") or [], e.get("staleness") or []):
+            if st is not None and e.get("round") is not None:
+                commits[(t, e["round"] - st)] += 1
+    dup_commit = sum(c - 1 for c in commits.values() if c > 1)
+    retry_ok = str(_hp(run, "task_retry_policy", "taskRetryPolicy", default="none")).lower() != "none"
+    last, timed_out, dup_dispatch = {}, set(), 0
+    for e in run["agg"]:
+        k = e.get("event")
+        if k == "abandon_timeout" and str(e.get("reason", "")).startswith("abandon"):
+            timed_out.add(e.get("end_id"))
+        elif k == "dispatch":
+            key = (e.get("end_id"), e.get("task"))
+            if last.get(key) == e.get("round") and not (retry_ok and key[0] in timed_out):
+                dup_dispatch += 1
+            last[key] = e.get("round")
+            timed_out.discard(key[0])
+    if not run["trainers"] and not run["agg"]:
+        return _res("SKIP", "no telemetry")
+    bad = dup_send + dup_commit + dup_dispatch
+    return _res("PASS" if bad == 0 else "FAIL",
+                f"dup_send={dup_send} dup_commit={dup_commit} dup_dispatch={dup_dispatch} "
+                f"trainer_discards={discards}")
+
+
 CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model, ev4_real_sleep,
           ev5_commit_accounting, ev6_staleness, ev7_agg_goal_cadence, ev8_concurrency_cap,
           ev9_selector_state, ev10_dispatch_one_in_flight, ev11_vclock, ev12_reached_budget,
-          ev13_no_stall, ev14_eval_sane]
+          ev13_no_stall, ev14_eval_sane, ev15_one_task_per_version]
 
 
 def check_run(run_dir: str) -> dict:
