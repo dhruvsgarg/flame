@@ -116,9 +116,8 @@ lib/python/examples/async_cifar10/experiments/campaign_*/
 lib/python/examples/async_cifar10/experiments/pool_*/
 lib/python/examples/async_cifar10/experiments/iso_*/
 lib/python/examples/async_cifar10/experiments/harness_*/
-# per-node harness state (FX-N22): real-leg bank + learned durations, never shared across nodes (T9)
-lib/python/examples/async_cifar10/experiments/_real_bank.tsv
-lib/python/examples/async_cifar10/experiments/_harness_durations.json
+# harness pool roots + per-node state (FX-N22: real-leg bank, learned durations; never shared, T9)
+lib/python/examples/experiments/
 lib/python/examples/fmow/experiments/run_*/
 lib/python/examples/fmow/experiments/smoke_*/
 lib/python/examples/fwdllm/experiments/

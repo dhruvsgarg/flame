@@ -98,7 +98,7 @@ section already says.
   When shared code is complex or a nuisance to maintain, simplify or reimplement it instead of stacking
   special cases onto it.
 - **R14 Harness first.** Every code change is validated on the no-GPU harness before any GPU run, through
-  `scripts/harness_pool.py` tiers (T1 delta ~5 min · T2 sim-only matrix · T3 real-path pairs · T4 nightly ·
+  `lib/python/examples/scripts/harness_pool.py` tiers (T1 delta ~5 min · T2 sim-only matrix · T3 real-path pairs · T4 nightly ·
   G1/G2 GPU; `--datasets cifar10|google_speech|all`; FX-N22) or a targeted `scripts/harness_suite.sh`. It grades each leg against the paradigm's ground-truth events
   (`scripts/parity/event_invariants.py`) and each pair for parity. GPU real/sim runs come only after the
   harness is green for the affected baselines and traces. Every scripted step carries a hard timeout so one

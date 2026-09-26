@@ -2,7 +2,8 @@
 # harness_report.sh ROOT [T0_epoch] [pytest_line] -- one SUMMARY.txt across <ROOT>/P*/summary.tsv (FX-N22):
 # phase table, real queue_wait, FX-N13 oracle replay (P7/P7o), S1 injected-bug verdicts. Spawns no FL process.
 set -uo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The analysis tools live with the example that produced the legs (async_cifar10 for both datasets).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../async_cifar10/scripts" && pwd)"
 ROOT="$1"; T0="${2:-$(date +%s)}"; P0_LINE="${3:-}"
 PY="$(conda run -n "${FLAME_CONDA_ENV:-dg_flame}" which python 2>/dev/null | tail -1)"
 _elapsed() { echo $(( $(date +%s) - T0 )); }

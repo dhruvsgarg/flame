@@ -26,7 +26,7 @@
 #   harness_suite.sh --grade-only --real-dir R --sim-dir S --baselines B --traces T --runtime-s N --output-dir DIR
 #
 # --isolate (FX-N22 slot): private mosquitto on its own port + a run tag scoping every sweep, so this
-# suite can run beside others. Cores come from the caller's affinity (harness_pool.py uses taskset).
+# suite can run beside others. Cores come from the caller's affinity (examples/scripts/harness_pool.py uses taskset).
 # ============================================================================
 set -uo pipefail
 
@@ -214,17 +214,17 @@ for trace in $TRACES; do
     # FX-L24: a healthy own real leg joins the bank; a sim-only leg borrows the matching one.
     if [ "$real_src" = own ] && [[ "$ev_real" != MISSING ]] && [ "$timed_out" = 0 ]; then
       mapfile -d '' key < <(_bank_key "$trace" "$b")
-      "$PY" "$SCRIPT_DIR/harness_bank.py" register --real-dir "$real_dir" "${key[@]}" || true
+      "$PY" "$LIB_DIR/examples/scripts/harness_bank.py" register --real-dir "$real_dir" "${key[@]}" || true
     fi
     if [ -z "$real_dir" ] && [ -n "$sim_dir" ] && [ -n "$REAL_FROM" ]; then
       if [ "$REAL_FROM" = auto ]; then
         mapfile -d '' key < <(_bank_key "$trace" "$b")
-        IFS=$'\t' read -r real_dir status < <("$PY" "$SCRIPT_DIR/harness_bank.py" lookup "${key[@]}")
+        IFS=$'\t' read -r real_dir status < <("$PY" "$LIB_DIR/examples/scripts/harness_bank.py" lookup "${key[@]}")
         real_src="bank:${status:-NONE}"
       elif [ -d "$REAL_FROM/telemetry" ]; then
         real_dir="$REAL_FROM"; real_src="given"
       else
-        real_dir="$("$PY" "$SCRIPT_DIR/harness_bank.py" from-dir "$REAL_FROM" --trace "$trace" --baseline "$b")"
+        real_dir="$("$PY" "$LIB_DIR/examples/scripts/harness_bank.py" from-dir "$REAL_FROM" --trace "$trace" --baseline "$b")"
         real_src="dir:$( [ -n "$real_dir" ] && echo unchecked || echo NONE)"
       fi
     fi

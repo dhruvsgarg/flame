@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""FX-N22 harness pool: run harness legs in parallel, isolated slots on one node.
+"""FX-N22 harness pool: run harness legs in parallel, isolated slots on one node (any example, any dataset).
 
 A slot = disjoint physical cores (taskset) + a private mosquitto + a run tag (harness_suite.sh --isolate)
 [+ exclusive GPUs]. A real+sim pair runs as two parallel legs plus a grade job. Jobs are packed
@@ -33,10 +33,16 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-EX_DIR = SCRIPT_DIR.parent
-REPO = EX_DIR.parents[3]  # the git top level
-SUITE = SCRIPT_DIR / "harness_suite.sh"
-DURATIONS = EX_DIR / "experiments" / "_harness_durations.json"
+EXAMPLES = SCRIPT_DIR.parent                 # lib/python/examples
+REPO = EXAMPLES.parents[2]                   # the git top level
+OUT_DIR = EXAMPLES / "experiments"           # pool roots + per-node state (bank, durations)
+DURATIONS = OUT_DIR / "_harness_durations.json"
+# dataset -> the launcher example that runs it (one shared backprop-FL example today)
+EXAMPLE_OF = {"cifar10": "async_cifar10", "google_speech": "async_cifar10"}
+
+
+def example_dir(dataset: str) -> Path:
+    return EXAMPLES / EXAMPLE_OF[dataset]
 
 B6 = ("felix", "fedbuff", "oort", "oort_star", "refl", "feddance")
 DATASETS = ("cifar10", "google_speech")
@@ -90,6 +96,7 @@ DELTA_RULES = (
     ("lib/python/examples/async_cifar10/aggregator/pytorch/main_fedavg_agg.py", ("feddance",), False),
     ("lib/python/examples/async_cifar10/aggregator/*", B6, False),
     ("lib/python/examples/async_cifar10/scripts/*", B6, False),
+    ("lib/python/examples/scripts/expt_runner.sh", B6, False),
     ("lib/python/examples/async_cifar10/expt_scripts_2026/felix_oort_refl_feddance_alpha0.1_parity.yaml", B6, False),
     ("lib/python/examples/_metadata/baselines.yaml", B6, False),
     ("lib/python/examples/_metadata/datasets.yaml", B6, False),
@@ -585,13 +592,14 @@ class Pool:
         if gp and (not j.whole or self.bad_gpus):
             args += ["--gpu-ids", ",".join(map(str, gp))]
         pin = [] if j.whole else ["taskset", "-c", ",".join(map(str, cpus))]
-        cmd = [*pin, "bash", str(SUITE), *args, "--output-dir", str(out)]
+        suite = example_dir(j.dataset) / "scripts" / "harness_suite.sh"
+        cmd = [*pin, "bash", str(suite), *args, "--output-dir", str(out)]
         (out / "cmd.txt").write_text(shlex.join(cmd) + "\n")
         env = {**os.environ, "EXPT_AUTOCLEAN": "1", "FLAME_RUN_TAG": tag}
         if not j.whole:
             env["FLAME_AGG_CORES"] = str(8 if j.gpus else agg_cores(j.n))
         proc = subprocess.Popen(cmd, stdout=open(out / "suite.log", "w"), stderr=subprocess.STDOUT,
-                                env=env, start_new_session=True, cwd=str(EX_DIR))
+                                env=env, start_new_session=True, cwd=str(example_dir(j.dataset)))
         self.say(f"START {j.jid} cpus={_ranges(cpus)} port={port}{' gpus=' + str(gp) if gp else ''} est={j.est_s / 60:.1f}m")
         return Running(j, proc, cpus, gp, port, tag, time.time(), out)
 
@@ -696,7 +704,7 @@ def run_gate(root: Path, datasets, pool: "Pool") -> int:
         pool.say(f"ABORT gate: pytest collection failed -- {root}/P00_collect.txt")
         return 4
     r = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import fl_data; "
-                        "[print(fl_data.verify(d)) for d in sys.argv[2:]]", str(EX_DIR), *datasets],
+                        "[print(fl_data.verify(d)) for d in sys.argv[2:]]", str(example_dir(datasets[0])), *datasets],
                        capture_output=True, text=True, timeout=600)
     (root / "P00_data.txt").write_text(r.stdout + r.stderr)
     if r.returncode:
@@ -775,7 +783,7 @@ def main(argv=None) -> int:
     i, n = map(int, a.shard.split("/"))
     jobs = shard(jobs, i, n)
 
-    root = Path(a.output_dir or EX_DIR / "experiments" / f"pool_{time.strftime('%Y%m%d_%H%M%S')}_{'_'.join(tiers)}")
+    root = Path(a.output_dir or OUT_DIR / f"pool_{time.strftime('%Y%m%d_%H%M%S')}_{'_'.join(tiers)}").resolve()
     root.mkdir(parents=True, exist_ok=True)
     pool = Pool(root, jobs, a.max_parallel, a.reserve_cores, a.mem_headroom_gb, a.deadline_h * 3600, a.dry_run,
                 log=open(root / "pool.log", "a"))

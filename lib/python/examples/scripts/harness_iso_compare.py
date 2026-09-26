@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+EX_SCRIPTS = Path(__file__).resolve().parents[1] / "async_cifar10" / "scripts"  # analyze_send_recv_lag.py
 TOL = 0.10
 
 
@@ -45,7 +45,7 @@ def leg_stats(run_dir: str, mode: str) -> dict:
     out = {"commits": len(rows), "rounds": max(r.get("round", 0) for r in rows),
            "staleness": statistics.mean(st) if st else 0.0, "rate": len(rows) / span if span else 0.0}
     if mode == "real":
-        q = subprocess.run([sys.executable, str(SCRIPT_DIR / "analyze_send_recv_lag.py"), run_dir, "--queue-wait"],
+        q = subprocess.run([sys.executable, str(EX_SCRIPTS / "analyze_send_recv_lag.py"), run_dir, "--queue-wait"],
                            capture_output=True, text=True).stdout.strip().splitlines()
         p99 = [t.split("=")[1] for t in (q[-1].split() if q else []) if t.startswith("p99=")]
         out["qw_p99"] = float(p99[0]) if p99 else None

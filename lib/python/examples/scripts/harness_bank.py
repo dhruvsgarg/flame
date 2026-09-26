@@ -23,9 +23,9 @@ import sys
 import time
 from pathlib import Path
 
-EX_DIR = Path(__file__).resolve().parents[1]
-LIB_DIR = EX_DIR.parents[1]
-BANK = EX_DIR / "experiments" / "_real_bank.tsv"
+EXAMPLES = Path(__file__).resolve().parents[1]
+LIB_DIR = EXAMPLES.parent
+BANK = EXAMPLES / "experiments" / "_real_bank.tsv"
 KEY_FIELDS = ("dataset", "baseline", "trace", "n", "runtime_s", "delay_factor", "trace_scale", "harness",
               "agg_goal", "concurrency", "agg_hp", "trainer_hp", "inject_bug")
 # Code that only the real leg exercises (trainer, transport, availability); relative to lib/python.

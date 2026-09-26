@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS = Path(__file__).resolve().parents[2] / "examples" / "async_cifar10" / "scripts"
+SCRIPTS = Path(__file__).resolve().parents[2] / "examples" / "scripts"
 
 
 def _load(name):

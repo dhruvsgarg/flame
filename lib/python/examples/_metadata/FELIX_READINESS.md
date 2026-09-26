@@ -75,7 +75,9 @@ launcher's `agg_goal`, which is also the sync K (FX-L36).
 google_speech CPU sims get a 2× wall ceiling: with 29 MB updates on 2 aggregator cores they are
 aggregator-bound (EV12 still grades the vclock budget).
 
-**Tiers** (`harness_pool.py --tier A[,B] --datasets cifar10|google_speech|all`). Every run starts with a
+**Tiers** (`lib/python/examples/scripts/harness_pool.py --tier A[,B] --datasets cifar10|google_speech|all`; runs
+from any cwd; `EXAMPLE_OF` maps each dataset to the example that runs it; roots and per-node state in
+`lib/python/examples/experiments/`). Every run starts with a
 gate: pytest collection plus one felix smoke pair per dataset; it aborts in ~4 min.
 
 | tier | jobs | est. wall, one node (cpt 1 / 0.5) |
@@ -92,9 +94,9 @@ gate: pytest collection plus one felix smoke pair per dataset; it aborts in ~4 m
 - P1-P5 · done. Smokes: `pool_smoke_T3/T2/G1` (cifar), `pool_smoke_ds` (both datasets, 8 legs in parallel),
   `pool_smoke_gsG1` (speech GPU), `pool_smoke_gate`; SIGINT tore down 4 slots in 11s. Tests:
   `tests/harness/test_{slot_isolation,harness_pool,fl_data}.py`, `tests/launch/test_debug_run_dataset_profile.py`.
-- P6 · isolation control · todo (operator, ~15 min): `harness_pool.py --tier ISO --max-parallel 1
-  --output-dir experiments/iso_solo`, then `--tier ISO_FILL --cpus-per-trainer 0.5 --output-dir
-  experiments/iso_packed`, then `harness_iso_compare.py experiments/iso_solo experiments/iso_packed`.
+- P6 · isolation control · todo (operator, ~15 min): `$P --tier ISO --max-parallel 1 --output-dir
+  $E/iso_solo`, then `$P --tier ISO_FILL --cpus-per-trainer 0.5 --output-dir $E/iso_packed`, then
+  `examples/scripts/harness_iso_compare.py $E/iso_solo $E/iso_packed` ($P/$E: see FX-N20).
   EQUIVALENT → 0.5 becomes the default. Measured: a small slot averages 1-2 cores (p95 4-6) with its aggregator.
 - P7 · done: T4 on the pool, gate + `--pytest`; `harness_campaign.sh` is now a shim.
 - P8 · in-process fast sim: fake trainer replies, no MQTT and no processes (~100×). It is the
@@ -114,15 +116,21 @@ reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both 
 
 - **FX-N22 · Fast parallel harness (Active build) · wip: P6 isolation control next.** *Exit:* P6
   EQUIVALENT at cpt ≤ 0.5, and T2 for both datasets under 25 min on one node.
-- **FX-N20 · Harness T4 on both datasets · ready (operator).** Node A: `harness_pool.py --tier T4 --datasets
-  cifar10 --pytest`; node B: `--tier T4 --datasets google_speech` (same commit; ~40-70 min each). It
-  confirms FX-D12, FX-D15, the per-task rule and the new shapes across all six. *Predictions:* gate ok; EV
+- **FX-N20 · Harness T4 on both datasets · ready (operator).** From the repo root, same commit on both nodes
+  (~40-70 min each; results in `$E/pool_<ts>_T4/SUMMARY.txt`):
+  ```
+  P="conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/harness_pool.py"
+  E=lib/python/examples/experiments
+  $P --tier T4 --datasets cifar10 --pytest     # node A
+  $P --tier T4 --datasets google_speech        # node B
+  ```
+  It confirms FX-D12, FX-D15, the per-task rule and the new shapes across all six. *Predictions:* gate ok; EV
   green on every leg (EV10 = 0 on felix/fedbuff sims, EV11 ≤ 1%, EV15 0 dups); no SIM_WALL_CEILING on cifar;
   P11a-c CAUGHT ×3 on both; P10 (settle 0.1) fedbuff real queue_wait above P1's (p99 0.05s in the smoke).
   *Exit:* every miss triaged as checker gap vs bug; then everything in the unblock map moves.
 - **FX-N4 · First GPU block: felix + fedbuff, syn_0, 90 min · blocked: FX-N20.** cifar:
-  `--tier G1 --datasets cifar10` (whole node, both pairs in sequence, ~5h; or `--shard 1/2`, `2/2` across two
-  nodes, ~2.5h). speech: `--tier G1 --datasets google_speech` (~2.5h, can share the node with its T4). jayne
+  `$P --tier G1 --datasets cifar10` (whole node, both pairs in sequence, ~5h; or `--shard 1/2`, `2/2` across two
+  nodes, ~2.5h). speech: `$P --tier G1 --datasets google_speech` (~2.5h, can share the node with its T4). jayne
   runs on 7 GPUs (GPU 1 ECC); each pair stays on one node and one layout (L18). *Predictions:* EV green both
   legs; felix real queue_wait p99 < 1s; `trainer_speed_identity` inside tolerance now the cold start is gone.
   *Exit:* INV/EXACT green, convergence inside the replicate band, DIST residuals common-mode.
