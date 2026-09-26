@@ -418,3 +418,17 @@ class TestRedispatchWithinCycle:
         rx._queue.append(("e1", 103.0))
         msg, (end, _) = agg._sim_recv_min(rx, ["e1"])
         assert end == "e1" and msg[MessageType.SIM_COMPLETION_TS] == 103.0
+
+
+class TestBufferedCommitLeavesRecv:
+    """FX-D12: a buffered-then-committed end is RECVD, so it leaves the RECV list (P3 felix livelock)."""
+
+    def test_buffered_end_marked_recvd_on_commit(self):
+        agg = _make_agg(sct_ordered_drain=True)
+        ch = FakeChannel({"a", "b"}, [("a", 1.0), ("b", 2.0)])
+        _, (end, _) = agg._sim_recv_min(ch, ["a", "b"])
+        assert end == "a"
+        assert ch._ends["b"].get_property(KEY_END_STATE) == "none"  # buffered keeps its slot
+        _, (end, _) = agg._sim_recv_min(ch, ["b"])
+        assert end == "b"
+        assert ch._ends["b"].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD

@@ -37,7 +37,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data as data_utils
-import torchvision.transforms as transforms
 from flame.config import Config, TrainerAvailState
 from flame.mode.horizontal.trainer import Trainer
 from flame import telemetry
@@ -46,8 +45,10 @@ from flame.telemetry.events import (
     build_trainer_round,
     build_util_disparity,
 )
-from torchvision.datasets import CIFAR10
 from flame import harness
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+import fl_data  # noqa: E402
 from memory_profiler import MemoryProfiler
 
 logger = logging.getLogger(__name__)
@@ -76,30 +77,7 @@ def _stagger_params(trainer_id, onset_max_s, base_span_s, rate_jitter):
     return onset_s, max(base_span_s / 4.0, span_s)
 
 
-class Net(nn.Module):
-    """Net class."""
-
-    def __init__(self):
-        """Initialize."""
-        super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, 3)
-        self.conv2 = nn.Conv2d(64, 128, 3)
-        self.conv3 = nn.Conv2d(128, 256, 3)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.fc1 = nn.Linear(64 * 4 * 4, 128)
-        self.fc2 = nn.Linear(128, 256)
-        self.fc3 = nn.Linear(256, 10)
-
-    def forward(self, x):
-        """Forward."""
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))
-        x = x.view(-1, 64 * 4 * 4)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return F.log_softmax(x, dim=1)
+Net = fl_data.CifarNet  # FX-N10: models live in fl_data (one per dataset)
 
 
 class PyTorchCifar10Trainer(Trainer):
@@ -432,6 +410,11 @@ class PyTorchCifar10Trainer(Trainer):
             )
             time.sleep(20)
 
+    @property
+    def data_spec(self) -> "fl_data.DatasetSpec":
+        """FX-N10: this run's dataset (hyperparameters.dataset_name)."""
+        return fl_data.spec_for(self.config.hyperparameters)
+
     def initialize(self) -> None:
         """Initialize role."""
         self.memory_profiler.log_component_memory("initialize", "BEFORE")
@@ -454,7 +437,8 @@ class PyTorchCifar10Trainer(Trainer):
 
         self.device = harness.device_for(self.harness_mode)
 
-        self.model = Net().to(self.device)
+        self.model = self.data_spec.model().to(self.device)
+        self._warmup_device()
         
         # Log model memory usage
         model_info = self.memory_profiler.analyze_model_memory(self.model)
@@ -471,33 +455,36 @@ class PyTorchCifar10Trainer(Trainer):
             f"{time.time()}"
         )
 
+    def _warmup_device(self) -> None:
+        """FX-D15: pay driver/kernel init before any timed task: one dummy train step, weights restored."""
+        if self.device is None:
+            return
+        t0 = time.time()
+        cuda = self.device.type == "cuda"
+        saved = {k: v.detach().clone() for k, v in self.model.state_dict().items()}
+        x = torch.randn(max(2, self.batch_size or 2) if cuda else 2,
+                        *(self.data_spec.shape if cuda else self.data_spec.stub_shape), device=self.device)
+        y = torch.zeros(x.shape[0], dtype=torch.long, device=self.device)
+        self.model.train()
+        F.nll_loss(self.model(x), y).backward()
+        self.model.zero_grad(set_to_none=True)
+        self.model.load_state_dict(saved)
+        if cuda:
+            torch.cuda.synchronize(self.device)
+        logger.info(f"[WARMUP] trainer={self.trainer_id} device={self.device} {time.time() - t0:.2f}s")
+
     def load_data(self) -> None:
         """Load data."""
         self.memory_profiler.log_component_memory("load_data", "BEFORE")
         
-        transform_train = transforms.Compose(
-            [
-                transforms.RandomCrop(32, padding=4),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
-                ),
-            ]
-        )
-
         hp_n = harness.harness_samples(self.config.hyperparameters, self.harness_mode)
         if self.harness_mode == "stub":
             n = min(len(self.trainer_indices_list), hp_n)
-            dataset = harness.synthetic_dataset(n, (3, 32, 32), 10, seed_key=self.trainer_id)
+            dataset = harness.synthetic_dataset(n, self.data_spec.stub_shape, self.data_spec.num_classes,
+                                                seed_key=self.trainer_id)
             indices = torch.arange(n)
         else:
-            dataset = CIFAR10(
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data"),
-                train=True,
-                download=True,
-                transform=transform_train,
-            )
+            dataset = self.data_spec.train()
 
             # create indices into a list and convert to tensor
             idx_list = self.trainer_indices_list
@@ -792,7 +779,8 @@ class PyTorchCifar10Trainer(Trainer):
         else:
             logger.debug(f"Trainer {self.trainer_id}: Using base LR {current_lr}")
         
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=current_lr)
+        opt = torch.optim.Adam if self.data_spec.optimizer == "adam" else torch.optim.SGD
+        self.optimizer = opt(self.model.parameters(), lr=current_lr)
 
         # reset stat utility for OORT
         self.reset_stat_utility()

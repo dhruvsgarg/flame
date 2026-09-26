@@ -81,6 +81,7 @@ class TestRealDrainRecv:
         assert ch._ends["c"].props[KEY_END_STATE] == VAL_END_STATE_NONE
         assert ch._ends["a"].props[KEY_END_STATE] == VAL_END_STATE_RECVD
         assert agg._real_drain_recv(ch, [])[0] == {"v": "b"}
+        assert ch._ends["b"].props[KEY_END_STATE] == VAL_END_STATE_RECVD  # FX-D12: leaves RECV
         assert agg._real_drain_recv(ch, [])[0] == {"v": "c"}
 
     def test_same_end_two_versions_both_delivered(self):

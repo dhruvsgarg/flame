@@ -24,6 +24,7 @@ import cloudpickle
 from contextlib import contextmanager
 
 import torch
+from flame import harness
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
@@ -234,10 +235,12 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.debug(f"New message received for trainer_id {self.trainer_id}")
 
-        # FX-D9: drop an already-answered request (same task, version <=); before any state change.
+        # FX-D9: drop an answered request (version <= answered; a train answer covers eval), before any state change.
         _req_task = msg.get(MessageType.TASK_TO_PERFORM, self.task_to_perform)
         _req_ver = msg.get(MessageType.ROUND)
-        _answered = getattr(self, "_responded_version", {}).get(_req_task)
+        _resp = getattr(self, "_responded_version", {})
+        _covering = [_resp.get(t) for t in (("train", "eval") if _req_task == "eval" else (_req_task,))]
+        _answered = max((v for v in _covering if v is not None), default=None)
         if (MessageType.EOT not in msg and _req_ver is not None and _answered is not None
                 and _req_ver <= _answered):
             logger.info(
@@ -265,11 +268,14 @@ class Trainer(Role, metaclass=ABCMeta):
                 self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             with self._phase("weights_to_gpu_s"):
                 self._update_model()
-                if torch.cuda.is_available():
+                # FX-D15: sync only a CUDA model; never time driver init here
+                if self._model_on_cuda():
                     torch.cuda.synchronize()
 
         # Capture virtual send-time stamped by aggregator (sim mode); used for sim_completion_ts.
-        if MessageType.SIM_SEND_TS in msg:
+        if MessageType.SIM_SEND_TS in msg and not (
+            harness.injected("freeze_trainer_clock") and getattr(self, "_sim_send_ts", None) is not None
+        ):
             self._sim_send_ts = msg[MessageType.SIM_SEND_TS]
         _mqtt_vclock_end = getattr(self, "vclock_now", None)
         self._phase_vclock_s["mqtt_fetch_s"] = (
@@ -655,6 +661,10 @@ class Trainer(Role, metaclass=ABCMeta):
     def update_metrics(self, metrics: dict[str, float]):
         """Update metrics."""
         self.metrics = self.metrics | metrics
+
+    def _model_on_cuda(self) -> bool:
+        p = next(iter(self.model.parameters()), None) if hasattr(self.model, "parameters") else None
+        return p is not None and p.is_cuda
 
     def _update_model(self):
         if self.framework == MLFramework.PYTORCH:

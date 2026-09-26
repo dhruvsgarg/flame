@@ -157,7 +157,8 @@ class MqttBackend(AbstractBackend):
             # This prevents disconnections during heavy weight distribution to many trainers
             # where synchronous send operations can temporarily block the event loop
             keepalive_timeout = 300  # 5 minutes
-            self._mqtt_client.connect(self._broker, keepalive=keepalive_timeout)
+            host, _, port = self._broker.partition(":")
+            self._mqtt_client.connect(host, int(port or 1883), keepalive=keepalive_timeout)
             logger.info(f"MQTT client connecting to {self._broker} with keepalive={keepalive_timeout}s")
             self._mqtt_client.subscribe(self._health_check_topic)
 

@@ -512,6 +512,11 @@ class AsyncSelectorBase(AbstractSelector):
         for candidate_end in candidates:
             # {end: dispatch stamp}, on the abandon clock (#1c).
             self.all_selected[candidate_end] = self._abandon_clock_now()
+        # FX-D12: a new outstanding task; a prior receipt must not free it at cleanup.
+        for attr in ("ordered_updates_recv_ends", "trainer_eval_recv_ends"):
+            recvd = getattr(self, attr, None)
+            if recvd:
+                setattr(self, attr, [e for e in recvd if e not in candidates_dict])
         logger.debug(
             f"selected_ends now {self.selected_ends[self.requester]}, "
             f"all_selected now {sorted(self.all_selected)}"

@@ -24,7 +24,7 @@ import math
 import time
 from typing import Optional
 
-from flame import telemetry
+from flame import harness, telemetry
 from flame.availability.trace import load_trace, next_avail_after, state_at
 from flame.availability.trace import (
     read_trainer_unavailability as _read_trainer_unavailability,
@@ -62,9 +62,21 @@ class ClientAvailability:
     may be called from internal_init() or initialize().
     """
 
+    # FX-D12: fwdllm keeps the channel's UN_AVL slot release until S8 ports this.
+    _SUBSTRATE_OWNS_INFLIGHT_RELEASE = True
+
     # ------------------------------------------------------------------
     # Initialization
     # ------------------------------------------------------------------
+
+    def _claim_inflight_release(self, channels) -> None:
+        """FX-D12: with the substrate on, an UN_AVL report no longer frees a selector slot;
+        withhold/evict/abandon own in-flight release (T1, FX-L11)."""
+        if not (self._SUBSTRATE_OWNS_INFLIGHT_RELEASE
+                and getattr(self, "trainer_event_dict", None) is not None):
+            return
+        for ch in channels:
+            ch.release_slots_on_unavail = False
 
     def _init_availability(self, config) -> None:
         """Populate trainer_event_dict from config; no-op when gate is off.
@@ -562,7 +574,7 @@ class ClientAvailability:
         # Gate off (or a bare aggregator that never ran _init_availability): the
         # update is always committable and no ledger is touched. Keeps the shared
         # primitive safe to call from any partially-initialized commit loop.
-        if getattr(self, "trainer_event_dict", None) is None:
+        if getattr(self, "trainer_event_dict", None) is None or harness.injected("order_by_sct"):
             return False
         # T3.3 commit-checkpoint belief: read once here, covering both branches
         # below (fresh commit and re-registered/re-stashed) with one call.

@@ -34,7 +34,13 @@ class TestLedgerAndRetry:
         agg._distribute_weights("tag", "train")
         assert agg._task_ledger[("e1", "train")] == [5, 100.0, 0]
         assert agg._task_version_keys(ch, "train") == {"e1": (5, 0), "e2": (5, 0)}
-        assert agg._task_version_keys(ch, "eval") == {}  # another task is another request
+        assert agg._task_version_keys(ch, "eval") == {"e1": (5, 0), "e2": (5, 0)}  # train covers eval
+
+    def test_eval_at_v_does_not_block_train_at_v(self):
+        agg, ch = _agg()
+        agg._distribute_weights("tag", "eval")
+        assert agg._task_version_keys(ch, "train") == {}
+        assert set(agg._task_version_keys(ch, "eval")) == {"e1", "e2"}
 
     def test_version_advance_releases(self):
         agg, ch = _agg()
@@ -156,10 +162,15 @@ class TestTrainerDiscard:
         self._fetch(t, ch, {MessageType.ROUND: 4, MessageType.TASK_TO_PERFORM: "train"})
         assert t.fetch_success is False
 
-    def test_eval_after_train_same_version_is_accepted(self):
+    def test_eval_after_train_same_version_is_discarded(self):
         t, ch, _ = self._trainer({"train": 5})
         self._fetch(t, ch, {MessageType.ROUND: 5, MessageType.TASK_TO_PERFORM: "eval"})
-        assert t.fetch_success is True and t.task_to_perform == "eval"
+        assert t.fetch_success is False
+
+    def test_train_after_eval_same_version_is_accepted(self):
+        t, ch, _ = self._trainer({"eval": 5})
+        self._fetch(t, ch, {MessageType.ROUND: 5, MessageType.TASK_TO_PERFORM: "train"})
+        assert t.fetch_success is True and t.task_to_perform == "train"
 
     def test_newer_version_is_accepted(self):
         t, ch, _ = self._trainer({"train": 5})

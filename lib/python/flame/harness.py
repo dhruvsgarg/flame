@@ -11,6 +11,7 @@
 """
 
 import hashlib
+import os
 
 import torch
 import torch.utils.data as data_utils
@@ -21,6 +22,16 @@ DEFAULT_TEST_SAMPLES = {"stub": 256, "tiny_cpu": 512}
 # Stub GPU-compute charge: lognormal fit to run_20260702_125743 real_gpu_time_s (p10/50/90 .026/.10/.25s).
 DEFAULT_STUB_COMPUTE_MEDIAN_S = 0.10
 DEFAULT_STUB_COMPUTE_SIGMA = 0.9
+
+
+# S1: known sim bugs a harness run may re-inject, so a campaign proves each is caught.
+INJECTABLE_BUGS = ("no_busy_hold", "order_by_sct", "freeze_trainer_clock")
+
+
+def injected(bug: str) -> bool:
+    """True when FLAME_INJECT_BUG (comma list) names `bug`; unset in production."""
+    assert bug in INJECTABLE_BUGS, bug
+    return bug in os.environ.get("FLAME_INJECT_BUG", "").split(",")
 
 
 def _hp(hp, *keys, default=None):

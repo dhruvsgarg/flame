@@ -33,6 +33,11 @@ import torch
 import torch.nn as nn
 import yaml
 
+import sys as _sys
+
+_sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+import fl_data  # noqa: E402
+
 from flame import harness
 
 logger = logging.getLogger(__name__)
@@ -89,6 +94,30 @@ def _oort_utility_acc(model, data, targets, norm_n, device, sample_size=None):
     return (norm_n * math.sqrt(sumsq / nu) if nu else 0.0), acc
 
 
+class _LazyRows:
+    """`rows[idx_tensor]` over a map-style dataset, loading and caching each row once; `.targets` alike."""
+
+    def __init__(self, ds):
+        self.ds, self._x, self._y = ds, {}, {}
+        self.targets = _LazyTargets(self)
+
+    def _load(self, i):
+        if i not in self._x:
+            self._x[i], self._y[i] = self.ds[i]
+        return i
+
+    def __getitem__(self, idx):
+        return torch.stack([self._x[self._load(int(i))] for i in idx])
+
+
+class _LazyTargets:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __getitem__(self, idx):
+        return torch.tensor([self.rows._y[self.rows._load(int(i))] for i in idx], dtype=torch.long)
+
+
 class OracleUtilityProvider:
     """Lazily builds the trainer->data table + CIFAR pool, then injects per round."""
 
@@ -113,6 +142,7 @@ class OracleUtilityProvider:
         # Harness: rebuild the data the trainer holds (trainer load_data).
         self.harness_mode = harness.harness_mode(hp) if hp is not None else "off"
         self.harness_k = harness.harness_samples(hp, self.harness_mode) if hp is not None else 0
+        self.spec = fl_data.spec_for(hp) if hp is not None else fl_data.SPECS["cifar10"]
         self._table = None        # task_id -> {arrival_global_idx, total, onset_s, span_s}
         self._memo = {}           # task_id -> (model_version, visible, util, acc)
         self._imgs = self._targets = None
@@ -160,7 +190,8 @@ class OracleUtilityProvider:
             order = torch.randperm(n, generator=torch.Generator().manual_seed(seed))
             local = None
             if self.harness_mode == "stub":
-                local = harness.synthetic_dataset(n, (3, 32, 32), 10, seed_key=tid).tensors
+                local = harness.synthetic_dataset(n, self.spec.stub_shape, self.spec.num_classes,
+                                                  seed_key=tid).tensors
                 gidx = order  # positions into this trainer's own synthetic pool
             else:
                 gidx = torch.tensor(idx, dtype=torch.long)[order]
@@ -174,8 +205,10 @@ class OracleUtilityProvider:
         return table
 
     def _build_pool(self):
+        if self.spec.name == "google_speech":  # 84k clips: load only the rows a replay touches
+            return _LazyRows(fl_data.SpeechCommands("training")), None
         from torchvision.datasets import CIFAR10
-        ds = CIFAR10(self.data_root, train=True, download=True)
+        ds = CIFAR10(str(fl_data.dataset_dir("cifar10")), train=True, download=True)
         imgs = torch.from_numpy(ds.data).float().div_(255.0).permute(0, 3, 1, 2).contiguous()
         mean = torch.tensor(CIFAR_MEAN).view(1, 3, 1, 1)
         std = torch.tensor(CIFAR_STD).view(1, 3, 1, 1)
@@ -183,7 +216,7 @@ class OracleUtilityProvider:
 
     def _ensure(self, alpha, num_trainers):
         if self._table is None:
-            self._table = self._build_table(alpha, num_trainers)
+            self._table = self._build_table(alpha, num_trainers, dataset=self.spec.name)
             if self.harness_mode != "stub":
                 self._imgs, self._targets = self._build_pool()
             logger.info(f"[ORACLE_INJECT] table built: {len(self._table)} trainers")
@@ -212,7 +245,7 @@ class OracleUtilityProvider:
                     util, acc = memo[2], memo[3]
                 else:
                     g = info["arrival_global_idx"][:vis]
-                    imgs, targets = info["local"] or (self._imgs, self._targets)
+                    imgs, targets = info["local"] or (self._imgs, self._imgs.targets if self._targets is None else self._targets)
                     util, acc = _oort_utility_acc(
                         model, imgs[g], targets[g], norm_n=vis,
                         device=device, sample_size=self.sample_size)

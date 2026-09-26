@@ -196,6 +196,16 @@ def test_ev15_same_version_redispatch_needs_timeout_and_policy(tmp_path):
     assert _status(run, "EV15_one_task_per_version") == "PASS"
 
 
+def test_ev15_eval_after_train_same_version_fails_train_after_eval_passes(tmp_path):
+    agg, tr = _clean_run()
+    d = [e for e in agg if e["event"] == "dispatch" and e.get("task") == "train"][-1]
+    bad = agg + [{**d, "task": "eval", "ts": 60}]
+    assert _status(_write_run(tmp_path, bad, tr), "EV15_one_task_per_version") == "FAIL"
+    first = next(e for e in agg if e["event"] == "dispatch" and e.get("task") == "train")
+    ok = [{**first, "task": "eval", "ts": first["ts"] - 0.05}] + agg  # eval first, then train, same version
+    assert _status(_write_run(tmp_path / "b", ok, tr), "EV15_one_task_per_version") == "PASS"
+
+
 def test_ev15_duplicate_commit_fails(tmp_path):
     agg, tr = _clean_run()
     c = next(e for e in agg if e["event"] == "agg_round")
@@ -215,3 +225,43 @@ def test_ev5_sends_after_last_commit_are_not_lost(tmp_path):
     for r in (8, 9):  # two uploads cut off by the stop
         tr[T1].append({"event": "task_send", "round": r, "ts": 1e9 + r, "task_to_perform": "train"})
     assert _status(_write_run(tmp_path, agg, tr), "EV5_commit_accounting") == "PASS"
+
+
+def test_ev12_trace_starved_run_reached_budget_passes(tmp_path):
+    # FX-D12: a faithful starvation keeps selecting on the clock; the budget is consumed.
+    agg, tr = _clean_run()
+    agg.append({"event": "selection", "task": "train", "ts": 9.0, "chosen": [], "num_chosen": 0,
+                "vclock_now": 100.0})
+    run = _write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 100})
+    assert _status(run, "EV12_reached_budget") == "PASS"
+
+
+def test_ev3_frozen_trainer_clock_fails(tmp_path):
+    # S1 injected bug freeze_trainer_clock: the trainer keeps its first stamp.
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round" and e["round"] == 2:
+            e["sim_send_ts"], e["sim_completion_ts"] = 0.0, 5.0
+    assert _status(_write_run(tmp_path, agg, tr), "EV3_duration_model") == "FAIL"
+
+
+def _unavail_T1(monkeypatch):
+    from sortedcontainers import SortedDict
+    monkeypatch.setattr(ev, "_ground_truth", lambda run: {T1: SortedDict({0.0: "UN_AVL", 50.0: "AVL_TRAIN"}),
+                                                          T2: SortedDict()})
+
+
+def test_ev16_unavailable_commit_without_withhold_fails(tmp_path, monkeypatch):
+    # S1 injected bug order_by_sct: T1 is UN_AVL at its sct yet committed with no withheld delivery.
+    _unavail_T1(monkeypatch)
+    assert _status(_write_run(tmp_path, *_clean_run()), "EV16_withheld_delivery") == "FAIL"
+
+
+def test_ev16_withheld_at_next_avail_passes(tmp_path, monkeypatch):
+    _unavail_T1(monkeypatch)
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round":
+            agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
+                        "delivery_ts": 50.0, "actual_commit_ts": 50.0})
+    assert _status(_write_run(tmp_path, agg, tr), "EV16_withheld_delivery") == "PASS"

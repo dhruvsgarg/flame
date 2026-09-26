@@ -30,24 +30,27 @@ section already says.
 
 1. **Live ledger, not a log.** Every line must be true *now*. No dated "update:" notes, no changelogs, no
    narrative. `git log` is the history.
-2. **Fixed sections, fixed purposes.** Each child has: Preamble · Status grid · Next steps · Lessons (dos) ·
-   Tripwires (don'ts) · Done. Content goes in exactly one section.
+2. **Fixed sections, fixed purposes.** Each child has: Preamble · Status grid · Active build (optional:
+   design + task list of multi-session work, folded into Built when it lands) · Next steps · Lessons (dos) ·
+   Tripwires (don'ts) · Built. Content goes in exactly one section. Dos and don'ts use the same topic groups.
 3. **Next steps are the persistent queue across sessions.** An item is `ID · action · exit criterion ·
    state` (`todo` / `wip` / `blocked: <why>`). Ordered; the top item is what the next session picks up.
-4. **Close means move.** When an item finishes, delete it from Next steps and add ONE line to Done
-   (`ID · what landed · evidence/commit`) in the same edit. When Done passes ~15 lines, fold the oldest
-   into one summary line.
+4. **Close means delete.** When an item finishes, delete it from Next steps. If it added a capability,
+   add or extend ONE line in Built (what exists now, not how it got there; its `FX-D`/`S` ID stays because
+   code cites it). History and evidence live in code, tests and `git log`, not in a ledger.
 5. **Lessons are dos, tripwires are don'ts.** Each is at most 30 words, carries an ID, and is edited in
    place — never a near-duplicate. A falsified hypothesis becomes a tripwire; a confirmed pattern becomes a
    lesson; anything else is deleted.
 6. **Put it at the lowest scope that is true.** It goes here only if it holds for BOTH backprop and
    forward-gradient training. Otherwise it goes in the child. Promote an entry here when the second track
    confirms it.
-7. **Evidence, not argument.** Every status cell, lesson and Done line cites a run dir, a parity JSON, a
+7. **Evidence, not argument.** Every status cell and lesson cites a run dir, a parity JSON, a
    test, or a commit. "Should work" is `todo`, not done.
 8. **IDs are stable.** Never renumber or reuse one; other lines cite them. Retire an ID by deleting its line.
-9. **Budget.** Parent ≤ ~250 lines, each child ≤ ~300. Over budget means Done or the lessons need folding.
-   Size is a symptom of logging.
+9. **Crisp, current, not stale.** No hard line budget (the child may carry a task design while it is
+   being built), but every line must earn its place: a current-state doc of status, next steps, decisions,
+   dos and don'ts. Rewrite in place instead of appending; delete what a newer fact supersedes. Update at
+   decision points and test pauses, not mid-dev.
 10. **Whole-doc pass on every edit.** Re-read the section you touched and push down or delete anything the
     new fact supersedes, in the same edit.
 11. **Open questions for the operator** live at the bottom of the child as one line each and are removed
@@ -71,8 +74,8 @@ section already says.
   aggregators, trainers or a multi-test sweep — local harness or cluster — goes into ONE script the operator
   launches (killing that parent kills every child). The script writes all results under one
   `experiments/<suite>_<ts>/` dir with a summary file; Claude reads that dir afterwards. Claude hands over the
-  command, the expected duration and the prediction (what result confirms and what refutes). Assume 3-4
-  nodes; a baseline's real and sim legs run one at a time on one node.
+  command, the expected duration and the prediction (what result confirms and what refutes). Two nodes are
+  available; legs run in parallel only in isolated slots (R18).
 - **R5 One mechanism per run** when a fix could perturb another baseline. Shared roots before per-baseline
   roots: a bug failing rungs on 2+ baselines outranks one that fails on 1.
 - **R6 Run length follows the residual's shape.** Per-cycle mechanisms show up in 15-45 min. Accumulating or
@@ -94,9 +97,9 @@ section already says.
   shared so an improvement in one project lands in the other (propagate in the same workstream, S-queue).
   When shared code is complex or a nuisance to maintain, simplify or reimplement it instead of stacking
   special cases onto it.
-- **R14 Harness first.** Every code change is validated on the no-GPU harness before any GPU run:
-  `scripts/harness_campaign.sh` (unattended, all baselines x traces, ~4.5h) or a targeted
-  `scripts/harness_suite.sh`. It grades each leg against the paradigm's ground-truth events
+- **R14 Harness first.** Every code change is validated on the no-GPU harness before any GPU run, through
+  `scripts/harness_pool.py` tiers (T1 delta ~5 min · T2 sim-only matrix · T3 real-path pairs · T4 nightly ·
+  G1/G2 GPU; `--datasets cifar10|google_speech|all`; FX-N22) or a targeted `scripts/harness_suite.sh`. It grades each leg against the paradigm's ground-truth events
   (`scripts/parity/event_invariants.py`) and each pair for parity. GPU real/sim runs come only after the
   harness is green for the affected baselines and traces. Every scripted step carries a hard timeout so one
   hang never stalls the rest; long runs are sized so the operator can launch and sleep.
@@ -106,8 +109,10 @@ section already says.
   docstring or its doc row); code comments cite the ID only.
 - **R17 No redundancy.** Define once, fix once, and refer to it (file:symbol, test, commit, doc ID) everywhere
   else. Never restate a fact across docs and code; the readiness docs point, they don't copy.
-- **R18 Fast, never at correctness' cost.** Use every idle core (pytest `-n auto`, spare cores widen each
-  trainer's pin block, parallel analysis). Never oversubscribe cores or share a broker/node between graded legs.
+- **R18 Fast, never at correctness' cost.** Use every idle core (pytest `-n auto`, parallel legs, parallel
+  analysis). Legs share a node only in isolated slots: disjoint physical cores (`taskset`), a private MQTT
+  broker, own GPUs, own run tag (`harness_pool.py`, FX-N22). Never oversubscribe cores or share a broker
+  between graded legs; a solo-vs-parallel control proves a slot is isolation-equivalent.
 - **R19 Smoke before hand-off; fail in minutes.** Before handing over any long script, Claude runs its ≤5-min
   smoke itself (the one R4 exception: foreground, hard timeout, one script): `pytest --collect-only` plus one
   short real/sim pair showing commits on both legs. Every long script opens with that gate (campaign: P00)
@@ -226,6 +231,8 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
   with `str(x).lower() == "true"`.
 - **T14** Don't run module-level code that calls `sys.exit` in a `test_*.py`; it aborts xdist collection for
   the whole suite. Wrap it in a test function plus `__main__`.
+- **T15** Don't edit a shell script while a run of it is live; bash reads it incrementally and the run dies
+  on a shifted byte (`smoke_20260926_122039` summary lost).
 - **T12** Don't add a fix to one copy of a shared concept (pacer, drain, residence) without checking every
   copy.
 
@@ -236,12 +243,12 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
 Cross-cutting work that serves both tracks. Felix drives it now (R12); each item must leave FluxTune
 green (R10).
 
-- **S1 · No-GPU local harness · wip (Felix half landed; campaign 3 = FX-N1).** Landed: stub/tiny_cpu modes
-  (`flame/harness.py`), `FLAME_TRACE_TIME_SCALE`, event checker EV0-EV15, `harness_suite.sh`,
-  `harness_campaign.sh`. Caveat: absolute timeouts (90s abandon, join) are not scaled. Still to do: a fwdllm-family
+- **S1 · No-GPU local harness · wip (Felix half landed; parallel pool = FX-N22; injected-bug read = FX-N20).** Landed: stub/tiny_cpu
+  modes (`flame/harness.py`), `FLAME_TRACE_TIME_SCALE`, event checker EV0-EV16, `harness_suite.sh`,
+  `harness_pool.py` (parallel isolated slots, both datasets), `--inject-bug` (`FLAME_INJECT_BUG`: no_busy_hold → EV10, order_by_sct → EV16,
+  freeze_trainer_clock → EV3; campaign P11a-c). Caveat: absolute timeouts (90s abandon, join) are not scaled. Still to do: a fwdllm-family
   stub, a scenario library (scarcity, stragglers, mid-flight drop, lap boundaries). *Exit:* all six Felix
-  baselines + the fwdllm family run real+sim locally, and three injected bugs (drop the one-in-flight hold; order
-  by `sct` not delivery time; freeze the trainer clock) are each caught by an INV/EXACT rung.
+  baselines + the fwdllm family run real+sim locally, and P11a-c read CAUGHT ×3.
 - **S2 · One parity pipeline for every example · todo.** Generalise fwdllm's `run_parity.py` /
   `replicate_floor.py` / `profile_sim_charges.py` / preflight so they drive async_cifar10 and google_speech
   too: auto-pairing on flag + length + commit, two-sided floors, median-over-real-legs, `--control`,
@@ -257,7 +264,7 @@ green (R10).
 - **S4 · Legacy config removal · awaiting operator sign-off per row.** Inventory:
   | path | what | proposal |
   |---|---|---|
-  | `async_google_speech/trainer/config_*` (3.5k JSON, 33M) + `aggregator/*.json` + `expt_runs_*.sh` | 2024 per-trainer configs | delete after FX-N10 lands the launcher path |
+  | `async_google_speech/trainer/config_*` (3.5k JSON, 33M) + `aggregator/*.json` + `expt_runs_*.sh` + `*/pytorch/main*.py` | 2024 per-trainer configs + scripts; splits already imported (FX-N10) | delete once FX-N10 grades speech on the launcher; keep `data/` |
   | `async_cifar10/launch/` | stale, unused copy of `flame/launch` | delete |
   | `async_cifar10/{socc24_mlsys25,euromlsys25}_expts/`, `expt_scripts_2026/{scripts,configs}` | DEPRECATED shell/JSON runs | delete |
   | `async_cifar10/{eurosys26,socc26}_expts/` (10G) | paper logs/plots/notebooks | archive outside the repo, keep plots |
@@ -274,14 +281,15 @@ green (R10).
 - **S8 · Port one-task-per-version to FluxTune · parked (FluxTune parked; see its preamble).** FX-D9 landed it for asyncfl +
   the syncfl trainer: dispatch ledger → selector no-repeat guard, `taskRetryPolicy`, (trainer, version) commit
   dedup, trainer-side discard, EV15. fwdllm today holds committers to cycle close and keys its trainer guard on
-  `_updates_returned_upto_round`; unify on the same rule and checker. *Exit:* EV15 green on the fwdllm board.
+  `_updates_returned_upto_round`; unify on the same rule and checker, and drop fwdllm's
+  `_SUBSTRATE_OWNS_INFLIGHT_RELEASE = False` opt-out (FX-L33). *Exit:* EV15 green on the fwdllm board.
 - **S7 · Logging hygiene, all examples and baselines · todo.** Replace every `print` with the module logger at
   the right level; the default file log carries INFO+ that matters, DEBUG is opt-in. Fold into S6 (diag
   gating) but land per example, harness-green each time.
 
-## Shared Done
-- **S0** `dg_flame` → torch 2.12.1+cu129 / torchvision 0.27.1+cu129 (driver 12.9); cu13 libs removed; jayne 8/8 GPUs
-  verified (matmul, cuDNN, ResNet). Other nodes unchecked.
+## Shared built
+- **S0** `dg_flame` → torch 2.12.1+cu129 / torchvision 0.27.1+cu129 (driver 12.9); cu13 libs removed. jayne GPU 1
+  shows an uncorrected ECC error (2026-09-26; needs an admin reset); `harness_pool.py` skips such GPUs.
 - Parity methodology (causal ladder, roles/tiers, dependency gating), availability substrate v1, and the
   fwdllm floor/control/median grading all landed — derivations in PARITY.md §1-§5, UNAVAILABILITY_DESIGN.md,
   simulate_fwdllm.md §A-§D.

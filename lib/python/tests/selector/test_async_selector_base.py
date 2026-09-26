@@ -415,3 +415,20 @@ class TestSelectorsDrawIndependently:
         fedbuff = FedBuffSelector(_seed=7, c=4, aggGoal=2)._choose(ends, 8, ctx)
         arand = AsyncRandomSelector(_seed=7, c=4, aggGoal=2)._choose(ends, 8, ctx)
         assert fedbuff != arand
+
+
+class TestDispatchConsumesReceipt:
+    """FX-D12: a dispatch starts a new outstanding task; an earlier receipt of that end (eval
+    reply, commit) must not free it at the next cleanup (FX-N18 22s real queue_wait tail)."""
+
+    def test_redispatched_end_survives_cleanup(self, build):
+        sel = build()
+        sel.requester = "agg"
+        sel.selected_ends["agg"] = set()
+        sel.ordered_updates_recv_ends.append("e")
+        if hasattr(sel, "trainer_eval_recv_ends"):
+            sel.trainer_eval_recv_ends.append("e")
+        sel.process_chosen_candidate_dict({"e": None}, sel.selected_ends["agg"])
+        assert "e" not in sel.ordered_updates_recv_ends
+        assert "e" not in getattr(sel, "trainer_eval_recv_ends", [])
+        assert "e" in sel.all_selected and "e" in sel.selected_ends["agg"]

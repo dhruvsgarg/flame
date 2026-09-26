@@ -64,6 +64,22 @@ expt_pin_pythonpath() {
   export PYTHONPATH="$repo_root/lib/python${PYTHONPATH:+:$PYTHONPATH}"
 }
 
+# _expt_pids <pattern> -- this user's matching PIDs in this slot's FLAME_RUN_TAG (untagged if unset) (FX-N22).
+_expt_pids() {
+  local pid tag
+  for pid in $(pgrep -u "$(id -u)" -f "$1" 2>/dev/null); do
+    tag="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^FLAME_RUN_TAG=//p')"
+    [ "$tag" = "${FLAME_RUN_TAG:-}" ] && echo "$pid"
+  done
+}
+
+# _expt_pkill TERM|KILL <pattern> -- signal _expt_pids' matches.
+_expt_pkill() {
+  local pids; pids="$(_expt_pids "$2")"
+  [ -n "$pids" ] && kill -"$1" $pids 2>/dev/null
+  return 0
+}
+
 # FL worker process patterns — single source of truth for interrupt teardown and
 # the clean-slate preflight (run orchestrator, trainers, aggregator, watcher).
 EXPT_WORKER_PATS=(
@@ -83,7 +99,7 @@ expt_assert_clean_slate() {
   _ecs_scan() {
     local p pids out=""
     for p in "${EXPT_WORKER_PATS[@]}"; do
-      pids="$(pgrep -u "$uid" -f "$p" 2>/dev/null | tr '\n' ' ')"
+      pids="$(_expt_pids "$p" | tr '\n' ' ')"
       [ -n "$pids" ] && out+="    ${p} -> ${pids}\n"
     done
     printf '%b' "$out"
@@ -95,11 +111,11 @@ expt_assert_clean_slate() {
     if [ "${EXPT_AUTOCLEAN:-0}" = "1" ]; then
       echo "  [$label] EXPT_AUTOCLEAN=1 → killing and re-checking ..." >&2
       # TERM the orchestrator first (lets it tear down its own group), then KILL all.
-      pkill -TERM -u "$uid" -f 'flame.launch.run_experiment' 2>/dev/null || true
+      _expt_pkill TERM 'flame.launch.run_experiment'
       sleep "${EXPT_CLEAN_GRACE_S:-3}"
       local p
       for p in "${EXPT_WORKER_PATS[@]}"; do
-        pkill -9 -u "$uid" -f "$p" 2>/dev/null || true
+        _expt_pkill KILL "$p"
       done
       sleep 2
       dirty="$(_ecs_scan)"
@@ -239,13 +255,13 @@ expt_launch() {
           kill -TERM -"$run_pid" 2>/dev/null || true
           kill -TERM  "$run_pid" 2>/dev/null || true
           [ -n "$watcher_pid" ] && kill -TERM "$watcher_pid" 2>/dev/null
-          pkill -TERM -f converge_watch.py 2>/dev/null || true
+          _expt_pkill TERM converge_watch.py
           sleep "${EXPT_KILL_GRACE_S:-20}"
           kill -KILL -"$run_pid" 2>/dev/null || true
           kill -KILL  "$run_pid" 2>/dev/null || true
           local p
           for p in "${EXPT_WORKER_PATS[@]}"; do
-            pkill -9 -f "$p" 2>/dev/null || true
+            _expt_pkill KILL "$p"
           done
           break
         fi
@@ -275,15 +291,15 @@ expt_launch() {
     # $watcher_pid is the tee of the `converge_watch.py | tee` pipeline, so also
     # kill the poller by name.
     [ -n "$watcher_pid" ] && kill -TERM "$watcher_pid" 2>/dev/null
-    pkill -TERM -f converge_watch.py 2>/dev/null || true
+    _expt_pkill TERM converge_watch.py
     sleep "${EXPT_INT_GRACE_S:-5}"
     kill -KILL -"$run_pid" 2>/dev/null || true
     kill -KILL  "$run_pid" 2>/dev/null || true
-    pkill -9 -f 'flame.launch.run_experiment' 2>/dev/null || true
-    pkill -9 -f 'trainer/forward_training'  2>/dev/null || true
-    pkill -9 -f 'trainer/pytorch/main.py'   2>/dev/null || true
-    pkill -9 -f 'aggregator/pytorch/main_'  2>/dev/null || true
-    pkill -9 -f converge_watch.py           2>/dev/null || true
+    _expt_pkill KILL 'flame.launch.run_experiment'
+    _expt_pkill KILL 'trainer/forward_training'
+    _expt_pkill KILL 'trainer/pytorch/main.py'
+    _expt_pkill KILL 'aggregator/pytorch/main_'
+    _expt_pkill KILL converge_watch.py
     echo "[$(date '+%F %T')] INTERRUPT — teardown complete for '$label'. GPU/RAM freed." >&2
     exit 130
   }
@@ -303,8 +319,8 @@ expt_launch() {
   [ -n "$cj" ] && [ -f "$cj" ] && EXPT_LAST_CONVERGED=1
   [ -n "$sj" ] && [ -f "$sj" ] && EXPT_LAST_STALLED=1
   if [ "$EXPT_LAST_CONVERGED" = "1" ] || [ "$EXPT_LAST_STALLED" = "1" ]; then
-    pkill -9 -f "trainer/forward_training" 2>/dev/null || true
-    pkill -9 -f "aggregator/pytorch/main_" 2>/dev/null || true
+    _expt_pkill KILL "trainer/forward_training"
+    _expt_pkill KILL "aggregator/pytorch/main_"
   fi
 
   # Backstop-watchdog verdict: it already swept EXPT_WORKER_PATS itself, but sweep
@@ -315,7 +331,7 @@ expt_launch() {
     EXPT_LAST_TIMED_OUT=1
     local p
     for p in "${EXPT_WORKER_PATS[@]}"; do
-      pkill -9 -f "$p" 2>/dev/null || true
+      _expt_pkill KILL "$p"
     done
     rm -f "$timeout_marker"
   fi
@@ -376,10 +392,10 @@ expt_assert_run() {
 
 # Kill every FL worker of this user by name (the last-resort sweep after a group kill).
 _expt_sweep_workers() {
-  pkill -9 -u "$(id -u)" -f 'flame.launch.run_experiment' 2>/dev/null || true
-  pkill -9 -u "$(id -u)" -f 'trainer/pytorch/main.py'     2>/dev/null || true
-  pkill -9 -u "$(id -u)" -f 'trainer/forward_training'    2>/dev/null || true
-  pkill -9 -u "$(id -u)" -f 'aggregator/pytorch/main_'    2>/dev/null || true
+  _expt_pkill KILL 'flame.launch.run_experiment'
+  _expt_pkill KILL 'trainer/pytorch/main.py'
+  _expt_pkill KILL 'trainer/forward_training'
+  _expt_pkill KILL 'aggregator/pytorch/main_'
 }
 
 # _expt_timed_teardown label pgid grace_s -- TERM the group (its own traps clean up), then KILL + sweep.

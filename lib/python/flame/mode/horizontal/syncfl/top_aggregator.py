@@ -230,6 +230,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # trainer_event_dict=None when sim_unavailability=False → no-op on
         # all current runs; gate-on enables the oracular trace-read path.
         self._init_availability(self.config)
+        self._claim_inflight_release(self.cm._channels.values())
 
         # E.1: shared sim reorder buffer for withheld-update re-injection
         # (mirrors asyncfl's _sim_buffer; stays empty when gate is off).
@@ -888,6 +889,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         the join actually takes.
         """
         self._join_barrier_done = True
+        self._run_start_wall_ts = time.time()  # FX-D15: sim wall ceiling excludes startup
         if not self.simulated:
             self.agg_start_time_ts = time.time()
 
@@ -1184,7 +1186,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             return
         _sim_wall_ceil = getattr(self.config.hyperparameters, "sim_wall_ceiling_s", None)
         _max_wall_rt = getattr(self.config.hyperparameters, "max_wall_runtime_s", None)
-        _wall_elapsed = time.time() - self.agg_start_time_ts
+        _wall_elapsed = time.time() - getattr(self, "_run_start_wall_ts", self.agg_start_time_ts)
         if _sim_wall_ceil:
             _failsafe_s = float(_sim_wall_ceil)
         elif _max_wall_rt:

@@ -108,6 +108,28 @@ def _read_numa_nodes() -> dict:
     return nodes
 
 
+def slot_pids(pattern: str) -> list:
+    """This user's PIDs matching `pattern` in this slot's FLAME_RUN_TAG (= expt_runner.sh _expt_pids, FX-N22)."""
+    try:
+        out = subprocess.run(["pgrep", "-u", str(os.getuid()), "-f", pattern],
+                             capture_output=True, text=True, check=False).stdout.split()
+    except Exception:
+        return []
+    mine = os.environ.get("FLAME_RUN_TAG", "")
+    pids = []
+    for pid in map(int, out):
+        if pid == os.getpid():
+            continue
+        try:
+            env = open(f"/proc/{pid}/environ", "rb").read().split(b"\0")
+        except OSError:
+            continue
+        tag = next((e[len(b"FLAME_RUN_TAG="):].decode() for e in env if e.startswith(b"FLAME_RUN_TAG=")), "")
+        if tag == mine:
+            pids.append(pid)
+    return pids
+
+
 class ExperimentRunner:
     """Run experiments end-to-end against a generic example layout."""
 
@@ -239,7 +261,7 @@ class ExperimentRunner:
                 if len(_numa) >= 2:
                     _agg_node = min(_numa, key=lambda nid: len(_numa[nid]))
                     _node_cores = _numa[_agg_node]
-                    _n = min(8, max(2, len(_node_cores) // 8))
+                    _n = int(os.environ.get("FLAME_AGG_CORES") or min(8, max(2, len(_node_cores) // 8)))
                     agg_pin_cores = set(_node_cores[:_n])
                     reserved_cores = set(agg_pin_cores)
                     _other_cores = sorted(c for nid, cpus in _numa.items()
@@ -254,7 +276,8 @@ class ExperimentRunner:
                           f"{len(_overflow_cores)} core(s) past "
                           f"{len(_other_cores)} trainers")
                 else:
-                    _n = min(8, max(2, len(_all) // 8))
+                    # FX-N22: a harness slot sets the aggregator's core share.
+                    _n = int(os.environ.get("FLAME_AGG_CORES") or min(8, max(2, len(_all) // 8)))
                     agg_pin_cores = reserved_cores = set(_all[:_n])
                     print(f"  CPU partition: {len(reserved_cores)} core(s) reserved for "
                           f"aggregator {sorted(reserved_cores)}, "
@@ -296,7 +319,10 @@ class ExperimentRunner:
                 _visible = _torch.cuda.device_count()
             except Exception:
                 _visible = 0
-            _idle_gpus = [g for g in range(_visible) if g not in _gpu_ids]
+            # FX-N22: a harness slot never borrows a GPU outside its own set.
+            _slot_gpus = os.environ.get("FLAME_SLOT_GPUS", "")
+            _cand = [int(g) for g in _slot_gpus.split(",") if g] if _slot_gpus else range(_visible)
+            _idle_gpus = [g for g in _cand if g not in _gpu_ids]
             if _idle_gpus:
                 _agg_gpu = _idle_gpus[0]        # a fully idle physical GPU
             elif _gpu_ids:
@@ -734,6 +760,9 @@ class ExperimentRunner:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         d = self.experiments_dir / f"run_{timestamp}_{exp.name}"
         d.mkdir(parents=True, exist_ok=True)
+        if os.environ.get("FLAME_RUN_DIR_FILE"):  # FX-N22: exact leg discovery for parallel harness slots
+            with open(os.environ["FLAME_RUN_DIR_FILE"], "a") as f:
+                f.write(f"{d}\n")
         return d
 
     def _build_trainer_spawn_command(self, exp: ExperimentConfig) -> list:
@@ -796,26 +825,15 @@ class ExperimentRunner:
         Matches ONLY the example's main scripts — never the batch runner itself
         (``run_experiment``) — so it is safe to call from inside the batch loop."""
         for pat in self._STRAGGLER_PATTERNS:
-            try:
-                subprocess.run(["pkill", "-9", "-f", pat], check=False,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
+            for pid in slot_pids(pat):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
         # best-effort: wait until our user's GPU procs are gone (or timeout)
         deadline = time.time() + gpu_settle_timeout_s
         while time.time() < deadline:
-            try:
-                still_running = False
-                for pat in self._TRAINER_STRAGGLER_PATTERNS:
-                    out = subprocess.run(
-                        ["pgrep", "-f", pat],
-                        capture_output=True, text=True, check=False)
-                    if out.stdout.strip():
-                        still_running = True
-                        break
-                if not still_running:
-                    break
-            except Exception:
+            if not any(slot_pids(pat) for pat in self._TRAINER_STRAGGLER_PATTERNS):
                 break
             time.sleep(2)
         # drop spawner handles so stale references aren't reused next iteration

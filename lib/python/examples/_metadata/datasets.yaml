@@ -1,0 +1,39 @@
+# Dataset profiles (FX-N10). `debug_run.sh --dataset <name>` deep-merges `experiment` into every
+# experiment of the parity template (felix_oort_refl_feddance_alpha0.1_parity.yaml, written for
+# cifar10), and `by_optimizer.<sort>` into baselines whose optimizer is that sort. Baseline-defining
+# knobs stay in baselines.yaml; only what differs per dataset lives here.
+# Data lives outside the repo: <data_root>/<dataset>/ (cifar10/cifar-10-batches-py,
+# google_speech/SpeechCommands/speech_commands_v0.02). fl_data.dataset_dir takes $FLAME_DATA_ROOT, then the
+# first entry below that has the dataset, else the old in-repo dir (fwdllm shares the root: fl_datasets/fwdllm).
+data_roots:
+  - /coc/scratch/dgarg/fl_datasets
+
+datasets:
+  cifar10: {}   # the template itself
+
+  google_speech:
+    description: >-
+      SpeechCommands v0.02 (35 words, 1 s at 16 kHz), ResNet34-1D on raw waveforms (fl_data.py).
+      Reference = the 2024 SoCC runs (expt_runs_speech_n100_14Jul24_felix_*.sh): n=100, alpha=0.1
+      split (dataset_splits/google_speech_alpha0.1_n100.yaml), batch 32, trainer Adam, c 30,
+      aggGoal 10, fedbuff server lr table 'google-speech'. Carried over from async_cifar10 since:
+      launcher, registry delays (identical for trainers 1-100), syn_*/mobiperf_3st traces, streaming,
+      selector knobs, join barrier n-10. Trainer lr 0.000195 (2024 non-oort configs): a centralized check on
+      10 trainers' data (4 epochs) reached 43% test acc at 0.000195, 35% at 0.001, and stayed at chance at
+      the 2024 '_oort' value 0.04. The FL value is confirmed on GPU (FX-N10 sweep: 0.000195 vs 0.001).
+    experiment:
+      trainer:
+        num_trainers: 100
+        dataset: {name: google_speech, dirichlet_alpha: 0.1}
+        hyperparameters: {batchSize: 32, learningRate: 0.000195}
+        config_overrides:
+          hyperparameters: {dataset_name: google_speech}
+      aggregator:
+        config_overrides:
+          hyperparameters: {dataset_name: google_speech, batchSize: 32, learningRate: 0.000195,
+                            min_trainers_to_start: 90}
+    by_optimizer:
+      fedbuff:
+        aggregator:
+          config_overrides:
+            optimizer: {kwargs: {dataset_name: google-speech}}

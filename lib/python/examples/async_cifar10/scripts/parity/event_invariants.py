@@ -193,9 +193,14 @@ def ev3_duration_model(run):
     sim: sct = send + duration + leg."""
     reg = _registry_delays()
     sim = _simulated(run)
-    n = bad_max = bad_budget = bad_sct = 0
+    n = bad_max = bad_budget = bad_sct = bad_stamp = 0
     examples = []
     legs = []
+    # S1: the trainer's clock is the stamp it was dispatched with (catches a frozen trainer clock).
+    stamps = defaultdict(set)
+    for e in _events(run, "dispatch"):
+        if e.get("sim_send_ts") is not None:
+            stamps[(e.get("end_id"), e.get("round"), e.get("task", "train"))].add(round(e["sim_send_ts"], 6))
     for tid, evs in run["trainers"].items():
         d_true = _effective_d(run, reg[tid]) if tid in reg else None
         for e in evs:
@@ -211,6 +216,10 @@ def ev3_duration_model(run):
                 examples.append((tid[-4:], "D!=registry", budget, d_true))
             if sim and None not in (e.get("sim_send_ts"), e.get("sim_completion_ts"), dur):
                 legs.append((tid, e["sim_completion_ts"] - e["sim_send_ts"] - dur))
+                sent = stamps.get((tid, e.get("round"), "train"))
+                if sent and round(e["sim_send_ts"], 6) not in sent:
+                    bad_stamp += 1
+                    examples.append((tid[-4:], "send_ts!=dispatch", e["sim_send_ts"], sorted(sent)))
     if n == 0:
         return _res("SKIP", "no train trainer_round events")
     # sct = send + dur + leg, where the (trainer-config) leg is one non-negative constant per run.
@@ -221,9 +230,10 @@ def ev3_duration_model(run):
             if abs(x - leg) > _EPS_S or x < -_EPS_S:
                 bad_sct += 1
                 examples.append((tid[-4:], "sct!=send+dur+leg", round(x, 3), round(leg, 3)))
-    bad = bad_max + bad_budget + bad_sct
+    bad = bad_max + bad_budget + bad_sct + bad_stamp
     return _res("PASS" if bad == 0 else "FAIL",
                 f"rounds={n} dur!=max={bad_max} D!=registry={bad_budget} sct!=send+dur+leg={bad_sct}"
+                + (f" send_ts!=dispatch={bad_stamp}" if sim else "")
                 + (f" leg={leg:.3f}s" if leg is not None else ""), examples=examples[:10])
 
 
@@ -438,11 +448,13 @@ def ev12_reached_budget(run):
     if not budget or not commits:
         return _res("SKIP", "no budget or commits")
     budget = float(budget)
+    # Span of commits AND selections: a trace-starved run still consumes its budget (FX-D12).
+    sels = [e for e in run["agg"] if e.get("event") == "selection"]
     if _simulated(run):
-        reached = max(e.get("vclock_now") or 0.0 for e in commits)
+        reached = max(e.get("vclock_now") or 0.0 for e in commits + sels)
     else:
-        sels = [e["ts"] for e in run["agg"] if e.get("event") == "selection"]
-        reached = commits[-1]["ts"] - (min(sels) if sels else commits[0]["ts"])
+        ts = [e["ts"] for e in commits + sels]
+        reached = max(ts) - (min(e["ts"] for e in sels) if sels else commits[0]["ts"])
     ok = reached >= _BUDGET_FRAC * budget
     return _res("PASS" if ok else "FAIL", f"reached={reached:.0f}s budget={budget:.0f}s (need {_BUDGET_FRAC:.0%})")
 
@@ -473,12 +485,16 @@ def ev14_eval_sane(run):
 
 
 def ev15_one_task_per_version(run):
-    """FX-D9: each (trainer, task, model version) is answered once and committed once; the sim
-    aggregator re-dispatches the same one only after a timeout under a retry policy."""
+    """FX-D9: each (trainer, task, model version) is answered once and committed once, and no eval
+    follows a train at the same version (it would repeat the utility); the sim aggregator re-dispatches
+    the same one only after a timeout under a retry policy."""
     dup_send = 0
     for tid, evs in run["trainers"].items():
-        seen = Counter((e.get("task_to_perform"), e.get("round")) for e in evs if e.get("event") == "task_send")
+        sends = [(e.get("task_to_perform"), e.get("round")) for e in evs if e.get("event") == "task_send"]
+        seen = Counter(sends)
         dup_send += sum(c - 1 for c in seen.values() if c > 1)
+        trained = {v for t, v in sends if t == "train"}
+        dup_send += sum(1 for t, v in seen if t == "eval" and v in trained)
     discards = sum(1 for evs in run["trainers"].values() for e in evs if e.get("event") == "task_discard")
     commits = Counter()
     for e in _train_commits(run):
@@ -496,6 +512,8 @@ def ev15_one_task_per_version(run):
             key = (e.get("end_id"), e.get("task"))
             if last.get(key) == e.get("round") and not (retry_ok and key[0] in timed_out):
                 dup_dispatch += 1
+            elif key[1] == "eval" and last.get((key[0], "train")) == e.get("round"):
+                dup_dispatch += 1  # eval after train at the same version
             last[key] = e.get("round")
             timed_out.discard(key[0])
     if not run["trainers"] and not run["agg"]:
@@ -506,10 +524,66 @@ def ev15_one_task_per_version(run):
                 f"trainer_discards={discards}")
 
 
+def _ground_truth(run):
+    """task_id -> SortedDict trace at the run's scale (FLAME_TRACE_TIME_SCALE); None off-trace."""
+    if _trace(run) == "syn_0":
+        return None
+    from flame.availability.trace import read_trainer_unavailability
+    return read_trainer_unavailability(_trace(run))
+
+
+def ev16_withheld_delivery(run):
+    """Sim: a train update whose trainer is UN_AVL at its sct commits only as a withheld
+    delivery, at delivery_ts = next AVL after sct (FX-L12); catches committing at sct."""
+    if not _simulated(run):
+        return _res("SKIP", "sim-only (real send-gate is trainer-side, A8)")
+    gt = _ground_truth(run)
+    if not gt:
+        return _res("SKIP", "no availability trace")
+    from flame.availability.trace import next_avail_after, state_at
+    from flame.config import TrainerAvailState
+    held = {}
+    early = bad_dts = 0
+    examples = []
+    for e in _events(run, "withheld_delivery"):
+        held[(e.get("end_id"), round(float(e["sct"]), 3))] = e
+        tr = gt.get(e.get("end_id"))
+        if tr is not None:
+            sct = float(e["sct"])  # = ClientAvailability.compute_delivery_ts
+            want = sct if state_at(tr, sct) != TrainerAvailState.UN_AVL else next_avail_after(tr, sct)
+            if abs(float(e["delivery_ts"]) - want) > _EPS_S:
+                bad_dts += 1
+                examples.append((e["end_id"][-4:], "delivery_ts!=next_avl", e["delivery_ts"], want))
+        if e.get("actual_commit_ts") is not None and float(e["actual_commit_ts"]) < float(e["delivery_ts"]) - _EPS_S:
+            early += 1
+            examples.append((e["end_id"][-4:], "commit<delivery_ts", e["actual_commit_ts"], e["delivery_ts"]))
+    committed = {(t, e["round"] - st) for e in _train_commits(run) if e.get("round") is not None
+                 for t, st in zip(e.get("contributing_trainers") or [], e.get("staleness") or [])
+                 if st is not None}
+    unheld = n = 0
+    for tid, evs in run["trainers"].items():
+        tr = gt.get(tid)
+        if not tr:
+            continue
+        for e in evs:
+            if (e.get("event") != "trainer_round" or e.get("task_to_perform", "train") != "train"
+                    or e.get("sim_completion_ts") is None or (tid, e.get("round")) not in committed):
+                continue
+            n += 1
+            sct = float(e["sim_completion_ts"])
+            if state_at(tr, sct) == TrainerAvailState.UN_AVL and (tid, round(sct, 3)) not in held:
+                unheld += 1
+                examples.append((tid[-4:], "UN_AVL@sct committed unheld", e.get("round"), round(sct, 2)))
+    bad = unheld + early + bad_dts
+    return _res("PASS" if bad == 0 else "FAIL",
+                f"commits={n} withheld={len(held)} unavail_committed_unheld={unheld} "
+                f"commit_before_delivery={early} delivery_ts_mismatch={bad_dts}", examples=examples[:10])
+
+
 CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model, ev4_real_sleep,
           ev5_commit_accounting, ev6_staleness, ev7_agg_goal_cadence, ev8_concurrency_cap,
           ev9_selector_state, ev10_dispatch_one_in_flight, ev11_vclock, ev12_reached_budget,
-          ev13_no_stall, ev14_eval_sane, ev15_one_task_per_version]
+          ev13_no_stall, ev14_eval_sane, ev15_one_task_per_version, ev16_withheld_delivery]
 
 
 def check_run(run_dir: str) -> dict:

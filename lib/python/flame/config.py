@@ -16,6 +16,7 @@
 """Config parser."""
 
 import json
+import os
 import typing as t
 from enum import Enum
 
@@ -544,5 +545,8 @@ def transform_brokers(raw_brokers_config: dict):
         sort = raw_broker["sort"]
         host = raw_broker["host"]
         sort_to_host[sort] = host
+    # FX-N22: a harness slot's private broker (host[:port]); unset = config value.
+    if os.environ.get("FLAME_MQTT_BROKER") and "mqtt" in sort_to_host:
+        sort_to_host["mqtt"] = os.environ["FLAME_MQTT_BROKER"]
 
     return Broker(sort_to_host=sort_to_host)

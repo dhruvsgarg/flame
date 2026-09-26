@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """FX-N13 figures from oracle_misselection.py outputs (<run>/analysis/*.csv).
 
-Arms are `label=run_dir`, or `--campaign DIR` picks P7 (felix) and P7o (felix+oracle), real and sim.
+Arms are `label=run_dir`, or `--campaign DIR` picks every P7 (B) and P7o (B+oracle) row, real and sim.
 Writes to --out (default: <campaign>/P7_figures):
-  belief_vs_true.png       believed-vs-true Spearman per checkpoint round, per arm
-  pick_rank.png            true-utility percentile of each pick (1 = best pickable), per arm
+  belief_vs_true[_<B>].png  believed-vs-true Spearman per checkpoint round, per arm (one per baseline)
+  pick_rank[_<B>].png       true-utility percentile of each pick (1 = best pickable), per arm
   utility_heatmap_<arm>.png  true utility, trainers x round
   utility_trajectories.png / loss_trajectories.png   4 widest-ranging trainers of the first arm
   summary.txt              per-arm means
@@ -47,7 +47,7 @@ def _by_round(rows: list[dict], key: str) -> tuple[list[int], list[float]]:
 
 def campaign_arms(root: str) -> list[tuple[str, str]]:
     arms = []
-    for phase, name in (("P7", "felix"), ("P7o", "felix+oracle")):
+    for phase, suffix in (("P7", ""), ("P7o", "+oracle")):
         p = os.path.join(root, phase, "summary.tsv")
         if not os.path.exists(p):
             continue
@@ -55,8 +55,16 @@ def campaign_arms(root: str) -> list[tuple[str, str]]:
             for leg in ("real", "sim"):
                 d = row.get(f"{leg}_dir", "")
                 if d and os.path.isdir(d):
-                    arms.append((f"{name} {leg}", d))
+                    arms.append((f"{row['baseline']}{suffix} {leg}", d))
     return arms
+
+
+def by_baseline(arms) -> dict[str, list[tuple[str, str]]]:
+    """Group arms on the label's baseline ("felix+oracle sim" -> felix)."""
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for label, d in arms:
+        groups.setdefault(label.split()[0].split("+")[0], []).append((label, d))
+    return groups
 
 
 def _rows_tsv(p: str) -> list[dict]:
@@ -159,10 +167,13 @@ def main() -> None:
         raise SystemExit("no arm has analysis/oracle_misselection.csv; run oracle_misselection.py first")
     out = a.out or os.path.join(a.campaign or ".", "P7_figures")
     os.makedirs(out, exist_ok=True)
-    line_per_arm(arms, "spearman", "Believed vs true utility (Spearman)", "rank correlation",
-                 os.path.join(out, "belief_vs_true.png"), ylim=(-1.05, 1.05))
-    line_per_arm(arms, "rank_pct", "Pick quality: true-utility percentile of each pick",
-                 "percentile (1 = best pickable)", os.path.join(out, "pick_rank.png"), ylim=(0, 1.05))
+    groups = by_baseline(arms)
+    for b, g in groups.items():
+        tag = f"_{b}" if len(groups) > 1 else ""
+        line_per_arm(g, "spearman", f"Believed vs true utility (Spearman) — {b}", "rank correlation",
+                     os.path.join(out, f"belief_vs_true{tag}.png"), ylim=(-1.05, 1.05))
+        line_per_arm(g, "rank_pct", f"Pick quality: true-utility percentile of each pick — {b}",
+                     "percentile (1 = best pickable)", os.path.join(out, f"pick_rank{tag}.png"), ylim=(0, 1.05))
     for label, d in arms:
         heatmap(label, d, os.path.join(out, f"utility_heatmap_{label.replace(' ', '_').replace('+', '')}.png"))
     trajectories(*arms[0], os.path.join(out, "utility_trajectories.png"))

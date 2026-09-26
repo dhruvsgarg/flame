@@ -27,18 +27,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
-import torchvision.transforms as transforms
 
 # wandb setup
 import wandb
 from flame.config import Config
 from flame.dataset import Dataset
 from flame.mode.horizontal.top_aggregator import TopAggregator
-from torchvision.datasets import CIFAR10
 from flame import harness
 
 import sys as _sys, os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
+import fl_data  # noqa: E402
 from oracle_utility import OracleInjectMixin  # noqa: E402
 
 def initialize_wandb():
@@ -66,31 +66,7 @@ def initialize_wandb():
 logger = logging.getLogger(__name__)
 
 
-class Net(nn.Module):
-    """Net class."""
-
-    def __init__(self):
-        """Initialize."""
-        super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, 3)
-        self.conv2 = nn.Conv2d(64, 128, 3)
-        self.conv3 = nn.Conv2d(128, 256, 3)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.fc1 = nn.Linear(64 * 4 * 4, 128)
-        self.fc2 = nn.Linear(128, 256)
-        self.fc3 = nn.Linear(256, 10)
-
-    def forward(self, x):
-        """Forward."""
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))
-        x = x.view(-1, 64 * 4 * 4)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return F.log_softmax(x, dim=1)
-
+Net = fl_data.CifarNet  # FX-N10: models live in fl_data (one per dataset)
 
 class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
     """PyTorch CIFAR-10 Aggregator."""
@@ -115,36 +91,28 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
         if self.log_to_wandb:
             initialize_wandb()
 
+    @property
+    def data_spec(self) -> "fl_data.DatasetSpec":
+        """FX-N10: this run's dataset (hyperparameters.dataset_name)."""
+        return fl_data.spec_for(self.config.hyperparameters)
+
     def initialize(self):
         """Initialize role."""
         self.device = harness.device_for(self.harness_mode)
 
-        self.model = Net().to(self.device)
+        self.model = self.data_spec.model().to(self.device)
         self._init_oracle_util(
             _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
                           "..", "..", "data"))
 
     def load_data(self) -> None:
         """Load a test dataset."""
-        transform_test = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
-                ),
-            ]
-        )
-
         n_test = harness.harness_test_samples(self.config.hyperparameters, self.harness_mode)
         if self.harness_mode == "stub":
-            dataset = harness.synthetic_dataset(n_test, (3, 32, 32), 10, seed_key="agg_test", label_skew=0.0)
+            dataset = harness.synthetic_dataset(n_test, self.data_spec.stub_shape, self.data_spec.num_classes,
+                                                seed_key="agg_test", label_skew=0.0)
         else:
-            dataset = CIFAR10(
-                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data"),
-                train=False,
-                download=True,
-                transform=transform_test,
-            )
+            dataset = self.data_spec.test()
             if self.harness_mode == "tiny_cpu":
                 dataset = torch.utils.data.Subset(dataset, list(range(n_test)))
 

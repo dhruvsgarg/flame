@@ -1113,16 +1113,19 @@ class Channel(object):
             f"Updated new_state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(PROP_END_AVL_STATE)} from timestamp: {timestamp}"
         )
 
+        # FX-D12: off when the aggregator's availability substrate owns in-flight release (T1).
+        release = getattr(self, "release_slots_on_unavail", True)
         # If new updated_state is UN_AVL, reset end state to unblock
         # any train or eval tasks sent to that trainer
-        if new_state == TrainerAvailState.UN_AVL:
+        if release and new_state == TrainerAvailState.UN_AVL:
             logger.info(
                 f"Since new_state for trainer {end_id} is {new_state}, will remove from selected and all_selected"
             )
             self._selector.remove_from_selected_ends(self._ends, end_id)
             self._selector._cleanup_removed_ends(end_id)
         elif (
-            old_end_state == TrainerAvailState.AVL_TRAIN
+            release
+            and old_end_state == TrainerAvailState.AVL_TRAIN
             and new_state == TrainerAvailState.AVL_EVAL
         ):
             # TODO: (DG) This is a temporary fix to reset the state of

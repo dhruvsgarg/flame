@@ -51,6 +51,8 @@ HARNESS=""             # stub | tiny_cpu: no-GPU local harness (flame/harness.py
 DELAY_FACTOR=""        # trainingDelayFactor: divides every trainer's D (both modes); empty = unscaled
 AGG_HP=""              # --agg-hp 'k=v k2=v2': extra aggregator hyperparameters (A/B a sim flag)
 TRAINER_HP=""          # --trainer-hp 'k=v ...': extra trainer config_overrides hyperparameters (YAML/JSON values)
+DATASET=""             # --dataset cifar10|google_speech: _metadata/datasets.yaml profile (FX-N10); empty = template
+AGG_GOAL=""; CONC=""   # --agg-goal/--concurrency: small-n test shapes (FX-N22)
 DRY_RUN=0              # --dry-run: show the pre-flight table + checks, generate cfg, DON'T launch
 SHOW_ALL=0             # --show-all: expand tier ③ + list passing checks
 STRICT=0               # --strict: a BLOCKING pre-flight check aborts (default: warn + continue, so
@@ -84,6 +86,8 @@ usage() {
   echo "                        for short local real legs."
   echo "  --agg-hp              'k=v ...' extra aggregator hyperparameters, e.g. 'simColdStartGate=true'."
   echo "  --trainer-hp          'k=v ...' extra trainer hyperparameters (JSON values, no spaces)."
+  echo "  --dataset             cifar10 | google_speech: apply _metadata/datasets.yaml (default: template = cifar10)."
+  echo "  --agg-goal N / --concurrency C   test shapes: agg_goal (= sync aggr_num, launcher fan-out), async c."
   echo "  --alpha               Dirichlet alpha override (default: parity config's 0.1). Supported"
   echo "                        values have an n300 split: 0.1 / 1.0 / 10.0 / 100.0 (100=homogeneous)."
   echo "                        When set, the split lookup uses the n300 partition for that alpha."
@@ -136,6 +140,9 @@ else
       --delay-factor)        DELAY_FACTOR="$2"; shift 2 ;;
       --agg-hp)              AGG_HP="$2"; shift 2 ;;
       --trainer-hp)          TRAINER_HP="$2"; shift 2 ;;
+      --dataset)             DATASET="$2"; shift 2 ;;
+      --agg-goal)            AGG_GOAL="$2"; shift 2 ;;
+      --concurrency)         CONC="$2"; shift 2 ;;
       --dry-run)             DRY_RUN=1; shift ;;
       --show-all)            SHOW_ALL=1; shift ;;
       --strict)              STRICT=1; shift ;;
@@ -168,6 +175,8 @@ trace_overrides = sys.argv[8].strip().split() if len(sys.argv) > 8 and sys.argv[
 num_trainers_override = int(sys.argv[9]) if len(sys.argv) > 9 and sys.argv[9].strip() else None
 alpha_override = float(sys.argv[10]) if len(sys.argv) > 10 and sys.argv[10].strip() else None
 requested = set(baselines_str.lower().split())
+import re
+meta_dir = os.path.join(scr, "..", "..", "_metadata")
 # Deterministic selection seed (same for real+sim). Default 1234; SEED=none disables.
 _seed_env = os.environ.get("SEED", "1234").strip()
 seed_val = None if _seed_env.lower() in ("none", "") else int(_seed_env)
@@ -213,7 +222,23 @@ for e_src in cfg.get("experiments", []):
     # --trace wasn't given, so this loop is a no-op pass-through by default).
     for trace_override in trace_overrides:
         e = copy.deepcopy(e_src)
+        # FX-N10: dataset profile on top of the (cifar10) template.
+        ds_name = os.environ.get("DATASET", "").strip()
+        if ds_name and ds_name != "cifar10":
+            from flame.launch.baselines import deep_merge
+            prof = yaml.safe_load(open(os.path.join(meta_dir, "datasets.yaml"), encoding="utf-8"))["datasets"][ds_name]
+            e = deep_merge(e, copy.deepcopy(prof.get("experiment", {})))
+            bdefs = yaml.safe_load(open(os.path.join(meta_dir, "baselines.yaml"), encoding="utf-8"))["baselines"]
+            opt = (bdefs.get(bl, {}).get("aggregator", {}).get("optimizer") or {}).get("sort")
+            e = deep_merge(e, copy.deepcopy((prof.get("by_optimizer") or {}).get(opt, {})))
+            e["name"] = re.sub(r"_n\d+_", f"_n{e['trainer']['num_trainers']}_", f"{ds_name}_{e['name']}")
         h = e["aggregator"]["config_overrides"]["hyperparameters"]
+        # FX-N22 test shapes: set only the knobs this baseline has.
+        kw = e["aggregator"]["config_overrides"].setdefault("selector", {}).setdefault("kwargs", {})
+        if os.environ.get("AGG_GOAL", "").strip():  # the launcher fans agg_goal into aggGoal + aggr_num
+            e["aggregator"]["agg_goal"] = int(os.environ["AGG_GOAL"])
+        if os.environ.get("CONC", "").strip() and "c" in kw:
+            kw["c"] = int(os.environ["CONC"])
         h["max_experiment_runtime_s"] = runtime_s
         # Deterministic seed: the SAME value for every experiment so the real and sim
         # variants of each baseline make identical selection draws (dedicated per-
@@ -249,7 +274,8 @@ for e_src in cfg.get("experiments", []):
                 orig_n = e["trainer"].get("num_trainers", 300)
                 e["trainer"]["num_trainers"] = num_trainers_override
                 e["trainer"]["split_num_trainers"] = orig_n
-                h["min_trainers_to_start"] = max(1, num_trainers_override - 8)
+                # small test cohorts wait for all but one trainer (8 of 12 would skew early rounds)
+                h["min_trainers_to_start"] = max(1, num_trainers_override - (8 if num_trainers_override > 40 else 1))
             e["name"] = f"dbg_{e['name']}"
         # --alpha override: repoint dirichlet_alpha and the split lookup. Only n300
         # splits exist for every alpha (0.1/1.0/10.0/100.0=homogeneous); n48/n50
@@ -286,10 +312,8 @@ for e_src in cfg.get("experiments", []):
             t_co_hp.setdefault("client_notify", {})["trace"] = trace_override
             if "trackTrainerAvail" in h:
                 h["trackTrainerAvail"]["trace"] = trace_override
-                # For baselines NOT on the ORACULAR legacy path (felix, feddance,
-                # oracle, fedbuff): activate the new sim_unavailability gate so
-                # _init_availability picks up the trace (Sec 7 felix master-gate).
-                # ORACULAR baselines (oort, refl) already activate via the legacy path.
+                # Activate the sim_unavailability gate so _init_availability picks up
+                # the trace (oort, oort_star, refl also set it statically, FX-N7).
                 if h["trackTrainerAvail"].get("type", "").upper() != "ORACULAR":
                     h["simUnavailability"] = True
                     # proactive_inflight_evict is set directly in each experiment's
@@ -324,6 +348,11 @@ for e_src in cfg.get("experiments", []):
             ex["sleep_between_spawns"] = 0.2
             ex["aggregator_warmup_time"] = 20
             ex["num_gpus"], ex["gpu_ids"] = 0, None   # CPU only: no GPU pool, no health probe
+        # FX-N22: a GPU harness slot's trainer GPUs (FLAME_SLOT_GPUS bounds the aggregator's).
+        if os.environ.get("FLAME_GPU_IDS", "").strip():
+            ex = e.setdefault("execution", {})
+            ex["gpu_ids"] = [int(g) for g in os.environ["FLAME_GPU_IDS"].split(",")]
+            ex["num_gpus"] = len(ex["gpu_ids"])
         # FLAME_TRACE_TIME_SCALE (env, read by flame.availability.trace): recorded for provenance.
         if os.environ.get("FLAME_TRACE_TIME_SCALE", "").strip():
             h["trace_time_scale"] = float(os.environ["FLAME_TRACE_TIME_SCALE"])
@@ -511,7 +540,7 @@ cfg="$LOGDIR/debug_run.yaml"
 # Clear any stale config so a no-match run is skipped (not silently re-running
 # a previous baseline's leftover config).
 rm -f "$cfg"
-HARNESS="$HARNESS" DELAY_FACTOR="$DELAY_FACTOR" AGG_HP="$AGG_HP" TRAINER_HP="$TRAINER_HP" make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "$NUM_TRAINERS" "$ALPHA"
+DATASET="$DATASET" AGG_GOAL="$AGG_GOAL" CONC="$CONC" HARNESS="$HARNESS" DELAY_FACTOR="$DELAY_FACTOR" AGG_HP="$AGG_HP" TRAINER_HP="$TRAINER_HP" make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "$NUM_TRAINERS" "$ALPHA"
 
 if [ ! -f "$cfg" ]; then
   echo "No experiments matched for baselines='$BASELINES'. Nothing to run."
@@ -519,7 +548,8 @@ if [ ! -f "$cfg" ]; then
 fi
 
 _n_exps=$(_count_exps "$cfg")
-_budget=$(( _n_exps * RUNTIME_S ))
+# Per leg: runtime + join (~4 trainers/s) + 30s startup/teardown; n=120 legs overran 2x runtime.
+_budget=$(( _n_exps * (RUNTIME_S + ${NUM_TRAINERS:-300} / 4 + 30) ))
 echo "  queued: $_n_exps exp(s), estimated budget ~${_budget}s (sim finishes faster than real)"
 cifar_preflight "$cfg"; gate_or_continue $?
 run_node "debug_run" "$cfg" "$_budget" "$_n_exps"

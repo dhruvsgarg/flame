@@ -384,6 +384,7 @@ class TopAggregator(AsyncTopAgg):
     # stops: max_data_id_progress and vclock >= max_runtime_s). Override with an
     # explicit `sim_wall_ceiling_s` for a tighter bound.
     SIM_WALL_CEILING_FACTOR = 20.0
+    _SUBSTRATE_OWNS_INFLIGHT_RELEASE = False  # FX-D12 / S8
 
     def internal_init(self) -> None:
         """Initialize internal state for role."""

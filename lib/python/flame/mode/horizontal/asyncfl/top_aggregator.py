@@ -22,7 +22,8 @@ from datetime import datetime, timedelta
 
 import numpy as np
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
-from flame.end import KEY_END_STATE, VAL_END_STATE_NONE
+from flame import harness
+from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD
 from flame.common.constants import DeviceType
 from flame.common.util import (
     materialize_weights,
@@ -602,6 +603,9 @@ class TopAggregator(SyncTopAgg):
         for _buf_end in self._sim_buffer.pending_ends():
             if channel.has(_buf_end):
                 channel._ends[_buf_end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+        # FX-D12: a buffered end was reset to NONE; committed, it must leave RECV.
+        if channel.has(_end):
+            channel._ends[_end].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
         # Release trainer that was blocked waiting for this cross-round commit.
         # Free its concurrency slot too (selected_ends), now that it committed,
         # so the next selection can refill it — the slot was held since round end.
@@ -640,6 +644,8 @@ class TopAggregator(SyncTopAgg):
             return None, ("", datetime.now())
         pending.sort(key=lambda x: (x[0] is None, x[0] or 0, x[1]))
         _, _, (msg, md) = pending.pop(0)
+        if channel.has(md[0]):  # FX-D12: a buffered end was reset to NONE
+            channel._ends[md[0]].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
         # L4: drain_ready marked every pulled end RECVD; a still-buffered one keeps its slot.
         for _, _, (_, (_e, _)) in pending:
             if channel.has(_e):
@@ -1432,8 +1438,9 @@ class TopAggregator(SyncTopAgg):
         ledger[(end, task)] = [self._round, self._avail_now(), retries]
 
     def _task_version_keys(self, channel, task) -> dict:
-        """FX-D9: ends already given `task` at this model version, for the selector's no-repeat
-        guard. A timeout-reclaimed end is released per task_retry_policy; nothing else is."""
+        """FX-D9: ends already tasked at this model version, for the selector's no-repeat guard. A
+        train at v also blocks eval at v (same utility again); eval at v does not block train. A
+        timeout-reclaimed end is released per task_retry_policy; nothing else is."""
         hp = getattr(getattr(self, "config", None), "hyperparameters", None)
         policy = str(getattr(hp, "task_retry_policy", None) or "none").lower()
         if policy not in ("none", "fixed", "exponential"):
@@ -1444,7 +1451,7 @@ class TopAggregator(SyncTopAgg):
         now = self._avail_now()
         keys = {}
         for (end, t), (ver, disp_ts, retries) in getattr(self, "_task_ledger", {}).items():
-            if t != task or ver != self._round:
+            if ver != self._round or (t != task and not (task == "eval" and t == "train")):
                 continue
             to = timed_out.get(end)
             if policy != "none" and to is not None and to >= disp_ts:
@@ -1480,6 +1487,8 @@ class TopAggregator(SyncTopAgg):
         if self._inflight_residence:
             held = pending_in_buffer | set(self._sim_inflight_expected)
             held |= self._sim_cold_start_busy()  # first-contact ends are busy too
+        if harness.injected("no_busy_hold"):
+            held = set()
 
         # Release trainers no longer busy (committed, or — residence off — dispatched
         # with no buffer entry yet); they refill next round's fill pass.

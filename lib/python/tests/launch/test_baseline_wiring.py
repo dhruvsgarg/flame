@@ -74,11 +74,11 @@ class TestBaselineCatalogPresence:
     def test_oort_star_uses_fedavg_optimizer(self, baselines):
         assert baselines["oort_star"]["aggregator"]["optimizer"]["sort"] == "fedavg"
 
-    def test_oort_star_has_oracular_tracking(self, baselines):
+    def test_oort_star_has_substrate(self, baselines):
+        # FX-N7: the v1 substrate replaced the legacy ORACULAR block.
         hp = baselines["oort_star"]["aggregator"]["hyperparameters"]
-        tta = hp["trackTrainerAvail"]
-        assert tta["enabled"] == "True"
-        assert tta["type"] == "ORACULAR"
+        assert hp["simUnavailability"] is True
+        assert hp["trackTrainerAvail"]["enabled"] == "False"
 
     def test_all_six_baselines_in_parity_yaml(self, parity_experiments):
         present = {e["baseline"] for e in parity_experiments if "baseline" in e}
@@ -125,12 +125,10 @@ class TestOortWiring:
                         "oort_n300_alpha0.1_syn0_stream_sim", "oort")
         assert hp["proactive_inflight_evict"] == "False"
 
-    def test_trackTrainerAvail_enabled(self, baselines, parity_experiments):
+    def test_substrate_enabled(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "oort_n300_alpha0.1_syn0_stream_sim", "oort")
-        tta = hp.get("trackTrainerAvail") or {}
-        assert str(tta.get("enabled", "False")).strip().lower() == "true"
-        assert tta.get("type", "").upper() == "ORACULAR"
+        assert str(hp.get("simUnavailability")).lower() == "true"  # FX-N7
 
     def test_trace_name_set(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
@@ -150,12 +148,10 @@ class TestOortStarWiring:
                         "oort_star_n300_alpha0.1_syn0_stream_sim", "oort_star")
         assert hp["proactive_inflight_evict"] == "False"
 
-    def test_trackTrainerAvail_enabled(self, baselines, parity_experiments):
+    def test_substrate_enabled(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "oort_star_n300_alpha0.1_syn0_stream_sim", "oort_star")
-        tta = hp.get("trackTrainerAvail") or {}
-        assert str(tta.get("enabled", "False")).strip().lower() == "true"
-        assert tta.get("type", "").upper() == "ORACULAR"
+        assert str(hp.get("simUnavailability")).lower() == "true"  # FX-N7
 
     def test_differs_from_oort_only_in_filter(self, baselines, parity_experiments):
         oort_hp = _merged_hp(baselines, parity_experiments,
@@ -183,12 +179,10 @@ class TestReflWiring:
                         "refl_n300_alpha0.1_syn0_stream_sim", "refl")
         assert hp["proactive_inflight_evict"] == "False"
 
-    def test_trackTrainerAvail_enabled(self, baselines, parity_experiments):
+    def test_substrate_enabled(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "refl_n300_alpha0.1_syn0_stream_sim", "refl")
-        tta = hp.get("trackTrainerAvail") or {}
-        assert str(tta.get("enabled", "False")).strip().lower() == "true"
-        assert tta.get("type", "").upper() == "ORACULAR"
+        assert str(hp.get("simUnavailability")).lower() == "true"  # FX-N7
 
 
 class TestFedDanceWiring:

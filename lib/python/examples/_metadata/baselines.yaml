@@ -136,9 +136,11 @@ baselines:
           target_ratio: 0.8
           initial_deadline: 100.0
       hyperparameters:
+        # FX-N7: the v1 substrate reads the trace; the legacy ORACULAR block is retired.
+        simUnavailability: true
         trackTrainerAvail:
-          enabled: "True"
-          type: ORACULAR
+          enabled: "False"
+          type: "NA"
         # See felix note (overhead must stay below the sct-progression rate).
         # Jun9: 0.24 over-charged (sim 4031 rounds vs real 7254, residual
         # -0.14/commit) -> 0.10 (PARITY.md).
@@ -200,9 +202,11 @@ baselines:
         sort: fedavg
         kwargs: {}
       hyperparameters:
+        # FX-N7: the v1 substrate reads the trace; the legacy ORACULAR block is retired.
+        simUnavailability: true
         trackTrainerAvail:
-          enabled: "True"
-          type: ORACULAR
+          enabled: "False"
+          type: "NA"
         # NOTE: oort is NOT a pool-composition case -- its eligible pool already
         # matches real (sim 12.12 vs real 11.35); the divergence is the selector
         # picking ~average (12.21) vs real picking fast (8.81). That is a
@@ -228,9 +232,11 @@ baselines:
         sort: fedavg
         kwargs: {}
       hyperparameters:
+        # FX-N7: the v1 substrate reads the trace; the legacy ORACULAR block is retired.
+        simUnavailability: true
         trackTrainerAvail:
-          enabled: "True"
-          type: ORACULAR
+          enabled: "False"
+          type: "NA"
     trainer:
       hyperparameters:
         use_oort_loss_fn: "True"
@@ -254,6 +260,8 @@ baselines:
         trackTrainerAvail:
           enabled: "False"
           type: "NA"
+        # FX-N18: no real-only settle sleep before selection (operator OK; P10 is the 0.1s control).
+        realDistributeSettleSeconds: 0.0
     trainer:
       hyperparameters:
         client_notify:
