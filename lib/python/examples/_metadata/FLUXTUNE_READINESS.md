@@ -4,8 +4,10 @@
 - **Read [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) first.** Its doc rules, operating rules (R1-R13),
   shared lessons (L) and tripwires (T) apply here. This doc holds only what is specific to FluxTune:
   gradients (JVPs) aggregated instead of weights, a variance-gated commit, and the `data_id` progress axis.
-- **PARKED until Felix experiments are running (FELIX_READINESS FX-N12).** Nothing here is worked except
-  (a) keeping this track green under shared changes (R10) and (b) the parent S-steps that cover fwdllm.
+- **PARKED until Felix readiness is stable across unavailability (syn_20/50, mobiperf_3st) on both async_cifar10
+  and google_speech (FELIX_READINESS FX-N9, FX-N11)** and the shared changes it drives have settled. Until then
+  nothing here is worked except (a) keeping this track green under shared changes (R10) and (b) the parent
+  S-steps that cover fwdllm.
 - **Scope:** nine baselines on AG News / DistilBERT, n=100, α=1, `jvp_eval_mode` ON: `fluxtune`, `fwdllm`,
   `fwdllm_it_unaware`, `fwdllm_it_oracular`, `fedbuff_round`, `fedbuff_it_unaware`, `fedbuff_it_oracular`,
   `felix_round`, `felix_it`.

@@ -4,6 +4,7 @@
 (trainer/pytorch/main.py load_data + its sha256(trainer_id) arrival order)."""
 
 import hashlib
+import os
 from types import SimpleNamespace
 
 import torch
@@ -12,7 +13,7 @@ import yaml
 from examples.async_cifar10.aggregator.pytorch.oracle_utility import OracleUtilityProvider
 from flame import harness
 
-_META = "examples/_metadata"
+_META = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "examples", "_metadata")
 
 
 def _provider(mode, k):
@@ -88,3 +89,11 @@ def test_utility_memoized_per_model_version(monkeypatch):
     agg._round = 4
     prov.inject(agg, ch, [tid], "train")
     assert len(calls) == 2
+
+
+def test_stream_clock_matches_the_trainers_in_both_modes(monkeypatch):
+    # Real trainers unlock by wall since AGG_START_TS; a 0 clock ranked every real pick on a 1-sample prefix.
+    from examples.async_cifar10.aggregator.pytorch import oracle_utility as ou
+    monkeypatch.setattr(ou.time, "time", lambda: 1_000.0)
+    assert ou._stream_now(SimpleNamespace(simulated=False, agg_start_time_ts=880.0)) == 120.0
+    assert ou._stream_now(SimpleNamespace(simulated=True, _vclock=SimpleNamespace(now=42.0))) == 42.0

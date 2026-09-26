@@ -8,7 +8,8 @@ speedup, with and without client unavailability, so paper experiments run sim-on
   shared infrastructure work;
 - [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS.**
 - [FLUXTUNE_READINESS.md](FLUXTUNE_READINESS.md) — FluxTune: perturbation / forward-gradient fine-tuning
-  (fwdllm). **PARKED** until Felix experiments are done; shared changes must still keep it green (R10).
+  (fwdllm). **PARKED** until Felix readiness is stable across unavailability on both async_cifar10 and
+  google_speech (FX-N9, FX-N11); shared changes must still keep it green (R10).
 
 **Every older doc is DEPRECATED** (PARITY.md, UNAVAILABILITY_DESIGN.md, simulate_fwdllm.md, FWDLLM_DESIGN.md,
 PARITY_CHECKER_README.md, BASELINES.md, the `docs/`, `fl_fwd_ft_*` and `paper_expts_fluxtune/` files; each
@@ -270,7 +271,7 @@ green (R10).
   JSONL, pipeline the serial per-commit aggregator path. Every perf commit re-runs the harness and a 90-min
   parity pass on all baselines.
 
-- **S8 · Port one-task-per-version to FluxTune · todo (after Felix campaign 3).** FX-D9 landed it for asyncfl +
+- **S8 · Port one-task-per-version to FluxTune · parked (FluxTune parked; see its preamble).** FX-D9 landed it for asyncfl +
   the syncfl trainer: dispatch ledger → selector no-repeat guard, `taskRetryPolicy`, (trainer, version) commit
   dedup, trainer-side discard, EV15. fwdllm today holds committers to cycle close and keys its trainer guard on
   `_updates_returned_upto_round`; unify on the same rule and checker. *Exit:* EV15 green on the fwdllm board.

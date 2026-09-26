@@ -22,7 +22,7 @@ export FLAME_CONDA_ENV="${FLAME_CONDA_ENV:-dg_flame}"
 export EXPT_AUTOCLEAN=1   # a timed-out leg's leftovers must not block the next launch
 
 DEADLINE_H=7
-PHASES="P0 P1 P2 P3 P4 P5 P6 P7 P7o P8"
+PHASES="P0 P1 P2 P3 P4 P5 P6 P7 P7o P8 P9"
 DRY=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -69,9 +69,10 @@ PHASE_TABLE=(
   "P7|15|--harness tiny_cpu --baselines felix --traces syn_0 --runtime-s 300 $STREAM_T --agg-hp '$STREAM_A'"
   "P7o|15|--harness tiny_cpu --baselines felix --traces syn_0 --runtime-s 300 $STREAM_T --agg-hp '$STREAM_A $ORACLE_A'"
   "P8|25|--baselines fedbuff --traces syn_50 --runtime-s 450 --trace-scale 4 --agg-hp 'taskRetryPolicy=exponential taskRetryBackoffSeconds=10'"
+  "P9|20|--baselines 'felix fedbuff' --traces syn_0 --runtime-s 300 --agg-hp 'real_drain_ready_ingest=true'"
 )
 echo "campaign root: $ROOT  host=$(hostname)  deadline=${DEADLINE_H}h  phases='$PHASES'  commit=$(git -C "$LIB_DIR" rev-parse --short HEAD)$(git -C "$LIB_DIR" diff --quiet || echo '+dirty')"
-echo "P0 pytest ~5m | P1 syn_0 x6 ~65m | P2 syn_50 x6 ~75m | P3 mobiperf_3st x6 ~90m | P4 cold-start OFF control ~20m | P5 syn_20 ~25m | P6 tiny_cpu ~25m | P7/P7o streaming (+oracle) ~30m | P8 retry policy ~25m"
+echo "P0 pytest ~5m | P1 syn_0 x6 ~65m | P2 syn_50 x6 ~75m | P3 mobiperf_3st x6 ~90m | P4 cold-start OFF control ~20m | P5 syn_20 ~25m | P6 tiny_cpu ~25m | P7/P7o streaming (+oracle) ~30m | P8 retry policy ~25m | P9 real drain_ready ~20m"
 
 _elapsed() { echo $(( $(date +%s) - T0 )); }
 _want() { [[ " $PHASES " == *" $1 "* ]]; }
@@ -117,6 +118,16 @@ for row in "${PHASE_TABLE[@]}"; do
   [ "$rc" = 124 ] && echo "  $pid HIT ITS PHASE CEILING — later rows of this phase are missing"
 done
 
+# FX-N13: oracle replay + figures on the P7/P7o legs (no processes spawned).
+if [ -z "$DRY" ] && { [ -f "$ROOT/P7/summary.tsv" ] || [ -f "$ROOT/P7o/summary.tsv" ]; }; then
+  echo "=== [$(date '+%F %T')] P7 analysis: oracle_misselection + felix_streaming_figures"
+  _p7_dirs="$(cat "$ROOT"/P7/summary.tsv "$ROOT"/P7o/summary.tsv 2>/dev/null | awk -F'\t' 'NR>1 && $1!="trace" {print $11; print $12}' | grep -v '^$')"
+  ( timeout --foreground 1800 "$PY" "$SCRIPT_DIR/oracle_misselection.py" $_p7_dirs \
+    && timeout --foreground 600 "$PY" "$SCRIPT_DIR/felix_streaming_figures.py" --campaign "$ROOT" ) \
+    > "$ROOT/P7_analysis.log" 2>&1
+  echo "  P7 analysis rc=$? :: $ROOT/P7_figures/summary.txt"
+fi
+
 # One table across phases.
 {
   echo "campaign $ROOT  total=$(( $(_elapsed) / 60 ))m"
@@ -129,5 +140,18 @@ done
     tail -n +2 "$f" | cut -f1-10 | sed "s/^/$p\t/"
   done
 } | column -t -s $'\t' > "$ROOT/SUMMARY.txt"
+# FX-N18: real-leg queue wait per row (P9 vs its P1 control).
+{
+  echo; echo "real queue_wait (arrival -> processing):"
+  for f in "$ROOT"/P*/summary.tsv; do
+    [ -f "$f" ] || continue
+    p="$(basename "$(dirname "$f")")"
+    tail -n +2 "$f" | while IFS=$'\t' read -r tr bl _ _ _ _ _ _ _ _ real_dir _; do
+      [ -d "$real_dir" ] || continue
+      echo "$p $tr $bl :: $(timeout --foreground 120 "$PY" "$SCRIPT_DIR/analyze_send_recv_lag.py" "$real_dir" --queue-wait 2>&1 | tail -1)"
+    done
+  done
+  [ -f "$ROOT/P7_figures/summary.txt" ] && { echo; echo "FX-N13 oracle replay (P7 vs P7o):"; cat "$ROOT/P7_figures/summary.txt"; }
+} >> "$ROOT/SUMMARY.txt"
 echo; cat "$ROOT/SUMMARY.txt"
 echo; echo "done: $ROOT/SUMMARY.txt"

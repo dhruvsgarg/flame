@@ -10,7 +10,7 @@ candidate's currently-unlocked data prefix. The selector (OORT/REFL/FedDance/Fel
 then ranks oracularly with ZERO selector changes, and the run diverges into the
 counterfactual trajectory B' (vs the stale-utility run B).
 
-It is the online twin of scripts/analysis/oracle_misselection.py: same data
+It is the online twin of scripts/oracle_misselection.py: same data
 partition (Dirichlet split), same deterministic arrival order (sha256(task_id)),
 same streaming schedule (uniform or staggered), same utility
 ``I_m = N*sqrt(mean(loss^2))``. Keep the formulas in sync with that script and with
@@ -27,6 +27,7 @@ import hashlib
 import logging
 import math
 import os
+import time
 
 import torch
 import torch.nn as nn
@@ -58,6 +59,15 @@ def _visible_count(sim_now, onset_s, span_s, total, min_visible=1):
         return total
     frac = min(1.0, max(0.0, (sim_now - onset_s) / span_s))
     return min(total, max(min_visible, math.floor(frac * total)))
+
+
+def _stream_now(agg):
+    """The trainers' streaming clock: vclock (sim), wall since the broadcast AGG_START_TS (real)."""
+    if getattr(agg, "simulated", False):
+        vc = getattr(agg, "_vclock", None)
+        return float(vc.now) if vc is not None else 0.0
+    t0 = getattr(agg, "agg_start_time_ts", None)
+    return max(0.0, time.time() - float(t0)) if t0 is not None else 0.0
 
 
 def _oort_utility_acc(model, data, targets, norm_n, device, sample_size=None):
@@ -185,8 +195,7 @@ class OracleUtilityProvider:
             return
         try:
             self._ensure(self.alpha, self.num_trainers)
-            sim_now = float(getattr(agg, "_vclock", None).now) if getattr(
-                agg, "simulated", False) and getattr(agg, "_vclock", None) else 0.0
+            sim_now = _stream_now(agg)
             device = agg.device
             model = agg.model
             n_set = 0

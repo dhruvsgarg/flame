@@ -200,6 +200,11 @@ class TopAggregator(SyncTopAgg):
         # Real-mode settle sleep before selection (0 = compute-bound).
         _settle = getattr(self.config.hyperparameters, "real_distribute_settle_s", 0.1)
         self._real_distribute_settle_s: float = float(_settle) if _settle is not None else 0.1
+        # FX-N18: real ingest via streamer-free drain_ready (default off ⇒ recv_fifo).
+        self._real_drain_ready_ingest: bool = bool(
+            getattr(self.config.hyperparameters, "real_drain_ready_ingest", False))
+        self._real_drain_pending: list = []  # (arrival ts, seq, (msg, metadata))
+        self._real_recv_seq = 0
 
         self._prev_distribute_weights_success = False
 
@@ -612,6 +617,35 @@ class TopAggregator(SyncTopAgg):
             logger.info(f"[SIM_PENDING_COMMIT] released {_end[-4:]} sct={sct:.1f}")
         return m, md
 
+    def _real_drain_recv(self, channel, recv_ends):
+        """FX-N18: streamer-free twin of ``next(recv_fifo(recv_ends, 1))``; pops the
+        earliest-arrival update from a persistent drain_ready buffer."""
+        pending = self._real_drain_pending
+        deadline = time.time() + RECV_TIMEOUT_WAIT_S
+
+        def _buffer(drained):
+            for msg, md in drained:
+                if not msg:  # leave notification
+                    continue
+                self._real_recv_seq += 1
+                pending.append((md[1], self._real_recv_seq, (msg, md)))
+
+        _buffer(channel.drain_ready(recv_ends, timeout=0))
+        while not pending and recv_ends:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            _buffer(channel.drain_ready(recv_ends, timeout=remaining))
+        if not pending:
+            return None, ("", datetime.now())
+        pending.sort(key=lambda x: (x[0] is None, x[0] or 0, x[1]))
+        _, _, (msg, md) = pending.pop(0)
+        # L4: drain_ready marked every pulled end RECVD; a still-buffered one keeps its slot.
+        for _, _, (_, (_e, _)) in pending:
+            if channel.has(_e):
+                channel._ends[_e].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+        return msg, md
+
     def _aggregate_weights(self, tag: str) -> None:
         """Aggregate local model weights asynchronously.
 
@@ -632,6 +666,8 @@ class TopAggregator(SyncTopAgg):
         if not recv_ends:
             if self.simulated and len(self._sim_buffer) > 0:
                 recv_ends = []  # buffer still has entries to drain — don't block
+            elif not self.simulated and getattr(self, "_real_drain_pending", None):
+                recv_ends = []
             else:
                 logger.debug(f"[AGG_RECV] no live recv ends (round={self._round}); skipping")
                 # F.2: in sim, advance vclock to next availability event instead of
@@ -671,6 +707,8 @@ class TopAggregator(SyncTopAgg):
                 return
         if self.simulated:
             msg, metadata = self._sim_recv_min(channel, recv_ends)
+        elif getattr(self, "_real_drain_ready_ingest", False):
+            msg, metadata = self._real_drain_recv(channel, recv_ends)
         else:
             msg, metadata = next(
                 channel.recv_fifo(recv_ends, 1, timeout=RECV_TIMEOUT_WAIT_S)

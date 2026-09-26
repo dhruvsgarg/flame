@@ -48,18 +48,26 @@ on the launcher, no sim support.
 
 ## Next steps (persistent queue — top item is next)
 
-- **FX-N1 · Run campaign 3 (`harness_campaign.sh`, P0-P8, ~7h), then read it · blocked: operator run.**
+- **FX-N1 · Read campaign 3 (`harness_campaign.sh --deadline-h 12`, P0-P9 + P7 analysis, ~6.5h) · parked:
+  overnight run, read in the morning.** Read `SUMMARY.txt` (table + real queue_wait + oracle replay).
   *Exit:* every EV FAIL triaged checker-gap vs bug; EV15 green everywhere; P3 felix/fedbuff reach the real leg;
-  P7/P7o commit with checkpoints and oracle injection; P8 re-dispatches only after a timeout. Then the
-  injected-bug checks (parent S1 exit).
+  P7/P7o commit with checkpoints and oracle injection; P8 re-dispatches only after a timeout; FX-N18 and
+  FX-N13 predictions below read. Then the injected-bug checks (parent S1 exit).
 - **FX-N14 · Confirm one-in-flight holds off syn_0 with the gate on (now default) · blocked: FX-N1.**
   *Exit:* P2/P3 felix/fedbuff sims show EV10 redispatch_while_outstanding = 0; P4 (gate off) stays the control.
-- **FX-N18 · Real asyncfl consumes an end's updates seconds late (`recv_fifo` streamer) · todo.** Smoke
-  `smoke_20260925_235128` real: 0407's v123/v124 sat in its rxq 11s ("already has active task") while 179 others
-  committed. fwdllm already runs `drain_ready` on its real path (`test_fwdllm_real_drain_ready.py`); port it to
-  asyncfl real behind a flag (R9, R12). *Exit:* real SEND_RECV_LAG queue_wait ≈ 0 at n=60 stub.
-- **FX-N19 · K4 overlap factor tolerance · todo.** Absolute 0.3 at ~25x in flight fails every harness pair;
-  it is labelled diagnostic. Make it relative (or DIAG) with the replicate floor as evidence (L12).
+- **FX-N18 · Real asyncfl reads updates seconds late · wip: flag in P9; tail root open.** Ported
+  fwdllm's flag `real_drain_ready_ingest` (default off) to `asyncfl/top_aggregator.py:_real_drain_recv` —
+  `tests/mode/test_asyncfl_real_drain_ready.py`. Control `smoke_20260925_235128` real: queue_wait p99 8.6s, max
+  23s, 42k active-task skips (`analyze_send_recv_lag.py <run> --queue-wait`). Flag-on smoke
+  `smoke_20260926_021126`: 0 skips, real+sim EV all PASS, but p99 15s — the streamer is not the tail's root.
+  Tail = stale versions (v72 at round ~120) sitting ~20s in an rxq whose end is absent from the RECV list; one
+  end was re-dispatched with v71 unreturned (`[SELECTION_CHECK]`). *Next:* why a sent-to end leaves the RECV
+  list before its update is read. P9 = A/B vs P1 on EV5/K4/skips. *Exit:* queue_wait p99 < 1s, then promote
+  with operator OK (R9).
+- **FX-N19 · K4 overlap-factor gaps are real, not tolerance · todo (after FX-N1).** K4 already passes on abs
+  0.3 OR rel 10%; campaign 2 fails on signal: fedbuff sim/real ≈ 2.7× (P1/P2/P4), refl under unavailability
+  sim 0.2 vs real 4.7 (P2/P3/P5), felix rel 13-17% (floor unknown). Don't widen (T7, R11). *Exit:* fedbuff
+  re-read after FX-N18; refl gap root-caused (vclock jumps in the span?); felix graded against a floor (L12).
 - **FX-N15 · fedbuff sim diverges to NaN at syn_50 · todo.** Stored Jul-2 sim: test-loss 8.3 at round 550,
   NaN from 600 (EV14). Training health, not timing: check fedbuff's `agg_rate_conf` (`old`) staleness weight
   against the withheld-delivery staleness (~160) it now sees.
@@ -72,15 +80,18 @@ on the launcher, no sim support.
 - **FX-N5 · syn_0 cluster block: oort, oort_star, refl, feddance · todo.** Same protocol. oort's open root:
   per-round `relative_change` of the exploited utility, binned by quartile, in both modes (don't touch the
   pacer). refl: confirm at 3h. *Exit:* as FX-N4.
-- **FX-N13 · Streaming motivation experiment (heterogeneous, α=0.1) · wip (harness); sweep blocked: FX-N4,
-  FX-N5.** Show empirically that (a) per-trainer statistical utility changes over time as data
+- **FX-N13 · Streaming motivation experiment (heterogeneous, α=0.1) · wip (analysis in campaign 3); sweep
+  blocked: FX-N4, FX-N5.** Show empirically that (a) per-trainer statistical utility changes over time as data
   streams in and is trained on, (b) an unaware aggregator mis-selects, and (c) one that tracks utility but
   mis-estimates it still mis-selects. Harness smoke is wired (FX-D11: campaign P7 felix vs P7o felix+oracle,
-  tiny_cpu, 240s horizon). Next: run `oracle_misselection.py` + `felix_streaming_figures.py` on the P7/P7o dirs
-  (both still assume the full split: make them harness-aware like `oracle_utility.py`); move the arms from the
-  deprecated `run_felix_streaming.sh`/`gen_n50_experiment.py` onto the launcher (S3); calibrate the horizon;
-  sweep. Exact design comes from the operator before the sweep. *Exit:* utility-over-time and mis-selection
-  figures for each baseline.
+  tiny_cpu, 240s horizon). Offline replay `scripts/oracle_misselection.py` + `scripts/felix_streaming_figures.py`
+  now run after P7o (`<campaign>/P7_figures/`; `tests/harness/test_oracle_misselection.py`). The online oracle's
+  real leg used stream clock 0 (fixed, FX-L30): stored P7o-style smoke believed-vs-true Spearman sim 0.99, real
+  0.38. *Prediction:* P7o real ≈ sim ≈ 0.99; P7 (no oracle) lower. Harness scale is pipeline-only: tiny_cpu
+  loss sits at chance (`rms_loss` ≈ 2.3) and 10-round checkpoints can't resolve participation dips. Next: move the arms from the deprecated
+  `run_felix_streaming.sh`/`gen_n50_experiment.py` onto the launcher (S3); calibrate the horizon; sweep. Exact
+  design comes from the operator before the sweep. *Exit:* utility-over-time and mis-selection figures for each
+  baseline.
 - **FX-N6 · Unavailability design re-audit · todo.** Keep v1 semantics; check them against the fwdllm
   invariants (FX-N3b), logical-budget grading and the drain primitives. Record decisions in
   UNAVAILABILITY_DESIGN.md; any semantic change needs operator sign-off. *Exit:* one audit table (item ·
@@ -133,6 +144,8 @@ on the launcher, no sim support.
   (`max_dur − dur_i`); streaming oort/refl stay per-message.
 - **FX-L10** Split eval from train in any check that reads `agg_rounds`. Each eval gets its own `sct`,
   never the last train `sct`.
+- **FX-L30** Anything replaying trainer data (oracle, replay) reads the trainers' stream clock: vclock in sim,
+  wall since the broadcast `AGG_START_TS` in real — never 0.
 
 **Availability**
 - **FX-L11** Two separate axes per baseline: knowledge at selection (`avail_select_filter`: felix, oort_star,
