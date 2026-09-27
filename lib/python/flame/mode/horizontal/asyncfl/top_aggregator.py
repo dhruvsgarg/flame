@@ -1428,39 +1428,6 @@ class TopAggregator(SyncTopAgg):
         ts = float(q.popleft())
         return min(ts, float(round_now)) if round_now is not None else ts
 
-    def _record_task_dispatch(self, end, task) -> None:
-        """FX-D9 ledger: a re-dispatch at the same version counts as a retry."""
-        ledger = getattr(self, "_task_ledger", None)
-        if ledger is None:
-            ledger = self._task_ledger = {}
-        prev = ledger.get((end, task))
-        retries = prev[2] + 1 if prev is not None and prev[0] == self._round else 0
-        ledger[(end, task)] = [self._round, self._avail_now(), retries]
-
-    def _task_version_keys(self, channel, task) -> dict:
-        """FX-D9: ends already tasked at this model version, for the selector's no-repeat guard. A
-        train at v also blocks eval at v (same utility again); eval at v does not block train. A
-        timeout-reclaimed end is released per task_retry_policy; nothing else is."""
-        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
-        policy = str(getattr(hp, "task_retry_policy", None) or "none").lower()
-        if policy not in ("none", "fixed", "exponential"):
-            raise ValueError(f"task_retry_policy={policy!r}: expected none|fixed|exponential")
-        base = float(getattr(hp, "task_retry_backoff_s", None) or 0.0)
-        timed_out = dict(getattr(getattr(channel, "_selector", None), "timed_out_at", None) or {})
-        timed_out.update(getattr(self, "_task_timeout_at", None) or {})
-        now = self._avail_now()
-        keys = {}
-        for (end, t), (ver, disp_ts, retries) in getattr(self, "_task_ledger", {}).items():
-            if ver != self._round or (t != task and not (task == "eval" and t == "train")):
-                continue
-            to = timed_out.get(end)
-            if policy != "none" and to is not None and to >= disp_ts:
-                wait = base * (2 ** retries if policy == "exponential" else 1)
-                if now - to >= wait:
-                    continue  # retry allowed
-            keys[end] = self.version_key
-        return keys
-
     def _sim_hold_busy_slots(self, channel) -> None:
         """Hold BUSY trainers (a compute task still outstanding) in their
         concurrency slot until their update commits.

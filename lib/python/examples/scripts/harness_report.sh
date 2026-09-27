@@ -8,15 +8,16 @@ ROOT="$1"; T0="${2:-$(date +%s)}"; P0_LINE="${3:-}"
 PY="$(conda run -n "${FLAME_CONDA_ENV:-dg_flame}" which python 2>/dev/null | tail -1)"
 _elapsed() { echo $(( $(date +%s) - T0 )); }
 
-# FX-N13: oracle replay + figures on the P7/P7o legs (no processes spawned).
-if { [ -f "$ROOT/P7/summary.tsv" ] || [ -f "$ROOT/P7o/summary.tsv" ]; }; then
-  echo "=== [$(date '+%F %T')] P7 analysis: oracle_misselection + felix_streaming_figures"
-  _p7_dirs="$(cat "$ROOT"/P7/summary.tsv "$ROOT"/P7o/summary.tsv 2>/dev/null | awk -F'\t' 'NR>1 && $1!="trace" {print $11; print $12}' | grep -v '^$')"
+# FX-N13: oracle replay + figures on the P7/P7o legs, per dataset prefix (no processes spawned).
+for pre in "" gs_; do
+  [ -f "$ROOT/${pre}P7/summary.tsv" ] || [ -f "$ROOT/${pre}P7o/summary.tsv" ] || continue
+  echo "=== [$(date '+%F %T')] ${pre}P7 analysis: oracle_misselection + felix_streaming_figures"
+  _p7_dirs="$(cat "$ROOT/${pre}P7/summary.tsv" "$ROOT/${pre}P7o/summary.tsv" 2>/dev/null | awk -F'\t' 'NR>1 && $1!="trace" {print $11; print $12}' | grep -v '^$')"
   ( timeout --foreground 1800 "$PY" "$SCRIPT_DIR/oracle_misselection.py" $_p7_dirs \
-    && timeout --foreground 600 "$PY" "$SCRIPT_DIR/felix_streaming_figures.py" --campaign "$ROOT" ) \
-    > "$ROOT/P7_analysis.log" 2>&1
-  echo "  P7 analysis rc=$? :: $ROOT/P7_figures/summary.txt"
-fi
+    && timeout --foreground 600 "$PY" "$SCRIPT_DIR/felix_streaming_figures.py" --campaign "$ROOT" --prefix "$pre" ) \
+    > "$ROOT/${pre}P7_analysis.log" 2>&1
+  echo "  ${pre}P7 analysis rc=$? :: $ROOT/${pre}P7_figures/summary.txt"
+done
 
 # One table across phases.
 {
@@ -41,7 +42,10 @@ fi
       echo "$p $tr $bl :: $(timeout --foreground 120 "$PY" "$SCRIPT_DIR/analyze_send_recv_lag.py" "$real_dir" --queue-wait 2>&1 | tail -1)"
     done
   done
-  [ -f "$ROOT/P7_figures/summary.txt" ] && { echo; echo "FX-N13 oracle replay (P7 vs P7o):"; cat "$ROOT/P7_figures/summary.txt"; }
+  for pre in "" gs_; do
+    [ -f "$ROOT/${pre}P7_figures/summary.txt" ] || continue
+    echo; echo "FX-N13 oracle replay ${pre:+($pre) }(P7 vs P7o):"; cat "$ROOT/${pre}P7_figures/summary.txt"
+  done
   for pre in "" gs_; do
     ls -d "$ROOT/${pre}P11"* >/dev/null 2>&1 || continue
     echo; echo "S1 injected bugs ${pre:+($pre) }(sim must FAIL the named rung):"

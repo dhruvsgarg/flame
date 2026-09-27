@@ -122,15 +122,13 @@ def selection_metrics(sel: dict, true_u: dict[str, float]) -> dict | None:
 
 
 def replay(run_dir: str, sample_size: int = 256) -> tuple[str, str]:
-    from main_asyncfl_agg import Net  # the aggregator's model
-
     prov = build_provider(run_dir, sample_size)
     sels = train_selections(run_dir)
     out_dir = os.path.join(run_dir, "analysis")
     os.makedirs(out_dir, exist_ok=True)
     u_path = os.path.join(out_dir, "oracle_true_utility.csv")
     m_path = os.path.join(out_dir, "oracle_misselection.csv")
-    model = Net()
+    model = prov.spec.model()  # the run's dataset model (fl_data)
     in_run = {t for ss in sels.values() for s in ss for t in (s.get("per_trainer") or {})}
     torch.manual_seed(0)  # sample_size subsampling is seeded per run
     with open(u_path, "w", newline="") as uf, open(m_path, "w", newline="") as mf:
@@ -140,7 +138,11 @@ def replay(run_dir: str, sample_size: int = 256) -> tuple[str, str]:
                                  "regret_rel", "spearman"])
         mw.writeheader()
         for ck in sorted(glob.glob(os.path.join(run_dir, "checkpoints", "round_*.pt"))):
-            st = torch.load(ck, map_location="cpu", weights_only=False)
+            try:
+                st = torch.load(ck, map_location="cpu", weights_only=False)
+            except RuntimeError as e:  # truncated by a pre-FX-N33 exit abort
+                print(f"SKIP {ck}: {e.__class__.__name__}")
+                continue
             rnd, t = int(st["round"]), float(st.get("sim_time_s") or 0.0)
             model.load_state_dict(st["state_dict"])
             believed = {}
@@ -152,7 +154,7 @@ def replay(run_dir: str, sample_size: int = 256) -> tuple[str, str]:
                     continue
                 vis = _visible_count(t, info["onset_s"], info["span_s"], info["total"], prov.min_visible)
                 g = info["arrival_global_idx"][:vis]
-                imgs, targets = info["local"] or (prov._imgs, prov._targets)
+                imgs, targets = prov.rows(info)
                 true_u[tid], _ = _oort_utility_acc(model, imgs[g], targets[g], norm_n=vis,
                                                    device=torch.device("cpu"), sample_size=prov.sample_size)
                 uw.writerow([rnd, f"{t:.1f}", tid, vis, f"{true_u[tid]:.5f}", f"{true_u[tid] / vis:.5f}",

@@ -747,7 +747,10 @@ class TopAggregator(BaseTopAggregator):
         if not isinstance(_in_flight, set):
             _in_flight = set(_in_flight) if _in_flight else set()
         _connected = set(channel._ends.keys())
-        num_eligible = len(_connected - set(curr_unavail_trainer_list) - _in_flight)
+        _version_keys = self._task_version_keys(channel, task_to_perform)
+        num_eligible = len(
+            _connected - set(curr_unavail_trainer_list) - _in_flight - set(_version_keys)
+        )
 
         # Cohort-floor guardrail: if desired_selection > connected cohort size
         # (e.g. n=12 with desired_selection=13), the starvation gate fires
@@ -824,7 +827,9 @@ class TopAggregator(BaseTopAggregator):
             return
 
         # Threshold met — proceed with selection.
-        selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+        selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
+                                     agg_version_key=self.version_key,
+                                     trainer_version_keys=_version_keys)
         if not selected_ends:
             return
 
@@ -865,6 +870,7 @@ class TopAggregator(BaseTopAggregator):
             if self.simulated:
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sim_send_ts)
             channel.send_payload(end, _payload)
+            self._record_task_dispatch(end, task_to_perform)
         if selected_ends:
             logger.info(
                 f"[DISTRIBUTE_TIMING] round={self._round} n_sends={len(selected_ends)} "

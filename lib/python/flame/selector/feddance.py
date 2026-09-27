@@ -102,7 +102,11 @@ class FedDanceSelector(AbstractSelector):
 
         round_num = channel_props.get("round", 0)
 
-        if round_num <= self.round and len(self.newly_selected_this_round) != 0:
+        agg_version_key = kwargs.get("agg_version_key")
+        trainer_version_keys = kwargs.get("trainer_version_keys")
+        # A dispatch (version keys passed) never re-sends the cache (see OortSelector.select).
+        if (trainer_version_keys is None and round_num <= self.round
+                and len(self.newly_selected_this_round) != 0):
             return {key: None for key in self.newly_selected_this_round}
         if channel_props.get(KEY_CH_STATE) == VAL_CH_STATE_RECV:
             return {}  # no SEND this round (starvation return): nothing to receive (FX-D6)
@@ -117,6 +121,8 @@ class FedDanceSelector(AbstractSelector):
             eid: e
             for eid, e in ends.items()
             if eid not in unavail and eid not in self.selected_ends
+            and not (trainer_version_keys is not None and agg_version_key is not None
+                     and trainer_version_keys.get(eid) == agg_version_key)  # FX-D9
         }
 
         if not eligible:

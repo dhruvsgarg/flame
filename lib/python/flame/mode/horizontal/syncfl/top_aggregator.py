@@ -59,6 +59,7 @@ from flame.selector.properties import (
 )
 from flame import telemetry
 from flame.telemetry.events import (
+    EVENT_RUN_END,
     build_agg_eval,
     build_agg_round,
     build_utility_belief,
@@ -262,6 +263,39 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         sync FL has no intra-round iteration axis, so iteration is always 0;
         fwdllm_aggregator overrides this for its variance-gated cadence."""
         return (self._round, 0)
+
+    def _record_task_dispatch(self, end, task) -> None:
+        """FX-D9 ledger: a re-dispatch at the same version counts as a retry."""
+        ledger = getattr(self, "_task_ledger", None)
+        if ledger is None:
+            ledger = self._task_ledger = {}
+        prev = ledger.get((end, task))
+        retries = prev[2] + 1 if prev is not None and prev[0] == self._round else 0
+        ledger[(end, task)] = [self._round, self._avail_now(), retries]
+
+    def _task_version_keys(self, channel, task) -> dict:
+        """FX-D9: ends already tasked at this model version, for the selector's no-repeat guard. A
+        train at v also blocks eval at v (same utility again); eval at v does not block train. A
+        timeout-reclaimed end is released per task_retry_policy; nothing else is."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        policy = str(getattr(hp, "task_retry_policy", None) or "none").lower()
+        if policy not in ("none", "fixed", "exponential"):
+            raise ValueError(f"task_retry_policy={policy!r}: expected none|fixed|exponential")
+        base = float(getattr(hp, "task_retry_backoff_s", None) or 0.0)
+        timed_out = dict(getattr(getattr(channel, "_selector", None), "timed_out_at", None) or {})
+        timed_out.update(getattr(self, "_task_timeout_at", None) or {})
+        now = self._avail_now()
+        keys = {}
+        for (end, t), (ver, disp_ts, retries) in getattr(self, "_task_ledger", {}).items():
+            if ver != self._round or (t != task and not (task == "eval" and t == "train")):
+                continue
+            to = timed_out.get(end)
+            if policy != "none" and to is not None and to >= disp_ts:
+                wait = base * (2 ** retries if policy == "exponential" else 1)
+                if now - to >= wait:
+                    continue  # retry allowed
+            keys[end] = self.version_key
+        return keys
 
     @property
     def vclock_now(self) -> float | None:
@@ -1004,8 +1038,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         _in_flight = getattr(channel._selector, 'selected_ends', set())
         if not isinstance(_in_flight, set):
             _in_flight = set(_in_flight) if _in_flight else set()
+        _version_keys = self._task_version_keys(channel, task_to_perform)
         num_eligible = len(
             set(channel._ends.keys()) - set(curr_unavail_trainer_list) - _in_flight
+            - set(_version_keys)
         )
 
         if num_eligible < _threshold:
@@ -1066,7 +1102,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # SEND state: pick (new) trainers to send the model to. With a buffered
         # selector (random) this fills concurrency; stateless selectors ignore
         # the state and return their normal selection.
-        selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+        selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
+                                     agg_version_key=self.version_key,
+                                     trainer_version_keys=_version_keys)
         if not selected_ends:
             return
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
@@ -1096,6 +1134,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             if self.simulated:
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sim_send_ts)
             channel.send_payload(end, _payload)
+            self._record_task_dispatch(end, task_to_perform)
             # register round start time on each end for round duration
             # measurement.
             channel.set_end_property(
@@ -1114,6 +1153,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             logger.debug(f"channel not found for tag {self.dist_tag}")
             return
 
+        if telemetry.is_enabled():  # EV12 reads a starved sim's final vclock jump here
+            telemetry.emit(EVENT_RUN_END, round=self._round, work_done=bool(self._work_done),
+                           vclock_now=self.vclock_now)
         payload = {MessageType.EOT: self._work_done}
         # Sim trainers only advance _sim_now() on dispatch, so one that goes
         # quiet (withheld/evicted UN_AVL) never catches its avl_state up to
@@ -1324,10 +1366,12 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
             def _write(p=path, b=blob):
                 try:
-                    torch.save(b, p)
+                    torch.save(b, p + ".tmp")
+                    os.replace(p + ".tmp", p)  # a killed writer never leaves a truncated .pt
                 except Exception as e:
                     logger.warning(f"checkpoint write failed (non-fatal): {e}")
-            threading.Thread(target=_write, daemon=True).start()
+            # Non-daemon: exit waits for the write (a daemon killed inside torch.save aborts the process).
+            threading.Thread(target=_write, daemon=False).start()
         except Exception as e:  # checkpointing must never break training
             logger.warning(f"save_round_checkpoint failed (non-fatal): {e}")
 

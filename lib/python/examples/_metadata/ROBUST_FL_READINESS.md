@@ -122,6 +122,10 @@ section already says.
   (`set -m`, `setsid`, bare `timeout`) traps INT/TERM, tears that group down (TERM → grace → KILL → name sweep),
   and exits 130 rather than advancing. Otherwise use `timeout --foreground`. Test it with a scripted SIGINT to the
   script's process group before hand-off.
+- **R21 Storage hygiene.** Once a new T4 is cited in the docs, the operator prunes stale artifacts. Stale means: harness
+  run dirs (`*_hstub_*`, `*_htiny_cpu_*`) that no cited pool's `legs.txt`, `_real_bank.tsv` or doc line names; `.pt` files
+  outside cited pools' P7/P7o legs (the FX-N13 replay's only reader); and uncited `experiments/pool_*` dirs. GPU runs are
+  never pruned.
 - **R13 Commits:** follow CLAUDE.md (crisp comments, minimal diff, short title and body). Confirm before any
   push.
 
@@ -248,7 +252,7 @@ green (R10).
   `harness_pool.py` (parallel isolated slots, both datasets), `--inject-bug` (`FLAME_INJECT_BUG`: no_busy_hold → EV10, order_by_sct → EV16,
   freeze_trainer_clock → EV3; campaign P11a-c). Caveat: absolute timeouts (90s abandon, join) are not scaled. Still to do: a fwdllm-family
   stub, a scenario library (scarcity, stragglers, mid-flight drop, lap boundaries). *Exit:* all six Felix
-  baselines + the fwdllm family run real+sim locally, and P11a-c read CAUGHT ×3.
+  baselines + the fwdllm family run real+sim locally, and P11a-c read CAUGHT ×3 (speech P11b misses: FX-N32).
 - **S2 · One parity pipeline for every example · todo.** Generalise fwdllm's `run_parity.py` /
   `replicate_floor.py` / `profile_sim_charges.py` / preflight so they drive async_cifar10 and google_speech
   too: auto-pairing on flag + length + commit, two-sided floors, median-over-real-legs, `--control`,

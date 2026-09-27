@@ -132,10 +132,16 @@ class REFLOortSelector(OortSelector):
             f"task: {task_to_perform}, avail_priority={self.avail_priority}"
         )
 
-        if round_num <= self._last_selection_round and len(self.newly_selected_this_round) != 0:
+        agg_version_key = kwargs.get("agg_version_key")
+        trainer_version_keys = kwargs.get("trainer_version_keys")
+        # A dispatch (version keys passed) never re-sends the cache (see OortSelector.select).
+        if (trainer_version_keys is None and round_num <= self._last_selection_round
+                and len(self.newly_selected_this_round) != 0):
             return {key: None for key in self.newly_selected_this_round}
 
-        self.pacer(round_num)
+        if round_num != getattr(self, "_paced_round", None):  # once per round (FX-D10 repeats a round)
+            self._paced_round = round_num
+            self.pacer(round_num)
 
         unavail_set = set(trainer_unavail_list) if trainer_unavail_list else set()
 
@@ -143,6 +149,8 @@ class REFLOortSelector(OortSelector):
             end_id: end
             for end_id, end in ends.items()
             if end_id not in unavail_set and end_id not in self.selected_ends
+            and not (trainer_version_keys is not None and agg_version_key is not None
+                     and trainer_version_keys.get(end_id) == agg_version_key)  # FX-D9
         }
 
         if len(eligible_ends) == 0:

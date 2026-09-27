@@ -45,10 +45,10 @@ def _by_round(rows: list[dict], key: str) -> tuple[list[int], list[float]]:
     return xs, [st.mean(acc[x]) for x in xs]
 
 
-def campaign_arms(root: str) -> list[tuple[str, str]]:
+def campaign_arms(root: str, prefix: str = "") -> list[tuple[str, str]]:
     arms = []
     for phase, suffix in (("P7", ""), ("P7o", "+oracle")):
-        p = os.path.join(root, phase, "summary.tsv")
+        p = os.path.join(root, prefix + phase, "summary.tsv")
         if not os.path.exists(p):
             continue
         for row in _rows_tsv(p):
@@ -157,15 +157,16 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("arms", nargs="*", help="label=run_dir")
     ap.add_argument("--campaign")
+    ap.add_argument("--prefix", default="", help="campaign phase prefix (gs_ = google_speech)")
     ap.add_argument("--out")
     a = ap.parse_args()
     arms = [tuple(x.split("=", 1)) for x in a.arms]
     if a.campaign:
-        arms += campaign_arms(a.campaign)
+        arms += campaign_arms(a.campaign, a.prefix)
     arms = [(l, d) for l, d in arms if os.path.exists(os.path.join(d, "analysis", "oracle_misselection.csv"))]
     if not arms:
         raise SystemExit("no arm has analysis/oracle_misselection.csv; run oracle_misselection.py first")
-    out = a.out or os.path.join(a.campaign or ".", "P7_figures")
+    out = a.out or os.path.join(a.campaign or ".", f"{a.prefix}P7_figures")
     os.makedirs(out, exist_ok=True)
     groups = by_baseline(arms)
     for b, g in groups.items():

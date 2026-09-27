@@ -127,16 +127,18 @@ class OortSelector(AbstractSelector):
         # full candidate pool, captured before any filtering for telemetry
         all_ends = dict(ends)
 
-        if round <= self._last_selection_round and len(self.selected_ends) != 0:
-            return {key: None for key in self.selected_ends}
-
-        self.pacer(round)
-
-        # Same no-repeat filter as async_oort's guard, kept inert here -- no
-        # caller passes both kwargs yet, since the round-scoped `selected_ends`
-        # guard above already prevents a within-round re-pick.
         agg_version_key = kwargs.get("agg_version_key")
         trainer_version_keys = kwargs.get("trainer_version_keys")
+        # A dispatch (version keys passed) selects afresh; the cache serves same-round RECV (FX-N31).
+        if (trainer_version_keys is None and round <= self._last_selection_round
+                and len(self.selected_ends) != 0):
+            return {key: None for key in self.selected_ends}
+
+        if round != getattr(self, "_paced_round", None):  # once per round (FX-D10 repeats a round)
+            self._paced_round = round
+            self.pacer(round)
+
+        # FX-D9 no-repeat guard: an end already tasked at this version is not eligible.
         eligible_ends = {
             end_id: end
             for end_id, end in ends.items()

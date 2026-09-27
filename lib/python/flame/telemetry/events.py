@@ -39,6 +39,7 @@ EVENT_SLOT_STARVATION = "slot_starvation"  # a freed dispatch slot had fewer eli
 EVENT_VCLOCK_CHARGE = "vclock_charge"  # every charge_sim_vclock_overhead() call: measured span vs actually-charged
 EVENT_SERVER_UPDATE = "server_update"  # fwdllm: applied-update vs weight norm per commit (I-1 audit)
 EVENT_TASK_DISCARD = "task_discard"  # trainer dropped a request it already answered (FX-D9)
+EVENT_RUN_END = "run_end"  # aggregator stop point: round, vclock (sim), work_done (FX-N31)
 
 KNOWN_EVENTS = frozenset(
     {
@@ -66,6 +67,7 @@ KNOWN_EVENTS = frozenset(
         EVENT_SLOT_STARVATION,
         EVENT_VCLOCK_CHARGE,
         EVENT_TASK_DISCARD,
+        EVENT_RUN_END,
     }
 )
 

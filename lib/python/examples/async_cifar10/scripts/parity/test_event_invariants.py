@@ -250,6 +250,14 @@ def test_ev12_trace_starved_run_reached_budget_passes(tmp_path):
     assert _status(run, "EV12_reached_budget") == "PASS"
 
 
+def test_ev12_starvation_jump_to_budget_passes(tmp_path):
+    # FX-N31: a sync sim starved with no selection jumps the vclock to budget; run_end records it.
+    agg, tr = _clean_run()
+    agg.append({"event": "run_end", "ts": 9.0, "round": 2, "work_done": True, "vclock_now": 100.0})
+    run = _write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 100})
+    assert _status(run, "EV12_reached_budget") == "PASS"
+
+
 def test_ev3_frozen_trainer_clock_fails(tmp_path):
     # S1 injected bug freeze_trainer_clock: the trainer keeps its first stamp.
     agg, tr = _clean_run()

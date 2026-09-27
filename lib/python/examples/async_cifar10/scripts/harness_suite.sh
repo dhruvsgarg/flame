@@ -148,7 +148,7 @@ _crash_lines() {
   local n=0 d
   for d in "$@"; do
     [ -d "$d" ] || continue
-    n=$(( n + $(grep -rhE "Traceback \(most recent call last\)|CRITICAL|Segmentation fault" "$d" --include='*.log' 2>/dev/null | wc -l) ))
+    n=$(( n + $(grep -rhE "Traceback \(most recent call last\)|CRITICAL|Segmentation fault|Fatal Python error" "$d" --include='*.log' --exclude='*_resources.log' 2>/dev/null | wc -l) ))  # node-wide monitor, not the run
   done
   echo "$n"
 }

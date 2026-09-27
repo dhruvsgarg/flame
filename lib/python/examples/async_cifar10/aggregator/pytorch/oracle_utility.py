@@ -214,6 +214,10 @@ class OracleUtilityProvider:
         std = torch.tensor(CIFAR_STD).view(1, 3, 1, 1)
         return (imgs - mean) / std, torch.tensor(ds.targets, dtype=torch.long)
 
+    def rows(self, info):
+        """(inputs, targets) a trainer's data indices address: its stub set, else the shared pool."""
+        return info["local"] or (self._imgs, self._imgs.targets if self._targets is None else self._targets)
+
     def _ensure(self, alpha, num_trainers):
         if self._table is None:
             self._table = self._build_table(alpha, num_trainers, dataset=self.spec.name)
@@ -245,7 +249,7 @@ class OracleUtilityProvider:
                     util, acc = memo[2], memo[3]
                 else:
                     g = info["arrival_global_idx"][:vis]
-                    imgs, targets = info["local"] or (self._imgs, self._imgs.targets if self._targets is None else self._targets)
+                    imgs, targets = self.rows(info)
                     util, acc = _oort_utility_acc(
                         model, imgs[g], targets[g], norm_n=vis,
                         device=device, sample_size=self.sample_size)

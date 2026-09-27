@@ -451,7 +451,9 @@ def ev12_reached_budget(run):
     # Span of commits AND selections: a trace-starved run still consumes its budget (FX-D12).
     sels = [e for e in run["agg"] if e.get("event") == "selection"]
     if _simulated(run):
-        reached = max(e.get("vclock_now") or 0.0 for e in commits + sels)
+        # run_end carries a trace-starved run's final vclock jump (FX-N31); a livelock stops at a frozen vclock.
+        ends = [e for e in run["agg"] if e.get("event") == "run_end"]
+        reached = max(e.get("vclock_now") or 0.0 for e in commits + sels + ends)
     else:
         ts = [e["ts"] for e in commits + sels]
         reached = max(ts) - (min(e["ts"] for e in sels) if sels else commits[0]["ts"])
