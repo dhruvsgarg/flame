@@ -478,9 +478,10 @@ def ev14_eval_sane(run):
     evs = _events(run, "agg_eval")
     if not evs:
         return _res("SKIP", "no agg_eval")
+    def _ok(x, lo=-math.inf, hi=math.inf):  # None check, not `or`: 0.0 is a valid value
+        return x is not None and math.isfinite(x) and lo <= x <= hi
     bad = [e.get("round") for e in evs
-           if not (0.0 <= (e.get("test-accuracy") or -1) <= 1.0)
-           or not math.isfinite(e.get("test-loss") or float("nan"))]
+           if not _ok(e.get("test-accuracy"), 0.0, 1.0) or not _ok(e.get("test-loss"))]
     return _res("PASS" if not bad else "FAIL", f"evals={len(evs)} bad={len(bad)}", examples=bad[:10])
 
 
@@ -491,10 +492,13 @@ def ev15_one_task_per_version(run):
     dup_send = 0
     for tid, evs in run["trainers"].items():
         sends = [(e.get("task_to_perform"), e.get("round")) for e in evs if e.get("event") == "task_send"]
-        seen = Counter(sends)
-        dup_send += sum(c - 1 for c in seen.values() if c > 1)
-        trained = {v for t, v in sends if t == "train"}
-        dup_send += sum(1 for t, v in seen if t == "eval" and v in trained)
+        dup_send += sum(c - 1 for c in Counter(sends).values() if c > 1)
+        trained = set()  # eval@v before train@v is allowed (FX-L26); only eval after train counts
+        for t, v in sends:
+            if t == "train":
+                trained.add(v)
+            elif t == "eval" and v in trained:
+                dup_send += 1
     discards = sum(1 for evs in run["trainers"].values() for e in evs if e.get("event") == "task_discard")
     commits = Counter()
     for e in _train_commits(run):

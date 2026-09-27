@@ -595,7 +595,7 @@ class Pool:
         suite = example_dir(j.dataset) / "scripts" / "harness_suite.sh"
         cmd = [*pin, "bash", str(suite), *args, "--output-dir", str(out)]
         (out / "cmd.txt").write_text(shlex.join(cmd) + "\n")
-        env = {**os.environ, "EXPT_AUTOCLEAN": "1", "FLAME_RUN_TAG": tag}
+        env = {**os.environ, "EXPT_AUTOCLEAN": "1", "FLAME_RUN_TAG": tag, "FLAME_RUN_LABEL": j.phase}
         if not j.whole:
             env["FLAME_AGG_CORES"] = str(8 if j.gpus else agg_cores(j.n))
         proc = subprocess.Popen(cmd, stdout=open(out / "suite.log", "w"), stderr=subprocess.STDOUT,

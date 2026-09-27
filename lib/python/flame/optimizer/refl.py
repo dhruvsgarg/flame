@@ -654,9 +654,9 @@ class REFL(AbstractOptimizer):
                 val2 = 0.0
                 
                 for key in current_model.keys():
-                    if key not in tres.weights:
-                        continue
-                        
+                    if key not in tres.weights or not current_model[key].is_floating_point():
+                        continue  # REFL's norm runs over model.parameters() only
+
                     param = current_model[key]
                     update = tres.weights[key]
                     
@@ -717,7 +717,11 @@ class REFL(AbstractOptimizer):
         
         if ml_framework == MLFramework.PYTORCH:
             import torch
-            return {k: torch.zeros_like(v) for k, v in weights.items()}
+            # Integer buffers (BatchNorm num_batches_tracked) accumulate in float (FX-L41).
+            return {
+                k: torch.zeros_like(v, dtype=v.dtype if v.is_floating_point() else torch.float64)
+                for k, v in weights.items()
+            }
         elif ml_framework == MLFramework.TENSORFLOW:
             import numpy as np
             return [np.zeros_like(w) for w in weights]
@@ -731,7 +735,10 @@ class REFL(AbstractOptimizer):
         if ml_framework == MLFramework.PYTORCH:
             for k in base.keys():
                 if k in deltas:
-                    base[k] += deltas[k]
+                    d = deltas[k]
+                    if d.dtype != base[k].dtype:
+                        d = d.round().to(base[k].dtype)
+                    base[k] += d
         elif ml_framework == MLFramework.TENSORFLOW:
             for idx in range(len(base)):
                 base[idx] += deltas[idx]
@@ -822,6 +829,14 @@ class REFL(AbstractOptimizer):
         Returns:
             Adjusted model weights after applying gradient policy
         """
+        if isinstance(current_model, dict):
+            # REFL's policies act on model.parameters() only; integer buffers keep the weighted average.
+            ints = {k: v for k, v in current_model.items() if not v.is_floating_point()}
+            if ints:
+                floats = [k for k in current_model if k not in ints]
+                out = self._apply_gradient_policy(
+                    {k: last_model[k] for k in floats}, {k: current_model[k] for k in floats}, trainers)
+                return {k: ints[k] if k in ints else out[k] for k in current_model}
         if self.gradient_policy == "yogi":
             return self._apply_yogi(last_model, current_model)
         elif self.gradient_policy == "qfedavg":

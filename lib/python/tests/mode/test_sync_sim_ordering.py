@@ -459,7 +459,7 @@ class TestStaleRejectRecordsPropsIntegration:
             def set_end_property(self, end, key, val):
                 self._props[end][key] = val
 
-            def recv_fifo(self, end_ids, first_k=0, timeout=None):
+            def recv_fifo(self, end_ids, first_k=0, timeout=None, deadline=None):
                 # Deliver one STALE update (version 7 < round 11) exactly once.
                 if not self._delivered and "slow" in set(end_ids):
                     self._delivered = True
@@ -526,6 +526,7 @@ class TestStaleRejectRecordsPropsIntegration:
         agg.cache = {}
         agg._updates_recevied = {}
         agg._oort_sent_version_ts = {"slow": {7: sent_ts}}
+        agg.agg_start_time_ts = sent_ts.timestamp()
         return agg, chan, sel
 
     def test_stale_reject_records_speed_and_utility_but_not_aggregated(self):
@@ -555,6 +556,15 @@ class TestAllStaleRoundFreesSlotsAndKeepsVersion(TestStaleRejectRecordsPropsInte
         monkeypatch.setattr(oort_mod.time, "sleep", lambda s: None)
         agg, chan, sel = self._build_agg()
         agg.optimizer.do = lambda weights, cache, total=0: None if not cache else weights
+        agg._aggregate_weights("tag")
+        assert "slow" not in sel.selected_ends
+        assert agg._round_committed is False
+
+    def test_empty_cache_not_committed_when_optimizer_returns_weights(self, monkeypatch):
+        """FX-D10: refl returns base weights on an empty cache; that is still no commit."""
+        import flame.mode.horizontal.oort.top_aggregator as oort_mod
+        monkeypatch.setattr(oort_mod.time, "sleep", lambda s: None)
+        agg, chan, sel = self._build_agg()  # optimizer.do returns weights unconditionally
         agg._aggregate_weights("tag")
         assert "slow" not in sel.selected_ends
         assert agg._round_committed is False

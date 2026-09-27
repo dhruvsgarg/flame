@@ -252,23 +252,9 @@ class TopAggregator(BaseTopAggregator):
 
         received_end_count = 0
 
-        # Real mode only: bound recv_fifo with a wall-clock timeout (default
-        # trainer_recv_wall_timeout_s=90s, >> the 18s max trainer speed in
-        # async_cifar10) so unavailable trainers can't stall the aggregator
-        # indefinitely; capped at the remaining max_experiment_runtime_s
-        # budget so the process never overshoots it. Sim mode leaves
-        # _recv_timeout=None — the vclock drives termination there instead.
-        _recv_timeout = None
-        if not self.simulated:
-            _stall = float(getattr(
-                self.config.hyperparameters, "trainer_recv_wall_timeout_s", 90.0
-            ))
-            _max_rt = getattr(self.config.hyperparameters, "max_experiment_runtime_s", None)
-            if _max_rt:
-                _remaining = max(1.0, float(_max_rt) - (time.time() - self.agg_start_time_ts))
-                _recv_timeout = min(_stall, _remaining)
-            else:
-                _recv_timeout = _stall
+        # Real: recvs stop at the per-trainer deadline; abandoned ends' late updates still land, stale-gated (FX-L40).
+        _recv_deadline = None if self.simulated else self._real_round_recv_deadline(channel, end_ids)
+        _real_ends = None if self.simulated else self._real_recv_ends(end_ids)
 
         # simulated: commit the aggr_num updates with the smallest
         # sim_completion_ts (the k that would physically finish first in real),
@@ -281,7 +267,7 @@ class TopAggregator(BaseTopAggregator):
             self._round_start_vclock = self._vclock.now
             _recv = self._oort_sim_recv(channel, end_ids)
         else:
-            _recv = channel.recv_fifo(end_ids, aggr_num, timeout=_recv_timeout)
+            _recv = channel.recv_fifo(_real_ends, aggr_num, deadline=_recv_deadline)
 
         for msg, metadata in _recv:
             end, _ = metadata
@@ -294,6 +280,7 @@ class TopAggregator(BaseTopAggregator):
             # loop already recorded it inside _sim_withhold_if_unavail).
             if not self.simulated:
                 self._record_commit_belief(end)
+                self.commit_withheld(end)  # an abandoned trainer's late update arrived
 
             # Calculate staleness
             trainer_round = msg.get(MessageType.MODEL_VERSION, 0)
@@ -397,7 +384,9 @@ class TopAggregator(BaseTopAggregator):
             _recv2 = (
                 self._oort_sim_recv(channel, end_ids)
                 if self.simulated
-                else channel.recv_fifo(end_ids, 1, timeout=_recv_timeout)
+                else channel.recv_fifo(
+                    [e for e in _real_ends if e in end_ids or e in getattr(self, "pending_withheld", {})], 1,
+                    deadline=_recv_deadline)
             )
             for msg, metadata in _recv2:
                 end, _ = metadata
@@ -411,6 +400,7 @@ class TopAggregator(BaseTopAggregator):
                 # commit loop already recorded it inside _sim_withhold_if_unavail).
                 if not self.simulated:
                     self._record_commit_belief(end)
+                    self.commit_withheld(end)  # an abandoned trainer's late update arrived
 
                 # Calculate staleness
                 trainer_round = msg.get(MessageType.MODEL_VERSION, 0)
@@ -537,9 +527,10 @@ class TopAggregator(BaseTopAggregator):
 
         # optimizer conducts optimization (in this case, aggregation)
         _opt0 = time.time()
+        # An empty cache commits nothing, whatever the optimizer returns (FX-L28).
         global_weights = self.optimizer.do(
             deepcopy(self.weights), self.cache, total=total
-        )
+        ) if self.cache else None
         # [AGG_COMMIT_TIMING] per-round aggregate cost (cache store in-memory +
         # optimizer + weight deepcopy).
         logger.info(
@@ -675,12 +666,8 @@ class TopAggregator(BaseTopAggregator):
         # before distributing weights, update it from global model
         self._update_weights()
 
-        # C.3: re-clock the 90s abandon to the vclock and free stalled slots so a
-        # replacement is selectable this round (no-op when the gate is off).
-        # Sim-only: real mode already has a native wall-clock abandon in the
-        # selector itself (SEND_TIMEOUT_WAIT_S), so this would be redundant there.
-        if self.simulated:
-            self._sim_abandon_stalled(channel)
+        # C.3: free slots stalled past 90s since dispatch, both modes (no-op when the gate is off).
+        self._abandon_stalled(channel)
         # D.1: for availability_aware baselines, proactively free any in-flight
         # slot the trace now shows as UN_AVL -- no 90s wait. Both modes: trace-read
         # eviction has no real-mode equivalent (unlike the abandon above), so
@@ -795,7 +782,7 @@ class TopAggregator(BaseTopAggregator):
                 )
                 if _nxt is not None and _nxt > self._vclock.now and self._vclock.now < _budget:
                     self._vclock.advance(_nxt)
-                    self._sim_abandon_stalled(channel)
+                    self._abandon_stalled(channel)
                     curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
                         task_to_perform
                     )

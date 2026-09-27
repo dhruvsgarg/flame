@@ -36,6 +36,32 @@ def test_no_run_dir_file_without_env(tmp_path, monkeypatch):
     assert [p.name for p in tmp_path.iterdir()] == ["experiments"]
 
 
+def test_same_second_slots_get_distinct_run_dirs(tmp_path, monkeypatch):
+    """FX-D13: two slots launching the same leg in one second never share a run dir."""
+    import datetime as dt
+
+    import pytest
+
+    import flame.launch.runner as runner_mod
+
+    class _Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 26, 20, 0, 7)
+
+    monkeypatch.setattr(runner_mod, "datetime", _Frozen)
+    monkeypatch.delenv("FLAME_RUN_DIR_FILE", raising=False)
+    fake = SimpleNamespace(experiments_dir=tmp_path)
+    exp = SimpleNamespace(name="dbg_fedbuff_real")
+    dirs = []
+    for label in ("gs_P1", "gs_P10"):
+        monkeypatch.setenv("FLAME_RUN_LABEL", label)
+        dirs.append(ExperimentRunner._create_experiment_directory(fake, exp))
+    assert dirs[0].name == "run_20260926_200007_gs_P1_dbg_fedbuff_real" and dirs[0] != dirs[1]
+    with pytest.raises(FileExistsError):  # same label, same second: refuse to share
+        ExperimentRunner._create_experiment_directory(fake, exp)
+
+
 def test_slot_pids_sees_only_its_own_slot(monkeypatch):
     import os
     import subprocess

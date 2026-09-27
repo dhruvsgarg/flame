@@ -245,7 +245,7 @@ class TopAggregator(SyncTopAgg):
             return False
 
     # C.2 / C.3 commit-loop wiring (_sim_pop_committable, _sim_reinject_ready_withheld,
-    # _sim_abandon_stalled) is shared, library-level in ClientAvailability so the oort
+    # _abandon_stalled) is shared, library-level in ClientAvailability so the oort
     # stack rides the identical logic. The asyncfl gate tracker (_sim_inflight_expected)
     # is reached via the mixin's guarded _avail_drop_inflight hook.
 
@@ -1534,7 +1534,7 @@ class TopAggregator(SyncTopAgg):
         # Sim-only: real mode already has a native wall-clock abandon in the
         # selector itself (SEND_TIMEOUT_WAIT_S), so this would be redundant there.
         if self.simulated:
-            self._sim_abandon_stalled(channel)
+            self._abandon_stalled(channel)
         # D.1: for proactive_inflight_evict baselines (felix only), free any
         # in-flight slot the trace now shows as UN_AVL -- no 90s wait. Both modes:
         # trace-read eviction has no real-mode equivalent (unlike the abandon

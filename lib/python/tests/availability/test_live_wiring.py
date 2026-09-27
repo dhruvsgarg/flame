@@ -111,6 +111,7 @@ class _Harness(ClientAvailability):
             TrainerAvailState.AVL_EVAL in trace.values()
             for trace in trainer_event_dict.values()
         )
+        self.simulated = True
         self.pending_withheld = {}
         self._sim_withheld_payload = {}
         self._sim_withheld_delivering = {}
@@ -328,7 +329,7 @@ def _setup_abandon(selector_cls, inflight_tracker):
 def test_abandon_fires_past_90s_async_shape():
     h, sel, ch = _setup_abandon(_AsyncSelector, inflight_tracker=True)
     ch.set_end_property("t1", PROP_SIM_SEND_TS, 300 - 100)  # age 100 > 90
-    h._sim_abandon_stalled(ch)
+    h._abandon_stalled(ch)
     assert not sel.holds("t1")                  # slot freed -> replacement selectable
     assert "t1" in h.pending_withheld           # delivery ledger registered
     assert "t1" not in h._sim_inflight_expected
@@ -337,15 +338,49 @@ def test_abandon_fires_past_90s_async_shape():
 def test_abandon_fires_past_90s_oort_shape():
     h, sel, ch = _setup_abandon(_OortSelector, inflight_tracker=False)
     ch.set_end_property("t1", PROP_SIM_SEND_TS, 300 - 95)   # age 95 > 90
-    h._sim_abandon_stalled(ch)
+    h._abandon_stalled(ch)
     assert not sel.holds("t1")
     assert "t1" in h.pending_withheld
+
+
+def test_abandon_fires_past_90s_real_wall_clock():
+    """Real sync: a trainer 95s past its dispatch (PROP_ROUND_START_TIME) is abandoned; its late
+    update stays due (pending_withheld) and is received on the real recv set."""
+    import datetime as dt
+
+    from flame.selector.properties import PROP_ROUND_START_TIME
+    h, sel, ch = _setup_abandon(_OortSelector, inflight_tracker=False)
+    h.simulated, h.agg_start_time_ts = False, 1000.0
+    h._avail_now = lambda: 300.0
+    ch.set_end_property("t1", PROP_ROUND_START_TIME, (3, dt.datetime.fromtimestamp(1000.0 + 205)))
+    h._abandon_stalled(ch)
+    assert not sel.holds("t1") and "t1" in h.pending_withheld
+    assert h._real_recv_ends(["t2"]) == ["t2", "t1"]
+    h.commit_withheld("t1")
+    assert h._real_recv_ends(["t2"]) == ["t2"]
+
+
+def test_real_recv_deadline_is_latest_trainer_timeout():
+    """Per-trainer: wait until the latest-dispatched awaited trainer hits 90s; abandoned ones don't count."""
+    import datetime as dt
+    from types import SimpleNamespace
+
+    from flame.selector.properties import PROP_ROUND_START_TIME
+    h, sel, ch = _setup_abandon(_OortSelector, inflight_tracker=False)
+    h.simulated, h.agg_start_time_ts = False, 1000.0
+    h.config = SimpleNamespace(hyperparameters=SimpleNamespace(max_experiment_runtime_s=240))
+    for e, t in (("a", 10.0), ("b", 30.0), ("gone", 50.0)):
+        ch.set_end_property(e, PROP_ROUND_START_TIME, (1, dt.datetime.fromtimestamp(1000.0 + t)))
+    h.pending_withheld["gone"] = 60.0
+    assert h._real_round_recv_deadline(ch, ["a", "b", "gone"]) == 1000.0 + 30 + 90
+    h.config.hyperparameters.max_experiment_runtime_s = 100
+    assert h._real_round_recv_deadline(ch, ["a", "b"]) == 1000.0 + 100
 
 
 def test_abandon_does_not_fire_under_90s():
     h, sel, ch = _setup_abandon(_OortSelector, inflight_tracker=False)
     ch.set_end_property("t1", PROP_SIM_SEND_TS, 300 - 50)   # age 50 <= 90
-    h._sim_abandon_stalled(ch)
+    h._abandon_stalled(ch)
     assert sel.holds("t1")                      # still in-flight
     assert h.pending_withheld == {}
 
@@ -355,7 +390,7 @@ def test_abandon_skips_buffered_committed_and_withheld():
     ch.set_end_property("t1", PROP_SIM_SEND_TS, 300 - 100)
     # already arrived in the buffer -> not stalled.
     h._sim_buffer.add("t1", 250.0, _payload("t1"))
-    h._sim_abandon_stalled(ch)
+    h._abandon_stalled(ch)
     assert sel.holds("t1") and h.pending_withheld == {}
 
 
@@ -364,7 +399,7 @@ def test_abandon_gate_off_is_noop():
     sel = _OortSelector(); sel.add("t1")
     ch = _Channel(sel, ["t1"])
     ch.set_end_property("t1", PROP_SIM_SEND_TS, 0.0)
-    h._sim_abandon_stalled(ch)
+    h._abandon_stalled(ch)
     assert sel.holds("t1") and h.pending_withheld == {}
 
 

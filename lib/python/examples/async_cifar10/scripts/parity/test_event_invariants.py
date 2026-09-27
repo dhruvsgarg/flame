@@ -163,6 +163,12 @@ def test_ev14_nan_loss_fails(tmp_path):
     assert _status(_write_run(tmp_path, agg, tr), "EV14_eval_sane") == "FAIL"
 
 
+def test_ev14_zero_accuracy_passes(tmp_path):
+    agg, tr = _clean_run()
+    agg.append({"event": "agg_eval", "ts": 99, "round": 2, "test-accuracy": 0.0, "test-loss": 0.0})
+    assert _status(_write_run(tmp_path, agg, tr), "EV14_eval_sane") == "PASS"
+
+
 def test_broken_check_is_error_not_crash(tmp_path, monkeypatch):
     def boom(run):
         raise RuntimeError("x")
@@ -204,6 +210,14 @@ def test_ev15_eval_after_train_same_version_fails_train_after_eval_passes(tmp_pa
     first = next(e for e in agg if e["event"] == "dispatch" and e.get("task") == "train")
     ok = [{**first, "task": "eval", "ts": first["ts"] - 0.05}] + agg  # eval first, then train, same version
     assert _status(_write_run(tmp_path / "b", ok, tr), "EV15_one_task_per_version") == "PASS"
+
+
+def test_ev15_trainer_eval_then_train_same_version_passes(tmp_path):
+    agg, tr = _clean_run()
+    tr[T1].insert(0, {"event": "task_send", "round": 1, "ts": 0.0, "task_to_perform": "eval"})
+    assert _status(_write_run(tmp_path, agg, tr), "EV15_one_task_per_version") == "PASS"
+    tr[T1].append({"event": "task_send", "round": 1, "ts": 99, "task_to_perform": "eval"})
+    assert _status(_write_run(tmp_path / "b", agg, tr), "EV15_one_task_per_version") == "FAIL"
 
 
 def test_ev15_duplicate_commit_fails(tmp_path):

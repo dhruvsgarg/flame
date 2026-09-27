@@ -382,10 +382,10 @@ PY
 
 # Count experiments in a generated YAML (used to estimate budget and track progress).
 _count_exps() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" "${2:-}" <<'PY'
 import yaml, sys
 d = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-print(len(d.get('experiments', [])))
+print(sum(1 for e in d.get('experiments', []) if str(e.get('name', '')).endswith(sys.argv[2])))
 PY
 }
 
@@ -548,8 +548,10 @@ if [ ! -f "$cfg" ]; then
 fi
 
 _n_exps=$(_count_exps "$cfg")
-# Per leg: runtime + join (~4 trainers/s) + 30s startup/teardown; n=120 legs overran 2x runtime.
-_budget=$(( _n_exps * (RUNTIME_S + ${NUM_TRAINERS:-300} / 4 + 30) ))
+_n_sim=$(_count_exps "$cfg" _sim)
+# Per leg: wall cap (runtime; sim: its wall ceiling) + join (~4 trainers/s) + 30s startup/teardown (FX-D13).
+_leg_extra=$(( ${NUM_TRAINERS:-300} / 4 + 30 ))
+_budget=$(( (_n_exps - _n_sim) * (RUNTIME_S + _leg_extra) + _n_sim * (${SIM_WALL_CEILING_S:-$RUNTIME_S} + _leg_extra) ))
 echo "  queued: $_n_exps exp(s), estimated budget ~${_budget}s (sim finishes faster than real)"
 cifar_preflight "$cfg"; gate_or_continue $?
 run_node "debug_run" "$cfg" "$_budget" "$_n_exps"

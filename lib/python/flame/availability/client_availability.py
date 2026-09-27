@@ -31,7 +31,7 @@ from flame.availability.trace import (
 )
 from flame.config import TrainerAvailState
 from flame.mode.message import MessageType
-from flame.selector.properties import PROP_AVL_STATE, PROP_SIM_SEND_TS
+from flame.selector.properties import PROP_AVL_STATE, PROP_ROUND_START_TIME, PROP_SIM_SEND_TS
 from flame.telemetry.events import (
     build_abandon_timeout,
     build_agg_belief_change,
@@ -461,7 +461,7 @@ class ClientAvailability:
 
     def commit_withheld(self, end: str) -> Optional[float]:
         """Pop `end` from the delivery ledger once its late update has committed."""
-        return self.pending_withheld.pop(end, None)
+        return getattr(self, "pending_withheld", {}).pop(end, None)
 
     # ------------------------------------------------------------------
     # Slot-ledger helpers (robust to both selector shapes)
@@ -666,8 +666,37 @@ class ClientAvailability:
         )
         telemetry.emit(ev, **f)
 
-    def _sim_abandon_stalled(self, channel) -> None:
-        """C.3: free in-flight slots stalled past the 90s vclock deadline.
+    def _avail_send_ts(self, channel, end) -> Optional[float]:
+        """`end`'s last dispatch on the availability timeline (vclock in sim, wall since start in real)."""
+        if getattr(self, "simulated", False):
+            sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
+            return None if sst is None else float(sst)
+        prop = channel.get_end_property(end, PROP_ROUND_START_TIME)  # (round, datetime)
+        if prop is None:
+            return None
+        sent = prop[1] if isinstance(prop, tuple) else prop
+        return sent.timestamp() - self.agg_start_time_ts
+
+    def _real_recv_ends(self, ends) -> list:
+        """Real sync recv set: in-flight ends plus abandoned ones whose late update is still due (stale-gated)."""
+        late = [e for e in getattr(self, "pending_withheld", {}) if e not in set(ends)]
+        return list(ends) + late
+
+    def _real_round_recv_deadline(self, channel, ends) -> float:
+        """Real sync round: wait until every awaited trainer is past its own 90s since dispatch (FX-L40),
+        capped at the run budget's end. Abandoned ends don't extend the wait."""
+        hp = self.config.hyperparameters
+        timeout_s = float(getattr(hp, "trainer_recv_wall_timeout_s", _AVAIL_ABANDON_TIMEOUT_S))
+        sent = [self._avail_send_ts(channel, e) for e in ends if e not in getattr(self, "pending_withheld", {})]
+        sent = [t for t in sent if t is not None]
+        deadline = self.agg_start_time_ts + (max(sent) + timeout_s if sent else self._avail_now())
+        max_rt = getattr(hp, "max_experiment_runtime_s", None)
+        if max_rt:
+            deadline = min(deadline, self.agg_start_time_ts + float(max_rt))
+        return deadline
+
+    def _abandon_stalled(self, channel) -> None:
+        """C.3: free in-flight slots stalled past 90s since dispatch (vclock in sim, wall in real).
 
         Re-clocks the selector's wall-based abandon (inert in sim) onto the vclock.
         A trainer dispatched > 90 vclock-seconds ago whose update has neither
@@ -694,26 +723,26 @@ class ClientAvailability:
                 continue  # already arrived — not stalled
             if end in committed or end in self.pending_withheld:
                 continue  # invariant 1: already committed / abandoned
-            sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
+            sst = self._avail_send_ts(channel, end)
             if sst is None:
                 continue
             if now - float(sst) <= _AVAIL_ABANDON_TIMEOUT_S:
                 continue
-            self.free_stalled_slot(
-                channel, end, reason="abandon_90s_vclock", sct=now
-            )
+            reason = "abandon_90s_vclock" if getattr(self, "simulated", False) else "abandon_90s_wall"
+            self.free_stalled_slot(channel, end, reason=reason, sct=now)
             if not hasattr(self, "_task_timeout_at"):
                 self._task_timeout_at = {}
             self._task_timeout_at[end] = now  # FX-D9: timeout, not an aware eviction
             logger.info(
-                f"[ABANDON_90S] end={str(end)[-4:]} sim_send_ts={float(sst):.1f} "
-                f"vclock={now:.1f} age={now - float(sst):.1f}s"
+                f"[ABANDON_90S] end={str(end)[-4:]} send_ts={float(sst):.1f} "
+                f"now={now:.1f} age={now - float(sst):.1f}s ({reason})"
             )
             if telemetry.is_enabled():
                 ev, f = build_abandon_timeout(
                     round_num=getattr(self, "_round", -1), end_id=end,
-                    sim_send_ts=float(sst), vclock_now=now, time_mode="sim",
-                    reason="abandon_90s_vclock",
+                    sim_send_ts=float(sst), vclock_now=now,
+                    time_mode="sim" if getattr(self, "simulated", False) else "real",
+                    reason=reason,
                 )
                 telemetry.emit(ev, **f)
 

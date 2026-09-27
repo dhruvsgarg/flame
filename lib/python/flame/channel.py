@@ -465,7 +465,8 @@ class Channel(object):
         return msg, timestamp
 
     def recv_fifo(
-        self, end_ids: list[str], first_k: int = 0, timeout: float = None
+        self, end_ids: list[str], first_k: int = 0, timeout: float = None,
+        deadline: float = None,
     ) -> tuple[Any, tuple[str, datetime]]:
         """Receive a message per end from a list of ends.
 
@@ -486,6 +487,8 @@ class Channel(object):
                  arrives within it, yield (None, ("", now)) and stop, so a
                  caller never blocks forever on in-flight ends that have gone
                  quiet (unavailable / departed). Default None = block (legacy).
+        deadline: optional absolute ``time.time()`` bound on the whole call; each
+                 wait is capped at the time left (FX-L40). Default None = no cap.
 
         Returns
         -------
@@ -508,10 +511,18 @@ class Channel(object):
             logger.debug("Got an empty end id list, will yield None")
             yield None, ("", datetime.now())
 
+        def _wait_s():
+            if deadline is None:
+                return timeout
+            left = max(0.01, deadline - time.time())  # 0 races run_async's future
+            return left if timeout is None else min(timeout, left)
+
+        streamer_timeout = _wait_s()
+
         async def _put_message_to_rxq_inner():
             logger.debug("Created task for recv_fifo in put_msg_to_rxq_inner")
             _ = asyncio.create_task(
-                self._streamer_for_recv_fifo(end_ids, timeout=timeout)
+                self._streamer_for_recv_fifo(end_ids, timeout=streamer_timeout)
             )
 
         async def _get_message_inner():
@@ -527,7 +538,7 @@ class Channel(object):
         # the temp queue; we call this coroutine first_k times
         for _ in range(first_k):
             result, status = run_async(
-                _get_message_inner(), self._backend.loop(), timeout=timeout
+                _get_message_inner(), self._backend.loop(), timeout=_wait_s()
             )
             logger.debug(f"After getting message, status: {status}")
             # timeout (or any non-delivery): don't index into a None result;

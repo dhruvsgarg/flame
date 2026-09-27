@@ -1152,14 +1152,18 @@ class PyTorchCifar10Trainer(Trainer):
             logger.debug("Initiating send heartbeat to aggregator")
             self.send_heartbeat_to_agg()
 
+    def _avail_thread_done(self) -> bool:
+        # EOT, or process shutdown (a trainer UN_AVL at run end gets no EOT, only SIGTERM): FX-D7.
+        return getattr(self, "_work_done", False) or getattr(self, "_shutting_down", False)
+
     def notify_trainer_avail(self) -> None:
-        # Stops at EOT (_work_done is set before channel.leave; absent until run()), FX-D7.
-        while not getattr(self, "_work_done", False):
+        # Both flags are set before channel.leave; _work_done is absent until run(), FX-D7.
+        while not self._avail_thread_done():
             time.sleep(1)  # Will check every 1 second
             try:
                 self.check_and_update_state_avl()
             except Exception:
-                if not getattr(self, "_work_done", False):
+                if not self._avail_thread_done():
                     raise
                 return  # channel torn down mid-update at shutdown
 
@@ -1257,6 +1261,7 @@ def main():
     # Register exit handler to generate memory report
     def cleanup_and_report():
         """Generate memory profiling report on exit."""
+        t._shutting_down = True
         try:
             report = t.memory_profiler.generate_report()
             logger.info(f"\n{report}")
@@ -1268,6 +1273,7 @@ def main():
     
     # No I/O in the handler (reentrant stdout); atexit writes the report; repeat signals ignored.
     def signal_handler(signum, frame):
+        t._shutting_down = True
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         raise SystemExit(0)

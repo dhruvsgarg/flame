@@ -357,17 +357,23 @@ expt_assert_run() {
     EXPT_LAST_HEALTH="NO_MARKER"; export EXPT_LAST_HEALTH
     echo "  [$label] NO_MARKER (cannot scope health check)"; return 1
   fi
+  # Parallel slots share $expdir: scan only this slot's run dirs (FX-T28).
+  local -a roots=("$expdir")
+  if [ -n "${FLAME_RUN_DIR_FILE:-}" ] && [ -s "$FLAME_RUN_DIR_FILE" ]; then
+    mapfile -t roots < <(sort -u "$FLAME_RUN_DIR_FILE" | while IFS= read -r d; do [ -d "$d" ] && echo "$d"; done)
+    [ "${#roots[@]}" -gt 0 ] || roots=("$marker.none")
+  fi
   local agg=0 stop=0 wall=0 starv=0 crash=0 nlogs=0 f n
   while IFS= read -r f; do
     n=$(grep -c "agg_round" "$f" 2>/dev/null); agg=$(( agg + ${n:-0} ))
-  done < <(find "$expdir" -name "aggregator_*.jsonl" -newer "$marker" 2>/dev/null)
+  done < <(find "${roots[@]}" -name "aggregator_*.jsonl" -newer "$marker" 2>/dev/null)
   while IFS= read -r f; do
     nlogs=$(( nlogs + 1 ))
     n=$(grep -ic "stopping run" "$f" 2>/dev/null);          stop=$((  stop  + ${n:-0} ))
     n=$(grep -c  "SIM_WALL_CEILING" "$f" 2>/dev/null);       wall=$((  wall  + ${n:-0} ))
     n=$(grep -c  "\[SIM_STARVATION\]" "$f" 2>/dev/null);     starv=$(( starv + ${n:-0} ))
     n=$(grep -cE "Traceback \(most recent call last\)|CUDA error|Segmentation fault" "$f" 2>/dev/null); crash=$(( crash + ${n:-0} ))
-  done < <(find "$expdir" -name "*_aggregator.log" -newer "$marker" 2>/dev/null)
+  done < <(find "${roots[@]}" -name "*_aggregator.log" -newer "$marker" 2>/dev/null)
   # A healthy, fully-run experiment is COMPLETED (a process outcome), not PASS.
   local status="COMPLETED"
   [ "$agg" -eq 0 ]   && status="NO_AGG_ROUNDS"

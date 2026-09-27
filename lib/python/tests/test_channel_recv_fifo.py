@@ -309,6 +309,23 @@ class TestRecvFifoSimPattern:
         finally:
             self._stop_loop(loop, thread)
 
+    def test_deadline_bounds_the_whole_call(self):
+        """FX-D17: a message arriving just inside each per-message timeout can't stretch the call
+        past its deadline; the late end's task is released too."""
+        loop, thread = self._start_loop()
+        try:
+            ch = self._make_channel(loop, ["a", "b"])
+            loop.call_later(0.3, lambda: ch._ends["a"].rxq.put_nowait(
+                (cloudpickle.dumps({MessageType.MODEL_VERSION: 1}), "t")))
+            t0 = time.time()
+            got = list(ch.recv_fifo(["a", "b"], 2, timeout=10.0, deadline=t0 + 0.6))
+            assert time.time() - t0 < 1.5
+            assert [m is not None for m, _ in got] == [True, False]
+            self._wait_drained(ch)
+            assert ch._active_recv_fifo_tasks == set()
+        finally:
+            self._stop_loop(loop, thread)
+
 
 async def _make_queue():
     return asyncio.Queue()

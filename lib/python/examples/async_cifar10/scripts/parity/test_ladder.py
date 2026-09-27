@@ -709,3 +709,14 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{len(fns) - failed}/{len(fns)} passed")
     sys.exit(1 if failed else 0)
+
+
+def test_phase_split_sub_phase_grades_on_mean():
+    """FX-D13: a sub-0.2s phase passes on matching means despite KS, fails on a >50ms mean gap."""
+    from parity.checks import trainer_phase_split
+
+    def _tr(vals):
+        return {"t": {"trainer_round": [{"pre_train_s": v} for v in vals]}}
+    real = _tr([0.010, 0.012] * 20)
+    assert trainer_phase_split(real, _tr([0.020, 0.022] * 20))["phase_pre_train"]["ok"]
+    assert not trainer_phase_split(real, _tr([0.15] * 40))["phase_pre_train"]["ok"]

@@ -758,8 +758,9 @@ class ExperimentRunner:
 
     def _create_experiment_directory(self, exp: ExperimentConfig) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        d = self.experiments_dir / f"run_{timestamp}_{exp.name}"
-        d.mkdir(parents=True, exist_ok=True)
+        label = os.environ.get("FLAME_RUN_LABEL")  # pool phase: parallel slots may start in the same second (FX-D13)
+        d = self.experiments_dir / (f"run_{timestamp}_{label}_{exp.name}" if label else f"run_{timestamp}_{exp.name}")
+        d.mkdir(parents=True, exist_ok=False)  # two runs sharing a dir double every commit
         if os.environ.get("FLAME_RUN_DIR_FILE"):  # FX-N22: exact leg discovery for parallel harness slots
             with open(os.environ["FLAME_RUN_DIR_FILE"], "a") as f:
                 f.write(f"{d}\n")

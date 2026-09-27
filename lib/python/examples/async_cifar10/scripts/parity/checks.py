@@ -4656,6 +4656,10 @@ def training_budget_parity(real_trainers: dict, sim_trainers: dict,
             "n_real": len(rv), "n_sim": len(sv)}
 
 
+_SUB_PHASE_S = 0.2
+_SUB_PHASE_MEAN_TOL_S = 0.05
+
+
 def trainer_phase_split(real_trainers: dict, sim_trainers: dict,
                         ks_tol: float = 0.25) -> dict:
     """T_* [DIST]: one independent KS check per training phase.
@@ -4684,16 +4688,11 @@ def trainer_phase_split(real_trainers: dict, sim_trainers: dict,
         ks = ks_stat(rv, sv)
         rm, _ = mean_std(rv)
         sm, _ = mean_std(sv)
-        # Point-mass guard: when both modes are sub-5ms the distribution is a
-        # near-zero spike; KS→1 is a statistical artifact of comparing two
-        # point masses at slightly different zero-proxies (0.001s real vs 0.0s
-        # sim). Pass on mean_diff instead — a real past-dating divergence clears
-        # 5ms by orders of magnitude.
-        _near_zero_phase_s = 0.005
-        if abs(rm) <= _near_zero_phase_s and abs(sm) <= _near_zero_phase_s:
-            ok = True
-            note = (f"near-zero point mass (both means <={_near_zero_phase_s*1000:.0f}ms): "
-                    "KS uninformative — passed on mean")
+        # Sub-0.2s phases: KS grades wall-capture jitter, so grade the mean (FX-L17).
+        if max(abs(rm), abs(sm)) < _SUB_PHASE_S:
+            ok = abs(rm - sm) <= _SUB_PHASE_MEAN_TOL_S
+            note = (f"sub-{_SUB_PHASE_S}s phase: graded on |mean diff| "
+                    f"<= {_SUB_PHASE_MEAN_TOL_S}s, KS diagnostic")
         else:
             ok = ks <= ks_tol
             note = None
@@ -4813,7 +4812,7 @@ _AGG_STEP_TIMING_OFF_CRITICAL_PATH_FUNCS = frozenset({
 })
 
 # Point-mass guard (same rationale as `trainer_phase_split`'s
-# `_near_zero_phase_s`): near-zero distributions score KS/mean-rel dither, not
+# `_SUB_PHASE_S`): near-zero distributions score KS/mean-rel dither, not
 # divergence. Also requires the ABSOLUTE gap to be tiny, not just both means
 # small -- else a real fraction-of-samples shift would dilute under the mean
 # floor and wrongly pass; see test_genuine_divergence_spanning_many_samples_still_fails.

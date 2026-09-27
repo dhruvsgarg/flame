@@ -1,6 +1,6 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""FX-D7: the availability thread stops at EOT and never crashes on channel teardown."""
+"""FX-D7: the availability thread stops at EOT or shutdown and never crashes on channel teardown."""
 
 import threading
 
@@ -53,3 +53,15 @@ def test_stops_after_work_done():
     th.start()
     th.join(timeout=2)
     assert not th.is_alive() and len(calls) == 3
+
+
+def test_exits_quietly_on_sigterm_teardown_without_eot():
+    """FX-D7: a trainer UN_AVL at run end gets no EOT; SIGTERM tears the channel down."""
+    t = _trainer(None)
+
+    def _update():
+        t._shutting_down = True  # signal handler ran; channel left mid-update
+        raise RuntimeError("channel gone")
+    t.check_and_update_state_avl = _update
+    t.notify_trainer_avail()  # returns, no raise
+    assert t._work_done is False
