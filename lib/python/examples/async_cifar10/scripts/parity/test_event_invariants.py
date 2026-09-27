@@ -145,6 +145,14 @@ def test_ev10_redispatch_while_outstanding_fails(tmp_path):
     assert _status(_write_run(tmp_path, agg, tr), "EV10_dispatch_one_in_flight") == "FAIL"
 
 
+def test_ev10_redispatch_after_withhold_passes(tmp_path):
+    agg, tr = _clean_run()
+    d = next(e for e in agg if e["event"] == "dispatch")
+    agg += [{**d, "ts": d["ts"] + 0.001},
+            {"event": "withheld_delivery", "end_id": d["end_id"], "ts": d["ts"] + 0.002}]
+    assert _status(_write_run(tmp_path, agg, tr), "EV10_dispatch_one_in_flight") == "PASS"
+
+
 def test_ev11_clock_backwards_fails(tmp_path):
     agg, tr = _clean_run()
     commits = [e for e in agg if e["event"] == "agg_round"]

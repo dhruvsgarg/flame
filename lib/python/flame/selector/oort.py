@@ -139,10 +139,13 @@ class OortSelector(AbstractSelector):
             self.pacer(round)
 
         # FX-D9 no-repeat guard: an end already tasked at this version is not eligible.
+        # Excluded here so the random paths skip unavailable ends too (EV9).
+        unavail = set(trainer_unavail_list or ())
         eligible_ends = {
             end_id: end
             for end_id, end in ends.items()
             if end_id not in self.selected_ends
+            and end_id not in unavail
             and not (
                 agg_version_key is not None
                 and trainer_version_keys is not None
@@ -601,6 +604,10 @@ class OortSelector(AbstractSelector):
 
     def _cleanup_removed_ends(self, end_id):
         logger.debug(f"end_id {end_id} left the channel")
+
+    def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
+        """Channel UN_AVL release (substrate off)."""
+        self.selected_ends.discard(end_id)
 
     def _cleanup_recvd_ends(self, ends: dict[str, End]):
         """Free ends whose updates were received from the in-flight set."""

@@ -139,25 +139,34 @@ G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). 
 passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
 → FX-N11 (speech GPU parity) → FX-N12. FX-N10 grades on FX-N20 + speech G1. FX-N13 design can start any time.
 
-- **FX-N20 `[C][S]` · Harness T4 re-run on both datasets, with the G0 screen · wip: operator launching overnight.**
-  T4 + G0 + G0C over kaylee and wash (8 free GPUs each), est 411 min per node; jayne stays free (another user's job
-  holds 4 of its GPUs). Prep: kaylee `git fetch && git checkout dg/pending_fl_baselines` (it was on `dg/fluxtune_opts`,
-  clean); wash `git pull` + the R21 prune. Smokes: `pool_smoke_final` (felix/refl, both datasets: T3 syn_50 and G0 syn_20
-  green, G0C path works; EV1 misses are 60s/n=12 artifacts) and `pool_check_p3n45` (P3 real at n=45: felix 350 / refl 95
-  commits, EV green).
+- **FX-N20 `[C][S]` · Harness T4 + G0 + G0C re-run on both datasets · todo (operator): re-run with the fixes below.**
+  Run 1 (`pool_20260927_060727_T4_G0_G0C` kaylee, `pool_20260927_060911_T4_G0_G0C` wash) is not gradable: every GPU
+  real leg was killed at budget+175s, before its own stop (EV0/EV12; FX-N36), and wash lost 26 legs to external SIGKILL
+  waves (open question). Fixed in tree: felix syn_50 0 commits (`AsyncOortSelector.requester` unset when an UN_AVL report
+  precedes the first select); feddance rx task died on trainer leave (no `_cleanup_removed_ends`); speech G0 CUDA OOM;
+  oort_star chose UN_AVL ends (EV9: random paths skipped the unavail list); felix/fedbuff sim double dispatch after a late
+  commit (EV10/EV11, FX-L32); EV10 counted withhold releases. Tests: `tests/selector/test_{async_selector_base,sync_repeat_round}.py`,
+  `test_event_invariants.py`.
   ```
   P="conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/harness_pool.py"
-  $P --tier T4,G0,G0C --datasets all --shard 1/2 --pytest --deadline-h 11   # kaylee
-  $P --tier T4,G0,G0C --datasets all --shard 2/2 --deadline-h 11            # wash
+  $P --tier T4,G0,G0C --datasets all --shard 1/2 --pytest --deadline-h 12   # kaylee
+  $P --tier T4,G0,G0C --datasets all --shard 2/2 --deadline-h 12            # wash
   ```
   Then "Several nodes" (Active build).
-  *Predictions:* P3 feddance real and refl sim EV12 green on both datasets, with no leg stuck at one round (FX-N31;
-  smoke `smoke_fxn31_010328`: sims reach 125/120s with 0 discards; reals idle ≤90s on send-gated picks per FX-L40, so they need 240s);
-  P2/P8/P11 syn_50 legs (now 1200s, head-free) see ~50% unavailable and withhold (EV16 withheld > 0; P11b CAUGHT on both datasets,
-  FX-N32); P3 (n=45, ~10% trainable from t=0) progresses on every baseline; G0 syn_20 legs withhold and deliver;
-  EV-fail non-control pairs drop to fedbuff EV14 on cifar (FX-N15) plus speech P7/P7o (FX-N30); crash_lines 0 outside those;
-  every checkpoint loads (FX-N33; the exit abort may still show in crash_lines); `gs_P7_figures` is written (FX-N13). *On return:* read both
+  *Predictions:* no `requester`, `_cleanup_removed_ends` or CUDA OOM traceback; every GPU real leg logs its budget stop
+  (EV0/EV12 green; joins may still be short, FX-N36); oort_star EV9 green; felix/fedbuff sim EV10 = 0 outside P4/P11a;
+  P11b CAUGHT on both datasets only if withholds are frequent enough (FX-N32); P3 oort real stays short (FX-N37); EV-fail
+  non-control pairs otherwise only fedbuff EV14 (FX-N15) and speech P7/P7o (FX-N30). *On return:* read both
   `SUMMARY.txt` and open an item for each unpredicted miss. *Exit:* that holds, or each new miss has an item.
+- **FX-N36 `[C][S]` · n=100 GPU legs take 5-10 min to join · todo.** Run 1: trainer `.to(cuda)` + warmup stalled for
+  4-7 min whenever two 100-trainer GPU legs started together (to_cuda 0.3s → 480s; 33-69 of 92 joined by the 600s barrier
+  timeout). Alone on jayne: 0.3 → 11s, joined in 2.5 min; 200 bare CUDA processes never stall (≤3s), so the trigger is
+  in the trainer process. The watchdogs now allow the 600s barrier (`debug_run.sh`, `harness_suite.sh`). Next: stagger
+  GPU leg starts in the pool; name the trigger. *Exit:* every G0 leg reaches its join barrier.
+- **FX-N37 `[C]` · Sync sim closes a round at a withheld pick's sct; real waits 90s · todo.** P3 oort (unaware), same
+  picks in both modes: sim `free_stalled_slot(send_gate_withhold)` frees the slot at sct, real cannot see the withhold and
+  waits the 90s timeout (FX-L40): real 2 commits in 240s, sim 84. Hold a withheld pick until dispatch+90s in the sync sim
+  round close for unaware baselines. *Exit:* P3 oort real/sim commit counts agree.
 - **FX-N31 `[C][S]` · Sync round that does not advance livelocks · fix in tree, confirm in FX-N20.** P3 mobiperf, both datasets:
   refl sim (withheld round) stuck at vclock 74s; feddance real (both abandoned at 90s) stuck at round 7. When a round
   commits nothing (FX-D10), the refl_oort/feddance round cache re-returned the freed trainers, and they discarded the
@@ -187,9 +196,10 @@ passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
   selections each (`gs_P7_figures`); P7o real has none. *Exit:* speech P7/P7o EV green; FX-N13 speech arms usable.
 - **FX-N22 · Fast parallel harness (Active build) · wip: P6 isolation control next.** *Exit:* P6
   EQUIVALENT at cpt ≤ 0.5, and T2 for both datasets under 25 min on one node.
-- **FX-N34 `[C][S]` · G0 GPU screen, all six × both datasets × syn_0/syn_20 · wip: launching with FX-N20.** 30 min,
+- **FX-N34 `[C][S]` · G0 GPU screen, all six × both datasets × syn_0/syn_20 · wip: re-run with FX-N20.** 30 min,
   cohorts scaled with the reference c/n and aggGoal/c (cifar n=100 c=10 aggGoal 3, 3 GPUs; speech n=50 c=15 aggGoal 5,
-  4 GPUs), keeping the reference trainers per GPU. GPU memory is not binding (speech n=100: 15 GB total, util ~0%).
+  4 GPUs), keeping the reference trainers per GPU. Speech GPU memory binds: idle trainers kept ~3 GB of cached
+  activations and 13 per A40 OOM'd; `train()` now frees an idle cache above 1 GB.
   syn_20 is stationary, so 30 min sees 17-19% unavailable (GPU syn_50 is FX-N9). G0C adds a
   second real leg per syn_0 cell for the real↔real floor (R7). Smoke `pool_smoke_G0` (felix): EV all PASS, cifar
   parity 1.0. *Predictions:* EV green on every leg except cifar fedbuff EV14 (FX-N15); syn_20 legs withhold and deliver
@@ -278,8 +288,8 @@ passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
   (`max_dur − dur_i`); streaming oort/refl stay per-message.
 - **FX-L31** A committed end is RECVD so it leaves RECV; a buffered one reset to NONE then committed stays a
   phantom that blocks the starvation wake-up (P3 felix/fedbuff 6-min livelock).
-- **FX-L32** A dispatch consumes the end's earlier receipt (eval reply, commit); else agg-goal cleanup frees an
-  in-flight trainer and it is re-dispatched (FX-D16 22s tail).
+- **FX-L32** A dispatch consumes the end's earlier receipt (eval reply, commit) and its RECVD state; else cleanup or
+  recv frees the in-flight trainer and it is re-dispatched (FX-D16 22s tail; late withheld commits, FX-N20).
 - **FX-L10** Split eval from train in any check that reads `agg_rounds`. Each eval gets its own `sct`,
   never the last train `sct`.
 - **FX-L30** Anything replaying trainer data (oracle, replay) reads the trainers' stream clock: vclock in sim,
@@ -466,6 +476,9 @@ IDs are kept because code comments cite them.
   launcher (FX-N10).
 
 ## Open questions (operator)
+- wash, 2026-09-27 10:26-11:50: seven SIGKILL waves each killed every running aggregator (no OOM; not our tag-scoped
+  sweeps). A clone on the shared account, `wash:/home/dgarg39/Seshu/SatlinkTp/flame` (made 10:08, during a 10:05-12:19
+  login), still has the unscoped `pkill -9 -f` in `runner.py:800`. Coordinate node use, or have that clone pull FX-N22.
 - Felix paper experiment list, and the exact streaming-experiment design (FX-N13), once FX-N22 and FX-N10 land.
 - Make `real_drain_ready_ingest` the default (R9)? Cifar T4 P9 vs P1: RECV_FIFO skips 887→0 (fedbuff) and 908→0
   (felix); queue_wait p99 0.028 vs 0.035s (fedbuff) and 0.019 vs 0.025s (felix); fedbuff parity 0.984 vs 0.952; no new EV fail.

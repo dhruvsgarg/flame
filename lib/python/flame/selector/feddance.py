@@ -283,3 +283,10 @@ class FedDanceSelector(AbstractSelector):
         for end_id in self.ordered_updates_recv_ends:
             self.selected_ends.discard(end_id)
         self.ordered_updates_recv_ends = []
+
+    # Channel leave / UN_AVL hooks.
+    def _cleanup_removed_ends(self, end_id) -> None:
+        self.selected_ends.discard(end_id)
+
+    def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
+        self.selected_ends.discard(end_id)

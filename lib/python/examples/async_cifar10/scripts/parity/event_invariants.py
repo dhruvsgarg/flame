@@ -400,17 +400,27 @@ def ev10_dispatch_one_in_flight(run):
                 timeline.append((e["ts"], 1, "c", t))
         elif k in ("abandon_timeout",):
             timeline.append((e["ts"], 1, "c", e["end_id"]))
+        elif k == "withheld_delivery":
+            timeline.append((e["ts"], 1, "w", e["end_id"]))
     if not timeline:
         return _res("SKIP", "no dispatch events")
     outstanding = set()
     viol = []
+    suspect = {}  # end -> redispatch, cleared if its prior task was withheld (FX-L12)
     for ts, _, kind, end in sorted(timeline):
         if kind == "d":
+            if end in suspect:
+                viol.append(suspect.pop(end))
             if end in outstanding:
-                viol.append(end[-4:])
+                suspect[end] = end[-4:]
             outstanding.add(end)
+        elif kind == "w":
+            suspect.pop(end, None)
         else:
+            if end in suspect:
+                viol.append(suspect.pop(end))
             outstanding.discard(end)
+    viol += list(suspect.values())
     n = sum(1 for x in timeline if x[2] == "d")
     return _res("PASS" if not viol else "FAIL", f"dispatches={n} redispatch_while_outstanding={len(viol)}",
                 examples=viol[:10])

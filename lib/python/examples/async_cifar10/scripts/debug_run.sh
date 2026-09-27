@@ -549,8 +549,8 @@ fi
 
 _n_exps=$(_count_exps "$cfg")
 _n_sim=$(_count_exps "$cfg" _sim)
-# Per leg: wall cap (runtime; sim: its wall ceiling) + join (~4 trainers/s) + 30s startup/teardown (FX-D13).
-_leg_extra=$(( ${NUM_TRAINERS:-300} / 4 + 30 ))
+# Per leg: wall cap (runtime; sim: its wall ceiling) + join barrier timeout + 30s startup/teardown (FX-D13, FX-N36).
+_leg_extra=$(( ${JOIN_TIMEOUT_S:-600} + 30 ))
 _budget=$(( (_n_exps - _n_sim) * (RUNTIME_S + _leg_extra) + _n_sim * (${SIM_WALL_CEILING_S:-$RUNTIME_S} + _leg_extra) ))
 echo "  queued: $_n_exps exp(s), estimated budget ~${_budget}s (sim finishes faster than real)"
 cifar_preflight "$cfg"; gate_or_continue $?

@@ -86,6 +86,21 @@ class TestSharedMechanism:
         chosen = sel.select(ends, _send_props(), blocked)
         assert not set(chosen) & set(blocked)
 
+    def test_unavail_report_before_first_select(self, build, make_ends):
+        # B1: an UN_AVL report during aggregator init preceded select() and killed the rx task.
+        sel = build(c=3)
+        sel.remove_from_selected_ends(make_ends(count=2, prefix="t"), "t0")
+
+    def test_dispatch_clears_late_commit_receipt(self, build, make_ends):
+        # A withheld end committed late (RECVD) and re-dispatched must stay in flight.
+        sel = build(c=6)
+        ends = make_ends(count=6, prefix="t")
+        for e in ends.values():
+            e.set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
+        chosen = set(sel.select(ends, _send_props(), []))
+        recv_props = dict(_send_props(), **{KEY_CH_STATE: VAL_CH_STATE_RECV})
+        assert chosen and set(sel.select(ends, recv_props, [])) == chosen
+
 
 class TestVersionKeyRePickGuard:
     """R-A: a trainer that already contributed to this exact version_key must

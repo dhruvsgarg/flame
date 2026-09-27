@@ -102,6 +102,7 @@ class AsyncSelectorBase(AbstractSelector):
         # not the bare set the sync ones use.
         self.all_selected = dict()
         self.selected_ends = dict()
+        self.requester = None  # set by select(); an UN_AVL report can precede it
         self.ordered_updates_recv_ends = list()
 
         self.track_trainer_timeouts = dict()
@@ -442,6 +443,10 @@ class AsyncSelectorBase(AbstractSelector):
         candidates_dict = {end_id: None for end_id in chosen}
 
         self.process_chosen_candidate_dict(candidates_dict, selected_ends)
+        # FX-L32: clear a late commit's RECVD so recv doesn't free the new task.
+        for end_id in candidates_dict:
+            if end_id in ends and ends[end_id].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD:
+                ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
         logger.info(f"handle_send_state dispatching: {list(candidates_dict)}")
         return candidates_dict
 
@@ -669,7 +674,7 @@ class AsyncSelectorBase(AbstractSelector):
 
     def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
         """Remove an end from the in-flight set."""
-        selected_ends = self.selected_ends[self.requester]
+        selected_ends = self.selected_ends.get(self.requester, set())
         if end_id in ends and end_id in selected_ends:
             selected_ends.remove(end_id)
             self.selected_ends[self.requester] = selected_ends

@@ -191,7 +191,7 @@ for trace in $TRACES; do
       fi
       legs=$(( 1 + SIM_CEIL_X )); [ "$MODE" = real ] && legs=1; [ "$MODE" = sim ] && legs=$SIM_CEIL_X
       : > "$run_dir/legs.txt"
-      expt_timed_run "$label" $(( legs * (RUNTIME_S + NUM_TRAINERS / 4 + 30) )) "$TIMEOUT_BUFFER_S" "$run_dir/shell.log" -- \
+      expt_timed_run "$label" $(( legs * (RUNTIME_S + ${JOIN_TIMEOUT_S:-600} + 30) )) "$TIMEOUT_BUFFER_S" "$run_dir/shell.log" -- \
         env FLAME_LOGDIR="$run_dir" FLAME_RUN_DIR_FILE="$run_dir/legs.txt" bash "$SCRIPT_DIR/debug_run.sh" "${args[@]}"
       [ "$?" = 124 ] && timed_out=1
       real_dir="$(grep -E '_real$' "$run_dir/legs.txt" | tail -1)"; sim_dir="$(grep -E '_sim$' "$run_dir/legs.txt" | tail -1)"

@@ -50,3 +50,20 @@ def test_same_round_recv_keeps_cache(selector, make_ends):
     props = {"round": 5, "cur_time": 0.0, KEY_CH_STATE: VAL_CH_STATE_RECV}
     assert set(selector.select(ends, props, trainer_unavail_list=[],
                                task_to_perform="train")) == first
+
+
+def test_random_first_round_skips_unavailable(selector, make_ends):
+    ends = make_ends(count=10, prefix="t")
+    unavail = [f"t{i}" for i in range(8)]
+    props = {"round": 0, "cur_time": 0.0, KEY_CH_STATE: VAL_CH_STATE_SEND}
+    chosen = set(selector.select(ends, props, trainer_unavail_list=unavail, task_to_perform="train",
+                                 agg_version_key=(0, 0), trainer_version_keys={}))
+    assert chosen and not chosen & set(unavail)
+
+
+def test_leave_hooks_exist(selector, make_ends):
+    # B2: channel.remove()/UN_AVL call these; feddance lacked them and killed the rx task.
+    ends = make_ends(count=10, prefix="t")
+    a, b = sorted(_dispatch(selector, ends, 5, set()))
+    selector.remove_from_selected_ends(ends, a)
+    selector._cleanup_removed_ends(b)

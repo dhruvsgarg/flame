@@ -834,6 +834,10 @@ class PyTorchCifar10Trainer(Trainer):
         # at the top of train(): they hurt under co-located concurrency.
         if hasattr(self, 'optimizer') and self.optimizer is not None:
             self.optimizer.zero_grad(set_to_none=True)
+        # Idle trainers hoarding >1 GB of cached activations (speech: ~3 GB each) OOM a shared GPU.
+        if self.device is not None and self.device.type == "cuda" and (
+                torch.cuda.memory_reserved(self.device) - torch.cuda.memory_allocated(self.device) > 1 << 30):
+            torch.cuda.empty_cache()
 
         # Log memory after training round (no-op unless profiling enabled)
         self.memory_profiler.log_memory_after_round()
