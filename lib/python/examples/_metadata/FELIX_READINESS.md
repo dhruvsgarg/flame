@@ -43,7 +43,9 @@ Stored grades: `async_cifar10/experiments/parity_{felix,oort,refl}_20260624_{540
 
 **Harness (CPU):** last T4 is pre-fix: cifar `experiments/pool_20260926_192834_T4` (ee34364ee, 59 min) and speech
 `pool_20260926_193335_T4` (7c001537, 65 min, copied from wash). P11a-c CAUGHT ×3 on both. Every EV fail there was
-FX-N15, FX-N30 or a since-landed fix (FX-D7, FX-D10, FX-D13, FX-D17); re-run is FX-N20.
+FX-N15, FX-N30 or a since-landed fix (FX-D7, FX-D10, FX-D13, FX-D17); re-run is FX-N20. Post-fix smokes
+(a68fe7cc8, 60s, syn_50, both datasets): `pool_20260926_213919_T3` (refl/oort/felix/fedbuff) and the refl/oort/
+feddance/felix rerun after the per-trainer timeout: EV PASS on all 16 legs each, 0 crash, 0 timeout.
 
 **google_speech** (n=100, α=0.1; profile `_metadata/datasets.yaml`) — on the launcher (`--dataset
 google_speech`), real + sim. Smokes only: felix/oort CPU pairs EV PASS (`pool_smoke_ds`), felix GPU pair EV
@@ -116,7 +118,7 @@ reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both 
 **Unblock map.** FX-N20 T4 re-run green → FX-N4 (G1) + FX-N7 → FX-N5 (G2) → FX-N6 + FX-N9 (GPU unavailability)
 → FX-N11 (speech GPU parity) → FX-N12. FX-N10 grades on FX-N20 + speech G1. FX-N13 design can start any time.
 
-- **FX-N20 `[C][S]` · Harness T4 re-run on both datasets · todo (the fix session landed: FX-D7/D10/D13/D17).** Same commit on both nodes:
+- **FX-N20 `[C][S]` · Harness T4 re-run on both datasets · wip: operator launching at a68fe7cc8 on both nodes.** Same commit on both nodes:
   ```
   P="conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/harness_pool.py"
   E=lib/python/examples/experiments
@@ -128,7 +130,11 @@ reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both 
   new checker re-grades those pools with only EV15/EV14 fails removed, all P11a-c still CAUGHT. *Predictions:* EV green on
   every leg except fedbuff P8 cifar real (FX-N15) and speech P7/P7o (FX-N30); speech refl legs run and P2/P3 refl
   real EV0/EV12 green (FX-D17); P3 refl sim EV7 green (FX-D10); 1 health log and 1 run dir per leg, no void P1/P10
-  fedbuff (FX-D13); `phase_pre_train`/`weights_to_gpu`/`post_train` pass. *Exit:* that holds, or each new miss has an item.
+  fedbuff (FX-D13); `phase_pre_train`/`weights_to_gpu`/`post_train` pass; P3 mobiperf real sync legs log
+  `abandon_90s_wall` (the new real abandon, FX-L40) with EV15 still green. *On return:* read both `SUMMARY.txt`
+  (EV columns, `CAUGHT` block), count EV-fail non-control pairs per dataset vs 11/44 and 30/44, confirm run dirs are
+  `run_<ts>_<phase>_<name>` and one per leg, then open an item for each unpredicted miss. *Exit:* that holds, or
+  each new miss has an item.
 - **FX-N26 `[C][S]` · Stub real per-trainer speed runs above sim · todo.** `trainer_speed_identity` fails on 22 cifar and
   ~30 speech stub legs, always with real > sim. The gap is +1.0-1.5s on sync oort/oort_star/feddance (most trainers, e.g. 2.19s vs 1.0s),
   and +0.1-1.3s on some felix/fedbuff trainers. Cifar tiny_cpu legs are 0 out. Sim equals D on the 0.25s grid. Find which endpoint
@@ -263,8 +269,8 @@ reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both 
   all-stale iteration keeps it and still frees every consumed slot. Test the cache, not the optimizer's result.
 - **FX-L40** Time out each trainer 90s after its own dispatch, both modes: abandon at the next distribute, stop a
   real recv once every awaited trainer is past it. A per-recv timeout waits (1+K)× and overruns the budget (FX-D17).
-- **FX-L41** Accumulate model state in each tensor's own dtype (cast back like `fedavg.py`). Integer buffers exist
-  only in some models (BatchNorm), so a single-dataset test misses it (FX-D17).
+- **FX-L41** Accumulate model state in float and cast back to each tensor's dtype once; apply baseline-specific
+  server steps to parameters (float) only. Integer buffers exist only in some models (BatchNorm) (FX-D17).
 
 **Reading the checker**
 - **FX-L29** Stub legs charge a seeded GPU-fitted compute span (`flame.harness.stub_compute_s`, fit to
@@ -379,7 +385,7 @@ IDs are kept because code comments cite them.
 - **FX-D7** Trainer availability thread stops at EOT or shutdown (SIGTERM/atexit); clean teardown.
 - **FX-D11** Streaming + oracle harness (P7/P7o) with offline replay and figures.
 - **FX-D13** Event checker EV0-EV16 + injected bugs (P11a-c); parallel isolated pool with tiers T1-T4/G1/G2,
-  real bank, `--changed`, `--shard`, gate (FX-N22). Run dirs carry the run tag and are never reused; health reads
+  real bank, `--changed`, `--shard`, gate (FX-N22). Run dirs are `run_<ts>_<phase>_<name>` (`FLAME_RUN_LABEL`) and never reused; health reads
   `FLAME_RUN_DIR_FILE`; the leg watchdog budgets the sim wall ceiling; sub-0.2s phases grade on mean (50 ms).
 - **FX-D15** No cold start in timed tasks: startup warm-up (CPU + GPU), CUDA-only sync in the weights phase,
   sim wall ceiling from the join barrier (first-task compute 9-14s → 0.1s; fedbuff EV11 fixed).
