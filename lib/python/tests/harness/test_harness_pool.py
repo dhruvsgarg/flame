@@ -110,6 +110,30 @@ def test_datasets_get_their_own_phase_ids_and_gpu_cohorts():
     assert next(j for j in gs if j.mode == "real").cpus == 48  # n=100 GPU leg leaves room for CPU slots
 
 
+def test_g0_screen_scales_cohort_keeps_ratios_and_gpu_density():
+    # FX-N34: all six, syn_0 + syn_50, 30 min, reference c/n and aggGoal/c, reference trainers per GPU.
+    for ds, (n, k, c, g) in {"cifar10": (100, 3, 10, 3), "google_speech": (50, 5, 15, 4)}.items():
+        phs = pool.tier_phases("G0", B6, ds)
+        assert [p.trace for p in phs] == ["syn_0", "syn_50"]
+        for p in phs:
+            assert (p.n, p.agg_goal, p.c, p.gpus, p.harness, p.baselines, p.runtime_s) == (n, k, c, g, "none", B6, 1800)
+        jobs = pool.build_jobs(phs, 1.0, 8, {})
+        legs = [j for j in jobs if j.mode in ("real", "sim")]
+        assert len(legs) == 24 and {j.gpus for j in legs} == {g}
+        assert {j.cpus for j in legs} == {pool.slot_cpus(n, 0.4, 8)}
+
+
+def test_gpu_allow_skips_gpus_busy_at_start_and_honours_explicit(monkeypatch):
+    # A foreign job on a GPU (jayne 2026-09-27: GPUs 0,2-4 at 23 GB) keeps pool legs off it; ECC GPUs stay out.
+    rows = [(0, 0, 23000.0), (1, 3, 0.0), (2, 0, 5.0), (3, 0, 0.0)]
+    monkeypatch.setattr(pool, "_gpu_query", lambda: rows)
+    pool.set_gpu_allow("")
+    assert pool.gpu_ids() == [2, 3] and pool.gpu_ids(healthy_only=False) == [0, 1, 2, 3]
+    pool.set_gpu_allow("0,3")
+    assert pool.gpu_ids() == [0, 3]
+    monkeypatch.setattr(pool, "GPU_ALLOW", None)
+
+
 def test_bank_lookup_ok_stale_none(tmp_path):
     b = tmp_path / "bank.tsv"
     real = tmp_path / "run_x_real"

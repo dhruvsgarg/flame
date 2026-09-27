@@ -123,7 +123,8 @@ section already says.
   and exits 130 rather than advancing. Otherwise use `timeout --foreground`. Test it with a scripted SIGINT to the
   script's process group before hand-off.
 - **R21 Storage hygiene.** Once a new T4 is cited in the docs, the operator prunes stale artifacts. Stale means: harness
-  run dirs (`*_hstub_*`, `*_htiny_cpu_*`) that no cited pool's `legs.txt`, `_real_bank.tsv` or doc line names; `.pt` files
+  run dirs (`*_hstub_*`, `*_htiny_cpu_*`) that no cited pool's `legs.txt` (every `pool_*` a doc names, incl.
+  `pool_smoke_*`, in `experiments/` or `async_cifar10/experiments/`), `_real_bank.tsv` or doc line names; `.pt` files
   outside cited pools' P7/P7o legs (the FX-N13 replay's only reader); and uncited `experiments/pool_*` dirs. GPU runs are
   never pruned.
 - **R13 Commits:** follow CLAUDE.md (crisp comments, minimal diff, short title and body). Confirm before any

@@ -58,6 +58,9 @@ SHAPES = {
     "mobiperf_3st": dict(trace="mobiperf_3st", n=30, agg_goal=2, c=4, runtime_s=240, trace_scale="4"),
 }
 GPU_N = {"cifar10": 300, "google_speech": 100}  # the datasets' reference cohorts (datasets.yaml)
+# G0 screen: reference c/n and aggGoal/c ratios at a smaller n; GPUs per leg keep the reference trainers per GPU.
+G0_SHAPE = {"cifar10": dict(n=100, agg_goal=3, c=10, gpus=3),
+            "google_speech": dict(n=50, agg_goal=5, c=15, gpus=4)}
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
 STREAM_A = STREAM_T + ' checkpoint={"enabled":"True","every_n_rounds":10}'
 
@@ -142,6 +145,7 @@ class Phase:
     inject_bug: str = ""
     kind: str = "pair"  # pair: real+sim legs + grade | sim: sim leg vs banked real | sim_ev: sim leg, EV only
     cpt: Optional[float] = None  # CPUs per trainer for this phase; None = --cpus-per-trainer
+    gpus: Optional[int] = None  # GPU legs: GPUs each; None = --gpus-per-job
 
 
 def shaped(pid, baselines, shape, kind, dataset, **kw) -> Phase:
@@ -184,6 +188,9 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [shaped(f"T3_{sh}", baselines, sh, "pair", ds) for sh in matrix]
     if tier == "T4":
         return campaign_phases(ds)
+    if tier == "G0":  # GPU screen: all six, syn_0 + syn_50, 30 min, smaller cohort (FX-N34)
+        return [Phase(f"{DS_TAG[ds]}G0_{t}", baselines, t, runtime_s=1800, dataset=ds, harness="none", **G0_SHAPE[ds])
+                for t in ("syn_0", "syn_50")]
     if tier == "G1":  # GPU block on the production path at the dataset's reference config (FX-N4)
         bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
         return [Phase(DS_TAG[ds] + "G1", bls, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none")]
@@ -263,7 +270,7 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
             gpu = ph.harness == "none"
             cpus = slot_cpus(ph.n, gpu_per_trainer, 8) if gpu else slot_cpus(ph.n, ph.cpt or per_trainer)
             mem = (1.0 if gpu else 0.6) * ph.n + 3  # ~0.55 GB per stub trainer (n=120 legs peak ~68 GB)
-            g = gpus_per_job if gpu else 0
+            g = (ph.gpus or gpus_per_job) if gpu else 0
             stem = f"{ph.pid}_{b}" if ph.pid.endswith(t) else f"{ph.pid}_{t}_{b}"
             mk = lambda mode, args, deps=(), c=cpus, m=mem, gg=g: Job(
                 f"{stem}_{mode}", ph.pid, t, b, mode, args, ph.n, ph.runtime_s, ph.harness, c, m, gg, deps,
@@ -367,21 +374,36 @@ def mem_available_gb() -> float:
     return 0.0
 
 
-def gpu_ids(healthy_only: bool = True) -> List[int]:
-    """Node GPU ordinals; by default without any GPU showing a volatile uncorrected ECC error
-    (the runner's health check refuses those, e.g. jayne GPU 1 on 2026-09-26)."""
+GPU_ALLOW: Optional[set] = None  # usable GPUs, fixed once at pool start (set_gpu_allow)
+
+
+def _gpu_query() -> List[tuple]:
+    """(index, uncorrected volatile ECC count, MiB used) per GPU."""
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=index,ecc.errors.uncorrected.volatile.total",
-                              "--format=csv,noheader"], capture_output=True, text=True, timeout=20).stdout
+        out = subprocess.run(["nvidia-smi", "--query-gpu=index,ecc.errors.uncorrected.volatile.total,memory.used",
+                              "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=20).stdout
     except Exception:
         return []
-    ids = []
+    rows = []
     for line in out.strip().splitlines():
-        idx, ecc = (x.strip() for x in line.split(","))
-        if healthy_only and ecc.isdigit() and int(ecc) > 0:
-            continue
-        ids.append(int(idx))
-    return ids
+        idx, ecc, used = (x.strip() for x in line.split(","))
+        rows.append((int(idx), int(ecc) if ecc.isdigit() else 0, float(used) if used.replace(".", "").isdigit() else 0.0))
+    return rows
+
+
+def gpu_ids(healthy_only: bool = True) -> List[int]:
+    """Node GPU ordinals; by default without a volatile uncorrected ECC error (the runner's health
+    check refuses those, e.g. jayne GPU 1 on 2026-09-26) and within GPU_ALLOW."""
+    return [i for i, ecc, _ in _gpu_query()
+            if not healthy_only or (ecc == 0 and (GPU_ALLOW is None or i in GPU_ALLOW))]
+
+
+def set_gpu_allow(explicit: str = "", busy_mib: float = 1024) -> None:
+    """Fix the usable GPUs at start: --gpu-ids, else every GPU another process isn't already using."""
+    global GPU_ALLOW
+    rows = _gpu_query()
+    GPU_ALLOW = ({int(x) for x in explicit.split(",") if x.strip()} if explicit
+                 else {i for i, _, used in rows if used < busy_mib})
 
 
 def free_port(start: int, used: set) -> int:
@@ -485,7 +507,7 @@ class Pool:
         self.say(f"{len(self.jobs)} jobs, {tot / 60:.0f} slot-min total")
         for j in sorted(self.jobs, key=lambda j: -j.est_s):
             self.say(f"  {j.jid:<44} cpus={j.cpus:<3} mem={j.mem_gb:<5.0f} est={j.est_s / 60:5.1f}m deps={list(j.deps)}")
-        self.say(f"estimated makespan ~{simulate_makespan(self.jobs, cm.total(), self.max_parallel) / 60:.0f} min")
+        self.say(f"estimated makespan ~{simulate_makespan(self.jobs, cm.total(), self.max_parallel, len(gpu_ids())) / 60:.0f} min")
 
     def run(self, groups) -> int:
         cm = CoreMap(groups, self.reserve_cores)
@@ -654,28 +676,28 @@ def _order(j: Job) -> tuple:
     return (j.whole, -j.est_s, j.jid)
 
 
-def simulate_makespan(jobs: List[Job], cpus: int, max_parallel: int) -> float:
-    """List-scheduling estimate of wall time (cores only; deps respected)."""
+def simulate_makespan(jobs: List[Job], cpus: int, max_parallel: int, gpus: int = 0) -> float:
+    """List-scheduling estimate of wall time (cores and GPUs; deps respected)."""
     pending = sorted(jobs, key=_order)
     done_at: Dict[str, float] = {}
-    running: List[tuple] = []  # (end, cpus, jid)
-    now, free = 0.0, cpus
+    running: List[tuple] = []  # (end, cpus, gpus, jid)
+    now, free, gfree = 0.0, cpus, gpus
     while pending or running:
         for j in list(pending):
             if any(done_at.get(d, math.inf) > now for d in j.deps) or len(running) >= max_parallel:
                 continue
-            if j.cpus <= free:
-                running.append((now + j.est_s, j.cpus, j.jid))
-                free -= j.cpus
+            if j.cpus <= free and j.gpus <= gfree:
+                running.append((now + j.est_s, j.cpus, j.gpus, j.jid))
+                free, gfree = free - j.cpus, gfree - j.gpus
                 pending.remove(j)
         if not running:
-            if pending and all(j.cpus > cpus for j in pending):
+            if pending and all(j.cpus > cpus or j.gpus > gpus for j in pending):
                 return math.inf
             now += 1
             continue
         running.sort()
-        end, c, jid = running.pop(0)
-        now, free = end, free + c
+        end, c, g, jid = running.pop(0)
+        now, free, gfree = end, free + c, gfree + g
         done_at[jid] = end
     return now
 
@@ -729,11 +751,12 @@ def run_gate(root: Path, datasets, pool: "Pool") -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 G1 G2 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 G0 G1 G2 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")
     ap.add_argument("--phases", default="", help="subset of the tier's phase ids (e.g. 'P1 P2', 'P11a')")
+    ap.add_argument("--exclude-phases", default="", help="exact phase ids to drop (e.g. 'G0_syn_0 gs_G0_syn_50')")
     ap.add_argument("--shard", default="1/1", help="i/N: this node's share of the job list")
     ap.add_argument("--max-parallel", type=int, default=32)
     ap.add_argument("--reserve-cores", type=int, default=4, help="physical cores kept out of every slot")
@@ -742,6 +765,7 @@ def main(argv=None) -> int:
     ap.add_argument("--traces", default="", help="restrict the tier to these traces")
     ap.add_argument("--agg-hp", default="", help="'k=v ...' appended to every phase's aggregator hp (A/B)")
     ap.add_argument("--trainer-hp", default="", help="'k=v ...' appended to every phase's trainer hp")
+    ap.add_argument("--gpu-ids", default="", help="GPUs this pool may use (default: those idle at start)")
     ap.add_argument("--gpus-per-job", type=int, default=8, help="GPU legs: GPUs each (capped at the healthy count)")
     ap.add_argument("--gpu-cpus-per-trainer", type=float, default=0.4,
                     help="GPU legs: CPUs per trainer (0.4 = n=300 on 128 CPUs -> whole node; n=100 -> 48 CPUs)")
@@ -755,6 +779,7 @@ def main(argv=None) -> int:
     ap.add_argument("--pytest", action="store_true", help="run the full pytest (P0) before the jobs")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
+    set_gpu_allow(a.gpu_ids)
 
     real_changed = False
     if a.baselines:
@@ -769,6 +794,8 @@ def main(argv=None) -> int:
     if a.phases:
         want = set(a.phases.split())
         phases = [p for p in phases if p.pid in want or p.pid[len(DS_TAG[p.dataset]):] in want]
+    if a.exclude_phases:
+        phases = [p for p in phases if p.pid not in set(a.exclude_phases.split())]
     if a.traces:
         phases = [p for p in phases if p.trace in a.traces.split()]
     phases = [p for p in phases if p.baselines]
@@ -803,7 +830,8 @@ def main(argv=None) -> int:
             j.gpus = min(j.gpus, len(gpu_ids()))
     bad_gpus = sorted(set(gpu_ids(healthy_only=False)) - set(gpu_ids()))
     if bad_gpus:
-        pool.say(f"GPU(s) {bad_gpus} show uncorrected ECC errors: excluded (GPU legs use {gpu_ids()})")
+        pool.say(f"GPU(s) {bad_gpus} excluded (ECC error, in use by another process, or not in --gpu-ids); "
+                 f"GPU legs use {gpu_ids()}")
     pool.bad_gpus = bad_gpus
     pool.plan(groups)
     if a.dry_run or not jobs:

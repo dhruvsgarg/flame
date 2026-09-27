@@ -91,6 +91,7 @@ gate: pytest collection plus one felix smoke pair per dataset; it aborts in ~4 m
 | T2 | sim-only × 4 shapes vs the banked real legs + P11a-c | 38 / 22 min (both datasets) |
 | T3 | real+sim pairs × 4 shapes; refreshes the bank | 82 / 47 min (both datasets) |
 | T4 | campaign P1-P11 (`harness_campaign.sh` = `--tier T4 --pytest`) | 70 / 40 min per dataset |
+| G0 | GPU 30 min screen: all six × syn_0 + syn_50, n 100/50 (FX-N34) | ~5-8h over two nodes (FX-N20 split) |
 | G1 / G2 | GPU 90 min: felix+fedbuff / the other four, reference config | ~2.5h per pair (cifar), in parallel with CPU (speech) |
 
 `--changed <ref>` picks the affected baselines; `--shard i/N` splits across nodes. Whole-node jobs run last.
@@ -109,7 +110,8 @@ bash $R/scripts/harness_report.sh $R/experiments/$POOL   # re-runs the P7 replay
 
 **Tasks**
 - P1-P5 · done. Smokes: `pool_smoke_T3/T2/G1` (cifar), `pool_smoke_ds` (both datasets, 8 legs in parallel),
-  `pool_smoke_gsG1` (speech GPU), `pool_smoke_gate`; SIGINT tore down 4 slots in 11s. Tests:
+  `pool_smoke_gsG1` (speech GPU), `pool_smoke_gate`; SIGINT tore down 4 slots in 11s. Their SUMMARY files remain;
+  21 of their 30 run dirs were pruned on jayne (2026-09-27). Tests:
   `tests/harness/test_{slot_isolation,harness_pool,fl_data}.py`, `tests/launch/test_debug_run_dataset_profile.py`.
 - P6 · isolation control · todo (operator, ~15 min): `$P --tier ISO --max-parallel 1 --output-dir
   $E/iso_solo`, then `$P --tier ISO_FILL --cpus-per-trainer 0.5 --output-dir $E/iso_packed`, then
@@ -126,18 +128,20 @@ pool tiers T1-T4: real aggregator + trainer processes over MQTT on CPU (stub/tin
 by the event checker and the parity battery. GPU tests = G1/G2: the production path on real data at the
 reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both (`--tier T4,G1`).
 
-**Unblock map.** FX-N20 T4 re-run green (confirms FX-N31/N33) → FX-N4 (G1) + FX-N7 → FX-N5 (G2) → FX-N6 + FX-N9 (GPU unavailability)
+**Unblock map.** FX-N20 T4 re-run (confirms FX-N31/N33) + FX-N34 G0 screen → FX-N4 (G1) + FX-N5 (G2) on the cells G0
+passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
 → FX-N11 (speech GPU parity) → FX-N12. FX-N10 grades on FX-N20 + speech G1. FX-N13 design can start any time.
 
 - **FX-N20 `[C][S]` · Harness T4 re-run on both datasets, combined with GPU · wip: operator launching overnight at the FX-N31/N33 commit.**
-  T4 plus GPU in one pool per node (the FX-N4/FX-N5 GPU legs run before T4 is read):
+  T4 plus the G0 GPU screen, one pool per node. The pool skips GPUs another process is using at start (jayne
+  2026-09-27: GPUs 0,2-4 held by another user's job, 1 ECC → 3 usable), so jayne takes the CPU-heavy share:
   ```
   P="conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/harness_pool.py"
   E=lib/python/examples/experiments
-  $P --tier T4,G1 --datasets cifar10 --pytest         # node A (jayne), est 366 min
-  $P --tier T4,G1,G2 --datasets google_speech         # node B (wash), est 471 min; then "Two nodes" (Active build)
+  $P --tier T4,G0 --datasets all --exclude-phases 'G0_syn_50 gs_G0_syn_0 gs_G0_syn_50' --pytest  # jayne, est 317 min
+  $P --tier G0 --datasets all --exclude-phases 'G0_syn_0'                                        # wash, est ~470 min
   ```
-  Cifar G2 (est 613 min, whole node) is next.
+  Then "Two nodes" (Active build).
   *Predictions:* P3 feddance real and refl sim EV12 green on both datasets, with no leg stuck at one round (FX-N31;
   smoke `smoke_fxn31_010328`: sims reach 125/120s with 0 discards; reals idle ≤90s on send-gated picks per FX-L40, so they need 240s);
   EV-fail non-control pairs drop to fedbuff EV14 on cifar (FX-N15) plus speech P7/P7o (FX-N30); crash_lines 0 outside those;
@@ -156,7 +160,7 @@ reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both 
   `.pt` (gs_P7 oort_star sim). Fix: a non-daemon writer plus an atomic rename (`save_round_checkpoint`); the replay skips an
   unreadable file. Test: `tests/mode/test_run_exit_artifacts.py`. *Exit:* FX-N20 shows no abort → Built.
 - **FX-N32 `[S]` · EV16's injected bug is weakly exercised · todo.** Every sim leg withholds 0-1 updates (felix evicts, stub
-  compute is short), so P11b is caught only by 1-2 chance commits (cifar CAUGHT, speech MISSED). Needs a mid-flight-drop
+  compute is short, and harness syn_50 is only ~10% unavailable: FX-N35), so P11b is caught only by 1-2 chance commits (cifar CAUGHT, speech MISSED). Needs a mid-flight-drop
   shape (parent S1 scenario library): compute long relative to AVL spans, on a withholding baseline. *Exit:* P11b sim
   shows ≥10 withheld commits and is CAUGHT on both datasets.
 - **FX-N26 `[C][S]` · Stub real per-trainer speed runs above sim · todo.** `trainer_speed_identity` fails on 22 cifar and
@@ -170,7 +174,20 @@ reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both 
   selections each (`gs_P7_figures`); P7o real has none. *Exit:* speech P7/P7o EV green; FX-N13 speech arms usable.
 - **FX-N22 · Fast parallel harness (Active build) · wip: P6 isolation control next.** *Exit:* P6
   EQUIVALENT at cpt ≤ 0.5, and T2 for both datasets under 25 min on one node.
-- **FX-N4 · First GPU block: felix + fedbuff, syn_0, 90 min · blocked: FX-N20.** cifar:
+- **FX-N34 `[C][S]` · G0 GPU screen, all six × both datasets × syn_0/syn_50 · wip: launching with FX-N20.** 30 min,
+  cohorts scaled with the reference c/n and aggGoal/c (cifar n=100 c=10 aggGoal 3, 3 GPUs; speech n=50 c=15 aggGoal 5,
+  4 GPUs), keeping the reference trainers per GPU. GPU memory is not binding (speech n=100: 15 GB total, util ~0%).
+  syn_50 reaches only ~20% unavailable within 30 min (FX-N35). Smoke `pool_smoke_G0`: felix, both datasets and traces,
+  EV all PASS, cifar parity 1.0; speech legs shared GPUs with a foreign 100%-util job (now excluded). *Predictions:* EV green on every leg except cifar fedbuff EV14 (FX-N15); syn_50 legs withhold
+  and deliver (EV16 withheld > 0). *Exit:* per cell (baseline × dataset × trace) INV/EXACT green → that cell goes to
+  G1/G2 at reference n; each red cell gets an item. Parity sign-off still needs the reference n, controls (R7) and 3h runs.
+- **FX-N35 `[C][S]` · Synthetic traces understate unavailability · todo.** Unavailable-time fraction (300 trainers) over the
+  first 960/2700/5400/10800/86400 s of trace time: syn_20 4/8/10/10.5/10.8%; syn_50 10/30/40/45/49.4%. syn_20 is a ~11%
+  trace (EuroSys'26 runs used it under the 20% name), and both ramp from full availability, so short runs and the CPU
+  harness (960 s of trace) see far less than the name says. Plan: rename syn_20 → syn_10, generate a true syn_20, remove
+  the ramp (trace offset or regenerate), report each leg's effective unavailability, pytest the full-day fraction.
+  *Exit:* each trace name matches its full-day fraction within ±2%, and each leg reports its effective fraction.
+- **FX-N4 · First GPU block: felix + fedbuff, syn_0, 90 min · blocked: FX-N20, FX-N34.** cifar:
   `$P --tier G1 --datasets cifar10` (whole node, both pairs in sequence, ~5h; or `--shard 1/2`, `2/2` across two
   nodes, ~2.5h). speech: `$P --tier G1 --datasets google_speech` (~2.5h, can share the node with its T4). jayne
   runs on 7 GPUs (GPU 1 ECC); each pair stays on one node and one layout (L18). *Predictions:* EV green both
@@ -193,7 +210,7 @@ reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both 
 - **FX-N5 · syn_0 GPU block (G2): oort, oort_star, refl, feddance · blocked: FX-N4.** Same protocol.
   oort's open root: per-round `relative_change` of the exploited utility, binned by quartile, in both modes
   (don't touch the pacer). refl: confirm at 3h.
-- **FX-N15 · fedbuff training diverges; now reproduces on the CPU harness · todo.** Stored Jul-2 GPU sim:
+- **FX-N15 · fedbuff training diverges; now reproduces on the CPU harness · todo.** Stored Jul-2 sim (CPU fallback, FX-L29):
   NaN from round 600 at syn_50. Cifar T4 stub legs: sim test-loss rises (P1b syn_0 2.55→3.31, P2 syn_50 2.63→3.03);
   real is NaN at the first eval (round 50) on P1b, P7 and P8 (EV14; `pool_20260926_223155_T4`). Leads: the real/sim split
   on one shape, and the hardcoded cifar server lr 40.9 (`fedbuff.py:_scale_add_agg_weights_pytorch`) applied to a 2-3
@@ -302,8 +319,8 @@ reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both 
   already tasked at it. A selector's round cache serves only the same round's RECV lookups (FX-N31).
 
 **Reading the checker**
-- **FX-L29** Stub legs charge a seeded GPU-fitted compute span (`flame.harness.stub_compute_s`, fit to
-  run_20260702 real); refit it when GPU hardware or model changes (L17).
+- **FX-L29** Stub legs charge a seeded compute span (`flame.harness.stub_compute_s`, fit to run_20260702 real). Those
+  runs fell back to CPU (CUDA failed to start before S0), so refit it from a G0/G1 real leg (L17).
 - **FX-L16** A2 failing (KS) while S3/4 passes is one in-flight gap graded at two tolerances; walk to
   residence, not eligibility.
 - **FX-L17** U6 KS on a sub-ms point mass is signal-free; read `mean_diff`. P3 sub-second opposite-sign
