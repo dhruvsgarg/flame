@@ -41,6 +41,10 @@ are re-run items. Everything is 🟡 because PRs #72-#85 rewrote code these runs
 Stored grades: `async_cifar10/experiments/parity_{felix,oort,refl}_20260624_{5400,3h}.json`,
 `parity_feddance_20260623_3h.json` (run dirs are named inside each JSON).
 
+**Harness (CPU) at HEAD:** T4 cifar `experiments/pool_20260926_192834_T4` (ee34364ee, 59 min, pytest 2176 pass)
+and speech `pool_20260926_193335_T4` (7c001537, 65 min, copied from wash). P11a-c are CAUGHT ×3 on both. Every EV
+fail is tied to FX-N15 or FX-N23-N31; oort/oort_star EV are green except FX-N23/N25/N30 legs.
+
 **google_speech** (n=100, α=0.1; profile `_metadata/datasets.yaml`) — on the launcher (`--dataset
 google_speech`), real + sim. Smokes only: felix/oort CPU pairs EV PASS (`pool_smoke_ds`), felix GPU pair EV
 PASS, parity 0.918 at 60s (`pool_smoke_gsG1`). No graded run yet: all six ⬚.
@@ -109,25 +113,72 @@ pool tiers T1-T4: real aggregator + trainer processes over MQTT on CPU (stub/tin
 by the event checker and the parity battery. GPU tests = G1/G2: the production path on real data at the
 reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both (`--tier T4,G1`).
 
-**Unblock map.** FX-N20 (T4, both datasets) green → FX-N4 (G1) + FX-N14/N18/N7 read off its legs → FX-N5
+**Unblock map.** Fix session (FX-N29/N25/N24/N23/N27/N31) → FX-N20 T4 re-run green → FX-N4 (G1) + FX-N7 → FX-N5
 (G2) → FX-N6 + FX-N9 (GPU unavailability) → FX-N11 (speech GPU parity) → FX-N12. FX-N10 grades on FX-N20
 + speech G1. FX-N13 design can start any time.
 
 
-- **FX-N22 · Fast parallel harness (Active build) · wip: P6 isolation control next.** *Exit:* P6
-  EQUIVALENT at cpt ≤ 0.5, and T2 for both datasets under 25 min on one node.
-- **FX-N20 · Harness T4 on both datasets · ready (operator).** From the repo root, same commit on both nodes
-  (~40-70 min each; results in `$E/pool_<ts>_T4/SUMMARY.txt`):
+**Fix session (FX-N29, N25, N24, N23, N27, N31, then FX-N20).** Each item is tagged `[C]` cifar / `[S]` speech. All
+the roots are in shared code except FX-N29 (speech's integer buffers). Land them together, run pytest and a T1 smoke, then run
+FX-N20 on both nodes.
+
+- **FX-N29 `[S]` · refl optimizer crashes on integer buffers · todo, blocks every speech refl leg.**
+  `refl.py:_aggregate_pytorch` does `weighted_deltas[k] += v * importance` on a Long tensor (ResNet34 BatchNorm
+  `num_batches_tracked`) and raises `RuntimeError: Float can't be cast to Long` in the first aggregation. All 7 speech refl
+  pairs fail EV0/EV1/EV12 in both modes. fedavg/fedbuff already cast back to `v.dtype` (`fedavg.py:97`); refl
+  doesn't, and cifar's model has no integer buffers. Check refl's `/ importance_sum` step too (T12). *Exit:* pytest with a
+  BatchNorm model; speech refl EV green.
+- **FX-N25 `[C][S]` · Checker gaps · todo (no FL processes).** (a) EV15 `dup_send`: the trainer-side check doesn't
+  look at order, so eval@v followed by train@v (allowed by FX-L26) fails. That's 1 per leg on 11 of 13 cifar felix pairs and
+  every speech felix pair (`event_invariants.py:ev15_one_task_per_version`). Count only an eval that comes after a train at
+  the same v, as the dispatch side does. (b) Sub-0.2s wall phases (`pre_train`, `weights_to_gpu`, `post_train`) fail KS
+  0.27-0.67 with means within 10ms, on ~30 cifar legs and most speech legs. Grade them on the mean (FX-L17). (c) EV14
+  `test-accuracy or -1` turns a real 0.0 into "missing": 12 speech tiny_cpu legs are at chance (loss 3.52 ≈ ln 35,
+  acc 0.0). Use an explicit None check. *Exit:* tests for all three; re-grade both stored T4 pools and confirm no other
+  verdict changes.
+- **FX-N24 `[C]` · Oort-stack sim closes empty rounds (FX-D10 hole) · todo.** P3 refl sim: 14 `[SIM_STARVATION]`
+  rounds with in_flight=0 each advanced the round (EV7 gaps 21→23→38). `optimizer.do` returns weights on an empty
+  cache, so `oort/top_aggregator.py:_aggregate_weights` sets `_round_committed`. Fix: no commit on an empty
+  cache (syncfl already does this). *Exit:* pytest; P3 refl/oort/oort_star sim EV7 green.
+- **FX-N23 `[C][S?]` · Sync real recv overshoots its 90s abandon and the run budget · todo.**
+  `oort/top_aggregator.py:_aggregate_weights` computes `_recv_timeout` once per round. The first recv and every loop2
+  recv then each wait the full 90s, so a round can stall up to (1+K)×90s. P2 refl real: round 35 stuck
+  >150s, harness-killed (EV0, EV12 148/240s). P3 refl real: round 20 took 180s. Fix: one deadline per round,
+  min(dispatch + `trainer_recv_wall_timeout_s`, budget end); check syncfl's recv (`:611`) for the same issue (T12).
+  *Exit:* P2/P3 refl real EV0/EV12 green. The P3 real sync legs with EV12 at 42-44s of 240 (cifar feddance; speech
+  feddance/oort/oort_star, not yet read) either go green or are explained by harness sizing (FX-L34, the unscaled 90s timeout in parent S1).
+- **FX-N27 `[C][S]` · Pool leg hygiene · todo (FX-N22).** (a) `expt_runner.sh`'s health tally greps every
+  `*_aggregator.log` in the shared `async_cifar10/experiments` newer than the marker, so it picks up neighbours' logs. P2 felix sim counted 21 logs,
+  including P11c's `SIM_WALL_CEILING`, and 5 sims reported `WALL_CEILING` with EV12 PASS. Read `FLAME_RUN_DIR_FILE` instead. (b) The run-dir
+  name carries neither the run tag nor the phase. gs_P1 and gs_P10 fedbuff real started in the same second and shared
+  `run_20260926_200007_…`, so every commit doubled: EV2/EV7/EV15 fail (6 per round against aggGoal 3, 218 duplicate commits), and
+  the P10 control is void. Add the run tag, or refuse an existing dir. (c) The harness kill (budget + 120s = 333s) fires
+  before speech's 2× sim ceiling (360s), so slow sims are TIMEOUT_KILLED (EV0) instead of ceiling-stopped. Derive the kill from the
+  ceiling. *Exit:* pytest; a pool smoke shows 1 log and 1 unique dir per leg.
+- **FX-N31 `[S]` · Trainer availability thread raises at teardown · todo.** gs P3 felix real: `Exception in thread
+  (notify_trainer_avail)` at EOT, and the process exited before the stack printed (EV0, 1 crash line). FX-D7 says the
+  thread stops at EOT; find the race with channel leave. *Exit:* a pytest reproducing teardown with a live trace; EV0 green.
+- **FX-N20 `[C][S]` · Harness T4 re-run on both datasets · blocked: the fix session above.** Same commit on both nodes:
   ```
   P="conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/harness_pool.py"
   E=lib/python/examples/experiments
-  $P --tier T4 --datasets cifar10 --pytest     # node A
-  $P --tier T4 --datasets google_speech        # node B
+  $P --tier T4 --datasets cifar10 --pytest     # node A (jayne)
+  $P --tier T4 --datasets google_speech        # node B (wash); then rsync the pool dir + legs.txt run dirs
   ```
-  It confirms FX-D12, FX-D15, the per-task rule and the new shapes across all six. *Predictions:* gate ok; EV
-  green on every leg (EV10 = 0 on felix/fedbuff sims, EV11 ≤ 1%, EV15 0 dups); no SIM_WALL_CEILING on cifar;
-  P11a-c CAUGHT ×3 on both; P10 (settle 0.1) fedbuff real queue_wait above P1's (p99 0.05s in the smoke).
-  *Exit:* every miss triaged as checker gap vs bug; then everything in the unblock map moves.
+  The first run met: gate ok on both; EV10 = 0 and EV11 ≤ 1% on every non-control sim; P11a-c CAUGHT ×3 on both;
+  cifar P10 queue_wait p99 0.227s vs P1 0.035s. *Predictions:* EV green on every leg except fedbuff P8 cifar real (FX-N15)
+  and speech P7/P7o (FX-N30). *Exit:* that holds, or each new miss has an item.
+- **FX-N26 `[C][S]` · Stub real per-trainer speed runs above sim · todo.** `trainer_speed_identity` fails on 22 cifar and
+  ~30 speech stub legs, always with real > sim. The gap is +1.0-1.5s on sync oort/oort_star/feddance (most trainers, e.g. 2.19s vs 1.0s),
+  and +0.1-1.3s on some felix/fedbuff trainers. Cifar tiny_cpu legs are 0 out. Sim equals D on the 0.25s grid. Find which endpoint
+  real adds (L6). *Exit:* root named. Then fix it, or show it is stub-only and not on GPU (FX-N4 prediction).
+- **FX-N30 `[S]` · Speech tiny_cpu is too heavy for CPU slots · todo.** P7/P7o sims run at sim_rate 0.2-0.5 and are
+  killed at 63-141s of 180 (EV0/EV12). In P7o real, the oracle's `select` blocks the MQTT thread for 20-84s on the 2 aggregator
+  cores (felix/fedbuff queue_wait p99 111-147s), and real per-trainer speed is 2-4× sim. Options: shrink the speech tiny_cpu
+  model/data, give oracle legs more aggregator cores, or run P7/P7o speech on GPU/P8. *Exit:* speech P7/P7o EV green;
+  FX-N13 speech arms usable.
+- **FX-N22 · Fast parallel harness (Active build) · wip: P6 isolation control next.** *Exit:* P6
+  EQUIVALENT at cpt ≤ 0.5, and T2 for both datasets under 25 min on one node.
 - **FX-N4 · First GPU block: felix + fedbuff, syn_0, 90 min · blocked: FX-N20.** cifar:
   `$P --tier G1 --datasets cifar10` (whole node, both pairs in sequence, ~5h; or `--shard 1/2`, `2/2` across two
   nodes, ~2.5h). speech: `$P --tier G1 --datasets google_speech` (~2.5h, can share the node with its T4). jayne
@@ -138,38 +189,38 @@ reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both 
   = 2024 SoCC n=100 (the 2024 n=300 configs are malformed past trainer 100). The model, data and optimizer
   switch lives in `fl_data.py`. Splits come from `_metadata/scripts/import_speech_splits_2024.py` (α 0.1/1/10,
   n=100). The profile is `datasets.yaml`. Trainer Adam lr 0.000195: the 2024 "_oort" value 0.04 stays at
-  chance in a centralized check. *Next:* FX-N20 speech T4; GPU lr check in the first speech G1 (0.000195 vs
+  chance in a centralized check. *Next:* speech T4 fixes (FX-N29, FX-N30); GPU lr check in the first speech G1 (0.000195 vs
   0.001 via `--trainer-hp learningRate=…`); target accuracy + stop rule (2024: 20 evals ≥ 60%); then S4 removes
   the 2024 JSON/scripts and the import script. Data: `<data_root>/google_speech/SpeechCommands/…` via
   `datasets.yaml` `data_roots` = `/coc/scratch/dgarg/fl_datasets` (verified complete by the pool gate). *Exit:* all six real+sim
   graded on speech (T4 CPU + G1/G2 GPU).
-- **FX-N18 · Real asyncfl reads updates seconds late · wip: read in FX-N20.** felix root fixed (FX-D12).
-  fedbuff now runs without the real-only 0.1s settle sleep (`baselines.yaml`, operator OK; felix already did).
-  P10 is the 0.1s control and P9 tests `real_drain_ready_ingest`. *Exit:* fedbuff EV green and queue_wait p99
-  < 1s with settle 0; decide drain_ready from P9.
-- **FX-N14 · Confirm one-in-flight holds off syn_0 · blocked: FX-N20.** *Exit:* felix/fedbuff EV10 = 0 on
-  syn_20/syn_50/mobiperf_3st and in P8; P4 (gate off) stays the control.
-- **FX-N19 · K4 overlap-factor gaps are real, not tolerance · todo (after FX-N20).** fedbuff ≈ 2.7× (settle
-  brake, FX-N18); refl under unavailability sim 0.2 vs real 4.7; felix rel 13-17% (floor unknown). Don't widen
-  (T7, R11). *Exit:* each gap re-read after FX-N20, remaining ones root-caused or graded against a floor (L12).
+- **FX-N19 · asyncfl sim serializes more than real at small n · todo (after the FX-N20 re-run).** From cifar T4,
+  felix/fedbuff: sim per-commit advance is 13-32% above real (K3b: P1 felix 2.15 vs 1.88s, P1b fedbuff 0.88 vs 0.67s).
+  Overlap is lower in sim (K4: P1b felix 6.0 vs 7.2, P2 4.4 vs 5.1), and U6 visibility lag is 0.2-0.4s in sim vs 0.006s in real. P3 mobiperf
+  goes the other way: real overlap 1.0-1.25 vs sim 2.9-3.8. Don't widen (T7, R11). *Exit:* root-caused, or
+  graded against a real↔real floor (L12).
 - **FX-N5 · syn_0 GPU block (G2): oort, oort_star, refl, feddance · blocked: FX-N4.** Same protocol.
   oort's open root: per-round `relative_change` of the exploited utility, binned by quartile, in both modes
   (don't touch the pacer). refl: confirm at 3h.
-- **FX-N15 · fedbuff sim diverges to NaN at syn_50 · todo (GPU-only: stub loss is flat).** Stored Jul-2 sim:
-  test-loss 8.3 at round 550, NaN from 600 (EV14). Operator: no staleness cutoff; FedBuff's 1/√(1+s) discount
-  IS the baseline (FX-T24). Read it as training health (server lr 40.9 × a staleness-160 delta) on the first
-  GPU syn_50 run.
+- **FX-N15 · fedbuff training diverges; now reproduces on the CPU harness · todo.** Stored Jul-2 GPU sim:
+  NaN from round 600 at syn_50. Cifar T4 stub legs, both modes and all traces: test-loss rises (P1b syn_0 2.59→3.30,
+  P2 syn_50 2.63→3.03) and P8 real is NaN from round 50 (EV14). Max staleness is 4, and felix on the same shapes stays flat
+  at 2.30. The same leg at aggGoal 10 stayed at 2.33. So staleness is not the driver: suspect the fedbuff server step on a
+  small buffer (aggGoal 2-3). Cifar only: speech fedbuff (Adam trainer) stays flat at chance (3.57→3.60) on the stub. Operator: no staleness cutoff (FX-T24). *Exit:* root in the fedbuff optimizer
+  named, and fixed if it is a port bug (L7) or recorded as baseline behaviour.
 - **FX-N13 · Streaming motivation experiment, both datasets · design after FX-N22 + FX-N10.** Show (a)
   per-trainer statistical utility changes as data streams in, (b) an unaware aggregator mis-selects, (c) one
   that tracks utility but mis-estimates it still mis-selects. Pipeline built: campaign P7/P7o, oracle replay
-  `scripts/oracle_misselection.py` + `scripts/felix_streaming_figures.py` (campaign 3 felix Spearman P7o
-  0.99 vs P7 0.83). Next: move the arms onto the launcher (S3), calibrate the horizon, operator's design, sweep.
+  `scripts/oracle_misselection.py` + `scripts/felix_streaming_figures.py`. Cifar T4 Spearman, real/sim: felix 0.66/0.53
+  → +oracle 0.995/0.966 (regret 0.089/0.040 → 0.023/0.025); oort −0.40/−0.32 → 0.90/0.85. Sim and real agree in
+  sign on every arm (`pool_20260926_192834_T4/P7_figures`). Next: move the arms onto the launcher (S3), calibrate the horizon, operator's design, sweep.
 - **FX-N2 · Parent S2 (parity pipeline) for async_cifar10 · todo.** *Exit:* the stored Jun 23-24 pairs
   re-grade through it to within the floor, or each difference is explained.
 - **FX-N6 · Unavailability design re-audit · todo.** Keep v1 semantics; check against the fwdllm invariants,
   logical-budget grading and the drain primitives. *Exit:* one audit table (item · keep/change · evidence).
-- **FX-N7 · Remove legacy `trackTrainerAvail` (oort, oort_star, refl) · wip: config landed, verify in FX-N20.**
-  *Exit:* oort/oort_star/refl EV unchanged vs campaign 3; then delete the dead check and legacy branch (S4).
+- **FX-N7 · Remove legacy `trackTrainerAvail` (oort, oort_star, refl) · blocked: FX-N23, FX-N24, FX-N29.** oort/oort_star
+  EV are green on every cifar T4 leg; refl's fails are FX-N23/N24 (cifar) and FX-N29 (speech). *Exit:* refl EV green; then delete the dead check and
+  legacy branch (S4).
 - **FX-N8 · Concurrent-run confound on fedbuff · likely closed by FX-N22.** Two runs on one broker
   collide by construction: MQTT client ids are fixed task ids. *Exit:* P6 EQUIVALENT.
 - **FX-N9 · GPU unavailability: syn_20 → syn_50 → mobiperf_3st, all six · blocked: FX-N5, FX-N6.**
@@ -206,7 +257,7 @@ reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both 
 - **FX-L31** A committed end is RECVD so it leaves RECV; a buffered one reset to NONE then committed stays a
   phantom that blocks the starvation wake-up (P3 felix/fedbuff 6-min livelock).
 - **FX-L32** A dispatch consumes the end's earlier receipt (eval reply, commit); else agg-goal cleanup frees an
-  in-flight trainer and it is re-dispatched (FX-N18 22s tail).
+  in-flight trainer and it is re-dispatched (FX-D16 22s tail).
 - **FX-L10** Split eval from train in any check that reads `agg_rounds`. Each eval gets its own `sct`,
   never the last train `sct`.
 - **FX-L30** Anything replaying trainer data (oracle, replay) reads the trainers' stream clock: vclock in sim,
@@ -247,8 +298,12 @@ reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both 
   timeout frees the slot and the trainer waits for the next version. `fixed`/`exponential` are A/B only.
 - **FX-L27** Identity of an update is (trainer, version): dedup commits on it; the trainer drops a request it
   already answered (same task, same or older version).
-- **FX-L28** A sync round advances the model version only when an aggregation committed; a starved or all-stale
-  iteration keeps it and still frees every consumed slot.
+- **FX-L28** A sync round advances the model version only when an aggregation committed; a starved, empty or
+  all-stale iteration keeps it and still frees every consumed slot. Test the cache, not the optimizer's result.
+- **FX-L40** Bound a sync real round with one deadline set at dispatch. A per-recv timeout inside a loop waits
+  (1+K)× as long and overruns the budget (FX-N23).
+- **FX-L41** Accumulate model state in each tensor's own dtype (cast back like `fedavg.py`). Integer buffers exist
+  only in some models (BatchNorm), so a single-dataset test misses it (FX-N29).
 
 **Reading the checker**
 - **FX-L29** Stub legs charge a seeded GPU-fitted compute span (`flame.harness.stub_compute_s`, fit to
@@ -323,6 +378,8 @@ reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both 
   its wall ceiling at vclock 6.
 - **FX-T25** Don't kill FL workers by process name alone; scope by `FLAME_RUN_TAG` (`_expt_pids`,
   `slot_pids`). The runner's pre-leg `pkill -9` would have killed every neighbouring slot.
+- **FX-T28** Don't derive a leg's health from the shared `experiments/` dir; parallel neighbours' logs leak
+  in (FX-N27). Read the leg's own run dirs.
 
 **Datasets**
 - **FX-T27** Don't take trainer lr from the 2024 speech "_oort" configs (Adam 0.04 stays at chance).
@@ -336,7 +393,8 @@ IDs are kept because code comments cite them.
 **Simulator fidelity**
 - **FX-D1** Core sim fidelity: sct-ordered drain, one-in-flight residence, oort carry-over, refl pool exclusion,
   intrinsic selector duration, UCB temporal term, faithful pacer, feddance barrier-anchored U6.
-- **FX-D4/D8** Cold-start gate (`simColdStartGate`, default on) and uncapped busy hold, freed on abandon/evict.
+- **FX-D4/D8** Cold-start gate (`simColdStartGate`, default on) and uncapped busy hold, freed on abandon/evict;
+  one-in-flight holds off syn_0 (felix/fedbuff sims EV10 = 0 on syn_20/50/mobiperf_3st, cifar T4; P4 control fails).
 - **FX-D6** asyncfl sim: no stranded same-cycle re-dispatch; inner loop honours `_work_done`; refl residence
   starvation wake-up.
 - **FX-D9** One task per version: dispatch ledger + no-repeat guard (a train at v also blocks eval at v),
@@ -349,6 +407,8 @@ IDs are kept because code comments cite them.
 - **FX-D5** Real withheld updates are delivered (bool send-gate fix); `mobiperf_3st` launchable.
 - **FX-D12** Under the substrate only withhold/evict/abandon free an in-flight slot; committed ends leave RECV;
   a dispatch consumes the end's earlier receipt.
+- **FX-D16** (code cites FX-N18) Real asyncfl ingests updates on arrival: no settle sleep for felix/fedbuff (`baselines.yaml`).
+  T4 real queue_wait p99: cifar ≤ 0.06s on every felix/fedbuff leg (0.1s-settle control P10: 0.227s); speech ≤ 0.43s outside FX-N30.
 
 **Harness, checkers, datasets**
 - **FX-D7** Trainer availability thread stops at EOT; clean teardown.
@@ -362,3 +422,6 @@ IDs are kept because code comments cite them.
 
 ## Open questions (operator)
 - Felix paper experiment list, and the exact streaming-experiment design (FX-N13), once FX-N22 and FX-N10 land.
+- Make `real_drain_ready_ingest` the default (R9)? Cifar T4 P9 vs P1: RECV_FIFO skips 887→0 (fedbuff) and 908→0
+  (felix); queue_wait p99 0.028 vs 0.035s (fedbuff) and 0.019 vs 0.025s (felix); fedbuff parity 0.984 vs 0.952; no new EV fail.
+  Speech P9 is mixed: skips go to 0, but felix p99 is 0.286s vs 0.186s (P1), and speech P1 fedbuff is void (FX-N27b).
