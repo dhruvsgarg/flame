@@ -9,7 +9,10 @@
 - **Scope:** `felix`, `oort`, `oort_star`, `refl`, `feddance`, `fedbuff` (+ each one's `*_oracle` arm for the
   streaming experiment, FX-N13). Out of scope: `fedavg`, `oracle`.
 - **Traces (both datasets, both papers):** `syn_0`, `syn_20`, `syn_50` (synthetic) and `mobiperf_3st` (the
-  real-world 3-state trace).
+  real-world 3-state trace). `syn_10` is the pre-2026-09-27 "syn_20" (10.8%, used by the EuroSys'26 runs; FX-D18).
+  Levels (300 trainers, instantaneous TRAIN/EVAL/UN %) are flat from 1 min to 3 h: syn_10 89/0/11, syn_20 ~80/0/20,
+  syn_50 ~50/0/50, mobiperf_2st 10/0/90, 3st_50 10/25/65, 3st_75 10/10/80; mobiperf's trainable share rises to 18-22%
+  by 6-24 h (diurnal).
 - **IDs:** `FX-N` next steps · `FX-L` lessons · `FX-T` tripwires · `FX-D` built features. Shared work is `S#` in the parent.
 - **Reference (read only for detail):** rung catalog and derivations → [PARITY.md](../async_cifar10/PARITY.md)
   §1-§5 · checker internals → [PARITY_CHECKER_README.md](../async_cifar10/scripts/parity/PARITY_CHECKER_README.md)
@@ -74,8 +77,9 @@ launcher's `agg_goal`, which is also the sync K (FX-L36).
 |---|---|---|---|---|---|
 | syn_0 | 12 | 3 | 5 | 180s | – |
 | syn_0b | 15 | 2 | 8 | 180s | – |
-| syn_20, syn_50 | 15 | 3 | 6 | 240s | 4 |
-| mobiperf_3st | 30 | 2 | 4 | 240s | 4 (FX-L34) |
+| syn_20 | 15 | 3 | 6 | 240s | 4 |
+| syn_50 | 15 | 3 | 6 | 1200s | 4 (FX-L43) |
+| mobiperf_3st | 45 | 2 | 4 | 240s | 4 (FX-L34) |
 
 google_speech CPU sims get a 2× wall ceiling: with 29 MB updates on 2 aggregator cores they are
 aggregator-bound (EV12 still grades the vclock budget).
@@ -91,20 +95,23 @@ gate: pytest collection plus one felix smoke pair per dataset; it aborts in ~4 m
 | T2 | sim-only × 4 shapes vs the banked real legs + P11a-c | 38 / 22 min (both datasets) |
 | T3 | real+sim pairs × 4 shapes; refreshes the bank | 82 / 47 min (both datasets) |
 | T4 | campaign P1-P11 (`harness_campaign.sh` = `--tier T4 --pytest`) | 70 / 40 min per dataset |
-| G0 | GPU 30 min screen: all six × syn_0 + syn_50, n 100/50 (FX-N34) | ~5-8h over two nodes (FX-N20 split) |
+| G0 / G0C | GPU 30 min screen: all six × syn_0 + syn_20, n 100/50 (FX-N34) / a second real leg per syn_0 cell (R7) | T4+G0+G0C ~6.9h per 8-GPU node, `--shard i/2` |
 | G1 / G2 | GPU 90 min: felix+fedbuff / the other four, reference config | ~2.5h per pair (cifar), in parallel with CPU (speech) |
 
-`--changed <ref>` picks the affected baselines; `--shard i/N` splits across nodes. Whole-node jobs run last.
+`--changed <ref>` picks the affected baselines; `--shard i/N` splits across nodes; `--exclude-phases` drops exact phase
+ids. Whole-node jobs run last. Between leg starts (never mid-leg) the pool skips GPUs and cores another process is
+using and checks live free memory, so it scales down under foreign load and back up when it clears (`LOAD` lines in
+`pool.log`); `--gpu-ids` pins the usable GPUs.
 
-**Two nodes.** Run node B's share (usually `--datasets google_speech` on wash), then pull its pool and run dirs from
-node A (jayne). Run dirs live in `async_cifar10/experiments/` for both datasets, and the P7/P7o checkpoints are FX-N13
-replay input:
+**Several nodes.** Each node runs its shard; then pull every node's pool and run dirs to the analysis node (jayne). Run
+dirs live in `async_cifar10/experiments/` for both datasets, and the P7/P7o checkpoints are FX-N13 replay input. Per
+node `N` (wash, kaylee):
 ```
-R=/home/dgarg39/flame/lib/python/examples
-POOL=$(ssh wash "ls -dt $R/experiments/pool_*_T4 | head -1 | xargs basename")   # check the name
-rsync -av wash:$R/experiments/$POOL $R/experiments/
-ssh wash "cat $R/experiments/$POOL/*/*/runs/*/legs.txt" | sort -u > /tmp/legs_$POOL.txt
-rsync -av --files-from=/tmp/legs_$POOL.txt -r wash:/ /
+R=/home/dgarg39/flame/lib/python/examples; N=wash
+POOL=$(ssh $N "ls -dt $R/experiments/pool_*_T4* | head -1 | xargs basename")   # check the name
+rsync -av $N:$R/experiments/$POOL $R/experiments/
+ssh $N "cat $R/experiments/$POOL/*/*/runs/*/legs.txt" | sort -u > /tmp/legs_$POOL.txt
+rsync -av --files-from=/tmp/legs_$POOL.txt -r $N:/ /
 bash $R/scripts/harness_report.sh $R/experiments/$POOL   # re-runs the P7 replay here
 ```
 
@@ -125,27 +132,31 @@ bash $R/scripts/harness_report.sh $R/experiments/$POOL   # re-runs the P7 replay
 
 **Test levels.** pytest (P0/T0) = in-process unit/integration tests, no FL processes, ~4 min. CPU tests =
 pool tiers T1-T4: real aggregator + trainer processes over MQTT on CPU (stub/tiny_cpu data, n 12-30), graded
-by the event checker and the parity battery. GPU tests = G1/G2: the production path on real data at the
-reference n (cifar 300, speech 100), 90 min. "CPU+GPU" = one pool run with both (`--tier T4,G1`).
+by the event checker and the parity battery. GPU tests = G0 (30 min screen at n 100/50, + G0C real replicates) and
+G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). "CPU+GPU" = one pool run with both.
 
 **Unblock map.** FX-N20 T4 re-run (confirms FX-N31/N33) + FX-N34 G0 screen → FX-N4 (G1) + FX-N5 (G2) on the cells G0
 passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
 → FX-N11 (speech GPU parity) → FX-N12. FX-N10 grades on FX-N20 + speech G1. FX-N13 design can start any time.
 
-- **FX-N20 `[C][S]` · Harness T4 re-run on both datasets, combined with GPU · wip: operator launching overnight at the FX-N31/N33 commit.**
-  T4 plus the G0 GPU screen, one pool per node. The pool skips GPUs another process is using at start (jayne
-  2026-09-27: GPUs 0,2-4 held by another user's job, 1 ECC → 3 usable), so jayne takes the CPU-heavy share:
+- **FX-N20 `[C][S]` · Harness T4 re-run on both datasets, with the G0 screen · wip: operator launching overnight.**
+  T4 + G0 + G0C over kaylee and wash (8 free GPUs each), est 411 min per node; jayne stays free (another user's job
+  holds 4 of its GPUs). Prep: kaylee `git fetch && git checkout dg/pending_fl_baselines` (it was on `dg/fluxtune_opts`,
+  clean); wash `git pull` + the R21 prune. Smokes: `pool_smoke_final` (felix/refl, both datasets: T3 syn_50 and G0 syn_20
+  green, G0C path works; EV1 misses are 60s/n=12 artifacts) and `pool_check_p3n45` (P3 real at n=45: felix 350 / refl 95
+  commits, EV green).
   ```
   P="conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/harness_pool.py"
-  E=lib/python/examples/experiments
-  $P --tier T4,G0 --datasets all --exclude-phases 'G0_syn_50 gs_G0_syn_0 gs_G0_syn_50' --pytest  # jayne, est 317 min
-  $P --tier G0 --datasets all --exclude-phases 'G0_syn_0'                                        # wash, est ~470 min
+  $P --tier T4,G0,G0C --datasets all --shard 1/2 --pytest --deadline-h 11   # kaylee
+  $P --tier T4,G0,G0C --datasets all --shard 2/2 --deadline-h 11            # wash
   ```
-  Then "Two nodes" (Active build).
+  Then "Several nodes" (Active build).
   *Predictions:* P3 feddance real and refl sim EV12 green on both datasets, with no leg stuck at one round (FX-N31;
   smoke `smoke_fxn31_010328`: sims reach 125/120s with 0 discards; reals idle ≤90s on send-gated picks per FX-L40, so they need 240s);
+  P2/P8/P11 syn_50 legs (now 1200s, head-free) see ~50% unavailable and withhold (EV16 withheld > 0; P11b CAUGHT on both datasets,
+  FX-N32); P3 (n=45, ~10% trainable from t=0) progresses on every baseline; G0 syn_20 legs withhold and deliver;
   EV-fail non-control pairs drop to fedbuff EV14 on cifar (FX-N15) plus speech P7/P7o (FX-N30); crash_lines 0 outside those;
-  no `Fatal Python error` and every checkpoint loads (FX-N33); `gs_P7_figures` is written (FX-N13). *On return:* read both
+  every checkpoint loads (FX-N33; the exit abort may still show in crash_lines); `gs_P7_figures` is written (FX-N13). *On return:* read both
   `SUMMARY.txt` and open an item for each unpredicted miss. *Exit:* that holds, or each new miss has an item.
 - **FX-N31 `[C][S]` · Sync round that does not advance livelocks · fix in tree, confirm in FX-N20.** P3 mobiperf, both datasets:
   refl sim (withheld round) stuck at vclock 74s; feddance real (both abandoned at 90s) stuck at round 7. When a round
@@ -155,12 +166,14 @@ passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
   to budget with no selection, so a new `run_end` event records the stop vclock for EV12. Tests:
   `tests/selector/test_sync_repeat_round.py`, `test_run_exit_artifacts.py`, EV12 in `test_event_invariants.py`.
   *Exit:* FX-N20 predictions hold → Built.
-- **FX-N33 `[C][S]` · Checkpoint writer aborts the process at exit · fix in tree, confirm in FX-N20.** A daemon thread
-  killed inside `torch.save` → `terminate called without an active exception` (6 runs, all checkpointing) and a truncated
-  `.pt` (gs_P7 oort_star sim). Fix: a non-daemon writer plus an atomic rename (`save_round_checkpoint`); the replay skips an
-  unreadable file. Test: `tests/mode/test_run_exit_artifacts.py`. *Exit:* FX-N20 shows no abort → Built.
+- **FX-N33 `[C][S]` · Aggregator aborts at interpreter exit · todo (root open).** After a clean channel leave:
+  `terminate called without an active exception` → `Fatal Python error: Aborted` (a C++ thread destroyed while
+  joinable; no Python frame). 6 runs in the 09-26 pools, and again in `pool_smoke_final` G0 syn_20 refl sim, which wrote
+  no checkpoint, so checkpointing is not the root. The checkpoint writer is now non-daemon with an atomic rename (a
+  killed writer truncated one `.pt`; `tests/mode/test_run_exit_artifacts.py`), and crash_lines counts the abort. Data
+  is intact (post-leave). Candidates: torch/CUDA or MQTT native threads at teardown. *Exit:* root named, abort gone.
 - **FX-N32 `[S]` · EV16's injected bug is weakly exercised · todo.** Every sim leg withholds 0-1 updates (felix evicts, stub
-  compute is short, and harness syn_50 is only ~10% unavailable: FX-N35), so P11b is caught only by 1-2 chance commits (cifar CAUGHT, speech MISSED). Needs a mid-flight-drop
+  compute is short, and harness syn_50 was only ~10% unavailable before FX-D18), so P11b is caught only by 1-2 chance commits (cifar CAUGHT, speech MISSED). Needs a mid-flight-drop
   shape (parent S1 scenario library): compute long relative to AVL spans, on a withholding baseline. *Exit:* P11b sim
   shows ≥10 withheld commits and is CAUGHT on both datasets.
 - **FX-N26 `[C][S]` · Stub real per-trainer speed runs above sim · todo.** `trainer_speed_identity` fails on 22 cifar and
@@ -174,19 +187,17 @@ passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
   selections each (`gs_P7_figures`); P7o real has none. *Exit:* speech P7/P7o EV green; FX-N13 speech arms usable.
 - **FX-N22 · Fast parallel harness (Active build) · wip: P6 isolation control next.** *Exit:* P6
   EQUIVALENT at cpt ≤ 0.5, and T2 for both datasets under 25 min on one node.
-- **FX-N34 `[C][S]` · G0 GPU screen, all six × both datasets × syn_0/syn_50 · wip: launching with FX-N20.** 30 min,
+- **FX-N34 `[C][S]` · G0 GPU screen, all six × both datasets × syn_0/syn_20 · wip: launching with FX-N20.** 30 min,
   cohorts scaled with the reference c/n and aggGoal/c (cifar n=100 c=10 aggGoal 3, 3 GPUs; speech n=50 c=15 aggGoal 5,
   4 GPUs), keeping the reference trainers per GPU. GPU memory is not binding (speech n=100: 15 GB total, util ~0%).
-  syn_50 reaches only ~20% unavailable within 30 min (FX-N35). Smoke `pool_smoke_G0`: felix, both datasets and traces,
-  EV all PASS, cifar parity 1.0; speech legs shared GPUs with a foreign 100%-util job (now excluded). *Predictions:* EV green on every leg except cifar fedbuff EV14 (FX-N15); syn_50 legs withhold
-  and deliver (EV16 withheld > 0). *Exit:* per cell (baseline × dataset × trace) INV/EXACT green → that cell goes to
+  syn_20 is stationary, so 30 min sees 17-19% unavailable (GPU syn_50 is FX-N9). G0C adds a
+  second real leg per syn_0 cell for the real↔real floor (R7). Smoke `pool_smoke_G0` (felix): EV all PASS, cifar
+  parity 1.0. *Predictions:* EV green on every leg except cifar fedbuff EV14 (FX-N15); syn_20 legs withhold and deliver
+  (EV16 withheld > 0); a cell's real↔real (G0C) gap bounds which real↔sim residuals are noise. *Exit:* per cell (baseline × dataset × trace) INV/EXACT green → that cell goes to
   G1/G2 at reference n; each red cell gets an item. Parity sign-off still needs the reference n, controls (R7) and 3h runs.
-- **FX-N35 `[C][S]` · Synthetic traces understate unavailability · todo.** Unavailable-time fraction (300 trainers) over the
-  first 960/2700/5400/10800/86400 s of trace time: syn_20 4/8/10/10.5/10.8%; syn_50 10/30/40/45/49.4%. syn_20 is a ~11%
-  trace (EuroSys'26 runs used it under the 20% name), and both ramp from full availability, so short runs and the CPU
-  harness (960 s of trace) see far less than the name says. Plan: rename syn_20 → syn_10, generate a true syn_20, remove
-  the ramp (trace offset or regenerate), report each leg's effective unavailability, pytest the full-day fraction.
-  *Exit:* each trace name matches its full-day fraction within ±2%, and each leg reports its effective fraction.
+- **FX-N35 `[C][S]` · Report each leg's effective unavailability · todo.** Traces are fixed (FX-D18); the pool still doesn't
+  print the fraction a leg actually saw. Also re-key or drop `_real_bank.tsv` rows banked under the old syn_20 (per node)
+  before any T2. *Exit:* SUMMARY carries each leg's effective fraction; no bank row predates FX-D18 for syn_20.
 - **FX-N4 · First GPU block: felix + fedbuff, syn_0, 90 min · blocked: FX-N20, FX-N34.** cifar:
   `$P --tier G1 --datasets cifar10` (whole node, both pairs in sequence, ~5h; or `--shard 1/2`, `2/2` across two
   nodes, ~2.5h). speech: `$P --tier G1 --datasets google_speech` (~2.5h, can share the node with its T4). jayne
@@ -286,8 +297,8 @@ passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
   and feddance clear each round). Size n ≈ threshold / (1 − unavailable fraction).
 - **FX-L33** With the substrate on, only withhold/evict/abandon release an in-flight slot; the channel's MQTT
   UN_AVL release re-dispatched trainers mid-update and a same-end eval overwrote the buffered train (P2 EV10/EV5).
-- **FX-L34** Size a harness phase for its trace: mobiperf_3st at trace-scale 4 leaves ~10% AVL_TRAIN after
-  vclock 75, so sync baselines (select 13) need n ≈ 120.
+- **FX-L34** Size a harness phase for its trace: mobiperf_3st has ~10% AVL_TRAIN from t=0, so n ≈ select / 0.1 × 1.5
+  (P3: n=45 for sync select 3; select 13 needs n ≈ 200).
 - **FX-L35** Parallel legs need a slot each: own physical cores (`taskset`), private broker, run tag, the
   aggregator's solo core share (`FLAME_AGG_CORES`). Prove density with the ISO control before raising it.
 - **FX-L36** Set a test shape through the launcher's `experiment.aggregator.agg_goal`: it fans into
@@ -300,6 +311,11 @@ passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
 - **FX-L39** Time sim-speed guards (wall ceiling) from the join barrier, like real's trace origin.
 - **FX-L25** A sim starvation wake-up is the earliest FUTURE event that frees a slot: availability
   transition, withheld delivery, residence-held `sct`. A due entry is no wake-up (it stops the run).
+- **FX-L43** Size a leg for its trace: over runtime × trace scale it must see ≥ 80% of the named unavailability
+  (`effective_unavailability`; pytest over T4/G0) and a few outage/up cycles per trainer for the mechanism under test.
+- **FX-L44** Trace time 0 is the join barrier (real re-anchors `agg_start_time_ts`; sim's vclock starts at round 0). Spawn
+  stagger and registration fall before it (an UN_AVL trainer still joins), so a trace needs no all-available head; a
+  trainer holds trace time at 0 until its first dispatch brings the origin (FX-D18).
 - **FX-L15** The ramp is syn_0 (byte-identical to availability off) → syn_20 → syn_50 → mobiperf. 2-state
   traces collapse AVL_EVAL (`_trace_has_avl_eval`); only mobiperf exercises it.
 
@@ -393,11 +409,12 @@ passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
   `slot_pids`). The runner's pre-leg `pkill -9` would have killed every neighbouring slot.
 - **FX-T28** Don't derive a leg's health from the shared `experiments/` dir; parallel neighbours' logs leak
   in (FX-D13). Read the leg's own run dirs.
-- **FX-T29** Don't write a file from a daemon thread, and don't write a replay input in place: exit kills the thread
-  inside `torch.save`, aborting the process and truncating the file (FX-N33).
+- **FX-T29** Don't write a replay input in place or from a daemon thread: a writer killed at exit truncates it (FX-N33).
 
 **Datasets**
 - **FX-T27** Don't take trainer lr from the 2024 speech "_oort" configs (Adam 0.04 stays at chance).
+- **FX-T30** Don't name a trace by intent; name it by its measured full-day unavailable fraction (the old "syn_20" was
+  10.8%, FX-D18).
 
 ---
 
@@ -437,6 +454,14 @@ IDs are kept because code comments cite them.
   `FLAME_RUN_DIR_FILE`; the leg watchdog budgets the sim wall ceiling; sub-0.2s phases grade on mean (50 ms).
 - **FX-D15** No cold start in timed tasks: startup warm-up (CPU + GPU), CUDA-only sync in the weights phase,
   sim wall ceiling from the join barrier (first-task compute 9-14s → 0.1s; fedbuff EV11 fixed).
+- **FX-D18** Traces sit at their named level from t=0: `syn_10` (11%, the old syn_20, origin +600s), `syn_20` (20%, new,
+  stationary, `_metadata/scripts/gen_synthetic_trace.py` seed 20), `syn_50` (50%, origin +2400s), mobiperf (origin
+  +300s: the injected 5-min head) via `_metadata/scripts/shift_trace_origin.py`; syn_* extended from 24 h (then all
+  UN_AVL) to mobiperf's 149 h with the same chain (`gen_synthetic_trace.py --extend`; 13 MB, parsed once per process
+  with the C loader by `trace.read_trace_file`, 9 s); `effective_unavailability()`; any `syn_*`
+  reaches real trainers (spawner + trainer); a real trainer's trace clock holds at 0 until the aggregator's origin
+  arrives (it used to run from process start and pop transitions up to ~5 min early). T4 syn_50 legs 1200s (~2 cycles per trainer), P3 n=45, G0 uses syn_20.
+  Tests: `tests/availability/test_synthetic_trace_fractions.py`, `test_harness_pool.py`.
 - **FX-D14** Dataset switch (`fl_data.py`, `datasets.yaml`, `data_roots` = /coc/scratch/dgarg/fl_datasets); google_speech on the
   launcher (FX-N10).
 

@@ -263,7 +263,7 @@ for e_src in cfg.get("experiments", []):
             if num_trainers_override:
                 # Shrink the cohort but keep runtime_s as the real budget (unlike
                 # smoke, which hardcodes rounds=4/runtime=240 -- too short for a
-                # trace-driven vclock floor like syn_20's first UN_AVL at t=600s).
+                # trace-driven vclock floor like syn_10's first UN_AVL at t=600s).
                 # Same join-barrier slack ratio as smoke (gap of 8 below the count).
                 # Preserve the config's native partition size as split_num_trainers
                 # so the shrunk cohort reads the existing n<orig> split (e.g. n300)

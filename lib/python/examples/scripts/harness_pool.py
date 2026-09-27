@@ -53,9 +53,10 @@ SHAPES = {
     "syn_0": dict(trace="syn_0", n=12, agg_goal=3, c=5, runtime_s=180, trace_scale=""),
     "syn_0b": dict(trace="syn_0", n=15, agg_goal=2, c=8, runtime_s=180, trace_scale=""),
     "syn_20": dict(trace="syn_20", n=15, agg_goal=3, c=6, runtime_s=240, trace_scale="4"),
-    "syn_50": dict(trace="syn_50", n=15, agg_goal=3, c=6, runtime_s=240, trace_scale="4"),
-    # FX-L34: ~10% AVL_TRAIN late in the scaled trace, so the cohort is larger and aggGoal/c smaller
-    "mobiperf_3st": dict(trace="mobiperf_3st", n=30, agg_goal=2, c=4, runtime_s=240, trace_scale="4"),
+    # 1200s x scale 4 = 4800s of trace: ~2 outage/up cycles per trainer (means ~1200s of trace each; FX-D18)
+    "syn_50": dict(trace="syn_50", n=15, agg_goal=3, c=6, runtime_s=1200, trace_scale="4"),
+    # FX-L34: ~10% AVL_TRAIN from t=0 (FX-D18), so n=45 keeps ~4-5 trainable for aggGoal 2 / sync select 3
+    "mobiperf_3st": dict(trace="mobiperf_3st", n=45, agg_goal=2, c=4, runtime_s=240, trace_scale="4"),
 }
 GPU_N = {"cifar10": 300, "google_speech": 100}  # the datasets' reference cohorts (datasets.yaml)
 # G0 screen: reference c/n and aggGoal/c ratios at a smaller n; GPUs per leg keep the reference trainers per GPU.
@@ -143,7 +144,7 @@ class Phase:
     agg_hp: str = ""
     trainer_hp: str = ""
     inject_bug: str = ""
-    kind: str = "pair"  # pair: real+sim legs + grade | sim: sim leg vs banked real | sim_ev: sim leg, EV only
+    kind: str = "pair"  # pair: real+sim legs + grade | sim: sim leg vs banked real | sim_ev: sim leg, EV only | real: real leg, EV only
     cpt: Optional[float] = None  # CPUs per trainer for this phase; None = --cpus-per-trainer
     gpus: Optional[int] = None  # GPU legs: GPUs each; None = --gpus-per-job
 
@@ -188,9 +189,12 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [shaped(f"T3_{sh}", baselines, sh, "pair", ds) for sh in matrix]
     if tier == "T4":
         return campaign_phases(ds)
-    if tier == "G0":  # GPU screen: all six, syn_0 + syn_50, 30 min, smaller cohort (FX-N34)
+    if tier == "G0":  # GPU screen: all six, syn_0 + syn_20 (stationary, ~20% within 30 min), smaller cohort (FX-N34)
         return [Phase(f"{DS_TAG[ds]}G0_{t}", baselines, t, runtime_s=1800, dataset=ds, harness="none", **G0_SHAPE[ds])
-                for t in ("syn_0", "syn_50")]
+                for t in ("syn_0", "syn_20")]
+    if tier == "G0C":  # R7 control: a second real leg per G0 syn_0 cell (real<->real floor for G0's pairs)
+        return [Phase(f"{DS_TAG[ds]}G0C_syn_0", baselines, "syn_0", runtime_s=1800, dataset=ds, harness="none",
+                      kind="real", **G0_SHAPE[ds])]
     if tier == "G1":  # GPU block on the production path at the dataset's reference config (FX-N4)
         bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
         return [Phase(DS_TAG[ds] + "G1", bls, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none")]
@@ -278,6 +282,8 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
             if ph.kind == "pair":
                 real, sim = mk("real", base + ["--mode", "real"]), mk("sim", base + ["--mode", "sim"])
                 jobs += [real, sim, mk("grade", base, (real.jid, sim.jid), 2, 1.0, 0)]
+            elif ph.kind == "real":  # replicate for a real<->real control (R7)
+                jobs.append(mk("real", base + ["--mode", "real"]))
             elif ph.kind == "sim":
                 jobs.append(mk("sim", base + ["--mode", "sim", "--real-from", "auto"]))
             else:
@@ -344,16 +350,21 @@ class CoreMap:
     def total(self) -> int:
         return sum(len(g) for gs in self.free.values() for g in gs)
 
-    def alloc(self, cpus: int) -> Optional[List[int]]:
-        fits = [nd for nd, gs in self.free.items() if sum(len(g) for g in gs) >= cpus]
-        order = sorted(fits, key=lambda nd: sum(len(g) for g in self.free[nd])) or \
-            sorted(self.free, key=lambda nd: -sum(len(g) for g in self.free[nd]))
-        if sum(len(g) for gs in self.free.values() for g in gs) < cpus:
+    def alloc(self, cpus: int, avoid: frozenset = frozenset()) -> Optional[List[int]]:
+        """`avoid`: logical CPUs another process keeps busy right now; their physical cores are skipped."""
+        ok = {nd: [g for g in gs if not avoid.intersection(g)] for nd, gs in self.free.items()}
+        fits = [nd for nd, gs in ok.items() if sum(len(g) for g in gs) >= cpus]
+        order = sorted(fits, key=lambda nd: sum(len(g) for g in ok[nd])) or \
+            sorted(ok, key=lambda nd: -sum(len(g) for g in ok[nd]))
+        if sum(len(g) for gs in ok.values() for g in gs) < cpus:
             return None
         got: List[int] = []
         for nd in order:
-            while self.free[nd] and len(got) < cpus:
-                got += self.free[nd].pop(0)
+            for g in list(ok[nd]):
+                if len(got) >= cpus:
+                    break
+                self.free[nd].remove(g)
+                got += g
             if len(got) >= cpus:
                 break
         return sorted(got)
@@ -374,7 +385,7 @@ def mem_available_gb() -> float:
     return 0.0
 
 
-GPU_ALLOW: Optional[set] = None  # usable GPUs, fixed once at pool start (set_gpu_allow)
+GPU_ALLOW: Optional[set] = None  # --gpu-ids; None = every healthy GPU
 
 
 def _gpu_query() -> List[tuple]:
@@ -398,12 +409,33 @@ def gpu_ids(healthy_only: bool = True) -> List[int]:
             if not healthy_only or (ecc == 0 and (GPU_ALLOW is None or i in GPU_ALLOW))]
 
 
-def set_gpu_allow(explicit: str = "", busy_mib: float = 1024) -> None:
-    """Fix the usable GPUs at start: --gpu-ids, else every GPU another process isn't already using."""
+def set_gpu_allow(explicit: str = "") -> None:
     global GPU_ALLOW
-    rows = _gpu_query()
-    GPU_ALLOW = ({int(x) for x in explicit.split(",") if x.strip()} if explicit
-                 else {i for i, _, used in rows if used < busy_mib})
+    GPU_ALLOW = {int(x) for x in explicit.split(",") if x.strip()} if explicit else None
+
+
+def busy_gpus(busy_mib: float = 1024) -> set:
+    """GPUs holding >= busy_mib now; the pool only asks about GPUs none of its legs hold, so this is foreign load."""
+    return {i for i, _, used in _gpu_query() if used >= busy_mib}
+
+
+def _cpu_times() -> Dict[int, tuple]:
+    out = {}
+    for line in open("/proc/stat"):
+        if line.startswith("cpu") and line[3].isdigit():
+            f = line.split()
+            v = list(map(int, f[1:]))
+            out[int(f[0][3:])] = (sum(v), v[3] + v[4])  # (total, idle + iowait)
+    return out
+
+
+def busy_cpus(threshold: float = 0.5, window_s: float = 1.0) -> frozenset:
+    """Logical CPUs above `threshold` utilisation over a short window (the caller drops its own slots' CPUs)."""
+    a = _cpu_times()
+    time.sleep(window_s)
+    b = _cpu_times()
+    return frozenset(c for c in b if c in a and (b[c][0] - a[c][0]) > 0
+                     and 1 - (b[c][1] - a[c][1]) / (b[c][0] - a[c][0]) > threshold)
 
 
 def free_port(start: int, used: set) -> int:
@@ -519,6 +551,7 @@ class Pool:
         t0 = self.t0 = time.time()
         mem_budget = mem_available_gb() - self.mem_headroom_gb
         stop = {"flag": False}
+        probe, last_note = None, None
         tick = 0
         jobs_tsv = open(self.root / "jobs.tsv", "a")
         jobs_tsv.write("jid\trc\tdur_s\test_s\tcpus\tcores_avg\tcores_p95\n")
@@ -544,10 +577,25 @@ class Pool:
                         continue
                     if j.gpus > len(gpus_free):
                         continue
-                    cpus = cm.alloc(j.cpus)
+                    if probe is None or time.time() - probe["t"] > 30:  # foreign load, between starts only
+                        ours = {c for r in running.values() for c in r.cpus}
+                        probe = {"t": time.time(), "gpus": busy_gpus(), "mem": mem_available_gb(),
+                                 "cpus": frozenset(busy_cpus() - ours)}
+                        note = (sorted(probe["gpus"] & set(gpus_free)), len(probe["cpus"]) // 8 * 8)  # log on change
+                        if note != last_note:
+                            self.say(f"LOAD foreign: busy GPUs {note[0] or '-'}, busy CPUs ~{note[1]}, "
+                                     f"{probe['mem']:.0f} GB available")
+                            last_note = note
+                    usable = [g for g in gpus_free if g not in probe["gpus"]]
+                    if j.gpus > len(usable) or (running and j.mem_gb > probe["mem"] - self.mem_headroom_gb):
+                        continue
+                    cpus = cm.alloc(j.cpus, probe["cpus"])
                     if cpus is None:
                         continue
-                    gp = [gpus_free.pop(0) for _ in range(j.gpus)]
+                    gp = usable[:j.gpus]
+                    for g in gp:
+                        gpus_free.remove(g)
+                    probe["mem"] -= j.mem_gb
                     port = free_port(18830, ports)
                     ports.add(port)
                     running[j.jid] = self._launch(j, cpus, gp, port)
@@ -751,7 +799,7 @@ def run_gate(root: Path, datasets, pool: "Pool") -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 G0 G1 G2 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 G0 G0C G1 G2 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")
@@ -765,7 +813,7 @@ def main(argv=None) -> int:
     ap.add_argument("--traces", default="", help="restrict the tier to these traces")
     ap.add_argument("--agg-hp", default="", help="'k=v ...' appended to every phase's aggregator hp (A/B)")
     ap.add_argument("--trainer-hp", default="", help="'k=v ...' appended to every phase's trainer hp")
-    ap.add_argument("--gpu-ids", default="", help="GPUs this pool may use (default: those idle at start)")
+    ap.add_argument("--gpu-ids", default="", help="GPUs this pool may use (default: all healthy; busy ones skipped per start)")
     ap.add_argument("--gpus-per-job", type=int, default=8, help="GPU legs: GPUs each (capped at the healthy count)")
     ap.add_argument("--gpu-cpus-per-trainer", type=float, default=0.4,
                     help="GPU legs: CPUs per trainer (0.4 = n=300 on 128 CPUs -> whole node; n=100 -> 48 CPUs)")
@@ -802,9 +850,11 @@ def main(argv=None) -> int:
     for p in phases:
         p.agg_hp = " ".join(x for x in (p.agg_hp, a.agg_hp) if x)
         p.trainer_hp = " ".join(x for x in (p.trainer_hp, a.trainer_hp) if x)
-    if a.smoke:  # R19 gate: every leg 60s, small cohorts
+    if a.smoke:  # R19 gate: every leg 60s, small cohorts, 1 GPU per GPU leg (plumbing, not timing)
         for p in phases:
             p.runtime_s, p.n = 60, min(p.n, 12)
+            p.c = min(p.c, p.n) if p.c else p.c
+            p.gpus = 1 if p.harness == "none" else p.gpus
     history = _load_history()
     jobs = build_jobs(phases, a.cpus_per_trainer, a.gpus_per_job, history, a.gpu_cpus_per_trainer)
     i, n = map(int, a.shard.split("/"))
@@ -830,8 +880,8 @@ def main(argv=None) -> int:
             j.gpus = min(j.gpus, len(gpu_ids()))
     bad_gpus = sorted(set(gpu_ids(healthy_only=False)) - set(gpu_ids()))
     if bad_gpus:
-        pool.say(f"GPU(s) {bad_gpus} excluded (ECC error, in use by another process, or not in --gpu-ids); "
-                 f"GPU legs use {gpu_ids()}")
+        pool.say(f"GPU(s) {bad_gpus} excluded (ECC error or not in --gpu-ids); GPU legs use {gpu_ids()}, "
+                 f"skipping any another process holds when a leg starts")
     pool.bad_gpus = bad_gpus
     pool.plan(groups)
     if a.dry_run or not jobs:

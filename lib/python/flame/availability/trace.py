@@ -43,20 +43,19 @@ _AVL_STATE_VALUES = frozenset(
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=16)
+def read_trace_file(path: str) -> dict:
+    """A whole trace YAML, parsed once per process with the C loader (149 h synthetic file: 9 s vs 31 s).
+    encoding="utf-8" explicit: a non-UTF-8 locale mis-decodes non-ASCII bytes (see debug_run.sh)."""
+    with open(path, encoding="utf-8") as f:
+        return yaml.load(f, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+
+
 def _raw_mobiperf(trace_dir: str) -> dict:
-    # encoding="utf-8" explicit: open() otherwise falls back to the node's
-    # locale-preferred encoding, which mis-decodes any non-ASCII byte on a
-    # non-UTF-8 locale (e.g. C/POSIX) and yaml.safe_load then rejects the
-    # resulting control chars — bit us once already on the sibling parity
-    # YAML (see debug_run.sh).
-    with open(Path(trace_dir) / "mobiperf_traces.yaml", encoding="utf-8") as f:
-        return yaml.safe_load(f)["traces"]
+    return read_trace_file(str(Path(trace_dir) / "mobiperf_traces.yaml"))["traces"]
 
 
-@lru_cache(maxsize=16)
 def _raw_synthetic(trace_dir: str) -> dict:
-    with open(Path(trace_dir) / "synthetic_traces.yaml", encoding="utf-8") as f:
-        return yaml.safe_load(f)["traces"]
+    return read_trace_file(str(Path(trace_dir) / "synthetic_traces.yaml"))["traces"]
 
 
 # ---------------------------------------------------------------------------
@@ -222,3 +221,22 @@ def read_trainer_unavailability(
         f"[AVAIL] loaded {len(trainer_events_dict)} trainer traces (trace={trace!r})"
     )
     return trainer_events_dict or None
+
+
+def effective_unavailability(trace_name: str, run_s: float, scale: float = 1.0, n_trainers: int = 300) -> float:
+    """Mean UN_AVL time fraction over trainers 1..n for a run of `run_s` at trace time scale `scale`
+    (covers run_s * scale of trace time). A short run sees less than a ramped trace's name (FX-N35)."""
+    horizon = run_s * scale
+    env_scale = trace_time_scale()  # load_trace applies it; undo to read trace time
+    fracs = []
+    for i in range(1, n_trainers + 1):
+        tr = load_trace(trace_name, f"trainer_{i:03d}")
+        ts = [float(t) * env_scale for t in tr.keys()]
+        down = 0.0
+        for j, (t0, state) in enumerate(zip(ts, tr.values())):
+            if t0 >= horizon:
+                break
+            if state == TrainerAvailState.UN_AVL.value:
+                down += min(ts[j + 1] if j + 1 < len(ts) else horizon, horizon) - t0
+        fracs.append(down / horizon)
+    return sum(fracs) / len(fracs)

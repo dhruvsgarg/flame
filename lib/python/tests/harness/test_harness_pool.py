@@ -111,10 +111,10 @@ def test_datasets_get_their_own_phase_ids_and_gpu_cohorts():
 
 
 def test_g0_screen_scales_cohort_keeps_ratios_and_gpu_density():
-    # FX-N34: all six, syn_0 + syn_50, 30 min, reference c/n and aggGoal/c, reference trainers per GPU.
+    # FX-N34: all six, syn_0 + syn_20, 30 min, reference c/n and aggGoal/c, reference trainers per GPU.
     for ds, (n, k, c, g) in {"cifar10": (100, 3, 10, 3), "google_speech": (50, 5, 15, 4)}.items():
         phs = pool.tier_phases("G0", B6, ds)
-        assert [p.trace for p in phs] == ["syn_0", "syn_50"]
+        assert [p.trace for p in phs] == ["syn_0", "syn_20"]
         for p in phs:
             assert (p.n, p.agg_goal, p.c, p.gpus, p.harness, p.baselines, p.runtime_s) == (n, k, c, g, "none", B6, 1800)
         jobs = pool.build_jobs(phs, 1.0, 8, {})
@@ -123,15 +123,49 @@ def test_g0_screen_scales_cohort_keeps_ratios_and_gpu_density():
         assert {j.cpus for j in legs} == {pool.slot_cpus(n, 0.4, 8)}
 
 
-def test_gpu_allow_skips_gpus_busy_at_start_and_honours_explicit(monkeypatch):
-    # A foreign job on a GPU (jayne 2026-09-27: GPUs 0,2-4 at 23 GB) keeps pool legs off it; ECC GPUs stay out.
+def test_gpu_allow_and_foreign_busy_gpus(monkeypatch):
+    # A foreign job on a GPU (jayne 2026-09-27: GPUs 0,2-4 at 23 GB) is skipped per leg start; ECC GPUs never used.
     rows = [(0, 0, 23000.0), (1, 3, 0.0), (2, 0, 5.0), (3, 0, 0.0)]
     monkeypatch.setattr(pool, "_gpu_query", lambda: rows)
     pool.set_gpu_allow("")
-    assert pool.gpu_ids() == [2, 3] and pool.gpu_ids(healthy_only=False) == [0, 1, 2, 3]
+    assert pool.gpu_ids() == [0, 2, 3] and pool.busy_gpus() == {0}
     pool.set_gpu_allow("0,3")
     assert pool.gpu_ids() == [0, 3]
-    monkeypatch.setattr(pool, "GPU_ALLOW", None)
+    pool.set_gpu_allow("")
+
+
+def test_g0c_is_one_real_replicate_per_g0_syn_0_cell():
+    for ds in ("cifar10", "google_speech"):
+        (c,) = pool.tier_phases("G0C", B6, ds)
+        g0 = pool.tier_phases("G0", B6, ds)[0]
+        assert (c.kind, c.trace, c.n, c.agg_goal, c.c, c.gpus, c.runtime_s) == \
+            ("real", "syn_0", g0.n, g0.agg_goal, g0.c, g0.gpus, g0.runtime_s)
+        jobs = pool.build_jobs([c], 1.0, 8, {})
+        assert [j.mode for j in jobs] == ["real"] * 6
+
+
+def test_coremap_skips_cores_another_process_keeps_busy():
+    cm = pool.CoreMap({0: [[0, 64], [1, 65], [2, 66], [3, 67]]}, reserve_cores=0)
+    assert cm.alloc(4, frozenset({65})) == [0, 2, 64, 66]  # core 1 (CPUs 1, 65) skipped
+    assert cm.alloc(4, frozenset({65})) is None and cm.alloc(4) == [1, 3, 65, 67]
+
+
+@pytest.mark.parametrize("tier", ["T4", "G0"])
+def test_unavailability_phases_run_long_enough_for_their_trace(tier):
+    # FX-N35: a syn_X leg must see >= 80% of X% unavailable over its own run (ramped traces need long runs).
+    from flame.availability.trace import effective_unavailability
+    seen = set()
+    for ds in ("cifar10", "google_speech"):
+        for p in pool.tier_phases(tier, B6, ds):
+            if not p.trace.startswith("syn_") or p.trace == "syn_0":
+                continue
+            key = (p.trace, p.runtime_s, p.trace_scale, p.n)
+            if key in seen:
+                continue
+            seen.add(key)
+            got = effective_unavailability(p.trace, p.runtime_s, float(p.trace_scale or 1), p.n)
+            assert got >= 0.8 * int(p.trace[4:]) / 100, (p.pid, key, round(got, 3))
+    assert seen
 
 
 def test_bank_lookup_ok_stale_none(tmp_path):

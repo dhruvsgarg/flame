@@ -35,12 +35,11 @@ class MetadataLoader:
         traces_dir = self.metadata_dir / "availability_traces"
         self.synthetic_traces = {"traces": {}}
         self.mobiperf_traces = {"traces": {}}
+        from flame.availability.trace import read_trace_file  # shared cache: load_trace reuses this parse
         if (traces_dir / "synthetic_traces.yaml").is_file():
-            with open(traces_dir / "synthetic_traces.yaml") as f:
-                self.synthetic_traces = yaml.safe_load(f)
+            self.synthetic_traces = read_trace_file(str(traces_dir / "synthetic_traces.yaml"))
         if (traces_dir / "mobiperf_traces.yaml").is_file():
-            with open(traces_dir / "mobiperf_traces.yaml") as f:
-                self.mobiperf_traces = yaml.safe_load(f)
+            self.mobiperf_traces = read_trace_file(str(traces_dir / "mobiperf_traces.yaml"))
 
     def get_trainer_metadata(self, trainer_id: int) -> Dict:
         """Get metadata for a specific trainer."""
@@ -175,7 +174,7 @@ class ConfigGenerator:
             )
 
         # Add all synthetic traces (for flexibility)
-        for trace_name in ["syn_0", "syn_20", "syn_50"]:
+        for trace_name in ["syn_0", "syn_10", "syn_20", "syn_50"]:
             config["hyperparameters"][f"avl_events_{trace_name}"] = (
                 self.metadata.get_synthetic_trace(trace_name, trainer_id)
             )
@@ -593,6 +592,7 @@ if __name__ == "__main__":
             "mobiperf_3st_50",
             "mobiperf_3st_75",
             "syn_0",
+            "syn_10",
             "syn_20",
             "syn_50",
         ],

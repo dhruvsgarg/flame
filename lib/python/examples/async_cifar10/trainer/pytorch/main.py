@@ -203,19 +203,6 @@ class PyTorchCifar10Trainer(Trainer):
             self.config.hyperparameters.avl_events_mobiperf_2st
         )
 
-        # Storing synthetic avail traces
-        self.avl_events_syn_0 = parse_trace(
-            self.config.hyperparameters.avl_events_syn_0
-        )
-
-        self.avl_events_syn_20 = parse_trace(
-            self.config.hyperparameters.avl_events_syn_20
-        )
-
-        self.avl_events_syn_50 = parse_trace(
-            self.config.hyperparameters.avl_events_syn_50
-        )
-
         if self.client_notify["trace"] in ("mobiperf_3st", "mobiperf_3st_50", "mobiperf_3st_75"):
             if self.client_notify["trace"] == "mobiperf_3st_75":
                 self.avl_events_3_state = parse_trace(
@@ -230,15 +217,11 @@ class PyTorchCifar10Trainer(Trainer):
             logger.info(
                 f"Set avl_events_mobiperf_2st for trainer id {self.trainer_id}."
             )
-        elif self.client_notify["trace"] == "syn_0":
-            self.state_avl_event_ts = self.avl_events_syn_0
-            logger.info(f"Set avl_events_syn_0 for trainer id {self.trainer_id}.")
-        elif self.client_notify["trace"] == "syn_20":
-            self.state_avl_event_ts = self.avl_events_syn_20
-            logger.info(f"Set avl_events_syn_20 for trainer id {self.trainer_id}.")
-        elif self.client_notify["trace"] == "syn_50":
-            self.state_avl_event_ts = self.avl_events_syn_50
-            logger.info(f"Set avl_events_syn_50 for trainer id {self.trainer_id}.")
+        elif str(self.client_notify["trace"]).startswith("syn_"):
+            # Any synthetic trace the spawner shipped (syn_0/10/20/50); a missing one must fail, not run always-available.
+            name = self.client_notify["trace"]
+            self.state_avl_event_ts = parse_trace(getattr(self.config.hyperparameters, f"avl_events_{name}"))
+            logger.info(f"Set avl_events_{name} for trainer id {self.trainer_id}.")
         else:
             logger.info(
                 f"No avl_events set for trainer id {self.trainer_id} since state not specified."
@@ -335,13 +318,15 @@ class PyTorchCifar10Trainer(Trainer):
         rather than this trainer's own `trainer_start_ts`, so every trainer's
         trace lookups share the aggregator's exact origin -- a local
         per-trainer origin would reintroduce a join-ramp-style skew (same
-        class of bug as B2.0.3). Falls back to `trainer_start_ts` only until
-        the first dispatch arrives.
+        class of bug as B2.0.3). Until the first dispatch brings that origin, trace
+        time holds at 0 in both modes: trace time starts at the join barrier, and a
+        local origin would pop transitions early and lose them (FX-L44).
         """
         if self.simulated:
             return float(self._sim_send_ts) if self._sim_send_ts is not None else 0.0
-        origin = self._agg_start_origin if self._agg_start_origin is not None else self.trainer_start_ts
-        return time.time() - origin
+        if self._agg_start_origin is None:
+            return 0.0
+        return time.time() - self._agg_start_origin
 
     def _refresh_avl_state(self) -> None:
         """Advance availability state to the current point in the trace, both

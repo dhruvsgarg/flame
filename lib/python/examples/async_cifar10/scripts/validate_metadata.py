@@ -257,7 +257,7 @@ class MetadataValidator:
             f"  Validating {len(self.synthetic_traces['traces'])} synthetic traces..."
         )
 
-        for trace_name in ["syn_0", "syn_20", "syn_50"]:
+        for trace_name in ["syn_0", "syn_10", "syn_20", "syn_50"]:
             yaml_pattern = self.synthetic_traces["traces"][trace_name]["pattern"]
             json_pattern = eval(hp[f"avl_events_{trace_name}"])
             # Convert JSON tuples to lists for comparison

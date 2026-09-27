@@ -34,10 +34,11 @@ class TestSimNowRealModeUsesSharedOrigin:
         )
         assert t._sim_now() == pytest.approx(50.0, abs=0.5)
 
-    def test_falls_back_to_trainer_start_ts_before_first_dispatch(self):
+    def test_holds_trace_time_at_zero_before_first_dispatch(self):
+        # FX-L44: trace time starts at the join barrier; a spawn-staggered local origin would pop transitions early.
         now = time.time()
         t = _make(simulated=False, agg_start_origin=None, trainer_start_ts=now - 12.0)
-        assert t._sim_now() == pytest.approx(12.0, abs=0.5)
+        assert t._sim_now() == 0.0
 
     def test_sim_mode_unaffected_by_origin_fields(self):
         t = _make(simulated=True, sim_send_ts=88.0, agg_start_origin=12345.0)

@@ -406,43 +406,43 @@ class TestSyntheticTracePerTrainer:
     """Regression for Open B (UNAVAILABILITY_DESIGN.md): get_synthetic_trace used
     to always return the shared `pattern` entry regardless of trainer_id,
     ignoring synthetic_traces.yaml's per-trainer entries. trainer_054's own
-    trace (first event t=13800s) differs from syn_20's shared pattern
-    (t=600s)."""
+    trace (first outage t=13200s) differs from syn_10's shared pattern
+    (unavailable at t=0; FX-D18 shifted syn_10 by 600s)."""
 
     def test_shared_pattern_when_trainer_id_omitted(self, loader):
-        pattern = loader.get_synthetic_trace("syn_20")
-        assert pattern[0] == [0, "AVL_TRAIN"]
+        pattern = loader.get_synthetic_trace("syn_10")
+        assert pattern[0] == [0, "UN_AVL"]
         assert pattern[1][0] == 600
 
     def test_per_trainer_used_when_trainer_id_given(self, loader):
-        trace_054 = loader.get_synthetic_trace("syn_20", trainer_id=54)
-        pattern = loader.get_synthetic_trace("syn_20")
+        trace_054 = loader.get_synthetic_trace("syn_10", trainer_id=54)
+        pattern = loader.get_synthetic_trace("syn_10")
         assert trace_054 != pattern
         assert trace_054[0] == [0.0, "AVL_TRAIN"]
-        assert trace_054[1][0] == 13800
+        assert trace_054[1][0] == 13200
 
     def test_different_trainers_get_different_traces(self, loader):
-        trace_054 = loader.get_synthetic_trace("syn_20", trainer_id=54)
-        trace_005 = loader.get_synthetic_trace("syn_20", trainer_id=5)
+        trace_054 = loader.get_synthetic_trace("syn_10", trainer_id=54)
+        trace_005 = loader.get_synthetic_trace("syn_10", trainer_id=5)
         assert trace_054 != trace_005
 
     def test_generate_trainer_config_bakes_in_per_trainer_trace(self, gen):
         cfg = gen.generate_trainer_config(
-            trainer_id=54, alpha=0.1, availability_mode="syn_20"
+            trainer_id=54, alpha=0.1, availability_mode="syn_10"
         )
-        events = cfg["hyperparameters"]["avl_events_syn_20"]
-        assert events[1][0] == 13800
+        events = cfg["hyperparameters"]["avl_events_syn_10"]
+        assert events[1][0] == 13200
 
     def test_generate_trainer_config_differs_across_trainers(self, gen):
         cfg_054 = gen.generate_trainer_config(
-            trainer_id=54, alpha=0.1, availability_mode="syn_20"
+            trainer_id=54, alpha=0.1, availability_mode="syn_10"
         )
         cfg_005 = gen.generate_trainer_config(
-            trainer_id=5, alpha=0.1, availability_mode="syn_20"
+            trainer_id=5, alpha=0.1, availability_mode="syn_10"
         )
         assert (
-            cfg_054["hyperparameters"]["avl_events_syn_20"]
-            != cfg_005["hyperparameters"]["avl_events_syn_20"]
+            cfg_054["hyperparameters"]["avl_events_syn_10"]
+            != cfg_005["hyperparameters"]["avl_events_syn_10"]
         )
 
 
