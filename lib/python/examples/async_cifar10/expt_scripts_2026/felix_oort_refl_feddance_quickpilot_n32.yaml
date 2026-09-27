@@ -26,6 +26,7 @@ experiments:
     baseline: felix
     trainer: &felix_tr
       num_trainers: 32
+      split_num_trainers: 300
       start_id: 1
       dataset: {name: cifar10, dirichlet_alpha: 0.1}
       availability: {mode: syn_0}
@@ -63,6 +64,7 @@ experiments:
     baseline: oort
     trainer:
       num_trainers: 32
+      split_num_trainers: 300
       start_id: 1
       dataset: {name: cifar10, dirichlet_alpha: 0.1}
       availability: {mode: syn_0}
@@ -103,6 +105,7 @@ experiments:
     baseline: refl
     trainer:
       num_trainers: 32
+      split_num_trainers: 300
       start_id: 1
       dataset: {name: cifar10, dirichlet_alpha: 0.1}
       availability: {mode: syn_0}
@@ -143,6 +146,7 @@ experiments:
     baseline: feddance
     trainer:
       num_trainers: 32
+      split_num_trainers: 300
       start_id: 1
       dataset: {name: cifar10, dirichlet_alpha: 0.1}
       availability: {mode: syn_0}
