@@ -221,6 +221,20 @@ class TestRecvFifoSimPattern:
         while time.time() < end and ch._active_recv_fifo_tasks:
             time.sleep(0.01)
 
+    def test_deadline_call_releases_readers_on_return(self):
+        # P2 feddance: a reader left by a deadline recv made the next call skip its end; its reply waited ~87s.
+        loop, thread = self._start_loop()
+        try:
+            ch = self._make_channel(loop, ["a", "b"])
+            self._inject(loop, ch._ends["a"], {MessageType.MODEL_VERSION: 1})
+            got = list(ch.recv_fifo(["a", "b"], 1, deadline=time.time() + 5))
+            assert got[0][1][0] == "a" and ch._active_recv_fifo_tasks == set()
+            self._inject(loop, ch._ends["b"], {MessageType.MODEL_VERSION: 1})
+            got = list(ch.recv_fifo(["b"], 1, deadline=time.time() + 1))
+            assert got[0][0] is not None and got[0][1][0] == "b"
+        finally:
+            self._stop_loop(loop, thread)
+
     def test_quiet_probe_returns_none_and_releases(self):
         loop, thread = self._start_loop()
         try:

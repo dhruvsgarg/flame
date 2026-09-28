@@ -139,22 +139,21 @@ G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). 
 passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
 → FX-N11 (speech GPU parity) → FX-N12. FX-N10 grades on FX-N20 + speech G1. FX-N13 design can start any time.
 
-- **FX-N20 `[C][S]` · 6h two-node run: run-1 fixes + FX-N36 + FX-N37 · todo (operator; local P2 check first).** Run 1
+- **FX-N20 `[C][S]` · 6h two-node run: run-1 fixes + FX-N36 + FX-N37 · todo (operator).** Run 1
   (`pool_20260927_060727_T4_G0_G0C` kaylee, `pool_20260927_060911_T4_G0_G0C` wash) is not gradable: GPU real legs were
   watchdog-killed during 10-min joins (FX-N36), and wash lost 26 legs to external SIGKILL waves. Fixed in tree: felix
   syn_50 0 commits (`AsyncOortSelector.requester` unset when an UN_AVL report precedes the first select); feddance rx task
   died on trainer leave (no `_cleanup_removed_ends`); speech G0 CUDA OOM; oort_star chose UN_AVL ends (EV9); felix/fedbuff
   sim double dispatch after a late commit (EV10/EV11, FX-L32); EV10 counted withhold releases; FX-N36; FX-N37; real
   felix/fedbuff read every reply one dispatch late after a late withheld update (FX-L27; P2 real queue_wait max 17-90s).
-  Local checks `experiments/pool_local_fxn37{,b,c}` (jayne) predate the last two FX-N37 fixes, so first:
+  Local check `experiments/pool_local_fxn37d` (jayne, P2): real queue_wait max felix 60→0.67s, fedbuff 35→7.3s; oort,
+  oort_star, refl ≤ 5 ms; EV real PASS except fedbuff EV14 (FX-N15). Feddance still hit 89s: a deadline `recv_fifo` left
+  its per-end readers running, so the next call skipped those ends (`[RECV_FIFO] Skipping … already has active task`).
+  Now a deadline call cancels its readers on return (`test_channel_recv_fifo.py`); unverified on the harness, so the
+  kaylee T4's P2 feddance leg checks it (queue_wait max < 2s, `in-flight total` ≤ 3). Async `timeout=` calls still leave
+  readers (fedbuff 7s; `active_task_skips`). Both nodes check out `dg/pending_fl_baselines` and pull:
   ```
   P="conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/harness_pool.py"
-  $P --tier T4 --datasets cifar10 --phases 'P2' --deadline-h 1 --output-dir lib/python/examples/experiments/pool_local_fxn37d   # jayne, ~30 min
-  ```
-  *Local predictions:* P2 real queue_wait max < 2s on every baseline (fxn37c: feddance 149s, fedbuff 35s, felix 60s);
-  feddance never logs `in-flight total` > 3 (was 6 in 136 rounds); `[LATE_UPDATE]` lines in felix/fedbuff real; EV real
-  PASS on all six; sim unchanged (FX-N38 fails remain). Then both nodes check out `dg/pending_fl_baselines` and pull:
-  ```
   $P --tier T4,G0 --datasets cifar10 --exclude-phases 'G0_syn_0' --pytest --deadline-h 6              # kaylee, ~270 min
   $P --tier T4,G0 --datasets google_speech --exclude-phases 'gs_G0_syn_0' --deadline-h 6          # shepherd, ~246 min
   ```
@@ -162,8 +161,8 @@ passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
   trainer starts, max `[WARMUP]` ≤ 5s (FX-N36; refuted if any leg still takes ≥ 5 min); no `requester`,
   `_cleanup_removed_ends` or CUDA OOM traceback; every GPU real leg logs its budget stop (EV0/EV12); oort_star EV9 green;
   EV7 green on every sync leg (no commit < `agg_goal`, FX-N37); P3 oort real/sim commit counts within 2× (was 2 vs 84;
-  EV1 may fail there: unaware oort at mobiperf really commits ~3 in 240s); real queue_wait max < 2s on every cifar
-  leg; P11a/c CAUGHT; known: P2 felix/fedbuff sim EV10/EV11/EV16 (FX-N38), fedbuff EV14 (FX-N15), speech P7/P7o (FX-N30).
+  EV1 may fail there: unaware oort at mobiperf really commits ~3 in 240s); real queue_wait max < 2s on every sync cifar
+  leg (async ≤ 10s); P11a/c CAUGHT; known: P2 felix/fedbuff sim EV10/EV11/EV16 (FX-N38), fedbuff EV14 (FX-N15), speech P7/P7o (FX-N30).
   *On return:* read both `SUMMARY.txt`; an item per unpredicted miss. *Exit:* that holds, or each new miss has an item.
 - **FX-N36 `[C][S]` · n=100 GPU legs took 10 min to join · fix in tree, confirm in FX-N20.** Root: `Role.mc =
   MetricCollector()` (import time, every flame process) polled NVML on all 8 GPUs at 1 Hz (~6.4 ms a sweep); 200

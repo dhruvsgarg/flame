@@ -523,11 +523,18 @@ class Channel(object):
 
         streamer_timeout = _wait_s()
 
+        _streamers = []
+
         async def _put_message_to_rxq_inner():
             logger.debug("Created task for recv_fifo in put_msg_to_rxq_inner")
-            _ = asyncio.create_task(
+            _streamers.append(asyncio.create_task(
                 self._streamer_for_recv_fifo(end_ids, timeout=streamer_timeout)
-            )
+            ))
+
+        async def _stop_streamer():
+            for t in _streamers:
+                t.cancel()
+            await asyncio.gather(*_streamers, return_exceptions=True)
 
         async def _get_message_inner():
             logger.debug("In _get_msg_inner(), will await until getting a message")
@@ -540,26 +547,30 @@ class Channel(object):
 
         # the _get_message_inner() coroutine fetches a message from
         # the temp queue; we call this coroutine first_k times
-        for _ in range(first_k):
-            result, status = run_async(
-                _get_message_inner(), self._backend.loop(), timeout=_wait_s()
-            )
-            logger.debug(f"After getting message, status: {status}")
-            # timeout (or any non-delivery): don't index into a None result;
-            # signal "no message" to the caller and stop yielding.
-            if not status or result is None:
-                logger.debug(
-                    f"recv_fifo: no message within timeout={timeout}s; "
-                    f"yielding None and stopping"
+        try:
+            for _ in range(first_k):
+                result, status = run_async(
+                    _get_message_inner(), self._backend.loop(), timeout=_wait_s()
                 )
-                yield None, ("", datetime.now())
-                return
-            (end_id, payload) = result
-            logger.debug(f"get payload for {end_id}")
+                logger.debug(f"After getting message, status: {status}")
+                # timeout (or any non-delivery): don't index into a None result;
+                # signal "no message" to the caller and stop yielding.
+                if not status or result is None:
+                    logger.debug(
+                        f"recv_fifo: no message within timeout={timeout}s; "
+                        f"yielding None and stopping"
+                    )
+                    yield None, ("", datetime.now())
+                    return
+                (end_id, payload) = result
+                logger.debug(f"get payload for {end_id}")
 
-            msg, metadata = self._apply_recv_payload(end_id, payload)
+                msg, metadata = self._apply_recv_payload(end_id, payload)
 
-            yield msg, metadata
+                yield msg, metadata
+        finally:
+            if deadline is not None:  # a leftover reader made the next call skip its ends (P2 feddance 87s)
+                run_async(_stop_streamer(), self._backend.loop())
 
     def _apply_recv_payload(
         self, end_id: str, payload
