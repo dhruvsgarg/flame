@@ -146,13 +146,12 @@ passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
   died on trainer leave (no `_cleanup_removed_ends`); speech G0 CUDA OOM; oort_star chose UN_AVL ends (EV9); felix/fedbuff
   sim double dispatch after a late commit (EV10/EV11, FX-L32); EV10 counted withhold releases; FX-N36; FX-N37; real
   felix/fedbuff read every reply one dispatch late after a late withheld update (FX-L27; P2 real queue_wait max 17-90s).
-  Local check `experiments/pool_local_fxn37d` (jayne, P2): real queue_wait max felix 60→0.67s, fedbuff 35→7.3s; oort,
-  oort_star, refl ≤ 5 ms; EV real PASS except fedbuff EV14 (FX-N15). Feddance still hit 89s: a deadline `recv_fifo` left
-  its per-end readers running, so the next call skipped those ends (`[RECV_FIFO] Skipping … already has active task`).
-  Now a deadline call cancels its readers on return (`test_channel_recv_fifo.py`); unverified on the harness, so the
-  kaylee T4's P2 feddance leg checks it (queue_wait max < 2s, `in-flight total` ≤ 3). Fedbuff's 7s: an abandoned end's
-  late update waited for its next dispatch; real asyncfl now also reads ends whose update already arrived
-  (`pool_local_fxn37e` checks felix/fedbuff/feddance P2). Both nodes check out `dg/pending_fl_baselines` and pull:
+  Local checks (jayne, P2): `pool_local_fxn37e` at 6f06e505f has EV real PASS on all six; real queue_wait max feddance
+  0.08s (fxn37c 149s), fedbuff 2.5s (35s), felix 1.8s (60s), oort family ≤ 9 ms. Fixes since fxn37c: a deadline
+  `recv_fifo` cancels its per-end readers on return (the next call skipped those ends); real asyncfl also reads ends whose
+  update already arrived (an abandoned end's late update waited for its next dispatch). Feddance still carries 1-2
+  earlier-version picks into a round (`in-flight total` 4-5 in 247 of 373 rounds): open question below. Run on kaylee
+  (cifar) and jayne GPUs 0,2,3 (speech, `pool_20260928_jayne_gs_T4_G0`: 3 GPUs per G0 leg, not the reference 4):
   ```
   P="conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/harness_pool.py"
   $P --tier T4,G0 --datasets cifar10 --exclude-phases 'G0_syn_0' --pytest --deadline-h 6              # kaylee, ~270 min
@@ -509,3 +508,5 @@ IDs are kept because code comments cite them.
   Speech P9 is mixed: skips go to 0, but felix p99 is 0.286s vs 0.186s (P1), and speech P1 fedbuff is void (shared run dir, FX-D13).
 - Sync wait-K counts a late (abandoned, older-version) update toward K at the current version
   (oort stack and syncfl alike). Keep that, or count only updates trained on the current version (FX-N37)?
+- Sync wait-K: a pick still in flight when its version commits is received at the next version, and distribute still
+  picks K new there (feddance in flight up to 5 at K=3, `pool_local_fxn37e`). Keep that, or count carried picks toward K?
