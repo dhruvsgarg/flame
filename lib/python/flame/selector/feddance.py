@@ -96,7 +96,7 @@ class FedDanceSelector(AbstractSelector):
         task_to_perform: str = "train",
         **kwargs,
     ) -> SelectorReturnType:
-        num_of_ends = min(len(ends), self.num_of_ends)
+        num_of_ends = min(len(ends), kwargs.get("num_to_select") or self.num_of_ends)  # FX-N37 top-up
         if num_of_ends == 0:
             return {}
 

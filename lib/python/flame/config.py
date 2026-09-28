@@ -351,6 +351,8 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     proactive_inflight_evict: t.Optional[bool] = Field(
         alias="proactiveInflightEvict", default=None
     )
+    # FX-N37: a sync version commits only at K accepted updates; timed-out picks are replaced mid-round.
+    sync_wait_for_k: t.Optional[bool] = Field(alias="syncWaitForK", default=False)
     # Override directory for availability trace YAMLs. Defaults to
     # examples/_metadata/availability_traces/ when None.
     availability_trace_dir: t.Optional[str] = Field(

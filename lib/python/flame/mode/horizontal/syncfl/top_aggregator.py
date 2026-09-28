@@ -295,6 +295,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 if now - to >= wait:
                     continue  # retry allowed
             keys[end] = self.version_key
+        if self._sync_wait_k_on():  # FX-N37: a late update accepted at v also blocks a re-pick at v
+            keys.update({e: self.version_key for e in self._sync_accepted_ends()})
         return keys
 
     @property
@@ -454,7 +456,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # Barrier: drain the whole selected set in one recv_fifo pass, then pick
         # the first_k smallest sim_completion_ts (never before a smaller is in).
         buf = SimReorderBuffer()
-        ends = [e for e in ends if channel.has(e)]
+        _held = getattr(self, "_withheld_slot_held", ())  # FX-N37: held picks return via reinject
+        ends = [e for e in ends if channel.has(e) and e not in _held]
         barrier_t0 = time.time()
         drained_all = True
         if ends:
@@ -602,8 +605,17 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # ends() can be None transiently before selections populate (notably in
         # simulated mode where distribute/aggregate run back-to-back) — skip and
         # retry rather than crash on len(None).
-        ends = channel.ends(VAL_CH_STATE_RECV)
+        _wait_k = self._sync_wait_k_on() and first_k > 0
+        if _wait_k:  # FX-N37
+            ends = sorted(self._sync_awaited(channel))
+            first_k -= len(self._sync_accepted_ends())
+            total = getattr(self, "_sync_total", 0)
+        else:
+            ends = channel.ends(VAL_CH_STATE_RECV)
         if not ends:
+            if _wait_k and self.simulated:
+                self._sim_sync_wait(channel)
+                return
             time.sleep(0.5)
             return
         logger.debug(
@@ -619,14 +631,14 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             # B2.0.1: withheld trainers never send, so bound the barrier per trainer (FX-L40).
             updates = channel.recv_fifo(
                 self._real_recv_ends(ends), first_k=first_k,
-                deadline=self._real_round_recv_deadline(channel, ends),
+                deadline=self._real_round_recv_deadline(channel, ends, earliest=_wait_k),
             )
 
         # receive local model parameters from trainers
         # [U6 real barrier-anchor] Real applies all K updates at ONE post-loop
         # aggregation instant, so each update's true visibility lag is measured
         # against that single barrier — collected here, finalized after the loop.
-        _real_round_durs: list = []
+        _real_round_durs: list = list(getattr(self, "_sync_real_durs", [])) if _wait_k else []
         for msg, metadata in updates:
             end, timestamp = metadata
             _t_msg_start = datetime.now()  # start of per-message processing (vii)
@@ -776,6 +788,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 tres = TrainResult(weights, count, version=_trained_ver)
                 _cs0 = time.time()
                 self.cache[end] = tres   # in-memory (MemCache)
+                if _wait_k:
+                    self._sync_accepted_ends().add(end)
                 self._agg_cache_store_s = (
                     getattr(self, "_agg_cache_store_s", 0.0) + time.time() - _cs0)
 
@@ -808,6 +822,14 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             if channel._selector is not None:
                 channel._selector.on_update_received(end, msg, self._round)
                 
+        if _wait_k and len(self._sync_accepted_ends()) < agg_goal:
+            # FX-N37: no commit below K; the cache carries, distribute replaces timed-out picks.
+            self._sync_total, self._sync_real_durs = total, _real_round_durs
+            logger.info(f"[SYNC_WAIT_K] round={self._round} accepted={len(self._sync_accepted_ends())}/{agg_goal}")
+            if self.simulated:
+                self._sim_sync_wait(channel)
+            return
+
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
         # [U6 real barrier-anchor] Finalize real visibility lag against the single round barrier:
@@ -876,6 +898,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self.weights = global_weights
         self._update_model()
         self._round_committed = True
+        self._sync_accepted_ends().clear()
+        self._sync_total, self._sync_real_durs = 0, []
 
         if channel._selector is not None:
             channel._selector.on_round_completed(channel._ends, self._round)
@@ -1044,6 +1068,17 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             - set(_version_keys)
         )
 
+        # FX-N37: top up only the slots this version is missing; mid-round, take what is eligible.
+        _need = None
+        if self._sync_wait_k_on():
+            _desired = getattr(channel._selector, "num_of_ends", _threshold)
+            _fresh = self._sync_version_inflight(channel)
+            _need = _desired - len(_fresh) - len(self._sync_accepted_ends())
+            if _need <= 0 or (_fresh and num_eligible == 0):
+                return
+            _need = min(_need, num_eligible) if _fresh else _need
+            _threshold = min(_need, len(channel._ends))
+
         if num_eligible < _threshold:
             if self.simulated and self.trainer_event_dict is not None:
                 _nxt = self._next_avail_vclock()
@@ -1104,7 +1139,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # the state and return their normal selection.
         selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
                                      agg_version_key=self.version_key,
-                                     trainer_version_keys=_version_keys)
+                                     trainer_version_keys=_version_keys,
+                                     num_to_select=_need)
         if not selected_ends:
             return
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
@@ -1138,7 +1174,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             # register round start time on each end for round duration
             # measurement.
             channel.set_end_property(
-                end, PROP_ROUND_START_TIME, (round, datetime.now())
+                end, PROP_ROUND_START_TIME, (self._round, datetime.now())
             )
         if selected_ends:
             logger.info(

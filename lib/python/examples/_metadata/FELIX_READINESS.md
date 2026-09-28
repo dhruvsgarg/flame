@@ -139,34 +139,60 @@ G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). 
 passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
 → FX-N11 (speech GPU parity) → FX-N12. FX-N10 grades on FX-N20 + speech G1. FX-N13 design can start any time.
 
-- **FX-N20 `[C][S]` · Harness T4 + G0 + G0C re-run on both datasets · todo (operator): re-run with the fixes below.**
-  Run 1 (`pool_20260927_060727_T4_G0_G0C` kaylee, `pool_20260927_060911_T4_G0_G0C` wash) is not gradable: every GPU
-  real leg was killed at budget+175s, before its own stop (EV0/EV12; FX-N36), and wash lost 26 legs to external SIGKILL
-  waves (open question). Fixed in tree: felix syn_50 0 commits (`AsyncOortSelector.requester` unset when an UN_AVL report
-  precedes the first select); feddance rx task died on trainer leave (no `_cleanup_removed_ends`); speech G0 CUDA OOM;
-  oort_star chose UN_AVL ends (EV9: random paths skipped the unavail list); felix/fedbuff sim double dispatch after a late
-  commit (EV10/EV11, FX-L32); EV10 counted withhold releases. Tests: `tests/selector/test_{async_selector_base,sync_repeat_round}.py`,
-  `test_event_invariants.py`.
+- **FX-N20 `[C][S]` · 6h two-node run: run-1 fixes + FX-N36 + FX-N37 · todo (operator; local P2 check first).** Run 1
+  (`pool_20260927_060727_T4_G0_G0C` kaylee, `pool_20260927_060911_T4_G0_G0C` wash) is not gradable: GPU real legs were
+  watchdog-killed during 10-min joins (FX-N36), and wash lost 26 legs to external SIGKILL waves. Fixed in tree: felix
+  syn_50 0 commits (`AsyncOortSelector.requester` unset when an UN_AVL report precedes the first select); feddance rx task
+  died on trainer leave (no `_cleanup_removed_ends`); speech G0 CUDA OOM; oort_star chose UN_AVL ends (EV9); felix/fedbuff
+  sim double dispatch after a late commit (EV10/EV11, FX-L32); EV10 counted withhold releases; FX-N36; FX-N37; real
+  felix/fedbuff read every reply one dispatch late after a late withheld update (FX-L27; P2 real queue_wait max 17-90s).
+  Local checks `experiments/pool_local_fxn37{,b,c}` (jayne) predate the last two FX-N37 fixes, so first:
   ```
   P="conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/harness_pool.py"
-  $P --tier T4,G0,G0C --datasets all --shard 1/2 --pytest --deadline-h 12   # kaylee
-  $P --tier T4,G0,G0C --datasets all --shard 2/2 --deadline-h 12            # wash
+  $P --tier T4 --datasets cifar10 --phases 'P2' --deadline-h 1 --output-dir lib/python/examples/experiments/pool_local_fxn37d   # jayne, ~30 min
   ```
-  Then "Several nodes" (Active build).
-  *Predictions:* no `requester`, `_cleanup_removed_ends` or CUDA OOM traceback; every GPU real leg logs its budget stop
-  (EV0/EV12 green; joins may still be short, FX-N36); oort_star EV9 green; felix/fedbuff sim EV10 = 0 outside P4/P11a;
-  P11b CAUGHT on both datasets only if withholds are frequent enough (FX-N32); P3 oort real stays short (FX-N37); EV-fail
-  non-control pairs otherwise only fedbuff EV14 (FX-N15) and speech P7/P7o (FX-N30). *On return:* read both
-  `SUMMARY.txt` and open an item for each unpredicted miss. *Exit:* that holds, or each new miss has an item.
-- **FX-N36 `[C][S]` · n=100 GPU legs take 5-10 min to join · todo.** Run 1: trainer `.to(cuda)` + warmup stalled for
-  4-7 min whenever two 100-trainer GPU legs started together (to_cuda 0.3s → 480s; 33-69 of 92 joined by the 600s barrier
-  timeout). Alone on jayne: 0.3 → 11s, joined in 2.5 min; 200 bare CUDA processes never stall (≤3s), so the trigger is
-  in the trainer process. The watchdogs now allow the 600s barrier (`debug_run.sh`, `harness_suite.sh`). Next: stagger
-  GPU leg starts in the pool; name the trigger. *Exit:* every G0 leg reaches its join barrier.
-- **FX-N37 `[C]` · Sync sim closes a round at a withheld pick's sct; real waits 90s · todo.** P3 oort (unaware), same
-  picks in both modes: sim `free_stalled_slot(send_gate_withhold)` frees the slot at sct, real cannot see the withhold and
-  waits the 90s timeout (FX-L40): real 2 commits in 240s, sim 84. Hold a withheld pick until dispatch+90s in the sync sim
-  round close for unaware baselines. *Exit:* P3 oort real/sim commit counts agree.
+  *Local predictions:* P2 real queue_wait max < 2s on every baseline (fxn37c: feddance 149s, fedbuff 35s, felix 60s);
+  feddance never logs `in-flight total` > 3 (was 6 in 136 rounds); `[LATE_UPDATE]` lines in felix/fedbuff real; EV real
+  PASS on all six; sim unchanged (FX-N38 fails remain). Then both nodes check out `dg/pending_fl_baselines` and pull:
+  ```
+  $P --tier T4,G0 --datasets cifar10 --exclude-phases 'G0_syn_0' --pytest --deadline-h 6              # kaylee, ~270 min
+  $P --tier T4,G0 --datasets google_speech --exclude-phases 'gs_G0_syn_0' --deadline-h 6          # shepherd, ~246 min
+  ```
+  Then "Several nodes" (Active build). *Predictions:* every G0 real leg passes its join barrier ≤ 3 min after its first
+  trainer starts, max `[WARMUP]` ≤ 5s (FX-N36; refuted if any leg still takes ≥ 5 min); no `requester`,
+  `_cleanup_removed_ends` or CUDA OOM traceback; every GPU real leg logs its budget stop (EV0/EV12); oort_star EV9 green;
+  EV7 green on every sync leg (no commit < `agg_goal`, FX-N37); P3 oort real/sim commit counts within 2× (was 2 vs 84;
+  EV1 may fail there: unaware oort at mobiperf really commits ~3 in 240s); real queue_wait max < 2s on every cifar
+  leg; P11a/c CAUGHT; known: P2 felix/fedbuff sim EV10/EV11/EV16 (FX-N38), fedbuff EV14 (FX-N15), speech P7/P7o (FX-N30).
+  *On return:* read both `SUMMARY.txt`; an item per unpredicted miss. *Exit:* that holds, or each new miss has an item.
+- **FX-N36 `[C][S]` · n=100 GPU legs took 10 min to join · fix in tree, confirm in FX-N20.** Root: `Role.mc =
+  MetricCollector()` (import time, every flame process) polled NVML on all 8 GPUs at 1 Hz (~6.4 ms a sweep); 200
+  trainers ≈ 1.3 s/s of driver-lock time, so CUDA init starved. Run 1 signature: init GIL-held for ~3.5 s × spawn
+  index node-wide, then all `.to(cuda)` released together; bare CUDA probes (no flame import) never stalled. Poll threads
+  are now opt-in (`FLAME_STAT_THREADS=1`; nothing read those stats). Test: `tests/test_metric_collector_threads.py`.
+  Local (`pool_local_fxn37` G0 syn_20 oort real, one leg): 92/92 joined 99s after the first trainer, max `[WARMUP]`
+  0.56s. *Exit:* FX-N20 join prediction holds with two GPU legs per node.
+- **FX-N37 `[C]` · Round progress vs timeouts, all sync baselines · fix in tree, confirm in FX-N20.** Rule (operator):
+  a version advances only when `agg_goal` updates aggregate; each trainer's 90s timeout runs from its own dispatch and
+  is applied at dispatch time; no mode frees a slot on knowledge real lacks. Was: sync real ended a round at the latest
+  pick's timeout and committed partial (P3 oort 2 commits in 240s); sim freed withheld picks at `sct` and committed
+  partial (21 of 84 rounds). Now (`syncWaitForK`, on for oort/oort_star/refl/feddance in `baselines.yaml`): a version
+  collects K accepted updates across passes; real's recv stops at the first pending timeout; distribute abandons it and
+  tops up only the missing slots at the same version (`num_to_select`); sim keeps a withheld pick's slot to dispatch+90
+  and jumps the vclock to the next timeout/delivery; a replied pick is never abandoned, a re-dispatch re-arms its
+  timeout, and a pick with an undelivered withheld update is not re-selectable (its reinject overwrote the fresh reply
+  in the per-end reorder buffer); an end accepted at v (a late update counts) is not re-pickable at v; recv awaits every
+  unaccepted in-flight pick, incl. an earlier version's leftover (feddance stranded both, `pool_local_fxn37c`). Local (`pool_local_fxn37`): EV7 under-K = 0 on every sync leg; G0 syn_20 oort 47 real vs 49 sim commits; P3
+  oort 3 vs 3 (was 2 vs 84). Also fixed: oort's utility path re-sent every in-flight end; syncfl
+  stamped `PROP_ROUND_START_TIME` with the builtin `round`. asyncfl already followed the rule except sim's send-gate
+  freeing an unaware fedbuff pick at `sct` (open). Tests: `tests/availability/test_sync_wait_k.py`,
+  `test_sync_repeat_round.py`, EV7 in `test_event_invariants.py`. *Exit:* FX-N20 EV7/P3 predictions hold.
+- **FX-N38 `[C]` · P2 syn_50 async sims break one-in-flight and ordering · todo.** Predates FX-N37 (run 1 had more):
+  `pool_local_fxn37` felix sim EV10 11 redispatch-while-outstanding, EV11 4.5% past-dated, EV16 2 delivery_ts ≠ trace
+  (450 vs 149.5: the evict-time estimate, FX-L11); fedbuff sim EV11 3.3%. Real legs pass. Lead: felix proactive evict
+  registers delivery before the update completes, and a later re-dispatch overlaps it; `withheld_held_ends` frees an
+  end at `dts == now`, before its reinject, so a re-pick collides in the per-end reorder buffer (fixed for sync only). *Exit:* P2 felix/fedbuff sim
+  EV10/EV11/EV16 green.
 - **FX-N31 `[C][S]` · Sync round that does not advance livelocks · fix in tree, confirm in FX-N20.** P3 mobiperf, both datasets:
   refl sim (withheld round) stuck at vclock 74s; feddance real (both abandoned at 90s) stuck at round 7. When a round
   commits nothing (FX-D10), the refl_oort/feddance round cache re-returned the freed trainers, and they discarded the
@@ -334,11 +360,11 @@ passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
   returned the utility); eval at v still allows train at v (operator). Default `taskRetryPolicy: none`: the 90s
   timeout frees the slot and the trainer waits for the next version. `fixed`/`exponential` are A/B only.
 - **FX-L27** Identity of an update is (trainer, version): dedup commits on it; the trainer drops a request it
-  already answered (same task, same or older version).
-- **FX-L28** A sync round advances the model version only when an aggregation committed; a starved, empty or
+  already answered; a late update from an older dispatch never answers the end's newer one.
+- **FX-L28** A round advances the model version only when `agg_goal` updates aggregate (FX-N37); a starved, empty or
   all-stale iteration keeps it and still frees every consumed slot. Test the cache, not the optimizer's result.
-- **FX-L40** Time out each trainer 90s after its own dispatch, both modes: abandon at the next distribute, stop a
-  real recv once every awaited trainer is past it. A per-recv timeout waits (1+K)× and overruns the budget (FX-D17).
+- **FX-L40** Time out each trainer 90s after its own dispatch, both modes, applied at dispatch time; a timeout never
+  closes a round (FX-N37). A per-recv timeout waits (1+K)× and overruns the budget (FX-D17).
 - **FX-L41** Accumulate model state in float and cast back to each tensor's dtype once; apply baseline-specific
   server steps to parameters (float) only. Integer buffers exist only in some models (BatchNorm) (FX-D17).
 - **FX-L42** A sync round that commits nothing re-dispatches at the same version: select afresh, excluding ends
@@ -443,7 +469,8 @@ IDs are kept because code comments cite them.
   `taskRetryPolicy` (default none), (trainer, version) commit dedup, trainer-side discard, EV15.
 - **FX-D10** Sync rounds advance only on a committed aggregation (non-empty cache); an all-stale round frees its slots.
 - **FX-D17** Sync stacks (syncfl, oort) abandon a trainer 90s after its dispatch in real too (shared
-  `_abandon_stalled`); a real round's recvs stop at the latest awaited trainer's timeout (`recv_fifo(deadline=)`);
+  `_abandon_stalled`); a real round's recvs stop at the latest awaited trainer's timeout (`recv_fifo(deadline=)`;
+  the first one under `syncWaitForK`, FX-N37);
   an abandoned trainer's late update is still received, stale-gated. refl sums integer buffers in float and applies
   YoGi/QFedAvg and its staleness norm to float tensors only (reference REFL: `model.parameters()`).
 
@@ -476,10 +503,9 @@ IDs are kept because code comments cite them.
   launcher (FX-N10).
 
 ## Open questions (operator)
-- wash, 2026-09-27 10:26-11:50: seven SIGKILL waves each killed every running aggregator (no OOM; not our tag-scoped
-  sweeps). A clone on the shared account, `wash:/home/dgarg39/Seshu/SatlinkTp/flame` (made 10:08, during a 10:05-12:19
-  login), still has the unscoped `pkill -9 -f` in `runner.py:800`. Coordinate node use, or have that clone pull FX-N22.
 - Felix paper experiment list, and the exact streaming-experiment design (FX-N13), once FX-N22 and FX-N10 land.
 - Make `real_drain_ready_ingest` the default (R9)? Cifar T4 P9 vs P1: RECV_FIFO skips 887→0 (fedbuff) and 908→0
   (felix); queue_wait p99 0.028 vs 0.035s (fedbuff) and 0.019 vs 0.025s (felix); fedbuff parity 0.984 vs 0.952; no new EV fail.
   Speech P9 is mixed: skips go to 0, but felix p99 is 0.286s vs 0.186s (P1), and speech P1 fedbuff is void (shared run dir, FX-D13).
+- Sync wait-K counts a late (abandoned, older-version) update toward K at the current version
+  (oort stack and syncfl alike). Keep that, or count only updates trained on the current version (FX-N37)?

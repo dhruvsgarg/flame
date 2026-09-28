@@ -198,6 +198,7 @@ class Channel(object):
         trainer_version_keys: dict[str, tuple] = None,
         data_id: int = None,
         allow_recv_bootstrap: bool = False,
+        num_to_select: int = None,
     ) -> list[str]:
         """Return a list of end ids.
 
@@ -207,6 +208,7 @@ class Channel(object):
             data_id: Progress axis for selection telemetry. Not part of
                 version_key (model_version already implies it); pass
                 explicitly when a caller needs it.
+            num_to_select: FX-N37 top-up count overriding the selector's default size.
             allow_recv_bootstrap: Let a RECV-state selector fabricate an
                 in-flight set when nothing was ever dispatched. Only safe for
                 a single-parent caller (`one_end()` sets this); a real
@@ -243,6 +245,7 @@ class Channel(object):
                     trainer_version_keys=trainer_version_keys,
                     data_id=data_id,
                     allow_recv_bootstrap=allow_recv_bootstrap,
+                    **({"num_to_select": num_to_select} if num_to_select else {}),
                 )
                 logger.debug(f"trainer unavail list available, selected: {selected}")
                 if len(selected) == 0:
@@ -257,6 +260,7 @@ class Channel(object):
                     trainer_version_keys=trainer_version_keys,
                     data_id=data_id,
                     allow_recv_bootstrap=allow_recv_bootstrap,
+                    **({"num_to_select": num_to_select} if num_to_select else {}),
                 )
                 logger.debug(
                     f"trainer unavail list not available, selected: {selected}"

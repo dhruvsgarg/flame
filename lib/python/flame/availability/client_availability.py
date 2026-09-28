@@ -438,6 +438,8 @@ class ClientAvailability:
         """
         if not self.pending_withheld:
             return set()
+        if self._sync_wait_k_on():
+            return set(self.pending_withheld)  # FX-N37: undelivered until committed; a re-pick would collide with it
         if now is None:
             now = self._avail_now()
         return {end for end, dts in self.pending_withheld.items() if dts > now}
@@ -549,6 +551,7 @@ class ClientAvailability:
             if payload is None:
                 continue  # no payload yet; stays registered until it arrives
             self.commit_withheld(end)
+            self._withheld_slot_held.discard(end)
             orig_sct, msgmd = payload
             buf.add(end, float(dts), msgmd)
             self._sim_withheld_delivering[end] = (float(orig_sct), float(dts))
@@ -607,6 +610,12 @@ class ClientAvailability:
             )
         else:
             self._sim_withheld_payload[end] = (float(sct), msgmd)
+        if self._sync_wait_k_on() and not getattr(self, "proactive_inflight_evict", False):
+            # FX-N37: real can't see a withhold, so the slot stays held until dispatch+90s.
+            self.pending_withheld[end] = dts
+            self._withheld_slot_held.add(end)
+            logger.info(f"[AVAIL] withhold_hold_slot end={str(end)[-4:]} sct={float(sct):.1f} delivery_ts={dts:.1f}")
+            return True
         self.free_stalled_slot(
             channel, end, reason="send_gate_withhold", sct=float(sct)
         )
@@ -682,18 +691,91 @@ class ClientAvailability:
         late = [e for e in getattr(self, "pending_withheld", {}) if e not in set(ends)]
         return list(ends) + late
 
-    def _real_round_recv_deadline(self, channel, ends) -> float:
+    def _real_round_recv_deadline(self, channel, ends, earliest: bool = False) -> float:
         """Real sync round: wait until every awaited trainer is past its own 90s since dispatch (FX-L40),
-        capped at the run budget's end. Abandoned ends don't extend the wait."""
+        capped at the run budget's end. Abandoned ends don't extend the wait. `earliest` (FX-N37): stop at
+        the first pending timeout instead, so distribute can replace that pick."""
         hp = self.config.hyperparameters
         timeout_s = float(getattr(hp, "trainer_recv_wall_timeout_s", _AVAIL_ABANDON_TIMEOUT_S))
-        sent = [self._avail_send_ts(channel, e) for e in ends if e not in getattr(self, "pending_withheld", {})]
-        sent = [t for t in sent if t is not None]
-        deadline = self.agg_start_time_ts + (max(sent) + timeout_s if sent else self._avail_now())
+        if earliest:  # FX-N37: awaited = not replied and not timed out since its latest dispatch
+            now, replied = self._avail_now(), self._sync_replied(channel)
+            sent = [(e, self._avail_send_ts(channel, e)) for e in ends if e not in replied]
+            due = [t + timeout_s for e, t in sent
+                   if t is not None and not self._sync_abandoned_since_dispatch(e, t) and t + timeout_s > now]
+            deadline = self.agg_start_time_ts + (min(due) if due else now + 0.5)  # 0.5s: no spin when idle
+        else:
+            sent = [self._avail_send_ts(channel, e) for e in ends if e not in getattr(self, "pending_withheld", {})]
+            sent = [t for t in sent if t is not None]
+            deadline = self.agg_start_time_ts + (max(sent) + timeout_s if sent else self._avail_now())
         max_rt = getattr(hp, "max_experiment_runtime_s", None)
         if max_rt:
             deadline = min(deadline, self.agg_start_time_ts + float(max_rt))
         return deadline
+
+    @property
+    def _withheld_slot_held(self) -> set:
+        """FX-N37: withheld sim picks still holding their slot until dispatch+90s."""
+        if not hasattr(self, "_withheld_slot_held_set"):
+            self._withheld_slot_held_set = set()
+        return self._withheld_slot_held_set
+
+    def _sync_wait_k_on(self) -> bool:
+        """FX-N37 gate; needs the substrate, whose 90s abandon frees stalled picks."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        return bool(getattr(hp, "sync_wait_for_k", False)) and getattr(self, "trainer_event_dict", None) is not None
+
+    def _sync_accepted_ends(self) -> set:
+        """FX-N37: ends whose update was accepted at the current version (reset on commit)."""
+        if not hasattr(self, "_sync_accepted"):
+            self._sync_accepted = set()
+        return self._sync_accepted
+
+    def _sync_replied(self, channel) -> set:
+        """FX-N37: picks whose update already arrived this version (accepted or stale-rejected), not stalled."""
+        sel = getattr(channel, "_selector", None)
+        return self._sync_accepted_ends() | set(getattr(sel, "ordered_updates_recv_ends", None) or ())
+
+    def _sync_abandoned_since_dispatch(self, end, sst) -> bool:
+        """FX-N37: `end` already timed out after its latest dispatch (a re-dispatch re-arms its timeout)."""
+        to = getattr(self, "_task_timeout_at", {}).get(end)
+        return to is not None and sst is not None and to >= float(sst)
+
+    def _sync_version_inflight(self, channel) -> set:
+        """FX-N37: picks dispatched at this version that still hold a slot and have not been accepted."""
+        acc = self._sync_accepted_ends()
+        out = set()
+        for e in self._avail_inflight_ends(channel):
+            prop = channel.get_end_property(e, PROP_ROUND_START_TIME)
+            if isinstance(prop, tuple) and prop[0] == self._round and e not in acc:
+                out.add(e)
+        return out
+
+    def _sync_awaited(self, channel) -> set:
+        """FX-N37: a waiting version receives from every unaccepted in-flight pick, incl. an earlier version's leftover."""
+        return self._avail_inflight_ends(channel) - self._sync_accepted_ends()
+
+    def _sim_sync_next_wake(self, channel) -> Optional[float]:
+        """FX-N37: next vclock event that can move a waiting sync round: a pick's timeout or a delivery."""
+        now = self._avail_now()
+        buf = getattr(self, "_sim_buffer", None)
+        cands = [d for d in getattr(self, "pending_withheld", {}).values() if now < d < math.inf]
+        replied = self._sync_replied(channel)
+        for e in self._avail_inflight_ends(channel):
+            if (buf is not None and buf.has(e)) or e in replied:
+                continue
+            sst = self._avail_send_ts(channel, e)
+            if sst is not None and float(sst) + _AVAIL_ABANDON_TIMEOUT_S >= now:
+                cands.append(float(sst) + _AVAIL_ABANDON_TIMEOUT_S + 1e-6)  # abandon needs age > 90
+        return min(cands) if cands else None
+
+    def _sim_sync_wait(self, channel) -> None:
+        """FX-N37: while a sync version waits for K, jump the vclock to its next event (capped at the budget)."""
+        wake = self._sim_sync_next_wake(channel)
+        if wake is None:
+            return  # nothing pending: distribute selects or starves (FX-L25)
+        budget = getattr(self.config.hyperparameters, "max_experiment_runtime_s", None)
+        self._vclock.advance(min(wake, float(budget)) if budget else wake)
+        logger.info(f"[SYNC_WAIT_K] round={self._round} vclock->{self._vclock.now:.1f}")
 
     def _abandon_stalled(self, channel) -> None:
         """C.3: free in-flight slots stalled past 90s since dispatch (vclock in sim, wall in real).
@@ -718,18 +800,29 @@ class ClientAvailability:
         now = self._avail_now()
         buf = getattr(self, "_sim_buffer", None)
         committed = getattr(self, "_sim_committed", set())
+        wait_k = self._sync_wait_k_on()
+        replied = self._sync_replied(channel) if wait_k else set()
         for end in list(inflight):
             if buf is not None and buf.has(end):
                 continue  # already arrived — not stalled
-            if end in committed or end in self.pending_withheld:
-                continue  # invariant 1: already committed / abandoned
+            held = end in self._withheld_slot_held
             sst = self._avail_send_ts(channel, end)
+            if wait_k:  # FX-N37: a replied pick isn't stalled; a re-dispatched one re-arms its timeout
+                if end in committed or end in replied or self._sync_abandoned_since_dispatch(end, sst):
+                    continue
+            elif end in committed or end in self.pending_withheld:
+                continue  # invariant 1: already committed / abandoned
             if sst is None:
                 continue
             if now - float(sst) <= _AVAIL_ABANDON_TIMEOUT_S:
                 continue
             reason = "abandon_90s_vclock" if getattr(self, "simulated", False) else "abandon_90s_wall"
-            self.free_stalled_slot(channel, end, reason=reason, sct=now)
+            if held:  # FX-N37: delivery ledger already registered; only the slot frees
+                self._withheld_slot_held.discard(end)
+                self._avail_free_slot_ledger(channel, end)
+                self._avail_drop_inflight(end)
+            else:
+                self.free_stalled_slot(channel, end, reason=reason, sct=now)
             if not hasattr(self, "_task_timeout_at"):
                 self._task_timeout_at = {}
             self._task_timeout_at[end] = now  # FX-D9: timeout, not an aware eviction

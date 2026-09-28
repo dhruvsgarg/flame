@@ -114,7 +114,7 @@ class OortSelector(AbstractSelector):
         **kwargs,
     ) -> SelectorReturnType:
         """Return k number of ends from the given ends."""
-        num_of_ends = min(len(ends), self.num_of_ends)
+        num_of_ends = min(len(ends), kwargs.get("num_to_select") or self.num_of_ends)  # FX-N37 top-up
         if num_of_ends == 0:
             logger.debug("ends is empty")
             return {}
@@ -269,7 +269,7 @@ class OortSelector(AbstractSelector):
                 **self._system_util_summary(),
             },
         )
-        return {key: None for key in self.selected_ends}
+        return {key: None for key in newly_selected}  # SEND only the new picks
 
     def cutoff_util(
         self,

@@ -67,3 +67,22 @@ def test_leave_hooks_exist(selector, make_ends):
     a, b = sorted(_dispatch(selector, ends, 5, set()))
     selector.remove_from_selected_ends(ends, a)
     selector._cleanup_removed_ends(b)
+
+
+def _dispatch_n(sel, ends, rnd, n):
+    props = {"round": rnd, "cur_time": 0.0, KEY_CH_STATE: VAL_CH_STATE_SEND}
+    return set(sel.select(ends, props, trainer_unavail_list=[], task_to_perform="train",
+                          agg_version_key=(rnd, 0), trainer_version_keys={}, num_to_select=n))
+
+
+def test_top_up_sends_only_new_picks(selector, make_ends):
+    # FX-N37: a mid-round top-up picks exactly the missing slots and never re-sends an in-flight end.
+    from datetime import timedelta
+    from flame.selector.properties import PROP_CLIENT_TASK_TRAIN_DURATION, PROP_STAT_UTILITY
+    ends = make_ends(count=10, prefix="t")
+    first = _dispatch_n(selector, ends, 5, None)
+    for i, e in enumerate(ends.values()):  # utilities known: oort leaves its random first-round path
+        e.set_property(PROP_STAT_UTILITY, 1.0 + i)
+        e.set_property(PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=5))
+    top = _dispatch_n(selector, ends, 5, 1)
+    assert len(top) == 1 and not (top & first)

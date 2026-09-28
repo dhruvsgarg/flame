@@ -324,10 +324,13 @@ def ev7_agg_goal_cadence(run):
         over = {r: c for r, c in per_round.items() if c > k}
         empty = [e.get("round") for e in commits if not (e.get("contributing_trainers") or [])]
         gaps = [(a, b) for a, b in zip(rounds, rounds[1:]) if b - a != 1]
-        return _res("PASS" if not (over or empty or gaps) else "FAIL",
+        # FX-N37: with syncWaitForK a version commits only once K updates are accepted.
+        under = ([e.get("round") for e in commits if len(e.get("contributing_trainers") or []) < k]
+                 if _truthy(_hp(run, "syncWaitForK", "sync_wait_for_k")) else [])
+        return _res("PASS" if not (over or empty or gaps or under) else "FAIL",
                     f"sync rounds={len(rounds)} rounds_over_agg_goal={len(over)} "
-                    f"empty={len(empty)} gaps={len(gaps)}",
-                    over=dict(list(over.items())[:5]), empty=empty[:5], gaps=gaps[:5])
+                    f"empty={len(empty)} gaps={len(gaps)} under_agg_goal={len(under)}",
+                    over=dict(list(over.items())[:5]), empty=empty[:5], gaps=gaps[:5], under=under[:5])
     closed = rounds[:-1]
     wrong = {r: per_round[r] for r in closed if per_round[r] != k}
     gaps = [(a, b) for a, b in zip(rounds, rounds[1:]) if b - a != 1]

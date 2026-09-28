@@ -242,6 +242,23 @@ def test_ev7_sync_empty_round_fails(tmp_path):
     assert _status(_write_run(tmp_path, agg, tr, optimizer="fedavg"), "EV7_agg_goal_cadence") == "FAIL"
 
 
+def _sync_run(contrib_per_round):
+    agg, tr = _clean_run()
+    agg = [e for e in agg if e["event"] != "agg_round"]
+    for rnd, contrib in enumerate(contrib_per_round, 1):
+        agg.append({"event": "agg_round", "task_to_perform": "train", "ts": 5.0 + rnd, "round": rnd,
+                    "contributing_trainers": contrib, "staleness": [0] * len(contrib), "vclock_now": 10.0 * rnd})
+    return agg, tr
+
+
+@pytest.mark.parametrize("contrib,status", [([[T1, T2], [T1, T2]], "PASS"), ([[T1, T2], [T1]], "FAIL")])
+def test_ev7_sync_wait_k_commits_k(tmp_path, contrib, status):
+    # FX-N37: with syncWaitForK a version never commits fewer than agg_goal updates.
+    agg, tr = _sync_run(contrib)
+    run = _write_run(tmp_path, agg, tr, optimizer="fedavg", hp={"syncWaitForK": True})
+    assert _status(run, "EV7_agg_goal_cadence") == status
+
+
 def test_ev5_sends_after_last_commit_are_not_lost(tmp_path):
     agg, tr = _clean_run()
     for r in (8, 9):  # two uploads cut off by the stop

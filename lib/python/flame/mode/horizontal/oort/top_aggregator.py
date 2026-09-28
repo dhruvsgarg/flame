@@ -84,7 +84,8 @@ class TopAggregator(BaseTopAggregator):
         buf = self._sim_buffer
         # Barrier: drain the whole un-buffered set in one recv_fifo pass; the
         # yield-loop below commits in ascending sim_completion_ts order.
-        to_probe = [e for e in end_ids if not buf.has(e)]
+        # FX-N37: a withheld pick holding its slot already reported; it returns via reinject.
+        to_probe = [e for e in end_ids if not buf.has(e) and e not in getattr(self, "_withheld_slot_held", ())]
         barrier_t0 = time.time()
         drained_all = True
         if to_probe:
@@ -219,6 +220,13 @@ class TopAggregator(BaseTopAggregator):
                 f"Stale updates may not be consumed!"
             )
 
+        # FX-N37: a version collects K accepted updates across passes; accepted ends aren't awaited again.
+        _wait_k = self._sync_wait_k_on()
+        if _wait_k:
+            _acc = self._sync_accepted_ends()
+            end_ids = [e for e in end_ids if e not in _acc]
+            total = getattr(self, "_sync_total", 0)
+
         # In-flight residence tracking: record the round each trainer
         # entered the in-flight set so cleanup can emit per-straggler residence. A
         # carryover straggler keeps its earlier entry round (setdefault); a
@@ -235,7 +243,7 @@ class TopAggregator(BaseTopAggregator):
             self._inflight_commit_fresh = {}
 
         configured_aggr_num = self.config.selector.kwargs.get("aggr_num", 10)
-        aggr_num = min(configured_aggr_num, len(end_ids))
+        aggr_num = configured_aggr_num if _wait_k else min(configured_aggr_num, len(end_ids))
         
         # CRITICAL: Log mismatch between configured and actual aggregation count
         if len(end_ids) < configured_aggr_num:
@@ -250,10 +258,11 @@ class TopAggregator(BaseTopAggregator):
                 f"from {len(end_ids)} in-flight trainers"
             )
 
-        received_end_count = 0
+        received_end_count = len(self._sync_accepted_ends()) if _wait_k else 0
 
         # Real: recvs stop at the per-trainer deadline; abandoned ends' late updates still land, stale-gated (FX-L40).
-        _recv_deadline = None if self.simulated else self._real_round_recv_deadline(channel, end_ids)
+        _recv_deadline = None if self.simulated else self._real_round_recv_deadline(
+            channel, end_ids, earliest=_wait_k)
         _real_ends = None if self.simulated else self._real_recv_ends(end_ids)
 
         # simulated: commit the aggr_num updates with the smallest
@@ -267,7 +276,7 @@ class TopAggregator(BaseTopAggregator):
             self._round_start_vclock = self._vclock.now
             _recv = self._oort_sim_recv(channel, end_ids)
         else:
-            _recv = channel.recv_fifo(_real_ends, aggr_num, deadline=_recv_deadline)
+            _recv = channel.recv_fifo(_real_ends, aggr_num - received_end_count, deadline=_recv_deadline)
 
         for msg, metadata in _recv:
             end, _ = metadata
@@ -367,6 +376,8 @@ class TopAggregator(BaseTopAggregator):
             # remove end_id if it sends a valid message with correct
             # round info break the for loop if k valid messages arrive
             received_end_count += 1
+            if _wait_k:
+                self._sync_accepted_ends().add(end)
             # Only remove if end is in end_ids (stale messages from previous rounds won't be)
             if end in end_ids:
                 end_ids.remove(end)
@@ -479,6 +490,8 @@ class TopAggregator(BaseTopAggregator):
                 # correct round info break the for loop if k valid
                 # messages arrive
                 received_end_count += 1
+                if _wait_k:
+                    self._sync_accepted_ends().add(end)
                 # Only remove if end is in end_ids (stale messages from previous rounds won't be)
                 if end in end_ids:
                     end_ids.remove(end)
@@ -486,6 +499,14 @@ class TopAggregator(BaseTopAggregator):
                     break
             if not progressed:
                 break
+
+        if _wait_k and received_end_count < aggr_num:
+            # FX-N37: no commit below K; the cache carries, distribute replaces timed-out picks.
+            self._sync_total = total
+            logger.info(f"[SYNC_WAIT_K] round={self._round} accepted={received_end_count}/{aggr_num}")
+            if self.simulated:
+                self._sim_sync_wait(channel)
+            return
 
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
@@ -557,6 +578,8 @@ class TopAggregator(BaseTopAggregator):
         # update model with global weights
         self._update_model()
         self._round_committed = True
+        self._sync_accepted_ends().clear()
+        self._sync_total = 0
 
         # CRITICAL: Clean up trainers who returned updates, freeing them from in-flight set
         # This must happen immediately after aggregation to prevent race condition where
@@ -752,12 +775,22 @@ class TopAggregator(BaseTopAggregator):
             _connected - set(curr_unavail_trainer_list) - _in_flight - set(_version_keys)
         )
 
+        # FX-N37: top up only the slots this version is missing; mid-round, take what is eligible.
+        _need = None
+        if self._sync_wait_k_on():
+            _fresh = self._sync_version_inflight(channel)
+            _need = desired_selection - len(_fresh) - len(self._sync_accepted_ends())
+            if _need <= 0 or (_fresh and num_eligible == 0):
+                return
+            if _fresh:
+                _need = min(_need, num_eligible)
+
         # Cohort-floor guardrail: if desired_selection > connected cohort size
         # (e.g. n=12 with desired_selection=13), the starvation gate fires
         # every round and exhausts the budget with zero training (observed
         # Jun 29, accidental n=12 oort). Clamp + warn once instead of
         # silently degenerating into an all-starvation run.
-        _starv_threshold = min(desired_selection, len(_connected))
+        _starv_threshold = min(desired_selection if _need is None else _need, len(_connected))
         if desired_selection > len(_connected) and not getattr(
             self, "_oort_cohort_floor_warned", False
         ):
@@ -829,7 +862,8 @@ class TopAggregator(BaseTopAggregator):
         # Threshold met — proceed with selection.
         selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
                                      agg_version_key=self.version_key,
-                                     trainer_version_keys=_version_keys)
+                                     trainer_version_keys=_version_keys,
+                                     num_to_select=_need)
         if not selected_ends:
             return
 

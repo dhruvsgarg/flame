@@ -652,6 +652,15 @@ class TopAggregator(SyncTopAgg):
                 channel._ends[_e].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
         return msg, md
 
+    def _keep_newer_dispatch_inflight(self, channel, end, recv_version) -> None:
+        """FX-L27: a late update from an older dispatch doesn't answer the end's newer one; keep it in flight."""
+        if self.simulated or not channel.has(end):
+            return
+        sent = self._track_trainer_version_duration_s[end]["sent_wts_version_ts"]
+        if recv_version in sent and max(sent.values()) > sent[recv_version]:  # trainers reply FIFO
+            channel._ends[end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+            logger.info(f"[LATE_UPDATE] end={end[-4:]} version={recv_version}: newer dispatch still in flight")
+
     def _aggregate_weights(self, tag: str) -> None:
         """Aggregate local model weights asynchronously.
 
@@ -924,6 +933,7 @@ class TopAggregator(SyncTopAgg):
                 self._track_trainer_version_duration_s[end]["recv_wts_version_ts"][
                     recv_wts_version
                 ] = recv_wts_ts
+                self._keep_newer_dispatch_inflight(channel, end, recv_wts_version)
 
                 wall_lag_s = (recv_wts_ts - sent_wts_ts).total_seconds()
                 logger.info(

@@ -136,6 +136,7 @@ baselines:
           target_ratio: 0.8
           initial_deadline: 100.0
       hyperparameters:
+        syncWaitForK: true  # FX-N37: commit a version only at K accepted updates
         # FX-N7: the v1 substrate reads the trace; the legacy ORACULAR block is retired.
         simUnavailability: true
         trackTrainerAvail:
@@ -183,6 +184,7 @@ baselines:
         sort: fedavg
         kwargs: {}
       hyperparameters:
+        syncWaitForK: true  # FX-N37: commit a version only at K accepted updates
         trackTrainerAvail:
           enabled: "False"
           type: "NA"
@@ -202,6 +204,7 @@ baselines:
         sort: fedavg
         kwargs: {}
       hyperparameters:
+        syncWaitForK: true  # FX-N37: commit a version only at K accepted updates
         # FX-N7: the v1 substrate reads the trace; the legacy ORACULAR block is retired.
         simUnavailability: true
         trackTrainerAvail:
@@ -232,6 +235,7 @@ baselines:
         sort: fedavg
         kwargs: {}
       hyperparameters:
+        syncWaitForK: true  # FX-N37: commit a version only at K accepted updates
         # FX-N7: the v1 substrate reads the trace; the legacy ORACULAR block is retired.
         simUnavailability: true
         trackTrainerAvail:
