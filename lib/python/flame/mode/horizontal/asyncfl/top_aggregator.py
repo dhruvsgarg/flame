@@ -652,6 +652,12 @@ class TopAggregator(SyncTopAgg):
                 channel._ends[_e].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
         return msg, md
 
+    @staticmethod
+    def _with_arrived_ends(channel, recv_ends) -> list:
+        """FX-L27 (real): also read ends whose update already arrived, e.g. an abandoned end's late one."""
+        recv_ends = list(recv_ends or [])
+        return recv_ends + sorted(e for e in channel.ends_with_pending_rx() if channel.has(e) and e not in recv_ends)
+
     def _keep_newer_dispatch_inflight(self, channel, end, recv_version) -> None:
         """FX-L27: a late update from an older dispatch doesn't answer the end's newer one; keep it in flight."""
         if self.simulated or not channel.has(end):
@@ -678,6 +684,8 @@ class TopAggregator(SyncTopAgg):
         recv_ends = channel.ends(VAL_CH_STATE_RECV)
         if recv_ends:
             recv_ends = [e for e in recv_ends if channel.has(e)]
+        if not self.simulated:
+            recv_ends = self._with_arrived_ends(channel, recv_ends)
         if not recv_ends:
             if self.simulated and len(self._sim_buffer) > 0:
                 recv_ends = []  # buffer still has entries to drain — don't block

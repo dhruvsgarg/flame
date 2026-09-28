@@ -34,6 +34,9 @@ class _DrainChannel(_FakeChannel):
     def ends(self, state=None):
         return list(self._ends)
 
+    def ends_with_pending_rx(self):
+        return set()
+
     def has(self, end_id):
         return end_id in self._ends
 

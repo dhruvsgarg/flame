@@ -37,3 +37,10 @@ def test_reply_to_latest_dispatch_frees_end():
 
 def test_sim_untouched():
     assert _run([181, 353], 181, simulated=True) == VAL_END_STATE_RECVD
+
+
+def test_arrived_abandoned_end_is_received():
+    # P2 fedbuff: an abandoned end's late update sat 6s until the end's next dispatch.
+    ch = SimpleNamespace(ends_with_pending_rx=lambda: {"t9", "t1", "gone"}, has=lambda e: e != "gone")
+    assert TopAggregator._with_arrived_ends(ch, ["t1", "t2"]) == ["t1", "t2", "t9"]
+    assert TopAggregator._with_arrived_ends(ch, None) == ["t1", "t9"]

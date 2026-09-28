@@ -40,6 +40,9 @@ class _FakeChannel:
     def ends(self, state=None):
         return ["t1"]
 
+    def ends_with_pending_rx(self):
+        return set()
+
     def has(self, end_id):
         return True
 

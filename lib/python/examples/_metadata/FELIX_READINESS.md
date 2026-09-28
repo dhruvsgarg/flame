@@ -150,8 +150,9 @@ passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
   oort_star, refl ≤ 5 ms; EV real PASS except fedbuff EV14 (FX-N15). Feddance still hit 89s: a deadline `recv_fifo` left
   its per-end readers running, so the next call skipped those ends (`[RECV_FIFO] Skipping … already has active task`).
   Now a deadline call cancels its readers on return (`test_channel_recv_fifo.py`); unverified on the harness, so the
-  kaylee T4's P2 feddance leg checks it (queue_wait max < 2s, `in-flight total` ≤ 3). Async `timeout=` calls still leave
-  readers (fedbuff 7s; `active_task_skips`). Both nodes check out `dg/pending_fl_baselines` and pull:
+  kaylee T4's P2 feddance leg checks it (queue_wait max < 2s, `in-flight total` ≤ 3). Fedbuff's 7s: an abandoned end's
+  late update waited for its next dispatch; real asyncfl now also reads ends whose update already arrived
+  (`pool_local_fxn37e` checks felix/fedbuff/feddance P2). Both nodes check out `dg/pending_fl_baselines` and pull:
   ```
   P="conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/harness_pool.py"
   $P --tier T4,G0 --datasets cifar10 --exclude-phases 'G0_syn_0' --pytest --deadline-h 6              # kaylee, ~270 min
@@ -162,7 +163,7 @@ passes, + FX-N7 → FX-N6 + FX-N9 (GPU unavailability)
   `_cleanup_removed_ends` or CUDA OOM traceback; every GPU real leg logs its budget stop (EV0/EV12); oort_star EV9 green;
   EV7 green on every sync leg (no commit < `agg_goal`, FX-N37); P3 oort real/sim commit counts within 2× (was 2 vs 84;
   EV1 may fail there: unaware oort at mobiperf really commits ~3 in 240s); real queue_wait max < 2s on every sync cifar
-  leg (async ≤ 10s); P11a/c CAUGHT; known: P2 felix/fedbuff sim EV10/EV11/EV16 (FX-N38), fedbuff EV14 (FX-N15), speech P7/P7o (FX-N30).
+  leg (async < 2s); P11a/c CAUGHT; known: P2 felix/fedbuff sim EV10/EV11/EV16 (FX-N38), fedbuff EV14 (FX-N15), speech P7/P7o (FX-N30).
   *On return:* read both `SUMMARY.txt`; an item per unpredicted miss. *Exit:* that holds, or each new miss has an item.
 - **FX-N36 `[C][S]` · n=100 GPU legs took 10 min to join · fix in tree, confirm in FX-N20.** Root: `Role.mc =
   MetricCollector()` (import time, every flame process) polled NVML on all 8 GPUs at 1 Hz (~6.4 ms a sweep); 200
