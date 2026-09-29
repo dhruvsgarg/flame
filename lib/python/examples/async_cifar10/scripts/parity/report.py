@@ -36,7 +36,7 @@ _SECTIONS = [
     ]),
     ("1", "Clock / Time-base", [
         ("K1   vclock monotone (sim)",          "sim_commit_monotone"),
-        ("K7   sim_rate in [0.01, 100]",        "sim_rate"),
+        ("K7   sim_rate >= 0.01",               "sim_rate"),
         ("P3   trainer_speed_s (control)",      "trainer_speed"),
         ("K3a  modeled-compute advance",        "modeled_compute_advance"),
         ("K3b  overhead residual",              "overhead_residual"),

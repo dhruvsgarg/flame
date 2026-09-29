@@ -23,6 +23,7 @@
 #                    [--inject-bug no_busy_hold|order_by_sct|freeze_trainer_clock]
 #                    [--isolate [--broker-port P] [--run-tag T]] [--gpu-ids 0,1,..] [--dry-run]
 #                    [--dataset cifar10|google_speech] [--agg-goal N] [--concurrency C] [--sim-ceiling-x X]
+#                    [--no-fail-fast]   (FX-N40: default stops after a pair whose logs hold a fatal line -> ABORT.txt)
 #   harness_suite.sh --grade-only --real-dir R --sim-dir S --baselines B --traces T --runtime-s N --output-dir DIR
 #
 # --isolate (FX-N22 slot): private mosquitto on its own port + a run tag scoping every sweep, so this
@@ -62,6 +63,7 @@ DATASET=cifar10
 AGG_GOAL=""; CONC=""; SIM_CEIL_X=1
 GIVEN_REAL=""
 GIVEN_SIM=""
+FAIL_FAST=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -91,6 +93,7 @@ while [[ $# -gt 0 ]]; do
     --real-dir)         GIVEN_REAL="$2"; shift 2 ;;
     --sim-dir)          GIVEN_SIM="$2"; shift 2 ;;
     --dry-run)          DRY_RUN=1; shift ;;
+    --no-fail-fast)     FAIL_FAST=0; shift ;;
     -h|--help)          sed -n 2,30p "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -252,9 +255,15 @@ PY
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$trace" "$b" "$ev_real" "$ev_sim" "$verdict" \
       "$score" "$nfail" "$roots" "$crashes" "$timed_out" "$real_dir" "$sim_dir" "$real_src" >> "$SUMMARY_TSV"
     echo "  [$label] events real=$ev_real sim=$ev_sim | parity=$verdict score=$score roots=$roots | crashes=$crashes timeout=$timed_out real_src=$real_src"
+    if [ "$FAIL_FAST" = 1 ] && [ "$GRADE_ONLY" = 0 ] && [ "${#own[@]}" -gt 0 ] \
+       && ! "$PY" "$LIB_DIR/examples/scripts/fail_fast.py" "${own[@]}" --abort-file "$OUT/ABORT.txt" > /dev/null; then
+      echo "[$(date '+%F %T')] FAIL-FAST [$label]: fatal line in its logs -- $OUT/ABORT.txt" >&2
+      break 2
+    fi
   done
 done
 
 column -t -s $'\t' "$SUMMARY_TSV" > "$OUT/summary.txt"
 echo; cat "$OUT/summary.txt"
 echo; echo "results: $OUT"
+if [ "$FAIL_FAST" = 1 ] && [ -f "$OUT/ABORT.txt" ]; then exit 3; fi

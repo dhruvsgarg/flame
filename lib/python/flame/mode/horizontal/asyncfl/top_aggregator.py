@@ -16,6 +16,7 @@
 """Asynchronous horizontal FL top level aggregator."""
 
 import logging
+import math
 import time
 from collections import deque
 from datetime import datetime, timedelta
@@ -108,6 +109,7 @@ class TopAggregator(SyncTopAgg):
         self._contributed_versions: set = set()
         # FX-D9: (end, task) -> [version, dispatch_ts, retries at that version] of its last dispatch.
         self._task_ledger: dict = {}
+        self._last_rx_ts: dict = {}  # FX-L27: end -> `_avail_now` of its last received reply (real)
 
         self._updates_in_queue = 0
         self._updates_recevied = {}
@@ -652,11 +654,22 @@ class TopAggregator(SyncTopAgg):
                 channel._ends[_e].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
         return msg, md
 
-    @staticmethod
-    def _with_arrived_ends(channel, recv_ends) -> list:
-        """FX-L27 (real): also read ends whose update already arrived, e.g. an abandoned end's late one."""
+    def _owed_ends(self, channel) -> set:
+        """FX-L27 (real): ends whose latest dispatch timed out or was evicted and is still unanswered."""
+        last_disp = {}
+        for (end, _), (_, disp_ts, _) in getattr(self, "_task_ledger", {}).items():
+            last_disp[end] = max(last_disp.get(end, disp_ts), disp_ts)
+        rx = getattr(self, "_last_rx_ts", {})
+        timed_out = self._timed_out_at(channel)
+        owed = {e for e, to in timed_out.items() if e in last_disp and to >= last_disp[e]}
+        owed |= set(getattr(self, "pending_withheld", {}))
+        return {e for e in owed if rx.get(e, -math.inf) < last_disp.get(e, math.inf)}
+
+    def _with_arrived_ends(self, channel, recv_ends) -> list:
+        """FX-L27 (real): also read ends whose update arrived or is still owed, e.g. an abandoned end's late one."""
         recv_ends = list(recv_ends or [])
-        return recv_ends + sorted(e for e in channel.ends_with_pending_rx() if channel.has(e) and e not in recv_ends)
+        extra = (channel.ends_with_pending_rx() | self._owed_ends(channel)) - set(recv_ends)
+        return recv_ends + sorted(e for e in extra if channel.has(e))
 
     def _keep_newer_dispatch_inflight(self, channel, end, recv_version) -> None:
         """FX-L27: a late update from an older dispatch doesn't answer the end's newer one; keep it in flight."""
@@ -743,6 +756,7 @@ class TopAggregator(SyncTopAgg):
         # T3.3 commit-checkpoint belief (real mode only — sim's own commit
         # loop already recorded it inside _sim_withhold_if_unavail).
         if not self.simulated:
+            self._last_rx_ts[end] = self._avail_now()
             self._record_commit_belief(end)
         _t_msg_start = datetime.now()  # start of per-message processing (vii)
 

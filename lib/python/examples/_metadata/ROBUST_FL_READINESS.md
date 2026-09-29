@@ -127,6 +127,9 @@ section already says.
   `pool_smoke_*`, in `experiments/` or `async_cifar10/experiments/`), `_real_bank.tsv` or doc line names; `.pt` files
   outside cited pools' P7/P7o legs (the FX-N13 replay's only reader); and uncited `experiments/pool_*` dirs. GPU runs are
   never pruned.
+- **R22 Test at the end, scoped.** During dev run only the tests of the area touched (e.g. `tests/mode`,
+  `tests/harness`, the checker's own), and batch them: finish the session's changes, then test. The full pytest runs
+  once, right before handing over a launch command or a commit (R10).
 - **R13 Commits:** follow CLAUDE.md (crisp comments, minimal diff, short title and body). Confirm before any
   push.
 

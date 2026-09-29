@@ -463,12 +463,12 @@ def ev12_reached_budget(run):
     budget = float(budget)
     # Span of commits AND selections: a trace-starved run still consumes its budget (FX-D12).
     sels = [e for e in run["agg"] if e.get("event") == "selection"]
+    # run_end: a trace-starved run's budget stop (FX-N31); a livelock stops at a frozen vclock.
+    ends = [e for e in run["agg"] if e.get("event") == "run_end"]
     if _simulated(run):
-        # run_end carries a trace-starved run's final vclock jump (FX-N31); a livelock stops at a frozen vclock.
-        ends = [e for e in run["agg"] if e.get("event") == "run_end"]
         reached = max(e.get("vclock_now") or 0.0 for e in commits + sels + ends)
     else:
-        ts = [e["ts"] for e in commits + sels]
+        ts = [e["ts"] for e in commits + sels + ends]
         reached = max(ts) - (min(e["ts"] for e in sels) if sels else commits[0]["ts"])
     ok = reached >= _BUDGET_FRAC * budget
     return _res("PASS" if ok else "FAIL", f"reached={reached:.0f}s budget={budget:.0f}s (need {_BUDGET_FRAC:.0%})")

@@ -402,6 +402,8 @@ class PyTorchCifar10Trainer(Trainer):
 
     def initialize(self) -> None:
         """Initialize role."""
+        if harness.injected("trainer_crash"):
+            raise RuntimeError("FLAME_INJECT_BUG=trainer_crash (FX-N40 fail-fast smoke)")
         self.memory_profiler.log_component_memory("initialize", "BEFORE")
 
         # Honour single-thread pinning set by the spawner via OMP_NUM_THREADS=1.
@@ -456,6 +458,7 @@ class PyTorchCifar10Trainer(Trainer):
         self.model.load_state_dict(saved)
         if cuda:
             torch.cuda.synchronize(self.device)
+            torch.cuda.empty_cache()  # FX-D15: a warmed idle trainer kept ~3 GB (speech), OOMing co-located warm-ups
         logger.info(f"[WARMUP] trainer={self.trainer_id} device={self.device} {time.time() - t0:.2f}s")
 
     def load_data(self) -> None:

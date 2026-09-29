@@ -14,6 +14,7 @@ longest-first with backfill; the degree of parallelism follows from free cores, 
   harness_pool.py --tier T4 [--phases 'P1 P2']        # the campaign phases
   ... --shard 1/2    this node's half (by estimated time)     ... --dry-run   print the plan only
 Output: experiments/pool_<ts>/{SUMMARY.txt, pool.log, <phase>/summary.tsv, <phase>/<job>/...}.
+Fail fast (FX-N40): a fatal line in any leg's logs stops the pool within ~30s -> ABORT.txt (--no-fail-fast).
 """
 
 import argparse
@@ -31,6 +32,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fail_fast import EXIT_FATAL, Scanner, leg_run_dirs, write_abort  # noqa: E402
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 EXAMPLES = SCRIPT_DIR.parent                 # lib/python/examples
@@ -191,6 +195,9 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return campaign_phases(ds)
     if tier == "G0":  # GPU screen: all six, syn_0 + syn_20 (stationary, ~20% within 30 min), smaller cohort (FX-N34)
         return [Phase(f"{DS_TAG[ds]}G0_{t}", baselines, t, runtime_s=1800, dataset=ds, harness="none", **G0_SHAPE[ds])
+                for t in ("syn_0", "syn_20")]
+    if tier == "GS":  # FX-N42 L5: GPU short pairs, G0 cohort, 10 min (GPU-only faults and the clock rungs, cheaply)
+        return [Phase(f"{DS_TAG[ds]}GS_{t}", baselines, t, runtime_s=600, dataset=ds, harness="none", **G0_SHAPE[ds])
                 for t in ("syn_0", "syn_20")]
     if tier == "G0C":  # R7 control: a second real leg per G0 syn_0 cell (real<->real floor for G0's pairs)
         return [Phase(f"{DS_TAG[ds]}G0C_syn_0", baselines, "syn_0", runtime_s=1800, dataset=ds, harness="none",
@@ -523,6 +530,20 @@ class Pool:
     log: object = None
     done: Dict[str, Path] = field(default_factory=dict)
     bad_gpus: List[int] = field(default_factory=list)
+    fail_fast: bool = True
+    aborted: bool = False
+    scanner: Scanner = field(default_factory=Scanner)
+
+    def _fatal(self, r: "Running") -> bool:
+        """FX-N40: a fatal line in this leg's logs aborts the pool (ABORT.txt names it)."""
+        found = self.scanner.scan(leg_run_dirs(r.out))
+        if not found or not self.fail_fast:
+            return False
+        write_abort(self.root / "ABORT.txt", r.job.jid, found)
+        self.say(f"FAIL-FAST {r.job.jid}: {found[0].path.name}:{found[0].lineno}: {found[0].line.strip()[:120]} "
+                 f"-- {self.root}/ABORT.txt")
+        self.aborted = True
+        return True
 
     def say(self, msg: str) -> None:
         line = f"[{time.strftime('%F %T')}] {msg}"
@@ -562,7 +583,7 @@ class Pool:
         signal.signal(signal.SIGINT, _on_signal)
         signal.signal(signal.SIGTERM, _on_signal)
         try:
-            while (pending or running) and not stop["flag"]:
+            while (pending or running) and not stop["flag"] and not self.aborted:
                 for j in list(pending):
                     if any(d not in self.done for d in j.deps):
                         continue
@@ -607,6 +628,8 @@ class Pool:
                     if rc is None:
                         if tick % 3 == 0:
                             r.sample()
+                        if tick % 15 == 0 and self._fatal(r):
+                            break
                         continue
                     kill_tag(r.tag)  # leftovers of a leg that died hard
                     dur = time.time() - r.t0
@@ -624,6 +647,8 @@ class Pool:
                     ports.discard(r.port)
                     self.done[jid] = r.out
                     del running[jid]
+                    if self._fatal(r):
+                        break
         finally:
             if running:
                 self.say(f"INTERRUPT — tearing down {len(running)} slot(s)")
@@ -645,7 +670,7 @@ class Pool:
         if stop["flag"]:
             return 130
         self.merge()
-        return 0
+        return EXIT_FATAL if self.aborted else 0
 
     def _launch(self, j: Job, cpus: List[int], gp: List[int], port: int) -> Running:
         out = self.root / j.phase / j.jid
@@ -799,7 +824,7 @@ def run_gate(root: Path, datasets, pool: "Pool") -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 G0 G0C G1 G2 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C G1 G2 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")
@@ -813,6 +838,7 @@ def main(argv=None) -> int:
     ap.add_argument("--traces", default="", help="restrict the tier to these traces")
     ap.add_argument("--agg-hp", default="", help="'k=v ...' appended to every phase's aggregator hp (A/B)")
     ap.add_argument("--trainer-hp", default="", help="'k=v ...' appended to every phase's trainer hp")
+    ap.add_argument("--inject-bug", default="", help="S1 bug for every leg (trainer_crash: FX-N40 fail-fast smoke)")
     ap.add_argument("--gpu-ids", default="", help="GPUs this pool may use (default: all healthy; busy ones skipped per start)")
     ap.add_argument("--gpus-per-job", type=int, default=8, help="GPU legs: GPUs each (capped at the healthy count)")
     ap.add_argument("--gpu-cpus-per-trainer", type=float, default=0.4,
@@ -826,6 +852,8 @@ def main(argv=None) -> int:
                          "failure (default on unless --smoke/--dry-run)")
     ap.add_argument("--pytest", action="store_true", help="run the full pytest (P0) before the jobs")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--no-fail-fast", dest="fail_fast", action="store_false",
+                    help="FX-N40: keep going after a fatal line (Traceback, CUDA OOM, ...) in a leg's logs")
     a = ap.parse_args(argv)
     set_gpu_allow(a.gpu_ids)
 
@@ -850,6 +878,7 @@ def main(argv=None) -> int:
     for p in phases:
         p.agg_hp = " ".join(x for x in (p.agg_hp, a.agg_hp) if x)
         p.trainer_hp = " ".join(x for x in (p.trainer_hp, a.trainer_hp) if x)
+        p.inject_bug = p.inject_bug or a.inject_bug
     if a.smoke:  # R19 gate: every leg 60s, small cohorts, 1 GPU per GPU leg (plumbing, not timing)
         for p in phases:
             p.runtime_s, p.n = 60, min(p.n, 12)
@@ -863,7 +892,7 @@ def main(argv=None) -> int:
     root = Path(a.output_dir or OUT_DIR / f"pool_{time.strftime('%Y%m%d_%H%M%S')}_{'_'.join(tiers)}").resolve()
     root.mkdir(parents=True, exist_ok=True)
     pool = Pool(root, jobs, a.max_parallel, a.reserve_cores, a.mem_headroom_gb, a.deadline_h * 3600, a.dry_run,
-                log=open(root / "pool.log", "a"))
+                log=open(root / "pool.log", "a"), fail_fast=a.fail_fast)
     commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True,
                             text=True).stdout.strip()
     pool.say(f"pool {root} host={socket.gethostname()} tier={a.tier} datasets={','.join(datasets)} baselines={' '.join(baselines) or '-'} "
@@ -899,7 +928,7 @@ def main(argv=None) -> int:
         (root / "P0_pytest.txt").write_text(r.stdout + r.stderr)
         pool.say(f"P0 rc={r.returncode} :: {(r.stdout.strip().splitlines() or [''])[-1]}")
     rc = pool.run(groups)
-    if rc == 0:
+    if rc in (0, EXIT_FATAL):
         subprocess.run(["bash", str(SCRIPT_DIR / "harness_report.sh"), str(root), str(int(pool.t0))])
         pool.say(f"done: {root}/SUMMARY.txt")
         print((root / "SUMMARY.txt").read_text() if (root / "SUMMARY.txt").exists() else "")

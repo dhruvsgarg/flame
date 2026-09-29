@@ -2621,8 +2621,9 @@ def sim_commit_order_monotone(sim: dict) -> dict:
             "monotone": monotone}
 
 
-def sim_rate_ok(sim: dict, min_rate: float = 0.01, max_rate: float = 100.0) -> dict:
-    """K7 [INV]: sim_rate = vclock / wall_sim must be in sane range [0.01, 100]."""
+def sim_rate_ok(sim: dict, min_rate: float = 0.01, max_rate: float = math.inf) -> dict:
+    """K7 [INV]: sim_rate = vclock / wall_sim >= 0.01 (a stalled clock). No upper bound: a fast sim is the goal
+    (sim_speedup); skipped work shows up in K2/K3, not here."""
     vclock_vals = [e.get("vclock_now") for e in sim["agg_rounds"]
                    if e.get("vclock_now") is not None]
     ts_vals = [e["ts"] for e in sim["agg_rounds"] if e.get("ts") is not None]
@@ -3743,7 +3744,8 @@ def duty_cycle_parity(real_trainers: dict, sim_trainers: dict) -> dict:
     keys = set(rf) | set(sf)
     diffs = [abs(rf.get(k, 0.0) - sf.get(k, 0.0)) for k in keys]
     max_diff = max(diffs) if diffs else 0.0
-    return {"ok": max_diff <= 0.2, "tier": "DIST",
+    # DIAG: superseded by A4dur (FX-T19); a transition fraction over a 30-min leg is 0/1/0.5 per trainer.
+    return {"ok": max_diff <= 0.2, "tier": "DIAG",
             "max_dutycycle_diff": round(max_diff, 3), "n_trainers": len(keys)}
 
 
@@ -7784,7 +7786,7 @@ CHECK_META: dict = {
     "eligibility":             {"stage": 2, "role": "MECHANISM", "deps": ("avail_composition",)},
     "eligible_speed":          {"stage": 2, "role": "MECHANISM", "deps": ("eligibility",)},
     "avail_timebase":          {"stage": 2, "role": "CONTROL",  "deps": ("per_round_advance",)},
-    "duty_cycle":              {"stage": 2, "role": "MECHANISM", "deps": ("avail_timebase",)},
+    "duty_cycle":              {"stage": 2, "role": "DIAG",     "deps": ("avail_timebase",)},
     "duty_cycle_duration":     {"stage": 2, "role": "MECHANISM", "deps": ("avail_timebase",)},
     "eligible_pool_reduction": {"stage": 2, "role": "DIAG",     "deps": ("eligibility",)},
     "abandon_timeout":         {"stage": 2, "role": "CONTROL",  "deps": ("avail_timebase",)},

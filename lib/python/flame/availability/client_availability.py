@@ -174,6 +174,14 @@ class ClientAvailability:
             return float(self._vclock.now)
         return time.time() - self.agg_start_time_ts
 
+    def _timed_out_at(self, channel) -> dict:
+        """FX-D9: end -> its latest task timeout on this clock (the asyncfl selector stamps epoch in real)."""
+        out = dict(getattr(getattr(channel, "_selector", None), "timed_out_at", None) or {})
+        if out and not getattr(self, "simulated", False):
+            out = {e: t - self.agg_start_time_ts for e, t in out.items()}
+        out.update(getattr(self, "_task_timeout_at", None) or {})
+        return out
+
     # ------------------------------------------------------------------
     # Trace loading (replaces three duplicated copies)
     # ------------------------------------------------------------------

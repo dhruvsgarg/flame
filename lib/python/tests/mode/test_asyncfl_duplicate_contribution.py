@@ -14,6 +14,7 @@ fedbuff.py) makes a genuine duplicate-contribution newly reachable, so this
 guard (_agg_cycle_contributed_ends) closes the same gap here.
 """
 
+import time
 from types import SimpleNamespace
 
 import torch
@@ -84,6 +85,8 @@ def _make_agg():
     optimizer.scale_add_agg_weights/_update_model finalization path)."""
     agg = _ConcreteAgg.__new__(_ConcreteAgg)
     agg.simulated = False
+    agg.agg_start_time_ts = time.time()
+    agg._last_rx_ts = {}
     agg._agg_goal = 5  # high enough that 2 messages never trip finalization
     agg._agg_goal_cnt = 0
     agg._agg_goal_weights = None

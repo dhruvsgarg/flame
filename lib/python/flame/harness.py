@@ -25,7 +25,7 @@ DEFAULT_STUB_COMPUTE_SIGMA = 0.9
 
 
 # S1: known sim bugs a harness run may re-inject, so a campaign proves each is caught.
-INJECTABLE_BUGS = ("no_busy_hold", "order_by_sct", "freeze_trainer_clock")
+INJECTABLE_BUGS = ("no_busy_hold", "order_by_sct", "freeze_trainer_clock", "trainer_crash")  # last: FX-N40 fail-fast
 
 
 def injected(bug: str) -> bool:

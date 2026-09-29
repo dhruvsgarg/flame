@@ -283,6 +283,16 @@ def test_ev12_starvation_jump_to_budget_passes(tmp_path):
     assert _status(run, "EV12_reached_budget") == "PASS"
 
 
+def test_ev12_real_budget_stop_after_last_commit_passes(tmp_path):
+    # FX-D21: P3 oort real commits until 199s and stops on its 240s wall budget; run_end marks the stop.
+    agg, tr = _clean_run()
+    t0 = min(e["ts"] for e in agg if e.get("event") == "selection")
+    real = {"time_mode": "real", "max_experiment_runtime_s": 1000}
+    assert _status(_write_run(tmp_path / "a", agg, tr, hp=real), "EV12_reached_budget") == "FAIL"
+    agg.append({"event": "run_end", "ts": t0 + 1000.0, "round": 2, "work_done": True, "vclock_now": None})
+    assert _status(_write_run(tmp_path / "b", agg, tr, hp=real), "EV12_reached_budget") == "PASS"
+
+
 def test_ev3_frozen_trainer_clock_fails(tmp_path):
     # S1 injected bug freeze_trainer_clock: the trainer keeps its first stamp.
     agg, tr = _clean_run()

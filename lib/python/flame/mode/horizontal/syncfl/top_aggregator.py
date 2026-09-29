@@ -282,8 +282,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         if policy not in ("none", "fixed", "exponential"):
             raise ValueError(f"task_retry_policy={policy!r}: expected none|fixed|exponential")
         base = float(getattr(hp, "task_retry_backoff_s", None) or 0.0)
-        timed_out = dict(getattr(getattr(channel, "_selector", None), "timed_out_at", None) or {})
-        timed_out.update(getattr(self, "_task_timeout_at", None) or {})
+        timed_out = self._timed_out_at(channel)
         now = self._avail_now()
         keys = {}
         for (end, t), (ver, disp_ts, retries) in getattr(self, "_task_ledger", {}).items():
