@@ -330,6 +330,7 @@ def _load_agg_jsonl_uncached(path: str) -> dict:
     comm_dispatch: list = []
     redispatch_decomp: list = []
     vclock_charges: list = []
+    agg_timings: list = []
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -372,6 +373,8 @@ def _load_agg_jsonl_uncached(path: str) -> dict:
                 # What each overhead category folded onto the clock
                 # (`charged_s`) vs sim's own `span_s`, and which one it used.
                 vclock_charges.append(e)
+            elif ev == "agg_timing":
+                agg_timings.append(e)
     selection_train.sort(key=lambda x: (x["round"], x["ts"]))
     agg_rounds.sort(key=lambda x: (x["round"], x.get("agg_goal_count", 0), x["ts"]))
     eval_commits.sort(key=lambda x: (x["round"], x["ts"]))
@@ -398,6 +401,7 @@ def _load_agg_jsonl_uncached(path: str) -> dict:
         "step_timing": step_timing,
         "redispatch_decomp": redispatch_decomp,
         "vclock_charges": vclock_charges,
+        "agg_timings": agg_timings,
     }
 
 
@@ -1083,6 +1087,15 @@ def eligibility_parity(real: dict, sim: dict, warn_ks: float = 0.2) -> dict:
     if pm_el or pm_ca:
         out["note"] = ("point-mass distribution: KS uninformative (zero-variance side), "
                        "means match within {:.0%} — passed on mean".format(MEAN_TOL_REL))
+
+    def _excl_means(sel_events):  # L15: mean ends excluded per selection, by reason (runs from run 5 on)
+        evs = [e.get("excluded_by") for e in sel_events if e.get("excluded_by") is not None]
+        keys = {k for d in evs for k in d}
+        return {k: round(sum(d.get(k, 0) for d in evs) / len(evs), 2) for k in sorted(keys)} if evs else None
+
+    rx, sx = _excl_means(real["selection_train"]), _excl_means(sim["selection_train"])
+    if rx is not None or sx is not None:
+        out["excluded_by_real"], out["excluded_by_sim"] = rx, sx
     return out
 
 
@@ -2586,6 +2599,8 @@ def vclock_telemetry_present(sim: dict) -> dict:
     """
     n_total = len(sim["agg_rounds"])
     n_with = sum(1 for e in sim["agg_rounds"] if e.get("vclock_now") is not None)
+    if n_total == 0:
+        return {"ok": True, "tier": "INV", "status": "SKIP", "note": "sim committed nothing (EV1)", "n_total_events": 0}
     if n_with == 0:
         return {
             "ok": False,
@@ -3536,6 +3551,7 @@ def field_coverage(real_agg: dict, sim_agg: dict,
 
     matrix: dict = {}
     violations: list = []
+    no_events: set = set()
     for label, src, field, mode in _COVERAGE_SPEC:
         if src in ("agg", "sel"):
             rd = _density(_agg_evs(real_agg, src), field)
@@ -3548,12 +3564,15 @@ def field_coverage(real_agg: dict, sim_agg: dict,
             "sim": round(sd, 3) if sd is not None else None,
             "expect": mode,
         }
-        if mode in ("both", "real") and not rd:
-            violations.append(f"{label}(real)")
-        if mode in ("both", "sim") and not sd:
-            violations.append(f"{label}(sim)")
-    return {"ok": not violations, "tier": "INV",
-            "matrix": matrix, "violations": violations}
+        for side, d in (("real", rd), ("sim", sd)):
+            if mode in ("both", side) and d is None:
+                no_events.add(f"{src}({side})")  # nothing to cover: a progress failure (EV1), not a missing field
+            elif mode in ("both", side) and not d:
+                violations.append(f"{label}({side})")
+    out = {"ok": not violations, "tier": "INV", "matrix": matrix, "violations": violations}
+    if no_events and not violations:
+        out.update(status="SKIP", note=f"no events on {sorted(no_events)} (no commits/tasks: EV1)")
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -7179,6 +7198,26 @@ def charge_coverage(real: dict, sim: dict, sim_trainers: Optional[dict] = None,
     }
 
 
+def agg_timing_split(real: dict, sim: dict) -> dict:
+    """[DIAG] FX-N43: per-commit aggregator wall split (median/p90), each side; ingest + commit is the chargeable part."""
+    comps = ("cycle_s", "recv_wait_s", "ingest_s", "commit_s", "other_s")
+
+    def side(d):
+        evs = d.get("agg_timings") or []
+        if not evs:
+            return None
+        out = {"n": len(evs)}
+        for c in comps:
+            v = sorted(float(e.get(c) or 0.0) for e in evs)
+            out[c] = {"median": round(v[len(v) // 2], 4), "p90": round(v[int(0.9 * (len(v) - 1))], 4)}
+        return out
+
+    r, s = side(real), side(sim)
+    if r is None and s is None:
+        return {"ok": True, "status": "SKIP", "tier": "DIAG", "note": "no agg_timing events (runs before FX-N43)"}
+    return {"ok": True, "tier": "DIAG", "real": r, "sim": s}
+
+
 def aggregation_compute_wall_parity(real: dict, sim: dict, ks_tol: float = 0.3,
                                     mean_tol_rel: float = 0.35) -> dict:
     """Aggregation-stage wall-clock EQUALITY check (DIAG, TWO-SIDED) -- the
@@ -7647,6 +7686,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["drain_wall_budget"] = drain_wall_budget_parity(real_agg, sim_agg)
     results["aggregation_compute_wall"] = aggregation_compute_wall_parity(real_agg, sim_agg)
     results["charge_coverage"] = charge_coverage(real_agg, sim_agg, sim_trainers)
+    results["agg_timing_split"] = agg_timing_split(real_agg, sim_agg)
     results["agg_step_timing_breakdown"] = agg_step_timing_breakdown_parity(real_agg, sim_agg)
     results["phase_vclock_bottlenecks"] = phase_vclock_bottlenecks(
         real_agg, sim_agg, real_trainers, sim_trainers)
@@ -7836,6 +7876,7 @@ CHECK_META: dict = {
     "drain_wall_budget":       {"stage": 6, "role": "MECHANISM", "deps": ("vclock_telemetry", "commit_visibility")},
     "aggregation_compute_wall": {"stage": 6, "role": "DIAG",     "deps": ("drain_wall_budget",)},
     "agg_step_timing_breakdown": {"stage": 6, "role": "DIAG",    "deps": ("aggregation_compute_wall",)},
+    "agg_timing_split":         {"stage": 6, "role": "DIAG",    "deps": ()},
     "charge_coverage":          {"stage": 6, "role": "DIAG",    "deps": ("vclock_telemetry",)},
     "aggregation_sequence":    {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order")},
     "cohort_sequence":         {"stage": 6, "role": "EMERGENT", "deps": ("participation", "inter_arrival_order", "r1_inflight_overlap", "v1_iter_per_data_id")},
@@ -7931,6 +7972,7 @@ THRESHOLD_PROVENANCE: dict = {
     "withheld_delivery":       (INVARIANT, None),   # every withheld commit delivered
     "decision_determinism":    (INVARIANT, None),   # same seed => same decisions
     "charge_coverage":         (INVARIANT, None),   # every charge modeled
+    "agg_timing_split":        (INVARIANT, None),   # report-only split, no threshold
 
     # ── CALIBRATED, floor measured (the 10 that were firing) ──
     "v1_iter_per_data_id":     (CALIBRATED, "iters_per_bin"),

@@ -208,3 +208,20 @@ class TestRandomSelectorAggVersionStatePassthrough:
             assert "iteration_per_data_id" not in sels[0]
         finally:
             telemetry.shutdown()
+
+
+def test_selection_event_counts_exclusions(tmp_path, make_ends):
+    from flame.selector.properties import PROP_EXCL_REASON
+    telemetry.configure(role="aggregator", run_dir=str(tmp_path))
+    try:
+        ends = make_ends(count=5, stat_utility=1.0, round_duration=timedelta(seconds=2))
+        ids = sorted(ends)
+        ends[ids[0]].set_property(PROP_EXCL_REASON, "owed")
+        ends[ids[1]].set_property(PROP_EXCL_REASON, "unavail")
+        props = {"round": 1, KEY_CH_STATE: VAL_CH_STATE_SEND, KEY_CH_SELECT_REQUESTER: "agg1"}
+        _make_selector().select(ends, props, trainer_unavail_list=[], task_to_perform="train")
+        sel = [json.loads(l) for l in (tmp_path / "aggregator.jsonl").read_text().splitlines()
+               if '"selection"' in l][0]
+        assert sel["excluded_by"] == {"owed": 1, "unavail": 1} and sel["per_trainer"][ids[0]]["excl"] == "owed"
+    finally:
+        telemetry.shutdown()

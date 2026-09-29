@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List
 
 FATAL = re.compile(r"Traceback \(most recent call last\)|Fatal Python error|Segmentation fault")
+BROKER_FATAL = re.compile(r"already connected, closing old connection")  # a client id live twice: two runs, one broker
 BENIGN_PRECEDED_BY = {"Fatal Python error: Aborted": "terminate called without an active exception"}  # FX-N33
 CONTEXT_LINES = 40
 EXIT_FATAL = 3
@@ -60,7 +61,11 @@ class Scanner:
                     found += self._scan_file(log)
         return found
 
-    def _scan_file(self, log: Path) -> List[Finding]:
+    def scan_broker(self, log: Path) -> List[Finding]:
+        """L28: the leg's private broker log."""
+        return self._scan_file(log, BROKER_FATAL) if log.exists() else []
+
+    def _scan_file(self, log: Path, pat: re.Pattern = FATAL) -> List[Finding]:
         off, n, prev = self._pos.get(log, (0, 0, ""))
         try:
             with open(log, "rb") as f:
@@ -73,7 +78,7 @@ class Scanner:
         for raw in chunk[:end].splitlines():
             n += 1
             line = raw.decode(errors="replace").rstrip("\r")
-            if FATAL.search(line) and BENIGN_PRECEDED_BY.get(line.strip()) != prev.strip():
+            if pat.search(line) and BENIGN_PRECEDED_BY.get(line.strip()) != prev.strip():
                 found.append(Finding(log, n, line))
             prev = line
         self._pos[log] = (off + end, n, prev)

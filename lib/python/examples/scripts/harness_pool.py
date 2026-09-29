@@ -18,6 +18,7 @@ Fail fast (FX-N40): a fatal line in any leg's logs stops the pool within ~30s ->
 """
 
 import argparse
+import fcntl
 import fnmatch
 import json
 import math
@@ -29,7 +30,7 @@ import statistics
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -62,6 +63,8 @@ SHAPES = {
     # FX-L34: ~10% AVL_TRAIN from t=0 (FX-D18), so n=45 keeps ~4-5 trainable for aggGoal 2 / sync select 3
     "mobiperf_3st": dict(trace="mobiperf_3st", n=45, agg_goal=2, c=4, runtime_s=240, trace_scale="4"),
 }
+# CPU legs that need longer for EV1's >= 4 commits (unaware oort waits out 90s timeouts; run 4: 0 in 240s).
+MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 960}
 GPU_N = {"cifar10": 300, "google_speech": 100}  # the datasets' reference cohorts (datasets.yaml)
 # G0 screen: reference c/n and aggGoal/c ratios at a smaller n; GPUs per leg keep the reference trainers per GPU.
 G0_SHAPE = {"cifar10": dict(n=100, agg_goal=3, c=10, gpus=3),
@@ -269,7 +272,9 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
     for ph in phases:
         t = ph.trace
         for b in ph.baselines:
-            base = ["--harness", ph.harness, "--baselines", b, "--traces", t, "--runtime-s", str(ph.runtime_s),
+            at_shape = ph.harness != "none" and ph.runtime_s == SHAPES.get(t, {}).get("runtime_s")  # not smoke/T1
+            rt = max(ph.runtime_s, MIN_RUNTIME_S.get((b, t), 0)) if at_shape else ph.runtime_s
+            base = ["--harness", ph.harness, "--baselines", b, "--traces", t, "--runtime-s", str(rt),
                     "--num-trainers", str(ph.n), "--dataset", ph.dataset]
             for flag, v in (("--trace-scale", ph.trace_scale), ("--agg-goal", ph.agg_goal),
                             ("--concurrency", ph.c), ("--agg-hp", ph.agg_hp),
@@ -284,7 +289,7 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
             g = (ph.gpus or gpus_per_job) if gpu else 0
             stem = f"{ph.pid}_{b}" if ph.pid.endswith(t) else f"{ph.pid}_{t}_{b}"
             mk = lambda mode, args, deps=(), c=cpus, m=mem, gg=g: Job(
-                f"{stem}_{mode}", ph.pid, t, b, mode, args, ph.n, ph.runtime_s, ph.harness, c, m, gg, deps,
+                f"{stem}_{mode}", ph.pid, t, b, mode, args, ph.n, rt, ph.harness, c, m, gg, deps,
                 unit=stem, dataset=ph.dataset)
             if ph.kind == "pair":
                 real, sim = mk("real", base + ["--mode", "real"]), mk("sim", base + ["--mode", "sim"])
@@ -445,16 +450,69 @@ def busy_cpus(threshold: float = 0.5, window_s: float = 1.0) -> frozenset:
                      and 1 - (b[c][1] - a[c][1]) / (b[c][0] - a[c][0]) > threshold)
 
 
-def free_port(start: int, used: set) -> int:
+class Leases:
+    """L28: node-wide flock leases on ports, cores and GPUs across pools; the kernel drops a dead pool's leases."""
+
+    def __init__(self, root: Optional[Path] = None):
+        self.root = root or Path(f"/tmp/flame_pool_leases_{os.getuid()}")
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.held: Dict[str, int] = {}
+
+    def take(self, name: str) -> bool:
+        if name in self.held:
+            return False
+        fd = os.open(self.root / name, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return False
+        self.held[name] = fd
+        return True
+
+    def take_all(self, names: List[str]) -> bool:
+        got = []
+        for n in names:
+            if not self.take(n):
+                self.drop(got)
+                return False
+            got.append(n)
+        return True
+
+    def drop(self, names) -> None:
+        for n in names:
+            fd = self.held.pop(n, None)
+            if fd is not None:
+                os.close(fd)
+
+    def foreign(self, names) -> set:
+        """Names another process holds now."""
+        out = set()
+        for n in names:
+            if n in self.held:
+                continue
+            if self.take(n):
+                self.drop([n])
+            else:
+                out.add(n)
+        return out
+
+
+def slot_leases(cpus: List[int], gpus: List[int], port: Optional[int] = None) -> List[str]:
+    return [f"cpu{c}" for c in cpus] + [f"gpu{g}" for g in gpus] + ([f"port{port}"] if port else [])
+
+
+def free_port(start: int, used: set, leases: Optional[Leases] = None) -> int:
     p = start
     while True:
-        if p not in used:
+        if p not in used and (leases is None or leases.take(f"port{p}")):
             with socket.socket() as s:
                 try:
                     s.bind(("127.0.0.1", p))
                     return p
                 except OSError:
-                    pass
+                    if leases is not None:
+                        leases.drop([f"port{p}"])
         p += 1
 
 
@@ -533,10 +591,12 @@ class Pool:
     fail_fast: bool = True
     aborted: bool = False
     scanner: Scanner = field(default_factory=Scanner)
+    label: str = ""  # progress prefix, e.g. the ladder rung
+    leases: Optional["Leases"] = None
 
     def _fatal(self, r: "Running") -> bool:
         """FX-N40: a fatal line in this leg's logs aborts the pool (ABORT.txt names it)."""
-        found = self.scanner.scan(leg_run_dirs(r.out))
+        found = self.scanner.scan(leg_run_dirs(r.out)) + self.scanner.scan_broker(r.out / "mosquitto.log")
         if not found or not self.fail_fast:
             return False
         write_abort(self.root / "ABORT.txt", r.job.jid, found)
@@ -552,6 +612,22 @@ class Pool:
             self.log.write(line + "\n")
             self.log.flush()
 
+    def progress(self, pending, running, cpus: int) -> None:
+        """Terminal-only progress: done/total, running legs vs estimate, ETA, deadline cut (nothing persisted)."""
+        now, total = time.time(), len(self.jobs)
+        done = total - len(pending) - len(running)
+        left = [replace(j, deps=tuple(d for d in j.deps if d not in self.done)) for j in pending]
+        left += [replace(r.job, deps=(), est_s=max(30.0, r.job.est_s - (now - r.t0))) for r in running.values()]
+        eta = simulate_makespan(left, cpus, self.max_parallel, len(gpu_ids())) if left else 0.0
+        bar = "#" * round(20 * done / max(1, total))
+        runs = ", ".join(f"{r.job.jid} {(now - r.t0) / 60:.0f}/{r.job.est_s / 60:.0f}m" for r in running.values())
+        hm = lambda t: time.strftime("%H:%M", time.localtime(t))
+        msg = (f"PROGRESS {self.label + ' ' if self.label else ''}[{bar:<20}] {done}/{total} done | running: {runs or '-'} "
+               f"| elapsed {(now - self.t0) / 60:.0f}m, left ~{eta / 60:.0f}m, ETA {hm(now + eta)}")
+        if now + eta > self.t0 + self.deadline_s:
+            msg += f" | past deadline {hm(self.t0 + self.deadline_s)}: later starts SKIPPED"
+        print(f"[{time.strftime('%F %T')}] {msg}", flush=True)
+
     def plan(self, groups) -> None:
         cm = CoreMap(groups, self.reserve_cores)
         self.say(f"node: {cm.total()} cpus for slots (reserve {self.reserve_cores} cores), "
@@ -560,12 +636,19 @@ class Pool:
         self.say(f"{len(self.jobs)} jobs, {tot / 60:.0f} slot-min total")
         for j in sorted(self.jobs, key=lambda j: -j.est_s):
             self.say(f"  {j.jid:<44} cpus={j.cpus:<3} mem={j.mem_gb:<5.0f} est={j.est_s / 60:5.1f}m deps={list(j.deps)}")
-        self.say(f"estimated makespan ~{simulate_makespan(self.jobs, cm.total(), self.max_parallel, len(gpu_ids())) / 60:.0f} min")
+        span = simulate_makespan(self.jobs, cm.total(), self.max_parallel, len(gpu_ids()))
+        self.say(f"estimated makespan ~{span / 60:.0f} min")
+        if span > self.deadline_s:
+            self.say(f"WARNING: makespan ~{span / 3600:.1f}h > --deadline-h {self.deadline_s / 3600:g}: jobs not started by "
+                     f"{time.strftime('%H:%M', time.localtime(time.time() + self.deadline_s))} are SKIPPED")
 
     def run(self, groups) -> int:
         cm = CoreMap(groups, self.reserve_cores)
+        cap = cm.total()
+        leases = self.leases or Leases()
+        node = slot_leases([c for gs in groups.values() for g in gs for c in g], gpu_ids())
         gpus_free = gpu_ids()
-        pending = sorted(self.jobs, key=_order)
+        pending = sorted(self.jobs, key=_order_key(self.jobs))
         running: Dict[str, Running] = {}
         ports: set = set()
         history = _load_history()
@@ -573,7 +656,7 @@ class Pool:
         mem_budget = mem_available_gb() - self.mem_headroom_gb
         stop = {"flag": False}
         probe, last_note = None, None
-        tick = 0
+        tick, shown = 0, 0.0
         jobs_tsv = open(self.root / "jobs.tsv", "a")
         jobs_tsv.write("jid\trc\tdur_s\test_s\tcpus\tcores_avg\tcores_p95\n")
 
@@ -600,8 +683,10 @@ class Pool:
                         continue
                     if probe is None or time.time() - probe["t"] > 30:  # foreign load, between starts only
                         ours = {c for r in running.values() for c in r.cpus}
-                        probe = {"t": time.time(), "gpus": busy_gpus(), "mem": mem_available_gb(),
-                                 "cpus": frozenset(busy_cpus() - ours)}
+                        leased = leases.foreign(node)  # another pool's slots, busy or not yet
+                        probe = {"t": time.time(), "mem": mem_available_gb(),
+                                 "gpus": busy_gpus() | {int(n[3:]) for n in leased if n.startswith("gpu")},
+                                 "cpus": frozenset((busy_cpus() - ours) | {int(n[3:]) for n in leased if n.startswith("cpu")})}
                         note = (sorted(probe["gpus"] & set(gpus_free)), len(probe["cpus"]) // 8 * 8)  # log on change
                         if note != last_note:
                             self.say(f"LOAD foreign: busy GPUs {note[0] or '-'}, busy CPUs ~{note[1]}, "
@@ -614,10 +699,14 @@ class Pool:
                     if cpus is None:
                         continue
                     gp = usable[:j.gpus]
+                    if not leases.take_all(slot_leases(cpus, gp)):  # a neighbour pool took one since the probe
+                        cm.release(cpus, groups)
+                        probe = None
+                        continue
                     for g in gp:
                         gpus_free.remove(g)
                     probe["mem"] -= j.mem_gb
-                    port = free_port(18830, ports)
+                    port = free_port(18830, ports, leases)
                     ports.add(port)
                     running[j.jid] = self._launch(j, cpus, gp, port)
                     pending.remove(j)
@@ -643,12 +732,17 @@ class Pool:
                     if rc == 0 and (r.job.mode == "grade" or row.get(f"{r.job.mode}_dir")):
                         history.setdefault(r.job.key, []).append(round(dur))
                     cm.release(r.cpus, groups)
+                    leases.drop(slot_leases(r.cpus, r.gpus, r.port))
                     gpus_free += r.gpus
                     ports.discard(r.port)
                     self.done[jid] = r.out
                     del running[jid]
+                    shown = 0.0  # a leg finished: show progress now
                     if self._fatal(r):
                         break
+                if time.time() - shown > 300 and (pending or running):
+                    self.progress(pending, running, cap)
+                    shown = time.time()
         finally:
             if running:
                 self.say(f"INTERRUPT — tearing down {len(running)} slot(s)")
@@ -666,6 +760,7 @@ class Pool:
                     except OSError:
                         pass
                     kill_tag(r.tag)
+                    leases.drop(slot_leases(r.cpus, r.gpus, r.port))
             _save_history(history)
         if stop["flag"]:
             return 130
@@ -744,14 +839,18 @@ def _ranges(cpus: List[int]) -> str:
     return ",".join(out)
 
 
-def _order(j: Job) -> tuple:
-    """Longest first, but whole-node jobs last: they block every slot while they run."""
-    return (j.whole, -j.est_s, j.jid)
+def _order_key(jobs: List[Job]):
+    """Longest unit (pair + grade) first, a unit's legs together; whole-node jobs last (they block every slot).
+    Unit-major so a --deadline cut drops whole pairs, never every pair's sim."""
+    unit_s: Dict[str, float] = {}
+    for j in jobs:
+        unit_s[j.unit or j.jid] = unit_s.get(j.unit or j.jid, 0.0) + j.est_s
+    return lambda j: (j.whole, -unit_s[j.unit or j.jid], j.unit or j.jid, -j.est_s, j.jid)
 
 
 def simulate_makespan(jobs: List[Job], cpus: int, max_parallel: int, gpus: int = 0) -> float:
     """List-scheduling estimate of wall time (cores and GPUs; deps respected)."""
-    pending = sorted(jobs, key=_order)
+    pending = sorted(jobs, key=_order_key(jobs))
     done_at: Dict[str, float] = {}
     running: List[tuple] = []  # (end, cpus, gpus, jid)
     now, free, gfree = 0.0, cpus, gpus
@@ -845,6 +944,7 @@ def main(argv=None) -> int:
                     help="GPU legs: CPUs per trainer (0.4 = n=300 on 128 CPUs -> whole node; n=100 -> 48 CPUs)")
     ap.add_argument("--mem-headroom-gb", type=float, default=32)
     ap.add_argument("--deadline-h", type=float, default=12)
+    ap.add_argument("--progress-label", default="", help="prefix of the PROGRESS lines (the ladder passes its rung)")
     ap.add_argument("--output-dir", default="")
     ap.add_argument("--smoke", action="store_true", help="every leg 60s, n<=12 (the pool's own gate)")
     ap.add_argument("--gate", action=argparse.BooleanOptionalAction, default=None,
@@ -895,7 +995,7 @@ def main(argv=None) -> int:
     root = Path(a.output_dir or OUT_DIR / f"pool_{time.strftime('%Y%m%d_%H%M%S')}_{'_'.join(tiers)}").resolve()
     root.mkdir(parents=True, exist_ok=True)
     pool = Pool(root, jobs, a.max_parallel, a.reserve_cores, a.mem_headroom_gb, a.deadline_h * 3600, a.dry_run,
-                log=open(root / "pool.log", "a"), fail_fast=a.fail_fast)
+                log=open(root / "pool.log", "a"), fail_fast=a.fail_fast, label=a.progress_label)
     commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True,
                             text=True).stdout.strip()
     pool.say(f"pool {root} host={socket.gethostname()} tier={a.tier} datasets={','.join(datasets)} baselines={' '.join(baselines) or '-'} "

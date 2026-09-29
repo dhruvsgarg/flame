@@ -80,3 +80,13 @@ def test_pool_aborts_on_a_fatal_leg(tmp_path):
     q = pool.Pool(tmp_path / "q", [], 1, 0, 0, 1, False, fail_fast=False)
     (tmp_path / "q").mkdir()
     assert not q._fatal(r) and not q.aborted
+
+
+def test_broker_duplicate_client_id_is_fatal(tmp_path):
+    # Run 4 gs_P11a: a neighbour pool's leg joined this leg's broker; fixed client ids kicked each other.
+    log = tmp_path / "mosquitto.log"
+    log.write_text("1790680237: New client connected from 127.0.0.1:1 as agg (p5, c1, k300).\n"
+                   "1790680237: Client agg already connected, closing old connection.\n")
+    found = ff.Scanner().scan_broker(log)
+    assert len(found) == 1 and found[0].lineno == 2
+    assert ff.Scanner().scan_broker(tmp_path / "absent.log") == []

@@ -44,6 +44,7 @@ from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
 from flame import telemetry
 from flame.telemetry.events import build_agg_round, build_dispatch, build_utility_belief
+from flame.telemetry.agg_timing import agg_timing
 from flame.sim import SimReorderBuffer
 from flame.selector.properties import PROP_SIM_SEND_TS, PROP_SIM_COMPLETION_TS
 from flame.selector.oort import (
@@ -684,6 +685,8 @@ class TopAggregator(SyncTopAgg):
         if not channel:
             logger.debug("No channel found")
             return
+        _at = agg_timing(self)
+        _at.begin()
 
         # Filter to live ends; drop ghosts that left after selection to avoid
         # blocking recv_fifo on an empty queue.
@@ -734,6 +737,7 @@ class TopAggregator(SyncTopAgg):
                             return
                     time.sleep(0.5)
                 return
+        _t_recv = time.time()
         if self.simulated:
             msg, metadata = self._sim_recv_min(channel, recv_ends)
         elif getattr(self, "_real_drain_ready_ingest", False):
@@ -742,6 +746,7 @@ class TopAggregator(SyncTopAgg):
             msg, metadata = next(
                 channel.recv_fifo(recv_ends, 1, timeout=RECV_TIMEOUT_WAIT_S)
             )
+        _at.add_recv(time.time() - _t_recv)
         end, _ = metadata
         if not msg:
             logger.debug(f"[AGG_RECV] No data from {end}; skipping it, agg_model_version={self._round}")
@@ -751,6 +756,7 @@ class TopAggregator(SyncTopAgg):
         if not self.simulated:
             self._note_real_receipt(end)
             self._record_commit_belief(end)
+            self.commit_withheld(end)  # an evicted/abandoned trainer's late update arrived
         _t_msg_start = datetime.now()  # start of per-message processing (vii)
 
         # NOTE: Only 2 types of messages are expected here: (i) model
@@ -837,8 +843,12 @@ class TopAggregator(SyncTopAgg):
                 f"Eval done, will remove end {end} from selected_ends and all_selected "
                 f"to allow re-selection in same round for train"
             )
-            channel._selector.remove_from_selected_ends(channel._ends, end)
-            channel._selector._cleanup_removed_ends(end)
+            if (getattr(self, "_last_task_sent", None) or {}).get(end) == "train":
+                # FX-N38: a train sent after this eval is still in flight (replies are FIFO); keep the end busy.
+                logger.info(f"[LATE_EVAL] end={end[-4:]} version={msg[MessageType.MODEL_VERSION]}: newer train in flight")
+            else:
+                channel._selector.remove_from_selected_ends(channel._ends, end)
+                channel._selector._cleanup_removed_ends(end)
 
             # Eval-commit timeliness telemetry (mirror of the train branch below):
             # an eval task must commit at its OWN modeled completion, not a stale
@@ -1274,6 +1284,7 @@ class TopAggregator(SyncTopAgg):
             )
             # increment agg goal count
             self._agg_goal_cnt += 1
+            _at.add_ingest((datetime.now() - _t_msg_start).total_seconds())
 
         if self._agg_goal_cnt < self._agg_goal:
             logger.debug(
@@ -1311,6 +1322,7 @@ class TopAggregator(SyncTopAgg):
                         self._round - 1
                     ] = 1
 
+        _t_commit = time.time()
         self.weights = self.optimizer.scale_add_agg_weights(
             self.weights, self._agg_goal_weights, self._agg_goal
         )
@@ -1376,6 +1388,7 @@ class TopAggregator(SyncTopAgg):
 
         if self.simulated:
             self._sim_hold_busy_slots(channel)
+        _at.emit(self._round, time.time() - _t_commit, self.simulated, getattr(self, "vclock_now", None))
 
     def _trace_read_avail_check(self, end: str) -> bool:
         logger.debug("In _trace_read_avail_check")
@@ -1544,13 +1557,15 @@ class TopAggregator(SyncTopAgg):
             )
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts (§4.5 residence, sct→delivery_ts).
-            _held_withheld = self.withheld_held_ends() | self.real_owed_held_ends(channel)
+            _wh, _ow = self.withheld_held_ends(), self.real_owed_held_ends(channel)
+            _held_withheld = _wh | _ow
             if _held_withheld:
                 curr_unavail_trainer_list = list(
                     set(curr_unavail_trainer_list) | _held_withheld
                 )
         else:
             curr_unavail_trainer_list = []
+            _wh = _ow = set()
 
         # exclude ends in their post-commit cooldown (until vclock >= sct + gap);
         # prune expired entries.
@@ -1587,6 +1602,8 @@ class TopAggregator(SyncTopAgg):
         # just evicted) so emit_selection's avail_composition/per_trainer reflect
         # the oracular read instead of staying all-UNKNOWN.
         self._avail_stamp_end_states(channel)
+        self._stamp_exclusions(channel, task_to_perform, withheld=_wh, owed=_ow,
+                               unavail=set(curr_unavail_trainer_list))
 
         # Expose current availability-timeline time to selector so it can attach
         # it to selection events. _avail_now() covers both modes — real used to

@@ -43,6 +43,7 @@ from flame.selector.properties import PROP_LAST_RETURNED_ROUND, PROP_SIM_SEND_TS
 
 from ..top_aggregator import TopAggregator as BaseTopAggregator
 from flame import telemetry
+from flame.telemetry.agg_timing import agg_timing
 from flame.telemetry.events import (
     build_agg_round,
     build_inflight_residence,
@@ -195,6 +196,8 @@ class TopAggregator(BaseTopAggregator):
         channel = self.cm.get_by_tag(tag)
         if not channel:
             return
+        _at = agg_timing(self)
+        _at.begin()
 
         total = 0
 
@@ -271,14 +274,16 @@ class TopAggregator(BaseTopAggregator):
         # clock. Uses a persistent buffer so overcommitment stragglers carry
         # across rounds and commit late as stale (mirroring real). real: receive
         # by physical FIFO arrival (authentic baseline).
+        _t_recv = time.time()
         if self.simulated:
             # Pin the carry-over threshold before any clock advance this round.
             self._round_start_vclock = self._vclock.now
             _recv = self._oort_sim_recv(channel, end_ids)
         else:
             _recv = channel.recv_fifo(_real_ends, aggr_num - received_end_count, deadline=_recv_deadline)
+        _at.add_recv(time.time() - _t_recv)
 
-        for msg, metadata in _recv:
+        for msg, metadata in _at.iterate(_recv):
             end, _ = metadata
 
             if not msg:
@@ -393,6 +398,7 @@ class TopAggregator(BaseTopAggregator):
         # nothing means no more arrivals this round, so stop instead of spinning.
         while received_end_count < aggr_num and end_ids:
             progressed = False
+            _t_recv = time.time()
             _recv2 = (
                 self._oort_sim_recv(channel, end_ids)
                 if self.simulated
@@ -400,7 +406,8 @@ class TopAggregator(BaseTopAggregator):
                     [e for e in _real_ends if e in end_ids or e in getattr(self, "pending_withheld", {})], 1,
                     deadline=_recv_deadline)
             )
-            for msg, metadata in _recv2:
+            _at.add_recv(time.time() - _t_recv)
+            for msg, metadata in _at.iterate(_recv2):
                 end, _ = metadata
 
                 if not msg:
@@ -615,6 +622,7 @@ class TopAggregator(BaseTopAggregator):
             f"[CLEANUP_COMPLETE] Round {self._round}: Freed {num_to_cleanup} trainers. "
             f"in_flight: {in_flight_before} -> {in_flight_after} (delta={in_flight_before - in_flight_after})"
         )
+        _at.emit(self._round, time.time() - _opt0, self.simulated, getattr(self, "vclock_now", None))
         if test_in_cleanup or test_in_flight_before:
             logger.info(
                 f"[TRACK_411] Round {self._round}: After cleanup - in_flight={test_in_flight_after}, "
@@ -717,13 +725,15 @@ class TopAggregator(BaseTopAggregator):
             )
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts (§4.5 residence, sct→delivery_ts).
-            _held_withheld = self.withheld_held_ends() | self.real_owed_held_ends(channel)
+            _wh, _ow = self.withheld_held_ends(), self.real_owed_held_ends(channel)
+            _held_withheld = _wh | _ow
             if _held_withheld:
                 curr_unavail_trainer_list = list(
                     set(curr_unavail_trainer_list) | _held_withheld
                 )
         else:
             curr_unavail_trainer_list = []
+            _wh = _ow = set()
 
         # [SIM_RESIDENCE] (§4.5) Mark trainers STILL COMPUTING in sim time unavailable for this
         # selection. In sim a dispatched update arrives physically at once, so the trainer can
@@ -754,6 +764,8 @@ class TopAggregator(BaseTopAggregator):
         # just evicted) so emit_selection's avail_composition/per_trainer reflect
         # the oracular read instead of staying all-UNKNOWN.
         self._avail_stamp_end_states(channel)
+        self._stamp_exclusions(channel, task_to_perform, withheld=_wh, owed=_ow,
+                               unavail=set(curr_unavail_trainer_list))
 
         # Expose current availability-timeline time to selector so it can attach
         # it to selection events (C.6.1 — restores per-trainer avl_state identity

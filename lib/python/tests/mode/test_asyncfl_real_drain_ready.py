@@ -126,3 +126,13 @@ class TestAggregateWeightsRouting:
         agg.cm = type("CM", (), {"get_by_tag": lambda self, t: ch})()
         agg._aggregate_weights("param-channel")
         assert agg._agg_goal_cnt == 1
+
+    def test_real_receipt_clears_withheld_ledger(self):
+        # Run 4: real asyncfl never popped an evicted end, so its later dispatches counted as owed (real pool < sim).
+        agg, ch = _agg(), _DrainChannel(["t1"])
+        assert not agg.simulated
+        agg.cm = type("CM", (), {"get_by_tag": lambda self, t: ch})()
+        agg.pending_withheld = {"t1": 5.0}
+        ch.deliver("t1", 1.0, _msg_for("t1")[0])
+        agg._aggregate_weights("param-channel")
+        assert agg.pending_withheld == {}

@@ -14,6 +14,7 @@ selection-filter and delivery-ledger methods:
 
 import math
 import types
+from types import SimpleNamespace
 
 import pytest
 from sortedcontainers import SortedDict
@@ -280,16 +281,29 @@ class TestWithholdDeliver:
         assert "t1" in h.withheld_held_ends()
 
     def test_withheld_not_held_at_delivery_ts(self):
-        """withheld_held_ends() is empty when vclock == delivery_ts."""
+        """Knob off: withheld_held_ends() is empty when vclock == delivery_ts."""
         h = _Harness({"t1": _T1}, vclock_now=600)
+        h.config = SimpleNamespace(hyperparameters=SimpleNamespace(sim_hold_withheld_until_commit=False))
         h.pending_withheld["t1"] = 600.0
         assert "t1" not in h.withheld_held_ends()
 
     def test_withheld_not_held_after_delivery_ts(self):
-        """withheld_held_ends() is empty when vclock > delivery_ts."""
+        """Knob off: withheld_held_ends() is empty when vclock > delivery_ts."""
         h = _Harness({"t1": _T1}, vclock_now=700)
+        h.config = SimpleNamespace(hyperparameters=SimpleNamespace(sim_hold_withheld_until_commit=False))
         h.pending_withheld["t1"] = 600.0
         assert "t1" not in h.withheld_held_ends()
+
+    def test_withheld_held_until_commit(self):
+        """FX-N38: cifar T3_syn_50 felix sim re-picked a trainer whose due withheld update was not yet committed."""
+        h = _Harness({"t1": _T1}, vclock_now=700)
+        h.pending_withheld["t1"] = 600.0
+        assert h.withheld_held_ends() == {"t1"}  # due, not reinjected
+        h.pending_withheld.clear()
+        h._sim_withheld_delivering["t1"] = (400.0, 600.0)
+        assert h.withheld_held_ends() == {"t1"}  # reinjected, not committed
+        h._sim_take_withheld_delivering("t1")
+        assert h.withheld_held_ends() == set()
 
     def test_ready_withheld_ordered_by_delivery_ts(self):
         """ready_withheld() returns (end, dts) sorted ascending by dts."""

@@ -61,3 +61,28 @@ def test_rung_ranges():
     assert lad._rung_ids("L1-L3") == ["L1", "L2", "L3"]
     assert lad._rung_ids("L5") == ["L5"] and lad._rung_ids("L2,L4") == ["L2", "L4"]
     assert all(r.reuse in lad.BY_ID for r in lad.LADDER if r.reuse)
+
+
+def test_real_only_control_is_not_sim_missing(tmp_path):
+    # Run 4 L6: every G0C cell read red "sim MISSING"; G0C has no sim leg by design.
+    root = _pool(tmp_path, "gs_G0C_syn_0", [("syn_0", "felix", "PASS", "MISSING"), ("syn_0", "oort", "FAIL:EV0", "MISSING")])
+    s = _status(lad.grade_pool(root, 99))
+    assert s[("gs_G0C_syn_0", "felix")] == ("green", "") and s[("gs_G0C_syn_0", "oort")] == ("red", "real EV0")
+    root = _pool(tmp_path / "g0", "G0_syn_0", [("syn_0", "felix", "PASS", "MISSING")])
+    assert _status(lad.grade_pool(root, 99))[("G0_syn_0", "felix")] == ("red", "sim MISSING")
+
+
+def test_interrupt_waits_for_pool_teardown(tmp_path):
+    # R20, run 4 L6: subprocess.run SIGKILLed the pool 0.25s after Ctrl+C, orphaning its GPU legs.
+    import os, signal, subprocess, time
+    mark = tmp_path / "torn_down"
+    pool = tmp_path / "pool.py"
+    pool.write_text("import signal, sys, time\n"
+                    "signal.signal(signal.SIGINT, lambda *_: (time.sleep(1.5), open(sys.argv[1], 'w').close(), sys.exit(130)))\n"
+                    "print('up', flush=True)\ntime.sleep(60)\n")
+    drv = f"import sys; sys.path.insert(0, {str(SCRIPTS)!r}); import parity_ladder as l; " \
+          f"sys.exit(l._run_pool([sys.executable, {str(pool)!r}, {str(mark)!r}]))"
+    p = subprocess.Popen([sys.executable, "-c", drv], start_new_session=True, stdout=subprocess.PIPE, text=True)
+    assert p.stdout.readline().strip() == "up"
+    os.killpg(p.pid, signal.SIGINT)  # the terminal's Ctrl+C: the whole foreground group
+    assert p.wait(timeout=30) == 130 and mark.exists()

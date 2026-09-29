@@ -133,6 +133,8 @@ section already says.
 - **R22 Test at the end, scoped.** During dev run only the tests of the area touched (e.g. `tests/mode`,
   `tests/harness`, the checker's own), and batch them: finish the session's changes, then test. The full pytest runs
   once, right before handing over a launch command or a commit (R10).
+- **R23 Persist only what something reads (operator).** Progress, ETAs and live stats render in memory to the terminal
+  every few minutes; a run writes a file only when a later step or a person reads it.
 - **R13 Commits:** follow CLAUDE.md (crisp comments, minimal diff, short title and body). Confirm before any
   push.
 
@@ -220,6 +222,9 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
   of that trainer did), never by send−commit counts: the stop cuts off queued tails (FX-D11).
 - **L22 `[measure]`** A borderline EXACT rung can become the root once an upstream DIST rung converges with
   run length. That is the next rung surfacing, not a regression.
+- **L28 `[slot]`** Pools sharing a node take ports, cores and GPUs through `harness_pool.Leases`; a leg broker log saying
+  `already connected` means two runs share it (fail-fast; run 4 voided 4 legs).
+- **L29 `[measure]`** A checker reads run-defining settings (trace scale, knobs) from the run's config, never its env.
 
 ## Shared tripwires (don'ts)
 
@@ -282,9 +287,9 @@ green (R10).
   | `async_cifar10/wandb`, `aggregator/wandb` (17G) | wandb run caches | delete (untrack) |
   | `fwdllm/expt_scripts/probe_*`, `writeup_figs/data` JSON | probe/figure DATA, not configs | keep |
   Plus the `trackTrainerAvail` blocks (FX-N7). *Exit:* no per-trainer JSON or `pytorch/main*.py` shell path left.
-- **S5 · Knob contract · todo.** Declare which knobs apply to which baseline in `baselines.yaml` and enforce
-  that in `test_baseline_readiness.py`, the launch preflight and `--validate`, so a missing knob is caught
-  before a run.
+- **S5 · Knob contract · blocked: operator picks the layout (PARITY_READINESS, blocked list).** Declare each knob once,
+  print the resolved baseline × dataset matrix with sources, diff it against a run's config (L9), enforce required knobs
+  in `test_baseline_readiness.py`, the preflight and `--validate`.
 - **S6 · Sim perf pass · blocked: on Felix parity (FX board green).** Gate diagnostic logging, trim per-commit
   JSONL, pipeline the serial per-commit aggregator path. Every perf commit re-runs the harness and a 90-min
   parity pass on all baselines.

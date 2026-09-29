@@ -62,9 +62,11 @@ from flame.telemetry.events import (
     EVENT_RUN_END,
     build_agg_eval,
     build_agg_round,
+    build_dispatch,
     build_utility_belief,
 )
 from flame.sim import VirtualClock, SimReorderBuffer
+from flame.telemetry.agg_timing import agg_timing
 from flame.selector.properties import PROP_SIM_SEND_TS, PROP_SIM_COMPLETION_TS
 
 logger = logging.getLogger(__name__)
@@ -272,6 +274,12 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         prev = ledger.get((end, task))
         retries = prev[2] + 1 if prev is not None and prev[0] == self._round else 0
         ledger[(end, task)] = [self._round, self._avail_now(), retries]
+        if getattr(self, "_last_task_sent", None) is None:
+            self._last_task_sent = {}
+        self._last_task_sent[end] = task  # FX-N38: an eval reply never frees a newer train
+        if not getattr(self, "simulated", False) and telemetry.is_enabled():  # C7: EV17 reads real dispatches
+            ev, f = build_dispatch(round_num=self._round, end_id=end, task=task, time_mode="real")
+            telemetry.emit(ev, **f)
 
     def _task_version_keys(self, channel, task) -> dict:
         """FX-D9: ends already tasked at this model version, for the selector's no-repeat guard. A
@@ -590,6 +598,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         channel = self.cm.get_by_tag(tag)
         if not channel:
             return
+        _at = agg_timing(self)
+        _at.begin()
 
         total = 0
 
@@ -623,6 +633,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
         # simulated: commit k-smallest-sim_completion_ts (reorder by sim time);
         # real: commit the first_k by physical arrival (authentic baseline).
+        _t_recv = time.time()
         if self.simulated:
             _resolved_k = first_k if first_k > 0 else len(ends)
             updates = self._sync_sim_recv_first_k(channel, ends, _resolved_k)
@@ -638,7 +649,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # aggregation instant, so each update's true visibility lag is measured
         # against that single barrier — collected here, finalized after the loop.
         _real_round_durs: list = list(getattr(self, "_sync_real_durs", [])) if _wait_k else []
-        for msg, metadata in updates:
+        _at.add_recv(time.time() - _t_recv)
+        for msg, metadata in _at.iterate(updates):
             end, timestamp = metadata
             _t_msg_start = datetime.now()  # start of per-message processing (vii)
             _real_task_dur = None  # WALL_SEND_TS - dispatch (real); set below
@@ -903,6 +915,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
         if channel._selector is not None:
             channel._selector.on_round_completed(channel._ends, self._round)
+        _at.emit(self._round, time.time() - _opt0, self.simulated, getattr(self, "vclock_now", None))
 
     def put(self, tag: str, task_to_perform: str = "train") -> None:
         """Set data to remote role(s)."""
@@ -958,17 +971,22 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             self.config.hyperparameters, "min_trainers_join_timeout_s",
             MIN_TRAINERS_JOIN_TIMEOUT_S))
         deadline = time.time() + timeout_s
+        seen, beat = set(), 0.0
         while time.time() < deadline:
-            n = len(channel._ends)
+            ends = set(channel._ends)
+            n = len(ends)
             if n >= min_start:
                 logger.info(f"[JOIN_BARRIER] {n}/{min_start} trainers joined; starting")
                 self._mark_join_barrier_done()
                 return
-            logger.info(f"[JOIN_BARRIER] waiting for {min_start} trainers to join; have {n}")
+            if ends != seen or time.time() - beat > 30:  # each join by id, else a 30s heartbeat
+                logger.info(f"[JOIN_BARRIER] waiting for {min_start} trainers to join; have {n}; "
+                            f"+{sorted(e[-4:] for e in ends - seen)} -{sorted(e[-4:] for e in seen - ends)}")
+                seen, beat = ends, time.time()
             time.sleep(1.0)
         logger.warning(
             f"[JOIN_BARRIER] timed out after {timeout_s:.0f}s; "
-            f"proceeding with {len(channel._ends)}/{min_start} trainers"
+            f"proceeding with {len(channel._ends)}/{min_start} trainers: {sorted(e[-4:] for e in channel._ends)}"
         )
         self._mark_join_barrier_done()
 
@@ -1020,19 +1038,23 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             )
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts.
-            _held_withheld = self.withheld_held_ends() | self.real_owed_held_ends(channel)
+            _wh, _ow = self.withheld_held_ends(), self.real_owed_held_ends(channel)
+            _held_withheld = _wh | _ow
             if _held_withheld:
                 curr_unavail_trainer_list = list(
                     set(curr_unavail_trainer_list) | _held_withheld
                 )
         else:
             curr_unavail_trainer_list = []
+            _wh = _ow = set()
         channel.set_curr_unavailable_trainers(
             trainer_unavail_list=curr_unavail_trainer_list
         )
         # Stamp PROP_AVL_STATE so emit_selection's avail_composition/per_trainer
         # reflect the oracular read instead of staying all-UNKNOWN.
         self._avail_stamp_end_states(channel)
+        self._stamp_exclusions(channel, task_to_perform, withheld=_wh, owed=_ow,
+                               unavail=set(curr_unavail_trainer_list))
 
         # Per-baseline online oracle: overwrite candidate stat-utility with the
         # TRUE current value (computed from the just-updated global model) before

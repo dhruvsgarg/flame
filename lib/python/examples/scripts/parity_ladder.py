@@ -61,11 +61,13 @@ BY_ID = {r.rid: r for r in LADDER}
 KNOWN: Tuple[Tuple[str, Tuple[str, ...], str, str], ...] = (
     ("EV14", ("fedbuff",), r".*", "FX-N15"),
     ("EV5|EV10|EV11|EV16", ("felix", "fedbuff"), r"syn_50|mobiperf_3st|syn_20", "FX-N38"),
-    ("EV1", ("oort",), r"mobiperf_3st|syn_50", "open question: P3 oort"),
+    ("EV1", ("oort",), r"syn_50 (gs_)?T1$", "open question: P3 oort"),  # L1's 120s; CPU mobiperf legs run 960s
     ("EV0|EV1|EV12", tuple(), r"gs_P7o?$", "FX-N30"),
 )
 # Phases whose sim leg must FAIL a named check (injected bugs; P4 = the cold-start-gate-off control, FX-D8).
 EXPECTED_FAIL = {"P11a": "EV10", "P11b": "EV16", "P11c": "EV3", "P4": "EV10"}
+# Real-only phases (harness_pool kind="real"): no sim leg by design, graded on the real leg's EV.
+REAL_ONLY = ("G0C_",)
 
 
 def _known(check: str, baseline: str, where: str) -> Optional[str]:
@@ -118,7 +120,8 @@ def grade_pool(root: Path, max_stage: int) -> List[Cell]:
             where = f"{tr} {phase}"
             red, known = [], []
             want = EXPECTED_FAIL.get(bare)
-            for side in ("ev_real", "ev_sim"):
+            sides = ("ev_real",) if bare.startswith(REAL_ONLY) else ("ev_real", "ev_sim")
+            for side in sides:
                 fails = _ev_fails(r.get(side, ""))
                 if want and side == "ev_sim":
                     if want not in fails:
@@ -155,6 +158,25 @@ def _rung_ids(spec: str) -> List[str]:
     return out
 
 
+def _run_pool(cmd: List[str]) -> int:
+    """R20: wait out the pool's own teardown on Ctrl+C (subprocess.run SIGKILLs it, orphaning legs); forward SIGTERM."""
+    proc = subprocess.Popen(cmd)
+    stop = {"sig": False}
+
+    def _on(signum, _frm):
+        stop["sig"] = True
+        if signum == signal.SIGTERM:
+            proc.send_signal(signal.SIGTERM)
+
+    old = {s: signal.signal(s, _on) for s in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        rc = proc.wait()
+    finally:
+        for s, h in old.items():
+            signal.signal(s, h)
+    return 130 if stop["sig"] else rc
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--rungs", default="L1-L5", help="e.g. L1-L5, L2,L3, L6")
@@ -171,18 +193,18 @@ def main(argv=None) -> int:
     out = Path(a.output_dir or EXAMPLES / "experiments" / f"ladder_{time.strftime('%Y%m%d_%H%M%S')}").resolve()
     out.mkdir(parents=True, exist_ok=True)
     report = out / "LADDER.txt"
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(130))
     first = True
-    for rid in _rung_ids(a.rungs):
+    rids = _rung_ids(a.rungs)
+    for i, rid in enumerate(rids, 1):
         rung = BY_ID[rid]
         root = out / (rung.reuse or rid)
         if rung.tiers:
             cmd = [sys.executable, str(SCRIPT_DIR / "harness_pool.py"), "--tier", rung.tiers, "--output-dir", str(root),
-                   *(["--phases", rung.phases] if rung.phases else []), *([] if first else ["--no-gate"]), *pool_args]
+                   *(["--phases", rung.phases] if rung.phases else []), *([] if first else ["--no-gate"]),
+                   "--progress-label", f"{rid} (rung {i}/{len(rids)})", *pool_args]
             print(f"[{time.strftime('%F %T')}] {rid}: {' '.join(cmd[2:])}", flush=True)
-            try:
-                rc = subprocess.run(cmd).returncode
-            except KeyboardInterrupt:
+            rc = _run_pool(cmd)
+            if rc == 130:
                 return 130
             first = False
             if rc not in (0, 3):  # 3 = fail-fast abort: gate what finished, it is red

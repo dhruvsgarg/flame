@@ -544,11 +544,20 @@ def ev15_one_task_per_version(run):
 
 
 def _ground_truth(run):
-    """task_id -> SortedDict trace at the run's scale (FLAME_TRACE_TIME_SCALE); None off-trace."""
+    """task_id -> SortedDict trace at the run's own recorded scale (not this process's FLAME_TRACE_TIME_SCALE)."""
     if _trace(run) == "syn_0":
         return None
+    import os
     from flame.availability.trace import read_trainer_unavailability
-    return read_trainer_unavailability(_trace(run))
+    scale, env = _hp(run, "trace_time_scale"), os.environ.get("FLAME_TRACE_TIME_SCALE")
+    os.environ["FLAME_TRACE_TIME_SCALE"] = str(scale or 1)
+    try:
+        return read_trainer_unavailability(_trace(run))
+    finally:
+        if env is None:
+            os.environ.pop("FLAME_TRACE_TIME_SCALE")
+        else:
+            os.environ["FLAME_TRACE_TIME_SCALE"] = env
 
 
 def ev16_withheld_delivery(run):
@@ -601,8 +610,8 @@ def ev16_withheld_delivery(run):
 
 
 def ev17_real_gate_repick(run):
-    """Real: never select a trainer while its previous update is held behind its send-gate
-    (L4; FX-N50). EV10's real twin: real has no dispatch events, so read the trainer's gate window."""
+    """Real: never dispatch to a trainer while its previous update is held behind its send-gate
+    (L4; FX-N50). EV10's real twin, graded on the trainer's gate window."""
     if _simulated(run):
         return _res("SKIP", "real-only (sim: EV10)")
     wins = []
@@ -615,7 +624,9 @@ def ev17_real_gate_repick(run):
                 wins.append((tid, float(e["ts"]) - w, float(e["ts"])))
     if not wins:
         return _res("SKIP", "no send-gate holds")
-    picks = [(float(e["ts"]), set(e.get("chosen") or [])) for e in _events(run, "selection", task="train")]
+    # Sync `chosen` also lists carried in-flight picks; read real dispatches when logged (runs before run 5 lack them).
+    picks = ([(float(e["ts"]), {e["end_id"]}) for e in _events(run, "dispatch", task="train")]
+             or [(float(e["ts"]), set(e.get("chosen") or [])) for e in _events(run, "selection", task="train")])
     viol = [(tid[-4:], round(ts - a, 1)) for tid, a, b in wins for ts, ch in picks if tid in ch and a < ts < b]
     return _res("PASS" if not viol else "FAIL", f"gated={len(wins)} repicked_while_gated={len(viol)}",
                 examples=viol[:10])

@@ -19,6 +19,7 @@ Plus the gate-off byte-identity no-op and the Challenge-7 composition contract
 """
 
 import math
+from types import SimpleNamespace
 
 from sortedcontainers import SortedDict
 
@@ -267,21 +268,33 @@ def test_reinject_keeps_slot_only_entry_until_payload_arrives():
     assert not h._sim_buffer.has("t1")                # nothing to deliver yet
     assert "t1" not in h._sim_withheld_delivering
 
-    # the physical update now arrives (actual sct=250, past the original
-    # estimate) via the normal pop path -> recognized as still-withheld,
-    # delivery_ts bumped to the real completion time (no past-dating).
+    # the physical update now arrives (actual sct=250, trainer AVL again): it was
+    # never send-gated, so it commits now and leaves the ledger (FX-N38).
     sel = _OortSelector()
     ch = _Channel(sel, ["t1"])
     p = _payload("t1")
     h._sim_buffer.add("t1", 250.0, p)
-    assert h._sim_pop_committable(ch) is None         # held, not committed
-    assert h.pending_withheld == {"t1": 250.0}        # bumped from the estimate
-    assert h._sim_withheld_payload["t1"] == (250.0, p)
+    assert h._sim_pop_committable(ch) == ("t1", 250.0, p)
+    assert h.pending_withheld == {} and "t1" not in h._sim_withheld_payload
 
-    h._sim_reinject_ready_withheld()
-    assert h.pending_withheld == {}
-    assert h._sim_buffer.has("t1")
-    assert h._sim_withheld_delivering["t1"] == (250.0, 250.0)
+
+def test_evicted_update_down_at_sct_delivers_at_next_avail_not_estimate():
+    # FX-N38: felix evicted 0370 at 600 with an estimate of 750; its update (sct 599.55, AVL) committed at 750.
+    h = _Harness({"t1": _DOWN}, now=150)
+    h.pending_withheld = {"t1": 400.0}  # eviction-time estimate
+    p = _payload("t1")
+    h._sim_buffer.add("t1", 150.0, p)  # completed while down: gated until AVL at 200
+    assert h._sim_pop_committable(_Channel(_OortSelector(), ["t1"])) is None
+    assert h.pending_withheld == {"t1": 200.0} and h._sim_withheld_payload["t1"] == (150.0, p)
+
+
+def test_true_delivery_knob_off_keeps_the_estimate():
+    h = _Harness({"t1": _DOWN}, now=250)
+    h.config = SimpleNamespace(hyperparameters=SimpleNamespace(sim_withheld_true_delivery=False))
+    h.pending_withheld = {"t1": 200.0}
+    h._sim_buffer.add("t1", 250.0, _payload("t1"))
+    assert h._sim_pop_committable(_Channel(_OortSelector(), ["t1"])) is None
+    assert h.pending_withheld == {"t1": 250.0}
 
 
 # ---------------------------------------------------------------------------
@@ -578,3 +591,18 @@ def test_task_ineligible_2state_trace_does_not_exclude_avl_train_from_eval():
     assert h._trace_has_avl_eval is False
     assert h.get_curr_task_ineligible_trainers("eval") == []
     assert h.get_curr_task_ineligible_trainers("train") == []
+
+
+def test_selection_names_each_exclusion(monkeypatch):
+    # C7 (run 4: feddance/oort_star syn_50 sim had 0.4-1.2 more eligible than real; nothing said which hold).
+    from flame import telemetry
+    from flame.selector.properties import PROP_EXCL_REASON
+    monkeypatch.setattr(telemetry, "is_enabled", lambda: True)
+    h = _Harness({"t1": _DOWN}, now=150)
+    sel = _OortSelector()
+    sel.add("t4")
+    ch = _Channel(sel, ["t1", "t2", "t3", "t4", "t5"])
+    h._task_version_keys = lambda channel, task: {"t5": (3, 0)}
+    h._stamp_exclusions(ch, "train", withheld={"t1"}, owed={"t2"}, unavail={"t1", "t3"})
+    got = {e: end.get_property(PROP_EXCL_REASON) for e, end in ch._ends.items()}
+    assert got == {"t1": "withheld", "t2": "owed", "t3": "unavail", "t4": "in_flight", "t5": "version_guard"}

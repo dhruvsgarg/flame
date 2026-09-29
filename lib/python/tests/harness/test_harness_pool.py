@@ -178,3 +178,42 @@ def test_bank_lookup_ok_stale_none(tmp_path):
     assert bank.lookup(key, b, hashes={"f": "1"}) == (str(real), "OK")
     assert bank.lookup(key, b, hashes={"f": "2"}) == (str(real), "STALE:f")
     assert bank.lookup(key | {"trace": "syn_50"}, b, hashes={"f": "1"}) == ("", "NONE")
+
+
+def test_order_is_unit_major():
+    # Run 4 L6: longest-first ran all 18 reals before any sim, so the deadline would skip every sim.
+    jobs = [_job("a_real", 30, unit="a"), _job("b_real", 30, unit="b"), _job("a_sim", 10, unit="a"),
+            _job("b_sim", 5, unit="b"), _job("a_grade", 1, deps=("a_real", "a_sim"), unit="a")]
+    assert [j.jid for j in sorted(jobs, key=pool._order_key(jobs))] == ["a_real", "a_sim", "a_grade", "b_real", "b_sim"]
+
+
+def test_progress_line_shows_eta_and_deadline_cut(capsys, monkeypatch):
+    monkeypatch.setattr(pool, "gpu_ids", lambda *a, **k: [])
+    jobs = [_job("a_real", 600, unit="a"), _job("b_real", 600, unit="b")]
+    p = pool.Pool(Path("."), jobs, 1, 0, 0, 900, False, label="L6 (rung 2/2)")
+    p.t0, p.done = pool.time.time(), {}
+    p.progress(jobs, {}, 100)
+    out = capsys.readouterr().out
+    assert "PROGRESS L6 (rung 2/2) [" in out and "0/2 done" in out and "left ~20m" in out
+    assert "later starts SKIPPED" in out
+
+
+def test_leases_keep_two_pools_off_one_slot(tmp_path):
+    # Run 4: two ladders on jayne took port 18830 and cores 9,17-24 two seconds apart.
+    a, b = pool.Leases(tmp_path), pool.Leases(tmp_path)
+    assert a.take_all(pool.slot_leases([9, 17], [4]))
+    assert b.foreign(pool.slot_leases([9, 17, 18], [4, 5])) == {"cpu9", "cpu17", "gpu4"}
+    assert not b.take_all(pool.slot_leases([17, 18], [])) and "cpu18" not in b.held  # all or nothing
+    pa = pool.free_port(18830, set(), a)
+    assert pool.free_port(18830, set(), b) != pa
+    a.drop(pool.slot_leases([9, 17], [4], pa))
+    assert b.take_all(pool.slot_leases([9, 17], [4]))
+
+
+def test_oort_mobiperf_legs_run_long_enough_to_commit():
+    # Run 4: unaware oort committed 0 updates in 240s on mobiperf_3st (both datasets); nothing graded.
+    ph = pool.shaped("P3", ("oort", "felix"), "mobiperf_3st", "pair", "cifar10")
+    rt = {(j.baseline, j.mode): j.runtime_s for j in pool.build_jobs([ph], 1.0, 1, {})}
+    assert rt[("oort", "real")] == rt[("oort", "sim")] == 960 and rt[("felix", "real")] == 240
+    ph.runtime_s = 60  # --smoke keeps its 60s
+    assert {j.runtime_s for j in pool.build_jobs([ph], 1.0, 1, {})} == {60}

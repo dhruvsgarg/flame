@@ -81,7 +81,7 @@ class AsyncSelectorBase(AbstractSelector):
         super().__init__(**kwargs)
 
         # #1c: abandon-timeout clock -- set per-select() from
-        # channel_props["vclock_now"] (sim) or left None (real -> wall).
+        # channel_props["vclock_now"] (the avail clock, both modes).
         self._sim_now_s = None
         self.round = 0
 
@@ -225,8 +225,8 @@ class AsyncSelectorBase(AbstractSelector):
             self.selected_ends[self.requester] = set()
 
         # #1c: the abandon-timeout must run on the same clock the trainer
-        # commits on -- virtual in sim, wall in real. Stashed so the dispatch
-        # STAMP and the CHECK agree; None in real -> time.time().
+        # commits on (the aggregator's avail clock). Stashed so the dispatch
+        # STAMP and the CHECK agree; None only without an aggregator -> time.time().
         self._sim_now_s = channel_props.get("vclock_now")
 
         # Only `channel.one_end()` (a single-parent caller, e.g. a trainer

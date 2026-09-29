@@ -31,7 +31,7 @@ from flame.availability.trace import (
 )
 from flame.config import TrainerAvailState
 from flame.mode.message import MessageType
-from flame.selector.properties import PROP_AVL_STATE, PROP_ROUND_START_TIME, PROP_SIM_SEND_TS
+from flame.selector.properties import PROP_AVL_STATE, PROP_EXCL_REASON, PROP_ROUND_START_TIME, PROP_SIM_SEND_TS
 from flame.telemetry.events import (
     build_abandon_timeout,
     build_agg_belief_change,
@@ -175,10 +175,8 @@ class ClientAvailability:
         return time.time() - self.agg_start_time_ts
 
     def _timed_out_at(self, channel) -> dict:
-        """FX-D9: end -> its latest task timeout on this clock (the asyncfl selector stamps epoch in real)."""
+        """FX-D9: end -> its latest task timeout on this clock (the asyncfl selector stamps channel `vclock_now`)."""
         out = dict(getattr(getattr(channel, "_selector", None), "timed_out_at", None) or {})
-        if out and not getattr(self, "simulated", False):
-            out = {e: t - self.agg_start_time_ts for e, t in out.items()}
         out.update(getattr(self, "_task_timeout_at", None) or {})
         return out
 
@@ -269,6 +267,18 @@ class ClientAvailability:
                 f"{len(ineligible)}/{len(self.trainer_event_dict)} @ t={now:.1f}s"
             )
         return ineligible
+
+    def _stamp_exclusions(self, channel, task, **held) -> None:
+        """C7: stamp each end's first exclusion reason for emit_selection: each named hold in order, then in flight,
+        then the one-task-per-version guard (L15: split an eligibility gap by channel)."""
+        if not telemetry.is_enabled() or not getattr(channel, "_ends", None):
+            return
+        sel = getattr(getattr(channel, "_selector", None), "selected_ends", None) or ()
+        inflight = set().union(*sel.values()) if isinstance(sel, dict) else set(sel)
+        guard = set(self._task_version_keys(channel, task)) if hasattr(self, "_task_version_keys") else set()
+        held = dict(held, in_flight=inflight, version_guard=guard)
+        for end_id, end in channel._ends.items():
+            end.set_property(PROP_EXCL_REASON, next((k for k, s in held.items() if end_id in s), None))
 
     def _avail_stamp_end_states(self, channel) -> None:
         """C.6.1 follow-up: write each known end's CURRENT oracular state onto
@@ -468,17 +478,19 @@ class ClientAvailability:
         return owed
 
     def withheld_held_ends(self, now: Optional[float] = None) -> set:
-        """Ends whose withheld update has NOT yet reached its delivery_ts.
-
-        These must stay out of the eligible pool (invariant 2: a still-down
-        trainer is never re-selected) until vclock >= delivery_ts — the §4.5
-        residence exclusion extended from `sct` to `delivery_ts`. Unioned into
-        the unavailable list by the selection driver.
-        """
-        if not self.pending_withheld:
+        """Ends whose withheld update has NOT yet committed (sim; knob `sim_hold_withheld_until_commit`), else
+        whose delivery_ts is still ahead. Unioned into the unavailable list by the selection driver (L4)."""
+        # A reinjected update is off the ledger but still uncommitted in the buffer.
+        buf = getattr(self, "_sim_buffer", None)
+        held = set(self.pending_withheld or ()) | {e for e in getattr(self, "_sim_withheld_delivering", None) or ()
+                                                  if buf is None or buf.has(e)}
+        if not held:
             return set()
-        if self._sync_wait_k_on():
-            return set(self.pending_withheld)  # FX-N37: undelivered until committed; a re-pick would collide with it
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        until_commit = getattr(self, "simulated", False) and \
+            str(getattr(hp, "sim_hold_withheld_until_commit", True)).lower() == "true"
+        if self._sync_wait_k_on() or until_commit:
+            return held  # FX-N37/FX-N38: undelivered until committed; a re-pick would collide with it
         if now is None:
             now = self._avail_now()
         return {end for end, dts in self.pending_withheld.items() if dts > now}
@@ -625,15 +637,22 @@ class ClientAvailability:
         # already freed (C.3 abandon). Its arrived payload is stashed so the
         # reinject delivers it at the registered delivery_ts.
         if end in self.pending_withheld:
+            hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+            if str(getattr(hp, "sim_withheld_true_delivery", True)).lower() == "true":
+                # FX-N38: the eviction/abandon estimate yields to the completion: an update finished while
+                # available was never send-gated (real receives it at sct); else it delivers at the next AVL.
+                dts = self.compute_delivery_ts(end, float(sct))
+                if dts <= sct:
+                    self.commit_withheld(end)
+                    self._withheld_slot_held.discard(end)
+                    return False
+                self.pending_withheld[end] = dts
+            else:  # estimate bumped later, never earlier
+                self.pending_withheld[end] = max(
+                    self.pending_withheld[end], self.compute_delivery_ts(end, float(sct))
+                )
             self._sim_withheld_payload[end] = (float(sct), msgmd)
             self._avail_drop_inflight(end)
-            # delivery_ts was an ESTIMATE made at eviction time (before this
-            # update finished computing); bump to the real completion-based
-            # value if later -- never earlier (invariant 2: never release a
-            # still-down trainer before its registered window).
-            self.pending_withheld[end] = max(
-                self.pending_withheld[end], self.compute_delivery_ts(end, float(sct))
-            )
             return True
         dts = self.compute_delivery_ts(end, sct)
         if dts <= sct:

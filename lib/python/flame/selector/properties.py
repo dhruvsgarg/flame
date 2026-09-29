@@ -33,6 +33,7 @@ PROP_TOTAL_UNAVAIL_DURATION = "total_unavail_duration"
 
 # Availability
 PROP_AVL_STATE = "avl_state"
+PROP_EXCL_REASON = "excl_reason"  # why the aggregator kept an end out of this selection (None = eligible)
 
 # FedDance per-end computed values
 PROP_LAMBDA = "lambda_m"

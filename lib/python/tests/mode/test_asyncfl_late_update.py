@@ -58,22 +58,34 @@ def test_arrived_abandoned_end_is_received():
 def test_owed_end_is_received_before_it_arrives():
     # cifar P8 fedbuff: a timed-out end's late update arrived mid-recv and waited 29s for the next call.
     ledger = {("t5", "train"): [318, 400.0, 0], ("t6", "train"): [318, 400.0, 0], ("t7", "train"): [330, 500.0, 0]}
-    agg, ch = _agg(timed_out={"t5": 1000.0 + 490.0, "t6": 1000.0 + 490.0, "t7": 1000.0 + 490.0},  # selector: epoch
+    agg, ch = _agg(timed_out={"t5": 490.0, "t6": 490.0, "t7": 490.0},  # selector: avail clock
                    ledger=ledger, rx={"t6": 495.0}, withheld={"t8": 600.0})
     # t5 owed; t6 answered after its timeout; t7 re-dispatched after its timeout; t8 evicted (withheld).
     assert agg._owed_ends(ch) == {"t5", "t8"}
 
 
 def test_timed_out_at_uses_the_avail_clock_in_real():
-    agg, ch = _agg(timed_out={"t1": 1090.0})
+    agg, ch = _agg(timed_out={"t1": 90.0})
     agg._task_timeout_at = {"t2": 95.0}
     assert agg._timed_out_at(ch) == {"t1": 90.0, "t2": 95.0}
+
+
+def test_selector_timeout_stamp_holds_owed_end_in_real():
+    # Run 4 EV17: the selector stamps channel vclock_now (avail clock) in real; re-basing it as epoch held nothing.
+    from flame.selector.fedbuff import FedBuffSelector
+    sel = FedBuffSelector(_seed=7, c=4, aggGoal=2)
+    sel.all_selected, sel.ordered_updates_recv_ends = {"t5": 400.0}, []
+    sel._sim_now_s = 491.0  # = channel_props["vclock_now"] = agg._avail_now()
+    sel._reclaim_timed_out_ends(set())
+    agg, _ = _agg(ledger={("t5", "train"): [318, 400.0, 0]})
+    agg.config = SimpleNamespace(hyperparameters=SimpleNamespace())
+    assert agg.real_owed_held_ends(SimpleNamespace(_selector=sel)) == {"t5"}
 
 
 def test_owed_end_is_held_out_of_selection_in_real():
     # FX-N50: real re-picked a trainer whose update was still behind its send-gate (5 of 9 on P2 fedbuff).
     ledger = {("t5", "train"): [318, 400.0, 0]}
-    agg, ch = _agg(timed_out={"t5": 1000.0 + 490.0}, ledger=ledger)
+    agg, ch = _agg(timed_out={"t5": 490.0}, ledger=ledger)
     agg.config = SimpleNamespace(hyperparameters=SimpleNamespace())
     assert agg.real_owed_held_ends(ch) == {"t5"}
     agg._note_real_receipt = TopAggregator._note_real_receipt.__get__(agg)
@@ -83,9 +95,44 @@ def test_owed_end_is_held_out_of_selection_in_real():
 
 
 def test_owed_hold_is_real_only_and_switchable():
-    agg, ch = _agg(timed_out={"t5": 1490.0}, ledger={("t5", "train"): [318, 400.0, 0]})
+    agg, ch = _agg(timed_out={"t5": 490.0}, ledger={("t5", "train"): [318, 400.0, 0]})
     agg.config = SimpleNamespace(hyperparameters=SimpleNamespace(real_hold_owed_ends=False))
     assert agg.real_owed_held_ends(ch) == set()
     agg.config.hyperparameters.real_hold_owed_ends = True
     agg.simulated = True
     assert agg.real_owed_held_ends(ch) == set()
+
+
+def test_real_dispatch_is_logged_for_ev17(monkeypatch):
+    from flame import telemetry
+    calls = []
+    monkeypatch.setattr(telemetry, "is_enabled", lambda: True)
+    monkeypatch.setattr(telemetry, "emit", lambda ev, **f: calls.append((ev, f)))
+    agg, _ = _agg()
+    agg._round, agg._avail_now = 7, lambda: 12.0
+    agg._record_task_dispatch("t1", "train")
+    assert calls == [("dispatch", {"round": 7, "end_id": "t1", "task": "train", "time_mode": "real"})]
+    agg.simulated = True  # sim's asyncfl emits its own richer dispatch event
+    agg._record_task_dispatch("t1", "train")
+    assert len(calls) == 1
+
+
+def _eval_reply(last_sent):
+    from flame.mode.message import MessageType
+    from tests.mode.test_asyncfl_duplicate_contribution import _FakeChannel, _make_agg
+    freed = []
+    ch = _FakeChannel([({MessageType.STAT_UTILITY: 0.5, MessageType.MODEL_VERSION: 1}, ("t1", 0.0))])
+    ch._selector = SimpleNamespace(remove_from_selected_ends=lambda ends, e: freed.append(e),
+                                   _cleanup_removed_ends=lambda e: None)
+    ch._ends = {"t1": _End()}
+    agg = _make_agg()
+    agg.cm = SimpleNamespace(get_by_tag=lambda t: ch)
+    agg._last_task_sent = {"t1": last_sent}
+    agg._aggregate_weights("param-channel")
+    return freed
+
+
+def test_eval_reply_keeps_newer_train_in_flight():
+    # FX-N38: cifar T3_syn_50 felix sim re-picked 0370 at v436 while its v435 train (sent after the eval) was buffered.
+    assert _eval_reply("train") == []
+    assert _eval_reply("eval") == ["t1"]

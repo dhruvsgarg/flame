@@ -155,6 +155,8 @@ def test_due_withheld_pick_not_reselectable_until_delivered():
     agg._now = 200.0  # a's delivery is due but not yet reinjected
     assert "a" in agg.withheld_held_ends()
     agg._sim_reinject_ready_withheld()
+    assert "a" in agg.withheld_held_ends()  # FX-N38: reinjected, still uncommitted
+    agg._sim_take_withheld_delivering("a")  # its commit
     assert "a" not in agg.withheld_held_ends()
 
 

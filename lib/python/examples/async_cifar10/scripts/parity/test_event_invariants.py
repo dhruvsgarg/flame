@@ -322,3 +322,23 @@ def test_ev16_withheld_at_next_avail_passes(tmp_path, monkeypatch):
             agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
                         "delivery_ts": 50.0, "actual_commit_ts": 50.0})
     assert _status(_write_run(tmp_path, agg, tr), "EV16_withheld_delivery") == "PASS"
+
+
+def _gated_real_run(tmp_path, dispatch_ends):
+    # T1's update sits behind its send-gate over ts 10-20; a sync selection at 15 still lists it in flight.
+    agg = [{"event": "selection", "task": "train", "ts": 15.0, "chosen": [T1, T2]}]
+    agg += [{"event": "dispatch", "task": "train", "end_id": t, "ts": 15.0, "time_mode": "real"} for t in dispatch_ends]
+    tr = {T1: [{"event": "task_send", "ts": 20.0, "send_gate_wait_s": 10.0}], T2: []}
+    return _write_run(tmp_path, agg, tr, hp={"time_mode": "real"})
+
+
+def test_ev17_carried_inflight_pick_passes(tmp_path):
+    assert _status(_gated_real_run(tmp_path, [T2]), "EV17_real_gate_repick") == "PASS"
+
+
+def test_ev17_redispatch_while_gated_fails(tmp_path):
+    assert _status(_gated_real_run(tmp_path, [T1, T2]), "EV17_real_gate_repick") == "FAIL"
+
+
+def test_ev17_without_dispatch_events_reads_selections(tmp_path):
+    assert _status(_gated_real_run(tmp_path, []), "EV17_real_gate_repick") == "FAIL"
