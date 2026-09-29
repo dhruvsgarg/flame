@@ -103,3 +103,5 @@ class MessageType(Enum):
     # trainer_id) identically in real and sim. None when delays are disabled
     # (aggregator then falls back to arrival order).
     MODELED_DELAY_S = 43
+
+    SEND_GATE_WAIT_S = 44    # real: seconds a finished update waited offline at the send-gate; not client speed (FX-N44)

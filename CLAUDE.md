@@ -3,8 +3,8 @@
 ## Every session: read the readiness docs first
 
 `lib/python/examples/_metadata/ROBUST_FL_READINESS.md` (rules, shared lessons/tripwires, shared queue), then
-the active child: `FELIX_READINESS.md` (current focus) or `FLUXTUNE_READINESS.md`. Resume from the child's
-"Next steps". Standing instructions are recorded there, not in agent memory.
+`PARITY_READINESS.md` (parity climbing rules, method, scoreboard), then the active child: `FELIX_READINESS.md`
+(current focus) or `FLUXTUNE_READINESS.md`. Resume from the child's "Next steps". Standing instructions are recorded there, not in agent memory.
 
 ## Before any commit + push
 

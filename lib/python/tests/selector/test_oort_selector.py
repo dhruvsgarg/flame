@@ -466,18 +466,12 @@ class TestAlgorithmHyperparams:
         from flame.selector.properties import PROP_END_ID, PROP_UTILITY
         utils = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
         ul = [{PROP_END_ID: f"e{i}", PROP_UTILITY: u} for i, u in enumerate(utils)]
-        oort.exploration_factor = 0.0          # exploitLen = num_of_ends
         oort.cut_off_util = 0.5
         n = len(utils)
-        # exploit_len = int(n*(1-0)) = n -> index = n-1-n < 0 -> clamps to 0 (lowest)
-        cut = oort.cutoff_util(ul, n)
-        assert cut == 0.5 * utils[0]
-        # with high exploration, exploitLen small -> boundary near the TOP
-        oort.exploration_factor = 0.8
-        exploit_len = int(n * (1.0 - oort.exploration_factor))  # float-faithful to code
-        cut2 = oort.cutoff_util(ul, n)
-        assert cut2 == 0.5 * utils[n - 1 - exploit_len]
-        assert cut2 > cut  # boundary moved up toward higher utilities
+        # FX-N53: the caller passes exploitLen; exploitLen = n -> index clamps to 0 (lowest)
+        assert oort.cutoff_util(ul, n) == 0.5 * utils[0]
+        # small exploitLen -> boundary near the TOP (reference: scores[sorted_desc[exploitLen]])
+        assert oort.cutoff_util(ul, 2) == 0.5 * utils[n - 1 - 2]
 
 
 class TestPacerFidelity:
@@ -731,3 +725,35 @@ class TestPendingCommitExcludedFromSelection:
         )
         assert len(result) >= 1
         assert set(result).issubset(set(ends))
+
+
+def test_sample_by_util_never_underfills():
+    # Reference Oort augments the exploit pool below the cutoff; the port drew only >= cutoff and
+    # returned 2 of 3 each round (sync oort then needed a same-round top-up every round).
+    from flame.selector.oort import OortSelector
+    from flame.selector.properties import PROP_END_ID, PROP_UTILITY
+    sel = OortSelector(aggr_num=3)
+    ul = [{PROP_END_ID: f"t{i}", PROP_UTILITY: u} for i, u in enumerate([0.1, 0.2, 5.0, 6.0])]
+    assert len(sel.sample_by_util(4.0, ul, 3)) == 3
+
+
+def test_topk_explores_remaining_slots_from_unexplored(make_ends):
+    # FX-N53, reference getTopK: exploit <= len(explored)-1, every other slot from the unexplored.
+    from flame.selector.oort import OortSelector
+    sel = OortSelector(aggr_num=3, exploration_factor=0.0, exploration_decay=1.0, exploration_min=0.0)
+    ends = make_ends(count=10, prefix="t")
+    for e in ("t0", "t1"):
+        ends[e].set_property("stat_utility", 1.0)
+    sel.selected_ends = {"x"}  # not the first round
+    picked = sel.select(ends, {"round": 5}, trainer_unavail_list=[], task_to_perform="train")
+    assert len(picked) == 3 and len({"t0", "t1"} & set(picked)) == 1
+
+
+def test_topk_pads_when_exploit_is_capped(make_ends):
+    # All explored: exploit <= len(explored)-1, so the last slot is a random pad (FX-N53).
+    from flame.selector.oort import OortSelector
+    sel = OortSelector(aggr_num=3, exploration_factor=0.0, exploration_decay=1.0, exploration_min=0.0)
+    ends = make_ends(count=3, prefix="t", stat_utility=1.0)
+    ends.update(make_ends(count=2, prefix="u", stat_utility=1.0))
+    sel.selected_ends = {"x"}
+    assert len(sel.select(ends, {"round": 5}, trainer_unavail_list=[], task_to_perform="train")) == 3

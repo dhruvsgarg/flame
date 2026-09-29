@@ -3,10 +3,12 @@
 **Goal:** run Felix and FluxTune, with all their baselines, in the simulator with high fidelity and a real
 speedup, with and without client unavailability, so paper experiments run sim-only and fast.
 
-**Three docs are the only working references:**
-- **this doc** — the rules for all three docs, the lessons and tripwires both tracks share, and the queue of
+**Four docs are the only working references:**
+- **this doc** — the rules for all four docs, the lessons and tripwires both tracks share, and the queue of
   shared infrastructure work;
 - [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS.**
+- [PARITY_READINESS.md](PARITY_READINESS.md) — real↔sim parity for both tracks: climbing rules (C1-C9: correct before
+  equal, instrument what you can't see, launch only when fixes are maximized), method, tools, per-track scoreboard.
 - [FLUXTUNE_READINESS.md](FLUXTUNE_READINESS.md) — FluxTune: perturbation / forward-gradient fine-tuning
   (fwdllm). **PARKED** until Felix readiness is stable across unavailability on both async_cifar10 and
   google_speech (FX-N9, FX-N11); shared changes must still keep it green (R10).
@@ -17,16 +19,17 @@ carries a banner saying so). They keep derivations, rung catalogs and history fo
 ever SHRINK: when you use or change something in one, move the live part here and delete it at the source in
 the same edit, leaving a one-line pointer where code or another doc cites the section. Never add to them.
 
-**Self-goal: context clarity and crispness.** A fresh session must be able to act from these three docs
+**Self-goal: context clarity and crispness.** A fresh session must be able to act from these four docs
 alone, in minutes. Prefer one exact line to a paragraph; delete before adding; never restate what another
 section already says.
 
-**Read order at session start:** this doc top to bottom → the active child's preamble → its **Next steps**
+**Read order at session start:** this doc top to bottom → the active child's preamble → PARITY_READINESS climbing rules
+→ the child's **Next steps**
 → only the lessons and tripwires tagged for the area you are touching.
 
 ---
 
-## Doc rules (apply to all three docs)
+## Doc rules (apply to all four docs)
 
 1. **Live ledger, not a log.** Every line must be true *now*. No dated "update:" notes, no changelogs, no
    narrative. `git log` is the history.
@@ -239,8 +242,8 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
   with `str(x).lower() == "true"`.
 - **T14** Don't run module-level code that calls `sys.exit` in a `test_*.py`; it aborts xdist collection for
   the whole suite. Wrap it in a test function plus `__main__`.
-- **T15** Don't edit a shell script while a run of it is live; bash reads it incrementally and the run dies
-  on a shifted byte (`smoke_20260926_122039` summary lost).
+- **T15** Don't edit code or scripts while a run is live: bash reads a script incrementally, and each leg imports the
+  code at its own launch (`smoke_20260926_122039` summary lost; `pool_smoke_fxn52` ran a half-edited selector).
 - **T12** Don't add a fix to one copy of a shared concept (pacer, drain, residence) without checking every
   copy.
 

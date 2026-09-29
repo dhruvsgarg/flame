@@ -68,3 +68,24 @@ def test_timed_out_at_uses_the_avail_clock_in_real():
     agg, ch = _agg(timed_out={"t1": 1090.0})
     agg._task_timeout_at = {"t2": 95.0}
     assert agg._timed_out_at(ch) == {"t1": 90.0, "t2": 95.0}
+
+
+def test_owed_end_is_held_out_of_selection_in_real():
+    # FX-N50: real re-picked a trainer whose update was still behind its send-gate (5 of 9 on P2 fedbuff).
+    ledger = {("t5", "train"): [318, 400.0, 0]}
+    agg, ch = _agg(timed_out={"t5": 1000.0 + 490.0}, ledger=ledger)
+    agg.config = SimpleNamespace(hyperparameters=SimpleNamespace())
+    assert agg.real_owed_held_ends(ch) == {"t5"}
+    agg._note_real_receipt = TopAggregator._note_real_receipt.__get__(agg)
+    agg._avail_now = lambda: 520.0
+    agg._note_real_receipt("t5")  # its reply lands: identity released
+    assert agg.real_owed_held_ends(ch) == set()
+
+
+def test_owed_hold_is_real_only_and_switchable():
+    agg, ch = _agg(timed_out={"t5": 1490.0}, ledger={("t5", "train"): [318, 400.0, 0]})
+    agg.config = SimpleNamespace(hyperparameters=SimpleNamespace(real_hold_owed_ends=False))
+    assert agg.real_owed_held_ends(ch) == set()
+    agg.config.hyperparameters.real_hold_owed_ends = True
+    agg.simulated = True
+    assert agg.real_owed_held_ends(ch) == set()

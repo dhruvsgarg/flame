@@ -502,6 +502,7 @@ class Trainer(Role, metaclass=ABCMeta):
         # Stamp wall-clock send time so aggregator can decompose wall_lag_s.
         _wall_send_ts = time.time()
         msg[MessageType.WALL_SEND_TS] = _wall_send_ts
+        msg[MessageType.SEND_GATE_WAIT_S] = float(self._phase_times.get("send_gate_wait_s", 0.0))
 
         with self._phase("mqtt_send_s"):
             channel.send(end, msg)

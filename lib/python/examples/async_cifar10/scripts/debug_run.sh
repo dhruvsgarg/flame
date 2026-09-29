@@ -76,9 +76,9 @@ usage() {
   echo "                        multiple (e.g. 'syn_20 syn_50' queues both, one experiment set each)."
   echo "                        Default: use whatever is in the parity config (syn_0)."
   echo "  --num-trainers        non-smoke only: shrink the cohort below the parity config's 300,"
-  echo "                        scaling min_trainers_to_start down with it (gap of 8, same ratio as"
-  echo "                        smoke). Use this instead of 'smoke' when you need a real --runtime-s"
-  echo "                        budget (e.g. a vclock floor for an availability trace) that smoke's"
+  echo "                        with min_trainers_to_start = the whole cohort. Use this instead of"
+  echo "                        'smoke' when you need a real --runtime-s budget (e.g. a vclock floor"
+  echo "                        for an availability trace) that smoke's"
   echo "                        hardcoded rounds=4/runtime=240 would cut short."
   echo "  --harness             stub|tiny_cpu: run on CPU with synthetic (stub) or a small real-data"
   echo "                        prefix (tiny_cpu) per trainer; every FL code path stays live."
@@ -274,8 +274,8 @@ for e_src in cfg.get("experiments", []):
                 orig_n = e["trainer"].get("num_trainers", 300)
                 e["trainer"]["num_trainers"] = num_trainers_override
                 e["trainer"]["split_num_trainers"] = orig_n
-                # small test cohorts wait for all but one trainer (8 of 12 would skew early rounds)
-                h["min_trainers_to_start"] = max(1, num_trainers_override - (8 if num_trainers_override > 40 else 1))
+                # wait for the whole cohort: a fast sim finishes before stragglers join, real sees them (FX-N47)
+                h["min_trainers_to_start"] = num_trainers_override
             e["name"] = f"dbg_{e['name']}"
         # --alpha override: repoint dirichlet_alpha and the split lookup. Only n300
         # splits exist for every alpha (0.1/1.0/10.0/100.0=homogeneous); n48/n50

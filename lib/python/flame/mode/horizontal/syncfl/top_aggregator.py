@@ -651,6 +651,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             if not self.simulated:
                 self._record_commit_belief(end)
                 self.commit_withheld(end)  # an abandoned trainer's late update arrived
+                self._note_real_receipt(end)
 
             logger.debug(f"received data from {end}")
             channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
@@ -1019,7 +1020,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             )
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts.
-            _held_withheld = self.withheld_held_ends()
+            _held_withheld = self.withheld_held_ends() | self.real_owed_held_ends(channel)
             if _held_withheld:
                 curr_unavail_trainer_list = list(
                     set(curr_unavail_trainer_list) | _held_withheld
@@ -1090,7 +1091,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                     curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
                         task_to_perform
                     )
-                    _held = self.withheld_held_ends()
+                    _held = self.withheld_held_ends() | self.real_owed_held_ends(channel)
                     if _held:
                         curr_unavail_trainer_list = list(
                             set(curr_unavail_trainer_list) | _held

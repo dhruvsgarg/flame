@@ -826,7 +826,7 @@ def main(argv=None) -> int:
     ap.add_argument("--tier", required=True,
                     help="comma list of T1 T2 T3 T4 GS G0 G0C G1 G2 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
-    ap.add_argument("--baselines", default="", help="space-separated; default = --changed set, else all six")
+    ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")
     ap.add_argument("--phases", default="", help="subset of the tier's phase ids (e.g. 'P1 P2', 'P11a')")
     ap.add_argument("--exclude-phases", default="", help="exact phase ids to drop (e.g. 'G0_syn_0 gs_G0_syn_50')")
@@ -859,7 +859,10 @@ def main(argv=None) -> int:
 
     real_changed = False
     if a.baselines:
-        baselines = tuple(a.baselines.split())
+        baselines = tuple(a.baselines.replace(",", " ").split())
+        unknown = [b for b in baselines if b not in B6]
+        if unknown:  # an unknown name used to run nothing and exit 0
+            ap.error(f"--baselines: unknown {unknown}; expected any of {B6}")
     elif a.changed:
         baselines, real_changed = affected(changed_paths(a.changed))
     else:

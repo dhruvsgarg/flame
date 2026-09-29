@@ -436,6 +436,37 @@ class ClientAvailability:
         )
         return delivery_ts
 
+    def _note_real_receipt(self, end: str) -> None:
+        """FX-L27 (real): stamp an end's last received reply on the availability clock."""
+        if not getattr(self, "simulated", False):
+            if getattr(self, "_last_rx_ts", None) is None:
+                self._last_rx_ts = {}
+            self._last_rx_ts[end] = self._avail_now()
+
+    def _owed_ends(self, channel) -> set:
+        """FX-L27 (real): ends whose latest dispatch timed out or was evicted and is still unanswered."""
+        last_disp = {}
+        for (end, _), (_, disp_ts, _) in getattr(self, "_task_ledger", {}).items():
+            last_disp[end] = max(last_disp.get(end, disp_ts), disp_ts)
+        rx = getattr(self, "_last_rx_ts", None) or {}
+        timed_out = self._timed_out_at(channel)
+        owed = {e for e, to in timed_out.items() if e in last_disp and to >= last_disp[e]}
+        owed |= set(getattr(self, "pending_withheld", {}))
+        return {e for e in owed if rx.get(e, -math.inf) < last_disp.get(e, math.inf)}
+
+    def real_owed_held_ends(self, channel) -> set:
+        """FX-N50 (real): an end whose latest dispatch is unanswered stays out of the pool until its
+        reply lands (L4/L5: abandon frees the slot, not the identity). Sim's twin: withheld_held_ends."""
+        if getattr(self, "simulated", False):
+            return set()
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        if str(getattr(hp, "real_hold_owed_ends", True)).lower() != "true":
+            return set()
+        owed = self._owed_ends(channel)
+        if owed:
+            logger.info(f"[OWED_HOLD] round={getattr(self, '_round', None)} held={sorted(e[-4:] for e in owed)}")
+        return owed
+
     def withheld_held_ends(self, now: Optional[float] = None) -> set:
         """Ends whose withheld update has NOT yet reached its delivery_ts.
 

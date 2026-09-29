@@ -61,7 +61,7 @@ BY_ID = {r.rid: r for r in LADDER}
 KNOWN: Tuple[Tuple[str, Tuple[str, ...], str, str], ...] = (
     ("EV14", ("fedbuff",), r".*", "FX-N15"),
     ("EV5|EV10|EV11|EV16", ("felix", "fedbuff"), r"syn_50|mobiperf_3st|syn_20", "FX-N38"),
-    ("EV1", ("oort",), r"mobiperf_3st", "open question: P3 oort"),
+    ("EV1", ("oort",), r"mobiperf_3st|syn_50", "open question: P3 oort"),
     ("EV0|EV1|EV12", tuple(), r"gs_P7o?$", "FX-N30"),
 )
 # Phases whose sim leg must FAIL a named check (injected bugs; P4 = the cold-start-gate-off control, FX-D8).

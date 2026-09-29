@@ -52,6 +52,9 @@ def real_client_task_train_duration(
     """
     wst = msg.get(MessageType.WALL_SEND_TS)
     wrt = msg.get(MessageType.WALL_RECV_TS)
+    # FX-N44: time held offline at the send-gate is not device speed (sim reports the modeled span).
+    if wst is not None:
+        wst = float(wst) - float(msg.get(MessageType.SEND_GATE_WAIT_S) or 0.0)
     # Primary: both client stamps -> intrinsic compute+sleep, server-wait-free.
     if wst is not None and wrt is not None:
         dur = float(wst) - float(wrt)

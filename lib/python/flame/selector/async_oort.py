@@ -380,16 +380,15 @@ class AsyncOortSelector(AsyncSelectorBase):
         over_cutoff_utility_probs = []
         over_cutoff_utility_sum = 0
 
-        under_cutoff_utility_list = []
-
-        # Divide ends on whether its utility exceeds cutoff_loss or not
-        for utility_pair in utility_list:
-            if utility_pair[PROP_UTILITY] >= cutoff_utility:
-                over_cutoff_utility_end_ids.append(utility_pair[PROP_END_ID])
-                over_cutoff_utility_probs.append(utility_pair[PROP_UTILITY])
-                over_cutoff_utility_sum += utility_pair[PROP_UTILITY]
-            else:
-                under_cutoff_utility_list.append(utility_pair)
+        # Reference Oort (thirdparty/oort/oort.py:334-340): keep below-cutoff ends too until the
+        # pool exceeds 10x the draw, so it never under-fills (same as OortSelector.sample_by_util).
+        for utility_pair in sorted(utility_list, key=lambda x: x[PROP_UTILITY], reverse=True):
+            if (utility_pair[PROP_UTILITY] < cutoff_utility
+                    and len(over_cutoff_utility_end_ids) > 10 * num_of_ends):
+                break
+            over_cutoff_utility_end_ids.append(utility_pair[PROP_END_ID])
+            over_cutoff_utility_probs.append(utility_pair[PROP_UTILITY])
+            over_cutoff_utility_sum += utility_pair[PROP_UTILITY]
 
         # Select clients on the probability based on the utility divided by
         # the utility sum

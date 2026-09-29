@@ -432,3 +432,27 @@ class TestBufferedCommitLeavesRecv:
         _, (end, _) = agg._sim_recv_min(ch, ["b"])
         assert end == "b"
         assert ch._ends["b"].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD
+
+
+class TestIngestKeepsIdentityUntilAggregate:
+    """FX-N46: sim freed a held end's identity at ingest and re-dispatched it at the same version
+    (staleness-0 share 6% vs real 26%); real frees only the slot there, identity at the agg-goal cleanup."""
+
+    def _run(self, hold):
+        from types import SimpleNamespace
+        agg = _make_agg(sct_ordered_drain=True)
+        agg._sim_identity_until_aggregate = hold
+        agg._sim_pending_commit = {"a"}
+        ch = FakeChannel({"a"}, [("a", 1.0)])
+        ch._selector = SimpleNamespace(requester="r", all_selected={"a": 0.0}, selected_ends={"r": {"a"}})
+        _, (end, _) = agg._sim_recv_min(ch, ["a"])
+        assert end == "a" and "a" not in ch._selector.selected_ends["r"]  # slot freed either way
+        return ch
+
+    def test_identity_held_until_cleanup(self):
+        ch = self._run(hold=True)
+        assert "a" in ch._selector.all_selected
+        assert ch._ends["a"].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD  # the cleanup frees it
+
+    def test_legacy_frees_identity_at_ingest(self):
+        assert "a" not in self._run(hold=False)._selector.all_selected

@@ -1,6 +1,6 @@
 # FwdLLM — Real↔Sim Parity
 
-> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../_metadata/ROBUST_FL_READINESS.md) → [FLUXTUNE_READINESS.md](../_metadata/FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+> **DEPRECATED — reference only.** Parity lives in [PARITY_READINESS.md](../_metadata/PARITY_READINESS.md) (rules, method, tools, scoreboard); everything else in [ROBUST_FL_READINESS.md](../_metadata/ROBUST_FL_READINESS.md) and its track docs. This file only shrinks as content moves there; don't add to it.
 
 **Scope: real↔sim parity only**, for **fluxtune / fwdllm / fwdllm_plus** (+ the 6 ported fedbuff/felix-lineage
 baselines) at 100% availability (syn_0, Phase 1), then unavailability (Phase 2), then beyond syn_0 (Phase 3).
@@ -413,7 +413,7 @@ INV/EXACT (hard fail), DIST (fail unless `--lenient`), DIAG (informational).
 - **Never touch `var_threshold` / `max_iterations_per_data_id`** (§F-3): baseline-defining config, not
   parity levers. A cadence gap is ALWAYS an upstream set/order/clock divergence.
 
-**Run-length budget — SHORT BY DEFAULT** (`--max-runtime-s`): 900-1800s for verification, 3600s+ only for
+**Run-length budget — SHORT BY DEFAULT** (shared rule: [PARITY_READINESS.md](../_metadata/PARITY_READINESS.md) → Run length; the rows below are fwdllm-specific) (`--max-runtime-s`): 900-1800s for verification, 3600s+ only for
 scoreboard re-grades and the duration-gated rungs below. **Duration follows the residual's SHAPE, never
 habit** (§D-25): a per-cycle divergence is fully present in cycle 1 and grades at full strength on a short
 run; an accumulating one is under-reported by construction and a short run reads a FALSE PASS. The clock

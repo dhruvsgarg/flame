@@ -110,6 +110,9 @@ class TopAggregator(SyncTopAgg):
         # FX-D9: (end, task) -> [version, dispatch_ts, retries at that version] of its last dispatch.
         self._task_ledger: dict = {}
         self._last_rx_ts: dict = {}  # FX-L27: end -> `_avail_now` of its last received reply (real)
+        # FX-N46: sim holds an ingested trainer's identity until the agg-goal cleanup, as real does.
+        self._sim_identity_until_aggregate = str(
+            getattr(self.config.hyperparameters, "sim_identity_until_aggregate", True)).lower() == "true"
 
         self._updates_in_queue = 0
         self._updates_recevied = {}
@@ -614,11 +617,12 @@ class TopAggregator(SyncTopAgg):
         if _end in self._sim_pending_commit:
             self._sim_pending_commit.discard(_end)
             sel = channel._selector
-            if _end in sel.all_selected:
+            # FX-N46: like real, ingest frees the slot; identity (all_selected) waits for the agg-goal cleanup.
+            if not getattr(self, "_sim_identity_until_aggregate", True) and _end in sel.all_selected:
                 del sel.all_selected[_end]
             if sel.requester in sel.selected_ends:
                 sel.selected_ends[sel.requester].discard(_end)
-            if channel.has(_end):
+            if channel.has(_end) and not getattr(self, "_sim_identity_until_aggregate", True):
                 channel._ends[_end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
             logger.info(f"[SIM_PENDING_COMMIT] released {_end[-4:]} sct={sct:.1f}")
         return m, md
@@ -653,17 +657,6 @@ class TopAggregator(SyncTopAgg):
             if channel.has(_e):
                 channel._ends[_e].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
         return msg, md
-
-    def _owed_ends(self, channel) -> set:
-        """FX-L27 (real): ends whose latest dispatch timed out or was evicted and is still unanswered."""
-        last_disp = {}
-        for (end, _), (_, disp_ts, _) in getattr(self, "_task_ledger", {}).items():
-            last_disp[end] = max(last_disp.get(end, disp_ts), disp_ts)
-        rx = getattr(self, "_last_rx_ts", {})
-        timed_out = self._timed_out_at(channel)
-        owed = {e for e, to in timed_out.items() if e in last_disp and to >= last_disp[e]}
-        owed |= set(getattr(self, "pending_withheld", {}))
-        return {e for e in owed if rx.get(e, -math.inf) < last_disp.get(e, math.inf)}
 
     def _with_arrived_ends(self, channel, recv_ends) -> list:
         """FX-L27 (real): also read ends whose update arrived or is still owed, e.g. an abandoned end's late one."""
@@ -756,7 +749,7 @@ class TopAggregator(SyncTopAgg):
         # T3.3 commit-checkpoint belief (real mode only — sim's own commit
         # loop already recorded it inside _sim_withhold_if_unavail).
         if not self.simulated:
-            self._last_rx_ts[end] = self._avail_now()
+            self._note_real_receipt(end)
             self._record_commit_belief(end)
         _t_msg_start = datetime.now()  # start of per-message processing (vii)
 
@@ -1551,7 +1544,7 @@ class TopAggregator(SyncTopAgg):
             )
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts (§4.5 residence, sct→delivery_ts).
-            _held_withheld = self.withheld_held_ends()
+            _held_withheld = self.withheld_held_ends() | self.real_owed_held_ends(channel)
             if _held_withheld:
                 curr_unavail_trainer_list = list(
                     set(curr_unavail_trainer_list) | _held_withheld

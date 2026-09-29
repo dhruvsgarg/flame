@@ -203,17 +203,9 @@ class OortSelector(AbstractSelector):
             )
             return result
 
-        # Not the first round, performing Oort-based selection
-        # Calculate number of ends to select for exploration and
-        # exploitation
-        (
-            exploration_len,
-            exploitation_len,
-        ) = self.calculate_num_of_exploration_exploitation(
-            num_of_ends, unexplored_end_ids
-        )
-
-        if len(utility_list) == 0:
+        # Not the first round: reference Oort getTopK (thirdparty/oort/oort.py:316-393). Exploit at
+        # most len(explored)-1; explore every remaining slot from the unexplored; pad at random.
+        if len(utility_list) == 0 and not unexplored_end_ids:
             self._last_selection_round = round
             result = self.select_random(ends, num_of_ends)
             self.emit_selection(
@@ -224,18 +216,28 @@ class OortSelector(AbstractSelector):
             )
             return result
 
-        utility_list = self.calculate_total_utility(utility_list, ends, round)
-        cutoff_utility = self.cutoff_util(utility_list, num_of_ends)
-
-        exploit_end_ids = self.sample_by_util(
-            cutoff_utility, utility_list, exploitation_len
-        )
+        exploit_end_ids = []
+        if utility_list:
+            utility_list = self.calculate_total_utility(utility_list, ends, round)
+            exploitation_len = min(
+                num_of_ends - int(num_of_ends * self.exploration_factor), len(utility_list) - 1
+            )
+            if exploitation_len > 0:
+                cutoff_utility = self.cutoff_util(utility_list, exploitation_len)
+                exploit_end_ids = self.sample_by_util(
+                    cutoff_utility, utility_list, exploitation_len
+                )
 
         explore_end_ids = []
-        if self.exploration_factor > 0.0 and len(unexplored_end_ids) > 0:
-            explore_end_ids = self.sample_by_speed(unexplored_end_ids, exploration_len)
+        explore_len = min(len(unexplored_end_ids), num_of_ends - len(exploit_end_ids))
+        if explore_len > 0:
+            explore_end_ids = self.sample_by_speed(unexplored_end_ids, explore_len)
 
-        newly_selected = set([*explore_end_ids, *exploit_end_ids])
+        picked = [*explore_end_ids, *exploit_end_ids]
+        pool = sorted(e for e in ends if e not in picked and e not in blocklist_end_ids)
+        while len(picked) < num_of_ends and pool:
+            picked.append(pool.pop(self._pyrng.randrange(len(pool))))
+        newly_selected = set(picked)
         self.selected_ends = self.selected_ends | newly_selected
 
         self.save_exploited_utility_history(ends, exploit_end_ids)
@@ -286,7 +288,7 @@ class OortSelector(AbstractSelector):
             logger.debug("Got empty utility_list, returning 999999.0")
             return 999999.0
 
-        exploit_len = int(num_of_ends * (1.0 - self.exploration_factor))
+        exploit_len = num_of_ends  # the exploitLen itself (reference: scores[sorted[exploitLen]])
         index = len(sorted_utility_list) - 1 - exploit_len
         index = max(0, min(index, len(sorted_utility_list) - 1))
 
@@ -304,17 +306,15 @@ class OortSelector(AbstractSelector):
         over_cutoff_utility_probs = []
         over_cutoff_utility_sum = 0
 
-        under_cutoff_utility_list = []
-
-        # Divide ends on whether its utility exceeds cutoff_loss or
-        # not
-        for utility_pair in utility_list:
-            if utility_pair[PROP_UTILITY] >= cutoff_utility:
-                over_cutoff_utility_end_ids.append(utility_pair[PROP_END_ID])
-                over_cutoff_utility_probs.append(utility_pair[PROP_UTILITY])
-                over_cutoff_utility_sum += utility_pair[PROP_UTILITY]
-            else:
-                under_cutoff_utility_list.append(utility_pair)
+        # Reference Oort (thirdparty/oort/oort.py:334-340): walk scores high->low and keep
+        # below-cutoff ends too until the pool exceeds 10x the draw, so it never under-fills.
+        for utility_pair in sorted(utility_list, key=lambda x: x[PROP_UTILITY], reverse=True):
+            if (utility_pair[PROP_UTILITY] < cutoff_utility
+                    and len(over_cutoff_utility_end_ids) > 10 * num_of_ends):
+                break
+            over_cutoff_utility_end_ids.append(utility_pair[PROP_END_ID])
+            over_cutoff_utility_probs.append(utility_pair[PROP_UTILITY])
+            over_cutoff_utility_sum += utility_pair[PROP_UTILITY]
 
         # Select clients on the probability based on the utility
         # divided by the utility sum

@@ -444,9 +444,12 @@ class PyTorchCifar10Trainer(Trainer):
 
     def _warmup_device(self) -> None:
         """FX-D15: pay driver/kernel init before any timed task: one dummy train step, weights restored."""
+        t0 = time.time()
+        # FX-N26: the first optimizer ctor lazily imports torch._dynamo (~1.3s), else charged to task 1.
+        (torch.optim.Adam if self.data_spec.optimizer == "adam" else torch.optim.SGD)(
+            self.model.parameters(), lr=getattr(self, "learning_rate", 0.01))
         if self.device is None:
             return
-        t0 = time.time()
         cuda = self.device.type == "cuda"
         saved = {k: v.detach().clone() for k, v in self.model.state_dict().items()}
         x = torch.randn(max(2, self.batch_size or 2) if cuda else 2,
@@ -708,9 +711,11 @@ class PyTorchCifar10Trainer(Trainer):
         # compute loop (setup/avail/loader-rebuild overhead). Reported in
         # [TRAIN_CYCLE] + telemetry so the breakdown is first-class.
         _phase_train_entry = time.time()
+        _pre = {}  # FX-N26: cumulative checkpoints inside pre_train_s (first task costs ~1.4s)
 
         # Log memory before training round (no-op unless profiling enabled)
         self.memory_profiler.log_memory_before_round()
+        _pre["mem"] = time.time() - _phase_train_entry
 
         # NOTE: we deliberately do NOT call torch.cuda.empty_cache()/gc.collect()
         # per round here. With many trainers co-located on one GPU, empty_cache
@@ -727,6 +732,7 @@ class PyTorchCifar10Trainer(Trainer):
         # Refresh availability from the trace at this task's current time
         # (both modes) before deciding.
         self._refresh_avl_state()
+        _pre["avl"] = time.time() - _phase_train_entry
         # [SEND_GATE] compute-completes / gate-the-send model (UNAVAILABILITY_DESIGN
         # §8.3): training always runs to completion regardless of avl_state — a
         # trainer dispatched while AVL_* that goes UN_AVL (or AVL_EVAL) mid-flight is
@@ -767,14 +773,17 @@ class PyTorchCifar10Trainer(Trainer):
         else:
             logger.debug(f"Trainer {self.trainer_id}: Using base LR {current_lr}")
         
+        _pre["stream"] = time.time() - _phase_train_entry
         opt = torch.optim.Adam if self.data_spec.optimizer == "adam" else torch.optim.SGD
         self.optimizer = opt(self.model.parameters(), lr=current_lr)
+        _pre["opt"] = time.time() - _phase_train_entry
 
         # reset stat utility for OORT
         self.reset_stat_utility()
 
         num_batches = len(self.train_loader)
         dataset_size = len(self.train_loader.dataset)
+        _pre["loader"] = time.time() - _phase_train_entry
         _D = self.training_delay_s if self.training_delay_enabled else 0.0
         if self.simulated:
             _expected_wallclock_hint = f"~GPU wall-clock only; virtual_advance=max(gpu,D={_D:.1f}s)"
@@ -787,6 +796,7 @@ class PyTorchCifar10Trainer(Trainer):
             f"time_mode={self.time_mode}, expected_cycle_time={_expected_wallclock_hint}"
         )
         _cycle_start = time.time()
+        _pre["log"] = _cycle_start - _phase_train_entry
 
         # Find current location
         elapsed_s = self._sim_now()
@@ -794,6 +804,7 @@ class PyTorchCifar10Trainer(Trainer):
         lat = self.coords[timestep, self.satellite_index, 0]
         lon = self.coords[timestep, self.satellite_index, 1]
         logger.info(f"({elapsed_s}s) Trainer {self.trainer_id} Location: ({lat:.2f}, {lon:.2f})")
+        _pre["coords"] = time.time() - _phase_train_entry
 
         total_batches_processed = 0
         final_loss = None
@@ -932,6 +943,7 @@ class PyTorchCifar10Trainer(Trainer):
                     "task_to_perform": getattr(self, "task_to_perform", None),
                     "lr": current_lr,
                     "pre_train_s": _pre_train_s,
+                    "pre_train_split_s": {k: round(v, 4) for k, v in _pre.items()},
                     "gpu_compute_s": _real_gpu_time_s,
                     "sleep_s": _remaining_time,
                     "post_train_s": _post_train_s,

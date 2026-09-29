@@ -599,10 +599,32 @@ def ev16_withheld_delivery(run):
                 f"commit_before_delivery={early} delivery_ts_mismatch={bad_dts}", examples=examples[:10])
 
 
+
+def ev17_real_gate_repick(run):
+    """Real: never select a trainer while its previous update is held behind its send-gate
+    (L4; FX-N50). EV10's real twin: real has no dispatch events, so read the trainer's gate window."""
+    if _simulated(run):
+        return _res("SKIP", "real-only (sim: EV10)")
+    wins = []
+    for tid, evs in run["trainers"].items():
+        for e in evs:
+            if e.get("event") != "task_send":
+                continue
+            w = float((e.get("phases") or {}).get("send_gate_wait_s") or e.get("send_gate_wait_s") or 0.0)
+            if w > 1.0:
+                wins.append((tid, float(e["ts"]) - w, float(e["ts"])))
+    if not wins:
+        return _res("SKIP", "no send-gate holds")
+    picks = [(float(e["ts"]), set(e.get("chosen") or [])) for e in _events(run, "selection", task="train")]
+    viol = [(tid[-4:], round(ts - a, 1)) for tid, a, b in wins for ts, ch in picks if tid in ch and a < ts < b]
+    return _res("PASS" if not viol else "FAIL", f"gated={len(wins)} repicked_while_gated={len(viol)}",
+                examples=viol[:10])
+
 CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model, ev4_real_sleep,
           ev5_commit_accounting, ev6_staleness, ev7_agg_goal_cadence, ev8_concurrency_cap,
           ev9_selector_state, ev10_dispatch_one_in_flight, ev11_vclock, ev12_reached_budget,
-          ev13_no_stall, ev14_eval_sane, ev15_one_task_per_version, ev16_withheld_delivery]
+          ev13_no_stall, ev14_eval_sane, ev15_one_task_per_version, ev16_withheld_delivery,
+          ev17_real_gate_repick]
 
 
 def check_run(run_dir: str) -> dict:
