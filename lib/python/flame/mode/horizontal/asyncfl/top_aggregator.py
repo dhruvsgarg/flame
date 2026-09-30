@@ -88,6 +88,10 @@ class TopAggregator(SyncTopAgg):
     """Asynchronous top level Aggregator implements an ML aggregation
     role."""
 
+    # FX-D23: `send + D` lower-bounds sct, so a zero-slack gate is exact; fwdllm keeps _SIM_ORDER_SLACK_S.
+    _SIM_ORDER_SLACK_DEFAULT_S = 0.0
+    _sim_order_slack_s = _SIM_ORDER_SLACK_DEFAULT_S
+
     def internal_init(self) -> None:
         """Initialize internal state for role."""
         logger.info("Calling internal init for SYNC from ASYNC")
@@ -170,6 +174,8 @@ class TopAggregator(SyncTopAgg):
         # Excludes exp <= vclock (due/abandoned) so a lost entry can't pin the clock.
         _clamp = getattr(self.config.hyperparameters, "sim_clock_jump_clamp", True)
         self._sim_clock_jump_clamp: bool = bool(_clamp) if _clamp is not None else True
+        _slack = getattr(self.config.hyperparameters, "sim_order_slack_s", None)
+        self._sim_order_slack_s = float(_slack) if _slack is not None else self._SIM_ORDER_SLACK_DEFAULT_S
 
         # Event-driven re-dispatch (async only; FALSIFIED, kept off — PARITY.md §3.evt).
         # Re-stamps each freed slot's refill at the vclock it FREED (not the shared round-start
@@ -326,6 +332,8 @@ class TopAggregator(SyncTopAgg):
             if self._sim_buffer.has(actual_end):
                 self._sim_dupadd = getattr(self, "_sim_dupadd", 0) + 1
             self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
+            if actual_end in self._sim_inflight_expected:  # FX-D23: arrived → exact sct, not the leg-free lower bound
+                self._sim_inflight_expected[actual_end] = float(sct)
             if not hasattr(self, "_sim_enqueue_round"):
                 self._sim_enqueue_round = {}
             self._sim_enqueue_round.setdefault(actual_end, getattr(self, "_round", 0))
@@ -395,7 +403,7 @@ class TopAggregator(SyncTopAgg):
                 # fragments are mid-reassembly.
                 _bmin = self._sim_buffer.peek_min_ts()
                 _probe_ceiling = (
-                    _bmin + _SIM_ORDER_SLACK_S if _bmin is not None else float("inf")
+                    _bmin + self._sim_order_slack_s if _bmin is not None else float("inf")
                 )
                 to_probe = [e for e in recv_ends
                             if not self._sim_buffer.has(e) and e not in self._sim_committed]
@@ -435,7 +443,7 @@ class TopAggregator(SyncTopAgg):
                 if min_stuck is None or exp < min_stuck:
                     min_stuck, _stuck_end = exp, e
             earlier_stuck = (buffered_min is not None and min_stuck is not None
-                             and min_stuck + _SIM_ORDER_SLACK_S < buffered_min)
+                             and min_stuck + self._sim_order_slack_s < buffered_min)
             unknown_stuck = self._sim_unknown_stuck(_pending_ends)
             if buffered_min is None and not _pending_ends:
                 break  # nothing to commit and nothing in flight
@@ -481,7 +489,7 @@ class TopAggregator(SyncTopAgg):
                 if exp > _now and (_min_future_exp is None or exp < _min_future_exp):
                     _min_future_exp = exp
             if _min_future_exp is not None:
-                _advance_to = max(_now, min(sct, _min_future_exp + _SIM_ORDER_SLACK_S))
+                _advance_to = max(_now, min(sct, _min_future_exp + self._sim_order_slack_s))
         self._advance_sim_clock(_advance_to)
         # Re-dispatch tell (second contribution this cycle). Drives the past-dating source breakdown.
         _was_recommit = _end in getattr(self, "_agg_cycle_contributed_ends", ())
@@ -534,7 +542,7 @@ class TopAggregator(SyncTopAgg):
         # (sct < vclock by more than the gate slack) — exactly what inflates
         # version-vs-clock and drifts staleness. The predictor fix should drive
         # this count and the cumulative past-dating toward zero.
-        if _commit_gap > _SIM_ORDER_SLACK_S:
+        if _commit_gap > self._sim_order_slack_s:
             self._sim_pastdated_commits = getattr(self, "_sim_pastdated_commits", 0) + 1
             self._sim_pastdated_gap_cum = getattr(self, "_sim_pastdated_gap_cum", 0.0) + _commit_gap
             self._sim_pastdated_gap_max = max(getattr(self, "_sim_pastdated_gap_max", 0.0), _commit_gap)
@@ -1638,7 +1646,7 @@ class TopAggregator(SyncTopAgg):
                     )
             _send_ends.append(end)
 
-        _round_now = getattr(self, "vclock_now", None)
+        _round_now = self._sim_send_stamp()
         # Event-driven re-dispatch: stagger each TRAIN dispatch by the vclock at
         # which its slot freed (a prior commit), so the round-boundary cohort no
         # longer collapses to one frozen frontier. Off / eval / real ⇒ one shared

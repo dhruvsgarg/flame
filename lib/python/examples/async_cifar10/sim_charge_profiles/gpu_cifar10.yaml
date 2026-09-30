@@ -1,0 +1,52 @@
+completion_leg:
+  asyncfl:
+    mean_s: 0.0544
+    p50_s: 0.047
+    n: 2091
+    charge: true
+  oort_sync:
+    mean_s: 0.0689
+    p50_s: 0.059
+    n: 567
+    charge: true
+  fedavg:
+    mean_s: 0.0565
+    p50_s: 0.057
+    n: 186
+    charge: true
+dispatch_latency:
+  asyncfl:
+    mean_s: 0.0561
+    p50_s: 0.033
+    n: 1378
+    charge: true
+  oort_sync:
+    mean_s: 0.0545
+    p50_s: 0.051
+    n: 186
+    charge: true
+  fedavg:
+    mean_s: 0.0752
+    p50_s: 0.077
+    n: 61
+    charge: true
+_meta:
+  dataset: cifar10
+  harness: gpu
+  host: kaylee
+  commit: faa8664c
+  date: '2026-09-30'
+  tool: profile_felix_charges.py
+  runs:
+  - run_20260929_044523_GS_syn_0_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
+  - run_20260929_045856_GS_syn_0_dbg_felix_n300_alpha0.1_syn_0_stream_real
+  - run_20260929_051232_GS_syn_20_dbg_felix_n300_alpha0.1_syn_20_stream_real
+  - run_20260929_052605_GS_syn_0_dbg_refl_n300_alpha0.1_syn_0_stream_real
+  - run_20260929_053907_GS_syn_20_dbg_oort_star_n300_alpha0.1_syn_20_stream_real
+  - run_20260929_055233_GS_syn_20_dbg_refl_n300_alpha0.1_syn_20_stream_real
+  - run_20260929_060535_GS_syn_0_dbg_feddance_n300_alpha0.1_syn_0_stream_real
+  - run_20260929_061902_GS_syn_20_dbg_fedbuff_n300_alpha0.1_syn_20_stream_real
+  - run_20260929_063238_GS_syn_0_dbg_oort_n300_alpha0.1_syn_0_stream_real
+  - run_20260929_064605_GS_syn_20_dbg_oort_n300_alpha0.1_syn_20_stream_real
+  - run_20260929_065931_GS_syn_20_dbg_feddance_n300_alpha0.1_syn_20_stream_real
+  - run_20260929_071258_GS_syn_0_dbg_oort_star_n300_alpha0.1_syn_0_stream_real

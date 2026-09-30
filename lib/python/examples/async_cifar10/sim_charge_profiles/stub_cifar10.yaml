@@ -1,0 +1,53 @@
+completion_leg:
+  asyncfl:
+    mean_s: 0.0333
+    p50_s: 0.03
+    n: 1731
+    charge: true
+  oort_sync:
+    mean_s: 0.0405
+    p50_s: 0.037
+    n: 799
+    charge: true
+  fedavg:
+    mean_s: 0.0362
+    p50_s: 0.032
+    n: 225
+    charge: true
+dispatch_latency:
+  asyncfl:
+    mean_s: 0.0196
+    p50_s: 0.016
+    n: 968
+    charge: true
+  oort_sync:
+    mean_s: 0.0387
+    p50_s: 0.024
+    n: 324
+    charge: true
+  fedavg:
+    mean_s: 0.0502
+    p50_s: 0.038
+    n: 91
+    charge: true
+_meta:
+  dataset: cifar10
+  harness: stub
+  host: jayne
+  commit: 7a6ded90c
+  date: '2026-09-30'
+  tool: profile_felix_charges.py
+  runs:
+  - run_20260930_021545_T3_syn_0_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real
+  - run_20260930_022233_T3_syn_0_hstub_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
+  - run_20260930_022354_T3_syn_0b_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real
+  - run_20260930_022607_T3_syn_0_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real
+  - run_20260930_022754_T3_syn_0b_hstub_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
+  - run_20260930_023051_T3_syn_0b_hstub_dbg_oort_star_n300_alpha0.1_syn_0_stream_real
+  - run_20260930_023141_T3_syn_0_hstub_dbg_feddance_n300_alpha0.1_syn_0_stream_real
+  - run_20260930_023233_T3_syn_0b_hstub_dbg_oort_n300_alpha0.1_syn_0_stream_real
+  - run_20260930_023337_T3_syn_0b_hstub_dbg_feddance_n300_alpha0.1_syn_0_stream_real
+  - run_20260930_023441_T3_syn_0b_hstub_dbg_refl_n300_alpha0.1_syn_0_stream_real
+  - run_20260930_023459_T3_syn_0_hstub_dbg_oort_n300_alpha0.1_syn_0_stream_real
+  - run_20260930_023619_T3_syn_0_hstub_dbg_oort_star_n300_alpha0.1_syn_0_stream_real
+  - run_20260930_023809_T3_syn_0_hstub_dbg_refl_n300_alpha0.1_syn_0_stream_real

@@ -394,6 +394,19 @@ class AsyncSelectorBase(AbstractSelector):
         """Extra per-task eligibility beyond avl_state (e.g. eval staleness)."""
         return True
 
+    release_recvd_at_send = True  # FX-D24; False = legacy one-arrival refill lag
+
+    @staticmethod
+    def _drop_recvd(selected_ends: set, ends: dict[str, End]) -> None:
+        """Drop ends already heard from (RECVD): their slot is free."""
+        for end_id in list(selected_ends):
+            if end_id not in ends:
+                logger.debug(f"end {end_id} no longer in ends; leaving in-flight")
+                continue
+            if ends[end_id].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD:
+                selected_ends.remove(end_id)
+                logger.debug(f"Removed {end_id} from selected_ends: already RECVD")
+
     def _handle_send_state(
         self, ends: dict[str, End], concurrency: int, ctx: SelectContext
     ) -> SelectorReturnType:
@@ -403,6 +416,8 @@ class AsyncSelectorBase(AbstractSelector):
         self._drop_disconnected_selections(
             selected_ends, ctx.connected_ends if ctx.connected_ends is not None else ends
         )
+        if self.release_recvd_at_send:  # FX-D24: an ingested end's slot refills now, not one arrival later
+            self._drop_recvd(selected_ends, ends)
 
         # Cooling (committed, not-yet-redispatched) ends hold a slot so the
         # idle pool can't refill it -- else the redispatch gap is inert.
@@ -479,14 +494,7 @@ class AsyncSelectorBase(AbstractSelector):
         """
         selected_ends = self.selected_ends[self.requester]
 
-        # Drop ends already heard from, so we don't wait on them again.
-        for end_id in list(selected_ends):
-            if end_id not in ends:
-                logger.debug(f"end {end_id} no longer in ends; leaving in-flight")
-                continue
-            if ends[end_id].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD:
-                selected_ends.remove(end_id)
-                logger.debug(f"Removed {end_id} from selected_ends: already RECVD")
+        self._drop_recvd(selected_ends, ends)
 
         if (
             getattr(self, "_recv_bootstrap_allowed", False)

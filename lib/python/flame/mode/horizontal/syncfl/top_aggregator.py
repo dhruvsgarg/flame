@@ -218,6 +218,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self._sim_commit_overhead_s = float(
             getattr(self.config.hyperparameters, "sim_commit_overhead_s", 0.0) or 0.0
         )
+        self._sim_dispatch_latency_s = float(
+            getattr(self.config.hyperparameters, "sim_dispatch_latency_s", 0.0) or 0.0
+        )
 
         self.framework = get_ml_framework_in_use()
         if self.framework == MLFramework.UNKNOWN:
@@ -367,6 +370,15 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             )
             self._aggregate_weights(tag)
 
+    _sim_dispatch_latency_s = 0.0
+
+    def _sim_send_stamp(self) -> float | None:
+        """Sim send stamp: vclock + the profiled dispatch latency real pays after a commit (FX-D23)."""
+        now = getattr(self, "vclock_now", None)
+        if now is None or not getattr(self, "simulated", False):
+            return now
+        return now + self._sim_dispatch_latency_s
+
     def _advance_sim_clock(self, sct: float) -> None:
         """Advance vclock to a commit's sim_completion_ts + per-commit overhead."""
         before = self._vclock.now
@@ -436,7 +448,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 return False
             if min_stuck is None or exp < min_stuck:
                 min_stuck = exp
-        return min_stuck is None or not (min_stuck + _SIM_ORDER_SLACK_S < bmin)
+        return min_stuck is None or not (min_stuck + getattr(self, "_sim_order_slack_s", _SIM_ORDER_SLACK_S) < bmin)
 
     def _sync_sim_recv_first_k(self, channel, ends, first_k):
         """Simulated mode: commit the first_k updates with the SMALLEST
@@ -944,6 +956,17 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         if not self.simulated:
             self.agg_start_time_ts = time.time()
 
+    send_origin_at_join = True  # FX-N45; fwdllm opts out
+
+    def _send_trace_origin(self, channel) -> None:
+        """FX-N45: real trainers start their trace clock at the join barrier, not their first dispatch."""
+        if self.simulated or not self.send_origin_at_join:
+            return
+        payload = channel.dumps({MessageType.AGG_START_TS: self.agg_start_time_ts})
+        for end in list(channel._ends):
+            channel.send_payload(end, payload)
+        logger.info(f"[TRACE_ORIGIN] sent to {len(channel._ends)} trainers")
+
     def _await_min_trainers(self, channel) -> None:
         """One-shot startup barrier: block until ``min_trainers_to_start`` ends
         have joined the channel before the first selection.
@@ -963,6 +986,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         min_start = getattr(self.config.hyperparameters, "min_trainers_to_start", None)
         if not min_start or int(min_start) <= 0:
             self._mark_join_barrier_done()
+            self._send_trace_origin(channel)
             return
         min_start = int(min_start)
         # Allow override: large cohorts (e.g. n300 at sleep_between_spawns=1s take
@@ -978,6 +1002,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             if n >= min_start:
                 logger.info(f"[JOIN_BARRIER] {n}/{min_start} trainers joined; starting")
                 self._mark_join_barrier_done()
+                self._send_trace_origin(channel)
                 return
             if ends != seen or time.time() - beat > 30:  # each join by id, else a 30s heartbeat
                 logger.info(f"[JOIN_BARRIER] waiting for {min_start} trainers to join; have {n}; "
@@ -989,6 +1014,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             f"proceeding with {len(channel._ends)}/{min_start} trainers: {sorted(e[-4:] for e in channel._ends)}"
         )
         self._mark_join_barrier_done()
+        self._send_trace_origin(channel)
 
     @timer_decorator
     def _inject_oracle_utilities(self, channel, task_to_perform: str) -> None:
@@ -1168,7 +1194,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 
         # Same model goes to every recipient this round; build + serialize once.
-        _sim_send_ts = getattr(self, "vclock_now", None)
+        _sim_send_ts = self._sim_send_stamp()
         msg = {
             MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
             MessageType.ROUND: self._round,

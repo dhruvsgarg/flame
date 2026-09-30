@@ -377,6 +377,10 @@ class TopAggregator(AsyncTopAgg):
     """Top level Aggregator implements an ML aggregation
     role."""
 
+    send_origin_at_join = False  # FX-N45: FluxTune parked
+    _SIM_ORDER_SLACK_DEFAULT_S = _SIM_ORDER_SLACK_S  # FluxTune parked: keep its gate slack (FX-D23)
+    _sim_order_slack_s = _SIM_ORDER_SLACK_S
+
     # The sim runs real forward-grad GPU + server eval, so its physical wall
     # legitimately exceeds the vclock budget (#6/#13); a 1x wall ceiling would
     # truncate it before vclock reached the budget. Decoupled to a generous

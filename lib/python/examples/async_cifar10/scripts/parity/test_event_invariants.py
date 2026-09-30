@@ -160,6 +160,12 @@ def test_ev11_clock_backwards_fails(tmp_path):
     assert _status(_write_run(tmp_path, agg, tr), "EV11_vclock") == "FAIL"
 
 
+def test_ev11_sub_slack_pastdating_fails(tmp_path):
+    agg, tr = _clean_run()
+    next(e for e in agg if e["event"] == "agg_round")["commit_gap_s"] = 0.5  # FX-D23: below the old 2s slack
+    assert _status(_write_run(tmp_path, agg, tr), "EV11_vclock") == "FAIL"
+
+
 def test_ev12_short_run_fails(tmp_path):
     run = _write_run(tmp_path, *_clean_run(), hp={"max_experiment_runtime_s": 1000})
     assert _status(run, "EV12_reached_budget") == "FAIL"

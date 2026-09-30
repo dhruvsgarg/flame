@@ -220,9 +220,17 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_completion_leg_s: t.Optional[float] = Field(
         alias="simCompletionLegSeconds", default=0.0
     )
+    # Sim dispatch latency (commit -> next send: select, ingest, send), profiled per stack (FX-D23).
+    sim_dispatch_latency_s: t.Optional[float] = Field(
+        alias="simDispatchLatencySeconds", default=0.0
+    )
     # Sim POST-commit re-dispatch cooldown; spaces completions without inflating staleness.
     sim_redispatch_gap_s: t.Optional[float] = Field(
         alias="simRedispatchGapSeconds", default=0.0
+    )
+    # Sim gate: hold a commit for an in-flight end expected earlier by more than this (None = stack default; FX-D23).
+    sim_order_slack_s: t.Optional[float] = Field(
+        alias="simOrderSlackSeconds", default=None
     )
     # Sim async-stack: cap each commit's clock advance at the earliest in-flight
     # FUTURE modeled completion (+slack), so a forced far-future straggler commit

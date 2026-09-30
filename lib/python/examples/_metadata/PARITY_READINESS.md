@@ -1,5 +1,18 @@
 # Parity readiness — real↔sim parity, Felix and FluxTune
 
+> **C0 · Rule zero: extract, then climb (operator). Time is the scarcest resource.**
+> 1. **Mine what exists first.** Stored logs, telemetry and the code answer most questions. A launch that only
+>    reproduces known failures wastes the time it takes.
+> 2. **Short runs to find and fix.** Debug with the shortest run that shows the mechanism (single pairs, 3-5 min
+>    legs, one or two shapes). Verify each fix across several short settings (both datasets, stacks, traces) before
+>    believing it.
+> 3. **Common roots first.** Group reds across baselines and cells by mechanism. One root that turns many cells
+>    green comes before any single-cell fix.
+> 4. **Lower rungs clean before higher ones.** A higher rung launches only when the lower rungs have no open shared
+>    root. Higher rungs inherit lower roots and compound them into noise.
+> 5. **Long runs only to confirm, or for effects that exist only at length** (convergence, drift, compounding).
+>    Launch one only when confident; state what confirms and what refutes.
+
 ## Preamble
 - **Read [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) first** (doc rules, R-rules, shared L/T). This doc owns
   real↔sim parity: climbing rules, method, axes, tools, the ladder, each track's scoreboard and the **run queue**
@@ -7,7 +20,7 @@
   keep their `FX-N`/`FT-N` items, lessons and built features.
 - **Deprecated parity docs** ([PARITY.md](../async_cifar10/PARITY.md), [simulate_fwdllm.md](../fwdllm/simulate_fwdllm.md),
   [PARITY_CHECKER_README.md](../async_cifar10/scripts/parity/PARITY_CHECKER_README.md)) only shrink.
-- **IDs:** `C#` climbing rules · `Q#` ladder tasks · `PR#` run-queue steps.
+- **IDs:** `C#` climbing rules (C0 above all) · `Q#` ladder tasks · `PR#` run-queue steps.
 
 ---
 
@@ -16,7 +29,8 @@
 - **C1 Every run closes roots.** Before the next launch, trace every red cell from stored logs to a root; each root
   gets a fix in tree or an item with a hypothesis and a prediction.
 - **C2 Lowest red check per cell first.** Higher fails are presumed downstream. A root failing 2+ cells outranks one.
-- **C3 No cell blocks another.** Climb per cell (baseline × dataset × avail/unavail); always `--keep-going`.
+- **C3 No cell blocks another within a rung.** Climb per cell (baseline × dataset × avail/unavail); always
+  `--keep-going`. Across rungs, C0.4 governs.
 - **C4 Logical before timing.** Logical = same steps, same order, timestamps ignored. Timing closes through profiled
   charges, never knob tuning (T3, FX-T31). A logical miss on a timing-red cell is first checked for clock coupling.
 - **C5 Loop per run.** Regrade both nodes and rewrite the scoreboard; group each cell's lowest red by root; apply C1,
@@ -67,39 +81,17 @@ rsync -a --files-from=/tmp/legs.txt -r $N:/ /
 
 ---
 
-## Felix scoreboard — after run 4 (2026-09-29)
+## Felix scoreboard — short runs, 2026-09-30
 
-Sources: jayne `experiments/ladder_20260929_045715` (L1-L4), jayne `ladder_20260929_044231` (speech L5-L6),
-kaylee `ladder_20260929_044146_kaylee` (cifar L5, partial L6: 9 real legs, stopped).
+T3 syn_0/syn_0b/mobiperf × six × both datasets (`pool_fixB_verify_s1`, `_s2_kaylee`, `pool_clamp_verify_*`):
+K3b green on all 36 cells (max rel 0.038), EV green on all legs. Open reds: A6r on oort/oort_star/refl mobiperf
+(PR5, fix in tree). Run 4's board (`ladder_20260929_*`) is superseded.
 
-- **L1** green (known: oort T1 syn_50 EV1). **L4** green except injected gs_P11a (collision) and fedbuff P8 real EV17.
-- **L2/L3/L5** logical: felix, fedbuff, feddance near green on both datasets. Remaining logical reds: real EV17
-  (fedbuff/oort/oort_star syn_50) and speech sync oort/oort_star/refl `selection_detail`/`residence` (sim ~2 picks
-  in flight at commit vs real ~1.1). Timing (`overhead_residual`, `throughput`) red almost everywhere (FX-N43).
-- **Void legs (port collision, two ladders on jayne; fixed by leases):** gs_P11a sim, cifar T3_mobiperf_3st oort real,
-  gs_GS_syn_0_refl sim, gs_G0C_syn_0 felix real. Don't read those cells from run 4.
-- **L6** partial only: kaylee fedbuff cifar G0 syn_0 went NaN at round 150 (G0C twin finite; FX-N15). Convergence
-  can't be judged below 90 min (heterogeneous start is slow; operator).
-
-**Roots found in run 4 and fixed in tree (unmeasured until run 5)**
-
-| symptom | root | fix |
-|---|---|---|
-| felix/fedbuff sim syn_50 EV10 (6/3 legs), dup buffer adds | a late eval reply freed a trainer whose newer train was in flight | eval branch keeps it busy (`_last_task_sent`) |
-| same, plus EV11 past-dating (79/80 felix, 82/87 fedbuff while 2 tasks out) | due withheld update left `pending_withheld` at reinject, before commit; trainer re-picked | hold until commit (`sim_hold_withheld_until_commit`, default on) |
-| EV16 delivery_ts mismatch (felix 0370) | eviction estimate kept for an update finished while available | deliver at true completion (`sim_withheld_true_delivery`, default on) |
-| EV16 922 false unheld (hand re-grade) | checker read trace scale from its env | reads the run's `trace_time_scale` (L29) |
-| real EV17, real pool < sim | real selector timeout stamp re-based as epoch; evicted end never popped | avail clock; `commit_withheld` on receipt |
-| 4 void legs, gs_P11a join 3/15 | two pools took port 18830 two seconds apart | `Leases` + broker duplicate-id fail-fast |
-| oort mobiperf graded nothing | 0 commits in 240s (unaware oort waits out 90s) | CPU oort mobiperf legs 960s; coverage checks SKIP on 0 commits |
-| L6 G0C cells "sim MISSING" | report expected a sim leg | G0C graded real-only |
-| Ctrl+C left GPU legs alive | `subprocess.run` SIGKILLed the pool after 0.25s | ladder waits for pool teardown |
-
-**Measured, not a root:** speech sync real `aggregate()` 11.4s is recv wait for K; the commit itself is 0.065s
-median (p90 0.077s). The speech sync in-flight gap needs another root; run 5's `agg_timing` + `excluded_by` answer it.
-
-**New telemetry for run 5:** `agg_timing` per commit (recv wait / ingest / commit / other, both modes);
-selection `excluded_by` + per-trainer `excl`; `[JOIN_BARRIER]` joins by id.
+Landed 2026-09-30 (each default on, knob reverts): async sim commit order exact (`simOrderSlackSeconds` 0, EV11
+absolute); sim charges profiled per (dataset, harness, stack) from real legs (`profile_felix_charges.py` →
+`async_cifar10/sim_charge_profiles/`, `simDispatchLatencySeconds`, `SIM_CHARGES=legacy`); real async frees an
+ingested slot at SEND (`release_recvd_at_send`); clock clamp uses an arrived end's exact sct; checker times real from
+run start (K2/K8/U2).
 
 ## FluxTune scoreboard
 Parked with the track; its board still sits in simulate_fwdllm.md §A.
@@ -108,25 +100,24 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR1 · Read the operator's smoke · todo.** The smoke ran on jayne after the run-4 fixes. Green = gate PASS and the
-  felix pair commits on both legs on both datasets. Red → fix, re-smoke; nothing else launches.
-- **PR2 · Full pytest (R10) · todo.** Four suites (parent doc); must pass before PR3.
-- **PR3 · Run 5: 6h daytime, both nodes · todo (after PR1-PR2).** Hand the operator (from repo root):
+- **PR5 · Real trainer trace clock starts at join · fix in tree, verify overnight.** An undispatched real trainer
+  never started its trace clock (origin rode the first task) → A6r red on sync mobiperf. The aggregator now sends the
+  origin at the join barrier (`send_origin_at_join`; fwdllm off). *Confirms:* A6r green on oort/oort_star/refl mobiperf.
+- **PR4 · Overnight 2026-09-30: L1-L4 ∥ L5, split by node · running.** GPU charge profiles come from each node's
+  run-4 L5 real legs (T9), hence jayne = cifar L1-L4 ∥ speech L5, kaylee = speech L1-L4 ∥ cifar L5 (~3.5h). Launch
+  (repo root; `$L` as in Tools):
   ```
-  L="conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/parity_ladder.py"
-  # jayne (both lines in parallel; leases keep them apart)
-  $L --rungs L1-L4 --datasets all --keep-going --deadline-h 6                 # CPU, ~3.5-4h
-  $L --rungs L5 --datasets google_speech --keep-going --deadline-h 6          # 4 GPUs, ~4h
+  # jayne
+  $L --rungs L1-L4 --datasets cifar10 --keep-going --deadline-h 5
+  $L --rungs L5 --datasets google_speech --keep-going --deadline-h 5
   # kaylee
-  $L --rungs L5-L6 --datasets cifar10 --keep-going --deadline-h 6             # L5 ~2h, then L6 pairs until the deadline
+  $L --rungs L1-L4 --datasets google_speech --keep-going --deadline-h 5
+  $L --rungs L5 --datasets cifar10 --keep-going --deadline-h 5
   ```
-  Before handing over: `--dry-run` each and confirm the makespan line; L6 cifar will not finish in 6h (pairs are
-  ordered so the deadline drops whole pairs). *Predictions:* EV10/EV11/EV16 green on felix/fedbuff sim syn_50
-  (T3, L1) → delete the FX-N38 `KNOWN` row; EV17 green on every real leg; no broker `already connected` anywhere;
-  gs_P11a sim CAUGHT (EV10 FAIL, EV0 PASS, 15/15 joined); oort mobiperf ≥ 4 commits both legs; `agg_timing`
-  commit_s ≪ recv_wait_s on every stack; `excluded_by` names which hold differs on feddance/oort_star syn_50.
-  *Refutes:* any EV10 on syn_50 sims → a third re-pick path (read `[LATE_EVAL]` and `excl` of the re-picked end).
-- **PR4 · Regrade run 5 (C5) · after PR3.** Rewrite the scoreboard above; roots → items; then FX-N43 timing.
+  *Predictions:* L2/L3 stage 1 green on every cell; syn_50 EV10/EV11/EV16 green (→ delete FX-N38 `KNOWN`); EV17 green
+  on real legs; P11a-c CAUGHT; L5 K3b green with the GPU profiles. *Refutes:* a GPU cell K3b red → re-profile from
+  run 5's own L5 real legs.
+- **PR6 · Regrade run 5 (C5), then L6 only if L2-L5 have no open shared root.**
 
 **Blocked on the operator**
 - FX-N15 fedbuff server lr 40.9 (cifar, `fedbuff.py` table): keep or change (baseline-defining, T5).

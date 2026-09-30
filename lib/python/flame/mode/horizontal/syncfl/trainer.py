@@ -235,6 +235,15 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.debug(f"New message received for trainer_id {self.trainer_id}")
 
+        # FX-N45: the join-barrier trace origin carries no task.
+        if MessageType.AGG_START_TS in msg and MessageType.WEIGHTS not in msg and MessageType.ROUND not in msg:
+            self._agg_start_origin = msg[MessageType.AGG_START_TS]
+            if hasattr(self, "_refresh_avl_state"):
+                self._refresh_avl_state()
+            channel._selector.ordered_updates_recv_ends.append(end)
+            channel.cleanup_recvd_ends()
+            return
+
         # FX-D9: drop an answered request (version <= answered; a train answer covers eval), before any state change.
         _req_task = msg.get(MessageType.TASK_TO_PERFORM, self.task_to_perform)
         _req_ver = msg.get(MessageType.ROUND)

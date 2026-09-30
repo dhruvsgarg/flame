@@ -22,7 +22,7 @@ from collections import Counter, defaultdict
 import yaml
 
 _EPS_S = 0.05            # float slack on modeled durations
-_PASTDATE_SLACK_S = 2.0  # = _SIM_ORDER_SLACK_S
+_PASTDATE_SLACK_S = 1e-3  # absolute: the sim gate's own slack hid sub-2s past-dating (FX-D23, C6)
 _PASTDATE_MAX_FRAC = 0.01
 _BUDGET_FRAC = 0.85      # a run must reach this fraction of its budget
 _REGISTRY = os.path.join(os.path.dirname(__file__), "..", "..", "..", "_metadata",

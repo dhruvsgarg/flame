@@ -358,6 +358,21 @@ for e_src in cfg.get("experiments", []):
             h["trace_time_scale"] = float(os.environ["FLAME_TRACE_TIME_SCALE"])
         if delay_factor:
             e["trainer"].setdefault("hyperparameters", {})["training_delay_factor"] = float(delay_factor)
+        # FX-D23: profiled non-compute charges replace the per-baseline hand constants; SIM_CHARGES=legacy reverts.
+        _prof = os.path.join(scr, "..", "sim_charge_profiles",
+                             f"{harness_mode or 'gpu'}_{ds_name or 'cifar10'}.yaml")
+        if os.environ.get("SIM_CHARGES", "profiled") == "profiled" and os.path.exists(_prof):
+            from flame.mode.horizontal.sim_charge_registry import get_profiled_charge_s
+            _main = yaml.safe_load(open(os.path.join(meta_dir, "baselines.yaml"), encoding="utf-8"))[
+                "baselines"][bl]["example"]["aggregator_main"]
+            _stack = os.path.basename(_main)[len("main_"):-len("_agg.py")]
+            _leg = get_profiled_charge_s(_prof, "completion_leg", _stack)
+            _lat = get_profiled_charge_s(_prof, "dispatch_latency", _stack)
+            if _leg is not None and _lat is not None:
+                h.update(simDispatchLatencySeconds=_lat, simCommitOverheadSeconds=0.0,
+                         simRedispatchGapSeconds=0.0, simChargeProfilePath=os.path.abspath(_prof))
+                e["trainer"].setdefault("config_overrides", {}).setdefault(
+                    "hyperparameters", {})["simCompletionLegSeconds"] = _leg
         for kv in os.environ.get("AGG_HP", "").split():
             k, v = kv.split("=", 1)
             h[k] = yaml.safe_load(v)

@@ -49,7 +49,8 @@ def _make_agg(*, simulated: bool, min_trainers_to_start=None, n_joined=0):
         )
     )
     agg.agg_start_time_ts = time.time()
-    channel = types.SimpleNamespace(_ends={f"t{i}": None for i in range(n_joined)})
+    channel = types.SimpleNamespace(_ends={f"t{i}": None for i in range(n_joined)}, dumps=lambda m: m,
+                                    send_payload=lambda e, p: None)  # FX-N45 origin broadcast
     return agg, channel
 
 

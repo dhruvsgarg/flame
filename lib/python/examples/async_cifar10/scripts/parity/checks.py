@@ -735,7 +735,13 @@ def _side_clock_fn(agg_rounds: list, use_vclock: bool):
             else (lambda e: e.get("ts")))
 
 
-def _algorithmic_clock(agg_rounds: list, use_vclock: bool):
+def _run_origin_ts(side: dict):
+    """A side's wall run origin: its first train selection (= vclock 0), not its first commit (FX-D25)."""
+    ts = [e["ts"] for e in side.get("selection_train", []) if e.get("ts") is not None]
+    return min(ts) if ts else None
+
+
+def _algorithmic_clock(agg_rounds: list, use_vclock: bool, origin_ts=None):
     """`(time_fn, elapsed)` on one side's own clock, or `(None, None)`.
 
     `use_vclock=True` reads sim's vclock; False reads real's genuine algorithmic
@@ -756,7 +762,7 @@ def _algorithmic_clock(agg_rounds: list, use_vclock: bool):
     ts = [e["ts"] for e in agg_rounds if e.get("ts") is not None]
     if len(ts) < 2:
         return None, None
-    t0 = min(ts)
+    t0 = min(ts) if origin_ts is None else min(origin_ts, min(ts))
     return ((lambda e: (e["ts"] - t0) if e.get("ts") is not None else None),
             max(ts) - t0)
 
@@ -2789,7 +2795,7 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY
     across replicates, which is where its floor comes from (§D-72).
     """
     _b_time_fn, final_vclock = _algorithmic_clock(
-        sim["agg_rounds"], _b_uses_vclock(sim["agg_rounds"], same_mode))
+        sim["agg_rounds"], _b_uses_vclock(sim["agg_rounds"], same_mode), _run_origin_ts(sim))
     if _b_time_fn is None:
         return {"ok": False, "tier": "EXACT",
                 "note": ("no usable clock in the B-side agg_round events"
@@ -2809,7 +2815,7 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY
     # compares like-for-like vs the sim's rounds-per-vclock-second. A leg carrying
     # a vclock reads THAT, so a sim↔sim control compares two virtual clocks.
     _a_time_fn, wall_elapsed = _algorithmic_clock(real["agg_rounds"],
-                                                  _has_vclock(real["agg_rounds"]))
+                                                  _has_vclock(real["agg_rounds"]), _run_origin_ts(real))
     if _a_time_fn is None:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "insufficient real ts data (< 2 agg_round events)"}
@@ -3183,9 +3189,9 @@ def total_commits_parity(real: dict, sim: dict,
     on `terminal_state` (`_WARN_ONLY_CHECKS`, §D-64). `same_mode` as in K2.
     """
     real_time_fn, _ = _algorithmic_clock(real["agg_rounds"],
-                                         _has_vclock(real["agg_rounds"]))
+                                         _has_vclock(real["agg_rounds"]), _run_origin_ts(real))
     sim_time_fn, _ = _algorithmic_clock(
-        sim["agg_rounds"], _b_uses_vclock(sim["agg_rounds"], same_mode))
+        sim["agg_rounds"], _b_uses_vclock(sim["agg_rounds"], same_mode), _run_origin_ts(sim))
     if sim_time_fn is None:
         return {"ok": False, "tier": "EXACT",
                 "note": ("no usable clock in the B-side events" if same_mode
@@ -3235,9 +3241,9 @@ def terminal_state_parity(real: dict, sim: dict,
     `same_mode` as in K2 — it is what measures those floors.
     """
     real_time_fn, _ = _algorithmic_clock(real["agg_rounds"],
-                                         _has_vclock(real["agg_rounds"]))
+                                         _has_vclock(real["agg_rounds"]), _run_origin_ts(real))
     sim_time_fn, _ = _algorithmic_clock(
-        sim["agg_rounds"], _b_uses_vclock(sim["agg_rounds"], same_mode))
+        sim["agg_rounds"], _b_uses_vclock(sim["agg_rounds"], same_mode), _run_origin_ts(sim))
     if sim_time_fn is None:
         return {"ok": False, "tier": "EXACT",
                 "note": ("no usable clock in the B-side events" if same_mode else

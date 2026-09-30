@@ -227,5 +227,5 @@ class TestSyncStaysBatched:
         src = inspect.getsource(mod.TopAggregator._distribute_weights)
         # A sync round IS a synchronized cohort (barrier): one shared sim_send_ts,
         # never the async per-slot stagger.
-        assert '_sim_send_ts = getattr(self, "vclock_now", None)' in src
+        assert "_sim_send_ts = self._sim_send_stamp()" in src
         assert "_sim_staggered_redispatch" not in src

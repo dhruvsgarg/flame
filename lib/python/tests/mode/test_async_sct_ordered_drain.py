@@ -396,6 +396,32 @@ class TestColdStartGate:
         assert end == "A"  # B is known: earlier_stuck owns it, not the cold-start gate
 
 
+class TestOrderSlack:
+    """FX-D23: an in-flight end expected < 2s before the buffered min was skipped (past-dated commit)."""
+
+    def _commit_first(self, slack=None):
+        agg = _make_agg(sct_ordered_drain=True)
+        if slack is not None:
+            agg._sim_order_slack_s = slack
+        agg._sim_known_delay_s = {"A": 3.0, "B": 2.5}
+        agg._sim_inflight_expected = {"A": 3.0, "B": 2.5}
+        ch = _TimedChannel({"A", "B"}, [("A", 3.0, 0), ("B", 2.5, 2)])  # B lands two passes late
+        msg, (end, _) = agg._sim_recv_min(ch, ["A", "B"])
+        return end, agg._vclock.now
+
+    def test_zero_slack_holds_for_earlier_expected(self):
+        assert self._commit_first() == ("B", 2.5)
+
+    def test_legacy_slack_commits_past_it(self):
+        assert self._commit_first(slack=2.0) == ("A", 3.0)
+
+    def test_fwdllm_keeps_its_slack(self):
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator as FwdAgg
+        from flame.mode.horizontal.syncfl.top_aggregator import _SIM_ORDER_SLACK_S
+        assert FwdAgg._sim_order_slack_s == FwdAgg._SIM_ORDER_SLACK_DEFAULT_S == _SIM_ORDER_SLACK_S
+        assert TopAggregator._sim_order_slack_s == 0.0
+
+
 class TestRedispatchWithinCycle:
     """FX-D6: an end re-dispatched after committing in the same agg cycle stays ingestible."""
 
@@ -456,3 +482,24 @@ class TestIngestKeepsIdentityUntilAggregate:
 
     def test_legacy_frees_identity_at_ingest(self):
         assert "a" not in self._run(hold=False)._selector.all_selected
+
+
+class TestDispatchLatency:
+    """FX-D23: a sim send is stamped at vclock + the profiled dispatch latency (one helper, every stack)."""
+
+    def _agg(self, simulated, latency):
+        agg = _make_agg(sct_ordered_drain=True)
+        agg.simulated = simulated
+        agg.time_mode = "simulated" if simulated else "real"
+        agg._vclock.advance(5.0)
+        agg._sim_dispatch_latency_s = latency
+        return agg
+
+    def test_sim_stamp_adds_latency(self):
+        assert self._agg(True, 0.3)._sim_send_stamp() == pytest.approx(5.3)
+
+    def test_zero_latency_is_vclock(self):
+        assert self._agg(True, 0.0)._sim_send_stamp() == pytest.approx(5.0)
+
+    def test_real_mode_has_no_stamp(self):
+        assert self._agg(False, 0.3)._sim_send_stamp() is None

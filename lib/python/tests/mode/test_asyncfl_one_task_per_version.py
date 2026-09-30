@@ -181,3 +181,30 @@ class TestTrainerDiscard:
         t, ch, _ = self._trainer({"train": 5})
         self._fetch(t, ch, {MessageType.ROUND: 5, MessageType.EOT: True})
         assert t.fetch_success is True and t._work_done is True
+
+
+class TestTraceOriginAtJoin:
+    """FX-N45: an undispatched real trainer's trace clock never started (origin rode the first task)."""
+
+    def test_origin_message_sets_clock_without_a_task(self):
+        t, ch, cleaned = TestTrainerDiscard()._trainer({})
+        t._agg_start_origin = None
+        ch.recv = lambda end: ({MessageType.AGG_START_TS: 123.0}, None)
+        t._fetch_weights("fetch")
+        assert t._agg_start_origin == 123.0 and t.fetch_success is False and t._round == 3 and cleaned == [1]
+
+    def test_aggregator_sends_origin_to_every_joined_end_in_real_only(self):
+        from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator
+        sent = []
+        ch = SimpleNamespace(_ends={"a": 1, "b": 2}, dumps=lambda m: m,
+                             send_payload=lambda e, p: sent.append((e, p[MessageType.AGG_START_TS])))
+        agg = SimpleNamespace(simulated=False, send_origin_at_join=True, agg_start_time_ts=7.0)
+        TopAggregator._send_trace_origin(agg, ch)
+        assert sorted(sent) == [("a", 7.0), ("b", 7.0)]
+        agg.simulated, sent[:] = True, []
+        TopAggregator._send_trace_origin(agg, ch)
+        assert sent == []
+
+    def test_fwdllm_opts_out(self):
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator as FwdAgg
+        assert FwdAgg.send_origin_at_join is False

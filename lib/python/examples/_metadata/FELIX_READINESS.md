@@ -40,7 +40,7 @@ Per-cell parity scoreboard (logical and timing axes, run 3) and the roots of its
 | sync wait-K, round livelock | ✅ EV7 green all sync legs | FX-D20, FX-D21 |
 | async real ingest latency (< 2s) | ✅ run 3: max < 2s outside P7/P7o except 4 legs with one 2.2-3.2s update | FX-D16 |
 | GPU speech legs start (no OOM) | ✅ run 3 L5: EV green on all 24 GPU legs | FX-N34 |
-| sim clock charges profiled per dataset/platform | ⚠ hand-tuned constants; `agg_timing` telemetry landed | FX-N43 |
+| sim clock charges profiled per dataset/platform | ✅ K3b green 36/36 short cells (CPU); GPU in run 5 | FX-D23 |
 | DIST tolerances sized by a replicate floor | ⚠ nominal everywhere ("no floor yet") | FX-N42, parent S2 |
 | streaming / oracle experiment (FX-N13) | 🟡 cifar arms agree real/sim; speech arms starved | FX-N30, FX-N13 |
 | sim speedup vs real | ⬚ not measured at REF | S6, FX-N22 P8 |
@@ -135,11 +135,12 @@ pool tiers T1-T4: real aggregator + trainer processes over MQTT on CPU (stub/tin
 by the event checker and the parity battery. GPU tests = G0 (30 min screen at n 100/50, + G0C real replicates) and
 G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). "CPU+GPU" = one pool run with both.
 
-**Unblock map.** Every cell climbs on its own (C3). Run 4 (FX-N52) confirms the logical fixes → timing FX-N43 →
+**Unblock map.** Rungs climb in order, shared roots first, short runs to find and verify (PARITY C0). Run 5
+(L1-L5) →
 Q2 floors (gate DIST) → L6 = FX-N34 G0 screen → L7 = FX-N4 (G1) + FX-N5 (G2), + FX-N7 → FX-N6 + FX-N9 (GPU unavailability) → FX-N11 (speech GPU
 parity) → FX-N12. FX-N13 design can start any time.
 
-- **FX-N52 `[C][S]` · Run 5 · todo.** Queue, commands and predictions: [PARITY_READINESS.md](PARITY_READINESS.md) → Next steps.
+- **FX-N52 `[C][S]` · Run 5 (L1-L4 ∥ L5) · running.** Queue and predictions: [PARITY_READINESS.md](PARITY_READINESS.md) → Next steps.
 - **FX-N50 `[C]` · Pool identity: join barrier + real re-picks a send-gated trainer · wip: fixed in tree.** (a)
   `debug_run.sh` released the join barrier at n−8 (n−1 below 41): a sim ending in seconds never saw the stragglers real
   got by round 2 (sim refl cifar stuck at 93 of 100; the root of every L5 sync `eligibility` red and speech GPU oort's
@@ -176,22 +177,13 @@ parity) → FX-N12. FX-N13 design can start any time.
   L1 syn_50 EV1 is baseline behaviour (round 1: 1 of 3 accepted, wait-K runs to the budget), now in `KNOWN` under the
   P3 open question. *Exit:* run 4 syn_50 oort commits within 2× real↔sim; EV1 answered.
 - **FX-N42 `[S]` · Parity ladder · wip (PARITY_READINESS Active build: Q2-Q6).** *Exit:* Q2-Q6 done; a run graded per cell on both axes.
-- **FX-N43 `[C][S]` · Profiled sim clock charges (timing root) · todo.** `overhead_residual` is the lowest timing red on
-  27 of 32 red L2 pairs in run 3. The sim's non-compute clock charges are constants fitted on cifar GPU n=300 (June):
-  `simCompletionLegSeconds` 0.6 (pre-commit leg, "placeholder"), `simRedispatchGapSeconds` 0.6, `simCommitOverheadSeconds`
-  0.074 (`_metadata/baselines.yaml`). Real's per-update costs scale with update size, cohort, stack and platform
-  (directions: Status grid, "Why cells are red"). Replace each constant by a charge profiled per (dataset,
-  harness, platform) from real `LAG_DECOMP` (agg_to_trainer, mqtt_lag, queue_wait, process) with its provenance (L17);
-  port fwdllm's `profile_sim_charges.py` (parent S2). R9: gated, default off until A/B. *Exit:* L2 stage-1 rungs green
-  on every cell, both datasets.
 - **FX-N44 `[C]` · Real duration counted the send-gate wait · wip: fixed in tree.** Run 2 G0: the
   `trainer_speed_identity` misses were withheld trainers (real 50-1101s vs sim 5-21s); run 3 shows it steered unaware
   oort away from trainers that go offline (FX-N48). Offline time is not device speed (L6; the reference's durations come
   from device profiles), so real now excludes it: the trainer sends `SEND_GATE_WAIT_S` and `real_client_task_train_duration`
   subtracts it. *Exit:* `trainer_speed_identity` green on withheld trainers.
-- **FX-N45 `[C]` · Real trace fidelity on sync legs (A6r) · todo.** G0 oort/refl: 64 missed + 104-175 spurious
-  transitions, refl mean_err 0.18. Lead: a real trainer's trace clock holds at 0 until its first dispatch (FX-L44), and
-  sync legs dispatch few trainers. *Exit:* A6r green on every G0 leg, or shown to be telemetry-only.
+- **FX-N45 `[C]` · Real trace fidelity on sync legs (A6r) · fixed in tree (PARITY PR5; code cites FX-N45).** The trace origin now reaches
+  every trainer at the join barrier. *Exit:* A6r green on every G0 and mobiperf leg.
 - **FX-N38 `[C]` · Sim syn_50 one-in-flight/ordering · wip: 3 roots fixed in tree** (PARITY_READINESS run-4 roots).
   *Exit:* run 5 felix/fedbuff sim EV10/EV11/EV16 green; then delete its `KNOWN` row.
 - **FX-N41 `[C][S]` · Unavailability parity family · todo (after FX-N38).** Run 2 unavail CPU pairs, both datasets:
@@ -248,7 +240,7 @@ parity) → FX-N12. FX-N13 design can start any time.
   the 2024 JSON/scripts and the import script. Data: `<data_root>/google_speech/SpeechCommands/…` via
   `datasets.yaml` `data_roots` = `/coc/scratch/dgarg/fl_datasets` (verified complete by the pool gate). *Exit:* all six real+sim
   graded on speech (T4 CPU + G1/G2 GPU).
-- **FX-N19 · asyncfl sim serializes more than real at small n · todo (timing, after FX-N43).** From cifar T4,
+- **FX-N19 · asyncfl sim serializes more than real at small n · todo (timing; recheck after FX-D23).** From cifar T4,
   felix/fedbuff: sim per-commit advance is 13-32% above real (K3b: P1 felix 2.15 vs 1.88s, P1b fedbuff 0.88 vs 0.67s).
   Overlap is lower in sim (K4: P1b felix 6.0 vs 7.2, P2 4.4 vs 5.1), and U6 visibility lag is 0.2-0.4s in sim vs 0.006s in real. P3 mobiperf
   goes the other way: real overlap 1.0-1.25 vs sim 2.9-3.8. Don't widen (T7, R11). *Exit:* root-caused, or
@@ -436,7 +428,7 @@ parity) → FX-N12. FX-N13 design can start any time.
 
 **Harness and runs**
 - **FX-T31** Don't retune `simCompletionLegSeconds`, `simRedispatchGapSeconds` or `simCommitOverheadSeconds` to close a
-  clock rung: they are single-config fits; they become profiled charges (FX-N43).
+  clock rung: they are single-config fits; profiled charges replaced them (FX-D23).
 - **FX-T13** Don't grade a fedbuff/felix real run while another n=300 real run shares the broker (FX-N8).
 - **FX-T16** Don't re-chase GPU contention (overrun 0), SEND_TIMEOUT or MQTT drops at n=300 cifar; all
   measured 0.
@@ -460,6 +452,11 @@ parity) → FX-N12. FX-N13 design can start any time.
 IDs are kept because code comments cite them.
 
 **Simulator fidelity**
+- **FX-D23** Sim non-compute charges are profiled per (dataset, harness, stack) from real legs
+  (`scripts/profile_felix_charges.py` → `async_cifar10/sim_charge_profiles/`), applied to all six by `debug_run.sh`:
+  completion leg + dispatch latency (`SIM_CHARGES=legacy` reverts); async commit order exact (`simOrderSlackSeconds` 0).
+- **FX-D24** Real async frees an ingested trainer's slot at SEND, not one arrival later (`release_recvd_at_send`).
+- **FX-D25** Checker times both sides from run start (first train selection), not the first commit (K2/K8/U2).
 - **FX-D1** Core sim fidelity: sct-ordered drain, one-in-flight residence, oort carry-over, refl pool exclusion,
   intrinsic selector duration, UCB temporal term, faithful pacer, feddance barrier-anchored U6.
 - **FX-D4/D8** Cold-start gate (`simColdStartGate`, default on) and uncapped busy hold, freed on abandon/evict;

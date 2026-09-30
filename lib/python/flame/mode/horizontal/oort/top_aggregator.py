@@ -887,7 +887,7 @@ class TopAggregator(BaseTopAggregator):
         )
 
         # Same model goes to every recipient this round; build + serialize once.
-        _sim_send_ts = getattr(self, "vclock_now", None)
+        _sim_send_ts = self._sim_send_stamp()
         msg = {
             MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
             MessageType.ROUND: self._round,
