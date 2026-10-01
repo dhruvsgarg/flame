@@ -373,3 +373,20 @@ def test_deadline_cancel_after_dequeue_keeps_the_update(monkeypatch):
 
     assert run(True) == 1
     assert run(False) == 0, "legacy path drops it (the fixture must reproduce the loss)"
+
+
+def test_streamer_cancelled_before_readers_start_releases_ends():
+    """FX-N63: merge starts readers lazily; an early cancel must still free every end (real refl leaked all 37)."""
+
+    async def scenario():
+        ends = [f"e{i}" for i in range(30)]
+        ch = TestStreamerCleanup._make_bare_channel(ends)
+        ch._rx_queue = asyncio.Queue()
+        for _ in range(20):
+            t = asyncio.ensure_future(ch._streamer_for_recv_fifo(ends, timeout=5.0))
+            await asyncio.sleep(0)  # cancel after the adds, before merge has started every reader
+            t.cancel()
+            await asyncio.gather(t, return_exceptions=True)
+        return ch._active_recv_fifo_tasks
+
+    assert asyncio.run(scenario()) == set()

@@ -768,6 +768,7 @@ class Channel(object):
                 )
 
         runs = []
+        reader_ends = []
         skipped_ends = []
         for end_id in end_ids:
             if not self.has(end_id):
@@ -788,6 +789,7 @@ class Channel(object):
                 continue
 
             runs.append(_get_inner(end_id))
+            reader_ends.append(end_id)
             self._active_recv_fifo_tasks.add(end_id)
             logger.debug(
                 f"[RECV_FIFO] active task added for {end_id}, total runs: {len(runs)}"
@@ -802,21 +804,25 @@ class Channel(object):
         )
 
         merged = stream.merge(*runs)
-        async with merged.stream() as streamer:
-            msg_count = 0
-            async for result in streamer:
-                (end_id, payload) = result
-                # Active-task cleanup is handled in _get_inner's finally.
-                # Don't enqueue non-messages (timed-out / quiet ends): they
-                # would consume a first_k slot ahead of a real update. The
-                # caller's own timeout bounds how long it waits on the rx queue.
-                if payload is None or _RECV_FIFO_DIRECT_ENQUEUE:  # FX-N63: the reader enqueued it
-                    continue
-                msg_count += 1
-                await self._rx_queue.put(result)
-                logger.debug(
-                    f"[RECV_FIFO] delivered message {msg_count} from {end_id}"
-                )
+        msg_count = 0
+        try:
+            async with merged.stream() as streamer:
+                async for result in streamer:
+                    (end_id, payload) = result
+                    # Active-task cleanup is handled in _get_inner's finally.
+                    # Don't enqueue non-messages (timed-out / quiet ends): they
+                    # would consume a first_k slot ahead of a real update. The
+                    # caller's own timeout bounds how long it waits on the rx queue.
+                    if payload is None or _RECV_FIFO_DIRECT_ENQUEUE:  # FX-N63: the reader enqueued it
+                        continue
+                    msg_count += 1
+                    await self._rx_queue.put(result)
+                    logger.debug(
+                        f"[RECV_FIFO] delivered message {msg_count} from {end_id}"
+                    )
+        finally:
+            # FX-N63: merge starts readers lazily; one cancelled before it started never runs its finally.
+            self._active_recv_fifo_tasks.difference_update(reader_ends)
 
         logger.debug(
             f"[RECV_FIFO] Merge stream completed, delivered {msg_count} messages from {len(runs)} tasks"

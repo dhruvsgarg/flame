@@ -159,8 +159,8 @@ dataset (speech: 2024 used 60%).
 
 ## Next steps (persistent queue — top item is next)
 
-**Counter (2026-10-01, after run 6):** 20 open — 6 wip · 6 todo · 6 blocked · 2 other (FX-N13 parked design, FX-N8 likely closed).
-This session: 9 closed (FX-N15/N19/N41/N49/N55/N56/N57/N58 + FX-N61 opened and closed), 4 opened (FX-N59/N60/N62/N63).
+**Counter (2026-10-01, after PR8):** 18 open — 4 wip · 6 todo · 6 blocked · 2 other (FX-N13 parked design, FX-N8 likely closed).
+This session: 2 closed (FX-N59/N60), 0 opened; FX-N63 root revised (leaked reader slot), FX-N62 widened to fedbuff mobiperf.
 
 Work rule: PARITY C10 — each session resolves as many independent items below as it can, not just files new ones.
 
@@ -169,32 +169,24 @@ pool tiers T1-T4: real aggregator + trainer processes over MQTT on CPU (stub/tin
 by the event checker and the parity battery. GPU tests = G0 (30 min screen at n 100/50, + G0C real replicates) and
 G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). "CPU+GPU" = one pool run with both.
 
-**Unblock map.** PR8 verify (FX-N59/N60/N63) → run 7 = full L1-L5 (FX-N63 touches every real leg) → Q2 floors (gate
+**Unblock map.** PR8b verify (FX-N63) → run 7 = full L1-L5 (FX-N63 touches every real leg) → Q2 floors (gate
 DIST) → L6 = FX-N34 G0 screen → L7 = FX-N4 (G1) + FX-N5 (G2), + FX-N7 → FX-N6 + FX-N9 (GPU unavailability) → FX-N11
 (speech GPU parity) → FX-N12. FX-N13 design can start any time.
 
-- **FX-N59 `[C]` · Sim freed an unaware withheld pick's slot on arrival · wip: fixed in tree, verify (PARITY PR8).** The
-  held pick's update physically arrives in sim, so the channel marks it RECVD and the selector's FX-D24 `_drop_recvd`
-  frees the slot at the next select; real never receives it and holds the slot to dispatch+90s. On mobiperf (90% dead
-  picks) sim dispatched 9 dead picks at one vclock: real 3 rounds vs sim 122 in 240s (both datasets); syn_50: real 3
-  ~93s all-slots-dead stalls, sim 0 (K4 in flight 5.4 vs 4.9). → the hold resets the end to NONE (`sim_hold_withheld_slot`).
-  *Exit:* fedbuff syn_50 + mobiperf K4/K3b/K2 and matched_budget_coverage green, both datasets.
-- **FX-N60 `[C]` · Sim never ingested a felix-evicted end's update · wip: fixed in tree, verify (PR8).** An
-  `aware_boundary_eviction` leaves a payload-less ledger entry, and no `_sim_recv_min` probe set covers the evicted end,
-  so its update sat in the rx queue and the end stayed "withheld" (ineligible) for the rest of the run (0383/0384 from
-  vclock 150 to 1200). Sim withheld exclusions climbed 0.8 → 7.2 of 15 while real's stayed 3-4: A2 6.3 vs 6.9, K4 4.58
-  vs 5.16 (cifar). → `_sim_ingest_evicted_updates` buffers it (`sim_ingest_evicted`). *Exit:* felix syn_50 A2/K4/K2
-  green on both datasets; sim `withheld_delivery` count ≈ real's evictions.
-- **FX-N63 `[C][S]` · Real recv_fifo lost updates at its deadline cancel · wip: fixed in tree, verify (PR8 GS).**
-  `recv_fifo(deadline=)` cancels its streamer each round; an update dequeued from its End but not yet put on
-  `_rx_queue` was dropped. GPU speech refl syn_20: 23 of 1081 arrivals never processed = 23 `ABANDON_90S`, then held as
-  owed forever (eligible 17.7 vs sim 23.6, K3b 12.6%); syn_0 lost 4, oort_star 1, CPU legs 0. Real was wrong (C6). →
-  the reader enqueues on dequeue (`FLAME_RECV_FIFO_LEGACY=1` reverts). *Exit:* 0 lost arrivals on every real leg
-  (arrivals = processed); speech refl syn_20 K3b/A2 green.
-- **FX-N62 `[C]` · oort syn_50 T3 legs can't grade timing · blocked: long-run phase (PARITY C0.6).** Unaware oort waits
+- **FX-N63 `[C][S]` · Real recv_fifo leaked reader slots at its deadline cancel · wip: fixed in tree, verify (PARITY PR8b).**
+  `recv_fifo(deadline=)` cancels its streamer each round; aiostream's merge starts readers lazily, so a reader cancelled
+  before it started never ran its `finally` and its end stayed in `_active_recv_fifo_tasks`: skipped ("already has active
+  task") by every later recv, its update never read, then held as owed forever. Run 6 speech refl syn_20: 23 leaked = 23
+  `ABANDON_90S` (eligible 17.7 vs 23.6); PR8 (`pool_fxn63_verify`, enqueue-on-dequeue in): all 37 leaked, real 42 rounds
+  vs sim 216 (run 6 real 189). → the streamer releases its ends in a `finally` (+ the reader enqueues on dequeue,
+  `FLAME_RECV_FIFO_LEGACY=1` reverts that half). *Exit:* `active_task_skips` ≈ 0 and arrivals = processed on every sync
+  real leg; speech refl syn_0/syn_20 K4/K3b/A2 green.
+- **FX-N62 `[C]` · Unaware short legs can't grade timing · blocked: long-run phase (PARITY C0.6).** Unaware oort waits
   out a 90s timeout on most syn_50 rounds: 11-18 rounds per 1200s leg, ~6 stall-free; stall counts match (5/6, 6/7).
-  KNOWN in the ladder. Operator: run a ~3h oort-only syn_50 leg once short-run roots are exhausted, beside the other long
-  legs. *Exit:* a graded oort unavail timing cell.
+  fedbuff mobiperf (240s): 3 real vs 2 sim rounds, all stalls (K3b/S3/4 red on < 20 commits, `pool_fxn59_verify`). With
+  2-3 stalls a leg, one alive pick splitting a stall moves K3b's stall-free mean 16% (speech fedbuff syn_50). KNOWN in the
+  ladder for oort. Operator: run ~3h oort syn_50 + fedbuff mobiperf legs once short-run roots are exhausted, beside the
+  other long legs. *Exit:* graded unaware unavail timing cells.
 - **FX-N42 `[S]` · Parity ladder · wip (PARITY_READINESS Active build: Q2-Q6).** *Exit:* Q2-Q6 done; a run graded per cell on both axes.
 - **FX-N33 `[C][S]` · Aggregator aborts at interpreter exit · todo (root open).** After a clean channel leave:
   `terminate called without an active exception` → `Fatal Python error: Aborted` (a C++ thread destroyed while
@@ -279,7 +271,7 @@ update is accepted only under the baseline's own rule (REFL staleness ≤ 5; oor
 - **FX-L32** A dispatch consumes the end's earlier receipt (eval reply, commit) and its RECVD state; else cleanup or
   recv frees the in-flight trainer and it is re-dispatched (FX-D16 22s tail; late withheld commits, FX-D16).
 - **FX-L45** In sim, arrival is not receipt: an update real can't have received yet (withheld, evicted) must leave
-  channel and selector state as real's unanswered dispatch (FX-N59, FX-N60).
+  channel and selector state as real's unanswered dispatch (FX-D34).
 - **FX-L10** Split eval from train in any check that reads `agg_rounds`. Each eval gets its own `sct`,
   never the last train `sct`.
 - **FX-L30** Anything replaying trainer data (oracle, replay) reads the trainers' stream clock: vclock in sim,
@@ -337,8 +329,8 @@ update is accepted only under the baseline's own rule (REFL staleness ≤ 5; oor
 **Reading the checker**
 - **FX-L46** Decompose a sync clock residual first: 2-9 ninety-second timeout stalls dominate a syn_50 mean; compare
   stall-free advance and stall count separately (FX-N62).
-- **FX-L47** Audit real's receive path per leg: arrivals vs processed updates. An abandoned end whose update arrived is a
-  lost message, not a slow trainer (FX-N63).
+- **FX-L47** Audit real's receive path per leg: arrivals vs processed, and `active_task_skips`. An abandoned end whose
+  update arrived is a lost message; growing skips mean a leaked reader slot (FX-N63).
 - **FX-L29** Stub legs charge a seeded compute span (`flame.harness.stub_compute_s`, fit to run_20260702 real). Those
   runs fell back to CPU (CUDA failed to start before S0), so refit it from a G0/G1 real leg (L17).
 - **FX-L16** A2 failing (KS) while S3/4 passes is one in-flight gap graded at two tolerances; walk to
@@ -447,6 +439,10 @@ IDs are kept because code comments cite them.
   UN_AVL at the trace level (0.51/0.53 at selection, EV17 green); asyncfl holds a withheld pick's slot to dispatch+90s;
   syncfl discards stale updates (`sync_accept_stale`); each baseline's `[TRAINER_HP]` equals its `datasets.yaml`
   `by_baseline` row on every leg; fedbuff EV14 green on all CPU+GPU legs (`ladder_20261001_051724`, `_051427`).
+- **FX-D34** (code cites FX-N59/N60) Sim leaves an unanswered dispatch's channel/selector state as real does: an unaware
+  withheld pick holds its slot (`sim_hold_withheld_slot`; mobiperf fedbuff real 3 vs sim 2 rounds, was 3 vs 122), and a
+  felix-evicted end's update is ingested (`sim_ingest_evicted`; felix syn_50 A2 6.9/6.9, K2/K4 green, both datasets;
+  `pool_fxn59_verify`).
 - **FX-D33** (code cites FX-N41/N61/N62) Checker: A7 commit and selection beliefs are graded at their own instant (±1s);
   K2/K3/K3b grade stall-free rounds (< 72s) and K3s grades the ≥72s timeout-stall rate (Poisson 2σ + 1). Run-6 regrade:
   sync syn_50 stage 1 green on feddance/refl/oort_star, both datasets.
