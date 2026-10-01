@@ -133,3 +133,6 @@ temp_trainer.log
 # Smoke-mode sim charge profiles: built from 10-minute real runs, never valid
 # for a scored arm (expt_scripts/nodes/run_node.sh).
 lib/python/examples/fwdllm/sim_charge_profiles/smoke/
+
+# Reference papers (local only)
+lib/python/examples/*.pdf

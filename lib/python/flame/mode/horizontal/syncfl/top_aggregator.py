@@ -242,6 +242,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # (mirrors asyncfl's _sim_buffer; stays empty when gate is off).
         self._sim_buffer = SimReorderBuffer()
         self._sim_committed: set = set()
+        # FX-N57: sync baselines discard stale updates (Oort-style); True reverts to accepting them.
+        self._sync_accept_stale = str(getattr(self.config.hyperparameters, "sync_accept_stale", False)).lower() == "true"
 
         # Shared per-trainer delay cache (end -> MODELED_DELAY_S). No
         # cross-trainer fallback -- an unseen end has no entry.
@@ -804,11 +806,15 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
             logger.debug(f"{end}'s parameters trained with {count} samples")
 
+            _trained_ver = msg.get(MessageType.MODEL_VERSION, self._round)
+            if weights is not None and self._round - _trained_ver > 0 and not getattr(self, "_sync_accept_stale", False):
+                # FX-N57: a sync baseline (FedAvg, FedDance) takes no stale update; it neither aggregates nor counts to K.
+                logger.info(f"[MSG_SKIP] stale update from {end[-4:]} (trained v{_trained_ver}, now v{self._round})")
+                weights = None
             if weights is not None and count > 0:
                 total += count
                 # Stamp the trained-on version so staleness = self._round - version is
                 # real; without it version defaults to 0 and staleness == round number.
-                _trained_ver = msg.get(MessageType.MODEL_VERSION, self._round)
                 tres = TrainResult(weights, count, version=_trained_ver)
                 _cs0 = time.time()
                 self.cache[end] = tres   # in-memory (MemCache)

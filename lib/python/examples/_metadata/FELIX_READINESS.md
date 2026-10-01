@@ -129,7 +129,7 @@ P7/P7o checkpoints are FX-N13 replay input.
 
 ## Next steps (persistent queue — top item is next)
 
-**Counter (2026-10-01):** 24 open — 8 wip (fixed in tree, awaiting a run) · 7 todo · 7 blocked · 2 other (FX-N13 design,
+**Counter (2026-10-01):** 24 open — 10 wip (fixed in tree, awaiting a run) · 7 todo · 5 blocked · 2 other (FX-N13 design,
 FX-N8 likely closed). This session: 16 closed (FX-N26/N32/N35/N38/N44/N45/N46/N48/N50/N51/N52/N53/N54 + PR4/PR5), 5 opened (FX-N55/N56/N57/N58 + C10).
 
 Work rule: PARITY C10 — each session resolves as many independent items below as it can, not just files new ones.
@@ -159,10 +159,11 @@ parity) → FX-N12. FX-N13 design can start any time.
   starvation wake-up. `pool_fxn56d_verify`: stage 1 green on 3 of 4 syn_50 cells; fedbuff sim EV10 (a selector-timeout
   reclaim left a held end out of both slot and identity hold) → held set synced to `all_selected` (T1 EV green).
   *Exit:* fedbuff syn_50 K2/K3b/K4 green (run 6).
-- **FX-N57 `[C]` · feddance: late updates vs K differ real↔sim · blocked: operator (open question 3).** Real syncfl counts a
-  withheld delivery toward K (round 101: 0384 at staleness 31 filled K, carrying a fresh pick), then sustains 3 new + 2
-  carried per round (in flight 4.03 vs sim 3.15; real 3.3 vs sim 4.15 s/round). Sim `_sync_sim_recv_first_k` commits
-  deliveries as a bonus beyond K and drops popped stragglers. *Exit:* one rule on both sides; feddance syn_50 K2 green.
+- **FX-N57 `[C]` · Sync baselines took stale updates · wip: fixed in tree, verify (`pool_fxn57_t3`, run 6).** Real syncfl
+  counted a withheld delivery toward K (feddance round 101: staleness 31), sim aggregated it as a bonus. Operator: accept a
+  late update only if the baseline's own rule allows it (REFL ≤ 5, oort none); FedDance is sync and never mentions stale
+  updates → discard, like oort. → syncfl discards any stale update on both sides (`sync_accept_stale`, default false).
+  *Exit:* feddance syn_50 K2 green; real in flight ≈ sim.
 - **FX-N41 `[C][S]` · Unavailability parity family · wip: stage-2 checker roots fixed, verify (PR6).** syn_50 stage 2
   was red on every cell; three were checker artifacts: A5 (normalized bins on the 150s trace steps → absolute time,
   graded where both sides observed within 30s), A7 commit (each commit vouched 30s past a pre-boundary commit; 0 of
@@ -210,10 +211,11 @@ parity) → FX-N12. FX-N13 design can start any time.
   per dataset, over the dataset defaults); cifar fedbuff = 0.000195, no decay: `pool_fxn15_lr` syn_0/syn_0b pairs all
   green, real test loss 2.30 at round 50 (was NaN). Launch logs every lr/batch/optimizer knob with its source (`[HP]`);
   trainers log `[TRAINER_HP]`, fedbuff `[SERVER_LR]`. *Exit:* run 6 fedbuff EV14 green on every leg; then drop the `KNOWN` row.
-- **FX-N58 `[C]` · Trainer lr decay never applied · blocked: operator (open question 4).** The template sets
-  `lrDecayEnabled/lrDecayFactor/lrDecayEpoch/minLearningRate` for oort, oort_star, refl, feddance, fedbuff, but `Hyperparameters`
-  has no alias for them, so `lr_decay_enabled` is always False (both modes; parity blind). Trainers now warn. *Exit:* aliases
-  added and each baseline's decay set per its reference in `by_baseline`.
+- **FX-N58 `[C]` · Baseline hyperparameters from their sources · wip: fixed in tree, verify (`pool_hpval_t1`, run 6).**
+  `lrDecay*`/`minLearningRate` had no alias (decay never ran); every baseline ran the template's lr 0.01 / batch 10.
+  → aliases (decay default off) + `trainerOptimizer`; `datasets.yaml` `by_baseline` carries each baseline's
+  paper/repo/our-2024 values per dataset, each field tagged with its source; `[HP]`/`[TRAINER_HP]`/`[SERVER_LR]` log them.
+  *Exit:* every leg's `[TRAINER_HP]` equals its `by_baseline` row (both datasets).
 - **FX-N13 · Streaming motivation experiment, both datasets · design after FX-N22 + FX-N10.** Show (a) per-trainer
   statistical utility changes as data streams in, (b) an unaware aggregator mis-selects, (c) one that tracks but
   mis-estimates utility still mis-selects. Pipeline: P7/P7o + `scripts/oracle_misselection.py` +
@@ -233,6 +235,18 @@ parity) → FX-N12. FX-N13 design can start any time.
 - **FX-N12 · Felix paper experiments, sim-only · blocked: FX-N11, FX-N22 P8.** List: open question below.
 
 ---
+
+## Baseline hyperparameters (note, operator 2026-10-01)
+
+Source of truth: `datasets.yaml` `by_baseline` (each field tagged [paper]/[repo]/[ours]); shared defaults are listed in its
+header. Rules: a baseline uses its paper's values per dataset; lr decay only where the baseline configures it (REFL); a late
+update is accepted only under the baseline's own rule (REFL staleness ≤ 5; oort, oort_star, feddance none). Judgement calls:
+- REFL speech lr: paper Table 1 0.005 used; its repo config says 0.05.
+- REFL staleness: paper default is no bound (≤ 5 only in its §3.2 study); kept `stale_update: 5` (operator).
+- Oort/FedDance/REFL defer other knobs to FedScale defaults, which include lr decay 0.98/10; decay kept off except REFL (operator rule).
+- Speech felix: the 2024 runs used Adam 0.04 (`_48h_oort` trainers), which stays at chance in a centralized check (FX-T27); kept 0.000195.
+- The SGD papers' speech values run with `trainerOptimizer: sgd`; felix/fedbuff keep the dataset's Adam.
+- Models differ from some papers (REFL/FedDance use ResNet18 on CIFAR-10; ours is CifarNet), so their lrs are a starting point, not a guarantee.
 
 ## Felix lessons (dos)
 
@@ -481,17 +495,8 @@ IDs are kept because code comments cite them.
   launcher (FX-N10).
 
 ## Open questions (operator)
-- (4) Trainer lr decay (FX-N58): which baselines use it? Trainer code says REFL yes, Oort no; the template enables it for
-  oort, oort_star, refl, feddance and fedbuff. Recommended: per each reference (REFL on; Oort, oort_star, fedbuff off;
-  feddance per its paper).
-- (5) Tuned client lr per baseline × dataset (FX-N15 class): felix/oort (`use_oort_lr`) server lr 0.3 (cifar) / 0.065 (speech)
-  run with client lr 0.01 (cifar) / 0.000195 (speech); speech's 2024 "_oort" value was 0.04 (stays at chance). What client lr
-  was each server lr tuned with?
+
 - Felix paper experiment list, and the exact streaming-experiment design (FX-N13), once FX-N22 and FX-N10 land.
 - Make `real_drain_ready_ingest` the default (R9)? Cifar T4 P9 vs P1: RECV_FIFO skips 887→0 (fedbuff) and 908→0
   (felix); queue_wait p99 0.028 vs 0.035s (fedbuff) and 0.019 vs 0.025s (felix); fedbuff parity 0.984 vs 0.952; no new EV fail.
   Speech P9 is mixed: skips go to 0, but felix p99 is 0.286s vs 0.186s (P1), and speech P1 fedbuff is void (shared run dir, FX-D13).
-- Sync wait-K: real counts a late (abandoned, older-version) update toward K at the current version; sim syncfl commits
-  it as a bonus beyond K (FX-N57). Which rule? Recommended: only updates trained on the version count toward K.
-- Sync wait-K: a pick still in flight when its version commits is received at the next version, and distribute still
-  picks K new there (feddance in flight up to 5 at K=3, `pool_local_fxn37e`). Keep that, or count carried picks toward K?

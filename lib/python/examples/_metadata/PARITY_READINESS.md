@@ -111,14 +111,9 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
   K3b green with the profiles. *Refutes:* a GPU cell K3b red → re-profile from run 6's own L5 real legs.
 - **PR8 · Regrade run 6 (C5), then L6 only if L2-L5 have no open shared root.**
 
-**Blocked on the operator**
-- FX-N57 sync wait-K: does a late (older-version) update count toward K? Recommended: no — K is the version's quorum of
-  updates trained on it; a late one commits as a bonus (sim syncfl today); real syncfl and the oort stack then change.
-- FX-N58 trainer lr decay per baseline; tuned client lr per baseline × dataset (FELIX open questions 4-5).
-- S5 knob layout: (a) `baselines.yaml` = what a baseline is; `datasets.yaml` gets `defaults` + per-baseline tuned
-  values (trainer lr, batch, epochs, server lr, c, aggGoal, round_threshold); code tables move to config; a tool prints
-  the resolved baseline × dataset matrix with each value's source and diffs it against a run's config. (b) the same
-  in one new `knobs.yaml`. Recommended: (a).
+**Operator decisions / open**
+- S5 knob layout: (a) adopted (operator 2026-10-01): `datasets.yaml` holds dataset defaults + `by_baseline` tuned values
+  with sources; left: move the `fedbuff.py` server-lr table into config, and a tool printing the resolved matrix.
 
 ---
 

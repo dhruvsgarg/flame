@@ -146,6 +146,12 @@ class BaseModel(FlameSchema):
 class Hyperparameters(FlameSchema, extra=Extra.allow):
     batch_size: t.Optional[int] = Field(alias="batchSize", default=None)
     learning_rate: t.Optional[float] = Field(alias="learningRate", default=None)
+    # FX-N58: trainer lr decay, off unless a baseline configures it (REFL); unaliased keys were silently ignored.
+    lr_decay_enabled: bool = Field(alias="lrDecayEnabled", default=False)
+    lr_decay_factor: float = Field(alias="lrDecayFactor", default=0.98)
+    lr_decay_epoch: int = Field(alias="lrDecayEpoch", default=10)
+    min_learning_rate: float = Field(alias="minLearningRate", default=1e-4)
+    trainer_optimizer: t.Optional[str] = Field(alias="trainerOptimizer", default=None)  # sgd | adam; None = dataset's
     weight_decay: t.Optional[float] = Field(alias="weightDecay", default=None)
     rounds: int
     epochs: int

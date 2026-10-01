@@ -105,12 +105,10 @@ class PyTorchCifar10Trainer(Trainer):
         self.lr_decay_epoch = getattr(self.config.hyperparameters, 'lr_decay_epoch', 10)
         self.min_learning_rate = getattr(self.config.hyperparameters, 'min_learning_rate', 1e-4)
         _hp = self.config.hyperparameters
-        logger.info(f"[TRAINER_HP] lr={self.learning_rate} batch={self.batch_size} epochs={self.epochs} "
+        logger.info(f"[TRAINER_HP] optimizer={self._optimizer_name()} lr={self.learning_rate} batch={self.batch_size} "
+                    f"epochs={self.epochs} "
                     f"lr_decay={self.lr_decay_enabled} (factor={self.lr_decay_factor}, every={self.lr_decay_epoch}, "
                     f"min={self.min_learning_rate})")
-        _ignored = [k for k in ("lrDecayEnabled", "lrDecayFactor", "lrDecayEpoch", "minLearningRate") if hasattr(_hp, k)]
-        if _ignored:  # FX-N15: camelCase keys have no alias, so the trainer never reads them
-            logger.warning(f"[TRAINER_HP] config keys ignored (no alias): {_ignored}")
 
         self.criterion = None
 
@@ -449,11 +447,15 @@ class PyTorchCifar10Trainer(Trainer):
             f"{time.time()}"
         )
 
+    def _optimizer_name(self) -> str:
+        """Trainer-local optimizer: the baseline's `trainerOptimizer` if set (FX-N58), else the dataset's (fl_data)."""
+        return (getattr(self.config.hyperparameters, "trainer_optimizer", None) or self.data_spec.optimizer).lower()
+
     def _warmup_device(self) -> None:
         """FX-D15: pay driver/kernel init before any timed task: one dummy train step, weights restored."""
         t0 = time.time()
         # FX-N26: the first optimizer ctor lazily imports torch._dynamo (~1.3s), else charged to task 1.
-        (torch.optim.Adam if self.data_spec.optimizer == "adam" else torch.optim.SGD)(
+        (torch.optim.Adam if self._optimizer_name() == "adam" else torch.optim.SGD)(
             self.model.parameters(), lr=getattr(self, "learning_rate", 0.01))
         if self.device is None:
             return
@@ -781,7 +783,7 @@ class PyTorchCifar10Trainer(Trainer):
             logger.debug(f"Trainer {self.trainer_id}: Using base LR {current_lr}")
         
         _pre["stream"] = time.time() - _phase_train_entry
-        opt = torch.optim.Adam if self.data_spec.optimizer == "adam" else torch.optim.SGD
+        opt = torch.optim.Adam if self._optimizer_name() == "adam" else torch.optim.SGD
         self.optimizer = opt(self.model.parameters(), lr=current_lr)
         _pre["opt"] = time.time() - _phase_train_entry
 

@@ -225,10 +225,6 @@ experiments:
     hyperparameters:
       batchSize: 10
       learningRate: 0.01
-      lrDecayEnabled: true
-      lrDecayFactor: 0.98
-      lrDecayEpoch: 10
-      minLearningRate: 0.0001
     config_overrides:
       hyperparameters:
         data_streaming:
@@ -299,10 +295,6 @@ experiments:
     hyperparameters:
       batchSize: 10
       learningRate: 0.01
-      lrDecayEnabled: true
-      lrDecayFactor: 0.98
-      lrDecayEpoch: 10
-      minLearningRate: 0.0001
     config_overrides:
       hyperparameters:
         data_streaming:
@@ -368,10 +360,6 @@ experiments:
     hyperparameters:
       batchSize: 10
       learningRate: 0.01
-      lrDecayEnabled: true
-      lrDecayFactor: 0.98
-      lrDecayEpoch: 10
-      minLearningRate: 0.0001
     config_overrides:
       hyperparameters:
         data_streaming:
@@ -456,10 +444,6 @@ experiments:
     hyperparameters:
       batchSize: 10
       learningRate: 0.01
-      lrDecayEnabled: true
-      lrDecayFactor: 0.98
-      lrDecayEpoch: 10
-      minLearningRate: 0.0001
     config_overrides:
       hyperparameters:
         data_streaming:
@@ -530,10 +514,6 @@ experiments:
     hyperparameters:
       batchSize: 10
       learningRate: 0.01
-      lrDecayEnabled: true
-      lrDecayFactor: 0.98
-      lrDecayEpoch: 10
-      minLearningRate: 0.0001
     config_overrides:
       hyperparameters:
         data_streaming:
@@ -597,10 +577,6 @@ experiments:
     hyperparameters:
       batchSize: 10
       learningRate: 0.01
-      lrDecayEnabled: true
-      lrDecayFactor: 0.98
-      lrDecayEpoch: 10
-      minLearningRate: 0.0001
     config_overrides:
       hyperparameters:
         data_streaming:
@@ -668,10 +644,6 @@ experiments:
     hyperparameters:
       batchSize: 10
       learningRate: 0.01
-      lrDecayEnabled: true
-      lrDecayFactor: 0.98
-      lrDecayEpoch: 10
-      minLearningRate: 0.0001
     config_overrides:
       hyperparameters:
         data_streaming:
@@ -736,10 +708,6 @@ experiments:
     hyperparameters:
       batchSize: 10
       learningRate: 0.01
-      lrDecayEnabled: true
-      lrDecayFactor: 0.98
-      lrDecayEpoch: 10
-      minLearningRate: 0.0001
     config_overrides:
       hyperparameters:
         data_streaming:
@@ -806,10 +774,6 @@ experiments:
       # LR schedule matches felix and all other async cifar10 runs.
       batchSize: 10
       learningRate: 0.01
-      lrDecayEnabled: true
-      lrDecayFactor: 0.98
-      lrDecayEpoch: 10
-      minLearningRate: 0.0001
     config_overrides:
       hyperparameters:
         data_streaming:
@@ -884,10 +848,6 @@ experiments:
       # LR schedule matches felix and all other async cifar10 runs.
       batchSize: 10
       learningRate: 0.01
-      lrDecayEnabled: true
-      lrDecayFactor: 0.98
-      lrDecayEpoch: 10
-      minLearningRate: 0.0001
     config_overrides:
       hyperparameters:
         data_streaming:

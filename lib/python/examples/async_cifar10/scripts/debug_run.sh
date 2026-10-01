@@ -221,7 +221,7 @@ def _leaves(d, pre=""):
 
 def _log_hp_sources(bl, ds, e, layers):
     """FX-N15: print every lr/optimizer/batch knob a baseline runs with and the layer that set it (else template)."""
-    keys = ("learningRate", "lrDecay", "minLearningRate", "batchSize", "optimizer.", "dataset_name", "agg_goal")
+    keys = ("learningRate", "lrDecay", "minLearningRate", "batchSize", "optimizer.", "Optimizer", "dataset_name", "agg_goal")
     src = {k: s for s, ov in layers for k, _ in _leaves(ov)}
     for k, v in sorted(_leaves({"trainer": e.get("trainer", {}), "aggregator": e.get("aggregator", {})})):
         if any(t in k for t in keys):
