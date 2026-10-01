@@ -292,6 +292,7 @@ class AsyncSelectorBase(AbstractSelector):
         """
         # getattr-guarded: test doubles built via __new__ skip __init__.
         timeout_s = getattr(self, "send_timeout_wait_s", SEND_TIMEOUT_WAIT_S)
+        self._reclaimed_now = set()  # FX-N55: freed slot, not freed identity -- not re-pickable this pass
         for end in list(self.all_selected.keys()):
             now_s = self._abandon_clock_now()
             if end not in self.all_selected:
@@ -313,6 +314,7 @@ class AsyncSelectorBase(AbstractSelector):
             )
             del self.all_selected[end]
             selected_ends.discard(end)
+            self._reclaimed_now.add(end)
             # FX-D9: timeout stamp, read by the aggregator's task_retry_policy.
             if not hasattr(self, "timed_out_at"):
                 self.timed_out_at = {}
@@ -361,12 +363,12 @@ class AsyncSelectorBase(AbstractSelector):
         candidates = {}
         n_ineligible = 0
         for end_id, end in ends.items():
-            if end_id in self.all_selected or end_id in pending:
+            if end_id in self.all_selected or end_id in pending or end_id in getattr(self, "_reclaimed_now", ()):
                 continue
             avl_state = end.get_property(PROP_AVL_STATE)
             # None avl_state == no heartbeat state set -> always eligible,
             # matching trainers without availability tracking.
-            if avl_state is not None and avl_state not in eligible_states:
+            if self.filter_by_avl_state and avl_state is not None and avl_state not in eligible_states:
                 n_ineligible += 1
                 continue
             if not self._task_extra_eligible(end_id, end, ctx):
@@ -395,6 +397,7 @@ class AsyncSelectorBase(AbstractSelector):
         return True
 
     release_recvd_at_send = True  # FX-D24; False = legacy one-arrival refill lag
+    filter_by_avl_state = True  # FX-N55: the aggregator clears it for an unaware baseline
 
     @staticmethod
     def _drop_recvd(selected_ends: set, ends: dict[str, End]) -> None:

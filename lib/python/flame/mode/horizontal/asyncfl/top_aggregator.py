@@ -22,6 +22,7 @@ from collections import deque
 from datetime import datetime, timedelta
 
 import numpy as np
+from flame.availability.client_availability import _AVAIL_ABANDON_TIMEOUT_S
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame import harness
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD
@@ -118,6 +119,14 @@ class TopAggregator(SyncTopAgg):
         # FX-N46: sim holds an ingested trainer's identity until the agg-goal cleanup, as real does.
         self._sim_identity_until_aggregate = str(
             getattr(self.config.hyperparameters, "sim_identity_until_aggregate", True)).lower() == "true"
+        # FX-N54: with no recv end, a due withheld delivery is work to commit, not starvation.
+        self._sim_reinject_when_idle = str(
+            getattr(self.config.hyperparameters, "sim_reinject_when_idle", True)).lower() == "true"
+        self._unaware_ignores_trace = str(
+            getattr(self.config.hyperparameters, "unaware_ignores_trace", True)).lower() == "true"
+        # FX-N56: an unaware baseline's withheld trainer keeps its slot until its 90s timeout, as in real.
+        self._sim_hold_withheld_slot = str(
+            getattr(self.config.hyperparameters, "sim_hold_withheld_slot", True)).lower() == "true"
 
         self._updates_in_queue = 0
         self._updates_recevied = {}
@@ -703,6 +712,10 @@ class TopAggregator(SyncTopAgg):
             recv_ends = [e for e in recv_ends if channel.has(e)]
         if not self.simulated:
             recv_ends = self._with_arrived_ends(channel, recv_ends)
+        if self.simulated and recv_ends:  # FX-N56: a held pick's update is in the delivery ledger, not the channel
+            recv_ends = [e for e in recv_ends if e not in self._withheld_slot_held]
+        if not recv_ends and self.simulated and getattr(self, "_sim_reinject_when_idle", True):
+            self._sim_reinject_ready_withheld()  # FX-N54
         if not recv_ends:
             if self.simulated and len(self._sim_buffer) > 0:
                 recv_ends = []  # buffer still has entries to drain — don't block
@@ -714,6 +727,12 @@ class TopAggregator(SyncTopAgg):
                 # wall-sleeping — covers felix and fedbuff asyncfl starvation paths.
                 if self.simulated and self.trainer_event_dict is not None:
                     _nxt = self._next_avail_vclock()
+                    # FX-N56: a held pick's 90s timeout frees its slot, so it is a wake-up too (FX-L25).
+                    _sst = [self._avail_send_ts(channel, e) for e in self._withheld_slot_held]
+                    _exp = [t + _AVAIL_ABANDON_TIMEOUT_S + 1e-6 for t in _sst
+                            if t is not None and t + _AVAIL_ABANDON_TIMEOUT_S >= self._vclock.now]
+                    if _exp:
+                        _nxt = min(_exp) if _nxt is None else min(_nxt, min(_exp))
                     _budget = float(
                         getattr(self.config.hyperparameters, "max_experiment_runtime_s", float("inf"))
                     )
@@ -1500,6 +1519,7 @@ class TopAggregator(SyncTopAgg):
         if self._inflight_residence:
             held = pending_in_buffer | set(self._sim_inflight_expected)
             held |= self._sim_cold_start_busy()  # first-contact ends are busy too
+        held |= self._withheld_slot_held  # FX-N56: freed by _abandon_stalled at dispatch+90s
         if harness.injected("no_busy_hold"):
             held = set()
 
@@ -1565,6 +1585,8 @@ class TopAggregator(SyncTopAgg):
             )
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts (§4.5 residence, sct→delivery_ts).
+            if self._withheld_slot_held and channel._selector is not None:  # FX-N56: a selector timeout freed it
+                self._withheld_slot_held.intersection_update(getattr(channel._selector, "all_selected", {}) or {})
             _wh, _ow = self.withheld_held_ends(), self.real_owed_held_ends(channel)
             _held_withheld = _wh | _ow
             if _held_withheld:
@@ -1610,6 +1632,9 @@ class TopAggregator(SyncTopAgg):
         # just evicted) so emit_selection's avail_composition/per_trainer reflect
         # the oracular read instead of staying all-UNKNOWN.
         self._avail_stamp_end_states(channel)
+        if self.trainer_event_dict is not None and channel._selector is not None:
+            # FX-N55: the stamp is the oracle trace; an unaware baseline must not select on it.
+            channel._selector.filter_by_avl_state = self.avail_select_filter or not self._unaware_ignores_trace
         self._stamp_exclusions(channel, task_to_perform, withheld=_wh, owed=_ow,
                                unavail=set(curr_unavail_trainer_list))
 

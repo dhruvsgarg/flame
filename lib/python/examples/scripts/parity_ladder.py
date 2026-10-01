@@ -60,7 +60,6 @@ BY_ID = {r.rid: r for r in LADDER}
 # Known misses: (check, baselines, trace/phase regex, item). A known cell never blocks; closing the item deletes its row.
 KNOWN: Tuple[Tuple[str, Tuple[str, ...], str, str], ...] = (
     ("EV14", ("fedbuff",), r".*", "FX-N15"),
-    ("EV5|EV10|EV11|EV16", ("felix", "fedbuff"), r"syn_50|mobiperf_3st|syn_20", "FX-N38"),
     ("EV1", ("oort",), r"syn_50 (gs_)?T1$", "open question: P3 oort"),  # L1's 120s; CPU mobiperf legs run 960s
     ("EV0|EV1|EV12", tuple(), r"gs_P7o?$", "FX-N30"),
 )

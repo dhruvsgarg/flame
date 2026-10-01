@@ -484,6 +484,8 @@ class ClientAvailability:
         buf = getattr(self, "_sim_buffer", None)
         held = set(self.pending_withheld or ()) | {e for e in getattr(self, "_sim_withheld_delivering", None) or ()
                                                   if buf is None or buf.has(e)}
+        if getattr(self, "_sim_hold_withheld_slot", False):  # FX-N56: still in flight, as real labels it until timeout
+            held -= self._withheld_slot_held
         if not held:
             return set()
         hp = getattr(getattr(self, "config", None), "hyperparameters", None)
@@ -668,10 +670,13 @@ class ClientAvailability:
             )
         else:
             self._sim_withheld_payload[end] = (float(sct), msgmd)
-        if self._sync_wait_k_on() and not getattr(self, "proactive_inflight_evict", False):
+        async_hold = getattr(self, "_sim_hold_withheld_slot", False)  # FX-N56
+        if (self._sync_wait_k_on() or async_hold) and not getattr(self, "proactive_inflight_evict", False):
             # FX-N37: real can't see a withhold, so the slot stays held until dispatch+90s.
             self.pending_withheld[end] = dts
             self._withheld_slot_held.add(end)
+            if async_hold:
+                self._avail_drop_inflight(end)
             logger.info(f"[AVAIL] withhold_hold_slot end={str(end)[-4:]} sct={float(sct):.1f} delivery_ts={dts:.1f}")
             return True
         self.free_stalled_slot(
@@ -868,7 +873,7 @@ class ClientAvailability:
             if wait_k:  # FX-N37: a replied pick isn't stalled; a re-dispatched one re-arms its timeout
                 if end in committed or end in replied or self._sync_abandoned_since_dispatch(end, sst):
                     continue
-            elif end in committed or end in self.pending_withheld:
+            elif end in committed or (end in self.pending_withheld and not held):
                 continue  # invariant 1: already committed / abandoned
             if sst is None:
                 continue

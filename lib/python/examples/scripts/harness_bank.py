@@ -33,6 +33,7 @@ REAL_PATH_GLOBS = (
     "flame/channel.py", "flame/channel_manager.py", "flame/backend/*.py",
     "flame/mode/horizontal/syncfl/trainer.py", "flame/availability/*.py",
     "examples/async_cifar10/trainer/pytorch/*.py", "examples/async_cifar10/fl_data.py",
+    "examples/_metadata/availability_traces/*.yaml",  # FX-N35: a regenerated trace stales its real legs
 )
 
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import sys
 from pathlib import Path
@@ -43,6 +44,16 @@ def _find_run_dirs(experiments_dir: str, baseline_tag: str) -> tuple:
     if not sims:
         raise FileNotFoundError(f"No sim run dir matching *_{baseline_tag}_n<N>_*sim* in {experiments_dir}")
     return reals[-1], sims[-1]
+
+
+def _run_budget_s(run_dir: str, cli_budget_s):
+    """L29: the run's own `max_experiment_runtime_s` wins over the CLI budget."""
+    try:
+        with open(os.path.join(run_dir, "aggregator_config.json")) as f:
+            v = (json.load(f).get("hyperparameters") or {}).get("max_experiment_runtime_s")
+        return float(v) if v is not None else cli_budget_s
+    except (OSError, ValueError, AttributeError):
+        return cli_budget_s
 
 
 def _run_pair(real_dir: str, sim_dir: str,
@@ -68,13 +79,14 @@ def _run_pair(real_dir: str, sim_dir: str,
     real_label = real_label or os.path.basename(real_dir.rstrip("/"))
     sim_label = sim_label or os.path.basename(sim_dir.rstrip("/"))
 
+    budget_s = _run_budget_s(sim_dir, budget_s)
     print(f"[parity] Loading real: {real_label}")
     real_agg, real_trainers = load_run_dir(real_dir)
     print(f"[parity] Loading sim:  {sim_label}")
     sim_agg, sim_trainers = load_run_dir(sim_dir)
 
-    real_ground_truth = load_ground_truth(resolve_trace_name(real_dir))
-    sim_ground_truth = load_ground_truth(resolve_trace_name(sim_dir))
+    real_ground_truth = load_ground_truth(resolve_trace_name(real_dir), run_dir=real_dir)
+    sim_ground_truth = load_ground_truth(resolve_trace_name(sim_dir), run_dir=sim_dir)
 
     print(f"[parity]   real: {len(real_agg['agg_rounds'])} agg_round events, "
           f"{len(real_agg['selection_train'])} selection events, "

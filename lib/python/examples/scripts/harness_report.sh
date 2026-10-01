@@ -42,6 +42,19 @@ done
       echo "$p $tr $bl :: $(timeout --foreground 120 "$PY" "$SCRIPT_DIR/analyze_send_recv_lag.py" "$real_dir" --queue-wait 2>&1 | tail -1)"
     done
   done
+  # FX-N35: the UN_AVL share each leg saw at selection (real / sim).
+  echo; echo "effective unavailability (UN_AVL share at selection, real / sim):"
+  for f in "$ROOT"/*/summary.tsv; do
+    [ -f "$f" ] || continue
+    p="$(basename "$(dirname "$f")")"
+    # awk, not `read`: a tab IFS merges empty columns (sim-only rows)
+    tail -n +2 "$f" | awk -F'\t' '{print $1, $2, ($11 == "" ? "-" : $11), ($12 == "" ? "-" : $12)}' |
+    while read -r tr bl real_dir sim_dir; do
+      u_r="$([ -d "$real_dir" ] && "$PY" "$SCRIPT_DIR/leg_unavailability.py" "$real_dir" | cut -d' ' -f1 || echo -)"
+      u_s="$([ -d "$sim_dir" ] && "$PY" "$SCRIPT_DIR/leg_unavailability.py" "$sim_dir" | cut -d' ' -f1 || echo -)"
+      echo "$p $tr $bl :: $u_r / $u_s"
+    done
+  done
   for pre in "" gs_; do
     [ -f "$ROOT/${pre}P7_figures/summary.txt" ] || continue
     echo; echo "FX-N13 oracle replay ${pre:+($pre) }(P7 vs P7o):"; cat "$ROOT/${pre}P7_figures/summary.txt"

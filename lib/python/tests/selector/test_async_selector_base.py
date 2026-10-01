@@ -158,6 +158,16 @@ class TestPendingCommitGuard:
         assert "stale" not in pending
 
 
+    def test_timed_out_end_not_repicked_in_same_pass(self, build, make_ends):
+        """FX-N55: a timeout frees the slot, not the identity -- its update is still owed (EV17)."""
+        sel = build(c=4)
+        ends = make_ends(count=4, prefix="t")
+        sel.requester = "agg"
+        sel.selected_ends = {"agg": {"t0"}}
+        sel.all_selected = {"t0": time.time() - 1000}
+        assert "t0" not in sel.select(ends, _send_props(), [])
+
+
 class TestAbandonClockIsVirtualInSim:
     """#1c: the abandon timeout must run on the clock the trainer commits on --
     virtual in sim -- or a slow sim evicts a still-outstanding trainer."""
@@ -198,6 +208,14 @@ class TestAvailabilityEligibility:
 
         chosen = sel.select(ends, _send_props(), [])
         assert "t0" not in chosen
+
+    def test_unaware_selector_ignores_avl_state(self, build, make_ends):
+        """FX-N55: the stamped avl_state is the oracle trace; an unaware baseline must not filter on it."""
+        sel = build(c=5)
+        sel.filter_by_avl_state = False
+        ends = make_ends(count=4, prefix="t")
+        ends["t0"].set_property(PROP_AVL_STATE, TrainerAvailState.UN_AVL.value)
+        assert "t0" in sel.select(ends, _send_props(), [])
 
     def test_none_avl_state_stays_eligible(self, build, make_ends):
         """Trainers without availability tracking must not be filtered out."""

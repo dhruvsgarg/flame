@@ -85,6 +85,22 @@ def test_flag_off_frees_at_sct():
     assert "a" not in ch._selector.selected_ends
 
 
+def test_async_unaware_withheld_holds_slot_until_timeout():
+    """FX-N56: an async unaware baseline's withheld trainer keeps its slot until dispatch+90s, as in real."""
+    agg, ch = _Agg(wait_k=False, now=20.0), _Channel(["a", "b", "c"])
+    agg._sim_hold_withheld_slot = True
+    agg._sim_inflight_expected = {"a": 20.0}
+    ch.dispatch("a", 3, 5.0)
+    assert agg._sim_withhold_if_unavail(ch, "a", 20.0, ({}, ("a", None)))
+    assert "a" in ch._selector.selected_ends and "a" in agg._withheld_slot_held
+    assert "a" not in agg._sim_inflight_expected
+    assert "a" not in agg.withheld_held_ends()  # in flight, not yet an owed identity (real's label)
+    agg._now = 95.5
+    agg._abandon_stalled(ch)
+    assert "a" not in ch._selector.selected_ends and agg.pending_withheld["a"] == 200.0
+    assert "a" in agg.withheld_held_ends()
+
+
 def test_sim_wakes_at_first_timeout_or_delivery():
     agg, ch = _withheld_pick(wait_k=True)
     agg._sim_buffer.add("b", 30.0, ({}, ("b", None)))  # b arrived: not a wake source
@@ -178,3 +194,13 @@ def test_awaited_includes_earlier_version_leftover():
     agg._sync_accepted_ends().add("b")
     ch.dispatch("c", 2, 0.0)
     assert agg._sync_awaited(ch) == {"a", "c"} and agg._sync_version_inflight(ch) == {"a"}
+
+
+def test_selector_reclaimed_held_pick_keeps_identity_hold():
+    """FX-N56: once a selector timeout frees a held slot, the end is an owed identity, not re-pickable (EV10)."""
+    agg, ch = _Agg(wait_k=False, now=20.0), _Channel(["a", "b", "c"])
+    agg._sim_hold_withheld_slot = True
+    ch.dispatch("a", 3, 5.0)
+    assert agg._sim_withhold_if_unavail(ch, "a", 20.0, ({}, ("a", None)))
+    agg._withheld_slot_held.intersection_update(set())  # what distribute does once the selector reclaimed "a"
+    assert "a" in agg.withheld_held_ends()

@@ -330,6 +330,17 @@ def test_ev16_withheld_at_next_avail_passes(tmp_path, monkeypatch):
     assert _status(_write_run(tmp_path, agg, tr), "EV16_withheld_delivery") == "PASS"
 
 
+def test_ev16_late_withheld_delivery_fails(tmp_path, monkeypatch):
+    # FX-N54: a due delivery the sim starved past commits long after delivery_ts.
+    _unavail_T1(monkeypatch)
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round":
+            agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
+                        "delivery_ts": 50.0, "actual_commit_ts": 500.0})
+    assert _status(_write_run(tmp_path, agg, tr), "EV16_withheld_delivery") == "FAIL"
+
+
 def _gated_real_run(tmp_path, dispatch_ends):
     # T1's update sits behind its send-gate over ts 10-20; a sync selection at 15 still lists it in flight.
     agg = [{"event": "selection", "task": "train", "ts": 15.0, "chosen": [T1, T2]}]

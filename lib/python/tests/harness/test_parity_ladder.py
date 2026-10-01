@@ -35,7 +35,7 @@ def test_ev_gate_known_and_red(tmp_path):
     root = _pool(tmp_path, "P2", [("syn_50", "felix", "PASS", "FAIL:EV10"), ("syn_50", "oort", "FAIL:EV2", "PASS"),
                                   ("syn_50", "refl", "PASS", "PASS"), ("syn_50", "fedbuff", "FAIL:EV14", "PASS")])
     s = _status(lad.grade_pool(root, -1))
-    assert s[("P2", "felix")] == ("known", "sim EV10 (FX-N38)")
+    assert s[("P2", "felix")][0] == "red"  # FX-N38 closed: syn_50 EV10 is a regression again
     assert s[("P2", "oort")][0] == "red" and s[("P2", "refl")][0] == "green"
     assert s[("P2", "fedbuff")] == ("known", "real EV14 (FX-N15)")
 

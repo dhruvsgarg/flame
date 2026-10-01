@@ -33,7 +33,7 @@
   `--keep-going`. Across rungs, C0.4 governs.
 - **C4 Logical before timing.** Logical = same steps, same order, timestamps ignored. Timing closes through profiled
   charges, never knob tuning (T3, FX-T31). A logical miss on a timing-red cell is first checked for clock coupling.
-- **C5 Loop per run.** Regrade both nodes and rewrite the scoreboard; group each cell's lowest red by root; apply C1,
+- **C5 Loop per run.** Regrade the run and rewrite the scoreboard; group each cell's lowest red by root; apply C1,
   C6-C8; the next launch states what confirms and refutes each fix.
 - **C6 Correct first, equal second.** Decide which side is wrong from first principles (FL semantics, `third_party/`,
   the stated invariant). A check green because both sides share a bug is a bug.
@@ -41,6 +41,9 @@
 - **C8 Launch only when fixes are maximized:** every red cell has a fix in tree or an item the run will answer, full
   pytest green, smoke green (R19).
 - **C9 Correct fixes default on (operator)** with a knob to revert; R9 default-off is for unproven changes.
+- **C10 Resolve, don't just file (operator).** Every session (and every wait on a run) picks up as many independent
+  Next-steps items as it can and drives each to a fix in tree or a closed item; a new item is filed only for a root found
+  this session that can't be fixed in it. Report items closed vs opened at the end of each session.
 
 ---
 
@@ -71,27 +74,22 @@ conda run -n dg_flame python lib/python/examples/async_cifar10/scripts/parity/ev
 ```
 - Pools on one node are safe (`harness_pool.Leases`, L28); progress prints every 5 min and after each leg (R23).
   One Ctrl+C tears everything down (the ladder waits for the pool's teardown).
-- Pull a node's ladder to jayne:
-```
-R=/home/dgarg39/flame/lib/python/examples; N=kaylee; LAD=<ladder_dir>
-rsync -a $N:$R/experiments/$LAD $R/experiments/${LAD}_$N/
-ssh $N "cat $R/experiments/$LAD/*/*/*/runs/*/legs.txt" | sort -u > /tmp/legs.txt
-rsync -a --files-from=/tmp/legs.txt -r $N:/ /
-```
+- All runs on jayne only (parent R4).
 
 ---
 
-## Felix scoreboard — short runs, 2026-09-30
+## Felix scoreboard — run 5, 2026-09-30 (cifar L1-L4 only)
 
-T3 syn_0/syn_0b/mobiperf × six × both datasets (`pool_fixB_verify_s1`, `_s2_kaylee`, `pool_clamp_verify_*`):
-K3b green on all 36 cells (max rel 0.038), EV green on all legs. Open reds: A6r on oort/oort_star/refl mobiperf
-(PR5, fix in tree). Run 4's board (`ladder_20260929_*`) is superseded.
+`ladder_20260930_054655` (jayne). Speech L1-L4 and both L5 never ran (kaylee launches absent; jayne L5 not relaunched).
 
-Landed 2026-09-30 (each default on, knob reverts): async sim commit order exact (`simOrderSlackSeconds` 0, EV11
-absolute); sim charges profiled per (dataset, harness, stack) from real legs (`profile_felix_charges.py` →
-`async_cifar10/sim_charge_profiles/`, `simDispatchLatencySeconds`, `SIM_CHARGES=legacy`); real async frees an
-ingested slot at SEND (`release_recvd_at_send`); clock clamp uses an arrived end's exact sct; checker times real from
-run start (K2/K8/U2).
+| rung | cifar | reds → root |
+|---|---|---|
+| L1 sim EV | 11 green, 1 known (oort syn_50 EV1) | — |
+| L2/L3 pairs | 19/24 green; syn_0, syn_0b, mobiperf all green | syn_50 × felix/fedbuff/feddance/oort_star/refl stage-1 timing: felix FX-N54, fedbuff FX-N55+N56, feddance FX-N57, oort_star/refl matched-window 13-14% (whole run 6-7%; no floor, Q2) |
+| L4 campaign | 25/25 green; P11a-c CAUGHT | — |
+
+Stage 2 on every syn_50 cell: A7 commit-belief + A2 (FX-N41); A5 was a checker artifact (fixed). fedbuff syn_50 EV14
+both legs (FX-N15).
 
 ## FluxTune scoreboard
 Parked with the track; its board still sits in simulate_fwdllm.md §A.
@@ -100,26 +98,22 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR5 · Real trainer trace clock starts at join · fix in tree, verify overnight.** An undispatched real trainer
-  never started its trace clock (origin rode the first task) → A6r red on sync mobiperf. The aggregator now sends the
-  origin at the join barrier (`send_origin_at_join`; fwdllm off). *Confirms:* A6r green on oort/oort_star/refl mobiperf.
-- **PR4 · Overnight 2026-09-30: L1-L4 ∥ L5, split by node · running.** GPU charge profiles come from each node's
-  run-4 L5 real legs (T9), hence jayne = cifar L1-L4 ∥ speech L5, kaylee = speech L1-L4 ∥ cifar L5 (~3.5h). Launch
-  (repo root; `$L` as in Tools):
+- **PR6 · Verify FX-N54/N55/N56 on short pairs · running.** `pool_fxn54_verify` (jayne): T3 felix + fedbuff × syn_50,
+  syn_0 × both datasets, `max_experiment_runtime_s=600`. *Confirms:* felix syn_50 K2/K3b/K4 green and EV16 green; fedbuff
+  picks UN_AVL on both legs, K2/K3b green; syn_0 unchanged. *Refutes:* any syn_0 red, or felix EV16 `commit_late` > 0.
+- **PR7 · Run 6: L1-L4 ∥ L5, both datasets, jayne only · after PR6.** Speech L1-L4 and every L5 cell are unrun since the
+  run-4 roots landed. GPU charge profiles: cifar from kaylee, speech from jayne (same hardware, T9). Launch (repo root; `$L` as in Tools):
   ```
-  # jayne
-  $L --rungs L1-L4 --datasets cifar10 --keep-going --deadline-h 5
-  $L --rungs L5 --datasets google_speech --keep-going --deadline-h 5
-  # kaylee
-  $L --rungs L1-L4 --datasets google_speech --keep-going --deadline-h 5
-  $L --rungs L5 --datasets cifar10 --keep-going --deadline-h 5
+  $L --rungs L1-L4 --datasets all --keep-going --deadline-h 6
+  $L --rungs L5 --datasets all --keep-going --deadline-h 6
   ```
-  *Predictions:* L2/L3 stage 1 green on every cell; syn_50 EV10/EV11/EV16 green (→ delete FX-N38 `KNOWN`); EV17 green
-  on real legs; P11a-c CAUGHT; L5 K3b green with the GPU profiles. *Refutes:* a GPU cell K3b red → re-profile from
-  run 5's own L5 real legs.
-- **PR6 · Regrade run 5 (C5), then L6 only if L2-L5 have no open shared root.**
+  *Predictions:* L2 syn_50 felix/fedbuff stage 1 green; feddance syn_50 stays red (FX-N57); speech mirrors cifar; L5
+  K3b green with the profiles. *Refutes:* a GPU cell K3b red → re-profile from run 6's own L5 real legs.
+- **PR8 · Regrade run 6 (C5), then L6 only if L2-L5 have no open shared root.**
 
 **Blocked on the operator**
+- FX-N57 sync wait-K: does a late (older-version) update count toward K? Recommended: no — K is the version's quorum of
+  updates trained on it; a late one commits as a bonus (sim syncfl today); real syncfl and the oort stack then change.
 - FX-N15 fedbuff server lr 40.9 (cifar, `fedbuff.py` table): keep or change (baseline-defining, T5).
 - S5 knob layout: (a) `baselines.yaml` = what a baseline is; `datasets.yaml` gets `defaults` + per-baseline tuned
   values (trainer lr, batch, epochs, server lr, c, aggGoal, round_threshold); code tables move to config; a tool prints

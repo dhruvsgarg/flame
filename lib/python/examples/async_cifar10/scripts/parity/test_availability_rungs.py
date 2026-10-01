@@ -332,3 +332,26 @@ def test_load_trainer_jsonl_dir_surfaces_avail_change(tmp_path):
     assert "0001" in tr
     assert len(tr["0001"]["avail_change"]) == 1
     assert tr["0001"]["avail_change"][0]["new_state"] == "UN_AVL"
+
+
+def _a5_sel(t, state, tid="t1"):
+    return {"event": "selection", "task": "train", "round": int(t), "ts": t, "vclock_now": t,
+            "per_trainer": {tid: {"avl_state": state}}}
+
+
+def test_a5_stale_forward_fill_is_not_graded():
+    """A5: a side that hasn't observed the trainer for > fresh_s is not compared (sampling, not belief)."""
+    from parity.checks import state_timeline_agreement
+    real = {"selection_train": [_a5_sel(0.0, "AVL_TRAIN"), _a5_sel(100.0, "AVL_TRAIN")]}
+    sim = {"selection_train": [_a5_sel(t, "AVL_TRAIN" if t < 60 else "UN_AVL") for t in range(0, 101, 5)]}
+    r = state_timeline_agreement(real, sim)
+    assert r["ok"] and r["total"] < 20  # real's 0..100 gap leaves the middle bins ungraded
+
+
+def test_cli_budget_from_run_config(tmp_path):
+    """L29: the sim run's own max_experiment_runtime_s wins over --budget-s."""
+    import json
+    from parity.cli import _run_budget_s
+    (tmp_path / "aggregator_config.json").write_text(json.dumps({"hyperparameters": {"max_experiment_runtime_s": 600}}))
+    assert _run_budget_s(str(tmp_path), 180.0) == 600.0
+    assert _run_budget_s(str(tmp_path / "missing"), 180.0) == 180.0

@@ -182,8 +182,10 @@ def campaign_phases(ds: str) -> List[Phase]:
 
 def injected_phases(kind, ds) -> List[Phase]:
     """S1: each injected bug must FAIL its sim rung (EV10 / EV16 / EV3)."""
-    return [shaped(pid, ("felix",), "syn_50", kind, ds, inject_bug=bug)
-            for pid, bug in (("P11a", "no_busy_hold"), ("P11b", "order_by_sct"), ("P11c", "freeze_trainer_clock"))]
+    # FX-N32: P11b on fedbuff, which withholds (felix evicts, so order_by_sct had 0-1 withheld commits to catch).
+    return [shaped(pid, (bl,), "syn_50", kind, ds, inject_bug=bug)
+            for pid, bl, bug in (("P11a", "felix", "no_busy_hold"), ("P11b", "fedbuff", "order_by_sct"),
+                                 ("P11c", "felix", "freeze_trainer_clock"))]
 
 
 def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]:

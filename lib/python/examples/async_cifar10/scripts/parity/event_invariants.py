@@ -25,6 +25,7 @@ _EPS_S = 0.05            # float slack on modeled durations
 _PASTDATE_SLACK_S = 1e-3  # absolute: the sim gate's own slack hid sub-2s past-dating (FX-D23, C6)
 _PASTDATE_MAX_FRAC = 0.01
 _BUDGET_FRAC = 0.85      # a run must reach this fraction of its budget
+_LATE_DELIVERY_S = 10.0  # a due withheld delivery commits within a few commit cycles (FX-N54)
 _REGISTRY = os.path.join(os.path.dirname(__file__), "..", "..", "..", "_metadata",
                          "trainer_registry.yaml")
 
@@ -562,7 +563,8 @@ def _ground_truth(run):
 
 def ev16_withheld_delivery(run):
     """Sim: a train update whose trainer is UN_AVL at its sct commits only as a withheld
-    delivery, at delivery_ts = next AVL after sct (FX-L12); catches committing at sct."""
+    delivery, at delivery_ts = next AVL after sct (FX-L12); catches committing at sct, or
+    long after delivery_ts (FX-N54)."""
     if not _simulated(run):
         return _res("SKIP", "sim-only (real send-gate is trainer-side, A8)")
     gt = _ground_truth(run)
@@ -571,7 +573,7 @@ def ev16_withheld_delivery(run):
     from flame.availability.trace import next_avail_after, state_at
     from flame.config import TrainerAvailState
     held = {}
-    early = bad_dts = 0
+    early = late = bad_dts = 0
     examples = []
     for e in _events(run, "withheld_delivery"):
         held[(e.get("end_id"), round(float(e["sct"]), 3))] = e
@@ -585,6 +587,10 @@ def ev16_withheld_delivery(run):
         if e.get("actual_commit_ts") is not None and float(e["actual_commit_ts"]) < float(e["delivery_ts"]) - _EPS_S:
             early += 1
             examples.append((e["end_id"][-4:], "commit<delivery_ts", e["actual_commit_ts"], e["delivery_ts"]))
+        if e.get("actual_commit_ts") is not None and \
+                float(e["actual_commit_ts"]) > float(e["delivery_ts"]) + _LATE_DELIVERY_S:
+            late += 1
+            examples.append((e["end_id"][-4:], "commit>>delivery_ts", e["actual_commit_ts"], e["delivery_ts"]))
     committed = {(t, e["round"] - st) for e in _train_commits(run) if e.get("round") is not None
                  for t, st in zip(e.get("contributing_trainers") or [], e.get("staleness") or [])
                  if st is not None}
@@ -602,10 +608,11 @@ def ev16_withheld_delivery(run):
             if state_at(tr, sct) == TrainerAvailState.UN_AVL and (tid, round(sct, 3)) not in held:
                 unheld += 1
                 examples.append((tid[-4:], "UN_AVL@sct committed unheld", e.get("round"), round(sct, 2)))
-    bad = unheld + early + bad_dts
+    bad = unheld + early + late + bad_dts
     return _res("PASS" if bad == 0 else "FAIL",
                 f"commits={n} withheld={len(held)} unavail_committed_unheld={unheld} "
-                f"commit_before_delivery={early} delivery_ts_mismatch={bad_dts}", examples=examples[:10])
+                f"commit_before_delivery={early} commit_late={late} delivery_ts_mismatch={bad_dts}",
+                examples=examples[:10])
 
 
 

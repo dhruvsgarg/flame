@@ -77,8 +77,8 @@ section already says.
   aggregators, trainers or a multi-test sweep — local harness or cluster — goes into ONE script the operator
   launches (killing that parent kills every child). The script writes all results under one
   `experiments/<suite>_<ts>/` dir with a summary file; Claude reads that dir afterwards. Claude hands over the
-  command, the expected duration and the prediction (what result confirms and what refutes). Two nodes are
-  available; legs run in parallel only in isolated slots (R18).
+  command, the expected duration and the prediction (what result confirms and what refutes). **All runs go on
+  jayne only (operator); never launch on kaylee or wash.** Legs run in parallel only in isolated slots (R18).
 - **R5 One mechanism per run** when a fix could perturb another baseline. Shared roots before per-baseline
   roots: a bug failing rungs on 2+ baselines outranks one that fails on 1.
 - **R6 Run length follows the residual's shape.** Per-cycle mechanisms show up in 15-45 min. Accumulating or
@@ -239,7 +239,8 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
 - **T7** Don't widen or re-window a failing rung if a sibling baseline passes it on the same code path.
 - **T8** Don't pool legs across commits, run lengths or configs, or build a floor from 2 legs on an
   unpinned baseline.
-- **T9** Don't copy `parity_floors/` or `sim_charge_profiles/` between nodes; re-derive them from the run dirs.
+- **T9** Don't reuse `parity_floors/` or `sim_charge_profiles/` across different hardware; re-derive them. Same hardware
+  shares them (operator): wash/shepherd/kaylee/jayne are identical; mal/inara have the same A40s and RAM, fewer cores.
 - **T10** Don't chain a grader that exits non-zero on findings with `&&`.
 - **T11** Don't blame GPU contention below ~100 trainers; at n≥100 it is a real root for shared-compute
   wall rungs.

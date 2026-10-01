@@ -102,6 +102,17 @@ def test_a7_commit_checkpoint_passes_when_matched():
     assert res["selection"].get("status") == "SKIP"
 
 
+def test_a7_commit_just_before_a_flip_is_not_stale():
+    """FX-N41: a commit 1s before the trace flips vouches only for its instant (was scored stale for 30s)."""
+    gt = {"t1_0001": SortedDict({600.0: "UN_AVL"})}
+    agg = {
+        "selection_train": [_sel(1, 0.0, {}), _sel(2, 900.0, {})],
+        "agg_belief_changes": [_belief(r, "0001", "AVL_TRAIN", t, checkpoint="commit")
+                               for r, t in ((1, 560.0), (2, 580.0), (3, 599.0))],
+    }
+    assert agg_belief_fidelity_parity(agg, "sim", gt)["commit"]["mean_err"] == 0.0
+
+
 def test_a7_commit_checkpoint_fails_on_belief_wrong_at_its_own_instant():
     # Ground truth transitions at 600s; the aggregator's LAST commit lands at
     # 900 but still claims AVL_TRAIN -- i.e. a belief-recording bug where the

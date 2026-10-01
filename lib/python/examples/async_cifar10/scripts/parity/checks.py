@@ -4114,7 +4114,8 @@ def eligible_pool_reduction_parity(real: dict, sim: dict,
 
 def state_timeline_agreement(real: dict, sim: dict,
                               n_bins: int = 20,
-                              tol: float = 0.95) -> dict:
+                              tol: float = 0.95,
+                              fresh_s: float = 30.0) -> dict:
     """A5 [DIST]: per-(trainer, t) avl_state agreement between real and sim.
 
     Real and sim both read availability from the SAME trace, so at any
@@ -4123,8 +4124,9 @@ def state_timeline_agreement(real: dict, sim: dict,
     selection events) at n_bins equally-spaced normalised time points, compares
     the result per (trainer, bin), and reports match_frac.
 
-    Time is normalised within each mode (t / run_span) so wall-time vs vclock
-    differences are removed before comparison. SKIP if either mode has no
+    Both modes stamp the availability clock (sim vclock, real time since the join barrier), so bins sit at
+    absolute times over the common span; a bin is graded only where both sides observed the trainer within
+    `fresh_s` (a stale forward-fill compares sampling, not belief). SKIP if either mode has no
     per-trainer avl_state, or if the two modes share no common trainers.
     PASS when match_frac >= tol (default 0.95).
     """
@@ -4146,16 +4148,18 @@ def state_timeline_agreement(real: dict, sim: dict,
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no common trainers between real and sim series"}
 
+    span = min(r_span, s_span)
+
     def _state_at_frac(pts, frac, span):
-        """Forward-fill: trainer state at absolute time frac*span."""
+        """Forward-fill: trainer state at absolute time frac*span, None if last seen > fresh_s before."""
         target = frac * span
-        state = None
+        state = seen = None
         for t, s in pts:
             if t <= target:
-                state = s
+                state, seen = s, t
             else:
                 break
-        return state
+        return state if seen is not None and target - seen <= fresh_s else None
 
     bin_fracs = [(b + 0.5) / n_bins for b in range(n_bins)]
     matched = 0
@@ -4167,8 +4171,8 @@ def state_timeline_agreement(real: dict, sim: dict,
         if not r_pts or not s_pts:
             continue
         for frac in bin_fracs:
-            rs = _state_at_frac(r_pts, frac, r_span)
-            ss = _state_at_frac(s_pts, frac, s_span)
+            rs = _state_at_frac(r_pts, frac, span)
+            ss = _state_at_frac(s_pts, frac, span)
             if rs is None or ss is None:
                 continue
             total += 1
@@ -4539,22 +4543,16 @@ def agg_belief_fidelity_parity(agg: dict, mode: str, ground_truth: Optional[dict
         if gt is None:
             continue
         raw_obs = build_observed_timeline_from_agg_belief(evs)
-        # extrapolate_tail=False + max_gap_s=lag_tol_s: "commit" is
-        # event-triggered, not continuous (Batch 4 finding,
-        # UNAVAILABILITY_DESIGN.md) -- don't score the silence after a
-        # trainer's last commit (tail) OR between two commits (interior gap)
-        # as if it were stale belief; each commit only vouches for its own
-        # state within lag_tol_s of itself.
-        scored = _fidelity_score(raw_obs, gt, span, lag_tol_s, seed_state=None,
-                                 extrapolate_tail=False, max_gap_s=lag_tol_s)
-        if scored is None:
+        if not raw_obs:
             continue
-        tvd, lags, missed, spurious = scored
-        commit_errs[short_id] = tvd
-        commit_missed += missed
-        commit_spurious += spurious
-        if lags:
-            commit_max_lag = max(commit_max_lag, max(lags))
+        # FX-N41: a commit belief vouches only for its own instant; interval scoring blamed the trace flip after
+        # a pre-boundary commit. Point accuracy, +-1s for real's wall jitter at a transition.
+        def _gt_at(t):
+            k = gt.bisect_right(t) - 1
+            return gt.peekitem(k)[1] if k >= 0 else "AVL_TRAIN"  # a trace starts AVL_TRAIN
+        wrong = sum(1 for t, st in raw_obs
+                    if all(_gt_at(t + dt) != st for dt in (0.0, -1.0, 1.0)))
+        commit_errs[short_id] = wrong / len(raw_obs)
     commit_result = _fidelity_result(
         commit_errs, commit_missed, commit_spurious, commit_max_lag, mode, mean_tol,
         within_tau, frac_pass_tol,
