@@ -20,6 +20,7 @@ Fail fast (FX-N40): a fatal line in any leg's logs stops the pool within ~30s ->
 import argparse
 import fcntl
 import fnmatch
+import hashlib
 import json
 import math
 import os
@@ -772,7 +773,8 @@ class Pool:
     def _launch(self, j: Job, cpus: List[int], gp: List[int], port: int) -> Running:
         out = self.root / j.phase / j.jid
         out.mkdir(parents=True, exist_ok=True)
-        tag = f"pool_{self.root.name}_{j.jid}"
+        # Unique per pool path: two ladders' gate pools are both named P00 (one killed the other's legs).
+        tag = f"pool_{self.root.name}_{hashlib.sha1(str(self.root).encode()).hexdigest()[:8]}_{j.jid}"
         args = list(j.args)
         if j.mode == "grade":
             legs = [_summary_row(self.done.get(d)) for d in j.deps]
