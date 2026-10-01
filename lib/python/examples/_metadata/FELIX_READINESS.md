@@ -129,8 +129,8 @@ P7/P7o checkpoints are FX-N13 replay input.
 
 ## Next steps (persistent queue — top item is next)
 
-**Counter (2026-10-01):** 23 open — 7 wip (fixed in tree, awaiting a run) · 7 todo · 7 blocked · 2 other (FX-N13 design,
-FX-N8 likely closed). This session: 16 closed (FX-N26/N32/N35/N38/N44/N45/N46/N48/N50/N51/N52/N53/N54 + PR4/PR5), 4 opened (FX-N55/N56/N57 + C10).
+**Counter (2026-10-01):** 24 open — 8 wip (fixed in tree, awaiting a run) · 7 todo · 7 blocked · 2 other (FX-N13 design,
+FX-N8 likely closed). This session: 16 closed (FX-N26/N32/N35/N38/N44/N45/N46/N48/N50/N51/N52/N53/N54 + PR4/PR5), 5 opened (FX-N55/N56/N57/N58 + C10).
 
 Work rule: PARITY C10 — each session resolves as many independent items below as it can, not just files new ones.
 
@@ -204,10 +204,16 @@ parity) → FX-N12. FX-N13 design can start any time.
 - **FX-N5 · syn_0 GPU block (G2): oort, oort_star, refl, feddance · blocked: FX-N4.** Same protocol.
   oort's open root: per-round `relative_change` of the exploited utility, binned by quartile, in both modes
   (don't touch the pacer). refl: confirm at 3h.
-- **FX-N15 · fedbuff training diverges · blocked: operator (server lr 40.9).** Run 5 cifar syn_50 fedbuff: EV14 on both
-  legs (`KNOWN`). Lead: the hardcoded cifar server lr 40.9 (`fedbuff.py:_scale_add_agg_weights_pytorch`) on a 2-3 update
-  mean; diff against the reference FedBuff first (L7, T5). Falsified: BatchNorm buffers × 40.9 (CifarNet has no BN). Speech fedbuff (Adam) stays flat. Operator: no staleness
-  cutoff (FX-T24). *Exit:* root named, fixed if a port bug or recorded as baseline behaviour.
+- **FX-N15 · fedbuff training diverges · wip: root fixed in tree, confirm in run 6.** Root: config drift. Server lr 40.9
+  (`fedbuff.py` table) was tuned with client lr 0.000195, no decay (`30e20a3f6`, Feb 2024); the cifar template ran fedbuff
+  trainers at 0.01 (~50×), so real went NaN at the first eval. → `datasets.yaml` `by_baseline` (a baseline's tuned values
+  per dataset, over the dataset defaults); cifar fedbuff = 0.000195, no decay: `pool_fxn15_lr` syn_0/syn_0b pairs all
+  green, real test loss 2.30 at round 50 (was NaN). Launch logs every lr/batch/optimizer knob with its source (`[HP]`);
+  trainers log `[TRAINER_HP]`, fedbuff `[SERVER_LR]`. *Exit:* run 6 fedbuff EV14 green on every leg; then drop the `KNOWN` row.
+- **FX-N58 `[C]` · Trainer lr decay never applied · blocked: operator (open question 4).** The template sets
+  `lrDecayEnabled/lrDecayFactor/lrDecayEpoch/minLearningRate` for oort, oort_star, refl, feddance, fedbuff, but `Hyperparameters`
+  has no alias for them, so `lr_decay_enabled` is always False (both modes; parity blind). Trainers now warn. *Exit:* aliases
+  added and each baseline's decay set per its reference in `by_baseline`.
 - **FX-N13 · Streaming motivation experiment, both datasets · design after FX-N22 + FX-N10.** Show (a) per-trainer
   statistical utility changes as data streams in, (b) an unaware aggregator mis-selects, (c) one that tracks but
   mis-estimates utility still mis-selects. Pipeline: P7/P7o + `scripts/oracle_misselection.py` +
@@ -475,6 +481,12 @@ IDs are kept because code comments cite them.
   launcher (FX-N10).
 
 ## Open questions (operator)
+- (4) Trainer lr decay (FX-N58): which baselines use it? Trainer code says REFL yes, Oort no; the template enables it for
+  oort, oort_star, refl, feddance and fedbuff. Recommended: per each reference (REFL on; Oort, oort_star, fedbuff off;
+  feddance per its paper).
+- (5) Tuned client lr per baseline × dataset (FX-N15 class): felix/oort (`use_oort_lr`) server lr 0.3 (cifar) / 0.065 (speech)
+  run with client lr 0.01 (cifar) / 0.000195 (speech); speech's 2024 "_oort" value was 0.04 (stays at chance). What client lr
+  was each server lr tuned with?
 - Felix paper experiment list, and the exact streaming-experiment design (FX-N13), once FX-N22 and FX-N10 land.
 - Make `real_drain_ready_ingest` the default (R9)? Cifar T4 P9 vs P1: RECV_FIFO skips 887→0 (fedbuff) and 908→0
   (felix); queue_wait p99 0.028 vs 0.035s (fedbuff) and 0.019 vs 0.025s (felix); fedbuff parity 0.984 vs 0.952; no new EV fail.

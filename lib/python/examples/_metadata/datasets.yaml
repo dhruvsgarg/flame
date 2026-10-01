@@ -1,7 +1,8 @@
 # Dataset profiles (FX-N10). `debug_run.sh --dataset <name>` deep-merges `experiment` into every
 # experiment of the parity template (felix_oort_refl_feddance_alpha0.1_parity.yaml, written for
-# cifar10), and `by_optimizer.<sort>` into baselines whose optimizer is that sort. Baseline-defining
-# knobs stay in baselines.yaml; only what differs per dataset lives here.
+# cifar10), `by_optimizer.<sort>` into baselines whose optimizer is that sort, then `by_baseline.<name>`:
+# a baseline's own tuned values on this dataset (paired client/server lr etc.), which win over the defaults.
+# Baseline-defining knobs stay in baselines.yaml; only what differs per dataset lives here.
 # Data lives outside the repo: <data_root>/<dataset>/ (cifar10/cifar-10-batches-py,
 # google_speech/SpeechCommands/speech_commands_v0.02). fl_data.dataset_dir takes $FLAME_DATA_ROOT, then the
 # first entry below that has the dataset, else the old in-repo dir (fwdllm shares the root: fl_datasets/fwdllm).
@@ -9,7 +10,11 @@ data_roots:
   - /coc/scratch/dgarg/fl_datasets
 
 datasets:
-  cifar10: {}   # the template itself
+  cifar10:   # the template itself; only per-baseline tuned values here
+    by_baseline:
+      fedbuff:   # FX-N15: server lr 40.9 (fedbuff.py table) was tuned with client lr 0.000195, no decay (30e20a3f6)
+        trainer:
+          hyperparameters: {learningRate: 0.000195, lrDecayEnabled: false}
 
   google_speech:
     description: >-

@@ -211,6 +211,23 @@ except FileNotFoundError:
     print(f"ERROR: parity config not found: {src}", flush=True)
     sys.exit(1)
 
+def _leaves(d, pre=""):
+    for k, v in (d or {}).items():
+        if isinstance(v, dict):
+            yield from _leaves(v, f"{pre}{k}.")
+        else:
+            yield f"{pre}{k}", v
+
+
+def _log_hp_sources(bl, ds, e, layers):
+    """FX-N15: print every lr/optimizer/batch knob a baseline runs with and the layer that set it (else template)."""
+    keys = ("learningRate", "lrDecay", "minLearningRate", "batchSize", "optimizer.", "dataset_name", "agg_goal")
+    src = {k: s for s, ov in layers for k, _ in _leaves(ov)}
+    for k, v in sorted(_leaves({"trainer": e.get("trainer", {}), "aggregator": e.get("aggregator", {})})):
+        if any(t in k for t in keys):
+            print(f"[HP] {bl} {ds} {k}={v} ({src.get(k, 'template default')})", flush=True)
+
+
 kept = []
 for e_src in cfg.get("experiments", []):
     bl = e_src.get("baseline", "").lower()
@@ -223,14 +240,20 @@ for e_src in cfg.get("experiments", []):
     for trace_override in trace_overrides:
         e = copy.deepcopy(e_src)
         # FX-N10: dataset profile on top of the (cifar10) template.
-        ds_name = os.environ.get("DATASET", "").strip()
-        if ds_name and ds_name != "cifar10":
-            from flame.launch.baselines import deep_merge
-            prof = yaml.safe_load(open(os.path.join(meta_dir, "datasets.yaml"), encoding="utf-8"))["datasets"][ds_name]
-            e = deep_merge(e, copy.deepcopy(prof.get("experiment", {})))
+        ds_name = os.environ.get("DATASET", "").strip() or "cifar10"
+        from flame.launch.baselines import deep_merge
+        prof = yaml.safe_load(open(os.path.join(meta_dir, "datasets.yaml"), encoding="utf-8"))["datasets"][ds_name] or {}
+        layers = []  # (source, overlay) in merge order; a later layer wins
+        if ds_name != "cifar10":  # cifar10 is the template itself
             bdefs = yaml.safe_load(open(os.path.join(meta_dir, "baselines.yaml"), encoding="utf-8"))["baselines"]
             opt = (bdefs.get(bl, {}).get("aggregator", {}).get("optimizer") or {}).get("sort")
-            e = deep_merge(e, copy.deepcopy((prof.get("by_optimizer") or {}).get(opt, {})))
+            layers += [(f"datasets.{ds_name}", prof.get("experiment", {})),
+                       (f"datasets.{ds_name}.by_optimizer.{opt}", (prof.get("by_optimizer") or {}).get(opt, {}))]
+        # A baseline's tuned values for this dataset win over the dataset defaults (FX-N15).
+        layers.append((f"datasets.{ds_name}.by_baseline.{bl}", (prof.get("by_baseline") or {}).get(bl, {})))
+        for _src, _ov in layers:
+            e = deep_merge(e, copy.deepcopy(_ov or {}))
+        if ds_name != "cifar10":
             e["name"] = re.sub(r"_n\d+_", f"_n{e['trainer']['num_trainers']}_", f"{ds_name}_{e['name']}")
         h = e["aggregator"]["config_overrides"]["hyperparameters"]
         # FX-N22 test shapes: set only the knobs this baseline has.
@@ -240,6 +263,7 @@ for e_src in cfg.get("experiments", []):
         if os.environ.get("CONC", "").strip() and "c" in kw:
             kw["c"] = int(os.environ["CONC"])
         h["max_experiment_runtime_s"] = runtime_s
+        _log_hp_sources(bl, ds_name, e, layers)
         # Deterministic seed: the SAME value for every experiment so the real and sim
         # variants of each baseline make identical selection draws (dedicated per-
         # selector RNG, PARITY "Determinism / seeding"). Without this, real vs sim are

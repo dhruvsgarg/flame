@@ -276,6 +276,11 @@ class FedBuff(AbstractOptimizer):
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))
             )
+        if base_weights and not getattr(self, "_server_lr_logged", False):  # FX-N15: the server lr in force, once
+            src = "config learning_rate" if self.learning_rate is not None else \
+                f"fedbuff.py table (use_oort_lr={self.use_oort_lr}, dataset={self.dataset_name})"
+            logger.info(f"[SERVER_LR] fedbuff server lr={learning_rate} from {src}, agg_goal={agg_goal}")
+            self._server_lr_logged = True
         return base_weights
 
     def _scale_add_agg_weights_tensorflow(

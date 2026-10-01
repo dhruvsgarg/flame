@@ -104,6 +104,13 @@ class PyTorchCifar10Trainer(Trainer):
         self.lr_decay_factor = getattr(self.config.hyperparameters, 'lr_decay_factor', 0.98)
         self.lr_decay_epoch = getattr(self.config.hyperparameters, 'lr_decay_epoch', 10)
         self.min_learning_rate = getattr(self.config.hyperparameters, 'min_learning_rate', 1e-4)
+        _hp = self.config.hyperparameters
+        logger.info(f"[TRAINER_HP] lr={self.learning_rate} batch={self.batch_size} epochs={self.epochs} "
+                    f"lr_decay={self.lr_decay_enabled} (factor={self.lr_decay_factor}, every={self.lr_decay_epoch}, "
+                    f"min={self.min_learning_rate})")
+        _ignored = [k for k in ("lrDecayEnabled", "lrDecayFactor", "lrDecayEpoch", "minLearningRate") if hasattr(_hp, k)]
+        if _ignored:  # FX-N15: camelCase keys have no alias, so the trainer never reads them
+            logger.warning(f"[TRAINER_HP] config keys ignored (no alias): {_ignored}")
 
         self.criterion = None
 
