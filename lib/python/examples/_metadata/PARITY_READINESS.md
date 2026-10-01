@@ -91,7 +91,7 @@ this session's checker (FX-D33); predicted board until run 7 confirms (PR8 close
 | L1 sim EV | 22 / 2 / 0 | — | known: oort syn_50 EV1 (P3 oort) |
 | L2/L3 pairs | 35 / 0 / 13 | 40 / 2 / 6 | fedbuff syn_50 + mobiperf ×2 datasets, felix cifar syn_50: FX-D34; feddance cifar mobiperf K2 9.5% (no floor, Q2); known: oort syn_50 timing FX-N62 |
 | L4 campaign | 48 / 2 / 0 | — | known: speech P7o EV12 FX-N30; P11a-c CAUGHT |
-| L5 GPU pairs | 22 / 0 / 2 | 22 / 0 / 2 | speech refl syn_20 FX-N63; cifar oort_star syn_20 K2 12.6% with A2c selected-speed bias on 35 rounds (G0C control, L6) |
+| L5 GPU pairs | 22 / 0 / 2 | 22 / 0 / 2 | speech refl syn_20 FX-D35; cifar oort_star syn_20 K2 12.6% with A2c selected-speed bias on 35 rounds (G0C control, L6) |
 
 Stage 2-3 (not gated, no floors): sync syn_50 A3 progress-binned trajectories follow the stall counts; A7 selection is
 green after FX-D33.
@@ -103,21 +103,10 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR8b · Verify FX-N63 on GS refl · next (operator, ~25 min).** PR8 (`pool_fxn59_verify`, `pool_fxn63_verify`): EV
-  green on all 20 legs, every syn_0 cell INV/EXACT green, FX-N59/N60 closed (FX-D34); the INV/EXACT reds left are FX-N62 (fedbuff
-  mobiperf on 2-3 rounds; speech fedbuff syn_50 K3b from one pick draw) and speech refl syn_20, whose real leg leaked
-  every reader slot (FX-N63, root revised, fixed in tree). From the repo root, `$P` = `conda run --no-capture-output -n
-  dg_flame python lib/python/examples/scripts/harness_pool.py`:
-  ```
-  $P --tier GS --datasets google_speech --baselines refl --output-dir lib/python/examples/experiments/pool_fxn63_verify2
-  ```
-  Smokes: `pool_smoke_fxn63b` (speech refl T3 syn_0 60s: all checks pass) and `pool_smoke_fxn63c` (GS syn_20 60s: parity
-  pass, EV1 = 5 commits in a 60s smoke shape); `active_task_skips` 0 on both; pytest 2332 passed.
-  *Confirms:* SUMMARY `active_task_skips` ≈ 0 on both refl legs; real syn_20 ≈ 190 rounds (run 6: 189), arrivals =
-  processed; K4/K3b green, A2 eligible real ≈ sim (~23.7). *Refutes:* skips still grow, or real < 150 rounds.
-- **PR9 · Run 7: full L1-L5, both datasets, jayne · after PR8b (~6.5h: run 6 L1-L4 6h26m ∥ L5 3h32m).** FX-N63 changes every sync real leg's receive path, so every
-  cell reruns. Commands as run 6 (`$L --rungs L1-L4 …` ∥ `$L --rungs L5 …`, `$L` in Tools). *Predictions:* L2 red only on
-  feddance cifar mobiperf (no floor); L5 red only on cifar oort_star (selection draw). Then Q2 floors, then L6.
+- **PR9 · Run 7: full L1-L5, both datasets, jayne · next (operator, ~6.5h: run 6 L1-L4 6h26m ∥ L5 3h32m).** PR8/PR8b
+  (`pool_fxn59_verify`, `pool_fxn63_verify2`) closed FX-N59/N60/N63 (FX-D34/D35); FX-D35 changes every sync real leg's
+  receive path, so every cell reruns. Commands as run 6 (`$L --rungs L1-L4 …` ∥ `$L --rungs L5 …`, `$L` in Tools). *Predictions:* L2 red only on
+  feddance cifar mobiperf (no floor); L5 red only on cifar oort_star (selection draw); ungated DIST: refl U6 (real 0.17s lag, sim 0). Then Q2 floors, then L6.
 
 **Operator decisions / open**
 - S5 knob layout: (a) adopted (operator 2026-10-01): `datasets.yaml` holds dataset defaults + `by_baseline` tuned values

@@ -34,7 +34,7 @@
 | L1 sim EV | 22 / 2 / 0 | — |
 | L2/L3 pairs | 35 / 0 / 13 (every red = unavail cell) | 40 / 2 / 6; each red has a fix in tree |
 | L4 campaign | 48 / 2 / 0, P11a-c caught | — |
-| L5 GPU pairs | 22 / 0 / 2 (EV green on all 24) | 22 / 0 / 2 (FX-N63; oort_star → L6 control) |
+| L5 GPU pairs | 22 / 0 / 2 (EV green on all 24) | 22 / 0 / 2 (FX-D35; oort_star → L6 control) |
 
 **Cross-cutting capabilities**
 
@@ -159,8 +159,8 @@ dataset (speech: 2024 used 60%).
 
 ## Next steps (persistent queue — top item is next)
 
-**Counter (2026-10-01, after PR8):** 18 open — 4 wip · 6 todo · 6 blocked · 2 other (FX-N13 parked design, FX-N8 likely closed).
-This session: 2 closed (FX-N59/N60), 0 opened; FX-N63 root revised (leaked reader slot), FX-N62 widened to fedbuff mobiperf.
+**Counter (2026-10-01, after PR8b):** 17 open — 3 wip · 6 todo · 6 blocked · 2 other (FX-N13 parked design, FX-N8 likely closed).
+This session: 3 closed (FX-N59/N60/N63), 0 opened; FX-N62 widened to fedbuff mobiperf.
 
 Work rule: PARITY C10 — each session resolves as many independent items below as it can, not just files new ones.
 
@@ -169,18 +169,10 @@ pool tiers T1-T4: real aggregator + trainer processes over MQTT on CPU (stub/tin
 by the event checker and the parity battery. GPU tests = G0 (30 min screen at n 100/50, + G0C real replicates) and
 G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). "CPU+GPU" = one pool run with both.
 
-**Unblock map.** PR8b verify (FX-N63) → run 7 = full L1-L5 (FX-N63 touches every real leg) → Q2 floors (gate
+**Unblock map.** run 7 = full L1-L5 (FX-D35 touches every sync real leg) → Q2 floors (gate
 DIST) → L6 = FX-N34 G0 screen → L7 = FX-N4 (G1) + FX-N5 (G2), + FX-N7 → FX-N6 + FX-N9 (GPU unavailability) → FX-N11
 (speech GPU parity) → FX-N12. FX-N13 design can start any time.
 
-- **FX-N63 `[C][S]` · Real recv_fifo leaked reader slots at its deadline cancel · wip: fixed in tree, verify (PARITY PR8b).**
-  `recv_fifo(deadline=)` cancels its streamer each round; aiostream's merge starts readers lazily, so a reader cancelled
-  before it started never ran its `finally` and its end stayed in `_active_recv_fifo_tasks`: skipped ("already has active
-  task") by every later recv, its update never read, then held as owed forever. Run 6 speech refl syn_20: 23 leaked = 23
-  `ABANDON_90S` (eligible 17.7 vs 23.6); PR8 (`pool_fxn63_verify`, enqueue-on-dequeue in): all 37 leaked, real 42 rounds
-  vs sim 216 (run 6 real 189). → the streamer releases its ends in a `finally` (+ the reader enqueues on dequeue,
-  `FLAME_RECV_FIFO_LEGACY=1` reverts that half). *Exit:* `active_task_skips` ≈ 0 and arrivals = processed on every sync
-  real leg; speech refl syn_0/syn_20 K4/K3b/A2 green.
 - **FX-N62 `[C]` · Unaware short legs can't grade timing · blocked: long-run phase (PARITY C0.6).** Unaware oort waits
   out a 90s timeout on most syn_50 rounds: 11-18 rounds per 1200s leg, ~6 stall-free; stall counts match (5/6, 6/7).
   fedbuff mobiperf (240s): 3 real vs 2 sim rounds, all stalls (K3b/S3/4 red on < 20 commits, `pool_fxn59_verify`). With
@@ -330,7 +322,7 @@ update is accepted only under the baseline's own rule (REFL staleness ≤ 5; oor
 - **FX-L46** Decompose a sync clock residual first: 2-9 ninety-second timeout stalls dominate a syn_50 mean; compare
   stall-free advance and stall count separately (FX-N62).
 - **FX-L47** Audit real's receive path per leg: arrivals vs processed, and `active_task_skips`. An abandoned end whose
-  update arrived is a lost message; growing skips mean a leaked reader slot (FX-N63).
+  update arrived is a lost message; growing skips mean a leaked reader slot (FX-D35).
 - **FX-L29** Stub legs charge a seeded compute span (`flame.harness.stub_compute_s`, fit to run_20260702 real). Those
   runs fell back to CPU (CUDA failed to start before S0), so refit it from a G0/G1 real leg (L17).
 - **FX-L16** A2 failing (KS) while S3/4 passes is one in-flight gap graded at two tolerances; walk to
@@ -439,6 +431,9 @@ IDs are kept because code comments cite them.
   UN_AVL at the trace level (0.51/0.53 at selection, EV17 green); asyncfl holds a withheld pick's slot to dispatch+90s;
   syncfl discards stale updates (`sync_accept_stale`); each baseline's `[TRAINER_HP]` equals its `datasets.yaml`
   `by_baseline` row on every leg; fedbuff EV14 green on all CPU+GPU legs (`ladder_20261001_051724`, `_051427`).
+- **FX-D35** (code cites FX-N63) Real `recv_fifo` releases every reader slot when its streamer exits (a reader cancelled
+  before aiostream's merge started it leaked its end forever) and enqueues on dequeue: speech refl syn_0/syn_20 real 223
+  rounds (PR8 42), 0 `active_task_skips`, arrivals = processed + too-stale, K2/K3b/K4/A2 green (`pool_fxn63_verify2`).
 - **FX-D34** (code cites FX-N59/N60) Sim leaves an unanswered dispatch's channel/selector state as real does: an unaware
   withheld pick holds its slot (`sim_hold_withheld_slot`; mobiperf fedbuff real 3 vs sim 2 rounds, was 3 vs 122), and a
   felix-evicted end's update is ingested (`sim_ingest_evicted`; felix syn_50 A2 6.9/6.9, K2/K4 green, both datasets;
