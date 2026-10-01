@@ -106,3 +106,28 @@ def test_held_pick_is_not_a_recv_end_and_wakes_at_its_timeout():
     a.cm = SimpleNamespace(get_by_tag=lambda tag: _ChHeld())
     a._aggregate_weights("t")
     assert a.drained == [] and abs(a._vclock.now - 640.0) < 1e-3
+
+
+class _ChEvicted(_Ch):
+    def __init__(self):
+        self.msgs = {"ev": [({"sim_completion_ts": 640.0}, ("ev", None))]}
+
+    def has(self, e):
+        return e in self.msgs
+
+    def drain_ready(self, ends, timeout=None):
+        return [m for e in ends for m in self.msgs.pop(e, [])]
+
+
+def test_evicted_end_update_is_ingested():
+    """FX-N60: a payload-less ledger entry's arrived update reaches the buffer instead of rotting in the rx queue."""
+    from flame.mode.message import MessageType
+    a = _idle_agg()
+    a._sim_ingest_evicted = True
+    a.pending_withheld, a._sim_withheld_payload = {"ev": 900.0}, {}
+    ch = _ChEvicted()
+    ch.msgs["ev"][0][0][MessageType.SIM_COMPLETION_TS] = 640.0
+    a._sim_ingest_evicted_updates(ch)
+    assert a._sim_buffer.has("ev") and a._sim_buffer.peek_min_ts() == 640.0
+    a._sim_ingest_evicted_updates(ch)  # idempotent: buffered once
+    assert len(a._sim_buffer) == 1

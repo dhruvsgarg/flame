@@ -37,7 +37,9 @@ def test_ev_gate_known_and_red(tmp_path):
     s = _status(lad.grade_pool(root, -1))
     assert s[("P2", "felix")][0] == "red"  # FX-N38 closed: syn_50 EV10 is a regression again
     assert s[("P2", "oort")][0] == "red" and s[("P2", "refl")][0] == "green"
-    assert s[("P2", "fedbuff")] == ("known", "real EV14 (FX-N15)")
+    assert s[("P2", "fedbuff")][0] == "red"  # FX-N15 closed
+    known = _status(lad.grade_pool(_pool(tmp_path / "k", "gs_P7o", [("syn_0", "felix", "PASS", "FAIL:EV12")]), -1))
+    assert known[("gs_P7o", "felix")] == ("known", "sim EV12 (FX-N30)")
 
 
 def test_injected_bug_must_fail_its_check(tmp_path):
@@ -86,3 +88,10 @@ def test_interrupt_waits_for_pool_teardown(tmp_path):
     assert p.stdout.readline().strip() == "up"
     os.killpg(p.pid, signal.SIGINT)  # the terminal's Ctrl+C: the whole foreground group
     assert p.wait(timeout=30) == 130 and mark.exists()
+
+
+def test_known_parity_fail_is_known(tmp_path):
+    """FX-N62: a parity fail matching a KNOWN row is known, not red."""
+    root = _pool(tmp_path, "T3_syn_50", [("syn_50", "oort", "PASS", "PASS")],
+                 parity={("syn_50", "oort"): {"overhead_residual": {"ok": False, "tier": "EXACT"}}})
+    assert _status(lad.grade_pool(root, 1))[("T3_syn_50", "oort")][0] == "known"

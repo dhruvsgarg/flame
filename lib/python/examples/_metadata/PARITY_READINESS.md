@@ -12,6 +12,9 @@
 >    root. Higher rungs inherit lower roots and compound them into noise.
 > 5. **Long runs only to confirm, or for effects that exist only at length** (convergence, drift, compounding).
 >    Launch one only when confident; state what confirms and what refutes.
+> 6. **Long-run phase (operator).** Once short runs stop finding roots, launch the needed long legs (e.g. ~3h oort
+>    syn_50) together: several small-but-reasonable legs in parallel on the GPUs, to surface any remaining real↔sim
+>    blockers at once.
 
 ## Preamble
 - **Read [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) first** (doc rules, R-rules, shared L/T). This doc owns
@@ -78,18 +81,20 @@ conda run -n dg_flame python lib/python/examples/async_cifar10/scripts/parity/ev
 
 ---
 
-## Felix scoreboard — run 5, 2026-09-30 (cifar L1-L4 only)
+## Felix scoreboard — run 6, 2026-10-01 (both datasets, L1-L5)
 
-`ladder_20260930_054655` (jayne). Speech L1-L4 and both L5 never ran (kaylee launches absent; jayne L5 not relaunched).
+`ladder_20261001_051724` (L1-L4) and `ladder_20261001_051427` (L5), jayne. "regraded" = the stored pairs re-run through
+this session's checker (FX-D33); predicted board until PR8/run 7 confirm.
 
-| rung | cifar | reds → root |
-|---|---|---|
-| L1 sim EV | 11 green, 1 known (oort syn_50 EV1) | — |
-| L2/L3 pairs | 19/24 green; syn_0, syn_0b, mobiperf all green | syn_50 × felix/fedbuff/feddance/oort_star/refl stage-1 timing: felix FX-N54, fedbuff FX-N55+N56, feddance FX-N57, oort_star/refl matched-window 13-14% (whole run 6-7%; no floor, Q2) |
-| L4 campaign | 25/25 green; P11a-c CAUGHT | — |
+| rung | run 6 | regraded | reds → root |
+|---|---|---|---|
+| L1 sim EV | 22 / 2 / 0 | — | known: oort syn_50 EV1 (P3 oort) |
+| L2/L3 pairs | 35 / 0 / 13 | 40 / 2 / 6 | fedbuff syn_50 + mobiperf ×2 datasets FX-N59; felix cifar syn_50 FX-N60; feddance cifar mobiperf K2 9.5% (no floor, Q2); known: oort syn_50 timing FX-N62 |
+| L4 campaign | 48 / 2 / 0 | — | known: speech P7o EV12 FX-N30; P11a-c CAUGHT |
+| L5 GPU pairs | 22 / 0 / 2 | 22 / 0 / 2 | speech refl syn_20 FX-N63; cifar oort_star syn_20 K2 12.6% with A2c selected-speed bias on 35 rounds (G0C control, L6) |
 
-Stage 2 on every syn_50 cell: A7 commit-belief + A2 (FX-N41); A5 was a checker artifact (fixed). fedbuff syn_50 EV14
-both legs (FX-N15).
+Stage 2-3 (not gated, no floors): sync syn_50 A3 progress-binned trajectories follow the stall counts; A7 selection is
+green after FX-D33.
 
 ## FluxTune scoreboard
 Parked with the track; its board still sits in simulate_fwdllm.md §A.
@@ -98,18 +103,19 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR6 · Verify FX-N54/N55/N56 on short pairs · running.** `pool_fxn54_verify` (jayne): T3 felix + fedbuff × syn_50,
-  syn_0 × both datasets, `max_experiment_runtime_s=600`. *Confirms:* felix syn_50 K2/K3b/K4 green and EV16 green; fedbuff
-  picks UN_AVL on both legs, K2/K3b green; syn_0 unchanged. *Refutes:* any syn_0 red, or felix EV16 `commit_late` > 0.
-- **PR7 · Run 6: L1-L4 ∥ L5, both datasets, jayne only · after PR6.** Speech L1-L4 and every L5 cell are unrun since the
-  run-4 roots landed. GPU charge profiles: cifar from kaylee, speech from jayne (same hardware, T9). Launch (repo root; `$L` as in Tools):
+- **PR8 · Verify FX-N59/N60/N63 on short pairs · next (operator, ~55 min, two pools in parallel).** From the repo root,
+  `$P` = `conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/harness_pool.py`:
   ```
-  $L --rungs L1-L4 --datasets all --keep-going --deadline-h 6
-  $L --rungs L5 --datasets all --keep-going --deadline-h 6
+  $P --tier T3 --datasets all --baselines 'felix fedbuff' --traces 'syn_0 syn_50 mobiperf_3st' --output-dir lib/python/examples/experiments/pool_fxn59_verify
+  $P --tier GS --datasets google_speech --baselines 'refl oort_star' --output-dir lib/python/examples/experiments/pool_fxn63_verify
   ```
-  *Predictions:* L2 syn_50 felix/fedbuff stage 1 green; feddance syn_50 stays red (FX-N57); speech mirrors cifar; L5
-  K3b green with the profiles. *Refutes:* a GPU cell K3b red → re-profile from run 6's own L5 real legs.
-- **PR8 · Regrade run 6 (C5), then L6 only if L2-L5 have no open shared root.**
+  Smokes green: `pool_smoke_fxn59`, `pool_smoke_drainready` (EV both datasets; real RECV_FIFO skips 0; mobiperf EV1 =
+  60s-smoke shape, every baseline), `pool_smoke_fxn60` (240s felix syn_50: 2 evictions ingested, A2 6.5/6.5, all checks pass). *Confirms:* fedbuff syn_50/mobiperf K4/K3b/K2 green on both datasets
+  (mobiperf real ≈ sim rounds); felix syn_50 A2/K4 green; speech refl syn_20 arrivals = processed, 0 owed holds, K3b
+  green. *Refutes:* any syn_0 red; fedbuff sim stalls ≫ real (over-hold); a lost arrival on any real leg.
+- **PR9 · Run 7: full L1-L5, both datasets, jayne · after PR8.** FX-N63 changes every real leg's receive path, so every
+  cell reruns. Commands as run 6 (`$L --rungs L1-L4 …` ∥ `$L --rungs L5 …`, `$L` in Tools). *Predictions:* L2 red only on
+  feddance cifar mobiperf (no floor); L5 red only on cifar oort_star (selection draw). Then Q2 floors, then L6.
 
 **Operator decisions / open**
 - S5 knob layout: (a) adopted (operator 2026-10-01): `datasets.yaml` holds dataset defaults + `by_baseline` tuned values
@@ -134,7 +140,8 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 | L7 | G1/G2 at reference n, 90 min → 3h | ~5h per dataset |
 
 - Q2 · todo: real↔real floors into `floor_gated_tol` (parent S2) so DIST gates.
-- Q3 · todo: `--grade` re-runs the checker on stored pairs.
+- Q3 · todo: `--grade` re-runs the checker on stored pairs (done by hand this session: `scripts/parity_check.py --real --sim
+  --agg-goal --budget-s` per `*_grade/summary.txt`, ~5 min for 72 pairs at 20 parallel).
 - Q4 · todo: runner reports the two axes per cell (today it gates timing INV/EXACT and leaves logical DIST ungated).
 - Q5 · todo: per-cell scheduling (C3).
 - Q6 · wip: `logical_diff.py`; next: per-round marginals for async pairs.

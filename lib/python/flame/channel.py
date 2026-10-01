@@ -33,9 +33,13 @@ from flame.mode.role import Role
 from flame.monitor.runtime import timer_decorator
 import gzip
 import zstandard as zstd
+import os
 import sys
 
 logger = logging.getLogger(__name__)
+
+# FX-N63: a recv_fifo reader enqueues on dequeue, so a deadline cancel can't drop an arrived update.
+_RECV_FIFO_DIRECT_ENQUEUE = os.environ.get("FLAME_RECV_FIFO_LEGACY", "0") != "1"
 
 KEY_CH_STATE = "state"
 VAL_CH_STATE_RECV = "recv"
@@ -725,6 +729,8 @@ class Channel(object):
                         payload = await asyncio.wait_for(get_coro, timeout)
                     else:
                         payload = await get_coro
+                    if payload and _RECV_FIFO_DIRECT_ENQUEUE:
+                        self._rx_queue.put_nowait((end_id, payload))  # FX-N63: no await since the dequeue
                     if payload:
                         # ignore timestamp for measuring bytes received
                         self.mc.accumulate("bytes", "recv", len(payload[0]))
@@ -804,10 +810,7 @@ class Channel(object):
                 # Don't enqueue non-messages (timed-out / quiet ends): they
                 # would consume a first_k slot ahead of a real update. The
                 # caller's own timeout bounds how long it waits on the rx queue.
-                if payload is None:
-                    logger.debug(
-                        f"[RECV_FIFO] no message from {end_id}; not enqueuing"
-                    )
+                if payload is None or _RECV_FIFO_DIRECT_ENQUEUE:  # FX-N63: the reader enqueued it
                     continue
                 msg_count += 1
                 await self._rx_queue.put(result)

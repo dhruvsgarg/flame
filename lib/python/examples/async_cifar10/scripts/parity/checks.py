@@ -2774,6 +2774,36 @@ def floor_gated_tol(nominal: float, floor_rel: Optional[float],
     return min(nominal, max(k * floor_rel, min_abs)), None
 
 
+_TIMEOUT_STALL_S = 72.0  # FX-N62: 0.8 x the 90s per-pick timeout
+
+
+def _round_axis(*legs: dict) -> bool:
+    return all(_progress_axis(leg["agg_rounds"]) == "round" for leg in legs)
+
+
+def _stall_free(adv: list, *legs: dict) -> list:
+    """FX-N62: rounds under the 90s-timeout stall cut; round axis only (a fwdllm data_id is not a round)."""
+    if not _round_axis(*legs):
+        return adv
+    return [a for a in adv if a < _TIMEOUT_STALL_S] or adv
+
+
+def timeout_stalls(real: dict, sim: dict, same_mode: bool = False) -> dict:
+    """K3s [DIST]: per-round rate of >=72s timeout stalls, Poisson 2-sigma + one count (FX-N62)."""
+    _a_vclock, _b_vclock = pair_clocks(real, sim, same_mode)
+    r = _per_round_advances(real["agg_rounds"], use_vclock=_a_vclock)
+    b = _per_round_advances(sim["agg_rounds"], use_vclock=_b_vclock)
+    if len(r) < 2 or len(b) < 2 or not _round_axis(real, sim):
+        return {"ok": True, "tier": "DIST", "status": "SKIP", "note": "fewer than 2 rounds, or not a round axis"}
+    nr = sum(1 for x in r if x >= _TIMEOUT_STALL_S)
+    nb = sum(1 for x in b if x >= _TIMEOUT_STALL_S)
+    rate_r, rate_b = nr / len(r), nb / len(b)
+    tol = 2.0 * math.sqrt(nr / len(r) ** 2 + nb / len(b) ** 2) + 1.0 / min(len(r), len(b))
+    return {"ok": abs(rate_r - rate_b) <= tol, "tier": "DIST",
+            "real_stalls": nr, "sim_stalls": nb, "real_rounds": len(r), "sim_rounds": len(b),
+            "real_rate": round(rate_r, 4), "sim_rate": round(rate_b, 4), "tol": round(tol, 4)}
+
+
 def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY_TOL_REL,
                       same_mode: bool = False) -> dict:
     """K2 [EXACT]: rounds-per-virtual-second parity.
@@ -2858,6 +2888,7 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY
         sim_adv = _per_round_advances(
             sim["agg_rounds"],
             use_vclock=_b_uses_vclock(sim["agg_rounds"], same_mode))[: matched_n - 1]
+        real_adv, sim_adv = _stall_free(real_adv, real, sim), _stall_free(sim_adv, real, sim)  # FX-N62
         if real_adv and sim_adv:
             r_mean = sum(real_adv) / len(real_adv)
             s_mean = sum(sim_adv) / len(sim_adv)
@@ -2944,8 +2975,9 @@ def per_round_advance_parity(real: dict, sim: dict,
     if matched_n >= 2:
         matched_sim = sim_adv[:matched_n]
         matched_real = real_adv[:matched_n]
-        matched_sim_mean = sum(matched_sim) / matched_n
-        matched_real_mean = sum(matched_real) / matched_n
+        _fs, _fr = _stall_free(matched_sim, real, sim), _stall_free(matched_real, real, sim)  # FX-N62
+        matched_sim_mean = sum(_fs) / len(_fs)
+        matched_real_mean = sum(_fr) / len(_fr)
         matched_mean_rel_diff = (
             abs(matched_sim_mean - matched_real_mean)
             / max(matched_sim_mean, matched_real_mean, 1e-9))
@@ -3665,10 +3697,10 @@ def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
     # the raw residual. Applies on every baseline, not just sync (§D-84).
     matched_n = min(len(sim_adv), len(real_adv))
     if matched_n >= 2:
-        matched_sim = sim_adv[:matched_n]
-        matched_real = real_adv[:matched_n]
-        matched_sim_mean = sum(matched_sim) / matched_n
-        matched_real_mean = sum(matched_real) / matched_n
+        matched_sim = _stall_free(sim_adv[:matched_n], real, sim)  # FX-N62
+        matched_real = _stall_free(real_adv[:matched_n], real, sim)
+        matched_sim_mean = sum(matched_sim) / len(matched_sim)
+        matched_real_mean = sum(matched_real) / len(matched_real)
         matched_residual = matched_real_mean - matched_sim_mean
         matched_rel = (abs(matched_residual) / matched_real_mean
                        if matched_real_mean > 0 else 0.0)
@@ -4463,6 +4495,15 @@ def trainer_trace_fidelity_parity(trainer_dict: dict, selection_events: list,
                   "avail_change telemetry (gate off, or predates T3.2)")
 
 
+def _point_belief_error(raw_obs: list, gt) -> float:
+    """FX-N41: fraction of beliefs wrong at their own instant, +-1s for real's wall jitter at a transition."""
+    def _gt_at(t):
+        k = gt.bisect_right(t) - 1
+        return gt.peekitem(k)[1] if k >= 0 else "AVL_TRAIN"  # a trace starts AVL_TRAIN
+    wrong = sum(1 for t, st in raw_obs if all(_gt_at(t + dt) != st for dt in (0.0, -1.0, 1.0)))
+    return wrong / len(raw_obs)
+
+
 def agg_belief_fidelity_parity(agg: dict, mode: str, ground_truth: Optional[dict],
                                mean_tol: float = 0.05, within_tau: float = 0.10,
                                frac_pass_tol: float = 0.95,
@@ -4512,17 +4553,10 @@ def agg_belief_fidelity_parity(agg: dict, mode: str, ground_truth: Optional[dict
     for end_id, raw_obs in sel_series.items():
         short_id = str(end_id)[-4:]
         gt = gt_by_short.get(short_id)
-        if gt is None:
+        if gt is None or not raw_obs:
             continue
-        scored = _fidelity_score(raw_obs, gt, span, lag_tol_s, seed_state="AVL_TRAIN")
-        if scored is None:
-            continue
-        tvd, lags, missed, spurious = scored
-        sel_errs[short_id] = tvd
-        sel_missed += missed
-        sel_spurious += spurious
-        if lags:
-            sel_max_lag = max(sel_max_lag, max(lags))
+        # FX-N61: a selection belief vouches only for its instant (no decision between selections).
+        sel_errs[short_id] = _point_belief_error(raw_obs, gt)
     sel_result = _fidelity_result(
         sel_errs, sel_missed, sel_spurious, sel_max_lag, mode, mean_tol, within_tau,
         frac_pass_tol,
@@ -4545,14 +4579,7 @@ def agg_belief_fidelity_parity(agg: dict, mode: str, ground_truth: Optional[dict
         raw_obs = build_observed_timeline_from_agg_belief(evs)
         if not raw_obs:
             continue
-        # FX-N41: a commit belief vouches only for its own instant; interval scoring blamed the trace flip after
-        # a pre-boundary commit. Point accuracy, +-1s for real's wall jitter at a transition.
-        def _gt_at(t):
-            k = gt.bisect_right(t) - 1
-            return gt.peekitem(k)[1] if k >= 0 else "AVL_TRAIN"  # a trace starts AVL_TRAIN
-        wrong = sum(1 for t, st in raw_obs
-                    if all(_gt_at(t + dt) != st for dt in (0.0, -1.0, 1.0)))
-        commit_errs[short_id] = wrong / len(raw_obs)
+        commit_errs[short_id] = _point_belief_error(raw_obs, gt)  # FX-N41
     commit_result = _fidelity_result(
         commit_errs, commit_missed, commit_spurious, commit_max_lag, mode, mean_tol,
         within_tau, frac_pass_tol,
@@ -7607,6 +7634,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["overhead_residual"] = overhead_residual(
         real_agg, sim_agg, agg_goal=agg_goal, same_mode=same_mode,
         **_tol["overhead_residual"])
+    results["timeout_stalls"] = timeout_stalls(real_agg, sim_agg, same_mode=same_mode)
     results["overlap_factor"] = overlap_factor(real_agg, sim_agg,
                                                same_mode=same_mode,
                                                **_tol["overlap_factor"])
@@ -7821,6 +7849,7 @@ CHECK_META: dict = {
     "modeled_compute_advance": {"stage": 1, "role": "DIAG",     "deps": ("trainer_speed", "sim_commit_monotone")},
     "overlap_factor":          {"stage": 1, "role": "MECHANISM", "deps": ("trainer_speed", "sim_commit_monotone")},
     "overhead_residual":       {"stage": 1, "role": "MECHANISM", "deps": ("trainer_speed", "sim_commit_monotone", "overlap_factor")},
+    "timeout_stalls":          {"stage": 1, "role": "MECHANISM", "deps": ("trainer_speed",)},
     "per_round_advance":       {"stage": 1, "role": "EMERGENT", "deps": ("overhead_residual",)},
     "throughput":              {"stage": 1, "role": "EMERGENT", "deps": ("per_round_advance",)},
     "wall_disparity":          {"stage": 1, "role": "DIAG",     "deps": ("throughput",)},
@@ -7993,6 +8022,7 @@ THRESHOLD_PROVENANCE: dict = {
     # ── CALIBRATED in kind, NO FLOOR YET -- the debt, measurable from n>=3 ──
     "per_round_advance":       (CALIBRATED, "round_advance_rel"),
     "overhead_residual":       (CALIBRATED, "overhead_rel"),
+    "timeout_stalls":          (CALIBRATED, "timeout_stall_rate"),  # Poisson-sized until a floor exists
     "overlap_factor":          (CALIBRATED, "overlap_rel"),
     "utility":                 (CALIBRATED, "utility_ks"),
     "staleness":               (CALIBRATED, None),

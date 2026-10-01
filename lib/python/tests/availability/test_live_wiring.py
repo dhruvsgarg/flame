@@ -606,3 +606,19 @@ def test_selection_names_each_exclusion(monkeypatch):
     h._stamp_exclusions(ch, "train", withheld={"t1"}, owed={"t2"}, unavail={"t1", "t3"})
     got = {e: end.get_property(PROP_EXCL_REASON) for e, end in ch._ends.items()}
     assert got == {"t1": "withheld", "t2": "owed", "t3": "unavail", "t4": "in_flight", "t5": "version_guard"}
+
+
+def test_async_held_withhold_clears_recvd_so_the_slot_stays():
+    """FX-N59: an arrived-but-withheld update leaves the end un-RECVD, so the selector keeps its slot (real never got it)."""
+    from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD
+    from flame.selector.async_base import AsyncSelectorBase
+
+    h = _Harness({"t1": _DOWN}, now=130, inflight_tracker=True)
+    h._sim_hold_withheld_slot = True
+    sel = _AsyncSelector(); sel.add("t1")
+    ch = _Channel(sel, ["t1"])
+    ch._ends["t1"].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)  # arrived in the sim channel
+    assert h._sim_withhold_if_unavail(ch, "t1", 150.0, _payload("t1")) is True
+    assert ch._ends["t1"].get_property(KEY_END_STATE) == VAL_END_STATE_NONE
+    AsyncSelectorBase._drop_recvd(sel.selected_ends["agg"], ch._ends)
+    assert sel.holds("t1") and "t1" in h._withheld_slot_held

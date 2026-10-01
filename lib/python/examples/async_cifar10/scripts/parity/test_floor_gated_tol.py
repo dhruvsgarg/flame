@@ -709,3 +709,20 @@ class TestThresholdProvenance:
                      "overlap_factor"):
             assert left not in debt, f"{left} is floor-gated now"
         assert len(debt) <= 41
+
+
+def test_timeout_stalls_split_from_the_clock_rungs():
+    """FX-N62: K3b grades stall-free rounds; the 90s-stall count is graded on its own (K3s)."""
+    from parity.checks import overhead_residual, timeout_stalls
+
+    def _leg(n, stall_at):
+        t, ev = 0.0, []
+        for r in range(1, n + 1):
+            t += 93.0 if r in stall_at else 3.0
+            ev.append({"event": "agg_round", "round": r, "ts": t, "contributing_trainers": ["1"]})
+        return {"agg_rounds": ev}
+    a, b = _leg(150, {20, 50, 80, 110, 140}), _leg(150, {60})
+    assert overhead_residual(a, b, same_mode=True)["ok"]
+    ts = timeout_stalls(a, b, same_mode=True)
+    assert (ts["real_stalls"], ts["sim_stalls"]) == (5, 1) and ts["ok"]
+    assert not timeout_stalls(_leg(150, set(range(5, 150, 5))), b, same_mode=True)["ok"]

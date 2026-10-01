@@ -91,8 +91,9 @@ section already says.
 - **R9 Config-gated, default-off, byte-identical when off** for every sim or real behaviour change.
   Promote to default only with A/B evidence and operator sign-off.
 - **R10 Shared code keeps both tracks green.** Any change under `flame/` (aggregators, selectors, channel,
-  availability, launch) runs the full pytest (below) plus the harness smoke for Felix AND FluxTune
-  baselines before it lands.
+  availability, launch) runs the full pytest (below, incl. the fwdllm suites) plus the Felix harness smoke before it
+  lands. **Until the Felix fixes land (operator 2026-10-01): no FluxTune or other fwdllm-example runs or smokes; a shared
+  change is checked for fwdllm by pytest alone.**
 - **R11 Fix the concept, not the symptom; no hacks.** A number moved without a correct mechanism is a
   regression in disguise. Never tune a baseline-defining knob to close a parity gap. When unsure, stop and
   ask.
@@ -278,7 +279,7 @@ green (R10).
   `run_sequential.sh` heredoc into an importable, tested module. Reject dead legs (never reached the first
   commit) in the shared leg-discovery helper. Auto-skip a broken GPU ordinal. *Exit:* both examples launch
   real+sim pairs through the one driver.
-- **S4 · Legacy config removal · awaiting operator sign-off per row.** Inventory:
+- **S4 · Legacy config removal · approved (operator 2026-10-01): one separate deletion PR.** List:
   | path | what | proposal |
   |---|---|---|
   | `async_google_speech/trainer/config_*` (3.5k JSON, 33M) + `aggregator/*.json` + `expt_runs_*.sh` + `*/pytorch/main*.py` | 2024 per-trainer configs + scripts; splits already imported (FX-N10) | delete once FX-N10 grades speech on the launcher; keep `data/` |
@@ -288,7 +289,8 @@ green (R10).
   | `async_cifar10/wandb`, `aggregator/wandb` (17G) | wandb run caches | delete (untrack) |
   | `fwdllm/expt_scripts/probe_*`, `writeup_figs/data` JSON | probe/figure DATA, not configs | keep |
   Plus the `trackTrainerAvail` blocks (FX-N7). *Exit:* no per-trainer JSON or `pytorch/main*.py` shell path left.
-- **S5 · Knob contract · blocked: operator picks the layout (PARITY_READINESS, blocked list).** Declare each knob once,
+- **S5 · Knob contract · wip: layout (a) adopted (`datasets.yaml` `by_baseline`); left: `fedbuff.py` server-lr table into
+  config and a resolved-matrix printer (PARITY_READINESS, operator decisions).** Declare each knob once,
   print the resolved baseline × dataset matrix with sources, diff it against a run's config (L9), enforce required knobs
   in `test_baseline_readiness.py`, the preflight and `--validate`.
 - **S6 · Sim perf pass · blocked: on Felix parity (FX board green).** Gate diagnostic logging, trim per-commit
@@ -306,7 +308,7 @@ green (R10).
 
 ## Shared built
 - **S0** `dg_flame` → torch 2.12.1+cu129 / torchvision 0.27.1+cu129 (driver 12.9); cu13 libs removed. jayne GPU 1
-  shows an uncorrected ECC error (2026-09-26; needs an admin reset); `harness_pool.py` skips such GPUs.
+  shows an uncorrected ECC error (2026-09-26); operator: work with 7 GPUs for now; `harness_pool.py` skips such GPUs.
 - Parity methodology (causal ladder, roles/tiers, dependency gating), availability substrate v1, and the
   fwdllm floor/control/median grading all landed — derivations in PARITY.md §1-§5, UNAVAILABILITY_DESIGN.md,
   simulate_fwdllm.md §A-§D.

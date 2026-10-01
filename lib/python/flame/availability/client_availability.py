@@ -677,6 +677,10 @@ class ClientAvailability:
             self._withheld_slot_held.add(end)
             if async_hold:
                 self._avail_drop_inflight(end)
+                if channel is not None and channel.has(end):  # FX-N59: real never received it; RECVD frees the slot
+                    from flame.end import KEY_END_STATE, VAL_END_STATE_NONE
+
+                    channel._ends[end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
             logger.info(f"[AVAIL] withhold_hold_slot end={str(end)[-4:]} sct={float(sct):.1f} delivery_ts={dts:.1f}")
             return True
         self.free_stalled_slot(

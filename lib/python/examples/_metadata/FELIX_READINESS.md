@@ -26,29 +26,28 @@
 
 ## Status grid (scoreboard)
 
-**At a glance (2026-10-01)** — green / known / red, detail in [PARITY_READINESS.md](PARITY_READINESS.md) → Felix scoreboard:
+**At a glance (2026-10-01, run 6)** — green / known / red, detail in [PARITY_READINESS.md](PARITY_READINESS.md) → Felix scoreboard:
 
-| test | cifar | speech |
+| test | both datasets (run 6) | regraded with this session's checker fixes |
 |---|---|---|
-| pytest (4 suites) | 2325 passed · 0 failed · 7 skipped | (shared) |
-| L1 sim EV | 11 / 1 / 0 (run 5) | not run since run 4 |
-| L2/L3 pairs | 19 / 0 / 5 (run 5; all 5 = syn_50) | not run since run 4 (21 red of 24) |
-| L4 campaign | 25 / 0 / 0, P11a-c caught (run 5) | not run since run 4 |
-| L5 GPU pairs | not run since run 4 (6 red of 12, both datasets) | — |
-| syn_50 felix+fedbuff verify (T3, 600s) | felix: stage 1 green, A2+A3 red; fedbuff: EV10 (fixed, T1 green) | felix: only A2 red; fedbuff: EV10 (fixed) |
+| pytest (4 suites) | 2331 passed · 0 failed · 7 skipped | — |
+| L1 sim EV | 22 / 2 / 0 | — |
+| L2/L3 pairs | 35 / 0 / 13 (every red = unavail cell) | 40 / 2 / 6; each red has a fix in tree |
+| L4 campaign | 48 / 2 / 0, P11a-c caught | — |
+| L5 GPU pairs | 22 / 0 / 2 (EV green on all 24) | 22 / 0 / 2 (FX-N63; oort_star → L6 control) |
 
 **Cross-cutting capabilities**
 
 | capability | status | evidence / item |
 |---|---|---|
-| checker catches injected sim bugs (P11a-c) | ✅ both datasets | run 5 cifar, `pool_fxn32_p11b` (P11b on fedbuff) |
+| checker catches injected sim bugs (P11a-c) | ✅ both datasets | run 6 L4 (`ladder_20261001_051724`) |
 | fail fast on fatal errors | ✅ | FX-D22 |
 | parity ladder runner + offline re-gate | ✅ | FX-N42 |
 | GPU join / warm-up at n=100 | ✅ 44-99s / ≤1.35s | FX-D19 |
 | sync wait-K, round livelock | ✅ EV7 green all sync legs | FX-D20, FX-D21 |
 | async real ingest latency (< 2s) | ✅ run 3: max < 2s outside P7/P7o except 4 legs with one 2.2-3.2s update | FX-D16 |
-| GPU speech legs start (no OOM) | ✅ run 3 L5: EV green on all 24 GPU legs | FX-N34 |
-| sim clock charges profiled per dataset/platform | ✅ K3b green 36/36 short cells (CPU); GPU in run 6 (PR7) | FX-D23 |
+| GPU legs start (no OOM), EV green | ✅ run 6 L5: EV green on all 24 GPU legs | FX-D19 |
+| sim clock charges profiled per dataset/platform | ✅ K3b green on every syn_0 cell, CPU + GPU, both datasets (run 6) | FX-D23 |
 | DIST tolerances sized by a replicate floor | ⚠ nominal everywhere ("no floor yet") | FX-N42, parent S2 |
 | streaming / oracle experiment (FX-N13) | 🟡 cifar arms agree real/sim; speech arms starved | FX-N30, FX-N13 |
 | sim speedup vs real | ⬚ not measured at REF | S6, FX-N22 P8 |
@@ -127,10 +126,41 @@ P7/P7o checkpoints are FX-N13 replay input.
 - P8 · in-process fast sim: fake trainer replies, no MQTT and no processes (~100×). It is the
   paper-experiment engine (parent S6). After P6.
 
+## Parked design — streaming time-to-accuracy experiments (FX-N12, FX-N13)
+
+Starts when L1-L5 have no open shared root (operator: don't add noise to the parity path before then).
+
+**Experiment (operator).** All six baselines × {cifar10, google_speech} × {syn_0, syn_20, syn_50, mobiperf_3st} × two
+stream modes; metric = time-to-accuracy; each trainer's data reaches 100% at 6 days of trace time (the trace horizon);
+sim-only once streaming parity holds. Claim: Felix's eval selector finds clients whose data (hence utility) just grew;
+unaware or mis-estimating selectors don't.
+- **linear:** every trainer starts at 10% of its data and grows linearly to 100% at 6 days.
+- **events:** starts at 10%; each trainer uploads preset chunks at its own, out-of-sync times (flat stretches, then jumps),
+  totalling 100% at 6 days.
+
+**Exists.** Trainer streaming in the shared trainer (`async_cifar10/trainer/pytorch/main.py` `data_streaming`): a seeded
+prefix of the local pool grows linearly 0→100% over `full_data_available_after_s`, optional per-client onset/span
+(`stagger`); clock = vclock (sim) / wall since `AGG_START_TS` (real, FX-L30). P7/P7o harness, oracle selector,
+`oracle_misselection.py`, `felix_streaming_figures.py`; cifar arms agree in sign real/sim; speech arms starved (FX-N30).
+
+**Steps** (each with pytest + a harness smoke; EV/parity before any sweep):
+- ST1 linear: `initial_frac` (0.1): visible = initial + (1−initial)·t/T.
+- ST2 events: per-trainer chunk schedule, deterministic from (trainer_id, seed), identical in real and sim; `data_growth`
+  telemetry per chunk.
+- ST3 clock: the stream clock is trace time (same scale as the availability trace), so 6 days lines up with its horizon.
+- ST4 checker: EV — visible count monotone and equal to the schedule at every task, both modes; parity — per-task visible
+  count, utility trajectories, oracle-vs-baseline misselection.
+- ST5 parity: P7/P7o × {linear, events} × both datasets, CPU then GPU short legs; FX-N30 (speech P7) first.
+- ST6 sweep: sim-only matrix (needs FX-N22 P8 for scale); figures: time-to-accuracy, misselection gap.
+
+**Open (operator, at ST2/ST6).** Event mode: chunk size and gap distribution; uploads only while AVL_TRAIN (tie to the
+trace)? New data from the same distribution (today: a random-permutation prefix) or drifting labels? Target accuracy per
+dataset (speech: 2024 used 60%).
+
 ## Next steps (persistent queue — top item is next)
 
-**Counter (2026-10-01):** 24 open — 10 wip (fixed in tree, awaiting a run) · 7 todo · 5 blocked · 2 other (FX-N13 design,
-FX-N8 likely closed). This session: 16 closed (FX-N26/N32/N35/N38/N44/N45/N46/N48/N50/N51/N52/N53/N54 + PR4/PR5), 5 opened (FX-N55/N56/N57/N58 + C10).
+**Counter (2026-10-01, after run 6):** 20 open — 6 wip · 6 todo · 6 blocked · 2 other (FX-N13 parked design, FX-N8 likely closed).
+This session: 9 closed (FX-N15/N19/N41/N49/N55/N56/N57/N58 + FX-N61 opened and closed), 4 opened (FX-N59/N60/N62/N63).
 
 Work rule: PARITY C10 — each session resolves as many independent items below as it can, not just files new ones.
 
@@ -139,47 +169,38 @@ pool tiers T1-T4: real aggregator + trainer processes over MQTT on CPU (stub/tin
 by the event checker and the parity battery. GPU tests = G0 (30 min screen at n 100/50, + G0C real replicates) and
 G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). "CPU+GPU" = one pool run with both.
 
-**Unblock map.** Run 6 (PARITY PR7: speech L1-L4 never ran in run 5, L5 on both datasets) → Q2 floors (gate DIST) →
-L6 = FX-N34 G0 screen → L7 = FX-N4 (G1) + FX-N5 (G2), + FX-N7 → FX-N6 + FX-N9 (GPU unavailability) → FX-N11 (speech GPU
-parity) → FX-N12. FX-N13 design can start any time.
+**Unblock map.** PR8 verify (FX-N59/N60/N63) → run 7 = full L1-L5 (FX-N63 touches every real leg) → Q2 floors (gate
+DIST) → L6 = FX-N34 G0 screen → L7 = FX-N4 (G1) + FX-N5 (G2), + FX-N7 → FX-N6 + FX-N9 (GPU unavailability) → FX-N11
+(speech GPU parity) → FX-N12. FX-N13 design can start any time.
 
-- **FX-N55 `[C]` · Unaware fedbuff selected on the oracle trace (C6) · wip: fixed in tree, verify (PARITY PR6).**
-  `AsyncSelectorBase._eligible_candidates` filtered on the telemetry-only `PROP_AVL_STATE` stamp, so fedbuff
-  (`avail_select_filter` false) never picked UN_AVL (5300/5300 AVL_TRAIN, both legs). → the asyncfl aggregator clears
-  `filter_by_avl_state` for an unaware baseline (`unaware_ignores_trace`). Exposed a real race (EV17 7/14 on
-  `pool_fxn54_verify`): a selector timeout reclaim freed an owed end and re-picked it in the same `select()` →
-  a reclaimed end is not a candidate that pass. *Exit:* fedbuff syn_50 EV17 green; UN_AVL picks on both legs.
-- **FX-N56 `[C]` · Sim freed an unaware async withheld slot at sct · wip: fixed in tree, verify (PR6).** Real can't
-  see a send-gate, so the slot stays until the 90s timeout; sim freed it at the withhold. → asyncfl holds it in
-  `_withheld_slot_held` until dispatch+90s (`sim_hold_withheld_slot`). `pool_fxn54_verify` fedbuff syn_50: in flight
-  real 6.0 / sim 5.83, timeouts 21 / ~19 match, yet sim 1.75 vs real 3.62 s/round: real spent 3.75 slots on dead
-  dispatches vs sim 2.85 (27 vs 19), the extra ≈ the 7 EV17 re-picks (FX-N55 race). `pool_fxn55b_verify`: EV17 green,
-  speech stage 1 green, cifar K2 matched-window 9.1% (tol 8%), K3b/K4 green. A held pick counted as a recv end (its
-  update is in the delivery ledger) livelocked a speech sim at vclock 599.7 → excluded from recv; its dispatch+90s is a
-  starvation wake-up. `pool_fxn56d_verify`: stage 1 green on 3 of 4 syn_50 cells; fedbuff sim EV10 (a selector-timeout
-  reclaim left a held end out of both slot and identity hold) → held set synced to `all_selected` (T1 EV green).
-  *Exit:* fedbuff syn_50 K2/K3b/K4 green (run 6).
-- **FX-N57 `[C]` · Sync baselines took stale updates · wip: fixed in tree, verify (`pool_fxn57_t3`, run 6).** Real syncfl
-  counted a withheld delivery toward K (feddance round 101: staleness 31), sim aggregated it as a bonus. Operator: accept a
-  late update only if the baseline's own rule allows it (REFL ≤ 5, oort none); FedDance is sync and never mentions stale
-  updates → discard, like oort. → syncfl discards any stale update on both sides (`sync_accept_stale`, default false).
-  *Exit:* feddance syn_50 K2 green; real in flight ≈ sim.
-- **FX-N41 `[C][S]` · Unavailability parity family · wip: stage-2 checker roots fixed, verify (PR6).** syn_50 stage 2
-  was red on every cell; three were checker artifacts: A5 (normalized bins on the 150s trace steps → absolute time,
-  graded where both sides observed within 30s), A7 commit (each commit vouched 30s past a pre-boundary commit; 0 of
-  ~5100 commit beliefs actually wrong → point accuracy, ±1s), and offline grades loading ground truth at the shell's
-  trace scale (→ the run's `trace_time_scale`). fedbuff A2: sim listed an in-flight held pick as withheld, real as in
-  flight (num_eligible 5.6-7.5 vs 9.2) → identity hold starts when the slot frees. Remaining: felix A2 KS 0.24 (means
-  7.1/6.6), A3 late-run bins. *Exit:* each rung green or its root has an item.
-- **FX-N49 `[C]` · REFL exploration port · wip: confirm on GPU.** CPU L2 refl EV/parity green; *Exit:* GPU refl distinct
-  picks ≈ oort's (L5/L6).
+- **FX-N59 `[C]` · Sim freed an unaware withheld pick's slot on arrival · wip: fixed in tree, verify (PARITY PR8).** The
+  held pick's update physically arrives in sim, so the channel marks it RECVD and the selector's FX-D24 `_drop_recvd`
+  frees the slot at the next select; real never receives it and holds the slot to dispatch+90s. On mobiperf (90% dead
+  picks) sim dispatched 9 dead picks at one vclock: real 3 rounds vs sim 122 in 240s (both datasets); syn_50: real 3
+  ~93s all-slots-dead stalls, sim 0 (K4 in flight 5.4 vs 4.9). → the hold resets the end to NONE (`sim_hold_withheld_slot`).
+  *Exit:* fedbuff syn_50 + mobiperf K4/K3b/K2 and matched_budget_coverage green, both datasets.
+- **FX-N60 `[C]` · Sim never ingested a felix-evicted end's update · wip: fixed in tree, verify (PR8).** An
+  `aware_boundary_eviction` leaves a payload-less ledger entry, and no `_sim_recv_min` probe set covers the evicted end,
+  so its update sat in the rx queue and the end stayed "withheld" (ineligible) for the rest of the run (0383/0384 from
+  vclock 150 to 1200). Sim withheld exclusions climbed 0.8 → 7.2 of 15 while real's stayed 3-4: A2 6.3 vs 6.9, K4 4.58
+  vs 5.16 (cifar). → `_sim_ingest_evicted_updates` buffers it (`sim_ingest_evicted`). *Exit:* felix syn_50 A2/K4/K2
+  green on both datasets; sim `withheld_delivery` count ≈ real's evictions.
+- **FX-N63 `[C][S]` · Real recv_fifo lost updates at its deadline cancel · wip: fixed in tree, verify (PR8 GS).**
+  `recv_fifo(deadline=)` cancels its streamer each round; an update dequeued from its End but not yet put on
+  `_rx_queue` was dropped. GPU speech refl syn_20: 23 of 1081 arrivals never processed = 23 `ABANDON_90S`, then held as
+  owed forever (eligible 17.7 vs sim 23.6, K3b 12.6%); syn_0 lost 4, oort_star 1, CPU legs 0. Real was wrong (C6). →
+  the reader enqueues on dequeue (`FLAME_RECV_FIFO_LEGACY=1` reverts). *Exit:* 0 lost arrivals on every real leg
+  (arrivals = processed); speech refl syn_20 K3b/A2 green.
+- **FX-N62 `[C]` · oort syn_50 T3 legs can't grade timing · blocked: long-run phase (PARITY C0.6).** Unaware oort waits
+  out a 90s timeout on most syn_50 rounds: 11-18 rounds per 1200s leg, ~6 stall-free; stall counts match (5/6, 6/7).
+  KNOWN in the ladder. Operator: run a ~3h oort-only syn_50 leg once short-run roots are exhausted, beside the other long
+  legs. *Exit:* a graded oort unavail timing cell.
 - **FX-N42 `[S]` · Parity ladder · wip (PARITY_READINESS Active build: Q2-Q6).** *Exit:* Q2-Q6 done; a run graded per cell on both axes.
 - **FX-N33 `[C][S]` · Aggregator aborts at interpreter exit · todo (root open).** After a clean channel leave:
   `terminate called without an active exception` → `Fatal Python error: Aborted` (a C++ thread destroyed while
-  joinable; no Python frame). 16 of 661 run dirs from 09-27/28, 15 of them sim aggregators, CPU and GPU alike. Data is
-  intact (post-leave); FX-D22 allowlists exactly this signature. Loaded natives: grpc, pyarrow (+ s3fs), torch, wandb,
-  mlflow. 0 aborts in the 140 run dirs since `c2e4ac286` (3/119 earlier on 09-30, 43/577 on 09-29); that commit
-  touches no thread/exit code, so the root is unnamed. *Exit:* root named, abort gone.
+  joinable; only the main thread, no Python frame). Run 6: 9 of 244 run dirs, all sim aggregators, CPU and GPU (09-27/28:
+  15 of 16 sim). Data is intact (post-leave); FX-D22 allowlists exactly this signature. Loaded natives: grpc, pyarrow
+  (+ s3fs), torch, cuda.bindings, zstandard. Next: diff what sim alone starts at exit. *Exit:* root named, abort gone.
 - **FX-N30 `[S]` · Speech tiny_cpu is too heavy for CPU slots · todo.** P7/P7o sims run at sim_rate 0.2-0.5 and are
   killed at 63-141s of 180 (EV0/EV12, `KNOWN`). In P7o real, the oracle's `select` blocks the MQTT thread 20-84s on 2
   aggregator cores. Options: shrink the speech tiny_cpu model/data, more aggregator cores for oracle legs, or run
@@ -188,39 +209,21 @@ parity) → FX-N12. FX-N13 design can start any time.
   EQUIVALENT at cpt ≤ 0.5, and T2 for both datasets under 25 min on one node.
 - **FX-N34 `[C][S]` · G0 GPU screen, all six × both datasets × syn_0/syn_20 · todo: L6, after run 6 L5.** 30 min,
   cohorts scaled with the reference c/n and aggGoal/c (cifar n=100 c=10 aggGoal 3, 3 GPUs; speech n=50 c=15 aggGoal 5,
-  4 GPUs). G0C adds a second real leg per syn_0 cell for the real↔real floor (R7). *Predictions:* EV green on every leg
-  except cifar fedbuff EV14 (FX-N15); syn_20 legs withhold and deliver. *Exit:* per cell INV/EXACT green → G1/G2; each
+  4 GPUs). G0C adds a second real leg per syn_0 cell for the real↔real floor (R7). *Predictions:* EV green on every leg; syn_20 legs withhold and deliver. *Exit:* per cell INV/EXACT green → G1/G2; each
   red cell gets an item.
 - **FX-N4 · First GPU block: felix + fedbuff, syn_0, 90 min · blocked: FX-N34.** `$P --tier G1 --datasets cifar10`
   (whole node, ~5h) and `--datasets google_speech` (~2.5h). jayne runs on 7 GPUs (GPU 1 ECC); each pair stays on one
   layout (L18). *Predictions:* EV green; felix real queue_wait p99 < 1s; `trainer_speed_identity` green. *Exit:*
   INV/EXACT green, convergence inside the replicate band, DIST residuals common-mode.
-- **FX-N10 · google_speech on the launcher · wip: graded runs next.** Reference = 2024 SoCC n=100. *Next:* run 6
-  speech L1-L4; GPU lr check in the first speech G1 (0.000195 vs 0.001 via `--trainer-hp learningRate=…`); target
+- **FX-N10 · google_speech on the launcher · wip: graded runs next.** Reference = 2024 SoCC n=100. Run 6 speech:
+  L1/L4 green (P7o = FX-N30), L2 reds = the shared unavail roots above, L5 EV green. *Next:* GPU lr check in the first speech G1 (0.000195 vs 0.001 via `--trainer-hp learningRate=…`); target
   accuracy + stop rule (2024: 20 evals ≥ 60%); then S4 removes the 2024 JSON/scripts and the import script. *Exit:*
   all six real+sim graded on speech (T4 CPU + G1/G2 GPU).
-- **FX-N19 · asyncfl sim serializes more than real at small n · todo (recheck on run 6).** Run 5 cifar syn_0/syn_0b/
-  mobiperf felix/fedbuff K3b/K4 green; reopen only if run 6 or G1 shows it. *Exit:* root-caused, or graded against a
-  real↔real floor (L12).
 - **FX-N5 · syn_0 GPU block (G2): oort, oort_star, refl, feddance · blocked: FX-N4.** Same protocol.
   oort's open root: per-round `relative_change` of the exploited utility, binned by quartile, in both modes
   (don't touch the pacer). refl: confirm at 3h.
-- **FX-N15 · fedbuff training diverges · wip: root fixed in tree, confirm in run 6.** Root: config drift. Server lr 40.9
-  (`fedbuff.py` table) was tuned with client lr 0.000195, no decay (`30e20a3f6`, Feb 2024); the cifar template ran fedbuff
-  trainers at 0.01 (~50×), so real went NaN at the first eval. → `datasets.yaml` `by_baseline` (a baseline's tuned values
-  per dataset, over the dataset defaults); cifar fedbuff = 0.000195, no decay: `pool_fxn15_lr` syn_0/syn_0b pairs all
-  green, real test loss 2.30 at round 50 (was NaN). Launch logs every lr/batch/optimizer knob with its source (`[HP]`);
-  trainers log `[TRAINER_HP]`, fedbuff `[SERVER_LR]`. *Exit:* run 6 fedbuff EV14 green on every leg; then drop the `KNOWN` row.
-- **FX-N58 `[C]` · Baseline hyperparameters from their sources · wip: fixed in tree, verify (`pool_hpval_t1`, run 6).**
-  `lrDecay*`/`minLearningRate` had no alias (decay never ran); every baseline ran the template's lr 0.01 / batch 10.
-  → aliases (decay default off) + `trainerOptimizer`; `datasets.yaml` `by_baseline` carries each baseline's
-  paper/repo/our-2024 values per dataset, each field tagged with its source; `[HP]`/`[TRAINER_HP]`/`[SERVER_LR]` log them.
-  *Exit:* every leg's `[TRAINER_HP]` equals its `by_baseline` row (both datasets).
-- **FX-N13 · Streaming motivation experiment, both datasets · design after FX-N22 + FX-N10.** Show (a) per-trainer
-  statistical utility changes as data streams in, (b) an unaware aggregator mis-selects, (c) one that tracks but
-  mis-estimates utility still mis-selects. Pipeline: P7/P7o + `scripts/oracle_misselection.py` +
-  `scripts/felix_streaming_figures.py`; cifar arms agree real/sim in sign (`pool_20260926_223155_T4/P7_figures`); speech
-  arms starved (FX-N30). Next: arms onto the launcher (S3), horizon, operator's design, sweep.
+- **FX-N13 · Streaming experiments (linear + events), both datasets · parked: design in "Parked design" above.**
+  *Exit:* ST1-ST5 done; streaming EV + parity green on both datasets.
 - **FX-N7 · Remove legacy `trackTrainerAvail` (oort, oort_star, refl) · todo: unblocked.** refl EV green on every run-5
   leg. Delete the dead check and legacy branch (S4), then T12 retires. *Exit:* code gone, pytest green.
 - **FX-N2 · Parent S2 (parity pipeline) for async_cifar10 · todo.** *Exit:* the stored Jun 23-24 pairs
@@ -232,7 +235,7 @@ parity) → FX-N12. FX-N13 design can start any time.
   *Exit:* A1-A8/K11 + the syn_0 ladder green; clean self-stop; withheld updates delivered; AVL_EVAL and the
   empty-pool cleanup exercised live on mobiperf_3st.
 - **FX-N11 · google_speech GPU parity · blocked: FX-N9, FX-N10.** Reuse the FX-N4/5/9 protocol.
-- **FX-N12 · Felix paper experiments, sim-only · blocked: FX-N11, FX-N22 P8.** List: open question below.
+- **FX-N12 · Felix paper experiments, sim-only · blocked: FX-N11, FX-N13, FX-N22 P8.** = ST6 of the streaming design.
 
 ---
 
@@ -275,6 +278,8 @@ update is accepted only under the baseline's own rule (REFL staleness ≤ 5; oor
   phantom that blocks the starvation wake-up (P3 felix/fedbuff 6-min livelock).
 - **FX-L32** A dispatch consumes the end's earlier receipt (eval reply, commit) and its RECVD state; else cleanup or
   recv frees the in-flight trainer and it is re-dispatched (FX-D16 22s tail; late withheld commits, FX-D16).
+- **FX-L45** In sim, arrival is not receipt: an update real can't have received yet (withheld, evicted) must leave
+  channel and selector state as real's unanswered dispatch (FX-N59, FX-N60).
 - **FX-L10** Split eval from train in any check that reads `agg_rounds`. Each eval gets its own `sct`,
   never the last train `sct`.
 - **FX-L30** Anything replaying trainer data (oracle, replay) reads the trainers' stream clock: vclock in sim,
@@ -330,6 +335,10 @@ update is accepted only under the baseline's own rule (REFL staleness ≤ 5; oor
   already tasked at it. A selector's round cache serves only the same round's RECV lookups (FX-N31).
 
 **Reading the checker**
+- **FX-L46** Decompose a sync clock residual first: 2-9 ninety-second timeout stalls dominate a syn_50 mean; compare
+  stall-free advance and stall count separately (FX-N62).
+- **FX-L47** Audit real's receive path per leg: arrivals vs processed updates. An abandoned end whose update arrived is a
+  lost message, not a slow trainer (FX-N63).
 - **FX-L29** Stub legs charge a seeded compute span (`flame.harness.stub_compute_s`, fit to run_20260702 real). Those
   runs fell back to CPU (CUDA failed to start before S0), so refit it from a G0/G1 real leg (L17).
 - **FX-L16** A2 failing (KS) while S3/4 passes is one in-flight gap graded at two tolerances; walk to
@@ -434,6 +443,13 @@ IDs are kept because code comments cite them.
   real bank hashes the trace store, so a regenerated trace stales its banked real legs.
 - **FX-D31** (code cites FX-N32) P11b (`order_by_sct`) runs on fedbuff, which withholds: CAUGHT on both datasets with
   607/703 unheld UN_AVL commits (`pool_fxn32_p11b`; felix had 0-1).
+- **FX-D32** (code cites FX-N15/N55/N56/N57/N58) Run-6 confirmed: unaware fedbuff ignores the oracle stamp and picks
+  UN_AVL at the trace level (0.51/0.53 at selection, EV17 green); asyncfl holds a withheld pick's slot to dispatch+90s;
+  syncfl discards stale updates (`sync_accept_stale`); each baseline's `[TRAINER_HP]` equals its `datasets.yaml`
+  `by_baseline` row on every leg; fedbuff EV14 green on all CPU+GPU legs (`ladder_20261001_051724`, `_051427`).
+- **FX-D33** (code cites FX-N41/N61/N62) Checker: A7 commit and selection beliefs are graded at their own instant (±1s);
+  K2/K3/K3b grade stall-free rounds (< 72s) and K3s grades the ≥72s timeout-stall rate (Poisson 2σ + 1). Run-6 regrade:
+  sync syn_50 stage 1 green on feddance/refl/oort_star, both datasets.
 - **FX-D30** Grader reads the run's own `max_experiment_runtime_s` (L29; K5 used the CLI budget).
 - **FX-D27** Oort-family selection follows the REFL fork's `getTopK` (exploit ≤ explored−1, explore the remaining slots,
   random pad) and keeps below-cut-off ends in the exploit pool (oort/oort_star/refl EV + syn_0 parity green, run 5).
@@ -467,6 +483,8 @@ IDs are kept because code comments cite them.
 - **FX-D16** (code cites FX-N18) Real asyncfl ingests updates on arrival: no settle sleep for felix/fedbuff (`baselines.yaml`);
   recv also reads ends whose update arrived or is still owed (timed out / withheld, `_owed_ends`, FX-L27).
   T4 real queue_wait p99: cifar ≤ 0.06s on every felix/fedbuff leg (0.1s-settle control P10: 0.227s); speech ≤ 0.43s outside FX-N30.
+  Real asyncfl ingests via streamer-free `drain_ready` by default (operator 2026-10-01; `real_drain_ready_ingest=false`
+  = recv_fifo, kept as campaign control P9); P9-vs-P1 run 4: RECV_FIFO skips 900 → 0, p99 no worse on cifar.
 
 **Harness, checkers, datasets**
 - **FX-D19** (code cites FX-N36) flame processes poll NVML only with `FLAME_STAT_THREADS=1`: run 2 GPU legs joined 44-99s
@@ -496,7 +514,4 @@ IDs are kept because code comments cite them.
 
 ## Open questions (operator)
 
-- Felix paper experiment list, and the exact streaming-experiment design (FX-N13), once FX-N22 and FX-N10 land.
-- Make `real_drain_ready_ingest` the default (R9)? Cifar T4 P9 vs P1: RECV_FIFO skips 887→0 (fedbuff) and 908→0
-  (felix); queue_wait p99 0.028 vs 0.035s (fedbuff) and 0.019 vs 0.025s (felix); fedbuff parity 0.984 vs 0.952; no new EV fail.
-  Speech P9 is mixed: skips go to 0, but felix p99 is 0.286s vs 0.186s (P1), and speech P1 fedbuff is void (shared run dir, FX-D13).
+- None open; the streaming questions sit in its parked design.

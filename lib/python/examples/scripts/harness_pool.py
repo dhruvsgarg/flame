@@ -175,7 +175,7 @@ def campaign_phases(ds: str) -> List[Phase]:
         ph("P7", B6, "syn_0", harness="tiny_cpu", trainer_hp=STREAM_T, agg_hp=STREAM_A),
         ph("P7o", B6, "syn_0", harness="tiny_cpu", trainer_hp=STREAM_T, agg_hp=STREAM_A + " " + oracle_a(ds)),
         ph("P8", ("fedbuff",), "syn_50", agg_hp="taskRetryPolicy=exponential taskRetryBackoffSeconds=10"),
-        ph("P9", ("felix", "fedbuff"), "syn_0", agg_hp="real_drain_ready_ingest=true"),
+        ph("P9", ("felix", "fedbuff"), "syn_0", agg_hp="real_drain_ready_ingest=false"),  # legacy recv_fifo control
         # FX-N18 control: fedbuff with the old 0.1s real-only settle sleep (default is now 0)
         ph("P10", ("fedbuff",), "syn_0", agg_hp="realDistributeSettleSeconds=0.1"),
     ] + injected_phases("pair", ds)

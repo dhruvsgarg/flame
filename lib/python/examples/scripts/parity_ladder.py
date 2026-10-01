@@ -59,9 +59,10 @@ BY_ID = {r.rid: r for r in LADDER}
 
 # Known misses: (check, baselines, trace/phase regex, item). A known cell never blocks; closing the item deletes its row.
 KNOWN: Tuple[Tuple[str, Tuple[str, ...], str, str], ...] = (
-    ("EV14", ("fedbuff",), r".*", "FX-N15"),
     ("EV1", ("oort",), r"syn_50 (gs_)?T1$", "open question: P3 oort"),  # L1's 120s; CPU mobiperf legs run 960s
     ("EV0|EV1|EV12", tuple(), r"gs_P7o?$", "FX-N30"),
+    # Unaware oort stalls 90s on most syn_50 rounds: ~6 stall-free rounds per leg can't grade timing.
+    ("overhead_residual|per_round_advance|throughput", ("oort",), r"^syn_50 (gs_)?T3_", "FX-N62"),
 )
 # Phases whose sim leg must FAIL a named check (injected bugs; P4 = the cold-start-gate-off control, FX-D8).
 EXPECTED_FAIL = {"P11a": "EV10", "P11b": "EV16", "P11c": "EV3", "P4": "EV10"}
@@ -131,7 +132,8 @@ def grade_pool(root: Path, max_stage: int) -> List[Cell]:
                     (known if item else red).append(f"{side[3:]} {c}" + (f" ({item})" if item else ""))
             js = next(iter(f.parent.glob(f"*/parity/{tr}_{b}.json")), None)
             for stage, k, tier in _parity_fails(js, max_stage):
-                red.append(f"S{stage} {k} [{tier}]")
+                item = _known(k, b, where)
+                (known if item else red).append(f"S{stage} {k} [{tier}]" + (f" ({item})" if item else ""))
             status = "red" if red else ("known" if known else "green")
             cells.append(Cell(phase, tr, b, status, "; ".join(red or known)))
     return cells

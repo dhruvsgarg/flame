@@ -343,3 +343,33 @@ class TestRecvFifoSimPattern:
 
 async def _make_queue():
     return asyncio.Queue()
+
+
+def test_deadline_cancel_after_dequeue_keeps_the_update(monkeypatch):
+    """FX-N63: a reader cancelled right after End.get() returned must not drop the update (real lost 23/1081)."""
+    import flame.channel as channel_mod
+
+    def run(direct):
+        monkeypatch.setattr(channel_mod, "_RECV_FIFO_DIRECT_ENQUEUE", direct)
+
+        async def scenario():
+            ch = TestStreamerCleanup._make_bare_channel(["a"])
+            ch._rx_queue = asyncio.Queue()
+            box = {}
+
+            class _CancelOnGet(FakeEnd):
+                async def get(self):
+                    payload = await self.rxq.get()
+                    box["task"].cancel()  # the deadline cancel lands just after the dequeue
+                    return payload
+
+            ch._ends["a"] = _CancelOnGet()
+            ch._ends["a"].rxq.put_nowait((b"w", "ts"))
+            box["task"] = asyncio.ensure_future(ch._streamer_for_recv_fifo(["a"], timeout=1.0))
+            await asyncio.gather(box["task"], return_exceptions=True)
+            return ch._rx_queue.qsize()
+
+        return asyncio.run(scenario())
+
+    assert run(True) == 1
+    assert run(False) == 0, "legacy path drops it (the fixture must reproduce the loss)"

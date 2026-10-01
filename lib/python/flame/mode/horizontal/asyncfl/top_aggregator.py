@@ -127,6 +127,9 @@ class TopAggregator(SyncTopAgg):
         # FX-N56: an unaware baseline's withheld trainer keeps its slot until its 90s timeout, as in real.
         self._sim_hold_withheld_slot = str(
             getattr(self.config.hyperparameters, "sim_hold_withheld_slot", True)).lower() == "true"
+        # FX-N60: an evicted/abandoned end's late update is ingested, as real receives it.
+        self._sim_ingest_evicted = str(
+            getattr(self.config.hyperparameters, "sim_ingest_evicted", True)).lower() == "true"
 
         self._updates_in_queue = 0
         self._updates_recevied = {}
@@ -222,9 +225,9 @@ class TopAggregator(SyncTopAgg):
         # Real-mode settle sleep before selection (0 = compute-bound).
         _settle = getattr(self.config.hyperparameters, "real_distribute_settle_s", 0.1)
         self._real_distribute_settle_s: float = float(_settle) if _settle is not None else 0.1
-        # FX-N18: real ingest via streamer-free drain_ready (default off ⇒ recv_fifo).
-        self._real_drain_ready_ingest: bool = bool(
-            getattr(self.config.hyperparameters, "real_drain_ready_ingest", False))
+        # FX-N18: real ingest via streamer-free drain_ready (default on; false ⇒ recv_fifo).
+        self._real_drain_ready_ingest: bool = str(
+            getattr(self.config.hyperparameters, "real_drain_ready_ingest", True)).lower() == "true"
         self._real_drain_pending: list = []  # (arrival ts, seq, (msg, metadata))
         self._real_recv_seq = 0
 
@@ -293,6 +296,21 @@ class TopAggregator(SyncTopAgg):
             if e not in self._sim_known_delay_s
             and not self._sim_buffer.has(e) and e not in self._sim_committed
         }
+
+    def _sim_ingest_evicted_updates(self, channel) -> None:
+        """FX-N60: buffer an evicted/abandoned end's arrived update; no probe set covers it."""
+        if not getattr(self, "_sim_ingest_evicted", False) or not getattr(self, "pending_withheld", None):
+            return
+        waiting = [e for e in self.pending_withheld
+                   if e not in getattr(self, "_sim_withheld_payload", {}) and not self._sim_buffer.has(e) and channel.has(e)]
+        if not waiting:
+            return
+        for msg, metadata in channel.drain_ready(waiting, timeout=None):
+            if not msg:
+                continue
+            sct = msg.get(MessageType.SIM_COMPLETION_TS)
+            self._sim_buffer.add(metadata[0], float(sct if sct is not None else self._vclock.now), (msg, metadata))
+            logger.info(f"[EVICTED_INGEST] end={str(metadata[0])[-4:]} sct={sct}")
 
     def _sim_unknown_stuck(self, pending_ends) -> bool:
         """Cold-start gate: hold while a pending first-contact end may still be computing."""
@@ -714,6 +732,8 @@ class TopAggregator(SyncTopAgg):
             recv_ends = self._with_arrived_ends(channel, recv_ends)
         if self.simulated and recv_ends:  # FX-N56: a held pick's update is in the delivery ledger, not the channel
             recv_ends = [e for e in recv_ends if e not in self._withheld_slot_held]
+        if self.simulated:
+            self._sim_ingest_evicted_updates(channel)
         if not recv_ends and self.simulated and getattr(self, "_sim_reinject_when_idle", True):
             self._sim_reinject_ready_withheld()  # FX-N54
         if not recv_ends:

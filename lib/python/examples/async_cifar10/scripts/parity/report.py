@@ -40,6 +40,7 @@ _SECTIONS = [
         ("P3   trainer_speed_s (control)",      "trainer_speed"),
         ("K3a  modeled-compute advance",        "modeled_compute_advance"),
         ("K3b  overhead residual",              "overhead_residual"),
+        ("K3s  timeout stalls",                 "timeout_stalls"),
         ("K4   overlap factor (diagnostic)",    "overlap_factor"),
         ("K3   per-round advance distribution", "per_round_advance"),
         ("K2   rounds-per-virtual-second",      "throughput"),
@@ -369,6 +370,12 @@ def _fmt_metric(name: str, res: dict) -> list:
             f"         implied per-commit overhead="
             f"{res.get('implied_per_commit_overhead_s')}s "
             f"(agg_goal={res.get('agg_goal')})",
+        ]
+    elif name == "timeout_stalls":
+        lines += [
+            f"         stalls real={res.get('real_stalls')}/{res.get('real_rounds')} "
+            f"sim={res.get('sim_stalls')}/{res.get('sim_rounds')} rounds  "
+            f"rate diff tol={res.get('tol')}",
         ]
     elif name == "eligible_speed":
         lines += [
