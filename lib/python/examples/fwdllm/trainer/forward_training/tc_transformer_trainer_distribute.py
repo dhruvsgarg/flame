@@ -863,6 +863,25 @@ class ForwardTextClassificationTrainer:
     @timer_decorator
 
     @timer_decorator
+    def _emit_probe_run_meta(self):
+        """Once per trainer: its own probe knobs, to diff against the aggregator's copy."""
+        if getattr(self, "_probe_run_meta_emitted", False):
+            return
+        self._probe_run_meta_emitted = True
+        try:
+            from flame import telemetry
+            if telemetry.is_enabled():
+                from flame.telemetry.events import build_run_meta
+                ev, fields = build_run_meta(scope="trainer_probe", config={
+                    "probe_combine": self.probe_combine,
+                    "perturbation_count": self.perturbation_count,
+                    "jvp_eval_mode": self.jvp_eval_mode,
+                    "train_batch_size": getattr(self.args, "train_batch_size", None),
+                })
+                telemetry.emit(ev, **fields)
+        except Exception:  # pragma: no cover - telemetry must never fault training
+            logging.debug("trainer run_meta emit failed", exc_info=True)
+
     def train_model(self, device=None, logging_state=None):
         if not device:
             device = self.device
@@ -875,6 +894,7 @@ class ForwardTextClassificationTrainer:
                 self.trainer_id
             )
 
+        self._emit_probe_run_meta()
         self.log_memory("train_model_start", device)
         self.allocated_before = torch.cuda.memory_allocated(device)
 

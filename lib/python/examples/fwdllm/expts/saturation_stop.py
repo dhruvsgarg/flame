@@ -101,8 +101,9 @@ class SaturationDetector:
 
     def __init__(self, warmup, threshold=SAT_GL_THRESHOLD,
                  patience=SAT_PATIENCE, window=SAT_SMOOTH_WINDOW,
-                 slope_horizon=None, stall_frac=None):
+                 slope_horizon=None, stall_frac=None, decay=True):
         self.warmup = int(warmup)
+        self.decay = bool(decay)     # False => GL trigger off, stall only
         self.threshold = float(threshold)
         self.patience = int(patience)
         self.window = int(window)
@@ -118,6 +119,7 @@ class SaturationDetector:
         self._breaches = 0           # consecutive DECAY breaches
         self._stalls = 0             # consecutive STALL breaches
         self.fired_at = None
+        self.last_smoothed = self.last_gl = None   # telemetry only
         # "stall" | "decay", and None while the stall trigger is off -- with one
         # possible trigger the distinction carries no information, and callers
         # fall back to the pre-E' wording so `stall_frac=None` stays byte-identical.
@@ -139,6 +141,7 @@ class SaturationDetector:
         if self._best is None or smoothed > self._best:
             self._best = smoothed
         gl = (self._best - smoothed) / self._best if self._best > 0 else 0.0
+        self.last_smoothed, self.last_gl = smoothed, gl
         self._hist.append((commit, smoothed))
         # Keep one entry PAST the horizon: that is the one the comparison reads.
         while len(self._hist) > 2 and commit - self._hist[1][0] >= self.slope_horizon:
@@ -147,7 +150,7 @@ class SaturationDetector:
             self._breaches = self._stalls = 0
             return False
         # --- DECAY: the run has fallen below its own best (the 08-22 rule).
-        breach = gl > self.threshold
+        breach = self.decay and gl > self.threshold
         if breach and self.slope_horizon:
             # Prechelt's progress term: a run still climbing over the horizon has
             # not saturated, however far it has dipped below its own running max.

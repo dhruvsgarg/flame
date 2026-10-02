@@ -236,9 +236,15 @@ class FedSGDAggregator(TopAggregator):
         self._commit_gate = str(
             getattr(self.args, "commit_gate", "var") or "var"
         ).lower()
-        if self._commit_gate not in ("var", "n_target"):
+        if self._commit_gate not in ("var", "n_target", "fixed"):
             logger.warning(f"unknown commit_gate={self._commit_gate!r}; using var")
             self._commit_gate = "var"
+        # `fixed` gate / `pool` schedule: commit at N uploads; rho = s*sqrt(G_rule*N/p).
+        _pt = getattr(self.args, "pool_target", None)
+        self._pool_target = int(_pt) if _pt not in (None, "", 0, "0") else None
+        if (self._commit_gate == "fixed" or self._rho_schedule == "pool") \
+                and self._pool_target is None:
+            raise ValueError("commit_gate=fixed / rho_schedule=pool need pool_target")
         self._gate_safety_s = float(getattr(self.args, "gate_safety_s", 0.4) or 0.4)
         # Which rho sizes the pool. `annealed` (shipped) uses rho_t, which under
         # S-B drives N_req -> 0, floors the gate at I=1 and decays progress as
@@ -254,7 +260,7 @@ class FedSGDAggregator(TopAggregator):
             self._gate_rho_ref = "annealed"
         self._last_rho = None
         self._p_trainable = self._g_rule = None
-        if self._commit_gate == "n_target":
+        if self._commit_gate in ("n_target", "fixed") or self._rho_schedule == "pool":
             self._p_trainable = sum(
                 p.numel() for p in self.trainer.model.parameters() if p.requires_grad
             )
@@ -268,6 +274,12 @@ class FedSGDAggregator(TopAggregator):
                 f"probe_combine={_pc} P={_P} G_rule={self._g_rule} "
                 f"rho_ref={self._gate_rho_ref}"
             )
+        if self._rho_schedule == "pool":
+            # Constant rho from the pool; _rho_star_now() falls through to it.
+            self._rho_star = self._gate_safety_s * math.sqrt(
+                self._g_rule * self._pool_target / self._p_trainable)
+            logger.info(f"[ServerStep] rho_schedule=pool N={self._pool_target} "
+                        f"-> rho*={self._rho_star:.6g}")
 
         self.track_trainer_avail = (
             self.config.hyperparameters.track_trainer_avail or None
@@ -324,9 +336,13 @@ class FedSGDAggregator(TopAggregator):
         # nothing: Lambda = 2B/s is schedule-free. b_max starts at D1's ln 2.
         self._b_max = float(getattr(self.args, "b_max", 0.0) or B_MAX_PRIOR)
         self._t_res = float(getattr(self.args, "t_res", 0.0) or T_RES_DEFAULT)
-        self._budget_stop_frac = float(
-            getattr(self.args, "budget_stop_frac", 0.0) or BUDGET_STOP_FRAC_DEFAULT
+        # Unset => default; an explicit <= 0 turns the budget stop off.
+        _bsf = getattr(self.args, "budget_stop_frac", None)
+        self._budget_stop_frac = (
+            BUDGET_STOP_FRAC_DEFAULT if _bsf in (None, "") else float(_bsf)
         )
+        if self._budget_stop_frac <= 0:
+            self._budget_stop_frac = math.inf
         self._phi_stop = str(getattr(self.args, "phi_stop", "off") or "off").lower()
         if self._phi_stop not in ("off", "log_only", "halt"):
             logger.warning(f"unknown phi_stop={self._phi_stop!r}; using off")
@@ -348,6 +364,8 @@ class FedSGDAggregator(TopAggregator):
         # None => the 08-22 behaviour, byte-identical (§6.1).
         _sf = getattr(self.args, "sat_stall_frac", None)
         self._sat_stall_frac = None if _sf in (None, "", 0, "0") else float(_sf)
+        # False => GL decay trigger off; stall (if set) is the only accuracy stop.
+        self._sat_decay = bool(getattr(self.args, "sat_decay", True) is not False)
         self._sat_det = None
         self._eval_commit = 0
         # P3': cos(theta_t, theta_0) against 1/Phi. 0 = off, byte-identical.
@@ -389,6 +407,7 @@ class FedSGDAggregator(TopAggregator):
                 warmup_commits(self._b_max_probe_every),
                 slope_horizon=slope_horizon_commits(self._b_max_probe_every),
                 stall_frac=self._sat_stall_frac,
+                decay=self._sat_decay,
             )
             _stall = (f"STALL g<={self._sat_stall_frac} OR "
                       if self._sat_stall_frac is not None else "")
@@ -397,6 +416,7 @@ class FedSGDAggregator(TopAggregator):
                 f"rising -- either for {SAT_PATIENCE} evals on an 11-eval trailing "
                 f"mean over {self._sat_det.slope_horizon} commits; armed after "
                 f"commit {self._sat_det.warmup}"
+                + ("" if self._sat_decay else " [DECAY trigger OFF]")
             )
         if self._b_max_probe_every:
             logger.info(
@@ -575,6 +595,7 @@ class FedSGDAggregator(TopAggregator):
         if m == 0:
             return None
         mean_sq = sum(float(t.pow(2).sum()) for t in lst) / n
+        self._pool_mean_sq, self._var_dim = mean_sq, m   # telemetry
         return 2.0 * mean_sq / (m * var_scalar)
 
     def _gate_rho(self):
@@ -606,6 +627,8 @@ class FedSGDAggregator(TopAggregator):
 
     def _gate_satisfied(self):
         """Has this pool earned a commit? `var` = fixed threshold; `n_target` = S-C."""
+        if self._commit_gate == "fixed":
+            return len(self.grad_for_var_check_list) >= self._pool_target
         if self._commit_gate != "n_target":
             return bool(self.var <= self.var_threshold)
         n_req = self._n_required()
@@ -774,6 +797,7 @@ class FedSGDAggregator(TopAggregator):
             _gn, _tn = _g_sq ** 0.5, _t_sq ** 0.5
             # ||G||=0 means an empty/degenerate pool: skip rather than divide.
             _scale = (_rho_t * _tn / _gn) if _gn > 0 else 0.0
+            self._last_g_norm, self._last_step_skipped = _gn, not _gn > 0   # telemetry
             logger.info(
                 f"[ServerStep] trust_ratio commit={self._commit_count} rho*={_rho_t:.6g} "
                 f"||G||={_gn:.6g} ||theta_tr||={_tn:.6g} scale={_scale:.6g}"
@@ -1126,6 +1150,19 @@ class FedSGDAggregator(TopAggregator):
             f"rho*={self._rho_star_now():.6g} took={time.time() - t0:.1f}s  "
             f"curve[{curve}]"
         )
+        try:
+            from flame import telemetry
+            if telemetry.is_enabled():
+                from flame.telemetry.events import build_bmax_probe
+                ev, fields = build_bmax_probe(
+                    commit_count=self._commit_count, base_acc=base_acc,
+                    phis=self._b_max_phis, accs=accs, phi_knee=phi_knee, b_rem=new,
+                    b_max_before=old, b_max_after=self._b_max, budget_b=self._B,
+                    policy=self._b_max_policy, took_s=time.time() - t0,
+                )
+                telemetry.emit(ev, **fields)
+        except Exception:  # pragma: no cover - telemetry must never fault training
+            logger.debug("bmax_probe telemetry emit failed", exc_info=True)
 
     def _reference_batch(self, n_want):
         """The fixed held-out batch both server-side probes read (B17).
@@ -1244,7 +1281,6 @@ class FedSGDAggregator(TopAggregator):
                     learning_rate=learning_rate,
                     trainable_delta_norm=trainable_delta_norm,
                     trainable_weight_norm=trainable_weight_norm,
-                    pool_size=_psize,
                     split_half_dot=_dot,
                     split_half_norm_a=_na,
                     split_half_norm_b=_nb,
@@ -1254,6 +1290,15 @@ class FedSGDAggregator(TopAggregator):
                     budget_b=self._B, budget_b_max=self._b_max,
                     rho_star=self._rho_star_now(), n_req=self._n_required(),
                     stop_reason=self._stop_fired,
+                    commit_count=self._commit_count,
+                    g_norm=getattr(self, "_last_g_norm", None),
+                    step_skipped=getattr(self, "_last_step_skipped", None),
+                    rho_max=self._rho_max,
+                    pool_size=len(self.grad_for_var_check_list) if _psize is None else _psize,
+                    pool_mean_sq=getattr(self, "_pool_mean_sq", None),
+                    var_dim=getattr(self, "_var_dim", None),
+                    g_rule=self._g_rule, p_trainable=self._p_trainable,
+                    safety_s=self._gate_safety_s,
                 )
                 telemetry.emit(ev, **fields)
         except Exception:  # pragma: no cover - telemetry must never fault training
@@ -1600,7 +1645,10 @@ class FedSGDAggregator(TopAggregator):
         if self._sat_det is not None:
             try:
                 acc = (out[0] or {}).get("acc")
-                if acc is not None and self._sat_det.update(self._eval_commit, acc):
+                _fired = acc is not None and self._sat_det.update(self._eval_commit, acc)
+                if acc is not None:
+                    self._emit_sat_state(acc)
+                if _fired:
                     _g = self._sat_det.progress
                     _why = getattr(self._sat_det, "fired_reason", None)
                     logger.warning(
@@ -1614,6 +1662,80 @@ class FedSGDAggregator(TopAggregator):
                 logger.debug("saturation detector update failed", exc_info=True)
         return out
 
+    def _emit_sat_state(self, acc):
+        """One `sat_state` record per eval (rows 16-17). Never faults eval."""
+        try:
+            from flame import telemetry
+            if telemetry.is_enabled():
+                from flame.telemetry.events import build_sat_state
+                d = self._sat_det
+                ev, fields = build_sat_state(
+                    commit_count=self._eval_commit, acc=acc,
+                    smoothed=getattr(d, "last_smoothed", None), best=d.best,
+                    gl=getattr(d, "last_gl", None), progress=d.progress,
+                    stalls=getattr(d, "_stalls", None),
+                    breaches=getattr(d, "_breaches", None),
+                    fired_at=d.fired_at, fired_reason=getattr(d, "fired_reason", None),
+                    phi=math.exp(self._B),
+                )
+                telemetry.emit(ev, **fields)
+        except Exception:  # pragma: no cover - telemetry must never fault eval
+            logger.debug("sat_state telemetry emit failed", exc_info=True)
+
+    def _emit_run_meta(self):
+        """One `run_meta` snapshot of every controller knob, so a run is self-describing."""
+        try:
+            from flame import telemetry
+            if not telemetry.is_enabled():
+                return
+            from flame.telemetry.events import build_run_meta
+            hp = self.config.hyperparameters
+            a = self.args
+            _tr = [p for p in self.trainer.model.parameters() if p.requires_grad]
+            ev, fields = build_run_meta(scope="aggregator", config={
+                "p_trainable": sum(p.numel() for p in _tr),
+                "theta_tr_norm_init": math.sqrt(
+                    sum(float(p.detach().pow(2).sum()) for p in _tr)),
+                "perturbation_count": getattr(a, "perturbation_count", None),
+                "probe_combine": getattr(a, "probe_combine", None),
+                "g_rule": self._g_rule,
+                "agg_goal": getattr(self, "_agg_goal", None),
+                "concurrency": self.config.selector.kwargs.get("c"),
+                "dynamic_kc": self.config.selector.kwargs.get("dynamic_kc"),
+                "train_batch_size": getattr(a, "train_batch_size", None),
+                "total_data_bins": getattr(self, "total_data_bins", None),
+                "max_iterations_per_data_id": getattr(hp, "max_iterations_per_data_id", None),
+                "commit_gate": self._commit_gate,
+                "gate_safety_s": self._gate_safety_s,
+                "gate_rho_ref": self._gate_rho_ref,
+                "var_threshold": getattr(self, "var_threshold", None),
+                "agg_rate_conf": getattr(getattr(self, "optimizer", None), "agg_rate_conf", None),
+                "server_step_rule": self._server_step_rule,
+                "rho_star": self._rho_star,
+                "rho_schedule": self._rho_schedule,
+                "rho_exp": self._rho_exp,
+                "rho_max": self._rho_max,
+                "t_res": self._t_res,
+                "b_max_prior": self._b_max,
+                "b_max_probe_every": self._b_max_probe_every,
+                "b_max_probe_phis": self._b_max_phis,
+                "b_max_policy": self._b_max_policy,
+                "phi_stop": self._phi_stop,
+                "phi_stop_threshold": self._phi_stop_threshold,
+                "budget_stop_frac": (None if math.isinf(self._budget_stop_frac)
+                                     else self._budget_stop_frac),
+                "saturation_stop": self._sat_stop,
+                "sat_stall_frac": self._sat_stall_frac,
+                "sat_decay": self._sat_decay,
+                "pool_target": self._pool_target,
+                "server_momentum": self.server_momentum,
+                "server_weight_decay": self._weight_decay,
+                "server_update_audit": getattr(self, "_server_update_audit", False),
+            })
+            telemetry.emit(ev, **fields)
+        except Exception:  # pragma: no cover - telemetry must never fault training
+            logger.debug("run_meta telemetry emit failed", exc_info=True)
+
     def evaluate(self) -> None:
         pass
 
@@ -1625,3 +1747,4 @@ class FedSGDAggregator(TopAggregator):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # logger.info(f"model for agg is not None: {self.model}")
         self.model.to(self.device)
+        self._emit_run_meta()

@@ -141,6 +141,17 @@ def _fd_spacing(v, trainable_idx):
             + (f"(scale_invariant=on, held at {_FD_REF_DISPLACEMENT:.4f} from p={_FD_REF_P})"
                if on else "(scale_invariant=off, h fixed -- displacement moves with p)")
         )
+        try:
+            from flame import telemetry
+            if telemetry.is_enabled():
+                from flame.telemetry.events import build_run_meta
+                ev, fields = build_run_meta(scope="trainer_fd", config={
+                    "p": p, "fd_h": h, "fd_displacement": h * math.sqrt(p),
+                    "fd_scale_invariant": on,
+                })
+                telemetry.emit(ev, **fields)
+        except Exception:  # pragma: no cover - telemetry must never fault training
+            logger.debug("fd run_meta emit failed", exc_info=True)
     return _FD_REF_DISPLACEMENT / math.sqrt(p) if on else 0.01
 
 
