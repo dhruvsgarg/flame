@@ -726,3 +726,22 @@ def test_timeout_stalls_split_from_the_clock_rungs():
     ts = timeout_stalls(a, b, same_mode=True)
     assert (ts["real_stalls"], ts["sim_stalls"]) == (5, 1) and ts["ok"]
     assert not timeout_stalls(_leg(150, set(range(5, 150, 5))), b, same_mode=True)["ok"]
+
+
+def test_split_stall_is_one_episode_and_stays_out_of_k3b_and_k4():
+    """FX-N62: a 90s stall served late (10.7+12.8+70.8s) is one stall; K3b and K4 grade without it."""
+    from parity.checks import _stall_episodes, overhead_residual, overlap_factor
+
+    def _leg(n, gaps_at):
+        t, ev = 0.0, []
+        for r in range(1, n + 1):
+            t += gaps_at.get(r, 2.0)
+            ev.append({"event": "agg_round", "round": r, "ts": t, "contributing_trainers": ["1"],
+                       "intrinsic_span_s": 2.0})
+        return {"agg_rounds": ev}
+    split = {100: 10.7, 101: 12.8, 102: 70.8}
+    assert _stall_episodes([2.0] * 5 + [10.7, 12.8, 70.8] + [2.0] * 5) == [[5, 6, 7]]
+    assert _stall_episodes([2.0] * 5 + [70.8] + [2.0] * 5) == []
+    a, b = _leg(300, {100: 93.0}), _leg(300, split)
+    assert overhead_residual(a, b, same_mode=True)["ok"]
+    assert overlap_factor(a, b, same_mode=True)["ok"]

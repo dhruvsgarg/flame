@@ -7,7 +7,8 @@ ladder stops at the first red rung, so no GPU time is spent above a broken funda
 and FELIX_READINESS.md (Active build — parity ladder).
 
   parity_ladder.py --rungs L1-L5 --datasets all [harness_pool args...]   # run (one pool per rung, under <out>/<rung>)
-  parity_ladder.py --grade POOL_DIR [--max-stage 1] [--gpu]              # gate an existing pool (no processes)
+  parity_ladder.py --grade POOL_DIR [--max-stage 1] [--regrade]          # gate an existing pool (--regrade: re-run
+                                                                         # the checker on its stored pairs first)
 
 Writes <out>/LADDER.txt (per rung: cells green / known / red, and each red cell's lowest failing rung).
 """
@@ -63,6 +64,8 @@ KNOWN: Tuple[Tuple[str, Tuple[str, ...], str, str], ...] = (
     ("EV0|EV1|EV12", tuple(), r"gs_P7o?$", "FX-N30"),
     # Unaware oort stalls 90s on most syn_50 rounds: ~6 stall-free rounds per leg can't grade timing.
     ("overhead_residual|per_round_advance|throughput", ("oort",), r"^syn_50 (gs_)?T3_", "FX-N62"),
+    # fedbuff mobiperf (240s): 2-3 rounds, all stalls; < 20 commits grade nothing.
+    ("overhead_residual|per_round_advance|throughput", ("fedbuff",), r"^mobiperf_3st (gs_)?T3_", "FX-N62"),
 )
 # Phases whose sim leg must FAIL a named check (injected bugs; P4 = the cold-start-gate-off control, FX-D8).
 EXPECTED_FAIL = {"P11a": "EV10", "P11b": "EV16", "P11c": "EV3", "P4": "EV10"}
@@ -110,6 +113,29 @@ class Cell:
         return "google_speech" if self.phase.startswith("gs_") else "cifar10"
 
 
+def regrade_pool(root: Path, jobs: int = 20) -> None:
+    """Q3: re-run the checker on every stored pair of a pool into <cell>_grade/parity_regrade/ (read by grade_pool)."""
+    import concurrent.futures as cf
+    checker = EXAMPLES / "async_cifar10" / "scripts" / "parity_check.py"
+
+    def one(cmd_txt: Path) -> None:
+        t = cmd_txt.read_text()
+        g = {k: re.search(rf"--{k} (\S+)", t) for k in ("real-dir", "sim-dir", "agg-goal", "runtime-s", "baselines", "traces")}
+        if not all(g[k] for k in ("real-dir", "sim-dir", "agg-goal", "runtime-s")):
+            return
+        out = cmd_txt.parent / "parity_regrade"
+        out.mkdir(exist_ok=True)
+        name = next(iter((cmd_txt.parent / "parity").glob("*.json")), None)
+        if name is None:
+            return
+        subprocess.run([sys.executable, str(checker), "--real", g["real-dir"][1], "--sim", g["sim-dir"][1],
+                        "--agg-goal", g["agg-goal"][1], "--budget-s", g["runtime-s"][1],
+                        "--json-out", str(out / name.name)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    with cf.ThreadPoolExecutor(jobs) as ex:
+        list(ex.map(one, root.glob("*/*_grade/cmd.txt")))
+
+
 def grade_pool(root: Path, max_stage: int) -> List[Cell]:
     cells = []
     for f in sorted(root.glob("*/summary.tsv")):
@@ -130,7 +156,8 @@ def grade_pool(root: Path, max_stage: int) -> List[Cell]:
                 for c in fails:
                     item = _known(c, b, where)
                     (known if item else red).append(f"{side[3:]} {c}" + (f" ({item})" if item else ""))
-            js = next(iter(f.parent.glob(f"*/parity/{tr}_{b}.json")), None)
+            js = next(iter(f.parent.glob(f"*/parity_regrade/{tr}_{b}.json")), None) or \
+                next(iter(f.parent.glob(f"*/parity/{tr}_{b}.json")), None)
             for stage, k, tier in _parity_fails(js, max_stage):
                 item = _known(k, b, where)
                 (known if item else red).append(f"S{stage} {k} [{tier}]" + (f" ({item})" if item else ""))
@@ -183,10 +210,13 @@ def main(argv=None) -> int:
     ap.add_argument("--rungs", default="L1-L5", help="e.g. L1-L5, L2,L3, L6")
     ap.add_argument("--grade", help="gate an existing pool dir instead of running")
     ap.add_argument("--max-stage", type=int, default=1, help="with --grade: parity stages gated (-1 = EV only)")
+    ap.add_argument("--regrade", action="store_true", help="with --grade: re-run the checker on the stored pairs first")
     ap.add_argument("--output-dir", default="")
     ap.add_argument("--keep-going", action="store_true", help="run every rung even after a red one (report all)")
     a, pool_args = ap.parse_known_args(argv)
     if a.grade:
+        if a.regrade:
+            regrade_pool(Path(a.grade))
         rung = Rung("grade", f"{a.grade} (stages <= {a.max_stage})", max_stage=a.max_stage)
         print(render(rung, grade_pool(Path(a.grade), a.max_stage)))
         return 0

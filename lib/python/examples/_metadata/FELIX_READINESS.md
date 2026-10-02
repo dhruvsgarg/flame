@@ -26,15 +26,15 @@
 
 ## Status grid (scoreboard)
 
-**At a glance (2026-10-01, run 6)** — green / known / red, detail in [PARITY_READINESS.md](PARITY_READINESS.md) → Felix scoreboard:
+**At a glance (2026-10-02, run 7)** — green / known / red, detail in [PARITY_READINESS.md](PARITY_READINESS.md) → Felix scoreboard:
 
-| test | both datasets (run 6) | regraded with this session's checker fixes |
+| test | both datasets (run 7) | regraded with FX-D36 + FX-N62 KNOWN row |
 |---|---|---|
-| pytest (4 suites) | 2331 passed · 0 failed · 7 skipped | — |
+| pytest | 2333 passed · 0 failed · 7 skipped (2026-10-02, with FX-D36) | — |
 | L1 sim EV | 22 / 2 / 0 | — |
-| L2/L3 pairs | 35 / 0 / 13 (every red = unavail cell) | 40 / 2 / 6; each red has a fix in tree |
+| L2/L3 pairs | 41 / 1 / 6 | 43 / 3 / 2 (feddance mobiperf K2 8.6-9.5%, no floor) |
 | L4 campaign | 48 / 2 / 0, P11a-c caught | — |
-| L5 GPU pairs | 22 / 0 / 2 (EV green on all 24) | 22 / 0 / 2 (FX-D35; oort_star → L6 control) |
+| L5 GPU pairs | 22 / 0 / 2 (EV green on all 24; cifar felix/oort syn_0 K2 8.1/8.2% vs 8%, opposite signs) | — |
 
 **Cross-cutting capabilities**
 
@@ -159,8 +159,8 @@ dataset (speech: 2024 used 60%).
 
 ## Next steps (persistent queue — top item is next)
 
-**Counter (2026-10-01, after PR8b):** 17 open — 3 wip · 6 todo · 6 blocked · 2 other (FX-N13 parked design, FX-N8 likely closed).
-This session: 3 closed (FX-N59/N60/N63), 0 opened; FX-N62 widened to fedbuff mobiperf.
+**Counter (2026-10-02, after run 7):** 17 open — 3 wip · 6 todo · 6 blocked · 2 other (FX-N13 parked design, FX-N8 likely closed).
+This session: 0 closed, 0 opened; FX-N62's split-stall half fixed (FX-D36); the remaining reds are Q2 floors.
 
 Work rule: PARITY C10 — each session resolves as many independent items below as it can, not just files new ones.
 
@@ -169,15 +169,15 @@ pool tiers T1-T4: real aggregator + trainer processes over MQTT on CPU (stub/tin
 by the event checker and the parity battery. GPU tests = G0 (30 min screen at n 100/50, + G0C real replicates) and
 G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). "CPU+GPU" = one pool run with both.
 
-**Unblock map.** run 7 = full L1-L5 (FX-D35 touches every sync real leg) → Q2 floors (gate
-DIST) → L6 = FX-N34 G0 screen → L7 = FX-N4 (G1) + FX-N5 (G2), + FX-N7 → FX-N6 + FX-N9 (GPU unavailability) → FX-N11
+**Unblock map.** run 7 (full L1-L5) done → L6 = FX-N34 G0 screen (its G0C legs are the Q2 floors that gate
+DIST) → L7 = FX-N4 (G1) + FX-N5 (G2), + FX-N7 → FX-N6 + FX-N9 (GPU unavailability) → FX-N11
 (speech GPU parity) → FX-N12. FX-N13 design can start any time.
 
 - **FX-N62 `[C]` · Unaware short legs can't grade timing · blocked: long-run phase (PARITY C0.6).** Unaware oort waits
   out a 90s timeout on most syn_50 rounds: 11-18 rounds per 1200s leg, ~6 stall-free; stall counts match (5/6, 6/7).
   fedbuff mobiperf (240s): 3 real vs 2 sim rounds, all stalls (K3b/S3/4 red on < 20 commits, `pool_fxn59_verify`). With
   2-3 stalls a leg, one alive pick splitting a stall moves K3b's stall-free mean 16% (speech fedbuff syn_50). KNOWN in the
-  ladder for oort. Operator: run ~3h oort syn_50 + fedbuff mobiperf legs once short-run roots are exhausted, beside the
+  ladder for oort syn_50 and fedbuff mobiperf. Operator: run ~3h oort syn_50 + fedbuff mobiperf legs once short-run roots are exhausted, beside the
   other long legs. *Exit:* graded unaware unavail timing cells.
 - **FX-N42 `[S]` · Parity ladder · wip (PARITY_READINESS Active build: Q2-Q6).** *Exit:* Q2-Q6 done; a run graded per cell on both axes.
 - **FX-N33 `[C][S]` · Aggregator aborts at interpreter exit · todo (root open).** After a clean channel leave:
@@ -320,7 +320,7 @@ update is accepted only under the baseline's own rule (REFL staleness ≤ 5; oor
 
 **Reading the checker**
 - **FX-L46** Decompose a sync clock residual first: 2-9 ninety-second timeout stalls dominate a syn_50 mean; compare
-  stall-free advance and stall count separately (FX-N62).
+  stall-free advance and stall count separately (FX-N62). Count a stall served late as one episode (FX-D36).
 - **FX-L47** Audit real's receive path per leg: arrivals vs processed, and `active_task_skips`. An abandoned end whose
   update arrived is a lost message; growing skips mean a leaked reader slot (FX-D35).
 - **FX-L29** Stub legs charge a seeded compute span (`flame.harness.stub_compute_s`, fit to run_20260702 real). Those
@@ -431,6 +431,10 @@ IDs are kept because code comments cite them.
   UN_AVL at the trace level (0.51/0.53 at selection, EV17 green); asyncfl holds a withheld pick's slot to dispatch+90s;
   syncfl discards stale updates (`sync_accept_stale`); each baseline's `[TRAINER_HP]` equals its `datasets.yaml`
   `by_baseline` row on every leg; fedbuff EV14 green on all CPU+GPU legs (`ladder_20261001_051724`, `_051427`).
+- **FX-D36** (code cites FX-N62) Checker: a timeout stall is an episode (one round ≥ 72s, or consecutive rounds ≥ 3× median
+  summing past it), so a late alive pick can't leak a 70s piece into the stall-free mean; K4 drops stall time from its
+  clock span. Regrade of the 48 L2 pairs: refl cifar syn_50 K4 0.54/0.86 → 0.98/0.98x, speech fedbuff syn_50 K2 0.105 →
+  0.02 (stalls 3/3), no other cell moved.
 - **FX-D35** (code cites FX-N63) Real `recv_fifo` releases every reader slot when its streamer exits (a reader cancelled
   before aiostream's merge started it leaked its end forever) and enqueues on dequeue: speech refl syn_0/syn_20 real 223
   rounds (PR8 42), 0 `active_task_skips`, arrivals = processed + too-stale, K2/K3b/K4/A2 green (`pool_fxn63_verify2`).

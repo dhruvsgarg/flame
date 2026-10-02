@@ -71,7 +71,7 @@ A timing red on a pair with < ~20 commits is noise.
 ```
 L="conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/parity_ladder.py"
 $L --rungs L1-L4 --datasets all --keep-going --deadline-h 6     # CPU
-$L --grade <pool> --max-stage 1                                  # offline re-gate
+$L --grade <pool> --max-stage 1 [--regrade]                      # offline re-gate (--regrade re-runs the checker, ~30s/48 pairs)
 python lib/python/examples/scripts/logical_diff.py <pool>        # first diverging selection/commit per pair
 conda run -n dg_flame python lib/python/examples/async_cifar10/scripts/parity/event_invariants.py <run_dir>
 ```
@@ -81,20 +81,21 @@ conda run -n dg_flame python lib/python/examples/async_cifar10/scripts/parity/ev
 
 ---
 
-## Felix scoreboard — run 6, 2026-10-01 (both datasets, L1-L5)
+## Felix scoreboard — run 7, 2026-10-02 (both datasets, L1-L5)
 
-`ladder_20261001_051724` (L1-L4) and `ladder_20261001_051427` (L5), jayne. "regraded" = the stored pairs re-run through
-this session's checker (FX-D33); predicted board until run 7 confirms (PR8 closed FX-N59/N60).
+`ladder_20261001_164350` (L1-L4) and `ladder_20261001_164408` (L5), jayne. "regraded" = the stored L2 pairs re-run
+through the FX-D36 checker plus the FX-N62 KNOWN row for fedbuff mobiperf (predicted until run 8 confirms).
 
-| rung | run 6 | regraded | reds → root |
+| rung | run 7 | regraded | reds → root |
 |---|---|---|---|
 | L1 sim EV | 22 / 2 / 0 | — | known: oort syn_50 EV1 (P3 oort) |
-| L2/L3 pairs | 35 / 0 / 13 | 40 / 2 / 6 | fedbuff syn_50 + mobiperf ×2 datasets, felix cifar syn_50: FX-D34; feddance cifar mobiperf K2 9.5% (no floor, Q2); known: oort syn_50 timing FX-N62 |
+| L2/L3 pairs | 41 / 1 / 6 | 43 / 3 / 2 | refl cifar syn_50 K4 + fedbuff speech syn_50 K2/K3b: split timeout stall, FX-D36; fedbuff mobiperf ×2 datasets (2-3 rounds, all stalls) and oort speech syn_50: FX-N62 known; feddance mobiperf K2 9.5% cifar / 8.6% speech, sim faster, no floor (Q2) |
 | L4 campaign | 48 / 2 / 0 | — | known: speech P7o EV12 FX-N30; P11a-c CAUGHT |
-| L5 GPU pairs | 22 / 0 / 2 | 22 / 0 / 2 | speech refl syn_20 FX-D35; cifar oort_star syn_20 K2 12.6% with A2c selected-speed bias on 35 rounds (G0C control, L6) |
+| L5 GPU pairs | 22 / 0 / 2 | — | cifar felix 8.1% (sim slower) and oort 8.2% (sim faster) syn_0 K2 vs tol 8%: opposite signs, no floor (Q2) |
 
-Stage 2-3 (not gated, no floors): sync syn_50 A3 progress-binned trajectories follow the stall counts; A7 selection is
-green after FX-D33.
+Matched-window K2 residual over 70 healthy cells spans ±0.08 (oort ±0.07, oort_star ±0.076): the nominal 0.08 sits inside
+replicate noise until Q2 floors it. Stage 2-3 (not gated): no L3 red beyond the L2 ones. Run 6's FX-D34/D35 predictions held
+(oort_star selection draw green, speech refl green).
 
 ## FluxTune scoreboard
 Parked with the track; its board still sits in simulate_fwdllm.md §A.
@@ -103,10 +104,13 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR9 · Run 7: full L1-L5, both datasets, jayne · next (operator, ~6.5h: run 6 L1-L4 6h26m ∥ L5 3h32m).** PR8/PR8b
-  (`pool_fxn59_verify`, `pool_fxn63_verify2`) closed FX-N59/N60/N63 (FX-D34/D35); FX-D35 changes every sync real leg's
-  receive path, so every cell reruns. Commands as run 6 (`$L --rungs L1-L4 …` ∥ `$L --rungs L5 …`, `$L` in Tools). *Predictions:* L2 red only on
-  feddance cifar mobiperf (no floor); L5 red only on cifar oort_star (selection draw); ungated DIST: refl U6 (real 0.17s lag, sim 0). Then Q2 floors, then L6.
+- **PR10 · Run 8: L6 = G0C + G0, both datasets, jayne · next (operator, > 6h per dataset).** L1-L5 have no open shared
+  root (C0.4): every remaining red is a no-floor tolerance (Q2) or FX-N62. G0C's second real leg per syn_0 cell is the
+  first real↔real floor; with it Q2 gates DIST and re-sizes K2. Command: `$L --rungs L6 --datasets all --keep-going`
+  (`$L` in Tools). *Confirms:* K2 spread between the two real legs ≥ 0.05 on cifar felix/oort and speech feddance (then
+  the L5/L2 0.08-0.095 reds are noise and the tolerance becomes floor-gated); EV green on every leg. *Refutes:* real↔real
+  K2 < 0.03 while feddance mobiperf stays at ~0.09 sim-faster on both datasets (a feddance-specific sim charge: diff
+  its barrier, real 2.56 vs sim 2.31s, against profiled charges). Then L7. Beside it (C0.6), long FX-N62 legs once a tier exists.
 
 **Operator decisions / open**
 - S5 knob layout: (a) adopted (operator 2026-10-01): `datasets.yaml` holds dataset defaults + `by_baseline` tuned values
@@ -131,8 +135,6 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 | L7 | G1/G2 at reference n, 90 min → 3h | ~5h per dataset |
 
 - Q2 · todo: real↔real floors into `floor_gated_tol` (parent S2) so DIST gates.
-- Q3 · todo: `--grade` re-runs the checker on stored pairs (done by hand this session: `scripts/parity_check.py --real --sim
-  --agg-goal --budget-s` per `*_grade/summary.txt`, ~5 min for 72 pairs at 20 parallel).
 - Q4 · todo: runner reports the two axes per cell (today it gates timing INV/EXACT and leaves logical DIST ungated).
 - Q5 · todo: per-cell scheduling (C3).
 - Q6 · wip: `logical_diff.py`; next: per-round marginals for async pairs.

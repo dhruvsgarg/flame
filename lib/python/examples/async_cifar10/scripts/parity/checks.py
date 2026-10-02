@@ -2781,11 +2781,33 @@ def _round_axis(*legs: dict) -> bool:
     return all(_progress_axis(leg["agg_rounds"]) == "round" for leg in legs)
 
 
+def _stall_episodes(adv: list) -> list:
+    """FX-N62: index lists of timeout stalls: one round >= the cut, or consecutive slow rounds (>= 3x median) that
+    sum past it (a late alive pick splits one 90s stall into pieces, some under the cut)."""
+    if not adv:
+        return []
+    slow = max(_TIMEOUT_STALL_S / 8, 3 * statistics.median(adv))
+    eps, i = [], 0
+    while i < len(adv):
+        if adv[i] >= _TIMEOUT_STALL_S:
+            eps.append([i])
+            i += 1
+            continue
+        j = i
+        while j < len(adv) and slow <= adv[j] < _TIMEOUT_STALL_S:
+            j += 1
+        if j > i and sum(adv[i:j]) >= _TIMEOUT_STALL_S:
+            eps.append(list(range(i, j)))
+        i = max(j, i + 1)
+    return eps
+
+
 def _stall_free(adv: list, *legs: dict) -> list:
-    """FX-N62: rounds under the 90s-timeout stall cut; round axis only (a fwdllm data_id is not a round)."""
+    """FX-N62: rounds outside every timeout stall; round axis only (a fwdllm data_id is not a round)."""
     if not _round_axis(*legs):
         return adv
-    return [a for a in adv if a < _TIMEOUT_STALL_S] or adv
+    drop = {i for ep in _stall_episodes(adv) for i in ep}
+    return [a for i, a in enumerate(adv) if i not in drop] or adv
 
 
 def timeout_stalls(real: dict, sim: dict, same_mode: bool = False) -> dict:
@@ -2795,8 +2817,7 @@ def timeout_stalls(real: dict, sim: dict, same_mode: bool = False) -> dict:
     b = _per_round_advances(sim["agg_rounds"], use_vclock=_b_vclock)
     if len(r) < 2 or len(b) < 2 or not _round_axis(real, sim):
         return {"ok": True, "tier": "DIST", "status": "SKIP", "note": "fewer than 2 rounds, or not a round axis"}
-    nr = sum(1 for x in r if x >= _TIMEOUT_STALL_S)
-    nb = sum(1 for x in b if x >= _TIMEOUT_STALL_S)
+    nr, nb = len(_stall_episodes(r)), len(_stall_episodes(b))
     rate_r, rate_b = nr / len(r), nb / len(b)
     tol = 2.0 * math.sqrt(nr / len(r) ** 2 + nb / len(b) ** 2) + 1.0 / min(len(r), len(b))
     return {"ok": abs(rate_r - rate_b) <= tol, "tier": "DIST",
@@ -3145,7 +3166,7 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
     """
     N, prog_fn = _matched_logical_budget(real["agg_rounds"], sim["agg_rounds"])
 
-    def side(agg_rounds: list, time_fn) -> Optional[dict]:
+    def side(agg_rounds: list, time_fn, use_vclock: bool) -> Optional[dict]:
         evs = [e for e in agg_rounds if e.get("event") in (None, "agg_round")]
         if N is not None:
             windowed = [e for e in evs
@@ -3160,6 +3181,10 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
         if span <= 0:
             return None
         adv = span / len(evs)
+        if _round_axis(real, sim):  # FX-N62: stall time out of the clock span, at round level
+            rounds_adv = _per_round_advances(evs, use_vclock)
+            stall_s = sum(rounds_adv[i] for ep in _stall_episodes(rounds_adv) for i in ep)
+            adv = (span - stall_s) / len(evs)
         return {"barrier": sum(barriers) / len(barriers), "adv": adv,
                 "cycles": len(evs), "span": span}
 
@@ -3168,8 +3193,8 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
     # against the other's vclock. `same_mode` lets the B side fall back to wall so a
     # real↔real pair is readable (§D-72).
     _a_vclock, _b_vclock = pair_clocks(real, sim, same_mode)
-    r = side(real["agg_rounds"], _side_clock_fn(real["agg_rounds"], _a_vclock))
-    s = side(sim["agg_rounds"], _side_clock_fn(sim["agg_rounds"], _b_vclock))
+    r = side(real["agg_rounds"], _side_clock_fn(real["agg_rounds"], _a_vclock), _a_vclock)
+    s = side(sim["agg_rounds"], _side_clock_fn(sim["agg_rounds"], _b_vclock), _b_vclock)
     if r is None or s is None:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "insufficient barrier/clock data (K10 may be blocking)"}
