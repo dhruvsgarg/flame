@@ -3756,7 +3756,14 @@ class TestInterArrivalOrderPower:
         assert r["bucket_sizes"]["real"] == [3, 3]
 
     def test_many_rounds_is_not_flagged(self):
-        rounds = [_round(i, ["a", "b"], [0, 0]) for i in range(1, 8)]
+        rounds = [_round(i, ["a", "b", "c"], [0, 0, 0]) for i in range(1, 8)]
         r = pc.inter_arrival_order_parity(_agg(agg_rounds=rounds),
                                           _agg(agg_rounds=rounds))
         assert r["n_rounds"] == 7 and r["underpowered"] is False
+
+    def test_disjoint_stochastic_picks_do_not_read_as_anticorrelated(self):
+        # FX-N66: ends absent on one side used to rank at its tail; only the common trainers are ranked now.
+        real = [_round(i, ["a", "b", "c", "x1", "x2"], [0] * 5) for i in range(1, 8)]
+        sim = [_round(i, ["a", "b", "c", "y1", "y2"], [0] * 5) for i in range(1, 8)]
+        r = pc.inter_arrival_order_parity(_agg(agg_rounds=real), _agg(agg_rounds=sim))
+        assert r["mean_spearman_rho"] == 1.0 and r["ok"]

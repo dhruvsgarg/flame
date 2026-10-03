@@ -747,6 +747,28 @@ def test_split_stall_is_one_episode_and_stays_out_of_k3b_and_k4():
     assert overlap_factor(a, b, same_mode=True)["ok"]
 
 
+def test_k3b_reports_the_selection_mix_adjusted_residual():
+    """FX-N67: a barrier leg whose slowest pick is 4s slower reads 4s apart, but 0 net of the speed mix."""
+    from parity.checks import overhead_residual
+
+    def _leg(step, spd):
+        return {"agg_rounds": [{"event": "agg_round", "round": r, "ts": r * step, "contributing_trainers": ["1"],
+                                "trainer_speed_s": [spd]} for r in range(1, 40)]}
+    res = overhead_residual(_leg(28.0, 27.8), _leg(24.0, 23.8), same_mode=True)
+    assert not res["ok"] and res["residual_s"] == 4.0 and res["mix_adjusted_residual_s"] == 0.0
+
+
+def test_support_guard_survives_the_p99_edge_but_catches_a_real_tail():
+    """FX-N67: a slow bucket at ~1% of picks flips a bare p99 ratio; a tail an order of magnitude wider still fails."""
+    from parity.checks import training_budget_parity
+
+    def _tr(vals):
+        return {"t": {"trainer_round": [{"training_budget_s": v} for v in vals]}}
+    real = _tr([2.0] * 1250 + [11.75] * 10)
+    assert training_budget_parity(real, _tr([2.0] * 1245 + [11.75] * 15))["ok"]
+    assert not training_budget_parity(real, _tr([2.0] * 1100 + [50.0] * 160))["ok"]
+
+
 class TestControlFloors:
     def test_reads_each_rungs_gap_and_skips_absent_rungs(self):
         from parity.checks import control_floors

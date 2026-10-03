@@ -370,6 +370,7 @@ def _fmt_metric(name: str, res: dict) -> list:
             f"         implied per-commit overhead="
             f"{res.get('implied_per_commit_overhead_s')}s "
             f"(agg_goal={res.get('agg_goal')})",
+            f"         selection-mix-adjusted residual={res.get('mix_adjusted_residual_s')}s (diag)",
         ]
     elif name == "timeout_stalls":
         lines += [

@@ -37,6 +37,7 @@
 | L5 GPU pairs | 22 / 0 / 2 (EV green on all 24; cifar felix/oort syn_0 K2 8.1/8.2% vs 8%, opposite signs) | — |
 | L6 G0C + G0 (`ladder_20261002_033358`) | 31 / 0 / 5 | 35 / 0 / 1 (speech oort syn_20 trainers_at_n 49 vs 46; speech refl NaN fixed, FX-D38) |
 | L7 cifar G1 (`ladder_20261002_203715`) | 2 / 0 / 0: felix + fedbuff syn_0 n=300 5400s, EV0-18 green, K2 0.1/0.3%, K3b 0.001/0.003, K8 0.2/0.3%, queue_wait p99 0.13/0.05s; C1/C2 LOWC (FX-N65) | — |
+| L7 cifar G2 (`pr12_cifar_20261003_0322`, oort_star not run) | 1 / 0 / 2: refl green (residence hist = real to 2 dp); oort S3/4+Sr (gate, FX-D39, fixed, CPU-confirmed); feddance K3b/A2c (lock-in draw, FX-N68) | — |
 
 **Cross-cutting capabilities**
 
@@ -105,6 +106,8 @@ gate: pytest collection plus one felix smoke pair per dataset; it aborts in ~4 m
 | T3 | real+sim pairs × 4 shapes; refreshes the bank | 82 / 47 min (both datasets) |
 | T4 | campaign P1-P11 (`harness_campaign.sh` = `--tier T4 --pytest`) | 70 / 40 min per dataset |
 | G0 / G0C | GPU 30 min screen: all six × syn_0 + syn_20, n 100/50 / a second real leg per syn_0 cell (R7) | T4+G0+G0C ~6.9h per 8-GPU node |
+| T3S | oort/oort_star/refl pairs with aggGoal 10 (stragglers cross rounds), syn_0 + syn_20, FX-D39 | 24 min (6 pairs) |
+| G2S / G2C | one G2 cell replicated sim-only (5400s, ~8 min) / real-only (97 min): floor for a chaotic selector (FX-N68) | 8 / 97 min |
 | N64 / N64S | FX-D38 refl speech health: 25 min real+sim pair + a real replicate / 40 min sim-only (EV18) | 45 / 27 min |
 | G1 / G2 | GPU 90 min: felix+fedbuff / the other four, reference config | ~2.5h per pair (cifar), in parallel with CPU (speech) |
 
@@ -162,8 +165,8 @@ dataset (speech: 2024 used 60%).
 
 ## Next steps (persistent queue — top item is next)
 
-**Counter (2026-10-03, after run 9):** 18 open — 3 wip · 2 next · 7 todo · 4 blocked · 2 other (FX-N13 parked design; FX-N8 likely closed).
-This session: 0 closed, 2 opened (FX-N65, FX-N66); FX-N4 narrowed to speech (cifar G1 green), FX-N5 unblocked.
+**Counter (2026-10-03, after run 10 G2 cifar):** 19 open — 3 wip · 2 next · 8 todo · 4 blocked · 2 other (FX-N13 parked design; FX-N8 likely closed).
+This session: 2 closed (FX-N67 oort carry-over gate → FX-D39; FX-N66 U5 now ranks common trainers), 1 opened (FX-N68); FX-N5 narrowed (oort_star not yet run).
 
 Work rule: PARITY C10 — each session resolves as many independent items below as it can, not just files new ones.
 
@@ -200,16 +203,13 @@ G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). 
 - **FX-N65 `[C]` · Convergence can't be graded at 90 min · todo.** C1/C2 read LOWC below 7200s (`SHORT_RUN_CONFIDENCE_S`); G1 legs are 5400s (acc diff 1.5/1.1%, 15/13 evals) and no
   real↔real replicate sizes the band. *Next:* felix cifar syn_0 ≥7500s, real ×2 + sim (PARITY PR14). *Exit:* C1/C2 not LOWC and acc diff inside the real↔real spread, or the
   G1/G2 length raised to 2h.
-- **FX-N66 `[S]` · U5 inter-arrival ρ is negative on utility selectors · todo (hypothesis).** felix ρ -0.20 (L5 -0.08..-0.15, L6 -0.16..-0.28) vs fedbuff 0.90; WARN only. Selections differ per round
-  (S1 Jaccard 0.42, S2 marginals KS 0.017), and `inter_arrival_order_parity` ranks absent trainers at the tail, so ρ is over disjoint sets. *Predict:* ρ over trainers common to both sides
-  ≈ 0 for utility selectors, ≈ 0.9 for fedbuff. *Exit:* U5 grades the common set (or is DIAG for stochastic selectors, L14).
 - **FX-N10 · google_speech on the launcher · wip: graded runs next.** Reference = 2024 SoCC n=100. Run 6 speech:
   L1/L4 green (P7o = FX-N30), L2 reds = the shared unavail roots above, L5 EV green. *Next:* GPU lr check in the first speech G1 (0.000195 vs 0.001 via `--trainer-hp learningRate=…`); target
   accuracy + stop rule (2024: 20 evals ≥ 60%); then S4 removes the 2024 JSON/scripts and the import script. *Exit:*
   all six real+sim graded on speech (T4 CPU + G1/G2 GPU).
-- **FX-N5 · syn_0 GPU block (G2): oort, oort_star, refl, feddance · next (PARITY PR12, cifar; ~9h in two pools).** Same protocol.
-  oort's open root: per-round `relative_change` of the exploited utility, binned by quartile, in both modes
-  (don't touch the pacer). refl: confirm at 3h.
+- **FX-N5 · syn_0 GPU block (G2): oort, oort_star, refl, feddance · next (PARITY PR12b).** Run 10 cifar: refl 0 fails; oort fixed by FX-D39 (verify at n=300); feddance FX-N68. oort_star runs only with unavailability.
+  *Exit:* oort G2 EV green, K2/K3b/K8 inside tolerance, Sr/S3/4 green, queue_wait p99 < 1s. refl: confirm at 3h.
+- **FX-N68 `[C]` · feddance cifar G2 selection is a lock-in draw; no 5400s floor · todo.** Utilities tie to ±0.005 (loss ≈ chance), so top-N locks onto ~12 trainers from round ~60-100. Real and sim agree to round 60 (slowest pick 27.8/28.2 s, 26.2/25.8 s) then lock different sets (28 vs 21 s): K2 28.0 vs 24.0 s/round (14%), A2c bias 0 vs -1.9 s, S2 per-trainer max_KS 0.88; K3b's mix-adjusted residual is 0.04 s (clock charges match). *Predict:* sim↔sim and real↔real replicates at 5400s spread ≥ 14% (the 30-min G0 floor ≤ 5% predates lock-in). *Next:* `G2S` ×3 (sim, ~25 min) + `G2C` (real, 97 min); `parity_check --control`, `--floors`. *Exit:* a 5400s floor sizes K2/K3b/K8/A2c for feddance (SKIP or green).
 - **FX-N13 · Streaming experiments (linear + events), both datasets · parked: design in "Parked design" above.**
   *Exit:* ST1-ST5 done; streaming EV + parity green on both datasets.
 - **FX-N7 · Remove legacy `trackTrainerAvail` (oort, oort_star, refl) · todo: unblocked.** refl EV green on every run-5
@@ -256,8 +256,7 @@ update is accepted only under the baseline's own rule (REFL staleness ≤ 5; oor
 **Aggregation, ordering, clock**
 - **FX-L6** Async (felix): drain each in-flight end's queue directly (`simSctOrderedDrain`) and hold busy
   slots until commit (`_sim_hold_busy_slots`). This one root cleared K3b/K2/U3/U6/K8/U2 together.
-- **FX-L7** Sync oort over-selects ×1.3: a prior-round straggler with `sct` past the pinned round start is
-  held in `selected_ends` and commits later (`simInflightCarryover`).
+- **FX-L7** Sync oort over-selects ×1.3: an in-flight straggler stays in `selected_ends` and is received stale in the next round by sct-ordered pop, as real (FX-D39).
 - **FX-L8** refl/oort: a trainer still computing (`vclock < sct`) is kept out of the eligible pool via the
   unavailable path, not `selected_ends`.
 - **FX-L9** For a strict-barrier baseline (feddance, fedavg), real visibility lag is anchored on the barrier
@@ -375,6 +374,7 @@ update is accepted only under the baseline's own rule (REFL staleness ≤ 5; oor
 - **FX-T21** Don't call `ends()` for anything but a real dispatch: RECV or state-less calls run the selector
   (feddance phantom picks, oracle crash). List the pool with `all_ends()`.
 - **FX-T22** Don't skip a trainer after the selector chose it; the selector keeps a slot nothing was sent to.
+- **FX-T33** Don't enable `simInflightCarryover`: it holds a straggler whose sct falls inside the next round, so it is received two rounds late (real: one) and sim carries 6.6 vs 3.8 (FX-D39).
   Exclude at eligibility (the removed `[SELECTION_CHECK] Skipping`, 46-143 per felix run).
 
 **Availability**
@@ -454,6 +454,7 @@ IDs are kept because code comments cite them.
 - **FX-D35** (code cites FX-N63) Real `recv_fifo` releases every reader slot when its streamer exits (a reader cancelled
   before aiostream's merge started it leaked its end forever) and enqueues on dequeue: speech refl syn_0/syn_20 real 223
   rounds (PR8 42), 0 `active_task_skips`, arrivals = processed + too-stale, K2/K3b/K4/A2 green (`pool_fxn63_verify2`).
+- **FX-D39** (code cites FX-N67) `simInflightCarryover` off for oort/oort_star (`..._parity.yaml`): sim stale receipts land one round after dispatch, as real (G2 oort carried 6.6 vs 3.8; refl, gate off, matched real to 2 dp). Harness shape `syn_0s`/`syn_20s` + tier `T3S` (aggGoal 10, n 30-40, oort/oort_star/refl) reproduces it on CPU in 7 min: gate on carried 5.95 vs 3.39 (rel 0.43, as GPU 0.43), off 3.33 vs 3.30, EV + all checks green. K3b adds `mix_adjusted_residual_s`; U5 ranks only trainers on both sides (disjoint stochastic picks no longer read ρ < 0, FX-N66); P3/T2 support guard counts the sim tail past real's p99 (binomial edge) instead of a bare p99 ratio.
 - **FX-D34** (code cites FX-N59/N60) Sim leaves an unanswered dispatch's channel/selector state as real does: an unaware
   withheld pick holds its slot (`sim_hold_withheld_slot`; mobiperf fedbuff real 3 vs sim 2 rounds, was 3 vs 122), and a
   felix-evicted end's update is ingested (`sim_ingest_evicted`; felix syn_50 A2 6.9/6.9, K2/K4 green, both datasets;

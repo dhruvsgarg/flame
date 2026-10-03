@@ -58,6 +58,9 @@ DS_TAG = {"cifar10": "", "google_speech": "gs_"}  # phase-id prefix; cifar keeps
 SHAPES = {
     "syn_0": dict(trace="syn_0", n=12, agg_goal=3, c=5, runtime_s=180, trace_scale=""),
     "syn_0b": dict(trace="syn_0", n=15, agg_goal=2, c=8, runtime_s=180, trace_scale=""),
+    # FX-N67: aggGoal 10 over-selects 13, so stragglers cross rounds as at n=300
+    "syn_0s": dict(trace="syn_0", n=30, agg_goal=10, c=13, runtime_s=300, trace_scale=""),
+    "syn_20s": dict(trace="syn_20", n=40, agg_goal=10, c=13, runtime_s=300, trace_scale="4"),
     "syn_20": dict(trace="syn_20", n=15, agg_goal=3, c=6, runtime_s=240, trace_scale="4"),
     # 1200s x scale 4 = 4800s of trace: ~2 outage/up cycles per trainer (means ~1200s of trace each; FX-D18)
     "syn_50": dict(trace="syn_50", n=15, agg_goal=3, c=6, runtime_s=1200, trace_scale="4"),
@@ -199,6 +202,9 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [shaped(f"T3_{sh}", baselines, sh, "pair", ds) for sh in matrix]
     if tier == "T4":
         return campaign_phases(ds)
+    if tier == "T3S":  # FX-N67: straggler carry-over pair for the over-selecting sync stacks
+        bls = tuple(x for x in baselines if x in ("oort", "oort_star", "refl")) if baselines != B6 else ("oort", "oort_star", "refl")
+        return [shaped(f"T3S_{sh}", bls, sh, "pair", ds) for sh in ("syn_0s", "syn_20s")]
     if tier == "G0":  # GPU screen: all six, syn_0 + syn_20 (stationary, ~20% within 30 min), smaller cohort (FX-N34)
         return [Phase(f"{DS_TAG[ds]}G0_{t}", baselines, t, runtime_s=1800, dataset=ds, harness="none", **G0_SHAPE[ds])
                 for t in ("syn_0", "syn_20")]
@@ -221,6 +227,10 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
     if tier == "G2":  # the other four (FX-N5)
         bls = tuple(b for b in baselines if b not in ("felix", "fedbuff")) or B6[2:]
         return [Phase(DS_TAG[ds] + "G2", bls, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none")]
+    if tier in ("G2S", "G2C"):  # FX-N68: sim-only / real-only G2 replicates (floor, R7)
+        bls = tuple(b for b in baselines if b not in ("felix", "fedbuff")) or B6[2:]
+        return [Phase(DS_TAG[ds] + tier, bls, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
+                      kind="sim_ev" if tier == "G2S" else "real")]
     if tier in ("ISO", "ISO_FILL"):  # P6: felix/fedbuff pairs solo (--max-parallel 1), then packed
         iso = [shaped("ISO", ("felix", "fedbuff"), "syn_0", "pair", ds)]
         # packed stage: neighbours load the node (and double as FX-N20 syn_50 checks)

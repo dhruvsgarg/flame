@@ -251,11 +251,8 @@ experiments:
         min_trainers_to_start: 290
         min_trainers_join_timeout_s: 600
         aggGoal: 10
-        # PARITY §4.9: carry still-computing (sct>vclock) overcommit stragglers
-        # in-flight across rounds instead of draining them at instant physical
-        # arrival, so sim in_flight (~3 carry) matches real. Sim-only; validated
-        # by this run (Sr residence rung). See PARITY.md Jun-17c.
-        simInflightCarryover: true
+        # FX-N67: gate off (it delivers stragglers a round late).
+        simInflightCarryover: false
         # oort is unaware at selection (avail_select_filter=False); the trace is
         # used for starvation-advance vclock tracking only, not selection filtering.
         avail_select_filter: 'False'
@@ -670,7 +667,7 @@ experiments:
         min_trainers_to_start: 290
         min_trainers_join_timeout_s: 600
         aggGoal: 10
-        simInflightCarryover: true
+        simInflightCarryover: false  # FX-N67
         avail_select_filter: "True"
         proactive_inflight_evict: "False"
         checkpoint:

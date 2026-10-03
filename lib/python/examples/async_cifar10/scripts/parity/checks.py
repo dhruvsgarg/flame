@@ -2047,9 +2047,12 @@ def inter_arrival_order_parity(real: dict, sim: dict,
     rhos = []
     for rd in common:
         rt, st = r_arr[rd], s_arr[rd]
-        all_t = list(dict.fromkeys(rt + st))
-        r_idx = [rt.index(t) if t in rt else len(rt) for t in all_t]
-        s_idx = [st.index(t) if t in st else len(st) for t in all_t]
+        # FX-N66: rank common trainers only (absent ones at the tail read disjoint picks as rho < 0).
+        all_t = [t for t in dict.fromkeys(rt) if t in st]
+        if len(all_t) < 3:
+            continue
+        r_idx = [rt.index(t) for t in all_t]
+        s_idx = [st.index(t) for t in all_t]
         rho = spearman_rho(r_idx, s_idx)
         if not math.isnan(rho):
             rhos.append(rho)
@@ -2330,6 +2333,15 @@ def trainer_speed_identity_parity(real: dict, sim: dict, tol_rel: float = 0.10,
     return out
 
 
+def _tail_beyond_support_ok(real_vals: list, sim_vals: list, support_tol: float) -> tuple:
+    """(ok, n_beyond): sim samples past real's p99 x (1+tol) stay within the 1% edge's binomial 2-sigma + 1 (FX-N67).
+    A bare p99 ratio flips on bucketed values when the slow bucket holds ~1% of picks."""
+    cut = percentile(real_vals, 99) * (1.0 + support_tol)
+    n_beyond = sum(1 for v in sim_vals if v > cut)
+    n = len(sim_vals)
+    return n_beyond <= 0.01 * n + 2.0 * math.sqrt(0.01 * 0.99 * n) + 1.0, n_beyond
+
+
 def trainer_speed_parity(real: dict, sim: dict, ks_tol: float = 0.1,
                          support_tol: float = 0.15) -> dict:
     """P3: trainer_speed_s — the speed MODEL is identical (control).
@@ -2374,8 +2386,9 @@ def trainer_speed_parity(real: dict, sim: dict, ks_tol: float = 0.1,
     real_p99, sim_p99 = percentile(real_speeds, 99), percentile(sim_speeds, 99)
     # support guard: sim must not produce speeds materially beyond real's range.
     support_ratio = sim_p99 / real_p99 if real_p99 > 0 else float("nan")
+    tail_ok, n_beyond = _tail_beyond_support_ok(real_speeds, sim_speeds, support_tol)
     ok = (not math.isnan(support_ratio)
-          and support_ratio <= 1.0 + support_tol)
+          and (support_ratio <= 1.0 + support_tol or tail_ok))
     mix_deferred = bool(ok and grid_ks > ks_tol)  # passes support but mix-shifted
     return {
         "ok": ok,
@@ -2385,6 +2398,7 @@ def trainer_speed_parity(real: dict, sim: dict, ks_tol: float = 0.1,
         "real_p99_speed_s": round(real_p99, 2),
         "sim_p99_speed_s": round(sim_p99, 2),
         "mix_deferred": mix_deferred,
+        "n_beyond_support": n_beyond,
         # diagnostics (selection-mix signal; A2c selection_bias owns the verdict):
         "ks_stat": round(grid_ks, 3) if not math.isnan(grid_ks) else None,
         "ks_tol": ks_tol,
@@ -3778,6 +3792,11 @@ def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
         result["matched_window_rel"] = round(matched_rel, 3)
         result["decided_on"] = "matched_window_rel"
         result["ok"] = matched_rel <= tol_rel
+    # Diag: residual net of the slowest-pick speed, separating selection mix from clock charges.
+    r_spd, s_spd = _per_round_max_speed(real["agg_rounds"]), _per_round_max_speed(sim["agg_rounds"])
+    if r_spd and s_spd:
+        mix = sum(s_spd.values()) / len(s_spd) - sum(r_spd.values()) / len(r_spd)
+        result["mix_adjusted_residual_s"] = round(residual + mix, 2)
     return result
 
 
@@ -4763,9 +4782,11 @@ def training_budget_parity(real_trainers: dict, sim_trainers: dict,
     sm, _ = mean_std(sv)
     real_p99, sim_p99 = percentile(rv, 99), percentile(sv, 99)
     support_ratio = sim_p99 / real_p99 if real_p99 > 0 else float("nan")
+    tail_ok, n_beyond = _tail_beyond_support_ok(rv, sv, support_tol)
     ok = (not math.isnan(support_ratio)
-          and support_ratio <= 1.0 + support_tol)
+          and (support_ratio <= 1.0 + support_tol or tail_ok))
     return {"ok": ok, "tier": "DIST",
+            "n_beyond_support": n_beyond,
             "support_ratio": round(support_ratio, 3) if not math.isnan(support_ratio) else None,
             "support_tol": support_tol,
             "real_p99_s": round(real_p99, 2), "sim_p99_s": round(sim_p99, 2),

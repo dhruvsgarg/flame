@@ -101,6 +101,24 @@ def test_t2_sim_legs_share_the_bank_key_config_of_t3_real_legs():
         assert t2 == t3
 
 
+def test_t3s_over_selecting_sync_pair_has_stragglers():
+    # FX-N67: sync oort-family selects 1.3 x aggGoal, so aggGoal 10 leaves ~3 stragglers per round to carry over.
+    phs = pool.tier_phases("T3S", B6, "cifar10")
+    assert [p.trace for p in phs] == ["syn_0", "syn_20"]
+    for ph in phs:
+        assert (ph.baselines, ph.agg_goal, ph.kind) == (("oort", "oort_star", "refl"), 10, "pair")
+        assert int(ph.agg_goal * 1.3) > ph.agg_goal and ph.n >= 2 * int(ph.agg_goal * 1.3)
+
+
+def test_g2_replicate_tiers_run_one_side_at_the_g2_config():
+    # FX-N68: sim-only / real-only copies of a G2 cell, same n and length, for the real<->real / sim<->sim floor.
+    for tier, kind in (("G2S", "sim_ev"), ("G2C", "real")):
+        (ph,) = pool.tier_phases(tier, ("feddance",), "cifar10")
+        g2 = pool.tier_phases("G2", ("feddance",), "cifar10")[0]
+        assert (ph.kind, ph.baselines, ph.n, ph.runtime_s) == (kind, ("feddance",), g2.n, g2.runtime_s)
+        assert ph.pid == tier
+
+
 def test_datasets_get_their_own_phase_ids_and_gpu_cohorts():
     c, g = pool.tier_phases("G1", B6, "cifar10")[0], pool.tier_phases("G1", B6, "google_speech")[0]
     assert (c.pid, c.n, c.agg_goal) == ("G1", 300, None) and (g.pid, g.n) == ("gs_G1", 100)
