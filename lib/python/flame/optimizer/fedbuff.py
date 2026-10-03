@@ -30,6 +30,7 @@ from diskcache import Cache
 from ..common.typing import ModelWeights
 from ..common.util import MLFramework, get_ml_framework_in_use, valid_frameworks
 from .abstract import AbstractOptimizer
+from .bn_buffers import clamp_running_var
 from .regularizer.default import Regularizer
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class FedBuff(AbstractOptimizer):
         super().__init__(**kwargs)
 
         self.agg_goal_weights = None
+        self.clamp_running_var = str(kwargs.get("clamp_running_var", True)).lower() == "true"  # FX-N64
 
         ml_framework_in_use = get_ml_framework_in_use()
         if ml_framework_in_use == MLFramework.PYTORCH:
@@ -276,6 +278,8 @@ class FedBuff(AbstractOptimizer):
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))
             )
+        if self.clamp_running_var and clamp_running_var(base_weights):
+            logger.warning("[FEDBUFF_BN] negative running_var clamped to 0 (FX-N64)")
         if base_weights and not getattr(self, "_server_lr_logged", False):  # FX-N15: the server lr in force, once
             src = "config learning_rate" if self.learning_rate is not None else \
                 f"fedbuff.py table (use_oort_lr={self.use_oort_lr}, dataset={self.dataset_name})"

@@ -30,6 +30,7 @@ from typing import Any, Optional
 from .events import (  # noqa: F401  (re-exported for convenience)
     EVENT_AGG_EVAL,
     EVENT_AGG_ROUND,
+    EVENT_MODEL_HEALTH,
     EVENT_AVAIL_CHANGE,
     EVENT_RUN_META,
     EVENT_SELECTION,

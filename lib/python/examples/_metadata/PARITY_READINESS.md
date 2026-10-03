@@ -74,6 +74,7 @@ $L --rungs L1-L4 --datasets all --keep-going --deadline-h 6     # CPU
 $L --grade <pool> --max-stage 1 [--regrade]                      # offline re-gate (--regrade re-runs the checker, ~30s/48 pairs)
 python lib/python/examples/scripts/logical_diff.py <pool>        # first diverging selection/commit per pair
 conda run -n dg_flame python lib/python/examples/async_cifar10/scripts/parity/event_invariants.py <run_dir>
+python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --sim <B> --control --json-out c.json   # real<->real floor (Q2); --floors <json> sizes a pair's gates
 ```
 - Pools on one node are safe (`harness_pool.Leases`, L28); progress prints every 5 min and after each leg (R23).
   One Ctrl+C tears everything down (the ladder waits for the pool's teardown).
@@ -81,21 +82,23 @@ conda run -n dg_flame python lib/python/examples/async_cifar10/scripts/parity/ev
 
 ---
 
-## Felix scoreboard — run 7, 2026-10-02 (both datasets, L1-L5)
+## Felix scoreboard — run 8, 2026-10-02 (L6 on top of run 7's L1-L5)
 
-`ladder_20261001_164350` (L1-L4) and `ladder_20261001_164408` (L5), jayne. "regraded" = the stored L2 pairs re-run
-through the FX-D36 checker plus the FX-N62 KNOWN row for fedbuff mobiperf (predicted until run 8 confirms).
+L1-L5 (`ladder_20261001_164350`, `_164408`, jayne): L1 22/2/0 · L2/L3 41/1/6 (regraded 43/3/2 with FX-D36 + FX-N62 KNOWN) · L4 48/2/0 ·
+L5 22/0/2 (cifar felix/oort syn_0 K2 8.1/8.2%, opposite signs). Reds there are no-floor tolerances (Q2) or FX-N62.
 
-| rung | run 7 | regraded | reds → root |
-|---|---|---|---|
-| L1 sim EV | 22 / 2 / 0 | — | known: oort syn_50 EV1 (P3 oort) |
-| L2/L3 pairs | 41 / 1 / 6 | 43 / 3 / 2 | refl cifar syn_50 K4 + fedbuff speech syn_50 K2/K3b: split timeout stall, FX-D36; fedbuff mobiperf ×2 datasets (2-3 rounds, all stalls) and oort speech syn_50: FX-N62 known; feddance mobiperf K2 9.5% cifar / 8.6% speech, sim faster, no floor (Q2) |
-| L4 campaign | 48 / 2 / 0 | — | known: speech P7o EV12 FX-N30; P11a-c CAUGHT |
-| L5 GPU pairs | 22 / 0 / 2 | — | cifar felix 8.1% (sim slower) and oort 8.2% (sim faster) syn_0 K2 vs tol 8%: opposite signs, no floor (Q2) |
+L6 `ladder_20261002_033358` (G0C + G0, 691 min), green / known / red: 31/0/5 raw → **35/0/1** with FX-D37/D38 (floor SKIPs, stall-free K8, EV16 re-run offline, refl BN fix).
 
-Matched-window K2 residual over 70 healthy cells spans ±0.08 (oort ±0.07, oort_star ±0.076): the nominal 0.08 sits inside
-replicate noise until Q2 floors it. Stage 2-3 (not gated): no L3 red beyond the L2 ones. Run 6's FX-D34/D35 predictions held
-(oort_star selection draw green, speech refl green).
+| cell | raw red | root |
+|---|---|---|
+| speech feddance syn_20 | K3b/K2/K3/K8 (real 28.1 vs sim 18.5 s/round) | real↔real itself spans 18.0-22.2 s/round at syn_0: selections match to round ~21, then utility feedback diverges; floor 17% swallows the 8% tol → SKIP |
+| cifar + speech oort syn_20 | K8/U2 8.3% (sim 11 stalls, real 9) | 90s stall draw owned by K3s: K8/U2 now stall-free; cifar green |
+| cifar oort_star syn_20 | sim EV16 | one withheld delivery at the 1800s budget committed 12.9s later by the final sync round: not late (FX-D37) |
+| speech refl syn_0 (G0C real) | EV14 test-loss NaN at round 600 | fixed (FX-D38): BN `running_var` went negative from stale deltas; fresh-only BN stats |
+| speech oort syn_20 | K8 trainers_at_n 49 vs 46 (6.1% vs 5%) | open: a 2-leg floor reads 0 (selections seeded), so no floor sizes a ±3 count (Q2, FX-N62) |
+
+Real↔real K2 spread (G0 vs G0C real, one pair per cell: T8 lower bound): cifar ≤ 5% on all six; speech ≤ 3% except feddance 17-19%.
+EV green on every leg bar the two above.
 
 ## FluxTune scoreboard
 Parked with the track; its board still sits in simulate_fwdllm.md §A.
@@ -104,13 +107,11 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR10 · Run 8: L6 = G0C + G0, both datasets, jayne · next (operator, > 6h per dataset).** L1-L5 have no open shared
-  root (C0.4): every remaining red is a no-floor tolerance (Q2) or FX-N62. G0C's second real leg per syn_0 cell is the
-  first real↔real floor; with it Q2 gates DIST and re-sizes K2. Command: `$L --rungs L6 --datasets all --keep-going`
-  (`$L` in Tools). *Confirms:* K2 spread between the two real legs ≥ 0.05 on cifar felix/oort and speech feddance (then
-  the L5/L2 0.08-0.095 reds are noise and the tolerance becomes floor-gated); EV green on every leg. *Refutes:* real↔real
-  K2 < 0.03 while feddance mobiperf stays at ~0.09 sim-faster on both datasets (a feddance-specific sim charge: diff
-  its barrier, real 2.56 vs sim 2.31s, against profiled charges). Then L7. Beside it (C0.6), long FX-N62 legs once a tier exists.
+- **PR11 · Run 9: L7 cifar (G1/G2 90 min), jayne · next (operator, ~5h).** L1-L6 have no open shared root (C0.4); L6's
+  one red is a single-cell count tolerance (FX-N62). Command: `$L --rungs L7 --datasets cifar10 --keep-going`.
+  *Confirms:* EV green, K2/K3b inside the (n=2) floors on felix/fedbuff/oort at 90 min, convergence inside the real↔real band.
+  *Refutes:* a clock rung red while its floor < 5% (then profile the charge at 90 min, not the tolerance). Beside it (C0.6),
+  long FX-N62 legs. Speech L7 is unblocked (FX-D38).
 
 **Operator decisions / open**
 - S5 knob layout: (a) adopted (operator 2026-10-01): `datasets.yaml` holds dataset defaults + `by_baseline` tuned values
@@ -134,7 +135,7 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 | L6 | G0C + G0: 30 min + real↔real control | > 6h per dataset |
 | L7 | G1/G2 at reference n, 90 min → 3h | ~5h per dataset |
 
-- Q2 · todo: real↔real floors into `floor_gated_tol` (parent S2) so DIST gates.
+- Q2 · wip: `--control`/`--floors` + `parity_ladder` regrade feed G0C real↔real floors into `floor_gated_tol` (SKIP only, never tighten: n=2, T8). Next: ≥3 legs per syn_0 cell, then tighten + gate DIST.
 - Q4 · todo: runner reports the two axes per cell (today it gates timing INV/EXACT and leaves logical DIST ungated).
 - Q5 · todo: per-cell scheduling (C3).
 - Q6 · wip: `logical_diff.py`; next: per-round marginals for async pairs.

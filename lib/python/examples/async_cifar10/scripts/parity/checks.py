@@ -2740,6 +2740,29 @@ _FLOOR_TOL_K = 3.0
 _FLOOR_TOL_MIN_ABS = 0.02
 
 
+# Control result field -> the `_floor_specs` metric it measures.
+_CONTROL_GAPS = (
+    ("throughput", "matched_window_rel_diff", "throughput_rel"),
+    ("terminal_state", "time_rel_diff", "time_to_n"),
+    ("terminal_state", "trainers_rel_diff", "trainers_at_n"),
+    ("overhead_residual", "matched_window_rel", "overhead_rel"),
+    ("per_round_advance", "matched_window_mean_rel_diff", "round_advance_rel"),
+    ("per_round_advance", "matched_window_ks_stat", "round_advance_ks"),
+    ("overlap_factor", "rel_diff", "overlap_rel"),
+    ("selection_detail", "rel_diff_chosen", "mean_chosen"),
+)
+
+
+def control_floors(results: dict) -> dict:
+    """{metric: spread} read off a real<->real control pair's results (Q2); a rung that skipped adds none."""
+    out = {}
+    for rung, field, metric in _CONTROL_GAPS:
+        v = (results.get(rung) or {}).get(field)
+        if isinstance(v, (int, float)) and v == v:
+            out[metric] = abs(float(v))
+    return out
+
+
 def floor_gated_tol(nominal: float, floor_rel: Optional[float],
                     k: float = _FLOOR_TOL_K,
                     min_abs: float = _FLOOR_TOL_MIN_ABS,
@@ -2808,6 +2831,16 @@ def _stall_free(adv: list, *legs: dict) -> list:
         return adv
     drop = {i for ep in _stall_episodes(adv) for i in ep}
     return [a for i, a in enumerate(adv) if i not in drop] or adv
+
+
+def _stall_s_to_n(agg_rounds: list, prog_fn, N, time_fn, real: dict, sim: dict) -> float:
+    """FX-N62: timeout-stall seconds (excess over the median round) up to N; K3s owns the stall rate."""
+    if not _round_axis(real, sim):
+        return 0.0
+    ts = [time_fn(e) for e in agg_rounds if (p := prog_fn(e)) is not None and p <= N and time_fn(e) is not None]
+    adv = [b - a for a, b in zip(ts, ts[1:]) if b > a]
+    med = statistics.median(adv) if adv else 0.0
+    return sum(adv[i] - med for ep in _stall_episodes(adv) for i in ep)  # the excess; the round itself still counts
 
 
 def timeout_stalls(real: dict, sim: dict, same_mode: bool = False) -> dict:
@@ -3262,6 +3295,9 @@ def total_commits_parity(real: dict, sim: dict,
                 "note": "no matched logical budget — run too short to measure"}
     real_t = _time_to_progress(real["agg_rounds"], prog_fn, N, real_time_fn)
     sim_t = _time_to_progress(sim["agg_rounds"], prog_fn, N, sim_time_fn)
+    if real_t and sim_t:  # FX-N62: stall-free, as K8
+        real_t -= _stall_s_to_n(real["agg_rounds"], prog_fn, N, real_time_fn, real, sim)
+        sim_t -= _stall_s_to_n(sim["agg_rounds"], prog_fn, N, sim_time_fn, real, sim)
     if not real_t or not sim_t or max(real_t, sim_t) <= 0:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "zero time-to-N in one mode — run too short to measure"}
@@ -3315,6 +3351,10 @@ def terminal_state_parity(real: dict, sim: dict,
                 "note": "no matched logical budget — run too short to measure"}
     real_t = _time_to_progress(real["agg_rounds"], prog_fn, N, real_time_fn)
     sim_t = _time_to_progress(sim["agg_rounds"], prog_fn, N, sim_time_fn)
+    raw_t = (real_t, sim_t)
+    if real_t and sim_t:  # FX-N62: stall-free, as K2/K3b/K4
+        real_t -= _stall_s_to_n(real["agg_rounds"], prog_fn, N, real_time_fn, real, sim)
+        sim_t -= _stall_s_to_n(sim["agg_rounds"], prog_fn, N, sim_time_fn, real, sim)
 
     def _trainers(agg_rounds):
         ts = set()
@@ -3339,6 +3379,8 @@ def terminal_state_parity(real: dict, sim: dict,
         "matched_logical_budget_n": _prog_json(N),
         "sim_vclock_to_n_s": round(sim_t, 1),
         "real_time_to_n_s": round(real_t, 1),
+        "raw_sim_vclock_to_n_s": round(raw_t[1], 1),
+        "raw_real_time_to_n_s": round(raw_t[0], 1),
         "time_rel_diff": round(time_rel_diff, 3),
         "time_tol": time_tol,
         "sim_trainers_at_n": n_st,
@@ -7513,7 +7555,8 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
                    sim_ground_truth: Optional[dict] = None,
                    max_bin: Optional[int] = None,
                    floors: Optional[dict] = None,
-                   same_mode: bool = False) -> dict:
+                   same_mode: bool = False,
+                   floors_tighten: bool = True) -> dict:
     """Run the full parity + invariant battery; returns {name: result_dict}.
 
     Ordered HIGH → MID → LOW so coarse failures surface first:
@@ -7616,6 +7659,8 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
             _nominal = inspect.signature(_fn).parameters[_field].default
             _eff, _why = floor_gated_tol(_nominal, _floor, min_abs=_min_abs,
                                          loosen_cap=(_cap[0] if _cap else None))
+            if not floors_tighten and not _why:
+                _eff = max(_eff, _nominal)  # 2-leg floor = lower bound (T8): may SKIP a rung, never tighten
             _tol[_rung][_field] = _eff
             # One ungradeable field makes the whole rung ungradeable: its verdict
             # is an AND over its bounds, so a coin-flip on one decides it. Tracked

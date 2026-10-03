@@ -43,6 +43,7 @@ from diskcache import Cache
 from ..common.typing import ModelWeights
 from ..common.util import MLFramework, get_ml_framework_in_use, valid_frameworks
 from .abstract import AbstractOptimizer
+from .bn_buffers import clamp_running_var, is_bn_stat
 from .regularizer.default import Regularizer
 from .train_result import TrainResult
 
@@ -118,6 +119,9 @@ class REFL(AbstractOptimizer):
 
         # Gradient policy (applied after aggregation)
         self.gradient_policy = kwargs.get("gradient_policy", None)  # None, "yogi", "qfedavg"
+        self.clamp_running_var = str(kwargs.get("clamp_running_var", True)).lower() == "true"  # FX-N64
+        # BN running stats average fresh updates only (convex, var >= 0); a stale delta is meaningless for them (FX-N64).
+        self.bn_fresh_only = str(kwargs.get("bn_fresh_only", True)).lower() == "true"
         
         # YoGi parameters (if gradient_policy == "yogi")
         # NOTE: tau=1e-8 matches third_party/REFL (NOT 1e-3)
@@ -198,6 +202,7 @@ class REFL(AbstractOptimizer):
         
         # Accumulate weighted deltas separately (don't modify base yet)
         self.weighted_deltas = self._zero_weights(base_weights)
+        self._bn_imp = 0.0  # importance of the fresh updates folded into the BN running stats
 
         if len(cache) == 0 or total == 0:
             return base_weights
@@ -282,6 +287,11 @@ class REFL(AbstractOptimizer):
 
         # Normalize ONLY the deltas (not the base model!)
         self._normalize_by_importance(self.weighted_deltas, importance_sum)
+        if self.bn_fresh_only:  # no fresh update = BN stats unchanged
+            for k in self.weighted_deltas:
+                if is_bn_stat(k):
+                    self.weighted_deltas[k] = self.weighted_deltas[k] * (importance_sum / self._bn_imp) \
+                        if self._bn_imp > 0 else self.weighted_deltas[k] * 0.0
         
         # Log normalized deltas
         if sample_key:
@@ -739,6 +749,8 @@ class REFL(AbstractOptimizer):
                     if d.dtype != base[k].dtype:
                         d = d.round().to(base[k].dtype)
                     base[k] += d
+            if self.clamp_running_var and clamp_running_var(base):
+                logger.warning("[REFL_BN] negative running_var clamped to 0 (FX-N64)")
         elif ml_framework == MLFramework.TENSORFLOW:
             for idx in range(len(base)):
                 base[idx] += deltas[idx]
@@ -779,7 +791,12 @@ class REFL(AbstractOptimizer):
         Formula: weighted_deltas += delta * importance
         """
         # Accumulate weighted deltas (not into base model!)
+        fresh = not tres.staleness
+        if fresh:
+            self._bn_imp += importance
         for k, v in tres.weights.items():
+            if self.bn_fresh_only and not fresh and is_bn_stat(k):
+                continue
             if k in self.weighted_deltas:
                 self.weighted_deltas[k] += v * importance
             else:

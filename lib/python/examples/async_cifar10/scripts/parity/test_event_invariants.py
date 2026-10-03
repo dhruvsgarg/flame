@@ -338,7 +338,17 @@ def test_ev16_late_withheld_delivery_fails(tmp_path, monkeypatch):
         if e["event"] == "trainer_round":
             agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
                         "delivery_ts": 50.0, "actual_commit_ts": 500.0})
-    assert _status(_write_run(tmp_path, agg, tr), "EV16_withheld_delivery") == "FAIL"
+    assert _status(_write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 1000}), "EV16_withheld_delivery") == "FAIL"
+
+
+def test_ev16_delivery_at_budget_commits_at_final_round_passes(tmp_path, monkeypatch):
+    _unavail_T1(monkeypatch)
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round":
+            agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
+                        "delivery_ts": 50.0, "actual_commit_ts": 500.0})
+    assert _status(_write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 50}), "EV16_withheld_delivery") == "PASS"
 
 
 def _gated_real_run(tmp_path, dispatch_ends):
@@ -359,3 +369,17 @@ def test_ev17_redispatch_while_gated_fails(tmp_path):
 
 def test_ev17_without_dispatch_events_reads_selections(tmp_path):
     assert _status(_gated_real_run(tmp_path, []), "EV17_real_gate_repick") == "FAIL"
+
+
+def test_ev18_model_finite(tmp_path):
+    agg, tr = _clean_run()
+    agg += [{"event": "model_health", "round": r, "weight_norm": 10.0, "nonfinite": 0, "bn_buf_max": 2.0} for r in (1, 2)]
+    assert _status(_write_run(tmp_path, agg, tr), "EV18_model_finite") == "PASS"
+    agg.append({"event": "model_health", "round": 3, "weight_norm": 10.0, "nonfinite": 4, "bn_buf_max": 2.0})
+    assert _status(_write_run(tmp_path / "b", agg, tr), "EV18_model_finite") == "FAIL"
+
+
+def test_ev18_negative_running_var_fails(tmp_path):
+    agg, tr = _clean_run()
+    agg.append({"event": "model_health", "round": 1, "weight_norm": 1.0, "nonfinite": 0, "bn_buf_max": 2.0, "bn_var_min": -0.005})
+    assert _status(_write_run(tmp_path, agg, tr), "EV18_model_finite") == "FAIL"

@@ -113,10 +113,39 @@ class Cell:
         return "google_speech" if self.phase.startswith("gs_") else "cifar10"
 
 
+def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
+    """Q2: {(phase prefix, baseline): floors} from each G0C real leg vs its G0 syn_0 real leg (n=2: a lower bound, T8);
+    syn_20 cells reuse the syn_0 floor. Writes <G0C phase>/control_<b>.json."""
+    import concurrent.futures as cf
+    sys.path.insert(0, str(EXAMPLES / "async_cifar10" / "scripts"))
+    from parity.checks import control_floors
+
+    def one(item):
+        (pre, b), (g0c_dir, cmd_txt, out) = item
+        t = cmd_txt.read_text()
+        real, goal, rt = (re.search(rf"--{k} (\S+)", t) for k in ("real-dir", "agg-goal", "runtime-s"))
+        subprocess.run([sys.executable, str(checker), "--real", real[1], "--sim", str(g0c_dir), "--control",
+                        "--agg-goal", goal[1], "--budget-s", rt[1], "--json-out", str(out)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return (pre, b), (control_floors(json.loads(out.read_text())) if out.exists() else {})
+
+    pairs = {}
+    for f in root.glob("*G0C_syn_0/summary.tsv"):
+        pre = f.parent.name.split("G0C")[0]
+        for r in csv.DictReader(open(f), delimiter="\t"):
+            cmd = next(iter(root.glob(f"{pre}G0_syn_0/{pre}G0_syn_0_{r['baseline']}_grade/cmd.txt")), None)
+            if cmd:
+                pairs[(pre, r["baseline"])] = (Path(r["real_dir"]), cmd, f.parent / f"control_{r['baseline']}.json")
+    with cf.ThreadPoolExecutor(jobs) as ex:
+        return dict(ex.map(one, pairs.items()))
+
+
 def regrade_pool(root: Path, jobs: int = 20) -> None:
-    """Q3: re-run the checker on every stored pair of a pool into <cell>_grade/parity_regrade/ (read by grade_pool)."""
+    """Q3: re-run the checker on every stored pair of a pool into <cell>_grade/parity_regrade/ (read by grade_pool);
+    Q2: pairs of a pool with G0C legs are gated against their baseline's real<->real floor (`floors.json`)."""
     import concurrent.futures as cf
     checker = EXAMPLES / "async_cifar10" / "scripts" / "parity_check.py"
+    floors = _control_floors(root, checker, jobs)
 
     def one(cmd_txt: Path) -> None:
         t = cmd_txt.read_text()
@@ -128,8 +157,14 @@ def regrade_pool(root: Path, jobs: int = 20) -> None:
         name = next(iter((cmd_txt.parent / "parity").glob("*.json")), None)
         if name is None:
             return
+        phase = cmd_txt.parent.parent.name
+        fl = floors.get((phase.split("G0")[0], g["baselines"][1] if g["baselines"] else ""))
+        extra = []
+        if fl:
+            (cmd_txt.parent / "floors.json").write_text(json.dumps(fl))
+            extra = ["--floors", str(cmd_txt.parent / "floors.json")]
         subprocess.run([sys.executable, str(checker), "--real", g["real-dir"][1], "--sim", g["sim-dir"][1],
-                        "--agg-goal", g["agg-goal"][1], "--budget-s", g["runtime-s"][1],
+                        "--agg-goal", g["agg-goal"][1], "--budget-s", g["runtime-s"][1], *extra,
                         "--json-out", str(out / name.name)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     with cf.ThreadPoolExecutor(jobs) as ex:
@@ -242,6 +277,8 @@ def main(argv=None) -> int:
                 with open(report, "a") as f:
                     f.write(f"== {rid} pool rc={rc}: stopped\n")
                 return rc
+        if "G0C" in rung.tiers:
+            regrade_pool(root)  # Q2: floor-gate against the real<->real legs
         cells = grade_pool(root, rung.max_stage)
         text = render(rung, cells)
         with open(report, "a") as f:

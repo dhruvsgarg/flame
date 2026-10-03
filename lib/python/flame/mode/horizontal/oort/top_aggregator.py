@@ -46,6 +46,7 @@ from flame import telemetry
 from flame.telemetry.agg_timing import agg_timing
 from flame.telemetry.events import (
     build_agg_round,
+    build_model_health,
     build_inflight_residence,
     build_utility_belief,
 )
@@ -583,6 +584,9 @@ class TopAggregator(BaseTopAggregator):
 
         # set global weights
         self.weights = global_weights
+        if telemetry.is_enabled():  # FX-N64
+            ev, fields = build_model_health(round_num=self._round, weights=self.weights)
+            telemetry.emit(ev, **fields)
 
         # update model with global weights
         self._update_model()

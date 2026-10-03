@@ -208,6 +208,13 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
     if tier == "G0C":  # R7 control: a second real leg per G0 syn_0 cell (real<->real floor for G0's pairs)
         return [Phase(f"{DS_TAG[ds]}G0C_syn_0", baselines, "syn_0", runtime_s=1800, dataset=ds, harness="none",
                       kind="real", **G0_SHAPE[ds])]
+    if tier == "N64":  # FX-N64: REFL speech model health, 25 min pair + a real replicate (model_health telemetry, EV18)
+        return [Phase(f"{DS_TAG[ds]}N64", ("refl",), "syn_0", runtime_s=1500, dataset=ds, harness="none", **G0_SHAPE[ds]),
+                Phase(f"{DS_TAG[ds]}N64C", ("refl",), "syn_0", runtime_s=1500, dataset=ds, harness="none",
+                      kind="real", **G0_SHAPE[ds])]
+    if tier == "N64S":  # FX-N64 verify: sim-only refl past round 650 (where running_var went negative), EV18
+        return [Phase(f"{DS_TAG[ds]}N64S", ("refl",), "syn_0", runtime_s=2400, dataset=ds, harness="none",
+                      kind="sim_ev", **G0_SHAPE[ds])]
     if tier == "G1":  # GPU block on the production path at the dataset's reference config (FX-N4)
         bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
         return [Phase(DS_TAG[ds] + "G1", bls, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none")]
@@ -927,7 +934,7 @@ def run_gate(root: Path, datasets, pool: "Pool") -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C G1 G2 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

@@ -575,6 +575,7 @@ def ev16_withheld_delivery(run):
     held = {}
     early = late = bad_dts = 0
     examples = []
+    budget = float(_hp(run, "max_experiment_runtime_s", "maxExperimentRuntimeS") or math.inf)
     for e in _events(run, "withheld_delivery"):
         held[(e.get("end_id"), round(float(e["sct"]), 3))] = e
         tr = gt.get(e.get("end_id"))
@@ -587,7 +588,8 @@ def ev16_withheld_delivery(run):
         if e.get("actual_commit_ts") is not None and float(e["actual_commit_ts"]) < float(e["delivery_ts"]) - _EPS_S:
             early += 1
             examples.append((e["end_id"][-4:], "commit<delivery_ts", e["actual_commit_ts"], e["delivery_ts"]))
-        if e.get("actual_commit_ts") is not None and \
+        # A delivery at the budget commits when the final round closes: not late.
+        if e.get("actual_commit_ts") is not None and float(e["delivery_ts"]) < budget and \
                 float(e["actual_commit_ts"]) > float(e["delivery_ts"]) + _LATE_DELIVERY_S:
             late += 1
             examples.append((e["end_id"][-4:], "commit>>delivery_ts", e["actual_commit_ts"], e["delivery_ts"]))
@@ -638,11 +640,24 @@ def ev17_real_gate_repick(run):
     return _res("PASS" if not viol else "FAIL", f"gated={len(wins)} repicked_while_gated={len(viol)}",
                 examples=viol[:10])
 
+def ev18_model_finite(run):
+    """FX-N64: global model finite and BN running_var >= 0 after every commit; names the first bad round."""
+    evs = sorted(_events(run, "model_health"), key=lambda e: e.get("round") or 0)
+    if not evs:
+        return _res("SKIP", "no model_health (oort-stack aggregators only)")
+    bad = [e["round"] for e in evs if e.get("nonfinite") or (e.get("bn_var_min") is not None and e["bn_var_min"] < 0)]
+    norms = [e["weight_norm"] for e in evs]
+    return _res("PASS" if not bad else "FAIL",
+                f"commits={len(evs)} nonfinite_rounds={len(bad)} first_bad={bad[0] if bad else None} "
+                f"bn_var_min={min((e['bn_var_min'] for e in evs if e.get('bn_var_min') is not None), default=None)} "
+                f"norm_first={norms[0]:.1f} norm_max={max(norms):.1f} bn_buf_max={max(e['bn_buf_max'] for e in evs):.3g}")
+
+
 CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model, ev4_real_sleep,
           ev5_commit_accounting, ev6_staleness, ev7_agg_goal_cadence, ev8_concurrency_cap,
           ev9_selector_state, ev10_dispatch_one_in_flight, ev11_vclock, ev12_reached_budget,
           ev13_no_stall, ev14_eval_sane, ev15_one_task_per_version, ev16_withheld_delivery,
-          ev17_real_gate_repick]
+          ev17_real_gate_repick, ev18_model_finite]
 
 
 def check_run(run_dir: str) -> dict:

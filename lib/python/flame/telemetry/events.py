@@ -40,10 +40,12 @@ EVENT_VCLOCK_CHARGE = "vclock_charge"  # every charge_sim_vclock_overhead() call
 EVENT_SERVER_UPDATE = "server_update"  # fwdllm: applied-update vs weight norm per commit (I-1 audit)
 EVENT_TASK_DISCARD = "task_discard"  # trainer dropped a request it already answered (FX-D9)
 EVENT_RUN_END = "run_end"  # aggregator stop point: round, vclock (sim), work_done (FX-N31)
+EVENT_MODEL_HEALTH = "model_health"  # global model health after a commit (FX-N64)
 EVENT_AGG_TIMING = "agg_timing"  # per-commit wall split: recv wait vs ingest vs commit (FX-N43)
 
 KNOWN_EVENTS = frozenset(
     {
+        EVENT_MODEL_HEALTH,
         EVENT_RUN_META,
         EVENT_SELECTION,
         EVENT_AGG_EVAL,
@@ -126,6 +128,27 @@ def build_agg_eval(
     fields = {"round": round_num}
     fields.update(metrics)
     return EVENT_AGG_EVAL, fields
+
+
+def build_model_health(*, round_num: int, weights: dict) -> tuple[str, dict[str, Any]]:
+    """FX-N64: float-weight L2 norm, non-finite count, max |BN buffer|, min running_var (< 0 = NaN at eval)."""
+    import torch
+
+    sq, bad, buf_max, var_min = 0.0, 0, 0.0, float("inf")
+    for k, v in weights.items():
+        if not torch.is_tensor(v) or not v.is_floating_point():
+            continue
+        t = v.detach().float()
+        fin = torch.isfinite(t)
+        bad += int((~fin).sum())
+        t = torch.where(fin, t, torch.zeros_like(t))
+        sq += float((t * t).sum())
+        if "running_" in k and t.numel():
+            buf_max = max(buf_max, float(t.abs().max()))
+            if k.endswith("running_var"):
+                var_min = min(var_min, float(t.min()))
+    return EVENT_MODEL_HEALTH, {"round": round_num, "weight_norm": sq ** 0.5, "nonfinite": bad, "bn_buf_max": buf_max,
+                                                 "bn_var_min": var_min if var_min != float("inf") else None}
 
 
 def build_agg_round(

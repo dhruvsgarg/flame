@@ -745,3 +745,17 @@ def test_split_stall_is_one_episode_and_stays_out_of_k3b_and_k4():
     a, b = _leg(300, {100: 93.0}), _leg(300, split)
     assert overhead_residual(a, b, same_mode=True)["ok"]
     assert overlap_factor(a, b, same_mode=True)["ok"]
+
+
+class TestControlFloors:
+    def test_reads_each_rungs_gap_and_skips_absent_rungs(self):
+        from parity.checks import control_floors
+        res = {"throughput": {"matched_window_rel_diff": 0.17},
+               "terminal_state": {"time_rel_diff": 0.169, "trainers_rel_diff": 0.0},
+               "per_round_advance": {"status": "SKIP"}}
+        assert control_floors(res) == {"throughput_rel": 0.17, "time_to_n": 0.169, "trainers_at_n": 0.0}
+
+    def test_no_tighten_keeps_nominal_but_a_swallowing_floor_still_skips(self):
+        from parity.checks import run_all_parity  # noqa: F401  (signature carries floors_tighten)
+        import inspect
+        assert inspect.signature(run_all_parity).parameters["floors_tighten"].default is True

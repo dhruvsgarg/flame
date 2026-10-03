@@ -61,8 +61,11 @@ def _run_pair(real_dir: str, sim_dir: str,
               strict: bool, lenient: bool,
               json_out, plot_out,
               real_label: str = "", sim_label: str = "",
-              max_bin=None) -> bool:
-    """Load, check, and report one real/sim pair.  Returns True if passed."""
+              max_bin=None, floors=None, control: bool = False) -> bool:
+    """Load, check, and report one real/sim pair.  Returns True if passed.
+
+    `floors` = {metric: real<->real spread} sizing the gated tolerances (Q2); `control` grades two REAL legs.
+    """
     # Import here to avoid circular import issues when run as __main__
     import sys as _sys
     # Ensure scripts/ is on path so parity.checks can be imported
@@ -105,6 +108,9 @@ def _run_pair(real_dir: str, sim_dir: str,
         real_ground_truth=real_ground_truth,
         sim_ground_truth=sim_ground_truth,
         max_bin=max_bin,
+        floors=floors,
+        same_mode=control,
+        floors_tighten=False,
     )
 
     # Add first_divergence as a diagnostic summary entry (always ok — index=0 is expected for async)
@@ -156,6 +162,10 @@ def main() -> None:
                         help="Write full results JSON to this path")
     parser.add_argument("--plot-out", metavar="PATH", default=None,
                         help="Write summary PNG to this path")
+    parser.add_argument("--floors", metavar="JSON", default=None,
+                        help="{metric: real<->real spread} sizing the gated tolerances (Q2; from --control)")
+    parser.add_argument("--control", action="store_true",
+                        help="--real and --sim are two replicate REAL legs: measure the floor (read `control_floors` off --json-out)")
     parser.add_argument("--diagnostics", action="store_true",
                         help="(reserved) Run diagnostic single-run analysis scripts")
     # ── real-correctness validation ──
@@ -237,6 +247,7 @@ def main() -> None:
     if not args.real or not args.sim:
         parser.error("Provide --real and --sim (or use --batch mode)")
 
+    floors = json.load(open(args.floors)) if args.floors else None
     ok = _run_pair(
         args.real, args.sim,
         agg_goal=args.agg_goal,
@@ -247,6 +258,8 @@ def main() -> None:
         json_out=args.json_out,
         plot_out=args.plot_out,
         max_bin=args.max_bin,
+        floors=floors,
+        control=args.control,
     )
     sys.exit(0 if ok else 1)
 
