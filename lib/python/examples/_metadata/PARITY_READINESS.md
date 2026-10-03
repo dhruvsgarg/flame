@@ -82,7 +82,7 @@ python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --si
 
 ---
 
-## Felix scoreboard — run 8, 2026-10-02 (L6 on top of run 7's L1-L5)
+## Felix scoreboard — run 9, 2026-10-03 (L7 cifar G1 on top of run 8's L1-L6)
 
 L1-L5 (`ladder_20261001_164350`, `_164408`, jayne): L1 22/2/0 · L2/L3 41/1/6 (regraded 43/3/2 with FX-D36 + FX-N62 KNOWN) · L4 48/2/0 ·
 L5 22/0/2 (cifar felix/oort syn_0 K2 8.1/8.2%, opposite signs). Reds there are no-floor tolerances (Q2) or FX-N62.
@@ -100,6 +100,21 @@ L6 `ladder_20261002_033358` (G0C + G0, 691 min), green / known / red: 31/0/5 raw
 Real↔real K2 spread (G0 vs G0C real, one pair per cell: T8 lower bound): cifar ≤ 5% on all six; speech ≤ 3% except feddance 17-19%.
 EV green on every leg bar the two above.
 
+**L7 cifar G1** (`ladder_20261002_203715`, 273 min, syn_0, n=300, 5400s, 7 GPUs): felix + fedbuff **2/0/0**, 67/67 and 66/66 enforced checks, EV0-EV18 green both modes.
+
+| check | felix | fedbuff |
+|---|---|---|
+| K2 / K3b / K3 / K8 | 0.1% / 0.001 / KS 0.03 / 0.2% (tol 8/10/20/8%) | 0.3% / 0.003 / KS 0.01 / 0.3% |
+| S2 / S3/4 / A2c | KS 0.017 / 0.1% / KS 0.005 | KS 0.007 / 0% / KS 0 |
+| U3 staleness mean | 2.894 vs 2.893 | 2.895 vs 2.894 |
+| real queue_wait p99 / max | 0.127s / 0.37s (0 skips) | 0.054s / 0.12s (0 skips) |
+| C1/C2 convergence | LOWC: acc diff 1.5%, loss 0.013 (15 evals) | LOWC: 1.1%, 0.014 (13 evals) |
+| sim wall vs vclock | 1212s for 5405s (4.5×) | 727s for 5401s (7.4×) |
+
+Not green or not graded: C1/C2 are low-confidence at a 5400s budget (checker floor 7200s, FX-N65); felix U5 WARN ρ = -0.20 (chronic on utility selectors
+in L5-L7, selection-set noise, FX-N66); fedbuff sim aggregator exit abort (FX-N33, data intact). G2 (oort, oort_star, refl, feddance) did not run: the first
+launch (`ladder_20261002_202440`, G1+G2, est. 15.3h > 12h deadline) was stopped after its gate.
+
 ## FluxTune scoreboard
 Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
@@ -107,11 +122,13 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR11 · Run 9: L7 cifar (G1/G2 90 min), jayne · next (operator, ~5h).** L1-L6 have no open shared root (C0.4); L6's
-  one red is a single-cell count tolerance (FX-N62). Command: `$L --rungs L7 --datasets cifar10 --keep-going`.
-  *Confirms:* EV green, K2/K3b inside the (n=2) floors on felix/fedbuff/oort at 90 min, convergence inside the real↔real band.
-  *Refutes:* a clock rung red while its floor < 5% (then profile the charge at 90 min, not the tolerance). Beside it (C0.6),
-  long FX-N62 legs. Speech L7 is unblocked (FX-D38).
+- **PR12 · Run 10: L7 cifar G2 (oort, oort_star, refl, feddance), jayne · next (operator, ~9h: ~2.3h per pair, whole node each).** Two pools of ~4.6h:
+  `conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/harness_pool.py --tier G2 --datasets cifar10 --baselines "oort oort_star"`
+  then `"refl feddance"`. *Confirms:* EV green, K2/K3b/K8 inside tolerance, real queue_wait p99 < 1s, `relative_change` binned by quartile agrees (FX-N5).
+  *Refutes:* a clock rung red while its floor < 5% (profile the charge at 90 min, not the tolerance); refl K2 drift (re-check at 3h, FX-L19).
+- **PR13 · Run 11: L7 speech G1 (felix, fedbuff) + G2, jayne · after PR12 (~2.5h per pair).** Unblocked (FX-D38). Same predictions; add the GPU lr check (FX-N10).
+- **PR14 · Long phase (C0.6), beside PR13 · when PR12 is green.** felix cifar syn_0 at ≥7500s: real ×2 + sim (sizes the real↔real convergence band, FX-N65), plus the
+  FX-N62 legs (~3h oort syn_50, fedbuff mobiperf). *Confirms:* C1/C2 not LOWC and acc diff inside the real↔real spread.
 
 **Operator decisions / open**
 - S5 knob layout: (a) adopted (operator 2026-10-01): `datasets.yaml` holds dataset defaults + `by_baseline` tuned values
@@ -133,7 +150,7 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 | L4 | T4 extras: P4-P11c, EV | 37 / 48 min |
 | L5 | GS: GPU pairs 10 min, G0 cohort, syn_0 + syn_20 | 122 / 238 min |
 | L6 | G0C + G0: 30 min + real↔real control | > 6h per dataset |
-| L7 | G1/G2 at reference n, 90 min → 3h | ~5h per dataset |
+| L7 | G1/G2 at reference n, 90 min → 3h | cifar G1 4.5h (done) + G2 ~9h / speech ~5h |
 
 - Q2 · wip: `--control`/`--floors` + `parity_ladder` regrade feed G0C real↔real floors into `floor_gated_tol` (SKIP only, never tighten: n=2, T8). Next: ≥3 legs per syn_0 cell, then tighten + gate DIST.
 - Q4 · todo: runner reports the two axes per cell (today it gates timing INV/EXACT and leaves logical DIST ungated).
