@@ -763,7 +763,7 @@ class ClientAvailability:
         capped at the run budget's end. Abandoned ends don't extend the wait. `earliest` (FX-N37): stop at
         the first pending timeout instead, so distribute can replace that pick."""
         hp = self.config.hyperparameters
-        timeout_s = float(getattr(hp, "trainer_recv_wall_timeout_s", _AVAIL_ABANDON_TIMEOUT_S))
+        timeout_s = float(getattr(hp, "trainer_recv_wall_timeout_s", None) or self._task_timeout_s())
         if earliest:  # FX-N37: awaited = not replied and not timed out since its latest dispatch
             now, replied = self._avail_now(), self._sync_replied(channel)
             sent = [(e, self._avail_send_ts(channel, e)) for e in ends if e not in replied]
@@ -831,8 +831,8 @@ class ClientAvailability:
             if (buf is not None and buf.has(e)) or e in replied:
                 continue
             sst = self._avail_send_ts(channel, e)
-            if sst is not None and float(sst) + _AVAIL_ABANDON_TIMEOUT_S >= now:
-                cands.append(float(sst) + _AVAIL_ABANDON_TIMEOUT_S + 1e-6)  # abandon needs age > 90
+            if sst is not None and float(sst) + self._task_timeout_s() >= now:
+                cands.append(float(sst) + self._task_timeout_s() + 1e-6)  # abandon needs age > timeout
         return min(cands) if cands else None
 
     def _sim_sync_wait(self, channel) -> None:
@@ -843,6 +843,12 @@ class ClientAvailability:
         budget = getattr(self.config.hyperparameters, "max_experiment_runtime_s", None)
         self._vclock.advance(min(wake, float(budget)) if budget else wake)
         logger.info(f"[SYNC_WAIT_K] round={self._round} vclock->{self._vclock.now:.1f}")
+
+    def _task_timeout_s(self) -> float:
+        """FX-D46: per-dispatch timeout, the selectors' `send_timeout_wait_s` (90s; speech 450s, scaled with its D)."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        v = getattr(hp, "send_timeout_wait_s", None)
+        return float(v) if v is not None else _AVAIL_ABANDON_TIMEOUT_S
 
     def _abandon_stalled(self, channel) -> None:
         """C.3: free in-flight slots stalled past 90s since dispatch (vclock in sim, wall in real).
@@ -881,7 +887,7 @@ class ClientAvailability:
                 continue  # invariant 1: already committed / abandoned
             if sst is None:
                 continue
-            if now - float(sst) <= _AVAIL_ABANDON_TIMEOUT_S:
+            if now - float(sst) <= self._task_timeout_s():
                 continue
             reason = "abandon_90s_vclock" if getattr(self, "simulated", False) else "abandon_90s_wall"
             if held:  # FX-N37: delivery ledger already registered; only the slot frees

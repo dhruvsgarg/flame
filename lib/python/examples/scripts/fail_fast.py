@@ -2,7 +2,7 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
 """FX-N40 fail fast: a fatal line in any leg's logs stops the whole batch (a GPU or code fault that hit one leg
-hits the next). Fatal = the lines EV0 counts; the FX-N33 post-leave exit abort is allowlisted by signature.
+hits the next). FX-D45 StallWatch: a leg that stops progressing (rules S1/S2) is killed alone; the pool goes on. Fatal = the lines EV0 counts; the FX-N33 post-leave exit abort is allowlisted by signature.
 harness_pool.py scans live legs every ~30s; harness_suite.sh after each pair.
 
   fail_fast.py RUN_DIR... [--abort-file ABORT.txt]   # exit 3 when fatal, printing file:line + context
@@ -83,6 +83,67 @@ class Scanner:
             prev = line
         self._pos[log] = (off + end, n, prev)
         return found
+
+
+STALL_NO_ROUND_S = 15 * 60  # S1: no new agg_round (no committed version) for this long
+STALL_SILENT_S = 10 * 60    # S2: no leg log grew for this long
+
+
+class StallWatch:
+    """Early-termination rules for a live leg; only a leg that stopped progressing trips one, never a slow one.
+
+    S1 no new `agg_round` event for STALL_NO_ROUND_S (from leg start until the first) · S2 no leg log grew for
+    STALL_SILENT_S. Reads only what the files gained since the last call."""
+
+    def __init__(self, t0: float, no_round_s: float = STALL_NO_ROUND_S, silent_s: float = STALL_SILENT_S) -> None:
+        self.no_round_s, self.silent_s = no_round_s, silent_s
+        self.last_round = self.last_growth = t0
+        self.rounds = 0
+        self._off: Dict[Path, int] = {}
+        self._size: Dict[Path, int] = {}
+
+    def check(self, run_dirs: Iterable, now: float) -> str:
+        """'' while healthy, else the tripped rule with its evidence."""
+        for d in map(Path, run_dirs):
+            if not d.is_dir():
+                continue
+            for f in list(d.rglob("*.log")) + list(d.glob("telemetry/aggregator_*.jsonl")):
+                if f.name.endswith("_resources.log"):
+                    continue
+                try:
+                    size = f.stat().st_size
+                except OSError:
+                    continue
+                if size != self._size.get(f):
+                    self._size[f] = size
+                    self.last_growth = now
+                if f.suffix == ".jsonl":
+                    self._read_rounds(f, now)
+        if self.no_round_s and now - self.last_round > self.no_round_s:
+            return (f"S1 no new agg_round for {(now - self.last_round) / 60:.0f} min "
+                    f"({self.rounds} rounds so far; limit {self.no_round_s / 60:.0f} min)")
+        if self.silent_s and now - self.last_growth > self.silent_s:
+            return f"S2 no leg log grew for {(now - self.last_growth) / 60:.0f} min (limit {self.silent_s / 60:.0f} min)"
+        return ""
+
+    def _read_rounds(self, f: Path, now: float) -> None:
+        off = self._off.get(f, 0)
+        try:
+            with open(f, "rb") as fh:
+                fh.seek(off)
+                chunk = fh.read()
+        except OSError:
+            return
+        end = chunk.rfind(b"\n") + 1
+        n = chunk[:end].count(b'"event": "agg_round"')
+        if n:
+            self.rounds += n
+            self.last_round = now
+        self._off[f] = off + end
+
+
+def write_stalled(path: Path, where: str, rule: str, run_dirs: List[str]) -> None:
+    Path(path).write_text(f"STALLED: {where}: {rule}\nrun dirs:\n" + "\n".join(run_dirs) + "\n")
 
 
 def leg_run_dirs(out: Path) -> List[str]:

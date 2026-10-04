@@ -41,6 +41,8 @@ datasets:
       selector knobs, join barrier n-10. Trainer lr 0.000195 (2024 non-oort configs): a centralized check on
       10 trainers' data (4 epochs) reached 43% test acc at 0.000195, 35% at 0.001, and stayed at chance at
       the 2024 '_oort' value 0.04. The FL value is confirmed on GPU (FX-N10 sweep: 0.000195 vs 0.001).
+    # FX-D46 (operator): D x5 and timeout 450s on GPU legs (speech task ~270x cifar); a harness --delay-factor wins.
+    device_time_scale: 5
     experiment:
       trainer:
         num_trainers: 100

@@ -11,6 +11,18 @@ import time
 from pathlib import Path
 from typing import Optional
 
+# FX-D44: keep freed model buffers in the heap; fresh pages cost ~30 ms per 29 MB copy.
+_MALLOC_ENV = {"MALLOC_MMAP_THRESHOLD_": str(32 << 20), "MALLOC_TRIM_THRESHOLD_": str(4 << 30),
+               "MALLOC_TOP_PAD_": str(256 << 20)}
+
+
+def apply_malloc_env(env: dict) -> dict:
+    """FX-D44: set the glibc heap knobs unless FLAME_MALLOC_TUNE=0 or the caller already set them."""
+    if env.get("FLAME_MALLOC_TUNE", "1") != "0":
+        for k, v in _MALLOC_ENV.items():
+            env.setdefault(k, v)
+    return env
+
 
 class AggregatorSpawner:
     """Spawns aggregator process with log capture."""
@@ -87,7 +99,7 @@ class AggregatorSpawner:
 
         # CPU pinning: confine the aggregator to its reserved cores; its math libs
         # get a quarter of them, the rest serve its MQTT/asyncio threads.
-        env = os.environ.copy()
+        env = apply_malloc_env(os.environ.copy())
         # GPU pin: give the aggregator its own device so its eval forward pass
         # does not time-slice a trainer's GPU. Without it the aggregator defaults
         # to GPU 0, inflating that trainer's compute over its delay budget.

@@ -47,6 +47,12 @@
 - **C10 Resolve, don't just file (operator).** Every session (and every wait on a run) picks up as many independent
   Next-steps items as it can and drives each to a fix in tree or a closed item; a new item is filed only for a root found
   this session that can't be fixed in it. Report items closed vs opened at the end of each session.
+- **C11 New features go short, small, parallel first (operator).** Streaming and unavailability are screened with short
+  legs (≤ 15-30 min), small cohorts (n ≈ 50, 1-2 GPUs) and many legs packed in parallel; long, low-parallelism GPU legs
+  only confirm what the screen already passed.
+- **C12 Early termination only by rule (operator).** A leg is killed early only when it stops progressing: S1 no new
+  committed round for `--stall-min` (15) min, S2 no log growth for 10 min (FX-D45); fatal lines abort the pool (FX-D22).
+  A slow but progressing leg (low sim_rate, long rounds) is never cut.
 
 ---
 
@@ -82,7 +88,7 @@ python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --si
 
 ---
 
-## Felix scoreboard — run 10b, 2026-10-04 (L7 cifar G1 + G2, speech G1 on top of run 8's L1-L6)
+## Felix scoreboard — run 11, 2026-10-04 (L7 cifar G1/G2/G1L, speech G1+G2, N62, on top of run 8's L1-L6)
 
 L1-L5 (`ladder_20261001_164350`, `_164408`, jayne): L1 22/2/0 · L2/L3 41/1/6 (regraded 43/3/2 with FX-D36 + FX-N62 KNOWN) · L4 48/2/0 ·
 L5 22/0/2 (cifar felix/oort syn_0 K2 8.1/8.2%, opposite signs). Reds there are no-floor tolerances (Q2) or FX-N62.
@@ -111,7 +117,10 @@ EV green on every leg bar the two above.
 | C1/C2 convergence | LOWC: acc diff 1.5%, loss 0.013 (15 evals) | LOWC: 1.1%, 0.014 (13 evals) |
 | sim wall vs vclock | 1212s for 5405s (4.5×) | 727s for 5401s (7.4×) |
 
-Not green or not graded: C1/C2 are low-confidence at a 5400s budget (checker floor 7200s, FX-N65); felix U5 WARN ρ = -0.20 (chronic on utility selectors
+**G1L** (`block_20261004_0543/g1l`, felix cifar syn_0 7500s, real ×2 + sim): both reals vs sim 0 fails; C1/C2 graded, acc diff 1.09/1.11% vs real↔real
+1.29% (loss 0.014 all three); real↔real K2 2078 vs 2079 rounds (floors ≈ 0). C1/C2 sign-off needs ≥ 7500s legs.
+
+Not green or not graded at 5400s: C1/C2 LOWC (use G1L length); felix U5 WARN ρ = -0.20 (chronic on utility selectors
 in L5-L7, selection-set noise, FX-N66); fedbuff sim aggregator exit abort (FX-N33, data intact). G2 (oort, oort_star, refl, feddance) did not run: the first
 launch (`ladder_20261002_202440`, G1+G2, est. 15.3h > 12h deadline) was stopped after its gate.
 
@@ -125,15 +134,18 @@ launch (`ladder_20261002_202440`, G1+G2, est. 15.3h > 12h deadline) was stopped 
 
 oort_star syn_0 G2 dropped (graded with unavailability). C1/C2 LOWC at 5400s (FX-N65).
 
-**L7 speech G1** (`block_20261003_1311/gs_g1`, syn_0, n=100, 5400s, 4 GPUs per leg), **0/0/2**:
+**L7 speech G1 + G2** (`block_20261004_0543/gs_g1`, `gs_g2`, syn_0, n=100, 5400s, 4 GPUs per leg; every leg streams), **0/1/4**:
 
 | cell | red | root |
 |---|---|---|
-| fedbuff (64/66) | U6 real 0.80 s vs sim 0 (real queue_wait p99 5.9 s, 2330 waits > 1 s) | aggregator OMP stall: 0.33 s per 29 MB update at 2.4 updates/s (FX-D40, fixed; smoke p90 0.05 s) |
-| fedbuff | speed identity: 8 trainers (D 2-3 s) +11-13% | per-commit real mean 3.58 vs 3.12 s on D=3: heavier real overrun tail (GPU excess 42 vs 20 s) + ~0.1 s post-compute span; hypothesis: aggregator spin on HT siblings of trainer cores (FX-D40). Checker now per commit |
-| felix | real leg CUDA OOM at 9 min (memory 4 → 43 GB/GPU) | `evaluate()` kept the utility's autograd graph and chained it across evals (FX-D41, fixed) |
+| felix | real leg CUDA OOM at 35 min (mean flat ~22-25 GB/GPU, spikes 37) | util_cf telemetry forward left 2.4 GB reserved per idle trainer (FX-D43, fixed); FX-D41 leak gone |
+| fedbuff (64/66) | U6 real 0.75 s vs 0; speed identity 7 trainers +13% | queue_wait p99 5.5 s: per-update pickling (FX-N70; FX-D42 cuts the 85 ms dispatch dumps); fast-trainer GPU overrun (FX-N69) |
+| oort (2 fails) | U6 0.15 s; speed identity 10 trainers ±26% | FX-N70; FX-N69. K2/K3b/K4 green (12.33 vs 12.34 s/round) |
+| refl (12 fails) | K4 3.82 vs 5.04×, K3 3.74 vs 2.46 s/round, A2 eligible 44 vs 48, U6 7.2 s, speed identity 20 trainers; sim EV12 | real aggregator-bound: 3.17 s cycle, 0.33 s waiting (FX-N70); real GPU 2× sim on D=2 (FX-N69); sim stopped at vclock 3365 s by its wall ceiling (sim_rate 0.62) |
+| feddance | K3b 30.1 vs 26.2 s/round, speed identity 3 trainers | KNOWN: selection-mix-adjusted residual 0.2 s = lock-in draw; needs its sim↔sim floor (G2S), as cifar |
 
-fedbuff otherwise green: K2 5.1%, K3b 0.051, K8 5.1%, U3 2.895/2.895, P3 support 0.998, C1 LOWC acc diff 0.5%.
+**N62** (`block_20261004_0543/n62`, cifar oort syn_50, n=15 CPU, 3h), **0/1/0**: K3b 39.98 vs 46.97 s/round; stalls 76/77, stall seconds and abandons
+(129/133) match; residual = 50-60 s partial-stall rounds (5 vs 11) read as stall-free (FX-N62).
 
 ## FluxTune scoreboard
 Parked with the track; its board still sits in simulate_fwdllm.md §A.
@@ -142,15 +154,18 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR13+14 · Run 11, one ~10.5h block on jayne · running (tmux `dg_flame`, `experiments/block_20261004_*`).** `lib/python/examples/scripts/run_block_20261004.sh` (smoked with `BLOCK_EXTRA=--smoke`; Ctrl+C stops it):
-  A. speech G1 felix + fedbuff, then G2 oort/refl/feddance, 2 legs × 4 GPUs (~5h), beside cifar oort syn_50 3h CPU pair (`N62`). B. felix cifar syn_0 7500s pair +
-  a real replicate (~4.8h), then `--control` floors and both reals graded against the sim.
-  *Confirms FX-D40:* speech real queue_wait p99 < 1 s, U6 green, speech sim wall ≥ 3× faster than real; speed identity green (refutes the HT-sibling hypothesis if still red:
-  then charge the post-compute span). *Confirms FX-D41:* felix speech real runs 90 min, GPU memory flat; `[TRAINER_HP]` lr 0.000195 (FX-N10).
-  *Speech G2:* EV green, INV/EXACT green or floor-SKIP (feddance lock-in may need G2S). *N62:* oort syn_50 K2/K3b graded on ≥ 60 stall-free rounds.
-  *G1L (FX-N65):* C1/C2 not LOWC; sim acc diff inside the real↔real spread.
+- **PR15 · Run 12, ~3h on jayne (7 GPUs) · ready: `lib/python/examples/scripts/run_block_20261005.sh`** (smoked: `experiments/smoke_run12_1919`; Ctrl+C stops it).
+  Two pools side by side: cifar G0U (all six × syn_50 + mobiperf_3st, n=50, 15 min, 1 GPU) and speech G1S (felix + fedbuff, n=100, 45 min,
+  3 GPUs) + speech G0U (felix + fedbuff, 30 min). Speech runs at D ×5 with a 450s timeout (FX-D46). *Confirms FX-D43:* speech felix real runs 45 min, no OOM. *Confirms FX-D42/D44:* speech real
+  queue_wait p99 < 1 s and agg `ingest_s` ≤ 0.05 s/update (was 0.14), U6 < 0.2 s. *Refutes D44:* ingest unchanged → profile the MQTT rx path.
+  *G0U:* EV green on all legs; INV/EXACT green or a named root; A2 shape at n=50 (land-mine 3); AVL_EVAL path exercised on mobiperf (land-mine 13).
+  *Confirms FX-D46:* speech overrun < 5% of tasks on every trainer, speed identity green, speech sim_rate ≥ 3 (was 0.6-1.1).
+  *Refutes:* overrun persists on the largest-data trainers → per-trainer data, not D, is the lever.
 
 **Operator decisions / open**
+- Decided (operator 2026-10-04): jayne has 7 healthy GPUs; FX-N70 fix the real aggregator (FX-D44, not a wire-format change: pickling was page
+  faults); cifar unavailability starts now (FX-N9); G-tier streaming config kept (1 sample → full at 10800s); C11, C12; speech D ×5 (FX-D46:
+  compute speech/cifar ~270× per task, ~53× per sample; ×5 leaves the worst trainer at 0.53 of its D solo).
 - S5 knob layout: (a) adopted (operator 2026-10-01): `datasets.yaml` holds dataset defaults + `by_baseline` tuned values
   with sources; left: move the `fedbuff.py` server-lr table into config, and a tool printing the resolved matrix.
 

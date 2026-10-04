@@ -38,3 +38,18 @@ def test_shape_goes_through_agg_goal_and_only_async_gets_c(generator_source, tmp
     assert f["aggregator"]["config_overrides"]["selector"]["kwargs"]["c"] == 5
     o = _one(generator_source, tmp_path, monkeypatch, "oort", AGG_GOAL="3", CONC="5")
     assert o["aggregator"]["agg_goal"] == 3 and "c" not in o["aggregator"]["config_overrides"]["selector"]["kwargs"]
+
+
+def test_speech_device_time_scale_scales_d_and_timeout(generator_source, tmp_path, monkeypatch):
+    """FX-D46: speech D x5 (divisor 0.2) and the per-dispatch timeout 450s; a harness --delay-factor wins; cifar untouched."""
+    monkeypatch.delenv("DELAY_FACTOR", raising=False)
+    e = _one(generator_source, tmp_path, monkeypatch, "fedbuff", DATASET="google_speech")
+    assert e["trainer"]["hyperparameters"]["training_delay_factor"] == pytest.approx(0.2)
+    assert e["aggregator"]["config_overrides"]["hyperparameters"]["send_timeout_wait_s"] == 450.0
+    h = _one(generator_source, tmp_path, monkeypatch, "fedbuff", DATASET="google_speech", DELAY_FACTOR="4")
+    assert h["trainer"]["hyperparameters"]["training_delay_factor"] == 4.0
+    assert "send_timeout_wait_s" not in h["aggregator"]["config_overrides"]["hyperparameters"]
+    monkeypatch.delenv("DELAY_FACTOR", raising=False)
+    c = _one(generator_source, tmp_path, monkeypatch, "fedbuff", DATASET="cifar10")
+    assert "training_delay_factor" not in c["trainer"].get("hyperparameters", {})
+    assert "send_timeout_wait_s" not in c["aggregator"]["config_overrides"]["hyperparameters"]

@@ -527,7 +527,19 @@ def load_run_dir(run_dir: str) -> tuple:
     trainer_data = load_trainer_jsonl_dir(telemetry_dir)
     agg_data["training_delay_factor"], agg_data["training_delay_floor_s"] = \
         _load_training_delay_config(run_dir)
+    agg_data["task_timeout_s"] = _load_task_timeout_s(run_dir)
     return agg_data, trainer_data
+
+
+def _load_task_timeout_s(run_dir: str) -> float:
+    """FX-D46: the run's per-dispatch timeout (`send_timeout_wait_s`, 90s default; speech 450s) from its config (L29)."""
+    try:
+        with open(os.path.join(run_dir, "aggregator_config.json")) as f:
+            hp = json.load(f).get("hyperparameters", {})
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return 90.0
+    v = hp.get("send_timeout_wait_s", hp.get("sendTimeoutWaitSeconds"))
+    return float(v) if v is not None else 90.0
 
 
 def _load_training_delay_config(run_dir: str) -> tuple:
@@ -2829,26 +2841,31 @@ def floor_gated_tol(nominal: float, floor_rel: Optional[float],
 _TIMEOUT_STALL_S = 72.0  # FX-N62: 0.8 x the 90s per-pick timeout
 
 
+def _stall_cut(*legs: dict) -> float:
+    """FX-D46: the stall cut scales with the legs' own per-dispatch timeout."""
+    return 0.8 * max([float(leg.get("task_timeout_s") or 90.0) for leg in legs] or [90.0])
+
+
 def _round_axis(*legs: dict) -> bool:
     return all(_progress_axis(leg["agg_rounds"]) == "round" for leg in legs)
 
 
-def _stall_episodes(adv: list) -> list:
+def _stall_episodes(adv: list, cut: float = _TIMEOUT_STALL_S) -> list:
     """FX-N62: index lists of timeout stalls: one round >= the cut, or consecutive slow rounds (>= 3x median) that
     sum past it (a late alive pick splits one 90s stall into pieces, some under the cut)."""
     if not adv:
         return []
-    slow = max(_TIMEOUT_STALL_S / 8, 3 * statistics.median(adv))
+    slow = max(cut / 8, 3 * statistics.median(adv))
     eps, i = [], 0
     while i < len(adv):
-        if adv[i] >= _TIMEOUT_STALL_S:
+        if adv[i] >= cut:
             eps.append([i])
             i += 1
             continue
         j = i
-        while j < len(adv) and slow <= adv[j] < _TIMEOUT_STALL_S:
+        while j < len(adv) and slow <= adv[j] < cut:
             j += 1
-        if j > i and sum(adv[i:j]) >= _TIMEOUT_STALL_S:
+        if j > i and sum(adv[i:j]) >= cut:
             eps.append(list(range(i, j)))
         i = max(j, i + 1)
     return eps
@@ -2858,7 +2875,7 @@ def _stall_free(adv: list, *legs: dict) -> list:
     """FX-N62: rounds outside every timeout stall; round axis only (a fwdllm data_id is not a round)."""
     if not _round_axis(*legs):
         return adv
-    drop = {i for ep in _stall_episodes(adv) for i in ep}
+    drop = {i for ep in _stall_episodes(adv, _stall_cut(*legs)) for i in ep}
     return [a for i, a in enumerate(adv) if i not in drop] or adv
 
 
@@ -2869,17 +2886,18 @@ def _stall_s_to_n(agg_rounds: list, prog_fn, N, time_fn, real: dict, sim: dict) 
     ts = [time_fn(e) for e in agg_rounds if (p := prog_fn(e)) is not None and p <= N and time_fn(e) is not None]
     adv = [b - a for a, b in zip(ts, ts[1:]) if b > a]
     med = statistics.median(adv) if adv else 0.0
-    return sum(adv[i] - med for ep in _stall_episodes(adv) for i in ep)  # the excess; the round itself still counts
+    return sum(adv[i] - med for ep in _stall_episodes(adv, _stall_cut(real, sim)) for i in ep)  # the excess; the round still counts
 
 
 def timeout_stalls(real: dict, sim: dict, same_mode: bool = False) -> dict:
-    """K3s [DIST]: per-round rate of >=72s timeout stalls, Poisson 2-sigma + one count (FX-N62)."""
+    """K3s [DIST]: per-round rate of timeout stalls (>= 0.8 x the run timeout), Poisson 2-sigma + one count (FX-N62)."""
     _a_vclock, _b_vclock = pair_clocks(real, sim, same_mode)
     r = _per_round_advances(real["agg_rounds"], use_vclock=_a_vclock)
     b = _per_round_advances(sim["agg_rounds"], use_vclock=_b_vclock)
     if len(r) < 2 or len(b) < 2 or not _round_axis(real, sim):
         return {"ok": True, "tier": "DIST", "status": "SKIP", "note": "fewer than 2 rounds, or not a round axis"}
-    nr, nb = len(_stall_episodes(r)), len(_stall_episodes(b))
+    cut = _stall_cut(real, sim)
+    nr, nb = len(_stall_episodes(r, cut)), len(_stall_episodes(b, cut))
     rate_r, rate_b = nr / len(r), nb / len(b)
     tol = 2.0 * math.sqrt(nr / len(r) ** 2 + nb / len(b) ** 2) + 1.0 / min(len(r), len(b))
     return {"ok": abs(rate_r - rate_b) <= tol, "tier": "DIST",
@@ -3245,7 +3263,7 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
         adv = span / len(evs)
         if _round_axis(real, sim):  # FX-N62: stall time out of the clock span, at round level
             rounds_adv = _per_round_advances(evs, use_vclock)
-            stall_s = sum(rounds_adv[i] for ep in _stall_episodes(rounds_adv) for i in ep)
+            stall_s = sum(rounds_adv[i] for ep in _stall_episodes(rounds_adv, _stall_cut(real, sim)) for i in ep)
             adv = (span - stall_s) / len(evs)
         return {"barrier": sum(barriers) / len(barriers), "adv": adv,
                 "cycles": len(evs), "span": span}
@@ -7764,7 +7782,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["duty_cycle_duration"] = duration_duty_cycle_parity(real_agg, sim_agg)
     results["eligible_pool_reduction"] = eligible_pool_reduction_parity(
         real_agg, sim_agg)
-    results["abandon_timeout"] = abandon_timeout_parity(real_agg, sim_agg)
+    results["abandon_timeout"] = abandon_timeout_parity(real_agg, sim_agg, threshold_s=sim_agg.get("task_timeout_s") or 90.0)
     results["starvation_advance"] = starvation_advance_parity(real_agg, sim_agg)
     results["state_timeline_agreement"] = state_timeline_agreement(real_agg, sim_agg)
     results["trainer_trace_fidelity_real"] = trainer_trace_fidelity_parity(

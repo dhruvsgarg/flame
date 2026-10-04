@@ -15,6 +15,7 @@ longest-first with backfill; the degree of parallelism follows from free cores, 
   ... --shard 1/2    this node's half (by estimated time)     ... --dry-run   print the plan only
 Output: experiments/pool_<ts>/{SUMMARY.txt, pool.log, <phase>/summary.tsv, <phase>/<job>/...}.
 Fail fast (FX-N40): a fatal line in any leg's logs stops the pool within ~30s -> ABORT.txt (--no-fail-fast).
+Stall rules (FX-D45): a leg with no new committed round for --stall-min (15) min, or no log growth for 10 min, is killed alone -> STALLED.txt.
 """
 
 import argparse
@@ -36,7 +37,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fail_fast import EXIT_FATAL, Scanner, leg_run_dirs, write_abort  # noqa: E402
+from fail_fast import EXIT_FATAL, Scanner, StallWatch, leg_run_dirs, write_abort, write_stalled  # noqa: E402
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 EXAMPLES = SCRIPT_DIR.parent                 # lib/python/examples
@@ -73,6 +74,11 @@ GPU_N = {"cifar10": 300, "google_speech": 100}  # the datasets' reference cohort
 # G0 screen: reference c/n and aggGoal/c ratios at a smaller n; GPUs per leg keep the reference trainers per GPU.
 G0_SHAPE = {"cifar10": dict(n=100, agg_goal=3, c=10, gpus=3),
             "google_speech": dict(n=50, agg_goal=5, c=15, gpus=4)}
+# FX-N9 screen (C11): n=50 keeps cifar on 1 GPU, speech at 25/GPU.
+G0U_SHAPE = {"cifar10": dict(n=50, agg_goal=3, c=5, gpus=1),
+             "google_speech": dict(n=50, agg_goal=5, c=15, gpus=2)}
+G0U_MOBIPERF = dict(agg_goal=2, c=4)  # FX-L34: ~10% AVL_TRAIN of n=50 leaves ~5 trainable
+G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
 STREAM_A = STREAM_T + ' checkpoint={"enabled":"True","every_n_rounds":10}'
 
@@ -231,6 +237,13 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         bls = tuple(b for b in baselines if b not in ("felix", "fedbuff")) or B6[2:]
         return [Phase(DS_TAG[ds] + tier, bls, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
                       kind="sim_ev" if tier == "G2S" else "real")]
+    if tier == "G1S":  # FX-D42/D43/D44 confirm: felix + fedbuff at the reference n, 45 min, 3 GPUs (7 healthy on jayne)
+        bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
+        return [Phase(DS_TAG[ds] + "G1S", bls, "syn_0", runtime_s=2700, n=GPU_N[ds], dataset=ds, harness="none", gpus=3)]
+    if tier == "G0U":  # FX-N9 screen: syn_50 + mobiperf_3st at trace scale 4, EV + logical parity
+        return [Phase(f"{DS_TAG[ds]}G0U_{t}", baselines, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds, harness="none", trace_scale="4",
+                      **{**G0U_SHAPE[ds], **(G0U_MOBIPERF if t == "mobiperf_3st" else {})})
+                for t in ("syn_50", "mobiperf_3st")]
     if tier == "G1L":  # FX-N65: felix syn_0 past the 7200s convergence floor, pair + a real replicate
         return [Phase(f"{DS_TAG[ds]}G1L", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds, harness="none"),
                 Phase(f"{DS_TAG[ds]}G1LC", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds,
@@ -593,6 +606,9 @@ class Running:
     cpu: Dict[int, float] = field(default_factory=dict)  # pid -> last seen CPU seconds
     busy: List[float] = field(default_factory=list)      # cores busy per sample interval
     last: tuple = (0.0, 0.0)                              # (time, total CPU s) at the last sample
+    watch: Optional[StallWatch] = None                    # FX-D45; None for grade jobs or --stall-min 0
+    stalled: str = ""
+    stalled_at: float = 0.0
 
     def sample(self) -> None:
         self.cpu.update(tag_cpu_s(self.tag))
@@ -619,6 +635,24 @@ class Pool:
     scanner: Scanner = field(default_factory=Scanner)
     label: str = ""  # progress prefix, e.g. the ladder rung
     leases: Optional["Leases"] = None
+    stall_min: float = 15.0  # FX-D45 S1 limit; 0 disables the stall rules
+
+    def _stalled(self, r: "Running") -> bool:
+        """FX-D45: a leg that stopped progressing is killed alone (STALLED.txt); its neighbours keep running."""
+        if r.watch is None or r.stalled:
+            return False
+        dirs = leg_run_dirs(r.out)
+        rule = r.watch.check(dirs, time.time())
+        if not rule:
+            return False
+        r.stalled, r.stalled_at = rule, time.time()
+        write_stalled(r.out / "STALLED.txt", r.job.jid, rule, dirs)
+        self.say(f"STALLED {r.job.jid}: {rule} -- killing this leg only ({r.out}/STALLED.txt)")
+        try:
+            os.killpg(r.proc.pid, signal.SIGTERM)
+        except OSError:
+            pass
+        return True
 
     def _fatal(self, r: "Running") -> bool:
         """FX-N40: a fatal line in this leg's logs aborts the pool (ABORT.txt names it)."""
@@ -745,12 +779,16 @@ class Pool:
                             r.sample()
                         if tick % 15 == 0 and self._fatal(r):
                             break
+                        if tick % 30 == 0:
+                            self._stalled(r)
+                        elif r.stalled and time.time() - r.stalled_at > 60:
+                            kill_tag(r.tag)  # SIGTERM ignored: force it
                         continue
                     kill_tag(r.tag)  # leftovers of a leg that died hard
                     dur = time.time() - r.t0
                     avg = sum(r.cpu.values()) / max(1.0, dur)
                     p95 = sorted(r.busy)[int(0.95 * (len(r.busy) - 1))] if r.busy else 0.0
-                    self.say(f"DONE  {jid} rc={rc} {dur / 60:.1f}m (est {r.job.est_s / 60:.1f}m) "
+                    self.say(f"DONE  {jid} rc={rc}{' STALLED' if r.stalled else ''} {dur / 60:.1f}m (est {r.job.est_s / 60:.1f}m) "
                              f"cores avg {avg:.1f} p95 {p95:.1f} of {len(r.cpus)}")
                     jobs_tsv.write(f"{jid}\t{rc}\t{dur:.0f}\t{r.job.est_s:.0f}\t{len(r.cpus)}\t{avg:.2f}\t{p95:.2f}\n")
                     jobs_tsv.flush()
@@ -818,7 +856,9 @@ class Pool:
         proc = subprocess.Popen(cmd, stdout=open(out / "suite.log", "w"), stderr=subprocess.STDOUT,
                                 env=env, start_new_session=True, cwd=str(example_dir(j.dataset)))
         self.say(f"START {j.jid} cpus={_ranges(cpus)} port={port}{' gpus=' + str(gp) if gp else ''} est={j.est_s / 60:.1f}m")
-        return Running(j, proc, cpus, gp, port, tag, time.time(), out)
+        t = time.time()
+        watch = StallWatch(t, self.stall_min * 60) if self.stall_min > 0 and j.mode != "grade" else None
+        return Running(j, proc, cpus, gp, port, tag, t, out, watch=watch)
 
     def merge(self) -> None:
         """<phase>/summary.tsv: the grade row of a pair, else the sim row (harness_suite columns)."""
@@ -981,6 +1021,8 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-fail-fast", dest="fail_fast", action="store_false",
                     help="FX-N40: keep going after a fatal line (Traceback, CUDA OOM, ...) in a leg's logs")
+    ap.add_argument("--stall-min", type=float, default=15.0,
+                    help="FX-D45: kill a leg with no new committed round for this many minutes (0 = off)")
     a = ap.parse_args(argv)
     set_gpu_allow(a.gpu_ids)
 
@@ -1022,7 +1064,8 @@ def main(argv=None) -> int:
     root = Path(a.output_dir or OUT_DIR / f"pool_{time.strftime('%Y%m%d_%H%M%S')}_{'_'.join(tiers)}").resolve()
     root.mkdir(parents=True, exist_ok=True)
     pool = Pool(root, jobs, a.max_parallel, a.reserve_cores, a.mem_headroom_gb, a.deadline_h * 3600, a.dry_run,
-                log=open(root / "pool.log", "a"), fail_fast=a.fail_fast, label=a.progress_label)
+                log=open(root / "pool.log", "a"), fail_fast=a.fail_fast, label=a.progress_label,
+                stall_min=a.stall_min)
     commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True,
                             text=True).stdout.strip()
     pool.say(f"pool {root} host={socket.gethostname()} tier={a.tier} datasets={','.join(datasets)} baselines={' '.join(baselines) or '-'} "

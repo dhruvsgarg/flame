@@ -382,6 +382,10 @@ for e_src in cfg.get("experiments", []):
             h["trace_time_scale"] = float(os.environ["FLAME_TRACE_TIME_SCALE"])
         if delay_factor:
             e["trainer"].setdefault("hyperparameters", {})["training_delay_factor"] = float(delay_factor)
+        elif prof.get("device_time_scale"):  # FX-D46: dataset D scale; the per-dispatch timeout scales with it
+            _k = float(prof["device_time_scale"])
+            e["trainer"].setdefault("hyperparameters", {})["training_delay_factor"] = 1.0 / _k
+            h["send_timeout_wait_s"] = 90.0 * _k
         # FX-D23: profiled non-compute charges replace the per-baseline hand constants; SIM_CHARGES=legacy reverts.
         _prof = os.path.join(scr, "..", "sim_charge_profiles",
                              f"{harness_mode or 'gpu'}_{ds_name or 'cifar10'}.yaml")

@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import sys
 
+from flame.launch.aggregator_spawner import apply_malloc_env
+
 
 class MetadataLoader:
     """Loads and caches experiment metadata."""
@@ -334,7 +336,7 @@ class TrainerSpawner:
             preexec_fn = lambda c=_core_set: os.sched_setaffinity(0, c)
 
         # Build command
-        env = os.environ.copy()
+        env = apply_malloc_env(os.environ.copy())
         env["CUDA_VISIBLE_DEVICES"] = "" if gpu_id is None else str(gpu_id)
         if self.cpu_pinning and cpu_core is not None:
             # One math thread per pinned core: no oversubscription.

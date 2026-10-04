@@ -22,7 +22,6 @@ from collections import deque
 from datetime import datetime, timedelta
 
 import numpy as np
-from flame.availability.client_availability import _AVAIL_ABANDON_TIMEOUT_S
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame import harness
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD
@@ -749,8 +748,8 @@ class TopAggregator(SyncTopAgg):
                     _nxt = self._next_avail_vclock()
                     # FX-N56: a held pick's 90s timeout frees its slot, so it is a wake-up too (FX-L25).
                     _sst = [self._avail_send_ts(channel, e) for e in self._withheld_slot_held]
-                    _exp = [t + _AVAIL_ABANDON_TIMEOUT_S + 1e-6 for t in _sst
-                            if t is not None and t + _AVAIL_ABANDON_TIMEOUT_S >= self._vclock.now]
+                    _to = self._task_timeout_s()
+                    _exp = [t + _to + 1e-6 for t in _sst if t is not None and t + _to >= self._vclock.now]
                     if _exp:
                         _nxt = min(_exp) if _nxt is None else min(_nxt, min(_exp))
                     _budget = float(
@@ -1373,6 +1372,7 @@ class TopAggregator(SyncTopAgg):
         self.weights = self.optimizer.scale_add_agg_weights(
             self.weights, self._agg_goal_weights, self._agg_goal
         )
+        self._dispatch_payload = None  # FX-D42: weights mutate in place
 
         # update model with global weights
         self._update_model()
@@ -1713,7 +1713,6 @@ class TopAggregator(SyncTopAgg):
         # carries its own SIM_SEND_TS so the payload must be rebuilt per end — sim
         # weights are small and dwarfed by the real GPU compute these runs do).
         base_msg = {
-            MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
             MessageType.ROUND: self._round,
             MessageType.MODEL_VERSION: self._round,
             MessageType.TASK_TO_PERFORM: task_to_perform,
@@ -1727,7 +1726,18 @@ class TopAggregator(SyncTopAgg):
                 # wall-clock availability lookups anchor to the SAME point the
                 # aggregator uses.
                 base_msg[MessageType.AGG_START_TS] = self.agg_start_time_ts
-            _shared_payload = channel.dumps(base_msg)
+            # FX-D42: one pickle per (version, task, stamp), not per dispatch.
+            _key = (self._round, task_to_perform, base_msg.get(MessageType.SIM_SEND_TS),
+                    base_msg.get(MessageType.AGG_START_TS))
+            _cached = getattr(self, "_dispatch_payload", None)
+            if _cached is not None and _cached[0] == _key:
+                _shared_payload = _cached[1]
+            else:
+                base_msg[MessageType.WEIGHTS] = weights_to_device(self.weights, DeviceType.CPU)
+                _shared_payload = channel.dumps(base_msg)
+                self._dispatch_payload = (_key, _shared_payload)
+        else:
+            base_msg[MessageType.WEIGHTS] = weights_to_device(self.weights, DeviceType.CPU)
 
         _send_t0 = time.time()  # [DISTRIBUTE_TIMING]
         for end in _send_ends:

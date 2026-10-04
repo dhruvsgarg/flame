@@ -798,3 +798,11 @@ def test_speed_identity_grades_per_commit_not_per_snapshot():
     real = {"agg_rounds": commits, "selection_train": held(3.0, 3) + held(9.0, 300)}
     sim = {"agg_rounds": commits, "selection_train": held(3.0, 300) + held(9.0, 3)}
     assert trainer_speed_identity_parity(real, sim)["speed_s"]["ok"]
+
+
+def test_stall_cut_scales_with_run_timeout():
+    """FX-D46: a 200s round is a stall at the 90s timeout, not at speech's 450s."""
+    from parity.checks import _stall_cut, _stall_episodes
+    adv = [5.0] * 20 + [200.0] + [5.0] * 20
+    assert _stall_episodes(adv, _stall_cut({}, {})) == [[20]]
+    assert _stall_episodes(adv, _stall_cut({"task_timeout_s": 450.0}, {"task_timeout_s": 450.0})) == []
