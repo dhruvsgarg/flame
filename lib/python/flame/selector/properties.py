@@ -30,6 +30,7 @@ PROP_STAT_UTILITY = "stat_utility"      # I_m / Oort utility
 PROP_LOCAL_ACCURACY = "local_accuracy"  # FedDance a_m
 PROP_UTILITY = "utility"                # generic computed utility
 PROP_TOTAL_UNAVAIL_DURATION = "total_unavail_duration"
+PROP_SATELLITE_INDEX = "satellite_index"
 
 # Availability
 PROP_AVL_STATE = "avl_state"

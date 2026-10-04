@@ -54,6 +54,8 @@ from flame.selector.oort import (
     PROP_UPDATE_COUNT,
 )
 
+from flame.selector.properties import PROP_SATELLITE_INDEX
+
 logger = logging.getLogger(__name__)
 
 SEND_TIMEOUT_WAIT_S = 90  # 90 seconds timeout
@@ -700,6 +702,10 @@ class TopAggregator(SyncTopAgg):
                 end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
             )
 
+            _sat_idx = msg.get(MessageType.SATELLITE_INDEX)
+            if _sat_idx is not None:
+                channel.set_end_property(end, PROP_SATELLITE_INDEX, int(_sat_idx))
+
             # TODO: (DG) Also set the end property for task=eval done
             # at timestamp=current.
 
@@ -751,6 +757,7 @@ class TopAggregator(SyncTopAgg):
                         "update_ready_ts": _ready_e,
                         "update_committed_ts": _committed_e,
                         "update_visibility_lag_s": [_vis_lag_e] if _vis_lag_e is not None else [],
+                        **(self._link_extra(channel, end, self.link_runtime_downlink) or {}),
                     },
                 )
                 telemetry.emit(ev, **fields)
@@ -1031,6 +1038,10 @@ class TopAggregator(SyncTopAgg):
             )
             stat_utility = msg[MessageType.STAT_UTILITY]
 
+        _sat_idx = msg.get(MessageType.SATELLITE_INDEX)
+        if _sat_idx is not None:
+            channel.set_end_property(end, PROP_SATELLITE_INDEX, int(_sat_idx))
+
         logger.debug(
             f"Received weights from {end}. It was trained on model version {version}, with {count} samples. Returned stat utility {stat_utility}"
         )
@@ -1095,6 +1106,7 @@ class TopAggregator(SyncTopAgg):
                         "buf_depth": len(self._sim_buffer) if self.simulated else None,
                         "residence_rounds": (self._round - _enq_round) if _enq_round is not None else None,
                         "inflight": self._updates_in_queue,
+                        **(self._link_extra(channel, end, self.link_runtime_downlink) or {}),
                     },
                 )
                 telemetry.emit(ev, **fields)
@@ -1571,6 +1583,7 @@ class TopAggregator(SyncTopAgg):
                                               if _cohort_min is not None else 0.0),
                         held_s=(float(_round_now - _prior) if _prior is not None else None),
                         staggered=_staggered,
+                        extra=self._link_extra(channel, end, self.link_runtime_uplink),
                     )
                     telemetry.emit(ev, **f)
             else:
