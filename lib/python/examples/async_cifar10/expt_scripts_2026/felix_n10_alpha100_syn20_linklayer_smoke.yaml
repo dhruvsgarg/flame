@@ -1,0 +1,60 @@
+# Felix smoke test + Link Layer module: 10 trainers, homogeneous (alpha=100),
+# syn_20 unavailability, ground-station <-> satellite RF link budget enabled
+# on the AGGREGATOR side only (trainer-side integration is not wired yet --
+# telemetry-only, affectsDelay stays false, so round timing is identical to
+# felix_n10_alpha100_syn20_smoke.yaml). The aggregator independently
+# computes the uplink leg (dispatch) and the downlink leg (receive) for each
+# connected trainer, keyed by MessageType.SATELLITE_INDEX.
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/async_cifar10/expt_scripts_2026/felix_n10_alpha100_syn20_linklayer_smoke.yaml
+
+experiments:
+  - name: felix_n10_alpha100_syn20_linklayer_smoke
+    description: "Felix smoke (10 trainers, alpha=100, syn_20) with the configurable link-layer module enabled on the aggregator side."
+
+    baseline: felix
+
+    trainer:
+      num_trainers: 10
+      start_id: 1
+      dataset:
+        name: cifar10
+        dirichlet_alpha: 100.0
+      availability:
+        mode: syn_20
+      enable_training_delays: true
+      hyperparameters:
+        batchSize: 32
+        learningRate: 0.001
+      config_overrides:
+        hyperparameters:
+          client_notify:
+            trace: syn_20
+
+    aggregator:
+      config_template: ../_metadata/aggregator_base.json
+      selector: async_oort
+      tracking_mode: client_notify
+      agg_goal: 5
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: felix_n10_alpha100_syn20_linklayer_smoke
+        hyperparameters:
+          batchSize: 32
+          learningRate: 0.001
+          rounds: 200
+          linkLayer:
+            enabled: true
+        selector:
+          kwargs:
+            c: 8
+            
+    execution:
+      num_gpus: 2
+      sleep_between_spawns: 1.0
+      aggregator_warmup_time: 15
+      monitoring:
+        enabled: false
