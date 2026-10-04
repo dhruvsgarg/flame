@@ -1109,30 +1109,33 @@ class PyTorchCifar10Trainer(Trainer):
 
         logger.info(f"Starting eval (forward pass) for trainer id {self.trainer_id}")
         _eval_gpu_t0 = time.time()
-        for epoch in range(1, self.epochs + 1):
-            for batch_idx, (data, target) in enumerate(self.train_loader):
-                data, target = data.to(self.device), target.to(self.device)
-                output = self.model(data)
+        # FX-D41: fresh utility per eval; no graph (it chained across evals, OOM).
+        self.reset_stat_utility()
+        with torch.no_grad():
+            for epoch in range(1, self.epochs + 1):
+                for batch_idx, (data, target) in enumerate(self.train_loader):
+                    data, target = data.to(self.device), target.to(self.device)
+                    output = self.model(data)
 
-                if self.use_oort_loss_fn == "False":
-                    # Loss function to use with Fedbuff
-                    loss = F.nll_loss(output, target)
-                elif self.use_oort_loss_fn == "True":
-                    # Calculate statistical utility of a trainer while
-                    # calculating loss
-                    loss = self.oort_loss(output, target, epoch, batch_idx)
-                if batch_idx % 100 == 0:
-                    done = batch_idx * len(data)
-                    total = len(self.train_loader.dataset)
-                    percent = 100.0 * batch_idx / len(self.train_loader)
-                    logger.info(
-                        f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
-                        f"\tloss: {loss.item():.6f}"
-                    )
+                    if self.use_oort_loss_fn == "False":
+                        # Loss function to use with Fedbuff
+                        loss = F.nll_loss(output, target)
+                    elif self.use_oort_loss_fn == "True":
+                        # Calculate statistical utility of a trainer while
+                        # calculating loss
+                        loss = self.oort_loss(output, target, epoch, batch_idx)
+                    if batch_idx % 100 == 0:
+                        done = batch_idx * len(data)
+                        total = len(self.train_loader.dataset)
+                        percent = 100.0 * batch_idx / len(self.train_loader)
+                        logger.info(
+                            f"epoch: {epoch} [{done}/{total} ({percent:.0f}%)]"
+                            f"\tloss: {loss.item():.6f}"
+                        )
 
-            # normalize statistical utility of a trainer based on the size
-            # of the dataset
-            self.normalize_stat_utility(epoch)
+                # normalize statistical utility of a trainer based on the size
+                # of the dataset
+                self.normalize_stat_utility(epoch)
         _real_eval_gpu_s = time.time() - _eval_gpu_t0
         # Eval is ~20x faster than training (NPUs don't support training), so the
         # modeled eval delay is training_delay_s/20.

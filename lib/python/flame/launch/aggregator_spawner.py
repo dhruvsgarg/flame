@@ -85,9 +85,8 @@ class AggregatorSpawner:
                 if wandb_run_name:
                     cmd.extend(["--wandb_run_name", wandb_run_name])
 
-        # CPU pinning: confine the aggregator to its reserved cores and let its
-        # math libs use exactly that many threads (it benefits from a few cores
-        # for chunk reassembly / aggregation, unlike a 1-core-pinned trainer).
+        # CPU pinning: confine the aggregator to its reserved cores; its math libs
+        # get a quarter of them, the rest serve its MQTT/asyncio threads.
         env = os.environ.copy()
         # GPU pin: give the aggregator its own device so its eval forward pass
         # does not time-slice a trainer's GPU. Without it the aggregator defaults
@@ -100,7 +99,8 @@ class AggregatorSpawner:
             _cores = {int(c) for c in cpu_cores}
             if hasattr(os, "sched_setaffinity"):
                 preexec_fn = lambda c=_cores: os.sched_setaffinity(0, c)
-                _nthreads = str(len(_cores))
+                # FX-D40: OMP threads == pinned cores stalls each large-tensor op ~6ms (speech 0.33s/update).
+                _nthreads = os.environ.get("FLAME_AGG_MATH_THREADS") or str(max(1, len(_cores) // 4))
                 for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
                              "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
                     env[_var] = _nthreads

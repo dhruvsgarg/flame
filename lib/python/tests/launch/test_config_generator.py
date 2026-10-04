@@ -480,3 +480,28 @@ class TestExecutionConfigBanksDelays:
         assert cfg["experiment"]["trainer"]["enable_training_delays"] is False
         # factor unset -> banked as None (trainer_base default applies)
         assert cfg["experiment"]["trainer"]["training_delay_factor"] is None
+
+
+class TestAggregatorMathThreads:
+    """FX-D40: the aggregator's math libs get a quarter of its pinned cores; env overrides."""
+
+    def _env(self, monkeypatch, cores, override=None):
+        import subprocess
+        from flame.launch.aggregator_spawner import AggregatorSpawner
+
+        seen = []
+        monkeypatch.setattr(subprocess, "Popen",
+                            lambda *a, **k: seen.append(k) or type("P", (), {"pid": 1})())
+        if override is None:
+            monkeypatch.delenv("FLAME_AGG_MATH_THREADS", raising=False)
+        else:
+            monkeypatch.setenv("FLAME_AGG_MATH_THREADS", override)
+        AggregatorSpawner().spawn("main.py", config_json="{}", cpu_cores=set(cores))
+        return seen[0]["env"]
+
+    def test_quarter_of_pinned_cores(self, monkeypatch):
+        assert self._env(monkeypatch, range(8))["OMP_NUM_THREADS"] == "2"
+        assert self._env(monkeypatch, range(2))["MKL_NUM_THREADS"] == "1"
+
+    def test_env_override(self, monkeypatch):
+        assert self._env(monkeypatch, range(8), "8")["OMP_NUM_THREADS"] == "8"

@@ -2289,6 +2289,15 @@ def trainer_speed_identity_parity(real: dict, sim: dict, tol_rel: float = 0.10,
                     acc.setdefault(tid, []).append(float(v))
         return {t: v for t, v in acc.items() if len(v) >= min_samples}
 
+    def _per_commit_speed(agg_rounds):
+        # one sample per committed update; selection snapshots weight a value by its random re-pick gap (FX-D40)
+        acc: dict = {}
+        for e in agg_rounds:
+            for tid, v in (e.get("agg_observed_s") or {}).items():
+                if v is not None:
+                    acc.setdefault(tid, []).append(float(v))
+        return {t: v for t, v in acc.items() if len(v) >= min_samples}
+
     out = {"ok": True, "tier": "DIST", "tol_rel": tol_rel}
     # Per-trainer UTILITY is loss-on-current-model -- PATH-DEPENDENT, so for a
     # stochastic (subset/streaming, e.g. AsyncOortSelector) selector it
@@ -2300,6 +2309,11 @@ def trainer_speed_identity_parity(real: dict, sim: dict, tol_rel: float = 0.10,
     for field in ("speed_s", "utility"):
         r_pt = _per_trainer(real["selection_train"], field)
         s_pt = _per_trainer(sim["selection_train"], field)
+        if field == "speed_s":
+            r_pc = _per_commit_speed(real.get("agg_rounds") or [])
+            s_pc = _per_commit_speed(sim.get("agg_rounds") or [])
+            if r_pc and s_pc:
+                r_pt, s_pt = r_pc, s_pc
         shared = sorted(set(r_pt) & set(s_pt))
         if not shared:
             out[field] = {"status": "SKIP", "note": "no shared per-trainer samples"}
@@ -2764,6 +2778,7 @@ _CONTROL_GAPS = (
     ("per_round_advance", "matched_window_ks_stat", "round_advance_ks"),
     ("overlap_factor", "rel_diff", "overlap_rel"),
     ("selection_detail", "rel_diff_chosen", "mean_chosen"),
+    ("selection_bias", "bias_rel_diff", "selection_bias_rel"),
 )
 
 
@@ -7670,6 +7685,9 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         "overhead_residual": (overhead_residual,
                               [("tol_rel", "overhead_rel", 0.02)]),
         "overlap_factor": (overlap_factor, [("tol_rel", "overlap_rel", 0.02)]),
+        # A2c bias: a lock-in selector draws different speed sets per replicate (FX-N68).
+        "selection_bias": (selection_speed_bias_parity,
+                           [("bias_tol", "selection_bias_rel", 0.02)]),
     }
     _tol, _ungradeable, _floor_of = {}, {}, {}
     _ungradeable_field: dict = {}
@@ -7772,7 +7790,8 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         real_agg, sim_agg, volume_rel=_v1.get("mean_rel_diff"),
         **_tol["selection_detail"])
     results["residence"] = inflight_residence_parity(real_agg, sim_agg)
-    results["selection_bias"] = selection_speed_bias_parity(real_agg, sim_agg)
+    results["selection_bias"] = selection_speed_bias_parity(real_agg, sim_agg,
+                                                            **_tol["selection_bias"])
     results["selector_score"] = selector_score_parity(real_agg, sim_agg)
     results["preferred_duration"] = preferred_duration_parity(real_agg, sim_agg)
     results["participation"] = participation_parity(real_agg, sim_agg)
@@ -8126,7 +8145,7 @@ THRESHOLD_PROVENANCE: dict = {
     "eligible_speed":          (CALIBRATED, None),
     "eligible_pool_reduction": (CALIBRATED, None),
     "selection":               (CALIBRATED, None),
-    "selection_bias":          (CALIBRATED, None),
+    "selection_bias":          (CALIBRATED, "selection_bias_rel"),
     "selector_score":          (CALIBRATED, None),
     "residence":               (CALIBRATED, None),
     "preferred_duration":      (CALIBRATED, None),

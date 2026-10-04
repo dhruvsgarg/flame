@@ -231,6 +231,12 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         bls = tuple(b for b in baselines if b not in ("felix", "fedbuff")) or B6[2:]
         return [Phase(DS_TAG[ds] + tier, bls, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
                       kind="sim_ev" if tier == "G2S" else "real")]
+    if tier == "G1L":  # FX-N65: felix syn_0 past the 7200s convergence floor, pair + a real replicate
+        return [Phase(f"{DS_TAG[ds]}G1L", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds, harness="none"),
+                Phase(f"{DS_TAG[ds]}G1LC", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds,
+                      harness="none", kind="real")]
+    if tier == "N62":  # FX-N62: unaware oort syn_50 long enough to grade its stall-free timing
+        return [shaped("N62_syn_50", ("oort",), "syn_50", "pair", ds, runtime_s=10800)]
     if tier in ("ISO", "ISO_FILL"):  # P6: felix/fedbuff pairs solo (--max-parallel 1), then packed
         iso = [shaped("ISO", ("felix", "fedbuff"), "syn_0", "pair", ds)]
         # packed stage: neighbours load the node (and double as FX-N20 syn_50 checks)
@@ -944,7 +950,7 @@ def run_gate(root: Path, datasets, pool: "Pool") -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1L N62 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

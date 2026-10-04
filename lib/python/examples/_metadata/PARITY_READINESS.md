@@ -82,7 +82,7 @@ python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --si
 
 ---
 
-## Felix scoreboard — run 9, 2026-10-03 (L7 cifar G1 on top of run 8's L1-L6)
+## Felix scoreboard — run 10b, 2026-10-04 (L7 cifar G1 + G2, speech G1 on top of run 8's L1-L6)
 
 L1-L5 (`ladder_20261001_164350`, `_164408`, jayne): L1 22/2/0 · L2/L3 41/1/6 (regraded 43/3/2 with FX-D36 + FX-N62 KNOWN) · L4 48/2/0 ·
 L5 22/0/2 (cifar felix/oort syn_0 K2 8.1/8.2%, opposite signs). Reds there are no-floor tolerances (Q2) or FX-N62.
@@ -115,15 +115,25 @@ Not green or not graded: C1/C2 are low-confidence at a 5400s budget (checker flo
 in L5-L7, selection-set noise, FX-N66); fedbuff sim aggregator exit abort (FX-N33, data intact). G2 (oort, oort_star, refl, feddance) did not run: the first
 launch (`ladder_20261002_202440`, G1+G2, est. 15.3h > 12h deadline) was stopped after its gate.
 
-**L7 cifar G2** (`experiments/pr12_cifar_20261003_0322`, 328 min, syn_0, n=300, 5400s; oort_star not run), 1/0/2:
+**L7 cifar G2** (`pr12_cifar_20261003_0322` + run 10b `block_20261003_1311`, syn_0, n=300, 5400s), **3/0/0**:
 
-| cell | result | root |
+| cell | result | evidence |
 |---|---|---|
-| refl | green, 0 fails; residence hist and carried ages = real to 2 dp | gate off |
-| oort | S3/4 14.4%, Sr 43%: carried 6.6 vs 3.8, stale residence 2 vs 1 round; new picks' speed within 4% every window | `simInflightCarryover` held in-round stragglers a round (FX-D39, fixed) |
-| feddance | K3b 14.4%, A2c bias 0 vs -1.9 s; K2/K8/U2 downstream | lock-in draw (FX-N68); K3b mix-adjusted residual 0.04 s |
+| refl | green, 0 fails; residence hist and carried ages = real to 2 dp | run 10 |
+| oort | green 69/69: carried 3.71 vs 3.84, K2 1.0%, K3b 0.01, K8 1.6% (trainers 4.7%), A2c bias -2.53/-2.18 s, queue_wait p99 0.014s | `g2_oort`, FX-D39 confirmed |
+| feddance | 58/59 on its floor: K2/K3/K3b/K8/U2/A2c SKIP; U6 2.1 s vs 2.0 s gate (sim↔sim 1.8 s) = KNOWN draw | sim↔sim s/round 24.0-27.75 (n=4), real↔real 28.10/28.55 (n=2); locked sets overlap 4-8/12 within either mode (FX-D37) |
 
-Not graded: C1/C2 LOWC (5400s); real queue_wait p99 ≤ 0.2s, 0 skips on all three.
+oort_star syn_0 G2 dropped (graded with unavailability). C1/C2 LOWC at 5400s (FX-N65).
+
+**L7 speech G1** (`block_20261003_1311/gs_g1`, syn_0, n=100, 5400s, 4 GPUs per leg), **0/0/2**:
+
+| cell | red | root |
+|---|---|---|
+| fedbuff (64/66) | U6 real 0.80 s vs sim 0 (real queue_wait p99 5.9 s, 2330 waits > 1 s) | aggregator OMP stall: 0.33 s per 29 MB update at 2.4 updates/s (FX-D40, fixed; smoke p90 0.05 s) |
+| fedbuff | speed identity: 8 trainers (D 2-3 s) +11-13% | per-commit real mean 3.58 vs 3.12 s on D=3: heavier real overrun tail (GPU excess 42 vs 20 s) + ~0.1 s post-compute span; hypothesis: aggregator spin on HT siblings of trainer cores (FX-D40). Checker now per commit |
+| felix | real leg CUDA OOM at 9 min (memory 4 → 43 GB/GPU) | `evaluate()` kept the utility's autograd graph and chained it across evals (FX-D41, fixed) |
+
+fedbuff otherwise green: K2 5.1%, K3b 0.051, K8 5.1%, U3 2.895/2.895, P3 support 0.998, C1 LOWC acc diff 0.5%.
 
 ## FluxTune scoreboard
 Parked with the track; its board still sits in simulate_fwdllm.md §A.
@@ -132,15 +142,13 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR12b · Run 10b, one ~7h block on jayne · next (operator).** `lib/python/examples/scripts/run_block_20261003.sh` (smoked with `BLOCK_EXTRA=--smoke`; Ctrl+C stops it):
-  1. feddance G2S ×3 sim (~27 min) + `replicate_spread.py`. *Confirms:* s/round spread ≥ 14% (lock-in draw, FX-N68). *Refutes:* ≤ 3% (real and sim differ systematically: diff round 60-100 selections).
-  2. feddance G2C real replicate (~1.7h), spread vs the overnight real leg. *Confirms:* real↔real spread comparable to sim↔sim and to the 14% gap (floor sized).
-  3. G2 oort (~2.2h). *Confirms:* Sr/S3/4 green (carried ≈ 3.8 both), EV green, K2/K3b/K8 in tolerance. *Refutes:* Sr ≥ 20% (straggler sct, not the gate).
-  4. speech G1 felix + fedbuff, 4 GPUs each side by side (~2.5h, FX-N4/N10). *Confirms:* EV green, K2/K3b/K8 ≤ tolerance; GPU lr 0.000195 in `[TRAINER_HP]`.
-  oort_star is graded only with unavailability (T3S syn_20s is green on CPU); its G2 syn_0 run is dropped. Left: refl 3h, speech G2, FX-N62/N65 long legs.
-- **PR13 · Run 11: L7 speech G1 (felix, fedbuff) + G2, jayne · after PR12 (~2.5h per pair).** Unblocked (FX-D38). Same predictions; add the GPU lr check (FX-N10).
-- **PR14 · Long phase (C0.6), beside PR13 · when PR12 is green.** felix cifar syn_0 at ≥7500s: real ×2 + sim (sizes the real↔real convergence band, FX-N65), plus the
-  FX-N62 legs (~3h oort syn_50, fedbuff mobiperf). *Confirms:* C1/C2 not LOWC and acc diff inside the real↔real spread.
+- **PR13+14 · Run 11, one ~10.5h block on jayne · running (tmux `dg_flame`, `experiments/block_20261004_*`).** `lib/python/examples/scripts/run_block_20261004.sh` (smoked with `BLOCK_EXTRA=--smoke`; Ctrl+C stops it):
+  A. speech G1 felix + fedbuff, then G2 oort/refl/feddance, 2 legs × 4 GPUs (~5h), beside cifar oort syn_50 3h CPU pair (`N62`). B. felix cifar syn_0 7500s pair +
+  a real replicate (~4.8h), then `--control` floors and both reals graded against the sim.
+  *Confirms FX-D40:* speech real queue_wait p99 < 1 s, U6 green, speech sim wall ≥ 3× faster than real; speed identity green (refutes the HT-sibling hypothesis if still red:
+  then charge the post-compute span). *Confirms FX-D41:* felix speech real runs 90 min, GPU memory flat; `[TRAINER_HP]` lr 0.000195 (FX-N10).
+  *Speech G2:* EV green, INV/EXACT green or floor-SKIP (feddance lock-in may need G2S). *N62:* oort syn_50 K2/K3b graded on ≥ 60 stall-free rounds.
+  *G1L (FX-N65):* C1/C2 not LOWC; sim acc diff inside the real↔real spread.
 
 **Operator decisions / open**
 - S5 knob layout: (a) adopted (operator 2026-10-01): `datasets.yaml` holds dataset defaults + `by_baseline` tuned values

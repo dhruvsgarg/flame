@@ -781,3 +781,20 @@ class TestControlFloors:
         from parity.checks import run_all_parity  # noqa: F401  (signature carries floors_tighten)
         import inspect
         assert inspect.signature(run_all_parity).parameters["floors_tighten"].default is True
+
+
+def test_selection_bias_floor_skips_a_lock_in_draw():
+    """FX-N68: A2c's bias gate takes a replicate floor; one past the tolerance SKIPs it."""
+    from parity.checks import floor_gated_tol
+    _, why = floor_gated_tol(0.10, 0.1525, min_abs=0.02)
+    assert why
+
+
+def test_speed_identity_grades_per_commit_not_per_snapshot():
+    """FX-D40: a value held across many selection snapshots must not outweigh other commits."""
+    from parity.checks import trainer_speed_identity_parity
+    commits = [{"agg_observed_s": {"t1": v}} for v in (3.0, 3.0, 9.0, 3.0)]
+    held = lambda v, n: [{"per_trainer": {"t1": {"speed_s": v}}}] * n
+    real = {"agg_rounds": commits, "selection_train": held(3.0, 3) + held(9.0, 300)}
+    sim = {"agg_rounds": commits, "selection_train": held(3.0, 300) + held(9.0, 3)}
+    assert trainer_speed_identity_parity(real, sim)["speed_s"]["ok"]
