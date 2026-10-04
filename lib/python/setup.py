@@ -27,6 +27,7 @@ setup(
         "fedscale",
         "gpustat",
         "grpcio",
+        "itur",
         "mlflow",
         "numpy",
         "paho-mqtt",
