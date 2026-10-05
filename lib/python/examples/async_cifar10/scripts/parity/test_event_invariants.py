@@ -383,3 +383,33 @@ def test_ev18_negative_running_var_fails(tmp_path):
     agg, tr = _clean_run()
     agg.append({"event": "model_health", "round": 1, "weight_norm": 1.0, "nonfinite": 0, "bn_buf_max": 2.0, "bn_var_min": -0.005})
     assert _status(_write_run(tmp_path, agg, tr), "EV18_model_finite") == "FAIL"
+
+
+_STREAM = {"data_streaming": {"enabled": "True", "initial_frac": 0.1, "full_data_available_after_s": 20}}
+
+
+def _streamed(plant=None):
+    """_clean_run's trainer tasks carrying the schedule's own visible count (100 samples)."""
+    agg, trainers = _clean_run()
+    for evs in trainers.values():
+        for e in evs:
+            if e["event"] == "trainer_round":
+                t = e["sim_send_ts"]
+                e.update(stream_clock_s=t, total_samples=100, visible_samples=int(10 + 90 * t / 20))
+    if plant:
+        plant(trainers)
+    return agg, trainers
+
+
+def test_ev19_stream_schedule(tmp_path):
+    assert _status(_write_run(tmp_path / "off", *_clean_run()), "EV19_stream_schedule") == "SKIP"
+    assert _status(_write_run(tmp_path / "ok", *_streamed(), hp=_STREAM), "EV19_stream_schedule") == "PASS"
+
+    def off_schedule(tr):
+        [e for e in tr[T1] if e["event"] == "trainer_round"][1]["visible_samples"] = 99
+
+    def clock_drift(tr):
+        [e for e in tr[T2] if e["event"] == "trainer_round"][0]["stream_clock_s"] = 0.5
+
+    for name, plant in (("sched", off_schedule), ("clock", clock_drift)):
+        assert _status(_write_run(tmp_path / name, *_streamed(plant), hp=_STREAM), "EV19_stream_schedule") == "FAIL"

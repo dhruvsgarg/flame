@@ -90,3 +90,27 @@ def test_broker_duplicate_client_id_is_fatal(tmp_path):
     found = ff.Scanner().scan_broker(log)
     assert len(found) == 1 and found[0].lineno == 2
     assert ff.Scanner().scan_broker(tmp_path / "absent.log") == []
+
+
+TEARDOWN = ("Exception ignored in: <function _gc_pause_callback at 0x7f>\nTraceback (most recent call last):\n"
+            '  File "runtime.py", line 31, in _gc_pause_callback\n    def _gc_pause_callback(phase, info):\n    \n'
+            "2026-10-05 02:53:09,388 | main.py:534 | INFO | MainThread | load_data | other thread\n"
+            '  File "main.py", line 1231, in signal_handler\n    raise SystemExit(0)\nSystemExit: 0\n')
+
+
+def test_teardown_exit_request_is_benign_even_across_scans(tmp_path):
+    out, run = _leg(tmp_path, "a", **{"x_trainers.log": TEARDOWN})
+    assert ff.Scanner().scan(ff.leg_run_dirs(out)) == []
+    head, tail = TEARDOWN.split("  File \"main.py\"")
+    _, run = _leg(tmp_path, "b", **{"x.log": head})
+    s = ff.Scanner()
+    assert s.scan([run]) == []
+    with open(run / "x.log", "a") as f:
+        f.write("  File \"main.py\"" + tail.replace("SystemExit: 0", "SystemExit: 1"))
+    assert [f.lineno for f in s.scan([run])] == [2]  # a non-zero exit is still fatal
+
+
+def test_final_flushes_a_held_traceback():
+    lines = list(enumerate(["ok", "Traceback (most recent call last):", '  File "x.py", line 1'], 1))
+    assert list(ff.fatal_hits(lines, ff.TRACEBACK)) == []
+    assert [n for n, _ in ff.fatal_hits(lines, ff.TRACEBACK, final=True)] == [2]

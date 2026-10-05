@@ -12,9 +12,7 @@ counterfactual trajectory B' (vs the stale-utility run B).
 
 It is the online twin of scripts/oracle_misselection.py: same data
 partition (Dirichlet split), same deterministic arrival order (sha256(task_id)),
-same streaming schedule (uniform or staggered), same utility
-``I_m = N*sqrt(mean(loss^2))``. Keep the formulas in sync with that script and with
-trainer/pytorch/main.py:_stagger_params.
+same streaming schedule (stream_schedule.py), same utility ``I_m = N*sqrt(mean(loss^2))``.
 
 Gated by hyperparameters.oracle_utility_injection.enabled == "True". The aggregator
 is *allowed* to reconstruct trainer data here precisely because it is an oracle /
@@ -37,6 +35,7 @@ import sys as _sys
 
 _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 import fl_data  # noqa: E402
+import stream_schedule  # noqa: E402
 
 from flame import harness
 
@@ -46,24 +45,6 @@ CIFAR_MEAN = (0.4914, 0.4822, 0.4465)
 CIFAR_STD = (0.2023, 0.1994, 0.2010)
 PROP_STAT_UTILITY = "stat_utility"
 PROP_LOCAL_ACCURACY = "local_accuracy"
-
-
-# --- formulas (mirror oracle_misselection.py / trainer main.py) -------------
-
-def _stagger_params(trainer_id, onset_max_s, base_span_s, rate_jitter):
-    h = hashlib.sha256(f"{trainer_id}:stagger".encode()).hexdigest()
-    u1 = int(h[0:8], 16) / 0xFFFFFFFF
-    u2 = int(h[8:16], 16) / 0xFFFFFFFF
-    onset_s = onset_max_s * u1
-    span_s = base_span_s * (1.0 + rate_jitter * (2.0 * u2 - 1.0))
-    return onset_s, max(base_span_s / 4.0, span_s)
-
-
-def _visible_count(sim_now, onset_s, span_s, total, min_visible=1):
-    if span_s <= 0:
-        return total
-    frac = min(1.0, max(0.0, (sim_now - onset_s) / span_s))
-    return min(total, max(min_visible, math.floor(frac * total)))
 
 
 def _stream_now(agg):
@@ -131,25 +112,18 @@ class OracleUtilityProvider:
         # config doesn't otherwise carry them); set by the experiment generator.
         self.alpha = oi.get("alpha", 0.1)
         self.num_trainers = int(oi.get("num_trainers", 50) or 50)
-        ds = (getattr(hp, "data_streaming", None) or {}) if hp else {}
-        self.full_after_s = float(ds.get("full_data_available_after_s", 0) or 0)
-        stg = ds.get("stagger") or {}
-        self.stg_on = str(stg.get("enabled", "False")) == "True" and self.full_after_s > 0
-        self.onset_max_s = float(stg.get("onset_max_s", 0.0) or 0.0)
-        self.rate_jitter = float(stg.get("rate_jitter", 0.0) or 0.0)
-        self.min_visible = int(stg.get("min_visible", 1) or 1)
+        self.ds_cfg = (getattr(hp, "data_streaming", None) or {}) if hp else {}
         self.data_root = data_root
         # Harness: rebuild the data the trainer holds (trainer load_data).
         self.harness_mode = harness.harness_mode(hp) if hp is not None else "off"
         self.harness_k = harness.harness_samples(hp, self.harness_mode) if hp is not None else 0
         self.spec = fl_data.spec_for(hp) if hp is not None else fl_data.SPECS["cifar10"]
-        self._table = None        # task_id -> {arrival_global_idx, total, onset_s, span_s}
+        self._table = None        # task_id -> {arrival_global_idx, total, sched}
         self._memo = {}           # task_id -> (model_version, visible, util, acc)
         self._imgs = self._targets = None
         if self.enabled:
             logger.info(
-                f"[ORACLE_INJECT] enabled (full_after_s={self.full_after_s}, "
-                f"stagger={'on' if self.stg_on else 'off'}, "
+                f"[ORACLE_INJECT] enabled (data_streaming={self.ds_cfg}, "
                 f"inject_accuracy={self.inject_accuracy})"
             )
 
@@ -195,13 +169,8 @@ class OracleUtilityProvider:
                 gidx = order  # positions into this trainer's own synthetic pool
             else:
                 gidx = torch.tensor(idx, dtype=torch.long)[order]
-            if self.stg_on:
-                onset, span = _stagger_params(tid, self.onset_max_s,
-                                              self.full_after_s, self.rate_jitter)
-            else:
-                onset, span = 0.0, self.full_after_s
-            table[tid] = {"arrival_global_idx": gidx, "total": n,
-                          "onset_s": onset, "span_s": span, "local": local}
+            sched = stream_schedule.from_config(self.ds_cfg, tid) or stream_schedule.StreamSchedule()
+            table[tid] = {"arrival_global_idx": gidx, "total": n, "sched": sched, "local": local}
         return table
 
     def _build_pool(self):
@@ -240,8 +209,7 @@ class OracleUtilityProvider:
                 info = self._table.get(str(eid))
                 if info is None:
                     continue
-                vis = _visible_count(sim_now, info["onset_s"], info["span_s"],
-                                     info["total"], self.min_visible)
+                vis = info["sched"].visible(info["total"], sim_now)
                 # True utility is a function of (model version, visible data) only.
                 ver = getattr(agg, "_round", None)
                 memo = self._memo.get(str(eid))

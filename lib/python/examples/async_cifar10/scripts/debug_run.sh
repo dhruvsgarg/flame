@@ -408,6 +408,8 @@ for e_src in cfg.get("experiments", []):
         for kv in os.environ.get("TRAINER_HP", "").split():
             k, v = kv.split("=", 1)
             _thp[k] = yaml.safe_load(v)
+        if _thp.get("data_streaming"):  # FX-N13: the oracle and EV19 read the trainers' schedule
+            h["data_streaming"] = _thp["data_streaming"]
         e["aggregator"]["config_overrides"]["job"]["id"] = e["name"]
         kept.append(e)
 

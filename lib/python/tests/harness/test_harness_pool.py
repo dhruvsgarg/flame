@@ -235,3 +235,19 @@ def test_oort_mobiperf_legs_run_long_enough_to_commit():
     assert rt[("oort", "real")] == rt[("oort", "sim")] == 960 and rt[("felix", "real")] == 240
     ph.runtime_s = 60  # --smoke keeps its 60s
     assert {j.runtime_s for j in pool.build_jobs([ph], 1.0, 1, {})} == {60}
+
+
+def test_gpu_slots_sized_from_their_own_cores_p95_and_pairs_match():
+    hp_ = pool
+    ph = hp_.Phase("G0T_x", ("felix", "refl"), "syn_0", runtime_s=900, n=50, harness="none", gpus=1)
+    jobs = hp_.build_jobs([ph], 1.0, 1, {}, gpu_per_trainer=0.2)
+    legs = {j.jid: j for j in jobs if j.mode != "grade"}
+    assert {j.cpus for j in legs.values()} == {18}  # no history: the formula
+    real = legs["G0T_x_syn_0_refl_real"]
+    hist = {hp_.cores_key(real): [7.0, 15.0]}
+    jobs = {j.jid: j for j in hp_.build_jobs([ph], 1.0, 1, hist, gpu_per_trainer=0.2)}
+    assert jobs["G0T_x_syn_0_refl_real"].cpus == jobs["G0T_x_syn_0_refl_sim"].cpus == 24  # 1.5 x 15 -> even
+    assert jobs["G0T_x_syn_0_felix_real"].cpus == 18
+    hist = {hp_.cores_key(real): [100.0]}
+    jobs = {j.jid: j for j in hp_.build_jobs([ph], 1.0, 1, hist, gpu_per_trainer=0.2)}
+    assert jobs["G0T_x_syn_0_refl_sim"].cpus == hp_.slot_cpus(50, 0.4, 8)  # never above the 0.4 default

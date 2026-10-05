@@ -139,11 +139,14 @@ def _res(status, detail="", **kw):
 
 # ── checks ──────────────────────────────────────────────────────────────────
 def ev0_clean_exit(run):
-    """No tracebacks in any log; the aggregator logged its budget stop."""
+    """No tracebacks in any log (a teardown SIGTERM's `SystemExit: 0` excepted, fail_fast); the aggregator logged its budget stop."""
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))
+    from fail_fast import TRACEBACK, fatal_hits
     tb = 0
     for p in run["logs"]:
         with open(p, errors="replace") as f:
-            tb += sum(1 for line in f if "Traceback (most recent call last)" in line)
+            tb += sum(1 for _ in fatal_hits(((i, ln.rstrip("\n")) for i, ln in enumerate(f, 1)), TRACEBACK, final=True))
     stopped = False
     if run["agg_log"]:
         with open(run["agg_log"], errors="replace") as f:
@@ -653,11 +656,60 @@ def ev18_model_finite(run):
                 f"norm_first={norms[0]:.1f} norm_max={max(norms):.1f} bn_buf_max={max(e['bn_buf_max'] for e in evs):.3g}")
 
 
+def ev19_stream_schedule(run):
+    """FX-N13 ST4: each task's visible count equals the schedule (stream_schedule.py, run's trace scale) at its
+    stream clock, is monotone per trainer, and the stream clock tracks the run clock (sim: = sim_send_ts; real:
+    lags wall-since-first-dispatch by at most one task)."""
+    ds = _hp(run, "data_streaming") or {}
+    if not _truthy(ds.get("enabled", "False")):
+        return _res("SKIP", "streaming off")
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+    import stream_schedule
+    scale = float(_hp(run, "trace_time_scale") or 1.0)
+    sim = _simulated(run)
+    disp = [e["ts"] for e in run["agg"] if e.get("event") == "dispatch" and e.get("ts")]
+    origin = min(disp) if disp else None
+    max_lag = 1.5 * float(_hp(run, "send_timeout_wait_s") or 90.0) + 30.0
+    n = wrong = nonmono = clock_bad = 0
+    examples, fracs = [], []
+    for tid, evs in run["trainers"].items():
+        sched = stream_schedule.from_config(ds, tid, scale=scale)
+        last = -1
+        for e in evs:
+            if e.get("event") != "trainer_round" or e.get("stream_clock_s") is None or e.get("visible_samples") is None:
+                continue
+            n += 1
+            t, vis, tot = float(e["stream_clock_s"]), int(e["visible_samples"]), int(e.get("total_samples") or 0)
+            want = sched.visible(tot, t)
+            fracs.append(vis / tot if tot else 1.0)
+            if vis != want:
+                wrong += 1
+                if len(examples) < 5:
+                    examples.append(dict(trainer=tid[-6:], stream_clock_s=round(t, 2), visible=vis, schedule=want))
+            if vis < last:
+                nonmono += 1
+            last = vis
+            if sim:
+                ok = e.get("sim_send_ts") is None or abs(float(e["sim_send_ts"]) - t) <= _EPS_S
+            else:
+                lag = (float(e["ts"]) - origin - t) if origin is not None else 0.0
+                ok = -5.0 <= lag <= max_lag
+            clock_bad += not ok
+    if not n:
+        return _res("FAIL", "streaming on but no trainer_round carries stream_clock_s")
+    bad = wrong + nonmono + clock_bad
+    return _res("PASS" if bad == 0 else "FAIL",
+                f"tasks={n} off_schedule={wrong} non_monotone={nonmono} clock_mismatch={clock_bad} "
+                f"mode={ds.get('mode', 'linear')} visible_frac min={min(fracs):.2f} max={max(fracs):.2f}",
+                examples=examples)
+
+
 CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model, ev4_real_sleep,
           ev5_commit_accounting, ev6_staleness, ev7_agg_goal_cadence, ev8_concurrency_cap,
           ev9_selector_state, ev10_dispatch_one_in_flight, ev11_vclock, ev12_reached_budget,
           ev13_no_stall, ev14_eval_sane, ev15_one_task_per_version, ev16_withheld_delivery,
-          ev17_real_gate_repick, ev18_model_finite]
+          ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule]
 
 
 def check_run(run_dir: str) -> dict:

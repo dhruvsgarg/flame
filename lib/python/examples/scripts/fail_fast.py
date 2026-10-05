@@ -14,11 +14,15 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 FATAL = re.compile(r"Traceback \(most recent call last\)|Fatal Python error|Segmentation fault")
 BROKER_FATAL = re.compile(r"already connected, closing old connection")  # a client id live twice: two runs, one broker
 BENIGN_PRECEDED_BY = {"Fatal Python error: Aborted": "terminate called without an active exception"}  # FX-N33
+TRACEBACK = re.compile(r"Traceback \(most recent call last\)")
+EXIT_REQUEST = re.compile(r"^SystemExit(: 0)?$")  # SIGTERM's clean exit landing in a gc callback at teardown
+_INTERLEAVED = re.compile(r"^\s|^\d{4}-\d\d-\d\d |^$")  # frame lines and other threads' log lines
+TB_WAIT_LINES = 60
 CONTEXT_LINES = 40
 EXIT_FATAL = 3
 
@@ -44,11 +48,34 @@ class Finding:
         return "\n".join(out)
 
 
+def fatal_hits(lines: Iterable, pat: re.Pattern = FATAL, state: Optional[dict] = None, final: bool = False):
+    """Yield (lineno, line) per fatal line. A Traceback is held until its exception line and dropped when that is a
+    clean exit request; `state` carries a held one across incremental reads, `final` (a complete file) flushes it."""
+    st = {} if state is None else state
+    for n, line in lines:
+        held = st.get("held")
+        if held is not None:
+            if _INTERLEAVED.match(line) and st["waited"] < TB_WAIT_LINES:
+                st["waited"] += 1
+                st["prev"] = line
+                continue
+            st["held"] = None
+            if not EXIT_REQUEST.match(line.strip()):
+                yield held
+        if pat.search(line) and TRACEBACK.search(line):
+            st["held"], st["waited"] = (n, line), 0
+        elif pat.search(line) and BENIGN_PRECEDED_BY.get(line.strip()) != st.get("prev", "").strip():
+            yield n, line
+        st["prev"] = line
+    if final and st.get("held") is not None:
+        yield st.pop("held")
+
+
 class Scanner:
     """Incremental: each call reads only what the logs gained since the last one."""
 
     def __init__(self) -> None:
-        self._pos: Dict[Path, tuple] = {}  # log -> (byte offset, lines read, last line)
+        self._pos: Dict[Path, tuple] = {}  # log -> (byte offset, lines read, fatal_hits state)
 
     def scan(self, run_dirs: Iterable) -> List[Finding]:
         found = []
@@ -66,7 +93,7 @@ class Scanner:
         return self._scan_file(log, BROKER_FATAL) if log.exists() else []
 
     def _scan_file(self, log: Path, pat: re.Pattern = FATAL) -> List[Finding]:
-        off, n, prev = self._pos.get(log, (0, 0, ""))
+        off, n, st = self._pos.get(log, (0, 0, {}))
         try:
             with open(log, "rb") as f:
                 f.seek(off)
@@ -74,14 +101,9 @@ class Scanner:
         except OSError:
             return []
         end = chunk.rfind(b"\n") + 1  # a partial last line waits for the next scan
-        found = []
-        for raw in chunk[:end].splitlines():
-            n += 1
-            line = raw.decode(errors="replace").rstrip("\r")
-            if pat.search(line) and BENIGN_PRECEDED_BY.get(line.strip()) != prev.strip():
-                found.append(Finding(log, n, line))
-            prev = line
-        self._pos[log] = (off + end, n, prev)
+        lines = [(n + i + 1, raw.decode(errors="replace").rstrip("\r")) for i, raw in enumerate(chunk[:end].splitlines())]
+        found = [Finding(log, k, line) for k, line in fatal_hits(lines, pat, st)]
+        self._pos[log] = (off + end, n + len(lines), st)
         return found
 
 

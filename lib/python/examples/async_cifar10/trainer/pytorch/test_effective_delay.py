@@ -40,12 +40,7 @@ def test_stub_load_data_builds_synthetic_loader():
     t.batch_size = 4
     t.training_delay_s = 1.0
     t.memory_profiler = MemoryProfiler(trainer_id="3", enabled=False)
-    t.data_streaming_enabled = False
-    t.data_streaming_full_after_s = 0.0
-    t.stream_stagger_enabled = False
-    t.stream_min_visible = 1
-    t._stream_onset_s = 0.0
-    t._stream_span_s = 0.0
+    t.data_streaming_enabled, t._stream_sched = False, None
     t.load_data()
     assert len(t.train_loader.dataset) == 8
     x, y = next(iter(t.train_loader))

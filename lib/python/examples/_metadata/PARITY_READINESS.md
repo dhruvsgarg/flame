@@ -88,7 +88,7 @@ python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --si
 
 ---
 
-## Felix scoreboard — run 11, 2026-10-04 (L7 cifar G1/G2/G1L, speech G1+G2, N62, on top of run 8's L1-L6)
+## Felix scoreboard — run 11, 2026-10-04 (L7 cifar G1/G2/G1L, speech G1+G2, N62, on top of run 8's L1-L6; regraded 2026-10-05 with FX-D48)
 
 L1-L5 (`ladder_20261001_164350`, `_164408`, jayne): L1 22/2/0 · L2/L3 41/1/6 (regraded 43/3/2 with FX-D36 + FX-N62 KNOWN) · L4 48/2/0 ·
 L5 22/0/2 (cifar felix/oort syn_0 K2 8.1/8.2%, opposite signs). Reds there are no-floor tolerances (Q2) or FX-N62.
@@ -144,8 +144,8 @@ oort_star syn_0 G2 dropped (graded with unavailability). C1/C2 LOWC at 5400s (FX
 | refl (12 fails) | K4 3.82 vs 5.04×, K3 3.74 vs 2.46 s/round, A2 eligible 44 vs 48, U6 7.2 s, speed identity 20 trainers; sim EV12 | real aggregator-bound: 3.17 s cycle, 0.33 s waiting (FX-N70); real GPU 2× sim on D=2 (FX-N69); sim stopped at vclock 3365 s by its wall ceiling (sim_rate 0.62) |
 | feddance | K3b 30.1 vs 26.2 s/round, speed identity 3 trainers | KNOWN: selection-mix-adjusted residual 0.2 s = lock-in draw; needs its sim↔sim floor (G2S), as cifar |
 
-**N62** (`block_20261004_0543/n62`, cifar oort syn_50, n=15 CPU, 3h), **0/1/0**: K3b 39.98 vs 46.97 s/round; stalls 76/77, stall seconds and abandons
-(129/133) match; residual = 50-60 s partial-stall rounds (5 vs 11) read as stall-free (FX-N62).
+**N62** (`block_20261004_0543/n62`, cifar oort syn_50, n=15 CPU, 3h), **1/0/0** with FX-D48 (69/69): the old K3b 0.175 read 40-60 s rounds
+that took a fresh send-gated update as stall-free; by cause, stall-free 3.16 vs 3.15 s/round and K8 time-to-N 829 vs 835 s.
 
 ## FluxTune scoreboard
 Parked with the track; its board still sits in simulate_fwdllm.md §A.
@@ -154,15 +154,25 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR15 · Run 12, ~3h on jayne (7 GPUs) · ready: `lib/python/examples/scripts/run_block_20261005.sh`** (smoked: `experiments/smoke_run12_1919`; Ctrl+C stops it).
-  Two pools side by side: cifar G0U (all six × syn_50 + mobiperf_3st, n=50, 15 min, 1 GPU) and speech G1S (felix + fedbuff, n=100, 45 min,
-  3 GPUs) + speech G0U (felix + fedbuff, 30 min). Speech runs at D ×5 with a 450s timeout (FX-D46). *Confirms FX-D43:* speech felix real runs 45 min, no OOM. *Confirms FX-D42/D44:* speech real
-  queue_wait p99 < 1 s and agg `ingest_s` ≤ 0.05 s/update (was 0.14), U6 < 0.2 s. *Refutes D44:* ingest unchanged → profile the MQTT rx path.
-  *G0U:* EV green on all legs; INV/EXACT green or a named root; A2 shape at n=50 (land-mine 3); AVL_EVAL path exercised on mobiperf (land-mine 13).
-  *Confirms FX-D46:* speech overrun < 5% of tasks on every trainer, speed identity green, speech sim_rate ≥ 3 (was 0.6-1.1).
-  *Refutes:* overrun persists on the largest-data trainers → per-trainer data, not D, is the lever.
+- **PR15 · Runs 12-14, ~13h on jayne (7 GPUs) · ready: `lib/python/examples/scripts/run_block_20261005b.sh`** (smoked: `smoke_run1213_*`,
+  `smoke_phaseB_*`; Ctrl+C stops it). Run 12 never ran: its block passed the dataset positionally. Phase A (~7h), two chains in priority order:
+  speech G1S felix+fedbuff (n=100, 45 min) + G0U felix+fedbuff → G0T felix syn_0; cifar G0U all six (n=50, 15 min) → G0T all six × {linear,
+  events} syn_0 → syn_50 → G0To oracle arms (felix, oort, refl, fedbuff) syn_0. Phase B starts automatically (no starts past T0+11.4h): speech
+  G2 oort+refl at D ×5 (3 GPUs); cifar G0UC real replicates → G1U felix+fedbuff syn_50 at n=300, 90 min. Cifar GPU legs at 0.2 CPU/trainer (FX-D49).
+  *Confirms FX-D43:* speech felix real runs 45 min, no OOM. *Confirms FX-D42/D44:* speech real queue_wait p99 < 1 s, `ingest_s` ≤ 0.05 s/update,
+  U6 < 0.2 s; *refutes:* ingest unchanged → profile the MQTT rx path. *Confirms FX-D46:* speech overrun < 5% of tasks, speed identity green,
+  sim_rate ≥ 3; *refutes:* overrun on the largest-data trainers → per-trainer data is the lever. *G0U:* EV green; INV/EXACT green or a named root;
+  A2 shape at n=50; AVL_EVAL exercised on mobiperf. *G0T (FX-D47):* EV19 green on every leg; `stream_growth` visible/fresh share within 0.05
+  real↔sim; INV/EXACT as the matching G0U/syn_0 cell; *refutes:* a streaming-only red → the stream clock (real wall vs sim vclock at dispatch).
+  *G0To:* oracle arms beat their baseline's time-to-accuracy in sign on both modes. *FX-D49:* no leg `CPU_SAT`; a SAT leg's timing reds are
+  slot-bound, not sim. *G0UC:* real↔real floors per G0U cell (Q2). *G1U:* felix/fedbuff syn_50 INV/EXACT green at n=300 (FX-N9 long confirm).
+  *Speech G2:* oort/refl U6 and speed identity green at D ×5 (FX-N5).
 
 **Operator decisions / open**
+- Decided (operator 2026-10-05): cifar GPU legs at 0.2 CPU/trainer, sized per baseline (FX-D49); the second block of a run starts
+  automatically after the screens (operator analyzes separately).
+- Decided (operator 2026-10-05): streaming on the trace clock with its own horizon; event chunks fixed (9 × 10%), seeded uniform times,
+  regardless of availability; same-distribution data; time-to-accuracy targets cifar 50%, speech 60% (FELIX Active build).
 - Decided (operator 2026-10-04): jayne has 7 healthy GPUs; FX-N70 fix the real aggregator (FX-D44, not a wire-format change: pickling was page
   faults); cifar unavailability starts now (FX-N9); G-tier streaming config kept (1 sample → full at 10800s); C11, C12; speech D ×5 (FX-D46:
   compute speech/cifar ~270× per task, ~53× per sample; ×5 leaves the worst trainer at 0.53 of its D solo).

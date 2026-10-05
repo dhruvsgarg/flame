@@ -49,32 +49,10 @@ from flame import harness
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 import fl_data  # noqa: E402
+import stream_schedule  # noqa: E402
 from memory_profiler import MemoryProfiler
 
 logger = logging.getLogger(__name__)
-
-
-def _stagger_params(trainer_id, onset_max_s, base_span_s, rate_jitter):
-    """Per-client streaming schedule (onset, span), deterministic in trainer_id.
-
-    Used for staggered data streaming so different clients' data arrives in
-    different sim-time windows. Mirrored EXACTLY in
-    scripts/analysis/oracle_misselection.py:stagger_params -- if you change the
-    derivation here, change it there too or the offline oracle will reconstruct
-    the wrong visible prefixes.
-
-        onset_s = onset_max_s * u1
-        span_s  = base_span_s * (1 + rate_jitter * (2*u2 - 1))   (>= base_span/4)
-
-    where u1, u2 in [0,1) come from disjoint 32-bit slices of
-    sha256(f"{trainer_id}:stagger").
-    """
-    h = hashlib.sha256(f"{trainer_id}:stagger".encode()).hexdigest()
-    u1 = int(h[0:8], 16) / 0xFFFFFFFF
-    u2 = int(h[8:16], 16) / 0xFFFFFFFF
-    onset_s = onset_max_s * u1
-    span_s = base_span_s * (1.0 + rate_jitter * (2.0 * u2 - 1.0))
-    return onset_s, max(base_span_s / 4.0, span_s)
 
 
 Net = fl_data.CifarNet  # FX-N10: models live in fl_data (one per dataset)
@@ -249,28 +227,10 @@ class PyTorchCifar10Trainer(Trainer):
         self.wait_until_next_avl = self.config.hyperparameters.wait_until_next_avl
 
         ds_cfg = getattr(self.config.hyperparameters, "data_streaming", None) or {}
-        self.data_streaming_enabled = str(ds_cfg.get("enabled", "False")) == "True"
-        self.data_streaming_full_after_s = float(
-            ds_cfg.get("full_data_available_after_s", 0)
-        )
-        # Optional staggered streaming: each client gets its OWN onset (start
-        # delay) and span (time to fill), derived deterministically from its
-        # trainer_id so the offline oracle can reconstruct the exact schedule.
-        # Uniform streaming is the special case onset=0, span=full_after_s.
-        stg = ds_cfg.get("stagger", {}) or {}
-        self.stream_stagger_enabled = str(stg.get("enabled", "False")) == "True"
-        self.stream_onset_max_s = float(stg.get("onset_max_s", 0.0))
-        self.stream_rate_jitter = float(stg.get("rate_jitter", 0.0))
-        self.stream_min_visible = int(stg.get("min_visible", 1) or 1)
-        # Defaults (overwritten per-client in load_data once trainer_id-seeded):
-        self._stream_onset_s = 0.0
-        self._stream_span_s = self.data_streaming_full_after_s
-        logger.info(
-            f"Trainer {self.trainer_id}: data streaming "
-            f"{'ENABLED' if self.data_streaming_enabled else 'DISABLED'} "
-            f"(full_data_available_after_s={self.data_streaming_full_after_s}, "
-            f"stagger={'ON' if self.stream_stagger_enabled else 'off'})"
-        )
+        # FX-N13: one schedule definition shared with the oracle and EV19 (stream_schedule.py).
+        self._stream_sched = stream_schedule.from_config(ds_cfg, self.trainer_id)
+        self.data_streaming_enabled = self._stream_sched is not None
+        logger.info(f"Trainer {self.trainer_id}: data streaming {self._stream_sched or 'DISABLED'}")
 
         uc_cfg = getattr(self.config.hyperparameters, "util_counterfactual", None) or {}
         self.util_cf_enabled = str(uc_cfg.get("enabled", "False")) == "True"
@@ -565,20 +525,6 @@ class PyTorchCifar10Trainer(Trainer):
             self._stream_total, generator=torch.Generator().manual_seed(seed)
         )
 
-        # Per-client streaming schedule (staggered onset + span). Mirrored EXACTLY
-        # in scripts/analysis/oracle_misselection.py:stagger_params -- keep in sync.
-        if self.stream_stagger_enabled and self.data_streaming_full_after_s > 0:
-            self._stream_onset_s, self._stream_span_s = _stagger_params(
-                self.trainer_id,
-                onset_max_s=self.stream_onset_max_s,
-                base_span_s=self.data_streaming_full_after_s,
-                rate_jitter=self.stream_rate_jitter,
-            )
-            logger.info(
-                f"Trainer {self.trainer_id}: staggered stream "
-                f"onset={self._stream_onset_s:.0f}s span={self._stream_span_s:.0f}s"
-            )
-
         # Build initial loader (full pool unless streaming is enabled)
         self._rebuild_stream_loader()
         gc.collect()
@@ -600,26 +546,15 @@ class PyTorchCifar10Trainer(Trainer):
         )
 
     def _visible_sample_count(self) -> int:
-        """Samples unlocked so far: linear in sim-time, full after the client's span.
-
-        Uniform streaming: onset=0, span=full_after_s (one global horizon).
-        Staggered streaming: per-client onset/span (set in load_data) so different
-        clients' data arrives in different sim-time windows.
-        """
-        if not self.data_streaming_enabled or self.data_streaming_full_after_s <= 0:
+        """Samples unlocked at this task's stream clock (stream_schedule.py)."""
+        if self._stream_sched is None:
             return self._stream_total
-        # *_after_s and onset/span are in sim-seconds; _sim_now() is sim-time
-        # (wall-clock in real mode, stamped task time in simulated mode).
-        span = self._stream_span_s if self._stream_span_s > 0 else self.data_streaming_full_after_s
-        frac = min(1.0, max(0.0, (self._sim_now() - self._stream_onset_s) / span))
-        n = math.floor(frac * self._stream_total)
-        # >= stream_min_visible so the loader is non-empty even before onset.
-        floor_n = self.stream_min_visible if self.stream_stagger_enabled else 1
-        return min(self._stream_total, max(floor_n, n))
+        return self._stream_sched.visible(self._stream_total, self._sim_now())
 
     def _rebuild_stream_loader(self) -> None:
         """Rebuild train_loader over the currently-visible prefix of the pool."""
-        n = self._visible_sample_count()
+        self._stream_clock_s = self._sim_now() if self._stream_sched is not None else None
+        n = self._stream_visible = self._visible_sample_count()
         full = n >= self._stream_total
         if self._stream_gpu:
             if full:
@@ -925,11 +860,7 @@ class PyTorchCifar10Trainer(Trainer):
         _post_train_s = time.time() - _phase_post_start
 
         if telemetry.is_enabled():
-            visible = (
-                self._visible_sample_count()
-                if self.data_streaming_enabled
-                else self._stream_total
-            )
+            visible = self._stream_visible  # what this task trained on, not a post-train recount
             ev, fields = build_trainer_round(
                 round_num=int(getattr(self, "_round", 0)),
                 real_gpu_time_s=_real_gpu_time_s,
@@ -948,6 +879,7 @@ class PyTorchCifar10Trainer(Trainer):
                     "sim_completion_ts": self._sim_completion_ts,
                     "sim_send_ts": float(self._sim_send_ts) if self._sim_send_ts is not None else None,
                     "time_mode": self.time_mode,
+                    "stream_clock_s": self._stream_clock_s,
                     "training_budget_s": _modeled_delay_s,
                     "remaining_time_s": _remaining_time,
                     "overran": _overran,

@@ -81,6 +81,26 @@ G0U_MOBIPERF = dict(agg_goal=2, c=4)  # FX-L34: ~10% AVL_TRAIN of n=50 leaves ~5
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
 STREAM_A = STREAM_T + ' checkpoint={"enabled":"True","every_n_rounds":10}'
+STREAM_MODES = ("linear", "events")
+
+
+def stream_hp(mode: str, runtime_s: int, trace_scale: str) -> str:
+    """FX-N13 screen: 10% -> 100% over the leg's own trace span (horizon = runtime x trace scale, ST3)."""
+    horizon = int(runtime_s * float(trace_scale or 1))
+    return ('data_streaming={"enabled":"True","mode":"%s","initial_frac":0.1,"full_data_available_after_s":%d}'
+            % (mode, horizon))
+
+
+def stream_phases(pid, ds, traces, oracle, mk) -> "List[Phase]":
+    """One phase per (stream mode, trace); mk(pid, trace) builds the Phase at its tier's shape."""
+    out = []
+    for mode in STREAM_MODES:
+        for t in traces:
+            ph = mk(f"{pid}_{mode[:3]}_{t}", t)
+            ph.trainer_hp = stream_hp(mode, ph.runtime_s, ph.trace_scale)
+            ph.agg_hp = ph.trainer_hp + (" " + oracle_a(ds) if oracle else "")
+            out.append(ph)
+    return out
 
 
 def oracle_a(dataset: str) -> str:
@@ -244,6 +264,20 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [Phase(f"{DS_TAG[ds]}G0U_{t}", baselines, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds, harness="none", trace_scale="4",
                       **{**G0U_SHAPE[ds], **(G0U_MOBIPERF if t == "mobiperf_3st" else {})})
                 for t in ("syn_50", "mobiperf_3st")]
+    if tier in ("TS", "TSo"):  # FX-N13 ST5 CPU: tiny_cpu pairs x {linear, events}; TSo = the *_oracle arms
+        return stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "TSo",
+                             lambda pid, t: shaped(pid, baselines, t, "pair", ds, harness="tiny_cpu"))
+    if tier in ("G0T", "G0To"):  # FX-N13 ST5 GPU screen (C11): G0U cohort x {linear, events} x {syn_0, syn_50}
+        return stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "G0To",
+                             lambda pid, t: Phase(pid, baselines, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds,
+                                                  harness="none", trace_scale="" if t == "syn_0" else "4",
+                                                  **G0U_SHAPE[ds]))
+    if tier == "G0UC":  # R7 control: a real replicate per G0U cell (same-code real<->real floor, Q2)
+        return [replace(ph, pid=ph.pid.replace("G0U_", "G0UC_"), kind="real") for ph in tier_phases("G0U", baselines, ds)]
+    if tier == "G1U":  # FX-N9 long confirm: felix + fedbuff at the reference n on syn_50, production trace timeline
+        bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
+        return [Phase(DS_TAG[ds] + "G1U_syn_50", bls, "syn_50", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
+                      gpus=3)]
     if tier == "G1L":  # FX-N65: felix syn_0 past the 7200s convergence floor, pair + a real replicate
         return [Phase(f"{DS_TAG[ds]}G1L", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds, harness="none"),
                 Phase(f"{DS_TAG[ds]}G1LC", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds,
@@ -339,9 +373,36 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
                 jobs.append(mk("sim", base + ["--mode", "sim", "--real-from", "auto"]))
             else:
                 jobs.append(mk("sim", base + ["--mode", "sim"]))
+    size_gpu_slots(jobs, history, gpu_per_trainer)
     for j in jobs:
         j.est_s = estimate_s(j, history)
     return jobs
+
+
+CPU_HEADROOM = 1.5  # a GPU slot gets >= this x its baseline's measured cores p95
+CPU_SAT_BUSY = 0.9  # a sample with the slot this busy is throttled
+
+
+def cores_key(j: "Job") -> str:
+    return "cores|" + j.key
+
+
+def size_gpu_slots(jobs: List["Job"], history: dict, gpu_per_trainer: float) -> None:
+    """A reduced CPU share stays per-baseline accurate: each GPU pair gets max(formula, 1.5 x its own measured cores
+    p95), capped at the 0.4/trainer default; real and sim of a pair always get the same slot."""
+    units: Dict[str, List[Job]] = {}
+    for j in jobs:
+        if j.gpus and j.mode != "grade":
+            units.setdefault(j.unit, []).append(j)
+    for legs in units.values():
+        seen = [p for j in legs for p in history.get(cores_key(j), [])[-3:]]
+        if not seen or gpu_per_trainer >= 0.4:
+            continue
+        cap = slot_cpus(legs[0].n, 0.4, 8)
+        want = math.ceil(CPU_HEADROOM * max(seen))
+        cpus = min(cap, max(legs[0].cpus, want + want % 2))
+        for j in legs:
+            j.cpus = cpus
 
 
 def shard(jobs: List[Job], i: int, n: int) -> List[Job]:
@@ -718,7 +779,7 @@ class Pool:
         probe, last_note = None, None
         tick, shown = 0, 0.0
         jobs_tsv = open(self.root / "jobs.tsv", "a")
-        jobs_tsv.write("jid\trc\tdur_s\test_s\tcpus\tcores_avg\tcores_p95\n")
+        jobs_tsv.write("jid\trc\tdur_s\test_s\tcpus\tcores_avg\tcores_p95\tcpu_sat\n")
 
         def _on_signal(signum, _frm):
             stop["flag"] = True
@@ -788,13 +849,16 @@ class Pool:
                     dur = time.time() - r.t0
                     avg = sum(r.cpu.values()) / max(1.0, dur)
                     p95 = sorted(r.busy)[int(0.95 * (len(r.busy) - 1))] if r.busy else 0.0
+                    sat = sum(b >= CPU_SAT_BUSY * len(r.cpus) for b in r.busy) / max(1, len(r.busy))
                     self.say(f"DONE  {jid} rc={rc}{' STALLED' if r.stalled else ''} {dur / 60:.1f}m (est {r.job.est_s / 60:.1f}m) "
-                             f"cores avg {avg:.1f} p95 {p95:.1f} of {len(r.cpus)}")
-                    jobs_tsv.write(f"{jid}\t{rc}\t{dur:.0f}\t{r.job.est_s:.0f}\t{len(r.cpus)}\t{avg:.2f}\t{p95:.2f}\n")
+                             f"cores avg {avg:.1f} p95 {p95:.1f} of {len(r.cpus)}{f' CPU_SAT {sat:.0%}' if sat > 0.05 else ''}")
+                    jobs_tsv.write(f"{jid}\t{rc}\t{dur:.0f}\t{r.job.est_s:.0f}\t{len(r.cpus)}\t{avg:.2f}\t{p95:.2f}\t{sat:.3f}\n")
                     jobs_tsv.flush()
                     row = _summary_row(r.out)
                     if rc == 0 and (r.job.mode == "grade" or row.get(f"{r.job.mode}_dir")):
                         history.setdefault(r.job.key, []).append(round(dur))
+                        if r.job.gpus and r.busy:
+                            history.setdefault(cores_key(r.job), []).append(round(p95, 2))
                     cm.release(r.cpus, groups)
                     leases.drop(slot_leases(r.cpus, r.gpus, r.port))
                     gpus_free += r.gpus

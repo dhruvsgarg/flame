@@ -55,6 +55,11 @@ done
       echo "$p $tr $bl :: $u_r / $u_s"
     done
   done
+  # Reduced GPU-slot CPU share: a leg throttled in > 5% of samples has suspect timing (harness_pool CPU_SAT).
+  if [ -f "$ROOT/jobs.tsv" ]; then
+    echo; echo "CPU share per leg (cores p95 / allocated; SAT = throttled > 5% of samples, timing suspect):"
+    awk -F'\t' 'NR>1 && $1 !~ /_grade$/ && $8 != "" {printf "%s :: %s / %s%s\n", $1, $7, $5, ($8 > 0.05 ? sprintf("  SAT %.0f%%", 100*$8) : "")}' "$ROOT/jobs.tsv"
+  fi
   for pre in "" gs_; do
     [ -f "$ROOT/${pre}P7_figures/summary.txt" ] || continue
     echo; echo "FX-N13 oracle replay ${pre:+($pre) }(P7 vs P7o):"; cat "$ROOT/${pre}P7_figures/summary.txt"

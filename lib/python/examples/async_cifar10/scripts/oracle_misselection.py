@@ -38,7 +38,7 @@ _AGG = os.path.join(_HERE, "..", "aggregator", "pytorch")
 if _AGG not in sys.path:
     sys.path.insert(0, _AGG)
 
-from oracle_utility import OracleUtilityProvider, _oort_utility_acc, _visible_count  # noqa: E402
+from oracle_utility import OracleUtilityProvider, _oort_utility_acc  # noqa: E402
 
 _DATA_ROOT = os.path.join(_HERE, "..", "data")
 
@@ -152,7 +152,7 @@ def replay(run_dir: str, sample_size: int = 256) -> tuple[str, str]:
             for tid, info in prov._table.items():
                 if in_run and tid not in in_run:
                     continue
-                vis = _visible_count(t, info["onset_s"], info["span_s"], info["total"], prov.min_visible)
+                vis = info["sched"].visible(info["total"], t)
                 g = info["arrival_global_idx"][:vis]
                 imgs, targets = prov.rows(info)
                 true_u[tid], _ = _oort_utility_acc(model, imgs[g], targets[g], norm_n=vis,

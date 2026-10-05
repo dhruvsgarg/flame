@@ -528,7 +528,36 @@ def load_run_dir(run_dir: str) -> tuple:
     agg_data["training_delay_factor"], agg_data["training_delay_floor_s"] = \
         _load_training_delay_config(run_dir)
     agg_data["task_timeout_s"] = _load_task_timeout_s(run_dir)
+    _mark_stall_causes(agg_data, trainer_data, run_dir)
     return agg_data, trainer_data
+
+
+_GATED_SEND_S = 0.5  # a real send held this long at the send-gate is a withheld delivery
+
+
+def _mark_stall_causes(agg_data: dict, trainer_data: dict, run_dir: str) -> None:
+    """FX-N62: stamp `stall_cause` on each sync train round that waited on an abandon or on a withheld (send-gated)
+    update of its own version among its contributors (sim `withheld_delivery` at staleness 0; real `task_send` gated
+    > 0.5 s). A stale gated straggler lands in a round that never waited for it; async rounds stay unstamped."""
+    try:
+        with open(os.path.join(run_dir, "aggregator_config.json")) as f:
+            if str(json.load(f).get("optimizer", {}).get("sort", "")).lower() == "fedbuff":
+                return
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return
+    gated = {(e.get("end_id"), e.get("round")) for e in agg_data.get("withheld_deliveries", [])
+             if e.get("accepted", True) and not e.get("staleness")}
+    gated |= {(e.get("end_id"), e.get("round")) for tr in trainer_data.values() for e in tr.get("task_send", [])
+              if (e.get("send_gate_wait_s") or 0.0) > _GATED_SEND_S and e.get("task_to_perform", "train") == "train"}
+    abandoned = {e.get("round") for e in agg_data.get("abandon_timeouts", [])}
+    for e in agg_data.get("agg_rounds", []):
+        if e.get("task_to_perform", "train") != "train":
+            continue
+        r = e.get("round")
+        if r in abandoned:
+            e["stall_cause"] = "abandon"
+        elif any((t, r) in gated for t in e.get("contributing_trainers") or ()):
+            e["stall_cause"] = "gated"
 
 
 def _load_task_timeout_s(run_dir: str) -> float:
@@ -988,8 +1017,17 @@ def _per_round_advances(agg_rounds: list, use_vclock: bool) -> list:
             continue
         adv = v_curr - v_prev
         if adv > 0:
-            advances.append(adv)
+            advances.append(_RoundAdv(adv, e_curr.get("stall_cause")))
     return advances
+
+
+class _RoundAdv(float):
+    """A round's clock advance carrying its FX-N62 `stall_cause` (None = no abandon / withheld delivery in it)."""
+
+    def __new__(cls, value, cause=None):
+        obj = super().__new__(cls, value)
+        obj.cause = cause
+        return obj
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -2851,14 +2889,14 @@ def _round_axis(*legs: dict) -> bool:
 
 
 def _stall_episodes(adv: list, cut: float = _TIMEOUT_STALL_S) -> list:
-    """FX-N62: index lists of timeout stalls: one round >= the cut, or consecutive slow rounds (>= 3x median) that
-    sum past it (a late alive pick splits one 90s stall into pieces, some under the cut)."""
+    """FX-N62: index lists of timeout stalls: one round >= the cut or stamped with a `stall_cause`, or consecutive slow
+    rounds (>= 3x median) that sum past it (a late alive pick splits one 90s stall into pieces, some under the cut)."""
     if not adv:
         return []
     slow = max(cut / 8, 3 * statistics.median(adv))
     eps, i = [], 0
     while i < len(adv):
-        if adv[i] >= cut:
+        if adv[i] >= cut or getattr(adv[i], "cause", None):  # by length, or by cause (an abandon / withheld delivery)
             eps.append([i])
             i += 1
             continue
@@ -2869,6 +2907,16 @@ def _stall_episodes(adv: list, cut: float = _TIMEOUT_STALL_S) -> list:
             eps.append(list(range(i, j)))
         i = max(j, i + 1)
     return eps
+
+
+_MIN_FREE_ROUNDS = 10  # below this a stall-free mean is noise (a timing red on < ~20 commits, PARITY Method)
+
+
+def _skip_if_few_free(result: dict, real_free: list, sim_free: list, n_rounds: int) -> None:
+    """FX-N62: a leg whose stalls leave too few stall-free rounds can't grade timing; SKIP, never pass or fail."""
+    n = min(len(real_free), len(sim_free))
+    if n < min(_MIN_FREE_ROUNDS, n_rounds):
+        result.update(ok=True, status="SKIP", note=f"{n} stall-free rounds < {_MIN_FREE_ROUNDS}: timing ungradeable")
 
 
 def _stall_free(adv: list, *legs: dict) -> list:
@@ -2883,10 +2931,18 @@ def _stall_s_to_n(agg_rounds: list, prog_fn, N, time_fn, real: dict, sim: dict) 
     """FX-N62: timeout-stall seconds (excess over the median round) up to N; K3s owns the stall rate."""
     if not _round_axis(real, sim):
         return 0.0
-    ts = [time_fn(e) for e in agg_rounds if (p := prog_fn(e)) is not None and p <= N and time_fn(e) is not None]
-    adv = [b - a for a, b in zip(ts, ts[1:]) if b > a]
-    med = statistics.median(adv) if adv else 0.0
-    return sum(adv[i] - med for ep in _stall_episodes(adv, _stall_cut(real, sim)) for i in ep)  # the excess; the round still counts
+    evs = [e for e in agg_rounds if (p := prog_fn(e)) is not None and p <= N and time_fn(e) is not None]
+    adv = [_RoundAdv(time_fn(b) - time_fn(a), b.get("stall_cause")) for a, b in zip(evs, evs[1:])
+           if time_fn(b) > time_fn(a)]
+    return _stall_excess_s(adv, _stall_cut(real, sim))
+
+
+def _stall_excess_s(adv: list, cut: float) -> float:
+    """FX-N62: stall rounds' time over a stall-free round's (median) cost; the stall round itself still counts."""
+    stall = {i for ep in _stall_episodes(adv, cut) for i in ep}
+    free = [a for i, a in enumerate(adv) if i not in stall]
+    med = statistics.median(free or adv) if adv else 0.0
+    return sum(adv[i] - med for i in stall)
 
 
 def timeout_stalls(real: dict, sim: dict, same_mode: bool = False) -> dict:
@@ -2989,6 +3045,7 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY
         sim_adv = _per_round_advances(
             sim["agg_rounds"],
             use_vclock=_b_uses_vclock(sim["agg_rounds"], same_mode))[: matched_n - 1]
+        n_rounds = min(len(real_adv), len(sim_adv))
         real_adv, sim_adv = _stall_free(real_adv, real, sim), _stall_free(sim_adv, real, sim)  # FX-N62
         if real_adv and sim_adv:
             r_mean = sum(real_adv) / len(real_adv)
@@ -3010,6 +3067,7 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY
             result["per_unit_s"] = {f"p{q}": _pc(q) for q in (50, 90, 99)}
             result["ok"] = matched_rel_diff <= tol_rel
             result["decided_on"] = "matched_window_rel_diff"
+            _skip_if_few_free(result, real_adv, sim_adv, n_rounds)
     return result
 
 
@@ -3109,6 +3167,7 @@ def per_round_advance_parity(real: dict, sim: dict,
         result["ok"] = ((matched_grid_ks <= ks_tol
                          and matched_mean_rel_diff <= mean_tol_rel)
                         or central_ok)
+        _skip_if_few_free(result, _fr, _fs, matched_n)
     return result
 
 
@@ -3262,9 +3321,7 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
             return None
         adv = span / len(evs)
         if _round_axis(real, sim):  # FX-N62: stall time out of the clock span, at round level
-            rounds_adv = _per_round_advances(evs, use_vclock)
-            stall_s = sum(rounds_adv[i] for ep in _stall_episodes(rounds_adv, _stall_cut(real, sim)) for i in ep)
-            adv = (span - stall_s) / len(evs)
+            adv = (span - _stall_excess_s(_per_round_advances(evs, use_vclock), _stall_cut(real, sim))) / len(evs)
         return {"barrier": sum(barriers) / len(barriers), "adv": adv,
                 "cycles": len(evs), "span": span}
 
@@ -3607,6 +3664,34 @@ _PHASE_FIELDS = ("pre_train_s", "gpu_compute_s", "mqtt_fetch_s",
                  "weights_to_gpu_s", "weights_to_ram_s", "post_train_s")
 
 
+def _stream_tasks(trainers: dict) -> list:
+    """FX-N13: per train task, (visible share, fresh share = data new since the trainer's previous train task)."""
+    out = []
+    for d in trainers.values():
+        prev = None
+        evs = [e for e in d.get("trainer_round", []) if e.get("stream_clock_s") is not None and e.get("total_samples")
+               and e.get("task_to_perform", "train") == "train"]
+        for e in sorted(evs, key=lambda e: e["stream_clock_s"]):
+            v = int(e.get("visible_samples") or 0)
+            out.append((v / e["total_samples"], (v - prev) / v if prev is not None and v else None))
+            prev = v
+    return out
+
+
+def stream_growth_parity(real_trainers: dict, sim_trainers: dict, tol: float = 0.05) -> dict:
+    """ST4 [DIAG]: mean visible and fresh data share per train task, real vs sim (the Felix claim's metric)."""
+    r, s = _stream_tasks(real_trainers), _stream_tasks(sim_trainers)
+    if not r or not s:
+        return {"ok": True, "tier": "DIAG", "status": "SKIP", "note": "no streamed train tasks on one side"}
+    mean = lambda xs: sum(xs) / len(xs) if xs else 0.0
+    rv, sv = mean([v for v, _ in r]), mean([v for v, _ in s])
+    rf, sf = mean([f for _, f in r if f is not None]), mean([f for _, f in s if f is not None])
+    return {"ok": abs(rv - sv) <= tol and abs(rf - sf) <= tol, "tier": "DIAG",
+            "n_real": len(r), "n_sim": len(s), "visible_share_real": round(rv, 4), "visible_share_sim": round(sv, 4),
+            "fresh_share_real": round(rf, 4), "fresh_share_sim": round(sf, 4),
+            "ks_visible": round(ks_stat([v for v, _ in s], [v for v, _ in r]), 4), "tol_abs": tol}
+
+
 def trainer_phase_parity(real_trainers: dict, sim_trainers: dict) -> dict:
     """T_phase [DIAG]: Per-phase timing distribution comparison (real vs sim).
 
@@ -3825,6 +3910,7 @@ def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
         result["matched_window_rel"] = round(matched_rel, 3)
         result["decided_on"] = "matched_window_rel"
         result["ok"] = matched_rel <= tol_rel
+        _skip_if_few_free(result, matched_real, matched_sim, matched_n)
     # Diag: residual net of the slowest-pick speed, separating selection mix from clock charges.
     r_spd, s_spd = _per_round_max_speed(real["agg_rounds"]), _per_round_max_speed(sim["agg_rounds"])
     if r_spd and s_spd:
@@ -7827,6 +7913,7 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["gpu_budget_real"] = gpu_budget_ok(real_trainers)
     results["gpu_budget_sim"] = gpu_budget_ok(sim_trainers)
     results["timing_overrun"] = timing_overrun(real_trainers, sim_trainers)
+    results["stream_growth"] = stream_growth_parity(real_trainers, sim_trainers)
     results["sim_send_ts"] = sim_send_ts_ok(real_trainers, sim_trainers)
 
     # ── Stage 5 Update return & ordering ──
@@ -8023,6 +8110,7 @@ CHECK_META: dict = {
     "gpu_budget_real":         {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
     "gpu_budget_sim":          {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
     "timing_overrun":          {"stage": 4, "role": "DIAG",     "deps": ("gpu_budget_real", "gpu_budget_sim")},
+    "stream_growth":           {"stage": 7, "role": "DIAG",     "deps": ()},
     "sim_send_ts":             {"stage": 4, "role": "CONTROL",  "deps": ("vclock_telemetry",)},
     # ── Stage 5 Update return & ordering ──
     "inter_arrival_order":     {"stage": 5, "role": "MECHANISM", "deps": ("per_round_advance", "selection_detail")},
@@ -8205,6 +8293,7 @@ THRESHOLD_PROVENANCE: dict = {
     "slot_utilization":        (POLICY, None),
     "matched_budget_coverage": (POLICY, None),      # how much run must overlap to trust it
     "timing_overrun":          (POLICY, None),
+    "stream_growth":           (POLICY, None),      # DIAG until a streaming floor exists (FX-N13 ST5)
     "eval_commit_timeliness":  (POLICY, None),
     "commit_promptness":       (POLICY, None),
     "abandon_timeout":         (POLICY, None),
