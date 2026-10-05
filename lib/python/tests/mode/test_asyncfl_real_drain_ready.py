@@ -102,6 +102,17 @@ class TestRealDrainRecv:
         assert msg is None and md[0] == ""
 
 
+    def test_idle_wait_ends_at_the_selector_reclaim(self):
+        # FX-D50: a pick dispatched 89.5s ago is reclaimed at 90s; the idle wait ends then, not at the 30s poll.
+        import time as _t
+        agg, ch = _agg(), _DrainChannel(["a"])
+        ch._selector = type("S", (), {"send_timeout_wait_s": 90.0, "ordered_updates_recv_ends": set(),
+                                      "all_selected": {"a": _t.time() - 89.5}})()
+        t0 = _t.time()
+        assert agg._real_drain_recv(ch, ["a"])[0] is None
+        assert _t.time() - t0 < 2.0
+
+
 class TestAggregateWeightsRouting:
     def test_flag_on_routes_through_drain(self):
         agg, ch = _agg(), _DrainChannel(["t1"])

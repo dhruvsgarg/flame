@@ -60,6 +60,7 @@ from flame.selector.properties import (
 from flame import telemetry
 from flame.telemetry.events import (
     EVENT_RUN_END,
+    EVENT_TRACE_ORIGIN,
     build_agg_eval,
     build_agg_round,
     build_dispatch,
@@ -968,6 +969,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         """FX-N45: real trainers start their trace clock at the join barrier, not their first dispatch."""
         if self.simulated or not self.send_origin_at_join:
             return
+        if telemetry.is_enabled():
+            telemetry.emit(EVENT_TRACE_ORIGIN, origin_ts=self.agg_start_time_ts)
         payload = channel.dumps({MessageType.AGG_START_TS: self.agg_start_time_ts})
         for end in list(channel._ends):
             channel.send_payload(end, payload)

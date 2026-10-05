@@ -1390,6 +1390,15 @@ class TestSelectionDetailMatchedWindow:
         assert r["n_selections_unexplained_by_volume"] == 0.75, r
         assert r["real_mean_chosen"] == r["sim_mean_chosen"] == 30.0, r
 
+    def test_async_selector_graded_on_total_picks(self):
+        """FX-D51: an async refill's per-event mean follows loop cadence (empty polls, batched slots); totals match."""
+        def sd(n, ts):
+            return {**self._sd(n, ts), "selector": "FedBuffSelector", "in_flight": 4}
+        real = self._side([sd(2, 0.1 * i) for i in range(10)], n_bins=5)
+        sim = self._side([sd(1 if i % 2 else 0, 0.05 * i) for i in range(40)], n_bins=5)
+        r = pc.selection_detail_parity(real, sim)
+        assert r["ok"] and r["real_total_chosen"] == r["sim_total_chosen"] == 20, r
+
     def test_redraw_COUNT_gap_that_work_VOLUME_explains_still_defers(self):
         """The §D-64 case that must NOT regress: where the re-draw gap IS v1's
         number (8 of 9 baselines read them equal to 3 d.p.), one measurement

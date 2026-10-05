@@ -316,6 +316,7 @@ def _fmt_metric(name: str, res: dict) -> list:
     elif name == "selection_detail":
         lines += [
             f"         num_chosen : real={res.get('real_mean_chosen')}  sim={res.get('sim_mean_chosen')}  "
+            f"total {res.get('real_total_chosen')}/{res.get('sim_total_chosen')}  "
             f"rel_diff={res.get('rel_diff_chosen')} (<={res.get('tol_chosen')})",
             f"         in_flight  : real={res.get('real_mean_inflight')}  sim={res.get('sim_mean_inflight')}  "
             f"rel_diff={res.get('rel_diff_inflight')} (<={res.get('tol_inflight')})",

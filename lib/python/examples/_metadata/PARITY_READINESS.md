@@ -36,7 +36,7 @@
   `--keep-going`. Across rungs, C0.4 governs.
 - **C4 Logical before timing.** Logical = same steps, same order, timestamps ignored. Timing closes through profiled
   charges, never knob tuning (T3, FX-T31). A logical miss on a timing-red cell is first checked for clock coupling.
-- **C5 Loop per run.** Regrade the run and rewrite the scoreboard; group each cell's lowest red by root; apply C1,
+- **C5 Loop per run.** Regrade the run, rewrite the scoreboard and the FELIX accuracy table (`accuracy_table.py`); group each cell's lowest red by root; apply C1,
   C6-C8; the next launch states what confirms and refutes each fix.
 - **C6 Correct first, equal second.** Decide which side is wrong from first principles (FL semantics, `third_party/`,
   the stated invariant). A check green because both sides share a bug is a bug.
@@ -88,64 +88,31 @@ python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --si
 
 ---
 
-## Felix scoreboard — run 11, 2026-10-04 (L7 cifar G1/G2/G1L, speech G1+G2, N62, on top of run 8's L1-L6; regraded 2026-10-05 with FX-D48)
+## Felix scoreboard — runs 12-14 (`experiments/block_20261005_0401`), regraded 2026-10-05 with FX-D50-52
 
-L1-L5 (`ladder_20261001_164350`, `_164408`, jayne): L1 22/2/0 · L2/L3 41/1/6 (regraded 43/3/2 with FX-D36 + FX-N62 KNOWN) · L4 48/2/0 ·
-L5 22/0/2 (cifar felix/oort syn_0 K2 8.1/8.2%, opposite signs). Reds there are no-floor tolerances (Q2) or FX-N62.
+Green / known / red on INV/EXACT (`parity_ladder.py --grade <pool> --regrade --max-stage 9`; DIST gated only by floors, Q4).
 
-L6 `ladder_20261002_033358` (G0C + G0, 691 min), green / known / red: 31/0/5 raw → **35/0/1** with FX-D37/D38 (floor SKIPs, stall-free K8, EV16 re-run offline, refl BN fix).
+**Settled (earlier runs).** L1-L5 (run 8, `ladder_20261001_164350`/`_164408`): 22/2/0 · 43/3/2 · 48/2/0 · 21/0/3, reds = no-floor tolerances.
+L6 G0C + G0 (`ladder_20261002_033358`): 35/0/1 (speech oort syn_20 trainers_at_n 49 vs 46). Real↔real K2 spread at syn_0: cifar ≤ 5%,
+speech ≤ 3% except feddance 17-19%. Cifar L7 at n=300 syn_0, 5/0/0: G1 felix/fedbuff (`ladder_20261002_203715`) K2 ≤ 0.3%, U3 equal to 3 dp,
+sim 4.5×/7.4× real; G1L felix 7500s (`block_20261004_0543/g1l`) C1/C2 acc diff 1.09/1.11% vs real↔real 1.29%; G2 refl/oort/feddance
+(`pr12_cifar_20261003_0322`, `block_20261003_1311`) green, feddance on its sim↔sim floor (FX-D37). N62 oort syn_50 3h CPU 69/69 (FX-D48).
 
-| cell | raw red | root |
+| run 12-14 pool | g / k / r | reds and roots |
 |---|---|---|
-| speech feddance syn_20 | K3b/K2/K3/K8 (real 28.1 vs sim 18.5 s/round) | real↔real itself spans 18.0-22.2 s/round at syn_0: selections match to round ~21, then utility feedback diverges; floor 17% swallows the 8% tol → SKIP |
-| cifar + speech oort syn_20 | K8/U2 8.3% (sim 11 stalls, real 9) | 90s stall draw owned by K3s: K8/U2 now stall-free; cifar green |
-| cifar oort_star syn_20 | sim EV16 | one withheld delivery at the 1800s budget committed 12.9s later by the final sync round: not late (FX-D37) |
-| speech refl syn_0 (G0C real) | EV14 test-loss NaN at round 600 | fixed (FX-D38): BN `running_var` went negative from stale deltas; fresh-only BN stats |
-| speech oort syn_20 | K8 trainers_at_n 49 vs 46 (6.1% vs 5%) | open: a 2-leg floor reads 0 (selections seeded), so no floor sizes a ±3 count (Q2, FX-N62) |
+| `gs` G1S felix+fedbuff (n=100, 45 min, D ×5) | 2 / 0 / 0 | K2 0.4/1.3%, U6 0.08 s, speed identity green, queue_wait p99 0.17/0.30 s; no OOM (FX-D43) |
+| `gs_g2` G2 oort+refl (90 min, D ×5) | 2 / 0 / 0 | DIST: refl U6 0.60 s, ingest 168 vs oort 35 ms/update (FX-N70); oort 2/47 speed identity (FX-N73) |
+| `cifar` G0U (n=50, 15 min) on `cifar_uc` G0UC floors | 9 / 0 / 3 | fedbuff syn_50 sim EV16, fedbuff mobiperf K4 (both FX-D50); oort mobiperf EV1, 2 rounds in both modes (FX-D52) |
+| `gs` G0U (n=50, 30 min) | 0 / 0 / 4 | felix + fedbuff sim EV16 → clock family (FX-D50); fedbuff mobiperf 5 vs 8 rounds (FX-D52) |
+| `cifar_t0` / `cifar_t50` G0T, `cifar_o` G0To | 10/2/0 · 9/0/3 · 8/0/0 | feddance syn_0 lock-in KNOWN (adj. residual ≤ 0.04 s); fedbuff syn_50 EV16 (FX-D50); oort_star lin syn_50 K3b 21.8 vs 16.6 s (FX-N9) |
+| `gs_t` G0T felix syn_0 | 1 / 0 / 1 | lin sim EV10: gate failsafe dropped a 50 s-wall task (FX-D50) |
+| `cifar_g1u` G1U | aborted | CUDA OOM at trainer init, n=300 on 3 GPUs (FX-D52) |
 
-Real↔real K2 spread (G0 vs G0C real, one pair per cell: T8 lower bound): cifar ≤ 5% on all six; speech ≤ 3% except feddance 17-19%.
-EV green on every leg bar the two above.
+G0UC real↔real floors at n=50 syn_50 (throughput rel): oort 0.90, refl 0.20, fedbuff 0.18, feddance 0.13, oort_star 0.06, felix 0.02; mobiperf
+feddance 0.56, others ≤ 0.07. Unaware/sync cells are stall-placement chaos at this size (FX-L53).
 
-**L7 cifar G1** (`ladder_20261002_203715`, 273 min, syn_0, n=300, 5400s, 7 GPUs): felix + fedbuff **2/0/0**, 67/67 and 66/66 enforced checks, EV0-EV18 green both modes.
-
-| check | felix | fedbuff |
-|---|---|---|
-| K2 / K3b / K3 / K8 | 0.1% / 0.001 / KS 0.03 / 0.2% (tol 8/10/20/8%) | 0.3% / 0.003 / KS 0.01 / 0.3% |
-| S2 / S3/4 / A2c | KS 0.017 / 0.1% / KS 0.005 | KS 0.007 / 0% / KS 0 |
-| U3 staleness mean | 2.894 vs 2.893 | 2.895 vs 2.894 |
-| real queue_wait p99 / max | 0.127s / 0.37s (0 skips) | 0.054s / 0.12s (0 skips) |
-| C1/C2 convergence | LOWC: acc diff 1.5%, loss 0.013 (15 evals) | LOWC: 1.1%, 0.014 (13 evals) |
-| sim wall vs vclock | 1212s for 5405s (4.5×) | 727s for 5401s (7.4×) |
-
-**G1L** (`block_20261004_0543/g1l`, felix cifar syn_0 7500s, real ×2 + sim): both reals vs sim 0 fails; C1/C2 graded, acc diff 1.09/1.11% vs real↔real
-1.29% (loss 0.014 all three); real↔real K2 2078 vs 2079 rounds (floors ≈ 0). C1/C2 sign-off needs ≥ 7500s legs.
-
-Not green or not graded at 5400s: C1/C2 LOWC (use G1L length); felix U5 WARN ρ = -0.20 (chronic on utility selectors
-in L5-L7, selection-set noise, FX-N66); fedbuff sim aggregator exit abort (FX-N33, data intact). G2 (oort, oort_star, refl, feddance) did not run: the first
-launch (`ladder_20261002_202440`, G1+G2, est. 15.3h > 12h deadline) was stopped after its gate.
-
-**L7 cifar G2** (`pr12_cifar_20261003_0322` + run 10b `block_20261003_1311`, syn_0, n=300, 5400s), **3/0/0**:
-
-| cell | result | evidence |
-|---|---|---|
-| refl | green, 0 fails; residence hist and carried ages = real to 2 dp | run 10 |
-| oort | green 69/69: carried 3.71 vs 3.84, K2 1.0%, K3b 0.01, K8 1.6% (trainers 4.7%), A2c bias -2.53/-2.18 s, queue_wait p99 0.014s | `g2_oort`, FX-D39 confirmed |
-| feddance | 58/59 on its floor: K2/K3/K3b/K8/U2/A2c SKIP; U6 2.1 s vs 2.0 s gate (sim↔sim 1.8 s) = KNOWN draw | sim↔sim s/round 24.0-27.75 (n=4), real↔real 28.10/28.55 (n=2); locked sets overlap 4-8/12 within either mode (FX-D37) |
-
-oort_star syn_0 G2 dropped (graded with unavailability). C1/C2 LOWC at 5400s (FX-N65).
-
-**L7 speech G1 + G2** (`block_20261004_0543/gs_g1`, `gs_g2`, syn_0, n=100, 5400s, 4 GPUs per leg; every leg streams), **0/1/4**:
-
-| cell | red | root |
-|---|---|---|
-| felix | real leg CUDA OOM at 35 min (mean flat ~22-25 GB/GPU, spikes 37) | util_cf telemetry forward left 2.4 GB reserved per idle trainer (FX-D43, fixed); FX-D41 leak gone |
-| fedbuff (64/66) | U6 real 0.75 s vs 0; speed identity 7 trainers +13% | queue_wait p99 5.5 s: per-update pickling (FX-N70; FX-D42 cuts the 85 ms dispatch dumps); fast-trainer GPU overrun (FX-N69) |
-| oort (2 fails) | U6 0.15 s; speed identity 10 trainers ±26% | FX-N70; FX-N69. K2/K3b/K4 green (12.33 vs 12.34 s/round) |
-| refl (12 fails) | K4 3.82 vs 5.04×, K3 3.74 vs 2.46 s/round, A2 eligible 44 vs 48, U6 7.2 s, speed identity 20 trainers; sim EV12 | real aggregator-bound: 3.17 s cycle, 0.33 s waiting (FX-N70); real GPU 2× sim on D=2 (FX-N69); sim stopped at vclock 3365 s by its wall ceiling (sim_rate 0.62) |
-| feddance | K3b 30.1 vs 26.2 s/round, speed identity 3 trainers | KNOWN: selection-mix-adjusted residual 0.2 s = lock-in draw; needs its sim↔sim floor (G2S), as cifar |
-
-**N62** (`block_20261004_0543/n62`, cifar oort syn_50, n=15 CPU, 3h), **1/0/0** with FX-D48 (69/69): the old K3b 0.175 read 40-60 s rounds
-that took a fresh send-gated update as stall-free; by cause, stall-free 3.16 vs 3.15 s/round and K8 time-to-N 829 vs 835 s.
+**Accuracy (correctness, not parity):** see FELIX_READINESS → Accuracy table. Streaming-era rows: only speech oort reached its target
+(60.7% at 80 min); speech felix/fedbuff sat at chance (server lr, fixed); refl had 0-5% fresh commits (FX-D53). Run 15 G1A gives full-data rows.
 
 ## FluxTune scoreboard
 Parked with the track; its board still sits in simulate_fwdllm.md §A.
@@ -154,28 +121,21 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR15 · Runs 12-14, ~13h on jayne (7 GPUs) · ready: `lib/python/examples/scripts/run_block_20261005b.sh`** (smoked: `smoke_run1213_*`,
-  `smoke_phaseB_*`; Ctrl+C stops it). Run 12 never ran: its block passed the dataset positionally. Phase A (~7h), two chains in priority order:
-  speech G1S felix+fedbuff (n=100, 45 min) + G0U felix+fedbuff → G0T felix syn_0; cifar G0U all six (n=50, 15 min) → G0T all six × {linear,
-  events} syn_0 → syn_50 → G0To oracle arms (felix, oort, refl, fedbuff) syn_0. Phase B starts automatically (no starts past T0+11.4h): speech
-  G2 oort+refl at D ×5 (3 GPUs); cifar G0UC real replicates → G1U felix+fedbuff syn_50 at n=300, 90 min. Cifar GPU legs at 0.2 CPU/trainer (FX-D49).
-  *Confirms FX-D43:* speech felix real runs 45 min, no OOM. *Confirms FX-D42/D44:* speech real queue_wait p99 < 1 s, `ingest_s` ≤ 0.05 s/update,
-  U6 < 0.2 s; *refutes:* ingest unchanged → profile the MQTT rx path. *Confirms FX-D46:* speech overrun < 5% of tasks, speed identity green,
-  sim_rate ≥ 3; *refutes:* overrun on the largest-data trainers → per-trainer data is the lever. *G0U:* EV green; INV/EXACT green or a named root;
-  A2 shape at n=50; AVL_EVAL exercised on mobiperf. *G0T (FX-D47):* EV19 green on every leg; `stream_growth` visible/fresh share within 0.05
-  real↔sim; INV/EXACT as the matching G0U/syn_0 cell; *refutes:* a streaming-only red → the stream clock (real wall vs sim vclock at dispatch).
-  *G0To:* oracle arms beat their baseline's time-to-accuracy in sign on both modes. *FX-D49:* no leg `CPU_SAT`; a SAT leg's timing reds are
-  slot-bound, not sim. *G0UC:* real↔real floors per G0U cell (Q2). *G1U:* felix/fedbuff syn_50 INV/EXACT green at n=300 (FX-N9 long confirm).
-  *Speech G2:* oort/refl U6 and speed identity green at D ×5 (FX-N5).
+- **PR16 · Run 15, ~6h on jayne (8 GPUs) · ready: `lib/python/examples/scripts/run_block_20261006.sh`** (smoked: `smoke_run15b_*`; Ctrl+C
+  stops it). A (~45 min, CPU): T3 felix/fedbuff syn_50 + mobiperf (FX-D50) ∥ T3 refl syn_0 + syn_50 (FX-D53), both datasets. B (~5h, no
+  start past T0+4.4h): G1A (reference n, syn_0, full data, 90 min) — cifar GPUs 0-3: felix → refl; speech GPUs 4-7: felix → refl → fedbuff.
+  *Confirms FX-N74:* speech felix ≥ 30% by 60 min and rising on both sides (G1S was 3.7%); cifar felix ≥ 50% by 90 min on full data; refl
+  never degrades and > 10% of its commits are fresh. *Refutes:* speech felix flat → the async step (rate, staleness) not the lr; refl
+  accuracy still falls → the stale weighting itself. *FX-D50:* T3 EV16 commit_late 0, K11 green. *FX-D53:* refl rounds close on K fresh
+  (agg_round staleness has ≥ K zeros). Afterwards: `scripts/accuracy_table.py <OUT>/*` fills the accuracy table; regrade each pool.
+- **PR17 · next:** GPU G0U/G0UC confirms of FX-D50 (fedbuff, oort mobiperf), G1U at n=300, speech oort/feddance/fedbuff G1A rows.
 
 **Operator decisions / open**
 - Decided (operator 2026-10-05): cifar GPU legs at 0.2 CPU/trainer, sized per baseline (FX-D49); the second block of a run starts
   automatically after the screens (operator analyzes separately).
-- Decided (operator 2026-10-05): streaming on the trace clock with its own horizon; event chunks fixed (9 × 10%), seeded uniform times,
-  regardless of availability; same-distribution data; time-to-accuracy targets cifar 50%, speech 60% (FELIX Active build).
-- Decided (operator 2026-10-04): jayne has 7 healthy GPUs; FX-N70 fix the real aggregator (FX-D44, not a wire-format change: pickling was page
-  faults); cifar unavailability starts now (FX-N9); G-tier streaming config kept (1 sample → full at 10800s); C11, C12; speech D ×5 (FX-D46:
-  compute speech/cifar ~270× per task, ~53× per sample; ×5 leaves the worst trainer at 0.53 of its D solo).
+- Decided (operator 2026-10-05): streaming design → FELIX Active build (streaming).
+- Decided (operator 2026-10-04): jayne has 7 healthy GPUs; fix the real aggregator, not the wire format (FX-D44); speech D ×5 (FX-D46); C11, C12.
+- Open: FX-N73 — should selector speed include the transfer leg in sim, as real Oort's duration does?
 - S5 knob layout: (a) adopted (operator 2026-10-01): `datasets.yaml` holds dataset defaults + `by_baseline` tuned values
   with sources; left: move the `fedbuff.py` server-lr table into config, and a tool printing the resolved matrix.
 
@@ -197,7 +157,8 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 | L6 | G0C + G0: 30 min + real↔real control | > 6h per dataset |
 | L7 | G1/G2 at reference n, 90 min → 3h | cifar G1 4.5h (done) + G2 ~9h / speech ~5h |
 
-- Q2 · wip: `--control`/`--floors` + `parity_ladder` regrade feed G0C real↔real floors into `floor_gated_tol` (SKIP only, never tighten: n=2, T8). Next: ≥3 legs per syn_0 cell, then tighten + gate DIST.
+- Q2 · wip: `--control`/`--floors` + `parity_ladder --regrade` feed G0C (syn_0/20) and G0UC (G0U, G0T) real↔real floors into `floor_gated_tol`
+  (SKIP only, never tighten: n=2, T8). Next: ≥3 legs per cell, then tighten + gate DIST.
 - Q4 · todo: runner reports the two axes per cell (today it gates timing INV/EXACT and leaves logical DIST ungated).
 - Q5 · todo: per-cell scheduling (C3).
 - Q6 · wip: `logical_diff.py`; next: per-round marginals for async pairs.

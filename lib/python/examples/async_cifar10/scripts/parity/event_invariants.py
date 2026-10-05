@@ -579,6 +579,9 @@ def ev16_withheld_delivery(run):
     early = late = bad_dts = 0
     examples = []
     budget = float(_hp(run, "max_experiment_runtime_s", "maxExperimentRuntimeS") or math.inf)
+    # FX-D51: a sync delivery joins the open round and commits at its close, as in real.
+    closes = [] if _is_async(run) else sorted(
+        float(e["vclock_now"]) for e in _train_commits(run) if e.get("vclock_now") is not None)
     for e in _events(run, "withheld_delivery"):
         held[(e.get("end_id"), round(float(e["sct"]), 3))] = e
         tr = gt.get(e.get("end_id"))
@@ -592,8 +595,10 @@ def ev16_withheld_delivery(run):
             early += 1
             examples.append((e["end_id"][-4:], "commit<delivery_ts", e["actual_commit_ts"], e["delivery_ts"]))
         # A delivery at the budget commits when the final round closes: not late.
-        if e.get("actual_commit_ts") is not None and float(e["delivery_ts"]) < budget and \
-                float(e["actual_commit_ts"]) > float(e["delivery_ts"]) + _LATE_DELIVERY_S:
+        _due = float(e["delivery_ts"])
+        _close = next((c for c in closes if c >= _due - _EPS_S), _due)
+        if e.get("actual_commit_ts") is not None and _due < budget and \
+                float(e["actual_commit_ts"]) > max(_due + _LATE_DELIVERY_S, _close + _EPS_S):
             late += 1
             examples.append((e["end_id"][-4:], "commit>>delivery_ts", e["actual_commit_ts"], e["delivery_ts"]))
     committed = {(t, e["round"] - st) for e in _train_commits(run) if e.get("round") is not None
@@ -656,6 +661,23 @@ def ev18_model_finite(run):
                 f"norm_first={norms[0]:.1f} norm_max={max(norms):.1f} bn_buf_max={max(e['bn_buf_max'] for e in evs):.3g}")
 
 
+def _trace_origin(run):
+    """Real trace/stream clock origin: trace_origin event, else the log's [TRACE_ORIGIN] line, else the first dispatch."""
+    ev = [e["origin_ts"] for e in run["agg"] if e.get("event") == "trace_origin" and e.get("origin_ts")]
+    if ev:
+        return float(ev[0])
+    import glob
+    import time as _time
+    for log in glob.glob(os.path.join(run["dir"], "*aggregator.log")):
+        with open(log, errors="replace") as f:
+            for line in f:
+                if "[TRACE_ORIGIN]" in line:
+                    ts = line.split(" | ", 1)[0]
+                    return _time.mktime(_time.strptime(ts[:19], "%Y-%m-%d %H:%M:%S")) + int(ts[20:23]) / 1000
+    disp = [e["ts"] for e in run["agg"] if e.get("event") == "dispatch" and e.get("ts")]
+    return min(disp) if disp else None
+
+
 def ev19_stream_schedule(run):
     """FX-N13 ST4: each task's visible count equals the schedule (stream_schedule.py, run's trace scale) at its
     stream clock, is monotone per trainer, and the stream clock tracks the run clock (sim: = sim_send_ts; real:
@@ -668,8 +690,7 @@ def ev19_stream_schedule(run):
     import stream_schedule
     scale = float(_hp(run, "trace_time_scale") or 1.0)
     sim = _simulated(run)
-    disp = [e["ts"] for e in run["agg"] if e.get("event") == "dispatch" and e.get("ts")]
-    origin = min(disp) if disp else None
+    origin = _trace_origin(run)
     max_lag = 1.5 * float(_hp(run, "send_timeout_wait_s") or 90.0) + 30.0
     n = wrong = nonmono = clock_bad = 0
     examples, fracs = [], []
@@ -697,6 +718,8 @@ def ev19_stream_schedule(run):
                 ok = -5.0 <= lag <= max_lag
             clock_bad += not ok
     if not n:
+        if not any(e.get("event") == "trainer_round" for evs in run["trainers"].values() for e in evs):
+            return _res("SKIP", "no trainer_round (EV1 owns progress)")
         return _res("FAIL", "streaming on but no trainer_round carries stream_clock_s")
     bad = wrong + nonmono + clock_bad
     return _res("PASS" if bad == 0 else "FAIL",

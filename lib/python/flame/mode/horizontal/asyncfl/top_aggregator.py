@@ -15,6 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Asynchronous horizontal FL top level aggregator."""
 
+import itertools
 import logging
 import math
 import time
@@ -207,8 +208,9 @@ class TopAggregator(SyncTopAgg):
         # Cold-start gate (FX-D4); default on (FX-D8).
         _csg = getattr(self.config.hyperparameters, "sim_cold_start_gate", True)
         self._sim_cold_start_gate: bool = True if _csg is None else bool(_csg)
-        _cap = getattr(self.config.hyperparameters, "sim_gate_compute_cap_s", 10.0)
-        self._sim_gate_compute_cap_s: float = float(_cap) if _cap is not None else 10.0
+        _cap = getattr(self.config.hyperparameters, "sim_gate_compute_cap_s", None)
+        # FX-D50: unset = the task timeout.
+        self._sim_gate_compute_cap_s: float = float(_cap) if _cap is not None else self._task_timeout_s()
         self._sim_dispatch_wall: dict = {}  # end -> wall time of its last sim dispatch
         # One-in-flight-per-trainer invariant (§3.resid, felix async). A trainer with an update
         # still outstanding must NOT be re-selected — real keeps it out of VAL_CH_STATE_SEND
@@ -336,7 +338,9 @@ class TopAggregator(SyncTopAgg):
         if not hasattr(self, "_sim_known_delay_s"):  # bare-init guard (tests)
             self._sim_known_delay_s = {}
         barrier_t0 = time.time()
-        deadline = barrier_t0 + RECV_TIMEOUT_WAIT_S
+        # FX-D50: no update is lost before its task timeout.
+        _ttl = self._task_timeout_s() if hasattr(self, "_task_timeout_s") else RECV_TIMEOUT_WAIT_S
+        deadline = barrier_t0 + max(RECV_TIMEOUT_WAIT_S, _ttl)
         drained_all = True
         probed = 0
         # Eager drain + virtual-completion gate: each pass pulls every ready update
@@ -364,7 +368,7 @@ class TopAggregator(SyncTopAgg):
                 self._sim_enqueue_round = {}
             self._sim_enqueue_round.setdefault(actual_end, getattr(self, "_round", 0))
 
-        for _pass in range(_SIM_GATE_MAX_PASSES):
+        for _pass in itertools.count():  # FX-D50: bounded by `deadline`
             # Ingest arrived in-flight updates into the sct-ordered buffer. The
             # probe set is the recv_ends snapshot (taken once upstream in
             # _aggregate_weights) UNION the LIVE in-flight set — a stale snapshot
@@ -480,6 +484,8 @@ class TopAggregator(SyncTopAgg):
                 # for it (treat as lost so it can't block future commits too) and
                 # commit the buffered min.
                 self._sim_gate_failsafe = getattr(self, "_sim_gate_failsafe", 0) + 1
+                logger.warning(f"[SIM_GATE_FAILSAFE] round={getattr(self, '_round', -1)} dropping "
+                               f"{str(_stuck_end)[-4:]} exp={min_stuck} after {time.time() - barrier_t0:.0f}s wall")
                 if _stuck_end is not None:
                     self._sim_inflight_expected.pop(_stuck_end, None)
                 break
@@ -667,6 +673,9 @@ class TopAggregator(SyncTopAgg):
         earliest-arrival update from a persistent drain_ready buffer."""
         pending = self._real_drain_pending
         deadline = time.time() + RECV_TIMEOUT_WAIT_S
+        _reclaim = self._next_reclaim_wall(channel)
+        if _reclaim is not None:  # FX-D50: wake at the selector's reclaim
+            deadline = min(deadline, max(time.time(), _reclaim) + 0.01)
 
         def _buffer(drained):
             for msg, md in drained:
@@ -692,6 +701,17 @@ class TopAggregator(SyncTopAgg):
             if channel.has(_e):
                 channel._ends[_e].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
         return msg, md
+
+    def _next_reclaim_wall(self, channel):
+        """Real: wall ts of the earliest pending selector timeout reclaim (dispatch + send_timeout_wait_s), else None."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        if str(getattr(hp, "real_wake_at_timeout", True)).lower() != "true":
+            return None
+        sel = getattr(channel, "_selector", None)
+        to = getattr(sel, "send_timeout_wait_s", None)
+        skip = getattr(sel, "ordered_updates_recv_ends", ())
+        sent = [t for e, t in dict(getattr(sel, "all_selected", {}) or {}).items() if e not in skip]
+        return min(sent) + float(to) if sent and to else None
 
     def _with_arrived_ends(self, channel, recv_ends) -> list:
         """FX-L27 (real): also read ends whose update arrived or is still owed, e.g. an abandoned end's late one."""

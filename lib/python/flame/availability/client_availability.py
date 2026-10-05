@@ -581,8 +581,8 @@ class ClientAvailability:
     # a stack-specific attribute (the gate tracker is reached via the guarded
     # _avail_drop_inflight hook). Off ⇒ pending_withheld stays empty ⇒ no-op.
 
-    def _sim_reinject_ready_withheld(self) -> None:
-        """C.2: re-inject withheld updates whose delivery_ts has arrived.
+    def _sim_reinject_ready_withheld(self, horizon: Optional[float] = None) -> None:
+        """C.2: re-inject withheld updates whose delivery_ts has arrived (or is <= ``horizon``).
 
         Call before each pop. For every ledger entry due at the current vclock,
         re-add the held payload to the reorder buffer at delivery_ts so it
@@ -599,7 +599,8 @@ class ClientAvailability:
         buf = getattr(self, "_sim_buffer", None)
         if buf is None:
             return
-        for end, dts in self.ready_withheld(self._avail_now()):
+        now = self._avail_now() if horizon is None else max(self._avail_now(), horizon)
+        for end, dts in self.ready_withheld(now):
             payload = self._sim_withheld_payload.pop(end, None)
             if payload is None:
                 continue  # no payload yet; stays registered until it arrives
@@ -700,7 +701,12 @@ class ClientAvailability:
         pop_min(); reinject a no-op. Byte-identical when sim_unavailability is off.
         """
         buf = self._sim_buffer
+        lookahead = str(getattr(getattr(getattr(self, "config", None), "hyperparameters", None),
+                                "sim_reinject_lookahead", True)).lower() == "true"
         while True:
+            # FX-D50: a delivery due before the next buffered sct commits first, as real's opened send-gate.
+            if lookahead and buf.peek_min_ts() is not None:
+                self._sim_reinject_ready_withheld(horizon=buf.peek_min_ts())
             popped = buf.pop_min()
             if popped is None:
                 return None

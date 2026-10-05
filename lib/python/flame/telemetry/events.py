@@ -40,11 +40,13 @@ EVENT_VCLOCK_CHARGE = "vclock_charge"  # every charge_sim_vclock_overhead() call
 EVENT_SERVER_UPDATE = "server_update"  # fwdllm: applied-update vs weight norm per commit (I-1 audit)
 EVENT_TASK_DISCARD = "task_discard"  # trainer dropped a request it already answered (FX-D9)
 EVENT_RUN_END = "run_end"  # aggregator stop point: round, vclock (sim), work_done (FX-N31)
+EVENT_TRACE_ORIGIN = "trace_origin"  # real join barrier: trace/stream clock origin (FX-D51)
 EVENT_MODEL_HEALTH = "model_health"  # global model health after a commit (FX-N64)
 EVENT_AGG_TIMING = "agg_timing"  # per-commit wall split: recv wait vs ingest vs commit (FX-N43)
 
 KNOWN_EVENTS = frozenset(
     {
+        EVENT_TRACE_ORIGIN,
         EVENT_MODEL_HEALTH,
         EVENT_RUN_META,
         EVENT_SELECTION,

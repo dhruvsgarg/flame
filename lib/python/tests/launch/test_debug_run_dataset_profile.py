@@ -32,6 +32,19 @@ def test_google_speech_profile(generator_source, tmp_path, monkeypatch, baseline
     assert e["name"].startswith("dbg_google_speech_") and "_n100_" in e["name"]
 
 
+@pytest.mark.parametrize("baseline", ["felix", "fedbuff"])
+def test_speech_async_server_lr_and_cifar_fedbuff_batch(generator_source, tmp_path, monkeypatch, baseline):
+    """FX-N74: speech felix/fedbuff run Adam 0.000195 x server lr 1.0; cifar fedbuff keeps 2024's batch 32."""
+    e = _one(generator_source, tmp_path, monkeypatch, baseline, DATASET="google_speech")
+    assert e["aggregator"]["config_overrides"]["optimizer"]["kwargs"]["learning_rate"] == 1.0
+    assert e["trainer"]["hyperparameters"]["learningRate"] == 0.000195
+    monkeypatch.delenv("DATASET", raising=False)
+    c = _one(generator_source, tmp_path, monkeypatch, baseline)
+    assert "learning_rate" not in c["aggregator"]["config_overrides"].get("optimizer", {}).get("kwargs", {})
+    if baseline == "fedbuff":
+        assert c["trainer"]["hyperparameters"]["batchSize"] == 32
+
+
 def test_shape_goes_through_agg_goal_and_only_async_gets_c(generator_source, tmp_path, monkeypatch):
     f = _one(generator_source, tmp_path, monkeypatch, "felix", AGG_GOAL="3", CONC="5")
     assert f["aggregator"]["agg_goal"] == 3

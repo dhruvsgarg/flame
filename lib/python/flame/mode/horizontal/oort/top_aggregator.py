@@ -372,7 +372,7 @@ class TopAggregator(BaseTopAggregator):
             # This prevents the selector from re-selecting this trainer in the next round
             # before it has returned its update (key for SyncFL with overcommitment)
             self._inflight_commit_staleness[end] = staleness
-            self._inflight_commit_fresh[end] = True
+            self._inflight_commit_fresh[end] = staleness <= 0
             channel._selector.ordered_updates_recv_ends.append(end)
             # Reference Oort/REFL `time_stamp`: the agg round of last RECEIPT (drives the
             # UCB temporal term; see PROP_LAST_RETURNED_ROUND).
@@ -380,11 +380,11 @@ class TopAggregator(BaseTopAggregator):
 
             logger.info(f"[MSG_ACCEPTED] Message from ...{end[-8:]} accepted, received_end_count={received_end_count + 1}/{aggr_num}")
 
-            # remove end_id if it sends a valid message with correct
-            # round info break the for loop if k valid messages arrive
-            received_end_count += 1
-            if _wait_k:
-                self._sync_accepted_ends().add(end)
+            # FX-D53: REFL stale updates aggregate but don't fill K.
+            if self._counts_toward_k(staleness):
+                received_end_count += 1
+                if _wait_k:
+                    self._sync_accepted_ends().add(end)
             # Only remove if end is in end_ids (stale messages from previous rounds won't be)
             if end in end_ids:
                 end_ids.remove(end)
@@ -489,19 +489,17 @@ class TopAggregator(BaseTopAggregator):
 
                 # CRITICAL: Notify selector that this trainer has returned its update
                 self._inflight_commit_staleness[end] = staleness
-                self._inflight_commit_fresh[end] = True
+                self._inflight_commit_fresh[end] = staleness <= 0
                 channel._selector.ordered_updates_recv_ends.append(end)
                 # Reference time_stamp = agg round of last receipt (UCB temporal term).
                 channel.set_end_property(end, PROP_LAST_RETURNED_ROUND, self._round)
 
                 logger.info(f"[MSG_ACCEPTED] (loop2) Message from ...{end[-8:]} accepted, received_end_count={received_end_count + 1}/{aggr_num}")
 
-                # remove end_id if it sends a valid message with
-                # correct round info break the for loop if k valid
-                # messages arrive
-                received_end_count += 1
-                if _wait_k:
-                    self._sync_accepted_ends().add(end)
+                if self._counts_toward_k(staleness):  # FX-D53
+                    received_end_count += 1
+                    if _wait_k:
+                        self._sync_accepted_ends().add(end)
                 # Only remove if end is in end_ids (stale messages from previous rounds won't be)
                 if end in end_ids:
                     end_ids.remove(end)
@@ -567,9 +565,10 @@ class TopAggregator(BaseTopAggregator):
         logger.info(
             f"[AGG_COMMIT_TIMING] round={self._round} "
             f"cache_store_s={getattr(self, '_agg_cache_store_s', 0.0):.4f} "
+            f"materialize_s={getattr(self, '_agg_materialize_s', 0.0):.4f} "
             f"optimizer_s={time.time() - _opt0:.4f}"
         )
-        self._agg_cache_store_s = 0.0
+        self._agg_cache_store_s = self._agg_materialize_s = 0.0
         if global_weights is None:
             logger.debug("failed model aggregation")
             # Consumed (stale-rejected) updates still free their slots (FX-D10).
@@ -995,6 +994,13 @@ class TopAggregator(BaseTopAggregator):
         # runs for it), so its `time_stamp` (UCB temporal source) advances to this round.
         channel.set_end_property(end, PROP_LAST_RETURNED_ROUND, self._round)
 
+    def _counts_toward_k(self, staleness: int) -> bool:
+        """FX-D53: whether an accepted update fills the round's K; REFL (`refl_fresh_k`, default on) counts fresh only."""
+        if staleness <= 0 or getattr(self.optimizer, "stale_update_max", None) is None:
+            return True
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        return str(getattr(hp, "refl_fresh_k", True)).lower() != "true"
+
     def _handle_weights_msg(
         self, msg: Any, metadata: Tuple[str, datetime], channel: Any, total: int
     ) -> int:
@@ -1087,8 +1093,10 @@ class TopAggregator(BaseTopAggregator):
         # malformed message can never UnboundLocalError at the `weights is not
         # None` check below.
         weights = None
+        _mt0 = time.time()
         if materialize_weights(msg) is not None:
             weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+        self._agg_materialize_s = getattr(self, "_agg_materialize_s", 0.0) + time.time() - _mt0  # FX-N70
 
         if MessageType.DATASET_SIZE in msg:
             count = msg[MessageType.DATASET_SIZE]

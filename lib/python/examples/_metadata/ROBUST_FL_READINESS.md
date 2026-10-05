@@ -1,7 +1,9 @@
 # Robust FL readiness — parent doc (read first, every session)
 
 **Goal:** run Felix and FluxTune, with all their baselines, in the simulator with high fidelity and a real
-speedup, with and without client unavailability, so paper experiments run sim-only and fast.
+speedup, with and without client unavailability, so paper experiments run sim-only and fast. **Parity is not enough:
+real and sim must each be correct** — every baseline follows its reference semantics and reaches its dataset's target
+accuracy in the expected time window (tracked per track: FELIX accuracy table). Equal-but-wrong is a failure (R1, C6).
 
 **Four docs are the only working references:**
 - **this doc** — the rules for all four docs, the lessons and tripwires both tracks share, and the queue of

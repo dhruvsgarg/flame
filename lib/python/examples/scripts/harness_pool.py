@@ -70,6 +70,8 @@ SHAPES = {
 }
 # CPU legs that need longer for EV1's >= 4 commits (unaware oort waits out 90s timeouts; run 4: 0 in 240s).
 MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 960}
+# FX-D52: G0U legs whose unaware picks hold slots a full timeout run longer, to reach a gradeable round count.
+G0U_RUNTIME_X = {("oort", "mobiperf_3st"): 4, ("fedbuff", "mobiperf_3st", "google_speech"): 3}
 GPU_N = {"cifar10": 300, "google_speech": 100}  # the datasets' reference cohorts (datasets.yaml)
 # G0 screen: reference c/n and aggGoal/c ratios at a smaller n; GPUs per leg keep the reference trainers per GPU.
 G0_SHAPE = {"cifar10": dict(n=100, agg_goal=3, c=10, gpus=3),
@@ -247,7 +249,7 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
     if tier == "N64S":  # FX-N64 verify: sim-only refl past round 650 (where running_var went negative), EV18
         return [Phase(f"{DS_TAG[ds]}N64S", ("refl",), "syn_0", runtime_s=2400, dataset=ds, harness="none",
                       kind="sim_ev", **G0_SHAPE[ds])]
-    if tier == "G1":  # GPU block on the production path at the dataset's reference config (FX-N4)
+    if tier == "G1":  # GPU block on the production path at the dataset's reference config (L7)
         bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
         return [Phase(DS_TAG[ds] + "G1", bls, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none")]
     if tier == "G2":  # the other four (FX-N5)
@@ -276,8 +278,13 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [replace(ph, pid=ph.pid.replace("G0U_", "G0UC_"), kind="real") for ph in tier_phases("G0U", baselines, ds)]
     if tier == "G1U":  # FX-N9 long confirm: felix + fedbuff at the reference n on syn_50, production trace timeline
         bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
+        # FX-D52: cifar n=300 takes every GPU (3 GPUs OOMed at init).
         return [Phase(DS_TAG[ds] + "G1U_syn_50", bls, "syn_50", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
-                      gpus=3)]
+                      gpus=3 if ds == "google_speech" else None)]
+    if tier == "G1A":  # FX-N74: accuracy at the reference config on full data
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        return [Phase(DS_TAG[ds] + "G1A", baselines, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
+                      trainer_hp=full, agg_hp=full + " evalEveryNRounds=20", gpus=3 if ds == "google_speech" else 4)]
     if tier == "G1L":  # FX-N65: felix syn_0 past the 7200s convergence floor, pair + a real replicate
         return [Phase(f"{DS_TAG[ds]}G1L", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds, harness="none"),
                 Phase(f"{DS_TAG[ds]}G1LC", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds,
@@ -347,6 +354,8 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
         for b in ph.baselines:
             at_shape = ph.harness != "none" and ph.runtime_s == SHAPES.get(t, {}).get("runtime_s")  # not smoke/T1
             rt = max(ph.runtime_s, MIN_RUNTIME_S.get((b, t), 0)) if at_shape else ph.runtime_s
+            if "G0U" in ph.pid:
+                rt *= G0U_RUNTIME_X.get((b, t, ph.dataset), G0U_RUNTIME_X.get((b, t), 1))
             base = ["--harness", ph.harness, "--baselines", b, "--traces", t, "--runtime-s", str(rt),
                     "--num-trainers", str(ph.n), "--dataset", ph.dataset]
             for flag, v in (("--trace-scale", ph.trace_scale), ("--agg-goal", ph.agg_goal),
@@ -1054,7 +1063,7 @@ def run_gate(root: Path, datasets, pool: "Pool") -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1L N62 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

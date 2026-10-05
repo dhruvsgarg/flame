@@ -207,10 +207,11 @@ def test_pop_committable_skips_withheld_returns_next():
     h._sim_buffer.add("t1", 150.0, _payload("t1"))
     h._sim_buffer.add("t2", 260.0, _payload("t2"))
 
+    # t1 is held (delivery 200), then delivered before t2 (FX-D50); buffer then empty.
     popped = h._sim_pop_committable(ch)
-    assert popped is not None and popped[0] == "t2"
-    assert "t1" in h.pending_withheld and not sel.holds("t1")
-    # t2 is the only committable; buffer now empty.
+    assert popped is not None and popped[:2] == ("t1", 200.0)
+    assert h.pending_withheld == {} and not sel.holds("t1")
+    assert h._sim_pop_committable(ch)[0] == "t2"
     assert h._sim_pop_committable(ch) is None
 
 
@@ -222,6 +223,18 @@ def test_pop_committable_gate_off_single_pop():
     popped = h._sim_pop_committable(ch)
     assert popped[0] == "a" and popped[1] == 10.0
     assert h.pending_withheld == {}
+
+
+def test_pop_committable_delivers_withheld_due_before_next_sct():
+    # FX-D50: vclock 190, delivery due at 200, next fresh update at 230: the delivery commits first, at 200.
+    h = _Harness({"t1": _DOWN}, now=190, inflight_tracker=True)
+    sel = _AsyncSelector(); sel.add("t2")
+    ch = _Channel(sel, ["t2"])
+    h.pending_withheld = {"t1": 200.0}
+    h._sim_withheld_payload = {"t1": (150.0, _payload("t1"))}
+    h._sim_buffer.add("t2", 230.0, _payload("t2"))
+    assert h._sim_pop_committable(ch)[:2] == ("t1", 200.0)
+    assert h._sim_pop_committable(ch)[:2] == ("t2", 230.0)
 
 
 # ---------------------------------------------------------------------------

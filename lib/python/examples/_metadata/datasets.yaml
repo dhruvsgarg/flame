@@ -28,8 +28,8 @@ datasets:
                                     lrDecayEpoch: 10, minLearningRate: 0.00005}}
       feddance:  # [paper] FedDance SoCC'25 Table 1 CIFAR-10: lr 0.1, batch 24, 1 local step; no decay described
         trainer: {hyperparameters: {learningRate: 0.1, batchSize: 24}}
-      fedbuff:   # [ours] FX-N15: server lr 40.9 (fedbuff.py) was tuned with client lr 0.000195, no decay (git 30e20a3f6)
-        trainer: {hyperparameters: {learningRate: 0.000195}}
+      fedbuff:   # [ours] 2024 pair (git 97cede899 config_dir*_48h): client lr 0.000195, batch 32 x server lr 40.9, no decay
+        trainer: {hyperparameters: {learningRate: 0.000195, batchSize: 32}}
 
   google_speech:
     description: >-
@@ -38,9 +38,8 @@ datasets:
       split (dataset_splits/google_speech_alpha0.1_n100.yaml), batch 32, trainer Adam, c 30,
       aggGoal 10, fedbuff server lr table 'google-speech'. Carried over from async_cifar10 since:
       launcher, registry delays (identical for trainers 1-100), syn_*/mobiperf_3st traces, streaming,
-      selector knobs, join barrier n-10. Trainer lr 0.000195 (2024 non-oort configs): a centralized check on
-      10 trainers' data (4 epochs) reached 43% test acc at 0.000195, 35% at 0.001, and stayed at chance at
-      the 2024 '_oort' value 0.04. The FL value is confirmed on GPU (FX-N10 sweep: 0.000195 vs 0.001).
+      selector knobs, join barrier n-10. Trainer Adam lr 0.000195: a centralized check on 10 trainers' data
+      (4 epochs) reached 43% test acc at 0.000195, 35% at 0.001, chance at 0.04; server lr per baseline below.
     # FX-D46 (operator): D x5 and timeout 450s on GPU legs (speech task ~270x cifar); a harness --delay-factor wins.
     device_time_scale: 5
     experiment:
@@ -59,7 +58,15 @@ datasets:
         aggregator:
           config_overrides:
             optimizer: {kwargs: {dataset_name: google-speech}}
-    by_baseline:   # felix, fedbuff: dataset default Adam 0.000195 (FX-T27; [ours] 2024 non-oort configs); the SGD papers set their own
+    by_baseline:   # the SGD papers set their own; felix/fedbuff below
+      # [ours] FX-N74: 2024 pairs (felix 0.04 x 0.065, fedbuff 0.000195 x 0.075) stay at 4% after 300 updates (fl_lr_check.py);
+      # Adam 0.000195 x server 1.0 reaches 23.6%.
+      felix:
+        trainer: {hyperparameters: {learningRate: 0.000195}}
+        aggregator: {config_overrides: {optimizer: {kwargs: {learning_rate: 1.0}}}}
+      fedbuff:
+        trainer: {hyperparameters: {learningRate: 0.000195}}
+        aggregator: {config_overrides: {optimizer: {kwargs: {learning_rate: 1.0}}}}
       oort:      # [paper] Oort §6: lr 0.04, batch 16 (speech); FedScale SGD
         trainer: {hyperparameters: {trainerOptimizer: sgd, learningRate: 0.04, batchSize: 16}}
       oort_star: # = oort

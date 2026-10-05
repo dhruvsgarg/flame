@@ -1575,6 +1575,9 @@ def selection_parity(real: dict, sim: dict, max_rounds: Optional[int] = None,
     }
 
 
+_ASYNC_SELECTORS = ("FedBuffSelector", "AsyncOortSelector")
+
+
 def selection_detail_parity(real: dict, sim: dict,
                               tol_chosen: float = 0.05,
                               tol_inflight: float = 0.15,
@@ -1662,7 +1665,11 @@ def selection_detail_parity(real: dict, sim: dict,
     r_ec_m = mean_or_nan(r_ec)
     s_ec_m = mean_or_nan(s_ec)
 
-    rel_chosen = abs(r_ch_m - s_ch_m) / max(r_ch_m, s_ch_m, 1) if not math.isnan(r_ch_m) else 0.0
+    # FX-D51: an async selector's per-event mean follows loop cadence; grade its total picks in the window.
+    r_tot, s_tot = sum(r_ch), sum(s_ch)
+    _async_sel = any(e.get("selector") in _ASYNC_SELECTORS for e in real["selection_train"][:1])
+    rel_chosen = (abs(r_tot - s_tot) / max(r_tot, s_tot, 1) if _async_sel else
+                  abs(r_ch_m - s_ch_m) / max(r_ch_m, s_ch_m, 1) if not math.isnan(r_ch_m) else 0.0)
     rel_inflight = abs(r_inf_m - s_inf_m) / max(r_inf_m, s_inf_m, 1) if (
         not math.isnan(r_inf_m) and not math.isnan(s_inf_m)) else 0.0
 
@@ -1697,6 +1704,8 @@ def selection_detail_parity(real: dict, sim: dict,
         "real_mean_chosen": round(r_ch_m, 2) if not math.isnan(r_ch_m) else None,
         "sim_mean_chosen": round(s_ch_m, 2) if not math.isnan(s_ch_m) else None,
         "rel_diff_chosen": round(rel_chosen, 3),
+        "real_total_chosen": r_tot,
+        "sim_total_chosen": s_tot,
         "real_mean_inflight": round(r_inf_m, 2) if not math.isnan(r_inf_m) else None,
         "sim_mean_inflight": round(s_inf_m, 2) if not math.isnan(s_inf_m) else None,
         "rel_diff_inflight": round(rel_inflight, 3),
@@ -3476,7 +3485,8 @@ def terminal_state_parity(real: dict, sim: dict,
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "zero time-to-N in one mode — run too short to measure"}
     time_rel_diff = abs(sim_t - real_t) / max(sim_t, real_t)
-    ok = time_rel_diff <= time_tol and trainers_rel_diff <= trainers_tol
+    # FX-D51: ±1 trainer is the integer edge.
+    ok = time_rel_diff <= time_tol and (trainers_rel_diff <= trainers_tol or abs(n_st - n_rt) <= 1)
     return {
         "ok": ok,
         "tier": "EXACT",
@@ -3931,24 +3941,32 @@ def avail_timebase_parity(real: dict, sim: dict,
     (sim=vclock, real=wall — the REFL HIGH-1 bug), the eligible-count curve vs
     normalized progress diverges even when the clock advance looks fine.
     """
+    # FX-D51: bin by trace time over the common span; round fractions misalign synchronized trace flips.
+    def _timed(sel):
+        return [e for e in sel if e.get("num_eligible") is not None]
+
+    rs, ss = _timed(real["selection_train"]), _timed(sim["selection_train"])
+    by_time = bool(rs and ss) and all(e.get("vclock_now") is not None for e in rs + ss)
+    span = min(max(float(e["vclock_now"]) for e in rs), max(float(e["vclock_now"]) for e in ss)) if by_time else 0.0
+
     def _traj(sel):
-        by_round: dict = {}
+        by_key: dict = {}
         for e in sel:
-            ne = e.get("num_eligible")
-            if ne is None:
+            key = float(e["vclock_now"]) if by_time else e["round"]
+            if by_time and key > span:
                 continue
-            by_round.setdefault(e["round"], []).append(ne)
-        if not by_round:
+            by_key.setdefault(key, []).append(e["num_eligible"])
+        if not by_key:
             return None
-        maxr = max(by_round)
+        maxk = span if by_time else max(by_key)
         bins: list = [[] for _ in range(n_bins)]
-        for r, vals in by_round.items():
-            frac = r / maxr if maxr else 0.0
+        for k, vals in by_key.items():
+            frac = k / maxk if maxk else 0.0
             idx = min(n_bins - 1, int(frac * n_bins))
             bins[idx].append(sum(vals) / len(vals))
         return [(sum(b) / len(b) if b else None) for b in bins]
 
-    rt, st = _traj(real["selection_train"]), _traj(sim["selection_train"])
+    rt, st = _traj(rs), _traj(ss)
     if not rt or not st:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no num_eligible trajectory"}
@@ -3967,6 +3985,7 @@ def avail_timebase_parity(real: dict, sim: dict,
         "tier": "DIST",
         "max_rel_diff": round(max_rel, 3) if not math.isnan(max_rel) else None,
         "per_bin_rel_diff": per_bin,
+        "binned_by": "trace_time" if by_time else "round",
         "tol_rel": tol_rel,
     }
 
@@ -5022,12 +5041,13 @@ def trainer_phase_wall_budget_ok(real_trainers: dict, sim_trainers: dict,
     }
 
     _gating = [components[f] for f in _TRAINER_OVERHEAD_PHASES]
+    # FX-D51: DIAG — these phases are off the vclock, so excess is sim speed (S6), not fidelity.
     if all(c.get("status") == "SKIP" for c in _gating):
-        return {"ok": True, "tier": "EXACT", "status": "SKIP",
+        return {"ok": True, "tier": "DIAG", "status": "SKIP",
                 "note": "no trainer overhead-phase telemetry", "components": components}
     return {
         "ok": all(c["ok"] for c in _gating),
-        "tier": "EXACT",
+        "tier": "DIAG",
         "tol_rel": tol_rel,
         "min_abs_s": min_abs_s,
         "components": components,
@@ -8104,7 +8124,7 @@ CHECK_META: dict = {
     "phase_mqtt_fetch":        {"stage": 4, "role": "DIAG",      "deps": ()},
     "phase_weights_to_ram":    {"stage": 4, "role": "MECHANISM", "deps": ()},
     "phase_post_train":        {"stage": 4, "role": "MECHANISM", "deps": ()},
-    "trainer_phase_wall_budget": {"stage": 4, "role": "MECHANISM", "deps": ()},
+    "trainer_phase_wall_budget": {"stage": 4, "role": "DIAG",     "deps": ()},
     "step_timing_breakdown":  {"stage": 4, "role": "DIAG",     "deps": ("phase_gpu_compute",)},
     "trainer_phase":           {"stage": 4, "role": "DIAG",     "deps": ()},
     "gpu_budget_real":         {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},

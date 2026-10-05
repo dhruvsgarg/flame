@@ -66,6 +66,9 @@ KNOWN: Tuple[Tuple[str, Tuple[str, ...], str, str], ...] = (
     ("overhead_residual|per_round_advance|throughput", ("oort",), r"^syn_50 (gs_)?T3_", "FX-N62"),
     # fedbuff mobiperf (240s): 2-3 rounds, all stalls; < 20 commits grade nothing.
     ("overhead_residual|per_round_advance|throughput", ("fedbuff",), r"^mobiperf_3st (gs_)?T3_", "FX-N62"),
+    # feddance lock-in draw at n=50 (FX-D37).
+    ("overhead_residual|per_round_advance|throughput|terminal_state|total_commits", ("feddance",),
+     r"^syn_0 (gs_)?G0T", "FX-D37"),
 )
 # Phases whose sim leg must FAIL a named check (injected bugs; P4 = the cold-start-gate-off control, FX-D8).
 EXPECTED_FAIL = {"P11a": "EV10", "P11b": "EV16", "P11c": "EV3", "P4": "EV10"}
@@ -82,6 +85,15 @@ def _known(check: str, baseline: str, where: str) -> Optional[str]:
 
 def _ev_fails(v: str) -> List[str]:
     return [] if v in ("PASS", "-", "") else (["MISSING"] if v == "MISSING" else v.replace("FAIL:", "").split(","))
+
+
+def _regraded_ev(phase_dir: Path, tr: str, b: str) -> dict:
+    """--regrade's EV result per side ({'ev_real': [...], 'ev_sim': [...]}), else {} (stored summary wins)."""
+    js = next(iter(phase_dir.glob(f"*/parity_regrade/events_{tr}_{b}.json")), None)
+    if js is None:
+        return {}
+    return {f"ev_{r['mode']}": [k.split("_")[0] for k, c in r["checks"].items() if c["status"] == "FAIL"]
+            for r in json.loads(js.read_text())}
 
 
 def _parity_fails(path: Optional[Path], max_stage: int) -> List[Tuple[int, str, str]]:
@@ -114,30 +126,40 @@ class Cell:
 
 
 def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
-    """Q2: {(phase prefix, baseline): floors} from each G0C real leg vs its G0 syn_0 real leg (n=2: a lower bound, T8);
-    syn_20 cells reuse the syn_0 floor. Writes <G0C phase>/control_<b>.json."""
+    """Q2: {(phase, baseline): floors} from each real replicate leg vs its cell's real leg (n=2: a lower bound, T8):
+    G0C per G0 syn_0 cell (syn_20 reuses it), G0UC per G0U cell (may sit in a sibling pool of the block).
+    Writes <control phase>/control_<b>.json."""
     import concurrent.futures as cf
     sys.path.insert(0, str(EXAMPLES / "async_cifar10" / "scripts"))
     from parity.checks import control_floors
 
     def one(item):
-        (pre, b), (g0c_dir, cmd_txt, out) = item
+        key, (ctl_dir, cmd_txt, out) = item
         t = cmd_txt.read_text()
         real, goal, rt = (re.search(rf"--{k} (\S+)", t) for k in ("real-dir", "agg-goal", "runtime-s"))
-        subprocess.run([sys.executable, str(checker), "--real", real[1], "--sim", str(g0c_dir), "--control",
+        subprocess.run([sys.executable, str(checker), "--real", real[1], "--sim", str(ctl_dir), "--control",
                         "--agg-goal", goal[1], "--budget-s", rt[1], "--json-out", str(out)],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return (pre, b), (control_floors(json.loads(out.read_text())) if out.exists() else {})
+        return key, (control_floors(json.loads(out.read_text())) if out.exists() else {})
 
     pairs = {}
-    for f in root.glob("*G0C_syn_0/summary.tsv"):
-        pre = f.parent.name.split("G0C")[0]
+    for f in {*root.glob("*G0C_syn_0/summary.tsv"), *root.parent.glob("*/*G0UC_*/summary.tsv")}:
+        tag = "G0UC_" if "G0UC_" in f.parent.name else "G0C_"
+        pre, _, trace = f.parent.name.partition(tag)
+        target = f"{pre}{tag[:-2]}_{trace}"
         for r in csv.DictReader(open(f), delimiter="\t"):
-            cmd = next(iter(root.glob(f"{pre}G0_syn_0/{pre}G0_syn_0_{r['baseline']}_grade/cmd.txt")), None)
-            if cmd:
-                pairs[(pre, r["baseline"])] = (Path(r["real_dir"]), cmd, f.parent / f"control_{r['baseline']}.json")
+            b = r["baseline"]
+            cmd = next(iter(root.parent.glob(f"*/{target}/{target}_{b}_grade/cmd.txt")), None)
+            if cmd and r.get("real_dir"):
+                pairs[(target, b)] = (Path(r["real_dir"]), cmd, f.parent / f"control_{b}.json")
     with cf.ThreadPoolExecutor(jobs) as ex:
-        return dict(ex.map(one, pairs.items()))
+        floors = dict(ex.map(one, pairs.items()))
+    for (target, b), fl in list(floors.items()):
+        if target.endswith("G0_syn_0"):
+            floors.setdefault((target[:-1] + "20", b), fl)
+        for mode in ("T_lin", "T_eve", "To_lin", "To_eve"):  # streaming screens share the G0U cohort (lower bound)
+            floors.setdefault((target.replace("G0U_", f"G0{mode}_"), b), fl)
+    return floors
 
 
 def regrade_pool(root: Path, jobs: int = 20) -> None:
@@ -145,12 +167,13 @@ def regrade_pool(root: Path, jobs: int = 20) -> None:
     Q2: pairs of a pool with G0C legs are gated against their baseline's real<->real floor (`floors.json`)."""
     import concurrent.futures as cf
     checker = EXAMPLES / "async_cifar10" / "scripts" / "parity_check.py"
+    events = checker.parent / "parity" / "event_invariants.py"
     floors = _control_floors(root, checker, jobs)
 
     def one(cmd_txt: Path) -> None:
         t = cmd_txt.read_text()
         g = {k: re.search(rf"--{k} (\S+)", t) for k in ("real-dir", "sim-dir", "agg-goal", "runtime-s", "baselines", "traces")}
-        if not all(g[k] for k in ("real-dir", "sim-dir", "agg-goal", "runtime-s")):
+        if not all(g[k] for k in ("real-dir", "sim-dir", "runtime-s")):
             return
         out = cmd_txt.parent / "parity_regrade"
         out.mkdir(exist_ok=True)
@@ -158,14 +181,18 @@ def regrade_pool(root: Path, jobs: int = 20) -> None:
         if name is None:
             return
         phase = cmd_txt.parent.parent.name
-        fl = floors.get((phase.split("G0")[0], g["baselines"][1] if g["baselines"] else ""))
+        fl = floors.get((phase, g["baselines"][1] if g["baselines"] else ""))
         extra = []
         if fl:
             (cmd_txt.parent / "floors.json").write_text(json.dumps(fl))
             extra = ["--floors", str(cmd_txt.parent / "floors.json")]
+        goal = ["--agg-goal", g["agg-goal"][1]] if g["agg-goal"] else []  # reference-config tiers (G1/G1S) omit it
         subprocess.run([sys.executable, str(checker), "--real", g["real-dir"][1], "--sim", g["sim-dir"][1],
-                        "--agg-goal", g["agg-goal"][1], "--budget-s", g["runtime-s"][1], *extra,
+                        *goal, "--budget-s", g["runtime-s"][1], *extra,
                         "--json-out", str(out / name.name)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([sys.executable, str(events), g["real-dir"][1], g["sim-dir"][1],  # EV re-run too
+                        "--json-out", str(out / f"events_{name.name}")],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     with cf.ThreadPoolExecutor(jobs) as ex:
         list(ex.map(one, root.glob("*/*_grade/cmd.txt")))
@@ -182,8 +209,9 @@ def grade_pool(root: Path, max_stage: int) -> List[Cell]:
             red, known = [], []
             want = EXPECTED_FAIL.get(bare)
             sides = ("ev_real",) if bare.startswith(REAL_ONLY) else ("ev_real", "ev_sim")
+            ev = _regraded_ev(f.parent, tr, b)
             for side in sides:
-                fails = _ev_fails(r.get(side, ""))
+                fails = ev[side] if side in ev else _ev_fails(r.get(side, ""))
                 if want and side == "ev_sim":
                     if want not in fails:
                         red.append(f"sim did not FAIL {want}")

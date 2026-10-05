@@ -269,7 +269,7 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_cold_start_gate: t.Optional[bool] = Field(
         alias="simColdStartGate", default=True
     )
-    # Wall seconds a dispatched task may still be computing (cold-start / phantom gates); None = 10.
+    # Wall seconds a dispatched task may still be computing (cold-start / phantom gates); None = task timeout (asyncfl), 10 (fwdllm).
     sim_gate_compute_cap_s: t.Optional[float] = Field(
         alias="simGateComputeCapSeconds", default=None
     )
