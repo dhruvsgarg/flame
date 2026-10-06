@@ -42,6 +42,8 @@ datasets:
       (4 epochs) reached 43% test acc at 0.000195, 35% at 0.001, chance at 0.04; server lr per baseline below.
     # FX-D46 (operator): D x5 and timeout 450s on GPU legs (speech task ~270x cifar); a harness --delay-factor wins.
     device_time_scale: 5
+    # FX-D58: <= 7 trainers train at once per A40 (25 idle x 0.47 GB + 7 x 3.1 GB = 33 GB); a random c=30 first wave put 9-11 on one.
+    gpu_train_slots: 7
     experiment:
       trainer:
         num_trainers: 100

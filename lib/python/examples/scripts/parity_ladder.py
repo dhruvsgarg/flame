@@ -127,7 +127,7 @@ class Cell:
 
 def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
     """Q2: {(phase, baseline): floors} from each real replicate leg vs its cell's real leg (n=2: a lower bound, T8):
-    G0C per G0 syn_0 cell (syn_20 reuses it), G0UC per G0U cell (may sit in a sibling pool of the block).
+    G0C per G0 syn_0 cell (syn_20 reuses it), G0UC per G0U cell, T3C per T3 cell (may sit in a sibling pool of the block).
     Writes <control phase>/control_<b>.json."""
     import concurrent.futures as cf
     sys.path.insert(0, str(EXAMPLES / "async_cifar10" / "scripts"))
@@ -143,8 +143,9 @@ def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
         return key, (control_floors(json.loads(out.read_text())) if out.exists() else {})
 
     pairs = {}
-    for f in {*root.glob("*G0C_syn_0/summary.tsv"), *root.parent.glob("*/*G0UC_*/summary.tsv")}:
-        tag = "G0UC_" if "G0UC_" in f.parent.name else "G0C_"
+    for f in {*root.glob("*G0C_syn_0/summary.tsv"), *root.parent.glob("*/*G0UC_*/summary.tsv"),
+              *root.parent.glob("*/*T3C_*/summary.tsv")}:
+        tag = next(t for t in ("G0UC_", "T3C_", "G0C_") if t in f.parent.name)
         pre, _, trace = f.parent.name.partition(tag)
         target = f"{pre}{tag[:-2]}_{trace}"
         for r in csv.DictReader(open(f), delimiter="\t"):

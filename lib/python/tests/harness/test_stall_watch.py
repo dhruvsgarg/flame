@@ -62,3 +62,12 @@ def test_partial_line_waits(tmp_path):
     _append(tel, ', "round": 1}\n')
     w.check([run], 2.0)
     assert w.rounds == 1
+
+
+def test_ended_run_never_trips(tmp_path):
+    # FX-D62: run 16 G1A legs were cut in post-run analysis, 10 min after the aggregator's last line.
+    run, tel, log = _leg(tmp_path)
+    w = ff.StallWatch(0.0, no_round_s=600, silent_s=300)
+    _append(tel, '{"event": "agg_round", "round": 1}\n{"event": "run_end", "round": 1}\n')
+    assert w.check([run], 10.0) == ""
+    assert w.check([run], 5000.0) == ""

@@ -46,3 +46,39 @@ def test_refl_bn_stats_use_fresh_updates_only(tmp_path):
 def test_refl_bn_fresh_only_knob_reverts(tmp_path):
     out = _agg(tmp_path, clamp_running_var="False", bn_fresh_only="False")
     assert out["bn.running_var"].item() < 0  # the old all-updates delta average goes negative
+
+
+
+class _Cache(dict):
+    def iterkeys(self):
+        return iter(list(self.keys()))
+
+
+def _felix(bn_absolute_mean, stale_round):
+    """FX-D61: felix's rate (~0.9) x server lr on stale BN deltas drove speech running_var negative on 296/300 commits."""
+    from flame.optimizer.fedbuff import FedBuff
+    from flame.optimizer.train_result import TrainResult
+    opt = FedBuff(use_oort_lr="True", dataset_name="google-speech", learning_rate=2.0, clamp_running_var="False",
+                  agg_rate_conf={"type": "new", "scale": 0.4, "a_exp": 0.25, "b_exp": 0.1}, bn_absolute_mean=bn_absolute_mean)
+
+    def rnd(base, version, updates):
+        agg = None
+        for v, dw, dv in updates:
+            tr = TrainResult({"w": torch.tensor([dw]), "bn.running_var": torch.tensor([dv])}, 1, v, 600.0)
+            agg = opt.do(agg, _Cache(t=tr), total=1, version=version)
+        return opt.scale_add_agg_weights(base, agg, len(updates))
+
+    g9 = {"w": torch.tensor([1.0]), "bn.running_var": torch.tensor([0.1])}
+    g10 = rnd(g9, 9, [(9, 0.0, 0.0)])  # BN 0.1 at v9 and v10
+    return rnd({k: v.clone() for k, v in g10.items()}, 10, stale_round)
+
+
+def test_fedbuff_bn_stats_average_absolute_stats():
+    # fresh v10 local var 0.05, stale v9 local var 0.01: the mean 0.03, outside rate and server lr
+    out = _felix(True, [(10, 0.2, -0.05), (9, 0.2, -0.09)])
+    assert abs(out["bn.running_var"].item() - 0.03) < 1e-6
+    assert out["w"].item() > 1.0
+
+
+def test_fedbuff_bn_knob_reverts_to_deltas():
+    assert _felix("False", [(10, 0.2, -0.05), (9, 0.2, -0.09)])["bn.running_var"].item() < 0

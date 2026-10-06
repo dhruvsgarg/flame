@@ -220,3 +220,36 @@ class TestSendGateBoolConfig:
         t.cm = types.SimpleNamespace(get_by_tag=lambda tag: _make_channel())
         t._send_weights("tag")
         assert not [ev for ev, _ in captured_events if ev == "task_send"]
+
+
+class TestSendGateRefreshesTrace:
+    """FX-D55: the gate reads the trace at send time; the 1 s poller's cached state let real updates
+    finishing just past a flip go out ungated (refl cifar syn_50: real sent at 150.65 s, flip at 150.0)."""
+
+    def _trainer(self, flips):
+        t = _make_trainer()
+        t.simulated = False
+        t.avl_state = TrainerAvailState.AVL_TRAIN  # stale: the poller hasn't seen the flip yet
+        t._sim_now = lambda: 0.0
+        t.cm = types.SimpleNamespace(get_by_tag=lambda tag: _make_channel())
+
+        def _refresh():
+            if flips:
+                t.avl_state = flips.pop(0)
+        t._refresh_avl_state = _refresh
+        return t
+
+    def test_gates_on_flip_the_poller_missed(self, monkeypatch, captured_events):
+        import flame.mode.horizontal.syncfl.trainer as trainer_mod
+        t = self._trainer([TrainerAvailState.UN_AVL, TrainerAvailState.UN_AVL, TrainerAvailState.AVL_TRAIN])
+        clock = _FakeClock()
+        monkeypatch.setattr(trainer_mod.time, "time", clock.time)
+        monkeypatch.setattr(trainer_mod.time, "sleep", clock.sleep)
+        t._send_weights("tag")
+        assert _task_send_fields(captured_events)["send_gate_wait_s"] == pytest.approx(0.2)
+
+    def test_knob_off_keeps_cached_state(self, monkeypatch, captured_events):
+        monkeypatch.setenv("FLAME_SEND_GATE_REFRESH", "0")
+        t = self._trainer([TrainerAvailState.UN_AVL])
+        t._send_weights("tag")
+        assert _task_send_fields(captured_events)["send_gate_wait_s"] == 0.0

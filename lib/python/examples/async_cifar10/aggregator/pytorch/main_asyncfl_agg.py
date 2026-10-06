@@ -153,6 +153,7 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
         eval_every = self.config.hyperparameters.eval_every_n_rounds or 10
         if self._round % eval_every != 0:
             return
+        self._eval_every_n_commits = 1  # FX-D63: the round gate is the cadence; a commit stride on top halved it
         # Off the critical path: snapshot weights now, run the test-set forward
         # pass in a daemon thread so the aggregator keeps committing/dispatching
         # (the synchronous eval penalised async — more rounds -> more pauses).

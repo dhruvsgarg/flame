@@ -112,6 +112,23 @@ class TestRealDrainRecv:
         assert agg._real_drain_recv(ch, ["a"])[0] is None
         assert _t.time() - t0 < 2.0
 
+    def test_reclaim_read_on_the_avail_clock(self):
+        # FX-D60: production stamps on the avail clock (s since start); an epoch read made every wait 10 ms (run 16 spin).
+        import time as _t
+        agg, ch = _agg(), _DrainChannel(["a"])
+        agg.simulated, agg.agg_start_time_ts = False, _t.time() - 500.0
+        ch._selector = type("S", (), {"send_timeout_wait_s": 90.0, "ordered_updates_recv_ends": set(),
+                                      "_sim_now_s": 480.0, "all_selected": {"a": 450.0}})()
+        assert abs(agg._next_reclaim_wall(ch) - (_t.time() + 40.0)) < 1.0
+
+    def test_past_due_reclaim_is_no_wakeup(self):
+        import time as _t
+        agg, ch = _agg(), _DrainChannel(["a"])
+        agg.simulated, agg.agg_start_time_ts = False, _t.time() - 500.0
+        ch._selector = type("S", (), {"send_timeout_wait_s": 90.0, "ordered_updates_recv_ends": set(),
+                                      "_sim_now_s": 480.0, "all_selected": {"a": 300.0}})()
+        assert agg._next_reclaim_wall(ch) is None
+
 
 class TestAggregateWeightsRouting:
     def test_flag_on_routes_through_drain(self):

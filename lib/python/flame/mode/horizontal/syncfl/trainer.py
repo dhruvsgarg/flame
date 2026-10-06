@@ -18,6 +18,7 @@ import gc
 import inspect
 import logging
 import math
+import os
 import time
 
 import cloudpickle
@@ -384,6 +385,11 @@ class Trainer(Role, metaclass=ABCMeta):
             if not getattr(self, "simulated", False) and hasattr(self, "_sim_now")
             else None
         )
+        # FX-D55: gate on the trace at send time, not the 1 s poller's cached state.
+        _refresh = (getattr(self, "_refresh_avl_state", None)
+                    if os.environ.get("FLAME_SEND_GATE_REFRESH", "1") != "0" else None)
+        if _refresh and not getattr(self, "simulated", False):
+            _refresh()
         if (
             not getattr(self, "simulated", False)
             and self.avl_state == TrainerAvailState.UN_AVL
@@ -395,7 +401,9 @@ class Trainer(Role, metaclass=ABCMeta):
                 )
                 with self._phase("send_gate_wait_s"):
                     while self.avl_state == TrainerAvailState.UN_AVL:
-                        time.sleep(1)
+                        time.sleep(0.1 if _refresh else 1)
+                        if _refresh:
+                            _refresh()
             else:
                 logger.warning(
                     f"Trainer id {self.trainer_id} is unavailable to send weights since wait_until_next_avl = {self.wait_until_next_avl}. Exiting sending weights."

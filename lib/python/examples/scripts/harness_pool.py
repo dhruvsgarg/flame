@@ -25,6 +25,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shlex
 import signal
 import socket
@@ -261,7 +262,7 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                       kind="sim_ev" if tier == "G2S" else "real")]
     if tier == "G1S":  # FX-D42/D43/D44 confirm: felix + fedbuff at the reference n, 45 min, 3 GPUs (7 healthy on jayne)
         bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
-        return [Phase(DS_TAG[ds] + "G1S", bls, "syn_0", runtime_s=2700, n=GPU_N[ds], dataset=ds, harness="none", gpus=3)]
+        return [Phase(DS_TAG[ds] + "G1S", bls, "syn_0", runtime_s=2700, n=GPU_N[ds], dataset=ds, harness="none", gpus=4)]
     if tier == "G0U":  # FX-N9 screen: syn_50 + mobiperf_3st at trace scale 4, EV + logical parity
         return [Phase(f"{DS_TAG[ds]}G0U_{t}", baselines, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds, harness="none", trace_scale="4",
                       **{**G0U_SHAPE[ds], **(G0U_MOBIPERF if t == "mobiperf_3st" else {})})
@@ -274,17 +275,20 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                              lambda pid, t: Phase(pid, baselines, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds,
                                                   harness="none", trace_scale="" if t == "syn_0" else "4",
                                                   **G0U_SHAPE[ds]))
+    if tier == "T3C":  # R7 control: a real replicate per T3 cell (floors flip-boundary forks, FX-L53)
+        return [replace(ph, pid=ph.pid.replace("T3_", "T3C_"), kind="real") for ph in tier_phases("T3", baselines, ds)]
     if tier == "G0UC":  # R7 control: a real replicate per G0U cell (same-code real<->real floor, Q2)
         return [replace(ph, pid=ph.pid.replace("G0U_", "G0UC_"), kind="real") for ph in tier_phases("G0U", baselines, ds)]
     if tier == "G1U":  # FX-N9 long confirm: felix + fedbuff at the reference n on syn_50, production trace timeline
         bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
         # FX-D52: cifar n=300 takes every GPU (3 GPUs OOMed at init).
         return [Phase(DS_TAG[ds] + "G1U_syn_50", bls, "syn_50", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
-                      gpus=3 if ds == "google_speech" else None)]
-    if tier == "G1A":  # FX-N74: accuracy at the reference config on full data
+                      gpus=4 if ds == "google_speech" else None)]
+    if tier in ("G1A", "G1AS"):  # FX-N74: accuracy at the reference config on full data; G1AS = sim legs only
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
-        return [Phase(DS_TAG[ds] + "G1A", baselines, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
-                      trainer_hp=full, agg_hp=full + " evalEveryNRounds=20", gpus=3 if ds == "google_speech" else 4)]
+        return [Phase(DS_TAG[ds] + tier, baselines, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
+                      trainer_hp=full, agg_hp=full + " evalEveryNRounds=20", gpus=4,
+                      **({"kind": "sim_ev"} if tier == "G1AS" else {}))]
     if tier == "G1L":  # FX-N65: felix syn_0 past the 7200s convergence floor, pair + a real replicate
         return [Phase(f"{DS_TAG[ds]}G1L", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds, harness="none"),
                 Phase(f"{DS_TAG[ds]}G1LC", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds,
@@ -367,7 +371,8 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
                 base += ["--sim-ceiling-x", str(ph.sim_ceiling_x)]
             gpu = ph.harness == "none"
             cpus = slot_cpus(ph.n, gpu_per_trainer, 8) if gpu else slot_cpus(ph.n, ph.cpt or per_trainer)
-            mem = (1.0 if gpu else 0.6) * ph.n + 3  # ~0.55 GB per stub trainer (n=120 legs peak ~68 GB)
+            # FX-D59: GPU trainer ~1.2 GB PSS (cifar n=300 ~360 GB); stub ~0.55 GB (n=120 legs peak ~68 GB)
+            mem = (GPU_TRAINER_RAM_GB if gpu else 0.6) * ph.n + (8 if gpu else 3)
             g = (ph.gpus or gpus_per_job) if gpu else 0
             stem = f"{ph.pid}_{b}" if ph.pid.endswith(t) else f"{ph.pid}_{t}_{b}"
             mk = lambda mode, args, deps=(), c=cpus, m=mem, gg=g: Job(
@@ -386,6 +391,30 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
     for j in jobs:
         j.est_s = estimate_s(j, history)
     return jobs
+
+
+GPU_TRAINER_RAM_GB = 1.3  # FX-D59: host RAM per GPU-leg trainer; the pool never co-schedules past the node's RAM
+GPU_TIGHT = 0.85  # FX-D56: a leg peaking above this share of a GPU's memory is one burst from OOM
+
+
+def gpu_peak_note(run_dirs, gpus) -> str:
+    """FX-D56/D59: ' gpu peak U/T GB' over the leg's GPUs and the node's ' ram peak' (resources.log); *_TIGHT above GPU_TIGHT."""
+    peak = ram = None
+    for d in run_dirs:
+        for f in Path(d).glob("*_resources.log"):
+            text = f.read_text(errors="replace")
+            for m in re.finditer(r"GPU(\d+): ([\d.]+)/([\d.]+)GB", text):
+                if int(m.group(1)) in gpus and (peak is None or float(m.group(2)) > peak[0]):
+                    peak = (float(m.group(2)), float(m.group(3)))
+            for m in re.finditer(r"RAM: ([\d.]+)GB / ([\d.]+)GB", text):
+                if ram is None or float(m.group(1)) > ram[0]:
+                    ram = (float(m.group(1)), float(m.group(2)))
+    note = ""
+    if peak:
+        note += f" gpu peak {peak[0]:.1f}/{peak[1]:.0f} GB" + (" GPU_TIGHT" if peak[0] > GPU_TIGHT * peak[1] else "")
+    if ram:
+        note += f" ram peak {ram[0]:.0f}/{ram[1]:.0f} GB" + (" RAM_TIGHT" if ram[0] > GPU_TIGHT * ram[1] else "")
+    return note
 
 
 CPU_HEADROOM = 1.5  # a GPU slot gets >= this x its baseline's measured cores p95
@@ -860,7 +889,8 @@ class Pool:
                     p95 = sorted(r.busy)[int(0.95 * (len(r.busy) - 1))] if r.busy else 0.0
                     sat = sum(b >= CPU_SAT_BUSY * len(r.cpus) for b in r.busy) / max(1, len(r.busy))
                     self.say(f"DONE  {jid} rc={rc}{' STALLED' if r.stalled else ''} {dur / 60:.1f}m (est {r.job.est_s / 60:.1f}m) "
-                             f"cores avg {avg:.1f} p95 {p95:.1f} of {len(r.cpus)}{f' CPU_SAT {sat:.0%}' if sat > 0.05 else ''}")
+                             f"cores avg {avg:.1f} p95 {p95:.1f} of {len(r.cpus)}{f' CPU_SAT {sat:.0%}' if sat > 0.05 else ''}"
+                             f"{gpu_peak_note(leg_run_dirs(r.out), r.gpus)}")
                     jobs_tsv.write(f"{jid}\t{rc}\t{dur:.0f}\t{r.job.est_s:.0f}\t{len(r.cpus)}\t{avg:.2f}\t{p95:.2f}\t{sat:.3f}\n")
                     jobs_tsv.flush()
                     row = _summary_row(r.out)
@@ -923,7 +953,8 @@ class Pool:
         suite = example_dir(j.dataset) / "scripts" / "harness_suite.sh"
         cmd = [*pin, "bash", str(suite), *args, "--output-dir", str(out)]
         (out / "cmd.txt").write_text(shlex.join(cmd) + "\n")
-        env = {**os.environ, "EXPT_AUTOCLEAN": "1", "FLAME_RUN_TAG": tag, "FLAME_RUN_LABEL": j.phase}
+        env = {**os.environ, "EXPT_AUTOCLEAN": "1", "FLAME_RUN_TAG": tag, "FLAME_RUN_LABEL": j.phase,
+               "FLAME_POST_ANALYSIS": "0"}  # FX-D62: nothing reads a leg's plots/
         if not j.whole:
             env["FLAME_AGG_CORES"] = str(8 if j.gpus else agg_cores(j.n))
         proc = subprocess.Popen(cmd, stdout=open(out / "suite.log", "w"), stderr=subprocess.STDOUT,
@@ -1087,6 +1118,8 @@ def main(argv=None) -> int:
     ap.add_argument("--progress-label", default="", help="prefix of the PROGRESS lines (the ladder passes its rung)")
     ap.add_argument("--output-dir", default="")
     ap.add_argument("--smoke", action="store_true", help="every leg 60s, n<=12 (the pool's own gate)")
+    ap.add_argument("--scale-smoke", type=int, default=0, metavar="S",
+                    help="FX-D56: every leg S seconds at its production n, c and GPUs (density/OOM check before a block)")
     ap.add_argument("--gate", action=argparse.BooleanOptionalAction, default=None,
                     help="R19 gate first: pytest --collect-only + a felix smoke pair per dataset; abort on "
                          "failure (default on unless --smoke/--dry-run)")
@@ -1129,6 +1162,9 @@ def main(argv=None) -> int:
             p.runtime_s, p.n = 60, min(p.n, 12)
             p.c = min(p.c, p.n) if p.c else p.c
             p.gpus = 1 if p.harness == "none" else p.gpus
+    if a.scale_smoke:  # FX-D56: production density, short: the first dispatch wave is the memory peak
+        for p in phases:
+            p.runtime_s = min(p.runtime_s, a.scale_smoke)
     history = _load_history()
     jobs = build_jobs(phases, a.cpus_per_trainer, a.gpus_per_job, history, a.gpu_cpus_per_trainer)
     i, n = map(int, a.shard.split("/"))
@@ -1161,7 +1197,7 @@ def main(argv=None) -> int:
     pool.plan(groups)
     if a.dry_run or not jobs:
         return 0
-    if (a.gate is None and not a.smoke) or a.gate:
+    if (a.gate is None and not a.smoke and not a.scale_smoke) or a.gate:
         rc = run_gate(root, datasets, pool)
         if rc:
             return rc

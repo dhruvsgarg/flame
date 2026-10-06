@@ -24,6 +24,7 @@ import argparse
 import ast
 import calendar
 import gc
+import fcntl
 import hashlib
 import logging
 import os
@@ -315,39 +316,8 @@ class PyTorchCifar10Trainer(Trainer):
             if len(self.state_avl_event_ts) > 0:
                 # event timestamps are in sim-seconds since start; compare to
                 # the current sim-time (no speedup_factor in either mode).
-                sim_elapsed = self._sim_now()
-                if sim_elapsed >= self.state_avl_event_ts[0][0]:
-                    due_ts, state_to_set = self.state_avl_event_ts.pop(0)
-                    old_status = self.avl_state.value
-                    try:
-                        self.avl_state = TrainerAvailState(state_to_set)
-                    except ValueError:
-                        logger.error(
-                            f"Invalid status encountered: {state_to_set}. Retaining old status {old_status}."
-                        )
-                        return
-                    new_status = self.avl_state.value
-                    logger.info(
-                        f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}"
-                    )
-                    if telemetry.is_enabled():
-                        # sim_now = the transition's own scheduled trace-time
-                        # (due_ts), not self._sim_now() at processing time --
-                        # correct regardless of catch-up delay, fixing sim
-                        # mode's frozen-clock-during-idle gap at the source.
-                        ev, fields = build_avail_change(
-                            round_num=int(getattr(self, "_round", 0)),
-                            old_state=str(old_status),
-                            new_state=str(new_status),
-                            sim_now=due_ts,
-                        )
-                        telemetry.emit(ev, **fields)
-                    if self.client_notify["enabled"] == "True":
-                        self._perform_channel_state_update(
-                            tag="upload",
-                            state=self.avl_state,
-                            timestamp=str(time.time()),
-                        )
+                with self.__dict__.setdefault("_avl_lock", threading.RLock()):  # FX-D55: poller and send gate both pop
+                    self._pop_due_avl_transition()
             else:
                 logger.debug(
                     f"No availability events pending for trainer {self.trainer_id}"
@@ -359,6 +329,42 @@ class PyTorchCifar10Trainer(Trainer):
                 f"Sleep for 20s before checking again."
             )
             time.sleep(20)
+
+    def _pop_due_avl_transition(self):
+        """Apply the next trace transition if due (caller holds `_avl_lock`)."""
+        sim_elapsed = self._sim_now()
+        if self.state_avl_event_ts and sim_elapsed >= self.state_avl_event_ts[0][0]:
+            due_ts, state_to_set = self.state_avl_event_ts.pop(0)
+            old_status = self.avl_state.value
+            try:
+                self.avl_state = TrainerAvailState(state_to_set)
+            except ValueError:
+                logger.error(
+                    f"Invalid status encountered: {state_to_set}. Retaining old status {old_status}."
+                )
+                return
+            new_status = self.avl_state.value
+            logger.info(
+                f"Changed the availability status of trainer {self.trainer_id} from {old_status} to {new_status}"
+            )
+            if telemetry.is_enabled():
+                # sim_now = the transition's own scheduled trace-time
+                # (due_ts), not self._sim_now() at processing time --
+                # correct regardless of catch-up delay, fixing sim
+                # mode's frozen-clock-during-idle gap at the source.
+                ev, fields = build_avail_change(
+                    round_num=int(getattr(self, "_round", 0)),
+                    old_state=str(old_status),
+                    new_state=str(new_status),
+                    sim_now=due_ts,
+                )
+                telemetry.emit(ev, **fields)
+            if self.client_notify["enabled"] == "True":
+                self._perform_channel_state_update(
+                    tag="upload",
+                    state=self.avl_state,
+                    timestamp=str(time.time()),
+                )
 
     @property
     def data_spec(self) -> "fl_data.DatasetSpec":
@@ -416,6 +422,22 @@ class PyTorchCifar10Trainer(Trainer):
         if self.device is not None and self.device.type == "cuda" and (
                 torch.cuda.memory_reserved(self.device) - torch.cuda.memory_allocated(self.device) > 1 << 30):
             torch.cuda.empty_cache()
+
+    def _acquire_gpu_slot(self):
+        """FX-D58: hold one of `gpu_train_slots` flock slots of this GPU while training (None = uncapped)."""
+        n = int(getattr(self.config.hyperparameters, "gpu_train_slots", 0) or 0)
+        if n <= 0 or self.device is None or self.device.type != "cuda":
+            return None
+        gpu = os.environ.get("CUDA_VISIBLE_DEVICES", "x").split(",")[0]
+        while True:
+            for k in range(n):
+                f = open(f"/dev/shm/flame_{os.getuid()}_gpu{gpu}_train{k}.lock", "a")
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return f
+                except OSError:
+                    f.close()
+            time.sleep(0.05)
 
     def _warmup_device(self) -> None:
         """FX-D15: pay driver/kernel init before any timed task: one dummy train step, weights restored."""
@@ -764,6 +786,7 @@ class PyTorchCifar10Trainer(Trainer):
         # initializes the accumulators, so no init_oort_variables dependency.
         self.reset_local_accuracy()
         _gpu_start = time.time()
+        _gpu_slot = self._acquire_gpu_slot()  # FX-D58: the wait counts as GPU time, as contention does
         # Setup/avail/loader-rebuild overhead before the compute loop.
         _pre_train_s = _gpu_start - _phase_train_entry
         for epoch in range(1, self.epochs + 1):
@@ -799,6 +822,8 @@ class PyTorchCifar10Trainer(Trainer):
         if hasattr(self, 'optimizer') and self.optimizer is not None:
             self.optimizer.zero_grad(set_to_none=True)
         self._release_gpu_cache()
+        if _gpu_slot is not None:
+            _gpu_slot.close()  # after the cache release, so the next holder finds the memory free
 
         # Log memory after training round (no-op unless profiling enabled)
         self.memory_profiler.log_memory_after_round()

@@ -386,6 +386,8 @@ for e_src in cfg.get("experiments", []):
             _k = float(prof["device_time_scale"])
             e["trainer"].setdefault("hyperparameters", {})["training_delay_factor"] = 1.0 / _k
             h["send_timeout_wait_s"] = 90.0 * _k
+        if prof.get("gpu_train_slots") and not harness_mode:  # FX-D58: GPU legs only
+            e["trainer"].setdefault("hyperparameters", {})["gpu_train_slots"] = int(prof["gpu_train_slots"])
         # FX-D23: profiled non-compute charges replace the per-baseline hand constants; SIM_CHARGES=legacy reverts.
         _prof = os.path.join(scr, "..", "sim_charge_profiles",
                              f"{harness_mode or 'gpu'}_{ds_name or 'cifar10'}.yaml")

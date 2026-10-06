@@ -336,7 +336,10 @@ class TrainerSpawner:
             preexec_fn = lambda c=_core_set: os.sched_setaffinity(0, c)
 
         # Build command
-        env = apply_malloc_env(os.environ.copy())
+        # FX-D59: trainers keep glibc defaults; the 4 GB trim pinned ~0.3-0.7 GB/trainer (cifar n=300 + speech n=100 hit 100% RAM).
+        env = os.environ.copy()
+        if env.get("FLAME_MALLOC_TUNE_TRAINERS") == "1":
+            env = apply_malloc_env(env)
         env["CUDA_VISIBLE_DEVICES"] = "" if gpu_id is None else str(gpu_id)
         if self.cpu_pinning and cpu_core is not None:
             # One math thread per pinned core: no oversubscription.

@@ -711,7 +711,12 @@ class TopAggregator(SyncTopAgg):
         to = getattr(sel, "send_timeout_wait_s", None)
         skip = getattr(sel, "ordered_updates_recv_ends", ())
         sent = [t for e, t in dict(getattr(sel, "all_selected", {}) or {}).items() if e not in skip]
-        return min(sent) + float(to) if sent and to else None
+        if not sent or not to:
+            return None
+        # FX-D60: stamps are on the selector's abandon clock (avail clock once a select saw vclock_now), not epoch.
+        now = self._avail_now() if getattr(sel, "_sim_now_s", None) is not None else time.time()
+        due = [t + float(to) - now for t in sent if t + float(to) > now]  # a past-due one is reclaimed by the next select
+        return time.time() + min(due) if due else None
 
     def _with_arrived_ends(self, channel, recv_ends) -> list:
         """FX-L27 (real): also read ends whose update arrived or is still owed, e.g. an abandoned end's late one."""

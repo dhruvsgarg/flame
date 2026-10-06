@@ -79,7 +79,8 @@ section already says.
   aggregators, trainers or a multi-test sweep — local harness or cluster — goes into ONE script the operator
   launches (killing that parent kills every child). The script writes all results under one
   `experiments/<suite>_<ts>/` dir with a summary file; Claude reads that dir afterwards. Claude hands over the
-  command, the expected duration and the prediction (what result confirms and what refutes). **All runs go on
+  command, the expected duration and the prediction (what result confirms and what refutes). Long scripts launch
+  detached (`--detach`, PARITY PL4) so a lost terminal can't kill them. **All runs go on
   jayne only (operator); never launch on kaylee or wash.** Legs run in parallel only in isolated slots (R18).
 - **R5 One mechanism per run** when a fix could perturb another baseline. Shared roots before per-baseline
   roots: a bug failing rungs on 2+ baselines outranks one that fails on 1.
@@ -122,8 +123,8 @@ section already says.
 - **R19 Smoke before hand-off; fail in minutes.** Before handing over any long script, Claude runs its ≤5-min
   smoke itself (the one R4 exception: foreground, hard timeout, one script): `pytest --collect-only` plus one
   short real/sim pair showing commits on both legs. Every long script opens with that gate (campaign: P00)
-  and aborts when it fails. Never hand over a command that has not run end-to-end once at small scale.
-  Every run and test uses the `dg_flame` env (`FLAME_CONDA_ENV`), never the active shell's.
+  and aborts when it fails. Never hand over a command that has not run end-to-end once at small scale, and at
+  production density (PARITY PL3 scale smoke; operator 2026-10-06: Claude runs it). Every run and test uses the `dg_flame` env (`FLAME_CONDA_ENV`), never the active shell's.
 - **R20 One Ctrl+C stops everything.** Every script layer that puts a child in its own process group
   (`set -m`, `setsid`, bare `timeout`) traps INT/TERM, tears that group down (TERM → grace → KILL → name sweep),
   and exits 130 rather than advancing. Otherwise use `timeout --foreground`. Test it with a scripted SIGINT to the
@@ -215,8 +216,8 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
   change sign; a new lowest rung is a deeper mechanism, not a regression.
 - **L23 `[slot]`** Anything keyed on a LEARNED per-trainer value (known delay) is blind to first-contact
   trainers. Key "is it busy / may it complete earlier" on the dispatch itself.
-- **L24 `[ops]`** A test fixture must build config values the way production does (through the config
-  parser). A string `"True"` fixture hid a bool-coerced flag that dropped every real withheld update.
+- **L24 `[ops]`** A test fixture must build values the way production does (config parser, clocks): a string `"True"` fixture
+  hid a bool-coerced flag; epoch stamps hid an avail-clock wake bug that spun real asyncfl for a whole run (FX-D60).
 - **L25 `[measure]`** Grade a single run against the paradigm's own ground truth (registry D, lifecycle
   order, cadence), not just against its twin: two runs can agree on a bug the absolute check catches.
 - **L26 `[ops]`** Every inner composer loop exits on `_work_done`, and the sim wall ceiling is checked
@@ -309,8 +310,8 @@ green (R10).
   gating) but land per example, harness-green each time.
 
 ## Shared built
-- **S0** `dg_flame` → torch 2.12.1+cu129 / torchvision 0.27.1+cu129 (driver 12.9); cu13 libs removed. jayne GPU 1
-  shows an uncorrected ECC error (2026-09-26); operator: work with 7 GPUs for now; `harness_pool.py` skips such GPUs.
+- **S0** `dg_flame` → torch 2.12.1+cu129 / torchvision 0.27.1+cu129 (driver 12.9); cu13 libs removed. jayne: all 8 GPUs
+  ECC-clean on 2026-10-06 (GPU 1 had a volatile ECC error 2026-09-26); `harness_pool.py` skips any GPU that reports one.
 - Parity methodology (causal ladder, roles/tiers, dependency gating), availability substrate v1, and the
   fwdllm floor/control/median grading all landed — derivations in PARITY.md §1-§5, UNAVAILABILITY_DESIGN.md,
   simulate_fwdllm.md §A-§D.

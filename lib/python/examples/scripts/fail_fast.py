@@ -115,12 +115,14 @@ class StallWatch:
     """Early-termination rules for a live leg; only a leg that stopped progressing trips one, never a slow one.
 
     S1 no new `agg_round` event for STALL_NO_ROUND_S (from leg start until the first) · S2 no leg log grew for
-    STALL_SILENT_S. Reads only what the files gained since the last call."""
+    STALL_SILENT_S. Disarmed once the aggregator logs `run_end`: teardown and grading are bounded by the leg's own
+    timeouts (FX-D62). Reads only what the files gained since the last call."""
 
     def __init__(self, t0: float, no_round_s: float = STALL_NO_ROUND_S, silent_s: float = STALL_SILENT_S) -> None:
         self.no_round_s, self.silent_s = no_round_s, silent_s
         self.last_round = self.last_growth = t0
         self.rounds = 0
+        self.ended = False
         self._off: Dict[Path, int] = {}
         self._size: Dict[Path, int] = {}
 
@@ -141,6 +143,8 @@ class StallWatch:
                     self.last_growth = now
                 if f.suffix == ".jsonl":
                     self._read_rounds(f, now)
+        if self.ended:
+            return ""
         if self.no_round_s and now - self.last_round > self.no_round_s:
             return (f"S1 no new agg_round for {(now - self.last_round) / 60:.0f} min "
                     f"({self.rounds} rounds so far; limit {self.no_round_s / 60:.0f} min)")
@@ -158,6 +162,7 @@ class StallWatch:
             return
         end = chunk.rfind(b"\n") + 1
         n = chunk[:end].count(b'"event": "agg_round"')
+        self.ended = self.ended or b'"event": "run_end"' in chunk[:end]
         if n:
             self.rounds += n
             self.last_round = now

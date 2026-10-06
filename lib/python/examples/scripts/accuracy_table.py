@@ -24,8 +24,15 @@ def _agg_events(run_dir):
     f = glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl"))
     if not f:
         return []
-    with open(f[0]) as fh:
-        return [json.loads(line) for line in fh if line.strip()]
+    keep = (b'"agg_eval"', b'"agg_round"', b'"trace_origin"')
+    out, first_start = [], None
+    with open(f[0], "rb") as fh:  # stream + pre-filter: real asyncfl telemetry reaches tens of GB
+        for line in fh:
+            if any(k in line for k in keep):
+                out.append(json.loads(line))
+            elif first_start is None and (b'"dispatch"' in line or b'"selection"' in line):
+                first_start = json.loads(line)
+    return out + ([first_start] if first_start else [])
 
 
 def curve(run_dir):
@@ -92,7 +99,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     hdr = ["phase", "baseline", "trace", "mode", "evals", "max%"] + [f"@{w}m%" for w in WINDOWS_MIN] + ["t→target(min)"]
     out = []
-    legs = [(os.path.basename(r), "", "", r, "") for r in a.runs] + list(rows_from_pools(a.pools))
+    legs = [(os.path.basename(r), "", "", *((r, "") if not r.rstrip("/").endswith("_sim") else ("", r))) for r in a.runs]
+    legs += list(rows_from_pools(a.pools))
     for phase, b, tr, real, sim in legs:
         for mode, d in (("real", real), ("sim", sim)):
             if not d or not os.path.isdir(d):

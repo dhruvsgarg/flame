@@ -30,7 +30,7 @@ from diskcache import Cache
 from ..common.typing import ModelWeights
 from ..common.util import MLFramework, get_ml_framework_in_use, valid_frameworks
 from .abstract import AbstractOptimizer
-from .bn_buffers import clamp_running_var
+from .bn_buffers import clamp_running_var, is_bn_stat
 from .regularizer.default import Regularizer
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,9 @@ class FedBuff(AbstractOptimizer):
 
         self.agg_goal_weights = None
         self.clamp_running_var = str(kwargs.get("clamp_running_var", True)).lower() == "true"  # FX-N64
+        # FX-D61: BN stats = mean of absolute stats (BN at the update's version + delta), outside rate and server lr.
+        self.bn_absolute_mean = str(kwargs.get("bn_absolute_mean", True)).lower() == "true"
+        self._bn_hist, self._bn_sum, self._bn_n, self._version = {}, {}, 0, None
 
         ml_framework_in_use = get_ml_framework_in_use()
         if ml_framework_in_use == MLFramework.PYTORCH:
@@ -206,6 +209,8 @@ class FedBuff(AbstractOptimizer):
                 f"trainer stat_utility: {tres.stat_utility}, rate: {rate}, "
                 f"with agg_rate_type: {self.agg_rate_conf}"
             )
+            self._version = version
+            self._bn_base = self._bn_hist.get(tres.version)
             self.aggregate_fn(tres, rate)
 
         return self.agg_goal_weights
@@ -233,7 +238,14 @@ class FedBuff(AbstractOptimizer):
     ) -> ModelWeights:
         logger.debug(f"base_weights.keys(): {base_weights.keys()}")
 
+        bn = self.bn_absolute_mean and self._version is not None
+        if bn:
+            self._bn_hist.setdefault(self._version, self._bn_copy(base_weights))
         for k in base_weights.keys():
+            if bn and is_bn_stat(k):
+                if self._bn_n:
+                    base_weights[k] = (self._bn_sum[k] / self._bn_n).to(dtype=base_weights[k].dtype)
+                continue
             # agg_goal_weights are already adjusted with rate Using
             # hardcoded learning_rate for now, will pass as an
             # argument later TODO: (DG) Hyper-parameters for AsyncOORT
@@ -278,6 +290,11 @@ class FedBuff(AbstractOptimizer):
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))
             )
+        if bn:  # result = global at version + 1
+            self._bn_hist[self._version + 1] = self._bn_copy(base_weights)
+            for v in [v for v in self._bn_hist if v < self._version - 63]:
+                del self._bn_hist[v]
+        self._bn_sum, self._bn_n = {}, 0
         if self.clamp_running_var and clamp_running_var(base_weights):
             logger.warning("[FEDBUFF_BN] negative running_var clamped to 0 (FX-N64)")
         if base_weights and not getattr(self, "_server_lr_logged", False):  # FX-N15: the server lr in force, once
@@ -295,13 +312,25 @@ class FedBuff(AbstractOptimizer):
             base_weights[idx] += learning_rate * (agg_goal_weights[idx] / agg_goal)
         return base_weights
 
+    @staticmethod
+    def _bn_copy(weights):
+        return {k: v.detach().clone() for k, v in weights.items() if is_bn_stat(k)}
+
     def _aggregate_pytorch(self, tres, rate):
         logger.debug("calling _aggregate_pytorch")
 
         if self.is_agg_weights_none:
             self.agg_goal_weights = {}
 
+        base = getattr(self, "_bn_base", None) if self.bn_absolute_mean else None
+        if base is not None:  # a version older than the ring adds nothing to the BN mean
+            self._bn_n += 1
         for k, v in tres.weights.items():
+            if self.bn_absolute_mean and is_bn_stat(k):
+                if base is not None:
+                    a = base[k].double() + v.double()
+                    self._bn_sum[k] = a if k not in self._bn_sum else self._bn_sum[k] + a
+                v = v * 0  # keeps the key in agg_goal_weights; scale_add sets the mean
             tmp = v * rate
             # tmp.dtype is always float32 or double as rate is float
             # if v.dtype is integer (int32 or int64), there is type

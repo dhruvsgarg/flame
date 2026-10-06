@@ -789,7 +789,7 @@ class ExperimentRunner:
         Best-effort: never raise. Skips silently if no telemetry was produced.
         """
         telemetry_dir = getattr(self, "telemetry_dir", None)
-        if not telemetry_dir or not telemetry_dir.exists():
+        if not telemetry_dir or not telemetry_dir.exists() or os.environ.get("FLAME_POST_ANALYSIS", "1") == "0":
             return
         # repo root: lib/python/flame/launch/runner.py -> parents[4]
         analyzer = (
@@ -806,6 +806,7 @@ class ExperimentRunner:
             subprocess.run(
                 [sys.executable, str(analyzer), str(telemetry_dir)],
                 check=False,
+                timeout=float(os.environ.get("FLAME_POST_ANALYSIS_TIMEOUT_S", 300)),  # FX-D62: run 16 legs hung here
             )
         except Exception as e:
             print(f"  (telemetry analysis failed: {e})")
