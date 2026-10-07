@@ -226,6 +226,14 @@ def spec_for(hp) -> DatasetSpec:
     return SPECS[name]
 
 
+def in_memory(ds: data_utils.Dataset) -> data_utils.Dataset:
+    """Decode a deterministic (test) dataset into tensors once (FX-D64); `FLAME_EVAL_PRELOAD=0` keeps per-sample decode."""
+    if os.environ.get("FLAME_EVAL_PRELOAD", "1") == "0":
+        return ds
+    xs, ys = zip(*(ds[i] for i in range(len(ds))))
+    return data_utils.TensorDataset(torch.stack(xs), torch.as_tensor(ys))
+
+
 def verify(name: str) -> str:
     """Gate check: the dataset resolves and is complete ("<name>: <dir> train=N test=M")."""
     spec = SPECS[name]

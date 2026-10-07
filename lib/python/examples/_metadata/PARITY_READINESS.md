@@ -35,7 +35,7 @@
   `--keep-going`. Across rungs, C0.4 governs.
 - **C4 Logical before timing.** Logical = same steps, same order, timestamps ignored. Timing closes through profiled
   charges, never knob tuning (T3, FX-T31). A logical miss on a timing-red cell is first checked for clock coupling.
-- **C5 Loop per run.** Regrade the run, rewrite the scoreboard and the FELIX accuracy table (`accuracy_table.py`);
+- **C5 Loop per run.** Regrade the run, rewrite the scoreboard, the progress dashboard and the FELIX accuracy table (`accuracy_table.py`);
   group each cell's lowest red by root; apply C1, C6-C8; the next launch states what confirms and refutes each fix.
 - **C6 Correct first, equal second.** Decide which side is wrong from first principles (FL semantics, `third_party/`,
   the stated invariant). A check green because both sides share a bug is a bug.
@@ -101,6 +101,39 @@ python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --si
 
 ---
 
+## Progress dashboard (operator 2026-10-07: rewrite every run, C5)
+
+**Per run.** Open = FX-N items in FELIX Next steps; built = FX-D lines; targets = G1A full-data legs reaching cifar 50% / speech 60%
+on both sides (of 12 baseline × dataset cells). Open items flat while built grows = roots open as fast as they close.
+
+| run / commit | date | pytest pass / fail | open FX-N | built FX-D | INV/EXACT cells green / known / red | baselines at target |
+|---|---|---|---|---|---|---|
+| run 6-8 (`798a0e435`) | 10-01 | n/a | 20 | 31 | L1-L5: 134 / 7 / 5 | not measured |
+| runs 12-14 (`e174fbed6`) | 10-05 | n/a | 17 | 47 | G0U/G0T: 37 / 2 / 11 | not measured |
+| run 16 (`11152ac33`) | 10-06 | 2414 / 0 | 17 | 61 | 9 / 2 / 1 (+5 MISSING) | 1 / 12 (cifar felix) |
+| run 17 (this commit) | 10-07 | 2416 / 0 | 17 | 62 | 14 / 0 / 0 (+2 hand-graded 68/68, 66/66) | 1 / 12 |
+
+**Per baseline × dataset (latest grade).** Parity = INV/EXACT on the latest pair (DIST reds in notes). Accuracy = max % in 90 min,
+real / sim, full data unless *stream* (G2: data 0 → 100% over 3 h, a lower bound).
+
+| baseline | dataset | parity syn_0 | parity unavailability | accuracy real / sim | target |
+|---|---|---|---|---|---|
+| felix | cifar | ✅ G1A 67/67 (run 16) | ✅ T3 syn_50+mobiperf (run 16); 🔴 G0U EV16 (runs 12-14, fix FX-D50 CPU-confirmed; PR18) | 57.0 / 56.3 | ✅ 57 / 60 min |
+| felix | speech | ✅ G1A, K2 1.2%; U6 DIST (FX-D64) | ✅ T3 (run 16); 🔴 G0U EV16 (runs 12-14; PR18) | 40.4 / 50.7 | ❌ lr pair (FX-N74) |
+| fedbuff | cifar | ✅ G1A 66/66, K2 0.3% (run 17) | ✅ T3; 🔴 G0U EV16 + mobiperf K4 (runs 12-14; PR18) | 34.7 / 38.1 | ❌ |
+| fedbuff | speech | ✅ G1A; DIST phase timings, U6 | ✅ T3; 🔴 G0U mobiperf 5 vs 8 rounds (FX-D52; PR18) | 48.3 / 52.1 | ❌ lr pair (FX-N74) |
+| refl | cifar | ✅ G1A 68/68, K2 2% (run 17) | ✅ T3 syn_50 on T3C floor (run 17); 🟡 G0U A2 KS 0.24 | 44.5 / 44.1 | ❌ rising at 90 min |
+| refl | speech | ✅ G1A; U6 DIST (FX-N70) | ✅ T3 syn_50 (run 17) | 38.7 / 39.7 | ❌ |
+| oort | cifar | ✅ G2 (L7) | 🔴 G0U mobiperf EV1, 2 rounds (FX-D52; PR18) | *stream* 37.7 / 31.4 | n/a (stream) |
+| oort | speech | ✅ G2 (run 13) | ⬚ PR18 | *stream* 60.7 / 57.2 | 🟡 real 80 min, stream; G1A PR18 |
+| oort_star | cifar | ✅ L6 G0 | 🔴 G0T lin syn_50 K3b 21.8 vs 16.6 s (FX-N9) | ⬚ | ⬚ |
+| oort_star | speech | ✅ L6 G0 | ⬚ PR18 | ⬚ | ⬚ |
+| feddance | cifar | ✅ G2 on sim↔sim floor (FX-D37) | ✅ G0U (runs 12-14) | *stream* 16.6 / 35.4 | ❌ |
+| feddance | speech | ⬚ FX-N5 (PR18) | ⬚ PR18 | *stream* 21.5 / 45.2 | ❌ |
+
+**This session (2026-10-07):** closed 3 (FX-D64 eval stall; real/sim-only legs graded as MISSING; accuracy window) · opened 0 ·
+confirmed 4 (FX-D60, D61, D63; T3C floor).
+
 ## Felix scoreboard
 
 Green / known / red on INV/EXACT (`--grade <pool> --regrade --max-stage 9`; DIST gated only by floors, Q4).
@@ -114,7 +147,8 @@ oort speed identity FX-N73).
 | pool (run) | g / k / r | reds and roots |
 |---|---|---|
 | run 16 A `block_20261006_run16/a_async`: T3 felix+fedbuff syn_50 + mobiperf, both datasets | 6 / 2 / 0 | FX-D50 holds; known = fedbuff mobiperf S1 timing (FX-N62) |
-| run 16 A `…/a_refl`: T3 refl syn_50 + mobiperf, both datasets | 3 / 0 / 1 | **FX-D55 confirmed** (real gates 3 updates at the 150 s flip); cifar syn_50 S1/S8 red: a 0.45 s offset forks one task across the flip (FX-L53) → T3C floor |
+| run 17 `block_20261006_1943`: A T3 felix+fedbuff syn_0 · T3+T3C refl syn_50, both datasets | 8/0/0 · 4/0/0 | refl syn_50 green on its T3C floor (FX-L53 fork closed); real-only legs no longer read "sim MISSING" |
+| run 17 B G1A speech felix+fedbuff · G1AS cifar refl+fedbuff sims vs run 16 reals | 2/0/0 · 68/68, 66/66 | **FX-D60/61/63 confirmed**: real telemetry 2.5 MB/min, 0 BN clamps, evals every 20 rounds; speech felix K2 1.2%; DIST U6 red on both = real eval stall (FX-D64) |
 | run 16 B G1A (accuracy, full data) | regraded by hand | **cifar felix 67/67 green** (K2 0.6%, both reach 50%); speech fedbuff K2 0.4%, K3b/U3 green, DIST phase timings + U6 red; speech refl green but U6 (FX-N70); speech felix sim EV14 = NaN eval (FX-D61); 5 legs MISSING: S2 cut in post-run analysis (FX-D62) |
 | runs 12-14 G0U cifar (n=50) on G0UC floors | 9 / 0 / 3 | fedbuff syn_50 EV16 + mobiperf K4 (FX-D50, CPU-confirmed); oort mobiperf EV1, 2 rounds (FX-D52) |
 | runs 12-14 G0U speech (n=50) | 0 / 0 / 4 | felix + fedbuff EV16 (FX-D50, CPU-confirmed); fedbuff mobiperf 5 vs 8 rounds (FX-D52) |
@@ -131,17 +165,13 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR17 · Run 17, ~5.5h on jayne · `run_block_20261007.sh` in tmux `dg_flame`** (phase 0 smoked: `smoke_run17_s0`, cifar
-  pair 1.0, real telemetry 46 MB/min; speech sim EV12 = 5-min wall ceiling, as run 16). 0 (40 min): PL3 felix scale smoke, aborts the block.
-  A (~25 min, CPU): T3 + T3C refl syn_50, T3 felix+fedbuff syn_0, both datasets. B: G1A speech felix + fedbuff pairs (~3h, 2 legs at a
-  time), then G1AS cifar refl + fedbuff sim legs (~45 min, graded by hand against run 16's real legs). No leg starts past T0+5.8h.
-  *Confirms:* FX-D60 — real felix/fedbuff aggregator telemetry ≈ G1L's 50 MB/min, `slot_starvation` < 5/s, speech U6 smaller;
-  FX-D61 — 0 `[FEDBUFF_BN]` clamps, finite test loss, speech felix ≥ 30% by 60 min and rising; FX-D62 — no MISSING/STALLED after `run_end`;
-  FX-D63 — evals every 20 rounds; T3C floor covers the cifar refl syn_50 fork. *Refutes:* speech felix finite but flat → felix's rate ×
-  server lr 1.0 is too strong under staleness (in-process lr sweep, operator call); telemetry still > 100 MB/min → a second spin source.
-  Afterwards: `accuracy_table.py --runs …`, regrade each pool (C5).
-- **PR18 · next:** cifar felix/fedbuff real G1A re-run (their run 16 real legs ran the spin); GPU G0U + G0UC all six (FX-N9); G1U n=300;
-  speech oort/feddance G1A.
+- **PR18 · Run 18, ~9h on jayne · `run_block_20261008.sh --detach`** (pytest 2416/0/7). 0 (~16 min): PL3 scale smoke speech G0U n=50 +
+  speech G1A oort, aborts the block. A (~100 min): cifar G0U + G0UC all six (GPU) ∥ T3 oort/oort_star/feddance syn_50 + mobiperf, both
+  datasets (CPU). B (~140 min): speech G0U + G0UC syn_50, all six. C: G1A speech oort + feddance, then cifar fedbuff (spin-free real); no leg
+  starts past T0+9.3h. *Confirms:* FX-D50/D55/D60 on GPU — G0U INV/EXACT green on G0UC floors, EV16/EV10 green; FX-D64 — real queue_wait
+  max < 2 s on speech G1A, U6 mean_diff < 0.1 s; FX-N5 speech feddance INV/EXACT green. *Refutes:* G0U EV16/K4 red on a fresh floor → a GPU-only
+  withhold/delivery root; U6 still red with no eval-time queue spikes → a second ingest cost (FX-N70). Afterwards: `accuracy_table.py`, regrade (C5).
+- **PR19 · next:** G0U mobiperf speech; G1U n=300; speech felix/fedbuff G1A on the operator's lr decision (FX-N74).
 
 **Operator decisions / open**
 - Decided (2026-10-06): Claude runs the PL3 scale smoke and launches the block in tmux `dg_flame`; every block opens with phase 0 and aborts itself on failure.

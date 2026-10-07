@@ -72,6 +72,13 @@ def test_real_only_control_is_not_sim_missing(tmp_path):
     assert s[("gs_G0C_syn_0", "felix")] == ("green", "") and s[("gs_G0C_syn_0", "oort")] == ("red", "real EV0")
     root = _pool(tmp_path / "g0", "G0_syn_0", [("syn_0", "felix", "PASS", "MISSING")])
     assert _status(lad.grade_pool(root, 99))[("G0_syn_0", "felix")] == ("red", "sim MISSING")
+    # Run 17: T3C read "sim MISSING"; G1AS (sim-only) grades its sim leg alone.
+    for ph in ("T3C_syn_50", "G0UC_syn_50", "gs_G2C_syn_0"):
+        root = _pool(tmp_path / ph, ph, [("syn_50", "refl", "PASS", "MISSING")])
+        assert _status(lad.grade_pool(root, 99))[(ph, "refl")] == ("green", "")
+    root = _pool(tmp_path / "s", "G1AS", [("syn_0", "refl", "MISSING", "PASS"), ("syn_0", "fedbuff", "-", "FAIL:EV14")])
+    s = _status(lad.grade_pool(root, 99))
+    assert s[("G1AS", "refl")] == ("green", "") and s[("G1AS", "fedbuff")] == ("red", "sim EV14")
 
 
 def test_interrupt_waits_for_pool_teardown(tmp_path):

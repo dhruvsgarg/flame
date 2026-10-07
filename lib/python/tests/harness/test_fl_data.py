@@ -62,3 +62,22 @@ def test_incomplete_speech_copy_is_refused(tmp_path):
     (tmp_path / "yes" / "a_nohash_0.wav").write_bytes(b"")
     with pytest.raises(RuntimeError, match="incomplete copy"):
         fl_data.SpeechCommands("training", root=tmp_path)
+
+
+class _Decoded(torch.utils.data.Dataset):
+    def __len__(self):
+        return 5
+
+    def __getitem__(self, i):
+        return torch.full((1, 3), float(i)), i % 2
+
+
+def test_in_memory_matches_per_sample_decode(monkeypatch):
+    """FX-D64: the aggregator's test set is decoded once, not per eval in the thread that shares ingest's GIL."""
+    ds = fl_data.in_memory(_Decoded())
+    assert isinstance(ds, torch.utils.data.TensorDataset) and len(ds) == 5
+    for i in range(5):
+        x, y = ds[i]
+        assert torch.equal(x, _Decoded()[i][0]) and int(y) == i % 2 and y.dtype == torch.int64
+    monkeypatch.setenv("FLAME_EVAL_PRELOAD", "0")
+    assert isinstance(fl_data.in_memory(_Decoded()), _Decoded)

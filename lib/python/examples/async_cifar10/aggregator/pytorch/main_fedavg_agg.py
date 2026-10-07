@@ -115,12 +115,13 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
             dataset = self.data_spec.test()
             if self.harness_mode == "tiny_cpu":
                 dataset = torch.utils.data.Subset(dataset, list(range(n_test)))
+            dataset = fl_data.in_memory(dataset)  # FX-D64: per-sample decode in the eval thread stalled real ingest
 
         test_kwargs = {
             "batch_size": self.batch_size,
             "shuffle": False,
             "num_workers": 0,  # Changed from 2 to 0 - reduces CPU RAM usage
-            "pin_memory": True,  # Use pinned memory for faster CPU->GPU transfers
+            "pin_memory": False,  # FX-D64: pinning an in-memory test set cost 2 s per speech eval
         }
 
         self.test_loader = torch.utils.data.DataLoader(dataset, **test_kwargs)

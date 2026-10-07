@@ -36,10 +36,10 @@ def _agg_events(run_dir):
 
 
 def curve(run_dir):
-    """[(t_s, round, acc)] on the leg's own clock."""
+    """([(t_s, round, acc)], leg end t_s) on the leg's own clock."""
     ev = _agg_events(run_dir)
     if not ev:
-        return []
+        return [], None
     sim = run_dir.rstrip("/").endswith("_sim")
     evals = [e for e in ev if e.get("event") == "agg_eval" and e.get("test-accuracy") is not None]
     if sim:
@@ -59,16 +59,19 @@ def curve(run_dir):
 
         def t_of(e):
             return e["ts"] - t0
-    return [(t, e["round"], float(e["test-accuracy"])) for e in evals if (t := t_of(e)) is not None]
+    rounds_ev = [e for e in ev if e.get("event") == "agg_round" and e.get("round") is not None]
+    end = (pts[-1][1] if pts else None) if sim else max((t_of(e) for e in rounds_ev), default=None)
+    return [(t, e["round"], float(e["test-accuracy"])) for e in evals if (t := t_of(e)) is not None], end
 
 
-def summarize(c, target):
+def summarize(c, target, end=None):
     if not c:
         return None
-    out = {"n_evals": len(c), "max_acc": max(a for _, _, a in c), "last_t_min": c[-1][0] / 60}
+    end = max(end or 0, c[-1][0])  # a window counts once the leg ran ~through it, not its last eval
+    out = {"n_evals": len(c), "max_acc": max(a for _, _, a in c), "last_t_min": c[-1][0] / 60, "end_min": end / 60}
     for w in WINDOWS_MIN:
         prior = [a for t, _, a in c if t <= w * 60]
-        out[f"acc@{w}m"] = prior[-1] if prior and c[-1][0] >= w * 60 * 0.95 else None
+        out[f"acc@{w}m"] = prior[-1] if prior and end >= w * 60 * 0.95 else None
     hit = next((t for t, _, a in c if a >= target), None)
     out["t_to_target_min"] = hit / 60 if hit is not None else None
     return out
@@ -105,7 +108,8 @@ def main(argv=None):
         for mode, d in (("real", real), ("sim", sim)):
             if not d or not os.path.isdir(d):
                 continue
-            s = summarize(curve(d), TARGETS[dataset_of(d)])
+            c, end = curve(d)
+            s = summarize(c, TARGETS[dataset_of(d)], end)
             if s is None:
                 continue
             out.append({"phase": phase, "baseline": b, "trace": tr, "mode": mode, "run_dir": d, **s})

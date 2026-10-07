@@ -214,6 +214,7 @@ for trace in $TRACES; do
       if [ -n "$sim_dir" ]; then ev_sim="$(_event_verdict "$ev_json" $i)"; fi
     fi
     [ "$MODE" = sim ] && [ "$GRADE_ONLY" = 0 ] && ev_real="-"
+    [ "$MODE" = real ] && [ "$GRADE_ONLY" = 0 ] && ev_sim="-"  # real-only control (T3C, G0UC): no sim leg by design
     # FX-L24: a healthy own real leg joins the bank; a sim-only leg borrows the matching one.
     if [ "$real_src" = own ] && [[ "$ev_real" != MISSING ]] && [ "$timed_out" = 0 ]; then
       mapfile -d '' key < <(_bank_key "$trace" "$b")

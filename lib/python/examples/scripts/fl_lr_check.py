@@ -68,7 +68,7 @@ def run_pair(spec, train, test_idx, test, splits, client_lr, server_lr, a, gpu, 
     glob_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
     rng = random.Random(a.seed)
     names = sorted(splits)
-    opt_cls = torch.optim.Adam if spec.optimizer == "adam" else torch.optim.SGD
+    opt_cls = torch.optim.Adam if (a.optimizer or spec.optimizer) == "adam" else torch.optim.SGD
     test_loader = data_utils.DataLoader(data_utils.Subset(test, test_idx), batch_size=256)
     t0, hist = time.time(), []
     opt_f = _flame_opt(a, server_lr, bn_absolute_mean) if a.flame_opt else None
@@ -132,6 +132,7 @@ def main(argv=None):
     ap.add_argument("--rounds", type=int, default=30)
     ap.add_argument("--k", type=int, default=10, help="updates per round (aggGoal)")
     ap.add_argument("--batch", type=int, default=32)
+    ap.add_argument("--optimizer", choices=["sgd", "adam"], help="trainer optimizer (default: the dataset's)")
     ap.add_argument("--rate", type=float, default=0.88, help="per-update weight (felix 'new' rate ~0.88; fedbuff 1)")
     ap.add_argument("--eval-every", type=int, default=5)
     ap.add_argument("--test-n", type=int, default=2000)

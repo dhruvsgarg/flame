@@ -72,8 +72,9 @@ KNOWN: Tuple[Tuple[str, Tuple[str, ...], str, str], ...] = (
 )
 # Phases whose sim leg must FAIL a named check (injected bugs; P4 = the cold-start-gate-off control, FX-D8).
 EXPECTED_FAIL = {"P11a": "EV10", "P11b": "EV16", "P11c": "EV3", "P4": "EV10"}
-# Real-only phases (harness_pool kind="real"): no sim leg by design, graded on the real leg's EV.
-REAL_ONLY = ("G0C_",)
+# Real-only / sim-only phases (harness_pool kind="real" / "sim_ev"): graded on the one leg they run.
+REAL_ONLY = ("G0C_", "G0UC_", "T3C_", "G2C_")
+SIM_ONLY = ("G1AS", "G2S")
 
 
 def _known(check: str, baseline: str, where: str) -> Optional[str]:
@@ -209,7 +210,8 @@ def grade_pool(root: Path, max_stage: int) -> List[Cell]:
             where = f"{tr} {phase}"
             red, known = [], []
             want = EXPECTED_FAIL.get(bare)
-            sides = ("ev_real",) if bare.startswith(REAL_ONLY) else ("ev_real", "ev_sim")
+            sides = ("ev_real",) if bare.startswith(REAL_ONLY) else \
+                ("ev_sim",) if bare.startswith(SIM_ONLY) else ("ev_real", "ev_sim")
             ev = _regraded_ev(f.parent, tr, b)
             for side in sides:
                 fails = ev[side] if side in ev else _ev_fails(r.get(side, ""))
