@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Run 18 (~9h on jayne, 8 GPUs): GPU unavailability screen on all six after FX-D50/D55/D60/D64 (FX-N9), then the long legs.
-# Phase 0 (~16 min): PL3 scale smoke of the new shapes: speech G0U n=50 (2 GPUs), speech G1A oort (sync, SGD, n=100).
+# Phase 0 (~16 min): PL3 scale smoke of the new shapes: speech G0U n=50 (2 GPUs), speech G1A oort + felix (SGD, n=100).
 #   cifar G1A n=300 was smoked in run 17 (felix, same density).
 # Phase A (~100 min): cifar G0U + G0UC all six (GPU) | T3 sync oort/oort_star/feddance x syn_50 + mobiperf, both datasets (CPU).
 # Phase B (~140 min): speech G0U + G0UC syn_50, all six (first speech floors).
-# Phase C (rest; no leg starts past T0+9.3h): G1A speech oort + feddance pairs (FX-N74, FX-N5), then cifar fedbuff (spin-free real).
+# Phase C (rest; no leg starts past T0+9.3h): G1A speech felix + fedbuff on SGD 0.04 b16 (FX-N74), then oort + feddance (FX-N5).
 # After: scripts/accuracy_table.py <pool dirs>  and  parity_ladder.py --grade <pool> --regrade --max-stage 9  (C5).
 # Usage: run_block_20261008.sh [--detach] [OUT_DIR]; BLOCK_PHASES="0" runs phase 0 only.
 # --detach survives a lost terminal; stop with: kill -INT -- -$(cat OUT/PGID). Ctrl+C stops a foreground run.
@@ -46,7 +46,7 @@ has() { [[ " $PHASES " == *" $1 "* ]]; }
 
 if has 0; then
   pool s0_gs_g0u "${SPEECH[@]}" --tier G0U,G0UC --baselines felix --traces syn_50 --scale-smoke 300
-  pool s0_gs_g1a "${SPEECH[@]}" --tier G1A --baselines oort --scale-smoke 300
+  pool s0_gs_g1a "${SPEECH[@]}" --tier G1A --baselines "oort felix" --scale-smoke 300
   bad=$(grep "DONE  s0_.*rc=[1-9]" "$OUT/BLOCK.log")
   bad+=$(ls "$OUT"/s0_*/ABORT.txt "$OUT"/s0_*/*/*/STALLED.txt 2>/dev/null)
   bad+=$(grep -h "GPU_TIGHT\|RAM_TIGHT\|SKIP " "$OUT"/s0_*/pool.log 2>/dev/null)
@@ -72,7 +72,7 @@ if has B; then
 fi
 
 if has C; then
-  pool c_gs_g1a "${SPEECH[@]}" --tier G1A --baselines "oort feddance" --deadline-h "$(left_h)"
-  pool c_cifar_g1a "${CIFAR[@]}" --tier G1A --baselines fedbuff --deadline-h "$(left_h)"
+  pool c_gs_g1a_async "${SPEECH[@]}" --tier G1A --baselines "felix fedbuff" --deadline-h "$(left_h)"
+  pool c_gs_g1a_sync "${SPEECH[@]}" --tier G1A --baselines "oort feddance" --deadline-h "$(left_h)"
 fi
 say "BLOCK DONE"

@@ -167,11 +167,11 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 - **PR18 · Run 18, ~9h on jayne · `run_block_20261008.sh --detach`** (pytest 2416/0/7). 0 (~16 min): PL3 scale smoke speech G0U n=50 +
   speech G1A oort, aborts the block. A (~100 min): cifar G0U + G0UC all six (GPU) ∥ T3 oort/oort_star/feddance syn_50 + mobiperf, both
-  datasets (CPU). B (~140 min): speech G0U + G0UC syn_50, all six. C: G1A speech oort + feddance, then cifar fedbuff (spin-free real); no leg
-  starts past T0+9.3h. *Confirms:* FX-D50/D55/D60 on GPU — G0U INV/EXACT green on G0UC floors, EV16/EV10 green; FX-D64 — real queue_wait
-  max < 2 s on speech G1A, U6 mean_diff < 0.1 s; FX-N5 speech feddance INV/EXACT green. *Refutes:* G0U EV16/K4 red on a fresh floor → a GPU-only
+  datasets (CPU). B (~140 min): speech G0U + G0UC syn_50, all six. C: G1A speech felix + fedbuff on SGD 0.04 b16 (FX-N74), then oort +
+  feddance; no leg starts past T0+9.3h. *Confirms:* FX-D50/D55/D60 on GPU — G0U INV/EXACT green on G0UC floors, EV16/EV10 green; FX-D64 — real queue_wait
+  max < 2 s on speech G1A, U6 mean_diff < 0.1 s; FX-N5 speech feddance INV/EXACT green; speech felix/fedbuff ≥ 55% at 90 min (in-process r120: 49%), oort full ≥ its streamed 60.7%. *Refutes:* G0U EV16/K4 red on a fresh floor → a GPU-only
   withhold/delivery root; U6 still red with no eval-time queue spikes → a second ingest cost (FX-N70). Afterwards: `accuracy_table.py`, regrade (C5).
-- **PR19 · next:** G0U mobiperf speech; G1U n=300; speech felix/fedbuff G1A on the operator's lr decision (FX-N74).
+- **PR19 · next:** G0U mobiperf speech; G1U n=300; cifar fedbuff G1A (spin-free real).
 
 **Operator decisions / open**
 - Decided (2026-10-06): Claude runs the PL3 scale smoke and launches the block in tmux `dg_flame`; every block opens with phase 0 and aborts itself on failure.

@@ -34,10 +34,11 @@ def test_google_speech_profile(generator_source, tmp_path, monkeypatch, baseline
 
 @pytest.mark.parametrize("baseline", ["felix", "fedbuff"])
 def test_speech_async_server_lr_and_cifar_fedbuff_batch(generator_source, tmp_path, monkeypatch, baseline):
-    """FX-N74: speech felix/fedbuff run Adam 0.000195 x server lr 1.0; cifar fedbuff keeps 2024's batch 32."""
+    """FX-N74: speech felix/fedbuff run SGD 0.04 b16 x server lr 0.5 / 1.0; cifar fedbuff keeps 2024's batch 32."""
     e = _one(generator_source, tmp_path, monkeypatch, baseline, DATASET="google_speech")
-    assert e["aggregator"]["config_overrides"]["optimizer"]["kwargs"]["learning_rate"] == 1.0
-    assert e["trainer"]["hyperparameters"]["learningRate"] == 0.000195
+    assert e["aggregator"]["config_overrides"]["optimizer"]["kwargs"]["learning_rate"] == {"felix": 0.5, "fedbuff": 1.0}[baseline]
+    hp = e["trainer"]["hyperparameters"]
+    assert (hp["trainerOptimizer"], hp["learningRate"], hp["batchSize"]) == ("sgd", 0.04, 16)
     monkeypatch.delenv("DATASET", raising=False)
     c = _one(generator_source, tmp_path, monkeypatch, baseline)
     assert "learning_rate" not in c["aggregator"]["config_overrides"].get("optimizer", {}).get("kwargs", {})

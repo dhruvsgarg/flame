@@ -178,11 +178,12 @@ G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). 
 **Unblock map.** FX-D50 + FX-D55 (CPU-confirmed, runs 15-16) → GPU G0U/G0UC, then G1U → speech FX-N9. FX-N70 (refl) + FX-N5 (speech feddance floor) →
 FX-N11. FX-N12 also needs FX-N13 (ST6) and P8 (speech sim is GPU-bound).
 
-- **FX-N74 `[C]` · Every baseline reaches its target on full data, both sides · wip: speech lr pair (operator decision).** Accuracy table above.
+- **FX-N74 `[C]` · Every baseline reaches its target on full data, both sides · wip: run 18 G1A speech on SGD (PR18).** Accuracy table above.
   Cifar felix reaches 50% (57/60 min); every other G1A row is below target at 90 min (speech 40-52%, cifar fedbuff 32-38%, refl 44%).
   Speech oort (SGD 0.04, b16) reached 60.7% at 80 min even streaming. In-process (`fl_lr_check.py --staleness 5 --flame-opt felix`, 40
-  rounds): Adam 0.000195 × 1.0 8-15%, unstable (loss 4.5 at r40); SGD 0.04 b16 × 0.5 → 23%, monotone. *Next:* operator picks the speech
-  felix/fedbuff pair; G1A speech oort/feddance (PR18). *Exit:* G1A real and sim reach target per baseline, or a named root; real↔sim acc
+  rounds, then 120): at r120 Adam 0.000195 × 1.0 = felix 26.8 / fedbuff 33.6%; SGD 0.04 b16 × 0.5 = 49.2 / 39.5%, × 1.0 = 41.3 (swings) /
+  49.5%. Streamed oort's 60.7% is SGD + sync, not streaming (no same-baseline stream vs full pair yet). *Next:* run 18 G1A speech felix/fedbuff
+  on SGD (operator 2026-10-07) and oort/feddance (PR18). *Exit:* G1A real and sim reach target per baseline, or a named root; real↔sim acc
   diff within the real↔real floor.
 - **FX-N9 · GPU unavailability: syn_50 → mobiperf_3st, all six · wip: CPU confirmed (run 16 T3: async 6/2/0, FX-D55 gates real at flips); GPU G0U + G1U next.**
   Cifar G0U 9/0/3 on G0UC floors; syn_20 G0 green (L6). Open: cifar refl T3 syn_50 S1/S8 (a 0.45 s clock offset after 72 rounds puts one
@@ -237,8 +238,9 @@ update is accepted only under the baseline's own rule (REFL staleness ≤ 5; oor
 - REFL staleness: paper default is no bound (≤ 5 only in its §3.2 study); kept `stale_update: 5` (operator).
 - Oort/FedDance/REFL defer other knobs to FedScale defaults, which include lr decay 0.98/10; decay kept off except REFL (operator rule).
 - 2024 pairs (git 97cede899): cifar felix SGD 0.04 × server 0.3, fedbuff SGD 0.000195 (batch 32) × 40.9 — kept; speech felix Adam
-  0.04 × 0.065, fedbuff Adam 0.000195 × 0.075 — replaced by Adam 0.000195 × server 1.0 on both, the only pair that learns in our windows (FX-T27, FX-N74).
-- The SGD papers' speech values run with `trainerOptimizer: sgd`; felix/fedbuff keep the dataset's Adam.
+  0.04 × 0.065, fedbuff Adam 0.000195 × 0.075 — replaced (operator 2026-10-07) by oort's speech client, SGD 0.04 b16, × server 0.5 (felix) / 1.0
+  (fedbuff), as cifar felix shares oort's client (FX-T27, FX-N74).
+- Every speech baseline now trains with `trainerOptimizer: sgd`; the dataset default (Adam) is unused on speech.
 - Models differ from some papers (REFL/FedDance use ResNet18 on CIFAR-10; ours is CifarNet), so their lrs are a starting point, not a guarantee.
 
 ## Felix lessons (dos)
@@ -440,8 +442,8 @@ update is accepted only under the baseline's own rule (REFL staleness ≤ 5; oor
 - **FX-T39** Don't stack two eval gates (round modulo, then a commit stride): evals landed every 2N rounds (FX-D63).
 
 **Datasets**
-- **FX-T27** Don't take speech lr pairs from the 2024 configs as-is: server lr 0.065/0.075 (felix Adam 0.04 or 0.000195) stays at chance
-  for 300+ updates (`fl_lr_check.py`, FX-N74).
+- **FX-T27** Don't take speech lr pairs from the 2024 configs as-is (server lr 0.065/0.075 stays at chance), or run speech felix/fedbuff on
+  Adam: under staleness it oscillates (felix 27% at r120 vs SGD 49%, `fl_lr_check.py`, FX-N74).
 - **FX-T30** Don't name a trace by intent; name it by its measured full-day unavailable fraction (the old "syn_20" was
   10.8%, FX-D18).
 
