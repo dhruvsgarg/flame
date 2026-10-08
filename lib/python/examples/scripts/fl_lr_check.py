@@ -143,9 +143,9 @@ def main(argv=None):
     ap.add_argument("--utility", type=float, default=600.0, help="stat_utility fed to the felix rate")
     a = ap.parse_args(argv)
     spec = fl_data.SPECS[a.dataset]
-    split_file = {"google_speech": "google_speech_alpha0.1_n100.yaml"}.get(a.dataset)
+    split_file = {"google_speech": "google_speech_alpha0.1_n100.yaml", "cifar10": "cifar10_alpha0.1_n300.yaml"}.get(a.dataset)
     if split_file is None:
-        sys.exit("only google_speech has a stored split here")
+        sys.exit(f"no stored split for {a.dataset}")
     raw = yaml.safe_load(open(SPLITS / split_file))["trainer_data_splits"]
     train, test = Cached(spec.train()), Cached(spec.test())
     test_idx = random.Random(0).sample(range(len(test)), min(a.test_n, len(test)))

@@ -185,3 +185,11 @@ def test_sync_barrier_zero_progress_when_all_delays_known_upfront():
     out = agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=len(SCTS))
     assert len(ch.recv_calls) == 1  # single barrier call
     assert len(out) == len(SCTS)  # drained the whole cohort, no shortfall
+
+
+def test_oort_never_awaits_an_end_queued_for_cleanup():
+    # Run 18 speech oort syn_50 sim: a stale-rejected straggler stayed in selected_ends, was re-probed, and with a
+    # newly picked end of unknown delay the barrier blocked forever.
+    ch = RecordingChannel(SCTS, SCRAMBLED)
+    ch._selector = type("S", (), {"ordered_updates_recv_ends": ["t3"]})()
+    assert OortAgg._awaited_ends(ch, ["t1", "t3", "t4"]) == ["t1", "t4"]

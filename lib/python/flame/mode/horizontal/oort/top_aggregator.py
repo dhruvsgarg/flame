@@ -132,7 +132,8 @@ class TopAggregator(BaseTopAggregator):
             while True:
                 # C.2: re-inject any withheld update whose delivery_ts has arrived
                 # (no-op when the gate is off ⇒ pop loop unchanged, byte-identical).
-                self._sim_reinject_ready_withheld()
+                self._sim_reinject_ready_withheld(
+                    horizon=buf.peek_min_ts() if self._sim_lookahead_on() else None)  # FX-D70
                 popped = buf.pop_min()
                 if popped is None:
                     break
@@ -183,6 +184,16 @@ class TopAggregator(BaseTopAggregator):
             for _e, _sct, _payload in held_over:
                 buf.add(_e, _sct, _payload)
 
+    def _sim_lookahead_on(self) -> bool:
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        return str(getattr(hp, "sim_reinject_lookahead", True)).lower() == "true"
+
+    @staticmethod
+    def _awaited_ends(channel, end_ids):
+        """Ends queued for cleanup already returned their update; awaiting them deadlocks the sim barrier (FX-D66)."""
+        returned = set(getattr(channel._selector, "ordered_updates_recv_ends", ()))
+        return [e for e in end_ids if e not in returned]
+
     def _aggregate_weights(self, tag: str) -> None:
         """
         Aggregate local model weights, accepting K trainers out of
@@ -230,6 +241,7 @@ class TopAggregator(BaseTopAggregator):
             _acc = self._sync_accepted_ends()
             end_ids = [e for e in end_ids if e not in _acc]
             total = getattr(self, "_sync_total", 0)
+        end_ids = self._awaited_ends(channel, end_ids)
 
         # In-flight residence tracking: record the round each trainer
         # entered the in-flight set so cleanup can emit per-straggler residence. A
@@ -347,6 +359,8 @@ class TopAggregator(BaseTopAggregator):
                         self._inflight_commit_staleness[end] = staleness
                         self._inflight_commit_fresh[end] = False
                         channel._selector.ordered_updates_recv_ends.append(end)
+                        if end in end_ids:
+                            end_ids.remove(end)
                         logger.info(
                             f"[CLEANUP_STALE] Added stale trainer ...{end[-8:]} to cleanup queue. "
                             f"trainer_round={trainer_round}, current_round={self._round}, staleness={staleness}, "
@@ -471,6 +485,8 @@ class TopAggregator(BaseTopAggregator):
                         self._inflight_commit_staleness[end] = staleness
                         self._inflight_commit_fresh[end] = False
                         channel._selector.ordered_updates_recv_ends.append(end)
+                        if end in end_ids:
+                            end_ids.remove(end)
                         logger.info(
                             f"[CLEANUP_STALE] (loop2) Added stale trainer ...{end[-8:]} to cleanup queue. "
                             f"trainer_round={trainer_round}, current_round={self._round}, staleness={staleness}, "

@@ -74,7 +74,9 @@ def test_pool_aborts_on_a_fatal_leg(tmp_path):
     pool = _load("harness_pool")
     out, _ = _leg(tmp_path, "gs_G0_syn_20_felix_real", **{"x_trainers.log": OOM})
     p = pool.Pool(tmp_path, [], 1, 0, 0, 1, False)
-    r = SimpleNamespace(out=out, job=SimpleNamespace(jid="gs_G0_syn_20_felix_real"))
+    r = SimpleNamespace(out=out, job=SimpleNamespace(jid="gs_G0_syn_20_felix_real"), stalled="S1")
+    assert not p._fatal(r) and not p.aborted  # FX-N75: a stall-killed leg's teardown never aborts
+    r.stalled = ""
     assert p._fatal(r) and p.aborted
     assert "gs_G0_syn_20_felix_real" in (tmp_path / "ABORT.txt").read_text()
     q = pool.Pool(tmp_path / "q", [], 1, 0, 0, 1, False, fail_fast=False)

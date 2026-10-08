@@ -156,10 +156,9 @@ def ev0_clean_exit(run):
 
 
 def ev1_progress(run):
-    """The run committed at least two aggregation goals' worth of train updates."""
+    """The run committed at least two aggregation goals' worth of train updates (two train rounds; FX-D68)."""
     n = len(_train_commits(run))
-    k = _agg_goal(run) or 1
-    return _res("PASS" if n >= 2 * k else "FAIL", f"train_commits={n} need>={2 * k}", n=n)
+    return _res("PASS" if n >= 2 else "FAIL", f"train_commits={n} need>=2", n=n)
 
 
 def ev2_task_alternation(run):

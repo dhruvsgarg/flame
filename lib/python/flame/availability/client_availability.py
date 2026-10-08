@@ -706,7 +706,7 @@ class ClientAvailability:
         while True:
             # FX-D50: a delivery due before the next buffered sct commits first, as real's opened send-gate.
             if lookahead and buf.peek_min_ts() is not None:
-                self._sim_reinject_ready_withheld(horizon=buf.peek_min_ts())
+                self._sim_reinject_ready_withheld(horizon=self._sim_next_event_ts(buf.peek_min_ts()))
             popped = buf.pop_min()
             if popped is None:
                 return None
@@ -714,6 +714,14 @@ class ClientAvailability:
             if self._sim_withhold_if_unavail(channel, end, sct, msgmd):
                 continue
             return popped
+
+    def _sim_next_event_ts(self, bmin: float) -> float:
+        """Lookahead horizon: the buffered min, capped by the earliest expected in-flight completion (FX-D69)."""
+        inflight = getattr(self, "_sim_inflight_expected", None)
+        if not inflight:
+            return bmin
+        now = self._vclock.now if hasattr(self, "_vclock") else self._avail_now()
+        return min([bmin] + [t for e, t in inflight.items() if t > now and e not in getattr(self, "_sim_committed", ())])
 
     def _sim_take_withheld_delivering(self, end: str) -> Optional[tuple]:
         """Pop (orig_sct, delivery_ts) if `end`'s commit is a late withheld delivery.
@@ -942,8 +950,8 @@ class ClientAvailability:
         buf = getattr(self, "_sim_buffer", None)
         committed = getattr(self, "_sim_committed", set())
         for end in list(inflight):
-            if buf is not None and buf.has(end):
-                continue  # update already arrived in buffer — not stalled
+            if buf is not None and buf.has(end) and end not in buf.pending_after(now):
+                continue  # complete by now; a future sct is still computing (FX-D71)
             if end in committed or end in self.pending_withheld:
                 continue  # invariant 1: already committed / registered
             trace = self.trainer_event_dict.get(end)

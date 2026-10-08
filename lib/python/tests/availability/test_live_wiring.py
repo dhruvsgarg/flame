@@ -635,3 +635,30 @@ def test_async_held_withhold_clears_recvd_so_the_slot_stays():
     assert ch._ends["t1"].get_property(KEY_END_STATE) == VAL_END_STATE_NONE
     AsyncSelectorBase._drop_recvd(sel.selected_ends["agg"], ch._ends)
     assert sel.holds("t1") and "t1" in h._withheld_slot_held
+
+
+def test_boundary_evict_buffered_update_still_computing():
+    # Run 19 speech felix: a sim payload arrives at once with a future sct; UN_AVL mid-compute must still be evicted.
+    h, sel, ch = _setup_abandon(_AsyncSelector, inflight_tracker=True)
+    h._now, h.proactive_inflight_evict = 150.0, True
+    ch.set_end_property("t1", PROP_SIM_SEND_TS, 140.0)
+    h._sim_buffer.add("t1", 180.0, _payload("t1"))      # completes at 180 > now
+    h._sim_evict_unavail_inflight(ch)
+    assert not sel.holds("t1") and "t1" in h.pending_withheld
+
+
+def test_boundary_evict_skips_buffered_update_already_complete():
+    h, sel, ch = _setup_abandon(_AsyncSelector, inflight_tracker=True)
+    h._now, h.proactive_inflight_evict = 150.0, True
+    h._sim_buffer.add("t1", 120.0, _payload("t1"))      # completed at 120 <= now
+    h._sim_evict_unavail_inflight(ch)
+    assert sel.holds("t1") and "t1" not in h.pending_withheld
+
+
+def test_lookahead_horizon_stops_at_earlier_inflight():
+    # Run 19 speech fedbuff EV16: a delivery due at 200 must not jump an in-flight trainer expected at 180.
+    h = _Harness({"t1": _DOWN}, now=150, inflight_tracker=True)
+    h._sim_inflight_expected["t2"] = 180.0
+    assert h._sim_next_event_ts(250.0) == 180.0
+    h._sim_inflight_expected["t2"] = 140.0              # already past: no cap
+    assert h._sim_next_event_ts(250.0) == 250.0

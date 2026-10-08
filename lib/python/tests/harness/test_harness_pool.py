@@ -251,3 +251,11 @@ def test_gpu_slots_sized_from_their_own_cores_p95_and_pairs_match():
     hist = {hp_.cores_key(real): [100.0]}
     jobs = {j.jid: j for j in hp_.build_jobs([ph], 1.0, 1, hist, gpu_per_trainer=0.2)}
     assert jobs["G0T_x_syn_0_refl_sim"].cpus == hp_.slot_cpus(50, 0.4, 8)  # never above the 0.4 default
+
+
+def test_merge_skips_a_phase_that_never_started(tmp_path):
+    # FX-N75 (run 18 A): an aborted pool's merge() crashed writing G0UC_*/summary.tsv.
+    jobs = [_job("a_sim", 10), pool.Job("b_sim", "Q", "syn_0", "felix", "sim", [], 10, 100, "stub", 10, 1.0, 0, (), 10, "b")]
+    (tmp_path / "P").mkdir()
+    pool.Pool(tmp_path, jobs, 1, 0, 0, 900, False).merge()
+    assert "MISSING" in (tmp_path / "P" / "summary.tsv").read_text() and not (tmp_path / "Q").exists()

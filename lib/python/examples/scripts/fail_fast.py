@@ -107,14 +107,15 @@ class Scanner:
         return found
 
 
-STALL_NO_ROUND_S = 15 * 60  # S1: no new agg_round (no committed version) for this long
+STALL_NO_ROUND_S = 15 * 60  # S1: no new agg_round (no committed version) or abandon_timeout for this long
 STALL_SILENT_S = 10 * 60    # S2: no leg log grew for this long
 
 
 class StallWatch:
     """Early-termination rules for a live leg; only a leg that stopped progressing trips one, never a slow one.
 
-    S1 no new `agg_round` event for STALL_NO_ROUND_S (from leg start until the first) · S2 no leg log grew for
+    S1 no new `agg_round` or `abandon_timeout` event for STALL_NO_ROUND_S (from leg start until the first; abandons are progress,
+    FX-D67) · S2 no leg log grew for
     STALL_SILENT_S. Disarmed once the aggregator logs `run_end`: teardown and grading are bounded by the leg's own
     timeouts (FX-D62). Reads only what the files gained since the last call."""
 
@@ -146,7 +147,7 @@ class StallWatch:
         if self.ended:
             return ""
         if self.no_round_s and now - self.last_round > self.no_round_s:
-            return (f"S1 no new agg_round for {(now - self.last_round) / 60:.0f} min "
+            return (f"S1 no new agg_round or abandon for {(now - self.last_round) / 60:.0f} min "
                     f"({self.rounds} rounds so far; limit {self.no_round_s / 60:.0f} min)")
         if self.silent_s and now - self.last_growth > self.silent_s:
             return f"S2 no leg log grew for {(now - self.last_growth) / 60:.0f} min (limit {self.silent_s / 60:.0f} min)"
@@ -165,6 +166,7 @@ class StallWatch:
         self.ended = self.ended or b'"event": "run_end"' in chunk[:end]
         if n:
             self.rounds += n
+        if n or b'"event": "abandon_timeout"' in chunk[:end]:
             self.last_round = now
         self._off[f] = off + end
 

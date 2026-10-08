@@ -34,16 +34,17 @@ def test_google_speech_profile(generator_source, tmp_path, monkeypatch, baseline
 
 @pytest.mark.parametrize("baseline", ["felix", "fedbuff"])
 def test_speech_async_server_lr_and_cifar_fedbuff_batch(generator_source, tmp_path, monkeypatch, baseline):
-    """FX-N74: speech felix/fedbuff run SGD 0.04 b16 x server lr 0.5 / 1.0; cifar fedbuff keeps 2024's batch 32."""
+    """FX-N74: speech felix/fedbuff run SGD 0.04 b16 x server lr 0.5 / 1.0; cifar fedbuff SGD 0.04 b32 x 1.0, cifar felix keeps the table lr."""
     e = _one(generator_source, tmp_path, monkeypatch, baseline, DATASET="google_speech")
     assert e["aggregator"]["config_overrides"]["optimizer"]["kwargs"]["learning_rate"] == {"felix": 0.5, "fedbuff": 1.0}[baseline]
     hp = e["trainer"]["hyperparameters"]
     assert (hp["trainerOptimizer"], hp["learningRate"], hp["batchSize"]) == ("sgd", 0.04, 16)
     monkeypatch.delenv("DATASET", raising=False)
     c = _one(generator_source, tmp_path, monkeypatch, baseline)
-    assert "learning_rate" not in c["aggregator"]["config_overrides"].get("optimizer", {}).get("kwargs", {})
+    server_lr = c["aggregator"]["config_overrides"].get("optimizer", {}).get("kwargs", {}).get("learning_rate")
+    assert server_lr == {"felix": None, "fedbuff": 1.0}[baseline]
     if baseline == "fedbuff":
-        assert c["trainer"]["hyperparameters"]["batchSize"] == 32
+        assert (c["trainer"]["hyperparameters"]["learningRate"], c["trainer"]["hyperparameters"]["batchSize"]) == (0.04, 32)
 
 
 def test_shape_goes_through_agg_goal_and_only_async_gets_c(generator_source, tmp_path, monkeypatch):
@@ -67,3 +68,9 @@ def test_speech_device_time_scale_scales_d_and_timeout(generator_source, tmp_pat
     c = _one(generator_source, tmp_path, monkeypatch, "fedbuff", DATASET="cifar10")
     assert "training_delay_factor" not in c["trainer"].get("hyperparameters", {})
     assert "send_timeout_wait_s" not in c["aggregator"]["config_overrides"]["hyperparameters"]
+
+
+def test_trainer_hp_beats_by_baseline(generator_source, tmp_path, monkeypatch):
+    # Run 20: --trainer-hp learningRate=0.05 lost to speech refl's by_baseline 0.005 (the launcher prefers trainer.hyperparameters).
+    e = _one(generator_source, tmp_path, monkeypatch, "refl", DATASET="google_speech", TRAINER_HP="learningRate=0.05")
+    assert e["trainer"]["hyperparameters"]["learningRate"] == 0.05

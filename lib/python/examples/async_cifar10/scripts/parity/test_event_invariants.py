@@ -166,6 +166,14 @@ def test_ev11_sub_slack_pastdating_fails(tmp_path):
     assert _status(_write_run(tmp_path, agg, tr), "EV11_vclock") == "FAIL"
 
 
+def test_ev1_counts_rounds_not_updates(tmp_path):
+    # Two rounds pass at any agg_goal (old 2 x agg_goal failed oort syn_50 at 8 rounds, K=5, on both sides).
+    agg, tr = _clean_run()
+    assert _status(_write_run(tmp_path, agg, tr, hp={"aggGoal": 5}), "EV1_progress") == "PASS"
+    one = [e for e in agg if e["event"] != "agg_round"] + [next(e for e in agg if e["event"] == "agg_round")]
+    assert _status(_write_run(tmp_path / "b", one, tr), "EV1_progress") == "FAIL"
+
+
 def test_ev12_short_run_fails(tmp_path):
     run = _write_run(tmp_path, *_clean_run(), hp={"max_experiment_runtime_s": 1000})
     assert _status(run, "EV12_reached_budget") == "FAIL"

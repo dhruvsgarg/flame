@@ -28,12 +28,12 @@
 ## Status grid (scoreboard)
 
 Run-by-run green/known/red, open/closed items and per-baseline parity + accuracy: [PARITY_READINESS.md](PARITY_READINESS.md) → Progress dashboard, Felix scoreboard.
-pytest: 2416 passed · 0 failed · 7 skipped (2026-10-07, with FX-D64).
+pytest: 2420 passed · 0 failed · 7 skipped (2026-10-07, with FX-D68).
 
 **Accuracy table (FX-N74; `scripts/accuracy_table.py --runs <run dirs>`)** — test accuracy % at time on the leg's own clock (real
 wall, sim vclock), syn_0, reference n. Targets: cifar 50%, speech 60%. G1A = full data (run 16, `block_20261006_run16`; evals every 40
 rounds; run 17 `block_20261006_1943` speech + cifar G1AS sims, evals every 20 rounds, FX-D63; run 18 `block_20261007_0424_run18/c_gs_g1a_async`
-speech felix/fedbuff on SGD 0.04 b16); G2 rows stream data (0 → 100% over 3 h: lower bounds). `-` = no eval in that window.
+speech on SGD 0.04 b16); G2 rows stream data (0 → 100% over 3 h: lower bounds). `-` = no eval in that window.
 
 | dataset · baseline | leg | real: @30 / @60 / @90 min · max | sim: same | note |
 |---|---|---|---|---|
@@ -42,8 +42,12 @@ speech felix/fedbuff on SGD 0.04 b16); G2 rows stream data (0 → 100% over 3 h:
 | cifar · fedbuff | G1A | 20.0 / 24.0 / 32.7 · 34.7 | 23.1 / 31.5 / 31.7 · 38.1 | below target both sides; K2 0.3% |
 | cifar · oort, feddance | G2 stream (`block_20261003_1311`, `pr12_cifar_20261003_0322`) | oort 24.8 @60 · 37.7; feddance · 16.6 | oort · 31.4; feddance · 35.4 | |
 | speech · fedbuff | G1A SGD (run 18) | 40.8 / 54.6 / 59.1 · 60.2 | 42.5 / 55.9 / 64.0 · 64.0 | **target at 82 min real, 88 sim** (Adam run 16: 48.3 / 52.1) |
-| speech · refl | G1A | 3.9 / 29.3 / 38.7 · 38.7 | 3.9 / 31.0 / - · 39.7 | 82 rounds in 90 min (65 s/round, K fresh) |
+| speech · refl | G1A | 3.9 / 29.3 / 38.7 · 38.7 | 3.9 / 31.0 / - · 39.7 | Adam (run 16); 82 rounds in 90 min (65 s/round, K fresh) |
+| speech · refl | G1AS SGD (runs 19, 21) | — | 0.005 (paper): 21.8 / 31.3 / 43.7 · 43.7; 0.05 (repo): 25.4 / 40.7 / 53.0 · 53.0 | rising at 90 min, below 60% |
+| cifar · fedbuff | G1AS SGD 0.04 × 1.0 (run 21, FX-D73) | — | 39.6 / 46.0 / 56.4 · 56.4 | **sim target at 63 min** |
 | speech · felix | G1A SGD (run 18) | 41.5 / 58.8 / 67.5 · 67.5 | 46.0 / 56.0 / 68.1 · 68.1 | **target at 72 min both sides** (Adam run 16-17: 40.4 / 50.7) |
+| speech · oort | G1A SGD (run 18 `c_gs_g1a_sync`) | 25.8 / 44.1 / 50.8 · 50.8 | 18.8 / 45.3 / 55.1 · 55.1 | below target; 102 / 113 rounds (52 / 48 s/round, FX-N73) |
+| speech · feddance | G1A SGD (run 18) | 3.7 / 28.8 / 28.8 · 28.8 | 3.7 / 27.7 / 27.7 · 27.7 | round-bound: 38 rounds at 142 s/round both sides |
 | speech · oort, feddance | G2 stream (`block_20261004_0543/gs_g2`) | oort **60.7 at 80 min**; feddance · 21.5 | oort · 57.2; feddance · 45.2 | |
 
 **Cross-cutting capabilities**
@@ -176,40 +180,67 @@ pool tiers T1-T4: real aggregator + trainer processes over MQTT on CPU (stub/tin
 by the event checker and the parity battery. GPU tests = G0 (30 min screen at n 100/50, + G0C real replicates) and
 G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). "CPU+GPU" = one pool run with both.
 
-**Unblock map.** FX-D50 + FX-D55 (CPU-confirmed, runs 15-16) → GPU G0U/G0UC, then G1U → speech FX-N9. FX-N70 (refl) + FX-N5 (speech feddance floor) →
-FX-N11. FX-N12 also needs FX-N13 (ST6) and P8 (speech sim is GPU-bound).
+**Unblock map.** FX-D50 + FX-D55 (CPU-confirmed, runs 15-16) → GPU G0U/G0UC, then G1U → speech FX-N9. FX-N70 (refl) → FX-N11 (speech feddance green at G1A, run 18). FX-N12 also needs FX-N13 (ST6) and P8 (speech sim is GPU-bound).
 
-- **FX-N74 `[C]` · Every baseline reaches its target on full data, both sides · wip: speech felix + fedbuff reach 60% on SGD (run 18); oort/feddance running.** Accuracy table above.
+- **FX-N74 `[C]` · Every baseline reaches its target on full data, both sides · wip: speech felix + fedbuff reach 60% on SGD (run 18); oort 51/55%, feddance 28%.** Accuracy table above.
   **Run 18 (SGD 0.04 b16):** speech felix 67.5 / 68.1 (60% at 72 min both), fedbuff 60.2 / 64.0 (82 / 88 min); parity timing-only reds
   (phase_weights_to_ram, commit_visibility; fedbuff + phase_gpu_compute). Cifar felix reaches 50% (57/60 min); still below target at 90 min:
   cifar fedbuff 32-38%, cifar refl 44%, speech refl 39% (Adam).
   Speech oort (SGD 0.04, b16) reached 60.7% at 80 min even streaming. In-process (`fl_lr_check.py --staleness 5 --flame-opt felix`, 40
   rounds, then 120): at r120 Adam 0.000195 × 1.0 = felix 26.8 / fedbuff 33.6%; SGD 0.04 b16 × 0.5 = 49.2 / 39.5%, × 1.0 = 41.3 (swings) /
   49.5%. Streamed oort's 60.7% is SGD + sync, not streaming (no same-baseline stream vs full pair yet). *Next:* grade run 18 speech
-  oort/feddance G1A (`c_gs_g1a_sync`, ETA ~12:05 10-07); then SGD for speech refl and a cifar fedbuff/refl lr check. *Exit:* G1A real and sim reach target per baseline, or a named root; real↔sim acc
+  **Run 18 sync:** speech oort 50.8 / 55.1 (full data, below its streamed 60.7: one leg each, evals every 20 rounds); feddance 28.8 / 27.7
+  on 38 rounds at 142 s/round (score 1.0). **Root (named, by design):** feddance is sync `aggr_num=10 ×1.0` (no overcommit) with a
+  speed-blind selector, so each round waits for the slowest of 10 picks under the speech D ×5 tail (136 s median vs oort's 46 s: 16 picked,
+  first 10 commit). Reaching 60% needs a longer window — operator call. Speech refl's config is already its paper SGD 0.005 b20 (39% was
+  Adam): run 19 G1AS screens it. In-process cifar fedbuff (`fl_lr_check`, now cifar-capable): all four pairs near chance at r120 — too few
+  rounds; *next:* 1000 rounds (~9 min on a free GPU). *Exit:* G1A real and sim reach target per baseline, or a named root; real↔sim acc
   diff within the real↔real floor.
 - **FX-N9 · GPU unavailability: syn_50 → mobiperf_3st, all six · wip: CPU confirmed (run 16 T3: async 6/2/0, FX-D55 gates real at flips); GPU G0U + G1U next.**
   Cifar G0U 9/0/3 on G0UC floors; syn_20 G0 green (L6). Open: cifar refl T3 syn_50 S1/S8 (a 0.45 s clock offset after 72 rounds puts one
   0.75 s task on either side of the 150 s flip, FX-L53: run 17 T3C floors it); fedbuff K4 + oort mobiperf length (FX-D52); oort_star G0T lin
-  syn_50 K3b 21.8 vs 16.6 s; refl syn_50 A2 KS 0.24. Run 18: G0U/G0UC GPU confirm lost to FX-N75 (rerun); new stalls: cifar oort mobiperf
-  real 0 rounds in 16 min, speech oort syn_50 sim 2 rounds then 15 min idle. Run 18 T3 oort/oort_star/feddance: mobiperf 5/6 green (speech
+  syn_50 K3b 21.8 vs 16.6 s; refl syn_50 A2 KS 0.24. Run 18: G0U/G0UC GPU confirm lost to a pool abort (FX-D65; rerun PR19); both oort stalls rooted: cifar
+  mobiperf real was healthy (picks = sim's through 720 s; sim's round 1 at 734 s) and cut by S1 (FX-D67); speech syn_50 sim deadlocked
+  re-probing a stale-rejected straggler (FX-D66). **Confirmed** (`pr19pre_oort_g0u_20261007_1329`, regrade 2/0/0): cifar mobiperf
+  174 / 191 rounds, 12 / 12 abandons (was 0 rounds; red since runs 12-14); speech syn_50 8 / 8 rounds, 3 / 3 abandons. DIST only: cifar
+  convergence_loss (4 evals); speech preferred_duration (9 rounds), trainer_trace_fidelity_sim 0.88 vs 0.95 (sim trainers pop several
+  flips at once on a vclock jump).
+  **Run 19 speech G0U syn_50 (pre-floor):** refl, feddance INV/EXACT green; fedbuff sim EV16 + commit_promptness (INV): 0373's withheld
+  delivery committed 13.3 s before delivery_ts — the FX-D50 lookahead horizon is the buffered min only, an in-flight trainer expected
+  earlier (1486.7) is ignored and the clock clamp then holds T_v below dts; totals 35 / 35 rounds, 51.4 s/round both (window-only
+  timing reds). oort_star commit_promptness (INV): 2 deliveries committed 70 s late — `_oort_sim_recv` reinjects without the FX-D50
+  lookahead, so a later buffered sct commits first. *Fix (one rule):* deliveries due before min(buffered min, earliest in-flight
+  expected) commit first, in both stacks.
+  **Run 19 speech felix G0U syn_50:** EV + logic green; timing red, sim 17.7 vs real 15.3 s/round (overlap 13.9 vs 15.8) though real
+  trainers are ~1.4 s slower each (FX-N73). Root: felix's boundary eviction (D.1) skips any trainer whose payload is buffered, and sim
+  payloads arrive at once with a future sct — so sim evicts 24 vs real 109 and holds slots of trainers that went UN_AVL mid-compute.
+  *Fix:* skip only buffered updates already complete (`sct <= now`, `buf.pending_after`). Real's eviction telemetry reads age 0 (no
+  `PROP_SIM_SEND_TS` in real) — stamp the real send ts.
+  **Run 20 confirm (`block_20261007_1802_run20`):** FX-D69 fedbuff sim EV16 PASS; FX-D70 oort_star commit_promptness 10/10 at slack 0;
+  FX-D71 felix evictions 98 sim vs 104 real, eviction→commit p50 150 vs 157 s; cifar felix syn_50 1.0 (no regression). **Felix speech
+  throughput gap remains** (sim 107 vs real 122 rounds): time-weighted in-flight 13.5 sim vs 15.0 real at c=15, though both report 15
+  at every selection — sim slots sit empty between selections. *Next:* per-slot idle timeline (commit → re-dispatch vclock) in sim.
+  Run 20 speech G0U on run 19 floors: INV/EXACT logic green on felix/fedbuff/oort_star; timing reds remain beyond tight floors (fedbuff
+  0.011: 37/35 rounds; oort_star 0.069: 14/14 rounds, 19% s/round). Cifar fedbuff syn_50 sim unchanged by FX-D69 (30 rounds both runs);
+  real 36 → 33 rounds — sim 10-17% slow at n=50, green only on its floor.
+  Felix idle-slot clues (run 20): commit → next dispatch mean 1.34 s sim vs 0.58 real (p50 0.12 vs 0.01); selections finding the cap
+  full (chose 0, eligible > 0) 22% sim vs 13% real — sim holds a slot ~0.8 s longer per commit and more slots look busy at selection. Run 18 T3 oort/oort_star/feddance: mobiperf 5/6 green (speech
   feddance overhead_residual); syn_50 0/6 (eligibility, avail_timebase, duty_cycle_duration, overhead_residual). *Exit:* A1-A8/K11 + the syn_0 ladder green; withheld updates delivered; AVL_EVAL and
   empty-pool cleanup counted on mobiperf_3st; G1U n=300 INV/EXACT green.
-- **FX-N75 `[S]` · A stall-kill aborts the whole pool · todo (fix after run 18; PL5).** Run 18 A (cifar G0U, 5/48 legs) and B (speech
-  G0U syn_50, 10/24) died the same way: S1 killed one leg (cifar oort mobiperf real, 0 rounds in 16 min; speech oort syn_50 sim, 2 rounds),
-  its dying trainers printed `Fatal Python error: _enter_buffered_busy … at interpreter shutdown, possibly due to daemon threads`, and
-  fail-fast (FX-D22) read that teardown noise as fatal → ABORT; then `merge()` crashed on a missing `G0UC_*/summary.tsv`, so no SUMMARY.
-  *Fix:* fail-fast skips a leg the pool itself killed (or allowlists the shutdown signature); `merge()` skips phases with no dir. Separate
-  roots: the two oort stalls (FX-N9). *Exit:* a stalled leg kills only itself; pool finishes and writes SUMMARY.
 - **FX-N70 `[C][S]` · Real refl ingest on 29 MB updates · wip: FX-D64 not enough (run 18).** Run 18 speech G1A real queue_wait max 10.96 s felix
   (341 > 1 s), 6.81 s fedbuff (59 > 1 s) vs the < 2 s confirm: a second ingest cost remains. Run 16 speech G1A refl: queue_wait p99 0.74 s (was 4.3; 5 updates > 1 s),
-  ingest 138 ms/update (13/round), K2 green; U6 red: real visibility lag 0.18 s vs sim 0. *Next:* profile it into a sim charge or floor it
-  (G2C). *Exit:* U6 green or floor-SKIP.
-- **FX-N5 · syn_0 GPU block (G2), speech feddance · todo: speech G2 feddance + G2S floor (PR17).** Speech oort/refl INV/EXACT green at D ×5 (run 13); cifar
-  done. *Exit:* speech feddance INV/EXACT green or floor-SKIP.
-- **FX-N73 `[C]` · Selector speed includes the transfer leg in real only · todo (operator decision).** Real oort/refl duration = dispatch→receipt
-  (speech ~1.4 s of 29 MB transfer); sim speed = max(gpu, D), leg kept out by FX-D23. Speech oort: preferred-duration median 16.35 vs 15.0 s,
-  2/47 fast trainers outside speed identity; selection bias/participation green. C6: real Oort's duration includes comm. *Exit:* decided; speed identity green.
+  ingest 138 ms/update (13/round), K2 green; U6 red: real visibility lag 0.18 s vs sim 0. **Run 18 profile (speech G1A real `agg_timing`):**
+  ingest per 10-update commit p50 2.5 s / p90 9.4 s / max 24 s felix, p50 1.4 s fedbuff; no trend over the run. 25/45 felix spikes (> 8 s)
+  fall within 60 s after an eval (base rate 14%): the eval forward still shares the aggregator's cores with ingest (FX-D64 removed only
+  the decode). C6: a deployment's eval doesn't stall ingest → fix real: eval off the ingest path (own process/GPU). Felix's extra ~0.12
+  s/update over fedbuff is unexplained (BN ring, FX-D61?). *Next:* move eval off the ingest path; per-update ingest split. *Exit:* U6 green or floor-SKIP.
+- **FX-N73 `[C]` · Sim selector speed and clock miss real trainer-side costs · todo (decided: C13 — model them).**
+  Run 20 speech felix: real per-update duration p50 = D + 0.1 s, mean D + 0.7-1.4 s from outlier rounds — real pads only GPU time to D,
+  so trainer pre/post-train work lands on top (0388 r58: GPU 3.37 s, **post 16.79 s**, sleep 6.63 s); sim advances max(gpu, D) and its
+  selector sees exactly D. Sim post p50 0.025 / mean 0.08 vs real 0.022 / 0.30. *Fix:* sim duration = pre + max(gpu, D) + post as
+  measured (clock and selector), leg profile without the post part; then root the real post outliers (cache release under contention?). Earlier
+  evidence: speech oort preferred-duration median 16.35 vs 15.0 s; run 18 G1A fast trainers ~1.1 s slower real, 51.9 vs 47.7 s/round.
+  *Exit:* speed identity green; real post-train outliers rooted.
 - **FX-N10 · google_speech on the launcher · wip: lr fixed (FX-N74); stop rule next.** *Next:* target accuracy + stop rule (2024: 20 evals
   ≥ 60%); then S4 removes the 2024 JSON/scripts and the import script. *Exit:* all six real+sim graded on speech (T4 CPU + G1/G2 GPU).
 - **FX-N13 · Streaming experiments (linear + events), both datasets · wip: ST5 cifar done; speech G0T felix eve green, lin EV10 fixed (FX-D50).**
@@ -562,6 +593,24 @@ IDs are kept because code comments cite them.
 - **FX-D64** Aggregators decode the test set into tensors once at load (`fl_data.in_memory`; `FLAME_EVAL_PRELOAD=0` reverts) and don't pin it:
   the eval thread's per-wav decode held the GIL ~7.5 s per speech eval, so real ingest waited up to 19.5 s at each eval (run 17 G1A felix,
   148 waits > 1 s, 96 within 90 s of an eval); now 4.7 s once at load, 0.08 s per pass. `tests/harness/test_fl_data.py`.
+- **FX-D66** Oort-stack sync never awaits an end already on the cleanup queue (`_awaited_ends`; stale-reject drops it from the pass):
+  run 18 speech oort syn_50 sim re-probed a stale-rejected straggler (105 s wall wait, then a block with no timeout once a new pick had no
+  cached delay). `test_sim_barrier.py`.
+- **FX-D67** StallWatch S1 counts `abandon_timeout` as progress: unaware oort on mobiperf cycled 8 × 90 s abandons (identical in sim)
+  and was cut 14 s before round 1. `test_stall_watch.py`.
+- **FX-D72** `--trainer-hp` also overwrites a key the by_baseline layer set in `trainer.hyperparameters` (the launcher prefers it over
+  `config_overrides`): run 20's speech refl lr 0.05 screen ran at 0.005 (PL7 caught it). `test_debug_run_dataset_profile.py`.
+- **FX-D73** Cifar fedbuff trains SGD 0.04 b32 × server lr 1.0 (`datasets.yaml`; FX-N74): in-process r1000 53.1% vs the 2024 pair's 32.2%.
+- **FX-D69** Asyncfl's FX-D50 lookahead horizon = min(buffered min, earliest in-flight expected completion) (`_sim_next_event_ts`): run 19
+  speech fedbuff committed a withheld delivery 13 s before its delivery_ts. `test_live_wiring.py`.
+- **FX-D70** The oort sync stack reinjects withheld deliveries with the FX-D50 lookahead (`sim_reinject_lookahead`): run 19 speech oort_star
+  committed two 70 s late. `test_live_wiring.py` (shared helper).
+- **FX-D71** Felix boundary eviction (D.1) skips a buffered update only once complete (`sct <= now`): sim payloads arrive at once with a
+  future sct, so run 19 speech felix sim evicted 24 vs real 109 and ran 14% slow. `test_live_wiring.py`.
+- **FX-D68** EV1 needs two train rounds, not 2 × agg_goal rounds (it counted rounds against an update count; unaware oort syn_50
+  failed at 8 rounds on both sides). `test_event_invariants.py`.
+- **FX-D65** A stall-killed leg skips fail-fast (its post-SIGTERM `_enter_buffered_busy` teardown aborted run 18 A/B); `merge()` skips unstarted
+  phases. `test_fail_fast.py`, `test_harness_pool.py`.
 - **FX-D43** Trainer `_release_gpu_cache` also runs after the util_cf telemetry forward (256 samples left 2.4 GB reserved per idle trainer; felix's
   skewed picks left ~10 hoarders per GPU → speech felix real OOM at 35 min, run 11; run 12 G1S ran 45 min clean). `test_release_gpu_cache.py`.
 - **FX-D41** Trainer `evaluate()` resets the utility and runs under `no_grad`: it summed onto the last task's utility (eval utilities read ~5% high) and

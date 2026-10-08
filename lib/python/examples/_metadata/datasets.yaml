@@ -28,8 +28,9 @@ datasets:
                                     lrDecayEpoch: 10, minLearningRate: 0.00005}}
       feddance:  # [paper] FedDance SoCC'25 Table 1 CIFAR-10: lr 0.1, batch 24, 1 local step; no decay described
         trainer: {hyperparameters: {learningRate: 0.1, batchSize: 24}}
-      fedbuff:   # [ours] 2024 pair (git 97cede899 config_dir*_48h): client lr 0.000195, batch 32 x server lr 40.9, no decay
-        trainer: {hyperparameters: {learningRate: 0.000195, batchSize: 32}}
+      fedbuff:   # [ours] FX-D73: SGD 0.04 b32 x server lr 1.0 (fl_lr_check r1000: 53% vs the 2024 pair's 32%)
+        trainer: {hyperparameters: {learningRate: 0.04, batchSize: 32}}
+        aggregator: {config_overrides: {optimizer: {kwargs: {learning_rate: 1.0}}}}
 
   google_speech:
     description: >-

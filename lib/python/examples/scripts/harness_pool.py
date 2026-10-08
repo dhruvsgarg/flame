@@ -755,7 +755,9 @@ class Pool:
 
     def _fatal(self, r: "Running") -> bool:
         """FX-N40: a fatal line in this leg's logs aborts the pool (ABORT.txt names it)."""
-        found = self.scanner.scan(leg_run_dirs(r.out)) + self.scanner.scan_broker(r.out / "mosquitto.log")
+        if r.stalled:  # FX-N75: post-kill output is our own teardown
+            return False
+        found =self.scanner.scan(leg_run_dirs(r.out)) + self.scanner.scan_broker(r.out / "mosquitto.log")
         if not found or not self.fail_fast:
             return False
         write_abort(self.root / "ABORT.txt", r.job.jid, found)
@@ -970,6 +972,8 @@ class Pool:
         for j in self.jobs:
             by_phase.setdefault(j.phase, []).append(j)
         for ph, js in by_phase.items():
+            if not (self.root / ph).is_dir():  # FX-N75: phase never started
+                continue
             rows, header = [], None
             graded = {d for j in js if j.mode == "grade" for d in j.deps}
             for j in sorted(js, key=lambda j: j.jid):

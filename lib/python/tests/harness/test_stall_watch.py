@@ -45,6 +45,16 @@ def test_no_new_round_trips_s1_even_while_logging(tmp_path):
     assert w.check([run], 700.0).startswith("S1")
 
 
+def test_abandon_cycles_are_progress(tmp_path):
+    # Run 18 cifar oort mobiperf real: 8 x 90 s abandons before round 1 (sim matched) was cut at 16 min.
+    run, tel, log = _leg(tmp_path)
+    w = ff.StallWatch(0.0, no_round_s=600, silent_s=300)
+    for t in range(90, 1500, 90):
+        _append(tel, '{"event": "abandon_timeout"}\n')
+        assert w.check([run], float(t)) == ""
+    assert w.rounds == 0 and w.check([run], 2100.0).startswith("S1")
+
+
 def test_silent_leg_trips_s2(tmp_path):
     run, tel, log = _leg(tmp_path)
     w = ff.StallWatch(0.0, no_round_s=0, silent_s=300)
