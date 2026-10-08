@@ -187,6 +187,7 @@ class Phase:
     kind: str = "pair"  # pair: real+sim legs + grade | sim: sim leg vs banked real | sim_ev: sim leg, EV only | real: real leg, EV only
     cpt: Optional[float] = None  # CPUs per trainer for this phase; None = --cpus-per-trainer
     gpus: Optional[int] = None  # GPU legs: GPUs each; None = --gpus-per-job
+    delay_factor: str = ""  # divides every trainer's D (debug_run --delay-factor)
 
 
 def shaped(pid, baselines, shape, kind, dataset, **kw) -> Phase:
@@ -295,6 +296,10 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                       harness="none", kind="real")]
     if tier == "N62":  # FX-N62: unaware oort syn_50 long enough to grade its stall-free timing
         return [shaped("N62_syn_50", ("oort",), "syn_50", "pair", ds, runtime_s=10800)]
+    if tier == "PROF":  # FX-N77: n=10, aggGoal = c = 10, D/10 real legs; profile with FLAME_PYSPY
+        bls = baselines if baselines != B6 else ("fedbuff", "oort", "feddance")  # one per aggregator stack
+        return [Phase(f"{DS_TAG[ds]}PROF", bls, "syn_0", runtime_s=240, n=10, dataset=ds, harness="none", agg_goal=10, c=10,
+                      kind="real", gpus=1, delay_factor="10")]
     if tier in ("ISO", "ISO_FILL"):  # P6: felix/fedbuff pairs solo (--max-parallel 1), then packed
         iso = [shaped("ISO", ("felix", "fedbuff"), "syn_0", "pair", ds)]
         # packed stage: neighbours load the node (and double as FX-N20 syn_50 checks)
@@ -364,7 +369,8 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
                     "--num-trainers", str(ph.n), "--dataset", ph.dataset]
             for flag, v in (("--trace-scale", ph.trace_scale), ("--agg-goal", ph.agg_goal),
                             ("--concurrency", ph.c), ("--agg-hp", ph.agg_hp),
-                            ("--trainer-hp", ph.trainer_hp), ("--inject-bug", ph.inject_bug)):
+                            ("--trainer-hp", ph.trainer_hp), ("--inject-bug", ph.inject_bug),
+                            ("--delay-factor", ph.delay_factor)):
                 if v:
                     base += [flag, str(v)]
             if ph.sim_ceiling_x != 1:

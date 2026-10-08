@@ -92,6 +92,7 @@ class ChunkThread(Thread):
             queue_depth = rxq.qsize() if hasattr(rxq, 'qsize') else 'unknown'
             logger.info(f"[MSG_ARRIVAL] Putting message into rxq for end_id ...{end_id[-8:]}, queue_depth_before={queue_depth}, msg_size={len(data)} bytes")
             await rxq.put((data, timestamp))
+            self._channel.note_arrival()
             queue_depth_after = rxq.qsize() if hasattr(rxq, 'qsize') else 'unknown'
             logger.info(f"[MSG_ARRIVAL] Message put into rxq for end_id ...{end_id[-8:]}, queue_depth_after={queue_depth_after}")
 
@@ -104,7 +105,8 @@ class ChunkThread(Thread):
                 if self.chunk_store.is_stale(TRANSFER_TIMEOUT):
                     logger.warning(
                         f"incomplete transfer for {self._end_id} stalled for "
-                        f"{TRANSFER_TIMEOUT}s (chunk likely lost); resetting"
+                        f"{TRANSFER_TIMEOUT}s (chunk likely lost); have seqnos {sorted(self.chunk_store.recv_buf)}, "
+                        f"eom={self.chunk_store.eom_seqno}; resetting"
                     )
                     self.chunk_store.reset()
                     self._backend.set_cleanup_ready(self._end_id)

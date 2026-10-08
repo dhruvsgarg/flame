@@ -27,6 +27,8 @@ from flame.channel import VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
 from flame.common.util import (
     materialize_weights,
+    model_device,
+    pack_weights,
     weights_to_device,
     weights_to_model_device,
 )
@@ -908,7 +910,7 @@ class TopAggregator(BaseTopAggregator):
         # Same model goes to every recipient this round; build + serialize once.
         _sim_send_ts = self._sim_send_stamp()
         msg = {
-            MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
+            MessageType.WEIGHTS_BYTES: pack_weights(self.weights),  # FX-N77
             MessageType.ROUND: self._round,
             MessageType.MODEL_VERSION: self._round,
             MessageType.TASK_TO_PERFORM: task_to_perform,
@@ -1110,7 +1112,7 @@ class TopAggregator(BaseTopAggregator):
         # None` check below.
         weights = None
         _mt0 = time.time()
-        if materialize_weights(msg) is not None:
+        if materialize_weights(msg, model_device(self.model)) is not None:
             weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
         self._agg_materialize_s = getattr(self, "_agg_materialize_s", 0.0) + time.time() - _mt0  # FX-N70
 

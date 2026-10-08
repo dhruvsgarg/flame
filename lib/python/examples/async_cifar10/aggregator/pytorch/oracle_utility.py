@@ -202,8 +202,9 @@ class OracleUtilityProvider:
         try:
             self._ensure(self.alpha, self.num_trainers)
             sim_now = _stream_now(agg)
-            device = agg.device
-            model = agg.model
+            replica = getattr(agg, "eval_replica", None)  # FX-N77: the aggregating model may sit on CPU
+            model = replica() if replica else agg.model
+            device = getattr(agg, "eval_device", agg.device)
             n_set = 0
             for eid in end_ids:
                 info = self._table.get(str(eid))

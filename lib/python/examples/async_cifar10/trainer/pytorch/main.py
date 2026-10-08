@@ -824,11 +824,6 @@ class PyTorchCifar10Trainer(Trainer):
         if hasattr(self, 'optimizer') and self.optimizer is not None:
             self.optimizer.zero_grad(set_to_none=True)
         _post["zero_grad"] = time.time() - _phase_post_start
-        self._release_gpu_cache()
-        _post["release_cache"] = time.time() - _phase_post_start
-        if _gpu_slot is not None:
-            _gpu_slot.close()  # after the cache release, so the next holder finds the memory free
-        _post["slot_close"] = time.time() - _phase_post_start
 
         # Log memory after training round (no-op unless profiling enabled)
         self.memory_profiler.log_memory_after_round()
@@ -948,12 +943,17 @@ class PyTorchCifar10Trainer(Trainer):
             self._emit_util_disparity(
                 int(getattr(self, "_round", 0)), self._sim_now()
             )
-            self._release_gpu_cache()  # FX-D43: util_cf's forward left 2.4 GB cached
 
         _tail_s = time.time() - _ovh_mark  # unpadded in real, not yet charged
 
+        # FX-N77: GPU-sharing housekeeping is emulation-only, so neither side charges it: real runs it inside the D
+        # padding, sim outside the measured overhead. After util_cf (FX-D43); slot closed after it (FX-D58).
+        _hk0 = time.time()
+        self._release_gpu_cache()
+        if _gpu_slot is not None:
+            _gpu_slot.close()
         if not self.simulated and _remaining_time > 0:
-            time.sleep(_remaining_time)
+            time.sleep(max(0.0, _remaining_time - (time.time() - _hk0)))
 
         _cycle_elapsed = time.time() - _cycle_start
         if self.simulated:

@@ -62,7 +62,7 @@ class Trainer(BaseTrainer):
         req = {MessageType.REQ_COORDINATED_ENDS: (CHANNEL_TRAINER_TO_MID, state, None)}
         channel.send(end_id, req)
         msg, _ = channel.recv(end_id)
-        logger.debug(f"received message = {msg} from {end_id}")
+        logger.debug(f"received message keys={list(msg or ())} from {end_id}")
 
         if not msg:
             return []

@@ -31,7 +31,7 @@ def test_every_gated_round_evaluates(name, cls):
     agg = klass.__new__(klass)
     agg.config = SimpleNamespace(hyperparameters=SimpleNamespace(eval_every_n_rounds=20, eval_every_n_commits=2))
     agg.model = torch.nn.Sequential(torch.nn.Flatten(), torch.nn.Linear(4, 2), torch.nn.LogSoftmax(dim=1))
-    agg.device = "cpu"
+    agg.device = agg.eval_device = "cpu"
     agg.test_loader = torch.utils.data.DataLoader(
         torch.utils.data.TensorDataset(torch.randn(8, 4), torch.zeros(8, dtype=torch.long)), batch_size=8)
     agg.loss_list = []

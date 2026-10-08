@@ -43,6 +43,11 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 
 ## Next steps (persistent queue — resumes after Felix)
 
+- **FT-N12 · Port FX-N77's real-cost fixes to fwdllm · todo (after Felix).** Already shared: channel framing + MQTT transport, event-driven
+  `drain_ready`, `materialize_weights` decode in `fwdllm_aggregator`. Left: fwdllm's distribute still pickles `WEIGHTS` and
+  `fwdllm_trainer` reads it directly (→ `pack_weights` / `materialize_weights`); fwdllm files are exempt from
+  `test_no_eager_payload_logs.py`; profile a fwdllm PROF-shaped leg with `FLAME_PYSPY` first. *Exit:* fwdllm board unchanged, per-round
+  serialization ~0 in `profile_report.py`.
 - **FT-N11 · 6 red fwdllm tests (R10) · todo.** `tests/mode/test_fwdllm_{probe_report,server_update_audit,eval_background}`
   (source drift: moved strings, a `config`-less fake) and `test_replicate_floor` (`pretokenize_dataset.py` not in
   `LAUNCHER_INVOKES`). *Exit:* full pytest green.

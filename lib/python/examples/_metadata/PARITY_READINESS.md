@@ -58,6 +58,8 @@
 - **C14 Baselines stay themselves (operator 2026-10-07).** Never change a baseline's algorithm; only Felix/FluxTune (ours) innovate.
   Hyperparameters stay within the paper/repo values (ours: tuned). Accuracy targets need not be reached in short runs; longer runs show it.
 - **C15 Quick runs before long runs (operator 2026-10-07).** No overnight block until short iteration runs stop finding roots (C0).
+- **C16 Batch fixes per run (operator 2026-10-08).** Don't spend a run on one fix. Root and fix as many items as possible offline
+  (stored logs, telemetry, in-process benchmarks), then test them all together in one run of ≤ 30 min.
 
 ## Pre-launch checklist (operator: never repeat a failure; every long run passes all of these)
 
@@ -183,12 +185,14 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR20 · now (quick runs, operator 2026-10-08): C13 real-cost roots, FX-N76 R1-R5.** One root at a time, each with a short smoke:
-  15-30 min G0U syn_50 pairs + a 45 min G1S pair, 2-3 baselines (felix, fedbuff, refl/oort), both datasets where cheap; ≤ 1 h blocks.
-  Order: R3 (eval/GIL, hits every baseline's ingest) → R2 (cache release) → R1 (recv-gap profile) → R4 (tail) → R5 (ingest charge).
-  *Confirms:* speed identity + `phase_*` DIST green; real queue_wait max < 2 s; no INV/EXACT regressions on the run 24 cells.
-- **PR21 · overnight, after PR20 (one block):** G0U + G0UC all six × {syn_50, mobiperf_3st}, both datasets (FX-N9; first full rerun
-  with FX-D50-D76) · speech refl G1A real+sim at lr 0.05 (repo) · cifar fedbuff G1A real+sim on SGD 0.04 × 1.0 (FX-D73) · G1U n=300.
+- **PR20 · now (operator 2026-10-08): confirm FX-N77's offline fixes in ONE ≤ 30 min block (C16).** Fixes landed and profiled
+  (FX-D77-D83, PROF tier, `run_20261008_0343*PROF*`). Block: (a) fresh real legs → re-derive `sim_charge_profiles` (transport changed,
+  L17); (b) G0U syn_50 pairs felix, fedbuff, oort × both datasets, packed in parallel. *Confirms:* speed identity + `phase_*` DIST green;
+  real queue_wait max < 2 s; no INV/EXACT regressions on the run 20-24 cells. *Refutes:* any cell regresses vs runs 20-24.
+- **PR21 · overnight, after PR20 + the FX-N77 open roots (one block, ~9 h, 8 GPUs):** phase 0 PL3 scale smoke · G0U + G0UC all six ×
+  {syn_50, mobiperf_3st}, both datasets (FX-N9; first full rerun with FX-D50-D83, fresh charge profiles) · G0T streaming felix + oort +
+  fedbuff × {linear, events} × {syn_0, syn_50}, both datasets (FX-N13 ST5) · G1A accuracy pairs: speech refl lr 0.05 (repo), cifar fedbuff
+  SGD 0.04 × 1.0 (FX-D73). *Confirms:* INV/EXACT green per cell on G0UC floors; streaming EV19 + parity per cell; G1A real↔sim acc within floor.
 - **Done 10-07 (runs 18-24, `bd5fc954d`, `acdccb1d7`):** run 18 graded; G0U oort stalls rooted (FX-D65-68); speech G0U syn_50 roots
   FX-D69-71, D75-76 → speech felix G0U green (run 24, 120 / 119 rounds); C13 trainer overhead FX-D74 → speed identity green; cifar
   fedbuff lr FX-D73 (sim 56% at 63 min); T3C floors → run 18 T3 8/0/4.
@@ -199,6 +203,8 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
   the screens; streaming design → FELIX Active build.
 - Decided (2026-10-04): fix the real aggregator, not the wire format (FX-D44); speech D ×5 (FX-D46); C11, C12.
 - Decided (2026-10-07): C13 (model every significant real cost), C14 (baselines stay themselves), C15 (quick runs first). FX-N73 → C13.
+- Decided (2026-10-08, FX-N77): flat weight codec default-on (knob reverts); lean MQTT, not shm (QoS 2 kept: seqno restarts per
+  message, so QoS 1 + seqno dedup could splice a late duplicate into the next message); CPU aggregation with GPU eval only.
 - Decided (2026-10-08): PR20 real-cost roots now; unavailability rerun + accuracy pairs go together in the PR21 overnight.
 - S5 knob layout (a) adopted (2026-10-01): `datasets.yaml` holds dataset defaults + `by_baseline` values with sources;
   left: the `fedbuff.py` server-lr table into config, and a resolved-matrix printer.

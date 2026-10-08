@@ -87,7 +87,7 @@ def _agg(channel):
 @pytest.fixture(autouse=True)
 def _identity_weights(monkeypatch):
     import flame.mode.horizontal.asyncfl.top_aggregator as mod
-    monkeypatch.setattr(mod, "weights_to_device", lambda w, d: w)
+    monkeypatch.setattr(mod, "pack_weights", lambda w: dict(w))  # FX-N77: the down path packs WEIGHTS_BYTES
 
 
 def test_same_version_reuses_payload_new_version_or_task_repickles():
@@ -97,7 +97,7 @@ def test_same_version_reuses_payload_new_version_or_task_repickles():
     agg._distribute_weights("tag", "train")
     assert ch.dumps_calls == 1
     assert ch.sent[0][1] == ch.sent[1][1]
-    assert ch.sent[0][1][MessageType.WEIGHTS] == {"w": 1.0}
+    assert ch.sent[0][1][MessageType.WEIGHTS_BYTES] == {"w": 1.0}
     agg._distribute_weights("tag", "eval")
     assert ch.dumps_calls == 2
     agg._round = 4
@@ -114,4 +114,4 @@ def test_commit_invalidates_cache():
     agg.weights = {"w": 2.0}
     agg._distribute_weights("tag", "train")
     assert ch.dumps_calls == 2
-    assert ch.sent[-1][1][MessageType.WEIGHTS] == {"w": 2.0}
+    assert ch.sent[-1][1][MessageType.WEIGHTS_BYTES] == {"w": 2.0}

@@ -23,12 +23,14 @@ from collections import deque
 from datetime import datetime, timedelta
 
 import numpy as np
-from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
+from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND, wait_arrival
 from flame import harness
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD
 from flame.common.constants import DeviceType
 from flame.common.util import (
     materialize_weights,
+    model_device,
+    pack_weights,
     weights_to_device,
     weights_to_model_device,
 )
@@ -733,6 +735,13 @@ class TopAggregator(SyncTopAgg):
             channel._ends[end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
             logger.info(f"[LATE_UPDATE] end={end[-4:]} version={recv_version}: newer dispatch still in flight")
 
+    def _prune_version_ledger(self, end, version) -> None:
+        """FX-N77: replies are FIFO, so versions older than a received one never arrive; keep the ledger bounded."""
+        led = self._track_trainer_version_duration_s[end]
+        for key in ("sent_wts_version_ts", "recv_wts_version_ts"):
+            for v in [v for v in led[key] if v < version]:
+                del led[key][v]
+
     def _aggregate_weights(self, tag: str) -> None:
         """Aggregate local model weights asynchronously.
 
@@ -746,6 +755,7 @@ class TopAggregator(SyncTopAgg):
             return
         _at = agg_timing(self)
         _at.begin()
+        _arrivals = getattr(channel, "arrival_seq", 0)  # FX-N77: an idle pass waits for a delivery after this
 
         # Filter to live ends; drop ghosts that left after selection to avoid
         # blocking recv_fifo on an empty queue.
@@ -806,7 +816,7 @@ class TopAggregator(SyncTopAgg):
                                 f"stopping run."
                             )
                             return
-                    time.sleep(0.5)
+                    wait_arrival(channel, _arrivals, 0.5)
                 return
         _t_recv = time.time()
         if self.simulated:
@@ -905,7 +915,7 @@ class TopAggregator(SyncTopAgg):
                 channel._selector.trainer_eval_recv_ends.append(end)
                 logger.debug(
                     f"After appending {end} to trainer_eval_recv_ends: "
-                    f"{channel._selector.trainer_eval_recv_ends}"
+                    f"{len(channel._selector.trainer_eval_recv_ends)} ends"
                 )
 
             # Remove end from selected_ends and set its state to none
@@ -959,7 +969,7 @@ class TopAggregator(SyncTopAgg):
         # Else, throw an error and return
         else:
             logger.error(
-                f"Invalid message received from {end} in aggregate_weights: {msg}"
+                f"Invalid message received from {end} in aggregate_weights: keys={list(msg)}"
             )
             return
 
@@ -1030,6 +1040,7 @@ class TopAggregator(SyncTopAgg):
                     recv_wts_version
                 ] = recv_wts_ts
                 self._keep_newer_dispatch_inflight(channel, end, recv_wts_version)
+                self._prune_version_ledger(end, recv_wts_version)
 
                 wall_lag_s = (recv_wts_ts - sent_wts_ts).total_seconds()
                 logger.info(
@@ -1168,7 +1179,7 @@ class TopAggregator(SyncTopAgg):
                 ] = new_cumulative_training_s
                 logger.debug(
                     f"Updated training time record for {end}, details: "
-                    f"{self._track_trainer_version_duration_s[end]}"
+                    f"{self._track_trainer_version_duration_s[end]['total_training_time_s']:.1f}s total"
                 )
 
                 # Following the relaxation in asyncFL to not check for
@@ -1197,7 +1208,7 @@ class TopAggregator(SyncTopAgg):
         # the tensor from WEIGHTS_BYTES (only paid for this committed update);
         # default None so an eval-only/malformed message can't UnboundLocalError.
         weights = None
-        if materialize_weights(msg) is not None:
+        if materialize_weights(msg, model_device(self.model)) is not None:
             weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
 
         if MessageType.DATASET_SIZE in msg:
@@ -1760,11 +1771,11 @@ class TopAggregator(SyncTopAgg):
             if _cached is not None and _cached[0] == _key:
                 _shared_payload = _cached[1]
             else:
-                base_msg[MessageType.WEIGHTS] = weights_to_device(self.weights, DeviceType.CPU)
+                base_msg[MessageType.WEIGHTS_BYTES] = pack_weights(self.weights)  # FX-N77
                 _shared_payload = channel.dumps(base_msg)
                 self._dispatch_payload = (_key, _shared_payload)
         else:
-            base_msg[MessageType.WEIGHTS] = weights_to_device(self.weights, DeviceType.CPU)
+            base_msg[MessageType.WEIGHTS_BYTES] = pack_weights(self.weights)  # FX-N77
 
         _send_t0 = time.time()  # [DISTRIBUTE_TIMING]
         for end in _send_ends:

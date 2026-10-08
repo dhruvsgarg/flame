@@ -106,9 +106,7 @@ class ChunkStore(object):
         if self._first_chunk_ts is None:
             self._first_chunk_ts = time.time()
 
-        logger.debug(f"chunk {msg.seqno}: {len(msg.payload)}")
-        # add payload to a recv buf
-        self.recv_buf[msg.seqno] = msg.payload
+        self.recv_buf[msg.seqno] = msg.payload  # each .payload access copies the bytes: read it once (FX-N77)
 
         if (msg.eom):
             self.eom_seqno = msg.seqno

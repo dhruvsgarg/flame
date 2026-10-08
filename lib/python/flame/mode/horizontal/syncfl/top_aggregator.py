@@ -21,7 +21,6 @@ import threading
 import time
 from copy import deepcopy
 from datetime import datetime, timedelta
-import cloudpickle
 import numpy as np
 
 from diskcache import Cache
@@ -33,11 +32,13 @@ from flame.common.util import (
     MLFramework,
     get_ml_framework_in_use,
     materialize_weights,
+    model_device,
+    pack_weights,
     valid_frameworks,
     weights_to_device,
     weights_to_model_device,
 )
-from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
+from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND, wait_arrival
 from flame.config import Config
 from flame.datasamplers import datasampler_provider
 from flame.mode.composer import Composer
@@ -514,10 +515,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         committed = []
         for end, sct, (msg, md) in all_popped:
             # Lazy deserialize before gate check (payload may be needed for stash).
-            if MessageType.WEIGHTS_BYTES in msg:
-                msg[MessageType.WEIGHTS] = cloudpickle.loads(
-                    msg.pop(MessageType.WEIGHTS_BYTES)
-                )
+            materialize_weights(msg)
             # E.1: send-gate — withhold if trainer is UN_AVL at completion.
             if self._sim_withhold_if_unavail(channel, end, sct, (msg, md)):
                 continue
@@ -547,10 +545,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             if wh is None:
                 break
             wend, wdts, (wmsg, wmd) = wh
-            if MessageType.WEIGHTS_BYTES in wmsg:
-                wmsg[MessageType.WEIGHTS] = cloudpickle.loads(
-                    wmsg.pop(MessageType.WEIGHTS_BYTES)
-                )
+            materialize_weights(wmsg)
             # Batch 3 T3.5 (K11): advance before emitting, matching asyncfl's
             # existing order — see _emit_withheld_delivery's docstring for why
             # this specific advance is provably a no-op here either way, but
@@ -615,6 +610,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             return
         _at = agg_timing(self)
         _at.begin()
+        _arrivals = getattr(channel, "arrival_seq", 0)  # FX-N77: an idle pass waits for a delivery after this
 
         total = 0
 
@@ -640,7 +636,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             if _wait_k and self.simulated:
                 self._sim_sync_wait(channel)
                 return
-            time.sleep(0.5)
+            wait_arrival(channel, _arrivals, 0.5)
             return
         logger.debug(
             f"Waiting for first_k={first_k} responses from {len(ends)} selected trainers"
@@ -759,13 +755,13 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                                 f"Reduce trainers-per-GPU or add GPUs."
                             )
 
-            logger.debug(f"received message in agg_weights {msg} from {end}")
+            logger.debug(f"received message in agg_weights keys={list(msg or ())} from {end}")
 
             # Lazy-deserialize: restore the tensor from WEIGHTS_BYTES if the sim
             # barrier didn't already (real sync arrives here with bytes). Default
             # None so an eval-only/malformed message can't UnboundLocalError.
             weights = None
-            if materialize_weights(msg) is not None:
+            if materialize_weights(msg, model_device(self.model)) is not None:
                 weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
 
             if MessageType.DATASET_SIZE in msg:
@@ -1205,7 +1201,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # Same model goes to every recipient this round; build + serialize once.
         _sim_send_ts = self._sim_send_stamp()
         msg = {
-            MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
+            MessageType.WEIGHTS_BYTES: pack_weights(self.weights),  # FX-N77
             MessageType.ROUND: self._round,
             MessageType.DATASAMPLER_METADATA: datasampler_metadata,
             MessageType.MODEL_VERSION: self._round,
@@ -1526,8 +1522,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 return None
         try:
             import copy
-            if getattr(self, "_eval_model", None) is None:
-                self._eval_model = copy.deepcopy(self.model)
+            if getattr(self, "_eval_model", None) is None:  # on eval_device (FX-N77)
+                self._eval_model = copy.deepcopy(self.model).to(getattr(self, "eval_device", None) or model_device(self.model))
             self._eval_model.load_state_dict(self.model.state_dict())
             self._eval_done = threading.Event()
             self._eval_inflight = True

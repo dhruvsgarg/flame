@@ -229,6 +229,8 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
 - **L28 `[slot]`** Pools sharing a node take ports, cores and GPUs through `harness_pool.Leases`; a leg broker log saying
   `already connected` means two runs share it (fail-fast; run 4 voided 4 legs).
 - **L29 `[measure]`** A checker reads run-defining settings (trace scale, knobs) from the run's config, never its env.
+- **L30 `[measure]`** Rank real costs from a profile, not a hypothesis list: `FLAME_PYSPY` wall + cpu views per role, then
+  `profile_report.py`; compare runs only at equal leg concurrency (CPU-starved legs inflate every CPU row; FX-N77).
 
 ## Shared tripwires (don'ts)
 
@@ -255,6 +257,7 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
 - **T15** Don't edit code or scripts while a run is live: bash reads a script incrementally, and each leg imports the
   code at its own launch (`smoke_20260926_122039` summary lost; `pool_smoke_fxn52` ran a half-edited selector).
 - **T12** Don't add a fix to one copy of a shared concept (pacer, drain, residence) without checking every
+- **T16** Don't interpolate a message, payload or ledger in a log f-string; it formats even at an off level (`test_no_eager_payload_logs.py`).
   copy.
 
 ---
@@ -310,6 +313,8 @@ green (R10).
   gating) but land per example, harness-green each time.
 
 ## Shared built
+- **S9** Wire + profiling (FX-D77/78/80/83, both tracks): flat tensor codec, out-of-band channel frames, non-blocking FIFO MQTT
+  sends, delivery-driven waits, `FLAME_PYSPY` per-process profiles. fwdllm adoption of the codec: FT-N12.
 - **S0** `dg_flame` → torch 2.12.1+cu129 / torchvision 0.27.1+cu129 (driver 12.9); cu13 libs removed. jayne: all 8 GPUs
   ECC-clean on 2026-10-06 (GPU 1 had a volatile ECC error 2026-09-26); `harness_pool.py` skips any GPU that reports one.
 - Parity methodology (causal ladder, roles/tiers, dependency gating), availability substrate v1, and the

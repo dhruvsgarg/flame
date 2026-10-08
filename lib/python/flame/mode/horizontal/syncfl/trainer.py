@@ -21,22 +21,22 @@ import math
 import os
 import time
 
-import cloudpickle
 from contextlib import contextmanager
 
 import torch
 from flame import harness
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.channel_manager import ChannelManager
-from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
 from flame.common.util import (
     MLFramework,
     delta_weights_pytorch,
     delta_weights_tensorflow,
     get_ml_framework_in_use,
+    materialize_weights,
+    model_device,
+    pack_weights,
     valid_frameworks,
-    weights_to_device,
     weights_to_model_device,
 )
 from flame.config import Config, TrainerAvailState
@@ -269,13 +269,13 @@ class Trainer(Role, metaclass=ABCMeta):
             self._round = msg[MessageType.ROUND]
             logger.debug(f"[TRAINER_FETCH] Updated round from {prev_round} to {self._round} for trainer_id {self.trainer_id}")
 
-        if MessageType.WEIGHTS in msg:
+        if MessageType.WEIGHTS in msg or MessageType.WEIGHTS_BYTES in msg:
             # Load the model onto GPU if self.model is None:
             # self._load_model_onto_gpu()
 
             # Update the model
             with self._phase("weights_to_ram_s"):
-                self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+                self.weights = weights_to_model_device(materialize_weights(msg, model_device(self.model)), self.model)
             with self._phase("weights_to_gpu_s"):
                 self._update_model()
                 # FX-D15: sync only a CUDA model; never time driver init here
@@ -455,7 +455,7 @@ class Trainer(Role, metaclass=ABCMeta):
                 self.finalize_local_accuracy()
 
                 msg = {
-                    MessageType.WEIGHTS: weights_to_device(delta_weights, DeviceType.CPU),
+                    MessageType.WEIGHTS_BYTES: pack_weights(delta_weights),  # FX-N77: one D2H, no tensor pickling
                     MessageType.DATASET_SIZE: self.dataset_size,
                     MessageType.MODEL_VERSION: self._round,
                     MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
@@ -484,15 +484,6 @@ class Trainer(Role, metaclass=ABCMeta):
             msg[MessageType.SIM_COMPLETION_TS] = _sim_completion
             msg[MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S] = getattr(
                 self, "_sim_round_duration", 0.0
-            )
-
-        # Lazy-deserialize (real and sim): ship the weight update as raw pre-serialized bytes so
-        # the aggregator reconstructs the tensor only for updates it commits, not the surplus/
-        # stale ones it discards (the channel otherwise cloudpickle.loads every received tensor).
-        # The aggregator restores it via common.util.materialize_weights at its read site.
-        if MessageType.WEIGHTS in msg:
-            msg[MessageType.WEIGHTS_BYTES] = cloudpickle.dumps(
-                msg.pop(MessageType.WEIGHTS)
             )
 
         # MODELED_DELAY_S (mirrors fwdllm_trainer.py); None when delays are
@@ -681,8 +672,8 @@ class Trainer(Role, metaclass=ABCMeta):
         self.metrics = self.metrics | metrics
 
     def _model_on_cuda(self) -> bool:
-        p = next(iter(self.model.parameters()), None) if hasattr(self.model, "parameters") else None
-        return p is not None and p.is_cuda
+        d = model_device(self.model)
+        return d is not None and d.type == "cuda"
 
     def _update_model(self):
         if self.framework == MLFramework.PYTORCH:

@@ -19,6 +19,9 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Union
+import pickle
+import struct
+import threading
 import time
 import cloudpickle
 from aiostream import stream
@@ -34,7 +37,6 @@ from flame.monitor.runtime import timer_decorator
 import gzip
 import zstandard as zstd
 import os
-import sys
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,52 @@ END_LAST_AVAIL_TS = "end_last_avail_ts"
 END_LAST_UNAVAIL_TS = "end_last_unavail_ts"
 PROP_TOTAL_AVAIL_DURATION = "total_avail_duration"
 PROP_TOTAL_UNAVAIL_DURATION = "total_unavail_duration"
+
+
+_FRAME = b"FLF1"
+_OOB_MIN_BYTES = 1 << 20
+
+
+def encode_message(message) -> bytes:
+    """Pickle a message; top-level bytes values >= 1 MiB travel out-of-band after it (FX-N77).
+
+    Frame: FLF1 | count | sizes | pickled head | raw buffers. One copy of each large buffer instead of pickle's 1.5,
+    and decode_message hands them back as zero-copy memoryviews.
+    """
+    if not (isinstance(message, dict) and any(isinstance(v, (bytes, bytearray)) and len(v) >= _OOB_MIN_BYTES
+                                              for v in message.values())):
+        return cloudpickle.dumps(message)
+    bufs = []
+    head = cloudpickle.dumps(
+        {k: pickle.PickleBuffer(v) if isinstance(v, (bytes, bytearray)) and len(v) >= _OOB_MIN_BYTES else v
+         for k, v in message.items()}, protocol=5, buffer_callback=bufs.append)
+    raws = [b.raw() for b in bufs]
+    sizes = [len(head)] + [r.nbytes for r in raws]
+    return b"".join((_FRAME, struct.pack(f"<I{len(sizes)}Q", len(sizes), *sizes), head, *raws))
+
+
+def decode_message(data):
+    """Inverse of encode_message; also reads plain cloudpickle payloads."""
+    mv = memoryview(data)
+    if bytes(mv[:4]) != _FRAME:
+        return cloudpickle.loads(data)
+    n = struct.unpack_from("<I", mv, 4)[0]
+    off, parts = 8 + 8 * n, []
+    for size in struct.unpack_from(f"<{n}Q", mv, 8):
+        parts.append(mv[off:off + size])
+        off += size
+    return cloudpickle.loads(parts[0], buffers=parts[1:])
+
+
+_DRAIN_POLL_S = 0.05  # drain_ready fallback poll when a backend doesn't signal arrivals
+
+
+def wait_arrival(channel, after_seq: int, timeout: float) -> None:
+    """Sleep up to `timeout`, waking early on a delivery after `after_seq` (FX-N77); plain sleep for non-Channels."""
+    if isinstance(channel, Channel):
+        channel.wait_arrival(after_seq, timeout)
+    else:
+        time.sleep(timeout)
 
 
 class Channel(object):
@@ -91,8 +139,14 @@ class Channel(object):
         # dict showing active, awaiting recv fifo tasks on each ends
         self._active_recv_fifo_tasks: set(str) = set()
 
+        # FX-N77: arrival signal, so waiters wake on a delivery instead of polling
+        self._arrival_seq = 0
+        self._arrival_ev = None  # asyncio.Event on the backend loop
+        self._arrival_cv = threading.Condition()
+
         async def _setup():
             self.await_join_event = asyncio.Event()
+            self._arrival_ev = asyncio.Event()
 
             self._bcast_queue = asyncio.Queue()
             self._rx_queue = asyncio.Queue()
@@ -383,7 +437,7 @@ class Channel(object):
         """Broadcast a message in a blocking call fashion."""
 
         async def _put():
-            payload = cloudpickle.dumps(message)
+            payload = encode_message(message)
             self.mc.accumulate("bytes", "broadcast", len(payload))
             await self._bcast_queue.put(payload)
 
@@ -391,7 +445,7 @@ class Channel(object):
 
     def dumps(self, message) -> bytes:
         """Serialize a message once for reuse across sends (see send_payload)."""
-        return cloudpickle.dumps(message)
+        return encode_message(message)
 
     def send_payload(self, end_id, payload):
         """Send a pre-serialized payload (from dumps) — avoids re-pickling the
@@ -409,22 +463,7 @@ class Channel(object):
     def send(self, end_id, message):
         """Send a message to an end in a blocking call fashion."""
 
-        async def _put():
-            if not self.has(end_id):
-                # can't send message to end_id
-                return
-
-            payload = cloudpickle.dumps(message)
-            # payload2 = gzip.compress(payload)
-            # compressor = zstd.ZstdCompressor()
-            # payload2 = compressor.compress(payload)
-            self.mc.accumulate("bytes", "send", len(payload))
-            logger.info(f"size of payload = {sys.getsizeof(payload)}")
-            await self._ends[end_id].put(payload)
-
-        _, status = run_async(_put(), self._backend.loop())
-
-        return status
+        return self.send_payload(end_id, encode_message(message))  # pickle here, not on the backend loop (FX-N77)
 
     def recv(self, end_id) -> tuple[Any, datetime]:
         # NOTE (DG): This isnt being used in horizontal top-agg async,
@@ -462,7 +501,7 @@ class Channel(object):
 
         # dissect the payload into msg and timestamp
         msg, timestamp = (
-            (cloudpickle.loads(payload[0]), payload[1])
+            (decode_message(payload[0]), payload[1])
             if payload and status
             else (None, None)
         )
@@ -598,7 +637,7 @@ class Channel(object):
             logger.debug(f"channel {self._name} has no end id {end_id} for msg")
 
         msg, timestamp = (
-            (cloudpickle.loads(payload[0]), payload[1]) if payload else (None, None)
+            (decode_message(payload[0]), payload[1]) if payload else (None, None)
         )
         metadata = (end_id, timestamp)
 
@@ -672,13 +711,22 @@ class Channel(object):
 
             out.extend(_sweep())
             if not out and timeout and live:
-                # Poll (rather than await End.get(), whose cancellation could
-                # drop a just-delivered item) until the first arrival or budget.
+                # Wait for an arrival (not End.get(), whose cancellation could drop a just-delivered item), then
+                # sweep again; FX-N77: event-driven, with a coarse poll for backends that don't note_arrival.
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + float(timeout)
+                ev = getattr(self, "_arrival_ev", None)
                 while not out and loop.time() < deadline:
-                    await asyncio.sleep(0.002)
+                    seq = getattr(self, "_arrival_seq", 0)
+                    if ev is not None:
+                        ev.clear()
                     out.extend(_sweep())
+                    if not out and getattr(self, "_arrival_seq", 0) == seq:
+                        wait_s = max(0.0, min(_DRAIN_POLL_S, deadline - loop.time()))
+                        try:
+                            await (asyncio.wait_for(ev.wait(), wait_s) if ev is not None else asyncio.sleep(wait_s))
+                        except asyncio.TimeoutError:
+                            pass
             return out
 
         raw, ok = run_async(_pull_raw(), self._backend.loop())
@@ -862,7 +910,7 @@ class Channel(object):
         payload, status = run_async(_peek(), self._backend.loop())
 
         msg, timestamp = (
-            (cloudpickle.loads(payload[0]), payload[1])
+            (decode_message(payload[0]), payload[1])
             if payload and status
             else (None, None)
         )
@@ -932,6 +980,23 @@ class Channel(object):
         timeouted, _ = run_async(_inner(), self._backend.loop())
         logger.info(f"timeouted = {timeouted}")
         return timeouted
+
+    def note_arrival(self) -> None:
+        """A message was put into an end's rx queue (call on the backend loop): wake arrival waiters."""
+        self._arrival_seq += 1
+        if self._arrival_ev is not None:
+            self._arrival_ev.set()
+        with self._arrival_cv:
+            self._arrival_cv.notify_all()
+
+    @property
+    def arrival_seq(self) -> int:
+        return self._arrival_seq
+
+    def wait_arrival(self, after_seq: int, timeout: float) -> bool:
+        """Block (not on the backend loop) until a delivery after `after_seq` or `timeout`; True if one came."""
+        with self._arrival_cv:
+            return self._arrival_cv.wait_for(lambda: self._arrival_seq > after_seq, timeout)
 
     def is_rxq_empty(self, end_id: str) -> bool:
         """Return true if rxq is empty; otherwise, false."""

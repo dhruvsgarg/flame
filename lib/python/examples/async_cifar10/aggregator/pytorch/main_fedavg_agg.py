@@ -22,12 +22,7 @@ https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 
 import logging
 import os
-import time
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torchvision
 
 # wandb setup
 import wandb
@@ -40,6 +35,7 @@ import sys as _sys, os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
 import fl_data  # noqa: E402
+from agg_common import ExampleAggregatorMixin  # noqa: E402
 from oracle_utility import OracleInjectMixin  # noqa: E402
 
 def initialize_wandb():
@@ -69,8 +65,10 @@ logger = logging.getLogger(__name__)
 
 Net = fl_data.CifarNet  # FX-N10: models live in fl_data (one per dataset)
 
-class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
+class PyTorchCifar10Aggregator(ExampleAggregatorMixin, OracleInjectMixin, TopAggregator):
     """PyTorch CIFAR-10 Aggregator."""
+
+    EVAL_ROUND_ONE = True
 
     def __init__(self, config: Config, log_to_wandb: bool = False) -> None:
         """Initialize a class instance."""
@@ -91,102 +89,6 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
         self.log_to_wandb = log_to_wandb
         if self.log_to_wandb:
             initialize_wandb()
-
-    @property
-    def data_spec(self) -> "fl_data.DatasetSpec":
-        """FX-N10: this run's dataset (hyperparameters.dataset_name)."""
-        return fl_data.spec_for(self.config.hyperparameters)
-
-    def initialize(self):
-        """Initialize role."""
-        self.device = harness.device_for(self.harness_mode)
-
-        self.model = self.data_spec.model().to(self.device)
-        self._init_oracle_util(
-            _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
-                          "..", "..", "data"))
-
-    def load_data(self) -> None:
-        """Load a test dataset."""
-        n_test = harness.harness_test_samples(self.config.hyperparameters, self.harness_mode)
-        if self.harness_mode == "stub":
-            dataset = harness.synthetic_dataset(n_test, self.data_spec.stub_shape, self.data_spec.num_classes,
-                                                seed_key="agg_test", label_skew=0.0)
-        else:
-            dataset = self.data_spec.test()
-            if self.harness_mode == "tiny_cpu":
-                dataset = torch.utils.data.Subset(dataset, list(range(n_test)))
-            dataset = fl_data.in_memory(dataset)  # FX-D64: per-sample decode in the eval thread stalled real ingest
-
-        test_kwargs = {
-            "batch_size": self.batch_size,
-            "shuffle": False,
-            "num_workers": 0,  # Changed from 2 to 0 - reduces CPU RAM usage
-            "pin_memory": False,  # FX-D64: pinning an in-memory test set cost 2 s per speech eval
-        }
-
-        self.test_loader = torch.utils.data.DataLoader(dataset, **test_kwargs)
-
-        # store data into dataset for analysis (e.g., bias)
-        self.dataset = Dataset(dataloader=self.test_loader)
-
-    def train(self) -> None:
-        """Train a model."""
-        # Implement this if testing is needed in aggregator
-        pass
-
-    def evaluate(self) -> None:
-        """Evaluate (test) a model."""
-        # Gate eval cadence (evalEveryNRounds) instead of evaluating every round;
-        # the full test pass dominates per-round cost at n300. Used by the
-        # FedDance arm (this is its aggregator stack). Always eval round 1.
-        eval_every = (
-            getattr(self.config.hyperparameters, "eval_every_n_rounds", 10) or 10
-        )
-        if self._round != 1 and (self._round % eval_every != 0):
-            return
-        self._eval_every_n_commits = 1  # FX-D63: the round gate is the cadence; a commit stride on top halved it
-        # Off the critical path: snapshot weights now, run the test-set forward
-        # pass in a daemon thread so the aggregator keeps progressing. Backgrounding
-        # is why this needs no sim_model_*_compute_time vclock fold — see
-        # main_asyncfl_agg.py's evaluate().
-        eval_model = self._eval_snapshot_model()
-        if eval_model is None:
-            return  # prior async eval still running
-        round_num = self._round
-        test_loader, device = self.test_loader, self.device
-
-        def _job():
-            try:
-                _t0 = time.time()
-                eval_model.eval()
-                test_loss = 0
-                correct = 0
-                with torch.no_grad():
-                    for data, target in test_loader:
-                        data, target = data.to(device), target.to(device)
-                        output = eval_model(data)
-                        test_loss += F.nll_loss(output, target, reduction="sum").item()
-                        pred = output.argmax(dim=1, keepdim=True)
-                        correct += pred.eq(target.view_as(pred)).sum().item()
-                total = len(test_loader.dataset)
-                logger.info(f"[ASYNC_EVAL_TIMING] round={round_num} wall_s={time.time() - _t0:.2f} device={device}")  # FX-N70
-                self._eval_emit(round_num, test_loss / total, correct / total)
-            except Exception as e:  # eval must never break training
-                logger.warning(f"[ASYNC_EVAL] failed (non-fatal): {e}")
-                self._eval_inflight = False
-
-        import threading
-        threading.Thread(target=_job, daemon=True).start()
-
-        # print to save to file
-        logger.debug(f"loss list at cifar agg: {self.loss_list}")
-
-    def check_and_sleep(self) -> None:
-        """Induce transient unavailability"""
-        # Implement this if transient unavailability need to be
-        # emulated in aggregator
-        pass
 
 
 if __name__ == "__main__":

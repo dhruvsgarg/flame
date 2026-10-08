@@ -137,6 +137,8 @@ def configure(
                 _writer.close()
             _writer = TelemetryWriter(path, role, end_id)
         logger.info(f"telemetry enabled: writing to {path}")
+        from flame.telemetry import profiler
+        profiler.maybe_start(run_dir, filename.rsplit(".", 1)[0])  # FX-N77
         return _writer
     except Exception as e:  # never let telemetry setup break a run
         logger.warning(f"telemetry disabled (configure failed): {e}")
