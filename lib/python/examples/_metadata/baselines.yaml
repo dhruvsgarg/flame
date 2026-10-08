@@ -38,15 +38,13 @@ baselines:
         kwargs:
           use_oort_lr: "True"
           dataset_name: cifar-10
+          learning_rate: 0.3  # [ours] 2024 cifar server lr (S5; was fedbuff.py table)
           agg_rate_conf:
             type: new
             scale: 0.4
             a_exp: 0.25
             b_exp: 0.1
       hyperparameters:
-        trackTrainerAvail:
-          enabled: "False"
-          type: "NA"
         # Overhead OFF the virtual clock so it tracks completions, not a ramp. PARITY §3c.
         simCommitOverheadSeconds: 0.0
         # Post-commit re-dispatch leg, calibrated to real's measured LAG_DECOMP leg.
@@ -90,15 +88,13 @@ baselines:
         kwargs:
           use_oort_lr: "True"
           dataset_name: cifar-10
+          learning_rate: 0.3  # S5: was fedbuff.py table
           agg_rate_conf:
             type: new
             scale: 0.4
             a_exp: 0.25
             b_exp: 0.1
       hyperparameters:
-        trackTrainerAvail:
-          enabled: "False"
-          type: "NA"
         simCommitOverheadSeconds: 0.0
     trainer:
       hyperparameters:
@@ -139,9 +135,6 @@ baselines:
         syncWaitForK: true  # FX-N37: commit a version only at K accepted updates
         # FX-N7: the v1 substrate reads the trace; the legacy ORACULAR block is retired.
         simUnavailability: true
-        trackTrainerAvail:
-          enabled: "False"
-          type: "NA"
         # See felix note (overhead must stay below the sct-progression rate).
         # Jun9: 0.24 over-charged (sim 4031 rounds vs real 7254, residual
         # -0.14/commit) -> 0.10 (PARITY.md).
@@ -185,9 +178,6 @@ baselines:
         kwargs: {}
       hyperparameters:
         syncWaitForK: true  # FX-N37: commit a version only at K accepted updates
-        trackTrainerAvail:
-          enabled: "False"
-          type: "NA"
     trainer:
       hyperparameters:
         use_oort_loss_fn: "True"
@@ -207,9 +197,6 @@ baselines:
         syncWaitForK: true  # FX-N37: commit a version only at K accepted updates
         # FX-N7: the v1 substrate reads the trace; the legacy ORACULAR block is retired.
         simUnavailability: true
-        trackTrainerAvail:
-          enabled: "False"
-          type: "NA"
         # NOTE: oort is NOT a pool-composition case -- its eligible pool already
         # matches real (sim 12.12 vs real 11.35); the divergence is the selector
         # picking ~average (12.21) vs real picking fast (8.81). That is a
@@ -238,9 +225,6 @@ baselines:
         syncWaitForK: true  # FX-N37: commit a version only at K accepted updates
         # FX-N7: the v1 substrate reads the trace; the legacy ORACULAR block is retired.
         simUnavailability: true
-        trackTrainerAvail:
-          enabled: "False"
-          type: "NA"
     trainer:
       hyperparameters:
         use_oort_loss_fn: "True"
@@ -258,12 +242,10 @@ baselines:
         kwargs:
           use_oort_lr: "False"
           dataset_name: cifar-10
+          learning_rate: 1.0  # [ours] FX-D73 (S5; datasets.yaml may override)
           agg_rate_conf:
             type: old
       hyperparameters:
-        trackTrainerAvail:
-          enabled: "False"
-          type: "NA"
         # FX-N18: no real-only settle sleep before selection (operator OK; P10 is the 0.1s control).
         realDistributeSettleSeconds: 0.0
     trainer:
@@ -284,9 +266,6 @@ baselines:
         sort: fedavg
         kwargs: {}
       hyperparameters:
-        trackTrainerAvail:
-          enabled: "False"
-          type: "NA"
     trainer:
       hyperparameters:
         client_notify:
@@ -1073,6 +1052,7 @@ baselines:
           # like a copy-paste artifact from another example's config, left
           # unfixed here (deliberately, for parity -- see description above).
           dataset_name: google-speech
+          learning_rate: 0.065  # S5: the google-speech table value this transcription ran with
           agg_rate_conf:
             type: old
             scale: 1.0

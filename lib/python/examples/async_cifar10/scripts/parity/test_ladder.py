@@ -747,3 +747,22 @@ def test_eligibility_splits_exclusions_by_reason():
     res = eligibility_parity({"selection_train": [sel(5, {"owed": 2, "unavail": 8}), sel(6, {"unavail": 9})]},
                              {"selection_train": [sel(7, {"unavail": 8})]})
     assert res["excluded_by_real"] == {"owed": 1.0, "unavail": 8.5} and res["excluded_by_sim"] == {"unavail": 8.0}
+
+
+def test_eligibility_grades_dispatching_selections_only():
+    """FX-D98: no-op wakes sample at each side's own cadence (real 30 s poll, sim events); run 2026-10-08 KS 0.41."""
+    from parity.checks import eligibility_parity
+    sel = lambda n, k: {"num_eligible": n, "num_candidates": 45, "num_chosen": k}
+    disp = [sel(n, 1) for n in (38, 40, 42, 45)]
+    res = eligibility_parity({"selection_train": disp + [sel(45, 0)] * 6},
+                             {"selection_train": disp + [sel(37, 0)] * 10})
+    assert res["ok"] and res["ks_eligible"] == 0.0
+
+
+def test_timing_skips_without_a_matched_window():
+    """FX-D95: one sim advance vs real's 3.8 s + a 267 s tail round sim never ran graded K3b at 97%."""
+    from parity.checks import overhead_residual
+    rounds = lambda vs, key: [{"round": i + 1, key: v, "ts": v} for i, v in enumerate(vs)]
+    res = overhead_residual({"agg_rounds": rounds([0.0, 3.8, 270.5], "ts")},
+                            {"agg_rounds": rounds([0.0, 3.8], "vclock_now")}, agg_goal=2)
+    assert res.get("status") == "SKIP", res

@@ -1167,6 +1167,16 @@ class PyTorchCifar10Trainer(Trainer):
                 return  # channel torn down mid-update at shutdown
 
 
+def _stop_bg_threads(t) -> None:
+    """FX-D87: join daemons before finalization; a SIGTERM during the join must not raise (FX-D92)."""
+    import signal
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    t._shutting_down = True
+    for th in getattr(t, "_bg_threads", ()):
+        th.join(timeout=5)
+
+
 def main():
     import argparse
     import json
@@ -1260,9 +1270,7 @@ def main():
     # Register exit handler to generate memory report
     def cleanup_and_report():
         """Generate memory profiling report on exit."""
-        t._shutting_down = True
-        for th in getattr(t, "_bg_threads", ()):  # a daemon mid-log at finalization aborts the exit (FX-D87)
-            th.join(timeout=5)
+        _stop_bg_threads(t)
         try:
             report = t.memory_profiler.generate_report()
             logger.info(f"\n{report}")

@@ -55,7 +55,8 @@ datasets:
       aggregator:
         config_overrides:
           hyperparameters: {dataset_name: google_speech, batchSize: 32, learningRate: 0.000195,
-                            min_trainers_to_start: 90}
+                            min_trainers_to_start: 90,
+                            targetAccuracy: 0.6}  # FX-N10: stop after stableEvalsAboveTarget (20) evals >= 60%
     by_optimizer:
       fedbuff:
         aggregator:

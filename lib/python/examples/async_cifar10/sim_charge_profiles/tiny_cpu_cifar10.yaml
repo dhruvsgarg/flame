@@ -1,0 +1,50 @@
+completion_leg:
+  asyncfl:
+    mean_s: 0.0213
+    p50_s: 0.019
+    n: 1280
+    charge: true
+  oort_sync:
+    mean_s: 0.0348
+    p50_s: 0.029
+    n: 739
+    charge: true
+  fedavg:
+    mean_s: 0.0273
+    p50_s: 0.027
+    n: 114
+    charge: true
+dispatch_latency:
+  asyncfl:
+    mean_s: 0.0088
+    p50_s: 0.008
+    n: 1280
+    charge: true
+  oort_sync:
+    mean_s: 0.0187
+    p50_s: 0.02
+    n: 245
+    charge: true
+  fedavg:
+    mean_s: 0.0137
+    p50_s: 0.015
+    n: 38
+    charge: true
+_meta:
+  dataset: cifar10
+  harness: tiny_cpu
+  host: jayne
+  commit: d333e2142
+  date: '2026-10-08'
+  tool: profile_felix_charges.py
+  runs:
+  - run_20261008_151209_P6_htiny_cpu_dbg_felix_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_151209_P6_htiny_cpu_dbg_oort_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_152755_P7_htiny_cpu_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_152755_P7_htiny_cpu_dbg_feddance_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_152755_P7_htiny_cpu_dbg_oort_star_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_152755_P7_htiny_cpu_dbg_refl_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_152909_P6_htiny_cpu_dbg_felix_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_152915_P7_htiny_cpu_dbg_felix_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_153021_P6_htiny_cpu_dbg_oort_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_153121_P7_htiny_cpu_dbg_oort_n300_alpha0.1_syn_0_stream_real

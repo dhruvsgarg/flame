@@ -64,25 +64,11 @@ class FedBuff(AbstractOptimizer):
 
         self.regularizer = Regularizer()
 
-        # Set learning rate differently if asyncOORT selector is used
+        # FX-D97: server lr is config (baselines.yaml, datasets.yaml).
         try:
-            self.use_oort_lr = kwargs["use_oort_lr"]
+            self.learning_rate = float(kwargs["learning_rate"])
         except KeyError:
-            raise KeyError("Not specified wether to use oort lr or not in config")
-
-        # Set learning rate differently for dataset used Current
-        # options: {"cifar-10", "google-speech"}
-        try:
-            self.dataset_name = kwargs["dataset_name"]
-        except KeyError:
-            raise KeyError("Dataset name not specified in the config")
-
-        # Explicit learning rate, independent of dataset_name. When set,
-        # this wins over the dataset_name lookup table below -- lets each
-        # baseline declare its own rate instead of relying on fedbuff's
-        # hardcoded cifar-10/google-speech table (which has no entry for
-        # other examples, e.g. fwdllm/fluxtune).
-        self.learning_rate = kwargs.get("learning_rate", None)
+            raise KeyError("fedbuff optimizer needs an explicit learning_rate (S5)")
 
         # Set aggregation rate type between old (just staleness) and
         # new (tradeoff staleness and stat utility) Current options:
@@ -238,6 +224,7 @@ class FedBuff(AbstractOptimizer):
     ) -> ModelWeights:
         logger.debug(f"base_weights.keys(): {base_weights.keys()}")
 
+        learning_rate = self.learning_rate
         bn = self.bn_absolute_mean and self._version is not None
         if bn:
             self._bn_hist.setdefault(self._version, self._bn_copy(base_weights))
@@ -246,47 +233,6 @@ class FedBuff(AbstractOptimizer):
                 if self._bn_n:
                     base_weights[k] = (self._bn_sum[k] / self._bn_n).to(dtype=base_weights[k].dtype)
                 continue
-            # agg_goal_weights are already adjusted with rate Using
-            # hardcoded learning_rate for now, will pass as an
-            # argument later TODO: (DG) Hyper-parameters for AsyncOORT
-            # need tuning? Which all hyper-parameters apart from LR
-            # need to be tuned?
-            if self.learning_rate is not None:
-                learning_rate = self.learning_rate
-            elif self.use_oort_lr == "False":
-                # for fedbuff asyncfl
-                if self.dataset_name == "cifar-10":
-                    learning_rate = 40.9  # Used with CIFAR-10
-                elif self.dataset_name == "google-speech":
-                    learning_rate = 0.075  # Used with Google speech
-                else:
-                    learning_rate = 1.0
-                    logger.warning(
-                        f"Dataset not specified. using default learning "
-                        f"rate of {learning_rate} "
-                        f"for FedBuff optimizer"
-                    )
-                logger.debug(
-                    f"Dataset was {self.dataset_name}. using learning "
-                    f"rate of {learning_rate} "
-                    f"for FedBuff optimizer"
-                )
-            elif self.use_oort_lr == "True":
-                # for asyncOORT asyncfl
-                if self.dataset_name == "cifar-10":
-                    learning_rate = 0.3  # Used with CIFAR-10
-                elif self.dataset_name == "google-speech":
-                    learning_rate = 0.065  # Used with Google speech
-                else:
-                    learning_rate = 1.0
-                    logger.warning(
-                        f"Dataset not specified. using default learning "
-                        f"rate of {learning_rate} "
-                        f"for FedBuff optimizer"
-                    )
-                # logger.debug(f"Dataset was {self.dataset_name}. using learning "
-                #              f"rate of {learning_rate} "
-                #              f"for FedBuff optimizer")
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))
             )
@@ -298,16 +244,14 @@ class FedBuff(AbstractOptimizer):
         if self.clamp_running_var and clamp_running_var(base_weights):
             logger.warning("[FEDBUFF_BN] negative running_var clamped to 0 (FX-N64)")
         if base_weights and not getattr(self, "_server_lr_logged", False):  # FX-N15: the server lr in force, once
-            src = "config learning_rate" if self.learning_rate is not None else \
-                f"fedbuff.py table (use_oort_lr={self.use_oort_lr}, dataset={self.dataset_name})"
-            logger.info(f"[SERVER_LR] fedbuff server lr={learning_rate} from {src}, agg_goal={agg_goal}")
+            logger.info(f"[SERVER_LR] fedbuff server lr={learning_rate} from config learning_rate, agg_goal={agg_goal}")
             self._server_lr_logged = True
         return base_weights
 
     def _scale_add_agg_weights_tensorflow(
         self, base_weights: ModelWeights, agg_goal_weights: ModelWeights, agg_goal: int
     ) -> ModelWeights:
-        learning_rate = self.learning_rate if self.learning_rate is not None else 1.0
+        learning_rate = self.learning_rate
         for idx in range(len(base_weights)):
             base_weights[idx] += learning_rate * (agg_goal_weights[idx] / agg_goal)
         return base_weights

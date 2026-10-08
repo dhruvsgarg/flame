@@ -77,3 +77,17 @@ def test_heartbeat_stops_on_shutdown():
     th.start()
     th.join(timeout=2)
     assert not th.is_alive()
+
+
+def test_exit_join_ignores_late_sigterm():
+    """FX-D92: harness SIGTERM during the atexit join raised SystemExit there (fail-fast traceback)."""
+    import signal
+    saved = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        t = _trainer(None)
+        main_mod._stop_bg_threads(t)
+        assert t._shutting_down
+        assert all(signal.getsignal(s) == signal.SIG_IGN for s in saved)
+    finally:
+        for s, h in saved.items():
+            signal.signal(s, h)

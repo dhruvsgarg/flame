@@ -334,29 +334,7 @@ for e_src in cfg.get("experiments", []):
             avail["mode"] = trace_override
             t_co_hp = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
             t_co_hp.setdefault("client_notify", {})["trace"] = trace_override
-            if "trackTrainerAvail" in h:
-                h["trackTrainerAvail"]["trace"] = trace_override
-                # Activate the sim_unavailability gate so _init_availability picks up
-                # the trace (oort, oort_star, refl also set it statically, FX-N7).
-                if h["trackTrainerAvail"].get("type", "").upper() != "ORACULAR":
-                    h["simUnavailability"] = True
-                    # proactive_inflight_evict is set directly in each experiment's
-                    # config_overrides HP (T1 two-axis split); no auto-detection needed
-                    # here. The client_notify.enabled check below is always False
-                    # (Stage H is future), so proactiveInflightEvict is never set by
-                    # this branch -- the explicit YAML value is authoritative.
-                    t_hp = e.get("trainer", {}).get("hyperparameters", {})
-                    if str(t_hp.get("client_notify", {}).get("enabled", "False")).lower() == "true":
-                        h["proactiveInflightEvict"] = True
-            elif "client_notify" in h and isinstance(h["client_notify"], dict):
-                h["client_notify"]["trace"] = trace_override
-                h["simUnavailability"] = True
-            elif e["aggregator"].get("tracking_mode", "oracular").lower() != "oracular":
-                # Non-oracular baseline with no HP-level tracking block (e.g. feddance
-                # in v1, which has no client_notify in HP and no trackTrainerAvail).
-                # Inject trace via availability_trace so _init_availability finds it.
-                h["availability_trace"] = trace_override
-                h["simUnavailability"] = True
+            h["simUnavailability"] = True  # FX-D94: runner fans the trace into availability_trace
             # Rewrite syn_<digits> or syn<digits> in the name so run dirs are identifiable.
             import re
             e["name"] = re.sub(r"syn_?[0-9]+", trace_override, e["name"])
@@ -403,6 +381,10 @@ for e_src in cfg.get("experiments", []):
                          simRedispatchGapSeconds=0.0, simChargeProfilePath=os.path.abspath(_prof))
                 e["trainer"].setdefault("config_overrides", {}).setdefault(
                     "hyperparameters", {})["simCompletionLegSeconds"] = _leg
+        if os.environ.get("SIM_CHARGES", "profiled") == "profiled" and "simChargeProfilePath" not in h:
+            # FX-D99: a silent fallback once ran a 0.6 s placeholder leg.
+            print(f"WARNING: no profiled sim charges for {os.path.basename(_prof)} stack of {bl}; "
+                  "legacy hand constants in force", flush=True)
         for kv in os.environ.get("AGG_HP", "").split():
             k, v = kv.split("=", 1)
             h[k] = yaml.safe_load(v)

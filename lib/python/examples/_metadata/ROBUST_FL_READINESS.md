@@ -303,8 +303,8 @@ green (R10).
   | `async_cifar10/wandb`, `aggregator/wandb` (17G) | wandb run caches | delete (untrack) |
   | `fwdllm/expt_scripts/probe_*`, `writeup_figs/data` JSON | probe/figure DATA, not configs | keep |
   Plus the `trackTrainerAvail` blocks (FX-N7). *Exit:* no per-trainer JSON or `pytorch/main*.py` shell path left.
-- **S5 · Knob contract · wip: layout (a) adopted (`datasets.yaml` `by_baseline`); left: `fedbuff.py` server-lr table into
-  config and a resolved-matrix printer (PARITY_READINESS, operator decisions).** Declare each knob once,
+- **S5 · Knob contract · wip: layout (a) adopted (`datasets.yaml` `by_baseline`); server lr in config (FX-D97); left: a
+  resolved-matrix printer.** Declare each knob once,
   print the resolved baseline × dataset matrix with sources, diff it against a run's config (L9), enforce required knobs
   in `test_baseline_readiness.py`, the preflight and `--validate`.
 - **S6 · Sim perf pass · blocked: on Felix parity (FX board green).** Gate diagnostic logging, trim per-commit

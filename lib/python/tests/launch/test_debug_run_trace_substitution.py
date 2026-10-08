@@ -138,13 +138,13 @@ class TestTrainerTraceSubstitution:
         exps = _run_generator(generator_source, tmp_path, "feddance", trace="syn_50")
         for exp in exps:
             h = exp["aggregator"]["config_overrides"]["hyperparameters"]
-            assert h.get("availability_trace") == "syn_50"
+            assert exp["trainer"]["availability"]["mode"] == "syn_50"  # runner fans it to availability_trace
             assert h.get("simUnavailability") is True
 
         exps = _run_generator(generator_source, tmp_path, "oort", trace="syn_50")
         for exp in exps:
             h = exp["aggregator"]["config_overrides"]["hyperparameters"]
-            assert h["trackTrainerAvail"]["trace"] == "syn_50"
+            assert h.get("simUnavailability") is True and "trackTrainerAvail" not in h  # FX-D94: runner fans the trace
 
 
 class TestMultiTraceSubstitution:

@@ -43,7 +43,7 @@ from flame.config import TrainerAvailState
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD, End
 from flame.selector import AbstractSelector, SelectorReturnType
 from flame.selector.properties import PROP_AVL_STATE
-from flame.telemetry.events import build_slot_starvation
+from flame.telemetry.events import build_abandon_timeout, build_slot_starvation
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +228,8 @@ class AsyncSelectorBase(AbstractSelector):
         # commits on (the aggregator's avail clock). Stashed so the dispatch
         # STAMP and the CHECK agree; None only without an aggregator -> time.time().
         self._sim_now_s = channel_props.get("vclock_now")
+        self._agg_round = channel_props.get("agg_round", -1)
+        self._time_mode = channel_props.get("time_mode", "real")
 
         # Only `channel.one_end()` (a single-parent caller, e.g. a trainer
         # picking its aggregator) sets this -- see `_handle_recv_state`.
@@ -325,6 +327,14 @@ class AsyncSelectorBase(AbstractSelector):
             pending_ref = getattr(self, "_agg_pending_commit_ref", None)
             if pending_ref is not None:
                 pending_ref.discard(end)
+            if telemetry.is_enabled():  # FX-D96: real asyncfl abandons fire here, not in _abandon_stalled
+                mode = getattr(self, "_time_mode", "real")
+                ev, f = build_abandon_timeout(
+                    round_num=getattr(self, "_agg_round", -1), end_id=end, sim_send_ts=float(sent_at),
+                    vclock_now=float(now_s), time_mode=mode,
+                    reason="abandon_90s_vclock" if mode == "sim" else "abandon_90s_wall",
+                )
+                telemetry.emit(ev, **f)
 
     def _drop_disconnected_selections(
         self, selected_ends: set, connected_ends: dict[str, End]

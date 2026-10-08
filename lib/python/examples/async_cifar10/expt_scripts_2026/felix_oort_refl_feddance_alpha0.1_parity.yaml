@@ -94,15 +94,11 @@ experiments:
         # Stage C/D gate plumbing (§7): sim_unavailability activates the oracular
         # delivery-ledger substrate for felix via the asyncfl commit loop. With
         # syn_0 (100% avail) the mechanism fires but sees no UN_AVL → byte-identical
-        # behavior. client_notify.trace is overridden by debug_run.sh --trace;
-        # enabled stays False (Stage H).
+        # behavior. The runner fans the trace into availability_trace (FX-N7).
         # Two-axis flag split (T1): felix is the only baseline with both flags ON.
         sim_unavailability: 'True'
         avail_select_filter: 'True'
         proactive_inflight_evict: 'True'
-        client_notify:
-          enabled: 'False'
-          trace: syn_0
       selector:
         kwargs:
           c: 30
@@ -179,9 +175,6 @@ experiments:
         sim_unavailability: 'True'
         avail_select_filter: 'True'
         proactive_inflight_evict: 'True'
-        client_notify:
-          enabled: 'False'
-          trace: syn_0
       selector:
         kwargs:
           c: 30
@@ -260,8 +253,6 @@ experiments:
         checkpoint:
           enabled: 'True'
           every_n_rounds: 50
-        trackTrainerAvail:
-          trace: syn_0
       selector:
         kwargs:
           aggr_num: 10
@@ -323,8 +314,6 @@ experiments:
         checkpoint:
           enabled: 'True'
           every_n_rounds: 50
-        trackTrainerAvail:
-          trace: syn_0
         min_trainers_to_start: 290
         min_trainers_join_timeout_s: 600
       selector:
@@ -402,8 +391,6 @@ experiments:
         checkpoint:
           enabled: 'True'
           every_n_rounds: 50
-        trackTrainerAvail:
-          trace: syn_0
       selector:
         kwargs:
           aggr_num: 10
@@ -471,8 +458,6 @@ experiments:
         checkpoint:
           enabled: 'True'
           every_n_rounds: 50
-        trackTrainerAvail:
-          trace: syn_0
         min_trainers_to_start: 290
         min_trainers_join_timeout_s: 600
       selector:
@@ -673,8 +658,6 @@ experiments:
         checkpoint:
           enabled: "True"
           every_n_rounds: 50
-        trackTrainerAvail:
-          trace: syn_0
       selector:
         kwargs:
           aggr_num: 10
@@ -734,8 +717,6 @@ experiments:
         checkpoint:
           enabled: "True"
           every_n_rounds: 50
-        trackTrainerAvail:
-          trace: syn_0
         min_trainers_to_start: 290
         min_trainers_join_timeout_s: 600
       selector:
@@ -804,10 +785,6 @@ experiments:
         avail_select_filter: "False"
         proactive_inflight_evict: "False"
         sim_unavailability: "True"
-        availability_trace: syn_0
-        client_notify:
-          enabled: "False"
-          trace: syn_0
         checkpoint:
           enabled: "True"
           every_n_rounds: 50
@@ -873,10 +850,6 @@ experiments:
         avail_select_filter: "False"
         proactive_inflight_evict: "False"
         sim_unavailability: "True"
-        availability_trace: syn_0
-        client_notify:
-          enabled: "False"
-          trace: syn_0
         checkpoint:
           enabled: "True"
           every_n_rounds: 50

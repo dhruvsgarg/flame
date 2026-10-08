@@ -26,7 +26,7 @@
 - **C5 Loop per run:** regrade, rewrite scoreboard, dashboard and FELIX accuracy table.
 - **C6 Correct first, equal second:** a check green on a shared bug is a bug.
 - **C7 Instrument what you can't see,** in the same change as the next fix.
-- **C8 Launch only when fixes are maximized** and PL1-PL10 pass.
+- **C8 Launch only when fixes are maximized** and PL1-PL11 pass.
 - **C9 Correct fixes default on** with a revert knob; unproven ones default off.
 - **C10 Resolve, don't just file:** drive max items to closure; report closed vs opened.
 - **C11 New features screen short, small, parallel** (≤ 30 min, n ≈ 50) before long legs.
@@ -35,6 +35,14 @@
 - **C14 Baselines stay themselves:** paper/repo hyperparameters; only Felix/FluxTune innovate.
 - **C15 Quick runs before long runs:** no overnight until short runs stop finding roots.
 - **C16 Batch fixes per run:** root many offline, test together in one ≤ 30-min run.
+- **C17 Close Felix fast (operator 10-08):** goal = baselines, availability, streaming, both datasets closed.
+  - Pick the top open item; fix the root system-wide: every Felix stack and baseline, not one cell.
+  - Shared roots that FluxTune also has get one line in FT-N12-style FLUXTUNE Next steps, fixed later.
+  - Land a few small, independently checkable fixes (pytest / stored runs), then one short CPU smoke batch.
+  - Smoke after every few fixes so a new red names its cause; runs only as long as the signal needs.
+- **C18 Short runs gate long runs (operator 10-08).** While any issue is fixable and testable by a short run (pytest, stored
+  telemetry, CPU tier, ≤ 30-min GPU screen), no long run. Long runs only to find new issues once the short queue is empty.
+  No long run before 2026-10-09 02:00.
 
 ## Pre-launch checklist (operator: never repeat a failure)
 
@@ -52,6 +60,7 @@ A new failure mode adds a check here in the same session.
 | PL8 | +10 min: `BLOCK.log` advancing, PROGRESS lines, telemetry < 100 MB/min | read `OUT/`; `ls -l <run>/telemetry/aggregator_*` | run 15 unseen OOM; run 16 310 MB/min |
 | PL9 | every leg graded before citing numbers | `SUMMARY.txt`, else `parity_check.py` | run 16 MISSING legs |
 | PL10 | stall rules never cut a leg matching its sim | compare STALLED real with sim timeline | run 18 oort cut pre-round 1 |
+| PL11 | every sim leg has a charge profile for its harness × dataset × stack | no `no profiled sim charges` WARNING in the leg's `shell.log` | FX-N71: tiny_cpu ran a 0.6 s placeholder |
 
 ## Method
 
@@ -99,6 +108,7 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 | run 25 | 10-08 | 2445 / 0 | 16 | 86 | speech G0U 10/0/2 · cifar 10/0/1 (+11 MISSING) | 3 / 12 |
 | run 26 | 10-08 | 2447 / 0 | 16 | 88 | cifar felix/fedbuff/oort 3/0/0 · speech fedbuff 1 red | 3 / 12 |
 | run 27 (FX-D89-91) | 10-08 | 2450 / 0 | 17 | 91 | speech felix + fedbuff ✅ · cifar felix + oort ✅, fedbuff floor-bound | 3 / 12 |
+| CPU smokes (FX-D92-99) | 10-08 | 2456 / 0 | 16 | 99 | T1 24/24 · T3 mobiperf 2/0/0 · P6 2/0/0 · P7 6/0/0 | 3 / 12 |
 
 **Per baseline × dataset (latest grade).** Parity = INV/EXACT on the latest pair; accuracy numbers in FELIX accuracy table.
 
@@ -130,6 +140,7 @@ INV/EXACT green / known / red via `--grade <pool> --regrade --max-stage 9`; DIST
 
 | pool (run) | g / k / r | reds and roots |
 |---|---|---|
+| CPU smokes `pool_20261008_15{0148,2447}_*` | T3 mob 2/0/0 · P6 2/0/0 · P7 6/0/0 (feddance DIST) | FX-D92-D99; T1 24/24 EV |
 | run 27 `block_20261008_1231_run27`: G0U syn_50 both datasets | speech 2/0/0 · cifar 2/0/1 | cifar fedbuff red vs own real, green vs run 26 real |
 | run 26 `block_20261008_1138_run26` | 3/0/0 · speech 1/0/1 | fedbuff overhead_residual 12.5% → FX-D90 |
 | run 25 `block_20261008_0508_run25`: G0U | speech 10/0/2 · cifar 10/0/1 | early async commits → FX-D88; late abandons → FX-D89; exit race → FX-D87 |
@@ -148,12 +159,9 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR21 · overnight block (~9 h, 8 GPUs).** Phase 0 PL3 scale smoke, then:
-  - G0U + G0UC: speech mobiperf all six; cifar all six × {syn_50, mobiperf}.
-  - Cifar oort syn_50 and refl mobiperf G0U (FX-N9).
-  - G0T streaming felix/oort/fedbuff × {lin, events} × {syn_0, syn_50}, both datasets (FX-N13).
-  - G1A pairs: speech refl lr 0.05; cifar fedbuff SGD 0.04 × 1.0 (FX-D73).
-  - *Confirms:* INV/EXACT per cell on ≥ 3-leg floors; EV19; G1A acc within floor.
+- **PR22 · CPU matrix on today's code (~75 min, parallel pools; FX-N78).** T3 cifar + T3 speech (+ syn_20), T1 both, TS/TSo cifar.
+  *Confirms:* INV/EXACT green per cell; EV19. Any red → root before the next pool.
+- **PR21 · GPU long block · deferred by C18** until the short queue is empty: G1A accuracy pairs, G1U, G0T full grid.
 
 **Operator decisions**
 - Claude runs PL3 and launches blocks in tmux `dg_flame`; phase 0 aborts on failure (10-06).
@@ -162,8 +170,8 @@ Parked with the track; board in simulate_fwdllm.md §A.
 - C13, C14, C15 adopted; FX-N73 folded into C13 / FX-N76 (10-07).
 - Flat weight codec default-on; lean MQTT keeps QoS 2; CPU aggregation, GPU eval (10-08).
 - QoS 1 rejected: per-message seqno restart could splice late duplicates (10-08).
-- Unavailability rerun + accuracy pairs go together in PR21 (10-08).
-- S5 knob layout (a): `datasets.yaml` defaults + `by_baseline`; left: fedbuff server-lr table, matrix printer.
+- Short runs gate long runs (C18); no long run before 10-09 02:00 (10-08).
+- S5 knob layout (a): `datasets.yaml` defaults + `by_baseline`; left: matrix printer.
 
 ---
 

@@ -128,16 +128,16 @@ class ClientAvailability:
 
         if sim_unavail:
             client_notify = getattr(hp, "client_notify", None) or {}
-            trace_name = (
-                client_notify.get("trace")
-                or getattr(hp, "availability_trace", None)
+            trace_name = (  # FX-D94: runner-fanned key first; the rest serve non-runner configs
+                getattr(hp, "availability_trace", None)
+                or client_notify.get("trace")
                 or track.get("trace")
             )
         else:
-            # Legacy path: only activate for ORACULAR type
+            # Legacy path (FluxTune oracular baselines, FT-N13): only activate for ORACULAR type
             if str(track.get("type", "")).upper() != "ORACULAR":
                 return
-            trace_name = track.get("trace")
+            trace_name = getattr(hp, "availability_trace", None) or track.get("trace")
 
         if not trace_name:
             logger.warning("[AVAIL] availability enabled but no trace name configured")

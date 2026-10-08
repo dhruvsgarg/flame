@@ -638,7 +638,7 @@ class ExperimentRunner:
         a separate field a baseline can hardcode). Left unfanned, a baseline
         default can silently override the experiment's intended availability
         mode even though the right data loaded. Aggregator-side analog
-        (trackTrainerAvail.trace) is fanned in _build_aggregator_config.
+        (availability_trace) is fanned in _build_aggregator_config.
 
         Returns (merged_dict, provenance) -- provenance maps each leaf path to
         the layer name that contributed it.
@@ -731,12 +731,10 @@ class ExperimentRunner:
             {"hyperparameters": _delay_fan},
         ))
 
-        # Aggregator-side analog of the client_notify.trace fan above:
-        # trackTrainerAvail.trace is equally prone to a baseline default
-        # winning over the experiment's intended availability.mode.
+        # Aggregator-side analog of the client_notify.trace fan (FX-D94).
         layers.append((
-            "experiment.trainer.availability (fanned to trackTrainerAvail)",
-            {"hyperparameters": {"trackTrainerAvail": {"trace": exp.trainer.availability.mode}}},
+            "experiment.trainer.availability (fanned to availability_trace)",
+            {"hyperparameters": {"availability_trace": exp.trainer.availability.mode}},
         ))
 
         merged, provenance = merge_with_provenance(layers)

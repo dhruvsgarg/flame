@@ -1097,8 +1097,12 @@ def eligibility_parity(real: dict, sim: dict, warn_ks: float = 0.2) -> dict:
                 candidates.append(nc)
         return eligible, candidates
 
-    r_el, r_ca = collect(real["selection_train"])
-    s_el, s_ca = collect(sim["selection_train"])
+    def dispatching(sel_events):  # FX-D98: no-op wakes sample at each side's own cadence (real poll, sim events)
+        return [e for e in sel_events if e.get("num_chosen")] if any("num_chosen" in e for e in sel_events) else sel_events
+
+    real_sel, sim_sel = dispatching(real["selection_train"]), dispatching(sim["selection_train"])
+    r_el, r_ca = collect(real_sel)
+    s_el, s_ca = collect(sim_sel)
     if not r_el and not r_ca:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no num_eligible/num_candidates in telemetry"}
@@ -1149,7 +1153,7 @@ def eligibility_parity(real: dict, sim: dict, warn_ks: float = 0.2) -> dict:
         keys = {k for d in evs for k in d}
         return {k: round(sum(d.get(k, 0) for d in evs) / len(evs), 2) for k in sorted(keys)} if evs else None
 
-    rx, sx = _excl_means(real["selection_train"]), _excl_means(sim["selection_train"])
+    rx, sx = _excl_means(real_sel), _excl_means(sim_sel)
     if rx is not None or sx is not None:
         out["excluded_by_real"], out["excluded_by_sim"] = rx, sx
     return out
@@ -2921,6 +2925,11 @@ def _stall_episodes(adv: list, cut: float = _TIMEOUT_STALL_S) -> list:
 _MIN_FREE_ROUNDS = 10  # below this a stall-free mean is noise (a timing red on < ~20 commits, PARITY Method)
 
 
+def _skip_unmatched(result: dict, matched_n: int) -> None:
+    """FX-D95: a full-run mean compares rounds one side never ran; with no matched window, timing is ungradeable."""
+    result.update(ok=True, status="SKIP", note=f"{matched_n} matched units < 2: timing ungradeable")
+
+
 def _skip_if_few_free(result: dict, real_free: list, sim_free: list, n_rounds: int) -> None:
     """FX-N62: a leg whose stalls leave too few stall-free rounds can't grade timing; SKIP, never pass or fail."""
     n = min(len(real_free), len(sim_free))
@@ -3047,7 +3056,9 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY
     # its mean and understating the residual (fedbuff_round 0.024 -> 0.080).
     # §D-4/§F-2, the rule `terminal_state` already followed (§D-75).
     matched_n = min(n_sim_rounds, n_real_rounds)
-    if matched_n >= 2:
+    if matched_n < 2:
+        _skip_unmatched(result, matched_n)
+    else:
         real_adv = _per_round_advances(
             real["agg_rounds"],
             use_vclock=_has_vclock(real["agg_rounds"]))[: matched_n - 1]
@@ -3140,7 +3151,9 @@ def per_round_advance_parity(real: dict, sim: dict,
     # The override used to be gated on `_real_intrinsic_clock`, a SYNC-only wall
     # coordinate `matched_n` never reads, so async graded the full run (§D-84).
     matched_n = min(len(sim_adv), len(real_adv))
-    if matched_n >= 2:
+    if matched_n < 2:
+        _skip_unmatched(result, matched_n)
+    else:
         matched_sim = sim_adv[:matched_n]
         matched_real = real_adv[:matched_n]
         _fs, _fr = _stall_free(matched_sim, real, sim), _stall_free(matched_real, real, sim)  # FX-N62
@@ -3905,7 +3918,9 @@ def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
     # sim's round count legitimately outruns real's wall-capped one, inflating
     # the raw residual. Applies on every baseline, not just sync (§D-84).
     matched_n = min(len(sim_adv), len(real_adv))
-    if matched_n >= 2:
+    if matched_n < 2:
+        _skip_unmatched(result, matched_n)
+    else:
         matched_sim = _stall_free(sim_adv[:matched_n], real, sim)  # FX-N62
         matched_real = _stall_free(real_adv[:matched_n], real, sim)
         matched_sim_mean = sum(matched_sim) / len(matched_sim)

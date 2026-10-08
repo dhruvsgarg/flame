@@ -698,7 +698,7 @@ class TopAggregator(SyncTopAgg):
         """FX-N18: streamer-free twin of ``next(recv_fifo(recv_ends, 1))``; pops the
         earliest-arrival update from a persistent drain_ready buffer."""
         pending = self._real_drain_pending
-        deadline = time.time() + RECV_TIMEOUT_WAIT_S
+        deadline = min(time.time() + RECV_TIMEOUT_WAIT_S, self._real_budget_end_wall())
         _reclaim = self._next_reclaim_wall(channel)
         if _reclaim is not None:  # FX-D50: wake at the selector's reclaim
             deadline = min(deadline, max(time.time(), _reclaim) + 0.01)
@@ -727,6 +727,20 @@ class TopAggregator(SyncTopAgg):
             if channel.has(_e):
                 channel._ends[_e].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
         return msg, md
+
+    def _real_budget_end_wall(self) -> float:
+        """Real: wall ts at which max_experiment_runtime_s runs out (inf if unset)."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        max_rt, start = getattr(hp, "max_experiment_runtime_s", None), getattr(self, "agg_start_time_ts", None)
+        return start + float(max_rt) if max_rt and start is not None else math.inf
+
+    def _real_budget_spent(self) -> bool:
+        """FX-D93: a version waiting on late updates must still stop at the budget, not at its next commit."""
+        if self.simulated or time.time() < self._real_budget_end_wall():
+            return False
+        logger.info(f"max_experiment_runtime_s reached while waiting at round {self._round}; stopping run.")
+        self._work_done = True
+        return True
 
     def _next_reclaim_wall(self, channel):
         """Real: wall ts of the earliest pending selector timeout reclaim (dispatch + send_timeout_wait_s), else None."""
@@ -776,6 +790,8 @@ class TopAggregator(SyncTopAgg):
         channel = self.cm.get_by_tag(tag)
         if not channel:
             logger.debug("No channel found")
+            return
+        if self._real_budget_spent():
             return
         _at = agg_timing(self)
         _at.begin()
@@ -1497,70 +1513,6 @@ class TopAggregator(SyncTopAgg):
             self._sim_hold_busy_slots(channel)
         _at.emit(self._round, time.time() - _t_commit, self.simulated, getattr(self, "vclock_now", None))
 
-    def _trace_read_avail_check(self, end: str) -> bool:
-        logger.debug("In _trace_read_avail_check")
-
-        picked_trainer_is_available = True
-
-        if end in self.trainer_unavail_durations.keys():
-            # aggregator seconds from start, on the trace's timeline: virtual
-            # clock in simulated mode (wall-clock would barely advance vs the
-            # sim timeline, so every unavailability window would be missed),
-            # wall-clock in real mode. Mirrors the trainer-side _sim_now() path.
-            agg_time_since_start_s = (
-                self._vclock.now if self.simulated
-                else time.time() - self.agg_start_time_ts
-            )
-
-            curr_trainer_unavail_list = self.trainer_unavail_durations[end]
-
-            # iterate through unavailability list First, check if the
-            # current time is within any failure window
-
-            for start_time, duration in curr_trainer_unavail_list:
-                if start_time <= agg_time_since_start_s < start_time + duration:
-                    logger.debug(
-                        f"### Trainer {end} attempted to be picked in failed " f"state."
-                    )
-                    picked_trainer_is_available = False
-                    return picked_trainer_is_available
-                else:
-                    logger.debug(f"### Trainer {end} is available.")
-                    picked_trainer_is_available = True
-
-            # Remove entries that occurred in the past
-            updated_trainer_unavail_list = [
-                (start_time, duration)
-                for start_time, duration in curr_trainer_unavail_list
-                if (start_time + duration) >= agg_time_since_start_s
-            ]
-
-            # Remove end from trainer_unavail_durations if list is
-            # empty TODO: Check if deletion is happening properly
-            if len(updated_trainer_unavail_list) == 0:
-                logger.info(
-                    f"### Trainer {end} will no longer fail, removing from "
-                    f"trainer_unavail_durations"
-                )
-                del self.trainer_unavail_durations[end]
-            else:
-                self.trainer_unavail_durations[end] = updated_trainer_unavail_list
-        else:
-            logger.debug(
-                f"No info on end {end} in self.trainer_unavail_durations"
-                f", returning TRUE (default)"
-            )
-        return picked_trainer_is_available
-
-    def check_trainer_availability(self, end: str) -> bool:
-        picked_trainer_is_available = True
-        if self.track_trainer_avail["enabled"] == "False":
-            return True
-        elif self.track_trainer_avail["type"] == "ORACULAR":
-            picked_trainer_is_available = self._trace_read_avail_check(end)
-
-        return picked_trainer_is_available
-
     def _pop_free_slot_ts(self, round_now):
         """Oldest freed-slot vclock (FIFO) to stamp a re-dispatch, else round_now.
 
@@ -1726,6 +1678,8 @@ class TopAggregator(SyncTopAgg):
         # it to selection events. _avail_now() covers both modes — real used to
         # be skipped here (see syncfl/top_aggregator.py for the parity fallout).
         channel.properties["vclock_now"] = self._avail_now()
+        channel.properties["agg_round"] = self._round  # FX-D96: selector abandon events cite the round
+        channel.properties["time_mode"] = "sim" if self.simulated else "real"
 
         # Per-baseline online oracle: refresh candidate stat-utility to true values
         # before selection. No-op unless oracle_utility_injection is enabled.

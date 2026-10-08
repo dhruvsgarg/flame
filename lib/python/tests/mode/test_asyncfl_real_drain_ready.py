@@ -112,6 +112,19 @@ class TestRealDrainRecv:
         assert agg._real_drain_recv(ch, ["a"])[0] is None
         assert _t.time() - t0 < 2.0
 
+    def test_wait_ends_at_the_runtime_budget(self):
+        # FX-D93: a version short of aggGoal waited past the budget until its next update (run 363 s of 240).
+        import time as _t
+        from types import SimpleNamespace
+        agg, ch = _agg(), _DrainChannel(["a"])
+        agg.simulated, agg.agg_start_time_ts = False, _t.time() - 239.5
+        agg.config = SimpleNamespace(hyperparameters=SimpleNamespace(max_experiment_runtime_s=240))
+        t0 = _t.time()
+        assert agg._real_drain_recv(ch, ["a"])[0] is None
+        assert _t.time() - t0 < 2.0
+        agg._work_done = False
+        assert agg._real_budget_spent() and agg._work_done
+
     def test_reclaim_read_on_the_avail_clock(self):
         # FX-D60: production stamps on the avail clock (s since start); an epoch read made every wait 10 ms (run 16 spin).
         import time as _t

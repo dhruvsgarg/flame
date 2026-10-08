@@ -19,6 +19,7 @@ def test_no_dataset_is_the_cifar_template(generator_source, tmp_path, monkeypatc
     e = _one(generator_source, tmp_path, monkeypatch, "felix")
     assert e["trainer"]["num_trainers"] == 300 and e["trainer"]["dataset"]["name"] == "cifar10"
     assert "dataset_name" not in e["aggregator"]["config_overrides"]["hyperparameters"]
+    assert "targetAccuracy" not in e["aggregator"]["config_overrides"]["hyperparameters"]
 
 
 @pytest.mark.parametrize("baseline,fedbuff_opt", [("felix", True), ("fedbuff", True), ("oort", False)])
@@ -28,13 +29,14 @@ def test_google_speech_profile(generator_source, tmp_path, monkeypatch, baseline
     assert e["trainer"]["config_overrides"]["hyperparameters"]["dataset_name"] == "google_speech"
     agg = e["aggregator"]["config_overrides"]
     assert agg["hyperparameters"]["dataset_name"] == "google_speech"
+    assert agg["hyperparameters"]["targetAccuracy"] == 0.6  # FX-N10 stop rule
     assert (agg.get("optimizer", {}).get("kwargs", {}).get("dataset_name") == "google-speech") == fedbuff_opt
     assert e["name"].startswith("dbg_google_speech_") and "_n100_" in e["name"]
 
 
 @pytest.mark.parametrize("baseline", ["felix", "fedbuff"])
 def test_speech_async_server_lr_and_cifar_fedbuff_batch(generator_source, tmp_path, monkeypatch, baseline):
-    """FX-N74: speech felix/fedbuff run SGD 0.04 b16 x server lr 0.5 / 1.0; cifar fedbuff SGD 0.04 b32 x 1.0, cifar felix keeps the table lr."""
+    """FX-N74: speech felix/fedbuff run SGD 0.04 b16 x server lr 0.5 / 1.0; cifar fedbuff SGD 0.04 b32 x 1.0, cifar felix keeps baselines.yaml's 0.3 (S5)."""
     e = _one(generator_source, tmp_path, monkeypatch, baseline, DATASET="google_speech")
     assert e["aggregator"]["config_overrides"]["optimizer"]["kwargs"]["learning_rate"] == {"felix": 0.5, "fedbuff": 1.0}[baseline]
     hp = e["trainer"]["hyperparameters"]

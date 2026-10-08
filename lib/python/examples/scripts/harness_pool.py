@@ -225,7 +225,9 @@ def injected_phases(kind, ds) -> List[Phase]:
 def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]:
     matrix = ("syn_0", "syn_0b", "syn_50", "mobiperf_3st")
     if tier == "T1":
-        return [shaped("T1", baselines, sh, "sim_ev", ds, runtime_s=120) for sh in ("syn_0", "syn_50")]
+        # syn_50 360 s: unaware oort first commits at vclock 150 / 300 (FX-L43).
+        return [shaped("T1", baselines, sh, "sim_ev", ds, runtime_s={"syn_0": 120, "syn_50": 360}[sh])
+                for sh in ("syn_0", "syn_50")]
     if tier == "T2":
         return [shaped(f"T2_{sh}", baselines, sh, "sim", ds) for sh in matrix] + injected_phases("sim_ev", ds)
     if tier == "T3":

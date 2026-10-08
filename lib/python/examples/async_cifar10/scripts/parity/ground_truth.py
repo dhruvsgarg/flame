@@ -38,13 +38,7 @@ _AVL_STATES = frozenset({TrainerAvailState.AVL_TRAIN, TrainerAvailState.AVL_EVAL
 def resolve_trace_name(run_dir: str) -> Optional[str]:
     """Read aggregator_config.json in run_dir and return the configured trace name.
 
-    Priority mirrors debug_run.sh's own ``--trace`` substitution branch (see
-    UNAVAILABILITY_DESIGN.md Baseline matrix ⁺ note): oort/oort_star/refl write
-    trackTrainerAvail.trace; felix/oort_star (HP-level client_notify path)
-    write client_notify.trace; feddance/fedbuff write availability_trace. Try
-    in that order so a run with more than one key set (e.g. a stale YAML
-    default alongside the live debug_run.sh override) resolves to the one
-    debug_run.sh itself would have picked, not an arbitrary one.
+    Order: legacy trackTrainerAvail.trace (runs before FX-D94), then availability_trace, then client_notify.trace.
 
     Returns None if the config file is missing/unreadable or no key is set
     (gate off / syn_0-style always-available).
@@ -57,17 +51,12 @@ def resolve_trace_name(run_dir: str) -> Optional[str]:
         return None
     hp = cfg.get("hyperparameters", cfg)
 
-    track = hp.get("trackTrainerAvail") or {}
-    trace = track.get("trace")
-    if trace:
-        return trace
-
-    client_notify = hp.get("client_notify") or {}
-    trace = client_notify.get("trace")
-    if trace:
-        return trace
-
-    return hp.get("availability_trace") or None
+    track = hp.get("trackTrainerAvail") or {}  # runs before FX-D94 carry the trace here
+    if track.get("trace"):
+        return track["trace"]
+    if hp.get("availability_trace"):  # FX-D94
+        return hp["availability_trace"]
+    return (hp.get("client_notify") or {}).get("trace") or None
 
 
 def load_ground_truth(

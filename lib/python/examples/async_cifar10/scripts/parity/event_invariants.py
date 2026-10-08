@@ -125,12 +125,14 @@ def _effective_d(run, raw: float) -> float:
 
 
 def _trace(run) -> str:
-    """Availability trace name: asyncfl stacks use client_notify, oort/refl/feddance trackTrainerAvail."""
-    for key in ("client_notify", "trackTrainerAvail"):
-        block = _hp(run, key, default={})
-        if isinstance(block, dict) and block.get("trace"):
-            return str(block["trace"])
-    return "syn_0"
+    """Availability trace name; same key order as ground_truth.resolve_trace_name (FX-D94)."""
+    legacy = _hp(run, "trackTrainerAvail", default={})
+    if isinstance(legacy, dict) and legacy.get("trace"):
+        return str(legacy["trace"])
+    if _hp(run, "availability_trace"):
+        return str(_hp(run, "availability_trace"))
+    block = _hp(run, "client_notify", default={})
+    return str(block["trace"]) if isinstance(block, dict) and block.get("trace") else "syn_0"
 
 
 def _res(status, detail="", **kw):

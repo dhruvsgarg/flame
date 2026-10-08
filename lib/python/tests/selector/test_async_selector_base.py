@@ -195,6 +195,21 @@ class TestAbandonClockIsVirtualInSim:
         chosen = sel.select(make_ends(count=4, prefix="t"), props, [])
         assert all(sel.all_selected[e] == 500.0 for e in chosen)
 
+    def test_reclaim_emits_abandon_timeout(self, build, monkeypatch):
+        """FX-D96: real asyncfl abandons happen here, so the event must too."""
+        from flame import telemetry
+        seen = []
+        monkeypatch.setattr(telemetry, "is_enabled", lambda: True)
+        monkeypatch.setattr(telemetry, "emit", lambda ev, **f: seen.append((ev, f)))
+        sel = build()
+        sel.requester = "agg"
+        sel.selected_ends = {"agg": {"t0"}}
+        sel.all_selected = {"t0": 0.0}
+        sel._sim_now_s, sel._agg_round, sel._time_mode = 200.0, 7, "real"
+        sel._reclaim_timed_out_ends(sel.selected_ends["agg"])
+        assert [(ev, f["end_id"], f["round"], f["reason"], f["age_s"]) for ev, f in seen] == [
+            ("abandon_timeout", "t0", 7, "abandon_90s_wall", 200.0)]
+
     def test_send_timeout_is_configurable(self, build):
         assert build().send_timeout_wait_s == 90
         assert build(send_timeout_wait_s=300).send_timeout_wait_s == 300
