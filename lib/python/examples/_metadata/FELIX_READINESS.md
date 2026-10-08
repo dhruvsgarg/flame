@@ -54,7 +54,7 @@ G1A = full data (runs 16-18); G2 streams data 0 → 100% over 3 h (lower bound).
 | sim speedup vs real | 🟡 cifar 4.5-7.4×; 🔴 speech 0.6-1.1× (GPU-bound) | FX-N22 P8 |
 | paper experiments sim-only | ⬚ | FX-N12 |
 
-**Validation matrix (goal: real↔sim parity on correct behaviour).** Short = CPU tiers + ≤ 30-min GPU screens (PARITY C18).
+**Validation matrix (goal: real↔sim parity on correct behaviour).** Short = pytest, stored telemetry, CPU tiers, ≤ 30-min GPU screens, in-process `fl_lr_check.py` (PARITY C18).
 
 | axis | cells | latest short-run evidence | left to test (short) |
 |---|---|---|---|
@@ -63,7 +63,7 @@ G1A = full data (runs 16-18); G2 streams data 0 → 100% over 3 h (lower bound).
 | syn_20 × six, both | 12 | none in T3 (T3 shapes syn_0, syn_0b, syn_50, mobiperf) | add syn_20 to T3 (FX-N78) |
 | syn_50 × six, both | 12 | T1 EV ✅; G0U run 27 felix/oort/fedbuff | T3 all six; refl A2, oort_star K3b (FX-N9) |
 | mobiperf_3st × six, both | 12 | T3 cifar felix + fedbuff ✅ (10-08) | T3 other four + speech; AVL_EVAL counts (FX-N9) |
-| streaming lin/events × syn_0/syn_50 (+oracle) | 6 × 2 × 4 | cifar ST5 EV19 ✅ (pre-FX-D77) | TS/TSo cifar rerun; speech blocked FX-N30; oracle advantage (FX-N13) |
+| streaming lin/events × syn_0/syn_50 (+oracle) | 6 × 2 × 4 | cifar ST5 EV19 ✅ (pre-FX-D77) | TS/TSo cifar rerun; speech G0T/G0To screens (FX-N30); oracle advantage (FX-N13) |
 | checker sensitivity P11a-c | 2 | CAUGHT run 6; speech P11b miss | rerun T4 P11 both datasets |
 | correctness: accuracy to target | 12 | 3 / 12 at target (G1A) | in-process `fl_lr_check.py` per open baseline (FX-N74); G1A pairs = long |
 | DIST replicate floors | per cell | n = 2 | T3C ≥ 3 legs per cell (FX-N42 Q2) |
@@ -125,7 +125,7 @@ CPU harness catches logic bugs; distribution parity is decided on GPU.
 - **events:** starts 10%; nine 10% chunks land at seeded uniform times, unsynchronized.
 - Stream clock = trace time; horizon 6 days (paper) or leg span (screens); chunks ignore availability.
 - **Built (FX-D47):** one `stream_schedule.py` for trainer, oracle, replay and EV19; tiers TS/TSo, G0T/G0To.
-- **Left:** ST5 speech (after FX-N70, FX-N30) · ST6 sim-only sweep + oracle advantage (needs P8).
+- **Left:** ST5 speech on GPU screens (FX-N30) · ST6 sim-only sweep + oracle advantage (needs P8).
 
 ## Unavailability v1 (FX-N6 audit, 2026-10-04): kept; open rows below
 
@@ -149,13 +149,16 @@ Work rule: PARITY C10, C17, C18. Run queue + pre-launch checklist: PARITY_READIN
   - refl syn_50 A2: eligible real 25.6 vs sim 23.4 (sync: every selection dispatches); split `excluded_by` on run 25.
   - oort_star G0T lin syn_50 K3b 21.8 vs 16.6 s; mobiperf G0U for the four others; AVL_EVAL counts from stored mobiperf G0U.
   - *Exit:* A1-A8/K11 green per cell on T3 + G0U screens.
-- **FX-N13 · Streaming, both datasets · wip: cifar ST5 done pre-FX-D77.** Rerun TS/TSo; speech needs FX-N30.
-  *Exit:* EV19 + INV/EXACT green on TS both datasets; ST6 oracle advantage graded.
-- **FX-N30 `[S]` · Speech tiny_cpu too heavy for CPU slots · todo.** P7/P7o killed early; oracle select blocks MQTT.
-  *Exit:* speech P7/P7o EV green (shrink model, more cores, or GPU screen).
+- **FX-N13 · Streaming, both datasets · wip: cifar ST5 done pre-FX-D77.** Rerun TS/TSo cifar (CPU); speech on G0T/G0To
+  screens (FX-N30). *Exit:* EV19 + INV/EXACT green both datasets; ST6 oracle advantage graded.
+- **FX-N30 `[S]` · Speech streaming on GPU screens · todo.** CPU tiny_cpu speech too heavy (P7/P7o killed; oracle select blocks
+  MQTT); the model stays as is (operator 10-08). *Exit:* speech G0T/G0To lin + events × syn_0/syn_50 EV19 + INV/EXACT green.
 - **FX-N74 `[C]` · Every baseline reaches target on full data · wip: 3 / 12 (cifar felix; speech felix, fedbuff).**
-  Short: `fl_lr_check.py` per open cell (cifar refl, fedbuff; speech refl, oort, feddance). Long G1A pairs wait.
-  *Exit:* each cell at target in-process or a named root.
+  Short (operator 10-08): in-process `fl_lr_check.py` counts as evidence; G1A pairs confirm in the long block.
+  Open cells: cifar refl, fedbuff; speech refl, oort, feddance. Each baseline follows its paper/repo definition (C14):
+  audit selector, aggregation, staleness and hyperparameters vs `third_party/`; fix any disparity.
+  Speech feddance: slow by its own algorithm is accepted as round-bound (target in a longer run); bugs/disparity are fixed.
+  *Exit:* each cell at target in-process, or audited faithful and named round-bound.
 - **FX-N77 `[C][S]` · Real-cost parity · wip.** Cifar fedbuff G0U syn_50 red vs own real, green vs run 26: needs a ≥ 3-leg G0UC floor
   (≤ 30-min screens). *Exit:* fedbuff green on the floor.
 - **FX-N76 `[C][S]` · C13 real-cost audit · wip.** Open: sim recv gap contention-inflated (run 22 weights_to_ram 0.23 vs 0.006 s).
@@ -171,7 +174,7 @@ Work rule: PARITY C10, C17, C18. Run queue + pre-launch checklist: PARITY_READIN
 - **FX-N2 · Parent S2 pipeline for async_cifar10 · todo.** *Exit:* stored Jun pairs regrade within floor.
 
 *Long (only after the short queue is empty, PARITY C18):*
-- **PR21** GPU block: G1A accuracy pairs (FX-N74), G1U n=300, G0T full grid.
+- **PR21** GPU block: G1A accuracy pairs (FX-N74; speech feddance longer window if round-bound), G1U n=300, G0T full grid.
 - **FX-N11 · google_speech GPU parity · blocked: short queue.** **FX-N12 · paper experiments sim-only · blocked: FX-N11, FX-N13, P8.**
 
 ---
@@ -424,4 +427,3 @@ Source of truth: `datasets.yaml` `by_baseline`, each field tagged [paper]/[repo]
 
 ## Open questions (operator)
 
-- Speech feddance is round-bound at 90 min: lengthen its window? (FX-N74)

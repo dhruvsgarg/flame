@@ -40,9 +40,9 @@
   - Shared roots that FluxTune also has get one line in FT-N12-style FLUXTUNE Next steps, fixed later.
   - Land a few small, independently checkable fixes (pytest / stored runs), then one short CPU smoke batch.
   - Smoke after every few fixes so a new red names its cause; runs only as long as the signal needs.
-- **C18 Short runs gate long runs (operator 10-08).** While any issue is fixable and testable by a short run (pytest, stored
-  telemetry, CPU tier, ≤ 30-min GPU screen), no long run. Long runs only to find new issues once the short queue is empty.
-  No long run before 2026-10-09 02:00.
+- **C18 Short runs gate long runs (operator 10-08).** While any issue is fixable and testable by a short run, no long run.
+  Short = pytest, stored telemetry, CPU tiers, ≤ 30-min GPU screens (G0U/G0UC/G0T/G0To), in-process `fl_lr_check.py`.
+  Long (G1*/G2/blocks) only to find new issues once the short queue is empty. No long run before 2026-10-09 02:00.
 
 ## Pre-launch checklist (operator: never repeat a failure)
 
@@ -125,7 +125,7 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 | oort_star | cifar | ✅ L6 G0 | 🔴 G0T lin syn_50 K3b (FX-N9) | ⬚ |
 | oort_star | speech | ✅ L6 G0 | 🟡 G0U syn_50 replicate chaos (FX-L53); ⬚ PR21 | ⬚ |
 | feddance | cifar | ✅ G2 on sim↔sim floor | ✅ G0U (runs 12-14) | ❌ |
-| feddance | speech | ✅ G1A 1.0 (run 18) | 🟡 T3 mobiperf overhead_residual | ❌ round-bound |
+| feddance | speech | ✅ G1A 1.0 (run 18) | 🟡 T3 mobiperf overhead_residual | ❌ round-bound if audit faithful (FX-N74) |
 
 ## Felix scoreboard
 
@@ -160,6 +160,8 @@ Parked with the track; board in simulate_fwdllm.md §A.
 ## Next steps (run queue — top item is next)
 
 - **PR22 · CPU matrix on today's code (~75 min, parallel pools; FX-N78).** T3 cifar + T3 speech (+ syn_20), T1 both, TS/TSo cifar.
+- **PR23 · GPU screens (≤ 30 min each; C18).** G0UC fedbuff cifar ≥ 3 legs (FX-N77); G0T oort_star lin syn_50 (FX-N9);
+  speech G0T/G0To streaming (FX-N30); G0U mobiperf for the four remaining baselines (FX-N9).
   *Confirms:* INV/EXACT green per cell; EV19. Any red → root before the next pool.
 - **PR21 · GPU long block · deferred by C18** until the short queue is empty: G1A accuracy pairs, G1U, G0T full grid.
 
@@ -170,7 +172,8 @@ Parked with the track; board in simulate_fwdllm.md §A.
 - C13, C14, C15 adopted; FX-N73 folded into C13 / FX-N76 (10-07).
 - Flat weight codec default-on; lean MQTT keeps QoS 2; CPU aggregation, GPU eval (10-08).
 - QoS 1 rejected: per-message seqno restart could splice late duplicates (10-08).
-- Short runs gate long runs (C18); no long run before 10-09 02:00 (10-08).
+- Short runs gate long runs (C18); GPU screens ≤ 30 min and `fl_lr_check.py` count as short; speech streaming on GPU, model unchanged (10-08).
+- A baseline slow by its own algorithm is round-bound, not a bug; disparity vs its reference is fixed (10-08).
 - S5 knob layout (a): `datasets.yaml` defaults + `by_baseline`; left: matrix printer.
 
 ---
