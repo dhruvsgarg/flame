@@ -181,6 +181,15 @@ class Trainer(Role, metaclass=ABCMeta):
         if tag == TAG_FETCH:
             self._fetch_weights(tag)
 
+    def _aggregator_left(self, channel) -> bool:
+        """FX-N77: the aggregator left after an EOT this trainer hadn't read (it was training); finish on it."""
+        eot = getattr(channel, "departed_eot", None)
+        if eot is None or channel.all_ends():
+            return False
+        self._work_done = eot
+        self.fetch_success = True
+        return True
+
     def _fetch_weights(self, tag: str) -> None:
         logger.debug(
             f"### FETCH WEIGHTS start for tag: {tag}, "
@@ -209,6 +218,8 @@ class Trainer(Role, metaclass=ABCMeta):
             f"for trainer_id {self.trainer_id}"
         )
         channel.await_join()
+        if self._aggregator_left(channel):
+            return
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
@@ -421,6 +432,8 @@ class Trainer(Role, metaclass=ABCMeta):
             f"for trainer_id: {self.trainer_id}"
         )
         channel.await_join()
+        if self._aggregator_left(channel):
+            return
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_SEND)
@@ -583,6 +596,8 @@ class Trainer(Role, metaclass=ABCMeta):
             f"{channel} for trainer_id: {self.trainer_id}"
         )
         channel.await_join()
+        if self._aggregator_left(channel):
+            return
 
         # Setting the channel status to False. Means that trainer
         # should not send updates during this time.
@@ -612,6 +627,8 @@ class Trainer(Role, metaclass=ABCMeta):
             f"{channel} for trainer_id: {self.trainer_id}"
         )
         channel.await_join()
+        if self._aggregator_left(channel):
+            return
 
         channel.join()
 
@@ -648,6 +665,8 @@ class Trainer(Role, metaclass=ABCMeta):
             f"{channel} for trainer_id: {self.trainer_id}"
         )
         channel.await_join()
+        if self._aggregator_left(channel):
+            return
 
         channel.update_trainer_state(state, timestamp)
         logger.info(

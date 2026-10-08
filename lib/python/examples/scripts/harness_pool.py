@@ -280,6 +280,9 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [replace(ph, pid=ph.pid.replace("T3_", "T3C_"), kind="real") for ph in tier_phases("T3", baselines, ds)]
     if tier == "G0UC":  # R7 control: a real replicate per G0U cell (same-code real<->real floor, Q2)
         return [replace(ph, pid=ph.pid.replace("G0U_", "G0UC_"), kind="real") for ph in tier_phases("G0U", baselines, ds)]
+    if tier == "CHG":  # L17: real syn_0 legs at the G0U cohort, input to profile_felix_charges.py after a transport change
+        return [Phase(f"{DS_TAG[ds]}CHG", baselines, "syn_0", runtime_s=600, dataset=ds, harness="none", kind="real",
+                      **G0U_SHAPE[ds])]
     if tier == "G1U":  # FX-N9 long confirm: felix + fedbuff at the reference n on syn_50, production trace timeline
         bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
         # FX-D52: cifar n=300 takes every GPU (3 GPUs OOMed at init).

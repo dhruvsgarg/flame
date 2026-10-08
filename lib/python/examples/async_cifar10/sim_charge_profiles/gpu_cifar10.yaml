@@ -1,52 +1,46 @@
 completion_leg:
+  fedavg:
+    mean_s: 0.0438
+    p50_s: 0.041
+    n: 100
+    charge: true
   asyncfl:
-    mean_s: 0.0405
-    p50_s: 0.034
-    n: 2091
+    mean_s: 0.0312
+    p50_s: 0.028
+    n: 582
     charge: true
   oort_sync:
-    mean_s: 0.0538
-    p50_s: 0.045
-    n: 567
-    charge: true
-  fedavg:
-    mean_s: 0.04
-    p50_s: 0.038
-    n: 186
+    mean_s: 0.0528
+    p50_s: 0.048
+    n: 432
     charge: true
 dispatch_latency:
+  fedavg:
+    mean_s: 0.0382
+    p50_s: 0.018
+    n: 33
+    charge: true
   asyncfl:
-    mean_s: 0.0561
-    p50_s: 0.033
-    n: 1378
+    mean_s: 0.0164
+    p50_s: 0.011
+    n: 579
     charge: true
   oort_sync:
-    mean_s: 0.0545
-    p50_s: 0.051
-    n: 186
-    charge: true
-  fedavg:
-    mean_s: 0.0752
-    p50_s: 0.077
-    n: 61
+    mean_s: 0.0382
+    p50_s: 0.026
+    n: 143
     charge: true
 _meta:
   dataset: cifar10
   harness: gpu
   host: jayne
-  commit: bd5fc954d
-  date: '2026-10-07'
+  commit: d8a594ccb
+  date: '2026-10-08'
   tool: profile_felix_charges.py
   runs:
-  - run_20260929_044523_GS_syn_0_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
-  - run_20260929_045856_GS_syn_0_dbg_felix_n300_alpha0.1_syn_0_stream_real
-  - run_20260929_051232_GS_syn_20_dbg_felix_n300_alpha0.1_syn_20_stream_real
-  - run_20260929_052605_GS_syn_0_dbg_refl_n300_alpha0.1_syn_0_stream_real
-  - run_20260929_053907_GS_syn_20_dbg_oort_star_n300_alpha0.1_syn_20_stream_real
-  - run_20260929_055233_GS_syn_20_dbg_refl_n300_alpha0.1_syn_20_stream_real
-  - run_20260929_060535_GS_syn_0_dbg_feddance_n300_alpha0.1_syn_0_stream_real
-  - run_20260929_061902_GS_syn_20_dbg_fedbuff_n300_alpha0.1_syn_20_stream_real
-  - run_20260929_063238_GS_syn_0_dbg_oort_n300_alpha0.1_syn_0_stream_real
-  - run_20260929_064605_GS_syn_20_dbg_oort_n300_alpha0.1_syn_20_stream_real
-  - run_20260929_065931_GS_syn_20_dbg_feddance_n300_alpha0.1_syn_20_stream_real
-  - run_20260929_071258_GS_syn_0_dbg_oort_star_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_053053_CHG_dbg_feddance_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_053053_CHG_dbg_felix_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_053054_CHG_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_054406_CHG_dbg_oort_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_054406_CHG_dbg_oort_star_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_054415_CHG_dbg_refl_n300_alpha0.1_syn_0_stream_real

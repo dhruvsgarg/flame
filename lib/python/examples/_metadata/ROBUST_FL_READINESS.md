@@ -231,6 +231,10 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
 - **L29 `[measure]`** A checker reads run-defining settings (trace scale, knobs) from the run's config, never its env.
 - **L30 `[measure]`** Rank real costs from a profile, not a hypothesis list: `FLAME_PYSPY` wall + cpu views per role, then
   `profile_report.py`; compare runs only at equal leg concurrency (CPU-starved legs inflate every CPU row; FX-N77).
+- **L32 `[measure]`** Count simultaneous events the same on both sides: sim's same-vclock commits are zero advances, real's are
+  sub-second ones; dropping zeros skews every per-unit mean (FX-D91).
+- **L31 `[ops]`** Deliver a peer's membership events (JOIN/LEAVE) on the same ordered path as its data: a LEAVE handled ahead of
+  the chunks before it dropped the EOT and hung trainers 32 s (FX-D86).
 
 ## Shared tripwires (don'ts)
 
@@ -257,8 +261,12 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
 - **T15** Don't edit code or scripts while a run is live: bash reads a script incrementally, and each leg imports the
   code at its own launch (`smoke_20260926_122039` summary lost; `pool_smoke_fxn52` ran a half-edited selector).
 - **T12** Don't add a fix to one copy of a shared concept (pacer, drain, residence) without checking every
-- **T16** Don't interpolate a message, payload or ledger in a log f-string; it formats even at an off level (`test_no_eager_payload_logs.py`).
   copy.
+- **T16** Don't interpolate a message, payload or ledger in a log f-string; it formats even at an off level (`test_no_eager_payload_logs.py`).
+- **T17** Don't re-publish a QoS-2 message from the app on a timeout: the copy gets a new mid, and the receiver splices it into the
+  next message (FX-D85). paho + the broker own delivery.
+- **T18** Don't let a daemon thread log at interpreter exit: a thread holding stdout's lock aborts finalization (`Fatal Python
+  error: _enter_buffered_busy`); stop and join it in the atexit hook (FX-D87).
 
 ---
 

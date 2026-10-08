@@ -28,7 +28,7 @@
 ## Status grid (scoreboard)
 
 Run-by-run green/known/red, open/closed items and per-baseline parity + accuracy: [PARITY_READINESS.md](PARITY_READINESS.md) → Progress dashboard, Felix scoreboard.
-pytest: 2433 passed · 0 failed · 7 skipped (2026-10-08, with FX-D77-D83).
+pytest: 2450 passed · 0 failed · 7 skipped (2026-10-08, with FX-D77-D91).
 
 **Accuracy table (FX-N74; `scripts/accuracy_table.py --runs <run dirs>`)** — test accuracy % at time on the leg's own clock (real
 wall, sim vclock), syn_0, reference n. Targets: cifar 50%, speech 60%. G1A = full data (run 16, `block_20261006_run16`; evals every 40
@@ -188,12 +188,20 @@ G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). 
   0.49-0.56 → 0.34-0.41 s, post_wait 0.34-0.55 → 0.16 s, ingest/commit 0.35-3.16 → 0.06-0.14 s, queue_wait max 6-7 → < 0.2 s; per
   trainer-round pickle/unpickle 0.15-0.2 s → 0. Same-concurrency A/B (3 speech fedbuff legs): 85/84 commits vs 80 with codec + CPU agg
   reverted. T1 sim 14/16 EV green (oort syn_50 EV1 red at HEAD too: 120 s too short for unaware oort).
-  *Next, in order (operator 2026-10-08):* (1) fix the open roots, each tested on the PROF tier (both datasets): paho rx reads
-  0.16-0.18 s/commit (agg loop) and ~0.1 s/round (trainer); pipelined QoS-2 chunks lost at flame receivers (root it, then re-enable
-  pipelining; FX-D80 sends one in flight); trainers block ~30 s in `await_join` after the aggregator leaves; eval 10-11 s on a GPU shared
-  with trainers. (2) PR20 block (≤ 30 min, C16): fresh real legs → re-derive `sim_charge_profiles` (transport changed, L17); G0U syn_50
-  pairs felix, fedbuff, oort × both datasets. (3) keep rooting and fixing the next reds toward high real↔sim fidelity across
-  unavailability and streaming (G0U/G0T), then the PR21 overnight. *Exit:* (1) measured, (2) green.
+  Open roots closed (`pool_prof5/6/7_20261008`): rx copies + O(n^2) send (FX-D84), lost pipelined chunks (FX-D85), 32 s teardown
+  (FX-D86): speech commits felix 680 → 800, oort 79 → 89 per window, 0 chunk warnings, trainers leave 0.05-1.2 s after the aggregator.
+  Eval is genuine fp32 compute (speech 7.9 s on an idle A40; autotune/TF32 0%, fp16 1.66× but changes the metric): kept.
+  **Run 25** (`block_20261008_0508_run25`, graded): speech G0U syn_50 10/0/2, cifar G0U 10/0/1 on 10-05 floors (11 cells MISSING: cifar
+  pool aborted on a trainer exit race → FX-D87); real queue_wait max 0.37 s. Reds: speech fedbuff (sim 15-90 s ahead from round 11:
+  early async commits → FX-D88; also felix 20 commits), speech oort_star time-to-12 rounds 12% (replicate chaos: the G0U real waited
+  for the 900 s flip at round 7, the G0UC real and sim did not; FX-L53), cifar fedbuff syn_50 sim 6-14% slow (late abandons → FX-D89).
+  Real asyncfl abandons via the selector emit no `abandon_timeout` (10 real vs 8 sim, same ends): C7 gap, todo.
+  **Run 26** (`block_20261008_1138_run26`): cifar G0U syn_50 felix/fedbuff/oort 3/0/0; speech felix green, fedbuff 1 red
+  (overhead_residual 12.5%; was 3 S1 reds); 0 early commits, 0 fatal exits (FX-D87/D88 confirmed). Residual root → FX-D90.
+  **Run 27** (`block_20261008_1231_run27`, FX-D89/D90): sim abandons at age = timeout, one pick per withheld commit at a flip; speech
+  fedbuff sim tracks its real to < 1 s through round 17. On the FX-D91 checker: speech felix + fedbuff green (runs 26-27; run 25 speech
+  11/0/1, oort_star chaos); cifar felix + oort green; cifar fedbuff red vs its own real (36 vs 33 rounds) but green vs run 26's real
+  (≤ 5.1%; real↔real 5.7%): n=2 can't split it (L12) → PR21 G0UC legs. *Next:* PR21. *Exit:* cifar fedbuff on a ≥ 3-leg floor.
 - **FX-N76 `[C][S]` · C13 real-cost audit · wip: R1-R5 cut by FX-D77-D83; confirm in FX-N77's block.** R1 recv gap: codec decode +
   one H2D (was unpickle 0.19 + per-tensor H2D 0.07 s/round). R2 cache release: inside D padding, charged on neither side (FX-D82).
   R3 eval: off the ingest path (CPU aggregation, FX-D79), batch 512. R4 tail: release moved out; telemetry + util_cf remain (~0 p50).
@@ -650,6 +658,26 @@ IDs are kept because code comments cite them.
 - **FX-D82** GPU cache release + slot close run inside real's D padding and outside sim's measured overhead (emulation-only housekeeping).
 - **FX-D83** Waits wake on deliveries (`Channel.note_arrival` / `wait_arrival`): `drain_ready` no longer polls every 2 ms over all ends;
   asyncfl/syncfl idle passes no longer `sleep(0.5)`. Asyncfl version ledgers pruned below each received version (replies are FIFO).
+- **FX-D84** (code cites FX-N77) Zero-copy MQTT: `flame/backend/paho_fast.FastClient` reads each packet once into its own buffer
+  (`recv_into`), hands large payloads out as memoryviews and writes from memoryviews (paho re-sliced the tail per partial send);
+  `Any(Data)` parsed in place (`mqtt._DataView`); `FLAME_MQTT_FAST=0` reverts. Parse + assemble 48 → 3.3 ms per 29 MB; speech agg loop
+  CPU 23.8 → 17.0 s per PROF leg. `tests/test_mqtt_wire.py`.
+- **FX-D85** A message's QoS-2 chunks are all in flight and never re-published (an app re-publish = a new mid, a stray chunk that
+  corrupted the next message: the "lost" chunks); a receiver drops a partial message only when a new seqno 0 arrives. `test_mqtt_wire.py`.
+- **FX-D86** Teardown: `Channel.leave` flushes queued sends (EOT before LEAVE); JOIN/LEAVE apply after the end's in-assembly chunks
+  (`ChunkManager.in_order`); an unread EOT of a removed end ends the trainer (`Channel.departed_eot`). Was 32 s in `await_join`.
+- **FX-D87** Trainer exit: the atexit hook stops and joins the availability/heartbeat threads; a daemon mid-log aborted finalization
+  (run 25 cifar oort real, T18). `test_avail_thread_shutdown.py`.
+- **FX-D88** Async sim gate withholds send-gated buffer heads first (`_sim_withhold_gated_heads`), so it waits on earlier in-flight
+  completions; the clock clamp had committed a later update up to 69 s before its sct (run 25). `sim_withhold_before_gate`; `test_live_wiring.py`.
+- **FX-D89** Async sim abandon deadline (dispatch + timeout) is a clock event (`_next_abandon_ts`, shared `_abandon_candidates`): the
+  clock stops there (unless a buffered, withheld or in-transit update is due first) so distribute replaces the end, as real's selector
+  timer does; sim abandoned up to 7 s late at the next commit (run 25 cifar fedbuff diverged at 102 s). `sim_abandon_wakes`; `test_live_wiring.py`.
+- **FX-D90** Async sim: a send-gated trainer's held slot frees when its delivery commits, not at reinjection (`_sim_delivering_held`);
+  at a flip all due deliveries freed their slots at once, so sim picked 8 from 43 where real picks 1 of 50 per commit (run 26 speech
+  fedbuff, 450 s). `sim_hold_delivering_slot`; `test_live_wiring.py`.
+- **FX-D91** Checker: per-round advances keep zero (rounds sim commits at one vclock); dropping them read 36 vs 36 rounds as 60 vs
+  50 s/round in `per_round_advance`, `overhead_residual`, matched windows. `test_floor_gated_tol.py`.
 - **FX-D75** D.1 boundary eviction also frees a buffered update that is send-gated (trainer UN_AVL at its sct): real never receives it
   (run 20 sim in_flight up to 30 vs cap 15). `SimReorderBuffer.ts_of`; `test_live_wiring.py`.
 - **FX-D72** `--trainer-hp` also overwrites a key the by_baseline layer set in `trainer.hyperparameters` (the launcher prefers it over

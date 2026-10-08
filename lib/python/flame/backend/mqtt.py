@@ -17,6 +17,7 @@
 
 import asyncio
 import logging
+import os
 import time
 from collections import deque
 from enum import IntEnum
@@ -25,6 +26,7 @@ import paho.mqtt.client as mqtt
 from flame.backend.abstract import AbstractBackend
 from flame.backend.chunk_manager import ChunkManager
 from flame.backend.chunk_store import DEFAULT_CHUNK_SIZE
+from flame.backend.paho_fast import FastClient, _varint as _read_varint
 from flame.channel import Channel
 from flame.common.constants import (
     DEFAULT_RUN_ASYNC_WAIT_TIME,
@@ -47,7 +49,7 @@ END_STATUS_OFF = "offline"
 MQTT_TIME_WAIT = 14400  # 14400 sec
 MIN_CHECK_PERIOD = 1  # 1 sec
 PUBLISH_ATTEMPTS = 5
-PUBLISH_TIMEOUT_S = 100
+PUBLISH_TIMEOUT_S = 100  # warn interval while awaiting PUBCOMPs
 TOPIC_SEP = "/"
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,56 @@ class MqttQoS(IntEnum):
 
 
 _ANY_DATA_URL = ("type.googleapis.com/" + msg_pb2.Data.DESCRIPTOR.full_name).encode()
+_ANY_NOTIFY_URL = ("type.googleapis.com/" + msg_pb2.Notify.DESCRIPTOR.full_name).encode()
+
+
+def _fields(buf):
+    """Yield (field number, value) of a protobuf message; length-delimited values are memoryviews of `buf`."""
+    pos, end = 0, len(buf)
+    while pos < end:
+        tag, pos = _read_varint(buf, pos)
+        num, wire = tag >> 3, tag & 7
+        if wire == 0:
+            val, pos = _read_varint(buf, pos)
+        elif wire == 2:
+            n, pos = _read_varint(buf, pos)
+            val, pos = buf[pos:pos + n], pos + n
+        elif wire in (1, 5):
+            val, pos = None, pos + (8 if wire == 1 else 4)
+        else:
+            raise ValueError(f"unsupported protobuf wire type {wire}")
+        yield num, val
+
+
+class _DataView:
+    """msg_pb2.Data parsed in place: `payload` is a view into the received packet, copied once at assembly (FX-N77)."""
+
+    __slots__ = ("end_id", "channel_name", "seqno", "eom", "payload")
+
+    def __init__(self, buf):
+        self.end_id, self.channel_name, self.seqno, self.eom, self.payload = "", "", 0, False, b""
+        for num, val in _fields(buf):
+            if num == 1:
+                self.end_id = str(val, "utf-8")
+            elif num == 2:
+                self.channel_name = str(val, "utf-8")
+            elif num == 3:
+                self.seqno = val - (1 << 64) if val >= 1 << 63 else val
+            elif num == 4:
+                self.eom = bool(val)
+            elif num == 5:
+                self.payload = val
+
+
+def _split_any(buf) -> tuple:
+    """(type_url bytes, value view) of a serialized google.protobuf.Any."""
+    url, value = b"", b""
+    for num, val in _fields(buf):
+        if num == 1:
+            url = bytes(val)
+        elif num == 2:
+            value = val
+    return url, value
 
 
 def _varint(n: int) -> bytes:
@@ -160,9 +212,8 @@ class MqttBackend(AbstractBackend):
         self._job_id = job_id
         self._id = task_id
 
-        self._mqtt_client = mqtt.Client(
-            mqtt.CallbackAPIVersion.VERSION1, self._id, protocol=MQTTv5
-        )
+        client_cls = mqtt.Client if os.environ.get("FLAME_MQTT_FAST", "1") == "0" else FastClient
+        self._mqtt_client = client_cls(mqtt.CallbackAPIVersion.VERSION1, self._id, protocol=MQTTv5)
 
         self._health_check_topic = f"{MQTT_TOPIC_PREFIX}/{self._job_id}"
 
@@ -299,9 +350,7 @@ class MqttBackend(AbstractBackend):
         self._cleanup_waits[end_id] = expiry
         logger.debug(f"end: {end_id}, expiry time: {expiry}")
 
-    async def _handle_notification(self, any_msg):
-        msg = msg_pb2.Notify()
-        any_msg.Unpack(msg)
+    async def _handle_notification(self, msg: msg_pb2.Notify):
 
         if msg.end_id == self._id:
             # This case happens when message is broadcast to a self-loop e.g.,
@@ -315,24 +364,22 @@ class MqttBackend(AbstractBackend):
 
         channel = self._channels[msg.channel_name]
 
-        if msg.type == msg_pb2.NotifyType.JOIN and not channel.has(msg.end_id):
-            # this is the first time to see this end, so let's notify my
-            # presence to the end
-            logger.debug(f"Acknowledge join notification from {msg.end_id}")
-            self.notify(msg.channel_name, msg_pb2.NotifyType.JOIN)
+        if msg.type == msg_pb2.NotifyType.JOIN:
+            async def _join(end_id=msg.end_id):
+                if not channel.has(end_id):  # first sight of this end: announce myself to it
+                    logger.debug(f"Acknowledge join notification from {end_id}")
+                    self.notify(channel.name(), msg_pb2.NotifyType.JOIN)
+                    await channel.add(end_id)
 
-            # add end to the channel
-            await channel.add(msg.end_id)
+            await self.chunk_mgr.in_order(msg.end_id, _join)
         elif msg.type == msg_pb2.NotifyType.LEAVE:
             logger.debug(f"Got channel leave message from {msg.end_id}")
-            await channel.remove(msg.end_id)
+            await self.chunk_mgr.in_order(msg.end_id, lambda end_id=msg.end_id: channel.remove(end_id))
         elif msg.type == msg_pb2.NotifyType.STATE_UPDATE:
             logger.info(f"Got state update message from {msg.end_id}")
             await channel.update_state(msg.end_id, msg.info.state, msg.info.timestamp)
 
-    async def _handle_data(self, any_msg: Any) -> None:
-        msg = msg_pb2.Data()
-        any_msg.Unpack(msg)
+    async def _handle_data(self, msg: _DataView) -> None:
 
         if msg.end_id == self._id:
             # This case happens when message is broadcast to a self-loop e.g.,
@@ -367,12 +414,11 @@ class MqttBackend(AbstractBackend):
                 f"_rx_task - topic: {message.topic}; len: {len(message.payload)}"
             )
 
-            any_msg = Any().FromString(message.payload)
-
-            if any_msg.Is(msg_pb2.Notify.DESCRIPTOR):
-                await self._handle_notification(any_msg)
-            elif any_msg.Is(msg_pb2.Data.DESCRIPTOR):
-                await self._handle_data(any_msg)
+            url, value = _split_any(memoryview(message.payload))
+            if url == _ANY_DATA_URL:
+                await self._handle_data(_DataView(value))
+            elif url == _ANY_NOTIFY_URL:
+                await self._handle_notification(msg_pb2.Notify.FromString(bytes(value)))
             else:
                 logger.warning("unknown message type")
 
@@ -569,11 +615,10 @@ class MqttBackend(AbstractBackend):
             txq.task_done()
 
     async def send_chunks_async(self, topic, ch_name: str, data: bytes) -> None:
-        """Publish `data` chunk by chunk (QoS 2), awaiting each PUBCOMP via on_publish (FX-N77).
+        """Publish `data` as pipelined QoS-2 chunks and await every PUBCOMP via on_publish (FX-N77).
 
-        Awaiting (not a blocking `client.loop(1)`) keeps the backend loop serving rx meanwhile; messages to different
-        ends go FIFO. An unacknowledged chunk is re-published after a timeout; the receiver drops duplicate seqnos of
-        the message it is assembling.
+        Whole messages go FIFO; chunks within one are all in flight. A QoS-2 chunk is never re-published: paho and the
+        broker own its delivery, and an app-level copy (new mid) arrived as a stray chunk that corrupted the next message.
         """
         if self._tx_lock is None:
             self._tx_lock = asyncio.Lock()
@@ -583,21 +628,16 @@ class MqttBackend(AbstractBackend):
     async def _send_chunks(self, topic, ch_name: str, data: bytes) -> None:
         mv = memoryview(data)
         n = -(-len(mv) // DEFAULT_CHUNK_SIZE)
-        chunks = {i: _encode_chunk(self._id, ch_name, mv[i * DEFAULT_CHUNK_SIZE:(i + 1) * DEFAULT_CHUNK_SIZE], i, i == n - 1)
-                  for i in range(n)}
-        for attempt in range(PUBLISH_ATTEMPTS):
-            if not chunks:
+        futs = [await self._publish(topic, _encode_chunk(self._id, ch_name, mv[i * DEFAULT_CHUNK_SIZE:(i + 1) * DEFAULT_CHUNK_SIZE],
+                                                         i, i == n - 1))
+                for i in range(n)]
+        waited = 0
+        while True:
+            _, pending = await asyncio.wait(futs, timeout=PUBLISH_TIMEOUT_S)
+            if not pending:
                 return
-            for i in list(chunks):  # one chunk in flight per message: pipelined chunks got lost at receivers (FX-N77)
-                fut = await self._publish(topic, chunks[i])
-                await asyncio.wait([fut], timeout=PUBLISH_TIMEOUT_S)
-                if fut.done():
-                    del chunks[i]
-            if not chunks:
-                return
-            logger.warning(f"{len(chunks)} chunk(s) to {topic} unacknowledged after {PUBLISH_TIMEOUT_S}s "
-                           f"(attempt {attempt + 1}/{PUBLISH_ATTEMPTS}); re-publishing")
-        raise RuntimeError(f"failed to send {len(chunks)} chunk(s) to {topic} after {PUBLISH_ATTEMPTS} attempts")
+            waited += PUBLISH_TIMEOUT_S
+            logger.warning(f"{len(pending)}/{n} chunk(s) to {topic} unacknowledged after {waited}s; still waiting")
 
     async def _publish(self, topic: str, payload: bytes) -> asyncio.Future:
         """Queue one QoS-2 publish; the returned future resolves on its PUBCOMP (on_publish)."""

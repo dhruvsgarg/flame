@@ -124,6 +124,7 @@ class Channel(object):
         self._groupby = groupby
         self.properties = dict()
         self.await_join_event = None
+        self.departed_eot = None  # EOT a removed end left unread in its rx queue (FX-N77)
         self.mc = Role.mc
 
         self.trainer_unavail_list = None
@@ -943,10 +944,23 @@ class Channel(object):
         logger.info(f"calling channel leave for {self._name}")
 
         self.drain_messages()
+        self.flush_tx()
 
         self._backend.leave(self)
 
         logger.info(f"channel leave done for {self._name}")
+
+    def flush_tx(self, timeout: float = 60.0) -> bool:
+        """Block until queued sends are on the wire, so LEAVE can't overtake the EOT broadcast (FX-N77)."""
+
+        async def _join():
+            queues = [self._bcast_queue] + [end.get_txq() for end in self._ends.values()]
+            await asyncio.gather(*(q.join() for q in queues if q is not None))
+
+        _, done = run_async(_join(), self._backend.loop(), timeout)
+        if not done:
+            logger.warning(f"tx queues of {self._name} not flushed within {timeout}s; leaving anyway")
+        return done
 
     def update_trainer_state(self, state: TrainerAvailState, timestamp: str):
         """Update the state of an end in the channel."""
@@ -1128,6 +1142,12 @@ class Channel(object):
             f"[CHANNEL REMOVE] End {end_id}: rxq has {rxq_size} pending messages, txq has {txq_size}"
         )
 
+        for payload, _ in list(getattr(rxq, "_queue", ())):  # an unread EOT outlives its end: the trainer was busy
+            if payload and len(payload) < (1 << 20):
+                msg = decode_message(payload)
+                if isinstance(msg, dict) and MessageType.EOT in msg:
+                    self.departed_eot = msg[MessageType.EOT]
+
         del self._ends[end_id]
         logger.warning(f"[CHANNEL REMOVE] Deleted end {end_id} from self._ends")
 
@@ -1137,7 +1157,7 @@ class Channel(object):
         # put bogus data to let tx_task finish
         await txq.put(EMPTY_PAYLOAD)
 
-        if len(self._ends) == 0:
+        if len(self._ends) == 0 and self.departed_eot is None:  # with a departed EOT, await_join returns to read it
             # clear (or unset) the event
             self.await_join_event.clear()
 

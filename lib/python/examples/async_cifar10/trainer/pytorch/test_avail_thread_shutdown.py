@@ -65,3 +65,15 @@ def test_exits_quietly_on_sigterm_teardown_without_eot():
     t.check_and_update_state_avl = _update
     t.notify_trainer_avail()  # returns, no raise
     assert t._work_done is False
+
+
+def test_heartbeat_stops_on_shutdown():
+    """FX-D87: background threads end before finalization so atexit can join them."""
+    t = _trainer(None)
+    t.heartbeats_second_freq = 0
+    t.dup_check_and_sleep = lambda: None
+    t.send_heartbeat_to_agg = lambda: setattr(t, "_shutting_down", True)
+    th = threading.Thread(target=t.initiate_heartbeat)
+    th.start()
+    th.join(timeout=2)
+    assert not th.is_alive()

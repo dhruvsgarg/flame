@@ -1144,7 +1144,7 @@ class PyTorchCifar10Trainer(Trainer):
             )
 
     def initiate_heartbeat(self) -> None:
-        while True:
+        while not self._avail_thread_done():
             # dup_check_and_sleep operates on a copy to avoid mutating state on the heartbeat thread
             time.sleep(self.heartbeats_second_freq)
             self.dup_check_and_sleep()
@@ -1261,6 +1261,8 @@ def main():
     def cleanup_and_report():
         """Generate memory profiling report on exit."""
         t._shutting_down = True
+        for th in getattr(t, "_bg_threads", ()):  # a daemon mid-log at finalization aborts the exit (FX-D87)
+            th.join(timeout=5)
         try:
             report = t.memory_profiler.generate_report()
             logger.info(f"\n{report}")
@@ -1287,6 +1289,7 @@ def main():
         heartbeat_thread = threading.Thread(target=t.initiate_heartbeat)
         heartbeat_thread.daemon = True
         heartbeat_thread.start()
+        t._bg_threads = [heartbeat_thread]
     elif t.client_notify["trace"] is not None:
         logger.info(
             f"Will initiate thread to update state of " f"trainer {t.trainer_id}"
@@ -1299,6 +1302,7 @@ def main():
         avail_notify_thread = threading.Thread(target=t.notify_trainer_avail)
         avail_notify_thread.daemon = True
         avail_notify_thread.start()
+        t._bg_threads = [avail_notify_thread]
 
     print(f"[TRAINER STARTUP] Starting compose and run for trainer {t.trainer_id}...")
     logger.info(f"Trainer {t.trainer_id} initiating compose() and run() - will now connect to aggregator")

@@ -980,7 +980,7 @@ def _prog_json(N):
 
 
 def _per_round_advances(agg_rounds: list, use_vclock: bool) -> list:
-    """Per-progress-unit time advances (positive only).
+    """Per-progress-unit time advances (non-negative: rounds sim commits at one vclock count as 0, FX-D91).
 
     use_vclock=True:  Δvclock_now between consecutive units (sim mode).
     use_vclock=False: real mode -- Δ(intrinsic algorithmic clock) when the
@@ -1016,7 +1016,7 @@ def _per_round_advances(agg_rounds: list, use_vclock: bool) -> list:
         if v_prev is None or v_curr is None:
             continue
         adv = v_curr - v_prev
-        if adv > 0:
+        if adv >= 0:
             advances.append(_RoundAdv(adv, e_curr.get("stall_cause")))
     return advances
 

@@ -99,7 +99,11 @@ class ChunkStore(object):
         message) is set, bytes in the array are joined.
         """
 
-        if msg.seqno in self.recv_buf:
+        if msg.seqno == 0 and self.recv_buf:  # in-order delivery: chunk 0 starts a new message (FX-N77)
+            logger.warning(f"new message from {msg.end_id} before the last one completed "
+                           f"(had seqnos {sorted(self.recv_buf)}); dropping the partial one")
+            self.reset()
+        elif msg.seqno in self.recv_buf:
             logger.debug(f"duplicate seqno {msg.seqno} from {msg.end_id}, ignoring")
             return True
             

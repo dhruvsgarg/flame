@@ -97,6 +97,13 @@ class SimReorderBuffer:
         """Earliest completion time still in the future (> ``ts``); ``None`` if none."""
         return min((sct for sct, _ in self._items.values() if sct > ts), default=None)
 
+    def peek_min(self) -> Optional[tuple[str, float]]:
+        """``(end_id, sim_completion_ts)`` that ``pop_min`` would return, or None."""
+        if not self._items:
+            return None
+        end_id = min(self._items, key=lambda e: (self._items[e][0], str(e)))
+        return end_id, self._items[end_id][0]
+
     def pop_min(self) -> Optional[tuple[str, float, Any]]:
         """Remove and return ``(end_id, sim_completion_ts, payload)`` with the
         smallest completion time (ties by end id). ``None`` if empty."""

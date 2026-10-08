@@ -121,6 +121,9 @@ on both sides (of 12 baseline × dataset cells). Open items flat while built gro
 | runs 12-14 (`e174fbed6`) | 10-05 | n/a | 17 | 47 | G0U/G0T: 37 / 2 / 11 | not measured |
 | run 16 (`11152ac33`) | 10-06 | 2414 / 0 | 17 | 61 | 9 / 2 / 1 (+5 MISSING) | 1 / 12 (cifar felix) |
 | run 17 (`67959e542`) | 10-07 | 2416 / 0 | 17 | 62 | 14 / 0 / 0 (+2 hand-graded 68/68, 66/66) | 1 / 12 |
+| run 27 (FX-D89-91) | 10-08 | 2450 / 0 | 16 | 91 | speech G0U syn_50 felix + fedbuff 2 / 0 / 0 · cifar felix + oort ✅, fedbuff red vs own real, green vs run 26 real (n=2 floor) | 3 / 12 |
+| run 26 (FX-D87-88) | 10-08 | 2447 / 0 | 16 | 88 | cifar G0U syn_50 felix/fedbuff/oort 3 / 0 / 0 · speech felix ✅, fedbuff overhead_residual 12.5% (→ FX-D90) | 3 / 12 |
+| run 25 (FX-D77-86, fresh charge profiles) | 10-08 | 2445 / 0 | 16 | 86 | speech G0U syn_50 10 / 0 / 2 (fedbuff early commits → FX-D88; oort_star time-to-N) · cifar G0U 10 / 0 / 1 on 10-05 floors (fedbuff S1), 11 MISSING (exit race → FX-D87) | 3 / 12 |
 | runs 23-24 (FX-D74-76) | 10-07 | 2427 / 0 | 16 | 76 | speech G0U syn_50: felix ✅ (120 / 119 rounds), fedbuff window 8.8% vs 8% (total 2.8%) · cifar felix ✅, fedbuff per_round_advance | 3 / 12 |
 | runs 20-22 (`bd5fc954d` + FX-D74) | 10-07 | 2426 / 0 | 16 | 74 | speech G0U syn_50 3 / 0 / 1 (felix: slot hold → FX-D75) · G1S felix 0 INV/EXACT red (186 / 187 rounds) · cifar felix 1.0 | 3 / 12 (+ cifar fedbuff sim 56%, FX-D73) |
 | run 19 (3h screen, uncommitted) | 10-07 | 2423 / 0 | 16 | 69 | speech G0U syn_50 6 / 0 / 2 + felix 0 / 0 / 1 (3 roots → FX-D69-71) · cifar G0U 9 / 0 / 1 · T3C 6 / 0 / 0 → run 18 T3 8 / 0 / 4 | 3 / 12 (speech refl SGD 0.005 sim 43.7%) |
@@ -185,12 +188,8 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR20 · now (operator 2026-10-08): confirm FX-N77's offline fixes in ONE ≤ 30 min block (C16).** Fixes landed and profiled
-  (FX-D77-D83, PROF tier, `run_20261008_0343*PROF*`). Block: (a) fresh real legs → re-derive `sim_charge_profiles` (transport changed,
-  L17); (b) G0U syn_50 pairs felix, fedbuff, oort × both datasets, packed in parallel. *Confirms:* speed identity + `phase_*` DIST green;
-  real queue_wait max < 2 s; no INV/EXACT regressions on the run 20-24 cells. *Refutes:* any cell regresses vs runs 20-24.
-- **PR21 · overnight, after PR20 + the FX-N77 open roots (one block, ~9 h, 8 GPUs):** phase 0 PL3 scale smoke · G0U + G0UC all six ×
-  {syn_50, mobiperf_3st}, both datasets (FX-N9; first full rerun with FX-D50-D83, fresh charge profiles) · G0T streaming felix + oort +
+- **PR21 · overnight (one block, ~9 h, 8 GPUs):** phase 0 PL3 scale smoke · G0U + G0UC speech mobiperf_3st
+  all six + cifar G0UC all six × {syn_50, mobiperf_3st} (lost in run 25) + cifar oort syn_50, refl mobiperf G0U (FX-N9) · G0T streaming felix + oort +
   fedbuff × {linear, events} × {syn_0, syn_50}, both datasets (FX-N13 ST5) · G1A accuracy pairs: speech refl lr 0.05 (repo), cifar fedbuff
   SGD 0.04 × 1.0 (FX-D73). *Confirms:* INV/EXACT green per cell on G0UC floors; streaming EV19 + parity per cell; G1A real↔sim acc within floor.
 - **Done 10-07 (runs 18-24, `bd5fc954d`, `acdccb1d7`):** run 18 graded; G0U oort stalls rooted (FX-D65-68); speech G0U syn_50 roots

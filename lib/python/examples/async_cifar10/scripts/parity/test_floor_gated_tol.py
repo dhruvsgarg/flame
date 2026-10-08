@@ -806,3 +806,13 @@ def test_stall_cut_scales_with_run_timeout():
     adv = [5.0] * 20 + [200.0] + [5.0] * 20
     assert _stall_episodes(adv, _stall_cut({}, {})) == [[20]]
     assert _stall_episodes(adv, _stall_cut({"task_timeout_s": 450.0}, {"task_timeout_s": 450.0})) == []
+
+
+def test_simultaneous_sim_commits_count_as_zero_advance():
+    """FX-D91 (run 27 speech fedbuff): 36 vs 36 rounds read 60 vs 50 s/round when sim's same-vclock rounds were dropped."""
+    from parity.checks import _per_round_advances
+    sim = [{"round": r, "vclock_now": v, "ts": 0.0} for r, v in enumerate([0.0, 50.0, 100.0, 100.0, 150.0], 1)]
+    real = [{"round": r, "ts": t} for r, t in enumerate([0.0, 50.0, 100.0, 100.3, 150.0], 1)]
+    s, r = _per_round_advances(sim, use_vclock=True), _per_round_advances(real, use_vclock=False)
+    assert len(s) == len(r) == 4
+    assert abs(sum(s) / len(s) - sum(r) / len(r)) < 1e-9

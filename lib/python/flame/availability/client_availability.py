@@ -605,6 +605,8 @@ class ClientAvailability:
             if payload is None:
                 continue  # no payload yet; stays registered until it arrives
             self.commit_withheld(end)
+            if end in self._withheld_slot_held:  # FX-D90: real frees this slot when the delivery lands, not before
+                self._sim_delivering_held.add(end)
             self._withheld_slot_held.discard(end)
             orig_sct, msgmd = payload
             buf.add(end, float(dts), msgmd)
@@ -715,6 +717,18 @@ class ClientAvailability:
                 continue
             return popped
 
+    def _sim_withhold_gated_heads(self, channel) -> None:
+        """FX-D88: withhold send-gated updates at the buffer head, so the gate waits on the first committable one."""
+        buf = self._sim_buffer
+        while (head := buf.peek_min()) is not None:
+            end, sct = head
+            if end not in self.pending_withheld and self.compute_delivery_ts(end, sct) <= sct:
+                return
+            end, sct, msgmd = buf.pop_min()
+            if not self._sim_withhold_if_unavail(channel, end, sct, msgmd):
+                buf.add(end, sct, msgmd)
+                return
+
     def _sim_next_event_ts(self, bmin: float) -> float:
         """Lookahead horizon: the buffered min, capped by the earliest expected in-flight completion (FX-D69)."""
         inflight = getattr(self, "_sim_inflight_expected", None)
@@ -730,6 +744,7 @@ class ClientAvailability:
         fresh/straggler commit) so it can emit the withheld_delivery rung and tag
         the "withheld" past-dating bucket. Returns None for an ordinary commit.
         """
+        self._sim_delivering_held.discard(end)
         d = getattr(self, "_sim_withheld_delivering", None)
         if not d:
             return None
@@ -792,6 +807,13 @@ class ClientAvailability:
         if max_rt:
             deadline = min(deadline, self.agg_start_time_ts + float(max_rt))
         return deadline
+
+    @property
+    def _sim_delivering_held(self) -> set:
+        """FX-D90: reinjected deliveries whose trainer still holds its slot until the commit."""
+        if not hasattr(self, "_sim_delivering_held_set"):
+            self._sim_delivering_held_set = set()
+        return self._sim_delivering_held_set
 
     @property
     def _withheld_slot_held(self) -> set:
@@ -864,6 +886,38 @@ class ClientAvailability:
         v = getattr(hp, "send_timeout_wait_s", None)
         return float(v) if v is not None else _AVAIL_ABANDON_TIMEOUT_S
 
+    def _abandon_candidates(self, channel) -> list:
+        """(end, dispatch ts, held) of each in-flight end the C.3 abandon would time out (not arrived/committed/abandoned)."""
+        inflight = self._avail_inflight_ends(channel)
+        if not inflight:
+            return []
+        buf = getattr(self, "_sim_buffer", None)
+        committed = getattr(self, "_sim_committed", set())
+        wait_k = self._sync_wait_k_on()
+        replied = self._sync_replied(channel) if wait_k else set()
+        out = []
+        for end in list(inflight):
+            if buf is not None and buf.has(end):
+                continue  # already arrived — not stalled
+            held = end in self._withheld_slot_held
+            sst = self._avail_send_ts(channel, end)
+            if wait_k:  # FX-N37: a replied pick isn't stalled; a re-dispatched one re-arms its timeout
+                if end in committed or end in replied or self._sync_abandoned_since_dispatch(end, sst):
+                    continue
+            elif end in committed or (end in self.pending_withheld and not held):
+                continue  # invariant 1: already committed / abandoned
+            if sst is not None:
+                out.append((end, float(sst), held))
+        return out
+
+    def _next_abandon_ts(self, channel) -> Optional[float]:
+        """FX-D89: earliest future C.3 abandon deadline, a clock event like real's selector timer."""
+        if getattr(self, "trainer_event_dict", None) is None:
+            return None
+        now, to = self._avail_now(), self._task_timeout_s()
+        due = [sst + to for _, sst, _ in self._abandon_candidates(channel) if sst + to > now]
+        return min(due) if due else None
+
     def _abandon_stalled(self, channel) -> None:
         """C.3: free in-flight slots stalled past 90s since dispatch (vclock in sim, wall in real).
 
@@ -881,27 +935,9 @@ class ClientAvailability:
         """
         if getattr(self, "trainer_event_dict", None) is None:
             return
-        inflight = self._avail_inflight_ends(channel)
-        if not inflight:
-            return
         now = self._avail_now()
-        buf = getattr(self, "_sim_buffer", None)
-        committed = getattr(self, "_sim_committed", set())
-        wait_k = self._sync_wait_k_on()
-        replied = self._sync_replied(channel) if wait_k else set()
-        for end in list(inflight):
-            if buf is not None and buf.has(end):
-                continue  # already arrived — not stalled
-            held = end in self._withheld_slot_held
-            sst = self._avail_send_ts(channel, end)
-            if wait_k:  # FX-N37: a replied pick isn't stalled; a re-dispatched one re-arms its timeout
-                if end in committed or end in replied or self._sync_abandoned_since_dispatch(end, sst):
-                    continue
-            elif end in committed or (end in self.pending_withheld and not held):
-                continue  # invariant 1: already committed / abandoned
-            if sst is None:
-                continue
-            if now - float(sst) <= self._task_timeout_s():
+        for end, sst, held in self._abandon_candidates(channel):
+            if now - sst <= self._task_timeout_s():
                 continue
             reason = "abandon_90s_vclock" if getattr(self, "simulated", False) else "abandon_90s_wall"
             if held:  # FX-N37: delivery ledger already registered; only the slot frees

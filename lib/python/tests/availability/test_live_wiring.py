@@ -672,3 +672,43 @@ def test_boundary_evict_buffered_update_send_gated():
     h._sim_buffer.add("t1", 120.0, _payload("t1"))      # _DOWN: UN_AVL over [100, 200)
     h._sim_evict_unavail_inflight(ch)
     assert not sel.holds("t1") and "t1" in h.pending_withheld
+
+
+def test_send_gated_head_withheld_before_gate():
+    # FX-D88 (run 25 speech fedbuff): a send-gated head hid an in-flight 470 completion; 500 then committed at 470.
+    h = _Harness({"t1": _DOWN}, now=100, inflight_tracker=True)
+    h._sim_hold_withheld_slot = True
+    sel = _AsyncSelector(); sel.add("t1"); sel.add("t2")
+    ch = _Channel(sel, ["t1", "t2"])
+    h._sim_buffer.add("t1", 150.0, _payload("t1"))      # UN_AVL at 150: send-gated
+    h._sim_buffer.add("t2", 190.0, _payload("t2"))      # available at 190: committable
+    h._sim_withhold_gated_heads(ch)
+    assert h._sim_buffer.peek_min() == ("t2", 190.0) and "t1" in h.pending_withheld
+    h._sim_withhold_gated_heads(ch)                     # committable head stays
+    assert h._sim_buffer.peek_min() == ("t2", 190.0)
+
+
+def test_next_abandon_ts_is_dispatch_plus_timeout():
+    # FX-D89 (run 25 cifar fedbuff): real's selector frees at send + 90; sim waited for the next commit.
+    h, sel, ch = _setup_abandon(_AsyncSelector, inflight_tracker=True)
+    h._now = 50.0
+    ch.set_end_property("t1", PROP_SIM_SEND_TS, 12.0)
+    assert h._next_abandon_ts(ch) == 102.0
+    h._sim_buffer.add("t1", 60.0, _payload("t1"))       # arrived: not stalled
+    assert h._next_abandon_ts(ch) is None
+    h._sim_buffer.discard("t1"); h._now = 103.0          # past due: _abandon_stalled's job, not a wake-up
+    assert h._next_abandon_ts(ch) is None
+    h._abandon_stalled(ch)
+    assert not sel.holds("t1")
+
+
+def test_reinjected_held_delivery_keeps_slot_until_commit():
+    # FX-D90 (run 26 speech fedbuff): 8 deliveries due at a flip freed 8 slots at once; real frees one per commit.
+    h = _Harness({"t1": _DOWN}, now=200, inflight_tracker=True)
+    h.pending_withheld["t1"] = 200.0
+    h._sim_withheld_payload["t1"] = (150.0, _payload("t1"))
+    h._withheld_slot_held.add("t1")
+    h._sim_reinject_ready_withheld()
+    assert h._sim_buffer.has("t1") and "t1" in h._sim_delivering_held and "t1" not in h._withheld_slot_held
+    assert h._sim_take_withheld_delivering("t1") == (150.0, 200.0)
+    assert "t1" not in h._sim_delivering_held

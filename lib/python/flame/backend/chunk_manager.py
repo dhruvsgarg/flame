@@ -16,7 +16,9 @@
 """Chunk Manager."""
 
 import logging
+import time
 from datetime import datetime
+from concurrent.futures import CancelledError
 from queue import Empty, Queue
 from threading import Thread
 
@@ -33,6 +35,13 @@ KEY_END_ID = "end_id"
 
 QUEUE_TIMEOUT = 5  # 5 seconds
 TRANSFER_TIMEOUT = 30 # 30 seconds
+
+
+class _Control:
+    """Queue item: a membership change applied on the loop after the end's earlier messages are delivered (FX-N77)."""
+
+    def __init__(self, coro_fn):
+        self.coro_fn = coro_fn
 
 
 class ChunkThread(Thread):
@@ -102,14 +111,20 @@ class ChunkThread(Thread):
                 msg = self.queue.get(timeout=QUEUE_TIMEOUT)
             except Empty:
                 logger.debug("Currently empty")
-                if self.chunk_store.is_stale(TRANSFER_TIMEOUT):
+                if self.chunk_store.is_stale(TRANSFER_TIMEOUT):  # warn only: the rest may still come (FX-N77)
                     logger.warning(
                         f"incomplete transfer for {self._end_id} stalled for "
-                        f"{TRANSFER_TIMEOUT}s (chunk likely lost); have seqnos {sorted(self.chunk_store.recv_buf)}, "
-                        f"eom={self.chunk_store.eom_seqno}; resetting"
+                        f"{TRANSFER_TIMEOUT}s; have seqnos {sorted(self.chunk_store.recv_buf)}, "
+                        f"eom={self.chunk_store.eom_seqno}"
                     )
-                    self.chunk_store.reset()
-                    self._backend.set_cleanup_ready(self._end_id)
+                    self.chunk_store._first_chunk_ts = time.time()
+                continue
+
+            if isinstance(msg, _Control):  # e.g. LEAVE after the EOT it followed on the wire
+                try:
+                    run_async(msg.coro_fn(), self._backend.loop())
+                except CancelledError:  # backend shutting down
+                    break
                 continue
 
             timestamp = datetime.now()
@@ -129,9 +144,12 @@ class ChunkThread(Thread):
                 f"Payload will now be pushed to target receive queue for end: {msg.end_id}"
             )
             # now push payload to a target receive queue.
-            _, status = run_async(
-                inner(msg.end_id, payload, timestamp), self._backend.loop()
-            )
+            try:
+                _, status = run_async(
+                    inner(msg.end_id, payload, timestamp), self._backend.loop()
+                )
+            except CancelledError:  # backend shutting down
+                break
 
             # message was completely assembled, reset the chunk store
             self.chunk_store.reset()
@@ -165,6 +183,14 @@ class ChunkManager(object):
         logger.debug(
             f"len of chunk thd for end: {msg.end_id} is {chunk_thd.queue.qsize()}"
         )
+
+    async def in_order(self, end_id: str, coro_fn) -> None:
+        """Run `coro_fn()` (a JOIN/LEAVE) after `end_id`'s messages in assembly: on the loop it overtook the chunk thread."""
+        chunk_thd = self._chunk_threads.get(end_id)
+        if chunk_thd is None:
+            await coro_fn()
+        else:
+            chunk_thd.insert(_Control(coro_fn))
 
     def stop(self, end_id):
         """Stop chunk thread associated with end id."""

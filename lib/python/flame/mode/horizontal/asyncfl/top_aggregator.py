@@ -132,6 +132,15 @@ class TopAggregator(SyncTopAgg):
         # FX-N60: an evicted/abandoned end's late update is ingested, as real receives it.
         self._sim_ingest_evicted = str(
             getattr(self.config.hyperparameters, "sim_ingest_evicted", True)).lower() == "true"
+        # FX-D90: a send-gated trainer's held slot frees when its delivery commits, as in real.
+        self._sim_hold_delivering_slot = str(
+            getattr(self.config.hyperparameters, "sim_hold_delivering_slot", True)).lower() == "true"
+        # FX-D89: the abandon deadline is a sim clock event, as real's selector timer.
+        self._sim_abandon_wakes = str(
+            getattr(self.config.hyperparameters, "sim_abandon_wakes", True)).lower() == "true"
+        # FX-D88: send-gated buffer heads are withheld before the gate, so it waits on earlier in-flight completions.
+        self._sim_withhold_before_gate = str(
+            getattr(self.config.hyperparameters, "sim_withhold_before_gate", True)).lower() == "true"
 
         self._updates_in_queue = 0
         self._updates_recevied = {}
@@ -467,6 +476,8 @@ class TopAggregator(SyncTopAgg):
                         _ingest(msg, metadata)
                     drained_all = all(self._sim_buffer.has(e) for e in to_probe)
             # Gate: earliest expected completion among un-drained in-flight trainers.
+            if getattr(self, "_sim_withhold_before_gate", True) and getattr(self, "trainer_event_dict", None) is not None:
+                self._sim_withhold_gated_heads(channel)
             buffered_min = self._sim_buffer.peek_min_ts()
             _stuck_end, min_stuck = None, None
             for e, exp in self._sim_inflight_expected.items():
@@ -497,6 +508,19 @@ class TopAggregator(SyncTopAgg):
             self._sim_gate_holds = getattr(self, "_sim_gate_holds", 0) + 1
         barrier_wait = time.time() - barrier_t0
 
+        _abandon_ts = self._next_abandon_ts(channel) if getattr(self, "_sim_abandon_wakes", True) else None
+        if _abandon_ts is not None:  # FX-D89: abandon on time, so distribute replaces the end then
+            # any earlier event wins: a buffered completion, a withheld delivery, an in-flight update still in transit
+            _bmin = self._sim_buffer.peek_min_ts()
+            _transit = [t for e, t in self._sim_inflight_expected.items()
+                        if not self._sim_buffer.has(e) and e not in self._sim_committed]
+            _next_ts = min(list(getattr(self, "pending_withheld", {}).values()) + _transit
+                           + ([_bmin] if _bmin is not None else []), default=math.inf)
+            _budget = float(getattr(self.config.hyperparameters, "max_experiment_runtime_s", None) or math.inf)
+            if _abandon_ts < min(_next_ts, _budget) and not self._sim_cold_start_inflight():
+                self._vclock.advance(_abandon_ts + 1e-6)
+                logger.info(f"[ABANDON_WAKE] vclock->{self._vclock.now:.1f} next={_next_ts:.1f}")
+                return None, ("", datetime.now())
         # Pop the minimum regardless of recv_ends membership so buffered updates
         # are not lost when an end is cleaned up before its commit. First re-inject
         # any withheld update whose delivery_ts has arrived (C.2), then pop the
@@ -1577,6 +1601,8 @@ class TopAggregator(SyncTopAgg):
             held |= self._sim_cold_start_busy()  # first-contact ends are busy too
         # FX-D76: a late delivery doesn't retake its freed slot
         held -= set(getattr(self, "_sim_withheld_delivering", ())) | set(getattr(self, "pending_withheld", ()))
+        if getattr(self, "_sim_hold_delivering_slot", True):  # FX-D90: a held slot frees at its delivery's commit
+            held |= self._sim_delivering_held & pending_in_buffer
         held |= self._withheld_slot_held  # FX-N56: freed by _abandon_stalled at dispatch+90s
         if harness.injected("no_busy_hold"):
             held = set()
