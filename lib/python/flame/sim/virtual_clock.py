@@ -69,6 +69,11 @@ class SimReorderBuffer:
     def has(self, end_id: str) -> bool:
         return end_id in self._items
 
+    def ts_of(self, end_id: str) -> Optional[float]:
+        """Buffered completion time of ``end_id``, or None."""
+        item = self._items.get(end_id)
+        return None if item is None else item[0]
+
     def pending_ends(self) -> set[str]:
         return set(self._items)
 

@@ -926,6 +926,12 @@ class ClientAvailability:
                 )
                 telemetry.emit(ev, **f)
 
+    def _sim_send_gated(self, end) -> bool:
+        """A buffered update whose trainer was UN_AVL at its sct: real never receives it until the trainer is back."""
+        buf, trace = getattr(self, "_sim_buffer", None), (self.trainer_event_dict or {}).get(end)
+        sct = buf.ts_of(end) if buf is not None else None
+        return bool(trace) and sct is not None and state_at(trace, sct) == TrainerAvailState.UN_AVL
+
     def _sim_evict_unavail_inflight(self, channel) -> None:
         """D.1: Proactively free in-flight slots for trainers now showing UN_AVL.
 
@@ -950,8 +956,8 @@ class ClientAvailability:
         buf = getattr(self, "_sim_buffer", None)
         committed = getattr(self, "_sim_committed", set())
         for end in list(inflight):
-            if buf is not None and buf.has(end) and end not in buf.pending_after(now):
-                continue  # complete by now; a future sct is still computing (FX-D71)
+            if buf is not None and buf.has(end) and end not in buf.pending_after(now) and not self._sim_send_gated(end):
+                continue  # complete and delivered by now; still computing or send-gated is evictable (FX-D71, FX-D75)
             if end in committed or end in self.pending_withheld:
                 continue  # invariant 1: already committed / registered
             trace = self.trainer_event_dict.get(end)
@@ -967,11 +973,11 @@ class ClientAvailability:
                 f"state=UN_AVL — proactive boundary eviction"
             )
             if telemetry.is_enabled():
-                sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
+                sst = self._avail_send_ts(channel, end)  # real: wall dispatch
                 ev, f = build_abandon_timeout(
                     round_num=getattr(self, "_round", -1), end_id=end,
-                    sim_send_ts=float(sst) if sst is not None else now,
-                    vclock_now=now, time_mode="sim",
+                    sim_send_ts=sst if sst is not None else now,
+                    vclock_now=now, time_mode="sim" if getattr(self, "simulated", False) else "real",
                     reason="aware_boundary_eviction",
                 )
                 telemetry.emit(ev, **f)

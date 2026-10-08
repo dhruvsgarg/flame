@@ -471,10 +471,10 @@ def test_evict_leaves_available_trainer():
 
 
 def test_evict_skips_buffered_trainer():
-    # t1 is UN_AVL at vclock=150 but its update already arrived in the buffer
-    # → not stalled → eviction skipped.
+    # t1 is UN_AVL at vclock=150 but its update completed at 90, while available
+    # → delivered, not stalled → eviction skipped (sct inside the down window is send-gated: FX-D75).
     h, sel, ch = _harness_aware(150, ("t1",), _OortSelector)
-    h._sim_buffer.add("t1", 120.0, _payload("t1"))
+    h._sim_buffer.add("t1", 90.0, _payload("t1"))
     h._sim_evict_unavail_inflight(ch)
     assert sel.holds("t1")
     assert h.pending_withheld == {}
@@ -650,7 +650,7 @@ def test_boundary_evict_buffered_update_still_computing():
 def test_boundary_evict_skips_buffered_update_already_complete():
     h, sel, ch = _setup_abandon(_AsyncSelector, inflight_tracker=True)
     h._now, h.proactive_inflight_evict = 150.0, True
-    h._sim_buffer.add("t1", 120.0, _payload("t1"))      # completed at 120 <= now
+    h._sim_buffer.add("t1", 90.0, _payload("t1"))       # completed at 90, before the down window
     h._sim_evict_unavail_inflight(ch)
     assert sel.holds("t1") and "t1" not in h.pending_withheld
 
@@ -662,3 +662,13 @@ def test_lookahead_horizon_stops_at_earlier_inflight():
     assert h._sim_next_event_ts(250.0) == 180.0
     h._sim_inflight_expected["t2"] = 140.0              # already past: no cap
     assert h._sim_next_event_ts(250.0) == 250.0
+
+
+def test_boundary_evict_buffered_update_send_gated():
+    # Run 20 speech felix: done at sct=120 while UN_AVL (send-gated) — real never receives it, so D.1 frees the slot.
+    h, sel, ch = _setup_abandon(_AsyncSelector, inflight_tracker=True)
+    h._now, h.proactive_inflight_evict = 150.0, True
+    ch.set_end_property("t1", PROP_SIM_SEND_TS, 90.0)
+    h._sim_buffer.add("t1", 120.0, _payload("t1"))      # _DOWN: UN_AVL over [100, 200)
+    h._sim_evict_unavail_inflight(ch)
+    assert not sel.holds("t1") and "t1" in h.pending_withheld

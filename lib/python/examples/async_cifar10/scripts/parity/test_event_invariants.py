@@ -421,3 +421,18 @@ def test_ev19_stream_schedule(tmp_path):
 
     for name, plant in (("sched", off_schedule), ("clock", clock_drift)):
         assert _status(_write_run(tmp_path / name, *_streamed(plant), hp=_STREAM), "EV19_stream_schedule") == "FAIL"
+
+
+def test_ev3_sim_duration_includes_measured_overhead(tmp_path):
+    # C13 (FX-N73): sim duration = max(gpu, D) + the trainer's measured overhead; sct moves with it.
+    agg, tr = _clean_run()
+    for evs in tr.values():
+        for e in evs:
+            if e["event"] == "trainer_round":
+                e.update(trainer_overhead_s=0.3, sim_round_duration_s=5.3, sim_completion_ts=e["sim_send_ts"] + 5.3)
+    assert _status(_write_run(tmp_path, agg, tr), "EV3_duration_model") == "PASS"
+    for evs in tr.values():
+        for e in evs:
+            if e["event"] == "trainer_round":
+                e["trainer_overhead_s"] = 0.0
+    assert _status(_write_run(tmp_path / "b", agg, tr), "EV3_duration_model") == "FAIL"

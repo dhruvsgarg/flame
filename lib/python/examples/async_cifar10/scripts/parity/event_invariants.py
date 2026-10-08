@@ -192,7 +192,7 @@ def ev2_task_alternation(run):
 
 
 def ev3_duration_model(run):
-    """Trainer's modeled duration = max(gpu, D) with D = registry D (floor, factor);
+    """Trainer's modeled duration = max(gpu, D) with D = registry D (floor, factor), + measured overhead in sim (C13);
     sim: sct = send + duration + leg."""
     reg = _registry_delays()
     sim = _simulated(run)
@@ -211,7 +211,8 @@ def ev3_duration_model(run):
                 continue
             n += 1
             gpu, dur, budget = e.get("real_gpu_time_s"), e.get("sim_round_duration_s"), e.get("training_budget_s")
-            if None not in (gpu, dur, budget) and abs(dur - max(gpu, budget)) > _EPS_S:
+            ovh = (e.get("trainer_overhead_s") or 0.0) if sim else 0.0  # C13: sim charges measured trainer overhead
+            if None not in (gpu, dur, budget) and abs(dur - max(gpu, budget) - ovh) > _EPS_S:
                 bad_max += 1
                 examples.append((tid[-4:], "dur!=max(gpu,D)", dur, gpu, budget))
             if d_true is not None and budget is not None and budget > 0 and abs(budget - d_true) > 1e-3:

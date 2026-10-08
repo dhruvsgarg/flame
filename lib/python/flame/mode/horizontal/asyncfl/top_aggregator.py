@@ -1564,6 +1564,8 @@ class TopAggregator(SyncTopAgg):
         if self._inflight_residence:
             held = pending_in_buffer | set(self._sim_inflight_expected)
             held |= self._sim_cold_start_busy()  # first-contact ends are busy too
+        # FX-D76: a late delivery doesn't retake its freed slot
+        held -= set(getattr(self, "_sim_withheld_delivering", ())) | set(getattr(self, "pending_withheld", ()))
         held |= self._withheld_slot_held  # FX-N56: freed by _abandon_stalled at dispatch+90s
         if harness.injected("no_busy_hold"):
             held = set()

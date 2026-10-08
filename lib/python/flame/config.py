@@ -226,6 +226,10 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_completion_leg_s: t.Optional[float] = Field(
         alias="simCompletionLegSeconds", default=0.0
     )
+    # C13: sim adds each update's measured trainer pre/post-train time to its duration.
+    sim_charge_trainer_overhead: t.Optional[bool] = Field(
+        alias="simChargeTrainerOverhead", default=True
+    )
     # Sim dispatch latency (commit -> next send: select, ingest, send), profiled per stack (FX-D23).
     sim_dispatch_latency_s: t.Optional[float] = Field(
         alias="simDispatchLatencySeconds", default=0.0

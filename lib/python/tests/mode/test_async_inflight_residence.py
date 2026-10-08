@@ -132,6 +132,16 @@ class TestHoldBusySlots:
         assert agg._sim_pending_commit == set()
 
 
+def test_late_withheld_delivery_does_not_retake_slot():
+    # FX-D76 (run 23 speech felix): reinjected deliveries of evicted ends pushed in_flight 15 -> 27.
+    ch = _HoldChannel(["e1", "w1", "w2"], selected=[], all_selected={})
+    agg = _make_hold_agg(buffered=["e1", "w1", "w2"], inflight_expected={"e1": 110.0}, residence=True)
+    agg._sim_withheld_delivering = {"w1": (90.0, 100.0)}
+    agg.pending_withheld = {"w2": 300.0}
+    agg._sim_hold_busy_slots(ch)
+    assert _slot(ch) == {"e1"}
+
+
 class TestBusyNeverMarkedUnavailable:
     """The semantic correction: busy (AVL_TRAIN/AVL_EVAL) trainers must never go on
     the unavailable (UN_AVL) list — _distribute_weights must not add in-flight

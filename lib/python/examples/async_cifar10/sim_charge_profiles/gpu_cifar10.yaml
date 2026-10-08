@@ -1,17 +1,17 @@
 completion_leg:
   asyncfl:
-    mean_s: 0.0544
-    p50_s: 0.047
+    mean_s: 0.0405
+    p50_s: 0.034
     n: 2091
     charge: true
   oort_sync:
-    mean_s: 0.0689
-    p50_s: 0.059
+    mean_s: 0.0538
+    p50_s: 0.045
     n: 567
     charge: true
   fedavg:
-    mean_s: 0.0565
-    p50_s: 0.057
+    mean_s: 0.04
+    p50_s: 0.038
     n: 186
     charge: true
 dispatch_latency:
@@ -33,9 +33,9 @@ dispatch_latency:
 _meta:
   dataset: cifar10
   harness: gpu
-  host: kaylee
-  commit: faa8664c
-  date: '2026-09-30'
+  host: jayne
+  commit: bd5fc954d
+  date: '2026-10-07'
   tool: profile_felix_charges.py
   runs:
   - run_20260929_044523_GS_syn_0_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real

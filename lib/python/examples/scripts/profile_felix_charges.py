@@ -2,7 +2,7 @@
 """FX-D23: profile the sim's non-compute charges from REAL legs into a `sim_charge_registry` YAML.
 
 Per aggregator stack (asyncfl | oort_sync | fedavg, from baselines.yaml), from each real leg's aggregator log:
-  completion_leg   = download + upload per update: [LAG_DECOMP] agg_to_trainer + post_wait + mqtt_lag + queue_wait
+  completion_leg   = download + upload per update: [LAG_DECOMP] agg_to_trainer + mqtt_lag + queue_wait
   dispatch_latency = commit -> next send: sync stacks = last update of version v -> [DISTRIBUTE_TIMING] round v+1;
                      asyncfl = [DISTRIBUTE_TIMING] - the latest update arrival before it
 The launcher (debug_run.sh) applies both to every baseline of that stack. Only this script writes the numbers.
@@ -21,7 +21,7 @@ from datetime import date, datetime
 
 import yaml
 
-LAG_KEYS = ("agg_to_trainer_s", "post_wait_s", "mqtt_lag_s", "queue_wait_s")
+LAG_KEYS = ("agg_to_trainer_s", "mqtt_lag_s", "queue_wait_s")  # post_wait: sim measures trainer overhead itself (C13)
 BASELINES = os.path.join(os.path.dirname(__file__), "..", "_metadata", "baselines.yaml")
 
 

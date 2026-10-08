@@ -144,6 +144,7 @@ class PyTorchCifar10Trainer(Trainer):
         # (= cycle/advance) is invariant to it, only advance/throughput change.
         _leg = getattr(self.config.hyperparameters, "sim_completion_leg_s", 0.0)
         self.sim_completion_leg_s = float(_leg) if _leg is not None else 0.0
+        self._sim_charge_overhead = getattr(self.config.hyperparameters, "sim_charge_trainer_overhead", True) is not False
 
         self.time_mode = str(time_mode)
         self.simulated = self.time_mode == "simulated"
@@ -819,14 +820,19 @@ class PyTorchCifar10Trainer(Trainer):
         # Drop grads (cheap, frees their memory for reuse within this process).
         # We intentionally skip empty_cache()/gc.collect() here — see the note
         # at the top of train(): they hurt under co-located concurrency.
+        _post = {}  # FX-N73: post-train split
         if hasattr(self, 'optimizer') and self.optimizer is not None:
             self.optimizer.zero_grad(set_to_none=True)
+        _post["zero_grad"] = time.time() - _phase_post_start
         self._release_gpu_cache()
+        _post["release_cache"] = time.time() - _phase_post_start
         if _gpu_slot is not None:
             _gpu_slot.close()  # after the cache release, so the next holder finds the memory free
+        _post["slot_close"] = time.time() - _phase_post_start
 
         # Log memory after training round (no-op unless profiling enabled)
         self.memory_profiler.log_memory_after_round()
+        _post["mem_profile"] = time.time() - _phase_post_start
 
         _modeled_delay_s = self.training_delay_s if self.training_delay_enabled else 0.0
         _remaining_time = max(0.0, _modeled_delay_s - _real_gpu_time_s)
@@ -883,6 +889,17 @@ class PyTorchCifar10Trainer(Trainer):
         # sleep. Together with _pre_train_s and _real_gpu_time_s this is the
         # full trainer-side breakdown of where a round's wall time goes.
         _post_train_s = time.time() - _phase_post_start
+        _post["delta_l2"] = _post_train_s
+
+        # C13 (FX-D74): real pads only GPU time to D; sim charges measured pre/post. recv gap is burst-inflated in sim: report only.
+        _ovh_mark = time.time()
+        _overhead_s = _pre_train_s + _post_train_s
+        _recv_gap_s = max(0.0, _ovh_mark - (getattr(self, "_wall_recv_ts", None) or _phase_train_entry)
+                          - _real_gpu_time_s - _overhead_s)
+        if self.simulated and self._sim_charge_overhead:
+            sim_round_duration += _overhead_s
+            self._sim_round_duration = sim_round_duration
+            self._sim_completion_ts += _overhead_s
 
         if telemetry.is_enabled():
             visible = self._stream_visible  # what this task trained on, not a post-train recount
@@ -913,9 +930,12 @@ class PyTorchCifar10Trainer(Trainer):
                     "lr": current_lr,
                     "pre_train_s": _pre_train_s,
                     "pre_train_split_s": {k: round(v, 4) for k, v in _pre.items()},
+                    "post_train_split_s": {k: round(v, 4) for k, v in _post.items()},
                     "gpu_compute_s": _real_gpu_time_s,
                     "sleep_s": _remaining_time,
                     "post_train_s": _post_train_s,
+                    "trainer_overhead_s": _overhead_s,
+                    "recv_gap_s": _recv_gap_s,
                     **getattr(self, "_phase_times", {}),
                     # Sim-mode-only vclock snapshot per _phase_times key; nested so
                     # an absent dict in real mode needs no per-key None-check.
@@ -930,6 +950,8 @@ class PyTorchCifar10Trainer(Trainer):
             )
             self._release_gpu_cache()  # FX-D43: util_cf's forward left 2.4 GB cached
 
+        _tail_s = time.time() - _ovh_mark  # unpadded in real, not yet charged
+
         if not self.simulated and _remaining_time > 0:
             time.sleep(_remaining_time)
 
@@ -939,7 +961,7 @@ class PyTorchCifar10Trainer(Trainer):
                 f"[TRAIN_CYCLE] Trainer {self.trainer_id} round={self._round} "
                 f"time_mode=simulated: wall={_cycle_elapsed:.2f}s "
                 f"GPU={_real_gpu_time_s:.2f}s budget={_modeled_delay_s:.1f}s "
-                f"pre={_pre_train_s:.2f}s post={_post_train_s:.2f}s "
+                f"pre={_pre_train_s:.2f}s post={_post_train_s:.2f}s tail={_tail_s:.2f}s overhead={_overhead_s:.2f}s "
                 f"virtual_advance={sim_round_duration:.2f}s "
                 f"{'OVERRUN' if _overran else 'OK'} "
                 f"sct={self._sim_completion_ts:.2f}"
@@ -949,7 +971,7 @@ class PyTorchCifar10Trainer(Trainer):
                 f"[TRAIN_CYCLE] Trainer {self.trainer_id} round={self._round} "
                 f"time_mode=real: wall={_cycle_elapsed:.2f}s "
                 f"GPU={_real_gpu_time_s:.2f}s budget={_modeled_delay_s:.1f}s "
-                f"pre={_pre_train_s:.2f}s post={_post_train_s:.2f}s "
+                f"pre={_pre_train_s:.2f}s post={_post_train_s:.2f}s tail={_tail_s:.2f}s overhead={_overhead_s:.2f}s "
                 f"sleep={_remaining_time:.2f}s total={sim_round_duration:.1f}s "
                 f"{'OVERRUN' if _overran else 'OK'}"
             )

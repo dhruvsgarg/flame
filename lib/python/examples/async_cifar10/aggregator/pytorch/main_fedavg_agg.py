@@ -22,6 +22,7 @@ https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 
 import logging
 import os
+import time
 
 import torch
 import torch.nn as nn
@@ -157,6 +158,7 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
 
         def _job():
             try:
+                _t0 = time.time()
                 eval_model.eval()
                 test_loss = 0
                 correct = 0
@@ -168,6 +170,7 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
                         pred = output.argmax(dim=1, keepdim=True)
                         correct += pred.eq(target.view_as(pred)).sum().item()
                 total = len(test_loader.dataset)
+                logger.info(f"[ASYNC_EVAL_TIMING] round={round_num} wall_s={time.time() - _t0:.2f} device={device}")  # FX-N70
                 self._eval_emit(round_num, test_loss / total, correct / total)
             except Exception as e:  # eval must never break training
                 logger.warning(f"[ASYNC_EVAL] failed (non-fatal): {e}")

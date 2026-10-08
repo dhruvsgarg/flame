@@ -224,10 +224,19 @@ G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). 
   0.011: 37/35 rounds; oort_star 0.069: 14/14 rounds, 19% s/round). Cifar fedbuff syn_50 sim unchanged by FX-D69 (30 rounds both runs);
   real 36 → 33 rounds — sim 10-17% slow at n=50, green only on its floor.
   Felix idle-slot clues (run 20): commit → next dispatch mean 1.34 s sim vs 0.58 real (p50 0.12 vs 0.01); selections finding the cap
-  full (chose 0, eligible > 0) 22% sim vs 13% real — sim holds a slot ~0.8 s longer per commit and more slots look busy at selection. Run 18 T3 oort/oort_star/feddance: mobiperf 5/6 green (speech
+  full (chose 0, eligible > 0) 22% sim vs 13% real — sim holds a slot ~0.8 s longer per commit and more slots look busy at selection.
+  **Root (run 20 telemetry):** at each syn_50 flip (vclock 150/300/450) sim in_flight reaches 19-30 vs cap 15 (100 selections over cap,
+  real max 17, 33 over) and dispatches nothing for 10-34 s (44 gaps, 654 s). A trainer that finished but is UN_AVL at its sct is
+  send-gated: real never receives it, so D.1 evicts it and frees the slot; sim has its payload buffered (sct <= now), FX-D71 skips it,
+  and the withhold path then *holds* the slot. FX-D75 (evict send-gated) matched evictions (101 vs 100) but run 23 still went over cap
+  (max 31, 109 vs 121 rounds). **Actual root:** at a flip the evicted ends' withheld deliveries are reinjected together and
+  `_sim_hold_busy_slots` holds every buffered end as busy, re-adding them to `selected_ends` (in_flight 15 → 27 with no dispatch);
+  dispatch stops until they commit one by one. Real's late arrival never retakes a freed slot → FX-D76. Confirm: run 24. Run 18 T3 oort/oort_star/feddance: mobiperf 5/6 green (speech
   feddance overhead_residual); syn_50 0/6 (eligibility, avail_timebase, duty_cycle_duration, overhead_residual). *Exit:* A1-A8/K11 + the syn_0 ladder green; withheld updates delivered; AVL_EVAL and
   empty-pool cleanup counted on mobiperf_3st; G1U n=300 INV/EXACT green.
-- **FX-N70 `[C][S]` · Real refl ingest on 29 MB updates · wip: FX-D64 not enough (run 18).** Run 18 speech G1A real queue_wait max 10.96 s felix
+- **FX-N70 `[C][S]` · Real refl ingest on 29 MB updates · wip: FX-D64 not enough (run 18).** Run 22: aggregator eval runs on CUDA but
+  takes 10-11 s per eval (`[ASYNC_EVAL_TIMING]`) — Python-bound loop holding the GIL; G1S felix (45 min) had no spikes (queue_wait max
+  0.58 s). Run 18 speech G1A real queue_wait max 10.96 s felix
   (341 > 1 s), 6.81 s fedbuff (59 > 1 s) vs the < 2 s confirm: a second ingest cost remains. Run 16 speech G1A refl: queue_wait p99 0.74 s (was 4.3; 5 updates > 1 s),
   ingest 138 ms/update (13/round), K2 green; U6 red: real visibility lag 0.18 s vs sim 0. **Run 18 profile (speech G1A real `agg_timing`):**
   ingest per 10-update commit p50 2.5 s / p90 9.4 s / max 24 s felix, p50 1.4 s fedbuff; no trend over the run. 25/45 felix spikes (> 8 s)
@@ -240,6 +249,11 @@ G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). 
   selector sees exactly D. Sim post p50 0.025 / mean 0.08 vs real 0.022 / 0.30. *Fix:* sim duration = pre + max(gpu, D) + post as
   measured (clock and selector), leg profile without the post part; then root the real post outliers (cache release under contention?). Earlier
   evidence: speech oort preferred-duration median 16.35 vs 15.0 s; run 18 G1A fast trainers ~1.1 s slower real, 51.9 vs 47.7 s/round.
+  **Run 22 (FX-D74 charge = recv → pre-sleep minus GPU):** speed identity green on speech felix (max 3.2%) and oort_star (0.75%).
+  Real post outliers rooted: `_release_gpu_cache()` 1.4-5.1 s in 5/631 rounds (FX-D43's empty_cache under contention); real overhead
+  p50 0.03 / mean 0.15 / max 5.4 s. But sim overhead p50 0.23 / mean 0.43: its recv → train gap is contention-inflated (sim trainers
+  receive in bursts; weights_to_ram 0.23 vs 0.006 s), so sim mean speed 48.0 vs real 46.6. *Next:* charge measured pre + post (+ tail)
+  only, and profile the real recv-side gap (weights_to_ram, deserialize) as a constant like the leg.
   *Exit:* speed identity green; real post-train outliers rooted.
 - **FX-N10 · google_speech on the launcher · wip: lr fixed (FX-N74); stop rule next.** *Next:* target accuracy + stop rule (2024: 20 evals
   ≥ 60%); then S4 removes the 2024 JSON/scripts and the import script. *Exit:* all six real+sim graded on speech (T4 CPU + G1/G2 GPU).
@@ -598,6 +612,16 @@ IDs are kept because code comments cite them.
   cached delay). `test_sim_barrier.py`.
 - **FX-D67** StallWatch S1 counts `abandon_timeout` as progress: unaware oort on mobiperf cycled 8 × 90 s abandons (identical in sim)
   and was cut 14 s before round 1. `test_stall_watch.py`.
+- **FX-D76** Asyncfl's busy-slot hold skips withheld deliveries and pending-withheld ends (late deliveries of evicted/abandoned
+  trainers never retake their freed slot; FX-N56 held slots kept). `test_async_inflight_residence.py`.
+- **FX-D76** Async sim: a late withheld delivery of an evicted/abandoned end doesn't retake its freed slot (`_sim_hold_busy_slots`):
+  at each syn_50 flip reinjected deliveries pushed in_flight 15 → 27-31 and stalled dispatch. Run 24 speech felix G0U syn_50 green
+  (120 / 119 rounds, overlap 15.70 / 15.64; was 107-109 / 121). `test_async_inflight_residence.py`.
+- **FX-D74** C13: sim trainers add their measured pre + post-train time to duration and sct (`sim_charge_trainer_overhead`, default on;
+  EV3 checks it); the profiled completion leg drops `post_wait` (transfer only; GPU + stub profiles regenerated). Telemetry: post-train
+  split, `recv_gap_s`, TRAIN_CYCLE `tail=`/`overhead=`. Run 22: speech felix/oort_star speed identity green. `test_event_invariants.py`.
+- **FX-D75** D.1 boundary eviction also frees a buffered update that is send-gated (trainer UN_AVL at its sct): real never receives it
+  (run 20 sim in_flight up to 30 vs cap 15). `SimReorderBuffer.ts_of`; `test_live_wiring.py`.
 - **FX-D72** `--trainer-hp` also overwrites a key the by_baseline layer set in `trainer.hyperparameters` (the launcher prefers it over
   `config_overrides`): run 20's speech refl lr 0.05 screen ran at 0.005 (PL7 caught it). `test_debug_run_dataset_profile.py`.
 - **FX-D73** Cifar fedbuff trains SGD 0.04 b32 × server lr 1.0 (`datasets.yaml`; FX-N74): in-process r1000 53.1% vs the 2024 pair's 32.2%.

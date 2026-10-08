@@ -119,6 +119,8 @@ on both sides (of 12 baseline × dataset cells). Open items flat while built gro
 | runs 12-14 (`e174fbed6`) | 10-05 | n/a | 17 | 47 | G0U/G0T: 37 / 2 / 11 | not measured |
 | run 16 (`11152ac33`) | 10-06 | 2414 / 0 | 17 | 61 | 9 / 2 / 1 (+5 MISSING) | 1 / 12 (cifar felix) |
 | run 17 (`67959e542`) | 10-07 | 2416 / 0 | 17 | 62 | 14 / 0 / 0 (+2 hand-graded 68/68, 66/66) | 1 / 12 |
+| runs 23-24 (FX-D74-76) | 10-07 | 2427 / 0 | 16 | 76 | speech G0U syn_50: felix ✅ (120 / 119 rounds), fedbuff window 8.8% vs 8% (total 2.8%) · cifar felix ✅, fedbuff per_round_advance | 3 / 12 |
+| runs 20-22 (`bd5fc954d` + FX-D74) | 10-07 | 2426 / 0 | 16 | 74 | speech G0U syn_50 3 / 0 / 1 (felix: slot hold → FX-D75) · G1S felix 0 INV/EXACT red (186 / 187 rounds) · cifar felix 1.0 | 3 / 12 (+ cifar fedbuff sim 56%, FX-D73) |
 | run 19 (3h screen, uncommitted) | 10-07 | 2423 / 0 | 16 | 69 | speech G0U syn_50 6 / 0 / 2 + felix 0 / 0 / 1 (3 roots → FX-D69-71) · cifar G0U 9 / 0 / 1 · T3C 6 / 0 / 0 → run 18 T3 8 / 0 / 4 | 3 / 12 (speech refl SGD 0.005 sim 43.7%) |
 | run 18 (`1abe482a3`) | 10-07 | 2420 / 0 | 16 | 63 | T3: 5 / 0 / 7 · G1A speech: 1 / 0 / 3 (timing only) · G0U: aborted (FX-D65) | 3 / 12 (+ speech felix, fedbuff) |
 
@@ -128,7 +130,7 @@ real / sim, full data unless *stream* (G2: data 0 → 100% over 3 h, a lower bou
 | baseline | dataset | parity syn_0 | parity unavailability | accuracy real / sim | target |
 |---|---|---|---|---|---|
 | felix | cifar | ✅ G1A 67/67 (run 16) | ✅ T3 syn_50+mobiperf (run 16); 🔴 G0U EV16 (runs 12-14, fix FX-D50 CPU-confirmed; PR19) | 57.0 / 56.3 | ✅ 57 / 60 min |
-| felix | speech | 🟡 G1A SGD (run 18): timing reds weights_to_ram, commit_visibility; real queue_wait max 11 s (FX-N70) | ✅ T3 (run 16); 🔴 G0U EV16 (runs 12-14; rerun PR19) | 67.5 / 68.1 | ✅ 72 / 72 min |
+| felix | speech | 🟡 G1A SGD (run 18): timing reds weights_to_ram, commit_visibility; real queue_wait max 11 s (FX-N70) | ✅ T3 (run 16); ✅ G0U syn_50 (run 24, FX-D71/74-76) | 67.5 / 68.1 | ✅ 72 / 72 min |
 | fedbuff | cifar | ✅ G1A 66/66, K2 0.3% (run 17) | ✅ T3; 🔴 G0U EV16 + mobiperf K4 (runs 12-14; PR19) | 34.7 / 38.1 | ❌ |
 | fedbuff | speech | 🟡 G1A SGD (run 18): timing reds gpu_compute, weights_to_ram, commit_visibility | ✅ T3; 🔴 G0U mobiperf 5 vs 8 rounds (FX-D52; rerun PR19) | 60.2 / 64.0 | ✅ 82 / 88 min |
 | refl | cifar | ✅ G1A 68/68, K2 2% (run 17) | ✅ T3 syn_50 on T3C floor (run 17); 🟡 G0U A2 KS 0.24 | 44.5 / 44.1 | ❌ rising at 90 min |
