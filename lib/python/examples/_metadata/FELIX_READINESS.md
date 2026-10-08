@@ -28,7 +28,7 @@
 ## Status grid (scoreboard)
 
 Run-by-run green/known/red, open/closed items and per-baseline parity + accuracy: [PARITY_READINESS.md](PARITY_READINESS.md) → Progress dashboard, Felix scoreboard.
-pytest: 2420 passed · 0 failed · 7 skipped (2026-10-07, with FX-D68).
+pytest: 2427 passed · 0 failed · 7 skipped (2026-10-07, with FX-D76).
 
 **Accuracy table (FX-N74; `scripts/accuracy_table.py --runs <run dirs>`)** — test accuracy % at time on the leg's own clock (real
 wall, sim vclock), syn_0, reference n. Targets: cifar 50%, speech 60%. G1A = full data (run 16, `block_20261006_run16`; evals every 40
@@ -182,6 +182,25 @@ G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). 
 
 **Unblock map.** FX-D50 + FX-D55 (CPU-confirmed, runs 15-16) → GPU G0U/G0UC, then G1U → speech FX-N9. FX-N70 (refl) → FX-N11 (speech feddance green at G1A, run 18). FX-N12 also needs FX-N13 (ST6) and P8 (speech sim is GPU-bound).
 
+- **FX-N76 `[C][S]` · C13 real-cost audit: every significant real wall cost charged in sim, all six baselines · wip (operator 2026-10-08:
+  current focus; quick runs only).** Root + fix each, verify on short pairs of several baselines and both datasets (C0.2). Baseline now:
+  FX-D74 charges measured pre + post; speech felix G0U syn_50 green (run 24); speech G1S felix 0 INV/EXACT red (run 22).
+  - **R1 recv → train gap (trainer).** Real mean ~0.1 s (WALL_RECV → train entry: deserialize 29 MB, weights_to_ram, model load); sim
+    measures 0.23 / 0.43 s (burst-contended), so it is reported (`recv_gap_s`), not charged. *Fix:* profile it from real legs into
+    `sim_charge_profiles` (like the leg) and charge the constant; or make sim's own recv contention-free. *Check:* `phase_weights_to_ram`
+    DIST green; speed identity holds.
+  - **R2 GPU cache release (trainer, real).** `_release_gpu_cache()` (FX-D43 empty_cache) 1.4-5.1 s in ~1% of real rounds (run 22
+    `post_train_split_s`); sim measures its own, rarer. *First:* cut the cost (release only above a memory threshold / without a device
+    sync; FX-T36 density still holds); *then* confirm sim/real post distributions match (C13: model what remains).
+  - **R3 aggregator eval (real + sim).** `[ASYNC_EVAL_TIMING]` 10-11 s per eval on CUDA (run 22 G1S): Python-bound loop (per-batch
+    `.item()` sync) holding the GIL against ingest; FX-N70 spikes cluster after evals (run 18: 25/45). *Fix:* vectorized eval (one sync),
+    or a separate process; then charge any remaining ingest delay. *Check:* eval < 2 s; real queue_wait max < 2 s on G1A.
+  - **R4 trainer tail (real).** Telemetry emit + util_cf forward + second cache release after the overhead mark (`tail=` p99 1.58 s
+    real, 1.12 sim): unpadded in real, uncharged in sim. *Fix:* move the mark after the tail, or charge it.
+  - **R5 aggregator ingest per update.** 0.14 s/update pickle (fedbuff), +0.12 s felix (FX-N70); in the leg profile as queue_wait mean
+    only. *Check:* `agg_timing.ingest_s` real vs sim per commit.
+  *Smoke plan:* per root, a 15-30 min G0U syn_50 + G1S pair on 2-3 baselines (felix, fedbuff, refl/oort), both datasets where cheap.
+  *Exit:* R1-R5 rooted and fixed or measured < 1% of round time; speed identity + phase DIST green on speech and cifar.
 - **FX-N74 `[C]` · Every baseline reaches its target on full data, both sides · wip: speech felix + fedbuff reach 60% on SGD (run 18); oort 51/55%, feddance 28%.** Accuracy table above.
   **Run 18 (SGD 0.04 b16):** speech felix 67.5 / 68.1 (60% at 72 min both), fedbuff 60.2 / 64.0 (82 / 88 min); parity timing-only reds
   (phase_weights_to_ram, commit_visibility; fedbuff + phase_gpu_compute). Cifar felix reaches 50% (57/60 min); still below target at 90 min:
@@ -243,7 +262,7 @@ G1/G2 (the production path at the reference n, cifar 300 / speech 100, 90 min). 
   fall within 60 s after an eval (base rate 14%): the eval forward still shares the aggregator's cores with ingest (FX-D64 removed only
   the decode). C6: a deployment's eval doesn't stall ingest → fix real: eval off the ingest path (own process/GPU). Felix's extra ~0.12
   s/update over fedbuff is unexplained (BN ring, FX-D61?). *Next:* move eval off the ingest path; per-update ingest split. *Exit:* U6 green or floor-SKIP.
-- **FX-N73 `[C]` · Sim selector speed and clock miss real trainer-side costs · todo (decided: C13 — model them).**
+- **FX-N73 `[C]` · Sim selector speed and clock miss real trainer-side costs · wip: FX-D74 (pre + post); rest in FX-N76.**
   Run 20 speech felix: real per-update duration p50 = D + 0.1 s, mean D + 0.7-1.4 s from outlier rounds — real pads only GPU time to D,
   so trainer pre/post-train work lands on top (0388 r58: GPU 3.37 s, **post 16.79 s**, sleep 6.63 s); sim advances max(gpu, D) and its
   selector sees exactly D. Sim post p50 0.025 / mean 0.08 vs real 0.022 / 0.30. *Fix:* sim duration = pre + max(gpu, D) + post as

@@ -129,16 +129,16 @@ real / sim, full data unless *stream* (G2: data 0 → 100% over 3 h, a lower bou
 
 | baseline | dataset | parity syn_0 | parity unavailability | accuracy real / sim | target |
 |---|---|---|---|---|---|
-| felix | cifar | ✅ G1A 67/67 (run 16) | ✅ T3 syn_50+mobiperf (run 16); 🔴 G0U EV16 (runs 12-14, fix FX-D50 CPU-confirmed; PR19) | 57.0 / 56.3 | ✅ 57 / 60 min |
+| felix | cifar | ✅ G1A 67/67 (run 16) | ✅ T3 syn_50+mobiperf (run 16); 🔴 G0U EV16 (runs 12-14, fix FX-D50 CPU-confirmed; PR21) | 57.0 / 56.3 | ✅ 57 / 60 min |
 | felix | speech | 🟡 G1A SGD (run 18): timing reds weights_to_ram, commit_visibility; real queue_wait max 11 s (FX-N70) | ✅ T3 (run 16); ✅ G0U syn_50 (run 24, FX-D71/74-76) | 67.5 / 68.1 | ✅ 72 / 72 min |
-| fedbuff | cifar | ✅ G1A 66/66, K2 0.3% (run 17) | ✅ T3; 🔴 G0U EV16 + mobiperf K4 (runs 12-14; PR19) | 34.7 / 38.1 | ❌ |
-| fedbuff | speech | 🟡 G1A SGD (run 18): timing reds gpu_compute, weights_to_ram, commit_visibility | ✅ T3; 🔴 G0U mobiperf 5 vs 8 rounds (FX-D52; rerun PR19) | 60.2 / 64.0 | ✅ 82 / 88 min |
+| fedbuff | cifar | ✅ G1A 66/66, K2 0.3% (run 17) | ✅ T3; 🔴 G0U EV16 + mobiperf K4 (runs 12-14; PR21) | 34.7 / 38.1 | ❌ |
+| fedbuff | speech | 🟡 G1A SGD (run 18): timing reds gpu_compute, weights_to_ram, commit_visibility | ✅ T3; 🔴 G0U mobiperf 5 vs 8 rounds (FX-D52; rerun PR21) | 60.2 / 64.0 | ✅ 82 / 88 min |
 | refl | cifar | ✅ G1A 68/68, K2 2% (run 17) | ✅ T3 syn_50 on T3C floor (run 17); 🟡 G0U A2 KS 0.24 | 44.5 / 44.1 | ❌ rising at 90 min |
 | refl | speech | ✅ G1A; U6 DIST (FX-N70) | ✅ T3 syn_50 (run 17) | 38.7 / 39.7 | ❌ |
 | oort | cifar | ✅ G2 (L7) | ✅ G0U mobiperf 0.986, 174 / 191 rounds (FX-D67, 10-07 confirm); syn_50 ✅ (runs 12-14) | *stream* 37.7 / 31.4 | n/a (stream) |
-| oort | speech | 🟡 G1A SGD (run 18): throughput 8.1% vs 8%, speed identity, commit_visibility (FX-N73) | ✅ G0U syn_50 8 / 8 rounds (FX-D66, D68; 10-07 confirm); mobiperf ⬚ PR19 | 50.8 / 55.1 | ❌ (stream 60.7 at 80 min) |
+| oort | speech | 🟡 G1A SGD (run 18): throughput 8.1% vs 8%, speed identity, commit_visibility (FX-N73) | ✅ G0U syn_50 8 / 8 rounds (FX-D66, D68; 10-07 confirm); mobiperf ⬚ PR21 | 50.8 / 55.1 | ❌ (stream 60.7 at 80 min) |
 | oort_star | cifar | ✅ L6 G0 | 🔴 G0T lin syn_50 K3b 21.8 vs 16.6 s (FX-N9) | ⬚ | ⬚ |
-| oort_star | speech | ✅ L6 G0 | ⬚ PR19 | ⬚ | ⬚ |
+| oort_star | speech | ✅ L6 G0 | ⬚ PR21 | ⬚ | ⬚ |
 | feddance | cifar | ✅ G2 on sim↔sim floor (FX-D37) | ✅ G0U (runs 12-14) | *stream* 16.6 / 35.4 | ❌ |
 | feddance | speech | ✅ G1A SGD 1.0 (run 18) | 🟡 T3 mobiperf overhead_residual (run 18) | 28.8 / 27.7 | ❌ 38 rounds at 142 s |
 
@@ -183,21 +183,23 @@ Parked with the track; its board still sits in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR18 · Run 18 done** (`experiments/block_20261007_0424_run18`, 04:24-12:01). Graded: A T3, C G1A async + sync. A/B G0U aborted by a
-  stall-kill (FX-D65 fixes it). Speech felix/fedbuff reach 60% on SGD; oort 51/55%, feddance 28% (round-bound); FX-D64 confirm missed (FX-N70).
-- **Run 20 confirm (live, `block_20261007_1802_run20`, ~70 min):** speech G0U syn_50 felix/fedbuff/oort_star on run 19 floors; cifar G0U
-  felix/fedbuff regression; cifar fedbuff lr pairs at 1000 rounds (in-process); speech refl G1AS lr 0.05 (repo). *Confirms:* EV16 +
-  commit_promptness green, felix sim within 8% of real s/round; cifar stays green. *Refutes:* felix gap persists → a second concurrency root.
-- **PR19 · next:** rerun cifar G0U+G0UC and speech G0U+G0UC syn_50 (PR18 A/B, now FX-D65); G0U mobiperf speech; G1U n=300; cifar fedbuff
-  G1A (spin-free real). The two G0U oort stalls are rooted (FX-D66 sim re-probe deadlock, FX-D67 S1 cut a healthy leg); confirm pool
-  `pr19pre_oort_g0u_20261007_1329` **confirmed GREEN 2/0/0** (cifar mobiperf + speech syn_50 oort pairs, after FX-D68).
+- **PR20 · now (quick runs, operator 2026-10-08): C13 real-cost roots, FX-N76 R1-R5.** One root at a time, each with a short smoke:
+  15-30 min G0U syn_50 pairs + a 45 min G1S pair, 2-3 baselines (felix, fedbuff, refl/oort), both datasets where cheap; ≤ 1 h blocks.
+  Order: R3 (eval/GIL, hits every baseline's ingest) → R2 (cache release) → R1 (recv-gap profile) → R4 (tail) → R5 (ingest charge).
+  *Confirms:* speed identity + `phase_*` DIST green; real queue_wait max < 2 s; no INV/EXACT regressions on the run 24 cells.
+- **PR21 · overnight, after PR20 (one block):** G0U + G0UC all six × {syn_50, mobiperf_3st}, both datasets (FX-N9; first full rerun
+  with FX-D50-D76) · speech refl G1A real+sim at lr 0.05 (repo) · cifar fedbuff G1A real+sim on SGD 0.04 × 1.0 (FX-D73) · G1U n=300.
+- **Done 10-07 (runs 18-24, `bd5fc954d`, `acdccb1d7`):** run 18 graded; G0U oort stalls rooted (FX-D65-68); speech G0U syn_50 roots
+  FX-D69-71, D75-76 → speech felix G0U green (run 24, 120 / 119 rounds); C13 trainer overhead FX-D74 → speed identity green; cifar
+  fedbuff lr FX-D73 (sim 56% at 63 min); T3C floors → run 18 T3 8/0/4.
 
 **Operator decisions / open**
 - Decided (2026-10-06): Claude runs the PL3 scale smoke and launches the block in tmux `dg_flame`; every block opens with phase 0 and aborts itself on failure.
 - Decided (2026-10-05): cifar GPU legs at 0.2 CPU/trainer (FX-D49); a run's second block starts automatically after
   the screens; streaming design → FELIX Active build.
 - Decided (2026-10-04): fix the real aggregator, not the wire format (FX-D44); speech D ×5 (FX-D46); C11, C12.
-- Open: FX-N73 — should selector speed include the transfer leg in sim, as real Oort's duration does?
+- Decided (2026-10-07): C13 (model every significant real cost), C14 (baselines stay themselves), C15 (quick runs first). FX-N73 → C13.
+- Decided (2026-10-08): PR20 real-cost roots now; unavailability rerun + accuracy pairs go together in the PR21 overnight.
 - S5 knob layout (a) adopted (2026-10-01): `datasets.yaml` holds dataset defaults + `by_baseline` values with sources;
   left: the `fedbuff.py` server-lr table into config, and a resolved-matrix printer.
 
