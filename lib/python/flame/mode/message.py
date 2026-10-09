@@ -105,3 +105,4 @@ class MessageType(Enum):
     MODELED_DELAY_S = 43
 
     SEND_GATE_WAIT_S = 44    # real: seconds a finished update waited offline at the send-gate; not client speed (FX-N44)
+    TRAIN_LOSS_MEAN = 45     # mean mini-batch training loss over this task's local iterations (FedDance I_m, Eq. 6)

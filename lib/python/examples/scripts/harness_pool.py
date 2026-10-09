@@ -129,6 +129,7 @@ DELTA_RULES = (
     ("lib/python/flame/optimizer/fedbuff.py", ("felix", "fedbuff"), False),
     ("lib/python/flame/optimizer/fedavg.py", ("oort", "oort_star", "feddance"), False),
     ("lib/python/flame/optimizer/refl.py", ("refl",), False),
+    ("lib/python/flame/optimizer/fedscale_yogi.py", ("oort", "oort_star", "refl"), False),
     ("lib/python/flame/availability/feddance_predictor.py", ("feddance",), False),
     ("lib/python/flame/availability/refl_tracker.py", ("refl",), False),
     ("lib/python/flame/channel*.py", B6, True),
@@ -223,7 +224,7 @@ def injected_phases(kind, ds) -> List[Phase]:
 
 
 def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]:
-    matrix = ("syn_0", "syn_0b", "syn_50", "mobiperf_3st")
+    matrix = ("syn_0", "syn_0b", "syn_20", "syn_50", "mobiperf_3st")  # FX-N78: syn_20 in T3
     if tier == "T1":
         # syn_50 360 s: unaware oort first commits at vclock 150 / 300 (FX-L43).
         return [shaped("T1", baselines, sh, "sim_ev", ds, runtime_s={"syn_0": 120, "syn_50": 360}[sh])
@@ -1076,9 +1077,15 @@ def run_gate(root: Path, datasets, pool: "Pool") -> int:
     """R19: collect every test, check each dataset is complete, run one felix smoke pair per dataset;
     nonzero = abort (4)."""
     lib = REPO / "lib" / "python"
-    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "--collect-only", "-p", "no:cacheprovider", "tests",
-                        "examples/async_cifar10/scripts/parity", "examples/async_cifar10/trainer/pytorch",
-                        "examples/fwdllm/expt_scripts"], cwd=str(lib), capture_output=True, text=True, timeout=300)
+    # One collect at a time per node (FX-D101).
+    with open(Leases().root / "gate_collect", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            r = subprocess.run([sys.executable, "-m", "pytest", "-q", "--collect-only", "-p", "no:cacheprovider", "tests",
+                                "examples/async_cifar10/scripts/parity", "examples/async_cifar10/trainer/pytorch",
+                                "examples/fwdllm/expt_scripts"], cwd=str(lib), capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired as e:
+            r = subprocess.CompletedProcess(e.cmd, 1, str(e.stdout or ""), f"collect timed out after {e.timeout}s")
     (root / "P00_collect.txt").write_text(r.stdout + r.stderr)
     if r.returncode:
         pool.say(f"ABORT gate: pytest collection failed -- {root}/P00_collect.txt")
@@ -1091,10 +1098,18 @@ def run_gate(root: Path, datasets, pool: "Pool") -> int:
         pool.say(f"ABORT gate: dataset missing or incomplete -- {root}/P00_data.txt")
         return 4
     pool.say("data ok: " + " | ".join(r.stdout.split("\n")[:-1]))
+    stamp = Leases().root / f"gate_ok_{code_key()}_{'_'.join(sorted(datasets))}"
+    if stamp.exists():  # one smoke per code state per node (FX-D101)
+        pool.say(f"gate ok (collect; smoke passed earlier on this code: {stamp.read_text().strip()})")
+        return 0
     g = root / "P00"
-    r = subprocess.run([sys.executable, __file__, "--tier", "T3", "--baselines", "felix", "--phases", "T3_syn_0",
-                        "--smoke", "--no-gate", "--datasets", ",".join(datasets), "--output-dir", str(g)],
-                       capture_output=True, text=True, timeout=900)
+    try:
+        r = subprocess.run([sys.executable, __file__, "--tier", "T3", "--baselines", "felix", "--phases", "T3_syn_0",
+                            "--smoke", "--no-gate", "--datasets", ",".join(datasets), "--output-dir", str(g)],
+                           capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        pool.say(f"ABORT gate: smoke pair timed out -- {g}")
+        return 4
     leg_bad = lambda v: v == "MISSING" or "EV1" in v.replace("FAIL:", "").split(",")
     bad = [row for f in g.glob("*/summary.tsv") for row in f.read_text().splitlines()[1:]
            if leg_bad(row.split("\t")[2]) or leg_bad(row.split("\t")[3])
@@ -1102,8 +1117,15 @@ def run_gate(root: Path, datasets, pool: "Pool") -> int:
     if r.returncode or bad or not list(g.glob("*/summary.tsv")):
         pool.say(f"ABORT gate: smoke pair made no progress -- {g}")
         return 4
+    stamp.write_text(str(g))
     pool.say("gate ok (collect + smoke pair per dataset)")
     return 0
+
+
+def code_key() -> str:
+    """HEAD plus the uncommitted diff: two pools share a gate only on identical code."""
+    git = lambda *a: subprocess.run(["git", "-C", str(REPO), *a], capture_output=True, text=True).stdout
+    return hashlib.sha1((git("rev-parse", "HEAD") + git("diff", "HEAD")).encode()).hexdigest()[:12]
 
 
 def main(argv=None) -> int:

@@ -221,7 +221,8 @@ def _leaves(d, pre=""):
 
 def _log_hp_sources(bl, ds, e, layers):
     """FX-N15: print every lr/optimizer/batch knob a baseline runs with and the layer that set it (else template)."""
-    keys = ("learningRate", "lrDecay", "minLearningRate", "batchSize", "optimizer.", "Optimizer", "dataset_name", "agg_goal")
+    keys = ("learningRate", "lrDecay", "minLearningRate", "batchSize", "optimizer.", "Optimizer", "dataset_name", "agg_goal",
+            "localSteps", "epochs", "statUtility", "lrBatchNormalize", "selector.kwargs")
     src = {k: s for s, ov in layers for k, _ in _leaves(ov)}
     for k, v in sorted(_leaves({"trainer": e.get("trainer", {}), "aggregator": e.get("aggregator", {})})):
         if any(t in k for t in keys):
@@ -253,6 +254,10 @@ for e_src in cfg.get("experiments", []):
         layers.append((f"datasets.{ds_name}.by_baseline.{bl}", (prof.get("by_baseline") or {}).get(bl, {})))
         for _src, _ov in layers:
             e = deep_merge(e, copy.deepcopy(_ov or {}))
+        # FX-N74: the baseline's source-faithful values (baseline_reference.yaml) are the last word.
+        from flame.launch import baseline_reference as _bref
+        layers.append((f"reference.{bl}.{ds_name}", _bref.overlay(_bref.load(), bl, ds_name, e["trainer"]["num_trainers"])))
+        e = deep_merge(e, copy.deepcopy(layers[-1][1]))
         if ds_name != "cifar10":
             e["name"] = re.sub(r"_n\d+_", f"_n{e['trainer']['num_trainers']}_", f"{ds_name}_{e['name']}")
         h = e["aggregator"]["config_overrides"]["hyperparameters"]

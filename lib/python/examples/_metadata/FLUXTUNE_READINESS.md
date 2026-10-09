@@ -43,6 +43,9 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 
 ## Next steps (persistent queue — resumes after Felix)
 
+- **FT-N15 · Baseline fidelity for the fwdllm family · todo (after Felix).** Adopt ROBUST L33-L37: add fwdllm baselines to
+  `baseline_reference.yaml` (local work, lr/batch, server step, K/N >= 5%, cited from their papers/code); check compute < D per setting.
+  *Exit:* `test_baseline_reference.py` covers every FluxTune baseline.
 - **FT-N12 · Port FX-N77's real-cost fixes to fwdllm · todo (after Felix).** Already shared: channel framing + MQTT transport, event-driven
   `drain_ready`, `materialize_weights` decode in `fwdllm_aggregator`. Left: fwdllm's distribute still pickles `WEIGHTS` and
   `fwdllm_trainer` reads it directly (→ `pack_weights` / `materialize_weights`); fwdllm files are exempt from

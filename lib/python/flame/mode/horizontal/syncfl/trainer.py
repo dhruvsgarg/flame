@@ -474,19 +474,22 @@ class Trainer(Role, metaclass=ABCMeta):
                     MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
                     MessageType.STAT_UTILITY: self._stat_utility,
                     MessageType.LOCAL_ACCURACY: self._local_accuracy,
+                    MessageType.TRAIN_LOSS_MEAN: getattr(self, "_train_loss_mean", None),
                 }
         elif self.task_to_perform == "train":
             msg = {
                 MessageType.MODEL_VERSION: self._round,
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.STAT_UTILITY: self._stat_utility,
-                MessageType.LOCAL_ACCURACY: self._local_accuracy
+                MessageType.LOCAL_ACCURACY: self._local_accuracy,
+                MessageType.TRAIN_LOSS_MEAN: getattr(self, "_train_loss_mean", None),
             }
         else:
             msg = {
                 MessageType.MODEL_VERSION: self._round,
                 MessageType.STAT_UTILITY: self._stat_utility,
                 MessageType.LOCAL_ACCURACY: self._local_accuracy,
+                MessageType.TRAIN_LOSS_MEAN: getattr(self, "_train_loss_mean", None),
             }
 
         # simulated-time mode only: report the modeled completion time/duration
@@ -736,6 +739,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self._local_accuracy = 0.0
         self._local_accuracy_correct = 0
         self._local_accuracy_total = 0
+        self._train_loss_sum, self._train_loss_batches, self._train_loss_mean = 0.0, 0, None
 
         if "reduction" not in inspect.signature(self.loss_fn).parameters:
             msg = "Parameter 'reduction' not found in loss function "
@@ -758,6 +762,11 @@ class Trainer(Role, metaclass=ABCMeta):
             )
             self._local_accuracy_total += int(target.numel())
 
+    def update_train_loss(self, loss: "torch.Tensor") -> None:
+        """Accumulate one mini-batch's mean loss on-device (FedDance I_m, Eq. 6); synced once in finalize."""
+        self._train_loss_sum = self._train_loss_sum + loss.detach()
+        self._train_loss_batches += 1
+
     def finalize_local_accuracy(self) -> None:
         correct = self._local_accuracy_correct
         if torch.is_tensor(correct):
@@ -766,11 +775,15 @@ class Trainer(Role, metaclass=ABCMeta):
             self._local_accuracy = correct / self._local_accuracy_total
         else:
             self._local_accuracy = 0.0
+        loss_sum, n = getattr(self, "_train_loss_sum", 0.0), getattr(self, "_train_loss_batches", 0)
+        loss_sum = float(loss_sum.item()) if torch.is_tensor(loss_sum) else float(loss_sum)
+        self._train_loss_mean = loss_sum / n if n else None
 
     def reset_local_accuracy(self) -> None:
         self._local_accuracy = 0.0
         self._local_accuracy_correct = 0
         self._local_accuracy_total = 0
+        self._train_loss_sum, self._train_loss_batches, self._train_loss_mean = 0.0, 0, None
 
     # TODO: Enable this in trainer code using a flag based on selector
     # used. Needs to also pass to trainer/main.py
@@ -786,6 +799,14 @@ class Trainer(Role, metaclass=ABCMeta):
         Measure the loss of a trainer during training. The trainer's
         statistical utility is measured at epoch 1.
         """
+        if epoch == 1 and self._fedscale_utility():  # every batch of the first pass, EMA of mean loss^2
+            reduction = kwargs.pop("reduction", "mean")
+            loss_list = self.loss_fn(reduction="none", **kwargs)(output, target)
+            sq = torch.square(loss_list.detach()).mean()
+            ema = getattr(self, "_util_ema", None)
+            self._util_ema = sq if ema is None else 0.8 * ema + 0.2 * sq
+            self._util_samples = getattr(self, "_util_samples", 0) + int(target.numel())
+            return loss_list.mean() if reduction == "mean" else loss_list.sum()
         if epoch == 1 and batch_idx == 0:
             if "reduction" in kwargs.keys():
                 reduction = kwargs["reduction"]
@@ -814,6 +835,12 @@ class Trainer(Role, metaclass=ABCMeta):
         Normalize statistical utility of a trainer based on the size
         of the trainer's datset, at epoch 1.
         """
+        if epoch == 1 and self._fedscale_utility():
+            ema = getattr(self, "_util_ema", None)
+            if ema is not None:
+                trained = min(len(self.train_loader.dataset), self._util_samples)
+                self._stat_utility = math.sqrt(float(ema.item())) * trained
+            return
         if epoch == 1:
             self._stat_utility = len(self.train_loader.dataset) * math.sqrt(
                 self._stat_utility / len(self.train_loader.dataset)
@@ -821,9 +848,14 @@ class Trainer(Role, metaclass=ABCMeta):
         else:
             return
 
+    def _fedscale_utility(self) -> bool:
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        return getattr(hp, "stat_utility", "legacy") == "fedscale"
+
     def reset_stat_utility(self) -> None:
         """Reset the trainer's statistical utility to zero."""
         self._stat_utility = 0
+        self._util_ema, self._util_samples = None, 0
 
     def compose(self) -> None:
         """Compose role with tasklets."""

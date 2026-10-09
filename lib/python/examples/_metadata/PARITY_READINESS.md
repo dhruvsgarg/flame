@@ -32,7 +32,7 @@
 - **C11 New features screen short, small, parallel** (≤ 30 min, n ≈ 50) before long legs.
 - **C12 Kill early only by rule:** S1 no commit 15 min, S2 no log 10 min.
 - **C13 Model every significant real cost in sim,** on the clock and in selector measurements.
-- **C14 Baselines stay themselves:** paper/repo hyperparameters; only Felix/FluxTune innovate.
+- **C14 Baselines stay themselves:** source-faithful values from `baseline_reference.yaml` (ROBUST L33-L37); only Felix/FluxTune innovate.
 - **C15 Quick runs before long runs:** no overnight until short runs stop finding roots.
 - **C16 Batch fixes per run:** root many offline, test together in one ≤ 30-min run.
 - **C17 Close Felix fast (operator 10-08):** goal = baselines, availability, streaming, both datasets closed.
@@ -43,6 +43,16 @@
 - **C18 Short runs gate long runs (operator 10-08).** While any issue is fixable and testable by a short run, no long run.
   Short = pytest, stored telemetry, CPU tiers, ≤ 30-min GPU screens (G0U/G0UC/G0T/G0To), in-process `fl_lr_check.py`.
   Long (G1*/G2/blocks) only to find new issues once the short queue is empty. No long run before 2026-10-09 02:00.
+
+- **C19 Minimum experiment first (operator 10-08).** Every block, before launch, states in its doc line:
+  - *Claim:* the one hypothesis it validates or refutes.
+  - *Unknowns:* only what is unmeasured; anything measured or reliably modelled is not re-run.
+  - *Shortest real test per unknown:* micro-benchmark before end-to-end, one probe before a sweep, one repetition first,
+    the case the model says matters before calibration or edge cases.
+  - *Decision + stop rule,* written before the data: what each result decides; the threshold to stop or rethink.
+  - *Duration:* expected wall time; > 1 h states why it can't be shorter. Sweeps, repeats and grids only confirm.
+- **C20 Invalidated configs stop (operator 10-08).** When a baseline's definition changes, its queued and running legs are
+  dropped (not graded, not cited) and resume on the new config; other baselines continue.
 
 ## Pre-launch checklist (operator: never repeat a failure)
 
@@ -109,6 +119,7 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 | run 26 | 10-08 | 2447 / 0 | 16 | 88 | cifar felix/fedbuff/oort 3/0/0 · speech fedbuff 1 red | 3 / 12 |
 | run 27 (FX-D89-91) | 10-08 | 2450 / 0 | 17 | 91 | speech felix + fedbuff ✅ · cifar felix + oort ✅, fedbuff floor-bound | 3 / 12 |
 | CPU smokes (FX-D92-99) | 10-08 | 2456 / 0 | 16 | 99 | T1 24/24 · T3 mobiperf 2/0/0 · P6 2/0/0 · P7 6/0/0 | 3 / 12 |
+| PR22/23 + FX-D100-103 | 10-08 | 2491 / 0 | 16 | 103 | T3 cifar 27/30 · speech 16/30 (stale stub profile → FX-D103; syn_0b re-check 2/2) · G0U fedbuff cifar ✅ (FX-N77 closed) | 4 / 12 |
 
 **Per baseline × dataset (latest grade).** Parity = INV/EXACT on the latest pair; accuracy numbers in FELIX accuracy table.
 
@@ -127,6 +138,8 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 | feddance | cifar | ✅ G2 on sim↔sim floor | ✅ G0U (runs 12-14) | ❌ |
 | feddance | speech | ✅ G1A 1.0 (run 18) | 🟡 T3 mobiperf overhead_residual | ❌ round-bound if audit faithful (FX-N74) |
 
+refl, oort, oort_star, feddance rows predate FX-D100 (source-faithful configs): void for accuracy, re-graded under FX-N80 (C20).
+
 ## Felix scoreboard
 
 INV/EXACT green / known / red via `--grade <pool> --regrade --max-stage 9`; DIST gated by floors only (Q4).
@@ -140,6 +153,8 @@ INV/EXACT green / known / red via `--grade <pool> --regrade --max-stage 9`; DIST
 
 | pool (run) | g / k / r | reds and roots |
 |---|---|---|
+| PR23 `pool_20261008_1845_G0Tgs`: speech G0T felix + fedbuff | 8/0/0 · EV 8/8 | DIST only: phase_gpu_compute, speed identity (FX-N76); fedbuff syn_50 eligibility |
+| PR22/23 `pool_20261008_1628_{T3c,T3s,T1}`, `_2000_wt{T1,P7}`, `_2010_wtT3s`, `_1628_G0Ufb` | T3 cifar 27/0/3 · speech 16/0/14 · T1 24/24 · wtP7 6/0/0 · G0Ufb 1/0/0 | speech timing = stale stub profile → FX-D103 (syn_0b 2/0/0 after); cifar syn_50 oort-family terminal_state (pre-FX-D100, FX-N9) |
 | CPU smokes `pool_20261008_15{0148,2447}_*` | T3 mob 2/0/0 · P6 2/0/0 · P7 6/0/0 (feddance DIST) | FX-D92-D99; T1 24/24 EV |
 | run 27 `block_20261008_1231_run27`: G0U syn_50 both datasets | speech 2/0/0 · cifar 2/0/1 | cifar fedbuff red vs own real, green vs run 26 real |
 | run 26 `block_20261008_1138_run26` | 3/0/0 · speech 1/0/1 | fedbuff overhead_residual 12.5% → FX-D90 |
@@ -159,10 +174,10 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR22 · CPU matrix on today's code (~75 min, parallel pools; FX-N78).** T3 cifar + T3 speech (+ syn_20), T1 both, TS/TSo cifar.
-- **PR23 · GPU screens (≤ 30 min each; C18).** G0UC fedbuff cifar ≥ 3 legs (FX-N77); G0T oort_star lin syn_50 (FX-N9);
-  speech G0T/G0To streaming (FX-N30); G0U mobiperf for the four remaining baselines (FX-N9).
-  *Confirms:* INV/EXACT green per cell; EV19. Any red → root before the next pool.
+- **PR24 · FELIX "Next steps → Resume here", in order FX-N82 → N83 → N80 → N84.** Then FX-N80's C19 steps (in-process `fl_lr_check --baseline`, then T3 + G0U screens on FX-D100 configs).
+- **PR23 · GPU screens (C18) · partly done.** Done: G0UC fedbuff cifar ×3 + G0U pair at HEAD ✅ (FX-N77 closed). Done: speech G0T
+  felix + fedbuff INV/EXACT 8/0/0 (`pool_20261008_1845_G0Tgs`). Dropped by C20 (rerun on FX-D100): G0T oort_star, G0U mobiperf oort_star/refl/feddance,
+  speech G0T for the other four.
 - **PR21 · GPU long block · deferred by C18** until the short queue is empty: G1A accuracy pairs, G1U, G0T full grid.
 
 **Operator decisions**
@@ -174,7 +189,11 @@ Parked with the track; board in simulate_fwdllm.md §A.
 - QoS 1 rejected: per-message seqno restart could splice late duplicates (10-08).
 - Short runs gate long runs (C18); GPU screens ≤ 30 min and `fl_lr_check.py` count as short; speech streaming on GPU, model unchanged (10-08).
 - A baseline slow by its own algorithm is round-bound, not a bug; disparity vs its reference is fixed (10-08).
-- S5 knob layout (a): `datasets.yaml` defaults + `by_baseline`; left: matrix printer.
+- S5: per-baseline values moved to `baseline_reference.yaml` (FX-D100); `datasets.yaml` keeps dataset-only values.
+- Baselines: code wins over paper; nearest own config when a dataset is missing; sync K/N >= 5%; model fixed, adapt the fewest
+  knobs and record them (ROBUST L33-L37) (10-08 evening).
+- D = our trainer runtime distribution for every baseline, never per-sample; compute > D = rethink for all (ROBUST L36) (10-08).
+- Implement REFL `adapt_selection` (FX-N82); vendor Oort into third_party (FX-N83); trainer memory audit to raise n (FX-N84) (10-08).
 
 ---
 

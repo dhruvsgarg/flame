@@ -10,9 +10,9 @@ from flame.mode.message import MessageType
 from flame.selector.feddance import (
     FedDanceSelector,
     PROP_LOCAL_ACCURACY,
-    PROP_STAT_UTILITY,
     PROP_U,
 )
+from flame.selector.properties import PROP_STAT_UTILITY
 
 
 @pytest.fixture
@@ -103,7 +103,7 @@ class TestOnUpdateReceived:
     def test_captures_loss_and_accuracy(self, feddance):
         feddance.on_update_received(
             "t1",
-            {MessageType.STAT_UTILITY: 0.7, MessageType.LOCAL_ACCURACY: 0.9},
+            {MessageType.TRAIN_LOSS_MEAN: 0.7, MessageType.LOCAL_ACCURACY: 0.9},
             round_num=1,
         )
         assert feddance.last_loss["t1"] == pytest.approx(0.7)
@@ -121,10 +121,10 @@ class TestOnUpdateReceived:
 class TestOnRoundCompleted:
     def test_updates_prev_round_means(self, feddance, make_ends):
         feddance.on_update_received(
-            "a", {MessageType.STAT_UTILITY: 1.0, MessageType.LOCAL_ACCURACY: 0.5}, 1
+            "a", {MessageType.TRAIN_LOSS_MEAN: 1.0, MessageType.LOCAL_ACCURACY: 0.5}, 1
         )
         feddance.on_update_received(
-            "b", {MessageType.STAT_UTILITY: 3.0, MessageType.LOCAL_ACCURACY: 0.9}, 1
+            "b", {MessageType.TRAIN_LOSS_MEAN: 3.0, MessageType.LOCAL_ACCURACY: 0.9}, 1
         )
         feddance.selected_ends.update(["a", "b"])
         feddance.on_round_completed(make_ends(["a", "b"]), 1)
@@ -213,3 +213,15 @@ class TestSelectorRegistration:
     def test_enum_value_present(self):
         from flame.config import SelectorType
         assert SelectorType.FEDDANCE.value == "feddance"
+
+
+def test_unseen_device_takes_mean_I_not_stat_utility(make_ends, channel_props):
+    """Alg. 1 l.14-15: a never-returned device's I is last round's mean I; Oort stat_utility is not an input (Eq. 6)."""
+    s = FedDanceSelector(aggr_num=2)
+    s.prev_round_mean_I = 2.0
+    ends = make_ends(["a", "b"], **{PROP_STAT_UTILITY: 99.0})
+    s.on_update_received("a", {MessageType.TRAIN_LOSS_MEAN: 0.5}, 1)
+    s.select(ends, channel_props, trainer_unavail_list=[], task_to_perform="train")
+    assert s.last_loss == {"a": 0.5}
+    from flame.selector.properties import PROP_I
+    assert ends["b"].get_property(PROP_I) == 2.0 and ends["a"].get_property(PROP_I) == 0.5

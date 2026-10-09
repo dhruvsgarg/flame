@@ -4,7 +4,7 @@
 
 U_m(r) = (V_m * I_m * A_m) * (1 + log10(R+1) / (10 * (1 + J_m)))
   V_m: Poisson availability over next K rounds
-  I_m: average training loss in last engaged round (Oort stat_utility)
+  I_m: mean mini-batch training loss over the last engaged round's tau local iterations (Eq. 6)
   A_m: slope of training accuracy across last beta engagements
   J_m: last round in which device m was engaged
 
@@ -29,7 +29,6 @@ from flame.selector.properties import (
     PROP_LAST_ENGAGED_ROUND,
     PROP_LOCAL_ACCURACY,
     PROP_SELECTED_COUNT,
-    PROP_STAT_UTILITY,
     PROP_U,
     PROP_V,
 )
@@ -188,9 +187,8 @@ class FedDanceSelector(AbstractSelector):
             v = self.predictor.V_m(end_id, round_num)
 
             i = self.last_loss.get(end_id)
-            if i is None:
-                stat_util = end.get_property(PROP_STAT_UTILITY)
-                i = stat_util if stat_util is not None else mean_I
+            if i is None:  # Alg. 1 l.14-15: never-returned devices take last round's mean I
+                i = mean_I
 
             a = self._accuracy_slope(end_id)
             if a is None:
@@ -240,7 +238,7 @@ class FedDanceSelector(AbstractSelector):
 
         self.ordered_updates_recv_ends.append(end_id)
 
-        loss = msg.get(MessageType.STAT_UTILITY)
+        loss = msg.get(MessageType.TRAIN_LOSS_MEAN)  # Eq. 6: mean loss over the tau local iterations
         acc = msg.get(MessageType.LOCAL_ACCURACY)
 
         if loss is not None:

@@ -1,53 +1,52 @@
 completion_leg:
   asyncfl:
-    mean_s: 0.0254
-    p50_s: 0.023
-    n: 1731
+    mean_s: 0.0251
+    p50_s: 0.024
+    n: 1802
     charge: true
   oort_sync:
-    mean_s: 0.0325
-    p50_s: 0.03
-    n: 799
+    mean_s: 0.0321
+    p50_s: 0.031
+    n: 824
     charge: true
   fedavg:
-    mean_s: 0.0285
-    p50_s: 0.025
-    n: 225
+    mean_s: 0.0311
+    p50_s: 0.029
+    n: 230
     charge: true
 dispatch_latency:
   asyncfl:
-    mean_s: 0.0196
-    p50_s: 0.016
-    n: 968
+    mean_s: 0.0093
+    p50_s: 0.008
+    n: 1802
     charge: true
   oort_sync:
-    mean_s: 0.0387
-    p50_s: 0.024
-    n: 324
+    mean_s: 0.0182
+    p50_s: 0.0185
+    n: 336
     charge: true
   fedavg:
-    mean_s: 0.0502
-    p50_s: 0.038
-    n: 91
+    mean_s: 0.0132
+    p50_s: 0.015
+    n: 92
     charge: true
 _meta:
   dataset: cifar10
   harness: stub
   host: jayne
-  commit: bd5fc954d
-  date: '2026-10-07'
+  commit: 72f2dfa19
+  date: '2026-10-08'
   tool: profile_felix_charges.py
   runs:
-  - run_20260930_021545_T3_syn_0_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real
-  - run_20260930_022233_T3_syn_0_hstub_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
-  - run_20260930_022354_T3_syn_0b_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real
-  - run_20260930_022607_T3_syn_0_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real
-  - run_20260930_022754_T3_syn_0b_hstub_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
-  - run_20260930_023051_T3_syn_0b_hstub_dbg_oort_star_n300_alpha0.1_syn_0_stream_real
-  - run_20260930_023141_T3_syn_0_hstub_dbg_feddance_n300_alpha0.1_syn_0_stream_real
-  - run_20260930_023233_T3_syn_0b_hstub_dbg_oort_n300_alpha0.1_syn_0_stream_real
-  - run_20260930_023337_T3_syn_0b_hstub_dbg_feddance_n300_alpha0.1_syn_0_stream_real
-  - run_20260930_023441_T3_syn_0b_hstub_dbg_refl_n300_alpha0.1_syn_0_stream_real
-  - run_20260930_023459_T3_syn_0_hstub_dbg_oort_n300_alpha0.1_syn_0_stream_real
-  - run_20260930_023619_T3_syn_0_hstub_dbg_oort_star_n300_alpha0.1_syn_0_stream_real
-  - run_20260930_023809_T3_syn_0_hstub_dbg_refl_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_170433_T3_syn_0_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_173144_T3_syn_0_hstub_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_175952_T3_syn_0_hstub_dbg_oort_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_180314_T3_syn_0_hstub_dbg_oort_star_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_180502_T3_syn_0_hstub_dbg_feddance_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_180819_T3_syn_0_hstub_dbg_refl_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_182045_T3_syn_0b_hstub_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_182219_T3_syn_0b_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_182612_T3_syn_0b_hstub_dbg_oort_star_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_182723_T3_syn_0b_hstub_dbg_refl_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_183009_T3_syn_0b_hstub_dbg_oort_n300_alpha0.1_syn_0_stream_real
+  - run_20261008_183338_T3_syn_0b_hstub_dbg_feddance_n300_alpha0.1_syn_0_stream_real

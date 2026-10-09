@@ -749,6 +749,7 @@ class PyTorchCifar10Trainer(Trainer):
         _pre["stream"] = time.time() - _phase_train_entry
         opt = torch.optim.Adam if self._optimizer_name() == "adam" else torch.optim.SGD
         self.optimizer = opt(self.model.parameters(), lr=current_lr)
+        self._step_lr = current_lr
         _pre["opt"] = time.time() - _phase_train_entry
 
         # reset stat utility for OORT
@@ -790,11 +791,17 @@ class PyTorchCifar10Trainer(Trainer):
         _gpu_slot = self._acquire_gpu_slot()  # FX-D58: the wait counts as GPU time, as contention does
         # Setup/avail/loader-rebuild overhead before the compute loop.
         _pre_train_s = _gpu_start - _phase_train_entry
-        for epoch in range(1, self.epochs + 1):
-            epoch_batches, epoch_loss = self._train_epoch(epoch)
+        steps = self.config.hyperparameters.local_steps
+        epoch = 0
+        while epoch < self.epochs if steps is None else total_batches_processed < steps:  # FX-N74
+            epoch += 1
+            left = None if steps is None else steps - total_batches_processed
+            epoch_batches, epoch_loss = self._train_epoch(epoch, max_batches=left)
             total_batches_processed += epoch_batches
             if epoch_loss is not None:
                 final_loss = epoch_loss
+            if epoch_batches == 0:
+                break
         # Stub: charge a realistic GPU-compute span (flame.harness.stub_compute_s).
         _stub_s = harness.stub_compute_s(self.config.hyperparameters, self.harness_mode,
                                          (self.trainer_id, self._round))
@@ -976,7 +983,7 @@ class PyTorchCifar10Trainer(Trainer):
                 f"{'OVERRUN' if _overran else 'OK'}"
             )
 
-    def _train_epoch(self, epoch):
+    def _train_epoch(self, epoch, max_batches=None):
         self.model.train()
         
         # Log memory for first epoch to track per-batch memory
@@ -991,8 +998,13 @@ class PyTorchCifar10Trainer(Trainer):
         _grad_norm_batches = 0
 
         for batch_idx, (data, target) in enumerate(self.train_loader):
+            if max_batches is not None and batches_processed >= max_batches:
+                break
             data, target = data.to(self.device), target.to(self.device)
             self.optimizer.zero_grad(set_to_none=True)  # Use set_to_none=True for better memory
+            if self.config.hyperparameters.lr_batch_normalize:  # FedBuff §5 learning-rate normalization
+                for g in self.optimizer.param_groups:
+                    g["lr"] = self._step_lr * min(1.0, len(target) / self.batch_size)
             output = self.model(data)
 
             if self.use_oort_loss_fn == "False":
@@ -1005,6 +1017,7 @@ class PyTorchCifar10Trainer(Trainer):
 
             # accumulate per-round local training accuracy (FedDance A_m signal)
             self.update_local_accuracy(output, target)
+            self.update_train_loss(loss)
 
             loss.backward()
 

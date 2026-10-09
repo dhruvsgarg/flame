@@ -1,8 +1,7 @@
 # Dataset profiles (FX-N10). `debug_run.sh --dataset <name>` deep-merges `experiment` into every
 # experiment of the parity template (felix_oort_refl_feddance_alpha0.1_parity.yaml, written for
-# cifar10), `by_optimizer.<sort>` into baselines whose optimizer is that sort, then `by_baseline.<name>`:
-# a baseline's own tuned values on this dataset (paired client/server lr etc.), which win over the defaults.
-# Baseline-defining knobs stay in baselines.yaml; only what differs per dataset lives here.
+# cifar10), `by_optimizer.<sort>` into baselines whose optimizer is that sort, then baseline_reference.yaml.
+# Stack wiring lives in baselines.yaml; source-faithful baseline values in baseline_reference.yaml (FX-N74).
 # Data lives outside the repo: <data_root>/<dataset>/ (cifar10/cifar-10-batches-py,
 # google_speech/SpeechCommands/speech_commands_v0.02). fl_data.dataset_dir takes $FLAME_DATA_ROOT, then the
 # first entry below that has the dataset, else the old in-repo dir (fwdllm shares the root: fl_datasets/fwdllm).
@@ -10,27 +9,8 @@ data_roots:
   - /coc/scratch/dgarg/fl_datasets
 
 datasets:
-  # by_baseline = each baseline's tuned trainer values on this dataset, over the shared defaults.
-  # Shared defaults (all baselines, unless by_baseline overrides): epochs 1 (trainer_base.yaml; every paper uses 1
-  # local epoch/step), lr decay OFF (Hyperparameters default; only REFL configures it), the dataset's optimizer
-  # (fl_data: cifar10 SGD, google_speech Adam), template batch 10 / lr 0.01 (cifar10), dataset batch 32 / lr 0.000195 (speech).
-  # Field sources: [paper] = the baseline's paper; [repo] = its reference code in third_party/; [ours] = our tuned 2024 runs.
-  cifar10:   # the template itself; only per-baseline tuned values here
-    by_baseline:
-      felix:     # [ours] 2024 cifar trainers (git 728097bad config_dir*_6d_3state_oort): lr 0.04, batch 32; server lr 0.3 (fedbuff.py use_oort_lr)
-        trainer: {hyperparameters: {learningRate: 0.04, batchSize: 32}}
-      oort:      # [paper] Oort OSDI'21 §6: lr 0.04, batch 32 (non-speech); no decay described
-        trainer: {hyperparameters: {learningRate: 0.04, batchSize: 32}}
-      oort_star: # = oort (Oort-derived)
-        trainer: {hyperparameters: {learningRate: 0.04, batchSize: 32}}
-      refl:      # [paper] REFL EuroSys'23 Table 1: lr 0.01, batch 10; [repo] decay x0.98 every 10 rounds, floor 5e-5
-        trainer: {hyperparameters: {learningRate: 0.01, batchSize: 10, lrDecayEnabled: true, lrDecayFactor: 0.98,
-                                    lrDecayEpoch: 10, minLearningRate: 0.00005}}
-      feddance:  # [paper] FedDance SoCC'25 Table 1 CIFAR-10: lr 0.1, batch 24, 1 local step; no decay described
-        trainer: {hyperparameters: {learningRate: 0.1, batchSize: 24}}
-      fedbuff:   # [ours] FX-D73: SGD 0.04 b32 x server lr 1.0 (fl_lr_check r1000: 53% vs the 2024 pair's 32%)
-        trainer: {hyperparameters: {learningRate: 0.04, batchSize: 32}}
-        aggregator: {config_overrides: {optimizer: {kwargs: {learning_rate: 1.0}}}}
+  # A dataset sets only what differs per dataset; every baseline-defining value lives in baseline_reference.yaml.
+  cifar10: {}  # the template itself; per-baseline values: baseline_reference.yaml (FX-N74)
 
   google_speech:
     description: >-
@@ -62,21 +42,4 @@ datasets:
         aggregator:
           config_overrides:
             optimizer: {kwargs: {dataset_name: google-speech}}
-    by_baseline:   # the SGD papers set their own; felix/fedbuff below
-      # [ours] FX-N74: oort's speech client (SGD 0.04, b16); fl_lr_check staleness 5, r120: felix x 0.5 49.2%, fedbuff x 1.0 49.5%
-      # (Adam 0.000195 x 1.0: 26.8 / 33.6%; 2024 pairs stay at chance).
-      felix:
-        trainer: {hyperparameters: {trainerOptimizer: sgd, learningRate: 0.04, batchSize: 16}}
-        aggregator: {config_overrides: {optimizer: {kwargs: {learning_rate: 0.5}}}}
-      fedbuff:
-        trainer: {hyperparameters: {trainerOptimizer: sgd, learningRate: 0.04, batchSize: 16}}
-        aggregator: {config_overrides: {optimizer: {kwargs: {learning_rate: 1.0}}}}
-      oort:      # [paper] Oort §6: lr 0.04, batch 16 (speech); FedScale SGD
-        trainer: {hyperparameters: {trainerOptimizer: sgd, learningRate: 0.04, batchSize: 16}}
-      oort_star: # = oort
-        trainer: {hyperparameters: {trainerOptimizer: sgd, learningRate: 0.04, batchSize: 16}}
-      refl:      # [paper] REFL Table 1 Google Speech: lr 0.005, batch 20 ([repo] conf_exp.yml says 0.05); [repo] decay as cifar10
-        trainer: {hyperparameters: {trainerOptimizer: sgd, learningRate: 0.005, batchSize: 20, lrDecayEnabled: true,
-                                    lrDecayFactor: 0.98, lrDecayEpoch: 10, minLearningRate: 0.00005}}
-      feddance:  # [paper] FedDance Table 1 Google Speech: lr 0.075, batch 32; FedScale SGD
-        trainer: {hyperparameters: {trainerOptimizer: sgd, learningRate: 0.075, batchSize: 32}}
+    # per-baseline values (client/server lr, batch, local work, decay): baseline_reference.yaml (FX-N74)

@@ -38,3 +38,19 @@ def test_refl_gradient_policy_skips_integer_buffers(tmp_path):
     assert base["bn.num_batches_tracked"].dtype == torch.long
     assert int(base["bn.num_batches_tracked"]) == 20
     assert base["w"].dtype == torch.float32
+
+
+def test_refl_gradient_policy_skips_bn_running_stats(tmp_path):
+    """FX-N74: YoGi steps parameters only; BN running stats are buffers and keep the plain average (REFL fork)."""
+    w = lambda x, m: {"w": torch.full((2,), float(x)), "bn.running_mean": torch.full((2,), float(m))}
+    plain, yogi = REFL(deadline=100.0), REFL(deadline=100.0, gradient_policy="yogi")
+    outs = []
+    for refl in (plain, yogi):
+        base = w(1.0, 1.0)
+        for i in range(3):
+            with Cache(str(tmp_path / f"{id(refl)}_{i}")) as cache:
+                cache["a"] = TrainResult(weights=w(0.5, 0.25), count=10, end_id="a")
+                base = refl.do(base, cache, total=10, version=i + 1, round_duration=1.0)
+        outs.append(base)
+    assert torch.allclose(outs[0]["bn.running_mean"], outs[1]["bn.running_mean"])
+    assert not torch.allclose(outs[0]["w"], outs[1]["w"])

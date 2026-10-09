@@ -1,53 +1,52 @@
 completion_leg:
   asyncfl:
-    mean_s: 0.2753
-    p50_s: 0.245
-    n: 1461
+    mean_s: 0.0936
+    p50_s: 0.082
+    n: 1676
     charge: true
   fedavg:
-    mean_s: 0.4655
-    p50_s: 0.4645
-    n: 192
+    mean_s: 0.1531
+    p50_s: 0.1385
+    n: 218
     charge: true
   oort_sync:
-    mean_s: 0.3939
-    p50_s: 0.3825
-    n: 662
+    mean_s: 0.1767
+    p50_s: 0.171
+    n: 708
     charge: true
 dispatch_latency:
   asyncfl:
-    mean_s: 0.1035
-    p50_s: 0.098
-    n: 820
+    mean_s: 0.0385
+    p50_s: 0.029
+    n: 1676
     charge: true
   fedavg:
-    mean_s: 0.4488
-    p50_s: 0.429
-    n: 77
+    mean_s: 0.074
+    p50_s: 0.073
+    n: 88
     charge: true
   oort_sync:
-    mean_s: 0.1277
-    p50_s: 0.12
-    n: 267
+    mean_s: 0.1063
+    p50_s: 0.104
+    n: 286
     charge: true
 _meta:
   dataset: google_speech
   harness: stub
   host: jayne
-  commit: bd5fc954d
-  date: '2026-10-07'
+  commit: 72f2dfa19
+  date: '2026-10-08'
   tool: profile_felix_charges.py
   runs:
-  - run_20260930_021545_gs_T3_syn_0_hstub_dbg_google_speech_felix_n100_alpha0.1_syn_0_stream_real
-  - run_20260930_021852_gs_T3_syn_0_hstub_dbg_google_speech_fedbuff_n100_alpha0.1_syn_0_stream_real
-  - run_20260930_021852_gs_T3_syn_0b_hstub_dbg_google_speech_fedbuff_n100_alpha0.1_syn_0_stream_real
-  - run_20260930_021852_gs_T3_syn_0b_hstub_dbg_google_speech_felix_n100_alpha0.1_syn_0_stream_real
-  - run_20260930_021924_gs_T3_syn_0_hstub_dbg_google_speech_feddance_n100_alpha0.1_syn_0_stream_real
-  - run_20260930_022205_gs_T3_syn_0_hstub_dbg_google_speech_felix_n100_alpha0.1_syn_0_stream_real
-  - run_20260930_022346_gs_T3_syn_0b_hstub_dbg_google_speech_feddance_n100_alpha0.1_syn_0_stream_real
-  - run_20260930_022600_gs_T3_syn_0_hstub_dbg_google_speech_oort_star_n100_alpha0.1_syn_0_stream_real
-  - run_20260930_022702_gs_T3_syn_0_hstub_dbg_google_speech_oort_n100_alpha0.1_syn_0_stream_real
-  - run_20260930_022859_gs_T3_syn_0b_hstub_dbg_google_speech_oort_star_n100_alpha0.1_syn_0_stream_real
-  - run_20260930_023021_gs_T3_syn_0_hstub_dbg_google_speech_refl_n100_alpha0.1_syn_0_stream_real
-  - run_20260930_023657_gs_T3_syn_0b_hstub_dbg_google_speech_oort_n100_alpha0.1_syn_0_stream_real
-  - run_20260930_023910_gs_T3_syn_0b_hstub_dbg_google_speech_refl_n100_alpha0.1_syn_0_stream_real
+  - run_20261008_163411_gs_T3_syn_0_hstub_dbg_google_speech_fedbuff_n100_alpha0.1_syn_0_stream_real
+  - run_20261008_165445_gs_T3_syn_0_hstub_dbg_google_speech_felix_n100_alpha0.1_syn_0_stream_real
+  - run_20261008_173150_gs_T3_syn_0_hstub_dbg_google_speech_feddance_n100_alpha0.1_syn_0_stream_real
+  - run_20261008_175220_gs_T3_syn_0_hstub_dbg_google_speech_refl_n100_alpha0.1_syn_0_stream_real
+  - run_20261008_175359_gs_T3_syn_0_hstub_dbg_google_speech_oort_star_n100_alpha0.1_syn_0_stream_real
+  - run_20261008_175736_gs_T3_syn_0_hstub_dbg_google_speech_oort_n100_alpha0.1_syn_0_stream_real
+  - run_20261008_183520_gs_T3_syn_0b_hstub_dbg_google_speech_felix_n100_alpha0.1_syn_0_stream_real
+  - run_20261008_183917_gs_T3_syn_0b_hstub_dbg_google_speech_fedbuff_n100_alpha0.1_syn_0_stream_real
+  - run_20261008_184439_gs_T3_syn_0b_hstub_dbg_google_speech_oort_star_n100_alpha0.1_syn_0_stream_real
+  - run_20261008_184826_gs_T3_syn_0b_hstub_dbg_google_speech_feddance_n100_alpha0.1_syn_0_stream_real
+  - run_20261008_184951_gs_T3_syn_0b_hstub_dbg_google_speech_oort_n100_alpha0.1_syn_0_stream_real
+  - run_20261008_185348_gs_T3_syn_0b_hstub_dbg_google_speech_refl_n100_alpha0.1_syn_0_stream_real

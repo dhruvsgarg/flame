@@ -259,3 +259,30 @@ def test_merge_skips_a_phase_that_never_started(tmp_path):
     (tmp_path / "P").mkdir()
     pool.Pool(tmp_path, jobs, 1, 0, 0, 900, False).merge()
     assert "MISSING" in (tmp_path / "P" / "summary.tsv").read_text() and not (tmp_path / "Q").exists()
+
+
+def test_gate_collect_timeout_aborts_cleanly(tmp_path, monkeypatch):
+    """Concurrent pools: a collect timeout is a gate ABORT (4), never a traceback that kills the pool."""
+    def boom(cmd, **kw):
+        raise pool.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+    monkeypatch.setattr(pool.subprocess, "run", boom)
+    monkeypatch.setattr(pool, "Leases", lambda: type("L", (), {"root": tmp_path})())
+    said = []
+    assert pool.run_gate(tmp_path, ["cifar10"], type("P", (), {"say": lambda self, m: said.append(m)})()) == 4
+    assert "timed out" in (tmp_path / "P00_collect.txt").read_text() and said and "ABORT" in said[0]
+
+
+def test_gate_smoke_runs_once_per_code_state(tmp_path, monkeypatch):
+    """A sibling pool on identical code reuses the node's passed smoke instead of queueing its own."""
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return pool.subprocess.CompletedProcess(cmd, 0, "ok\n", "")
+    monkeypatch.setattr(pool.subprocess, "run", run)
+    monkeypatch.setattr(pool, "Leases", lambda: type("L", (), {"root": tmp_path})())
+    monkeypatch.setattr(pool, "code_key", lambda: "abc")
+    (tmp_path / "gate_ok_abc_cifar10").write_text("earlier")
+    said = []
+    assert pool.run_gate(tmp_path, ["cifar10"], type("P", (), {"say": lambda self, m: said.append(m)})()) == 0
+    assert len(calls) == 2 and "earlier" in said[-1]  # collect + data check, no smoke

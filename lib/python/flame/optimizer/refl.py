@@ -44,6 +44,7 @@ from ..common.typing import ModelWeights
 from ..common.util import MLFramework, get_ml_framework_in_use, valid_frameworks
 from .abstract import AbstractOptimizer
 from .bn_buffers import clamp_running_var, is_bn_stat
+from .fedscale_yogi import FedScaleYoGi
 from .regularizer.default import Regularizer
 from .train_result import TrainResult
 
@@ -140,6 +141,7 @@ class REFL(AbstractOptimizer):
         
         if self.gradient_policy == "yogi":
             self.gradient_controller = self._init_yogi_controller()
+            self._yogi = FedScaleYoGi(self.yogi_eta, self.yogi_tau, self.yogi_beta, self.yogi_beta2)
 
         # Stale update storage
         self.stale_weights: Dict[str, ModelWeights] = {}
@@ -846,9 +848,11 @@ class REFL(AbstractOptimizer):
         Returns:
             Adjusted model weights after applying gradient policy
         """
+        if isinstance(current_model, dict) and self.gradient_policy == "yogi":
+            return self._yogi.step(last_model, current_model)
         if isinstance(current_model, dict):
-            # REFL's policies act on model.parameters() only; integer buffers keep the weighted average.
-            ints = {k: v for k, v in current_model.items() if not v.is_floating_point()}
+            # REFL's policies act on model.parameters() only; buffers (BN stats, counters) keep the weighted average.
+            ints = {k: v for k, v in current_model.items() if not v.is_floating_point() or is_bn_stat(k)}
             if ints:
                 floats = [k for k in current_model if k not in ints]
                 out = self._apply_gradient_policy(
@@ -874,44 +878,8 @@ class REFL(AbstractOptimizer):
         """
         ml_framework = get_ml_framework_in_use()
         
-        if ml_framework == MLFramework.PYTORCH:
-            import torch
-            
-            # Compute model difference
-            diff = {k: current_model[k] - last_model[k] for k in current_model.keys()}
-            
-            # Initialize YoGi state if needed
-            if self.gradient_controller['v_t'] is None:
-                self.gradient_controller['v_t'] = {k: v ** 2 for k, v in diff.items()}
-                self.gradient_controller['delta_t'] = {k: v.clone() for k, v in diff.items()}
-                adjusted_diff = diff
-            else:
-                # Apply YoGi updates
-                adjusted_diff = {}
-                v_t = self.gradient_controller['v_t']
-                delta_t = self.gradient_controller['delta_t']
-                
-                for k in diff.keys():
-                    gradient = diff[k]
-                    gradient_square = gradient ** 2
-                    
-                    # Update momentum
-                    delta_t[k] = (
-                        self.yogi_beta * delta_t[k] + (1.0 - self.yogi_beta) * gradient
-                    )
-                    
-                    # Update adaptive learning rate (YoGi-specific)
-                    v_t[k] = v_t[k] - (1.0 - self.yogi_beta2) * gradient_square * torch.sign(
-                        v_t[k] - gradient_square
-                    )
-                    
-                    # Apply adaptive learning rate
-                    yogi_lr = self.yogi_eta / (torch.sqrt(v_t[k]) + self.yogi_tau)
-                    adjusted_diff[k] = yogi_lr * delta_t[k]
-            
-            # Return last_model + adjusted_diff
-            return {k: last_model[k] + adjusted_diff[k] for k in last_model.keys()}
-            
+        if ml_framework == MLFramework.PYTORCH:  # dict weights go through FedScaleYoGi in _apply_gradient_policy
+            return self._yogi.step(last_model, current_model)
         elif ml_framework == MLFramework.TENSORFLOW:
             import numpy as np
             

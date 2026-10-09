@@ -57,6 +57,7 @@ class OptimizerType(str, Enum):
     """Define optimizer types."""
 
     FEDAVG = "fedavg"
+    FEDAVG_YOGI = "fedavg_yogi"  # FedAvg + FedScale server YoGi (Oort, FX-N74)
     FEDADAGRAD = "fedadagrad"
     FEDADAM = "fedadam"
     FEDYOGI = "fedyogi"
@@ -155,6 +156,13 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     weight_decay: t.Optional[float] = Field(alias="weightDecay", default=None)
     rounds: int
     epochs: int
+    # FX-N74: mini-batch iterations per task (FedScale `local_steps`, cycling the local data); None = `epochs` full passes.
+    local_steps: t.Optional[int] = Field(alias="localSteps", default=None)
+    # FedBuff §5: a short last batch scales the step lr by its size / batchSize.
+    lr_batch_normalize: bool = Field(alias="lrBatchNormalize", default=False)
+    # FX-N74: Oort statistical utility form; "fedscale" = sqrt(EMA_0.2 batch mean loss^2, first pass) x trained samples
+    # (Oort learner.py:296-312, REFL client.py:261); "legacy" = first-batch form Felix was built on.
+    stat_utility: str = Field(alias="statUtility", default="legacy")
     aggregation_goal: t.Optional[int] = Field(alias="aggGoal", default=None)
     eval_every_n_rounds: t.Optional[int] = Field(alias="evalEveryNRounds", default=50)
     eval_goal_factor: t.Optional[float] = Field(alias="evalGoalFactor", default=None)

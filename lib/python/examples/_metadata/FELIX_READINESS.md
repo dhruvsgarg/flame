@@ -20,7 +20,7 @@
 ## Status grid
 
 Parity per run and per baseline: [PARITY_READINESS.md](PARITY_READINESS.md) → Progress dashboard, Felix scoreboard.
-pytest: 2456 passed · 0 failed · 7 skipped (2026-10-08, FX-D92-D99).
+pytest: main 2491 passed (FX-D100-D103 landed, 10-08).
 
 **Accuracy table (FX-N74; `scripts/accuracy_table.py --runs <dirs>`).** Test acc % on the leg's own clock, syn_0, reference n.
 G1A = full data (runs 16-18); G2 streams data 0 → 100% over 3 h (lower bound). `-` = no eval in window.
@@ -38,6 +38,7 @@ G1A = full data (runs 16-18); G2 streams data 0 → 100% over 3 h (lower bound).
 | speech · refl | G1AS SGD (runs 19, 21) | — | lr 0.005: 43.7 max; lr 0.05: 53.0 max | rising, below 60% |
 | speech · oort | G1A SGD (run 18) | 25.8 / 44.1 / 50.8 · 50.8 | 18.8 / 45.3 / 55.1 · 55.1 | 102 / 113 rounds |
 | speech · feddance | G1A SGD (run 18) | 3.7 / 28.8 / 28.8 · 28.8 | 3.7 / 27.7 / 27.7 · 27.7 | round-bound: 38 rounds, 142 s/round |
+| in-process `fl_lr_check` (FX-N74) | k=10, full data | cifar fedbuff 53.3 @r1000 | (refl/oort/feddance void: pre-FX-D100 configs) | 10-08 |
 | speech · oort, feddance | G2 stream | oort **60.7 at 80 min**; feddance 21.5 | oort 57.2; feddance 45.2 | |
 
 **Cross-cutting capabilities**
@@ -47,7 +48,7 @@ G1A = full data (runs 16-18); G2 streams data 0 → 100% over 3 h (lower bound).
 | checker catches injected sim bugs (P11a-c) | ✅ both datasets | run 6 L4 |
 | fail fast; ladder runner + offline re-gate | ✅ | FX-D22, FX-N42 |
 | GPU join/warm-up at n=100; sync wait-K | ✅ joins 44-99 s; EV7 green | FX-D19, FX-D20/21 |
-| real async ingest < 2 s | ✅ G0U queue_wait max 0.37 s (run 25) | FX-D16, FX-N70 |
+| real async ingest < 2 s | ✅ G0U queue_wait max 0.37 s (run 25); U6 felix ≤ fedbuff both datasets (run 27) | FX-D16 |
 | profiled sim charges per dataset/platform | ✅ K3b green every syn_0 cell | FX-D23 |
 | DIST tolerances from replicate floors | 🟡 n=2 floors gate regrade; none tightened | FX-D37, PARITY Q2 |
 | streaming / oracle experiment | 🟡 cifar EV19 green; oracle advantage ungraded | FX-N13 |
@@ -58,14 +59,14 @@ G1A = full data (runs 16-18); G2 streams data 0 → 100% over 3 h (lower bound).
 
 | axis | cells | latest short-run evidence | left to test (short) |
 |---|---|---|---|
-| syn_0 × six, cifar | 6 | T1 EV ✅; P6/P7 tiny_cpu ✅ (10-08); T3 pairs last full run 18 | T3 all six (PR22) |
-| syn_0 × six, speech | 6 | T1 EV ✅ (10-08); T3 not run since FX-D77 | T3 speech all six (PR22) |
-| syn_20 × six, both | 12 | none in T3 (T3 shapes syn_0, syn_0b, syn_50, mobiperf) | add syn_20 to T3 (FX-N78) |
-| syn_50 × six, both | 12 | T1 EV ✅; G0U run 27 felix/oort/fedbuff | T3 all six; refl A2, oort_star K3b (FX-N9) |
-| mobiperf_3st × six, both | 12 | T3 cifar felix + fedbuff ✅ (10-08) | T3 other four + speech; AVL_EVAL counts (FX-N9) |
-| streaming lin/events × syn_0/syn_50 (+oracle) | 6 × 2 × 4 | cifar ST5 EV19 ✅ (pre-FX-D77) | TS/TSo cifar rerun; speech G0T/G0To screens (FX-N30); oracle advantage (FX-N13) |
+| syn_0 × six, cifar | 6 | T3 all six ✅ (`pool_20261008_1628_T3c`, pre-FX-D100); P7 tiny_cpu 6/6 ✅ on FX-D100 (`pool_20261008_2000_wtP7`) | — |
+| syn_0 × six, speech | 6 | T3 timing reds = stale stub profile → FX-D103; syn_0b felix+fedbuff ✅ after (`pool_20261008_2010_wtT3s`) | T3 speech all six on landed code (FX-N80 step 2) |
+| syn_20 × six, both | 12 | in T3 now (FX-N78 done): cifar 6/6 ✅; speech 4/6 (feddance, syn_0b-type timing) | rerun speech on FX-D103 |
+| syn_50 × six, both | 12 | T1 EV ✅ both (FX-D100); cifar T3 3/6 (oort-family terminal_state); G0U fedbuff cifar ✅ at HEAD | FX-N9 |
+| mobiperf_3st × six, both | 12 | cifar T3 6/6 ✅; speech T3 4/6; AVL_EVAL real=sim (run 25) | G0U oort_star/refl/feddance on FX-D100 (FX-N9) |
+| streaming lin/events × syn_0/syn_50 (+oracle) | 6 × 2 × 4 | speech G0T felix+fedbuff INV/EXACT 8/0/0 (`pool_20261008_1845_G0Tgs`) | TS/TSo cifar rerun (FX-N13); other speech cells after FX-N80 |
 | checker sensitivity P11a-c | 2 | CAUGHT run 6; speech P11b miss | rerun T4 P11 both datasets |
-| correctness: accuracy to target | 12 | 3 / 12 at target (G1A) | in-process `fl_lr_check.py` per open baseline (FX-N74); G1A pairs = long |
+| correctness: accuracy to target | 12 | 4 / 12 (G1A 3 + cifar fedbuff in-process) | FX-N80 step 1 for refl, oort, feddance |
 | DIST replicate floors | per cell | n = 2 | T3C ≥ 3 legs per cell (FX-N42 Q2) |
 
 ---
@@ -133,8 +134,7 @@ Kept rules live in Built (Availability) and FX-L11-L15, L25, L33.
 
 | item | verdict | note |
 |---|---|---|
-| AVL_EVAL + empty-pool cleanup (land-mines 8, 13) | open | ran on mobiperf G0U; counts unread |
-| A2 two-tolerance shape (land-mine 3) | open | refl syn_50 A2 KS 0.30 at n=50 (FX-N9) |
+| A2 two-tolerance shape (land-mine 3) | open | refl syn_50 A2 KS 0.30 = stall placement: per-instant UN_AVL sequence identical (run 25, FX-L62) |
 
 ## Next steps (persistent queue — top item is next)
 
@@ -142,32 +142,45 @@ Work rule: PARITY C10, C17, C18. Run queue + pre-launch checklist: PARITY_READIN
 **Test levels:** pytest (~4 min) · CPU tiers T1-T4/TS (real processes, MQTT, n 12-45) · GPU ≤ 30-min screens (G0U/G0T/G0UC) · long (G1*/G2/blocks).
 **Unblock map:** short-run queue empty → long runs (PR21) → FX-N11 → FX-N12 (also needs FX-N13 ST6 + FX-N22 P8).
 
+*Resume here (operator 10-08 evening; do in order):*
+- **FX-N82 · REFL `adapt_selection` · todo.** Implement the whole feature from `third_party/REFL/core/aggregator.py`
+  (`adapt_selection`, `adapt_selection_cap`: fewer new picks when stale updates are due) in `refl_oort.py`; reference keys
+  (cifar `conf_exp.yml:61` = 1, speech `$ADAPT_SELECT` = 0), test. *Exit:* REFL cifar selects as the fork does.
+- **FX-N83 · Vendor Oort and re-audit · todo.** Clone SymbioticLab/Oort into `third_party/Oort`; diff selector (getTopK, pacer,
+  blacklist, utility), YoGi and learner loop against `oort.py`, `fedscale_yogi.py`, trainer `statUtility: fedscale`; fix any
+  disparity; repoint `baseline_reference.yaml` citations from `@master` to `third_party/Oort`. *Exit:* audit line per component.
+- **FX-N80 · Verify source-faithful configs (FX-D100) · todo, after FX-N82-N83.** C19:
+  - *Claim:* every baseline learns on our model with its source knobs, or with the fewest recorded adaptations (ROBUST L37).
+  - *Step 1 (~1 h, 1 GPU per cell):* `fl_lr_check.py --dataset D --baseline B --rounds R` for refl, oort, feddance x both
+    datasets (reads the reference; `--rounds` cifar 1000, speech 150). Known risk: repo YoGi blew up in a 2-round smoke (oort
+    speech loss 127; REFL tau 1e-8). *Stop/decide:* diverges or < 2x chance by r30 = climb the adaptation ladder one knob at a
+    time (server step first: YoGi eta/tau), record `source_v`/`why`/`evidence`.
+  - *Step 2 (~1.5 h):* T3 + G0U syn_50/mobiperf screens for refl, oort, oort_star, feddance on the landed code. *Stop:* any INV/EXACT red.
+  - *Step 3:* TIMING_OVERRUN share on GPU legs (Oort 20 steps overran 3-5% of tiny_cpu tasks). Overrun = ROBUST L36.
+- **FX-N84 · Trainer memory audit (GPU + host RAM) · todo.** Per-trainer CUDA context, model, optimizer state, allocator cache and
+  RSS at n = 50/100/300 (cifar + speech); find waste that scales with n or model size; fix; re-measure trainers per A40
+  (FX-T36: ~75 cifar / ~25 speech today; n=200 speech also needs a new split). *Exit:* footprint table, fixes, new caps.
+
 *Short-run queue (fix + verify with pytest, stored telemetry, CPU tiers or GPU screens):*
-- **FX-N78 · Full CPU matrix on today's code · todo.** PR22: T3 all six × both datasets (+ syn_20 shape), T1, TS/TSo cifar.
-  Root every INV/EXACT red. *Exit:* T3 both datasets INV/EXACT green; syn_20 in T3.
-- **FX-N9 · Unavailability, all six × syn_50 / mobiperf · wip.** G0U syn_50 green: felix, oort, fedbuff; T3 mobiperf felix + fedbuff.
-  - refl syn_50 A2: eligible real 25.6 vs sim 23.4 (sync: every selection dispatches); split `excluded_by` on run 25.
-  - oort_star G0T lin syn_50 K3b 21.8 vs 16.6 s; mobiperf G0U for the four others; AVL_EVAL counts from stored mobiperf G0U.
-  - *Exit:* A1-A8/K11 green per cell on T3 + G0U screens.
-- **FX-N13 · Streaming, both datasets · wip: cifar ST5 done pre-FX-D77.** Rerun TS/TSo cifar (CPU); speech on G0T/G0To
-  screens (FX-N30). *Exit:* EV19 + INV/EXACT green both datasets; ST6 oracle advantage graded.
-- **FX-N30 `[S]` · Speech streaming on GPU screens · todo.** CPU tiny_cpu speech too heavy (P7/P7o killed; oracle select blocks
-  MQTT); the model stays as is (operator 10-08). *Exit:* speech G0T/G0To lin + events × syn_0/syn_50 EV19 + INV/EXACT green.
-- **FX-N74 `[C]` · Every baseline reaches target on full data · wip: 3 / 12 (cifar felix; speech felix, fedbuff).**
-  Short (operator 10-08): in-process `fl_lr_check.py` counts as evidence; G1A pairs confirm in the long block.
-  Open cells: cifar refl, fedbuff; speech refl, oort, feddance. Each baseline follows its paper/repo definition (C14):
-  audit selector, aggregation, staleness and hyperparameters vs `third_party/`; fix any disparity.
-  Speech feddance: slow by its own algorithm is accepted as round-bound (target in a longer run); bugs/disparity are fixed.
-  *Exit:* each cell at target in-process, or audited faithful and named round-bound.
-- **FX-N77 `[C][S]` · Real-cost parity · wip.** Cifar fedbuff G0U syn_50 red vs own real, green vs run 26: needs a ≥ 3-leg G0UC floor
-  (≤ 30-min screens). *Exit:* fedbuff green on the floor.
-- **FX-N76 `[C][S]` · C13 real-cost audit · wip.** Open: sim recv gap contention-inflated (run 22 weights_to_ram 0.23 vs 0.006 s).
-  *Exit:* speed identity + phase DIST green both datasets.
-- **FX-N70 `[C][S]` · Real ingest after evals · wip.** Felix +0.12 s/update over fedbuff unexplained (BN ring?). *Exit:* U6 green or floor-SKIP.
+- **FX-N9 · Unavailability, all six x syn_50 / mobiperf · wip.** G0U syn_50 green: felix, oort, fedbuff (fedbuff cifar at HEAD:
+  `pool_20261008_1628_G0Ufb`); AVL_EVAL counts match real=sim (run 25); refl A2 = stall placement (FX-L62).
+  Left (rerun on FX-D100 configs, C20): oort_star G0T lin syn_50 K3b; mobiperf G0U oort_star/refl/feddance; cifar T3 syn_50
+  oort/oort_star/refl `terminal_state` reds (`pool_20261008_1628_T3c`, pre-FX-D100). *Exit:* A1-A8/K11 green per cell.
+- **FX-N13 · Streaming, both datasets · wip.** TS/TSo cifar stopped 18:10 to free cores (rerun); speech = FX-N30.
+  *Exit:* EV19 + INV/EXACT green both datasets; ST6 oracle advantage graded.
+- **FX-N30 `[S]` · Speech streaming on GPU screens · wip.** felix + fedbuff G0T lin/events × syn_0/syn_50 INV/EXACT 8/0/0, EV
+  8/8 (`pool_20261008_1845_G0Tgs`; DIST reds = FX-N76 gpu_compute/speed identity). Left: G0To; other baselines after FX-N80. *Exit:* speech G0T/G0To lin + events x syn_0/syn_50 EV19 + INV/EXACT green.
+- **FX-N74 `[C]` · Every baseline reaches target on full data · wip: 4 / 12 (G1A cifar felix, speech felix + fedbuff; cifar fedbuff in-process).**
+  cifar fedbuff 53.3% r1000 (`experiments/lrcheck_20261008`). refl, oort, oort_star, feddance results before FX-D100 are void
+  (C20); re-measured under FX-N80. *Exit:* each cell at target in-process, or audited faithful and named round-bound.
+- **FX-N76 `[C][S]` · C13 real-cost audit · wip.** weights_to_ram matches (run 27). Open: speech felix sim gpu_compute 3.7 vs
+  real 1.9 s (sim GPU contention; off the clock while < D). *Exit:* speed identity + phase DIST green both datasets.
 - **FX-N79 · feddance P7 DIST borderline · todo.** selection_bias KS 0.234, commit_visibility 0.202 (tol 0.20, n≈120).
   *Exit:* inside a T3C/P7 replicate floor, or a named root.
-- **FX-N33 `[C][S]` · Aggregator abort at interpreter exit · todo.** 11 / 236 runs on 10-08, no Python frame; allowlisted (FX-D22).
-  *Next:* `faulthandler` + gdb-free native dump (`PYTHONFAULTHANDLER`, `catchsegv`) on T1 legs. *Exit:* root or a clean join.
+- **FX-N33 `[C][S]` · Aggregator abort at interpreter exit · todo.** `terminate called without an active exception` after channel
+  leave; Python dump shows one thread, no frame (C++ static teardown). Frequent on oort T1 syn_50 sim. *Next:* gdb backtrace via
+  `FLAME_AGG_CMD_PREFIX` (FX-D102); gdb: `conda create -p <dir> -c conda-forge gdb` (no system gdb); 4 x T1 oort cifar syn_50
+  (stopped 18:10 for cores). *Exit:* root or a clean join.
 - **FX-N42 `[S]` · Parity ladder · wip (PARITY Q2-Q6).** *Exit:* a run graded per cell on both axes, DIST on ≥ 3-leg floors.
 - **FX-N10 · google_speech on the launcher · wip.** Stop rule wired. *Next:* S4 cleanup. *Exit:* all six graded on speech, CPU + GPU.
 - **FX-N22 · Fast parallel harness · wip.** *Exit:* ISO P6 EQUIVALENT at cpt ≤ 0.5; T2 both datasets < 25 min. Absorbs FX-N8.
@@ -179,17 +192,14 @@ Work rule: PARITY C10, C17, C18. Run queue + pre-launch checklist: PARITY_READIN
 
 ---
 
-## Baseline hyperparameters (operator 2026-10-01)
+## Baseline hyperparameters (operator 10-08)
 
-Source of truth: `datasets.yaml` `by_baseline`, each field tagged [paper]/[repo]/[ours]. Baselines stay themselves (PARITY C14).
-- Each baseline uses its paper's values; lr decay only where configured (REFL).
-- Late updates follow the baseline's rule: REFL staleness ≤ 5; oort, oort_star, feddance none.
-- REFL speech lr: paper 0.005 is default; repo 0.05 under screen.
-- REFL `stale_update: 5` kept (operator), though the paper default is unbounded.
-- FedScale lr decay 0.98/10 kept off except REFL.
-- Cifar felix SGD 0.04 × server 0.3 (2024, `baselines.yaml`); cifar fedbuff SGD 0.04 b32 × 1.0 (FX-D73).
-- All speech baselines: SGD 0.04 b16 (oort's client); server 0.5 felix, 1.0 fedbuff (FX-T27).
-- Our CifarNet differs from REFL/FedDance's ResNet18; their lrs are starting points.
+Single source: `_metadata/baseline_reference.yaml` (value + citation per baseline x dataset; rules ROBUST L33-L37).
+- REFL: 1 mini-batch/round [code]; cifar FedAvg + equal stale weight [code]; speech YoGi + SAA -4, lr 0.05 [code]; random sampler.
+- Oort/oort_star: 20 mini-batches, YoGi (no momentum), lr decay 0.95, FedScale utility [code]; cifar borrows Oort's CV config.
+- FedDance: 1 mini-batch, FedScale defaults (FedAvg, decay 0.98/10) [paper]; I_m = mean local training loss (Eq. 6).
+- FedBuff: 1 epoch, lr normalization [paper]; client/server lr [ours] (paper tunes by sweep). Felix: [ours].
+- Sync K = 5% of n (cifar 15, speech 5); async keeps aggGoal 10, c 10% / 30%.
 
 ## Felix lessons (dos)
 
@@ -246,7 +256,7 @@ Source of truth: `datasets.yaml` `by_baseline`, each field tagged [paper]/[repo]
 - **FX-L49** Run no-backward forwards under `no_grad`; free CUDA cache after idle GPU steps.
 - **FX-L50** Near-D GPU time makes speed contention-driven; check overrun share first.
 - **FX-L51** Profile the aggregator with fresh buffers; reused buffers hide page-fault cost.
-- **FX-L57** Check lr pairs in-process (`fl_lr_check.py`) first; grade accuracy on full data.
+- **FX-L57** Check lr pairs in-process (`fl_lr_check.py`; `--flame-opt refl`, `--lr-decay`) first; grade accuracy on full data.
 - **FX-L61** A per-task sim span of exactly D + constant is a charge, not a mechanism: check the leg's profile first.
 
 **Reading the checker**
@@ -263,6 +273,7 @@ Source of truth: `datasets.yaml` `by_baseline`, each field tagged [paper]/[repo]
 - **FX-L52** A sync round holding an abandon or gated update is a stall at any length.
 - **FX-L53** syn_* flips share slot boundaries; grade n=50 timing on G0UC floors.
 - **FX-L56** Align real and sim on trace time or matched work, not round fraction.
+- **FX-L62** Split A2 by `excluded_by` and trace instant first: same UN_AVL sequence + different stall placement = sampling, not mechanism.
 
 ## Felix tripwires (don'ts)
 
@@ -328,6 +339,9 @@ Source of truth: `datasets.yaml` `by_baseline`, each field tagged [paper]/[repo]
 - **FX-D20** `syncWaitForK`: version advances only on `agg_goal` accepted updates; picks topped up.
 - **FX-D21** Empty sync rounds re-dispatch from the ledger; `run_end` marks the stop point.
 - **FX-D23** Sim non-compute charges profiled per (dataset, harness, stack) (`profile_felix_charges.py`).
+- **FX-D100** Baselines are source-faithful from `baseline_reference.yaml` (launcher layer, cited, tested): mini-batch `localSteps`,
+  FedScale YoGi (`fedscale_yogi.py`, parameters only), `fedavg_yogi`, REFL `sample_mode`, Oort `overcommitment`, FedScale-form Oort
+  utility (`statUtility`), FedDance I_m from `TRAIN_LOSS_MEAN`, FedBuff `lrBatchNormalize`.
 - **FX-D99** `tiny_cpu_cifar10` charge profile (P6 + P7 reals); a leg without one prints a WARNING (FX-N71: 0.6 s placeholder).
 - **FX-D26** Run-4 roots: warm-up optimizer, syn_50 ordering, trace origin at join barrier.
 - **FX-D27** Oort-family selection follows REFL fork's `getTopK`.
@@ -424,6 +438,10 @@ Source of truth: `datasets.yaml` `by_baseline`, each field tagged [paper]/[repo]
 - **FX-D95** Timing checks SKIP below 2 matched units, never grade unmatched full-run means.
 - **FX-D96** asyncfl selector reclaims emit `abandon_timeout` (real abandons were invisible).
 - **FX-D98** A2 grades dispatching selections only; no-op wakes sample at each side's own cadence.
+- **FX-D103** Stub charge profiles re-derived after the FX-N77 transport fixes (10-08 T3 reals; speech charges were 2-3x high).
+- **FX-D101** Pool gate: one collect at a time per node, one smoke per code state; timeouts ABORT, never crash the pool.
+- **FX-D102** `FLAME_AGG_CMD_PREFIX` wraps the aggregator command (FX-N33 gdb diagnostics).
 
 ## Open questions (operator)
 
+- REFL `stale_update`: code -1 (unbounded, run_exps.sh:84) replaced the earlier operator choice 5. Confirm.

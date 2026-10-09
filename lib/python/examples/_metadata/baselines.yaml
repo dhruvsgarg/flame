@@ -115,7 +115,9 @@ baselines:
         kwargs:
           aggr_num: 10  # per-round selection count (OortSelector requires it); override per experiment to match agg_goal
           avail_priority: 1
-          blacklist_rounds: 50
+          sample_mode: random  # [repo] run_exps.sh samplers="random"; the Oort knobs below act only in sample_mode oort (FX-N74)
+          avail_probability: 0.9  # [repo] run_exps.sh availprob
+          blacklist_rounds: -1  # [repo] argParser default
           pacer_step: 20
           pacer_delta: 5
           exploration_factor: 0.9
@@ -128,7 +130,7 @@ baselines:
           stale_update: 5
           stale_factor: -4
           stale_beta: 0.35
-          scale_coff: 10.0
+          scale_coff: 1.0  # [repo] run_exps.sh scalecoff=1 (FX-N74)
           target_ratio: 0.8
           initial_deadline: 100.0
       hyperparameters:

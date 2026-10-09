@@ -61,7 +61,9 @@ class REFLOortSelector(OortSelector):
         self.avail_priority = kwargs.get(
             "avail_priority", 0
         )  # 0=none, 1=fill, 2=strict
-        self.avail_probability = kwargs.get("avail_probability", 1.0)  # Accuracy 0-1
+        self.avail_probability = float(kwargs.get("avail_probability", 1.0))  # Accuracy 0-1
+        # FX-N74: REFL fork `resampleClients` picks at random within the feasible set unless sample_mode == "oort"
+        self.sample_mode = kwargs.get("sample_mode", "oort")
 
         # Blacklisting parameters
         self.blacklist_rounds = kwargs.get("blacklist_rounds", -1)  # -1 disables
@@ -146,6 +148,7 @@ class REFLOortSelector(OortSelector):
             self._paced_round = round_num
             self.pacer(round_num)
 
+        self._draw_key = agg_version_key if agg_version_key is not None else round_num
         unavail_set = set(trainer_unavail_list) if trainer_unavail_list else set()
 
         eligible_ends = {
@@ -186,7 +189,7 @@ class REFLOortSelector(OortSelector):
         if self.avail_priority == 0:
             # No priority: use standard Oort on all available ends
             all_candidates = set(priority_ends + remaining_ends)
-            selected = self._select_with_oort_ucb(
+            selected = self._pick(
                 eligible_ends, all_candidates, num_to_select, round_num
             )
 
@@ -198,13 +201,13 @@ class REFLOortSelector(OortSelector):
 
         elif self.avail_priority == 2:
             # Strict mode: only select from high-priority clients
-            # REFL fork: all priority clients when they fit, then Oort over the rest.
+            # REFL fork: all priority clients when they fit, then the sampler over the rest.
             if len(priority_ends) <= num_to_select:
-                selected = list(priority_ends) + self._select_with_oort_ucb(
+                selected = list(priority_ends) + self._pick(
                     eligible_ends, set(remaining_ends), num_to_select - len(priority_ends), round_num
                 )
             else:
-                selected = self._select_with_oort_ucb(
+                selected = self._pick(
                     eligible_ends, set(priority_ends), num_to_select, round_num
                 )
 
@@ -213,7 +216,7 @@ class REFLOortSelector(OortSelector):
                 f"Unknown avail_priority={self.avail_priority}, using mode 0"
             )
             all_candidates = set(priority_ends + remaining_ends)
-            selected = self._select_with_oort_ucb(
+            selected = self._pick(
                 eligible_ends, all_candidates, num_to_select, round_num
             )
 
@@ -296,8 +299,10 @@ class REFLOortSelector(OortSelector):
             cur_time,
             round_duration,
             lookup_timeslots=2,
-            accuracy=self.avail_probability,
         )
+        if 0 < self.avail_probability < 1:  # REFL fork: keep a seeded fraction of each list (predictor accuracy)
+            keep = lambda xs: self._keyed(xs, int(len(xs) * self.avail_probability), "refl_acc")
+            priority_ends, remaining_ends = keep(priority_ends), keep(remaining_ends)
 
         return priority_ends, remaining_ends
 
@@ -311,11 +316,26 @@ class REFLOortSelector(OortSelector):
     ) -> List[str]:
         """avail_priority=1, REFL fork `resampleClients`: the feasible set is every priority
         client plus a RANDOM fill from the rest up to num_to_select; Oort then picks from it."""
+        if self.sample_mode != "oort":  # shuffle(priority + random fill)[:k] = priority first, then a random fill
+            if len(priority_ends) >= num_to_select:
+                return self._keyed(priority_ends, num_to_select, "refl")
+            return list(priority_ends) + self._keyed(remaining_ends, num_to_select - len(priority_ends), "refl")
         feasible = list(priority_ends)
         remain = num_to_select - len(feasible)
         if remain > 0 and remaining_ends:
             feasible += self._pyrng.sample(sorted(remaining_ends), min(remain, len(remaining_ends)))
-        return self._select_with_oort_ucb(ends, set(feasible), num_to_select, round_num)
+        return self._pick(ends, set(feasible), num_to_select, round_num)
+
+    def _pick(self, ends: Dict[str, End], candidate_end_ids: Set[str], num_to_select: int, round_num: int) -> List[str]:
+        """REFL fork `resampleClients`: Oort UCB in sample_mode 'oort', else a uniform draw."""
+        if self.sample_mode == "oort":
+            return self._select_with_oort_ucb(ends, candidate_end_ids, num_to_select, round_num)
+        return self._keyed(candidate_end_ids, num_to_select, "refl")
+
+    def _keyed(self, ids, k: int, salt: str) -> List[str]:
+        """Uniform k-subset from per-id draws keyed on (seed, salt, version, id): pool order never shifts a draw."""
+        draw = lambda c: random.Random(f"{self._seed}|{salt}|{self._draw_key}|{c}").random()
+        return sorted(ids, key=draw, reverse=True)[:k]
 
     def _select_with_oort_ucb(
         self,

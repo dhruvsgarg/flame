@@ -69,7 +69,7 @@ class OortSelector(AbstractSelector):
 
         # With Oort, we select 1.3 * k ends and wait until k ends to
         # complete at a round
-        self.overcommitment = 1.3
+        self.overcommitment = float(kwargs.get("overcommitment", 1.3))  # Oort code argParser: 1.1 (FX-N74)
         self.num_of_ends = int(self.aggr_num * self.overcommitment)
 
         # Algorithm hyperparameters default to the Oort paper (scoring.OORT_PAPER_DEFAULTS);

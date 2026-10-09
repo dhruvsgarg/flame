@@ -124,3 +124,25 @@ class TestREFLExploresUnexplored:
         ends = make_ends(count=10, prefix="t")
         picked = sel._select_priority_fill(ends, ["t0"], [f"t{i}" for i in range(1, 10)], 3, 2)
         assert "t0" in picked and len(set(picked)) == 3
+
+
+class TestREFLRandomSampler:
+    """FX-N74: REFL fork `resampleClients` with sample_mode random (run_exps.sh samplers="random")."""
+
+    def test_random_fill_takes_priority_first(self):
+        sel = REFLOortSelector(aggr_num=3, avail_priority=1, sample_mode="random")
+        sel._draw_key = 7
+        ends = {f"t{i}": None for i in range(8)}
+        picked = sel._select_priority_fill(ends, ["t1", "t5"], [f"t{i}" for i in (0, 2, 3, 4, 6, 7)], 3, 1)
+        assert picked[:2] == ["t1", "t5"] and len(picked) == 3 and picked[2] not in ("t1", "t5")
+
+    def test_random_pick_ignores_utility_and_pool_order(self, make_ends):
+        sel = REFLOortSelector(aggr_num=3, avail_priority=0, sample_mode="random")
+        sel._draw_key = 3
+        a = sel._pick({}, {f"t{i}" for i in range(10)}, 3, 1)
+        b = sel._pick({}, {f"t{i}" for i in range(10)} | {"x9"}, 3, 1)
+        assert len(a) == 3
+        assert set(a) == set(b) or ("x9" in b and len(set(a) & set(b)) == 2)  # a joiner displaces one pick at most
+
+    def test_oort_mode_is_default(self):
+        assert REFLOortSelector(aggr_num=3).sample_mode == "oort"

@@ -5,6 +5,7 @@ Spawns aggregator process with log capture.
 """
 
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -120,6 +121,9 @@ class AggregatorSpawner:
             else:
                 print("  (aggregator pinning requested but sched_setaffinity unavailable)")
 
+        prefix = os.environ.get("FLAME_AGG_CMD_PREFIX")  # FX-N33 diagnostics, e.g. a gdb batch wrapper
+        if prefix:
+            cmd = shlex.split(prefix) + cmd
         # Spawn process
         self.process = subprocess.Popen(
             cmd, stdout=stdout_target, stderr=stderr_target, text=True,

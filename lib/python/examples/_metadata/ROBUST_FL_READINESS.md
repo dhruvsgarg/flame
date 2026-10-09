@@ -165,7 +165,7 @@ conda run -n dg_flame python -m pytest lib/python/tests lib/python/examples/fwdl
 
 ## Shared lessons (dos)
 
-Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[ops]`.
+Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[ops]` `[baseline]`.
 
 **Simulator mechanics**
 - **L1 `[clock]`** Sim does the real compute but charges modeled time: `sct = send + max(gpu, D)`, and
@@ -235,6 +235,19 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
   sub-second ones; dropping zeros skews every per-unit mean (FX-D91).
 - **L31 `[ops]`** Deliver a peer's membership events (JOIN/LEAVE) on the same ordered path as its data: a LEAVE handled ahead of
   the chunks before it dropped the EOT and hung trainers 32 s (FX-D86).
+
+**Baseline fidelity (operator 10-08; FluxTune adopts it in FT-N15)**
+- **L33 `[baseline]`** Every baseline-defining value lives once, cited, in `_metadata/baseline_reference.yaml`; the launcher applies it
+  last and `test_baseline_reference.py` fails on a gap, a missing citation or a second source.
+- **L34 `[baseline]`** Faithful to the source: on paper vs code the code wins (it made the numbers), cite both; no config for a
+  dataset = the baseline's own nearest config; sync K/N >= 5% of the population; only Felix/FluxTune innovate.
+- **L35 `[baseline]`** A changed baseline value invalidates that baseline's queued and running legs (PARITY C20).
+- **L36 `[clock]`** Setup parity: every baseline runs on the same D population (our trainer runtime distribution, never
+  FedScale's per-sample time, whatever its local work). D emulates a device only while compute < D: an overrun means either a
+  sub-optimal implementation or D must scale for ALL baselines; stop and rethink, never per baseline (operator 10-08; FX-L50).
+- **L37 `[baseline]`** Our model is fixed. Assimilate the baseline first (source knobs as-is); if it doesn't learn on our model,
+  change the fewest knobs one at a time (server step, then client lr, then batch), keep the rest, and record each
+  (`source_v`, `why`, `evidence`) with per-cell model parity; `scripts/baseline_deviations.py --md` is the paper's table.
 
 ## Shared tripwires (don'ts)
 
