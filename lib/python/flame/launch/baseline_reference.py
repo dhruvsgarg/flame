@@ -12,7 +12,7 @@ K_OVER_N_FLOOR = 0.05  # operator 10-08: sync K >= 5% of the population
 REQUIRED = ("batch_size", "learning_rate", "optimizer", "lr_decay", "server")  # + local_steps | local_epochs
 _TRAINER = {"local_steps": "localSteps", "local_epochs": "epochs", "batch_size": "batchSize",
             "learning_rate": "learningRate", "optimizer": "trainerOptimizer", "stat_utility": "statUtility",
-            "lr_batch_normalize": "lrBatchNormalize"}
+            "lr_batch_normalize": "lrBatchNormalize", "momentum": "trainerMomentum", "weight_decay": "trainerWeightDecay"}
 
 
 def load(path: str = PATH) -> dict:

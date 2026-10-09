@@ -260,7 +260,7 @@ class TopAggregator(BaseTopAggregator):
             self._inflight_commit_staleness = {}
             self._inflight_commit_fresh = {}
 
-        configured_aggr_num = self.config.selector.kwargs.get("aggr_num", 10)
+        configured_aggr_num = self._version_k(self.config.selector.kwargs.get("aggr_num", 10))
         aggr_num = configured_aggr_num if _wait_k else min(configured_aggr_num, len(end_ids))
         
         # CRITICAL: Log mismatch between configured and actual aggregation count
@@ -356,6 +356,7 @@ class TopAggregator(BaseTopAggregator):
                         self._record_returned_trainer_props(
                             channel, end, msg, metadata[1]
                         )
+                        self._credit_dropped_straggler(channel, end, trainer_round)
                         # Check if trainer is currently in selected_ends (in-flight)
                         is_in_flight = end in getattr(channel._selector, 'selected_ends', set())
                         self._inflight_commit_staleness[end] = staleness
@@ -482,6 +483,7 @@ class TopAggregator(BaseTopAggregator):
                         self._record_returned_trainer_props(
                             channel, end, msg, metadata[1]
                         )
+                        self._credit_dropped_straggler(channel, end, trainer_round)
                         # Check if trainer is currently in selected_ends (in-flight)
                         is_in_flight = end in getattr(channel._selector, 'selected_ends', set())
                         self._inflight_commit_staleness[end] = staleness
@@ -572,6 +574,12 @@ class TopAggregator(BaseTopAggregator):
             )
             telemetry.emit(ev, **fields)
 
+        _fresh_u = [t.stat_utility for t in self.cache.values()
+                    if getattr(t, "staleness", 0) <= 0 and getattr(t, "stat_utility", None) is not None]
+        if _fresh_u:  # Oort avgUtilLastEpoch (even weights)
+            self._version_mean_util = getattr(self, "_version_mean_util", {})
+            self._version_mean_util[self._round] = sum(_fresh_u) / len(_fresh_u)
+
         # optimizer conducts optimization (in this case, aggregation)
         _opt0 = time.time()
         # An empty cache commits nothing, whatever the optimizer returns (FX-L28).
@@ -608,6 +616,7 @@ class TopAggregator(BaseTopAggregator):
         # update model with global weights
         self._update_model()
         self._round_committed = True
+        self._adapt_note_commit(channel)
         self._sync_accepted_ends().clear()
         self._sync_total = 0
 
@@ -710,7 +719,8 @@ class TopAggregator(BaseTopAggregator):
         # Get desired number of trainers
         aggr_num = self.config.selector.kwargs.get("aggr_num", 10)
         overcommitment = getattr(channel._selector, 'overcommitment', 1.3)
-        desired_selection = int(aggr_num * overcommitment)
+        desired_selection = getattr(channel._selector, "num_of_ends", None) or int(aggr_num * overcommitment)
+        desired_selection = self._adapt_picks(channel, desired_selection)
 
         logger.info(
             f"[DISTRIBUTE] Round {self._round}: desired_selection={desired_selection} "
@@ -1011,6 +1021,67 @@ class TopAggregator(BaseTopAggregator):
         # A stale straggler is still a RECEIVED result in the reference (registerScore
         # runs for it), so its `time_stamp` (UCB temporal source) advances to this round.
         channel.set_end_property(end, PROP_LAST_RETURNED_ROUND, self._round)
+
+    def _credit_dropped_straggler(self, channel, end, version) -> None:
+        """Oort param_server.py:347-352 (REFL stale_update 0 alike): a dropped overcommitted straggler scores the
+        mean utility of the version it missed, not its own (FX-N83)."""
+        if getattr(self.optimizer, "stale_update_max", None) not in (None, 0):
+            return
+        util = getattr(self, "_version_mean_util", {}).get(version)
+        if util is not None:
+            channel.set_end_property(end, PROP_STAT_UTILITY, util)
+
+    def _adapt_picks(self, channel, num: int) -> int:
+        """FX-N82: REFL `adapt_selection`, decided once per version from the stale updates due next round."""
+        sel = channel._selector
+        if not getattr(sel, "adapt_selection", 0):
+            return num
+        if not hasattr(self, "_adapt_last_commit"):
+            self._adapt_last_commit = self._avail_now()
+        if getattr(self, "_adapt_version", (None,))[0] != self._round:
+            due = self._stale_due(channel)
+            self._adapt_version = (self._round, sel.adapt_num_to_sample(num, due))
+            logger.info(f"[REFL_ADAPT] round={self._round} stale_due={due} picks={self._adapt_version[1]}/{num} "
+                        f"window_s={getattr(self, '_adapt_round_len', None)}")
+        return self._adapt_version[1]
+
+    def _version_k(self, k: int) -> int:
+        """FX-N82: REFL collects min(K, picks) fresh updates (aggregator.py tictak_client_tasks)."""
+        v = getattr(self, "_adapt_version", None)
+        return min(k, v[1]) if v and v[0] == self._round else k
+
+    def _stale_due(self, channel) -> int:
+        """REFL get_stale_status: earlier-version picks still out whose update lands within the moving-average round
+        length. Both sides estimate landing as dispatch + the end's last duration (else the population median)."""
+        window = getattr(self, "_adapt_round_len", None)
+        if window is None:
+            return 0
+        durs = {e: channel.get_end_property(e, PROP_CLIENT_TASK_TRAIN_DURATION) for e in channel._ends}
+        known = sorted(d.total_seconds() for d in durs.values() if d is not None)
+        median = known[len(known) // 2] if known else None
+        bound = getattr(self.optimizer, "stale_update_max", -1)
+        now, due = self._avail_now(), 0
+        for e in self._avail_inflight_ends(channel) - self._sync_accepted_ends():
+            prop = channel.get_end_property(e, PROP_ROUND_START_TIME)
+            if not isinstance(prop, tuple) or prop[0] >= self._round:
+                continue
+            if bound is not None and bound >= 0 and self._round - prop[0] > bound:
+                continue
+            sst = self._avail_send_ts(channel, e)
+            dur = durs.get(e).total_seconds() if durs.get(e) is not None else median
+            if sst is not None and dur is not None and sst + dur - now <= window:
+                due += 1
+        return due
+
+    def _adapt_note_commit(self, channel) -> None:
+        """REFL mov_avg_deadline (aggregator.py:633, deadline_alpha 0.25) over commit-to-commit round length."""
+        if not getattr(channel._selector, "adapt_selection", 0):
+            return
+        now, last = self._avail_now(), getattr(self, "_adapt_last_commit", None)
+        if last is not None:
+            avg = getattr(self, "_adapt_round_len", None)
+            self._adapt_round_len = now - last if avg is None else 0.75 * (now - last) + 0.25 * avg
+        self._adapt_last_commit = now
 
     def _counts_toward_k(self, staleness: int) -> bool:
         """FX-D53: whether an accepted update fills the round's K; REFL (`refl_fresh_k`, default on) counts fresh only."""

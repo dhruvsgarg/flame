@@ -153,6 +153,9 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     lr_decay_epoch: int = Field(alias="lrDecayEpoch", default=10)
     min_learning_rate: float = Field(alias="minLearningRate", default=1e-4)
     trainer_optimizer: t.Optional[str] = Field(alias="trainerOptimizer", default=None)  # sgd | adam; None = dataset's
+    # FX-N83: FedScale/Oort client SGD (REFL client.py:71, Oort learner.py:155): momentum 0.9, weight decay 5e-4.
+    trainer_momentum: float = Field(alias="trainerMomentum", default=0.0)
+    trainer_weight_decay: float = Field(alias="trainerWeightDecay", default=0.0)
     weight_decay: t.Optional[float] = Field(alias="weightDecay", default=None)
     rounds: int
     epochs: int

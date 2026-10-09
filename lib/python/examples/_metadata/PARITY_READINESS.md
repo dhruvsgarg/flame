@@ -120,6 +120,7 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 | run 27 (FX-D89-91) | 10-08 | 2450 / 0 | 17 | 91 | speech felix + fedbuff ✅ · cifar felix + oort ✅, fedbuff floor-bound | 3 / 12 |
 | CPU smokes (FX-D92-99) | 10-08 | 2456 / 0 | 16 | 99 | T1 24/24 · T3 mobiperf 2/0/0 · P6 2/0/0 · P7 6/0/0 | 3 / 12 |
 | PR22/23 + FX-D100-103 | 10-08 | 2491 / 0 | 16 | 103 | T3 cifar 27/30 · speech 16/30 (stale stub profile → FX-D103; syn_0b re-check 2/2) · G0U fedbuff cifar ✅ (FX-N77 closed) | 4 / 12 |
+| FX-N80 step 2 (FX-D104-105) | 10-09 | 2508 / 0 | 17 | 105 | T3 37/0/3 (Oort family) · G0U oort NaN abort | 4 / 12 |
 
 **Per baseline × dataset (latest grade).** Parity = INV/EXACT on the latest pair; accuracy numbers in FELIX accuracy table.
 
@@ -138,7 +139,7 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 | feddance | cifar | ✅ G2 on sim↔sim floor | ✅ G0U (runs 12-14) | ❌ |
 | feddance | speech | ✅ G1A 1.0 (run 18) | 🟡 T3 mobiperf overhead_residual | ❌ round-bound if audit faithful (FX-N74) |
 
-refl, oort, oort_star, feddance rows predate FX-D100 (source-faithful configs): void for accuracy, re-graded under FX-N80 (C20).
+refl, oort, oort_star, feddance rows predate FX-D100/D104/D105 (source-faithful configs): void for accuracy, re-graded under FX-N80 (C20).
 
 ## Felix scoreboard
 
@@ -174,7 +175,10 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR24 · FELIX "Next steps → Resume here", in order FX-N82 → N83 → N80 → N84.** Then FX-N80's C19 steps (in-process `fl_lr_check --baseline`, then T3 + G0U screens on FX-D100 configs).
+- **PR25 · FX-N80 step 2 · red, fixing:** T3 37/0/3 (`pool_20261008_N80_T3`; Oort-family reds), G0U fail-fast on oort selector
+  NaN (`pool_20261008_N80_G0U`). Fix FX-D105 roots, then rerun both. *Stop:* any INV/EXACT red = a FX-D104/D105 root, fixed before PR21.
+- **PR24 · FELIX "Next steps → Resume here", in order FX-N80 → N84.** FX-N80's C19 steps (in-process `fl_lr_check --baseline`, then T3 +
+  G0U screens on FX-D100/D104/D105 configs).
 - **PR23 · GPU screens (C18) · partly done.** Done: G0UC fedbuff cifar ×3 + G0U pair at HEAD ✅ (FX-N77 closed). Done: speech G0T
   felix + fedbuff INV/EXACT 8/0/0 (`pool_20261008_1845_G0Tgs`). Dropped by C20 (rerun on FX-D100): G0T oort_star, G0U mobiperf oort_star/refl/feddance,
   speech G0T for the other four.
@@ -193,7 +197,7 @@ Parked with the track; board in simulate_fwdllm.md §A.
 - Baselines: code wins over paper; nearest own config when a dataset is missing; sync K/N >= 5%; model fixed, adapt the fewest
   knobs and record them (ROBUST L33-L37) (10-08 evening).
 - D = our trainer runtime distribution for every baseline, never per-sample; compute > D = rethink for all (ROBUST L36) (10-08).
-- Implement REFL `adapt_selection` (FX-N82); vendor Oort into third_party (FX-N83); trainer memory audit to raise n (FX-N84) (10-08).
+- Trainer memory audit to raise n (FX-N84) (10-08).
 
 ---
 

@@ -43,7 +43,7 @@ class FedAvgYoGi(FedAvg):
     """FedAvg aggregate, then a FedScale YoGi server step (Oort runs YoGi or Prox, never plain FedAvg; FX-N74)."""
 
     def __init__(self, yogi_eta: float, yogi_tau: float, yogi_momentum: float, yogi_v_decay: float, **kwargs):
-        super().__init__()
+        super().__init__(**kwargs)
         self._yogi = FedScaleYoGi(yogi_eta, yogi_tau, yogi_momentum, yogi_v_decay)
 
     def do(self, base_weights, cache, *, total: int = 0, version: int = 0, **kwargs):

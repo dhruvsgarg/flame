@@ -14,7 +14,7 @@
 # model is adapted along the shortest ladder (one knob at a time, least invasive first: server step, then client lr, then batch),
 # and the key records `source_v` (the original), `why` and `evidence` (an experiments/ dir). scripts/baseline_deviations.py
 # prints every deviation and model mismatch as the paper's table.
-# Sources: REFL = third_party/REFL (+ examples/refl.eurosys23.pdf); Oort = github.com/SymbioticLab/Oort@master
+# Sources: REFL = third_party/REFL (+ examples/refl.eurosys23.pdf); Oort = third_party/Oort (SymbioticLab/Oort@05a3aa1)
 # (+ examples/osdi21-lai-oort.pdf); FedDance = examples/feddance_socc25.pdf (no public code; FedScale defaults);
 # FedBuff = arXiv 2106.06639 (no public code).
 #
@@ -31,14 +31,19 @@ refl:
       avail_probability: 0.9
       blacklist_rounds: -1
       overcommitment: 1.3
-    src: "[code] run_exps.sh:79 samplers=random, :97 availprios=1, :99 availprob=0.9, :70 overcommit=1.3; argParser.py:102 blacklist -1"
+    src: "[code] run_exps.sh:79 samplers=random, :97 availprios=1, :99 availprob=0.9, :70 overcommit=1.3 (aggregator.py:637 round()); argParser.py:102 blacklist -1"
   datasets:
     cifar10:
       model: {source: "ResNet18 ([paper] Table 1)", ours: "CifarNet (fl_data.py:56)"}
+      selector: {v: {adapt_selection: 1, adapt_selection_cap: 0.5}, src: "[code] cifar10/conf_exp.yml:61; argParser.py:48 cap"}
       local_steps: {v: 1, src: "[code] run_exps.sh:52 steps=1; client.py:110 counts mini-batches ([paper] Table 1: 1 epoch)"}
       batch_size: {v: 10, src: "[code] cifar10/conf_exp.yml:42 ([paper] Table 1)"}
-      learning_rate: {v: 0.01, src: "[code] cifar10/conf_exp.yml:41 ([paper] Table 1)"}
+      learning_rate: {v: 0.1, src: "[code] cifar10/conf_exp.yml:41 ([paper] Table 1)", source_v: 0.01,
+                      why: "1 step x lr 0.01 stays at chance on CifarNet for 1000 rounds (no server step to raise first)",
+                      evidence: "fl_lr_check r1000: 0.01 9.6%, 0.05 37%, 0.1 43% (experiments/lrcheck_20261008_fxn80/cifar10_refl.txt, L1_cifar_refl_lr.txt)"}
       optimizer: {v: sgd, src: "[code] FedScale client SGD"}
+      momentum: {v: 0.9, src: "[code] core/client.py:71 (enforce_sgd off, argParser.py:41)"}
+      weight_decay: {v: 0.0005, src: "[code] core/client.py:71"}
       lr_decay: {v: {factor: 0.98, every: 10, min: 0.00005}, src: "[code] argParser.py:115,119,120"}
       server:
         v: {sort: refl, kwargs: {deadline: 100, target_ratio: 0.8, stale_update: -1, stale_factor: 1, stale_beta: 0.35,
@@ -46,16 +51,21 @@ refl:
         src: "[code] run_exps.sh:56,60,84; cifar10/conf_exp.yml reads no STALE_FACTOR/SCALE_COFF -> argParser.py:16,54 defaults; FedAvg [paper] §5.1 + run_exps.sh:58 comment"
     google_speech:
       model: {source: "ResNet34 ([paper] Table 1; FedScale spectrograms)", ours: "ResNet34_1D on raw waveform (fl_data.py:97)"}
+      selector: {v: {adapt_selection: 0}, src: "[code] google_speech/conf_exp.yml:65 $ADAPT_SELECT <- run_exps.sh:101 (1 only for SAFA tags)"}
       local_steps: {v: 1, src: "[code] run_exps.sh:52 steps=1 ([paper] Table 1: 1 epoch)"}
       batch_size: {v: 20, src: "[code] google_speech/conf_exp.yml:45 ([paper] Table 1)"}
       learning_rate: {v: 0.05, src: "[code] google_speech/conf_exp.yml:44 ([paper] Table 1: 0.005)"}
       optimizer: {v: sgd, src: "[code] FedScale client SGD"}
+      momentum: {v: 0.9, src: "[code] core/client.py:71 (enforce_sgd off, argParser.py:41)"}
+      weight_decay: {v: 0.0005, src: "[code] core/client.py:71"}
       lr_decay: {v: {factor: 0.98, every: 10, min: 0.00005}, src: "[code] argParser.py:115,119,120"}
       server:
         v: {sort: refl, kwargs: {deadline: 100, target_ratio: 0.8, stale_update: -1, stale_factor: -4, stale_beta: 0.35,
-                                 scale_coff: 1.0, initial_deadline: 100.0, gradient_policy: yogi, yogi_eta: 0.003,
-                                 yogi_tau: 1.0e-8, yogi_beta: 0.9, yogi_beta2: 0.99}}
+                                 scale_coff: 1.0, initial_deadline: 100.0}}
         src: "[code] run_exps.sh:58,84,87,89,91; google_speech/conf_exp.yml:41-42; argParser.py:134-135 ([paper] §5.1 YoGi)"
+        source_v: {gradient_policy: yogi, yogi_eta: 0.003, yogi_tau: 1.0e-8, yogi_beta: 0.9, yogi_beta2: 0.99}
+        why: "server step (ladder rung 1): YoGi diverges at tau 1e-8 and stalls at tau 1e-3 / 1e-2; FedAvg server learns as FedDance does"
+        evidence: "fl_lr_check r150: yogi 6.2%, tau 1e-3 4.8%, tau 1e-2 8.9%, FedAvg 16.9% (experiments/lrcheck_20261008_fxn80/google_speech_refl.txt, L1_*, L2_*, L3_*)"
 
 oort:
   participation: {k_over_n: 0.038, src: "[paper] §7: K=100 of 1.3K selected; speech N=2,618 (Table 1)"}
@@ -65,12 +75,14 @@ oort:
       local_steps: {v: 20, src: "[code] learner.py:483 iters=upload_epoch; argParser.py:70 upload_epoch=20"}
       batch_size: {v: 30, src: "[code] argParser.py:64 (openimage conf sets none; [paper] §7: 32)"}
       learning_rate: {v: 0.04, src: "[code] argParser.py:80 ([paper] §7)"}
-      optimizer: {v: sgd, src: "[code] learner.py SGD"}
+      optimizer: {v: sgd, src: "[code] learner.py:155 MySGD"}
+      momentum: {v: 0.9, src: "[code] learner.py:155"}
+      weight_decay: {v: 0.0005, src: "[code] learner.py:155"}
       lr_decay: {v: {factor: 0.95, every: 5, min: 0.0001}, src: "[code] argParser.py:86,87,101"}
       stat_utility: {v: fedscale, src: "[code] learner.py:296-312"}
       server:
-        v: {sort: fedavg_yogi, kwargs: {yogi_eta: 0.005, yogi_tau: 0.001, yogi_momentum: 0.0, yogi_v_decay: 0.999}}
-        src: "[code] openimage/conf.yml:40 gradient_policy=yogi; argParser.py:112-115; utils/yogi.py (beta2=-1: no momentum)"
+        v: {sort: fedavg_yogi, kwargs: {yogi_eta: 0.005, yogi_tau: 0.001, yogi_momentum: 0.0, yogi_v_decay: 0.999, weighting: equal}}
+        src: "[code] openimage/conf.yml:40 gradient_policy=yogi; argParser.py:112-115; utils/yogi.py (beta2=-1: no momentum); argParser.py:96 is_even_avg -> equal weights"
       selector:
         v: {overcommitment: 1.1, round_threshold: 10, pacer_delta: 10, pacer_step: 20, cut_off_util: 0.7,
             clip_bound: 0.98, exploration_factor: 0.9, exploration_decay: 0.95, exploration_min: 0.2, round_penalty: 2.0}
@@ -80,12 +92,17 @@ oort:
       local_steps: {v: 20, src: "[code] learner.py:483; argParser.py:70"}
       batch_size: {v: 15, src: "[code] speech/conf.yml:47 ([paper] §7: 16)"}
       learning_rate: {v: 0.04, src: "[code] argParser.py:80 ([paper] §7)"}
-      optimizer: {v: sgd, src: "[code] learner.py SGD"}
+      optimizer: {v: sgd, src: "[code] learner.py:155 MySGD"}
+      momentum: {v: 0.9, src: "[code] learner.py:155"}
+      weight_decay: {v: 0.0005, src: "[code] learner.py:155"}
       lr_decay: {v: {factor: 0.95, every: 15, min: 0.0001}, src: "[code] speech/conf.yml:48; argParser.py:86,101"}
       stat_utility: {v: fedscale, src: "[code] learner.py:296-312"}
       server:
-        v: {sort: fedavg_yogi, kwargs: {yogi_eta: 0.005, yogi_tau: 0.001, yogi_momentum: 0.0, yogi_v_decay: 0.999}}
-        src: "[code] speech/conf.yml:40; argParser.py:112-115; utils/yogi.py"
+        v: {sort: fedavg_yogi, kwargs: {yogi_eta: 0.002, yogi_tau: 0.001, yogi_momentum: 0.0, yogi_v_decay: 0.999, weighting: equal}}
+        src: "[code] speech/conf.yml:40; argParser.py:96,112-115; utils/yogi.py"
+        source_v: {yogi_eta: 0.005}
+        why: "server step (ladder rung 1): eta 0.005 oscillates (31% -> 8%) and sits under 2x chance at r30"
+        evidence: "fl_lr_check r150: eta 0.005 15% oscillating, 0.002 23-25% steady, 0.001 20%, FedAvg 17% (experiments/lrcheck_20261008_fxn80/google_speech_oort.txt, L1_speech_oort_*)"
       selector:
         v: {overcommitment: 1.1, round_threshold: 30, pacer_delta: 30, pacer_step: 20, cut_off_util: 0.4,
             clip_bound: 0.98, exploration_factor: 0.9, exploration_decay: 0.95, exploration_min: 0.2, round_penalty: 2.0}
@@ -106,16 +123,20 @@ feddance:
       batch_size: {v: 24, src: "[paper] Table 1"}
       learning_rate: {v: 0.1, src: "[paper] Table 1"}
       optimizer: {v: sgd, src: "[paper] §6.1 FedScale defaults"}
+      momentum: {v: 0.9, src: "[paper] §6.1 FedScale defaults (FedScale client = REFL core/client.py:71)"}
+      weight_decay: {v: 0.0005, src: "[paper] §6.1 FedScale defaults (REFL core/client.py:71)"}
       lr_decay: {v: {factor: 0.98, every: 10, min: 0.00005}, src: "[paper] §6.1 FedScale defaults (REFL argParser.py:115,119,120)"}
-      server: {v: {sort: fedavg, kwargs: {}}, src: "[paper] §6.1 FedScale default aggregation (FedAvg)"}
+      server: {v: {sort: fedavg, kwargs: {weighting: equal}}, src: "[paper] §6.1 FedScale default aggregation (FedAvg, 1/K: REFL aggregator.py:744)"}
     google_speech:
       model: {source: "ResNet34 ([paper] Table 1)", ours: "ResNet34_1D on raw waveform (fl_data.py:97)"}
       local_steps: {v: 1, src: "[paper] Table 1 LS=1"}
       batch_size: {v: 32, src: "[paper] Table 1"}
       learning_rate: {v: 0.075, src: "[paper] Table 1"}
       optimizer: {v: sgd, src: "[paper] §6.1 FedScale defaults"}
+      momentum: {v: 0.9, src: "[paper] §6.1 FedScale defaults (FedScale client = REFL core/client.py:71)"}
+      weight_decay: {v: 0.0005, src: "[paper] §6.1 FedScale defaults (REFL core/client.py:71)"}
       lr_decay: {v: {factor: 0.98, every: 10, min: 0.00005}, src: "[paper] §6.1 FedScale defaults"}
-      server: {v: {sort: fedavg, kwargs: {}}, src: "[paper] §6.1 FedScale default aggregation (FedAvg)"}
+      server: {v: {sort: fedavg, kwargs: {weighting: equal}}, src: "[paper] §6.1 FedScale default aggregation (FedAvg, 1/K: REFL aggregator.py:744)"}
 
 fedbuff:
   participation: {k_over_n: null, src: "[paper] §6: async, buffer K=10 independent of concurrency; ours c = 10% (cifar) / 30% (speech) of n"}

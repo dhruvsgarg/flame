@@ -64,7 +64,7 @@ def test_random_first_round_skips_unavailable(selector, make_ends):
 def test_leave_hooks_exist(selector, make_ends):
     # B2: channel.remove()/UN_AVL call these; feddance lacked them and killed the rx task.
     ends = make_ends(count=10, prefix="t")
-    a, b = sorted(_dispatch(selector, ends, 5, set()))
+    a, b = sorted(_dispatch(selector, ends, 5, set()))[:2]
     selector.remove_from_selected_ends(ends, a)
     selector._cleanup_removed_ends(b)
 

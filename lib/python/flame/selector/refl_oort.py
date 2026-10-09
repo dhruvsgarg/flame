@@ -64,6 +64,13 @@ class REFLOortSelector(OortSelector):
         self.avail_probability = float(kwargs.get("avail_probability", 1.0))  # Accuracy 0-1
         # FX-N74: REFL fork `resampleClients` picks at random within the feasible set unless sample_mode == "oort"
         self.sample_mode = kwargs.get("sample_mode", "oort")
+        self.num_of_ends = round(self.aggr_num * self.overcommitment)  # REFL aggregator.py:637 rounds, Oort truncates
+        # FX-N82: REFL argParser.py:47-48; 2 (zero new picks) has no equivalent under the K-fresh close (FX-T37).
+        self.adapt_selection = int(kwargs.get("adapt_selection", 0))
+        self.adapt_selection_cap = float(kwargs.get("adapt_selection_cap", 0.5))
+        if self.adapt_selection not in (0, 1):
+            raise ValueError(f"adapt_selection={self.adapt_selection} unsupported (0 or 1)")
+        self.stale_due = None  # last adapt_num_to_sample input, for telemetry
 
         # Blacklisting parameters
         self.blacklist_rounds = kwargs.get("blacklist_rounds", -1)  # -1 disables
@@ -245,6 +252,7 @@ class REFLOortSelector(OortSelector):
                 "avail_priority": self.avail_priority,
                 "num_priority": len(priority_ends),
                 "num_blacklist": len(blacklist),
+                "stale_due": self.stale_due,
                 "exploration_factor": self.exploration_factor,
                 "explore_ids": list(getattr(self, "_last_explore", [])),
                 "exploit_ids": list(getattr(self, "_last_exploit", [])),
@@ -255,6 +263,15 @@ class REFLOortSelector(OortSelector):
             },
         )
         return {key: None for key in newly_selected}
+
+    def adapt_num_to_sample(self, num: int, stale_due: int) -> int:
+        """REFL aggregator.py:640-648: fewer new picks when `stale_due` stale updates land next round."""
+        self.stale_due = stale_due
+        if self.adapt_selection != 1 or stale_due <= 0:
+            return num
+        if self.adapt_selection_cap > 0:  # REFL passes the float cap on (a crash in rng.sample); we truncate
+            return max(int(self.adapt_selection_cap * num), num - stale_due)
+        return max(1, num - stale_due)
 
     def build_priority_lists(
         self,

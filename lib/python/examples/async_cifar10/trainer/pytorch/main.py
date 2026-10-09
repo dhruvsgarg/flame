@@ -747,8 +747,13 @@ class PyTorchCifar10Trainer(Trainer):
             logger.debug(f"Trainer {self.trainer_id}: Using base LR {current_lr}")
         
         _pre["stream"] = time.time() - _phase_train_entry
-        opt = torch.optim.Adam if self._optimizer_name() == "adam" else torch.optim.SGD
-        self.optimizer = opt(self.model.parameters(), lr=current_lr)
+        if self._optimizer_name() == "adam":
+            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=current_lr)
+        else:  # fresh per task, as FedScale/Oort build it per client run
+            hp = self.config.hyperparameters
+            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=current_lr,
+                                             momentum=getattr(hp, "trainer_momentum", 0.0) or 0.0,
+                                             weight_decay=getattr(hp, "trainer_weight_decay", 0.0) or 0.0)
         self._step_lr = current_lr
         _pre["opt"] = time.time() - _phase_train_entry
 

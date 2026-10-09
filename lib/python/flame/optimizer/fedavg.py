@@ -29,9 +29,12 @@ logger = logging.getLogger(__name__)
 class FedAvg(AbstractOptimizer):
     """FedAvg class."""
 
-    def __init__(self):
-        """Initialize FedAvg instance."""
+    def __init__(self, weighting: str = "samples", **kwargs):
+        """Initialize FedAvg instance; `weighting` "equal" averages updates 1/k (Oort is_even_avg, FedScale; FX-N83)."""
         self.agg_weights = None
+        if weighting not in ("samples", "equal"):
+            raise ValueError(f"weighting={weighting!r}: samples | equal")
+        self.weighting = weighting
 
         ml_framework_in_use = get_ml_framework_in_use()
         if ml_framework_in_use == MLFramework.PYTORCH:
@@ -79,12 +82,13 @@ class FedAvg(AbstractOptimizer):
         if len(cache) == 0 or total == 0:
             return None
 
+        k_updates = len(cache)
         for k in list(cache.iterkeys()):
             # after popping, the item is removed from the cache hence,
             # explicit cache cleanup is not needed
             tres = cache.pop(k)
 
-            rate = tres.count / total
+            rate = 1.0 / k_updates if self.weighting == "equal" else tres.count / total
             self.aggregate_fn(tres, rate)
 
         return self.agg_weights

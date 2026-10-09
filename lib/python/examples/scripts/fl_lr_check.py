@@ -71,7 +71,7 @@ def _flame_opt(a, server_lr, bn_absolute_mean):
         kw = dict(a.server["kwargs"])
         if a.server["sort"] == "refl":
             kw["deadline"] = 1e9  # no wall-clock deadline in-process
-        return {"refl": REFL, "fedavg": lambda **k: FedAvg(), "fedavg_yogi": FedAvgYoGi,
+        return {"refl": REFL, "fedavg": FedAvg, "fedavg_yogi": FedAvgYoGi,
                 "fedbuff": lambda **k: FedBuff(bn_absolute_mean=bn_absolute_mean, **k)}[a.server["sort"]](**kw)
     if a.flame_opt == "refl":  # baselines.yaml refl optimizer kwargs (FX-N74)
         from flame.optimizer.refl import REFL
@@ -106,7 +106,8 @@ def run_pair(spec, train, test_idx, test, splits, client_lr, server_lr, a, gpu, 
             base = past[-1 - s_i]
             model.load_state_dict(base)
             model.train()
-            opt = opt_cls(model.parameters(), lr=lr_r)
+            opt = opt_cls(model.parameters(), lr=lr_r) if opt_cls is torch.optim.Adam else \
+                opt_cls(model.parameters(), lr=lr_r, momentum=a.momentum, weight_decay=a.weight_decay)  # FX-N83
             loader = data_utils.DataLoader(data_utils.Subset(train, splits[tid]), batch_size=a.batch, shuffle=True)
             steps, done = a.local_steps, 0
             for _ in range(a.epochs if steps is None else 10 ** 9):  # local_steps cycles the data (trainer FX-N74)
@@ -175,13 +176,15 @@ def _apply_reference(a):
     a.optimizer = a.optimizer or hp["trainerOptimizer"]
     if a.local_steps is None and "localSteps" in hp:
         a.local_steps = hp["localSteps"]
+    a.momentum = a.momentum if a.momentum is not None else hp.get("trainerMomentum", 0.0)
+    a.weight_decay = a.weight_decay if a.weight_decay is not None else hp.get("trainerWeightDecay", 0.0)
     if not a.lr_decay and hp.get("lrDecayEnabled"):
         a.lr_decay = f"{hp['lrDecayFactor']}:{hp['lrDecayEpoch']}:{hp['minLearningRate']}"
-    a.server = srv
+    a.server = {**srv, "sort": a.server_sort or srv["sort"], "kwargs": {**srv["kwargs"], **{k: yaml.safe_load(v) for k, v in (kv.split("=", 1) for kv in a.server_kw)}}}
     a.k = a.k or ov["aggregator"].get("agg_goal") or 10
     a.pairs = a.pairs or [f"{hp['learningRate']}:{srv['kwargs'].get('learning_rate', 1)}"]
     print(f"[reference] {a.baseline} {a.dataset}: batch {a.batch} {a.optimizer} steps {a.local_steps} decay {a.lr_decay or '-'} "
-          f"server {srv['sort']} {srv['kwargs']} k {a.k} pairs {a.pairs}", flush=True)
+          f"momentum {a.momentum} wd {a.weight_decay} server {srv['sort']} {srv['kwargs']} k {a.k} pairs {a.pairs}", flush=True)
 
 
 def main(argv=None):
@@ -189,12 +192,16 @@ def main(argv=None):
     ap.add_argument("--dataset", default="google_speech")
     ap.add_argument("--pairs", nargs="+", help="client_lr:server_lr (default with --baseline: its client lr : 1)")
     ap.add_argument("--baseline", help="take every training/server knob from baseline_reference.yaml")
+    ap.add_argument("--server-sort", help="override the reference server optimizer (ladder)")
+    ap.add_argument("--server-kw", nargs="*", default=[], help="k=v overrides of the reference server kwargs (ladder)")
     ap.add_argument("--local-steps", type=int, help="mini-batch iterations per update (default: one --epochs pass)")
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--rounds", type=int, default=30)
     ap.add_argument("--k", type=int, help="updates per round (aggGoal; default 10, or the reference K)")
     ap.add_argument("--batch", type=int, help="default 32, or the reference batch")
     ap.add_argument("--optimizer", choices=["sgd", "adam"], help="trainer optimizer (default: the dataset's)")
+    ap.add_argument("--momentum", type=float, help="client SGD momentum (default 0, or the reference)")
+    ap.add_argument("--weight-decay", type=float, help="client SGD weight decay (default 0, or the reference)")
     ap.add_argument("--rate", type=float, default=0.88, help="per-update weight (felix 'new' rate ~0.88; fedbuff 1)")
     ap.add_argument("--eval-every", type=int, default=5)
     ap.add_argument("--test-n", type=int, default=2000)
@@ -211,6 +218,7 @@ def main(argv=None):
     if a.baseline:
         _apply_reference(a)
     a.k, a.batch = a.k or 10, a.batch or 32
+    a.momentum, a.weight_decay = a.momentum or 0.0, a.weight_decay or 0.0
     if not a.pairs:
         sys.exit("--pairs required without --baseline")
     spec = fl_data.SPECS[a.dataset]

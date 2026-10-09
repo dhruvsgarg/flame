@@ -727,30 +727,83 @@ class TestPendingCommitExcludedFromSelection:
         assert set(result).issubset(set(ends))
 
 
-def test_sample_by_util_never_underfills():
-    # Reference Oort augments the exploit pool below the cutoff; the port drew only >= cutoff and
-    # returned 2 of 3 each round (sync oort then needed a same-round top-up every round).
+def test_sample_by_util_pool_stops_at_cutoff():
+    # FX-N83, upstream Oort oort.py:255-262: the exploit pool is every score down to cut_off_util x the
+    # exploitLen-th highest (no below-cutoff augmentation, which is the REFL/FedScale fork).
     from flame.selector.oort import OortSelector
     from flame.selector.properties import PROP_END_ID, PROP_UTILITY
     sel = OortSelector(aggr_num=3)
-    ul = [{PROP_END_ID: f"t{i}", PROP_UTILITY: u} for i, u in enumerate([0.1, 0.2, 5.0, 6.0])]
-    assert len(sel.sample_by_util(4.0, ul, 3)) == 3
+    ul = [{PROP_END_ID: f"t{i}", PROP_UTILITY: u} for i, u in enumerate([0.01, 0.2, 5.0, 6.0, 7.0])]
+    cutoff = sel.cutoff_util(ul, 2)
+    assert cutoff == 0.7 * 5.0
+    for _ in range(20):
+        assert set(sel.sample_by_util(cutoff, ul, 2)) <= {"t2", "t3", "t4"}
 
 
-def test_topk_explores_remaining_slots_from_unexplored(make_ends):
-    # FX-N53, reference getTopK: exploit <= len(explored)-1, every other slot from the unexplored.
+def test_topk_exploits_every_explored_arm_when_exploration_is_zero(make_ends):
+    # FX-N83, upstream getTopK: exploitLen = min(int(n x (1 - exploration)), len(explored)); the rest explores.
     from flame.selector.oort import OortSelector
-    sel = OortSelector(aggr_num=3, exploration_factor=0.0, exploration_decay=1.0, exploration_min=0.0)
+    sel = OortSelector(aggr_num=3, overcommitment=1.0, exploration_factor=0.0, exploration_decay=1.0,
+                       exploration_min=0.0)
     ends = make_ends(count=10, prefix="t")
     for e in ("t0", "t1"):
         ends[e].set_property("stat_utility", 1.0)
     sel.selected_ends = {"x"}  # not the first round
     picked = sel.select(ends, {"round": 5}, trainer_unavail_list=[], task_to_perform="train")
-    assert len(picked) == 3 and len({"t0", "t1"} & set(picked)) == 1
+    assert len(picked) == 3 and {"t0", "t1"} <= set(picked)
+
+
+def test_exploration_decays_before_sizing(make_ends):
+    # FX-N83, oort.py:249-250: the first getTopK already uses factor x decay.
+    from flame.selector.oort import OortSelector
+    sel = OortSelector(aggr_num=10, overcommitment=1.0, exploration_factor=0.9, exploration_decay=0.5)
+    ends = make_ends(count=30, prefix="t")
+    for i in range(20):
+        ends[f"t{i}"].set_property("stat_utility", 1.0 + i)
+    sel.selected_ends = {"x"}
+    sel.select(ends, {"round": 5}, trainer_unavail_list=[], task_to_perform="train")
+    assert sel.exploration_factor == 0.45 and len(sel._last_exploit) == int(10 * 0.55)
+
+
+def test_no_unexplored_arm_zeroes_exploration(make_ends):
+    # FX-N83, oort.py:303-305.
+    from flame.selector.oort import OortSelector
+    sel = OortSelector(aggr_num=3, overcommitment=1.0)
+    ends = make_ends(count=6, prefix="t", stat_utility=1.0)
+    sel.selected_ends = {"x"}
+    sel.select(ends, {"round": 5}, trainer_unavail_list=[], task_to_perform="train")
+    assert sel.exploration_factor == 0.0 and sel.min_exploration_factor == 0.0
+
+
+def test_pacer_history_reads_returned_exploits(make_ends):
+    # FX-N83, oort.py calculateSumUtil: mean reward of last round's exploited arms that returned since.
+    from flame.selector.oort import OortSelector
+    from flame.selector.properties import PROP_LAST_RETURNED_ROUND
+    sel = OortSelector(aggr_num=3)
+    ends = make_ends(count=4, prefix="t", stat_utility=2.0)
+    ends["t0"].set_property(PROP_LAST_RETURNED_ROUND, 7)
+    ends["t1"].set_property(PROP_LAST_RETURNED_ROUND, 5)  # returned before the last pacer call
+    sel._last_exploit = ["t0", "t1"]
+    sel.save_exploited_utility_history(ends, 7)
+    assert sel.exploitation_util_history[-1] == pytest.approx(2.0 / 1.0001)
+    sel._last_exploit = []
+    sel.save_exploited_utility_history(ends, 8)
+    assert sel.exploitation_util_history[-1] == 0.0
+
+
+def test_preferred_duration_ranks_measured_arms_only(make_ends):
+    # FX-N83: Oort ranks every arm's (a-priori) duration; unmeasured arms are left out, never a 60 s stand-in.
+    from datetime import timedelta
+    from flame.selector.oort import OortSelector, PROP_CLIENT_TASK_TRAIN_DURATION
+    sel = OortSelector(aggr_num=3, round_threshold=50)
+    ends = make_ends(count=4, prefix="t")
+    ends["t0"].set_property(PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=10))
+    ends["t1"].set_property(PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=30))
+    assert sel.calculate_round_preferred_duration(ends) == timedelta(seconds=30)
 
 
 def test_topk_pads_when_exploit_is_capped(make_ends):
-    # All explored: exploit <= len(explored)-1, so the last slot is a random pad (FX-N53).
+    # All explored: exploit fills every slot (upstream exploitLen <= len(explored), FX-N83).
     from flame.selector.oort import OortSelector
     sel = OortSelector(aggr_num=3, exploration_factor=0.0, exploration_decay=1.0, exploration_min=0.0)
     ends = make_ends(count=3, prefix="t", stat_utility=1.0)
