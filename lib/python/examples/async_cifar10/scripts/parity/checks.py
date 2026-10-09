@@ -2609,6 +2609,18 @@ def utility_parity(real: dict, sim: dict, max_ks: float = 0.2,
 SHORT_RUN_CONFIDENCE_S = 7200.0
 
 
+NO_LEARNING_ACC_GAIN = 0.05  # FX-D115: below this best-minus-first accuracy gain on both sides, curves are noise
+
+
+def _no_learning_signal(real: dict, sim: dict) -> bool:
+    """FX-D115: neither side's accuracy beats its first eval by NO_LEARNING_ACC_GAIN (stub legs)."""
+    def gain(evs):
+        acc = [e.get("test-accuracy") for e in evs if e.get("test-accuracy") is not None]
+        return max(acc) - acc[0] if len(acc) >= 2 else None
+    g = [gain(real["agg_evals"]), gain(sim["agg_evals"])]
+    return all(x is not None and x < NO_LEARNING_ACC_GAIN for x in g)
+
+
 def _mark_low_confidence_if_short(res: dict, budget_s: Optional[float]) -> dict:
     """Tag a convergence PASS as low-confidence on a sub-2h run; leave FAILs alone."""
     if (budget_s is not None and budget_s < SHORT_RUN_CONFIDENCE_S
@@ -2648,6 +2660,8 @@ def convergence_parity(real: dict, sim: dict,
     amounts of training at the same nominal `data_id`. The composite key
     excludes a side's extra-lap evals from the intersection instead.
     """
+    if _no_learning_signal(real, sim):
+        return {"ok": True, "tier": "DIST", "status": "SKIP", "note": "no learning signal (FX-D115)"}
     def curve(agg_evals):
         axis = _eval_progress_axis(agg_evals)
         if axis == "data_id":
@@ -2930,9 +2944,13 @@ def _skip_unmatched(result: dict, matched_n: int) -> None:
     result.update(ok=True, status="SKIP", note=f"{matched_n} matched units < 2: timing ungradeable")
 
 
+class _AllStall(list):
+    """FX-D119: `_stall_free`'s fallback when every round stalls; counts as zero stall-free rounds."""
+
+
 def _skip_if_few_free(result: dict, real_free: list, sim_free: list, n_rounds: int) -> None:
     """FX-N62: a leg whose stalls leave too few stall-free rounds can't grade timing; SKIP, never pass or fail."""
-    n = min(len(real_free), len(sim_free))
+    n = min(0 if isinstance(x, _AllStall) else len(x) for x in (real_free, sim_free))
     if n < min(_MIN_FREE_ROUNDS, n_rounds):
         result.update(ok=True, status="SKIP", note=f"{n} stall-free rounds < {_MIN_FREE_ROUNDS}: timing ungradeable")
 
@@ -2942,17 +2960,30 @@ def _stall_free(adv: list, *legs: dict) -> list:
     if not _round_axis(*legs):
         return adv
     drop = {i for ep in _stall_episodes(adv, _stall_cut(*legs)) for i in ep}
-    return [a for i, a in enumerate(adv) if i not in drop] or adv
+    return [a for i, a in enumerate(adv) if i not in drop] or _AllStall(adv)
+
+
+def _adv_to_n(agg_rounds: list, prog_fn, N, time_fn) -> list:
+    """Per-round clock advances up to N, each carrying its `stall_cause`."""
+    evs = [e for e in agg_rounds if (p := prog_fn(e)) is not None and p <= N and time_fn(e) is not None]
+    return [_RoundAdv(time_fn(b) - time_fn(a), b.get("stall_cause")) for a, b in zip(evs, evs[1:])
+            if time_fn(b) > time_fn(a)]
 
 
 def _stall_s_to_n(agg_rounds: list, prog_fn, N, time_fn, real: dict, sim: dict) -> float:
     """FX-N62: timeout-stall seconds (excess over the median round) up to N; K3s owns the stall rate."""
     if not _round_axis(real, sim):
         return 0.0
-    evs = [e for e in agg_rounds if (p := prog_fn(e)) is not None and p <= N and time_fn(e) is not None]
-    adv = [_RoundAdv(time_fn(b) - time_fn(a), b.get("stall_cause")) for a, b in zip(evs, evs[1:])
-           if time_fn(b) > time_fn(a)]
-    return _stall_excess_s(adv, _stall_cut(real, sim))
+    return _stall_excess_s(_adv_to_n(agg_rounds, prog_fn, N, time_fn), _stall_cut(real, sim))
+
+
+def _few_free_note(real: dict, sim: dict, real_adv: list, sim_adv: list) -> Optional[str]:
+    """FX-D119: a side with no stall-free round has no stall-free time; the note says so, else None."""
+    if not _round_axis(real, sim) or not real_adv or not sim_adv:
+        return None
+    probe: dict = {}
+    _skip_if_few_free(probe, _stall_free(real_adv, real, sim), _stall_free(sim_adv, real, sim), 1)
+    return probe.get("note")
 
 
 def _stall_excess_s(adv: list, cut: float) -> float:
@@ -2960,7 +2991,7 @@ def _stall_excess_s(adv: list, cut: float) -> float:
     stall = {i for ep in _stall_episodes(adv, cut) for i in ep}
     free = [a for i, a in enumerate(adv) if i not in stall]
     med = statistics.median(free or adv) if adv else 0.0
-    return sum(adv[i] - med for i in stall)
+    return sum(max(0.0, adv[i] - med) for i in stall)  # FX-D119: a short cause-stamped round saves no time
 
 
 def timeout_stalls(real: dict, sim: dict, same_mode: bool = False) -> dict:
@@ -3342,10 +3373,11 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
         if span <= 0:
             return None
         adv = span / len(evs)
+        rounds = _per_round_advances(evs, use_vclock)
         if _round_axis(real, sim):  # FX-N62: stall time out of the clock span, at round level
-            adv = (span - _stall_excess_s(_per_round_advances(evs, use_vclock), _stall_cut(real, sim))) / len(evs)
+            adv = (span - _stall_excess_s(rounds, _stall_cut(real, sim))) / len(evs)
         return {"barrier": sum(barriers) / len(barriers), "adv": adv,
-                "cycles": len(evs), "span": span}
+                "cycles": len(evs), "span": span, "rounds": rounds}
 
     # Each side on its OWN clock (§D-73): a leg carrying a vclock reads THAT, so a
     # sim↔sim control compares two virtual clocks instead of one leg's process wall
@@ -3357,6 +3389,9 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
     if r is None or s is None:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "insufficient barrier/clock data (K10 may be blocking)"}
+    _few = _few_free_note(real, sim, r["rounds"], s["rounds"])
+    if _few:  # FX-D119
+        return {"ok": True, "tier": "EXACT", "status": "SKIP", "note": _few}
     real_ov = r["barrier"] / r["adv"]
     sim_ov = s["barrier"] / s["adv"]
     abs_diff = abs(sim_ov - real_ov)
@@ -3427,16 +3462,19 @@ def total_commits_parity(real: dict, sim: dict,
     if not real_t or not sim_t or max(real_t, sim_t) <= 0:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "zero time-to-N in one mode — run too short to measure"}
+    _few = _few_free_note(real, sim, _adv_to_n(real["agg_rounds"], prog_fn, N, real_time_fn),
+                          _adv_to_n(sim["agg_rounds"], prog_fn, N, sim_time_fn))
     rel_diff = abs(sim_t - real_t) / max(sim_t, real_t)
     ok = rel_diff <= tol_rel
     return {
-        "ok": ok,
+        "ok": ok or bool(_few),
         "tier": "EXACT",
         "matched_logical_budget_n": _prog_json(N),
         "sim_vclock_to_n_s": round(sim_t, 1),
         "real_time_to_n_s": round(real_t, 1),
         "rel_diff": round(rel_diff, 4),
         "tol": tol_rel,
+        **({"status": "SKIP", "note": _few} if _few else {}),  # FX-D119
     }
 
 
@@ -3498,8 +3536,10 @@ def terminal_state_parity(real: dict, sim: dict,
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "zero time-to-N in one mode — run too short to measure"}
     time_rel_diff = abs(sim_t - real_t) / max(sim_t, real_t)
+    _few = _few_free_note(real, sim, _adv_to_n(real["agg_rounds"], prog_fn, N, real_time_fn),
+                          _adv_to_n(sim["agg_rounds"], prog_fn, N, sim_time_fn))  # FX-D119: then grade trainers only
     # FX-D51: ±1 trainer is the integer edge.
-    ok = time_rel_diff <= time_tol and (trainers_rel_diff <= trainers_tol or abs(n_st - n_rt) <= 1)
+    ok = (bool(_few) or time_rel_diff <= time_tol) and (trainers_rel_diff <= trainers_tol or abs(n_st - n_rt) <= 1)
     return {
         "ok": ok,
         "tier": "EXACT",
@@ -3514,6 +3554,7 @@ def terminal_state_parity(real: dict, sim: dict,
         "real_trainers_at_n": n_rt,
         "trainers_rel_diff": round(trainers_rel_diff, 3),
         "trainers_tol": trainers_tol,
+        **({"time_status": "SKIP", "note": _few} if _few else {}),
     }
 
 
@@ -5331,6 +5372,8 @@ def convergence_loss_parity(real: dict, sim: dict, loss_tol: float = 0.15,
     docstring. Mirrors its fix so C1/C2 can't silently disagree on which
     checkpoints are "matched".
     """
+    if _no_learning_signal(real, sim):
+        return {"ok": True, "tier": "DIST", "status": "SKIP", "note": "no learning signal (FX-D115)"}
     def _curve(evs):
         axis = _eval_progress_axis(evs)
         if axis == "data_id":

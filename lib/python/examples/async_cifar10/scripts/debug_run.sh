@@ -384,8 +384,9 @@ for e_src in cfg.get("experiments", []):
             if _leg is not None and _lat is not None:
                 h.update(simDispatchLatencySeconds=_lat, simCommitOverheadSeconds=0.0,
                          simRedispatchGapSeconds=0.0, simChargeProfilePath=os.path.abspath(_prof))
-                e["trainer"].setdefault("config_overrides", {}).setdefault(
-                    "hyperparameters", {})["simCompletionLegSeconds"] = _leg
+                _thp0 = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
+                _thp0["simCompletionLegSeconds"] = _leg
+                _thp0["simDownloadLegSeconds"] = get_profiled_charge_s(_prof, "download_leg", _stack) or 0.0  # FX-D116
         if os.environ.get("SIM_CHARGES", "profiled") == "profiled" and "simChargeProfilePath" not in h:
             # FX-D99: a silent fallback once ran a 0.6 s placeholder leg.
             print(f"WARNING: no profiled sim charges for {os.path.basename(_prof)} stack of {bl}; "

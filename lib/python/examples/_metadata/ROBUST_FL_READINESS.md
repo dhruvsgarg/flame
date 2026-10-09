@@ -62,6 +62,9 @@ section already says.
     when answered (the answer goes wherever it belongs: a lesson, a next step or the grid).
 12. **Instructions live here, on git.** Every standing instruction from the operator goes into these docs
     (or CLAUDE.md), never only into an agent's private memory. Private memory may only point here.
+13. **Resumable at every moment (operator 10-09).** At each launch, return and decision, the active Next-steps item records
+    what runs (pool dir, ETA), uncommitted work (path of any patch outside the tree) and the next action, so a fresh
+    session resumes from the docs alone.
 
 ## Operating rules (non-negotiable, both tracks)
 

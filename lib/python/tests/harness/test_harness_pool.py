@@ -110,6 +110,15 @@ def test_t3s_over_selecting_sync_pair_has_stragglers():
         assert int(ph.agg_goal * 1.3) > ph.agg_goal and ph.n >= 2 * int(ph.agg_goal * 1.3)
 
 
+def test_oort_family_screens_run_at_k10():
+    # FX-D106: upstream exploitLen = int(K x 0.1) is 0 below K=9; every Oort screen leg exploits from round 1.
+    for tier in ("T2", "T3", "T4", "G0U"):
+        for ds in pool.DATASETS:
+            for p in pool.tier_phases(tier, B6, ds):
+                if set(p.baselines) & set(pool.OORT_FAMILY) and p.pid.split("_", 1)[-1][:2] not in ("P6", "P7"):
+                    assert p.agg_goal >= 9 and not set(p.baselines) - set(pool.OORT_FAMILY), (tier, p.pid)
+
+
 def test_g2_replicate_tiers_run_one_side_at_the_g2_config():
     # FX-N68: sim-only / real-only copies of a G2 cell, same n and length, for the real<->real / sim<->sim floor.
     for tier, kind in (("G2S", "sim_ev"), ("G2C", "real")):
@@ -286,3 +295,12 @@ def test_gate_smoke_runs_once_per_code_state(tmp_path, monkeypatch):
     said = []
     assert pool.run_gate(tmp_path, ["cifar10"], type("P", (), {"say": lambda self, m: said.append(m)})()) == 0
     assert len(calls) == 2 and "earlier" in said[-1]  # collect + data check, no smoke
+
+
+def test_speech_stub_legs_cap_local_steps():
+    # FX-D110: speech stub legs run one real step (Oort's 20 CPU passes overran D/4); GPU and tiny_cpu legs are untouched.
+    for p in pool.tier_phases("T3", B6, "google_speech"):
+        assert "harness_stub_max_steps=1" in p.trainer_hp, p.pid
+    assert all("harness_stub_max_steps" not in p.trainer_hp for p in pool.tier_phases("T3", B6, "cifar10"))
+    assert not any(p.trace == "mobiperf_3st" and set(p.baselines) & set(pool.OORT_FAMILY)
+                   for p in pool.tier_phases("T3", B6, "google_speech"))

@@ -68,7 +68,13 @@ SHAPES = {
     "syn_50": dict(trace="syn_50", n=15, agg_goal=3, c=6, runtime_s=1200, trace_scale="4"),
     # FX-L34: ~10% AVL_TRAIN from t=0 (FX-D18), so n=45 keeps ~4-5 trainable for aggGoal 2 / sync select 3
     "mobiperf_3st": dict(trace="mobiperf_3st", n=45, agg_goal=2, c=4, runtime_s=240, trace_scale="4"),
+    # FX-D106 Oort-family K=10 shapes; n by FX-L34 (select 11 / available share x 1.5)
+    "syn_50s": dict(trace="syn_50", n=40, agg_goal=10, c=13, runtime_s=1200, trace_scale="4"),
+    "mobiperf_3sts": dict(trace="mobiperf_3st", n=165, agg_goal=10, c=13, runtime_s=240, trace_scale="4", cpt=0.4),
 }
+# FX-D106: upstream exploitLen = int(K x (1 - 0.9)) is 0 below K=9, so Oort screens run at K=10.
+OORT_FAMILY = ("oort", "oort_star")
+OORT_SHAPE = {"syn_0": "syn_0s", "syn_0b": None, "syn_20": "syn_20s", "syn_50": "syn_50s", "mobiperf_3st": "mobiperf_3sts"}
 # CPU legs that need longer for EV1's >= 4 commits (unaware oort waits out 90s timeouts; run 4: 0 in 240s).
 MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 960}
 # FX-D52: G0U legs whose unaware picks hold slots a full timeout run longer, to reach a gradeable round count.
@@ -81,6 +87,10 @@ G0_SHAPE = {"cifar10": dict(n=100, agg_goal=3, c=10, gpus=3),
 G0U_SHAPE = {"cifar10": dict(n=50, agg_goal=3, c=5, gpus=1),
              "google_speech": dict(n=50, agg_goal=5, c=15, gpus=2)}
 G0U_MOBIPERF = dict(agg_goal=2, c=4)  # FX-L34: ~10% AVL_TRAIN of n=50 leaves ~5 trainable
+# FX-D106 Oort-family G0U; speech mobiperf at n=165 needs 7 GPUs a leg, so T3 mobiperf_3sts covers it.
+G0U_OORT = {("cifar10", "syn_50"): dict(n=50, agg_goal=10, c=13, gpus=1),
+            ("cifar10", "mobiperf_3st"): dict(n=165, agg_goal=10, c=13, gpus=3),
+            ("google_speech", "syn_50"): dict(n=50, agg_goal=10, c=13, gpus=2)}
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
 STREAM_A = STREAM_T + ' checkpoint={"enabled":"True","every_n_rounds":10}'
@@ -196,13 +206,28 @@ def shaped(pid, baselines, shape, kind, dataset, **kw) -> Phase:
     if dataset == "google_speech":
         sh["sim_ceiling_x"] = 2
     sh.update(kw)
+    if dataset == "google_speech" and sh.get("harness", "stub") == "stub":  # FX-D110: 20-step speech CPU passes overran D/4
+        sh["trainer_hp"] = (sh.get("trainer_hp", "") + " harness_stub_max_steps=1").strip()
     return Phase(DS_TAG[dataset] + pid, tuple(baselines), kind=kind, dataset=dataset, **sh)
+
+
+def oort_split(pid, baselines, shape, kind, dataset, **kw) -> List[Phase]:
+    """shaped(), with the Oort family moved to its K=10 shape (FX-D106) under `<pid>s`."""
+    rest = tuple(b for b in baselines if b not in OORT_FAMILY)
+    fam = tuple(b for b in baselines if b in OORT_FAMILY)
+    out = [shaped(pid, rest, shape, kind, dataset, **kw)] if rest else []
+    if dataset == "google_speech" and shape == "mobiperf_3st":
+        fam = ()  # mobiperf_3sts n=165 > speech's 100 partitions (FX-T36: needs a new split)
+    if fam and OORT_SHAPE.get(shape, shape):
+        out.append(shaped(pid + "s" if shape in OORT_SHAPE else pid, fam, OORT_SHAPE.get(shape, shape), kind, dataset, **kw))
+    return out
 
 
 def campaign_phases(ds: str) -> List[Phase]:
     ph = lambda pid, bls, shape, **kw: shaped(pid, bls, shape, "pair", ds, **kw)
+    sp = lambda pid, shape: oort_split(pid, B6, shape, "pair", ds)
     return [
-        ph("P1", B6, "syn_0"), ph("P1b", B6, "syn_0b"), ph("P2", B6, "syn_50"), ph("P3", B6, "mobiperf_3st"),
+        *sp("P1", "syn_0"), *sp("P1b", "syn_0b"), *sp("P2", "syn_50"), *sp("P3", "mobiperf_3st"),
         ph("P4", ("felix", "fedbuff"), "syn_0", agg_hp="simColdStartGate=false"),
         ph("P5", ("felix", "refl"), "syn_20"),
         ph("P6", ("felix", "oort"), "syn_0", harness="tiny_cpu"),
@@ -230,9 +255,9 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [shaped("T1", baselines, sh, "sim_ev", ds, runtime_s={"syn_0": 120, "syn_50": 360}[sh])
                 for sh in ("syn_0", "syn_50")]
     if tier == "T2":
-        return [shaped(f"T2_{sh}", baselines, sh, "sim", ds) for sh in matrix] + injected_phases("sim_ev", ds)
+        return [p for sh in matrix for p in oort_split(f"T2_{sh}", baselines, sh, "sim", ds)] + injected_phases("sim_ev", ds)
     if tier == "T3":
-        return [shaped(f"T3_{sh}", baselines, sh, "pair", ds) for sh in matrix]
+        return [p for sh in matrix for p in oort_split(f"T3_{sh}", baselines, sh, "pair", ds)]
     if tier == "T4":
         return campaign_phases(ds)
     if tier == "T3S":  # FX-N67: straggler carry-over pair for the over-selecting sync stacks
@@ -268,9 +293,14 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
         return [Phase(DS_TAG[ds] + "G1S", bls, "syn_0", runtime_s=2700, n=GPU_N[ds], dataset=ds, harness="none", gpus=4)]
     if tier == "G0U":  # FX-N9 screen: syn_50 + mobiperf_3st at trace scale 4, EV + logical parity
-        return [Phase(f"{DS_TAG[ds]}G0U_{t}", baselines, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds, harness="none", trace_scale="4",
-                      **{**G0U_SHAPE[ds], **(G0U_MOBIPERF if t == "mobiperf_3st" else {})})
-                for t in ("syn_50", "mobiperf_3st")]
+        rest = tuple(b for b in baselines if b not in OORT_FAMILY)
+        fam = tuple(b for b in baselines if b in OORT_FAMILY)
+        g0u = lambda pid, bls, t, shape: Phase(pid, bls, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds, harness="none",
+                                               trace_scale="4", **shape)
+        return ([g0u(f"{DS_TAG[ds]}G0U_{t}", rest, t, {**G0U_SHAPE[ds], **(G0U_MOBIPERF if t == "mobiperf_3st" else {})})
+                 for t in ("syn_50", "mobiperf_3st") if rest]
+                + [g0u(f"{DS_TAG[ds]}G0U_{t}s", fam, t, G0U_OORT[(ds, t)])
+                   for t in ("syn_50", "mobiperf_3st") if fam and (ds, t) in G0U_OORT])
     if tier in ("TS", "TSo"):  # FX-N13 ST5 CPU: tiny_cpu pairs x {linear, events}; TSo = the *_oracle arms
         return stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "TSo",
                              lambda pid, t: shaped(pid, baselines, t, "pair", ds, harness="tiny_cpu"))
@@ -307,7 +337,8 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [Phase(f"{DS_TAG[ds]}PROF", bls, "syn_0", runtime_s=240, n=10, dataset=ds, harness="none", agg_goal=10, c=10,
                       kind="real", gpus=1, delay_factor="10")]
     if tier in ("ISO", "ISO_FILL"):  # P6: felix/fedbuff pairs solo (--max-parallel 1), then packed
-        iso = [shaped("ISO", ("felix", "fedbuff"), "syn_0", "pair", ds)]
+        bls = baselines if baselines != B6 else ("felix", "fedbuff")  # --baselines picks the stacks to control
+        iso = oort_split("ISO", bls, "syn_0", "pair", ds)
         # packed stage: neighbours load the node (and double as FX-N20 syn_50 checks)
         return iso + ([shaped("FILL", B6[2:], "syn_50", "sim_ev", ds)] if tier == "ISO_FILL" else [])
     raise SystemExit(f"unknown tier {tier}")
@@ -769,7 +800,8 @@ class Pool:
         """FX-N40: a fatal line in this leg's logs aborts the pool (ABORT.txt names it)."""
         if r.stalled:  # FX-N75: post-kill output is our own teardown
             return False
-        found =self.scanner.scan(leg_run_dirs(r.out)) + self.scanner.scan_broker(r.out / "mosquitto.log")
+        found = (self.scanner.scan(leg_run_dirs(r.out)) + self.scanner.scan_broker(r.out / "mosquitto.log")
+                 + self.scanner.scan_launch(r.out))
         if not found or not self.fail_fast:
             return False
         write_abort(self.root / "ABORT.txt", r.job.jid, found)
@@ -910,7 +942,7 @@ class Pool:
                     row = _summary_row(r.out)
                     if rc == 0 and (r.job.mode == "grade" or row.get(f"{r.job.mode}_dir")):
                         history.setdefault(r.job.key, []).append(round(dur))
-                        if r.job.gpus and r.busy:
+                        if r.busy:  # CPU legs too: the ISO control sizes their slots from it (FX-N22)
                             history.setdefault(cores_key(r.job), []).append(round(p95, 2))
                     cm.release(r.cpus, groups)
                     leases.drop(slot_leases(r.cpus, r.gpus, r.port))

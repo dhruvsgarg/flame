@@ -2,7 +2,8 @@
 """FX-D23: profile the sim's non-compute charges from REAL legs into a `sim_charge_registry` YAML.
 
 Per aggregator stack (asyncfl | oort_sync | fedavg, from baselines.yaml), from each real leg's aggregator log:
-  completion_leg   = download + upload per update: [LAG_DECOMP] agg_to_trainer + mqtt_lag + queue_wait
+  completion_leg   = upload per update: [LAG_DECOMP] mqtt_lag + queue_wait
+  download_leg     = download per update: [LAG_DECOMP] agg_to_trainer (sim charges it only without FX-D108's measured lag)
   dispatch_latency = commit -> next send: sync stacks = last update of version v -> [DISTRIBUTE_TIMING] round v+1;
                      asyncfl = [DISTRIBUTE_TIMING] - the latest update arrival before it
 The launcher (debug_run.sh) applies both to every baseline of that stack. Only this script writes the numbers.
@@ -21,7 +22,8 @@ from datetime import date, datetime
 
 import yaml
 
-LAG_KEYS = ("agg_to_trainer_s", "mqtt_lag_s", "queue_wait_s")  # post_wait: sim measures trainer overhead itself (C13)
+LAG_KEYS = ("mqtt_lag_s", "queue_wait_s")  # post_wait: sim measures trainer overhead itself (C13)
+DOWNLOAD_KEY = "agg_to_trainer_s"  # FX-D116: apart, so a measured delivery lag never charges it twice
 BASELINES = os.path.join(os.path.dirname(__file__), "..", "_metadata", "baselines.yaml")
 
 
@@ -36,14 +38,17 @@ def stack_of(baseline: str) -> str:
 
 
 def leg_samples(log: str, stack: str):
-    """(completion_leg samples, dispatch_latency samples) from one real aggregator log."""
-    legs, lat = [], []
+    """(completion_leg, dispatch_latency, download_leg) samples from one real aggregator log."""
+    legs, lat, down = [], [], []
     last_by_version, dist_by_round, last_recv = {}, {}, None
     for line in open(log, errors="ignore"):
         if "[LAG_DECOMP]" in line:
             vals = [re.search(k + r"=(-?[0-9.]+)", line) for k in LAG_KEYS]
             if all(vals):
                 legs.append(sum(float(v.group(1)) for v in vals))
+            d = re.search(DOWNLOAD_KEY + r"=(-?[0-9.]+)", line)
+            if d:
+                down.append(float(d.group(1)))
             m = re.search(r"version=(\d+)", line)
             if m:
                 last_by_version[int(m.group(1))] = _ts(line)
@@ -58,7 +63,7 @@ def leg_samples(log: str, stack: str):
     if stack != "asyncfl":
         lat = [dist_by_round[v + 1] - t for v, t in last_by_version.items()
                if v + 1 in dist_by_round and dist_by_round[v + 1] > t]
-    return legs, lat
+    return legs, lat, down
 
 
 def _entry(xs):
@@ -83,7 +88,8 @@ def main():
     tag = "" if a.harness == "gpu" else f"_h{a.harness}_"
     runs = sorted(r for r in runs if ("google_speech" in r) == (a.dataset == "google_speech")
                   and (tag in r if tag else "_hstub_" not in r and "_htiny_cpu_" not in r))
-    pooled = {"completion_leg": defaultdict(list), "dispatch_latency": defaultdict(list)}
+    pooled = {"completion_leg": defaultdict(list), "dispatch_latency": defaultdict(list),
+              "download_leg": defaultdict(list)}
     used = []
     for r in runs:
         m = re.search(r"_(felix|fedbuff|oort_star|oort|refl|feddance|oracle)_n\d+", r)
@@ -91,9 +97,10 @@ def main():
         if not m or not logs:
             continue
         stack = stack_of(m.group(1))
-        legs, lat = leg_samples(logs[0], stack)
+        legs, lat, down = leg_samples(logs[0], stack)
         pooled["completion_leg"][stack] += legs
         pooled["dispatch_latency"][stack] += lat
+        pooled["download_leg"][stack] += down
         used.append(os.path.basename(r))
     out = {label: {s: _entry(xs) for s, xs in by.items() if xs} for label, by in pooled.items()}
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
@@ -101,7 +108,7 @@ def main():
                     "tool": "profile_felix_charges.py", "runs": used}
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     yaml.safe_dump(out, open(a.out, "w"), sort_keys=False)
-    for label in ("completion_leg", "dispatch_latency"):
+    for label in ("completion_leg", "dispatch_latency", "download_leg"):
         print(label, {s: (e["mean_s"], e["n"]) for s, e in out.get(label, {}).items()})
     print(f"{len(used)} real legs -> {a.out}")
 

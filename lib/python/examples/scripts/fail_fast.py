@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 FATAL = re.compile(r"Traceback \(most recent call last\)|Fatal Python error|Segmentation fault")
+LAUNCH_FATAL = re.compile(r"^experiment (\S+ )?failed: ")  # runner.py: the launcher itself raised (KeyError trainer_101)
 BROKER_FATAL = re.compile(r"already connected, closing old connection")  # a client id live twice: two runs, one broker
 BENIGN_PRECEDED_BY = {"Fatal Python error: Aborted": "terminate called without an active exception"}  # FX-N33
 TRACEBACK = re.compile(r"Traceback \(most recent call last\)")
@@ -87,6 +88,10 @@ class Scanner:
                 if not log.name.endswith("_resources.log"):  # node-wide monitor, not the run
                     found += self._scan_file(log)
         return found
+
+    def scan_launch(self, leg_out: Path) -> List[Finding]:
+        """The launcher's own failure, printed to debug_run.out (no run-dir log carries it)."""
+        return [f for out in sorted(Path(leg_out).rglob("debug_run.out")) for f in self._scan_file(out, LAUNCH_FATAL)]
 
     def scan_broker(self, log: Path) -> List[Finding]:
         """L28: the leg's private broker log."""

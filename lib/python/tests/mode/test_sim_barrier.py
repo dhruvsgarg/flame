@@ -193,3 +193,35 @@ def test_oort_never_awaits_an_end_queued_for_cleanup():
     ch = RecordingChannel(SCTS, SCRAMBLED)
     ch._selector = type("S", (), {"ordered_updates_recv_ends": ["t3"]})()
     assert OortAgg._awaited_ends(ch, ["t1", "t3", "t4"]) == ["t1", "t4"]
+
+
+def test_redispatched_end_with_stale_return_is_still_awaited():
+    # FX-D109: t3's v84 update landed in the cleanup queue after its v117 dispatch; it still owes v117.
+    from flame.mode.horizontal.oort.top_aggregator import TopAggregator as OortAgg
+    from types import SimpleNamespace
+    ch = SimpleNamespace(_selector=SimpleNamespace(ordered_updates_recv_ends=["t3", "t5"]))
+    sent, got = {"t3": {84: 0.0, 117: 1.0}, "t5": {116: 0.0}}, {"t3": 84, "t5": 116}
+    assert OortAgg._awaited_ends(ch, ["t1", "t3", "t5"], sent, got) == ["t1", "t3"]
+
+
+def test_stale_dropped_return_is_not_awaited_again():
+    # FX-D112: a stale-dropped v1 return must count as returned, or FX-D109 awaits it forever (T3 speech oort sim).
+    from types import SimpleNamespace
+    agg = _bare(OortAgg)
+    agg.simulated, agg._round = True, 3
+    props = {}
+    ch = SimpleNamespace(_selector=SimpleNamespace(ordered_updates_recv_ends=["t3"]),
+                         set_end_property=lambda e, k, v: props.__setitem__((e, k), v),
+                         get_end_property=lambda e, k: props.get((e, k)))
+    agg._record_returned_trainer_props(ch, "t3", {MessageType.MODEL_VERSION: 1}, None)
+    assert OortAgg._awaited_ends(ch, ["t1", "t3"], {"t3": {1: 0.0}}, agg._returned_version) == ["t1"]
+
+
+def test_sync_over_quota_update_carries_to_next_barrier():
+    # FX-D113: G0U speech feddance sim blocked forever awaiting a straggler whose consumed update had been dropped.
+    agg = _bare(SyncAgg)
+    ch = RecordingChannel(SCTS, SCRAMBLED)
+    agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=3)
+    out = agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=2)
+    assert ch.recv_calls[1] == frozenset(SCTS) - {"t3", "t4"}  # carried ends aren't awaited again
+    assert sorted(md[0] for _m, md in out) == ["t3", "t4"]

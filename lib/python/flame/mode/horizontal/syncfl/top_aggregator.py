@@ -43,6 +43,7 @@ from flame.config import Config
 from flame.datasamplers import datasampler_provider
 from flame.mode.composer import Composer
 from flame.mode.message import MessageType
+from flame.mode.horizontal.nonfinite import hp_of as nonfinite_hp, nonfinite_reason, reject as nonfinite_reject
 from flame.mode.horizontal.client_duration import real_client_task_train_duration
 from flame.mode.role import Role
 from flame.mode.tasklet import Loop, Tasklet
@@ -480,7 +481,13 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # the first_k smallest sim_completion_ts (never before a smaller is in).
         buf = SimReorderBuffer()
         _held = getattr(self, "_withheld_slot_held", ())  # FX-N37: held picks return via reinject
-        ends = [e for e in ends if channel.has(e) and e not in _held]
+        # FX-D113: over-quota updates carry to the next barrier, as real's rxq keeps them.
+        _carry = getattr(self, "_sim_sync_carry", {})
+        self._sim_sync_carry = {}
+        for e, (c_sct, c_item) in _carry.items():
+            if channel.has(e):
+                buf.add(e, c_sct, c_item)
+        ends = [e for e in ends if channel.has(e) and e not in _held and e not in _carry]
         barrier_t0 = time.time()
         drained_all = True
         if ends:
@@ -514,13 +521,14 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
         committed = []
         for end, sct, (msg, md) in all_popped:
+            if len(committed) >= first_k:
+                self._sim_sync_carry[end] = (sct, (msg, md))
+                continue
             # Lazy deserialize before gate check (payload may be needed for stash).
             materialize_weights(msg)
             # E.1: send-gate — withhold if trainer is UN_AVL at completion.
             if self._sim_withhold_if_unavail(channel, end, sct, (msg, md)):
                 continue
-            if len(committed) >= first_k:
-                break  # first_k quota met; remaining straggler updates dropped
             self._advance_sim_clock(sct)
             _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
             _srd = msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
@@ -654,6 +662,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 self._real_recv_ends(ends), first_k=first_k,
                 deadline=self._real_round_recv_deadline(channel, ends, earliest=_wait_k),
             )
+            if _wait_k:
+                updates = self._real_recv_until_awaited(updates, ends)  # FX-D118
 
         # receive local model parameters from trainers
         # [U6 real barrier-anchor] Real applies all K updates at ONE post-loop
@@ -763,6 +773,12 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             weights = None
             if materialize_weights(msg, model_device(self.model)) is not None:
                 weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+            _why = nonfinite_reason(msg, weights, nonfinite_hp(self))
+            if _why:  # FX-D111: a failed task: not aggregated, not counted to K, utility not recorded
+                nonfinite_reject(end, _why, self._round, msg.get(MessageType.MODEL_VERSION))
+                weights = None
+                msg.pop(MessageType.STAT_UTILITY, None)
+                self._sync_failed_ends().add(end)  # FX-D120
 
             if MessageType.DATASET_SIZE in msg:
                 count = msg[MessageType.DATASET_SIZE]
@@ -926,6 +942,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self._update_model()
         self._round_committed = True
         self._sync_accepted_ends().clear()
+        self._sync_failed_ends().clear()
         self._sync_total, self._sync_real_durs = 0, []
 
         if channel._selector is not None:
@@ -1214,6 +1231,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             # availability lookups anchor to the SAME point the aggregator uses
             # (post-join-barrier-reanchor), not a per-trainer local origin.
             msg[MessageType.AGG_START_TS] = self.agg_start_time_ts
+        if self.simulated:
+            msg[MessageType.SIM_WALL_SEND_TS] = time.time()  # FX-D108
         _payload = channel.dumps(msg)
         _send_t0 = time.time()  # [DISTRIBUTE_TIMING]
         for end in selected_ends:

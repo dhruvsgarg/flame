@@ -195,7 +195,7 @@ def ev2_task_alternation(run):
 
 def ev3_duration_model(run):
     """Trainer's modeled duration = max(gpu, D) with D = registry D (floor, factor), + measured overhead in sim (C13);
-    sim: sct = send + duration + leg."""
+    sim: sct = send + duration + delivery lag (FX-D108) + leg."""
     reg = _registry_delays()
     sim = _simulated(run)
     n = bad_max = bad_budget = bad_sct = bad_stamp = 0
@@ -221,7 +221,7 @@ def ev3_duration_model(run):
                 bad_budget += 1
                 examples.append((tid[-4:], "D!=registry", budget, d_true))
             if sim and None not in (e.get("sim_send_ts"), e.get("sim_completion_ts"), dur):
-                legs.append((tid, e["sim_completion_ts"] - e["sim_send_ts"] - dur))
+                legs.append((tid, e["sim_completion_ts"] - e["sim_send_ts"] - dur - (e.get("sim_delivery_lag_s") or 0.0)))
                 sent = stamps.get((tid, e.get("round"), "train"))
                 if sent and round(e["sim_send_ts"], 6) not in sent:
                     bad_stamp += 1

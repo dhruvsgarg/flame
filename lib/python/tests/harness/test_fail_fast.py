@@ -116,3 +116,12 @@ def test_final_flushes_a_held_traceback():
     lines = list(enumerate(["ok", "Traceback (most recent call last):", '  File "x.py", line 1'], 1))
     assert list(ff.fatal_hits(lines, ff.TRACEBACK)) == []
     assert [n for n, _ in ff.fatal_hits(lines, ff.TRACEBACK, final=True)] == [2]
+
+
+def test_launcher_failure_in_debug_run_out_is_fatal(tmp_path):
+    # FX-N40 gap: speech n=165 > 100 partitions raised KeyError in the launcher; only debug_run.out said so.
+    out = tmp_path / "runs" / "x"
+    out.mkdir(parents=True)
+    (out / "debug_run.out").write_text("ok\nexperiment hstub_dbg failed: 'trainer_101'\n")
+    found = ff.Scanner().scan_launch(tmp_path)
+    assert len(found) == 1 and "trainer_101" in found[0].line

@@ -12,8 +12,9 @@ from .fedavg import FedAvg
 
 
 class FedScaleYoGi:
-    def __init__(self, eta: float, tau: float, momentum: float, v_decay: float):
+    def __init__(self, eta: float, tau: float, momentum: float, v_decay: float, normalize_first: bool = False):
         self.eta, self.tau, self.momentum, self.v_decay = eta, tau, momentum, v_decay
+        self.normalize_first = normalize_first  # FX-D107: first step scaled by eta/(|g|+tau), not passed through
         self.v_t, self.delta_t = None, None
 
     def step(self, last: dict, current: dict) -> dict:
@@ -25,7 +26,8 @@ class FedScaleYoGi:
         if self.v_t is None:  # first call: initialise state, apply the plain update (both forks)
             self.v_t = {k: d ** 2 for k, d in diff.items()}
             self.delta_t = {k: d.clone() for k, d in diff.items()}
-            step = diff
+            step = ({k: self.eta / (d.abs() + self.tau) * d for k, d in diff.items()}
+                    if self.normalize_first else diff)
         else:
             step = {}
             for k, g in diff.items():
@@ -42,9 +44,11 @@ class FedScaleYoGi:
 class FedAvgYoGi(FedAvg):
     """FedAvg aggregate, then a FedScale YoGi server step (Oort runs YoGi or Prox, never plain FedAvg; FX-N74)."""
 
-    def __init__(self, yogi_eta: float, yogi_tau: float, yogi_momentum: float, yogi_v_decay: float, **kwargs):
+    def __init__(self, yogi_eta: float, yogi_tau: float, yogi_momentum: float, yogi_v_decay: float,
+                 yogi_normalize_first: bool = False, **kwargs):
         super().__init__(**kwargs)
-        self._yogi = FedScaleYoGi(yogi_eta, yogi_tau, yogi_momentum, yogi_v_decay)
+        self._yogi = FedScaleYoGi(yogi_eta, yogi_tau, yogi_momentum, yogi_v_decay,
+                                  normalize_first=str(yogi_normalize_first).lower() == "true")
 
     def do(self, base_weights, cache, *, total: int = 0, version: int = 0, **kwargs):
         last = {k: v.clone() for k, v in base_weights.items()}  # FedAvg.do accumulates into base_weights

@@ -316,6 +316,19 @@ def test_ev3_frozen_trainer_clock_fails(tmp_path):
     assert _status(_write_run(tmp_path, agg, tr), "EV3_duration_model") == "FAIL"
 
 
+def test_ev3_reported_delivery_lag_is_not_a_leg(tmp_path):
+    # FX-D108: a per-recipient delivery lag moves sct; reported, EV3 still holds; unreported, it is caught.
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round" and e["round"] == 2:
+            e["sim_completion_ts"] += 0.7
+    assert _status(_write_run(tmp_path / "a", agg, tr), "EV3_duration_model") == "FAIL"
+    for e in tr[T1]:
+        if e["event"] == "trainer_round" and e["round"] == 2:
+            e["sim_delivery_lag_s"] = 0.7
+    assert _status(_write_run(tmp_path / "b", agg, tr), "EV3_duration_model") == "PASS"
+
+
 def _unavail_T1(monkeypatch):
     from sortedcontainers import SortedDict
     monkeypatch.setattr(ev, "_ground_truth", lambda run: {T1: SortedDict({0.0: "UN_AVL", 50.0: "AVL_TRAIN"}),

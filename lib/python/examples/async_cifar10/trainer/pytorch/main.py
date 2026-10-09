@@ -145,6 +145,8 @@ class PyTorchCifar10Trainer(Trainer):
         _leg = getattr(self.config.hyperparameters, "sim_completion_leg_s", 0.0)
         self.sim_completion_leg_s = float(_leg) if _leg is not None else 0.0
         self._sim_charge_overhead = getattr(self.config.hyperparameters, "sim_charge_trainer_overhead", True) is not False
+        self._sim_charge_lag = bool(getattr(self.config.hyperparameters, "sim_charge_delivery_lag", False))
+        self.sim_download_leg_s = float(getattr(self.config.hyperparameters, "sim_download_leg_s", 0.0) or 0.0)
 
         self.time_mode = str(time_mode)
         self.simulated = self.time_mode == "simulated"
@@ -797,6 +799,9 @@ class PyTorchCifar10Trainer(Trainer):
         # Setup/avail/loader-rebuild overhead before the compute loop.
         _pre_train_s = _gpu_start - _phase_train_entry
         steps = self.config.hyperparameters.local_steps
+        _cap = harness.stub_max_steps(self.config.hyperparameters, self.harness_mode)
+        if _cap is not None:
+            steps = min(steps, _cap) if steps is not None else _cap
         epoch = 0
         while epoch < self.epochs if steps is None else total_batches_processed < steps:  # FX-N74
             epoch += 1
@@ -907,6 +912,14 @@ class PyTorchCifar10Trainer(Trainer):
             sim_round_duration += _overhead_s
             self._sim_round_duration = sim_round_duration
             self._sim_completion_ts += _overhead_s
+        # FX-D108: real trains from its own receipt; delivery lag is not device speed, so only the clock sees it.
+        _wst, _wrt = getattr(self, "_sim_wall_send_ts", None), getattr(self, "_wall_recv_ts", None)
+        _lag_s = 0.0
+        if self.simulated and self._sim_charge_lag and _wst is not None and _wrt is not None:
+            _lag_s = max(0.0, float(_wrt) - float(_wst))
+        elif self.simulated:
+            _lag_s = self.sim_download_leg_s  # FX-D116: profiled download stands in for the unmeasured lag
+        self._sim_completion_ts += _lag_s
 
         if telemetry.is_enabled():
             visible = self._stream_visible  # what this task trained on, not a post-train recount
@@ -942,6 +955,7 @@ class PyTorchCifar10Trainer(Trainer):
                     "sleep_s": _remaining_time,
                     "post_train_s": _post_train_s,
                     "trainer_overhead_s": _overhead_s,
+                    "sim_delivery_lag_s": _lag_s,
                     "recv_gap_s": _recv_gap_s,
                     **getattr(self, "_phase_times", {}),
                     # Sim-mode-only vclock snapshot per _phase_times key; nested so

@@ -1,17 +1,17 @@
 completion_leg:
   asyncfl:
-    mean_s: 0.2382
-    p50_s: 0.176
+    mean_s: 0.1077
+    p50_s: 0.105
     n: 355
     charge: true
   fedavg:
-    mean_s: 0.3192
-    p50_s: 0.326
+    mean_s: 0.1128
+    p50_s: 0.119
     n: 29
     charge: true
   oort_sync:
-    mean_s: 0.3982
-    p50_s: 0.364
+    mean_s: 0.1187
+    p50_s: 0.119
     n: 133
     charge: true
 dispatch_latency:
@@ -30,12 +30,28 @@ dispatch_latency:
     p50_s: 0.113
     n: 17
     charge: true
+download_leg:
+  asyncfl:
+    mean_s: 0.1305
+    p50_s: 0.072
+    n: 355
+    charge: true
+  fedavg:
+    mean_s: 0.2064
+    p50_s: 0.201
+    n: 29
+    charge: true
+  oort_sync:
+    mean_s: 0.2795
+    p50_s: 0.252
+    n: 133
+    charge: true
 _meta:
   dataset: google_speech
   harness: gpu
   host: jayne
-  commit: d8a594ccb
-  date: '2026-10-08'
+  commit: b4b85f0ca
+  date: '2026-10-09'
   tool: profile_felix_charges.py
   runs:
   - run_20261008_051734_gs_CHG_dbg_google_speech_fedbuff_n100_alpha0.1_syn_0_stream_real

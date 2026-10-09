@@ -1,17 +1,17 @@
 completion_leg:
   asyncfl:
-    mean_s: 0.0213
-    p50_s: 0.019
+    mean_s: 0.0101
+    p50_s: 0.009
     n: 1280
     charge: true
   oort_sync:
-    mean_s: 0.0348
-    p50_s: 0.029
+    mean_s: 0.0115
+    p50_s: 0.011
     n: 739
     charge: true
   fedavg:
-    mean_s: 0.0273
-    p50_s: 0.027
+    mean_s: 0.0104
+    p50_s: 0.01
     n: 114
     charge: true
 dispatch_latency:
@@ -30,12 +30,28 @@ dispatch_latency:
     p50_s: 0.015
     n: 38
     charge: true
+download_leg:
+  asyncfl:
+    mean_s: 0.0111
+    p50_s: 0.008
+    n: 1280
+    charge: true
+  oort_sync:
+    mean_s: 0.0233
+    p50_s: 0.017
+    n: 739
+    charge: true
+  fedavg:
+    mean_s: 0.0169
+    p50_s: 0.015
+    n: 114
+    charge: true
 _meta:
   dataset: cifar10
   harness: tiny_cpu
   host: jayne
-  commit: d333e2142
-  date: '2026-10-08'
+  commit: b4b85f0ca
+  date: '2026-10-09'
   tool: profile_felix_charges.py
   runs:
   - run_20261008_151209_P6_htiny_cpu_dbg_felix_n300_alpha0.1_syn_0_stream_real

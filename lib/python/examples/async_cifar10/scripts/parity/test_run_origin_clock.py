@@ -43,3 +43,34 @@ def test_k8_time_to_n_is_stall_free():
     r = terminal_state_parity(real, sim)
     assert r["raw_sim_vclock_to_n_s"] > r["raw_real_time_to_n_s"] * 1.2
     assert r["time_rel_diff"] < 0.02, r
+
+
+def _all_stall(n, step, vclock, trainers=3):
+    """n rounds, each a 90s timeout stall (N88 G0U cifar oort syn_50: every round abandons on both sides)."""
+    rounds, t = [], 0.0
+    for i in range(n):
+        t += step + 90.0
+        e = {"round": i + 1, "ts": 1000.0 + t, "contributing_trainers": [f"t{i % trainers}"],
+             "task_to_perform": "train", "stall_cause": "abandon", "trainer_speed_s": [step]}
+        if vclock:
+            e["vclock_now"] = t
+        rounds.append(e)
+    return {"agg_rounds": rounds, "selection_train": [{"round": 1, "ts": 1000.0}]}
+
+
+def test_all_stall_legs_skip_time_but_grade_trainers():
+    """FX-D119: no stall-free round = no stall-free time; K8 grades trainers only, U2 and K4 SKIP."""
+    from parity.checks import overlap_factor, total_commits_parity
+    real, sim = _all_stall(6, 60.0, vclock=False), _all_stall(6, 10.0, vclock=True)
+    r = terminal_state_parity(real, sim)
+    assert r["ok"] and r["time_status"] == "SKIP", r
+    assert total_commits_parity(real, sim)["status"] == "SKIP"
+    assert overlap_factor(real, sim).get("status") == "SKIP"
+    assert not terminal_state_parity(real, _all_stall(6, 10.0, vclock=True, trainers=1))["ok"]
+
+
+def test_short_stall_round_saves_no_time():
+    """FX-D119: a cause-stamped round shorter than the median counted negative (T3 sim 576s -> 600s stall-free)."""
+    from parity.checks import _RoundAdv, _stall_excess_s
+    adv = [_RoundAdv(50.0), _RoundAdv(50.0), _RoundAdv(20.0, "gated"), _RoundAdv(150.0, "abandon")]
+    assert _stall_excess_s(adv, 72.0) == 100.0

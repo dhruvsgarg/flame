@@ -810,3 +810,18 @@ def test_topk_pads_when_exploit_is_capped(make_ends):
     ends.update(make_ends(count=2, prefix="u", stat_utility=1.0))
     sel.selected_ends = {"x"}
     assert len(sel.select(ends, {"round": 5}, trainer_unavail_list=[], task_to_perform="train")) == 3
+
+
+def test_exploration_decays_once_per_round(make_ends):
+    # FX-N83: upstream getTopK runs once per round; FX-N37 top-ups re-enter select without decaying again.
+    from flame.selector.oort import OortSelector
+    sel = OortSelector(aggr_num=4, overcommitment=1.0, exploration_factor=0.9, exploration_decay=0.5)
+    ends = make_ends(count=30, prefix="t")
+    for i in range(20):
+        ends[f"t{i}"].set_property("stat_utility", 1.0 + i)
+    sel.selected_ends = {"x"}
+    sel.select(ends, {"round": 5}, trainer_unavail_list=[], task_to_perform="train",
+               agg_version_key=5, trainer_version_keys={})
+    sel.select(ends, {"round": 5}, trainer_unavail_list=[], task_to_perform="train", num_to_select=1,
+               agg_version_key=5, trainer_version_keys={})
+    assert sel.exploration_factor == 0.45

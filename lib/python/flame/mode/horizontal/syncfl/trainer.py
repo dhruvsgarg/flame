@@ -298,6 +298,7 @@ class Trainer(Role, metaclass=ABCMeta):
             harness.injected("freeze_trainer_clock") and getattr(self, "_sim_send_ts", None) is not None
         ):
             self._sim_send_ts = msg[MessageType.SIM_SEND_TS]
+        self._sim_wall_send_ts = msg.get(MessageType.SIM_WALL_SEND_TS)  # FX-D108
         _mqtt_vclock_end = getattr(self, "vclock_now", None)
         self._phase_vclock_s["mqtt_fetch_s"] = (
             _mqtt_vclock_end - _mqtt_vclock_start

@@ -35,6 +35,7 @@ from flame.common.util import (
     weights_to_model_device,
 )
 from flame.mode.composer import CloneComposer
+from flame.mode.horizontal.nonfinite import hp_of as nonfinite_hp, nonfinite_reason, reject as nonfinite_reject
 from flame.mode.horizontal.syncfl.top_aggregator import (
     TAG_AGGREGATE,
     TAG_DISTRIBUTE,
@@ -1250,6 +1251,11 @@ class TopAggregator(SyncTopAgg):
         weights = None
         if materialize_weights(msg, model_device(self.model)) is not None:
             weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+        _why = nonfinite_reason(msg, weights, nonfinite_hp(self))
+        if _why:  # FX-D111
+            nonfinite_reject(end, _why, self._round, msg.get(MessageType.MODEL_VERSION))
+            weights = None
+            msg.pop(MessageType.STAT_UTILITY, None)
 
         if MessageType.DATASET_SIZE in msg:
             count = msg[MessageType.DATASET_SIZE]

@@ -139,6 +139,7 @@ class OortSelector(AbstractSelector):
             self.save_exploited_utility_history(all_ends, getattr(self, "_paced_round", None))
             self._paced_round = round
             self.pacer(round)
+            self.update_exploration_factor()  # getTopK top: once per round, first round included
 
         # FX-D9 no-repeat guard: an end already tasked at this version is not eligible.
         # Excluded here so the random paths skip unavailable ends too (EV9).
@@ -217,7 +218,6 @@ class OortSelector(AbstractSelector):
             )
             return result
 
-        self.update_exploration_factor()  # decays at the top of getTopK, before sizing the split
         self.round_preferred_duration = self.calculate_round_preferred_duration(all_ends)
         exploit_end_ids = []
         if utility_list:

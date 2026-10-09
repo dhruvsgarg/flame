@@ -71,6 +71,7 @@ A new failure mode adds a check here in the same session.
 | PL9 | every leg graded before citing numbers | `SUMMARY.txt`, else `parity_check.py` | run 16 MISSING legs |
 | PL10 | stall rules never cut a leg matching its sim | compare STALLED real with sim timeline | run 18 oort cut pre-round 1 |
 | PL11 | every sim leg has a charge profile for its harness × dataset × stack | no `no profiled sim charges` WARNING in the leg's `shell.log` | FX-N71: tiny_cpu ran a 0.6 s placeholder |
+| PL12 | co-located pools can't starve each other | GPU pool `--gpu-cpus-per-trainer 0.1` beside a CPU tier; watch `LOAD foreign` | N86: G0U leased 112 CPUs using ~3, T3 idle 45 min |
 
 ## Method
 
@@ -121,6 +122,7 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 | CPU smokes (FX-D92-99) | 10-08 | 2456 / 0 | 16 | 99 | T1 24/24 · T3 mobiperf 2/0/0 · P6 2/0/0 · P7 6/0/0 | 3 / 12 |
 | PR22/23 + FX-D100-103 | 10-08 | 2491 / 0 | 16 | 103 | T3 cifar 27/30 · speech 16/30 (stale stub profile → FX-D103; syn_0b re-check 2/2) · G0U fedbuff cifar ✅ (FX-N77 closed) | 4 / 12 |
 | FX-N80 step 2 (FX-D104-105) | 10-09 | 2508 / 0 | 17 | 105 | T3 37/0/3 (Oort family) · G0U oort NaN abort | 4 / 12 |
+| N88 + FX-D106-D120 | 10-09 | 2529 / 0 | 17 | 120 | T3 10/0/4 · G0U 8/0/6 (stored runs, FX-D119 regrade) | 4 / 12 |
 
 **Per baseline × dataset (latest grade).** Parity = INV/EXACT on the latest pair; accuracy numbers in FELIX accuracy table.
 
@@ -154,6 +156,7 @@ INV/EXACT green / known / red via `--grade <pool> --regrade --max-stage 9`; DIST
 
 | pool (run) | g / k / r | reds and roots |
 |---|---|---|
+| N88 `pool_20261009_N88_{T3,G0U}`: Oort K=10 + refl/feddance G0U | T3 10/0/4 · G0U 8/0/6 | FX-D116-D120 (rerun: PR26); cifar Oort NaN, Oort stall placement, no K=10 floors (FX-N80) |
 | PR23 `pool_20261008_1845_G0Tgs`: speech G0T felix + fedbuff | 8/0/0 · EV 8/8 | DIST only: phase_gpu_compute, speed identity (FX-N76); fedbuff syn_50 eligibility |
 | PR22/23 `pool_20261008_1628_{T3c,T3s,T1}`, `_2000_wt{T1,P7}`, `_2010_wtT3s`, `_1628_G0Ufb` | T3 cifar 27/0/3 · speech 16/0/14 · T1 24/24 · wtP7 6/0/0 · G0Ufb 1/0/0 | speech timing = stale stub profile → FX-D103 (syn_0b 2/0/0 after); cifar syn_50 oort-family terminal_state (pre-FX-D100, FX-N9) |
 | CPU smokes `pool_20261008_15{0148,2447}_*` | T3 mob 2/0/0 · P6 2/0/0 · P7 6/0/0 (feddance DIST) | FX-D92-D99; T1 24/24 EV |
@@ -175,8 +178,10 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR25 · FX-N80 step 2 · red, fixing:** T3 37/0/3 (`pool_20261008_N80_T3`; Oort-family reds), G0U fail-fast on oort selector
-  NaN (`pool_20261008_N80_G0U`). Fix FX-D105 roots, then rerun both. *Stop:* any INV/EXACT red = a FX-D104/D105 root, fixed before PR21.
+- **PR26 · FX-N80 step 2 confirm · todo (operator launches).** *Claim:* FX-D116-D118 green speech refl + feddance G0U.
+  `harness_pool.py --tier G0U --datasets google_speech --baselines refl,feddance` (~48 min). *Then:* T3C Oort floors
+  `--tier T3C --datasets all --baselines oort,oort_star` (~68 min; after, not beside: PL12). cifar Oort GPU legs wait for
+  the in-process NaN repro (FELIX FX-N80 (a)). *Stop:* any INV/EXACT red on refl/feddance speech.
 - **PR24 · FELIX "Next steps → Resume here", in order FX-N80 → N84.** FX-N80's C19 steps (in-process `fl_lr_check --baseline`, then T3 +
   G0U screens on FX-D100/D104/D105 configs).
 - **PR23 · GPU screens (C18) · partly done.** Done: G0UC fedbuff cifar ×3 + G0U pair at HEAD ✅ (FX-N77 closed). Done: speech G0T

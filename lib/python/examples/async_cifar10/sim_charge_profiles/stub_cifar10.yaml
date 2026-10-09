@@ -1,17 +1,17 @@
 completion_leg:
   asyncfl:
-    mean_s: 0.0251
-    p50_s: 0.024
+    mean_s: 0.0142
+    p50_s: 0.013
     n: 1802
     charge: true
   oort_sync:
-    mean_s: 0.0321
-    p50_s: 0.031
+    mean_s: 0.0149
+    p50_s: 0.015
     n: 824
     charge: true
   fedavg:
-    mean_s: 0.0311
-    p50_s: 0.029
+    mean_s: 0.0146
+    p50_s: 0.014
     n: 230
     charge: true
 dispatch_latency:
@@ -30,12 +30,28 @@ dispatch_latency:
     p50_s: 0.015
     n: 92
     charge: true
+download_leg:
+  asyncfl:
+    mean_s: 0.0109
+    p50_s: 0.011
+    n: 1802
+    charge: true
+  oort_sync:
+    mean_s: 0.0172
+    p50_s: 0.015
+    n: 824
+    charge: true
+  fedavg:
+    mean_s: 0.0165
+    p50_s: 0.014
+    n: 230
+    charge: true
 _meta:
   dataset: cifar10
   harness: stub
   host: jayne
-  commit: 72f2dfa19
-  date: '2026-10-08'
+  commit: b4b85f0ca
+  date: '2026-10-09'
   tool: profile_felix_charges.py
   runs:
   - run_20261008_170433_T3_syn_0_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real

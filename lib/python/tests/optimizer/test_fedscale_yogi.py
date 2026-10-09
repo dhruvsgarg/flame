@@ -24,3 +24,12 @@ def test_fedavg_yogi_is_registered():
     opt = optimizer_provider.get(OptimizerType.FEDAVG_YOGI, yogi_eta=0.005, yogi_tau=0.001, yogi_momentum=0.0,
                                  yogi_v_decay=0.999)
     assert isinstance(opt, FedAvgYoGi)
+
+
+def test_first_step_passes_through_unless_normalized():
+    # FX-D107: off = upstream (plain first update); on = eta * g / (|g| + tau), bounded by eta.
+    last, cur = {"w": torch.zeros(2)}, {"w": torch.tensor([100.0, -0.002])}
+    assert torch.equal(FedScaleYoGi(0.005, 0.001, 0.0, 0.999).step(last, cur)["w"], cur["w"])
+    out = FedScaleYoGi(0.005, 0.001, 0.0, 0.999, normalize_first=True).step(last, cur)["w"]
+    assert torch.allclose(out, 0.005 / (cur["w"].abs() + 0.001) * cur["w"])
+    assert out.abs().max() <= 0.005

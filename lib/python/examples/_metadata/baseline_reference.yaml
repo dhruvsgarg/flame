@@ -81,8 +81,12 @@ oort:
       lr_decay: {v: {factor: 0.95, every: 5, min: 0.0001}, src: "[code] argParser.py:86,87,101"}
       stat_utility: {v: fedscale, src: "[code] learner.py:296-312"}
       server:
-        v: {sort: fedavg_yogi, kwargs: {yogi_eta: 0.005, yogi_tau: 0.001, yogi_momentum: 0.0, yogi_v_decay: 0.999, weighting: equal}}
+        v: {sort: fedavg_yogi, kwargs: {yogi_eta: 0.005, yogi_tau: 0.001, yogi_momentum: 0.0, yogi_v_decay: 0.999, weighting: equal,
+                                        yogi_normalize_first: true}}
         src: "[code] openimage/conf.yml:40 gradient_policy=yogi; argParser.py:112-115; utils/yogi.py (beta2=-1: no momentum); argParser.py:96 is_even_avg -> equal weights"
+        source_v: {yogi_normalize_first: false}
+        why: "server step (ladder rung 1): YoGi's plain first step spreads single-batch clients' blown-up deltas (NaN 1/6 seeds); client lr 0.03/0.02 still spikes or dies"
+        evidence: "fl_lr_check K=10 r150, 6 seeds: source NaN s4; normalized 31-39% all (experiments/lrcheck_20261009_fxd106/S1_*, cifar_oort_k10_s*, L1_*)"
       selector:
         v: {overcommitment: 1.1, round_threshold: 10, pacer_delta: 10, pacer_step: 20, cut_off_util: 0.7,
             clip_bound: 0.98, exploration_factor: 0.9, exploration_decay: 0.95, exploration_min: 0.2, round_penalty: 2.0}

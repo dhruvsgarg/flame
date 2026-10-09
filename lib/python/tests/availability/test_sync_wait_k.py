@@ -204,3 +204,43 @@ def test_selector_reclaimed_held_pick_keeps_identity_hold():
     assert agg._sim_withhold_if_unavail(ch, "a", 20.0, ({}, ("a", None)))
     agg._withheld_slot_held.intersection_update(set())  # what distribute does once the selector reclaimed "a"
     assert "a" in agg.withheld_held_ends()
+
+
+def test_sim_wakes_at_next_availability_change():
+    # FX-D114: N86 speech mobiperf sim skipped real's 1379s top-up, jumping from 1252 to a 1586 delivery.
+    agg, ch = _withheld_pick(wait_k=True)
+    agg._next_avail_vclock = lambda: 50.0
+    assert agg._sim_sync_next_wake(ch) == 50.0
+
+
+def test_sim_wakes_at_carried_update():
+    # FX-D117: N88 speech feddance syn_50 sim closed every round at the next 150s flip, past its carried 101s update.
+    agg, ch = _withheld_pick(wait_k=True)
+    agg._next_avail_vclock = lambda: 150.0
+    agg._sim_sync_carry = {"b": (60.0, ({}, ("b", None)))}
+    assert agg._sim_sync_next_wake(ch) == 60.0
+    agg._sim_sync_carry = {"b": (10.0, ({}, ("b", None)))}  # already due: wake now
+    assert agg._sim_sync_next_wake(ch) == 20.0
+
+
+def test_rejected_pick_frees_its_top_up():
+    # FX-D120: N88 G0U oort_star sim: 2 NaN rejects at 9/10 left distribute's need at 0; the version waited to the budget.
+    agg, ch = _withheld_pick(wait_k=True)
+    agg._sync_failed_ends().add("b")
+    assert agg._sync_version_inflight(ch) == {"a"}
+
+
+def test_real_recv_stops_once_nothing_awaited():
+    # FX-D118: N88 speech refl mobiperf real waited 262s for an abandoned end's late update after its only pick replied.
+    agg, closed = _Agg(), []
+
+    def recv():
+        try:
+            yield {}, ("b", None)
+            yield {}, ("late", None)
+        finally:
+            closed.append(True)
+
+    assert [m[1][0] for m in agg._real_recv_until_awaited(recv(), ["b"])] == ["b"] and closed
+    agg.config.hyperparameters.real_recv_until_awaited = False
+    assert len(list(agg._real_recv_until_awaited(recv(), ["b"]))) == 2

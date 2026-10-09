@@ -237,9 +237,25 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_completion_leg_s: t.Optional[float] = Field(
         alias="simCompletionLegSeconds", default=0.0
     )
+    # FX-D116: profiled download leg (agg -> trainer), charged only when the measured FX-D108 lag is not.
+    sim_download_leg_s: t.Optional[float] = Field(
+        alias="simDownloadLegSeconds", default=0.0
+    )
     # C13: sim adds each update's measured trainer pre/post-train time to its duration.
     sim_charge_trainer_overhead: t.Optional[bool] = Field(
         alias="simChargeTrainerOverhead", default=True
+    )
+    # FX-D111: drop an update whose weights or utility are NaN/inf (failed client task); false = revert.
+    reject_nonfinite_updates: t.Optional[bool] = Field(
+        alias="rejectNonfiniteUpdates", default=True
+    )
+    # FX-D118: real wait-K stops receiving once every awaited end replied; false = revert.
+    real_recv_until_awaited: t.Optional[bool] = Field(
+        alias="realRecvUntilAwaited", default=True
+    )
+    # C13 (FX-D108): sim starts each recipient after its measured fan-out delivery lag, as real does.
+    sim_charge_delivery_lag: t.Optional[bool] = Field(
+        alias="simChargeDeliveryLag", default=True
     )
     # Sim dispatch latency (commit -> next send: select, ingest, send), profiled per stack (FX-D23).
     sim_dispatch_latency_s: t.Optional[float] = Field(

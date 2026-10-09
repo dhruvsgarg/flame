@@ -787,6 +787,23 @@ class ClientAvailability:
         late = [e for e in getattr(self, "pending_withheld", {}) if e not in set(ends)]
         return list(ends) + late
 
+    def _real_recv_until_awaited(self, updates, ends):
+        """FX-D118 (real wait-K): stop once every awaited end replied, so distribute can top up; late owed
+        updates land on the next pass (sim's barrier returns the same way). `realRecvUntilAwaited=false` reverts."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        if str(getattr(hp, "real_recv_until_awaited", True)).lower() != "true":
+            yield from updates
+            return
+        pending = set(ends)
+        try:
+            for item in updates:
+                yield item
+                pending.discard(item[1][0])
+                if not pending:
+                    return
+        finally:
+            updates.close()
+
     def _real_round_recv_deadline(self, channel, ends, earliest: bool = False) -> float:
         """Real sync round: wait until every awaited trainer is past its own 90s since dispatch (FX-L40),
         capped at the run budget's end. Abandoned ends don't extend the wait. `earliest` (FX-N37): stop at
@@ -833,6 +850,12 @@ class ClientAvailability:
             self._sync_accepted = set()
         return self._sync_accepted
 
+    def _sync_failed_ends(self) -> set:
+        """FX-D120: ends whose update was rejected as non-finite at the current version (reset on commit)."""
+        if not hasattr(self, "_sync_failed"):
+            self._sync_failed = set()
+        return self._sync_failed
+
     def _sync_replied(self, channel) -> set:
         """FX-N37: picks whose update already arrived this version (accepted or stale-rejected), not stalled."""
         sel = getattr(channel, "_selector", None)
@@ -844,8 +867,9 @@ class ClientAvailability:
         return to is not None and sst is not None and to >= float(sst)
 
     def _sync_version_inflight(self, channel) -> set:
-        """FX-N37: picks dispatched at this version that still hold a slot and have not been accepted."""
-        acc = self._sync_accepted_ends()
+        """FX-N37: picks dispatched at this version that still hold a slot and owe a reply.
+        FX-D120: a pick whose reply was rejected as non-finite owes nothing; distribute replaces it."""
+        acc = self._sync_accepted_ends() | self._sync_failed_ends()
         out = set()
         for e in self._avail_inflight_ends(channel):
             prop = channel.get_end_property(e, PROP_ROUND_START_TIME)
@@ -863,12 +887,18 @@ class ClientAvailability:
         buf = getattr(self, "_sim_buffer", None)
         cands = [d for d in getattr(self, "pending_withheld", {}).values() if now < d < math.inf]
         replied = self._sync_replied(channel)
+        awaited = self._sync_awaited(channel)
+        carry = {e: c[0] for e, c in getattr(self, "_sim_sync_carry", {}).items() if e in awaited}
+        cands += [max(float(s), now) for s in carry.values()]  # FX-D117: a carried update is a delivery
         for e in self._avail_inflight_ends(channel):
-            if (buf is not None and buf.has(e)) or e in replied:
+            if (buf is not None and buf.has(e)) or e in replied or e in carry:
                 continue
             sst = self._avail_send_ts(channel, e)
             if sst is not None and float(sst) + self._task_timeout_s() >= now:
                 cands.append(float(sst) + self._task_timeout_s() + 1e-6)  # abandon needs age > timeout
+        nxt = self._next_avail_vclock()  # FX-D114: a newly available end can top up the version, as real's poll does
+        if nxt is not None and nxt > now:
+            cands.append(nxt)
         return min(cands) if cands else None
 
     def _sim_sync_wait(self, channel) -> None:

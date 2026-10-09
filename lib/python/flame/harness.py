@@ -91,6 +91,14 @@ def prefix_indices(indices, k: int):
     return list(indices)[: max(1, k)]
 
 
+def stub_max_steps(hp, mode: str):
+    """FX-D110: cap on real local steps in stub mode (None = no cap); the stub's span is stub_compute_s, not the model's."""
+    if mode != "stub":
+        return None
+    cap = _hp(hp, "harness_stub_max_steps", "harnessStubMaxSteps", default=None)
+    return int(cap) if cap not in (None, "", "None") else None
+
+
 def stub_compute_s(hp, mode: str, key) -> float:
     """Seeded modeled GPU-compute seconds for one stub task (0 outside stub). Same key ->
     same draw in both legs, so real/sim phase rungs compare one distribution."""
