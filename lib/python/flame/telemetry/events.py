@@ -38,6 +38,8 @@ EVENT_REDISPATCH_DECOMP = "redispatch_decomp"  # fwdllm round-cadence: commit->n
 EVENT_SLOT_STARVATION = "slot_starvation"  # a freed dispatch slot had fewer eligible candidates than slots
 EVENT_VCLOCK_CHARGE = "vclock_charge"  # every charge_sim_vclock_overhead() call: measured span vs actually-charged
 EVENT_SERVER_UPDATE = "server_update"  # fwdllm: applied-update vs weight norm per commit (I-1 audit)
+EVENT_BMAX_PROBE = "bmax_probe"      # fwdllm: one B_max re-sense (accuracy-vs-Phi curve + knee)
+EVENT_SAT_STATE = "sat_state"        # fwdllm: saturation-stop detector state per eval
 
 KNOWN_EVENTS = frozenset(
     {
@@ -61,6 +63,8 @@ KNOWN_EVENTS = frozenset(
         EVENT_VERSION_BUMP_CENSUS,
         EVENT_VAR_CALC,
         EVENT_SERVER_UPDATE,
+        EVENT_BMAX_PROBE,
+        EVENT_SAT_STATE,
         EVENT_REDISPATCH_DECOMP,
         EVENT_SLOT_STARVATION,
         EVENT_VCLOCK_CHARGE,
@@ -303,6 +307,15 @@ def build_server_update(
     rho_star: Optional[float] = None,
     n_req: Optional[float] = None,
     stop_reason: Optional[str] = None,
+    commit_count: Optional[int] = None,
+    g_norm: Optional[float] = None,
+    step_skipped: Optional[bool] = None,
+    rho_max: Optional[float] = None,
+    pool_mean_sq: Optional[float] = None,
+    var_dim: Optional[int] = None,
+    g_rule: Optional[float] = None,
+    p_trainable: Optional[int] = None,
+    safety_s: Optional[float] = None,
 ) -> tuple[str, dict[str, Any]]:
     """I-1 audit: L2 norm of the update actually SUBTRACTED from the server
     weights, the resulting weight norm, and their ratio — one record per commit.
@@ -374,7 +387,95 @@ def build_server_update(
         fields["rho_star"] = rho_star
         fields["n_req"] = n_req
         fields["stop_reason"] = stop_reason
+        if safety_s:
+            fields["progress_lambda"] = 2.0 * budget_b / safety_s
+    # Per-commit controller state for the cheatsheet's concept table; None = absent.
+    for k, v in (
+        ("commit_count", commit_count),
+        ("g_norm", g_norm),
+        ("step_skipped", step_skipped),
+        ("rho_max", rho_max),
+        ("pool_mean_sq", pool_mean_sq),
+        ("var_dim", var_dim),
+    ):
+        if v is not None:
+            fields[k] = v
+    if pool_size is not None:
+        fields["pool_size"] = pool_size
+    # Theory aim cos = sqrt(G_rule*N/p); D = measured / theory.
+    if g_rule and p_trainable and pool_size:
+        _cos_th = math.sqrt(g_rule * pool_size / p_trainable)
+        fields["cos_theory"] = _cos_th
+        if cos_ground_truth is not None:
+            fields["aim_d"] = cos_ground_truth / _cos_th
     return EVENT_SERVER_UPDATE, fields
+
+
+def build_run_meta(*, scope: str, config: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """One-time config snapshot; `scope` names the emitter (aggregator, trainer_probe, trainer_fd)."""
+    fields: dict[str, Any] = {"scope": scope}
+    fields.update({k: v for k, v in config.items() if v is not None})
+    return EVENT_RUN_META, fields
+
+
+def build_bmax_probe(
+    *,
+    commit_count: int,
+    base_acc: float,
+    phis: list[float],
+    accs: list[float],
+    phi_knee: Optional[float],
+    b_rem: Optional[float],
+    b_max_before: float,
+    b_max_after: float,
+    budget_b: float,
+    policy: str,
+    took_s: Optional[float] = None,
+) -> tuple[str, dict[str, Any]]:
+    """One B_max re-sense: the accuracy-vs-Phi curve, its knee and the resulting B_max."""
+    return EVENT_BMAX_PROBE, {
+        "commit_count": commit_count,
+        "base_acc": base_acc,
+        "phis": list(phis),
+        "accs": list(accs),
+        "phi_knee": phi_knee,
+        "b_rem": b_rem,
+        "b_max_before": b_max_before,
+        "b_max_after": b_max_after,
+        "budget_b": budget_b,
+        "policy": policy,
+        "took_s": took_s,
+    }
+
+
+def build_sat_state(
+    *,
+    commit_count: int,
+    acc: float,
+    smoothed: Optional[float],
+    best: Optional[float],
+    gl: Optional[float],
+    progress: Optional[float],
+    stalls: Optional[int],
+    breaches: Optional[int],
+    fired_at: Optional[int],
+    fired_reason: Optional[str],
+    phi: Optional[float] = None,
+) -> tuple[str, dict[str, Any]]:
+    """Saturation-stop detector state after one eval (rows 16-17: stall g, decay GL)."""
+    return EVENT_SAT_STATE, {
+        "commit_count": commit_count,
+        "acc": acc,
+        "smoothed": smoothed,
+        "best": best,
+        "gl": gl,
+        "progress": progress,
+        "stalls": stalls,
+        "breaches": breaches,
+        "fired_at": fired_at,
+        "fired_reason": fired_reason,
+        "phi": phi,
+    }
 
 
 def build_comm(

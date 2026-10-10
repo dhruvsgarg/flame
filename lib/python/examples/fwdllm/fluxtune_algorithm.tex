@@ -1,0 +1,431 @@
+% FluxTune: main-text section + per-concept appendix. Drop-in: \input{fluxtune_algorithm}
+% Packages: amsmath, amssymb, booktabs, algorithm, algpseudocode
+% Evidence: agnews, DistilBERT + adapters, rf=16 (p=450,340), one run per arm, eval noise +-0.005.
+\providecommand{\norm}[1]{\lVert #1\rVert}
+\providecommand{\ttr}{\theta_{\mathrm{tr}}}
+\providecommand{\E}{\mathbb{E}}
+% Placeholder figure; swap the body for \includegraphics[width=\linewidth]{figs/#1} once the plot exists.
+\newcommand{\figslot}[2]{\begin{figure}[t]\centering
+  \fbox{\parbox{0.92\linewidth}{\centering\vspace{2.5em}\texttt{\detokenize{#1}}\vspace{2.5em}}}
+  \caption{#2}\label{fig:#1}\end{figure}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% MAIN TEXT %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{FluxTune}
+\label{sec:fluxtune}
+
+\subsection{Overview}
+\label{sec:ft:overview}
+We fine-tune a model on devices that cannot run a backward pass. Following FwdLLM, each client estimates the gradient from forward passes only:
+it perturbs the trainable weights along random directions (a \emph{perturbation}) and reads the change in loss, i.e.\ the directional derivative of the loss along that direction (also called a Jacobian-vector product, JVP). In a space of $p=450{,}340$ trainable parameters a random direction is
+nearly perpendicular to the gradient, so one client gradient (the estimate a client sends to the server) is almost pure noise. We measure agreement between two vectors by their \emph{alignment}, the cosine $\cos(a,b)=a\!\cdot\! b/(\norm a\norm b)$ ($1$ for the same direction, $0$ for perpendicular): one client gradient has alignment $\approx0.005$ with the true gradient, and even a \emph{pool} of $N=50$ of them (the set of client gradients the server holds before it updates) reaches only $\approx0.03$.
+Every server-side decision is therefore a decision about how to spend a mostly-sideways step. An \emph{aggregation} is one server update computed from one pool.
+
+FluxTune keeps the FwdLLM estimator and changes what the server does with it. It (i) sets the step as a fixed fraction of the weight norm (the \emph{trust ratio} $\rho$, the name LARS and LAMB give to $\norm{\Delta\theta}/\norm{\theta}$) instead of
+letting it follow the gradient's scale, (ii) aggregates after a fixed pool size $N$ instead of a variance threshold, (iii) meters how much the weights have \emph{inflated} (grown in norm since the start of training) and stops itself on that meter or on \emph{saturation} (accuracy has stopped improving),
+and (iv) aggregates asynchronously. Section~\ref{sec:ft:gaps} explains why each change was needed, Section~\ref{sec:ft:design} gives the design, and Algorithm~\ref{alg:fluxtune} states it in full.
+
+Let $\theta$ be the model weights, $\ttr\in\mathbb{R}^p$ the trainable slice (the small adapter layers added to the frozen model), $L$ the loss, and $\norm{\cdot}$ the $\ell_2$ norm.
+Table~\ref{tab:ft:notation} lists the notation and the values used in our experiments.
+
+\begin{table}[t]
+\centering
+\caption{Notation and values used (agnews, DistilBERT + adapters).}
+\label{tab:ft:notation}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Symbol & Meaning & Value \\
+\midrule
+$p$ & trainable parameters & 450{,}340 \\
+$P$ & perturbations (random directions) per client gradient & 10 \\
+$h$ & finite-difference spacing & 0.01 \\
+$u_k$ & client gradient from client $k$ & --- \\
+$N$ & pool size: client gradients summed per aggregation & 50 \\
+$G$ & aggregated update $\sum_k\omega_ku_k$ (the direction the server steps along) & --- \\
+$\omega_k$ & per-client aggregation weight & 1 \\
+$n_{\mathrm{eff}}$ & independent-gradient equivalent of the pool & logged \\
+$C$ & concurrency: clients running at once & 30 \\
+$K$ & agg goal: client gradients that complete one round, FwdLLM's unit of waiting & 10 \\
+$I$, $\tau$ & rounds per aggregation $N/K$; staleness in aggregations & 5; mean 0.58 \\
+$s$ & safety factor in $\rho\le s\cos$ & 1.5 \\
+$\rho$ & relative step (trust ratio) $\norm{\Delta\ttr}/\norm{\ttr}$ & 0.050 \\
+$B$, $\Phi$ & budget (running total of steps) and inflation ratio $e^B$ & --- \\
+$\Phi_{\mathrm{cap}}$ & inflation rail (hard stop on $\Phi$) & 3 \\
+$a_t$, $m_t$, $g_t$ & accuracy, its 11-eval mean, relative gain over 150 aggregations & --- \\
+$T_{\mathrm{bins}}$ & data bins & 150 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\figslot{ft_system}{FluxTune. Clients send forward-gradient estimates; the server pools $N$ of them, steps by a fixed fraction $\rho$ of the weight norm, books the inflation $\Phi$, and stops on saturation or $\Phi\ge\Phi_{\mathrm{cap}}$.}
+
+\subsection{What FwdLLM does not solve}
+\label{sec:ft:gaps}
+
+\paragraph{Noise has nowhere to go.}
+The aggregated update is almost perpendicular to the weights, so a step cannot shorten the model:
+$\norm{\ttr+\Delta\ttr}^2=\norm{\ttr}^2+\norm{\Delta\ttr}^2$ (the cross term measured $1.000\pm0.005$ in every run).
+The roughly $93\%$ of each step that is noise therefore accumulates as weight length, and the weights inflate at every aggregation.
+
+\paragraph{The step and the variance threshold carry the loss's scale.}
+FwdLLM steps by $\eta G$ (plain SGD with learning rate $\eta$) and aggregates when an estimate of the variance of the pooled client gradients falls below a fixed threshold ($0.3$). Both are measured in units of the gradient norm $\norm{\nabla L}$, which depends on
+the loss unit, the batch size, the model, and $\norm{\ttr}$ itself (roughly $\norm{\ttr}^{0.9}$). Two consequences follow.
+First, the relative step $\rho$ is an outcome of $\norm{\nabla L}$, not a choice: noise inflates $\ttr$, which inflates the gradient estimate, which lengthens the next step.
+Second, the variance threshold ($\mathrm{var}\propto\norm{\nabla L}^2/N$) is secretly a pool-size controller whose threshold does not transfer: its achievable floor drifted $36\times$ over one run
+as $\norm{\ttr}$ grew $6\times$, and the shipped value of $0.3$ sits on one corner of the (client-data heterogeneity $\alpha$, agg goal) surface of one model.
+A rule that changes when the loss is merely relabelled (log base 2 scales the loss by $1.44$ and its variance by $2.08$) is not a statement about the model.
+
+\paragraph{It is stable only by accident.}
+A fixed variance threshold against a growing norm forces $N\propto\norm{\ttr}^2$, hence $\rho\propto1/\norm{\ttr}$: a decaying step schedule that nobody chose.
+It defers the collapse (extrapolated to aggregation $1{,}200$--$1{,}700$) rather than preventing it. Runs have a sharp cliff in inflation:
+of the $22$ runs that learned, every run below $\Phi=3.63$ held its peak and every run above $4.23$ lost it, two ending at about half their peak accuracy.
+FluxTune-v1 (asynchronous aggregation, and selection of the perturbation with the largest $|\text{JVP}|$, on the same plain SGD step) made each aggregation faster, which did not remove the cliff; it moved the crossing inside the run window.
+Slowing down is not a fix, because any constant $\rho$ still has $\sum\rho^2=\infty$.
+
+\paragraph{Synchronous rounds wait for the slowest device.}
+A round that needs $K$ client gradients from a fixed set of clients stalls on the slowest one, and devices differ in speed ($8$--$17$\,s per job here).
+
+\begin{table}[t]
+\centering
+\caption{What FluxTune changes, and why.}
+\label{tab:ft:changes}
+\small
+\begin{tabular}{@{}p{2.1cm}p{2.6cm}p{2.6cm}@{}}
+\toprule
+ & FwdLLM & FluxTune \\
+\midrule
+Server step & plain SGD $\eta G$; $\rho$ is an outcome & trust ratio; $\rho$ is set \\
+When to aggregate & variance threshold (carries units) & fixed pool size $N$ \\
+Perturbations & one selected direction & mean of all $P$ \\
+Inflation & unmetered & budget $B$, ratio $\Phi$, rail $\Phi_{\mathrm{cap}}$ \\
+Rounds & synchronous & asynchronous \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Design}
+\label{sec:ft:design}
+FwdLLM fails in three connected ways: its step length is inherited from the gradient's scale, its aggregation threshold is measured in the loss's units, and nothing counts how far the weights have inflated,
+so it is stable only while a decaying step happens to outrun the noise. FluxTune's design removes each cause. The organising rule is that every constant the server compares against must be a ratio of like quantities
+(weight norm over weight norm, count over count), so it does not move with the loss scale, the model, or the stage of training. Each choice below states what it replaces.
+
+\paragraph{Forward gradient with averaged perturbations.}\label{sec:ft:fg}
+A client draws $P$ Gaussian perturbation directions $v_i$ over the trainable slice, measures the slope $d_i$ of the loss along each with a central difference (the loss at $\theta+hv_i$ and $\theta-hv_i$: two forward passes, no backward pass),
+and sends the slope-weighted mean $u_k$:
+\begin{equation}
+d_i=\frac{L(\theta+hv_i)-L(\theta-hv_i)}{2h}\approx\nabla L\!\cdot\! v_i,\qquad
+u_k=\frac1P\sum_{i=1}^{P}d_iv_i,\qquad\E[u_k]=\nabla L .
+\label{eq:ft:fg}
+\end{equation}
+Memory is that of inference and does not grow with $P$. We average the perturbations rather than keeping the single best-aligned one (\texttt{select}): the mean gave $3.35\times$ more alignment per unit of compute.
+
+\paragraph{Aggregating a fixed pool size.}\label{sec:ft:pool}
+The server sums $N$ client gradients, $G=\sum_k u_k$, and the alignment of $G$ with $\nabla L$ grows as $\sqrt N$:
+\begin{equation}
+\cos(G,\nabla L)\approx\sqrt{\frac{PN}{p+PN}}\approx\sqrt{\frac{PN}{p}} .
+\label{eq:ft:aim}
+\end{equation}
+\emph{Why.} Write $g=\nabla L$. Each client gradient is the true gradient plus zero-mean noise, $u_k=g+\xi_k$. For Gaussian directions $\E[(v\!\cdot\! g)^2\norm{v}^2]=(p+2)\norm{g}^2$, so
+the mean of $P$ independent perturbations has noise power $\E\norm{\xi_k}^2=\frac{(p+1)}{P}\norm{g}^2\approx\frac pP\norm{g}^2$: the signal $\norm g$ is tiny next to the noise $\sqrt{p/P}\,\norm g$.
+Now sum $N$ independent client gradients. The signal terms all equal $g$, so they add coherently and the signal grows as $N\norm g$ (like steps taken in the same direction).
+The noise terms are independent and zero-mean, so their variances add and the noise grows only as $\sqrt{Np/P}\,\norm g$ (like a random walk, which drifts as the square root of the number of steps). Hence
+\[
+\cos(G,g)=\frac{N\norm g}{\sqrt{N^2\norm g^2+N(p/P)\norm g^2}}=\sqrt{\frac{NP}{NP+p}} ,
+\]
+which is Eq.~\eqref{eq:ft:aim}; for $N=1$ it gives $\sqrt{P/p}\approx0.005$. The argument needs the client gradients to be independent, which we check with $n_{\mathrm{eff}}$, the number of independent client gradients the pool is worth:
+$n_{\mathrm{eff}}/N$ stayed in $[0.98,1.03]$. Measured alignment was about $12\times$ below Eq.~\eqref{eq:ft:aim} (backprop audits, which compute the true gradient by backpropagation on held-out data to measure alignment, gave $\cos\approx0.003$), so we use the formula for its scaling in $(P,N,p)$
+and treat the constant as empirical, $\cos=c\sqrt{PN/p}$.
+FwdLLM aggregates once a variance estimate drops below a threshold; since that variance scales as $1/N$, FluxTune simply aggregates when the pool holds $N$ client gradients, which is the same control stated in count units.
+
+\paragraph{A trust-ratio step with $\rho$ set, not inherited.}\label{sec:ft:step}
+The server discards the length of $G$ and moves the trainable weights by a chosen fraction of their own norm:
+\begin{equation}
+\Delta\ttr=-\rho\,\norm{\ttr}\frac{G}{\norm{G}},\qquad\rho=s\sqrt{\frac{PN}{p}}=0.050 .
+\label{eq:ft:step}
+\end{equation}
+Because the step is relative, drifting gradient norms ($\norm{u_k}$ rose from $685$ to $1{,}168$) do not change it, and any factor common to the per-client weights $\omega_k$ in $G=\sum_k\omega_ku_k$ cancels, so we use $\omega_k=1$.
+The value of $\rho$ follows the safety rule $\rho\le s\cos(G,\nabla L)$: do not step farther than $s$ times the alignment. By Eq.~\eqref{eq:ft:aim}, fixing $N$ fixes $\rho$, and we hold it constant.
+A schedule that re-measured a budget ceiling every 150 aggregations made $\rho$ sawtooth between $0.032$ and $0.068$ and reached the same peak accuracy as constant $\rho=0.050$.
+Under this rule $\rho$ was identical across heterogeneity settings to six significant figures.
+
+\paragraph{A budget that meters inflation.}\label{sec:ft:budget}
+Since each step is sideways, it multiplies the trainable norm by exactly $\sqrt{1+\rho^2}$. Booking, with $t$ the aggregation index and $\rho_k$ the relative step taken at aggregation $k$,
+$B_t=\tfrac12\sum_{k\le t}\ln(1+\rho_k^2)$ gives the inflation ratio from step sizes alone, with no gradients, accuracy or tuned constants:
+\begin{equation}
+\Phi_t=e^{B_t}=\frac{\norm{\ttr^{(t)}}}{\norm{\ttr^{(0)}}},\qquad\text{constant }\rho:\ \Phi_t=(1+\rho^2)^{t/2}.
+\label{eq:ft:phi}
+\end{equation}
+This matched the measured ratio to $0.04\%$ (median). It turns the cliff above into a quantity the server can watch: at $\rho=0.050$, $\Phi=3$ falls at about $880$ aggregations.
+
+\paragraph{Stopping on saturation or inflation.}\label{sec:ft:stop}
+There is no accuracy target in deployment. With $a_t$ the held-out accuracy after aggregation $t$, $m_t$ its $11$-evaluation trailing mean, and $g_t=(m_t-m_{t-150})/m_t$, the run stops when
+\begin{equation}
+\#\{\text{consecutive evaluations with }g_t\le0.003\}\ge20\ \lor\ \Phi_t\ge\Phi_{\mathrm{cap}}=3,
+\label{eq:ft:stop}
+\end{equation}
+after a warm-up of $450$ aggregations. Smoothing and patience keep evaluation noise ($\pm0.005$) from ending the run; the cap sits below the cliff, bounding the damage if saturation is never detected.
+
+\paragraph{Asynchronous aggregation.}\label{sec:ft:async}
+The server keeps $C$ clients running and gives each freed slot the current weights, so no round waits for the slowest device. Every $K$ arrivals (the agg goal) form a round and an aggregation spans $I=N/K$ rounds.
+A client gradient computed on weights $\tau$ aggregations old (its \emph{staleness}) is accepted unchanged: $\E[\tau]\approx C/N$, and the measured mean was $0.58$ with $96\%$ of client gradients at most one aggregation stale, so staleness weights had little to correct.
+Keeping $C\le N$ holds this regime.
+
+\paragraph{Data bins.}
+The training data is cut into $T_{\mathrm{bins}}$ \emph{data bins}, fixed local batches indexed by \texttt{data\_id}. Aggregation $t$ uses bin $b_t=(t-1)\bmod T_{\mathrm{bins}}$, so all client gradients in a pool see the same bin and successive aggregations cycle through the data.
+
+\begin{algorithm}[t]
+\caption{FluxTune}
+\label{alg:fluxtune}
+\begin{algorithmic}[1]
+\Require weights $\theta$; $P,h,N,K,C,s,\Phi_{\mathrm{cap}},T_{\mathrm{bins}}$
+\State $\rho\gets s\sqrt{PN/p}$;\; $B\gets 0$;\; $t\gets 0$;\; pool $\gets\emptyset$
+\While{not stopped}
+  \State $b\gets t\bmod T_{\mathrm{bins}}$
+  \State \textbf{Server:} keep $C$ clients running; give each freed slot the current $(\theta,b)$
+  \ForAll{client \textbf{in parallel}}
+    \State draw $v_1,\dots,v_P\sim\mathcal{N}(0,I_p)$
+    \State $d_i\gets[L(\theta{+}hv_i)-L(\theta{-}hv_i)]/2h$ on bin $b$ \Comment{$2P$ forward passes}
+    \State send $u\gets\frac1P\sum_i d_iv_i$ to the server
+  \EndFor
+  \State on each arrival, add $u$ to pool \Comment{stale client gradients accepted unchanged}
+  \If{$|\text{pool}|\ge N$}
+    \State $G\gets\sum_{u\in\text{pool}}u$
+    \If{$\norm{G}>0$} \State $\ttr\gets\ttr-\rho\norm{\ttr}\,G/\norm{G}$ \EndIf
+    \State $B\gets B+\tfrac12\ln(1+\rho^2)$;\; $\Phi\gets e^{B}$;\; $t\gets t+1$;\; pool $\gets\emptyset$
+    \State every two aggregations, evaluate $a_t$ and update the saturation counter
+    \If{saturation counter $\ge20$ \textbf{or} $\Phi\ge\Phi_{\mathrm{cap}}$} \State \textbf{stop} \EndIf
+  \EndIf
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Comparison with the full FluxTune controller}
+\label{sec:ft:full}
+The full FluxTune controller already used the trust-ratio step but added four mechanisms: a variance-style condition $n_{\mathrm{eff}}\ge N_{\mathrm{req}}=p(\rho^*_t/s)^2/P$ to aggregate, with $\rho^*_t$ the allowed step at aggregation $t$,
+a $\rho$ schedule driven by a noise-measured budget ceiling $B_{\max}$, staleness- and alignment-based weights $\omega_k$, and extra stop rules. On agnews the simplified loop above reached the same peak accuracy
+($0.8726$ vs $0.8728$) in $1.74$\,h instead of $3.0$\,h ($508$ vs $285$ aggregations/h); part of the gap is the full controller's noise measurements and audits. One run per arm.
+
+\subsection{Limits}
+\label{sec:ft:discussion}
+All evidence is one model (DistilBERT with adapters) on one dataset (agnews) for the simplified loop, one run per arm, with evaluation noise of $\pm0.005$. The constant $s$ is empirical:
+measured $\rho/\cos$ was $14$--$20$, not $1.5$. The cap $\Phi_{\mathrm{cap}}=3$ overshot here (accuracy peaked near $\Phi\approx2.6$ and ended at $0.866$) and does not transfer between models.
+The finite difference is precision-sensitive, and with fixed $h$ the relative perturbation size falls from $0.50$ to about $0.17$ as $\norm{\ttr}$ triples, which did not hurt training here.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% APPENDIX %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{FluxTune: per-concept details}
+\label{app:fluxtune}
+Each concept lists its algorithm, intuition, variables, a depiction, and one observation.
+
+\subsection{Concept 1: Forward gradient}
+\paragraph{Algorithm.}
+A client draws $P$ Gaussian directions $v_i\sim\mathcal{N}(0,I_p)$ over the trainable slice and, for each,
+evaluates the loss at $\theta\pm h v_i$ on its bin (two forward passes, no backward pass). It sends the
+slope-weighted mean of the directions:
+\begin{equation}
+d_i=\frac{L(\theta+hv_i)-L(\theta-hv_i)}{2h}\approx\nabla L\!\cdot\! v_i,\qquad
+u_k=\frac1P\sum_{i=1}^{P}d_i v_i,\qquad \E[u_k]=\nabla L .
+\end{equation}
+\paragraph{Intuition.}
+Edge devices cannot hold an autograd graph, so peak memory must be that of inference. A directional
+derivative needs only two forward passes, and weighting each random direction by its measured slope makes
+the average point, in expectation, along the true gradient. We combine perturbations by the mean rather than keeping the
+best-aligned one (\texttt{select}): the mean gave $3.35\times$ more alignment per unit of compute.
+One client gradient is almost pure noise, $\cos(u_k,\nabla L)\approx\sqrt{P/p}\approx0.005$, which is why client gradients are pooled (Concept 3).
+\paragraph{Variables.}
+$P{=}10$ perturbations per client gradient; $h{=}0.01$ finite-difference spacing; $p{=}450{,}340$ trainable parameters;
+$v_i$ random direction; $d_i$ measured slope along $v_i$; $u_k$ the client gradient from client $k$.
+\paragraph{Depiction.} Fig.~\ref{fig:fg_pipeline}: one client, $v_i\to\theta\pm hv_i\to$ two losses $\to d_i\to u_k$.
+\figslot{fg_pipeline}{Forward-gradient pipeline on one client (six steps).}
+\paragraph{Observation.}
+The median client gradient norm $\norm{u_k}$ rose from $685$ to $1{,}168$ over training, so the server step must not depend on gradient scale.
+
+\subsection{Concept 2: Finite-difference spacing $h$}
+\paragraph{Algorithm.}
+Use one fixed $h$ for every perturbation. Optionally (flag \texttt{--fd-scale-invariant}) rescale $h_t=\varepsilon\norm{\ttr^{(t)}}/\sqrt p$ at each aggregation to hold the relative perturbation length $\varepsilon$ fixed.
+\paragraph{Intuition.}
+$d_i$ is the difference of two nearly equal losses. A small $h$ lets fp16 round-off swamp it, error $O(\delta_{\mathrm{fp16}}/h)$;
+a large $h$ lets curvature bias it, error $O(h^2\partial^3L)$. A perturbation moves the weights by $h\norm{v_i}\approx h\sqrt p$,
+so what matters is that length relative to the weights, $\varepsilon$. A fixed $h$ lets $\varepsilon$ drift down as the weights grow.
+\begin{equation}
+\varepsilon_t=\frac{h\sqrt p}{\norm{\ttr^{(t)}}},\qquad
+\text{scale-invariant: }h_t=\frac{\varepsilon\,\norm{\ttr^{(t)}}}{\sqrt p}.
+\end{equation}
+\paragraph{Variables.}
+$h$ (\texttt{fd\_h}); $\varepsilon$ (\texttt{fd\_displacement}); $\norm{\ttr}$ trainable-weight norm; $p$.
+At the start $h\sqrt p=6.7$ and $\varepsilon=0.50$.
+\paragraph{Depiction.} Fig.~\ref{fig:eps_vs_aggregation}: $\varepsilon$ against aggregation for fixed $h$ and for the scale-invariant flag.
+\figslot{eps_vs_aggregation}{Relative perturbation length $\varepsilon$ over training, fixed $h$ vs scale-invariant.}
+\paragraph{Observation.}
+$\varepsilon$ tracks $1/\norm{\ttr}$ exactly and fell from $0.50$ to $0.17$--$0.20$ as the norm tripled, with no visible harm to training.
+
+\subsection{Concept 3: Pooling and alignment}
+\paragraph{Algorithm.}
+Sum $N{=}50$ independent client gradients before taking any step: $G=\sum_{k=1}^{N}u_k$.
+\paragraph{Intuition.}
+Every client gradient's signal points the same way while its noise is independent across client gradients. Summing $N$ of them grows
+the signal $N$-fold and the noise only $\sqrt N$-fold, so the alignment of the aggregated update improves as $\sqrt N$.
+\begin{equation}
+\cos(G,\nabla L)\approx\sqrt{\frac{PN}{p+PN}}\approx\sqrt{\frac{PN}{p}},\qquad
+n_{\mathrm{eff}}=\frac{2\,\overline{\norm{u_k}^2}}{m\cdot\mathrm{var}},\qquad
+D=\frac{\cos_{\mathrm{measured}}}{\cos_{\mathrm{theory}}}.
+\end{equation}
+At $N=50$ the model gives $\cos\approx0.033$. $n_{\mathrm{eff}}$ (a split-half variance estimate over $m$ coordinates) checks that client gradients are independent, i.e.\ $n_{\mathrm{eff}}\approx N$.
+\paragraph{Variables.}
+$N$ pool size (\texttt{pool\_target}); $P$, $p$; $m$ number of coordinates in the variance check; $n_{\mathrm{eff}}$ independent-gradient equivalent (logged, not used to gate); $D$ measured over theoretical alignment (\texttt{aim\_d}).
+\paragraph{Depiction.} Fig.~\ref{fig:aim_vs_N}: theory curve $\cos$ against $N$ for $P=10$, $p=450{,}340$, with the backprop-audit points.
+\figslot{aim_vs_N}{Alignment of the aggregated update against pool size: theory and audited values.}
+\paragraph{Observation.}
+Backprop audits measured $\cos\approx0.003$ ($D\approx0.07$, about $12\times$ below theory, sometimes negative), yet the model trained to $0.87$: small but consistent alignment suffices.
+
+\subsection{Concept 4: Asynchronous aggregation}
+\paragraph{Algorithm.}
+Keep $C{=}30$ clients running. Each returning client frees a slot that is refilled with the current $\theta$.
+Client gradients queue in arrival order; every $K{=}10$ arrivals form an aggregation round, so an aggregation of $N{=}50$ spans $I=N/K=5$ rounds.
+A client gradient computed on slightly older weights is accepted as is.
+\paragraph{Intuition.}
+Clients differ in speed (8--17\,s per job here), and a synchronous round would wait for the slowest every time.
+With $C$ jobs always running, throughput scales with $C$ until the server saturates. Staleness $\tau$ (aggregations that landed
+while a job computed) is roughly the clients running per aggregation, so $C\le N$ keeps it under about one aggregation and no correction is needed.
+\begin{equation}
+I=\frac NK=5,\qquad \text{throughput}\propto C,\qquad \E[\tau]\approx\frac CN=\frac{30}{50}=0.6 .
+\end{equation}
+\paragraph{Variables.}
+$C$ concurrency; $K$ client gradients per round (\texttt{aggGoal}); $I$ rounds per aggregation; $\tau$ staleness; local batch size $8$; \texttt{dynamic\_kc} (adaptive $K/C$ controller, off).
+\paragraph{Depiction.} Fig.~\ref{fig:async_timeline}: per-client job bars on a time axis, slots refilled on return, a round marked every $K$ arrivals.
+\figslot{async_timeline}{Asynchronous dispatch: $C$ clients running, one round per $K$ client gradients.}
+\paragraph{Observation.}
+Mean staleness was $0.58$ aggregations with $96\%$ of client gradients at most one aggregation old; both arms ran $22$--$26$ rounds/min.
+
+\subsection{Concept 5: Aggregation condition and weights}
+\paragraph{Algorithm.}
+Aggregate as soon as the pool holds exactly $N{=}50$ client gradients. Build $G=\sum_k\omega_k u_k$ with $\omega_k=1$. Then clear the pool and advance to the next data bin.
+\paragraph{Intuition.}
+The aggregation condition answers ``is the pool good enough to step on'', the weights answer ``how much does each client gradient count''. Because
+only $G/\norm G$ is used (Concept 7), any factor common to all $\omega_k$ cancels, and measured weights barely differed.
+The pool also scales the safe step size ($\rho\propto\sqrt N$, Concept 6), so a fixed $N$ means a fixed $\rho$. The full controller instead
+aggregated when $n_{\mathrm{eff}}\ge N_{\mathrm{req}}$, but client gradients were independent so $n_{\mathrm{eff}}$ was just a counter.
+\begin{equation}
+\text{aggregation}\iff|\text{pool}|\ge N,\qquad G=\sum_{k\in\text{pool}}\omega_k u_k,\quad \omega_k=1,\qquad
+N_{\mathrm{req}}=\frac{p(\rho^*_t/s)^2}{P}\ \text{(full controller)} .
+\end{equation}
+\paragraph{Variables.}
+\texttt{commit\_gate}=fixed; $N$ (\texttt{pool\_target}); \texttt{agg\_rate\_type}=uniform ($\omega=1$); $I=5$; $\rho^*_t$ the step the full controller allowed at aggregation $t$. The plateau variance rule must be off (\texttt{--var-stopping-policy off}) or it can force an early aggregation.
+The full controller used grad-aware $\omega$ (staleness and alignment).
+\paragraph{Depiction.} Fig.~\ref{fig:pool_size}: pool size per aggregation, full controller vs fixed pool size.
+\figslot{pool_size}{Pool size per aggregation: full controller follows $\rho^*_t$, fixed pool size holds $N=50$.}
+\paragraph{Observation.}
+The full-controller pool swung $100\to30\to70$--$80\to30$ with each $B_{\max}$ measurement (mean $49.5$) and $\omega$ had median $0.767$ with only $1.11\times$ spread within a round; the fixed pool stayed at $50$.
+
+\subsection{Concept 6: Step size $\rho$}
+\paragraph{Algorithm.}
+Use one constant relative step for the whole run, tied to the pool's alignment:
+\begin{equation}
+\rho=s\sqrt{\frac{PN}{p}}=1.5\sqrt{\frac{500}{450{,}340}}=0.050 .
+\end{equation}
+\paragraph{Intuition.}
+The aggregated update is only slightly aligned with the true gradient. Step too far and noise dominates; too short and training crawls.
+The safety rule $\rho\le s\cos(G,\nabla L)$ steps no farther than $s$ times the alignment, and since $\cos\approx\sqrt{PN/p}$, fixing $N$ fixes $\rho$.
+Expected progress per aggregation is $-\rho\norm\theta\norm{\nabla L}\cos+O(\rho^2)$ while the noise added to the weights grows as $\rho^2$, so a smaller $\rho$ buys more progress
+per unit of inflation but needs more aggregations (Concept 8). Early in training progress scales with $\rho$; late it barely does.
+\paragraph{Variables.}
+$\rho$ (\texttt{rho\_star}, \texttt{rho\_schedule}=pool); $s$ safety factor (\texttt{gate\_safety\_s}, 1.5); $N$, $P$, $p$.
+The full controller set $\rho^*_t=\min\bigl(\rho_{\max},\sqrt{2(B_{\max}-B)/T_{\mathrm{res}}}\bigr)$ (law C: $\rho$ shrinks as the remaining budget shrinks), with $\rho_{\max}$ the largest step whose pool fits the round cap, $B_{\max}$ a budget ceiling re-measured every 150 aggregations by a noise measurement, and $T_{\mathrm{res}}$ a residual-horizon constant.
+\paragraph{Depiction.} Fig.~\ref{fig:rho_vs_aggregation}: $\rho$ against aggregation, full controller (sawtooth) vs constant.
+\figslot{rho_vs_aggregation}{Step size $\rho$ per aggregation: full-controller law C vs constant $\rho$.}
+\paragraph{Observation.}
+The full-controller $\rho$ ranged $0.032$--$0.068$ (mean $0.046$) and the new one held $0.0499$ on all $881$ aggregations, with the same peak accuracy; early, $0.80\to0.84$ took $129$ aggregations at $\rho{=}0.040$ vs $76$ at $0.050$, late $0.84\to0.87$ took $410$ vs $408$.
+
+\subsection{Concept 7: Trust-ratio step}
+\paragraph{Algorithm.}
+Pass 1 over the trainable slice computes $\norm G$ and $\norm{\ttr}$. Set $\text{scale}=\rho\norm{\ttr}/\norm G$ (zero if $\norm G{=}0$, logged as skipped). Pass 2 applies $\theta\mathrel{-}=\text{scale}\cdot G$ per tensor; frozen tensors have $G=0$. Momentum and weight decay are off.
+\begin{equation}
+\Delta\ttr=-\rho\,\norm{\ttr}\,\frac{G}{\norm G},\qquad
+\norm{\ttr^{(t+1)}}^2=\norm{\ttr^{(t)}}^2\bigl(1+\rho^2-2\rho\cos(\ttr^{(t)},G)\bigr)\approx\norm{\ttr^{(t)}}^2(1+\rho^2).
+\end{equation}
+\paragraph{Intuition.}
+The aggregated update is large and its norm drifts ($\norm{u_k}$: $685\to1{,}168$), so a plain step $\eta G$ would change size with it, and an earlier plain-SGD rule ran away.
+Using only the direction of $G$ and moving the weights by a fixed fraction of their own norm removes that dependence. $G$ is nearly all noise, so it is almost orthogonal to $\ttr$:
+the cross term vanishes and every step grows the norm by $\sqrt{1+\rho^2}$.
+\paragraph{Variables.}
+\texttt{server\_step\_rule}=trust\_ratio; $\rho$; $\norm{\ttr}$ (\texttt{trainable\_weight\_norm}); $\norm G$ (\texttt{g\_norm}); learning rate unused.
+\paragraph{Depiction.} Fig.~\ref{fig:step_norm}: absolute step $\norm{\Delta\ttr}$ against aggregation, measured vs $\rho\norm{\theta_0}(1+\rho^2)^{(t-1)/2}$.
+\figslot{step_norm}{Absolute step size over training: telemetry against the closed form.}
+\paragraph{Observation.}
+At constant $\rho$ the step grew smoothly $0.667\to2.001$ as $\norm{\ttr}$ tripled, matching the closed form within $0.16\%$.
+
+\subsection{Concept 8: Budget $B$ and inflation $\Phi$}
+\paragraph{Algorithm.}
+After each aggregation add the step actually taken to a budget, $B\mathrel{+}=\tfrac12\ln(1+\rho_t^2)$, and track $\Phi=e^B$.
+\paragraph{Intuition.}
+The run needs a model-free measure of how far training has moved, to compare runs and to decide when to stop.
+Because steps are sideways (Concept 7), each aggregation multiplies the trainable norm by exactly $\sqrt{1+\rho^2}$, so $\Phi$ is the norm inflation and the bookkeeping is exact.
+\begin{equation}
+B_t=\tfrac12\sum_{k\le t}\ln(1+\rho_k^2),\qquad
+\Phi_t=e^{B_t}=\frac{\norm{\ttr^{(t)}}}{\norm{\ttr^{(0)}}},\qquad
+\text{const }\rho:\ \Phi_t=(1+\rho^2)^{t/2}.
+\end{equation}
+At $\rho=0.050$, $\Phi=3$ is reached at $t=2\ln3/\ln(1+\rho^2)\approx880$ aggregations.
+\paragraph{Variables.}
+$B$ (\texttt{budget\_b}); $\Phi$ (\texttt{phi}); $\rho_t$ the step taken (\texttt{\_last\_rho}); $\Phi_{\mathrm{cap}}$ (\texttt{phi\_stop\_threshold}, 3.0).
+The full controller also kept a ceiling $B_{\max}$ and stopped at $B\ge0.95B_{\max}$; that stop never fired (max $0.86$).
+\paragraph{Depiction.} Fig.~\ref{fig:acc_vs_phi}: accuracy against $\Phi$ for both arms, with measured norm ratio overlaid.
+\figslot{acc_vs_phi}{Accuracy against inflation $\Phi$.}
+\paragraph{Observation.}
+$\Phi$ predicted the measured norm ratio to $0.04\%$ (median); accuracy gains are steep early ($+15$--$19$ points per $0.1\,\Phi$ at $\Phi\in[1.1,1.2]$) and near zero beyond $\Phi\approx2.2$.
+
+\subsection{Concept 9: Stopping}
+\paragraph{Algorithm.}
+Evaluate every two aggregations and smooth with an $11$-evaluation trailing mean $m_t$. After a warm-up of $450$ aggregations compute $g_t=(m_t-m_{t-150})/m_t$.
+If $g_t\le0.003$ add one to a streak, otherwise reset it to zero. Stop when the streak reaches $20$ (saturation) or $\Phi\ge3$ (rail).
+\begin{equation}
+m_t=\tfrac1{11}\sum_{j=0}^{10}a_{t-j},\qquad g_t=\frac{m_t-m_{t-150}}{m_t},\qquad
+\text{stop}\iff\#\{\text{consecutive }g\le0.003\}\ge20\ \lor\ \Phi_t\ge3 .
+\end{equation}
+\paragraph{Intuition.}
+There is no accuracy target in deployment, so the run must notice on its own that accuracy stopped rising, without stopping on a noisy dip.
+Smoothing and a long horizon suppress evaluation noise ($\pm0.005$), the patience requirement rejects single dips, and the $\Phi$ rail bounds inflation if the saturation rule never triggers.
+The full controller's rules (GL decay, a generalisation-loss rule, fires when accuracy sits $>0.5\%$ below best, budget stop) never fired on agnews and were dropped.
+\paragraph{Variables.}
+$a_t$ held-out accuracy at aggregation $t$; \texttt{sat\_stall\_frac}=0.003; patience $20$; smoothing window $11$; horizon $150$ aggregations; warm-up $450$; $\Phi_{\mathrm{cap}}=3$; GL decay off; budget stop off.
+\paragraph{Depiction.} Fig.~\ref{fig:saturation_trace}: $g_t$ and the saturation streak against aggregation, with the peak aggregation and the stop aggregation marked.
+\figslot{saturation_trace}{Saturation signal $g_t$ and streak; the run stops on the $\Phi$ rail.}
+\paragraph{Observation.}
+The streak reached $11$ at aggregation $745$ and was reset by one noisy evaluation at $761$; the $\Phi$ rail then stopped the run at $881$, $90$ aggregations after the peak (aggregation $791$, smoothed $0.8726$), after a dip to $0.866$.
+
+\subsection{Concept 10: Data bins and aggregation indexing}
+\paragraph{Algorithm.}
+Cut the data into $T_{\mathrm{bins}}$ bins. Aggregation $t$ uses bin $b=(t-1)\bmod T_{\mathrm{bins}}$: the server dispatches \texttt{data\_id}$=b$ with the model, and each client computes its client gradient on its own local batch of bin $b$. After the aggregation the pool resets and $b$ advances.
+\begin{equation}
+b_t=(t-1)\bmod T_{\mathrm{bins}},\qquad\text{passes}=t/T_{\mathrm{bins}}.
+\end{equation}
+\paragraph{Intuition.}
+All client gradients in one pool should see comparable data, and successive aggregations should walk through the whole dataset instead of reusing one slice.
+With a fixed pool size every bin gets exactly $I=5$ rounds (the full controller spent $3$--$10$).
+\paragraph{Variables.}
+\texttt{data\_id} ($b$); \texttt{commit\_count} ($t$); $T_{\mathrm{bins}}$ (150 agnews, 1{,}750 yahoo, 650 yelp-p); \texttt{iteration\_per\_data\_id}.
+\paragraph{Depiction.} Fig.~\ref{fig:data_id}: \texttt{data\_id} against aggregation (sawtooth wrapping every 150).
+\figslot{data_id}{Data-bin index per aggregation.}
+\paragraph{Observation.}
+\texttt{data\_id} advanced by exactly one per aggregation and wrapped every $150$; accuracy peaked in the sixth pass, so agnews was trained for about five passes before it plateaued.
+
+\begin{table}[t]
+\centering
+\caption{What carries to a new model or dataset.}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Concept & Carries as is & Refit \\
+\midrule
+1 Forward gradient & unbiasedness, $\cos\propto\sqrt{P/p}$ & $P$ if $p$ grows a lot \\
+2 FD spacing & scale-invariant form & $\varepsilon$ for the precision used \\
+3 Pooling and alignment & $\sqrt{PN/p}$ form & alignment constant $c$ ($D$ was $12$--$20\times$ off) \\
+4 Asynchronous aggregation & pipeline design & $C$ for device speeds \\
+5 Aggregation condition, $\omega$ & fixed $N$, $\omega=1$ & $N$ with $p$ and $c$ \\
+6 Step $\rho$ & $\rho\propto\sqrt{PN/p}$ & $s$ ($\equiv c$) \\
+7 Trust-ratio step & all of it & --- \\
+8 Budget $\Phi$ & exact accounting & --- \\
+9 Stopping & saturation form & horizon, patience, $\Phi_{\mathrm{cap}}$ per model \\
+10 Data bins & mechanism & bins are a dataset property \\
+\bottomrule
+\end{tabular}
+\end{table}

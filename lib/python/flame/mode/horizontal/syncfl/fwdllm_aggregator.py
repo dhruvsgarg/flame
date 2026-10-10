@@ -423,6 +423,8 @@ class TopAggregator(AsyncTopAgg):
         # seed, so this directly measures that instead of inferring it from
         # downstream cadence/variance symptoms.
         self._cycle_grad_norms = []
+        self._cycle_agg_weights = []  # per-contributor rate (omega_k) and align cos
+        self._cycle_align_cos = []
         # end -> canonical commit-order key (modeled_delay D, str(end)) for the
         # current cycle's cohort. Populated per contribution in aggregate_weights;
         # consumed by _canonicalize_cohort_commit_order to break equal-D ties by
@@ -911,7 +913,10 @@ class TopAggregator(AsyncTopAgg):
         else:
             staleness_val = self._model_version - version_for_rate
 
-            if self.optimizer.agg_rate_conf["type"] == "old":
+            if self.optimizer.agg_rate_conf["type"] == "uniform":
+                rate = 1.0  # omega = 1: plain sum, no staleness/utility/align weighting
+
+            elif self.optimizer.agg_rate_conf["type"] == "old":
                 rate = 1 / math.sqrt(1 + staleness_val)  # As per the Fedbuff paper
 
             elif self.optimizer.agg_rate_conf["type"] == "new":
@@ -971,6 +976,8 @@ class TopAggregator(AsyncTopAgg):
                     inverse_var=conf.get("inverse_var", False),
                     align_floor=_align_floor, var_eps=conf.get("var_eps", 1e-8),
                 )
+                if cos is not None:
+                    self.__dict__.setdefault("_cycle_align_cos", []).append(float(cos))
                 if cos is not None and cos < _align_floor:
                     self._grad_aware_gated_total = (
                         getattr(self, "_grad_aware_gated_total", 0) + 1
@@ -980,6 +987,7 @@ class TopAggregator(AsyncTopAgg):
                         f"< floor={_align_floor} base={base:.3f} -> rate={rate:.4f}"
                     )
 
+        self.__dict__.setdefault("_cycle_agg_weights", []).append(float(rate))
         if rate != 1.0:
             logger.info(
                 f"Weighted received gradients by rate: {rate} with staleness: {staleness_val}, stat utility: {stat_utility}"
@@ -2186,6 +2194,8 @@ class TopAggregator(AsyncTopAgg):
         # may have advanced -- see build_agg_round call below).
         _cycle_contributors = list(self._per_agg_trainer_list)
         _cycle_grad_norm_list = list(self._cycle_grad_norms)
+        _cycle_agg_weights = list(getattr(self, "_cycle_agg_weights", []))
+        _cycle_align_cos = list(getattr(self, "_cycle_align_cos", []))
         _cycle_target_version = self._model_version
         _cycle_speed_s = []
         _cycle_stat_utility = []
@@ -2616,6 +2626,10 @@ class TopAggregator(AsyncTopAgg):
                         # Per-contributor raw grad L2 norm this cycle (parity
                         # target: mode-invariant given identical input+seed).
                         "grad_norm": _cycle_grad_norm_list,
+                        # Row 9: applied weight omega_k per contributor, and its
+                        # cos to the running pool under grad_aware.
+                        "agg_weight": _cycle_agg_weights,
+                        "align_cos": _cycle_align_cos or None,
                         # R1/W1 residence rungs: per-contributor [dispatch_ts,
                         # commit_ts] intervals for this cycle.
                         "contributor_intervals": _contributor_intervals,
@@ -2722,6 +2736,8 @@ class TopAggregator(AsyncTopAgg):
         # In-place clear: `_agg_pending_commit_ref` holds a live reference.
         self._per_agg_trainer_list.clear()
         self._cycle_grad_norms = []
+        self._cycle_agg_weights = []
+        self._cycle_align_cos = []
         self._commit_key_by_end = {}  # cohort-scoped
         self._pending_cohort_contribs = []  # already drained above; defensive
 

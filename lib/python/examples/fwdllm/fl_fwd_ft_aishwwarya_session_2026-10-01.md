@@ -1,171 +1,316 @@
-# Aishwwarya — cheatsheet audit, telemetry and agnews run (2026-10-01)
+# Aishwwarya — cheatsheet audit, agnews trend check and simplified controller (2026-10-01/02)
 
-Session notes for [fl_fwd_ft_pipeline_cheatsheet.md](fl_fwd_ft_pipeline_cheatsheet.md). They record what
-was changed, why, and what is still open. The four-doc corpus remains authoritative.
+Session notes for [fl_fwd_ft_pipeline_cheatsheet.md](fl_fwd_ft_pipeline_cheatsheet.md). The four-doc corpus remains
+authoritative. Nothing here is committed yet.
 
 ## 1. Cheatsheet changes
 
-All edits are to the concepts table (§2) unless noted.
+- **"not in code" marks.** 13 variables are marked `*(not in code → code_name)*`. `D`, `Λ` and `A` have no code
+  variable at all.
+- **Flowchart variables added.** 16 symbols that were missing (`I`, `pool`, `N_req`, `G`, `ρ*_t`, …) are now in the
+  table, plus a new row 20, *Commit indexing*.
+- **New columns.** *Impact on training* (🔴 accuracy · 🟠 cost only · 🟢 marginal · ⚪ none) and *Simplify?*, which
+  holds proposals, not corpus results.
+- **New §3, Telemetry per concept.** Maps each row to the fields that track it.
+- **Parity gaps, not yet fixed:**
+  - Code defaults differ from the shipped values: `s`=0.4, `rho_star`=0.01, `probe_combine`=`select`,
+    `commit_gate`=`var`.
+  - `B` is updated from `_last_rho`, the step actually taken, not from `ρ*_t` as the flowchart says.
+  - Row 16: the code's stall progress is `(m_t−m_{t−h})/m_t`, with no chance level.
+  - Row 17: a GL breach also needs no gain over the 150-commit horizon.
 
-| Change | What it does |
+## 2. Code changes
+
+**Telemetry.** Every record is guarded so it can never fault training.
+
+| Record | Content |
 |---|---|
-| **"not in code" marks** | Each table variable was grepped against the code. 13 are marked `*(not in code → code_name)*`; `D`, `Λ` and `A` have no code variable at all |
-| **Flowchart variables added** | 16 symbols from the §1 flowchart that were missing from the table (`I`, `pool`, `var`, `m`, `N_req`, `G`, `θ_tr`, `Δθ_tr`, `φ`, `φ_knee`, `ρ*_t`, …), placed in their rows. New row 20, *Commit indexing* (`b`, `t`, `commit_count`) |
-| **Impact on training** column | 🔴 accuracy/convergence · 🟠 cost only · 🟢 marginal · ⚪ none, each with the measured evidence from the corpus |
-| **Simplify? (proposed)** column | A simplified maths model per row. **These are proposals, not corpus results** |
-| **§3 Telemetry per concept** (new section) | Maps each row to the `run_meta` and per-commit fields that track it |
+| `run_meta` | every knob, `p_trainable`, `‖θ_tr‖` at init. The trainers also log `probe_combine`, `P` and FD `h` |
+| `server_update` | adds `commit_count`, `g_norm`, `step_skipped`, `rho_max`, `pool_size`, `cos_theory`, `aim_d`, `progress_lambda`. Needs `--server-update-audit` |
+| `bmax_probe` | accuracy per tested Φ, `phi_knee`, `B_max` before and after |
+| `sat_state` | smoothed, best, `gl`, `progress`, streak counts. Needs `--saturation-stop` |
+| `agg_round` | `agg_weight` (ω_k) and `align_cos` per upload |
 
-### Parity findings, not fixed in the doc
+**Flags for the simplified model** (§5):
 
-- **Defaults differ from shipped values.** Code defaults are `gate_safety_s`=0.4, `rho_star`=0.01, `rho_exp`=0.55,
-  `probe_combine`=`select`, `commit_gate`=`var` and `gate_rho_ref`=`annealed`. `b_max_probe_every`=150 comes only from
-  the p4 launcher. Launch scripts disagree on `s` (1.5 vs 2.9).
-- **Budget bookkeeping uses `_last_rho`.** The flowchart says `B += ½·ln(1+ρ*_t²)`, but
-  `FedSgdAggregator.py` uses `_last_rho`, the step actually taken.
+| Flag | Effect |
+|---|---|
+| `--commit-gate fixed --pool-target N` | commit at exactly N uploads |
+| `--rho-schedule pool` | constant ρ = s·√(P·N/p) |
+| `--agg-rate-type uniform` | ω = 1 |
+| `--no-sat-decay` | GL decay trigger off |
+| `--budget-stop-frac 0` | budget stop off. Before this change, 0 fell back to 0.95 |
+| `--fd-scale-invariant` | exports `FWDLLM_FD_SCALE_INVARIANT=1` |
+| `--dynamic-kc on\|off` | the selector's K/C controller |
 
-### Main proposed simplification
+With `--commit-gate fixed`, also pass `--var-stopping-policy off`, or the plateau rule can force a commit early.
 
-The shipped `rho_star` = 0.06 is the commit gate solved backwards at `I`=2:
-`ρ = s·√(P·K·I/p)` = 1.5·√(200/118,348) ≈ 0.062. Fixing `I` and deriving `ρ` this way removes `rho_star`,
-`rho_exp`, `T_res`, law C and `ρ_max`. With constant `ρ`, the Φ rail becomes a commit count:
-`T = 2·ln 3/ln(1+ρ²)` ≈ 611. **Untested:** constant `ρ` gives up the anneal and relies on the rail or stall stop.
+**Files:** `run_sequential.sh`, `FedSgdAggregator.py`, `fwdllm_aggregator.py`, `saturation_stop.py`, `events.py`,
+`fwdgrad_utils.py`, `tc_transformer_trainer_distribute.py`.
 
-## 2. Telemetry added (code)
+**Tests:**
+- `tests/telemetry/test_controller_events.py` and `tests/mode/test_simplified_controller_flags.py` pass.
+- `tests/mode` + `tests/telemetry`: 1,027 pass. 5 fail, and the same 5 failed before this session.
 
-| Record | New content | Rows |
+## 3. Runs
+
+Both runs: conda env `test_fwdllm`, run from `examples/fwdllm/`, agnews, 100 trainers, C=30, K=10, P=10 (`mean`),
+`s`=1.5, rf=16 (`p`=450,340), GPUs 0, 2, 4, 5 and 6, a 3 h wall ceiling, and `EXPT_GPU_ALLOW_PEER=1`.
+
+| | Baseline (full controller) | Simplified |
 |---|---|---|
-| `run_meta`, once (`scope` = `aggregator`, `trainer_probe`, `trainer_fd`) | Every controller knob, `p_trainable` and `‖θ_tr‖` at init. The trainer's own `probe_combine`/`P` (to catch the mismatch gotcha) and FD `h` | all |
-| `server_update`, per commit | `commit_count`, `g_norm`, `step_skipped`, `rho_max`, `pool_mean_sq`, `var_dim`, `pool_size`. Calculated: `cos_theory`, `aim_d` (`D`), `progress_lambda` (`Λ`) | 4, 8, 11, 13, 15, 20 |
-| `bmax_probe` (new) | Each `B_max` re-sense: accuracy at each tested `Φ`, `phi_knee`, `B_max` before and after | 14 |
-| `sat_state` (new), per eval | Smoothed accuracy, best, `gl`, `progress`, stall/decay streaks | 16, 17 |
-| `agg_round` | Per-upload `agg_weight` (`ω_k`) and `align_cos`, in the same order as `grad_norm` | 9 |
+| Started | 2026-10-01 12:07 | 2026-10-02 00:07 (detached with `setsid nohup`) |
+| Controller | `n_target` gate, `landing` (`T_res` 300), `B_max` probe every 150 (`anchor`), `grad_aware` ω, budget stop 0.95, GL decay | `fixed` gate (N=50), `pool` (ρ=0.050), ω=1, no probe, no budget stop, stall rule 0.003 + Φ rail, no GL |
+| Audits | cos ground truth every 50 commits, retention every 25 | none |
+| Run directory | `experiments/run_20261001_120715_fluxtune_agnews_n100_smoke_syn_0_sim/` | `experiments/run_20261002_000757_fluxtune_agnews_n100_smoke_syn_0_sim/` |
+| Logs (in the run directory) | `01_10_26_12_07_…_{aggregator,trainers}.log` | `02_10_26_00_08_…_{aggregator,trainers}.log` |
+| Telemetry | `<run dir>/telemetry/aggregator_*.jsonl`, `trainer_*.jsonl` | same |
+| Launcher logs | `expt_scripts/smoke_logs/20261001_120712/` | `expt_scripts/smoke_logs/20261002_000754/` |
+| Console output | `agnews_full_20261001_1206.log` | `agnews_simple_20261002_0007.log` |
 
-**Files changed:**
-- `flame/telemetry/events.py`
-- `flame/mode/horizontal/syncfl/fwdllm_aggregator.py`
-- `examples/fwdllm/aggregator/FedSgdAggregator.py`
-- `examples/fwdllm/expts/saturation_stop.py`
-- `examples/fwdllm/trainer/forward_training/{fwdgrad_utils,tc_transformer_trainer_distribute}.py`
+**Launch gotchas:**
+- Pass `--max-runtime-s 48000 --sim-wall-ceiling-h 3`, or the preflight blocks the launch.
+- The GPU check reads the busiest GPU on the node, so set `EXPT_GPU_ALLOW_PEER=1` inline on the command.
+- A backward-pass cos audit costs about 85 s per fire.
+- Background shells are killed after 2 h, so detach runs that last longer.
 
-New tests are in `tests/telemetry/test_controller_events.py`. All telemetry is guarded so it can never fault training.
+**Comparing the runs:** `compare_runs.py <baseline> <simplified>` (session scratchpad). It compares accuracy at the same
+Φ, the same commit and the same wall-clock hour, plus time to reach a given accuracy. The baseline spent about 50 min
+on probes and audits, so the wall-clock comparison favours the simplified arm. The Φ and commit comparisons isolate
+the controllers.
 
-**Gating:**
-- `server_update` needs `--server-update-audit`.
-- `sat_state` needs `--saturation-stop`.
-- `aim_d` needs `--cos-ground-truth-audit`.
+## 4. Agnews baseline: observed against expected
 
-**Tests:** 7 new tests pass. The `tests/telemetry` + `tests/mode` suite has 5 failures, and the same 5 fail on the
-code without these changes (`eval_background` ×3, `probe_report`, `norms_are_inside_the_gate`).
+855 commits, stopped by the wall ceiling at Φ 2.58. Peak smoothed accuracy **0.873** (best single eval 0.8746);
+target 0.88.
 
-**Not yet done:** `analyze_run.py` / `telemetry_manifest.yaml` don't plot `bmax_probe` or `sat_state`.
+**Telemetry offsets.** `rho_star` and `n_req` in `server_update` belong to the next commit. `iteration_per_data_id`
+counts from 0 (pool = `10·(I+1)`). `rho` is measured after the step (about 0.2% low). Once corrected, the gate, the
+step and Φ are exact.
 
-## 3. Running
+**Verdict key:** ✅ matches the corpus · ⚠️ partly · ❌ contradicts · ❓ this run can't tell.
 
-**Conda env: `test_fwdllm`.** It links `flame` to `/home/dgarg39/flame`, but the launcher pins `PYTHONPATH` to this
-checkout. That was verified: the new telemetry code is what loads.
+| # | Concept | Expected | Observed | Verdict | Impact (expected → observed) |
+|---|---|---|---|---|---|
+| 1 | Forward gradient | ‖u_k‖ stable | 688 → 1030; 3.6× spread within a round | ✅ | 🔴 → 🔴 |
+| 2 | FD spacing | ε ∝ 1/‖θ‖ | ε 0.50 → 0.195 | ✅ | 🟢 → 🟢 |
+| 3 | Probe combination | `mean` on both sides | `mean`, P=10 everywhere | ✅ | 🔴 → 🔴 |
+| 4 | Pooling / aim | `n_eff`=pool; aim off theory | `n_eff/pool` 0.98–1.03; cos 12× below theory, ~40% lower late | ✅ | 🔴 → 🔴 |
+| 5 | Cohort | pipeline full | `in_flight`=30; 22–26 rounds/min | ✅ | 🟠 → 🟠 |
+| 6 | Safety rule | ρ/cos ≫ s | 14–20 vs 1.5 | ✅ | 🟠 → 🟠 |
+| 7 | Commit gate | `n_req` exact, mostly `natural` | exact; pool 100 → 30; 0 `cap` (corpus: 100% `cap`) | ✅ | 🔴 → 🟠 |
+| 8 | ρ_max | never exceeded | max ρ* 0.068 < 0.0999 | ✅ | 🟢 → ⚪ |
+| 9 | ω weights | 0.70–0.87, median 0.82 | median 0.767; 1.11× within a round | ⚠️ | 🟢 → ⚪ |
+| 10 | Legacy var gate | no effect | no effect | ✅ | ⚪ → ⚪ |
+| 11 | Trust-ratio step | ρ = ρ* | exact; 0 skipped | ✅ | 🔴 → 🔴 |
+| 12 | Budget law | Φ predicts ‖θ‖ | 0.04% median miss | ✅ | ⚪ → ⚪ |
+| 13 | Progress law | accuracy rises with Λ | 0.83 by Φ 1.45, then a slow creep | ✅ / ❓ | ⚪ → ⚪ |
+| 14 | `B_max` probe | knee ≈ 1.25, flat headroom | knee 1.25–1.73, set by one noisy point at φ=1.5 | ⚠️ | 🟢 → 🔴 noise sets ρ* |
+| 15 | Law C anneal | flat ρ* | sawtooth 0.032–0.068 | ❌ | 🔴 → 🔴 |
+| 16 | Stall stop | progress → 0.003 | reached at commit 833; streak 7/20 | ✅ | 🟠 → ⚪ |
+| 17 | GL decay | silent on a plateau | 0 breaches | ✅ | 🟢 → ⚪ |
+| 18 | Φ rail | peak at Φ 2.8–3.0 | not reached (Φ 2.58) | ❓ | 🔴 → ⚪ |
+| 19 | Budget stop | < 0.95 | max 0.86 | ⚠️ | ⚪ → ⚪ |
+| 20 | Commit indexing | +1 per commit | +1 every commit | ✅ | ⚪ → ⚪ |
 
-### Full agnews run (3 h hard stop, full logging)
+**Totals:** 13 ✅, 4 ⚠️, 1 ❌, 2 ❓. The only lever that changed during the run was ρ*_t (rows 14 + 15), and probe
+noise drove it.
 
-```bash
-conda activate test_fwdllm
-cd /home/dgarg39/aish_test/flame/lib/python/examples/fwdllm
-EXPT_GPU_ALLOW_PEER=1 FLAME_CONDA_ENV=test_fwdllm FWDLLM_FD_SCALE_INVARIANT=1 \
-./expt_scripts/run_sequential.sh \
-  --only fluxtune --mode sim --yes --clean --allow-stale-profile --dataset agnews \
-  --num-trainers 100 --num-gpus 5 --gpu-ids 0,2,4,5,6 --agg-goal 10 --c 30 --min-initial-frac 0.9 \
-  --probe-combine mean --commit-gate n_target --server-step-rule trust_ratio --gate-safety-s 1.5 \
-  --gate-rho-ref annealed --adapter-reduction-factor 16 --max-iter-per-data-id 20 \
-  --rho-schedule landing --t-res 300 --budget-stop-frac 0.95 \
-  --b-max-policy anchor --b-max-probe-every 150 --b-max-probe-n 512 \
-  --saturation-stop --phi-stop halt \
-  --server-update-audit --cos-ground-truth-audit --cos-probe-every 50 --retention-probe-every 25 \
-  --max-runtime-s 48000 --sim-wall-ceiling-h 3 \
-  2>&1 | tee agnews_full_$(date +%Y%m%d_%H%M).log
+## 5. Simplified model (proposal)
+
+```
+ρ = s·√(P·N/p)  (constant)    commit at N uploads    G = Σ u_k (ω = 1)    Δθ_tr = −ρ·‖θ_tr‖·G/‖G‖
+stop: Φ ≥ 3 (≈ 880 commits at ρ = 0.05) or the stall rule
 ```
 
-**Gotchas hit while launching:**
-- **Runtime flags:** without `--max-runtime-s 48000 --sim-wall-ceiling-h 3`, the defaults (600 s, no ceiling) make
-  the preflight block.
-- **GPU check:** it reads the busiest GPU on the node and ignores `--gpu-ids`. Another user's jobs on GPUs 1, 3 and 7
-  trigger it, so `EXPT_GPU_ALLOW_PEER=1` is needed, set inline: an `export` in another shell doesn't carry over.
-  This also skips the memory check on our own GPUs, so watch for `CUDA out of memory`.
-- **Backward-pass audit cost:** about 85 s per fire, which is why `--cos-probe-every 50`. The preflight estimated
-  7,848 s against the 10,800 s ceiling.
+N=50 matches the baseline's mean pool (49.5) and gives ρ=0.050, inside the observed range of 0.032–0.068.
 
-**Run status:** started 12:07:14 as `experiments/run_20261001_120715_fluxtune_agnews_n100_smoke_syn_0_sim`
-("smoke" is only the launcher's label). Trainers loaded on GPUs 0, 2, 4, 5 and 6 with no errors. The aggregator
-`run_meta` was emitted (`p_trainable`=450,340, `‖θ_tr‖`=13.34). First commit at 12:14:46, about 7.5 min after start.
+**Kept:** `P`, `mean`, FD spacing, `p`, trust-ratio, `N`, `s`, Φ rail, stall rule, `C`, `K`.
 
-**Log files.** Paths are relative to `/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/`.
+**Risk:** constant ρ has no late anneal.
 
-| What | Path |
-|---|---|
-| Run directory | `experiments/run_20261001_120715_fluxtune_agnews_n100_smoke_syn_0_sim/` |
-| Aggregator log (commits, `[ServerStep]`, `[CommitGate]`, `[BmaxProbe]`, `[SatStop]`) | `<run dir>/01_10_26_12_07_async_oort_n100_client_notify_alpha1_syn0_aggregator.log` |
-| Trainers log (`[FD] spacing`, `[JVP_EVAL_MODE]`, OOMs) | `<run dir>/01_10_26_12_07_async_oort_n100_client_notify_alpha1_syn0_trainers.log` |
-| Aggregator telemetry (`run_meta`, `server_update`, `bmax_probe`, `sat_state`, `agg_round`, `agg_eval`) | `<run dir>/telemetry/aggregator_fluxtune_agnews_n100_smoke_syn_0_sim.jsonl` |
-| Trainer telemetry, one file per trainer (`run_meta` `trainer_probe` / `trainer_fd`, `trainer_round`) | `<run dir>/telemetry/trainer_*.jsonl` (100 files) |
-| Resolved config as launched | `<run dir>/aggregator_config.json`, `execution_config.yaml`, `snapshot.yaml` |
-| Launcher logs (progress, stdout) | `expt_scripts/smoke_logs/20261001_120712/` (`expt_runner.log`, `fluxtune_agnews_n100_smoke_syn_0_sim.out`) |
-| Console output (`tee`) | `agnews_full_20261001_1206.log` |
+### What the removed variables did on agnews
 
-`agnews_full_20261001_1156.log` and `agnews_full_20261001_1203.log` are the two aborted launch attempts
-(preflight block and GPU-peer refusal).
+| Group | Variables | On agnews |
+|---|---|---|
+| **Never fired (6)** | `max_iter` cap, `ρ_max`, var plateau force-commit, legacy var gate, budget stop, GL decay | none triggered |
+| **Never read (3)** | `rho_star`, `rho_exp` (not used by `landing`), `learning_rate` (not used by trust-ratio) | inert |
+| **Switched off (3)** | `dynamic_kc`, momentum, weight decay | never exercised |
+| **Fired, no effect (3)** | align gate (×0.998), ω staleness weights (1.11×), cos audit | inert or audit-only |
+| **Fired and mattered (3)** | `B_max` probe, law C (`T_res`, `b_max_prior`), `n_req`/`n_eff` gate | set ρ* and the pool, mostly from noise |
 
-### Checking a run
+**"Never fired on agnews" does not mean "never fires".** Validate every removal on yahoo, yelp-p and a second model
+before treating it as safe. The corpus already shows the `max_iter` cap binding on 100% of commits in G-1 (`rf`=64),
+and the Φ rail firing on yelp-p.
 
-```bash
-R=$(ls -1dt experiments/run_* | head -1)
-grep -c "\[ServerStep\] trust_ratio commit=" $R/*aggregator.log
-grep -iE "Traceback|out of memory" $R/*.log | head
-```
+### Why GL never fired
 
-`check_smoke.py` (session scratchpad, not in the repo) checks that every new field is present and that training
-behaves: realised `ρ` ≈ `ρ*`, `B` never decreases, no NaN weights, accuracy rises.
+GL is a decay detector: it fires after 20 straight evals that are all past warm-up (commit 450), more than 0.5% below
+the best, and no higher than 150 commits earlier. Agnews never declined. The 7 evals with `gl > 0.005` all came
+before commit 105, and the largest `gl` after warm-up was 0.0044. GL worked; there was nothing to catch.
 
-## 4. Next step: does each concept follow its expected trend?
+- **Value:** a free safety net against collapse (runaway, training past the useful Φ, overfitting datasets).
+- **Weakness:** the "no higher than 150 commits ago" test ignores a quick peak-then-drop (for example 0.80 → 0.87 →
+  0.85), so GL is late on a sharp collapse.
+- **Recommendation:** the stall rule also catches decays, but keep GL **on** for yahoo and yelp-p until it is validated.
 
-Once the agnews run finishes, check each concept row against the trend the corpus predicts. A **pass**
-confirms the corpus on this run. A **fail** is a finding: either the code doesn't do what the corpus says,
-or the corpus claim doesn't hold. Fields are from §3 of the cheatsheet.
+### What the budget stop is
 
-Expected values are worked out for this run: `p`=450,340 (`rf`=16), `s`=1.5, `P`=`G_rule`=10, `K`=10,
-`max_iter`=20, `ρ*_0`≈0.068 (preflight), `‖θ_tr‖`=13.34 at init.
+`B = ½·Σ ln(1+ρ²)` is the total weight growth, with Φ = e^B. `B_max` is the growth the model is assumed to tolerate:
+a prior of `ln 2`, re-measured by the probe. Under `landing`, training stops at `B ≥ 0.95·B_max`. It never fired on
+agnews (max 0.86) for two reasons:
+- law C approaches `B_max` only gradually, at a rate set by `T_res`=300;
+- the probe moved `B_max` up 3 times out of 5.
 
-| # | Concept | Expected trend | Check (fields) | Pass if |
+It watches the same `B` as the Φ rail; only the threshold differs (measured instead of fixed). With `B_max = ln 3` it
+just repeats the Φ rail.
+
+## 6. A/B result (agnews): **pass**
+
+The simplified run stopped on the **Φ rail at commit 881** (Φ=3.001, 01:52), after 1.74 h of training. The baseline
+ran out the 3 h wall ceiling.
+
+| | Baseline | Simplified |
+|---|---|---|
+| Peak smoothed accuracy | 0.8728 (commit 797, Φ 2.49) | **0.8726** (commit 791, Φ 2.68) |
+| Best single eval | 0.8746 | 0.8755 |
+| Training wall time | 3.0 h (wall ceiling) | **1.74 h** (Φ rail) |
+| Time to 0.80 / 0.84 / 0.86 / 0.87 | 1.19 / 1.55 / 2.06 / 2.81 h | **0.59 / 0.73 / 1.09 / 1.50 h** |
+| Commits per hour | 285 | 508 |
+| Probes / audits | 5 probes (1,481 s), 18 cos audits | none |
+
+- **Accuracy:** the same peak (−0.0002, inside the ±0.005 pass band).
+- **At the same commit:** behind early (0.558 vs 0.670 at commit 100, since its ρ starts at 0.050 against 0.068).
+  Level from commit 450 onward.
+- **At the same Φ:** 0.002–0.006 lower, so constant ρ needs a little more Φ for the same accuracy.
+- **Wall time:** reached 0.87 about 47% sooner. The baseline's ~50 min of probes and audits explain only part of the
+  gap; the rest is not yet explained.
+- **End of run:** a plateau from commit 761 to 851, then a small dip in the last 20 commits (smoothed 0.8726 → 0.866
+  at Φ 2.93–3.0). `gl` reached 0.0067. GL was off in this arm and the stall streak only got to 7, so the Φ rail is
+  what stopped the run. With no anneal, Φ=3 overshoots the peak (Φ 2.68) slightly.
+
+**Not yet tested:** other datasets, and whether a rail at about 2.7, or GL turned on, would stop at the peak instead
+of after the dip.
+
+## 7. Open items
+
+- Repeat the §6 A/B on yahoo / yelp-p (with GL on), so the §5 removals are tested on other datasets.
+- Explain the extra wall-time gap beyond the audits, by comparing the two runs' `step_timing`.
+- Constant ρ overshoots the peak by Φ ≈ 0.3. Try a rail at about 2.7, or one step-down (ρ/√2 at Φ=2).
+  Preferred: anneal with ρ_t = ρ0/Φ_t (§8).
+- Fix the telemetry offsets and the misleading log lines (`[Variance=GOOD]`, `[CommitGate] n_target` under `fixed`).
+- Decide on the parity gaps in §1.
+- Extend `analyze_run.py` for `bmax_probe` / `sat_state`. Move `compare_runs.py` into `expt_scripts/`.
+- Commit following CLAUDE.md: tighten new comments, keep the diff minimal, short message.
+
+## 8. Follow-up (2026-10-07): is constant ρ a good idea?
+
+Re-read of both runs' `server_update` and `agg_eval` telemetry.
+
+**Findings**
+- **‖θ_tr‖ growth is set by ρ alone.** |cos(θ_tr, Δθ_tr)| < 0.0006 on every commit in both arms, so each step is
+  sideways and ‖θ_t‖² = ‖θ_{t−1}‖²·(1+ρ²). With a ground-truth gradient cos of ≈ 0.003, that growth is almost all
+  noise.
+- **Early, a larger ρ is faster per commit; late, it isn't:**
+
+| Accuracy band | Baseline commits (mean ρ) | Simplified commits (ρ 0.050) |
+|---|---|---|
+| 0.70 → 0.80 | 97 (0.046) | 70 |
+| 0.80 → 0.84 | 129 (0.040) | 76 |
+| 0.84 → 0.86 | 176 (0.046) | 194 |
+| 0.86 → 0.87 | 234 (0.047) | 214 |
+
+- So a large late ρ mostly adds Φ (noise), which fits the dip before the Φ = 3 rail.
+- **Caveat:** one run per arm and ±0.005 eval noise. The baseline's ρ jumps at its probes are too noisy to read
+  either way.
+
+**Proposal: ρ_t = ρ0·‖θ_0‖/‖θ_t‖ = ρ0/Φ_t (constant absolute step)**
+- Exact closed form: Φ_t = √(1 + t·ρ0²). ρ stays about flat for ~1/ρ0² commits, then decays like 1/√t. No
+  `T_res`, `B_max` or probe. Unlike `rm`, it doesn't cut the step from commit 1.
+- Use ρ0 ≈ 0.07 with a fixed N ≈ 98. Predicted ρ: 0.057 at commit 100, 0.045 at 300, 0.030 at 880, where Φ ≈ 2.3.
+- Keep N fixed rather than N ∝ ρ²: the gate's `s` is already ~10× off (ρ/cos 14–20 against 1.5).
+- **Side effect:** Φ = 3 now needs ≈ 1,600 commits, so stop on the stall rule (decay the streak instead of
+  resetting it) plus a commit cap.
+
+**Alternatives**
+- **One step-down at Φ = 2.** A cruder version of the proposal, with an extra threshold.
+- **Constant ρ with N ∝ Φ².** Better direction per commit, but slower commits and Φ still grows. This is the
+  backup arm.
+- **Holding ‖θ_tr‖ fixed (projection or weight decay).** Rejected: the adapters aren't scale-invariant, and the
+  step never anneals.
+
+**Next:** implement it as a new `rho_schedule` branch in `_rho_star_now`, then run the A/B: simplified vs
+simplified + ρ0/Φ (ρ0 = 0.07, N = 98), fixed stall rule, a cap of ~1,000 commits. Compare time to 0.86 and 0.87,
+the peak, and Φ at the peak.
+
+## 9. Follow-up (2026-10-09): which model next, and does FluxTune scale to ~1B?
+
+Extrapolated from buildplan §5.11 (roberta-large smoke `145932`). Nothing here is measured on a 1B model.
+
+**Next model: SmolLM2-360M + LoRA r=8 (q,v).**
+- Llama architecture, so it exercises the decoder path that LLaMA2-7B / Mistral-7B (G1) will use: pad token,
+  last-token pooling, causal mask, LoRA placement. `adapters` 1.3.0 supports `llama` and `mistral`, not Qwen.
+- Same size as roberta-large (355M), so its memory and trainers/GPU numbers carry over. `p` ≈ 0.8M sits between
+  DistilBERT (450k) and roberta-large (4.23M): a third point for N5c.
+- **Build tasks:** a `"llama"` entry in `MODEL_CLASSES` (`initializer.py`) with pad token = EOS and
+  `config.pad_token_id`; guard the `pre_classifier` handling; `peft_method: lora`; pre-tokenize; make the model
+  an override in `run_node_p4.sh`; retune lr (roberta needed 3e-4).
+
+**Scaling rule: commits grow with `p` (trainable), not model size.**
+- `ρ_max ∝ 1/√p`, so per-commit progress `½ln(1+ρ²) ∝ 1/p` and commits to Φ* = ln(2.9)/(½ln(1+ρ_max²)).
+  Reproduces DistilBERT ≈ 214 and roberta ≈ 2,000.
+- Model size sets the time per trip: each perturbation is 2 forward passes, 10 perturbations per batch.
+
+| Setup | `p` | Commits to Φ* | Fwd cost vs roberta | Wall time |
 |---|---|---|---|---|
-| 1 | Forward gradient | ‖u_k‖ stays the same order of magnitude; no blow-up | `agg_round.grad_norm` over commits | median ‖u_k‖ per commit stays within one order of magnitude |
-| 2 | FD spacing | Relative nudge `ε = fd_displacement/‖θ_tr‖` **shrinks** as `‖θ_tr‖` grows (13.35 → ~62 on agnews ⇒ `ε` 0.50 → ~0.11) | `run_meta.fd_displacement`, `trainable_weight_norm` | `ε` falls in step with `1/‖θ_tr‖` |
-| 3 | Probe combination | Trainer and aggregator agree | `run_meta.probe_combine` (all scopes), `g_rule` | all `mean`, `g_rule`=10 |
-| 4 | Pooling / aim | `n_eff` is an identity, so it can't see aim. Measured aim is far from theory and drifts | `n_eff/pool_size`, `aim_d` = `cos_ground_truth/cos_theory` | `n_eff/pool_size` = 1.00 ± 0.01; `aim_d` ≠ 1 and drifts 2–3× (corpus: 20× off theory) |
-| 5 | Cohort | Async pipeline stays full; throughput steady | `agg_round.in_flight`, commit timestamps, `staleness` | `in_flight` ≈ `C`=30; commits/s has no downward trend |
-| 6 | Safety criterion | Gate rule `ρ ≤ s·cos`, the "don't outstep your aim" rule | `rho / cos_ground_truth` | report the ratio vs `s`=1.5. Ratio ≫ `s` ⇒ the rule holds only in theory, consistent with row 4 |
-| 7 | Commit gate | `n_req = p·(ρ*/s)²/P` exactly. At `ρ*_0` ≈ 0.068: `n_req` ≈ 93 ⇒ `I` ≈ 10. Under `annealed`, `I` falls as `ρ*` falls | `n_req`, `rho_star`, `iteration_per_data_id`, `commit_reason` | `n_req` matches the formula to float precision; `I` ≈ `ceil(n_req/K)`; mostly `natural` commits, few `cap` |
-| 8 | Reachability cap | `ρ_max = s·√(max_iter·K·P/p)` ≈ 0.0999; `ρ*` never exceeds it | `rho_max`, `rho_star` | `rho_star ≤ rho_max` on every commit |
-| 9 | Aggregation weights | Near-inert: narrow band 0.70–0.87, median ≈ 0.82 | `agg_round.agg_weight`, `align_cos`, `grad_aware_gated_total` | `ω_k` inside the band, median 0.80–0.84; gated count ≈ 0 |
-| 10 | Legacy var gate | Not used under `n_target` | `agg_round.commit_reason` | no commits caused by `var_threshold` |
-| 11 | Trust-ratio step | Realised step equals the requested step | `rho` vs `rho_star`, `step_skipped` | `|rho − rho_star|/rho_star` < 1% on every commit; no skipped steps |
-| 12 | Budget law | `Φ = e^B` predicts weight growth (corpus: median miss 0.09%) | `phi` vs `trainable_weight_norm / theta_tr_norm_init` | median relative miss < 1% |
-| 13 | Progress law | Accuracy is a function of `Λ = 2B/s`, not of the schedule | `agg_eval.test-accuracy` vs `progress_lambda` | accuracy rises monotonically (smoothed) with `Λ` until the plateau |
-| 14 | `B_max` | Probe falsified: `Φ_knee` ≈ 1.25 and `B_max` recedes with `B`, so headroom stays ≈ constant | `bmax_probe.phi_knee`, `b_max_after − budget_b` | `phi_knee` ≈ 1.2–1.3; headroom flat at ≈ 0.22–0.25 (`ln 1.25` ≈ 0.22). Confirms the falsification |
-| 15 | Law C anneal | Degenerates to constant `ρ` once the first probe lands (flat headroom ⇒ flat `ρ*`) | `rho_star` over `commit_count` | `rho_star` flat after commit 150 rather than annealing |
-| 16 | Stop: stall | `progress` falls toward ≤ 0.003 on the plateau. The stall trigger is **off** in this run, so `stalls` stays 0 | `sat_state.progress`, `stalls` | `progress` decays to ~0.003 at the plateau; note the commit where it would have fired |
-| 17 | Stop: decay (GL) | Blind to a plateau at the best: `gl` ≈ 0 while flat | `sat_state.gl`, `breaches` | `gl` ≈ 0 on the plateau; if it fires, only after a real decline |
-| 18 | Stop: Φ rail | Peak accuracy lands at `Φ` ≈ 2.8–3.0 | `phi` at max smoothed accuracy; `stop_reason` | peak `Φ` in 2.8–3.0; rail fires at 3.0 if nothing earlier does |
-| 19 | Stop: budget | Unreachable under a receding `B_max` | `budget_frac` | stays < 0.95 throughout |
-| 20 | Commit indexing | One data bin per commit | `data_id`, `commit_count` | `data_id` advances by one per commit, wrapping at 150 |
+| DistilBERT 66M + adapters | 450k | 214 | ~0.2× | ~3 h (measured) |
+| roberta-large 355M + adapters | 4.23M | ~2,000 | 1× | ~50 h (measured rate) |
+| **1B Llama + LoRA r=8** | ~0.85–1.1M | ~450–550 | ~3× | **~25–55 h, central ~40 h** |
+| 1B full fine-tune | 1.1B | ~500,000 | ~3× | infeasible |
+| 7B + LoRA r=8 | ~4.2M | ~2,000 | ~20× | ~1,000 h, infeasible as-is |
 
-**Run-level target:** agnews FL target accuracy 0.88; the best forward-gradient result so far is 0.876.
+1B estimate: 50 h ÷ 3.7 (fewer commits) × 3 (costlier passes) ≈ 40 h. The range is trips/commit, 10 to 20
+(roberta stayed pinned at `ρ_max`, so 20).
 
-**How:** write `expt_scripts/evaluate_trends.py`. It reads the run's telemetry, computes each row's check,
-and prints pass/fail with the numbers. Extend `check_smoke.py`, which already loads and groups the events.
-Rows 4 and 6 need `cos_ground_truth`, so only commits where the backward-pass audit fired (every 50th) count.
+**Does it scale?**
+- ✅ Memory stays flat in depth and in P (no backward pass). The best-of-10 JVP gain doesn't depend on `p`.
+- ❌ Gradient cos ∝ 1/√p. Keep `p` ≈ 1M; raising LoRA rank or adding target matrices costs time in proportion.
+- ⚠ The FD JVP subtracts two near-equal losses: worse in bf16 (Llama default). Compute the JVP loss in fp32.
+- ⚠ `FWDLLM_FD_SCALE_INVARIANT` ON makes the chord drift as 1/√p (buildplan row F). Check before a 40 h run.
+- ❓ Whether Φ* holds at a new `p` (N5c) is still open. A 1B run is that test, so let it reach its own stop.
 
-## 5. Open items
+**Practical limits**
+- **Memory:** ~4.5 GB per trainer (fp16 weights + tangent) before activations, so ~6–8 trainers per A40 and
+  ~13–16 GPUs for 100 trainers. Fix: co-located trainers share one frozen backbone and keep separate LoRA weights
+  (new code).
+- **Stragglers:** ~3× roberta's per-batch compute. Re-profile `sim_charge_profiles` or sim timing won't match real.
 
-- Run §4 on the agnews run; then repeat on yahoo / yelp-p to separate dataset effects from code effects.
-- Decide whether to fix the `_last_rho` vs `ρ*_t` wording and the default-vs-shipped gaps.
-- Test the row 7/15/18 simplification (constant `ρ` from fixed `I`) as an A/B arm.
-- Extend `analyze_run.py` for `bmax_probe` / `sat_state`.
-- Move `check_smoke.py` into `expt_scripts/` if it is worth keeping.
-- Nothing is committed yet. Per CLAUDE.md: tighten new comments, keep the diff minimal, short commit message.
+**Next:** 15-min smoke on the 1B model. Read `[ProbeDim] p=…`, trips/commit, commits/h; wall ≈ 500 ÷ commits/h.
+`s` = 2.9 cuts it ~3.7× (~11 h) but under-trains by about half (§5.12): use it to check the controller, not accuracy.
+
+## 10. Follow-up (2026-10-10): trying a different model: pick, time estimate, smoke recipe
+
+Extrapolation from §9 and buildplan §5.11, not measured. Current baselines: DistilBERT 66M total / 450k trainable;
+roberta-large 355M / 4.23M.
+
+**Pick: SmolLM2-360M + LoRA r=8 (q,v) first, ~1B Llama + LoRA r=8 as stretch.** Avoid 7B (~1,000 h) and any full
+fine-tune at ≥1B (~500k commits). Keep `p` ≈ 1M. The 1B checkpoint is unchosen; Llama-3.2-1B and TinyLlama-1.1B
+both fit, and neither is named in the docs.
+
+**360M time estimate: ~5–10 h, central ~9 h.**
+- Anchor: roberta-large ≈ 2,000 commits ≈ 50 h (rate from smoke `145932`, never run to convergence).
+- Commits ∝ `p`: 4.23M / 0.8M ≈ 5.3× fewer, ≈ 380 commits. Forward cost ≈ 1× (355M vs 360M).
+- 50 h ÷ 5.3 ≈ 9.5 h at 20 trips/commit; ~5 h at 10.
+- An earlier ~15 h figure was wrong: it reused the 1B row's ÷3.7, which assumes `p` ≈ 1.1M.
+- Floor: per-commit fixed overhead (aggregation, probe, sim charging) doesn't shrink with `p`, so expect above the low end.
+
+**Easiest test: 15-min smoke on the 360M model.** Accuracy is irrelevant (the roberta smoke sat at chance and still
+counted as a clean port).
+1. Add a `"llama"` entry to `MODEL_CLASSES["classification"]` in `expts/initializer.py` (LlamaConfig,
+   LlamaForSequenceClassification, AutoTokenizer); pad token = EOS and `config.pad_token_id`. Only `bert`,
+   `distilbert`, `roberta-large`, `albert`, `deberta` exist today.
+2. Confirm `peft_method: lora` works for q,v (only the adapter branch was read); guard `pre_classifier`.
+3. Override the model in `expt_scripts/nodes/run_node_p4.sh`; few clients; retune lr (roberta needed 3e-4);
+   pre-tokenize.
+4. Before launch: JVP loss in fp32; check `FWDLLM_FD_SCALE_INVARIANT`.
+5. Read `[ProbeDim] p≈0.8M`, trips/commit, commits/h (wall ≈ 400 ÷ commits/h), and `cos·Φ` ≈ 1.0.
