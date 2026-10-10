@@ -98,6 +98,7 @@ $L --rungs L1-L4 --datasets all --keep-going --deadline-h 6     # CPU
 $L --grade <pool> --regrade --max-stage 9                        # offline re-gate (~30s/48 pairs)
 python lib/python/examples/scripts/logical_diff.py <pool>        # first diverging selection/commit per pair
 python lib/python/examples/scripts/readiness_score.py <pools>    # parity score matrix (C5)
+python lib/python/examples/scripts/cleanup_experiments.py [--apply] [--fwdllm]   # free storage: keeps pooled/banked/cited/<7d runs
 conda run -n dg_flame python lib/python/examples/async_cifar10/scripts/parity/event_invariants.py <run_dir>
 python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --sim <B> --control --json-out c.json   # real<->real floor (Q2)
 ```
