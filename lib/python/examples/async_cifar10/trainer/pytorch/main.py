@@ -87,7 +87,7 @@ class PyTorchCifar10Trainer(Trainer):
         logger.info(f"[TRAINER_HP] optimizer={self._optimizer_name()} lr={self.learning_rate} batch={self.batch_size} "
                     f"epochs={self.epochs} "
                     f"lr_decay={self.lr_decay_enabled} (factor={self.lr_decay_factor}, every={self.lr_decay_epoch}, "
-                    f"min={self.min_learning_rate})")
+                    f"min={self.min_learning_rate}) clip={getattr(_hp, 'trainer_clip_grad_norm', 0.0)}")
 
         self.criterion = None
 
@@ -1058,6 +1058,9 @@ class PyTorchCifar10Trainer(Trainer):
                     _grad_norm_accum += float(_gsq.sqrt().item())
                     _grad_norm_batches += 1
 
+            _clip = getattr(self.config.hyperparameters, "trainer_clip_grad_norm", 0.0) or 0.0  # FX-D126
+            if _clip > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), _clip)
             self.optimizer.step()
             batches_processed += 1
 

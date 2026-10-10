@@ -38,6 +38,9 @@ from .avail_state_series import (
     run_span,
     selection_run_span,
     state_fractions,
+    state_fractions_in_windows,
+    observed_windows,
+    intersect_windows,
     total_variation_distance,
 )
 from .ground_truth import (
@@ -208,6 +211,16 @@ def ks_stat(a: list, b: list) -> float:
             ib += 1
         d = max(d, abs(ia / na - ib / nb))
     return d
+
+
+MIN_SEL_SAMPLED = 20  # FX-D125: selection-sampled availability checks SKIP below this per side
+
+
+def ks_sample_tol(nominal: float, n: int, m: int, c: float = 1.22) -> float:
+    """Two-sample KS tolerance: `nominal`, raised to the noise floor c*sqrt((n+m)/(n*m)) (c=1.22: alpha 0.10)."""
+    if n <= 0 or m <= 0:
+        return nominal
+    return max(nominal, c * math.sqrt((n + m) / (n * m)))
 
 
 def spearman_rho(a: list, b: list) -> float:
@@ -1132,8 +1145,10 @@ def eligibility_parity(real: dict, sim: dict, warn_ks: float = 0.2) -> dict:
 
     pm_el = _pointmass_match(r_el, s_el, ks_el)
     pm_ca = _pointmass_match(r_ca, s_ca, ks_ca)
-    ok_el = math.isnan(ks_el) or ks_el <= warn_ks or pm_el
-    ok_ca = math.isnan(ks_ca) or ks_ca <= warn_ks or pm_ca
+    # FX-D125: KS noise floor at the sample size (alpha 0.10); never tightens warn_ks.
+    tol_el, tol_ca = ks_sample_tol(warn_ks, len(r_el), len(s_el)), ks_sample_tol(warn_ks, len(r_ca), len(s_ca))
+    ok_el = math.isnan(ks_el) or ks_el <= tol_el or pm_el
+    ok_ca = math.isnan(ks_ca) or ks_ca <= tol_ca or pm_ca
     ok = ok_el and ok_ca
     out = {
         "ok": ok,
@@ -1143,6 +1158,7 @@ def eligibility_parity(real: dict, sim: dict, warn_ks: float = 0.2) -> dict:
         "real_mean_eligible": round(r_el_mean, 1) if not math.isnan(r_el_mean) else None,
         "sim_mean_eligible": round(s_el_mean, 1) if not math.isnan(s_el_mean) else None,
         "warn_ks": warn_ks,
+        "ks_tol_eligible": round(tol_el, 3),
     }
     if pm_el or pm_ca:
         out["note"] = ("point-mass distribution: KS uninformative (zero-variance side), "
@@ -3990,7 +4006,7 @@ def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
 # ═══════════════════════════════════════════════════════════════════
 
 def avail_timebase_parity(real: dict, sim: dict,
-                          n_bins: int = 10, tol_rel: float = 0.20) -> dict:
+                          n_bins: int = 10, tol_rel: float = 0.20, min_selections: int = 0) -> dict:
     """A3 [DIST]: num_eligible trajectory aligned by run progress (round/maxround).
 
     If the availability trace is indexed by a different time-base in each mode
@@ -4002,6 +4018,9 @@ def avail_timebase_parity(real: dict, sim: dict,
         return [e for e in sel if e.get("num_eligible") is not None]
 
     rs, ss = _timed(real["selection_train"]), _timed(sim["selection_train"])
+    if rs and ss and min(len(rs), len(ss)) < min_selections:  # FX-D125: < ~2 selections per bin is noise
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": f"{min(len(rs), len(ss))} selections < {min_selections}: binned trajectory ungradeable"}
     by_time = bool(rs and ss) and all(e.get("vclock_now") is not None for e in rs + ss)
     span = min(max(float(e["vclock_now"]) for e in rs), max(float(e["vclock_now"]) for e in ss)) if by_time else 0.0
 
@@ -4089,8 +4108,13 @@ def duty_cycle_parity(real_trainers: dict, sim_trainers: dict) -> dict:
 def duration_duty_cycle_parity(real: dict, sim: dict,
                                mean_tol: float = 0.05,
                                within_tau: float = 0.10,
-                               frac_pass_tol: float = 0.95) -> dict:
+                               frac_pass_tol: float = 0.95,
+                               min_selections: int = 0) -> dict:
     """A4dur [DIST]: duration-weighted duty-cycle parity, real vs sim (C.6.3).
+
+    Both sides integrate over the COMMON trace-time horizon (FX-D125): a side that ran longer in
+    trace time would otherwise be graded on a different window of a non-stationary trace.
+    SKIP below `min_selections` selections on either side (state is sampled at selections).
 
     Replaces A4's transition-FRACTION counting (a bare max over `avail_change`
     — brittle, and blind in pure-oracular mode; see Dead-ends §9) with time-
@@ -4118,9 +4142,17 @@ def duration_duty_cycle_parity(real: dict, sim: dict,
         return {"ok": True, "tier": "DIST", "status": "SKIP",
                 "note": "no per-trainer avl_state in selection telemetry "
                         "(gate off, or predates C.6.1)"}
+    n_r, n_s = len(real["selection_train"]), len(sim["selection_train"])
+    if min(n_r, n_s) < min_selections:
+        return {"ok": True, "tier": "DIST", "status": "SKIP",
+                "note": f"{min(n_r, n_s)} selections < {min_selections}: sampled duty cycle ungradeable"}
 
-    r_frac = state_fractions(r_series, t_end=run_span(r_series))
-    s_frac = state_fractions(s_series, t_end=run_span(s_series))
+    horizon = min(run_span(r_series), run_span(s_series))  # FX-D125
+    wins = intersect_windows(observed_windows(r_series, horizon), observed_windows(s_series, horizon))
+    if not wins:
+        return {"ok": True, "tier": "DIST", "status": "SKIP", "note": "no commonly observed time window"}
+    r_frac = state_fractions_in_windows(r_series, wins)
+    s_frac = state_fractions_in_windows(s_series, wins)
     common = sorted(set(r_frac) & set(s_frac))
     if not common:
         return {"ok": True, "tier": "DIST", "status": "SKIP",
@@ -7945,9 +7977,9 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["avail_composition"] = avail_composition_parity(real_agg, sim_agg)
     results["eligibility"] = eligibility_parity(real_agg, sim_agg)
     results["eligible_speed"] = eligible_speed_composition_parity(real_agg, sim_agg)
-    results["avail_timebase"] = avail_timebase_parity(real_agg, sim_agg)
+    results["avail_timebase"] = avail_timebase_parity(real_agg, sim_agg, min_selections=MIN_SEL_SAMPLED)
     results["duty_cycle"] = duty_cycle_parity(real_trainers, sim_trainers)
-    results["duty_cycle_duration"] = duration_duty_cycle_parity(real_agg, sim_agg)
+    results["duty_cycle_duration"] = duration_duty_cycle_parity(real_agg, sim_agg, min_selections=MIN_SEL_SAMPLED)
     results["eligible_pool_reduction"] = eligible_pool_reduction_parity(
         real_agg, sim_agg)
     results["abandon_timeout"] = abandon_timeout_parity(real_agg, sim_agg, threshold_s=sim_agg.get("task_timeout_s") or 90.0)

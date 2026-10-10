@@ -156,6 +156,7 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     # FX-N83: FedScale/Oort client SGD (REFL client.py:71, Oort learner.py:155): momentum 0.9, weight decay 5e-4.
     trainer_momentum: float = Field(alias="trainerMomentum", default=0.0)
     trainer_weight_decay: float = Field(alias="trainerWeightDecay", default=0.0)
+    trainer_clip_grad_norm: float = Field(alias="trainerClipGradNorm", default=0.0)  # FX-D126: 0 = off (source Oort's clip is commented out)
     weight_decay: t.Optional[float] = Field(alias="weightDecay", default=None)
     rounds: int
     epochs: int

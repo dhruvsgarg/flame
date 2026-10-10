@@ -117,6 +117,8 @@ def run_pair(spec, train, test_idx, test, splits, client_lr, server_lr, a, gpu, 
                     x, y = x.to(dev), y.to(dev)
                     opt.zero_grad(set_to_none=True)
                     F.nll_loss(model(x), y).backward()
+                    if a.clip_grad_norm:  # FX-D126
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), a.clip_grad_norm)
                     opt.step()
                     done += 1
                 if steps is None or done >= steps:
@@ -201,6 +203,8 @@ def main(argv=None):
     ap.add_argument("--batch", type=int, help="default 32, or the reference batch")
     ap.add_argument("--optimizer", choices=["sgd", "adam"], help="trainer optimizer (default: the dataset's)")
     ap.add_argument("--momentum", type=float, help="client SGD momentum (default 0, or the reference)")
+    ap.add_argument("--clip-grad-norm", type=float, default=0.0, help="client grad-norm clip (0 = off; FX-D126)")
+    ap.add_argument("--shard-cap", type=int, default=0, help="truncate every client shard to N samples (streaming start; FX-D126)")
     ap.add_argument("--weight-decay", type=float, help="client SGD weight decay (default 0, or the reference)")
     ap.add_argument("--rate", type=float, default=0.88, help="per-update weight (felix 'new' rate ~0.88; fedbuff 1)")
     ap.add_argument("--eval-every", type=int, default=5)
@@ -226,6 +230,8 @@ def main(argv=None):
     if split_file is None:
         sys.exit(f"no stored split for {a.dataset}")
     raw = yaml.safe_load(open(SPLITS / split_file))["trainer_data_splits"]
+    if a.shard_cap:  # FX-D126: streaming start = tiny shards
+        raw = {k: v[:a.shard_cap] for k, v in raw.items()}
     train, test = Cached(spec.train()), Cached(spec.test())
     test_idx = random.Random(0).sample(range(len(test)), min(a.test_n, len(test)))
     gpus = [int(g) for g in a.gpus.split(",")]

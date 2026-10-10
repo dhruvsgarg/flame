@@ -364,3 +364,55 @@ def test_commit_promptness_late_needs_a_round_close_between():
     assert commit_promptness_parity({"withheld_deliveries": evs, "agg_rounds": rounds})["ok"]
     rounds.append({"event": "agg_round", "vclock_now": 230.0})
     assert commit_promptness_parity({"withheld_deliveries": evs, "agg_rounds": rounds})["n_late_violations"] == 1
+
+
+# ---------------------------------------------------------------------------
+# FX-D125: common horizon, sample-aware tolerances
+# ---------------------------------------------------------------------------
+
+def test_duty_cycle_duration_integrates_common_horizon():
+    # real ran to 1800 s and went UN_AVL after 900 s; sim stopped at 900 s. Over the common 900 s they match.
+    real = {"selection_train": [
+        _sel_avl(1, 1000.0, None, {"t1": {"avl_state": "AVL_TRAIN"}}),
+        _sel_avl(2, 1900.0, None, {"t1": {"avl_state": "UN_AVL"}}),
+        _sel_avl(3, 2800.0, None, {"t1": {"avl_state": "UN_AVL"}}),
+    ]}
+    sim = {"selection_train": [
+        _sel_avl(1, 0.0, 0.0, {"t1": {"avl_state": "AVL_TRAIN"}}),
+        _sel_avl(2, 0.0, 900.0, {"t1": {"avl_state": "UN_AVL"}}),
+    ]}
+    res = duration_duty_cycle_parity(real, sim)
+    assert res["ok"] and res["mean_err"] == 0.0, res
+
+
+def test_sampled_avail_checks_skip_below_min_selections():
+    from parity.checks import avail_timebase_parity
+    real = {"selection_train": [_sel_avl(1, 1000.0, None, {"t1": {"avl_state": "AVL_TRAIN"}})]}
+    sim = {"selection_train": [_sel_avl(1, 0.0, 0.0, {"t1": {"avl_state": "UN_AVL"}})]}
+    res = duration_duty_cycle_parity(real, sim, min_selections=20)
+    assert res["ok"] and res["status"] == "SKIP"
+    sel = [{"num_eligible": 3, "vclock_now": 1.0, "round": 1}]
+    assert avail_timebase_parity({"selection_train": sel}, {"selection_train": sel}, min_selections=20)["status"] == "SKIP"
+
+
+def test_ks_sample_tol_floor_never_tightens():
+    from parity.checks import ks_sample_tol
+    assert ks_sample_tol(0.2, 16, 17) > 0.4          # n~16: KS below 0.4 is noise
+    assert ks_sample_tol(0.2, 400, 400) == 0.2       # large n: nominal wins
+    assert ks_sample_tol(0.2, 0, 10) == 0.2
+
+
+def test_duty_cycle_duration_ignores_unobserved_stall_hole():
+    # real has no selections for 150-239 s (a stall): forward-fill must not credit the hole to the old state.
+    def sels(times, flip, mode):
+        out = []
+        for i, t in enumerate(times):
+            st = "AVL_TRAIN" if t < flip else "UN_AVL"
+            out.append(_sel_avl(i + 1, 1000.0 + t if mode == "real" else 0.0, None if mode == "real" else t,
+                                {"t1": {"avl_state": st}}))
+        return out
+    dense = [float(t) for t in range(0, 300, 4)]
+    real_t = [t for t in dense if t < 150] + [239.0 + 4 * i for i in range(16)]
+    res = duration_duty_cycle_parity({"selection_train": sels(real_t, 150.0, "real")},
+                                     {"selection_train": sels(dense, 150.0, "sim")})
+    assert res["ok"], res
