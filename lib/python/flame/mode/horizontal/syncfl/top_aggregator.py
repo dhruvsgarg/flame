@@ -484,10 +484,14 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # FX-D113: over-quota updates carry to the next barrier, as real's rxq keeps them.
         _carry = getattr(self, "_sim_sync_carry", {})
         self._sim_sync_carry = {}
+        _carried_wd = getattr(self, "_sim_sync_carry_withheld", set())  # FX-D130
+        self._sim_sync_carry_withheld = set()
         for e, (c_sct, c_item) in _carry.items():
             if channel.has(e):
                 buf.add(e, c_sct, c_item)
-        ends = [e for e in ends if channel.has(e) and e not in _held and e not in _carry]
+        # FX-D127: don't probe picks that owe nothing (each cost max(D) of wall).
+        _done = self._sync_owes_nothing(channel) if getattr(self, "_sync_wait_k_on", lambda: False)() else ()
+        ends = [e for e in ends if channel.has(e) and e not in _held and e not in _carry and e not in _done]
         barrier_t0 = time.time()
         drained_all = True
         if ends:
@@ -523,13 +527,19 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         for end, sct, (msg, md) in all_popped:
             if len(committed) >= first_k:
                 self._sim_sync_carry[end] = (sct, (msg, md))
+                if end in _carried_wd:
+                    self._sim_sync_carry_withheld.add(end)
                 continue
             # Lazy deserialize before gate check (payload may be needed for stash).
             materialize_weights(msg)
-            # E.1: send-gate — withhold if trainer is UN_AVL at completion.
-            if self._sim_withhold_if_unavail(channel, end, sct, (msg, md)):
+            # E.1: send-gate — withhold if trainer is UN_AVL at completion (a carried delivery already passed it).
+            _wd = self._sim_take_withheld_delivering(end) if end in _carried_wd else None
+            if _wd is None and self._sim_withhold_if_unavail(channel, end, sct, (msg, md)):
                 continue
             self._advance_sim_clock(sct)
+            if _wd is not None:
+                self._emit_withheld_delivery(end, msg, _wd[0], _wd[1])
+                self._sim_ready_ts = {**getattr(self, "_sim_ready_ts", {}), end: float(sct)}
             _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
             _srd = msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
             if _srd is not None:
@@ -555,8 +565,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             wend, wdts, (wmsg, wmd) = wh
             if self._sync_wait_k_on() and len(committed) >= first_k:
                 # FX-D122: co-due deliveries past K carry; real's version closes at the K-th arrival.
-                self._sim_take_withheld_delivering(wend)
+                # FX-D130: commits later as a withheld delivery; slot held until then.
                 self._sim_sync_carry[wend] = (wdts, (wmsg, wmd))
+                self._sim_sync_carry_withheld.add(wend)
                 continue
             materialize_weights(wmsg)
             # Batch 3 T3.5 (K11): advance before emitting, matching asyncfl's
@@ -830,6 +841,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             logger.debug(f"{end}'s parameters trained with {count} samples")
 
             _trained_ver = msg.get(MessageType.MODEL_VERSION, self._round)
+            self._note_returned_version(end, _trained_ver)
             if weights is not None and self._round - _trained_ver > 0 and not getattr(self, "_sync_accept_stale", False):
                 # FX-N57: a sync baseline (FedAvg, FedDance) takes no stale update; it neither aggregates nor counts to K.
                 logger.info(f"[MSG_SKIP] stale update from {end[-4:]} (trained v{_trained_ver}, now v{self._round})")
@@ -944,6 +956,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self._agg_cache_store_s = 0.0
         if global_weights is None:
             logger.debug("failed model aggregation")
+            self._drop_superseded_returns(channel)
             if channel._selector is not None:
                 channel._selector.on_round_completed(channel._ends, self._round)
             time.sleep(1)
@@ -956,6 +969,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self._sync_failed_ends().clear()
         self._sync_total, self._sync_real_durs, self._sync_sim_ready = 0, [], []
 
+        self._drop_superseded_returns(channel)
         if channel._selector is not None:
             channel._selector.on_round_completed(channel._ends, self._round)
         _at.emit(self._round, time.time() - _opt0, self.simulated, getattr(self, "vclock_now", None))

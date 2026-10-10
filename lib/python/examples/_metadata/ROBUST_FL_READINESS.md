@@ -344,8 +344,8 @@ green (R10).
 ## Shared built
 - **S9** Wire + profiling (FX-D77/78/80/83, both tracks): flat tensor codec, out-of-band channel frames, non-blocking FIFO MQTT
   sends, delivery-driven waits, `FLAME_PYSPY` per-process profiles. fwdllm adoption of the codec: FT-N12.
-- **S0** `dg_flame` → torch 2.12.1+cu129 / torchvision 0.27.1+cu129 (driver 12.9); cu13 libs removed. jayne: all 8 GPUs
-  ECC-clean on 2026-10-06 (GPU 1 had a volatile ECC error 2026-09-26); `harness_pool.py` skips any GPU that reports one.
+- **S0** `dg_flame` → torch 2.12.1+cu129 / torchvision 0.27.1+cu129 (driver 12.9); cu13 libs removed. jayne: 7 working GPUs; GPU 1 out
+  (operator 10-10; aggregate uncorrected ECC 1, volatile 0, so `harness_pool.py`'s volatile check passes it: pin `--gpu-ids 0,2-7`).
 - Parity methodology (causal ladder, roles/tiers, dependency gating), availability substrate v1, and the
   fwdllm floor/control/median grading all landed — derivations in PARITY.md §1-§5, UNAVAILABILITY_DESIGN.md,
   simulate_fwdllm.md §A-§D.

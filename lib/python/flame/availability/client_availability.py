@@ -857,9 +857,35 @@ class ClientAvailability:
         return self._sync_failed
 
     def _sync_replied(self, channel) -> set:
-        """FX-N37: picks whose update already arrived this version (accepted or stale-rejected), not stalled."""
+        """FX-N37: picks whose update already arrived this version (accepted or stale-rejected), not stalled.
+        FX-D129: a return that a newer dispatch superseded is not a reply."""
         sel = getattr(channel, "_selector", None)
-        return self._sync_accepted_ends() | set(getattr(sel, "ordered_updates_recv_ends", None) or ())
+        queued = getattr(sel, "ordered_updates_recv_ends", None) or ()
+        return self._sync_accepted_ends() | {e for e in queued if not self._owes_newer_dispatch(channel, e)}
+
+    def _note_returned_version(self, end, version) -> None:
+        """FX-D109: newest version `end` returned, accepted or stale-dropped (FX-D112)."""
+        if version is None:
+            return
+        self._returned_version = getattr(self, "_returned_version", {})
+        self._returned_version[end] = max(self._returned_version.get(end, -1), int(version))
+
+    def _owes_newer_dispatch(self, channel, end) -> bool:
+        """FX-D129: `end`'s newest return answered an older dispatch."""
+        rv = getattr(self, "_returned_version", {}).get(end)
+        prop = channel.get_end_property(end, PROP_ROUND_START_TIME)
+        return rv is not None and isinstance(prop, tuple) and prop[0] > rv
+
+    def _drop_superseded_returns(self, channel) -> None:
+        """FX-D129: drop queued returns a newer dispatch superseded (they must not free its slot)."""
+        sel = getattr(channel, "_selector", None)
+        if getattr(sel, "ordered_updates_recv_ends", None):
+            sel.ordered_updates_recv_ends = [e for e in sel.ordered_updates_recv_ends
+                                             if not self._owes_newer_dispatch(channel, e)]
+
+    def _sync_owes_nothing(self, channel) -> set:
+        """FX-D127: awaited picks that owe nothing: replied to their latest dispatch or rejected non-finite."""
+        return self._sync_replied(channel) | self._sync_failed_ends()
 
     def _sync_abandoned_since_dispatch(self, end, sst) -> bool:
         """FX-N37: `end` already timed out after its latest dispatch (a re-dispatch re-arms its timeout)."""

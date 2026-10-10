@@ -90,6 +90,8 @@ class ExampleAggregatorMixin:
         eval_every = getattr(self.config.hyperparameters, "eval_every_n_rounds", 10) or 10
         if self._round % eval_every != 0 and not (self.EVAL_ROUND_ONE and self._round == 1):
             return
+        if getattr(self, "_round_committed", None) is False:  # FX-D128: eval only on the committing pass
+            return
         self._eval_every_n_commits = 1  # FX-D63: the round gate is the cadence; a commit stride on top halved it
         eval_model = self._eval_snapshot_model()  # on self.eval_device
         if eval_model is None:

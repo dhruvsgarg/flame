@@ -81,6 +81,20 @@ def test_makespan_packs_in_parallel_and_respects_deps():
     assert pool.simulate_makespan(jobs, cpus=120, max_parallel=1) == pytest.approx(170)
 
 
+def test_makespan_unplaceable_leg_is_inf_not_a_hang():
+    # PR28 B5: a GPU-count hiccup (0 GPUs) left 3-GPU legs unplaceable beside a 0-GPU grade; the loop spun forever.
+    jobs = [_job("r", 100, cpus=2), _job("g", 10, cpus=2, deps=("r",))]
+    jobs[0].gpus = 3
+    assert pool.simulate_makespan(jobs, cpus=120, max_parallel=8, gpus=0) == float("inf")
+
+
+@pytest.mark.parametrize("busy, mem, blocks", [(False, 398, True), (True, 398, True), (False, 200, False), (False, 10**6, False)])
+def test_ram_blocks_even_in_an_idle_pool(monkeypatch, busy, mem, blocks):
+    # PR28 G5: an idle pool started a 398 GB leg with 285 GB free; only a leg bigger than the node starts unchecked.
+    monkeypatch.setattr(pool, "mem_available_gb", lambda key="MemAvailable": 504.0)
+    assert pool.ram_blocks(mem, available_gb=285, headroom_gb=32, busy=busy) is blocks
+
+
 def test_pair_phase_builds_parallel_legs_plus_grade():
     ph = pool.shaped("P1", ("felix",), "syn_0", "pair", "cifar10")
     jobs = pool.build_jobs([ph], 1.0, 8, {})

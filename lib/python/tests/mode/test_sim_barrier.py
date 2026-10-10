@@ -251,3 +251,53 @@ def test_sync_withheld_delivery_stamps_speed_and_ready():
     agg._sync_sim_recv_first_k(ch, [], first_k=1)
     assert ch.get_end_property("t1", PROP_CLIENT_TASK_TRAIN_DURATION).total_seconds() == 42.0
     assert agg._sim_ready_ts == {"t1": 300.0}
+
+
+@pytest.mark.parametrize("dispatch_round, probed", [(9, {"t1", "t2"}), (10, {"t1", "t2", "t3"})])
+def test_sync_wait_k_skips_picks_that_owe_nothing(dispatch_round, probed):
+    # FX-D127: t3 replied stale; probing it blocked the barrier max(D) of wall. A re-dispatch at this version still owes (FX-D109).
+    from flame.selector.properties import PROP_ROUND_START_TIME
+    agg = _bare(SyncAgg)
+    agg._round = 10
+    agg._sync_wait_k_on = lambda: True
+    ch = RecordingChannel(SCTS, ["t1", "t2"])
+    ch._selector = type("S", (), {"ordered_updates_recv_ends": ["t3"]})()
+    ch.set_end_property("t3", PROP_ROUND_START_TIME, (dispatch_round, None))
+    agg._note_returned_version("t3", 9)
+    out = agg._sync_sim_recv_first_k(ch, ["t1", "t2", "t3"], first_k=2)
+    assert ch.recv_calls[0] == frozenset(probed)
+    assert [md[0] for _m, md in out] == ["t2", "t1"]  # ascending sct
+
+
+def test_superseded_return_neither_replies_nor_frees_the_slot():
+    # FX-D129 (PR28 C2 real oort 0379): its v3 return sat in the cleanup queue after a v4 re-dispatch; round-end cleanup
+    # freed the slot (re-picked while gated, EV17) and "replied" hid the v4 task from the 90 s abandon.
+    from flame.selector.properties import PROP_ROUND_START_TIME
+    agg = _bare(SyncAgg)
+    agg._round = 4
+    ch = RecordingChannel(SCTS, [])
+    ch._selector = type("S", (), {"ordered_updates_recv_ends": ["t1", "t3"]})()
+    for e, (sent, returned) in {"t1": (4, 4), "t3": (4, 3)}.items():
+        ch.set_end_property(e, PROP_ROUND_START_TIME, (sent, None))
+        agg._note_returned_version(e, returned)
+    assert agg._sync_replied(ch) == {"t1"}
+    agg._drop_superseded_returns(ch)
+    assert ch._selector.ordered_updates_recv_ends == ["t1"]
+
+
+def test_carried_withheld_delivery_commits_as_a_withheld_delivery():
+    # FX-D130 (PR28 G1 speech feddance EV16): a delivery carried past K (FX-D122) committed through the fresh path:
+    # no withheld_delivery event, gate re-applied, slot freed at carry instead of at commit (FX-D90).
+    agg = _bare(SyncAgg)
+    agg._round = 4
+    msg = {MessageType.WEIGHTS: "w", MessageType.SIM_COMPLETION_TS: 207.1}
+    agg._sim_sync_carry = {"t3": (300.0, (msg, ("t3", None)))}
+    agg._sim_sync_carry_withheld = {"t3"}
+    agg._sim_withheld_delivering = {"t3": (207.1, 300.0)}
+    agg._sim_withhold_if_unavail = lambda *a: pytest.fail("a carried delivery already passed its send-gate")
+    seen = []
+    agg._emit_withheld_delivery = lambda end, m, sct, dts: seen.append((end, sct, dts, agg._vclock.now))
+    out = agg._sync_sim_recv_first_k(RecordingChannel(SCTS, []), [], first_k=1)
+    assert [md[0] for _m, md in out] == ["t3"]
+    assert seen == [("t3", 207.1, 300.0, 300.0)]
+    assert agg._sim_ready_ts["t3"] == 300.0 and "t3" not in agg._sim_withheld_delivering

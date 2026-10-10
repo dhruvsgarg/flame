@@ -571,11 +571,17 @@ class CoreMap:
             self.free[nd].sort()
 
 
-def mem_available_gb() -> float:
+def mem_available_gb(key: str = "MemAvailable") -> float:
     for line in open("/proc/meminfo"):
-        if line.startswith("MemAvailable:"):
+        if line.startswith(key + ":"):
             return int(line.split()[1]) / 1e6
     return 0.0
+
+
+def ram_blocks(mem_gb: float, available_gb: float, headroom_gb: float, busy: bool) -> bool:
+    """FX-D131: a leg waits for free RAM even in an idle pool; only one larger than the node starts unchecked."""
+    too_big = mem_gb > mem_available_gb("MemTotal") - headroom_gb
+    return (busy or not too_big) and mem_gb > available_gb - headroom_gb
 
 
 GPU_ALLOW: Optional[set] = None  # --gpu-ids; None = every healthy GPU
@@ -827,6 +833,10 @@ class Pool:
         bar = "#" * round(20 * done / max(1, total))
         runs = ", ".join(f"{r.job.jid} {(now - r.t0) / 60:.0f}/{r.job.est_s / 60:.0f}m" for r in running.values())
         hm = lambda t: time.strftime("%H:%M", time.localtime(t))
+        if math.isinf(eta):
+            print(f"[{time.strftime('%F %T')}] PROGRESS {done}/{total} done | running: {runs or '-'} | ETA ? (pending legs "
+                  f"cannot be placed: {len(gpu_ids())} healthy GPUs)", flush=True)
+            return
         msg = (f"PROGRESS {self.label + ' ' if self.label else ''}[{bar:<20}] {done}/{total} done | running: {runs or '-'} "
                f"| elapsed {(now - self.t0) / 60:.0f}m, left ~{eta / 60:.0f}m, ETA {hm(now + eta)}")
         if now + eta > self.t0 + self.deadline_s:
@@ -898,7 +908,7 @@ class Pool:
                                      f"{probe['mem']:.0f} GB available")
                             last_note = note
                     usable = [g for g in gpus_free if g not in probe["gpus"]]
-                    if j.gpus > len(usable) or (running and j.mem_gb > probe["mem"] - self.mem_headroom_gb):
+                    if j.gpus > len(usable) or ram_blocks(j.mem_gb, probe["mem"], self.mem_headroom_gb, bool(running)):
                         continue
                     cpus = cm.alloc(j.cpus, probe["cpus"])
                     if cpus is None:
@@ -1081,11 +1091,8 @@ def simulate_makespan(jobs: List[Job], cpus: int, max_parallel: int, gpus: int =
                 running.append((now + j.est_s, j.cpus, j.gpus, j.jid))
                 free, gfree = free - j.cpus, gfree - j.gpus
                 pending.remove(j)
-        if not running:
-            if pending and all(j.cpus > cpus or j.gpus > gpus for j in pending):
-                return math.inf
-            now += 1
-            continue
+        if not running:  # FX-D131: nothing can start or free up
+            return math.inf
         running.sort()
         end, c, g, jid = running.pop(0)
         now, free, gfree = end, free + c, gfree + g

@@ -72,6 +72,7 @@ A new failure mode adds a check here in the same session.
 | PL10 | stall rules never cut a leg matching its sim | compare STALLED real with sim timeline | run 18 oort cut pre-round 1 |
 | PL11 | every sim leg has a charge profile for its harness × dataset × stack | no `no profiled sim charges` WARNING in the leg's `shell.log` | FX-N71: tiny_cpu ran a 0.6 s placeholder |
 | PL12 | co-located pools share the node by leases (R24); size each pool's lease to its real use | GPU pool `--gpu-cpus-per-trainer 0.1` beside a CPU tier; watch `LOAD foreign` and `INTERFERENCE` | N86: G0U leased 112 CPUs using ~3, T3 idle 45 min |
+| PL13 | no leg starts without the host RAM it needs, idle pool or not | automatic (`ram_blocks`, FX-D131); `RAM_TIGHT` in a DONE line = rerun its neighbours | PR28: G5 at 285 of 398 GB OOM-killed 3 legs |
 
 ## Method
 
@@ -123,25 +124,26 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 | PR22/23 + FX-D100-103 | 10-08 | 2491 / 0 | 16 | 103 | T3 cifar 27/30 · speech 16/30 (stale stub profile → FX-D103; syn_0b re-check 2/2) · G0U fedbuff cifar ✅ (FX-N77 closed) | 4 / 12 |
 | FX-N80 step 2 (FX-D104-105) | 10-09 | 2508 / 0 | 17 | 105 | T3 37/0/3 (Oort family) · G0U oort NaN abort | 4 / 12 |
 | N88 + FX-D106-D120 | 10-09 | 2529 / 0 | 17 | 120 | T3 10/0/4 · G0U 8/0/6 (stored runs, FX-D119 regrade) | 4 / 12 |
+| PR28 + FX-D127-D131 | 10-10 | 2551 / 0 | 17 | 131 | T3 37/0/7 · G0U syn_50 9/0/3 · mobiperf 5/0/3 · G0T 13/0/3 · P11 6/6 CAUGHT · speech P7 0/6 (FX-N86) | 4 / 12 (+ cifar oort_star sim) |
 
 **Per baseline × dataset (latest grade).** Parity = INV/EXACT on the latest pair; accuracy numbers in FELIX accuracy table.
 
 | baseline | dataset | parity syn_0 | parity unavailability | target |
 |---|---|---|---|---|
-| felix | cifar | ✅ G1A 67/67 (run 16) | ✅ T3 (run 16); ✅ G0U syn_50 (run 27); mobiperf ⬚ PR21 | ✅ 57 / 60 min |
-| felix | speech | 🟡 G1A timing reds (run 18; FX-N70) | ✅ T3; ✅ G0U syn_50 (runs 24-27) | ✅ 72 / 72 min |
-| fedbuff | cifar | ✅ G1A 66/66 (run 17) | ✅ T3; 🟡 G0U syn_50 floor-bound (run 27) | ❌ (FX-D73 sim 56%) |
-| fedbuff | speech | 🟡 G1A timing reds (run 18) | ✅ T3; ✅ G0U syn_50 (runs 26-27); mobiperf ⬚ PR21 | ✅ 82 / 88 min |
-| refl | cifar | ✅ G1A 68/68 (run 17) | ✅ T3 syn_50 on T3C floor; 🟡 G0U A2 KS 0.24 | ❌ rising |
-| refl | speech | ✅ G1A; U6 DIST (FX-N70) | ✅ T3 syn_50 (run 17) | ❌ |
-| oort | cifar | ✅ G2 (L7) | ✅ G0U mobiperf + syn_50 (run 27) | n/a (stream) |
-| oort | speech | 🟡 G1A throughput 8.1% (FX-N76) | ✅ G0U syn_50; mobiperf ⬚ PR21 | ❌ |
-| oort_star | cifar | ✅ L6 G0 | 🔴 G0T lin syn_50 K3b (FX-N9) | ⬚ |
-| oort_star | speech | ✅ L6 G0 | 🟡 G0U syn_50 replicate chaos (FX-L53); ⬚ PR21 | ⬚ |
-| feddance | cifar | ✅ G2 on sim↔sim floor | ✅ G0U (runs 12-14) | ❌ |
-| feddance | speech | ✅ G1A 1.0 (run 18) | 🟡 T3 mobiperf overhead_residual | ❌ round-bound if audit faithful (FX-N74) |
+| felix | cifar | ✅ G1A 67/67 (run 16); T3 + P7 ✅ (PR28) | ✅ T3, G0U syn_50, G0U mobiperf (PR28) | ✅ 57 / 60 min |
+| felix | speech | 🟡 G1A timing reds (run 18; FX-N70); T3 ✅ (PR28) | ✅ T3, G0U syn_50 + mobiperf (PR28) | ✅ 72 / 72 min |
+| fedbuff | cifar | ✅ G1A 66/66 (run 17); T3 ✅ | ✅ T3; 🟡 G0U syn_50 7.8% (< floor 0.18); 🔴 G0U mobiperf 12.7% (> floor 0.07, FX-N85 s6) | ❌ (FX-D73 sim 56%) |
+| fedbuff | speech | 🟡 G1A timing reds (run 18); T3 ✅ | ✅ T3, G0U syn_50 + mobiperf (PR28) | ✅ 82 / 88 min |
+| refl | cifar | ✅ G1A 68/68 (run 17); T3 ✅ | ✅ T3, G0U syn_50 + mobiperf (PR28) | ❌ sim 29.5% @90 rising (PR28) |
+| refl | speech | ✅ G1A; T3 ✅ | ✅ G0U syn_50 + mobiperf; 🟡 T3 syn_50 throughput 8.5% (no floor) | ❌ round-bound @90 (FX-N74) |
+| oort | cifar | ✅ G2 (L7); T3 syn_0s ✅ | 🔴 T3 syn_50s real EV17 + coverage → FX-D129 (PR29); ✅ G0U syn_50s clip (B1); mobiperf clip terminal_state only | 🟡 sim 43.7% @30 (OOM-cut) |
+| oort | speech | 🟡 G1A throughput 8.1% (FX-N76); T3 ✅ | ✅ T3 syn_20s/50s, G0U syn_50s (PR28) | ❌ round-bound @90 |
+| oort_star | cifar | ✅ L6 G0; T3 ✅ | 🟡 T3 syn_20s/50s terminal_state (FX-D129 class); ✅ G0U syn_50s clip (B1) | 🟡 sim **50.8% at 82 min** |
+| oort_star | speech | ✅ L6 G0; T3 ✅ | ✅ G0U syn_50s; 🟡 T3 syn_20s timing 11% (floor, FX-L53) | ❌ round-bound @90 |
+| feddance | cifar | ✅ G2 on sim↔sim floor; T3 + P7 ✅ (PR28) | 🟡 T3 syn_50 17% (near-tie picks), G0U 10% (< 0.13), mobiperf 13.6% (< 0.56) | ❌ sim 18.5% (FX-D127-cut) |
+| feddance | speech | ✅ G1A 1.0 (run 18); T3 ✅ | 🔴 G0U syn_50 sim EV16 → FX-D130 (PR29); G0UC floor clears terminal_state | ❌ round-bound @90 |
 
-refl, oort, oort_star, feddance rows predate FX-D100/D104/D105 (source-faithful configs): void for accuracy, re-graded under FX-N80 (C20).
+refl, oort, oort_star, feddance G1A cells predate FX-D100/D104/D105: void for accuracy; PR28 G1AS sims are their source-faithful numbers.
 
 ## Felix scoreboard
 
@@ -156,6 +158,8 @@ INV/EXACT green / known / red via `--grade <pool> --regrade --max-stage 9`; DIST
 
 | pool (run) | g / k / r | reds and roots |
 |---|---|---|
+| PR28 `pool_20261010_0215_PR28_*` (FELIX "PR28 results") | C2 37/0/7 · G1 7/0/3 · G3 5/0/3 · B1 2/0/0 · B4 13/0/3 · C1 0/0/2 · C5 4/0/8 | EV reds rooted: FX-D127 (G1AS EV12), FX-D129 (EV17), FX-D130 (EV16), FX-D131 (OOM EV0); timing EXACT 3-17% mixed sign → floors; speech P7 FX-N86 |
+| PR27 `pool_20261009_2115_PR27_{A,B,C,D}` (offline regrade, FX-D125) | A 0/0/2 (commit_visibility) · C 9/0/5 · D 0/0/4 | R1 NaN (cifar Oort), R3 feddance U6 chaos, R4-R5 (FELIX FX-N85) |
 | PR26 `pool_20261009_PR26_{G0U,T3C}`: speech refl + feddance G0U, Oort T3C real replicates | refl 2/0/0 · feddance 0/0/2 · T3C 14/14 | feddance: FX-D121-D124 (PR27); Oort real<->real forks as sim does (FX-N80 b) |
 | N88 `pool_20261009_N88_{T3,G0U}`: Oort K=10 + refl/feddance G0U | T3 10/0/4 · G0U 8/0/6 | FX-D116-D120 (rerun: PR26); cifar Oort NaN, Oort stall placement, no K=10 floors (FX-N80) |
 | PR23 `pool_20261008_1845_G0Tgs`: speech G0T felix + fedbuff | 8/0/0 · EV 8/8 | DIST only: phase_gpu_compute, speed identity (FX-N76); fedbuff syn_50 eligibility |
@@ -179,12 +183,13 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR27 · confirm FX-D121-D124 · todo (operator launches: tmux `dg_flame`, `scripts/run_pr27.sh`; stages A-D run in parallel, ~100 min; probes in `experiments/pr27_*/probes.txt`).**
-  A feddance speech G0U (K-cap, speed stamp, U6, K11; *confirms:* trainers 35 vs 32 closes, U6 KS < 0.2; *refutes:* still 3+ trainer gap).
-  B G0UC feddance speech (R7: if real<->real forks at the same near-ties, A_m chaos is design, grade on the floor, no sim change).
-  C T3 Oort + oort_star both datasets (FX-D123: real-sim speed gap ~2 ms, `round_preferred_duration_s` within 0.5%, fewer
-  selection forks, stall rounds within the T3C real spread). D cifar Oort G0U (FX-D107 NaN: no `update_rejected`, loss < 3 at r10).
-  Smoke done: `pool_smoke_fxd121` (T3 oort+feddance speech, plumbing green; EV1 on 60 s legs only). Uncommitted: all FX-D121-D124 files.
+- **PR29 · todo (operator launches after the FELIX open questions; code: FX-D127-D131 uncommitted, pytest 2551/0).** C19:
+  *Claim:* FX-D127-D130 close PR28's EV reds and the wait-K sim slowness. *Cells (parallel, ~1.5 h):* G1AS sims cifar oort + feddance,
+  speech feddance (EV12 PASS, sim_rate > 1, one eval per eval round); T3 cifar Oort syn_20s/50s both baselines (EV17 PASS, real coverage
+  ~1); G0U speech feddance syn_50 (EV16 PASS); T3C speech Oort syn_50s (C4 OOM rerun, floor); G0U cifar oort_star mobiperf_3sts (B5 rest);
+  P7 replicate 2 (C6). *Refutes:* any of those EV reds persists, or sim_rate < 1 on a feddance sim. Offline first: grade C5 P7 felix/oort.
+- **PR28 · done 10-10** (`experiments/pr28_20261010_0215`; FELIX "PR28 results"). Roots: FX-D127-D131; open: FX-N85 s3/s6, FX-N86.
+- **PR27 · done 10-10** (`pool_20261009_2115_PR27_{A,B,C,D}`; roots R1-R5 in FELIX "PR27 root causes" → FX-N85).
 - **PR24 · FELIX "Next steps → Resume here", in order FX-N80 → N84.** FX-N80's C19 steps (in-process `fl_lr_check --baseline`, then T3 +
   G0U screens on FX-D100/D104/D105 configs).
 - **PR23 · GPU screens (C18) · partly done.** Done: G0UC fedbuff cifar ×3 + G0U pair at HEAD ✅ (FX-N77 closed). Done: speech G0T

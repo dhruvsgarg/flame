@@ -616,6 +616,7 @@ class TopAggregator(BaseTopAggregator):
         if global_weights is None:
             logger.debug("failed model aggregation")
             # Consumed (stale-rejected) updates still free their slots (FX-D10).
+            self._drop_superseded_returns(channel)
             channel.cleanup_recvd_ends()
             time.sleep(1)
             return
@@ -662,6 +663,7 @@ class TopAggregator(BaseTopAggregator):
                 f"in_flight={test_in_flight_before}"
             )
         
+        self._drop_superseded_returns(channel)
         channel.cleanup_recvd_ends()
         
         in_flight_after = len(getattr(channel._selector, 'selected_ends', set()))
@@ -985,11 +987,6 @@ class TopAggregator(BaseTopAggregator):
         aggregators (oort/refl, asyncfl/felix, syncfl/feddance) so the definition
         can't drift. See PARITY.md §S.dur / project_oort_a2c_root."""
         return real_client_task_train_duration(msg, dispatch_ts, recv_ts)
-
-    def _note_returned_version(self, end, version) -> None:
-        """FX-D109: newest version `end` returned, accepted or stale-dropped (FX-D112)."""
-        self._returned_version = getattr(self, "_returned_version", {})
-        self._returned_version[end] = max(self._returned_version.get(end, -1), version)
 
     def _record_returned_trainer_props(self, channel, end, msg, recv_ts) -> None:
         """Record a returned trainer's observed properties (statistical utility +
