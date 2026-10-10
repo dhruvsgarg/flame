@@ -6,7 +6,7 @@ in the given pools is green (INV/EXACT + EV, `parity_ladder --grade --max-stage 
 
 Scenarios: syn_0 (syn_0/0b), syn_20, syn_50, mobiperf (pair tiers T3/G0U/P*), stream_lin / stream_eve (G0T), stream_cpu (P7).
 Not scored: P11 (injected bugs, graded CAUGHT), oracle arms, real-only (*C) and sim-only (G1AS) phases. Speech mobiperf
-Oort cells are n/a (FX-D106).
+Oort cells are n/a (FX-D106); speech stream_cpu is n/a (P7 harness invalid for the real speech model, FX-N86; G0T covers it).
 """
 import argparse
 import sys
@@ -46,6 +46,8 @@ def score(pools):
                 cells[k] = c.status
     for b in ("oort", "oort_star"):
         cells[(b, "google_speech", "mobiperf")] = "n/a"
+    for b in BASELINES:
+        cells[(b, "google_speech", "stream_cpu")] = "n/a"
     return cells
 
 

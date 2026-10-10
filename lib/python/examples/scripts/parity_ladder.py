@@ -73,7 +73,7 @@ KNOWN: Tuple[Tuple[str, Tuple[str, ...], str, str], ...] = (
 # Phases whose sim leg must FAIL a named check (injected bugs; P4 = the cold-start-gate-off control, FX-D8).
 EXPECTED_FAIL = {"P11a": "EV10", "P11b": "EV16", "P11c": "EV3", "P4": "EV10"}
 # Real-only / sim-only phases (harness_pool kind="real" / "sim_ev"): graded on the one leg they run.
-REAL_ONLY = ("G0C_", "G0UC_", "T3C_", "G2C_")
+REAL_ONLY = ("G0C_", "G0UC_", "G0TC_", "T3C_", "G2C_")
 SIM_ONLY = ("G1AS", "G2S")
 
 
@@ -137,7 +137,8 @@ def _code_state(pool: Path) -> str:
 
 def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
     """Q2: {(phase, baseline): floors} from each real replicate leg vs its cell's real leg (n=2: a lower bound, T8):
-    G0C per G0 syn_0 cell (syn_20 reuses it), G0UC per G0U cell, T3C per T3 cell (may sit in a sibling pool of the block).
+    G0C per G0 syn_0 cell (syn_20 reuses it), G0UC per G0U cell, G0TC per G0T cell, T3C per T3 cell (may sit in a sibling
+    pool of the block).
     Writes <control phase>/control_<b>.json."""
     import concurrent.futures as cf
     sys.path.insert(0, str(EXAMPLES / "async_cifar10" / "scripts"))
@@ -155,8 +156,9 @@ def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
     pairs = {}
     same = [p for p in root.parent.iterdir() if p.is_dir() and _code_state(p) == _code_state(root)]  # L18: one code state
     for f in {*root.glob("*G0C_syn_0/summary.tsv"), *(g for p in same for g in p.glob("*G0UC_*/summary.tsv")),
-              *(g for p in same for g in p.glob("*T3C_*/summary.tsv"))}:
-        tag = next(t for t in ("G0UC_", "T3C_", "G0C_") if t in f.parent.name)
+              *(g for p in same for g in p.glob("*T3C_*/summary.tsv")),
+              *(g for p in same for g in p.glob("*G0TC_*/summary.tsv"))}:
+        tag = next(t for t in ("G0UC_", "G0TC_", "T3C_", "G0C_") if t in f.parent.name)
         pre, _, trace = f.parent.name.partition(tag)
         target = f"{pre}{tag[:-2]}_{trace}"
         for r in csv.DictReader(open(f), delimiter="\t"):

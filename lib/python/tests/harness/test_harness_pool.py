@@ -126,11 +126,29 @@ def test_t3s_over_selecting_sync_pair_has_stragglers():
 
 def test_oort_family_screens_run_at_k10():
     # FX-D106: upstream exploitLen = int(K x 0.1) is 0 below K=9; every Oort screen leg exploits from round 1.
-    for tier in ("T2", "T3", "T4", "G0U"):
+    for tier in ("T2", "T3", "T4", "G0U", "G0T", "G0To"):
         for ds in pool.DATASETS:
             for p in pool.tier_phases(tier, B6, ds):
                 if set(p.baselines) & set(pool.OORT_FAMILY) and p.pid.split("_", 1)[-1][:2] not in ("P6", "P7"):
                     assert p.agg_goal >= 9 and not set(p.baselines) - set(pool.OORT_FAMILY), (tier, p.pid)
+
+
+def test_g0t_oort_family_names_and_control():
+    # FX-L63: Oort-family G0T legs carry the `s` suffix (G0U_syn_50s floors map onto them); G0TC mirrors every cell real-only.
+    for ds in pool.DATASETS:
+        g0t = pool.tier_phases("G0T", B6, ds)
+        assert sorted(p.pid[len(pool.DS_TAG[ds]):] for p in g0t if "oort" in p.baselines) == \
+            sorted(f"G0T_{m}_{t}s" for m in ("lin", "eve") for t in ("syn_0", "syn_50"))
+        ctl = pool.tier_phases("G0TC", B6, ds)
+        assert [p.pid for p in ctl] == [p.pid.replace("G0T_", "G0TC_") for p in g0t]
+        assert {p.kind for p in ctl} == {"real"}
+
+
+def test_speech_has_no_tiny_cpu_streaming():
+    # FX-N86 (c): speech streaming runs on G0T only.
+    assert not pool.tier_phases("TS", B6, "google_speech")
+    assert not [p for p in pool.tier_phases("T4", B6, "google_speech") if p.pid.startswith("gs_P7")]
+    assert [p for p in pool.tier_phases("T4", B6, "cifar10") if p.pid == "P7"]
 
 
 def test_g2_replicate_tiers_run_one_side_at_the_g2_config():
@@ -318,3 +336,26 @@ def test_speech_stub_legs_cap_local_steps():
     assert all("harness_stub_max_steps" not in p.trainer_hp for p in pool.tier_phases("T3", B6, "cifar10"))
     assert not any(p.trace == "mobiperf_3st" and set(p.baselines) & set(pool.OORT_FAMILY)
                    for p in pool.tier_phases("T3", B6, "google_speech"))
+
+
+def test_doomed_leg_kills_itself_and_pair_partner_not_others(tmp_path, monkeypatch):
+    import event_invariants
+    killed = []
+    monkeypatch.setattr(pool.os, "killpg", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(pool, "leg_run_dirs", lambda out: [str(out)])
+    monkeypatch.setattr(event_invariants, "doomed", lambda d: ["EV14: evals=3 bad=1"] if d.endswith("a_sim") else [])
+
+    def run(jid, unit, mode, pid, phase="T3_syn_50"):
+        j = pool.Job(jid, phase, "syn_50", "felix", mode, [], 15, 300, "stub", 1, 1.0, unit=unit)
+        (tmp_path / jid).mkdir()
+        return pool.Running(j, type("P", (), {"pid": pid})(), [], [], 0, "t", 0.0, tmp_path / jid,
+                            watch=pool.StallWatch(0.0))
+    running = {r.job.jid: r for r in (run("a_sim", "a", "sim", 1), run("a_real", "a", "real", 2),
+                                      run("a_grade", "a", "grade", 3), run("b_sim", "b", "sim", 4),
+                                      run("p11_sim", "p", "sim", 5, phase="P11a"))}
+    p = pool.Pool(tmp_path, [], 1, 0, 0, 900, False)
+    for r in running.values():
+        p._doomed(r, running)
+    assert sorted(killed) == [1, 2]
+    assert running["a_sim"].stalled.startswith("DOOMED EV14") and running["a_real"].stalled == "DOOMED partner a_sim"
+    assert not running["b_sim"].stalled and (tmp_path / "DOOMED.txt").read_text().count("\n") == 2

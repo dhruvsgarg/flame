@@ -449,3 +449,13 @@ def test_ev3_sim_duration_includes_measured_overhead(tmp_path):
             if e["event"] == "trainer_round":
                 e["trainer_overhead_s"] = 0.0
     assert _status(_write_run(tmp_path / "b", agg, tr), "EV3_duration_model") == "FAIL"
+
+
+def test_doomed_only_prefix_safe_fails(tmp_path):
+    # A live prefix (no stop line, short of budget) is not doomed; a NaN eval is; EV11 pastdating alone is not.
+    agg, tr = _clean_run()
+    assert ev.doomed(_write_run(tmp_path / "a", agg, tr, hp={"max_experiment_runtime_s": 1000}, log="")) == []
+    nan = agg + [{"event": "agg_eval", "ts": 99, "round": 2, "test-accuracy": 0.1, "test-loss": float("nan")}]
+    assert [d.split(":")[0] for d in ev.doomed(_write_run(tmp_path / "b", nan, tr))] == ["EV14"]
+    next(e for e in agg if e["event"] == "agg_round")["commit_gap_s"] = 0.5
+    assert ev.doomed(_write_run(tmp_path / "c", agg, tr)) == []

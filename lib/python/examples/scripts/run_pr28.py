@@ -211,7 +211,7 @@ def probe(out: Path, pools: dict) -> list:
         v = "FAIL" if rej or not seen else "PASS"
         lines.append(f"probe CLIP {v}: legs={len(clip_runs)} clip=1.0 seen in {seen} trainer logs (PL7), update_rejected={rej}, nan-loss lines={nan}")
     for sid, pool in pools.items():
-        for bad in ("ABORT.txt", "STALLED.txt"):
+        for bad in ("ABORT.txt", "STALLED.txt", "DOOMED.txt"):
             if (pool / bad).exists():
                 lines.append(f"probe {sid} FAIL: {bad}: {(pool / bad).read_text()[:200].strip()}")
         summ = pool / "SUMMARY.txt"

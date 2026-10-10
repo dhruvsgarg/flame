@@ -102,6 +102,9 @@ conda run -n dg_flame python lib/python/examples/async_cifar10/scripts/parity/ev
 python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --sim <B> --control --json-out c.json   # real<->real floor (Q2)
 ```
 - Pools on one node are safe (L28); progress every 5 min; DONE lines carry GPU peak; one Ctrl+C stops all. jayne only (R4).
+- **Early exits (all automatic in `harness_pool`):** fatal log line → pool aborts in ~30 s (ABORT.txt); no new round 15 min / silent
+  10 min → leg killed (STALLED.txt); prefix-safe EV FAIL (EV6/8/9/11/14-19) → leg + pair partner killed at the next 5-min check
+  (DOOMED.txt, FX-D133). Runner probes print PASS/FAIL per claim as stages finish. Not early-killable: EV1/5/7/10/12, timing/DIST.
 
 ---
 
@@ -132,6 +135,16 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 | code state | parity score | syn_0 · syn_20 · syn_50 · mobiperf · stream_lin · stream_eve · stream_cpu | accuracy at target |
 |---|---|---|---|
 | PR28 (`d6186ddf7`) | **41 / 82** (64 tested) | 12/12 · 9/12 · 6/12 · 5/10 · 2/12 · 3/12 · 4/12 | 5 / 12 |
+| PR28 rescored, speech P7 n/a (FX-D135) | **41 / 76** (58 tested) | 12/12 · 9/12 · 6/12 · 5/10 · 2/12 · 3/12 · 4/6 | 5 / 12 |
+
+**Path to full score (76 cells; operator 10-10).** Each step regrades its pools and rewrites the row above (C5).
+
+| step | cells | what | done when |
+|---|---|---|---|
+| PR29 (`run_pr29.py`, ~4.6 h) | 17 red + 2 untested | reruns every red but speech P7: fix confirms (FX-D129/D130, clip) or same-code T3C/G0UC/G0TC floor; cifar Oort G0U mobiperf | best case 60 / 76 |
+| fix loop | PR29 residue | a timing red above its same-code floor is a mechanism: root, fix, re-screen that cell only (C2) | 0 red above floor |
+| PR30 (`run_pr30.py`, ~10.5 h) | 16 untested | speech G0T all six (replaces P7) + cifar/speech Oort `G0T_*s` (FX-L63), each with G0TC floor | 76 / 76 |
+| then | — | long runs (PR21: G1A accuracy, G1U, G0T full grid), C0.5 | accuracy 12 / 12 |
 
 **Per baseline × dataset (latest grade).** Parity = INV/EXACT on the latest pair; accuracy numbers in FELIX accuracy table.
 
@@ -190,13 +203,17 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR29 · ready 10-10 (smoke `pool_smoke_pr29` green, clip reaches trainers; operator launches; ~4.4 h on jayne, tmux `dg_flame`):** `cd lib/python/examples && $PY scripts/run_pr29.py --plan --hours 5
-  && $PY scripts/run_pr29.py --hours 5` (`$PY` = dg_flame python). Stages and claims: `run_pr29.py`. C19:
+- **PR29 · ready 10-10 (smoke `pool_smoke_pr29` green, clip reaches trainers; operator launches; ~4.6 h on jayne, tmux `dg_flame`):** `cd lib/python/examples && $PY scripts/run_pr29.py --plan --hours 6
+  && $PY scripts/run_pr29.py --hours 6` (`$PY` = dg_flame python). Stages and claims: `run_pr29.py`; B2 now packs G0TC floors. C19:
   *Claim:* FX-D127-D130 + cifar Oort clip close PR28's EV reds and wait-K sim slowness; same-batch replicate floors decide the 15 timing reds.
   *Confirms:* G3/G4 feddance sims sim_rate > 1, EV12 PASS, one eval per eval round; C1 cifar Oort real EV17 PASS, coverage ~1, CLIP probe
   0 rejects; G1 speech feddance EV16 PASS; each timing red within its floor. *Refutes:* any of those EV reds persists, or a timing red
   stays above a same-code floor (then it is a mechanism: root it before any long run). Read: `experiments/pr29_<ts>/`, regrade every pool,
   `readiness_score.py experiments/pool_<ts>_PR29_*` (+ unchanged PR28 pools for cells PR29 does not rerun).
+- **PR30 · ready after PR29 (~10.5 h; run overnight):** `$PY scripts/run_pr30.py --plan --hours 12 && $PY scripts/run_pr30.py --hours 12`. C19:
+  *Claim:* the 16 untested streaming cells grade green: speech G0T six (FX-N30, replaces P7) and Oort-family `G0T_*s` at K=10 (FX-L63).
+  *Confirms:* EV19 + INV/EXACT green, or DIST within the cell's G0TC floor; cifar Oort 0 update_rejected (clip). *Refutes:* an EV red
+  (DOOMED.txt names it early) or a DIST red above its G0TC floor → root it before long runs. Read: regrade, `readiness_score.py` on PR29 + PR30 pools.
 - **PR28 · done 10-10** (`experiments/pr28_20261010_0215`; FELIX "PR28 results"). Roots: FX-D127-D131; open: FX-N85 s3/s6, FX-N86.
 - **PR27 · done 10-10** (`pool_20261009_2115_PR27_{A,B,C,D}`; roots R1-R5 in FELIX "PR27 root causes" → FX-N85).
 - **PR24 · FELIX "Next steps → Resume here", in order FX-N80 → N84.** FX-N80's C19 steps (in-process `fl_lr_check --baseline`, then T3 +

@@ -16,6 +16,8 @@ longest-first with backfill; the degree of parallelism follows from free cores, 
 Output: experiments/pool_<ts>/{SUMMARY.txt, pool.log, <phase>/summary.tsv, <phase>/<job>/...}.
 Fail fast (FX-N40): a fatal line in any leg's logs stops the pool within ~30s -> ABORT.txt (--no-fail-fast).
 Stall rules (FX-D45): a leg with no new committed round for --stall-min (15) min, or no log growth for 10 min, is killed alone -> STALLED.txt.
+Early exit: every --doom-min (5) min each live leg runs the prefix-safe EV checks (event_invariants.EARLY); a FAIL kills the
+leg and its pair partner -> DOOMED.txt (the cell is red whatever the rest of the run does).
 """
 
 import argparse
@@ -38,6 +40,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "async_cifar10" / "scripts" / "parity"))
 from fail_fast import EXIT_FATAL, Scanner, StallWatch, leg_run_dirs, write_abort, write_stalled  # noqa: E402
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -231,8 +234,9 @@ def campaign_phases(ds: str) -> List[Phase]:
         ph("P4", ("felix", "fedbuff"), "syn_0", agg_hp="simColdStartGate=false"),
         ph("P5", ("felix", "refl"), "syn_20"),
         ph("P6", ("felix", "oort"), "syn_0", harness="tiny_cpu"),
-        ph("P7", B6, "syn_0", harness="tiny_cpu", trainer_hp=STREAM_T, agg_hp=STREAM_A),
-        ph("P7o", B6, "syn_0", harness="tiny_cpu", trainer_hp=STREAM_T, agg_hp=STREAM_A + " " + oracle_a(ds)),
+        *([ph("P7", B6, "syn_0", harness="tiny_cpu", trainer_hp=STREAM_T, agg_hp=STREAM_A),
+           ph("P7o", B6, "syn_0", harness="tiny_cpu", trainer_hp=STREAM_T, agg_hp=STREAM_A + " " + oracle_a(ds))]
+          if ds == "cifar10" else []),  # FX-N86 (c): speech tiny_cpu compute > D; speech streaming is G0T only
         ph("P8", ("fedbuff",), "syn_50", agg_hp="taskRetryPolicy=exponential taskRetryBackoffSeconds=10"),
         ph("P9", ("felix", "fedbuff"), "syn_0", agg_hp="real_drain_ready_ingest=false"),  # legacy recv_fifo control
         # FX-N18 control: fedbuff with the old 0.1s real-only settle sleep (default is now 0)
@@ -302,13 +306,23 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                 + [g0u(f"{DS_TAG[ds]}G0U_{t}s", fam, t, G0U_OORT[(ds, t)])
                    for t in ("syn_50", "mobiperf_3st") if fam and (ds, t) in G0U_OORT])
     if tier in ("TS", "TSo"):  # FX-N13 ST5 CPU: tiny_cpu pairs x {linear, events}; TSo = the *_oracle arms
+        if ds == "google_speech":
+            return []  # FX-N86 (c)
         return stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "TSo",
                              lambda pid, t: shaped(pid, baselines, t, "pair", ds, harness="tiny_cpu"))
     if tier in ("G0T", "G0To"):  # FX-N13 ST5 GPU screen (C11): G0U cohort x {linear, events} x {syn_0, syn_50}
-        return stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "G0To",
-                             lambda pid, t: Phase(pid, baselines, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds,
-                                                  harness="none", trace_scale="" if t == "syn_0" else "4",
-                                                  **G0U_SHAPE[ds]))
+        rest = tuple(b for b in baselines if b not in OORT_FAMILY)
+        fam = tuple(b for b in baselines if b in OORT_FAMILY)
+        mk = lambda bls, shape: lambda pid, t: Phase(pid, bls, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds, harness="none",
+                                                     trace_scale="" if t == "syn_0" else "4", **shape)
+        out = stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "G0To", mk(rest, G0U_SHAPE[ds])) if rest else []
+        if fam:  # FX-L63: Oort family at its K=10 G0U shape; `<pid>s` so G0U_syn_50s floors map onto it
+            fam_ph = stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "G0To",
+                                   mk(fam, G0U_OORT[(ds, "syn_50")]))
+            out += [replace(ph, pid=ph.pid + "s") for ph in fam_ph]
+        return out
+    if tier == "G0TC":  # R7 control: a real replicate per G0T cell (same-code real<->real streaming floor)
+        return [replace(ph, pid=ph.pid.replace("G0T_", "G0TC_"), kind="real") for ph in tier_phases("G0T", baselines, ds)]
     if tier == "T3C":  # R7 control: a real replicate per T3 cell (floors flip-boundary forks, FX-L53)
         return [replace(ph, pid=ph.pid.replace("T3_", "T3C_"), kind="real") for ph in tier_phases("T3", baselines, ds)]
     if tier == "G0UC":  # R7 control: a real replicate per G0U cell (same-code real<->real floor, Q2)
@@ -757,6 +771,7 @@ class Running:
     watch: Optional[StallWatch] = None                    # FX-D45; None for grade jobs or --stall-min 0
     stalled: str = ""
     stalled_at: float = 0.0
+    doom_at: float = 0.0  # last early-exit check
 
     def sample(self) -> None:
         self.cpu.update(tag_cpu_s(self.tag))
@@ -784,6 +799,7 @@ class Pool:
     label: str = ""  # progress prefix, e.g. the ladder rung
     leases: Optional["Leases"] = None
     stall_min: float = 15.0  # FX-D45 S1 limit; 0 disables the stall rules
+    doom_min: float = 5.0  # early-exit check period; 0 disables it
 
     def _stalled(self, r: "Running") -> bool:
         """FX-D45: a leg that stopped progressing is killed alone (STALLED.txt); its neighbours keep running."""
@@ -801,6 +817,30 @@ class Pool:
         except OSError:
             pass
         return True
+
+    def _doomed(self, r: "Running", running: Dict[str, "Running"]) -> None:
+        """Kill a leg that already FAILs a prefix-safe EV check, and its pair partner (same unit); exempt: expected-FAIL phases."""
+        now = time.time()
+        if (r.watch is None or r.stalled or self.doom_min <= 0 or now - r.doom_at < self.doom_min * 60
+                or re.match(r"(gs_)?(P11|P4$)", r.job.phase)):
+            return
+        r.doom_at = now
+        import event_invariants
+        dirs = leg_run_dirs(r.out)
+        fails = [f for d in dirs for f in event_invariants.doomed(d)]
+        if not fails:
+            return
+        for x in [r] + [o for o in running.values() if o is not r and o.job.unit == r.job.unit and o.job.mode != "grade"]:
+            why = f"DOOMED {'; '.join(fails)[:300]}" if x is r else f"DOOMED partner {r.job.jid}"
+            x.stalled, x.stalled_at = why, now
+            write_stalled(x.out / "DOOMED.txt", x.job.jid, why, leg_run_dirs(x.out))
+            with open(self.root / "DOOMED.txt", "a") as f:
+                f.write(f"{x.job.jid}: {why}\n")
+            self.say(f"{why} -- killing {x.job.jid} ({x.out}/DOOMED.txt)")
+            try:
+                os.killpg(x.proc.pid, signal.SIGTERM)
+            except OSError:
+                pass
 
     def _fatal(self, r: "Running") -> bool:
         """FX-N40: a fatal line in this leg's logs aborts the pool (ABORT.txt names it)."""
@@ -936,6 +976,7 @@ class Pool:
                             break
                         if tick % 30 == 0:
                             self._stalled(r)
+                            self._doomed(r, running)
                         elif r.stalled and time.time() - r.stalled_at > 60:
                             kill_tag(r.tag)  # SIGTERM ignored: force it
                         continue
@@ -944,7 +985,7 @@ class Pool:
                     avg = sum(r.cpu.values()) / max(1.0, dur)
                     p95 = sorted(r.busy)[int(0.95 * (len(r.busy) - 1))] if r.busy else 0.0
                     sat = sum(b >= CPU_SAT_BUSY * len(r.cpus) for b in r.busy) / max(1, len(r.busy))
-                    self.say(f"DONE  {jid} rc={rc}{' STALLED' if r.stalled else ''} {dur / 60:.1f}m (est {r.job.est_s / 60:.1f}m) "
+                    self.say(f"DONE  {jid} rc={rc}{(' DOOMED' if r.stalled.startswith('DOOMED') else ' STALLED') if r.stalled else ''} {dur / 60:.1f}m (est {r.job.est_s / 60:.1f}m) "
                              f"cores avg {avg:.1f} p95 {p95:.1f} of {len(r.cpus)}{f' CPU_SAT {sat:.0%}' if sat > 0.05 else ''}"
                              f"{gpu_peak_note(leg_run_dirs(r.out), r.gpus)}")
                     jobs_tsv.write(f"{jid}\t{rc}\t{dur:.0f}\t{r.job.est_s:.0f}\t{len(r.cpus)}\t{avg:.2f}\t{p95:.2f}\t{sat:.3f}\n")
@@ -1205,6 +1246,8 @@ def main(argv=None) -> int:
                     help="FX-N40: keep going after a fatal line (Traceback, CUDA OOM, ...) in a leg's logs")
     ap.add_argument("--stall-min", type=float, default=15.0,
                     help="FX-D45: kill a leg with no new committed round for this many minutes (0 = off)")
+    ap.add_argument("--doom-min", type=float, default=5.0,
+                    help="early exit: prefix-safe EV checks on live legs every this many minutes (0 = off)")
     a = ap.parse_args(argv)
     set_gpu_allow(a.gpu_ids)
 
@@ -1251,7 +1294,7 @@ def main(argv=None) -> int:
     (root / "code_key.txt").write_text(code_key() + "\n")  # parity_ladder pairs floors only within one code state
     pool = Pool(root, jobs, a.max_parallel, a.reserve_cores, a.mem_headroom_gb, a.deadline_h * 3600, a.dry_run,
                 log=open(root / "pool.log", "a"), fail_fast=a.fail_fast, label=a.progress_label,
-                stall_min=a.stall_min)
+                stall_min=a.stall_min, doom_min=a.doom_min)
     commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True,
                             text=True).stdout.strip()
     pool.say(f"pool {root} host={socket.gethostname()} tier={a.tier} datasets={','.join(datasets)} baselines={' '.join(baselines) or '-'} "

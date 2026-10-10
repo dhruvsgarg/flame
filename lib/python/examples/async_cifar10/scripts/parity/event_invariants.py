@@ -738,6 +738,26 @@ CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model
           ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule]
 
 
+# Live early exit: checks whose FAIL on a log prefix stays FAIL on the full log (EV11: its backwards count only).
+EARLY = (ev6_staleness, ev8_concurrency_cap, ev9_selector_state, ev11_vclock, ev14_eval_sane, ev15_one_task_per_version,
+         ev16_withheld_delivery, ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule)
+
+
+def doomed(run_dir: str) -> list:
+    """'EVn: detail' for each prefix-safe check a live run already FAILs (harness_pool kills the leg + its pair)."""
+    run = load_run(run_dir)
+    out = []
+    for fn in EARLY:
+        try:
+            r = fn(run)
+        except Exception:  # noqa: BLE001 -- a partial log must never kill a leg by crashing a check
+            continue
+        if r["status"] == "FAIL" and not (fn is ev11_vclock and "backwards=0 " in r["detail"]) \
+                and not (fn is ev19_stream_schedule and "no trainer_round carries" in r["detail"]):
+            out.append(re.match(r"ev\d+", fn.__name__)[0].upper() + ": " + r["detail"])
+    return out
+
+
 def check_run(run_dir: str) -> dict:
     run = load_run(run_dir)
     results = {}

@@ -35,8 +35,8 @@ rb.STAGES = [
     # GPU lane B: cifar Oort with clip, then the red streaming cells.
     ("B1", "gpuB", "--tier G0U --datasets cifar10 --baselines oort,oort_star", {}, "core",
      "clip default: cifar Oort syn_50s + mobiperf_3sts G0U (PR28 B5 rest), 0 update_rejected"),
-    ("B2", "gpuB", "--tier G0T --datasets cifar10 --baselines felix,fedbuff,feddance", {}, "core",
-     "streaming: felix lin syn_0, fedbuff eve syn_50, feddance lin syn_50 (syn_50 vs G2 floors); EV19"),
+    ("B2", "gpuB", "--tier G0T,G0TC --datasets cifar10 --baselines felix,fedbuff,feddance", {}, "core",
+     "streaming: felix lin syn_0, fedbuff eve syn_50, feddance lin syn_50 vs same-code G0TC floors; EV19"),
 ]
 
 if __name__ == "__main__":
