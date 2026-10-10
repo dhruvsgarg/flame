@@ -179,6 +179,7 @@ def _apply_reference(a):
     if a.local_steps is None and "localSteps" in hp:
         a.local_steps = hp["localSteps"]
     a.momentum = a.momentum if a.momentum is not None else hp.get("trainerMomentum", 0.0)
+    a.clip_grad_norm = a.clip_grad_norm or hp.get("trainerClipGradNorm", 0.0)
     a.weight_decay = a.weight_decay if a.weight_decay is not None else hp.get("trainerWeightDecay", 0.0)
     if not a.lr_decay and hp.get("lrDecayEnabled"):
         a.lr_decay = f"{hp['lrDecayFactor']}:{hp['lrDecayEpoch']}:{hp['minLearningRate']}"

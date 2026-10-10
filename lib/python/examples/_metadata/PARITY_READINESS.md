@@ -97,6 +97,7 @@ L="conda run --no-capture-output -n dg_flame python lib/python/examples/scripts/
 $L --rungs L1-L4 --datasets all --keep-going --deadline-h 6     # CPU
 $L --grade <pool> --regrade --max-stage 9                        # offline re-gate (~30s/48 pairs)
 python lib/python/examples/scripts/logical_diff.py <pool>        # first diverging selection/commit per pair
+python lib/python/examples/scripts/readiness_score.py <pools>    # parity score matrix (C5)
 conda run -n dg_flame python lib/python/examples/async_cifar10/scripts/parity/event_invariants.py <run_dir>
 python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --sim <B> --control --json-out c.json   # real<->real floor (Q2)
 ```
@@ -125,6 +126,12 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 | FX-N80 step 2 (FX-D104-105) | 10-09 | 2508 / 0 | 17 | 105 | T3 37/0/3 (Oort family) · G0U oort NaN abort | 4 / 12 |
 | N88 + FX-D106-D120 | 10-09 | 2529 / 0 | 17 | 120 | T3 10/0/4 · G0U 8/0/6 (stored runs, FX-D119 regrade) | 4 / 12 |
 | PR28 + FX-D127-D131 | 10-10 | 2551 / 0 | 17 | 131 | T3 37/0/7 · G0U syn_50 9/0/3 · mobiperf 5/0/3 · G0T 13/0/3 · P11 6/6 CAUGHT · speech P7 0/6 (FX-N86) | 4 / 12 (+ cifar oort_star sim) |
+
+**Readiness score** (`scripts/readiness_score.py <pools>`): parity cells green / applicable, worst pair wins; untested counts as not green.
+
+| code state | parity score | syn_0 · syn_20 · syn_50 · mobiperf · stream_lin · stream_eve · stream_cpu | accuracy at target |
+|---|---|---|---|
+| PR28 (`d6186ddf7`) | **41 / 82** (64 tested) | 12/12 · 9/12 · 6/12 · 5/10 · 2/12 · 3/12 · 4/12 | 5 / 12 |
 
 **Per baseline × dataset (latest grade).** Parity = INV/EXACT on the latest pair; accuracy numbers in FELIX accuracy table.
 
@@ -183,11 +190,13 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR29 · todo (operator launches after the FELIX open questions; code: FX-D127-D131 uncommitted, pytest 2551/0).** C19:
-  *Claim:* FX-D127-D130 close PR28's EV reds and the wait-K sim slowness. *Cells (parallel, ~1.5 h):* G1AS sims cifar oort + feddance,
-  speech feddance (EV12 PASS, sim_rate > 1, one eval per eval round); T3 cifar Oort syn_20s/50s both baselines (EV17 PASS, real coverage
-  ~1); G0U speech feddance syn_50 (EV16 PASS); T3C speech Oort syn_50s (C4 OOM rerun, floor); G0U cifar oort_star mobiperf_3sts (B5 rest);
-  P7 replicate 2 (C6). *Refutes:* any of those EV reds persists, or sim_rate < 1 on a feddance sim. Offline first: grade C5 P7 felix/oort.
+- **PR29 · ready 10-10 (smoke `pool_smoke_pr29` green, clip reaches trainers; operator launches; ~4.4 h on jayne, tmux `dg_flame`):** `cd lib/python/examples && $PY scripts/run_pr29.py --plan --hours 5
+  && $PY scripts/run_pr29.py --hours 5` (`$PY` = dg_flame python). Stages and claims: `run_pr29.py`. C19:
+  *Claim:* FX-D127-D130 + cifar Oort clip close PR28's EV reds and wait-K sim slowness; same-batch replicate floors decide the 15 timing reds.
+  *Confirms:* G3/G4 feddance sims sim_rate > 1, EV12 PASS, one eval per eval round; C1 cifar Oort real EV17 PASS, coverage ~1, CLIP probe
+  0 rejects; G1 speech feddance EV16 PASS; each timing red within its floor. *Refutes:* any of those EV reds persists, or a timing red
+  stays above a same-code floor (then it is a mechanism: root it before any long run). Read: `experiments/pr29_<ts>/`, regrade every pool,
+  `readiness_score.py experiments/pool_<ts>_PR29_*` (+ unchanged PR28 pools for cells PR29 does not rerun).
 - **PR28 · done 10-10** (`experiments/pr28_20261010_0215`; FELIX "PR28 results"). Roots: FX-D127-D131; open: FX-N85 s3/s6, FX-N86.
 - **PR27 · done 10-10** (`pool_20261009_2115_PR27_{A,B,C,D}`; roots R1-R5 in FELIX "PR27 root causes" → FX-N85).
 - **PR24 · FELIX "Next steps → Resume here", in order FX-N80 → N84.** FX-N80's C19 steps (in-process `fl_lr_check --baseline`, then T3 +
@@ -209,6 +218,8 @@ Parked with the track; board in simulate_fwdllm.md §A.
 - S5: per-baseline values moved to `baseline_reference.yaml` (FX-D100); `datasets.yaml` keeps dataset-only values.
 - Baselines: code wins over paper; nearest own config when a dataset is missing; sync K/N >= 5%; model fixed, adapt the fewest
   knobs and record them (ROBUST L33-L37) (10-08 evening).
+- Cifar Oort/oort_star clip 1.0 on (recorded deviation); speech G1AS accuracy recorded round-bound; debug every red on short runs
+  before any long run (10-10).
 - D = our trainer runtime distribution for every baseline, never per-sample; compute > D = rethink for all (ROBUST L36) (10-08).
 - Trainer memory audit to raise n (FX-N84) (10-08).
 

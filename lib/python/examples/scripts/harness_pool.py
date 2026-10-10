@@ -1248,6 +1248,7 @@ def main(argv=None) -> int:
 
     root = Path(a.output_dir or OUT_DIR / f"pool_{time.strftime('%Y%m%d_%H%M%S')}_{'_'.join(tiers)}").resolve()
     root.mkdir(parents=True, exist_ok=True)
+    (root / "code_key.txt").write_text(code_key() + "\n")  # parity_ladder pairs floors only within one code state
     pool = Pool(root, jobs, a.max_parallel, a.reserve_cores, a.mem_headroom_gb, a.deadline_h * 3600, a.dry_run,
                 log=open(root / "pool.log", "a"), fail_fast=a.fail_fast, label=a.progress_label,
                 stall_min=a.stall_min)

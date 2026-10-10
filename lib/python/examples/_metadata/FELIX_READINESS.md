@@ -20,7 +20,9 @@
 ## Status grid
 
 Parity per run and per baseline: [PARITY_READINESS.md](PARITY_READINESS.md) → Progress dashboard, Felix scoreboard.
-pytest: 2551 passed, 7 skipped (10-10, four suites, FX-D127-D131 in tree).
+**Readiness score** (`scripts/readiness_score.py <pools>`, baseline x dataset x scenario, worst pair wins): **parity 41 / 82** (PR28;
+syn_0 12/12 · syn_20 9/12 · syn_50 6/12 · mobiperf 5/10 · stream_lin 2/12 · stream_eve 3/12 · stream_cpu 4/12) · **accuracy 5 / 12** (table below).
+pytest: 2553 passed, 7 skipped (10-10, four suites, FX-D127-D132 + clip default).
 
 **Accuracy table (FX-N74; `scripts/accuracy_table.py --runs <dirs>`).** Test acc % on the leg's own clock, syn_0, reference n.
 G1A = full data (runs 16-18); G2 streams data 0 → 100% over 3 h (lower bound). `-` = no eval in window.
@@ -41,7 +43,7 @@ G1A = full data (runs 16-18); G2 streams data 0 → 100% over 3 h (lower bound).
 | in-process `fl_lr_check` (FX-N74, N80) | reference k, full data | cifar fedbuff 53 @r1000 · oort 60 · feddance 45 · refl (lr 0.1) 43 | speech @r150: oort (eta 0.002) 25 · feddance 18 · refl (FedAvg) 17 | 10-08 |
 | speech · oort, feddance | G2 stream | oort **60.7 at 80 min**; feddance 21.5 | oort 57.2; feddance 45.2 | |
 | cifar · oort_star, refl, oort, feddance | G1AS source-faithful (PR28 G5) | — | oort_star **50.8, target at 82 min** · refl 29.5 @90 · oort 43.7 @30 (OOM-cut) · feddance 18.5 @30 (FX-D127-cut) | rerun oort + feddance (PR29) |
-| speech · oort_star, oort, refl, feddance | G1AS source-faithful (PR28 G4) | — | 16.7 · 14.8 · 3.7 · 4.0 @90 | round-bound: 49-69 rounds (K=5, 78-110 s/round); r60 matches in-process |
+| speech · oort_star, oort, refl, feddance | G1AS source-faithful (PR28 G4) | — | 16.7 · 14.8 · 3.7 · 4.0 @90 | **round-bound (operator 10-10)**: 49-69 rounds (K=5, 78-110 s/round); r60 matches in-process |
 
 **Cross-cutting capabilities**
 
@@ -205,22 +207,20 @@ Work rule: PARITY C10, C17, C18. Run queue + pre-launch checklist: PARITY_READIN
 - **Offline regrade after FX-D125 (`parity_regrade/`), cells red on any DIST/EXACT/INV:** A 2 -> 2 (commit_visibility only, R3); C 7 -> 5;
   D 4 -> 4 (R1). Stored `parity/` JSON and SUMMARY.txt are unchanged (pre-fix).
 
-*Resume here (10-10; do in order). State: PR28 done and graded ("PR28 results"); FX-D125-D131, `run_pr28.py` uncommitted
-(full pytest: see Status grid); next action = operator decisions (bottom of doc), commit, then PR29 (PARITY run queue).*
+*Resume here (10-10; do in order). State: FX-D125-D132, clip default for cifar Oort and `run_pr29.py` committed;
+next action = operator launches PR29 (PARITY run queue), then regrade + `readiness_score.py` (C5).*
 - **FX-N85 · Close PR27 roots R1-R5 and PR28 roots · wip.** Order:
-  1. **Operator decision R1:** clip evidence is in: 0 `update_rejected` in 14 clip legs (C1, B1-B3, B5), B1 G0U parity 2/0/0. Enable
-     `trainerClipGradNorm: 1.0` for cifar oort/oort_star in `baseline_reference.yaml` (+ `baseline_deviations.py --md`; C20 drops old Oort
-     cifar legs), or keep off and grade on real replicates.
-  2. **PR29 confirm (FX-D127-D130):** feddance G1AS sims reach budget at sim_rate > 1 with one eval per eval round; cifar T3 Oort syn_50s
-     real coverage ~1 and EV17 PASS; speech G0U feddance syn_50 EV16 PASS; rerun the OOM-killed C4 syn_50s Oort reals and B5 oort_star sim.
-  3. **Floors (R3, R5):** done: G2 G0UC speech feddance + Oort syn_50; C4 3rd T3C real for speech Oort syn_20s, feddance syn_20/50.
-     Left: speech Oort syn_50s (C4 legs OOM-killed); cifar G0UC fedbuff + feddance syn_50 floor files (G1 timing 7.8% / 10%).
+  1. **R1 done (operator 10-10):** clip 1.0 is the cifar oort/oort_star default (`baseline_reference.yaml` deviation; full-data r300 48.9/54.5%
+     -> 48.9/49.9%, r200 equal, `experiments/lrcheck_20261010_clipfull`; tiny-shard NaN 3/6 -> 0/6). C20: older cifar Oort legs are void.
+  2. **PR29 (`run_pr29.py`):** confirm FX-D127-D130 + clip, and measure same-code floors for every PR28 timing red (all 15 classified in
+     stored telemetry: picks of stochastic selectors or fedbuff's 0.18 replicate spread; eligibility and speeds match). Then regrade.
+  3. **Floors (R3, R5):** after PR29, every T3/G0U red cell has a same-batch T3C/G0UC replicate. No floor yet: felix G0T lin syn_0.
   4. **R4:** re-derive the cifar stub charge profile, then cap cifar stub local steps (`harness_stub_max_steps=1`, as speech FX-D110) for the Oort family
      in `harness_pool.shaped()`; PL11 check; rerun T3 cifar oort syn_50.
   5. **R5 A5 builder:** apply FX-D125's observed-window rule to `state_timeline_agreement` (cifar T3 oort_star syn_50 0.9135).
   6. **Open timing roots above floor:** cifar G0U mobiperf fedbuff throughput 12.7% (sim slower; floor 0.07); cifar G0T felix lin syn_0
      9.7%, fedbuff eve syn_50 11.4% (no G0T floor yet).
-- **FX-N86 · Speech tiny_cpu legs (P7/P7o/TS) violate L36 · blocked: operator decision.** `tiny_cpu` runs the full speech model on CPU:
+- **FX-N86 · Speech tiny_cpu legs (P7/P7o/TS) violate L36 · blocked: operator picks an option.** `tiny_cpu` runs the full speech model on CPU:
   task compute 5-46 s p50 vs D 1.25-4.75 s (overrun 58-100%, PR28 C5; same on 09-28 T4), so `gpu_budget` INV and timing reds are the
   harness, not the sim (real ~ sim compute: felix 5.75 / 5.57 s). Options: (a) speech P7 on stub + `harness_stub_max_steps=1` with a
   streaming stub dataset; (b) scale speech tiny_cpu D for all baselines (`delay_factor`) above compute p90 (~20 s, Oort 130 s); (c) speech
@@ -256,9 +256,9 @@ Work rule: PARITY C10, C17, C18. Run queue + pre-launch checklist: PARITY_READIN
 - **FX-N30 `[S]` · Speech streaming on GPU screens · wip.** felix + fedbuff G0T lin/events × syn_0/syn_50 INV/EXACT 8/0/0, EV
   8/8 (`pool_20261008_1845_G0Tgs`; DIST reds = FX-N76 gpu_compute/speed identity). Left: G0To; other baselines after FX-N80. *Exit:* speech G0T/G0To lin + events x syn_0/syn_50 EV19 + INV/EXACT green.
 - **FX-N74 `[C]` · Every baseline reaches target on full data · wip: 5 / 12 (G1A cifar felix, speech felix + fedbuff; cifar fedbuff + oort in-process).**
-  PR28 G1AS sims (accuracy table): cifar oort_star 50.8% at 82 min; refl 29.5% @90 rising; oort, feddance cut (OOM, FX-D127): rerun.
-  Speech all four 4-17% @90 on 49-69 rounds (sync K=5 at 78-110 s/round), in line with in-process per round: round-bound on the
-  90-min clock; operator: run speech G1AS longer (r150 ~ 4 h) or name round-bound. *Exit:* each cell at target, or audited faithful and named round-bound.
+  PR28 G1AS sims (accuracy table): cifar oort_star 50.8% at 82 min; refl 29.5% @90 rising; oort, feddance cut (OOM, FX-D127): PR29 G4.
+  Speech refl/feddance/oort/oort_star: recorded round-bound (operator 10-10); longer runs only once correctness + parity are green.
+  *Exit:* each cell at target, or audited faithful and named round-bound.
 - **FX-N76 `[C][S]` · C13 real-cost audit · wip.** weights_to_ram matches (run 27). Open: speech felix sim gpu_compute 3.7 vs
   real 1.9 s (sim GPU contention; off the clock while < D). *Exit:* speed identity + phase DIST green both datasets.
 - **FX-N79 · feddance P7 DIST borderline · rooted, confirm.** selection_bias KS 0.234, commit_visibility 0.202 (tol 0.20, n≈120).
@@ -424,6 +424,7 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-T38** Don't key liveness on log growth past `run_end`; teardown is silent.
 - **FX-T39** Don't stack two eval gates; evals land every 2N rounds.
 - **FX-T40** Don't treat a "replied/returned" set as version-free: a return answers only its end's latest dispatch (FX-D129, FX-D127).
+- **FX-T42** Don't read a regraded red as floor-gated unless its grade dir holds `floors.json` from the same code state (FX-D132).
 - **FX-T41** Don't exempt an idle pool from the RAM check: PR28 G5 started 398 GB legs at 285 GB free and OOM-killed three legs (FX-D131).
 
 ---
@@ -561,8 +562,8 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   `MIN_SEL_SAMPLED` = 20 selections; A2 KS tolerance = max(0.2, 1.22 sqrt((n+m)/nm)) (`ks_sample_tol`, never tightens). Offline regrade of
   PR27 A/C/D: cells with a red A2/A3/A4dur 9 -> 3; real signal stays red (D mobiperf, R1).
 - **FX-D126** Opt-in client grad-norm clip `trainerClipGradNorm` (default 0 = off; source Oort's clip line is commented out,
-  `third_party/Oort/training/learner.py:284`); `fl_lr_check --clip-grad-norm/--shard-cap`. In-process, oort K=10, 4-8-sample shards:
-  no clip NaN 3/6 seeds, clip 1.0 NaN 0/6 (`experiments/lrcheck_20261010_fxd126`). Not enabled in `baseline_reference.yaml` (operator).
+  `third_party/Oort/training/learner.py:284`); `fl_lr_check --clip-grad-norm/--shard-cap`; reference key `clip_grad_norm`. Default 1.0 for
+  cifar oort/oort_star (recorded deviation, operator 10-10): tiny-shard NaN 3/6 -> 0/6, full-data accuracy unchanged within seeds.
 - **FX-D127** Sim wait-K barrier probes only picks that owe a reply (`_sync_owes_nothing`); a stale-replied pick blocked max(D) +
   margin of wall per pass (PR28 feddance G1AS sims 0.28-0.71x real time, 5395 of 5415 s in that wait; vclock unchanged).
 - **FX-D128** Example aggregators evaluate an eval round only on its committing pass (`_round_committed`); wait-K re-ran it per pass
@@ -574,6 +575,9 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   FX-D90); the fresh path re-gated it and emitted nothing (speech feddance EV16).
 - **FX-D131** `harness_pool`: `ram_blocks` makes an idle pool wait for foreign RAM (only a leg larger than the node starts unchecked);
   `simulate_makespan` returns inf when nothing can start (was an endless loop on a GPU-count hiccup: B5 hung 3.5 h).
+- **FX-D132** `parity_ladder` floors pair only within one code state (`code_key.txt` per pool; else the batch stamp) and with the
+  regraded pool's own real; Oort-family `*s` cells (`{phase}_{trace}_{b}_grade`) were never found, so no Oort floor ever applied.
+  `readiness_score.py` scores baseline x dataset x scenario cells from graded pools.
 - **FX-D124** Sim sync drain stamps a delivered update's speed (was 0) and anchors U6 lag at the round close from its delivery.
 - **FX-D114** A sim sync version waiting for K also wakes on the next availability change (real's poll tops up).
 - **FX-D113** Sync sim barrier carries over-quota updates to the next barrier, as real's rxq does (dropping them
@@ -596,6 +600,4 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 ## Open questions (operator)
 
 - REFL `stale_update`: code -1 (unbounded, run_exps.sh:84) replaced the earlier operator choice 5. Confirm.
-- R1 (FX-N85 s1): enable `trainerClipGradNorm: 1.0` for cifar oort/oort_star as a recorded deviation? Evidence: 0 rejects in 14 clip legs.
 - FX-N86: speech tiny_cpu compute > D: (a) stub + step cap, (b) scale speech tiny_cpu D for all baselines, or (c) drop speech P7 for G0T?
-- FX-N74: speech G1AS is round-bound at 90 min (49-69 rounds): run ~4 h sims for r150, or name round-bound now?

@@ -78,6 +78,9 @@ oort:
       optimizer: {v: sgd, src: "[code] learner.py:155 MySGD"}
       momentum: {v: 0.9, src: "[code] learner.py:155"}
       weight_decay: {v: 0.0005, src: "[code] learner.py:155"}
+      clip_grad_norm: {v: 1.0, src: "[code] learner.py:284 (clip line commented out in source)", source_v: 0.0,
+                       why: "1-8-sample streaming shards blow up one delta -> NaN rounds (PR27 R1); clip keeps full-data accuracy",
+                       evidence: "fl_lr_check shard 4-8: NaN 3/6 seeds -> 0/6 (experiments/lrcheck_20261010_fxd126); full data r300: 48.9/54.5% -> 48.9/49.9%, r200 equal (lrcheck_20261010_clipfull); PR28: 0 update_rejected in 14 clip legs"}
       lr_decay: {v: {factor: 0.95, every: 5, min: 0.0001}, src: "[code] argParser.py:86,87,101"}
       stat_utility: {v: fedscale, src: "[code] learner.py:296-312"}
       server:

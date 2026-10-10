@@ -126,6 +126,15 @@ class Cell:
         return "google_speech" if self.phase.startswith("gs_") else "cifar10"
 
 
+def _code_state(pool: Path) -> str:
+    """A pool's code key (`harness_pool` writes code_key.txt); older pools fall back to their batch stamp `pool_<date>_<hhmm>`."""
+    f = pool / "code_key.txt"
+    if f.exists():
+        return f.read_text().strip()
+    m = re.match(r"pool_\d{8}_\d{4}_", pool.name)
+    return m.group(0) if m else pool.name
+
+
 def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
     """Q2: {(phase, baseline): floors} from each real replicate leg vs its cell's real leg (n=2: a lower bound, T8):
     G0C per G0 syn_0 cell (syn_20 reuses it), G0UC per G0U cell, T3C per T3 cell (may sit in a sibling pool of the block).
@@ -144,14 +153,16 @@ def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
         return key, (control_floors(json.loads(out.read_text())) if out.exists() else {})
 
     pairs = {}
-    for f in {*root.glob("*G0C_syn_0/summary.tsv"), *root.parent.glob("*/*G0UC_*/summary.tsv"),
-              *root.parent.glob("*/*T3C_*/summary.tsv")}:
+    same = [p for p in root.parent.iterdir() if p.is_dir() and _code_state(p) == _code_state(root)]  # L18: one code state
+    for f in {*root.glob("*G0C_syn_0/summary.tsv"), *(g for p in same for g in p.glob("*G0UC_*/summary.tsv")),
+              *(g for p in same for g in p.glob("*T3C_*/summary.tsv"))}:
         tag = next(t for t in ("G0UC_", "T3C_", "G0C_") if t in f.parent.name)
         pre, _, trace = f.parent.name.partition(tag)
         target = f"{pre}{tag[:-2]}_{trace}"
         for r in csv.DictReader(open(f), delimiter="\t"):
             b = r["baseline"]
-            cmd = next(iter(root.parent.glob(f"*/{target}/{target}_{b}_grade/cmd.txt")), None)
+            cmd = next((c for g in (f"{target}_{b}", f"{target}_{r['trace']}_{b}")  # Oort-family *s shapes name legs by trace too
+                        for c in root.glob(f"{target}/{g}_grade/cmd.txt")), None)  # the regraded pool's own real
             if cmd and r.get("real_dir"):
                 pairs[(target, b)] = (Path(r["real_dir"]), cmd, f.parent / f"control_{b}.json")
     with cf.ThreadPoolExecutor(jobs) as ex:

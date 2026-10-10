@@ -34,6 +34,8 @@ GDB = "/coc/scratch/dgarg/gdb_env/bin/gdb -q -batch -ex run -ex 'thread apply al
 NON_OORT = "felix,fedbuff,refl,feddance"
 
 # (id, lane, harness_pool args, extra env, core|stretch, claim). Lane order = priority order within a lane.
+BATCH = "pr28"  # run_pr29.py reuses this runner with its own BATCH, STAGES, CLIP_STAGES
+CLIP_STAGES = ("B1", "B2", "B3", "C4")
 STAGES = [
     # CPU lane: stub/tiny_cpu tiers. P2 (syn_0/20/50) before P5 (mobiperf), per the 1-day plan.
     ("C1", "cpu", f"--tier T3 --datasets cifar10 --baselines oort,oort_star --traces syn_50 --trainer-hp {CLIP}", {}, "core",
@@ -193,7 +195,7 @@ def leg_runs(pool: Path):
 def probe(out: Path, pools: dict) -> list:
     """R24 early probes: PASS/FAIL/WAIT per claim from the legs' own telemetry."""
     lines = []
-    clip_runs = [r for s in ("B1", "B2", "B3", "C4") if s in pools for r in leg_runs(pools[s])]
+    clip_runs = [r for s in CLIP_STAGES if s in pools for r in leg_runs(pools[s])]
     if clip_runs:
         rej = nan = seen = 0
         for r in clip_runs:
@@ -248,7 +250,7 @@ def main() -> int:
         return 0
 
     ts = time.strftime("%Y%m%d_%H%M")
-    out = EX / "experiments" / f"pr28_{ts}"
+    out = EX / "experiments" / f"{BATCH}_{ts}"
     out.mkdir(parents=True, exist_ok=True)
     (out / "plan.txt").write_text("\n".join(txt) + "\n")
     code_state(out)
@@ -264,7 +266,7 @@ def main() -> int:
         log.flush()
 
     def lane(name, ss):
-        time.sleep(0 if a.dry_run else {"gpuA": 0, "gpuB": 90, "n33": 180, "cpu": 270}[name])  # stagger first pools: leases settle, gate runs once
+        time.sleep(0 if a.dry_run else {"gpuA": 0, "gpuB": 90, "n33": 180, "cpu": 270}.get(name, 330))  # stagger first pools: leases settle, gate runs once
         for sid, _, args, env, kind, claim in ss:
             if stop.is_set():
                 return
@@ -273,7 +275,7 @@ def main() -> int:
                 status[sid] = "SKIP (no time)"
                 say(f"{sid} SKIP: longest leg {longest[sid] / 60:.0f} min does not fit before the hard stop")
                 continue
-            pool = EX / "experiments" / f"pool_{ts}_PR28_{sid}"
+            pool = EX / "experiments" / f"pool_{ts}_{BATCH.upper()}_{sid}"
             cmd = [sys.executable, str(SCRIPTS / "harness_pool.py"), "--output-dir", str(pool), "--gpu-ids", GPU_IDS,
                    "--deadline-h", f"{left / 3600:.2f}"] + shlex.split(args) + shlex.split(LANE_POOL_ARGS[name]) \
                 + (["--dry-run"] if a.dry_run else [])
