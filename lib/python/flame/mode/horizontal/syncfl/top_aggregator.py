@@ -553,6 +553,11 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             if wh is None:
                 break
             wend, wdts, (wmsg, wmd) = wh
+            if self._sync_wait_k_on() and len(committed) >= first_k:
+                # FX-D122: co-due deliveries past K carry; real's version closes at the K-th arrival.
+                self._sim_take_withheld_delivering(wend)
+                self._sim_sync_carry[wend] = (wdts, (wmsg, wmd))
+                continue
             materialize_weights(wmsg)
             # Batch 3 T3.5 (K11): advance before emitting, matching asyncfl's
             # existing order — see _emit_withheld_delivery's docstring for why
@@ -562,6 +567,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             self._advance_sim_clock(wdts)
             if _wd is not None:
                 self._emit_withheld_delivery(wend, wmsg, _wd[0], _wd[1])
+            _srd = wmsg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)  # FX-D124: as the fresh loop stamps
+            if _srd is not None:
+                channel.set_end_property(wend, PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=float(_srd)))
+            self._sim_ready_ts = {**getattr(self, "_sim_ready_ts", {}), wend: float(wdts)}
             logger.info(
                 f"[SYNC_WITHHELD_DELIVER] end={str(wend)[-4:]} "
                 f"delivery_ts={wdts:.1f} T_v={self._vclock.now:.1f}"
@@ -670,6 +679,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # aggregation instant, so each update's true visibility lag is measured
         # against that single barrier — collected here, finalized after the loop.
         _real_round_durs: list = list(getattr(self, "_sync_real_durs", [])) if _wait_k else []
+        _sim_round_ready: list = list(getattr(self, "_sync_sim_ready", [])) if _wait_k else []
         _at.add_recv(time.time() - _t_recv)
         for msg, metadata in _at.iterate(updates):
             end, timestamp = metadata
@@ -848,11 +858,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 # (deferred to `_real_round_durs`); a per-message `now() - arrival` here would
                 # track arrival and collapse to ~0, blind to the barrier wait.
                 if self.simulated:
-                    _vis_ready, _vis_committed, _vis_lag = self._update_visibility_lag(
-                        msg.get(MessageType.SIM_COMPLETION_TS),
-                        timestamp if isinstance(timestamp, datetime) else None,
-                    )
-                    self._round_update_values["update_visibility_lag_s"].append(_vis_lag)
+                    # FX-D124: ready = delivery for a held update; lag is taken at the round close below.
+                    _sim_round_ready.append(getattr(self, "_sim_ready_ts", {}).pop(end, msg.get(MessageType.SIM_COMPLETION_TS)))
                 else:
                     _real_round_durs.append(_real_task_dur)
                 # PROP_CLIENT_TASK_TRAIN_DURATION is only populated by the Oort stack; on the
@@ -867,7 +874,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 
         if _wait_k and len(self._sync_accepted_ends()) < agg_goal:
             # FX-N37: no commit below K; the cache carries, distribute replaces timed-out picks.
-            self._sync_total, self._sync_real_durs = total, _real_round_durs
+            self._sync_total, self._sync_real_durs, self._sync_sim_ready = total, _real_round_durs, _sim_round_ready
             logger.info(f"[SYNC_WAIT_K] round={self._round} accepted={len(self._sync_accepted_ends())}/{agg_goal}")
             if self.simulated:
                 self._sim_sync_wait(channel)
@@ -882,6 +889,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         if not self.simulated and _real_round_durs:
             self._round_update_values["update_visibility_lag_s"] = (
                 self._barrier_anchored_lags(_real_round_durs)
+            )
+        if self.simulated and _sim_round_ready:  # FX-D124: same barrier anchor as real
+            self._round_update_values["update_visibility_lag_s"] = (
+                self._barrier_anchored_lags([None if r is None else float(r) for r in _sim_round_ready])
             )
 
         if telemetry.is_enabled() and self.cache:  # empty cache = no round (FX-D10)
@@ -943,7 +954,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self._round_committed = True
         self._sync_accepted_ends().clear()
         self._sync_failed_ends().clear()
-        self._sync_total, self._sync_real_durs = 0, []
+        self._sync_total, self._sync_real_durs, self._sync_sim_ready = 0, [], []
 
         if channel._selector is not None:
             channel._selector.on_round_completed(channel._ends, self._round)

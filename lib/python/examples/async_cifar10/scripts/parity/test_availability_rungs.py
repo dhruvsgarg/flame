@@ -355,3 +355,12 @@ def test_cli_budget_from_run_config(tmp_path):
     (tmp_path / "aggregator_config.json").write_text(json.dumps({"hyperparameters": {"max_experiment_runtime_s": 600}}))
     assert _run_budget_s(str(tmp_path), 180.0) == 600.0
     assert _run_budget_s(str(tmp_path / "missing"), 180.0) == 180.0
+
+
+def test_commit_promptness_late_needs_a_round_close_between():
+    # FX-D121: no round close in between = not late.
+    evs = [{"end_id": "t1", "delivery_ts": 200.0, "actual_commit_ts": 260.0}]
+    rounds = [{"event": "agg_round", "vclock_now": 190.0}, {"event": "agg_round", "vclock_now": 300.0}]
+    assert commit_promptness_parity({"withheld_deliveries": evs, "agg_rounds": rounds})["ok"]
+    rounds.append({"event": "agg_round", "vclock_now": 230.0})
+    assert commit_promptness_parity({"withheld_deliveries": evs, "agg_rounds": rounds})["n_late_violations"] == 1

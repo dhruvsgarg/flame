@@ -123,6 +123,11 @@ section already says.
   analysis). Legs share a node only in isolated slots: disjoint physical cores (`taskset`), a private MQTT
   broker, own GPUs, own run tag (`harness_pool.py`, FX-N22). Never oversubscribe cores or share a broker
   between graded legs; a solo-vs-parallel control proves a slot is isolation-equivalent.
+- **R24 Parallel by default; verify no interference (operator 10-09).** Launch independent runs and pools together whenever
+  resources fit (node-wide core/port/GPU leases, L28) and timing is not degraded. Every parallel batch ships (a) early probes that
+  print PASS/FAIL for its key claim within minutes (`early_probe.py`; fail-fast and stall rules stay), and (b) an end check for
+  interference (throttled legs, dur > 1.25 x est) that names the stage to rerun solo. Prefer short decisive cells over long runs;
+  keep a modest time buffer; long runs only after the short signal passes.
 - **R19 Smoke before hand-off; fail in minutes.** Before handing over any long script, Claude runs its ≤5-min
   smoke itself (the one R4 exception: foreground, hard timeout, one script): `pytest --collect-only` plus one
   short real/sim pair showing commits on both legs. Every long script opens with that gate (campaign: P00)
@@ -181,7 +186,7 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
   unavailable and withheld are three separate states.
 - **L5 `[slot]`** Keep CAPACITY (who holds a slot) and IDENTITY (who can't be re-picked yet) as two sets.
   One set serving both roles hides a bug until a rule changes one of them.
-- **L6 `[select]`** A duration fed to a selector is the client's intrinsic span (`WALL_SEND − WALL_RECV`).
+- **L6 `[select]`** A duration fed to a selector is the client's intrinsic span: the trainer's `max(gpu, D)` + charged overhead, no weight staging (`CLIENT_TASK_TRAIN_INTRINSIC_S`, FX-D123).
   Any aggregator-stamped endpoint smuggles in a server wait (single source: `client_duration.py`).
 - **L7 `[select]`** A ported controller or score term that diverges and compounds is usually an unfaithful
   port. Diff it line by line against `third_party/` for every baseline and every selector hand that uses

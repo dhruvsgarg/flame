@@ -71,7 +71,7 @@ A new failure mode adds a check here in the same session.
 | PL9 | every leg graded before citing numbers | `SUMMARY.txt`, else `parity_check.py` | run 16 MISSING legs |
 | PL10 | stall rules never cut a leg matching its sim | compare STALLED real with sim timeline | run 18 oort cut pre-round 1 |
 | PL11 | every sim leg has a charge profile for its harness × dataset × stack | no `no profiled sim charges` WARNING in the leg's `shell.log` | FX-N71: tiny_cpu ran a 0.6 s placeholder |
-| PL12 | co-located pools can't starve each other | GPU pool `--gpu-cpus-per-trainer 0.1` beside a CPU tier; watch `LOAD foreign` | N86: G0U leased 112 CPUs using ~3, T3 idle 45 min |
+| PL12 | co-located pools share the node by leases (R24); size each pool's lease to its real use | GPU pool `--gpu-cpus-per-trainer 0.1` beside a CPU tier; watch `LOAD foreign` and `INTERFERENCE` | N86: G0U leased 112 CPUs using ~3, T3 idle 45 min |
 
 ## Method
 
@@ -156,6 +156,7 @@ INV/EXACT green / known / red via `--grade <pool> --regrade --max-stage 9`; DIST
 
 | pool (run) | g / k / r | reds and roots |
 |---|---|---|
+| PR26 `pool_20261009_PR26_{G0U,T3C}`: speech refl + feddance G0U, Oort T3C real replicates | refl 2/0/0 · feddance 0/0/2 · T3C 14/14 | feddance: FX-D121-D124 (PR27); Oort real<->real forks as sim does (FX-N80 b) |
 | N88 `pool_20261009_N88_{T3,G0U}`: Oort K=10 + refl/feddance G0U | T3 10/0/4 · G0U 8/0/6 | FX-D116-D120 (rerun: PR26); cifar Oort NaN, Oort stall placement, no K=10 floors (FX-N80) |
 | PR23 `pool_20261008_1845_G0Tgs`: speech G0T felix + fedbuff | 8/0/0 · EV 8/8 | DIST only: phase_gpu_compute, speed identity (FX-N76); fedbuff syn_50 eligibility |
 | PR22/23 `pool_20261008_1628_{T3c,T3s,T1}`, `_2000_wt{T1,P7}`, `_2010_wtT3s`, `_1628_G0Ufb` | T3 cifar 27/0/3 · speech 16/0/14 · T1 24/24 · wtP7 6/0/0 · G0Ufb 1/0/0 | speech timing = stale stub profile → FX-D103 (syn_0b 2/0/0 after); cifar syn_50 oort-family terminal_state (pre-FX-D100, FX-N9) |
@@ -178,10 +179,12 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR26 · FX-N80 step 2 confirm · todo (operator launches).** *Claim:* FX-D116-D118 green speech refl + feddance G0U.
-  `harness_pool.py --tier G0U --datasets google_speech --baselines refl,feddance` (~48 min). *Then:* T3C Oort floors
-  `--tier T3C --datasets all --baselines oort,oort_star` (~68 min; after, not beside: PL12). cifar Oort GPU legs wait for
-  the in-process NaN repro (FELIX FX-N80 (a)). *Stop:* any INV/EXACT red on refl/feddance speech.
+- **PR27 · confirm FX-D121-D124 · todo (operator launches: tmux `dg_flame`, `scripts/run_pr27.sh`; stages A-D run in parallel, ~100 min; probes in `experiments/pr27_*/probes.txt`).**
+  A feddance speech G0U (K-cap, speed stamp, U6, K11; *confirms:* trainers 35 vs 32 closes, U6 KS < 0.2; *refutes:* still 3+ trainer gap).
+  B G0UC feddance speech (R7: if real<->real forks at the same near-ties, A_m chaos is design, grade on the floor, no sim change).
+  C T3 Oort + oort_star both datasets (FX-D123: real-sim speed gap ~2 ms, `round_preferred_duration_s` within 0.5%, fewer
+  selection forks, stall rounds within the T3C real spread). D cifar Oort G0U (FX-D107 NaN: no `update_rejected`, loss < 3 at r10).
+  Smoke done: `pool_smoke_fxd121` (T3 oort+feddance speech, plumbing green; EV1 on 60 s legs only). Uncommitted: all FX-D121-D124 files.
 - **PR24 · FELIX "Next steps → Resume here", in order FX-N80 → N84.** FX-N80's C19 steps (in-process `fl_lr_check --baseline`, then T3 +
   G0U screens on FX-D100/D104/D105 configs).
 - **PR23 · GPU screens (C18) · partly done.** Done: G0UC fedbuff cifar ×3 + G0U pair at HEAD ✅ (FX-N77 closed). Done: speech G0T

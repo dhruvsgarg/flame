@@ -50,6 +50,9 @@ def real_client_task_train_duration(
     (which carry the lag) only when a client stamp is absent. See PARITY.md §S.dur /
     project_oort_a2c_root.
     """
+    intr = msg.get(MessageType.CLIENT_TASK_TRAIN_INTRINSIC_S)  # FX-D123
+    if intr is not None and float(intr) > 0:
+        return timedelta(seconds=float(intr))
     wst = msg.get(MessageType.WALL_SEND_TS)
     wrt = msg.get(MessageType.WALL_RECV_TS)
     # FX-N44: time held offline at the send-gate is not device speed (sim reports the modeled span).

@@ -154,11 +154,12 @@ Work rule: PARITY C10, C17, C18. Run queue + pre-launch checklist: PARITY_READIN
     N88 (`pool_20261009_N88_T3` 4/14 red, `_N88_G0U` 6/14 red after FX-D119 regrade; oort_star T3 6/6 green) rooted to
     FX-D116 (speech sync sim +0.4 s/round), FX-D117 (feddance speech syn_50 sim rounds 150 s), FX-D118 (refl speech real 303 s
     round), FX-D119 (checker graded all-stall legs), FX-D120 (NaN rejects deadlocked G0U oort_star syn_50 sim to the budget).
-    Open: (a) cifar Oort family diverges: loss 2.30 -> 12.9 after the first YoGi step on both sides, then NaN updates (T3
-    syn_50 sim, G0U syn_50 + mobiperf both sides); repro in-process with `fl_lr_check` at n=50, K=10, alpha 0.1 before any
-    cifar Oort GPU leg. (b) Oort stall placement: syn_20s real hits its second 90 s abandon 2 rounds before sim, both datasets
-    (`logical_diff.py`). (c) Oort K=10 trainers_at_n (35 vs 37, 36 vs 39) and G0U cifar mobiperf throughput (11%) have no
-    K=10 replicate floor: T3C/G0UC first (R7). *Next:* PR26.
+    PR26 (`pool_20261009_PR26_{G0U,T3C}`): refl speech 2/2 green; Oort T3C 14 real replicates all PASS; feddance speech reds rooted
+    to FX-D121-D124 (landed, unverified on cluster: PR27). Open: (a) cifar Oort NaN: in-process fix is FX-D107, GPU confirm in PR27.
+    (b) Oort stall placement and trainers_at_n: real<->real forks too (gs syn_20 oort: R/C stall at rounds 3+10, sim 3+13; rounds 11/11
+    vs 23); selection forked on a 3.5% pref-duration bias (real wall = D + weight staging) -> FX-D123, rerun T3 Oort. (c) feddance
+    speech picks fork at near-ties of A_m (relu clamp 1e-6 vs k/32: a 10^4 utility step on one sample of local accuracy): chaos by
+    design, needs the G0UC replicate (R7) before any sim change. A6r 0.94 vs 0.95 on one real leg: n=50 sampling, floor-gate it.
   - *Step 3 done:* 0 TIMING_OVERRUN in 563 Oort GPU tasks (PL3 + N80_G0U legs, both datasets); 3-5% overran on tiny_cpu only.
 - **FX-N84 · Trainer memory audit (GPU + host RAM) · todo.** Per-trainer CUDA context, model, optimizer state, allocator cache and
   RSS at n = 50/100/300 (cifar + speech); find waste that scales with n or model size; fix; re-measure trainers per A40
@@ -464,6 +465,11 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-D119** Checker: a side with no stall-free round SKIPs K8's time half, U2 and K4 (K8 still grades trainers);
   stall excess is never negative.
 - **FX-D120** A non-finite-rejected pick owes nothing at its version: distribute replaces it (`_sync_failed_ends`).
+- **FX-D121** K11 late slack counts only if an agg_round closed between delivery and commit (a barrier applies at its close).
+- **FX-D122** Sim wait-K drain commits at most K per version (co-due deliveries carry), as real closes at the K-th arrival.
+- **FX-D123** Real trainer stamps `CLIENT_TASK_TRAIN_INTRINSIC_S` = sim's duration formula; the selector speed excludes weight
+  staging (real read D + 0.1 s, sim D + 0.01). `realIntrinsicClientDuration=false` reverts. Real-vs-sim speed gap 70 ms -> 2 ms.
+- **FX-D124** Sim sync drain stamps a delivered update's speed (was 0) and anchors U6 lag at the round close from its delivery.
 - **FX-D114** A sim sync version waiting for K also wakes on the next availability change (real's poll tops up).
 - **FX-D113** Sync sim barrier carries over-quota updates to the next barrier, as real's rxq does (dropping them
   deadlocked feddance once a new end made the recv timeout unbounded).

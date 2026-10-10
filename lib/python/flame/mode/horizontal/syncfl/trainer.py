@@ -518,6 +518,10 @@ class Trainer(Role, metaclass=ABCMeta):
         if _compute_s is not None:
             msg[MessageType.CLIENT_TASK_TRAIN_COMPUTE_S] = float(_compute_s)
 
+        _intr = getattr(self, "_client_task_train_intrinsic_s", None)
+        if _intr is not None:
+            msg[MessageType.CLIENT_TASK_TRAIN_INTRINSIC_S] = float(_intr)
+
         # Trainer recv timestamp: when channel.recv() returned the distributed
         # weights. Used by the aggregator for the agg→trainer delivery leg (i).
         _wrt = getattr(self, "_wall_recv_ts", None)

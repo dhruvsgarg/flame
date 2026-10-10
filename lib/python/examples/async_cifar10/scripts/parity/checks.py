@@ -4238,6 +4238,9 @@ def commit_promptness_parity(sim: dict, early_tol_s: float = 1.0,
     no withholds, or telemetry predates T3.5).
     """
     evs = sim.get("withheld_deliveries", []) or []
+    # FX-D121: a barrier applies deliveries at round close; late only if a round closed meanwhile.
+    closes = sorted(float(r["vclock_now"]) for r in sim.get("agg_rounds", []) or []
+                    if r.get("event") in (None, "agg_round") and r.get("vclock_now") is not None)
     slacks: list = []
     early_violations: list = []
     late_violations: list = []
@@ -4249,7 +4252,8 @@ def commit_promptness_parity(sim: dict, early_tol_s: float = 1.0,
         slacks.append(slack)
         if slack < -early_tol_s:
             early_violations.append({"end": e.get("end_id"), "slack_s": round(slack, 2)})
-        elif slack > late_slack_tol_s:
+        elif slack > late_slack_tol_s and (
+                not closes or any(float(dts) < c < float(act) for c in closes)):
             late_violations.append({"end": e.get("end_id"), "slack_s": round(slack, 2)})
 
     if not slacks:

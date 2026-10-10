@@ -253,6 +253,10 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     real_recv_until_awaited: t.Optional[bool] = Field(
         alias="realRecvUntilAwaited", default=True
     )
+    # FX-D123: real selector speed = sim's duration formula (no weight staging); false = revert.
+    real_intrinsic_client_duration: t.Optional[bool] = Field(
+        alias="realIntrinsicClientDuration", default=True
+    )
     # C13 (FX-D108): sim starts each recipient after its measured fan-out delivery lag, as real does.
     sim_charge_delivery_lag: t.Optional[bool] = Field(
         alias="simChargeDeliveryLag", default=True

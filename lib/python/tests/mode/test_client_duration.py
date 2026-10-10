@@ -70,3 +70,10 @@ def test_send_gate_wait_excluded():
     msg = {MessageType.WALL_RECV_TS: 100.0, MessageType.WALL_SEND_TS: 402.0,
            MessageType.SEND_GATE_WAIT_S: 300.0}
     assert real_client_task_train_duration(msg).total_seconds() == 2.0
+
+
+def test_trainer_intrinsic_duration_wins_over_wall():
+    # FX-D123: real read D+0.1 s (weight staging), sim D+0.01.
+    msg = {MessageType.WALL_RECV_TS: 100.0, MessageType.WALL_SEND_TS: 102.85,
+           MessageType.CLIENT_TASK_TRAIN_INTRINSIC_S: 2.762}
+    assert real_client_task_train_duration(msg).total_seconds() == 2.762

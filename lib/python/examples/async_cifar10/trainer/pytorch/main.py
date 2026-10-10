@@ -920,6 +920,11 @@ class PyTorchCifar10Trainer(Trainer):
         elif self.simulated:
             _lag_s = self.sim_download_leg_s  # FX-D116: profiled download stands in for the unmeasured lag
         self._sim_completion_ts += _lag_s
+        # FX-D123: real reports sim's duration formula, so the selector's speed excludes weight staging.
+        self._client_task_train_intrinsic_s = (
+            None if self.simulated or not getattr(self.config.hyperparameters, "real_intrinsic_client_duration", True)
+            else sim_round_duration + (_overhead_s if self._sim_charge_overhead else 0.0)
+        )
 
         if telemetry.is_enabled():
             visible = self._stream_visible  # what this task trained on, not a post-train recount

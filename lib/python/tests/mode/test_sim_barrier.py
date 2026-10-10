@@ -225,3 +225,29 @@ def test_sync_over_quota_update_carries_to_next_barrier():
     out = agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=2)
     assert ch.recv_calls[1] == frozenset(SCTS) - {"t3", "t4"}  # carried ends aren't awaited again
     assert sorted(md[0] for _m, md in out) == ["t3", "t4"]
+
+
+def test_sync_wait_k_caps_co_due_deliveries_at_k():
+    # FX-D122: sim took 6 commits at K=5; real closed at the 5th.
+    agg = _bare(SyncAgg)
+    agg._sync_wait_k_on = lambda: True
+    agg._sim_take_withheld_delivering = lambda e: None
+    agg._sim_reinject_ready_withheld = lambda: None
+    for e in ("t1", "t2", "t3"):
+        agg._sim_buffer.add(e, 300.0, ({}, (e, None)))
+    ch = RecordingChannel({}, [])
+    out = agg._sync_sim_recv_first_k(ch, [], first_k=2)
+    assert len(out) == 2 and len(agg._sim_sync_carry) == 1
+
+
+def test_sync_withheld_delivery_stamps_speed_and_ready():
+    # FX-D124: delivered updates had speed 0 and a hold-inflated lag.
+    from flame.selector.properties import PROP_CLIENT_TASK_TRAIN_DURATION
+    agg = _bare(SyncAgg)
+    agg._sim_take_withheld_delivering = lambda e: None
+    agg._sim_reinject_ready_withheld = lambda: None
+    ch = RecordingChannel({"t1": 1.0}, [])
+    agg._sim_buffer.add("t1", 300.0, ({MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S: 42.0}, ("t1", None)))
+    agg._sync_sim_recv_first_k(ch, [], first_k=1)
+    assert ch.get_end_property("t1", PROP_CLIENT_TASK_TRAIN_DURATION).total_seconds() == 42.0
+    assert agg._sim_ready_ts == {"t1": 300.0}
