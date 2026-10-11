@@ -90,6 +90,13 @@ def functional_get_loss(
     return _get_loss(y, t, num_classes)
 
 
+def amp_dtype():
+    """`FWDLLM_AMP_DTYPE=bf16` for models whose activations overflow fp16 (Llama: NaN loss)."""
+    if os.environ.get("FWDLLM_AMP_DTYPE", "").strip().lower() in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    return torch.float16
+
+
 def jvp_fp32_enabled() -> bool:
     """`FWDLLM_JVP_FP32=1` runs the two JVP forward passes OUTSIDE autocast.
 
@@ -168,7 +175,7 @@ def calculate_jvp(func, params, v, trainable_idx=None):
     _FWD_PASSES += 2   # loss + terbulence_loss forward passes below
     _JVP_EVALS += 1
     h = _fd_spacing(v, trainable_idx)
-    _cast = _nullcontext() if jvp_fp32_enabled() else autocast()
+    _cast = _nullcontext() if jvp_fp32_enabled() else autocast(dtype=amp_dtype())
     with torch.no_grad(), _cast:
         if trainable_idx is None:
             minus = tuple([params[i] - h * v[i] for i in range(len(params))])
@@ -194,7 +201,7 @@ def calculate_jvp_after_actual_update(func, params, v, jvp_scalar):
     global _FWD_PASSES
     _FWD_PASSES += 1
     h = 0.01 # learning rate factor
-    with torch.no_grad(), autocast():
+    with torch.no_grad(), autocast(dtype=amp_dtype()):
         loss = func(tuple([params[i] - h * jvp_scalar * v[i] for i in range(len(params))]))
     return loss
 
@@ -204,7 +211,7 @@ def calculate_jvp_before_actual_update(func, params):
     """
     global _FWD_PASSES
     _FWD_PASSES += 1
-    with torch.no_grad(), autocast():
+    with torch.no_grad(), autocast(dtype=amp_dtype()):
         loss = func(tuple([params[i] for i in range(len(params))]))
     return loss
 

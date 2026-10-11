@@ -27,6 +27,9 @@ from transformers import (
     DebertaConfig,
     DebertaForSequenceClassification,
     DebertaTokenizer,
+    LlamaConfig,
+    LlamaForSequenceClassification,
+    AutoTokenizer,
 )
 
 # from FedML.fedml_api.distributed.fedavg.FedAvgAPI import FedML_FedAvg_distributed
@@ -80,6 +83,12 @@ def create_model(args, formulation="classification"):
                 DebertaForSequenceClassification,
                 DebertaTokenizer,
             ),
+            # Decoder path (row N5c): SmolLM2, TinyLlama, Llama-3.2. Pair with peft_method=lora.
+            "llama": (
+                LlamaConfig,
+                LlamaForSequenceClassification,
+                AutoTokenizer,
+            ),
         },
         "seq_tagging": {
             "bert": (BertConfig, BertForTokenClassification, BertTokenizer),
@@ -116,6 +125,8 @@ def create_model(args, formulation="classification"):
         tokenizer = [None, None]
         tokenizer[0] = tokenizer_class.from_pretrained(args.model_name)
         tokenizer[1] = tokenizer[0]
+    if args.model_type == "llama":
+        _fill_decoder_special_tokens(tokenizer, config, model)
     # print('befor lorabefor lora befor lora befor lora befor lora')
     # print(model)
     logging.info(f"peft_method: {args.peft_method}")
@@ -167,6 +178,22 @@ def create_model(args, formulation="classification"):
     _p = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logging.info(f"[TrainableScope] scope={_scope} trainable_p={_p}")
     return config, model, tokenizer
+
+
+def _fill_decoder_special_tokens(tokenizer, config, model):
+    """Llama tokenizers ship without pad/cls/sep, which the feature converter needs.
+
+    pad = cls = sep = EOS: the classifier pools the last non-pad token, so every
+    added token is skipped and the score reads the last text token.
+    """
+    eos = tokenizer.eos_token
+    for attr in ("pad_token", "cls_token", "sep_token"):
+        if getattr(tokenizer, attr) is None:
+            setattr(tokenizer, attr, eos)
+    config.pad_token_id = tokenizer.pad_token_id
+    model.config.pad_token_id = tokenizer.pad_token_id
+    # fp16 autocast overflows Llama activations (NaN loss); read by amp_dtype() and aggregator eval.
+    os.environ.setdefault("FWDLLM_AMP_DTYPE", "bf16")
 
 
 def strict_determinism_enabled() -> bool:

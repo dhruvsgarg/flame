@@ -115,6 +115,7 @@ AVAIL_TRACE=""
 AVAIL_TRACES=""
 MODEL_TYPE=""          # --model-type NAME: second architecture (row N5c). Cache key leads
 MODEL_NAME=""          #   with model_type+model_name, so a new model needs its own pretokenize.
+PEFT_METHOD=""         # --peft-method adapter|lora|bitfit; llama needs lora.
 DATASET=""             # --dataset NAME: registry-derived data_file_path/partition_file_path/
                         # max_seq_length/name into both override blocks. unset => yaml default (agnews)
 PARTITION_METHOD=""
@@ -210,6 +211,7 @@ usage() {
   echo "          [--server-weight-decay auto|FLOAT]  (Q2: pins Phi=1 at auto=rho^2/2)" >&2
   echo "          [--server-momentum BETA]  (S1: temporal pooling; needs trust_ratio)" >&2
   echo "          [--adapter-reduction-factor N]  (768/N per adapter; the real p knob)" >&2
+  echo "          [--model-type T] [--model-name N] [--peft-method adapter|lora|bitfit]" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
   echo "          [--sim-wall-ceiling-s S | --sim-wall-ceiling-h H]  REAL-wall-clock outer safety" >&2
@@ -242,6 +244,7 @@ while [[ $# -gt 0 ]]; do
     --dataset)              DATASET="$2"; shift 2 ;;
     --model-type)           MODEL_TYPE="$2"; shift 2 ;;
     --model-name)           MODEL_NAME="$2"; shift 2 ;;
+    --peft-method)          PEFT_METHOD="$2"; shift 2 ;;
     --partition-method)     PARTITION_METHOD="$2"; shift 2 ;;
     --var-threshold)        VAR_THRESHOLD="$2"; shift 2 ;;
     --server-update-audit)  SERVER_UPDATE_AUDIT=1; shift ;;
@@ -465,7 +468,7 @@ EXPT_RUNNER_DIR="$EXPT_RUNNER_DIR" \
 MODE="$MODE" DELAYS="$DELAYS" MAX_RUNTIME_S="$MAX_RUNTIME_S" MAX_DATA_ID="$MAX_DATA_ID" \
 NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" GPU_IDS="$GPU_IDS" SEL_C="$SEL_C" SEL_C_ASYNC="$SEL_C_ASYNC" \
 SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" MIN_INIT_FRAC="$MIN_INIT_FRAC" \
-DATASET="$DATASET" MODEL_TYPE="$MODEL_TYPE" MODEL_NAME="$MODEL_NAME" PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
+DATASET="$DATASET" MODEL_TYPE="$MODEL_TYPE" MODEL_NAME="$MODEL_NAME" PEFT_METHOD="$PEFT_METHOD" PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
 SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" POOL_SPLIT_HALF_AUDIT="$POOL_SPLIT_HALF_AUDIT" \
 ALLOW_STALE_PROFILE="$ALLOW_STALE_PROFILE" \
@@ -509,6 +512,7 @@ MODE = env("MODE"); DELAYS = env("DELAYS")
 DATASET = env("DATASET") or ""
 MODEL_TYPE = env("MODEL_TYPE") or ""   # row N5c: second architecture
 MODEL_NAME = env("MODEL_NAME") or ""
+PEFT_METHOD = env("PEFT_METHOD") or ""
 if DATASET and DATASET not in dsreg.names():
     # exit 3, not 2: 2 means "blocking check, --force can override" (render_and_gate's
     # code), which is wrong here -- --force cannot rescue an unknown dataset name.
@@ -732,6 +736,10 @@ def patch(exp, run_key, variant, trace):
         _mn = MODEL_NAME or MODEL_TYPE
         h["model_name"] = _mn
         exp["trainer"]["config_overrides"]["hyperparameters"]["model_name"] = _mn
+    # Both sides build the model, so both need the same PEFT or shapes differ.
+    if PEFT_METHOD:
+        h["peft_method"] = PEFT_METHOD
+        exp["trainer"]["config_overrides"]["hyperparameters"]["peft_method"] = PEFT_METHOD
     # ABSOLUTE, always: the aggregator resolves this with a bare open() against
     # its OWN cwd (sim_charge_registry.py:19), which spawner.py inherits from the
     # launching shell -- and a miss is a WARNING plus an empty dict, so the vclock

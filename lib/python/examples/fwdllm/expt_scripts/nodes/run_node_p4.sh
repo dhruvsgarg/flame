@@ -83,7 +83,8 @@ DATASET="${1:?usage: run_node_p4.sh <agnews|yahoo|yelp-p> <controller|control>}"
 ARM="${2:?usage: run_node_p4.sh <agnews|yahoo|yelp-p> <controller|control>}"
 
 # Identity at the pinned rf=16 (_FD_REF_P is 450,340); set so the pin is safe to lift.
-export FWDLLM_FD_SCALE_INVARIANT=1
+# P4_FD_SCALE_INVARIANT=0 for a new-p port whose chord drifts (probe_port_init.py).
+export FWDLLM_FD_SCALE_INVARIANT="${P4_FD_SCALE_INVARIANT:-1}"
 
 FW="$(cd "$(dirname "$0")/../.." && pwd)"
 
@@ -202,6 +203,7 @@ fi
 MODEL_ARGS=()
 [[ -n "${P4_MODEL_TYPE:-}" ]] && MODEL_ARGS+=(--model-type "$P4_MODEL_TYPE")
 [[ -n "${P4_MODEL_NAME:-}" ]] && MODEL_ARGS+=(--model-name "$P4_MODEL_NAME")
+[[ -n "${P4_PEFT_METHOD:-}" ]] && MODEL_ARGS+=(--peft-method "$P4_PEFT_METHOD")
 [[ -n "${P4_PARTITION:-}" ]] && MODEL_ARGS+=(--partition-method "$P4_PARTITION")
 
 COMMON=(--only fluxtune --mode sim --yes --clean --allow-stale-profile "${FORCE[@]}"

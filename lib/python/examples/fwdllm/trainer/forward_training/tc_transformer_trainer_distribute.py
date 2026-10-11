@@ -293,6 +293,9 @@ class ForwardTextClassificationTrainer:
             self.layer_id_for_check = 12
         elif self.args.model_type == "albert":
             self.layer_id_for_check = 22
+        elif self.args.model_type == "llama":
+            # layers.1 q lora_B; a lora_A slice is all-zero at init (B=0).
+            self.layer_id_for_check = 16
         self.var = 0
         logger.info(f"Client Trainer learning rate: {self.args.learning_rate}")
 
@@ -806,7 +809,7 @@ class ForwardTextClassificationTrainer:
         global_step = 0
         # Optimization: Use autocast for training loop if enabled
         from torch.cuda.amp import autocast
-        autocast_cm = autocast() if self.args.fp16 else contextlib.nullcontext()
+        autocast_cm = autocast(dtype=amp_dtype()) if self.args.fp16 else contextlib.nullcontext()
         if not self.args.fp16: logging.warning(f"Autocast is disabled: {self.args.fp16}")
 
         with torch.no_grad(), autocast_cm:

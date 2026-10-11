@@ -3169,8 +3169,12 @@ class TopAggregator(AsyncTopAgg):
 
         from torch.cuda.amp import autocast
         import contextlib
+        import os
 
-        autocast_cm = autocast() if self.args.fp16 else contextlib.nullcontext()
+        # FWDLLM_AMP_DTYPE=bf16 (set for llama by create_model): fp16 overflows to NaN.
+        _bf16 = os.environ.get("FWDLLM_AMP_DTYPE", "").strip().lower() in ("bf16", "bfloat16")
+        autocast_cm = (autocast(dtype=torch.bfloat16 if _bf16 else torch.float16)
+                       if self.args.fp16 else contextlib.nullcontext())
         if not self.args.fp16:
             logging.warning(f"Autocast is disabled: {self.args.fp16}")
 

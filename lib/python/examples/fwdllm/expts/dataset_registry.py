@@ -37,8 +37,13 @@ ADAPTER_P_BY_MODEL = {
     # p=4,225,540 at rf=16 measured on run_20260823_145932 ([ProbeDim]); the
     # classifier is 1024*4+4 for agnews, so the adapter half is 4,221,440.
     "roberta-large": {16: 4221440},
+    # SmolLM2-360M + LoRA r=8 (q,v): p=823,040 measured via create_model on agnews.
+    # LoRA ignores rf; keyed at 16 so the default lookup resolves.
+    "llama": {16: 819200},
 }
-HIDDEN_SIZE = {"distilbert": 768, "roberta-large": 1024}
+HIDDEN_SIZE = {"distilbert": 768, "roberta-large": 1024, "llama": 960}
+# LlamaForSequenceClassification's `score` has no bias.
+_NO_HEAD_BIAS = {"llama"}
 # Back-compat alias: the bare name still means DistilBERT.
 ADAPTER_P = ADAPTER_P_BY_MODEL["distilbert"]
 
@@ -95,7 +100,8 @@ def probe_dim(num_labels: int, reduction_factor: int = 16,
     if reduction_factor not in table:
         raise KeyError(f"no adapter param count for model_type={m!r} "
                        f"reduction_factor={reduction_factor}; known: {sorted(table)}")
-    return table[reduction_factor] + HIDDEN_SIZE[m] * num_labels + num_labels
+    bias = 0 if m in _NO_HEAD_BIAS else num_labels
+    return table[reduction_factor] + HIDDEN_SIZE[m] * num_labels + bias
 
 
 def total_data_bins(name: str, num_clients: int, train_batch_size: int) -> int:

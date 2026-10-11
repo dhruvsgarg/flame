@@ -34,10 +34,11 @@ NOT what that costs in gradient quality. That is H-S / `scripts/probe_fd_chord.p
 """
 import argparse
 import math
+import os
 import sys
 import types
 
-sys.path.insert(0, "/home/dgarg39/flame/lib/python")
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 import torch  # noqa: E402
 
 from examples.fwdllm.expts.initializer import create_model  # noqa: E402
@@ -47,11 +48,11 @@ _FD_REF_P = 450340
 _FD_REF_DISPLACEMENT = 0.01 * math.sqrt(_FD_REF_P)
 
 
-def measure(model_type, model_name, rf, num_labels):
+def measure(model_type, model_name, rf, num_labels, peft_method="adapter"):
     args = types.SimpleNamespace(
         model_type=model_type, model_name=model_name, num_labels=num_labels,
         config={"num_labels": num_labels}, do_lower_case=True,
-        peft_method="adapter", adapter_reduction_factor=rf,
+        peft_method=peft_method, adapter_reduction_factor=rf,
         trainable_scope="adapters_head")
     _cfg, model, _tok = create_model(args, formulation="classification")
     # The trainer drops pre_classifier before the probe is drawn, so production p
@@ -72,6 +73,8 @@ def main():
     ap.add_argument("--rf", type=int, action="append",
                     help="repeat for a ladder; default 16")
     ap.add_argument("--num-labels", type=int, default=4)
+    ap.add_argument("--peft-method", default="adapter",
+                    help="lora for llama; rf is then ignored")
     a = ap.parse_args()
     name = a.model_name or ("distilbert-base-uncased"
                             if a.model_type == "distilbert" else a.model_type)
@@ -82,7 +85,7 @@ def main():
     print("-" * 83)
     rows = []
     for rf in rfs:
-        p, n, total = measure(a.model_type, name, rf, a.num_labels)
+        p, n, total = measure(a.model_type, name, rf, a.num_labels, a.peft_method)
         on, off = _FD_REF_DISPLACEMENT / n, 0.01 * math.sqrt(p) / n
         rows.append((on, off))
         print(f"{a.model_type + ' rf=' + str(rf):<24}{p:>11,}{n:>11.3f}"

@@ -12,12 +12,8 @@ authoritative. Nothing here is committed yet.
 - **New columns.** *Impact on training* (🔴 accuracy · 🟠 cost only · 🟢 marginal · ⚪ none) and *Simplify?*, which
   holds proposals, not corpus results.
 - **New §3, Telemetry per concept.** Maps each row to the fields that track it.
-- **Parity gaps, not yet fixed:**
-  - Code defaults differ from the shipped values: `s`=0.4, `rho_star`=0.01, `probe_combine`=`select`,
-    `commit_gate`=`var`.
-  - `B` is updated from `_last_rho`, the step actually taken, not from `ρ*_t` as the flowchart says.
-  - Row 16: the code's stall progress is `(m_t−m_{t−h})/m_t`, with no chance level.
-  - Row 17: a GL breach also needs no gain over the 150-commit horizon.
+- **Parity gaps found** (not yet fixed): code defaults ≠ shipped values, `B` fed from `_last_rho`, stall progress
+  without a chance level, an extra GL condition. Listed in [AI context §4](fl_fwd_ft_pipeline_context.md).
 
 ## 2. Code changes
 
@@ -84,9 +80,8 @@ the controllers.
 855 commits, stopped by the wall ceiling at Φ 2.58. Peak smoothed accuracy **0.873** (best single eval 0.8746);
 target 0.88.
 
-**Telemetry offsets.** `rho_star` and `n_req` in `server_update` belong to the next commit. `iteration_per_data_id`
-counts from 0 (pool = `10·(I+1)`). `rho` is measured after the step (about 0.2% low). Once corrected, the gate, the
-step and Φ are exact.
+Read with the telemetry offsets in AI context §4 corrected (pool = `10·(I+1)`); once corrected, the gate, the step
+and Φ are exact.
 
 **Verdict key:** ✅ matches the corpus · ⚠️ partly · ❌ contradicts · ❓ this run can't tell.
 
@@ -118,10 +113,8 @@ noise drove it.
 
 ## 5. Simplified model (proposal)
 
-```
-ρ = s·√(P·N/p)  (constant)    commit at N uploads    G = Σ u_k (ω = 1)    Δθ_tr = −ρ·‖θ_tr‖·G/‖G‖
-stop: Φ ≥ 3 (≈ 880 commits at ρ = 0.05) or the stall rule
-```
+Constant ρ = s·√(P·N/p), commit at N uploads, ω = 1, stop on Φ ≥ 3 or the stall rule. Flowchart: cheatsheet §2;
+flags: §2 above.
 
 N=50 matches the baseline's mean pool (49.5) and gives ρ=0.050, inside the observed range of 0.032–0.068.
 
@@ -224,24 +217,8 @@ Re-read of both runs' `server_update` and `agg_eval` telemetry.
 - **Caveat:** one run per arm and ±0.005 eval noise. The baseline's ρ jumps at its probes are too noisy to read
   either way.
 
-**Proposal: ρ_t = ρ0·‖θ_0‖/‖θ_t‖ = ρ0/Φ_t (constant absolute step)**
-- Exact closed form: Φ_t = √(1 + t·ρ0²). ρ stays about flat for ~1/ρ0² commits, then decays like 1/√t. No
-  `T_res`, `B_max` or probe. Unlike `rm`, it doesn't cut the step from commit 1.
-- Use ρ0 ≈ 0.07 with a fixed N ≈ 98. Predicted ρ: 0.057 at commit 100, 0.045 at 300, 0.030 at 880, where Φ ≈ 2.3.
-- Keep N fixed rather than N ∝ ρ²: the gate's `s` is already ~10× off (ρ/cos 14–20 against 1.5).
-- **Side effect:** Φ = 3 now needs ≈ 1,600 commits, so stop on the stall rule (decay the streak instead of
-  resetting it) plus a commit cap.
-
-**Alternatives**
-- **One step-down at Φ = 2.** A cruder version of the proposal, with an extra threshold.
-- **Constant ρ with N ∝ Φ².** Better direction per commit, but slower commits and Φ still grows. This is the
-  backup arm.
-- **Holding ‖θ_tr‖ fixed (projection or weight decay).** Rejected: the adapters aren't scale-invariant, and the
-  step never anneals.
-
-**Next:** implement it as a new `rho_schedule` branch in `_rho_star_now`, then run the A/B: simplified vs
-simplified + ρ0/Φ (ρ0 = 0.07, N = 98), fixed stall rule, a cap of ~1,000 commits. Compare time to 0.86 and 0.87,
-the peak, and Φ at the peak.
+**Proposal** (ρ_t = ρ0/Φ_t, constant absolute step), its settings and the alternatives: cheatsheet §6. Code hook:
+AI context §8.
 
 ## 9. Follow-up (2026-10-09): which model next, and does FluxTune scale to ~1B?
 
@@ -252,9 +229,6 @@ Extrapolated from buildplan §5.11 (roberta-large smoke `145932`). Nothing here 
   last-token pooling, causal mask, LoRA placement. `adapters` 1.3.0 supports `llama` and `mistral`, not Qwen.
 - Same size as roberta-large (355M), so its memory and trainers/GPU numbers carry over. `p` ≈ 0.8M sits between
   DistilBERT (450k) and roberta-large (4.23M): a third point for N5c.
-- **Build tasks:** a `"llama"` entry in `MODEL_CLASSES` (`initializer.py`) with pad token = EOS and
-  `config.pad_token_id`; guard the `pre_classifier` handling; `peft_method: lora`; pre-tokenize; make the model
-  an override in `run_node_p4.sh`; retune lr (roberta needed 3e-4).
 
 **Scaling rule: commits grow with `p` (trainable), not model size.**
 - `ρ_max ∝ 1/√p`, so per-commit progress `½ln(1+ρ²) ∝ 1/p` and commits to Φ* = ln(2.9)/(½ln(1+ρ_max²)).
@@ -275,8 +249,9 @@ Extrapolated from buildplan §5.11 (roberta-large smoke `145932`). Nothing here 
 **Does it scale?**
 - ✅ Memory stays flat in depth and in P (no backward pass). The best-of-10 JVP gain doesn't depend on `p`.
 - ❌ Gradient cos ∝ 1/√p. Keep `p` ≈ 1M; raising LoRA rank or adding target matrices costs time in proportion.
-- ⚠ The FD JVP subtracts two near-equal losses: worse in bf16 (Llama default). Compute the JVP loss in fp32.
-- ⚠ `FWDLLM_FD_SCALE_INVARIANT` ON makes the chord drift as 1/√p (buildplan row F). Check before a 40 h run.
+- ✅ *(resolved for 360M, §11)* bf16 precision in the JVP: as accurate as fp32. fp16 is what fails (NaN).
+- ⚠ `FWDLLM_FD_SCALE_INVARIANT` ON makes the chord drift as 1/√p (buildplan row F). At 360M + LoRA it doesn't
+  (0.511, §11); re-check on a 1B model.
 - ❓ Whether Φ* holds at a new `p` (N5c) is still open. A 1B run is that test, so let it reach its own stop.
 
 **Practical limits**
@@ -285,10 +260,10 @@ Extrapolated from buildplan §5.11 (roberta-large smoke `145932`). Nothing here 
   (new code).
 - **Stragglers:** ~3× roberta's per-batch compute. Re-profile `sim_charge_profiles` or sim timing won't match real.
 
-**Next:** 15-min smoke on the 1B model. Read `[ProbeDim] p=…`, trips/commit, commits/h; wall ≈ 500 ÷ commits/h.
-`s` = 2.9 cuts it ~3.7× (~11 h) but under-trains by about half (§5.12): use it to check the controller, not accuracy.
+**Next:** superseded by §10, which smoke-tests the 360M model first. For a 1B run: wall ≈ 500 ÷ commits/h; `s` = 2.9
+cuts it ~3.7× (~11 h) but under-trains by about half (§5.12), so use it to check the controller, not accuracy.
 
-## 10. Follow-up (2026-10-10): trying a different model: pick, time estimate, smoke recipe
+## 10. Follow-up (2026-10-10): trying a different model: pick and time estimate
 
 Extrapolation from §9 and buildplan §5.11, not measured. Current baselines: DistilBERT 66M total / 450k trainable;
 roberta-large 355M / 4.23M.
@@ -304,13 +279,16 @@ both fit, and neither is named in the docs.
 - An earlier ~15 h figure was wrong: it reused the 1B row's ÷3.7, which assumes `p` ≈ 1.1M.
 - Floor: per-commit fixed overhead (aggregation, probe, sim charging) doesn't shrink with `p`, so expect above the low end.
 
-**Easiest test: 15-min smoke on the 360M model.** Accuracy is irrelevant (the roberta smoke sat at chance and still
-counted as a clean port).
-1. Add a `"llama"` entry to `MODEL_CLASSES["classification"]` in `expts/initializer.py` (LlamaConfig,
-   LlamaForSequenceClassification, AutoTokenizer); pad token = EOS and `config.pad_token_id`. Only `bert`,
-   `distilbert`, `roberta-large`, `albert`, `deberta` exist today.
-2. Confirm `peft_method: lora` works for q,v (only the adapter branch was read); guard `pre_classifier`.
-3. Override the model in `expt_scripts/nodes/run_node_p4.sh`; few clients; retune lr (roberta needed 3e-4);
-   pre-tokenize.
-4. Before launch: JVP loss in fp32; check `FWDLLM_FD_SCALE_INVARIANT`.
-5. Read `[ProbeDim] p≈0.8M`, trips/commit, commits/h (wall ≈ 400 ÷ commits/h), and `cos·Φ` ≈ 1.0.
+**Smoke recipe:** superseded by §11.
+
+## 11. Follow-up (2026-10-10): SmolLM2-360M ported; smoke ready, not yet run
+
+Everything about this port (code changes, measurements, runbook, pass table) is in
+[fl_fwd_ft_smollm2_smoke_plan.md](fl_fwd_ft_smollm2_smoke_plan.md). Findings that change earlier sections:
+
+- `p` = **823,040**: the third `p` point for N5c.
+- Chord with the flag ON = **0.511**, not §10's estimated 0.38. LoRA's ‖θ_tr‖/√p is 0.0145, not the adapters'
+  0.0197, because `lora_B` = 0. Keep `FWDLLM_FD_SCALE_INVARIANT=1`.
+- **fp16 autocast gives a NaN loss**, even unperturbed. Llama now runs in bf16, which is as accurate as fp32 here
+  and 2.4× faster.
+- `tests/mode` + `tests/telemetry`: 1,027 pass, 5 fail. Whether these are the same 5 as §2 was not re-checked.

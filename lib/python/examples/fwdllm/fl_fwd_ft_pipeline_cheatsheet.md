@@ -163,45 +163,51 @@ Impact: 🔴 accuracy · 🟠 cost only · 🟢 marginal · ⚪ none. Proposals 
 
 ## 5. Agnews A/B: what we learned
 
+One run per arm, ±0.005 eval noise: read these as directions, not results. Full numbers: session notes §6 and §8.
+
 - **Same accuracy, faster:** the simplified arm matched the baseline peak (0.8726 vs 0.8728) in 1.74 h vs 3.0 h.
 - **`n_eff` never mattered:** it tracked the pool size (0.98–1.03×) in both arms.
 - **Baseline ρ was noise-driven:** it sawtoothed 0.032–0.068 as each `B_max` probe reset it.
-- **Constant ρ is a constant *relative* step:** the absolute step grows with ‖θ_tr‖ (0.67 → 2.0), so there is
-  no built-in anneal.
-- **Diminishing returns:** big gains up to Φ ≈ 1.8, almost none past Φ 2.2.
-- **Overshoot:** the simplified arm peaked at Φ 2.59 then dipped by the Φ = 3 rail; one noisy eval reset the
-  stall streak. Idea (untested): decay the streak instead of zeroing it — would stop ≈120 commits earlier.
+- **Φ measures steps, not learning:** every step is sideways to θ, so ‖θ_tr‖ grows by exactly √(1+ρ²) per
+  commit. With a true gradient cos of ≈ 0.003, that growth is almost all noise. A constant ρ is a constant
+  *relative* step: the absolute step grows with ‖θ_tr‖ (0.67 → 2.0), so there is no built-in anneal.
+- **ρ matters early, not late:** 0.80 → 0.84 took 129 commits at ρ 0.040 (baseline) vs 76 at 0.050
+  (simplified). 0.84 → 0.87 took 410 vs 408. Gains are large up to Φ ≈ 1.8 and near zero past Φ 2.2.
+- **Overshoot:** the simplified arm peaked at Φ 2.68, then dipped before the Φ = 3 rail stopped it; one noisy
+  eval had reset the stall streak. Idea (untested): decay the streak instead of zeroing it, which would stop
+  ≈120 commits earlier.
 
 ## 6. Proposal: anneal ρ as ‖θ_tr‖ grows (untested)
 
-**Why constant ρ is not ideal**
-- Every step is sideways to θ (cos(θ, Δθ) ≈ 0), so ‖θ_tr‖ grows by exactly ρ² per commit. Since the true
-  gradient cos is ≈ 0.003, that growth is almost all noise: Φ measures steps taken, not learning.
-- **Early, ρ matters:** 0.80 → 0.84 took 129 commits at ρ 0.040 (baseline) vs 76 at ρ 0.050 (simplified).
-- **Late, it barely does:** 0.84 → 0.87 took 410 vs 408 commits at ρ ≈ 0.046 vs 0.050. A large late ρ mostly
-  adds Φ (noise), which fits the dip before the Φ = 3 rail.
-- Evidence is one run per arm with ±0.005 eval noise, so treat these numbers as a direction, not a result.
-
-**Proposal: keep the absolute step constant**
+Keep the *absolute* step constant, so late commits stop adding noise to Φ:
 
 ```
 ρ_t = ρ0 · ‖θ_0‖ / ‖θ_t‖ = ρ0 / Φ_t        ⇒   Φ_t = √(1 + t·ρ0²)   (exact while steps stay sideways)
 ```
 
 - ρ stays about flat for ~1/ρ0² commits, then decays like 1/√t. No new knob: no `T_res`, no `B_max`, no probe.
-- Start higher: ρ0 ≈ 0.07 (N ≈ 98). That gives ρ ≈ 0.057 at commit 100, 0.045 at 300, 0.030 at 880, where
-  Φ ≈ 2.3 instead of 3.0.
-- Keep N fixed; don't shrink it as ρ falls.
+- Start higher: ρ0 ≈ 0.07 with a fixed N ≈ 98. That gives ρ ≈ 0.057 at commit 100, 0.045 at 300 and 0.030 at
+  880, where Φ ≈ 2.3 instead of 3.0.
 - **Side effect:** Φ = 3 now takes 8/ρ0² ≈ 1,600 commits, so the Φ rail stops being the stop. Stop on the
   stall rule (fix the streak reset first) plus a commit cap.
 
-**Alternatives considered**
-
-| Option | Verdict |
+| Alternative | Verdict |
 |---|---|
 | One step-down (ρ/√2 at Φ = 2) | Works, but a cruder version of ρ0/Φ with an extra threshold |
-| Constant ρ, grow N ∝ Φ² | Better direction per commit; slower commits and Φ still grows. Second arm if ρ0/Φ stalls late |
+| Constant ρ, grow N ∝ Φ² | Better direction per commit; slower commits and Φ still grows. Backup arm |
 | Hold ‖θ_tr‖ fixed (projection or weight decay) | No: adapters are not scale-invariant, and the step never anneals |
 
 **Next test (agnews):** simplified vs simplified + `ρ0/Φ` (ρ0 = 0.07, N = 98), stopping on the fixed stall
 rule with a cap of ~1,000 commits. Compare time to 0.86 and 0.87, the peak, and Φ at the peak.
+
+## 7. Second model: SmolLM2-360M (ported, smoke not yet run)
+
+Every scored run so far is DistilBERT. SmolLM2-360M (a small Llama) with LoRA is ported for a smoke test that
+checks plumbing, not accuracy. What changes:
+
+- `p` = 823,040 trainable (DistilBERT: 450,340). Gradient quality falls as `p` grows, so expect more commits per
+  unit of progress.
+- It runs in **bf16**, set automatically for `model_type=llama`: fp16 overflows and the loss is NaN.
+- The FD nudge size works out the same as DistilBERT's (chord 0.51), so no FD flag changes.
+
+How to run it, what to read and what to do next: [fl_fwd_ft_smollm2_smoke_plan.md](fl_fwd_ft_smollm2_smoke_plan.md).

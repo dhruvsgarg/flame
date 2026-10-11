@@ -5,7 +5,7 @@ Dense reference for an AI assistant. Human-readable version with diagrams:
 
 **Authority:** the four-doc corpus (`fl_fwd_ft_solution.md`, `practice`, `buildplan`, `writeup`) wins over this
 file. Scope: the live loop only. Evidence base: one model (DistilBERT + adapters), three datasets; `rf`=64 broke
-law C. Session notes: [fl_fwd_ft_aishwwarya_session_2026-10-01.md](fl_fwd_ft_aishwwarya_session_2026-10-01.md).
+law C. SmolLM2 port: §9 (not yet run). Session notes: [fl_fwd_ft_aishwwarya_session_2026-10-01.md](fl_fwd_ft_aishwwarya_session_2026-10-01.md).
 
 ## 1. Loop (baseline, code order)
 
@@ -160,26 +160,33 @@ Setup: rf=16, `p`=450,340, `s`=1.5, P=10 (mean), C=30, K=10, 100 trainers.
 - Simplified: `N_req` = 50.0, `n_eff` 49–51 (unused); ρ = 0.0499 flat. `‖Δθ_tr‖_t = ρ·‖θ_0‖·(1+ρ²)^{(t−1)/2}`
   ≈ 0.667 → 2.00, telemetry within 0.16% on 881 commits; angular step ≈ ρ rad, so constant ρ = no anneal.
 - Returns: +15–19 pts per 0.1 Φ at Φ 1.1–1.2; < 0.5 past Φ 1.8; ≈ 0 past Φ 2.2.
-- Overshoot (simplified): peak Φ 2.59 (0.8724) → 0.8660 at the Φ=3 rail (eval noise ±0.005). Stall streak hit
-  9/20 at c741, reset by one noisy eval (c761, 0.8737), reached only 7 more before the rail.
-- Untested idea: decay the stall streak instead of zeroing it (or widen the window); would stop at ~c750–760,
-  ~120 commits (~14 min) earlier.
+- Overshoot (simplified): smoothed peak 0.8726 at c791 (Φ 2.68) → 0.866 at the Φ=3 rail (eval noise ±0.005).
+  Stall streak hit 9/20 at c741, reset by one noisy eval (c761, 0.8737), reached only 7 more before the rail.
 
 ## 8. Proposal: ρ_t = ρ0/Φ_t (untested)
 
-Evidence (agnews, both arms): cos(θ_tr, Δθ_tr) |·| < 0.0006 on every commit ⇒ ‖θ_t‖² = ‖θ_{t−1}‖²(1+ρ²) exactly;
-`cos_ground_truth` ≈ 0.003 ⇒ Φ growth is noise. Commits per accuracy band, baseline (mean ρ) vs simplified (0.050):
-0.80→0.84 129 (0.040) vs 76; 0.84→0.86 176 (0.046) vs 194; 0.86→0.87 234 (0.047) vs 214. Early, progress ∝ ρ;
-late, it is insensitive to ρ ⇒ late ρ buys only Φ. One run per arm, ±0.005 eval noise.
+Rationale, settings and alternatives: cheatsheet §6; evidence: session §8. Code-level only here:
 
-- Schedule: `ρ_t = ρ0·θ0_norm/_tn` (constant `‖Δθ_tr‖`). Closed form `Φ_t = √(1+t·ρ0²)`; flat for ~1/ρ0²
-  commits, then ∝ 1/√t. Differs from `rm` (ρ*·t^−0.5), which decays from t=1.
-- Settings: ρ0 ≈ 0.07, N fixed ≈ 98 (`p·(ρ0/s)²/P`). Predicted ρ 0.057 / 0.045 / 0.030 at t = 100 / 300 / 880;
-  Φ(880) ≈ 2.3. Don't couple N ∝ ρ² (gate's `s` is ~10× off: ρ/cos 14–20 vs 1.5).
-- Stop: Φ=3 needs 8/ρ0² ≈ 1,600 commits, so the Φ rail is no longer the stop. Use stall (streak decay, not
-  reset) + commit cap.
+- Schedule: `ρ_t = ρ0·θ0_norm/_tn` (constant `‖Δθ_tr‖`), valid because |cos(θ_tr, Δθ_tr)| < 0.0006 on every
+  commit. Differs from `rm` (ρ*·t^−0.5), which decays from t=1.
+- N fixed ≈ 98 = `p·(ρ0/s)²/P` at ρ0 0.07. Don't couple N ∝ ρ²: the gate's `s` is ~10× off (ρ/cos 14–20 vs 1.5).
 - Code: new branch in `A._rho_star_now` (or a new `rho_schedule` value); `_tn` is available from pass 1;
-  `theta_tr_norm_init` is already in `run_meta`.
-- Rejected: single step-down at Φ=2 (cruder, extra threshold); norm projection / weight decay (adapters not
-  scale-invariant, no anneal). Backup arm: constant ρ with N ∝ Φ².
-- Test: simplified vs simplified + ρ0/Φ (ρ0 0.07, N 98), cap ~1,000; compare time to 0.86 / 0.87, peak, Φ at peak.
+  `theta_tr_norm_init` is already in `run_meta`. Stop on stall (streak decay, not reset) + commit cap.
+
+## 9. Second model: SmolLM2-360M + LoRA (ported 2026-10-10, smoke not run)
+
+Measurements and runbook: [fl_fwd_ft_smollm2_smoke_plan.md](fl_fwd_ft_smollm2_smoke_plan.md). `model_type=llama`,
+`model_name=HuggingFaceTB/SmolLM2-360M`, `peft_method=lora` (r=8, α=16, q,v; `rf` ignored). Code-level facts:
+
+- `p`=823,040 (LoRA 819,200 + `score` 960·4, no bias). ‖θ_tr‖0=13.13; ‖θ‖/√p 0.0145, not 0.0197, because
+  `lora_B`=0. Chord ON 0.511 ⇒ keep `FWDLLM_FD_SCALE_INVARIANT=1` (h=0.0074).
+- `lora_A` grad ≡ 0 at init (B=0) ⇒ about half of `p` carries zero signal early, lowering cos below √(n/p).
+- fp16 autocast ⇒ NaN loss. `create_model` sets `FWDLLM_AMP_DTYPE=bf16`; `U.amp_dtype()` feeds the 3 JVP
+  autocasts and the trainer loop; `F` eval reads the env directly. `FWDLLM_JVP_FP32=1` still overrides the JVP.
+- Tokens: pad = cls = sep = EOS (id 0), so the converter emits `[EOS] text [EOS] pad…`. The model pools the
+  rightmost non-pad token (the last text token). The trainer passes `input_ids` only, with no attention mask;
+  padding is on the right, so the causal mask keeps real tokens from seeing it.
+- Trainer `layer_id_for_check`=16 (the layers.1 q `lora_B`; it indexes all params, frozen included).
+  `dsreg.ADAPTER_P_BY_MODEL["llama"]={16: 819200}`, `_NO_HEAD_BIAS`. `HIDDEN_SIZE` 960 is SmolLM2-specific, so a
+  1B Llama needs its own row.
+- `learning_rate` is inert under `trust_ratio`. The sim profile is still DistilBERT's.
