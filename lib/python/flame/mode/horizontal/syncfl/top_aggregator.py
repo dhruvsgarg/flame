@@ -430,6 +430,41 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             return None
         return max(cache[e] for e in ends) + self._SIM_RECV_MARGIN_S
 
+    def _sim_barrier_recv(self, channel, ends):
+        """One pass bounded by known delays, then up to the task timeout for picks owing a reply (FX-D138)."""
+        answered = self.__dict__.setdefault("_sim_answered_sst", {})  # end -> dispatch stamp its last reply answered (L4)
+        gave_up = self.__dict__.setdefault("_sim_barrier_gave_up", set())
+
+        def _take(md):
+            answered[md[0]] = channel.get_end_property(md[0], PROP_SIM_SEND_TS)
+            gave_up.discard(md[0])
+
+        for msg, md in channel.recv_fifo(ends, first_k=len(ends), timeout=self._sim_recv_timeout_s(ends)):
+            if not msg:
+                break
+            _take(md)
+            yield msg, md
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        if str(getattr(hp, "sim_barrier_awaits_picks", True)).lower() != "true":
+            return
+
+        def _owed():
+            return [e for e in ends if channel.has(e) and channel.get_end_property(e, PROP_SIM_SEND_TS) is not None
+                    and answered.get(e) != channel.get_end_property(e, PROP_SIM_SEND_TS)]
+
+        owed = _owed()
+        if not owed:
+            return
+        for msg, md in channel.recv_fifo(owed, first_k=len(owed), timeout=self._task_timeout_s()):
+            if not msg:
+                break
+            _take(md)
+            yield msg, md
+        if _owed():  # _sim_owed_replies stops holding the vclock for it
+            gave_up.update(_owed())
+            logger.warning(f"[SIM_BARRIER_FAILSAFE] round={getattr(self, '_round', -1)} "
+                           f"no reply from {[e[-4:] for e in _owed()]} within the task timeout")
+
     def _sim_gate_is_safe(self, bmin, inflight_items) -> bool:
         """True iff buffered minimum `bmin` is safe to commit now, using only
         already-known state (no real-time wait needed).
@@ -495,11 +530,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         barrier_t0 = time.time()
         drained_all = True
         if ends:
-            # Exact per-end bound, or None to genuinely block.
-            timeout = self._sim_recv_timeout_s(ends)
-            for msg, md in channel.recv_fifo(ends, first_k=len(ends), timeout=timeout):
-                if not msg:  # no more ready (bound expired or set drained)
-                    break
+            for msg, md in self._sim_barrier_recv(channel, ends):
                 end = md[0]
                 self._note_sim_known_delay(end, msg)
                 sct = msg.get(MessageType.SIM_COMPLETION_TS)

@@ -72,7 +72,8 @@ A new failure mode adds a check here in the same session.
 | PL10 | stall rules never cut a leg matching its sim | compare STALLED real with sim timeline | run 18 oort cut pre-round 1 |
 | PL11 | every sim leg has a charge profile for its harness × dataset × stack | no `no profiled sim charges` WARNING in the leg's `shell.log` | FX-N71: tiny_cpu ran a 0.6 s placeholder |
 | PL12 | co-located pools share the node by leases (R24); size each pool's lease to its real use | GPU pool `--gpu-cpus-per-trainer 0.1` beside a CPU tier; watch `LOAD foreign` and `INTERFERENCE` | N86: G0U leased 112 CPUs using ~3, T3 idle 45 min |
-| PL13 | no leg starts without the host RAM it needs, idle pool or not | automatic (`ram_blocks`, FX-D131); `RAM_TIGHT` in a DONE line = rerun its neighbours | PR28: G5 at 285 of 398 GB OOM-killed 3 legs |
+| PL13 | no leg starts without the host RAM it needs, idle pool or not | automatic (`ram_blocks` + node-wide `ram_*` ledger, FX-D131/D136); `RAM_TIGHT` in a DONE line = rerun its neighbours | PR28: G5 at 285 of 398 GB OOM-killed 3 legs; PR29: 398 + 222 GB co-ran |
+| PL14 | measured RAM within estimate, no growth | DONE lines / runner probe `RAM_OVER`, `LEAK?`; `resource_report.py <pool>` (FX-D140) | PR29 OOMs on formula estimates |
 
 ## Method
 
@@ -130,6 +131,8 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 | FX-N80 step 2 (FX-D104-105) | 10-09 | 2508 / 0 | 17 | 105 | T3 37/0/3 (Oort family) · G0U oort NaN abort | 4 / 12 |
 | N88 + FX-D106-D120 | 10-09 | 2529 / 0 | 17 | 120 | T3 10/0/4 · G0U 8/0/6 (stored runs, FX-D119 regrade) | 4 / 12 |
 | PR28 + FX-D127-D131 | 10-10 | 2551 / 0 | 17 | 131 | T3 37/0/7 · G0U syn_50 9/0/3 · mobiperf 5/0/3 · G0T 13/0/3 · P11 6/6 CAUGHT · speech P7 0/6 (FX-N86) | 4 / 12 (+ cifar oort_star sim) |
+| PR29 + FX-D136 | 10-10 | 2560 / 0 | 17 | 136 | T3/G0U/G0T regrade: **51 / 76** (60 tested); 9 reds (3 timing borderline) | 5 / 12 |
+| PR29 rooted + FX-D137-D140 | 10-11 | 2572 / 0 | 17 | 140 | regrade **52 / 76**; 9 reds: 3 fixed (D137/D138), 3 OOM/false-positive (D136), 2 chaos, 1 checker (D139, cleared) | 5 / 12 |
 
 **Readiness score** (`scripts/readiness_score.py <pools>`): parity cells green / applicable, worst pair wins; untested counts as not green.
 
@@ -137,13 +140,15 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 |---|---|---|---|
 | PR28 (`d6186ddf7`) | **41 / 82** (64 tested) | 12/12 · 9/12 · 6/12 · 5/10 · 2/12 · 3/12 · 4/12 | 5 / 12 |
 | PR28 rescored, speech P7 n/a (FX-D135) | **41 / 76** (58 tested) | 12/12 · 9/12 · 6/12 · 5/10 · 2/12 · 3/12 · 4/6 | 5 / 12 |
+| PR29 over PR28 (later pool supersedes a pair; FX-D136) | **51 / 76** (60 tested, 16 = PR30) | 12/12 · 12/12 · 7/12 · 7/10 · 3/12 · 4/12 · 6/6 | 5 / 12 |
+| same pools, FX-D139 regrade | **52 / 76** | 12/12 · 12/12 · 8/12 · 7/10 · 3/12 · 4/12 · 6/6 | 5 / 12 |
 
 **Path to full score (76 cells; operator 10-10).** Each step regrades its pools and rewrites the row above (C5).
 
 | step | cells | what | done when |
 |---|---|---|---|
-| PR29 (`run_pr29.py`, ~4.6 h) | 17 red + 2 untested | reruns every red but speech P7: fix confirms (FX-D129/D130, clip) or same-code T3C/G0UC/G0TC floor; cifar Oort G0U mobiperf | best case 60 / 76 |
-| fix loop | PR29 residue | a timing red above its same-code floor is a mechanism: root, fix, re-screen that cell only (C2) | 0 red above floor |
+| PR29 (`run_pr29.py`, done 10-10, 9 h not 4.6 h) | 17 red + 2 untested | 52 / 76 after rooting (FELIX "PR29 results"): FX-D136-D139 | — |
+| PR29b (`run_pr29b.py`, ~2.7 h) | 7 red | confirms FX-D136-D138 + re-screens fedbuff/feddance/Oort; chaos cells need n >= 3 floors | 0 red above floor |
 | PR30 (`run_pr30.py`, ~10.5 h) | 16 untested | speech G0T all six (replaces P7) + cifar/speech Oort `G0T_*s` (FX-L63), each with G0TC floor | 76 / 76 |
 | then | — | long runs (PR21: G1A accuracy, G1U, G0T full grid), C0.5 | accuracy 12 / 12 |
 
@@ -153,15 +158,15 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 |---|---|---|---|---|
 | felix | cifar | ✅ G1A 67/67 (run 16); T3 + P7 ✅ (PR28) | ✅ T3, G0U syn_50, G0U mobiperf (PR28) | ✅ 57 / 60 min |
 | felix | speech | 🟡 G1A timing reds (run 18; FX-N70); T3 ✅ (PR28) | ✅ T3, G0U syn_50 + mobiperf (PR28) | ✅ 72 / 72 min |
-| fedbuff | cifar | ✅ G1A 66/66 (run 17); T3 ✅ | ✅ T3; 🟡 G0U syn_50 7.8% (< floor 0.18); 🔴 G0U mobiperf 12.7% (> floor 0.07, FX-N85 s6) | ❌ (FX-D73 sim 56%) |
+| fedbuff | cifar | ✅ G1A 66/66 (run 17); T3 ✅ | ✅ T3; ✅ G0U syn_50 (PR29); 🔴 G0U mobiperf, G0T lin syn_50 → FX-D137 (PR29b) | ❌ (FX-D73 sim 56%) |
 | fedbuff | speech | 🟡 G1A timing reds (run 18); T3 ✅ | ✅ T3, G0U syn_50 + mobiperf (PR28) | ✅ 82 / 88 min |
 | refl | cifar | ✅ G1A 68/68 (run 17); T3 ✅ | ✅ T3, G0U syn_50 + mobiperf (PR28) | ❌ sim 29.5% @90 rising (PR28) |
 | refl | speech | ✅ G1A; T3 ✅ | ✅ G0U syn_50 + mobiperf; 🟡 T3 syn_50 throughput 8.5% (no floor) | ❌ round-bound @90 (FX-N74) |
-| oort | cifar | ✅ G2 (L7); T3 syn_0s ✅ | 🔴 T3 syn_50s real EV17 + coverage → FX-D129 (PR29); ✅ G0U syn_50s clip (B1); mobiperf clip terminal_state only | 🟡 sim 43.7% @30 (OOM-cut) |
+| oort | cifar | ✅ G2 (L7); T3 syn_0s ✅ | ✅ T3 syn_50s (PR29, FX-D139 regrade), G0U syn_50s + mobiperf_3sts clip (PR29 B1) | 🟡 sim 43.7% @30 (OOM-cut) |
 | oort | speech | 🟡 G1A throughput 8.1% (FX-N76); T3 ✅ | ✅ T3 syn_20s/50s, G0U syn_50s (PR28) | ❌ round-bound @90 |
 | oort_star | cifar | ✅ L6 G0; T3 ✅ | 🟡 T3 syn_20s/50s terminal_state (FX-D129 class); ✅ G0U syn_50s clip (B1) | 🟡 sim **50.8% at 82 min** |
 | oort_star | speech | ✅ L6 G0; T3 ✅ | ✅ G0U syn_50s; 🟡 T3 syn_20s timing 11% (floor, FX-L53) | ❌ round-bound @90 |
-| feddance | cifar | ✅ G2 on sim↔sim floor; T3 + P7 ✅ (PR28) | 🟡 T3 syn_50 17% (near-tie picks), G0U 10% (< 0.13), mobiperf 13.6% (< 0.56) | ❌ sim 18.5% (FX-D127-cut) |
+| feddance | cifar | ✅ G2 on sim↔sim floor; T3 + P7 ✅ (PR28) | 🔴 T3 syn_50 → FX-D138 (PR29b); ✅ G0U syn_50 + mobiperf (PR29) | ❌ sim 18.5% (FX-D127-cut) |
 | feddance | speech | ✅ G1A 1.0 (run 18); T3 ✅ | 🔴 G0U syn_50 sim EV16 → FX-D130 (PR29); G0UC floor clears terminal_state | ❌ round-bound @90 |
 
 refl, oort, oort_star, feddance G1A cells predate FX-D100/D104/D105: void for accuracy; PR28 G1AS sims are their source-faithful numbers.
@@ -204,7 +209,13 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR29 · ready 10-10 (smoke `pool_smoke_pr29` green, clip reaches trainers; operator launches; ~4.6 h on jayne, tmux `dg_flame`):** `cd lib/python/examples && $PY scripts/run_pr29.py --plan --hours 6
+- **PR29b · ready (smoke `pool_smoke_pr29b` green; operator launches; ~2.7 h on jayne, tmux `dg_flame`):** `cd lib/python/examples && $PY scripts/run_pr29b.py
+  --plan --hours 6 && $PY scripts/run_pr29b.py --hours 6`. Stages and claims: `run_pr29b.py`. C19: *Claim:* FX-D136-D138 close PR29's 7 open reds.
+  *Unknowns:* cluster behaviour of the fixes; measured RAM per leg kind (first ledgers). *Confirms:* reals EV0 PASS with no `RAM_OVER`; cifar fedbuff
+  G0U mobiperf + G0T lin syn_50 and cifar feddance T3 syn_50 throughput within same-batch floors; speech feddance G0U syn_50 graded; no sim cell
+  that was green turns red. *Refutes:* any of those persists, or a re-screened green cell turns red (then FX-D137/D138 perturbed it: root first).
+  Read: regrade every `pool_<ts>_PR29b_*`, `readiness_score.py` (PR28, PR29, PR29b pools oldest first), `resource_report.py` per pool.
+- **PR29 · done 10-10 (`experiments/pr29_20261010_1606`; FELIX "PR29 results"). Was: ready (smoke `pool_smoke_pr29` green, clip reaches trainers; operator launches; ~4.6 h on jayne, tmux `dg_flame`):** `cd lib/python/examples && $PY scripts/run_pr29.py --plan --hours 6
   && $PY scripts/run_pr29.py --hours 6` (`$PY` = dg_flame python). Stages and claims: `run_pr29.py`; B2 now packs G0TC floors. C19:
   *Claim:* FX-D127-D130 + cifar Oort clip close PR28's EV reds and wait-K sim slowness; same-batch replicate floors decide the 15 timing reds.
   *Confirms:* G3/G4 feddance sims sim_rate > 1, EV12 PASS, one eval per eval round; C1 cifar Oort real EV17 PASS, coverage ~1, CLIP probe

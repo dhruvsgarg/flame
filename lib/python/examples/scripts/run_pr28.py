@@ -214,6 +214,12 @@ def probe(out: Path, pools: dict) -> list:
         for bad in ("ABORT.txt", "STALLED.txt", "DOOMED.txt"):
             if (pool / bad).exists():
                 lines.append(f"probe {sid} FAIL: {bad}: {(pool / bad).read_text()[:200].strip()}")
+        plog = pool / "pool.log"
+        if plog.exists():  # FX-D140: measured RAM over estimate or still climbing
+            flagged = [ln.split()[3] for ln in plog.read_text(errors="replace").splitlines()
+                       if " DONE " in f" {ln} " and ("RAM_OVER" in ln or "LEAK?" in ln) and len(ln.split()) > 3]
+            if flagged:
+                lines.append(f"probe {sid} RAM: RAM_OVER/LEAK? in {flagged[:8]} (resource_report.py {pool})")
         summ = pool / "SUMMARY.txt"
         if summ.exists():  # cell table = lines after the 'phase trace baseline ev_real ev_sim parity ...' header, to the first blank
             body = summ.read_text().splitlines()

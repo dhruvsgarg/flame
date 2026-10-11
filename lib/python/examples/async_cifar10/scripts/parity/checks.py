@@ -2994,11 +2994,13 @@ def _stall_s_to_n(agg_rounds: list, prog_fn, N, time_fn, real: dict, sim: dict) 
 
 
 def _few_free_note(real: dict, sim: dict, real_adv: list, sim_adv: list) -> Optional[str]:
-    """FX-D119: a side with no stall-free round has no stall-free time; the note says so, else None."""
+    """FX-D119: too few stall-free rounds = no gradeable stall-free time; the note says so, else None.
+    FX-D139: same bar as throughput, min(10, rounds)."""
     if not _round_axis(real, sim) or not real_adv or not sim_adv:
         return None
     probe: dict = {}
-    _skip_if_few_free(probe, _stall_free(real_adv, real, sim), _stall_free(sim_adv, real, sim), 1)
+    _skip_if_few_free(probe, _stall_free(real_adv, real, sim), _stall_free(sim_adv, real, sim),
+                      min(len(real_adv), len(sim_adv)))
     return probe.get("note")
 
 

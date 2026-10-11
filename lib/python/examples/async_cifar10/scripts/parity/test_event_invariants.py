@@ -372,6 +372,18 @@ def test_ev16_delivery_at_budget_commits_at_final_round_passes(tmp_path, monkeyp
     assert _status(_write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 50}), "EV16_withheld_delivery") == "PASS"
 
 
+def test_ev16_sync_delivery_awaiting_unlogged_close_passes(tmp_path, monkeypatch):
+    # FX-D136: a sync delivery joins the open round; its close is not logged yet in a live prefix or a cut final round.
+    _unavail_T1(monkeypatch)
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round":
+            agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
+                        "delivery_ts": 50.0, "actual_commit_ts": 500.0})
+    run = _write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 1000}, optimizer="oort")
+    assert _status(run, "EV16_withheld_delivery") == "PASS"
+
+
 def _gated_real_run(tmp_path, dispatch_ends):
     # T1's update sits behind its send-gate over ts 10-20; a sync selection at 15 still lists it in flight.
     agg = [{"event": "selection", "task": "train", "ts": 15.0, "chosen": [T1, T2]}]

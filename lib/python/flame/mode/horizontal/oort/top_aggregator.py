@@ -94,13 +94,7 @@ class TopAggregator(BaseTopAggregator):
         barrier_t0 = time.time()
         drained_all = True
         if to_probe:
-            # Exact per-end bound, or None to genuinely block.
-            timeout = self._sim_recv_timeout_s(to_probe)
-            for msg, md in channel.recv_fifo(
-                to_probe, first_k=len(to_probe), timeout=timeout
-            ):
-                if not msg:  # no more ready (bound expired or set drained)
-                    break
+            for msg, md in self._sim_barrier_recv(channel, to_probe):
                 actual_end = md[0]
                 self._note_sim_known_delay(actual_end, msg)
                 sct = msg.get(MessageType.SIM_COMPLETION_TS)

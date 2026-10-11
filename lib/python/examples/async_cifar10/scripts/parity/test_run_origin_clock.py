@@ -74,3 +74,12 @@ def test_short_stall_round_saves_no_time():
     from parity.checks import _RoundAdv, _stall_excess_s
     adv = [_RoundAdv(50.0), _RoundAdv(50.0), _RoundAdv(20.0, "gated"), _RoundAdv(150.0, "abandon")]
     assert _stall_excess_s(adv, 72.0) == 100.0
+
+
+def test_one_stall_free_round_skips_like_throughput():
+    """FX-D139: 1 stall-free round of 13 graded overlap_factor while throughput SKIPped (PR29 C1 cifar oort syn_50s)."""
+    from parity.checks import _RoundAdv, _few_free_note
+    real = {"agg_rounds": [{"round": 1, "ts": 0.0}], "selection_train": [{"round": 1, "ts": 0.0}]}
+    adv = [_RoundAdv(150.0, "abandon")] * 12 + [_RoundAdv(4.0)]
+    assert "1 stall-free rounds < 10" in (_few_free_note(real, real, adv, adv) or "")
+    assert _few_free_note(real, real, [_RoundAdv(4.0)] * 12, [_RoundAdv(4.0)] * 12) is None

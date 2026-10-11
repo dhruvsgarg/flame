@@ -3,6 +3,7 @@
 """FX-N22 P4: harness_pool.py pure parts (delta map, slot sizing, packing, sharding) + the real bank."""
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -269,6 +270,15 @@ def test_leases_keep_two_pools_off_one_slot(tmp_path):
     assert b.take_all(pool.slot_leases([9, 17], [4]))
 
 
+def test_ram_reservations_span_pools(tmp_path):
+    # FX-D136: PR29 C3 speech Oort reals hit 504/504 GB: two pools each saw free RAM before the other's leg ramped.
+    a, b = pool.Leases(tmp_path), pool.Leases(tmp_path)
+    a.reserve_ram("ram_1_G4", 398.0)
+    assert b.reserved_gb() == 398.0
+    a.drop(["ram_1_G4"])
+    assert b.reserved_gb() == 0.0
+
+
 def test_oort_mobiperf_legs_run_long_enough_to_commit():
     # Run 4: unaware oort committed 0 updates in 240s on mobiperf_3st (both datasets); nothing graded.
     ph = pool.shaped("P3", ("oort", "felix"), "mobiperf_3st", "pair", "cifar10")
@@ -359,3 +369,48 @@ def test_doomed_leg_kills_itself_and_pair_partner_not_others(tmp_path, monkeypat
     assert sorted(killed) == [1, 2]
     assert running["a_sim"].stalled.startswith("DOOMED EV14") and running["a_real"].stalled == "DOOMED partner a_sim"
     assert not running["b_sim"].stalled and (tmp_path / "DOOMED.txt").read_text().count("\n") == 2
+
+
+def test_ram_growth_flags_a_climbing_leg_not_a_steady_one():
+    # FX-D140: second-half least-squares growth; a ramp-then-flat leg reads ~0, a leak keeps climbing.
+    flat = [(t, min(t, 50.0)) for t in range(0, 200, 10)]
+    leak = [(t, t / 10) for t in range(0, 200, 10)]
+    assert abs(pool.ram_growth_gb(flat)) < 1e-6 and not pool.leak_suspect(50.0, pool.ram_growth_gb(flat))
+    assert pool.leak_suspect(19.0, pool.ram_growth_gb(leak))
+
+
+def test_mem_estimate_never_below_measured_peak():
+    # FX-D140: PR29 reals OOM-killed at 504/504 GB on formula estimates; the measured peak raises the next one.
+    j = pool.Job("x_real", "P", "syn_0", "felix", "real", [], 10, 60, "none", 4, 21.0)
+    assert pool.mem_estimate_gb(j, {}) == 21.0
+    assert pool.mem_estimate_gb(j, {pool.ram_key(j): [30.0]}) == pytest.approx(30.0 * pool.RAM_PROFILE_X)
+    assert pool.mem_estimate_gb(j, {pool.ram_key(j): [5.0]}) == 21.0
+
+
+def test_resource_ledger_samples_a_tagged_leg(tmp_path, monkeypatch):
+    # FX-D140: a live sample attributes this process (tagged) to its leg; the report reads start/sample/end.
+    resource_report = _load("resource_report")
+    tag = "fxd140test"
+    monkeypatch.setattr(pool, "pids_by_tag", lambda tags: {tag: [os.getpid()]})
+    monkeypatch.setattr(pool, "gpu_mib_by_pid", lambda: {})
+    monkeypatch.setattr(pool, "_gpu_query", lambda: [])
+    led = pool.ResourceLedger(tmp_path / "resources.jsonl")
+    r = pool.Running(pool.Job("x_real", "P", "syn_0", "felix", "real", [], 1, 60, "none", 4, 21.0),
+                     None, [0], [], 0, tag, 0.0, tmp_path)
+    led.event("start", jid="x_real", n=1, mem_est_gb=21.0)
+    led.sample({"x_real": r}, pool.Leases(tmp_path / "leases"))
+    assert r.ram and r.ram[0][1] > 0
+    led.event("end", jid="x_real", rc=0, dur_s=1, mem_est_gb=21.0, ram_peak_gb=r.ram[0][1], ram_growth_gb=0.0,
+              gpu_peak_gb=0.0, cores_p95=0.0)
+    table = resource_report.legs_table(resource_report.load([tmp_path]))
+    assert "| x_real | 1 | 21 |" in table and "RAM_OVER" not in table
+
+
+def test_proc_role_reads_the_script_not_the_inline_config(tmp_path, monkeypatch):
+    # FX-D140: trainers pass their config inline (--config-json '{..."aggregator"...}'); the smoke filed all their RAM under agg.
+    argv = {1: [b"python", b"/x/trainer/pytorch/main.py", b"--config-json", b'{"role": "aggregator"}'],
+            2: [b"python", b"/x/aggregator/pytorch/main_felix.py", b"cfg.json"], 3: [b"mosquitto", b"-c", b"m.conf"]}
+    real_read = pool.Path.read_bytes
+    monkeypatch.setattr(pool.Path, "read_bytes", lambda self: b"\0".join(argv[int(self.parent.name)])
+                        if self.name == "cmdline" else real_read(self))
+    assert [pool.proc_role(i) for i in (1, 2, 3)] == ["trainer", "agg", "broker"]

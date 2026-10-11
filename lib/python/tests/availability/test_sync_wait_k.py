@@ -244,3 +244,26 @@ def test_real_recv_stops_once_nothing_awaited():
     assert [m[1][0] for m in agg._real_recv_until_awaited(recv(), ["b"])] == ["b"] and closed
     agg.config.hyperparameters.real_recv_until_awaited = False
     assert len(list(agg._real_recv_until_awaited(recv(), ["b"]))) == 2
+
+
+def test_sim_wait_holds_for_an_unanswered_dispatch():
+    # FX-D138 (PR29 G2 cifar feddance G0U syn_50): 0412's fresh reply (sct 532.6) was never probed; wait-K jumped to 600.
+    agg, ch = _Agg(now=20.0), _Channel(["a", "b", "c"])
+    ch.dispatch("b", 3, 15.0)
+    agg._vclock = SimpleNamespace(now=20.0, advance=lambda t: setattr(agg._vclock, "now", max(agg._vclock.now, t)))
+    agg._sim_answered_sst = {"b": 5.0}                   # b's last reply answered an older dispatch
+    agg._sim_sync_wait(ch)
+    assert agg._vclock.now == 20.0
+    agg._sim_answered_sst["b"] = 15.0                    # reply received
+    agg._sim_sync_wait(ch)
+    assert agg._vclock.now > 20.0
+
+
+def test_sim_wait_hold_gives_up_after_task_timeout():
+    agg, ch = _Agg(now=20.0), _Channel(["a", "b", "c"])
+    ch.dispatch("b", 3, 15.0)
+    agg._vclock = SimpleNamespace(now=20.0, advance=lambda t: setattr(agg._vclock, "now", max(agg._vclock.now, t)))
+    agg._sim_answered_sst = {}
+    agg._sim_hold = (["b"], 0.0)                         # held since the epoch: past the task timeout
+    agg._sim_sync_wait(ch)
+    assert agg._vclock.now > 20.0 and "b" in agg._sim_barrier_gave_up

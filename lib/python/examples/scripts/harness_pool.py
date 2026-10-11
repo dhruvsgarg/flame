@@ -447,6 +447,7 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
     size_gpu_slots(jobs, history, gpu_per_trainer)
     for j in jobs:
         j.est_s = estimate_s(j, history)
+        j.mem_gb = mem_estimate_gb(j, history)
     return jobs
 
 
@@ -699,6 +700,28 @@ class Leases:
         return out
 
 
+    def reserve_ram(self, name: str, gb: float) -> None:
+        """FX-D136: a running leg's RAM budget, visible to every pool (a leg's footprint ramps, so free RAM at its start lies)."""
+        if self.take(name):
+            os.ftruncate(self.held[name], 0)
+            os.write(self.held[name], f"{gb:.1f}".encode())
+
+    def reserved_gb(self) -> float:
+        """Sum of live RAM reservations across pools (a lockable file is a dead pool's)."""
+        tot = 0.0
+        for f in self.root.glob("ram_*"):
+            fd = os.open(f, os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                try:
+                    tot += float(os.pread(fd, 32, 0) or 0)
+                except ValueError:
+                    pass
+            os.close(fd)
+        return tot
+
+
 def slot_leases(cpus: List[int], gpus: List[int], port: Optional[int] = None) -> List[str]:
     return [f"cpu{c}" for c in cpus] + [f"gpu{g}" for g in gpus] + ([f"port{port}"] if port else [])
 
@@ -754,6 +777,125 @@ def kill_tag(tag: str, sig=signal.SIGKILL) -> None:
             pass
 
 
+# ---------------------------------------------------------------- resource ledger (FX-D140)
+RES_SAMPLE_TICKS = 15  # loop ticks (2 s) between ledger samples: 30 s
+RAM_PROFILE_X = 1.15   # a leg's next RAM estimate >= this x its measured peak
+
+
+def ram_key(j: "Job") -> str:
+    return "ram|" + j.key
+
+
+def mem_estimate_gb(j: "Job", history: dict) -> float:
+    """FX-D140: the formula, raised to the measured peak of this leg kind's last runs (never lowered)."""
+    past = history.get(ram_key(j), [])
+    return max(j.mem_gb, RAM_PROFILE_X * max(past[-3:])) if past else j.mem_gb
+
+
+def pids_by_tag(tags) -> Dict[str, List[int]]:
+    """One /proc scan: {tag: pids carrying FLAME_RUN_TAG=<tag>}."""
+    want = {f"FLAME_RUN_TAG={t}".encode(): t for t in tags}
+    out: Dict[str, List[int]] = {t: [] for t in tags}
+    uid = os.getuid()
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            if d.stat().st_uid != uid:
+                continue
+            for kv in (d / "environ").read_bytes().split(b"\0"):
+                if kv in want:
+                    out[want[kv]].append(int(d.name))
+                    break
+        except OSError:
+            continue
+    return out
+
+
+def proc_role(pid: int) -> str:
+    try:
+        head = b" ".join(Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[:3])  # program + script, not the inline config
+    except OSError:
+        return "other"
+    return next((r for k, r in ((b"mosquitto", "broker"), (b"/trainer/", "trainer"), (b"/aggregator/", "agg")) if k in head), "other")
+
+
+def proc_mem_gb(pid: int) -> float:
+    """PSS (shared pages split, so a sum over processes is honest); RSS if smaps_rollup is unreadable."""
+    try:
+        for line in open(f"/proc/{pid}/smaps_rollup"):
+            if line.startswith("Pss:"):
+                return int(line.split()[1]) / 1e6
+    except OSError:
+        pass
+    try:
+        return int(open(f"/proc/{pid}/statm").read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1e9
+    except (OSError, IndexError, ValueError):
+        return 0.0
+
+
+def gpu_mib_by_pid() -> Dict[int, float]:
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        return {}
+    res = {}
+    for line in out.splitlines():
+        try:
+            pid, mib = (x.strip() for x in line.split(","))
+            res[int(pid)] = res.get(int(pid), 0.0) + float(mib)
+        except ValueError:
+            continue
+    return res
+
+
+def ram_growth_gb(series: List[tuple]) -> float:
+    """Least-squares RAM growth over a leg's second half (GB); a steady leg reads ~0, a leak keeps climbing."""
+    half = series[len(series) // 2:]
+    if len(half) < 4:
+        return 0.0
+    ts, ys = [t for t, _ in half], [y for _, y in half]
+    mt, my = sum(ts) / len(ts), sum(ys) / len(ys)
+    var = sum((t - mt) ** 2 for t in ts)
+    return 0.0 if var <= 0 else sum((t - mt) * (y - my) for t, y in zip(ts, ys)) / var * (ts[-1] - ts[0])
+
+
+def leak_suspect(peak_gb: float, growth_gb: float) -> bool:
+    return growth_gb > max(1.0, 0.1 * peak_gb)
+
+
+class ResourceLedger:
+    """FX-D140: `<pool>/resources.jsonl` — leg start/end events and 30 s samples of node RAM/CPU/GPU and each running
+    leg's PSS by role and GPU memory; `resource_report.py` reads it (profiles, leak suspects, packing)."""
+
+    def __init__(self, path: Path):
+        self.f = open(path, "a", buffering=1)
+
+    def event(self, ev: str, **kw) -> None:
+        self.f.write(json.dumps({"t": round(time.time(), 1), "ev": ev, **kw}) + "\n")
+
+    def sample(self, running: Dict[str, "Running"], leases: "Leases") -> None:
+        by_tag = pids_by_tag([r.tag for r in running.values()])
+        gpu = gpu_mib_by_pid()
+        legs = {}
+        for jid, r in running.items():
+            roles: Dict[str, float] = {}
+            pids = by_tag.get(r.tag, [])
+            for pid in pids:
+                role = proc_role(pid)
+                roles[role] = roles.get(role, 0.0) + proc_mem_gb(pid)
+            r.ram.append((time.time(), sum(roles.values())))
+            gpu_gb = sum(gpu.get(pid, 0.0) for pid in pids) / 1024
+            r.gpu_peak_gb = max(r.gpu_peak_gb, gpu_gb)
+            legs[jid] = {"ram_gb": {k: round(v, 2) for k, v in roles.items()}, "gpu_gb": round(gpu_gb, 2),
+                         "cores": round(r.busy[-1], 2) if r.busy else 0.0, "procs": len(pids)}
+        node = {"mem_avail_gb": round(mem_available_gb(), 1), "reserved_gb": round(leases.reserved_gb(), 1),
+                "load1": float(open("/proc/loadavg").read().split()[0]),
+                "gpu_used_gb": {i: round(m / 1024, 1) for i, _, m in _gpu_query()}}
+        self.event("sample", node=node, legs=legs)
+
+
 # ---------------------------------------------------------------- run
 @dataclass
 class Running:
@@ -772,6 +914,8 @@ class Running:
     stalled: str = ""
     stalled_at: float = 0.0
     doom_at: float = 0.0  # last early-exit check
+    ram: List[tuple] = field(default_factory=list)  # (time, GB PSS) per ledger sample (FX-D140)
+    gpu_peak_gb: float = 0.0
 
     def sample(self) -> None:
         self.cpu.update(tag_cpu_s(self.tag))
@@ -914,6 +1058,7 @@ class Pool:
         tick, shown = 0, 0.0
         jobs_tsv = open(self.root / "jobs.tsv", "a")
         jobs_tsv.write("jid\trc\tdur_s\test_s\tcpus\tcores_avg\tcores_p95\tcpu_sat\n")
+        ledger = ResourceLedger(self.root / "resources.jsonl")
 
         def _on_signal(signum, _frm):
             stop["flag"] = True
@@ -939,7 +1084,8 @@ class Pool:
                     if probe is None or time.time() - probe["t"] > 30:  # foreign load, between starts only
                         ours = {c for r in running.values() for c in r.cpus}
                         leased = leases.foreign(node)  # another pool's slots, busy or not yet
-                        probe = {"t": time.time(), "mem": mem_available_gb(),
+                        probe = {"t": time.time(),
+                                 "mem": min(mem_available_gb(), mem_available_gb("MemTotal") - leases.reserved_gb()),
                                  "gpus": busy_gpus() | {int(n[3:]) for n in leased if n.startswith("gpu")},
                                  "cpus": frozenset((busy_cpus() - ours) | {int(n[3:]) for n in leased if n.startswith("cpu")})}
                         note = (sorted(probe["gpus"] & set(gpus_free)), len(probe["cpus"]) // 8 * 8)  # log on change
@@ -948,7 +1094,8 @@ class Pool:
                                      f"{probe['mem']:.0f} GB available")
                             last_note = note
                     usable = [g for g in gpus_free if g not in probe["gpus"]]
-                    if j.gpus > len(usable) or ram_blocks(j.mem_gb, probe["mem"], self.mem_headroom_gb, bool(running)):
+                    if j.gpus > len(usable) or ram_blocks(j.mem_gb, min(probe["mem"], mem_available_gb("MemTotal") - leases.reserved_gb()),
+                                                       self.mem_headroom_gb, bool(running)):
                         continue
                     cpus = cm.alloc(j.cpus, probe["cpus"])
                     if cpus is None:
@@ -961,12 +1108,17 @@ class Pool:
                     for g in gp:
                         gpus_free.remove(g)
                     probe["mem"] -= j.mem_gb
+                    leases.reserve_ram(f"ram_{os.getpid()}_{j.jid}", j.mem_gb)
                     port = free_port(18830, ports, leases)
                     ports.add(port)
                     running[j.jid] = self._launch(j, cpus, gp, port)
+                    ledger.event("start", jid=j.jid, mode=j.mode, baseline=j.baseline, trace=j.trace, dataset=j.dataset,
+                                 harness=j.harness, n=j.n, mem_est_gb=round(j.mem_gb, 1), cpus=len(cpus), gpus=gp)
                     pending.remove(j)
                 time.sleep(2)
                 tick += 1
+                if tick % RES_SAMPLE_TICKS == 0 and running:
+                    ledger.sample(running, leases)
                 for jid, r in list(running.items()):
                     rc = r.proc.poll()
                     if rc is None:
@@ -985,9 +1137,16 @@ class Pool:
                     avg = sum(r.cpu.values()) / max(1.0, dur)
                     p95 = sorted(r.busy)[int(0.95 * (len(r.busy) - 1))] if r.busy else 0.0
                     sat = sum(b >= CPU_SAT_BUSY * len(r.cpus) for b in r.busy) / max(1, len(r.busy))
+                    ram_peak, ram_grow = max((g for _, g in r.ram), default=0.0), ram_growth_gb(r.ram)
+                    ledger.event("end", jid=jid, rc=rc, dur_s=round(dur), mem_est_gb=round(r.job.mem_gb, 1),
+                                 ram_peak_gb=round(ram_peak, 2), ram_growth_gb=round(ram_grow, 2),
+                                 gpu_peak_gb=round(r.gpu_peak_gb, 2), cores_p95=round(p95, 2))
                     self.say(f"DONE  {jid} rc={rc}{(' DOOMED' if r.stalled.startswith('DOOMED') else ' STALLED') if r.stalled else ''} {dur / 60:.1f}m (est {r.job.est_s / 60:.1f}m) "
                              f"cores avg {avg:.1f} p95 {p95:.1f} of {len(r.cpus)}{f' CPU_SAT {sat:.0%}' if sat > 0.05 else ''}"
-                             f"{gpu_peak_note(leg_run_dirs(r.out), r.gpus)}")
+                             f"{gpu_peak_note(leg_run_dirs(r.out), r.gpus)}"
+                             f"{f' leg RAM {ram_peak:.0f}/{r.job.mem_gb:.0f} GB' if ram_peak else ''}"
+                             f"{' RAM_OVER' if ram_peak > r.job.mem_gb else ''}"
+                             f"{f' LEAK? +{ram_grow:.1f} GB 2nd half' if leak_suspect(ram_peak, ram_grow) else ''}")
                     jobs_tsv.write(f"{jid}\t{rc}\t{dur:.0f}\t{r.job.est_s:.0f}\t{len(r.cpus)}\t{avg:.2f}\t{p95:.2f}\t{sat:.3f}\n")
                     jobs_tsv.flush()
                     row = _summary_row(r.out)
@@ -995,8 +1154,10 @@ class Pool:
                         history.setdefault(r.job.key, []).append(round(dur))
                         if r.busy:  # CPU legs too: the ISO control sizes their slots from it (FX-N22)
                             history.setdefault(cores_key(r.job), []).append(round(p95, 2))
+                        if ram_peak and r.job.mode != "grade":  # FX-D140: next estimate >= measured
+                            history.setdefault(ram_key(r.job), []).append(round(ram_peak, 1))
                     cm.release(r.cpus, groups)
-                    leases.drop(slot_leases(r.cpus, r.gpus, r.port))
+                    leases.drop(slot_leases(r.cpus, r.gpus, r.port) + [f"ram_{os.getpid()}_{jid}"])
                     gpus_free += r.gpus
                     ports.discard(r.port)
                     self.done[jid] = r.out
@@ -1024,7 +1185,7 @@ class Pool:
                     except OSError:
                         pass
                     kill_tag(r.tag)
-                    leases.drop(slot_leases(r.cpus, r.gpus, r.port))
+                    leases.drop(slot_leases(r.cpus, r.gpus, r.port) + [f"ram_{os.getpid()}_{r.job.jid}"])
             _save_history(history)
         if stop["flag"]:
             return 130

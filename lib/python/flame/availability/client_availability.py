@@ -927,8 +927,27 @@ class ClientAvailability:
             cands.append(nxt)
         return min(cands) if cands else None
 
+    def _sim_owed_replies(self, channel) -> list:
+        """FX-D138: awaited picks whose latest dispatch has no reply yet; a sim trainer always replies."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        ans = getattr(self, "_sim_answered_sst", None)
+        if ans is None or str(getattr(hp, "sim_barrier_awaits_picks", True)).lower() != "true":
+            return []
+        skip = self._sync_owes_nothing(channel) | getattr(self, "_sim_barrier_gave_up", set())
+        return sorted(e for e in self._sync_awaited(channel) - skip
+                      if channel.has(e) and self._avail_send_ts(channel, e) is not None
+                      and ans.get(e) != self._avail_send_ts(channel, e))
+
     def _sim_sync_wait(self, channel) -> None:
         """FX-N37: while a sync version waits for K, jump the vclock to its next event (capped at the budget)."""
+        owed = self._sim_owed_replies(channel)
+        if owed:  # FX-D138: the next pass receives it; no jump past its completion
+            if getattr(self, "_sim_hold", (None,))[0] != owed:
+                self._sim_hold = (owed, time.time())
+            if time.time() - self._sim_hold[1] < self._task_timeout_s():
+                logger.info(f"[SYNC_WAIT_K] round={self._round} hold for {[e[-4:] for e in owed]}")
+                return
+            self.__dict__.setdefault("_sim_barrier_gave_up", set()).update(owed)  # never received: stop holding
         wake = self._sim_sync_next_wake(channel)
         if wake is None:
             return  # nothing pending: distribute selects or starves (FX-L25)

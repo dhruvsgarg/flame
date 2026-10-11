@@ -599,7 +599,8 @@ def ev16_withheld_delivery(run):
             examples.append((e["end_id"][-4:], "commit<delivery_ts", e["actual_commit_ts"], e["delivery_ts"]))
         # A delivery at the budget commits when the final round closes: not late.
         _due = float(e["delivery_ts"])
-        _close = next((c for c in closes if c >= _due - _EPS_S), _due)
+        # Sync: a close not yet logged (live prefix) is the commit itself, never late (FX-D136).
+        _close = next((c for c in closes if c >= _due - _EPS_S), math.inf if not _is_async(run) else _due)
         if e.get("actual_commit_ts") is not None and _due < budget and \
                 float(e["actual_commit_ts"]) > max(_due + _LATE_DELIVERY_S, _close + _EPS_S):
             late += 1

@@ -139,6 +139,9 @@ class TopAggregator(SyncTopAgg):
         # FX-D89: the abandon deadline is a sim clock event, as real's selector timer.
         self._sim_abandon_wakes = str(
             getattr(self.config.hyperparameters, "sim_abandon_wakes", True)).lower() == "true"
+        # FX-D137: a commit-free return of _sim_recv_min keeps buffered ends' slots.
+        self._sim_keep_slots_on_wake = str(
+            getattr(self.config.hyperparameters, "sim_keep_slots_on_wake", True)).lower() == "true"
         # FX-D88: send-gated buffer heads are withheld before the gate, so it waits on earlier in-flight completions.
         self._sim_withhold_before_gate = str(
             getattr(self.config.hyperparameters, "sim_withhold_before_gate", True)).lower() == "true"
@@ -521,6 +524,8 @@ class TopAggregator(SyncTopAgg):
             if _abandon_ts < min(_next_ts, _budget) and not self._sim_cold_start_inflight():
                 self._vclock.advance(_abandon_ts + 1e-6)
                 logger.info(f"[ABANDON_WAKE] vclock->{self._vclock.now:.1f} next={_next_ts:.1f}")
+                if getattr(self, "_sim_keep_slots_on_wake", True):
+                    self._sim_keep_buffered_slots(channel)
                 return None, ("", datetime.now())
         # Pop the minimum regardless of recv_ends membership so buffered updates
         # are not lost when an end is cleaned up before its commit. First re-inject
@@ -531,6 +536,8 @@ class TopAggregator(SyncTopAgg):
         self._sim_reinject_ready_withheld()
         popped = self._sim_pop_committable(channel)
         if popped is None:
+            if getattr(self, "_sim_keep_slots_on_wake", True):
+                self._sim_keep_buffered_slots(channel)
             return None, ("", datetime.now())
         _end, sct, (m, md) = popped
         # Clamp the clock-jump to the earliest in-flight FUTURE modeled completion
@@ -667,15 +674,7 @@ class TopAggregator(SyncTopAgg):
                 f"known_delay_n={len(self._sim_known_delay_s)} "
                 f"dup_buffer_adds={getattr(self, '_sim_dupadd', 0)}"
             )
-        # recv_fifo marks every delivered end RECVD, but we only COMMITTED the
-        # popped one — the rest are buffered yet still in-flight. _handle_recv_state
-        # strips RECVD ends from selected_ends (freeing their concurrency slot),
-        # which would let the selector over-select to N. Reset the still-buffered
-        # ends back to NONE so they keep their in-flight slot until they commit;
-        # to_probe already skips them via _sim_buffer.has(), so they aren't re-recv'd.
-        for _buf_end in self._sim_buffer.pending_ends():
-            if channel.has(_buf_end):
-                channel._ends[_buf_end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+        self._sim_keep_buffered_slots(channel)
         # FX-D12: a buffered end was reset to NONE; committed, it must leave RECV.
         if channel.has(_end):
             channel._ends[_end].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
@@ -694,6 +693,12 @@ class TopAggregator(SyncTopAgg):
                 channel._ends[_end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
             logger.info(f"[SIM_PENDING_COMMIT] released {_end[-4:]} sct={sct:.1f}")
         return m, md
+
+    def _sim_keep_buffered_slots(self, channel) -> None:
+        """A buffered end is still in flight: NONE, not RECVD, so FX-D24 keeps its slot until commit (FX-D137)."""
+        for _buf_end in self._sim_buffer.pending_ends():
+            if channel.has(_buf_end):
+                channel._ends[_buf_end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
 
     def _real_drain_recv(self, channel, recv_ends):
         """FX-N18: streamer-free twin of ``next(recv_fifo(recv_ends, 1))``; pops the

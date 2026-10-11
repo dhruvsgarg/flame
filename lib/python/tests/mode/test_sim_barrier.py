@@ -301,3 +301,49 @@ def test_carried_withheld_delivery_commits_as_a_withheld_delivery():
     assert [md[0] for _m, md in out] == ["t3"]
     assert seen == [("t3", 207.1, 300.0, 300.0)]
     assert agg._sim_ready_ts["t3"] == 300.0 and "t3" not in agg._sim_withheld_delivering
+
+
+class _LateChannel(RecordingChannel):
+    """`late` ends reach the rxq only after the first recv_fifo pass (compute overran its known-delay bound)."""
+
+    def __init__(self, scts, arrival_order, late):
+        super().__init__(scts, [e for e in arrival_order if e not in late])
+        self._late = [e for e in arrival_order if e in late]
+
+    def recv_fifo(self, end_ids, first_k=0, timeout=None):
+        if self.recv_calls:
+            self._queue += self._late
+            self._late = []
+        return super().recv_fifo(end_ids, first_k, timeout)
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_sync_barrier_awaits_overrun_pick(on):
+    # FX-D138 (PR29 C1 feddance T3 syn_50): 0379's stub compute 3.6 s > D bound 3.3 s; the barrier dropped it, wait-K
+    # jumped the vclock to the next flip, and its sct-130 update committed at 150.
+    from flame.selector.properties import PROP_SIM_SEND_TS
+    from types import SimpleNamespace
+    agg = _bare(SyncAgg)
+    agg.config = SimpleNamespace(hyperparameters=SimpleNamespace(sim_barrier_awaits_picks=on))
+    agg._sim_known_delay_s = dict(SCTS)
+    ch = _LateChannel(SCTS, SCRAMBLED, late={"t2"})
+    for e in SCTS:
+        ch.set_end_property(e, PROP_SIM_SEND_TS, 0.0)
+    out = agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=3)
+    assert [md[0] for _m, md in out] == (["t2", "t5", "t1"] if on else ["t5", "t1", "t4"])
+    assert ch.recv_calls == [frozenset(SCTS)] + ([frozenset({"t2"})] if on else [])
+
+
+def test_barrier_never_awaits_an_answered_dispatch():
+    # FX-D138: a pick whose reply to its latest dispatch already arrived owes nothing; no second pass.
+    from flame.selector.properties import PROP_SIM_SEND_TS
+    agg = _bare(OortAgg)
+    ch = RecordingChannel(SCTS, SCRAMBLED)
+    for e in SCTS:
+        ch.set_end_property(e, PROP_SIM_SEND_TS, 0.0)
+    agg._sim_answered_sst = {"t9": 0.0}
+    list(agg._sim_barrier_recv(ch, list(SCTS)))
+    assert len(ch.recv_calls) == 1
+    ch._queue = []
+    list(agg._sim_barrier_recv(ch, ["t1"]))              # t1 answered dispatch 0.0 above: still one pass
+    assert len(ch.recv_calls) == 2
