@@ -221,6 +221,20 @@ class TestRecvFifoSimPattern:
         while time.time() < end and ch._active_recv_fifo_tasks:
             time.sleep(0.01)
 
+    def test_deadline_call_releases_readers_on_return(self):
+        # P2 feddance: a reader left by a deadline recv made the next call skip its end; its reply waited ~87s.
+        loop, thread = self._start_loop()
+        try:
+            ch = self._make_channel(loop, ["a", "b"])
+            self._inject(loop, ch._ends["a"], {MessageType.MODEL_VERSION: 1})
+            got = list(ch.recv_fifo(["a", "b"], 1, deadline=time.time() + 5))
+            assert got[0][1][0] == "a" and ch._active_recv_fifo_tasks == set()
+            self._inject(loop, ch._ends["b"], {MessageType.MODEL_VERSION: 1})
+            got = list(ch.recv_fifo(["b"], 1, deadline=time.time() + 1))
+            assert got[0][0] is not None and got[0][1][0] == "b"
+        finally:
+            self._stop_loop(loop, thread)
+
     def test_quiet_probe_returns_none_and_releases(self):
         loop, thread = self._start_loop()
         try:
@@ -309,6 +323,70 @@ class TestRecvFifoSimPattern:
         finally:
             self._stop_loop(loop, thread)
 
+    def test_deadline_bounds_the_whole_call(self):
+        """FX-D17: a message arriving just inside each per-message timeout can't stretch the call
+        past its deadline; the late end's task is released too."""
+        loop, thread = self._start_loop()
+        try:
+            ch = self._make_channel(loop, ["a", "b"])
+            loop.call_later(0.3, lambda: ch._ends["a"].rxq.put_nowait(
+                (cloudpickle.dumps({MessageType.MODEL_VERSION: 1}), "t")))
+            t0 = time.time()
+            got = list(ch.recv_fifo(["a", "b"], 2, timeout=10.0, deadline=t0 + 0.6))
+            assert time.time() - t0 < 1.5
+            assert [m is not None for m, _ in got] == [True, False]
+            self._wait_drained(ch)
+            assert ch._active_recv_fifo_tasks == set()
+        finally:
+            self._stop_loop(loop, thread)
+
 
 async def _make_queue():
     return asyncio.Queue()
+
+
+def test_deadline_cancel_after_dequeue_keeps_the_update(monkeypatch):
+    """FX-N63: a reader cancelled right after End.get() returned must not drop the update (real lost 23/1081)."""
+    import flame.channel as channel_mod
+
+    def run(direct):
+        monkeypatch.setattr(channel_mod, "_RECV_FIFO_DIRECT_ENQUEUE", direct)
+
+        async def scenario():
+            ch = TestStreamerCleanup._make_bare_channel(["a"])
+            ch._rx_queue = asyncio.Queue()
+            box = {}
+
+            class _CancelOnGet(FakeEnd):
+                async def get(self):
+                    payload = await self.rxq.get()
+                    box["task"].cancel()  # the deadline cancel lands just after the dequeue
+                    return payload
+
+            ch._ends["a"] = _CancelOnGet()
+            ch._ends["a"].rxq.put_nowait((b"w", "ts"))
+            box["task"] = asyncio.ensure_future(ch._streamer_for_recv_fifo(["a"], timeout=1.0))
+            await asyncio.gather(box["task"], return_exceptions=True)
+            return ch._rx_queue.qsize()
+
+        return asyncio.run(scenario())
+
+    assert run(True) == 1
+    assert run(False) == 0, "legacy path drops it (the fixture must reproduce the loss)"
+
+
+def test_streamer_cancelled_before_readers_start_releases_ends():
+    """FX-N63: merge starts readers lazily; an early cancel must still free every end (real refl leaked all 37)."""
+
+    async def scenario():
+        ends = [f"e{i}" for i in range(30)]
+        ch = TestStreamerCleanup._make_bare_channel(ends)
+        ch._rx_queue = asyncio.Queue()
+        for _ in range(20):
+            t = asyncio.ensure_future(ch._streamer_for_recv_fifo(ends, timeout=5.0))
+            await asyncio.sleep(0)  # cancel after the adds, before merge has started every reader
+            t.cancel()
+            await asyncio.gather(t, return_exceptions=True)
+        return ch._active_recv_fifo_tasks
+
+    assert asyncio.run(scenario()) == set()

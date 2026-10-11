@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import sys
 
+from flame.launch.aggregator_spawner import apply_malloc_env
+
 
 class MetadataLoader:
     """Loads and caches experiment metadata."""
@@ -35,12 +37,11 @@ class MetadataLoader:
         traces_dir = self.metadata_dir / "availability_traces"
         self.synthetic_traces = {"traces": {}}
         self.mobiperf_traces = {"traces": {}}
+        from flame.availability.trace import read_trace_file  # shared cache: load_trace reuses this parse
         if (traces_dir / "synthetic_traces.yaml").is_file():
-            with open(traces_dir / "synthetic_traces.yaml") as f:
-                self.synthetic_traces = yaml.safe_load(f)
+            self.synthetic_traces = read_trace_file(str(traces_dir / "synthetic_traces.yaml"))
         if (traces_dir / "mobiperf_traces.yaml").is_file():
-            with open(traces_dir / "mobiperf_traces.yaml") as f:
-                self.mobiperf_traces = yaml.safe_load(f)
+            self.mobiperf_traces = read_trace_file(str(traces_dir / "mobiperf_traces.yaml"))
 
     def get_trainer_metadata(self, trainer_id: int) -> Dict:
         """Get metadata for a specific trainer."""
@@ -69,7 +70,9 @@ class MetadataLoader:
         (flame.availability.trace.load_trace) the aggregator already uses.
         """
         if trainer_id is None:
-            return self.synthetic_traces["traces"][trace_name]["pattern"]
+            from flame.availability.trace import scale_events
+
+            return scale_events(self.synthetic_traces["traces"][trace_name]["pattern"])
         from flame.availability.trace import load_trace
 
         trainer_key = f"trainer_{trainer_id:03d}"
@@ -80,8 +83,10 @@ class MetadataLoader:
 
     def get_mobiperf_trace(self, trainer_id: int, variant: str = "2st") -> List:
         """Get mobiperf trace for a trainer."""
+        from flame.availability.trace import scale_events
+
         device_id = f"device_{trainer_id:03d}"
-        return self.mobiperf_traces["traces"][device_id][f"states_{variant}"]
+        return scale_events(self.mobiperf_traces["traces"][device_id][f"states_{variant}"])
 
 
 class ConfigGenerator:
@@ -160,6 +165,7 @@ class ConfigGenerator:
         # Add availability traces
         if availability_mode.startswith("mobiperf"):
             variant = availability_mode.replace("mobiperf_", "")
+            variant = "3st_50" if variant == "3st" else variant
             config["hyperparameters"][f"avl_events_mobiperf_{variant}"] = (
                 self.metadata.get_mobiperf_trace(trainer_id, variant)
             )
@@ -170,7 +176,7 @@ class ConfigGenerator:
             )
 
         # Add all synthetic traces (for flexibility)
-        for trace_name in ["syn_0", "syn_20", "syn_50"]:
+        for trace_name in ["syn_0", "syn_10", "syn_20", "syn_50"]:
             config["hyperparameters"][f"avl_events_{trace_name}"] = (
                 self.metadata.get_synthetic_trace(trace_name, trainer_id)
             )
@@ -315,25 +321,31 @@ class TrainerSpawner:
         # Serialize config to JSON string
         config_json = json.dumps(config)
 
-        # Determine GPU
-        gpu_id = self.gpu_ids[(trainer_id - 1) % len(self.gpu_ids)]
+        # Determine GPU; an empty pool (CPU harness) hides every GPU.
+        gpu_id = self.gpu_ids[(trainer_id - 1) % len(self.gpu_ids)] if self.gpu_ids else None
 
-        # Determine CPU core (round-robin across usable cores when pinning is on)
+        # Pin to a disjoint block of cores: spare cores (n < usable) widen each block.
         cpu_core: Optional[int] = None
         preexec_fn = None
+        cores_per = 1
         if self.cpu_pinning and self._usable_cores:
-            cpu_core = self._usable_cores[(trainer_id - 1) % len(self._usable_cores)]
-            _core_set = {cpu_core}
+            cores_per = max(1, len(self._usable_cores) // max(1, num_trainers))
+            slot = (trainer_id - 1) % (len(self._usable_cores) // cores_per)
+            _core_set = set(self._usable_cores[slot * cores_per:(slot + 1) * cores_per])
+            cpu_core = min(_core_set)
             preexec_fn = lambda c=_core_set: os.sched_setaffinity(0, c)
 
         # Build command
+        # FX-D59: trainers keep glibc defaults; the 4 GB trim pinned ~0.3-0.7 GB/trainer (cifar n=300 + speech n=100 hit 100% RAM).
         env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        if env.get("FLAME_MALLOC_TUNE_TRAINERS") == "1":
+            env = apply_malloc_env(env)
+        env["CUDA_VISIBLE_DEVICES"] = "" if gpu_id is None else str(gpu_id)
         if self.cpu_pinning and cpu_core is not None:
-            # Prevent thread oversubscription when pinned to one core.
+            # One math thread per pinned core: no oversubscription.
             for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
                          "NUMEXPR_NUM_THREADS"):
-                env[_var] = "1"
+                env[_var] = str(cores_per)
 
         cmd = [
             sys.executable,  # Use same Python interpreter
@@ -366,7 +378,7 @@ class TrainerSpawner:
             {"trainer_id": trainer_id, "gpu_id": gpu_id, "cpu_core": cpu_core, "process": process}
         )
 
-        core_str = f", CPU core {cpu_core}" if cpu_core is not None else ""
+        core_str = f", CPU core {cpu_core}" + (f" (+{cores_per - 1})" if cores_per > 1 else "") if cpu_core is not None else ""
         print(f"  Spawned trainer {trainer_id} on GPU {gpu_id}{core_str} (PID: {process.pid})")
 
         return process
@@ -440,7 +452,7 @@ class TrainerSpawner:
             print(f"\n  Trainer assignments (cpu_pinning=ON, {len(self._usable_cores)} cores):")
             print(f"  {'Trainer':>8}  {'GPU':>4}  {'CPU core':>9}  {'PID':>7}")
             for p in self.processes:
-                print(f"  {p['trainer_id']:>8}  {p['gpu_id']:>4}  {str(p.get('cpu_core', 'N/A')):>9}  {p['process'].pid:>7}")
+                print(f"  {p['trainer_id']:>8}  {str(p['gpu_id']):>4}  {str(p.get('cpu_core', 'N/A')):>9}  {p['process'].pid:>7}")
         self._assert_load_balanced()
 
     def _assert_load_balanced(self) -> None:
@@ -585,6 +597,7 @@ if __name__ == "__main__":
             "mobiperf_3st_50",
             "mobiperf_3st_75",
             "syn_0",
+            "syn_10",
             "syn_20",
             "syn_50",
         ],

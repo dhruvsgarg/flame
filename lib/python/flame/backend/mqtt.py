@@ -17,6 +17,7 @@
 
 import asyncio
 import logging
+import os
 import time
 from collections import deque
 from enum import IntEnum
@@ -24,7 +25,8 @@ from enum import IntEnum
 import paho.mqtt.client as mqtt
 from flame.backend.abstract import AbstractBackend
 from flame.backend.chunk_manager import ChunkManager
-from flame.backend.chunk_store import ChunkStore
+from flame.backend.chunk_store import DEFAULT_CHUNK_SIZE
+from flame.backend.paho_fast import FastClient, _varint as _read_varint
 from flame.channel import Channel
 from flame.common.constants import (
     DEFAULT_RUN_ASYNC_WAIT_TIME,
@@ -46,7 +48,8 @@ END_STATUS_OFF = "offline"
 # training
 MQTT_TIME_WAIT = 14400  # 14400 sec
 MIN_CHECK_PERIOD = 1  # 1 sec
-MQTT_LOOP_CHECK_PERIOD = 1  # 1 sec
+PUBLISH_ATTEMPTS = 5
+PUBLISH_TIMEOUT_S = 100  # warn interval while awaiting PUBCOMPs
 TOPIC_SEP = "/"
 
 logger = logging.getLogger(__name__)
@@ -60,6 +63,80 @@ class MqttQoS(IntEnum):
     AT_MOST_ONCE = 0
     AT_LEAST_ONCE = 1
     EXACTLY_ONCE = 2
+
+
+_ANY_DATA_URL = ("type.googleapis.com/" + msg_pb2.Data.DESCRIPTOR.full_name).encode()
+_ANY_NOTIFY_URL = ("type.googleapis.com/" + msg_pb2.Notify.DESCRIPTOR.full_name).encode()
+
+
+def _fields(buf):
+    """Yield (field number, value) of a protobuf message; length-delimited values are memoryviews of `buf`."""
+    pos, end = 0, len(buf)
+    while pos < end:
+        tag, pos = _read_varint(buf, pos)
+        num, wire = tag >> 3, tag & 7
+        if wire == 0:
+            val, pos = _read_varint(buf, pos)
+        elif wire == 2:
+            n, pos = _read_varint(buf, pos)
+            val, pos = buf[pos:pos + n], pos + n
+        elif wire in (1, 5):
+            val, pos = None, pos + (8 if wire == 1 else 4)
+        else:
+            raise ValueError(f"unsupported protobuf wire type {wire}")
+        yield num, val
+
+
+class _DataView:
+    """msg_pb2.Data parsed in place: `payload` is a view into the received packet, copied once at assembly (FX-N77)."""
+
+    __slots__ = ("end_id", "channel_name", "seqno", "eom", "payload")
+
+    def __init__(self, buf):
+        self.end_id, self.channel_name, self.seqno, self.eom, self.payload = "", "", 0, False, b""
+        for num, val in _fields(buf):
+            if num == 1:
+                self.end_id = str(val, "utf-8")
+            elif num == 2:
+                self.channel_name = str(val, "utf-8")
+            elif num == 3:
+                self.seqno = val - (1 << 64) if val >= 1 << 63 else val
+            elif num == 4:
+                self.eom = bool(val)
+            elif num == 5:
+                self.payload = val
+
+
+def _split_any(buf) -> tuple:
+    """(type_url bytes, value view) of a serialized google.protobuf.Any."""
+    url, value = b"", b""
+    for num, val in _fields(buf):
+        if num == 1:
+            url = bytes(val)
+        elif num == 2:
+            value = val
+    return url, value
+
+
+def _varint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        b, n = n & 0x7F, n >> 7
+        out.append(b | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
+
+def _encode_chunk(end_id: str, channel_name: str, payload, seqno: int, eom: bool) -> bytes:
+    """Wire bytes of Any(Data(...)) with the payload copied once (FX-N77); parses exactly as Any.Pack would emit.
+
+    Any.Pack + SerializeToString copied each 4 MB chunk three times; field order on the wire is free in protobuf.
+    """
+    head = msg_pb2.Data(end_id=end_id, channel_name=channel_name, seqno=seqno, eom=eom).SerializeToString()
+    field5 = b"\x2a" + _varint(len(payload))  # Data.payload: field 5, length-delimited
+    value_len = len(head) + len(field5) + len(payload)
+    return b"".join((b"\x0a", _varint(len(_ANY_DATA_URL)), _ANY_DATA_URL, b"\x12", _varint(value_len),
+                     head, field5, payload))
 
 
 class MqttBackend(AbstractBackend):
@@ -84,6 +161,8 @@ class MqttBackend(AbstractBackend):
         self._cleanup_ready = set()
         self._is_connected = False
         self._reconnecting = False
+        self._publish_waits: dict = {}  # mid -> future resolved by on_publish
+        self._tx_lock = None  # asyncio.Lock on the backend loop
 
         if self._initialized:
             return
@@ -133,9 +212,8 @@ class MqttBackend(AbstractBackend):
         self._job_id = job_id
         self._id = task_id
 
-        self._mqtt_client = mqtt.Client(
-            mqtt.CallbackAPIVersion.VERSION1, self._id, protocol=MQTTv5
-        )
+        client_cls = mqtt.Client if os.environ.get("FLAME_MQTT_FAST", "1") == "0" else FastClient
+        self._mqtt_client = client_cls(mqtt.CallbackAPIVersion.VERSION1, self._id, protocol=MQTTv5)
 
         self._health_check_topic = f"{MQTT_TOPIC_PREFIX}/{self._job_id}"
 
@@ -145,6 +223,7 @@ class MqttBackend(AbstractBackend):
             self._mqtt_client.on_connect = self.on_connect
             self._mqtt_client.on_disconnect = self.on_disconnect
             self._mqtt_client.on_message = self.on_message
+            self._mqtt_client.on_publish = self.on_publish
             self._mqtt_client.will_set(
                 self._health_check_topic,
                 payload=f"{self._id}:{END_STATUS_OFF}",
@@ -157,7 +236,8 @@ class MqttBackend(AbstractBackend):
             # This prevents disconnections during heavy weight distribution to many trainers
             # where synchronous send operations can temporarily block the event loop
             keepalive_timeout = 300  # 5 minutes
-            self._mqtt_client.connect(self._broker, keepalive=keepalive_timeout)
+            host, _, port = self._broker.partition(":")
+            self._mqtt_client.connect(host, int(port or 1883), keepalive=keepalive_timeout)
             logger.info(f"MQTT client connecting to {self._broker} with keepalive={keepalive_timeout}s")
             self._mqtt_client.subscribe(self._health_check_topic)
 
@@ -270,9 +350,7 @@ class MqttBackend(AbstractBackend):
         self._cleanup_waits[end_id] = expiry
         logger.debug(f"end: {end_id}, expiry time: {expiry}")
 
-    async def _handle_notification(self, any_msg):
-        msg = msg_pb2.Notify()
-        any_msg.Unpack(msg)
+    async def _handle_notification(self, msg: msg_pb2.Notify):
 
         if msg.end_id == self._id:
             # This case happens when message is broadcast to a self-loop e.g.,
@@ -286,24 +364,22 @@ class MqttBackend(AbstractBackend):
 
         channel = self._channels[msg.channel_name]
 
-        if msg.type == msg_pb2.NotifyType.JOIN and not channel.has(msg.end_id):
-            # this is the first time to see this end, so let's notify my
-            # presence to the end
-            logger.debug(f"Acknowledge join notification from {msg.end_id}")
-            self.notify(msg.channel_name, msg_pb2.NotifyType.JOIN)
+        if msg.type == msg_pb2.NotifyType.JOIN:
+            async def _join(end_id=msg.end_id):
+                if not channel.has(end_id):  # first sight of this end: announce myself to it
+                    logger.debug(f"Acknowledge join notification from {end_id}")
+                    self.notify(channel.name(), msg_pb2.NotifyType.JOIN)
+                    await channel.add(end_id)
 
-            # add end to the channel
-            await channel.add(msg.end_id)
+            await self.chunk_mgr.in_order(msg.end_id, _join)
         elif msg.type == msg_pb2.NotifyType.LEAVE:
             logger.debug(f"Got channel leave message from {msg.end_id}")
-            await channel.remove(msg.end_id)
+            await self.chunk_mgr.in_order(msg.end_id, lambda end_id=msg.end_id: channel.remove(end_id))
         elif msg.type == msg_pb2.NotifyType.STATE_UPDATE:
             logger.info(f"Got state update message from {msg.end_id}")
             await channel.update_state(msg.end_id, msg.info.state, msg.info.timestamp)
 
-    async def _handle_data(self, any_msg: Any) -> None:
-        msg = msg_pb2.Data()
-        any_msg.Unpack(msg)
+    async def _handle_data(self, msg: _DataView) -> None:
 
         if msg.end_id == self._id:
             # This case happens when message is broadcast to a self-loop e.g.,
@@ -338,12 +414,11 @@ class MqttBackend(AbstractBackend):
                 f"_rx_task - topic: {message.topic}; len: {len(message.payload)}"
             )
 
-            any_msg = Any().FromString(message.payload)
-
-            if any_msg.Is(msg_pb2.Notify.DESCRIPTOR):
-                await self._handle_notification(any_msg)
-            elif any_msg.Is(msg_pb2.Data.DESCRIPTOR):
-                await self._handle_data(any_msg)
+            url, value = _split_any(memoryview(message.payload))
+            if url == _ANY_DATA_URL:
+                await self._handle_data(_DataView(value))
+            elif url == _ANY_NOTIFY_URL:
+                await self._handle_notification(msg_pb2.Notify.FromString(bytes(value)))
             else:
                 logger.warning("unknown message type")
 
@@ -539,213 +614,59 @@ class MqttBackend(AbstractBackend):
             await self.send_chunks_async(topic, channel.name(), data)
             txq.task_done()
 
-    def send_chunks(self, topic, ch_name: str, data: bytes) -> None:
-        """Send data chunks (synchronous version - deprecated, use send_chunks_async)."""
-        chunk_store = ChunkStore()
-        chunk_store.set_data(data)
-
-        while True:
-            chunk, seqno, eom = chunk_store.get_chunk()
-            if chunk is None:
-                break
-
-            self.send_chunk(topic, ch_name, chunk, seqno, eom)
-
     async def send_chunks_async(self, topic, ch_name: str, data: bytes) -> None:
-        """Send data chunks asynchronously.
-        
-        This async version allows the event loop to process other tasks
-        (including keepalive messages) between chunk transmissions, preventing
-        MQTT broker disconnections during heavy load.
-        """
-        chunk_store = ChunkStore()
-        chunk_store.set_data(data)
+        """Publish `data` as pipelined QoS-2 chunks and await every PUBCOMP via on_publish (FX-N77).
 
+        Whole messages go FIFO; chunks within one are all in flight. A QoS-2 chunk is never re-published: paho and the
+        broker own its delivery, and an app-level copy (new mid) arrived as a stray chunk that corrupted the next message.
+        """
+        if self._tx_lock is None:
+            self._tx_lock = asyncio.Lock()
+        async with self._tx_lock:  # whole messages FIFO: interleaved ends all finished late (processor sharing)
+            await self._send_chunks(topic, ch_name, data)
+
+    async def _send_chunks(self, topic, ch_name: str, data: bytes) -> None:
+        mv = memoryview(data)
+        n = -(-len(mv) // DEFAULT_CHUNK_SIZE)
+        futs = [await self._publish(topic, _encode_chunk(self._id, ch_name, mv[i * DEFAULT_CHUNK_SIZE:(i + 1) * DEFAULT_CHUNK_SIZE],
+                                                         i, i == n - 1))
+                for i in range(n)]
+        waited = 0
         while True:
-            chunk, seqno, eom = chunk_store.get_chunk()
-            if chunk is None:
-                break
+            _, pending = await asyncio.wait(futs, timeout=PUBLISH_TIMEOUT_S)
+            if not pending:
+                return
+            waited += PUBLISH_TIMEOUT_S
+            logger.warning(f"{len(pending)}/{n} chunk(s) to {topic} unacknowledged after {waited}s; still waiting")
 
-            await self.send_chunk_async(topic, ch_name, chunk, seqno, eom)
-
-    def send_chunk(
-        self, topic: str, channel_name: str, data: bytes, seqno: int, eom: bool
-    ) -> None:
-        """Send a chunk with retry logic for disconnections."""
-        msg = msg_pb2.Data()
-        msg.end_id = self._id
-        msg.channel_name = channel_name
-        msg.payload = data
-        msg.seqno = seqno
-        msg.eom = eom
-
-        any = Any()
-        any.Pack(msg)
-        payload = any.SerializeToString()
-
-        max_retries = 5
-        retry_delay = 1.0  # initial delay in seconds
-        
-        for attempt in range(max_retries):
-            try:
-                # Check if client is connected before attempting to publish
-                if not self._is_connected:
-                    logger.warning(
-                        f"Client not connected (attempt {attempt + 1}/{max_retries}), "
-                        f"waiting for reconnection..."
-                    )
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # exponential backoff
-                    continue
-                
-                info = self._mqtt_client.publish(topic, payload, qos=MqttQoS.EXACTLY_ONCE)
-                
-                # Wait for publish to complete with timeout
-                timeout_counter = 0
-                max_wait_iterations = 100  # 100 seconds max wait
-                
-                while not info.is_published():
-                    if timeout_counter >= max_wait_iterations:
-                        raise TimeoutError(f"Publish timeout after {max_wait_iterations} seconds")
-                    
-                    logger.debug(f"waiting for publish completion: rc = {info.rc}")
-                    retval = self._mqtt_client.loop(MQTT_LOOP_CHECK_PERIOD)
-                    logger.debug(f"retval from loop = {retval}")
-                    timeout_counter += 1
-                
-                logger.debug(f"sending chunk {seqno} to {topic} is done")
-                return  # Success, exit retry loop
-                
-            except RuntimeError as e:
-                if "not currently connected" in str(e):
-                    logger.warning(
-                        f"Publish failed due to disconnection (attempt {attempt + 1}/{max_retries}): {e}"
-                    )
-                    if attempt < max_retries - 1:
-                        time.sleep(retry_delay)
-                        retry_delay *= 2  # exponential backoff
-                        continue
-                    else:
-                        logger.error(
-                            f"Failed to send chunk {seqno} to {topic} after {max_retries} attempts"
-                        )
+    async def _publish(self, topic: str, payload: bytes) -> asyncio.Future:
+        """Queue one QoS-2 publish; the returned future resolves on its PUBCOMP (on_publish)."""
+        delay = 1.0
+        for attempt in range(PUBLISH_ATTEMPTS):
+            if self._is_connected:
+                try:
+                    info = self._mqtt_client.publish(topic, payload, qos=MqttQoS.EXACTLY_ONCE)
+                except RuntimeError as e:
+                    if "not currently connected" not in str(e):
                         raise
-                else:
-                    # Different RuntimeError, re-raise immediately
-                    raise
-            except TimeoutError as e:
-                logger.warning(
-                    f"Publish timeout (attempt {attempt + 1}/{max_retries}): {e}"
-                )
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    retry_delay *= 2
-                    continue
-                else:
-                    logger.error(
-                        f"Failed to send chunk {seqno} to {topic} after {max_retries} attempts due to timeout"
-                    )
-                    raise
-            except Exception as e:
-                logger.error(f"Unexpected error sending chunk {seqno} to {topic}: {e}")
-                raise
-        
-        # If we exit the loop without returning, all retries failed
-        raise RuntimeError(f"Failed to send chunk {seqno} to {topic} after {max_retries} retries")
-
-    async def send_chunk_async(
-        self, topic: str, channel_name: str, data: bytes, seqno: int, eom: bool
-    ) -> None:
-        """Send a chunk asynchronously with retry logic for disconnections.
-        
-        This async version allows the event loop to process keepalive messages
-        during chunk transmission, preventing disconnections on heavy load.
-        """
-        msg = msg_pb2.Data()
-        msg.end_id = self._id
-        msg.channel_name = channel_name
-        msg.payload = data
-        msg.seqno = seqno
-        msg.eom = eom
-
-        any = Any()
-        any.Pack(msg)
-        payload = any.SerializeToString()
-
-        max_retries = 5
-        retry_delay = 1.0  # initial delay in seconds
-        
-        for attempt in range(max_retries):
-            try:
-                # Check if client is connected before attempting to publish
-                if not self._is_connected:
-                    logger.warning(
-                        f"Client not connected (attempt {attempt + 1}/{max_retries}), "
-                        f"waiting for reconnection..."
-                    )
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2  # exponential backoff
-                    continue
-                
-                info = self._mqtt_client.publish(topic, payload, qos=MqttQoS.EXACTLY_ONCE)
-                
-                # Wait for publish to complete with timeout
-                # Use async sleep to allow event loop to breathe
-                timeout_counter = 0
-                max_wait_iterations = 100  # 100 seconds max wait
-                
-                while not info.is_published():
-                    if timeout_counter >= max_wait_iterations:
-                        raise TimeoutError(f"Publish timeout after {max_wait_iterations} seconds")
-                    
-                    logger.debug(f"waiting for publish completion: rc = {info.rc}")
-                    retval = self._mqtt_client.loop(MQTT_LOOP_CHECK_PERIOD)
-                    logger.debug(f"retval from loop = {retval}")
-                    
-                    # CRITICAL: Yield to event loop to allow misc_loop() to send keepalives
-                    # This prevents broker disconnections during long send operations
-                    await asyncio.sleep(0)
-                    timeout_counter += 1
-                
-                logger.debug(f"sending chunk {seqno} to {topic} is done")
-                return  # Success, exit retry loop
-                
-            except RuntimeError as e:
-                if "not currently connected" in str(e):
-                    logger.warning(
-                        f"Publish failed due to disconnection (attempt {attempt + 1}/{max_retries}): {e}"
-                    )
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(retry_delay)
-                        retry_delay *= 2  # exponential backoff
-                        continue
+                    info = None
+                if info is not None and info.rc == mqtt.MQTT_ERR_SUCCESS:
+                    fut = self._loop.create_future()
+                    if info.is_published():
+                        fut.set_result(None)
                     else:
-                        logger.error(
-                            f"Failed to send chunk {seqno} to {topic} after {max_retries} attempts"
-                        )
-                        raise
-                else:
-                    # Different RuntimeError, re-raise immediately
-                    raise
-            except TimeoutError as e:
-                logger.warning(
-                    f"Publish timeout (attempt {attempt + 1}/{max_retries}): {e}"
-                )
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2
-                    continue
-                else:
-                    logger.error(
-                        f"Failed to send chunk {seqno} to {topic} after {max_retries} attempts due to timeout"
-                    )
-                    raise
-            except Exception as e:
-                logger.error(f"Unexpected error sending chunk {seqno} to {topic}: {e}")
-                raise
-        
-        # If we exit the loop without returning, all retries failed
-        raise RuntimeError(f"Failed to send chunk {seqno} to {topic} after {max_retries} retries")
+                        self._publish_waits[info.mid] = fut
+                    return fut
+            logger.warning(f"publish to {topic} not possible (attempt {attempt + 1}/{PUBLISH_ATTEMPTS}); waiting")
+            await asyncio.sleep(delay)
+            delay *= 2
+        raise RuntimeError(f"failed to publish to {topic} after {PUBLISH_ATTEMPTS} attempts")
+
+    def on_publish(self, client, userdata, mid, *args):
+        """PUBCOMP received (runs on the backend loop via AsyncioHelper): resolve that publish's future."""
+        fut = self._publish_waits.pop(mid, None)
+        if fut is not None and not fut.done():
+            fut.set_result(None)
 
     async def cleanup(self):
         """Clean up resources in backend."""

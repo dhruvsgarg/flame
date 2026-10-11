@@ -43,7 +43,7 @@ from flame.config import TrainerAvailState
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD, End
 from flame.selector import AbstractSelector, SelectorReturnType
 from flame.selector.properties import PROP_AVL_STATE
-from flame.telemetry.events import build_slot_starvation
+from flame.telemetry.events import build_abandon_timeout, build_slot_starvation
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ class AsyncSelectorBase(AbstractSelector):
         super().__init__(**kwargs)
 
         # #1c: abandon-timeout clock -- set per-select() from
-        # channel_props["vclock_now"] (sim) or left None (real -> wall).
+        # channel_props["vclock_now"] (the avail clock, both modes).
         self._sim_now_s = None
         self.round = 0
 
@@ -102,6 +102,7 @@ class AsyncSelectorBase(AbstractSelector):
         # not the bare set the sync ones use.
         self.all_selected = dict()
         self.selected_ends = dict()
+        self.requester = None  # set by select(); an UN_AVL report can precede it
         self.ordered_updates_recv_ends = list()
 
         self.track_trainer_timeouts = dict()
@@ -224,9 +225,11 @@ class AsyncSelectorBase(AbstractSelector):
             self.selected_ends[self.requester] = set()
 
         # #1c: the abandon-timeout must run on the same clock the trainer
-        # commits on -- virtual in sim, wall in real. Stashed so the dispatch
-        # STAMP and the CHECK agree; None in real -> time.time().
+        # commits on (the aggregator's avail clock). Stashed so the dispatch
+        # STAMP and the CHECK agree; None only without an aggregator -> time.time().
         self._sim_now_s = channel_props.get("vclock_now")
+        self._agg_round = channel_props.get("agg_round", -1)
+        self._time_mode = channel_props.get("time_mode", "real")
 
         # Only `channel.one_end()` (a single-parent caller, e.g. a trainer
         # picking its aggregator) sets this -- see `_handle_recv_state`.
@@ -291,6 +294,7 @@ class AsyncSelectorBase(AbstractSelector):
         """
         # getattr-guarded: test doubles built via __new__ skip __init__.
         timeout_s = getattr(self, "send_timeout_wait_s", SEND_TIMEOUT_WAIT_S)
+        self._reclaimed_now = set()  # FX-N55: freed slot, not freed identity -- not re-pickable this pass
         for end in list(self.all_selected.keys()):
             now_s = self._abandon_clock_now()
             if end not in self.all_selected:
@@ -312,12 +316,25 @@ class AsyncSelectorBase(AbstractSelector):
             )
             del self.all_selected[end]
             selected_ends.discard(end)
+            self._reclaimed_now.add(end)
+            # FX-D9: timeout stamp, read by the aggregator's task_retry_policy.
+            if not hasattr(self, "timed_out_at"):
+                self.timed_out_at = {}
+            self.timed_out_at[end] = now_s
             # R1: also drop it from the pending-commit set (sim's
             # `_sim_pending_commit` or real's `_per_agg_trainer_list`), or it
             # stays un-re-pickable forever despite the reclaim above.
             pending_ref = getattr(self, "_agg_pending_commit_ref", None)
             if pending_ref is not None:
                 pending_ref.discard(end)
+            if telemetry.is_enabled():  # FX-D96: real asyncfl abandons fire here, not in _abandon_stalled
+                mode = getattr(self, "_time_mode", "real")
+                ev, f = build_abandon_timeout(
+                    round_num=getattr(self, "_agg_round", -1), end_id=end, sim_send_ts=float(sent_at),
+                    vclock_now=float(now_s), time_mode=mode,
+                    reason="abandon_90s_vclock" if mode == "sim" else "abandon_90s_wall",
+                )
+                telemetry.emit(ev, **f)
 
     def _drop_disconnected_selections(
         self, selected_ends: set, connected_ends: dict[str, End]
@@ -356,12 +373,12 @@ class AsyncSelectorBase(AbstractSelector):
         candidates = {}
         n_ineligible = 0
         for end_id, end in ends.items():
-            if end_id in self.all_selected or end_id in pending:
+            if end_id in self.all_selected or end_id in pending or end_id in getattr(self, "_reclaimed_now", ()):
                 continue
             avl_state = end.get_property(PROP_AVL_STATE)
             # None avl_state == no heartbeat state set -> always eligible,
             # matching trainers without availability tracking.
-            if avl_state is not None and avl_state not in eligible_states:
+            if self.filter_by_avl_state and avl_state is not None and avl_state not in eligible_states:
                 n_ineligible += 1
                 continue
             if not self._task_extra_eligible(end_id, end, ctx):
@@ -389,6 +406,20 @@ class AsyncSelectorBase(AbstractSelector):
         """Extra per-task eligibility beyond avl_state (e.g. eval staleness)."""
         return True
 
+    release_recvd_at_send = True  # FX-D24; False = legacy one-arrival refill lag
+    filter_by_avl_state = True  # FX-N55: the aggregator clears it for an unaware baseline
+
+    @staticmethod
+    def _drop_recvd(selected_ends: set, ends: dict[str, End]) -> None:
+        """Drop ends already heard from (RECVD): their slot is free."""
+        for end_id in list(selected_ends):
+            if end_id not in ends:
+                logger.debug(f"end {end_id} no longer in ends; leaving in-flight")
+                continue
+            if ends[end_id].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD:
+                selected_ends.remove(end_id)
+                logger.debug(f"Removed {end_id} from selected_ends: already RECVD")
+
     def _handle_send_state(
         self, ends: dict[str, End], concurrency: int, ctx: SelectContext
     ) -> SelectorReturnType:
@@ -398,6 +429,8 @@ class AsyncSelectorBase(AbstractSelector):
         self._drop_disconnected_selections(
             selected_ends, ctx.connected_ends if ctx.connected_ends is not None else ends
         )
+        if self.release_recvd_at_send:  # FX-D24: an ingested end's slot refills now, not one arrival later
+            self._drop_recvd(selected_ends, ends)
 
         # Cooling (committed, not-yet-redispatched) ends hold a slot so the
         # idle pool can't refill it -- else the redispatch gap is inert.
@@ -438,6 +471,10 @@ class AsyncSelectorBase(AbstractSelector):
         candidates_dict = {end_id: None for end_id in chosen}
 
         self.process_chosen_candidate_dict(candidates_dict, selected_ends)
+        # FX-L32: clear a late commit's RECVD so recv doesn't free the new task.
+        for end_id in candidates_dict:
+            if end_id in ends and ends[end_id].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD:
+                ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
         logger.info(f"handle_send_state dispatching: {list(candidates_dict)}")
         return candidates_dict
 
@@ -470,14 +507,7 @@ class AsyncSelectorBase(AbstractSelector):
         """
         selected_ends = self.selected_ends[self.requester]
 
-        # Drop ends already heard from, so we don't wait on them again.
-        for end_id in list(selected_ends):
-            if end_id not in ends:
-                logger.debug(f"end {end_id} no longer in ends; leaving in-flight")
-                continue
-            if ends[end_id].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD:
-                selected_ends.remove(end_id)
-                logger.debug(f"Removed {end_id} from selected_ends: already RECVD")
+        self._drop_recvd(selected_ends, ends)
 
         if (
             getattr(self, "_recv_bootstrap_allowed", False)
@@ -508,6 +538,11 @@ class AsyncSelectorBase(AbstractSelector):
         for candidate_end in candidates:
             # {end: dispatch stamp}, on the abandon clock (#1c).
             self.all_selected[candidate_end] = self._abandon_clock_now()
+        # FX-D12: a new outstanding task; a prior receipt must not free it at cleanup.
+        for attr in ("ordered_updates_recv_ends", "trainer_eval_recv_ends"):
+            recvd = getattr(self, attr, None)
+            if recvd:
+                setattr(self, attr, [e for e in recvd if e not in candidates_dict])
         logger.debug(
             f"selected_ends now {self.selected_ends[self.requester]}, "
             f"all_selected now {sorted(self.all_selected)}"
@@ -660,7 +695,7 @@ class AsyncSelectorBase(AbstractSelector):
 
     def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
         """Remove an end from the in-flight set."""
-        selected_ends = self.selected_ends[self.requester]
+        selected_ends = self.selected_ends.get(self.requester, set())
         if end_id in ends and end_id in selected_ends:
             selected_ends.remove(end_id)
             self.selected_ends[self.requester] = selected_ends

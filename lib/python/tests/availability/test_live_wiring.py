@@ -19,6 +19,7 @@ Plus the gate-off byte-identity no-op and the Challenge-7 composition contract
 """
 
 import math
+from types import SimpleNamespace
 
 from sortedcontainers import SortedDict
 
@@ -111,6 +112,7 @@ class _Harness(ClientAvailability):
             TrainerAvailState.AVL_EVAL in trace.values()
             for trace in trainer_event_dict.values()
         )
+        self.simulated = True
         self.pending_withheld = {}
         self._sim_withheld_payload = {}
         self._sim_withheld_delivering = {}
@@ -205,10 +207,11 @@ def test_pop_committable_skips_withheld_returns_next():
     h._sim_buffer.add("t1", 150.0, _payload("t1"))
     h._sim_buffer.add("t2", 260.0, _payload("t2"))
 
+    # t1 is held (delivery 200), then delivered before t2 (FX-D50); buffer then empty.
     popped = h._sim_pop_committable(ch)
-    assert popped is not None and popped[0] == "t2"
-    assert "t1" in h.pending_withheld and not sel.holds("t1")
-    # t2 is the only committable; buffer now empty.
+    assert popped is not None and popped[:2] == ("t1", 200.0)
+    assert h.pending_withheld == {} and not sel.holds("t1")
+    assert h._sim_pop_committable(ch)[0] == "t2"
     assert h._sim_pop_committable(ch) is None
 
 
@@ -220,6 +223,18 @@ def test_pop_committable_gate_off_single_pop():
     popped = h._sim_pop_committable(ch)
     assert popped[0] == "a" and popped[1] == 10.0
     assert h.pending_withheld == {}
+
+
+def test_pop_committable_delivers_withheld_due_before_next_sct():
+    # FX-D50: vclock 190, delivery due at 200, next fresh update at 230: the delivery commits first, at 200.
+    h = _Harness({"t1": _DOWN}, now=190, inflight_tracker=True)
+    sel = _AsyncSelector(); sel.add("t2")
+    ch = _Channel(sel, ["t2"])
+    h.pending_withheld = {"t1": 200.0}
+    h._sim_withheld_payload = {"t1": (150.0, _payload("t1"))}
+    h._sim_buffer.add("t2", 230.0, _payload("t2"))
+    assert h._sim_pop_committable(ch)[:2] == ("t1", 200.0)
+    assert h._sim_pop_committable(ch)[:2] == ("t2", 230.0)
 
 
 # ---------------------------------------------------------------------------
@@ -266,21 +281,33 @@ def test_reinject_keeps_slot_only_entry_until_payload_arrives():
     assert not h._sim_buffer.has("t1")                # nothing to deliver yet
     assert "t1" not in h._sim_withheld_delivering
 
-    # the physical update now arrives (actual sct=250, past the original
-    # estimate) via the normal pop path -> recognized as still-withheld,
-    # delivery_ts bumped to the real completion time (no past-dating).
+    # the physical update now arrives (actual sct=250, trainer AVL again): it was
+    # never send-gated, so it commits now and leaves the ledger (FX-N38).
     sel = _OortSelector()
     ch = _Channel(sel, ["t1"])
     p = _payload("t1")
     h._sim_buffer.add("t1", 250.0, p)
-    assert h._sim_pop_committable(ch) is None         # held, not committed
-    assert h.pending_withheld == {"t1": 250.0}        # bumped from the estimate
-    assert h._sim_withheld_payload["t1"] == (250.0, p)
+    assert h._sim_pop_committable(ch) == ("t1", 250.0, p)
+    assert h.pending_withheld == {} and "t1" not in h._sim_withheld_payload
 
-    h._sim_reinject_ready_withheld()
-    assert h.pending_withheld == {}
-    assert h._sim_buffer.has("t1")
-    assert h._sim_withheld_delivering["t1"] == (250.0, 250.0)
+
+def test_evicted_update_down_at_sct_delivers_at_next_avail_not_estimate():
+    # FX-N38: felix evicted 0370 at 600 with an estimate of 750; its update (sct 599.55, AVL) committed at 750.
+    h = _Harness({"t1": _DOWN}, now=150)
+    h.pending_withheld = {"t1": 400.0}  # eviction-time estimate
+    p = _payload("t1")
+    h._sim_buffer.add("t1", 150.0, p)  # completed while down: gated until AVL at 200
+    assert h._sim_pop_committable(_Channel(_OortSelector(), ["t1"])) is None
+    assert h.pending_withheld == {"t1": 200.0} and h._sim_withheld_payload["t1"] == (150.0, p)
+
+
+def test_true_delivery_knob_off_keeps_the_estimate():
+    h = _Harness({"t1": _DOWN}, now=250)
+    h.config = SimpleNamespace(hyperparameters=SimpleNamespace(sim_withheld_true_delivery=False))
+    h.pending_withheld = {"t1": 200.0}
+    h._sim_buffer.add("t1", 250.0, _payload("t1"))
+    assert h._sim_pop_committable(_Channel(_OortSelector(), ["t1"])) is None
+    assert h.pending_withheld == {"t1": 250.0}
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +355,7 @@ def _setup_abandon(selector_cls, inflight_tracker):
 def test_abandon_fires_past_90s_async_shape():
     h, sel, ch = _setup_abandon(_AsyncSelector, inflight_tracker=True)
     ch.set_end_property("t1", PROP_SIM_SEND_TS, 300 - 100)  # age 100 > 90
-    h._sim_abandon_stalled(ch)
+    h._abandon_stalled(ch)
     assert not sel.holds("t1")                  # slot freed -> replacement selectable
     assert "t1" in h.pending_withheld           # delivery ledger registered
     assert "t1" not in h._sim_inflight_expected
@@ -337,15 +364,49 @@ def test_abandon_fires_past_90s_async_shape():
 def test_abandon_fires_past_90s_oort_shape():
     h, sel, ch = _setup_abandon(_OortSelector, inflight_tracker=False)
     ch.set_end_property("t1", PROP_SIM_SEND_TS, 300 - 95)   # age 95 > 90
-    h._sim_abandon_stalled(ch)
+    h._abandon_stalled(ch)
     assert not sel.holds("t1")
     assert "t1" in h.pending_withheld
+
+
+def test_abandon_fires_past_90s_real_wall_clock():
+    """Real sync: a trainer 95s past its dispatch (PROP_ROUND_START_TIME) is abandoned; its late
+    update stays due (pending_withheld) and is received on the real recv set."""
+    import datetime as dt
+
+    from flame.selector.properties import PROP_ROUND_START_TIME
+    h, sel, ch = _setup_abandon(_OortSelector, inflight_tracker=False)
+    h.simulated, h.agg_start_time_ts = False, 1000.0
+    h._avail_now = lambda: 300.0
+    ch.set_end_property("t1", PROP_ROUND_START_TIME, (3, dt.datetime.fromtimestamp(1000.0 + 205)))
+    h._abandon_stalled(ch)
+    assert not sel.holds("t1") and "t1" in h.pending_withheld
+    assert h._real_recv_ends(["t2"]) == ["t2", "t1"]
+    h.commit_withheld("t1")
+    assert h._real_recv_ends(["t2"]) == ["t2"]
+
+
+def test_real_recv_deadline_is_latest_trainer_timeout():
+    """Per-trainer: wait until the latest-dispatched awaited trainer hits 90s; abandoned ones don't count."""
+    import datetime as dt
+    from types import SimpleNamespace
+
+    from flame.selector.properties import PROP_ROUND_START_TIME
+    h, sel, ch = _setup_abandon(_OortSelector, inflight_tracker=False)
+    h.simulated, h.agg_start_time_ts = False, 1000.0
+    h.config = SimpleNamespace(hyperparameters=SimpleNamespace(max_experiment_runtime_s=240))
+    for e, t in (("a", 10.0), ("b", 30.0), ("gone", 50.0)):
+        ch.set_end_property(e, PROP_ROUND_START_TIME, (1, dt.datetime.fromtimestamp(1000.0 + t)))
+    h.pending_withheld["gone"] = 60.0
+    assert h._real_round_recv_deadline(ch, ["a", "b", "gone"]) == 1000.0 + 30 + 90
+    h.config.hyperparameters.max_experiment_runtime_s = 100
+    assert h._real_round_recv_deadline(ch, ["a", "b"]) == 1000.0 + 100
 
 
 def test_abandon_does_not_fire_under_90s():
     h, sel, ch = _setup_abandon(_OortSelector, inflight_tracker=False)
     ch.set_end_property("t1", PROP_SIM_SEND_TS, 300 - 50)   # age 50 <= 90
-    h._sim_abandon_stalled(ch)
+    h._abandon_stalled(ch)
     assert sel.holds("t1")                      # still in-flight
     assert h.pending_withheld == {}
 
@@ -355,7 +416,7 @@ def test_abandon_skips_buffered_committed_and_withheld():
     ch.set_end_property("t1", PROP_SIM_SEND_TS, 300 - 100)
     # already arrived in the buffer -> not stalled.
     h._sim_buffer.add("t1", 250.0, _payload("t1"))
-    h._sim_abandon_stalled(ch)
+    h._abandon_stalled(ch)
     assert sel.holds("t1") and h.pending_withheld == {}
 
 
@@ -364,7 +425,7 @@ def test_abandon_gate_off_is_noop():
     sel = _OortSelector(); sel.add("t1")
     ch = _Channel(sel, ["t1"])
     ch.set_end_property("t1", PROP_SIM_SEND_TS, 0.0)
-    h._sim_abandon_stalled(ch)
+    h._abandon_stalled(ch)
     assert sel.holds("t1") and h.pending_withheld == {}
 
 
@@ -410,10 +471,10 @@ def test_evict_leaves_available_trainer():
 
 
 def test_evict_skips_buffered_trainer():
-    # t1 is UN_AVL at vclock=150 but its update already arrived in the buffer
-    # → not stalled → eviction skipped.
+    # t1 is UN_AVL at vclock=150 but its update completed at 90, while available
+    # → delivered, not stalled → eviction skipped (sct inside the down window is send-gated: FX-D75).
     h, sel, ch = _harness_aware(150, ("t1",), _OortSelector)
-    h._sim_buffer.add("t1", 120.0, _payload("t1"))
+    h._sim_buffer.add("t1", 90.0, _payload("t1"))
     h._sim_evict_unavail_inflight(ch)
     assert sel.holds("t1")
     assert h.pending_withheld == {}
@@ -543,3 +604,111 @@ def test_task_ineligible_2state_trace_does_not_exclude_avl_train_from_eval():
     assert h._trace_has_avl_eval is False
     assert h.get_curr_task_ineligible_trainers("eval") == []
     assert h.get_curr_task_ineligible_trainers("train") == []
+
+
+def test_selection_names_each_exclusion(monkeypatch):
+    # C7 (run 4: feddance/oort_star syn_50 sim had 0.4-1.2 more eligible than real; nothing said which hold).
+    from flame import telemetry
+    from flame.selector.properties import PROP_EXCL_REASON
+    monkeypatch.setattr(telemetry, "is_enabled", lambda: True)
+    h = _Harness({"t1": _DOWN}, now=150)
+    sel = _OortSelector()
+    sel.add("t4")
+    ch = _Channel(sel, ["t1", "t2", "t3", "t4", "t5"])
+    h._task_version_keys = lambda channel, task: {"t5": (3, 0)}
+    h._stamp_exclusions(ch, "train", withheld={"t1"}, owed={"t2"}, unavail={"t1", "t3"})
+    got = {e: end.get_property(PROP_EXCL_REASON) for e, end in ch._ends.items()}
+    assert got == {"t1": "withheld", "t2": "owed", "t3": "unavail", "t4": "in_flight", "t5": "version_guard"}
+
+
+def test_async_held_withhold_clears_recvd_so_the_slot_stays():
+    """FX-N59: an arrived-but-withheld update leaves the end un-RECVD, so the selector keeps its slot (real never got it)."""
+    from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD
+    from flame.selector.async_base import AsyncSelectorBase
+
+    h = _Harness({"t1": _DOWN}, now=130, inflight_tracker=True)
+    h._sim_hold_withheld_slot = True
+    sel = _AsyncSelector(); sel.add("t1")
+    ch = _Channel(sel, ["t1"])
+    ch._ends["t1"].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)  # arrived in the sim channel
+    assert h._sim_withhold_if_unavail(ch, "t1", 150.0, _payload("t1")) is True
+    assert ch._ends["t1"].get_property(KEY_END_STATE) == VAL_END_STATE_NONE
+    AsyncSelectorBase._drop_recvd(sel.selected_ends["agg"], ch._ends)
+    assert sel.holds("t1") and "t1" in h._withheld_slot_held
+
+
+def test_boundary_evict_buffered_update_still_computing():
+    # Run 19 speech felix: a sim payload arrives at once with a future sct; UN_AVL mid-compute must still be evicted.
+    h, sel, ch = _setup_abandon(_AsyncSelector, inflight_tracker=True)
+    h._now, h.proactive_inflight_evict = 150.0, True
+    ch.set_end_property("t1", PROP_SIM_SEND_TS, 140.0)
+    h._sim_buffer.add("t1", 180.0, _payload("t1"))      # completes at 180 > now
+    h._sim_evict_unavail_inflight(ch)
+    assert not sel.holds("t1") and "t1" in h.pending_withheld
+
+
+def test_boundary_evict_skips_buffered_update_already_complete():
+    h, sel, ch = _setup_abandon(_AsyncSelector, inflight_tracker=True)
+    h._now, h.proactive_inflight_evict = 150.0, True
+    h._sim_buffer.add("t1", 90.0, _payload("t1"))       # completed at 90, before the down window
+    h._sim_evict_unavail_inflight(ch)
+    assert sel.holds("t1") and "t1" not in h.pending_withheld
+
+
+def test_lookahead_horizon_stops_at_earlier_inflight():
+    # Run 19 speech fedbuff EV16: a delivery due at 200 must not jump an in-flight trainer expected at 180.
+    h = _Harness({"t1": _DOWN}, now=150, inflight_tracker=True)
+    h._sim_inflight_expected["t2"] = 180.0
+    assert h._sim_next_event_ts(250.0) == 180.0
+    h._sim_inflight_expected["t2"] = 140.0              # already past: no cap
+    assert h._sim_next_event_ts(250.0) == 250.0
+
+
+def test_boundary_evict_buffered_update_send_gated():
+    # Run 20 speech felix: done at sct=120 while UN_AVL (send-gated) — real never receives it, so D.1 frees the slot.
+    h, sel, ch = _setup_abandon(_AsyncSelector, inflight_tracker=True)
+    h._now, h.proactive_inflight_evict = 150.0, True
+    ch.set_end_property("t1", PROP_SIM_SEND_TS, 90.0)
+    h._sim_buffer.add("t1", 120.0, _payload("t1"))      # _DOWN: UN_AVL over [100, 200)
+    h._sim_evict_unavail_inflight(ch)
+    assert not sel.holds("t1") and "t1" in h.pending_withheld
+
+
+def test_send_gated_head_withheld_before_gate():
+    # FX-D88 (run 25 speech fedbuff): a send-gated head hid an in-flight 470 completion; 500 then committed at 470.
+    h = _Harness({"t1": _DOWN}, now=100, inflight_tracker=True)
+    h._sim_hold_withheld_slot = True
+    sel = _AsyncSelector(); sel.add("t1"); sel.add("t2")
+    ch = _Channel(sel, ["t1", "t2"])
+    h._sim_buffer.add("t1", 150.0, _payload("t1"))      # UN_AVL at 150: send-gated
+    h._sim_buffer.add("t2", 190.0, _payload("t2"))      # available at 190: committable
+    h._sim_withhold_gated_heads(ch)
+    assert h._sim_buffer.peek_min() == ("t2", 190.0) and "t1" in h.pending_withheld
+    h._sim_withhold_gated_heads(ch)                     # committable head stays
+    assert h._sim_buffer.peek_min() == ("t2", 190.0)
+
+
+def test_next_abandon_ts_is_dispatch_plus_timeout():
+    # FX-D89 (run 25 cifar fedbuff): real's selector frees at send + 90; sim waited for the next commit.
+    h, sel, ch = _setup_abandon(_AsyncSelector, inflight_tracker=True)
+    h._now = 50.0
+    ch.set_end_property("t1", PROP_SIM_SEND_TS, 12.0)
+    assert h._next_abandon_ts(ch) == 102.0
+    h._sim_buffer.add("t1", 60.0, _payload("t1"))       # arrived: not stalled
+    assert h._next_abandon_ts(ch) is None
+    h._sim_buffer.discard("t1"); h._now = 103.0          # past due: _abandon_stalled's job, not a wake-up
+    assert h._next_abandon_ts(ch) is None
+    h._abandon_stalled(ch)
+    assert not sel.holds("t1")
+
+
+def test_reinjected_held_delivery_keeps_slot_until_commit():
+    # FX-D90 (run 26 speech fedbuff): 8 deliveries due at a flip freed 8 slots at once; real frees one per commit.
+    h = _Harness({"t1": _DOWN}, now=200, inflight_tracker=True)
+    h.pending_withheld["t1"] = 200.0
+    h._sim_withheld_payload["t1"] = (150.0, _payload("t1"))
+    h._withheld_slot_held.add("t1")
+    h._sim_reinject_ready_withheld()
+    assert h._sim_buffer.has("t1") and "t1" in h._sim_delivering_held and "t1" not in h._withheld_slot_held
+    assert h._sim_take_withheld_delivering("t1") == (150.0, 200.0)
+    assert "t1" not in h._sim_delivering_held

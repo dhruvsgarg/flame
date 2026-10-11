@@ -132,6 +132,16 @@ class TestHoldBusySlots:
         assert agg._sim_pending_commit == set()
 
 
+def test_late_withheld_delivery_does_not_retake_slot():
+    # FX-D76 (run 23 speech felix): reinjected deliveries of evicted ends pushed in_flight 15 -> 27.
+    ch = _HoldChannel(["e1", "w1", "w2"], selected=[], all_selected={})
+    agg = _make_hold_agg(buffered=["e1", "w1", "w2"], inflight_expected={"e1": 110.0}, residence=True)
+    agg._sim_withheld_delivering = {"w1": (90.0, 100.0)}
+    agg.pending_withheld = {"w2": 300.0}
+    agg._sim_hold_busy_slots(ch)
+    assert _slot(ch) == {"e1"}
+
+
 class TestBusyNeverMarkedUnavailable:
     """The semantic correction: busy (AVL_TRAIN/AVL_EVAL) trainers must never go on
     the unavailable (UN_AVL) list — _distribute_weights must not add in-flight
@@ -154,3 +164,41 @@ class TestBusyNeverMarkedUnavailable:
         agg._distribute_weights("tag", "train")
         assert agg._sim_inflight_expected["e1"] == 150.0  # only a commit pops it
         assert "e1" not in ch.sent                        # not re-dispatched
+
+
+class TestHoldColdStart:
+    """sim_cold_start_gate: a first-contact end (no known delay) still computing is busy too."""
+
+    def _agg(self, gate, dispatched_ago=0.0):
+        import time as _t
+        agg = _make_hold_agg(buffered=[], inflight_expected={"k1": 120.0}, residence=True)
+        agg._sim_buffer = types.SimpleNamespace(pending_ends=lambda: [], has=lambda e: False)
+        agg._sim_known_delay_s = {"k1": 5.0}
+        agg._sim_committed = set()
+        agg._sim_cold_start_gate = gate
+        agg._sim_gate_compute_cap_s = 10.0
+        agg._sim_dispatch_wall = {"k1": _t.time(), "new1": _t.time() - dispatched_ago}
+        return agg
+
+    def test_first_contact_end_keeps_its_slot(self):
+        ch = _HoldChannel(["k1", "new1"], selected=["k1", "new1"],
+                          all_selected={"k1": 1.0, "new1": 1.0})
+        self._agg(gate=True)._sim_hold_busy_slots(ch)
+        assert _slot(ch) == {"k1", "new1"}
+
+    def test_flag_off_releases_first_contact_end(self):
+        ch = _HoldChannel(["k1", "new1"], selected=["k1", "new1"],
+                          all_selected={"k1": 1.0, "new1": 1.0})
+        self._agg(gate=False)._sim_hold_busy_slots(ch)
+        assert _slot(ch) == {"k1"}  # the overlap hole the gate closes
+
+    def test_past_compute_cap_stays_busy_until_freed(self):
+        # FX-D8: the wall cap bounds the commit-order wait only; busy lasts until commit/free.
+        ch = _HoldChannel(["k1", "new1"], selected=["k1", "new1"],
+                          all_selected={"k1": 1.0, "new1": 1.0})
+        agg = self._agg(gate=True, dispatched_ago=60.0)
+        agg._sim_hold_busy_slots(ch)
+        assert _slot(ch) == {"k1", "new1"}
+        agg._avail_drop_inflight("new1")  # abandon / evict frees it
+        agg._sim_hold_busy_slots(ch)
+        assert _slot(ch) == {"k1"}

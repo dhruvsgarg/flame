@@ -28,6 +28,9 @@ from examples.fwdllm.expts.saturation_stop import (  # noqa: E402
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                     "writeup_figs", "data")
+if not os.path.exists(os.path.join(DATA, "agnews_anchor.json")) and "pytest" in sys.modules:
+    import pytest  # writeup_figs/data is gitignored: only the node that made the figures has it
+    pytest.skip("writeup_figs/data not on this node", allow_module_level=True)
 CADENCE = 150
 # Sized by replay on N1-N3, re-checked out of sample 2026-08-22 (buildplan §5.5).
 EXPECT = {"agnews": (1194, -0.005), "yahoo": (1084, -0.008), "yelp-p": (1179, -0.007)}

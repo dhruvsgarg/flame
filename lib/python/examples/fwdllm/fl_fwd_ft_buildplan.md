@@ -1,5 +1,7 @@
 # Build plan — **the status doc**: the claim, where it stands, and what to launch next
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../_metadata/ROBUST_FL_READINESS.md) → [FLUXTUNE_READINESS.md](../_metadata/FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 > **One file for status and next steps.** §1 is the claim and its scoreboard · §2 is what is running now ·
 > §3 is the queue · §4 is how to run and read a run · §5 is what must not be re-derived · §6 is the rules
 > any change inherits.

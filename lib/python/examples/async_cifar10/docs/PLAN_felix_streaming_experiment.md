@@ -1,5 +1,7 @@
 # Plan: Felix Streaming‑Misprioritization Experiment (async_cifar10, n=50)
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../../_metadata/ROBUST_FL_READINESS.md) → [FELIX_READINESS.md](../../_metadata/FELIX_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 > **Status (updated 2026‑06‑11): IMPLEMENTED.** See the as‑built docs
 > [EXPERIMENT_felix_streaming.md](EXPERIMENT_felix_streaming.md) and
 > [IMPLEMENTATION_felix_streaming.md](IMPLEMENTATION_felix_streaming.md) — they

@@ -86,6 +86,21 @@ class TestSharedMechanism:
         chosen = sel.select(ends, _send_props(), blocked)
         assert not set(chosen) & set(blocked)
 
+    def test_unavail_report_before_first_select(self, build, make_ends):
+        # B1: an UN_AVL report during aggregator init preceded select() and killed the rx task.
+        sel = build(c=3)
+        sel.remove_from_selected_ends(make_ends(count=2, prefix="t"), "t0")
+
+    def test_dispatch_clears_late_commit_receipt(self, build, make_ends):
+        # A withheld end committed late (RECVD) and re-dispatched must stay in flight.
+        sel = build(c=6)
+        ends = make_ends(count=6, prefix="t")
+        for e in ends.values():
+            e.set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
+        chosen = set(sel.select(ends, _send_props(), []))
+        recv_props = dict(_send_props(), **{KEY_CH_STATE: VAL_CH_STATE_RECV})
+        assert chosen and set(sel.select(ends, recv_props, [])) == chosen
+
 
 class TestVersionKeyRePickGuard:
     """R-A: a trainer that already contributed to this exact version_key must
@@ -143,6 +158,16 @@ class TestPendingCommitGuard:
         assert "stale" not in pending
 
 
+    def test_timed_out_end_not_repicked_in_same_pass(self, build, make_ends):
+        """FX-N55: a timeout frees the slot, not the identity -- its update is still owed (EV17)."""
+        sel = build(c=4)
+        ends = make_ends(count=4, prefix="t")
+        sel.requester = "agg"
+        sel.selected_ends = {"agg": {"t0"}}
+        sel.all_selected = {"t0": time.time() - 1000}
+        assert "t0" not in sel.select(ends, _send_props(), [])
+
+
 class TestAbandonClockIsVirtualInSim:
     """#1c: the abandon timeout must run on the clock the trainer commits on --
     virtual in sim -- or a slow sim evicts a still-outstanding trainer."""
@@ -170,6 +195,21 @@ class TestAbandonClockIsVirtualInSim:
         chosen = sel.select(make_ends(count=4, prefix="t"), props, [])
         assert all(sel.all_selected[e] == 500.0 for e in chosen)
 
+    def test_reclaim_emits_abandon_timeout(self, build, monkeypatch):
+        """FX-D96: real asyncfl abandons happen here, so the event must too."""
+        from flame import telemetry
+        seen = []
+        monkeypatch.setattr(telemetry, "is_enabled", lambda: True)
+        monkeypatch.setattr(telemetry, "emit", lambda ev, **f: seen.append((ev, f)))
+        sel = build()
+        sel.requester = "agg"
+        sel.selected_ends = {"agg": {"t0"}}
+        sel.all_selected = {"t0": 0.0}
+        sel._sim_now_s, sel._agg_round, sel._time_mode = 200.0, 7, "real"
+        sel._reclaim_timed_out_ends(sel.selected_ends["agg"])
+        assert [(ev, f["end_id"], f["round"], f["reason"], f["age_s"]) for ev, f in seen] == [
+            ("abandon_timeout", "t0", 7, "abandon_90s_wall", 200.0)]
+
     def test_send_timeout_is_configurable(self, build):
         assert build().send_timeout_wait_s == 90
         assert build(send_timeout_wait_s=300).send_timeout_wait_s == 300
@@ -183,6 +223,14 @@ class TestAvailabilityEligibility:
 
         chosen = sel.select(ends, _send_props(), [])
         assert "t0" not in chosen
+
+    def test_unaware_selector_ignores_avl_state(self, build, make_ends):
+        """FX-N55: the stamped avl_state is the oracle trace; an unaware baseline must not filter on it."""
+        sel = build(c=5)
+        sel.filter_by_avl_state = False
+        ends = make_ends(count=4, prefix="t")
+        ends["t0"].set_property(PROP_AVL_STATE, TrainerAvailState.UN_AVL.value)
+        assert "t0" in sel.select(ends, _send_props(), [])
 
     def test_none_avl_state_stays_eligible(self, build, make_ends):
         """Trainers without availability tracking must not be filtered out."""
@@ -415,3 +463,20 @@ class TestSelectorsDrawIndependently:
         fedbuff = FedBuffSelector(_seed=7, c=4, aggGoal=2)._choose(ends, 8, ctx)
         arand = AsyncRandomSelector(_seed=7, c=4, aggGoal=2)._choose(ends, 8, ctx)
         assert fedbuff != arand
+
+
+class TestDispatchConsumesReceipt:
+    """FX-D12: a dispatch starts a new outstanding task; an earlier receipt of that end (eval
+    reply, commit) must not free it at the next cleanup (FX-N18 22s real queue_wait tail)."""
+
+    def test_redispatched_end_survives_cleanup(self, build):
+        sel = build()
+        sel.requester = "agg"
+        sel.selected_ends["agg"] = set()
+        sel.ordered_updates_recv_ends.append("e")
+        if hasattr(sel, "trainer_eval_recv_ends"):
+            sel.trainer_eval_recv_ends.append("e")
+        sel.process_chosen_candidate_dict({"e": None}, sel.selected_ends["agg"])
+        assert "e" not in sel.ordered_updates_recv_ends
+        assert "e" not in getattr(sel, "trainer_eval_recv_ends", [])
+        assert "e" in sel.all_selected and "e" in sel.selected_ends["agg"]

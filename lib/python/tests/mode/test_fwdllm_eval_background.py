@@ -25,6 +25,8 @@ stubbed -- not portable to a GPU-less CI runner.
 
 import threading
 
+from types import SimpleNamespace
+
 import torch
 import torch.nn as nn
 
@@ -69,6 +71,7 @@ class _FakeEvalAggregator:
             fp16 = False
 
         self.args = _Args()
+        self.config = SimpleNamespace(hyperparameters=SimpleNamespace(eval_max_samples=0))
 
         input_ids = torch.randn(n, in_features)
         labels = torch.randint(0, num_labels, (n,))

@@ -602,7 +602,7 @@ class TestClockJumpClamp:
         channel = FakeChannel(inflight=set(), arrival_order=[])
         msg, (end, _) = agg._sim_recv_min(channel, [])
         assert end == "A"                       # earliest sct still commits first
-        assert agg._vclock.now == 10.0          # S.exp(8) + slack(2), NOT 100
+        assert agg._vclock.now == 8.0           # S.exp(8) + slack(0, FX-D23), NOT 100
 
     def test_disabled_clamp_laps_to_committed_sct(self):
         agg = _make_agg()
@@ -614,6 +614,17 @@ class TestClockJumpClamp:
         msg, (end, _) = agg._sim_recv_min(channel, [])
         assert end == "A"
         assert agg._vclock.now == 100.0         # old behavior: jumps to sct, laps S
+
+    def test_arrived_update_clamps_on_its_sct_not_its_estimate(self):
+        # FX-D23: exp = send + D omits the completion leg. Once B has arrived its sct is exact, so it must not
+        # pin A's commit below A's own sct (sim U6 went negative, gs syn_0b fedbuff, pool_fixB_verify_s2).
+        agg = _make_agg()
+        agg._sim_clock_jump_clamp = True
+        agg._sim_inflight_expected = {"A": 2.7, "B": 2.9}  # leg 0.3 → true scts 3.0 / 3.2
+        agg._sim_known_delay_s = {"A": 2.7, "B": 2.9}
+        channel = FakeChannel(inflight={"A", "B"}, arrival_order=[("A", 3.0), ("B", 3.2)])
+        msg, (end, _) = agg._sim_recv_min(channel, ["A", "B"])
+        assert end == "A" and agg._vclock.now == 3.0
 
     def test_clamp_never_advances_backwards(self):
         # No in-flight FUTURE (all exp <= vclock): clamp is inert, clock advances

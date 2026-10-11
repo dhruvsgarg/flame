@@ -34,6 +34,7 @@ from ..end import End
 from ..telemetry.events import build_selection
 from .properties import (
     PROP_AVL_STATE,
+    PROP_EXCL_REASON,
     PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_LAST_EVAL_ROUND,
     PROP_STAT_UTILITY,
@@ -252,6 +253,7 @@ class AbstractSelector(ABC):
             chosen_set = set(chosen_ids)
             avail_composition: dict[str, int] = {}
             per_trainer: dict[str, dict] = {}
+            excluded_by: dict[str, int] = {}
             for end_id, end in ends.items():
                 state = end.get_property(PROP_AVL_STATE)
                 state_name = getattr(state, "value", None) or (
@@ -270,6 +272,10 @@ class AbstractSelector(ABC):
                     "selected": end_id in chosen_set,
                     "avl_state": state_name,
                 }
+                excl = end.get_property(PROP_EXCL_REASON)
+                if excl:
+                    entry["excl"] = excl
+                    excluded_by[excl] = excluded_by.get(excl, 0) + 1
                 if per_trainer_extra and end_id in per_trainer_extra:
                     entry.update(per_trainer_extra[end_id])
                 per_trainer[end_id] = entry
@@ -307,6 +313,7 @@ class AbstractSelector(ABC):
                 "seed": self._seed,
                 "eligible_fingerprint": elig_fp,
                 "decision_fingerprint": dec_fp,
+                "excluded_by": excluded_by,
             })
 
             ev, fields = build_selection(

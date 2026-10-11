@@ -1,5 +1,7 @@
 # FluxTune — what the code actually does (Q&A)
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../_metadata/ROBUST_FL_READINESS.md) → [FLUXTUNE_READINESS.md](../_metadata/FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 **Scope.** Answers grounded in the code on `dg/fluxtune_expts_sim_init`, the shipped config
 (`_metadata/baselines.yaml` → `fluxtune`, `expt_scripts/fluxtune_n10_smoke.yaml`, launched by
 `expt_scripts/run_sequential.sh:295`), and one full real run

@@ -47,6 +47,12 @@ SIM_WALL_CEILING_S=""  # empty = max_experiment_runtime_s (1×, tight guard; sim
 MODE="both"            # sim | real | both — which time_mode variant(s) of each baseline to run
 NUM_TRAINERS=""        # empty = use whatever's in the parity config (300); non-smoke override only
 ALPHA=""               # empty = use the parity config's dirichlet_alpha (0.1); e.g. 100 for homogeneous
+HARNESS=""             # stub | tiny_cpu: no-GPU local harness (flame/harness.py); empty = production path
+DELAY_FACTOR=""        # trainingDelayFactor: divides every trainer's D (both modes); empty = unscaled
+AGG_HP=""              # --agg-hp 'k=v k2=v2': extra aggregator hyperparameters (A/B a sim flag)
+TRAINER_HP=""          # --trainer-hp 'k=v ...': extra trainer config_overrides hyperparameters (YAML/JSON values)
+DATASET=""             # --dataset cifar10|google_speech: _metadata/datasets.yaml profile (FX-N10); empty = template
+AGG_GOAL=""; CONC=""   # --agg-goal/--concurrency: small-n test shapes (FX-N22)
 DRY_RUN=0              # --dry-run: show the pre-flight table + checks, generate cfg, DON'T launch
 SHOW_ALL=0             # --show-all: expand tier ③ + list passing checks
 STRICT=0               # --strict: a BLOCKING pre-flight check aborts (default: warn + continue, so
@@ -70,10 +76,18 @@ usage() {
   echo "                        multiple (e.g. 'syn_20 syn_50' queues both, one experiment set each)."
   echo "                        Default: use whatever is in the parity config (syn_0)."
   echo "  --num-trainers        non-smoke only: shrink the cohort below the parity config's 300,"
-  echo "                        scaling min_trainers_to_start down with it (gap of 8, same ratio as"
-  echo "                        smoke). Use this instead of 'smoke' when you need a real --runtime-s"
-  echo "                        budget (e.g. a vclock floor for an availability trace) that smoke's"
+  echo "                        with min_trainers_to_start = the whole cohort. Use this instead of"
+  echo "                        'smoke' when you need a real --runtime-s budget (e.g. a vclock floor"
+  echo "                        for an availability trace) that smoke's"
   echo "                        hardcoded rounds=4/runtime=240 would cut short."
+  echo "  --harness             stub|tiny_cpu: run on CPU with synthetic (stub) or a small real-data"
+  echo "                        prefix (tiny_cpu) per trainer; every FL code path stays live."
+  echo "  --delay-factor        divide every trainer's modeled delay D by this (both modes), e.g. 4"
+  echo "                        for short local real legs."
+  echo "  --agg-hp              'k=v ...' extra aggregator hyperparameters, e.g. 'simColdStartGate=true'."
+  echo "  --trainer-hp          'k=v ...' extra trainer hyperparameters (JSON values, no spaces)."
+  echo "  --dataset             cifar10 | google_speech: apply _metadata/datasets.yaml (default: template = cifar10)."
+  echo "  --agg-goal N / --concurrency C   test shapes: agg_goal (= sync aggr_num, launcher fan-out), async c."
   echo "  --alpha               Dirichlet alpha override (default: parity config's 0.1). Supported"
   echo "                        values have an n300 split: 0.1 / 1.0 / 10.0 / 100.0 (100=homogeneous)."
   echo "                        When set, the split lookup uses the n300 partition for that alpha."
@@ -99,6 +113,10 @@ if [ "${1:-}" = "smoke" ]; then
       --mode)      MODE="$2"; shift 2 ;;
       --trace)     TRACE="$2"; shift 2 ;;
       --alpha)     ALPHA="$2"; shift 2 ;;
+      --harness)   HARNESS="$2"; shift 2 ;;
+      --delay-factor) DELAY_FACTOR="$2"; shift 2 ;;
+      --agg-hp)    AGG_HP="$2"; shift 2 ;;
+      --trainer-hp) TRAINER_HP="$2"; shift 2 ;;
       --dry-run)   DRY_RUN=1; shift ;;
       --show-all)  SHOW_ALL=1; shift ;;
       --strict)    STRICT=1; shift ;;
@@ -118,6 +136,13 @@ else
       --trace)               TRACE="$2"; shift 2 ;;
       --num-trainers)        NUM_TRAINERS="$2"; shift 2 ;;
       --alpha)               ALPHA="$2"; shift 2 ;;
+      --harness)             HARNESS="$2"; shift 2 ;;
+      --delay-factor)        DELAY_FACTOR="$2"; shift 2 ;;
+      --agg-hp)              AGG_HP="$2"; shift 2 ;;
+      --trainer-hp)          TRAINER_HP="$2"; shift 2 ;;
+      --dataset)             DATASET="$2"; shift 2 ;;
+      --agg-goal)            AGG_GOAL="$2"; shift 2 ;;
+      --concurrency)         CONC="$2"; shift 2 ;;
       --dry-run)             DRY_RUN=1; shift ;;
       --show-all)            SHOW_ALL=1; shift ;;
       --strict)              STRICT=1; shift ;;
@@ -150,6 +175,8 @@ trace_overrides = sys.argv[8].strip().split() if len(sys.argv) > 8 and sys.argv[
 num_trainers_override = int(sys.argv[9]) if len(sys.argv) > 9 and sys.argv[9].strip() else None
 alpha_override = float(sys.argv[10]) if len(sys.argv) > 10 and sys.argv[10].strip() else None
 requested = set(baselines_str.lower().split())
+import re
+meta_dir = os.path.join(scr, "..", "..", "_metadata")
 # Deterministic selection seed (same for real+sim). Default 1234; SEED=none disables.
 _seed_env = os.environ.get("SEED", "1234").strip()
 seed_val = None if _seed_env.lower() in ("none", "") else int(_seed_env)
@@ -184,6 +211,24 @@ except FileNotFoundError:
     print(f"ERROR: parity config not found: {src}", flush=True)
     sys.exit(1)
 
+def _leaves(d, pre=""):
+    for k, v in (d or {}).items():
+        if isinstance(v, dict):
+            yield from _leaves(v, f"{pre}{k}.")
+        else:
+            yield f"{pre}{k}", v
+
+
+def _log_hp_sources(bl, ds, e, layers):
+    """FX-N15: print every lr/optimizer/batch knob a baseline runs with and the layer that set it (else template)."""
+    keys = ("learningRate", "lrDecay", "minLearningRate", "batchSize", "optimizer.", "Optimizer", "dataset_name", "agg_goal",
+            "localSteps", "epochs", "statUtility", "lrBatchNormalize", "selector.kwargs", "Momentum", "WeightDecay")
+    src = {k: s for s, ov in layers for k, _ in _leaves(ov)}
+    for k, v in sorted(_leaves({"trainer": e.get("trainer", {}), "aggregator": e.get("aggregator", {})})):
+        if any(t in k for t in keys):
+            print(f"[HP] {bl} {ds} {k}={v} ({src.get(k, 'template default')})", flush=True)
+
+
 kept = []
 for e_src in cfg.get("experiments", []):
     bl = e_src.get("baseline", "").lower()
@@ -195,8 +240,35 @@ for e_src in cfg.get("experiments", []):
     # --trace wasn't given, so this loop is a no-op pass-through by default).
     for trace_override in trace_overrides:
         e = copy.deepcopy(e_src)
+        # FX-N10: dataset profile on top of the (cifar10) template.
+        ds_name = os.environ.get("DATASET", "").strip() or "cifar10"
+        from flame.launch.baselines import deep_merge
+        prof = yaml.safe_load(open(os.path.join(meta_dir, "datasets.yaml"), encoding="utf-8"))["datasets"][ds_name] or {}
+        layers = []  # (source, overlay) in merge order; a later layer wins
+        if ds_name != "cifar10":  # cifar10 is the template itself
+            bdefs = yaml.safe_load(open(os.path.join(meta_dir, "baselines.yaml"), encoding="utf-8"))["baselines"]
+            opt = (bdefs.get(bl, {}).get("aggregator", {}).get("optimizer") or {}).get("sort")
+            layers += [(f"datasets.{ds_name}", prof.get("experiment", {})),
+                       (f"datasets.{ds_name}.by_optimizer.{opt}", (prof.get("by_optimizer") or {}).get(opt, {}))]
+        # A baseline's tuned values for this dataset win over the dataset defaults (FX-N15).
+        layers.append((f"datasets.{ds_name}.by_baseline.{bl}", (prof.get("by_baseline") or {}).get(bl, {})))
+        for _src, _ov in layers:
+            e = deep_merge(e, copy.deepcopy(_ov or {}))
+        # FX-N74: the baseline's source-faithful values (baseline_reference.yaml) are the last word.
+        from flame.launch import baseline_reference as _bref
+        layers.append((f"reference.{bl}.{ds_name}", _bref.overlay(_bref.load(), bl, ds_name, e["trainer"]["num_trainers"])))
+        e = deep_merge(e, copy.deepcopy(layers[-1][1]))
+        if ds_name != "cifar10":
+            e["name"] = re.sub(r"_n\d+_", f"_n{e['trainer']['num_trainers']}_", f"{ds_name}_{e['name']}")
         h = e["aggregator"]["config_overrides"]["hyperparameters"]
+        # FX-N22 test shapes: set only the knobs this baseline has.
+        kw = e["aggregator"]["config_overrides"].setdefault("selector", {}).setdefault("kwargs", {})
+        if os.environ.get("AGG_GOAL", "").strip():  # the launcher fans agg_goal into aggGoal + aggr_num
+            e["aggregator"]["agg_goal"] = int(os.environ["AGG_GOAL"])
+        if os.environ.get("CONC", "").strip() and "c" in kw:
+            kw["c"] = int(os.environ["CONC"])
         h["max_experiment_runtime_s"] = runtime_s
+        _log_hp_sources(bl, ds_name, e, layers)
         # Deterministic seed: the SAME value for every experiment so the real and sim
         # variants of each baseline make identical selection draws (dedicated per-
         # selector RNG, PARITY "Determinism / seeding"). Without this, real vs sim are
@@ -220,7 +292,7 @@ for e_src in cfg.get("experiments", []):
             if num_trainers_override:
                 # Shrink the cohort but keep runtime_s as the real budget (unlike
                 # smoke, which hardcodes rounds=4/runtime=240 -- too short for a
-                # trace-driven vclock floor like syn_20's first UN_AVL at t=600s).
+                # trace-driven vclock floor like syn_10's first UN_AVL at t=600s).
                 # Same join-barrier slack ratio as smoke (gap of 8 below the count).
                 # Preserve the config's native partition size as split_num_trainers
                 # so the shrunk cohort reads the existing n<orig> split (e.g. n300)
@@ -231,7 +303,8 @@ for e_src in cfg.get("experiments", []):
                 orig_n = e["trainer"].get("num_trainers", 300)
                 e["trainer"]["num_trainers"] = num_trainers_override
                 e["trainer"]["split_num_trainers"] = orig_n
-                h["min_trainers_to_start"] = max(1, num_trainers_override - 8)
+                # wait for the whole cohort: a fast sim finishes before stragglers join, real sees them (FX-N47)
+                h["min_trainers_to_start"] = num_trainers_override
             e["name"] = f"dbg_{e['name']}"
         # --alpha override: repoint dirichlet_alpha and the split lookup. Only n300
         # splits exist for every alpha (0.1/1.0/10.0/100.0=homogeneous); n48/n50
@@ -266,34 +339,69 @@ for e_src in cfg.get("experiments", []):
             avail["mode"] = trace_override
             t_co_hp = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
             t_co_hp.setdefault("client_notify", {})["trace"] = trace_override
-            if "trackTrainerAvail" in h:
-                h["trackTrainerAvail"]["trace"] = trace_override
-                # For baselines NOT on the ORACULAR legacy path (felix, feddance,
-                # oracle, fedbuff): activate the new sim_unavailability gate so
-                # _init_availability picks up the trace (Sec 7 felix master-gate).
-                # ORACULAR baselines (oort, refl) already activate via the legacy path.
-                if h["trackTrainerAvail"].get("type", "").upper() != "ORACULAR":
-                    h["simUnavailability"] = True
-                    # proactive_inflight_evict is set directly in each experiment's
-                    # config_overrides HP (T1 two-axis split); no auto-detection needed
-                    # here. The client_notify.enabled check below is always False
-                    # (Stage H is future), so proactiveInflightEvict is never set by
-                    # this branch -- the explicit YAML value is authoritative.
-                    t_hp = e.get("trainer", {}).get("hyperparameters", {})
-                    if str(t_hp.get("client_notify", {}).get("enabled", "False")).lower() == "true":
-                        h["proactiveInflightEvict"] = True
-            elif "client_notify" in h and isinstance(h["client_notify"], dict):
-                h["client_notify"]["trace"] = trace_override
-                h["simUnavailability"] = True
-            elif e["aggregator"].get("tracking_mode", "oracular").lower() != "oracular":
-                # Non-oracular baseline with no HP-level tracking block (e.g. feddance
-                # in v1, which has no client_notify in HP and no trackTrainerAvail).
-                # Inject trace via availability_trace so _init_availability finds it.
-                h["availability_trace"] = trace_override
-                h["simUnavailability"] = True
+            h["simUnavailability"] = True  # FX-D94: runner fans the trace into availability_trace
             # Rewrite syn_<digits> or syn<digits> in the name so run dirs are identifiable.
             import re
             e["name"] = re.sub(r"syn_?[0-9]+", trace_override, e["name"])
+        # --harness / --delay-factor: same values on both roles (runner fans the factor).
+        harness_mode = os.environ.get("HARNESS", "").strip()
+        delay_factor = os.environ.get("DELAY_FACTOR", "").strip()
+        if harness_mode:
+            e["trainer"].setdefault("hyperparameters", {})["harness_mode"] = harness_mode
+            h["harness_mode"] = harness_mode
+            e["name"] = f"h{harness_mode}_{e['name']}"
+            # CPU trainers start in ms: shrink the GPU-era spawn pacing.
+            ex = e.setdefault("execution", {})
+            ex["sleep_between_spawns"] = 0.2
+            ex["aggregator_warmup_time"] = 20
+            ex["num_gpus"], ex["gpu_ids"] = 0, None   # CPU only: no GPU pool, no health probe
+        # FX-N22: a GPU harness slot's trainer GPUs (FLAME_SLOT_GPUS bounds the aggregator's).
+        if os.environ.get("FLAME_GPU_IDS", "").strip():
+            ex = e.setdefault("execution", {})
+            ex["gpu_ids"] = [int(g) for g in os.environ["FLAME_GPU_IDS"].split(",")]
+            ex["num_gpus"] = len(ex["gpu_ids"])
+        # FLAME_TRACE_TIME_SCALE (env, read by flame.availability.trace): recorded for provenance.
+        if os.environ.get("FLAME_TRACE_TIME_SCALE", "").strip():
+            h["trace_time_scale"] = float(os.environ["FLAME_TRACE_TIME_SCALE"])
+        if delay_factor:
+            e["trainer"].setdefault("hyperparameters", {})["training_delay_factor"] = float(delay_factor)
+        elif prof.get("device_time_scale"):  # FX-D46: dataset D scale; the per-dispatch timeout scales with it
+            _k = float(prof["device_time_scale"])
+            e["trainer"].setdefault("hyperparameters", {})["training_delay_factor"] = 1.0 / _k
+            h["send_timeout_wait_s"] = 90.0 * _k
+        if prof.get("gpu_train_slots") and not harness_mode:  # FX-D58: GPU legs only
+            e["trainer"].setdefault("hyperparameters", {})["gpu_train_slots"] = int(prof["gpu_train_slots"])
+        # FX-D23: profiled non-compute charges replace the per-baseline hand constants; SIM_CHARGES=legacy reverts.
+        _prof = os.path.join(scr, "..", "sim_charge_profiles",
+                             f"{harness_mode or 'gpu'}_{ds_name or 'cifar10'}.yaml")
+        if os.environ.get("SIM_CHARGES", "profiled") == "profiled" and os.path.exists(_prof):
+            from flame.mode.horizontal.sim_charge_registry import get_profiled_charge_s
+            _main = yaml.safe_load(open(os.path.join(meta_dir, "baselines.yaml"), encoding="utf-8"))[
+                "baselines"][bl]["example"]["aggregator_main"]
+            _stack = os.path.basename(_main)[len("main_"):-len("_agg.py")]
+            _leg = get_profiled_charge_s(_prof, "completion_leg", _stack)
+            _lat = get_profiled_charge_s(_prof, "dispatch_latency", _stack)
+            if _leg is not None and _lat is not None:
+                h.update(simDispatchLatencySeconds=_lat, simCommitOverheadSeconds=0.0,
+                         simRedispatchGapSeconds=0.0, simChargeProfilePath=os.path.abspath(_prof))
+                _thp0 = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
+                _thp0["simCompletionLegSeconds"] = _leg
+                _thp0["simDownloadLegSeconds"] = get_profiled_charge_s(_prof, "download_leg", _stack) or 0.0  # FX-D116
+        if os.environ.get("SIM_CHARGES", "profiled") == "profiled" and "simChargeProfilePath" not in h:
+            # FX-D99: a silent fallback once ran a 0.6 s placeholder leg.
+            print(f"WARNING: no profiled sim charges for {os.path.basename(_prof)} stack of {bl}; "
+                  "legacy hand constants in force", flush=True)
+        for kv in os.environ.get("AGG_HP", "").split():
+            k, v = kv.split("=", 1)
+            h[k] = yaml.safe_load(v)
+        _thp = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
+        for kv in os.environ.get("TRAINER_HP", "").split():
+            k, v = kv.split("=", 1)
+            _thp[k] = yaml.safe_load(v)
+            if k in e["trainer"].get("hyperparameters", {}):  # CLI beats by_baseline (FX-D72)
+                e["trainer"]["hyperparameters"][k] = _thp[k]
+        if _thp.get("data_streaming"):  # FX-N13: the oracle and EV19 read the trainers' schedule
+            h["data_streaming"] = _thp["data_streaming"]
         e["aggregator"]["config_overrides"]["job"]["id"] = e["name"]
         kept.append(e)
 
@@ -311,10 +419,10 @@ PY
 
 # Count experiments in a generated YAML (used to estimate budget and track progress).
 _count_exps() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" "${2:-}" <<'PY'
 import yaml, sys
 d = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-print(len(d.get('experiments', [])))
+print(sum(1 for e in d.get('experiments', []) if str(e.get('name', '')).endswith(sys.argv[2])))
 PY
 }
 
@@ -381,6 +489,15 @@ tiers = [
         {"label": "logdir", "value": env("LOGDIR")},
     ]},
 ]
+# A GPU run whose torch can't see CUDA silently trains on CPU (e.g. a cu130 wheel on a 12.x driver).
+if not any((e.get("trainer", {}).get("hyperparameters") or {}).get("harness_mode") for e in cfg["experiments"]):
+    try:
+        import torch
+        cuda_ok, why = torch.cuda.is_available(), f"torch {torch.__version__} (cuda {torch.version.cuda})"
+    except Exception as ex:  # noqa: BLE001
+        cuda_ok, why = False, f"torch import failed: {ex}"
+    checks.append({"name": "torch sees CUDA (non-harness run)", "level": "ok" if cuda_ok else "error",
+                   "detail": why + ("" if cuda_ok else " -- would silently run on CPU")})
 checks.append({"name": "run names carry _real/_sim tags for parity glob", "level": "ok",
                "detail": "make_debug_yaml keeps the parity config's _sim/_real suffixes"})
 spec = {"title": "CIFAR DEBUG RUN", "subtitle": f"{len(exps)} experiment(s)",
@@ -434,7 +551,7 @@ if [ "$SMOKE" = "1" ]; then
   # Clear any stale config from a previous invocation so a no-match run is
   # skipped (not silently re-running a leftover config).
   rm -f "$cfg"
-  make_debug_yaml "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "" "$ALPHA"
+  HARNESS="$HARNESS" DELAY_FACTOR="$DELAY_FACTOR" AGG_HP="$AGG_HP" TRAINER_HP="$TRAINER_HP" make_debug_yaml "$BASELINES" 240 "$cfg" 1 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "" "$ALPHA"
   if [ -f "$cfg" ]; then
     _n=$(_count_exps "$cfg")
     cifar_preflight "$cfg"; gate_or_continue $?
@@ -460,7 +577,7 @@ cfg="$LOGDIR/debug_run.yaml"
 # Clear any stale config so a no-match run is skipped (not silently re-running
 # a previous baseline's leftover config).
 rm -f "$cfg"
-make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "$NUM_TRAINERS" "$ALPHA"
+DATASET="$DATASET" AGG_GOAL="$AGG_GOAL" CONC="$CONC" HARNESS="$HARNESS" DELAY_FACTOR="$DELAY_FACTOR" AGG_HP="$AGG_HP" TRAINER_HP="$TRAINER_HP" make_debug_yaml "$BASELINES" "$RUNTIME_S" "$cfg" 0 "$SIM_WALL_CEILING_S" "$MODE" "$TRACE" "$NUM_TRAINERS" "$ALPHA"
 
 if [ ! -f "$cfg" ]; then
   echo "No experiments matched for baselines='$BASELINES'. Nothing to run."
@@ -468,7 +585,10 @@ if [ ! -f "$cfg" ]; then
 fi
 
 _n_exps=$(_count_exps "$cfg")
-_budget=$(( _n_exps * RUNTIME_S ))
+_n_sim=$(_count_exps "$cfg" _sim)
+# Per leg: wall cap (runtime; sim: its wall ceiling) + join barrier timeout + 30s startup/teardown (FX-D13, FX-N36).
+_leg_extra=$(( ${JOIN_TIMEOUT_S:-600} + 30 ))
+_budget=$(( (_n_exps - _n_sim) * (RUNTIME_S + _leg_extra) + _n_sim * (${SIM_WALL_CEILING_S:-$RUNTIME_S} + _leg_extra) ))
 echo "  queued: $_n_exps exp(s), estimated budget ~${_budget}s (sim finishes faster than real)"
 cifar_preflight "$cfg"; gate_or_continue $?
 run_node "debug_run" "$cfg" "$_budget" "$_n_exps"

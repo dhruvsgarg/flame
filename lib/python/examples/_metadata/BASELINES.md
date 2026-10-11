@@ -1,5 +1,7 @@
 # Baseline catalog — cross-cutting view + finalized paper matrix
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) → [FELIX_READINESS.md](FELIX_READINESS.md) / [FLUXTUNE_READINESS.md](FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 **What this is.** Two self-contained sections — **Felix** (CNN/speech, this project's async substrate
 paper) and **FluxTune** (LLM forward-mode, the fwdllm paper) — each with its baseline catalog and
 comparison-fit justification in one table, since the two papers never share a results table (§Felix ↔
@@ -231,50 +233,6 @@ over `baselines.yaml`) that regenerates them between markers, run in the same ch
 
 ---
 
-## Remaining work (pick up here next session)
+## Remaining work
 
-Naming is finalized (this doc); none of it is propagated to code/tests/yaml files yet.
-
-1. **Wire the 5 new baselines** (`fedbuff_round`, `fedbuff_it_unaware`, `fedbuff_it_oracular`,
-   `felix_round`, `felix_it` — new keys, not renames) into `run_sequential.sh` (baseline/smoke-yaml pair
-   list), a smoke YAML each, `test_baselines.py`, `test_config_generator.py`.
-2. **Propagate the `fwdllm_plus` → `fwdllm_it_unaware`/`fwdllm_it_oracular` rename into code**
-   (currently yaml/doc-only): `test_baselines.py` (rename dict keys +
-   `test_fwdllm_plus_is_sync_random_fedavg_oracular`), `test_config_generator.py` (parametrized case),
-   `run_sequential.sh`, rename the 7 `fwdllm_plus_n10_smoke*.yaml` files
-   (base/momentum/seeded/sim/sim_seeded/sim_short/sim_short_momentum/short/short_momentum);
-   cosmetic-only comment fixes in `flame/config.py`, `flame/launch/runner.py`,
-   `flame/mode/horizontal/syncfl/fwdllm_aggregator.py`, `flame/selector/random.py`.
-3. **Park `fluxtune_dynkc` (do not delete)**: C2/dynamic K/C is a pending, not descoped, third L2
-   contribution (see ᵖ note under the FluxTune paper matrix) — `fluxtune_dynkc` is the flag path that
-   promotes it from `⛔ RESEARCH` to part of the headline `fluxtune` config once validated. Keep
-   `test_fluxtune_dynkc_preserves_legacy_production_default` and its `test_config_generator.py` param
-   case as-is; leave the `configs/trainer_base.yaml` comment. Revisit only once C2 either lands (rename
-   off the `_dynkc` research name into the finalized headline config) or is explicitly descoped (ask the
-   operator first — this doc's ✅/⚠/pending framing depends on the answer). A *Felix*-side reuse of
-   dynamic K/C as a Felix-internal ablation (disambiguation note, C2 exception) is a separate, later
-   concern either way.
-4. **Sweep remaining referencing docs/scripts** for old-key mentions and apply this doc's display names:
-   `EXPERIMENTS.md` (§1 table + §10 run ledger), `EXPTS_CHARTER.md`, `simulate_fwdllm.md`,
-   `fluxtune_contributions.md`, `MIGRATION_TO_LAUNCHER_FWDLLM.md`, `expt_scripts/compare_baselines.py`,
-   `expt_scripts/plotlib/baselines.py` (this feeds figure-legend text — apply the `(P)`/`+IT`/`+O`
-   display names here so legends actually render them), `expt_scripts/logical_parity.py`,
-   `expt_scripts/run_parity.py`, `experiments.yaml`, `telemetry_manifest.yaml`, `figs.yaml`.
-5. **Retune** `felix_round`/`felix_it`'s placeholder `learning_rate: 0.075` (ported from fluxtune,
-   marked `TODO(verify)` in `baselines.yaml`) against a smoke run.
-6. **Verification pass**: repo-wide grep for every old key name (zero non-historical hits expected),
-   `test_baselines.py` + `test_config_generator.py` green.
-7. ~~`fluxtune_v2`'s `FWDLLM_FD_SCALE_INVARIANT=1` requirement is a manual env-var export, not enforced by
-   config.~~ **Done (2026-08-15).** Still a manual export (the schema has no env-var mechanism to auto-set
-   it), but `run_sequential.sh` now has a preflight check: any resolved `adapter_reduction_factor != 16`
-   with the var unset is `level: error`, `--force`-able, same treatment as the wall-clock/sim-charge-profile
-   checks. Verified: blocks `--only fluxtune --mode real --dry-run` without the export, passes with it,
-   and is silent for `fluxtune_v1` (rf=16, doesn't need the var).
-8. **Re-profile `sim_charge_profiles/fluxtune.yaml` against a `fluxtune_v2` real run.** It predates the
-   estimator-layer changes (2026-08-15) and in particular has no charge for the cos ground-truth audit's
-   real-wall cost — a **sim**-mode `fluxtune`/`fluxtune_v2` run's vclock should be treated as unvalidated
-   until this lands (real-mode is unaffected). The launcher's provenance preflight blocks `--only
-   fluxtune_v1`/`--only fluxtune_v2` on this already (correctly); it cannot block plain `--only fluxtune`
-   since the profile's recorded name still string-matches. Once re-profiled, decide whether `fluxtune_v1`
-   needs its own profile too or can keep sharing `fluxtune.yaml` (it's byte-identical to what that profile
-   was originally profiled against, so sharing is currently correct for v1, not v2).
+Moved to `FLUXTUNE_READINESS.md` FT-N3.

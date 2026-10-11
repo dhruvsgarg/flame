@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import os
 from typing import Optional
 
 from sortedcontainers import SortedDict
@@ -37,13 +38,7 @@ _AVL_STATES = frozenset({TrainerAvailState.AVL_TRAIN, TrainerAvailState.AVL_EVAL
 def resolve_trace_name(run_dir: str) -> Optional[str]:
     """Read aggregator_config.json in run_dir and return the configured trace name.
 
-    Priority mirrors debug_run.sh's own ``--trace`` substitution branch (see
-    UNAVAILABILITY_DESIGN.md Baseline matrix ⁺ note): oort/oort_star/refl write
-    trackTrainerAvail.trace; felix/oort_star (HP-level client_notify path)
-    write client_notify.trace; feddance/fedbuff write availability_trace. Try
-    in that order so a run with more than one key set (e.g. a stale YAML
-    default alongside the live debug_run.sh override) resolves to the one
-    debug_run.sh itself would have picked, not an arbitrary one.
+    Order: legacy trackTrainerAvail.trace (runs before FX-D94), then availability_trace, then client_notify.trace.
 
     Returns None if the config file is missing/unreadable or no key is set
     (gate off / syn_0-style always-available).
@@ -56,29 +51,39 @@ def resolve_trace_name(run_dir: str) -> Optional[str]:
         return None
     hp = cfg.get("hyperparameters", cfg)
 
-    track = hp.get("trackTrainerAvail") or {}
-    trace = track.get("trace")
-    if trace:
-        return trace
-
-    client_notify = hp.get("client_notify") or {}
-    trace = client_notify.get("trace")
-    if trace:
-        return trace
-
-    return hp.get("availability_trace") or None
+    track = hp.get("trackTrainerAvail") or {}  # runs before FX-D94 carry the trace here
+    if track.get("trace"):
+        return track["trace"]
+    if hp.get("availability_trace"):  # FX-D94
+        return hp["availability_trace"]
+    return (hp.get("client_notify") or {}).get("trace") or None
 
 
 def load_ground_truth(
-    trace_name: Optional[str], base_dir: Optional[str] = None
+    trace_name: Optional[str], base_dir: Optional[str] = None, run_dir: Optional[str] = None
 ) -> Optional[dict]:
-    """{task_id: SortedDict[ts -> state_str]} for every registered trainer.
-
-    Thin re-export of flame.availability.trace.read_trainer_unavailability —
-    the canonical per-trainer trace loader, already used aggregator-side.
+    """{task_id: SortedDict[ts -> state_str]} for every registered trainer, at `run_dir`'s own
+    `trace_time_scale` when given (L29: never this process's FLAME_TRACE_TIME_SCALE).
     Returns None when trace_name is falsy or the registry/trace can't be read.
     """
-    return read_trainer_unavailability(trace_name, base_dir=base_dir)
+    scale = None
+    if run_dir:
+        try:
+            with open(os.path.join(run_dir, "aggregator_config.json")) as f:
+                scale = (json.load(f).get("hyperparameters") or {}).get("trace_time_scale")
+        except (OSError, ValueError, AttributeError):
+            pass
+    if scale is None:
+        return read_trainer_unavailability(trace_name, base_dir=base_dir)
+    env = os.environ.get("FLAME_TRACE_TIME_SCALE")
+    os.environ["FLAME_TRACE_TIME_SCALE"] = str(scale)
+    try:
+        return read_trainer_unavailability(trace_name, base_dir=base_dir)
+    finally:
+        if env is None:
+            os.environ.pop("FLAME_TRACE_TIME_SCALE")
+        else:
+            os.environ["FLAME_TRACE_TIME_SCALE"] = env
 
 
 def by_short_id(ground_truth: Optional[dict]) -> dict:

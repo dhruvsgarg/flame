@@ -21,27 +21,23 @@ https://pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html.
 """
 
 import argparse
-import ast
-import json
 import logging
 import os
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torchvision.transforms as transforms
 
 # wandb setup
 import wandb
 from flame.config import Config
 from flame.dataset import Dataset
 from flame.mode.horizontal.asyncfl.top_aggregator import TopAggregator
-from torchvision.datasets import CIFAR10
+from flame import harness
 
 import sys as _sys, os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", ".."))
+import fl_data  # noqa: E402
+from agg_common import ExampleAggregatorMixin  # noqa: E402
 from oracle_utility import OracleInjectMixin  # noqa: E402
-from sortedcontainers import SortedDict
 
 
 def initialize_wandb(run_name=None):
@@ -76,33 +72,9 @@ def initialize_wandb(run_name=None):
 logger = logging.getLogger(__name__)
 
 
-class Net(nn.Module):
-    """Net class."""
+Net = fl_data.CifarNet  # FX-N10: models live in fl_data (one per dataset)
 
-    def __init__(self):
-        """Initialize."""
-        super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, 3)
-        self.conv2 = nn.Conv2d(64, 128, 3)
-        self.conv3 = nn.Conv2d(128, 256, 3)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.fc1 = nn.Linear(64 * 4 * 4, 128)
-        self.fc2 = nn.Linear(128, 256)
-        self.fc3 = nn.Linear(256, 10)
-
-    def forward(self, x):
-        """Forward."""
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))
-        x = x.view(-1, 64 * 4 * 4)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return F.log_softmax(x, dim=1)
-
-
-class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
+class PyTorchCifar10Aggregator(ExampleAggregatorMixin, OracleInjectMixin, TopAggregator):
     """PyTorch CIFAR-10 Aggregator."""
 
     def __init__(
@@ -110,6 +82,8 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
     ) -> None:
         """Initialize a class instance."""
         self.config = config
+        # Before load_data, which runs ahead of initialize.
+        self.harness_mode = harness.harness_mode(self.config.hyperparameters)
         self.model = None
         self.dataset: Dataset = None
 
@@ -129,92 +103,6 @@ class PyTorchCifar10Aggregator(OracleInjectMixin, TopAggregator):
         self.log_to_wandb = log_to_wandb
         if self.log_to_wandb:
             initialize_wandb(run_name=wandb_run_name)
-
-    def initialize(self):
-        """Initialize role."""
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        self.model = Net().to(self.device)
-        self._init_oracle_util(
-            _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
-                          "..", "..", "data"))
-
-    def load_data(self) -> None:
-        """Load a test dataset."""
-        transform_test = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
-                ),
-            ]
-        )
-
-        dataset = CIFAR10(
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data"),
-            train=False,
-            download=True,
-            transform=transform_test,
-        )
-
-        test_kwargs = {
-            "batch_size": self.batch_size,
-            "shuffle": False,
-            "num_workers": 0,  # Changed from 2 to 0 - reduces CPU RAM usage
-            "pin_memory": True,  # Use pinned memory for faster CPU->GPU transfers
-        }
-
-        self.test_loader = torch.utils.data.DataLoader(dataset, **test_kwargs)
-        self.dataset = Dataset(dataloader=self.test_loader)
-
-    def train(self) -> None:
-        """Train a model."""
-        pass
-
-    def evaluate(self) -> None:
-        """Evaluate (test) a model every evalEveryNRounds rounds (default 10)."""
-        eval_every = self.config.hyperparameters.eval_every_n_rounds or 10
-        if self._round % eval_every != 0:
-            return
-        # Off the critical path: snapshot weights now, run the test-set forward
-        # pass in a daemon thread so the aggregator keeps committing/dispatching
-        # (the synchronous eval penalised async — more rounds -> more pauses).
-        #
-        # Backgrounding is why this needs no sim_model_*_compute_time vclock fold
-        # (flame/config.py); if eval ever becomes synchronous, add one or sim mode
-        # will under-count wall time.
-        eval_model = self._eval_snapshot_model()
-        if eval_model is None:
-            return  # prior async eval still running
-        round_num = self._round
-        test_loader, device = self.test_loader, self.device
-
-        def _job():
-            try:
-                eval_model.eval()
-                test_loss = 0
-                correct = 0
-                with torch.no_grad():
-                    for data, target in test_loader:
-                        data, target = data.to(device), target.to(device)
-                        output = eval_model(data)
-                        test_loss += F.nll_loss(output, target, reduction="sum").item()
-                        pred = output.argmax(dim=1, keepdim=True)
-                        correct += pred.eq(target.view_as(pred)).sum().item()
-                total = len(test_loader.dataset)
-                self._eval_emit(round_num, test_loss / total, correct / total)
-            except Exception as e:  # eval must never break training
-                logger.warning(f"[ASYNC_EVAL] failed (non-fatal): {e}")
-                self._eval_inflight = False
-
-        import threading
-        threading.Thread(target=_job, daemon=True).start()
-
-        logger.debug(f"loss list at cifar agg: {self.loss_list}")
-
-    def check_and_sleep(self) -> None:
-        """Induce transient unavailability"""
-        pass
 
 
 if __name__ == "__main__":

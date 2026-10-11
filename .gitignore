@@ -112,6 +112,12 @@ specs/*
 # Experiment run outputs (telemetry / plots / logs) — generated, not source
 lib/python/examples/async_cifar10/experiments/run_*/
 lib/python/examples/async_cifar10/experiments/smoke_*/
+lib/python/examples/async_cifar10/experiments/campaign_*/
+lib/python/examples/async_cifar10/experiments/pool_*/
+lib/python/examples/async_cifar10/experiments/iso_*/
+lib/python/examples/async_cifar10/experiments/harness_*/
+# harness pool roots + per-node state (FX-N22: real-leg bank, learned durations; never shared, T9)
+lib/python/examples/experiments/
 lib/python/examples/fmow/experiments/run_*/
 lib/python/examples/fmow/experiments/smoke_*/
 lib/python/examples/fwdllm/experiments/
@@ -127,3 +133,6 @@ temp_trainer.log
 # Smoke-mode sim charge profiles: built from 10-minute real runs, never valid
 # for a scored arm (expt_scripts/nodes/run_node.sh).
 lib/python/examples/fwdllm/sim_charge_profiles/smoke/
+
+# Reference papers (local only)
+lib/python/examples/*.pdf

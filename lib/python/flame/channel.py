@@ -19,6 +19,9 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Union
+import pickle
+import struct
+import threading
 import time
 import cloudpickle
 from aiostream import stream
@@ -33,9 +36,12 @@ from flame.mode.role import Role
 from flame.monitor.runtime import timer_decorator
 import gzip
 import zstandard as zstd
-import sys
+import os
 
 logger = logging.getLogger(__name__)
+
+# FX-N63: a recv_fifo reader enqueues on dequeue, so a deadline cancel can't drop an arrived update.
+_RECV_FIFO_DIRECT_ENQUEUE = os.environ.get("FLAME_RECV_FIFO_LEGACY", "0") != "1"
 
 KEY_CH_STATE = "state"
 VAL_CH_STATE_RECV = "recv"
@@ -47,6 +53,52 @@ END_LAST_AVAIL_TS = "end_last_avail_ts"
 END_LAST_UNAVAIL_TS = "end_last_unavail_ts"
 PROP_TOTAL_AVAIL_DURATION = "total_avail_duration"
 PROP_TOTAL_UNAVAIL_DURATION = "total_unavail_duration"
+
+
+_FRAME = b"FLF1"
+_OOB_MIN_BYTES = 1 << 20
+
+
+def encode_message(message) -> bytes:
+    """Pickle a message; top-level bytes values >= 1 MiB travel out-of-band after it (FX-N77).
+
+    Frame: FLF1 | count | sizes | pickled head | raw buffers. One copy of each large buffer instead of pickle's 1.5,
+    and decode_message hands them back as zero-copy memoryviews.
+    """
+    if not (isinstance(message, dict) and any(isinstance(v, (bytes, bytearray)) and len(v) >= _OOB_MIN_BYTES
+                                              for v in message.values())):
+        return cloudpickle.dumps(message)
+    bufs = []
+    head = cloudpickle.dumps(
+        {k: pickle.PickleBuffer(v) if isinstance(v, (bytes, bytearray)) and len(v) >= _OOB_MIN_BYTES else v
+         for k, v in message.items()}, protocol=5, buffer_callback=bufs.append)
+    raws = [b.raw() for b in bufs]
+    sizes = [len(head)] + [r.nbytes for r in raws]
+    return b"".join((_FRAME, struct.pack(f"<I{len(sizes)}Q", len(sizes), *sizes), head, *raws))
+
+
+def decode_message(data):
+    """Inverse of encode_message; also reads plain cloudpickle payloads."""
+    mv = memoryview(data)
+    if bytes(mv[:4]) != _FRAME:
+        return cloudpickle.loads(data)
+    n = struct.unpack_from("<I", mv, 4)[0]
+    off, parts = 8 + 8 * n, []
+    for size in struct.unpack_from(f"<{n}Q", mv, 8):
+        parts.append(mv[off:off + size])
+        off += size
+    return cloudpickle.loads(parts[0], buffers=parts[1:])
+
+
+_DRAIN_POLL_S = 0.05  # drain_ready fallback poll when a backend doesn't signal arrivals
+
+
+def wait_arrival(channel, after_seq: int, timeout: float) -> None:
+    """Sleep up to `timeout`, waking early on a delivery after `after_seq` (FX-N77); plain sleep for non-Channels."""
+    if isinstance(channel, Channel):
+        channel.wait_arrival(after_seq, timeout)
+    else:
+        time.sleep(timeout)
 
 
 class Channel(object):
@@ -72,6 +124,7 @@ class Channel(object):
         self._groupby = groupby
         self.properties = dict()
         self.await_join_event = None
+        self.departed_eot = None  # EOT a removed end left unread in its rx queue (FX-N77)
         self.mc = Role.mc
 
         self.trainer_unavail_list = None
@@ -87,8 +140,14 @@ class Channel(object):
         # dict showing active, awaiting recv fifo tasks on each ends
         self._active_recv_fifo_tasks: set(str) = set()
 
+        # FX-N77: arrival signal, so waiters wake on a delivery instead of polling
+        self._arrival_seq = 0
+        self._arrival_ev = None  # asyncio.Event on the backend loop
+        self._arrival_cv = threading.Condition()
+
         async def _setup():
             self.await_join_event = asyncio.Event()
+            self._arrival_ev = asyncio.Event()
 
             self._bcast_queue = asyncio.Queue()
             self._rx_queue = asyncio.Queue()
@@ -180,7 +239,8 @@ class Channel(object):
         `allow_recv_bootstrap` on `ends()`.
         """
         end_list = self.ends(state, allow_recv_bootstrap=True)
-        return end_list[0] if len(end_list) > 0 else None
+        # None once the peer has left (shutdown race); send() then no-ops.
+        return end_list[0] if end_list else None
     
     def get_c(self):
         try:
@@ -197,6 +257,7 @@ class Channel(object):
         trainer_version_keys: dict[str, tuple] = None,
         data_id: int = None,
         allow_recv_bootstrap: bool = False,
+        num_to_select: int = None,
     ) -> list[str]:
         """Return a list of end ids.
 
@@ -206,6 +267,7 @@ class Channel(object):
             data_id: Progress axis for selection telemetry. Not part of
                 version_key (model_version already implies it); pass
                 explicitly when a caller needs it.
+            num_to_select: FX-N37 top-up count overriding the selector's default size.
             allow_recv_bootstrap: Let a RECV-state selector fabricate an
                 in-flight set when nothing was ever dispatched. Only safe for
                 a single-parent caller (`one_end()` sets this); a real
@@ -242,6 +304,7 @@ class Channel(object):
                     trainer_version_keys=trainer_version_keys,
                     data_id=data_id,
                     allow_recv_bootstrap=allow_recv_bootstrap,
+                    **({"num_to_select": num_to_select} if num_to_select else {}),
                 )
                 logger.debug(f"trainer unavail list available, selected: {selected}")
                 if len(selected) == 0:
@@ -256,6 +319,7 @@ class Channel(object):
                     trainer_version_keys=trainer_version_keys,
                     data_id=data_id,
                     allow_recv_bootstrap=allow_recv_bootstrap,
+                    **({"num_to_select": num_to_select} if num_to_select else {}),
                 )
                 logger.debug(
                     f"trainer unavail list not available, selected: {selected}"
@@ -374,7 +438,7 @@ class Channel(object):
         """Broadcast a message in a blocking call fashion."""
 
         async def _put():
-            payload = cloudpickle.dumps(message)
+            payload = encode_message(message)
             self.mc.accumulate("bytes", "broadcast", len(payload))
             await self._bcast_queue.put(payload)
 
@@ -382,7 +446,7 @@ class Channel(object):
 
     def dumps(self, message) -> bytes:
         """Serialize a message once for reuse across sends (see send_payload)."""
-        return cloudpickle.dumps(message)
+        return encode_message(message)
 
     def send_payload(self, end_id, payload):
         """Send a pre-serialized payload (from dumps) — avoids re-pickling the
@@ -400,22 +464,7 @@ class Channel(object):
     def send(self, end_id, message):
         """Send a message to an end in a blocking call fashion."""
 
-        async def _put():
-            if not self.has(end_id):
-                # can't send message to end_id
-                return
-
-            payload = cloudpickle.dumps(message)
-            # payload2 = gzip.compress(payload)
-            # compressor = zstd.ZstdCompressor()
-            # payload2 = compressor.compress(payload)
-            self.mc.accumulate("bytes", "send", len(payload))
-            logger.info(f"size of payload = {sys.getsizeof(payload)}")
-            await self._ends[end_id].put(payload)
-
-        _, status = run_async(_put(), self._backend.loop())
-
-        return status
+        return self.send_payload(end_id, encode_message(message))  # pickle here, not on the backend loop (FX-N77)
 
     def recv(self, end_id) -> tuple[Any, datetime]:
         # NOTE (DG): This isnt being used in horizontal top-agg async,
@@ -453,7 +502,7 @@ class Channel(object):
 
         # dissect the payload into msg and timestamp
         msg, timestamp = (
-            (cloudpickle.loads(payload[0]), payload[1])
+            (decode_message(payload[0]), payload[1])
             if payload and status
             else (None, None)
         )
@@ -464,7 +513,8 @@ class Channel(object):
         return msg, timestamp
 
     def recv_fifo(
-        self, end_ids: list[str], first_k: int = 0, timeout: float = None
+        self, end_ids: list[str], first_k: int = 0, timeout: float = None,
+        deadline: float = None,
     ) -> tuple[Any, tuple[str, datetime]]:
         """Receive a message per end from a list of ends.
 
@@ -485,6 +535,8 @@ class Channel(object):
                  arrives within it, yield (None, ("", now)) and stop, so a
                  caller never blocks forever on in-flight ends that have gone
                  quiet (unavailable / departed). Default None = block (legacy).
+        deadline: optional absolute ``time.time()`` bound on the whole call; each
+                 wait is capped at the time left (FX-L40). Default None = no cap.
 
         Returns
         -------
@@ -507,11 +559,26 @@ class Channel(object):
             logger.debug("Got an empty end id list, will yield None")
             yield None, ("", datetime.now())
 
+        def _wait_s():
+            if deadline is None:
+                return timeout
+            left = max(0.01, deadline - time.time())  # 0 races run_async's future
+            return left if timeout is None else min(timeout, left)
+
+        streamer_timeout = _wait_s()
+
+        _streamers = []
+
         async def _put_message_to_rxq_inner():
             logger.debug("Created task for recv_fifo in put_msg_to_rxq_inner")
-            _ = asyncio.create_task(
-                self._streamer_for_recv_fifo(end_ids, timeout=timeout)
-            )
+            _streamers.append(asyncio.create_task(
+                self._streamer_for_recv_fifo(end_ids, timeout=streamer_timeout)
+            ))
+
+        async def _stop_streamer():
+            for t in _streamers:
+                t.cancel()
+            await asyncio.gather(*_streamers, return_exceptions=True)
 
         async def _get_message_inner():
             logger.debug("In _get_msg_inner(), will await until getting a message")
@@ -524,26 +591,30 @@ class Channel(object):
 
         # the _get_message_inner() coroutine fetches a message from
         # the temp queue; we call this coroutine first_k times
-        for _ in range(first_k):
-            result, status = run_async(
-                _get_message_inner(), self._backend.loop(), timeout=timeout
-            )
-            logger.debug(f"After getting message, status: {status}")
-            # timeout (or any non-delivery): don't index into a None result;
-            # signal "no message" to the caller and stop yielding.
-            if not status or result is None:
-                logger.debug(
-                    f"recv_fifo: no message within timeout={timeout}s; "
-                    f"yielding None and stopping"
+        try:
+            for _ in range(first_k):
+                result, status = run_async(
+                    _get_message_inner(), self._backend.loop(), timeout=_wait_s()
                 )
-                yield None, ("", datetime.now())
-                return
-            (end_id, payload) = result
-            logger.debug(f"get payload for {end_id}")
+                logger.debug(f"After getting message, status: {status}")
+                # timeout (or any non-delivery): don't index into a None result;
+                # signal "no message" to the caller and stop yielding.
+                if not status or result is None:
+                    logger.debug(
+                        f"recv_fifo: no message within timeout={timeout}s; "
+                        f"yielding None and stopping"
+                    )
+                    yield None, ("", datetime.now())
+                    return
+                (end_id, payload) = result
+                logger.debug(f"get payload for {end_id}")
 
-            msg, metadata = self._apply_recv_payload(end_id, payload)
+                msg, metadata = self._apply_recv_payload(end_id, payload)
 
-            yield msg, metadata
+                yield msg, metadata
+        finally:
+            if deadline is not None:  # a leftover reader made the next call skip its ends (P2 feddance 87s)
+                run_async(_stop_streamer(), self._backend.loop())
 
     def _apply_recv_payload(
         self, end_id: str, payload
@@ -567,7 +638,7 @@ class Channel(object):
             logger.debug(f"channel {self._name} has no end id {end_id} for msg")
 
         msg, timestamp = (
-            (cloudpickle.loads(payload[0]), payload[1]) if payload else (None, None)
+            (decode_message(payload[0]), payload[1]) if payload else (None, None)
         )
         metadata = (end_id, timestamp)
 
@@ -631,8 +702,9 @@ class Channel(object):
             def _sweep():
                 pulled = []
                 for end_id in live:
-                    while True:
-                        payload = self._ends[end_id].get_ready_nowait()
+                    end = self._ends.get(end_id)  # may have left during the poll
+                    while end is not None:
+                        payload = end.get_ready_nowait()
                         if payload is None:
                             break
                         pulled.append((end_id, payload))
@@ -640,13 +712,22 @@ class Channel(object):
 
             out.extend(_sweep())
             if not out and timeout and live:
-                # Poll (rather than await End.get(), whose cancellation could
-                # drop a just-delivered item) until the first arrival or budget.
+                # Wait for an arrival (not End.get(), whose cancellation could drop a just-delivered item), then
+                # sweep again; FX-N77: event-driven, with a coarse poll for backends that don't note_arrival.
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + float(timeout)
+                ev = getattr(self, "_arrival_ev", None)
                 while not out and loop.time() < deadline:
-                    await asyncio.sleep(0.002)
+                    seq = getattr(self, "_arrival_seq", 0)
+                    if ev is not None:
+                        ev.clear()
                     out.extend(_sweep())
+                    if not out and getattr(self, "_arrival_seq", 0) == seq:
+                        wait_s = max(0.0, min(_DRAIN_POLL_S, deadline - loop.time()))
+                        try:
+                            await (asyncio.wait_for(ev.wait(), wait_s) if ev is not None else asyncio.sleep(wait_s))
+                        except asyncio.TimeoutError:
+                            pass
             return out
 
         raw, ok = run_async(_pull_raw(), self._backend.loop())
@@ -697,6 +778,8 @@ class Channel(object):
                         payload = await asyncio.wait_for(get_coro, timeout)
                     else:
                         payload = await get_coro
+                    if payload and _RECV_FIFO_DIRECT_ENQUEUE:
+                        self._rx_queue.put_nowait((end_id, payload))  # FX-N63: no await since the dequeue
                     if payload:
                         # ignore timestamp for measuring bytes received
                         self.mc.accumulate("bytes", "recv", len(payload[0]))
@@ -734,6 +817,7 @@ class Channel(object):
                 )
 
         runs = []
+        reader_ends = []
         skipped_ends = []
         for end_id in end_ids:
             if not self.has(end_id):
@@ -754,6 +838,7 @@ class Channel(object):
                 continue
 
             runs.append(_get_inner(end_id))
+            reader_ends.append(end_id)
             self._active_recv_fifo_tasks.add(end_id)
             logger.debug(
                 f"[RECV_FIFO] active task added for {end_id}, total runs: {len(runs)}"
@@ -768,24 +853,25 @@ class Channel(object):
         )
 
         merged = stream.merge(*runs)
-        async with merged.stream() as streamer:
-            msg_count = 0
-            async for result in streamer:
-                (end_id, payload) = result
-                # Active-task cleanup is handled in _get_inner's finally.
-                # Don't enqueue non-messages (timed-out / quiet ends): they
-                # would consume a first_k slot ahead of a real update. The
-                # caller's own timeout bounds how long it waits on the rx queue.
-                if payload is None:
+        msg_count = 0
+        try:
+            async with merged.stream() as streamer:
+                async for result in streamer:
+                    (end_id, payload) = result
+                    # Active-task cleanup is handled in _get_inner's finally.
+                    # Don't enqueue non-messages (timed-out / quiet ends): they
+                    # would consume a first_k slot ahead of a real update. The
+                    # caller's own timeout bounds how long it waits on the rx queue.
+                    if payload is None or _RECV_FIFO_DIRECT_ENQUEUE:  # FX-N63: the reader enqueued it
+                        continue
+                    msg_count += 1
+                    await self._rx_queue.put(result)
                     logger.debug(
-                        f"[RECV_FIFO] no message from {end_id}; not enqueuing"
+                        f"[RECV_FIFO] delivered message {msg_count} from {end_id}"
                     )
-                    continue
-                msg_count += 1
-                await self._rx_queue.put(result)
-                logger.debug(
-                    f"[RECV_FIFO] delivered message {msg_count} from {end_id}"
-                )
+        finally:
+            # FX-N63: merge starts readers lazily; one cancelled before it started never runs its finally.
+            self._active_recv_fifo_tasks.difference_update(reader_ends)
 
         logger.debug(
             f"[RECV_FIFO] Merge stream completed, delivered {msg_count} messages from {len(runs)} tasks"
@@ -825,7 +911,7 @@ class Channel(object):
         payload, status = run_async(_peek(), self._backend.loop())
 
         msg, timestamp = (
-            (cloudpickle.loads(payload[0]), payload[1])
+            (decode_message(payload[0]), payload[1])
             if payload and status
             else (None, None)
         )
@@ -858,10 +944,23 @@ class Channel(object):
         logger.info(f"calling channel leave for {self._name}")
 
         self.drain_messages()
+        self.flush_tx()
 
         self._backend.leave(self)
 
         logger.info(f"channel leave done for {self._name}")
+
+    def flush_tx(self, timeout: float = 60.0) -> bool:
+        """Block until queued sends are on the wire, so LEAVE can't overtake the EOT broadcast (FX-N77)."""
+
+        async def _join():
+            queues = [self._bcast_queue] + [end.get_txq() for end in self._ends.values()]
+            await asyncio.gather(*(q.join() for q in queues if q is not None))
+
+        _, done = run_async(_join(), self._backend.loop(), timeout)
+        if not done:
+            logger.warning(f"tx queues of {self._name} not flushed within {timeout}s; leaving anyway")
+        return done
 
     def update_trainer_state(self, state: TrainerAvailState, timestamp: str):
         """Update the state of an end in the channel."""
@@ -895,6 +994,23 @@ class Channel(object):
         timeouted, _ = run_async(_inner(), self._backend.loop())
         logger.info(f"timeouted = {timeouted}")
         return timeouted
+
+    def note_arrival(self) -> None:
+        """A message was put into an end's rx queue (call on the backend loop): wake arrival waiters."""
+        self._arrival_seq += 1
+        if self._arrival_ev is not None:
+            self._arrival_ev.set()
+        with self._arrival_cv:
+            self._arrival_cv.notify_all()
+
+    @property
+    def arrival_seq(self) -> int:
+        return self._arrival_seq
+
+    def wait_arrival(self, after_seq: int, timeout: float) -> bool:
+        """Block (not on the backend loop) until a delivery after `after_seq` or `timeout`; True if one came."""
+        with self._arrival_cv:
+            return self._arrival_cv.wait_for(lambda: self._arrival_seq > after_seq, timeout)
 
     def is_rxq_empty(self, end_id: str) -> bool:
         """Return true if rxq is empty; otherwise, false."""
@@ -1026,6 +1142,12 @@ class Channel(object):
             f"[CHANNEL REMOVE] End {end_id}: rxq has {rxq_size} pending messages, txq has {txq_size}"
         )
 
+        for payload, _ in list(getattr(rxq, "_queue", ())):  # an unread EOT outlives its end: the trainer was busy
+            if payload and len(payload) < (1 << 20):
+                msg = decode_message(payload)
+                if isinstance(msg, dict) and MessageType.EOT in msg:
+                    self.departed_eot = msg[MessageType.EOT]
+
         del self._ends[end_id]
         logger.warning(f"[CHANNEL REMOVE] Deleted end {end_id} from self._ends")
 
@@ -1035,7 +1157,7 @@ class Channel(object):
         # put bogus data to let tx_task finish
         await txq.put(EMPTY_PAYLOAD)
 
-        if len(self._ends) == 0:
+        if len(self._ends) == 0 and self.departed_eot is None:  # with a departed EOT, await_join returns to read it
             # clear (or unset) the event
             self.await_join_event.clear()
 
@@ -1111,16 +1233,19 @@ class Channel(object):
             f"Updated new_state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(PROP_END_AVL_STATE)} from timestamp: {timestamp}"
         )
 
+        # FX-D12: off when the aggregator's availability substrate owns in-flight release (T1).
+        release = getattr(self, "release_slots_on_unavail", True)
         # If new updated_state is UN_AVL, reset end state to unblock
         # any train or eval tasks sent to that trainer
-        if new_state == TrainerAvailState.UN_AVL:
+        if release and new_state == TrainerAvailState.UN_AVL:
             logger.info(
                 f"Since new_state for trainer {end_id} is {new_state}, will remove from selected and all_selected"
             )
             self._selector.remove_from_selected_ends(self._ends, end_id)
             self._selector._cleanup_removed_ends(end_id)
         elif (
-            old_end_state == TrainerAvailState.AVL_TRAIN
+            release
+            and old_end_state == TrainerAvailState.AVL_TRAIN
             and new_state == TrainerAvailState.AVL_EVAL
         ):
             # TODO: (DG) This is a temporary fix to reset the state of

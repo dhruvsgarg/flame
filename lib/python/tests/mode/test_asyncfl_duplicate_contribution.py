@@ -14,6 +14,7 @@ fedbuff.py) makes a genuine duplicate-contribution newly reachable, so this
 guard (_agg_cycle_contributed_ends) closes the same gap here.
 """
 
+import time
 from types import SimpleNamespace
 
 import torch
@@ -39,6 +40,9 @@ class _FakeChannel:
 
     def ends(self, state=None):
         return ["t1"]
+
+    def ends_with_pending_rx(self):
+        return set()
 
     def has(self, end_id):
         return True
@@ -81,6 +85,8 @@ def _make_agg():
     optimizer.scale_add_agg_weights/_update_model finalization path)."""
     agg = _ConcreteAgg.__new__(_ConcreteAgg)
     agg.simulated = False
+    agg.agg_start_time_ts = time.time()
+    agg._last_rx_ts = {}
     agg._agg_goal = 5  # high enough that 2 messages never trip finalization
     agg._agg_goal_cnt = 0
     agg._agg_goal_weights = None
@@ -126,6 +132,16 @@ class TestAsyncflDuplicateContributionGuard:
         agg._aggregate_weights("param-channel")
         assert agg._agg_goal_cnt == 1
         assert channel.cleaned_up == ["t1"]
+
+    def test_same_end_different_versions_both_counted(self):
+        # FX-D9: identity is (end, version); P2 fedbuff real lost 0417's v160 behind its v159.
+        agg = _make_agg()
+        channel = _FakeChannel([_msg_for("t1", version=1), _msg_for("t1", version=2)])
+        agg.cm = SimpleNamespace(get_by_tag=lambda tag: channel)
+        agg._round = 2
+        agg._aggregate_weights("param-channel")
+        agg._aggregate_weights("param-channel")
+        assert agg._agg_goal_cnt == 2 and channel.cleaned_up == []
 
     def test_different_ends_both_counted(self):
         agg = _make_agg()

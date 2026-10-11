@@ -181,3 +181,52 @@ def total_variation_distance(a: dict, b: dict) -> float:
     """0.5 * Σ_s |a_s - b_s| over the union of states; 0 if identical."""
     keys = set(a) | set(b)
     return 0.5 * sum(abs(a.get(k, 0.0) - b.get(k, 0.0)) for k in keys)
+
+
+def observed_windows(series: dict, horizon: float, gap_factor: float = 5.0, min_gap_s: float = 10.0) -> list:
+    """FX-D125: [(a, b)] spans of [0, horizon] covered by selection samples with gap <= max(gap_factor x median gap,
+    min_gap_s). A hole (e.g. a 90 s stall) is unobserved, not 'last state held'."""
+    times = sorted({p[0] for pts in series.values() for p in pts if p[0] <= horizon})
+    if len(times) < 2:
+        return []
+    gaps = sorted(b - a for a, b in zip(times, times[1:]))
+    cap = max(gap_factor * gaps[len(gaps) // 2], min_gap_s)
+    out: list = []
+    for a, b in zip(times, times[1:]):
+        if b - a <= cap:
+            if out and out[-1][1] == a:
+                out[-1] = (out[-1][0], b)
+            else:
+                out.append((a, b))
+    return out
+
+
+def intersect_windows(x: list, y: list) -> list:
+    out, i, j = [], 0, 0
+    while i < len(x) and j < len(y):
+        lo, hi = max(x[i][0], y[j][0]), min(x[i][1], y[j][1])
+        if hi > lo:
+            out.append((lo, hi))
+        if x[i][1] < y[j][1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+def state_fractions_in_windows(series: dict, windows: list) -> dict:
+    """Per-trainer {state: fraction} of the forward-filled series, integrated over `windows` only."""
+    out: dict = {}
+    for end_id, pts in series.items():
+        if len(pts) < 2:
+            continue
+        dur: dict = {}
+        for (t_a, s_a), nxt in zip(pts, pts[1:] + [(float("inf"), None)]):
+            for lo, hi in windows:
+                o = min(hi, nxt[0]) - max(lo, t_a)
+                if o > 0:
+                    dur[s_a] = dur.get(s_a, 0.0) + o
+        total = sum(dur.values())
+        if total > 0:
+            out[end_id] = {s: d / total for s, d in dur.items()}
+    return out

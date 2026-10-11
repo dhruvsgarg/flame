@@ -1,5 +1,7 @@
 # Fluxtune: Systems & ML Contributions for On-Device LLM Fine-Tuning
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../_metadata/ROBUST_FL_READINESS.md) → [FLUXTUNE_READINESS.md](../_metadata/FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 **Thesis.** Fluxtune makes federated LLM fine-tuning practical on *memory- and hardware-constrained*
 devices by training with **forward-mode (backprop-free) gradients** over **parameter-efficient adapters**,
 aggregated **asynchronously**, with **informed (JVP-magnitude) perturbation selection**. Peak memory is

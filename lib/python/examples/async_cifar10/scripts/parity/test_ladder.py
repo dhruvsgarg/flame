@@ -709,3 +709,60 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{len(fns) - failed}/{len(fns)} passed")
     sys.exit(1 if failed else 0)
+
+
+def test_phase_split_sub_phase_grades_on_mean():
+    """FX-D13: a sub-0.2s phase passes on matching means despite KS, fails on a >50ms mean gap."""
+    from parity.checks import trainer_phase_split
+
+    def _tr(vals):
+        return {"t": {"trainer_round": [{"pre_train_s": v} for v in vals]}}
+    real = _tr([0.010, 0.012] * 20)
+    assert trainer_phase_split(real, _tr([0.020, 0.022] * 20))["phase_pre_train"]["ok"]
+    assert not trainer_phase_split(real, _tr([0.15] * 40))["phase_pre_train"]["ok"]
+
+
+def test_agg_timing_split_reports_each_side():
+    from parity.checks import agg_timing_split
+    ev = lambda w, c: {"event": "agg_timing", "cycle_s": w + c + 0.1, "recv_wait_s": w, "ingest_s": 0.1, "commit_s": c}
+    res = agg_timing_split({"agg_timings": [ev(11.0, 0.06), ev(12.0, 0.07)]}, {"agg_timings": []})
+    assert res["tier"] == "DIAG" and res["real"]["recv_wait_s"]["median"] == 12.0 and res["sim"] is None
+    assert agg_timing_split({}, {})["status"] == "SKIP"
+
+
+def test_zero_commit_legs_skip_coverage_not_fail():
+    # Run 4 speech oort mobiperf: 0 commits on both legs read as 9 missing fields; the root is EV1.
+    from parity.checks import field_coverage, vclock_telemetry_present
+    empty = {"agg_rounds": [], "selection_train": []}
+    fc = field_coverage(empty, empty, {}, {})
+    assert fc["ok"] and fc["status"] == "SKIP" and not fc["violations"]
+    vt = vclock_telemetry_present(empty)
+    assert vt["ok"] and vt["status"] == "SKIP"
+    assert not vclock_telemetry_present({"agg_rounds": [{"round": 1}]})["ok"]  # commits without stamps still fail
+
+
+def test_eligibility_splits_exclusions_by_reason():
+    from parity.checks import eligibility_parity
+    sel = lambda n, ex: {"num_eligible": n, "num_candidates": 15, "excluded_by": ex}
+    res = eligibility_parity({"selection_train": [sel(5, {"owed": 2, "unavail": 8}), sel(6, {"unavail": 9})]},
+                             {"selection_train": [sel(7, {"unavail": 8})]})
+    assert res["excluded_by_real"] == {"owed": 1.0, "unavail": 8.5} and res["excluded_by_sim"] == {"unavail": 8.0}
+
+
+def test_eligibility_grades_dispatching_selections_only():
+    """FX-D98: no-op wakes sample at each side's own cadence (real 30 s poll, sim events); run 2026-10-08 KS 0.41."""
+    from parity.checks import eligibility_parity
+    sel = lambda n, k: {"num_eligible": n, "num_candidates": 45, "num_chosen": k}
+    disp = [sel(n, 1) for n in (38, 40, 42, 45)]
+    res = eligibility_parity({"selection_train": disp + [sel(45, 0)] * 6},
+                             {"selection_train": disp + [sel(37, 0)] * 10})
+    assert res["ok"] and res["ks_eligible"] == 0.0
+
+
+def test_timing_skips_without_a_matched_window():
+    """FX-D95: one sim advance vs real's 3.8 s + a 267 s tail round sim never ran graded K3b at 97%."""
+    from parity.checks import overhead_residual
+    rounds = lambda vs, key: [{"round": i + 1, key: v, "ts": v} for i, v in enumerate(vs)]
+    res = overhead_residual({"agg_rounds": rounds([0.0, 3.8, 270.5], "ts")},
+                            {"agg_rounds": rounds([0.0, 3.8], "vclock_now")}, agg_goal=2)
+    assert res.get("status") == "SKIP", res

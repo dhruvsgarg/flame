@@ -157,6 +157,21 @@ class TestRealChannelDrainReady:
         finally:
             ch._backend.stop()
 
+    def test_end_leaving_mid_poll_is_skipped(self):
+        # A trainer departing while drain_ready polls must not KeyError the aggregator.
+        ch = _make_channel(["a", "b"])
+        try:
+            def _leave_then_send():
+                time.sleep(0.05)
+                ch._backend.loop().call_soon_threadsafe(ch._ends.pop, "a")
+                time.sleep(0.05)
+                _put(ch, "b", {MessageType.SIM_COMPLETION_TS: 4.0})
+            threading.Thread(target=_leave_then_send, daemon=True).start()
+            out = ch.drain_ready(["a", "b"], timeout=1.0)
+            assert [md[0] for _, md in out] == ["b"]
+        finally:
+            ch._backend.stop()
+
     def test_timeout_none_returns_immediately_does_not_block(self):
         # drain_ready(timeout=None) returns immediately (poll guard falsy),
         # unlike recv_fifo, which genuinely blocks.
@@ -325,3 +340,166 @@ class TestSctOrderedDrainCommit:
             c_on, tv_on = _drain(on, FakeChannel(set(self.SCENARIO), list(arrival)))
             assert c_on == c_off == self.COMPLETION_ORDER
             assert tv_on == tv_off == 25.0
+
+
+# --------------------------------------------------------------------------- #
+# 3. Cold-start gate (sim_cold_start_gate): first-contact ends have no known delay
+# --------------------------------------------------------------------------- #
+class _TimedChannel(FakeChannel):
+    """drain_ready releases each end's message only from its `release_pass` call on."""
+
+    def __init__(self, inflight, arrivals):
+        super().__init__(inflight, [(e, sct) for e, sct, _ in arrivals])
+        self._release = {e: rp for e, _, rp in arrivals}
+        self._calls = 0
+
+    def drain_ready(self, end_ids, timeout=None):
+        self._calls += 1
+        ready = [e for e in end_ids if self._release.get(e, 0) < self._calls]
+        return super().drain_ready(ready, timeout)
+
+
+class TestColdStartGate:
+    def _agg(self, gate, cap=10.0, dispatched=("A", "B"), dispatched_ago=0.0):
+        agg = _make_agg(sct_ordered_drain=True)
+        agg._sim_cold_start_gate = gate
+        agg._sim_gate_compute_cap_s = cap
+        now = time.time()
+        agg._sim_dispatch_wall = {e: now - dispatched_ago for e in dispatched}
+        return agg
+
+    def test_holds_for_unknown_earlier_trainer(self):
+        # A arrives first but B (unknown delay, still computing) completes earlier.
+        agg = self._agg(gate=True)
+        ch = _TimedChannel({"A", "B"}, [("A", 100.0, 0), ("B", 50.0, 1)])
+        msg, (end, _) = agg._sim_recv_min(ch, ["A", "B"])
+        assert end == "B" and msg[MessageType.SIM_COMPLETION_TS] == 50.0
+        assert agg._sim_cold_start_holds >= 1
+
+    def test_flag_off_is_legacy_behaviour(self):
+        agg = self._agg(gate=False)
+        ch = _TimedChannel({"A", "B"}, [("A", 100.0, 0), ("B", 50.0, 1)])
+        _msg, (end, _) = agg._sim_recv_min(ch, ["A", "B"])
+        assert end == "A"  # the blind spot the gate closes
+
+    def test_releases_after_compute_cap(self):
+        agg = self._agg(gate=True, cap=0.05, dispatched=("A", "GHOST"), dispatched_ago=1.0)
+        ch = _TimedChannel({"A", "GHOST"}, [("A", 100.0, 0)])
+        _msg, (end, _) = agg._sim_recv_min(ch, ["A", "GHOST"])
+        assert end == "A" and getattr(agg, "_sim_gate_failsafe", 0) == 0
+
+    def test_known_delay_end_not_held_by_cold_start(self):
+        agg = self._agg(gate=True)
+        agg._sim_known_delay_s = {"B": 5.0}
+        ch = _TimedChannel({"A", "B"}, [("A", 100.0, 0), ("B", 50.0, 3)])
+        _msg, (end, _) = agg._sim_recv_min(ch, ["A", "B"])
+        assert end == "A"  # B is known: earlier_stuck owns it, not the cold-start gate
+
+
+class TestOrderSlack:
+    """FX-D23: an in-flight end expected < 2s before the buffered min was skipped (past-dated commit)."""
+
+    def _commit_first(self, slack=None):
+        agg = _make_agg(sct_ordered_drain=True)
+        if slack is not None:
+            agg._sim_order_slack_s = slack
+        agg._sim_known_delay_s = {"A": 3.0, "B": 2.5}
+        agg._sim_inflight_expected = {"A": 3.0, "B": 2.5}
+        ch = _TimedChannel({"A", "B"}, [("A", 3.0, 0), ("B", 2.5, 2)])  # B lands two passes late
+        msg, (end, _) = agg._sim_recv_min(ch, ["A", "B"])
+        return end, agg._vclock.now
+
+    def test_zero_slack_holds_for_earlier_expected(self):
+        assert self._commit_first() == ("B", 2.5)
+
+    def test_legacy_slack_commits_past_it(self):
+        assert self._commit_first(slack=2.0) == ("A", 3.0)
+
+    def test_fwdllm_keeps_its_slack(self):
+        from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator as FwdAgg
+        from flame.mode.horizontal.syncfl.top_aggregator import _SIM_ORDER_SLACK_S
+        assert FwdAgg._sim_order_slack_s == FwdAgg._SIM_ORDER_SLACK_DEFAULT_S == _SIM_ORDER_SLACK_S
+        assert TopAggregator._sim_order_slack_s == 0.0
+
+
+class TestRedispatchWithinCycle:
+    """FX-D6: an end re-dispatched after committing in the same agg cycle stays ingestible."""
+
+    @pytest.fixture(autouse=True)
+    def _identity_weights(self, monkeypatch):
+        import flame.mode.horizontal.asyncfl.top_aggregator as async_mod
+        monkeypatch.setattr(async_mod, "weights_to_device", lambda w, d: w)
+
+    def test_second_update_commits_instead_of_stranding(self):
+        from tests.mode.test_async_staggered_redispatch import _DistChannel, _make_dist_agg
+        agg = _make_dist_agg(_DistChannel(["e1"]), staggered=False)
+        agg._sim_buffer = SimReorderBuffer()
+        agg._sim_committed = set()
+        agg._sim_pending_commit = set()
+        agg._sim_sct_ordered_drain = True
+        rx = FakeChannel({"e1"}, [("e1", 101.0)])
+        _msg, (end, _) = agg._sim_recv_min(rx, ["e1"])
+        assert end == "e1" and "e1" in agg._sim_committed
+        agg._distribute_weights("tag", "train")  # same cycle: _sim_committed not reset
+        rx._queue.append(("e1", 103.0))
+        msg, (end, _) = agg._sim_recv_min(rx, ["e1"])
+        assert end == "e1" and msg[MessageType.SIM_COMPLETION_TS] == 103.0
+
+
+class TestBufferedCommitLeavesRecv:
+    """FX-D12: a buffered-then-committed end is RECVD, so it leaves the RECV list (P3 felix livelock)."""
+
+    def test_buffered_end_marked_recvd_on_commit(self):
+        agg = _make_agg(sct_ordered_drain=True)
+        ch = FakeChannel({"a", "b"}, [("a", 1.0), ("b", 2.0)])
+        _, (end, _) = agg._sim_recv_min(ch, ["a", "b"])
+        assert end == "a"
+        assert ch._ends["b"].get_property(KEY_END_STATE) == "none"  # buffered keeps its slot
+        _, (end, _) = agg._sim_recv_min(ch, ["b"])
+        assert end == "b"
+        assert ch._ends["b"].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD
+
+
+class TestIngestKeepsIdentityUntilAggregate:
+    """FX-N46: sim freed a held end's identity at ingest and re-dispatched it at the same version
+    (staleness-0 share 6% vs real 26%); real frees only the slot there, identity at the agg-goal cleanup."""
+
+    def _run(self, hold):
+        from types import SimpleNamespace
+        agg = _make_agg(sct_ordered_drain=True)
+        agg._sim_identity_until_aggregate = hold
+        agg._sim_pending_commit = {"a"}
+        ch = FakeChannel({"a"}, [("a", 1.0)])
+        ch._selector = SimpleNamespace(requester="r", all_selected={"a": 0.0}, selected_ends={"r": {"a"}})
+        _, (end, _) = agg._sim_recv_min(ch, ["a"])
+        assert end == "a" and "a" not in ch._selector.selected_ends["r"]  # slot freed either way
+        return ch
+
+    def test_identity_held_until_cleanup(self):
+        ch = self._run(hold=True)
+        assert "a" in ch._selector.all_selected
+        assert ch._ends["a"].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD  # the cleanup frees it
+
+    def test_legacy_frees_identity_at_ingest(self):
+        assert "a" not in self._run(hold=False)._selector.all_selected
+
+
+class TestDispatchLatency:
+    """FX-D23: a sim send is stamped at vclock + the profiled dispatch latency (one helper, every stack)."""
+
+    def _agg(self, simulated, latency):
+        agg = _make_agg(sct_ordered_drain=True)
+        agg.simulated = simulated
+        agg.time_mode = "simulated" if simulated else "real"
+        agg._vclock.advance(5.0)
+        agg._sim_dispatch_latency_s = latency
+        return agg
+
+    def test_sim_stamp_adds_latency(self):
+        assert self._agg(True, 0.3)._sim_send_stamp() == pytest.approx(5.3)
+
+    def test_zero_latency_is_vclock(self):
+        assert self._agg(True, 0.0)._sim_send_stamp() == pytest.approx(5.0)
+
+    def test_real_mode_has_no_stamp(self):
+        assert self._agg(False, 0.3)._sim_send_stamp() is None

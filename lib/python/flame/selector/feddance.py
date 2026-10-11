@@ -4,7 +4,7 @@
 
 U_m(r) = (V_m * I_m * A_m) * (1 + log10(R+1) / (10 * (1 + J_m)))
   V_m: Poisson availability over next K rounds
-  I_m: average training loss in last engaged round (Oort stat_utility)
+  I_m: mean mini-batch training loss over the last engaged round's tau local iterations (Eq. 6)
   A_m: slope of training accuracy across last beta engagements
   J_m: last round in which device m was engaged
 
@@ -19,6 +19,7 @@ from collections import deque
 from typing import Optional
 
 from flame.availability.feddance_predictor import FedDancePredictor
+from flame.channel import KEY_CH_STATE, VAL_CH_STATE_RECV
 from flame.common.typing import Scalar
 from flame.end import End
 from flame.selector import AbstractSelector, SelectorReturnType
@@ -28,7 +29,6 @@ from flame.selector.properties import (
     PROP_LAST_ENGAGED_ROUND,
     PROP_LOCAL_ACCURACY,
     PROP_SELECTED_COUNT,
-    PROP_STAT_UTILITY,
     PROP_U,
     PROP_V,
 )
@@ -95,14 +95,20 @@ class FedDanceSelector(AbstractSelector):
         task_to_perform: str = "train",
         **kwargs,
     ) -> SelectorReturnType:
-        num_of_ends = min(len(ends), self.num_of_ends)
+        num_of_ends = min(len(ends), kwargs.get("num_to_select") or self.num_of_ends)  # FX-N37 top-up
         if num_of_ends == 0:
             return {}
 
         round_num = channel_props.get("round", 0)
 
-        if round_num <= self.round and len(self.newly_selected_this_round) != 0:
+        agg_version_key = kwargs.get("agg_version_key")
+        trainer_version_keys = kwargs.get("trainer_version_keys")
+        # A dispatch (version keys passed) never re-sends the cache (see OortSelector.select).
+        if (trainer_version_keys is None and round_num <= self.round
+                and len(self.newly_selected_this_round) != 0):
             return {key: None for key in self.newly_selected_this_round}
+        if channel_props.get(KEY_CH_STATE) == VAL_CH_STATE_RECV:
+            return {}  # no SEND this round (starvation return): nothing to receive (FX-D6)
 
         unavail = set(trainer_unavail_list or [])
 
@@ -114,6 +120,8 @@ class FedDanceSelector(AbstractSelector):
             eid: e
             for eid, e in ends.items()
             if eid not in unavail and eid not in self.selected_ends
+            and not (trainer_version_keys is not None and agg_version_key is not None
+                     and trainer_version_keys.get(eid) == agg_version_key)  # FX-D9
         }
 
         if not eligible:
@@ -179,9 +187,8 @@ class FedDanceSelector(AbstractSelector):
             v = self.predictor.V_m(end_id, round_num)
 
             i = self.last_loss.get(end_id)
-            if i is None:
-                stat_util = end.get_property(PROP_STAT_UTILITY)
-                i = stat_util if stat_util is not None else mean_I
+            if i is None:  # Alg. 1 l.14-15: never-returned devices take last round's mean I
+                i = mean_I
 
             a = self._accuracy_slope(end_id)
             if a is None:
@@ -231,7 +238,7 @@ class FedDanceSelector(AbstractSelector):
 
         self.ordered_updates_recv_ends.append(end_id)
 
-        loss = msg.get(MessageType.STAT_UTILITY)
+        loss = msg.get(MessageType.TRAIN_LOSS_MEAN)  # Eq. 6: mean loss over the tau local iterations
         acc = msg.get(MessageType.LOCAL_ACCURACY)
 
         if loss is not None:
@@ -274,3 +281,10 @@ class FedDanceSelector(AbstractSelector):
         for end_id in self.ordered_updates_recv_ends:
             self.selected_ends.discard(end_id)
         self.ordered_updates_recv_ends = []
+
+    # Channel leave / UN_AVL hooks.
+    def _cleanup_removed_ends(self, end_id) -> None:
+        self.selected_ends.discard(end_id)
+
+    def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
+        self.selected_ends.discard(end_id)

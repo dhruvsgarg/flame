@@ -1,5 +1,7 @@
 # FwdLLM Simulator — Design, Build Plan & Roadmap
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../_metadata/ROBUST_FL_READINESS.md) → [FLUXTUNE_READINESS.md](../_metadata/FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 Non-parity companion to [simulate_fwdllm.md](simulate_fwdllm.md) (which owns real↔sim parity status,
 open parity questions, and landed parity fixes for the fluxtune/fwdllm/fwdllm_plus baselines) and
 [async_cifar10/PARITY.md](../async_cifar10/PARITY.md) (shared parity methodology + fwdllm's rung
@@ -58,27 +60,7 @@ Phase order (locked): Phase-1 syn_0 → Phase-2 unavailability → Phase-3 beyon
 
 ## §E  Roadmap
 
-**Phase 1 (syn_0) — in close-out, blocked on a new regression.** The parity-CLI checker bugs are fixed
-(`simulate_fwdllm.md` §A/§G) and the selector RNG-order fix (`simulate_fwdllm.md` §G) is validated for
-fwdllm/fwdllm_plus's dispatch-order identity, but the 07-15 re-run is NOT a trustworthy scoreboard for
-fluxtune — its `sim_rate` collapsed to 0.60× (SLOWDOWN) and both real/sim accuracy collapsed to the
-random-guess floor, correlated with `[TIMING_OVERRUN]` firing for the first time since §O's calibration
-(`simulate_fwdllm.md` §A, top priority). `overhead_residual` for fwdllm/fwdllm_plus remains root-caused
-to the real-only `num_min_req=1` compose-loop clamp (`simulate_fwdllm.md` §A) — the RNG-order fix closed
-it for fwdllm_plus but not fwdllm, proving selection-order identity and this clamp are separate
-mechanisms. `preferred_duration` (fluxtune, oort) is now CLOSED (`simulate_fwdllm.md` §G). Open: the
-TIMING_OVERRUN regression (`simulate_fwdllm.md` §A #1), the `num_min_req=1` compose-loop refactor
-(`simulate_fwdllm.md` §A #2), `sim_sct_ordered_drain` A/B (`simulate_fwdllm.md` §A #3, now blocked on #1).
-
-Exit: all 3 baselines' `sim_rate`/throughput/terminal_state pass, then C1/C2 convergence at matched `data_id`.
-
-**Phase 2 — unavailability (syn_20/50/mobiperf).** Wire the ClientAvailability effect path into the grad loop:
-send-time gate (real) / `delivery_ts = max(sct, next_avail)` buffering (sim); two ledgers; starvation
-vclock-advance; per-baseline `avail_select_filter`. Exit: A1–A5 + A6/A7/A8 PASS; self-stops; withheld grads
-delivered not dropped.
-
-**Phase 3 — beyond syn_0.** Full ladder under scarcity. Exit: curves within tolerance at matched `data_id`;
-K8/U2 within bar; V1/V2 binned residual flat.
+Moved to `_metadata/FLUXTUNE_READINESS.md` (Next steps). Phase order stays: syn_0 → unavailability → beyond syn_0.
 
 ---
 

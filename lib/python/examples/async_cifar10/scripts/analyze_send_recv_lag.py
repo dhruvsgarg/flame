@@ -5,6 +5,7 @@ exceeds a configurable threshold. Optionally emits a CDF plot.
 
 Usage:
     python analyze_send_recv_lag.py <aggregator_log> [--warn-threshold-s 5.0] [--plot]
+    python analyze_send_recv_lag.py <run_dir or aggregator_log> --queue-wait   # FX-N18 one-liner
 """
 
 import argparse
@@ -21,6 +22,38 @@ if _SCRIPT_DIR not in sys.path:
 LAG_RE = re.compile(
     r"\[SEND_RECV_LAG\] end=(\S+) version=(\d+) wall_lag_s=([0-9.]+)"
 )
+
+
+QWAIT_RE = re.compile(r"\[LAG_DECOMP\] .*queue_wait_s=(-?[0-9.]+)")
+ACTIVE_SKIP = "already has active task"
+
+
+def queue_wait_summary(log_path: str) -> dict:
+    """FX-N18: arrival→processing wait of each real update, plus recv_fifo streamer skips."""
+    waits, skips = [], 0
+    with open(log_path, errors="replace") as f:
+        for line in f:
+            m = QWAIT_RE.search(line)
+            if m:
+                waits.append(float(m.group(1)))
+            elif ACTIVE_SKIP in line:
+                skips += 1
+    out = {"n": len(waits), "active_task_skips": skips}
+    if waits:
+        sv = sorted(waits)
+        n = len(sv)
+        out.update(p50=sv[n // 2], p99=sv[min(n - 1, int(n * 0.99))], max=sv[-1],
+                   over_1s=sum(w > 1.0 for w in sv))
+    return out
+
+
+def _agg_log(path: str) -> str:
+    if os.path.isdir(path):
+        logs = sorted(x for x in os.listdir(path) if x.endswith("_aggregator.log"))
+        if not logs:
+            raise FileNotFoundError(f"no *_aggregator.log in {path}")
+        return os.path.join(path, logs[0])
+    return path
 
 
 def parse_lags(log_path: str) -> dict[str, list[float]]:
@@ -123,7 +156,13 @@ def main() -> None:
         help="Warn if any trainer's median lag exceeds this (seconds)"
     )
     parser.add_argument("--plot", action="store_true", help="Emit CDF plot PNG")
+    parser.add_argument("--queue-wait", action="store_true",
+                        help="Print one queue_wait summary line (accepts a run dir)")
     args = parser.parse_args()
+    if args.queue_wait:
+        q = queue_wait_summary(_agg_log(args.log))
+        print(" ".join(f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}" for k, v in q.items()))
+        return
     lags = parse_lags(args.log)
     report(lags, args.warn_threshold_s)
     if args.plot:

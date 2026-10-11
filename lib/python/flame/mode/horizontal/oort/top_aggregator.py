@@ -27,10 +27,13 @@ from flame.channel import VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
 from flame.common.util import (
     materialize_weights,
+    model_device,
+    pack_weights,
     weights_to_device,
     weights_to_model_device,
 )
 from flame.mode.message import MessageType
+from flame.mode.horizontal.nonfinite import hp_of as nonfinite_hp, nonfinite_reason, reject as nonfinite_reject
 from flame.mode.horizontal.client_duration import real_client_task_train_duration
 from flame.optimizer.train_result import TrainResult
 from flame.selector.oort import (
@@ -43,8 +46,10 @@ from flame.selector.properties import PROP_LAST_RETURNED_ROUND, PROP_SIM_SEND_TS
 
 from ..top_aggregator import TopAggregator as BaseTopAggregator
 from flame import telemetry
+from flame.telemetry.agg_timing import agg_timing
 from flame.telemetry.events import (
     build_agg_round,
+    build_model_health,
     build_inflight_residence,
     build_utility_belief,
 )
@@ -84,7 +89,8 @@ class TopAggregator(BaseTopAggregator):
         buf = self._sim_buffer
         # Barrier: drain the whole un-buffered set in one recv_fifo pass; the
         # yield-loop below commits in ascending sim_completion_ts order.
-        to_probe = [e for e in end_ids if not buf.has(e)]
+        # FX-N37: a withheld pick holding its slot already reported; it returns via reinject.
+        to_probe = [e for e in end_ids if not buf.has(e) and e not in getattr(self, "_withheld_slot_held", ())]
         barrier_t0 = time.time()
         drained_all = True
         if to_probe:
@@ -129,7 +135,8 @@ class TopAggregator(BaseTopAggregator):
             while True:
                 # C.2: re-inject any withheld update whose delivery_ts has arrived
                 # (no-op when the gate is off ⇒ pop loop unchanged, byte-identical).
-                self._sim_reinject_ready_withheld()
+                self._sim_reinject_ready_withheld(
+                    horizon=buf.peek_min_ts() if self._sim_lookahead_on() else None)  # FX-D70
                 popped = buf.pop_min()
                 if popped is None:
                     break
@@ -180,6 +187,18 @@ class TopAggregator(BaseTopAggregator):
             for _e, _sct, _payload in held_over:
                 buf.add(_e, _sct, _payload)
 
+    def _sim_lookahead_on(self) -> bool:
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        return str(getattr(hp, "sim_reinject_lookahead", True)).lower() == "true"
+
+    @staticmethod
+    def _awaited_ends(channel, end_ids, sent=None, got=None):
+        """Ends queued for cleanup already returned their update; awaiting them deadlocks the sim barrier (FX-D66).
+        FX-D109: an end re-dispatched since its queued (stale) return still owes the newer task."""
+        returned = set(getattr(channel._selector, "ordered_updates_recv_ends", ()))
+        sent, got = sent or {}, got or {}
+        return [e for e in end_ids if e not in returned or max(sent.get(e) or {-1: None}) > got.get(e, -1)]
+
     def _aggregate_weights(self, tag: str) -> None:
         """
         Aggregate local model weights, accepting K trainers out of
@@ -190,9 +209,12 @@ class TopAggregator(BaseTopAggregator):
         This method is overriden from one in horizontal top aggregator
         (..top_aggregator).
         """
+        self._round_committed = False  # FX-D10
         channel = self.cm.get_by_tag(tag)
         if not channel:
             return
+        _at = agg_timing(self)
+        _at.begin()
 
         total = 0
 
@@ -218,6 +240,15 @@ class TopAggregator(BaseTopAggregator):
                 f"Stale updates may not be consumed!"
             )
 
+        # FX-N37: a version collects K accepted updates across passes; accepted ends aren't awaited again.
+        _wait_k = self._sync_wait_k_on()
+        if _wait_k:
+            _acc = self._sync_accepted_ends()
+            end_ids = [e for e in end_ids if e not in _acc]
+            total = getattr(self, "_sync_total", 0)
+        end_ids = self._awaited_ends(channel, end_ids, getattr(self, "_oort_sent_version_ts", None),
+                                     getattr(self, "_returned_version", None))
+
         # In-flight residence tracking: record the round each trainer
         # entered the in-flight set so cleanup can emit per-straggler residence. A
         # carryover straggler keeps its earlier entry round (setdefault); a
@@ -233,8 +264,8 @@ class TopAggregator(BaseTopAggregator):
             self._inflight_commit_staleness = {}
             self._inflight_commit_fresh = {}
 
-        configured_aggr_num = self.config.selector.kwargs.get("aggr_num", 10)
-        aggr_num = min(configured_aggr_num, len(end_ids))
+        configured_aggr_num = self._version_k(self.config.selector.kwargs.get("aggr_num", 10))
+        aggr_num = configured_aggr_num if _wait_k else min(configured_aggr_num, len(end_ids))
         
         # CRITICAL: Log mismatch between configured and actual aggregation count
         if len(end_ids) < configured_aggr_num:
@@ -249,25 +280,12 @@ class TopAggregator(BaseTopAggregator):
                 f"from {len(end_ids)} in-flight trainers"
             )
 
-        received_end_count = 0
+        received_end_count = len(self._sync_accepted_ends()) if _wait_k else 0
 
-        # Real mode only: bound recv_fifo with a wall-clock timeout (default
-        # trainer_recv_wall_timeout_s=90s, >> the 18s max trainer speed in
-        # async_cifar10) so unavailable trainers can't stall the aggregator
-        # indefinitely; capped at the remaining max_experiment_runtime_s
-        # budget so the process never overshoots it. Sim mode leaves
-        # _recv_timeout=None — the vclock drives termination there instead.
-        _recv_timeout = None
-        if not self.simulated:
-            _stall = float(getattr(
-                self.config.hyperparameters, "trainer_recv_wall_timeout_s", 90.0
-            ))
-            _max_rt = getattr(self.config.hyperparameters, "max_experiment_runtime_s", None)
-            if _max_rt:
-                _remaining = max(1.0, float(_max_rt) - (time.time() - self.agg_start_time_ts))
-                _recv_timeout = min(_stall, _remaining)
-            else:
-                _recv_timeout = _stall
+        # Real: recvs stop at the per-trainer deadline; abandoned ends' late updates still land, stale-gated (FX-L40).
+        _recv_deadline = None if self.simulated else self._real_round_recv_deadline(
+            channel, end_ids, earliest=_wait_k)
+        _real_ends = None if self.simulated else self._real_recv_ends(end_ids)
 
         # simulated: commit the aggr_num updates with the smallest
         # sim_completion_ts (the k that would physically finish first in real),
@@ -275,14 +293,18 @@ class TopAggregator(BaseTopAggregator):
         # clock. Uses a persistent buffer so overcommitment stragglers carry
         # across rounds and commit late as stale (mirroring real). real: receive
         # by physical FIFO arrival (authentic baseline).
+        _t_recv = time.time()
         if self.simulated:
             # Pin the carry-over threshold before any clock advance this round.
             self._round_start_vclock = self._vclock.now
             _recv = self._oort_sim_recv(channel, end_ids)
         else:
-            _recv = channel.recv_fifo(end_ids, aggr_num, timeout=_recv_timeout)
+            _recv = channel.recv_fifo(_real_ends, aggr_num - received_end_count, deadline=_recv_deadline)
+            if _wait_k:
+                _recv = self._real_recv_until_awaited(_recv, end_ids)  # FX-D118
+        _at.add_recv(time.time() - _t_recv)
 
-        for msg, metadata in _recv:
+        for msg, metadata in _at.iterate(_recv):
             end, _ = metadata
 
             if not msg:
@@ -293,6 +315,8 @@ class TopAggregator(BaseTopAggregator):
             # loop already recorded it inside _sim_withhold_if_unavail).
             if not self.simulated:
                 self._record_commit_belief(end)
+                self.commit_withheld(end)  # an abandoned trainer's late update arrived
+                self._note_real_receipt(end)
 
             # Calculate staleness
             trainer_round = msg.get(MessageType.MODEL_VERSION, 0)
@@ -338,11 +362,14 @@ class TopAggregator(BaseTopAggregator):
                         self._record_returned_trainer_props(
                             channel, end, msg, metadata[1]
                         )
+                        self._credit_dropped_straggler(channel, end, trainer_round)
                         # Check if trainer is currently in selected_ends (in-flight)
                         is_in_flight = end in getattr(channel._selector, 'selected_ends', set())
                         self._inflight_commit_staleness[end] = staleness
                         self._inflight_commit_fresh[end] = False
                         channel._selector.ordered_updates_recv_ends.append(end)
+                        if end in end_ids:
+                            end_ids.remove(end)
                         logger.info(
                             f"[CLEANUP_STALE] Added stale trainer ...{end[-8:]} to cleanup queue. "
                             f"trainer_round={trainer_round}, current_round={self._round}, staleness={staleness}, "
@@ -358,6 +385,12 @@ class TopAggregator(BaseTopAggregator):
                         continue
 
             total = self._handle_weights_msg(msg, metadata, channel, total)
+            if end in getattr(self, "_nonfinite_ends", ()):  # FX-D111: returned, not counted toward K
+                self._nonfinite_ends.discard(end)
+                channel._selector.ordered_updates_recv_ends.append(end)
+                if end in end_ids:
+                    end_ids.remove(end)
+                continue
 
             if end not in self._updates_recevied.keys():
                 self._updates_recevied[end] = 1
@@ -368,7 +401,7 @@ class TopAggregator(BaseTopAggregator):
             # This prevents the selector from re-selecting this trainer in the next round
             # before it has returned its update (key for SyncFL with overcommitment)
             self._inflight_commit_staleness[end] = staleness
-            self._inflight_commit_fresh[end] = True
+            self._inflight_commit_fresh[end] = staleness <= 0
             channel._selector.ordered_updates_recv_ends.append(end)
             # Reference Oort/REFL `time_stamp`: the agg round of last RECEIPT (drives the
             # UCB temporal term; see PROP_LAST_RETURNED_ROUND).
@@ -376,9 +409,11 @@ class TopAggregator(BaseTopAggregator):
 
             logger.info(f"[MSG_ACCEPTED] Message from ...{end[-8:]} accepted, received_end_count={received_end_count + 1}/{aggr_num}")
 
-            # remove end_id if it sends a valid message with correct
-            # round info break the for loop if k valid messages arrive
-            received_end_count += 1
+            # FX-D53: REFL stale updates aggregate but don't fill K.
+            if self._counts_toward_k(staleness):
+                received_end_count += 1
+                if _wait_k:
+                    self._sync_accepted_ends().add(end)
             # Only remove if end is in end_ids (stale messages from previous rounds won't be)
             if end in end_ids:
                 end_ids.remove(end)
@@ -393,12 +428,16 @@ class TopAggregator(BaseTopAggregator):
         # nothing means no more arrivals this round, so stop instead of spinning.
         while received_end_count < aggr_num and end_ids:
             progressed = False
+            _t_recv = time.time()
             _recv2 = (
                 self._oort_sim_recv(channel, end_ids)
                 if self.simulated
-                else channel.recv_fifo(end_ids, 1, timeout=_recv_timeout)
+                else channel.recv_fifo(
+                    [e for e in _real_ends if e in end_ids or e in getattr(self, "pending_withheld", {})], 1,
+                    deadline=_recv_deadline)
             )
-            for msg, metadata in _recv2:
+            _at.add_recv(time.time() - _t_recv)
+            for msg, metadata in _at.iterate(_recv2):
                 end, _ = metadata
 
                 if not msg:
@@ -410,6 +449,8 @@ class TopAggregator(BaseTopAggregator):
                 # commit loop already recorded it inside _sim_withhold_if_unavail).
                 if not self.simulated:
                     self._record_commit_belief(end)
+                    self.commit_withheld(end)  # an abandoned trainer's late update arrived
+                    self._note_real_receipt(end)
 
                 # Calculate staleness
                 trainer_round = msg.get(MessageType.MODEL_VERSION, 0)
@@ -454,11 +495,14 @@ class TopAggregator(BaseTopAggregator):
                         self._record_returned_trainer_props(
                             channel, end, msg, metadata[1]
                         )
+                        self._credit_dropped_straggler(channel, end, trainer_round)
                         # Check if trainer is currently in selected_ends (in-flight)
                         is_in_flight = end in getattr(channel._selector, 'selected_ends', set())
                         self._inflight_commit_staleness[end] = staleness
                         self._inflight_commit_fresh[end] = False
                         channel._selector.ordered_updates_recv_ends.append(end)
+                        if end in end_ids:
+                            end_ids.remove(end)
                         logger.info(
                             f"[CLEANUP_STALE] (loop2) Added stale trainer ...{end[-8:]} to cleanup queue. "
                             f"trainer_round={trainer_round}, current_round={self._round}, staleness={staleness}, "
@@ -474,20 +518,26 @@ class TopAggregator(BaseTopAggregator):
                         continue
 
                 total = self._handle_weights_msg(msg, metadata, channel, total)
+                if end in getattr(self, "_nonfinite_ends", ()):  # FX-D111
+                    self._nonfinite_ends.discard(end)
+                    channel._selector.ordered_updates_recv_ends.append(end)
+                    if end in end_ids:
+                        end_ids.remove(end)
+                    continue
 
                 # CRITICAL: Notify selector that this trainer has returned its update
                 self._inflight_commit_staleness[end] = staleness
-                self._inflight_commit_fresh[end] = True
+                self._inflight_commit_fresh[end] = staleness <= 0
                 channel._selector.ordered_updates_recv_ends.append(end)
                 # Reference time_stamp = agg round of last receipt (UCB temporal term).
                 channel.set_end_property(end, PROP_LAST_RETURNED_ROUND, self._round)
 
                 logger.info(f"[MSG_ACCEPTED] (loop2) Message from ...{end[-8:]} accepted, received_end_count={received_end_count + 1}/{aggr_num}")
 
-                # remove end_id if it sends a valid message with
-                # correct round info break the for loop if k valid
-                # messages arrive
-                received_end_count += 1
+                if self._counts_toward_k(staleness):  # FX-D53
+                    received_end_count += 1
+                    if _wait_k:
+                        self._sync_accepted_ends().add(end)
                 # Only remove if end is in end_ids (stale messages from previous rounds won't be)
                 if end in end_ids:
                     end_ids.remove(end)
@@ -496,13 +546,22 @@ class TopAggregator(BaseTopAggregator):
             if not progressed:
                 break
 
+        if _wait_k and received_end_count < aggr_num:
+            # FX-N37: no commit below K; the cache carries, distribute replaces timed-out picks.
+            self._sync_total = total
+            logger.info(f"[SYNC_WAIT_K] round={self._round} accepted={received_end_count}/{aggr_num}")
+            if self.simulated:
+                self._sim_sync_wait(channel)
+            return
+
         logger.debug(f"received {len(self.cache)} trainer updates in cache")
 
         # Aggregation-round telemetry (the OORT stack overrides _aggregate_weights
         # and otherwise emits none). Emit BEFORE optimizer.do, which consumes the
         # cache. Read from the cached TrainResult objects (staleness / stat_utility
         # / round_duration), and agg_observed_s = aggregator-side send->recv wall.
-        if telemetry.is_enabled():
+        # An empty cache commits nothing, so it is no round (FX-D10).
+        if telemetry.is_enabled() and self.cache:
             contrib = list(self.cache)
             stale, sutil, speeds, agg_obs, vis_lag = [], [], [], {}, []
             for eid in contrib:
@@ -533,21 +592,32 @@ class TopAggregator(BaseTopAggregator):
             )
             telemetry.emit(ev, **fields)
 
+        _fresh_u = [t.stat_utility for t in self.cache.values()
+                    if getattr(t, "staleness", 0) <= 0 and getattr(t, "stat_utility", None) is not None]
+        if _fresh_u:  # Oort avgUtilLastEpoch (even weights)
+            self._version_mean_util = getattr(self, "_version_mean_util", {})
+            self._version_mean_util[self._round] = sum(_fresh_u) / len(_fresh_u)
+
         # optimizer conducts optimization (in this case, aggregation)
         _opt0 = time.time()
+        # An empty cache commits nothing, whatever the optimizer returns (FX-L28).
         global_weights = self.optimizer.do(
             deepcopy(self.weights), self.cache, total=total
-        )
+        ) if self.cache else None
         # [AGG_COMMIT_TIMING] per-round aggregate cost (cache store in-memory +
         # optimizer + weight deepcopy).
         logger.info(
             f"[AGG_COMMIT_TIMING] round={self._round} "
             f"cache_store_s={getattr(self, '_agg_cache_store_s', 0.0):.4f} "
+            f"materialize_s={getattr(self, '_agg_materialize_s', 0.0):.4f} "
             f"optimizer_s={time.time() - _opt0:.4f}"
         )
-        self._agg_cache_store_s = 0.0
+        self._agg_cache_store_s = self._agg_materialize_s = 0.0
         if global_weights is None:
             logger.debug("failed model aggregation")
+            # Consumed (stale-rejected) updates still free their slots (FX-D10).
+            self._drop_superseded_returns(channel)
+            channel.cleanup_recvd_ends()
             time.sleep(1)
             return
 
@@ -558,9 +628,17 @@ class TopAggregator(BaseTopAggregator):
 
         # set global weights
         self.weights = global_weights
+        if telemetry.is_enabled():  # FX-N64
+            ev, fields = build_model_health(round_num=self._round, weights=self.weights)
+            telemetry.emit(ev, **fields)
 
         # update model with global weights
         self._update_model()
+        self._round_committed = True
+        self._adapt_note_commit(channel)
+        self._sync_accepted_ends().clear()
+        self._sync_failed_ends().clear()
+        self._sync_total = 0
 
         # CRITICAL: Clean up trainers who returned updates, freeing them from in-flight set
         # This must happen immediately after aggregation to prevent race condition where
@@ -585,6 +663,7 @@ class TopAggregator(BaseTopAggregator):
                 f"in_flight={test_in_flight_before}"
             )
         
+        self._drop_superseded_returns(channel)
         channel.cleanup_recvd_ends()
         
         in_flight_after = len(getattr(channel._selector, 'selected_ends', set()))
@@ -594,6 +673,7 @@ class TopAggregator(BaseTopAggregator):
             f"[CLEANUP_COMPLETE] Round {self._round}: Freed {num_to_cleanup} trainers. "
             f"in_flight: {in_flight_before} -> {in_flight_after} (delta={in_flight_before - in_flight_after})"
         )
+        _at.emit(self._round, time.time() - _opt0, self.simulated, getattr(self, "vclock_now", None))
         if test_in_cleanup or test_in_flight_before:
             logger.info(
                 f"[TRACK_411] Round {self._round}: After cleanup - in_flight={test_in_flight_after}, "
@@ -660,7 +740,8 @@ class TopAggregator(BaseTopAggregator):
         # Get desired number of trainers
         aggr_num = self.config.selector.kwargs.get("aggr_num", 10)
         overcommitment = getattr(channel._selector, 'overcommitment', 1.3)
-        desired_selection = int(aggr_num * overcommitment)
+        desired_selection = getattr(channel._selector, "num_of_ends", None) or int(aggr_num * overcommitment)
+        desired_selection = self._adapt_picks(channel, desired_selection)
 
         logger.info(
             f"[DISTRIBUTE] Round {self._round}: desired_selection={desired_selection} "
@@ -670,12 +751,8 @@ class TopAggregator(BaseTopAggregator):
         # before distributing weights, update it from global model
         self._update_weights()
 
-        # C.3: re-clock the 90s abandon to the vclock and free stalled slots so a
-        # replacement is selectable this round (no-op when the gate is off).
-        # Sim-only: real mode already has a native wall-clock abandon in the
-        # selector itself (SEND_TIMEOUT_WAIT_S), so this would be redundant there.
-        if self.simulated:
-            self._sim_abandon_stalled(channel)
+        # C.3: free slots stalled past 90s since dispatch, both modes (no-op when the gate is off).
+        self._abandon_stalled(channel)
         # D.1: for availability_aware baselines, proactively free any in-flight
         # slot the trace now shows as UN_AVL -- no 90s wait. Both modes: trace-read
         # eviction has no real-mode equivalent (unlike the abandon above), so
@@ -700,13 +777,15 @@ class TopAggregator(BaseTopAggregator):
             )
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts (§4.5 residence, sct→delivery_ts).
-            _held_withheld = self.withheld_held_ends()
+            _wh, _ow = self.withheld_held_ends(), self.real_owed_held_ends(channel)
+            _held_withheld = _wh | _ow
             if _held_withheld:
                 curr_unavail_trainer_list = list(
                     set(curr_unavail_trainer_list) | _held_withheld
                 )
         else:
             curr_unavail_trainer_list = []
+            _wh = _ow = set()
 
         # [SIM_RESIDENCE] (§4.5) Mark trainers STILL COMPUTING in sim time unavailable for this
         # selection. In sim a dispatched update arrives physically at once, so the trainer can
@@ -737,6 +816,8 @@ class TopAggregator(BaseTopAggregator):
         # just evicted) so emit_selection's avail_composition/per_trainer reflect
         # the oracular read instead of staying all-UNKNOWN.
         self._avail_stamp_end_states(channel)
+        self._stamp_exclusions(channel, task_to_perform, withheld=_wh, owed=_ow,
+                               unavail=set(curr_unavail_trainer_list))
 
         # Expose current availability-timeline time to selector so it can attach
         # it to selection events (C.6.1 — restores per-trainer avl_state identity
@@ -755,14 +836,27 @@ class TopAggregator(BaseTopAggregator):
         if not isinstance(_in_flight, set):
             _in_flight = set(_in_flight) if _in_flight else set()
         _connected = set(channel._ends.keys())
-        num_eligible = len(_connected - set(curr_unavail_trainer_list) - _in_flight)
+        _version_keys = self._task_version_keys(channel, task_to_perform)
+        num_eligible = len(
+            _connected - set(curr_unavail_trainer_list) - _in_flight - set(_version_keys)
+        )
+
+        # FX-N37: top up only the slots this version is missing; mid-round, take what is eligible.
+        _need = None
+        if self._sync_wait_k_on():
+            _fresh = self._sync_version_inflight(channel)
+            _need = desired_selection - len(_fresh) - len(self._sync_accepted_ends())
+            if _need <= 0 or (_fresh and num_eligible == 0):
+                return
+            if _fresh:
+                _need = min(_need, num_eligible)
 
         # Cohort-floor guardrail: if desired_selection > connected cohort size
         # (e.g. n=12 with desired_selection=13), the starvation gate fires
         # every round and exhausts the budget with zero training (observed
         # Jun 29, accidental n=12 oort). Clamp + warn once instead of
         # silently degenerating into an all-starvation run.
-        _starv_threshold = min(desired_selection, len(_connected))
+        _starv_threshold = min(desired_selection if _need is None else _need, len(_connected))
         if desired_selection > len(_connected) and not getattr(
             self, "_oort_cohort_floor_warned", False
         ):
@@ -777,16 +871,24 @@ class TopAggregator(BaseTopAggregator):
         if num_eligible < _starv_threshold:
             if self.simulated and self.trainer_event_dict is not None:
                 _nxt = self._next_avail_vclock()
+                # A [SIM_RESIDENCE]-held trainer frees up at its sct: also a wake-up (FX-D6).
+                _buf = getattr(self, "_sim_buffer", None)
+                if _buf is not None and getattr(
+                    self.config.hyperparameters, "inflight_residence", False
+                ):
+                    _rel = _buf.next_after(self._vclock.now)
+                    if _rel is not None:
+                        _nxt = _rel if _nxt is None else min(_nxt, _rel)
                 _budget = float(
                     getattr(self.config.hyperparameters, "max_experiment_runtime_s", float("inf"))
                 )
                 if _nxt is not None and _nxt > self._vclock.now and self._vclock.now < _budget:
                     self._vclock.advance(_nxt)
-                    self._sim_abandon_stalled(channel)
+                    self._abandon_stalled(channel)
                     curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
                         task_to_perform
                     )
-                    _held = self.withheld_held_ends()
+                    _held = self.withheld_held_ends() | self.real_owed_held_ends(channel)
                     if _held:
                         curr_unavail_trainer_list = list(
                             set(curr_unavail_trainer_list) | _held
@@ -824,7 +926,10 @@ class TopAggregator(BaseTopAggregator):
             return
 
         # Threshold met — proceed with selection.
-        selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+        selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
+                                     agg_version_key=self.version_key,
+                                     trainer_version_keys=_version_keys,
+                                     num_to_select=_need)
         if not selected_ends:
             return
 
@@ -834,9 +939,9 @@ class TopAggregator(BaseTopAggregator):
         )
 
         # Same model goes to every recipient this round; build + serialize once.
-        _sim_send_ts = getattr(self, "vclock_now", None)
+        _sim_send_ts = self._sim_send_stamp()
         msg = {
-            MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
+            MessageType.WEIGHTS_BYTES: pack_weights(self.weights),  # FX-N77
             MessageType.ROUND: self._round,
             MessageType.MODEL_VERSION: self._round,
             MessageType.TASK_TO_PERFORM: task_to_perform,
@@ -847,6 +952,8 @@ class TopAggregator(BaseTopAggregator):
             # T3.0: broadcast the trace-read origin so a trainer's own wall-clock
             # availability lookups anchor to the SAME point the aggregator uses.
             msg[MessageType.AGG_START_TS] = self.agg_start_time_ts
+        if self.simulated:
+            msg[MessageType.SIM_WALL_SEND_TS] = time.time()  # FX-D108
         _payload = channel.dumps(msg)
         _send_t0 = time.time()
         for end in selected_ends:
@@ -865,6 +972,7 @@ class TopAggregator(BaseTopAggregator):
             if self.simulated:
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sim_send_ts)
             channel.send_payload(end, _payload)
+            self._record_task_dispatch(end, task_to_perform)
         if selected_ends:
             logger.info(
                 f"[DISTRIBUTE_TIMING] round={self._round} n_sends={len(selected_ends)} "
@@ -897,9 +1005,11 @@ class TopAggregator(BaseTopAggregator):
         loop kept real's selection mix artificially broad vs sim. See PARITY.md
         "Real is the reference, but VERIFY real is correct".
         """
+        self._note_returned_version(end, msg.get(MessageType.MODEL_VERSION, self._round))
         # Statistical utility marks the trainer as explored (the selector's
         # unexplored test is `PROP_STAT_UTILITY is None`).
-        if MessageType.STAT_UTILITY in msg:
+        if MessageType.STAT_UTILITY in msg and nonfinite_reason(
+                {MessageType.STAT_UTILITY: msg[MessageType.STAT_UTILITY]}, None, nonfinite_hp(self)) is None:  # FX-D111
             channel.set_end_property(
                 end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
             )
@@ -937,6 +1047,74 @@ class TopAggregator(BaseTopAggregator):
         # runs for it), so its `time_stamp` (UCB temporal source) advances to this round.
         channel.set_end_property(end, PROP_LAST_RETURNED_ROUND, self._round)
 
+    def _credit_dropped_straggler(self, channel, end, version) -> None:
+        """Oort param_server.py:347-352 (REFL stale_update 0 alike): a dropped overcommitted straggler scores the
+        mean utility of the version it missed, not its own (FX-N83)."""
+        if getattr(self.optimizer, "stale_update_max", None) not in (None, 0):
+            return
+        util = getattr(self, "_version_mean_util", {}).get(version)
+        if util is not None:
+            channel.set_end_property(end, PROP_STAT_UTILITY, util)
+
+    def _adapt_picks(self, channel, num: int) -> int:
+        """FX-N82: REFL `adapt_selection`, decided once per version from the stale updates due next round."""
+        sel = channel._selector
+        if not getattr(sel, "adapt_selection", 0):
+            return num
+        if not hasattr(self, "_adapt_last_commit"):
+            self._adapt_last_commit = self._avail_now()
+        if getattr(self, "_adapt_version", (None,))[0] != self._round:
+            due = self._stale_due(channel)
+            self._adapt_version = (self._round, sel.adapt_num_to_sample(num, due))
+            logger.info(f"[REFL_ADAPT] round={self._round} stale_due={due} picks={self._adapt_version[1]}/{num} "
+                        f"window_s={getattr(self, '_adapt_round_len', None)}")
+        return self._adapt_version[1]
+
+    def _version_k(self, k: int) -> int:
+        """FX-N82: REFL collects min(K, picks) fresh updates (aggregator.py tictak_client_tasks)."""
+        v = getattr(self, "_adapt_version", None)
+        return min(k, v[1]) if v and v[0] == self._round else k
+
+    def _stale_due(self, channel) -> int:
+        """REFL get_stale_status: earlier-version picks still out whose update lands within the moving-average round
+        length. Both sides estimate landing as dispatch + the end's last duration (else the population median)."""
+        window = getattr(self, "_adapt_round_len", None)
+        if window is None:
+            return 0
+        durs = {e: channel.get_end_property(e, PROP_CLIENT_TASK_TRAIN_DURATION) for e in channel._ends}
+        known = sorted(d.total_seconds() for d in durs.values() if d is not None)
+        median = known[len(known) // 2] if known else None
+        bound = getattr(self.optimizer, "stale_update_max", -1)
+        now, due = self._avail_now(), 0
+        for e in self._avail_inflight_ends(channel) - self._sync_accepted_ends():
+            prop = channel.get_end_property(e, PROP_ROUND_START_TIME)
+            if not isinstance(prop, tuple) or prop[0] >= self._round:
+                continue
+            if bound is not None and bound >= 0 and self._round - prop[0] > bound:
+                continue
+            sst = self._avail_send_ts(channel, e)
+            dur = durs.get(e).total_seconds() if durs.get(e) is not None else median
+            if sst is not None and dur is not None and sst + dur - now <= window:
+                due += 1
+        return due
+
+    def _adapt_note_commit(self, channel) -> None:
+        """REFL mov_avg_deadline (aggregator.py:633, deadline_alpha 0.25) over commit-to-commit round length."""
+        if not getattr(channel._selector, "adapt_selection", 0):
+            return
+        now, last = self._avail_now(), getattr(self, "_adapt_last_commit", None)
+        if last is not None:
+            avg = getattr(self, "_adapt_round_len", None)
+            self._adapt_round_len = now - last if avg is None else 0.75 * (now - last) + 0.25 * avg
+        self._adapt_last_commit = now
+
+    def _counts_toward_k(self, staleness: int) -> bool:
+        """FX-D53: whether an accepted update fills the round's K; REFL (`refl_fresh_k`, default on) counts fresh only."""
+        if staleness <= 0 or getattr(self.optimizer, "stale_update_max", None) is None:
+            return True
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        return str(getattr(hp, "refl_fresh_k", True)).lower() != "true"
+
     def _handle_weights_msg(
         self, msg: Any, metadata: Tuple[str, datetime], channel: Any, total: int
     ) -> int:
@@ -963,6 +1141,7 @@ class TopAggregator(BaseTopAggregator):
         # round M > N) use the correct send timestamp for version N, not the
         # overwritten PROP_ROUND_START_TIME from the later re-selection.
         _msg_version = msg.get(MessageType.MODEL_VERSION, self._round)
+        self._note_returned_version(end, _msg_version)
         _sent_version_ts = getattr(self, "_oort_sent_version_ts", {})
         _sent_ts = _sent_version_ts.get(end, {}).get(_msg_version)
         if _sent_ts is None and isinstance(round_start_time_tup, tuple):
@@ -1029,8 +1208,16 @@ class TopAggregator(BaseTopAggregator):
         # malformed message can never UnboundLocalError at the `weights is not
         # None` check below.
         weights = None
-        if materialize_weights(msg) is not None:
+        _mt0 = time.time()
+        if materialize_weights(msg, model_device(self.model)) is not None:
             weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+        self._agg_materialize_s = getattr(self, "_agg_materialize_s", 0.0) + time.time() - _mt0  # FX-N70
+        _why = nonfinite_reason(msg, weights, nonfinite_hp(self))
+        if _why:  # FX-D111: the caller frees the slot as for a dropped stale update
+            nonfinite_reject(end, _why, self._round, msg.get(MessageType.MODEL_VERSION))
+            self._nonfinite_ends = getattr(self, "_nonfinite_ends", set()) | {end}
+            self._sync_failed_ends().add(end)  # FX-D120
+            return total
 
         if MessageType.DATASET_SIZE in msg:
             count = msg[MessageType.DATASET_SIZE]
@@ -1071,7 +1258,8 @@ class TopAggregator(BaseTopAggregator):
         channel.set_end_property(end, PROP_LAST_EVAL_ROUND, trainer_model_version)
 
         stat_utility = 0  # default
-        if MessageType.STAT_UTILITY in msg:
+        if MessageType.STAT_UTILITY in msg and nonfinite_reason(
+                {MessageType.STAT_UTILITY: msg[MessageType.STAT_UTILITY]}, None, nonfinite_hp(self)) is None:  # FX-D111
             channel.set_end_property(
                 end, PROP_STAT_UTILITY, msg[MessageType.STAT_UTILITY]
             )

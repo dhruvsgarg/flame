@@ -69,7 +69,7 @@ class OortSelector(AbstractSelector):
 
         # With Oort, we select 1.3 * k ends and wait until k ends to
         # complete at a round
-        self.overcommitment = 1.3
+        self.overcommitment = float(kwargs.get("overcommitment", 1.3))  # Oort code argParser: 1.1 (FX-N74)
         self.num_of_ends = int(self.aggr_num * self.overcommitment)
 
         # Algorithm hyperparameters default to the Oort paper (scoring.OORT_PAPER_DEFAULTS);
@@ -97,6 +97,7 @@ class OortSelector(AbstractSelector):
         self.clip_bound = kwargs.get("clip_bound", _d["clip_bound"])
         # cut_off_util: exploitation-pool breadth factor.
         self.cut_off_util = kwargs.get("cut_off_util", _d["cut_off_util"])
+        self.sample_window = kwargs.get("sample_window", 5.0)  # Oort argParser.py:51
 
         # UCB temporal-uncertainty term. Like reference Oort/REFL, divide by the agg round
         # of the end's LAST RECEIVED update (PROP_LAST_RETURNED_ROUND, registration-init) so
@@ -114,7 +115,7 @@ class OortSelector(AbstractSelector):
         **kwargs,
     ) -> SelectorReturnType:
         """Return k number of ends from the given ends."""
-        num_of_ends = min(len(ends), self.num_of_ends)
+        num_of_ends = min(len(ends), kwargs.get("num_to_select") or self.num_of_ends)  # FX-N37 top-up
         if num_of_ends == 0:
             logger.debug("ends is empty")
             return {}
@@ -127,20 +128,27 @@ class OortSelector(AbstractSelector):
         # full candidate pool, captured before any filtering for telemetry
         all_ends = dict(ends)
 
-        if round <= self._last_selection_round and len(self.selected_ends) != 0:
-            return {key: None for key in self.selected_ends}
-
-        self.pacer(round)
-
-        # Same no-repeat filter as async_oort's guard, kept inert here -- no
-        # caller passes both kwargs yet, since the round-scoped `selected_ends`
-        # guard above already prevents a within-round re-pick.
         agg_version_key = kwargs.get("agg_version_key")
         trainer_version_keys = kwargs.get("trainer_version_keys")
+        # A dispatch (version keys passed) selects afresh; the cache serves same-round RECV (FX-N31).
+        if (trainer_version_keys is None and round <= self._last_selection_round
+                and len(self.selected_ends) != 0):
+            return {key: None for key in self.selected_ends}
+
+        if round != getattr(self, "_paced_round", None):  # once per round (FX-D10 repeats a round)
+            self.save_exploited_utility_history(all_ends, getattr(self, "_paced_round", None))
+            self._paced_round = round
+            self.pacer(round)
+            self.update_exploration_factor()  # getTopK top: once per round, first round included
+
+        # FX-D9 no-repeat guard: an end already tasked at this version is not eligible.
+        # Excluded here so the random paths skip unavailable ends too (EV9).
+        unavail = set(trainer_unavail_list or ())
         eligible_ends = {
             end_id: end
             for end_id, end in ends.items()
             if end_id not in self.selected_ends
+            and end_id not in unavail
             and not (
                 agg_version_key is not None
                 and trainer_version_keys is not None
@@ -198,17 +206,8 @@ class OortSelector(AbstractSelector):
             )
             return result
 
-        # Not the first round, performing Oort-based selection
-        # Calculate number of ends to select for exploration and
-        # exploitation
-        (
-            exploration_len,
-            exploitation_len,
-        ) = self.calculate_num_of_exploration_exploitation(
-            num_of_ends, unexplored_end_ids
-        )
-
-        if len(utility_list) == 0:
+        # Not the first round: upstream Oort getTopK (third_party/Oort/oort/oort.py:216-305, FX-N83).
+        if len(utility_list) == 0 and not unexplored_end_ids:
             self._last_selection_round = round
             result = self.select_random(ends, num_of_ends)
             self.emit_selection(
@@ -219,22 +218,35 @@ class OortSelector(AbstractSelector):
             )
             return result
 
-        utility_list = self.calculate_total_utility(utility_list, ends, round)
-        cutoff_utility = self.cutoff_util(utility_list, num_of_ends)
-
-        exploit_end_ids = self.sample_by_util(
-            cutoff_utility, utility_list, exploitation_len
-        )
+        self.round_preferred_duration = self.calculate_round_preferred_duration(all_ends)
+        exploit_end_ids = []
+        if utility_list:
+            utility_list = self.calculate_total_utility(utility_list, ends, round, pref_ends=all_ends)
+            exploitation_len = min(
+                int(num_of_ends * (1.0 - self.exploration_factor)), len(utility_list)
+            )
+            if exploitation_len > 0:
+                cutoff_utility = self.cutoff_util(utility_list, exploitation_len)
+                exploit_end_ids = self.sample_by_util(
+                    cutoff_utility, utility_list, exploitation_len
+                )
 
         explore_end_ids = []
-        if self.exploration_factor > 0.0 and len(unexplored_end_ids) > 0:
-            explore_end_ids = self.sample_by_speed(unexplored_end_ids, exploration_len)
+        if any(e.get_property(PROP_STAT_UTILITY) is None for e in all_ends.values()):
+            explore_len = min(len(unexplored_end_ids), num_of_ends - len(exploit_end_ids))
+            if explore_len > 0:
+                explore_end_ids = self.sample_by_speed(unexplored_end_ids, explore_len, ends)
+        else:  # oort.py:303-305: nothing left to explore, ever
+            self.exploration_factor = self.min_exploration_factor = 0.0
 
-        newly_selected = set([*explore_end_ids, *exploit_end_ids])
+        picked = [*explore_end_ids, *exploit_end_ids]
+        pool = sorted(e for e in ends if e not in picked and e not in blocklist_end_ids)
+        while len(picked) < num_of_ends and pool:
+            picked.append(pool.pop(self._pyrng.randrange(len(pool))))
+        newly_selected = set(picked)
         self.selected_ends = self.selected_ends | newly_selected
 
-        self.save_exploited_utility_history(ends, exploit_end_ids)
-        self.update_exploration_factor()
+        self._last_exploit = list(exploit_end_ids)
         self.increment_selected_count_on_selected_ends(ends)
 
         logger.info(f"selected ends: {self.selected_ends}")
@@ -264,7 +276,7 @@ class OortSelector(AbstractSelector):
                 **self._system_util_summary(),
             },
         )
-        return {key: None for key in self.selected_ends}
+        return {key: None for key in newly_selected}  # SEND only the new picks
 
     def cutoff_util(
         self,
@@ -281,7 +293,7 @@ class OortSelector(AbstractSelector):
             logger.debug("Got empty utility_list, returning 999999.0")
             return 999999.0
 
-        exploit_len = int(num_of_ends * (1.0 - self.exploration_factor))
+        exploit_len = num_of_ends  # the exploitLen itself (reference: scores[sorted[exploitLen]])
         index = len(sorted_utility_list) - 1 - exploit_len
         index = max(0, min(index, len(sorted_utility_list) - 1))
 
@@ -299,17 +311,14 @@ class OortSelector(AbstractSelector):
         over_cutoff_utility_probs = []
         over_cutoff_utility_sum = 0
 
-        under_cutoff_utility_list = []
-
-        # Divide ends on whether its utility exceeds cutoff_loss or
-        # not
-        for utility_pair in utility_list:
-            if utility_pair[PROP_UTILITY] >= cutoff_utility:
-                over_cutoff_utility_end_ids.append(utility_pair[PROP_END_ID])
-                over_cutoff_utility_probs.append(utility_pair[PROP_UTILITY])
-                over_cutoff_utility_sum += utility_pair[PROP_UTILITY]
-            else:
-                under_cutoff_utility_list.append(utility_pair)
+        # Upstream Oort (oort.py:255-262): the pool is every score down to the cut-off.
+        for utility_pair in sorted(utility_list, key=lambda x: x[PROP_UTILITY], reverse=True):
+            if utility_pair[PROP_UTILITY] < cutoff_utility:
+                break
+            over_cutoff_utility_end_ids.append(utility_pair[PROP_END_ID])
+            over_cutoff_utility_probs.append(utility_pair[PROP_UTILITY])
+            over_cutoff_utility_sum += utility_pair[PROP_UTILITY]
+        over_cutoff_utility_sum = max(1e-4, over_cutoff_utility_sum)
 
         # Select clients on the probability based on the utility
         # divided by the utility sum
@@ -328,19 +337,25 @@ class OortSelector(AbstractSelector):
         return [str(e) for e in selected_ends]
 
     def sample_by_speed(
-        self, unexplored_end_ids: list[str], num_of_ends: int
+        self, unexplored_end_ids: list[str], num_of_ends: int, ends: dict[str, End]
     ) -> list[str]:
-        """Sample num_of_ends clients by speed."""
-
-        # Oort paper prioritizes unexplored ends with faster system
-        # speed We initially implement to perform random here
-        # Cast np.str_ -> str so ids match the python-str keys of ``ends``.
-        return [
-            str(e)
-            for e in self._rng.choice(
-                unexplored_end_ids, size=num_of_ends, replace=False
-            )
-        ]
+        """Oort exploration (oort.py:285-299): draw by registration reward (data size), speed-penalized,
+        from the top `sample_window` x n. Size and speed are unknown before first contact here (no a-priori
+        registration), so unknown arms weigh equally; a seeded shuffle breaks ties."""
+        pref = self.round_preferred_duration
+        reward = {}
+        for eid in unexplored_end_ids:
+            r = float(ends[eid].get_property(PROP_DATASET_SIZE) or 1.0)
+            dur = ends[eid].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
+            if dur is not None and pref is not None and dur > pref:
+                r *= (pref / max(dur, timedelta(seconds=1e-4))) ** self.alpha
+            reward[eid] = r
+        order = sorted(unexplored_end_ids)
+        self._pyrng.shuffle(order)
+        order.sort(key=lambda e: reward[e], reverse=True)
+        window = order[:min(int(self.sample_window * num_of_ends), len(order))]
+        w = np.array([reward[e] for e in window], dtype=np.float64)
+        return [str(e) for e in self._rng.choice(window, size=num_of_ends, replace=False, p=w / max(1e-4, w.sum()))]
 
     def pacer(self, round: int) -> None:
         """Adapt `round_threshold` (the speed-penalty percentile) from the exploited-utility
@@ -427,10 +442,10 @@ class OortSelector(AbstractSelector):
             sorted_round_duration = []
             for end_id in ends.keys():
                 end_round_duration = ends[end_id].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
-                if end_round_duration is not None:
+                if end_round_duration is not None:  # Oort knows every arm's duration a priori; we rank the measured
                     sorted_round_duration.append(end_round_duration)
-                else:
-                    sorted_round_duration.append(timedelta(seconds=60))
+            if not sorted_round_duration:
+                return timedelta(seconds=99999)
             # pref = round_threshold-th PERCENTILE -> sort first (ref Oort oort.py:272)
             sorted_round_duration.sort()
             round_preferred_duration = timedelta(
@@ -506,17 +521,17 @@ class OortSelector(AbstractSelector):
             self.alpha,
         )
 
-    def save_exploited_utility_history(
-        self, ends: dict[str, End], exploit_end_ids: list[str]
-    ) -> None:
-        # exploit_end_ids may be a numpy array (from sample_by_util); use len()
-        # so the emptiness check doesn't raise "truth value ambiguous".
-        if len(exploit_end_ids) == 0:
-            return
-        total = sum(
-            ends[eid].get_property(PROP_STAT_UTILITY) for eid in exploit_end_ids
-        )
-        self.exploitation_util_history.append(total / len(exploit_end_ids))
+    def save_exploited_utility_history(self, ends: dict[str, End], last_paced_round) -> None:
+        """Oort calculateSumUtil (oort.py:162-170): mean reward of last round's exploited ends that returned
+        since the previous pacer call; appended every call (0 when none)."""
+        cnt, total = 1e-4, 0.0
+        for eid in getattr(self, "_last_exploit", ()):
+            end = ends.get(eid)
+            returned = end.get_property(PROP_LAST_RETURNED_ROUND) if end is not None else None
+            util = end.get_property(PROP_STAT_UTILITY) if end is not None else None
+            if last_paced_round is not None and returned is not None and returned >= last_paced_round and util is not None:
+                cnt, total = cnt + 1, total + util
+        self.exploitation_util_history.append(total / cnt)
 
     def update_exploration_factor(self) -> None:
         self.exploration_factor = max(
@@ -543,10 +558,11 @@ class OortSelector(AbstractSelector):
         return {key: None for key in newly_selected}
 
     def calculate_total_utility(
-        self, utility_list: list[tuple[str, float]], ends: dict[str, End], round: int
+        self, utility_list: list[tuple[str, float]], ends: dict[str, End], round: int, pref_ends=None
     ) -> list[tuple[str, float]]:
-        """Apply temporal uncertainty and global system utility to each entry."""
-        self.round_preferred_duration = self.calculate_round_preferred_duration(ends)
+        """Apply temporal uncertainty and global system utility to each entry; the preferred duration
+        ranks `pref_ends` (Oort: every registered arm), default `ends`."""
+        self.round_preferred_duration = self.calculate_round_preferred_duration(pref_ends or ends)
 
         utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY])
 
@@ -599,6 +615,10 @@ class OortSelector(AbstractSelector):
 
     def _cleanup_removed_ends(self, end_id):
         logger.debug(f"end_id {end_id} left the channel")
+
+    def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
+        """Channel UN_AVL release (substrate off)."""
+        self.selected_ends.discard(end_id)
 
     def _cleanup_recvd_ends(self, ends: dict[str, End]):
         """Free ends whose updates were received from the in-flight set."""

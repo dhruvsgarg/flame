@@ -26,8 +26,10 @@ from flame.common.util import MLFramework, get_ml_framework_in_use
 from flame.end import End
 from flame.selector.oort import OortSelector
 from flame.selector.properties import (
+    PROP_DATASET_SIZE,
     PROP_END_ID,
     PROP_SELECTED_COUNT,
+    PROP_STAT_UTILITY,
     PROP_UTILITY,
 )
 from flame.availability.refl_tracker import REFLAvailabilityTracker
@@ -59,7 +61,16 @@ class REFLOortSelector(OortSelector):
         self.avail_priority = kwargs.get(
             "avail_priority", 0
         )  # 0=none, 1=fill, 2=strict
-        self.avail_probability = kwargs.get("avail_probability", 1.0)  # Accuracy 0-1
+        self.avail_probability = float(kwargs.get("avail_probability", 1.0))  # Accuracy 0-1
+        # FX-N74: REFL fork `resampleClients` picks at random within the feasible set unless sample_mode == "oort"
+        self.sample_mode = kwargs.get("sample_mode", "oort")
+        self.num_of_ends = round(self.aggr_num * self.overcommitment)  # REFL aggregator.py:637 rounds, Oort truncates
+        # FX-N82: REFL argParser.py:47-48; 2 (zero new picks) has no equivalent under the K-fresh close (FX-T37).
+        self.adapt_selection = int(kwargs.get("adapt_selection", 0))
+        self.adapt_selection_cap = float(kwargs.get("adapt_selection_cap", 0.5))
+        if self.adapt_selection not in (0, 1):
+            raise ValueError(f"adapt_selection={self.adapt_selection} unsupported (0 or 1)")
+        self.stale_due = None  # last adapt_num_to_sample input, for telemetry
 
         # Blacklisting parameters
         self.blacklist_rounds = kwargs.get("blacklist_rounds", -1)  # -1 disables
@@ -68,6 +79,7 @@ class REFLOortSelector(OortSelector):
         # Pacer parameters
         self.pacer_step = kwargs.get("pacer_step", 20)
         self.pacer_delta = kwargs.get("pacer_delta", 5)
+        self.sample_window = kwargs.get("sample_window", 5.0)  # REFL fork default
 
         # Availability tracker
         trace_file = kwargs.get("availability_trace_file", None)
@@ -118,7 +130,7 @@ class REFLOortSelector(OortSelector):
         """
         logger.debug("Calling REFL Oort select")
 
-        num_of_ends = min(len(ends), self.num_of_ends)
+        num_of_ends = min(len(ends), kwargs.get("num_to_select") or self.num_of_ends)  # FX-N37 top-up
         if num_of_ends == 0:
             logger.debug("ends is empty")
             return {}
@@ -132,17 +144,26 @@ class REFLOortSelector(OortSelector):
             f"task: {task_to_perform}, avail_priority={self.avail_priority}"
         )
 
-        if round_num <= self._last_selection_round and len(self.newly_selected_this_round) != 0:
+        agg_version_key = kwargs.get("agg_version_key")
+        trainer_version_keys = kwargs.get("trainer_version_keys")
+        # A dispatch (version keys passed) never re-sends the cache (see OortSelector.select).
+        if (trainer_version_keys is None and round_num <= self._last_selection_round
+                and len(self.newly_selected_this_round) != 0):
             return {key: None for key in self.newly_selected_this_round}
 
-        self.pacer(round_num)
+        if round_num != getattr(self, "_paced_round", None):  # once per round (FX-D10 repeats a round)
+            self._paced_round = round_num
+            self.pacer(round_num)
 
+        self._draw_key = agg_version_key if agg_version_key is not None else round_num
         unavail_set = set(trainer_unavail_list) if trainer_unavail_list else set()
 
         eligible_ends = {
             end_id: end
             for end_id, end in ends.items()
             if end_id not in unavail_set and end_id not in self.selected_ends
+            and not (trainer_version_keys is not None and agg_version_key is not None
+                     and trainer_version_keys.get(end_id) == agg_version_key)  # FX-D9
         }
 
         if len(eligible_ends) == 0:
@@ -175,7 +196,7 @@ class REFLOortSelector(OortSelector):
         if self.avail_priority == 0:
             # No priority: use standard Oort on all available ends
             all_candidates = set(priority_ends + remaining_ends)
-            selected = self._select_with_oort_ucb(
+            selected = self._pick(
                 eligible_ends, all_candidates, num_to_select, round_num
             )
 
@@ -187,21 +208,22 @@ class REFLOortSelector(OortSelector):
 
         elif self.avail_priority == 2:
             # Strict mode: only select from high-priority clients
-            available_priority = min(len(priority_ends), num_to_select)
-            logger.info(
-                f"Strict priority mode: selecting {available_priority} from "
-                f"{len(priority_ends)} priority ends"
-            )
-            selected = self._select_with_oort_ucb(
-                eligible_ends, set(priority_ends), available_priority, round_num
-            )
+            # REFL fork: all priority clients when they fit, then the sampler over the rest.
+            if len(priority_ends) <= num_to_select:
+                selected = list(priority_ends) + self._pick(
+                    eligible_ends, set(remaining_ends), num_to_select - len(priority_ends), round_num
+                )
+            else:
+                selected = self._pick(
+                    eligible_ends, set(priority_ends), num_to_select, round_num
+                )
 
         else:
             logger.warning(
                 f"Unknown avail_priority={self.avail_priority}, using mode 0"
             )
             all_candidates = set(priority_ends + remaining_ends)
-            selected = self._select_with_oort_ucb(
+            selected = self._pick(
                 eligible_ends, all_candidates, num_to_select, round_num
             )
 
@@ -215,7 +237,6 @@ class REFLOortSelector(OortSelector):
         )
 
         self._last_selection_round = round_num
-        self.update_exploration_factor()
 
         for end_id in selected:
             if end_id in ends:
@@ -231,11 +252,26 @@ class REFLOortSelector(OortSelector):
                 "avail_priority": self.avail_priority,
                 "num_priority": len(priority_ends),
                 "num_blacklist": len(blacklist),
+                "stale_due": self.stale_due,
                 "exploration_factor": self.exploration_factor,
+                "explore_ids": list(getattr(self, "_last_explore", [])),
+                "exploit_ids": list(getattr(self, "_last_exploit", [])),
+                "num_unexplored": sum(
+                    1 for e in eligible_ends.values() if e.get_property(PROP_STAT_UTILITY) is None
+                ),
                 "vclock_now": channel_props.get("vclock_now"),
             },
         )
         return {key: None for key in newly_selected}
+
+    def adapt_num_to_sample(self, num: int, stale_due: int) -> int:
+        """REFL aggregator.py:640-648: fewer new picks when `stale_due` stale updates land next round."""
+        self.stale_due = stale_due
+        if self.adapt_selection != 1 or stale_due <= 0:
+            return num
+        if self.adapt_selection_cap > 0:  # REFL passes the float cap on (a crash in rng.sample); we truncate
+            return max(int(self.adapt_selection_cap * num), num - stale_due)
+        return max(1, num - stale_due)
 
     def build_priority_lists(
         self,
@@ -280,8 +316,10 @@ class REFLOortSelector(OortSelector):
             cur_time,
             round_duration,
             lookup_timeslots=2,
-            accuracy=self.avail_probability,
         )
+        if 0 < self.avail_probability < 1:  # REFL fork: keep a seeded fraction of each list (predictor accuracy)
+            keep = lambda xs: self._keyed(xs, int(len(xs) * self.avail_probability), "refl_acc")
+            priority_ends, remaining_ends = keep(priority_ends), keep(remaining_ends)
 
         return priority_ends, remaining_ends
 
@@ -293,38 +331,28 @@ class REFLOortSelector(OortSelector):
         num_to_select: int,
         round_num: int,
     ) -> List[str]:
-        """
-        Select clients prioritizing high-priority, fill remaining from others.
+        """avail_priority=1, REFL fork `resampleClients`: the feasible set is every priority
+        client plus a RANDOM fill from the rest up to num_to_select; Oort then picks from it."""
+        if self.sample_mode != "oort":  # shuffle(priority + random fill)[:k] = priority first, then a random fill
+            if len(priority_ends) >= num_to_select:
+                return self._keyed(priority_ends, num_to_select, "refl")
+            return list(priority_ends) + self._keyed(remaining_ends, num_to_select - len(priority_ends), "refl")
+        feasible = list(priority_ends)
+        remain = num_to_select - len(feasible)
+        if remain > 0 and remaining_ends:
+            feasible += self._pyrng.sample(sorted(remaining_ends), min(remain, len(remaining_ends)))
+        return self._pick(ends, set(feasible), num_to_select, round_num)
 
-        Args:
-            ends: All available ends
-            priority_ends: High-priority end IDs
-            remaining_ends: Remaining end IDs
-            num_to_select: Total number to select
-            round_num: Current round number
+    def _pick(self, ends: Dict[str, End], candidate_end_ids: Set[str], num_to_select: int, round_num: int) -> List[str]:
+        """REFL fork `resampleClients`: Oort UCB in sample_mode 'oort', else a uniform draw."""
+        if self.sample_mode == "oort":
+            return self._select_with_oort_ucb(ends, candidate_end_ids, num_to_select, round_num)
+        return self._keyed(candidate_end_ids, num_to_select, "refl")
 
-        Returns:
-            List of selected end IDs
-        """
-        selected = []
-
-        # First, select from priority clients
-        if priority_ends:
-            num_from_priority = min(len(priority_ends), num_to_select)
-            priority_selected = self._select_with_oort_ucb(
-                ends, set(priority_ends), num_from_priority, round_num
-            )
-            selected.extend(priority_selected)
-
-        # Fill remaining slots from other clients
-        remaining_slots = num_to_select - len(selected)
-        if remaining_slots > 0 and remaining_ends:
-            remaining_selected = self._select_with_oort_ucb(
-                ends, set(remaining_ends), remaining_slots, round_num
-            )
-            selected.extend(remaining_selected)
-
-        return selected
+    def _keyed(self, ids, k: int, salt: str) -> List[str]:
+        """Uniform k-subset from per-id draws keyed on (seed, salt, version, id): pool order never shifts a draw."""
+        draw = lambda c: random.Random(f"{self._seed}|{salt}|{self._draw_key}|{c}").random()
+        return sorted(ids, key=draw, reverse=True)[:k]
 
     def _select_with_oort_ucb(
         self,
@@ -333,17 +361,11 @@ class REFLOortSelector(OortSelector):
         num_to_select: int,
         round_num: int,
     ) -> List[str]:
-        """
-        Run Oort's UCB-based selection on candidate ends.
+        """REFL fork `getTopK` (thirdparty/oort/oort.py:261-406) over `candidate_end_ids`.
 
-        Args:
-            ends: All available ends
-            candidate_end_ids: Set of candidate end IDs to select from
-            num_to_select: Number to select
-            round_num: Current round number
-
-        Returns:
-            List of selected end IDs
+        Exploit at most len(explored)-1 by weighted draw above the cut-off; explore every
+        remaining slot from the UNEXPLORED (no stat_utility yet), weighted by the arm's
+        registration reward over the top `sample_window` x slots; pad at random.
         """
         if not candidate_end_ids or num_to_select == 0:
             return []
@@ -353,84 +375,92 @@ class REFLOortSelector(OortSelector):
         candidate_ends = {eid: ends[eid] for eid in sorted(candidate_end_ids) if eid in ends}
 
         if len(candidate_ends) <= num_to_select:
+            self._last_explore, self._last_exploit = [], []
             return list(candidate_ends.keys())
 
-        # Use parent class's calculate_total_utility and selection logic
-        # Build utility list for candidates
+        # Reference decays exploration at the top of getTopK, before sizing the split.
+        self.update_exploration_factor()
+
         utility_list = []
+        unexplored = []
         for end_id, end in candidate_ends.items():
-            stat_util = end.get_property("stat_utility")
+            stat_util = end.get_property(PROP_STAT_UTILITY)
             if stat_util is not None:
                 utility_list.append({PROP_END_ID: end_id, PROP_UTILITY: stat_util})
-
-        if not utility_list:
-            # sorted(): cross-process-stable order for the seeded draw.
-            return self._pyrng.sample(sorted(candidate_end_ids), num_to_select)
-
-        # Calculate total utility with temporal uncertainty and system utility
-        utility_list = self.calculate_total_utility(
-            utility_list, candidate_ends, round_num
-        )
-
-        # Select top-k with exploration/exploitation
-        num_exploit = int(num_to_select * (1 - self.exploration_factor))
-        num_explore = num_to_select - num_exploit
-
-        # Sort by utility (descending)
-        utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY], reverse=True)
-
-        # Exploitation, faithful to the REFL fork (thirdparty/oort/oort.py:316-355):
-        # threshold at cut_off_util * the exploitLen-th-highest score, augment the pool
-        # down to that cutoff (or 10x exploitLen), then sample exploitLen WEIGHTED by utility.
-        exploit_clients = []
-        if num_exploit > 0:
-            boundary = min(num_exploit, len(utility_list) - 1)
-            cutoff = self.cut_off_util * utility_list[boundary][PROP_UTILITY]
-            pool = []
-            for item in utility_list:
-                if item[PROP_UTILITY] < cutoff and len(pool) > 10 * num_exploit:
-                    break
-                pool.append(item)
-            scores = np.array([max(p[PROP_UTILITY], 0.0) for p in pool], dtype=np.float64)
-            ids = [p[PROP_END_ID] for p in pool]
-            k = min(num_exploit, len(ids))
-            # Stamp the final per-candidate draw probability + pool/cutoff membership
-            # into the audit so the parity checker can compare the SELECTION weighting
-            # (not just per-term KS) sim vs real — the divergence that drives refl K3b.
-            _audit = getattr(self, "_audit_components", None)
-            if _audit is not None:
-                _tot = float(scores.sum())
-                for _i, _eid in enumerate(ids):
-                    if _eid in _audit:
-                        _audit[_eid]["in_exploit_pool"] = True
-                        _audit[_eid]["exploit_cutoff"] = cutoff
-                        _audit[_eid]["selection_prob"] = (
-                            float(scores[_i]) / _tot if _tot > 0 else 0.0
-                        )
-            if scores.sum() > 0:
-                exploit_clients = list(
-                    self._rng.choice(ids, k, replace=False, p=scores / scores.sum())
-                )
             else:
-                exploit_clients = ids[:k]
+                unexplored.append(end_id)
 
-        # Exploration: random from clients not already exploited
-        remaining_candidates = [
-            item[PROP_END_ID]
-            for item in utility_list
-            if item[PROP_END_ID] not in set(exploit_clients)
-        ]
-        explore_clients = self._pyrng.sample(
-            remaining_candidates, min(num_explore, len(remaining_candidates))
-        )
+        exploit_clients = []
+        if utility_list:
+            # Calculate total utility with temporal uncertainty and system utility
+            utility_list = self.calculate_total_utility(
+                utility_list, candidate_ends, round_num
+            )
+            exploration_len = int(num_to_select * self.exploration_factor)
+            num_exploit = min(num_to_select - exploration_len, len(utility_list) - 1)
 
-        selected = [str(c) for c in exploit_clients] + explore_clients
+            # Sort by utility (descending)
+            utility_list = sorted(utility_list, key=lambda x: x[PROP_UTILITY], reverse=True)
+
+            # Exploitation, faithful to the REFL fork (thirdparty/oort/oort.py:316-355):
+            # threshold at cut_off_util * the exploitLen-th-highest score, augment the pool
+            # down to that cutoff (or 10x exploitLen), then sample exploitLen WEIGHTED by utility.
+            if num_exploit > 0:
+                boundary = min(num_exploit, len(utility_list) - 1)
+                cutoff = self.cut_off_util * utility_list[boundary][PROP_UTILITY]
+                pool = []
+                for item in utility_list:
+                    if item[PROP_UTILITY] < cutoff and len(pool) > 10 * num_exploit:
+                        break
+                    pool.append(item)
+                scores = np.array([max(p[PROP_UTILITY], 0.0) for p in pool], dtype=np.float64)
+                ids = [p[PROP_END_ID] for p in pool]
+                k = min(num_exploit, len(ids))
+                # Stamp the final per-candidate draw probability + pool/cutoff membership
+                # into the audit so the parity checker can compare the SELECTION weighting
+                # (not just per-term KS) sim vs real — the divergence that drives refl K3b.
+                _audit = getattr(self, "_audit_components", None)
+                if _audit is not None:
+                    _tot = float(scores.sum())
+                    for _i, _eid in enumerate(ids):
+                        if _eid in _audit:
+                            _audit[_eid]["in_exploit_pool"] = True
+                            _audit[_eid]["exploit_cutoff"] = cutoff
+                            _audit[_eid]["selection_prob"] = (
+                                float(scores[_i]) / _tot if _tot > 0 else 0.0
+                            )
+                if scores.sum() > 0:
+                    exploit_clients = [
+                        str(c) for c in self._rng.choice(ids, k, replace=False, p=scores / scores.sum())
+                    ]
+                else:
+                    exploit_clients = ids[:k]
+
+        explore_clients = []
+        if unexplored:
+            explore_len = min(len(unexplored), num_to_select - len(exploit_clients))
+            if explore_len > 0:
+                # Registration reward = dataset size when known (reference: min(size, local
+                # steps x batch)); unknown before a first update, so equal. Seeded shuffle
+                # first so equal rewards don't bias the window toward low ids.
+                order = list(unexplored)
+                self._pyrng.shuffle(order)
+                reward = {e: float(candidate_ends[e].get_property(PROP_DATASET_SIZE) or 1.0) for e in order}
+                order.sort(key=lambda e: reward[e], reverse=True)
+                window = order[:max(explore_len, min(int(self.sample_window * explore_len), len(order)))]
+                w = np.array([reward[e] for e in window], dtype=np.float64)
+                explore_clients = [
+                    str(c) for c in self._rng.choice(window, explore_len, replace=False, p=w / w.sum())
+                ]
+
+        selected = explore_clients + exploit_clients
 
         # Pad with random if needed (sorted() for cross-process-stable order)
-        while len(selected) < num_to_select and len(candidate_end_ids) > len(selected):
-            remaining = candidate_end_ids - set(selected)
-            selected.append(self._pyrng.choice(sorted(remaining)))
+        while len(selected) < num_to_select and len(candidate_ends) > len(selected):
+            remaining = sorted(set(candidate_ends) - set(selected))
+            selected.append(self._pyrng.choice(remaining))
 
+        self._last_explore, self._last_exploit = explore_clients, exploit_clients
         return selected[:num_to_select]
 
     def get_blacklist(self, ends: Dict[str, End]) -> Set[str]:

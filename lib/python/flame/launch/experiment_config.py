@@ -27,7 +27,7 @@ class AvailabilityConfig:
     """Availability trace configuration."""
 
     mode: str = (
-        "mobiperf_2st"  # mobiperf_2st, mobiperf_3st_50, mobiperf_3st_75, syn_0, syn_20, syn_50
+        "mobiperf_2st"  # mobiperf_2st, mobiperf_3st_50, mobiperf_3st_75, syn_0, syn_10, syn_20, syn_50
     )
 
 

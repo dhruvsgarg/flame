@@ -1390,6 +1390,15 @@ class TestSelectionDetailMatchedWindow:
         assert r["n_selections_unexplained_by_volume"] == 0.75, r
         assert r["real_mean_chosen"] == r["sim_mean_chosen"] == 30.0, r
 
+    def test_async_selector_graded_on_total_picks(self):
+        """FX-D51: an async refill's per-event mean follows loop cadence (empty polls, batched slots); totals match."""
+        def sd(n, ts):
+            return {**self._sd(n, ts), "selector": "FedBuffSelector", "in_flight": 4}
+        real = self._side([sd(2, 0.1 * i) for i in range(10)], n_bins=5)
+        sim = self._side([sd(1 if i % 2 else 0, 0.05 * i) for i in range(40)], n_bins=5)
+        r = pc.selection_detail_parity(real, sim)
+        assert r["ok"] and r["real_total_chosen"] == r["sim_total_chosen"] == 20, r
+
     def test_redraw_COUNT_gap_that_work_VOLUME_explains_still_defers(self):
         """The §D-64 case that must NOT regress: where the re-draw gap IS v1's
         number (8 of 9 baselines read them equal to 3 d.p.), one measurement
@@ -3756,7 +3765,14 @@ class TestInterArrivalOrderPower:
         assert r["bucket_sizes"]["real"] == [3, 3]
 
     def test_many_rounds_is_not_flagged(self):
-        rounds = [_round(i, ["a", "b"], [0, 0]) for i in range(1, 8)]
+        rounds = [_round(i, ["a", "b", "c"], [0, 0, 0]) for i in range(1, 8)]
         r = pc.inter_arrival_order_parity(_agg(agg_rounds=rounds),
                                           _agg(agg_rounds=rounds))
         assert r["n_rounds"] == 7 and r["underpowered"] is False
+
+    def test_disjoint_stochastic_picks_do_not_read_as_anticorrelated(self):
+        # FX-N66: ends absent on one side used to rank at its tail; only the common trainers are ranked now.
+        real = [_round(i, ["a", "b", "c", "x1", "x2"], [0] * 5) for i in range(1, 8)]
+        sim = [_round(i, ["a", "b", "c", "y1", "y2"], [0] * 5) for i in range(1, 8)]
+        r = pc.inter_arrival_order_parity(_agg(agg_rounds=real), _agg(agg_rounds=sim))
+        assert r["mean_spearman_rho"] == 1.0 and r["ok"]

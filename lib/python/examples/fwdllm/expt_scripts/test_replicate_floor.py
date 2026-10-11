@@ -170,7 +170,7 @@ class TestCodeVersionGrouping:
         invoked = set(re.findall(r"([a-z_]+)\.py", open(sh, errors="ignore").read()))
         here = {os.path.basename(p)[:-3]
                 for p in glob.glob(os.path.join(os.path.dirname(sh), "*.py"))}
-        for name in invoked & here:
+        for name in invoked & here - {n for n in here if n.startswith("test_")}:  # guards, not inputs
             path = f"lib/python/examples/fwdllm/expt_scripts/{name}.py"
             assert not rf._RUN_IRRELEVANT.search(path), (
                 f"{name}.py is invoked by run_sequential.sh but is treated as "

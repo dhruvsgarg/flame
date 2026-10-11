@@ -40,9 +40,16 @@ EVENT_VCLOCK_CHARGE = "vclock_charge"  # every charge_sim_vclock_overhead() call
 EVENT_SERVER_UPDATE = "server_update"  # fwdllm: applied-update vs weight norm per commit (I-1 audit)
 EVENT_BMAX_PROBE = "bmax_probe"      # fwdllm: one B_max re-sense (accuracy-vs-Phi curve + knee)
 EVENT_SAT_STATE = "sat_state"        # fwdllm: saturation-stop detector state per eval
+EVENT_TASK_DISCARD = "task_discard"  # trainer dropped a request it already answered (FX-D9)
+EVENT_RUN_END = "run_end"  # aggregator stop point: round, vclock (sim), work_done (FX-N31)
+EVENT_TRACE_ORIGIN = "trace_origin"  # real join barrier: trace/stream clock origin (FX-D51)
+EVENT_MODEL_HEALTH = "model_health"  # global model health after a commit (FX-N64)
+EVENT_AGG_TIMING = "agg_timing"  # per-commit wall split: recv wait vs ingest vs commit (FX-N43)
 
 KNOWN_EVENTS = frozenset(
     {
+        EVENT_TRACE_ORIGIN,
+        EVENT_MODEL_HEALTH,
         EVENT_RUN_META,
         EVENT_SELECTION,
         EVENT_AGG_EVAL,
@@ -68,6 +75,9 @@ KNOWN_EVENTS = frozenset(
         EVENT_REDISPATCH_DECOMP,
         EVENT_SLOT_STARVATION,
         EVENT_VCLOCK_CHARGE,
+        EVENT_TASK_DISCARD,
+        EVENT_RUN_END,
+        EVENT_AGG_TIMING,
     }
 )
 
@@ -124,6 +134,27 @@ def build_agg_eval(
     fields = {"round": round_num}
     fields.update(metrics)
     return EVENT_AGG_EVAL, fields
+
+
+def build_model_health(*, round_num: int, weights: dict) -> tuple[str, dict[str, Any]]:
+    """FX-N64: float-weight L2 norm, non-finite count, max |BN buffer|, min running_var (< 0 = NaN at eval)."""
+    import torch
+
+    sq, bad, buf_max, var_min = 0.0, 0, 0.0, float("inf")
+    for k, v in weights.items():
+        if not torch.is_tensor(v) or not v.is_floating_point():
+            continue
+        t = v.detach().float()
+        fin = torch.isfinite(t)
+        bad += int((~fin).sum())
+        t = torch.where(fin, t, torch.zeros_like(t))
+        sq += float((t * t).sum())
+        if "running_" in k and t.numel():
+            buf_max = max(buf_max, float(t.abs().max()))
+            if k.endswith("running_var"):
+                var_min = min(var_min, float(t.min()))
+    return EVENT_MODEL_HEALTH, {"round": round_num, "weight_norm": sq ** 0.5, "nonfinite": bad, "bn_buf_max": buf_max,
+                                                 "bn_var_min": var_min if var_min != float("inf") else None}
 
 
 def build_agg_round(
@@ -994,6 +1025,26 @@ def build_withheld_delivery(
     if actual_commit_ts is not None:
         fields["actual_commit_ts"] = float(actual_commit_ts)
     return EVENT_WITHHELD_DELIVERY, fields
+
+
+def build_agg_timing(
+    *,
+    round_num: int,
+    cycle_s: float,
+    recv_wait_s: float,
+    ingest_s: float,
+    commit_s: float,
+    n_updates: int,
+    time_mode: str,
+    vclock_now: Optional[float] = None,
+) -> tuple[str, dict[str, Any]]:
+    """FX-N43: one commit's aggregator wall split; other = cycle minus recv wait, ingest and commit."""
+    other = cycle_s - recv_wait_s - ingest_s - commit_s
+    return EVENT_AGG_TIMING, {
+        "round": round_num, "cycle_s": round(cycle_s, 4), "recv_wait_s": round(recv_wait_s, 4),
+        "ingest_s": round(ingest_s, 4), "commit_s": round(commit_s, 4), "other_s": round(max(0.0, other), 4),
+        "n_updates": n_updates, "time_mode": time_mode, "vclock_now": vclock_now,
+    }
 
 
 def build_abandon_timeout(

@@ -19,7 +19,7 @@ import logging
 
 from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
-from flame.common.util import weights_to_device, weights_to_model_device
+from flame.common.util import materialize_weights, weights_to_device, weights_to_model_device
 from flame.mode.composer import Composer
 from flame.mode.distributed.trainer import Trainer as DistTrainer
 from flame.mode.hybrid.top_aggregator import GROUP_UNIDENTIFIED
@@ -115,6 +115,7 @@ class Trainer(DistTrainer):
         end = channel.one_end()
         msg, _ = channel.recv(end)
 
+        materialize_weights(msg)  # FX-N77: WEIGHTS_BYTES from pack_weights
         if MessageType.WEIGHTS in msg:
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             self._update_model()

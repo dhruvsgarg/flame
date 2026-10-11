@@ -1,5 +1,7 @@
 # FLUXTUNE vs FwdLLM / FedBuff(P) / Felix(P) — experiment design (living doc)
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../_metadata/ROBUST_FL_READINESS.md) → [FLUXTUNE_READINESS.md](../_metadata/FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 **Status:** N=100 α=1 runs landed (2×2 opt ablation + baseline comparison — charter) on the original
 3-baseline `main` run-set; E1 headline holds on **peak** accuracy, runs do not yet *hold* the minimum
 (Issue I-1, **root-caused** → `fluxtune_contributions.md` §8, next = S1 server optimizer). Since then, the

@@ -233,3 +233,14 @@ def test_selector_emits_selection_event(factory, make_ends, channel_props, tmp_p
     # availability composition was derived from end properties
     assert r["avail_composition"].get("AVL_TRAIN", 0) == 7
     assert r["avail_composition"].get("UN_AVL", 0) == 3
+
+
+def test_model_health_counts_nonfinite_and_bn_buffers():
+    import torch
+    from flame.telemetry.events import EVENT_MODEL_HEALTH, KNOWN_EVENTS, build_model_health
+    w = {"conv.weight": torch.tensor([3.0, 4.0]), "bn.running_var": torch.tensor([1.0, 50.0]),
+         "bn.num_batches_tracked": torch.tensor(7), "fc.bias": torch.tensor([float("nan"), 0.0])}
+    ev, f = build_model_health(round_num=5, weights=w)
+    assert ev == EVENT_MODEL_HEALTH and ev in KNOWN_EVENTS
+    assert f["nonfinite"] == 1 and f["bn_buf_max"] == 50.0 and f["round"] == 5
+    assert abs(f["weight_norm"] - (9 + 16 + 1 + 2500) ** 0.5) < 1e-4

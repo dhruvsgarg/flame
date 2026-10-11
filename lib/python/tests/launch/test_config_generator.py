@@ -370,47 +370,79 @@ class TestTrainerSpawnerForwardsDatasetIdentity:
         ]
 
 
+class TestTrainerSpawnerPlacement:
+    """CPU harness: an empty GPU pool hides every GPU; spare cores widen each trainer's pin block."""
+
+    def _spawn(self, tmp_path, monkeypatch, n_trainers, usable, **kw):
+        import subprocess
+        from flame.launch.spawner import TrainerSpawner
+
+        seen = []
+        monkeypatch.setattr(subprocess, "Popen",
+                            lambda *a, **k: seen.append(k) or type("P", (), {"pid": 1})())
+        gen = TestTrainerSpawnerForwardsDatasetIdentity._RecordingConfigGenerator()
+        sp = TrainerSpawner(gen, cpu_pinning=False, **kw)
+        sp.cpu_pinning, sp._usable_cores = True, list(usable)
+        for tid in range(1, n_trainers + 1):
+            sp.spawn_trainer(trainer_id=tid, alpha=0.1, availability_mode="syn_0",
+                             trainer_main_path=tmp_path / "main.py", num_trainers=n_trainers)
+        return seen
+
+    def test_empty_gpu_pool_hides_gpus(self, tmp_path, monkeypatch):
+        seen = self._spawn(tmp_path, monkeypatch, 2, range(4), num_gpus=0)
+        assert all(k["env"]["CUDA_VISIBLE_DEVICES"] == "" for k in seen)
+
+    def test_spare_cores_split_into_disjoint_blocks(self, tmp_path, monkeypatch):
+        seen = self._spawn(tmp_path, monkeypatch, 3, range(7), num_gpus=1)
+        assert [k["env"]["OMP_NUM_THREADS"] for k in seen] == ["2"] * 3
+
+    def test_oversubscribed_keeps_one_core_each(self, tmp_path, monkeypatch):
+        seen = self._spawn(tmp_path, monkeypatch, 10, range(4), num_gpus=1)
+        assert {k["env"]["OMP_NUM_THREADS"] for k in seen} == {"1"}
+        assert seen[0]["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+
+
 class TestSyntheticTracePerTrainer:
     """Regression for Open B (UNAVAILABILITY_DESIGN.md): get_synthetic_trace used
     to always return the shared `pattern` entry regardless of trainer_id,
     ignoring synthetic_traces.yaml's per-trainer entries. trainer_054's own
-    trace (first event t=13800s) differs from syn_20's shared pattern
-    (t=600s)."""
+    trace (first outage t=13200s) differs from syn_10's shared pattern
+    (unavailable at t=0; FX-D18 shifted syn_10 by 600s)."""
 
     def test_shared_pattern_when_trainer_id_omitted(self, loader):
-        pattern = loader.get_synthetic_trace("syn_20")
-        assert pattern[0] == [0, "AVL_TRAIN"]
+        pattern = loader.get_synthetic_trace("syn_10")
+        assert pattern[0] == [0, "UN_AVL"]
         assert pattern[1][0] == 600
 
     def test_per_trainer_used_when_trainer_id_given(self, loader):
-        trace_054 = loader.get_synthetic_trace("syn_20", trainer_id=54)
-        pattern = loader.get_synthetic_trace("syn_20")
+        trace_054 = loader.get_synthetic_trace("syn_10", trainer_id=54)
+        pattern = loader.get_synthetic_trace("syn_10")
         assert trace_054 != pattern
         assert trace_054[0] == [0.0, "AVL_TRAIN"]
-        assert trace_054[1][0] == 13800
+        assert trace_054[1][0] == 13200
 
     def test_different_trainers_get_different_traces(self, loader):
-        trace_054 = loader.get_synthetic_trace("syn_20", trainer_id=54)
-        trace_005 = loader.get_synthetic_trace("syn_20", trainer_id=5)
+        trace_054 = loader.get_synthetic_trace("syn_10", trainer_id=54)
+        trace_005 = loader.get_synthetic_trace("syn_10", trainer_id=5)
         assert trace_054 != trace_005
 
     def test_generate_trainer_config_bakes_in_per_trainer_trace(self, gen):
         cfg = gen.generate_trainer_config(
-            trainer_id=54, alpha=0.1, availability_mode="syn_20"
+            trainer_id=54, alpha=0.1, availability_mode="syn_10"
         )
-        events = cfg["hyperparameters"]["avl_events_syn_20"]
-        assert events[1][0] == 13800
+        events = cfg["hyperparameters"]["avl_events_syn_10"]
+        assert events[1][0] == 13200
 
     def test_generate_trainer_config_differs_across_trainers(self, gen):
         cfg_054 = gen.generate_trainer_config(
-            trainer_id=54, alpha=0.1, availability_mode="syn_20"
+            trainer_id=54, alpha=0.1, availability_mode="syn_10"
         )
         cfg_005 = gen.generate_trainer_config(
-            trainer_id=5, alpha=0.1, availability_mode="syn_20"
+            trainer_id=5, alpha=0.1, availability_mode="syn_10"
         )
         assert (
-            cfg_054["hyperparameters"]["avl_events_syn_20"]
-            != cfg_005["hyperparameters"]["avl_events_syn_20"]
+            cfg_054["hyperparameters"]["avl_events_syn_10"]
+            != cfg_005["hyperparameters"]["avl_events_syn_10"]
         )
 
 
@@ -448,3 +480,28 @@ class TestExecutionConfigBanksDelays:
         assert cfg["experiment"]["trainer"]["enable_training_delays"] is False
         # factor unset -> banked as None (trainer_base default applies)
         assert cfg["experiment"]["trainer"]["training_delay_factor"] is None
+
+
+class TestAggregatorMathThreads:
+    """FX-D40: the aggregator's math libs get a quarter of its pinned cores; env overrides."""
+
+    def _env(self, monkeypatch, cores, override=None):
+        import subprocess
+        from flame.launch.aggregator_spawner import AggregatorSpawner
+
+        seen = []
+        monkeypatch.setattr(subprocess, "Popen",
+                            lambda *a, **k: seen.append(k) or type("P", (), {"pid": 1})())
+        if override is None:
+            monkeypatch.delenv("FLAME_AGG_MATH_THREADS", raising=False)
+        else:
+            monkeypatch.setenv("FLAME_AGG_MATH_THREADS", override)
+        AggregatorSpawner().spawn("main.py", config_json="{}", cpu_cores=set(cores))
+        return seen[0]["env"]
+
+    def test_quarter_of_pinned_cores(self, monkeypatch):
+        assert self._env(monkeypatch, range(8))["OMP_NUM_THREADS"] == "2"
+        assert self._env(monkeypatch, range(2))["MKL_NUM_THREADS"] == "1"
+
+    def test_env_override(self, monkeypatch):
+        assert self._env(monkeypatch, range(8), "8")["OMP_NUM_THREADS"] == "8"

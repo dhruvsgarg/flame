@@ -16,7 +16,6 @@
 """Aysnc and SyncFL horizontal FL top level aggregator for FwdLLM."""
 
 # TODO: Shift is_async param to hyperparameters
-import cloudpickle
 import gc
 import logging
 import psutil
@@ -32,7 +31,7 @@ from sortedcontainers import SortedDict
 import torch.nn.functional as F
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType
-from flame.common.util import weights_to_device, weights_to_model_device
+from flame.common.util import materialize_weights, weights_to_device, weights_to_model_device
 from flame.config import OptimizerType, TrainerAvailState
 from flame.end import KEY_END_STATE, PROP_END_AVL_STATE, VAL_END_STATE_NONE
 from flame.mode.composer import CloneComposer
@@ -377,6 +376,10 @@ class TopAggregator(AsyncTopAgg):
     """Top level Aggregator implements an ML aggregation
     role."""
 
+    send_origin_at_join = False  # FX-N45: FluxTune parked
+    _SIM_ORDER_SLACK_DEFAULT_S = _SIM_ORDER_SLACK_S  # FluxTune parked: keep its gate slack (FX-D23)
+    _sim_order_slack_s = _SIM_ORDER_SLACK_S
+
     # The sim runs real forward-grad GPU + server eval, so its physical wall
     # legitimately exceeds the vclock budget (#6/#13); a 1x wall ceiling would
     # truncate it before vclock reached the budget. Decoupled to a generous
@@ -384,6 +387,7 @@ class TopAggregator(AsyncTopAgg):
     # stops: max_data_id_progress and vclock >= max_runtime_s). Override with an
     # explicit `sim_wall_ceiling_s` for a tighter bound.
     SIM_WALL_CEILING_FACTOR = 20.0
+    _SUBSTRATE_OWNS_INFLIGHT_RELEASE = False  # FX-D12 / S8
 
     def internal_init(self) -> None:
         """Initialize internal state for role."""
@@ -2844,10 +2848,7 @@ class TopAggregator(AsyncTopAgg):
             if popped is None:
                 break
             end, sct, (msg, md) = popped
-            if MessageType.WEIGHTS_BYTES in msg:
-                msg[MessageType.WEIGHTS] = cloudpickle.loads(
-                    msg.pop(MessageType.WEIGHTS_BYTES)
-                )
+            materialize_weights(msg)
             # E.1: send-gate — withhold if trainer is UN_AVL at completion.
             if self._sim_withhold_if_unavail(channel, end, sct, (msg, md)):
                 continue
@@ -2876,10 +2877,7 @@ class TopAggregator(AsyncTopAgg):
             if wh is None:
                 break
             wend, wdts, (wmsg, wmd) = wh
-            if MessageType.WEIGHTS_BYTES in wmsg:
-                wmsg[MessageType.WEIGHTS] = cloudpickle.loads(
-                    wmsg.pop(MessageType.WEIGHTS_BYTES)
-                )
+            materialize_weights(wmsg)
             _wd = self._sim_take_withheld_delivering(wend)
             self._advance_sim_clock(wdts)
             if _wd is not None:

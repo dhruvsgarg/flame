@@ -1,5 +1,7 @@
 # Forward-gradient fine-tuning — implementation, evidence, and how to run it
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../_metadata/ROBUST_FL_READINESS.md) → [FLUXTUNE_READINESS.md](../_metadata/FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 > **This document owns every number a run produced**, plus the flags, runs, dead ends, instruments and
 > launch procedure. **[P3](#p3--knob-ledger) (knobs) and [P4](#p4--run-ledger) (runs) are the two
 > ledgers, and they are the source of truth for evidence.**

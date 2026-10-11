@@ -84,21 +84,31 @@ def registry_override_keys():
     return out
 
 
-needed = unguarded_args_reads(TRAINER) - PRESET
-supplied = builder_supplies()
-missing = sorted(needed - supplied)
-print(f"  trainer __init__ reads unguarded : {len(needed)}   builder supplies: {len(supplied)}")
-print(f"  missing from build_model_args    : {missing or 'none'}")
+def check():
+    """Print the report; True when every check passes."""
+    needed = unguarded_args_reads(TRAINER) - PRESET
+    supplied = builder_supplies()
+    missing = sorted(needed - supplied)
+    print(f"  trainer __init__ reads unguarded : {len(needed)}   builder supplies: {len(supplied)}")
+    print(f"  missing from build_model_args    : {missing or 'none'}")
 
-unfanned = sorted(DUAL_READ_FROM_REGISTRY - registry_override_keys())
-unbuilt = sorted(DUAL_READ_FROM_REGISTRY - supplied)
-print(f"  dual-read, not in hyperparameter_overrides : {unfanned or 'none'}")
-print(f"  dual-read, not supplied by the builder     : {unbuilt or 'none'}")
+    unfanned = sorted(DUAL_READ_FROM_REGISTRY - registry_override_keys())
+    unbuilt = sorted(DUAL_READ_FROM_REGISTRY - supplied)
+    print(f"  dual-read, not in hyperparameter_overrides : {unfanned or 'none'}")
+    print(f"  dual-read, not supplied by the builder     : {unbuilt or 'none'}")
 
-fail = bool(missing or unfanned or unbuilt)
-for main in MAINS:
-    src = open(main).read()
-    if "ClassificationArgs()" in src:
-        print(f"  {os.path.relpath(main, ROOT)}: hand-rolls ClassificationArgs again -- use the builder")
-        fail = True
-sys.exit(1 if fail else 0)
+    fail = bool(missing or unfanned or unbuilt)
+    for main in MAINS:
+        src = open(main).read()
+        if "ClassificationArgs()" in src:
+            print(f"  {os.path.relpath(main, ROOT)}: hand-rolls ClassificationArgs again -- use the builder")
+            fail = True
+    return not fail
+
+
+def test_model_args_parity():
+    assert check()
+
+
+if __name__ == "__main__":
+    sys.exit(0 if check() else 1)

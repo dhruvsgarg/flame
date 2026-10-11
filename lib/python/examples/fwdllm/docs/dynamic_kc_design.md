@@ -1,5 +1,7 @@
 # Dynamic K and C for FwdLLM: Design Document
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../../_metadata/ROBUST_FL_READINESS.md) → [FLUXTUNE_READINESS.md](../../_metadata/FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 **Author:** Dhruv Garg  
 **Date:** 2026-04-11  
 **Branch:** `dg/dyn_k_c_asyncOORT`
