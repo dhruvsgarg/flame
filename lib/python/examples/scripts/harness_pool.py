@@ -83,6 +83,17 @@ MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 960}
 # FX-D52: G0U legs whose unaware picks hold slots a full timeout run longer, to reach a gradeable round count.
 G0U_RUNTIME_X = {("oort", "mobiperf_3st"): 4, ("fedbuff", "mobiperf_3st", "google_speech"): 3}
 GPU_N = {"cifar10": 300, "google_speech": 100}  # the datasets' reference cohorts (datasets.yaml)
+EUROSYS_TARGET = {"cifar10": 0.7, "google_speech": 0.6}  # EuroSys'26 runs: cifar "70acc"; speech = FELIX target (assumed)
+EUROSYS_HORIZON_S = 72000  # 20 h virtual: the paper's slowest MobiPerf TTA is 16.3 h
+EUROSYS_K = 10  # May-2025 runs: aggr_num 10 (sync), aggGoal 10 (async)
+# May-2025 shared trainer (trainer/config_dir0.1_num300_* @ 966797558): 1 epoch, bs 32, lr 0.04, plain SGD, no decay.
+EUROSYS_TRAINER_HP = ("localSteps=null epochs=1 batchSize=32 learningRate=0.04 trainerOptimizer=sgd trainerMomentum=0 "
+                      "trainerWeightDecay=0 lrDecayEnabled=false")
+# FedDance paper Table 1 + FedScale defaults (baseline_reference.yaml feddance), applied to every F3 arm.
+FEDDANCE_PAPER_HP = {
+    ds: f"localSteps=1 epochs=1 batchSize={bs} learningRate={lr} trainerOptimizer=sgd trainerMomentum=0.9 "
+        "trainerWeightDecay=0.0005 lrDecayEnabled=true lrDecayFactor=0.98 lrDecayEpoch=10 minLearningRate=0.00005"
+    for ds, bs, lr in (("cifar10", 24, 0.1), ("google_speech", 32, 0.075))}
 # G0 screen: reference c/n and aggGoal/c ratios at a smaller n; GPUs per leg keep the reference trainers per GPU.
 G0_SHAPE = {"cifar10": dict(n=100, agg_goal=3, c=10, gpus=3),
             "google_speech": dict(n=50, agg_goal=5, c=15, gpus=4)}
@@ -340,6 +351,28 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [Phase(DS_TAG[ds] + tier, baselines, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
                       trainer_hp=full, agg_hp=full + " evalEveryNRounds=20", gpus=4,
                       **({"kind": "sim_ev"} if tier == "G1AS" else {}))]
+    if tier in ("G1X", "G1XP"):  # FedDance sprint: EuroSys'26 setup, every baseline on one config; G1XP = real+sim convergence pair
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        kw = dict(n=GPU_N[ds], dataset=ds, harness="none", trainer_hp=f"{full} {EUROSYS_TRAINER_HP}", gpus=4, agg_goal=EUROSYS_K)
+        if tier == "G1XP":
+            return [Phase(f"{DS_TAG[ds]}G1XP_syn_0", baselines, "syn_0", runtime_s=3600,
+                          agg_hp=full + " evalEveryNRounds=20", **kw)]
+        return [Phase(f"{DS_TAG[ds]}G1X_{t}", baselines, t, runtime_s=EUROSYS_HORIZON_S, kind="sim_ev",
+                      agg_hp=f"{full} evalEveryNRounds=20 targetAccuracy={EUROSYS_TARGET[ds]}", **kw)
+                for t in ("mobiperf_3st", "syn_50", "syn_10", "syn_0")]
+    if tier in ("G1XS", "G1XQ"):  # FedDance sprint sanity: shared config at n=50 real+sim (15 min) / n=300 sim speed probe (2 h vclock)
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        kw = dict(dataset=ds, harness="none", trainer_hp=f"{full} {EUROSYS_TRAINER_HP}", agg_goal=EUROSYS_K)
+        if tier == "G1XS":
+            return [Phase(f"{DS_TAG[ds]}G1XS_syn_50", baselines, "syn_50", runtime_s=900, n=50, gpus=1,
+                          agg_hp=full + " evalEveryNRounds=5", **kw)]
+        return [Phase(f"{DS_TAG[ds]}G1XQ_mobiperf_3st", baselines, "mobiperf_3st", runtime_s=7200, n=GPU_N[ds], gpus=4,
+                      agg_hp=full + " evalEveryNRounds=20", kind="sim_ev", **kw)]
+    if tier in ("G1XF", "G1XFS"):  # FedDance sprint F3: FedDance vs random (fedavg) on the FedDance paper's own training config, small n
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        return [Phase(f"{DS_TAG[ds]}{tier}_mobiperf_3st", baselines, "mobiperf_3st", runtime_s=6000 if tier == "G1XF" else 3000, n=50, dataset=ds, harness="none",
+                      trainer_hp=f"{full} {FEDDANCE_PAPER_HP[ds]}", agg_hp=full + " evalEveryNRounds=20", gpus=1, agg_goal=5,
+                      kind="sim_ev")]
     if tier == "G1L":  # FX-N65: felix syn_0 past the 7200s convergence floor, pair + a real replicate
         return [Phase(f"{DS_TAG[ds]}G1L", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds, harness="none"),
                 Phase(f"{DS_TAG[ds]}G1LC", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds,
@@ -428,8 +461,7 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
                 base += ["--sim-ceiling-x", str(ph.sim_ceiling_x)]
             gpu = ph.harness == "none"
             cpus = slot_cpus(ph.n, gpu_per_trainer, 8) if gpu else slot_cpus(ph.n, ph.cpt or per_trainer)
-            # FX-D59: GPU trainer ~1.2 GB PSS (cifar n=300 ~360 GB); stub ~0.55 GB (n=120 legs peak ~68 GB)
-            mem = (GPU_TRAINER_RAM_GB if gpu else 0.6) * ph.n + (8 if gpu else 3)
+            mem = leg_ram_formula_gb(ph.dataset, gpu, ph.n)
             g = (ph.gpus or gpus_per_job) if gpu else 0
             stem = f"{ph.pid}_{b}" if ph.pid.endswith(t) else f"{ph.pid}_{t}_{b}"
             mk = lambda mode, args, deps=(), c=cpus, m=mem, gg=g: Job(
@@ -451,7 +483,17 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
     return jobs
 
 
-GPU_TRAINER_RAM_GB = 1.3  # FX-D59: host RAM per GPU-leg trainer; the pool never co-schedules past the node's RAM
+# FX-D59/FX-D141: host RAM per trainer and per-leg base (agg + broker), by (dataset, gpu); ~1.05 x ledger max (PR29b/PR30)
+TRAINER_RAM_GB = {("cifar10", True): 1.3, ("google_speech", True): 1.55, ("cifar10", False): 0.65,
+                  ("google_speech", False): 1.05}
+LEG_BASE_RAM_GB = {("cifar10", True): 8, ("google_speech", True): 8, ("cifar10", False): 3, ("google_speech", False): 6}
+
+
+def leg_ram_formula_gb(dataset: str, gpu: bool, n: int) -> float:
+    k = (dataset if dataset in DATASETS else "cifar10", gpu)
+    return TRAINER_RAM_GB[k] * n + LEG_BASE_RAM_GB[k]
+
+
 GPU_TIGHT = 0.85  # FX-D56: a leg peaking above this share of a GPU's memory is one burst from OOM
 
 
@@ -778,6 +820,7 @@ def kill_tag(tag: str, sig=signal.SIGKILL) -> None:
 
 
 # ---------------------------------------------------------------- resource ledger (FX-D140)
+BLOCKED_LOG_S = 600  # FX-D141
 RES_SAMPLE_TICKS = 15  # loop ticks (2 s) between ledger samples: 30 s
 RAM_PROFILE_X = 1.15   # a leg's next RAM estimate >= this x its measured peak
 
@@ -1046,11 +1089,16 @@ class Pool:
         cap = cm.total()
         leases = self.leases or Leases()
         node = slot_leases([c for gs in groups.values() for g in gs for c in g], gpu_ids())
-        gpus_free = gpu_ids()
+        node_gpus = gpu_ids()
+        gpus_free = list(node_gpus)
+        gpu_seen_t = time.time()
+        blocked: Dict[str, str] = {}  # FX-D141: why each ready leg is waiting; logged every BLOCKED_LOG_S
+        blocked_shown = time.time()
         pending = sorted(self.jobs, key=_order_key(self.jobs))
         running: Dict[str, Running] = {}
         ports: set = set()
         history = _load_history()
+        history_base = {k: list(v) for k, v in history.items()}
         t0 = self.t0 = time.time()
         mem_budget = mem_available_gb() - self.mem_headroom_gb
         stop = {"flag": False}
@@ -1067,6 +1115,17 @@ class Pool:
         signal.signal(signal.SIGTERM, _on_signal)
         try:
             while (pending or running) and not stop["flag"] and not self.aborted:
+                if time.time() - gpu_seen_t > 30 and any(j.gpus for j in pending):
+                    # FX-D141: refresh; a failed nvidia-smi returns [] and a start-time snapshot starved PR29b B1
+                    node_gpus = gpu_ids() or node_gpus
+                    ours = {g for r in running.values() for g in r.gpus}
+                    gpus_free = [g for g in node_gpus if g not in ours]
+                    gpu_seen_t = time.time()
+                if blocked and time.time() - blocked_shown > BLOCKED_LOG_S:
+                    for jid, why in list(blocked.items())[:6]:
+                        self.say(f"BLOCKED {jid}: {why}")
+                    blocked_shown = time.time()
+                blocked.clear()
                 for j in list(pending):
                     if any(d not in self.done for d in j.deps):
                         continue
@@ -1078,8 +1137,10 @@ class Pool:
                     if len(running) >= self.max_parallel:
                         break
                     if j.mem_gb + sum(r.job.mem_gb for r in running.values()) > mem_budget and running:
+                        blocked[j.jid] = f"pool RAM budget ({j.mem_gb:.0f} GB + running > {mem_budget:.0f})"
                         continue
                     if j.gpus > len(gpus_free):
+                        blocked[j.jid] = f"needs {j.gpus} GPUs, {len(gpus_free)} free of {node_gpus}"
                         continue
                     if probe is None or time.time() - probe["t"] > 30:  # foreign load, between starts only
                         ours = {c for r in running.values() for c in r.cpus}
@@ -1094,14 +1155,18 @@ class Pool:
                                      f"{probe['mem']:.0f} GB available")
                             last_note = note
                     usable = [g for g in gpus_free if g not in probe["gpus"]]
-                    if j.gpus > len(usable) or ram_blocks(j.mem_gb, min(probe["mem"], mem_available_gb("MemTotal") - leases.reserved_gb()),
-                                                       self.mem_headroom_gb, bool(running)):
+                    avail = min(probe["mem"], mem_available_gb("MemTotal") - leases.reserved_gb())
+                    if j.gpus > len(usable) or ram_blocks(j.mem_gb, avail, self.mem_headroom_gb, bool(running)):
+                        blocked[j.jid] = (f"GPUs usable {usable} (foreign busy {sorted(probe['gpus'])}), "
+                                          f"RAM {j.mem_gb:.0f} GB vs {avail:.0f} available - {self.mem_headroom_gb:.0f} headroom")
                         continue
                     cpus = cm.alloc(j.cpus, probe["cpus"])
                     if cpus is None:
+                        blocked[j.jid] = f"needs {j.cpus} CPUs, {len(probe['cpus'])} foreign-busy"
                         continue
                     gp = usable[:j.gpus]
                     if not leases.take_all(slot_leases(cpus, gp)):  # a neighbour pool took one since the probe
+                        blocked[j.jid] = "lease race with a neighbour pool"
                         cm.release(cpus, groups)
                         probe = None
                         continue
@@ -1158,7 +1223,7 @@ class Pool:
                             history.setdefault(ram_key(r.job), []).append(round(ram_peak, 1))
                     cm.release(r.cpus, groups)
                     leases.drop(slot_leases(r.cpus, r.gpus, r.port) + [f"ram_{os.getpid()}_{jid}"])
-                    gpus_free += r.gpus
+                    gpus_free += [g for g in r.gpus if g not in gpus_free]
                     ports.discard(r.port)
                     self.done[jid] = r.out
                     del running[jid]
@@ -1186,7 +1251,7 @@ class Pool:
                         pass
                     kill_tag(r.tag)
                     leases.drop(slot_leases(r.cpus, r.gpus, r.port) + [f"ram_{os.getpid()}_{r.job.jid}"])
-            _save_history(history)
+            _save_history(history, history_base)
         if stop["flag"]:
             return 130
         self.merge()
@@ -1309,9 +1374,17 @@ def _load_history() -> dict:
         return {}
 
 
-def _save_history(h: dict) -> None:
+def _save_history(h: dict, base: Optional[dict] = None) -> None:
+    """FX-D141: merge this pool's appends onto the file under a lock; a plain write lost every concurrent pool's."""
     DURATIONS.parent.mkdir(parents=True, exist_ok=True)
-    DURATIONS.write_text(json.dumps({k: v[-10:] for k, v in h.items()}, indent=1, sort_keys=True))
+    with open(DURATIONS.with_suffix(".lock"), "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        disk = _load_history()
+        for k, v in h.items():
+            disk[k] = disk.get(k, []) + v[len((base or {}).get(k, [])):]
+        tmp = DURATIONS.with_suffix(".tmp")
+        tmp.write_text(json.dumps({k: v[-10:] for k, v in disk.items()}, indent=1, sort_keys=True))
+        os.replace(tmp, DURATIONS)
 
 
 def run_gate(root: Path, datasets, pool: "Pool") -> int:

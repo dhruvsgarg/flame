@@ -230,7 +230,9 @@ def probe(out: Path, pools: dict) -> list:
                     break
                 rows.append(ln.split())
             fails = [f"{r[0]}:{r[2]}" for r in rows if any(x.startswith("FAIL") for x in r[3:6])]
-            lines.append(f"probe {sid} {'PASS' if not fails else 'RED'}: {len(rows)} cells, red (EV or parity) {fails[:12]}")
+            skips = plog.read_text(errors="replace").count("] SKIP ") if plog.exists() else 0
+            v = "EMPTY" if not rows else "RED" if fails else "PARTIAL" if skips else "PASS"  # FX-D141: 0 cells is not a pass
+            lines.append(f"probe {sid} {v}: {len(rows)} cells, {skips} legs skipped, red (EV or parity) {fails[:12]}")
     return lines
 
 

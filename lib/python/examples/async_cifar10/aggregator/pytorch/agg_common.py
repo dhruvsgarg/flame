@@ -7,6 +7,7 @@ the GPU serves only eval and oracle forwards, so ingest never queues behind an e
 `FLAME_AGG_MODEL_DEVICE=eval` reverts to the model on the eval device.
 """
 
+import copy
 import logging
 import os
 import threading
@@ -41,6 +42,8 @@ class ExampleAggregatorMixin:
         on_eval = os.environ.get(ENV_AGG_MODEL_DEVICE, "cpu").lower() == "eval"
         self.device = self.eval_device if on_eval else torch.device("cpu")
         self.model = self.data_spec.model().to(self.device)
+        # FX-D142: eval copy before the trace origin; built lazily, its CUDA init delayed round 2 in real only
+        self._eval_model = copy.deepcopy(self.model).to(self.eval_device)
         self._replica = None
         self._init_oracle_util(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data"))
 

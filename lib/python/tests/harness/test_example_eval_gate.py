@@ -38,3 +38,17 @@ def test_non_eval_round_skips():
     agg = _Agg(21, True)
     agg.evaluate()
     assert agg.snapshots == 0
+
+
+def test_eval_copy_built_at_initialize(monkeypatch):
+    # FX-D142: a lazy first-eval deepcopy to the GPU put CUDA context creation on round 1's critical path (real only).
+    import torch
+    import agg_common
+    agg = _Agg(1, True)
+    agg.harness_mode = "stub"
+    agg._init_oracle_util = lambda _: None
+    monkeypatch.setattr(agg_common.harness, "device_for", lambda _: torch.device("cpu"))
+    monkeypatch.setattr(ExampleAggregatorMixin, "data_spec",
+                        property(lambda self: SimpleNamespace(model=lambda: torch.nn.Linear(2, 2))))
+    agg.initialize()
+    assert agg._eval_model is not None and agg._eval_model is not agg.model

@@ -142,14 +142,15 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 | PR28 rescored, speech P7 n/a (FX-D135) | **41 / 76** (58 tested) | 12/12 · 9/12 · 6/12 · 5/10 · 2/12 · 3/12 · 4/6 | 5 / 12 |
 | PR29 over PR28 (later pool supersedes a pair; FX-D136) | **51 / 76** (60 tested, 16 = PR30) | 12/12 · 12/12 · 7/12 · 7/10 · 3/12 · 4/12 · 6/6 | 5 / 12 |
 | same pools, FX-D139 regrade | **52 / 76** | 12/12 · 12/12 · 8/12 · 7/10 · 3/12 · 4/12 · 6/6 | 5 / 12 |
+| PR29b + PR30 over PR28-29 (10-11) | **62 / 76** (68 tested) | 12/12 · 12/12 · 10/12 · 9/10 · 6/12 · 7/12 · 6/6 | 5 / 12 |
 
 **Path to full score (76 cells; operator 10-10).** Each step regrades its pools and rewrites the row above (C5).
 
 | step | cells | what | done when |
 |---|---|---|---|
 | PR29 (`run_pr29.py`, done 10-10, 9 h not 4.6 h) | 17 red + 2 untested | 52 / 76 after rooting (FELIX "PR29 results"): FX-D136-D139 | — |
-| PR29b (`run_pr29b.py`, ~2.7 h) | 7 red | confirms FX-D136-D138 + re-screens fedbuff/feddance/Oort; chaos cells need n >= 3 floors | 0 red above floor |
-| PR30 (`run_pr30.py`, ~10.5 h) | 16 untested | speech G0T all six (replaces P7) + cifar/speech Oort `G0T_*s` (FX-L63), each with G0TC floor | 76 / 76 |
+| PR29b + PR30 (done 10-11) | 7 red + 16 untested | 62 / 76: 6 red, 8 untested (B1 stall FX-D141 cut 3 stages) | — |
+| PR31 (`run_pr31.py`, ~9.5 h) | 6 red + 8 untested | FX-D141-D143 confirms + speech G0T refl/feddance/Oort + 3-leg floors + T3 re-screen | 76 / 76 |
 | then | — | long runs (PR21: G1A accuracy, G1U, G0T full grid), C0.5 | accuracy 12 / 12 |
 
 **Per baseline × dataset (latest grade).** Parity = INV/EXACT on the latest pair; accuracy numbers in FELIX accuracy table.
@@ -209,23 +210,13 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR29b · ready (smoke `pool_smoke_pr29b` green; operator launches; ~2.7 h on jayne, tmux `dg_flame`):** `cd lib/python/examples && $PY scripts/run_pr29b.py
-  --plan --hours 6 && $PY scripts/run_pr29b.py --hours 6`. Stages and claims: `run_pr29b.py`. C19: *Claim:* FX-D136-D138 close PR29's 7 open reds.
-  *Unknowns:* cluster behaviour of the fixes; measured RAM per leg kind (first ledgers). *Confirms:* reals EV0 PASS with no `RAM_OVER`; cifar fedbuff
-  G0U mobiperf + G0T lin syn_50 and cifar feddance T3 syn_50 throughput within same-batch floors; speech feddance G0U syn_50 graded; no sim cell
-  that was green turns red. *Refutes:* any of those persists, or a re-screened green cell turns red (then FX-D137/D138 perturbed it: root first).
-  Read: regrade every `pool_<ts>_PR29b_*`, `readiness_score.py` (PR28, PR29, PR29b pools oldest first), `resource_report.py` per pool.
-- **PR29 · done 10-10 (`experiments/pr29_20261010_1606`; FELIX "PR29 results"). Was: ready (smoke `pool_smoke_pr29` green, clip reaches trainers; operator launches; ~4.6 h on jayne, tmux `dg_flame`):** `cd lib/python/examples && $PY scripts/run_pr29.py --plan --hours 6
-  && $PY scripts/run_pr29.py --hours 6` (`$PY` = dg_flame python). Stages and claims: `run_pr29.py`; B2 now packs G0TC floors. C19:
-  *Claim:* FX-D127-D130 + cifar Oort clip close PR28's EV reds and wait-K sim slowness; same-batch replicate floors decide the 15 timing reds.
-  *Confirms:* G3/G4 feddance sims sim_rate > 1, EV12 PASS, one eval per eval round; C1 cifar Oort real EV17 PASS, coverage ~1, CLIP probe
-  0 rejects; G1 speech feddance EV16 PASS; each timing red within its floor. *Refutes:* any of those EV reds persists, or a timing red
-  stays above a same-code floor (then it is a mechanism: root it before any long run). Read: `experiments/pr29_<ts>/`, regrade every pool,
-  `readiness_score.py experiments/pool_<ts>_PR29_*` (+ unchanged PR28 pools for cells PR29 does not rerun).
-- **PR30 · ready after PR29 (~10.5 h; run overnight):** `$PY scripts/run_pr30.py --plan --hours 12 && $PY scripts/run_pr30.py --hours 12`. C19:
-  *Claim:* the 16 untested streaming cells grade green: speech G0T six (FX-N30, replaces P7) and Oort-family `G0T_*s` at K=10 (FX-L63).
-  *Confirms:* EV19 + INV/EXACT green, or DIST within the cell's G0TC floor; cifar Oort 0 update_rejected (clip). *Refutes:* an EV red
-  (DOOMED.txt names it early) or a DIST red above its G0TC floor → root it before long runs. Read: regrade, `readiness_score.py` on PR29 + PR30 pools.
+- **PR31 · PARKED 10-11 for the FedDance sprint (FELIX); split into PR31a/PR31b before launch.** Was ready (~9.5 h on jayne, tmux `dg_flame`): `cd lib/python/examples && $PY scripts/run_pr31.py --plan --hours 12
+  && $PY scripts/run_pr31.py --hours 12`. C19: *Claim:* FX-D142 closes cifar Oort G0T time_to_n reds, FX-D143 closes cifar feddance T3 syn_50,
+  FX-D141 lets every stage start; 3-leg floors decide trainers_at_n cells. *Confirms:* B1/C1 cells within floor; B2 real EV0 PASS; no `BLOCKED`
+  on an idle node; no T3/G0T cell green in PR28-30 turns red. *Refutes:* a red persists above its same-batch floor (root before long runs), or a green
+  cell turns red under the new charges (FX-D143 perturbed it). Read: regrade every `pool_<ts>_PR31_*`, `readiness_score.py` (PR28 → PR31 oldest first).
+- **PR29b, PR30 · done 10-11** (`experiments/pr29b_20261011_0043`, `pr30_20261011_0624`; FELIX "PR29b + PR30 results").
+- **PR29 · done 10-10** (`experiments/pr29_20261010_1606`; FELIX "PR29 results").
 - **PR28 · done 10-10** (`experiments/pr28_20261010_0215`; FELIX "PR28 results"). Roots: FX-D127-D131; open: FX-N85 s3/s6, FX-N86.
 - **PR27 · done 10-10** (`pool_20261009_2115_PR27_{A,B,C,D}`; roots R1-R5 in FELIX "PR27 root causes" → FX-N85).
 - **PR24 · FELIX "Next steps → Resume here", in order FX-N80 → N84.** FX-N80's C19 steps (in-process `fl_lr_check --baseline`, then T3 +

@@ -467,6 +467,7 @@ class PyTorchCifar10Trainer(Trainer):
     def load_data(self) -> None:
         """Load data."""
         self.memory_profiler.log_component_memory("load_data", "BEFORE")
+        torch.manual_seed(harness.stable_seed((self.trainer_id, "data")))  # FX-D144: preload augmentation draws
         
         hp_n = harness.harness_samples(self.config.hyperparameters, self.harness_mode)
         if self.harness_mode == "stub":
@@ -802,6 +803,9 @@ class PyTorchCifar10Trainer(Trainer):
         _cap = harness.stub_max_steps(self.config.hyperparameters, self.harness_mode)
         if _cap is not None:
             steps = min(steps, _cap) if steps is not None else _cap
+        # FX-D144: batch order seeded by logical identity, not the process RNG (incidental draws forked sim from real)
+        self._task_seq = getattr(self, "_task_seq", 0) + 1
+        torch.manual_seed(harness.stable_seed((self.trainer_id, self._round, self._task_seq)))
         epoch = 0
         while epoch < self.epochs if steps is None else total_batches_processed < steps:  # FX-N74
             epoch += 1

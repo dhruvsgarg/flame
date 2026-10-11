@@ -414,3 +414,24 @@ def test_proc_role_reads_the_script_not_the_inline_config(tmp_path, monkeypatch)
     monkeypatch.setattr(pool.Path, "read_bytes", lambda self: b"\0".join(argv[int(self.parent.name)])
                         if self.name == "cmdline" else real_read(self))
     assert [pool.proc_role(i) for i in (1, 2, 3)] == ["trainer", "agg", "broker"]
+
+
+def test_ram_formula_per_dataset():
+    # FX-D141: ledger GB/trainer (PR29b/PR30): speech GPU 1.47 and CPU 0.99 overran the old single 1.3 / 0.6.
+    assert pool.leg_ram_formula_gb("cifar10", True, 50) == pytest.approx(73.0)
+    assert pool.leg_ram_formula_gb("google_speech", True, 50) > 1.47 * 50 + 7.2
+    assert pool.leg_ram_formula_gb("google_speech", False, 15) > 0.99 * 15 + 3.1
+
+
+def test_history_save_merges_concurrent_pools(tmp_path, monkeypatch):
+    # FX-D141: two pools load the same file; the last to save used to erase the other's appends.
+    monkeypatch.setattr(pool, "DURATIONS", tmp_path / "h.json")
+    pool._save_history({"k": [1]})
+    a, b = pool._load_history(), pool._load_history()
+    base_a, base_b = {k: list(v) for k, v in a.items()}, {k: list(v) for k, v in b.items()}
+    a["k"].append(2)
+    a["ka"] = [5]
+    b["k"].append(3)
+    pool._save_history(a, base_a)
+    pool._save_history(b, base_b)
+    assert pool._load_history() == {"k": [1, 2, 3], "ka": [5]}

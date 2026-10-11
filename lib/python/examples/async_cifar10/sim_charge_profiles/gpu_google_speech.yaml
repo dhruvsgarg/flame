@@ -1,62 +1,62 @@
 completion_leg:
   asyncfl:
-    mean_s: 0.1077
-    p50_s: 0.105
-    n: 355
-    charge: true
-  fedavg:
-    mean_s: 0.1128
-    p50_s: 0.119
-    n: 29
+    mean_s: 0.0987
+    p50_s: 0.096
+    n: 358
     charge: true
   oort_sync:
-    mean_s: 0.1187
-    p50_s: 0.119
-    n: 133
+    mean_s: 0.1152
+    p50_s: 0.112
+    n: 109
+    charge: true
+  fedavg:
+    mean_s: 0.1241
+    p50_s: 0.115
+    n: 50
     charge: true
 dispatch_latency:
   asyncfl:
-    mean_s: 0.0617
-    p50_s: 0.029
-    n: 351
-    charge: true
-  fedavg:
-    mean_s: 0.1568
-    p50_s: 0.079
-    n: 5
+    mean_s: 0.0616
+    p50_s: 0.044
+    n: 355
     charge: true
   oort_sync:
-    mean_s: 0.1618
-    p50_s: 0.113
-    n: 17
+    mean_s: 0.1366
+    p50_s: 0.136
+    n: 12
+    charge: true
+  fedavg:
+    mean_s: 0.0901
+    p50_s: 0.09
+    n: 8
     charge: true
 download_leg:
   asyncfl:
-    mean_s: 0.1305
-    p50_s: 0.072
-    n: 355
-    charge: true
-  fedavg:
-    mean_s: 0.2064
-    p50_s: 0.201
-    n: 29
+    mean_s: 0.1444
+    p50_s: 0.06
+    n: 358
     charge: true
   oort_sync:
-    mean_s: 0.2795
-    p50_s: 0.252
-    n: 133
+    mean_s: 0.2644
+    p50_s: 0.233
+    n: 109
+    charge: true
+  fedavg:
+    mean_s: 0.2437
+    p50_s: 0.2505
+    n: 50
     charge: true
 _meta:
   dataset: google_speech
   harness: gpu
   host: jayne
-  commit: b4b85f0ca
-  date: '2026-10-09'
+  commit: 42afaa684
+  date: '2026-10-11'
   tool: profile_felix_charges.py
   runs:
-  - run_20261008_051734_gs_CHG_dbg_google_speech_fedbuff_n100_alpha0.1_syn_0_stream_real
-  - run_20261008_051734_gs_CHG_dbg_google_speech_feddance_n100_alpha0.1_syn_0_stream_real
-  - run_20261008_051734_gs_CHG_dbg_google_speech_felix_n100_alpha0.1_syn_0_stream_real
-  - run_20261008_051734_gs_CHG_dbg_google_speech_oort_star_n100_alpha0.1_syn_0_stream_real
-  - run_20261008_053033_gs_CHG_dbg_google_speech_oort_n100_alpha0.1_syn_0_stream_real
-  - run_20261008_053033_gs_CHG_dbg_google_speech_refl_n100_alpha0.1_syn_0_stream_real
+  - run_20261011_125300_gs_CHG_dbg_google_speech_felix_n100_alpha0.1_syn_0_stream_real
+  - run_20261011_130745_gs_CHG_dbg_google_speech_fedbuff_n100_alpha0.1_syn_0_stream_real
+  - run_20261011_130745_gs_CHG_dbg_google_speech_oort_star_n100_alpha0.1_syn_0_stream_real
+  - run_20261011_130749_gs_CHG_dbg_google_speech_feddance_n100_alpha0.1_syn_0_stream_real
+  - run_20261011_132131_gs_CHG_dbg_google_speech_oort_n100_alpha0.1_syn_0_stream_real
+  - run_20261011_132206_gs_CHG_dbg_google_speech_refl_n100_alpha0.1_syn_0_stream_real
