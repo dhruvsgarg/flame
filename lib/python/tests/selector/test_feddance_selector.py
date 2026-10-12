@@ -225,3 +225,16 @@ def test_unseen_device_takes_mean_I_not_stat_utility(make_ends, channel_props):
     assert s.last_loss == {"a": 0.5}
     from flame.selector.properties import PROP_I
     assert ends["b"].get_property(PROP_I) == 2.0 and ends["a"].get_property(PROP_I) == 0.5
+
+
+def test_random_utility_ignores_scores_and_respects_eligibility(make_ends, channel_props):
+    """utility=random (the fedavg arm): uniform over available, not-in-flight ends; seeded, so repeatable."""
+    picks = []
+    for _ in range(2):
+        s = FedDanceSelector(aggr_num=3, utility="random")
+        ends = make_ends(count=20, prefix="t")
+        s.last_loss = {"t19": 1e9}  # would win under V*I*A
+        picks.append(set(s.select(ends, channel_props, trainer_unavail_list=["t0"], task_to_perform="train")))
+    assert picks[0] == picks[1] and len(picks[0]) == 3 and "t0" not in picks[0]
+    with pytest.raises(ValueError):
+        FedDanceSelector(aggr_num=3, utility="bogus")

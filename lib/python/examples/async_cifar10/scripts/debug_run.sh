@@ -63,7 +63,7 @@ usage() {
   echo "usage: $0 [--baselines 'felix refl'] [--runtime-s 3600] [--mode sim|real|both] [--sim-wall-ceiling-s 2700] [--trace syn_20]"
   echo "       $0 smoke [--baselines ...] [--mode sim|real|both] [--trace syn_20]"
   echo ""
-  echo "  --baselines           which baselines to run (any of felix oort oort_star refl feddance fedbuff);"
+  echo "  --baselines           which baselines to run (any of felix oort oort_star refl feddance fedbuff, fedavg);"
   echo "                        filtered from the parity config, node-agnostic."
   echo "  --mode                which time_mode variant(s) to run for each baseline:"
   echo "                        'sim' (only the simulated run), 'real' (only the real run),"
@@ -229,10 +229,15 @@ def _log_hp_sources(bl, ds, e, layers):
             print(f"[HP] {bl} {ds} {k}={v} ({src.get(k, 'template default')})", flush=True)
 
 
+# fedavg (random) = the feddance experiment with selector utility=random: only the selection rule differs.
+if "fedavg" in requested:
+    cfg["experiments"] += [dict(copy.deepcopy(x), arm="fedavg", name=x["name"].replace("feddance", "fedavg"))
+                           for x in cfg.get("experiments", []) if x.get("baseline") == "feddance"]
 kept = []
 for e_src in cfg.get("experiments", []):
     bl = e_src.get("baseline", "").lower()
-    if bl not in requested:
+    arm = e_src.pop("arm", bl)
+    if arm not in requested:
         continue
     if mode != "both" and exp_mode(e_src) != mode:
         continue
@@ -263,6 +268,8 @@ for e_src in cfg.get("experiments", []):
         h = e["aggregator"]["config_overrides"]["hyperparameters"]
         # FX-N22 test shapes: set only the knobs this baseline has.
         kw = e["aggregator"]["config_overrides"].setdefault("selector", {}).setdefault("kwargs", {})
+        if arm == "fedavg":
+            kw["utility"] = "random"
         if os.environ.get("AGG_GOAL", "").strip():  # the launcher fans agg_goal into aggGoal + aggr_num
             e["aggregator"]["agg_goal"] = int(os.environ["AGG_GOAL"])
         if os.environ.get("CONC", "").strip() and "c" in kw:

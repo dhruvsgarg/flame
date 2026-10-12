@@ -60,6 +60,10 @@ class FedDanceSelector(AbstractSelector):
             )
 
         self.num_of_ends = max(1, int(self.aggr_num * self.overcommitment))
+        # "random": uniform pick from the same eligible set (the paper's FedAvg baseline; only selection differs).
+        self.utility = kwargs.get("utility", "feddance")
+        if self.utility not in ("feddance", "random"):
+            raise ValueError(f"utility must be feddance/random, got {self.utility}")
 
         self.predictor = FedDancePredictor(
             history_window=self.history_window,
@@ -137,8 +141,11 @@ class FedDanceSelector(AbstractSelector):
                 f"[FEDDANCE] round {round_num}: only {num_to_select}/{num_of_ends} trainers eligible"
             )
 
-        utilities = self._compute_utilities(eligible, round_num)
-        selected = self._pick_top_n(utilities, num_to_select)
+        if self.utility == "random":
+            selected = self._pyrng.sample(sorted(eligible), num_to_select)
+        else:
+            utilities = self._compute_utilities(eligible, round_num)
+            selected = self._pick_top_n(utilities, num_to_select)
 
         self.newly_selected_this_round = set(selected)
         self.selected_ends = self.selected_ends | self.newly_selected_this_round

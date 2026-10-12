@@ -377,6 +377,10 @@ def test_ram_growth_flags_a_climbing_leg_not_a_steady_one():
     leak = [(t, t / 10) for t in range(0, 200, 10)]
     assert abs(pool.ram_growth_gb(flat)) < 1e-6 and not pool.leak_suspect(50.0, pool.ram_growth_gb(flat))
     assert pool.leak_suspect(19.0, pool.ram_growth_gb(leak))
+    # FD S3: spawn ramp over most of a short sim, then flat once every trainer is up.
+    spawn = [(t, min(t, 300.0), min(t, 300)) for t in range(0, 390, 30)]
+    assert not pool.leak_suspect(300.0, pool.ram_growth_gb(spawn))
+    assert pool.leak_suspect(30.0, pool.ram_growth_gb([(t, t / 10, 9) for t in range(0, 300, 10)]))
 
 
 def test_mem_estimate_never_below_measured_peak():

@@ -54,7 +54,7 @@ FedDance invariants + real/sim loss equality, rtol 1e-4: post-FX-D144 max 7.9e-6
 | F1 | done `pool_20261011_1338_FD_F1` (T3/T3C x syn_0/50/mobiperf x both): 15/16; cifar syn_50 throughput green (drift 0.68 → 0.23 s at r58); terminal_state 8.3% vs 8% (real<->real 6%): 0384 edge flip from a ~4 ms/round residual at stub scale (0.1% of a GPU round); recorded, not chased | INV/EXACT green or floor |
 | F2 | done `pool_20261011_1415_FD_F2` 6/8 → FX-D144 (loss term differed from round 1: no trainer seed). F2b `pool_20261011_1528_FD_F2b`: losses equal; cifar mobiperf 6.6% ✅, speech mobiperf 0.6% ✅, speech syn_50 ✅; cifar syn_50 trainers_at_n 36 vs 38 (stall placement, floor-gate) | INV/EXACT green or floor |
 | S1 | done: config dry-run (`debug_run.sh --dry-run` on G1X cifar mobiperf): K=10, overcommit 1.3, FedAvg equal, target 0.7, 72000 s, shared trainer hp, localSteps cleared; full pytest 2575 passed | config as specified |
-| S2-S4 | **next (daytime, ~2 h):** `$PY scripts/run_fd.py --only S2,S3,S4 --plan --hours 2.5 && $PY scripts/run_fd.py --only S2,S3,S4 --hours 2.5` | see S-table |
+| S2-S4 | done `fd_20261011_1644` + `fd_20261011_2016` (S4 rerun): S2 ✅; S3 ✅ 7200 s vclock in 6.5 min wall (~18x: all four F5 traces fit), acc 0.45 @ r440 (LEAK? flag = spawn ramp, FX-D147); S4 ✅ runs, tie: feddance vs fedavg mean acc r20-200 0.165 vs 0.164 (r200 0.207 vs 0.147, noisy); not < random, so no stop; 220 rounds is before the paper's gap (1.16x at ~440): F3 6000 s decides | see S-table |
 | S5 | after S2-S4 (no GPU, ~20 min): `fd_sanity.py` on S2 legs + `--pair`, `parity_ladder --grade`, `eurosys_export.py --target 0.7` on S3, notebook smoke: a `feddance` curve from S3 JSON renders | all PASS; plot renders |
 | A (F4, F3) | `$PY scripts/run_fd.py --only F4,F3 --hours 3`: F4 G1XP cifar n=300 real+sim 60 min; F3 G1XF paper config 6000 s | F4: INV/EXACT green + sim acc per round = real; F3: feddance < random rounds to 30/40% |
 | B (F5) | operator approves after A: `$PY scripts/run_fd.py --only F5C,F5SP --hours 18`: cifar G1X mobiperf, syn_0, syn_10, syn_50 back to back (~4 h each est.; stop at 70% or 20 h vclock); speech mobiperf stretch (sim ~1x: does not fit with cifar) | `eurosys_export.py` → notebook: feddance curves, comm bars, e2e row |
@@ -690,6 +690,9 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   created the CUDA context (0.8 s) between round 1's commit and round 2's dispatch, on real's trace clock only; G0T stream chunks then
   landed on different sides of a trainer's train time (0374: 55 vs 27 samples), forking Oort utilities and picks (cifar oort eve syn_0s,
   oort_star lin syn_50s, PR30 B1).
+- **FX-D147** Leak check (`ram_growth_gb`) starts after a leg's process count peaks: a short sim's spawn ramp read as LEAK? (S3 +113 GB).
+- **FX-D146** `fedavg` arm = feddance with selector `utility=random` (uniform over the same eligible set); only selection differs (S4/F3).
+- **FX-D145** FedAvg sums updates in sorted end-id order: arrival order differs sim vs real, so float sums did.
 - **FX-D144** Trainer seeds torch from logical identity: `(trainer, "data")` before load (GPU-preload augmentation) and
   `(trainer, round, task#)` before each pass (batch shuffle). No seed was set, so results rode PyTorch's fixed default seed and any
   mode-specific draw forked sim from real (cifar feddance G0U mobiperf: round-1 loss differs, picks fork at r14). Also a candidate root

@@ -894,11 +894,14 @@ def gpu_mib_by_pid() -> Dict[int, float]:
 
 
 def ram_growth_gb(series: List[tuple]) -> float:
-    """Least-squares RAM growth over a leg's second half (GB); a steady leg reads ~0, a leak keeps climbing."""
-    half = series[len(series) // 2:]
+    """Least-squares RAM growth over a leg's second half (GB); a steady leg reads ~0, a leak keeps climbing.
+    (t, GB, procs) samples: the window starts once procs peaks, so a short sim's spawn ramp is not a leak."""
+    peak = max((s[2] for s in series if len(s) > 2), default=None)
+    start = next((i for i, s in enumerate(series) if len(s) > 2 and s[2] >= peak), 0) if peak else 0
+    half = series[max(len(series) // 2, start):]
     if len(half) < 4:
         return 0.0
-    ts, ys = [t for t, _ in half], [y for _, y in half]
+    ts, ys = [s[0] for s in half], [s[1] for s in half]
     mt, my = sum(ts) / len(ts), sum(ys) / len(ys)
     var = sum((t - mt) ** 2 for t in ts)
     return 0.0 if var <= 0 else sum((t - mt) * (y - my) for t, y in zip(ts, ys)) / var * (ts[-1] - ts[0])
@@ -928,7 +931,7 @@ class ResourceLedger:
             for pid in pids:
                 role = proc_role(pid)
                 roles[role] = roles.get(role, 0.0) + proc_mem_gb(pid)
-            r.ram.append((time.time(), sum(roles.values())))
+            r.ram.append((time.time(), sum(roles.values()), len(pids)))
             gpu_gb = sum(gpu.get(pid, 0.0) for pid in pids) / 1024
             r.gpu_peak_gb = max(r.gpu_peak_gb, gpu_gb)
             legs[jid] = {"ram_gb": {k: round(v, 2) for k, v in roles.items()}, "gpu_gb": round(gpu_gb, 2),
@@ -1202,7 +1205,7 @@ class Pool:
                     avg = sum(r.cpu.values()) / max(1.0, dur)
                     p95 = sorted(r.busy)[int(0.95 * (len(r.busy) - 1))] if r.busy else 0.0
                     sat = sum(b >= CPU_SAT_BUSY * len(r.cpus) for b in r.busy) / max(1, len(r.busy))
-                    ram_peak, ram_grow = max((g for _, g in r.ram), default=0.0), ram_growth_gb(r.ram)
+                    ram_peak, ram_grow = max((s[1] for s in r.ram), default=0.0), ram_growth_gb(r.ram)
                     ledger.event("end", jid=jid, rc=rc, dur_s=round(dur), mem_est_gb=round(r.job.mem_gb, 1),
                                  ram_peak_gb=round(ram_peak, 2), ram_growth_gb=round(ram_grow, 2),
                                  gpu_peak_gb=round(r.gpu_peak_gb, 2), cores_p95=round(p95, 2))
@@ -1488,9 +1491,9 @@ def main(argv=None) -> int:
     real_changed = False
     if a.baselines:
         baselines = tuple(a.baselines.replace(",", " ").split())
-        unknown = [b for b in baselines if b not in B6]
+        unknown = [b for b in baselines if b not in B6 + ("fedavg",)]  # fedavg: feddance's random arm (G1XF/G1XFS)
         if unknown:  # an unknown name used to run nothing and exit 0
-            ap.error(f"--baselines: unknown {unknown}; expected any of {B6}")
+            ap.error(f"--baselines: unknown {unknown}; expected any of {B6 + ('fedavg',)}")
     elif a.changed:
         baselines, real_changed = affected(changed_paths(a.changed))
     else:

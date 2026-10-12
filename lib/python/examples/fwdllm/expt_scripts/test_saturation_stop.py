@@ -142,6 +142,7 @@ def _base_eval(self, *a, **k):
     return ({"acc": self._next_acc}, None, None)
 
 
+_ORIG = (_BASE._eval_snapshot_model, _BASE.eval_model)  # restored at the end: the patch leaked into later tests
 _BASE._eval_snapshot_model = _base_snapshot
 _BASE.eval_model = _base_eval
 
@@ -261,3 +262,4 @@ assert SAT_STALL_FRAC == 0.003, SAT_STALL_FRAC
 print(f"  constant              : SAT_STALL_FRAC={SAT_STALL_FRAC} "
       f"(sized on 11 curves, P4.17; plateau 0.002-0.004)")
 print("\n  ALL CHECKS PASS")
+_BASE._eval_snapshot_model, _BASE.eval_model = _ORIG
