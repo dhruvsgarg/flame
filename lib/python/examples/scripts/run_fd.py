@@ -44,7 +44,7 @@ rb.STAGES = [
      "F5: speech feddance MobiPerf time-to-60% + comm (e2e table row)"),
 ]
 
-F5_EXPECTED_S = 4 * 3600  # per G1X leg: runs stop at target; the 20 h horizon / 1.6 estimate would skip every later stage
+F5_EXPECTED_S = {"cifar10": 80 * 60, "google_speech": 135 * 60}  # 20 h vclock at measured 18x (F3) / 11.2x (V3), +20%
 F3_EXPECTED_S = 30 * 60  # per G1XF leg: n=300 cifar sims run >= 18x (S3)
 _stage_jobs = rb.stage_jobs
 
@@ -53,7 +53,7 @@ def stage_jobs(args):
     jobs = _stage_jobs(args)
     for j in jobs:
         if "G1X_" in j.jid:  # not G1XQ/G1XS: those have short horizons
-            j.est_s = min(j.est_s, F5_EXPECTED_S)
+            j.est_s = min(j.est_s, F5_EXPECTED_S["google_speech" if j.jid.startswith("gs_") else "cifar10"])
         elif "G1XF_" in j.jid:
             j.est_s = min(j.est_s, F3_EXPECTED_S)
     return jobs

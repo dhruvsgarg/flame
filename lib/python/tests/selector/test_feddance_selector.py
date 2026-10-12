@@ -258,7 +258,7 @@ class TestAggregatedFeedback:
         assert s.last_loss["t"] == 9.0
 
     def test_selected_without_feedback_scores_zero(self, make_ends, channel_props):
-        s = FedDanceSelector(aggr_num=2)
+        s = FedDanceSelector(aggr_num=2, straggler_score="zero")
         s.prev_round_mean_I = 2.0
         ends = make_ends(["a", "b", "c"])
         s.ever_selected = {"a"}  # picked before, never aggregated
@@ -267,7 +267,21 @@ class TestAggregatedFeedback:
         assert ends["a"].get_property(PROP_I) == 0.0 and ends["b"].get_property(PROP_I) == 2.0
         assert ends["a"].get_property(PROP_U) == 0.0
 
-    def test_round_means_are_factor_means(self, feddance, make_ends):
+    def test_selected_without_feedback_takes_mean_I(self, make_ends, channel_props):
+        """FX-N90 "mean": a straggler with no aggregated update scores last round's mean I (FedScale)."""
+        s = FedDanceSelector(aggr_num=2, straggler_score="mean")
+        s.prev_round_mean_I = 2.0
+        ends = make_ends(["a", "b", "c"])
+        s.ever_selected = {"a"}
+        s.select(ends, channel_props, trainer_unavail_list=[], task_to_perform="train")
+        from flame.selector.properties import PROP_I
+        assert ends["a"].get_property(PROP_I) == 2.0
+        with pytest.raises(ValueError):
+            FedDanceSelector(aggr_num=3, straggler_score="bogus")
+
+    def test_round_means_are_factor_means(self, make_ends):
+        feddance = FedDanceSelector(aggr_num=3, history_window=10, straggler_score="zero")
+        feddance.ever_selected = {"a", "b", "c"}
         from collections import deque
         feddance.accuracy_history["a"] = deque([0.2, 0.4], maxlen=5)  # slope 0.2 after this round's 0.4
         feddance.on_update_received("a", {MessageType.TRAIN_LOSS_MEAN: 1.0, MessageType.LOCAL_ACCURACY: 0.6}, 1)

@@ -12,6 +12,8 @@ The selector picks top-N by U_m, with cold-start substitution from the
 previous round's mean I, A for devices never selected (Alg. 1 l.11-15).
 feedback="aggregated" (FX-D150): only aggregated updates report I/A (FedScale stragglers never run);
 a dropped return repeats its last accuracy (zero increment). "all" reverts.
+straggler_score="zero" = Alg. 1 l.3 literal (L_m = 0, never revived); "mean" (FX-N90, off) scores a selected device
+with no aggregated update at last round's mean I, as FedScale scores stragglers (REFL aggregator.py:611-616).
 """
 
 import logging
@@ -69,6 +71,9 @@ class FedDanceSelector(AbstractSelector):
         self.feedback = kwargs.get("feedback", "aggregated")
         if self.feedback not in ("aggregated", "all"):
             raise ValueError(f"feedback must be aggregated/all, got {self.feedback}")
+        self.straggler_score = kwargs.get("straggler_score", "zero")
+        if self.straggler_score not in ("mean", "zero"):
+            raise ValueError(f"straggler_score must be mean/zero, got {self.straggler_score}")
         self.ever_selected: set = set()
         self._round_participants: list = []
 
@@ -201,9 +206,7 @@ class FedDanceSelector(AbstractSelector):
         for end_id, end in sorted(eligible.items()):
             v = self.predictor.V_m(end_id, round_num)
 
-            i = self.last_loss.get(end_id)
-            if i is None:  # Alg. 1 l.3, l.14-15: never-selected take last round's mean I; selected keep L_m = 0
-                i = 0.0 if (self.feedback == "aggregated" and end_id in self.ever_selected) else mean_I
+            i = self._i_factor(end_id, mean_I)
 
             a = self._a_factor(end_id, mean_A)
 
@@ -221,6 +224,13 @@ class FedDanceSelector(AbstractSelector):
             utilities.append((end_id, u))
 
         return utilities
+
+    def _i_factor(self, end_id: str, mean_I: float) -> float:
+        i = self.last_loss.get(end_id)
+        if i is not None:
+            return i
+        zero = self.feedback == "aggregated" and self.straggler_score == "zero" and end_id in self.ever_selected
+        return 0.0 if zero else mean_I  # Alg. 1 l.3, l.14-15; FX-N90
 
     def _a_factor(self, end_id: str, mean_A: float) -> float:
         a = self._accuracy_slope(end_id)
@@ -292,9 +302,10 @@ class FedDanceSelector(AbstractSelector):
     ) -> None:
         if self.feedback == "aggregated":  # Alg. 1 l.11-12: means of the factors over S_prev
             if self._round_participants:
+                mean_I = self.prev_round_mean_I if self.prev_round_mean_I is not None else 1.0
                 mean_A = self.prev_round_mean_A if self.prev_round_mean_A is not None else 1.0
                 ps = self._round_participants
-                self.prev_round_mean_I = sum(self.last_loss.get(e, 0.0) for e in ps) / len(ps)
+                self.prev_round_mean_I = sum(self._i_factor(e, mean_I) for e in ps) / len(ps)
                 self.prev_round_mean_A = sum(self._a_factor(e, mean_A) for e in ps) / len(ps)
             self._round_participants = []
             self._round_loss_buffer, self._round_acc_buffer = [], []
