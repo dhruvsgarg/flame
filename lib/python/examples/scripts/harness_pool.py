@@ -83,7 +83,7 @@ MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 960}
 # FX-D52: G0U legs whose unaware picks hold slots a full timeout run longer, to reach a gradeable round count.
 G0U_RUNTIME_X = {("oort", "mobiperf_3st"): 4, ("fedbuff", "mobiperf_3st", "google_speech"): 3}
 GPU_N = {"cifar10": 300, "google_speech": 100}  # the datasets' reference cohorts (datasets.yaml)
-EUROSYS_TARGET = {"cifar10": 0.7, "google_speech": 0.6}  # EuroSys'26 runs: cifar "70acc"; speech = FELIX target (assumed)
+EUROSYS_TARGET = {"cifar10": 0.7, "google_speech": 0.7}  # EuroSys'26 runs: 70% on both (operator 10-12)
 EUROSYS_HORIZON_S = 72000  # 20 h virtual: the paper's slowest MobiPerf TTA is 16.3 h
 EUROSYS_K = 10  # May-2025 runs: aggr_num 10 (sync), aggGoal 10 (async)
 # May-2025 shared trainer (trainer/config_dir0.1_num300_* @ 966797558): 1 epoch, bs 32, lr 0.04, plain SGD, no decay.

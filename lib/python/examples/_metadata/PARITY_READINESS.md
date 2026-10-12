@@ -75,6 +75,7 @@ A new failure mode adds a check here in the same session.
 | PL13 | no leg starts without the host RAM it needs, idle pool or not | automatic (`ram_blocks` + node-wide `ram_*` ledger, FX-D131/D136); `RAM_TIGHT` in a DONE line = rerun its neighbours | PR28: G5 at 285 of 398 GB OOM-killed 3 legs; PR29: 398 + 222 GB co-ran |
 | PL14 | measured RAM within estimate, no growth | DONE lines / runner probe `RAM_OVER`, `LEAK?`; `resource_report.py <pool>` (FX-D140) | PR29 OOMs on formula estimates |
 | PL15 | selector comparisons have a choice; real↔sim equality legs run deterministic kernels | `fd_sanity.py` choice check; `trainerDeterministic=true` (FX-D149) | F3: both arms picked the same ends; F4 losses drifted from r2 |
+| PL16 | foreign GPU jobs: pin pools to GPUs nobody else uses (`GPU_IDS`), not to "free right now" | `nvidia-smi --query-compute-apps=pid --format=csv` + `ps -o user=`; watch restarts | PR31 A1: vLLM on 4-7 restarts every few min, pool took GPU 6 between restarts, trainer OOM aborted the pool |
 
 ## Method
 
@@ -104,7 +105,7 @@ python lib/python/examples/scripts/cleanup_experiments.py [--apply] [--fwdllm]  
 conda run -n dg_flame python lib/python/examples/async_cifar10/scripts/parity/event_invariants.py <run_dir>
 python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --sim <B> --control --json-out c.json   # real<->real floor (Q2)
 ```
-- Pools on one node are safe (L28); progress every 5 min; DONE lines carry GPU peak; one Ctrl+C stops all. jayne only (R4).
+- Pools on one node are safe (L28); progress every 5 min; DONE lines carry GPU peak; one Ctrl+C stops all. shepherd GPUs 0-3 (R4).
 - **Early exits (all automatic in `harness_pool`):** fatal log line → pool aborts in ~30 s (ABORT.txt); no new round 15 min / silent
   10 min → leg killed (STALLED.txt); prefix-safe EV FAIL (EV6/8/9/11/14-19) → leg + pair partner killed at the next 5-min check
   (DOOMED.txt, FX-D133). Runner probes print PASS/FAIL per claim as stages finish. Not early-killable: EV1/5/7/10/12, timing/DIST.
@@ -144,6 +145,7 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 | PR29 over PR28 (later pool supersedes a pair; FX-D136) | **51 / 76** (60 tested, 16 = PR30) | 12/12 · 12/12 · 7/12 · 7/10 · 3/12 · 4/12 · 6/6 | 5 / 12 |
 | same pools, FX-D139 regrade | **52 / 76** | 12/12 · 12/12 · 8/12 · 7/10 · 3/12 · 4/12 · 6/6 | 5 / 12 |
 | PR29b + PR30 over PR28-29 (10-11) | **62 / 76** (68 tested) | 12/12 · 12/12 · 10/12 · 9/10 · 6/12 · 7/12 · 6/6 | 5 / 12 |
+| + sprint pools F1/F2b/V1/V4 (10-12) | **61 / 76** (70 tested); honest: feddance cells pre-FX-D148/D150 void (C20) → PR31 | 12/12 · 12/12 · 10/12 · 9/10 · 5/12 · 7/12 · 6/6 | 5 / 12 |
 
 **Path to full score (76 cells; operator 10-10).** Each step regrades its pools and rewrites the row above (C5).
 
@@ -151,7 +153,7 @@ Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching
 |---|---|---|---|
 | PR29 (`run_pr29.py`, done 10-10, 9 h not 4.6 h) | 17 red + 2 untested | 52 / 76 after rooting (FELIX "PR29 results"): FX-D136-D139 | — |
 | PR29b + PR30 (done 10-11) | 7 red + 16 untested | 62 / 76: 6 red, 8 untested (B1 stall FX-D141 cut 3 stages) | — |
-| PR31 (`run_pr31.py`, ~9.5 h) | 6 red + 8 untested | FX-D141-D143 confirms + speech G0T refl/feddance/Oort + 3-leg floors + T3 re-screen | 76 / 76 |
+| PR31 (`run_pr31.py`, running 10-12) | 9 red + 6 untested + void feddance | FX-D137/D141-D143 confirms, feddance everywhere (C20), speech G0T refl/Oort, 3-leg floors, T3 re-screen | 76 / 76 |
 | then | — | long runs (PR21: G1A accuracy, G1U, G0T full grid), C0.5 | accuracy 12 / 12 |
 
 **Per baseline × dataset (latest grade).** Parity = INV/EXACT on the latest pair; accuracy numbers in FELIX accuracy table.
@@ -211,11 +213,17 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR31 · PARKED 10-11 for the FedDance sprint (FELIX); split into PR31a/PR31b before launch.** Was ready (~9.5 h on jayne, tmux `dg_flame`): `cd lib/python/examples && $PY scripts/run_pr31.py --plan --hours 12
-  && $PY scripts/run_pr31.py --hours 12`. C19: *Claim:* FX-D142 closes cifar Oort G0T time_to_n reds, FX-D143 closes cifar feddance T3 syn_50,
-  FX-D141 lets every stage start; 3-leg floors decide trainers_at_n cells. *Confirms:* B1/C1 cells within floor; B2 real EV0 PASS; no `BLOCKED`
-  on an idle node; no T3/G0T cell green in PR28-30 turns red. *Refutes:* a red persists above its same-batch floor (root before long runs), or a green
-  cell turns red under the new charges (FX-D143 perturbed it). Read: regrade every `pool_<ts>_PR31_*`, `readiness_score.py` (PR28 → PR31 oldest first).
+- **PR31 · planned for shepherd GPUs 0-3 (operator 10-12; jayne off).** `run_pr31.py` (13 stages, `GPU_IDS 0,1,2,3`): ~5.1 h at
+  `--hours 5.5`; `--hours 4.5` trims speech Oort G0T (B3) tail. Streaming cells on syn_50 only (C19), regression stretch dropped.
+  Shepherd = jayne hardware (EPYC 7513, A40, driver 575.57.08): jayne charges reused; T3/G0T syn_0 greens check that. `/home` 96% (120 GB
+  free; a batch writes ~2 GB). Sync: shepherd is on `dg/fluxtune_opts` (clean) → `git fetch && git checkout dg/pending_fl_baselines && git pull`;
+  then pytest (PL1), `$PY scripts/run_pr31.py --plan --hours 5.5`, launch in tmux (operator). Jayne launches
+  `pr31_20261012_1400`/`_1410` killed, not graded.
+  C19: *Claim:* FX-D137/D142 close cifar fedbuff/Oort/oort_star G0T reds; FedDance on its FX-D148/D150 definition is green in every cell
+  (C20 voids every older feddance grade); the 6 untested speech G0T cells (refl, oort, oort_star) are green; FX-D143 charges turn no T3
+  cell red. *Stages:* reds first, pairs only; replicates only for floor-bound reds (B4, C3, C4); A4 G0U regression is stretch.
+  *Refutes:* a red persists above its same-batch floor → root offline before any rerun. *Read:* regrade every `pool_20261012_1400_PR31_*`,
+  then `readiness_score.py` on PR28 → PR30 pools + PR31 (feddance only from PR31).
 - **PR29b, PR30 · done 10-11** (`experiments/pr29b_20261011_0043`, `pr30_20261011_0624`; FELIX "PR29b + PR30 results").
 - **PR29 · done 10-10** (`experiments/pr29_20261010_1606`; FELIX "PR29 results").
 - **PR28 · done 10-10** (`experiments/pr28_20261010_0215`; FELIX "PR28 results"). Roots: FX-D127-D131; open: FX-N85 s3/s6, FX-N86.

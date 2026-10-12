@@ -2,7 +2,7 @@
 
 ## Preamble
 - **Read [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) first**; its rules, L and T apply here unrepeated.
-- **CURRENT FOCUS (operator 10-11): FedDance sprint below** (< 24 h). Felix-wide parity is PARKED at PR31 (resume pointer below).
+- **CURRENT FOCUS (operator 10-12): Felix-wide parity to 76/76** (PARITY run queue PR31, operator launches on shepherd). FedDance sprint done; its paper text and plot debts (FX-N91) below.
 - **Parked goal:** Felix feature-complete (syn_0 + unavailability, both datasets), paper runs sim-only.
 - **Correct, not just equal:** every baseline follows its reference and hits target (cifar 50%, speech 60%) on full data.
 - Root and fix every red cell per run, so the matrix reaches parity in fewest runs.
@@ -18,7 +18,7 @@
 
 ---
 
-## FedDance sprint (CURRENT FOCUS, operator 10-11; deadline 10-12 ~13:00)
+## FedDance sprint (done 10-12; EuroSys plots in use, debts FX-N91)
 
 *Goal:* the FedDance number for the EuroSys'26 Felix paper: sim time-to-accuracy + communication cost on cifar mobiperf/syn_0/syn_10/
 syn_50 (+ speech mobiperf if it fits), added to `async_cifar10/eurosys26_expts/plots/all_plots.ipynb`. FedDance must be faithful
@@ -27,14 +27,14 @@ syn_50 (+ speech mobiperf if it fits), added to `async_cifar10/eurosys26_expts/p
 **Approach (operator 10-11): FedDance's algorithm, evaluated on our setup, apples to apples with every baseline.**
 - *Common to all baselines:* model, Dirichlet α=0.1, n=300 cifar / 100 speech, K=10 aggregated (c=13 dispatched), the May-2025 shared
   trainer (1 epoch, bs 32, lr 0.04, plain SGD, no momentum/wd/decay; `trainer/config_dir0.1_num300_*` @ `966797558`), traces, simulator,
-  targets (cifar 70%; speech 60% assumed, unconfirmed), metrics (time-to-target on the run's clock; comm = msgs x 1 MB, eval reply 0.01 MB).
+  targets (70% both datasets, operator 10-12; `EUROSYS_TARGET`), metrics (time-to-target on the run's clock; comm = msgs x 1 MB, eval reply 0.01 MB).
 - *Per baseline (its paper's logic):* selection, availability handling, aggregation rule. FedDance: V·I·A utility + MAB exploration
   (K_h 50, K 5, β 5, overcommit 1.3), its own check-in predictor (no trace oracle), FedAvg equal weights, server lr 1.
 - *Not carried over:* FedDance's paper setup (LS=1 local step, bs 24, lr 0.1, 1,000 clients, 45%/31% targets): their setting, used only
   for the fidelity check (S4/F3). Rationale: FedDance's claim is relative round-to-accuracy in one shared harsh harness; it re-ran REFL
   etc. in its own setup the same way (REFL's own setup: 1 epoch, 3K learners, top-5 metrics).
 - *Comparability (operator):* today only FedDance runs on the new sim code; all baselines (and FedDance again) re-run after parity.
-  EuroSys curves stay the May-2025 real runs (`agg_logs/`). Node: jayne only; a cifar n=300 leg holds 398 GB → one at a time.
+  EuroSys curves stay the May-2025 real runs (`agg_logs/`). Node: shepherd GPUs 0-3 (R4); a cifar n=300 leg holds 398 GB → one at a time.
 
 *Decisions (operator 10-12):* speech F5 gets a fixed vclock budget, set from V3's sim speed after the V run (not run-to-60%); no F4 rerun
 (V2 tests real==sim with deterministic kernels more cheaply); FX-D148 extends to REFL, Oort, oort_star when they re-run (FX-N89).
@@ -62,8 +62,8 @@ FedDance invariants incl. "selector had a choice"; `--pair`: commits identical, 
 | A (F4, F3) | done `fd_20261011_2107`. F4 ✅ INV/EXACT 1.0, K2 2.6%; commits identical through r34, acc r200 real 32.7 / sim 31.3% (evals swing ±7 pts); losses drift 1e-6 → 1e-3 by r5 from non-deterministic cuDNN (FX-D149), so the fork at r35 is numerics. F3 void: from vclock 2750 s no round closed (eligible 2-5 < c=6, FX-D148), and 202/218 selections took every eligible end, so both arms picked the same ends (acc 0.208 vs 0.208 @ r160); fedavg sim hit FX-N33 at exit | F4: INV/EXACT green + sim acc per round = real; F3: feddance < random rounds to 30/40% |
 | V + F3' | done `fd_20261012_0011` (`2a2c934`). V1 EV 24/24, INV green; EXACT reds = timing on forked picks (n=50, default kernels) + cifar U6 sim 10-11 vs real 4-5 s on syn_50 → FX-D151 (offline: gap 6.0 → 1.4 s). V2 ✅: losses bit-identical, commits identical to r41/r48 (cifar), all rounds (speech); speech `trainer_speed_identity` DIST only (FX-N76). V3 speech sim 11.2x → F5SP fits (~1.8 h); n=100 mobiperf: 17/17 picks took every eligible end (no choice). F3 ❌ (3-eval mean, rounds to 30/35/40%): mobiperf feddance 340/420/700 vs random 320/440/660; syn_0 440/-/- vs 400/460/720, 19.5 vs 15.6 s/round: picks 34% from the slowest D quartile (random 23%) → FX-D150 | — |
 | V4 + F3'' | done `fd_20261012_0347` (`85818aa`). V4: U6 green both cells (FX-D151 ✅); mobiperf all green; syn_50 K8 trainers 41 vs 37 (INTERFERENCE-flagged sim leg). F3: stragglers fixed (slowest-quartile picks 5%/11%, s/round 7.8 vs 13.6 mobiperf, 13.5 vs 15.5 syn_0; time to 40% mobiperf 112 vs 158 min) but rounds to 35/40% +17-26% vs random on syn_0, mobiperf plateaus ~0.45: Alg. 1 l.3 zeroes never-aggregated picks (syn_0: 104/300 at U=0, 199 vs 281 committers) → FX-N90 | — |
-| B (F5) | **next (operator launches, 10-12 ~05:20, ~7.7 h):** `$PY scripts/run_fd.py --only F5C,F5SP --hours 9`; FedDance = literal Alg. 1 (FX-D150, `straggler_score: zero`), FX-N90 open. Was: `$PY scripts/run_fd.py --only F5C,F5SP --hours 18`: cifar G1X mobiperf, syn_0, syn_10, syn_50 back to back (~4 h each est.; stop at 70% or 20 h vclock); speech mobiperf stretch (sim ~1x: does not fit with cifar) | `eurosys_export.py` → notebook: feddance curves, comm bars, e2e row |
-| C | notebook: add `feddance` to colors/markers/labels and every strategy list; load exporter JSON; regenerate paper PDFs | figures + table row |
+| B (F5) | done `fd_20261012_0503` (`b5a5fe8`, literal Alg. 1). Cifar sims, 20 h vclock, **no trace reached 70%**: syn_0 64.4 / syn_10 64.2 % (plateau from ~10 h), mobiperf 49.0 % (plateau ~45 % from 3 h, FX-N90), syn_50 65.2 % at 12.9 h (DOOMED EV16: 5 late commits). Speech mobiperf sim 60 % at 9.85 h (first eval ≥ 60; noisy ±5), 68.9 % max | — |
+| C | done: `all_plots.ipynb` loads `eurosys26_expts/feddance_logs/*.json`; feddance (`#a0937d`) in acc curves, comm bars, e2e, legend → `eurosys26_expts/plots/paper/`. Every curve: time to 70% = first eval ≥ 70, else log-time fit past the run's end, capped 48 h (`curve_tta`); comm scaled to that time; stalls at 48 h on a broken axis. FeLiX speedup vs REFL and FedDance (`speedup_refs`), comm ratio vs REFL only (`ref_strategy`; FedDance may not reach 70%) (operator 10-12). FedDance at 70%: cifar syn_50 39 h, syn_0/10/mobiperf and speech > 48 h | open: FX-N91 |
 
 **S-table (daytime sanity, `run_fd.py --only S2,S3,S4`; plan ~2.0 h).**
 
@@ -73,15 +73,23 @@ FedDance invariants incl. "selector had a choice"; `--pair`: commits identical, 
 | S3 | G1XQ | cifar feddance n=300 sim, mobiperf, 2 h vclock | sim speed (vclock h / wall h) → real F5 budget per trace; early accuracy slope (on track for 70%?) | `eurosys_export.py --target 0.7`; speed from `agg_round.vclock_now` vs wall |
 | S4 | G1XFS | now n=300 K=10 mobiperf 3000 s (F3's shape, subsumed by F3) | selector earns its keep early (F3 direction) | `accuracy_table.py` per round: feddance >= random |
 
+*FedDance in the paper (eval text; evidence `fd_20261012_0503` telemetry, FX-N90).* FedDance climbs fast, then plateaus below 70% on both
+datasets. Its utility favours fast, high-loss devices, so early rounds are short (12 s vs 15.5 s for random selection on CIFAR-10) and accuracy
+rises steeply (≈40% within 2 h). But FedDance gives a selected device whose update was dropped as a straggler zero statistical utility
+(Alg. 1, l. 3), and over-commit (13 picks for 10 updates) drops three devices every round. Within two hours a third of the CIFAR-10
+population (99-105 of 300) is zeroed and never contributes again; under MobiPerf, where few devices are online at once, only 91 of 300 ever
+contribute and 20% of devices supply 96% of updates. With non-IID data (Dirichlet α = 0.1) the excluded devices' classes never reach the
+model: CIFAR-10 plateaus at 64-65% on the synthetic traces and 49% on MobiPerf; Speech Commands shows the same skew (55 of 100 devices ever
+contribute, 20% supply 84% of updates) and reaches 68.9% after 20 h. Extrapolated, FedDance needs > 48 h to 70% everywhere except CIFAR-10
+syn_50 (39 h).
+
 *Decision points:* S3 speed < ~5 h vclock per wall h → drop syn_0/syn_10 from F5 first (keep mobiperf, syn_50). F3 feddance < random →
 stop and root (selector/predictor bug) before any F5 leg. S2 any FAIL → fix before A.
 
-**Parked: Felix-wide parity (resume here after the sprint).** State 10-11 13:30: 62 / 76 (PR29b + PR30 regraded); FX-D141-D144 landed during the sprint (profiles
-regenerated; trainer seeding may close the "GPU numerics" pick-fork reds, e.g. speech feddance R3, Oort utility forks: re-grade them first;
-stub oort_sync charges ~2x → re-screen Oort T3).
-Next: split `run_pr31.py` into PR31a (~4 h: 6 reds) and PR31b (speech streaming, 8 untested; pairs first, G0TC only for reds); full
-pytest before launch. Open roots and claims: "PR29b + PR30 results" table, PARITY run queue PR31. Accuracy 5/12; speech Oort/refl/feddance
-accuracy policy needs an operator decision (round-bound vs per-baseline target vs long sims after P8).
+**Felix-wide parity (resumed 10-12).** 61 / 76 with sprint pools; every pre-FX-D148/D150 feddance grade void (C20). PR31 planned on shepherd
+(PARITY run queue: claims, sync + launch steps). On return: regrade the shepherd `pool_<ts>_PR31_*`, root every red offline (C1, C10), rescore
+(`readiness_score.py` on jayne PR28 → PR30 pools + PR31; copy the PR31 pools back or score on shepherd).
+Accuracy 5/12; speech Oort/refl/feddance accuracy policy needs an operator decision (round-bound vs per-baseline target vs long sims after P8).
 
 ---
 
@@ -280,6 +288,13 @@ Work rule: PARITY C10, C17, C18. Run queue + pre-launch checklist: PARITY_READIN
 **Unblock map:** short-run queue empty → long runs (PR21) → FX-N11 → FX-N12 (also needs FX-N13 ST6 + FX-N22 P8).
 
 *PR27 root causes (10-10; PR27 A-D done, graded offline):*
+- **FX-N91 · EuroSys plot debts (no runs now, operator 10-12) · todo.** In order:
+  - (a) FedDance controls: G1X cifar syn_0 `fedavg` random sim 20 h (~25 min wall): plateau ≈ 64% → shared config, else FedDance's coverage; G1X speech mobiperf `felix` sim (n=100, 70%; ~5 h) for a like-for-like speech row. `$PY scripts/harness_pool.py --tier G1X --datasets <ds> --baselines <b> --traces <t>`.
+  - (b) FX-N90 is the paper's explanation ("FedDance in the paper", sprint section); a FedScale-style `straggler_score: mean` arm would show what the literal Alg. 1 l.3 costs (reviewer question).
+  - (c) REFL label: operator calls REFL an original baseline, notebook labels it `REFL*` (logs `refl_n300_oracular_*_prob0.9`); REFL curves are scaled ×1.06 (`accuracy_adjustment_factor`; raw syn_0 max 64.6%). Decide label and factor; ratios use REFL.
+  - (d) Hard-coded MobiPerf e2e table vs logs: OORT* 15.6 h (table) vs 9.45 h (curve's first 70%); OORT+Async* 15.9 vs 14.97; REFL mobiperf has no log anywhere (table row only).
+  - (e) Speech e2e: May-2025 rows have no logs/configs on any node; comm unit per speech message unknown (FedDance uses 13.5 = 29.0/2.15 MB).
+  - (f) Comm to 70% scales whole-log counts by time share; exact = count `[MSG_ARRIVAL]`/send lines up to the 70% timestamp.
 - **R1 cifar Oort/Oort_star NaN, real AND sim (training instability, not a sim bug).** Source config (SGD momentum 0.9, 20 steps, lr 0.04)
   on 1-8-sample streaming shards blows up one delta; the finite-but-huge update (weight norm 16.8 -> 52.5, stat_utility 3238) poisons
   version 3-4, then ~35-55% of tasks return NaN. NaN legs since the K=10 shapes: real 13/94 (mobiperf_3sts oort), 12/55 (syn_50s

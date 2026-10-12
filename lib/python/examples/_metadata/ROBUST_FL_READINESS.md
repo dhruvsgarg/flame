@@ -8,7 +8,7 @@ accuracy in the expected time window (tracked per track: FELIX accuracy table). 
 **Four docs are the only working references:**
 - **this doc** — the rules for all four docs, the lessons and tripwires both tracks share, and the queue of
   shared infrastructure work;
-- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS: FedDance sprint (10-11); Felix-wide parity parked at PR31.**
+- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS: Felix-wide parity to 76/76 (PR31 on shepherd, 10-12).**
 - [PARITY_READINESS.md](PARITY_READINESS.md) — real↔sim parity for both tracks: climbing rules (C1-C9: correct before
   equal, instrument what you can't see, launch only when fixes are maximized), method, tools, per-track scoreboard.
 - [FLUXTUNE_READINESS.md](FLUXTUNE_READINESS.md) — FluxTune: perturbation / forward-gradient fine-tuning
@@ -83,8 +83,8 @@ section already says.
   launches (killing that parent kills every child). The script writes all results under one
   `experiments/<suite>_<ts>/` dir with a summary file; Claude reads that dir afterwards. Claude hands over the
   command, the expected duration and the prediction (what result confirms and what refutes). Long scripts launch
-  detached (`--detach`, PARITY PL4) so a lost terminal can't kill them. **All runs go on
-  jayne only (operator); never launch on kaylee or wash.** Legs run in parallel only in isolated slots (R18).
+  detached (`--detach`, PARITY PL4) so a lost terminal can't kill them. **Runs go on
+  shepherd GPUs 0-3 (operator 10-12; jayne off); never launch on kaylee or wash.** Legs run in parallel only in isolated slots (R18).
 - **R5 One mechanism per run** when a fix could perturb another baseline. Shared roots before per-baseline
   roots: a bug failing rungs on 2+ baselines outranks one that fails on 1.
 - **R6 Run length follows the residual's shape.** Per-cycle mechanisms show up in 15-45 min. Accumulating or
