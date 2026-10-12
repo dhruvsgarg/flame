@@ -15,7 +15,7 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~4 min) · CPU tiers T1-T4
   - *State (10-12 17:40):* shepherd at `a7278fb` on `dg/pending_fl_baselines`, clean; GPUs 0-7 idle, ECC 0, no compute apps; RAM 492 GB
     free; `/home` 120 GB free (a batch writes ~2 GB); PL1 pytest 2596 passed, 8 skipped (fwdllm wall-clock preflight test made node-independent). Jayne launches `pr31_20261012_1400`/`_1410` were killed:
     never grade their pools.
-  - *Launch* (tmux `dg_flame`, in `lib/python/examples`): `$PY scripts/run_pr31.py --hours 7.5` · GPUs 0-3 only (`GPU_IDS`, R4) · all 13
+  - *Launch* (tmux `dg_flame`, in `lib/python/examples`; `PY=/coc/scratch/dgarg/miniconda3/envs/dg_flame/bin/python`): `$PY scripts/run_pr31.py --hours 7.5` · GPUs 0-3 only (`GPU_IDS`, R4) · all 13
     stages, ~6.8 h · out `experiments/pr31_<ts>/` (`probes.txt`, `<stage>.out`), pools `experiments/pool_<ts>_PR31_<stage>` · one Ctrl+C
     stops all. `--hours 5.5` cuts A2 + B3, leaving 8 cells untested. PL8 check at +10 min.
   - *On return:* (1) `parity_ladder.py --grade <pool> --regrade --max-stage 9` per PR31 pool; (2) rsync the PR31 pools to jayne
