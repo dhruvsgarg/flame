@@ -165,7 +165,9 @@ def plan(stages, hours: float) -> list:
                     lane_ready[ln] = t
         if all(lane_i[ln] >= len(lanes[ln]) for ln in lanes):
             break
-        nxt = [r[0] for r in running] + [v for v in lane_ready.values() if v > t]
+        # A lane's unstarted next stage may start at t.
+        nxt = [r[0] for r in running] + [v for ln, v in lane_ready.items() if v > t or (
+            lane_i[ln] < len(lanes[ln]) and lanes[ln][lane_i[ln]][0] not in started)]
         if not nxt or min(nxt) > horizon:  # nothing can progress: unstarted legs past the horizon
             for ln in lanes:
                 for s in lanes[ln][lane_i[ln]:]:

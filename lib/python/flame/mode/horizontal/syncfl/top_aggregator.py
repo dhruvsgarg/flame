@@ -1101,6 +1101,17 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         aggregators that know the dataset override it. Must never raise."""
         return
 
+    def _sync_wait_k_plan(self, channel, num_eligible: int, threshold: int):
+        """FX-N37: (picks, eligible needed to dispatch) for this version's missing slots; None when none are missing."""
+        desired = getattr(channel._selector, "num_of_ends", threshold)
+        fresh = self._sync_version_inflight(channel)
+        need = desired - len(fresh) - len(self._sync_accepted_ends())
+        if need <= 0 or (fresh and num_eligible == 0):
+            return None
+        if fresh or getattr(self.config.hyperparameters, "sync_partial_dispatch", False):  # mid-round, or FX-D148
+            need = min(need, num_eligible)
+        return need, max(1, min(need, len(channel._ends)))
+
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         # data_id / iteration_per_data_id are FwdLLM-only; default them so
         # non-FwdLLM aggregators (fedavg, feddance) on this base stack don't
@@ -1194,16 +1205,12 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             - set(_version_keys)
         )
 
-        # FX-N37: top up only the slots this version is missing; mid-round, take what is eligible.
         _need = None
         if self._sync_wait_k_on():
-            _desired = getattr(channel._selector, "num_of_ends", _threshold)
-            _fresh = self._sync_version_inflight(channel)
-            _need = _desired - len(_fresh) - len(self._sync_accepted_ends())
-            if _need <= 0 or (_fresh and num_eligible == 0):
+            _plan = self._sync_wait_k_plan(channel, num_eligible, _threshold)
+            if _plan is None:
                 return
-            _need = min(_need, num_eligible) if _fresh else _need
-            _threshold = min(_need, len(channel._ends))
+            _need, _threshold = _plan
 
         if num_eligible < _threshold:
             if self.simulated and self.trainer_event_dict is not None:

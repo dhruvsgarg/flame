@@ -180,6 +180,7 @@ baselines:
         kwargs: {}
       hyperparameters:
         syncWaitForK: true  # FX-N37: commit a version only at K accepted updates
+        syncPartialDispatch: true  # FX-D148 (third_party/REFL/core/client_manager.py:276)
     trainer:
       hyperparameters:
         use_oort_loss_fn: "True"

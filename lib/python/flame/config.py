@@ -157,6 +157,7 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     trainer_momentum: float = Field(alias="trainerMomentum", default=0.0)
     trainer_weight_decay: float = Field(alias="trainerWeightDecay", default=0.0)
     trainer_clip_grad_norm: float = Field(alias="trainerClipGradNorm", default=0.0)  # FX-D126: 0 = off (source Oort's clip is commented out)
+    trainer_deterministic: bool = Field(alias="trainerDeterministic", default=False)  # FX-D149: deterministic cuDNN kernels
     weight_decay: t.Optional[float] = Field(alias="weightDecay", default=None)
     rounds: int
     epochs: int
@@ -403,6 +404,8 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     )
     # FX-N37: a sync version commits only at K accepted updates; timed-out picks are replaced mid-round.
     sync_wait_for_k: t.Optional[bool] = Field(alias="syncWaitForK", default=False)
+    # FX-D148: wait-K versions dispatch to whoever is eligible, not only at c eligible.
+    sync_partial_dispatch: t.Optional[bool] = Field(alias="syncPartialDispatch", default=False)
     # Override directory for availability trace YAMLs. Defaults to
     # examples/_metadata/availability_traces/ when None.
     availability_trace_dir: t.Optional[str] = Field(

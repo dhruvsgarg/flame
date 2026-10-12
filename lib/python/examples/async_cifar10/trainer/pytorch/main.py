@@ -87,7 +87,8 @@ class PyTorchCifar10Trainer(Trainer):
         logger.info(f"[TRAINER_HP] optimizer={self._optimizer_name()} lr={self.learning_rate} batch={self.batch_size} "
                     f"epochs={self.epochs} "
                     f"lr_decay={self.lr_decay_enabled} (factor={self.lr_decay_factor}, every={self.lr_decay_epoch}, "
-                    f"min={self.min_learning_rate}) clip={getattr(_hp, 'trainer_clip_grad_norm', 0.0)}")
+                    f"min={self.min_learning_rate}) clip={getattr(_hp, 'trainer_clip_grad_norm', 0.0)} "
+                    f"deterministic={getattr(_hp, 'trainer_deterministic', False)}")
 
         self.criterion = None
 
@@ -397,6 +398,8 @@ class PyTorchCifar10Trainer(Trainer):
         )
 
         self.device = harness.device_for(self.harness_mode)
+        if getattr(self.config.hyperparameters, "trainer_deterministic", False):  # FX-D149
+            torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = True, False
 
         self.model = self.data_spec.model().to(self.device)
         self._warmup_device()

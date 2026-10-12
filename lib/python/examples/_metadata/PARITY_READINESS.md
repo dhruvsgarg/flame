@@ -74,6 +74,7 @@ A new failure mode adds a check here in the same session.
 | PL12 | co-located pools share the node by leases (R24); size each pool's lease to its real use | GPU pool `--gpu-cpus-per-trainer 0.1` beside a CPU tier; watch `LOAD foreign` and `INTERFERENCE` | N86: G0U leased 112 CPUs using ~3, T3 idle 45 min |
 | PL13 | no leg starts without the host RAM it needs, idle pool or not | automatic (`ram_blocks` + node-wide `ram_*` ledger, FX-D131/D136); `RAM_TIGHT` in a DONE line = rerun its neighbours | PR28: G5 at 285 of 398 GB OOM-killed 3 legs; PR29: 398 + 222 GB co-ran |
 | PL14 | measured RAM within estimate, no growth | DONE lines / runner probe `RAM_OVER`, `LEAK?`; `resource_report.py <pool>` (FX-D140) | PR29 OOMs on formula estimates |
+| PL15 | selector comparisons have a choice; real↔sim equality legs run deterministic kernels | `fd_sanity.py` choice check; `trainerDeterministic=true` (FX-D149) | F3: both arms picked the same ends; F4 losses drifted from r2 |
 
 ## Method
 

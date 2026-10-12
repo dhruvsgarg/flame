@@ -6,7 +6,7 @@
 
 Per run (PASS/FAIL each): config applied ([TRAINER_HP]), every commit has exactly K updates, picks <= ceil(overcommit*K) and
 never an UN_AVL client, FedDance utilities vary (not degenerate), no update_rejected / NaN loss, evals arrive and accuracy rises.
---pair: per (trainer, round) training losses equal in real and sim up to the first pick fork (FX-D144), same commit rounds.
+--pair: same committed ends per round through --rounds, and per (trainer, round) losses equal up to the first commit fork (FX-D144).
 """
 import argparse
 import glob
@@ -51,6 +51,10 @@ def check_run(run, k, oc, expect):
     unav = [e["round"] for e in sel for c in e.get("chosen") or []
             if (e.get("per_trainer") or {}).get(c, {}).get("avl_state") == "UN_AVL"]
     res.append((f"picks <= {cap}, none UN_AVL", not over and not unav, f"over {over[:5]} unavail {unav[:5]}"))
+    starts = [e for e in sel if e.get("chosen")]
+    nochoice = sum(1 for e in starts if (e.get("num_eligible") or 0) <= len(e["chosen"]))
+    res.append(("selector had a choice (eligible > picks in >= half)", bool(starts) and nochoice < len(starts) / 2,
+                f"{nochoice} of {len(starts)} selections picked every eligible end"))
     utils = [round(v["utility"], 6) for e in sel[len(sel) // 4:] for v in (e.get("per_trainer") or {}).values()
              if v.get("utility") is not None]
     res.append(("utilities vary", len(set(utils)) > 5, f"{len(set(utils))} distinct of {len(utils)}"))
@@ -62,15 +66,22 @@ def check_run(run, k, oc, expect):
     return res
 
 
+def commits(run):
+    return {e["round"]: sorted(e.get("contributing_trainers") or []) for e in agg(run) if e.get("event") == "agg_round"}
+
+
 def check_pair(real, sim, n_rounds):
+    cr, cs = commits(real), commits(sim)
+    fork = next((r for r in sorted(set(cr) & set(cs)) if cr[r] != cs[r]), None)
+    upto = min(n_rounds, fork - 1) if fork else n_rounds
     lr, ls = losses(real), losses(sim)
-    common = sorted(x for x in set(lr) & set(ls) if x[1] <= n_rounds)
+    common = sorted(x for x in set(lr) & set(ls) if x[1] <= upto)
     rel = {x: abs(lr[x] - ls[x]) / max(1e-12, abs(lr[x])) for x in common}
-    diff = [x for x in common if rel[x] > LOSS_RTOL]  # GPU float order leaves ~1e-6; a different RNG stream gives ~1e-2
-    rr = [e["round"] for e in agg(real) if e.get("event") == "agg_round"]
-    sr = [e["round"] for e in agg(sim) if e.get("event") == "agg_round"]
-    return [("losses identical (FX-D144)", bool(common) and not diff, f"{len(common)} (trainer, round) pairs, max rel {max(rel.values(), default=0):.1e}, over {LOSS_RTOL:g}: {diff[:3]}"),
-            ("commit rounds match", rr[:n_rounds] == sr[:n_rounds], f"real {len(rr)} sim {len(sr)} rounds")]
+    diff = [x for x in common if rel[x] > LOSS_RTOL]  # FX-D149 kernels leave 0; default cuDNN drift grows per round
+    return [(f"losses identical through r{upto} (FX-D144)", bool(common) and not diff,
+             f"{len(common)} (trainer, round) pairs, max rel {max(rel.values(), default=0):.1e}, over {LOSS_RTOL:g}: {diff[:3]}"),
+            (f"commits identical through r{n_rounds}", bool(cr) and (fork is None or fork > n_rounds),
+             f"first commit fork r{fork}; real {len(cr)} sim {len(cs)} rounds")]
 
 
 def main(argv=None):

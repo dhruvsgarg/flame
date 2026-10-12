@@ -354,7 +354,8 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
     if tier in ("G1X", "G1XP"):  # FedDance sprint: EuroSys'26 setup, every baseline on one config; G1XP = real+sim convergence pair
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
         kw = dict(n=GPU_N[ds], dataset=ds, harness="none", trainer_hp=f"{full} {EUROSYS_TRAINER_HP}", gpus=4, agg_goal=EUROSYS_K)
-        if tier == "G1XP":
+        if tier == "G1XP":  # FX-D149
+            kw["trainer_hp"] += " trainerDeterministic=true"
             return [Phase(f"{DS_TAG[ds]}G1XP_syn_0", baselines, "syn_0", runtime_s=3600,
                           agg_hp=full + " evalEveryNRounds=20", **kw)]
         return [Phase(f"{DS_TAG[ds]}G1X_{t}", baselines, t, runtime_s=EUROSYS_HORIZON_S, kind="sim_ev",
@@ -363,16 +364,20 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
     if tier in ("G1XS", "G1XQ"):  # FedDance sprint sanity: shared config at n=50 real+sim (15 min) / n=300 sim speed probe (2 h vclock)
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
         kw = dict(dataset=ds, harness="none", trainer_hp=f"{full} {EUROSYS_TRAINER_HP}", agg_goal=EUROSYS_K)
-        if tier == "G1XS":
-            return [Phase(f"{DS_TAG[ds]}G1XS_syn_50", baselines, "syn_50", runtime_s=900, n=50, gpus=1,
-                          agg_hp=full + " evalEveryNRounds=5", **kw)]
-        return [Phase(f"{DS_TAG[ds]}G1XQ_mobiperf_3st", baselines, "mobiperf_3st", runtime_s=7200, n=GPU_N[ds], gpus=4,
-                      agg_hp=full + " evalEveryNRounds=20", kind="sim_ev", **kw)]
-    if tier in ("G1XF", "G1XFS"):  # FedDance sprint F3: FedDance vs random (fedavg) on the FedDance paper's own training config, small n
+        if tier == "G1XS":  # n=50 x K=10 can't fill mobiperf (G0U covers it)
+            kw["trainer_hp"] += " trainerDeterministic=true"  # FX-D149
+            return [Phase(f"{DS_TAG[ds]}G1XS_{t}", baselines, t, runtime_s=900, n=50, gpus=1 if ds == "cifar10" else 2,
+                          agg_hp=full + " evalEveryNRounds=5", **kw) for t in ("syn_50", "syn_10")]
+        # Speech sims run ~1x: 30 min vclock suffices to measure speed.
+        return [Phase(f"{DS_TAG[ds]}G1XQ_mobiperf_3st", baselines, "mobiperf_3st", runtime_s=7200 if ds == "cifar10" else 1800,
+                      n=GPU_N[ds], gpus=4, agg_hp=full + " evalEveryNRounds=20", kind="sim_ev", **kw)]
+    if tier in ("G1XF", "G1XFS"):  # FedDance sprint F3: FedDance vs random (fedavg) on the FedDance paper's own training config
+        # Reference n, K=10 as the paper: at n=50 both arms picked every eligible end (FX-L67).
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
-        return [Phase(f"{DS_TAG[ds]}{tier}_mobiperf_3st", baselines, "mobiperf_3st", runtime_s=6000 if tier == "G1XF" else 3000, n=50, dataset=ds, harness="none",
-                      trainer_hp=f"{full} {FEDDANCE_PAPER_HP[ds]}", agg_hp=full + " evalEveryNRounds=20", gpus=1, agg_goal=5,
-                      kind="sim_ev")]
+        return [Phase(f"{DS_TAG[ds]}{tier}_{t}", baselines, t, runtime_s=12000 if tier == "G1XF" else 3000, n=GPU_N[ds], dataset=ds,
+                      harness="none", trainer_hp=f"{full} {FEDDANCE_PAPER_HP[ds]}", agg_hp=full + " evalEveryNRounds=20", gpus=4,
+                      agg_goal=EUROSYS_K, kind="sim_ev")
+                for t in (("mobiperf_3st", "syn_0") if tier == "G1XF" else ("mobiperf_3st",))]
     if tier == "G1L":  # FX-N65: felix syn_0 past the 7200s convergence floor, pair + a real replicate
         return [Phase(f"{DS_TAG[ds]}G1L", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds, harness="none"),
                 Phase(f"{DS_TAG[ds]}G1LC", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds,
