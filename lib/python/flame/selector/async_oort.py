@@ -198,6 +198,7 @@ class AsyncOortSelector(AsyncSelectorBase):
             num_of_ends=feasible_extra, unexplored_end_ids=unexplored_end_ids
         )
 
+        self._pick_split = {}  # FELIX_INSIGHTS I-A5: random picks carry no explore/exploit split
         # First round: no end's utility has been measured yet -- random.
         if model_version == 0:
             self.round = model_version
@@ -249,6 +250,7 @@ class AsyncOortSelector(AsyncSelectorBase):
                 ends=candidates, num_of_ends=feasible_extra
             )
 
+        self._pick_split = {"exploit": set(exploit_end_ids), "explore": set(chosen) - set(exploit_end_ids)}
         if self.select_type == "default":
             self.save_exploited_utility_history(candidates, exploit_end_ids)
             self.update_exploration_factor()
@@ -269,6 +271,8 @@ class AsyncOortSelector(AsyncSelectorBase):
             "round_threshold": getattr(self, "round_threshold", None),
             "alpha": getattr(self, "alpha", None),
             **self._system_util_summary(results.keys()),
+            **({f"{k}_ids": sorted(set(results) & v) for k, v in getattr(self, "_pick_split", {}).items()}
+               if ctx.task_to_perform == "train" else {}),
         }
 
     def _per_trainer_selection_extra(self, ends: dict[str, End]) -> dict:

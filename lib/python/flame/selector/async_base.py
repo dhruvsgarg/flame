@@ -63,6 +63,7 @@ class SelectContext:
         "trainer_unavail_list",
         "concurrency",
         "extra",
+        "occupancy",
     )
 
     def __init__(self, **kw):
@@ -104,6 +105,7 @@ class AsyncSelectorBase(AbstractSelector):
         self.selected_ends = dict()
         self.requester = None  # set by select(); an UN_AVL report can precede it
         self.ordered_updates_recv_ends = list()
+        self._inflight_task = dict()  # end -> task of its latest dispatch (FELIX_INSIGHTS I-F1)
 
         self.track_trainer_timeouts = dict()
         self.track_selected_trainers_which_left = dict()
@@ -261,6 +263,7 @@ class AsyncSelectorBase(AbstractSelector):
                     "effective_c": effective_c,
                     "requester": self.requester,
                     "vclock_now": channel_props.get("vclock_now"),
+                    **(ctx.occupancy or {}),
                     **self._selection_extra(ctx, results),
                 },
             )
@@ -436,6 +439,7 @@ class AsyncSelectorBase(AbstractSelector):
         # idle pool can't refill it -- else the redispatch gap is inert.
         cooling = int((ctx.channel_props or {}).get("sim_cooling_count", 0))
         extra = max(0, concurrency - len(selected_ends) - cooling)
+        ctx.occupancy = self._occupancy(selected_ends, ends, cooling, concurrency, extra, ctx.task_to_perform)
         logger.debug(
             f"concurrency={concurrency}, in_flight={len(selected_ends)}, "
             f"cooling={cooling}, extra={extra}"
@@ -471,12 +475,26 @@ class AsyncSelectorBase(AbstractSelector):
         candidates_dict = {end_id: None for end_id in chosen}
 
         self.process_chosen_candidate_dict(candidates_dict, selected_ends)
+        tasks = self.__dict__.setdefault("_inflight_task", {})
+        for end_id in candidates_dict:
+            tasks[end_id] = ctx.task_to_perform
         # FX-L32: clear a late commit's RECVD so recv doesn't free the new task.
         for end_id in candidates_dict:
             if end_id in ends and ends[end_id].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD:
                 ends[end_id].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
         logger.info(f"handle_send_state dispatching: {list(candidates_dict)}")
         return candidates_dict
+
+    def _occupancy(self, selected_ends: set, eligible: dict, cooling: int, concurrency: int, extra: int, task: str) -> dict:
+        """FELIX_INSIGHTS §1: in-flight split by task, idle eligible ends, and train slots held by eval tasks."""
+        tasks = getattr(self, "_inflight_task", {})
+        n_eval = sum(1 for e in selected_ends if tasks.get(e) == "eval")
+        n_train = len(selected_ends) - n_eval
+        idle = sum(1 for e in eligible if e not in self.all_selected)
+        held_by_eval = max(0, min(n_eval, concurrency - n_train - cooling)) if task == "train" else 0
+        return {"in_flight_train": n_train, "in_flight_eval": n_eval, "cooling": cooling, "free_slots": extra,
+                "idle_eligible": idle, "train_slots_held_by_eval": held_by_eval,
+                "train_blocked_by_eval": task == "train" and extra == 0 and held_by_eval > 0 and idle > 0}
 
     def _model_version_for(self, ctx: SelectContext) -> int:
         """Step identity for the dispatch: version_key's model_version."""

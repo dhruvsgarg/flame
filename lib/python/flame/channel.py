@@ -101,6 +101,14 @@ def wait_arrival(channel, after_seq: int, timeout: float) -> None:
         time.sleep(timeout)
 
 
+
+def _emit_wire(direction: str, peer: str, nbytes: int) -> None:
+    """FELIX_INSIGHTS I-E1: one `wire` event per message this process sends or receives."""
+    from flame import telemetry  # lazy: flame.telemetry is optional at import time
+
+    if telemetry.is_enabled():
+        telemetry.emit("wire", dir=direction, peer=peer, bytes=int(nbytes))
+
 class Channel(object):
     """Channel class."""
 
@@ -454,11 +462,14 @@ class Channel(object):
 
         async def _put():
             if not self.has(end_id):
-                return
+                return False
             self.mc.accumulate("bytes", "send", len(payload))
             await self._ends[end_id].put(payload)
+            return True
 
-        _, status = run_async(_put(), self._backend.loop())
+        sent, status = run_async(_put(), self._backend.loop())
+        if sent:
+            _emit_wire("send", end_id, len(payload))
         return status
 
     def send(self, end_id, message):
@@ -488,6 +499,7 @@ class Channel(object):
                     # decompressor = zstd.ZstdDecompressor()
                     # payload = decompressor.decompress(payload)
                     self.mc.accumulate("bytes", "recv", len(payload[0]))
+                    _emit_wire("recv", end_id, len(payload[0]))
             except KeyError:
                 return None
 
@@ -630,6 +642,8 @@ class Channel(object):
         divergence there silently corrupts the selector's in-flight slot
         accounting (an end left out of ``RECVD`` is treated as still computing).
         """
+        if payload and payload[0]:
+            _emit_wire("recv", end_id, len(payload[0]))
         if self.has(end_id):
             logger.debug(f"channel got a msg for {end_id}")
             # mark that a message was received for this end

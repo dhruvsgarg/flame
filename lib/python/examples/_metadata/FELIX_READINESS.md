@@ -4,23 +4,29 @@ Read [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) and [PARITY_READINESS.md](
 here unrepeated. **Focus (operator 10-12): Felix-wide parity to 76 / 76.** Order: Next steps → Scoreboard (now, and expected after the
 next run) → Decisions → reference sections.
 
-**At a glance (10-12):** parity **61 / 76** graded (52 honest, C20) · accuracy **5 / 12** · next: PR31 on shepherd → expected **76 / 76** (≥ 73).
+**At a glance (10-12):** parity **61 / 76** graded, **25 / 76** honest (C20 voids feddance, refl, oort, oort_star) · accuracy **5 / 12** ·
+next: PR31 on shepherd → expected **76 / 76** (≥ 73).
 
 ## Next steps (persistent queue — top item is next)
 
 Work rule: PARITY C10, C17, C18. Test levels: pytest (~4 min) · CPU tiers T1-T4/TS · GPU ≤ 30-min screens (G0U/G0T/G0UC) · long
 (G1*/G2). Unblock map: short queue empty → PR21 → FX-N11 → FX-N12 (also needs FX-N13 ST6, FX-N22 P8).
 
-- **PR31 · confirm every open red + regrade FedDance + run the untested cells · todo: operator launches on shepherd.**
-  - *State (10-12 17:40):* shepherd at `a7278fb` on `dg/pending_fl_baselines`, clean; GPUs 0-7 idle, ECC 0, no compute apps; RAM 492 GB
-    free; `/home` 120 GB free (a batch writes ~2 GB); PL1 pytest 2596 passed, 8 skipped (fwdllm wall-clock preflight test made node-independent). Jayne launches `pr31_20261012_1400`/`_1410` were killed:
+- **PR31 · confirm every open red, regrade the four C20 baselines, re-screen felix/fedbuff G0U, run the untested cells · todo: operator
+  launches on shepherd.**
+  - *State (10-12 19:30):* shepherd on `dg/pending_fl_baselines` (FX-N89 commit), clean; GPUs 0-7 idle, ECC 0, no compute apps; RAM 492 GB
+    free; `/home` 120 GB free (a batch writes ~2 GB); PL1 pytest 2616 passed, 8 skipped (10-12, FX-N89 + FX-D153); smokes on that code: T1 syn_50 six
+    baselines EV 6/6 (`pool_20261012_182828_T1`), T3 mobiperf felix + refl EV + parity 2/2 (`pool_20261012_183234_T3`), T1 syn_0 felix/fedbuff
+    `wire` bytes both directions (`pool_20261012_184129_T1`). Jayne launches `pr31_20261012_1400`/`_1410` were killed:
     never grade their pools.
-  - *Launch* (tmux `dg_flame`, in `lib/python/examples`; `PY=/coc/scratch/dgarg/miniconda3/envs/dg_flame/bin/python`): `$PY scripts/run_pr31.py --hours 7.5` · GPUs 0-3 only (`GPU_IDS`, R4) · all 13
-    stages, ~6.8 h · out `experiments/pr31_<ts>/` (`probes.txt`, `<stage>.out`), pools `experiments/pool_<ts>_PR31_<stage>` · one Ctrl+C
-    stops all. `--hours 5.5` cuts A2 + B3, leaving 8 cells untested. PL8 check at +10 min.
+  - *Launch* (tmux `dg_flame`, in `lib/python/examples`; `PY=/coc/scratch/dgarg/miniconda3/envs/dg_flame/bin/python`): `$PY scripts/run_pr31.py --hours 15` · GPUs 0-3 only (`GPU_IDS`, R4) · all 14
+    stages, ~14.2 h (GPU-bound: 3165 GPU-min; 8 GPUs would halve it) · out `experiments/pr31_<ts>/` (`probes.txt`, `<stage>.out`), pools
+    `experiments/pool_<ts>_PR31_<stage>` · one Ctrl+C stops all. +10 min: PL8, and PL7 = `grep syncPartialDispatch` in a refl/oort leg's
+    `aggregator_config.json` (true).
   - *On return:* (1) `parity_ladder.py --grade <pool> --regrade --max-stage 9` per PR31 pool; (2) rsync the PR31 pools to jayne
-    `experiments/` and run `readiness_score.py` on the Scoreboard's pool set + PR31 (feddance rows from a PR31-only run, C20);
-    (3) root every red offline before any rerun (C1, C10); (4) `resource_report.py`; (5) rewrite the Scoreboard and its Expected table.
+    `experiments/` and run `readiness_score.py` on the Scoreboard's pool set + PR31 (feddance, refl, oort, oort_star rows from a PR31-only run, C20);
+    (3) root every red offline before any rerun (C1, C10); (4) `resource_report.py`; (5) `insights.py` on every PR31 pool (FELIX_INSIGHTS
+    IN2); (6) rewrite the Scoreboard and its Expected table.
 - **FX-N85 · Close PR27/PR28 roots · wip.** Left after PR31:
   - (a) Floors for chaotic cells (stall placement FX-L53, A_m near-ties): PR31 B4/C3/C4 give 3-leg real floors; speech feddance
     mobiperf (picks fork one pick later real↔real) and refl syn_50 A2 KS 0.30 (identical UN_AVL sequence, FX-L62) still need one.
@@ -30,9 +36,9 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~4 min) · CPU tiers T1-T4
   - (d) Speech Oort syn_20/50 `total_commits`, `participation`, `inter_arrival_order`, `selection_detail` on 7-14-round legs:
     underpowered; floor first, no change.
   - *Exit:* every listed cell green or floor-gated.
-- **FX-N89 · FX-D148 for REFL, Oort, oort_star (operator 10-12) · todo.** REFL: `syncPartialDispatch: true` in `baselines.yaml`; Oort
-  stack: port the plan to `oort/top_aggregator.py` (its starvation threshold is the full c). C20: their legs re-run.
-  *Exit:* pytest + T3/G0U syn_50 + mobiperf green per baseline.
+- **FX-N92 · Felix insights: telemetry-backed mechanisms for the paper (operator 10-12) · wip.** Model, catalog, telemetry (FX-D153) and
+  `insights.py` in [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md); its Next steps IN1, IN2 (`insights.py` on every PR31 pool), IN4 (long legs).
+  *Exit:* FELIX_INSIGHTS findings for every catalog row, real↔sim agreed.
 - **FX-N90 · FedDance coverage under over-commit · todo.** Literal Alg. 1 l.3 scores a picked-but-never-aggregated device I = 0 forever
   (F3 syn_0: 104/300 at U = 0, 199 vs 281 committers, rounds to 40% +17%). `straggler_score: mean` (FedScale: REFL aggregator.py:611-616)
   restores coverage but re-biases to slow ends (in-process: 34% slowest-quartile picks, 18.2 vs 15.5 s/round): A_m rewards rare engagement,
@@ -83,7 +89,8 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~4 min) · CPU tiers T1-T4
 
 ## Scoreboard (rewrite after every run, PARITY C5)
 
-**Parity 61 / 76 graded; 52 / 76 honest** — the 9 feddance greens predate FX-D148/D150 and are void (C20) until PR31.
+**Parity 61 / 76 graded; 25 / 76 honest** — feddance (FX-D148/D150) and refl, oort, oort_star (FX-D148 on the Oort stack) greens predate
+their definitions and are void (C20) until PR31; only felix (13/13) and fedbuff (12/13) stand.
 `readiness_score.py` on jayne `experiments/`: PR28, PR29, PR29B, PR30 pools + FD F1/F2b/V1/V4 (INV/EXACT + EV, worst pair wins, later
 pool supersedes). **Accuracy 5 / 12.** ✅ green · ✅ᵛ void (C20) · ❌ red · · untested · – n/a (FX-D106, FX-D135).
 
@@ -93,12 +100,12 @@ pool supersedes). **Accuracy 5 / 12.** ✅ green · ✅ᵛ void (C20) · ❌ red
 | felix · speech | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | – |
 | fedbuff · cifar | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
 | fedbuff · speech | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | – |
-| refl · cifar | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| refl · speech | ✅ | ✅ | ✅ | ✅ | · | · | – |
-| oort · cifar | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
-| oort · speech | ✅ | ✅ | ❌ | – | · | · | – |
-| oort_star · cifar | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
-| oort_star · speech | ✅ | ✅ | ✅ | – | · | · | – |
+| refl · cifar | ✅ᵛ | ✅ᵛ | ✅ᵛ | ✅ᵛ | ✅ᵛ | ✅ᵛ | ✅ᵛ |
+| refl · speech | ✅ᵛ | ✅ᵛ | ✅ᵛ | ✅ᵛ | · | · | – |
+| oort · cifar | ✅ᵛ | ✅ᵛ | ✅ᵛ | ✅ᵛ | ✅ᵛ | ❌ | ✅ᵛ |
+| oort · speech | ✅ᵛ | ✅ᵛ | ❌ | – | · | · | – |
+| oort_star · cifar | ✅ᵛ | ✅ᵛ | ✅ᵛ | ❌ | ❌ | ✅ᵛ | ✅ᵛ |
+| oort_star · speech | ✅ᵛ | ✅ᵛ | ✅ᵛ | – | · | · | – |
 | feddance · cifar | ✅ᵛ | ✅ᵛ | ❌ | ✅ᵛ | ❌ | ✅ᵛ | ✅ᵛ |
 | feddance · speech | ✅ᵛ | ✅ᵛ | ✅ᵛ | ✅ᵛ | ❌ | ❌ | – |
 
@@ -121,14 +128,17 @@ pool supersedes). **Accuracy 5 / 12.** ✅ green · ✅ᵛ void (C20) · ❌ red
 | oort·cifar stream_eve | ❌ | B1, B4 | ✅: syn_0s by FX-D142, syn_50s inside its 3-leg real floor | sim outside a floor whose reals agree |
 | oort_star·cifar stream_lin | ❌ | B1 | ✅ (FX-D142) | time_to_n still ≥ 8% |
 | oort_star·cifar mobiperf | ❌ | B2 | ✅ (no OOM: FX-D136/D141) | EV0 or `RAM_TIGHT` |
+| refl, oort, oort_star: all 37 cells | ✅ᵛ / ❌ / · | C1/C2 T3 syn_0/20/50 · C5 T3 mobiperf · B2 G0U syn_50 + mobiperf · A1 (refl), B1, B3, A2 G0T · C6 P7 | ✅ on FX-D148 | any INV/EXACT red = partial-dispatch mechanism |
 | oort·speech syn_50 | ❌ | C2, C4 | ✅ floor-gated | outside the 3-leg floor |
 | feddance, all 13 cells | 9 ✅ᵛ, 4 ❌ | C1/C2 T3 syn_0/20/50 · C3 floor · C5 T3 mobiperf · A5 G0U syn_50 + mobiperf · A1/A2 G0T syn_50 · C6 P7 | ✅ on FX-D148/D150 | any INV/EXACT red = FedDance mechanism |
 | refl·speech stream_lin/eve | · | A2 | ✅ | EV19 or INV/EXACT red |
 | oort, oort_star·speech stream_lin/eve | · | B3 | ✅ | EV19 or INV/EXACT red |
-| other T3 greens (syn_0/20/50) | ✅ | C1, C2 | stay ✅ on FX-D143 charges; jayne profiles hold on shepherd (T9) | a syn_0 red = re-derive charges on shepherd (FX-T47) |
+| felix, fedbuff G0U syn_50 + mobiperf | ✅ (PR28 code) | A4 | stay ✅ on FX-D137/D142/D143 code | a red = regression, root before PR21 |
+| felix, fedbuff T3 greens (syn_0/20/50) | ✅ | C1, C2 | stay ✅ on FX-D143 charges; jayne profiles hold on shepherd (T9) | a syn_0 red = re-derive charges on shepherd (FX-T47) |
 
 **Expected score: 76 / 76** if every claim holds; **≥ 73** if the three stall-placement cells (oort·cifar eve, oort·speech syn_50,
-feddance·cifar syn_50) miss their floors. `--hours 5.5` would leave A2/B3's 8 cells untested (≤ 68). Accuracy unchanged (no G1A legs).
+feddance·cifar syn_50) miss their floors. A shorter `--hours` cuts the lane tails (A2, B3: 8 speech streaming cells). Accuracy unchanged
+(no G1A legs).
 
 **Cross-cutting capabilities**
 
@@ -181,11 +191,14 @@ refl, oort, oort_star, feddance G1A rows predate FX-D100/D104/D105: void for acc
     the May-2025 real runs (`agg_logs/`).
   - *Plots:* time to 70% = first eval ≥ 70, else log-time fit past the run's end, capped 48 h (`curve_tta`); comm scaled to that time;
     FeLiX speedup vs REFL and FedDance (`speedup_refs`), comm ratio vs REFL only (`ref_strategy`).
-  - Speech F5 used a fixed vclock budget from V3's sim speed; no F4 rerun (V2 covers real == sim); FX-D148 extends to REFL, Oort,
-    oort_star when they re-run (FX-N89).
+  - Speech F5 used a fixed vclock budget from V3's sim speed; no F4 rerun (V2 covers real == sim).
 - **Baselines (10-08, 10-10):** source-faithful values in `baseline_reference.yaml` (ROBUST L33-L37); cifar Oort/oort_star clip 1.0
   is a recorded deviation (FX-D126: tiny-shard NaN 3/6 → 0/6, full-data r300 48.9/54.5 → 48.9/49.9%; C20 voids older cifar Oort legs);
   speech Oort/refl/feddance accuracy recorded round-bound; debug every red on short runs before any long run.
+- **FedScale baselines (10-12):** FX-D148 partial dispatch is correct behaviour for refl, oort, oort_star, feddance (FedScale `resampleClients`);
+  REFL staleness unbounded (`stale_update: -1`): paper §5 "no maximum threshold is applied to staleness"; the 5-round cap is only the
+  SAFA comparison (§5.2.2, `run_exps.sh` SAFA branch). Stored REFL runs already used -1 (reference applied last), so no C20 from it.
+- **PR31 scope (10-12):** includes the felix/fedbuff G0U regression (A4), since the 76/76 must stand on one code state.
 
 **FedDance in the paper** (eval text; evidence `fd_20261012_0503` telemetry, FX-N90). FedDance climbs fast, then plateaus below 70% on
 both datasets. Its utility favours fast, high-loss devices, so early rounds are short (12 s vs 15.5 s for random selection on CIFAR-10)
@@ -599,7 +612,7 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   created the CUDA context (0.8 s) between round 1's commit and round 2's dispatch, on real's trace clock only; G0T stream chunks then
   landed on different sides of a trainer's train time (0374: 55 vs 27 samples), forking Oort utilities and picks (cifar oort eve syn_0s,
   oort_star lin syn_50s, PR30 B1).
-- **FX-D148** `syncPartialDispatch` (feddance + its fedavg arm): a wait-K version dispatches to whoever is eligible, topping up later, as FedScale
+- **FX-D148** `syncPartialDispatch` (feddance + its fedavg arm via syncfl `_sync_wait_k_plan`; refl, oort, oort_star via Oort `_wait_k_need`): a wait-K version dispatches to whoever is eligible, topping up later, as FedScale
   `resampleClients` takes all online when < c; it waited for c eligible (F3 n=50 mobiperf: no round closed after 2750 s). Off = byte-identical.
 - **FX-D149** `trainerDeterministic` (cuDNN deterministic kernels; G1XP, G1XS): default kernels drift 1e-6 per epoch, chaotic on tiny shards
   (F4 losses 1e-3 by r5, commit fork r35); on: 0 drift (single-process check).
@@ -610,6 +623,9 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-D152** EuroSys FedDance tooling: `scripts/run_fd.py` (`--plan`, `--only`), tiers G1XS/G1XQ/G1XP/G1X/G1XF(S) (`EUROSYS_*`,
   `FEDDANCE_PAPER_HP`), `scripts/fd_sanity.py` (per-run invariants incl. "selector had a choice"; `--pair`: commits and losses equal up to
   the first fork), `scripts/eurosys_export.py`; `all_plots.ipynb` loads `eurosys26_expts/feddance_logs/*.json` (`curve_tta`).
+- **FX-D153** Insights telemetry (FELIX_INSIGHTS §4, read by no checker): async `selection` in-flight split by task + train slots held by
+  eval (`async_base._occupancy`); `wire` event per message, both roles (`channel._emit_wire`); felix `explore_ids`/`exploit_ids`; metrics in
+  `scripts/insights.py`.
 - **FX-D147** Leak check (`ram_growth_gb`) starts after a leg's process count peaks: a short sim's spawn ramp read as LEAK? (S3 +113 GB).
 - **FX-D146** `fedavg` arm = feddance with selector `utility=random` (uniform over the same eligible set); only selection differs (S4/F3).
 - **FX-D145** FedAvg sums updates in sorted end-id order: arrival order differs sim vs real, so float sums did.
@@ -642,4 +658,3 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 ## Open questions (operator)
 
 - Speech Oort/refl/feddance accuracy: round-bound (10-10) vs a per-baseline target vs long sims after P8?
-- REFL `stale_update`: code -1 (unbounded, run_exps.sh:84) replaced the earlier operator choice 5. Confirm.

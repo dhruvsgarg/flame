@@ -127,7 +127,7 @@ baselines:
         sort: refl
         kwargs:
           deadline: 100
-          stale_update: 5
+          stale_update: -1  # [code+paper] unbounded (REFL §5 "no maximum threshold"; 5 is the SAFA comparison only)
           stale_factor: -4
           stale_beta: 0.35
           scale_coff: 1.0  # [repo] run_exps.sh scalecoff=1 (FX-N74)
@@ -135,6 +135,7 @@ baselines:
           initial_deadline: 100.0
       hyperparameters:
         syncWaitForK: true  # FX-N37: commit a version only at K accepted updates
+        syncPartialDispatch: true  # FX-D148 (third_party/Oort clientSampler.py:170; REFL client_manager.py:276)
         # FX-N7: the v1 substrate reads the trace; the legacy ORACULAR block is retired.
         simUnavailability: true
         # See felix note (overhead must stay below the sct-progression rate).
@@ -198,6 +199,7 @@ baselines:
         kwargs: {}
       hyperparameters:
         syncWaitForK: true  # FX-N37: commit a version only at K accepted updates
+        syncPartialDispatch: true  # FX-D148 (third_party/Oort clientSampler.py:170; REFL client_manager.py:276)
         # FX-N7: the v1 substrate reads the trace; the legacy ORACULAR block is retired.
         simUnavailability: true
         # NOTE: oort is NOT a pool-composition case -- its eligible pool already
@@ -226,6 +228,7 @@ baselines:
         kwargs: {}
       hyperparameters:
         syncWaitForK: true  # FX-N37: commit a version only at K accepted updates
+        syncPartialDispatch: true  # FX-D148 (third_party/Oort clientSampler.py:170; REFL client_manager.py:276)
         # FX-N7: the v1 substrate reads the trace; the legacy ORACULAR block is retired.
         simUnavailability: true
     trainer:

@@ -6,10 +6,15 @@ import types
 
 import pytest
 
+from flame.mode.horizontal.oort.top_aggregator import TopAggregator as OortTopAggregator
 from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator
 
 
 class _Agg(TopAggregator):
+    check_and_sleep = evaluate = initialize = load_data = train = lambda self: None
+
+
+class _OortAgg(OortTopAggregator):
     check_and_sleep = evaluate = initialize = load_data = train = lambda self: None
 
 
@@ -50,9 +55,35 @@ def test_nothing_missing_returns_none():
     assert _agg(True, fresh={f"e{i}" for i in range(4)}, accepted={"e9", "e8"})._sync_wait_k_plan(_channel(), 9, 5) is None
 
 
-def test_feddance_enables_it():
+def _oort(partial, fresh=(), accepted=()):
+    agg = _OortAgg.__new__(_OortAgg)
+    agg.config = types.SimpleNamespace(hyperparameters=types.SimpleNamespace(sync_partial_dispatch=partial))
+    agg._sync_version_inflight = lambda ch: set(fresh)
+    agg._sync_accepted_ends = lambda: set(accepted)
+    return agg
+
+
+@pytest.mark.parametrize("eligible", [0, 3, 13, 20])
+def test_oort_off_needs_the_full_cohort(eligible):
+    assert _oort(False)._wait_k_need(None, eligible, 13) == 13
+
+
+@pytest.mark.parametrize("eligible,need", [(0, 13), (1, 1), (8, 8), (13, 13), (20, 13)])
+def test_oort_on_dispatches_to_whoever_is_eligible(eligible, need):
+    assert _oort(True)._wait_k_need(None, eligible, 13) == need  # 0 eligible keeps 13: the starvation gate waits
+
+
+def test_oort_mid_round_top_up_unchanged():
+    for partial in (False, True):
+        assert _oort(partial, fresh={"e1", "e2"}, accepted={"e3"})._wait_k_need(None, 4, 13) == 4
+        assert _oort(partial, fresh={"e1"})._wait_k_need(None, 0, 13) is None
+        assert _oort(partial, fresh={f"e{i}" for i in range(10)}, accepted={"a", "b", "c"})._wait_k_need(None, 9, 13) is None
+
+
+@pytest.mark.parametrize("baseline", ["feddance", "refl", "oort", "oort_star"])
+def test_fedscale_baselines_enable_it(baseline):
     import pathlib
     import yaml
     cat = yaml.safe_load((pathlib.Path(__file__).parents[2] / "examples/_metadata/baselines.yaml").read_text())
     root = cat.get("baselines", cat)
-    assert root["feddance"]["aggregator"]["hyperparameters"]["syncPartialDispatch"] is True
+    assert root[baseline]["aggregator"]["hyperparameters"]["syncPartialDispatch"] is True

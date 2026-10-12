@@ -710,6 +710,17 @@ class TopAggregator(BaseTopAggregator):
             f"{self._updates_recevied}"
         )
 
+    def _wait_k_need(self, channel, num_eligible: int, desired_selection: int):
+        """FX-N37 slots this version still misses, or None when there is nothing to dispatch."""
+        fresh = self._sync_version_inflight(channel)
+        need = desired_selection - len(fresh) - len(self._sync_accepted_ends())
+        if need <= 0 or (fresh and num_eligible == 0):
+            return None
+        # FX-D148: a version start too (FedScale resampleClients takes all online when < c); none eligible waits.
+        if fresh or (num_eligible and getattr(self.config.hyperparameters, "sync_partial_dispatch", False)):
+            need = min(need, num_eligible)
+        return need
+
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         """
         Distribute local model weights to 1.3K clients, where K is the
@@ -838,12 +849,9 @@ class TopAggregator(BaseTopAggregator):
         # FX-N37: top up only the slots this version is missing; mid-round, take what is eligible.
         _need = None
         if self._sync_wait_k_on():
-            _fresh = self._sync_version_inflight(channel)
-            _need = desired_selection - len(_fresh) - len(self._sync_accepted_ends())
-            if _need <= 0 or (_fresh and num_eligible == 0):
+            _need = self._wait_k_need(channel, num_eligible, desired_selection)
+            if _need is None:
                 return
-            if _fresh:
-                _need = min(_need, num_eligible)
 
         # Cohort-floor guardrail: if desired_selection > connected cohort size
         # (e.g. n=12 with desired_selection=13), the starvation gate fires

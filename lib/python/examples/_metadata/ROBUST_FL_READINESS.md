@@ -5,10 +5,11 @@ speedup, with and without client unavailability, so paper experiments run sim-on
 real and sim must each be correct** — every baseline follows its reference semantics and reaches its dataset's target
 accuracy in the expected time window (tracked per track: FELIX Scoreboard). Equal-but-wrong is a failure (R1, C6).
 
-**Four docs are the only working references:**
+**Four docs (plus FELIX's insights companion) are the only working references:**
 - **this doc** — the rules for all four docs, the lessons and tripwires both tracks share, and the queue of
   shared infrastructure work;
 - [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS: Felix-wide parity to 76/76 (PR31 on shepherd, 10-12).**
+  - [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) — Felix's companion: telemetry-backed insights for the paper (model, catalog, findings).
 - [PARITY_READINESS.md](PARITY_READINESS.md) — real↔sim parity for both tracks: climbing rules (C1-C9: correct before
   equal, instrument what you can't see, launch only when fixes are maximized), method, tools, per-track scoreboard.
 - [FLUXTUNE_READINESS.md](FLUXTUNE_READINESS.md) — FluxTune: perturbation / forward-gradient fine-tuning
@@ -78,10 +79,10 @@ Scoreboard
 - **R3 Evidence ladder: telemetry on disk → local harness/bench → short cluster run → long run.** Never
   spend a GPU run on a question the harness or stored telemetry can answer. A long run confirms; it never
   finds the first bug.
-- **R4 The operator launches everything that spawns processes.** Claude runs only short foreground,
-  single-process work itself (pytest, static checks, parsing stored runs). Anything that starts brokers,
-  aggregators, trainers or a multi-test sweep — local harness or cluster — goes into ONE script the operator
-  launches (killing that parent kills every child). The script writes all results under one
+- **R4 Claude runs anything up to 15 min itself; the operator launches the rest (operator 10-12).** Claude may run any
+  job with a hard timeout ≤ 15 min (pytest, harness tiers, short real/sim legs) to exercise a change; keep it as short and
+  small as the question allows. Anything longer goes into ONE script the operator launches (killing that parent kills every
+  child). The script writes all results under one
   `experiments/<suite>_<ts>/` dir with a summary file; Claude reads that dir afterwards. Claude hands over the
   command, the expected duration and the prediction (what result confirms and what refutes). Long scripts launch
   detached (`--detach`, PARITY PL4) so a lost terminal can't kill them. **Runs go on
@@ -129,8 +130,8 @@ Scoreboard
   print PASS/FAIL for its key claim within minutes (`early_probe.py`; fail-fast and stall rules stay), and (b) an end check for
   interference (throttled legs, dur > 1.25 x est) that names the stage to rerun solo. Prefer short decisive cells over long runs;
   keep a modest time buffer; long runs only after the short signal passes.
-- **R19 Smoke before hand-off; fail in minutes.** Before handing over any long script, Claude runs its ≤5-min
-  smoke itself (the one R4 exception: foreground, hard timeout, one script): `pytest --collect-only` plus one
+- **R19 Smoke before hand-off; fail in minutes.** Before handing over any long script, Claude runs its smoke itself
+  (≤ 15 min, R4; hard timeout, one script): `pytest --collect-only` plus one
   short real/sim pair showing commits on both legs. Every long script opens with that gate (campaign: P00)
   and aborts when it fails. Never hand over a command that has not run end-to-end once at small scale, and at
   production density (PARITY PL3 scale smoke; operator 2026-10-06: Claude runs it). Every run and test uses the `dg_flame` env (`FLAME_CONDA_ENV`), never the active shell's.
