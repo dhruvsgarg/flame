@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FedDance sprint (FELIX_READINESS "FedDance sprint"): FedDance on the EuroSys'26 setup, every baseline on one config.
+"""FedDance sprint (FELIX_READINESS Decisions "EuroSys FedDance", FX-D152): FedDance on the EuroSys'26 setup, every baseline on one config.
 
 Same runner as run_pr28.py (lanes, leases, probes, one Ctrl+C). Three steps, run in order:
   run_fd.py --only S2,S3,S4 --hours 2  # daytime sanity (~2 h), then fd_sanity.py / eurosys_export.py on its legs

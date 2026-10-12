@@ -23,7 +23,7 @@
 - **C2 Lowest red check per cell first;** a root failing 2+ cells outranks one.
 - **C3 Climb per cell** (baseline × dataset × avail); always `--keep-going`.
 - **C4 Logical before timing;** timing closes via profiled charges, never knob tuning (FX-T31).
-- **C5 Loop per run:** regrade, rewrite scoreboard, dashboard and FELIX accuracy table.
+- **C5 Loop per run:** regrade, then rewrite the FELIX Scoreboard (now + expected after the next run); never append a results log.
 - **C6 Correct first, equal second:** a check green on a shared bug is a bug.
 - **C7 Instrument what you can't see,** in the same change as the next fix.
 - **C8 Launch only when fixes are maximized** and PL1-PL11 pass.
@@ -112,72 +112,11 @@ python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --si
 
 ---
 
-## Progress dashboard (rewrite every run, C5)
-
-Open = FELIX FX-N items; built = FX-D lines; target = G1A full-data leg reaching cifar 50% / speech 60% both sides.
-
-| run / commit | date | pytest | open FX-N | built FX-D | INV/EXACT green / known / red | at target |
-|---|---|---|---|---|---|---|
-| runs 6-8 (`798a0e435`) | 10-01 | n/a | 20 | 31 | L1-L5: 134 / 7 / 5 | — |
-| runs 12-14 (`e174fbed6`) | 10-05 | n/a | 17 | 47 | G0U/G0T: 37 / 2 / 11 | — |
-| run 16 (`11152ac33`) | 10-06 | 2414 / 0 | 17 | 61 | 9 / 2 / 1 (+5 MISSING) | 1 / 12 |
-| run 17 (`67959e542`) | 10-07 | 2416 / 0 | 17 | 62 | 14 / 0 / 0 | 1 / 12 |
-| run 18 (`1abe482a3`) | 10-07 | 2420 / 0 | 16 | 63 | T3 5/0/7 · G1A speech 1/0/3 (timing) | 3 / 12 |
-| run 19 | 10-07 | 2423 / 0 | 16 | 69 | speech G0U 6/0/2 · cifar G0U 9/0/1 | 3 / 12 |
-| runs 20-24 (`bd5fc954d`) | 10-07 | 2427 / 0 | 16 | 76 | speech felix G0U ✅ (120 / 119 rounds) | 3 / 12 |
-| run 25 | 10-08 | 2445 / 0 | 16 | 86 | speech G0U 10/0/2 · cifar 10/0/1 (+11 MISSING) | 3 / 12 |
-| run 26 | 10-08 | 2447 / 0 | 16 | 88 | cifar felix/fedbuff/oort 3/0/0 · speech fedbuff 1 red | 3 / 12 |
-| run 27 (FX-D89-91) | 10-08 | 2450 / 0 | 17 | 91 | speech felix + fedbuff ✅ · cifar felix + oort ✅, fedbuff floor-bound | 3 / 12 |
-| CPU smokes (FX-D92-99) | 10-08 | 2456 / 0 | 16 | 99 | T1 24/24 · T3 mobiperf 2/0/0 · P6 2/0/0 · P7 6/0/0 | 3 / 12 |
-| PR22/23 + FX-D100-103 | 10-08 | 2491 / 0 | 16 | 103 | T3 cifar 27/30 · speech 16/30 (stale stub profile → FX-D103; syn_0b re-check 2/2) · G0U fedbuff cifar ✅ (FX-N77 closed) | 4 / 12 |
-| FX-N80 step 2 (FX-D104-105) | 10-09 | 2508 / 0 | 17 | 105 | T3 37/0/3 (Oort family) · G0U oort NaN abort | 4 / 12 |
-| N88 + FX-D106-D120 | 10-09 | 2529 / 0 | 17 | 120 | T3 10/0/4 · G0U 8/0/6 (stored runs, FX-D119 regrade) | 4 / 12 |
-| PR28 + FX-D127-D131 | 10-10 | 2551 / 0 | 17 | 131 | T3 37/0/7 · G0U syn_50 9/0/3 · mobiperf 5/0/3 · G0T 13/0/3 · P11 6/6 CAUGHT · speech P7 0/6 (FX-N86) | 4 / 12 (+ cifar oort_star sim) |
-| PR29 + FX-D136 | 10-10 | 2560 / 0 | 17 | 136 | T3/G0U/G0T regrade: **51 / 76** (60 tested); 9 reds (3 timing borderline) | 5 / 12 |
-| PR29 rooted + FX-D137-D140 | 10-11 | 2572 / 0 | 17 | 140 | regrade **52 / 76**; 9 reds: 3 fixed (D137/D138), 3 OOM/false-positive (D136), 2 chaos, 1 checker (D139, cleared) | 5 / 12 |
-
-**Readiness score** (`scripts/readiness_score.py <pools>`): parity cells green / applicable, worst pair wins; untested counts as not green.
-
-| code state | parity score | syn_0 · syn_20 · syn_50 · mobiperf · stream_lin · stream_eve · stream_cpu | accuracy at target |
-|---|---|---|---|
-| PR28 (`d6186ddf7`) | **41 / 82** (64 tested) | 12/12 · 9/12 · 6/12 · 5/10 · 2/12 · 3/12 · 4/12 | 5 / 12 |
-| PR28 rescored, speech P7 n/a (FX-D135) | **41 / 76** (58 tested) | 12/12 · 9/12 · 6/12 · 5/10 · 2/12 · 3/12 · 4/6 | 5 / 12 |
-| PR29 over PR28 (later pool supersedes a pair; FX-D136) | **51 / 76** (60 tested, 16 = PR30) | 12/12 · 12/12 · 7/12 · 7/10 · 3/12 · 4/12 · 6/6 | 5 / 12 |
-| same pools, FX-D139 regrade | **52 / 76** | 12/12 · 12/12 · 8/12 · 7/10 · 3/12 · 4/12 · 6/6 | 5 / 12 |
-| PR29b + PR30 over PR28-29 (10-11) | **62 / 76** (68 tested) | 12/12 · 12/12 · 10/12 · 9/10 · 6/12 · 7/12 · 6/6 | 5 / 12 |
-| + sprint pools F1/F2b/V1/V4 (10-12) | **61 / 76** (70 tested); honest: feddance cells pre-FX-D148/D150 void (C20) → PR31 | 12/12 · 12/12 · 10/12 · 9/10 · 5/12 · 7/12 · 6/6 | 5 / 12 |
-
-**Path to full score (76 cells; operator 10-10).** Each step regrades its pools and rewrites the row above (C5).
-
-| step | cells | what | done when |
-|---|---|---|---|
-| PR29 (`run_pr29.py`, done 10-10, 9 h not 4.6 h) | 17 red + 2 untested | 52 / 76 after rooting (FELIX "PR29 results"): FX-D136-D139 | — |
-| PR29b + PR30 (done 10-11) | 7 red + 16 untested | 62 / 76: 6 red, 8 untested (B1 stall FX-D141 cut 3 stages) | — |
-| PR31 (`run_pr31.py`, running 10-12) | 9 red + 6 untested + void feddance | FX-D137/D141-D143 confirms, feddance everywhere (C20), speech G0T refl/Oort, 3-leg floors, T3 re-screen | 76 / 76 |
-| then | — | long runs (PR21: G1A accuracy, G1U, G0T full grid), C0.5 | accuracy 12 / 12 |
-
-**Per baseline × dataset (latest grade).** Parity = INV/EXACT on the latest pair; accuracy numbers in FELIX accuracy table.
-
-| baseline | dataset | parity syn_0 | parity unavailability | target |
-|---|---|---|---|---|
-| felix | cifar | ✅ G1A 67/67 (run 16); T3 + P7 ✅ (PR28) | ✅ T3, G0U syn_50, G0U mobiperf (PR28) | ✅ 57 / 60 min |
-| felix | speech | 🟡 G1A timing reds (run 18; FX-N70); T3 ✅ (PR28) | ✅ T3, G0U syn_50 + mobiperf (PR28) | ✅ 72 / 72 min |
-| fedbuff | cifar | ✅ G1A 66/66 (run 17); T3 ✅ | ✅ T3; ✅ G0U syn_50 (PR29); 🔴 G0U mobiperf, G0T lin syn_50 → FX-D137 (PR29b) | ❌ (FX-D73 sim 56%) |
-| fedbuff | speech | 🟡 G1A timing reds (run 18); T3 ✅ | ✅ T3, G0U syn_50 + mobiperf (PR28) | ✅ 82 / 88 min |
-| refl | cifar | ✅ G1A 68/68 (run 17); T3 ✅ | ✅ T3, G0U syn_50 + mobiperf (PR28) | ❌ sim 29.5% @90 rising (PR28) |
-| refl | speech | ✅ G1A; T3 ✅ | ✅ G0U syn_50 + mobiperf; 🟡 T3 syn_50 throughput 8.5% (no floor) | ❌ round-bound @90 (FX-N74) |
-| oort | cifar | ✅ G2 (L7); T3 syn_0s ✅ | ✅ T3 syn_50s (PR29, FX-D139 regrade), G0U syn_50s + mobiperf_3sts clip (PR29 B1) | 🟡 sim 43.7% @30 (OOM-cut) |
-| oort | speech | 🟡 G1A throughput 8.1% (FX-N76); T3 ✅ | ✅ T3 syn_20s/50s, G0U syn_50s (PR28) | ❌ round-bound @90 |
-| oort_star | cifar | ✅ L6 G0; T3 ✅ | 🟡 T3 syn_20s/50s terminal_state (FX-D129 class); ✅ G0U syn_50s clip (B1) | 🟡 sim **50.8% at 82 min** |
-| oort_star | speech | ✅ L6 G0; T3 ✅ | ✅ G0U syn_50s; 🟡 T3 syn_20s timing 11% (floor, FX-L53) | ❌ round-bound @90 |
-| feddance | cifar | ✅ G2 on sim↔sim floor; T3 + P7 ✅ (PR28) | 🔴 T3 syn_50 → FX-D138 (PR29b); ✅ G0U syn_50 + mobiperf (PR29) | ❌ sim 18.5% (FX-D127-cut) |
-| feddance | speech | ✅ G1A 1.0 (run 18); T3 ✅ | 🔴 G0U syn_50 sim EV16 → FX-D130 (PR29); G0UC floor clears terminal_state | ❌ round-bound @90 |
-
-refl, oort, oort_star, feddance G1A cells predate FX-D100/D104/D105: void for accuracy; PR28 G1AS sims are their source-faithful numbers.
-
 ## Felix scoreboard
 
-INV/EXACT green / known / red via `--grade <pool> --regrade --max-stage 9`; DIST gated by floors only (Q4).
+Single source: [FELIX_READINESS.md](FELIX_READINESS.md) → Scoreboard (cell matrix, open reds → root, expected after the next run,
+accuracy table). `scripts/readiness_score.py <pools>`: baseline × dataset × scenario cells green / applicable, worst pair wins, a later
+pool supersedes, untested counts as not green. INV/EXACT via `--grade <pool> --regrade --max-stage 9`; DIST gated by floors only (Q4).
 
 **Settled.**
 - L1-L5 (run 8) green apart from no-floor tolerances; L6 G0C + G0 35/0/1.
@@ -185,23 +124,6 @@ INV/EXACT green / known / red via `--grade <pool> --regrade --max-stage 9`; DIST
 - Cifar L7 n=300: G1 felix/fedbuff K2 ≤ 0.3%; G1L acc diff within real↔real.
 - Cifar G2 refl/oort/feddance green; N62 oort syn_50 3 h 69/69.
 - Speech G1S felix + fedbuff, G2 oort + refl green on INV/EXACT.
-
-| pool (run) | g / k / r | reds and roots |
-|---|---|---|
-| PR28 `pool_20261010_0215_PR28_*` (FELIX "PR28 results") | C2 37/0/7 · G1 7/0/3 · G3 5/0/3 · B1 2/0/0 · B4 13/0/3 · C1 0/0/2 · C5 4/0/8 | EV reds rooted: FX-D127 (G1AS EV12), FX-D129 (EV17), FX-D130 (EV16), FX-D131 (OOM EV0); timing EXACT 3-17% mixed sign → floors; speech P7 FX-N86 |
-| PR27 `pool_20261009_2115_PR27_{A,B,C,D}` (offline regrade, FX-D125) | A 0/0/2 (commit_visibility) · C 9/0/5 · D 0/0/4 | R1 NaN (cifar Oort), R3 feddance U6 chaos, R4-R5 (FELIX FX-N85) |
-| PR26 `pool_20261009_PR26_{G0U,T3C}`: speech refl + feddance G0U, Oort T3C real replicates | refl 2/0/0 · feddance 0/0/2 · T3C 14/14 | feddance: FX-D121-D124 (PR27); Oort real<->real forks as sim does (FX-N80 b) |
-| N88 `pool_20261009_N88_{T3,G0U}`: Oort K=10 + refl/feddance G0U | T3 10/0/4 · G0U 8/0/6 | FX-D116-D120 (rerun: PR26); cifar Oort NaN, Oort stall placement, no K=10 floors (FX-N80) |
-| PR23 `pool_20261008_1845_G0Tgs`: speech G0T felix + fedbuff | 8/0/0 · EV 8/8 | DIST only: phase_gpu_compute, speed identity (FX-N76); fedbuff syn_50 eligibility |
-| PR22/23 `pool_20261008_1628_{T3c,T3s,T1}`, `_2000_wt{T1,P7}`, `_2010_wtT3s`, `_1628_G0Ufb` | T3 cifar 27/0/3 · speech 16/0/14 · T1 24/24 · wtP7 6/0/0 · G0Ufb 1/0/0 | speech timing = stale stub profile → FX-D103 (syn_0b 2/0/0 after); cifar syn_50 oort-family terminal_state (pre-FX-D100, FX-N9) |
-| CPU smokes `pool_20261008_15{0148,2447}_*` | T3 mob 2/0/0 · P6 2/0/0 · P7 6/0/0 (feddance DIST) | FX-D92-D99; T1 24/24 EV |
-| run 27 `block_20261008_1231_run27`: G0U syn_50 both datasets | speech 2/0/0 · cifar 2/0/1 | cifar fedbuff red vs own real, green vs run 26 real |
-| run 26 `block_20261008_1138_run26` | 3/0/0 · speech 1/0/1 | fedbuff overhead_residual 12.5% → FX-D90 |
-| run 25 `block_20261008_0508_run25`: G0U | speech 10/0/2 · cifar 10/0/1 | early async commits → FX-D88; late abandons → FX-D89; exit race → FX-D87 |
-| run 19 `block_20261007_1456_run19`: speech G0U/G0UC, cifar G0U, T3C | 6/0/2 · 9/0/1 · 6/0/0 | delivery-order roots → FX-D69-71 |
-| run 18 `block_20261007_0424_run18`: T3, G1A speech | 5/0/7 · 1/0/3 | T3 syn_50 timing reds; G1A timing only (FX-N70, FX-N76) |
-| run 17 `block_20261006_1943`: T3 + G1A(S) | 8/0/0 · 4/0/0 · 2/0/0 | FX-D60/61/63 confirmed |
-| run 16 `block_20261006_run16`: T3 + G1A | 6/2/0 · hand-graded | cifar felix 67/67; fedbuff mobiperf S1 known |
 
 G0UC real↔real floors (n=50 syn_50, throughput rel): oort 0.90 · refl 0.20 · fedbuff 0.18 · feddance 0.13 · oort_star 0.06 · felix 0.02.
 Mobiperf: feddance 0.56, others ≤ 0.07. n=50 syn_50 stall placement is chaotic (FX-L53).
@@ -213,26 +135,8 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR31 · planned for shepherd GPUs 0-3 (operator 10-12; jayne off).** `run_pr31.py` (13 stages, `GPU_IDS 0,1,2,3`): ~5.1 h at
-  `--hours 5.5`; `--hours 4.5` trims speech Oort G0T (B3) tail. Streaming cells on syn_50 only (C19), regression stretch dropped.
-  Shepherd = jayne hardware (EPYC 7513, A40, driver 575.57.08): jayne charges reused; T3/G0T syn_0 greens check that. `/home` 96% (120 GB
-  free; a batch writes ~2 GB). Sync: shepherd is on `dg/fluxtune_opts` (clean) → `git fetch && git checkout dg/pending_fl_baselines && git pull`;
-  then pytest (PL1), `$PY scripts/run_pr31.py --plan --hours 5.5`, launch in tmux (operator). Jayne launches
-  `pr31_20261012_1400`/`_1410` killed, not graded.
-  C19: *Claim:* FX-D137/D142 close cifar fedbuff/Oort/oort_star G0T reds; FedDance on its FX-D148/D150 definition is green in every cell
-  (C20 voids every older feddance grade); the 6 untested speech G0T cells (refl, oort, oort_star) are green; FX-D143 charges turn no T3
-  cell red. *Stages:* reds first, pairs only; replicates only for floor-bound reds (B4, C3, C4); A4 G0U regression is stretch.
-  *Refutes:* a red persists above its same-batch floor → root offline before any rerun. *Read:* regrade every `pool_20261012_1400_PR31_*`,
-  then `readiness_score.py` on PR28 → PR30 pools + PR31 (feddance only from PR31).
-- **PR29b, PR30 · done 10-11** (`experiments/pr29b_20261011_0043`, `pr30_20261011_0624`; FELIX "PR29b + PR30 results").
-- **PR29 · done 10-10** (`experiments/pr29_20261010_1606`; FELIX "PR29 results").
-- **PR28 · done 10-10** (`experiments/pr28_20261010_0215`; FELIX "PR28 results"). Roots: FX-D127-D131; open: FX-N85 s3/s6, FX-N86.
-- **PR27 · done 10-10** (`pool_20261009_2115_PR27_{A,B,C,D}`; roots R1-R5 in FELIX "PR27 root causes" → FX-N85).
-- **PR24 · FELIX "Next steps → Resume here", in order FX-N80 → N84.** FX-N80's C19 steps (in-process `fl_lr_check --baseline`, then T3 +
-  G0U screens on FX-D100/D104/D105 configs).
-- **PR23 · GPU screens (C18) · partly done.** Done: G0UC fedbuff cifar ×3 + G0U pair at HEAD ✅ (FX-N77 closed). Done: speech G0T
-  felix + fedbuff INV/EXACT 8/0/0 (`pool_20261008_1845_G0Tgs`). Dropped by C20 (rerun on FX-D100): G0T oort_star, G0U mobiperf oort_star/refl/feddance,
-  speech G0T for the other four.
+- **PR31 · next:** FELIX Next steps top item (state, launch, read-back); per-stage claims in `run_pr31.py` and FELIX Scoreboard →
+  Expected after PR31. C19 stop rule: a red above its same-batch floor is rooted offline before any rerun.
 - **PR21 · GPU long block · deferred by C18** until the short queue is empty: G1A accuracy pairs, G1U, G0T full grid.
 
 **Operator decisions**

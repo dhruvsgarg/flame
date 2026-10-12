@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FedDance sprint sanity checks on stored runs (FELIX_READINESS "FedDance sprint", S-steps).
+"""FedDance sprint sanity checks on stored runs (FELIX_READINESS FX-D152).
 
   fd_sanity.py RUN_DIR [RUN_DIR ...] [--k 10] [--overcommit 1.3] [--expect 'lr=0.04 batch=32 epochs=1 optimizer=sgd']
   fd_sanity.py --pair REAL_DIR SIM_DIR [--rounds 20]

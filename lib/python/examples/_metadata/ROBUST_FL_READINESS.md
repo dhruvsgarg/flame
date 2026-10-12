@@ -3,7 +3,7 @@
 **Goal:** run Felix and FluxTune, with all their baselines, in the simulator with high fidelity and a real
 speedup, with and without client unavailability, so paper experiments run sim-only and fast. **Parity is not enough:
 real and sim must each be correct** — every baseline follows its reference semantics and reaches its dataset's target
-accuracy in the expected time window (tracked per track: FELIX accuracy table). Equal-but-wrong is a failure (R1, C6).
+accuracy in the expected time window (tracked per track: FELIX Scoreboard). Equal-but-wrong is a failure (R1, C6).
 
 **Four docs are the only working references:**
 - **this doc** — the rules for all four docs, the lessons and tripwires both tracks share, and the queue of
@@ -25,8 +25,8 @@ the same edit, leaving a one-line pointer where code or another doc cites the se
 alone, in minutes. Prefer one exact line to a paragraph; delete before adding; never restate what another
 section already says.
 
-**Read order at session start:** this doc top to bottom → the active child's preamble → PARITY_READINESS climbing rules
-→ the child's **Next steps**
+**Read order at session start:** this doc top to bottom → PARITY_READINESS climbing rules → the active child's Next steps and
+Scoreboard
 → only the lessons and tripwires tagged for the area you are touching.
 
 ---
@@ -34,10 +34,11 @@ section already says.
 ## Doc rules (apply to all four docs)
 
 1. **Live ledger, not a log.** Every line must be true *now*. No dated "update:" notes, no changelogs, no
-   narrative. `git log` is the history.
-2. **Fixed sections, fixed purposes.** Each child has: Preamble · Status grid · Active build (optional:
-   design + task list of multi-session work, folded into Built when it lands) · Next steps · Lessons (dos) ·
-   Tripwires (don'ts) · Built. Content goes in exactly one section. Dos and don'ts use the same topic groups.
+   narrative, no per-run results sections (operator 10-12): a run rewrites the Scoreboard, closes or opens Next steps, and adds
+   lessons, tripwires or Built lines. `git log` is the history.
+2. **Fixed sections, fixed purposes (operator 10-12: Next steps and Scoreboard on top).** Each child has: a 3-line header ·
+   Next steps · Scoreboard (now, open reds → root, expected after the next run) · Decisions · Scope · Active build (optional:
+   design + task list of multi-session work, folded into Built when it lands) · Lessons (dos) · Tripwires (don'ts) · Built. Content goes in exactly one section. Dos and don'ts use the same topic groups.
 3. **Next steps are the persistent queue across sessions.** An item is `ID · action · exit criterion ·
    state` (`todo` / `wip` / `blocked: <why>`). Ordered; the top item is what the next session picks up.
 4. **Close means delete.** When an item finishes, delete it from Next steps. If it added a capability,
