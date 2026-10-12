@@ -52,7 +52,7 @@ def measure(model_type, model_name, rf, num_labels, peft_method="adapter"):
     args = types.SimpleNamespace(
         model_type=model_type, model_name=model_name, num_labels=num_labels,
         config={"num_labels": num_labels}, do_lower_case=True,
-        peft_method=peft_method, adapter_reduction_factor=rf,
+        peft_method=peft_method, adapter_reduction_factor=rf, lora_r=rf,
         trainable_scope="adapters_head")
     _cfg, model, _tok = create_model(args, formulation="classification")
     # The trainer drops pre_classifier before the probe is drawn, so production p
@@ -74,7 +74,7 @@ def main():
                     help="repeat for a ladder; default 16")
     ap.add_argument("--num-labels", type=int, default=4)
     ap.add_argument("--peft-method", default="adapter",
-                    help="lora for llama; rf is then ignored")
+                    help="lora for llama; --rf is then the LoRA rank")
     a = ap.parse_args()
     name = a.model_name or ("distilbert-base-uncased"
                             if a.model_type == "distilbert" else a.model_type)

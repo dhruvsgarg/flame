@@ -158,6 +158,7 @@ COS_PROBE_EVERY=""        # B1: run the probe every k-th commit; empty => 1 (it 
 SERVER_WEIGHT_DECAY=""    # Q2: decay the trainable slice after the step; "auto" = rho^2/2
 SERVER_MOMENTUM=""        # S1: heavy-ball on the pooled DIRECTION (rho stays rho* under trust_ratio)
 ADAPTER_RF=""          # S-I: adapter bottleneck reduction_factor -- the real p knob; empty => code default 16
+LORA_R=""              # LoRA rank: the p knob under --peft-method lora; empty => code default 8
 MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
 VAR_STOPPING_POLICY=""   # Opt-2: off|fixed_cap|plateau (empty => baselines.yaml, fluxtune=plateau)
 AGG_RATE_TYPE=""         # Opt-3: grad_aware|new|old|uniform (uniform = omega 1; empty => baselines.yaml, fluxtune=grad_aware; new=FeLiX)
@@ -211,6 +212,7 @@ usage() {
   echo "          [--server-weight-decay auto|FLOAT]  (Q2: pins Phi=1 at auto=rho^2/2)" >&2
   echo "          [--server-momentum BETA]  (S1: temporal pooling; needs trust_ratio)" >&2
   echo "          [--adapter-reduction-factor N]  (768/N per adapter; the real p knob)" >&2
+  echo "          [--lora-r R]  (LoRA rank; the p knob under --peft-method lora)" >&2
   echo "          [--model-type T] [--model-name N] [--peft-method adapter|lora|bitfit]" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
@@ -289,6 +291,7 @@ while [[ $# -gt 0 ]]; do
     --server-weight-decay) SERVER_WEIGHT_DECAY="$2"; shift 2 ;;
     --server-momentum) SERVER_MOMENTUM="$2"; shift 2 ;;
     --adapter-reduction-factor) ADAPTER_RF="$2"; shift 2 ;;
+    --lora-r)               LORA_R="$2"; shift 2 ;;
     --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
     --var-stopping-policy)  case "$2" in off|fixed_cap|plateau) ;; *) echo "ERROR: --var-stopping-policy must be off|fixed_cap|plateau (got '$2')" >&2; exit 2 ;; esac
                             VAR_STOPPING_POLICY="$2"; shift 2 ;;
@@ -488,7 +491,7 @@ LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
   GATE_RHO_REF="$GATE_RHO_REF" COS_GROUND_TRUTH_AUDIT="$COS_GROUND_TRUTH_AUDIT" \
   COS_PROBE_BATCH_SIZE="$COS_PROBE_BATCH_SIZE" COS_PROBE_EVERY="$COS_PROBE_EVERY" \
   SERVER_WEIGHT_DECAY="$SERVER_WEIGHT_DECAY" SERVER_MOMENTUM="$SERVER_MOMENTUM" \
-  ADAPTER_RF="$ADAPTER_RF" \
+  ADAPTER_RF="$ADAPTER_RF" LORA_R="$LORA_R" \
 DELAY_FLOOR="$DELAY_FLOOR" \
 VAR_STOPPING_POLICY="$VAR_STOPPING_POLICY" AGG_RATE_TYPE="$AGG_RATE_TYPE" \
 TARGET_ACC="$TARGET_ACC" CONVERGE_WINDOW="$CONVERGE_WINDOW" \
@@ -555,6 +558,7 @@ COS_PROBE_EVERY = env("COS_PROBE_EVERY") or ""
 SERVER_WEIGHT_DECAY = env("SERVER_WEIGHT_DECAY") or ""
 SERVER_MOMENTUM = env("SERVER_MOMENTUM") or ""
 ADAPTER_RF = env("ADAPTER_RF") or ""
+LORA_R = env("LORA_R") or ""
 VAR_STOPPING_POLICY = env("VAR_STOPPING_POLICY") or ""; AGG_RATE_TYPE = env("AGG_RATE_TYPE") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
 DELAY_FLOOR = env("DELAY_FLOOR") or ""
@@ -815,6 +819,9 @@ def patch(exp, run_key, variant, trace):
     if ADAPTER_RF:
         h["adapter_reduction_factor"] = int(ADAPTER_RF)
         exp["trainer"]["config_overrides"]["hyperparameters"]["adapter_reduction_factor"] = int(ADAPTER_RF)
+    if LORA_R:
+        h["lora_r"] = int(LORA_R)
+        exp["trainer"]["config_overrides"]["hyperparameters"]["lora_r"] = int(LORA_R)
     # S-A/S-B: aggregator-side step rule. S-A alone leaves ||theta|| geometric,
     # so an arm that sets trust_ratio without rho_schedule=rm is testing S-A only.
     if SERVER_STEP_RULE:
@@ -1032,9 +1039,11 @@ for trace in traces:
                 # model_type matters: the adapter table is per model, and reading
                 # it DistilBERT-only priced a roberta-large arm at 9.4x too small
                 # a `p` and refused a valid config (2026-08-24).
+                # LoRA's table is keyed by rank, adapters' by rf.
+                _size = (int(_hp("lora_r") or 8) if _hp("peft_method") == "lora"
+                         else int(_hp("adapter_reduction_factor") or 16))
                 _p_wc = dsreg.get(_hp("dataset") or "agnews").probe_dim(
-                    int(_hp("adapter_reduction_factor") or 16),
-                    str(_hp("model_type") or "distilbert"))
+                    _size, str(_hp("model_type") or "distilbert"))
                 # (c)/(d): sim's REAL-wall cap is sim_wall_ceiling_s (code default
                 # max_runtime_s*20); real mode has no such knob -- its outer safety
                 # is max_experiment_runtime_s (patch()'s own default, above).

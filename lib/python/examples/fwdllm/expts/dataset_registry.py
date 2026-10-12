@@ -37,9 +37,8 @@ ADAPTER_P_BY_MODEL = {
     # p=4,225,540 at rf=16 measured on run_20260823_145932 ([ProbeDim]); the
     # classifier is 1024*4+4 for agnews, so the adapter half is 4,221,440.
     "roberta-large": {16: 4221440},
-    # SmolLM2-360M + LoRA r=8 (q,v): p=823,040 measured via create_model on agnews.
-    # LoRA ignores rf; keyed at 16 so the default lookup resolves.
-    "llama": {16: 819200},
+    # SmolLM2-360M + LoRA (q,v), keyed by LoRA r, not rf. agnews p: r=8 823,040; r=4 413,440; r=2 208,640.
+    "llama": {8: 819200, 4: 409600, 2: 204800},
 }
 HIDDEN_SIZE = {"distilbert": 768, "roberta-large": 1024, "llama": 960}
 # LlamaForSequenceClassification's `score` has no bias.

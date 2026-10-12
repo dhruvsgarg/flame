@@ -26,6 +26,7 @@ _REQUIRED = (
 _OPTIONAL = {
     "trainable_scope": "adapters_head",   # S-I (inert on distilbert -- see §11.5)
     "adapter_reduction_factor": 16,       # the real p knob: 768/rf per adapter
+    "lora_r": 8,                          # LoRA rank: the p knob under peft_method=lora
     "perturbation_count": 10,             # P
     "probe_combine": "select",            # S-H
     "jvp_perf_opt": False,                # §L perf, bit-identical

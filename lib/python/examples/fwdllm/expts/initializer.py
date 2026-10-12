@@ -155,7 +155,9 @@ def create_model(args, formulation="classification"):
         model.train_adapter("rotten tomato")
     elif args.peft_method == "lora":
         adapters.init(model)
-        config = LoRAConfig(r=8, alpha=16)
+        # lora_r is the LoRA p knob (p ~ r); alpha=2r keeps the alpha/r scale fixed.
+        _r = int(getattr(args, "lora_r", 8) or 8)
+        config = LoRAConfig(r=_r, alpha=2 * _r)
         model.add_adapter("lora_adapter", config=config)
         model.train_adapter("lora_adapter")
     elif args.peft_method == "bitfit":
