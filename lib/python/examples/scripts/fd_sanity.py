@@ -18,6 +18,16 @@ import sys
 
 
 LOSS_RTOL = 1e-4
+SHARED_EXPECT = "lr=0.04 batch=32 epochs=1 optimizer=sgd"
+PAPER_EXPECT = {"cifar10": "lr=0.1 batch=24 epochs=1 optimizer=sgd",  # G1XF/G1XFS legs (harness_pool.FEDDANCE_PAPER_HP)
+                "google_speech": "lr=0.075 batch=32 epochs=1 optimizer=sgd"}
+
+
+def default_expect(run):
+    name = os.path.basename(run.rstrip("/"))
+    if "_G1XF" not in name:
+        return SHARED_EXPECT
+    return PAPER_EXPECT["google_speech" if "google_speech" in name else "cifar10"]
 
 
 def agg(run):
@@ -61,9 +71,29 @@ def check_run(run, k, oc, expect):
     rej = sum(e.get("event") == "update_rejected" for e in ev)
     nan = sum(1 for v in losses(run).values() if v != v)
     res.append(("no rejects / NaN", rej == 0 and nan == 0, f"rejected {rej}, NaN losses {nan}"))
+    res.append(("DIAG picks by trainer D quartile, fast -> slow (%)", True, d_quartile_picks(run, sel)))
     acc = [e["test-accuracy"] for e in ev if e.get("event") == "agg_eval" and e.get("test-accuracy") is not None]
     res.append(("evals arrive, accuracy rises", len(acc) >= 2 and acc[-1] > acc[0], f"{len(acc)} evals, {acc[:1]} -> {acc[-1:]}"))
     return res
+
+
+def d_quartile_picks(run, sel):
+    """Pick share per D quartile; random ~25 each. Slow-heavy = stragglers re-picked (FX-D150)."""
+    d = {}
+    for f in glob.glob(os.path.join(run, "telemetry", "trainer_*.jsonl")):
+        v = sorted(json.loads(ln)["sim_round_duration_s"] for ln in open(f)
+                   if '"trainer_round"' in ln and '"sim_round_duration_s"' in ln)
+        if v:
+            d[f[f.rindex("trainer_") + 8:-6]] = v[len(v) // 2]
+    picks = [c for e in sel for c in e.get("chosen") or [] if c in d]
+    if not picks:
+        return "n/a"
+    q = sorted(d.values())
+    cuts = [q[len(q) * i // 4] for i in (1, 2, 3)]
+    n = [0] * 4
+    for c in picks:
+        n[sum(d[c] > x for x in cuts)] += 1
+    return [round(100 * x / len(picks)) for x in n]
 
 
 def commits(run):
@@ -91,11 +121,11 @@ def main(argv=None):
     ap.add_argument("--k", type=int, default=10)
     ap.add_argument("--overcommit", type=float, default=1.3)
     ap.add_argument("--rounds", type=int, default=20)
-    ap.add_argument("--expect", default="lr=0.04 batch=32 epochs=1 optimizer=sgd")
+    ap.add_argument("--expect", default=None, help="default: shared config, or the paper config on G1XF legs")
     a = ap.parse_args(argv)
-    expect = dict(kv.split("=", 1) for kv in a.expect.split())
     fails = 0
-    jobs = [(r, check_run(r, a.k, a.overcommit, expect)) for r in a.runs]
+    jobs = [(r, check_run(r, a.k, a.overcommit, dict(kv.split("=", 1) for kv in (a.expect or default_expect(r)).split())))
+            for r in a.runs]
     if a.pair:
         jobs.append((" vs ".join(os.path.basename(p.rstrip("/")) for p in a.pair), check_pair(*a.pair, a.rounds)))
     for name, res in jobs:

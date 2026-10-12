@@ -9,7 +9,9 @@ U_m(r) = (V_m * I_m * A_m) * (1 + log10(R+1) / (10 * (1 + J_m)))
   J_m: last round in which device m was engaged
 
 The selector picks top-N by U_m, with cold-start substitution from the
-previous round's mean I, A for devices that have never returned an update.
+previous round's mean I, A for devices never selected (Alg. 1 l.11-15).
+feedback="aggregated" (FX-D150): only aggregated updates report I/A (FedScale stragglers never run);
+a dropped return repeats its last accuracy (zero increment). "all" reverts.
 """
 
 import logging
@@ -64,6 +66,11 @@ class FedDanceSelector(AbstractSelector):
         self.utility = kwargs.get("utility", "feddance")
         if self.utility not in ("feddance", "random"):
             raise ValueError(f"utility must be feddance/random, got {self.utility}")
+        self.feedback = kwargs.get("feedback", "aggregated")
+        if self.feedback not in ("aggregated", "all"):
+            raise ValueError(f"feedback must be aggregated/all, got {self.feedback}")
+        self.ever_selected: set = set()
+        self._round_participants: list = []
 
         self.predictor = FedDancePredictor(
             history_window=self.history_window,
@@ -149,6 +156,7 @@ class FedDanceSelector(AbstractSelector):
 
         self.newly_selected_this_round = set(selected)
         self.selected_ends = self.selected_ends | self.newly_selected_this_round
+        self.ever_selected |= self.newly_selected_this_round
 
         for end_id in selected:
             end = ends[end_id]
@@ -194,13 +202,10 @@ class FedDanceSelector(AbstractSelector):
             v = self.predictor.V_m(end_id, round_num)
 
             i = self.last_loss.get(end_id)
-            if i is None:  # Alg. 1 l.14-15: never-returned devices take last round's mean I
-                i = mean_I
+            if i is None:  # Alg. 1 l.3, l.14-15: never-selected take last round's mean I; selected keep L_m = 0
+                i = 0.0 if (self.feedback == "aggregated" and end_id in self.ever_selected) else mean_I
 
-            a = self._accuracy_slope(end_id)
-            if a is None:
-                a = mean_A
-            a = self._handle_negative_a(a)
+            a = self._a_factor(end_id, mean_A)
 
             base = v * i * a
             ucb = 1.0 + (
@@ -216,6 +221,10 @@ class FedDanceSelector(AbstractSelector):
             utilities.append((end_id, u))
 
         return utilities
+
+    def _a_factor(self, end_id: str, mean_A: float) -> float:
+        a = self._accuracy_slope(end_id)
+        return self._handle_negative_a(mean_A if a is None else a)
 
     def _accuracy_slope(self, end_id: str) -> Optional[float]:
         hist = self.accuracy_history.get(end_id)
@@ -239,11 +248,18 @@ class FedDanceSelector(AbstractSelector):
         return [eid for eid, _ in utilities[:n]]
 
     def on_update_received(
-        self, end_id: str, msg: dict, round_num: int
+        self, end_id: str, msg: dict, round_num: int, accepted: bool = True
     ) -> None:
         from flame.mode.message import MessageType
 
         self.ordered_updates_recv_ends.append(end_id)
+        if self.feedback == "aggregated":
+            self._round_participants.append(end_id)
+            if not accepted:  # FX-D150: no new loss/acc; a_m unchanged, so Eq. 7 sees a zero increment
+                hist = self.accuracy_history.setdefault(end_id, deque(maxlen=self.accuracy_window))
+                hist.append(hist[-1] if hist else 0.0)
+                self.last_engaged_round[end_id] = round_num
+                return
 
         loss = msg.get(MessageType.TRAIN_LOSS_MEAN)  # Eq. 6: mean loss over the tau local iterations
         acc = msg.get(MessageType.LOCAL_ACCURACY)
@@ -274,7 +290,15 @@ class FedDanceSelector(AbstractSelector):
     def on_round_completed(
         self, ends: dict[str, End], round_num: int
     ) -> None:
-        if self._round_loss_buffer:
+        if self.feedback == "aggregated":  # Alg. 1 l.11-12: means of the factors over S_prev
+            if self._round_participants:
+                mean_A = self.prev_round_mean_A if self.prev_round_mean_A is not None else 1.0
+                ps = self._round_participants
+                self.prev_round_mean_I = sum(self.last_loss.get(e, 0.0) for e in ps) / len(ps)
+                self.prev_round_mean_A = sum(self._a_factor(e, mean_A) for e in ps) / len(ps)
+            self._round_participants = []
+            self._round_loss_buffer, self._round_acc_buffer = [], []
+        elif self._round_loss_buffer:
             self.prev_round_mean_I = sum(self._round_loss_buffer) / len(
                 self._round_loss_buffer
             )

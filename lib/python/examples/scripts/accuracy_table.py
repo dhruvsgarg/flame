@@ -77,6 +77,13 @@ def summarize(c, target, end=None):
     return out
 
 
+def rounds_to(c, thresholds, smooth=3):
+    """First round whose trailing `smooth`-eval mean reaches each threshold (F3: selector vs random, rounds not time)."""
+    m = [(c[i][1], sum(a for *_, a in c[max(0, i - smooth + 1):i + 1]) / len(c[max(0, i - smooth + 1):i + 1]))
+         for i in range(len(c))]
+    return {th: next((r for r, a in m if a >= th), None) for th in thresholds}
+
+
 def dataset_of(run_dir):
     return "google_speech" if "google_speech" in os.path.basename(run_dir.rstrip("/")) else "cifar10"
 
@@ -99,7 +106,9 @@ def main(argv=None):
     ap.add_argument("pools", nargs="*")
     ap.add_argument("--runs", nargs="*", default=[])
     ap.add_argument("--json-out")
+    ap.add_argument("--rounds-to", default="", help="e.g. 0.3,0.35,0.4: first round each 3-eval mean reaches")
     a = ap.parse_args(argv)
+    ths = [float(x) for x in a.rounds_to.split(",") if x]
     hdr = ["phase", "baseline", "trace", "mode", "evals", "max%"] + [f"@{w}m%" for w in WINDOWS_MIN] + ["t→target(min)"]
     out = []
     legs = [(os.path.basename(r), "", "", *((r, "") if not r.rstrip("/").endswith("_sim") else ("", r))) for r in a.runs]
@@ -112,11 +121,14 @@ def main(argv=None):
             s = summarize(c, TARGETS[dataset_of(d)], end)
             if s is None:
                 continue
-            out.append({"phase": phase, "baseline": b, "trace": tr, "mode": mode, "run_dir": d, **s})
+            rt = {f"r→{100 * th:g}%": r for th, r in rounds_to(c, ths).items()}
+            out.append({"phase": phase, "baseline": b, "trace": tr, "mode": mode, "run_dir": d, **s, **rt})
+    hdr += [f"r→{100 * th:g}%" for th in ths]
     print("\t".join(hdr))
     for r in out:
         print("\t".join([r["phase"], r["baseline"], r["trace"], r["mode"], str(r["n_evals"]), fmt(r["max_acc"])]
-                        + [fmt(r[f"acc@{w}m"]) for w in WINDOWS_MIN] + [fmt(r["t_to_target_min"], pct=False)]))
+                        + [fmt(r[f"acc@{w}m"]) for w in WINDOWS_MIN] + [fmt(r["t_to_target_min"], pct=False)]
+                        + [fmt(r[f"r→{100 * th:g}%"], pct=False) for th in ths]))
     if a.json_out:
         with open(a.json_out, "w") as fh:
             json.dump(out, fh, indent=1)

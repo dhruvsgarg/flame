@@ -54,6 +54,8 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 - **FT-N13 · Retire legacy `trackTrainerAvail` ORACULAR (FX-N7 Felix half done) · todo.** Felix reads one runner-fanned
   `availability_trace`. Left: `fwdllm_it_oracular`, `fedbuff_it_oracular`, `FedSgdAggregator`, `fwdllm_aggregator.check_trainer_availability`
   → `simUnavailability`; then drop the legacy branch in `ClientAvailability._init_availability`. *Exit:* no `trackTrainerAvail` in code.
+- **FT-N16 · U6 barrier anchor on absolute ready times (FX-D151) · todo.** `fwdllm_aggregator` feeds `_barrier_anchored_lags`
+  dispatch-relative durations (`SIM_CLIENT_TASK_TRAIN_DURATION_S`); wrong once picks are dispatched at different times (top-ups).
 - **FT-N14 · Real abandon telemetry (FX-N77) · todo.** asyncfl selector reclaims now emit `abandon_timeout`; check fwdllm's
   own abandon path emits it in real. *Exit:* real fwdllm abandons visible to stall-cause stamping.
 - **FT-N11 · 6 red fwdllm tests (R10) · todo.** `tests/mode/test_fwdllm_{probe_report,server_update_audit,eval_background}`

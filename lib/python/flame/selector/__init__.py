@@ -333,7 +333,7 @@ class AbstractSelector(ABC):
             logger.debug(f"emit_selection failed: {e}")
 
     def on_update_received(
-        self, end_id: str, msg: dict, round_num: int
+        self, end_id: str, msg: dict, round_num: int, accepted: bool = True
     ) -> None:
         """Hook: aggregator calls this when a trainer update arrives.
 

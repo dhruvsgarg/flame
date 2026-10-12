@@ -4,6 +4,7 @@
 Same runner as run_pr28.py (lanes, leases, probes, one Ctrl+C). Three steps, run in order:
   run_fd.py --only S2,S3,S4 --hours 2  # daytime sanity (~2 h), then fd_sanity.py / eurosys_export.py on its legs
   run_fd.py --only V1,V2,V3,F3 --hours 5  # short validation + fidelity vs random
+  run_fd.py --only V4,F3 --hours 1.5   # confirm FX-D150/D151 + fidelity vs random
   run_fd.py --only F4,F3 --hours 3     # validate: convergence pair (real vs sim) + fidelity vs random
   run_fd.py --only F5C,F5SP --hours 18 # experiment sims, cifar traces one at a time (398 GB each)
   run_fd.py --plan [--only ...]        # schedule simulation
@@ -29,6 +30,8 @@ rb.STAGES = [
      "V2: shared config n=50 real+sim syn_50 + syn_10 both datasets: fd_sanity --pair losses identical (FX-D149), INV/EXACT green"),
     ("V3", "gpuB", "--tier G1XQ --datasets google_speech --baselines feddance", {}, "core",
      "V3: speech n=100 sim mobiperf 30 min vclock: sim speed decides F5SP (needs >= 3x to fit 20 h vclock in ~7 h)"),
+    ("V4", "gpuA", "--tier G0U --datasets cifar10 --baselines feddance", {}, "core",
+     "V4: cifar feddance G0U syn_50 + mobiperf on FX-D150/D151: U6 green (real lag on absolute send), EV + INV/EXACT green"),
     # Step A (validate). n=300 cifar legs (398 GB each) run one at a time.
     ("F4", "gpuA", "--tier G1XP --datasets cifar10 --baselines feddance", {}, "core",
      "F4: cifar feddance real vs sim accuracy curve on the shared config (60 min); sim within real<->real timing floor, same evals"),
