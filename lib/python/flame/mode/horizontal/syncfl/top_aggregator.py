@@ -594,7 +594,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             if wh is None:
                 break
             wend, wdts, (wmsg, wmd) = wh
-            if self._sync_wait_k_on() and len(committed) >= first_k:
+            if self._sync_wait_k_on() and len(committed) >= first_k and self._sim_counts_to_k(wmsg):
                 # FX-D122: co-due deliveries past K carry; real's version closes at the K-th arrival.
                 # FX-D130: commits later as a withheld delivery; slot held until then.
                 self._sim_sync_carry[wend] = (wdts, (wmsg, wmd))
@@ -620,6 +620,15 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             committed.append((wmsg, wmd))
 
         return committed
+
+    def _sim_counts_to_k(self, msg) -> bool:
+        """FX-D156: a due stale delivery (never counts to K, FX-N57) lands this pass, before the next selection, as in
+        real. `simIngestStalePastK=false` reverts."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        if str(getattr(hp, "sim_ingest_stale_past_k", True)).lower() != "true" or getattr(self, "_sync_accept_stale", False):
+            return True
+        ver = msg.get(MessageType.MODEL_VERSION)
+        return ver is None or ver >= self._round
 
     @staticmethod
     def _barrier_anchored_lags(durs):

@@ -728,6 +728,26 @@ def test_timeout_stalls_split_from_the_clock_rungs():
     assert not timeout_stalls(_leg(150, set(range(5, 150, 5))), b, same_mode=True)["ok"]
 
 
+def test_stall_counts_match_across_the_cut(monkeypatch):
+    """FX-D157: twins 66/70 s vs 74/78 s straddle the 72 s cut; stall-free rungs promote 66/70, K3s keeps 1 vs 3."""
+    from parity import checks
+    from parity.checks import overhead_residual, overlap_factor, timeout_stalls
+
+    def _leg(gaps_at):
+        t, ev = 0.0, []
+        for r in range(1, 31):
+            t += gaps_at.get(r, 18.0)
+            ev.append({"event": "agg_round", "round": r, "ts": t, "contributing_trainers": ["1"],
+                       "intrinsic_span_s": 10.0, "is_async": True})
+        return {"agg_rounds": ev}
+    a, b = _leg({5: 98.0, 12: 70.0, 20: 66.0}), _leg({5: 98.0, 12: 74.0, 20: 78.0})
+    ts = timeout_stalls(a, b, same_mode=True)
+    assert (ts["real_stalls"], ts["sim_stalls"]) == (1, 3)
+    assert overhead_residual(a, b, same_mode=True)["ok"] and overlap_factor(a, b, same_mode=True)["ok"]
+    monkeypatch.setattr(checks, "PAIR_MATCH_STALLS", False)
+    assert not overhead_residual(a, b, same_mode=True)["ok"]
+
+
 def test_split_stall_is_one_episode_and_stays_out_of_k3b_and_k4():
     """FX-N62: a 90s stall served late (10.7+12.8+70.8s) is one stall; K3b and K4 grade without it."""
     from parity.checks import _stall_episodes, overhead_residual, overlap_factor

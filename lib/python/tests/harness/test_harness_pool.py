@@ -469,3 +469,12 @@ def test_min_runtime_reaches_oort_k10_shapes():
     assert rt("google_speech", "oort_star")["gs_T3_syn_20s_syn_20_oort_star_real"] == 300
     assert rt("cifar10", "oort")["T3_syn_20s_syn_20_oort_real"] == 300
     assert rt("cifar10", "oort")["T3_mobiperf_3sts_mobiperf_3st_oort_real"] == 960
+
+
+def test_gpu_equality_tiers_run_deterministic_kernels():
+    """FX-D158: G0U/G0T pairs and their real controls run trainerDeterministic (PL15); G1 stays on default kernels."""
+    for tier in ("G0U", "G0UC", "G0T", "G0TC"):
+        for ds in ("cifar10", "google_speech"):
+            phs = pool.tier_phases(tier, pool.B6, ds)
+            assert phs and all("trainerDeterministic=true" in ph.trainer_hp for ph in phs), (tier, ds)
+    assert all("trainerDeterministic" not in ph.trainer_hp for ph in pool.tier_phases("G1", pool.B6, "cifar10"))

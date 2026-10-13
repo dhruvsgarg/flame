@@ -255,6 +255,14 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     real_recv_until_awaited: t.Optional[bool] = Field(
         alias="realRecvUntilAwaited", default=True
     )
+    # FX-D156: sim sync barrier ingests a due stale withheld delivery past K instead of carrying it; false = revert.
+    sim_ingest_stale_past_k: t.Optional[bool] = Field(
+        alias="simIngestStalePastK", default=True
+    )
+    # FX-D155: real wait-K recv returns at once when a pick is past its timeout but unabandoned; false = revert.
+    real_recv_returns_overdue: t.Optional[bool] = Field(
+        alias="realRecvReturnsOverdue", default=True
+    )
     # FX-D123: real selector speed = sim's duration formula (no weight staging); false = revert.
     real_intrinsic_client_duration: t.Optional[bool] = Field(
         alias="realIntrinsicClientDuration", default=True

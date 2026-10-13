@@ -165,6 +165,25 @@ def test_real_deadline_never_collapses_to_now():
     assert agg._real_round_recv_deadline(ch, ["a"], earliest=True) >= 1000.0 + 200.0 + 0.5
 
 
+def test_real_recv_returns_for_overdue_unabandoned_pick():
+    # FX-D155: picks co-dispatched 2 ms apart; distribute's check abandons only the first, recv must not skip the second.
+    agg, ch = _Agg(now=90.001), _Channel(["b", "c"])
+    agg.simulated, agg.agg_start_time_ts = False, 1000.0
+    ch.dispatch("b", 3, 0.0)
+    ch.dispatch("c", 3, 0.002)
+    agg._avail_send_ts = lambda ch_, e: ch.get_end_property(e, PROP_SIM_SEND_TS)
+    agg._abandon_stalled(ch)
+    assert ch._selector.selected_ends == {"c"}
+    agg._now = 90.01
+    assert agg._real_round_recv_deadline(ch, ["c"], earliest=True) == 1000.0 + 90.01
+    agg._abandon_stalled(ch)
+    assert not ch._selector.selected_ends
+    agg.config.hyperparameters.real_recv_returns_overdue = False  # revert: the pick drops out of `due`
+    ch.dispatch("c", 3, 0.002)
+    agg._task_timeout_at = {}
+    assert agg._real_round_recv_deadline(ch, ["c"], earliest=True) == 1000.0 + 90.01 + 0.5
+
+
 def test_due_withheld_pick_not_reselectable_until_delivered():
     # A re-pick at vclock == delivery_ts collided with the reinjected older update in the per-end buffer.
     agg, ch = _withheld_pick(wait_k=True)

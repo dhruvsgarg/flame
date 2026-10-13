@@ -10,6 +10,7 @@ order is still the sim_completion_ts order (logic unchanged, only wall pacing).
 """
 
 from collections import defaultdict
+from types import SimpleNamespace
 
 import pytest
 
@@ -238,6 +239,22 @@ def test_sync_wait_k_caps_co_due_deliveries_at_k():
     ch = RecordingChannel({}, [])
     out = agg._sync_sim_recv_first_k(ch, [], first_k=2)
     assert len(out) == 2 and len(agg._sim_sync_carry) == 1
+
+
+@pytest.mark.parametrize("on, carried", [(True, {"t3"}), (False, {"t2", "t3"})])
+def test_sync_stale_delivery_past_k_lands_this_pass(on, carried):
+    # FX-D156: a due stale return (never counts to K) was carried past the next selection, which then read stale beliefs.
+    agg = _bare(SyncAgg)
+    agg._round = 21
+    agg.config = SimpleNamespace(hyperparameters=SimpleNamespace(sim_ingest_stale_past_k=on))
+    agg._sync_wait_k_on = lambda: True
+    agg._sim_take_withheld_delivering = lambda e: None
+    agg._sim_reinject_ready_withheld = lambda: None
+    agg._sim_buffer.add("t1", 450.0, ({MessageType.MODEL_VERSION: 21}, ("t1", None)))
+    agg._sim_buffer.add("t2", 450.0, ({MessageType.MODEL_VERSION: 15}, ("t2", None)))
+    agg._sim_buffer.add("t3", 450.0, ({MessageType.MODEL_VERSION: 21}, ("t3", None)))
+    out = agg._sync_sim_recv_first_k(RecordingChannel({}, []), [], first_k=1)
+    assert set(agg._sim_sync_carry) == carried and len(out) == 3 - len(carried)
 
 
 def test_sync_withheld_delivery_stamps_speed_and_ready():

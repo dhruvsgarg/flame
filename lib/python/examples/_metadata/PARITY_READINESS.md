@@ -77,6 +77,7 @@ A new failure mode adds a check here in the same session.
 | PL15 | selector comparisons have a choice; real↔sim equality legs run deterministic kernels | `fd_sanity.py` choice check; `trainerDeterministic=true` (FX-D149) | F3: both arms picked the same ends; F4 losses drifted from r2 |
 | PL16 | foreign GPU jobs: pin pools to GPUs nobody else uses (`GPU_IDS`), not to "free right now" | `nvidia-smi --query-compute-apps=pid --format=csv` + `ps -o user=`; watch restarts | PR31 A1: vLLM on 4-7 restarts every few min, pool took GPU 6 between restarts, trainer OOM aborted the pool |
 | PL17 | a stage's gate must not queue behind its siblings | the gate's smoke is per dataset, timed from its first leg (FX-D154); `ABORT gate` in a stage's pool.log = read P00/pool.log for BLOCKED before blaming code | PR31 A4/A5: smoke timed out waiting on 112 sibling CPUs |
+| PL18 | the launch node runs the planned commit | `git log -1` on that node = the commit the doc names; `code_state.txt` HEAD | PR32: jayne launched without the shepherd commit (no G0UC, ECC GPU 1 used) |
 
 ## Method
 
@@ -137,9 +138,10 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR32 · next:** FELIX Next steps top item (state, launch, read-back); per-stage claims in `run_pr32.py` and FELIX Scoreboard →
-  Expected after PR32. C19 stop rule: a red above its same-code floor is rooted offline before any rerun.
-- **PR21 · GPU long block · deferred by C18** until the short queue is empty: G1A accuracy pairs, G1U, G0T full grid.
+- **PR33 · next:** FELIX Next steps top item (state, launch, read-back); per-stage claims in `run_pr33.py` and FELIX Scoreboard →
+  Expected after PR33. C19 stop rule: a red above its same-code floor is rooted offline before any rerun.
+- **PR34 · one-code-state re-screen · blocked: PR33** (FELIX Next steps).
+- **Long blocks (G1A pairs, G1U, G1AS grid) · deferred by C18** until 76/76: FELIX FX-N93.
 
 **Operator decisions**
 - Claude runs PL3 and launches blocks in tmux `dg_flame`; phase 0 aborts on failure (10-06).

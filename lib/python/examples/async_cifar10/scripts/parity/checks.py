@@ -2971,12 +2971,41 @@ def _skip_if_few_free(result: dict, real_free: list, sim_free: list, n_rounds: i
         result.update(ok=True, status="SKIP", note=f"{n} stall-free rounds < {_MIN_FREE_ROUNDS}: timing ungradeable")
 
 
-def _stall_free(adv: list, *legs: dict) -> list:
+def _stall_free(adv: list, *legs: dict, drop: Optional[set] = None) -> list:
     """FX-N62: rounds outside every timeout stall; round axis only (a fwdllm data_id is not a round)."""
     if not _round_axis(*legs):
         return adv
-    drop = {i for ep in _stall_episodes(adv, _stall_cut(*legs)) for i in ep}
+    if drop is None:
+        drop = {i for ep in _stall_episodes(adv, _stall_cut(*legs)) for i in ep}
     return [a for i, a in enumerate(adv) if i not in drop] or _AllStall(adv)
+
+
+PAIR_MATCH_STALLS = True  # FX-D157; False reverts to per-side classification
+
+
+def _pair_stall_sets(r_adv: list, s_adv: list, cut: float) -> tuple:
+    """FX-D157: per-side stall rounds with matched episode counts; the side with fewer promotes its longest slow-band
+    rounds (70 s vs 74 s at a 72 s cut moved stall-free means 20%). K3s still grades raw counts."""
+    sets = []
+    for adv in (r_adv, s_adv):
+        eps = _stall_episodes(adv, cut)
+        sets.append(({i for ep in eps for i in ep}, len(eps)))
+    if not PAIR_MATCH_STALLS or sets[0][1] == sets[1][1]:
+        return sets[0][0], sets[1][0]
+    lo = 0 if sets[0][1] < sets[1][1] else 1
+    adv, (drop, n) = (r_adv, s_adv)[lo], sets[lo]
+    slow = max(cut / 8, 3 * statistics.median(adv)) if adv else cut
+    band = sorted((i for i, a in enumerate(adv) if i not in drop and slow <= a < cut), key=lambda i: -adv[i])
+    drop = drop | set(band[:sets[1 - lo][1] - n])
+    return (drop, sets[1][0]) if lo == 0 else (sets[0][0], drop)
+
+
+def _stall_free_pair(r_adv: list, s_adv: list, real: dict, sim: dict) -> tuple:
+    """FX-N62 + FX-D157: (real, sim) stall-free rounds with matched episode counts."""
+    if not _round_axis(real, sim):
+        return r_adv, s_adv
+    r_drop, s_drop = _pair_stall_sets(r_adv, s_adv, _stall_cut(real, sim))
+    return _stall_free(r_adv, real, sim, drop=r_drop), _stall_free(s_adv, real, sim, drop=s_drop)
 
 
 def _adv_to_n(agg_rounds: list, prog_fn, N, time_fn) -> list:
@@ -2999,14 +3028,15 @@ def _few_free_note(real: dict, sim: dict, real_adv: list, sim_adv: list) -> Opti
     if not _round_axis(real, sim) or not real_adv or not sim_adv:
         return None
     probe: dict = {}
-    _skip_if_few_free(probe, _stall_free(real_adv, real, sim), _stall_free(sim_adv, real, sim),
+    _skip_if_few_free(probe, *_stall_free_pair(real_adv, sim_adv, real, sim),
                       min(len(real_adv), len(sim_adv)))
     return probe.get("note")
 
 
-def _stall_excess_s(adv: list, cut: float) -> float:
+def _stall_excess_s(adv: list, cut: float, stall: Optional[set] = None) -> float:
     """FX-N62: stall rounds' time over a stall-free round's (median) cost; the stall round itself still counts."""
-    stall = {i for ep in _stall_episodes(adv, cut) for i in ep}
+    if stall is None:
+        stall = {i for ep in _stall_episodes(adv, cut) for i in ep}
     free = [a for i, a in enumerate(adv) if i not in stall]
     med = statistics.median(free or adv) if adv else 0.0
     return sum(max(0.0, adv[i] - med) for i in stall)  # FX-D119: a short cause-stamped round saves no time
@@ -3115,7 +3145,7 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY
             sim["agg_rounds"],
             use_vclock=_b_uses_vclock(sim["agg_rounds"], same_mode))[: matched_n - 1]
         n_rounds = min(len(real_adv), len(sim_adv))
-        real_adv, sim_adv = _stall_free(real_adv, real, sim), _stall_free(sim_adv, real, sim)  # FX-N62
+        real_adv, sim_adv = _stall_free_pair(real_adv, sim_adv, real, sim)  # FX-N62, FX-D157
         if real_adv and sim_adv:
             r_mean = sum(real_adv) / len(real_adv)
             s_mean = sum(sim_adv) / len(sim_adv)
@@ -3205,7 +3235,7 @@ def per_round_advance_parity(real: dict, sim: dict,
     else:
         matched_sim = sim_adv[:matched_n]
         matched_real = real_adv[:matched_n]
-        _fs, _fr = _stall_free(matched_sim, real, sim), _stall_free(matched_real, real, sim)  # FX-N62
+        _fr, _fs = _stall_free_pair(matched_real, matched_sim, real, sim)  # FX-N62, FX-D157
         matched_sim_mean = sum(_fs) / len(_fs)
         matched_real_mean = sum(_fr) / len(_fr)
         matched_mean_rel_diff = (
@@ -3390,11 +3420,8 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
         span = max(times) - min(times)
         if span <= 0:
             return None
-        adv = span / len(evs)
         rounds = _per_round_advances(evs, use_vclock)
-        if _round_axis(real, sim):  # FX-N62: stall time out of the clock span, at round level
-            adv = (span - _stall_excess_s(rounds, _stall_cut(real, sim))) / len(evs)
-        return {"barrier": sum(barriers) / len(barriers), "adv": adv,
+        return {"barrier": sum(barriers) / len(barriers), "adv": span / len(evs),
                 "cycles": len(evs), "span": span, "rounds": rounds}
 
     # Each side on its OWN clock (§D-73): a leg carrying a vclock reads THAT, so a
@@ -3410,6 +3437,10 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
     _few = _few_free_note(real, sim, r["rounds"], s["rounds"])
     if _few:  # FX-D119
         return {"ok": True, "tier": "EXACT", "status": "SKIP", "note": _few}
+    if _round_axis(real, sim):  # FX-N62: stall time out of the clock span, at round level (counts matched, FX-D157)
+        cut = _stall_cut(real, sim)
+        for side_, drop in zip((r, s), _pair_stall_sets(r["rounds"], s["rounds"], cut)):
+            side_["adv"] = (side_["span"] - _stall_excess_s(side_["rounds"], cut, drop)) / side_["cycles"]
     real_ov = r["barrier"] / r["adv"]
     sim_ov = s["barrier"] / s["adv"]
     abs_diff = abs(sim_ov - real_ov)
@@ -3980,8 +4011,7 @@ def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
     if matched_n < 2:
         _skip_unmatched(result, matched_n)
     else:
-        matched_sim = _stall_free(sim_adv[:matched_n], real, sim)  # FX-N62
-        matched_real = _stall_free(real_adv[:matched_n], real, sim)
+        matched_real, matched_sim = _stall_free_pair(real_adv[:matched_n], sim_adv[:matched_n], real, sim)  # FX-D157
         matched_sim_mean = sum(matched_sim) / len(matched_sim)
         matched_real_mean = sum(matched_real) / len(matched_real)
         matched_residual = matched_real_mean - matched_sim_mean

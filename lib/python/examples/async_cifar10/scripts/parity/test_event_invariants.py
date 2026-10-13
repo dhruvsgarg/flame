@@ -404,6 +404,18 @@ def test_ev17_without_dispatch_events_reads_selections(tmp_path):
     assert _status(_gated_real_run(tmp_path, []), "EV17_real_gate_repick") == "FAIL"
 
 
+@pytest.mark.parametrize("abandon_lag, want", [(0.0, "PASS"), (61.0, "FAIL")])
+def test_ev20_abandon_on_time(tmp_path, abandon_lag, want):
+    # FX-D155: T2 dispatched 2 ms after T1; real abandoned it 61 s late.
+    agg = [{"event": "dispatch", "task": "train", "end_id": T1, "round": 15, "ts": 0.0},
+           {"event": "dispatch", "task": "train", "end_id": T2, "round": 15, "ts": 0.002},
+           {"event": "abandon_timeout", "end_id": T1, "round": 15, "ts": 90.0},
+           {"event": "abandon_timeout", "end_id": T2, "round": 15, "ts": 90.002 + abandon_lag},
+           {"event": "agg_round", "round": 15, "ts": 200.0}]
+    run = _write_run(tmp_path, agg, {T1: [], T2: []}, hp={"time_mode": "real"}, optimizer="fedavg")
+    assert _status(run, "EV20_abandon_on_time") == want
+
+
 def test_ev18_model_finite(tmp_path):
     agg, tr = _clean_run()
     agg += [{"event": "model_health", "round": r, "weight_norm": 10.0, "nonfinite": 0, "bn_buf_max": 2.0} for r in (1, 2)]

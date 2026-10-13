@@ -812,6 +812,8 @@ class ClientAvailability:
         timeout_s = float(getattr(hp, "trainer_recv_wall_timeout_s", None) or self._task_timeout_s())
         if earliest:  # FX-N37: awaited = not replied and not timed out since its latest dispatch
             now, replied = self._avail_now(), self._sync_replied(channel)
+            if self._real_overdue_pick(channel, ends, now):  # FX-D155: distribute abandons it now
+                return self.agg_start_time_ts + now
             sent = [(e, self._avail_send_ts(channel, e)) for e in ends if e not in replied]
             due = [t + timeout_s for e, t in sent
                    if t is not None and not self._sync_abandoned_since_dispatch(e, t) and t + timeout_s > now]
@@ -824,6 +826,16 @@ class ClientAvailability:
         if max_rt:
             deadline = min(deadline, self.agg_start_time_ts + float(max_rt))
         return deadline
+
+    def _real_overdue_pick(self, channel, ends, now: float) -> bool:
+        """FX-D155: an overdue pick missed by distribute's abandon check must return recv now, not at the next event.
+        `realRecvReturnsOverdue=false` reverts."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        if getattr(self, "trainer_event_dict", None) is None or \
+                str(getattr(hp, "real_recv_returns_overdue", True)).lower() != "true":
+            return False  # no trace: _abandon_stalled is a no-op, so returning early would spin
+        to = self._task_timeout_s()
+        return any(e in ends and now - sst > to for e, sst, _ in self._abandon_candidates(channel))
 
     @property
     def _sim_delivering_held(self) -> set:

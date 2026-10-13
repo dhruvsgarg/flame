@@ -732,11 +732,45 @@ def ev19_stream_schedule(run):
                 examples=examples)
 
 
+_ABANDON_GRACE_S = 10.0  # loop latency (2-6 s seen under load) is not a missed deadline; FX-D155's were ~60-90 s
+
+
+def ev20_abandon_on_time(run):
+    """FX-D155: real sync picks unanswered past their timeout are abandoned within 10 s (FX-L40). Never-abandoned
+    picks are counted, not failed. Not prefix-safe: trainer replies flush late."""
+    if _simulated(run) or _is_async(run):
+        return _res("SKIP", "real sync only")
+    to = float(_hp(run, "send_timeout_wait_s", default=90.0) or 90.0)
+    end = max((float(e.get("ts", 0)) for e in run["agg"]), default=0.0)
+    sent = {(tid, e.get("round")): float(e.get("wall_send_ts") or e["ts"])
+            for tid, evs in run["trainers"].items() for e in evs if e.get("event") == "task_send"}
+    ab = {}
+    for e in _events(run, "abandon_timeout"):
+        ab.setdefault(e["end_id"], []).append(float(e["ts"]))
+    due, never, late = 0, 0, []
+    for e in _events(run, "dispatch"):
+        if e.get("task", e.get("task_to_perform", "train")) != "train":
+            continue
+        dl = float(e["ts"]) + to
+        s = sent.get((e["end_id"], e.get("round")))
+        if dl + _ABANDON_GRACE_S > end or (s is not None and s <= dl + 1.0):
+            continue
+        due += 1
+        hit = [t for t in ab.get(e["end_id"], []) if dl - 1.0 <= t <= (s or end) + 1.0]
+        if not hit:
+            never += 1
+        elif min(hit) - dl > _ABANDON_GRACE_S:
+            late.append((e["end_id"][-4:], e.get("round"), round(min(hit) - dl, 1)))
+    if not due:
+        return _res("SKIP", "no pick outlived its timeout")
+    return _res("PASS" if not late else "FAIL", f"due={due} late={len(late)} never_abandoned={never}", examples=late[:10])
+
+
 CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model, ev4_real_sleep,
           ev5_commit_accounting, ev6_staleness, ev7_agg_goal_cadence, ev8_concurrency_cap,
           ev9_selector_state, ev10_dispatch_one_in_flight, ev11_vclock, ev12_reached_budget,
           ev13_no_stall, ev14_eval_sane, ev15_one_task_per_version, ev16_withheld_delivery,
-          ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule]
+          ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev20_abandon_on_time]
 
 
 # Live early exit: checks whose FAIL on a log prefix stays FAIL on the full log (EV11: its backwards count only).

@@ -106,6 +106,7 @@ G0U_MOBIPERF = dict(agg_goal=2, c=4)  # FX-L34: ~10% AVL_TRAIN of n=50 leaves ~5
 G0U_OORT = {("cifar10", "syn_50"): dict(n=50, agg_goal=10, c=13, gpus=1),
             ("cifar10", "mobiperf_3st"): dict(n=165, agg_goal=10, c=13, gpus=3),
             ("google_speech", "syn_50"): dict(n=50, agg_goal=10, c=13, gpus=2)}
+DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
 STREAM_A = STREAM_T + ' checkpoint={"enabled":"True","every_n_rounds":10}'
@@ -312,7 +313,7 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         rest = tuple(b for b in baselines if b not in OORT_FAMILY)
         fam = tuple(b for b in baselines if b in OORT_FAMILY)
         g0u = lambda pid, bls, t, shape: Phase(pid, bls, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds, harness="none",
-                                               trace_scale="4", **shape)
+                                               trace_scale="4", trainer_hp=DETERMINISTIC, **shape)
         return ([g0u(f"{DS_TAG[ds]}G0U_{t}", rest, t, {**G0U_SHAPE[ds], **(G0U_MOBIPERF if t == "mobiperf_3st" else {})})
                  for t in ("syn_50", "mobiperf_3st") if rest]
                 + [g0u(f"{DS_TAG[ds]}G0U_{t}s", fam, t, G0U_OORT[(ds, t)])
@@ -332,7 +333,7 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
             fam_ph = stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "G0To",
                                    mk(fam, G0U_OORT[(ds, "syn_50")]))
             out += [replace(ph, pid=ph.pid + "s") for ph in fam_ph]
-        return out
+        return [replace(ph, trainer_hp=f"{ph.trainer_hp} {DETERMINISTIC}") for ph in out]
     if tier == "G0TC":  # R7 control: a real replicate per G0T cell (same-code real<->real streaming floor)
         return [replace(ph, pid=ph.pid.replace("G0T_", "G0TC_"), kind="real") for ph in tier_phases("G0T", baselines, ds)]
     if tier == "T3C":  # R7 control: a real replicate per T3 cell (floors flip-boundary forks, FX-L53)
