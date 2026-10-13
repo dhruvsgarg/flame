@@ -342,6 +342,7 @@ class ForwardTextClassificationTrainer:
                 f"[GPU_WARMUP] trainer_id={self.trainer_id} device={self.device} "
                 f"vocab_size={vocab_size} seq_len={seq_len} -- kernel warmup pass complete"
             )
+            trim_host_heap()  # model is on GPU now: release its freed CPU-load heap
         except Exception as e:
             logging.warning(f"[GPU_WARMUP] skipped (non-fatal): {e}")
 
@@ -388,10 +389,9 @@ class ForwardTextClassificationTrainer:
     def _make_model_functional(self, device):
         # Ensure model is on the correct device
         self.model.to(device)               # TODO(Gaurav): does this need to be in CPU?
-        
-        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
-            self.model
-        )
+
+        # One weight copy: fmodel runs self.model on the passed tensors (no functorch deep copy).
+        self.fmodel, self.params, self.buffers = make_functional_view(self.model)
         self.params = [p.to(device) for p in self.params]    # In case it was moved to CPU for serialization before being sent over the channel
         self.buffers = [b.to(device) for b in self.buffers]
         # The authoritative p: create_model counts before :217 drops
@@ -866,6 +866,9 @@ class ForwardTextClassificationTrainer:
                      for fg, p in zip(self.grad, self.params)]
         if self.grad_for_var_check is not None:
             self.grad_for_var_check = self.grad_for_var_check.detach().cpu()
+        # Return this update's temporaries to the driver / OS: an idle trainer holds only the model.
+        torch.cuda.empty_cache()
+        trim_host_heap()
 
         allocated_after = torch.cuda.memory_allocated(device)
         self.log_memory("end", device)
@@ -911,13 +914,10 @@ class ForwardTextClassificationTrainer:
         self.log_memory("train_model_start", device)
         self.allocated_before = torch.cuda.memory_allocated(device)
 
-        # H13: must wrap _make_model_functional too — functorch deep-copies the
-        # module, so a later toggle never reaches the fmodel the JVP evaluates.
+        # H13: fmodel runs self.model itself, so the JVP sees this block's eval mode.
         with (_eval_mode(self.model) if self.jvp_eval_mode
               else contextlib.nullcontext()):
             self._log_dropout_census()
-            # No _force_cuda_memory_cleanup(): empty_cache() is a device-wide sync
-            # and had nothing to reclaim (allocated stays flat across the run).
             self.log_memory("before_train_model", device)
             self._make_model_functional(device)
 
@@ -963,9 +963,7 @@ class ForwardTextClassificationTrainer:
         # todo: Make sure that the model doesn't need to be put back into train mode using: `self.model.train()` before this method returns
         self.model.eval()
         # Optimization: use cached functional model components
-        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
-            self.model
-        )
+        self.fmodel, self.params, self.buffers = make_functional_view(self.model)
         self.params = [p.to(device) for p in self.params]
         self.buffers = [b.to(device) for b in self.buffers]
 

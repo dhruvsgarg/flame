@@ -127,6 +127,27 @@ def lowp_autocast(model):
     return autocast(dtype=amp_dtype(), enabled=lowp)
 
 
+def make_functional_view(model):
+    """`make_functional_with_buffers` without its deep copy: fmodel(params, buffers, x) runs `model` itself,
+    and the returned params/buffers are the model's own tensors (same order as functorch's)."""
+    pn = [n for n, _ in model.named_parameters()]
+    bn = [n for n, _ in model.named_buffers()]
+
+    def fmodel(params, buffers, x):
+        return torch.func.functional_call(model, {**dict(zip(pn, params)), **dict(zip(bn, buffers))}, (x,))
+
+    return fmodel, [p for _, p in model.named_parameters()], [b for _, b in model.named_buffers()]
+
+
+def trim_host_heap():
+    """Return freed host heap to the OS (glibc keeps small freed blocks, e.g. the CPU-side model load). No-op off glibc."""
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 def frozen_zero(p, device=None):
     """Zero stand-in for a frozen param's grad/perturbation slot: a stride-0 view, no memory."""
     return torch.zeros((), dtype=p.dtype, device=p.device if device is None else device).expand(p.shape)

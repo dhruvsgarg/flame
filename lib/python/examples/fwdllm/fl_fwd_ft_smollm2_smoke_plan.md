@@ -1,8 +1,65 @@
 # SmolLM2-360M + LoRA smoke test
 
 2026-10-10. Ported, checked offline and smoked (results §6; simplified 6 h run §7–§8; DistilBERT parity run, N=50, §9;
-trainer memory fixes §10; further improvements §11; ~1B model §12). Why this model and the full-run
-estimate: session notes §9–§10 ([fl_fwd_ft_aishwwarya_session_2026-10-01.md](fl_fwd_ft_aishwwarya_session_2026-10-01.md)).
+trainer performance optimisations and regression checks §0; further improvements §11; ~1B model §12; 1.7B port §13).
+Why this model and the full-run estimate: session notes §9–§10 ([fl_fwd_ft_aishwwarya_session_2026-10-01.md](fl_fwd_ft_aishwwarya_session_2026-10-01.md)).
+Long-form explanations (why each copy existed, bf16, caching allocator, host RAM): [fl_fwd_ft_trainer_memory_explained.md](fl_fwd_ft_trainer_memory_explained.md).
+
+## 0. Trainer performance optimisations (2026-10-13)
+
+**Problem.** `self.params` held every parameter, frozen backbone included, so each trainer kept up to five full-size fp32
+copies of the model (6.1 GB GPU, 6.6 GB host for 360M) although only 823k of 362.6M parameters train.
+
+| # | Optimisation | Where | Scope | State |
+|---|---|---|---|---|
+| O1 | Frozen slots of `v_params`, `self.grad`, its CPU copy and `full_grad` are a stride-0 `frozen_zero(p)`; accumulation skips them | `fwdgrad_utils.py`, `tc_transformer_trainer_distribute.py`, `fwdllm_trainer.py` | all models | `8292a1b4` |
+| O2 | Frozen `nn.Linear` weights stored in `amp_dtype()` (`store_frozen_linears_lowp`); `lowp_autocast` on warmup + `eval_model` | `fwdgrad_utils.py`, `trainer/main.py` | llama by default; `FWDLLM_FROZEN_LOWP=1\|0`; off without `fp16` or under `FWDLLM_JVP_FP32` | `00b8474d` |
+| O3 | One weight copy: `make_functional_view` (`torch.func.functional_call` on `self.model`) replaces functorch's deep copy | same | all models | uncommitted |
+| O4 | `torch.cuda.empty_cache()` at the end of each update | `_finalize_training` | all models | uncommitted |
+| O5 | `trim_host_heap()` (glibc `malloc_trim`) after warmup and after each update | `fwdgrad_utils.py`, trainer | all models | uncommitted |
+
+Why each is exact: O1 drops only `jvp × 0` terms; O2 stores what autocast already casts to, and `adapters` LoRA runs the
+frozen matmul apart from the delta; O3 feeds `fmodel` the same tensors (order, buffers and shifted forwards checked equal on
+DistilBERT and SmolLM2); O4–O5 touch no values. Trainer-only: the aggregator's fp32 reference probes are unchanged.
+
+**Measured** (SmolLM2-360M, 4 trainers on GPU 4, `FWDLLM_STRICT_DETERMINISM=1`, 500 vclock-s, 7 commits; per trainer;
+GPU excludes ~0.4 GB CUDA context):
+
+| Run `experiments/run_20261013_…` | `005113` original | `010457` O1 | `011909` +O2 | `022559` +O3–O4 | `024423` +O5 |
+|---|---|---|---|---|---|
+| `rms_jvp` (60) and eval (3) vs original | — | identical | identical | identical | identical |
+| GPU allocated / reserved | 2,951 / 6,084 MB | 2,951 / 4,425 | 1,714 / 2,609 | **876 / 912** | 876 / 912 |
+| Host RAM | 6,562 MB | 2,526 | 2,467 | 2,447 | **2,006** |
+| `_train_one_batch` median | 6.12 s | 5.33 | 4.67 | 4.83 | 4.80 |
+| `_finalize_training` median | 0.28 s | — | — | 0.014 | 0.021 |
+| Traceback / OOM / NaN / overrun | 0 | 0/0/0/1 | 0 | 0 | 0 |
+
+Peak during one update with O1–O3 (offline): 900 MB reserved; the model is 797 MB, so idle ≈ peak. The single overrun
+was a 4.3 s first `_make_model_functional`. `tests/mode/test_fwdllm_gpu_warmup.py` + `test_fwdllm_probe_report.py`: 51 pass.
+1.7B (`run_20261013_014657`, O1–O2): model 3,459 MB, allocated 7,267 / reserved 7,852 MB, host 2,782 MB; O3 removes one
+copy (~4 GB per trainer with context, est.).
+
+**Behaviour changes.** `eval_model` outside the training loop runs in `amp_dtype()` when weights are low precision. With
+`jvp_eval_mode` off, the JVP now follows the live model's mode, and an in-loop `eval_model` leaves it in eval.
+
+### Regression checks (next steps, in order)
+
+Baseline = pre-optimisation code `a44e0896` in a git worktree (data and token caches linked), run back-to-back with the
+new code on the same GPUs. "Identical" = every `rms_jvp`, `[ServerUpdate]` audit line and `agg_eval` equal under
+`FWDLLM_STRICT_DETERMINISM=1`.
+
+| ID | Check | Exit criterion | State |
+|---|---|---|---|
+| RC1 | Launcher dry runs: fluxtune DistilBERT, fwdllm, fedbuff_round, felix_round, SmolLM2-360M, 1.7B | preflight passes; rendered yaml equal to baseline's | todo |
+| RC2 | Full `tests/mode` + `tests/telemetry` | same failures as baseline (5 known) | todo |
+| RC3 | Bit-identity, DistilBERT fluxtune n4, ~5 min | identical; DistilBERT is O1/O3/O4/O5 only | todo |
+| RC4 | Bit-identity, paths the n4 runs skip: fwdllm (winner-only probe, `var_control` + odd-data_id `old_grad`), perf-opt off, `jvp_eval_mode` off, eval during training, retention + cos audits, one real-mode leg | identical, 0 errors | todo |
+| RC5 | **Accuracy per commit**: 360M n4 identity run to ~150 commits (~1.5 h); then the §9 config (N=50) for ~200 commits | n4: identical at every commit and acc clearly above chance; N=50: acc at commits 50/100/150/200 within ±0.02 of `run_20261012_032648` | todo |
+| RC6 | **Iteration time**: from RC5's paired runs, `_train_one_batch`, `_finalize_training`, `_make_model_functional` median and p95, and aggregator wall per iteration | new ≤ baseline + 5% (median and p95); 0 `[TIMING_OVERRUN]` | todo |
+| RC7 | **Commit time**: wall and vclock per commit at matched commits | wall ≤ baseline + 5% (§9: ~34 s/commit at N=50); vclock per commit equal in the identity runs | todo |
+| RC8 | Memory stability over RC5's N=50 run: per-trainer allocated, reserved, host RSS every eval | flat (no growth); per-trainer GPU ≈ 1.3 GB incl. context | todo |
+| RC9 | DistilBERT parity vs floors (O1/O3–O5 are shared code, R10) | `run_parity.py` passes | todo |
+| RC10 | 1.7B smoke (§13 step 6) after RC1–RC9 | §13 pass condition; per-trainer GPU ≈ 4 GB | todo |
 
 **Goal:** show the model ports cleanly and read the controller's numbers (`p`, trips/commit, commits/h, `cos·Φ`).
 Accuracy is out of scope: the roberta smoke `145932` sat at chance and still counted as a clean port. The porting
@@ -127,11 +184,10 @@ python ../check_arm_health.py $R                           # trips/commit per qu
 ## 5. If something breaks
 
 - Loss `nan`: check that `FWDLLM_AMP_DTYPE` isn't set to fp16 in the shell.
-- Dtype mismatch in a forward, or to rule out §10's bf16 frozen weights: rerun with `FWDLLM_FROZEN_LOWP=0`.
+- Dtype mismatch in a forward, or to rule out O2's bf16 frozen weights (§0): rerun with `FWDLLM_FROZEN_LOWP=0`.
 - Trainer `KeyError`/`AttributeError` on `layer_id_for_check`, or preflight `KeyError: no adapter param counts`:
   `model_type` isn't `llama`.
-- OOM: lower `P4_NUM_TRAINERS`. Each trainer holds fp32 weights plus a full-size grad buffer, about 3 GB before
-  activations.
+- OOM: lower `P4_NUM_TRAINERS`. With §0's O1–O5 a 360M trainer holds ~1.3 GB of GPU (1.7B ~4 GB est.).
 
 ## 6. Smoke result (2026-10-10)
 
@@ -356,64 +412,10 @@ run: compare at matched commit / Φ / wall, not stop-to-stop. A ~16 h ceiling wo
 **Result:** ended on the 6 h wall ceiling at 651 commits (Φ stop not reached). Best acc **0.837**, last 0.836, over
 325 evals; DistilBERT's simplified arm peaked at 0.8726. 0 dead trainers; trips/commit held at 5.0.
 
-## 10. Trainer memory fixes (2026-10-13, uncommitted)
-
-**Diagnosis.** `self.params` (from `make_functional_with_buffers`) holds every parameter, frozen backbone included.
-Each trainer therefore carried full-size fp32 zeros for frozen slots in three more places, which explains the 6.1 GB:
-
-| Where | What |
-|---|---|
-| `v_params` (`_prepare_perturbation_tensors`) | `zeros_like` per frozen param, GPU |
-| `self.grad` (`_setup_training_state`) | `zeros_like` per param, GPU; copied to CPU every update (`_finalize_training`) |
-| `full_grad` (`fwdllm_trainer.py`, `GRAD_POOL`) | zero padding per frozen param, CPU |
-| `make_functional_with_buffers` | a second full copy of the model, kept alongside `self.model` (**not fixed**) |
-
-**Fix 1: zero-size frozen slots (all models).** `frozen_zero(p)` in `fwdgrad_utils.py` is a stride-0 view: same shape,
-one element of storage. It replaces the zeros above; the two accumulation loops skip frozen slots (they only added
-`jvp × 0`). The var-check slice still reads zeros if `layer_id_for_check` is frozen. The upload is unchanged
-(`_send_grads` sends trainable `p.grad` only).
-
-**Fix 2: frozen Linear weights in `amp_dtype()` (llama only by default).** `store_frozen_linears_lowp` in
-`fwdgrad_utils.py`, called from `trainer/main.py` after `create_model`. Exact because autocast already casts these
-weights to bf16 on every call, and `adapters` LoRA runs the frozen matmul separately from the LoRA delta. LoRA, `score`,
-embeddings and norms stay fp32.
-- Gate `frozen_lowp_enabled`: `FWDLLM_FROZEN_LOWP=1|0`, unset = llama only; forced off without `fp16` (autocast) or
-  under `FWDLLM_JVP_FP32=1`. DistilBERT/roberta (fp16 autocast) are untouched.
-- Trainer only: the aggregator's retention and `_cos_probe_gradient` probes run fp32 outside autocast.
-- `lowp_autocast(model)` wraps GPU warmup and `eval_model`, which run outside the training loop's autocast. Behaviour
-  change: `eval_model` called from `fed_trainer_transformer.py:40` runs bf16 when the model holds bf16 weights.
-  Reported accuracy comes from the aggregator and is unaffected.
-
-**Verification.** Same 4-trainer sim on GPU 4, `FWDLLM_STRICT_DETERMINISM=1`, 500 vclock-s, 7 commits (data_id 0–7):
-
-| | Original | Fix 1 | Fixes 1 + 2 |
-|---|---|---|---|
-| Run dir (`experiments/run_20261013_…`) | `005113` | `010457` | `011909` |
-| `rms_jvp`, 60 updates | — | identical | identical |
-| Eval acc / loss, 3 evals | — | identical | identical |
-| GPU allocated / reserved per trainer | 2,951 / 6,084 MB | 2,951 / 4,425 MB | **1,714 / 2,609 MB** |
-| Host RAM per trainer | 6,562 MB | 2,526 MB | 2,467 MB |
-| `_train_one_batch` median | 6.12 s | 5.33 s | **4.67 s** |
-| Traceback / OOM / NaN / `[TIMING_OVERRUN]` | 0 | 0 / 0 / 0 / 1 | 0 |
-
-The one overrun was a 4.3 s first `_make_model_functional`, not a slowdown. Offline (`FWDLLM_STRICT_DETERMINISM=1`,
-SmolLM2-360M): loss, JVP and eval output identical with fp32 vs bf16 frozen storage; params 1,451 → 821 MB.
-`tests/mode/test_fwdllm_gpu_warmup.py` + `test_fwdllm_probe_report.py`: 51 pass.
-
-**Not yet shown.** 7 commits prove identity, not learning (acc at chance) and cover few paths. Sanity runs still owed:
-
-| # | Run | Exit criterion |
-|---|---|---|
-| S1 | 360M, 4-trainer deterministic before/after, ~150 commits (~1.5 h) | every JVP identical; acc clearly above chance |
-| S2 | §9 config with the fixes, ~2 h (~200 commits) | acc-vs-commit tracks §9 within noise |
-| S3 | DistilBERT deterministic before/after, then parity vs floors (fix 1 is shared code, R10) | identical; parity passes |
-| S4 | short identity runs: `var_control` (odd data_id `old_grad`), winner-only probe, perf-opt off, retention + cos audits | identical, no errors |
-
 ## 11. Improvements not yet made
 
 | Improvement | Gain | Cost / risk |
 |---|---|---|
-| Drop the `make_functional` copy: call the model with its own params (`torch.func.functional_call`) | removes one full model copy; largest remaining cost | trainer refactor; re-verify identity |
 | Staggered trainer start + `low_cpu_mem_usage=True` | avoids the startup host-RAM spike (each trainer loads fp32 on CPU first) | launcher change |
 | Recalibrate `training_delay_factor` per model (FWDLLM_DESIGN §O method × forward cost vs DistilBERT) | realistic device model; GPU time stays under modeled delay, so contention never reaches the vclock | config; per model |
 | Batch the 20 probe forwards (10 probes × ±h) into 1–2 calls | big for 360M (63 ms/fwd vs ~7 ms of arithmetic), ~1.5–2× at 1.7B | `calculate_jvp` + batched LoRA forward |
@@ -422,11 +424,8 @@ SmolLM2-360M): loss, JVP and eval output identical with fp32 vs bf16 frozen stor
 | One process per GPU sharing a frozen backbone, swapping per-client LoRA (~3 MB) | clients no longer memory-bound | restructure trainer launch/channels; needed for 7B |
 | 4-bit backbone (bitsandbytes) | ~2× less weight memory | slower forwards (dequant); `functorch` + `adapters` compatibility unknown. Hold for 7B |
 
-**Why contention matters.** Trainers on one GPU time-slice its compute (no MPS), so an update's GPU time grows with the
-number of *active* trainers on that GPU, on every forward pass. Sim charges max(gpu, modeled delay); once GPU time
-exceeds the delay, packing sets the vclock and update order. DistilBERT never hit this: §O's delays are calibrated to
-DistilBERT's NPU cost with a +1.5 s buffer. SmolLM2 runs reused those delays (`--allow-stale-profile`), so the margin
-shrank (§6: 7.8 s against 8.33 s).
+**Contention.** Active trainers on one GPU time-slice it, so update GPU time grows with them; once it exceeds the modeled
+delay (sim charges max), packing sets the vclock. §O's delays fit DistilBERT only; resize them per model (§13).
 
 ## 12. Handling a ~1B model
 
@@ -444,15 +443,13 @@ cleanest test that commits scale with `p`, not size (N5c). TinyLlama r=8 if the 
 All three run on the existing `model_type=llama` path (pad = cls = sep = EOS, bf16). Rerun `probe_port_init.py`: `p`,
 chord, and that `layer_id_for_check=16` still lands on a `lora_B`.
 
-**Memory per trainer (1.7B).** ~22 GB originally; ~9 GB with fixes 1 + 2 (4–5 per A40, ~35–40 clients on today's node:
-GPUs 0, 1, 3 carry ~20 GB of peer jobs); ~5 GB once the `make_functional` copy is dropped (~8 per A40, ~50 today, ~63
-with all 8 free). Host RAM (266 GB free, ~2.5 GB per trainer) caps near 80–100 trainers. Load trainers with a delay:
-50 simultaneous fp32 loads would need ~340 GB of host RAM.
+**Memory per trainer (1.7B).** ~22 GB unoptimised; 7.9 GB reserved measured with O1–O2 (§0); ~4 GB est. with O1–O5
+(~10 per A40, so N = 50 fits even with GPUs 0–3 carrying peer jobs). Host RAM 2.8 GB measured, so 50 trainers ≈ 140 GB
+of 266 GB free. Stagger launches: 50 simultaneous fp32 loads would need ~340 GB of host RAM.
 
-**C and delays.** Recalibrate delays first: DistilBERT's fastest modeled delay (~4 s) is below one 1.7B update (~6 s
-solo), so no C is overrun-free today. Scaled ~25× for 1.7B, the fastest delay is ~100 s; even 8 active trainers on one
-GPU (~48 s) fit, so any C ≤ N works. Keep C = 30 for parity with DistilBERT. Raise `--max-runtime-s` (vclock) with the
-delays, or the run ends early; the preflight ceiling projection needs the same.
+**C and delays.** Memory caps N; compute contention depends on C (only active trainers share a GPU's compute). With
+§13's recalibrated delays (fastest ~208 s vs a ~1.9 s solo update), even all trainers on a GPU active stay under the
+delay, so any C ≤ N is overrun-free. Keep C = 30 for parity with DistilBERT.
 
 **Wall time.** Delays add no wall time in sim. ~80 s per commit (360M: 34 s × 2.4× measured forward cost) and ~1,600
 commits to Φ = 3 → **~35 h**; ~14 h to §9's 630-commit point. Probe batching: maybe ~20 h.
@@ -461,8 +458,8 @@ commits to Φ = 3 → **~35 h**; ~14 h to §9's 630-commit point. Probe batching
 
 | # | Step | Done when |
 |---|---|---|
-| 1 | Memory fixes 1 + 2 (§10) | ✅ identity on 360M; sanity runs S1–S4 still owed |
-| 2 | Drop the `make_functional` copy; staggered start + `low_cpu_mem_usage` | 360M identical; ~1 GB less per trainer |
+| 1 | Trainer optimisations O1–O5 (§0) | ✅ identity on 360M; regression checks RC1–RC9 owed |
+| 2 | Staggered trainer start + `low_cpu_mem_usage` | 50 trainers start with host RAM well under 266 GB |
 | 3 | Port SmolLM2-1.7B, `lora_r=4`; pretokenize `clients=50` | ✅ port (§13); pretokenize owed |
 | 4 | One trainer on a free GPU | forward-only ✅ (§13); full trainer update owed (smoke step 6) |
 | 5 | Recalibrate `training_delay_factor`; raise `--max-runtime-s` and ceiling | ✅ values in §13; derivation next to FWDLLM_DESIGN §O owed |
@@ -515,5 +512,4 @@ EXPT_GPU_ALLOW_PEER=1 setsid nohup ./run_sequential.sh --yes --clean --only flux
 commits/h → projection (~35 h to Φ = 3 predicted). GPUs 0–3 carry peer jobs (15–20 GB): watch memory there, or use
 `--gpu-ids 4,5,6,7` with `--num-trainers` ≤ ~30.
 
-**Owed:** pretokenize; step 6 smoke; full-trainer solo update time and memory (the forward-only number excludes JVP and
-the `make_functional` copy); S1–S4 (§10).
+**Owed:** pretokenize; step 6 smoke (= RC10, after §0's RC1–RC9); full-trainer solo update time and memory with O1–O5.
