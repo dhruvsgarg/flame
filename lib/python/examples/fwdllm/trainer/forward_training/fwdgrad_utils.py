@@ -97,6 +97,11 @@ def amp_dtype():
     return torch.float16
 
 
+def frozen_zero(p, device=None):
+    """Zero stand-in for a frozen param's grad/perturbation slot: a stride-0 view, no memory."""
+    return torch.zeros((), dtype=p.dtype, device=p.device if device is None else device).expand(p.shape)
+
+
 def jvp_fp32_enabled() -> bool:
     """`FWDLLM_JVP_FP32=1` runs the two JVP forward passes OUTSIDE autocast.
 

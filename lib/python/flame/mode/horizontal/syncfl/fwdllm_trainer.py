@@ -424,9 +424,9 @@ class Trainer(Role, metaclass=ABCMeta):
                                     trainable_idx += 1
                                 else:
                                     # Append a zero tensor of same shape as
-                                    # param instead of None
+                                    # param instead of None (stride-0 view: no memory)
                                     full_grad.append(
-                                        torch.zeros_like(param, device="cpu")
+                                        torch.zeros((), dtype=param.dtype).expand(param.shape)
                                     )
                         
                         if partial_grad is not None:

@@ -425,7 +425,8 @@ class ForwardTextClassificationTrainer:
                     # Full grad-shape clone (old_grad arrives from the aggregator
                     # on CPU); only on odd data_ids (old_grad is None on even ones).
                     with _stage_timer(self, "tb_grad_clone"):
-                        self.grad = None if self.old_grad is None else [g.clone() for g in self.old_grad]
+                        self.grad = None if self.old_grad is None else [
+                            g.clone() if p.requires_grad else g for g, p in zip(self.old_grad, self.params)]
 
                 # v_all_pert = []
                 v_buffer = {}
@@ -535,10 +536,12 @@ class ForwardTextClassificationTrainer:
                 or len(self.grad) != len(self.params)
             ):
                 # Optimization: Initialize on device to avoid Host to Device transfer every batch
-                self.grad = [torch.zeros_like(p, device=device) for p in self.params]
+                self.grad = [torch.zeros_like(p, device=device) if p.requires_grad
+                             else frozen_zero(p, device) for p in self.params]
             else:
                 # Ensure gradients are on the correct device (they might have been moved to CPU in a previous round)
-                self.grad = [fg.to(device).zero_() for fg in self.grad]
+                self.grad = [fg.to(device).zero_() if p.requires_grad else frozen_zero(p, device)
+                             for fg, p in zip(self.grad, self.params)]
                 
             return v_buffer, best_idx
         
@@ -566,7 +569,7 @@ class ForwardTextClassificationTrainer:
                     (
                         v_buffer[i][idx].to(device)
                         if p.requires_grad
-                        else torch.zeros_like(p).to(device)
+                        else frozen_zero(p, device)
                     )
                     for i, p in enumerate(self.params)
                 ]
@@ -576,7 +579,7 @@ class ForwardTextClassificationTrainer:
                     (
                         torch.randn_like(p, device=device)
                         if p.requires_grad
-                        else torch.zeros_like(p, device=device)
+                        else frozen_zero(p, device)
                     )
                     for p in self.params
                 ]
@@ -657,8 +660,11 @@ class ForwardTextClassificationTrainer:
         def _accumulate_and_extract_grads(device, jvp, v_params):
             # Optimization: Accumulate on device. self.grad should be on device.
             for j, fg in enumerate(self.grad):
-                updated = (jvp * v_params[j]) # Keep on device
-                fg.add_(updated)
+                if self.params[j].requires_grad:
+                    updated = (jvp * v_params[j]) # Keep on device
+                    fg.add_(updated)
+                else:
+                    updated = fg  # frozen: v is 0, nothing to add
                 if self.args.var_control and j == self.layer_id_for_check:
                     self.grad_for_var_check = updated.detach().cpu() # Move to CPU only for check
 
@@ -686,8 +692,11 @@ class ForwardTextClassificationTrainer:
                 losses.append(float(loss_i))
                 sq += float(jvp_i) ** 2
                 for j, fg in enumerate(self.grad):
-                    updated = ((inv * jvp_i) * v_params_i[j])
-                    fg.add_(updated)
+                    if self.params[j].requires_grad:
+                        updated = ((inv * jvp_i) * v_params_i[j])
+                        fg.add_(updated)
+                    else:
+                        updated = fg  # frozen: v is 0, nothing to add
                     if self.args.var_control and j == self.layer_id_for_check:
                         check_acc = updated if check_acc is None else check_acc + updated
                 del v_params_i
@@ -853,7 +862,8 @@ class ForwardTextClassificationTrainer:
             if p.requires_grad:
                 p.grad = fg.clone() # Already on device
 
-        self.grad = [fg.detach().cpu() for fg in self.grad]
+        self.grad = [fg.detach().cpu() if p.requires_grad else frozen_zero(p, "cpu")
+                     for fg, p in zip(self.grad, self.params)]
         if self.grad_for_var_check is not None:
             self.grad_for_var_check = self.grad_for_var_check.detach().cpu()
 
