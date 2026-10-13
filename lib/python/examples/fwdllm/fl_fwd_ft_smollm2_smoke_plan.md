@@ -437,7 +437,7 @@ shrank (§6: 7.8 s against 8.33 s).
 | Architecture | Llama, 24 layers, hidden 2048, MHA 32/32 | Llama, 22 layers, GQA 32/4 | Llama, 16 layers, GQA 32/8 |
 | Tokenizer / data | same as 360M / 11T | Llama-2 32k / 3T (weak) | 128k / gated licence |
 | `p`, LoRA q,v | r=8 ~1.58M; **r=4 ~0.79M** | r=8 ~1.13M | r=8 ~0.86M |
-| Forward cost vs 360M | ~4.7× | ~3× | ~3.4× |
+| Forward cost vs 360M | **2.4× measured** (§13) | ~3× est. | ~3.4× est. |
 
 **Pick: SmolLM2-1.7B, LoRA r=4.** Same family and tokenizer as 360M with `p` ≈ 823k, so only model size changes: the
 cleanest test that commits scale with `p`, not size (N5c). TinyLlama r=8 if the paper must say "1B" or memory is short.
@@ -454,8 +454,8 @@ solo), so no C is overrun-free today. Scaled ~25× for 1.7B, the fastest delay i
 GPU (~48 s) fit, so any C ≤ N works. Keep C = 30 for parity with DistilBERT. Raise `--max-runtime-s` (vclock) with the
 delays, or the run ends early; the preflight ceiling projection needs the same.
 
-**Wall time.** Delays add no wall time in sim. ~120–160 s per commit (360M: 34 s × ~4.7× forward cost) and ~1,600
-commits to Φ = 3 → **~55–70 h**; ~20–27 h to §9's 630-commit point. Probe batching: maybe ~30–45 h.
+**Wall time.** Delays add no wall time in sim. ~80 s per commit (360M: 34 s × 2.4× measured forward cost) and ~1,600
+commits to Φ = 3 → **~35 h**; ~14 h to §9's 630-commit point. Probe batching: maybe ~20 h.
 
 **Plan.**
 
@@ -463,9 +463,57 @@ commits to Φ = 3 → **~55–70 h**; ~20–27 h to §9's 630-commit point. Prob
 |---|---|---|
 | 1 | Memory fixes 1 + 2 (§10) | ✅ identity on 360M; sanity runs S1–S4 still owed |
 | 2 | Drop the `make_functional` copy; staggered start + `low_cpu_mem_usage` | 360M identical; ~1 GB less per trainer |
-| 3 | Port SmolLM2-1.7B, `lora_r=4`; pretokenize `clients=50` | `p` ≈ 794k, chord checked |
-| 4 | One trainer on a free GPU | measured solo update time and peak memory |
-| 5 | Recalibrate `training_delay_factor`; raise `--max-runtime-s` and ceiling | value derived next to FWDLLM_DESIGN §O |
+| 3 | Port SmolLM2-1.7B, `lora_r=4`; pretokenize `clients=50` | ✅ port (§13); pretokenize owed |
+| 4 | One trainer on a free GPU | forward-only ✅ (§13); full trainer update owed (smoke step 6) |
+| 5 | Recalibrate `training_delay_factor`; raise `--max-runtime-s` and ceiling | ✅ values in §13; derivation next to FWDLLM_DESIGN §O owed |
 | 6 | ~1 h smoke, N = 50, C = 30 | 0 OOM / NaN / dead trainers / `[TIMING_OVERRUN]`; commits/h → projection |
 | 7 | Probe batching | only if step 6 projects > ~3 days |
 | 8 | Full run to its own stop, ceiling ~80 h, watchdog | Φ rail or stall; compare with 360M and DistilBERT at matched commit / Φ (N5c) |
+
+## 13. SmolLM2-1.7B port (2026-10-13)
+
+`HuggingFaceTB/SmolLM2-1.7B` + LoRA r=4 on q,v, `model_type=llama`, no trainer-code change. Changes:
+`LLAMA_BY_NAME` in `expts/dataset_registry.py` (hidden 2048; `probe_dim(..., model_name)`; 360M stays the default),
+`run_sequential.sh` passes `model_name` to the preflight, `expt_scripts/test_llama_probe_dim.py`.
+
+| Check | Result |
+|---|---|
+| `p` (`probe_port_init.py`, r=4 / r=8) | **794,624** / 1,581,056 = registry |
+| `‖θ_tr‖/√p`; chord ON / OFF (r=4) | 0.0092; **0.819** / 1.088 (360M: 0.511 / 0.691). Flag stays ON; first steps are ~1.6× longer relative to θ |
+| `layer_id_for_check=16` | `layers.1.q_proj` `lora_B` ✓ (315 params, 97 trainable) |
+| Forward, bf16, batch 8 × seq 192, GPU 4, solo | 360M 38.9 ms · **1.7B 92.5 ms (2.4×)**; 20-forward update 0.78 s vs 1.85 s |
+| Peak GPU alloc, forward only | 851 MB vs 3,588 MB (trainer adds LoRA grads, JVP buffers) |
+| Dry run (N=50, C=30, 8 GPUs) | preflight 8 ✓ 1 ⚠ (feature cache cold); `model_name`, `lora_r: 4`, delays reach both roles |
+
+**Delays.** `--delay-divisor 0.0192 --delay-floor 4.0` = §O's fluxtune 0.48 ÷ 25 (≈ DistilBERT→1.7B parameter ratio, 26×),
+so the fastest modeled delay is ~208 s (DistilBERT 8.33 s). Not measured on a real device; revisit if `[TIMING_OVERRUN]` or
+the vclock/wall ratio looks off. Vclock scales with the delays: `--max-runtime-s 2000000`, `--sim-wall-ceiling-h 80`.
+
+**Commands** (env `test_fwdllm`; from `expt_scripts/`; the operator launches, R4):
+
+```
+python pretokenize_dataset.py --dataset agnews --clients 50 --jobs 16 --model-type llama \
+  --model-name HuggingFaceTB/SmolLM2-1.7B --partition-method "niid_label_clients=50_alpha=1"
+# smoke (step 6): ~1 h; same flags, 1 h ceiling, vclock capped
+EXPT_GPU_ALLOW_PEER=1 setsid nohup ./run_sequential.sh --yes --clean --only fluxtune --mode sim --allow-stale-profile \
+  --dataset agnews --partition-method "niid_label_clients=50_alpha=1" --num-trainers 50 --num-gpus 8 \
+  --agg-goal 10 --c 30 --min-initial-frac 0.9 \
+  --model-type llama --model-name HuggingFaceTB/SmolLM2-1.7B --peft-method lora --lora-r 4 \
+  --adapter-reduction-factor 16 --fd-scale-invariant --delay-divisor 0.0192 --delay-floor 4.0 \
+  --probe-combine mean --server-step-rule trust_ratio --gate-safety-s 1.5 \
+  --commit-gate fixed --pool-target 50 --rho-schedule pool --agg-rate-type uniform \
+  --var-stopping-policy off --max-iter-per-data-id 20 \
+  --budget-stop-frac 0 --b-max-probe-every 0 --phi-stop halt \
+  --saturation-stop --no-sat-decay --sat-stall-frac 0.003 \
+  --server-update-audit --no-cos-ground-truth-audit \
+  --max-runtime-s 2000000 --sim-wall-ceiling-h 1 \
+  > ../smollm2_1p7b_smoke_$(date +%Y%m%d_%H%M).log 2>&1 < /dev/null &
+# full run: identical but --sim-wall-ceiling-h 80, plus the §8 watchdog with --max-hours 81
+```
+
+**Smoke pass condition (step 6):** 0 OOM / NaN / dead trainers / `[TIMING_OVERRUN]`; `[ProbeDim] p=794624`; 5.0 trips/commit;
+commits/h → projection (~35 h to Φ = 3 predicted). GPUs 0–3 carry peer jobs (15–20 GB): watch memory there, or use
+`--gpu-ids 4,5,6,7` with `--num-trainers` ≤ ~30.
+
+**Owed:** pretokenize; step 6 smoke; full-trainer solo update time and memory (the forward-only number excludes JVP and
+the `make_functional` copy); S1–S4 (§10).

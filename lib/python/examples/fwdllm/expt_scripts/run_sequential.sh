@@ -1043,7 +1043,7 @@ for trace in traces:
                 _size = (int(_hp("lora_r") or 8) if _hp("peft_method") == "lora"
                          else int(_hp("adapter_reduction_factor") or 16))
                 _p_wc = dsreg.get(_hp("dataset") or "agnews").probe_dim(
-                    _size, str(_hp("model_type") or "distilbert"))
+                    _size, str(_hp("model_type") or "distilbert"), _hp("model_name"))
                 # (c)/(d): sim's REAL-wall cap is sim_wall_ceiling_s (code default
                 # max_runtime_s*20); real mode has no such knob -- its outer safety
                 # is max_experiment_runtime_s (patch()'s own default, above).

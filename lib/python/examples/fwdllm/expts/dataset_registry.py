@@ -41,6 +41,10 @@ ADAPTER_P_BY_MODEL = {
     "llama": {8: 819200, 4: 409600, 2: 204800},
 }
 HIDDEN_SIZE = {"distilbert": 768, "roberta-large": 1024, "llama": 960}
+# Per-checkpoint llama override (hidden, LoRA q,v params by r); 196,608 r = 24 layers x 2 x 4096 r (MHA 32/32).
+LLAMA_BY_NAME = {
+    "HuggingFaceTB/SmolLM2-1.7B": (2048, {8: 1572864, 4: 786432, 2: 393216}),
+}
 # LlamaForSequenceClassification's `score` has no bias.
 _NO_HEAD_BIAS = {"llama"}
 # Back-compat alias: the bare name still means DistilBERT.
@@ -66,8 +70,9 @@ class DatasetSpec:
     def n_test(self) -> int:
         return self.test_range[1] - self.test_range[0]
 
-    def probe_dim(self, reduction_factor: int = 16, model_type: str = "distilbert") -> int:
-        return probe_dim(self.num_labels, reduction_factor, model_type)
+    def probe_dim(self, reduction_factor: int = 16, model_type: str = "distilbert",
+                  model_name: str = None) -> int:
+        return probe_dim(self.num_labels, reduction_factor, model_type, model_name)
 
     def label_vocab(self) -> dict:
         """The h5's own label map -- what the run actually derives num_labels from."""
@@ -78,7 +83,7 @@ class DatasetSpec:
 
 
 def probe_dim(num_labels: int, reduction_factor: int = 16,
-              model_type: str = "distilbert") -> int:
+              model_type: str = "distilbert", model_name: str = None) -> int:
     """Trainable `p` after the trainer drops pre_classifier.
 
     Dataset-dependent through the classifier alone -- distilbert rf=16 gives
@@ -95,12 +100,14 @@ def probe_dim(num_labels: int, reduction_factor: int = 16,
         raise KeyError(f"no adapter param counts measured for model_type={m!r}; "
                        f"known: {sorted(ADAPTER_P_BY_MODEL)}. Read p off a "
                        f"[ProbeDim] line and add a row -- do not interpolate.")
-    table = ADAPTER_P_BY_MODEL[m]
+    table, hidden = ADAPTER_P_BY_MODEL[m], HIDDEN_SIZE[m]
+    if m == "llama" and model_name in LLAMA_BY_NAME:
+        hidden, table = LLAMA_BY_NAME[model_name]
     if reduction_factor not in table:
         raise KeyError(f"no adapter param count for model_type={m!r} "
                        f"reduction_factor={reduction_factor}; known: {sorted(table)}")
     bias = 0 if m in _NO_HEAD_BIAS else num_labels
-    return table[reduction_factor] + HIDDEN_SIZE[m] * num_labels + bias
+    return table[reduction_factor] + hidden * num_labels + bias
 
 
 def total_data_bins(name: str, num_clients: int, train_batch_size: int) -> int:
