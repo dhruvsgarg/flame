@@ -35,6 +35,7 @@ from examples.fwdllm.trainer.forward_training.fed_trainer_transformer import (
     FedTransformerTrainer,
 )
 from examples.fwdllm.trainer.forward_training.FedSgdTrainer import FedSGDTrainer
+from examples.fwdllm.trainer.forward_training import fwdgrad_utils
 
 import argparse
 import logging
@@ -109,6 +110,9 @@ if __name__ == "__main__":
     model_config, client_model, tokenizer = create_model(
         model_args, formulation="classification"
     )
+    # Trainer only: the aggregator's fp32 reference probes run outside autocast.
+    if fwdgrad_utils.frozen_lowp_enabled(model_args.model_type, getattr(model_args, "fp16", False)):
+        fwdgrad_utils.store_frozen_linears_lowp(client_model)
 
     def bytes_to_mb(num_bytes):
         return num_bytes / (1024 * 1024)

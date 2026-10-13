@@ -335,7 +335,7 @@ class ForwardTextClassificationTrainer:
             vocab_size = emb.num_embeddings if emb is not None else 1000
             seq_len = getattr(self.args, "max_seq_length", 128)
             dummy_x = torch.randint(0, vocab_size, (1, seq_len), device=self.device)
-            with torch.no_grad():
+            with torch.no_grad(), lowp_autocast(self.model):
                 self.model(dummy_x)
             self.model.train(was_training)
             logging.info(
@@ -978,7 +978,7 @@ class ForwardTextClassificationTrainer:
 
         logging.info(f"len(test_dl) = {n_batches}, total samples = {test_sample_len}")
 
-        with torch.no_grad():
+        with torch.no_grad(), lowp_autocast(self.model):
             for i, batch in enumerate(self.test_dl):
                 x = batch[1].to(device, non_blocking=True)
                 labels = batch[4].to(device, non_blocking=True)

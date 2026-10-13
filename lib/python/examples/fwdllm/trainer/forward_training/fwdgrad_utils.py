@@ -97,6 +97,36 @@ def amp_dtype():
     return torch.float16
 
 
+def frozen_lowp_enabled(model_type, fp16):
+    """`FWDLLM_FROZEN_LOWP=1|0`: store frozen Linear weights in amp_dtype(). Default on for llama only.
+
+    Exact only when every forward runs under autocast, which casts these weights to amp_dtype() anyway;
+    so off without `fp16` (autocast) and under FWDLLM_JVP_FP32.
+    """
+    v = os.environ.get("FWDLLM_FROZEN_LOWP", "").strip().lower()
+    on = v in ("1", "true", "yes") if v else model_type == "llama"
+    return on and bool(fp16) and not jvp_fp32_enabled()
+
+
+def store_frozen_linears_lowp(model):
+    """Cast frozen nn.Linear weight/bias to amp_dtype(); trainable params, embeddings and norms stay fp32."""
+    dt, n = amp_dtype(), 0
+    for m in model.modules():
+        if isinstance(m, torch.nn.Linear):
+            for t in (m.weight, m.bias):
+                if t is not None and not t.requires_grad and t.dtype != dt:
+                    t.data = t.data.to(dt)
+                    n += t.numel()
+    logger.info(f"[FrozenLowp] {n} frozen Linear params stored in {dt}")
+    return n
+
+
+def lowp_autocast(model):
+    """Autocast for a forward outside the training loop, on only if store_frozen_linears_lowp ran."""
+    lowp = any(p.dtype != torch.float32 for p in model.parameters() if p.is_floating_point())
+    return autocast(dtype=amp_dtype(), enabled=lowp)
+
+
 def frozen_zero(p, device=None):
     """Zero stand-in for a frozen param's grad/perturbation slot: a stride-0 view, no memory."""
     return torch.zeros((), dtype=p.dtype, device=p.device if device is None else device).expand(p.shape)
