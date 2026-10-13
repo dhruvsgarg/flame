@@ -292,3 +292,5 @@ Everything about this port (code changes, measurements, runbook, pass table) is 
 - **fp16 autocast gives a NaN loss**, even unperturbed. Llama now runs in bf16, which is as accurate as fp32 here
   and 2.4× faster.
 - `tests/mode` + `tests/telemetry`: 1,027 pass, 5 fail. Whether these are the same 5 as §2 was not re-checked.
+- 2026-10-12: N=10 simplified run reached 0.751 in 4.4 h (smoke plan §8). The §6 simplified arm rerun on SmolLM2
+  (N=50 / C=30 / K=10, `clients=50_alpha=1`, 6 h) is live: smoke plan §9. `run_20261002_000757`'s run dir is gone.
