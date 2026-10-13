@@ -79,7 +79,8 @@ SHAPES = {
 OORT_FAMILY = ("oort", "oort_star")
 OORT_SHAPE = {"syn_0": "syn_0s", "syn_0b": None, "syn_20": "syn_20s", "syn_50": "syn_50s", "mobiperf_3st": "mobiperf_3sts"}
 # CPU legs that need longer for EV1's >= 4 commits (unaware oort waits out 90s timeouts; run 4: 0 in 240s).
-MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 960}
+MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 960,
+                 ("oort", "syn_20", "google_speech"): 600}  # FX-N85 d: 300 s gave 10 matched rounds (PR31 C2)
 # FX-D52: G0U legs whose unaware picks hold slots a full timeout run longer, to reach a gradeable round count.
 G0U_RUNTIME_X = {("oort", "mobiperf_3st"): 4, ("fedbuff", "mobiperf_3st", "google_speech"): 3}
 GPU_N = {"cifar10": 300, "google_speech": 100}  # the datasets' reference cohorts (datasets.yaml)
@@ -450,8 +451,8 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
     for ph in phases:
         t = ph.trace
         for b in ph.baselines:
-            at_shape = ph.harness != "none" and ph.runtime_s == SHAPES.get(t, {}).get("runtime_s")  # not smoke/T1
-            rt = max(ph.runtime_s, MIN_RUNTIME_S.get((b, t), 0)) if at_shape else ph.runtime_s
+            at_shape = ph.harness != "none" and ph.runtime_s in {v["runtime_s"] for v in SHAPES.values() if v["trace"] == t}  # not smoke/T1
+            rt = max(ph.runtime_s, MIN_RUNTIME_S.get((b, t, ph.dataset), MIN_RUNTIME_S.get((b, t), 0))) if at_shape else ph.runtime_s
             if "G0U" in ph.pid:
                 rt *= G0U_RUNTIME_X.get((b, t, ph.dataset), G0U_RUNTIME_X.get((b, t), 1))
             base = ["--harness", ph.harness, "--baselines", b, "--traces", t, "--runtime-s", str(rt),

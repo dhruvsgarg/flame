@@ -107,7 +107,7 @@ python lib/python/examples/scripts/cleanup_experiments.py [--apply] [--fwdllm]  
 conda run -n dg_flame python lib/python/examples/async_cifar10/scripts/parity/event_invariants.py <run_dir>
 python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --sim <B> --control --json-out c.json   # real<->real floor (Q2)
 ```
-- Pools on one node are safe (L28); progress every 5 min; DONE lines carry GPU peak; one Ctrl+C stops all. shepherd GPUs 0-3 (R4).
+- Pools on one node are safe (L28); progress every 5 min; DONE lines carry GPU peak; one Ctrl+C stops all. Nodes per R4.
 - **Early exits (all automatic in `harness_pool`):** fatal log line → pool aborts in ~30 s (ABORT.txt); no new round 15 min / silent
   10 min → leg killed (STALLED.txt); prefix-safe EV FAIL (EV6/8/9/11/14-19) → leg + pair partner killed at the next 5-min check
   (DOOMED.txt, FX-D133). Runner probes print PASS/FAIL per claim as stages finish. Not early-killable: EV1/5/7/10/12, timing/DIST.

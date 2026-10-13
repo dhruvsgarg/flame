@@ -460,3 +460,12 @@ def test_history_save_merges_concurrent_pools(tmp_path, monkeypatch):
     pool._save_history(a, base_a)
     pool._save_history(b, base_b)
     assert pool._load_history() == {"k": [1, 2, 3], "ka": [5]}
+
+
+def test_min_runtime_reaches_oort_k10_shapes():
+    """FX-N85 d: speech oort T3 syn_20s runs 600 s (300 s gave 10 matched rounds); MIN_RUNTIME_S now sees `*s` shapes."""
+    rt = lambda ds, b: {j.jid: j.runtime_s for j in pool.build_jobs(pool.tier_phases("T3", (b,), ds), 1.0, 1, {})}
+    assert rt("google_speech", "oort")["gs_T3_syn_20s_syn_20_oort_real"] == 600
+    assert rt("google_speech", "oort_star")["gs_T3_syn_20s_syn_20_oort_star_real"] == 300
+    assert rt("cifar10", "oort")["T3_syn_20s_syn_20_oort_real"] == 300
+    assert rt("cifar10", "oort")["T3_mobiperf_3sts_mobiperf_3st_oort_real"] == 960

@@ -5,7 +5,7 @@ here unrepeated. **Focus (operator 10-12): Felix-wide parity to 76 / 76.** Order
 next run) → Decisions → reference sections.
 
 **At a glance (10-13):** parity **71 / 76** honest (PR31 regraded; C20 rows from PR31 only) · accuracy **5 / 12** · 5 reds, all
-timing/terminal counts on syn_20/50 with no same-code floor, no mechanism found · next: PR32 on shepherd → expected **76 / 76**.
+timing/terminal counts on syn_20/50 with no same-code floor, no mechanism found · next: PR32 on jayne → expected **76 / 76**.
 
 ## Next steps (persistent queue — top item is next)
 
@@ -14,11 +14,11 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~4 min) · CPU tiers T1-T4
 
 - **PR32 · A4/A5 (never ran in PR31) + a same-code real floor for each of the 5 PR31 reds · todo: operator launches on shepherd.**
   - *State (10-13):* PR31 (`experiments/pr31_20261012_1849`, pools `pool_20261012_1849_PR31_*`, also on jayne) regraded, scored, rooted
-    offline (Scoreboard). Uncommitted on shepherd: FX-D154 gate fix, `logical_diff.py` no-op filter, `run_pr32.py`, these docs. On that
-    code: PL1 2618 passed, 8 skipped; gate smoke both datasets green (`pool_smoke_fxd154`).
-  - *Launch* (after commit; tmux `dg_flame`, in `lib/python/examples`; `PY=/coc/scratch/dgarg/miniconda3/envs/dg_flame/bin/python`):
-    `$PY scripts/run_pr32.py --hours 8` · GPUs 0-3 (PL16: check foreign apps first) · 7 stages, ~6.4 h (`--plan`) · out
-    `experiments/pr32_<ts>/`, pools `experiments/pool_<ts>_PR32_<stage>` · one Ctrl+C stops all.
+    offline (Scoreboard). Code: FX-D154 gate fix, `run_pr32.py` (7 GPUs, G0UC beside A4/A5, speech oort syn_20s 600 s); PL1
+    2618 passed on FX-D154, harness tests green after; gate smoke both datasets green (`pool_smoke_fxd154`).
+  - *Launch* (jayne after `git pull`; tmux `dg_flame`, in `lib/python/examples`; `PY=/coc/scratch/dgarg/miniconda3/envs/dg_flame/bin/python`):
+    `$PY scripts/run_pr32.py --hours 8` · GPUs 0,2-7 (GPU 1 out, S0; PL16: check foreign apps) · 7 stages, ~5.5 h (`--plan`; CPU leases
+    bind, not GPUs) · out `experiments/pr32_<ts>/`, pools `experiments/pool_<ts>_PR32_<stage>` · one Ctrl+C stops all.
   - *On return:* regrade each pool `--max-stage 9`; `readiness_score.py` PR32 pools on top of the 10-13 set; F1-F3/C1/C2 floors
     must exist in each grade dir (`floors.json`, FX-T42); rewrite the Scoreboard.
 - **FX-N85 · Close PR27/PR28 roots · wip.** Left after PR31:
@@ -27,8 +27,8 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~4 min) · CPU tiers T1-T4
   - (b) Cap cifar stub local steps for the Oort family (`harness_stub_max_steps=1` in `harness_pool.shaped()`, as speech FX-D110):
     11/177 real stub tasks overran D under pool load and 8-sample stub losses blow up utility; PL11 check, rerun T3 cifar oort syn_50.
   - (c) A5 builder: apply FX-D125's observed-window rule to `state_timeline_agreement` (cifar T3 oort_star syn_50 0.9135).
-  - (d) Speech Oort T3 syn_20s/50s legs reach 7-14 rounds (real stops ~50 s early on its wall budget): lengthen the shape if PR32 C2's floor
-    can't gate them.
+  - (d) Speech Oort T3 syn_20s/50s legs reach 7-14 rounds (real stops ~50 s early on its wall budget): oort syn_20s now 600 s
+    (`MIN_RUNTIME_S`, PR32 C2); extend the rest only if a cell stays underpowered.
   - *Exit:* every listed cell green or floor-gated.
 - **FX-N92 · Felix insights: telemetry-backed mechanisms for the paper (operator 10-12) · wip.** Model, catalog, telemetry (FX-D153) and
   `insights.py` in [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md); its Next steps IN1, IN2 (PR31 pools ran clean 10-13; findings not yet written), IN4 (long legs).
@@ -117,12 +117,12 @@ felix/fedbuff mobiperf and G0U syn_50 greens are PR28 code (A4 never ran; FX-D15
 
 | cell(s) | now | stage | expected | refuted if |
 |---|---|---|---|---|
-| felix, fedbuff G0U syn_50 + mobiperf, both datasets | ✅ (PR28 code) | A4 | stay ✅ | a red = regression since PR28 |
-| feddance G0U syn_50 + mobiperf, both datasets | ✅ (PR31 T3 only) | A5 | ✅ on FX-D148/D150 | any INV/EXACT red = FedDance mechanism |
+| felix, fedbuff G0U syn_50 + mobiperf, both datasets | ✅ (PR28 code) | A4 (+ G0UC) | stay ✅ | a red above its G0UC floor = regression since PR28 |
+| feddance G0U syn_50 + mobiperf, both datasets | ✅ (PR31 T3 only) | A5 (+ G0UC) | ✅ on FX-D148/D150 | a red above its G0UC floor = FedDance mechanism |
 | fedbuff·cifar stream_lin/eve, feddance·cifar stream_eve | ❌ | F1 | ✅ floor-gated | sim outside a floor whose two reals agree |
 | oort_star·cifar stream_lin | ❌ | F2 | ✅ floor-gated | same |
 | feddance·speech stream_eve | ❌ | F3 | ✅ floor-gated | same |
-| oort_star·cifar syn_20 · oort·speech syn_20 | ❌ | C1 · C2 | ✅ floor-gated | same; C2 too short to gate → FX-N85 d |
+| oort_star·cifar syn_20 · oort·speech syn_20 | ❌ | C1 · C2 (600 s) | ✅ floor-gated | same |
 
 **Expected score: 76 / 76** if every floor gates; floors are n=2 lower bounds (T8), so a red that survives one is rooted before PR21.
 Accuracy unchanged (no G1A legs).
@@ -164,7 +164,7 @@ refl, oort, oort_star, feddance G1A rows predate FX-D100/D104/D105: void for acc
 
 ## Decisions (operator; standing until changed here)
 
-- **Node (10-12):** runs on shepherd GPUs 0-3 (R4); jayne off for runs but holds the PR28-PR30 + FD pools (read-only scoring).
+- **Node (10-13):** PR32 runs on jayne GPUs 0,2-7 (GPU 1 out); shepherd GPUs 0-3 otherwise (R4).
   Shepherd = jayne hardware (EPYC 7513, A40, driver 575.57.08): charge profiles and floors are shared (T9).
 - **EuroSys FedDance (10-11/12): FedDance's algorithm on our setup, apples to apples.**
   - *Common to all baselines:* model, Dirichlet α=0.1, n=300 cifar / 100 speech, K=10 aggregated (c=13 dispatched), the May-2025 shared
@@ -259,7 +259,7 @@ CPU harness catches logic bugs; distribution parity is decided on GPU.
 
 - `--changed <ref>` picks affected baselines; `--exclude-phases` drops phase ids; `--gpu-ids` pins GPUs.
 - Pool skips busy GPUs/cores between legs, scaling with foreign load (`LOAD` in `pool.log`).
-- Run dirs live in `async_cifar10/experiments/`, pools in `experiments/` of the node that ran them (PR28-PR30, FD: jayne; PR31 on both; PR32: shepherd).
+- Run dirs live in `async_cifar10/experiments/`, pools in `experiments/` of the node that ran them (PR28-PR30, FD, PR32: jayne; PR31 on both).
 - Tests: `tests/harness/test_{slot_isolation,harness_pool,fl_data}.py`, `tests/launch/test_debug_run_dataset_profile.py`.
 
 ## Active build — streaming time-to-accuracy (FX-N12, FX-N13)

@@ -12,15 +12,15 @@ import sys
 import run_pr28 as rb
 
 rb.BATCH = "pr32"
-rb.GPU_IDS, rb.NODE_GPUS = "0,1,2,3", 4  # shepherd, first 4 GPUs (R4; PL16)
+rb.GPU_IDS, rb.NODE_GPUS = "0,2,3,4,5,6,7", 7  # jayne, GPU 1 out (S0, operator 10-13)
 rb.CLIP_STAGES = ("F2",)  # cifar oort_star G0T legs: clip from baseline_reference.yaml
 rb.LANE_POOL_ARGS["cpu2"] = rb.LANE_POOL_ARGS["cpu"]
 rb.LANE_CPU_CAP.update(cpu=80, cpu2=48)
 rb.STAGES = [
-    ("A4", "gpuA", "--tier G0U --datasets all --baselines felix,fedbuff", {}, "core",
-     "Regression: felix/fedbuff G0U syn_50 + mobiperf stay green on PR31 code (last graded PR28)"),
-    ("A5", "gpuA", "--tier G0U --datasets all --baselines feddance", {}, "core",
-     "C20: feddance G0U syn_50 + mobiperf both datasets green on FX-D148/D150"),
+    ("A4", "gpuA", "--tier G0U,G0UC --datasets all --baselines felix,fedbuff", {}, "core",
+     "Regression: felix/fedbuff G0U syn_50 + mobiperf stay green (last graded PR28); G0UC floors the chaotic cells (FX-L53)"),
+    ("A5", "gpuA", "--tier G0U,G0UC --datasets all --baselines feddance", {}, "core",
+     "C20: feddance G0U syn_50 + mobiperf both datasets green on FX-D148/D150, floored by G0UC"),
     ("F1", "gpuB", "--tier G0T,G0TC --datasets cifar10 --baselines fedbuff,feddance --traces syn_50", {}, "core",
      "FX-L66: cifar fedbuff G0T lin/eve throughput + terminal_state and feddance eve trainers_at_n inside their real floor"),
     ("F2", "gpuB", "--tier G0T,G0TC --datasets cifar10 --baselines oort_star --traces syn_50", {}, "core",
@@ -30,7 +30,7 @@ rb.STAGES = [
     ("C1", "cpu", "--tier T3,T3C --datasets cifar10 --baselines oort_star --traces syn_20", {}, "core",
      "FX-L53: cifar oort_star T3 syn_20s trainers_at_n (37 vs 35) inside its real floor"),
     ("C2", "cpu2", "--tier T3,T3C --datasets google_speech --baselines oort --traces syn_20", {}, "core",
-     "FX-N85 d: speech oort T3 syn_20s throughput (10 matched rounds) inside its real floor"),
+     "FX-N85 d: speech oort T3 syn_20s throughput inside its real floor at 600 s (300 s gave 10 matched rounds)"),
 ]
 
 if __name__ == "__main__":
