@@ -334,9 +334,30 @@ def test_gate_smoke_runs_once_per_code_state(tmp_path, monkeypatch):
     monkeypatch.setattr(pool, "Leases", lambda: type("L", (), {"root": tmp_path})())
     monkeypatch.setattr(pool, "code_key", lambda: "abc")
     (tmp_path / "gate_ok_abc_cifar10").write_text("earlier")
+    (tmp_path / "gate_ok_abc_google_speech").write_text("earlier")
     said = []
-    assert pool.run_gate(tmp_path, ["cifar10"], type("P", (), {"say": lambda self, m: said.append(m)})()) == 0
-    assert len(calls) == 2 and "earlier" in said[-1]  # collect + data check, no smoke
+    assert pool.run_gate(tmp_path, ["cifar10", "google_speech"], type("P", (), {"say": lambda self, m: said.append(m)})()) == 0
+    assert len(calls) == 2 and "earlier" in said[-1]  # PR31 A4/A5: per-dataset stamps cover a combo; no smoke
+
+
+def test_gate_smokes_only_unstamped_datasets(tmp_path, monkeypatch):
+    monkeypatch.setattr(pool.subprocess, "run", lambda cmd, **kw: pool.subprocess.CompletedProcess(cmd, 0, "ok\n", ""))
+    monkeypatch.setattr(pool, "Leases", lambda: type("L", (), {"root": tmp_path})())
+    monkeypatch.setattr(pool, "code_key", lambda: "abc")
+    (tmp_path / "gate_ok_abc_cifar10").write_text("earlier")
+    smoked = []
+    monkeypatch.setattr(pool, "run_smoke", lambda cmd, log: smoked.append(cmd) or 0)
+    said = []
+    assert pool.run_gate(tmp_path, ["cifar10", "google_speech"], type("P", (), {"say": lambda self, m: said.append(m)})()) == 4
+    assert smoked[0][smoked[0].index("--datasets") + 1] == "google_speech"  # no summary.tsv -> ABORT, but only speech ran
+
+
+def test_run_smoke_timeout_starts_at_first_leg(tmp_path):
+    """PR31 A4/A5: a smoke queued behind sibling pools' leases is not a timeout; one whose leg runs too long is."""
+    log = tmp_path / "pool.log"
+    script = f"import time, pathlib; time.sleep(2); pathlib.Path({str(log)!r}).write_text('x START leg'); time.sleep(30)"
+    assert pool.run_smoke([sys.executable, "-c", script], log, run_s=1, wait_s=60) is None
+    assert pool.run_smoke([sys.executable, "-c", "import time; time.sleep(3)"], log.with_name("none"), run_s=1, wait_s=60) == 0
 
 
 def test_speech_stub_legs_cap_local_steps():

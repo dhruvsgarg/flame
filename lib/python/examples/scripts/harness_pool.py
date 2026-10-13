@@ -1420,28 +1420,51 @@ def run_gate(root: Path, datasets, pool: "Pool") -> int:
         pool.say(f"ABORT gate: dataset missing or incomplete -- {root}/P00_data.txt")
         return 4
     pool.say("data ok: " + " | ".join(r.stdout.split("\n")[:-1]))
-    stamp = Leases().root / f"gate_ok_{code_key()}_{'_'.join(sorted(datasets))}"
-    if stamp.exists():  # one smoke per code state per node (FX-D101)
-        pool.say(f"gate ok (collect; smoke passed earlier on this code: {stamp.read_text().strip()})")
+    # One smoke per code state, dataset and node (FX-D101, FX-D154).
+    stamps = {d: Leases().root / f"gate_ok_{code_key()}_{d}" for d in datasets}
+    todo = [d for d in datasets if not stamps[d].exists()]
+    if not todo:
+        pool.say(f"gate ok (collect; smoke passed earlier on this code: {stamps[datasets[0]].read_text().strip()})")
         return 0
     g = root / "P00"
-    try:
-        r = subprocess.run([sys.executable, __file__, "--tier", "T3", "--baselines", "felix", "--phases", "T3_syn_0",
-                            "--smoke", "--no-gate", "--datasets", ",".join(datasets), "--output-dir", str(g)],
-                           capture_output=True, text=True, timeout=900)
-    except subprocess.TimeoutExpired:
+    cmd = [sys.executable, __file__, "--tier", "T3", "--baselines", "felix", "--phases", "T3_syn_0",
+           "--smoke", "--no-gate", "--datasets", ",".join(todo), "--output-dir", str(g)]
+    if GPU_ALLOW is not None:
+        cmd += ["--gpu-ids", ",".join(map(str, sorted(GPU_ALLOW)))]
+    rc = run_smoke(cmd, g / "pool.log")
+    if rc is None:
         pool.say(f"ABORT gate: smoke pair timed out -- {g}")
         return 4
     leg_bad = lambda v: v == "MISSING" or "EV1" in v.replace("FAIL:", "").split(",")
     bad = [row for f in g.glob("*/summary.tsv") for row in f.read_text().splitlines()[1:]
            if leg_bad(row.split("\t")[2]) or leg_bad(row.split("\t")[3])
            or row.split("\t")[4] in ("MISSING", "CHECKER_ERROR")]
-    if r.returncode or bad or not list(g.glob("*/summary.tsv")):
+    if rc or bad or not list(g.glob("*/summary.tsv")):
         pool.say(f"ABORT gate: smoke pair made no progress -- {g}")
         return 4
-    stamp.write_text(str(g))
+    for d in todo:
+        stamps[d].write_text(str(g))
     pool.say("gate ok (collect + smoke pair per dataset)")
     return 0
+
+
+def run_smoke(cmd, log: Path, run_s: float = 900, wait_s: float = 3600) -> Optional[int]:
+    """FX-D154: gate smoke timed from its first leg START, not while queued for leases; None = timed out."""
+    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # same group: Ctrl+C reaches it (R20)
+    t0, started = time.time(), None
+    while p.poll() is None:
+        if started is None and log.exists() and " START " in log.read_text():
+            started = time.time()
+        if time.time() - (started or t0) > (run_s if started else wait_s):
+            p.send_signal(signal.SIGINT)  # the pool tears its legs down
+            try:
+                p.wait(120)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+            return None
+        time.sleep(min(5.0, run_s / 2))
+    return p.returncode
 
 
 def code_key() -> str:

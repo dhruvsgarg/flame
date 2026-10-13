@@ -76,6 +76,7 @@ A new failure mode adds a check here in the same session.
 | PL14 | measured RAM within estimate, no growth | DONE lines / runner probe `RAM_OVER`, `LEAK?`; `resource_report.py <pool>` (FX-D140) | PR29 OOMs on formula estimates |
 | PL15 | selector comparisons have a choice; real↔sim equality legs run deterministic kernels | `fd_sanity.py` choice check; `trainerDeterministic=true` (FX-D149) | F3: both arms picked the same ends; F4 losses drifted from r2 |
 | PL16 | foreign GPU jobs: pin pools to GPUs nobody else uses (`GPU_IDS`), not to "free right now" | `nvidia-smi --query-compute-apps=pid --format=csv` + `ps -o user=`; watch restarts | PR31 A1: vLLM on 4-7 restarts every few min, pool took GPU 6 between restarts, trainer OOM aborted the pool |
+| PL17 | a stage's gate must not queue behind its siblings | the gate's smoke is per dataset, timed from its first leg (FX-D154); `ABORT gate` in a stage's pool.log = read P00/pool.log for BLOCKED before blaming code | PR31 A4/A5: smoke timed out waiting on 112 sibling CPUs |
 
 ## Method
 
@@ -136,8 +137,8 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR31 · next:** FELIX Next steps top item (state, launch, read-back); per-stage claims in `run_pr31.py` and FELIX Scoreboard →
-  Expected after PR31. C19 stop rule: a red above its same-batch floor is rooted offline before any rerun.
+- **PR32 · next:** FELIX Next steps top item (state, launch, read-back); per-stage claims in `run_pr32.py` and FELIX Scoreboard →
+  Expected after PR32. C19 stop rule: a red above its same-code floor is rooted offline before any rerun.
 - **PR21 · GPU long block · deferred by C18** until the short queue is empty: G1A accuracy pairs, G1U, G0T full grid.
 
 **Operator decisions**
