@@ -780,6 +780,7 @@ def build_dispatch(
     redispatch_stagger_s: Optional[float] = None,
     held_s: Optional[float] = None,
     staggered: Optional[bool] = None,
+    extra: Optional[dict[str, Any]] = None,
 ) -> tuple[str, dict[str, Any]]:
     """Per-dispatch re-dispatch-stagger validation (felix event-driven re-dispatch).
 
@@ -806,6 +807,8 @@ def build_dispatch(
     ):
         if v is not None:
             fields[k] = v
+    if extra:
+        fields.update(extra)
     return EVENT_DISPATCH, fields
 
 
