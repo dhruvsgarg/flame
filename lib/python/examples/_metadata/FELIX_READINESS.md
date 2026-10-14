@@ -15,6 +15,9 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
 - **PR35 · overnight: G1AS accuracy + non-streaming re-screen · todo (operator launches; ~11.7 h by `--plan --hours 13`).**
   `cd lib/python/examples && conda run --no-capture-output -n dg_flame python scripts/run_pr35.py --hours 13` (jayne, GPUs 0,2-7; tmux
   `dg_flame`, detached). Stages: A1/A2 G1AS speech/cifar six (FX-N93.1) · B1 G0U,G0UC all · C1 T3 all · C2 cifar P7 · C3 T3C all.
+  Ready: commit `c3a3ef3a4`, code key `82fe3b6ca892`; PL1 2634 passed; PL3 G1AS felix scale smoke rc=0 both datasets (cifar 343/398 GB
+  RAM, 31/45 GB GPU; speech 137/163 GB, 23/45 GB). Shepherd GPUs 0-4 hold foreign memory (PL16): jayne only. Operator adds one change first;
+  a run-affecting one needs a new commit, PL1 and `--plan`.
   Then `parity_ladder.py --grade <pool> --regrade --max-stage 9` per pool, `accuracy_table.py --runs <A1/A2 runs>`.
   *Predict:* every B1/C1/C2 cell green (or L13 draw); G1AS felix/fedbuff at target (cifar 50%, speech 60%) within 90 min as runs 18/21;
   cifar oort_star ≥ 50%; cifar oort/feddance first uncut values. *Refute:* a red voted by a majority of reals = mechanism, root it before
@@ -175,7 +178,8 @@ Sync-four numbers are G1AS on source-faithful configs (FX-D100/D104/D105); older
 - **FedScale baselines (10-12):** FX-D148 partial dispatch is correct behaviour for refl, oort, oort_star, feddance (FedScale `resampleClients`);
   REFL staleness unbounded (`stale_update: -1`): paper §5 "no maximum threshold is applied to staleness"; the 5-round cap is only the
   SAFA comparison (§5.2.2, `run_exps.sh` SAFA branch). Stored REFL runs already used -1 (reference applied last), so no C20 from it.
-- **Run scope (10-12):** the 76/76 must stand on one code state, so a batch reruns felix/fedbuff G0U (A4) beside the others.
+- **Run scope (10-12):** the 76/76 must stand on one code state, so a batch reruns felix/fedbuff G0U (A4) beside the others. One code
+  state = one `code_key` (FX-D162, 10-14): it may span batches (PR35 + PR36) while no run-affecting file changes.
 
 **FedDance in the paper** (eval text; evidence `fd_20261012_0503` telemetry, FX-N90). FedDance climbs fast, then plateaus below 70% on
 both datasets. Its utility favours fast, high-loss devices, so early rounds are short (12 s vs 15.5 s for random selection on CIFAR-10)

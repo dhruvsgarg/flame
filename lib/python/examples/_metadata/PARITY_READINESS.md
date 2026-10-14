@@ -26,7 +26,7 @@
 - **C5 Loop per run:** regrade, then rewrite the FELIX Scoreboard (now + expected after the next run); never append a results log.
 - **C6 Correct first, equal second:** a check green on a shared bug is a bug.
 - **C7 Instrument what you can't see,** in the same change as the next fix.
-- **C8 Launch only when fixes are maximized** and PL1-PL11 pass.
+- **C8 Launch only when fixes are maximized** and the PL checklist passes.
 - **C9 Correct fixes default on** with a revert knob; unproven ones default off.
 - **C10 Resolve, don't just file:** drive max items to closure; report closed vs opened.
 - **C11 New features screen short, small, parallel** (≤ 30 min, n ≈ 50) before long legs.
@@ -77,7 +77,7 @@ A new failure mode adds a check here in the same session.
 | PL15 | selector comparisons have a choice; real↔sim equality legs run deterministic kernels | `fd_sanity.py` choice check; `trainerDeterministic=true` (FX-D149) | F3: both arms picked the same ends; F4 losses drifted from r2 |
 | PL16 | foreign GPU jobs: pin pools to GPUs nobody else uses (`GPU_IDS`), not to "free right now" | `nvidia-smi --query-compute-apps=pid --format=csv` + `ps -o user=`; watch restarts | PR31 A1: vLLM on 4-7 restarts every few min, pool took GPU 6 between restarts, trainer OOM aborted the pool |
 | PL17 | a stage's gate must not queue behind its siblings | the gate's smoke is per dataset, timed from its first leg (FX-D154); `ABORT gate` in a stage's pool.log = read P00/pool.log for BLOCKED before blaming code | PR31 A4/A5: smoke timed out waiting on 112 sibling CPUs |
-| PL18 | the launch node runs the planned commit | `git log -1` on that node = the commit the doc names; `code_state.txt` HEAD | PR32: jayne launched without the shepherd commit (no G0UC, ECC GPU 1 used) |
+| PL18 | the launch node runs the planned commit and code key | `git log -1` on that node = the commit the doc names; `code_state.txt` HEAD; each pool's `code_key.txt` = the doc's key (FX-D162) | PR32: jayne launched without the shepherd commit (no G0UC, ECC GPU 1 used) |
 
 ## Method
 
@@ -159,6 +159,7 @@ Parked with the track; board in simulate_fwdllm.md §A.
   before any long run (10-10).
 - D = our trainer runtime distribution for every baseline, never per-sample; compute > D = rethink for all (ROBUST L36) (10-08).
 - Trainer memory audit to raise n (FX-N84) (10-08).
+- One code state = one `code_key` over run-affecting files (FX-D162); a re-screen may span batches on it (PR35 + PR36) (10-14).
 
 ---
 
