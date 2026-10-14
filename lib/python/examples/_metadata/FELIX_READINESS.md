@@ -15,9 +15,9 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
 - **PR35 · overnight: G1AS accuracy + non-streaming re-screen · todo (operator launches; ~10.8 h by `--plan --hours 13`).**
   `cd lib/python/examples && conda run --no-capture-output -n dg_flame python scripts/run_pr35.py --hours 13` (jayne, GPUs 0,2-7; tmux
   `dg_flame`, detached). Stages: A1/A2 G1AS speech/cifar six (FX-N93.1) · B1 G0U,G0UC all · C1 T3 all · C2 cifar P7 · C3 T3C all.
-  Ready: FX-N84 fixes (uncommitted) set a new commit + code key; PL1 2636 passed; PL3 G1AS felix scale smoke rc=0 both datasets (cifar 343/398 GB
-  RAM, 31/45 GB GPU; speech 137/163 GB, 23/45 GB). Shepherd GPUs 0-4 hold foreign memory (PL16): jayne only. Operator adds one change first;
-  a run-affecting one needs a new commit, PL1 and `--plan`.
+  Ready: commit `53c6d90f4` (FX-N84), code key `5e041d393b8a`; PL1 2640 passed; PL3 G1AS felix scale smoke rc=0 both datasets
+  (`pool_20261014_pl3_fxn84{,_gs}`: cifar 307/394 GB RAM, 31/45 GB GPU; speech 122/157 GB, 23/45 GB). Shepherd GPUs 0-4 hold foreign
+  memory (PL16): jayne only. A run-affecting edit needs a new commit, PL1 and `--plan`.
   Then `parity_ladder.py --grade <pool> --regrade --max-stage 9` per pool, `accuracy_table.py --runs <A1/A2 runs>`.
   *Predict:* every B1/C1/C2 cell green (or L13 draw); G1AS felix/fedbuff at target (cifar 50%, speech 60%) within 90 min as runs 18/21;
   cifar oort_star ≥ 50%; cifar oort/feddance first uncut values. *Refute:* a red voted by a majority of reals = mechanism, root it before
