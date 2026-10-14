@@ -124,3 +124,18 @@ def test_floors_take_every_same_code_replicate(tmp_path, monkeypatch):
     monkeypatch.setattr(lad.subprocess, "run", run)
     floors = lad._control_floors(exp / "pool_A", Path("checker"), 2)
     assert floors[("gs_G0U_syn_50", "feddance")] == {"trainers_at_n": 0.07}
+
+
+def test_minority_of_reals_is_the_draw(tmp_path):
+    # L13, PR34 speech feddance eve: sim red vs its own real only (1 of 3 reals) is the draw; vs a majority, the code.
+    red = {"terminal_state": {"ok": False, "tier": "EXACT"}}
+    root = _pool(tmp_path, "gs_G0T_eve_syn_50", [("syn_50", "feddance", "PASS", "PASS")])
+    p = root / "gs_G0T_eve_syn_50" / "gs_G0T_eve_syn_50_feddance_grade" / "parity_regrade"
+    p.mkdir(parents=True)
+    for name, checks in (("syn_50_feddance.json", red), ("syn_50_feddance.rep1.json", {}), ("syn_50_feddance.rep2.json", {})):
+        (p / name).write_text(json.dumps({**checks, "summary": {}}))
+    assert _status(lad.grade_pool(root, 9))[("gs_G0T_eve_syn_50", "feddance")] == ("green", "draw S8 terminal_state 1/3")
+    (p / "syn_50_feddance.rep2.json").write_text(json.dumps({**red, "summary": {}}))
+    assert _status(lad.grade_pool(root, 9))[("gs_G0T_eve_syn_50", "feddance")][0] == "red"
+    (p / "syn_50_feddance.rep2.json").unlink()  # n=2: no vote, any fail is red (L12)
+    assert _status(lad.grade_pool(root, 9))[("gs_G0T_eve_syn_50", "feddance")][0] == "red"

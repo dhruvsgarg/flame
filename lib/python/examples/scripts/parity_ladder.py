@@ -135,25 +135,10 @@ def _code_state(pool: Path) -> str:
     return m.group(0) if m else pool.name
 
 
-def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
-    """Q2: {(phase, baseline): floors}, max spread over every real<->real pair of a cell's real and its replicates (FX-D159;
-    n=2 is a lower bound, T8): G0C per G0 syn_0 cell (syn_20 reuses it), G0UC per G0U, G0TC per G0T, T3C per T3 cell.
-    Replicates may sit in any same-code pool of the block.
-    Writes <control phase>/control_<b>[_<n>].json."""
-    import concurrent.futures as cf
-    sys.path.insert(0, str(EXAMPLES / "async_cifar10" / "scripts"))
-    from parity.checks import control_floors
-
-    def one(item):
-        key, (a, b, cmd_txt, out) = item
-        t = cmd_txt.read_text()
-        goal, rt = (re.search(rf"--{k} (\S+)", t) for k in ("agg-goal", "runtime-s"))
-        subprocess.run([sys.executable, str(checker), "--real", str(a), "--sim", str(b), "--control",
-                        "--agg-goal", goal[1], "--budget-s", rt[1], "--json-out", str(out)],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return key, (control_floors(json.loads(out.read_text())) if out.exists() else {})
-
-    cells = {}  # (target, b) -> (own real, cmd.txt, [(replicate real, its phase dir)])
+def _replicate_cells(root: Path) -> dict:
+    """{(phase, baseline): (own real, grade cmd.txt, [(replicate real, its control phase dir)])}: G0C per G0 syn_0 cell,
+    G0UC per G0U, G0TC per G0T, T3C per T3 cell; replicates may sit in any same-code pool of the block."""
+    cells = {}
     same = [p for p in root.parent.iterdir() if p.is_dir() and _code_state(p) == _code_state(root)]  # L18: one code state
     for f in sorted({*root.glob("*G0C_syn_0/summary.tsv"), *(g for p in same for g in p.glob("*G0UC_*/summary.tsv")),
                      *(g for p in same for g in p.glob("*T3C_*/summary.tsv")),
@@ -168,8 +153,27 @@ def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
             own = re.search(r"--real-dir (\S+)", cmd.read_text()) if cmd else None
             if own and r.get("real_dir"):
                 cells.setdefault((target, b), (Path(own[1]), cmd, []))[2].append((Path(r["real_dir"]), f.parent))
+    return cells
+
+
+def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
+    """Q2: {(phase, baseline): floors}, max spread over every real<->real pair of a cell's real and its replicates (FX-D159;
+    n=2 is a lower bound, T8). Writes <control phase>/control_<b>[_<n>].json."""
+    import concurrent.futures as cf
+    sys.path.insert(0, str(EXAMPLES / "async_cifar10" / "scripts"))
+    from parity.checks import control_floors
+
+    def one(item):
+        key, (a, b, cmd_txt, out) = item
+        t = cmd_txt.read_text()
+        goal, rt = (re.search(rf"--{k} (\S+)", t) for k in ("agg-goal", "runtime-s"))
+        subprocess.run([sys.executable, str(checker), "--real", str(a), "--sim", str(b), "--control",
+                        "--agg-goal", goal[1], "--budget-s", rt[1], "--json-out", str(out)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return key, (control_floors(json.loads(out.read_text())) if out.exists() else {})
+
     pairs = {}
-    for (target, b), (own, cmd, reps) in cells.items():
+    for (target, b), (own, cmd, reps) in _replicate_cells(root).items():
         reals = [(own, None)] + reps
         for i, j in ((i, j) for j in range(1, len(reals)) for i in range(j)):
             out = reals[j][1] / (f"control_{b}.json" if i == 0 else f"control_{b}_{i}.json")
@@ -195,6 +199,7 @@ def regrade_pool(root: Path, jobs: int = 20) -> None:
     checker = EXAMPLES / "async_cifar10" / "scripts" / "parity_check.py"
     events = checker.parent / "parity" / "event_invariants.py"
     floors = _control_floors(root, checker, jobs)
+    reps = {k: [r for r, _ in v[2]] for k, v in _replicate_cells(root).items()}
 
     def one(cmd_txt: Path) -> None:
         t = cmd_txt.read_text()
@@ -213,9 +218,14 @@ def regrade_pool(root: Path, jobs: int = 20) -> None:
             (cmd_txt.parent / "floors.json").write_text(json.dumps(fl))
             extra = ["--floors", str(cmd_txt.parent / "floors.json")]
         goal = ["--agg-goal", g["agg-goal"][1]] if g["agg-goal"] else []  # reference-config tiers (G1/G1S) omit it
-        subprocess.run([sys.executable, str(checker), "--real", g["real-dir"][1], "--sim", g["sim-dir"][1],
-                        *goal, "--budget-s", g["runtime-s"][1], *extra,
-                        "--json-out", str(out / name.name)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for stale in out.glob(f"{name.stem}.rep*.json"):
+            stale.unlink()
+        # L13: grade the sim against every same-code real (<name>.rep<i>.json).
+        for i, real in enumerate([g["real-dir"][1], *reps.get((phase, g["baselines"][1] if g["baselines"] else ""), [])]):
+            subprocess.run([sys.executable, str(checker), "--real", str(real), "--sim", g["sim-dir"][1],
+                            *goal, "--budget-s", g["runtime-s"][1], *extra,
+                            "--json-out", str(out / (f"{name.stem}.rep{i}.json" if i else name.name))],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run([sys.executable, str(events), g["real-dir"][1], g["sim-dir"][1],  # EV re-run too
                         "--json-out", str(out / f"events_{name.name}")],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -248,11 +258,20 @@ def grade_pool(root: Path, max_stage: int) -> List[Cell]:
                     (known if item else red).append(f"{side[3:]} {c}" + (f" ({item})" if item else ""))
             js = next(iter(f.parent.glob(f"*/parity_regrade/{tr}_{b}.json")), None) or \
                 next(iter(f.parent.glob(f"*/parity/{tr}_{b}.json")), None)
-            for stage, k, tier in _parity_fails(js, max_stage):
+            grades = [js, *sorted(js.parent.glob(f"{tr}_{b}.rep*.json"))] if js else [js]
+            votes = {}
+            for g in grades:
+                for fail in _parity_fails(g, max_stage):
+                    votes[fail] = votes.get(fail, 0) + 1
+            draws = []
+            for (stage, k, tier), n in sorted(votes.items()):
+                if len(grades) >= 3 and 2 * n <= len(grades):  # L13: a minority of reals = the draw (n >= 3, L12)
+                    draws.append(f"draw S{stage} {k} {n}/{len(grades)}")
+                    continue
                 item = _known(k, b, where)
                 (known if item else red).append(f"S{stage} {k} [{tier}]" + (f" ({item})" if item else ""))
             status = "red" if red else ("known" if known else "green")
-            cells.append(Cell(phase, tr, b, status, "; ".join(red or known)))
+            cells.append(Cell(phase, tr, b, status, "; ".join(red or known or draws)))
     return cells
 
 

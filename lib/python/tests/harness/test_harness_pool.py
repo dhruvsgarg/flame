@@ -478,3 +478,25 @@ def test_gpu_equality_tiers_run_deterministic_kernels():
             phs = pool.tier_phases(tier, pool.B6, ds)
             assert phs and all("trainerDeterministic=true" in ph.trainer_hp for ph in phs), (tier, ds)
     assert all("trainerDeterministic" not in ph.trainer_hp for ph in pool.tier_phases("G1", pool.B6, "cifar10"))
+
+
+def test_code_key_ignores_files_no_leg_runs(tmp_path, monkeypatch):
+    # L18: a doc or grader edit keeps the code state (floors, gate); a run-affecting edit changes it.
+    import subprocess
+    git = lambda *a: subprocess.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True)
+    files = {"lib/python/flame/agg.py": "x = 1\n", "lib/python/examples/_metadata/FELIX.md": "a\n",
+             "lib/python/examples/scripts/parity_ladder.py": "y = 1\n", "lib/python/examples/scripts/run_pr35.py": "z = 1\n"}
+    for f, t in files.items():
+        (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f).write_text(t)
+    git("init", "-q")
+    git("add", ".")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c0")
+    monkeypatch.setattr(pool, "REPO", tmp_path)
+    k0 = pool.code_key()
+    for f in list(files)[1:]:
+        (tmp_path / f).write_text("edited\n")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "c1")
+    assert pool.code_key() == k0
+    (tmp_path / "lib/python/flame/agg.py").write_text("x = 2\n")
+    assert pool.code_key() != k0

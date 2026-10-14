@@ -1469,10 +1469,20 @@ def run_smoke(cmd, log: Path, run_s: float = 900, wait_s: float = 3600) -> Optio
     return p.returncode
 
 
+# L18: files no leg executes (docs, tests, graders, batch drivers); editing them keeps the code state.
+NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python/examples/async_cifar10/scripts/parity/**",
+                     "lib/python/examples/async_cifar10/scripts/parity_check.py", "lib/python/examples/scripts/run_*.py",
+                     *(f"lib/python/examples/scripts/{s}.py" for s in (
+                         "parity_ladder", "readiness_score", "logical_diff", "insights", "accuracy_table", "replicate_spread",
+                         "resource_report", "profile_report", "fd_sanity", "eurosys_export", "baseline_deviations",
+                         "cleanup_experiments", "test_inventory", "harness_iso_compare")))
+
+
 def code_key() -> str:
-    """HEAD plus the uncommitted diff: two pools share a gate only on identical code."""
+    """Tracked run-affecting files plus their uncommitted diff: two pools share a gate and floors only on identical code."""
     git = lambda *a: subprocess.run(["git", "-C", str(REPO), *a], capture_output=True, text=True).stdout
-    return hashlib.sha1((git("rev-parse", "HEAD") + git("diff", "HEAD")).encode()).hexdigest()[:12]
+    spec = ["--", ".", *(f":(exclude,glob){p}" for p in NOT_RUN_AFFECTING)]
+    return hashlib.sha1((git("ls-files", "-s", *spec) + git("diff", "HEAD", *spec)).encode()).hexdigest()[:12]
 
 
 def main(argv=None) -> int:
