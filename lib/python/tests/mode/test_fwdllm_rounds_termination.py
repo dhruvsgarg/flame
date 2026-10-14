@@ -98,8 +98,8 @@ class _FakeAggregator:
 
 
 @patch(
-    "flame.mode.horizontal.syncfl.fwdllm_aggregator.fc.make_functional_with_buffers",
-    return_value=(None, [], None),
+    "flame.mode.horizontal.syncfl.fwdllm_aggregator.grad_slots",
+    return_value=[],
 )
 class TestRoundsBasedTermination:
     def test_work_done_set_once_rounds_exhausted(self, _mock_ffb):

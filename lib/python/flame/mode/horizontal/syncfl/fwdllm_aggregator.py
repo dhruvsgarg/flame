@@ -121,6 +121,17 @@ def _calculate_hash(tensor):
     return hashlib.sha256(tensor.detach().cpu().numpy().tobytes()).hexdigest()
 
 
+def grad_slots(model):
+    """Zero grad list: real zeros for trainable params, a stride-0 view (no memory) for frozen ones."""
+    return [torch.zeros_like(p) if p.requires_grad
+            else torch.zeros((), dtype=p.dtype, device=p.device).expand(p.shape) for p in model.parameters()]
+
+
+def is_frozen_slot(t):
+    """A grad_slots() frozen entry: always zero, and in-place writes to it raise."""
+    return t.dim() > 0 and not any(t.stride())
+
+
 def log_error_distribution(probs, labels):
     """
     Analyzes error distribution across 4 classes and logs via logging.info.
@@ -1038,7 +1049,7 @@ class TopAggregator(AsyncTopAgg):
                 for i in range(0, len(grad_list)):
                     if i == 0:
                         grad[id] = grad_list[i][id]
-                    else:
+                    elif not is_frozen_slot(grad[id]):
                         grad[id] += grad_list[i][id]
             self.print_trainable_params_stats(location="[end,aggregate_grad_pool()]")
             return grad
@@ -2246,10 +2257,8 @@ class TopAggregator(AsyncTopAgg):
 
         self.add_local_trained_result(0, self.grad, self._agg_goal_cnt)
 
-        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
-            self.model
-        )
-        self.grad = [torch.zeros_like(p) for p in self.params]
+        # Was a functorch deep copy of the model each iteration, used only for these shapes.
+        self.grad = grad_slots(self.model)
 
         # Set before aggregate() — that function rolls back weights on var failure and clears the flag.
         self._force_commit_this_cycle = (

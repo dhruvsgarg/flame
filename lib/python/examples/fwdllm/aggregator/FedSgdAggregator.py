@@ -5,10 +5,11 @@ import random
 import time
 import math
 import numpy as np
+import psutil
 import torch
 from torch.nn import CrossEntropyLoss
-from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator
-from examples.fwdllm.trainer.forward_training.fwdgrad_utils import calculate_var, calculate_snr, calculate_cv, calculate_real_var, calculate_snr_gradients
+from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator, grad_slots, is_frozen_slot
+from examples.fwdllm.trainer.forward_training.fwdgrad_utils import calculate_var, calculate_snr, calculate_cv, calculate_real_var, calculate_snr_gradients, trim_host_heap
 from examples.fwdllm.expts.dataset_registry import (
     data_coverage, max_dominant_share, total_data_bins,
 )
@@ -313,10 +314,7 @@ class FedSGDAggregator(TopAggregator):
         self._n_eff_scalar = None
         self.snr = None
         self.snr_prev_iter_list = []
-        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
-            self.model
-        )
-        self.grad = [torch.zeros_like(p) for p in self.params]
+        self.grad = grad_slots(self.model)
 
         # Server-side momentum on the raw SGD update; 0.0 (default) is byte-identical.
         self.server_momentum = float(
@@ -682,7 +680,7 @@ class FedSGDAggregator(TopAggregator):
     @timer_decorator
     def _snapshot_last_round_update(self, weighted_gradient_sum):
         """Timed separately; shared by both commit branches (was duplicated verbatim)."""
-        return [p.clone().detach() for p in weighted_gradient_sum]
+        return [p if is_frozen_slot(p) else p.clone().detach() for p in weighted_gradient_sum]
 
     @timer_decorator
     def _accumulate_retry_cache(self, model_list, training_num):
@@ -754,7 +752,7 @@ class FedSGDAggregator(TopAggregator):
                 # w = local_sample_number / training_num
                 if i == 0:
                     weighted_gradient_sum[id] = local_model_params[id]
-                else:
+                elif not is_frozen_slot(weighted_gradient_sum[id]):
                     weighted_gradient_sum[id] += local_model_params[id]
             if not _trust:
                 _cos_accumulate(id, weighted_gradient_sum[id] / training_num)
@@ -783,14 +781,15 @@ class FedSGDAggregator(TopAggregator):
             _dirs = {}
             for id, _p in zip(range(len(weighted_gradient_sum)),
                               self.trainer.model.parameters()):
+                if not _p.requires_grad:  # always zero; keep the stride-0 slot instead of materialising it
+                    _dirs[id] = weighted_gradient_sum[id]
+                    continue
                 _pooled = weighted_gradient_sum[id] / training_num
                 # Momentum BEFORE normalisation, so the trust-ratio scale still
                 # pins rho at rho*. Applied after it (the raw_sgd path) heavy-ball
                 # multiplies the step by 1/(1-beta) -- which is the arithmetic
                 # behind the original S1 NaN, and would confound any momentum A/B.
                 _dirs[id] = self._server_update_step(id, _pooled)
-                if not _p.requires_grad:
-                    continue
                 _cos_accumulate(id, _dirs[id])
                 _g_sq += float(_dirs[id].pow(2).sum())
                 _t_sq += float(_p.detach().pow(2).sum())
@@ -1493,6 +1492,8 @@ class FedSGDAggregator(TopAggregator):
         self._force_commit_this_cycle = False
 
         old_param = self.get_global_model_params()
+        trim_host_heap()
+        logger.info(f"[MEM:agg] rss={psutil.Process().memory_info().rss / 2**20:.0f} MiB")
 
         end_time = time.time()
         logger.info("aggregate time cost: %d" % (end_time - start_time))

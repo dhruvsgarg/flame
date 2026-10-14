@@ -114,8 +114,7 @@ def emitted():
         yield events
 
 
-@patch("flame.mode.horizontal.syncfl.fwdllm_aggregator.fc."
-       "make_functional_with_buffers", return_value=(None, [], None))
+@patch("flame.mode.horizontal.syncfl.fwdllm_aggregator.grad_slots", return_value=[])
 class TestLapBoundaryProgressKey:
     def test_agg_round_round_is_the_cycle_it_worked_on(self, _ffb, emitted):
         # Committing the LAST bin of lap 1 must record (round=1, data_id=149) --
@@ -161,8 +160,7 @@ class TestLapBoundaryProgressKey:
         assert (agg._round, agg.data_id) == (1, 149)
 
 
-@patch("flame.mode.horizontal.syncfl.fwdllm_aggregator.fc."
-       "make_functional_with_buffers", return_value=(None, [], None))
+@patch("flame.mode.horizontal.syncfl.fwdllm_aggregator.grad_slots", return_value=[])
 class TestDataIdNeverOutOfRange:
     def test_version_bump_census_sees_a_wrapped_data_id(self, _ffb, emitted):
         agg = _Agg(round_=1, data_id=149, total_data_bins=150)
