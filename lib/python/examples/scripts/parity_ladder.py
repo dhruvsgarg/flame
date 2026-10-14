@@ -136,28 +136,28 @@ def _code_state(pool: Path) -> str:
 
 
 def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
-    """Q2: {(phase, baseline): floors} from each real replicate leg vs its cell's real leg (n=2: a lower bound, T8):
-    G0C per G0 syn_0 cell (syn_20 reuses it), G0UC per G0U cell, G0TC per G0T cell, T3C per T3 cell (may sit in a sibling
-    pool of the block).
-    Writes <control phase>/control_<b>.json."""
+    """Q2: {(phase, baseline): floors}, max spread over every real<->real pair of a cell's real and its replicates (FX-D159;
+    n=2 is a lower bound, T8): G0C per G0 syn_0 cell (syn_20 reuses it), G0UC per G0U, G0TC per G0T, T3C per T3 cell.
+    Replicates may sit in any same-code pool of the block.
+    Writes <control phase>/control_<b>[_<n>].json."""
     import concurrent.futures as cf
     sys.path.insert(0, str(EXAMPLES / "async_cifar10" / "scripts"))
     from parity.checks import control_floors
 
     def one(item):
-        key, (ctl_dir, cmd_txt, out) = item
+        key, (a, b, cmd_txt, out) = item
         t = cmd_txt.read_text()
-        real, goal, rt = (re.search(rf"--{k} (\S+)", t) for k in ("real-dir", "agg-goal", "runtime-s"))
-        subprocess.run([sys.executable, str(checker), "--real", real[1], "--sim", str(ctl_dir), "--control",
+        goal, rt = (re.search(rf"--{k} (\S+)", t) for k in ("agg-goal", "runtime-s"))
+        subprocess.run([sys.executable, str(checker), "--real", str(a), "--sim", str(b), "--control",
                         "--agg-goal", goal[1], "--budget-s", rt[1], "--json-out", str(out)],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return key, (control_floors(json.loads(out.read_text())) if out.exists() else {})
 
-    pairs = {}
+    cells = {}  # (target, b) -> (own real, cmd.txt, [(replicate real, its phase dir)])
     same = [p for p in root.parent.iterdir() if p.is_dir() and _code_state(p) == _code_state(root)]  # L18: one code state
-    for f in {*root.glob("*G0C_syn_0/summary.tsv"), *(g for p in same for g in p.glob("*G0UC_*/summary.tsv")),
-              *(g for p in same for g in p.glob("*T3C_*/summary.tsv")),
-              *(g for p in same for g in p.glob("*G0TC_*/summary.tsv"))}:
+    for f in sorted({*root.glob("*G0C_syn_0/summary.tsv"), *(g for p in same for g in p.glob("*G0UC_*/summary.tsv")),
+                     *(g for p in same for g in p.glob("*T3C_*/summary.tsv")),
+                     *(g for p in same for g in p.glob("*G0TC_*/summary.tsv"))}):
         tag = next(t for t in ("G0UC_", "G0TC_", "T3C_", "G0C_") if t in f.parent.name)
         pre, _, trace = f.parent.name.partition(tag)
         target = f"{pre}{tag[:-2]}_{trace}"
@@ -165,10 +165,21 @@ def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
             b = r["baseline"]
             cmd = next((c for g in (f"{target}_{b}", f"{target}_{r['trace']}_{b}")  # Oort-family *s shapes name legs by trace too
                         for c in root.glob(f"{target}/{g}_grade/cmd.txt")), None)  # the regraded pool's own real
-            if cmd and r.get("real_dir"):
-                pairs[(target, b)] = (Path(r["real_dir"]), cmd, f.parent / f"control_{b}.json")
+            own = re.search(r"--real-dir (\S+)", cmd.read_text()) if cmd else None
+            if own and r.get("real_dir"):
+                cells.setdefault((target, b), (Path(own[1]), cmd, []))[2].append((Path(r["real_dir"]), f.parent))
+    pairs = {}
+    for (target, b), (own, cmd, reps) in cells.items():
+        reals = [(own, None)] + reps
+        for i, j in ((i, j) for j in range(1, len(reals)) for i in range(j)):
+            out = reals[j][1] / (f"control_{b}.json" if i == 0 else f"control_{b}_{i}.json")
+            pairs[(target, b, i, j)] = (reals[i][0], reals[j][0], cmd, out)
     with cf.ThreadPoolExecutor(jobs) as ex:
-        floors = dict(ex.map(one, pairs.items()))
+        floors = {}
+        for (target, b, *_), fl in ex.map(one, pairs.items()):
+            acc = floors.setdefault((target, b), {})
+            for m, v in fl.items():
+                acc[m] = max(acc.get(m, 0.0), v)
     for (target, b), fl in list(floors.items()):
         if target.endswith("G0_syn_0"):
             floors.setdefault((target[:-1] + "20", b), fl)

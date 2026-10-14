@@ -267,6 +267,10 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     real_intrinsic_client_duration: t.Optional[bool] = Field(
         alias="realIntrinsicClientDuration", default=True
     )
+    # FX-D160: sim reads the data stream at send + delivery lag, as real; false = revert.
+    sim_stream_at_train_start: t.Optional[bool] = Field(
+        alias="simStreamAtTrainStart", default=True
+    )
     # C13 (FX-D108): sim starts each recipient after its measured fan-out delivery lag, as real does.
     sim_charge_delivery_lag: t.Optional[bool] = Field(
         alias="simChargeDeliveryLag", default=True

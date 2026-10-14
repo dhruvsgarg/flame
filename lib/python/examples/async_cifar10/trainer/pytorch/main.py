@@ -148,6 +148,8 @@ class PyTorchCifar10Trainer(Trainer):
         self._sim_charge_overhead = getattr(self.config.hyperparameters, "sim_charge_trainer_overhead", True) is not False
         self._sim_charge_lag = bool(getattr(self.config.hyperparameters, "sim_charge_delivery_lag", False))
         self.sim_download_leg_s = float(getattr(self.config.hyperparameters, "sim_download_leg_s", 0.0) or 0.0)
+        _hp = self.config.hyperparameters
+        self._sim_stream_at_start = str(getattr(_hp, "sim_stream_at_train_start", True)).lower() == "true"
 
         self.time_mode = str(time_mode)
         self.simulated = self.time_mode == "simulated"
@@ -574,15 +576,29 @@ class PyTorchCifar10Trainer(Trainer):
             f"{time.time()}"
         )
 
+    def _sim_delivery_lag_s(self) -> float:
+        """FX-D108: the task's fan-out delivery lag in sim (measured, else the profiled download leg)."""
+        _wst, _wrt = getattr(self, "_sim_wall_send_ts", None), getattr(self, "_wall_recv_ts", None)
+        if self._sim_charge_lag and _wst is not None and _wrt is not None:
+            return max(0.0, float(_wrt) - float(_wst))
+        return self.sim_download_leg_s  # FX-D116: profiled download stands in for the unmeasured lag
+
+    def _stream_now(self) -> float:
+        """FX-D160: stream clock at train start; sim adds the delivery lag real pays before training."""
+        on = getattr(self, "simulated", False) and getattr(self, "_sim_stream_at_start", True)
+        if on and self._sim_send_ts is not None:
+            return self._sim_now() + self._sim_delivery_lag_s()
+        return self._sim_now()
+
     def _visible_sample_count(self) -> int:
         """Samples unlocked at this task's stream clock (stream_schedule.py)."""
         if self._stream_sched is None:
             return self._stream_total
-        return self._stream_sched.visible(self._stream_total, self._sim_now())
+        return self._stream_sched.visible(self._stream_total, self._stream_now())
 
     def _rebuild_stream_loader(self) -> None:
         """Rebuild train_loader over the currently-visible prefix of the pool."""
-        self._stream_clock_s = self._sim_now() if self._stream_sched is not None else None
+        self._stream_clock_s = self._stream_now() if self._stream_sched is not None else None
         n = self._stream_visible = self._visible_sample_count()
         full = n >= self._stream_total
         if self._stream_gpu:
@@ -920,12 +936,7 @@ class PyTorchCifar10Trainer(Trainer):
             self._sim_round_duration = sim_round_duration
             self._sim_completion_ts += _overhead_s
         # FX-D108: real trains from its own receipt; delivery lag is not device speed, so only the clock sees it.
-        _wst, _wrt = getattr(self, "_sim_wall_send_ts", None), getattr(self, "_wall_recv_ts", None)
-        _lag_s = 0.0
-        if self.simulated and self._sim_charge_lag and _wst is not None and _wrt is not None:
-            _lag_s = max(0.0, float(_wrt) - float(_wst))
-        elif self.simulated:
-            _lag_s = self.sim_download_leg_s  # FX-D116: profiled download stands in for the unmeasured lag
+        _lag_s = self._sim_delivery_lag_s() if self.simulated else 0.0
         self._sim_completion_ts += _lag_s
         # FX-D123: real reports sim's duration formula, so the selector's speed excludes weight staging.
         self._client_task_train_intrinsic_s = (

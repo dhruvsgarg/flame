@@ -138,9 +138,9 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR33 · next:** FELIX Next steps top item (state, launch, read-back); per-stage claims in `run_pr33.py` and FELIX Scoreboard →
-  Expected after PR33. C19 stop rule: a red above its same-code floor is rooted offline before any rerun.
-- **PR34 · one-code-state re-screen · blocked: PR33** (FELIX Next steps).
+- **PR34 · next (~1.9 h):** speech feddance syn_50 G0U + G0T lin/eve on FX-D159/D160 with 3 reals per cell, plus a cifar canary
+  (`scripts/run_pr34.py`; FELIX Next steps). C19 stop rule: a red above its n=3 floor is rooted before the overnight run.
+- **Overnight one-code-state re-screen · blocked: PR34** (FELIX Next steps).
 - **Long blocks (G1A pairs, G1U, G1AS grid) · deferred by C18** until 76/76: FELIX FX-N93.
 
 **Operator decisions**
@@ -177,7 +177,7 @@ Parked with the track; board in simulate_fwdllm.md §A.
 | L6 | G0C + G0: 30 min + real↔real | > 6 h per dataset |
 | L7 | G1/G2 at reference n, 90 min → 3 h | ~5-13 h |
 
-- Q2 · wip: real↔real floors feed `floor_gated_tol` (SKIP only). Next: ≥ 3 legs per cell, then tighten DIST.
+- Q2 · wip: real↔real floors feed `floor_gated_tol` (SKIP only). Floors take every same-code replicate pair (FX-D159); next: ≥ 3 legs per cell (PR34 for speech feddance), then tighten DIST.
 - Q4 · todo: runner reports logical and timing axes per cell.
 - Q5 · todo: per-cell scheduling (C3).
 - Q6 · wip: `logical_diff.py`; next: per-round marginals for async pairs.

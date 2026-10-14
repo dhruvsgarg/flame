@@ -748,6 +748,29 @@ def test_stall_counts_match_across_the_cut(monkeypatch):
     assert not overhead_residual(a, b, same_mode=True)["ok"]
 
 
+def test_k8_keeps_same_clock_commits_and_shares_the_slow_band(monkeypatch):
+    """FX-D159 (PR33 cifar fedbuff syn_50): sim's same-vclock commits were dropped from K8's advances, lifting its slow
+    band past a twin 12 s round, so only real's 12+14+54 s split stall left the clock (13% vs raw 0.6%)."""
+    from parity import checks
+    from parity.checks import _pair_stall_sets, terminal_state_parity
+
+    gaps = [1.0, 2.0, 12.0, 14.0, 54.0] + ([0.0] * 6 + [3.0, 9.0, 4.0, 10.0, 5.0]) * 6
+
+    def _leg(zero):
+        t, ev = 0.0, []
+        for r, g in enumerate(gaps, 1):
+            t += g or zero
+            ev.append({"event": "agg_round", "round": r, "ts": t, "contributing_trainers": [str(r % 7)]})
+        return {"agg_rounds": ev}
+    k8 = terminal_state_parity(_leg(0.01), _leg(0.0), same_mode=True)
+    assert k8["time_rel_diff"] < 0.02 and k8["ok"]
+    r, s = [12.0, 14.0, 54.0] + [3.0] * 15, [12.1, 14.0, 54.0] + [4.1] * 9  # bands 9.0 vs 12.3 s; pooled 10.65 s
+    assert _pair_stall_sets(r, s, 72.0) == ({0, 1, 2}, {0, 1, 2})
+    monkeypatch.setattr(checks, "PAIR_SLOW_BAND", False)
+    monkeypatch.setattr(checks, "PAIR_MATCH_STALLS", False)
+    assert _pair_stall_sets(r, s, 72.0) == ({0, 1, 2}, set())
+
+
 def test_split_stall_is_one_episode_and_stays_out_of_k3b_and_k4():
     """FX-N62: a 90s stall served late (10.7+12.8+70.8s) is one stall; K3b and K4 grade without it."""
     from parity.checks import _stall_episodes, overhead_residual, overlap_factor

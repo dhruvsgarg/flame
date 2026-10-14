@@ -460,6 +460,18 @@ def test_ev19_stream_schedule(tmp_path):
         assert _status(_write_run(tmp_path / name, *_streamed(plant), hp=_STREAM), "EV19_stream_schedule") == "FAIL"
 
 
+@pytest.mark.parametrize("logged_lag, want", [(0.3, "PASS"), (0.0, "FAIL")])
+def test_ev19_sim_stream_clock_at_train_start(tmp_path, logged_lag, want):
+    # FX-D160: sim reads the stream at send + delivery lag; a clock past send by an unlogged lag still fails.
+    def lagged(tr):
+        for evs in tr.values():
+            for e in evs:
+                if e["event"] == "trainer_round":
+                    t = e["sim_send_ts"] + 0.3
+                    e.update(stream_clock_s=t, visible_samples=int(10 + 90 * t / 20), sim_delivery_lag_s=logged_lag)
+    assert _status(_write_run(tmp_path, *_streamed(lagged), hp=_STREAM), "EV19_stream_schedule") == want
+
+
 def test_ev3_sim_duration_includes_measured_overhead(tmp_path):
     # C13 (FX-N73): sim duration = max(gpu, D) + the trainer's measured overhead; sct moves with it.
     agg, tr = _clean_run()

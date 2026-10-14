@@ -102,3 +102,25 @@ def test_known_parity_fail_is_known(tmp_path):
     root = _pool(tmp_path, "T3_syn_50", [("syn_50", "oort", "PASS", "PASS")],
                  parity={("syn_50", "oort"): {"overhead_residual": {"ok": False, "tier": "EXACT"}}})
     assert _status(lad.grade_pool(root, 1))[("T3_syn_50", "oort")][0] == "known"
+
+
+def test_floors_take_every_same_code_replicate(tmp_path, monkeypatch):
+    # FX-D159: three reals give three pairs; the floor is their max spread, not the last pool's.
+    exp = tmp_path / "experiments"
+    spreads = {("r0", "r1"): 0.02, ("r0", "r2"): 0.0, ("r1", "r2"): 0.07}
+    for pool, rep in (("pool_A", "r1"), ("pool_B", "r2")):
+        (exp / pool).mkdir(parents=True)
+        (exp / pool / "code_key.txt").write_text("k1")
+        _pool(exp / pool, "gs_G0UC_syn_50", [("syn_50", "feddance", "PASS", "-")])
+        with open(exp / pool / "gs_G0UC_syn_50" / "summary.tsv", "w") as fh:
+            fh.write("trace\tbaseline\treal_dir\nsyn_50\tfeddance\t" + rep + "\n")
+    g = exp / "pool_A" / "gs_G0U_syn_50" / "gs_G0U_syn_50_feddance_grade"
+    g.mkdir(parents=True)
+    (g / "cmd.txt").write_text("x --real-dir r0 --sim-dir s0 --agg-goal 5 --runtime-s 1800")
+
+    def run(cmd, **_):
+        a, b, out = cmd[cmd.index("--real") + 1], cmd[cmd.index("--sim") + 1], cmd[cmd.index("--json-out") + 1]
+        Path(out).write_text(json.dumps({"terminal_state": {"trainers_rel_diff": spreads[(a, b)]}}))
+    monkeypatch.setattr(lad.subprocess, "run", run)
+    floors = lad._control_floors(exp / "pool_A", Path("checker"), 2)
+    assert floors[("gs_G0U_syn_50", "feddance")] == {"trainers_at_n": 0.07}

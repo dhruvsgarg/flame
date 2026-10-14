@@ -2931,12 +2931,13 @@ def _round_axis(*legs: dict) -> bool:
     return all(_progress_axis(leg["agg_rounds"]) == "round" for leg in legs)
 
 
-def _stall_episodes(adv: list, cut: float = _TIMEOUT_STALL_S) -> list:
+def _stall_episodes(adv: list, cut: float = _TIMEOUT_STALL_S, slow: Optional[float] = None) -> list:
     """FX-N62: index lists of timeout stalls: one round >= the cut or stamped with a `stall_cause`, or consecutive slow
     rounds (>= 3x median) that sum past it (a late alive pick splits one 90s stall into pieces, some under the cut)."""
     if not adv:
         return []
-    slow = max(cut / 8, 3 * statistics.median(adv))
+    if slow is None:
+        slow = _slow_band(adv, cut)
     eps, i = [], 0
     while i < len(adv):
         if adv[i] >= cut or getattr(adv[i], "cause", None):  # by length, or by cause (an abandon / withheld delivery)
@@ -2983,18 +2984,27 @@ def _stall_free(adv: list, *legs: dict, drop: Optional[set] = None) -> list:
 PAIR_MATCH_STALLS = True  # FX-D157; False reverts to per-side classification
 
 
+def _slow_band(adv: list, cut: float) -> float:
+    return max(cut / 8, 3 * statistics.median(adv)) if adv else cut
+
+
+PAIR_SLOW_BAND = True  # FX-D159; False reverts to a per-side slow band
+
+
 def _pair_stall_sets(r_adv: list, s_adv: list, cut: float) -> tuple:
     """FX-D157: per-side stall rounds with matched episode counts; the side with fewer promotes its longest slow-band
-    rounds (70 s vs 74 s at a 72 s cut moved stall-free means 20%). K3s still grades raw counts."""
+    rounds (70 s vs 74 s at a 72 s cut moved stall-free means 20%). K3s still grades raw counts.
+    FX-D159: both sides share one slow band (pooled median); per-side medians split twin rounds (12.1 vs 12.14 s)."""
+    shared = _slow_band(list(r_adv) + list(s_adv), cut) if PAIR_SLOW_BAND else None
     sets = []
     for adv in (r_adv, s_adv):
-        eps = _stall_episodes(adv, cut)
+        eps = _stall_episodes(adv, cut, shared)
         sets.append(({i for ep in eps for i in ep}, len(eps)))
     if not PAIR_MATCH_STALLS or sets[0][1] == sets[1][1]:
         return sets[0][0], sets[1][0]
     lo = 0 if sets[0][1] < sets[1][1] else 1
     adv, (drop, n) = (r_adv, s_adv)[lo], sets[lo]
-    slow = max(cut / 8, 3 * statistics.median(adv)) if adv else cut
+    slow = shared if shared is not None else _slow_band(adv, cut)
     band = sorted((i for i, a in enumerate(adv) if i not in drop and slow <= a < cut), key=lambda i: -adv[i])
     drop = drop | set(band[:sets[1 - lo][1] - n])
     return (drop, sets[1][0]) if lo == 0 else (sets[0][0], drop)
@@ -3009,17 +3019,21 @@ def _stall_free_pair(r_adv: list, s_adv: list, real: dict, sim: dict) -> tuple:
 
 
 def _adv_to_n(agg_rounds: list, prog_fn, N, time_fn) -> list:
-    """Per-round clock advances up to N, each carrying its `stall_cause`."""
+    """Per-round clock advances up to N, each carrying its `stall_cause`; zero advances kept (L32, FX-D159)."""
     evs = [e for e in agg_rounds if (p := prog_fn(e)) is not None and p <= N and time_fn(e) is not None]
     return [_RoundAdv(time_fn(b) - time_fn(a), b.get("stall_cause")) for a, b in zip(evs, evs[1:])
-            if time_fn(b) > time_fn(a)]
+            if time_fn(b) >= time_fn(a)]
 
 
-def _stall_s_to_n(agg_rounds: list, prog_fn, N, time_fn, real: dict, sim: dict) -> float:
-    """FX-N62: timeout-stall seconds (excess over the median round) up to N; K3s owns the stall rate."""
+def _stall_s_to_n(real: dict, sim: dict, prog_fn, N, real_time_fn, sim_time_fn) -> tuple:
+    """FX-N62: (real, sim) timeout-stall seconds (excess over the median round) up to N, stall sets pair-matched
+    (FX-D157/D159); K3s owns the stall rate."""
     if not _round_axis(real, sim):
-        return 0.0
-    return _stall_excess_s(_adv_to_n(agg_rounds, prog_fn, N, time_fn), _stall_cut(real, sim))
+        return 0.0, 0.0
+    cut = _stall_cut(real, sim)
+    advs = (_adv_to_n(real["agg_rounds"], prog_fn, N, real_time_fn),
+            _adv_to_n(sim["agg_rounds"], prog_fn, N, sim_time_fn))
+    return tuple(_stall_excess_s(a, cut, d) for a, d in zip(advs, _pair_stall_sets(*advs, cut)))
 
 
 def _few_free_note(real: dict, sim: dict, real_adv: list, sim_adv: list) -> Optional[str]:
@@ -3506,8 +3520,8 @@ def total_commits_parity(real: dict, sim: dict,
     real_t = _time_to_progress(real["agg_rounds"], prog_fn, N, real_time_fn)
     sim_t = _time_to_progress(sim["agg_rounds"], prog_fn, N, sim_time_fn)
     if real_t and sim_t:  # FX-N62: stall-free, as K8
-        real_t -= _stall_s_to_n(real["agg_rounds"], prog_fn, N, real_time_fn, real, sim)
-        sim_t -= _stall_s_to_n(sim["agg_rounds"], prog_fn, N, sim_time_fn, real, sim)
+        r_st, s_st = _stall_s_to_n(real, sim, prog_fn, N, real_time_fn, sim_time_fn)
+        real_t, sim_t = real_t - r_st, sim_t - s_st
     if not real_t or not sim_t or max(real_t, sim_t) <= 0:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "zero time-to-N in one mode — run too short to measure"}
@@ -3566,8 +3580,8 @@ def terminal_state_parity(real: dict, sim: dict,
     sim_t = _time_to_progress(sim["agg_rounds"], prog_fn, N, sim_time_fn)
     raw_t = (real_t, sim_t)
     if real_t and sim_t:  # FX-N62: stall-free, as K2/K3b/K4
-        real_t -= _stall_s_to_n(real["agg_rounds"], prog_fn, N, real_time_fn, real, sim)
-        sim_t -= _stall_s_to_n(sim["agg_rounds"], prog_fn, N, sim_time_fn, real, sim)
+        r_st, s_st = _stall_s_to_n(real, sim, prog_fn, N, real_time_fn, sim_time_fn)
+        real_t, sim_t = real_t - r_st, sim_t - s_st
 
     def _trainers(agg_rounds):
         ts = set()

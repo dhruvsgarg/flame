@@ -80,3 +80,13 @@ def test_trainer_reports_count_it_trained_on():
     now[0] = 1000.0  # clock moves during the task; the report must not
     assert (t._stream_visible, t._stream_clock_s, len(t.train_loader.dataset)) == (55, 500.0, 55)
     assert t._visible_sample_count() == 100
+
+
+@pytest.mark.parametrize("on, clock", [(True, 500.4), (False, 500.0)])
+def test_sim_stream_clock_at_train_start(on, clock):
+    # FX-D160: real reads the stream after its download; sim read it at the dispatch stamp (speech: 13/67 tasks forked).
+    from main import PyTorchCifar10Trainer
+    t = PyTorchCifar10Trainer.__new__(PyTorchCifar10Trainer)
+    t.simulated, t._sim_stream_at_start, t._sim_charge_lag, t.sim_download_leg_s = True, on, True, 0.2
+    t._sim_send_ts, t._sim_wall_send_ts, t._wall_recv_ts = 500.0, 10.0, 10.4
+    assert t._stream_now() == pytest.approx(clock)

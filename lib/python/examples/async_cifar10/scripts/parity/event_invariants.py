@@ -684,8 +684,8 @@ def _trace_origin(run):
 
 def ev19_stream_schedule(run):
     """FX-N13 ST4: each task's visible count equals the schedule (stream_schedule.py, run's trace scale) at its
-    stream clock, is monotone per trainer, and the stream clock tracks the run clock (sim: = sim_send_ts; real:
-    lags wall-since-first-dispatch by at most one task)."""
+    stream clock, is monotone per trainer, and the stream clock tracks the run clock (sim: = sim_send_ts + delivery
+    lag, FX-D160; real: lags wall-since-first-dispatch by at most one task)."""
     ds = _hp(run, "data_streaming") or {}
     if not _truthy(ds.get("enabled", "False")):
         return _res("SKIP", "streaming off")
@@ -715,8 +715,10 @@ def ev19_stream_schedule(run):
             if vis < last:
                 nonmono += 1
             last = vis
-            if sim:
-                ok = e.get("sim_send_ts") is None or abs(float(e["sim_send_ts"]) - t) <= _EPS_S
+            if sim:  # FX-D160: send + delivery lag; send alone on older runs
+                s0 = e.get("sim_send_ts")
+                ok = s0 is None or any(abs(float(s0) + d - t) <= _EPS_S
+                                       for d in (0.0, float(e.get("sim_delivery_lag_s") or 0.0)))
             else:
                 lag = (float(e["ts"]) - origin - t) if origin is not None else 0.0
                 ok = -5.0 <= lag <= max_lag
