@@ -168,15 +168,22 @@ class SpeechCommands(data_utils.Dataset):
     def __len__(self):
         return len(self.files)
 
-    def __getitem__(self, i):
+    def pcm16(self, i):
+        """Raw clip as int16 [1, SPEECH_LEN] (zero-padded) and label; model_input() gives the float waveform."""
         from scipy.io import wavfile
 
         path = self.files[i]
         _, pcm = wavfile.read(path)
-        wav = torch.zeros(1, SPEECH_LEN)
-        x = torch.from_numpy(pcm[:SPEECH_LEN].astype(np.float32) / 32768.0)  # = torchaudio's normalized load
+        if pcm.dtype != np.int16:
+            raise ValueError(f"{path}: expected 16-bit PCM, got {pcm.dtype}")
+        wav = torch.zeros(1, SPEECH_LEN, dtype=torch.int16)
+        x = torch.from_numpy(pcm[:SPEECH_LEN].copy())
         wav[0, : x.numel()] = x
         return wav, self.label_idx[Path(path).parent.name]
+
+    def __getitem__(self, i):
+        wav, label = self.pcm16(i)
+        return model_input(wav), label
 
 
 def _cifar_train():
@@ -226,11 +233,19 @@ def spec_for(hp) -> DatasetSpec:
     return SPECS[name]
 
 
+def model_input(x: torch.Tensor) -> torch.Tensor:
+    """int16 PCM -> torchaudio's normalized float (exact: int16 fits float32, /2^15 is exact); other inputs pass through."""
+    return x.float() / 32768.0 if x.dtype == torch.int16 else x
+
+
 def in_memory(ds: data_utils.Dataset) -> data_utils.Dataset:
-    """Decode a deterministic (test) dataset into tensors once (FX-D64); `FLAME_EVAL_PRELOAD=0` keeps per-sample decode."""
+    """Decode a deterministic (test) dataset into tensors once (FX-D64); `FLAME_EVAL_PRELOAD=0` keeps per-sample decode.
+    Speech stays int16 (FX-N84: 336 vs 672 MiB); consumers apply model_input()."""
     if os.environ.get("FLAME_EVAL_PRELOAD", "1") == "0":
         return ds
-    xs, ys = zip(*(ds[i] for i in range(len(ds))))
+    base, idx = (ds.dataset, ds.indices) if isinstance(ds, data_utils.Subset) else (ds, range(len(ds)))
+    get = base.pcm16 if isinstance(base, SpeechCommands) else base.__getitem__
+    xs, ys = zip(*(get(i) for i in idx))
     return data_utils.TensorDataset(torch.stack(xs), torch.as_tensor(ys))
 
 

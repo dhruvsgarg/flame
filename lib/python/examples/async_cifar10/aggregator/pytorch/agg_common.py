@@ -24,6 +24,19 @@ import fl_data
 logger = logging.getLogger(__name__)
 
 ENV_AGG_MODEL_DEVICE = "FLAME_AGG_MODEL_DEVICE"
+ENV_AGG_MALLOC_TRIM = "FLAME_AGG_MALLOC_TRIM"
+
+
+def trim_host_heap() -> float:
+    """FX-N84: return freed glibc heap (decoded updates) to the OS; 0.4-0.9 GB per speech agg. Returns seconds taken."""
+    t0 = time.time()
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+    return time.time() - t0
 
 
 class ExampleAggregatorMixin:
@@ -109,7 +122,7 @@ class ExampleAggregatorMixin:
                 correct = torch.zeros((), device=device, dtype=torch.long)
                 with torch.no_grad():
                     for data, target in test_loader:
-                        data, target = data.to(device), target.to(device)
+                        data, target = fl_data.model_input(data.to(device)), target.to(device)
                         output = eval_model(data)
                         loss += F.nll_loss(output, target, reduction="sum")
                         correct += (output.argmax(dim=1) == target).sum()
@@ -117,6 +130,8 @@ class ExampleAggregatorMixin:
                 total = len(test_loader.dataset)
                 logger.info(f"[ASYNC_EVAL_TIMING] round={round_num} wall_s={time.time() - t0:.2f} device={device}")  # FX-N70
                 self._eval_emit(round_num, loss / total, correct / total)
+                if os.environ.get(ENV_AGG_MALLOC_TRIM, "1") != "0":  # once per eval, off the commit path
+                    logger.info(f"[AGG_MALLOC_TRIM] round={round_num} s={trim_host_heap():.3f}")
             except Exception as e:  # eval must never break training
                 logger.warning(f"[ASYNC_EVAL] failed (non-fatal): {e}")
                 self._eval_inflight = False

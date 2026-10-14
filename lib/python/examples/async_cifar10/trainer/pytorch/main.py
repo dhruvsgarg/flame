@@ -137,7 +137,8 @@ class PyTorchCifar10Trainer(Trainer):
              # Config paths are repo-root-relative; trainers don't run from the root.
              if not os.path.isabs(coords_path):
                  coords_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *[".."] * 6, coords_path)
-             self.coords = np.load(coords_path)["coords"]
+             # Own satellite only: the full (steps, 300, 2) array is 49 MB per trainer (FX-N84).
+             self.coords = np.load(coords_path)["coords"][:, self.satellite_index].copy()
 
         # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
         # (buffer-residence queue_wait + re-dispatch latency) that the sim sct omitted, so sim's
@@ -802,8 +803,7 @@ class PyTorchCifar10Trainer(Trainer):
         # Find current location
         elapsed_s = self._sim_now()
         timestep = min(int(elapsed_s), self.coords.shape[0]-1)
-        lat = self.coords[timestep, self.satellite_index, 0]
-        lon = self.coords[timestep, self.satellite_index, 1]
+        lat, lon = self.coords[timestep]
         logger.info(f"({elapsed_s}s) Trainer {self.trainer_id} Location: ({lat:.2f}, {lon:.2f})")
         _pre["coords"] = time.time() - _phase_train_entry
 

@@ -490,9 +490,10 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
     return jobs
 
 
-# FX-D59/FX-D141: host RAM per trainer and per-leg base (agg + broker), by (dataset, gpu); ~1.05 x ledger max (PR29b/PR30)
-TRAINER_RAM_GB = {("cifar10", True): 1.3, ("google_speech", True): 1.55, ("cifar10", False): 0.65,
-                  ("google_speech", False): 1.05}
+# FX-D59/FX-D141: host RAM per trainer and per-leg base (agg + broker), by (dataset, gpu); ~1.05 x ledger max (PR29b/PR30),
+# less FX-N84's measured 0.13-0.15 GB/trainer (lazy mlflow, own-satellite coords)
+TRAINER_RAM_GB = {("cifar10", True): 1.16, ("google_speech", True): 1.4, ("cifar10", False): 0.52,
+                  ("google_speech", False): 0.92}
 LEG_BASE_RAM_GB = {("cifar10", True): 8, ("google_speech", True): 8, ("cifar10", False): 3, ("google_speech", False): 6}
 
 

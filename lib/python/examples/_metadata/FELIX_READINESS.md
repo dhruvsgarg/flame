@@ -5,17 +5,17 @@ here unrepeated. **Focus (operator 10-12/13): Felix-wide parity to 76 / 76, then
 Scoreboard (now, and expected after the next run) → Decisions → reference sections.
 
 **At a glance (10-14):** parity **76 / 76 on mixed commits** (PR34 + FX-D161 L13 votes) · accuracy **5 / 12** · next: PR35 overnight
-(G1AS accuracy six × both + G0U/T3/P7 re-screen, ~11.7 h), then PR36 (G0T re-screen, same code key) → 76/76 on one code state → FX-N93.2.
+(G1AS accuracy six × both + G0U/T3/P7 re-screen, ~10.8 h), then PR36 (G0T re-screen, same code key) → 76/76 on one code state → FX-N93.2.
 
 ## Next steps (persistent queue — top item is next)
 
 Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4/TS · GPU ≤ 30-min screens (G0U/G0T/G0UC) · long
 (G1*/G2). Unblock map: PR35 + PR36 (76/76 on one code key) → FX-N93.2 → FX-N12.
 
-- **PR35 · overnight: G1AS accuracy + non-streaming re-screen · todo (operator launches; ~11.7 h by `--plan --hours 13`).**
+- **PR35 · overnight: G1AS accuracy + non-streaming re-screen · todo (operator launches; ~10.8 h by `--plan --hours 13`).**
   `cd lib/python/examples && conda run --no-capture-output -n dg_flame python scripts/run_pr35.py --hours 13` (jayne, GPUs 0,2-7; tmux
   `dg_flame`, detached). Stages: A1/A2 G1AS speech/cifar six (FX-N93.1) · B1 G0U,G0UC all · C1 T3 all · C2 cifar P7 · C3 T3C all.
-  Ready: commit `c3a3ef3a4`, code key `82fe3b6ca892`; PL1 2634 passed; PL3 G1AS felix scale smoke rc=0 both datasets (cifar 343/398 GB
+  Ready: FX-N84 fixes (uncommitted) set a new commit + code key; PL1 2636 passed; PL3 G1AS felix scale smoke rc=0 both datasets (cifar 343/398 GB
   RAM, 31/45 GB GPU; speech 137/163 GB, 23/45 GB). Shepherd GPUs 0-4 hold foreign memory (PL16): jayne only. Operator adds one change first;
   a run-affecting one needs a new commit, PL1 and `--plan`.
   Then `parity_ladder.py --grade <pool> --regrade --max-stage 9` per pool, `accuracy_table.py --runs <A1/A2 runs>`.
@@ -49,9 +49,14 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
     mobiperf has no log anywhere (table row only).
   - (e) Speech e2e: May-2025 rows have no logs/configs on any node; comm unit per speech message unknown (FedDance uses 13.5 = 29.0/2.15 MB).
   - (f) Comm to 70% scales whole-log counts by time share; exact = count `[MSG_ARRIVAL]`/send lines up to the 70% timestamp.
-- **FX-N84 · Trainer memory audit (GPU + host RAM) · todo.** Per-trainer CUDA context, model, optimizer state, allocator cache and RSS at
-  n = 50/100/300 (both datasets); fix waste that scales with n; re-measure trainers per A40 (FX-T36: ~75 cifar / ~25 speech; n=200
-  speech also needs a new split). *Exit:* footprint table, fixes, new caps.
+- **FX-N84 · Trainer memory audit (GPU + host RAM) · wip.** Host PSS/trainer (n=10 real): cifar 1195 → 1052 MB, speech 1318 → 1160
+  MB via lazy mlflow import (81 MB) and own-satellite coords (49 MB); `TRAINER_RAM_GB` lowered to match. Left per trainer: `import
+  torch` ~280 MB anon, cuDNN/cuBLAS host ~390 MB, dynamo 74 MB; GPU ~0.37 GB context, speech idle ~0.6 GB (cache already released).
+  FluxTune's O1-O5 don't apply (no frozen params/functorch; trainer malloc_trim, CUDA env knobs measured ~0). Aggregator (1-8 GB/leg,
+  speech creeps): speech test set kept int16 (336 vs 672 MiB, bit-identical eval), `malloc_trim` after each eval returns 0.4-0.9 GB
+  in ≤ 62 ms (`FLAME_AGG_MALLOC_TRIM=0` reverts). Fork-server sharing of imports saves ~280 MB/trainer more but PR35 is
+  GPU/CPU-lease-bound (RAM-unbounded plan = same 10.8 h): defer. Next: trainers per A40 (FX-T36), which sets GPUs per leg.
+  *Exit:* footprint table, fixes, new caps.
 
 *Short-run queue (fix + verify with pytest, stored telemetry, CPU tiers or GPU screens):*
 - **FX-N9 · Unavailability, all six × syn_50 / mobiperf · wip.** syn_50 12/12, mobiperf 10/10 on mixed commits (PR34); left: PR35.

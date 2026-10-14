@@ -443,9 +443,10 @@ def test_proc_role_reads_the_script_not_the_inline_config(tmp_path, monkeypatch)
 
 def test_ram_formula_per_dataset():
     # FX-D141: ledger GB/trainer (PR29b/PR30): speech GPU 1.47 and CPU 0.99 overran the old single 1.3 / 0.6.
-    assert pool.leg_ram_formula_gb("cifar10", True, 50) == pytest.approx(73.0)
-    assert pool.leg_ram_formula_gb("google_speech", True, 50) > 1.47 * 50 + 7.2
-    assert pool.leg_ram_formula_gb("google_speech", False, 15) > 0.99 * 15 + 3.1
+    # FX-N84 saves 0.15 (speech) / 0.14 (cifar) GB per trainer.
+    assert pool.leg_ram_formula_gb("cifar10", True, 50) == pytest.approx(66.0)
+    assert pool.leg_ram_formula_gb("google_speech", True, 50) > (1.47 - 0.15) * 50 + 7.2
+    assert pool.leg_ram_formula_gb("google_speech", False, 15) > (0.99 - 0.15) * 15 + 3.1
 
 
 def test_history_save_merges_concurrent_pools(tmp_path, monkeypatch):

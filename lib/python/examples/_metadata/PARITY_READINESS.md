@@ -138,7 +138,7 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR35 · next (~11.7 h):** G1AS accuracy six × both (FX-N93.1) + G0U/G0UC, T3/T3C, cifar P7 re-screen (`scripts/run_pr35.py`; FELIX
+- **PR35 · next (~10.8 h):** G1AS accuracy six × both (FX-N93.1) + G0U/G0UC, T3/T3C, cifar P7 re-screen (`scripts/run_pr35.py`; FELIX
   Next steps). C19 stop rule: a red voted by a majority of reals is rooted before PR36.
 - **PR36 · blocked: PR35:** G0T/G0TC both datasets on PR35's code key (FX-D162) → 76/76 on one code state.
 - **Long blocks (G1A pairs, G1U, G1AS grid) · deferred by C18** until 76/76: FELIX FX-N93.
