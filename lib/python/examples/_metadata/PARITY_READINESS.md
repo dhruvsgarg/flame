@@ -144,7 +144,7 @@ Parked with the track; board in simulate_fwdllm.md §A.
   and the no-overrun rule (FELIX Active build "PR36 prerequisites").
 - **PR36 · blocked: those three:** full re-screen on one code key (G0U/G0UC, T3/T3C, G0T/G0TC, G1AS, third reals) → 76/76 + accuracy.
   Scaled n/c/K (same ratios for all baselines) and jayne 0,2-7 + shepherd 0-3 for more parallel legs.
-- **PR37 · blocked: PR36 complete:** all six baselines × syn_0 + syn_50_3st × both datasets, 3 h real + 3 h-vclock sim + real replicate,
+- **PR37 · blocked: PR36 complete:** all six baselines × syn_0 + syn_50_3st + stream_lin × both datasets, 3 h real + 3 h-vclock sim + real replicate,
   GPU-partitioned overlap at equal n:c:K ratios → sim-only experiments.
 - **Long blocks (G1U, G1AS grid) · deferred by C18** until PR37: FELIX FX-N93.
 

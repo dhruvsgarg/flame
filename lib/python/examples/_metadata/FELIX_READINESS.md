@@ -28,7 +28,7 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
   - FX-D163/D164 landed in `a7976c416`.
   - *Exit:* `readiness_score.py` on one code key = 76/76; G1AS on the board.
 - **PR37 · 3 h convergence parity, all six baselines (FX-N93.2/.3) · blocked: PR36 complete (operator 10-14).**
-  - Cells, both datasets: syn_0 (100% availability) and syn_50_3st (mobiperf_3st instead if fast enough).
+  - Cells, both datasets: syn_0 (100% availability), syn_50_3st (mobiperf_3st instead if fast enough), and stream_lin syn_0 (streaming).
   - Legs: 3 h real + sim at 3 h of vclock (not wall), plus a real replicate per cell for the real↔real band (size with `--plan`).
   - Overlap: legs run in parallel by partitioning GPUs across jayne 0,2-7 + shepherd 0-3. n/c/K scale down with the same n:c:K ratios for
     every baseline, so the run shows both real↔sim parity and how the baselines compare.
@@ -241,7 +241,7 @@ all four columns pass. Thresholds are nominal until a real↔real replicate sets
   - 3-state syn traces (EVAL share from `mobiperf_3st_50`) become the default; 2-state syn traces are deprecated, then deleted (FX-N96).
   - At most 1-2% of tasks may overrun D, in real and sim; above that, fewer trainers per GPU (FX-N98).
   - Sim must never be slower than real.
-- **Sim-only experiments (10-14):** after PR37 (all six baselines × syn_0 + syn_50_3st × both datasets, 3 h, n:c:K ratios equal across
+- **Sim-only experiments (10-14):** after PR37 (all six baselines × syn_0 + syn_50_3st + stream_lin × both datasets, 3 h, n:c:K equal across
   baselines) sits inside the real↔real band, paper experiments run sim-only.
 - **Sim speed (10-14):** sim never slower than real; 1-2× needs review; 2-5× and beyond is the target; always look for more.
 - **Nodes (10-14):** batches use jayne GPUs 0,2-7 and shepherd GPUs 0-3 together; more parallel legs via scaled n/c/K at fixed ratios.
@@ -824,5 +824,4 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 
 ## Open questions (operator)
 
-- Speech Oort/refl/feddance accuracy: round-bound (10-10) vs a per-baseline target vs long sims after P8?
-- PR37: add a streaming cell (stream_lin syn_0), as first proposed (10-14 a.m.), or leave streaming to PR36's G0T screens?
+- None open.
