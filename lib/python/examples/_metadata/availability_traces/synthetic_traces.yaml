@@ -1,3 +1,4 @@
+# 2-state syn_10/syn_20/syn_50 are deprecated and deleted (FX-D166, operator 10-14): use syn_10_3st/syn_20_3st/syn_50_3st.
 description: Synthetic availability traces - uniform across all trainers
 traces:
   syn_0:

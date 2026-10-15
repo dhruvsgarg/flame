@@ -31,7 +31,8 @@ datasets:
       trainer:
         num_trainers: 100
         dataset: {name: google_speech, dirichlet_alpha: 0.1}
-        hyperparameters: {batchSize: 32, learningRate: 0.000195}
+        # FX-N98: bf16 autocast, real and sim, every baseline (1.6x per task; fl_lr_check r5-r30 within 2.4 pp of fp32).
+        hyperparameters: {batchSize: 32, learningRate: 0.000195, trainerAmp: bf16}
         config_overrides:
           hyperparameters: {dataset_name: google_speech}
       aggregator:

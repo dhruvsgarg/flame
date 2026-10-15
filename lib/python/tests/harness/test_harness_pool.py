@@ -364,7 +364,8 @@ def test_speech_stub_legs_cap_local_steps():
     # FX-D110: speech stub legs run one real step (Oort's 20 CPU passes overran D/4); GPU and tiny_cpu legs are untouched.
     for p in pool.tier_phases("T3", B6, "google_speech"):
         assert "harness_stub_max_steps=1" in p.trainer_hp, p.pid
-    assert all("harness_stub_max_steps" not in p.trainer_hp for p in pool.tier_phases("T3", B6, "cifar10"))
+    for p in pool.tier_phases("T3", B6, "cifar10"):  # FX-N85 b: cifar caps the Oort family only
+        assert ("harness_stub_max_steps=1" in p.trainer_hp) == (set(p.baselines) <= set(pool.OORT_FAMILY)), p.pid
     assert not any(p.trace == "mobiperf_3st" and set(p.baselines) & set(pool.OORT_FAMILY)
                    for p in pool.tier_phases("T3", B6, "google_speech"))
 
@@ -501,3 +502,15 @@ def test_code_key_ignores_files_no_leg_runs(tmp_path, monkeypatch):
     assert pool.code_key() == k0
     (tmp_path / "lib/python/flame/agg.py").write_text("x = 2\n")
     assert pool.code_key() != k0
+
+
+def test_g3_shape_meets_baseline_constraints():
+    # PR37: one n:c:K for all six; Oort K >= 10 (FX-L63), sync K/n >= 5% (L34), c > K, <= 75 cifar / 25 speech per A40 (FX-T36)
+    per_gpu = {"cifar10": 75, "google_speech": 25}
+    for ds, sh in pool.G3_SHAPE.items():
+        assert sh["agg_goal"] >= 10 and sh["agg_goal"] / sh["n"] >= 0.05 and sh["c"] > sh["agg_goal"]
+        assert sh["n"] <= per_gpu[ds] * sh["gpus"]
+        phs = pool.tier_phases("G3", B6, ds)
+        assert len(phs) == 3 and all(set(p.baselines) == set(B6) and p.n == sh["n"] and p.runtime_s == pool.G3_RUNTIME_S for p in phs)
+        assert all("trainerDeterministic=true" in p.trainer_hp for p in phs)
+        assert [p.kind for p in pool.tier_phases("G3C", B6, ds)] == ["real"] * 3

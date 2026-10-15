@@ -544,6 +544,19 @@ def test_ev21_aware_train_pick_outside_avl_train_fails(tmp_path, monkeypatch):
     assert _status(run, "EV21_avl_eval_semantics") == "PASS"  # unaware picks anyone (its algorithm)
 
 
+def test_ev21_relisted_held_pick_is_not_a_dispatch(tmp_path, monkeypatch):
+    # gs T1 oort_star syn_50_3st: a top-up selection re-lists round 56's held pick after it went UN_AVL
+    run = _ev21_run(tmp_path, monkeypatch)
+    agg = os.path.join(run, "telemetry", [f for f in os.listdir(os.path.join(run, "telemetry")) if f.startswith("aggregator")][0])
+    ev = [json.loads(l) for l in open(agg)]
+    ev.insert(1, {"event": "selection", "task": "train", "ts": 1.5, "round": 1, "chosen": [T2], "per_trainer": {T2: {"avl_state": "UN_AVL"}}})
+    open(agg, "w").write("".join(json.dumps(e) + "\n" for e in ev))
+    assert _status(run, "EV21_avl_eval_semantics") == "PASS"
+    ev[1]["round"] = 2  # a new round's pick in UN_AVL is a dispatch
+    open(agg, "w").write("".join(json.dumps(e) + "\n" for e in ev))
+    assert _status(run, "EV21_avl_eval_semantics") == "FAIL"
+
+
 @pytest.mark.parametrize("sct, wait, want", [(60.0, 0.0, "PASS"), (10.0, 0.0, "FAIL"), (10.0, 40.0, "PASS")])
 def test_ev21_real_train_send_needs_avl_train(tmp_path, monkeypatch, sct, wait, want):
     run = _ev21_run(tmp_path, monkeypatch, sends=[(sct, wait)])

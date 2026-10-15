@@ -52,7 +52,7 @@ _metadata/
 ├── trainer_registry.yaml                  # n=300 device population
 ├── availability_traces/
 │   ├── mobiperf_traces.yaml               # per-device 2-state / 3-state
-│   └── synthetic_traces.yaml              # syn_0 (uniform) + syn_20 / syn_50 (per-trainer)
+│   └── synthetic_traces.yaml              # syn_0 (uniform) + syn_{10,20,50}_3st (per-trainer)
 └── dataset_splits/
     └── <dataset>_alpha<a>_n<N>.yaml       # per-trainer index lists
 ```

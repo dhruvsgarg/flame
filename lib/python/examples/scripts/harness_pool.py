@@ -106,6 +106,10 @@ G0U_MOBIPERF = dict(agg_goal=2, c=4)  # FX-L34: ~10% AVL_TRAIN of n=50 leaves ~5
 G0U_OORT = {("cifar10", "syn_50_3st"): dict(n=50, agg_goal=10, c=13, gpus=1),
             ("cifar10", "mobiperf_3st"): dict(n=165, agg_goal=10, c=13, gpus=3),
             ("google_speech", "syn_50_3st"): dict(n=50, agg_goal=10, c=13, gpus=2)}
+# PR37 (operator 10-14): one n:c:K per dataset for all six, cohort = the reference split's first n trainers (same shard, compute,
+# D). K=10 keeps Oort's exploitLen >= 1 (FX-L63), sync K/n >= 5% (L34); c=15 > K keeps async overlap; <= 75 / 25 per A40.
+G3_SHAPE = {"cifar10": dict(n=75, agg_goal=10, c=15, gpus=1), "google_speech": dict(n=50, agg_goal=10, c=15, gpus=2)}
+G3_RUNTIME_S, G3_EVAL_EVERY = 7200, 10  # 2 h legs (operator 10-15; R6: convergence sign-off 2-4 h)
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
@@ -222,7 +226,9 @@ def shaped(pid, baselines, shape, kind, dataset, **kw) -> Phase:
     if dataset == "google_speech":
         sh["sim_ceiling_x"] = 2
     sh.update(kw)
-    if dataset == "google_speech" and sh.get("harness", "stub") == "stub":  # FX-D110: 20-step speech CPU passes overran D/4
+    stub = sh.get("harness", "stub") == "stub"
+    # FX-D110, FX-N85 b: 20-step stub passes overran D (speech; cifar Oort family 11/177)
+    if stub and (dataset == "google_speech" or (baselines and all(b in OORT_FAMILY for b in baselines))):
         sh["trainer_hp"] = (sh.get("trainer_hp", "") + " harness_stub_max_steps=1").strip()
     return Phase(DS_TAG[dataset] + pid, tuple(baselines), kind=kind, dataset=dataset, **sh)
 
@@ -353,6 +359,17 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [Phase(DS_TAG[ds] + tier, baselines, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
                       trainer_hp=full, agg_hp=full + " evalEveryNRounds=20", gpus=4,
                       **({"kind": "sim_ev"} if tier == "G1AS" else {}))]
+    if tier in ("G3", "G3C"):  # PR37: convergence pairs at one n:c:K for all six; G3C = real replicate
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        kw = dict(dataset=ds, harness="none", runtime_s=G3_RUNTIME_S, **G3_SHAPE[ds])
+        out = [Phase(f"{DS_TAG[ds]}G3_{t}", baselines, t, trainer_hp=f"{full} {DETERMINISTIC}",
+                     agg_hp=f"{full} evalEveryNRounds={G3_EVAL_EVERY}", **kw) for t in ("syn_0", "syn_50_3st")]
+        lin = stream_hp("linear", G3_RUNTIME_S, "")
+        out.append(Phase(f"{DS_TAG[ds]}G3_lin_syn_0", baselines, "syn_0", trainer_hp=f"{lin} {DETERMINISTIC}",
+                         agg_hp=f"{lin} evalEveryNRounds={G3_EVAL_EVERY}", **kw))
+        if tier == "G3C":
+            out = [replace(ph, pid=ph.pid.replace("G3_", "G3C_"), kind="real") for ph in out]
+        return out
     if tier in ("G1X", "G1XP"):  # FedDance sprint: EuroSys'26 setup, every baseline on one config; G1XP = real+sim convergence pair
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
         kw = dict(n=GPU_N[ds], dataset=ds, harness="none", trainer_hp=f"{full} {EUROSYS_TRAINER_HP}", gpus=4, agg_goal=EUROSYS_K)
@@ -700,6 +717,48 @@ def busy_cpus(threshold: float = 0.5, window_s: float = 1.0) -> frozenset:
     b = _cpu_times()
     return frozenset(c for c in b if c in a and (b[c][0] - a[c][0]) > 0
                      and 1 - (b[c][1] - a[c][1]) / (b[c][0] - a[c][0]) > threshold)
+
+
+def foreign_owners(own_pgids: set, top: int = 6) -> List[str]:
+    """PL-LOG: per foreign owner (user + run label or script), the GPUs and CPUs (1 s sample) it holds, busiest first."""
+    import psutil
+    try:
+        uuid_idx = dict(reversed(l.split(", ")) for l in subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"], capture_output=True, text=True,
+            timeout=20).stdout.splitlines() if ", " in l)
+        apps = [l.split(", ") for l in subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid", "--format=csv,noheader"], capture_output=True, text=True,
+            timeout=20).stdout.splitlines() if ", " in l]
+    except (OSError, subprocess.SubprocessError):
+        uuid_idx, apps = {}, []
+    gpu_of = {int(pid): int(uuid_idx[u]) for pid, u in apps if u in uuid_idx}
+    me, procs = os.getpid(), []
+    for pr in psutil.process_iter(["pid", "username", "cmdline"]):
+        try:
+            if os.getpgid(pr.pid) in own_pgids or pr.pid == me:
+                continue
+            pr.cpu_percent(None)
+            procs.append(pr)
+        except (psutil.Error, OSError):
+            pass
+    time.sleep(1.0)
+    owners: Dict[str, list] = {}
+    for pr in procs:
+        try:
+            cpu = pr.cpu_percent(None) / 100
+            if cpu < 0.05 and pr.pid not in gpu_of:
+                continue
+            cmd = pr.info["cmdline"] or []
+            script = next((os.path.basename(c) for c in cmd if c.endswith((".py", ".sh"))), os.path.basename(cmd[0]) if cmd else "?")
+            label = pr.environ().get("FLAME_RUN_LABEL", script) if pr.info["username"] == os.environ.get("USER") else script
+            o = owners.setdefault(f"{pr.info['username']} {label}", [set(), 0.0])
+            if pr.pid in gpu_of:
+                o[0].add(gpu_of[pr.pid])
+            o[1] += cpu
+        except (psutil.Error, OSError):
+            pass
+    rows = sorted(((len(g), c, k, g) for k, (g, c) in owners.items() if g or c >= 1), reverse=True)[:top]
+    return [f"{k}: {len(g)} GPUs {sorted(g)}, {c:.0f} CPUs" if g else f"{k}: {c:.0f} CPUs" for _, c, k, g in rows]
 
 
 class Leases:
@@ -1113,7 +1172,7 @@ class Pool:
         t0 = self.t0 = time.time()
         mem_budget = mem_available_gb() - self.mem_headroom_gb
         stop = {"flag": False}
-        probe, last_note = None, None
+        probe, last_note, owners_shown = None, None, 0.0
         tick, shown = 0, 0.0
         jobs_tsv = open(self.root / "jobs.tsv", "a")
         jobs_tsv.write("jid\trc\tdur_s\test_s\tcpus\tcores_avg\tcores_p95\tcpu_sat\n")
@@ -1136,6 +1195,12 @@ class Pool:
                     for jid, why in list(blocked.items())[:6]:
                         self.say(f"BLOCKED {jid}: {why}")
                     blocked_shown = time.time()
+                if last_note and (last_note[0] or last_note[1]) and time.time() - owners_shown > BLOCKED_LOG_S:
+                    own = {os.getpgid(os.getpid())} | {r.proc.pid for r in running.values()}
+                    rows = foreign_owners(own)  # PL-LOG: whom to contact, every 10 min while foreign load exists
+                    if rows:
+                        self.say("LOAD foreign owners: " + "; ".join(rows))
+                    owners_shown = time.time()
                 blocked.clear()
                 for j in list(pending):
                     if any(d not in self.done for d in j.deps):
@@ -1173,7 +1238,10 @@ class Pool:
                         continue
                     cpus = cm.alloc(j.cpus, probe["cpus"])
                     if cpus is None:
-                        blocked[j.jid] = f"needs {j.cpus} CPUs, {len(probe['cpus'])} foreign-busy"
+                        own = sum(len(r.cpus) for r in running.values())
+                        blocked[j.jid] = (f"needs {j.cpus} CPUs, resources-busy ({own} held by this pool's legs, "
+                                          f"{len(probe['cpus'])} foreign-busy)" if own >= len(probe["cpus"]) else
+                                          f"needs {j.cpus} CPUs, {len(probe['cpus'])} foreign-busy ({own} held by this pool)")
                         continue
                     gp = usable[:j.gpus]
                     if not leases.take_all(slot_leases(cpus, gp)):  # a neighbour pool took one since the probe

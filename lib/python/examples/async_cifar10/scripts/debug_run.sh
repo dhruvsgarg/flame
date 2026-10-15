@@ -310,6 +310,7 @@ for e_src in cfg.get("experiments", []):
                 orig_n = e["trainer"].get("num_trainers", 300)
                 e["trainer"]["num_trainers"] = num_trainers_override
                 e["trainer"]["split_num_trainers"] = orig_n
+                e["name"] = re.sub(r"_n\d+_", f"_n{num_trainers_override}_", e["name"])  # L20: name the cohort that runs
                 # wait for the whole cohort: a fast sim finishes before stragglers join, real sees them (FX-N47)
                 h["min_trainers_to_start"] = num_trainers_override
             e["name"] = f"dbg_{e['name']}"
@@ -367,6 +368,8 @@ for e_src in cfg.get("experiments", []):
             ex = e.setdefault("execution", {})
             ex["gpu_ids"] = [int(g) for g in os.environ["FLAME_GPU_IDS"].split(",")]
             ex["num_gpus"] = len(ex["gpu_ids"])
+        if os.environ.get("FLAME_GPU_PLACEMENT", "").strip():  # FX-N98: balanced (default) | round_robin
+            e.setdefault("execution", {})["gpu_placement"] = os.environ["FLAME_GPU_PLACEMENT"].strip()
         # FLAME_TRACE_TIME_SCALE (env, read by flame.availability.trace): recorded for provenance.
         if os.environ.get("FLAME_TRACE_TIME_SCALE", "").strip():
             h["trace_time_scale"] = float(os.environ["FLAME_TRACE_TIME_SCALE"])

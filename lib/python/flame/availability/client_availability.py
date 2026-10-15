@@ -144,7 +144,7 @@ class ClientAvailability:
             trace=trace_name, base_dir=trace_dir
         )
         # D.2 guard: does this trace ever produce AVL_EVAL anywhere, for any
-        # trainer? syn_0/syn_20_3st/syn_50_3st are 2-state (AVL_TRAIN/UN_AVL only) —
+        # trainer? syn_0 and mobiperf_2st are 2-state (AVL_TRAIN/UN_AVL only) —
         # "the AVL_TRAIN<->AVL_EVAL split a 2-state trace collapses" (§1 Trace
         # representation). Computed once here, not per-call (would be an
         # O(trainers) scan of every SortedDict on every selection boundary).
@@ -1129,6 +1129,11 @@ class ClientAvailability:
                 )
                 telemetry.emit(ev, **f)
 
+    def _wake_task(self) -> Optional[str]:
+        """FX-D165: only an eval-dispatching selector (Felix) wakes on AVL_EVAL; for the rest AVL_EVAL is UN_AVL."""
+        kw = getattr(getattr(getattr(self, "config", None), "selector", None), "kwargs", None) or {}
+        return None if float(kw.get("evalGoalFactor") or 0) > 0 else "train"
+
     def _next_avail_vclock(self) -> Optional[float]:
         """Stage F: earliest vclock at which any trainer next becomes selectable.
 
@@ -1145,8 +1150,9 @@ class ClientAvailability:
             return None
         now = self._avail_now()
         candidates: list = []
+        task = self._wake_task()
         for trace in self.trainer_event_dict.values():
-            nxt = next_avail_after(trace, now)
+            nxt = next_avail_after(trace, now, task)
             if nxt != math.inf:
                 candidates.append(nxt)
         pw = getattr(self, "pending_withheld", None)

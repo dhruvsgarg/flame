@@ -785,11 +785,14 @@ def ev21_avl_eval_semantics(run):
     felix = float((run["cfg"].get("selector", {}).get("kwargs", {}) or {}).get("evalGoalFactor") or 0) > 0
     bad_pick, bad_send, n_pick, n_send = [], [], 0, 0
     n_eval = eval_on_eval = 0
-    bad_eval = []
+    bad_eval, seen = [], set()
     for e in _events(run, "selection"):
         task, per = e.get("task", "train"), e.get("per_trainer") or {}
         for end in e.get("chosen") or []:
             st = (per.get(end) or {}).get("avl_state")
+            if task == "train" and (e.get("round"), end) in seen:
+                continue  # an earlier pick of this round re-listed by a top-up selection, not a new dispatch (FX-D98)
+            seen.add((e.get("round"), end))
             if task == "train" and aware and st is not None:
                 n_pick += 1
                 if st != "AVL_TRAIN":

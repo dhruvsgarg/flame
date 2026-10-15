@@ -143,7 +143,9 @@ def load_trace(
     elif trace_name.startswith("syn_"):
         raw = _raw_synthetic(trace_dir)
         if trace_name not in raw:
-            raise KeyError(f"trace {trace_name!r} not found in synthetic_traces.yaml")
+            hint = f"; 2-state syn traces are deprecated, use {trace_name}_3st (FX-D166)" \
+                if trace_name in ("syn_10", "syn_20", "syn_50") else ""
+            raise KeyError(f"trace {trace_name!r} not found in synthetic_traces.yaml{hint}")
         entry = raw[trace_name]
         per_trainer = entry.get("per_trainer", {}).get("n300", {})
         pattern = entry.get("pattern", [])

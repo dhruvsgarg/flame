@@ -63,8 +63,8 @@ A new failure mode adds a check here in the same session.
 | PL1 | full pytest green | ROBUST → Full pytest | R10 |
 | PL2 | gate: collect + smoke pair per dataset | automatic per pool | R19 |
 | PL3 | scale smoke: new GPU shapes at production n/c/GPUs, 5 min, co-located | `harness_pool.py --scale-smoke 300`; block phase 0 repeats | run 15 GPU OOM, host RAM OOM (FX-D56-59) |
-| PL4 | detached launch | `run_block_*.sh --detach`; stop `kill -INT -- -$(cat OUT/PGID)` | lost terminal |
-| PL5 | no code edits while a run is live | T15 | half-edited selector ran |
+| PL4 | detached launch | `run_prNN.py` in tmux `dg_flame` (survives a lost terminal); stop: one Ctrl+C in its pane | lost terminal |
+| PL5 | no code edits while a run is live, incl. this session's own smokes | T15; `pgrep -af 'debug_run|harness_pool'` empty before editing | half-edited selector ran; 10-14 `debug_run.sh` edited under a live G3 smoke |
 | PL6 | GPUs idle, ECC-clean, disk free | `nvidia-smi --query-gpu=index,memory.used,ecc.errors.uncorrected.volatile.total --format=csv`; `df -h` | S0 GPU 1 ECC |
 | PL7 | new knob reaches the trainer | dry-run + grep a short leg (L9) | FX-D32, FX-D72 |
 | PL8 | +10 min: `BLOCK.log` advancing, PROGRESS lines, telemetry < 100 MB/min | read `OUT/`; `ls -l <run>/telemetry/aggregator_*` | run 15 unseen OOM; run 16 310 MB/min |
@@ -79,7 +79,7 @@ A new failure mode adds a check here in the same session.
 | PL17 | a stage's gate must not queue behind its siblings | the gate's smoke is per dataset, timed from its first leg (FX-D154); `ABORT gate` in a stage's pool.log = read P00/pool.log for BLOCKED before blaming code | PR31 A4/A5: smoke timed out waiting on 112 sibling CPUs |
 | PL18 | the launch node runs the planned commit and code key | `git log -1` on that node = the commit the doc names; `code_state.txt` HEAD; each pool's `code_key.txt` = the doc's key (FX-D162) | PR32: jayne launched without the shepherd commit (no G0UC, ECC GPU 1 used) |
 | PL19 | ≤ 2% of train tasks overrun D per leg, real and sim; above it, fewer trainers per GPU | DONE lines / trainer `overran` count (FX-N98) | PR35: speech G1AS sim 10%, real G1A 3.5% |
-| PL20 | AVL_EVAL is eval-only and Felix-only (EV21, once FX-N97 lands) | EV21 in every leg's events | 10-14: baselines trained on mobiperf_3st EVAL devices |
+| PL20 | AVL_EVAL is eval-only and Felix-only (FX-D165) | EV21 in every leg's events (prefix-safe → DOOMED) | 10-14: baselines trained on mobiperf_3st EVAL devices |
 
 ## Method
 
@@ -125,12 +125,12 @@ pool supersedes, untested counts as not green. INV/EXACT via `--grade <pool> --r
 
 **Settled.**
 - L1-L5 (run 8) green apart from no-floor tolerances; L6 G0C + G0 35/0/1.
-- Real↔real K2 at syn_0: cifar ≤ 5%, speech ≤ 3% (feddance 17-19%).
+- Real↔real K2 at syn_0: cifar ≤ 5%, speech ≤ 3% (feddance 17-19%). Rows below that name syn_20/syn_50 ran the deleted 2-state traces.
 - Cifar L7 n=300: G1 felix/fedbuff K2 ≤ 0.3%; G1L acc diff within real↔real.
 - Cifar G2 refl/oort/feddance green; N62 oort syn_50 3 h 69/69.
 - Speech G1S felix + fedbuff, G2 oort + refl green on INV/EXACT.
 
-G0UC real↔real floors (n=50 syn_50, throughput rel): oort 0.90 · refl 0.20 · fedbuff 0.18 · feddance 0.13 · oort_star 0.06 · felix 0.02.
+G0UC real↔real floors (n=50 2-state syn_50, throughput rel; syn_50_3st floors come from PR36 G0UC): oort 0.90 · refl 0.20 · fedbuff 0.18 · feddance 0.13 · oort_star 0.06 · felix 0.02.
 Mobiperf: feddance 0.56, others ≤ 0.07. n=50 syn_50 stall placement is chaotic (FX-L53).
 
 ## FluxTune scoreboard
@@ -140,12 +140,10 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **FX-N97 → FX-N96 → FX-N98 · next (new context):** AVL_EVAL eval-only/Felix-only, 3-state syn traces as default, sim GPU scheduling
-  and the no-overrun rule (FELIX Active build "PR36 prerequisites").
-- **PR36 · blocked: those three:** full re-screen on one code key (G0U/G0UC, T3/T3C, G0T/G0TC, G1AS, third reals) → 76/76 + accuracy.
-  Scaled n/c/K (same ratios for all baselines) and jayne 0,2-7 + shepherd 0-3 for more parallel legs.
-- **PR37 · blocked: PR36 complete:** all six baselines × syn_0 + syn_50_3st + stream_lin × both datasets, 3 h real + 3 h-vclock sim + real replicate,
-  GPU-partitioned overlap at equal n:c:K ratios → sim-only experiments.
+- **PR36 · ready (commit + sync shepherd):** full re-screen on one code key (G0U/G0UC, T3/T3C, G0T/G0TC, G1AS, third reals) → 76/76 +
+  accuracy + FX-N98 speed confirm. `run_pr36.py --node jayne|shepherd` (~14.8 / 13.8 h). Screen shapes stay per tier.
+- **PR37 · blocked: PR36 complete:** all six × syn_0 + syn_50_3st + stream_lin × both datasets, 2 h real + 2 h-vclock sim, real replicate on
+  syn_0 + lin, at one n:c:K per dataset (G3: cifar 75:15:10, speech 50:15:10) → sim-only experiments. `run_pr37.py` (~24-28 h).
 - **Long blocks (G1U, G1AS grid) · deferred by C18** until PR37: FELIX FX-N93.
 
 **Operator decisions**
@@ -166,8 +164,10 @@ Parked with the track; board in simulate_fwdllm.md §A.
 - Trainer memory audit to raise n (FX-N84) (10-08).
 - One code state = one `code_key` over run-affecting files (FX-D162); a re-screen may span batches on it (PR35 + PR36) (10-14).
 - Skip PR35b; FX-N97/N96/N98 before PR36; ≤ 1-2% overruns; PR37 (all six, 3 h) gates sim-only experiments (10-14).
+- 2-state syn traces deleted; 3-state `syn_*_3st` everywhere (10-14, FX-D166).
 - Sim speed: never slower than real; 1-2× needs review; 2-5× and beyond is the target; always look for more speedup (10-14).
 - Batches span jayne GPUs 0,2-7 + shepherd GPUs 0-3; scale n/c/K at fixed ratios to run more legs in parallel (10-14).
+- Speech trains in bf16 (FX-D168); GPU placement balanced by default (FX-D169); PR37 shape G3 (10-14 late).
 
 ---
 

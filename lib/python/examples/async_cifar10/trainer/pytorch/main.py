@@ -31,6 +31,7 @@ import os
 import sys
 import threading
 import time
+import contextlib
 import math
 
 import numpy as np
@@ -88,7 +89,7 @@ class PyTorchCifar10Trainer(Trainer):
                     f"epochs={self.epochs} "
                     f"lr_decay={self.lr_decay_enabled} (factor={self.lr_decay_factor}, every={self.lr_decay_epoch}, "
                     f"min={self.min_learning_rate}) clip={getattr(_hp, 'trainer_clip_grad_norm', 0.0)} "
-                    f"deterministic={getattr(_hp, 'trainer_deterministic', False)}")
+                    f"deterministic={getattr(_hp, 'trainer_deterministic', False)} amp={getattr(_hp, 'trainer_amp', '') or 'fp32'}")
 
         self.criterion = None
 
@@ -480,6 +481,12 @@ class PyTorchCifar10Trainer(Trainer):
                 return False
         return True
 
+    def _amp(self):
+        """FX-N98: bf16 autocast for forward + loss when `trainerAmp: bf16` on CUDA (backward follows); else a no-op."""
+        on = self.device is not None and self.device.type == "cuda" \
+            and getattr(self.config.hyperparameters, "trainer_amp", "") == "bf16"
+        return torch.autocast("cuda", dtype=torch.bfloat16) if on else contextlib.nullcontext()
+
     def _warmup_device(self) -> None:
         """FX-D15: pay driver/kernel init before any timed task: one dummy train step, weights restored."""
         t0 = time.time()
@@ -494,7 +501,9 @@ class PyTorchCifar10Trainer(Trainer):
                         *(self.data_spec.shape if cuda else self.data_spec.stub_shape), device=self.device)
         y = torch.zeros(x.shape[0], dtype=torch.long, device=self.device)
         self.model.train()
-        F.nll_loss(self.model(x), y).backward()
+        with self._amp():
+            _l = F.nll_loss(self.model(x), y)
+        _l.backward()
         self.model.zero_grad(set_to_none=True)
         self.model.load_state_dict(saved)
         if cuda:
@@ -1081,15 +1090,16 @@ class PyTorchCifar10Trainer(Trainer):
             if self.config.hyperparameters.lr_batch_normalize:  # FedBuff §5 learning-rate normalization
                 for g in self.optimizer.param_groups:
                     g["lr"] = self._step_lr * min(1.0, len(target) / self.batch_size)
-            output = self.model(data)
+            with self._amp():
+                output = self.model(data)
 
-            if self.use_oort_loss_fn == "False":
-                # Loss function to use with Fedbuff
-                loss = F.nll_loss(output, target)
-            elif self.use_oort_loss_fn == "True":
-                # Calculate statistical utility of a trainer while
-                # calculating loss
-                loss = self.oort_loss(output, target, epoch, batch_idx)
+                if self.use_oort_loss_fn == "False":
+                    # Loss function to use with Fedbuff
+                    loss = F.nll_loss(output, target)
+                elif self.use_oort_loss_fn == "True":
+                    # Calculate statistical utility of a trainer while
+                    # calculating loss
+                    loss = self.oort_loss(output, target, epoch, batch_idx)
 
             # accumulate per-round local training accuracy (FedDance A_m signal)
             self.update_local_accuracy(output, target)
@@ -1190,7 +1200,8 @@ class PyTorchCifar10Trainer(Trainer):
             for epoch in range(1, self.epochs + 1):
                 for batch_idx, (data, target) in enumerate(self.train_loader):
                     data, target = data.to(self.device), target.to(self.device)
-                    output = self.model(data)
+                    with self._amp():
+                        output = self.model(data)
 
                     if self.use_oort_loss_fn == "False":
                         # Loss function to use with Fedbuff

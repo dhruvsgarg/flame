@@ -115,6 +115,8 @@ class ExecutionConfig:
     # Explicit CUDA ordinals to use instead of range(num_gpus) -- skips a
     # broken GPU. Drives round-robin; num_gpus becomes metadata-only when set.
     gpu_ids: Optional[List[int]] = None
+    # FX-N98: "balanced" spreads expected task rate (1/D) evenly over GPUs; "round_robin" (by trainer id) reverts.
+    gpu_placement: str = "balanced"
     sleep_between_spawns: float = 1.0
     aggregator_warmup_time: int = 10
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
@@ -250,6 +252,7 @@ class ExperimentBatch:
                     ExecutionConfig(
                         num_gpus=exec_data.get("num_gpus", 8),
                         gpu_ids=exec_data.get("gpu_ids"),
+                        gpu_placement=exec_data.get("gpu_placement", "balanced"),
                         sleep_between_spawns=exec_data.get("sleep_between_spawns", 1.0),
                         aggregator_warmup_time=exec_data.get("aggregator_warmup_time", 10),
                         monitoring=(

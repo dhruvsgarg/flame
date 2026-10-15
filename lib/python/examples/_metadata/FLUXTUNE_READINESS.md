@@ -4,7 +4,7 @@
 - **Read [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) first.** Its doc rules, operating rules (R1-R13),
   shared lessons (L) and tripwires (T) apply here. This doc holds only what is specific to FluxTune:
   gradients (JVPs) aggregated instead of weights, a variance-gated commit, and the `data_id` progress axis.
-- **PARKED until Felix readiness is stable across unavailability (syn_20/50, mobiperf_3st) on both async_cifar10
+- **PARKED until Felix readiness is stable across unavailability (syn_20_3st/syn_50_3st, mobiperf_3st) on both async_cifar10
   and google_speech (FELIX_READINESS FX-N9, FX-N11)** and the shared changes it drives have settled. Until then
   nothing here is worked except (a) keeping this track green under shared changes (R10) and (b) the parent
   S-steps that cover fwdllm.
@@ -74,7 +74,7 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 - **FT-N4 · Training stability I-1 under v2 · todo** (owned by fluxtune_contributions.md §8). *Exit:* a 4h+
   run holds past the lap boundary. Gates every long experiment run.
 - **FT-N5 · Unavailability for the grad loop · blocked: Felix FX-N6 audit + FX-N9.** Reuse the audited
-  `ClientAvailability` path; harness first; syn_20 → syn_50 → mobiperf_3st. *Exit:* A1-A8/K11 + the syn_0
+  `ClientAvailability` path; harness first; syn_20_3st → syn_50_3st → mobiperf_3st. *Exit:* A1-A8/K11 + the syn_0
   board green; withheld gradients delivered, not dropped.
 - **FT-N6 · Paper experiments E1-E5, sim-only · blocked: FT-N1, FT-N4** (and FT-N5 for the unavailability
   figures).
