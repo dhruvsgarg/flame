@@ -8,7 +8,7 @@ accuracy in the expected time window (tracked per track: FELIX Scoreboard). Equa
 **Four docs (plus FELIX's insights companion) are the only working references:**
 - **this doc** — the rules for all four docs, the lessons and tripwires both tracks share, and the queue of
   shared infrastructure work;
-- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS: PR36 prerequisites (FX-N97 AVL_EVAL semantics, FX-N96 3-state syn traces, FX-N98 sim GPU scheduling), then PR36 → 76/76 on one code state, then PR37 3 h pairs → sim-only experiments.**
+- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS: PR36 prerequisites (FX-N97 AVL_EVAL semantics, FX-N96 3-state syn traces, FX-N98 sim GPU scheduling), then PR36 → 76/76 on one code state, then PR37 (all six, 3 h) → sim-only experiments. Sim speedup is the point: never < 1×, aim 2-5×+.**
   - [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) — Felix's companion: telemetry-backed insights for the paper (model, catalog, findings).
 - [PARITY_READINESS.md](PARITY_READINESS.md) — real↔sim parity for both tracks: climbing rules (C1-C9: correct before
   equal, instrument what you can't see, launch only when fixes are maximized), method, tools, per-track scoreboard.
@@ -86,7 +86,7 @@ Scoreboard
   `experiments/<suite>_<ts>/` dir with a summary file; Claude reads that dir afterwards. Claude hands over the
   command, the expected duration and the prediction (what result confirms and what refutes). Long scripts launch
   detached (`--detach`, PARITY PL4) so a lost terminal can't kill them. **Runs go on
-  shepherd GPUs 0-3, or jayne GPUs 0,2-7 (operator 10-13); never launch on kaylee or wash.** Legs run in parallel only in isolated slots (R18).
+  jayne GPUs 0,2-7 and shepherd GPUs 0-3, together (operator 10-14); never launch on kaylee or wash.** Legs run in parallel only in isolated slots (R18).
 - **R5 One mechanism per run** when a fix could perturb another baseline. Shared roots before per-baseline
   roots: a bug failing rungs on 2+ baselines outranks one that fails on 1.
 - **R6 Run length follows the residual's shape.** Per-cycle mechanisms show up in 15-45 min. Accumulating or

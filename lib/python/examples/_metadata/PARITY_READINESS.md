@@ -143,7 +143,9 @@ Parked with the track; board in simulate_fwdllm.md §A.
 - **FX-N97 → FX-N96 → FX-N98 · next (new context):** AVL_EVAL eval-only/Felix-only, 3-state syn traces as default, sim GPU scheduling
   and the no-overrun rule (FELIX Active build "PR36 prerequisites").
 - **PR36 · blocked: those three:** full re-screen on one code key (G0U/G0UC, T3/T3C, G0T/G0TC, G1AS, third reals) → 76/76 + accuracy.
-- **PR37 · blocked: PR36:** 3 h real/replicate/sim pairs, baseline + unavailability + streaming × both datasets → sim-only experiments.
+  Scaled n/c/K (same ratios for all baselines) and jayne 0,2-7 + shepherd 0-3 for more parallel legs.
+- **PR37 · blocked: PR36 complete:** all six baselines × syn_0 + syn_50_3st × both datasets, 3 h real + 3 h-vclock sim + real replicate,
+  GPU-partitioned overlap at equal n:c:K ratios → sim-only experiments.
 - **Long blocks (G1U, G1AS grid) · deferred by C18** until PR37: FELIX FX-N93.
 
 **Operator decisions**
@@ -163,7 +165,9 @@ Parked with the track; board in simulate_fwdllm.md §A.
 - D = our trainer runtime distribution for every baseline, never per-sample; compute > D = rethink for all (ROBUST L36) (10-08).
 - Trainer memory audit to raise n (FX-N84) (10-08).
 - One code state = one `code_key` over run-affecting files (FX-D162); a re-screen may span batches on it (PR35 + PR36) (10-14).
-- Skip PR35b; FX-N97/N96/N98 before PR36; sim ≥ 1× real; ≤ 1-2% overruns; 3 h pairs gate sim-only experiments (10-14).
+- Skip PR35b; FX-N97/N96/N98 before PR36; ≤ 1-2% overruns; PR37 (all six, 3 h) gates sim-only experiments (10-14).
+- Sim speed: never slower than real; 1-2× needs review; 2-5× and beyond is the target; always look for more speedup (10-14).
+- Batches span jayne GPUs 0,2-7 + shepherd GPUs 0-3; scale n/c/K at fixed ratios to run more legs in parallel (10-14).
 
 ---
 

@@ -17,16 +17,24 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
   Active build "PR36 prerequisites" §A. *Exit:* EV check green on mobiperf_3st + syn_*_3st legs of all six; baselines never train on,
   dispatch to, or deliver from an AVL_EVAL trainer; Felix evals use AVL_EVAL trainers.
 - **FX-N96 · 3-state synthetic traces, new default · todo (operator 10-14).** Active build §B. *Exit:* `syn_{10,20,50}_3st` generated,
-  self-checked and documented; every run defaults to them; 2-state syn traces DEPRECATED (delete once PR36 grades green on 3st).
+  self-checked and documented; every run defaults to them; 2-state syn traces deleted everywhere once 3st is verified.
 - **FX-N98 · Sim GPU scheduling + no-overrun rule · todo (operator 10-14).** Active build §C. *Exit:* overrun share ≤ 2% per leg in real and
-  sim (PL19); speech G1AS felix sim ≥ 1× real (target ≥ 2× on 4 GPUs) with accuracy within noise of PR35 A1.
-- **PR36 · full re-screen on one code key · blocked: FX-N96/N97/N98** (PR35b skipped, operator 10-14). G0U/G0UC + T3/T3C (syn_*_3st,
-  mobiperf_3st), G0T/G0TC both datasets, G1AS six × both, a third real on the 4 PR35 draw cells (Scoreboard). Size with `--plan`
-  (~14-16 h). Commit `FX-D163/D164` landed with the PR35 analysis. *Exit:* `readiness_score.py` on one code key = 76/76; G1AS on the board.
-- **PR37 · 3 h convergence parity (FX-N93.2/.3) · blocked: PR36.** Per dataset, three cells × (real, real replicate, sim), 3 h each:
-  syn_0 (baseline), syn_50_3st (unavailability), stream_lin syn_0 (streaming); felix in every cell plus one sync baseline (proposal:
-  oort_star; confirm at `--plan`). Deterministic kernels. *Decision rule:* all cells inside the real↔real band on the convergence board's
-  C and U criteria ⇒ paper experiments run sim-only (FX-N12, operator 10-14); a red ⇒ root on short runs first (C18).
+  sim (PL19); speech G1AS felix sim ≥ 2× real (never < 1×) with accuracy within noise of PR35 A1.
+- **PR36 · full re-screen on one code key · blocked: FX-N96/N97/N98** (PR35b skipped, operator 10-14).
+  - Scope: G0U/G0UC + T3/T3C (syn_*_3st, mobiperf_3st), G0T/G0TC both datasets, G1AS six × both, and a third real on the 4 PR35 draw
+    cells (Scoreboard).
+  - Overlap: scale n/c/K down, same ratios for every baseline, so more legs run at once (operator 10-14).
+  - Nodes: jayne GPUs 0,2-7 plus shepherd GPUs 0-3, split by `--plan` (PL16/PL18 per node).
+  - FX-D163/D164 landed in `a7976c416`.
+  - *Exit:* `readiness_score.py` on one code key = 76/76; G1AS on the board.
+- **PR37 · 3 h convergence parity, all six baselines (FX-N93.2/.3) · blocked: PR36 complete (operator 10-14).**
+  - Cells, both datasets: syn_0 (100% availability) and syn_50_3st (mobiperf_3st instead if fast enough).
+  - Legs: 3 h real + sim at 3 h of vclock (not wall), plus a real replicate per cell for the real↔real band (size with `--plan`).
+  - Overlap: legs run in parallel by partitioning GPUs across jayne 0,2-7 + shepherd 0-3. n/c/K scale down with the same n:c:K ratios for
+    every baseline, so the run shows both real↔sim parity and how the baselines compare.
+  - Deterministic kernels.
+  - *Decision rule:* every cell inside the real↔real band on the convergence board's C and U criteria ⇒ paper experiments run sim-only
+    (FX-N12); a red ⇒ root it on short runs first (C18).
 - **PL-LOG · harness_pool contention messages · todo (apply after PR36 grades; changes the code key, so not between PR35 and PR36).**
   `harness_pool.py` BLOCKED reasons say "N foreign-busy" even when our own legs hold the slots. Rename to `resources-busy` when the
   block is this pool's own running legs. Re-print `LOAD foreign` (CPU/GPU contention) to the terminal every 10 min while any foreign
@@ -186,12 +194,15 @@ all four columns pass. Thresholds are nominal until a real↔real replicate sets
 - **C · curve parity:** G1A real + sim + real replicate, deterministic kernels: accuracy at matched rounds within max(2 pp, real↔real) and
   time-to-target sim/real within max(10%, real↔real) (FX-N93.2; time-to-target rung still to build, C7).
 - **U · hours under unavailability:** syn_50_3st + mobiperf_3st, 3 h: INV/EXACT green and C's criteria (FX-N93.3, PR37).
-- **S · sim speed:** sim ≥ 1× real wall at reference n on every cell, never slower (FX-N98).
+- **S · sim speed (operator 10-14):** never slower than real.
+  - 1-2×: okay, but needs a review and sanity check (where the wall goes).
+  - 2-5× and beyond: the goal.
+  - Speedup is the simulator's purpose, so every change keeps looking for more of it (FX-N98, S6).
 
 | baseline · dataset | A | C | U | S |
 |---|---|---|---|---|
-| felix · cifar / speech | ✅ / ✅ | ⬚ / ⬚ (run 18 pre-76/76) | ⬚ / ⬚ | ✅ 4.7× / ✅ 1.09× (fix: FX-N98) |
-| fedbuff · cifar / speech | ✅ / ✅ | ⬚ / ⬚ | ⬚ / ⬚ | ✅ / ✅ 1.5× |
+| felix · cifar / speech | ✅ / ✅ | ⬚ / ⬚ (run 18 pre-76/76) | ⬚ / ⬚ | ✅ 4.7× / 🟡 1.09× (review; FX-N98) |
+| fedbuff · cifar / speech | ✅ / ✅ | ⬚ / ⬚ | ⬚ / ⬚ | ✅ / 🟡 1.5× (review) |
 | oort, oort_star · cifar | ✅ ✅ | ⬚ | ⬚ | ✅ |
 | refl, feddance · cifar | ❌ ❌ (29.5, 35.6%) | ⬚ | ⬚ | ✅ |
 | oort, oort_star, refl, feddance · speech | round-bound: needs C (same accuracy, same time) | ⬚ | ⬚ | ✅ |
@@ -202,7 +213,8 @@ all four columns pass. Thresholds are nominal until a real↔real replicate sets
 
 ## Decisions (operator; standing until changed here)
 
-- **Node (10-13):** runs on jayne GPUs 0,2-7 (GPU 1 out) or shepherd GPUs 0-3 (R4); score on the node holding every scored pool's runs (jayne).
+- **Node (10-13, 10-14):** batches use jayne GPUs 0,2-7 (GPU 1 out) and shepherd GPUs 0-3 together (R4); score on the node holding
+  every scored pool's runs (copy shepherd pools and runs to jayne, FX-T48).
   Shepherd = jayne hardware (EPYC 7513, A40, driver 575.57.08): charge profiles and floors are shared (T9).
 - **EuroSys FedDance (10-11/12): FedDance's algorithm on our setup, apples to apples.**
   - *Common to all baselines:* model, Dirichlet α=0.1, n=300 cifar / 100 speech, K=10 aggregated (c=13 dispatched), the May-2025 shared
@@ -229,8 +241,11 @@ all four columns pass. Thresholds are nominal until a real↔real replicate sets
   - 3-state syn traces (EVAL share from `mobiperf_3st_50`) become the default; 2-state syn traces are deprecated, then deleted (FX-N96).
   - At most 1-2% of tasks may overrun D, in real and sim; above that, fewer trainers per GPU (FX-N98).
   - Sim must never be slower than real.
-- **Sim-only experiments (10-14):** after PR37's 3 h pairs (baseline, unavailability, streaming × both datasets) sit inside the real↔real
-  band, paper experiments run sim-only.
+- **Sim-only experiments (10-14):** after PR37 (all six baselines × syn_0 + syn_50_3st × both datasets, 3 h, n:c:K ratios equal across
+  baselines) sits inside the real↔real band, paper experiments run sim-only.
+- **Sim speed (10-14):** sim never slower than real; 1-2× needs review; 2-5× and beyond is the target; always look for more.
+- **Nodes (10-14):** batches use jayne GPUs 0,2-7 and shepherd GPUs 0-3 together; more parallel legs via scaled n/c/K at fixed ratios.
+- **2-state syn traces (10-14):** deprecated everywhere; delete the keys and every reference once the 3-state traces are verified.
 - **Run scope (10-12):** the 76/76 must stand on one code state, so a batch reruns felix/fedbuff G0U (A4) beside the others. One code
   state = one `code_key` (FX-D162, 10-14): it may span batches (PR35 + PR36) while no run-affecting file changes.
 
@@ -312,8 +327,8 @@ Implement in this order in a fresh context; delete each subsection when its item
   - window-exit rates within ±5 pp of MobiPerf's;
   - deterministic for a seed, no repeated states, final UN_AVL marker kept.
 - *Default switch:* new keys; `harness_pool` shapes/tiers, run scripts, `debug_run.sh` defaults and the Scoreboard syn_20/syn_50 columns
-  move to `_3st` (grep every `syn_10`/`syn_20`/`syn_50` literal). Old 2-state keys are marked DEPRECATED in `synthetic_traces.yaml`,
-  deleted once PR36 grades green on 3st.
+  move to `_3st` (grep every `syn_10`/`syn_20`/`syn_50` literal). The 2-state keys are deprecated everywhere (operator 10-14): mark them
+  in `synthetic_traces.yaml`, then delete the keys and every reference (code, tests, docs, EuroSys tooling) once 3st is verified.
 - *Trainer check (CPU T3 pairs, felix/fedbuff/oort on syn_50_3st, ≤ 15 min):*
   - each trainer's `avail_change` telemetry equals the trace at the same trace times, all 3 states;
   - EV21 green;
@@ -334,7 +349,7 @@ Implement in this order in a fresh context; delete each subsection when its item
   - sim charges slot-held time only (slot waiting is a sim artifact; in real it stays contention).
   - First a ≤ 15-min micro-benchmark of one speech task at K = 1-4 per GPU: pick the K with best throughput and per-task time ≤ real's.
 - *Verify:*
-  - speech G1AS felix sim ≥ 1× (target ≥ 2× on 4 GPUs);
+  - speech G1AS felix sim ≥ 2× (≥ 1× floor; 1-2× needs a review of where the wall goes);
   - per-task compute KS vs real G1A, and overruns ≤ 2%;
   - accuracy within noise of PR35 A1 (67.9%);
   - speech G0U felix/fedbuff sims green vs PR35 reals;
@@ -810,5 +825,4 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 ## Open questions (operator)
 
 - Speech Oort/refl/feddance accuracy: round-bound (10-10) vs a per-baseline target vs long sims after P8?
-- PR37's sync baseline: oort_star (proposal) or another?
-- Delete the 2-state syn traces after PR36: does any EuroSys plot still need `syn_10`/`syn_50` 2-state (G1X FedDance `fd_20261012_0503`)?
+- PR37: add a streaming cell (stream_lin syn_0), as first proposed (10-14 a.m.), or leave streaming to PR36's G0T screens?
