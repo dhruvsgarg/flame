@@ -53,7 +53,7 @@ Capacity at 4,184 MiB peak: 10 trainers per 46 GB GPU, 9 on the aggregator's GPU
 unoptimised: ~15). GPU memory binds, not host RAM (79 × 2 GB + helpers 14 GB + aggregator). Compute is already
 92–100% at 3–4 trainers per GPU, so keep C ≈ 30.
 
-### Aggregator optimisations (2026-10-14, uncommitted)
+### Aggregator optimisations (2026-10-14, `1de4bb79`)
 
 **Problem.** O1–O5 never reached the aggregator. On 1.7B (`run_20261014_014720`) it held **108–110 GB host RSS**,
 104 GB of it glibc `[heap]`, growing ~5 GB/h; trainers totalled 47 GB. Each gradient list carried full-size fp32 zeros
@@ -104,7 +104,7 @@ new code on the same GPUs. "Identical" = every `rms_jvp`, `[ServerUpdate]` audit
 | RC9 | DistilBERT parity vs floors (O1/O3–O5 are shared code, R10) | `run_parity.py` passes | todo |
 | RC10 | 1.7B smoke (§13 step 6) after RC1–RC9 | §13 pass condition; per-trainer GPU ≈ 4 GB | partly: 4.0 / 4.2 GB measured (n25, §13) |
 | RC11 | Aggregator A1–A4 bit-identity vs `2357c3d2` | identical, 0 errors | done (DistilBERT n4, 14 commits) |
-| RC12 | Aggregator RAM on 1.7B: rerun `run_20261014_014720`'s config ~30 min | `[MEM:agg]` under ~15 GB and flat vs 108–110 GB before | todo |
+| RC12 | Aggregator RAM on 1.7B: `[MEM:agg]` in the N = 50 run (§13) | under ~15 GB and flat vs 108–110 GB before (n25, old aggregator) | wip |
 | RC13 | A1–A4 on the `fwdllm` baseline path (`var_control`, odd-data_id `old_grad`; RC4's legs) | identical, 0 errors | todo |
 
 **Goal:** show the model ports cleanly and read the controller's numbers (`p`, trips/commit, commits/h, `cos·Φ`).
@@ -576,6 +576,37 @@ Not a scored run.
 against modeled delays of 208–2,448 vclock-s: 1,885 `abandon_timeout` (logged as `abandon_90s_wall`) on 20 of 25
 trainers, 2,856 `slot_starvation`. No update lost (3,165 computed, 3,140 aggregated, 25 in flight at stop; 62% of
 contributions from "abandoned" trainers; staleness 0–1), because C = N here. With C < N a freed slot would dispatch past
-C. Raise it to ≥ 3,600 s for 1.7B before any C < N run.
+C. For 1.7B pass `--send-timeout-s 3600` (above the 2,448 s slowest delay), as the N = 50 run below does.
 
-**Owed:** RC12 (aggregator RAM on 1.7B); the timeout override; step 6 at N = 50 (= RC10, after §0's RC1–RC9).
+**N = 50 run, 8 h wall (launched 2026-10-14 03:46).** O1–O5 trainers + A1–A4 aggregator; agnews
+`niid_label_clients=50_alpha=1` (pretokenized for 1.7B, 51 shards in 1.3 min); N / C / K = 50 / 30 / 10; all 8 GPUs.
+The step-6 command with these changes:
+
+```
+--partition-method "niid_label_clients=50_alpha=1" --num-trainers 50 --num-gpus 8 --c 30 --min-initial-frac 0.9
+--send-timeout-s 3600            # new launcher flag -> send_timeout_wait_s (yaml default 300)
+--phi-stop log_only              # no Φ halt, no --saturation-stop: only the wall ceiling ends it
+--max-runtime-s 1000000000 --sim-wall-ceiling-h 8
+```
+
+| | |
+|---|---|
+| Run dir | `experiments/run_20261014_034646_fluxtune_agnews_n50_smoke_syn_0_sim/` |
+| Aggregator / trainers log | `<run dir>/14_10_26_03_47_async_oort_n50_client_notify_alpha1_syn0_{aggregator,trainers}.log` |
+| Accuracy, commits | `<run dir>/telemetry/aggregator_fluxtune_agnews_n50_smoke_syn_0_sim.jsonl` (`agg_eval`, `server_update`) |
+| Aggregator RAM (RC12) | `[MEM:agg] rss=` lines in the aggregator log |
+| Launcher stdout | `smollm2_1p7b_n50_20261014_0346.log` |
+| Watchdog | `smollm2_1p7b_n50_watch.log` (`--pgid 1494946 --kill --max-hours 9`) |
+| Rendered config | `expt_scripts/smoke_logs/20261014_034638/` (dry run: `…/20261014_034613/`, preflight 9/9) |
+| Stop by hand | `kill -TERM -- -1494946`, then `kill -KILL -- -1494946` after ~20 s |
+
+**Stop:** the aggregator's `sim_wall_ceiling_s` 28,800 s from its start (03:47:19) → ~11:47; launcher hard kill at
++20 min, watchdog at 9 h. **Spawn:** aggregator on GPU 7 (03:47:10); 50 trainers `(id − 1) % 8` round-robin, 2 s apart
+(03:47:15–03:48:58), 7/7/6/6/6/6/6/6 per GPU, one pinned core each, each loading its own model. All 50 updating by
+03:54; C = 30 honoured (`effective_c: 30`).
+
+**Projection** (ρ = 1.5·√(10·50/794,624) ≈ 0.0376, as 360M N=50 §9; 50–75 commits/h): ~390–580 commits and
+**~0.81–0.83** accuracy at 8 h (360M N=50 at matched commits; up to ~0.85 if 1.7B keeps its early per-commit lead).
+Φ = 3 needs ~1,560 commits (~21–31 h), so 8 h ends before the run's own stop.
+
+**Owed:** RC12 (aggregator RAM, read from this run); step 6 pass condition from this run (= RC10).

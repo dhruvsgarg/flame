@@ -142,6 +142,7 @@ EVAL_MAX_SAMPLES=""    # agg eval on a fixed subsample of the test set. Unset = 
 B_MAX_PROBE_PHIS=""    # 3.1: comma-separated Phi grid (1.5,2,2.5,3,3.5,4)
 SATURATION_STOP=""     # E: 1 = stop when held-out accuracy stops rising (Prechelt GL). Unset = off
 SAT_STALL_FRAC=""      # E': stall trigger. g=(m_t-m_{t-h})/m_t <= this for `patience` evals.
+SEND_TIMEOUT_S=""      # per-dispatch abandon timeout (send_timeout_wait_s); empty => yaml (300 s)
                        # Unset = the 08-22 decay-only rule, byte-identical. 0.003 = shipped sizing.
 RETENTION_PROBE_EVERY="" # P3': log cos(theta_t,theta_0) every N commits. 0/unset = off
 TRAINABLE_SCOPE=""     # S-I: adapters_head|adapters_only -- adapters_only freezes pre_classifier (56.7% of p)
@@ -204,6 +205,7 @@ usage() {
   echo "          [--b-max-policy mean|ratchet|anchor] [--eval-max-samples N]" >&2
   echo "          [--saturation-stop] [--retention-probe-every N]  (E: the saturation stop; P3': cos(theta_t,theta_0))" >&2
   echo "          [--sat-stall-frac F] [--no-sat-decay]  (stall trigger; drop the GL decay trigger)" >&2
+  echo "          [--send-timeout-s S]  (abandon timeout; scale with the delays, e.g. 3600 for 1.7B)" >&2
   echo "          [--pool-target N] [--fd-scale-invariant] [--dynamic-kc on|off] [--agg-rate-type grad_aware|new|old|uniform]" >&2
   echo "          [--allow-stale-profile]  warn (not error) when local reals postdate the sim profile" >&2
   echo "          [--trainable-scope adapters_head|adapters_only] [--commit-gate var|n_target|fixed] [--gate-safety-s F]" >&2
@@ -271,6 +273,7 @@ while [[ $# -gt 0 ]]; do
     --eval-max-samples)     EVAL_MAX_SAMPLES="$2"; shift 2 ;;
     --saturation-stop)      SATURATION_STOP=1; shift ;;
     --sat-stall-frac)       SAT_STALL_FRAC="$2"; shift 2 ;;
+    --send-timeout-s)       SEND_TIMEOUT_S="$2"; shift 2 ;;
     --no-sat-decay)         SAT_DECAY=0; shift ;;
     --pool-target)          POOL_TARGET="$2"; shift 2 ;;
     --fd-scale-invariant)   FD_SCALE_INVARIANT=1; shift ;;
@@ -484,6 +487,7 @@ LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
   B_MAX_PROBE_PHIS="$B_MAX_PROBE_PHIS" \
   B_MAX_POLICY="$B_MAX_POLICY" \
   SATURATION_STOP="$SATURATION_STOP" SAT_STALL_FRAC="$SAT_STALL_FRAC" SAT_DECAY="$SAT_DECAY" \
+  SEND_TIMEOUT_S="$SEND_TIMEOUT_S" \
   POOL_TARGET="$POOL_TARGET" DYNAMIC_KC="$DYNAMIC_KC" \
   RETENTION_PROBE_EVERY="$RETENTION_PROBE_EVERY" \
   EVAL_MAX_SAMPLES="$EVAL_MAX_SAMPLES" \
@@ -545,6 +549,7 @@ B_MAX_PROBE_PHIS = env("B_MAX_PROBE_PHIS") or ""
 B_MAX_POLICY = env("B_MAX_POLICY") or ""
 SATURATION_STOP = env("SATURATION_STOP") or ""
 SAT_STALL_FRAC = env("SAT_STALL_FRAC") or ""
+SEND_TIMEOUT_S = env("SEND_TIMEOUT_S") or ""
 SAT_DECAY = env("SAT_DECAY") or ""; POOL_TARGET = env("POOL_TARGET") or ""
 DYNAMIC_KC = env("DYNAMIC_KC") or ""
 RETENTION_PROBE_EVERY = env("RETENTION_PROBE_EVERY") or ""
@@ -861,6 +866,8 @@ def patch(exp, run_key, variant, trace):
     # only the curve -- no target, no chance level, no num_labels (buildplan §5.13).
     if SAT_STALL_FRAC:
         h["sat_stall_frac"] = float(SAT_STALL_FRAC)
+    if SEND_TIMEOUT_S:
+        h["send_timeout_wait_s"] = float(SEND_TIMEOUT_S)
     if SAT_DECAY == "0":
         h["sat_decay"] = False
     if POOL_TARGET:
