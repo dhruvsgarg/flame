@@ -4,23 +4,35 @@ Read [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) and [PARITY_READINESS.md](
 here unrepeated. **Focus (operator 10-12/13): Felix-wide parity to 76 / 76, then convergence parity (FX-N93).** Order: Next steps →
 Scoreboard (now, and expected after the next run) → Decisions → reference sections.
 
-**At a glance (10-15):** PR36 stopped mid-batch (EV21 false DOOMED kills); its finished pools regrade **60 / 76** with the fixed
-checker, every red rooted (Scoreboard). Fixes FX-D172-D174 change `code_key`, so PR36 reruns whole · accuracy **6 / 12** · convergence
-**0 / 12** · next: FX-N99 scheduler, pytest + smoke, relaunch PR36, then FX-D171 (Felix utility = Oort's), then PR37 → FX-N12.
+**At a glance (10-15 late):** golden rule ROBUST R0 (short screens first). Fixes `5f1848184`; packing adopted (FX-N100: trainer-packed
+GPUs, measured leases; host RAM and GPU memory bind). Next: **PR36-short** (~2-3 h), fix on short runs, then full PR36 (~12.5 h). First
+PR36 run regrades 60 / 76 · accuracy **6 / 12** · convergence **0 / 12** · then FX-D171, PR37 → FX-N12.
 
 ## Next steps (persistent queue — top item is next)
 
 Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4/TS · GPU ≤ 30-min screens (G0U/G0T/G0UC) · long
 (G1*/G2). Unblock map: PR36 (76/76 on one code key; confirms FX-N98) → PR37 (FX-N93.2/.3) → FX-N12.
 
-- **FX-N99 · Measured-utilization scheduler · wip: building in tree (operator 10-15: before the PR36 relaunch).** Design: Active build
-  "measured scheduler". *Exit:* A/B inside the R7 floors; PR36 `--plan` makespan drops and jayne's idle CPUs/GPUs stay under ~30%; flag
-  promoted only with operator sign-off (R9).
+- **PR36-short · broad bug screen on the new packing (R0) · ready: launch (commands in PR36 below).** Stages B1 (G0U), C1 (T3), C2 (P7) on
+  jayne and S1 (G0T) on shepherd, every leg ≤ 240 s at production density, `--short 240 --measured --one-queue --gpu-share 4`. Plan:
+  ~2.1 h jayne, ~3.0 h shepherd. *Graded on* EV + INV/EXACT logic per cell, plus `resource_report.py --util`: legs/h, overruns 0-2%, no
+  OOM/`RAM_OVER`/slow legs. DIST/timing reds on 240 s legs are artifacts (E1). *Decision:* fix every logical red on short runs and
+  re-screen only the affected cells; when clean, launch full PR36 (~12.5 h, same flags without `--short`) for DIST, replicate floors,
+  draws and G1AS.
+- **FX-N100 · Throughput: utilization-aware packing (central goal, operator 10-15) · wip: packing adopted (E3/E3b); confirm on PR36-short.** Design: Active build "throughput".
+  *Exit:* on a 10-min mixed batch (CPU + GPU legs, both datasets), legs finished per hour ≥ 2× the PR36 packing, with node CPU busy
+  and GPU SM / memory use reported per minute. Interference (overruns > 2% (PL19), `CPU_SAT`, sim slowdown > 1.25×, EV/parity reds vs
+  solo) must stay at the solo baseline. The PR36 `--plan` uses the measured packing.
 - **FX-N98 · Sim speed + no-overrun rule · wip: sim side met in PR36 A1 (felix ~2.0× incl. startup, fedbuff 2.9×, 0 overruns, accuracy
   within 2 pp); close when the rerun's real legs show ≤ 2% overruns.**
   Active build "sim speed". *Exit:* overrun share ≤ 2% per leg in real and sim (PL19); speech G1AS felix sim ≥ 2× real (never < 1×) with
   accuracy within 2 pp of PR35 A1 (felix 67.9%, fedbuff 64.6%).
-- **PR36 · full re-screen on one code key · relaunch after FX-N99 + pytest + smoke; commit + sync shepherd first (PL18).**
+- **PR36 · full re-screen on one code key · blocked: PR36-short clean.**
+  - *Launch (operator runs, in tmux `dg_flame` on each node, after `git pull` on shepherd and matching `code_key`, PL18):*
+    `cd ~/flame/lib/python/examples && /coc/scratch/dgarg/miniconda3/envs/dg_flame/bin/python scripts/run_pr36.py --node jayne
+    --hours 5 --short 240 --measured --one-queue --gpu-share 4 --only B1,C1,C2` (shepherd: `--node shepherd ... --only S1`). Drop
+    `--short 240 --only ...` and use `--hours 15` for full PR36. Read: `experiments/pr36_<node>_<ts>/OVERNIGHT.txt`, probes, `--util`. The relaunch (`pr36_*_20261015_1626`, `--measured --one-queue`) was stopped
+  after A1's gate (operator 10-15: no long run at low utilization). Commit `5f1848184` holds the fixes; the code key changes with FX-N100.
   - Scope: G0U/G0UC + T3/T3C (syn_*_3st, mobiperf_3st), G0T/G0TC both datasets, G1AS six × both (accuracy + FX-N98 speed at reference
     n), and a third real on the 4 PR35 draw cells (Scoreboard). Screen shapes stay per tier (mechanism parity per baseline; G0U is n=50).
   - Runner: `run_pr36.py --node jayne` (GPUs 0,2-7: G1AS, G0U, G0UC, speech G0TC, CPU tiers; ~14.8 h) and `--node shepherd` (GPUs 0-3:
@@ -302,15 +314,94 @@ to 70% everywhere except CIFAR-10 syn_50 (39 h).
 - *Confirm in PR36 A1:* speech G1AS felix sim ≥ 2×, overruns ≤ 2%, felix/fedbuff accuracy within 2 pp of PR35 A1, cifar not slower.
   Next lever if short: more GPUs per speech sim leg.
 
-## Active build — measured scheduler (FX-N99; operator 10-15)
+## Active build — throughput (FX-N100, absorbs FX-N99; operator 10-15)
+
+- *Goal:* finish the most legs per wall hour at high CPU/RAM/GPU use, with each leg behaving as if alone (R18, R24). Proven on 5-10 min
+  runs, then every long batch uses it.
+- *Evidence (first PR36 run, jayne, 14 h; ledger `resources.jsonl`):* load 1-12 of 128 CPUs (~5%); GPU memory 100-195 of 315 GB; 2-15 legs
+  at once, mostly 3-4 after 4 h; GPUs idle for the last ~2.5 h while CPU tiers finished. Peak GPU memory per leg: cifar G0U ~20 GB (one
+  GPU of 45), speech G0U ~25 GB per GPU, G1AS ~31-35 GB per GPU. Mean busy cores: real legs 0.3-0.5, sims 2.2-4.6. GPU compute (SM %) is
+  not recorded.
+- *Plan, each step tested on a 5-10 min batch:*
+  1. *Instrument:* per-minute node CPU busy cores, RAM, per-GPU SM % and memory in the ledger. `resource_report.py --util` gives time-
+     weighted utilization, idle capacity, legs and leg-budget-hours finished per wall hour, and per-leg interference (overrun share, `CPU_SAT`,
+     duration vs solo).
+  2. *GPU sharing:* place legs on GPUs by measured peak memory and SM % (history per leg key), up to ~85% of memory and ~90% SM. Sim
+     vclock is unaffected (L1); real timing is unaffected while compute < D, so the overrun share (PL19) is the interference signal.
+  3. *Measured CPU leases + admission (FX-N99, built):* real CPU legs lease measured cores; sims keep the formula (their wall is their
+     throughput).
+  4. *One queue across stages and nodes:* no lane waits on another, and the GPU tail fills with GPU work, not CPU stragglers.
+- *Binding constraints (first PR36 run, BLOCKED counts):* CPU leases held idle by other pools (478), GPUs held exclusively (~600), pool
+  RAM budget (261), lanes serial (C3 began at 13:02 after C1). Baseline `resource_report.py --util`: 15.9 legs/h, 3.3 legs running on
+  average, CPU 6%, GPU memory 39%, GPUs idle 25% of GPU-time. Real cifar compute is 0.18 s per 4 s task, so GPU memory, not SM, binds GPU
+  legs; measured leg RAM (cifar G0U 43-59 GB, speech 65-80 GB) ≈ formula, so RAM caps jayne at ~8 cifar or ~6 speech GPU legs.
+- *Built (10-15, uncommitted):* ledger samples per-GPU SM % (`gpu_sm_pct`), per-leg SM (`nvidia-smi pmon`), node CPU busy and RAM; each
+  GPU leg's DONE line and ledger end event carry SM % and overran/train tasks (`OVERRUN` > 2%); history `gpu|<key>` = [peak GB, SM %] per
+  GPU. `--gpu-share K` places legs on GPUs by measured footprint (`place_gpus`, `gslot_<g>_<i>` leases carrying GB,SM): ≤ 85% memory
+  committed, ≤ 90% SM, live use + peak ≤ 90%; unmeasured legs claim a whole GPU. Under `--lease-from-telemetry` the measured RAM peak
+  ×1.15 sizes the reservation both ways. `resource_report.py --util`: utilization, legs/h, budget-h/h, concurrency, overruns, slow legs.
+- *Measured footprints (E1 + first PR36 run; per leg, n=50 G0U, n=15-40 T3; refresh as screens add history):*
+
+  | leg | cores mean / p95 | RAM peak GB | GPU GB per GPU | SM % | wall vs budget |
+  |---|---|---|---|---|---|
+  | cifar G0U real (1 GPU) | 0.9 / 2.7 | 49-53 | 19.6-19.8 | 0-1 | 240 s budget → 7.8 min (join + teardown ~3.5 min) |
+  | cifar G0U sim (1 GPU) | 1.8-2.0 / 4.6-5.6 | 24 (PR36: 43-59) | 19.4-19.8 | 0-1 | 3.7-4.2 min |
+  | speech G0U real (2 GPUs) | 0.8-1.0 / 2.6-4.2 | 59-65 (PR36 ≤ 78) | 21.6-28.3 | ~1 | 6.7-7.9 min |
+  | speech G0U sim (2 GPUs) | 2.2-2.4 / 4.9 | 34-47 (PR36 ≤ 79) | 14.8-20.9 | ~1 | 2.3-2.7 min |
+  | G1AS sim n=300 cifar / n=100 speech (4 GPUs) | 4.6 / 3.7 | 133-163 | ~31-35 | n/a | 90 min vclock: cifar ~20 min, speech 31-46 min |
+  | T3 real / sim (stub) | 0.3-0.9 / ≤ 1.2; sim 0.6-1.7 / ≤ 3.3 | 6-13 | 0 | 0 | real 5.6 min; sim 1.8-2.9 min |
+
+  GPU memory is ~0.4 GB per trainer process (CUDA context + preloaded shard), so GPU legs bind on GPU memory and host RAM, never SM.
+- *E1, exclusive GPUs (`pool_20261015_tput_E1`; G0U + T3 syn_50_3st, felix + fedbuff, both datasets, `--scale-smoke 240`):* 68.9 legs/h,
+  4.59 budget-h/h, concurrency 5.4; CPU 5%; RAM peak 232 GB of 504; GPU SM 2%, memory 13%, GPUs idle 62%; overruns 0/565; 3 slow legs
+  (G0U reals 470 s vs 342 s est: join + teardown). Parity reds on G0U fedbuff (both) and gs felix are 240 s-leg artifacts and the control
+  for E2.
+- *E2 attempt 1 (aborted):* the speech felix sim CUDA-OOMed on GPU 0 (44.7 of 44.4 GiB usable) beside a cifar real. Its recorded footprint
+  (14.8 GB/GPU) was a missed peak: a 2.7-min sim gets few 30 s samples, while its real twin (same trainers) peaked at 28.3. Fixed: a
+  footprint is the max over the key's real and sim legs; `GPU_GB` = 44.4; caps 90% (operator 10-15).
+- *GPU memory per trainer (micro-benchmark, idle GPU 7):* 312 MiB of bare CUDA context per process; cuDNN kernels add ~4 MiB (lazy loading
+  is already on). MPS does not shrink it (20 processes: 6,257 vs 6,319 MiB); its pipe dir must be short (108-char socket limit), and clients
+  index the server's visible GPUs. So a 50-trainer leg holds ~15 GB of contexts before data. With caps, only two cifar G0U legs (19.8 GB)
+  share a GPU; speech legs (21.6-28.3 GB/GPU) stay alone.
+- *E2, whole-leg sharing (`pool_20261015_tput_E2`):* 74.5 legs/h (+8%), concurrency 6.0, GPUs idle 57%, overruns 0/570, 0 slow legs,
+  parity verdicts = E1. Only cifar legs paired: speech legs (≥ 21.6 GB/GPU at their even 2-GPU split) never fit beside another leg.
+- *Trainer-granular packing (built 10-15):* the placer spreads a leg's trainers over any GPUs with room (`place_trainers`; per-trainer GB =
+  per-GPU peak / even split; partly used GPUs first; ≥ 5 trainers per GPU; aggregator's 3 GB on a GPU the leg already uses, listed
+  last), passed as `FLAME_GPU_TRAINER_CAPS` to the spawner (`balanced_gpu_placement(caps)`, rate-balanced within caps; off =
+  byte-identical). Read → choose → commit runs under a node-wide `flock` (`gpu_place.lock`), and a leg reserves its whole footprint
+  before launch (all or nothing), so two legs can never each hold part of the memory they need. Footprints are keyed by dataset ·
+  harness · baseline · n · GPUs (memory doesn't depend on mode, trace or runtime), seeded from PR36's exclusive legs: cifar n=50 20.6-22.4
+  GB, speech n=50 38-42 GB per GPU (long legs; E1's 4-min legs read 28), G1AS n=300/100 30-39 GB per GPU.
+- *E3, trainer packing (`pool_20261015_tput_E3`):* 81.7 legs/h (+19% vs E1), concurrency 7.2, GPU memory 20%, GPUs idle 34%, overruns 0/572,
+  no OOM (shared GPUs peaked 28-34 GB), 1 slow leg. Packed legs ran 5-10% longer than E1's. New red: cifar G0U felix
+  `trainer_trace_fidelity_sim` (DIST) at 94% of trainers within tolerance vs a 95% gate (3 of 50, 83 spurious transitions). Speech fedbuff sim
+  used 60 GB RAM vs 42 GB reserved: a short E1 sim had lowered it. Fixed: the RAM reservation is 1.15 × the max over every run of that
+  baseline at that n (cifar 71, speech 92-93 GB).
+- *E3b (E3 repeated with the RAM fix, `pool_20261015_tput_E3b`):* the felix cell is green (100% within tolerance): E3's red was a draw. Verdicts
+  = E1, overruns 0/568, no OOM. Throughput fell to 69.8 legs/h: measured RAM reservations (cifar 71, speech 92-93 GB) admit only 5 GPU legs
+  at once, while actual RAM peaked at 253 GB (4-min legs use less than the full-length peaks). At production length **host RAM binds the
+  speech-heavy stages and GPU memory the rest.** Trainer packing is adopted.
+- *Sim CPU leases:* T1 (24 sims) at 2 / 4 cores / formula (7-9 cores): 3.07 / 2.26 / 1.62 min per sim, but 282 / **337** / 181 legs/h.
+  Sims lease ≥ 4 cores (`SIM_LEASE_MIN_CORES`), real CPU legs ≥ 2; core history falls back across runtimes (`cores_seen`).
+- *PR36 plans (`run_pr36.py --plan`, planner models trainer packing + measured RAM):*
+
+  | | old packing (jayne / shepherd) | `--measured --one-queue --gpu-share 4` |
+  |---|---|---|
+  | full | 13.9 / 11.9 h | 12.5 / 12.3 h (RAM-bound: measured speech peaks > formula) |
+  | short, all stages (`--short 240`) | 9.0 / 3.7 h | 4.0 / 3.3 h |
+  | short, bug-finding stages only (G0U, T3, P7 / G0T) | – | **2.1 / 3.0 h** |
+
+  The short screen grades EV + INV/EXACT logic; G1AS, replicate and third-real stages run only at full length (240 s legs give artifact
+  DIST/timing reds, E1).
+- *FX-N99 parts (built, flagged):*
 
 - *Root (PR36, jayne 10-15):* `slot_cpus` leases aggregator cores + 1 CPU/trainer (14-74 CPUs/leg); measured `cores_p95` is 0.1-1.2, `cpu_sat`
   0.000 on every finished leg. C3 sat `BLOCKED … 62 held by this pool's legs` with load ~2 on 128 CPUs and all 8 GPUs idle (PL12/N86 again).
   Lanes also run stages serially (A2 waited for A1; two GPU lanes idle from ~08:00).
 - *Built (10-15, in tree, uncommitted; `harness_pool.py --lease-from-telemetry [--priority N]`, `run_pr36.py --measured --one-queue`):*
-  - *1 Measured lease (`measured_lease`):* a pair leases ceil(1.25 × margin × max of its keys' last-3 `cores_p95`) physical cores, at least 2,
-    never above the formula. No history keeps the formula. The aggregator gets at most half the slot (`FLAME_AGG_CORES`). `plan()` uses
-    the same numbers.
+  - *1 Measured lease (`measured_lease`):* a real CPU leg leases ceil(1.25 × margin × max of its key's last-3 `cores_p95`) physical cores,
+    at least 2, never above the formula. Sims, GPU legs and legs without history keep the formula. The aggregator gets at most half the
+    slot (`FLAME_AGG_CORES`). `plan()` uses the same numbers.
   - *2 Live admission (`NodeLoad`):* a leg starts only while smoothed node busy cores + legs started < 60 s ago + its predicted p95 ≤ 70%
     of CPUs. Measured pools drop the CPU lane's `--reserve-cores`; `plan()` drops `LANE_CPU_CAP`.
   - *3 Back-pressure:* a leg whose slot saturates in > 5% of its last 10 samples, or a run queue > 1 per CPU, pauses starts. The leg's DONE
@@ -319,10 +410,11 @@ to 70% everywhere except CIFAR-10 syn_50 (39 h).
     GPUs only while enough stay free for a higher-priority pool's blocked GPU leg (`want_p<N>` leases). CPU legs never defer.
   - Tests: `test_measured_lease_sizes_pairs_from_their_p95` (incl. byte-identical off), `test_gpu_priority_wants_span_pools`,
     `test_node_load_reads_busy_cores`.
-- *Plan (`--plan --hours 20`):* jayne 13.9 → 13.3 h, shepherd 11.9 h either way. GPU-bound: 5,027 GPU-min on 7 GPUs, ~90% busy. CPU leases
-  80k → 36k CPU-min; CPU tiers end by ~4.6 h instead of ~13 h. Shorter needs more GPU legs per GPU (an isolation change, R18).
-- *A/B (R7) before default-on:* T3 syn_0 felix/fedbuff/oort cifar, old vs measured lease, co-run (`pool_20261015_fxn99_AB{old,new}`), plus
-  T1 both datasets measured (`pool_20261015_fxn99_T1M`).
+- *Plan (`--plan --hours 20`):* jayne 13.9 → 13.1 h, shepherd 11.9 h either way. GPU-bound: 5,027 GPU-min on 7 GPUs, ~90% busy. CPU leases
+  80k → 60k CPU-min, and the CPU tiers no longer queue behind each other. Shorter needs more GPU legs per GPU (an isolation change, R18).
+- *A/B (10-15):* T3 syn_0 felix/fedbuff cifar, old vs measured lease, co-run (`pool_20261015_fxn99_AB{old,new}`): 4/4 PASS. Real↔real
+  control old vs measured: throughput 1.4% / 0.3%, trainers-at-N equal. T1 both datasets measured (`pool_20261015_fxn99_T1M`): 24/24 EV
+  PASS, but sims ran 1.5-2.2× slower on 4-CPU slots, so sims keep formula leases (only real CPU legs are measured).
 
 ## Active build — fast parallel harness (FX-N22)
 
@@ -491,6 +583,8 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-L77** Read sim speed from the critical chain: the barrier waits on the earliest-deadline in-flight task, so per-GPU load of the
   fastest trainers (not mean GPU use) paces the sim (FX-N98: GPU 2 held 7 of 16 fast trainers).
 - **FX-L74** "Sim outside all n reals" is no refute: under exchangeability it holds with probability 2/(n+1) (50% at n=3); vote per real (FX-D161).
+- **FX-L78** Per-trainer memory is at its floor: 312 MiB CUDA context per process (MPS doesn't shrink it) + ~1.0-1.5 GB host RAM after
+  FX-N84's 10-12% cut. Gain throughput by packing on measured footprints (FX-N100), not by trimming trainers (operator 10-15).
 
 ## Felix tripwires (don'ts)
 

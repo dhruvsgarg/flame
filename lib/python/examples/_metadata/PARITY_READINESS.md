@@ -1,5 +1,7 @@
 # Parity readiness — real↔sim parity, Felix and FluxTune
 
+> **Golden rule: ROBUST R0: short screens first; long runs only for what needs length.**
+>
 > **C0 · Rule zero: extract, then climb (operator). Time is the scarcest resource.**
 > 1. **Mine what exists first:** stored logs, telemetry and code answer most questions.
 > 2. **Short runs find and fix:** shortest run showing the mechanism; verify across several settings.
@@ -53,6 +55,14 @@
   - *Duration:* expected wall time; > 1 h states why it can't be shorter. Sweeps, repeats and grids only confirm.
 - **C20 Invalidated configs stop (operator 10-08).** When a baseline's definition changes, its queued and running legs are
   dropped (not graded, not cited) and resume on the new config; other baselines continue.
+- **C21 Measured packing before any batch config (operator 10-15).** A batch (PR36, PR37, any FluxTune block) is configured only after
+  a 5-10 min screen at production density shows its packing on measured CPU, RAM, GPU memory and GPU SM use, not formula estimates
+  or lease counts. Name the binding resource and the number that binds it, and record both here and in the track doc.
+- **C22 Maximum signal per unit time (operator 10-15).** Time is the scarcest resource and nodes are shared.
+  - Find issues with the shortest run that shows them; long runs only confirm a config already shown correct (C15, C18).
+  - Run as many legs at once as measured resources allow without interference (Throughput below); a stalled or idle resource is
+    waste to root, like a red cell.
+  - Every batch ends with `resource_report.py --util`; its numbers go into the Throughput record.
 
 ## Pre-launch checklist (operator: never repeat a failure)
 
@@ -80,7 +90,35 @@ A new failure mode adds a check here in the same session.
 | PL18 | the launch node runs the planned commit and code key | `git log -1` on that node = the commit the doc names; `code_state.txt` HEAD; each pool's `code_key.txt` = the doc's key (FX-D162) | PR32: jayne launched without the shepherd commit (no G0UC, ECC GPU 1 used) |
 | PL19 | ≤ 2% of train tasks overrun D per leg, real and sim; above it, fewer trainers per GPU | DONE lines / trainer `overran` count (FX-N98) | PR35: speech G1AS sim 10%, real G1A 3.5% |
 | PL20 | AVL_EVAL is eval-only and Felix-only (FX-D165) | EV21 in every leg's events (prefix-safe → DOOMED) | 10-14: baselines trained on mobiperf_3st EVAL devices |
+| PL22 | the batch's packing is measured (C21): its last screen's `--util` names the binding resource, legs/h, overruns 0-2%, no slow legs; the plan uses `--gpu-share`/`--lease-from-telemetry` as measured | `resource_report.py <screen pools> --util` | first PR36: 3.3 legs at once, CPU 6%, GPU memory 39%, GPUs idle 25% for 14 h |
 | PL21 | a new or changed prefix-safe EV passes on stored legs of all six × every trace before launch | run it over the last batch's legs (`event_invariants.load_run` + the check) | PR36: EV21 DOOMED 17 oort_star/fedbuff legs mid-batch |
+
+## Throughput (both tracks; operator 10-15)
+
+Goal: most legs (and budget-hours) finished per wall hour, each leg behaving as if alone (R18). Felix numbers: FELIX Active build
+"throughput"; FluxTune adopts the same tools when it resumes.
+- **Measure (`harness_pool` ledger, `resources.jsonl`, 30 s):** node CPU busy cores and RAM used, per-GPU SM % and memory, per leg cores,
+  PSS by role, GPU GB and SM % (`nvidia-smi pmon`). The DONE line and end event carry cores p95, `CPU_SAT`, RAM peak vs estimate, GPU
+  peak, SM %, overran/train tasks. History (`_harness_durations.json`) keeps per leg key: duration, cores p95, RAM peak, [GPU GB, SM %]
+  per GPU.
+- **Report:** `resource_report.py POOLS --util [--gpus ids]` gives legs/h, budget-h/h, mean concurrency, CPU/RAM/GPU SM/memory use, GPU idle
+  share, overruns, and slow legs (> 1.25× solo estimate).
+- **Pack (flags, default off; byte-identical off, R9):** `--lease-from-telemetry` (measured CPU lease for real CPU legs, RAM reservation
+  = 1.15 × measured peak, admission ≤ 70% node CPU, back-pressure on saturated slots); `--gpu-share K` (legs share a GPU while committed
+  measured peaks ≤ 90% of memory and SM ≤ 90%; unmeasured legs take a whole GPU); `run_pr28 --measured --one-queue` (all stages at once,
+  stage order = GPU priority).
+- **Buffers (operator 10-15):** no resource past 90% of capacity (node hangs and failed runs cost more than the packing gains): committed
+  GPU memory ≤ 90% and live use + newcomer ≤ 90%, GPU SM ≤ 90%, host RAM headroom 10% of MemTotal (`--mem-headroom-gb` default), CPU
+  admission ≤ 70%.
+- **Static reservations (operator 10-15):** a leg reserves 1.15 × its largest measured peak upfront and keeps it to the end. Dynamic
+  grow/release was rejected: allocations can't wait for a reservation (an OOM, not a pause), and early release only frees the last ~25%
+  of a leg.
+- **Bottleneck → optimize it:** once a batch's binding resource is named (C21), add a next step to cut that resource's use in our own
+  processes (aggregator, trainers), so it binds less.
+- **Interference signals (each must match the solo baseline):** real overruns of D (PL19, ≤ 2%), `CPU_SAT`/`TIMING_SUSPECT`, slow legs, sim
+  wall slowdown, EV/parity verdicts vs the same jobs packed exclusively.
+- **Experiment loop:** same jobs, two packings, 5-10 min legs at production density (`--scale-smoke 240`), run back to back; adopt a packing
+  only if legs/h rises and every interference signal holds.
 
 ## Method
 
@@ -169,6 +207,7 @@ Parked with the track; board in simulate_fwdllm.md §A.
 - Sim speed: never slower than real; 1-2× needs review; 2-5× and beyond is the target; always look for more speedup (10-14).
 - Batches span jayne GPUs 0,2-7 + shepherd GPUs 0-3; scale n/c/K at fixed ratios to run more legs in parallel (10-14).
 - Speech trains in bf16 (FX-D168); GPU placement balanced by default (FX-D169); PR37 shape G3 (10-14 late).
+- Throughput is the central goal; batch configs only after measured packing (C21, C22); no long run at low utilization (10-15).
 
 ---
 

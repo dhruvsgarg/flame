@@ -8,16 +8,17 @@ accuracy in the expected time window (tracked per track: FELIX Scoreboard). Equa
 **Four docs (plus FELIX's insights companion) are the only working references:**
 - **this doc** — the rules for all four docs, the lessons and tripwires both tracks share, and the queue of
   shared infrastructure work;
-- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS: relaunch PR36 (first run stopped by EV21 false kills; fixes FX-D172-D174 + FX-N99 scheduler) → 76/76 on one code state, then PR37 (all six, 2 h) → sim-only experiments. Sim speedup is the point: never < 1×, aim 2-5×+.**
+- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS (operator 10-15): throughput: utilization-aware packing of legs on CPU/RAM/GPU with no interference, proven on 5-10 min runs (FX-N100); then PR36 → 76/76, PR37 → sim-only experiments. Sim speedup is the point: never < 1×, aim 2-5×+.**
   - [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) — Felix's companion: telemetry-backed insights for the paper (model, catalog, findings).
 - [PARITY_READINESS.md](PARITY_READINESS.md) — real↔sim parity for both tracks: climbing rules (C1-C9: correct before
   equal, instrument what you can't see, launch only when fixes are maximized), method, tools, per-track scoreboard.
 - [FLUXTUNE_READINESS.md](FLUXTUNE_READINESS.md) — FluxTune: perturbation / forward-gradient fine-tuning
   (fwdllm). **PARKED** until Felix readiness is stable across unavailability on both async_cifar10 and
   google_speech (FX-N9, FX-N11); shared changes must still keep it green (R10).
+  - [EXPERIMENTS.md](../paper_expts_fluxtune/EXPERIMENTS.md) — FluxTune's companion: the paper evaluation plan and run queue.
 
 **Every older doc is DEPRECATED** (PARITY.md, UNAVAILABILITY_DESIGN.md, simulate_fwdllm.md, FWDLLM_DESIGN.md,
-PARITY_CHECKER_README.md, BASELINES.md, the `docs/`, `fl_fwd_ft_*` and `paper_expts_fluxtune/` files; each
+PARITY_CHECKER_README.md, BASELINES.md, the `docs/` and `fl_fwd_ft_*` files; each
 carries a banner saying so). They keep derivations, rung catalogs and history for reference, and they only
 ever SHRINK: when you use or change something in one, move the live part here and delete it at the source in
 the same edit, leaving a one-line pointer where code or another doc cites the section. Never add to them.
@@ -69,6 +70,12 @@ Scoreboard
     session resumes from the docs alone.
 
 ## Operating rules (non-negotiable, both tracks)
+
+- **R0 Golden rule: short screens first; a long run only when no short screen can answer the question (operator 10-15).** Before any
+  run, write the question it answers. If a short screen (pytest, stored telemetry, CPU tiers, ≤ 10-min legs at production density) can
+  answer it, run that, broad and packed, and fix what it finds. Long runs answer only what needs length: accuracy and convergence,
+  compounding clocks, replicate floors, draw cells. Never use a long run to find bugs. Every run is packed on measured resources (PARITY
+  C21, C22, Throughput).
 
 - **R1 Correctness first; passing tests and parity are consequences.** If something looks wrong against
   FL/systems first principles, stop, raise it, and fix the concept, even when every test and rung is green.
