@@ -167,7 +167,7 @@ def test_ev11_sub_slack_pastdating_fails(tmp_path):
 
 
 def test_ev1_counts_rounds_not_updates(tmp_path):
-    # Two rounds pass at any agg_goal (old 2 x agg_goal failed oort syn_50 at 8 rounds, K=5, on both sides).
+    # Two rounds pass at any agg_goal (old 2 x agg_goal failed oort syn_50_3st at 8 rounds, K=5, on both sides).
     agg, tr = _clean_run()
     assert _status(_write_run(tmp_path, agg, tr, hp={"aggGoal": 5}), "EV1_progress") == "PASS"
     one = [e for e in agg if e["event"] != "agg_round"] + [next(e for e in agg if e["event"] == "agg_round")]
@@ -200,7 +200,7 @@ def test_broken_check_is_error_not_crash(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("hp,want", [({}, "FAIL"),
-                                     ({"trackTrainerAvail": {"trace": "syn_50"}}, "WARN"),
+                                     ({"trackTrainerAvail": {"trace": "syn_50_3st"}}, "WARN"),
                                      ({"client_notify": {"trace": "mobiperf_3st"}}, "WARN")])
 def test_ev13_stall_is_warn_off_syn_0_for_either_trace_key(tmp_path, hp, want):
     agg, tr = _clean_run()
@@ -495,3 +495,65 @@ def test_doomed_only_prefix_safe_fails(tmp_path):
     assert [d.split(":")[0] for d in ev.doomed(_write_run(tmp_path / "b", nan, tr))] == ["EV14"]
     next(e for e in agg if e["event"] == "agg_round")["commit_gap_s"] = 0.5
     assert ev.doomed(_write_run(tmp_path / "c", agg, tr)) == []
+
+
+def _eval_trace(monkeypatch):
+    # T1: TRAIN -> EVAL [0,50) -> TRAIN; T2 always TRAIN.
+    from sortedcontainers import SortedDict
+    monkeypatch.setattr(ev, "_ground_truth", lambda run: {T1: SortedDict({0.0: "AVL_EVAL", 50.0: "AVL_TRAIN"}),
+                                                          T2: SortedDict({0.0: "AVL_TRAIN"})})
+
+
+def test_ev16_train_commit_in_avl_eval_unheld_fails(tmp_path, monkeypatch):
+    # FX-N97: AVL_EVAL is not deliverable for a train update.
+    _eval_trace(monkeypatch)
+    assert _status(_write_run(tmp_path, *_clean_run()), "EV16_withheld_delivery") == "FAIL"
+
+
+def test_ev16_train_withheld_to_avl_train_passes(tmp_path, monkeypatch):
+    _eval_trace(monkeypatch)
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round":
+            agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
+                        "delivery_ts": 50.0, "actual_commit_ts": 50.0, "task": "train"})
+    assert _status(_write_run(tmp_path / "a", agg, tr), "EV16_withheld_delivery") == "PASS"
+
+
+def _ev21_run(tmp_path, monkeypatch, chosen_state="AVL_TRAIN", evals=(), hp=None, sends=(), cfg_eval=0.0, done=True):
+    _eval_trace(monkeypatch)
+    agg = [{"event": "selection", "task": "train", "ts": 1.0, "round": 1, "chosen": [T2], "per_trainer": {
+        T2: {"avl_state": chosen_state}}}]
+    agg += [{"event": "selection", "task": "eval", "ts": 2.0, "round": 1, "chosen": [T1],
+             "per_trainer": {T1: {"avl_state": st}}} for st in evals]
+    agg += [{"event": "run_end", "ts": 3.0}] * done
+    tr = {T1: [{"event": "task_send", "task_to_perform": "train", "send_gate_sct": sct, "send_gate_wait_s": w}
+               for sct, w in sends], T2: []}
+    run = _write_run(tmp_path, agg, tr, hp={"time_mode": "real", **(hp or {})})
+    cfg = json.load(open(os.path.join(run, "aggregator_config.json")))
+    cfg["selector"]["kwargs"]["evalGoalFactor"] = cfg_eval
+    json.dump(cfg, open(os.path.join(run, "aggregator_config.json"), "w"))
+    return run
+
+
+def test_ev21_aware_train_pick_outside_avl_train_fails(tmp_path, monkeypatch):
+    assert _status(_ev21_run(tmp_path / "a", monkeypatch), "EV21_avl_eval_semantics") == "PASS"
+    run = _ev21_run(tmp_path / "b", monkeypatch, chosen_state="AVL_EVAL")
+    assert _status(run, "EV21_avl_eval_semantics") == "FAIL"
+    run = _ev21_run(tmp_path / "c", monkeypatch, chosen_state="AVL_EVAL", hp={"avail_select_filter": "False"})
+    assert _status(run, "EV21_avl_eval_semantics") == "PASS"  # unaware picks anyone (its algorithm)
+
+
+@pytest.mark.parametrize("sct, wait, want", [(60.0, 0.0, "PASS"), (10.0, 0.0, "FAIL"), (10.0, 40.0, "PASS")])
+def test_ev21_real_train_send_needs_avl_train(tmp_path, monkeypatch, sct, wait, want):
+    run = _ev21_run(tmp_path, monkeypatch, sends=[(sct, wait)])
+    assert _status(run, "EV21_avl_eval_semantics") == want
+
+
+def test_ev21_eval_tasks_are_felix_only_and_reach_avl_eval(tmp_path, monkeypatch):
+    felix = dict(cfg_eval=1.0)
+    assert _status(_ev21_run(tmp_path / "a", monkeypatch, evals=["AVL_EVAL"] * 25, **felix), "EV21_avl_eval_semantics") == "PASS"
+    assert _status(_ev21_run(tmp_path / "b", monkeypatch, evals=["AVL_EVAL"] * 25), "EV21_avl_eval_semantics") == "FAIL"  # not Felix
+    assert _status(_ev21_run(tmp_path / "c", monkeypatch, evals=["UN_AVL"], **felix), "EV21_avl_eval_semantics") == "FAIL"
+    assert _status(_ev21_run(tmp_path / "d", monkeypatch, evals=["AVL_TRAIN"] * 25, **felix), "EV21_avl_eval_semantics") == "FAIL"  # never AVL_EVAL
+    assert _status(_ev21_run(tmp_path / "e", monkeypatch, evals=["AVL_TRAIN"] * 25, done=False, **felix), "EV21_avl_eval_semantics") == "PASS"  # live prefix

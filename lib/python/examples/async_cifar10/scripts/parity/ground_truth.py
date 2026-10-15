@@ -26,13 +26,11 @@ from typing import Optional
 from sortedcontainers import SortedDict
 
 from flame.availability.trace import (
+    deliverable,
     next_avail_after,
     read_trainer_unavailability,
     state_at,
 )
-from flame.config import TrainerAvailState
-
-_AVL_STATES = frozenset({TrainerAvailState.AVL_TRAIN, TrainerAvailState.AVL_EVAL})
 
 
 def resolve_trace_name(run_dir: str) -> Optional[str]:
@@ -133,14 +131,14 @@ def transitions_in_range(trace: SortedDict, t_start: float, t_end: float) -> lis
     ]
 
 
-def expected_send_gate_wait(trace: SortedDict, sct: float) -> Optional[float]:
+def expected_send_gate_wait(trace: SortedDict, sct: float, task: str = "train") -> Optional[float]:
     """Ground-truth-expected [SEND_GATE] wait (Batch 3 T3.4, A8): the trainer
     became ready to send at ``sct`` (its own trace-time-basis clock) -- how
     long should it have had to wait, per the raw trace, before the gate
     releases it?
 
-    0 if the trace already shows the trainer AVL_* at ``sct`` (no reason to
-    wait), else the gap to the next AVL_* transition. Same state-check-first
+    0 if the trace already shows the trainer able to deliver ``task`` at ``sct``
+    (no reason to wait), else the gap to the next such transition. Same state-check-first
     logic as ``ClientAvailability.compute_delivery_ts`` (client_availability.py,
     the sim-side send-gate) -- next_avail_after(trace, sct) alone is NOT
     enough, since it always returns the *next* transition even when the
@@ -152,9 +150,9 @@ def expected_send_gate_wait(trace: SortedDict, sct: float) -> Optional[float]:
     case; the caller excludes it from scoring instead of treating it as a
     numeric error.
     """
-    if state_at(trace, sct) in _AVL_STATES:
+    if deliverable(state_at(trace, sct), task):  # FX-N97: a train result needs AVL_TRAIN
         return 0.0
-    nxt = next_avail_after(trace, sct)
+    nxt = next_avail_after(trace, sct, task)
     if math.isinf(nxt):
         return None
     return max(0.0, nxt - sct)

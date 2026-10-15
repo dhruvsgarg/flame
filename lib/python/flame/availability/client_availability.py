@@ -25,7 +25,7 @@ import time
 from typing import Optional
 
 from flame import harness, telemetry
-from flame.availability.trace import load_trace, next_avail_after, state_at
+from flame.availability.trace import deliverable, load_trace, next_avail_after, state_at
 from flame.availability.trace import (
     read_trainer_unavailability as _read_trainer_unavailability,
 )
@@ -39,10 +39,6 @@ from flame.telemetry.events import (
 )
 
 logger = logging.getLogger(__name__)
-
-_AVL_STATES = frozenset(
-    {TrainerAvailState.AVL_TRAIN, TrainerAvailState.AVL_EVAL}
-)
 
 # Re-clock of the selector's wall-based abandon (SEND_TIMEOUT_WAIT_S) onto the
 # vclock. Heuristic basis (PARITY.md / design §1): train takes ≤60s, so an
@@ -148,7 +144,7 @@ class ClientAvailability:
             trace=trace_name, base_dir=trace_dir
         )
         # D.2 guard: does this trace ever produce AVL_EVAL anywhere, for any
-        # trainer? syn_0/syn_20/syn_50 are 2-state (AVL_TRAIN/UN_AVL only) —
+        # trainer? syn_0/syn_20_3st/syn_50_3st are 2-state (AVL_TRAIN/UN_AVL only) —
         # "the AVL_TRAIN<->AVL_EVAL split a 2-state trace collapses" (§1 Trace
         # representation). Computed once here, not per-call (would be an
         # O(trainers) scan of every SortedDict on every selection boundary).
@@ -376,15 +372,15 @@ class ClientAvailability:
     # The same effect path serves all three triggers (90s vclock abandon, aware
     # boundary eviction, and the future avl_* message) — only the trigger differs.
 
-    def compute_delivery_ts(self, end: str, sct: float) -> float:
-        """When a withheld update from `end` becomes deliverable.
+    def compute_delivery_ts(self, end: str, sct: float, task: str = "train") -> float:
+        """When a withheld `task` update from `end` becomes deliverable.
 
-        The earliest time >= sct at which the trainer is AVL_* again: a
+        The earliest time >= sct at which the trainer can deliver it (FX-N97: a
+        train result needs AVL_TRAIN, an eval result AVL_EVAL or AVL_TRAIN): a
         completed-but-withheld update cannot deliver before it finished
         computing (`sct`) nor while the trainer is unreachable. If the trainer
-        is already available at `sct` (it recovered before completing, or never
-        went down) delivery is immediate (= sct); otherwise it waits for the
-        next AVL_* window. Returns math.inf when the trace never recovers — the
+        can deliver at `sct` delivery is immediate (= sct); otherwise it waits
+        for the next such window. Returns math.inf when the trace never recovers — the
         caller must guard (Challenge 10); the update is undeliverable in-window.
         """
         if self.trainer_event_dict is None:
@@ -393,12 +389,27 @@ class ClientAvailability:
         if not trace:
             return float(sct)
         ref = float(sct)
-        if state_at(trace, ref) in _AVL_STATES:
+        if deliverable(state_at(trace, ref), task):
             return ref
-        nxt = next_avail_after(trace, ref)
+        nxt = next_avail_after(trace, ref, task)
         if nxt == math.inf:
             return math.inf
         return max(ref, float(nxt)) + self._sim_gate_release_s()
+
+    @staticmethod
+    def _task_of_update(msgmd) -> str:
+        """FX-N97: an update carrying weights answers a train task; a bare STAT_UTILITY reply, an eval."""
+        msg = msgmd[0] if isinstance(msgmd, tuple) and msgmd else None
+        if isinstance(msg, dict) and MessageType.STAT_UTILITY in msg \
+                and MessageType.WEIGHTS not in msg and MessageType.WEIGHTS_BYTES not in msg:
+            return "eval"
+        return "train"
+
+    def _inflight_task(self, end: str) -> str:
+        """FX-N97: task of `end`'s latest dispatch (train when none is recorded)."""
+        ledger = getattr(self, "_task_ledger", None) or {}
+        latest = max(((v[1], t) for (e, t), v in ledger.items() if e == end), default=(0.0, "train"))
+        return latest[1]
 
     def _sim_gate_release_s(self) -> float:
         """FX-D163: sim charges real's send-gate exit + co-released upload after the flip; 0 = deliver at the flip."""
@@ -408,7 +419,7 @@ class ClientAvailability:
         return float(getattr(hp, "sim_gate_release_s", 0.0) or 0.0)
 
     def free_stalled_slot(
-        self, channel, end: str, *, reason: str, sct: Optional[float] = None
+        self, channel, end: str, *, reason: str, sct: Optional[float] = None, task: Optional[str] = None
     ) -> Optional[float]:
         """Free an in-flight slot and register its pending withheld delivery.
 
@@ -418,7 +429,7 @@ class ClientAvailability:
         abstraction exists for exactly that swap.
 
         1. Remove `end` from the selector slot ledger (selected_ends / all_selected).
-        2. Compute delivery_ts = compute_delivery_ts(end, sct) (delivery ledger).
+        2. Compute delivery_ts = compute_delivery_ts(end, sct, task) (delivery ledger; task = latest dispatch).
         3. Register pending_withheld[end] = delivery_ts.
 
         No-op (returns None) when the gate is off (trainer_event_dict is None),
@@ -445,7 +456,7 @@ class ClientAvailability:
         # 2/3. Delivery ledger: hold the completed update until delivery_ts.
         if sct is None:
             sct = self._avail_now()
-        delivery_ts = self.compute_delivery_ts(end, sct)
+        delivery_ts = self.compute_delivery_ts(end, sct, task or self._inflight_task(end))
         self.pending_withheld[end] = delivery_ts
         logger.info(
             f"[AVAIL] free_stalled_slot({end!r}, reason={reason!r}) "
@@ -642,6 +653,7 @@ class ClientAvailability:
         # primitive safe to call from any partially-initialized commit loop.
         if getattr(self, "trainer_event_dict", None) is None or harness.injected("order_by_sct"):
             return False
+        task = self._task_of_update(msgmd)
         # T3.3 commit-checkpoint belief: read once here, covering both branches
         # below (fresh commit and re-registered/re-stashed) with one call.
         self._record_commit_belief(end, sct)
@@ -653,7 +665,7 @@ class ClientAvailability:
             if str(getattr(hp, "sim_withheld_true_delivery", True)).lower() == "true":
                 # FX-N38: the eviction/abandon estimate yields to the completion: an update finished while
                 # available was never send-gated (real receives it at sct); else it delivers at the next AVL.
-                dts = self.compute_delivery_ts(end, float(sct))
+                dts = self.compute_delivery_ts(end, float(sct), task)
                 if dts <= sct:
                     self.commit_withheld(end)
                     self._withheld_slot_held.discard(end)
@@ -661,12 +673,12 @@ class ClientAvailability:
                 self.pending_withheld[end] = dts
             else:  # estimate bumped later, never earlier
                 self.pending_withheld[end] = max(
-                    self.pending_withheld[end], self.compute_delivery_ts(end, float(sct))
+                    self.pending_withheld[end], self.compute_delivery_ts(end, float(sct), task)
                 )
             self._sim_withheld_payload[end] = (float(sct), msgmd)
             self._avail_drop_inflight(end)
             return True
-        dts = self.compute_delivery_ts(end, sct)
+        dts = self.compute_delivery_ts(end, sct, task)
         if dts <= sct:
             return False  # available at completion (or gate off) — commit now
         # withhold: trainer is UN_AVL at sct; hold the completed update.
@@ -694,7 +706,7 @@ class ClientAvailability:
             logger.info(f"[AVAIL] withhold_hold_slot end={str(end)[-4:]} sct={float(sct):.1f} delivery_ts={dts:.1f}")
             return True
         self.free_stalled_slot(
-            channel, end, reason="send_gate_withhold", sct=float(sct)
+            channel, end, reason="send_gate_withhold", sct=float(sct), task=task
         )
         return True
 
@@ -729,7 +741,8 @@ class ClientAvailability:
         buf = self._sim_buffer
         while (head := buf.peek_min()) is not None:
             end, sct = head
-            if end not in self.pending_withheld and self.compute_delivery_ts(end, sct) <= sct:
+            if end not in self.pending_withheld and \
+                    self.compute_delivery_ts(end, sct, self._task_of_update(buf.payload_of(end))) <= sct:
                 return
             end, sct, msgmd = buf.pop_min()
             if not self._sim_withhold_if_unavail(channel, end, sct, msgmd):
@@ -775,6 +788,7 @@ class ClientAvailability:
             staleness=(self._round - int(mv)) if mv is not None else None,
             accepted=True, time_mode="sim",
             actual_commit_ts=self._avail_now(),
+            task=self._task_of_update((msg,)),
         )
         telemetry.emit(ev, **f)
 
@@ -1057,16 +1071,17 @@ class ClientAvailability:
                 telemetry.emit(ev, **f)
 
     def _sim_send_gated(self, end) -> bool:
-        """A buffered update whose trainer was UN_AVL at its sct: real never receives it until the trainer is back."""
+        """A buffered update its trainer cannot deliver at its sct (FX-N97): real never receives it until the trainer can."""
         buf, trace = getattr(self, "_sim_buffer", None), (self.trainer_event_dict or {}).get(end)
         sct = buf.ts_of(end) if buf is not None else None
-        return bool(trace) and sct is not None and state_at(trace, sct) == TrainerAvailState.UN_AVL
+        return bool(trace) and sct is not None and \
+            not deliverable(state_at(trace, sct), self._task_of_update(buf.payload_of(end)))
 
     def _sim_evict_unavail_inflight(self, channel) -> None:
         """D.1: Proactively free in-flight slots for trainers now showing UN_AVL.
 
         For availability_aware baselines the oracular trace read at the selection
-        boundary is authoritative — no need to wait for the 90s vclock deadline
+        boundary is authoritative (FX-N97: UN_AVL, or AVL_EVAL for a train task) — no need to wait for the 90s vclock deadline
         (C.3). A trainer that transitioned to UN_AVL since it was dispatched has
         its slot freed immediately so a replacement is selectable this round.
 
@@ -1093,14 +1108,16 @@ class ClientAvailability:
             trace = self.trainer_event_dict.get(end)
             if not trace:
                 continue
-            if state_at(trace, now) != TrainerAvailState.UN_AVL:
-                continue  # still available — leave the slot
+            task = self._inflight_task(end)
+            state = state_at(trace, now)
+            if deliverable(state, task):
+                continue  # can still deliver — leave the slot
             self.free_stalled_slot(
-                channel, end, reason="aware_boundary_eviction", sct=now
+                channel, end, reason="aware_boundary_eviction", sct=now, task=task
             )
             logger.info(
                 f"[AWARE_EVICT] end={str(end)[-4:]} vclock={now:.1f} "
-                f"state=UN_AVL — proactive boundary eviction"
+                f"state={state.value} task={task} — proactive boundary eviction"
             )
             if telemetry.is_enabled():
                 sst = self._avail_send_ts(channel, end)  # real: wall dispatch

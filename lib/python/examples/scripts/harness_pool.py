@@ -65,22 +65,22 @@ SHAPES = {
     "syn_0b": dict(trace="syn_0", n=15, agg_goal=2, c=8, runtime_s=180, trace_scale=""),
     # FX-N67: aggGoal 10 over-selects 13, so stragglers cross rounds as at n=300
     "syn_0s": dict(trace="syn_0", n=30, agg_goal=10, c=13, runtime_s=300, trace_scale=""),
-    "syn_20s": dict(trace="syn_20", n=40, agg_goal=10, c=13, runtime_s=300, trace_scale="4"),
-    "syn_20": dict(trace="syn_20", n=15, agg_goal=3, c=6, runtime_s=240, trace_scale="4"),
+    "syn_20_3sts": dict(trace="syn_20_3st", n=40, agg_goal=10, c=13, runtime_s=300, trace_scale="4"),
+    "syn_20_3st": dict(trace="syn_20_3st", n=15, agg_goal=3, c=6, runtime_s=240, trace_scale="4"),
     # 1200s x scale 4 = 4800s of trace: ~2 outage/up cycles per trainer (means ~1200s of trace each; FX-D18)
-    "syn_50": dict(trace="syn_50", n=15, agg_goal=3, c=6, runtime_s=1200, trace_scale="4"),
+    "syn_50_3st": dict(trace="syn_50_3st", n=15, agg_goal=3, c=6, runtime_s=1200, trace_scale="4"),
     # FX-L34: ~10% AVL_TRAIN from t=0 (FX-D18), so n=45 keeps ~4-5 trainable for aggGoal 2 / sync select 3
     "mobiperf_3st": dict(trace="mobiperf_3st", n=45, agg_goal=2, c=4, runtime_s=240, trace_scale="4"),
     # FX-D106 Oort-family K=10 shapes; n by FX-L34 (select 11 / available share x 1.5)
-    "syn_50s": dict(trace="syn_50", n=40, agg_goal=10, c=13, runtime_s=1200, trace_scale="4"),
+    "syn_50_3sts": dict(trace="syn_50_3st", n=40, agg_goal=10, c=13, runtime_s=1200, trace_scale="4"),
     "mobiperf_3sts": dict(trace="mobiperf_3st", n=165, agg_goal=10, c=13, runtime_s=240, trace_scale="4", cpt=0.4),
 }
 # FX-D106: upstream exploitLen = int(K x (1 - 0.9)) is 0 below K=9, so Oort screens run at K=10.
 OORT_FAMILY = ("oort", "oort_star")
-OORT_SHAPE = {"syn_0": "syn_0s", "syn_0b": None, "syn_20": "syn_20s", "syn_50": "syn_50s", "mobiperf_3st": "mobiperf_3sts"}
+OORT_SHAPE = {"syn_0": "syn_0s", "syn_0b": None, "syn_20_3st": "syn_20_3sts", "syn_50_3st": "syn_50_3sts", "mobiperf_3st": "mobiperf_3sts"}
 # CPU legs that need longer for EV1's >= 4 commits (unaware oort waits out 90s timeouts; run 4: 0 in 240s).
 MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 960,
-                 ("oort", "syn_20", "google_speech"): 600}  # FX-N85 d: 300 s gave 10 matched rounds (PR31 C2)
+                 ("oort", "syn_20_3st", "google_speech"): 600}  # FX-N85 d: 300 s gave 10 matched rounds (PR31 C2)
 # FX-D52: G0U legs whose unaware picks hold slots a full timeout run longer, to reach a gradeable round count.
 G0U_RUNTIME_X = {("oort", "mobiperf_3st"): 4, ("fedbuff", "mobiperf_3st", "google_speech"): 3}
 GPU_N = {"cifar10": 300, "google_speech": 100}  # the datasets' reference cohorts (datasets.yaml)
@@ -103,9 +103,9 @@ G0U_SHAPE = {"cifar10": dict(n=50, agg_goal=3, c=5, gpus=1),
              "google_speech": dict(n=50, agg_goal=5, c=15, gpus=2)}
 G0U_MOBIPERF = dict(agg_goal=2, c=4)  # FX-L34: ~10% AVL_TRAIN of n=50 leaves ~5 trainable
 # FX-D106 Oort-family G0U; speech mobiperf at n=165 needs 7 GPUs a leg, so T3 mobiperf_3sts covers it.
-G0U_OORT = {("cifar10", "syn_50"): dict(n=50, agg_goal=10, c=13, gpus=1),
+G0U_OORT = {("cifar10", "syn_50_3st"): dict(n=50, agg_goal=10, c=13, gpus=1),
             ("cifar10", "mobiperf_3st"): dict(n=165, agg_goal=10, c=13, gpus=3),
-            ("google_speech", "syn_50"): dict(n=50, agg_goal=10, c=13, gpus=2)}
+            ("google_speech", "syn_50_3st"): dict(n=50, agg_goal=10, c=13, gpus=2)}
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
@@ -243,14 +243,14 @@ def campaign_phases(ds: str) -> List[Phase]:
     ph = lambda pid, bls, shape, **kw: shaped(pid, bls, shape, "pair", ds, **kw)
     sp = lambda pid, shape: oort_split(pid, B6, shape, "pair", ds)
     return [
-        *sp("P1", "syn_0"), *sp("P1b", "syn_0b"), *sp("P2", "syn_50"), *sp("P3", "mobiperf_3st"),
+        *sp("P1", "syn_0"), *sp("P1b", "syn_0b"), *sp("P2", "syn_50_3st"), *sp("P3", "mobiperf_3st"),
         ph("P4", ("felix", "fedbuff"), "syn_0", agg_hp="simColdStartGate=false"),
-        ph("P5", ("felix", "refl"), "syn_20"),
+        ph("P5", ("felix", "refl"), "syn_20_3st"),
         ph("P6", ("felix", "oort"), "syn_0", harness="tiny_cpu"),
         *([ph("P7", B6, "syn_0", harness="tiny_cpu", trainer_hp=STREAM_T, agg_hp=STREAM_A),
            ph("P7o", B6, "syn_0", harness="tiny_cpu", trainer_hp=STREAM_T, agg_hp=STREAM_A + " " + oracle_a(ds))]
           if ds == "cifar10" else []),  # FX-N86 (c): speech tiny_cpu compute > D; speech streaming is G0T only
-        ph("P8", ("fedbuff",), "syn_50", agg_hp="taskRetryPolicy=exponential taskRetryBackoffSeconds=10"),
+        ph("P8", ("fedbuff",), "syn_50_3st", agg_hp="taskRetryPolicy=exponential taskRetryBackoffSeconds=10"),
         ph("P9", ("felix", "fedbuff"), "syn_0", agg_hp="real_drain_ready_ingest=false"),  # legacy recv_fifo control
         # FX-N18 control: fedbuff with the old 0.1s real-only settle sleep (default is now 0)
         ph("P10", ("fedbuff",), "syn_0", agg_hp="realDistributeSettleSeconds=0.1"),
@@ -260,17 +260,17 @@ def campaign_phases(ds: str) -> List[Phase]:
 def injected_phases(kind, ds) -> List[Phase]:
     """S1: each injected bug must FAIL its sim rung (EV10 / EV16 / EV3)."""
     # FX-N32: P11b on fedbuff, which withholds (felix evicts, so order_by_sct had 0-1 withheld commits to catch).
-    return [shaped(pid, (bl,), "syn_50", kind, ds, inject_bug=bug)
+    return [shaped(pid, (bl,), "syn_50_3st", kind, ds, inject_bug=bug)
             for pid, bl, bug in (("P11a", "felix", "no_busy_hold"), ("P11b", "fedbuff", "order_by_sct"),
                                  ("P11c", "felix", "freeze_trainer_clock"))]
 
 
 def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]:
-    matrix = ("syn_0", "syn_0b", "syn_20", "syn_50", "mobiperf_3st")  # FX-N78: syn_20 in T3
+    matrix = ("syn_0", "syn_0b", "syn_20_3st", "syn_50_3st", "mobiperf_3st")  # FX-N78: syn_20_3st in T3
     if tier == "T1":
-        # syn_50 360 s: unaware oort first commits at vclock 150 / 300 (FX-L43).
-        return [shaped("T1", baselines, sh, "sim_ev", ds, runtime_s={"syn_0": 120, "syn_50": 360}[sh])
-                for sh in ("syn_0", "syn_50")]
+        # syn_50_3st 360 s: unaware oort first commits at vclock 150 / 300 (FX-L43).
+        return [shaped("T1", baselines, sh, "sim_ev", ds, runtime_s={"syn_0": 120, "syn_50_3st": 360}[sh])
+                for sh in ("syn_0", "syn_50_3st")]
     if tier == "T2":
         return [p for sh in matrix for p in oort_split(f"T2_{sh}", baselines, sh, "sim", ds)] + injected_phases("sim_ev", ds)
     if tier == "T3":
@@ -279,13 +279,13 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return campaign_phases(ds)
     if tier == "T3S":  # FX-N67: straggler carry-over pair for the over-selecting sync stacks
         bls = tuple(x for x in baselines if x in ("oort", "oort_star", "refl")) if baselines != B6 else ("oort", "oort_star", "refl")
-        return [shaped(f"T3S_{sh}", bls, sh, "pair", ds) for sh in ("syn_0s", "syn_20s")]
-    if tier == "G0":  # GPU screen: all six, syn_0 + syn_20 (stationary, ~20% within 30 min), smaller cohort (FX-N34)
+        return [shaped(f"T3S_{sh}", bls, sh, "pair", ds) for sh in ("syn_0s", "syn_20_3sts")]
+    if tier == "G0":  # GPU screen: all six, syn_0 + syn_20_3st (stationary, ~20% within 30 min), smaller cohort (FX-N34)
         return [Phase(f"{DS_TAG[ds]}G0_{t}", baselines, t, runtime_s=1800, dataset=ds, harness="none", **G0_SHAPE[ds])
-                for t in ("syn_0", "syn_20")]
+                for t in ("syn_0", "syn_20_3st")]
     if tier == "GS":  # FX-N42 L5: GPU short pairs, G0 cohort, 10 min (GPU-only faults and the clock rungs, cheaply)
         return [Phase(f"{DS_TAG[ds]}GS_{t}", baselines, t, runtime_s=600, dataset=ds, harness="none", **G0_SHAPE[ds])
-                for t in ("syn_0", "syn_20")]
+                for t in ("syn_0", "syn_20_3st")]
     if tier == "G0C":  # R7 control: a second real leg per G0 syn_0 cell (real<->real floor for G0's pairs)
         return [Phase(f"{DS_TAG[ds]}G0C_syn_0", baselines, "syn_0", runtime_s=1800, dataset=ds, harness="none",
                       kind="real", **G0_SHAPE[ds])]
@@ -309,29 +309,29 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
     if tier == "G1S":  # FX-D42/D43/D44 confirm: felix + fedbuff at the reference n, 45 min, 3 GPUs (7 healthy on jayne)
         bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
         return [Phase(DS_TAG[ds] + "G1S", bls, "syn_0", runtime_s=2700, n=GPU_N[ds], dataset=ds, harness="none", gpus=4)]
-    if tier == "G0U":  # FX-N9 screen: syn_50 + mobiperf_3st at trace scale 4, EV + logical parity
+    if tier == "G0U":  # FX-N9 screen: syn_50_3st + mobiperf_3st at trace scale 4, EV + logical parity
         rest = tuple(b for b in baselines if b not in OORT_FAMILY)
         fam = tuple(b for b in baselines if b in OORT_FAMILY)
         g0u = lambda pid, bls, t, shape: Phase(pid, bls, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds, harness="none",
                                                trace_scale="4", trainer_hp=DETERMINISTIC, **shape)
         return ([g0u(f"{DS_TAG[ds]}G0U_{t}", rest, t, {**G0U_SHAPE[ds], **(G0U_MOBIPERF if t == "mobiperf_3st" else {})})
-                 for t in ("syn_50", "mobiperf_3st") if rest]
+                 for t in ("syn_50_3st", "mobiperf_3st") if rest]
                 + [g0u(f"{DS_TAG[ds]}G0U_{t}s", fam, t, G0U_OORT[(ds, t)])
-                   for t in ("syn_50", "mobiperf_3st") if fam and (ds, t) in G0U_OORT])
+                   for t in ("syn_50_3st", "mobiperf_3st") if fam and (ds, t) in G0U_OORT])
     if tier in ("TS", "TSo"):  # FX-N13 ST5 CPU: tiny_cpu pairs x {linear, events}; TSo = the *_oracle arms
         if ds == "google_speech":
             return []  # FX-N86 (c)
-        return stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "TSo",
+        return stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50_3st"), tier == "TSo",
                              lambda pid, t: shaped(pid, baselines, t, "pair", ds, harness="tiny_cpu"))
-    if tier in ("G0T", "G0To"):  # FX-N13 ST5 GPU screen (C11): G0U cohort x {linear, events} x {syn_0, syn_50}
+    if tier in ("G0T", "G0To"):  # FX-N13 ST5 GPU screen (C11): G0U cohort x {linear, events} x {syn_0, syn_50_3st}
         rest = tuple(b for b in baselines if b not in OORT_FAMILY)
         fam = tuple(b for b in baselines if b in OORT_FAMILY)
         mk = lambda bls, shape: lambda pid, t: Phase(pid, bls, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds, harness="none",
                                                      trace_scale="" if t == "syn_0" else "4", **shape)
-        out = stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "G0To", mk(rest, G0U_SHAPE[ds])) if rest else []
-        if fam:  # FX-L63: Oort family at its K=10 G0U shape; `<pid>s` so G0U_syn_50s floors map onto it
-            fam_ph = stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "G0To",
-                                   mk(fam, G0U_OORT[(ds, "syn_50")]))
+        out = stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50_3st"), tier == "G0To", mk(rest, G0U_SHAPE[ds])) if rest else []
+        if fam:  # FX-L63: Oort family at its K=10 G0U shape; `<pid>s` so G0U_syn_50_3sts floors map onto it
+            fam_ph = stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50_3st"), tier == "G0To",
+                                   mk(fam, G0U_OORT[(ds, "syn_50_3st")]))
             out += [replace(ph, pid=ph.pid + "s") for ph in fam_ph]
         return [replace(ph, trainer_hp=f"{ph.trainer_hp} {DETERMINISTIC}") for ph in out]
     if tier == "G0TC":  # R7 control: a real replicate per G0T cell (same-code real<->real streaming floor)
@@ -343,10 +343,10 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
     if tier == "CHG":  # L17: real syn_0 legs at the G0U cohort, input to profile_felix_charges.py after a transport change
         return [Phase(f"{DS_TAG[ds]}CHG", baselines, "syn_0", runtime_s=600, dataset=ds, harness="none", kind="real",
                       **G0U_SHAPE[ds])]
-    if tier == "G1U":  # FX-N9 long confirm: felix + fedbuff at the reference n on syn_50, production trace timeline
+    if tier == "G1U":  # FX-N9 long confirm: felix + fedbuff at the reference n on syn_50_3st, production trace timeline
         bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
         # FX-D52: cifar n=300 takes every GPU (3 GPUs OOMed at init).
-        return [Phase(DS_TAG[ds] + "G1U_syn_50", bls, "syn_50", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
+        return [Phase(DS_TAG[ds] + "G1U_syn_50_3st", bls, "syn_50_3st", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
                       gpus=4 if ds == "google_speech" else None)]
     if tier in ("G1A", "G1AS"):  # FX-N74: accuracy at the reference config on full data; G1AS = sim legs only
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
@@ -362,14 +362,14 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                           agg_hp=full + " evalEveryNRounds=20", **kw)]
         return [Phase(f"{DS_TAG[ds]}G1X_{t}", baselines, t, runtime_s=EUROSYS_HORIZON_S, kind="sim_ev",
                       agg_hp=f"{full} evalEveryNRounds=20 targetAccuracy={EUROSYS_TARGET[ds]}", **kw)
-                for t in ("mobiperf_3st", "syn_50", "syn_10", "syn_0")]
+                for t in ("mobiperf_3st", "syn_50_3st", "syn_10_3st", "syn_0")]
     if tier in ("G1XS", "G1XQ"):  # FedDance sprint sanity: shared config at n=50 real+sim (15 min) / n=300 sim speed probe (2 h vclock)
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
         kw = dict(dataset=ds, harness="none", trainer_hp=f"{full} {EUROSYS_TRAINER_HP}", agg_goal=EUROSYS_K)
         if tier == "G1XS":  # n=50 x K=10 can't fill mobiperf (G0U covers it)
             kw["trainer_hp"] += " trainerDeterministic=true"  # FX-D149
             return [Phase(f"{DS_TAG[ds]}G1XS_{t}", baselines, t, runtime_s=900, n=50, gpus=1 if ds == "cifar10" else 2,
-                          agg_hp=full + " evalEveryNRounds=5", **kw) for t in ("syn_50", "syn_10")]
+                          agg_hp=full + " evalEveryNRounds=5", **kw) for t in ("syn_50_3st", "syn_10_3st")]
         # Speech sims run ~1x: 30 min vclock suffices to measure speed.
         return [Phase(f"{DS_TAG[ds]}G1XQ_mobiperf_3st", baselines, "mobiperf_3st", runtime_s=7200 if ds == "cifar10" else 1800,
                       n=GPU_N[ds], gpus=4, agg_hp=full + " evalEveryNRounds=20", kind="sim_ev", **kw)]
@@ -384,8 +384,8 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [Phase(f"{DS_TAG[ds]}G1L", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds, harness="none"),
                 Phase(f"{DS_TAG[ds]}G1LC", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds,
                       harness="none", kind="real")]
-    if tier == "N62":  # FX-N62: unaware oort syn_50 long enough to grade its stall-free timing
-        return [shaped("N62_syn_50", ("oort",), "syn_50", "pair", ds, runtime_s=10800)]
+    if tier == "N62":  # FX-N62: unaware oort syn_50_3st long enough to grade its stall-free timing
+        return [shaped("N62_syn_50_3st", ("oort",), "syn_50_3st", "pair", ds, runtime_s=10800)]
     if tier == "PROF":  # FX-N77: n=10, aggGoal = c = 10, D/10 real legs; profile with FLAME_PYSPY
         bls = baselines if baselines != B6 else ("fedbuff", "oort", "feddance")  # one per aggregator stack
         return [Phase(f"{DS_TAG[ds]}PROF", bls, "syn_0", runtime_s=240, n=10, dataset=ds, harness="none", agg_goal=10, c=10,
@@ -393,8 +393,8 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
     if tier in ("ISO", "ISO_FILL"):  # P6: felix/fedbuff pairs solo (--max-parallel 1), then packed
         bls = baselines if baselines != B6 else ("felix", "fedbuff")  # --baselines picks the stacks to control
         iso = oort_split("ISO", bls, "syn_0", "pair", ds)
-        # packed stage: neighbours load the node (and double as FX-N20 syn_50 checks)
-        return iso + ([shaped("FILL", B6[2:], "syn_50", "sim_ev", ds)] if tier == "ISO_FILL" else [])
+        # packed stage: neighbours load the node (and double as FX-N20 syn_50_3st checks)
+        return iso + ([shaped("FILL", B6[2:], "syn_50_3st", "sim_ev", ds)] if tier == "ISO_FILL" else [])
     raise SystemExit(f"unknown tier {tier}")
 
 
@@ -1494,7 +1494,7 @@ def main(argv=None) -> int:
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")
     ap.add_argument("--phases", default="", help="subset of the tier's phase ids (e.g. 'P1 P2', 'P11a')")
-    ap.add_argument("--exclude-phases", default="", help="exact phase ids to drop (e.g. 'G0_syn_0 gs_G0_syn_50')")
+    ap.add_argument("--exclude-phases", default="", help="exact phase ids to drop (e.g. 'G0_syn_0 gs_G0_syn_50_3st')")
     ap.add_argument("--shard", default="1/1", help="i/N: this node's share of the job list")
     ap.add_argument("--max-parallel", type=int, default=32)
     ap.add_argument("--reserve-cores", type=int, default=4, help="physical cores kept out of every slot")

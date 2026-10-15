@@ -119,7 +119,7 @@ def test_t2_sim_legs_share_the_bank_key_config_of_t3_real_legs():
 def test_t3s_over_selecting_sync_pair_has_stragglers():
     # FX-N67: sync oort-family selects 1.3 x aggGoal, so aggGoal 10 leaves ~3 stragglers per round to carry over.
     phs = pool.tier_phases("T3S", B6, "cifar10")
-    assert [p.trace for p in phs] == ["syn_0", "syn_20"]
+    assert [p.trace for p in phs] == ["syn_0", "syn_20_3st"]
     for ph in phs:
         assert (ph.baselines, ph.agg_goal, ph.kind) == (("oort", "oort_star", "refl"), 10, "pair")
         assert int(ph.agg_goal * 1.3) > ph.agg_goal and ph.n >= 2 * int(ph.agg_goal * 1.3)
@@ -135,11 +135,11 @@ def test_oort_family_screens_run_at_k10():
 
 
 def test_g0t_oort_family_names_and_control():
-    # FX-L63: Oort-family G0T legs carry the `s` suffix (G0U_syn_50s floors map onto them); G0TC mirrors every cell real-only.
+    # FX-L63: Oort-family G0T legs carry the `s` suffix (G0U_syn_50_3sts floors map onto them); G0TC mirrors every cell real-only.
     for ds in pool.DATASETS:
         g0t = pool.tier_phases("G0T", B6, ds)
         assert sorted(p.pid[len(pool.DS_TAG[ds]):] for p in g0t if "oort" in p.baselines) == \
-            sorted(f"G0T_{m}_{t}s" for m in ("lin", "eve") for t in ("syn_0", "syn_50"))
+            sorted(f"G0T_{m}_{t}s" for m in ("lin", "eve") for t in ("syn_0", "syn_50_3st"))
         ctl = pool.tier_phases("G0TC", B6, ds)
         assert [p.pid for p in ctl] == [p.pid.replace("G0T_", "G0TC_") for p in g0t]
         assert {p.kind for p in ctl} == {"real"}
@@ -171,10 +171,10 @@ def test_datasets_get_their_own_phase_ids_and_gpu_cohorts():
 
 
 def test_g0_screen_scales_cohort_keeps_ratios_and_gpu_density():
-    # FX-N34: all six, syn_0 + syn_20, 30 min, reference c/n and aggGoal/c, reference trainers per GPU.
+    # FX-N34: all six, syn_0 + syn_20_3st, 30 min, reference c/n and aggGoal/c, reference trainers per GPU.
     for ds, (n, k, c, g) in {"cifar10": (100, 3, 10, 3), "google_speech": (50, 5, 15, 4)}.items():
         phs = pool.tier_phases("G0", B6, ds)
-        assert [p.trace for p in phs] == ["syn_0", "syn_20"]
+        assert [p.trace for p in phs] == ["syn_0", "syn_20_3st"]
         for p in phs:
             assert (p.n, p.agg_goal, p.c, p.gpus, p.harness, p.baselines, p.runtime_s) == (n, k, c, g, "none", B6, 1800)
         jobs = pool.build_jobs(phs, 1.0, 8, {})
@@ -224,7 +224,7 @@ def test_unavailability_phases_run_long_enough_for_their_trace(tier):
                 continue
             seen.add(key)
             got = effective_unavailability(p.trace, p.runtime_s, float(p.trace_scale or 1), p.n)
-            assert got >= 0.8 * int(p.trace[4:]) / 100, (p.pid, key, round(got, 3))
+            assert got >= 0.8 * int(p.trace[4:6]) / 100, (p.pid, key, round(got, 3))
     assert seen
 
 
@@ -237,7 +237,7 @@ def test_bank_lookup_ok_stale_none(tmp_path):
     bank.register(str(real), key, b, hashes={"f": "1"})
     assert bank.lookup(key, b, hashes={"f": "1"}) == (str(real), "OK")
     assert bank.lookup(key, b, hashes={"f": "2"}) == (str(real), "STALE:f")
-    assert bank.lookup(key | {"trace": "syn_50"}, b, hashes={"f": "1"}) == ("", "NONE")
+    assert bank.lookup(key | {"trace": "syn_50_3st"}, b, hashes={"f": "1"}) == ("", "NONE")
 
 
 def test_order_is_unit_major():
@@ -376,8 +376,8 @@ def test_doomed_leg_kills_itself_and_pair_partner_not_others(tmp_path, monkeypat
     monkeypatch.setattr(pool, "leg_run_dirs", lambda out: [str(out)])
     monkeypatch.setattr(event_invariants, "doomed", lambda d: ["EV14: evals=3 bad=1"] if d.endswith("a_sim") else [])
 
-    def run(jid, unit, mode, pid, phase="T3_syn_50"):
-        j = pool.Job(jid, phase, "syn_50", "felix", mode, [], 15, 300, "stub", 1, 1.0, unit=unit)
+    def run(jid, unit, mode, pid, phase="T3_syn_50_3st"):
+        j = pool.Job(jid, phase, "syn_50_3st", "felix", mode, [], 15, 300, "stub", 1, 1.0, unit=unit)
         (tmp_path / jid).mkdir()
         return pool.Running(j, type("P", (), {"pid": pid})(), [], [], 0, "t", 0.0, tmp_path / jid,
                             watch=pool.StallWatch(0.0))
@@ -464,11 +464,11 @@ def test_history_save_merges_concurrent_pools(tmp_path, monkeypatch):
 
 
 def test_min_runtime_reaches_oort_k10_shapes():
-    """FX-N85 d: speech oort T3 syn_20s runs 600 s (300 s gave 10 matched rounds); MIN_RUNTIME_S now sees `*s` shapes."""
+    """FX-N85 d: speech oort T3 syn_20_3sts runs 600 s (300 s gave 10 matched rounds); MIN_RUNTIME_S now sees `*s` shapes."""
     rt = lambda ds, b: {j.jid: j.runtime_s for j in pool.build_jobs(pool.tier_phases("T3", (b,), ds), 1.0, 1, {})}
-    assert rt("google_speech", "oort")["gs_T3_syn_20s_syn_20_oort_real"] == 600
-    assert rt("google_speech", "oort_star")["gs_T3_syn_20s_syn_20_oort_star_real"] == 300
-    assert rt("cifar10", "oort")["T3_syn_20s_syn_20_oort_real"] == 300
+    assert rt("google_speech", "oort")["gs_T3_syn_20_3sts_syn_20_3st_oort_real"] == 600
+    assert rt("google_speech", "oort_star")["gs_T3_syn_20_3sts_syn_20_3st_oort_star_real"] == 300
+    assert rt("cifar10", "oort")["T3_syn_20_3sts_syn_20_3st_oort_real"] == 300
     assert rt("cifar10", "oort")["T3_mobiperf_3sts_mobiperf_3st_oort_real"] == 960
 
 

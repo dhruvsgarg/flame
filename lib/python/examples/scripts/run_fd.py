@@ -25,13 +25,13 @@ rb.STAGES = [
      "S4: paper config (LS=1) n=300 K=10 mobiperf 3000 s: feddance accuracy-per-round >= random (fedavg) early (F3 direction)"),
     # Step V (short validation, FX-D148/D149): unavailability + streaming parity, shared-config real==sim, speech sim speed.
     ("V1", "gpuA", "--tier G0U,G0T --datasets all --baselines feddance", {}, "core",
-     "V1: feddance G0U (syn_50, mobiperf) + G0T (lin/eve x syn_0/syn_50) both datasets: EV + INV/EXACT green; fd_sanity per leg"),
+     "V1: feddance G0U (syn_50_3st, mobiperf) + G0T (lin/eve x syn_0/syn_50_3st) both datasets: EV + INV/EXACT green; fd_sanity per leg"),
     ("V2", "gpuB", "--tier G1XS --datasets all --baselines feddance", {}, "core",
-     "V2: shared config n=50 real+sim syn_50 + syn_10 both datasets: fd_sanity --pair losses identical (FX-D149), INV/EXACT green"),
+     "V2: shared config n=50 real+sim syn_50_3st + syn_10_3st both datasets: fd_sanity --pair losses identical (FX-D149), INV/EXACT green"),
     ("V3", "gpuB", "--tier G1XQ --datasets google_speech --baselines feddance", {}, "core",
      "V3: speech n=100 sim mobiperf 30 min vclock: sim speed decides F5SP (needs >= 3x to fit 20 h vclock in ~7 h)"),
     ("V4", "gpuA", "--tier G0U --datasets cifar10 --baselines feddance", {}, "core",
-     "V4: cifar feddance G0U syn_50 + mobiperf on FX-D150/D151: U6 green (real lag on absolute send), EV + INV/EXACT green"),
+     "V4: cifar feddance G0U syn_50_3st + mobiperf on FX-D150/D151: U6 green (real lag on absolute send), EV + INV/EXACT green"),
     # Step A (validate). n=300 cifar legs (398 GB each) run one at a time.
     ("F4", "gpuA", "--tier G1XP --datasets cifar10 --baselines feddance", {}, "core",
      "F4: cifar feddance real vs sim accuracy curve on the shared config (60 min); sim within real<->real timing floor, same evals"),
@@ -39,7 +39,7 @@ rb.STAGES = [
      "F3: FedDance paper config (LS=1), n=300 K=10, mobiperf + syn_0, 12000 s: feddance reaches 30% / 40% in fewer rounds than random (fedavg)"),
     # Step B (experiment). One pool runs the four cifar traces back to back (398 GB each); speech after (stretch: ~1x sim speed).
     ("F5C", "gpuA", "--tier G1X --datasets cifar10 --baselines feddance", {}, "core",
-     "F5: cifar feddance time-to-70% + comm on mobiperf, syn_0, syn_10, syn_50 (figures + e2e table row)"),
+     "F5: cifar feddance time-to-70% + comm on mobiperf, syn_0, syn_10_3st, syn_50_3st (figures + e2e table row)"),
     ("F5SP", "gpuA", "--tier G1X --datasets google_speech --baselines feddance --traces mobiperf_3st", {}, "stretch",
      "F5: speech feddance MobiPerf time-to-60% + comm (e2e table row)"),
 ]

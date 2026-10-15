@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """FX-D12: an MQTT UN_AVL report frees selector slots only when no availability substrate owns
 in-flight release. With the substrate on, an in-flight trainer keeps its slot (T1), so it is not
-re-dispatched while its update is outstanding (P2 syn_50 felix: EV10 9, EV5 lost v288)."""
+re-dispatched while its update is outstanding (P2 syn_50_3st felix: EV10 9, EV5 lost v288)."""
 
 import asyncio
 

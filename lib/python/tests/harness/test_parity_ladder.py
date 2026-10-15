@@ -32,10 +32,10 @@ def _status(cells):
 
 
 def test_ev_gate_known_and_red(tmp_path):
-    root = _pool(tmp_path, "P2", [("syn_50", "felix", "PASS", "FAIL:EV10"), ("syn_50", "oort", "FAIL:EV2", "PASS"),
-                                  ("syn_50", "refl", "PASS", "PASS"), ("syn_50", "fedbuff", "FAIL:EV14", "PASS")])
+    root = _pool(tmp_path, "P2", [("syn_50_3st", "felix", "PASS", "FAIL:EV10"), ("syn_50_3st", "oort", "FAIL:EV2", "PASS"),
+                                  ("syn_50_3st", "refl", "PASS", "PASS"), ("syn_50_3st", "fedbuff", "FAIL:EV14", "PASS")])
     s = _status(lad.grade_pool(root, -1))
-    assert s[("P2", "felix")][0] == "red"  # FX-N38 closed: syn_50 EV10 is a regression again
+    assert s[("P2", "felix")][0] == "red"  # FX-N38 closed: syn_50_3st EV10 is a regression again
     assert s[("P2", "oort")][0] == "red" and s[("P2", "refl")][0] == "green"
     assert s[("P2", "fedbuff")][0] == "red"  # FX-N15 closed
     known = _status(lad.grade_pool(_pool(tmp_path / "k", "gs_P7o", [("syn_0", "felix", "PASS", "FAIL:EV12")]), -1))
@@ -43,9 +43,9 @@ def test_ev_gate_known_and_red(tmp_path):
 
 
 def test_injected_bug_must_fail_its_check(tmp_path):
-    root = _pool(tmp_path, "P11b", [("syn_50", "felix", "PASS", "FAIL:EV10,EV16")])
+    root = _pool(tmp_path, "P11b", [("syn_50_3st", "felix", "PASS", "FAIL:EV10,EV16")])
     assert _status(lad.grade_pool(root, -1))[("P11b", "felix")][0] == "green"
-    root2 = _pool(tmp_path / "x", "P11b", [("syn_50", "felix", "PASS", "PASS")])
+    root2 = _pool(tmp_path / "x", "P11b", [("syn_50_3st", "felix", "PASS", "PASS")])
     assert _status(lad.grade_pool(root2, -1))[("P11b", "felix")] == ("red", "sim did not FAIL EV16")
 
 
@@ -73,8 +73,8 @@ def test_real_only_control_is_not_sim_missing(tmp_path):
     root = _pool(tmp_path / "g0", "G0_syn_0", [("syn_0", "felix", "PASS", "MISSING")])
     assert _status(lad.grade_pool(root, 99))[("G0_syn_0", "felix")] == ("red", "sim MISSING")
     # Run 17: T3C read "sim MISSING"; G1AS (sim-only) grades its sim leg alone.
-    for ph in ("T3C_syn_50", "G0UC_syn_50", "gs_G2C_syn_0"):
-        root = _pool(tmp_path / ph, ph, [("syn_50", "refl", "PASS", "MISSING")])
+    for ph in ("T3C_syn_50_3st", "G0UC_syn_50_3st", "gs_G2C_syn_0"):
+        root = _pool(tmp_path / ph, ph, [("syn_50_3st", "refl", "PASS", "MISSING")])
         assert _status(lad.grade_pool(root, 99))[(ph, "refl")] == ("green", "")
     root = _pool(tmp_path / "s", "G1AS", [("syn_0", "refl", "MISSING", "PASS"), ("syn_0", "fedbuff", "-", "FAIL:EV14")])
     s = _status(lad.grade_pool(root, 99))
@@ -99,9 +99,9 @@ def test_interrupt_waits_for_pool_teardown(tmp_path):
 
 def test_known_parity_fail_is_known(tmp_path):
     """FX-N62: a parity fail matching a KNOWN row is known, not red."""
-    root = _pool(tmp_path, "T3_syn_50", [("syn_50", "oort", "PASS", "PASS")],
-                 parity={("syn_50", "oort"): {"overhead_residual": {"ok": False, "tier": "EXACT"}}})
-    assert _status(lad.grade_pool(root, 1))[("T3_syn_50", "oort")][0] == "known"
+    root = _pool(tmp_path, "T3_syn_50_3st", [("syn_50_3st", "oort", "PASS", "PASS")],
+                 parity={("syn_50_3st", "oort"): {"overhead_residual": {"ok": False, "tier": "EXACT"}}})
+    assert _status(lad.grade_pool(root, 1))[("T3_syn_50_3st", "oort")][0] == "known"
 
 
 def test_floors_take_every_same_code_replicate(tmp_path, monkeypatch):
@@ -111,10 +111,10 @@ def test_floors_take_every_same_code_replicate(tmp_path, monkeypatch):
     for pool, rep in (("pool_A", "r1"), ("pool_B", "r2")):
         (exp / pool).mkdir(parents=True)
         (exp / pool / "code_key.txt").write_text("k1")
-        _pool(exp / pool, "gs_G0UC_syn_50", [("syn_50", "feddance", "PASS", "-")])
-        with open(exp / pool / "gs_G0UC_syn_50" / "summary.tsv", "w") as fh:
+        _pool(exp / pool, "gs_G0UC_syn_50_3st", [("syn_50_3st", "feddance", "PASS", "-")])
+        with open(exp / pool / "gs_G0UC_syn_50_3st" / "summary.tsv", "w") as fh:
             fh.write("trace\tbaseline\treal_dir\nsyn_50\tfeddance\t" + rep + "\n")
-    g = exp / "pool_A" / "gs_G0U_syn_50" / "gs_G0U_syn_50_feddance_grade"
+    g = exp / "pool_A" / "gs_G0U_syn_50_3st" / "gs_G0U_syn_50_3st_feddance_grade"
     g.mkdir(parents=True)
     (g / "cmd.txt").write_text("x --real-dir r0 --sim-dir s0 --agg-goal 5 --runtime-s 1800")
 
@@ -123,19 +123,19 @@ def test_floors_take_every_same_code_replicate(tmp_path, monkeypatch):
         Path(out).write_text(json.dumps({"terminal_state": {"trainers_rel_diff": spreads[(a, b)]}}))
     monkeypatch.setattr(lad.subprocess, "run", run)
     floors = lad._control_floors(exp / "pool_A", Path("checker"), 2)
-    assert floors[("gs_G0U_syn_50", "feddance")] == {"trainers_at_n": 0.07}
+    assert floors[("gs_G0U_syn_50_3st", "feddance")] == {"trainers_at_n": 0.07}
 
 
 def test_minority_of_reals_is_the_draw(tmp_path):
     # L13, PR34 speech feddance eve: sim red vs its own real only (1 of 3 reals) is the draw; vs a majority, the code.
     red = {"terminal_state": {"ok": False, "tier": "EXACT"}}
-    root = _pool(tmp_path, "gs_G0T_eve_syn_50", [("syn_50", "feddance", "PASS", "PASS")])
-    p = root / "gs_G0T_eve_syn_50" / "gs_G0T_eve_syn_50_feddance_grade" / "parity_regrade"
+    root = _pool(tmp_path, "gs_G0T_eve_syn_50_3st", [("syn_50_3st", "feddance", "PASS", "PASS")])
+    p = root / "gs_G0T_eve_syn_50_3st" / "gs_G0T_eve_syn_50_3st_feddance_grade" / "parity_regrade"
     p.mkdir(parents=True)
-    for name, checks in (("syn_50_feddance.json", red), ("syn_50_feddance.rep1.json", {}), ("syn_50_feddance.rep2.json", {})):
+    for name, checks in (("syn_50_3st_feddance.json", red), ("syn_50_3st_feddance.rep1.json", {}), ("syn_50_3st_feddance.rep2.json", {})):
         (p / name).write_text(json.dumps({**checks, "summary": {}}))
-    assert _status(lad.grade_pool(root, 9))[("gs_G0T_eve_syn_50", "feddance")] == ("green", "draw S8 terminal_state 1/3")
-    (p / "syn_50_feddance.rep2.json").write_text(json.dumps({**red, "summary": {}}))
-    assert _status(lad.grade_pool(root, 9))[("gs_G0T_eve_syn_50", "feddance")][0] == "red"
-    (p / "syn_50_feddance.rep2.json").unlink()  # n=2: no vote, any fail is red (L12)
-    assert _status(lad.grade_pool(root, 9))[("gs_G0T_eve_syn_50", "feddance")][0] == "red"
+    assert _status(lad.grade_pool(root, 9))[("gs_G0T_eve_syn_50_3st", "feddance")] == ("green", "draw S8 terminal_state 1/3")
+    (p / "syn_50_3st_feddance.rep2.json").write_text(json.dumps({**red, "summary": {}}))
+    assert _status(lad.grade_pool(root, 9))[("gs_G0T_eve_syn_50_3st", "feddance")][0] == "red"
+    (p / "syn_50_3st_feddance.rep2.json").unlink()  # n=2: no vote, any fail is red (L12)
+    assert _status(lad.grade_pool(root, 9))[("gs_G0T_eve_syn_50_3st", "feddance")][0] == "red"

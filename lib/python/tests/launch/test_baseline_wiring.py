@@ -225,7 +225,7 @@ class TestFedBuffWiring:
         )
 
     def test_no_static_trace(self, baselines, parity_experiments):
-        """FX-D94: run 27 fedbuff carried a stale static syn_0 beside the fanned syn_50."""
+        """FX-D94: run 27 fedbuff carried a stale static syn_0 beside the fanned syn_50_3st."""
         hp = _merged_hp(baselines, parity_experiments,
                         "fedbuff_n300_alpha0.1_syn0_stream_sim", "fedbuff")
         assert "availability_trace" not in hp and "client_notify" not in hp

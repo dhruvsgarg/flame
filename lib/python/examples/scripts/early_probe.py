@@ -29,8 +29,8 @@ def events(run, kind, role="aggregator"):
                 yield r
 
 
-def probe_A(since):  # D122/D124: sim feddance speech syn_50 commits <= K per version and stamps every speed
-    sims = runs(since, "gs_G0U_syn_50", "feddance", "_sim")
+def probe_A(since):  # D122/D124: sim feddance speech syn_50_3st commits <= K per version and stamps every speed
+    sims = runs(since, "gs_G0U_syn_50_3st", "feddance", "_sim")
     rs = [r for r in events(sims[-1], "agg_round")] if sims else []
     if len(rs) < 5:
         return "WAIT", f"A sim rounds={len(rs)} < 5"
@@ -39,8 +39,8 @@ def probe_A(since):  # D122/D124: sim feddance speech syn_50 commits <= K per ve
     return ("PASS" if not over and not zero else "FAIL"), f"A rounds>K={over} zero-speed rounds={zero}"
 
 
-def probe_C(since):  # D123: real vs sim preferred duration and first picks, speech syn_20 oort
-    pair = {m: runs(since, "gs_T3_syn_20s", "_oort_n", f"_{m}") for m in ("real", "sim")}
+def probe_C(since):  # D123: real vs sim preferred duration and first picks, speech syn_20_3st oort
+    pair = {m: runs(since, "gs_T3_syn_20_3sts", "_oort_n", f"_{m}") for m in ("real", "sim")}
     if not all(pair.values()):
         return "WAIT", "C legs not started"
     sel = {m: [r for r in events(pair[m][-1], "selection") if r.get("round_preferred_duration_s")] for m in pair}

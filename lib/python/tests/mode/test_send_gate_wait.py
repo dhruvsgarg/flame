@@ -224,7 +224,7 @@ class TestSendGateBoolConfig:
 
 class TestSendGateRefreshesTrace:
     """FX-D55: the gate reads the trace at send time; the 1 s poller's cached state let real updates
-    finishing just past a flip go out ungated (refl cifar syn_50: real sent at 150.65 s, flip at 150.0)."""
+    finishing just past a flip go out ungated (refl cifar syn_50_3st: real sent at 150.65 s, flip at 150.0)."""
 
     def _trainer(self, flips):
         t = _make_trainer()
@@ -253,3 +253,34 @@ class TestSendGateRefreshesTrace:
         t = self._trainer([TrainerAvailState.UN_AVL])
         t._send_weights("tag")
         assert _task_send_fields(captured_events)["send_gate_wait_s"] == 0.0
+
+
+class TestSendGateTaskAware:
+    """FX-N97: a train result waits for AVL_TRAIN; an eval result goes out in AVL_EVAL."""
+
+    @pytest.mark.parametrize("task, waits", [("train", True), ("eval", False)])
+    def test_avl_eval_gates_train_only(self, monkeypatch, captured_events, task, waits):
+        import flame.mode.horizontal.syncfl.trainer as trainer_mod
+
+        t = _make_trainer()
+        t.task_to_perform = task
+        t.dataset_size = 0  # skips the weight-send path
+        t.simulated = False
+        t.avl_state = TrainerAvailState.AVL_EVAL
+        t._sim_now = lambda: 7.0
+        t.cm = types.SimpleNamespace(get_by_tag=lambda tag: _make_channel())
+        clock = _FakeClock()
+        calls = {"n": 0}
+
+        def _sleep(s):
+            clock.sleep(s)
+            calls["n"] += 1
+            t.avl_state = TrainerAvailState.AVL_TRAIN  # the next flip
+
+        monkeypatch.setattr(trainer_mod.time, "time", clock.time)
+        monkeypatch.setattr(trainer_mod.time, "sleep", _sleep)
+
+        t._send_weights("tag")
+
+        assert calls["n"] == (1 if waits else 0)
+        assert _task_send_fields(captured_events)["send_gate_wait_s"] == (pytest.approx(1.0) if waits else 0.0)

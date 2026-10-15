@@ -5011,7 +5011,7 @@ def send_gate_wait_fidelity_parity(trainer_dict: dict, ground_truth: Optional[di
             if obs is None or sct is None:
                 continue
             n_events += 1
-            expected = expected_send_gate_wait(gt, float(sct))
+            expected = expected_send_gate_wait(gt, float(sct), e.get("task_to_perform") or "train")
             if expected is None:
                 n_uncomparable += 1
                 continue

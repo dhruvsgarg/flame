@@ -889,6 +889,7 @@ def build_withheld_delivery(
     accepted: Optional[bool] = None,
     time_mode: str = "sim",
     actual_commit_ts: Optional[float] = None,
+    task: Optional[str] = None,
 ) -> tuple[str, dict[str, Any]]:
     """A send-gated update committing late (stale) at its ``delivery_ts``.
 
@@ -925,6 +926,8 @@ def build_withheld_delivery(
         fields["accepted"] = accepted
     if actual_commit_ts is not None:
         fields["actual_commit_ts"] = float(actual_commit_ts)
+    if task is not None:
+        fields["task"] = task  # FX-N97: train waits for AVL_TRAIN, eval for AVL_*
     return EVENT_WITHHELD_DELIVERY, fields
 
 

@@ -432,21 +432,53 @@ class PyTorchCifar10Trainer(Trainer):
                 torch.cuda.memory_reserved(self.device) - torch.cuda.memory_allocated(self.device) > 1 << 30):
             torch.cuda.empty_cache()
 
-    def _acquire_gpu_slot(self):
-        """FX-D58: hold one of `gpu_train_slots` flock slots of this GPU while training (None = uncapped)."""
-        n = int(getattr(self.config.hyperparameters, "gpu_train_slots", 0) or 0)
+    def _acquire_gpu_slot(self, deadline=None):
+        """FX-D58: hold one of `gpu_train_slots` flock slots of this GPU while training (None = uncapped).
+        FX-N98 (sim): `sim_gpu_train_slots` replaces it, and waiters take a free slot earliest-deadline first."""
+        hp = self.config.hyperparameters
+        sim_n = int(getattr(hp, "sim_gpu_train_slots", 0) or 0) if getattr(self, "simulated", False) else 0
+        n = sim_n or int(getattr(hp, "gpu_train_slots", 0) or 0)
         if n <= 0 or self.device is None or self.device.type != "cuda":
             return None
         gpu = os.environ.get("CUDA_VISIBLE_DEVICES", "x").split(",")[0]
-        while True:
-            for k in range(n):
-                f = open(f"/dev/shm/flame_{os.getuid()}_gpu{gpu}_train{k}.lock", "a")
+        waiting = None
+        if sim_n:
+            wdir = f"/dev/shm/flame_{os.getuid()}_gpu{gpu}_wait"
+            os.makedirs(wdir, exist_ok=True)
+            waiting = os.path.join(wdir, f"{float(deadline or 0.0):016.3f}_{os.getpid()}")
+            open(waiting, "w").close()
+        try:
+            while True:
+                if waiting is None or self._first_waiter(os.path.dirname(waiting), os.path.basename(waiting)):
+                    for k in range(n):
+                        f = open(f"/dev/shm/flame_{os.getuid()}_gpu{gpu}_train{k}.lock", "a")
+                        try:
+                            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            return f
+                        except OSError:
+                            f.close()
+                time.sleep(0.05 if waiting is None else 0.01)
+        finally:
+            if waiting is not None:
+                os.unlink(waiting)
+
+    @staticmethod
+    def _first_waiter(wdir: str, mine: str) -> bool:
+        """FX-N98: `mine` has the earliest (deadline, pid) among live waiters; dead waiters' tickets are dropped."""
+        for name in sorted(os.listdir(wdir)):
+            if name == mine:
+                return True
+            try:
+                os.kill(int(name.split("_")[1]), 0)
+                return False
+            except ProcessLookupError:
                 try:
-                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    return f
-                except OSError:
-                    f.close()
-            time.sleep(0.05)
+                    os.unlink(os.path.join(wdir, name))
+                except FileNotFoundError:
+                    pass
+            except (PermissionError, ValueError):
+                return False
+        return True
 
     def _warmup_device(self) -> None:
         """FX-D15: pay driver/kernel init before any timed task: one dummy train step, weights restored."""
@@ -815,9 +847,11 @@ class PyTorchCifar10Trainer(Trainer):
         # initializes the accumulators, so no init_oort_variables dependency.
         self.reset_local_accuracy()
         _gpu_start = time.time()
-        _gpu_slot = self._acquire_gpu_slot()  # FX-D58: the wait counts as GPU time, as contention does
-        # Setup/avail/loader-rebuild overhead before the compute loop.
-        _pre_train_s = _gpu_start - _phase_train_entry
+        _pre_train_s = _gpu_start - _phase_train_entry  # setup/avail/loader-rebuild overhead before the compute loop
+        # FX-D58: in real the slot wait counts as GPU time, as contention does; FX-N98: sim charges slot-held time only.
+        _gpu_slot = self._acquire_gpu_slot((self._sim_send_ts or 0.0) + _D)
+        if _gpu_slot is not None and self.simulated and getattr(self.config.hyperparameters, "sim_gpu_train_slots", 0):
+            _gpu_start = time.time()
         steps = self.config.hyperparameters.local_steps
         _cap = harness.stub_max_steps(self.config.hyperparameters, self.harness_mode)
         if _cap is not None:

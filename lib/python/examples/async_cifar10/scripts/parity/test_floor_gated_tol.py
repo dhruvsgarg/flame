@@ -749,7 +749,7 @@ def test_stall_counts_match_across_the_cut(monkeypatch):
 
 
 def test_k8_keeps_same_clock_commits_and_shares_the_slow_band(monkeypatch):
-    """FX-D159 (PR33 cifar fedbuff syn_50): sim's same-vclock commits were dropped from K8's advances, lifting its slow
+    """FX-D159 (PR33 cifar fedbuff syn_50_3st): sim's same-vclock commits were dropped from K8's advances, lifting its slow
     band past a twin 12 s round, so only real's 12+14+54 s split stall left the clock (13% vs raw 0.6%)."""
     from parity import checks
     from parity.checks import _pair_stall_sets, terminal_state_parity

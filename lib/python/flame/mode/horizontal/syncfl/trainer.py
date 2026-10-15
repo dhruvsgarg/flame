@@ -25,6 +25,7 @@ from contextlib import contextmanager
 
 import torch
 from flame import harness
+from flame.availability.trace import DELIVERABLE_STATES, deliverable
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.channel_manager import ChannelManager
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
@@ -402,9 +403,11 @@ class Trainer(Role, metaclass=ABCMeta):
                     if os.environ.get("FLAME_SEND_GATE_REFRESH", "1") != "0" else None)
         if _refresh and not getattr(self, "simulated", False):
             _refresh()
+        # FX-N97: a train result is deliverable only in AVL_TRAIN, an eval result in AVL_EVAL or AVL_TRAIN.
+        _task = self.task_to_perform if self.task_to_perform in DELIVERABLE_STATES else "train"
         if (
             not getattr(self, "simulated", False)
-            and self.avl_state == TrainerAvailState.UN_AVL
+            and not deliverable(self.avl_state, _task)
         ):
             # bool-coerced config flag (T13, FX-D5)
             if str(self.wait_until_next_avl).strip().lower() == "true":
@@ -412,7 +415,7 @@ class Trainer(Role, metaclass=ABCMeta):
                     f"Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again"
                 )
                 with self._phase("send_gate_wait_s"):
-                    while self.avl_state == TrainerAvailState.UN_AVL:
+                    while not deliverable(self.avl_state, _task):
                         time.sleep(0.1 if _refresh else 1)
                         if _refresh:
                             _refresh()

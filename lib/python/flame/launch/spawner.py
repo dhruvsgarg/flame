@@ -176,7 +176,7 @@ class ConfigGenerator:
             )
 
         # Add all synthetic traces (for flexibility)
-        for trace_name in ["syn_0", "syn_10", "syn_20", "syn_50"]:
+        for trace_name in ["syn_0", "syn_10_3st", "syn_20_3st", "syn_50_3st"]:
             config["hyperparameters"][f"avl_events_{trace_name}"] = (
                 self.metadata.get_synthetic_trace(trace_name, trainer_id)
             )
@@ -597,9 +597,9 @@ if __name__ == "__main__":
             "mobiperf_3st_50",
             "mobiperf_3st_75",
             "syn_0",
-            "syn_10",
-            "syn_20",
-            "syn_50",
+            "syn_10_3st",
+            "syn_20_3st",
+            "syn_50_3st",
         ],
         help="Availability trace mode",
     )

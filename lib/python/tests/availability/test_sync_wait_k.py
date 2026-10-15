@@ -233,7 +233,7 @@ def test_sim_wakes_at_next_availability_change():
 
 
 def test_sim_wakes_at_carried_update():
-    # FX-D117: N88 speech feddance syn_50 sim closed every round at the next 150s flip, past its carried 101s update.
+    # FX-D117: N88 speech feddance syn_50_3st sim closed every round at the next 150s flip, past its carried 101s update.
     agg, ch = _withheld_pick(wait_k=True)
     agg._next_avail_vclock = lambda: 150.0
     agg._sim_sync_carry = {"b": (60.0, ({}, ("b", None)))}
@@ -266,7 +266,7 @@ def test_real_recv_stops_once_nothing_awaited():
 
 
 def test_sim_wait_holds_for_an_unanswered_dispatch():
-    # FX-D138 (PR29 G2 cifar feddance G0U syn_50): 0412's fresh reply (sct 532.6) was never probed; wait-K jumped to 600.
+    # FX-D138 (PR29 G2 cifar feddance G0U syn_50_3st): 0412's fresh reply (sct 532.6) was never probed; wait-K jumped to 600.
     agg, ch = _Agg(now=20.0), _Channel(["a", "b", "c"])
     ch.dispatch("b", 3, 15.0)
     agg._vclock = SimpleNamespace(now=20.0, advance=lambda t: setattr(agg._vclock, "now", max(agg._vclock.now, t)))

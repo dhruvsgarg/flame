@@ -25,6 +25,8 @@ datasets:
     device_time_scale: 5
     # FX-D58: <= 7 trainers train at once per A40 (25 idle x 0.47 GB + 7 x 3.1 GB = 33 GB); a random c=30 first wave put 9-11 on one.
     gpu_train_slots: 7
+    # FX-N98: sim trains one at a time per A40, earliest deadline first (gpu_slot_bench.py: K=1 is the best throughput, 11.4 vs 10.1 steps/s at K=2-3; concurrency only slows each task); 0 reverts.
+    sim_gpu_train_slots: 1
     experiment:
       trainer:
         num_trainers: 100

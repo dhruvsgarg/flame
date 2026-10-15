@@ -60,8 +60,8 @@ STRICT=0               # --strict: a BLOCKING pre-flight check aborts (default: 
 AFTER=""               # --after: comma list of post-launch hooks (parity,plot) -- see after_* below
 
 usage() {
-  echo "usage: $0 [--baselines 'felix refl'] [--runtime-s 3600] [--mode sim|real|both] [--sim-wall-ceiling-s 2700] [--trace syn_20]"
-  echo "       $0 smoke [--baselines ...] [--mode sim|real|both] [--trace syn_20]"
+  echo "usage: $0 [--baselines 'felix refl'] [--runtime-s 3600] [--mode sim|real|both] [--sim-wall-ceiling-s 2700] [--trace syn_20_3st]"
+  echo "       $0 smoke [--baselines ...] [--mode sim|real|both] [--trace syn_20_3st]"
   echo ""
   echo "  --baselines           which baselines to run (any of felix oort oort_star refl feddance fedbuff, fedavg);"
   echo "                        filtered from the parity config, node-agnostic."
@@ -73,7 +73,7 @@ usage() {
   echo "                        A well-behaved sim finishes in <= real-mode wall time."
   echo "                        Fires [SIM_WALL_CEILING] warning + stops when exceeded."
   echo "  --trace               availability trace name(s) to substitute, space-separated for"
-  echo "                        multiple (e.g. 'syn_20 syn_50' queues both, one experiment set each)."
+  echo "                        multiple (e.g. 'syn_20_3st syn_50_3st' queues both, one experiment set each)."
   echo "                        Default: use whatever is in the parity config (syn_0)."
   echo "  --num-trainers        non-smoke only: shrink the cohort below the parity config's 300,"
   echo "                        with min_trainers_to_start = the whole cohort. Use this instead of"
@@ -170,7 +170,7 @@ scr, baselines_str, runtime_s, outpath, smoke, ceil_arg = (
     sys.argv[6] if len(sys.argv) > 6 else ""
 )
 mode = (sys.argv[7] if len(sys.argv) > 7 else "both").lower()
-# Space-separated list of trace names (e.g. "syn_20 syn_50"); "" -> [""] (no substitution).
+# Space-separated list of trace names (e.g. "syn_20_3st syn_50_3st"); "" -> [""] (no substitution).
 trace_overrides = sys.argv[8].strip().split() if len(sys.argv) > 8 and sys.argv[8].strip() else [""]
 num_trainers_override = int(sys.argv[9]) if len(sys.argv) > 9 and sys.argv[9].strip() else None
 alpha_override = float(sys.argv[10]) if len(sys.argv) > 10 and sys.argv[10].strip() else None
@@ -299,7 +299,7 @@ for e_src in cfg.get("experiments", []):
             if num_trainers_override:
                 # Shrink the cohort but keep runtime_s as the real budget (unlike
                 # smoke, which hardcodes rounds=4/runtime=240 -- too short for a
-                # trace-driven vclock floor like syn_10's first UN_AVL at t=600s).
+                # trace-driven vclock floor like syn_10_3st's first UN_AVL at t=600s).
                 # Same join-barrier slack ratio as smoke (gap of 8 below the count).
                 # Preserve the config's native partition size as split_num_trainers
                 # so the shrunk cohort reads the existing n<orig> split (e.g. n300)
@@ -378,6 +378,8 @@ for e_src in cfg.get("experiments", []):
             h["send_timeout_wait_s"] = 90.0 * _k
         if prof.get("gpu_train_slots") and not harness_mode:  # FX-D58: GPU legs only
             e["trainer"].setdefault("hyperparameters", {})["gpu_train_slots"] = int(prof["gpu_train_slots"])
+        if prof.get("sim_gpu_train_slots") and not harness_mode:  # FX-N98: sim legs only (trainer ignores it in real)
+            e["trainer"].setdefault("hyperparameters", {})["sim_gpu_train_slots"] = int(prof["sim_gpu_train_slots"])
         # FX-D23: profiled non-compute charges replace the per-baseline hand constants; SIM_CHARGES=legacy reverts.
         _prof = os.path.join(scr, "..", "sim_charge_profiles",
                              f"{harness_mode or 'gpu'}_{ds_name or 'cifar10'}.yaml")

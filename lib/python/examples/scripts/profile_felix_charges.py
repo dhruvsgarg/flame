@@ -11,7 +11,7 @@ The launcher (debug_run.sh) applies them to every baseline of that stack. Only t
 
 Usage: profile_felix_charges.py --dataset D --harness H --out sim_charge_profiles/<H>_<D>.yaml <pool | *_real dir> ...
        --only gate_release merges that label (own `_meta.gate_release` provenance) into an existing --out: it needs
-       syn_50/mobiperf reals, the other labels syn_0 CHG reals.
+       syn_50_3st/mobiperf reals, the other labels syn_0 CHG reals.
 """
 import argparse
 import glob

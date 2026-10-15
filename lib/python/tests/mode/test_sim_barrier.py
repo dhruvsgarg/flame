@@ -189,7 +189,7 @@ def test_sync_barrier_zero_progress_when_all_delays_known_upfront():
 
 
 def test_oort_never_awaits_an_end_queued_for_cleanup():
-    # Run 18 speech oort syn_50 sim: a stale-rejected straggler stayed in selected_ends, was re-probed, and with a
+    # Run 18 speech oort syn_50_3st sim: a stale-rejected straggler stayed in selected_ends, was re-probed, and with a
     # newly picked end of unknown delay the barrier blocked forever.
     ch = RecordingChannel(SCTS, SCRAMBLED)
     ch._selector = type("S", (), {"ordered_updates_recv_ends": ["t3"]})()
@@ -336,7 +336,7 @@ class _LateChannel(RecordingChannel):
 
 @pytest.mark.parametrize("on", [True, False])
 def test_sync_barrier_awaits_overrun_pick(on):
-    # FX-D138 (PR29 C1 feddance T3 syn_50): 0379's stub compute 3.6 s > D bound 3.3 s; the barrier dropped it, wait-K
+    # FX-D138 (PR29 C1 feddance T3 syn_50_3st): 0379's stub compute 3.6 s > D bound 3.3 s; the barrier dropped it, wait-K
     # jumped the vclock to the next flip, and its sct-130 update committed at 150.
     from flame.selector.properties import PROP_SIM_SEND_TS
     from types import SimpleNamespace
