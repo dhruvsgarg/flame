@@ -3026,6 +3026,16 @@ def _pair_stall_sets(r_adv: list, s_adv: list, cut: float) -> tuple:
     return (drop, sets[1][0]) if lo == 0 else (sets[0][0], drop)
 
 
+def _tail_cut(real: dict, sim: dict) -> int:
+    """FX-D174: 1 when the last round both legs reached holds fewer commits on one side (its stop cut it), else 0."""
+    if "data_id" in (_progress_axis(real["agg_rounds"]), _progress_axis(sim["agg_rounds"])):
+        return 0
+    rc = collections.Counter(e.get("round") for e in real["agg_rounds"])
+    sc = collections.Counter(e.get("round") for e in sim["agg_rounds"])
+    common = [r for r in rc if r in sc and r is not None]
+    return int(bool(common) and rc[max(common)] != sc[max(common)])
+
+
 def _stall_free_pair(r_adv: list, s_adv: list, real: dict, sim: dict) -> tuple:
     """FX-N62 + FX-D157: (real, sim) stall-free rounds with matched episode counts."""
     if not _stall_axis(real, sim):
@@ -3164,7 +3174,7 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY
     # extra tail units -- the expensive ones sim never reached -- were inflating
     # its mean and understating the residual (fedbuff_round 0.024 -> 0.080).
     # §D-4/§F-2, the rule `terminal_state` already followed (§D-75).
-    matched_n = min(n_sim_rounds, n_real_rounds)
+    matched_n = min(n_sim_rounds, n_real_rounds) - _tail_cut(real, sim)
     if matched_n < 2:
         _skip_unmatched(result, matched_n)
     else:
@@ -3259,7 +3269,7 @@ def per_round_advance_parity(real: dict, sim: dict,
     # Same population-mismatch rationale as throughput_parity's matched_window_*.
     # The override used to be gated on `_real_intrinsic_clock`, a SYNC-only wall
     # coordinate `matched_n` never reads, so async graded the full run (§D-84).
-    matched_n = min(len(sim_adv), len(real_adv))
+    matched_n = min(len(sim_adv), len(real_adv)) - _tail_cut(real, sim)
     if matched_n < 2:
         _skip_unmatched(result, matched_n)
     else:
@@ -4037,7 +4047,7 @@ def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
     # Same population-mismatch rationale as throughput_parity's matched_window_*:
     # sim's round count legitimately outruns real's wall-capped one, inflating
     # the raw residual. Applies on every baseline, not just sync (§D-84).
-    matched_n = min(len(sim_adv), len(real_adv))
+    matched_n = min(len(sim_adv), len(real_adv)) - _tail_cut(real, sim)
     if matched_n < 2:
         _skip_unmatched(result, matched_n)
     else:

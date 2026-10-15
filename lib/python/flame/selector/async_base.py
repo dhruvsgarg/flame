@@ -163,8 +163,8 @@ class AsyncSelectorBase(AbstractSelector):
     def _concurrency_for_task(
         self, task_to_perform: str, num_ends: int, effective_c: int
     ) -> int:
-        """Slots this task may occupy. Overridden where eval has its own pool."""
-        return min(num_ends, effective_c)
+        """Slots this task may occupy; no evals unless overridden (Felix, FX-D172)."""
+        return 0 if task_to_perform == "eval" else min(num_ends, effective_c)
 
     def _pre_choose(self, ctx: SelectContext) -> None:
         """Once-per-dispatch hook before candidate selection (e.g. Oort's pacer)."""

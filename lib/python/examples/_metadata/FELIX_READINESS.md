@@ -4,19 +4,23 @@ Read [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) and [PARITY_READINESS.md](
 here unrepeated. **Focus (operator 10-12/13): Felix-wide parity to 76 / 76, then convergence parity (FX-N93).** Order: Next steps →
 Scoreboard (now, and expected after the next run) → Decisions → reference sections.
 
-**At a glance (10-14 late):** parity **76 / 76 on mixed commits** (2-state syn, pre-FX-N97 mobiperf: void for PR36); FX-N97 + FX-N96
-landed (FX-D165/D166); speed levers bf16 + balanced placement landed (FX-D168/D169) · accuracy **6 / 12** · convergence **0 / 12** ·
-next: commit + sync shepherd, launch PR36 (~14 h), then PR37 (scope: Open questions) → sim-only experiments (FX-N12).
+**At a glance (10-15):** PR36 stopped mid-batch (EV21 false DOOMED kills); its finished pools regrade **60 / 76** with the fixed
+checker, every red rooted (Scoreboard). Fixes FX-D172-D174 change `code_key`, so PR36 reruns whole · accuracy **6 / 12** · convergence
+**0 / 12** · next: FX-N99 scheduler, pytest + smoke, relaunch PR36, then FX-D171 (Felix utility = Oort's), then PR37 → FX-N12.
 
 ## Next steps (persistent queue — top item is next)
 
 Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4/TS · GPU ≤ 30-min screens (G0U/G0T/G0UC) · long
 (G1*/G2). Unblock map: PR36 (76/76 on one code key; confirms FX-N98) → PR37 (FX-N93.2/.3) → FX-N12.
 
-- **FX-N98 · Sim speed + no-overrun rule · wip: levers landed (FX-D168 bf16, FX-D169 balanced placement), confirm in PR36 A1.**
+- **FX-N99 · Measured-utilization scheduler · wip: building in tree (operator 10-15: before the PR36 relaunch).** Design: Active build
+  "measured scheduler". *Exit:* A/B inside the R7 floors; PR36 `--plan` makespan drops and jayne's idle CPUs/GPUs stay under ~30%; flag
+  promoted only with operator sign-off (R9).
+- **FX-N98 · Sim speed + no-overrun rule · wip: sim side met in PR36 A1 (felix ~2.0× incl. startup, fedbuff 2.9×, 0 overruns, accuracy
+  within 2 pp); close when the rerun's real legs show ≤ 2% overruns.**
   Active build "sim speed". *Exit:* overrun share ≤ 2% per leg in real and sim (PL19); speech G1AS felix sim ≥ 2× real (never < 1×) with
   accuracy within 2 pp of PR35 A1 (felix 67.9%, fedbuff 64.6%).
-- **PR36 · full re-screen on one code key · ready: commit + sync shepherd (PL18), then launch** (PR35b skipped, operator 10-14).
+- **PR36 · full re-screen on one code key · relaunch after FX-N99 + pytest + smoke; commit + sync shepherd first (PL18).**
   - Scope: G0U/G0UC + T3/T3C (syn_*_3st, mobiperf_3st), G0T/G0TC both datasets, G1AS six × both (accuracy + FX-N98 speed at reference
     n), and a third real on the 4 PR35 draw cells (Scoreboard). Screen shapes stay per tier (mechanism parity per baseline; G0U is n=50).
   - Runner: `run_pr36.py --node jayne` (GPUs 0,2-7: G1AS, G0U, G0UC, speech G0TC, CPU tiers; ~14.8 h) and `--node shepherd` (GPUs 0-3:
@@ -26,6 +30,11 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
     both, overruns real 1.1% / sim 0% (PL19), GPU peak 31/45 GB at 25 trainers; DIST reds are FX-N76's.
     cifar G3 smoke (`pool_20261014_234804_G3`, n=75 on 1 GPU): GPU peak 30/45 GB, RAM 79 GB, 0 overruns in 383 real tasks (PL3).
   - *Exit:* `readiness_score.py` on one code key = 76/76; G1AS on the board.
+  - *First run (10-15, `pr36_jayne_20261015_0023` + shepherd `pool_20261015_0102_PR36_SHEPHERD_S{1,2}`, copied to jayne):* A1, A2, B1-B3,
+    C1, C2, D1, S1, S2 finished; C3 (15/54) and C4X (0) stopped, ignore them. G1AS: speech felix sim 68.1% / fedbuff 65.9% (PR35 67.9 /
+    64.6), 90 min of vclock in 45.5 min wall incl. startup (was 1.09×), 0 overruns; cifar felix 56.0 / fedbuff 56.1 / oort 52.2 / oort_star
+    52.9%. EV21 killed 17 oort_star + fedbuff legs: FX-D174 (checker) and FX-D172 (FedBuff eval). Key split: plot edits mid-batch gave
+    B2/B3/C3/C4X `deec34d15ea6`, the rest `c9f29966340b`; plot paths are now `NOT_RUN_AFFECTING`.
 - **PR37 · 2 h convergence parity, all six baselines (FX-N93.2/.3) · blocked: PR36 complete.**
   - Cells, both datasets: syn_0, syn_50_3st, stream_lin syn_0. Legs: real + sim at 2 h of vclock (tier G3) + a real replicate (G3C) of
     the syn_0 and lin cells; syn_50_3st reuses its baseline's syn_0 band (operator 10-15).
@@ -35,6 +44,13 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
   - Runner: `run_pr37.py --node jayne` (speech G3, cifar G3C) / `--node shepherd` (cifar G3, speech G3C): ~24 / 27.5 h by `--plan` (fp32-era speech sim estimates).
   - *Decision rule:* every cell inside the real↔real band on the convergence board's C and U criteria ⇒ paper experiments run sim-only
     (FX-N12); a red ⇒ root it on short runs first (C18).
+  - *Prerequisite, after PR36 completes (operator 10-15; never mid-PR36: an uncommitted diff changes `code_key`):* FX-D171 Felix
+    utility = Oort's. Add `stat_utility: {v: fedscale, ...}` to both `felix` rows of `baseline_reference.yaml` (same key `oort` uses).
+    Was `legacy`: first mini-batch only, √(|D|·Σ_{b0} L²). Now |D|·√(EMA of batch-mean L²) over the whole first pass, as FedScale/Oort.
+  - *Watch (PR37 vs PR36 Felix, same cells):* expect a Felix-only shift. U grows ~√(|D|/B) (~2.3× at |D|=167, B=32), so fedbuff's β
+    rises a few % (U 146 → 334: β 0.89 → 0.94). Ranking now weights |D| linearly. A train-pass U (EMA while the model trains) now reads
+    lower than an eval U (fixed global model): check `utility_belief` for an eval-vs-train bias. Track time-to-target and accuracy;
+    **revert (drop the two lines) if Felix falls outside its PR36 real↔real band**. Unlikely, since Oort already runs this utility.
 - **FX-N94 · tiny_cpu first-contact sim delivery lag · todo.** `smoke_fxd160_0010`: first-contact trainers measured 1.1-1.7 s FX-D108 lag
   (real ~0.03 s), pushing sim's clock 1.7 s ahead by round 3; GPU legs stay ≤ 0.5 s. Check whether the trainer is still initializing when
   its first task arrives in sim. *Exit:* first-contact lag ≈ later tasks' on tiny_cpu.
@@ -113,46 +129,44 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
 
 ## Scoreboard (rewrite after every run, PARITY C5)
 
-**Parity: 76 / 76 on mixed commits (PR28-PR34); one code key: PR35 `5e041d393b8a` 47 / 52 tested, stream 24 untested.** This board
-is the last measured one: its syn_20/syn_50 columns ran the deleted 2-state traces and its mobiperf column predates FX-N97, so PR36
-re-measures every cell on syn_*_3st (C20). `readiness_score.py` on PR35 B1/C1/C2/C3 after the FX-D164 regrade (10-14, jayne). INV/EXACT + EV, worst pair wins; 2 reals per cell, so
-FX-D161 keeps any fail red. **Accuracy 6 / 12** (cifar felix, fedbuff, oort, oort_star; speech felix, fedbuff). ✅ green · ❌ red · – n/a ·
-· untested.
+**Parity: 60 / 76: PR36's finished pools (keys `c9f29966340b` + `deec34d15ea6`, same run code), regraded on scratch copies with
+FX-D174's checker** (10-15, jayne; `--grade --regrade --max-stage 9`, then `readiness_score.py` over A1-D1 + S1-S2). FX-D172/D173 change run
+code, so the PR36 rerun re-measures every cell. **Accuracy 6 / 12** (cifar felix, fedbuff, oort, oort_star; speech felix, fedbuff).
+✅ green · ❌ red · – n/a.
 
-| baseline · dataset | syn_0 | syn_20 | syn_50 | mobiperf | stream_lin | stream_eve | stream_cpu |
+| baseline · dataset | syn_0 | syn_20_3st | syn_50_3st | mobiperf | stream_lin | stream_eve | stream_cpu |
 |---|---|---|---|---|---|---|---|
-| felix · cifar | ✅ | ✅ | ✅ | ✅ | · | · | ✅ |
-| felix · speech | ✅ | ✅ | ✅ | ✅ | · | · | – |
-| fedbuff · cifar | ✅ | ✅ | ✅ | ✅ | · | · | ✅ |
-| fedbuff · speech | ✅ | ✅ | ✅ | ✅ | · | · | – |
-| refl · cifar | ✅ | ✅ | ✅ | ✅ | · | · | ✅ |
-| refl · speech | ✅ | ✅ | ✅ | ✅ | · | · | – |
-| oort · cifar | ✅ | ❌ | ✅ | ✅ | · | · | ✅ |
-| oort · speech | ✅ | ❌ | ✅ | – | · | · | – |
-| oort_star · cifar | ✅ | ❌ | ❌ | ✅ | · | · | ✅ |
-| oort_star · speech | ✅ | ✅ | ✅ | – | · | · | – |
-| feddance · cifar | ✅ | ✅ | ✅ | ✅ | · | · | ✅ |
-| feddance · speech | ✅ | ✅ | ❌ | ✅ | · | · | – |
+| felix · cifar | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| felix · speech | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | – |
+| fedbuff · cifar | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| fedbuff · speech | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | – |
+| refl · cifar | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| refl · speech | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | – |
+| oort · cifar | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
+| oort · speech | ✅ | ✅ | ❌ | – | ✅ | ✅ | – |
+| oort_star · cifar | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ |
+| oort_star · speech | ✅ | ✅ | ❌ | – | ❌ | ❌ | – |
+| feddance · cifar | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| feddance · speech | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | – |
 
-**Open reds → root** (PR35; `logical_diff.py`, per-round clocks):
-- feddance · speech G0U syn_50 (trainers 31 vs 29, 2/2 reals): sim delivered send-gated updates at the flip, real 0.2-0.4 s later
-  (r4 −0.44 s, r7 −0.27 s), utilities forked at sel #7. **Fixed, FX-D163:** local re-sim vs both PR35 reals has no selection or
-  commit fork, K8 0.1% / 32 vs 32.
-- oort · speech T3 syn_20s (K8 10-11%, S1): trainer 0377 finishes 0.3 s either side of the t=150 flip; its real replicate forks the same
-  way (real↔real first fork at commit #5). Draw: needs a third real (FX-D161).
-- oort · cifar T3 syn_20s (trainers 39 vs 37): 0385/0396 share D = 3.25 s and arrive 8 ms apart in real, reversed in sim. K-th-slot
-  tie, FX-L72: third real.
-- oort_star · cifar T3 syn_20s, G0U syn_50s: red against 1 of 2 reals, and the two reals differ (raw 688 vs 787 s). Third real.
-- Cleared by FX-D164 (grader): fedbuff · cifar G0U syn_50 K8 11.2% → 1.1% (raw 1.1%; async gaps had been classified as stalls).
-- FX-D163 local re-screen (18 sims vs PR35 reals: speech syn_50/syn_50s/mobiperf G0U + T3, cifar fedbuff G0U): EV 18/18 PASS, no new
-  fork. Only the draw cells above stay red.
+**Open reds → root (16):**
+- *Killed by EV21, rerun (9):* oort_star syn_50_3sts (cifar T3, G0U, G0T eve; speech T3, G0U, G0T lin/eve), fedbuff syn_50_3st (cifar T3;
+  speech G0U, G0T lin). With the real leg MISSING the regrade keeps the stored pre-fix EV; FX-D174's EV21 passes on those sims.
+- *Real draws: trainers-at-N off by 2 of ~35 (5.4% vs 5% tol) (5):* oort T3 syn_20/50_3sts cifar, G0U syn_50_3sts cifar, T3 syn_50_3sts
+  speech; oort_star T3 syn_20_3sts cifar; feddance speech G0T eve syn_50_3st. Real↔real forks the same way (cifar oort T3 syn_50_3sts: first
+  commit fork #0 in both pairs; speech: reals 33 vs 35, sim = replicate). Needs the rerun's T3C/G0UC floors (C3 died, so none existed).
+- *Leg too short, fixed:* oort cifar T3 mobiperf_3sts: 1 commit in 960 s, both legs identical (unaware sync Oort abandons ~10 of 11 picks
+  per 90 s now that AVL_EVAL counts as UN_AVL). `MIN_RUNTIME_S` 3000 (G0U sim's 4th commit at 2508 s).
+- *Sim bug, fixed (FX-D173):* fedbuff speech G0U mobiperf_3st EV16. A 0.75 s gate release crossed a short AVL_TRAIN window, the async loop
+  re-gated the released update, and the second withhold overwrote its sct.
+- *Checker artifact, fixed (FX-D174; green above):* fedbuff cifar G0U mobiperf_3st throughput: the sim matched the replicate real to 0.1 s per commit;
+  the stop cut real's round 6 after 1 of 2 commits.
+- *Open:* felix cifar G0T eve syn_0 (first graded run). Sim = both reals to ≤ 0.5 s through round 40; after the round-37 selection fork it
+  falls 9% behind (picks mean D 9.76 vs 9.35/9.24 s), while the two reals (forked at commit #31) agree within 2%. Mix-adjusted residual
+  −0.02 s. One sim trajectory can't separate a post-fork draw from a mechanism; the rerun gives a second.
 
-**3-state screens so far (`2e0a86340` tree, T3 cifar, 10-14):** syn_20_3st felix, fedbuff green ×2 pools; mobiperf_3st felix, fedbuff green;
-EV21 PASS on every leg. oort syn_20_3sts red in 2/2 pools on DIST checks (`avail_composition`, `trainer_trace_fidelity_real`; second pool
-`throughput`, `selection_detail`): the PR32 2-state oort leg failed the same fidelity check (0.775, 68 spurious), so a draw cell (FX-L72).
-
-**Expected after PR36:** 76/76 on one code key, with syn_20_3st/syn_50_3st and FX-N97 enforced. Draw cells need their third real
-(L13); mobiperf cells may move, since baselines lose EVAL devices.
+**Expected after the PR36 rerun:** 76/76 is possible only if the 5 draw cells clear on the new floors and felix eve is a draw. The 9 killed
+cells and the 2 fixed cells should go green.
 
 **Cross-cutting capabilities**
 
@@ -176,13 +190,13 @@ Sync-four numbers are G1AS on source-faithful configs (FX-D100/D104/D105); older
 | dataset · baseline | leg | real @30 / @60 / @90 · max | sim same | note |
 |---|---|---|---|---|
 | cifar · felix | G1A | 36.2 / 51.8 / 56.9 · 57.0 | 40.6 / 50.6 / 53.7 · 56.3 | **target at 57 / 60 min** |
-| cifar · felix, fedbuff | G1AS PR35 A2 (key `5e041d393b8a`) | — | felix 40.0 / 51.1 / 57.0 · 57.5 · fedbuff 39.4 / 46.4 / 54.9 · 56.2 | **sim target at 52 / 65 min**; no regression vs runs 18/21 |
-| cifar · oort, oort_star | G1AS PR35 A2 | — | oort 44.3 / 51.6 / 53.7 · 54.5 · oort_star 36.1 / 51.6 / 52.0 · 52.0 | **sim target at 32 / 58 min** |
-| cifar · refl, feddance | G1AS PR35 A2 | — | refl 20.0 / 25.5 / 26.9 · 29.5 · feddance 19.7 / 27.4 / 35.6 · 35.6 (first uncut) | below 50%: audit or round-bound (FX-N74) |
+| cifar · felix, fedbuff | G1AS PR36 A2 | — | felix 37.8 / 51.5 / 53.4 · 56.0 · fedbuff 39.5 / 46.3 / 55.3 · 56.1 | **sim target at 56 / 63 min** (PR35 52 / 65) |
+| cifar · oort, oort_star | G1AS PR36 A2 | — | oort 27.4 / 44.9 / 52.2 · 52.2 · oort_star 44.1 / 50.8 / 52.9 · 52.9 | **sim target at 47 / 59 min** |
+| cifar · refl, feddance | G1AS PR36 A2 | — | refl 19.7 / 25.8 / 25.7 · 25.8 · feddance 17.3 / 27.0 / 33.3 · 33.3 | below 50%: audit or round-bound (FX-N74) |
 | speech · felix | G1A SGD (run 18) | 41.5 / 58.8 / 67.5 · 67.5 | 46.0 / 56.0 / 68.1 · 68.1 | **target at 72 min both** |
 | speech · fedbuff | G1A SGD (run 18) | 40.8 / 54.6 / 59.1 · 60.2 | 42.5 / 55.9 / 64.0 · 64.0 | **target at 82 / 88 min** |
-| speech · felix, fedbuff | G1AS PR35 A1 | — | felix 44.1 / 59.2 / 66.2 · 67.9 · fedbuff 42.5 / 55.1 / 64.6 · 64.6 | **sim target at 65 / 87 min** |
-| speech · oort_star, oort, refl, feddance | G1AS PR35 A1 | — | 13.3 · 16.0 · 4.0 · 7.7 max @90 (3-4 evals) | **round-bound (operator 10-10)**; PR28 G4 16.7 · 14.8 · 3.7 · 4.0 |
+| speech · felix, fedbuff | G1AS PR36 A1 (bf16) | — | felix 45.2 / 57.4 / 68.1 · 68.1 · fedbuff 42.3 / 55.3 / 65.9 · 65.9 | **sim target at 64 / 87 min** |
+| speech · oort_star, oort, refl, feddance | G1AS PR36 A1 | — | 18.0 · 16.5 · 3.7 · 5.0 max @90 (3-4 evals) | **round-bound (operator 10-10)**; PR28 G4 16.7 · 14.8 · 3.7 · 4.0 |
 | speech · refl | G1AS SGD (runs 19, 21) | — | lr 0.005: 43.7 max; lr 0.05: 53.0 max | rising, below 60% |
 | in-process `fl_lr_check` | reference k, full data | cifar fedbuff 53 @r1000 · oort 60 · feddance 45 · refl (lr 0.1) 43 | speech @r150: oort (eta 0.002) 25 · feddance 18 · refl (FedAvg) 17 | 10-08 |
 | both · oort, feddance | G2 stream | cifar oort 37.7, feddance 16.6; speech oort **60.7 at 80 min**, feddance 21.5 | cifar oort 31.4, feddance 35.4; speech 57.2, 45.2 | lower bound |
@@ -202,13 +216,13 @@ all four columns pass. Thresholds are nominal until a real↔real replicate sets
 
 | baseline · dataset | A | C | U | S |
 |---|---|---|---|---|
-| felix · cifar / speech | ✅ / ✅ | ⬚ / ⬚ (run 18 pre-76/76) | ⬚ / ⬚ | ✅ 4.7× / 🟡 1.09× (review; FX-N98) |
-| fedbuff · cifar / speech | ✅ / ✅ | ⬚ / ⬚ | ⬚ / ⬚ | ✅ / 🟡 1.5× (review) |
+| felix · cifar / speech | ✅ / ✅ | ⬚ / ⬚ (run 18 pre-76/76) | ⬚ / ⬚ | ✅ 4.3× / ✅ ~2.0× (PR36 A1) |
+| fedbuff · cifar / speech | ✅ / ✅ | ⬚ / ⬚ | ⬚ / ⬚ | ✅ / ✅ 2.9× (PR36 A1) |
 | oort, oort_star · cifar | ✅ ✅ | ⬚ | ⬚ | ✅ |
 | refl, feddance · cifar | ❌ ❌ (29.5, 35.6%) | ⬚ | ⬚ | ✅ |
 | oort, oort_star, refl, feddance · speech | round-bound: needs C (same accuracy, same time) | ⬚ | ⬚ | ✅ |
 
-**Convergence 0 / 12** (A 6/12 · C 0 · U 0 · S cifar 6/6; speech felix 1.09×, fedbuff 1.5×, sync four ≥ 13× at G1AS).
+**Convergence 0 / 12** (A 6/12 · C 0 · U 0 · S 12/12: speech felix ~2.0×, fedbuff 2.9×, sync four ≥ 13× at G1AS).
 
 ---
 
@@ -287,6 +301,28 @@ to 70% everywhere except CIFAR-10 syn_50 (39 h).
   `gpu_train_slots`, FX-T36; sim: K). Real speech G1A at 3.5% (fp32) broke it; bf16 should drop it.
 - *Confirm in PR36 A1:* speech G1AS felix sim ≥ 2×, overruns ≤ 2%, felix/fedbuff accuracy within 2 pp of PR35 A1, cifar not slower.
   Next lever if short: more GPUs per speech sim leg.
+
+## Active build — measured scheduler (FX-N99; operator 10-15)
+
+- *Root (PR36, jayne 10-15):* `slot_cpus` leases aggregator cores + 1 CPU/trainer (14-74 CPUs/leg); measured `cores_p95` is 0.1-1.2, `cpu_sat`
+  0.000 on every finished leg. C3 sat `BLOCKED … 62 held by this pool's legs` with load ~2 on 128 CPUs and all 8 GPUs idle (PL12/N86 again).
+  Lanes also run stages serially (A2 waited for A1; two GPU lanes idle from ~08:00).
+- *Built (10-15, in tree, uncommitted; `harness_pool.py --lease-from-telemetry [--priority N]`, `run_pr36.py --measured --one-queue`):*
+  - *1 Measured lease (`measured_lease`):* a pair leases ceil(1.25 × margin × max of its keys' last-3 `cores_p95`) physical cores, at least 2,
+    never above the formula. No history keeps the formula. The aggregator gets at most half the slot (`FLAME_AGG_CORES`). `plan()` uses
+    the same numbers.
+  - *2 Live admission (`NodeLoad`):* a leg starts only while smoothed node busy cores + legs started < 60 s ago + its predicted p95 ≤ 70%
+    of CPUs. Measured pools drop the CPU lane's `--reserve-cores`; `plan()` drops `LANE_CPU_CAP`.
+  - *3 Back-pressure:* a leg whose slot saturates in > 5% of its last 10 samples, or a run queue > 1 per CPU, pauses starts. The leg's DONE
+    line reads `TIMING_SUSPECT` (`run_pr28` lists it under INTERFERENCE → rerun solo), and its key's margin ×1.5 (cap 4).
+  - *4 One queue:* every stage starts at once (after the first pool's gate stamp), stage order = priority. A lower-priority pool takes
+    GPUs only while enough stay free for a higher-priority pool's blocked GPU leg (`want_p<N>` leases). CPU legs never defer.
+  - Tests: `test_measured_lease_sizes_pairs_from_their_p95` (incl. byte-identical off), `test_gpu_priority_wants_span_pools`,
+    `test_node_load_reads_busy_cores`.
+- *Plan (`--plan --hours 20`):* jayne 13.9 → 13.3 h, shepherd 11.9 h either way. GPU-bound: 5,027 GPU-min on 7 GPUs, ~90% busy. CPU leases
+  80k → 36k CPU-min; CPU tiers end by ~4.6 h instead of ~13 h. Shorter needs more GPU legs per GPU (an isolation change, R18).
+- *A/B (R7) before default-on:* T3 syn_0 felix/fedbuff/oort cifar, old vs measured lease, co-run (`pool_20261015_fxn99_AB{old,new}`), plus
+  T1 both datasets measured (`pool_20261015_fxn99_T1M`).
 
 ## Active build — fast parallel harness (FX-N22)
 
@@ -515,6 +551,8 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-T41** Don't exempt an idle pool from the RAM check: PR28 G5 started 398 GB legs at 285 GB free and OOM-killed three legs (FX-D131).
 - **FX-T48** Don't `--regrade` a pool copied without its run dirs: missing runs rewrite its grades as EV0 reds (PR31 copies on jayne, 10-13).
 - **FX-T49** Don't classify a pair's rounds with per-side thresholds or drop one side's zero advances: twin rounds split (FX-D159).
+- **FX-T50** Don't key a prefix-safe EV on (round, trainer): async selectors re-list held picks every round, so one stale entry DOOMs
+  the leg (PR36 EV21, 17 legs). Key on the dispatch.
 
 ---
 
@@ -731,7 +769,7 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-D165** AVL_EVAL is eval-only (FX-N97): a train result delivers only in AVL_TRAIN, an eval result in AVL_EVAL or AVL_TRAIN
   (`trace.deliverable`), in the real send gate, sim withhold/delivery (`compute_delivery_ts(task)`) and Felix's boundary eviction (both
   modes); unaware baselines still pick EVAL devices, compute, and hold the upload until AVL_TRAIN. EV21 (prefix-safe): aware train picks
-  AVL_TRAIN (a top-up re-listing a round's held pick is no dispatch), real train sends leave in AVL_TRAIN, only Felix evals. The sim's
+  AVL_TRAIN (a held pick re-listed until it commits or is abandoned is no dispatch, FX-D174), real train sends leave in AVL_TRAIN, only Felix evals. The sim's
   starvation wake-up skips AVL_EVAL flips unless the selector sends evals (`_wake_task`). `test_avl_eval_semantics.py`; for non-Felix
   every decision equals the trace with AVL_EVAL relabeled UN_AVL (`test_avl_eval_is_unavail_for_baselines.py`).
 - **FX-D166** 3-state syn traces `syn_{10,20,50}_3st` (FX-N96): syn_X's AVL_TRAIN intervals kept, non-train windows relabeled with
@@ -748,6 +786,12 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   trainers fastest-first onto the GPU with the least task rate 1/D, ≤ ceil(n/G) each (`spawner.balanced_gpu_placement`).
 - **FX-D170** `harness_pool` contention log: a CPU block held mostly by this pool's own legs reads `resources-busy`; every 10 min while
   foreign load exists, `LOAD foreign owners:` lists user + run label/script with its GPUs and CPUs (`foreign_owners`, PL-LOG).
+- **FX-D172** Async selectors send no evals unless they override `_concurrency_for_task` (Felix's `AsyncOortSelector`, evalGoalFactor > 0):
+  FedBuff took a free slot at the eval tasklet ~once per leg, real only (PR36 EV21). `test_no_eval_dispatch_without_eval_goal`.
+- **FX-D173** Sim never re-gates a released withheld delivery (`_sim_withhold_if_unavail`, as oort's commit loop): a gate release past a
+  short AVL_TRAIN window withheld it twice and lost its sct (PR36 gs fedbuff G0U mobiperf_3st EV16). `test_released_delivery_past_a_short_window_is_not_regated`.
+- **FX-D174** Checker: EV21 counts a train pick once per dispatch (async selectors re-list in-flight/withheld picks every round; PR36
+  killed 17 legs); throughput/K3/K3b drop the last common round when one side's stop cut it short (`_tail_cut`).
 - **FX-D147** Leak check (`ram_growth_gb`) starts after a leg's process count peaks: a short sim's spawn ramp read as LEAK? (S3 +113 GB).
 - **FX-D146** `fedavg` arm = feddance with selector `utility=random` (uniform over the same eligible set); only selection differs (S4/F3).
 - **FX-D145** FedAvg sums updates in sorted end-id order: arrival order differs sim vs real, so float sums did.

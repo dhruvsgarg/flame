@@ -552,9 +552,13 @@ def test_ev21_relisted_held_pick_is_not_a_dispatch(tmp_path, monkeypatch):
     ev.insert(1, {"event": "selection", "task": "train", "ts": 1.5, "round": 1, "chosen": [T2], "per_trainer": {T2: {"avl_state": "UN_AVL"}}})
     open(agg, "w").write("".join(json.dumps(e) + "\n" for e in ev))
     assert _status(run, "EV21_avl_eval_semantics") == "PASS"
-    ev[1]["round"] = 2  # a new round's pick in UN_AVL is a dispatch
+    ev[1]["round"] = 2  # PR36 oort_star: async re-lists an in-flight/withheld pick in later rounds
     open(agg, "w").write("".join(json.dumps(e) + "\n" for e in ev))
-    assert _status(run, "EV21_avl_eval_semantics") == "FAIL"
+    assert _status(run, "EV21_avl_eval_semantics") == "PASS"
+    for free in ({"event": "agg_round", "ts": 1.2, "round": 1, "contributing_trainers": [T2]},
+                 {"event": "abandon_timeout", "ts": 1.2, "end_id": T2}):
+        open(agg, "w").write("".join(json.dumps(e) + "\n" for e in ev[:1] + [free] + ev[1:]))
+        assert _status(run, "EV21_avl_eval_semantics") == "FAIL"  # re-picked after its slot freed: a dispatch
 
 
 @pytest.mark.parametrize("sct, wait, want", [(60.0, 0.0, "PASS"), (10.0, 0.0, "FAIL"), (10.0, 40.0, "PASS")])

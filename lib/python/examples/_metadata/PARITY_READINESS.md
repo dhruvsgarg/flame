@@ -80,6 +80,7 @@ A new failure mode adds a check here in the same session.
 | PL18 | the launch node runs the planned commit and code key | `git log -1` on that node = the commit the doc names; `code_state.txt` HEAD; each pool's `code_key.txt` = the doc's key (FX-D162) | PR32: jayne launched without the shepherd commit (no G0UC, ECC GPU 1 used) |
 | PL19 | ≤ 2% of train tasks overrun D per leg, real and sim; above it, fewer trainers per GPU | DONE lines / trainer `overran` count (FX-N98) | PR35: speech G1AS sim 10%, real G1A 3.5% |
 | PL20 | AVL_EVAL is eval-only and Felix-only (FX-D165) | EV21 in every leg's events (prefix-safe → DOOMED) | 10-14: baselines trained on mobiperf_3st EVAL devices |
+| PL21 | a new or changed prefix-safe EV passes on stored legs of all six × every trace before launch | run it over the last batch's legs (`event_invariants.load_run` + the check) | PR36: EV21 DOOMED 17 oort_star/fedbuff legs mid-batch |
 
 ## Method
 
@@ -140,7 +141,7 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR36 · ready (commit + sync shepherd):** full re-screen on one code key (G0U/G0UC, T3/T3C, G0T/G0TC, G1AS, third reals) → 76/76 +
+- **PR36 · relaunch (first run stopped 10-15 by EV21 false kills; FELIX PR36):** full re-screen on one code key (G0U/G0UC, T3/T3C, G0T/G0TC, G1AS, third reals) → 76/76 +
   accuracy + FX-N98 speed confirm. `run_pr36.py --node jayne|shepherd` (~14.8 / 13.8 h). Screen shapes stay per tier.
 - **PR37 · blocked: PR36 complete:** all six × syn_0 + syn_50_3st + stream_lin × both datasets, 2 h real + 2 h-vclock sim, real replicate on
   syn_0 + lin, at one n:c:K per dataset (G3: cifar 75:15:10, speech 50:15:10) → sim-only experiments. `run_pr37.py` (~24-28 h).

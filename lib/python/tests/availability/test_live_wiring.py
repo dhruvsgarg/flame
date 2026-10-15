@@ -237,6 +237,21 @@ def test_pop_committable_delivers_withheld_due_before_next_sct():
     assert h._sim_pop_committable(ch)[:2] == ("t2", 230.0)
 
 
+def test_released_delivery_past_a_short_window_is_not_regated():
+    # PR36 gs fedbuff mobiperf_3st: flip at 200, window closes at 200.5, release 0.75 lands in UN_AVL.
+    h = _Harness({"t1": _trace((0, "AVL_TRAIN"), (100, "UN_AVL"), (200, "AVL_TRAIN"), (200.5, "UN_AVL"),
+                               (300, "AVL_TRAIN"))}, now=130, inflight_tracker=True)
+    h.config = SimpleNamespace(hyperparameters=SimpleNamespace(sim_gate_release_s=0.75))
+    sel = _AsyncSelector(); sel.add("t1")
+    ch = _Channel(sel, ["t1"])
+    h._sim_buffer.add("t1", 150.0, _payload("t1"))
+    assert h._sim_pop_committable(ch) is None and h.pending_withheld == {"t1": 200.75}
+    h._now = 201.0
+    h._sim_reinject_ready_withheld()
+    assert h._sim_pop_committable(ch)[:2] == ("t1", 200.75)
+    assert h._sim_withheld_delivering["t1"] == (150.0, 200.75)  # orig sct kept for EV16
+
+
 # ---------------------------------------------------------------------------
 # _sim_reinject_ready_withheld — ordering, residence, slot-only drop
 # ---------------------------------------------------------------------------

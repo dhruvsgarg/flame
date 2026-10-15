@@ -653,6 +653,8 @@ class ClientAvailability:
         # primitive safe to call from any partially-initialized commit loop.
         if getattr(self, "trainer_event_dict", None) is None or harness.injected("order_by_sct"):
             return False
+        if end in (getattr(self, "_sim_withheld_delivering", None) or {}):
+            return False  # a released delivery is never re-gated (FX-D173)
         task = self._task_of_update(msgmd)
         # T3.3 commit-checkpoint belief: read once here, covering both branches
         # below (fresh commit and re-registered/re-stashed) with one call.

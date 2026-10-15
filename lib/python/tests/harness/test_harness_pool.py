@@ -283,7 +283,7 @@ def test_oort_mobiperf_legs_run_long_enough_to_commit():
     # Run 4: unaware oort committed 0 updates in 240s on mobiperf_3st (both datasets); nothing graded.
     ph = pool.shaped("P3", ("oort", "felix"), "mobiperf_3st", "pair", "cifar10")
     rt = {(j.baseline, j.mode): j.runtime_s for j in pool.build_jobs([ph], 1.0, 1, {})}
-    assert rt[("oort", "real")] == rt[("oort", "sim")] == 960 and rt[("felix", "real")] == 240
+    assert rt[("oort", "real")] == rt[("oort", "sim")] == 3000 and rt[("felix", "real")] == 240
     ph.runtime_s = 60  # --smoke keeps its 60s
     assert {j.runtime_s for j in pool.build_jobs([ph], 1.0, 1, {})} == {60}
 
@@ -470,7 +470,7 @@ def test_min_runtime_reaches_oort_k10_shapes():
     assert rt("google_speech", "oort")["gs_T3_syn_20_3sts_syn_20_3st_oort_real"] == 600
     assert rt("google_speech", "oort_star")["gs_T3_syn_20_3sts_syn_20_3st_oort_star_real"] == 300
     assert rt("cifar10", "oort")["T3_syn_20_3sts_syn_20_3st_oort_real"] == 300
-    assert rt("cifar10", "oort")["T3_mobiperf_3sts_mobiperf_3st_oort_real"] == 960
+    assert rt("cifar10", "oort")["T3_mobiperf_3sts_mobiperf_3st_oort_real"] == 3000
 
 
 def test_gpu_equality_tiers_run_deterministic_kernels():
@@ -514,3 +514,41 @@ def test_g3_shape_meets_baseline_constraints():
         assert len(phs) == 3 and all(set(p.baselines) == set(B6) and p.n == sh["n"] and p.runtime_s == pool.G3_RUNTIME_S for p in phs)
         assert all("trainerDeterministic=true" in p.trainer_hp for p in phs)
         assert [p.kind for p in pool.tier_phases("G3C", B6, ds)] == ["real"] * 3
+
+
+def test_measured_lease_sizes_pairs_from_their_p95(monkeypatch):
+    # FX-N99 1: PR36 T3 legs leased 14-74 CPUs for a measured p95 of 0.1-1.2 cores.
+    ph = pool.shaped("T3_syn_50_3st", ("felix", "oort"), "syn_50_3st", "pair", "cifar10")
+    jobs = pool.build_jobs([ph], 1.0, 1, {})
+    formula = {j.jid: j.cpus for j in jobs}
+    key = lambda b, m: pool.cores_key(next(j for j in jobs if j.baseline == b and j.mode == m))
+    hist = {key("felix", "real"): [0.4, 1.2], key("felix", "sim"): [6.0], key("oort", "real"): [0.1]}
+    monkeypatch.setattr(pool, "MEASURED", False)
+    assert {j.jid: j.cpus for j in pool.build_jobs([ph], 1.0, 1, hist)} == formula  # off: byte-identical
+    monkeypatch.setattr(pool, "MEASURED", True)
+    hist[key("felix", "real")] = [6.0]
+    got = {(j.baseline, j.mode): j.cpus for j in pool.build_jobs([ph], 1.0, 1, hist)}
+    assert got[("felix", "real")] == 8  # ceil(1.25 x 6 / 2) = 4 cores
+    assert got[("felix", "sim")] == formula[next(j.jid for j in jobs if j.baseline == "felix" and j.mode == "sim")]  # sims: formula
+    assert got[("oort", "real")] == 4  # floor: 2 physical cores
+    hist[pool.margin_key(next(j for j in jobs if j.baseline == "oort"))] = [3.0]
+    assert pool.predicted_cores(next(j for j in jobs if j.baseline == "oort" and j.mode == "real"), hist) == pytest.approx(0.3)
+
+
+def test_gpu_priority_wants_span_pools(tmp_path):
+    # FX-N99 4: a lower-priority pool leaves GPUs for a higher-priority pool's blocked leg.
+    a, b = pool.Leases(tmp_path), pool.Leases(tmp_path)
+    a.put("want_p000_1", 4)
+    assert pool.gpus_wanted_above(b, 3) == 4 and pool.gpus_wanted_above(b, 0) == 0
+    a.put("want_p000_1", 2)
+    assert pool.gpus_wanted_above(b, 3) == 2
+    a.drop(["want_p000_1"])
+    assert pool.gpus_wanted_above(b, 3) == 0
+
+
+def test_node_load_reads_busy_cores():
+    load = pool.NodeLoad()
+    load.tick()
+    load.tick()
+    assert load.ema is None or 0.0 <= load.ema <= load.ncpu
+    assert load.runq >= 0.0

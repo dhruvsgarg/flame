@@ -785,13 +785,22 @@ def ev21_avl_eval_semantics(run):
     felix = float((run["cfg"].get("selector", {}).get("kwargs", {}) or {}).get("evalGoalFactor") or 0) > 0
     bad_pick, bad_send, n_pick, n_send = [], [], 0, 0
     n_eval = eval_on_eval = 0
-    bad_eval, seen = [], set()
-    for e in _events(run, "selection"):
+    bad_eval, seen, held = [], set(), set()
+    for e in run["agg"]:
+        if e.get("event") == "agg_round":
+            held.difference_update(e.get("contributing_trainers") or ())
+            continue
+        if e.get("event") == "abandon_timeout":
+            held.discard(e.get("end_id"))
+            continue
+        if e.get("event") != "selection":
+            continue
         task, per = e.get("task", "train"), e.get("per_trainer") or {}
-        for end in e.get("chosen") or []:
+        chosen = e.get("chosen") or []
+        for end in chosen:
             st = (per.get(end) or {}).get("avl_state")
-            if task == "train" and (e.get("round"), end) in seen:
-                continue  # an earlier pick of this round re-listed by a top-up selection, not a new dispatch (FX-D98)
+            if task == "train" and ((e.get("round"), end) in seen or end in held):
+                continue  # a held pick re-listed, not a new dispatch (FX-D98, FX-D174)
             seen.add((e.get("round"), end))
             if task == "train" and aware and st is not None:
                 n_pick += 1
@@ -802,6 +811,8 @@ def ev21_avl_eval_semantics(run):
                 eval_on_eval += st == "AVL_EVAL"
                 if not felix or st == "UN_AVL":
                     bad_eval.append((end[-4:], e.get("round"), st))
+        if task == "train":
+            held = set(chosen)  # until it leaves `chosen`, commits or is abandoned
     if not _simulated(run):
         for tid, evs in run["trainers"].items():
             tr = gt.get(tid)

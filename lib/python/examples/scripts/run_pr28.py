@@ -112,12 +112,13 @@ def stage_jobs(args: str):
     return [j for j in jobs if j.mode != "grade"]
 
 
-def plan(stages, hours: float) -> list:
-    """List-schedule every lane on shared CPUs/GPUs/RAM; returns rows (stage, start_min, end_min or None, cpu_min, gpu_min)."""
+def plan(stages, hours: float, one_queue: bool = False) -> list:
+    """List-schedule every lane on shared CPUs/GPUs/RAM; returns rows (stage, start_min, end_min or None, cpu_min, gpu_min).
+    one_queue (FX-N99 4): every stage is its own lane, filled in stage order."""
     mem_cap = hp.mem_available_gb() - 32
     lanes = {}
     for s in stages:
-        lanes.setdefault(s[1], []).append(s)
+        lanes.setdefault(s[0] if one_queue else s[1], []).append(s)
     jobs = {s[0]: sorted(stage_jobs(s[2]), key=lambda j: -j.est_s) for s in stages}
     t, horizon = 0.0, hours * 3600
     lane_i = {ln: 0 for ln in lanes}
@@ -136,7 +137,7 @@ def plan(stages, hours: float) -> list:
                 pend[sid] = list(jobs[sid])
                 lane_ready[ln] = t + GATE_S
         order = list(lanes)
-        rot = int(t // 60) % len(order)  # pools poll leases independently: rotate which lane goes first
+        rot = 0 if one_queue else int(t // 60) % len(order)  # pools poll leases independently: rotate which lane goes first
         for ln in order[rot:] + order[:rot]:
             i = lane_i[ln]
             if i >= len(lanes[ln]):
@@ -147,7 +148,8 @@ def plan(stages, hours: float) -> list:
             for j in list(pend[sid]):
                 cpu_used = sum(r[1] for r in running)
                 lane_used = sum(r[1] for r in running if r[4] == ln)
-                if (cpu_used + j.cpus > NODE_CPUS or lane_used + j.cpus > LANE_CPU_CAP.get(ln, NODE_CPUS)
+                lane_cap = NODE_CPUS if hp.MEASURED else LANE_CPU_CAP.get(ln, NODE_CPUS)  # FX-N99: admission replaces caps
+                if (cpu_used + j.cpus > NODE_CPUS or lane_used + j.cpus > lane_cap
                         or sum(r[2] for r in running) + j.gpus > NODE_GPUS or sum(r[3] for r in running) + j.mem_gb > mem_cap
                         or t + j.est_s > horizon):
                     continue
@@ -244,9 +246,12 @@ def main() -> int:
     ap.add_argument("--only", default="", help="comma list of stage ids")
     ap.add_argument("--plan", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="pass --dry-run to every pool")
+    ap.add_argument("--measured", action="store_true", help="FX-N99: pools lease measured cores (--lease-from-telemetry)")
+    ap.add_argument("--one-queue", action="store_true", help="FX-N99: every stage starts at once; stage order = GPU priority")
     a = ap.parse_args()
+    hp.MEASURED = a.measured
     stages = [s for s in STAGES if not a.only or s[0] in a.only.split(",")]
-    rows = plan(stages, a.hours)
+    rows = plan(stages, a.hours, a.one_queue)
     hdr = f"{'stage':6s}{'lane':6s}{'kind':8s}{'start':>7s}{'end':>7s}{'cpu-min':>9s}{'gpu-min':>9s}  claim"
     txt = [hdr] + [f"{r[0]:6s}{s[1]:6s}{s[4]:8s}{('-' if r[1] is None else f'{r[1]:.0f}'):>7s}"
                    f"{(('SKIP' if r[1] is None else 'PART') if r[2] is None else f'{r[2]:.0f}'):>7s}{r[3]:9.0f}{r[4]:9.0f}  {s[5]}"
@@ -275,8 +280,30 @@ def main() -> int:
         log.write(line + "\n")
         log.flush()
 
+    prio = {s[0]: i for i, s in enumerate(stages)}
+
+    def lane_args(ln: str) -> list:
+        """A lane's pool args; measured pools drop the CPU lane's core reserve (admission replaces it, FX-N99 2)."""
+        xs = shlex.split(LANE_POOL_ARGS[ln])
+        if a.measured and "--reserve-cores" in xs:
+            i = xs.index("--reserve-cores")
+            del xs[i:i + 2]
+        return xs
+
+    def gate_passed(t_max: float = 900) -> None:
+        """One-queue: later stages start once the first pool's gate smoke stamped this code state (or t_max)."""
+        stamps = [hp.Leases().root / f"gate_ok_{hp.code_key()}_{d}" for d in hp.DATASETS]
+        end = time.time() + t_max
+        while time.time() < end and not stop.is_set() and not all(f.exists() for f in stamps):
+            time.sleep(10)
+
     def lane(name, ss):
-        time.sleep(0 if a.dry_run else {"gpuA": 0, "gpuB": 90, "n33": 180, "cpu": 270}.get(name, 330))  # stagger first pools: leases settle, gate runs once
+        if a.one_queue:
+            if prio[ss[0][0]] and not a.dry_run:
+                gate_passed()
+                time.sleep(5 * prio[ss[0][0]])
+        else:
+            time.sleep(0 if a.dry_run else {"gpuA": 0, "gpuB": 90, "n33": 180, "cpu": 270}.get(name, 330))  # stagger first pools: leases settle, gate runs once
         for sid, _, args, env, kind, claim in ss:
             if stop.is_set():
                 return
@@ -287,8 +314,9 @@ def main() -> int:
                 continue
             pool = EX / "experiments" / f"pool_{ts}_{BATCH.upper()}_{sid}"
             cmd = [sys.executable, str(SCRIPTS / "harness_pool.py"), "--output-dir", str(pool), "--gpu-ids", GPU_IDS,
-                   "--deadline-h", f"{left / 3600:.2f}"] + shlex.split(args) + shlex.split(LANE_POOL_ARGS[name]) \
-                + (["--dry-run"] if a.dry_run else [])
+                   "--deadline-h", f"{left / 3600:.2f}"] + shlex.split(args) + lane_args(ss[0][1]) \
+                + (["--dry-run"] if a.dry_run else []) + (["--lease-from-telemetry"] if a.measured else []) \
+                + (["--priority", str(prio[sid])] if a.one_queue else [])
             with lock:
                 pools[sid] = pool
             say(f"{sid} START ({kind}) -> {pool.name}: {claim}")
@@ -319,7 +347,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, on_signal)
     by_lane = {}
     for s in stages:
-        by_lane.setdefault(s[1], []).append(s)
+        by_lane.setdefault(s[0] if a.one_queue else s[1], []).append(s)
     threads = [threading.Thread(target=lane, args=(ln, ss), daemon=True) for ln, ss in by_lane.items()]
     for th in threads:
         th.start()

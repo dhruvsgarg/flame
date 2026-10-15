@@ -79,6 +79,13 @@ class TestSharedMechanism:
         assert len(first) == 3
         assert second == {}  # slots full, nothing more to dispatch
 
+    def test_no_eval_dispatch_without_eval_goal(self, build, make_ends):
+        # FX-D165: PR36 fedbuff sent an eval task whenever a slot was free at the eval tasklet.
+        sel = build(c=3)
+        if hasattr(sel, "eval_goal_factor"):
+            sel.eval_goal_factor = 0.0
+        assert sel.select(make_ends(count=6, prefix="t"), _send_props(), [], task_to_perform="eval") == {}
+
     def test_unavail_list_is_excluded(self, build, make_ends):
         sel = build(c=3)
         ends = make_ends(count=6, prefix="t")

@@ -79,7 +79,7 @@ SHAPES = {
 OORT_FAMILY = ("oort", "oort_star")
 OORT_SHAPE = {"syn_0": "syn_0s", "syn_0b": None, "syn_20_3st": "syn_20_3sts", "syn_50_3st": "syn_50_3sts", "mobiperf_3st": "mobiperf_3sts"}
 # CPU legs that need longer for EV1's >= 4 commits (unaware oort waits out 90s timeouts; run 4: 0 in 240s).
-MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 960,
+MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 3000,  # FX-D165: AVL_EVAL is UN_AVL; PR36 960 s gave 1 commit, G0U sim's 4th at 2508 s
                  ("oort", "syn_20_3st", "google_speech"): 600}  # FX-N85 d: 300 s gave 10 matched rounds (PR31 C2)
 # FX-D52: G0U legs whose unaware picks hold slots a full timeout run longer, to reach a gradeable round count.
 G0U_RUNTIME_X = {("oort", "mobiperf_3st"): 4, ("fedbuff", "mobiperf_3st", "google_speech"): 3}
@@ -501,6 +501,8 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
             else:
                 jobs.append(mk("sim", base + ["--mode", "sim"]))
     size_gpu_slots(jobs, history, gpu_per_trainer)
+    if MEASURED:
+        measured_lease(jobs, history)
     for j in jobs:
         j.est_s = estimate_s(j, history)
         j.mem_gb = mem_estimate_gb(j, history)
@@ -566,6 +568,39 @@ def size_gpu_slots(jobs: List["Job"], history: dict, gpu_per_trainer: float) -> 
         cpus = min(cap, max(legs[0].cpus, want + want % 2))
         for j in legs:
             j.cpus = cpus
+
+
+# FX-N99 (`--lease-from-telemetry`, default off): measured leases, live admission, back-pressure, GPU priority across pools.
+MEASURED = False
+LEASE_X = 1.25  # a real CPU leg leases this x its measured cores p95 ...
+LEASE_MIN_CORES = 2  # ... in whole physical cores, at least this many
+ADMIT_FRAC = 0.7  # a leg starts only while smoothed node busy + fresh legs + its predicted p95 stay under this share of CPUs
+SAT_PAUSE = 0.05  # a leg saturating its slot in more samples than this pauses starts and is timing-suspect
+RUNQ_PAUSE = 1.0  # runnable threads per CPU that pause starts
+MARGIN_X, MARGIN_MAX = 1.5, 4.0  # a saturated key's next lease margin
+
+
+def margin_key(j: "Job") -> str:
+    return "lease_x|" + j.key
+
+
+def lease_margin(j: "Job", history: dict) -> float:
+    return (history.get(margin_key(j)) or [1.0])[-1]
+
+
+def predicted_cores(j: "Job", history: dict) -> float:
+    """A leg's expected busy cores: its key's measured p95 x margin, else its formula lease."""
+    seen = history.get(cores_key(j), [])[-3:]
+    return max(seen) * lease_margin(j, history) if seen else float(j.cpus)
+
+
+def measured_lease(jobs: List["Job"], history: dict) -> None:
+    """FX-N99 1: a real CPU leg leases ceil(LEASE_X x margin x measured p95) whole cores (>= LEASE_MIN_CORES), never above the formula.
+    Sims keep the formula: their wall time is their throughput, and a p95 lease slowed T1 sims 1.5-2.2x (FX-N99 A/B)."""
+    for j in jobs:
+        seen = history.get(cores_key(j), [])[-3:]
+        if j.mode == "real" and not j.gpus and seen:
+            j.cpus = min(j.cpus, 2 * max(LEASE_MIN_CORES, math.ceil(LEASE_X * lease_margin(j, history) * max(seen) / 2)))
 
 
 def shard(jobs: List[Job], i: int, n: int) -> List[Job]:
@@ -719,6 +754,24 @@ def busy_cpus(threshold: float = 0.5, window_s: float = 1.0) -> frozenset:
                      and 1 - (b[c][1] - a[c][1]) / (b[c][0] - a[c][0]) > threshold)
 
 
+class NodeLoad:
+    """FX-N99 2: node-wide busy cores (/proc/stat, smoothed over pool ticks) and runnable threads per CPU."""
+
+    def __init__(self, alpha: float = 0.3):
+        self.alpha, self.ema, self.last, self.runq, self.ncpu = alpha, None, None, 0.0, os.cpu_count() or 1
+
+    def tick(self) -> None:
+        a = _cpu_times()
+        tot, idle = sum(v[0] for v in a.values()), sum(v[1] for v in a.values())
+        if self.last and tot > self.last[0]:
+            busy = len(a) * (1 - (idle - self.last[1]) / (tot - self.last[0]))
+            self.ema = busy if self.ema is None else self.alpha * busy + (1 - self.alpha) * self.ema
+        self.last, self.ncpu = (tot, idle), len(a) or self.ncpu
+        for line in open("/proc/stat"):
+            if line.startswith("procs_running"):
+                self.runq = (int(line.split()[1]) - 1) / self.ncpu  # less this pool's own sampler
+
+
 def foreign_owners(own_pgids: set, top: int = 6) -> List[str]:
     """PL-LOG: per foreign owner (user + run label or script), the GPUs and CPUs (1 s sample) it holds, busiest first."""
     import psutil
@@ -815,6 +868,12 @@ class Leases:
             os.ftruncate(self.held[name], 0)
             os.write(self.held[name], f"{gb:.1f}".encode())
 
+    def put(self, name: str, value: float) -> None:
+        """A live lease carrying `value` (taken on first use, rewritten after)."""
+        if name in self.held or self.take(name):
+            os.ftruncate(self.held[name], 0)
+            os.pwrite(self.held[name], f"{value:g}".encode(), 0)
+
     def reserved_gb(self) -> float:
         """Sum of live RAM reservations across pools (a lockable file is a dead pool's)."""
         tot = 0.0
@@ -829,6 +888,28 @@ class Leases:
                     pass
             os.close(fd)
         return tot
+
+
+def _lease_values(root: Path, pattern: str) -> Dict[str, float]:
+    """{name: value} of live (locked) lease files matching `pattern`."""
+    out = {}
+    for f in root.glob(pattern):
+        fd = os.open(f, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            try:
+                out[f.name] = float(os.pread(fd, 32, 0) or 0)
+            except ValueError:
+                pass
+        os.close(fd)
+    return out
+
+
+def gpus_wanted_above(leases: "Leases", priority: int) -> int:
+    """FX-N99 4: most GPUs a higher-priority pool's blocked leg waits for (`want_p<N>_<pid>`, N < priority)."""
+    vals = [v for k, v in _lease_values(leases.root, "want_p*").items() if int(k.split("_")[1][1:]) < priority]
+    return int(max(vals, default=0))
 
 
 def slot_leases(cpus: List[int], gpus: List[int], port: Optional[int] = None) -> List[str]:
@@ -1029,6 +1110,7 @@ class Running:
     doom_at: float = 0.0  # last early-exit check
     ram: List[tuple] = field(default_factory=list)  # (time, GB PSS) per ledger sample (FX-D140)
     gpu_peak_gb: float = 0.0
+    saturated: bool = False  # FX-N99 3: its slot saturated (back-pressure logged)
 
     def sample(self) -> None:
         self.cpu.update(tag_cpu_s(self.tag))
@@ -1057,6 +1139,7 @@ class Pool:
     leases: Optional["Leases"] = None
     stall_min: float = 15.0  # FX-D45 S1 limit; 0 disables the stall rules
     doom_min: float = 5.0  # early-exit check period; 0 disables it
+    priority: int = -1  # FX-N99 4: GPU priority among co-running pools (lower first); -1 = off
 
     def _stalled(self, r: "Running") -> bool:
         """FX-D45: a leg that stopped progressing is killed alone (STALLED.txt); its neighbours keep running."""
@@ -1174,6 +1257,8 @@ class Pool:
         stop = {"flag": False}
         probe, last_note, owners_shown = None, None, 0.0
         tick, shown = 0, 0.0
+        load, paused_until = NodeLoad(), 0.0  # FX-N99 2-3
+        want_lease = f"want_p{self.priority:03d}_{os.getpid()}"
         jobs_tsv = open(self.root / "jobs.tsv", "a")
         jobs_tsv.write("jid\trc\tdur_s\test_s\tcpus\tcores_avg\tcores_p95\tcpu_sat\n")
         ledger = ResourceLedger(self.root / "resources.jsonl")
@@ -1202,6 +1287,11 @@ class Pool:
                         self.say("LOAD foreign owners: " + "; ".join(rows))
                     owners_shown = time.time()
                 blocked.clear()
+                gpu_wait = 0
+                if MEASURED:
+                    load.tick()
+                    if load.runq > RUNQ_PAUSE:
+                        paused_until = max(paused_until, time.time() + 30)
                 for j in list(pending):
                     if any(d not in self.done for d in j.deps):
                         continue
@@ -1212,11 +1302,15 @@ class Pool:
                         continue
                     if len(running) >= self.max_parallel:
                         break
+                    if MEASURED and time.time() < paused_until:
+                        blocked[j.jid] = f"back-pressure (slot saturated or run queue {load.runq:.2f}/CPU)"
+                        break
                     if j.mem_gb + sum(r.job.mem_gb for r in running.values()) > mem_budget and running:
                         blocked[j.jid] = f"pool RAM budget ({j.mem_gb:.0f} GB + running > {mem_budget:.0f})"
                         continue
                     if j.gpus > len(gpus_free):
                         blocked[j.jid] = f"needs {j.gpus} GPUs, {len(gpus_free)} free of {node_gpus}"
+                        gpu_wait = max(gpu_wait, j.gpus)
                         continue
                     if probe is None or time.time() - probe["t"] > 30:  # foreign load, between starts only
                         ours = {c for r in running.values() for c in r.cpus}
@@ -1231,6 +1325,19 @@ class Pool:
                                      f"{probe['mem']:.0f} GB available")
                             last_note = note
                     usable = [g for g in gpus_free if g not in probe["gpus"]]
+                    if j.gpus and self.priority >= 0:
+                        if j.gpus > len(usable):
+                            gpu_wait = max(gpu_wait, j.gpus)
+                        elif len(usable) - j.gpus < gpus_wanted_above(leases, self.priority):
+                            blocked[j.jid] = "GPU priority: a higher-priority stage waits for GPUs"
+                            continue
+                    if MEASURED and load.ema is not None:
+                        fresh = sum(predicted_cores(r.job, history) for r in running.values() if time.time() - r.t0 < 60)
+                        need = predicted_cores(j, history)
+                        if load.ema + fresh + need > ADMIT_FRAC * load.ncpu:
+                            blocked[j.jid] = (f"node busy {load.ema:.0f} + fresh {fresh:.0f} + {need:.1f} cores > "
+                                              f"{ADMIT_FRAC:.0%} of {load.ncpu}")
+                            continue
                     avail = min(probe["mem"], mem_available_gb("MemTotal") - leases.reserved_gb())
                     if j.gpus > len(usable) or ram_blocks(j.mem_gb, avail, self.mem_headroom_gb, bool(running)):
                         blocked[j.jid] = (f"GPUs usable {usable} (foreign busy {sorted(probe['gpus'])}), "
@@ -1259,6 +1366,11 @@ class Pool:
                     ledger.event("start", jid=j.jid, mode=j.mode, baseline=j.baseline, trace=j.trace, dataset=j.dataset,
                                  harness=j.harness, n=j.n, mem_est_gb=round(j.mem_gb, 1), cpus=len(cpus), gpus=gp)
                     pending.remove(j)
+                if self.priority >= 0:
+                    if gpu_wait:
+                        leases.put(want_lease, gpu_wait)
+                    else:
+                        leases.drop([want_lease])
                 time.sleep(2)
                 tick += 1
                 if tick % RES_SAMPLE_TICKS == 0 and running:
@@ -1268,6 +1380,13 @@ class Pool:
                     if rc is None:
                         if tick % 3 == 0:
                             r.sample()
+                            recent = r.busy[-10:]
+                            if MEASURED and r.job.mode != "grade" and len(recent) == 10 and \
+                                    sum(b >= CPU_SAT_BUSY * len(r.cpus) for b in recent) / 10 > SAT_PAUSE:
+                                paused_until = max(paused_until, time.time() + 30)
+                                if not r.saturated:
+                                    r.saturated = True
+                                    self.say(f"BACKPRESSURE {jid}: slot of {len(r.cpus)} CPUs saturated; starts paused, timing-suspect")
                         if tick % 15 == 0 and self._fatal(r):
                             break
                         if tick % 30 == 0:
@@ -1290,7 +1409,8 @@ class Pool:
                              f"{gpu_peak_note(leg_run_dirs(r.out), r.gpus)}"
                              f"{f' leg RAM {ram_peak:.0f}/{r.job.mem_gb:.0f} GB' if ram_peak else ''}"
                              f"{' RAM_OVER' if ram_peak > r.job.mem_gb else ''}"
-                             f"{f' LEAK? +{ram_grow:.1f} GB 2nd half' if leak_suspect(ram_peak, ram_grow) else ''}")
+                             f"{f' LEAK? +{ram_grow:.1f} GB 2nd half' if leak_suspect(ram_peak, ram_grow) else ''}"
+                             f"{' TIMING_SUSPECT' if MEASURED and r.job.mode != 'grade' and sat > SAT_PAUSE else ''}")
                     jobs_tsv.write(f"{jid}\t{rc}\t{dur:.0f}\t{r.job.est_s:.0f}\t{len(r.cpus)}\t{avg:.2f}\t{p95:.2f}\t{sat:.3f}\n")
                     jobs_tsv.flush()
                     row = _summary_row(r.out)
@@ -1300,6 +1420,9 @@ class Pool:
                             history.setdefault(cores_key(r.job), []).append(round(p95, 2))
                         if ram_peak and r.job.mode != "grade":  # FX-D140: next estimate >= measured
                             history.setdefault(ram_key(r.job), []).append(round(ram_peak, 1))
+                    if MEASURED and r.job.mode != "grade" and sat > SAT_PAUSE:  # FX-N99 3: the next lease of this key grows
+                        history.setdefault(margin_key(r.job), []).append(
+                            round(min(MARGIN_MAX, lease_margin(r.job, history) * MARGIN_X), 2))
                     cm.release(r.cpus, groups)
                     leases.drop(slot_leases(r.cpus, r.gpus, r.port) + [f"ram_{os.getpid()}_{jid}"])
                     gpus_free += [g for g in r.gpus if g not in gpus_free]
@@ -1358,7 +1481,8 @@ class Pool:
         env = {**os.environ, "EXPT_AUTOCLEAN": "1", "FLAME_RUN_TAG": tag, "FLAME_RUN_LABEL": j.phase,
                "FLAME_POST_ANALYSIS": "0"}  # FX-D62: nothing reads a leg's plots/
         if not j.whole:
-            env["FLAME_AGG_CORES"] = str(8 if j.gpus else agg_cores(j.n))
+            agg = 8 if j.gpus else agg_cores(j.n)
+            env["FLAME_AGG_CORES"] = str(min(agg, max(1, len(cpus) // 2)) if MEASURED else agg)  # FX-N99: trainers keep half
         proc = subprocess.Popen(cmd, stdout=open(out / "suite.log", "w"), stderr=subprocess.STDOUT,
                                 env=env, start_new_session=True, cwd=str(example_dir(j.dataset)))
         self.say(f"START {j.jid} cpus={_ranges(cpus)} port={port}{' gpus=' + str(gp) if gp else ''} est={j.est_s / 60:.1f}m")
@@ -1541,6 +1665,8 @@ def run_smoke(cmd, log: Path, run_s: float = 900, wait_s: float = 3600) -> Optio
 # L18: files no leg executes (docs, tests, graders, batch drivers); editing them keeps the code state.
 NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python/examples/async_cifar10/scripts/parity/**",
                      "lib/python/examples/async_cifar10/scripts/parity_check.py", "lib/python/examples/scripts/run_*.py",
+                     *(f"lib/python/examples/fwdllm/expt_scripts/{p}" for p in (  # plots: PR36 split its key mid-batch
+                         "plotlib/**", "make_paper_figs.py", "preview_palette.py", "figs*.yaml")),
                      *(f"lib/python/examples/scripts/{s}.py" for s in (
                          "parity_ladder", "readiness_score", "logical_diff", "insights", "accuracy_table", "replicate_spread",
                          "resource_report", "profile_report", "fd_sanity", "eurosys_export", "baseline_deviations",
@@ -1594,7 +1720,12 @@ def main(argv=None) -> int:
                     help="FX-D45: kill a leg with no new committed round for this many minutes (0 = off)")
     ap.add_argument("--doom-min", type=float, default=5.0,
                     help="early exit: prefix-safe EV checks on live legs every this many minutes (0 = off)")
+    ap.add_argument("--lease-from-telemetry", action="store_true",
+                    help="FX-N99: lease measured cores, admit by node load, back-pressure on saturated slots")
+    ap.add_argument("--priority", type=int, default=-1, help="FX-N99: GPU priority among co-running pools (lower first)")
     a = ap.parse_args(argv)
+    global MEASURED
+    MEASURED = a.lease_from_telemetry
     set_gpu_allow(a.gpu_ids)
 
     real_changed = False
@@ -1640,7 +1771,7 @@ def main(argv=None) -> int:
     (root / "code_key.txt").write_text(code_key() + "\n")  # parity_ladder pairs floors only within one code state
     pool = Pool(root, jobs, a.max_parallel, a.reserve_cores, a.mem_headroom_gb, a.deadline_h * 3600, a.dry_run,
                 log=open(root / "pool.log", "a"), fail_fast=a.fail_fast, label=a.progress_label,
-                stall_min=a.stall_min, doom_min=a.doom_min)
+                stall_min=a.stall_min, doom_min=a.doom_min, priority=a.priority)
     commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True,
                             text=True).stdout.strip()
     pool.say(f"pool {root} host={socket.gethostname()} tier={a.tier} datasets={','.join(datasets)} baselines={' '.join(baselines) or '-'} "
