@@ -390,7 +390,8 @@ for e_src in cfg.get("experiments", []):
             _lat = get_profiled_charge_s(_prof, "dispatch_latency", _stack)
             if _leg is not None and _lat is not None:
                 h.update(simDispatchLatencySeconds=_lat, simCommitOverheadSeconds=0.0,
-                         simRedispatchGapSeconds=0.0, simChargeProfilePath=os.path.abspath(_prof))
+                         simRedispatchGapSeconds=0.0, simChargeProfilePath=os.path.abspath(_prof),
+                         simGateReleaseSeconds=get_profiled_charge_s(_prof, "gate_release", _stack) or 0.0)  # FX-D163
                 _thp0 = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
                 _thp0["simCompletionLegSeconds"] = _leg
                 _thp0["simDownloadLegSeconds"] = get_profiled_charge_s(_prof, "download_leg", _stack) or 0.0  # FX-D116

@@ -83,3 +83,11 @@ def test_one_stall_free_round_skips_like_throughput():
     adv = [_RoundAdv(150.0, "abandon")] * 12 + [_RoundAdv(4.0)]
     assert "1 stall-free rounds < 10" in (_few_free_note(real, real, adv, adv) or "")
     assert _few_free_note(real, real, [_RoundAdv(4.0)] * 12, [_RoundAdv(4.0)] * 12) is None
+
+
+def test_async_gaps_are_graded_raw():
+    """FX-D164: an async gap is trace scarcity, not a timeout stall; K8 grades raw time (PR35 fedbuff G0U syn_50 1% -> 11%)."""
+    real, sim = _stalled(40, 10.0, {5, 20}, vclock=False), _stalled(40, 10.0, {5, 12, 20, 30}, vclock=True)
+    real["async_stack"] = sim["async_stack"] = True
+    r = terminal_state_parity(real, sim)
+    assert r["sim_vclock_to_n_s"] == r["raw_sim_vclock_to_n_s"] and not r["ok"], r

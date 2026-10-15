@@ -239,6 +239,10 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_completion_leg_s: t.Optional[float] = Field(
         alias="simCompletionLegSeconds", default=0.0
     )
+    # FX-D163: profiled send-gate release (exit + upload) after a flip; sim withheld delivery = flip + this.
+    sim_gate_release_s: t.Optional[float] = Field(
+        alias="simGateReleaseSeconds", default=0.0
+    )
     # FX-D116: profiled download leg (agg -> trainer), charged only when the measured FX-D108 lag is not.
     sim_download_leg_s: t.Optional[float] = Field(
         alias="simDownloadLegSeconds", default=0.0

@@ -60,3 +60,35 @@ _meta:
   - run_20261011_125259_CHG_dbg_oort_n300_alpha0.1_syn_0_stream_real
   - run_20261011_125259_CHG_dbg_oort_star_n300_alpha0.1_syn_0_stream_real
   - run_20261011_130745_CHG_dbg_refl_n300_alpha0.1_syn_0_stream_real
+  gate_release:
+    dataset: cifar10
+    harness: gpu
+    host: jayne
+    commit: 4303d3a91
+    date: '2026-10-14'
+    tool: profile_felix_charges.py
+    runs:
+    - run_20261014_055148_G0U_syn_50_dbg_felix_n300_alpha0.1_syn_50_stream_real
+    - run_20261014_061222_G0U_syn_50_dbg_fedbuff_n300_alpha0.1_syn_50_stream_real
+    - run_20261014_063156_G0U_syn_50s_dbg_oort_star_n300_alpha0.1_syn_50_stream_real
+    - run_20261014_065142_G0U_syn_50s_dbg_oort_n300_alpha0.1_syn_50_stream_real
+    - run_20261014_071115_G0U_syn_50_dbg_feddance_n300_alpha0.1_syn_50_stream_real
+    - run_20261014_073031_G0U_syn_50_dbg_refl_n300_alpha0.1_syn_50_stream_real
+    - run_20261014_073329_G0U_mobiperf_3st_dbg_fedbuff_n300_alpha0.1_mobiperf_3st_stream_real
+    - run_20261014_091021_G0U_mobiperf_3sts_dbg_oort_n300_alpha0.1_mobiperf_3st_stream_real
+gate_release:
+  asyncfl:
+    mean_s: 0.0444
+    p50_s: 0.0377
+    n: 44
+    charge: true
+  oort_sync:
+    mean_s: 0.0252
+    p50_s: 0.0229
+    n: 69
+    charge: true
+  fedavg:
+    mean_s: 0.0208
+    p50_s: 0.0205
+    n: 4
+    charge: true

@@ -398,7 +398,14 @@ class ClientAvailability:
         nxt = next_avail_after(trace, ref)
         if nxt == math.inf:
             return math.inf
-        return max(ref, float(nxt))
+        return max(ref, float(nxt)) + self._sim_gate_release_s()
+
+    def _sim_gate_release_s(self) -> float:
+        """FX-D163: sim charges real's send-gate exit + co-released upload after the flip; 0 = deliver at the flip."""
+        if not getattr(self, "simulated", False):
+            return 0.0
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        return float(getattr(hp, "sim_gate_release_s", 0.0) or 0.0)
 
     def free_stalled_slot(
         self, channel, end: str, *, reason: str, sct: Optional[float] = None

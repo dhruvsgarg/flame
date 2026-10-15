@@ -78,6 +78,8 @@ A new failure mode adds a check here in the same session.
 | PL16 | foreign GPU jobs: pin pools to GPUs nobody else uses (`GPU_IDS`), not to "free right now" | `nvidia-smi --query-compute-apps=pid --format=csv` + `ps -o user=`; watch restarts | PR31 A1: vLLM on 4-7 restarts every few min, pool took GPU 6 between restarts, trainer OOM aborted the pool |
 | PL17 | a stage's gate must not queue behind its siblings | the gate's smoke is per dataset, timed from its first leg (FX-D154); `ABORT gate` in a stage's pool.log = read P00/pool.log for BLOCKED before blaming code | PR31 A4/A5: smoke timed out waiting on 112 sibling CPUs |
 | PL18 | the launch node runs the planned commit and code key | `git log -1` on that node = the commit the doc names; `code_state.txt` HEAD; each pool's `code_key.txt` = the doc's key (FX-D162) | PR32: jayne launched without the shepherd commit (no G0UC, ECC GPU 1 used) |
+| PL19 | ≤ 2% of train tasks overrun D per leg, real and sim; above it, fewer trainers per GPU | DONE lines / trainer `overran` count (FX-N98) | PR35: speech G1AS sim 10%, real G1A 3.5% |
+| PL20 | AVL_EVAL is eval-only and Felix-only (EV21, once FX-N97 lands) | EV21 in every leg's events | 10-14: baselines trained on mobiperf_3st EVAL devices |
 
 ## Method
 
@@ -118,7 +120,7 @@ python lib/python/examples/async_cifar10/scripts/parity_check.py --real <A> --si
 ## Felix scoreboard
 
 Single source: [FELIX_READINESS.md](FELIX_READINESS.md) → Scoreboard (cell matrix, open reds → root, expected after the next run,
-accuracy table). `scripts/readiness_score.py <pools>`: baseline × dataset × scenario cells green / applicable, worst pair wins, a later
+accuracy table, convergence board A/C/U/S for long runs: FX-N93). `scripts/readiness_score.py <pools>`: baseline × dataset × scenario cells green / applicable, worst pair wins, a later
 pool supersedes, untested counts as not green. INV/EXACT via `--grade <pool> --regrade --max-stage 9`; DIST gated by floors only (Q4).
 
 **Settled.**
@@ -138,10 +140,11 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR35 · next (~10.8 h):** G1AS accuracy six × both (FX-N93.1) + G0U/G0UC, T3/T3C, cifar P7 re-screen (`scripts/run_pr35.py`; FELIX
-  Next steps). C19 stop rule: a red voted by a majority of reals is rooted before PR36.
-- **PR36 · blocked: PR35:** G0T/G0TC both datasets on PR35's code key (FX-D162) → 76/76 on one code state.
-- **Long blocks (G1A pairs, G1U, G1AS grid) · deferred by C18** until 76/76: FELIX FX-N93.
+- **FX-N97 → FX-N96 → FX-N98 · next (new context):** AVL_EVAL eval-only/Felix-only, 3-state syn traces as default, sim GPU scheduling
+  and the no-overrun rule (FELIX Active build "PR36 prerequisites").
+- **PR36 · blocked: those three:** full re-screen on one code key (G0U/G0UC, T3/T3C, G0T/G0TC, G1AS, third reals) → 76/76 + accuracy.
+- **PR37 · blocked: PR36:** 3 h real/replicate/sim pairs, baseline + unavailability + streaming × both datasets → sim-only experiments.
+- **Long blocks (G1U, G1AS grid) · deferred by C18** until PR37: FELIX FX-N93.
 
 **Operator decisions**
 - Claude runs PL3 and launches blocks in tmux `dg_flame`; phase 0 aborts on failure (10-06).
@@ -160,6 +163,7 @@ Parked with the track; board in simulate_fwdllm.md §A.
 - D = our trainer runtime distribution for every baseline, never per-sample; compute > D = rethink for all (ROBUST L36) (10-08).
 - Trainer memory audit to raise n (FX-N84) (10-08).
 - One code state = one `code_key` over run-affecting files (FX-D162); a re-screen may span batches on it (PR35 + PR36) (10-14).
+- Skip PR35b; FX-N97/N96/N98 before PR36; sim ≥ 1× real; ≤ 1-2% overruns; 3 h pairs gate sim-only experiments (10-14).
 
 ---
 

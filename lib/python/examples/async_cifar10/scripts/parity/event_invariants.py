@@ -585,12 +585,13 @@ def ev16_withheld_delivery(run):
     # FX-D51: a sync delivery joins the open round and commits at its close, as in real.
     closes = [] if _is_async(run) else sorted(
         float(e["vclock_now"]) for e in _train_commits(run) if e.get("vclock_now") is not None)
+    release = float(_hp(run, "sim_gate_release_s", "simGateReleaseSeconds") or 0.0)  # FX-D163
     for e in _events(run, "withheld_delivery"):
         held[(e.get("end_id"), round(float(e["sct"]), 3))] = e
         tr = gt.get(e.get("end_id"))
         if tr is not None:
             sct = float(e["sct"])  # = ClientAvailability.compute_delivery_ts
-            want = sct if state_at(tr, sct) != TrainerAvailState.UN_AVL else next_avail_after(tr, sct)
+            want = sct if state_at(tr, sct) != TrainerAvailState.UN_AVL else next_avail_after(tr, sct) + release
             if abs(float(e["delivery_ts"]) - want) > _EPS_S:
                 bad_dts += 1
                 examples.append((e["end_id"][-4:], "delivery_ts!=next_avl", e["delivery_ts"], want))

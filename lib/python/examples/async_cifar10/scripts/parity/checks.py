@@ -541,8 +541,18 @@ def load_run_dir(run_dir: str) -> tuple:
     agg_data["training_delay_factor"], agg_data["training_delay_floor_s"] = \
         _load_training_delay_config(run_dir)
     agg_data["task_timeout_s"] = _load_task_timeout_s(run_dir)
+    agg_data["async_stack"] = _async_stack(run_dir)
     _mark_stall_causes(agg_data, trainer_data, run_dir)
     return agg_data, trainer_data
+
+
+def _async_stack(run_dir: str) -> Optional[bool]:
+    """True for the asyncfl stack (fedbuff optimizer: felix, fedbuff); None if the config is unreadable."""
+    try:
+        with open(os.path.join(run_dir, "aggregator_config.json")) as f:
+            return str(json.load(f).get("optimizer", {}).get("sort", "")).lower() == "fedbuff"
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
 
 
 _GATED_SEND_S = 0.5  # a real send held this long at the send-gate is a withheld delivery
@@ -552,11 +562,7 @@ def _mark_stall_causes(agg_data: dict, trainer_data: dict, run_dir: str) -> None
     """FX-N62: stamp `stall_cause` on each sync train round that waited on an abandon or on a withheld (send-gated)
     update of its own version among its contributors (sim `withheld_delivery` at staleness 0; real `task_send` gated
     > 0.5 s). A stale gated straggler lands in a round that never waited for it; async rounds stay unstamped."""
-    try:
-        with open(os.path.join(run_dir, "aggregator_config.json")) as f:
-            if str(json.load(f).get("optimizer", {}).get("sort", "")).lower() == "fedbuff":
-                return
-    except (OSError, json.JSONDecodeError, AttributeError):
+    if _async_stack(run_dir) is not False:
         return
     gated = {(e.get("end_id"), e.get("round")) for e in agg_data.get("withheld_deliveries", [])
              if e.get("accepted", True) and not e.get("staleness")}
@@ -2931,6 +2937,16 @@ def _round_axis(*legs: dict) -> bool:
     return all(_progress_axis(leg["agg_rounds"]) == "round" for leg in legs)
 
 
+ASYNC_NO_STALLS = True  # FX-D164; False strips length-only "stalls" from async legs again
+
+
+def _stall_axis(*legs: dict) -> bool:
+    """FX-D164: stall stripping is sync-only; an async gap is trace scarcity (FX-L40), graded raw."""
+    if ASYNC_NO_STALLS and any(leg.get("async_stack") for leg in legs):
+        return False
+    return _round_axis(*legs)
+
+
 def _stall_episodes(adv: list, cut: float = _TIMEOUT_STALL_S, slow: Optional[float] = None) -> list:
     """FX-N62: index lists of timeout stalls: one round >= the cut or stamped with a `stall_cause`, or consecutive slow
     rounds (>= 3x median) that sum past it (a late alive pick splits one 90s stall into pieces, some under the cut)."""
@@ -2974,7 +2990,7 @@ def _skip_if_few_free(result: dict, real_free: list, sim_free: list, n_rounds: i
 
 def _stall_free(adv: list, *legs: dict, drop: Optional[set] = None) -> list:
     """FX-N62: rounds outside every timeout stall; round axis only (a fwdllm data_id is not a round)."""
-    if not _round_axis(*legs):
+    if not _stall_axis(*legs):
         return adv
     if drop is None:
         drop = {i for ep in _stall_episodes(adv, _stall_cut(*legs)) for i in ep}
@@ -3012,7 +3028,7 @@ def _pair_stall_sets(r_adv: list, s_adv: list, cut: float) -> tuple:
 
 def _stall_free_pair(r_adv: list, s_adv: list, real: dict, sim: dict) -> tuple:
     """FX-N62 + FX-D157: (real, sim) stall-free rounds with matched episode counts."""
-    if not _round_axis(real, sim):
+    if not _stall_axis(real, sim):
         return r_adv, s_adv
     r_drop, s_drop = _pair_stall_sets(r_adv, s_adv, _stall_cut(real, sim))
     return _stall_free(r_adv, real, sim, drop=r_drop), _stall_free(s_adv, real, sim, drop=s_drop)
@@ -3028,7 +3044,7 @@ def _adv_to_n(agg_rounds: list, prog_fn, N, time_fn) -> list:
 def _stall_s_to_n(real: dict, sim: dict, prog_fn, N, real_time_fn, sim_time_fn) -> tuple:
     """FX-N62: (real, sim) timeout-stall seconds (excess over the median round) up to N, stall sets pair-matched
     (FX-D157/D159); K3s owns the stall rate."""
-    if not _round_axis(real, sim):
+    if not _stall_axis(real, sim):
         return 0.0, 0.0
     cut = _stall_cut(real, sim)
     advs = (_adv_to_n(real["agg_rounds"], prog_fn, N, real_time_fn),
@@ -3039,7 +3055,7 @@ def _stall_s_to_n(real: dict, sim: dict, prog_fn, N, real_time_fn, sim_time_fn) 
 def _few_free_note(real: dict, sim: dict, real_adv: list, sim_adv: list) -> Optional[str]:
     """FX-D119: too few stall-free rounds = no gradeable stall-free time; the note says so, else None.
     FX-D139: same bar as throughput, min(10, rounds)."""
-    if not _round_axis(real, sim) or not real_adv or not sim_adv:
+    if not _stall_axis(real, sim) or not real_adv or not sim_adv:
         return None
     probe: dict = {}
     _skip_if_few_free(probe, *_stall_free_pair(real_adv, sim_adv, real, sim),
@@ -3451,7 +3467,7 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
     _few = _few_free_note(real, sim, r["rounds"], s["rounds"])
     if _few:  # FX-D119
         return {"ok": True, "tier": "EXACT", "status": "SKIP", "note": _few}
-    if _round_axis(real, sim):  # FX-N62: stall time out of the clock span, at round level (counts matched, FX-D157)
+    if _stall_axis(real, sim):  # FX-N62: stall time out of the clock span, at round level (counts matched, FX-D157)
         cut = _stall_cut(real, sim)
         for side_, drop in zip((r, s), _pair_stall_sets(r["rounds"], s["rounds"], cut)):
             side_["adv"] = (side_["span"] - _stall_excess_s(side_["rounds"], cut, drop)) / side_["cycles"]

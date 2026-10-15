@@ -60,3 +60,36 @@ _meta:
   - run_20261011_130749_gs_CHG_dbg_google_speech_feddance_n100_alpha0.1_syn_0_stream_real
   - run_20261011_132131_gs_CHG_dbg_google_speech_oort_n100_alpha0.1_syn_0_stream_real
   - run_20261011_132206_gs_CHG_dbg_google_speech_refl_n100_alpha0.1_syn_0_stream_real
+  gate_release:
+    dataset: google_speech
+    harness: gpu
+    host: jayne
+    commit: 4303d3a91
+    date: '2026-10-14'
+    tool: profile_felix_charges.py
+    runs:
+    - run_20261014_055147_gs_G0U_mobiperf_3st_dbg_google_speech_fedbuff_n100_alpha0.1_mobiperf_3st_stream_real
+    - run_20261014_081223_gs_G0U_syn_50_dbg_google_speech_felix_n100_alpha0.1_syn_50_stream_real
+    - run_20261014_085529_gs_G0U_syn_50_dbg_google_speech_feddance_n100_alpha0.1_syn_50_stream_real
+    - run_20261014_092754_gs_G0U_syn_50_dbg_google_speech_fedbuff_n100_alpha0.1_syn_50_stream_real
+    - run_20261014_094950_gs_G0U_syn_50s_dbg_google_speech_oort_n100_alpha0.1_syn_50_stream_real
+    - run_20261014_100318_gs_G0U_syn_50s_dbg_google_speech_oort_star_n100_alpha0.1_syn_50_stream_real
+    - run_20261014_102622_gs_G0U_mobiperf_3st_dbg_google_speech_felix_n100_alpha0.1_mobiperf_3st_stream_real
+    - run_20261014_104009_gs_G0U_syn_50_dbg_google_speech_refl_n100_alpha0.1_syn_50_stream_real
+    - run_20261014_111459_gs_G0U_mobiperf_3st_dbg_google_speech_refl_n100_alpha0.1_mobiperf_3st_stream_real
+gate_release:
+  asyncfl:
+    mean_s: 0.5872
+    p50_s: 0.5435
+    n: 172
+    charge: true
+  fedavg:
+    mean_s: 0.2519
+    p50_s: 0.238
+    n: 19
+    charge: true
+  oort_sync:
+    mean_s: 0.2426
+    p50_s: 0.2254
+    n: 52
+    charge: true
