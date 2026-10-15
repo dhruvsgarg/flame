@@ -15,6 +15,8 @@ import os
 
 # single-column width for a 2-column ACM/IEEE-style layout (inches)
 COL_WIDTH_IN = 3.35
+# full text width (both columns) for multi-panel rows
+TEXT_WIDTH_IN = 7.0
 # default aspect (height / width) for a line/CDF panel
 DEFAULT_ASPECT = 0.66
 

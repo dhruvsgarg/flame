@@ -14,7 +14,7 @@ the paper, not to represent any real experiment.
 
     python preview_palette.py                          # every registered baseline
     python preview_palette.py --baselines fwdllm,fluxtune
-    python preview_palette.py --manifest figs_main_v2.yaml   # that manifest's set
+    python preview_palette.py --manifest figs_e2e.yaml   # that manifest's arms
 """
 
 from __future__ import annotations
@@ -40,7 +40,12 @@ def _load_manifest_keys(path: str) -> list[str]:
     import yaml
     with open(path) as fh:
         manifest = yaml.safe_load(fh) or {}
-    return list((manifest.get("runs") or {}).keys())
+    keys = []
+    for cell in manifest.get("cells") or []:
+        keys += list((cell.get("arms") or {}).keys())
+    for g in manifest.get("groups") or []:
+        keys += [a["key"] for a in g.get("arms") or []]
+    return list(dict.fromkeys(keys))
 
 
 # --------------------------------------------------------------------------- #
@@ -149,8 +154,8 @@ def main() -> int:
                     help="comma list of baseline keys (default: every key in "
                          "plotlib.baselines.BASELINES)")
     ap.add_argument("--manifest", default=None,
-                    help="baseline set = this figs manifest's `runs:` keys, "
-                         "instead of the full registry (e.g. figs_main_v2.yaml)")
+                    help="baseline set = this figs manifest's arm keys, "
+                         "instead of the full registry (e.g. figs_e2e.yaml)")
     ap.add_argument("--charts", default="line,scatter,bar",
                     help="comma list of chart types (default: all three)")
     ap.add_argument("--out-root", default=os.path.join(HERE, "palette_preview"),

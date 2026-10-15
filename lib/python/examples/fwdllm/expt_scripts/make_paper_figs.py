@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
-"""Render the SOCC-2026 paper figures from a baseline→run-dir mapping.
+"""Render the FluxTune paper figures from a manifest (EXPERIMENTS.md §7).
 
-The mapping is data: `figs.yaml` maps each baseline to a run dir, overridable with
-`--run KEY=PATH`. Missing baselines are skipped. Output goes straight into
-`paper_figs/` (stable basenames, overwritten each render) + a manifest.json.
+    python make_paper_figs.py --manifest figs_e2e.yaml
+    python make_paper_figs.py --manifest figs_ablation.yaml
+    python make_paper_figs.py --manifest figs_availability.yaml
+    python make_paper_figs.py --manifest figs_e2e.yaml --synthetic   # layout preview
 
-    python make_paper_figs.py [--run fluxtune=/data/run_...] [--figures e1_acc_vs_time,...]
+Manifest kinds:
+  e2e       cells: [{id, label, target_acc, n_clients, arms: {key: [run_dir, ...]}}]
+            -> <prefix>_<cell>.pdf per cell, <prefix>_grid.pdf, and figures: b1/b2/b3 per cell
+  ablation  cell: {...}; groups: [{id, title, figures, arms: [{key, label, sync, runs}]}]
+            -> c_<group>.pdf (+ c_<group>_step_size.pdf if listed)
+Each run list is one dir per seed. Empty lists are skipped. Writes summary.csv + manifest.json.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
@@ -21,13 +28,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-from plotlib import baselines as B          # noqa: E402
-from plotlib import figures as F            # noqa: E402
+from plotlib import paper as P              # noqa: E402
 from plotlib import reducers as R           # noqa: E402
 from plotlib import style as S              # noqa: E402
+from plotlib import synthetic as SY         # noqa: E402
 
-# run dirs in the manifest are resolved relative to the fwdllm example dir
-EXAMPLE_DIR = os.path.abspath(os.path.join(HERE, ".."))
+EXAMPLE_DIR = os.path.abspath(os.path.join(HERE, ".."))   # run dirs resolve from here
+E2E_FIGS = {"b1": P.fig_b1_participation, "b2": P.fig_b2_diversity, "b3": P.fig_b3_progression}
 
 
 def _resolve(path: str) -> str:
@@ -37,140 +44,136 @@ def _resolve(path: str) -> str:
         cand = os.path.join(base, path)
         if os.path.exists(cand):
             return os.path.abspath(cand)
-    return os.path.abspath(os.path.join(EXAMPLE_DIR, path))  # best effort
+    return os.path.abspath(os.path.join(EXAMPLE_DIR, path))
 
 
-def _load_manifest(path: str) -> dict:
-    if not path or not os.path.exists(path):
-        return {}
-    try:
-        import yaml
-        with open(path) as fh:
-            return yaml.safe_load(fh) or {}
-    except Exception as e:  # noqa: BLE001
-        print(f"  [paper-figs] could not read manifest {path}: {e}", file=sys.stderr)
-        return {}
+def _load_runs(key, paths, args, cache):
+    out = []
+    for p in paths or []:
+        rp = _resolve(p)
+        if rp not in cache:
+            cache[rp] = R.load_run(rp, key=key, post_peak_grace_s=args.grace_s,
+                                   cutoff_mode=args.cutoff_mode)
+        rr = cache[rp]
+        if rr is None or not rr.evals:
+            print(f"  [paper-figs] WARN no usable telemetry: {key} {p}", file=sys.stderr)
+            continue
+        out.append(rr)
+    return out
+
+
+def _build_arms(specs, args, cache, n_clients, champion):
+    """specs: list of (key, label, sync, run_paths). Synthetic mode fakes 3 seeds per arm."""
+    arms = []
+    for i, (key, label, sync, paths) in enumerate(specs):
+        st = P.arm_style(key, label, i, len(specs), sync=bool(sync))
+        if args.synthetic:
+            runs = SY.fake_arm_runs(key, i, len(specs), n_clients=n_clients or 100,
+                                    champion=champion)
+        else:
+            runs = _load_runs(key, paths, args, cache)
+        if not runs:
+            print(f"  [paper-figs] missing runs: {key}")
+        arms.append(P.Arm(key=key, label=st.label, style=st, runs=runs))
+    return arms
+
+
+def _save(fig, out_dir, name, args, written):
+    if fig is None:
+        print(f"  [paper-figs] {name}: no data — skipped")
+        return
+    if args.synthetic:
+        P.watermark(fig)
+    S.save_pdf(fig, out_dir, name)
+    written.append(name)
+
+
+def render_e2e(man, args, out_dir, cache, written, rows):
+    opts = _opts(man, args)
+    prefix = man.get("prefix", "e2e")
+    figs = man.get("figures", ["row", "grid"])
+    grid = []
+    for cell in man.get("cells", []):
+        specs = [(k, None, k.startswith("fwdllm"), v) for k, v in (cell.get("arms") or {}).items()]
+        arms = _build_arms(specs, args, cache, cell.get("n_clients"), opts["champion"])
+        grid.append((cell, arms))
+        live = [a for a in arms if a.runs]
+        rows += P.summary_rows(prefix, cell, live, opts)
+        if "row" in figs:
+            _save(P.fig_e2e_row(live, cell, opts), out_dir, f"{prefix}_{cell['id']}", args, written)
+        for f in figs:
+            if f in E2E_FIGS and live:
+                _save(E2E_FIGS[f](live, cell, opts), out_dir, f"{f}_{cell['id']}", args, written)
+    if "grid" in figs:
+        _save(P.fig_e2e_grid(grid, opts), out_dir, f"{prefix}_grid", args, written)
+
+
+def render_ablation(man, args, out_dir, cache, written, rows):
+    opts = _opts(man, args)
+    cell = man.get("cell", {})
+    for g in man.get("groups", []):
+        specs = [(a["key"], a.get("label"), a.get("sync", False), a.get("runs"))
+                 for a in g.get("arms", [])]
+        arms = _build_arms(specs, args, cache, cell.get("n_clients"), opts["champion"])
+        live = [a for a in arms if a.runs]
+        rows += P.summary_rows(f"c_{g['id']}", cell, live, opts)
+        figs = g.get("figures", ["group"])
+        if "group" in figs:
+            _save(P.fig_c_group(live, cell, opts, title=g.get("title")), out_dir,
+                  f"c_{g['id']}", args, written)
+        if "step_size" in figs:
+            _save(P.fig_c_step_size(live, cell, opts), out_dir,
+                  f"c_{g['id']}_step_size", args, written)
+
+
+def _opts(man, args):
+    return {"consecutive": int(man.get("tta_consecutive", 1)),
+            "smooth": args.smooth,
+            "baseline": man.get("baseline", "fwdllm"),
+            "champion": man.get("champion", "fluxtune")}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--manifest", default=os.path.join(HERE, "figs.yaml"),
-                    help="baseline→run-dir manifest (default: expt_scripts/figs.yaml)")
-    ap.add_argument("--run", action="append", default=[], metavar="KEY=PATH",
-                    help="add/override one baseline's run dir (repeatable)")
-    ap.add_argument("--out-root", default=os.path.join(HERE, "paper_figs"),
-                    help="output dir (flat, overwritten each render)")
-    ap.add_argument("--figures", default=None,
-                    help="comma list of figure names (default: all)")
-    ap.add_argument("--target-acc", type=float, default=None)
-    ap.add_argument("--baseline-key", default=None,
-                    help="'true baseline' for the E1/E3 speedup callouts "
-                         "(default: fwdllm, or the manifest's speedup_baseline)")
-    ap.add_argument("--champion-key", default=None,
-                    help="our system for the E1/E3 speedup callouts "
-                         "(default: fluxtune, or the manifest's speedup_champion)")
-    ap.add_argument("--smooth", type=float, default=0.7,
-                    help="EMA line-smoothing factor ∈ [0,1) for learning curves "
-                         "(visual only; 0 = raw). Default 0.7")
-    ap.add_argument("--loss-plateau-rel", type=float, default=0.01,
-                    help="cut each run at its last cumulative test-loss drop of this "
-                         "relative size — the deterministic end of productive "
-                         "learning (default 0.01 = 1%%; the stall-guard rule)")
-    ap.add_argument("--post-peak-grace-min", type=float, default=0.0,
-                    help="minutes of tail to keep past the loss-plateau point "
-                         "(default 0 — the plateau is deterministic, no buffer needed)")
-    ap.add_argument("--no-cutoff", action="store_true",
-                    help="disable the cutoff (use full telemetry)")
-    ap.add_argument("--cutoff-mode", choices=["peak_acc", "loss_plateau"],
-                    default="peak_acc",
-                    help="where to clip each run: 'peak_acc' (default) at its "
-                         "highest-accuracy eval — every baseline stops very close "
-                         "to its best accuracy, clipping post-peak drift/divergence; "
-                         "'loss_plateau' at the last significant test-loss drop. "
-                         "A run that never learned (flat loss) is never clipped.")
+    ap.add_argument("--manifest", required=True)
+    ap.add_argument("--out-root", default=None,
+                    help="output dir (default: paper_figs/<manifest stem>)")
+    ap.add_argument("--synthetic", action="store_true",
+                    help="fake 3 seeds per arm to preview layouts (watermarked)")
+    ap.add_argument("--smooth", type=float, default=0.6, help="EMA for curves (visual only)")
+    ap.add_argument("--cutoff-mode", choices=["none", "peak_acc", "loss_plateau"],
+                    default="none", help="clip each run's tail (default: full run)")
     args = ap.parse_args()
-    grace_s = None if args.no_cutoff else args.post_peak_grace_min * 60.0
+    args.grace_s = None if args.cutoff_mode == "none" else 0.0
+    args.cutoff_mode = "peak_acc" if args.cutoff_mode == "none" else args.cutoff_mode
 
-    manifest = _load_manifest(args.manifest)
-    runs_map = dict(manifest.get("runs", {}) or {})
-    target = args.target_acc if args.target_acc is not None else manifest.get("target_acc")
-    baseline_key = args.baseline_key or manifest.get("speedup_baseline") or "fwdllm"
-    champion_key = args.champion_key or manifest.get("speedup_champion") or "fluxtune"
-    savings_from = manifest.get("bandwidth_savings_from") or "fwdllm"
-    savings_to = manifest.get("bandwidth_savings_to") or "felix_round"
-    for spec in args.run:                      # CLI overrides the manifest
-        if "=" not in spec:
-            print(f"  [paper-figs] ignoring malformed --run '{spec}' (want KEY=PATH)",
-                  file=sys.stderr)
-            continue
-        k, v = spec.split("=", 1)
-        runs_map[k.strip()] = v.strip()
-    if not runs_map:
-        print("  [paper-figs] no baselines mapped — populate figs.yaml or pass --run",
-              file=sys.stderr)
-        return 1
-
-    # load each mapped run (streaming); skip + warn on missing/empty telemetry
-    loaded = {}
-    for key in B.ordered(runs_map.keys()):
-        rr = R.load_run(_resolve(runs_map[key]), key=key, post_peak_grace_s=grace_s,
-                        loss_plateau_rel=args.loss_plateau_rel,
-                        cutoff_mode=args.cutoff_mode)
-        if rr is None or not rr.evals:
-            print(f"  [paper-figs] WARN no usable telemetry for '{key}' "
-                  f"({runs_map[key]}) — skipping", file=sys.stderr)
-            continue
-        loaded[key] = rr
-        cut = " (no cutoff — never learned)" if rr.cutoff_ts is None else (
-            f", cut @{args.cutoff_mode} {(rr.cutoff_ts - rr.t0)/3600:.2f}h")
-        print(f"  [paper-figs] loaded {key}: {len(rr.evals)} evals, "
-              f"{rr.n_trainers} trainers, max_acc={100*(rr.max_accuracy() or 0):.2f}%{cut}")
-    if not loaded:
-        print("  [paper-figs] nothing loaded — nothing to plot.", file=sys.stderr)
-        return 1
-
-    ordered_runs = [loaded[k] for k in B.ordered(loaded.keys())]
-    which = ([f.strip() for f in args.figures.split(",")]
-             if args.figures else list(F.FIG_BUILDERS))
+    import yaml
+    with open(args.manifest) as fh:
+        man = yaml.safe_load(fh) or {}
+    stem = os.path.splitext(os.path.basename(args.manifest))[0]
+    out_dir = S.render_outdir(args.out_root or os.path.join(HERE, "paper_figs", stem))
 
     S.use_paper_style()
-    out_dir = S.render_outdir(args.out_root)
-    written = []
-    for name in which:
-        builder = F.FIG_BUILDERS.get(name)
-        if builder is None:
-            print(f"  [paper-figs] unknown figure '{name}' — skipping", file=sys.stderr)
-            continue
-        fig = builder(ordered_runs, target=target, smooth=args.smooth,
-                     baseline_key=baseline_key, champion_key=champion_key,
-                     savings_from=savings_from, savings_to=savings_to)
-        if fig is None:
-            print(f"  [paper-figs] {name}: no data across baselines — skipped")
-            continue
-        S.save_pdf(fig, out_dir, name)
-        written.append(name)
+    written, rows, cache = [], [], {}
+    kind = man.get("kind", "e2e")
+    if kind == "e2e":
+        render_e2e(man, args, out_dir, cache, written, rows)
+    elif kind == "ablation":
+        render_ablation(man, args, out_dir, cache, written, rows)
+    else:
+        print(f"  [paper-figs] unknown manifest kind '{kind}'", file=sys.stderr)
+        return 1
 
+    if rows:
+        with open(os.path.join(out_dir, "summary.csv"), "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
     with open(os.path.join(out_dir, "manifest.json"), "w") as fh:
-        json.dump({
-            "runs": {k: loaded[k].run_dir for k in loaded},
-            "baselines_order": B.ordered(loaded.keys()),
-            "target_acc": target,
-            "speedup_baseline": baseline_key,
-            "speedup_champion": champion_key,
-            "bandwidth_savings_from": savings_from,
-            "bandwidth_savings_to": savings_to,
-            "figures": written,
-            "system_label": B.SYSTEM_LABEL,
-            "smooth": args.smooth,
-            "cutoff_mode": None if args.no_cutoff else args.cutoff_mode,
-            "loss_plateau_rel": None if args.no_cutoff else args.loss_plateau_rel,
-            "post_peak_grace_min": None if args.no_cutoff else args.post_peak_grace_min,
-            "cutoff_h": {k: (None if loaded[k].cutoff_ts is None
-                             else round((loaded[k].cutoff_ts - loaded[k].t0) / 3600, 3))
-                         for k in loaded},
-        }, fh, indent=2)
-
+        json.dump({"manifest": os.path.abspath(args.manifest), "synthetic": args.synthetic,
+                   "figures": written, "runs": sorted({r["run_dir"] for r in rows})},
+                  fh, indent=2)
     print(f"\n  wrote {len(written)} figure(s) → {out_dir}")
     return 0
 

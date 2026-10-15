@@ -1,25 +1,61 @@
-# SOCC-2026 FluxTune opt-ablation figure manifest — the 2×2 over the two
-# learning-affecting opts (Opt-2 var-stop × Opt-3 grad-aware), C1+Opt-1 held
-# constant. See EXPTS_CHARTER.md "Four planned full runs" and EXPERIMENTS.md §10.
-#
-# Landed N=100, α=1 (dir names say alpha0p1 — MISLABELED; the loaded-partition log
-# line reads niid_label_clients=100_alpha=1), target 0.84, launched 2026-07-08.
-# Identified by config (aggregator_config.json): var_stopping_policy × agg_rate type.
-#
-# Render:  python make_paper_figs.py --manifest figs_ablation.yaml
-# Keys are INTERNAL; blue-shade styles/labels live in plotlib/baselines.py.
+# [C1-C3] ablation figures (EXPERIMENTS.md §4 C1-C3). DistilBERT · AG News, sim, >= 3 seeds.
+# Arm ids match EXPERIMENTS.md tables; `sync: true` = hollow markers. A0/A6 reuse the
+# figs_e2e distilbert_agnews runs.
+#   python make_paper_figs.py --manifest figs_ablation.yaml [--synthetic]
+kind: ablation
+baseline: fwdllm
+champion: fluxtune
+tta_consecutive: 1
+cell:
+  id: distilbert_agnews
+  label: "DistilBERT · AG News"
+  n_clients: 100
+  target_acc: 0.80          # pencilled (EXPERIMENTS.md §2)
 
-runs:
-  # R1 FluxTune-base — var-stop OFF, agg-rate=new (neither Opt-2 nor Opt-3).
-  # C1 guided JVP perturbations + Opt-1 ON (as in all four). NOT FeLiX: it does
-  # forward-mode LLM perturbation fine-tuning, only borrowing FeLiX's scalar agg rate.
-  fluxtune_r1_base:      experiments/run_20260708_025543_fluxtune_n100_smoke_syn_0_real
-  # R2 + var-stop (Opt-2) — var-stop=plateau, agg-rate=new
-  fluxtune_r2_varstop:   experiments/run_20260708_025616_fluxtune_n100_smoke_syn_0_real
-  # R3 + grad-aware (Opt-3) — var-stop OFF, agg-rate=grad_aware
-  fluxtune_r3_gradaware: experiments/run_20260708_025636_fluxtune_n100_smoke_syn_0_real
-  # R4 all (= full FluxTune default) — var-stop=plateau, agg-rate=grad_aware
-  fluxtune_r4_full:      experiments/run_20260708_025716_fluxtune_n100_smoke_syn_0_real
+groups:
+  - id: phase_a                       # C1: FwdLLM + one concept
+    title: "FwdLLM + one FluxTune concept"
+    arms:
+      - {key: fwdllm,       label: "FwdLLM (A0)",        sync: true, runs: []}
+      - {key: a1_probe_mean, label: "+ mean of P probes", sync: true, runs: []}
+      - {key: a2_trust,     label: "+ trust-ratio step", sync: true, runs: []}
+      - {key: a3_pool,      label: "+ fixed pool",       sync: true, runs: []}
+      - {key: a4_async,     label: "+ async",                        runs: []}
+      - {key: a5_oort,      label: "+ async + Oort",                 runs: []}
+      - {key: fluxtune,     label: "FluxTune (A6)",                  runs: []}
 
-target_acc: 0.84
-window: 20
+  - id: phase_b                       # C2: cumulative ladder (headline ablation)
+    title: "Cumulative: FwdLLM → FluxTune"
+    arms:
+      - {key: fwdllm,   label: "FwdLLM",            sync: true, runs: []}
+      - {key: b1_e1,    label: "+ mean probes",     sync: true, runs: []}
+      - {key: b2_e2,    label: "+ trust ratio",     sync: true, runs: []}
+      - {key: b3_e3,    label: "+ fixed pool",      sync: true, runs: []}
+      - {key: b4_async, label: "+ async",                       runs: []}
+      - {key: fluxtune, label: "+ Oort = FluxTune",             runs: []}
+
+  - id: agg_criteria                  # C3a: when to commit
+    title: "Aggregation criterion"
+    arms:
+      - {key: ac_var,     label: "variance ≤ thr (FwdLLM)", runs: []}
+      - {key: ac_cap,     label: "hard stop @ I iters",     runs: []}
+      - {key: ac_snr,     label: "SNR target (n_target)",   runs: []}
+      - {key: fluxtune,   label: "fixed pool N=50",         runs: []}
+
+  - id: update_utility                # C3b: how probes/uploads are combined
+    title: "Update combination"
+    arms:
+      - {key: uu_align,   label: "grad-aligned (FwdLLM)", runs: []}
+      - {key: uu_cos,     label: "cos-sim weighted",      runs: []}
+      - {key: uu_top1,    label: "top-1 probe",           runs: []}
+      - {key: uu_random,  label: "1 random probe",        runs: []}
+      - {key: fluxtune,   label: "mean of P probes",      runs: []}
+
+  - id: step_size                     # C3c: server step and its schedule
+    title: "Server step size"
+    figures: [group, step_size]       # step_size needs server_update_audit: true
+    arms:
+      - {key: ss_sgd,     label: "SGD, tuned η",        runs: []}
+      - {key: ss_const,   label: "trust ratio, const ρ", runs: []}
+      - {key: ss_rm,      label: "trust ratio, ρ0·t^−a", runs: []}
+      - {key: fluxtune,   label: "trust ratio, ρ0/Φ",    runs: []}
