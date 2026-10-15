@@ -16,8 +16,7 @@
   [simulate_fwdllm.md](../fwdllm/simulate_fwdllm.md) (§A, §B.1, §D, §E, §F) · design, charge registry →
   [FWDLLM_DESIGN.md](../fwdllm/FWDLLM_DESIGN.md) · training stability →
   [fluxtune_contributions.md](../fwdllm/fluxtune_contributions.md) §8 · experiments →
-  [EXPERIMENTS.md](../paper_expts_fluxtune/EXPERIMENTS.md), [EXPTS_CHARTER.md](../paper_expts_fluxtune/EXPTS_CHARTER.md),
-  [BRIDGE_DESIGN.md](../paper_expts_fluxtune/BRIDGE_DESIGN.md) · identity → [BASELINES.md](BASELINES.md).
+  [EXPERIMENTS.md](../paper_expts_fluxtune/EXPERIMENTS.md) (live paper plan) · identity → [BASELINES.md](BASELINES.md).
 
 ---
 
@@ -43,6 +42,10 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 
 ## Next steps (persistent queue — resumes after Felix)
 
+- **FT-N16 · Measured packing for FluxTune blocks · todo (on resume).** PARITY C21/C22 and Throughput: screen each block's legs at
+  production density, record per-leg CPU/RAM/GPU footprints, pack with `--gpu-share`/`--lease-from-telemetry`. *Exit:* a FluxTune block's
+  `--util` record in this doc before its first long run.
+
 - **FT-N15 · Baseline fidelity for the fwdllm family · todo (after Felix).** Adopt ROBUST L33-L37: add fwdllm baselines to
   `baseline_reference.yaml` (local work, lr/batch, server step, K/N >= 5%, cited from their papers/code); check compute < D per setting.
   *Exit:* `test_baseline_reference.py` covers every FluxTune baseline.
@@ -67,17 +70,17 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
   on `_oracular`'s node. Prediction: 38 bins / 9.64 iters per bin = the knob matters; 40 / 9.20 = the host. If it isn't inert, un-pool `fedbuff_it`.
 - **FT-N3 · Baseline wiring leftovers · todo.** (a) Confirm that the 5 new baseline keys and the
   `fwdllm_plus` → `fwdllm_it_*` rename reached code, tests, smoke YAMLs, `plotlib/baselines.py` legends and
-  `run_parity.py` (BRIDGE_DESIGN steps 1-5 say they did). *Exit:* a repo-wide grep for the old keys finds
+  `run_parity.py`. *Exit:* a repo-wide grep for the old keys finds
   only historical hits; `test_baselines.py` + `test_config_generator.py` are green. (b) Retune the
   placeholder `learning_rate: 0.075` for `felix_round`/`felix_it` (`TODO(verify)` in `baselines.yaml`).
-  (c) BRIDGE_DESIGN step 6: an N=10 sim smoke per new baseline. Keep `fluxtune_dynkc` parked, not deleted.
+  (c) An N=10 sim smoke per new baseline. Keep `fluxtune_dynkc` parked, not deleted.
 - **FT-N4 · Training stability I-1 under v2 · todo** (owned by fluxtune_contributions.md §8). *Exit:* a 4h+
   run holds past the lap boundary. Gates every long experiment run.
 - **FT-N5 · Unavailability for the grad loop · blocked: Felix FX-N6 audit + FX-N9.** Reuse the audited
   `ClientAvailability` path; harness first; syn_20_3st → syn_50_3st → mobiperf_3st. *Exit:* A1-A8/K11 + the syn_0
   board green; withheld gradients delivered, not dropped.
-- **FT-N6 · Paper experiments E1-E5, sim-only · blocked: FT-N1, FT-N4** (and FT-N5 for the unavailability
-  figures).
+- **FT-N6 · Paper experiments, sim-only · blocked: FT-N1, FT-N4** (FT-N5 for C4 availability). Queue and figures:
+  [EXPERIMENTS.md](../paper_expts_fluxtune/EXPERIMENTS.md) §3.
 - **FT-N7 · Re-enforce `fedbuff_it_*` `utility` · todo.** Its sim floor (0.314) swallows the 0.2 gate; find
   why two `_oracular` sim legs differ that much. More legs won't help.
 - **FT-N8 · Promote `sim_sct_ordered_drain` + `sim_model_dispatch_queue` · todo.** Currently fluxtune-only;
