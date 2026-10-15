@@ -29,3 +29,18 @@ def test_deterministic_and_default_on():
     delays = {1: 10.0, 2: 10.0, 3: 50.0, 4: 60.0, 5: 20.0}
     assert balanced_gpu_placement(delays, [0, 1]) == balanced_gpu_placement(dict(reversed(delays.items())), [0, 1])
     assert ExecutionConfig().gpu_placement == "balanced"
+
+
+def test_trainer_caps_fill_uneven_gpu_gaps():
+    # FX-N100: a speech leg fills the room left beside cifar legs (caps from free memory), still balanced by rate.
+    from flame.launch.spawner import parse_gpu_trainer_caps
+    rng = random.Random(1)
+    delays = {t: rng.choice([10, 20, 35, 65]) for t in range(1, 51)}
+    caps = parse_gpu_trainer_caps("0:10,3:25,5:15")
+    place = balanced_gpu_placement(delays, [0, 3, 5], caps)
+    counts = {g: list(place.values()).count(g) for g in (0, 3, 5)}
+    assert counts == {0: 10, 3: 25, 5: 15}
+    assert balanced_gpu_placement(delays, [0, 3, 5], None) == balanced_gpu_placement(delays, [0, 3, 5])  # off: unchanged
+    import pytest
+    with pytest.raises(ValueError):
+        balanced_gpu_placement(delays, [0, 3], {0: 10, 3: 10})

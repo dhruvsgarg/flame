@@ -529,7 +529,7 @@ def test_measured_lease_sizes_pairs_from_their_p95(monkeypatch):
     hist[key("felix", "real")] = [6.0]
     got = {(j.baseline, j.mode): j.cpus for j in pool.build_jobs([ph], 1.0, 1, hist)}
     assert got[("felix", "real")] == 8  # ceil(1.25 x 6 / 2) = 4 cores
-    assert got[("felix", "sim")] == formula[next(j.jid for j in jobs if j.baseline == "felix" and j.mode == "sim")]  # sims: formula
+    assert got[("felix", "sim")] == min(8, formula[next(j.jid for j in jobs if j.baseline == "felix" and j.mode == "sim")])  # sims >= 4 cores
     assert got[("oort", "real")] == 4  # floor: 2 physical cores
     hist[pool.margin_key(next(j for j in jobs if j.baseline == "oort"))] = [3.0]
     assert pool.predicted_cores(next(j for j in jobs if j.baseline == "oort" and j.mode == "real"), hist) == pytest.approx(0.3)
@@ -552,3 +552,46 @@ def test_node_load_reads_busy_cores():
     load.tick()
     assert load.ema is None or 0.0 <= load.ema <= load.ncpu
     assert load.runq >= 0.0
+
+
+def test_shared_gpus_pack_by_measured_footprint(tmp_path, monkeypatch):
+    # FX-N100 2: E1 cifar G0U legs peaked 19.8 GB on a 45 GB GPU, so two share one; a third, or an unmeasured leg, does not.
+    monkeypatch.setattr(pool, "GPU_SHARE", 3)
+    a, b = pool.Leases(tmp_path), pool.Leases(tmp_path)
+    fp = (19.8, 1.0)
+    p1 = pool.place_gpus(1, fp, [0, 2], a, {})
+    assert p1 == [(0, "gslot_0_0")] and a.take_all([p1[0][1]])
+    a.put(p1[0][1], "19.8,1.0")
+    p2 = pool.place_gpus(1, fp, [0, 2], b, {})
+    assert p2 == [(2, "gslot_2_0")]  # least committed first
+    b.put("gslot_2_0", "19.8,1.0")
+    assert pool.place_gpus(1, fp, [0, 2], b, {}) in ([(0, "gslot_0_1")], [(2, "gslot_2_1")])  # 39.6 <= 40.5
+    b.put("gslot_0_1", "19.8,1.0")
+    b.put("gslot_2_1", "19.8,1.0")
+    assert pool.place_gpus(1, fp, [0, 2], b, {}) is None  # a third would pass 90%
+    assert pool.place_gpus(1, (pool.GPU_MEM_CAP * pool.GPU_GB, 90.0), [0, 2, 3], b, {}) == [(3, "gslot_3_0")]  # unmeasured: empty GPU
+    assert pool.place_gpus(1, fp, [3], b, {3: 30.0}) is None  # live use counts too
+
+
+def test_gpu_footprint_takes_the_real_and_sim_max():
+    # E2 OOM: a 2.7-min speech sim recorded 14.8 GB/GPU; its real twin (same trainers) peaked at 28.3. One key for both.
+    j = pool.Job("x_sim", "P", "syn_50_3st", "felix", "sim", [], 50, 240, "none", 14, 1.0, 2, dataset="google_speech")
+    twin = pool.Job("x_real", "P", "mobiperf_3st", "felix", "real", [], 50, 900, "none", 14, 1.0, 2, dataset="google_speech")
+    assert pool.gpu_key(j) == pool.gpu_key(twin)
+    hist = {pool.gpu_key(j): [[14.8, 1.1], [28.3, 1.2]]}
+    assert pool.gpu_footprint(j, hist) == (28.3, 1.2)
+    assert pool.gpu_footprint(j, {})[0] == pool.GPU_MEM_CAP * pool.GPU_GB and pool.per_trainer_footprint(j, {}) is None
+
+
+def test_trainers_fill_gaps_beside_other_legs(tmp_path, monkeypatch):
+    # FX-N100: a speech leg (50 x 1.13 GB) splits around a cifar leg's 19.8 GB instead of waiting for two empty GPUs.
+    monkeypatch.setattr(pool, "GPU_SHARE", 3)
+    a, b = pool.Leases(tmp_path), pool.Leases(tmp_path)
+    a.put("gslot_0_0", "19.8,0.0")
+    plan = pool.place_trainers(50, (1.13, 0.0), [0, 2, 3], b, {})
+    gpus = [g for g, *_ in plan]
+    assert gpus[0] == 0 and sum(k for _, k, *_ in plan) == 50  # the partly used GPU is filled first
+    for g, k, _, gb, _ in plan:
+        assert gb <= pool.GPU_MEM_CAP * pool.GPU_GB - (19.8 if g == 0 else 0.0) + 1e-6
+    assert plan[-1][3] >= pool.AGG_GPU_GB  # the aggregator's GPU is last and carries its share
+    assert pool.place_trainers(50, (1.13, 0.0), [0], b, {}) is None  # all or nothing: no partial reservation

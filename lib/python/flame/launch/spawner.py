@@ -209,17 +209,33 @@ class ConfigGenerator:
         return config
 
 
-def balanced_gpu_placement(delays: Dict[int, float], gpu_ids: List[int]) -> Dict[int, int]:
+def balanced_gpu_placement(delays: Dict[int, float], gpu_ids: List[int],
+                           caps: Optional[Dict[int, int]] = None) -> Dict[int, int]:
     """FX-N98: trainer -> GPU, greedy by expected task rate 1/D (fastest first) onto the least-loaded GPU with
-    fewer than ceil(n/G) trainers; round-robin stacked fast trainers on one GPU, which then paced the sim."""
-    cap = -(-len(delays) // len(gpu_ids))
+    fewer than ceil(n/G) trainers; round-robin stacked fast trainers on one GPU, which then paced the sim.
+    `caps` (FX-N100, `FLAME_GPU_TRAINER_CAPS`): per-GPU trainer limits; load is balanced relative to each cap."""
+    if caps:
+        if sum(caps.get(g, 0) for g in gpu_ids) < len(delays):
+            raise ValueError(f"GPU trainer caps {caps} hold fewer than {len(delays)} trainers")
+        cap_of = {g: caps.get(g, 0) for g in gpu_ids}
+        key = lambda g: (load[g] / cap_of[g], count[g] / cap_of[g])
+    else:
+        cap_of = dict.fromkeys(gpu_ids, -(-len(delays) // len(gpu_ids)))
+        key = lambda g: (load[g], count[g])
     load, count, out = {g: 0.0 for g in gpu_ids}, {g: 0 for g in gpu_ids}, {}
     for t in sorted(delays, key=lambda t: (delays[t], t)):
-        g = min((g for g in gpu_ids if count[g] < cap), key=lambda g: (load[g], count[g]))
+        g = min((g for g in gpu_ids if count[g] < cap_of[g]), key=key)
         out[t] = g
         load[g] += 1.0 / max(delays[t], 1e-9)
         count[g] += 1
     return out
+
+
+def parse_gpu_trainer_caps(text: str) -> Optional[Dict[int, int]]:
+    """'0:20,3:15' -> {0: 20, 3: 15}; empty -> None (even split)."""
+    if not text.strip():
+        return None
+    return {int(g): int(c) for g, c in (kv.split(":") for kv in text.split(",") if kv.strip())}
 
 
 class TrainerSpawner:
@@ -450,10 +466,13 @@ class TrainerSpawner:
         meta = getattr(self.config_gen, "metadata", None)  # None: a launcher without a registry stays round-robin
         if self.gpu_placement == "balanced" and self.gpu_ids and meta is not None:
             delays = {t: float(meta.get_trainer_metadata(t)["training_delay_s"]) for t in trainer_ids}
-            self._gpu_of = balanced_gpu_placement(delays, self.gpu_ids)
+            caps = parse_gpu_trainer_caps(os.environ.get("FLAME_GPU_TRAINER_CAPS", ""))
+            self._gpu_of = balanced_gpu_placement(delays, self.gpu_ids, caps)
             load = {g: round(sum(1 / max(delays[t], 1e-9) for t, gg in self._gpu_of.items() if gg == g), 3)
                     for g in self.gpu_ids}
-            print(f"[GPU_PLACEMENT] balanced: task rate (1/D) per GPU {load}")
+            counts = {g: sum(1 for gg in self._gpu_of.values() if gg == g) for g in self.gpu_ids}
+            print(f"[GPU_PLACEMENT] balanced: task rate (1/D) per GPU {load}, trainers per GPU {counts}"
+                  f"{' (caps ' + str(caps) + ')' if caps else ''}")
 
         for trainer_id in trainer_ids:
             trainer_overrides = dict(config_overrides)
