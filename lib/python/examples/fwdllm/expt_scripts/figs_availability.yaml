@@ -13,7 +13,7 @@ cells:
     label: "100% available (syn_0)"
     n_clients: 100
     target_acc: 0.80        # same as figs_e2e distilbert_agnews
-    arms: {fedbuff_round: [], felix_round: [], fluxtune: []}
+    arms: {fwdllm: [], fedbuff_round: [], felix_round: [], fluxtune: []}   # fwdllm = sync reference
   - id: syn_50_3st
     label: "50% unavailable (syn_50_3st)"
     n_clients: 100

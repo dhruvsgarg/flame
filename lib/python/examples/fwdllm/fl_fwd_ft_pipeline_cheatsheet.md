@@ -211,3 +211,39 @@ checks plumbing, not accuracy. What changes:
 - The FD nudge size works out the same as DistilBERT's (chord 0.51), so no FD flag changes.
 
 How to run it, what to read and what to do next: [fl_fwd_ft_smollm2_smoke_plan.md](fl_fwd_ft_smollm2_smoke_plan.md).
+
+## 8. Choosing the pool size N per model (DRAFT, not final)
+
+> **Not final.** A working procedure, not a validated rule. The √p scaling, the ρ band and the distinct-data
+> threshold are untested off DistilBERT. EXPERIMENTS.md §3 P0b must close before any paper run uses it.
+
+N = client gradients pooled per commit (`--pool-target`), not iterations (`I = N/K`). ρ follows from it:
+`ρ = s·√(P·N/p)` ⇔ `N(ρ) = p·(ρ/s)²/P`.
+
+**Key fact:** gradients to reach Φ\*, `G* = 2·lnΦ*·p/(s²·P)`, have no N in them. N only splits that work into
+fewer, larger commits or more, smaller ones. So N is chosen for the system, never tuned for accuracy.
+
+| Step | Rule |
+|---|---|
+| 1. System bounds | `N_min = max(C, 2K)` (staleness ≤ 1, ≥ 2 iterations/commit) · `N_max = min(n, max_iter·K)` (n = clients the node fits) |
+| 2. Step-size band | ρ ∈ [0.03, 0.07] ⇒ N ∈ [N(0.03), N(0.07)] · target `N₀ = 50·√(p/450,340)` (DistilBERT's N = 50 scaled by √p) |
+| 3. Choose | clamp N₀ into the overlap, round to a multiple of K · no overlap, large p: N = N_max, accept ρ < 0.03 · small p: N = N_min, lower P |
+| 4. Data check | passes over data ≈ `G*·bs·d/|D|` (d ≈ 0.77 at N = n, measured) · under ~1 pass with N near n ⇒ N ≈ 0.75·n or raise bs |
+| 5. Derive | `I = N/K` · `T* = 2·lnΦ*/ln(1+ρ²)` · wall ≈ `T*·(t_commit + I·t_iter)` · eval stride ≥ ⌈t_eval/commit time⌉ + 1 |
+| 6. First hour | I exact · distinct clients/pool ÷ N ≥ 0.7 · Φ on `(1+ρ²)^(t/2)` · 0 `eval still running` · commits/h within 15% |
+
+N stays fixed for the whole run. To cut wall time, change p or throughput, not N.
+
+Planned cells (EXPERIMENTS.md §2; s = 1.5, P = 10, Φ\* = 3, K = 10, C = 30, bs = 8):
+
+| Cell | p | n | N | ρ | T\* (commits) | G\* | passes over train set |
+|---|---|---|---|---|---|---|---|
+| DistilBERT · AG News | 450,340 | 100 | 50 | 0.050 | ~880 | 44k | ~2.9 |
+| RoBERTa-large LoRA · Yelp-P | 591,874 | 100 | 60 | 0.048 | ~960 | 58k | ~0.9 ⚠ |
+| SmolLM2-1.7B LoRA · Yahoo | 806,912 | 75 | 70 | 0.044 | ~1,130 | 79k | ~0.45 ⚠ |
+
+⚠ Under one pass: Step 4 says raise bs (to ~16 for Yelp-P, ~24 for Yahoo). Whether more data moves accuracy at
+Φ\* is untested.
+
+Measured inputs (SmolLM2-1.7B, N = 50, 8 h): t_commit 9.2 s, t_iter 5.1 s, full AG News eval 144 s. Clients the
+node fits (8× A40): ~75 for 1.7B (4.2–4.4 GB/trainer); 100 for DistilBERT and RoBERTa (memory allows more).

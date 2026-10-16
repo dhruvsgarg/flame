@@ -21,7 +21,6 @@ groups:
       - {key: a2_trust,     label: "+ trust-ratio step", sync: true, runs: []}
       - {key: a3_pool,      label: "+ fixed pool",       sync: true, runs: []}
       - {key: a4_async,     label: "+ async",                        runs: []}
-      - {key: a5_oort,      label: "+ async + Oort",                 runs: []}
       - {key: fluxtune,     label: "FluxTune (A6)",                  runs: []}
 
   - id: phase_b                       # C2: cumulative ladder (headline ablation)
@@ -31,8 +30,7 @@ groups:
       - {key: b1_e1,    label: "+ mean probes",     sync: true, runs: []}
       - {key: b2_e2,    label: "+ trust ratio",     sync: true, runs: []}
       - {key: b3_e3,    label: "+ fixed pool",      sync: true, runs: []}
-      - {key: b4_async, label: "+ async",                       runs: []}
-      - {key: fluxtune, label: "+ Oort = FluxTune",             runs: []}
+      - {key: fluxtune, label: "+ async = FluxTune",            runs: []}
 
   - id: agg_criteria                  # C3a: when to commit
     title: "Aggregation criterion"

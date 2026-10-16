@@ -139,6 +139,7 @@ B_MAX_PROBE_EVERY=""   # 3.1: re-sense B_max every N commits. 0/unset = off
 B_MAX_PROBE_N=""       # 3.1: held-out samples per probe eval (512)
 B_MAX_POLICY=""        # 3.1: mean|ratchet|anchor -- how successive senses combine
 EVAL_MAX_SAMPLES=""    # agg eval on a fixed subsample of the test set. Unset = full set
+EVAL_EVERY_N_COMMITS="" # commits per agg eval. Unset = yaml value (2)
 B_MAX_PROBE_PHIS=""    # 3.1: comma-separated Phi grid (1.5,2,2.5,3,3.5,4)
 SATURATION_STOP=""     # E: 1 = stop when held-out accuracy stops rising (Prechelt GL). Unset = off
 SAT_STALL_FRAC=""      # E': stall trigger. g=(m_t-m_{t-h})/m_t <= this for `patience` evals.
@@ -202,7 +203,7 @@ usage() {
   echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho-schedule const|rm|landing|pool] [--rho-exp F]" >&2
   echo "          [--b-max F] [--t-res F] [--budget-stop-frac F (0 = off)] [--phi-stop off|log_only|halt] [--phi-stop-threshold F]" >&2
   echo "          [--b-max-probe-every N] [--b-max-probe-n N] [--b-max-probe-phis L]" >&2
-  echo "          [--b-max-policy mean|ratchet|anchor] [--eval-max-samples N]" >&2
+  echo "          [--b-max-policy mean|ratchet|anchor] [--eval-max-samples N] [--eval-every-n-commits N]" >&2
   echo "          [--saturation-stop] [--retention-probe-every N]  (E: the saturation stop; P3': cos(theta_t,theta_0))" >&2
   echo "          [--sat-stall-frac F] [--no-sat-decay]  (stall trigger; drop the GL decay trigger)" >&2
   echo "          [--send-timeout-s S]  (abandon timeout; scale with the delays, e.g. 3600 for 1.7B)" >&2
@@ -271,6 +272,7 @@ while [[ $# -gt 0 ]]; do
     --b-max-policy)         case "$2" in mean|ratchet|anchor) ;; *) echo "ERROR: --b-max-policy must be mean|ratchet|anchor (got '$2')" >&2; exit 2 ;; esac
                             B_MAX_POLICY="$2"; shift 2 ;;
     --eval-max-samples)     EVAL_MAX_SAMPLES="$2"; shift 2 ;;
+    --eval-every-n-commits) EVAL_EVERY_N_COMMITS="$2"; shift 2 ;;
     --saturation-stop)      SATURATION_STOP=1; shift ;;
     --sat-stall-frac)       SAT_STALL_FRAC="$2"; shift 2 ;;
     --send-timeout-s)       SEND_TIMEOUT_S="$2"; shift 2 ;;
@@ -490,7 +492,7 @@ LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
   SEND_TIMEOUT_S="$SEND_TIMEOUT_S" \
   POOL_TARGET="$POOL_TARGET" DYNAMIC_KC="$DYNAMIC_KC" \
   RETENTION_PROBE_EVERY="$RETENTION_PROBE_EVERY" \
-  EVAL_MAX_SAMPLES="$EVAL_MAX_SAMPLES" \
+  EVAL_MAX_SAMPLES="$EVAL_MAX_SAMPLES" EVAL_EVERY_N_COMMITS="$EVAL_EVERY_N_COMMITS" \
   TRAINABLE_SCOPE="$TRAINABLE_SCOPE" COMMIT_GATE="$COMMIT_GATE" GATE_SAFETY_S="$GATE_SAFETY_S" \
   GATE_RHO_REF="$GATE_RHO_REF" COS_GROUND_TRUTH_AUDIT="$COS_GROUND_TRUTH_AUDIT" \
   COS_PROBE_BATCH_SIZE="$COS_PROBE_BATCH_SIZE" COS_PROBE_EVERY="$COS_PROBE_EVERY" \
@@ -554,6 +556,7 @@ SAT_DECAY = env("SAT_DECAY") or ""; POOL_TARGET = env("POOL_TARGET") or ""
 DYNAMIC_KC = env("DYNAMIC_KC") or ""
 RETENTION_PROBE_EVERY = env("RETENTION_PROBE_EVERY") or ""
 EVAL_MAX_SAMPLES = env("EVAL_MAX_SAMPLES") or ""
+EVAL_EVERY_N_COMMITS = env("EVAL_EVERY_N_COMMITS") or ""
 TRAINABLE_SCOPE = env("TRAINABLE_SCOPE") or ""
 COMMIT_GATE = env("COMMIT_GATE") or ""; GATE_SAFETY_S = env("GATE_SAFETY_S") or ""
 GATE_RHO_REF = env("GATE_RHO_REF") or ""
@@ -877,6 +880,8 @@ def patch(exp, run_key, variant, trace):
         h["retention_probe_every"] = int(RETENTION_PROBE_EVERY)
     if EVAL_MAX_SAMPLES:
         h["eval_max_samples"] = int(EVAL_MAX_SAMPLES)
+    if EVAL_EVERY_N_COMMITS:
+        h["eval_every_n_commits"] = int(EVAL_EVERY_N_COMMITS)
     # S-I: BOTH sides build the model, so both need the scope or the aggregator's
     # requires_grad mask disagrees with the trainer's probe mask.
     if TRAINABLE_SCOPE:
