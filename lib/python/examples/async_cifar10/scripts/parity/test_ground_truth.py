@@ -243,3 +243,18 @@ def test_a6_syn0_regression_perfect_fidelity():
     res = trainer_trace_fidelity_parity(trainers, sel, "sim", gt)
     assert res["ok"], res
     assert res["mean_err"] == 0.0
+
+
+def test_a6_ignores_observations_past_the_run_span():
+    # PR36-short: a trainer logs exact transitions after the last train selection (span 130 s); scored on [0, span] only.
+    gt = {"t1_0001": SortedDict({0.0: "AVL_TRAIN", 150.0: "AVL_EVAL", 209.25: "UN_AVL"})}
+    trainers = {"0001": {"avail_change": [
+        _avail_change(1, "AVL_TRAIN", "AVL_TRAIN", 0.0),
+        _avail_change(3, "AVL_TRAIN", "AVL_EVAL", 150.0),
+        _avail_change(3, "AVL_EVAL", "UN_AVL", 209.25),
+    ]}}
+    sel = [_sel(1, 0.0), _sel(2, 130.0)]
+    res = trainer_trace_fidelity_parity(trainers, sel, "sim", gt)
+    assert res["ok"], res
+    assert res["mean_err"] == 0.0
+    assert res["n_spurious_transitions"] == 0

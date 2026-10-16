@@ -1961,8 +1961,13 @@ def commit_visibility_parity(real: dict, sim: dict, warn_ks: float = 0.2,
     def withheld_keys(loaded):
         return {(e.get("round"), e.get("end_id")) for e in loaded.get("withheld_deliveries", [])}
 
-    rv = vals(real["agg_rounds"], withheld_keys(real))
-    sv = vals(sim["agg_rounds"], withheld_keys(sim))
+    def matched(agg_rounds, last):  # L10: rounds both legs reached
+        return [e for e in agg_rounds if last is None or e.get("round") is None or e["round"] <= last]
+
+    tops = [max((e["round"] for e in m["agg_rounds"] if e.get("round") is not None), default=None) for m in (real, sim)]
+    last = None if None in tops else min(tops)
+    rv = vals(matched(real["agg_rounds"], last), withheld_keys(real))
+    sv = vals(matched(sim["agg_rounds"], last), withheld_keys(sim))
     if not rv or not sv:
         return {"ok": True, "tier": "DIST", "skipped": True,
                 "reason": "update_visibility_lag_s absent in one mode "
@@ -4771,6 +4776,7 @@ def _fidelity_score(raw_obs: list, gt, span: float, lag_tol_s: float = 30.0,
     Returns None if there's nothing to score (empty input, or ground-truth /
     observed fraction computation comes up empty).
     """
+    raw_obs = [p for p in raw_obs if p[0] <= span]  # PR36-short: a trainer outlives the last selection
     if not raw_obs:
         return None
     obs = raw_obs
@@ -4796,7 +4802,7 @@ def _fidelity_score(raw_obs: list, gt, span: float, lag_tol_s: float = 30.0,
     if obs_frac is None or not gt_frac:
         return None
     tvd = total_variation_distance(obs_frac, gt_frac)
-    lags, missed, spurious = _match_transitions(gt_transitions, raw_obs, lag_tol_s)
+    lags, missed, spurious = _match_transitions(gt_transitions, [p for p in raw_obs if p[0] > t_start], lag_tol_s)  # gt's (t_start, t_end]
     return tvd, lags, missed, spurious
 
 

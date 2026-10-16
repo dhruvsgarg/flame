@@ -500,6 +500,14 @@ def test_trainer_speed_support_guard_tolerates_mix_catches_tail():
     assert res_bad["support_ratio"] > 1.0 + res_bad["support_tol"], res_bad
 
 
+def test_commit_visibility_grades_matched_rounds_only():
+    """PR36-short feddance: sim's extra round past real's stop (89 s lags) must not fail U6 (L10)."""
+    from parity.checks import commit_visibility_parity
+    real = {"agg_rounds": [{"round": r, "update_visibility_lag_s": [6.0, 5.0, 0.0]} for r in range(1, 11)]}
+    sim = {"agg_rounds": real["agg_rounds"] + [{"round": 11, "update_visibility_lag_s": [89.0, 85.0, 0.0]}]}
+    assert commit_visibility_parity(real, sim)["ok"]
+
+
 def test_commit_visibility_parity():
     """U6 commit-timeliness: KS the update_visibility_lag_s distributions.
 

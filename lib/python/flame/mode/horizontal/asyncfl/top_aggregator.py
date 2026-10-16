@@ -145,6 +145,9 @@ class TopAggregator(SyncTopAgg):
         # FX-D88: send-gated buffer heads are withheld before the gate, so it waits on earlier in-flight completions.
         self._sim_withhold_before_gate = str(
             getattr(self.config.hyperparameters, "sim_withhold_before_gate", True)).lower() == "true"
+        # FX-D176: an eval's expected completion is its dispatch (evals span << D), so the gate waits for it.
+        self._sim_eval_expect_at_send = str(
+            getattr(self.config.hyperparameters, "sim_eval_expect_at_send", True)).lower() == "true"
 
         self._updates_in_queue = 0
         self._updates_recevied = {}
@@ -1783,6 +1786,8 @@ class TopAggregator(SyncTopAgg):
                 # Expected completion = dispatch vclock + this end's own
                 # MODELED_DELAY_S. No fallback: unseen -> no gate entry.
                 _delay = self._sim_known_delay_s.get(end)
+                if _delay is not None and task_to_perform != "train" and getattr(self, "_sim_eval_expect_at_send", False):
+                    _delay = 0.0
                 if _delay is not None:
                     self._sim_inflight_expected[end] = _sst + _delay
                 # A new outstanding update: ingest it even if `end` committed earlier this cycle (FX-D6).

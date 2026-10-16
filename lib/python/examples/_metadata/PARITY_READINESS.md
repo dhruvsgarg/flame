@@ -92,6 +92,7 @@ A new failure mode adds a check here in the same session.
 | PL20 | AVL_EVAL is eval-only and Felix-only (FX-D165) | EV21 in every leg's events (prefix-safe → DOOMED) | 10-14: baselines trained on mobiperf_3st EVAL devices |
 | PL22 | the batch's packing is measured (C21): its last screen's `--util` names the binding resource, legs/h, overruns 0-2%, no slow legs; the plan uses `--gpu-share`/`--lease-from-telemetry` as measured | `resource_report.py <screen pools> --util` | first PR36: 3.3 legs at once, CPU 6%, GPU memory 39%, GPUs idle 25% for 14 h |
 | PL23 | packed GPU footprints are per nominal GPU, floored per trainer, and at most FX-T36 trainers share a GPU | `gpu|` history ≈ exclusive peaks (cifar n50 ~20 GB, speech ~40 GB/GPU); no `CUDA error: out of memory` in a smoke's trainers.log (FX-D175) | PR36-short: B1 + S1 OOM-aborted, 137 trainers on one A40 |
+| PL24 | a sim aggregator exits via `exit_after_run`, never native teardown | no `terminate called without an active exception` / `Fatal Python error` after `channel leave done` (FX-D178) | PR36-short B1: one exit segfault aborted 9 cells |
 | PL21 | a new or changed prefix-safe EV passes on stored legs of all six × every trace before launch | run it over the last batch's legs (`event_invariants.load_run` + the check) | PR36: EV21 DOOMED 17 oort_star/fedbuff legs mid-batch |
 
 ## Throughput (both tracks; operator 10-15)
@@ -180,11 +181,10 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR36-short rescreen (FELIX Next steps; first screen OOM-aborted, FX-D175):** jayne `--only B1,C5,S1S`, shepherd `--only S1C,S1S0` (~2.5 / 2.3 h).
-- **PR36 · full run after a clean rescreen (first run stopped 10-15 by EV21 false kills; FELIX PR36):** full re-screen on one code key (G0U/G0UC, T3/T3C, G0T/G0TC, G1AS, third reals) → 76/76 +
-  accuracy + FX-N98 speed confirm. `run_pr36.py --node jayne|shepherd` (~14.8 / 13.8 h). Screen shapes stay per tier.
-- **PR37 · blocked: PR36 complete:** all six × syn_0 + syn_50_3st + stream_lin × both datasets, 2 h real + 2 h-vclock sim, real replicate on
-  syn_0 + lin, at one n:c:K per dataset (G3: cifar 75:15:10, speech 50:15:10) → sim-only experiments. `run_pr37.py` (~24-28 h).
+- **PR37 + PR36 tail · one batch (operator 10-16; FELIX Next steps):** tail stages (B1/mobiperf cells, draw-cell replicates) first in
+  the PR37 queue on both nodes, then all six × syn_0 + syn_50_3st + stream_lin × both datasets, 2 h real + 2 h-vclock sim
+  (`run_pr37.py --node jayne|shepherd`, ~19.8 / 20.6 h); pass 2 = G3C replicate reals only after a clean pass 1 on the same key
+  (`--node jayne-rep|shepherd-rep`, ~8.2 h) → sim-only experiments. No full PR36 rerun.
 - **Long blocks (G1U, G1AS grid) · deferred by C18** until PR37: FELIX FX-N93.
 
 **Operator decisions**
@@ -210,6 +210,7 @@ Parked with the track; board in simulate_fwdllm.md §A.
 - Batches span jayne GPUs 0,2-7 + shepherd GPUs 0-3; scale n/c/K at fixed ratios to run more legs in parallel (10-14).
 - Speech trains in bf16 (FX-D168); GPU placement balanced by default (FX-D169); PR37 shape G3 (10-14 late).
 - Throughput is the central goal; batch configs only after measured packing (C21, C22); no long run at low utilization (10-15).
+- No full PR36 rerun: its untested cells and draw floors run as a tail inside PR37; the board mixes code keys; PR37 replicate reals run as a second pass after a clean first pass (10-16).
 
 ---
 

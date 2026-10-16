@@ -181,6 +181,7 @@ felix:  # ours: Felix is the system under study
       learning_rate: {v: 0.04, src: "[ours] 2024"}
       optimizer: {v: sgd, src: "[ours]"}
       lr_decay: {v: none, src: "[ours]"}
+      stat_utility: {v: fedscale, src: "[ours] FX-D171: Oort's utility (Oort learner.py:296-312)"}
       server: {v: {sort: fedbuff, kwargs: {use_oort_lr: "True", dataset_name: cifar-10, learning_rate: 0.3,
                                        agg_rate_conf: {type: new, scale: 0.4, a_exp: 0.25, b_exp: 0.1}}}, src: "[ours] 2024 server lr 0.3"}
     google_speech:
@@ -190,5 +191,6 @@ felix:  # ours: Felix is the system under study
       learning_rate: {v: 0.04, src: "[ours] FX-N74"}
       optimizer: {v: sgd, src: "[ours] FX-T27"}
       lr_decay: {v: none, src: "[ours]"}
+      stat_utility: {v: fedscale, src: "[ours] FX-D171: Oort's utility (Oort learner.py:296-312)"}
       server: {v: {sort: fedbuff, kwargs: {use_oort_lr: "True", dataset_name: google-speech, learning_rate: 0.5,
                                        agg_rate_conf: {type: new, scale: 0.4, a_exp: 0.25, b_exp: 0.1}}}, src: "[ours] FX-N74"}
