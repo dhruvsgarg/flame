@@ -48,6 +48,9 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
   - *Watching (tmux pane):* every 5 min a `STATUS` board per stage (bar, legs done, running, ETA) plus one `!!` line per failed
     (rc≠0), STALLED (no round 15 min / silent 10 min, auto-killed), DOOMED (prefix-safe EV fail) leg or ABORTED pool; probe FAIL/RED lines
     print live every 10 min (`run_pr28.status_board`). Silence past ETA with no `!!` = check `<sid>.out`.
+  - *Launch state (10-16 05:42, both nodes, `c34908bf2`, key `1e6004b6c305`):* jayne's first ~2.5 h are host-RAM-bound by TMP (oort
+    mobiperf n=165 reals reserve ~160-214 GB; 314 of 503 GB used), so TB1/A1 queue behind it, as planned; shepherd's later stages start
+    15 min late (the gate waits for a speech stamp a cifar-only first stage never writes). Shepherd `/home` 96% full (113 GB free).
   - *Early signal:* tail done by ~3 h. A tail red on a PR37 baseline × trace (oort syn_50_3st, felix/feddance/refl speech syn_50_3st)
     voids those PR37 legs (C20); mobiperf reds don't touch PR37.
   - *Analysis when logs land (copy shepherd's `pr37_shepherd_<ts>/` + its `pool_*` + run dirs to jayne with `rsync -a -r`, FX-T48):*
