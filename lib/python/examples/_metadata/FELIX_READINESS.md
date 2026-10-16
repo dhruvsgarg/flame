@@ -22,14 +22,19 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
   within 2 pp); close when the rerun's real legs show ≤ 2% overruns.**
   Active build "sim speed". *Exit:* overrun share ≤ 2% per leg in real and sim (PL19); speech G1AS felix sim ≥ 2× real (never < 1×) with
   accuracy within 2 pp of PR35 A1 (felix 67.9%, fedbuff 64.6%).
-- **PR37 + PR36 tail · one batch, both nodes (operator 10-16: no full PR36 rerun) · ready: G3 packing screen, then commit, push,
-  `git pull` on shepherd, launch.**
+- **PR37 + PR36 tail · one batch, both nodes (operator 10-16: no full PR36 rerun) · wip: pass 1 launched 10-16 by Claude in tmux
+  `dg_flame` (window `pr37`) on both nodes; read `experiments/pr37_<node>_<ts>/`.**
   - *Why one batch:* PR36-short left no logic root; a full PR36 would add only untested mobiperf / B1 cells (mobiperf is not a PR37
     trace) and replicate floors for the draw class. Those run as tail stages (`T*`, `run_pr37.py TAIL_J/TAIL_S`) first in the same queue,
     on the PR37 code key. The 76/76-on-one-key gate is dropped: the board mixes the PR36 / rescreen keys with the tail's key.
   - *Launch (operator, tmux `dg_flame` on each node, same commit, PL18):* `cd ~/flame/lib/python/examples &&
     /coc/scratch/dgarg/miniconda3/envs/dg_flame/bin/python scripts/run_pr37.py --node jayne --hours 30 --measured --one-queue
-    --gpu-share 4` (shepherd: `--node shepherd`). Commit: the FX-D171/D176-D178 commit after `0af166d6a`.
+    --gpu-share 4` (shepherd: `--node shepherd`). Commit: `530598e52` (+ docs-only commits; `.md` is not run-affecting).
+  - *G3 packing screen (`pool_20261016_0514_pr37pack_G3`, jayne, felix + oort × syn_0/lin × both, 240 s; 19/24 legs, 3 cifar legs cut
+    by the 25-min timeout):* EV 12/12 PASS; no OOM; overruns 2/78 on one speech real (PL19 borderline), 0 elsewhere; `statUtility: fedscale`
+    in the leg config (PL7). Binding: GPU memory, one G3 leg per GPU (cifar ~30 GB of 45, speech ~30 GB on each of 2); unmeasured G3
+    legs claim whole GPUs, which is what they'd get anyway. cifar felix real RAM 78-81 GB vs 73 reserved (`RAM_OVER`; reservations follow
+    history). Felix speech S3/4 red (picks 77 vs 84): sim ran 277 s vclock on a 240 s budget; open: S3/4 grades whole runs, not matched rounds.
   - *Two passes (operator 10-16): never two reals on possibly buggy code.* Pass 1 = tail + one real + one sim per G3 cell. Pass 2 =
     the G3C replicate real per syn_0 + lin cell (`--node jayne-rep` / `shepherd-rep`, ~8.2 h each), launched only if pass 1 found no bug
     and the code key is unchanged; a fix in between reruns pass 1 for the affected cells first.
