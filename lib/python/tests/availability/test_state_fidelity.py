@@ -295,7 +295,7 @@ class TestWithholdDeliver:
         assert "t1" not in h.withheld_held_ends()
 
     def test_withheld_held_until_commit(self):
-        """FX-N38: cifar T3_syn_50 felix sim re-picked a trainer whose due withheld update was not yet committed."""
+        """FX-N38: cifar T3_syn_50_3st felix sim re-picked a trainer whose due withheld update was not yet committed."""
         h = _Harness({"t1": _T1}, vclock_now=700)
         h.pending_withheld["t1"] = 600.0
         assert h.withheld_held_ends() == {"t1"}  # due, not reinjected

@@ -57,3 +57,14 @@ def test_few_stall_free_rounds_skip_only_when_stalls_dropped_rounds():
     r = {"ok": False}
     c._skip_if_few_free(r, [1.0] * 6, [1.0] * 6, n_rounds=6)
     assert "status" not in r and r["ok"] is False
+
+
+def test_tail_round_cut_by_one_stop_is_not_graded():
+    # PR36 B1 fedbuff G0U mobiperf_3st: sim == real replicate to 0.1 s, but real's stop cut round 6 after 1 of 2 commits.
+    t = [(1, 192.1), (1, 277.1), (2, 454.1), (2, 544.1), (3, 641.5), (3, 655.2), (4, 666.3), (4, 728.2), (5, 767.3),
+         (5, 822.2), (6, 862.4)]
+    real = {"agg_rounds": [{"event": "agg_round", "round": r, "ts": 1e9 + x} for r, x in t]}
+    sim = _agg([(r, x, ["a"]) for r, x in t + [(6, 915.2)]])
+    assert c._tail_cut(real, sim) == 1 and c._tail_cut(sim, sim) == 0
+    for chk in (c.throughput_parity, c.overhead_residual, c.per_round_advance_parity):
+        assert chk(real, sim)["matched_window_n"] == 4, chk.__name__

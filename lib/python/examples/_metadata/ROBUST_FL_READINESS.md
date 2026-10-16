@@ -3,20 +3,22 @@
 **Goal:** run Felix and FluxTune, with all their baselines, in the simulator with high fidelity and a real
 speedup, with and without client unavailability, so paper experiments run sim-only and fast. **Parity is not enough:
 real and sim must each be correct** — every baseline follows its reference semantics and reaches its dataset's target
-accuracy in the expected time window (tracked per track: FELIX accuracy table). Equal-but-wrong is a failure (R1, C6).
+accuracy in the expected time window (tracked per track: FELIX Scoreboard). Equal-but-wrong is a failure (R1, C6).
 
-**Four docs are the only working references:**
+**Four docs (plus FELIX's insights companion) are the only working references:**
 - **this doc** — the rules for all four docs, the lessons and tripwires both tracks share, and the queue of
   shared infrastructure work;
-- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS.**
+- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS (operator 10-15): throughput: utilization-aware packing of legs on CPU/RAM/GPU with no interference, proven on 5-10 min runs (FX-N100); then PR36 → 76/76, PR37 → sim-only experiments. Sim speedup is the point: never < 1×, aim 2-5×+.**
+  - [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) — Felix's companion: telemetry-backed insights for the paper (model, catalog, findings).
 - [PARITY_READINESS.md](PARITY_READINESS.md) — real↔sim parity for both tracks: climbing rules (C1-C9: correct before
   equal, instrument what you can't see, launch only when fixes are maximized), method, tools, per-track scoreboard.
 - [FLUXTUNE_READINESS.md](FLUXTUNE_READINESS.md) — FluxTune: perturbation / forward-gradient fine-tuning
   (fwdllm). **PARKED** until Felix readiness is stable across unavailability on both async_cifar10 and
   google_speech (FX-N9, FX-N11); shared changes must still keep it green (R10).
+  - [EXPERIMENTS.md](../paper_expts_fluxtune/EXPERIMENTS.md) — FluxTune's companion: the paper evaluation plan and run queue.
 
 **Every older doc is DEPRECATED** (PARITY.md, UNAVAILABILITY_DESIGN.md, simulate_fwdllm.md, FWDLLM_DESIGN.md,
-PARITY_CHECKER_README.md, BASELINES.md, the `docs/`, `fl_fwd_ft_*` and `paper_expts_fluxtune/` files; each
+PARITY_CHECKER_README.md, BASELINES.md, the `docs/` and `fl_fwd_ft_*` files; each
 carries a banner saying so). They keep derivations, rung catalogs and history for reference, and they only
 ever SHRINK: when you use or change something in one, move the live part here and delete it at the source in
 the same edit, leaving a one-line pointer where code or another doc cites the section. Never add to them.
@@ -25,8 +27,8 @@ the same edit, leaving a one-line pointer where code or another doc cites the se
 alone, in minutes. Prefer one exact line to a paragraph; delete before adding; never restate what another
 section already says.
 
-**Read order at session start:** this doc top to bottom → the active child's preamble → PARITY_READINESS climbing rules
-→ the child's **Next steps**
+**Read order at session start:** this doc top to bottom → PARITY_READINESS climbing rules → the active child's Next steps and
+Scoreboard
 → only the lessons and tripwires tagged for the area you are touching.
 
 ---
@@ -34,10 +36,11 @@ section already says.
 ## Doc rules (apply to all four docs)
 
 1. **Live ledger, not a log.** Every line must be true *now*. No dated "update:" notes, no changelogs, no
-   narrative. `git log` is the history.
-2. **Fixed sections, fixed purposes.** Each child has: Preamble · Status grid · Active build (optional:
-   design + task list of multi-session work, folded into Built when it lands) · Next steps · Lessons (dos) ·
-   Tripwires (don'ts) · Built. Content goes in exactly one section. Dos and don'ts use the same topic groups.
+   narrative, no per-run results sections (operator 10-12): a run rewrites the Scoreboard, closes or opens Next steps, and adds
+   lessons, tripwires or Built lines. `git log` is the history.
+2. **Fixed sections, fixed purposes (operator 10-12: Next steps and Scoreboard on top).** Each child has: a 3-line header ·
+   Next steps · Scoreboard (now, open reds → root, expected after the next run) · Decisions · Scope · Active build (optional:
+   design + task list of multi-session work, folded into Built when it lands) · Lessons (dos) · Tripwires (don'ts) · Built. Content goes in exactly one section. Dos and don'ts use the same topic groups.
 3. **Next steps are the persistent queue across sessions.** An item is `ID · action · exit criterion ·
    state` (`todo` / `wip` / `blocked: <why>`). Ordered; the top item is what the next session picks up.
 4. **Close means delete.** When an item finishes, delete it from Next steps. If it added a capability,
@@ -68,6 +71,12 @@ section already says.
 
 ## Operating rules (non-negotiable, both tracks)
 
+- **R0 Golden rule: short screens first; a long run only when no short screen can answer the question (operator 10-15).** Before any
+  run, write the question it answers. If a short screen (pytest, stored telemetry, CPU tiers, ≤ 10-min legs at production density) can
+  answer it, run that, broad and packed, and fix what it finds. Long runs answer only what needs length: accuracy and convergence,
+  compounding clocks, replicate floors, draw cells. Never use a long run to find bugs. Every run is packed on measured resources (PARITY
+  C21, C22, Throughput).
+
 - **R1 Correctness first; passing tests and parity are consequences.** If something looks wrong against
   FL/systems first principles, stop, raise it, and fix the concept, even when every test and rung is green.
   A rung green because both sides are equally wrong is a regression. Pair every relative check with an
@@ -77,14 +86,14 @@ section already says.
 - **R3 Evidence ladder: telemetry on disk → local harness/bench → short cluster run → long run.** Never
   spend a GPU run on a question the harness or stored telemetry can answer. A long run confirms; it never
   finds the first bug.
-- **R4 The operator launches everything that spawns processes.** Claude runs only short foreground,
-  single-process work itself (pytest, static checks, parsing stored runs). Anything that starts brokers,
-  aggregators, trainers or a multi-test sweep — local harness or cluster — goes into ONE script the operator
-  launches (killing that parent kills every child). The script writes all results under one
+- **R4 Claude runs anything up to 15 min itself; the operator launches the rest (operator 10-12).** Claude may run any
+  job with a hard timeout ≤ 15 min (pytest, harness tiers, short real/sim legs) to exercise a change; keep it as short and
+  small as the question allows. Anything longer goes into ONE script the operator launches (killing that parent kills every
+  child). The script writes all results under one
   `experiments/<suite>_<ts>/` dir with a summary file; Claude reads that dir afterwards. Claude hands over the
   command, the expected duration and the prediction (what result confirms and what refutes). Long scripts launch
-  detached (`--detach`, PARITY PL4) so a lost terminal can't kill them. **All runs go on
-  jayne only (operator); never launch on kaylee or wash.** Legs run in parallel only in isolated slots (R18).
+  detached (`--detach`, PARITY PL4) so a lost terminal can't kill them. **Runs go on
+  jayne GPUs 0,2-7 and shepherd GPUs 0-3, together (operator 10-14); never launch on kaylee or wash.** Legs run in parallel only in isolated slots (R18).
 - **R5 One mechanism per run** when a fix could perturb another baseline. Shared roots before per-baseline
   roots: a bug failing rungs on 2+ baselines outranks one that fails on 1.
 - **R6 Run length follows the residual's shape.** Per-cycle mechanisms show up in 15-45 min. Accumulating or
@@ -128,8 +137,8 @@ section already says.
   print PASS/FAIL for its key claim within minutes (`early_probe.py`; fail-fast and stall rules stay), and (b) an end check for
   interference (throttled legs, dur > 1.25 x est) that names the stage to rerun solo. Prefer short decisive cells over long runs;
   keep a modest time buffer; long runs only after the short signal passes.
-- **R19 Smoke before hand-off; fail in minutes.** Before handing over any long script, Claude runs its ≤5-min
-  smoke itself (the one R4 exception: foreground, hard timeout, one script): `pytest --collect-only` plus one
+- **R19 Smoke before hand-off; fail in minutes.** Before handing over any long script, Claude runs its smoke itself
+  (≤ 15 min, R4; hard timeout, one script): `pytest --collect-only` plus one
   short real/sim pair showing commits on both legs. Every long script opens with that gate (campaign: P00)
   and aborts when it fails. Never hand over a command that has not run end-to-end once at small scale, and at
   production density (PARITY PL3 scale smoke; operator 2026-10-06: Claude runs it). Every run and test uses the `dg_flame` env (`FLAME_CONDA_ENV`), never the active shell's.

@@ -1,0 +1,26 @@
+# [C4] FluxTune vs async SOTA (FedBuff(P), Felix(P), forward perturbation) across
+# client availability (EXPERIMENTS.md §4 C4). DistilBERT · AG News; one cell per trace.
+#   python make_paper_figs.py --manifest figs_availability.yaml [--synthetic]
+kind: e2e
+prefix: c_avail
+baseline: felix_round
+champion: fluxtune
+tta_consecutive: 1
+figures: [row, grid]
+
+cells:
+  - id: syn_0
+    label: "100% available (syn_0)"
+    n_clients: 100
+    target_acc: 0.80        # same as figs_e2e distilbert_agnews
+    arms: {fedbuff_round: [], felix_round: [], fluxtune: []}
+  - id: syn_50_3st
+    label: "50% unavailable (syn_50_3st)"
+    n_clients: 100
+    target_acc: 0.80
+    arms: {fedbuff_round: [], felix_round: [], fluxtune: []}
+  - id: mobiperf_3st
+    label: "MobiPerf trace (mobiperf_3st)"
+    n_clients: 100
+    target_acc: 0.80
+    arms: {fedbuff_round: [], felix_round: [], fluxtune: []}

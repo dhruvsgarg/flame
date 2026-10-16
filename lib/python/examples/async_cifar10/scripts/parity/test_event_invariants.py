@@ -167,7 +167,7 @@ def test_ev11_sub_slack_pastdating_fails(tmp_path):
 
 
 def test_ev1_counts_rounds_not_updates(tmp_path):
-    # Two rounds pass at any agg_goal (old 2 x agg_goal failed oort syn_50 at 8 rounds, K=5, on both sides).
+    # Two rounds pass at any agg_goal (old 2 x agg_goal failed oort syn_50_3st at 8 rounds, K=5, on both sides).
     agg, tr = _clean_run()
     assert _status(_write_run(tmp_path, agg, tr, hp={"aggGoal": 5}), "EV1_progress") == "PASS"
     one = [e for e in agg if e["event"] != "agg_round"] + [next(e for e in agg if e["event"] == "agg_round")]
@@ -200,7 +200,7 @@ def test_broken_check_is_error_not_crash(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("hp,want", [({}, "FAIL"),
-                                     ({"trackTrainerAvail": {"trace": "syn_50"}}, "WARN"),
+                                     ({"trackTrainerAvail": {"trace": "syn_50_3st"}}, "WARN"),
                                      ({"client_notify": {"trace": "mobiperf_3st"}}, "WARN")])
 def test_ev13_stall_is_warn_off_syn_0_for_either_trace_key(tmp_path, hp, want):
     agg, tr = _clean_run()
@@ -372,6 +372,18 @@ def test_ev16_delivery_at_budget_commits_at_final_round_passes(tmp_path, monkeyp
     assert _status(_write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 50}), "EV16_withheld_delivery") == "PASS"
 
 
+def test_ev16_sync_delivery_awaiting_unlogged_close_passes(tmp_path, monkeypatch):
+    # FX-D136: a sync delivery joins the open round; its close is not logged yet in a live prefix or a cut final round.
+    _unavail_T1(monkeypatch)
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round":
+            agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
+                        "delivery_ts": 50.0, "actual_commit_ts": 500.0})
+    run = _write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 1000}, optimizer="oort")
+    assert _status(run, "EV16_withheld_delivery") == "PASS"
+
+
 def _gated_real_run(tmp_path, dispatch_ends):
     # T1's update sits behind its send-gate over ts 10-20; a sync selection at 15 still lists it in flight.
     agg = [{"event": "selection", "task": "train", "ts": 15.0, "chosen": [T1, T2]}]
@@ -390,6 +402,18 @@ def test_ev17_redispatch_while_gated_fails(tmp_path):
 
 def test_ev17_without_dispatch_events_reads_selections(tmp_path):
     assert _status(_gated_real_run(tmp_path, []), "EV17_real_gate_repick") == "FAIL"
+
+
+@pytest.mark.parametrize("abandon_lag, want", [(0.0, "PASS"), (61.0, "FAIL")])
+def test_ev20_abandon_on_time(tmp_path, abandon_lag, want):
+    # FX-D155: T2 dispatched 2 ms after T1; real abandoned it 61 s late.
+    agg = [{"event": "dispatch", "task": "train", "end_id": T1, "round": 15, "ts": 0.0},
+           {"event": "dispatch", "task": "train", "end_id": T2, "round": 15, "ts": 0.002},
+           {"event": "abandon_timeout", "end_id": T1, "round": 15, "ts": 90.0},
+           {"event": "abandon_timeout", "end_id": T2, "round": 15, "ts": 90.002 + abandon_lag},
+           {"event": "agg_round", "round": 15, "ts": 200.0}]
+    run = _write_run(tmp_path, agg, {T1: [], T2: []}, hp={"time_mode": "real"}, optimizer="fedavg")
+    assert _status(run, "EV20_abandon_on_time") == want
 
 
 def test_ev18_model_finite(tmp_path):
@@ -436,6 +460,18 @@ def test_ev19_stream_schedule(tmp_path):
         assert _status(_write_run(tmp_path / name, *_streamed(plant), hp=_STREAM), "EV19_stream_schedule") == "FAIL"
 
 
+@pytest.mark.parametrize("logged_lag, want", [(0.3, "PASS"), (0.0, "FAIL")])
+def test_ev19_sim_stream_clock_at_train_start(tmp_path, logged_lag, want):
+    # FX-D160: sim reads the stream at send + delivery lag; a clock past send by an unlogged lag still fails.
+    def lagged(tr):
+        for evs in tr.values():
+            for e in evs:
+                if e["event"] == "trainer_round":
+                    t = e["sim_send_ts"] + 0.3
+                    e.update(stream_clock_s=t, visible_samples=int(10 + 90 * t / 20), sim_delivery_lag_s=logged_lag)
+    assert _status(_write_run(tmp_path, *_streamed(lagged), hp=_STREAM), "EV19_stream_schedule") == want
+
+
 def test_ev3_sim_duration_includes_measured_overhead(tmp_path):
     # C13 (FX-N73): sim duration = max(gpu, D) + the trainer's measured overhead; sct moves with it.
     agg, tr = _clean_run()
@@ -459,3 +495,82 @@ def test_doomed_only_prefix_safe_fails(tmp_path):
     assert [d.split(":")[0] for d in ev.doomed(_write_run(tmp_path / "b", nan, tr))] == ["EV14"]
     next(e for e in agg if e["event"] == "agg_round")["commit_gap_s"] = 0.5
     assert ev.doomed(_write_run(tmp_path / "c", agg, tr)) == []
+
+
+def _eval_trace(monkeypatch):
+    # T1: TRAIN -> EVAL [0,50) -> TRAIN; T2 always TRAIN.
+    from sortedcontainers import SortedDict
+    monkeypatch.setattr(ev, "_ground_truth", lambda run: {T1: SortedDict({0.0: "AVL_EVAL", 50.0: "AVL_TRAIN"}),
+                                                          T2: SortedDict({0.0: "AVL_TRAIN"})})
+
+
+def test_ev16_train_commit_in_avl_eval_unheld_fails(tmp_path, monkeypatch):
+    # FX-N97: AVL_EVAL is not deliverable for a train update.
+    _eval_trace(monkeypatch)
+    assert _status(_write_run(tmp_path, *_clean_run()), "EV16_withheld_delivery") == "FAIL"
+
+
+def test_ev16_train_withheld_to_avl_train_passes(tmp_path, monkeypatch):
+    _eval_trace(monkeypatch)
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round":
+            agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
+                        "delivery_ts": 50.0, "actual_commit_ts": 50.0, "task": "train"})
+    assert _status(_write_run(tmp_path / "a", agg, tr), "EV16_withheld_delivery") == "PASS"
+
+
+def _ev21_run(tmp_path, monkeypatch, chosen_state="AVL_TRAIN", evals=(), hp=None, sends=(), cfg_eval=0.0, done=True):
+    _eval_trace(monkeypatch)
+    agg = [{"event": "selection", "task": "train", "ts": 1.0, "round": 1, "chosen": [T2], "per_trainer": {
+        T2: {"avl_state": chosen_state}}}]
+    agg += [{"event": "selection", "task": "eval", "ts": 2.0, "round": 1, "chosen": [T1],
+             "per_trainer": {T1: {"avl_state": st}}} for st in evals]
+    agg += [{"event": "run_end", "ts": 3.0}] * done
+    tr = {T1: [{"event": "task_send", "task_to_perform": "train", "send_gate_sct": sct, "send_gate_wait_s": w}
+               for sct, w in sends], T2: []}
+    run = _write_run(tmp_path, agg, tr, hp={"time_mode": "real", **(hp or {})})
+    cfg = json.load(open(os.path.join(run, "aggregator_config.json")))
+    cfg["selector"]["kwargs"]["evalGoalFactor"] = cfg_eval
+    json.dump(cfg, open(os.path.join(run, "aggregator_config.json"), "w"))
+    return run
+
+
+def test_ev21_aware_train_pick_outside_avl_train_fails(tmp_path, monkeypatch):
+    assert _status(_ev21_run(tmp_path / "a", monkeypatch), "EV21_avl_eval_semantics") == "PASS"
+    run = _ev21_run(tmp_path / "b", monkeypatch, chosen_state="AVL_EVAL")
+    assert _status(run, "EV21_avl_eval_semantics") == "FAIL"
+    run = _ev21_run(tmp_path / "c", monkeypatch, chosen_state="AVL_EVAL", hp={"avail_select_filter": "False"})
+    assert _status(run, "EV21_avl_eval_semantics") == "PASS"  # unaware picks anyone (its algorithm)
+
+
+def test_ev21_relisted_held_pick_is_not_a_dispatch(tmp_path, monkeypatch):
+    # gs T1 oort_star syn_50_3st: a top-up selection re-lists round 56's held pick after it went UN_AVL
+    run = _ev21_run(tmp_path, monkeypatch)
+    agg = os.path.join(run, "telemetry", [f for f in os.listdir(os.path.join(run, "telemetry")) if f.startswith("aggregator")][0])
+    ev = [json.loads(l) for l in open(agg)]
+    ev.insert(1, {"event": "selection", "task": "train", "ts": 1.5, "round": 1, "chosen": [T2], "per_trainer": {T2: {"avl_state": "UN_AVL"}}})
+    open(agg, "w").write("".join(json.dumps(e) + "\n" for e in ev))
+    assert _status(run, "EV21_avl_eval_semantics") == "PASS"
+    ev[1]["round"] = 2  # PR36 oort_star: async re-lists an in-flight/withheld pick in later rounds
+    open(agg, "w").write("".join(json.dumps(e) + "\n" for e in ev))
+    assert _status(run, "EV21_avl_eval_semantics") == "PASS"
+    for free in ({"event": "agg_round", "ts": 1.2, "round": 1, "contributing_trainers": [T2]},
+                 {"event": "abandon_timeout", "ts": 1.2, "end_id": T2}):
+        open(agg, "w").write("".join(json.dumps(e) + "\n" for e in ev[:1] + [free] + ev[1:]))
+        assert _status(run, "EV21_avl_eval_semantics") == "FAIL"  # re-picked after its slot freed: a dispatch
+
+
+@pytest.mark.parametrize("sct, wait, want", [(60.0, 0.0, "PASS"), (10.0, 0.0, "FAIL"), (10.0, 40.0, "PASS")])
+def test_ev21_real_train_send_needs_avl_train(tmp_path, monkeypatch, sct, wait, want):
+    run = _ev21_run(tmp_path, monkeypatch, sends=[(sct, wait)])
+    assert _status(run, "EV21_avl_eval_semantics") == want
+
+
+def test_ev21_eval_tasks_are_felix_only_and_reach_avl_eval(tmp_path, monkeypatch):
+    felix = dict(cfg_eval=1.0)
+    assert _status(_ev21_run(tmp_path / "a", monkeypatch, evals=["AVL_EVAL"] * 25, **felix), "EV21_avl_eval_semantics") == "PASS"
+    assert _status(_ev21_run(tmp_path / "b", monkeypatch, evals=["AVL_EVAL"] * 25), "EV21_avl_eval_semantics") == "FAIL"  # not Felix
+    assert _status(_ev21_run(tmp_path / "c", monkeypatch, evals=["UN_AVL"], **felix), "EV21_avl_eval_semantics") == "FAIL"
+    assert _status(_ev21_run(tmp_path / "d", monkeypatch, evals=["AVL_TRAIN"] * 25, **felix), "EV21_avl_eval_semantics") == "FAIL"  # never AVL_EVAL
+    assert _status(_ev21_run(tmp_path / "e", monkeypatch, evals=["AVL_TRAIN"] * 25, done=False, **felix), "EV21_avl_eval_semantics") == "PASS"  # live prefix

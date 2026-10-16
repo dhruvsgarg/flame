@@ -430,6 +430,41 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             return None
         return max(cache[e] for e in ends) + self._SIM_RECV_MARGIN_S
 
+    def _sim_barrier_recv(self, channel, ends):
+        """One pass bounded by known delays, then up to the task timeout for picks owing a reply (FX-D138)."""
+        answered = self.__dict__.setdefault("_sim_answered_sst", {})  # end -> dispatch stamp its last reply answered (L4)
+        gave_up = self.__dict__.setdefault("_sim_barrier_gave_up", set())
+
+        def _take(md):
+            answered[md[0]] = channel.get_end_property(md[0], PROP_SIM_SEND_TS)
+            gave_up.discard(md[0])
+
+        for msg, md in channel.recv_fifo(ends, first_k=len(ends), timeout=self._sim_recv_timeout_s(ends)):
+            if not msg:
+                break
+            _take(md)
+            yield msg, md
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        if str(getattr(hp, "sim_barrier_awaits_picks", True)).lower() != "true":
+            return
+
+        def _owed():
+            return [e for e in ends if channel.has(e) and channel.get_end_property(e, PROP_SIM_SEND_TS) is not None
+                    and answered.get(e) != channel.get_end_property(e, PROP_SIM_SEND_TS)]
+
+        owed = _owed()
+        if not owed:
+            return
+        for msg, md in channel.recv_fifo(owed, first_k=len(owed), timeout=self._task_timeout_s()):
+            if not msg:
+                break
+            _take(md)
+            yield msg, md
+        if _owed():  # _sim_owed_replies stops holding the vclock for it
+            gave_up.update(_owed())
+            logger.warning(f"[SIM_BARRIER_FAILSAFE] round={getattr(self, '_round', -1)} "
+                           f"no reply from {[e[-4:] for e in _owed()]} within the task timeout")
+
     def _sim_gate_is_safe(self, bmin, inflight_items) -> bool:
         """True iff buffered minimum `bmin` is safe to commit now, using only
         already-known state (no real-time wait needed).
@@ -495,11 +530,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         barrier_t0 = time.time()
         drained_all = True
         if ends:
-            # Exact per-end bound, or None to genuinely block.
-            timeout = self._sim_recv_timeout_s(ends)
-            for msg, md in channel.recv_fifo(ends, first_k=len(ends), timeout=timeout):
-                if not msg:  # no more ready (bound expired or set drained)
-                    break
+            for msg, md in self._sim_barrier_recv(channel, ends):
                 end = md[0]
                 self._note_sim_known_delay(end, msg)
                 sct = msg.get(MessageType.SIM_COMPLETION_TS)
@@ -563,7 +594,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             if wh is None:
                 break
             wend, wdts, (wmsg, wmd) = wh
-            if self._sync_wait_k_on() and len(committed) >= first_k:
+            if self._sync_wait_k_on() and len(committed) >= first_k and self._sim_counts_to_k(wmsg):
                 # FX-D122: co-due deliveries past K carry; real's version closes at the K-th arrival.
                 # FX-D130: commits later as a withheld delivery; slot held until then.
                 self._sim_sync_carry[wend] = (wdts, (wmsg, wmd))
@@ -590,12 +621,20 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
         return committed
 
+    def _sim_counts_to_k(self, msg) -> bool:
+        """FX-D156: a due stale delivery (never counts to K, FX-N57) lands this pass, before the next selection, as in
+        real. `simIngestStalePastK=false` reverts."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        if str(getattr(hp, "sim_ingest_stale_past_k", True)).lower() != "true" or getattr(self, "_sync_accept_stale", False):
+            return True
+        ver = msg.get(MessageType.MODEL_VERSION)
+        return ver is None or ver >= self._round
+
     @staticmethod
     def _barrier_anchored_lags(durs):
         """Real U6 visibility lag per update for a strict SYNC BARRIER:
         ``lag_i = max_completion - completion_i`` over the round, where completion =
-        ``WALL_SEND_TS - dispatch`` (the trainer's finish on a dispatch-relative
-        axis, matching sim's ``sct``). The barrier is the round's latest completion;
+        ``WALL_SEND_TS`` (absolute, as sim's ``sct``; FX-D151). The barrier is the round's latest completion;
         an early finisher's update waits that gap for the cohort before the single
         post-loop aggregation applies all K. ``None``-safe (missing WALL_SEND_TS)."""
         present = [d for d in durs if d is not None]
@@ -695,7 +734,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         for msg, metadata in _at.iterate(updates):
             end, timestamp = metadata
             _t_msg_start = datetime.now()  # start of per-message processing (vii)
-            _real_task_dur = None  # WALL_SEND_TS - dispatch (real); set below
+            _real_ready_ts = None  # WALL_SEND_TS (real); set below
             if not msg:
                 logger.debug(f"No data from {end}; skipping it")
                 continue
@@ -725,8 +764,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 # Base syncfl stack (fedavg/feddance) doesn't set PROP_CLIENT_TASK_TRAIN_DURATION
                 # — only the oort overlay does. Fill it with the client's INTRINSIC duration
                 # (WALL_SEND - WALL_RECV, §S.dur), NOT wall_lag_s (recv - dispatch) which folds in
-                # server waits. (U6 barrier lag below uses _real_task_dur = WALL_SEND - dispatch,
-                # a separate anchor.)
+                # server waits. (U6 barrier lag below anchors on WALL_SEND_TS, FX-D151.)
                 if not self.simulated and channel.get_end_property(end, PROP_CLIENT_TASK_TRAIN_DURATION) is None:
                     _ctd = real_client_task_train_duration(msg, _sent_ts, recv_ts)
                     if _ctd is None:
@@ -738,12 +776,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 _rcs = msg.get(MessageType.CLIENT_TASK_TRAIN_COMPUTE_S) # modeled compute duration (float s)
                 _agg_sent_unix = _sent_ts.timestamp() if hasattr(_sent_ts, "timestamp") else None
                 _agg_recv_unix = recv_ts.timestamp() if hasattr(recv_ts, "timestamp") else None
-                # Real client task-train duration (WALL_SEND_TS - dispatch): the
-                # trainer's finish on a dispatch-relative axis, matching sim's sct.
-                # This is the apples-to-apples "ready" anchor for U6 (excludes MQTT
-                # re-selection wait + transit, which sim folds into the modeled sct).
-                if _wst is not None and _agg_sent_unix is not None:
-                    _real_task_dur = float(_wst) - _agg_sent_unix
+                # U6 "ready" = trainer send (excludes MQTT transit, as sim's sct).
+                if _wst is not None:  # FX-D151: absolute, as picks may be dispatched at different times (top-ups)
+                    _real_ready_ts = float(_wst)
                 _agg_to_trainer = f"{float(_wrt) - _agg_sent_unix:.3f}" if (_wrt and _agg_sent_unix) else "-"
                 _compute = f"{float(_rcs):.3f}" if _rcs is not None else "-"
                 _post_wait = f"{float(_wst) - float(_wrt) - float(_rcs):.3f}" if (_wst and _wrt and _rcs is not None) else "-"
@@ -846,7 +881,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 # FX-N57: a sync baseline (FedAvg, FedDance) takes no stale update; it neither aggregates nor counts to K.
                 logger.info(f"[MSG_SKIP] stale update from {end[-4:]} (trained v{_trained_ver}, now v{self._round})")
                 weights = None
-            if weights is not None and count > 0:
+            _accepted = weights is not None and count > 0
+            if _accepted:
                 total += count
                 # Stamp the trained-on version so staleness = self._round - version is
                 # real; without it version defaults to 0 and staleness == round number.
@@ -873,7 +909,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                     # FX-D124: ready = delivery for a held update; lag is taken at the round close below.
                     _sim_round_ready.append(getattr(self, "_sim_ready_ts", {}).pop(end, msg.get(MessageType.SIM_COMPLETION_TS)))
                 else:
-                    _real_round_durs.append(_real_task_dur)
+                    _real_round_durs.append(_real_ready_ts)
                 # PROP_CLIENT_TASK_TRAIN_DURATION is only populated by the Oort stack; on the
                 # base (fedavg / feddance) flow it's unset -> guard against None.
                 _rd = channel.get_end_property(end_id=end, key=PROP_CLIENT_TASK_TRAIN_DURATION)
@@ -882,7 +918,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 )
 
             if channel._selector is not None:
-                channel._selector.on_update_received(end, msg, self._round)
+                channel._selector.on_update_received(end, msg, self._round, accepted=_accepted)
                 
         if _wait_k and len(self._sync_accepted_ends()) < agg_goal:
             # FX-N37: no commit below K; the cache carries, distribute replaces timed-out picks.
@@ -1070,6 +1106,17 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         aggregators that know the dataset override it. Must never raise."""
         return
 
+    def _sync_wait_k_plan(self, channel, num_eligible: int, threshold: int):
+        """FX-N37: (picks, eligible needed to dispatch) for this version's missing slots; None when none are missing."""
+        desired = getattr(channel._selector, "num_of_ends", threshold)
+        fresh = self._sync_version_inflight(channel)
+        need = desired - len(fresh) - len(self._sync_accepted_ends())
+        if need <= 0 or (fresh and num_eligible == 0):
+            return None
+        if fresh or getattr(self.config.hyperparameters, "sync_partial_dispatch", False):  # mid-round, or FX-D148
+            need = min(need, num_eligible)
+        return need, max(1, min(need, len(channel._ends)))
+
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         # data_id / iteration_per_data_id are FwdLLM-only; default them so
         # non-FwdLLM aggregators (fedavg, feddance) on this base stack don't
@@ -1163,16 +1210,12 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             - set(_version_keys)
         )
 
-        # FX-N37: top up only the slots this version is missing; mid-round, take what is eligible.
         _need = None
         if self._sync_wait_k_on():
-            _desired = getattr(channel._selector, "num_of_ends", _threshold)
-            _fresh = self._sync_version_inflight(channel)
-            _need = _desired - len(_fresh) - len(self._sync_accepted_ends())
-            if _need <= 0 or (_fresh and num_eligible == 0):
+            _plan = self._sync_wait_k_plan(channel, num_eligible, _threshold)
+            if _plan is None:
                 return
-            _need = min(_need, num_eligible) if _fresh else _need
-            _threshold = min(_need, len(channel._ends))
+            _need, _threshold = _plan
 
         if num_eligible < _threshold:
             if self.simulated and self.trainer_event_dict is not None:

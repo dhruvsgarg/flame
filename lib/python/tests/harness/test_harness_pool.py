@@ -3,6 +3,7 @@
 """FX-N22 P4: harness_pool.py pure parts (delta map, slot sizing, packing, sharding) + the real bank."""
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -118,7 +119,7 @@ def test_t2_sim_legs_share_the_bank_key_config_of_t3_real_legs():
 def test_t3s_over_selecting_sync_pair_has_stragglers():
     # FX-N67: sync oort-family selects 1.3 x aggGoal, so aggGoal 10 leaves ~3 stragglers per round to carry over.
     phs = pool.tier_phases("T3S", B6, "cifar10")
-    assert [p.trace for p in phs] == ["syn_0", "syn_20"]
+    assert [p.trace for p in phs] == ["syn_0", "syn_20_3st"]
     for ph in phs:
         assert (ph.baselines, ph.agg_goal, ph.kind) == (("oort", "oort_star", "refl"), 10, "pair")
         assert int(ph.agg_goal * 1.3) > ph.agg_goal and ph.n >= 2 * int(ph.agg_goal * 1.3)
@@ -134,11 +135,11 @@ def test_oort_family_screens_run_at_k10():
 
 
 def test_g0t_oort_family_names_and_control():
-    # FX-L63: Oort-family G0T legs carry the `s` suffix (G0U_syn_50s floors map onto them); G0TC mirrors every cell real-only.
+    # FX-L63: Oort-family G0T legs carry the `s` suffix (G0U_syn_50_3sts floors map onto them); G0TC mirrors every cell real-only.
     for ds in pool.DATASETS:
         g0t = pool.tier_phases("G0T", B6, ds)
         assert sorted(p.pid[len(pool.DS_TAG[ds]):] for p in g0t if "oort" in p.baselines) == \
-            sorted(f"G0T_{m}_{t}s" for m in ("lin", "eve") for t in ("syn_0", "syn_50"))
+            sorted(f"G0T_{m}_{t}s" for m in ("lin", "eve") for t in ("syn_0", "syn_50_3st"))
         ctl = pool.tier_phases("G0TC", B6, ds)
         assert [p.pid for p in ctl] == [p.pid.replace("G0T_", "G0TC_") for p in g0t]
         assert {p.kind for p in ctl} == {"real"}
@@ -170,10 +171,10 @@ def test_datasets_get_their_own_phase_ids_and_gpu_cohorts():
 
 
 def test_g0_screen_scales_cohort_keeps_ratios_and_gpu_density():
-    # FX-N34: all six, syn_0 + syn_20, 30 min, reference c/n and aggGoal/c, reference trainers per GPU.
+    # FX-N34: all six, syn_0 + syn_20_3st, 30 min, reference c/n and aggGoal/c, reference trainers per GPU.
     for ds, (n, k, c, g) in {"cifar10": (100, 3, 10, 3), "google_speech": (50, 5, 15, 4)}.items():
         phs = pool.tier_phases("G0", B6, ds)
-        assert [p.trace for p in phs] == ["syn_0", "syn_20"]
+        assert [p.trace for p in phs] == ["syn_0", "syn_20_3st"]
         for p in phs:
             assert (p.n, p.agg_goal, p.c, p.gpus, p.harness, p.baselines, p.runtime_s) == (n, k, c, g, "none", B6, 1800)
         jobs = pool.build_jobs(phs, 1.0, 8, {})
@@ -223,7 +224,7 @@ def test_unavailability_phases_run_long_enough_for_their_trace(tier):
                 continue
             seen.add(key)
             got = effective_unavailability(p.trace, p.runtime_s, float(p.trace_scale or 1), p.n)
-            assert got >= 0.8 * int(p.trace[4:]) / 100, (p.pid, key, round(got, 3))
+            assert got >= 0.8 * int(p.trace[4:6]) / 100, (p.pid, key, round(got, 3))
     assert seen
 
 
@@ -236,7 +237,7 @@ def test_bank_lookup_ok_stale_none(tmp_path):
     bank.register(str(real), key, b, hashes={"f": "1"})
     assert bank.lookup(key, b, hashes={"f": "1"}) == (str(real), "OK")
     assert bank.lookup(key, b, hashes={"f": "2"}) == (str(real), "STALE:f")
-    assert bank.lookup(key | {"trace": "syn_50"}, b, hashes={"f": "1"}) == ("", "NONE")
+    assert bank.lookup(key | {"trace": "syn_50_3st"}, b, hashes={"f": "1"}) == ("", "NONE")
 
 
 def test_order_is_unit_major():
@@ -269,11 +270,20 @@ def test_leases_keep_two_pools_off_one_slot(tmp_path):
     assert b.take_all(pool.slot_leases([9, 17], [4]))
 
 
+def test_ram_reservations_span_pools(tmp_path):
+    # FX-D136: PR29 C3 speech Oort reals hit 504/504 GB: two pools each saw free RAM before the other's leg ramped.
+    a, b = pool.Leases(tmp_path), pool.Leases(tmp_path)
+    a.reserve_ram("ram_1_G4", 398.0)
+    assert b.reserved_gb() == 398.0
+    a.drop(["ram_1_G4"])
+    assert b.reserved_gb() == 0.0
+
+
 def test_oort_mobiperf_legs_run_long_enough_to_commit():
     # Run 4: unaware oort committed 0 updates in 240s on mobiperf_3st (both datasets); nothing graded.
     ph = pool.shaped("P3", ("oort", "felix"), "mobiperf_3st", "pair", "cifar10")
     rt = {(j.baseline, j.mode): j.runtime_s for j in pool.build_jobs([ph], 1.0, 1, {})}
-    assert rt[("oort", "real")] == rt[("oort", "sim")] == 960 and rt[("felix", "real")] == 240
+    assert rt[("oort", "real")] == rt[("oort", "sim")] == 3000 and rt[("felix", "real")] == 240
     ph.runtime_s = 60  # --smoke keeps its 60s
     assert {j.runtime_s for j in pool.build_jobs([ph], 1.0, 1, {})} == {60}
 
@@ -324,16 +334,38 @@ def test_gate_smoke_runs_once_per_code_state(tmp_path, monkeypatch):
     monkeypatch.setattr(pool, "Leases", lambda: type("L", (), {"root": tmp_path})())
     monkeypatch.setattr(pool, "code_key", lambda: "abc")
     (tmp_path / "gate_ok_abc_cifar10").write_text("earlier")
+    (tmp_path / "gate_ok_abc_google_speech").write_text("earlier")
     said = []
-    assert pool.run_gate(tmp_path, ["cifar10"], type("P", (), {"say": lambda self, m: said.append(m)})()) == 0
-    assert len(calls) == 2 and "earlier" in said[-1]  # collect + data check, no smoke
+    assert pool.run_gate(tmp_path, ["cifar10", "google_speech"], type("P", (), {"say": lambda self, m: said.append(m)})()) == 0
+    assert len(calls) == 2 and "earlier" in said[-1]  # PR31 A4/A5: per-dataset stamps cover a combo; no smoke
+
+
+def test_gate_smokes_only_unstamped_datasets(tmp_path, monkeypatch):
+    monkeypatch.setattr(pool.subprocess, "run", lambda cmd, **kw: pool.subprocess.CompletedProcess(cmd, 0, "ok\n", ""))
+    monkeypatch.setattr(pool, "Leases", lambda: type("L", (), {"root": tmp_path})())
+    monkeypatch.setattr(pool, "code_key", lambda: "abc")
+    (tmp_path / "gate_ok_abc_cifar10").write_text("earlier")
+    smoked = []
+    monkeypatch.setattr(pool, "run_smoke", lambda cmd, log: smoked.append(cmd) or 0)
+    said = []
+    assert pool.run_gate(tmp_path, ["cifar10", "google_speech"], type("P", (), {"say": lambda self, m: said.append(m)})()) == 4
+    assert smoked[0][smoked[0].index("--datasets") + 1] == "google_speech"  # no summary.tsv -> ABORT, but only speech ran
+
+
+def test_run_smoke_timeout_starts_at_first_leg(tmp_path):
+    """PR31 A4/A5: a smoke queued behind sibling pools' leases is not a timeout; one whose leg runs too long is."""
+    log = tmp_path / "pool.log"
+    script = f"import time, pathlib; time.sleep(2); pathlib.Path({str(log)!r}).write_text('x START leg'); time.sleep(30)"
+    assert pool.run_smoke([sys.executable, "-c", script], log, run_s=1, wait_s=60) is None
+    assert pool.run_smoke([sys.executable, "-c", "import time; time.sleep(3)"], log.with_name("none"), run_s=1, wait_s=60) == 0
 
 
 def test_speech_stub_legs_cap_local_steps():
     # FX-D110: speech stub legs run one real step (Oort's 20 CPU passes overran D/4); GPU and tiny_cpu legs are untouched.
     for p in pool.tier_phases("T3", B6, "google_speech"):
         assert "harness_stub_max_steps=1" in p.trainer_hp, p.pid
-    assert all("harness_stub_max_steps" not in p.trainer_hp for p in pool.tier_phases("T3", B6, "cifar10"))
+    for p in pool.tier_phases("T3", B6, "cifar10"):  # FX-N85 b: cifar caps the Oort family only
+        assert ("harness_stub_max_steps=1" in p.trainer_hp) == (set(p.baselines) <= set(pool.OORT_FAMILY)), p.pid
     assert not any(p.trace == "mobiperf_3st" and set(p.baselines) & set(pool.OORT_FAMILY)
                    for p in pool.tier_phases("T3", B6, "google_speech"))
 
@@ -345,8 +377,8 @@ def test_doomed_leg_kills_itself_and_pair_partner_not_others(tmp_path, monkeypat
     monkeypatch.setattr(pool, "leg_run_dirs", lambda out: [str(out)])
     monkeypatch.setattr(event_invariants, "doomed", lambda d: ["EV14: evals=3 bad=1"] if d.endswith("a_sim") else [])
 
-    def run(jid, unit, mode, pid, phase="T3_syn_50"):
-        j = pool.Job(jid, phase, "syn_50", "felix", mode, [], 15, 300, "stub", 1, 1.0, unit=unit)
+    def run(jid, unit, mode, pid, phase="T3_syn_50_3st"):
+        j = pool.Job(jid, phase, "syn_50_3st", "felix", mode, [], 15, 300, "stub", 1, 1.0, unit=unit)
         (tmp_path / jid).mkdir()
         return pool.Running(j, type("P", (), {"pid": pid})(), [], [], 0, "t", 0.0, tmp_path / jid,
                             watch=pool.StallWatch(0.0))
@@ -359,3 +391,241 @@ def test_doomed_leg_kills_itself_and_pair_partner_not_others(tmp_path, monkeypat
     assert sorted(killed) == [1, 2]
     assert running["a_sim"].stalled.startswith("DOOMED EV14") and running["a_real"].stalled == "DOOMED partner a_sim"
     assert not running["b_sim"].stalled and (tmp_path / "DOOMED.txt").read_text().count("\n") == 2
+
+
+def test_ram_growth_flags_a_climbing_leg_not_a_steady_one():
+    # FX-D140: second-half least-squares growth; a ramp-then-flat leg reads ~0, a leak keeps climbing.
+    flat = [(t, min(t, 50.0)) for t in range(0, 200, 10)]
+    leak = [(t, t / 10) for t in range(0, 200, 10)]
+    assert abs(pool.ram_growth_gb(flat)) < 1e-6 and not pool.leak_suspect(50.0, pool.ram_growth_gb(flat))
+    assert pool.leak_suspect(19.0, pool.ram_growth_gb(leak))
+    # FD S3: spawn ramp over most of a short sim, then flat once every trainer is up.
+    spawn = [(t, min(t, 300.0), min(t, 300)) for t in range(0, 390, 30)]
+    assert not pool.leak_suspect(300.0, pool.ram_growth_gb(spawn))
+    assert pool.leak_suspect(30.0, pool.ram_growth_gb([(t, t / 10, 9) for t in range(0, 300, 10)]))
+
+
+def test_mem_estimate_never_below_measured_peak():
+    # FX-D140: PR29 reals OOM-killed at 504/504 GB on formula estimates; the measured peak raises the next one.
+    j = pool.Job("x_real", "P", "syn_0", "felix", "real", [], 10, 60, "none", 4, 21.0)
+    assert pool.mem_estimate_gb(j, {}) == 21.0
+    assert pool.mem_estimate_gb(j, {pool.ram_key(j): [30.0]}) == pytest.approx(30.0 * pool.RAM_PROFILE_X)
+    assert pool.mem_estimate_gb(j, {pool.ram_key(j): [5.0]}) == 21.0
+
+
+def test_resource_ledger_samples_a_tagged_leg(tmp_path, monkeypatch):
+    # FX-D140: a live sample attributes this process (tagged) to its leg; the report reads start/sample/end.
+    resource_report = _load("resource_report")
+    tag = "fxd140test"
+    monkeypatch.setattr(pool, "pids_by_tag", lambda tags: {tag: [os.getpid()]})
+    monkeypatch.setattr(pool, "gpu_mib_by_pid", lambda: {})
+    monkeypatch.setattr(pool, "_gpu_query", lambda: [])
+    led = pool.ResourceLedger(tmp_path / "resources.jsonl")
+    r = pool.Running(pool.Job("x_real", "P", "syn_0", "felix", "real", [], 1, 60, "none", 4, 21.0),
+                     None, [0], [], 0, tag, 0.0, tmp_path)
+    led.event("start", jid="x_real", n=1, mem_est_gb=21.0)
+    led.sample({"x_real": r}, pool.Leases(tmp_path / "leases"))
+    assert r.ram and r.ram[0][1] > 0
+    led.event("end", jid="x_real", rc=0, dur_s=1, mem_est_gb=21.0, ram_peak_gb=r.ram[0][1], ram_growth_gb=0.0,
+              gpu_peak_gb=0.0, cores_p95=0.0)
+    table = resource_report.legs_table(resource_report.load([tmp_path]))
+    assert "| x_real | 1 | 21 |" in table and "RAM_OVER" not in table
+
+
+def test_proc_role_reads_the_script_not_the_inline_config(tmp_path, monkeypatch):
+    # FX-D140: trainers pass their config inline (--config-json '{..."aggregator"...}'); the smoke filed all their RAM under agg.
+    argv = {1: [b"python", b"/x/trainer/pytorch/main.py", b"--config-json", b'{"role": "aggregator"}'],
+            2: [b"python", b"/x/aggregator/pytorch/main_felix.py", b"cfg.json"], 3: [b"mosquitto", b"-c", b"m.conf"]}
+    real_read = pool.Path.read_bytes
+    monkeypatch.setattr(pool.Path, "read_bytes", lambda self: b"\0".join(argv[int(self.parent.name)])
+                        if self.name == "cmdline" else real_read(self))
+    assert [pool.proc_role(i) for i in (1, 2, 3)] == ["trainer", "agg", "broker"]
+
+
+def test_ram_formula_per_dataset():
+    # FX-D141: ledger GB/trainer (PR29b/PR30): speech GPU 1.47 and CPU 0.99 overran the old single 1.3 / 0.6.
+    # FX-N84 saves 0.15 (speech) / 0.14 (cifar) GB per trainer.
+    assert pool.leg_ram_formula_gb("cifar10", True, 50) == pytest.approx(66.0)
+    assert pool.leg_ram_formula_gb("google_speech", True, 50) > (1.47 - 0.15) * 50 + 7.2
+    assert pool.leg_ram_formula_gb("google_speech", False, 15) > (0.99 - 0.15) * 15 + 3.1
+
+
+def test_history_save_merges_concurrent_pools(tmp_path, monkeypatch):
+    # FX-D141: two pools load the same file; the last to save used to erase the other's appends.
+    monkeypatch.setattr(pool, "DURATIONS", tmp_path / "h.json")
+    pool._save_history({"k": [1]})
+    a, b = pool._load_history(), pool._load_history()
+    base_a, base_b = {k: list(v) for k, v in a.items()}, {k: list(v) for k, v in b.items()}
+    a["k"].append(2)
+    a["ka"] = [5]
+    b["k"].append(3)
+    pool._save_history(a, base_a)
+    pool._save_history(b, base_b)
+    assert pool._load_history() == {"k": [1, 2, 3], "ka": [5]}
+
+
+def test_min_runtime_reaches_oort_k10_shapes():
+    """FX-N85 d: speech oort T3 syn_20_3sts runs 600 s (300 s gave 10 matched rounds); MIN_RUNTIME_S now sees `*s` shapes."""
+    rt = lambda ds, b: {j.jid: j.runtime_s for j in pool.build_jobs(pool.tier_phases("T3", (b,), ds), 1.0, 1, {})}
+    assert rt("google_speech", "oort")["gs_T3_syn_20_3sts_syn_20_3st_oort_real"] == 600
+    assert rt("google_speech", "oort_star")["gs_T3_syn_20_3sts_syn_20_3st_oort_star_real"] == 300
+    assert rt("cifar10", "oort")["T3_syn_20_3sts_syn_20_3st_oort_real"] == 300
+    assert rt("cifar10", "oort")["T3_mobiperf_3sts_mobiperf_3st_oort_real"] == 3000
+
+
+def test_short_cap_keeps_unaware_oort_syn_50_full_length():
+    """PR36-short: --scale-smoke 240 gave unaware oort syn_50_3sts 1 round (EV1/K8); SHORT_KEEP legs keep full length."""
+    def rt(tier, ds, b):
+        phs = pool.tier_phases(tier, (b,), ds)
+        pool.cap_runtime(phs, 240)
+        return {j.jid: j.runtime_s for j in pool.build_jobs(phs, 1.0, 1, {}) if j.mode == "real"}
+    assert rt("T3", "cifar10", "oort")["T3_syn_50_3sts_syn_50_3st_oort_real"] == 1200
+    assert rt("T3", "cifar10", "oort_star")["T3_syn_50_3sts_syn_50_3st_oort_star_real"] == 240
+    assert rt("T3", "cifar10", "felix")["T3_syn_50_3st_felix_real"] == 240
+    assert rt("T3", "cifar10", "fedbuff")["T3_syn_50_3st_fedbuff_real"] == 240  # GPU-only keep
+    assert rt("G0U", "cifar10", "fedbuff")["G0U_syn_50_3st_fedbuff_real"] == pool.G0U_RUNTIME_S["cifar10"]
+    assert set(rt("G0T", "cifar10", "oort").values()) == {240, pool.G0U_RUNTIME_S["cifar10"]}
+
+
+def test_trainer_cap_per_gpu_spans_legs(tmp_path, monkeypatch):
+    """PR36-short OOM: 137 cifar trainers landed on one A40; FX-T36 caps trainers per GPU across every leg's lease."""
+    monkeypatch.setattr(pool, "GPU_SHARE", 4)
+    a, b = pool.Leases(tmp_path), pool.Leases(tmp_path)
+    a.put("gslot_0_0", "20.0,0.0,0.667")  # a 50-trainer cifar leg (50/75)
+    plan = pool.place_trainers(50, (0.4, 0.0), [0, 2], b, {}, cap=75)  # memory alone would fit 49 more on GPU 0
+    by_gpu = {g: k for g, k, *_ in plan}
+    assert by_gpu.get(0, 0) <= 25 and sum(by_gpu.values()) == 50
+    assert all(abs(sh - k / 75) < 1e-3 for _, k, _, _, _, sh in plan)
+    a.put("gslot_2_0", "20.0,0.0,1.0")
+    assert pool.place_gpus(1, (5.0, 0.0), [2], b, {}, share=0.2) is None  # a full trainer cap blocks whole-GPU legs too
+
+
+def test_per_trainer_footprint_floor_and_nominal_split():
+    """PR36-short: packed legs recorded per placed GPU (÷2-4); the per-trainer estimate never drops below the exclusive minimum."""
+    j = pool.Job("x_sim", "P", "syn_50_3st", "fedbuff", "sim", [], 50, 240, "none", 14, 1.0, 1)
+    assert pool.per_trainer_footprint(j, {pool.gpu_key(j): [[9.5, 0.0]]})[0] == pool.TRAINER_GPU_GB_MIN["cifar10"]
+    assert pool.per_trainer_footprint(j, {pool.gpu_key(j): [[25.0, 0.0]]})[0] == 0.5
+
+
+def test_gpu_equality_tiers_run_deterministic_kernels():
+    """FX-D158: G0U/G0T pairs and their real controls run trainerDeterministic (PL15); G1 stays on default kernels."""
+    for tier in ("G0U", "G0UC", "G0T", "G0TC"):
+        for ds in ("cifar10", "google_speech"):
+            phs = pool.tier_phases(tier, pool.B6, ds)
+            assert phs and all("trainerDeterministic=true" in ph.trainer_hp for ph in phs), (tier, ds)
+    assert all("trainerDeterministic" not in ph.trainer_hp for ph in pool.tier_phases("G1", pool.B6, "cifar10"))
+
+
+def test_code_key_ignores_files_no_leg_runs(tmp_path, monkeypatch):
+    # L18: a doc or grader edit keeps the code state (floors, gate); a run-affecting edit changes it.
+    import subprocess
+    git = lambda *a: subprocess.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True)
+    files = {"lib/python/flame/agg.py": "x = 1\n", "lib/python/examples/_metadata/FELIX.md": "a\n",
+             "lib/python/examples/scripts/parity_ladder.py": "y = 1\n", "lib/python/examples/scripts/run_pr35.py": "z = 1\n"}
+    for f, t in files.items():
+        (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f).write_text(t)
+    git("init", "-q")
+    git("add", ".")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c0")
+    monkeypatch.setattr(pool, "REPO", tmp_path)
+    k0 = pool.code_key()
+    for f in list(files)[1:]:
+        (tmp_path / f).write_text("edited\n")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "c1")
+    assert pool.code_key() == k0
+    (tmp_path / "lib/python/flame/agg.py").write_text("x = 2\n")
+    assert pool.code_key() != k0
+
+
+def test_g3_shape_meets_baseline_constraints():
+    # PR37: one n:c:K for all six; Oort K >= 10 (FX-L63), sync K/n >= 5% (L34), c > K, <= 75 cifar / 25 speech per A40 (FX-T36)
+    per_gpu = {"cifar10": 75, "google_speech": 25}
+    for ds, sh in pool.G3_SHAPE.items():
+        assert sh["agg_goal"] >= 10 and sh["agg_goal"] / sh["n"] >= 0.05 and sh["c"] > sh["agg_goal"]
+        assert sh["n"] <= per_gpu[ds] * sh["gpus"]
+        phs = pool.tier_phases("G3", B6, ds)
+        assert len(phs) == 3 and all(set(p.baselines) == set(B6) and p.n == sh["n"] and p.runtime_s == pool.G3_RUNTIME_S for p in phs)
+        assert all("trainerDeterministic=true" in p.trainer_hp for p in phs)
+        assert [p.kind for p in pool.tier_phases("G3C", B6, ds)] == ["real"] * 3
+
+
+def test_measured_lease_sizes_pairs_from_their_p95(monkeypatch):
+    # FX-N99 1: PR36 T3 legs leased 14-74 CPUs for a measured p95 of 0.1-1.2 cores.
+    ph = pool.shaped("T3_syn_50_3st", ("felix", "oort"), "syn_50_3st", "pair", "cifar10")
+    jobs = pool.build_jobs([ph], 1.0, 1, {})
+    formula = {j.jid: j.cpus for j in jobs}
+    key = lambda b, m: pool.cores_key(next(j for j in jobs if j.baseline == b and j.mode == m))
+    hist = {key("felix", "real"): [0.4, 1.2], key("felix", "sim"): [6.0], key("oort", "real"): [0.1]}
+    monkeypatch.setattr(pool, "MEASURED", False)
+    assert {j.jid: j.cpus for j in pool.build_jobs([ph], 1.0, 1, hist)} == formula  # off: byte-identical
+    monkeypatch.setattr(pool, "MEASURED", True)
+    hist[key("felix", "real")] = [6.0]
+    got = {(j.baseline, j.mode): j.cpus for j in pool.build_jobs([ph], 1.0, 1, hist)}
+    assert got[("felix", "real")] == 8  # ceil(1.25 x 6 / 2) = 4 cores
+    assert got[("felix", "sim")] == min(8, formula[next(j.jid for j in jobs if j.baseline == "felix" and j.mode == "sim")])  # sims >= 4 cores
+    assert got[("oort", "real")] == 4  # floor: 2 physical cores
+    hist[pool.margin_key(next(j for j in jobs if j.baseline == "oort"))] = [3.0]
+    assert pool.predicted_cores(next(j for j in jobs if j.baseline == "oort" and j.mode == "real"), hist) == pytest.approx(0.3)
+
+
+def test_gpu_priority_wants_span_pools(tmp_path):
+    # FX-N99 4: a lower-priority pool leaves GPUs for a higher-priority pool's blocked leg.
+    a, b = pool.Leases(tmp_path), pool.Leases(tmp_path)
+    a.put("want_p000_1", 4)
+    assert pool.gpus_wanted_above(b, 3) == 4 and pool.gpus_wanted_above(b, 0) == 0
+    a.put("want_p000_1", 2)
+    assert pool.gpus_wanted_above(b, 3) == 2
+    a.drop(["want_p000_1"])
+    assert pool.gpus_wanted_above(b, 3) == 0
+
+
+def test_node_load_reads_busy_cores():
+    load = pool.NodeLoad()
+    load.tick()
+    load.tick()
+    assert load.ema is None or 0.0 <= load.ema <= load.ncpu
+    assert load.runq >= 0.0
+
+
+def test_shared_gpus_pack_by_measured_footprint(tmp_path, monkeypatch):
+    # FX-N100 2: E1 cifar G0U legs peaked 19.8 GB on a 45 GB GPU, so two share one; a third, or an unmeasured leg, does not.
+    monkeypatch.setattr(pool, "GPU_SHARE", 3)
+    a, b = pool.Leases(tmp_path), pool.Leases(tmp_path)
+    fp = (19.8, 1.0)
+    p1 = pool.place_gpus(1, fp, [0, 2], a, {})
+    assert p1 == [(0, "gslot_0_0")] and a.take_all([p1[0][1]])
+    a.put(p1[0][1], "19.8,1.0")
+    p2 = pool.place_gpus(1, fp, [0, 2], b, {})
+    assert p2 == [(2, "gslot_2_0")]  # least committed first
+    b.put("gslot_2_0", "19.8,1.0")
+    assert pool.place_gpus(1, fp, [0, 2], b, {}) in ([(0, "gslot_0_1")], [(2, "gslot_2_1")])  # 39.6 <= 40.5
+    b.put("gslot_0_1", "19.8,1.0")
+    b.put("gslot_2_1", "19.8,1.0")
+    assert pool.place_gpus(1, fp, [0, 2], b, {}) is None  # a third would pass 90%
+    assert pool.place_gpus(1, (pool.GPU_MEM_CAP * pool.GPU_GB, 90.0), [0, 2, 3], b, {}) == [(3, "gslot_3_0")]  # unmeasured: empty GPU
+    assert pool.place_gpus(1, fp, [3], b, {3: 30.0}) is None  # live use counts too
+
+
+def test_gpu_footprint_takes_the_real_and_sim_max():
+    # E2 OOM: a 2.7-min speech sim recorded 14.8 GB/GPU; its real twin (same trainers) peaked at 28.3. One key for both.
+    j = pool.Job("x_sim", "P", "syn_50_3st", "felix", "sim", [], 50, 240, "none", 14, 1.0, 2, dataset="google_speech")
+    twin = pool.Job("x_real", "P", "mobiperf_3st", "felix", "real", [], 50, 900, "none", 14, 1.0, 2, dataset="google_speech")
+    assert pool.gpu_key(j) == pool.gpu_key(twin)
+    hist = {pool.gpu_key(j): [[14.8, 1.1], [28.3, 1.2]]}
+    assert pool.gpu_footprint(j, hist) == (28.3, 1.2)
+    assert pool.gpu_footprint(j, {})[0] == pool.GPU_MEM_CAP * pool.GPU_GB and pool.per_trainer_footprint(j, {}) is None
+
+
+def test_trainers_fill_gaps_beside_other_legs(tmp_path, monkeypatch):
+    # FX-N100: a speech leg (50 x 1.13 GB) splits around a cifar leg's 19.8 GB instead of waiting for two empty GPUs.
+    monkeypatch.setattr(pool, "GPU_SHARE", 3)
+    a, b = pool.Leases(tmp_path), pool.Leases(tmp_path)
+    a.put("gslot_0_0", "19.8,0.0")
+    plan = pool.place_trainers(50, (1.13, 0.0), [0, 2, 3], b, {})
+    gpus = [g for g, *_ in plan]
+    assert gpus[0] == 0 and sum(k for _, k, *_ in plan) == 50  # the partly used GPU is filled first
+    for g, k, _, gb, *_ in plan:
+        assert gb <= pool.GPU_MEM_CAP * pool.GPU_GB - (19.8 if g == 0 else 0.0) + 1e-6
+    assert plan[-1][3] >= pool.AGG_GPU_GB  # the aggregator's GPU is last and carries its share
+    assert pool.place_trainers(50, (1.13, 0.0), [0], b, {}) is None  # all or nothing: no partial reservation

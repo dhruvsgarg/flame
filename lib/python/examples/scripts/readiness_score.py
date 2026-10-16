@@ -2,9 +2,9 @@
 """Felix readiness score (PARITY C5): baseline x dataset x scenario cells, each green only if every graded pair of that cell
 in the given pools is green (INV/EXACT + EV, `parity_ladder --grade --max-stage 9`; worst pair wins).
 
-  readiness_score.py POOL [POOL ...]          # markdown matrix + score; pass the pools of one code state
+  readiness_score.py POOL [POOL ...]          # markdown matrix + score; pass pools oldest first: a later pool's grade of the same pair supersedes
 
-Scenarios: syn_0 (syn_0/0b), syn_20, syn_50, mobiperf (pair tiers T3/G0U/P*), stream_lin / stream_eve (G0T), stream_cpu (P7).
+Scenarios: syn_0 (syn_0/0b), syn_20_3st, syn_50_3st, mobiperf (pair tiers T3/G0U/P*), stream_lin / stream_eve (G0T), stream_cpu (P7).
 Not scored: P11 (injected bugs, graded CAUGHT), oracle arms, real-only (*C) and sim-only (G1AS) phases. Speech mobiperf
 Oort cells are n/a (FX-D106); speech stream_cpu is n/a (P7 harness invalid for the real speech model, FX-N86; G0T covers it).
 """
@@ -17,8 +17,8 @@ import parity_ladder as pl  # noqa: E402
 
 BASELINES = ("felix", "fedbuff", "refl", "oort", "oort_star", "feddance")
 DATASETS = ("cifar10", "google_speech")
-SCENARIOS = ("syn_0", "syn_20", "syn_50", "mobiperf", "stream_lin", "stream_eve", "stream_cpu")
-TRACE = {"syn_0": "syn_0", "syn_0b": "syn_0", "syn_20": "syn_20", "syn_50": "syn_50", "mobiperf_3st": "mobiperf"}
+SCENARIOS = ("syn_0", "syn_20_3st", "syn_50_3st", "mobiperf", "stream_lin", "stream_eve", "stream_cpu")
+TRACE = {"syn_0": "syn_0", "syn_0b": "syn_0", "syn_20_3st": "syn_20_3st", "syn_50_3st": "syn_50_3st", "mobiperf_3st": "mobiperf"}
 MARK = {"green": "✅", "known": "⚠", "red": "❌", None: "·", "n/a": "–"}
 
 
@@ -35,15 +35,18 @@ def scenario(phase: str, trace: str):
 
 def score(pools):
     rank = {"green": 0, "known": 1, "red": 2}
-    cells = {}
+    pairs = {}  # a later pool's grade of the same pair supersedes an earlier one
     for root in pools:
         for c in pl.grade_pool(Path(root), 9):
             sc = scenario(c.phase, c.trace)
             if sc is None or c.baseline not in BASELINES:
                 continue
-            k = (c.baseline, c.dataset, sc)
-            if k not in cells or rank[c.status] > rank[cells[k]]:
-                cells[k] = c.status
+            pairs[(c.baseline, c.dataset, sc, c.phase, c.trace)] = c.status
+    cells = {}
+    for (b, d, sc, _, _), st in pairs.items():
+        k = (b, d, sc)
+        if k not in cells or rank[st] > rank[cells[k]]:
+            cells[k] = st
     for b in ("oort", "oort_star"):
         cells[(b, "google_speech", "mobiperf")] = "n/a"
     for b in BASELINES:

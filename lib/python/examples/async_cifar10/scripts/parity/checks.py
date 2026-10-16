@@ -541,8 +541,18 @@ def load_run_dir(run_dir: str) -> tuple:
     agg_data["training_delay_factor"], agg_data["training_delay_floor_s"] = \
         _load_training_delay_config(run_dir)
     agg_data["task_timeout_s"] = _load_task_timeout_s(run_dir)
+    agg_data["async_stack"] = _async_stack(run_dir)
     _mark_stall_causes(agg_data, trainer_data, run_dir)
     return agg_data, trainer_data
+
+
+def _async_stack(run_dir: str) -> Optional[bool]:
+    """True for the asyncfl stack (fedbuff optimizer: felix, fedbuff); None if the config is unreadable."""
+    try:
+        with open(os.path.join(run_dir, "aggregator_config.json")) as f:
+            return str(json.load(f).get("optimizer", {}).get("sort", "")).lower() == "fedbuff"
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
 
 
 _GATED_SEND_S = 0.5  # a real send held this long at the send-gate is a withheld delivery
@@ -552,11 +562,7 @@ def _mark_stall_causes(agg_data: dict, trainer_data: dict, run_dir: str) -> None
     """FX-N62: stamp `stall_cause` on each sync train round that waited on an abandon or on a withheld (send-gated)
     update of its own version among its contributors (sim `withheld_delivery` at staleness 0; real `task_send` gated
     > 0.5 s). A stale gated straggler lands in a round that never waited for it; async rounds stay unstamped."""
-    try:
-        with open(os.path.join(run_dir, "aggregator_config.json")) as f:
-            if str(json.load(f).get("optimizer", {}).get("sort", "")).lower() == "fedbuff":
-                return
-    except (OSError, json.JSONDecodeError, AttributeError):
+    if _async_stack(run_dir) is not False:
         return
     gated = {(e.get("end_id"), e.get("round")) for e in agg_data.get("withheld_deliveries", [])
              if e.get("accepted", True) and not e.get("staleness")}
@@ -2931,12 +2937,23 @@ def _round_axis(*legs: dict) -> bool:
     return all(_progress_axis(leg["agg_rounds"]) == "round" for leg in legs)
 
 
-def _stall_episodes(adv: list, cut: float = _TIMEOUT_STALL_S) -> list:
+ASYNC_NO_STALLS = True  # FX-D164; False strips length-only "stalls" from async legs again
+
+
+def _stall_axis(*legs: dict) -> bool:
+    """FX-D164: stall stripping is sync-only; an async gap is trace scarcity (FX-L40), graded raw."""
+    if ASYNC_NO_STALLS and any(leg.get("async_stack") for leg in legs):
+        return False
+    return _round_axis(*legs)
+
+
+def _stall_episodes(adv: list, cut: float = _TIMEOUT_STALL_S, slow: Optional[float] = None) -> list:
     """FX-N62: index lists of timeout stalls: one round >= the cut or stamped with a `stall_cause`, or consecutive slow
     rounds (>= 3x median) that sum past it (a late alive pick splits one 90s stall into pieces, some under the cut)."""
     if not adv:
         return []
-    slow = max(cut / 8, 3 * statistics.median(adv))
+    if slow is None:
+        slow = _slow_band(adv, cut)
     eps, i = [], 0
     while i < len(adv):
         if adv[i] >= cut or getattr(adv[i], "cause", None):  # by length, or by cause (an abandon / withheld delivery)
@@ -2971,40 +2988,95 @@ def _skip_if_few_free(result: dict, real_free: list, sim_free: list, n_rounds: i
         result.update(ok=True, status="SKIP", note=f"{n} stall-free rounds < {_MIN_FREE_ROUNDS}: timing ungradeable")
 
 
-def _stall_free(adv: list, *legs: dict) -> list:
+def _stall_free(adv: list, *legs: dict, drop: Optional[set] = None) -> list:
     """FX-N62: rounds outside every timeout stall; round axis only (a fwdllm data_id is not a round)."""
-    if not _round_axis(*legs):
+    if not _stall_axis(*legs):
         return adv
-    drop = {i for ep in _stall_episodes(adv, _stall_cut(*legs)) for i in ep}
+    if drop is None:
+        drop = {i for ep in _stall_episodes(adv, _stall_cut(*legs)) for i in ep}
     return [a for i, a in enumerate(adv) if i not in drop] or _AllStall(adv)
 
 
+PAIR_MATCH_STALLS = True  # FX-D157; False reverts to per-side classification
+
+
+def _slow_band(adv: list, cut: float) -> float:
+    return max(cut / 8, 3 * statistics.median(adv)) if adv else cut
+
+
+PAIR_SLOW_BAND = True  # FX-D159; False reverts to a per-side slow band
+
+
+def _pair_stall_sets(r_adv: list, s_adv: list, cut: float) -> tuple:
+    """FX-D157: per-side stall rounds with matched episode counts; the side with fewer promotes its longest slow-band
+    rounds (70 s vs 74 s at a 72 s cut moved stall-free means 20%). K3s still grades raw counts.
+    FX-D159: both sides share one slow band (pooled median); per-side medians split twin rounds (12.1 vs 12.14 s)."""
+    shared = _slow_band(list(r_adv) + list(s_adv), cut) if PAIR_SLOW_BAND else None
+    sets = []
+    for adv in (r_adv, s_adv):
+        eps = _stall_episodes(adv, cut, shared)
+        sets.append(({i for ep in eps for i in ep}, len(eps)))
+    if not PAIR_MATCH_STALLS or sets[0][1] == sets[1][1]:
+        return sets[0][0], sets[1][0]
+    lo = 0 if sets[0][1] < sets[1][1] else 1
+    adv, (drop, n) = (r_adv, s_adv)[lo], sets[lo]
+    slow = shared if shared is not None else _slow_band(adv, cut)
+    band = sorted((i for i, a in enumerate(adv) if i not in drop and slow <= a < cut), key=lambda i: -adv[i])
+    drop = drop | set(band[:sets[1 - lo][1] - n])
+    return (drop, sets[1][0]) if lo == 0 else (sets[0][0], drop)
+
+
+def _tail_cut(real: dict, sim: dict) -> int:
+    """FX-D174: 1 when the last round both legs reached holds fewer commits on one side (its stop cut it), else 0."""
+    if "data_id" in (_progress_axis(real["agg_rounds"]), _progress_axis(sim["agg_rounds"])):
+        return 0
+    rc = collections.Counter(e.get("round") for e in real["agg_rounds"])
+    sc = collections.Counter(e.get("round") for e in sim["agg_rounds"])
+    common = [r for r in rc if r in sc and r is not None]
+    return int(bool(common) and rc[max(common)] != sc[max(common)])
+
+
+def _stall_free_pair(r_adv: list, s_adv: list, real: dict, sim: dict) -> tuple:
+    """FX-N62 + FX-D157: (real, sim) stall-free rounds with matched episode counts."""
+    if not _stall_axis(real, sim):
+        return r_adv, s_adv
+    r_drop, s_drop = _pair_stall_sets(r_adv, s_adv, _stall_cut(real, sim))
+    return _stall_free(r_adv, real, sim, drop=r_drop), _stall_free(s_adv, real, sim, drop=s_drop)
+
+
 def _adv_to_n(agg_rounds: list, prog_fn, N, time_fn) -> list:
-    """Per-round clock advances up to N, each carrying its `stall_cause`."""
+    """Per-round clock advances up to N, each carrying its `stall_cause`; zero advances kept (L32, FX-D159)."""
     evs = [e for e in agg_rounds if (p := prog_fn(e)) is not None and p <= N and time_fn(e) is not None]
     return [_RoundAdv(time_fn(b) - time_fn(a), b.get("stall_cause")) for a, b in zip(evs, evs[1:])
-            if time_fn(b) > time_fn(a)]
+            if time_fn(b) >= time_fn(a)]
 
 
-def _stall_s_to_n(agg_rounds: list, prog_fn, N, time_fn, real: dict, sim: dict) -> float:
-    """FX-N62: timeout-stall seconds (excess over the median round) up to N; K3s owns the stall rate."""
-    if not _round_axis(real, sim):
-        return 0.0
-    return _stall_excess_s(_adv_to_n(agg_rounds, prog_fn, N, time_fn), _stall_cut(real, sim))
+def _stall_s_to_n(real: dict, sim: dict, prog_fn, N, real_time_fn, sim_time_fn) -> tuple:
+    """FX-N62: (real, sim) timeout-stall seconds (excess over the median round) up to N, stall sets pair-matched
+    (FX-D157/D159); K3s owns the stall rate."""
+    if not _stall_axis(real, sim):
+        return 0.0, 0.0
+    cut = _stall_cut(real, sim)
+    advs = (_adv_to_n(real["agg_rounds"], prog_fn, N, real_time_fn),
+            _adv_to_n(sim["agg_rounds"], prog_fn, N, sim_time_fn))
+    return tuple(_stall_excess_s(a, cut, d) for a, d in zip(advs, _pair_stall_sets(*advs, cut)))
 
 
 def _few_free_note(real: dict, sim: dict, real_adv: list, sim_adv: list) -> Optional[str]:
-    """FX-D119: a side with no stall-free round has no stall-free time; the note says so, else None."""
-    if not _round_axis(real, sim) or not real_adv or not sim_adv:
+    """FX-D119: too few stall-free rounds = no gradeable stall-free time; the note says so, else None.
+    FX-D139: same bar as throughput, min(10, rounds)."""
+    if not _stall_axis(real, sim) or not real_adv or not sim_adv:
         return None
     probe: dict = {}
-    _skip_if_few_free(probe, _stall_free(real_adv, real, sim), _stall_free(sim_adv, real, sim), 1)
+    _skip_if_few_free(probe, *_stall_free_pair(real_adv, sim_adv, real, sim),
+                      min(len(real_adv), len(sim_adv)))
     return probe.get("note")
 
 
-def _stall_excess_s(adv: list, cut: float) -> float:
+def _stall_excess_s(adv: list, cut: float, stall: Optional[set] = None) -> float:
     """FX-N62: stall rounds' time over a stall-free round's (median) cost; the stall round itself still counts."""
-    stall = {i for ep in _stall_episodes(adv, cut) for i in ep}
+    if stall is None:
+        stall = {i for ep in _stall_episodes(adv, cut) for i in ep}
     free = [a for i, a in enumerate(adv) if i not in stall]
     med = statistics.median(free or adv) if adv else 0.0
     return sum(max(0.0, adv[i] - med) for i in stall)  # FX-D119: a short cause-stamped round saves no time
@@ -3102,7 +3174,7 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY
     # extra tail units -- the expensive ones sim never reached -- were inflating
     # its mean and understating the residual (fedbuff_round 0.024 -> 0.080).
     # §D-4/§F-2, the rule `terminal_state` already followed (§D-75).
-    matched_n = min(n_sim_rounds, n_real_rounds)
+    matched_n = min(n_sim_rounds, n_real_rounds) - _tail_cut(real, sim)
     if matched_n < 2:
         _skip_unmatched(result, matched_n)
     else:
@@ -3113,7 +3185,7 @@ def throughput_parity(real: dict, sim: dict, tol_rel: float = _THROUGHPUT_FAMILY
             sim["agg_rounds"],
             use_vclock=_b_uses_vclock(sim["agg_rounds"], same_mode))[: matched_n - 1]
         n_rounds = min(len(real_adv), len(sim_adv))
-        real_adv, sim_adv = _stall_free(real_adv, real, sim), _stall_free(sim_adv, real, sim)  # FX-N62
+        real_adv, sim_adv = _stall_free_pair(real_adv, sim_adv, real, sim)  # FX-N62, FX-D157
         if real_adv and sim_adv:
             r_mean = sum(real_adv) / len(real_adv)
             s_mean = sum(sim_adv) / len(sim_adv)
@@ -3197,13 +3269,13 @@ def per_round_advance_parity(real: dict, sim: dict,
     # Same population-mismatch rationale as throughput_parity's matched_window_*.
     # The override used to be gated on `_real_intrinsic_clock`, a SYNC-only wall
     # coordinate `matched_n` never reads, so async graded the full run (§D-84).
-    matched_n = min(len(sim_adv), len(real_adv))
+    matched_n = min(len(sim_adv), len(real_adv)) - _tail_cut(real, sim)
     if matched_n < 2:
         _skip_unmatched(result, matched_n)
     else:
         matched_sim = sim_adv[:matched_n]
         matched_real = real_adv[:matched_n]
-        _fs, _fr = _stall_free(matched_sim, real, sim), _stall_free(matched_real, real, sim)  # FX-N62
+        _fr, _fs = _stall_free_pair(matched_real, matched_sim, real, sim)  # FX-N62, FX-D157
         matched_sim_mean = sum(_fs) / len(_fs)
         matched_real_mean = sum(_fr) / len(_fr)
         matched_mean_rel_diff = (
@@ -3388,11 +3460,8 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
         span = max(times) - min(times)
         if span <= 0:
             return None
-        adv = span / len(evs)
         rounds = _per_round_advances(evs, use_vclock)
-        if _round_axis(real, sim):  # FX-N62: stall time out of the clock span, at round level
-            adv = (span - _stall_excess_s(rounds, _stall_cut(real, sim))) / len(evs)
-        return {"barrier": sum(barriers) / len(barriers), "adv": adv,
+        return {"barrier": sum(barriers) / len(barriers), "adv": span / len(evs),
                 "cycles": len(evs), "span": span, "rounds": rounds}
 
     # Each side on its OWN clock (§D-73): a leg carrying a vclock reads THAT, so a
@@ -3408,6 +3477,10 @@ def overlap_factor(real: dict, sim: dict, tol: float = 0.3,
     _few = _few_free_note(real, sim, r["rounds"], s["rounds"])
     if _few:  # FX-D119
         return {"ok": True, "tier": "EXACT", "status": "SKIP", "note": _few}
+    if _stall_axis(real, sim):  # FX-N62: stall time out of the clock span, at round level (counts matched, FX-D157)
+        cut = _stall_cut(real, sim)
+        for side_, drop in zip((r, s), _pair_stall_sets(r["rounds"], s["rounds"], cut)):
+            side_["adv"] = (side_["span"] - _stall_excess_s(side_["rounds"], cut, drop)) / side_["cycles"]
     real_ov = r["barrier"] / r["adv"]
     sim_ov = s["barrier"] / s["adv"]
     abs_diff = abs(sim_ov - real_ov)
@@ -3473,8 +3546,8 @@ def total_commits_parity(real: dict, sim: dict,
     real_t = _time_to_progress(real["agg_rounds"], prog_fn, N, real_time_fn)
     sim_t = _time_to_progress(sim["agg_rounds"], prog_fn, N, sim_time_fn)
     if real_t and sim_t:  # FX-N62: stall-free, as K8
-        real_t -= _stall_s_to_n(real["agg_rounds"], prog_fn, N, real_time_fn, real, sim)
-        sim_t -= _stall_s_to_n(sim["agg_rounds"], prog_fn, N, sim_time_fn, real, sim)
+        r_st, s_st = _stall_s_to_n(real, sim, prog_fn, N, real_time_fn, sim_time_fn)
+        real_t, sim_t = real_t - r_st, sim_t - s_st
     if not real_t or not sim_t or max(real_t, sim_t) <= 0:
         return {"ok": True, "tier": "EXACT", "status": "SKIP",
                 "note": "zero time-to-N in one mode — run too short to measure"}
@@ -3533,8 +3606,8 @@ def terminal_state_parity(real: dict, sim: dict,
     sim_t = _time_to_progress(sim["agg_rounds"], prog_fn, N, sim_time_fn)
     raw_t = (real_t, sim_t)
     if real_t and sim_t:  # FX-N62: stall-free, as K2/K3b/K4
-        real_t -= _stall_s_to_n(real["agg_rounds"], prog_fn, N, real_time_fn, real, sim)
-        sim_t -= _stall_s_to_n(sim["agg_rounds"], prog_fn, N, sim_time_fn, real, sim)
+        r_st, s_st = _stall_s_to_n(real, sim, prog_fn, N, real_time_fn, sim_time_fn)
+        real_t, sim_t = real_t - r_st, sim_t - s_st
 
     def _trainers(agg_rounds):
         ts = set()
@@ -3688,7 +3761,7 @@ def _overrun_stats(trainers: dict) -> tuple:
 
 
 def timing_overrun(real_trainers: dict, sim_trainers: dict,
-                   warn_frac: float = 0.05) -> dict:
+                   warn_frac: float = 0.05, max_frac: Optional[float] = None) -> dict:
     """Ovr [DIAG]: fraction of trainer rounds where the real GPU pass OVERRAN the
     modeled mobile-device delay budget.
 
@@ -3705,6 +3778,7 @@ def timing_overrun(real_trainers: dict, sim_trainers: dict,
     DIAG (never fails); reports per-mode overrun fraction + the earliest
     (data_id, iteration) an overrun occurs (cross-check against cohort_sequence
     first_divergence). SKIPs when `training_overran` is absent (delays disabled).
+    `max_frac` set (FX-N76, PL19): INV, fails when a side overruns more than max(1, max_frac x tasks).
     """
     rn, ro, rf = _overrun_stats(real_trainers)
     sn, so, sf = _overrun_stats(sim_trainers)
@@ -3726,9 +3800,12 @@ def timing_overrun(real_trainers: dict, sim_trainers: dict,
         verdict = (f"OVERRUN {worst:.1%} — GPU exceeds the modeled delay budget; "
                    "update order can flip → expect cohort_sequence/v2 breaks. "
                    "Raise delay_factor or lower perturbation_count (fluxtune).")
+    graded = max_frac is not None
+    ok = not graded or all(o <= max(1, int(max_frac * n)) for o, n in ((ro, rn), (so, sn)))
     return {
-        "ok": True,
-        "tier": "DIAG",
+        "ok": ok,
+        "tier": "INV" if graded else "DIAG",
+        "max_frac": max_frac,
         "real_overrun_frac": round(r_frac, 4),
         "sim_overrun_frac": round(s_frac, 4),
         "real_overran": ro, "real_rounds": rn,
@@ -3974,12 +4051,11 @@ def overhead_residual(real: dict, sim: dict, tol_rel: float = 0.10,
     # Same population-mismatch rationale as throughput_parity's matched_window_*:
     # sim's round count legitimately outruns real's wall-capped one, inflating
     # the raw residual. Applies on every baseline, not just sync (§D-84).
-    matched_n = min(len(sim_adv), len(real_adv))
+    matched_n = min(len(sim_adv), len(real_adv)) - _tail_cut(real, sim)
     if matched_n < 2:
         _skip_unmatched(result, matched_n)
     else:
-        matched_sim = _stall_free(sim_adv[:matched_n], real, sim)  # FX-N62
-        matched_real = _stall_free(real_adv[:matched_n], real, sim)
+        matched_real, matched_sim = _stall_free_pair(real_adv[:matched_n], sim_adv[:matched_n], real, sim)  # FX-D157
         matched_sim_mean = sum(matched_sim) / len(matched_sim)
         matched_real_mean = sum(matched_real) / len(matched_real)
         matched_residual = matched_real_mean - matched_sim_mean
@@ -4949,7 +5025,7 @@ def send_gate_wait_fidelity_parity(trainer_dict: dict, ground_truth: Optional[di
             if obs is None or sct is None:
                 continue
             n_events += 1
-            expected = expected_send_gate_wait(gt, float(sct))
+            expected = expected_send_gate_wait(gt, float(sct), e.get("task_to_perform") or "train")
             if expected is None:
                 n_uncomparable += 1
                 continue
@@ -7810,7 +7886,8 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
                    max_bin: Optional[int] = None,
                    floors: Optional[dict] = None,
                    same_mode: bool = False,
-                   floors_tighten: bool = True) -> dict:
+                   floors_tighten: bool = True,
+                   overrun_max_frac: Optional[float] = None) -> dict:
     """Run the full parity + invariant battery; returns {name: result_dict}.
 
     Ordered HIGH → MID → LOW so coarse failures surface first:
@@ -8026,7 +8103,10 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["trainer_phase"] = trainer_phase_parity(real_trainers, sim_trainers)
     results["gpu_budget_real"] = gpu_budget_ok(real_trainers)
     results["gpu_budget_sim"] = gpu_budget_ok(sim_trainers)
-    results["timing_overrun"] = timing_overrun(real_trainers, sim_trainers)
+    results["timing_overrun"] = timing_overrun(real_trainers, sim_trainers, max_frac=overrun_max_frac)
+    if overrun_max_frac is not None and results.get("phase_gpu_compute", {}).get("status") != "SKIP":
+        # FX-N76: contended real compute is off the clock unless it overruns D (timing_overrun)
+        results["phase_gpu_compute"]["tier"] = "DIAG"
     results["stream_growth"] = stream_growth_parity(real_trainers, sim_trainers)
     results["sim_send_ts"] = sim_send_ts_ok(real_trainers, sim_trainers)
 
@@ -8223,7 +8303,7 @@ CHECK_META: dict = {
     "trainer_phase":           {"stage": 4, "role": "DIAG",     "deps": ()},
     "gpu_budget_real":         {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
     "gpu_budget_sim":          {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
-    "timing_overrun":          {"stage": 4, "role": "DIAG",     "deps": ("gpu_budget_real", "gpu_budget_sim")},
+    "timing_overrun":          {"stage": 4, "role": "MECHANISM", "deps": ("gpu_budget_real", "gpu_budget_sim")},
     "stream_growth":           {"stage": 7, "role": "DIAG",     "deps": ()},
     "sim_send_ts":             {"stage": 4, "role": "CONTROL",  "deps": ("vclock_telemetry",)},
     # ── Stage 5 Update return & ordering ──

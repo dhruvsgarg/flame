@@ -85,6 +85,7 @@ _SECTIONS = [
         ("T_  per-phase combined (diagnostic)", "trainer_phase"),
         ("T3  GPU budget respected (real)",     "gpu_budget_real"),
         ("T3  GPU budget respected (sim)",      "gpu_budget_sim"),
+        ("Ovr overruns of D (PL19)",            "timing_overrun"),
         ("K6  sim_send_ts correctness",         "sim_send_ts"),
     ]),
     ("5", "Update Return & Ordering", [
@@ -239,6 +240,11 @@ def _fmt_metric(name: str, res: dict) -> list:
                 f"         mean_overrun_frac={mof}  "
                 f"trainers_with_overrun={res.get('trainers_with_any_overrun')}",
             ]
+    elif name == "timing_overrun" and "real_overran" in res:
+        lines += [
+            f"         real {res['real_overran']}/{res['real_rounds']}  sim {res['sim_overran']}/{res['sim_rounds']}"
+            f"  (max {res.get('max_frac')})",
+        ]
     elif name == "sim_send_ts":
         issues = res.get("issues", [])
         if issues:

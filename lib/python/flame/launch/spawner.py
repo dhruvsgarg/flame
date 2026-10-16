@@ -176,7 +176,7 @@ class ConfigGenerator:
             )
 
         # Add all synthetic traces (for flexibility)
-        for trace_name in ["syn_0", "syn_10", "syn_20", "syn_50"]:
+        for trace_name in ["syn_0", "syn_10_3st", "syn_20_3st", "syn_50_3st"]:
             config["hyperparameters"][f"avl_events_{trace_name}"] = (
                 self.metadata.get_synthetic_trace(trace_name, trainer_id)
             )
@@ -209,6 +209,35 @@ class ConfigGenerator:
         return config
 
 
+def balanced_gpu_placement(delays: Dict[int, float], gpu_ids: List[int],
+                           caps: Optional[Dict[int, int]] = None) -> Dict[int, int]:
+    """FX-N98: trainer -> GPU, greedy by expected task rate 1/D (fastest first) onto the least-loaded GPU with
+    fewer than ceil(n/G) trainers; round-robin stacked fast trainers on one GPU, which then paced the sim.
+    `caps` (FX-N100, `FLAME_GPU_TRAINER_CAPS`): per-GPU trainer limits; load is balanced relative to each cap."""
+    if caps:
+        if sum(caps.get(g, 0) for g in gpu_ids) < len(delays):
+            raise ValueError(f"GPU trainer caps {caps} hold fewer than {len(delays)} trainers")
+        cap_of = {g: caps.get(g, 0) for g in gpu_ids}
+        key = lambda g: (load[g] / cap_of[g], count[g] / cap_of[g])
+    else:
+        cap_of = dict.fromkeys(gpu_ids, -(-len(delays) // len(gpu_ids)))
+        key = lambda g: (load[g], count[g])
+    load, count, out = {g: 0.0 for g in gpu_ids}, {g: 0 for g in gpu_ids}, {}
+    for t in sorted(delays, key=lambda t: (delays[t], t)):
+        g = min((g for g in gpu_ids if count[g] < cap_of[g]), key=key)
+        out[t] = g
+        load[g] += 1.0 / max(delays[t], 1e-9)
+        count[g] += 1
+    return out
+
+
+def parse_gpu_trainer_caps(text: str) -> Optional[Dict[int, int]]:
+    """'0:20,3:15' -> {0: 20, 3: 15}; empty -> None (even split)."""
+    if not text.strip():
+        return None
+    return {int(g): int(c) for g, c in (kv.split(":") for kv in text.split(",") if kv.strip())}
+
+
 class TrainerSpawner:
     """Spawns trainer processes with GPU affinity."""
 
@@ -217,6 +246,7 @@ class TrainerSpawner:
         config_generator: ConfigGenerator,
         num_gpus: int = 8,
         gpu_ids: Optional[list] = None,
+        gpu_placement: str = "balanced",
         sleep_between_spawns: float = 1.0,
         log_file: Optional[Path] = None,
         time_mode: str = "simulated",
@@ -231,6 +261,8 @@ class TrainerSpawner:
         # defaults to the full range when not given.
         self.gpu_ids = list(gpu_ids) if gpu_ids else list(range(num_gpus))
         self._explicit_gpu_ids = bool(gpu_ids)
+        self.gpu_placement = gpu_placement
+        self._gpu_of: Dict[int, int] = {}  # trainer_id -> GPU when not round-robin
         self.reserved_cores = {int(c) for c in reserved_cores} if reserved_cores else set()
         self.sleep_between_spawns = sleep_between_spawns
         self.log_file = log_file
@@ -322,7 +354,7 @@ class TrainerSpawner:
         config_json = json.dumps(config)
 
         # Determine GPU; an empty pool (CPU harness) hides every GPU.
-        gpu_id = self.gpu_ids[(trainer_id - 1) % len(self.gpu_ids)] if self.gpu_ids else None
+        gpu_id = self._gpu_of.get(trainer_id, self.gpu_ids[(trainer_id - 1) % len(self.gpu_ids)]) if self.gpu_ids else None
 
         # Pin to a disjoint block of cores: spare cores (n < usable) widen each block.
         cpu_core: Optional[int] = None
@@ -429,6 +461,18 @@ class TrainerSpawner:
         print(f"  Availability: {availability_mode}")
         print(f"  GPUs: {self.num_gpus}")
         print()
+        if self.gpu_placement not in ("balanced", "round_robin"):
+            raise ValueError(f"unknown gpu_placement {self.gpu_placement!r} (balanced | round_robin)")
+        meta = getattr(self.config_gen, "metadata", None)  # None: a launcher without a registry stays round-robin
+        if self.gpu_placement == "balanced" and self.gpu_ids and meta is not None:
+            delays = {t: float(meta.get_trainer_metadata(t)["training_delay_s"]) for t in trainer_ids}
+            caps = parse_gpu_trainer_caps(os.environ.get("FLAME_GPU_TRAINER_CAPS", ""))
+            self._gpu_of = balanced_gpu_placement(delays, self.gpu_ids, caps)
+            load = {g: round(sum(1 / max(delays[t], 1e-9) for t, gg in self._gpu_of.items() if gg == g), 3)
+                    for g in self.gpu_ids}
+            counts = {g: sum(1 for gg in self._gpu_of.values() if gg == g) for g in self.gpu_ids}
+            print(f"[GPU_PLACEMENT] balanced: task rate (1/D) per GPU {load}, trainers per GPU {counts}"
+                  f"{' (caps ' + str(caps) + ')' if caps else ''}")
 
         for trainer_id in trainer_ids:
             trainer_overrides = dict(config_overrides)
@@ -597,9 +641,9 @@ if __name__ == "__main__":
             "mobiperf_3st_50",
             "mobiperf_3st_75",
             "syn_0",
-            "syn_10",
-            "syn_20",
-            "syn_50",
+            "syn_10_3st",
+            "syn_20_3st",
+            "syn_50_3st",
         ],
         help="Availability trace mode",
     )

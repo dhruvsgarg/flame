@@ -24,7 +24,7 @@ def test_load_trace_scaled(monkeypatch):
 
 def test_state_and_next_avail_consistent_under_scale(monkeypatch):
     monkeypatch.setenv("FLAME_TRACE_TIME_SCALE", "4")
-    t = tr.load_trace("syn_50", "trainer_001")
+    t = tr.load_trace("syn_50_3st", "trainer_001")
     base_ts = sorted(t.keys())
     for a, b in zip(base_ts, base_ts[1:]):
         mid = (a + b) / 2

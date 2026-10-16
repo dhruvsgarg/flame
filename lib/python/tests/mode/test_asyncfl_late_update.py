@@ -133,6 +133,6 @@ def _eval_reply(last_sent):
 
 
 def test_eval_reply_keeps_newer_train_in_flight():
-    # FX-N38: cifar T3_syn_50 felix sim re-picked 0370 at v436 while its v435 train (sent after the eval) was buffered.
+    # FX-N38: cifar T3_syn_50_3st felix sim re-picked 0370 at v436 while its v435 train (sent after the eval) was buffered.
     assert _eval_reply("train") == []
     assert _eval_reply("eval") == ["t1"]

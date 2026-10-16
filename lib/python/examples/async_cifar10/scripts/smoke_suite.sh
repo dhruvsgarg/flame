@@ -11,9 +11,9 @@
 # Steps
 #   1  pytest          — unit tests (flame/tests/), expected: 536p/7s
 #   2  syn_0  sim      — byte-identity regression, all 6 baselines
-#   3  syn_20 sim      — all 6 baselines (availability active, fast mode)
-#   4  syn_20 both     — all 6 baselines × sim + real (parity gate)
-#   5  syn_50 starvation — feddance + oort, both modes (B2.0.2 regression)
+#   3  syn_20_3st sim      — all 6 baselines (availability active, fast mode)
+#   4  syn_20_3st both     — all 6 baselines × sim + real (parity gate)
+#   5  syn_50_3st starvation — feddance + oort, both modes (B2.0.2 regression)
 #      Expected: [SIM_STARVATION] events present, no [SIM_WALL_CEILING],
 #                self-stops via "stopping run" in both modes.
 #
@@ -29,8 +29,8 @@
 #
 # Options:
 #   --runtime-syn0-s  N    Budget (wall/vclock) for syn_0 runs     [default: 900]
-#   --runtime-syn20-s N    Budget for syn_20 runs                  [default: 1800]
-#   --runtime-syn50-s N    Budget for syn_50 starvation runs       [default: 3600]
+#   --runtime-syn20-s N    Budget for syn_20_3st runs                  [default: 1800]
+#   --runtime-syn50-s N    Budget for syn_50_3st starvation runs       [default: 3600]
 #   --timeout-buffer-s N   Extra wall-sec before force-kill        [default: 600]
 #   --kill-settle-s N      GPU memory settle wait after force-kill [default: 20]
 #   --steps LIST           Comma-separated steps to run (1–5)      [default: 1,2,3,4,5]
@@ -305,31 +305,31 @@ step2_syn0_sim() {
   done
 }
 
-# ── Step 3: syn_20 sim ───────────────────────────────────────────────────────
+# ── Step 3: syn_20_3st sim ───────────────────────────────────────────────────────
 step3_syn20_sim() {
-  _step "3  syn_20 — sim, all 6 baselines"
+  _step "3  syn_20_3st — sim, all 6 baselines"
   for bl in $ALL_BASELINES; do
-    _run_one "$bl" sim syn_20 "$RUNTIME_SYN20_S" s3
+    _run_one "$bl" sim syn_20_3st "$RUNTIME_SYN20_S" s3
   done
 }
 
-# ── Step 4: syn_20 both modes ────────────────────────────────────────────────
+# ── Step 4: syn_20_3st both modes ────────────────────────────────────────────────
 step4_syn20_both() {
-  _step "4  syn_20 — sim then real, all 6 baselines"
+  _step "4  syn_20_3st — sim then real, all 6 baselines"
   _log "  (real runs take ~${RUNTIME_SYN20_S}s wall each; total step ~$(( $(wc -w <<< "$ALL_BASELINES") * RUNTIME_SYN20_S / 60 ))+ min)"
   for bl in $ALL_BASELINES; do
-    _run_one "$bl" sim  syn_20 "$RUNTIME_SYN20_S" s4
-    _run_one "$bl" real syn_20 "$RUNTIME_SYN20_S" s4
+    _run_one "$bl" sim  syn_20_3st "$RUNTIME_SYN20_S" s4
+    _run_one "$bl" real syn_20_3st "$RUNTIME_SYN20_S" s4
   done
 }
 
-# ── Step 5: syn_50 starvation regression ─────────────────────────────────────
+# ── Step 5: syn_50_3st starvation regression ─────────────────────────────────────
 step5_syn50_starvation() {
-  _step "5  syn_50 starvation — $STARV_BASELINES, both modes (B2.0.2 regression)"
+  _step "5  syn_50_3st starvation — $STARV_BASELINES, both modes (B2.0.2 regression)"
   _log "  Expected: [SIM_STARVATION] present, no [SIM_WALL_CEILING], self-stops cleanly."
   for bl in $STARV_BASELINES; do
-    _run_one "$bl" sim  syn_50 "$RUNTIME_SYN50_S" s5
-    _run_one "$bl" real syn_50 "$RUNTIME_SYN50_S" s5
+    _run_one "$bl" sim  syn_50_3st "$RUNTIME_SYN50_S" s5
+    _run_one "$bl" real syn_50_3st "$RUNTIME_SYN50_S" s5
   done
 }
 
@@ -345,7 +345,7 @@ _final_report() {
     printf "  Generated  : %s\n"  "$(date '+%F %T')"
     printf "  Duration   : %ds\n" "$(( $(date +%s) - SUITE_START ))"
     printf "  Output     : %s\n"  "$OUTPUT_DIR"
-    printf "  Runtimes   : syn_0=%ss  syn_20=%ss  syn_50=%ss  buffer=%ss  kill_settle=%ss\n" \
+    printf "  Runtimes   : syn_0=%ss  syn_20_3st=%ss  syn_50_3st=%ss  buffer=%ss  kill_settle=%ss\n" \
       "$RUNTIME_SYN0_S" "$RUNTIME_SYN20_S" "$RUNTIME_SYN50_S" "$TIMEOUT_BUFFER_S" "$KILL_SETTLE_S"
     echo "$divider"
     echo ""
@@ -405,7 +405,7 @@ _log "  steps       : $STEPS"
 _log "  baselines   : $ALL_BASELINES"
 _log "  starvation  : $STARV_BASELINES"
 _log "  num_trainers: ${NUM_TRAINERS:-300(parity config default)}"
-_log "  runtimes    : syn_0=${RUNTIME_SYN0_S}s  syn_20=${RUNTIME_SYN20_S}s  syn_50=${RUNTIME_SYN50_S}s  buffer=${TIMEOUT_BUFFER_S}s  kill_settle=${KILL_SETTLE_S}s"
+_log "  runtimes    : syn_0=${RUNTIME_SYN0_S}s  syn_20_3st=${RUNTIME_SYN20_S}s  syn_50_3st=${RUNTIME_SYN50_S}s  buffer=${TIMEOUT_BUFFER_S}s  kill_settle=${KILL_SETTLE_S}s"
 
 IFS=',' read -ra _steps_arr <<< "$STEPS"
 for s in "${_steps_arr[@]}"; do

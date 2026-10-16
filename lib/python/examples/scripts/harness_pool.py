@@ -65,24 +65,38 @@ SHAPES = {
     "syn_0b": dict(trace="syn_0", n=15, agg_goal=2, c=8, runtime_s=180, trace_scale=""),
     # FX-N67: aggGoal 10 over-selects 13, so stragglers cross rounds as at n=300
     "syn_0s": dict(trace="syn_0", n=30, agg_goal=10, c=13, runtime_s=300, trace_scale=""),
-    "syn_20s": dict(trace="syn_20", n=40, agg_goal=10, c=13, runtime_s=300, trace_scale="4"),
-    "syn_20": dict(trace="syn_20", n=15, agg_goal=3, c=6, runtime_s=240, trace_scale="4"),
+    "syn_20_3sts": dict(trace="syn_20_3st", n=40, agg_goal=10, c=13, runtime_s=300, trace_scale="4"),
+    "syn_20_3st": dict(trace="syn_20_3st", n=15, agg_goal=3, c=6, runtime_s=240, trace_scale="4"),
     # 1200s x scale 4 = 4800s of trace: ~2 outage/up cycles per trainer (means ~1200s of trace each; FX-D18)
-    "syn_50": dict(trace="syn_50", n=15, agg_goal=3, c=6, runtime_s=1200, trace_scale="4"),
+    "syn_50_3st": dict(trace="syn_50_3st", n=15, agg_goal=3, c=6, runtime_s=1200, trace_scale="4"),
     # FX-L34: ~10% AVL_TRAIN from t=0 (FX-D18), so n=45 keeps ~4-5 trainable for aggGoal 2 / sync select 3
     "mobiperf_3st": dict(trace="mobiperf_3st", n=45, agg_goal=2, c=4, runtime_s=240, trace_scale="4"),
     # FX-D106 Oort-family K=10 shapes; n by FX-L34 (select 11 / available share x 1.5)
-    "syn_50s": dict(trace="syn_50", n=40, agg_goal=10, c=13, runtime_s=1200, trace_scale="4"),
+    "syn_50_3sts": dict(trace="syn_50_3st", n=40, agg_goal=10, c=13, runtime_s=1200, trace_scale="4"),
     "mobiperf_3sts": dict(trace="mobiperf_3st", n=165, agg_goal=10, c=13, runtime_s=240, trace_scale="4", cpt=0.4),
 }
 # FX-D106: upstream exploitLen = int(K x (1 - 0.9)) is 0 below K=9, so Oort screens run at K=10.
 OORT_FAMILY = ("oort", "oort_star")
-OORT_SHAPE = {"syn_0": "syn_0s", "syn_0b": None, "syn_20": "syn_20s", "syn_50": "syn_50s", "mobiperf_3st": "mobiperf_3sts"}
+OORT_SHAPE = {"syn_0": "syn_0s", "syn_0b": None, "syn_20_3st": "syn_20_3sts", "syn_50_3st": "syn_50_3sts", "mobiperf_3st": "mobiperf_3sts"}
 # CPU legs that need longer for EV1's >= 4 commits (unaware oort waits out 90s timeouts; run 4: 0 in 240s).
-MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 960}
+MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 3000,  # FX-D165: AVL_EVAL is UN_AVL; PR36 960 s gave 1 commit, G0U sim's 4th at 2508 s
+                 ("oort", "syn_20_3st", "google_speech"): 600}  # FX-N85 d: 300 s gave 10 matched rounds (PR31 C2)
+# Full length under --scale-smoke (value: harness, None = all): at 240 s unaware oort got 1 round, GPU fedbuff 6 (PR36-short).
+SHORT_KEEP = {("oort", "syn_50_3st"): None, ("fedbuff", "syn_50_3st"): "none"}
 # FX-D52: G0U legs whose unaware picks hold slots a full timeout run longer, to reach a gradeable round count.
 G0U_RUNTIME_X = {("oort", "mobiperf_3st"): 4, ("fedbuff", "mobiperf_3st", "google_speech"): 3}
 GPU_N = {"cifar10": 300, "google_speech": 100}  # the datasets' reference cohorts (datasets.yaml)
+EUROSYS_TARGET = {"cifar10": 0.7, "google_speech": 0.7}  # EuroSys'26 runs: 70% on both (operator 10-12)
+EUROSYS_HORIZON_S = 72000  # 20 h virtual: the paper's slowest MobiPerf TTA is 16.3 h
+EUROSYS_K = 10  # May-2025 runs: aggr_num 10 (sync), aggGoal 10 (async)
+# May-2025 shared trainer (trainer/config_dir0.1_num300_* @ 966797558): 1 epoch, bs 32, lr 0.04, plain SGD, no decay.
+EUROSYS_TRAINER_HP = ("localSteps=null epochs=1 batchSize=32 learningRate=0.04 trainerOptimizer=sgd trainerMomentum=0 "
+                      "trainerWeightDecay=0 lrDecayEnabled=false")
+# FedDance paper Table 1 + FedScale defaults (baseline_reference.yaml feddance), applied to every F3 arm.
+FEDDANCE_PAPER_HP = {
+    ds: f"localSteps=1 epochs=1 batchSize={bs} learningRate={lr} trainerOptimizer=sgd trainerMomentum=0.9 "
+        "trainerWeightDecay=0.0005 lrDecayEnabled=true lrDecayFactor=0.98 lrDecayEpoch=10 minLearningRate=0.00005"
+    for ds, bs, lr in (("cifar10", 24, 0.1), ("google_speech", 32, 0.075))}
 # G0 screen: reference c/n and aggGoal/c ratios at a smaller n; GPUs per leg keep the reference trainers per GPU.
 G0_SHAPE = {"cifar10": dict(n=100, agg_goal=3, c=10, gpus=3),
             "google_speech": dict(n=50, agg_goal=5, c=15, gpus=4)}
@@ -91,9 +105,14 @@ G0U_SHAPE = {"cifar10": dict(n=50, agg_goal=3, c=5, gpus=1),
              "google_speech": dict(n=50, agg_goal=5, c=15, gpus=2)}
 G0U_MOBIPERF = dict(agg_goal=2, c=4)  # FX-L34: ~10% AVL_TRAIN of n=50 leaves ~5 trainable
 # FX-D106 Oort-family G0U; speech mobiperf at n=165 needs 7 GPUs a leg, so T3 mobiperf_3sts covers it.
-G0U_OORT = {("cifar10", "syn_50"): dict(n=50, agg_goal=10, c=13, gpus=1),
+G0U_OORT = {("cifar10", "syn_50_3st"): dict(n=50, agg_goal=10, c=13, gpus=1),
             ("cifar10", "mobiperf_3st"): dict(n=165, agg_goal=10, c=13, gpus=3),
-            ("google_speech", "syn_50"): dict(n=50, agg_goal=10, c=13, gpus=2)}
+            ("google_speech", "syn_50_3st"): dict(n=50, agg_goal=10, c=13, gpus=2)}
+# PR37 (operator 10-14): one n:c:K per dataset for all six, cohort = the reference split's first n trainers (same shard, compute,
+# D). K=10 keeps Oort's exploitLen >= 1 (FX-L63), sync K/n >= 5% (L34); c=15 > K keeps async overlap; <= 75 / 25 per A40.
+G3_SHAPE = {"cifar10": dict(n=75, agg_goal=10, c=15, gpus=1), "google_speech": dict(n=50, agg_goal=10, c=15, gpus=2)}
+G3_RUNTIME_S, G3_EVAL_EVERY = 7200, 10  # 2 h legs (operator 10-15; R6: convergence sign-off 2-4 h)
+DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
 STREAM_A = STREAM_T + ' checkpoint={"enabled":"True","every_n_rounds":10}'
@@ -202,6 +221,7 @@ class Phase:
     cpt: Optional[float] = None  # CPUs per trainer for this phase; None = --cpus-per-trainer
     gpus: Optional[int] = None  # GPU legs: GPUs each; None = --gpus-per-job
     delay_factor: str = ""  # divides every trainer's D (debug_run --delay-factor)
+    full_runtime_s: int = 0  # runtime before a --scale-smoke cap (0 = uncapped)
 
 
 def shaped(pid, baselines, shape, kind, dataset, **kw) -> Phase:
@@ -209,7 +229,9 @@ def shaped(pid, baselines, shape, kind, dataset, **kw) -> Phase:
     if dataset == "google_speech":
         sh["sim_ceiling_x"] = 2
     sh.update(kw)
-    if dataset == "google_speech" and sh.get("harness", "stub") == "stub":  # FX-D110: 20-step speech CPU passes overran D/4
+    stub = sh.get("harness", "stub") == "stub"
+    # FX-D110, FX-N85 b: 20-step stub passes overran D (speech; cifar Oort family 11/177)
+    if stub and (dataset == "google_speech" or (baselines and all(b in OORT_FAMILY for b in baselines))):
         sh["trainer_hp"] = (sh.get("trainer_hp", "") + " harness_stub_max_steps=1").strip()
     return Phase(DS_TAG[dataset] + pid, tuple(baselines), kind=kind, dataset=dataset, **sh)
 
@@ -230,14 +252,14 @@ def campaign_phases(ds: str) -> List[Phase]:
     ph = lambda pid, bls, shape, **kw: shaped(pid, bls, shape, "pair", ds, **kw)
     sp = lambda pid, shape: oort_split(pid, B6, shape, "pair", ds)
     return [
-        *sp("P1", "syn_0"), *sp("P1b", "syn_0b"), *sp("P2", "syn_50"), *sp("P3", "mobiperf_3st"),
+        *sp("P1", "syn_0"), *sp("P1b", "syn_0b"), *sp("P2", "syn_50_3st"), *sp("P3", "mobiperf_3st"),
         ph("P4", ("felix", "fedbuff"), "syn_0", agg_hp="simColdStartGate=false"),
-        ph("P5", ("felix", "refl"), "syn_20"),
+        ph("P5", ("felix", "refl"), "syn_20_3st"),
         ph("P6", ("felix", "oort"), "syn_0", harness="tiny_cpu"),
         *([ph("P7", B6, "syn_0", harness="tiny_cpu", trainer_hp=STREAM_T, agg_hp=STREAM_A),
            ph("P7o", B6, "syn_0", harness="tiny_cpu", trainer_hp=STREAM_T, agg_hp=STREAM_A + " " + oracle_a(ds))]
           if ds == "cifar10" else []),  # FX-N86 (c): speech tiny_cpu compute > D; speech streaming is G0T only
-        ph("P8", ("fedbuff",), "syn_50", agg_hp="taskRetryPolicy=exponential taskRetryBackoffSeconds=10"),
+        ph("P8", ("fedbuff",), "syn_50_3st", agg_hp="taskRetryPolicy=exponential taskRetryBackoffSeconds=10"),
         ph("P9", ("felix", "fedbuff"), "syn_0", agg_hp="real_drain_ready_ingest=false"),  # legacy recv_fifo control
         # FX-N18 control: fedbuff with the old 0.1s real-only settle sleep (default is now 0)
         ph("P10", ("fedbuff",), "syn_0", agg_hp="realDistributeSettleSeconds=0.1"),
@@ -247,17 +269,17 @@ def campaign_phases(ds: str) -> List[Phase]:
 def injected_phases(kind, ds) -> List[Phase]:
     """S1: each injected bug must FAIL its sim rung (EV10 / EV16 / EV3)."""
     # FX-N32: P11b on fedbuff, which withholds (felix evicts, so order_by_sct had 0-1 withheld commits to catch).
-    return [shaped(pid, (bl,), "syn_50", kind, ds, inject_bug=bug)
+    return [shaped(pid, (bl,), "syn_50_3st", kind, ds, inject_bug=bug)
             for pid, bl, bug in (("P11a", "felix", "no_busy_hold"), ("P11b", "fedbuff", "order_by_sct"),
                                  ("P11c", "felix", "freeze_trainer_clock"))]
 
 
 def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]:
-    matrix = ("syn_0", "syn_0b", "syn_20", "syn_50", "mobiperf_3st")  # FX-N78: syn_20 in T3
+    matrix = ("syn_0", "syn_0b", "syn_20_3st", "syn_50_3st", "mobiperf_3st")  # FX-N78: syn_20_3st in T3
     if tier == "T1":
-        # syn_50 360 s: unaware oort first commits at vclock 150 / 300 (FX-L43).
-        return [shaped("T1", baselines, sh, "sim_ev", ds, runtime_s={"syn_0": 120, "syn_50": 360}[sh])
-                for sh in ("syn_0", "syn_50")]
+        # syn_50_3st 360 s: unaware oort first commits at vclock 150 / 300 (FX-L43).
+        return [shaped("T1", baselines, sh, "sim_ev", ds, runtime_s={"syn_0": 120, "syn_50_3st": 360}[sh])
+                for sh in ("syn_0", "syn_50_3st")]
     if tier == "T2":
         return [p for sh in matrix for p in oort_split(f"T2_{sh}", baselines, sh, "sim", ds)] + injected_phases("sim_ev", ds)
     if tier == "T3":
@@ -266,13 +288,13 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return campaign_phases(ds)
     if tier == "T3S":  # FX-N67: straggler carry-over pair for the over-selecting sync stacks
         bls = tuple(x for x in baselines if x in ("oort", "oort_star", "refl")) if baselines != B6 else ("oort", "oort_star", "refl")
-        return [shaped(f"T3S_{sh}", bls, sh, "pair", ds) for sh in ("syn_0s", "syn_20s")]
-    if tier == "G0":  # GPU screen: all six, syn_0 + syn_20 (stationary, ~20% within 30 min), smaller cohort (FX-N34)
+        return [shaped(f"T3S_{sh}", bls, sh, "pair", ds) for sh in ("syn_0s", "syn_20_3sts")]
+    if tier == "G0":  # GPU screen: all six, syn_0 + syn_20_3st (stationary, ~20% within 30 min), smaller cohort (FX-N34)
         return [Phase(f"{DS_TAG[ds]}G0_{t}", baselines, t, runtime_s=1800, dataset=ds, harness="none", **G0_SHAPE[ds])
-                for t in ("syn_0", "syn_20")]
+                for t in ("syn_0", "syn_20_3st")]
     if tier == "GS":  # FX-N42 L5: GPU short pairs, G0 cohort, 10 min (GPU-only faults and the clock rungs, cheaply)
         return [Phase(f"{DS_TAG[ds]}GS_{t}", baselines, t, runtime_s=600, dataset=ds, harness="none", **G0_SHAPE[ds])
-                for t in ("syn_0", "syn_20")]
+                for t in ("syn_0", "syn_20_3st")]
     if tier == "G0C":  # R7 control: a second real leg per G0 syn_0 cell (real<->real floor for G0's pairs)
         return [Phase(f"{DS_TAG[ds]}G0C_syn_0", baselines, "syn_0", runtime_s=1800, dataset=ds, harness="none",
                       kind="real", **G0_SHAPE[ds])]
@@ -296,31 +318,31 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
     if tier == "G1S":  # FX-D42/D43/D44 confirm: felix + fedbuff at the reference n, 45 min, 3 GPUs (7 healthy on jayne)
         bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
         return [Phase(DS_TAG[ds] + "G1S", bls, "syn_0", runtime_s=2700, n=GPU_N[ds], dataset=ds, harness="none", gpus=4)]
-    if tier == "G0U":  # FX-N9 screen: syn_50 + mobiperf_3st at trace scale 4, EV + logical parity
+    if tier == "G0U":  # FX-N9 screen: syn_50_3st + mobiperf_3st at trace scale 4, EV + logical parity
         rest = tuple(b for b in baselines if b not in OORT_FAMILY)
         fam = tuple(b for b in baselines if b in OORT_FAMILY)
         g0u = lambda pid, bls, t, shape: Phase(pid, bls, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds, harness="none",
-                                               trace_scale="4", **shape)
+                                               trace_scale="4", trainer_hp=DETERMINISTIC, **shape)
         return ([g0u(f"{DS_TAG[ds]}G0U_{t}", rest, t, {**G0U_SHAPE[ds], **(G0U_MOBIPERF if t == "mobiperf_3st" else {})})
-                 for t in ("syn_50", "mobiperf_3st") if rest]
+                 for t in ("syn_50_3st", "mobiperf_3st") if rest]
                 + [g0u(f"{DS_TAG[ds]}G0U_{t}s", fam, t, G0U_OORT[(ds, t)])
-                   for t in ("syn_50", "mobiperf_3st") if fam and (ds, t) in G0U_OORT])
+                   for t in ("syn_50_3st", "mobiperf_3st") if fam and (ds, t) in G0U_OORT])
     if tier in ("TS", "TSo"):  # FX-N13 ST5 CPU: tiny_cpu pairs x {linear, events}; TSo = the *_oracle arms
         if ds == "google_speech":
             return []  # FX-N86 (c)
-        return stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "TSo",
+        return stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50_3st"), tier == "TSo",
                              lambda pid, t: shaped(pid, baselines, t, "pair", ds, harness="tiny_cpu"))
-    if tier in ("G0T", "G0To"):  # FX-N13 ST5 GPU screen (C11): G0U cohort x {linear, events} x {syn_0, syn_50}
+    if tier in ("G0T", "G0To"):  # FX-N13 ST5 GPU screen (C11): G0U cohort x {linear, events} x {syn_0, syn_50_3st}
         rest = tuple(b for b in baselines if b not in OORT_FAMILY)
         fam = tuple(b for b in baselines if b in OORT_FAMILY)
         mk = lambda bls, shape: lambda pid, t: Phase(pid, bls, t, runtime_s=G0U_RUNTIME_S[ds], dataset=ds, harness="none",
                                                      trace_scale="" if t == "syn_0" else "4", **shape)
-        out = stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "G0To", mk(rest, G0U_SHAPE[ds])) if rest else []
-        if fam:  # FX-L63: Oort family at its K=10 G0U shape; `<pid>s` so G0U_syn_50s floors map onto it
-            fam_ph = stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50"), tier == "G0To",
-                                   mk(fam, G0U_OORT[(ds, "syn_50")]))
+        out = stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50_3st"), tier == "G0To", mk(rest, G0U_SHAPE[ds])) if rest else []
+        if fam:  # FX-L63: Oort family at its K=10 G0U shape; `<pid>s` so G0U_syn_50_3sts floors map onto it
+            fam_ph = stream_phases(DS_TAG[ds] + tier, ds, ("syn_0", "syn_50_3st"), tier == "G0To",
+                                   mk(fam, G0U_OORT[(ds, "syn_50_3st")]))
             out += [replace(ph, pid=ph.pid + "s") for ph in fam_ph]
-        return out
+        return [replace(ph, trainer_hp=f"{ph.trainer_hp} {DETERMINISTIC}") for ph in out]
     if tier == "G0TC":  # R7 control: a real replicate per G0T cell (same-code real<->real streaming floor)
         return [replace(ph, pid=ph.pid.replace("G0T_", "G0TC_"), kind="real") for ph in tier_phases("G0T", baselines, ds)]
     if tier == "T3C":  # R7 control: a real replicate per T3 cell (floors flip-boundary forks, FX-L53)
@@ -330,22 +352,60 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
     if tier == "CHG":  # L17: real syn_0 legs at the G0U cohort, input to profile_felix_charges.py after a transport change
         return [Phase(f"{DS_TAG[ds]}CHG", baselines, "syn_0", runtime_s=600, dataset=ds, harness="none", kind="real",
                       **G0U_SHAPE[ds])]
-    if tier == "G1U":  # FX-N9 long confirm: felix + fedbuff at the reference n on syn_50, production trace timeline
+    if tier == "G1U":  # FX-N9 long confirm: felix + fedbuff at the reference n on syn_50_3st, production trace timeline
         bls = tuple(b for b in baselines if b in ("felix", "fedbuff")) if baselines != B6 else ("felix", "fedbuff")
         # FX-D52: cifar n=300 takes every GPU (3 GPUs OOMed at init).
-        return [Phase(DS_TAG[ds] + "G1U_syn_50", bls, "syn_50", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
+        return [Phase(DS_TAG[ds] + "G1U_syn_50_3st", bls, "syn_50_3st", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
                       gpus=4 if ds == "google_speech" else None)]
     if tier in ("G1A", "G1AS"):  # FX-N74: accuracy at the reference config on full data; G1AS = sim legs only
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
         return [Phase(DS_TAG[ds] + tier, baselines, "syn_0", runtime_s=5400, n=GPU_N[ds], dataset=ds, harness="none",
                       trainer_hp=full, agg_hp=full + " evalEveryNRounds=20", gpus=4,
                       **({"kind": "sim_ev"} if tier == "G1AS" else {}))]
+    if tier in ("G3", "G3C"):  # PR37: convergence pairs at one n:c:K for all six; G3C = real replicate
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        kw = dict(dataset=ds, harness="none", runtime_s=G3_RUNTIME_S, **G3_SHAPE[ds])
+        out = [Phase(f"{DS_TAG[ds]}G3_{t}", baselines, t, trainer_hp=f"{full} {DETERMINISTIC}",
+                     agg_hp=f"{full} evalEveryNRounds={G3_EVAL_EVERY}", **kw) for t in ("syn_0", "syn_50_3st")]
+        lin = stream_hp("linear", G3_RUNTIME_S, "")
+        out.append(Phase(f"{DS_TAG[ds]}G3_lin_syn_0", baselines, "syn_0", trainer_hp=f"{lin} {DETERMINISTIC}",
+                         agg_hp=f"{lin} evalEveryNRounds={G3_EVAL_EVERY}", **kw))
+        if tier == "G3C":
+            out = [replace(ph, pid=ph.pid.replace("G3_", "G3C_"), kind="real") for ph in out]
+        return out
+    if tier in ("G1X", "G1XP"):  # FedDance sprint: EuroSys'26 setup, every baseline on one config; G1XP = real+sim convergence pair
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        kw = dict(n=GPU_N[ds], dataset=ds, harness="none", trainer_hp=f"{full} {EUROSYS_TRAINER_HP}", gpus=4, agg_goal=EUROSYS_K)
+        if tier == "G1XP":  # FX-D149
+            kw["trainer_hp"] += " trainerDeterministic=true"
+            return [Phase(f"{DS_TAG[ds]}G1XP_syn_0", baselines, "syn_0", runtime_s=3600,
+                          agg_hp=full + " evalEveryNRounds=20", **kw)]
+        return [Phase(f"{DS_TAG[ds]}G1X_{t}", baselines, t, runtime_s=EUROSYS_HORIZON_S, kind="sim_ev",
+                      agg_hp=f"{full} evalEveryNRounds=20 targetAccuracy={EUROSYS_TARGET[ds]}", **kw)
+                for t in ("mobiperf_3st", "syn_50_3st", "syn_10_3st", "syn_0")]
+    if tier in ("G1XS", "G1XQ"):  # FedDance sprint sanity: shared config at n=50 real+sim (15 min) / n=300 sim speed probe (2 h vclock)
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        kw = dict(dataset=ds, harness="none", trainer_hp=f"{full} {EUROSYS_TRAINER_HP}", agg_goal=EUROSYS_K)
+        if tier == "G1XS":  # n=50 x K=10 can't fill mobiperf (G0U covers it)
+            kw["trainer_hp"] += " trainerDeterministic=true"  # FX-D149
+            return [Phase(f"{DS_TAG[ds]}G1XS_{t}", baselines, t, runtime_s=900, n=50, gpus=1 if ds == "cifar10" else 2,
+                          agg_hp=full + " evalEveryNRounds=5", **kw) for t in ("syn_50_3st", "syn_10_3st")]
+        # Speech sims run ~1x: 30 min vclock suffices to measure speed.
+        return [Phase(f"{DS_TAG[ds]}G1XQ_mobiperf_3st", baselines, "mobiperf_3st", runtime_s=7200 if ds == "cifar10" else 1800,
+                      n=GPU_N[ds], gpus=4, agg_hp=full + " evalEveryNRounds=20", kind="sim_ev", **kw)]
+    if tier in ("G1XF", "G1XFS"):  # FedDance sprint F3: FedDance vs random (fedavg) on the FedDance paper's own training config
+        # Reference n, K=10 as the paper: at n=50 both arms picked every eligible end (FX-L67).
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        return [Phase(f"{DS_TAG[ds]}{tier}_{t}", baselines, t, runtime_s=12000 if tier == "G1XF" else 3000, n=GPU_N[ds], dataset=ds,
+                      harness="none", trainer_hp=f"{full} {FEDDANCE_PAPER_HP[ds]}", agg_hp=full + " evalEveryNRounds=20", gpus=4,
+                      agg_goal=EUROSYS_K, kind="sim_ev")
+                for t in (("mobiperf_3st", "syn_0") if tier == "G1XF" else ("mobiperf_3st",))]
     if tier == "G1L":  # FX-N65: felix syn_0 past the 7200s convergence floor, pair + a real replicate
         return [Phase(f"{DS_TAG[ds]}G1L", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds, harness="none"),
                 Phase(f"{DS_TAG[ds]}G1LC", ("felix",), "syn_0", runtime_s=7500, n=GPU_N[ds], dataset=ds,
                       harness="none", kind="real")]
-    if tier == "N62":  # FX-N62: unaware oort syn_50 long enough to grade its stall-free timing
-        return [shaped("N62_syn_50", ("oort",), "syn_50", "pair", ds, runtime_s=10800)]
+    if tier == "N62":  # FX-N62: unaware oort syn_50_3st long enough to grade its stall-free timing
+        return [shaped("N62_syn_50_3st", ("oort",), "syn_50_3st", "pair", ds, runtime_s=10800)]
     if tier == "PROF":  # FX-N77: n=10, aggGoal = c = 10, D/10 real legs; profile with FLAME_PYSPY
         bls = baselines if baselines != B6 else ("fedbuff", "oort", "feddance")  # one per aggregator stack
         return [Phase(f"{DS_TAG[ds]}PROF", bls, "syn_0", runtime_s=240, n=10, dataset=ds, harness="none", agg_goal=10, c=10,
@@ -353,8 +413,8 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
     if tier in ("ISO", "ISO_FILL"):  # P6: felix/fedbuff pairs solo (--max-parallel 1), then packed
         bls = baselines if baselines != B6 else ("felix", "fedbuff")  # --baselines picks the stacks to control
         iso = oort_split("ISO", bls, "syn_0", "pair", ds)
-        # packed stage: neighbours load the node (and double as FX-N20 syn_50 checks)
-        return iso + ([shaped("FILL", B6[2:], "syn_50", "sim_ev", ds)] if tier == "ISO_FILL" else [])
+        # packed stage: neighbours load the node (and double as FX-N20 syn_50_3st checks)
+        return iso + ([shaped("FILL", B6[2:], "syn_50_3st", "sim_ev", ds)] if tier == "ISO_FILL" else [])
     raise SystemExit(f"unknown tier {tier}")
 
 
@@ -405,6 +465,12 @@ def estimate_s(job: Job, history: dict) -> float:
     return (job.runtime_s if job.mode == "real" else job.runtime_s / 1.6) + join
 
 
+def cap_runtime(phases: List[Phase], s: int) -> None:
+    """--scale-smoke S: every phase at most S seconds (SHORT_KEEP legs keep full length in build_jobs)."""
+    for p in phases:
+        p.full_runtime_s, p.runtime_s = p.runtime_s, min(p.runtime_s, s)
+
+
 def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, history: dict,
                gpu_per_trainer: float = 0.4) -> List[Job]:
     """gpu_per_trainer: CPUs per GPU-leg trainer (0.4 = the historical n=300 on 128 CPUs -> whole node)."""
@@ -412,8 +478,10 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
     for ph in phases:
         t = ph.trace
         for b in ph.baselines:
-            at_shape = ph.harness != "none" and ph.runtime_s == SHAPES.get(t, {}).get("runtime_s")  # not smoke/T1
-            rt = max(ph.runtime_s, MIN_RUNTIME_S.get((b, t), 0)) if at_shape else ph.runtime_s
+            at_shape = ph.harness != "none" and ph.runtime_s in {v["runtime_s"] for v in SHAPES.values() if v["trace"] == t}  # not smoke/T1
+            rt = max(ph.runtime_s, MIN_RUNTIME_S.get((b, t, ph.dataset), MIN_RUNTIME_S.get((b, t), 0))) if at_shape else ph.runtime_s
+            if ph.full_runtime_s and (b, t) in SHORT_KEEP and SHORT_KEEP[(b, t)] in (None, ph.harness):
+                rt = max(rt, ph.full_runtime_s)
             if "G0U" in ph.pid:
                 rt *= G0U_RUNTIME_X.get((b, t, ph.dataset), G0U_RUNTIME_X.get((b, t), 1))
             base = ["--harness", ph.harness, "--baselines", b, "--traces", t, "--runtime-s", str(rt),
@@ -428,8 +496,7 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
                 base += ["--sim-ceiling-x", str(ph.sim_ceiling_x)]
             gpu = ph.harness == "none"
             cpus = slot_cpus(ph.n, gpu_per_trainer, 8) if gpu else slot_cpus(ph.n, ph.cpt or per_trainer)
-            # FX-D59: GPU trainer ~1.2 GB PSS (cifar n=300 ~360 GB); stub ~0.55 GB (n=120 legs peak ~68 GB)
-            mem = (GPU_TRAINER_RAM_GB if gpu else 0.6) * ph.n + (8 if gpu else 3)
+            mem = leg_ram_formula_gb(ph.dataset, gpu, ph.n)
             g = (ph.gpus or gpus_per_job) if gpu else 0
             stem = f"{ph.pid}_{b}" if ph.pid.endswith(t) else f"{ph.pid}_{t}_{b}"
             mk = lambda mode, args, deps=(), c=cpus, m=mem, gg=g: Job(
@@ -445,13 +512,38 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
             else:
                 jobs.append(mk("sim", base + ["--mode", "sim"]))
     size_gpu_slots(jobs, history, gpu_per_trainer)
+    if MEASURED:
+        measured_lease(jobs, history)
     for j in jobs:
         j.est_s = estimate_s(j, history)
+        j.mem_gb = mem_estimate_gb(j, history)
     return jobs
 
 
-GPU_TRAINER_RAM_GB = 1.3  # FX-D59: host RAM per GPU-leg trainer; the pool never co-schedules past the node's RAM
+# FX-D59/FX-D141: host RAM per trainer and per-leg base (agg + broker), by (dataset, gpu); ~1.05 x ledger max (PR29b/PR30),
+# less FX-N84's measured 0.13-0.15 GB/trainer (lazy mlflow, own-satellite coords)
+TRAINER_RAM_GB = {("cifar10", True): 1.16, ("google_speech", True): 1.4, ("cifar10", False): 0.52,
+                  ("google_speech", False): 0.92}
+LEG_BASE_RAM_GB = {("cifar10", True): 8, ("google_speech", True): 8, ("cifar10", False): 3, ("google_speech", False): 6}
+
+
+def leg_ram_formula_gb(dataset: str, gpu: bool, n: int) -> float:
+    k = (dataset if dataset in DATASETS else "cifar10", gpu)
+    return TRAINER_RAM_GB[k] * n + LEG_BASE_RAM_GB[k]
+
+
 GPU_TIGHT = 0.85  # FX-D56: a leg peaking above this share of a GPU's memory is one burst from OOM
+
+
+def node_gpu_peak_gb(run_dirs, gpus) -> float:
+    """Peak used GB on any of `gpus` in the legs' resources.log (fine-grained; all residents of those GPUs)."""
+    peak = 0.0
+    for d in run_dirs:
+        for f in Path(d).glob("*_resources.log"):
+            for m in re.finditer(r"GPU(\d+): ([\d.]+)/([\d.]+)GB", f.read_text(errors="replace")):
+                if int(m.group(1)) in gpus:
+                    peak = max(peak, float(m.group(2)))
+    return peak
 
 
 def gpu_peak_note(run_dirs, gpus) -> str:
@@ -498,6 +590,52 @@ def size_gpu_slots(jobs: List["Job"], history: dict, gpu_per_trainer: float) -> 
         cpus = min(cap, max(legs[0].cpus, want + want % 2))
         for j in legs:
             j.cpus = cpus
+
+
+# FX-N99 (`--lease-from-telemetry`, default off): measured leases, live admission, back-pressure, GPU priority across pools.
+MEASURED = False
+LEASE_X = 1.25  # a real CPU leg leases this x its measured cores p95 ...
+LEASE_MIN_CORES = 2  # ... in whole physical cores, at least this many
+ADMIT_FRAC = 0.7  # a leg starts only while smoothed node busy + fresh legs + its predicted p95 stay under this share of CPUs
+SAT_PAUSE = 0.05  # a leg saturating its slot in more samples than this pauses starts and is timing-suspect
+RUNQ_PAUSE = 1.0  # runnable threads per CPU that pause starts
+MARGIN_X, MARGIN_MAX = 1.5, 4.0  # a saturated key's next lease margin
+
+
+def margin_key(j: "Job") -> str:
+    return "lease_x|" + j.key
+
+
+def lease_margin(j: "Job", history: dict) -> float:
+    return (history.get(margin_key(j)) or [1.0])[-1]
+
+
+def cores_seen(j: "Job", history: dict) -> list:
+    """The key's last 3 measured cores p95; else the same leg at any runtime (cores don't scale with run length)."""
+    seen = history.get(cores_key(j), [])[-3:]
+    if not seen:
+        stem = cores_key(j).rsplit("|rt", 1)[0] + "|rt"
+        seen = [p for k, v in history.items() if k.startswith(stem) for p in v[-3:]]
+    return seen
+
+
+def predicted_cores(j: "Job", history: dict) -> float:
+    """A leg's expected busy cores: its key's measured p95 x margin, else its formula lease."""
+    seen = cores_seen(j, history)
+    return max(seen) * lease_margin(j, history) if seen else float(j.cpus)
+
+
+SIM_LEASE_MIN_CORES = 4  # sims' wall time is their throughput: 2 cores slowed T1 sims 1.5-2.2x (FX-N99 A/B)
+
+
+def measured_lease(jobs: List["Job"], history: dict) -> None:
+    """FX-N99 1: a CPU leg leases ceil(LEASE_X x margin x measured p95) whole cores, at least LEASE_MIN_CORES (real) or
+    SIM_LEASE_MIN_CORES (sim), never above the formula."""
+    for j in jobs:
+        seen = cores_seen(j, history)
+        if j.mode in ("real", "sim") and not j.gpus and seen:
+            floor = LEASE_MIN_CORES if j.mode == "real" else SIM_LEASE_MIN_CORES
+            j.cpus = min(j.cpus, 2 * max(floor, math.ceil(LEASE_X * lease_margin(j, history) * max(seen) / 2)))
 
 
 def shard(jobs: List[Job], i: int, n: int) -> List[Job]:
@@ -651,6 +789,66 @@ def busy_cpus(threshold: float = 0.5, window_s: float = 1.0) -> frozenset:
                      and 1 - (b[c][1] - a[c][1]) / (b[c][0] - a[c][0]) > threshold)
 
 
+class NodeLoad:
+    """FX-N99 2: node-wide busy cores (/proc/stat, smoothed over pool ticks) and runnable threads per CPU."""
+
+    def __init__(self, alpha: float = 0.3):
+        self.alpha, self.ema, self.last, self.runq, self.ncpu = alpha, None, None, 0.0, os.cpu_count() or 1
+
+    def tick(self) -> None:
+        a = _cpu_times()
+        tot, idle = sum(v[0] for v in a.values()), sum(v[1] for v in a.values())
+        if self.last and tot > self.last[0]:
+            busy = len(a) * (1 - (idle - self.last[1]) / (tot - self.last[0]))
+            self.ema = busy if self.ema is None else self.alpha * busy + (1 - self.alpha) * self.ema
+        self.last, self.ncpu = (tot, idle), len(a) or self.ncpu
+        for line in open("/proc/stat"):
+            if line.startswith("procs_running"):
+                self.runq = (int(line.split()[1]) - 1) / self.ncpu  # less this pool's own sampler
+
+
+def foreign_owners(own_pgids: set, top: int = 6) -> List[str]:
+    """PL-LOG: per foreign owner (user + run label or script), the GPUs and CPUs (1 s sample) it holds, busiest first."""
+    import psutil
+    try:
+        uuid_idx = dict(reversed(l.split(", ")) for l in subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"], capture_output=True, text=True,
+            timeout=20).stdout.splitlines() if ", " in l)
+        apps = [l.split(", ") for l in subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid", "--format=csv,noheader"], capture_output=True, text=True,
+            timeout=20).stdout.splitlines() if ", " in l]
+    except (OSError, subprocess.SubprocessError):
+        uuid_idx, apps = {}, []
+    gpu_of = {int(pid): int(uuid_idx[u]) for pid, u in apps if u in uuid_idx}
+    me, procs = os.getpid(), []
+    for pr in psutil.process_iter(["pid", "username", "cmdline"]):
+        try:
+            if os.getpgid(pr.pid) in own_pgids or pr.pid == me:
+                continue
+            pr.cpu_percent(None)
+            procs.append(pr)
+        except (psutil.Error, OSError):
+            pass
+    time.sleep(1.0)
+    owners: Dict[str, list] = {}
+    for pr in procs:
+        try:
+            cpu = pr.cpu_percent(None) / 100
+            if cpu < 0.05 and pr.pid not in gpu_of:
+                continue
+            cmd = pr.info["cmdline"] or []
+            script = next((os.path.basename(c) for c in cmd if c.endswith((".py", ".sh"))), os.path.basename(cmd[0]) if cmd else "?")
+            label = pr.environ().get("FLAME_RUN_LABEL", script) if pr.info["username"] == os.environ.get("USER") else script
+            o = owners.setdefault(f"{pr.info['username']} {label}", [set(), 0.0])
+            if pr.pid in gpu_of:
+                o[0].add(gpu_of[pr.pid])
+            o[1] += cpu
+        except (psutil.Error, OSError):
+            pass
+    rows = sorted(((len(g), c, k, g) for k, (g, c) in owners.items() if g or c >= 1), reverse=True)[:top]
+    return [f"{k}: {len(g)} GPUs {sorted(g)}, {c:.0f} CPUs" if g else f"{k}: {c:.0f} CPUs" for _, c, k, g in rows]
+
+
 class Leases:
     """L28: node-wide flock leases on ports, cores and GPUs across pools; the kernel drops a dead pool's leases."""
 
@@ -697,6 +895,170 @@ class Leases:
             else:
                 out.add(n)
         return out
+
+
+    def reserve_ram(self, name: str, gb: float) -> None:
+        """FX-D136: a running leg's RAM budget, visible to every pool (a leg's footprint ramps, so free RAM at its start lies)."""
+        if self.take(name):
+            os.ftruncate(self.held[name], 0)
+            os.write(self.held[name], f"{gb:.1f}".encode())
+
+    def put(self, name: str, value) -> None:
+        """A live lease carrying `value` (a number or text; taken on first use, rewritten after)."""
+        if name in self.held or self.take(name):
+            os.ftruncate(self.held[name], 0)
+            os.pwrite(self.held[name], (value if isinstance(value, str) else f"{value:g}").encode(), 0)
+
+    def reserved_gb(self) -> float:
+        """Sum of live RAM reservations across pools (a lockable file is a dead pool's)."""
+        tot = 0.0
+        for f in self.root.glob("ram_*"):
+            fd = os.open(f, os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                try:
+                    tot += float(os.pread(fd, 32, 0) or 0)
+                except ValueError:
+                    pass
+            os.close(fd)
+        return tot
+
+
+def _lease_texts(root: Path, pattern: str, held: Optional[Dict[str, int]] = None) -> Dict[str, str]:
+    """{name: content} of live (locked) lease files matching `pattern`; `held` are this process's own (live)."""
+    out = {}
+    for f in root.glob(pattern):
+        if held is not None and f.name in held:
+            out[f.name] = os.pread(held[f.name], 64, 0).decode(errors="replace")
+            continue
+        fd = os.open(f, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            out[f.name] = os.pread(fd, 64, 0).decode(errors="replace")
+        os.close(fd)
+    return out
+
+
+def _lease_values(root: Path, pattern: str) -> Dict[str, float]:
+    """{name: value} of live (locked) lease files matching `pattern`."""
+    out = {}
+    for k, v in _lease_texts(root, pattern).items():
+        try:
+            out[k] = float(v or 0)
+        except ValueError:
+            pass
+    return out
+
+
+# FX-N100 2 (`--gpu-share K`, default 1 = exclusive GPUs, byte-identical): co-locate legs on a GPU by measured footprint.
+GPU_SHARE = 1
+SHORT_LEGS = False  # --scale-smoke legs record no GPU footprint: they read well below the full-length peak
+GPU_GB = 44.4  # A40 usable GiB (torch OOM message, E2)
+GPU_MEM_CAP, GPU_SM_CAP = 0.9, 90.0  # committed peak memory share and SM % per GPU
+GPU_LIVE_CAP = 0.9  # live used memory + the newcomer's peak (operator 10-15: no resource past 90%)
+
+
+def gpu_footprint(j: "Job", history: dict) -> tuple:
+    """(peak GB, mean SM %) per held GPU: max over the key's last 6 legs, real and sim alike (same trainers; a short sim's
+    30 s samples missed a 28 GB peak, E2 OOM); unmeasured legs claim a whole GPU."""
+    h = history.get(gpu_key(j), [])[-6:]
+    if not h:
+        return GPU_MEM_CAP * GPU_GB, GPU_SM_CAP
+    return min(GPU_MEM_CAP * GPU_GB, max(x[0] for x in h)), min(GPU_SM_CAP, max(x[1] for x in h))
+
+
+AGG_GPU_GB = 3.0  # the aggregator's eval model + context, on the leg's last GPU (runner `_agg_gpu`)
+MIN_TRAINERS_PER_GPU = 5  # smaller shards fragment GPUs for little gain
+TRAINERS_PER_GPU = {"cifar10": 75, "google_speech": 25}  # FX-T36: an A40's trainer cap; a trainer holds 1/cap of a GPU
+TRAINER_GPU_GB_MIN = {"cifar10": 0.4, "google_speech": 0.8}  # exclusive-leg minima (0.31 GB is bare CUDA context)
+
+
+def _gpu_commits(gpus: List[int], leases: "Leases") -> Dict[int, list]:
+    """{gpu: [committed GB, SM %, {slot indices}, trainer share]} over every pool's live `gslot_<g>_<i>` leases."""
+    load = {g: [0.0, 0.0, set(), 0.0] for g in gpus}
+    for name, txt in _lease_texts(leases.root, "gslot_*", leases.held).items():
+        _, g, i = name.split("_")
+        if int(g) in load:
+            try:
+                gb, sm, share = (list(map(float, txt.split(","))) + [0.0])[:3]
+            except ValueError:
+                gb, sm, share = GPU_MEM_CAP * GPU_GB, GPU_SM_CAP, 1.0  # half-written: assume full
+            load[int(g)][0] += gb
+            load[int(g)][1] += sm
+            load[int(g)][2].add(int(i))
+            load[int(g)][3] += share
+    return load
+
+
+def place_trainers(n: int, per_trainer: tuple, gpus: List[int], leases: "Leases",
+                   used_gb: Dict[int, float], cap: int = 75) -> Optional[List[tuple]]:
+    """FX-N100 2: spread a leg's n trainers over GPUs with room, [(gpu, trainers, slot lease, GB, SM, share)], aggregator GPU
+    last; at most `cap` trainers per GPU across legs (share k/cap, FX-T36). Fills partly used GPUs first; all or nothing."""
+    gb_t, sm_t = per_trainer
+    load = _gpu_commits(gpus, leases)
+    excl = leases.foreign([f"gpu{g}" for g in gpus])
+    room = {}
+    for g in gpus:
+        if f"gpu{g}" in excl or len(load[g][2]) >= GPU_SHARE:
+            continue
+        gb = min(GPU_MEM_CAP * GPU_GB - load[g][0], GPU_LIVE_CAP * GPU_GB - used_gb.get(g, 0.0))
+        fit = min(int(gb // max(gb_t, 1e-6)), int((GPU_SM_CAP - load[g][1]) // max(sm_t, 1e-6)) if sm_t > 0 else n,
+                  int((1.0 - load[g][3]) * cap + 1e-6))
+        if fit >= min(n, MIN_TRAINERS_PER_GPU):
+            room[g] = fit
+    picked, left = [], n
+    for g in sorted(room, key=lambda g: (-load[g][0], g)):  # fill partly used GPUs first
+        take = min(room[g], left)
+        if left and take >= min(left, MIN_TRAINERS_PER_GPU):
+            picked.append((g, take))
+            left -= take
+    if left:
+        return None
+    need, spare = math.ceil(AGG_GPU_GB / max(gb_t, 1e-6)), {g: room[g] - k for g, k in picked}
+    agg = max(spare, key=lambda g: (spare[g], -g))
+    if spare[agg] < need:  # no picked GPU has room for the aggregator: one more GPU hosts it alone
+        agg = next((g for g in sorted(room, key=lambda g: (-load[g][0], g)) if g not in spare and room[g] >= need), None)
+        if agg is None:
+            return None
+        picked.append((agg, 0))
+    picked.sort(key=lambda gk: gk[0] == agg)  # aggregator GPU last (runner `_agg_gpu = gpu_ids[-1]`)
+    out = []
+    for g, k in picked:
+        slot = f"gslot_{g}_{min(set(range(GPU_SHARE)) - load[g][2])}"
+        out.append((g, k, slot, round(k * gb_t + (AGG_GPU_GB if g == agg else 0.0), 1), round(k * sm_t, 1), round(k / cap, 3)))
+    return out
+
+
+def per_trainer_footprint(j: "Job", history: dict) -> Optional[tuple]:
+    """(GB, SM %) per trainer: the measured per-GPU peak over its even split ceil(n/G), at least TRAINER_GPU_GB_MIN;
+    None if unmeasured."""
+    if not history.get(gpu_key(j)):
+        return None
+    fp, per = gpu_footprint(j, history), -(-j.n // max(1, j.gpus))
+    return max(fp[0] / per, TRAINER_GPU_GB_MIN.get(j.dataset, 0.4)), fp[1] / per
+
+
+def place_gpus(m: int, fp: tuple, gpus: List[int], leases: "Leases", used_gb: Dict[int, float],
+               share: float = 0.0) -> Optional[List[tuple]]:
+    """FX-N100 2: [(gpu, slot lease)] on m GPUs whose live slot leases leave room for fp and `share` of the trainer cap;
+    least committed SM first."""
+    load = _gpu_commits(gpus, leases)
+    excl = leases.foreign([f"gpu{g}" for g in gpus])  # an exclusive pool's GPU
+    ok = [g for g in gpus if f"gpu{g}" not in excl and len(load[g][2]) < GPU_SHARE
+          and load[g][0] + fp[0] <= GPU_MEM_CAP * GPU_GB + 1e-6 and load[g][1] + fp[1] <= GPU_SM_CAP + 1e-6
+          and load[g][3] + share <= 1.0 + 1e-6 and used_gb.get(g, 0.0) + fp[0] <= GPU_LIVE_CAP * GPU_GB]
+    if len(ok) < m:
+        return None
+    ok.sort(key=lambda g: (load[g][1], load[g][0], g))
+    return [(g, f"gslot_{g}_{min(set(range(GPU_SHARE)) - load[g][2])}") for g in ok[:m]]
+
+
+def gpus_wanted_above(leases: "Leases", priority: int) -> int:
+    """FX-N99 4: most GPUs a higher-priority pool's blocked leg waits for (`want_p<N>_<pid>`, N < priority)."""
+    vals = [v for k, v in _lease_values(leases.root, "want_p*").items() if int(k.split("_")[1][1:]) < priority]
+    return int(max(vals, default=0))
 
 
 def slot_leases(cpus: List[int], gpus: List[int], port: Optional[int] = None) -> List[str]:
@@ -754,6 +1116,195 @@ def kill_tag(tag: str, sig=signal.SIGKILL) -> None:
             pass
 
 
+# ---------------------------------------------------------------- resource ledger (FX-D140)
+BLOCKED_LOG_S = 600  # FX-D141
+RES_SAMPLE_TICKS = 15  # loop ticks (2 s) between ledger samples: 30 s
+RAM_PROFILE_X = 1.15   # a leg's next RAM estimate >= this x its measured peak
+
+
+def overrun_share(run_dirs) -> tuple:
+    """FX-N100 / PL19: (overran, train tasks) over a leg's trainers: compute past D, the GPU-sharing interference signal."""
+    n = o = 0
+    for d in run_dirs:
+        for f in Path(d).glob("telemetry/trainer_*.jsonl"):
+            for line in open(f, errors="replace"):
+                if '"trainer_round"' in line and '"overran"' in line:
+                    try:
+                        e = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if e.get("task_to_perform", "train") == "train":
+                        n += 1
+                        o += bool(e.get("overran"))
+    return o, n
+
+
+def gpu_key(j: "Job") -> str:
+    """FX-N100: history of [peak GB, mean SM %] per held GPU; memory depends on the trainers, not mode, trace or runtime."""
+    return f"gpu|{j.dataset}|{j.harness}|{j.baseline}|n{j.n}|g{j.gpus}"
+
+
+def ram_key(j: "Job") -> str:
+    return "ram|" + j.key
+
+
+def mem_estimate_gb(j: "Job", history: dict) -> float:
+    """FX-D140: the formula, raised to the measured peak of this leg kind's last runs (never lowered)."""
+    past = history.get(ram_key(j), [])
+    if MEASURED:  # FX-N100: the measured peak sizes the reservation both ways; a short sim's 30 s samples miss peaks
+        peers = [max(v[-3:]) for k, v in history.items() if k.startswith(f"ram|{j.dataset}|{j.harness}|")
+                 and k.split("|")[5] == j.baseline and k.split("|")[6] == f"n{j.n}" and v]
+        if peers:
+            return RAM_PROFILE_X * max(peers)
+    return max(j.mem_gb, RAM_PROFILE_X * max(past[-3:])) if past else j.mem_gb
+
+
+def pids_by_tag(tags) -> Dict[str, List[int]]:
+    """One /proc scan: {tag: pids carrying FLAME_RUN_TAG=<tag>}."""
+    want = {f"FLAME_RUN_TAG={t}".encode(): t for t in tags}
+    out: Dict[str, List[int]] = {t: [] for t in tags}
+    uid = os.getuid()
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            if d.stat().st_uid != uid:
+                continue
+            for kv in (d / "environ").read_bytes().split(b"\0"):
+                if kv in want:
+                    out[want[kv]].append(int(d.name))
+                    break
+        except OSError:
+            continue
+    return out
+
+
+def proc_role(pid: int) -> str:
+    try:
+        head = b" ".join(Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[:3])  # program + script, not the inline config
+    except OSError:
+        return "other"
+    return next((r for k, r in ((b"mosquitto", "broker"), (b"/trainer/", "trainer"), (b"/aggregator/", "agg")) if k in head), "other")
+
+
+def proc_mem_gb(pid: int) -> float:
+    """PSS (shared pages split, so a sum over processes is honest); RSS if smaps_rollup is unreadable."""
+    try:
+        for line in open(f"/proc/{pid}/smaps_rollup"):
+            if line.startswith("Pss:"):
+                return int(line.split()[1]) / 1e6
+    except OSError:
+        pass
+    try:
+        return int(open(f"/proc/{pid}/statm").read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1e9
+    except (OSError, IndexError, ValueError):
+        return 0.0
+
+
+def gpu_mib_by_pid() -> Dict[int, float]:
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        return {}
+    res = {}
+    for line in out.splitlines():
+        try:
+            pid, mib = (x.strip() for x in line.split(","))
+            res[int(pid)] = res.get(int(pid), 0.0) + float(mib)
+        except ValueError:
+            continue
+    return res
+
+
+def gpu_sm_pct() -> Dict[int, float]:
+    """FX-N100: SM utilisation % per GPU (nvidia-smi's last sample period)."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=index,utilization.gpu", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        return {}
+    res = {}
+    for line in out.splitlines():
+        try:
+            i, u = (x.strip() for x in line.split(","))
+            res[int(i)] = float(u)
+        except ValueError:
+            continue
+    return res
+
+
+def gpu_sm_by_pid() -> Dict[int, float]:
+    """FX-N100: SM % per process, summed over GPUs (`nvidia-smi pmon`, one sample)."""
+    try:
+        out = subprocess.run(["nvidia-smi", "pmon", "-c", "1", "-s", "u"], capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        return {}
+    res = {}
+    for line in out.splitlines():
+        f = line.split()
+        if len(f) > 3 and not line.startswith("#") and f[1].isdigit() and f[3].replace(".", "").isdigit():
+            res[int(f[1])] = res.get(int(f[1]), 0.0) + float(f[3])
+    return res
+
+
+def ram_growth_gb(series: List[tuple]) -> float:
+    """Least-squares RAM growth over a leg's second half (GB); a steady leg reads ~0, a leak keeps climbing.
+    (t, GB, procs) samples: the window starts once procs peaks, so a short sim's spawn ramp is not a leak."""
+    peak = max((s[2] for s in series if len(s) > 2), default=None)
+    start = next((i for i, s in enumerate(series) if len(s) > 2 and s[2] >= peak), 0) if peak else 0
+    half = series[max(len(series) // 2, start):]
+    if len(half) < 4:
+        return 0.0
+    ts, ys = [s[0] for s in half], [s[1] for s in half]
+    mt, my = sum(ts) / len(ts), sum(ys) / len(ys)
+    var = sum((t - mt) ** 2 for t in ts)
+    return 0.0 if var <= 0 else sum((t - mt) * (y - my) for t, y in zip(ts, ys)) / var * (ts[-1] - ts[0])
+
+
+def leak_suspect(peak_gb: float, growth_gb: float) -> bool:
+    return growth_gb > max(1.0, 0.1 * peak_gb)
+
+
+class ResourceLedger:
+    """FX-D140: `<pool>/resources.jsonl` — leg start/end events and 30 s samples of node RAM/CPU/GPU and each running
+    leg's PSS by role and GPU memory; `resource_report.py` reads it (profiles, leak suspects, packing)."""
+
+    def __init__(self, path: Path):
+        self.f = open(path, "a", buffering=1)
+        self.load = NodeLoad(alpha=1.0)  # FX-N100: busy cores over each sample interval
+
+    def event(self, ev: str, **kw) -> None:
+        self.f.write(json.dumps({"t": round(time.time(), 1), "ev": ev, **kw}) + "\n")
+
+    def sample(self, running: Dict[str, "Running"], leases: "Leases") -> None:
+        by_tag = pids_by_tag([r.tag for r in running.values()])
+        gpu, sm = gpu_mib_by_pid(), gpu_sm_by_pid()
+        self.load.tick()
+        legs = {}
+        for jid, r in running.items():
+            roles: Dict[str, float] = {}
+            pids = by_tag.get(r.tag, [])
+            for pid in pids:
+                role = proc_role(pid)
+                roles[role] = roles.get(role, 0.0) + proc_mem_gb(pid)
+            r.ram.append((time.time(), sum(roles.values()), len(pids)))
+            gpu_gb = sum(gpu.get(pid, 0.0) for pid in pids) / 1024
+            r.gpu_peak_gb = max(r.gpu_peak_gb, gpu_gb)
+            leg_sm = sum(sm.get(pid, 0.0) for pid in pids)
+            if r.gpus:
+                r.gpu_sm.append(leg_sm / len(r.gpus))
+            legs[jid] = {"ram_gb": {k: round(v, 2) for k, v in roles.items()}, "gpu_gb": round(gpu_gb, 2),
+                         "gpu_sm": round(leg_sm, 1), "gpus": r.gpus,
+                         "cores": round(r.busy[-1], 2) if r.busy else 0.0, "procs": len(pids)}
+        node = {"mem_avail_gb": round(mem_available_gb(), 1), "reserved_gb": round(leases.reserved_gb(), 1),
+                "load1": float(open("/proc/loadavg").read().split()[0]),
+                "gpu_used_gb": {i: round(m / 1024, 1) for i, _, m in _gpu_query()},
+                "gpu_sm": gpu_sm_pct(), "cpu_busy": round(self.load.ema or 0.0, 1), "ncpu": self.load.ncpu,
+                "ram_used_gb": round(mem_available_gb("MemTotal") - mem_available_gb(), 1)}
+        self.event("sample", node=node, legs=legs)
+
+
 # ---------------------------------------------------------------- run
 @dataclass
 class Running:
@@ -772,6 +1323,11 @@ class Running:
     stalled: str = ""
     stalled_at: float = 0.0
     doom_at: float = 0.0  # last early-exit check
+    ram: List[tuple] = field(default_factory=list)  # (time, GB PSS) per ledger sample (FX-D140)
+    gpu_peak_gb: float = 0.0
+    saturated: bool = False  # FX-N99 3: its slot saturated (back-pressure logged)
+    gpu_sm: List[float] = field(default_factory=list)  # FX-N100: SM % per held GPU, per ledger sample
+    gslots: List[str] = field(default_factory=list)  # FX-N100: shared-GPU slot leases
 
     def sample(self) -> None:
         self.cpu.update(tag_cpu_s(self.tag))
@@ -800,6 +1356,7 @@ class Pool:
     leases: Optional["Leases"] = None
     stall_min: float = 15.0  # FX-D45 S1 limit; 0 disables the stall rules
     doom_min: float = 5.0  # early-exit check period; 0 disables it
+    priority: int = -1  # FX-N99 4: GPU priority among co-running pools (lower first); -1 = off
 
     def _stalled(self, r: "Running") -> bool:
         """FX-D45: a leg that stopped progressing is killed alone (STALLED.txt); its neighbours keep running."""
@@ -902,18 +1459,26 @@ class Pool:
         cap = cm.total()
         leases = self.leases or Leases()
         node = slot_leases([c for gs in groups.values() for g in gs for c in g], gpu_ids())
-        gpus_free = gpu_ids()
+        node_gpus = gpu_ids()
+        gpus_free = list(node_gpus)
+        gpu_seen_t = time.time()
+        blocked: Dict[str, str] = {}  # FX-D141: why each ready leg is waiting; logged every BLOCKED_LOG_S
+        blocked_shown = time.time()
         pending = sorted(self.jobs, key=_order_key(self.jobs))
         running: Dict[str, Running] = {}
         ports: set = set()
         history = _load_history()
+        history_base = {k: list(v) for k, v in history.items()}
         t0 = self.t0 = time.time()
         mem_budget = mem_available_gb() - self.mem_headroom_gb
         stop = {"flag": False}
-        probe, last_note = None, None
+        probe, last_note, owners_shown = None, None, 0.0
         tick, shown = 0, 0.0
+        load, paused_until = NodeLoad(), 0.0  # FX-N99 2-3
+        want_lease = f"want_p{self.priority:03d}_{os.getpid()}"
         jobs_tsv = open(self.root / "jobs.tsv", "a")
         jobs_tsv.write("jid\trc\tdur_s\test_s\tcpus\tcores_avg\tcores_p95\tcpu_sat\n")
+        ledger = ResourceLedger(self.root / "resources.jsonl")
 
         def _on_signal(signum, _frm):
             stop["flag"] = True
@@ -922,6 +1487,28 @@ class Pool:
         signal.signal(signal.SIGTERM, _on_signal)
         try:
             while (pending or running) and not stop["flag"] and not self.aborted:
+                if time.time() - gpu_seen_t > 30 and any(j.gpus for j in pending):
+                    # FX-D141: refresh; a failed nvidia-smi returns [] and a start-time snapshot starved PR29b B1
+                    node_gpus = gpu_ids() or node_gpus
+                    ours = {g for r in running.values() for g in r.gpus}
+                    gpus_free = [g for g in node_gpus if g not in ours]
+                    gpu_seen_t = time.time()
+                if blocked and time.time() - blocked_shown > BLOCKED_LOG_S:
+                    for jid, why in list(blocked.items())[:6]:
+                        self.say(f"BLOCKED {jid}: {why}")
+                    blocked_shown = time.time()
+                if last_note and (last_note[0] or last_note[1]) and time.time() - owners_shown > BLOCKED_LOG_S:
+                    own = {os.getpgid(os.getpid())} | {r.proc.pid for r in running.values()}
+                    rows = foreign_owners(own)  # PL-LOG: whom to contact, every 10 min while foreign load exists
+                    if rows:
+                        self.say("LOAD foreign owners: " + "; ".join(rows))
+                    owners_shown = time.time()
+                blocked.clear()
+                gpu_wait = 0
+                if MEASURED:
+                    load.tick()
+                    if load.runq > RUNQ_PAUSE:
+                        paused_until = max(paused_until, time.time() + 30)
                 for j in list(pending):
                     if any(d not in self.done for d in j.deps):
                         continue
@@ -932,14 +1519,22 @@ class Pool:
                         continue
                     if len(running) >= self.max_parallel:
                         break
+                    if MEASURED and time.time() < paused_until:
+                        blocked[j.jid] = f"back-pressure (slot saturated or run queue {load.runq:.2f}/CPU)"
+                        break
                     if j.mem_gb + sum(r.job.mem_gb for r in running.values()) > mem_budget and running:
+                        blocked[j.jid] = f"pool RAM budget ({j.mem_gb:.0f} GB + running > {mem_budget:.0f})"
                         continue
-                    if j.gpus > len(gpus_free):
+                    share = GPU_SHARE > 1 and j.gpus > 0
+                    if not share and j.gpus > len(gpus_free):
+                        blocked[j.jid] = f"needs {j.gpus} GPUs, {len(gpus_free)} free of {node_gpus}"
+                        gpu_wait = max(gpu_wait, j.gpus)
                         continue
                     if probe is None or time.time() - probe["t"] > 30:  # foreign load, between starts only
                         ours = {c for r in running.values() for c in r.cpus}
                         leased = leases.foreign(node)  # another pool's slots, busy or not yet
-                        probe = {"t": time.time(), "mem": mem_available_gb(),
+                        probe = {"t": time.time(),
+                                 "mem": min(mem_available_gb(), mem_available_gb("MemTotal") - leases.reserved_gb()),
                                  "gpus": busy_gpus() | {int(n[3:]) for n in leased if n.startswith("gpu")},
                                  "cpus": frozenset((busy_cpus() - ours) | {int(n[3:]) for n in leased if n.startswith("cpu")})}
                         note = (sorted(probe["gpus"] & set(gpus_free)), len(probe["cpus"]) // 8 * 8)  # log on change
@@ -948,30 +1543,97 @@ class Pool:
                                      f"{probe['mem']:.0f} GB available")
                             last_note = note
                     usable = [g for g in gpus_free if g not in probe["gpus"]]
-                    if j.gpus > len(usable) or ram_blocks(j.mem_gb, probe["mem"], self.mem_headroom_gb, bool(running)):
+                    if share:
+                        usable = list(node_gpus)  # placed under the node lock after CPU/RAM pass
+                    if j.gpus and self.priority >= 0 and not share:
+                        if j.gpus > len(usable):
+                            gpu_wait = max(gpu_wait, j.gpus)
+                        elif len(usable) - j.gpus < gpus_wanted_above(leases, self.priority):
+                            blocked[j.jid] = "GPU priority: a higher-priority stage waits for GPUs"
+                            continue
+                    if MEASURED and load.ema is not None:
+                        fresh = sum(predicted_cores(r.job, history) for r in running.values() if time.time() - r.t0 < 60)
+                        need = predicted_cores(j, history)
+                        if load.ema + fresh + need > ADMIT_FRAC * load.ncpu:
+                            blocked[j.jid] = (f"node busy {load.ema:.0f} + fresh {fresh:.0f} + {need:.1f} cores > "
+                                              f"{ADMIT_FRAC:.0%} of {load.ncpu}")
+                            continue
+                    avail = min(probe["mem"], mem_available_gb("MemTotal") - leases.reserved_gb())
+                    if j.gpus > len(usable) or ram_blocks(j.mem_gb, avail, self.mem_headroom_gb, bool(running)):
+                        blocked[j.jid] = (f"GPUs usable {usable} (foreign busy {sorted(probe['gpus'])}), "
+                                          f"RAM {j.mem_gb:.0f} GB vs {avail:.0f} available - {self.mem_headroom_gb:.0f} headroom")
                         continue
                     cpus = cm.alloc(j.cpus, probe["cpus"])
                     if cpus is None:
+                        own = sum(len(r.cpus) for r in running.values())
+                        blocked[j.jid] = (f"needs {j.cpus} CPUs, resources-busy ({own} held by this pool's legs, "
+                                          f"{len(probe['cpus'])} foreign-busy)" if own >= len(probe["cpus"]) else
+                                          f"needs {j.cpus} CPUs, {len(probe['cpus'])} foreign-busy ({own} held by this pool)")
                         continue
-                    gp = usable[:j.gpus]
-                    if not leases.take_all(slot_leases(cpus, gp)):  # a neighbour pool took one since the probe
+                    gp, gslots, caps, lock = usable[:j.gpus], [], "", None
+                    if share:  # FX-N100: read commitments, choose, commit, as one step per node
+                        lock = open(leases.root / "gpu_place.lock", "w")
+                        fcntl.flock(lock, fcntl.LOCK_EX)
+                        per = per_trainer_footprint(j, history)
+                        used = {i: m / 1024 for i, _, m in _gpu_query()}
+                        cap, k_even = TRAINERS_PER_GPU.get(j.dataset, 75), -(-j.n // j.gpus)
+                        if per is None:  # unmeasured: whole GPUs, even split
+                            placed = place_gpus(j.gpus, gpu_footprint(j, history), node_gpus, leases, used, k_even / cap)
+                            plan = ([(g, k_even, sl, GPU_MEM_CAP * GPU_GB, GPU_SM_CAP, round(k_even / cap, 3)) for g, sl in placed]
+                                    if placed else None)
+                        else:
+                            plan = place_trainers(j.n, per, node_gpus, leases, used, cap)
+                        if plan is None:
+                            lock.close()
+                            cm.release(cpus, groups)
+                            blocked[j.jid] = "no GPU room for its trainers" + (f" ({per[0]:.2f} GB each)" if per else " (unmeasured: whole GPUs)")
+                            continue
+                        gp, gslots = [g for g, *_ in plan], [sl for _, _, sl, *_ in plan]
+                        caps = ",".join(f"{g}:{k}" for g, k, *_ in plan) if per else ""
+                    if not leases.take_all(slot_leases(cpus, [] if share else gp) + gslots):  # a neighbour took one
+                        blocked[j.jid] = "lease race with a neighbour pool"
                         cm.release(cpus, groups)
                         probe = None
+                        if lock:
+                            lock.close()
                         continue
-                    for g in gp:
+                    for g, k, sl, gb, sm, tshare in (plan if share else []):
+                        leases.put(sl, f"{gb:.1f},{sm:.1f},{tshare:.3f}")
+                    if lock:
+                        lock.close()
+                    for g in ([] if share else gp):
                         gpus_free.remove(g)
                     probe["mem"] -= j.mem_gb
+                    leases.reserve_ram(f"ram_{os.getpid()}_{j.jid}", j.mem_gb)
                     port = free_port(18830, ports, leases)
                     ports.add(port)
-                    running[j.jid] = self._launch(j, cpus, gp, port)
+                    running[j.jid] = self._launch(j, cpus, gp, port, caps)
+                    running[j.jid].gslots = gslots
+                    ledger.event("start", jid=j.jid, mode=j.mode, baseline=j.baseline, trace=j.trace, dataset=j.dataset,
+                                 harness=j.harness, n=j.n, mem_est_gb=round(j.mem_gb, 1), cpus=len(cpus), gpus=gp,
+                                 runtime_s=j.runtime_s, est_s=round(j.est_s))
                     pending.remove(j)
+                if self.priority >= 0:
+                    if gpu_wait:
+                        leases.put(want_lease, gpu_wait)
+                    else:
+                        leases.drop([want_lease])
                 time.sleep(2)
                 tick += 1
+                if tick % RES_SAMPLE_TICKS == 0 and running:
+                    ledger.sample(running, leases)
                 for jid, r in list(running.items()):
                     rc = r.proc.poll()
                     if rc is None:
                         if tick % 3 == 0:
                             r.sample()
+                            recent = r.busy[-10:]
+                            if MEASURED and r.job.mode != "grade" and len(recent) == 10 and \
+                                    sum(b >= CPU_SAT_BUSY * len(r.cpus) for b in recent) / 10 > SAT_PAUSE:
+                                paused_until = max(paused_until, time.time() + 30)
+                                if not r.saturated:
+                                    r.saturated = True
+                                    self.say(f"BACKPRESSURE {jid}: slot of {len(r.cpus)} CPUs saturated; starts paused, timing-suspect")
                         if tick % 15 == 0 and self._fatal(r):
                             break
                         if tick % 30 == 0:
@@ -985,9 +1647,23 @@ class Pool:
                     avg = sum(r.cpu.values()) / max(1.0, dur)
                     p95 = sorted(r.busy)[int(0.95 * (len(r.busy) - 1))] if r.busy else 0.0
                     sat = sum(b >= CPU_SAT_BUSY * len(r.cpus) for b in r.busy) / max(1, len(r.busy))
+                    ram_peak, ram_grow = max((s[1] for s in r.ram), default=0.0), ram_growth_gb(r.ram)
+                    over = overrun_share(leg_run_dirs(r.out)) if r.gpus else (0, 0)
+                    ledger.event("end", jid=jid, rc=rc, dur_s=round(dur), mem_est_gb=round(r.job.mem_gb, 1),
+                                 ram_peak_gb=round(ram_peak, 2), ram_growth_gb=round(ram_grow, 2),
+                                 gpu_peak_gb=round(r.gpu_peak_gb, 2), cores_p95=round(p95, 2),
+                                 gpu_sm_mean=round(statistics.mean(r.gpu_sm), 1) if r.gpu_sm else None,
+                                 overran=over[0], train_tasks=over[1])
                     self.say(f"DONE  {jid} rc={rc}{(' DOOMED' if r.stalled.startswith('DOOMED') else ' STALLED') if r.stalled else ''} {dur / 60:.1f}m (est {r.job.est_s / 60:.1f}m) "
                              f"cores avg {avg:.1f} p95 {p95:.1f} of {len(r.cpus)}{f' CPU_SAT {sat:.0%}' if sat > 0.05 else ''}"
-                             f"{gpu_peak_note(leg_run_dirs(r.out), r.gpus)}")
+                             f"{gpu_peak_note(leg_run_dirs(r.out), r.gpus)}"
+                             f"{f' leg RAM {ram_peak:.0f}/{r.job.mem_gb:.0f} GB' if ram_peak else ''}"
+                             f"{' RAM_OVER' if ram_peak > r.job.mem_gb else ''}"
+                             f"{f' LEAK? +{ram_grow:.1f} GB 2nd half' if leak_suspect(ram_peak, ram_grow) else ''}"
+                             f"{' TIMING_SUSPECT' if MEASURED and r.job.mode != 'grade' and sat > SAT_PAUSE else ''}"
+                             f"{f' gpu SM {statistics.mean(r.gpu_sm):.0f}%' if r.gpu_sm else ''}"
+                             f"{f' overran {over[0]}/{over[1]}' if over[1] else ''}"
+                             f"{' OVERRUN' if over[1] and over[0] > 0.02 * over[1] else ''}")
                     jobs_tsv.write(f"{jid}\t{rc}\t{dur:.0f}\t{r.job.est_s:.0f}\t{len(r.cpus)}\t{avg:.2f}\t{p95:.2f}\t{sat:.3f}\n")
                     jobs_tsv.flush()
                     row = _summary_row(r.out)
@@ -995,9 +1671,19 @@ class Pool:
                         history.setdefault(r.job.key, []).append(round(dur))
                         if r.busy:  # CPU legs too: the ISO control sizes their slots from it (FX-N22)
                             history.setdefault(cores_key(r.job), []).append(round(p95, 2))
+                        if ram_peak and r.job.mode != "grade":  # FX-D140: next estimate >= measured
+                            history.setdefault(ram_key(r.job), []).append(round(ram_peak, 1))
+                        if r.gpus and r.gpu_sm and not SHORT_LEGS:  # FX-N100: per-GPU footprint for GPU packing
+                            per_gpu = r.gpu_peak_gb / r.job.gpus  # per nominal GPU (the key's split), not per placed GPU
+                            if not r.gslots:  # exclusive GPUs: the node log is this leg alone
+                                per_gpu = max(per_gpu, node_gpu_peak_gb(leg_run_dirs(r.out), r.gpus))
+                            history.setdefault(gpu_key(r.job), []).append([round(per_gpu, 1), round(statistics.mean(r.gpu_sm), 1)])
+                    if MEASURED and r.job.mode != "grade" and sat > SAT_PAUSE:  # FX-N99 3: the next lease of this key grows
+                        history.setdefault(margin_key(r.job), []).append(
+                            round(min(MARGIN_MAX, lease_margin(r.job, history) * MARGIN_X), 2))
                     cm.release(r.cpus, groups)
-                    leases.drop(slot_leases(r.cpus, r.gpus, r.port))
-                    gpus_free += r.gpus
+                    leases.drop(slot_leases(r.cpus, r.gpus, r.port) + [f"ram_{os.getpid()}_{jid}"] + r.gslots)
+                    gpus_free += [g for g in r.gpus if g not in gpus_free and not r.gslots]
                     ports.discard(r.port)
                     self.done[jid] = r.out
                     del running[jid]
@@ -1024,14 +1710,14 @@ class Pool:
                     except OSError:
                         pass
                     kill_tag(r.tag)
-                    leases.drop(slot_leases(r.cpus, r.gpus, r.port))
-            _save_history(history)
+                    leases.drop(slot_leases(r.cpus, r.gpus, r.port) + [f"ram_{os.getpid()}_{r.job.jid}"] + r.gslots)
+            _save_history(history, history_base)
         if stop["flag"]:
             return 130
         self.merge()
         return EXIT_FATAL if self.aborted else 0
 
-    def _launch(self, j: Job, cpus: List[int], gp: List[int], port: int) -> Running:
+    def _launch(self, j: Job, cpus: List[int], gp: List[int], port: int, caps: str = "") -> Running:
         out = self.root / j.phase / j.jid
         out.mkdir(parents=True, exist_ok=True)
         # Unique per pool path: two ladders' gate pools are both named P00 (one killed the other's legs).
@@ -1052,11 +1738,15 @@ class Pool:
         (out / "cmd.txt").write_text(shlex.join(cmd) + "\n")
         env = {**os.environ, "EXPT_AUTOCLEAN": "1", "FLAME_RUN_TAG": tag, "FLAME_RUN_LABEL": j.phase,
                "FLAME_POST_ANALYSIS": "0"}  # FX-D62: nothing reads a leg's plots/
+        if caps:
+            env["FLAME_GPU_TRAINER_CAPS"] = caps  # FX-N100: trainers per GPU from the placer
         if not j.whole:
-            env["FLAME_AGG_CORES"] = str(8 if j.gpus else agg_cores(j.n))
+            agg = 8 if j.gpus else agg_cores(j.n)
+            env["FLAME_AGG_CORES"] = str(min(agg, max(1, len(cpus) // 2)) if MEASURED else agg)  # FX-N99: trainers keep half
         proc = subprocess.Popen(cmd, stdout=open(out / "suite.log", "w"), stderr=subprocess.STDOUT,
                                 env=env, start_new_session=True, cwd=str(example_dir(j.dataset)))
-        self.say(f"START {j.jid} cpus={_ranges(cpus)} port={port}{' gpus=' + str(gp) if gp else ''} est={j.est_s / 60:.1f}m")
+        self.say(f"START {j.jid} cpus={_ranges(cpus)} port={port}{' gpus=' + str(gp) if gp else ''}"
+                 f"{' trainers/gpu=' + caps if caps else ''} est={j.est_s / 60:.1f}m")
         t = time.time()
         watch = StallWatch(t, self.stall_min * 60) if self.stall_min > 0 and j.mode != "grade" else None
         return Running(j, proc, cpus, gp, port, tag, t, out, watch=watch)
@@ -1148,9 +1838,17 @@ def _load_history() -> dict:
         return {}
 
 
-def _save_history(h: dict) -> None:
+def _save_history(h: dict, base: Optional[dict] = None) -> None:
+    """FX-D141: merge this pool's appends onto the file under a lock; a plain write lost every concurrent pool's."""
     DURATIONS.parent.mkdir(parents=True, exist_ok=True)
-    DURATIONS.write_text(json.dumps({k: v[-10:] for k, v in h.items()}, indent=1, sort_keys=True))
+    with open(DURATIONS.with_suffix(".lock"), "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        disk = _load_history()
+        for k, v in h.items():
+            disk[k] = disk.get(k, []) + v[len((base or {}).get(k, [])):]
+        tmp = DURATIONS.with_suffix(".tmp")
+        tmp.write_text(json.dumps({k: v[-10:] for k, v in disk.items()}, indent=1, sort_keys=True))
+        os.replace(tmp, DURATIONS)
 
 
 def run_gate(root: Path, datasets, pool: "Pool") -> int:
@@ -1178,34 +1876,69 @@ def run_gate(root: Path, datasets, pool: "Pool") -> int:
         pool.say(f"ABORT gate: dataset missing or incomplete -- {root}/P00_data.txt")
         return 4
     pool.say("data ok: " + " | ".join(r.stdout.split("\n")[:-1]))
-    stamp = Leases().root / f"gate_ok_{code_key()}_{'_'.join(sorted(datasets))}"
-    if stamp.exists():  # one smoke per code state per node (FX-D101)
-        pool.say(f"gate ok (collect; smoke passed earlier on this code: {stamp.read_text().strip()})")
+    # One smoke per code state, dataset and node (FX-D101, FX-D154).
+    stamps = {d: Leases().root / f"gate_ok_{code_key()}_{d}" for d in datasets}
+    todo = [d for d in datasets if not stamps[d].exists()]
+    if not todo:
+        pool.say(f"gate ok (collect; smoke passed earlier on this code: {stamps[datasets[0]].read_text().strip()})")
         return 0
     g = root / "P00"
-    try:
-        r = subprocess.run([sys.executable, __file__, "--tier", "T3", "--baselines", "felix", "--phases", "T3_syn_0",
-                            "--smoke", "--no-gate", "--datasets", ",".join(datasets), "--output-dir", str(g)],
-                           capture_output=True, text=True, timeout=900)
-    except subprocess.TimeoutExpired:
+    cmd = [sys.executable, __file__, "--tier", "T3", "--baselines", "felix", "--phases", "T3_syn_0",
+           "--smoke", "--no-gate", "--datasets", ",".join(todo), "--output-dir", str(g)]
+    if GPU_ALLOW is not None:
+        cmd += ["--gpu-ids", ",".join(map(str, sorted(GPU_ALLOW)))]
+    rc = run_smoke(cmd, g / "pool.log")
+    if rc is None:
         pool.say(f"ABORT gate: smoke pair timed out -- {g}")
         return 4
     leg_bad = lambda v: v == "MISSING" or "EV1" in v.replace("FAIL:", "").split(",")
     bad = [row for f in g.glob("*/summary.tsv") for row in f.read_text().splitlines()[1:]
            if leg_bad(row.split("\t")[2]) or leg_bad(row.split("\t")[3])
            or row.split("\t")[4] in ("MISSING", "CHECKER_ERROR")]
-    if r.returncode or bad or not list(g.glob("*/summary.tsv")):
+    if rc or bad or not list(g.glob("*/summary.tsv")):
         pool.say(f"ABORT gate: smoke pair made no progress -- {g}")
         return 4
-    stamp.write_text(str(g))
+    for d in todo:
+        stamps[d].write_text(str(g))
     pool.say("gate ok (collect + smoke pair per dataset)")
     return 0
 
 
+def run_smoke(cmd, log: Path, run_s: float = 900, wait_s: float = 3600) -> Optional[int]:
+    """FX-D154: gate smoke timed from its first leg START, not while queued for leases; None = timed out."""
+    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # same group: Ctrl+C reaches it (R20)
+    t0, started = time.time(), None
+    while p.poll() is None:
+        if started is None and log.exists() and " START " in log.read_text():
+            started = time.time()
+        if time.time() - (started or t0) > (run_s if started else wait_s):
+            p.send_signal(signal.SIGINT)  # the pool tears its legs down
+            try:
+                p.wait(120)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+            return None
+        time.sleep(min(5.0, run_s / 2))
+    return p.returncode
+
+
+# L18: files no leg executes (docs, tests, graders, batch drivers); editing them keeps the code state.
+NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python/examples/async_cifar10/scripts/parity/**",
+                     "lib/python/examples/async_cifar10/scripts/parity_check.py", "lib/python/examples/scripts/run_*.py",
+                     *(f"lib/python/examples/fwdllm/expt_scripts/{p}" for p in (  # plots: PR36 split its key mid-batch
+                         "plotlib/**", "make_paper_figs.py", "preview_palette.py", "figs*.yaml")),
+                     *(f"lib/python/examples/scripts/{s}.py" for s in (
+                         "parity_ladder", "readiness_score", "logical_diff", "insights", "accuracy_table", "replicate_spread",
+                         "resource_report", "profile_report", "fd_sanity", "eurosys_export", "baseline_deviations",
+                         "cleanup_experiments", "test_inventory", "harness_iso_compare")))
+
+
 def code_key() -> str:
-    """HEAD plus the uncommitted diff: two pools share a gate only on identical code."""
+    """Tracked run-affecting files plus their uncommitted diff: two pools share a gate and floors only on identical code."""
     git = lambda *a: subprocess.run(["git", "-C", str(REPO), *a], capture_output=True, text=True).stdout
-    return hashlib.sha1((git("rev-parse", "HEAD") + git("diff", "HEAD")).encode()).hexdigest()[:12]
+    spec = ["--", ".", *(f":(exclude,glob){p}" for p in NOT_RUN_AFFECTING)]
+    return hashlib.sha1((git("ls-files", "-s", *spec) + git("diff", "HEAD", *spec)).encode()).hexdigest()[:12]
 
 
 def main(argv=None) -> int:
@@ -1216,7 +1949,7 @@ def main(argv=None) -> int:
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")
     ap.add_argument("--phases", default="", help="subset of the tier's phase ids (e.g. 'P1 P2', 'P11a')")
-    ap.add_argument("--exclude-phases", default="", help="exact phase ids to drop (e.g. 'G0_syn_0 gs_G0_syn_50')")
+    ap.add_argument("--exclude-phases", default="", help="exact phase ids to drop (e.g. 'G0_syn_0 gs_G0_syn_50_3st')")
     ap.add_argument("--shard", default="1/1", help="i/N: this node's share of the job list")
     ap.add_argument("--max-parallel", type=int, default=32)
     ap.add_argument("--reserve-cores", type=int, default=4, help="physical cores kept out of every slot")
@@ -1230,7 +1963,8 @@ def main(argv=None) -> int:
     ap.add_argument("--gpus-per-job", type=int, default=8, help="GPU legs: GPUs each (capped at the healthy count)")
     ap.add_argument("--gpu-cpus-per-trainer", type=float, default=0.4,
                     help="GPU legs: CPUs per trainer (0.4 = n=300 on 128 CPUs -> whole node; n=100 -> 48 CPUs)")
-    ap.add_argument("--mem-headroom-gb", type=float, default=32)
+    ap.add_argument("--mem-headroom-gb", type=float, default=None,
+                    help="host RAM kept free (default: 10%% of MemTotal; operator 10-15: no resource past 90%%)")
     ap.add_argument("--deadline-h", type=float, default=12)
     ap.add_argument("--progress-label", default="", help="prefix of the PROGRESS lines (the ladder passes its rung)")
     ap.add_argument("--output-dir", default="")
@@ -1248,15 +1982,21 @@ def main(argv=None) -> int:
                     help="FX-D45: kill a leg with no new committed round for this many minutes (0 = off)")
     ap.add_argument("--doom-min", type=float, default=5.0,
                     help="early exit: prefix-safe EV checks on live legs every this many minutes (0 = off)")
+    ap.add_argument("--lease-from-telemetry", action="store_true",
+                    help="FX-N99: lease measured cores, admit by node load, back-pressure on saturated slots")
+    ap.add_argument("--priority", type=int, default=-1, help="FX-N99: GPU priority among co-running pools (lower first)")
+    ap.add_argument("--gpu-share", type=int, default=1, help="FX-N100: max legs per GPU, placed by measured footprint")
     a = ap.parse_args(argv)
+    global MEASURED, GPU_SHARE, SHORT_LEGS
+    MEASURED, GPU_SHARE, SHORT_LEGS = a.lease_from_telemetry, a.gpu_share, bool(a.scale_smoke)
     set_gpu_allow(a.gpu_ids)
 
     real_changed = False
     if a.baselines:
         baselines = tuple(a.baselines.replace(",", " ").split())
-        unknown = [b for b in baselines if b not in B6]
+        unknown = [b for b in baselines if b not in B6 + ("fedavg",)]  # fedavg: feddance's random arm (G1XF/G1XFS)
         if unknown:  # an unknown name used to run nothing and exit 0
-            ap.error(f"--baselines: unknown {unknown}; expected any of {B6}")
+            ap.error(f"--baselines: unknown {unknown}; expected any of {B6 + ('fedavg',)}")
     elif a.changed:
         baselines, real_changed = affected(changed_paths(a.changed))
     else:
@@ -1282,8 +2022,7 @@ def main(argv=None) -> int:
             p.c = min(p.c, p.n) if p.c else p.c
             p.gpus = 1 if p.harness == "none" else p.gpus
     if a.scale_smoke:  # FX-D56: production density, short: the first dispatch wave is the memory peak
-        for p in phases:
-            p.runtime_s = min(p.runtime_s, a.scale_smoke)
+        cap_runtime(phases, a.scale_smoke)
     history = _load_history()
     jobs = build_jobs(phases, a.cpus_per_trainer, a.gpus_per_job, history, a.gpu_cpus_per_trainer)
     i, n = map(int, a.shard.split("/"))
@@ -1292,9 +2031,10 @@ def main(argv=None) -> int:
     root = Path(a.output_dir or OUT_DIR / f"pool_{time.strftime('%Y%m%d_%H%M%S')}_{'_'.join(tiers)}").resolve()
     root.mkdir(parents=True, exist_ok=True)
     (root / "code_key.txt").write_text(code_key() + "\n")  # parity_ladder pairs floors only within one code state
-    pool = Pool(root, jobs, a.max_parallel, a.reserve_cores, a.mem_headroom_gb, a.deadline_h * 3600, a.dry_run,
+    headroom = a.mem_headroom_gb if a.mem_headroom_gb is not None else 0.1 * mem_available_gb("MemTotal")
+    pool = Pool(root, jobs, a.max_parallel, a.reserve_cores, headroom, a.deadline_h * 3600, a.dry_run,
                 log=open(root / "pool.log", "a"), fail_fast=a.fail_fast, label=a.progress_label,
-                stall_min=a.stall_min, doom_min=a.doom_min)
+                stall_min=a.stall_min, doom_min=a.doom_min, priority=a.priority)
     commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True,
                             text=True).stdout.strip()
     pool.say(f"pool {root} host={socket.gethostname()} tier={a.tier} datasets={','.join(datasets)} baselines={' '.join(baselines) or '-'} "

@@ -66,6 +66,7 @@ class _FakeBarrierAgg:
     _sync_sim_recv_first_k = _SyncBase._sync_sim_recv_first_k
     _advance_sim_clock = _SyncBase._advance_sim_clock
     _sim_recv_timeout_s = _SyncBase._sim_recv_timeout_s
+    _sim_barrier_recv = _SyncBase._sim_barrier_recv
     _note_sim_known_delay = _SyncBase._note_sim_known_delay
     _sim_reinject_ready_withheld = _SyncBase._sim_reinject_ready_withheld
     _sim_withhold_if_unavail = _SyncBase._sim_withhold_if_unavail

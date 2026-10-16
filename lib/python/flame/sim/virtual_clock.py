@@ -74,6 +74,11 @@ class SimReorderBuffer:
         item = self._items.get(end_id)
         return None if item is None else item[0]
 
+    def payload_of(self, end_id: str) -> Any:
+        """Buffered payload of ``end_id``, or None."""
+        item = self._items.get(end_id)
+        return None if item is None else item[1]
+
     def pending_ends(self) -> set[str]:
         return set(self._items)
 

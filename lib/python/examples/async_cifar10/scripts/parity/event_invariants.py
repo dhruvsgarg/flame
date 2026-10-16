@@ -568,16 +568,15 @@ def _ground_truth(run):
 
 
 def ev16_withheld_delivery(run):
-    """Sim: a train update whose trainer is UN_AVL at its sct commits only as a withheld
-    delivery, at delivery_ts = next AVL after sct (FX-L12); catches committing at sct, or
-    long after delivery_ts (FX-N54)."""
+    """Sim: a train update whose trainer is not AVL_TRAIN at its sct (UN_AVL or AVL_EVAL, FX-N97) commits only
+    as a withheld delivery, at delivery_ts = next deliverable state after sct (FX-L12); catches committing at sct,
+    or long after delivery_ts (FX-N54)."""
     if not _simulated(run):
         return _res("SKIP", "sim-only (real send-gate is trainer-side, A8)")
     gt = _ground_truth(run)
     if not gt:
         return _res("SKIP", "no availability trace")
-    from flame.availability.trace import next_avail_after, state_at
-    from flame.config import TrainerAvailState
+    from flame.availability.trace import deliverable, next_avail_after, state_at
     held = {}
     early = late = bad_dts = 0
     examples = []
@@ -585,12 +584,14 @@ def ev16_withheld_delivery(run):
     # FX-D51: a sync delivery joins the open round and commits at its close, as in real.
     closes = [] if _is_async(run) else sorted(
         float(e["vclock_now"]) for e in _train_commits(run) if e.get("vclock_now") is not None)
+    release = float(_hp(run, "sim_gate_release_s", "simGateReleaseSeconds") or 0.0)  # FX-D163
     for e in _events(run, "withheld_delivery"):
         held[(e.get("end_id"), round(float(e["sct"]), 3))] = e
         tr = gt.get(e.get("end_id"))
         if tr is not None:
             sct = float(e["sct"])  # = ClientAvailability.compute_delivery_ts
-            want = sct if state_at(tr, sct) != TrainerAvailState.UN_AVL else next_avail_after(tr, sct)
+            task = e.get("task") or "train"  # FX-N97: train waits for AVL_TRAIN
+            want = sct if deliverable(state_at(tr, sct), task) else next_avail_after(tr, sct, task) + release
             if abs(float(e["delivery_ts"]) - want) > _EPS_S:
                 bad_dts += 1
                 examples.append((e["end_id"][-4:], "delivery_ts!=next_avl", e["delivery_ts"], want))
@@ -599,7 +600,8 @@ def ev16_withheld_delivery(run):
             examples.append((e["end_id"][-4:], "commit<delivery_ts", e["actual_commit_ts"], e["delivery_ts"]))
         # A delivery at the budget commits when the final round closes: not late.
         _due = float(e["delivery_ts"])
-        _close = next((c for c in closes if c >= _due - _EPS_S), _due)
+        # Sync: a close not yet logged (live prefix) is the commit itself, never late (FX-D136).
+        _close = next((c for c in closes if c >= _due - _EPS_S), math.inf if not _is_async(run) else _due)
         if e.get("actual_commit_ts") is not None and _due < budget and \
                 float(e["actual_commit_ts"]) > max(_due + _LATE_DELIVERY_S, _close + _EPS_S):
             late += 1
@@ -618,9 +620,9 @@ def ev16_withheld_delivery(run):
                 continue
             n += 1
             sct = float(e["sim_completion_ts"])
-            if state_at(tr, sct) == TrainerAvailState.UN_AVL and (tid, round(sct, 3)) not in held:
+            if not deliverable(state_at(tr, sct), "train") and (tid, round(sct, 3)) not in held:
                 unheld += 1
-                examples.append((tid[-4:], "UN_AVL@sct committed unheld", e.get("round"), round(sct, 2)))
+                examples.append((tid[-4:], f"{state_at(tr, sct).value}@sct committed unheld", e.get("round"), round(sct, 2)))
     bad = unheld + early + late + bad_dts
     return _res("PASS" if bad == 0 else "FAIL",
                 f"commits={n} withheld={len(held)} unavail_committed_unheld={unheld} "
@@ -683,8 +685,8 @@ def _trace_origin(run):
 
 def ev19_stream_schedule(run):
     """FX-N13 ST4: each task's visible count equals the schedule (stream_schedule.py, run's trace scale) at its
-    stream clock, is monotone per trainer, and the stream clock tracks the run clock (sim: = sim_send_ts; real:
-    lags wall-since-first-dispatch by at most one task)."""
+    stream clock, is monotone per trainer, and the stream clock tracks the run clock (sim: = sim_send_ts + delivery
+    lag, FX-D160; real: lags wall-since-first-dispatch by at most one task)."""
     ds = _hp(run, "data_streaming") or {}
     if not _truthy(ds.get("enabled", "False")):
         return _res("SKIP", "streaming off")
@@ -714,8 +716,10 @@ def ev19_stream_schedule(run):
             if vis < last:
                 nonmono += 1
             last = vis
-            if sim:
-                ok = e.get("sim_send_ts") is None or abs(float(e["sim_send_ts"]) - t) <= _EPS_S
+            if sim:  # FX-D160: send + delivery lag; send alone on older runs
+                s0 = e.get("sim_send_ts")
+                ok = s0 is None or any(abs(float(s0) + d - t) <= _EPS_S
+                                       for d in (0.0, float(e.get("sim_delivery_lag_s") or 0.0)))
             else:
                 lag = (float(e["ts"]) - origin - t) if origin is not None else 0.0
                 ok = -5.0 <= lag <= max_lag
@@ -731,16 +735,116 @@ def ev19_stream_schedule(run):
                 examples=examples)
 
 
+_ABANDON_GRACE_S = 10.0  # loop latency (2-6 s seen under load) is not a missed deadline; FX-D155's were ~60-90 s
+
+
+def ev20_abandon_on_time(run):
+    """FX-D155: real sync picks unanswered past their timeout are abandoned within 10 s (FX-L40). Never-abandoned
+    picks are counted, not failed. Not prefix-safe: trainer replies flush late."""
+    if _simulated(run) or _is_async(run):
+        return _res("SKIP", "real sync only")
+    to = float(_hp(run, "send_timeout_wait_s", default=90.0) or 90.0)
+    end = max((float(e.get("ts", 0)) for e in run["agg"]), default=0.0)
+    sent = {(tid, e.get("round")): float(e.get("wall_send_ts") or e["ts"])
+            for tid, evs in run["trainers"].items() for e in evs if e.get("event") == "task_send"}
+    ab = {}
+    for e in _events(run, "abandon_timeout"):
+        ab.setdefault(e["end_id"], []).append(float(e["ts"]))
+    due, never, late = 0, 0, []
+    for e in _events(run, "dispatch"):
+        if e.get("task", e.get("task_to_perform", "train")) != "train":
+            continue
+        dl = float(e["ts"]) + to
+        s = sent.get((e["end_id"], e.get("round")))
+        if dl + _ABANDON_GRACE_S > end or (s is not None and s <= dl + 1.0):
+            continue
+        due += 1
+        hit = [t for t in ab.get(e["end_id"], []) if dl - 1.0 <= t <= (s or end) + 1.0]
+        if not hit:
+            never += 1
+        elif min(hit) - dl > _ABANDON_GRACE_S:
+            late.append((e["end_id"][-4:], e.get("round"), round(min(hit) - dl, 1)))
+    if not due:
+        return _res("SKIP", "no pick outlived its timeout")
+    return _res("PASS" if not late else "FAIL", f"due={due} late={len(late)} never_abandoned={never}", examples=late[:10])
+
+
+_GATE_POLL_S = 0.25  # the real send gate rereads the trace every 0.1 s (FX-D55)
+_EV21_MIN_EVALS = 20  # Felix needs this many eval selections before "none reached AVL_EVAL" is a verdict
+
+
+def ev21_avl_eval_semantics(run):
+    """FX-N97: AVL_EVAL is eval-only and Felix-only. (a) An aware baseline's train picks are all AVL_TRAIN at
+    selection; (b) real: no train result leaves its trainer outside AVL_TRAIN; (c) only Felix (evalGoalFactor > 0)
+    sends evals, and on a 3-state trace it reaches AVL_EVAL trainers and none in UN_AVL. Sim train deliveries: EV16."""
+    gt = _ground_truth(run)
+    if not gt or not any("AVL_EVAL" in tr.values() for tr in gt.values()):
+        return _res("SKIP", "trace has no AVL_EVAL")
+    from flame.availability.trace import deliverable, state_at
+    aware = _truthy(_hp(run, "avail_select_filter", default="True"))
+    felix = float((run["cfg"].get("selector", {}).get("kwargs", {}) or {}).get("evalGoalFactor") or 0) > 0
+    bad_pick, bad_send, n_pick, n_send = [], [], 0, 0
+    n_eval = eval_on_eval = 0
+    bad_eval, seen, held = [], set(), set()
+    for e in run["agg"]:
+        if e.get("event") == "agg_round":
+            held.difference_update(e.get("contributing_trainers") or ())
+            continue
+        if e.get("event") == "abandon_timeout":
+            held.discard(e.get("end_id"))
+            continue
+        if e.get("event") != "selection":
+            continue
+        task, per = e.get("task", "train"), e.get("per_trainer") or {}
+        chosen = e.get("chosen") or []
+        for end in chosen:
+            st = (per.get(end) or {}).get("avl_state")
+            if task == "train" and ((e.get("round"), end) in seen or end in held):
+                continue  # a held pick re-listed, not a new dispatch (FX-D98, FX-D174)
+            seen.add((e.get("round"), end))
+            if task == "train" and aware and st is not None:
+                n_pick += 1
+                if st != "AVL_TRAIN":
+                    bad_pick.append((end[-4:], e.get("round"), st))
+            elif task == "eval":
+                n_eval += 1
+                eval_on_eval += st == "AVL_EVAL"
+                if not felix or st == "UN_AVL":
+                    bad_eval.append((end[-4:], e.get("round"), st))
+        if task == "train":
+            held = set(chosen)  # until it leaves `chosen`, commits or is abandoned
+    if not _simulated(run):
+        for tid, evs in run["trainers"].items():
+            tr = gt.get(tid)
+            for e in evs if tr else ():
+                sct = e.get("send_gate_sct")
+                if e.get("event") != "task_send" or e.get("task_to_perform") != "train" or sct is None:
+                    continue
+                n_send += 1
+                out = float(sct) + float((e.get("phases") or {}).get("send_gate_wait_s") or e.get("send_gate_wait_s") or 0.0)
+                if not any(deliverable(state_at(tr, t), "train") for t in (out, out - _GATE_POLL_S)):
+                    bad_send.append((tid[-4:], e.get("round"), state_at(tr, out).value))
+    done = bool(_events(run, "run_end"))
+    no_eval_reach = felix and done and n_eval >= _EV21_MIN_EVALS and not eval_on_eval
+    bad = len(bad_pick) + len(bad_send) + len(bad_eval) + no_eval_reach
+    return _res("PASS" if not bad else "FAIL",
+                f"aware={aware} train_picks={n_pick} not_AVL_TRAIN={len(bad_pick)} real_train_sends={n_send} "
+                f"sent_outside_AVL_TRAIN={len(bad_send)} eval_picks={n_eval} on_AVL_EVAL={eval_on_eval} "
+                f"bad_eval_picks={len(bad_eval)} felix_reached_AVL_EVAL={not no_eval_reach}",
+                examples=(bad_pick + bad_send + bad_eval)[:10])
+
+
 CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model, ev4_real_sleep,
           ev5_commit_accounting, ev6_staleness, ev7_agg_goal_cadence, ev8_concurrency_cap,
           ev9_selector_state, ev10_dispatch_one_in_flight, ev11_vclock, ev12_reached_budget,
           ev13_no_stall, ev14_eval_sane, ev15_one_task_per_version, ev16_withheld_delivery,
-          ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule]
+          ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev20_abandon_on_time,
+          ev21_avl_eval_semantics]
 
 
 # Live early exit: checks whose FAIL on a log prefix stays FAIL on the full log (EV11: its backwards count only).
 EARLY = (ev6_staleness, ev8_concurrency_cap, ev9_selector_state, ev11_vclock, ev14_eval_sane, ev15_one_task_per_version,
-         ev16_withheld_delivery, ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule)
+         ev16_withheld_delivery, ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev21_avl_eval_semantics)
 
 
 def doomed(run_dir: str) -> list:

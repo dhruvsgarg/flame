@@ -37,6 +37,17 @@ _AVL_STATE_VALUES = frozenset(
     {TrainerAvailState.AVL_TRAIN.value, TrainerAvailState.AVL_EVAL.value}
 )
 
+# FX-N97: a result is deliverable in these states. AVL_EVAL is eval-only: a train result waits for AVL_TRAIN.
+DELIVERABLE_STATES = {
+    "train": frozenset({TrainerAvailState.AVL_TRAIN.value}),
+    "eval": _AVL_STATE_VALUES,
+}
+
+
+def deliverable(state, task: str = "train") -> bool:
+    """Whether a `task` result can be delivered while the trainer is in `state` (enum or str)."""
+    return getattr(state, "value", state) in DELIVERABLE_STATES[task]
+
 
 # ---------------------------------------------------------------------------
 # Internal YAML cache — loaded once per (trace_dir) call site, never reloaded.
@@ -93,7 +104,7 @@ def _canonical_trace_name(trace_name: str) -> str:
 
     Legacy configs (trackTrainerAvail.trace) name traces with an ``avl_events_``
     prefix, e.g. ``avl_events_syn_20`` / ``avl_events_mobiperf_2st``; newer ones
-    use the bare canonical name (``syn_20``). Strip the prefix so both resolve to
+    use the bare canonical name (``syn_20_3st``). Strip the prefix so both resolve to
     the same SortedDict — without this the legacy oort/refl JSON configs load 0
     traces and the gate silently turns OFF.
     """
@@ -111,7 +122,7 @@ def load_trace(
 ) -> SortedDict:
     """Return per-trainer availability as SortedDict[ts_s → state_str].
 
-    trace_name: canonical name — syn_0 / syn_20 / syn_50 / mobiperf_2st /
+    trace_name: canonical name — syn_0 / syn_20_3st / syn_50_3st / mobiperf_2st /
         mobiperf_3st_50 / mobiperf_3st_75.
     trainer_key: registry key ('trainer_001'). For mobiperf the numeric suffix
         is used to derive the device key ('device_001').
@@ -132,7 +143,9 @@ def load_trace(
     elif trace_name.startswith("syn_"):
         raw = _raw_synthetic(trace_dir)
         if trace_name not in raw:
-            raise KeyError(f"trace {trace_name!r} not found in synthetic_traces.yaml")
+            hint = f"; 2-state syn traces are deprecated, use {trace_name}_3st (FX-D166)" \
+                if trace_name in ("syn_10", "syn_20", "syn_50") else ""
+            raise KeyError(f"trace {trace_name!r} not found in synthetic_traces.yaml{hint}")
         entry = raw[trace_name]
         per_trainer = entry.get("per_trainer", {}).get("n300", {})
         pattern = entry.get("pattern", [])
@@ -164,15 +177,16 @@ def state_at(trace: SortedDict, t: float) -> TrainerAvailState:
         return TrainerAvailState.AVL_TRAIN
 
 
-def next_avail_after(trace: SortedDict, t: float) -> float:
-    """Smallest ts > t whose state ∈ {AVL_TRAIN, AVL_EVAL}.
+def next_avail_after(trace: SortedDict, t: float, task: Optional[str] = None) -> float:
+    """Smallest ts > t whose state is AVL_*, or deliverable for `task` (FX-N97) when given.
 
     Returns math.inf if the trace never recovers (caller must guard — Challenge 10).
     """
+    states = _AVL_STATE_VALUES if task is None else DELIVERABLE_STATES[task]
     idx = trace.bisect_right(t)
     for i in range(idx, len(trace)):
         ts, state = trace.peekitem(i)
-        if state in _AVL_STATE_VALUES:
+        if state in states:
             return float(ts)
     return math.inf
 
@@ -224,8 +238,9 @@ def read_trainer_unavailability(
 
 
 def effective_unavailability(trace_name: str, run_s: float, scale: float = 1.0, n_trainers: int = 300) -> float:
-    """Mean UN_AVL time fraction over trainers 1..n for a run of `run_s` at trace time scale `scale`
-    (covers run_s * scale of trace time). A short run sees less than a ramped trace's name (FX-N35)."""
+    """Mean non-trainable (not AVL_TRAIN) time fraction over trainers 1..n for a run of `run_s` at trace time scale
+    `scale` (covers run_s * scale of trace time): the level a trace's name states. A short run sees less than a
+    ramped trace's name (FX-N35)."""
     horizon = run_s * scale
     env_scale = trace_time_scale()  # load_trace applies it; undo to read trace time
     fracs = []
@@ -236,7 +251,7 @@ def effective_unavailability(trace_name: str, run_s: float, scale: float = 1.0, 
         for j, (t0, state) in enumerate(zip(ts, tr.values())):
             if t0 >= horizon:
                 break
-            if state == TrainerAvailState.UN_AVL.value:
+            if state != TrainerAvailState.AVL_TRAIN.value:
                 down += min(ts[j + 1] if j + 1 < len(ts) else horizon, horizon) - t0
         fracs.append(down / horizon)
     return sum(fracs) / len(fracs)

@@ -31,6 +31,7 @@ import os
 import sys
 import threading
 import time
+import contextlib
 import math
 
 import numpy as np
@@ -87,7 +88,8 @@ class PyTorchCifar10Trainer(Trainer):
         logger.info(f"[TRAINER_HP] optimizer={self._optimizer_name()} lr={self.learning_rate} batch={self.batch_size} "
                     f"epochs={self.epochs} "
                     f"lr_decay={self.lr_decay_enabled} (factor={self.lr_decay_factor}, every={self.lr_decay_epoch}, "
-                    f"min={self.min_learning_rate}) clip={getattr(_hp, 'trainer_clip_grad_norm', 0.0)}")
+                    f"min={self.min_learning_rate}) clip={getattr(_hp, 'trainer_clip_grad_norm', 0.0)} "
+                    f"deterministic={getattr(_hp, 'trainer_deterministic', False)} amp={getattr(_hp, 'trainer_amp', '') or 'fp32'}")
 
         self.criterion = None
 
@@ -136,7 +138,8 @@ class PyTorchCifar10Trainer(Trainer):
              # Config paths are repo-root-relative; trainers don't run from the root.
              if not os.path.isabs(coords_path):
                  coords_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *[".."] * 6, coords_path)
-             self.coords = np.load(coords_path)["coords"]
+             # Own satellite only: the full (steps, 300, 2) array is 49 MB per trainer (FX-N84).
+             self.coords = np.load(coords_path)["coords"][:, self.satellite_index].copy()
 
         # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
         # (buffer-residence queue_wait + re-dispatch latency) that the sim sct omitted, so sim's
@@ -147,6 +150,8 @@ class PyTorchCifar10Trainer(Trainer):
         self._sim_charge_overhead = getattr(self.config.hyperparameters, "sim_charge_trainer_overhead", True) is not False
         self._sim_charge_lag = bool(getattr(self.config.hyperparameters, "sim_charge_delivery_lag", False))
         self.sim_download_leg_s = float(getattr(self.config.hyperparameters, "sim_download_leg_s", 0.0) or 0.0)
+        _hp = self.config.hyperparameters
+        self._sim_stream_at_start = str(getattr(_hp, "sim_stream_at_train_start", True)).lower() == "true"
 
         self.time_mode = str(time_mode)
         self.simulated = self.time_mode == "simulated"
@@ -397,6 +402,8 @@ class PyTorchCifar10Trainer(Trainer):
         )
 
         self.device = harness.device_for(self.harness_mode)
+        if getattr(self.config.hyperparameters, "trainer_deterministic", False):  # FX-D149
+            torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = True, False
 
         self.model = self.data_spec.model().to(self.device)
         self._warmup_device()
@@ -426,21 +433,59 @@ class PyTorchCifar10Trainer(Trainer):
                 torch.cuda.memory_reserved(self.device) - torch.cuda.memory_allocated(self.device) > 1 << 30):
             torch.cuda.empty_cache()
 
-    def _acquire_gpu_slot(self):
-        """FX-D58: hold one of `gpu_train_slots` flock slots of this GPU while training (None = uncapped)."""
-        n = int(getattr(self.config.hyperparameters, "gpu_train_slots", 0) or 0)
+    def _acquire_gpu_slot(self, deadline=None):
+        """FX-D58: hold one of `gpu_train_slots` flock slots of this GPU while training (None = uncapped).
+        FX-N98 (sim): `sim_gpu_train_slots` replaces it, and waiters take a free slot earliest-deadline first."""
+        hp = self.config.hyperparameters
+        sim_n = int(getattr(hp, "sim_gpu_train_slots", 0) or 0) if getattr(self, "simulated", False) else 0
+        n = sim_n or int(getattr(hp, "gpu_train_slots", 0) or 0)
         if n <= 0 or self.device is None or self.device.type != "cuda":
             return None
         gpu = os.environ.get("CUDA_VISIBLE_DEVICES", "x").split(",")[0]
-        while True:
-            for k in range(n):
-                f = open(f"/dev/shm/flame_{os.getuid()}_gpu{gpu}_train{k}.lock", "a")
+        waiting = None
+        if sim_n:
+            wdir = f"/dev/shm/flame_{os.getuid()}_gpu{gpu}_wait"
+            os.makedirs(wdir, exist_ok=True)
+            waiting = os.path.join(wdir, f"{float(deadline or 0.0):016.3f}_{os.getpid()}")
+            open(waiting, "w").close()
+        try:
+            while True:
+                if waiting is None or self._first_waiter(os.path.dirname(waiting), os.path.basename(waiting)):
+                    for k in range(n):
+                        f = open(f"/dev/shm/flame_{os.getuid()}_gpu{gpu}_train{k}.lock", "a")
+                        try:
+                            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            return f
+                        except OSError:
+                            f.close()
+                time.sleep(0.05 if waiting is None else 0.01)
+        finally:
+            if waiting is not None:
+                os.unlink(waiting)
+
+    @staticmethod
+    def _first_waiter(wdir: str, mine: str) -> bool:
+        """FX-N98: `mine` has the earliest (deadline, pid) among live waiters; dead waiters' tickets are dropped."""
+        for name in sorted(os.listdir(wdir)):
+            if name == mine:
+                return True
+            try:
+                os.kill(int(name.split("_")[1]), 0)
+                return False
+            except ProcessLookupError:
                 try:
-                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    return f
-                except OSError:
-                    f.close()
-            time.sleep(0.05)
+                    os.unlink(os.path.join(wdir, name))
+                except FileNotFoundError:
+                    pass
+            except (PermissionError, ValueError):
+                return False
+        return True
+
+    def _amp(self):
+        """FX-N98: bf16 autocast for forward + loss when `trainerAmp: bf16` on CUDA (backward follows); else a no-op."""
+        on = self.device is not None and self.device.type == "cuda" \
+            and getattr(self.config.hyperparameters, "trainer_amp", "") == "bf16"
+        return torch.autocast("cuda", dtype=torch.bfloat16) if on else contextlib.nullcontext()
 
     def _warmup_device(self) -> None:
         """FX-D15: pay driver/kernel init before any timed task: one dummy train step, weights restored."""
@@ -456,7 +501,9 @@ class PyTorchCifar10Trainer(Trainer):
                         *(self.data_spec.shape if cuda else self.data_spec.stub_shape), device=self.device)
         y = torch.zeros(x.shape[0], dtype=torch.long, device=self.device)
         self.model.train()
-        F.nll_loss(self.model(x), y).backward()
+        with self._amp():
+            _l = F.nll_loss(self.model(x), y)
+        _l.backward()
         self.model.zero_grad(set_to_none=True)
         self.model.load_state_dict(saved)
         if cuda:
@@ -467,6 +514,7 @@ class PyTorchCifar10Trainer(Trainer):
     def load_data(self) -> None:
         """Load data."""
         self.memory_profiler.log_component_memory("load_data", "BEFORE")
+        torch.manual_seed(harness.stable_seed((self.trainer_id, "data")))  # FX-D144: preload augmentation draws
         
         hp_n = harness.harness_samples(self.config.hyperparameters, self.harness_mode)
         if self.harness_mode == "stub":
@@ -570,15 +618,29 @@ class PyTorchCifar10Trainer(Trainer):
             f"{time.time()}"
         )
 
+    def _sim_delivery_lag_s(self) -> float:
+        """FX-D108: the task's fan-out delivery lag in sim (measured, else the profiled download leg)."""
+        _wst, _wrt = getattr(self, "_sim_wall_send_ts", None), getattr(self, "_wall_recv_ts", None)
+        if self._sim_charge_lag and _wst is not None and _wrt is not None:
+            return max(0.0, float(_wrt) - float(_wst))
+        return self.sim_download_leg_s  # FX-D116: profiled download stands in for the unmeasured lag
+
+    def _stream_now(self) -> float:
+        """FX-D160: stream clock at train start; sim adds the delivery lag real pays before training."""
+        on = getattr(self, "simulated", False) and getattr(self, "_sim_stream_at_start", True)
+        if on and self._sim_send_ts is not None:
+            return self._sim_now() + self._sim_delivery_lag_s()
+        return self._sim_now()
+
     def _visible_sample_count(self) -> int:
         """Samples unlocked at this task's stream clock (stream_schedule.py)."""
         if self._stream_sched is None:
             return self._stream_total
-        return self._stream_sched.visible(self._stream_total, self._sim_now())
+        return self._stream_sched.visible(self._stream_total, self._stream_now())
 
     def _rebuild_stream_loader(self) -> None:
         """Rebuild train_loader over the currently-visible prefix of the pool."""
-        self._stream_clock_s = self._sim_now() if self._stream_sched is not None else None
+        self._stream_clock_s = self._stream_now() if self._stream_sched is not None else None
         n = self._stream_visible = self._visible_sample_count()
         full = n >= self._stream_total
         if self._stream_gpu:
@@ -782,8 +844,7 @@ class PyTorchCifar10Trainer(Trainer):
         # Find current location
         elapsed_s = self._sim_now()
         timestep = min(int(elapsed_s), self.coords.shape[0]-1)
-        lat = self.coords[timestep, self.satellite_index, 0]
-        lon = self.coords[timestep, self.satellite_index, 1]
+        lat, lon = self.coords[timestep]
         logger.info(f"({elapsed_s}s) Trainer {self.trainer_id} Location: ({lat:.2f}, {lon:.2f})")
         _pre["coords"] = time.time() - _phase_train_entry
 
@@ -795,13 +856,18 @@ class PyTorchCifar10Trainer(Trainer):
         # initializes the accumulators, so no init_oort_variables dependency.
         self.reset_local_accuracy()
         _gpu_start = time.time()
-        _gpu_slot = self._acquire_gpu_slot()  # FX-D58: the wait counts as GPU time, as contention does
-        # Setup/avail/loader-rebuild overhead before the compute loop.
-        _pre_train_s = _gpu_start - _phase_train_entry
+        _pre_train_s = _gpu_start - _phase_train_entry  # setup/avail/loader-rebuild overhead before the compute loop
+        # FX-D58: in real the slot wait counts as GPU time, as contention does; FX-N98: sim charges slot-held time only.
+        _gpu_slot = self._acquire_gpu_slot((self._sim_send_ts or 0.0) + _D)
+        if _gpu_slot is not None and self.simulated and getattr(self.config.hyperparameters, "sim_gpu_train_slots", 0):
+            _gpu_start = time.time()
         steps = self.config.hyperparameters.local_steps
         _cap = harness.stub_max_steps(self.config.hyperparameters, self.harness_mode)
         if _cap is not None:
             steps = min(steps, _cap) if steps is not None else _cap
+        # FX-D144: batch order seeded by logical identity, not the process RNG (incidental draws forked sim from real)
+        self._task_seq = getattr(self, "_task_seq", 0) + 1
+        torch.manual_seed(harness.stable_seed((self.trainer_id, self._round, self._task_seq)))
         epoch = 0
         while epoch < self.epochs if steps is None else total_batches_processed < steps:  # FX-N74
             epoch += 1
@@ -913,12 +979,7 @@ class PyTorchCifar10Trainer(Trainer):
             self._sim_round_duration = sim_round_duration
             self._sim_completion_ts += _overhead_s
         # FX-D108: real trains from its own receipt; delivery lag is not device speed, so only the clock sees it.
-        _wst, _wrt = getattr(self, "_sim_wall_send_ts", None), getattr(self, "_wall_recv_ts", None)
-        _lag_s = 0.0
-        if self.simulated and self._sim_charge_lag and _wst is not None and _wrt is not None:
-            _lag_s = max(0.0, float(_wrt) - float(_wst))
-        elif self.simulated:
-            _lag_s = self.sim_download_leg_s  # FX-D116: profiled download stands in for the unmeasured lag
+        _lag_s = self._sim_delivery_lag_s() if self.simulated else 0.0
         self._sim_completion_ts += _lag_s
         # FX-D123: real reports sim's duration formula, so the selector's speed excludes weight staging.
         self._client_task_train_intrinsic_s = (
@@ -1029,15 +1090,16 @@ class PyTorchCifar10Trainer(Trainer):
             if self.config.hyperparameters.lr_batch_normalize:  # FedBuff §5 learning-rate normalization
                 for g in self.optimizer.param_groups:
                     g["lr"] = self._step_lr * min(1.0, len(target) / self.batch_size)
-            output = self.model(data)
+            with self._amp():
+                output = self.model(data)
 
-            if self.use_oort_loss_fn == "False":
-                # Loss function to use with Fedbuff
-                loss = F.nll_loss(output, target)
-            elif self.use_oort_loss_fn == "True":
-                # Calculate statistical utility of a trainer while
-                # calculating loss
-                loss = self.oort_loss(output, target, epoch, batch_idx)
+                if self.use_oort_loss_fn == "False":
+                    # Loss function to use with Fedbuff
+                    loss = F.nll_loss(output, target)
+                elif self.use_oort_loss_fn == "True":
+                    # Calculate statistical utility of a trainer while
+                    # calculating loss
+                    loss = self.oort_loss(output, target, epoch, batch_idx)
 
             # accumulate per-round local training accuracy (FedDance A_m signal)
             self.update_local_accuracy(output, target)
@@ -1138,7 +1200,8 @@ class PyTorchCifar10Trainer(Trainer):
             for epoch in range(1, self.epochs + 1):
                 for batch_idx, (data, target) in enumerate(self.train_loader):
                     data, target = data.to(self.device), target.to(self.device)
-                    output = self.model(data)
+                    with self._amp():
+                        output = self.model(data)
 
                     if self.use_oort_loss_fn == "False":
                         # Loss function to use with Fedbuff

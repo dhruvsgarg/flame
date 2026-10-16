@@ -28,3 +28,14 @@ def test_unknown_weighting_rejected():
 
 def test_fedavg_yogi_passes_weighting():
     assert FedAvgYoGi(0.005, 0.001, 0.0, 0.999, weighting="equal").weighting == "equal"
+
+
+def test_sum_order_independent_of_arrival():
+    # FX-D145: sim and real deliver in different orders; float sums must not depend on it.
+    g = torch.Generator().manual_seed(0)
+    vals = {k: torch.randn(1000, generator=g) for k in "abcde"}
+    outs = []
+    for order in ("abcde", "edcba", "cabed"):
+        cache = MemCache(**{k: TrainResult({"w": vals[k].clone()}, 1, 1) for k in order})
+        outs.append(FedAvg(weighting="equal").do({"w": torch.zeros(1000)}, cache, total=5)["w"])
+    assert all(torch.equal(outs[0], o) for o in outs[1:])

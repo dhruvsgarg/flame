@@ -157,6 +157,8 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     trainer_momentum: float = Field(alias="trainerMomentum", default=0.0)
     trainer_weight_decay: float = Field(alias="trainerWeightDecay", default=0.0)
     trainer_clip_grad_norm: float = Field(alias="trainerClipGradNorm", default=0.0)  # FX-D126: 0 = off (source Oort's clip is commented out)
+    trainer_deterministic: bool = Field(alias="trainerDeterministic", default=False)  # FX-D149: deterministic cuDNN kernels
+    trainer_amp: str = Field(alias="trainerAmp", default="")  # FX-N98: "bf16" = bf16 autocast forward on CUDA; "" = fp32
     weight_decay: t.Optional[float] = Field(alias="weightDecay", default=None)
     rounds: int
     epochs: int
@@ -238,6 +240,10 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_completion_leg_s: t.Optional[float] = Field(
         alias="simCompletionLegSeconds", default=0.0
     )
+    # FX-D163: profiled send-gate release (exit + upload) after a flip; sim withheld delivery = flip + this.
+    sim_gate_release_s: t.Optional[float] = Field(
+        alias="simGateReleaseSeconds", default=0.0
+    )
     # FX-D116: profiled download leg (agg -> trainer), charged only when the measured FX-D108 lag is not.
     sim_download_leg_s: t.Optional[float] = Field(
         alias="simDownloadLegSeconds", default=0.0
@@ -254,9 +260,21 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     real_recv_until_awaited: t.Optional[bool] = Field(
         alias="realRecvUntilAwaited", default=True
     )
+    # FX-D156: sim sync barrier ingests a due stale withheld delivery past K instead of carrying it; false = revert.
+    sim_ingest_stale_past_k: t.Optional[bool] = Field(
+        alias="simIngestStalePastK", default=True
+    )
+    # FX-D155: real wait-K recv returns at once when a pick is past its timeout but unabandoned; false = revert.
+    real_recv_returns_overdue: t.Optional[bool] = Field(
+        alias="realRecvReturnsOverdue", default=True
+    )
     # FX-D123: real selector speed = sim's duration formula (no weight staging); false = revert.
     real_intrinsic_client_duration: t.Optional[bool] = Field(
         alias="realIntrinsicClientDuration", default=True
+    )
+    # FX-D160: sim reads the data stream at send + delivery lag, as real; false = revert.
+    sim_stream_at_train_start: t.Optional[bool] = Field(
+        alias="simStreamAtTrainStart", default=True
     )
     # C13 (FX-D108): sim starts each recipient after its measured fan-out delivery lag, as real does.
     sim_charge_delivery_lag: t.Optional[bool] = Field(
@@ -403,6 +421,8 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     )
     # FX-N37: a sync version commits only at K accepted updates; timed-out picks are replaced mid-round.
     sync_wait_for_k: t.Optional[bool] = Field(alias="syncWaitForK", default=False)
+    # FX-D148: wait-K versions dispatch to whoever is eligible, not only at c eligible.
+    sync_partial_dispatch: t.Optional[bool] = Field(alias="syncPartialDispatch", default=False)
     # Override directory for availability trace YAMLs. Defaults to
     # examples/_metadata/availability_traces/ when None.
     availability_trace_dir: t.Optional[str] = Field(

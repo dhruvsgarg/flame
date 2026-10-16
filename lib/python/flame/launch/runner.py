@@ -288,6 +288,7 @@ class ExperimentRunner:
                 config_gen,
                 num_gpus=exp.execution.num_gpus,
                 gpu_ids=exp.execution.gpu_ids,
+                gpu_placement=exp.execution.gpu_placement,
                 sleep_between_spawns=exp.execution.sleep_between_spawns,
                 log_file=trainers_log,
                 # CLI-only knobs passed on the trainer command line.

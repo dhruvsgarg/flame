@@ -728,6 +728,49 @@ def test_timeout_stalls_split_from_the_clock_rungs():
     assert not timeout_stalls(_leg(150, set(range(5, 150, 5))), b, same_mode=True)["ok"]
 
 
+def test_stall_counts_match_across_the_cut(monkeypatch):
+    """FX-D157: twins 66/70 s vs 74/78 s straddle the 72 s cut; stall-free rungs promote 66/70, K3s keeps 1 vs 3."""
+    from parity import checks
+    from parity.checks import overhead_residual, overlap_factor, timeout_stalls
+
+    def _leg(gaps_at):
+        t, ev = 0.0, []
+        for r in range(1, 31):
+            t += gaps_at.get(r, 18.0)
+            ev.append({"event": "agg_round", "round": r, "ts": t, "contributing_trainers": ["1"],
+                       "intrinsic_span_s": 10.0, "is_async": True})
+        return {"agg_rounds": ev}
+    a, b = _leg({5: 98.0, 12: 70.0, 20: 66.0}), _leg({5: 98.0, 12: 74.0, 20: 78.0})
+    ts = timeout_stalls(a, b, same_mode=True)
+    assert (ts["real_stalls"], ts["sim_stalls"]) == (1, 3)
+    assert overhead_residual(a, b, same_mode=True)["ok"] and overlap_factor(a, b, same_mode=True)["ok"]
+    monkeypatch.setattr(checks, "PAIR_MATCH_STALLS", False)
+    assert not overhead_residual(a, b, same_mode=True)["ok"]
+
+
+def test_k8_keeps_same_clock_commits_and_shares_the_slow_band(monkeypatch):
+    """FX-D159 (PR33 cifar fedbuff syn_50_3st): sim's same-vclock commits were dropped from K8's advances, lifting its slow
+    band past a twin 12 s round, so only real's 12+14+54 s split stall left the clock (13% vs raw 0.6%)."""
+    from parity import checks
+    from parity.checks import _pair_stall_sets, terminal_state_parity
+
+    gaps = [1.0, 2.0, 12.0, 14.0, 54.0] + ([0.0] * 6 + [3.0, 9.0, 4.0, 10.0, 5.0]) * 6
+
+    def _leg(zero):
+        t, ev = 0.0, []
+        for r, g in enumerate(gaps, 1):
+            t += g or zero
+            ev.append({"event": "agg_round", "round": r, "ts": t, "contributing_trainers": [str(r % 7)]})
+        return {"agg_rounds": ev}
+    k8 = terminal_state_parity(_leg(0.01), _leg(0.0), same_mode=True)
+    assert k8["time_rel_diff"] < 0.02 and k8["ok"]
+    r, s = [12.0, 14.0, 54.0] + [3.0] * 15, [12.1, 14.0, 54.0] + [4.1] * 9  # bands 9.0 vs 12.3 s; pooled 10.65 s
+    assert _pair_stall_sets(r, s, 72.0) == ({0, 1, 2}, {0, 1, 2})
+    monkeypatch.setattr(checks, "PAIR_SLOW_BAND", False)
+    monkeypatch.setattr(checks, "PAIR_MATCH_STALLS", False)
+    assert _pair_stall_sets(r, s, 72.0) == ({0, 1, 2}, set())
+
+
 def test_split_stall_is_one_episode_and_stays_out_of_k3b_and_k4():
     """FX-N62: a 90s stall served late (10.7+12.8+70.8s) is one stall; K3b and K4 grade without it."""
     from parity.checks import _stall_episodes, overhead_residual, overlap_factor

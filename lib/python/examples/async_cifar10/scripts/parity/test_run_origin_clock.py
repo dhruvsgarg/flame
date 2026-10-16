@@ -46,7 +46,7 @@ def test_k8_time_to_n_is_stall_free():
 
 
 def _all_stall(n, step, vclock, trainers=3):
-    """n rounds, each a 90s timeout stall (N88 G0U cifar oort syn_50: every round abandons on both sides)."""
+    """n rounds, each a 90s timeout stall (N88 G0U cifar oort syn_50_3st: every round abandons on both sides)."""
     rounds, t = [], 0.0
     for i in range(n):
         t += step + 90.0
@@ -74,3 +74,20 @@ def test_short_stall_round_saves_no_time():
     from parity.checks import _RoundAdv, _stall_excess_s
     adv = [_RoundAdv(50.0), _RoundAdv(50.0), _RoundAdv(20.0, "gated"), _RoundAdv(150.0, "abandon")]
     assert _stall_excess_s(adv, 72.0) == 100.0
+
+
+def test_one_stall_free_round_skips_like_throughput():
+    """FX-D139: 1 stall-free round of 13 graded overlap_factor while throughput SKIPped (PR29 C1 cifar oort syn_50_3sts)."""
+    from parity.checks import _RoundAdv, _few_free_note
+    real = {"agg_rounds": [{"round": 1, "ts": 0.0}], "selection_train": [{"round": 1, "ts": 0.0}]}
+    adv = [_RoundAdv(150.0, "abandon")] * 12 + [_RoundAdv(4.0)]
+    assert "1 stall-free rounds < 10" in (_few_free_note(real, real, adv, adv) or "")
+    assert _few_free_note(real, real, [_RoundAdv(4.0)] * 12, [_RoundAdv(4.0)] * 12) is None
+
+
+def test_async_gaps_are_graded_raw():
+    """FX-D164: an async gap is trace scarcity, not a timeout stall; K8 grades raw time (PR35 fedbuff G0U syn_50_3st 1% -> 11%)."""
+    real, sim = _stalled(40, 10.0, {5, 20}, vclock=False), _stalled(40, 10.0, {5, 12, 20, 30}, vclock=True)
+    real["async_stack"] = sim["async_stack"] = True
+    r = terminal_state_parity(real, sim)
+    assert r["sim_vclock_to_n_s"] == r["raw_sim_vclock_to_n_s"] and not r["ok"], r

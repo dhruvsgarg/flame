@@ -111,7 +111,8 @@ COMMON = ["--only", "fluxtune", "--mode", "sim", "--dry-run",
           "--cos-ground-truth-audit", "--num-trainers", "100", "--num-gpus", "8",
           "--agg-goal", "10", "--c", "30", "--probe-combine", "mean",
           "--commit-gate", "n_target", "--server-step-rule", "trust_ratio",
-          "--rho-star", "0.06", "--adapter-reduction-factor", "16"]
+          "--rho-star", "0.06", "--adapter-reduction-factor", "16",
+          "--allow-stale-profile"]  # node-local reals newer than the profile must not exit 2
 
 def part2():
     if os.environ.get("SKIP_LAUNCHER_CASES"):

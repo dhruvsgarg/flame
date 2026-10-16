@@ -3,7 +3,7 @@
 """Stage C parity rungs: withheld_delivery / abandon_timeout / eligible_pool_reduction.
 
 These cover the run-independent (structural) logic of the new availability rungs
-and the loader fields that feed them. Tolerance calibration vs a real syn_20
+and the loader fields that feed them. Tolerance calibration vs a real syn_20_3st
 reference is deferred to an actual run (these only assert what is true regardless
 of run data: ordering invariants, the vclock wall-leak guard, and SKIP/empty
 handling).

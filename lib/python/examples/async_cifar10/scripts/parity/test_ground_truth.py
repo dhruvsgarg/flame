@@ -65,24 +65,24 @@ def test_resolve_trace_name_no_keys_set(tmp_path):
 def test_resolve_trace_name_track_trainer_avail_priority(tmp_path):
     # All three keys set -> trackTrainerAvail wins (debug_run.sh's own priority).
     _write_config(tmp_path, {
-        "trackTrainerAvail": {"enabled": "True", "type": "ORACULAR", "trace": "syn_20"},
-        "client_notify": {"enabled": "False", "trace": "syn_50"},
+        "trackTrainerAvail": {"enabled": "True", "type": "ORACULAR", "trace": "syn_20_3st"},
+        "client_notify": {"enabled": "False", "trace": "syn_50_3st"},
         "availability_trace": "syn_0",
     })
-    assert resolve_trace_name(str(tmp_path)) == "syn_20"
+    assert resolve_trace_name(str(tmp_path)) == "syn_20_3st"
 
 
 def test_resolve_trace_name_client_notify_fallback(tmp_path):
     _write_config(tmp_path, {
         "trackTrainerAvail": {"enabled": "False", "type": "NA"},
-        "client_notify": {"enabled": "False", "trace": "syn_20"},
+        "client_notify": {"enabled": "False", "trace": "syn_20_3st"},
     })
-    assert resolve_trace_name(str(tmp_path)) == "syn_20"
+    assert resolve_trace_name(str(tmp_path)) == "syn_20_3st"
 
 
 def test_resolve_trace_name_availability_trace_fallback(tmp_path):
-    _write_config(tmp_path, {"availability_trace": "syn_50"})
-    assert resolve_trace_name(str(tmp_path)) == "syn_50"
+    _write_config(tmp_path, {"availability_trace": "syn_50_3st"})
+    assert resolve_trace_name(str(tmp_path)) == "syn_50_3st"
 
 
 def test_load_ground_truth_none_when_no_trace():

@@ -6,12 +6,16 @@ Per aggregator stack (asyncfl | oort_sync | fedavg, from baselines.yaml), from e
   download_leg     = download per update: [LAG_DECOMP] agg_to_trainer (sim charges it only without FX-D108's measured lag)
   dispatch_latency = commit -> next send: sync stacks = last update of version v -> [DISTRIBUTE_TIMING] round v+1;
                      asyncfl = [DISTRIBUTE_TIMING] - the latest update arrival before it
-The launcher (debug_run.sh) applies both to every baseline of that stack. Only this script writes the numbers.
+  gate_release     = FX-D163: a send-gated update's flip -> send (trainer telemetry) + its mqtt_lag + queue_wait
+The launcher (debug_run.sh) applies them to every baseline of that stack. Only this script writes the numbers.
 
 Usage: profile_felix_charges.py --dataset D --harness H --out sim_charge_profiles/<H>_<D>.yaml <pool | *_real dir> ...
+       --only gate_release merges that label (own `_meta.gate_release` provenance) into an existing --out: it needs
+       syn_50_3st/mobiperf reals, the other labels syn_0 CHG reals.
 """
 import argparse
 import glob
+import json
 import os
 import re
 import socket
@@ -66,6 +70,32 @@ def leg_samples(log: str, stack: str):
     return legs, lat, down
 
 
+def gate_samples(run: str, log: str) -> list:
+    """FX-D163: per send-gated update, flip -> aggregator processing (s): trainer flip->send + [LAG_DECOMP] upload."""
+    up = defaultdict(list)  # end -> [(log ts, upload)]; a stale delivery's `version` is the commit's, so match by time
+    for line in open(log, errors="ignore"):
+        if "[LAG_DECOMP]" in line:
+            m = re.search(r"end=(\S+) ", line)
+            vals = [re.search(k + r"=(-?[0-9.]+)", line) for k in LAG_KEYS]
+            if m and all(vals):
+                up[m.group(1)].append((_ts(line), sum(float(v.group(1)) for v in vals)))
+    out = []
+    for f in glob.glob(f"{run}/telemetry/trainer_*.jsonl"):
+        flips, sends = [], []
+        for line in open(f):
+            e = json.loads(line)
+            if e.get("event") == "avail_change" and str(e.get("new_state", "")).startswith("AVL"):
+                flips.append(e["ts"])
+            elif e.get("event") == "task_send" and (e.get("send_gate_wait_s") or 0) > 0.5:
+                sends.append(e)
+        for e in sends:
+            flip = max((t for t in flips if t <= e["wall_send_ts"]), default=None)
+            leg = next((u for t, u in up.get(e.get("trainer_id"), []) if t >= e["wall_send_ts"]), None)
+            if flip is not None and leg is not None:
+                out.append(e["wall_send_ts"] - flip + leg)
+    return out
+
+
 def _entry(xs):
     return {"mean_s": round(st.mean(xs), 4), "p50_s": round(st.median(xs), 4), "n": len(xs), "charge": True}
 
@@ -75,6 +105,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--dataset", required=True, choices=("cifar10", "google_speech"))
     ap.add_argument("--harness", required=True, help="stub | tiny_cpu | gpu (run-name tag _h<harness>_; gpu = none)")
+    ap.add_argument("--only", choices=("gate_release",), help="merge just this label into an existing --out")
     ap.add_argument("dirs", nargs="+")
     a = ap.parse_args()
     runs = set()
@@ -89,7 +120,7 @@ def main():
     runs = sorted(r for r in runs if ("google_speech" in r) == (a.dataset == "google_speech")
                   and (tag in r if tag else "_hstub_" not in r and "_htiny_cpu_" not in r))
     pooled = {"completion_leg": defaultdict(list), "dispatch_latency": defaultdict(list),
-              "download_leg": defaultdict(list)}
+              "download_leg": defaultdict(list), "gate_release": defaultdict(list)}
     used = []
     for r in runs:
         m = re.search(r"_(felix|fedbuff|oort_star|oort|refl|feddance|oracle)_n\d+", r)
@@ -101,14 +132,24 @@ def main():
         pooled["completion_leg"][stack] += legs
         pooled["dispatch_latency"][stack] += lat
         pooled["download_leg"][stack] += down
-        used.append(os.path.basename(r))
+        gates = gate_samples(r, logs[0])
+        pooled["gate_release"][stack] += gates
+        if not a.only or gates:
+            used.append(os.path.basename(r))
     out = {label: {s: _entry(xs) for s, xs in by.items() if xs} for label, by in pooled.items()}
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
-    out["_meta"] = {"dataset": a.dataset, "harness": a.harness, "host": socket.gethostname().split(".")[0], "commit": commit, "date": str(date.today()),
-                    "tool": "profile_felix_charges.py", "runs": used}
+    meta = {"dataset": a.dataset, "harness": a.harness, "host": socket.gethostname().split(".")[0], "commit": commit,
+            "date": str(date.today()), "tool": "profile_felix_charges.py", "runs": used}
+    if a.only:
+        prev = yaml.safe_load(open(a.out)) or {}
+        prev[a.only] = out[a.only]
+        prev.setdefault("_meta", {})[a.only] = meta
+        out = prev
+    else:
+        out["_meta"] = meta
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     yaml.safe_dump(out, open(a.out, "w"), sort_keys=False)
-    for label in ("completion_leg", "dispatch_latency", "download_leg"):
+    for label in ("completion_leg", "dispatch_latency", "download_leg", "gate_release"):
         print(label, {s: (e["mean_s"], e["n"]) for s, e in out.get(label, {}).items()})
     print(f"{len(used)} real legs -> {a.out}")
 

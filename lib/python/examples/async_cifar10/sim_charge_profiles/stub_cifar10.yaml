@@ -1,68 +1,100 @@
 completion_leg:
   asyncfl:
-    mean_s: 0.0142
+    mean_s: 0.0132
     p50_s: 0.013
-    n: 1802
+    n: 1902
     charge: true
   oort_sync:
-    mean_s: 0.0149
-    p50_s: 0.015
-    n: 824
+    mean_s: 0.0108
+    p50_s: 0.01
+    n: 2170
     charge: true
   fedavg:
-    mean_s: 0.0146
+    mean_s: 0.0151
     p50_s: 0.014
-    n: 230
+    n: 236
     charge: true
 dispatch_latency:
   asyncfl:
-    mean_s: 0.0093
-    p50_s: 0.008
-    n: 1802
+    mean_s: 0.0116
+    p50_s: 0.011
+    n: 1902
     charge: true
   oort_sync:
-    mean_s: 0.0182
-    p50_s: 0.0185
-    n: 336
+    mean_s: 0.0331
+    p50_s: 0.036
+    n: 236
     charge: true
   fedavg:
-    mean_s: 0.0132
-    p50_s: 0.015
-    n: 92
+    mean_s: 0.0178
+    p50_s: 0.0185
+    n: 94
     charge: true
 download_leg:
   asyncfl:
     mean_s: 0.0109
     p50_s: 0.011
-    n: 1802
+    n: 1902
     charge: true
   oort_sync:
-    mean_s: 0.0172
-    p50_s: 0.015
-    n: 824
+    mean_s: 0.0414
+    p50_s: 0.038
+    n: 2170
     charge: true
   fedavg:
-    mean_s: 0.0165
-    p50_s: 0.014
-    n: 230
+    mean_s: 0.0179
+    p50_s: 0.0165
+    n: 236
     charge: true
 _meta:
   dataset: cifar10
   harness: stub
   host: jayne
-  commit: b4b85f0ca
-  date: '2026-10-09'
+  commit: 42afaa684
+  date: '2026-10-11'
   tool: profile_felix_charges.py
   runs:
-  - run_20261008_170433_T3_syn_0_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real
-  - run_20261008_173144_T3_syn_0_hstub_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
-  - run_20261008_175952_T3_syn_0_hstub_dbg_oort_n300_alpha0.1_syn_0_stream_real
-  - run_20261008_180314_T3_syn_0_hstub_dbg_oort_star_n300_alpha0.1_syn_0_stream_real
-  - run_20261008_180502_T3_syn_0_hstub_dbg_feddance_n300_alpha0.1_syn_0_stream_real
-  - run_20261008_180819_T3_syn_0_hstub_dbg_refl_n300_alpha0.1_syn_0_stream_real
-  - run_20261008_182045_T3_syn_0b_hstub_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
-  - run_20261008_182219_T3_syn_0b_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real
-  - run_20261008_182612_T3_syn_0b_hstub_dbg_oort_star_n300_alpha0.1_syn_0_stream_real
-  - run_20261008_182723_T3_syn_0b_hstub_dbg_refl_n300_alpha0.1_syn_0_stream_real
-  - run_20261008_183009_T3_syn_0b_hstub_dbg_oort_n300_alpha0.1_syn_0_stream_real
-  - run_20261008_183338_T3_syn_0b_hstub_dbg_feddance_n300_alpha0.1_syn_0_stream_real
+  - run_20261011_125028_T3_syn_0_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real
+  - run_20261011_125255_T3_syn_0s_hstub_dbg_oort_n300_alpha0.1_syn_0_stream_real
+  - run_20261011_130108_T3_syn_0s_hstub_dbg_oort_star_n300_alpha0.1_syn_0_stream_real
+  - run_20261011_131727_T3_syn_0_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real
+  - run_20261011_132050_T3_syn_0b_hstub_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
+  - run_20261011_132105_T3_syn_0_hstub_dbg_fedbuff_n300_alpha0.1_syn_0_stream_real
+  - run_20261011_132242_T3_syn_0b_hstub_dbg_felix_n300_alpha0.1_syn_0_stream_real
+  - run_20261011_132342_T3_syn_0_hstub_dbg_feddance_n300_alpha0.1_syn_0_stream_real
+  - run_20261011_132526_T3_syn_0_hstub_dbg_refl_n300_alpha0.1_syn_0_stream_real
+  - run_20261011_133125_T3_syn_0b_hstub_dbg_refl_n300_alpha0.1_syn_0_stream_real
+  - run_20261011_133250_T3_syn_0b_hstub_dbg_feddance_n300_alpha0.1_syn_0_stream_real
+  gate_release:
+    dataset: cifar10
+    harness: stub
+    host: jayne
+    commit: 4303d3a91
+    date: '2026-10-14'
+    tool: profile_felix_charges.py
+    runs:
+    - run_20261014_062107_T3_syn_50_hstub_dbg_felix_n300_alpha0.1_syn_50_stream_real
+    - run_20261014_063037_T3_syn_50_hstub_dbg_fedbuff_n300_alpha0.1_syn_50_stream_real
+    - run_20261014_065452_T3_syn_50_hstub_dbg_refl_n300_alpha0.1_syn_50_stream_real
+    - run_20261014_070553_T3_syn_50_hstub_dbg_feddance_n300_alpha0.1_syn_50_stream_real
+    - run_20261014_071038_T3_syn_20_hstub_dbg_fedbuff_n300_alpha0.1_syn_20_stream_real
+    - run_20261014_082449_T3_syn_50s_hstub_dbg_oort_star_n300_alpha0.1_syn_50_stream_real
+    - run_20261014_091310_T3_syn_50s_hstub_dbg_oort_n300_alpha0.1_syn_50_stream_real
+    - run_20261014_110037_T3_syn_20s_hstub_dbg_oort_n300_alpha0.1_syn_20_stream_real
+    - run_20261014_134419_T3_mobiperf_3sts_hstub_dbg_oort_n300_alpha0.1_mobiperf_3st_stream_real
+gate_release:
+  asyncfl:
+    mean_s: 0.0262
+    p50_s: 0.0217
+    n: 39
+    charge: true
+  oort_sync:
+    mean_s: 0.0237
+    p50_s: 0.0207
+    n: 77
+    charge: true
+  fedavg:
+    mean_s: 0.0155
+    p50_s: 0.0161
+    n: 5
+    charge: true

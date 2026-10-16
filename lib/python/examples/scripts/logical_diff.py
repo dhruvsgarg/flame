@@ -26,7 +26,9 @@ def _events(run_dir):
 
 def trace(run_dir):
     ev = _events(run_dir)
-    sel = [e for e in ev if e.get("event") == "selection" and e.get("task") == "train"]
+    # FX-D98: drop no-op wakes; they shift every later index.
+    sel = [e for e in ev if e.get("event") == "selection" and e.get("task") == "train"
+           and e.get("num_chosen", len(e.get("chosen") or [])) > 0]
     com = [e for e in ev if e.get("event") == "agg_round" and e.get("task_to_perform", "train") == "train"]
     return sel, com
 

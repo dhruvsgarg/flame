@@ -657,3 +657,20 @@ class TestExpectedCompletionLowerBound:
         assert "fast" in agg._sim_known_delay_s
         assert "NEW" not in agg._sim_known_delay_s
         assert agg._sim_known_delay_s.get("NEW") is None
+
+
+@pytest.mark.parametrize("keep", [True, False])
+def test_abandon_wake_keeps_buffered_slot(keep):
+    # FX-D137 (PR29 G2 cifar fedbuff mobiperf): an abandon wake left 2 buffered ends RECVD; the selector freed their slots.
+    from types import SimpleNamespace
+    from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD
+    agg = _make_agg()
+    agg.config = SimpleNamespace(hyperparameters=SimpleNamespace(max_experiment_runtime_s=None))
+    agg._sim_keep_slots_on_wake = keep
+    agg._next_abandon_ts = lambda ch: 95.0
+    channel = FakeChannel(inflight={"A"}, arrival_order=[])
+    agg._sim_buffer.add("A", 103.0, ({MessageType.SIM_COMPLETION_TS: 103.0}, ("A", None)))
+    channel._ends["A"].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)  # as recv_fifo leaves it
+    msg, _ = agg._sim_recv_min(channel, [])
+    assert msg is None and agg._vclock.now == pytest.approx(95.0)
+    assert (channel._ends["A"].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD) is not keep

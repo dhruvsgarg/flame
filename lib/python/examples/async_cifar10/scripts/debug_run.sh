@@ -60,10 +60,10 @@ STRICT=0               # --strict: a BLOCKING pre-flight check aborts (default: 
 AFTER=""               # --after: comma list of post-launch hooks (parity,plot) -- see after_* below
 
 usage() {
-  echo "usage: $0 [--baselines 'felix refl'] [--runtime-s 3600] [--mode sim|real|both] [--sim-wall-ceiling-s 2700] [--trace syn_20]"
-  echo "       $0 smoke [--baselines ...] [--mode sim|real|both] [--trace syn_20]"
+  echo "usage: $0 [--baselines 'felix refl'] [--runtime-s 3600] [--mode sim|real|both] [--sim-wall-ceiling-s 2700] [--trace syn_20_3st]"
+  echo "       $0 smoke [--baselines ...] [--mode sim|real|both] [--trace syn_20_3st]"
   echo ""
-  echo "  --baselines           which baselines to run (any of felix oort oort_star refl feddance fedbuff);"
+  echo "  --baselines           which baselines to run (any of felix oort oort_star refl feddance fedbuff, fedavg);"
   echo "                        filtered from the parity config, node-agnostic."
   echo "  --mode                which time_mode variant(s) to run for each baseline:"
   echo "                        'sim' (only the simulated run), 'real' (only the real run),"
@@ -73,7 +73,7 @@ usage() {
   echo "                        A well-behaved sim finishes in <= real-mode wall time."
   echo "                        Fires [SIM_WALL_CEILING] warning + stops when exceeded."
   echo "  --trace               availability trace name(s) to substitute, space-separated for"
-  echo "                        multiple (e.g. 'syn_20 syn_50' queues both, one experiment set each)."
+  echo "                        multiple (e.g. 'syn_20_3st syn_50_3st' queues both, one experiment set each)."
   echo "                        Default: use whatever is in the parity config (syn_0)."
   echo "  --num-trainers        non-smoke only: shrink the cohort below the parity config's 300,"
   echo "                        with min_trainers_to_start = the whole cohort. Use this instead of"
@@ -170,7 +170,7 @@ scr, baselines_str, runtime_s, outpath, smoke, ceil_arg = (
     sys.argv[6] if len(sys.argv) > 6 else ""
 )
 mode = (sys.argv[7] if len(sys.argv) > 7 else "both").lower()
-# Space-separated list of trace names (e.g. "syn_20 syn_50"); "" -> [""] (no substitution).
+# Space-separated list of trace names (e.g. "syn_20_3st syn_50_3st"); "" -> [""] (no substitution).
 trace_overrides = sys.argv[8].strip().split() if len(sys.argv) > 8 and sys.argv[8].strip() else [""]
 num_trainers_override = int(sys.argv[9]) if len(sys.argv) > 9 and sys.argv[9].strip() else None
 alpha_override = float(sys.argv[10]) if len(sys.argv) > 10 and sys.argv[10].strip() else None
@@ -229,10 +229,15 @@ def _log_hp_sources(bl, ds, e, layers):
             print(f"[HP] {bl} {ds} {k}={v} ({src.get(k, 'template default')})", flush=True)
 
 
+# fedavg (random) = the feddance experiment with selector utility=random: only the selection rule differs.
+if "fedavg" in requested:
+    cfg["experiments"] += [dict(copy.deepcopy(x), arm="fedavg", name=x["name"].replace("feddance", "fedavg"))
+                           for x in cfg.get("experiments", []) if x.get("baseline") == "feddance"]
 kept = []
 for e_src in cfg.get("experiments", []):
     bl = e_src.get("baseline", "").lower()
-    if bl not in requested:
+    arm = e_src.pop("arm", bl)
+    if arm not in requested:
         continue
     if mode != "both" and exp_mode(e_src) != mode:
         continue
@@ -263,6 +268,8 @@ for e_src in cfg.get("experiments", []):
         h = e["aggregator"]["config_overrides"]["hyperparameters"]
         # FX-N22 test shapes: set only the knobs this baseline has.
         kw = e["aggregator"]["config_overrides"].setdefault("selector", {}).setdefault("kwargs", {})
+        if arm == "fedavg":
+            kw["utility"] = "random"
         if os.environ.get("AGG_GOAL", "").strip():  # the launcher fans agg_goal into aggGoal + aggr_num
             e["aggregator"]["agg_goal"] = int(os.environ["AGG_GOAL"])
         if os.environ.get("CONC", "").strip() and "c" in kw:
@@ -292,7 +299,7 @@ for e_src in cfg.get("experiments", []):
             if num_trainers_override:
                 # Shrink the cohort but keep runtime_s as the real budget (unlike
                 # smoke, which hardcodes rounds=4/runtime=240 -- too short for a
-                # trace-driven vclock floor like syn_10's first UN_AVL at t=600s).
+                # trace-driven vclock floor like syn_10_3st's first UN_AVL at t=600s).
                 # Same join-barrier slack ratio as smoke (gap of 8 below the count).
                 # Preserve the config's native partition size as split_num_trainers
                 # so the shrunk cohort reads the existing n<orig> split (e.g. n300)
@@ -303,6 +310,7 @@ for e_src in cfg.get("experiments", []):
                 orig_n = e["trainer"].get("num_trainers", 300)
                 e["trainer"]["num_trainers"] = num_trainers_override
                 e["trainer"]["split_num_trainers"] = orig_n
+                e["name"] = re.sub(r"_n\d+_", f"_n{num_trainers_override}_", e["name"])  # L20: name the cohort that runs
                 # wait for the whole cohort: a fast sim finishes before stragglers join, real sees them (FX-N47)
                 h["min_trainers_to_start"] = num_trainers_override
             e["name"] = f"dbg_{e['name']}"
@@ -360,6 +368,8 @@ for e_src in cfg.get("experiments", []):
             ex = e.setdefault("execution", {})
             ex["gpu_ids"] = [int(g) for g in os.environ["FLAME_GPU_IDS"].split(",")]
             ex["num_gpus"] = len(ex["gpu_ids"])
+        if os.environ.get("FLAME_GPU_PLACEMENT", "").strip():  # FX-N98: balanced (default) | round_robin
+            e.setdefault("execution", {})["gpu_placement"] = os.environ["FLAME_GPU_PLACEMENT"].strip()
         # FLAME_TRACE_TIME_SCALE (env, read by flame.availability.trace): recorded for provenance.
         if os.environ.get("FLAME_TRACE_TIME_SCALE", "").strip():
             h["trace_time_scale"] = float(os.environ["FLAME_TRACE_TIME_SCALE"])
@@ -371,6 +381,8 @@ for e_src in cfg.get("experiments", []):
             h["send_timeout_wait_s"] = 90.0 * _k
         if prof.get("gpu_train_slots") and not harness_mode:  # FX-D58: GPU legs only
             e["trainer"].setdefault("hyperparameters", {})["gpu_train_slots"] = int(prof["gpu_train_slots"])
+        if prof.get("sim_gpu_train_slots") and not harness_mode:  # FX-N98: sim legs only (trainer ignores it in real)
+            e["trainer"].setdefault("hyperparameters", {})["sim_gpu_train_slots"] = int(prof["sim_gpu_train_slots"])
         # FX-D23: profiled non-compute charges replace the per-baseline hand constants; SIM_CHARGES=legacy reverts.
         _prof = os.path.join(scr, "..", "sim_charge_profiles",
                              f"{harness_mode or 'gpu'}_{ds_name or 'cifar10'}.yaml")
@@ -383,7 +395,8 @@ for e_src in cfg.get("experiments", []):
             _lat = get_profiled_charge_s(_prof, "dispatch_latency", _stack)
             if _leg is not None and _lat is not None:
                 h.update(simDispatchLatencySeconds=_lat, simCommitOverheadSeconds=0.0,
-                         simRedispatchGapSeconds=0.0, simChargeProfilePath=os.path.abspath(_prof))
+                         simRedispatchGapSeconds=0.0, simChargeProfilePath=os.path.abspath(_prof),
+                         simGateReleaseSeconds=get_profiled_charge_s(_prof, "gate_release", _stack) or 0.0)  # FX-D163
                 _thp0 = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
                 _thp0["simCompletionLegSeconds"] = _leg
                 _thp0["simDownloadLegSeconds"] = get_profiled_charge_s(_prof, "download_leg", _stack) or 0.0  # FX-D116

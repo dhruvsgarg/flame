@@ -175,7 +175,7 @@ def test_a7_commit_checkpoint_does_not_extrapolate_past_last_commit():
 
 
 def test_a7_commit_checkpoint_does_not_extrapolate_across_interior_gap():
-    # Batch 4 live-run finding (UNAVAILABILITY_DESIGN.md, felix n=300 syn_50):
+    # Batch 4 live-run finding (UNAVAILABILITY_DESIGN.md, felix n=300 syn_50_3st):
     # both commits are individually CORRECT -- t=100 reads AVL_TRAIN (true,
     # ground truth is AVL_TRAIN on [0,200)), t=590 reads AVL_TRAIN (true,
     # ground truth is AVL_TRAIN on [400,600)) -- but the trace dips to UN_AVL

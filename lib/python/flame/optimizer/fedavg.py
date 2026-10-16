@@ -83,7 +83,7 @@ class FedAvg(AbstractOptimizer):
             return None
 
         k_updates = len(cache)
-        for k in list(cache.iterkeys()):
+        for k in sorted(cache.iterkeys()):  # FX-D145: fixed sum order; arrival order differs sim vs real (float sums)
             # after popping, the item is removed from the cache hence,
             # explicit cache cleanup is not needed
             tres = cache.pop(k)

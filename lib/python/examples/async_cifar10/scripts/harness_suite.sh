@@ -16,7 +16,7 @@
 #   <out>/runs/<trace>_<baseline>/               debug_run.sh logs (+ legs.txt: this pair's run dirs)
 #
 # Usage:
-#   harness_suite.sh [--harness stub|tiny_cpu|none] [--baselines 'felix oort ...'] [--traces 'syn_0 syn_50']
+#   harness_suite.sh [--harness stub|tiny_cpu|none] [--baselines 'felix oort ...'] [--traces 'syn_0 syn_50_3st']
 #                    [--mode both|real|sim] [--real-from auto|<real run dir>|<suite/campaign dir>]
 #                    [--runtime-s 300] [--num-trainers 60] [--delay-factor 4] [--trace-scale 4]
 #                    [--timeout-buffer-s 300] [--output-dir DIR] [--agg-hp 'k=v ...'] [--trainer-hp 'k=v ...']

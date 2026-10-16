@@ -45,6 +45,7 @@ EVENT_RUN_END = "run_end"  # aggregator stop point: round, vclock (sim), work_do
 EVENT_TRACE_ORIGIN = "trace_origin"  # real join barrier: trace/stream clock origin (FX-D51)
 EVENT_MODEL_HEALTH = "model_health"  # global model health after a commit (FX-N64)
 EVENT_AGG_TIMING = "agg_timing"  # per-commit wall split: recv wait vs ingest vs commit (FX-N43)
+EVENT_WIRE = "wire"  # one message sent or received at the channel: bytes per peer (FELIX_INSIGHTS I-E1)
 
 KNOWN_EVENTS = frozenset(
     {
@@ -78,6 +79,7 @@ KNOWN_EVENTS = frozenset(
         EVENT_TASK_DISCARD,
         EVENT_RUN_END,
         EVENT_AGG_TIMING,
+        EVENT_WIRE,
     }
 )
 
@@ -988,6 +990,7 @@ def build_withheld_delivery(
     accepted: Optional[bool] = None,
     time_mode: str = "sim",
     actual_commit_ts: Optional[float] = None,
+    task: Optional[str] = None,
 ) -> tuple[str, dict[str, Any]]:
     """A send-gated update committing late (stale) at its ``delivery_ts``.
 
@@ -1024,6 +1027,8 @@ def build_withheld_delivery(
         fields["accepted"] = accepted
     if actual_commit_ts is not None:
         fields["actual_commit_ts"] = float(actual_commit_ts)
+    if task is not None:
+        fields["task"] = task  # FX-N97: train waits for AVL_TRAIN, eval for AVL_*
     return EVENT_WITHHELD_DELIVERY, fields
 
 

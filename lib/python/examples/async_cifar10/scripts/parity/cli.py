@@ -28,6 +28,8 @@ import os
 import sys
 from pathlib import Path
 
+PL19_OVERRUN_MAX_FRAC = 0.02  # FX-N76: overruns of D graded per side; phase_gpu_compute is DIAG
+
 
 def _find_run_dirs(experiments_dir: str, baseline_tag: str) -> tuple:
     """Return (real_dir, sim_dir) by looking for latest real/sim pair matching baseline_tag.
@@ -111,6 +113,7 @@ def _run_pair(real_dir: str, sim_dir: str,
         floors=floors,
         same_mode=control,
         floors_tighten=False,
+        overrun_max_frac=PL19_OVERRUN_MAX_FRAC,
     )
 
     # Add first_divergence as a diagnostic summary entry (always ok — index=0 is expected for async)
