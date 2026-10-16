@@ -4,22 +4,25 @@ Read [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) and [PARITY_READINESS.md](
 here unrepeated. **Focus (operator 10-12/13): Felix-wide parity to 76 / 76, then convergence parity (FX-N93).** Order: Next steps →
 Scoreboard (now, and expected after the next run) → Decisions → reference sections.
 
-**At a glance (10-15 late):** golden rule ROBUST R0 (short screens first). Fixes `5f1848184`; packing adopted (FX-N100: trainer-packed
-GPUs, measured leases; host RAM and GPU memory bind). Next: **PR36-short** (~2-3 h), fix on short runs, then full PR36 (~12.5 h). First
-PR36 run regrades 60 / 76 · accuracy **6 / 12** · convergence **0 / 12** · then FX-D171, PR37 → FX-N12.
+**At a glance (10-16):** golden rule ROBUST R0 (short screens first). PR36-short found no sim logic root; it OOM-aborted on a packing
+bug, fixed (FX-D175). Next: **PR36-short rescreen** (~2.5 h), then full PR36 (~12.5 h). First PR36 run regrades 60 / 76 · accuracy
+**6 / 12** · convergence **0 / 12** · then FX-D171, PR37 → FX-N12.
 
 ## Next steps (persistent queue — top item is next)
 
 Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4/TS · GPU ≤ 30-min screens (G0U/G0T/G0UC) · long
 (G1*/G2). Unblock map: PR36 (76/76 on one code key; confirms FX-N98) → PR37 (FX-N93.2/.3) → FX-N12.
 
-- **PR36-short · broad bug screen on the new packing (R0) · ready: launch (commands in PR36 below).** Stages B1 (G0U), C1 (T3), C2 (P7) on
-  jayne and S1 (G0T) on shepherd, every leg ≤ 240 s at production density, `--short 240 --measured --one-queue --gpu-share 4`. Plan:
-  ~2.1 h jayne, ~3.0 h shepherd. *Graded on* EV + INV/EXACT logic per cell, plus `resource_report.py --util`: legs/h, overruns 0-2%, no
-  OOM/`RAM_OVER`/slow legs. DIST/timing reds on 240 s legs are artifacts (E1). *Decision:* fix every logical red on short runs and
-  re-screen only the affected cells; when clean, launch full PR36 (~12.5 h, same flags without `--short`) for DIST, replicate floors,
-  draws and G1AS.
-- **FX-N100 · Throughput: utilization-aware packing (central goal, operator 10-15) · wip: packing adopted (E3/E3b); confirm on PR36-short.** Design: Active build "throughput".
+- **PR36-short rescreen · the cells the first screen couldn't grade (R0) · ready: launch (PR36 below, `--only B1,C5,S1S` / `S1C,S1S0`).**
+  - *First screen (10-15, `pr36_jayne_20261015_1835` B1/C1/C2 + `pr36_shepherd_20261015_1834` S1, copied to jayne):* raw 41 / 76
+    (66 tested). No sim logic root: 17 cells MISSING (B1, S1 aborted on trainer CUDA OOM: FX-D175); 3 EV1/K8 on unaware oort syn_50_3sts
+    (240 s = 1 round: `SHORT_KEEP`); 2 draws (gs oort T3 syn_20_3sts K2 ±33%, sign flipped vs PR36; P7 oort_star K2 10.8%); fedbuff
+    syn_50_3st S3/4 count / K3b on 6 rounds; 11 `phase_gpu_compute` (packed real 0.05 → 0.2-0.4 s, < D: FX-N76, now DIAG). EV21 cells
+    green (FX-D172/D174 confirmed).
+  - *Rescreen:* jayne B1 (G0U all) + C5 (T3 oort syn_50_3sts) + S1S (speech G0T syn_50_3st); shepherd S1C (cifar G0T) + S1S0 (speech
+    G0T syn_0). Plan ~2.5 h jayne, ~2.3 h shepherd (balanced). *Graded on* EV + INV/EXACT per cell, no OOM, overruns ≤ 2% (`timing_overrun`), `--util`. *Decision:* clean ⇒ full PR36.
+- **FX-N100 · Throughput: utilization-aware packing (central goal, operator 10-15) · wip: packing adopted (E3/E3b); PR36-short OOM fixed
+  (FX-D175); confirm on the rescreen.** Design: Active build "throughput".
   *Exit:* on a 10-min mixed batch (CPU + GPU legs, both datasets), legs finished per hour ≥ 2× the PR36 packing, with node CPU busy
   and GPU SM / memory use reported per minute. Interference (overruns > 2% (PL19), `CPU_SAT`, sim slowdown > 1.25×, EV/parity reds vs
   solo) must stay at the solo baseline. The PR36 `--plan` uses the measured packing.
@@ -30,9 +33,9 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
 - **PR36 · full re-screen on one code key · blocked: PR36-short clean.**
   - *Launch (operator runs, in tmux `dg_flame` on each node, after `git pull` on shepherd and matching `code_key`, PL18):*
     `cd ~/flame/lib/python/examples && /coc/scratch/dgarg/miniconda3/envs/dg_flame/bin/python scripts/run_pr36.py --node jayne
-    --hours 5 --short 240 --measured --one-queue --gpu-share 4 --only B1,C1,C2` (shepherd: `--node shepherd ... --only S1`). Drop
-    `--short 240 --only ...` and use `--hours 15` for full PR36. Read: `experiments/pr36_<node>_<ts>/OVERNIGHT.txt`, probes, `--util`. The relaunch (`pr36_*_20261015_1626`, `--measured --one-queue`) was stopped
-  after A1's gate (operator 10-15: no long run at low utilization). Commit `5f1848184` holds the fixes; the code key changes with FX-N100.
+    --hours 5 --short 240 --measured --one-queue --gpu-share 4 --only B1,C5,S1S` (shepherd: `--node shepherd ... --only S1C,S1S0`). Full
+    PR36: drop `--short 240 --only ...` (C5/S1S/S1C/S1S0 are rescreen-only) and use `--hours 15`. Read: `experiments/pr36_<node>_<ts>/OVERNIGHT.txt`,
+    probes, `--util`. Commit: the FX-D175 commit after `77d69c55f`.
   - Scope: G0U/G0UC + T3/T3C (syn_*_3st, mobiperf_3st), G0T/G0TC both datasets, G1AS six × both (accuracy + FX-N98 speed at reference
     n), and a third real on the 4 PR35 draw cells (Scoreboard). Screen shapes stay per tier (mechanism parity per baseline; G0U is n=50).
   - Runner: `run_pr36.py --node jayne` (GPUs 0,2-7: G1AS, G0U, G0UC, speech G0TC, CPU tiers; ~14.8 h) and `--node shepherd` (GPUs 0-3:
@@ -107,10 +110,9 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
 - **FX-N30 `[S]` · Speech streaming on GPU screens · wip.** All six G0T green (PR31 A2/B3, PR34 B1); left: G0To. *Exit:* speech G0T/G0To lin + events × syn_0/syn_50 EV19 + INV/EXACT green.
 - **FX-N74 `[C]` · Every baseline reaches target on full data · wip: 5 / 12.** Accuracy table below. *Exit:* each cell at target, or
   audited faithful and named round-bound.
-- **FX-N76 `[C][S]` · C13 real-cost audit · wip.** weights_to_ram matches. Open: `phase_gpu_compute` compares contended real compute
-  with sim's one-at-a-time compute (FX-D167; speech G3 smoke real 3.8 vs sim 2.0 s, both < D, off the clock): grade the overrun share
-  (PL19) instead. `trainer_speed_identity` red only where real overran D (0405: 11.8 vs 10.0 s). *Exit:* both graded on what reaches
-  the clock, green both datasets.
+- **FX-N76 `[C][S]` · C13 real-cost audit · wip.** weights_to_ram matches; `phase_gpu_compute` is DIAG and overruns of D are graded
+  (FX-D175, operator 10-16). Open: `trainer_speed_identity` red only where real overran D (0405: 11.8 vs 10.0 s). *Exit:* graded on what
+  reaches the clock, green both datasets.
 - **FX-N33 `[C][S]` · Aggregator abort at interpreter exit · todo.** `terminate called without an active exception` after channel leave
   (C++ static teardown); frequent on oort T1 syn_50 sim, seen on F3 fedavg sim (results intact); 4/4 clean under gdb. *Next:* gdb via
   `FLAME_AGG_CMD_PREFIX` (FX-D102) = `/coc/scratch/dgarg/gdb_env/bin/gdb -q -batch -ex run -ex 'thread apply all bt' --args`.
@@ -143,7 +145,8 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
 
 **Parity: 60 / 76: PR36's finished pools (keys `c9f29966340b` + `deec34d15ea6`, same run code), regraded on scratch copies with
 FX-D174's checker** (10-15, jayne; `--grade --regrade --max-stage 9`, then `readiness_score.py` over A1-D1 + S1-S2). FX-D172/D173 change run
-code, so the PR36 rerun re-measures every cell. **Accuracy 6 / 12** (cifar felix, fedbuff, oort, oort_star; speech felix, fedbuff).
+code, so the PR36 rerun re-measures every cell. PR36-short (240 s legs, raw 41 / 76, 17 cells MISSING) found no new logic root and doesn't
+replace this board (Next steps). **Accuracy 6 / 12** (cifar felix, fedbuff, oort, oort_star; speech felix, fedbuff).
 ✅ green · ❌ red · – n/a.
 
 | baseline · dataset | syn_0 | syn_20_3st | syn_50_3st | mobiperf | stream_lin | stream_eve | stream_cpu |
@@ -381,6 +384,10 @@ to 70% everywhere except CIFAR-10 syn_50 (39 h).
   = E1, overruns 0/568, no OOM. Throughput fell to 69.8 legs/h: measured RAM reservations (cifar 71, speech 92-93 GB) admit only 5 GPU legs
   at once, while actual RAM peaked at 253 GB (4-min legs use less than the full-length peaks). At production length **host RAM binds the
   speech-heavy stages and GPU memory the rest.** Trainer packing is adopted.
+- *PR36-short (packed, 10-15; `--util`):* jayne 70.2 legs/h, concurrency 5.3, CPU 5%, GPUs idle 88% (B1 aborted at 21 min); shepherd
+  50.9 legs/h, concurrency 4.9, GPU memory 27%, idle 24%; overruns 2/5047. Both GPU pools OOM-aborted: packed legs had recorded footprints
+  ÷2-4 (FX-T51), so placement put 95-137 cifar trainers on one A40. Packed real compute rose 0.05 → 0.2-0.4 s (< D, 0 overruns). Real
+  legs ran 1.3-1.5× their estimate (concurrent startup). Fixed in FX-D175; history purged on both nodes (entries < 0.75 × key max).
 - *Sim CPU leases:* T1 (24 sims) at 2 / 4 cores / formula (7-9 cores): 3.07 / 2.26 / 1.62 min per sim, but 282 / **337** / 181 legs/h.
   Sims lease ≥ 4 cores (`SIM_LEASE_MIN_CORES`), real CPU legs ≥ 2; core history falls back across runtimes (`cores_seen`).
 - *PR36 plans (`run_pr36.py --plan`, planner models trainer packing + measured RAM):*
@@ -389,7 +396,8 @@ to 70% everywhere except CIFAR-10 syn_50 (39 h).
   |---|---|---|
   | full | 13.9 / 11.9 h | 12.5 / 12.3 h (RAM-bound: measured speech peaks > formula) |
   | short, all stages (`--short 240`) | 9.0 / 3.7 h | 4.0 / 3.3 h |
-  | short, bug-finding stages only (G0U, T3, P7 / G0T) | – | **2.1 / 3.0 h** |
+  | short, bug-finding stages only (G0U, T3, P7 / G0T) | – | 2.1 / 3.0 h |
+  | rescreen, FX-D175 footprints (B1, C5, S1S / S1C, S1S0) | – | **2.5 / 2.3 h** |
 
   The short screen grades EV + INV/EXACT logic; G1AS, replicate and third-real stages run only at full length (240 s legs give artifact
   DIST/timing reds, E1).
@@ -647,6 +655,8 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-T49** Don't classify a pair's rounds with per-side thresholds or drop one side's zero advances: twin rounds split (FX-D159).
 - **FX-T50** Don't key a prefix-safe EV on (round, trainer): async selectors re-list held picks every round, so one stale entry DOOMs
   the leg (PR36 EV21, 17 legs). Key on the dispatch.
+- **FX-T51** Don't record a packed leg's GPU peak per placed GPU or trust one 30 s sample: footprints read ÷2-4, 137 trainers shared an
+  A40, two pools OOM-aborted (PR36-short, FX-D175).
 
 ---
 
@@ -884,6 +894,10 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   FedBuff took a free slot at the eval tasklet ~once per leg, real only (PR36 EV21). `test_no_eval_dispatch_without_eval_goal`.
 - **FX-D173** Sim never re-gates a released withheld delivery (`_sim_withhold_if_unavail`, as oort's commit loop): a gate release past a
   short AVL_TRAIN window withheld it twice and lost its sct (PR36 gs fedbuff G0U mobiperf_3st EV16). `test_released_delivery_past_a_short_window_is_not_regated`.
+- **FX-D175** Packing + grading fixes (PR36-short): GPU history per nominal GPU, per-trainer floor (`TRAINER_GPU_GB_MIN`), FX-T36 cap
+  across legs (`TRAINERS_PER_GPU`, share in `gslot_*`); `--scale-smoke` keeps `SHORT_KEEP` legs full length and records no GPU footprint
+  (short legs read 25-55% of the full peak); Felix grading:
+  `phase_gpu_compute` DIAG, `timing_overrun` INV at max(1, 2%) per side (`PL19_OVERRUN_MAX_FRAC`; fwdllm unchanged).
 - **FX-D174** Checker: EV21 counts a train pick once per dispatch (async selectors re-list in-flight/withheld picks every round; PR36
   killed 17 legs); throughput/K3/K3b drop the last common round when one side's stop cut it short (`_tail_cut`).
 - **FX-D147** Leak check (`ram_growth_gb`) starts after a leg's process count peaks: a short sim's spawn ramp read as LEAK? (S3 +113 GB).

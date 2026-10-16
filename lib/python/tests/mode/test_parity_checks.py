@@ -3370,6 +3370,21 @@ class TestTimingOverrun:
         r = pc.timing_overrun(tr, tr)
         assert r.get("status") == "SKIP" and r["ok"]
 
+    def test_graded_bound_allows_one_overrun(self):
+        # FX-N76 / PL19: graded, a side fails above max(1, 2% of its tasks).
+        ok = {"a": {"trainer_round": [_tr_round(i == 0) for i in range(47)]}}
+        bad = {"a": {"trainer_round": [_tr_round(i < 3) for i in range(100)]}}
+        r = pc.timing_overrun(ok, ok, max_frac=0.02)
+        assert r["ok"] and r["tier"] == "INV"
+        assert not pc.timing_overrun(ok, bad, max_frac=0.02)["ok"]
+
+    def test_graded_run_demotes_gpu_compute_to_diag(self):
+        real = {"a": {"trainer_round": [{**_tr_round(False), "gpu_compute_s": 0.4} for _ in range(20)]}}
+        sim = {"a": {"trainer_round": [{**_tr_round(False), "gpu_compute_s": 0.05} for _ in range(20)]}}
+        assert pc.run_all_parity(_agg(), _agg(), real, sim)["phase_gpu_compute"]["tier"] == "DIST"
+        res = pc.run_all_parity(_agg(), _agg(), real, sim, overrun_max_frac=0.02)
+        assert res["phase_gpu_compute"]["tier"] == "DIAG" and res["timing_overrun"]["ok"]
+
     def test_present_in_run_all_and_meta(self):
         assert "timing_overrun" in pc.CHECK_META
         tr = {"a": {"trainer_round": [_tr_round(False)]}}

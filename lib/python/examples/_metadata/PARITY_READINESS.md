@@ -91,6 +91,7 @@ A new failure mode adds a check here in the same session.
 | PL19 | ≤ 2% of train tasks overrun D per leg, real and sim; above it, fewer trainers per GPU | DONE lines / trainer `overran` count (FX-N98) | PR35: speech G1AS sim 10%, real G1A 3.5% |
 | PL20 | AVL_EVAL is eval-only and Felix-only (FX-D165) | EV21 in every leg's events (prefix-safe → DOOMED) | 10-14: baselines trained on mobiperf_3st EVAL devices |
 | PL22 | the batch's packing is measured (C21): its last screen's `--util` names the binding resource, legs/h, overruns 0-2%, no slow legs; the plan uses `--gpu-share`/`--lease-from-telemetry` as measured | `resource_report.py <screen pools> --util` | first PR36: 3.3 legs at once, CPU 6%, GPU memory 39%, GPUs idle 25% for 14 h |
+| PL23 | packed GPU footprints are per nominal GPU, floored per trainer, and at most FX-T36 trainers share a GPU | `gpu|` history ≈ exclusive peaks (cifar n50 ~20 GB, speech ~40 GB/GPU); no `CUDA error: out of memory` in a smoke's trainers.log (FX-D175) | PR36-short: B1 + S1 OOM-aborted, 137 trainers on one A40 |
 | PL21 | a new or changed prefix-safe EV passes on stored legs of all six × every trace before launch | run it over the last batch's legs (`event_invariants.load_run` + the check) | PR36: EV21 DOOMED 17 oort_star/fedbuff legs mid-batch |
 
 ## Throughput (both tracks; operator 10-15)
@@ -105,7 +106,7 @@ Goal: most legs (and budget-hours) finished per wall hour, each leg behaving as 
   share, overruns, and slow legs (> 1.25× solo estimate).
 - **Pack (flags, default off; byte-identical off, R9):** `--lease-from-telemetry` (measured CPU lease for real CPU legs, RAM reservation
   = 1.15 × measured peak, admission ≤ 70% node CPU, back-pressure on saturated slots); `--gpu-share K` (legs share a GPU while committed
-  measured peaks ≤ 90% of memory and SM ≤ 90%; unmeasured legs take a whole GPU); `run_pr28 --measured --one-queue` (all stages at once,
+  measured peaks ≤ 90% of memory and SM ≤ 90%, ≤ FX-T36 trainers per GPU; unmeasured legs take a whole GPU); `run_pr28 --measured --one-queue` (all stages at once,
   stage order = GPU priority).
 - **Buffers (operator 10-15):** no resource past 90% of capacity (node hangs and failed runs cost more than the packing gains): committed
   GPU memory ≤ 90% and live use + newcomer ≤ 90%, GPU SM ≤ 90%, host RAM headroom 10% of MemTotal (`--mem-headroom-gb` default), CPU
@@ -179,7 +180,8 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR36 · relaunch (first run stopped 10-15 by EV21 false kills; FELIX PR36):** full re-screen on one code key (G0U/G0UC, T3/T3C, G0T/G0TC, G1AS, third reals) → 76/76 +
+- **PR36-short rescreen (FELIX Next steps; first screen OOM-aborted, FX-D175):** jayne `--only B1,C5,S1S`, shepherd `--only S1C,S1S0` (~2.5 / 2.3 h).
+- **PR36 · full run after a clean rescreen (first run stopped 10-15 by EV21 false kills; FELIX PR36):** full re-screen on one code key (G0U/G0UC, T3/T3C, G0T/G0TC, G1AS, third reals) → 76/76 +
   accuracy + FX-N98 speed confirm. `run_pr36.py --node jayne|shepherd` (~14.8 / 13.8 h). Screen shapes stay per tier.
 - **PR37 · blocked: PR36 complete:** all six × syn_0 + syn_50_3st + stream_lin × both datasets, 2 h real + 2 h-vclock sim, real replicate on
   syn_0 + lin, at one n:c:K per dataset (G3: cifar 75:15:10, speech 50:15:10) → sim-only experiments. `run_pr37.py` (~24-28 h).

@@ -81,6 +81,8 @@ OORT_SHAPE = {"syn_0": "syn_0s", "syn_0b": None, "syn_20_3st": "syn_20_3sts", "s
 # CPU legs that need longer for EV1's >= 4 commits (unaware oort waits out 90s timeouts; run 4: 0 in 240s).
 MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 3000,  # FX-D165: AVL_EVAL is UN_AVL; PR36 960 s gave 1 commit, G0U sim's 4th at 2508 s
                  ("oort", "syn_20_3st", "google_speech"): 600}  # FX-N85 d: 300 s gave 10 matched rounds (PR31 C2)
+# Full length under --scale-smoke (value: harness, None = all): at 240 s unaware oort got 1 round, GPU fedbuff 6 (PR36-short).
+SHORT_KEEP = {("oort", "syn_50_3st"): None, ("fedbuff", "syn_50_3st"): "none"}
 # FX-D52: G0U legs whose unaware picks hold slots a full timeout run longer, to reach a gradeable round count.
 G0U_RUNTIME_X = {("oort", "mobiperf_3st"): 4, ("fedbuff", "mobiperf_3st", "google_speech"): 3}
 GPU_N = {"cifar10": 300, "google_speech": 100}  # the datasets' reference cohorts (datasets.yaml)
@@ -219,6 +221,7 @@ class Phase:
     cpt: Optional[float] = None  # CPUs per trainer for this phase; None = --cpus-per-trainer
     gpus: Optional[int] = None  # GPU legs: GPUs each; None = --gpus-per-job
     delay_factor: str = ""  # divides every trainer's D (debug_run --delay-factor)
+    full_runtime_s: int = 0  # runtime before a --scale-smoke cap (0 = uncapped)
 
 
 def shaped(pid, baselines, shape, kind, dataset, **kw) -> Phase:
@@ -462,6 +465,12 @@ def estimate_s(job: Job, history: dict) -> float:
     return (job.runtime_s if job.mode == "real" else job.runtime_s / 1.6) + join
 
 
+def cap_runtime(phases: List[Phase], s: int) -> None:
+    """--scale-smoke S: every phase at most S seconds (SHORT_KEEP legs keep full length in build_jobs)."""
+    for p in phases:
+        p.full_runtime_s, p.runtime_s = p.runtime_s, min(p.runtime_s, s)
+
+
 def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, history: dict,
                gpu_per_trainer: float = 0.4) -> List[Job]:
     """gpu_per_trainer: CPUs per GPU-leg trainer (0.4 = the historical n=300 on 128 CPUs -> whole node)."""
@@ -471,6 +480,8 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
         for b in ph.baselines:
             at_shape = ph.harness != "none" and ph.runtime_s in {v["runtime_s"] for v in SHAPES.values() if v["trace"] == t}  # not smoke/T1
             rt = max(ph.runtime_s, MIN_RUNTIME_S.get((b, t, ph.dataset), MIN_RUNTIME_S.get((b, t), 0))) if at_shape else ph.runtime_s
+            if ph.full_runtime_s and (b, t) in SHORT_KEEP and SHORT_KEEP[(b, t)] in (None, ph.harness):
+                rt = max(rt, ph.full_runtime_s)
             if "G0U" in ph.pid:
                 rt *= G0U_RUNTIME_X.get((b, t, ph.dataset), G0U_RUNTIME_X.get((b, t), 1))
             base = ["--harness", ph.harness, "--baselines", b, "--traces", t, "--runtime-s", str(rt),
@@ -943,6 +954,7 @@ def _lease_values(root: Path, pattern: str) -> Dict[str, float]:
 
 # FX-N100 2 (`--gpu-share K`, default 1 = exclusive GPUs, byte-identical): co-locate legs on a GPU by measured footprint.
 GPU_SHARE = 1
+SHORT_LEGS = False  # --scale-smoke legs record no GPU footprint: they read well below the full-length peak
 GPU_GB = 44.4  # A40 usable GiB (torch OOM message, E2)
 GPU_MEM_CAP, GPU_SM_CAP = 0.9, 90.0  # committed peak memory share and SM % per GPU
 GPU_LIVE_CAP = 0.9  # live used memory + the newcomer's peak (operator 10-15: no resource past 90%)
@@ -959,28 +971,31 @@ def gpu_footprint(j: "Job", history: dict) -> tuple:
 
 AGG_GPU_GB = 3.0  # the aggregator's eval model + context, on the leg's last GPU (runner `_agg_gpu`)
 MIN_TRAINERS_PER_GPU = 5  # smaller shards fragment GPUs for little gain
+TRAINERS_PER_GPU = {"cifar10": 75, "google_speech": 25}  # FX-T36: an A40's trainer cap; a trainer holds 1/cap of a GPU
+TRAINER_GPU_GB_MIN = {"cifar10": 0.4, "google_speech": 0.8}  # exclusive-leg minima (0.31 GB is bare CUDA context)
 
 
 def _gpu_commits(gpus: List[int], leases: "Leases") -> Dict[int, list]:
-    """{gpu: [committed GB, committed SM %, {slot indices}]} over every pool's live `gslot_<g>_<i>` leases."""
-    load = {g: [0.0, 0.0, set()] for g in gpus}
+    """{gpu: [committed GB, SM %, {slot indices}, trainer share]} over every pool's live `gslot_<g>_<i>` leases."""
+    load = {g: [0.0, 0.0, set(), 0.0] for g in gpus}
     for name, txt in _lease_texts(leases.root, "gslot_*", leases.held).items():
         _, g, i = name.split("_")
         if int(g) in load:
             try:
-                gb, sm = map(float, txt.split(","))
+                gb, sm, share = (list(map(float, txt.split(","))) + [0.0])[:3]
             except ValueError:
-                gb, sm = GPU_MEM_CAP * GPU_GB, GPU_SM_CAP  # half-written: assume full
+                gb, sm, share = GPU_MEM_CAP * GPU_GB, GPU_SM_CAP, 1.0  # half-written: assume full
             load[int(g)][0] += gb
             load[int(g)][1] += sm
             load[int(g)][2].add(int(i))
+            load[int(g)][3] += share
     return load
 
 
 def place_trainers(n: int, per_trainer: tuple, gpus: List[int], leases: "Leases",
-                   used_gb: Dict[int, float]) -> Optional[List[tuple]]:
-    """FX-N100 2: spread a leg's n trainers over GPUs with room, [(gpu, trainers, slot lease, GB, SM)], aggregator GPU last.
-    Fills partly used GPUs first; all or nothing, so no leg ever holds part of its memory while waiting."""
+                   used_gb: Dict[int, float], cap: int = 75) -> Optional[List[tuple]]:
+    """FX-N100 2: spread a leg's n trainers over GPUs with room, [(gpu, trainers, slot lease, GB, SM, share)], aggregator GPU
+    last; at most `cap` trainers per GPU across legs (share k/cap, FX-T36). Fills partly used GPUs first; all or nothing."""
     gb_t, sm_t = per_trainer
     load = _gpu_commits(gpus, leases)
     excl = leases.foreign([f"gpu{g}" for g in gpus])
@@ -989,7 +1004,8 @@ def place_trainers(n: int, per_trainer: tuple, gpus: List[int], leases: "Leases"
         if f"gpu{g}" in excl or len(load[g][2]) >= GPU_SHARE:
             continue
         gb = min(GPU_MEM_CAP * GPU_GB - load[g][0], GPU_LIVE_CAP * GPU_GB - used_gb.get(g, 0.0))
-        fit = min(int(gb // max(gb_t, 1e-6)), int((GPU_SM_CAP - load[g][1]) // max(sm_t, 1e-6)) if sm_t > 0 else n)
+        fit = min(int(gb // max(gb_t, 1e-6)), int((GPU_SM_CAP - load[g][1]) // max(sm_t, 1e-6)) if sm_t > 0 else n,
+                  int((1.0 - load[g][3]) * cap + 1e-6))
         if fit >= min(n, MIN_TRAINERS_PER_GPU):
             room[g] = fit
     picked, left = [], n
@@ -1011,35 +1027,28 @@ def place_trainers(n: int, per_trainer: tuple, gpus: List[int], leases: "Leases"
     out = []
     for g, k in picked:
         slot = f"gslot_{g}_{min(set(range(GPU_SHARE)) - load[g][2])}"
-        out.append((g, k, slot, round(k * gb_t + (AGG_GPU_GB if g == agg else 0.0), 1), round(k * sm_t, 1)))
+        out.append((g, k, slot, round(k * gb_t + (AGG_GPU_GB if g == agg else 0.0), 1), round(k * sm_t, 1), round(k / cap, 3)))
     return out
 
 
 def per_trainer_footprint(j: "Job", history: dict) -> Optional[tuple]:
-    """(GB, SM %) per trainer: the measured per-GPU peak over its even split ceil(n/G); None if unmeasured."""
+    """(GB, SM %) per trainer: the measured per-GPU peak over its even split ceil(n/G), at least TRAINER_GPU_GB_MIN;
+    None if unmeasured."""
     if not history.get(gpu_key(j)):
         return None
     fp, per = gpu_footprint(j, history), -(-j.n // max(1, j.gpus))
-    return fp[0] / per, fp[1] / per
+    return max(fp[0] / per, TRAINER_GPU_GB_MIN.get(j.dataset, 0.4)), fp[1] / per
 
 
-def place_gpus(m: int, fp: tuple, gpus: List[int], leases: "Leases", used_gb: Dict[int, float]) -> Optional[List[tuple]]:
-    """FX-N100 2: [(gpu, slot lease)] on m GPUs whose live slot leases leave room for fp; least committed SM first."""
-    load = {g: [0.0, 0.0, set()] for g in gpus}
-    for name, txt in _lease_texts(leases.root, "gslot_*", leases.held).items():
-        _, g, i = name.split("_")
-        if int(g) in load:
-            try:
-                gb, sm = map(float, txt.split(","))
-            except ValueError:
-                gb, sm = GPU_MEM_CAP * GPU_GB, GPU_SM_CAP  # half-written: assume full
-            load[int(g)][0] += gb
-            load[int(g)][1] += sm
-            load[int(g)][2].add(int(i))
+def place_gpus(m: int, fp: tuple, gpus: List[int], leases: "Leases", used_gb: Dict[int, float],
+               share: float = 0.0) -> Optional[List[tuple]]:
+    """FX-N100 2: [(gpu, slot lease)] on m GPUs whose live slot leases leave room for fp and `share` of the trainer cap;
+    least committed SM first."""
+    load = _gpu_commits(gpus, leases)
     excl = leases.foreign([f"gpu{g}" for g in gpus])  # an exclusive pool's GPU
     ok = [g for g in gpus if f"gpu{g}" not in excl and len(load[g][2]) < GPU_SHARE
           and load[g][0] + fp[0] <= GPU_MEM_CAP * GPU_GB + 1e-6 and load[g][1] + fp[1] <= GPU_SM_CAP + 1e-6
-          and used_gb.get(g, 0.0) + fp[0] <= GPU_LIVE_CAP * GPU_GB]
+          and load[g][3] + share <= 1.0 + 1e-6 and used_gb.get(g, 0.0) + fp[0] <= GPU_LIVE_CAP * GPU_GB]
     if len(ok) < m:
         return None
     ok.sort(key=lambda g: (load[g][1], load[g][0], g))
@@ -1567,11 +1576,13 @@ class Pool:
                         fcntl.flock(lock, fcntl.LOCK_EX)
                         per = per_trainer_footprint(j, history)
                         used = {i: m / 1024 for i, _, m in _gpu_query()}
+                        cap, k_even = TRAINERS_PER_GPU.get(j.dataset, 75), -(-j.n // j.gpus)
                         if per is None:  # unmeasured: whole GPUs, even split
-                            placed = place_gpus(j.gpus, gpu_footprint(j, history), node_gpus, leases, used)
-                            plan = [(g, -(-j.n // j.gpus), sl, GPU_MEM_CAP * GPU_GB, GPU_SM_CAP) for g, sl in placed] if placed else None
+                            placed = place_gpus(j.gpus, gpu_footprint(j, history), node_gpus, leases, used, k_even / cap)
+                            plan = ([(g, k_even, sl, GPU_MEM_CAP * GPU_GB, GPU_SM_CAP, round(k_even / cap, 3)) for g, sl in placed]
+                                    if placed else None)
                         else:
-                            plan = place_trainers(j.n, per, node_gpus, leases, used)
+                            plan = place_trainers(j.n, per, node_gpus, leases, used, cap)
                         if plan is None:
                             lock.close()
                             cm.release(cpus, groups)
@@ -1586,8 +1597,8 @@ class Pool:
                         if lock:
                             lock.close()
                         continue
-                    for g, k, sl, gb, sm in (plan if share else []):
-                        leases.put(sl, f"{gb:.1f},{sm:.1f}")
+                    for g, k, sl, gb, sm, tshare in (plan if share else []):
+                        leases.put(sl, f"{gb:.1f},{sm:.1f},{tshare:.3f}")
                     if lock:
                         lock.close()
                     for g in ([] if share else gp):
@@ -1662,8 +1673,8 @@ class Pool:
                             history.setdefault(cores_key(r.job), []).append(round(p95, 2))
                         if ram_peak and r.job.mode != "grade":  # FX-D140: next estimate >= measured
                             history.setdefault(ram_key(r.job), []).append(round(ram_peak, 1))
-                        if r.gpus and r.gpu_sm:  # FX-N100: per-GPU footprint for GPU packing; 30 s pid samples miss a short peak
-                            per_gpu = r.gpu_peak_gb / len(r.gpus)
+                        if r.gpus and r.gpu_sm and not SHORT_LEGS:  # FX-N100: per-GPU footprint for GPU packing
+                            per_gpu = r.gpu_peak_gb / r.job.gpus  # per nominal GPU (the key's split), not per placed GPU
                             if not r.gslots:  # exclusive GPUs: the node log is this leg alone
                                 per_gpu = max(per_gpu, node_gpu_peak_gb(leg_run_dirs(r.out), r.gpus))
                             history.setdefault(gpu_key(r.job), []).append([round(per_gpu, 1), round(statistics.mean(r.gpu_sm), 1)])
@@ -1976,8 +1987,8 @@ def main(argv=None) -> int:
     ap.add_argument("--priority", type=int, default=-1, help="FX-N99: GPU priority among co-running pools (lower first)")
     ap.add_argument("--gpu-share", type=int, default=1, help="FX-N100: max legs per GPU, placed by measured footprint")
     a = ap.parse_args(argv)
-    global MEASURED, GPU_SHARE
-    MEASURED, GPU_SHARE = a.lease_from_telemetry, a.gpu_share
+    global MEASURED, GPU_SHARE, SHORT_LEGS
+    MEASURED, GPU_SHARE, SHORT_LEGS = a.lease_from_telemetry, a.gpu_share, bool(a.scale_smoke)
     set_gpu_allow(a.gpu_ids)
 
     real_changed = False
@@ -2011,8 +2022,7 @@ def main(argv=None) -> int:
             p.c = min(p.c, p.n) if p.c else p.c
             p.gpus = 1 if p.harness == "none" else p.gpus
     if a.scale_smoke:  # FX-D56: production density, short: the first dispatch wave is the memory peak
-        for p in phases:
-            p.runtime_s = min(p.runtime_s, a.scale_smoke)
+        cap_runtime(phases, a.scale_smoke)
     history = _load_history()
     jobs = build_jobs(phases, a.cpus_per_trainer, a.gpus_per_job, history, a.gpu_cpus_per_trainer)
     i, n = map(int, a.shard.split("/"))

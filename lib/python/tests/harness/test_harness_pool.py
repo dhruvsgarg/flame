@@ -473,6 +473,40 @@ def test_min_runtime_reaches_oort_k10_shapes():
     assert rt("cifar10", "oort")["T3_mobiperf_3sts_mobiperf_3st_oort_real"] == 3000
 
 
+def test_short_cap_keeps_unaware_oort_syn_50_full_length():
+    """PR36-short: --scale-smoke 240 gave unaware oort syn_50_3sts 1 round (EV1/K8); SHORT_KEEP legs keep full length."""
+    def rt(tier, ds, b):
+        phs = pool.tier_phases(tier, (b,), ds)
+        pool.cap_runtime(phs, 240)
+        return {j.jid: j.runtime_s for j in pool.build_jobs(phs, 1.0, 1, {}) if j.mode == "real"}
+    assert rt("T3", "cifar10", "oort")["T3_syn_50_3sts_syn_50_3st_oort_real"] == 1200
+    assert rt("T3", "cifar10", "oort_star")["T3_syn_50_3sts_syn_50_3st_oort_star_real"] == 240
+    assert rt("T3", "cifar10", "felix")["T3_syn_50_3st_felix_real"] == 240
+    assert rt("T3", "cifar10", "fedbuff")["T3_syn_50_3st_fedbuff_real"] == 240  # GPU-only keep
+    assert rt("G0U", "cifar10", "fedbuff")["G0U_syn_50_3st_fedbuff_real"] == pool.G0U_RUNTIME_S["cifar10"]
+    assert set(rt("G0T", "cifar10", "oort").values()) == {240, pool.G0U_RUNTIME_S["cifar10"]}
+
+
+def test_trainer_cap_per_gpu_spans_legs(tmp_path, monkeypatch):
+    """PR36-short OOM: 137 cifar trainers landed on one A40; FX-T36 caps trainers per GPU across every leg's lease."""
+    monkeypatch.setattr(pool, "GPU_SHARE", 4)
+    a, b = pool.Leases(tmp_path), pool.Leases(tmp_path)
+    a.put("gslot_0_0", "20.0,0.0,0.667")  # a 50-trainer cifar leg (50/75)
+    plan = pool.place_trainers(50, (0.4, 0.0), [0, 2], b, {}, cap=75)  # memory alone would fit 49 more on GPU 0
+    by_gpu = {g: k for g, k, *_ in plan}
+    assert by_gpu.get(0, 0) <= 25 and sum(by_gpu.values()) == 50
+    assert all(abs(sh - k / 75) < 1e-3 for _, k, _, _, _, sh in plan)
+    a.put("gslot_2_0", "20.0,0.0,1.0")
+    assert pool.place_gpus(1, (5.0, 0.0), [2], b, {}, share=0.2) is None  # a full trainer cap blocks whole-GPU legs too
+
+
+def test_per_trainer_footprint_floor_and_nominal_split():
+    """PR36-short: packed legs recorded per placed GPU (÷2-4); the per-trainer estimate never drops below the exclusive minimum."""
+    j = pool.Job("x_sim", "P", "syn_50_3st", "fedbuff", "sim", [], 50, 240, "none", 14, 1.0, 1)
+    assert pool.per_trainer_footprint(j, {pool.gpu_key(j): [[9.5, 0.0]]})[0] == pool.TRAINER_GPU_GB_MIN["cifar10"]
+    assert pool.per_trainer_footprint(j, {pool.gpu_key(j): [[25.0, 0.0]]})[0] == 0.5
+
+
 def test_gpu_equality_tiers_run_deterministic_kernels():
     """FX-D158: G0U/G0T pairs and their real controls run trainerDeterministic (PL15); G1 stays on default kernels."""
     for tier in ("G0U", "G0UC", "G0T", "G0TC"):
@@ -591,7 +625,7 @@ def test_trainers_fill_gaps_beside_other_legs(tmp_path, monkeypatch):
     plan = pool.place_trainers(50, (1.13, 0.0), [0, 2, 3], b, {})
     gpus = [g for g, *_ in plan]
     assert gpus[0] == 0 and sum(k for _, k, *_ in plan) == 50  # the partly used GPU is filled first
-    for g, k, _, gb, _ in plan:
+    for g, k, _, gb, *_ in plan:
         assert gb <= pool.GPU_MEM_CAP * pool.GPU_GB - (19.8 if g == 0 else 0.0) + 1e-6
     assert plan[-1][3] >= pool.AGG_GPU_GB  # the aggregator's GPU is last and carries its share
     assert pool.place_trainers(50, (1.13, 0.0), [0], b, {}) is None  # all or nothing: no partial reservation

@@ -27,6 +27,10 @@ NODES = {
         ("C1", "cpu", "--tier T3 --datasets all", {}, "core", "one code key: T3 syn_0/0b/20_3st/50_3st/mobiperf six x both green"),
         ("C2", "cpu2", "--tier T4 --datasets cifar10 --phases P7", {}, "core", "one code key: cifar P7 (stream_cpu) six green"),
         ("C3", "cpu", "--tier T3C --datasets all", {}, "core", "R7: a real replicate per T3 cell (floors on this code key)"),
+        ("C5", "cpu", "--tier T3 --datasets all --baselines oort --traces syn_50_3st", {}, "core",
+         "PR36-short rescreen: unaware oort T3 syn_50_3sts at full length (SHORT_KEEP; 240 s gave EV1)"),
+        ("S1S", "gpuA", "--tier G0T --datasets google_speech --traces syn_50_3st", {}, "core",
+         "PR36-short rescreen: speech G0T syn_50_3st (shepherd S1C/S1S0 run the rest of S1)"),
         ("C4", "cpu", "--tier T3C --datasets all --baselines oort,oort_star --traces syn_20_3st", {}, "core",
          "L13: third real for the T3 syn_20_3sts Oort draw cells (PR35: speech oort, cifar oort + oort_star)"),
     ]),
@@ -34,6 +38,8 @@ NODES = {
         ("S1", "gpuA", "--tier G0T --datasets all", {}, "core",
          "one code key: G0T lin/eve x syn_0/syn_50_3st six x both green (EV19 + INV/EXACT); jayne B3 runs speech G0TC"),
         ("S2", "gpuB", "--tier G0TC --datasets cifar10", {}, "core", "R7: a real replicate per cifar G0T cell"),
+        ("S1C", "gpuA", "--tier G0T --datasets cifar10", {}, "core", "PR36-short rescreen: cifar G0T"),
+        ("S1S0", "gpuB", "--tier G0T --datasets google_speech --traces syn_0", {}, "core", "PR36-short rescreen: speech G0T syn_0"),
     ]),
 }
 

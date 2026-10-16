@@ -3761,7 +3761,7 @@ def _overrun_stats(trainers: dict) -> tuple:
 
 
 def timing_overrun(real_trainers: dict, sim_trainers: dict,
-                   warn_frac: float = 0.05) -> dict:
+                   warn_frac: float = 0.05, max_frac: Optional[float] = None) -> dict:
     """Ovr [DIAG]: fraction of trainer rounds where the real GPU pass OVERRAN the
     modeled mobile-device delay budget.
 
@@ -3778,6 +3778,7 @@ def timing_overrun(real_trainers: dict, sim_trainers: dict,
     DIAG (never fails); reports per-mode overrun fraction + the earliest
     (data_id, iteration) an overrun occurs (cross-check against cohort_sequence
     first_divergence). SKIPs when `training_overran` is absent (delays disabled).
+    `max_frac` set (FX-N76, PL19): INV, fails when a side overruns more than max(1, max_frac x tasks).
     """
     rn, ro, rf = _overrun_stats(real_trainers)
     sn, so, sf = _overrun_stats(sim_trainers)
@@ -3799,9 +3800,12 @@ def timing_overrun(real_trainers: dict, sim_trainers: dict,
         verdict = (f"OVERRUN {worst:.1%} — GPU exceeds the modeled delay budget; "
                    "update order can flip → expect cohort_sequence/v2 breaks. "
                    "Raise delay_factor or lower perturbation_count (fluxtune).")
+    graded = max_frac is not None
+    ok = not graded or all(o <= max(1, int(max_frac * n)) for o, n in ((ro, rn), (so, sn)))
     return {
-        "ok": True,
-        "tier": "DIAG",
+        "ok": ok,
+        "tier": "INV" if graded else "DIAG",
+        "max_frac": max_frac,
         "real_overrun_frac": round(r_frac, 4),
         "sim_overrun_frac": round(s_frac, 4),
         "real_overran": ro, "real_rounds": rn,
@@ -7882,7 +7886,8 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
                    max_bin: Optional[int] = None,
                    floors: Optional[dict] = None,
                    same_mode: bool = False,
-                   floors_tighten: bool = True) -> dict:
+                   floors_tighten: bool = True,
+                   overrun_max_frac: Optional[float] = None) -> dict:
     """Run the full parity + invariant battery; returns {name: result_dict}.
 
     Ordered HIGH → MID → LOW so coarse failures surface first:
@@ -8098,7 +8103,10 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
     results["trainer_phase"] = trainer_phase_parity(real_trainers, sim_trainers)
     results["gpu_budget_real"] = gpu_budget_ok(real_trainers)
     results["gpu_budget_sim"] = gpu_budget_ok(sim_trainers)
-    results["timing_overrun"] = timing_overrun(real_trainers, sim_trainers)
+    results["timing_overrun"] = timing_overrun(real_trainers, sim_trainers, max_frac=overrun_max_frac)
+    if overrun_max_frac is not None and results.get("phase_gpu_compute", {}).get("status") != "SKIP":
+        # FX-N76: contended real compute is off the clock unless it overruns D (timing_overrun)
+        results["phase_gpu_compute"]["tier"] = "DIAG"
     results["stream_growth"] = stream_growth_parity(real_trainers, sim_trainers)
     results["sim_send_ts"] = sim_send_ts_ok(real_trainers, sim_trainers)
 
@@ -8295,7 +8303,7 @@ CHECK_META: dict = {
     "trainer_phase":           {"stage": 4, "role": "DIAG",     "deps": ()},
     "gpu_budget_real":         {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
     "gpu_budget_sim":          {"stage": 4, "role": "MECHANISM", "deps": ("training_budget",)},
-    "timing_overrun":          {"stage": 4, "role": "DIAG",     "deps": ("gpu_budget_real", "gpu_budget_sim")},
+    "timing_overrun":          {"stage": 4, "role": "MECHANISM", "deps": ("gpu_budget_real", "gpu_budget_sim")},
     "stream_growth":           {"stage": 7, "role": "DIAG",     "deps": ()},
     "sim_send_ts":             {"stage": 4, "role": "CONTROL",  "deps": ("vclock_telemetry",)},
     # ── Stage 5 Update return & ordering ──

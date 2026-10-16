@@ -106,8 +106,8 @@ def stage_jobs(args: str, short: int = 0):
     if a.traces:
         ph = [p for p in ph if p.trace in a.traces.split()]
     ph = [p for p in ph if p.baselines]
-    for p in ph if short else ():
-        p.runtime_s = min(p.runtime_s, short)
+    if short:
+        hp.cap_runtime(ph, short)
     jobs = hp.build_jobs(ph, 1.0, 8, hp._load_history(), 0.1)
     for j in jobs:
         j.gpus = min(j.gpus, NODE_GPUS)
