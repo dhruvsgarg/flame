@@ -7,7 +7,7 @@ Scoreboard (now, and expected after the next run) → Decisions → reference se
 **At a glance (10-17):** golden rule ROBUST R0 (short screens first). PR37 pass 1 (key `1e6004b6c305`) found no sim logic bug but every
 Felix claim failed (Scoreboard "Felix claims"); the **fix bundle** landed (Felix server lr 1.0 = FedBuff's, FX-D185; sync-sim abandon
 wake, FX-D182; real eval delay, FX-D183; pool RAM cap, FX-D179; U6 scale, FX-D184) and the **central dispatcher** (`dispatch.py`,
-FX-D186) now launches every long run; its live smoke ran on both nodes. Next: **PR38** = PR37 + G3C replicates on key `aa31087f51ad`,
+FX-D186) now launches every long run; its live smoke ran on both nodes. Next: **PR38** = PR37 + G3C replicates on key `44d44bd2d67b`,
 balanced over jayne GPUs 0,2-7 + shepherd GPUs 0-3 → FX-N108 gate.
 
 ## Next steps (persistent queue — top item is next)
