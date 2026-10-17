@@ -15,7 +15,9 @@ balanced over jayne GPUs 0,2-7 + shepherd GPUs 0-3 → FX-N108 gate.
 Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4/TS · GPU ≤ 30-min screens (G0U/G0T/G0UC) · long
 (G1*/G2). Unblock map: PR38 (one key: G3 pairs + G3C band) → Felix claims gate (FX-N108) + convergence board C/U → FX-N12.
 
-- **PR38 · PR37 on the fix-bundle key + G3C replicates, one dispatcher batch · wip: launching 10-17.** The bundle changes the key, so
+- **PR38 · PR37 on the fix-bundle key + G3C replicates, one dispatcher batch · wip: running since 10-17 04:57 (commit `2f8dca198`,
+  key `44d44bd2d67b`, tmux `dg_flame` window `pr38`, log `experiments/pr38_dispatch.out`; gates ok on both nodes 05:00; ETA ~01:30
+  10-18).** The bundle changes the key, so
   every PR37 G3 leg reruns (floors pair within one key, FX-D132): six × {syn_0, syn_50_3st, lin} × both datasets as real + sim pairs,
   plus one G3C real per syn_0 + lin cell (syn_50_3st takes its baseline's syn_0 band, FX-D181). 60 units, 141 leg-h.
   - *Launch (one command, one tmux window on jayne; the dispatcher drives shepherd over ssh):* tmux `dg_flame`, window `pr38`:
