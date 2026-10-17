@@ -73,7 +73,7 @@ A new failure mode adds a check here in the same session.
 | PL1 | full pytest green | ROBUST → Full pytest | R10 |
 | PL2 | gate: collect + smoke pair per dataset | automatic per pool | R19 |
 | PL3 | scale smoke: new GPU shapes at production n/c/GPUs, 5 min, co-located | `harness_pool.py --scale-smoke 300`; block phase 0 repeats | run 15 GPU OOM, host RAM OOM (FX-D56-59) |
-| PL4 | detached launch | `run_prNN.py` in tmux `dg_flame` (survives a lost terminal); stop: one Ctrl+C in its pane | lost terminal |
+| PL4 | detached launch through the dispatcher | `scripts/dispatch.py BATCH.yaml` in tmux `dg_flame` (both nodes, one Ctrl+C stops all; `--plan` first) | lost terminal; PR36/PR37 shepherd hand-offloaded twice |
 | PL5 | no code edits while a run is live, incl. this session's own smokes | T15; `pgrep -af 'debug_run|harness_pool'` empty before editing | half-edited selector ran; 10-14 `debug_run.sh` edited under a live G3 smoke |
 | PL6 | GPUs idle, ECC-clean, disk free | `nvidia-smi --query-gpu=index,memory.used,ecc.errors.uncorrected.volatile.total --format=csv`; `df -h` | S0 GPU 1 ECC |
 | PL7 | new knob reaches the trainer | dry-run + grep a short leg (L9) | FX-D32, FX-D72 |
@@ -93,6 +93,7 @@ A new failure mode adds a check here in the same session.
 | PL22 | the batch's packing is measured (C21): its last screen's `--util` names the binding resource, legs/h, overruns 0-2%, no slow legs; the plan uses `--gpu-share`/`--lease-from-telemetry` as measured | `resource_report.py <screen pools> --util` | first PR36: 3.3 legs at once, CPU 6%, GPU memory 39%, GPUs idle 25% for 14 h |
 | PL23 | packed GPU footprints are per nominal GPU, floored per trainer, and at most FX-T36 trainers share a GPU | `gpu|` history ≈ exclusive peaks (cifar n50 ~20 GB, speech ~40 GB/GPU); no `CUDA error: out of memory` in a smoke's trainers.log (FX-D175) | PR36-short: B1 + S1 OOM-aborted, 137 trainers on one A40 |
 | PL24 | a sim aggregator exits via `exit_after_run`, never native teardown | no `terminate called without an active exception` / `Fatal Python error` after `channel leave done` (FX-D178) | PR36-short B1: one exit segfault aborted 9 cells |
+| PL25 | no pool runs on a stale RAM cap | `BLOCKED … pool RAM budget` while node RAM < 70% used = start-time snapshot (FX-N102) | PR37 shepherd S1: 2 legs at a time for 20 h, RAM peak 329 of 504 GB |
 | PL21 | a new or changed prefix-safe EV passes on stored legs of all six × every trace before launch | run it over the last batch's legs (`event_invariants.load_run` + the check) | PR36: EV21 DOOMED 17 oort_star/fedbuff legs mid-batch |
 
 ## Throughput (both tracks; operator 10-15)
@@ -181,10 +182,8 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR37 + PR36 tail · one batch (operator 10-16; FELIX Next steps):** tail stages (B1/mobiperf cells, draw-cell replicates) first in
-  the PR37 queue on both nodes, then all six × syn_0 + syn_50_3st + stream_lin × both datasets, 2 h real + 2 h-vclock sim
-  (`run_pr37.py --node jayne|shepherd`, ~19.8 / 20.6 h); pass 2 = G3C replicate reals only after a clean pass 1 on the same key
-  (`--node jayne-rep|shepherd-rep`, ~8.2 h) → sim-only experiments. No full PR36 rerun.
+- **PR38 · PR37 + G3C replicates on the fix-bundle key (FELIX Next steps):** `dispatch.py batches/pr38.yaml` (both nodes, balanced) →
+  Felix claims gate (FX-N108) + convergence board C → sim-only experiments.
 - **Long blocks (G1U, G1AS grid) · deferred by C18** until PR37: FELIX FX-N93.
 
 **Operator decisions**

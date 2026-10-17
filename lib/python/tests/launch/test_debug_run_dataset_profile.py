@@ -36,15 +36,15 @@ def test_google_speech_profile(generator_source, tmp_path, monkeypatch, baseline
 
 @pytest.mark.parametrize("baseline", ["felix", "fedbuff"])
 def test_speech_async_server_lr_and_cifar_fedbuff_batch(generator_source, tmp_path, monkeypatch, baseline):
-    """FX-N74: speech felix/fedbuff run SGD 0.04 b16 x server lr 0.5 / 1.0; cifar fedbuff SGD 0.04 b32 x 1.0, cifar felix 0.3 (baseline_reference.yaml)."""
+    """FX-N74/FX-D185: felix and fedbuff run server lr 1.0 on both datasets; speech SGD 0.04 b16, cifar fedbuff SGD 0.04 b32."""
     e = _one(generator_source, tmp_path, monkeypatch, baseline, DATASET="google_speech")
-    assert e["aggregator"]["config_overrides"]["optimizer"]["kwargs"]["learning_rate"] == {"felix": 0.5, "fedbuff": 1.0}[baseline]
+    assert e["aggregator"]["config_overrides"]["optimizer"]["kwargs"]["learning_rate"] == 1.0
     hp = e["trainer"]["hyperparameters"]
     assert (hp["trainerOptimizer"], hp["learningRate"], hp["batchSize"]) == ("sgd", 0.04, 16)
     monkeypatch.delenv("DATASET", raising=False)
     c = _one(generator_source, tmp_path, monkeypatch, baseline)
     server_lr = c["aggregator"]["config_overrides"].get("optimizer", {}).get("kwargs", {}).get("learning_rate")
-    assert server_lr == {"felix": 0.3, "fedbuff": 1.0}[baseline]
+    assert server_lr == 1.0  # FX-D185: felix = fedbuff
     if baseline == "fedbuff":
         assert (c["trainer"]["hyperparameters"]["learningRate"], c["trainer"]["hyperparameters"]["batchSize"]) == (0.04, 32)
 

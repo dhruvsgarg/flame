@@ -418,6 +418,17 @@ def test_real_recv_deadline_is_latest_trainer_timeout():
     assert h._real_round_recv_deadline(ch, ["a", "b"]) == 1000.0 + 100
 
 
+def test_starved_sync_sim_wakes_at_the_pick_timeout_before_the_flip():
+    # FX-D182: pick sent at 250, timeout 340 < next flip 400: the starved sim wakes at 340 (+eps), not at the flip
+    h, sel, ch = _setup_abandon(_OortSelector, inflight_tracker=False)
+    h.trainer_event_dict, h._now = {"t1": _LATE_DOWN}, 300
+    ch.set_end_property("t1", PROP_SIM_SEND_TS, 250.0)
+    assert 340.0 < h._sim_starvation_wake(ch) < 341.0
+    import types
+    h.config = types.SimpleNamespace(hyperparameters=types.SimpleNamespace(sim_abandon_wakes=False))
+    assert h._sim_starvation_wake(ch) == h._next_avail_vclock()
+
+
 def test_abandon_does_not_fire_under_90s():
     h, sel, ch = _setup_abandon(_OortSelector, inflight_tracker=False)
     ch.set_end_property("t1", PROP_SIM_SEND_TS, 300 - 50)   # age 50 <= 90

@@ -7,6 +7,8 @@ Gate (operator 10-16): PR36 tail stages (T*) run first in the same queue. Decisi
   run_pr37.py --node jayne --plan        # pass 1, GPUs 0,2-7: PR36 tail TMP/TB1/TC5, speech G3 (not feddance)
   run_pr37.py --node shepherd --plan     # pass 1, GPUs 0-3: PR36 tail TDU/TDT, cifar G3, speech G3 feddance
   run_pr37.py --node jayne-rep|shepherd-rep    # pass 2 (G3C replicate reals) after a clean pass 1, same code key
+  run_pr37.py --node jayne-s1b            # offload 2: cifar G3 felix syn_0
+  run_pr37.py --node jayne-s1             # offload: cifar G3 syn_50_3st felix/fedbuff/feddance/refl (S1 tail)
   run_pr37.py --node <n> [--hours 30] [--only A1]
 Same runner as run_pr28.py. Score with readiness_score.py / accuracy_table.py on this batch's pools (copy shepherd's to jayne).
 """
@@ -38,6 +40,16 @@ NODES = {  # pass 1: tail + one real + one sim per cell (operator 10-16)
     "shepherd": ("0,1,2,3", 4, TAIL_S + [
         ("S1", "gpuA", "--tier G3 --datasets cifar10", LEAN, "core", f"cifar G3 six x {{syn_0, syn_50_3st, lin}}: {G3_CLAIM}"),
         ("S2", "gpuB", "--tier G3 --datasets google_speech --baselines feddance", LEAN, "core", f"speech G3 feddance (rest on jayne A1): {G3_CLAIM}"),
+    ]),
+    # offload (operator 10-16): shepherd S1 runs the other cells first (units sort cell, baseline); jayne takes the syn_50_3st tail
+    "jayne-s1": ("0,2,3,4,5,6,7", 7, [
+        ("S1J", "gpuA", "--tier G3 --datasets cifar10 --baselines felix,fedbuff,feddance,refl --traces syn_50_3st", LEAN, "core",
+         f"cifar G3 syn_50_3st felix/fedbuff/feddance/refl (S1's tail, moved from shepherd): {G3_CLAIM}"),
+    ]),
+    # offload 2 (operator 10-16): shepherd's last unstarted real (cifar felix syn_0) moves to idle jayne
+    "jayne-s1b": ("0,2,3,4,5,6,7", 7, [
+        ("S1K", "gpuA", "--tier G3 --datasets cifar10 --baselines felix --phases G3_syn_0", LEAN, "core",
+         f"cifar G3 felix syn_0 (S1's last real, moved from shepherd): {G3_CLAIM}"),
     ]),
     # pass 2, only after pass 1 is clean on an unchanged code key: the real replicate (G3C) per syn_0 + lin cell (band)
     "jayne-rep": ("0,2,3,4,5,6,7", 7, [

@@ -1219,7 +1219,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
         if num_eligible < _threshold:
             if self.simulated and self.trainer_event_dict is not None:
-                _nxt = self._next_avail_vclock()
+                _nxt = self._sim_starvation_wake(channel)  # FX-D182
                 _budget = float(
                     getattr(self.config.hyperparameters, "max_experiment_runtime_s", float("inf"))
                 )

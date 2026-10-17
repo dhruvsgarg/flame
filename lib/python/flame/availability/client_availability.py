@@ -1028,6 +1028,16 @@ class ClientAvailability:
         due = [sst + to for _, sst, _ in self._abandon_candidates(channel) if sst + to > now]
         return min(due) if due else None
 
+    def _sim_starvation_wake(self, channel) -> Optional[float]:
+        """FX-D182: a starved sync sim jumps to the next flip or pick timeout, whichever is first (real's timer fires at 90 s)."""
+        nxt = self._next_avail_vclock()
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        if str(getattr(hp, "sim_abandon_wakes", True)).lower() != "true":
+            return nxt
+        ab = self._next_abandon_ts(channel)
+        ab = None if ab is None else ab + 1e-6  # an abandon needs age > timeout
+        return ab if nxt is None else (nxt if ab is None else min(nxt, ab))
+
     def _abandon_stalled(self, channel) -> None:
         """C.3: free in-flight slots stalled past 90s since dispatch (vclock in sim, wall in real).
 

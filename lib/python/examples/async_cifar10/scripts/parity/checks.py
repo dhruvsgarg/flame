@@ -1983,6 +1983,9 @@ def commit_visibility_parity(real: dict, sim: dict, warn_ks: float = 0.2,
     # 100s of ms — judge those on mean_diff, not the degenerate-KS artifact.
     pointmass = (not math.isnan(rm) and not math.isnan(sm)
                  and abs(rm) <= NEAR_ZERO_LAG_S and abs(sm) <= NEAR_ZERO_LAG_S)
+    # FX-D184: lags scale with device time; the 2 s tolerance is calibrated at the 90 s (cifar) task timeout
+    scale = max(1.0, max(real.get("task_timeout_s", 90.0), sim.get("task_timeout_s", 90.0)) / 90.0)
+    warn_mean_diff *= scale
     if pointmass:
         ok = True
     elif not math.isnan(ks):
@@ -1998,6 +2001,7 @@ def commit_visibility_parity(real: dict, sim: dict, warn_ks: float = 0.2,
         "sim_p90": round(percentile(sv, 90), 3),
         "ks_stat": round(ks, 3) if not math.isnan(ks) else None,
         "mean_diff": round(mean_diff, 3) if not math.isnan(mean_diff) else None,
+        "mean_tol": round(warn_mean_diff, 3),
     }
     if pointmass:
         out["note"] = ("both modes commit immediately (mean lag <= {:.0f}ms): "
