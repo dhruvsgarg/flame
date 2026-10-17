@@ -7,25 +7,35 @@ Scoreboard (now, and expected after the next run) → Decisions → reference se
 **At a glance (10-17):** golden rule ROBUST R0 (short screens first). PR37 pass 1 (key `1e6004b6c305`) found no sim logic bug but every
 Felix claim failed (Scoreboard "Felix claims"); the **fix bundle** landed (Felix server lr 1.0 = FedBuff's, FX-D185; sync-sim abandon
 wake, FX-D182; real eval delay, FX-D183; pool RAM cap, FX-D179; U6 scale, FX-D184) and the **central dispatcher** (`dispatch.py`,
-FX-D186) now launches every long run. Next: **PR38** = PR37 + G3C replicates on the new key, balanced over both nodes → FX-N108 gate.
+FX-D186) now launches every long run; its live smoke ran on both nodes. Next: **PR38** = PR37 + G3C replicates on key `aa31087f51ad`,
+balanced over jayne GPUs 0,2-7 + shepherd GPUs 0-3 → FX-N108 gate.
 
 ## Next steps (persistent queue — top item is next)
 
 Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4/TS · GPU ≤ 30-min screens (G0U/G0T/G0UC) · long
 (G1*/G2). Unblock map: PR38 (one key: G3 pairs + G3C band) → Felix claims gate (FX-N108) + convergence board C/U → FX-N12.
 
-- **PR38 · PR37 on the fix-bundle key + G3C replicates, one dispatcher batch · todo.** The bundle changes the key, so every PR37 G3 leg
-  reruns (floors pair within one key, FX-D132): six × {syn_0, syn_50_3st, lin} × both datasets as real + sim pairs, plus one G3C real
-  per syn_0 + lin cell (syn_50_3st takes its baseline's syn_0 band, FX-D181).
-  - *Launch (operator, tmux `dg_flame`, both nodes at the same commit, PL18):* `cd /home/dgarg39/flame/lib/python/examples &&
-    /coc/scratch/dgarg/miniconda3/envs/dg_flame/bin/python scripts/dispatch.py batches/pr38.yaml` (`--plan` first prints the split and
-    each node's predicted finish). One Ctrl+C stops both nodes.
+- **PR38 · PR37 on the fix-bundle key + G3C replicates, one dispatcher batch · wip: launching 10-17.** The bundle changes the key, so
+  every PR37 G3 leg reruns (floors pair within one key, FX-D132): six × {syn_0, syn_50_3st, lin} × both datasets as real + sim pairs,
+  plus one G3C real per syn_0 + lin cell (syn_50_3st takes its baseline's syn_0 band, FX-D181). 60 units, 141 leg-h.
+  - *Launch (one command, one tmux window on jayne; the dispatcher drives shepherd over ssh):* tmux `dg_flame`, window `pr38`:
+    `cd /home/dgarg39/flame/lib/python/examples && /coc/scratch/dgarg/miniconda3/envs/dg_flame/bin/python scripts/dispatch.py
+    batches/pr38.yaml`. Writes `experiments/dispatch_pr38_<ts>/DISPATCH.log`; pools `experiments/pool_<ts>_PR38_{JAYNE,SHEPHERD}_{A,B,RA,RB}`
+    on their nodes. Stop: one Ctrl+C in that window (ABORT to every pool, both nodes).
+  - *Plan (`--plan`, 10-17, commit-time history):* jayne (7 GPUs, 120 CPUs, 475 GB) 38 units, finish ~20.2 h; shepherd (4 GPUs) 22
+    units, ~19.2 h. Binding: host RAM (a G3 real reserves ~90 GB, its sim ~70 GB until it ends). Units are released ≤ 30 min ahead of
+    their planned start, so the split adapts if one node runs slow.
+  - *Watch:* `STATUS <node>` every 5 min (legs running / done, predicted finish), `!!`/`!` health lines (aborted pool, STALLED / DOOMED
+    leg, leg > 1.25 × estimate, host RAM < 10% free, foreign process on a batch GPU). Shepherd GPUs 4-7 run another user's jobs
+    (pbehnam3, 21 GB each): not ours, ignored.
   - *Claims:* (a) every G3 cell's sim inside its real↔real band (C criteria); (b) FX-N103 classified by 4 reals of the oort ≡ oort_star
     lin process; (c) Felix claims C1-C4 (`felix_claims.py`), now that Felix and FedBuff share the server lr.
   - *Decision:* (a) + (b) green ⇒ parity side of FX-N12 done; (c) red ⇒ FX-N108 (Felix design), not a parity root.
   - *Analysis:* the dispatcher copies shepherd's pools + run dirs here; then `parity_ladder.py --grade <pool> --regrade --max-stage 9` per
     pool, `readiness_score.py`, `felix_claims.py <pools>`, `accuracy_table.py`, `resource_report.py --util` per node, and the
     Scoreboard's dynamics / comm tables.
+  - *Known short-leg artifact (not a root):* Felix speech S3/4 `num_chosen` totals 77 vs 84 on 240 s legs (sim vclock 267 s vs real
+    237 s at equal rounds; packing screen and dispatcher smoke alike); the 2 h PR37 Felix speech cells were green.
 - **FX-N103 · Cifar Oort-family pacer under linear streaming · wip (draw class pending PR38).** G3 lin oort / oort_star red on
   S1/S8 + A2c/T2/P3: real 551 / 568 versions, sim 665 / 383. Root: Oort's pacer relaxes `round_threshold` only when the 20-round utility
   sum changes ≤ 10%; FedScale utility ∝ visible |D|, which grows with the stream, so window ratios sit at 0.05-0.5 (syn_0: < 0.1 → all
@@ -1043,6 +1053,9 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   start and the plan is redone each minute from every pool's `status.json`, so a slow node gets fewer remaining units. Health per 5 min:
   aborted / STALLED / DOOMED, legs > 1.25 × estimate, foreign GPU processes, host RAM < 10% free. Ctrl+C sends ABORT to every pool; at
   the end remote pools + run dirs are copied here. Preflight refuses differing commit / code key (PL18). `tests/harness/test_dispatch.py`.
+  Smoke 10-17 (`dispatch_dsmoke`, 8 G3 pairs at `--scale-smoke 240`, both nodes): pools launched remotely, units released per plan,
+  11 legs rc 0, 4 pairs graded (EV PASS), no OOM / RAM / overrun flag; the 15-min cap exercised Ctrl+C (ABORT, clean teardown on both);
+  `collect()` copied shepherd's pools + run dirs.
 - **FX-D185** Felix server lr 1.0 on both datasets = FedBuff's (FX-D73 / FX-N74; was the 2024 0.3 / 0.5): Felix and FedBuff now differ
   only in Felix's selection, its staleness+utility rate and FedBuff's last-batch lr normalization (evidence in
   `baseline_reference.yaml`).

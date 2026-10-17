@@ -276,11 +276,17 @@ class Dispatcher:
             mt = st.get("mem_total_gb") or 0
             if mt and st.get("mem_available_gb", mt) < 0.1 * mt:
                 warn.append(f"!  {n}: host RAM {st['mem_available_gb']:.0f} of {mt:.0f} GB free")
-        for n in self.nodes:  # foreign GPU processes (PL16): any compute app not owned by us
-            r = sh(n, "for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader); do ps -o user= -p $p; done | sort | uniq -c")
-            foreign = [l for l in r.stdout.splitlines() if l.split()[-1] != "dgarg39"]
+        for n in self.nodes:  # foreign GPU processes on this batch's GPUs (PL16); other GPUs of the node are not ours
+            r = sh(n, "nvidia-smi --query-gpu=index,uuid --format=csv,noheader; echo ==; "
+                      "nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader | while IFS=', ' read u p; do "
+                      "echo \"$u $(ps -o user= -p $p)\"; done")
+            head, _, apps = r.stdout.partition("==")
+            idx = {u.strip(): i.strip() for i, u in (l.split(",") for l in head.split("\n") if "," in l)}
+            ours = set(NODES[n]["gpus"].split(","))
+            foreign = sorted({f"GPU {idx.get(u)} {who}" for u, who in (l.split()[:2] for l in apps.split("\n") if len(l.split()) >= 2)
+                              if idx.get(u) in ours and who != "dgarg39"})
             if foreign:
-                warn.append(f"!  {n}: foreign GPU processes {foreign}")
+                warn.append(f"!  {n}: foreign GPU processes on batch GPUs {foreign}")
         return warn
 
     def board(self, spans) -> None:
