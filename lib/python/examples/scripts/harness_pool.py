@@ -1144,12 +1144,17 @@ def gpu_key(j: "Job") -> str:
     return f"gpu|{j.dataset}|{j.harness}|{j.baseline}|n{j.n}|g{j.gpus}"
 
 
+GRADE_RAM_GB = 8.0  # parity_check + event checker on two legs' telemetry
+
+
 def ram_key(j: "Job") -> str:
     return "ram|" + j.key
 
 
 def mem_estimate_gb(j: "Job", history: dict) -> float:
     """FX-D140: the formula, raised to the measured peak of this leg kind's last runs (never lowered)."""
+    if j.mode == "grade":  # FX-D187: a checker, not a leg; MEASURED peers below gave it the leg's 90 GB
+        return GRADE_RAM_GB
     past = history.get(ram_key(j), [])
     if MEASURED:  # FX-N100: the measured peak sizes the reservation both ways; a short sim's 30 s samples miss peaks
         peers = [max(v[-3:]) for k, v in history.items() if k.startswith(f"ram|{j.dataset}|{j.harness}|")
