@@ -13,8 +13,8 @@ accuracy in the expected time window (tracked per track: FELIX Scoreboard). Equa
 - [PARITY_READINESS.md](PARITY_READINESS.md) — real↔sim parity for both tracks: climbing rules (C1-C9: correct before
   equal, instrument what you can't see, launch only when fixes are maximized), method, tools, per-track scoreboard.
 - [FLUXTUNE_READINESS.md](FLUXTUNE_READINESS.md) — FluxTune: perturbation / forward-gradient fine-tuning
-  (fwdllm). **PARKED** until Felix readiness is stable across unavailability on both async_cifar10 and
-  google_speech (FX-N9, FX-N11); shared changes must still keep it green (R10).
+  (fwdllm). **Paper runs unparked (operator 10-17)** per RUN_PLAN.md; the rest stays parked behind Felix
+  (FX-N9, FX-N11); shared changes must still keep it green (R10).
   - [EXPERIMENTS.md](../paper_expts_fluxtune/EXPERIMENTS.md) — FluxTune's companion: the paper evaluation plan and run queue.
 
 **Every older doc is DEPRECATED** (PARITY.md, UNAVAILABILITY_DESIGN.md, simulate_fwdllm.md, FWDLLM_DESIGN.md,
