@@ -58,6 +58,8 @@
 - **C21 Measured packing before any batch config (operator 10-15).** A batch (PR36, PR37, any FluxTune block) is configured only after
   a 5-10 min screen at production density shows its packing on measured CPU, RAM, GPU memory and GPU SM use, not formula estimates
   or lease counts. Name the binding resource and the number that binds it, and record both here and in the track doc.
+- **C23 A band is the cell's own (10-18):** a sim graded against a borrowed band (another trace's, another key's reals) is a
+  provisional verdict; chaotic cells (unavailability, streaming Oort) get their own ≥ 3 reals before a red names a mechanism (FX-L80).
 - **C22 Maximum signal per unit time (operator 10-15).** Time is the scarcest resource and nodes are shared.
   - Find issues with the shortest run that shows them; long runs only confirm a config already shown correct (C15, C18).
   - Run as many legs at once as measured resources allow without interference (Throughput below); a stalled or idle resource is
@@ -182,11 +184,11 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR38 · PR37 + G3C replicates on the fix-bundle key (FELIX Next steps):** `dispatch.py batches/pr38.yaml` (both nodes, balanced) →
-  Felix claims gate (FX-N108) + convergence board C → sim-only experiments.
+- **PR39 · FX-N103 confirm + ≥ 3-real bands for the thin cifar Oort cells (FELIX Next steps):** one `dispatch.py` batch after the
+  FX-N103 fix → 76 / 76 → Felix claims gate (FX-N108) → sim-only experiments.
 - **Long blocks (G1U, G1AS grid) · deferred by C18** until PR37: FELIX FX-N93.
 
-**Operator decisions**
+**Operator decisions** (Felix-specific ones: FELIX Decisions)
 - Claude runs PL3 and launches blocks in tmux `dg_flame`; phase 0 aborts on failure (10-06).
 - Cifar GPU legs at 0.2 CPU/trainer; a run's second block auto-starts (10-05).
 - Fix the real aggregator, not the wire format; speech device time ×5 (10-04).
@@ -204,10 +206,6 @@ Parked with the track; board in simulate_fwdllm.md §A.
 - Trainer memory audit to raise n (FX-N84) (10-08).
 - One code state = one `code_key` over run-affecting files (FX-D162); a re-screen may span batches on it (PR35 + PR36) (10-14).
 - Skip PR35b; FX-N97/N96/N98 before PR36; ≤ 1-2% overruns; PR37 (all six, 3 h) gates sim-only experiments (10-14).
-- 2-state syn traces deleted; 3-state `syn_*_3st` everywhere (10-14, FX-D166).
-- Sim speed: never slower than real; 1-2× needs review; 2-5× and beyond is the target; always look for more speedup (10-14).
-- Batches span jayne GPUs 0,2-7 + shepherd GPUs 0-3; scale n/c/K at fixed ratios to run more legs in parallel (10-14).
-- Speech trains in bf16 (FX-D168); GPU placement balanced by default (FX-D169); PR37 shape G3 (10-14 late).
 - Throughput is the central goal; batch configs only after measured packing (C21, C22); no long run at low utilization (10-15).
 - No full PR36 rerun: its untested cells and draw floors run as a tail inside PR37; the board mixes code keys; PR37 replicate reals run as a second pass after a clean first pass (10-16).
 

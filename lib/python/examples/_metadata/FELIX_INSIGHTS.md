@@ -125,5 +125,23 @@ reconstruction (§4 #4).
 - **Telemetry smoke (§4, 10-12, stub, cifar):** real↔sim agree on every logical metric: felix mobiperf T3 choice ratio 5.75 vs 5.73, explore
   share 0.42% vs 0.42%, waste 0.8% vs 0.6%; refl mobiperf T3 waste 0.4% vs 0.8%, 4.31 vs 4.34 MB per aggregated update
   (`pool_20261012_183234_T3`). Felix chose 0 eval tasks on these ≤ 6-min legs (gate g = 35), as §1 predicts.
-- **FedDance coverage (I-A2):** ≈ a third of cifar devices zeroed within 2 h; 91 of 300 ever contribute on mobiperf (FX-N90, FELIX
-  "FedDance in the paper").
+- **FedDance coverage (I-A2; paper eval text, evidence `fd_20261012_0503` telemetry, FX-N90):** FedDance climbs fast, then plateaus below 70% on
+both datasets. Its utility favours fast, high-loss devices, so early rounds are short (12 s vs 15.5 s for random selection on CIFAR-10)
+and accuracy rises steeply (≈40% within 2 h). But FedDance gives a selected device whose update was dropped as a straggler zero
+statistical utility (Alg. 1, l. 3), and over-commit (13 picks for 10 updates) drops three devices every round. Within two hours a third
+of the CIFAR-10 population (99-105 of 300) is zeroed and never contributes again; under MobiPerf, where few devices are online at once,
+only 91 of 300 ever contribute and 20% of devices supply 96% of updates. With non-IID data (Dirichlet α = 0.1) the excluded devices'
+classes never reach the model: CIFAR-10 plateaus at 64-65% on the synthetic traces and 49% on MobiPerf; Speech Commands shows the same
+skew (55 of 100 devices ever contribute, 20% supply 84% of updates) and reaches 68.9% after 20 h. Extrapolated, FedDance needs > 48 h
+to 70% everywhere except CIFAR-10 syn_50 (39 h).
+- **What moves accuracy and time to accuracy (G3, n:c:K 75:15:10 cifar / 50:15:10 speech, 2 h; real legs, sims agree; PR37 + PR38):**
+  - *Unavailability (syn_50_3st vs syn_0) hurts by awareness and task length.* Aware selectors keep their pace (Felix +4-7% versions);
+    unaware ones lose rounds to abandons and gated uploads: cifar oort −44% versions, fedbuff −13% (staleness 1.4 → 4.4). Speech is far
+    harsher (tasks ~5× longer vs the same 1 min-3 h windows): fedbuff −59% versions, oort −85% (FX-N106).
+  - *Dataset.* Speech gives ~5× fewer versions in 2 h (felix 1031 vs 220) but more accuracy per version; the sync four are round-bound
+    on speech (≤ 23% at 97-121 versions) while cifar Oort reaches ~50%.
+  - *Streaming (lin, data 10% → 100% over 2 h) costs accuracy, not versions,* for multi-step learners (cifar −3 to −8 pp max, speech
+    −6 to −11 pp); 1-mini-batch REFL / FedDance barely change (they never use the full shard).
+  - *Server lr (FX-D185).* Felix at 0.3 (PR37) reached 48.9% cifar in 2 h; at FedBuff's 1.0 (PR38) 53.8% and 50% at 63 min vs FedBuff 107.
+  - *Selection concentration.* Felix's top 20% of clients supply 57% of cifar updates (FedBuff 23%, Oort family 59-69%, FedDance 63-69%);
+    unavailability spreads Felix's picks (43%).

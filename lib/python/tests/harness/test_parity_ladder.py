@@ -148,6 +148,25 @@ def test_g3c_replicate_floors_its_g3_cell_and_syn_50(tmp_path, monkeypatch):
     assert lad._replicate_cells(exp / "pool_A")[("G3_lin_syn_0", "oort")][2][0][0] == Path("r_G3C_lin_syn_0")
 
 
+def test_syn_50_band_from_a_sibling_pools_syn_0_cell(tmp_path, monkeypatch):
+    # PR38: the syn_0 cell + G3C ran on shepherd, syn_50_3st on jayne; jayne's syn_50_3st still takes the syn_0 band.
+    exp = tmp_path / "experiments"
+    for pool in ("pool_J", "pool_S", "pool_SR"):
+        (exp / pool).mkdir(parents=True)
+        (exp / pool / "code_key.txt").write_text("k1")
+    (exp / "pool_SR" / "G3C_syn_0").mkdir()
+    (exp / "pool_SR" / "G3C_syn_0" / "summary.tsv").write_text("trace\tbaseline\treal_dir\nsyn_0\toort\tr2\n")
+    for pool, ph in (("pool_S", "G3_syn_0"), ("pool_J", "G3_syn_50_3st")):
+        g = exp / pool / ph / f"{ph}_oort_grade"
+        g.mkdir(parents=True)
+        (g / "cmd.txt").write_text(f"x --real-dir own_{ph} --sim-dir s --agg-goal 10 --runtime-s 7200")
+
+    def run(cmd, **_):
+        Path(cmd[cmd.index("--json-out") + 1]).write_text(json.dumps({"terminal_state": {"trainers_rel_diff": 0.04}}))
+    monkeypatch.setattr(lad.subprocess, "run", run)
+    assert ("G3_syn_50_3st", "oort") in lad._control_floors(exp / "pool_J", Path("checker"), 2)
+
+
 def test_minority_of_reals_is_the_draw(tmp_path):
     # L13, PR34 speech feddance eve: sim red vs its own real only (1 of 3 reals) is the draw; vs a majority, the code.
     red = {"terminal_state": {"ok": False, "tier": "EXACT"}}

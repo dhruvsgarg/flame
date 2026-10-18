@@ -8225,8 +8225,15 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         _res["floor_gated_tol"] = {m: round(e, 4) for m, _f, _n, e in _measured}
         _res["nominal_tol"] = {m: n for m, _f, n, _e in _measured}
         if _ungradeable[_rung]:
-            _res.update({"ok": True, "status": "SKIP",
-                         "reason": _ungradeable[_rung]})
+            # FX-D188: past K x its floor a gap is signal, not noise.
+            _floor = {m: f for m, f, _n, _e in _measured}
+            _beyond = {m: round(abs(v), 4) for r, fld, m in _CONTROL_GAPS if r == _rung and m in _floor
+                       for v in [_res.get(fld)] if isinstance(v, (int, float)) and abs(v) > _FLOOR_TOL_K * _floor[m]}
+            if _beyond:
+                _res.update({"ok": False, "beyond_floor": _beyond})
+            else:
+                _res.update({"ok": True, "status": "SKIP",
+                             "reason": _ungradeable[_rung]})
 
     # Stamp WHERE each verdict's threshold came from. A fail on a CALIBRATED rung
     # with no measured floor is not the same evidence as one on a floor-gated

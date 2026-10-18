@@ -149,8 +149,8 @@ def _replicate_cells(root: Path) -> dict:
         target = f"{pre}{tag[:-2]}_{trace}"
         for r in csv.DictReader(open(f), delimiter="\t"):
             b = r["baseline"]
-            cmd = next((c for g in (f"{target}_{b}", f"{target}_{r['trace']}_{b}")  # Oort-family *s shapes name legs by trace too
-                        for c in root.glob(f"{target}/{g}_grade/cmd.txt")), None)  # the regraded pool's own real
+            cmd = next((c for p in (root, *same) for g in (f"{target}_{b}", f"{target}_{r['trace']}_{b}")  # Oort *s shapes: by trace
+                        for c in p.glob(f"{target}/{g}_grade/cmd.txt")), None)  # own pool first, then a sibling (FX-D181)
             own = re.search(r"--real-dir (\S+)", cmd.read_text()) if cmd else None
             if own and r.get("real_dir"):
                 cells.setdefault((target, b), (Path(own[1]), cmd, []))[2].append((Path(r["real_dir"]), f.parent))
