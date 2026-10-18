@@ -74,6 +74,11 @@ Each item: action · exit · state. [B] adds no runs: it reads the [A] runs.
   arm peaked at Φ 2.68, then dipped). **Decided 10-17:** the baseline FluxTune tries landing's exponential decay without
   its budget: ρ_t = ρ0·exp(−(t−1)/(2·T_res)), T_res 300 (`--rho-schedule exp`, ρ0 from the `pool` formula).
   - [x] `--rho-schedule exp` in `_rho_star_now` (code done, untested: smoke it). `phi` (ρ0/Φ) is not built; it is an optional C3 arm.
+  - [ ] **Open: keep T_res?** With no budget (B_max) behind it, T_res is a hand-tuned decay constant, not derived; it sets
+    Φ_final = exp(ρ0²·T_res/2), which differs per model (ρ0 0.050/0.037/0.038). Finalise before the recipe is frozen: (a) keep 300 and
+    sweep it in C3, (b) set a target Φ_final and derive T_res = 2·ln Φ_final/ρ0², or (c) drop it for `phi` (ρ0/Φ, unbuilt).
+  - [ ] **Smoke `exp`** (before P0): short run (~20 commits, `--rho-schedule exp --t-res 300`); check `_last_rho` follows
+    ρ0·exp(−(t−1)/600) and logged Φ matches Π√(1+ρ²).
   - [ ] Fix the stall-rule streak reset (one noisy eval zeroes it); add a commit cap.
   - [ ] A/B on `distilbert_agnews`: §2 recipe (`exp`, ρ0 0.067, N 90) vs the same with `pool`, cap ~1,000
     commits, 1 seed; the `exp` arm runs 4 h uncapped (FT-N4 exit); compare TTA at 0.80/0.86/0.87, peak accuracy, Φ at peak. `exp` is the recipe; `pool` is a
@@ -294,4 +299,4 @@ FluxTune is the §2 recipe (simplified + exponential ρ decline + GL; grad-aware
 Decided 2026-10-17: targets 0.86 / 0.82 / 0.65; n 100 / 100 / 75; pool N rule and eval sampling in RUN_PLAN §2;
 12 h wall cap on RoBERTa and 1.7B; 1 seed per arm; no SmolLM2-360M runs; C4 traces `syn_0` + `mobiperf_3st_50`.
 Decided 2026-10-17 (later): pool N 90 / 100 / 70; DistilBERT eval = full test set, stride 4. Eval sample size and stride for Yelp-P and Yahoo stay open (RUN_PLAN §2).
-Decided 2026-10-17 (latest): ρ = exponential decay (`exp`, T_res 300) in the baseline; N final, N-check run dropped. Open, closed by gating runs: grad-aware (G1), batch size (P0b bs).
+Decided 2026-10-17 (latest): ρ = exponential decay (`exp`, T_res 300) in the baseline; N final, N-check run dropped. Open, closed by gating runs: grad-aware (G1), batch size (P0b bs). Also open: whether T_res stays (hand-tuned, no budget behind it) or becomes a target Φ_final / `phi`.

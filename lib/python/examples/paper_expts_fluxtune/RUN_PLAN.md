@@ -71,7 +71,7 @@ Stride 4 meets ⌈t_eval / s_commit⌉ + 1 at the sizes above. Every arm in a ce
 | ID | Model · Dataset | Arms / parameters | Runs | Time per run | Status | Feeds |
 |---|---|---|---|---|---|---|
 | G0 (FT-N1) | DistilBERT · AG News | paired v2 real legs with the §2 recipe → `sim_charge_profiles/fluxtune.yaml`, graded 0-fail (FT-T8: no v2 sim on the v1 profile) | ≥ 2 real | TBD | `code` (after the P0 code) | every sim run |
-| P0 A/B | DistilBERT · AG News | FluxTune `exp` (T_res 300, ρ0 0.067, N 90) vs `--rho-schedule pool`; compare TTA at 0.80/0.86/0.87, peak, Φ at peak | 2 | `exp` 4 h (no commit cap: FT-N4 exit, holds past the lap boundary); `pool` ~1 h | `code` | the recipe; `pool` reused in C3 `step_size` |
+| P0 A/B | DistilBERT · AG News | FluxTune `exp` (T_res 300 provisional, ρ0 0.067, N 90) vs `--rho-schedule pool`; compare TTA at 0.80/0.86/0.87, peak, Φ at peak | 2 | `exp` 4 h (no commit cap: FT-N4 exit, holds past the lap boundary); `pool` ~1 h | `code` | the recipe; `pool` reused in C3 `step_size` |
 | G1 grad-aware | DistilBERT · AG News | simplified recipe, same ρ schedule/N 90/seed: `--agg-rate-type grad_aware` vs `uniform`; compare TTA at 0.80/0.86/0.87, peak, ω spread (`agg_round.agg_weight`) | 2 | ~3 h | `code` (after P0 code) | decides grad-aware in the recipe or C3 control only; set `--agg-rate-type` in §2 |
 | P0b bs | DistilBERT · Yahoo | bs 8 vs 32 at N 90 | 2 | bs 8 ~3.5 h; bs 32 ~6–10 h (est.) | blocked: P0, G1 | bs for Yelp-P and Yahoo (both under one pass) |
 | S smoke | RoBERTa-large · Yelp-P (LoRA q,v r=6, seq 256); SmolLM2-1.7B · Yahoo (LoRA q,v r=4, seq 256) | FwdLLM + FluxTune at §2's N | 4 | 2 h cap | RoBERTa `code` (`classifier.dense` drop) | s/commit, t_eval, charge profile, distinct-clients/N for P3/P4 |
@@ -145,5 +145,6 @@ Scaling is linear in N, plus ×1.33 for seq 192 → 256:
 - RoBERTa and 1.7B s/commit, t_eval and charge profile: S records them, then the §2 and §4 estimates are replaced.
 - N is decided; S confirms distinct-clients/N ≥ 0.7 at RoBERTa's N = n.
 - C3 `agg_criteria` iteration cap value: set from A0's measured iterations per bin.
-- Code before the first figure run: `--rho-schedule exp` smoke, stall-rule fix, commit cap, per-eval resampled eval,
+- T_res is open (hand-tuned once the budget is gone): keep and sweep in C3, derive from a target Φ_final, or drop for `phi`; decide after the smoke/P0.
+- Code before the first figure run: `--rho-schedule exp` smoke, (short ~20-commit run: ρ follows ρ0·exp(−(t−1)/600), Φ matches Π√(1+ρ²)), stall-rule fix, commit cap, per-eval resampled eval,
   final full-test eval, `classifier.dense` drop.

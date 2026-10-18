@@ -261,7 +261,9 @@ class FedSGDAggregator(TopAggregator):
             self._gate_rho_ref = "annealed"
         self._last_rho = None
         self._p_trainable = self._g_rule = None
-        if self._commit_gate in ("n_target", "fixed") or self._rho_schedule == "pool":
+        _exp_pool = self._rho_schedule == "exp" and self._pool_target is not None
+        if self._commit_gate in ("n_target", "fixed") or self._rho_schedule == "pool" \
+                or _exp_pool:
             self._p_trainable = sum(
                 p.numel() for p in self.trainer.model.parameters() if p.requires_grad
             )
@@ -275,8 +277,8 @@ class FedSGDAggregator(TopAggregator):
                 f"probe_combine={_pc} P={_P} G_rule={self._g_rule} "
                 f"rho_ref={self._gate_rho_ref}"
             )
-        if self._rho_schedule == "pool":
-            # Constant rho from the pool; _rho_star_now() falls through to it.
+        if self._rho_schedule == "pool" or _exp_pool:
+            # rho0 from the pool; `pool` holds it, `exp` decays it in _rho_star_now().
             self._rho_star = self._gate_safety_s * math.sqrt(
                 self._g_rule * self._pool_target / self._p_trainable)
             logger.info(f"[ServerStep] rho_schedule=pool N={self._pool_target} "
@@ -939,6 +941,9 @@ class FedSGDAggregator(TopAggregator):
             return rho_star_now(self._b_max, self._B, self._t_res, self._rho_max)
         if self._rho_schedule == "rm":
             return self._rho_star * (t ** -self._rho_exp)
+        if self._rho_schedule == "exp":
+            # Landing's decay without its budget: rho0 * exp(-(t-1)/(2*T_res)).
+            return self._rho_star * math.exp(-(t - 1) / (2.0 * self._t_res))
         return self._rho_star
 
     def _pool_split_half_stats(self, model_list):
