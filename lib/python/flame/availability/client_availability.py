@@ -369,7 +369,7 @@ class ClientAvailability:
     #   * delivery ledger — pending_withheld[end] = delivery_ts; the completed
     #                       update is HELD, not discarded, and committed later
     #                       (stale) by the live commit loop.
-    # The same effect path serves all three triggers (90s vclock abandon, aware
+    # The same effect path serves all three triggers (task-timeout abandon, aware
     # boundary eviction, and the future avl_* message) — only the trigger differs.
 
     def compute_delivery_ts(self, end: str, sct: float, task: str = "train") -> float:
@@ -423,7 +423,7 @@ class ClientAvailability:
     ) -> Optional[float]:
         """Free an in-flight slot and register its pending withheld delivery.
 
-        Triggered by (a) the 90s vclock abandon for everyone (C.3) and (b) the
+        Triggered by (a) the task-timeout abandon for everyone (C.3) and (b) the
         aware boundary eviction for availability_aware baselines (Stage D); Stage H
         adds an avl_* message trigger without changing this effect logic — the
         abstraction exists for exactly that swap.
@@ -696,7 +696,7 @@ class ClientAvailability:
             self._sim_withheld_payload[end] = (float(sct), msgmd)
         async_hold = getattr(self, "_sim_hold_withheld_slot", False)  # FX-N56
         if (self._sync_wait_k_on() or async_hold) and not getattr(self, "proactive_inflight_evict", False):
-            # FX-N37: real can't see a withhold, so the slot stays held until dispatch+90s.
+            # FX-N37: real can't see a withhold, so the slot stays held until dispatch + timeout.
             self.pending_withheld[end] = dts
             self._withheld_slot_held.add(end)
             if async_hold:
@@ -828,7 +828,7 @@ class ClientAvailability:
             updates.close()
 
     def _real_round_recv_deadline(self, channel, ends, earliest: bool = False) -> float:
-        """Real sync round: wait until every awaited trainer is past its own 90s since dispatch (FX-L40),
+        """Real sync round: wait until every awaited trainer is past its own task timeout since dispatch (FX-L40),
         capped at the run budget's end. Abandoned ends don't extend the wait. `earliest` (FX-N37): stop at
         the first pending timeout instead, so distribute can replace that pick."""
         hp = self.config.hyperparameters
@@ -869,13 +869,13 @@ class ClientAvailability:
 
     @property
     def _withheld_slot_held(self) -> set:
-        """FX-N37: withheld sim picks still holding their slot until dispatch+90s."""
+        """FX-N37: withheld sim picks still holding their slot until dispatch + timeout."""
         if not hasattr(self, "_withheld_slot_held_set"):
             self._withheld_slot_held_set = set()
         return self._withheld_slot_held_set
 
     def _sync_wait_k_on(self) -> bool:
-        """FX-N37 gate; needs the substrate, whose 90s abandon frees stalled picks."""
+        """FX-N37 gate; needs the substrate, whose task-timeout abandon frees stalled picks."""
         hp = getattr(getattr(self, "config", None), "hyperparameters", None)
         return bool(getattr(hp, "sync_wait_for_k", False)) and getattr(self, "trainer_event_dict", None) is not None
 
@@ -1029,7 +1029,7 @@ class ClientAvailability:
         return min(due) if due else None
 
     def _sim_starvation_wake(self, channel) -> Optional[float]:
-        """FX-D182: a starved sync sim jumps to the next flip or pick timeout, whichever is first (real's timer fires at 90 s)."""
+        """FX-D182: a starved sync sim jumps to the next flip or pick timeout, whichever is first (real's timer fires at the task timeout)."""
         nxt = self._next_avail_vclock()
         hp = getattr(getattr(self, "config", None), "hyperparameters", None)
         if str(getattr(hp, "sim_abandon_wakes", True)).lower() != "true":
@@ -1039,7 +1039,7 @@ class ClientAvailability:
         return ab if nxt is None else (nxt if ab is None else min(nxt, ab))
 
     def _abandon_stalled(self, channel) -> None:
-        """C.3: free in-flight slots stalled past 90s since dispatch (vclock in sim, wall in real).
+        """C.3: free in-flight slots stalled past the task timeout since dispatch (vclock in sim, wall in real).
 
         Re-clocks the selector's wall-based abandon (inert in sim) onto the vclock.
         A trainer dispatched > 90 vclock-seconds ago whose update has neither
@@ -1059,7 +1059,7 @@ class ClientAvailability:
         for end, sst, held in self._abandon_candidates(channel):
             if now - sst <= self._task_timeout_s():
                 continue
-            reason = "abandon_90s_vclock" if getattr(self, "simulated", False) else "abandon_90s_wall"
+            reason = "abandon_timeout_vclock" if getattr(self, "simulated", False) else "abandon_timeout_wall"
             if held:  # FX-N37: delivery ledger already registered; only the slot frees
                 self._withheld_slot_held.discard(end)
                 self._avail_free_slot_ledger(channel, end)
@@ -1093,14 +1093,14 @@ class ClientAvailability:
         """D.1: Proactively free in-flight slots for trainers now showing UN_AVL.
 
         For availability_aware baselines the oracular trace read at the selection
-        boundary is authoritative (FX-N97: UN_AVL, or AVL_EVAL for a train task) — no need to wait for the 90s vclock deadline
+        boundary is authoritative (FX-N97: UN_AVL, or AVL_EVAL for a train task) — no need to wait for the task-timeout deadline
         (C.3). A trainer that transitioned to UN_AVL since it was dispatched has
         its slot freed immediately so a replacement is selectable this round.
 
         Same effect as free_stalled_slot (slot ledger freed + delivery ledger
         registered) — only the trigger differs from C.3. No-op when the gate is
         off (trainer_event_dict is None) or proactive_inflight_evict is False (unaware
-        and aware-at-selection-only baselines stay on the C.3 90s path).
+        and aware-at-selection-only baselines stay on the C.3 timeout path).
         """
         if not getattr(self, "proactive_inflight_evict", False):
             return

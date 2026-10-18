@@ -638,3 +638,10 @@ def test_grade_reserves_checker_ram_not_the_legs_peak(monkeypatch):
     mk = lambda mode: pool.Job(f"G3_syn_0_felix_{mode}", "G3_syn_0", "syn_0", "felix", mode, [], 75, 7200, "none", 2, 1.0)
     assert pool.mem_estimate_gb(mk("grade"), hist) == pool.GRADE_RAM_GB
     assert pool.mem_estimate_gb(mk("real"), hist) > 80
+
+
+def test_g3_speech_sim_spans_more_gpus_than_its_real():
+    # FX-L81: one sim train slot per GPU paces an async speech sim, so the sim leg spreads; its real twin keeps 2.
+    jobs = {j.jid: j for j in pool.build_jobs(pool.tier_phases("G3", ("felix",), "google_speech"), 1.0, 8, {})}
+    assert jobs["gs_G3_syn_0_felix_sim"].gpus == 4 and jobs["gs_G3_syn_0_felix_real"].gpus == 2
+    assert {j.gpus for j in pool.build_jobs(pool.tier_phases("G3", ("felix",), "cifar10"), 1.0, 8, {}) if j.mode != "grade"} == {1}

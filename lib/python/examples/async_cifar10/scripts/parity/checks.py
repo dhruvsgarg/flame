@@ -4400,7 +4400,7 @@ def abandon_timeout_parity(real: dict, sim: dict,
                            wall_leak_ceiling_s: float = 1e7) -> dict:
     """abandon_timeout [NEW, CONTROL]: the 90s abandon fires on the VCLOCK.
 
-    Each C.3 abandon (``reason="abandon_90s_vclock"``) frees a stalled
+    Each C.3 abandon (``reason="abandon_timeout_vclock"``) frees a stalled
     in-flight slot at age >= SEND_TIMEOUT_WAIT_S. Control purpose
     (Challenge 2): the deadline must be measured on the vclock, not the wall —
     a wall-clock leak surfaces as an age in epoch-scale seconds (~1.7e9)

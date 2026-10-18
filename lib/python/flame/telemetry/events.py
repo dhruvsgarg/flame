@@ -28,7 +28,7 @@ EVENT_INFLIGHT_RESIDENCE = "inflight_residence"  # per-round in-flight drain acc
 EVENT_UTILITY_BELIEF = "utility_belief"  # believed (at selection) vs actual (at return) client utility
 EVENT_DISPATCH = "dispatch"          # per-dispatch re-dispatch-stagger validation (felix)
 EVENT_WITHHELD_DELIVERY = "withheld_delivery"  # late stale delivery of a send-gated update
-EVENT_ABANDON_TIMEOUT = "abandon_timeout"      # 90s vclock slot-free of a stalled trainer
+EVENT_ABANDON_TIMEOUT = "abandon_timeout"      # task-timeout slot-free of a stalled trainer (FX-D46)
 EVENT_AGG_BELIEF_CHANGE = "agg_belief_change"   # aggregator's belief about a trainer's avail state
 EVENT_STEP_TIMING = "step_timing"    # per-function wall duration of a timed compute step
 EVENT_COMM = "comm"                  # one message put on the wire (byte-size accounting)
@@ -958,11 +958,11 @@ def build_abandon_timeout(
     sim_send_ts: float,
     vclock_now: float,
     time_mode: str = "sim",
-    reason: str = "abandon_90s_vclock",
+    reason: str = "abandon_timeout_vclock",
 ) -> tuple[str, dict[str, Any]]:
     """A stalled in-flight trainer freed by a slot-free trigger.
 
-    ``reason`` distinguishes C.3 90s-vclock abandons from D.1 aware boundary
+    ``reason`` distinguishes C.3 task-timeout abandons from D.1 aware boundary
     evictions. ``vclock_now − sim_send_ts`` is the in-flight age at trigger.
     Backs the ``abandon_timeout`` parity rung, which fails loudly if the
     deadline is measured on the wall instead of the vclock.

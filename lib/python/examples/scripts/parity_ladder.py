@@ -135,6 +135,18 @@ def _code_state(pool: Path) -> str:
     return m.group(0) if m else pool.name
 
 
+#: Code keys whose REAL legs ran identical code for these baselines (their sims may differ): reals pair across them (L18).
+#: Evidence = the run-affecting diff between the keys' commits.
+REAL_SAME_CODE = (
+    ({"1e6004b6c305", "44d44bd2d67b"}, {"fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "git diff 70895fcfc 2f8dca198: sim-only FX-D182, Felix-only FX-D183/D185, harness_pool scheduling FX-D179/D186/D187"),
+)
+
+
+def _real_same_code(a: str, b: str, baseline: str) -> bool:
+    return a == b or any({a, b} <= keys and baseline in bls for keys, bls, _ in REAL_SAME_CODE)
+
+
 def _replicate_cells(root: Path) -> dict:
     """{(phase, baseline): (own real, grade cmd.txt, [(replicate real, its control phase dir)])}: G0C per G0 syn_0 cell,
     G0UC per G0U, G0TC per G0T, T3C per T3, G3C per G3 cell; replicates may sit in any same-code pool of the block."""
@@ -154,6 +166,26 @@ def _replicate_cells(root: Path) -> dict:
             own = re.search(r"--real-dir (\S+)", cmd.read_text()) if cmd else None
             if own and r.get("real_dir"):
                 cells.setdefault((target, b), (Path(own[1]), cmd, []))[2].append((Path(r["real_dir"]), f.parent))
+    # Reals of a real-path-identical key (REAL_SAME_CODE): its pair legs and its *C replicates of the same cell.
+    key = _code_state(root)
+    other = [p for p in sorted(root.parent.iterdir()) if p.is_dir() and _code_state(p) not in (key,)]
+    for cmd in sorted(root.glob("*/*_grade/cmd.txt")):
+        target, t = cmd.parent.parent.name, cmd.read_text()
+        b, own = re.search(r"--baselines (\S+)", t), re.search(r"--real-dir (\S+)", t)
+        if not (b and own) or target.startswith(REAL_ONLY):
+            continue
+        b = b[1]
+        for p in other:
+            if not _real_same_code(key, _code_state(p), b):
+                continue
+            tag = target.replace("G3_", "G3C_").replace("G0U_", "G0UC_").replace("T3_", "T3C_").replace("G0T_", "G0TC_")
+            for ph in {target, tag}:
+                f = p / ph / "summary.tsv"
+                for r in (csv.DictReader(open(f), delimiter="\t") if f.exists() else []):
+                    if r["baseline"] == b and r.get("real_dir") and Path(r["real_dir"]).is_dir():
+                        ctl = cmd.parent / f"control_{p.name}_{ph}"  # floors land in this pool, never the other key's
+                        ctl.mkdir(exist_ok=True)
+                        cells.setdefault((target, b), (Path(own[1]), cmd, []))[2].append((Path(r["real_dir"]), ctl))
     return cells
 
 

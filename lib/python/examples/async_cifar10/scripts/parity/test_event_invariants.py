@@ -217,7 +217,7 @@ def test_ev15_duplicate_send_fails(tmp_path):
 def test_ev15_same_version_redispatch_needs_timeout_and_policy(tmp_path):
     agg, tr = _clean_run()
     d = [e for e in agg if e["event"] == "dispatch"][-1]
-    agg.append({"event": "abandon_timeout", "end_id": d["end_id"], "reason": "abandon_90s_vclock", "ts": 50})
+    agg.append({"event": "abandon_timeout", "end_id": d["end_id"], "reason": "abandon_timeout_vclock", "ts": 50})
     agg.append({**d, "ts": 51})
     assert _status(_write_run(tmp_path, agg, tr), "EV15_one_task_per_version") == "FAIL"
     run = _write_run(tmp_path / "b", agg, tr, hp={"task_retry_policy": "fixed"})

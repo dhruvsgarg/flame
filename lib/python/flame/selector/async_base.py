@@ -335,7 +335,7 @@ class AsyncSelectorBase(AbstractSelector):
                 ev, f = build_abandon_timeout(
                     round_num=getattr(self, "_agg_round", -1), end_id=end, sim_send_ts=float(sent_at),
                     vclock_now=float(now_s), time_mode=mode,
-                    reason="abandon_90s_vclock" if mode == "sim" else "abandon_90s_wall",
+                    reason="abandon_timeout_vclock" if mode == "sim" else "abandon_timeout_wall",
                 )
                 telemetry.emit(ev, **f)
 

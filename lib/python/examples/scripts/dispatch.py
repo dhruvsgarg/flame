@@ -67,6 +67,12 @@ class Unit:
         return max((l.est[n] for l in self.legs if not l.deps), default=0) + sum(l.est[n] for l in self.legs if l.deps)
 
 
+def unit_done(u: Unit, status: dict) -> bool:
+    """Every leg of a released unit is in its node pool's status.json `done`."""
+    done = status.get((u.node, u.stage), {}).get("done", {})
+    return u.node is not None and all(l.key.split(":", 1)[1] in done for l in u.legs)
+
+
 @dataclass
 class NodeCap:
     cpus: int
@@ -294,8 +300,9 @@ class Dispatcher:
             stz = [st for (m, _), st in self.status.items() if m == n]
             running = sum(len(st.get("running", {})) for st in stz)
             done = sum(len(st.get("done", {})) for st in stz)
-            left = sum(1 for u in self.units if u.node in (None, n))
-            self.log(f"STATUS {n}: legs running {running}, done {done}; units unfinished/unreleased {left}; "
+            left = sum(1 for u in self.units if u.node == n and not unit_done(u, self.status))
+            self.log(f"STATUS {n}: legs running {running}, done {done}; units released+unfinished {left}, "
+                     f"unreleased {sum(u.node is None for u in self.units)}; "
                      f"finish ~{(spans.get(n, 0) - time.time()) / 3600:.1f} h")
 
     def run(self) -> int:

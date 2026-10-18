@@ -215,7 +215,7 @@ class TestAbandonClockIsVirtualInSim:
         sel._sim_now_s, sel._agg_round, sel._time_mode = 200.0, 7, "real"
         sel._reclaim_timed_out_ends(sel.selected_ends["agg"])
         assert [(ev, f["end_id"], f["round"], f["reason"], f["age_s"]) for ev, f in seen] == [
-            ("abandon_timeout", "t0", 7, "abandon_90s_wall", 200.0)]
+            ("abandon_timeout", "t0", 7, "abandon_timeout_wall", 200.0)]
 
     def test_send_timeout_is_configurable(self, build):
         assert build().send_timeout_wait_s == 90

@@ -110,7 +110,7 @@ G0U_OORT = {("cifar10", "syn_50_3st"): dict(n=50, agg_goal=10, c=13, gpus=1),
             ("google_speech", "syn_50_3st"): dict(n=50, agg_goal=10, c=13, gpus=2)}
 # PR37 (operator 10-14): one n:c:K per dataset for all six, cohort = the reference split's first n trainers (same shard, compute,
 # D). K=10 keeps Oort's exploitLen >= 1 (FX-L63), sync K/n >= 5% (L34); c=15 > K keeps async overlap; <= 75 / 25 per A40.
-G3_SHAPE = {"cifar10": dict(n=75, agg_goal=10, c=15, gpus=1), "google_speech": dict(n=50, agg_goal=10, c=15, gpus=2)}
+G3_SHAPE = {"cifar10": dict(n=75, agg_goal=10, c=15, gpus=1), "google_speech": dict(n=50, agg_goal=10, c=15, gpus=2, sim_gpus=4)}
 G3_RUNTIME_S, G3_EVAL_EVERY = 7200, 10  # 2 h legs (operator 10-15; R6: convergence sign-off 2-4 h)
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
@@ -220,6 +220,7 @@ class Phase:
     kind: str = "pair"  # pair: real+sim legs + grade | sim: sim leg vs banked real | sim_ev: sim leg, EV only | real: real leg, EV only
     cpt: Optional[float] = None  # CPUs per trainer for this phase; None = --cpus-per-trainer
     gpus: Optional[int] = None  # GPU legs: GPUs each; None = --gpus-per-job
+    sim_gpus: Optional[int] = None  # a pair's sim leg: GPUs each (FX-L81: one train slot per GPU paces it); None = gpus
     delay_factor: str = ""  # divides every trainer's D (debug_run --delay-factor)
     full_runtime_s: int = 0  # runtime before a --scale-smoke cap (0 = uncapped)
 
@@ -503,7 +504,7 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
                 f"{stem}_{mode}", ph.pid, t, b, mode, args, ph.n, rt, ph.harness, c, m, gg, deps,
                 unit=stem, dataset=ph.dataset)
             if ph.kind == "pair":
-                real, sim = mk("real", base + ["--mode", "real"]), mk("sim", base + ["--mode", "sim"])
+                real, sim = mk("real", base + ["--mode", "real"]), mk("sim", base + ["--mode", "sim"], gg=ph.sim_gpus or g)
                 jobs += [real, sim, mk("grade", base, (real.jid, sim.jid), 2, 1.0, 0)]
             elif ph.kind == "real":  # replicate for a real<->real control (R7)
                 jobs.append(mk("real", base + ["--mode", "real"]))
