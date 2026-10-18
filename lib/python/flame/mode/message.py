@@ -108,3 +108,4 @@ class MessageType(Enum):
     TRAIN_LOSS_MEAN = 45     # mean mini-batch training loss over this task's local iterations (FedDance I_m, Eq. 6)
     CLIENT_TASK_TRAIN_INTRINSIC_S = 47  # real: sim's duration formula, no weight staging (FX-D123)
     SIM_WALL_SEND_TS = 46    # sim: aggregator wall clock at fan-out start; trainer's recv - this = its delivery lag (FX-D108)
+    SIM_FANOUT = 48          # sim: recipients in send order; a trainer's index picks its real-profiled download (FX-D191)

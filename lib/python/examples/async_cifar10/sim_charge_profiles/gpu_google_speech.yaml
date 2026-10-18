@@ -62,11 +62,62 @@ gate_release:
     p50_s: 0.1956
     n: 156
     charge: true
+send_prep:
+  asyncfl:
+    mean_s: 0.0518
+    p50_s: 0.0311
+    n: 8462
+    charge: true
+  fedavg:
+    mean_s: 0.0636
+    p50_s: 0.0248
+    n: 3160
+    charge: true
+  oort_sync:
+    mean_s: 0.0699
+    p50_s: 0.0375
+    n: 6596
+    charge: true
+download_by_rank:
+  fedavg:
+    ranks_s:
+    - 0.047
+    - 0.108
+    - 0.1785
+    - 0.249
+    - 0.3245
+    - 0.391
+    - 0.459
+    - 0.5245
+    - 0.5865
+    - 0.655
+    - 0.729
+    - 0.797
+    - 0.865
+    n: 3160
+    charge: true
+  oort_sync:
+    ranks_s:
+    - 0.066
+    - 0.133
+    - 0.202
+    - 0.283
+    - 0.363
+    - 0.443
+    - 0.529
+    - 0.613
+    - 0.695
+    - 0.778
+    - 0.77
+    - 0.8445
+    - 0.903
+    n: 6595
+    charge: true
 _meta:
   dataset: google_speech
   harness: gpu
   host: jayne
-  commit: 52ad7e029
+  commit: 10378bf8a
   date: '2026-10-18'
   tool: profile_felix_charges.py
   runs:

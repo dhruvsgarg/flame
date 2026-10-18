@@ -141,15 +141,14 @@ class PyTorchCifar10Trainer(Trainer):
              # Own satellite only: the full (steps, 300, 2) array is 49 MB per trainer (FX-N84).
              self.coords = np.load(coords_path)["coords"][:, self.satellite_index].copy()
 
-        # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
-        # (buffer-residence queue_wait + re-dispatch latency) that the sim sct omitted, so sim's
-        # cycle was short and advance under-charged. sct = send_ts + max(gpu, D) + leg; staleness
-        # (= cycle/advance) is invariant to it, only advance/throughput change.
+        # Sim-only profiled upload leg (FX-D23): sct = send_ts + max(gpu, D) + leg; trainer speed stays pure compute.
         _leg = getattr(self.config.hyperparameters, "sim_completion_leg_s", 0.0)
         self.sim_completion_leg_s = float(_leg) if _leg is not None else 0.0
         self._sim_charge_overhead = getattr(self.config.hyperparameters, "sim_charge_trainer_overhead", True) is not False
         self._sim_charge_lag = bool(getattr(self.config.hyperparameters, "sim_charge_delivery_lag", False))
         self.sim_download_leg_s = float(getattr(self.config.hyperparameters, "sim_download_leg_s", 0.0) or 0.0)
+        self.sim_download_by_rank = [float(x) for x in (getattr(self.config.hyperparameters, "sim_download_by_rank", None) or [])]
+        self.sim_send_prep_s = float(getattr(self.config.hyperparameters, "sim_send_prep_s", 0.0) or 0.0)
         _hp = self.config.hyperparameters
         self._sim_stream_at_start = str(getattr(_hp, "sim_stream_at_train_start", True)).lower() == "true"
 
@@ -619,7 +618,11 @@ class PyTorchCifar10Trainer(Trainer):
         )
 
     def _sim_delivery_lag_s(self) -> float:
-        """FX-D108: the task's fan-out delivery lag in sim (measured, else the profiled download leg)."""
+        """Sim fan-out delivery lag: real's profiled lag at this task's send rank (FX-D191), else measured (FX-D108),
+        else the profiled mean download leg (FX-D116)."""
+        _rank, _prof = getattr(self, "_sim_fanout_rank", None), getattr(self, "sim_download_by_rank", None)
+        if _prof and _rank is not None:
+            return _prof[min(_rank, len(_prof) - 1)]
         _wst, _wrt = getattr(self, "_sim_wall_send_ts", None), getattr(self, "_wall_recv_ts", None)
         if self._sim_charge_lag and _wst is not None and _wrt is not None:
             return max(0.0, float(_wrt) - float(_wst))
@@ -934,7 +937,7 @@ class PyTorchCifar10Trainer(Trainer):
         # added ONLY here, NOT to _sim_round_duration — so trainer_speed_s, OORT utility, the gate
         # predictor and P3/T2 controls keep pure compute; only the vclock (which advances to sct)
         # sees the real cycle time.
-        _leg = self.sim_completion_leg_s if self.simulated else 0.0
+        _leg = self.sim_completion_leg_s + self.sim_send_prep_s if self.simulated else 0.0
         self._sim_completion_ts = (
             (self._sim_send_ts if self._sim_send_ts is not None else self._sim_now())
             + sim_round_duration

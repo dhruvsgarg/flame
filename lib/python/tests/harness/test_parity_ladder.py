@@ -200,3 +200,9 @@ def test_reals_pair_across_a_real_path_identical_key(tmp_path, monkeypatch):
     cells = lad._replicate_cells(exp / "pool_38")
     assert [r for r, _ in cells[("G3_syn_50_3st", "oort")][2]] == [real37]
     assert ("G3_syn_50_3st", "felix") not in cells
+
+
+def test_real_same_code_is_transitive_per_baseline():
+    assert lad._real_same_code("1e6004b6c305", "3dbbe373124a", "oort")
+    assert not lad._real_same_code("1e6004b6c305", "3dbbe373124a", "felix")  # Felix's lr changed at 44d44bd2d67b
+    assert lad._real_same_code("44d44bd2d67b", "3dbbe373124a", "felix")

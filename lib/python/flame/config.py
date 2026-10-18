@@ -248,6 +248,10 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_download_leg_s: t.Optional[float] = Field(
         alias="simDownloadLegSeconds", default=0.0
     )
+    # FX-D191: real download per fan-out rank (profiled); a sim task charges its rank's, not its own measured lag.
+    sim_download_by_rank: t.Optional[list] = Field(alias="simDownloadByRank", default=None)
+    # FX-D191: real D-end -> send minus its pre/post-train time (weight packing + send path), added to sim sct.
+    sim_send_prep_s: t.Optional[float] = Field(alias="simSendPrepSeconds", default=0.0)
     # C13: sim adds each update's measured trainer pre/post-train time to its duration.
     sim_charge_trainer_overhead: t.Optional[bool] = Field(
         alias="simChargeTrainerOverhead", default=True

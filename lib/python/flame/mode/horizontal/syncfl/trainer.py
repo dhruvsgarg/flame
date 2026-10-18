@@ -300,6 +300,8 @@ class Trainer(Role, metaclass=ABCMeta):
         ):
             self._sim_send_ts = msg[MessageType.SIM_SEND_TS]
         self._sim_wall_send_ts = msg.get(MessageType.SIM_WALL_SEND_TS)  # FX-D108
+        _fan = msg.get(MessageType.SIM_FANOUT) or ()
+        self._sim_fanout_rank = _fan.index(str(self.trainer_id)) if str(self.trainer_id) in _fan else None  # FX-D191
         _mqtt_vclock_end = getattr(self, "vclock_now", None)
         self._phase_vclock_s["mqtt_fetch_s"] = (
             _mqtt_vclock_end - _mqtt_vclock_start

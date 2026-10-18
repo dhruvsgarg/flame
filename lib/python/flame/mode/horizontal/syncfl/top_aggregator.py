@@ -1301,6 +1301,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             msg[MessageType.AGG_START_TS] = self.agg_start_time_ts
         if self.simulated:
             msg[MessageType.SIM_WALL_SEND_TS] = time.time()  # FX-D108
+            msg[MessageType.SIM_FANOUT] = [str(e) for e in selected_ends]  # FX-D191: send order
         _payload = channel.dumps(msg)
         _send_t0 = time.time()  # [DISTRIBUTE_TIMING]
         for end in selected_ends:

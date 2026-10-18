@@ -140,11 +140,21 @@ def _code_state(pool: Path) -> str:
 REAL_SAME_CODE = (
     ({"1e6004b6c305", "44d44bd2d67b"}, {"fedbuff", "refl", "oort", "oort_star", "feddance"},
      "git diff 70895fcfc 2f8dca198: sim-only FX-D182, Felix-only FX-D183/D185, harness_pool scheduling FX-D179/D186/D187"),
+    ({"44d44bd2d67b", "3dbbe373124a"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "git diff 2f8dca198 10378bf8a: sim charge profiles + sim_gpus, telemetry fields/labels, comments"),
 )
 
 
 def _real_same_code(a: str, b: str, baseline: str) -> bool:
-    return a == b or any({a, b} <= keys and baseline in bls for keys, bls, _ in REAL_SAME_CODE)
+    """Transitive over REAL_SAME_CODE links that cover this baseline."""
+    seen, todo = {a}, [a]
+    while todo:
+        k = todo.pop()
+        for keys, bls, _ in REAL_SAME_CODE:
+            if k in keys and baseline in bls:
+                todo += [x for x in keys if x not in seen]
+                seen |= keys
+    return b in seen
 
 
 def _replicate_cells(root: Path) -> dict:
