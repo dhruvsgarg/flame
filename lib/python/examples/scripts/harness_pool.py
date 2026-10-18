@@ -1066,6 +1066,13 @@ def gpus_wanted_above(leases: "Leases", priority: int) -> int:
     return int(max(vals, default=0))
 
 
+def exclusive_gpus(m: int, usable: List[int], leases: "Leases") -> Optional[List[int]]:
+    """FX-D192: m whole GPUs from `usable` carrying no live `gslot_*` lease of any pool (call under gpu_place.lock)."""
+    held = {g for g, v in _gpu_commits(usable, leases).items() if v[2]}
+    free = [g for g in usable if g not in held]
+    return free[:m] if len(free) >= m else None
+
+
 def slot_leases(cpus: List[int], gpus: List[int], port: Optional[int] = None) -> List[str]:
     return [f"cpu{c}" for c in cpus] + [f"gpu{g}" for g in gpus] + ([f"port{port}"] if port else [])
 
@@ -1595,6 +1602,15 @@ class Pool:
                                           f"needs {j.cpus} CPUs, {len(probe['cpus'])} foreign-busy ({own} held by this pool)")
                         continue
                     gp, gslots, caps, lock = usable[:j.gpus], [], "", None
+                    if j.gpus and not share:  # FX-D192: an exclusive leg skips GPUs a sharing pool holds slots on
+                        lock = open(leases.root / "gpu_place.lock", "w")
+                        fcntl.flock(lock, fcntl.LOCK_EX)
+                        gp = exclusive_gpus(j.gpus, usable, leases)
+                        if gp is None:
+                            lock.close()
+                            cm.release(cpus, groups)
+                            blocked[j.jid] = f"needs {j.gpus} GPUs without another pool's shared slots"
+                            continue
                     if share:  # FX-N100: read commitments, choose, commit, as one step per node
                         lock = open(leases.root / "gpu_place.lock", "w")
                         fcntl.flock(lock, fcntl.LOCK_EX)

@@ -206,3 +206,23 @@ def test_real_same_code_is_transitive_per_baseline():
     assert lad._real_same_code("1e6004b6c305", "3dbbe373124a", "oort")
     assert not lad._real_same_code("1e6004b6c305", "3dbbe373124a", "felix")  # Felix's lr changed at 44d44bd2d67b
     assert lad._real_same_code("44d44bd2d67b", "3dbbe373124a", "felix")
+
+
+def test_g3s_sim_votes_against_every_equivalent_real(tmp_path):
+    exp = tmp_path / "experiments"
+    reals = []
+    for pool, key, ph in (("pool_38", "44d44bd2d67b", "G3_syn_0"), ("pool_38c", "44d44bd2d67b", "G3C_syn_0"),
+                          ("pool_39", "8ee1e79a2897", None)):
+        (exp / pool).mkdir(parents=True)
+        (exp / pool / "code_key.txt").write_text(key)
+        if ph:
+            r = tmp_path / f"r_{pool}"
+            r.mkdir()
+            reals.append(r)
+            (exp / pool / ph).mkdir()
+            (exp / pool / ph / "summary.tsv").write_text(f"trace\tbaseline\treal_dir\nsyn_0\toort_star\t{r}\n")
+    leg = exp / "pool_39" / "G3S1_syn_0" / "G3S1_syn_0_oort_star_sim"
+    leg.mkdir(parents=True)
+    (leg / "cmd.txt").write_text("x --baselines oort_star --traces syn_0 --mode sim --agg-goal 10 --runtime-s 7200")
+    own, cmd, rest = lad._replicate_cells(exp / "pool_39")[("G3S1_syn_0", "oort_star")]
+    assert {own, *(r for r, _ in rest)} == set(reals) and cmd == leg / "cmd.txt"

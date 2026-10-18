@@ -36,3 +36,14 @@ def test_worst_pair_wins_and_na(monkeypatch):
     assert cells[("oort", "google_speech", "mobiperf")] == "n/a"
     assert cells[("felix", "google_speech", "stream_cpu")] == "n/a"
     assert "0 / 76 green" in rs.render(cells)
+
+
+def test_g3s_sims_vote_by_majority_and_supersede_the_older_g3_pair(monkeypatch):
+    # FX-N103: one of three sims red against its reals is the draw; the PR38-key G3 pair's red no longer decides the cell.
+    C = rs.pl.Cell
+    grades = {"old": [C("G3_lin_syn_0", "syn_0", "oort", "red", "x")],
+              "new": [C(f"G3S{i}_lin_syn_0", "syn_0", "oort", st, "") for i, st in ((1, "red"), (2, "green"), (3, "green"))]}
+    monkeypatch.setattr(rs.pl, "grade_pool", lambda root, s: grades[str(root)])
+    assert rs.score(["old", "new"])[("oort", "cifar10", "stream_lin")] == "green"
+    grades["new"][1] = C("G3S2_lin_syn_0", "syn_0", "oort", "red", "")
+    assert rs.score(["old", "new"])[("oort", "cifar10", "stream_lin")] == "red"

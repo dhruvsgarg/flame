@@ -144,6 +144,8 @@ REAL_SAME_CODE = (
      "git diff 2f8dca198 10378bf8a: sim charge profiles + sim_gpus, telemetry fields/labels, comments"),
     ({"3dbbe373124a", "8ee1e79a2897"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
      "git diff 10378bf8a 17acb20c8: FX-D191 sim-only (SIM_FANOUT set/read only when simulated), sim profiles"),
+    ({"8ee1e79a2897", "5e0137646a6a"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "git diff 17acb20c8 6d5e16541: harness_pool G3S tier + sim-only GPU count"),
 )
 
 
@@ -198,6 +200,24 @@ def _replicate_cells(root: Path) -> dict:
                         ctl = cmd.parent / f"control_{p.name}_{ph}"  # floors land in this pool, never the other key's
                         ctl.mkdir(exist_ok=True)
                         cells.setdefault((target, b), (Path(own[1]), cmd, []))[2].append((Path(r["real_dir"]), ctl))
+    for cmd in sorted(root.glob("*G3S*/*_sim/cmd.txt")):  # sim-only replicates: every equivalent real of the cell votes
+        phase, b = cmd.parent.parent.name, re.search(r"--baselines (\S+)", cmd.read_text())
+        if not b:
+            continue
+        b, target = b[1], re.sub(r"G3S\d+_", "G3_", phase)
+        reals = []
+        for p in sorted(root.parent.iterdir()):
+            if not (p.is_dir() and _real_same_code(key, _code_state(p), b)):
+                continue
+            for ph in (target, target.replace("G3_", "G3C_")):
+                f = p / ph / "summary.tsv"
+                for r in (csv.DictReader(open(f), delimiter="\t") if f.exists() else []):
+                    if r["baseline"] == b and r.get("real_dir") and Path(r["real_dir"]).is_dir():
+                        ctl = cmd.parent / f"control_{p.name}_{ph}"
+                        ctl.mkdir(exist_ok=True)
+                        reals.append((Path(r["real_dir"]), ctl))
+        if reals:
+            cells[(phase, b)] = (reals[0][0], cmd, reals[1:])
     return cells
 
 
@@ -246,19 +266,28 @@ def regrade_pool(root: Path, jobs: int = 20) -> None:
     checker = EXAMPLES / "async_cifar10" / "scripts" / "parity_check.py"
     events = checker.parent / "parity" / "event_invariants.py"
     floors = _control_floors(root, checker, jobs)
-    reps = {k: [r for r, _ in v[2]] for k, v in _replicate_cells(root).items()}
+    cells = _replicate_cells(root)
+    reps = {k: [r for r, _ in v[2]] for k, v in cells.items()}
 
     def one(cmd_txt: Path) -> None:
         t = cmd_txt.read_text()
+        phase = cmd_txt.parent.parent.name
+        if "G3S" in phase:  # a sim-only leg: its first equivalent real stands in for --real-dir
+            b, rows = re.search(r"--baselines (\S+)", t), list(csv.DictReader(open(cmd_txt.parent / "summary.tsv"), delimiter="\t"))
+            cell = cells.get((phase, b[1] if b else ""))
+            if not (cell and rows and rows[0].get("sim_dir")):
+                return
+            t += f" --real-dir {cell[0]} --sim-dir {rows[0]['sim_dir']} --traces {rows[0]['trace']}"
         g = {k: re.search(rf"--{k} (\S+)", t) for k in ("real-dir", "sim-dir", "agg-goal", "runtime-s", "baselines", "traces")}
         if not all(g[k] for k in ("real-dir", "sim-dir", "runtime-s")):
             return
         out = cmd_txt.parent / "parity_regrade"
         out.mkdir(exist_ok=True)
         name = next(iter((cmd_txt.parent / "parity").glob("*.json")), None)
+        if name is None and g["traces"] and g["baselines"]:
+            name = Path(f"{g['traces'][1]}_{g['baselines'][1]}.json")
         if name is None:
             return
-        phase = cmd_txt.parent.parent.name
         fl = floors.get((phase, g["baselines"][1] if g["baselines"] else ""))
         extra = []
         if fl:
@@ -278,7 +307,7 @@ def regrade_pool(root: Path, jobs: int = 20) -> None:
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     with cf.ThreadPoolExecutor(jobs) as ex:
-        list(ex.map(one, root.glob("*/*_grade/cmd.txt")))
+        list(ex.map(one, [*root.glob("*/*_grade/cmd.txt"), *root.glob("*G3S*/*_sim/cmd.txt")]))
 
 
 def grade_pool(root: Path, max_stage: int) -> List[Cell]:
@@ -292,7 +321,7 @@ def grade_pool(root: Path, max_stage: int) -> List[Cell]:
             red, known = [], []
             want = EXPECTED_FAIL.get(bare)
             sides = ("ev_real",) if bare.startswith(REAL_ONLY) else \
-                ("ev_sim",) if bare.startswith(SIM_ONLY) else ("ev_real", "ev_sim")
+                ("ev_sim",) if bare.startswith(SIM_ONLY) or bare.startswith("G3S") else ("ev_real", "ev_sim")
             ev = _regraded_ev(f.parent, tr, b)
             for side in sides:
                 fails = ev[side] if side in ev else _ev_fails(r.get(side, ""))

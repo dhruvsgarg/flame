@@ -9,6 +9,7 @@ Not scored: P11 (injected bugs, graded CAUGHT), oracle arms, real-only (*C) and 
 Oort cells are n/a (FX-D106); speech stream_cpu is n/a (P7 harness invalid for the real speech model, FX-N86; G0T covers it).
 """
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -44,6 +45,15 @@ def score(pools):
             if sc is None or c.baseline not in BASELINES:
                 continue
             pairs[(c.baseline, c.dataset, sc, c.phase, c.trace)] = c.status
+    # G3S<i>_<cell> sims vote as one cell (majority red = red, FX-N103), superseding that cell's older-key G3 pair.
+    votes = {}
+    for (b, d, sc, ph, tr), st in pairs.items():
+        if "G3S" in ph:
+            votes.setdefault((b, d, sc, re.sub(r"G3S\d+_", "G3_", ph), tr), []).append(st)
+    for (b, d, sc, ph, tr), sts in votes.items():
+        pairs = {k: v for k, v in pairs.items() if not (k[:3] == (b, d, sc) and k[4] == tr
+                                                       and re.sub(r"G3S\d+_", "G3_", k[3]) == ph)}
+        pairs[(b, d, sc, ph, tr)] = "red" if 2 * sts.count("red") > len(sts) else ("known" if "known" in sts else "green")
     cells = {}
     for (b, d, sc, _, _), st in pairs.items():
         k = (b, d, sc)

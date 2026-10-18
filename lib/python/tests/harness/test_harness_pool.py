@@ -645,3 +645,12 @@ def test_g3_speech_sim_spans_more_gpus_than_its_real():
     jobs = {j.jid: j for j in pool.build_jobs(pool.tier_phases("G3", ("felix",), "google_speech"), 1.0, 8, {})}
     assert jobs["gs_G3_syn_0_felix_sim"].gpus == 4 and jobs["gs_G3_syn_0_felix_real"].gpus == 2
     assert {j.gpus for j in pool.build_jobs(pool.tier_phases("G3", ("felix",), "cifar10"), 1.0, 8, {}) if j.mode != "grade"} == {1}
+
+
+def test_exclusive_leg_skips_gpus_with_another_pools_shared_slots(tmp_path):
+    # FX-D192: a sharing pool's packed sim on GPU 0 OOM-killed an exclusive speech sim placed there 2 s later.
+    sharer, excl = pool.Leases(tmp_path), pool.Leases(tmp_path)
+    assert sharer.take("gslot_0_0")
+    sharer.put("gslot_0_0", "30.0,1.0,1.000")
+    assert pool.exclusive_gpus(2, [0, 2, 3], excl) == [2, 3]
+    assert pool.exclusive_gpus(3, [0, 2, 3], excl) is None
