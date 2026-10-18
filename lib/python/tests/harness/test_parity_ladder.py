@@ -226,3 +226,22 @@ def test_g3s_sim_votes_against_every_equivalent_real(tmp_path):
     (leg / "cmd.txt").write_text("x --baselines oort_star --traces syn_0 --mode sim --agg-goal 10 --runtime-s 7200")
     own, cmd, rest = lad._replicate_cells(exp / "pool_39")[("G3S1_syn_0", "oort_star")]
     assert {own, *(r for r, _ in rest)} == set(reals) and cmd == leg / "cmd.txt"
+
+
+def test_g3s_skips_reals_of_another_run_length(tmp_path):
+    # L18: a 10-min G3 screen's real is no replicate of a 2 h G3S cell.
+    exp = tmp_path / "experiments"
+    reals = {}
+    for pool, rt in (("pool_2h", 7200), ("pool_10m", 600)):
+        (exp / pool / "G3_syn_0" / "G3_syn_0_oort_real").mkdir(parents=True)
+        (exp / pool / "code_key.txt").write_text("8ee1e79a2897")
+        (exp / pool / "G3_syn_0" / "G3_syn_0_oort_real" / "cmd.txt").write_text(f"x --baselines oort --runtime-s {rt}")
+        reals[pool] = tmp_path / f"r_{pool}"
+        reals[pool].mkdir()
+        (exp / pool / "G3_syn_0" / "summary.tsv").write_text(f"trace\tbaseline\treal_dir\nsyn_0\toort\t{reals[pool]}\n")
+    leg = exp / "pool_s" / "G3S1_syn_0" / "G3S1_syn_0_oort_sim"
+    leg.mkdir(parents=True)
+    (exp / "pool_s" / "code_key.txt").write_text("8ee1e79a2897")
+    (leg / "cmd.txt").write_text("x --baselines oort --traces syn_0 --mode sim --agg-goal 10 --runtime-s 7200")
+    own, _, rest = lad._replicate_cells(exp / "pool_s")[("G3S1_syn_0", "oort")]
+    assert own == reals["pool_2h"] and rest == []

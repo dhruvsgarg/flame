@@ -7,38 +7,33 @@ experiments (FX-N12).** Order: Next steps → Scoreboard (now, and expected afte
 **At a glance (10-18):** golden rule ROBUST R0 (short screens first). PR38 (key `44d44bd2d67b`, 60 units, both nodes via the dispatcher,
 18.7 h) ran clean: EV PASS on all 96 legs, 0 crashes, 3 / 390k train tasks overran D. Felix and FedBuff are real == sim on every cell
 (versions within 1%, time to target inside the 2-real band); Felix now has the lowest time to target in all six scenarios (FX-D185).
-Open: the cifar Oort-family pacer under streaming (FX-N103, a sim mechanism), thin real bands on three cifar Oort cells, Felix
-claims C1 / C2' / C3' (FX-N108), and degenerate speech unavailability cells (FX-N106).
+10-18 G3S (key `2872646e24f4`, sim-only, graded on PR37/PR38 reals): parity 75 / 76. Open: feddance speech syn_50_3st (PR39
+G3S1), a real > sim lean on cifar lin oort (FX-N103), Felix claims C1 cifar / C2' / C3' (FX-N108).
 
 ## Next steps (persistent queue — top item is next)
 
 Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4/TS · GPU ≤ 30-min screens (G0U/G0T/G0UC) · long
-(G1*/G2/G3). Unblock map: FX-N103 (a) + PR39 (bands) → 76 / 76 → FX-N108 → FX-N12.
+(G1*/G2/G3). Unblock map: PR39 → 76 / 76 → FX-N108 → FX-N12.
 
-- **FX-N103 · Cifar Oort-family pacer under linear streaming · wip: chaotic fork + borderline pacer; sim bias unproven.** PR38 G3 lin
-  oort: sim 392 versions vs reals 625 / 694 (G3 + G3C), K2/K8 red at 3× the 17% floor (FX-D188); reals hold `round_threshold` T = 10
-  to round ~200, the sim ramps from ~30. All lin oort legs so far: reals 551 (PR37 key), 625, 694; sims 361-665 (6 legs, two keys):
-  16 of 18 real > sim (one-sided p ≈ 0.05). Screen `pool_20261018_015129_G3` (10 min, new `selection.pacer_sample`): the pacer and its
-  input are faithful (offline replay reproduces every T decision on both sides; 10 of 11 exploits counted every round on both);
-  picks and per-trainer losses are bit-identical to round 4; round 5 forks at a stream sample boundary (trainer 441 sees 53 vs 52
-  samples) because real's stream clock leads by 0.04 → 0.16 s over rounds 2-6 (~30 ms/round of uncharged real cost, FX-L73). After the
-  fork, utilities differ by draw and each 20-round window's ≤ 10% test is a coin flip (FX-L79). *Next:* (a) profile the ~30 ms/round
-  real cost (C13; `agg_timing` real vs sim on this pair); (b) PR39 grades the cell on ≥ 3 reals + ≥ 3 sims of one key, comparing the
-  distribution of pacer window Δ (`pacer_sample`), not one trajectory. *Exit:* sims inside the reals' versions spread on one key, or a
-  named biased input.
-- **PR39 · Bands for the thin cells + FX-N103 classification · todo (after FX-N103 (a)).** One dispatcher batch, one key:
-  - G3 lin oort, oort_star cifar: 3 sims + 2 G3C reals each (FX-N103 (b));
-  - G3C syn_50_3st reals for cifar oort, oort_star, fedbuff (the syn_0 band is not theirs: Oort syn_0 reals agree to 0.2%, its
-    syn_50_3st reals to ~10% across keys; FX-L80);
-  - a third cifar oort_star syn_0 real (n = 3 votes, L13: sim 13% off one real, 4% off the other).
-  - Speech sims with trainer packing across idle GPUs (`--gpu-share`; FX-N100).
-  - *Claim:* every cifar Oort-family cell green on ≥ 3-real votes; fedbuff cifar syn_50_3st G0U red is a 15-min artifact (its G3
-    cell is green). *Decision:* green ⇒ 76 / 76 on mixed keys, parity side of FX-N12 done.
+- **PR39 · G3S1 votes + band strengtheners · todo (operator launches, R4).** `dispatch.py batches/pr39.yaml` (tmux `dg_flame`;
+  shepherd pulls this commit, then `--plan`): S speech G3S1 all six × syn_0 / syn_50_3st / lin; C cifar G3S1 lin for felix, fedbuff,
+  refl, feddance; D felix, fedbuff G3 syn_50_3st both datasets (re-derived gate_release); RA a third G3C syn_50_3st real for cifar
+  oort, oort_star (reals 219 / 242 and 384 / 410, sims 210-228 and 354-389). The old B/C/RB/RC/T/U/V stages were answered by the
+  10-18 G3S/T3/G0U pools. *Claim:* feddance speech syn_50_3st green on its G3S vote (its PR38 G3 pair is green; the red is G0U
+  `pool_20261018_034047_G0U_G0UC` S8 terminal_state); every other cell stays green. Refute: a G3S red on a cell green today.
+
+- **FX-N103 · Cifar lin oort: real > sim lean · wip (cell green).** G3S `pool_20261018_033638_G3S` (FX-D191 fan-out charge): lin oort
+  sims 455 / 543 / 669 versions vs 2 h reals 551 / 625 / 694 (matched-window real↔real floor 17-40%), green by majority; 7 of 9 pairs
+  real > sim (PR38: 16 of 18). Lin oort_star sims 431-453 vs reals 403-568; syn_0 / syn_50_3st Oort-family sims within 0-14% of
+  reals. The 10-15 fork analysis stands (pacer faithful; chaotic fork from ~30 ms/round of uncharged real cost, FX-L73, FX-L79).
+  *Next:* (a) profile that real cost (C13; `agg_timing` on the 10-min pair `pool_20261018_031320_G3`). *Exit:* no one-sided lean
+  over ≥ 3 sims × 3 reals, or a named biased input.
 - **FX-N108 · Felix claims gate (operator 10-17) · wip, blocks FX-N12.** PR38 (Felix server lr 1.0): C2 ✅ in all six scenarios; C4 ✅;
   left (Scoreboard "Felix claims"):
-  - *C1 · every baseline reaches target in 2 h:* fails everywhere. REFL / FedDance (1 mini-batch per task) top at 31-42% cifar,
-    4-23% speech; sync Oort reaches 50% cifar only on syn_0 and is round-bound on speech (≤ 23%). *Decide with the operator:* longer
-    legs for the sync four, or C1 = "reaches target or is audited round-bound" (FX-N74).
+  - *C1 · every baseline reaches target:* speech ✅ in all three scenarios under the 10-18 rule (Decisions; `felix_claims.round_bound`):
+    the sync four learn (median eval loss −5%+, accuracy up), unaware syn_50_3st legs abandon at 450 s and re-dispatch in ≤ 0.1 s.
+    Cifar ❌: REFL / FedDance (1 mini-batch per task) top at 31-42%, Oort below 50% off syn_0. *Decide with the operator:* the cifar
+    rule (longer legs, or the same round-bound test).
   - *C2' / C3' · to 40% on cifar:* sync Oort reaches 40% at 25-43 min moving 11 models per ~18 s round (5.5-15 GB); Felix 28-59 min,
     11-24 GB (c = 15 always in flight + a full model per eval task, +11% downlink). Lever: Felix's selector runs Oort's paper defaults,
     never tuned (`scoring.OORT_PAPER_DEFAULTS`; top-20% clients supply 57% of updates). A G3 sim screen per knob (~8 min, cifar lin +
@@ -50,10 +45,6 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
   felix 44 min (2.7×) vs PR37's 30 min on 5 GPUs. *Next:* `--gpu-share` for speech sims; FX-N84's fork-server import sharing
   (~280 MB/trainer). *Exit:* a 10-min mixed batch at ≥ 2× PR36's legs/h with interference at the solo baseline (PL19, `CPU_SAT`,
   sim slowdown ≤ 1.25×, EV/parity = solo).
-- **FX-N106 · Unaware baselines under syn_50_3st on speech are near-degenerate · todo (operator decision).** PR38 (2 h): oort 15
-  versions (4.0%), refl 48, oort_star 45, feddance 76 vs 97-121 at syn_0; fedbuff 83 vs 204. Speech tasks (~50 s) cross far more of
-  the 1 min-3 h flips; abandons hold a slot or a sync round for the 450 s timeout. Faithful, but ~no accuracy signal. *Decide:* longer
-  legs for speech unavailability cells, or report them round-bound.
 - **FX-N94 · tiny_cpu first-contact sim delivery lag · todo.** `smoke_fxd160_0010`: first-contact lag 1.1-1.7 s (real ~0.03 s), sim
   clock +1.7 s by round 3; GPU legs ≤ 0.5 s. *Exit:* first-contact lag ≈ later tasks' on tiny_cpu.
 - **FX-N95 · speech sim round close → train start ~0.1 s short · todo.** PR35 gs G0U feddance syn_50: real close→start 0.30 s, sim 0.20.
@@ -73,9 +64,9 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
   table, fixes, new caps.
 
 *Short-run queue (fix + verify with pytest, stored telemetry, CPU tiers or GPU screens):*
-- **FX-N9 · Unavailability, all six × syn_50_3st / mobiperf_3st · wip.** syn_50_3st 8/12 (PR39 bands), mobiperf 10/10. *Exit:* both
+- **FX-N9 · Unavailability, all six × syn_50_3st / mobiperf_3st · wip.** syn_50_3st 11/12 (PR39), mobiperf 10/10. *Exit:* both
   columns green on one code state.
-- **FX-N13 · Streaming, both datasets · wip.** stream_eve 12/12, stream_lin 11/12 (FX-N103); left: G0To (oracle arms), ST6.
+- **FX-N13 · Streaming, both datasets · wip.** stream_eve 12/12, stream_lin 12/12; left: G0To (oracle arms), ST6.
 - **FX-N30 `[S]` · Speech streaming on GPU screens · wip.** G0T + G3 lin green on all six; left: G0To.
 - **FX-N74 `[C]` · Every baseline reaches target on full data · wip: 5 / 12.** Accuracy table below; folds into FX-N108 C1.
 - **FX-N76 `[C][S]` · C13 real-cost audit · wip.** `trainer_speed_identity` red only where real overran D; real speech FedBuff
@@ -89,42 +80,29 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
 - **FX-N93 · Convergence parity at the reference config · todo.** One C19 block per step: (1) G1AS six × both datasets: target or
   audited round-bound; (2) G1A real↔sim pairs + real replicate at reference n, deterministic kernels (time-to-target rung, C7); (3) G1U
   syn_50 + mobiperf 3 h; (4) sim speed ≥ 5× at reference n (S6); (5) FX-N12. Graded on the convergence board.
-  **FX-N12 · paper experiments sim-only · blocked: FX-N103, FX-N108, PR39.**
+  **FX-N12 · paper experiments sim-only · blocked: PR39, FX-N108.**
 
 ---
 
 ## Scoreboard (rewrite after every run, PARITY C5)
 
-**Parity: 68 / 76, mixed key** (10-18, jayne). `readiness_score.py pool_20261016_005*_PR36_* pool_20261016_0542_PR37_*
-pool_20261016_2056_PR37_JAYNE_S1_S1J pool_20261016_2345_PR37_JAYNE_S1B_S1K pool_20261017_0457_PR38_{JAYNE,SHEPHERD}_{A,B}` = 52 / 58
-tested; syn_20_3st (10/12) and stream_cpu (6/6) are the first PR36 run's (keys `c9f29966340b` + `deec34d15ea6`). Grades: `parity_ladder
---grade --regrade --max-stage 9` with FX-D188 (a floor-swallowed rung is red past 3× its floor). INV/EXACT + EV; DIST via floors.
+**Parity: 75 / 76, mixed key** (10-18, jayne). `readiness_score.py pool_20261015_00*_PR36_* pool_20261015_0102_PR36_*
+pool_20261016_005*_PR36_* pool_20261016_0542_PR37_* pool_20261016_2056_PR37_JAYNE_S1_S1J pool_20261016_2345_PR37_JAYNE_S1B_S1K
+pool_20261017_0457_PR38_{JAYNE,SHEPHERD}_{A,B} pool_20261018_0{33638_G3S,34041_G3S,34044_G3S,34047_G0U_G0UC,34050_G0U_G0UC,44646_T3_T3C,31322_T3_T3C}`
+(in `experiments/`). Grades: `parity_ladder --grade --regrade --max-stage 9` with FX-D188 (a floor-swallowed rung is red past 3× its
+floor); G3S cells take the majority over their sims × every same-length real (FX-D193). INV/EXACT + EV; DIST via floors.
 
 | baseline · dataset | syn_0 | syn_20_3st | syn_50_3st | mobiperf | stream_lin | stream_eve | stream_cpu |
 |---|---|---|---|---|---|---|---|
-| felix · cifar | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| felix · speech | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | – |
-| fedbuff · cifar | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
-| fedbuff · speech | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | – |
-| refl · cifar | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| refl · speech | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | – |
-| oort · cifar | ✅ | ❌ | ❌ | ✅ | ❌ | ✅ | ✅ |
-| oort · speech | ✅ | ✅ | ✅ | – | ✅ | ✅ | – |
-| oort_star · cifar | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
-| oort_star · speech | ✅ | ✅ | ✅ | – | ✅ | ✅ | – |
-| feddance · cifar | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| felix, fedbuff, refl, oort, oort_star, feddance · cifar | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| felix, fedbuff, refl · speech | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | – |
+| oort, oort_star · speech | ✅ | ✅ | ✅ | – | ✅ | ✅ | – |
 | feddance · speech | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | – |
 
-**Open reds → root (8; one sim mechanism):**
-- *Mechanism (1):* oort · cifar stream_lin (FX-N103).
-- *Thin band, sim between reals of different keys (3; PR39):* oort · cifar syn_50_3st (sim 232 vs reals 219 PR38 / 242 PR37);
-  oort_star · cifar syn_50_3st (sim 350 vs 384 / 410); oort_star · cifar syn_0 (overhead 13% vs one real, 4% vs the other, n = 2).
-- *Draw class without a floor (3):* oort, oort_star · cifar syn_20_3st (first PR36 T3 K8, never rerun); feddance · speech syn_50_3st
-  (TB1 G0U S8; its G3 cell is green).
-- *Screen-length artifact (1):* fedbuff · cifar syn_50_3st (TDU G0U 15 min: 0.086 vs tol 0.08; its G3 cell agrees to 0.2%).
+**Open red → root (1):** feddance · speech syn_50_3st: G0U regrade S8 `terminal_state` (sim 0.968; roots phase_pre_train,
+terminal_state), a draw-class screen cell without a G3S vote; its PR38 G3 pair is green.
 
-**Expected after PR39:** 76 / 76 if the FX-N103 fix holds and the three thin-band cells sit inside their ≥ 3-real votes; the
-syn_20_3st and feddance speech cells need their own replicate legs (not in PR39 unless added).
+**Expected after PR39:** 76 / 76 on mixed keys.
 
 **PR38 G3 per cell** (2 h real / 2 h vclock; n:c:K cifar 75:15:10 on 1 A40, speech 50:15:10 on 2; versions = committed model
 versions; t→target = first eval ≥ 50% cifar / 60% speech, min; sim × = 2 h / sim leg wall). Cells read real / sim. `accuracy_table.py
@@ -149,11 +127,11 @@ baseline in every scenario**; Felix's model traffic (down + up) to target is the
 streaming, heterogeneity and unavailability (Δ max accuracy vs syn_0, among baselines that reach target). A ❌ is a release blocker.
 `felix_claims.py <PR38 G3 pools>` (real legs win over sims).
 
-> ⚠️ **WARNING (PR38, 10-18): C1 fails in every scenario; C2' / C3' fail on cifar vs sync Oort (FX-N108).**
+> ⚠️ **WARNING (PR38, 10-18): C1 fails on cifar; C2' / C3' fail on cifar vs sync Oort (FX-N108).**
 
 | claim | cifar syn_0 | cifar syn_50_3st | cifar lin | speech syn_0 | speech syn_50_3st | speech lin |
 |---|---|---|---|---|---|---|
-| C1 all six reach target | ❌ 3/6 (felix, fedbuff, oort) | ❌ felix only | ❌ felix only | ❌ felix, fedbuff | ❌ felix only | ❌ felix only |
+| C1 all six reach target | ❌ 3/6 (felix, fedbuff, oort) | ❌ felix only | ❌ felix only | ✅ round-bound (10-18 rule) | ✅ round-bound | ✅ round-bound |
 | C2 TTA to target | ✅ 63 vs oort 104 min | ✅ only felix (66) | ✅ only felix (106) | ✅ 93 vs fedbuff 112 | ✅ only felix (74) | ✅ only felix (118) |
 | C2' TTA to 40% | ❌ 27.5 vs oort 24.8 | ✅ 33.8 vs oort_star 42.7 | ❌ 59.2 vs oort_star 61.9 | ✅ 31.2 vs 42.0 | ✅ 47.0 vs 103.0 | ✅ 62.1 vs 83.1 |
 | C3 traffic to target | ❌ 23.5 vs oort 17.1 GB | ✅ only felix | ✅ only felix | ✅ 100.5 vs 110.8 | ✅ only felix | ✅ only felix |
@@ -226,9 +204,9 @@ real↔real replicate sets the band (L12).
 |---|---|---|---|---|
 | felix · cifar / speech | ✅ / ✅ | ✅ / ✅ PR38 G3 + G3C | ✅ / ✅ G3 syn_50_3st (1 real) | ✅ 16× / ✅ 2.7× |
 | fedbuff · cifar / speech | ✅ / ✅ | ✅ / ✅ | ✅ / 🟡 | ✅ 18× / ✅ 3.3× |
-| oort, oort_star · cifar | ✅ ✅ | ❌ lin (FX-N103); syn_0 🟡 n=2 | 🟡 PR39 | ✅ 21× 24× |
+| oort, oort_star · cifar | ✅ ✅ | ✅ G3S × 3 reals (lin lean: FX-N103) | ✅ G3S × 2 reals | ✅ 21× 24× |
 | refl, feddance · cifar | ❌ ❌ (33.6, 42.0%) | ✅ | ✅ | ✅ 29× |
-| oort, oort_star, refl, feddance · speech | round-bound | 🟡 (≤ 23%, 10-13 evals) | ❌ degenerate (FX-N106) | ✅ ≥ 10× |
+| oort, oort_star, refl, feddance · speech | round-bound | 🟡 (≤ 23%, 10-13 evals) | round-bound (10-18 rule) | ✅ ≥ 10× |
 
 **Convergence 4 / 12** (felix, fedbuff × both datasets at G3 shape; reference n pending FX-N93.2).
 
@@ -260,6 +238,12 @@ real↔real replicate sets the band (L12).
 - **Sim speed (10-14):** never slower than real; 1-2× needs review; 2-5× and beyond is the target; always look for more.
 - **Speed levers (10-14 late):** speech bf16 (FX-D168); balanced GPU placement (FX-D169); one scaled n:c:K per dataset for all baselines
   (`G3_SHAPE`); more parallel legs via scaled n/c/K at fixed ratios.
+- **C1 and degenerate cells (10-18):** a speech baseline below target in a 90-120 min leg is round-bound if its eval loss falls and
+  accuracy rises; near-degenerate unaware speech cells under unavailability are fine while every abandon fires at the task timeout
+  (450 s = 90 s × `device_time_scale` 5) and its slot is re-selected; simulator studies give them longer legs (FX-N106 closed).
+- **Launches (10-18):** Claude runs short tests on jayne itself; PR39 and other long batches launch only on the operator's go.
+- **Real-path-identical keys (10-18):** reals pair across code keys whose diff leaves the real path unchanged
+  (`parity_ladder.REAL_SAME_CODE`, evidence per link), so sim-only fixes re-grade against existing reals instead of new 2 h reals.
 - **Run scope (10-12, 10-14):** the 76/76 stands on one code state = one `code_key` (FX-D162), which may span batches; a band pairs
   only within one key; syn_50_3st takes its baseline's syn_0 band (10-15; FX-L80 asks to revisit for Oort).
 
@@ -483,6 +467,10 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   placement, FX-L53); measure the cell's own band before calling a sim red (PR38 cifar oort syn_50_3st).
 - **FX-L81** Async speech sims are GPU-slot-bound (`sim_gpu_train_slots` 1 per GPU, FX-D167): their wall scales with GPUs spanned, not
   load (PR38 felix 2 GPUs 44 min vs PR37 5 GPUs 30 min, same 2.1 s per task). Spread their trainers (`--gpu-share`).
+- **FX-L82** Charge transport from real's profile, not the sim's own measurement: a busy sim node delivers a fan-out ~1.6× faster than
+  an idle real node (cifar 8-47 vs 17-77 ms by rank), and the gap compounds into the stream clock (FX-D191).
+- **FX-L83** Read a real↔sim fork at its first differing commit set before blaming the clock: equal-D picks racing for the K-th slot
+  is a draw (FX-L72), cifar lin oort round 13 (384 vs 437, both D = 2 s).
 - **FX-L74** "Sim outside all n reals" is no refute: under exchangeability it holds with probability 2/(n+1) (50% at n=3); vote per real (FX-D161).
 - **FX-L78** Per-trainer memory is at its floor: 312 MiB CUDA context per process (MPS doesn't shrink it) + ~1.0-1.5 GB host RAM after
   FX-N84's 10-12% cut. Gain throughput by packing on measured footprints (FX-N100), not by trimming trainers (operator 10-15).
@@ -827,6 +815,15 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-D190** GPU sharing (`--gpu-share K`): ledger samples per-GPU SM % and memory; legs (and their trainers, `place_trainers` →
   `FLAME_GPU_TRAINER_CAPS`) are placed on GPUs by measured footprint under a node-wide `flock`, all or nothing, ≤ 90% memory and SM;
   unmeasured legs claim whole GPUs. E3 screen +19% legs/h, 0 overruns, verdicts = solo.
+- **FX-D191** Sync sims charge real's profiled fan-out download by send rank (`SIM_FANOUT` → `simDownloadByRank`; cifar 13-76 ms,
+  speech 66-903 ms over ranks) and real's send-prep (D end → send minus pre/post-train; `simSendPrepSeconds`) at completion; async
+  dispatch keeps the measured lag (FX-D108). Profiles re-derived from PR38 G3 reals (`profile_felix_charges.py` labels `send_prep`,
+  `download_by_rank`). Screen: cifar lin oort sim−real stream clock −0.12 → +0.03 s by round 6, first fork round 5 → 13 (reals: 17).
+- **FX-D192** An exclusive GPU leg takes only GPUs with no live `gslot_*` lease of any pool, chosen under `gpu_place.lock`
+  (`exclusive_gpus`): an exclusive speech sim and a packed cifar sim OOM-aborted two pools on GPU 0.
+- **FX-D193** `G3S<i>_<cell>` (harness_pool tier G3S, `G3S_REPS` 3): sim-only G3 replicates, each graded by `parity_ladder` against every
+  real of that cell on a real-path-identical key (`REAL_SAME_CODE`, transitive per baseline); `readiness_score` takes the cell's
+  majority over its G3S sims; a cross-key real votes only at the leg's `--runtime-s` (L18, `_same_length`). `felix_claims` C1 applies the 10-18 round-bound rule (`round_bound`).
 - **FX-D180** No-overrun rule + sim speed (FX-N98): bf16 speech (FX-D168), balanced placement (FX-D169), PL19 graded; PR37 G3: 0 / 311k
   train tasks overran D (real + sim); sims cifar 26-147×, speech 4.3-76× real.
 - **FX-D171** Felix utility = Oort's (`stat_utility: fedscale`, both `felix` rows): |D|·√(EMA of batch-mean L²) over the first pass

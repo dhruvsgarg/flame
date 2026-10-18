@@ -44,6 +44,8 @@ def score(pools):
             sc = scenario(c.phase, c.trace)
             if sc is None or c.baseline not in BASELINES:
                 continue
+            if c.status == "red" and any(re.match(r"real (MISSING|EV0)\b", w) for w in c.why.split("; ")):
+                continue  # L18: a dead real leg (no telemetry) is no evidence; the cell's other pairs grade it
             pairs[(c.baseline, c.dataset, sc, c.phase, c.trace)] = c.status
     # G3S<i>_<cell> sims vote as one cell (majority red = red, FX-N103), superseding that cell's older-key G3 pair.
     votes = {}

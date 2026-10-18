@@ -146,6 +146,8 @@ REAL_SAME_CODE = (
      "git diff 10378bf8a 17acb20c8: FX-D191 sim-only (SIM_FANOUT set/read only when simulated), sim profiles"),
     ({"8ee1e79a2897", "5e0137646a6a"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
      "git diff 17acb20c8 6d5e16541: harness_pool G3S tier + sim-only GPU count"),
+    ({"5e0137646a6a", "2872646e24f4"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "harness_pool FX-D192 exclusive GPU placement"),
 )
 
 
@@ -159,6 +161,22 @@ def _real_same_code(a: str, b: str, baseline: str) -> bool:
                 todo += [x for x in keys if x not in seen]
                 seen |= keys
     return b in seen
+
+
+def _runtime_s(phase_dir: Path, baseline: str) -> Optional[str]:
+    """`--runtime-s` of a phase's leg for this baseline (None if no cmd.txt records it)."""
+    for c in phase_dir.glob("*/cmd.txt"):
+        t = c.read_text()
+        b, rt = re.search(r"--baselines (\S+)", t), re.search(r"--runtime-s (\S+)", t)
+        if b and rt and b[1] == baseline:
+            return rt[1]
+    return None
+
+
+def _same_length(phase_dir: Path, baseline: str, cmd_txt: str) -> bool:
+    """L18: a cross-pool real pairs only at equal `--runtime-s`."""
+    rt, own = _runtime_s(phase_dir, baseline), re.search(r"--runtime-s (\S+)", cmd_txt)
+    return rt is None or own is None or rt == own[1]
 
 
 def _replicate_cells(root: Path) -> dict:
@@ -195,6 +213,8 @@ def _replicate_cells(root: Path) -> dict:
             tag = target.replace("G3_", "G3C_").replace("G0U_", "G0UC_").replace("T3_", "T3C_").replace("G0T_", "G0TC_")
             for ph in {target, tag}:
                 f = p / ph / "summary.tsv"
+                if not _same_length(p / ph, b, t):
+                    continue
                 for r in (csv.DictReader(open(f), delimiter="\t") if f.exists() else []):
                     if r["baseline"] == b and r.get("real_dir") and Path(r["real_dir"]).is_dir():
                         ctl = cmd.parent / f"control_{p.name}_{ph}"  # floors land in this pool, never the other key's
@@ -211,6 +231,8 @@ def _replicate_cells(root: Path) -> dict:
                 continue
             for ph in (target, target.replace("G3_", "G3C_")):
                 f = p / ph / "summary.tsv"
+                if not _same_length(p / ph, b, cmd.read_text()):
+                    continue
                 for r in (csv.DictReader(open(f), delimiter="\t") if f.exists() else []):
                     if r["baseline"] == b and r.get("real_dir") and Path(r["real_dir"]).is_dir():
                         ctl = cmd.parent / f"control_{p.name}_{ph}"

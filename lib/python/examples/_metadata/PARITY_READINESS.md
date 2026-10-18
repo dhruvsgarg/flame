@@ -96,6 +96,7 @@ A new failure mode adds a check here in the same session.
 | PL23 | packed GPU footprints are per nominal GPU, floored per trainer, and at most FX-T36 trainers share a GPU | `gpu|` history ≈ exclusive peaks (cifar n50 ~20 GB, speech ~40 GB/GPU); no `CUDA error: out of memory` in a smoke's trainers.log (FX-D175) | PR36-short: B1 + S1 OOM-aborted, 137 trainers on one A40 |
 | PL24 | a sim aggregator exits via `exit_after_run`, never native teardown | no `terminate called without an active exception` / `Fatal Python error` after `channel leave done` (FX-D178) | PR36-short B1: one exit segfault aborted 9 cells |
 | PL25 | no pool runs on a stale RAM cap | `BLOCKED … pool RAM budget` while node RAM < 70% used = start-time snapshot (FX-N102) | PR37 shepherd S1: 2 legs at a time for 20 h, RAM peak 329 of 504 GB |
+| PL26 | exclusive and `--gpu-share` pools co-run on one node only on FX-D192+ code | `git log` contains `exclusive_gpus`; no `CUBLAS_STATUS_ALLOC_FAILED` / CUDA OOM in a leg's trainers.log | 10-18: two G3S pools OOM-aborted on GPU 0 |
 | PL21 | a new or changed prefix-safe EV passes on stored legs of all six × every trace before launch | run it over the last batch's legs (`event_invariants.load_run` + the check) | PR36: EV21 DOOMED 17 oort_star/fedbuff legs mid-batch |
 
 ## Throughput (both tracks; operator 10-15)
@@ -184,8 +185,8 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR39 · FX-N103 confirm + ≥ 3-real bands for the thin cifar Oort cells (FELIX Next steps):** one `dispatch.py` batch after the
-  FX-N103 fix → 76 / 76 → Felix claims gate (FX-N108) → sim-only experiments.
+- **PR39 · G3S1 votes for the last red + bands (FELIX Next steps):** `dispatch.py batches/pr39.yaml` → 76 / 76 → Felix claims gate
+  (FX-N108) → sim-only experiments.
 - **Long blocks (G1U, G1AS grid) · deferred by C18** until PR37: FELIX FX-N93.
 
 **Operator decisions** (Felix-specific ones: FELIX Decisions)

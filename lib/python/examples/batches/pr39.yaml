@@ -1,15 +1,9 @@
-# PR39 (FELIX Next steps): bands for the thin cifar Oort cells, FX-N103 on fresh charge profiles, the old draws and the G0U artifact,
-# and felix/fedbuff syn_50_3st on the re-derived gate_release. `dispatch.py batches/pr39.yaml`
+# PR39 (FELIX Next steps): G3S1 sim-only votes for the cells without one, a third cifar Oort-family syn_50_3st real, and
+# felix/fedbuff syn_50_3st on the re-derived gate_release. `dispatch.py batches/pr39.yaml`
 name: pr39
 common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1"
 stages:
-  - {id: A, args: "--tier G3 --datasets cifar10 --baselines oort,oort_star --phases G3_syn_50_3st"}
-  - {id: B, args: "--tier G3 --datasets cifar10 --baselines oort_star --phases G3_syn_0"}
-  - {id: C, args: "--tier G3 --datasets cifar10 --baselines oort --phases G3_lin_syn_0"}
+  - {id: S, args: "--tier G3S --gpu-share 2 --datasets google_speech --phases 'gs_G3S1_syn_0 gs_G3S1_syn_50_3st gs_G3S1_lin_syn_0'"}
+  - {id: C, args: "--tier G3S --datasets cifar10 --baselines felix,fedbuff,refl,feddance --phases G3S1_lin_syn_0"}
   - {id: D, args: "--tier G3 --datasets all --baselines felix,fedbuff --phases 'G3_syn_50_3st gs_G3_syn_50_3st'"}
   - {id: RA, args: "--tier G3C --datasets cifar10 --baselines oort,oort_star --phases G3C_syn_50_3st"}
-  - {id: RB, args: "--tier G3C --datasets cifar10 --baselines oort_star --phases G3C_syn_0"}
-  - {id: RC, args: "--tier G3C --datasets cifar10 --baselines oort --phases G3C_lin_syn_0"}
-  - {id: T, args: "--tier T3,T3C --datasets cifar10 --baselines oort,oort_star --traces syn_20_3st"}
-  - {id: U, args: "--tier G0U,G0UC --datasets google_speech --baselines feddance --traces syn_50_3st"}
-  - {id: V, args: "--tier G0U,G0UC --datasets cifar10 --baselines fedbuff --traces syn_50_3st"}
