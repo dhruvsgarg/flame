@@ -142,6 +142,8 @@ REAL_SAME_CODE = (
      "git diff 70895fcfc 2f8dca198: sim-only FX-D182, Felix-only FX-D183/D185, harness_pool scheduling FX-D179/D186/D187"),
     ({"44d44bd2d67b", "3dbbe373124a"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
      "git diff 2f8dca198 10378bf8a: sim charge profiles + sim_gpus, telemetry fields/labels, comments"),
+    ({"3dbbe373124a", "8ee1e79a2897"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "git diff 10378bf8a 17acb20c8: FX-D191 sim-only (SIM_FANOUT set/read only when simulated), sim profiles"),
 )
 
 

@@ -112,6 +112,7 @@ G0U_OORT = {("cifar10", "syn_50_3st"): dict(n=50, agg_goal=10, c=13, gpus=1),
 # D). K=10 keeps Oort's exploitLen >= 1 (FX-L63), sync K/n >= 5% (L34); c=15 > K keeps async overlap; <= 75 / 25 per A40.
 G3_SHAPE = {"cifar10": dict(n=75, agg_goal=10, c=15, gpus=1), "google_speech": dict(n=50, agg_goal=10, c=15, gpus=2, sim_gpus=4)}
 G3_RUNTIME_S, G3_EVAL_EVERY = 7200, 10  # 2 h legs (operator 10-15; R6: convergence sign-off 2-4 h)
+G3S_REPS = 3  # FX-N103: sim replicates per G3 cell, graded against its real-path-identical reals (parity_ladder)
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
@@ -374,6 +375,9 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         if tier == "G3C":
             out = [replace(ph, pid=ph.pid.replace("G3_", "G3C_"), kind="real") for ph in out]
         return out
+    if tier == "G3S":  # sim-only replicates of every G3 cell: G3S<i>_<cell>, graded on banked + equivalent reals
+        return [replace(ph, pid=ph.pid.replace("G3_", f"G3S{i}_"), kind="sim")
+                for i in range(1, G3S_REPS + 1) for ph in tier_phases("G3", baselines, ds)]
     if tier in ("G1X", "G1XP"):  # FedDance sprint: EuroSys'26 setup, every baseline on one config; G1XP = real+sim convergence pair
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
         kw = dict(n=GPU_N[ds], dataset=ds, harness="none", trainer_hp=f"{full} {EUROSYS_TRAINER_HP}", gpus=4, agg_goal=EUROSYS_K)
@@ -509,7 +513,7 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
             elif ph.kind == "real":  # replicate for a real<->real control (R7)
                 jobs.append(mk("real", base + ["--mode", "real"]))
             elif ph.kind == "sim":
-                jobs.append(mk("sim", base + ["--mode", "sim", "--real-from", "auto"]))
+                jobs.append(mk("sim", base + ["--mode", "sim", "--real-from", "auto"], gg=ph.sim_gpus or g))
             else:
                 jobs.append(mk("sim", base + ["--mode", "sim"]))
     size_gpu_slots(jobs, history, gpu_per_trainer)
