@@ -73,7 +73,7 @@ KNOWN: Tuple[Tuple[str, Tuple[str, ...], str, str], ...] = (
 # Phases whose sim leg must FAIL a named check (injected bugs; P4 = the cold-start-gate-off control, FX-D8).
 EXPECTED_FAIL = {"P11a": "EV10", "P11b": "EV16", "P11c": "EV3", "P4": "EV10"}
 # Real-only / sim-only phases (harness_pool kind="real" / "sim_ev"): graded on the one leg they run.
-REAL_ONLY = ("G0C_", "G0UC_", "G0TC_", "T3C_", "G2C_")
+REAL_ONLY = ("G0C_", "G0UC_", "G0TC_", "T3C_", "G2C_", "G3C_")
 SIM_ONLY = ("G1AS", "G2S")
 
 
@@ -137,13 +137,14 @@ def _code_state(pool: Path) -> str:
 
 def _replicate_cells(root: Path) -> dict:
     """{(phase, baseline): (own real, grade cmd.txt, [(replicate real, its control phase dir)])}: G0C per G0 syn_0 cell,
-    G0UC per G0U, G0TC per G0T, T3C per T3 cell; replicates may sit in any same-code pool of the block."""
+    G0UC per G0U, G0TC per G0T, T3C per T3, G3C per G3 cell; replicates may sit in any same-code pool of the block."""
     cells = {}
     same = [p for p in root.parent.iterdir() if p.is_dir() and _code_state(p) == _code_state(root)]  # L18: one code state
     for f in sorted({*root.glob("*G0C_syn_0/summary.tsv"), *(g for p in same for g in p.glob("*G0UC_*/summary.tsv")),
                      *(g for p in same for g in p.glob("*T3C_*/summary.tsv")),
-                     *(g for p in same for g in p.glob("*G0TC_*/summary.tsv"))}):
-        tag = next(t for t in ("G0UC_", "G0TC_", "T3C_", "G0C_") if t in f.parent.name)
+                     *(g for p in same for g in p.glob("*G0TC_*/summary.tsv")),
+                     *(g for p in same for g in p.glob("*G3C_*/summary.tsv"))}):
+        tag = next(t for t in ("G0UC_", "G0TC_", "T3C_", "G3C_", "G0C_") if t in f.parent.name)
         pre, _, trace = f.parent.name.partition(tag)
         target = f"{pre}{tag[:-2]}_{trace}"
         for r in csv.DictReader(open(f), delimiter="\t"):
@@ -187,6 +188,8 @@ def _control_floors(root: Path, checker: Path, jobs: int) -> dict:
     for (target, b), fl in list(floors.items()):
         if target.endswith("G0_syn_0"):
             floors.setdefault((target[:-1] + "20", b), fl)
+        if target.endswith("G3_syn_0"):  # PR37: syn_50_3st takes its baseline's syn_0 band (operator 10-15)
+            floors.setdefault((target[:-len("syn_0")] + "syn_50_3st", b), fl)
         for mode in ("T_lin", "T_eve", "To_lin", "To_eve"):  # streaming screens share the G0U cohort (lower bound)
             floors.setdefault((target.replace("G0U_", f"G0{mode}_"), b), fl)
     return floors

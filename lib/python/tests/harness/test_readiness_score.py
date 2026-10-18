@@ -20,7 +20,10 @@ def test_scenario_mapping():
     assert rs.scenario("G0T_eve_syn_0", "syn_0") == "stream_eve"
     assert rs.scenario("gs_G0T_lin_syn_50_3sts", "syn_50_3st") == "stream_lin"
     assert rs.scenario("gs_P7", "syn_0") == "stream_cpu"
-    for skipped in ("P11a", "P7o", "G0To_lin_syn_0", "G1AS", "T3C_syn_20_3sts", "gs_G0UC_syn_50_3st", "G0TC_lin_syn_0"):
+    assert rs.scenario("gs_G3_lin_syn_0", "syn_0") == "stream_lin"
+    assert rs.scenario("G3_syn_50_3st", "syn_50_3st") == "syn_50_3st"
+    for skipped in ("P11a", "P7o", "G0To_lin_syn_0", "G1AS", "T3C_syn_20_3sts", "gs_G0UC_syn_50_3st", "G0TC_lin_syn_0",
+                    "G3C_lin_syn_0"):
         assert rs.scenario(skipped, "syn_50_3st") is None, skipped
 
 

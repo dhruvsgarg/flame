@@ -115,3 +115,17 @@ def test_commit_invalidates_cache():
     agg._distribute_weights("tag", "train")
     assert ch.dumps_calls == 2
     assert ch.sent[-1][1][MessageType.WEIGHTS_BYTES] == {"w": 2.0}
+
+
+@pytest.mark.parametrize("on, want", [(True, 0.0), (False, 10.0)])
+def test_eval_expected_completion_is_its_dispatch(on, want):
+    """FX-D176: an eval's gate entry is its send stamp, not send + train D (PR36-short Felix eval past-dated 2-3 s)."""
+    ch = _Channel(["e1"])
+    agg = _agg(ch)
+    agg.simulated = True
+    agg._sim_known_delay_s = {"e1": 10.0}
+    agg._sim_eval_expect_at_send = on
+    agg._distribute_weights("tag", "eval")
+    assert agg._sim_inflight_expected["e1"] - agg._vclock.now == pytest.approx(want, abs=1.0)
+    agg._distribute_weights("tag", "train")
+    assert agg._sim_inflight_expected["e1"] - agg._vclock.now == pytest.approx(10.0, abs=1.0)

@@ -126,6 +126,28 @@ def test_floors_take_every_same_code_replicate(tmp_path, monkeypatch):
     assert floors[("gs_G0U_syn_50_3st", "feddance")] == {"trainers_at_n": 0.07}
 
 
+def test_g3c_replicate_floors_its_g3_cell_and_syn_50(tmp_path, monkeypatch):
+    # PR37 pass 2: a G3C real (another same-code pool) floors its G3 cell; syn_50_3st takes the syn_0 band (operator 10-15).
+    exp = tmp_path / "experiments"
+    for pool in ("pool_A", "pool_B"):
+        (exp / pool).mkdir(parents=True)
+        (exp / pool / "code_key.txt").write_text("k1")
+    for ph in ("G3C_syn_0", "G3C_lin_syn_0"):
+        (exp / "pool_B" / ph).mkdir()
+        (exp / "pool_B" / ph / "summary.tsv").write_text(f"trace\tbaseline\treal_dir\nsyn_0\toort\tr_{ph}\n")
+    for ph in ("G3_syn_0", "G3_lin_syn_0"):
+        g = exp / "pool_A" / ph / f"{ph}_oort_grade"
+        g.mkdir(parents=True)
+        (g / "cmd.txt").write_text(f"x --real-dir own_{ph} --sim-dir s --agg-goal 10 --runtime-s 7200")
+
+    def run(cmd, **_):
+        Path(cmd[cmd.index("--json-out") + 1]).write_text(json.dumps({"terminal_state": {"trainers_rel_diff": 0.04}}))
+    monkeypatch.setattr(lad.subprocess, "run", run)
+    floors = lad._control_floors(exp / "pool_A", Path("checker"), 2)
+    assert {k for k in floors} == {("G3_syn_0", "oort"), ("G3_lin_syn_0", "oort"), ("G3_syn_50_3st", "oort")}
+    assert lad._replicate_cells(exp / "pool_A")[("G3_lin_syn_0", "oort")][2][0][0] == Path("r_G3C_lin_syn_0")
+
+
 def test_minority_of_reals_is_the_draw(tmp_path):
     # L13, PR34 speech feddance eve: sim red vs its own real only (1 of 3 reals) is the draw; vs a majority, the code.
     red = {"terminal_state": {"ok": False, "tier": "EXACT"}}

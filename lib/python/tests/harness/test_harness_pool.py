@@ -629,3 +629,12 @@ def test_trainers_fill_gaps_beside_other_legs(tmp_path, monkeypatch):
         assert gb <= pool.GPU_MEM_CAP * pool.GPU_GB - (19.8 if g == 0 else 0.0) + 1e-6
     assert plan[-1][3] >= pool.AGG_GPU_GB  # the aggregator's GPU is last and carries its share
     assert pool.place_trainers(50, (1.13, 0.0), [0], b, {}) is None  # all or nothing: no partial reservation
+
+
+def test_grade_reserves_checker_ram_not_the_legs_peak(monkeypatch):
+    # FX-D187: measured peers gave PR37 grades the real leg's ~90 GB reservation
+    monkeypatch.setattr(pool, "MEASURED", True)
+    hist = {"ram|cifar10|none|real|syn_0|felix|n75|rt7200": [81.0]}
+    mk = lambda mode: pool.Job(f"G3_syn_0_felix_{mode}", "G3_syn_0", "syn_0", "felix", mode, [], 75, 7200, "none", 2, 1.0)
+    assert pool.mem_estimate_gb(mk("grade"), hist) == pool.GRADE_RAM_GB
+    assert pool.mem_estimate_gb(mk("real"), hist) > 80

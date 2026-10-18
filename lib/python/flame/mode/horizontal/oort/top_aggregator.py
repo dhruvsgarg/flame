@@ -872,7 +872,7 @@ class TopAggregator(BaseTopAggregator):
 
         if num_eligible < _starv_threshold:
             if self.simulated and self.trainer_event_dict is not None:
-                _nxt = self._next_avail_vclock()
+                _nxt = self._sim_starvation_wake(channel)  # FX-D182
                 # A [SIM_RESIDENCE]-held trainer frees up at its sct: also a wake-up (FX-D6).
                 _buf = getattr(self, "_sim_buffer", None)
                 if _buf is not None and getattr(

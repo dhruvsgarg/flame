@@ -69,6 +69,8 @@ def _flame_opt(a, server_lr, bn_absolute_mean):
         from flame.optimizer.fedscale_yogi import FedAvgYoGi
         from flame.optimizer.refl import REFL
         kw = dict(a.server["kwargs"])
+        if a.server["sort"] == "fedbuff":
+            kw["learning_rate"] = server_lr  # the pair's server lr (default: the reference's)
         if a.server["sort"] == "refl":
             kw["deadline"] = 1e9  # no wall-clock deadline in-process
         return {"refl": REFL, "fedavg": FedAvg, "fedavg_yogi": FedAvgYoGi,

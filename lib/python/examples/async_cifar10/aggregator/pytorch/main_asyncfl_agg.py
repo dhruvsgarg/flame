@@ -106,7 +106,7 @@ class PyTorchCifar10Aggregator(ExampleAggregatorMixin, OracleInjectMixin, TopAgg
 
 
 if __name__ == "__main__":
-    from flame.launch.cli import load_config_from_argv
+    from flame.launch.cli import exit_after_run, load_config_from_argv
 
     parser = argparse.ArgumentParser(description="")
     parser.add_argument(
@@ -129,3 +129,5 @@ if __name__ == "__main__":
 
     a.compose()
     a.run()
+
+    exit_after_run()

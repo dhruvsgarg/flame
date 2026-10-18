@@ -1961,8 +1961,13 @@ def commit_visibility_parity(real: dict, sim: dict, warn_ks: float = 0.2,
     def withheld_keys(loaded):
         return {(e.get("round"), e.get("end_id")) for e in loaded.get("withheld_deliveries", [])}
 
-    rv = vals(real["agg_rounds"], withheld_keys(real))
-    sv = vals(sim["agg_rounds"], withheld_keys(sim))
+    def matched(agg_rounds, last):  # L10: rounds both legs reached
+        return [e for e in agg_rounds if last is None or e.get("round") is None or e["round"] <= last]
+
+    tops = [max((e["round"] for e in m["agg_rounds"] if e.get("round") is not None), default=None) for m in (real, sim)]
+    last = None if None in tops else min(tops)
+    rv = vals(matched(real["agg_rounds"], last), withheld_keys(real))
+    sv = vals(matched(sim["agg_rounds"], last), withheld_keys(sim))
     if not rv or not sv:
         return {"ok": True, "tier": "DIST", "skipped": True,
                 "reason": "update_visibility_lag_s absent in one mode "
@@ -1978,6 +1983,9 @@ def commit_visibility_parity(real: dict, sim: dict, warn_ks: float = 0.2,
     # 100s of ms — judge those on mean_diff, not the degenerate-KS artifact.
     pointmass = (not math.isnan(rm) and not math.isnan(sm)
                  and abs(rm) <= NEAR_ZERO_LAG_S and abs(sm) <= NEAR_ZERO_LAG_S)
+    # FX-D184: lags scale with device time; the 2 s tolerance is calibrated at the 90 s (cifar) task timeout
+    scale = max(1.0, max(real.get("task_timeout_s", 90.0), sim.get("task_timeout_s", 90.0)) / 90.0)
+    warn_mean_diff *= scale
     if pointmass:
         ok = True
     elif not math.isnan(ks):
@@ -1993,6 +2001,7 @@ def commit_visibility_parity(real: dict, sim: dict, warn_ks: float = 0.2,
         "sim_p90": round(percentile(sv, 90), 3),
         "ks_stat": round(ks, 3) if not math.isnan(ks) else None,
         "mean_diff": round(mean_diff, 3) if not math.isnan(mean_diff) else None,
+        "mean_tol": round(warn_mean_diff, 3),
     }
     if pointmass:
         out["note"] = ("both modes commit immediately (mean lag <= {:.0f}ms): "
@@ -4771,6 +4780,7 @@ def _fidelity_score(raw_obs: list, gt, span: float, lag_tol_s: float = 30.0,
     Returns None if there's nothing to score (empty input, or ground-truth /
     observed fraction computation comes up empty).
     """
+    raw_obs = [p for p in raw_obs if p[0] <= span]  # PR36-short: a trainer outlives the last selection
     if not raw_obs:
         return None
     obs = raw_obs
@@ -4796,7 +4806,7 @@ def _fidelity_score(raw_obs: list, gt, span: float, lag_tol_s: float = 30.0,
     if obs_frac is None or not gt_frac:
         return None
     tvd = total_variation_distance(obs_frac, gt_frac)
-    lags, missed, spurious = _match_transitions(gt_transitions, raw_obs, lag_tol_s)
+    lags, missed, spurious = _match_transitions(gt_transitions, [p for p in raw_obs if p[0] > t_start], lag_tol_s)  # gt's (t_start, t_end]
     return tvd, lags, missed, spurious
 
 

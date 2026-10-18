@@ -500,6 +500,25 @@ def test_trainer_speed_support_guard_tolerates_mix_catches_tail():
     assert res_bad["support_ratio"] > 1.0 + res_bad["support_tol"], res_bad
 
 
+def test_commit_visibility_grades_matched_rounds_only():
+    """PR36-short feddance: sim's extra round past real's stop (89 s lags) must not fail U6 (L10)."""
+    from parity.checks import commit_visibility_parity
+    real = {"agg_rounds": [{"round": r, "update_visibility_lag_s": [6.0, 5.0, 0.0]} for r in range(1, 11)]}
+    sim = {"agg_rounds": real["agg_rounds"] + [{"round": 11, "update_visibility_lag_s": [89.0, 85.0, 0.0]}]}
+    assert commit_visibility_parity(real, sim)["ok"]
+
+
+def test_commit_visibility_mean_tolerance_scales_with_task_timeout():
+    # FX-D184: speech (450 s timeout) barrier lags ~46 s; a 2.1 s mean gap is 2 s-red at cifar scale, green at speech scale
+    from parity.checks import commit_visibility_parity
+    real = {"agg_rounds": [{"round": r, "update_visibility_lag_s": [45.0 + (r % 3)]} for r in range(1, 200)]}
+    sim = {"agg_rounds": [{"round": r, "update_visibility_lag_s": [47.1 + (r % 3)]} for r in range(1, 200)]}
+    assert not commit_visibility_parity(real, sim, warn_ks=1.0)["ok"]
+    real["task_timeout_s"] = sim["task_timeout_s"] = 450.0
+    res = commit_visibility_parity(real, sim, warn_ks=1.0)
+    assert res["ok"] and res["mean_tol"] == 10.0, res
+
+
 def test_commit_visibility_parity():
     """U6 commit-timeliness: KS the update_visibility_lag_s distributions.
 

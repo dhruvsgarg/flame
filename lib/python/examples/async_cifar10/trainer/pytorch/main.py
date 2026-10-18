@@ -1240,7 +1240,10 @@ class PyTorchCifar10Trainer(Trainer):
                 + _eval_dur
             )
         elif self.training_delay_enabled:
-            eval_delay = math.floor(self.training_delay_s / 20.0)
+            if str(getattr(self.config.hyperparameters, "realEvalDelayFloor", False)).lower() == "true":
+                eval_delay = math.floor(self.training_delay_s / 20.0)  # pre-FX-D183 revert
+            else:  # FX-D183: real eval spans max(gpu, D/20), as sim charges
+                eval_delay = max(0.0, _modeled_eval_delay_s - _real_eval_gpu_s)
             time.sleep(eval_delay)
             logger.debug(
                 f"Delayed eval time for trainer " f"{self.trainer_id} by {eval_delay}s"

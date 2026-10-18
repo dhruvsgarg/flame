@@ -15,6 +15,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -210,6 +211,30 @@ def leg_runs(pool: Path):
             yield ln
 
 
+def status_board(out: Path, pools: dict, status: dict, t0: float) -> list:
+    """R23: per-stage progress + every failed, stalled or doomed leg, rendered to the pane (no file)."""
+    lines = [f"STATUS {(time.time() - t0) / 3600:.1f} h"]
+    alerts = []
+    for sid, pool in pools.items():
+        prog = ""
+        so = out / f"{sid}.out"
+        if so.exists():
+            pl = [ln for ln in so.read_text(errors="replace").splitlines() if " PROGRESS " in ln]
+            if pl:
+                m = re.search(r"(\[[# ]*\] )?(\d+/\d+ done).*?\| (elapsed .*)$", pl[-1])
+                n_run = pl[-1].split("| running: ")[-1].split(" | ")[0].count("/") if "| running: " in pl[-1] else 0
+                prog = f"{m.group(1) or ''}{m.group(2)}, {n_run} running, {m.group(3)}" if m else pl[-1][-120:]
+        lines.append(f"  {sid:5s} {status.get(sid, 'running'):14s} {prog or 'starting'}")
+        plog = pool / "pool.log"
+        if plog.exists():
+            for ln in plog.read_text(errors="replace").splitlines():
+                if " DONE  " in ln and (" rc=0 " not in ln or " STALLED " in ln or " DOOMED " in ln):
+                    alerts.append(f"  !! {sid}: {ln.split(' DONE  ', 1)[1][:110]}")
+        if (pool / "ABORT.txt").exists():
+            alerts.append(f"  !! {sid}: POOL ABORTED: {' '.join((pool / 'ABORT.txt').read_text(errors='replace').split())[:160]}")
+    return lines + (alerts or ["  no failed, stalled or doomed legs"])
+
+
 def probe(out: Path, pools: dict) -> list:
     """R24 early probes: PASS/FAIL/WAIT per claim from the legs' own telemetry."""
     lines = []
@@ -369,7 +394,7 @@ def main() -> int:
     threads = [threading.Thread(target=lane, args=(ln, ss), daemon=True) for ln, ss in by_lane.items()]
     for th in threads:
         th.start()
-    last_probe = 0.0
+    last_probe = last_board = 0.0
     while any(th.is_alive() for th in threads):
         time.sleep(5)
         if stop.is_set():
@@ -383,12 +408,20 @@ def main() -> int:
                     except OSError:
                         pass
             break
+        if time.time() - last_board > 300 and not a.dry_run:
+            last_board = time.time()
+            with lock:
+                board = status_board(out, dict(pools), dict(status), t0)
+            print(f"[{time.strftime('%H:%M:%S')}] " + "\n".join(board), flush=True)
         if time.time() - last_probe > 600 and not a.dry_run:
             last_probe = time.time()
             with lock:
                 lines = probe(out, dict(pools))
             with open(out / "probes.txt", "a") as fh:
                 fh.write(f"--- {time.strftime('%H:%M')}\n" + "\n".join(lines) + "\n")
+            for ln in lines:
+                if " FAIL" in ln or " RED" in ln or " RAM:" in ln:
+                    say(ln[:220])
     interference = []
     for sid, pool in pools.items():
         tsv = pool / "jobs.tsv"

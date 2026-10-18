@@ -30,6 +30,8 @@ def scenario(phase: str, trace: str):
         return "stream_cpu"
     if p.startswith("G0T"):
         return "stream_lin" if "_lin_" in p else "stream_eve"
+    if "_lin_" in p:  # G3_lin_syn_0 (PR37)
+        return "stream_lin"
     return TRACE.get(trace)
 
 

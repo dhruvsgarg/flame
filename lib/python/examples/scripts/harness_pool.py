@@ -1144,12 +1144,17 @@ def gpu_key(j: "Job") -> str:
     return f"gpu|{j.dataset}|{j.harness}|{j.baseline}|n{j.n}|g{j.gpus}"
 
 
+GRADE_RAM_GB = 8.0  # parity_check + event checker on two legs' telemetry
+
+
 def ram_key(j: "Job") -> str:
     return "ram|" + j.key
 
 
 def mem_estimate_gb(j: "Job", history: dict) -> float:
     """FX-D140: the formula, raised to the measured peak of this leg kind's last runs (never lowered)."""
+    if j.mode == "grade":  # FX-D187: a checker, not a leg; MEASURED peers below gave it the leg's 90 GB
+        return GRADE_RAM_GB
     past = history.get(ram_key(j), [])
     if MEASURED:  # FX-N100: the measured peak sizes the reservation both ways; a short sim's 30 s samples miss peaks
         peers = [max(v[-3:]) for k, v in history.items() if k.startswith(f"ram|{j.dataset}|{j.harness}|")
@@ -1357,6 +1362,8 @@ class Pool:
     stall_min: float = 15.0  # FX-D45 S1 limit; 0 disables the stall rules
     doom_min: float = 5.0  # early-exit check period; 0 disables it
     priority: int = -1  # FX-N99 4: GPU priority among co-running pools (lower first); -1 = off
+    queue: Optional[Path] = None  # FX-D186: dispatch.py releases units here (one per line; END / ABORT)
+    unassigned: set = field(default_factory=set)
 
     def _stalled(self, r: "Running") -> bool:
         """FX-D45: a leg that stopped progressing is killed alone (STALLED.txt); its neighbours keep running."""
@@ -1470,7 +1477,6 @@ class Pool:
         history = _load_history()
         history_base = {k: list(v) for k, v in history.items()}
         t0 = self.t0 = time.time()
-        mem_budget = mem_available_gb() - self.mem_headroom_gb
         stop = {"flag": False}
         probe, last_note, owners_shown = None, None, 0.0
         tick, shown = 0, 0.0
@@ -1486,7 +1492,21 @@ class Pool:
         signal.signal(signal.SIGINT, _on_signal)
         signal.signal(signal.SIGTERM, _on_signal)
         try:
+            released, queue_t = set(), 0.0
             while (pending or running) and not stop["flag"] and not self.aborted:
+                if self.queue is not None and time.time() - queue_t > 10:  # FX-D186: units the dispatcher assigned here
+                    queue_t = time.time()
+                    lines = set(self.queue.read_text().split()) if self.queue.exists() else set()
+                    released = lines - {"END", "ABORT"}
+                    if "ABORT" in lines:
+                        self.say("ABORT from the dispatcher queue")
+                        stop["flag"] = True
+                        break
+                    if "END" in lines:
+                        for j in [j for j in pending if (j.unit or j.jid) not in released]:
+                            pending.remove(j)
+                            self.unassigned.add(j.jid)
+                    self._write_status(pending, running, released, blocked)
                 if time.time() - gpu_seen_t > 30 and any(j.gpus for j in pending):
                     # FX-D141: refresh; a failed nvidia-smi returns [] and a start-time snapshot starved PR29b B1
                     node_gpus = gpu_ids() or node_gpus
@@ -1510,6 +1530,8 @@ class Pool:
                     if load.runq > RUNQ_PAUSE:
                         paused_until = max(paused_until, time.time() + 30)
                 for j in list(pending):
+                    if self.queue is not None and (j.unit or j.jid) not in released:
+                        continue
                     if any(d not in self.done for d in j.deps):
                         continue
                     if time.time() - t0 > self.deadline_s:
@@ -1522,9 +1544,6 @@ class Pool:
                     if MEASURED and time.time() < paused_until:
                         blocked[j.jid] = f"back-pressure (slot saturated or run queue {load.runq:.2f}/CPU)"
                         break
-                    if j.mem_gb + sum(r.job.mem_gb for r in running.values()) > mem_budget and running:
-                        blocked[j.jid] = f"pool RAM budget ({j.mem_gb:.0f} GB + running > {mem_budget:.0f})"
-                        continue
                     share = GPU_SHARE > 1 and j.gpus > 0
                     if not share and j.gpus > len(gpus_free):
                         blocked[j.jid] = f"needs {j.gpus} GPUs, {len(gpus_free)} free of {node_gpus}"
@@ -1717,6 +1736,21 @@ class Pool:
         self.merge()
         return EXIT_FATAL if self.aborted else 0
 
+    def _write_status(self, pending, running, released, blocked) -> None:
+        """FX-D186: status.json for dispatch.py: queued / running (elapsed vs estimate) / done legs, node RAM, blocks."""
+        now = time.time()
+        st = {"t": now, "host": socket.gethostname(), "aborted": self.aborted,
+              "held": sorted({j.unit or j.jid for j in pending if (j.unit or j.jid) not in released}),
+              "queued": sorted(j.jid for j in pending if (j.unit or j.jid) in released),
+              "running": {jid: {"elapsed_s": round(now - r.t0), "est_s": round(r.job.est_s), "gpus": r.gpus,
+                                "stalled": r.stalled} for jid, r in running.items()},
+              "done": {jid: (str(p) if p else None) for jid, p in self.done.items()},
+              "blocked": dict(list(blocked.items())[:20]),
+              "mem_available_gb": round(mem_available_gb(), 1), "mem_total_gb": round(mem_available_gb("MemTotal"), 1)}
+        tmp = self.root / "status.json.tmp"
+        tmp.write_text(json.dumps(st))
+        tmp.replace(self.root / "status.json")
+
     def _launch(self, j: Job, cpus: List[int], gp: List[int], port: int, caps: str = "") -> Running:
         out = self.root / j.phase / j.jid
         out.mkdir(parents=True, exist_ok=True)
@@ -1757,7 +1791,8 @@ class Pool:
         for j in self.jobs:
             by_phase.setdefault(j.phase, []).append(j)
         for ph, js in by_phase.items():
-            if not (self.root / ph).is_dir():  # FX-N75: phase never started
+            js = [j for j in js if j.jid not in self.unassigned]  # FX-D186: ran on another node
+            if not js or not (self.root / ph).is_dir():  # FX-N75: phase never started
                 continue
             rows, header = [], None
             graded = {d for j in js if j.mode == "grade" for d in j.deps}
@@ -1924,14 +1959,14 @@ def run_smoke(cmd, log: Path, run_s: float = 900, wait_s: float = 3600) -> Optio
 
 
 # L18: files no leg executes (docs, tests, graders, batch drivers); editing them keeps the code state.
-NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python/examples/async_cifar10/scripts/parity/**",
+NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python/examples/batches/**", "lib/python/examples/async_cifar10/scripts/parity/**",
                      "lib/python/examples/async_cifar10/scripts/parity_check.py", "lib/python/examples/scripts/run_*.py",
                      *(f"lib/python/examples/fwdllm/expt_scripts/{p}" for p in (  # plots: PR36 split its key mid-batch
                          "plotlib/**", "make_paper_figs.py", "preview_palette.py", "figs*.yaml")),
                      *(f"lib/python/examples/scripts/{s}.py" for s in (
                          "parity_ladder", "readiness_score", "logical_diff", "insights", "accuracy_table", "replicate_spread",
                          "resource_report", "profile_report", "fd_sanity", "eurosys_export", "baseline_deviations",
-                         "cleanup_experiments", "test_inventory", "harness_iso_compare")))
+                         "cleanup_experiments", "test_inventory", "harness_iso_compare", "felix_claims", "fl_lr_check", "dispatch")))
 
 
 def code_key() -> str:
@@ -1986,6 +2021,8 @@ def main(argv=None) -> int:
                     help="FX-N99: lease measured cores, admit by node load, back-pressure on saturated slots")
     ap.add_argument("--priority", type=int, default=-1, help="FX-N99: GPU priority among co-running pools (lower first)")
     ap.add_argument("--gpu-share", type=int, default=1, help="FX-N100: max legs per GPU, placed by measured footprint")
+    ap.add_argument("--jobs-json", default="", help="FX-D186: write this node's jobs, estimates and capacity here and exit")
+    ap.add_argument("--queue", default="", help="FX-D186: run only units listed in this file (dispatch.py); END / ABORT")
     a = ap.parse_args(argv)
     global MEASURED, GPU_SHARE, SHORT_LEGS
     MEASURED, GPU_SHARE, SHORT_LEGS = a.lease_from_telemetry, a.gpu_share, bool(a.scale_smoke)
@@ -2034,7 +2071,8 @@ def main(argv=None) -> int:
     headroom = a.mem_headroom_gb if a.mem_headroom_gb is not None else 0.1 * mem_available_gb("MemTotal")
     pool = Pool(root, jobs, a.max_parallel, a.reserve_cores, headroom, a.deadline_h * 3600, a.dry_run,
                 log=open(root / "pool.log", "a"), fail_fast=a.fail_fast, label=a.progress_label,
-                stall_min=a.stall_min, doom_min=a.doom_min, priority=a.priority)
+                stall_min=a.stall_min, doom_min=a.doom_min, priority=a.priority,
+                queue=Path(a.queue).resolve() if a.queue else None)
     commit = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True,
                             text=True).stdout.strip()
     pool.say(f"pool {root} host={socket.gethostname()} tier={a.tier} datasets={','.join(datasets)} baselines={' '.join(baselines) or '-'} "
@@ -2054,6 +2092,14 @@ def main(argv=None) -> int:
         pool.say(f"GPU(s) {bad_gpus} excluded (ECC error or not in --gpu-ids); GPU legs use {gpu_ids()}, "
                  f"skipping any another process holds when a leg starts")
     pool.bad_gpus = bad_gpus
+    if a.jobs_json:  # FX-D186: dispatch.py plans on each node's own history and capacity
+        Path(a.jobs_json).write_text(json.dumps({
+            "host": socket.gethostname(), "code_key": code_key(), "cpus": cap, "gpus": gpu_ids(),
+            "mem_budget_gb": round(mem_available_gb("MemTotal") - headroom, 1),
+            "jobs": [{"jid": j.jid, "unit": j.unit or j.jid, "mode": j.mode, "phase": j.phase, "dataset": j.dataset,
+                      "est_s": round(j.est_s), "cpus": j.cpus, "mem_gb": round(j.mem_gb, 1), "gpus": j.gpus,
+                      "deps": list(j.deps), "runtime_s": j.runtime_s} for j in jobs]}))
+        return 0
     pool.plan(groups)
     if a.dry_run or not jobs:
         return 0
