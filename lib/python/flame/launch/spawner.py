@@ -151,6 +151,8 @@ class ConfigGenerator:
             config["hyperparameters"]["trainer_indices_list"] = dataset_indices
 
         config["hyperparameters"]["training_delay_s"] = trainer_meta["training_delay_s"]
+        if "computation_time_ms" in trainer_meta:
+            config["hyperparameters"]["computation_time_ms"] = trainer_meta["computation_time_ms"]
         
         # Set training_delay_enabled from overrides (default True)
         training_delay_enabled = overrides.get("hyperparameters.training_delay_enabled", "True")

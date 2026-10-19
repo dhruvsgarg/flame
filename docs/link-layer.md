@@ -2,7 +2,7 @@
 
 A configurable, physics-based RF link budget between the **aggregator (ground station)** and each connected **trainer (satellite)** — path loss + atmospheric loss + ionospheric loss → SINR degradation → throughput loss. Lives entirely in `flame/link/`, disabled by default, opt in via `hyperparameters.linkLayer.enabled` in a job config. Every number the formulas use — RF parameters *and* physical constants/model coefficients — is a config field; nothing is hardcoded in the calculation modules.
 
-**Status: wired into the aggregator only.** `flame/link/` (including the mode-agnostic `LinkRuntime` in `flame/link/runtime.py`) is a standalone module with no dependency on which role calls it — an aggregator currently does, computing a link budget per connected trainer from the shared satellite position file. Trainer-side integration (a trainer computing its own link budget) is not wired up right now; it's a clean follow-up against the same `LinkRuntime` API whenever that's needed.
+**Status:** the aggregator computes a link budget per connected trainer for telemetry (§1). With `affectsDelay: true`, the FMoW trainer also adds the link's download and upload time to each round's modeled delay, with `direct` or `isl` routing, enforced by sleep or by Toxiproxy (§5).
 
 This is a layer on top of Flame's base FL runtime (role composition, the aggregator/trainer call flow, weight-update math, per-round configuration). Cross-checked against `lib/python/examples/async_cifar10` and `lib/python/examples/fmow`, both of which wire this module into their aggregators.
 
@@ -12,6 +12,7 @@ This is a layer on top of Flame's base FL runtime (role composition, the aggrega
 2. [How the three losses are calculated](#2-how-the-three-losses-are-calculated)
 3. [How bandwidth and throughput are calculated](#3-how-bandwidth-and-throughput-are-calculated)
 4. [Full configurable parameter reference](#4-full-configurable-parameter-reference)
+5. [Transfer time, routing and enforcement](#5-transfer-time-routing-and-enforcement)
 
 ---
 
@@ -159,7 +160,7 @@ sequenceDiagram
 
 Cost trade-off: `precompute` pays T timesteps of `compute_link_budget` once per (satellite, direction), then every call is a list index. `per_round` pays one `compute_link_budget` per call, which only makes sense for a position source that can't be loaded up front. Both directions use the same formulas and differ only in `frequency.uplink_ghz` vs `frequency.downlink_ghz`.
 
-Either mode consumes its `LinkBudgetResult` the same way: folded into telemetry only (`build_dispatch`'s and `build_agg_round`'s `extra` fields). This is telemetry-only by design — nothing here touches dispatch timing, the virtual-clock gate, or aggregation itself (`affectsDelay`, the trainer-side opt-in for folding link-implied transmit time into round timing, has no aggregator-side equivalent yet since there's no aggregator-side round timing it would plug into).
+On the aggregator, either mode's `LinkBudgetResult` goes into telemetry only (`build_dispatch`'s and `build_agg_round`'s `extra` fields); it doesn't change dispatch timing, the virtual-clock gate, or aggregation. Round timing comes from the trainer side (`affectsDelay`, §5).
 
 Citations: `flame/link/runtime.py` (`LinkRuntime`), `flame/mode/horizontal/syncfl/top_aggregator.py`'s `internal_init` (builds both `LinkRuntime`s), `_link_timestep_now`/`_link_extra` (shared helpers), `_aggregate_weights` (caches `PROP_SATELLITE_INDEX`, folds `link_*` into `build_agg_round`'s `extra`), `_distribute_weights` (folds `link_*` into `build_dispatch`'s `extra`). `flame/mode/horizontal/asyncfl/top_aggregator.py` reuses all of the above via inheritance and adds the same wiring at its own per-end message-processing and dispatch sites (both `train` and `eval` branches). `flame/mode/horizontal/syncfl/trainer.py`'s `_send_weights` stamps `MessageType.SATELLITE_INDEX`.
 
@@ -252,7 +253,18 @@ Every field below is a `LinkLayerConfig` field (`flame/link/config.py`) and ever
 | Field (dot path) | Default | Meaning | Derivation / standard |
 |---|---|---|---|
 | `enabled` | `false` | Turn the whole module on | — |
-| `affectsDelay` | `false` | Reserved: fold link-implied transmit time into round timing (else telemetry-only). Not currently read by the aggregator (no aggregator-side round timing to fold it into) — meaningful again once a trainer-side consumer exists | — |
+| `affectsDelay` | `false` | Trainer adds link download + upload time to each round's modeled delay (§5). Aggregator ignores it (telemetry only) | — |
+| `routing` | `direct` | `direct`: ground station ↔ satellite only, waiting for the next pass. `isl`: relay via inter-satellite links (§5) | — |
+| `enforcement` | `sleep` | Real mode only. `sleep`: trainer sleeps the comm legs. `toxiproxy`: per-trainer proxy shapes the real MQTT traffic (§5) | — |
+| `transfer.efficiency` | `1.0` | Fraction of Shannon capacity achieved | 1.0 = Shannon upper bound |
+| `transfer.payloadBytes` | `null` | Bytes per transfer; `null` = measured from the model's weights | — |
+| `transfer.speedOfLightKmS` | `299792.458` | For propagation delay | — |
+| `isl.latencyPath` | `examples/_metadata/leo/latency.npz` | Per-(timestep, satellite) multi-hop latency and hop count from Svalbard (25° mask) | — |
+| `isl.throughputMbps` | `10000` | ISL rate cap | Representative optical ISL |
+| `isl.perHopProcessingMs` | `0.0` | Added per relay hop | — |
+| `toxiproxy.apiHost/apiPort` | `127.0.0.1:8474` | Toxiproxy HTTP API | — |
+| `toxiproxy.listenHost/listenPortBase` | `127.0.0.1`, `23000` | Trainer listens on `listenPortBase + satellite_index` | — |
+| `toxiproxy.bandwidthScale` | `1.0` | Multiplier on modeled rate before it becomes a bandwidth toxic | — |
 | `computeMode` | `precompute` | `precompute`: whole trajectory computed once at load time, indexed per round. `per_round`: recomputed from scratch every round. Any other value falls back to `precompute` | See §1 |
 | `minElevationDeg` | `25.0°` | Below this, satellite is not visible (`visible=false`, 100% throughput loss) | Typical LEO satellite elevation mask, approximate |
 | `minReferenceRangeKm` | `1.0 km` | Numerical floor under the zenith-reference range (avoids div-by-~0) | Numerical guard, not physical |
@@ -279,6 +291,159 @@ Every field below is a `LinkLayerConfig` field (`flame/link/config.py`) and ever
 FCC filing sources in full: [STA application 1423-EX-ST-2024](https://apps.fcc.gov/els/GetAtt.html?id=355143), [FCC DA-24-222](https://docs.fcc.gov/public/attachments/DA-24-222A1.pdf).
 
 > **Not configurable, on purpose:** the `90°` zenith-reference elevation (it *is* the definition of "directly overhead" — changing it would redefine what "the reference pass" means, not tune the model) and unit-conversion factors (MHz→Hz, Hz→Mbps — dimensional bookkeeping, not modeling choices).
+
+## 5. Transfer time, routing and enforcement
+
+`LinkRuntime.transfer(satellite_index, start_s, nbytes)` (`flame/link/runtime.py`, `flame/link/transfer.py`) walks the satellite's per-second rate from `start_s`:
+
+```
+rate_bps(t)    = throughput_mbps(t) · 1e6 · transfer.efficiency      (0 when no path)
+wait_s         = seconds with rate 0, before the first bit and during mid-transfer stalls
+transmit_s     = time for Σ rate_bps(t)·dt to reach nbytes·8
+propagation_s  = one-way path delay when transmission starts
+total_s        = wait_s + transmit_s + propagation_s
+```
+
+Time wraps modulo the trajectory length (10800 s), so long runs keep seeing passes. If no path exists for a full cycle, the estimate is `complete=False` (120 of 300 satellites are never in view of Svalbard at 25°).
+
+**Routing** (`linkLayer.routing`):
+
+| Mode | Rate | Propagation / hops |
+|---|---|---|
+| `direct` (default) | This satellite's own RF link; 0 when below the elevation mask | slant range / c; 1 hop |
+| `isl` | Own RF link when in view, else min(best in-view relay's RF rate, `isl.throughputMbps`) | `latency.npz` latency + (hops − 1) · `perHopProcessingMs`; `hop_count` |
+
+Svalbard always has 4–8 satellites in view, so `isl` never waits; `direct` waits for each satellite's next pass (median longest gap ≈ 1.5 h). `latency.npz` matches this module's own Svalbard / 25° visibility on 99.8% of (timestep, satellite) pairs.
+
+**Round delay (trainer, `flame/link/delay.py`).** With `enabled` and `affectsDelay`, `LinkDelayModel.round_legs` computes, from round start `t0`:
+
+```
+download = uplink.transfer(sat, t0, nbytes)                                 # ground -> satellite
+upload   = downlink.transfer(sat, t0 + download.total_s + max(gpu, compute), nbytes)
+modeled_delay = compute + download.total_s + upload.total_s
+```
+
+`compute` is `computation_time_ms[computeDevice] / 1000` from the trainer registry (`computeDevice` defaults to `mobile_device`, equal to the legacy `training_delay_s`). `nbytes` is `transfer.payloadBytes`, else the model's weight bytes. Each leg's fields are emitted as `link_download_*` / `link_upload_*` in the trainer round telemetry. A satellite with no path at all logs `[LINK_UNREACHABLE]` once and gets 0 comm delay. Wired into `examples/fmow` for both FedAvg (`main_fedavg_agg.py`) and async (`main_asyncfl_agg.py`) aggregators; see `exports/fmow_*_linkdelay_*.yaml`.
+
+### 5a. Round delay call flow (`enforcement: sleep`, and sim mode)
+
+**Orange shaded blocks mark where transfer time is calculated** (`estimate_transfer`).
+
+```mermaid
+sequenceDiagram
+    participant Agg as "Aggregator (syncfl or asyncfl)"
+    participant Tr as "FMoW Trainer (main.py)"
+    participant LDM as "LinkDelayModel (delay.py)"
+    participant RTu as "uplink LinkRuntime"
+    participant RTd as "downlink LinkRuntime"
+    participant B as "budget.py"
+    participant T as "transfer.py"
+
+    Note over Tr: __init__
+    Tr->>Tr: compute_budget_s = computation_time_ms[computeDevice] / 1000
+    Tr->>LDM: from_link_layer_dict(hyperparameters.link_layer) if enabled and affectsDelay
+    LDM->>RTu: LinkRuntime.from_link_layer_dict(raw, direction="uplink")
+    LDM->>RTd: LinkRuntime(cfg, ecef_km, direction="downlink")
+
+    Note over Agg,Tr: Every round
+    Agg->>Tr: WEIGHTS (+ SIM_SEND_TS in sim mode)
+    Tr->>Tr: t0 = _sim_now(), local training gives gpu
+    Tr->>LDM: payload_bytes(model) on first round (transfer.payloadBytes, else weight bytes)
+    Tr->>LDM: round_legs(sat, t0, max(gpu, compute_budget_s), nbytes)
+
+    LDM->>RTu: transfer(sat, t0, nbytes) for model download
+    RTu->>B: _series(sat) on cache miss, compute_link_budget_series
+    RTu->>RTu: _own_rate_bps(sat) = throughput_mbps x 1e6 x efficiency
+    alt routing direct
+        RTu->>RTu: rate(k) = own(k), prop(k) = slant_range / c, hops = 1
+    else routing isl
+        RTu->>RTu: own(k) if in view, else min(_relay_rate_bps(k), isl.throughputMbps)
+        RTu->>RTu: prop(k) and hops(k) from latency.npz when relayed
+    end
+    rect rgba(255, 170, 0, 0.30)
+        RTu->>T: estimate_transfer(rate, n, t0, nbytes, prop, hops)
+        loop each 1 s timestep, wrapping modulo n
+            T->>T: rate 0 adds to wait_s, else send bits and add to transmit_s
+        end
+        T-->>RTu: TransferEstimate (complete False if a full cycle has no path)
+    end
+    RTu-->>LDM: download
+
+    LDM->>RTd: transfer(sat, t0 + download.total_s + compute, nbytes) for update upload
+    rect rgba(255, 170, 0, 0.30)
+        RTd->>T: estimate_transfer(...), same as above
+        T-->>RTd: TransferEstimate
+    end
+    RTd-->>LDM: upload
+    LDM-->>Tr: RoundLegs, comm_s = download.total_s + upload.total_s (0 if unreachable)
+
+    Tr->>Tr: modeled_delay = compute_budget_s + comm_s
+    Tr->>Tr: remaining = max(0, compute_budget_s - gpu) + comm_s
+    alt time_mode simulated
+        Tr->>Tr: _sim_completion_ts = send_ts + gpu + remaining (+ completion leg), no sleep
+    else time_mode real
+        Tr->>Tr: time.sleep(remaining)
+    end
+    Tr->>Tr: telemetry trainer_round extra: link_download_*, link_upload_*, link_comm_s
+    Tr->>Agg: WEIGHTS + MODELED_DELAY_S (= modeled_delay) + SATELLITE_INDEX
+```
+
+**Enforcement** (`linkLayer.enforcement`, real mode only; sim mode always advances the virtual clock by the modeled delay):
+
+- `sleep`: the trainer sleeps `max(0, compute − gpu) + download.total_s + upload.total_s`.
+- `toxiproxy`: the trainer's MQTT connection goes through its own proxy (`flame/link/emulation/shaper.py`, listening on `listenPortBase + satellite_index`). Before each upload it sets the `upstream` toxics from the upload estimate, and the `downstream` toxics from the next download's estimate: latency = `propagation_s`, bandwidth = effective rate. The trainer then sleeps only the compute remainder and the two legs' `wait_s`. Pass waits aren't shaped because a latency toxic delays every byte, including MQTT keepalives (300 s), so hour-scale waits would drop the connection. The first round's download is unshaped.
+
+### 5b. Toxiproxy enforcement call flow (`enforcement: toxiproxy`, real mode)
+
+```mermaid
+sequenceDiagram
+    participant Agg as "Aggregator"
+    participant Br as "MQTT broker"
+    participant TP as "toxiproxy-server"
+    participant Sh as "ToxiproxyShaper (shaper.py)"
+    participant Tr as "FMoW Trainer"
+    participant LDM as "LinkDelayModel"
+
+    Note over Tr: __init__ (real mode, enforcement toxiproxy)
+    Tr->>Sh: ToxiproxyShaper(cfg, sat, brokers.sort_to_host["mqtt"])
+    Sh->>TP: delete_proxy("flame_satNNN") for any stale proxy
+    Sh->>TP: create_proxy(listen = listenHost:listenPortBase+sat, upstream = broker:1883)
+    Tr->>Tr: brokers.sort_to_host["mqtt"] = shaper.broker_address
+    Tr->>TP: MQTT connect (backend parses host:port)
+    TP->>Br: forwards connection
+
+    Note over Agg,Tr: Round 1
+    Agg->>Br: WEIGHTS
+    Br->>TP: downstream
+    TP->>Tr: WEIGHTS (unshaped on round 1)
+    Tr->>Tr: local training
+    Tr->>LDM: round_legs(sat, t0, max(gpu, compute), nbytes), as in 5a
+    LDM-->>Tr: RoundLegs (download, upload)
+    Tr->>Tr: proxy_enforced = comm_s - download.wait_s - upload.wait_s
+    Tr->>Sh: shape("upstream", upload)
+    Sh->>TP: set_toxic latency_upstream = propagation_s, bandwidth_upstream = rate x bandwidthScale
+    Tr->>LDM: uplink.transfer(sat, upload.start_s + upload.total_s, nbytes)
+    LDM-->>Tr: next download estimate
+    Tr->>Sh: shape("downstream", next download)
+    Sh->>TP: set_toxic latency_downstream, bandwidth_downstream
+    Tr->>Tr: time.sleep(remaining - proxy_enforced), i.e. compute remainder + pass waits
+    Tr->>TP: WEIGHTS upload
+    Note over TP: upstream delayed by propagation, throttled to modeled rate
+    TP->>Br: WEIGHTS
+    Br->>Agg: WEIGHTS
+
+    Note over Agg,Tr: Round 2+
+    Agg->>Br: WEIGHTS
+    Br->>TP: downstream
+    Note over TP: downstream shaped from the previous round's estimate
+    TP->>Tr: WEIGHTS
+
+    Note over Tr,TP: Process exit
+    Tr->>Sh: close() via atexit
+    Sh->>TP: delete_proxy("flame_satNNN")
+```
+
+`flame/link/emulation/poc/validate_link_shaping.py` checks the proxy against the model: measured transfer time vs. `transmit_s + propagation_s` was within 0.6–2.2% for 1–16 MB payloads at 4–30 Mbps, rising to 7% (1 MB at 30 Mbps) and 18% (1 MB at 106 Mbps) as fixed MQTT overhead dominates short transfers. Localhost MQTT can't reach the default ~2 Gbps Ku-band rate, so at full rate the proxy doesn't bind and real transfers run at local speed. Mosquitto 2.1 rejects packets over its default size limit (`disconnected: oversize packet`) and Flame sends 4 MB chunks, so set `max_packet_size 268435455` in `mosquitto.conf`.
 
 ---
 

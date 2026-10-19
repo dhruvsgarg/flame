@@ -144,6 +144,20 @@ class PyTorchFMoWTrainer(Trainer):
             _tde if isinstance(_tde, bool) else str(_tde).strip().lower() == "true"
         )
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
+        # Modeled compute per round: registry computation_time_ms[compute_device], else training_delay_s.
+        _ctm = self.config.hyperparameters.computation_time_ms
+        _dev = self.config.hyperparameters.compute_device
+        self.compute_budget_s = (
+            float(_ctm[_dev]) / 1000.0 if _ctm and _dev in _ctm else self.training_delay_s
+        )
+        # Link-layer comm legs (download/upload) added to the modeled delay; None = compute only.
+        self.link_delay = None
+        _ll = self.config.hyperparameters.link_layer
+        if _ll and _ll.get("enabled") and _ll.get("affectsDelay"):
+            from flame.link.delay import LinkDelayModel  # lazy: disabled runs never load itur
+
+            self.link_delay = LinkDelayModel.from_link_layer_dict(_ll)
+        self._link_payload_bytes = None
 
         # Add satellite coordinates
         self.satellite_index = int(self.config.hyperparameters.satellite_index)
@@ -160,6 +174,14 @@ class PyTorchFMoWTrainer(Trainer):
 
         self.time_mode = str(time_mode)
         self.simulated = self.time_mode == "simulated"
+        # Real-mode Toxiproxy enforcement: route this trainer's MQTT through its own proxy.
+        self.link_shaper = None
+        if self.link_delay is not None and self.link_delay.cfg.enforcement == "toxiproxy" and not self.simulated:
+            from flame.link.emulation.shaper import ToxiproxyShaper
+
+            _sorts = self.config.brokers.sort_to_host
+            self.link_shaper = ToxiproxyShaper(self.link_delay.cfg, self.satellite_index, _sorts["mqtt"])
+            _sorts["mqtt"] = self.link_shaper.broker_address
         self._sim_send_ts = None  # set by aggregator stamp on each task (sim mode)
         # Aggregator's trace-read origin (agg_start_time_ts), broadcast on every
         # dispatch in real mode -- see AGG_START_TS in trainer.py:_fetch_weights.
@@ -562,7 +584,7 @@ class PyTorchFMoWTrainer(Trainer):
 
         num_batches = len(self.train_loader)
         dataset_size = len(self.train_loader.dataset)
-        _D = self.training_delay_s if self.training_delay_enabled else 0.0
+        _D = self.compute_budget_s if self.training_delay_enabled else 0.0
         if self.simulated:
             _expected_wallclock_hint = f"~GPU wall-clock only; virtual_advance=max(gpu,D={_D:.1f}s)"
         else:
@@ -628,21 +650,47 @@ class PyTorchFMoWTrainer(Trainer):
         # Log memory after training round (no-op unless profiling enabled)
         self.memory_profiler.log_memory_after_round()
 
-        _modeled_delay_s = self.training_delay_s if self.training_delay_enabled else 0.0
-        _remaining_time = max(0.0, _modeled_delay_s - _real_gpu_time_s)
-        _overran = self.training_delay_enabled and _real_gpu_time_s > _modeled_delay_s
+        _compute_budget_s = self.compute_budget_s if self.training_delay_enabled else 0.0
+        # Comm legs start at round start (elapsed_s); upload follows max(gpu, compute).
+        _link_legs = None
+        if self.link_delay is not None:
+            if self._link_payload_bytes is None:
+                self._link_payload_bytes = self.link_delay.payload_bytes(self.model)
+            _link_legs = self.link_delay.round_legs(
+                self.satellite_index,
+                elapsed_s,
+                max(_real_gpu_time_s, _compute_budget_s),
+                self._link_payload_bytes,
+            )
+        _comm_s = _link_legs.comm_s if _link_legs is not None else 0.0
+        # With Toxiproxy, transmit + propagation happen on the shaped socket; only pass waits are slept.
+        _proxy_enforced_s = 0.0
+        if self.link_shaper is not None and _link_legs is not None and _link_legs.complete:
+            _ul, _dl = _link_legs.upload, _link_legs.download
+            _proxy_enforced_s = _comm_s - _dl.wait_s - _ul.wait_s
+            self.link_shaper.shape("upstream", _ul)
+            # Next round's download, estimated from when this upload lands.
+            self.link_shaper.shape(
+                "downstream",
+                self.link_delay.uplink.transfer(
+                    self.satellite_index, _ul.start_s + _ul.total_s, self._link_payload_bytes
+                ),
+            )
+        _modeled_delay_s = _compute_budget_s + _comm_s
+        _remaining_time = max(0.0, _compute_budget_s - _real_gpu_time_s) + _comm_s
+        _overran = self.training_delay_enabled and _real_gpu_time_s > _compute_budget_s
         self._training_budget_s = _modeled_delay_s
 
         if _overran:
             logger.warning(
                 f"[TIMING_OVERRUN] Trainer {self.trainer_id} round={self._round} "
-                f"exceeded budget: gpu={_real_gpu_time_s:.2f}s > budget={_modeled_delay_s:.2f}s "
-                f"(excess={_real_gpu_time_s - _modeled_delay_s:.2f}s). "
+                f"exceeded budget: gpu={_real_gpu_time_s:.2f}s > budget={_compute_budget_s:.2f}s "
+                f"(excess={_real_gpu_time_s - _compute_budget_s:.2f}s). "
                 f"Reduce trainers-per-GPU or add GPUs."
             )
 
-        # max(gpu, D): no contention → D; overrun → gpu > D (OORT sees trainer as slow).
-        sim_round_duration = _real_gpu_time_s + _remaining_time  # = max(gpu, D)
+        # max(gpu, compute) + comm: no contention → D; overrun → gpu > compute (OORT sees trainer as slow).
+        sim_round_duration = _real_gpu_time_s + _remaining_time
 
         self._sim_round_duration = sim_round_duration
 
@@ -712,17 +760,19 @@ class PyTorchFMoWTrainer(Trainer):
                     "lr": current_lr,
                     "pre_train_s": _pre_train_s,
                     "gpu_compute_s": _real_gpu_time_s,
-                    "sleep_s": _remaining_time,
+                    "sleep_s": _remaining_time - _proxy_enforced_s,
                     "post_train_s": _post_train_s,
                     **getattr(self, "_phase_times", {}),
                     "lat": lat,
-                    "lon": lon
+                    "lon": lon,
+                    "compute_budget_s": _compute_budget_s,
+                    **(_link_legs.as_telemetry() if _link_legs is not None else {}),
                 },
             )
             telemetry.emit(ev, **fields)
 
-        if not self.simulated and _remaining_time > 0:
-            time.sleep(_remaining_time)
+        if not self.simulated and _remaining_time - _proxy_enforced_s > 0:
+            time.sleep(_remaining_time - _proxy_enforced_s)
         elif self.simulated:
             time.sleep(random.uniform(0, 1))
 
@@ -885,9 +935,9 @@ class PyTorchFMoWTrainer(Trainer):
             self.normalize_stat_utility(epoch)
         _real_eval_gpu_s = time.time() - _eval_gpu_t0
         # Eval is ~20x faster than training (NPUs don't support training), so the
-        # modeled eval delay is training_delay_s/20.
+        # modeled eval delay is compute_budget_s/20.
         _modeled_eval_delay_s = (
-            self.training_delay_s / 20.0 if self.training_delay_enabled else 0.0
+            self.compute_budget_s / 20.0 if self.training_delay_enabled else 0.0
         )
         if self.simulated:
             # Stamp THIS eval's own completion ts (= send_ts + max(gpu, D_eval)).
@@ -901,7 +951,7 @@ class PyTorchFMoWTrainer(Trainer):
                 + _eval_dur
             )
         elif self.training_delay_enabled:
-            eval_delay = math.floor(self.training_delay_s / 20.0)
+            eval_delay = math.floor(self.compute_budget_s / 20.0)
             time.sleep(eval_delay)
             logger.debug(
                 f"Delayed eval time for trainer " f"{self.trainer_id} by {eval_delay}s"

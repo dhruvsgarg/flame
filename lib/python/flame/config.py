@@ -200,6 +200,13 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     training_delay_s: t.Optional[float] = Field(
         alias="trainingDelaySeconds", default=None
     )
+    # Per-device modeled compute time in ms, e.g. {mobile_device: 4000.0,
+    # gpu_a40: 200.0}; from the trainer registry. Supersedes training_delay_s.
+    computation_time_ms: t.Optional[dict] = Field(
+        alias="computationTimeMs", default=None
+    )
+    # Which computation_time_ms entry a trainer models (mobile_device == training_delay_s).
+    compute_device: t.Optional[str] = Field(alias="computeDevice", default="mobile_device")
     # Divisor on the modeled delay (effective = training_delay_s / factor):
     # >1 shortens, <1 lengthens. Wire key kept as *factor* for back-compat.
     training_delay_factor: t.Optional[float] = Field(
