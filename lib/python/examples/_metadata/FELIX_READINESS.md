@@ -16,8 +16,14 @@ draw-like lean on cifar lin oort (FX-N103), Felix claims C2' / C3' on cifar (FX-
 Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4/TS · GPU ≤ 30-min screens (G0U/G0T/G0UC) · long
 (G1*/G2/G3). Unblock map: 76 / 76 (10-18) → FX-N109 optimized Felix → PR39 on it → FX-N108 → FX-N12.
 
-- **FX-N109 · Optimize Felix (Active build "Felix design") · wip.** *Next:* PR39a, the syn_0 knob sweep (`batches/pr39a.yaml`, operator
-  launches on jayne: `--nodes jayne`), then `knob_sweep.py <pools>`. *Exit:* E1-E5 of the design.
+- **FX-N109 · Optimize Felix (Active build "Felix design") · wip.** E1 done (PR39a, `pool_20261019_0326_PR39A_JAYNE_{C,S}`).
+  *Running (10-19 19:12, tmux `dg_flame:pr39b`):* PR39b, E2's K × c grid as 60-min-vclock screens (`--scale-smoke 3600`), jayne GPUs
+  2-7 (GPU 0 foreign) + shepherd 0-3, commit 9651820a0 + uncommitted scripts, code_key `8bfee96f43ba` on both; pools
+  `pool_20261019_1912_PR39B_*`, ETA ~21:00 (RAM-bound: 4 legs per node at 96 GB). Adds K10lr2 / K5lr05 (step size vs step
+  frequency). Then `knob_sweep.py <pools>`. *Built, uncommitted (worktree `/home/dgarg39/flame_dkc`, T1 EV PASS):* I5 wiring:
+  asyncfl `_dynamic_kc_step` on the shared `DynamicKCController`, `update_stats.py` (noise scale B, stale-vs-fresh cos), policies
+  `schedule` / `noise_scale_k` / `availability_cap`, EV7 per-round K; lands after PR39b (T15). *Claim:* a K ≤ 5, c 20-30 arm beats K10c15 on cifar min to 40% and target at ≤ ctl GB.
+  *Refute:* K and c gains don't stack, or FedBuff gains as much from K5 (then K is no Felix advantage). *Exit:* E1-E5 of the design.
 
 - **PR39 · Hold 76 / 76 on the FX-D194 key + band strengtheners · blocked: FX-N109 (operator 10-19: re-target on the optimized Felix).** Commit, push; shepherd pulls; then
   `dispatch.py batches/pr39.yaml --plan`, `dispatch.py batches/pr39.yaml` (tmux `dg_flame`). Stages: S speech G3S1 all six × syn_0 /
@@ -65,6 +71,10 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
   table, fixes, new caps.
 
 *Short-run queue (fix + verify with pytest, stored telemetry, CPU tiers or GPU screens):*
+- **FX-N110 · Speech sim gate failsafe under GPU contention · todo.** PR39a `gs_F39A_c30_r1`: trainer 0388 took 11 min wall for a ~4 s
+  train (06:55-07:06, its GPUs ~98% SM with packed legs at `--gpu-share 2`); `SIM_GATE_FAILSAFE` dropped it at 457 s (round 143), then
+  128 pastdated commits (EV11 2.8%), 1 redispatch (EV10); c30_r2 same; EV13 stalls on ctl_r1 (304 s), c10_r1 (141 s). Root the 11-min
+  hang, then a solo vs packed c30 screen. *Exit:* speech c30 EV-clean when packed.
 - **FX-N9 · Unavailability, all six × syn_50_3st / mobiperf_3st · wip.** syn_50_3st 12/12, mobiperf 10/10 (mixed key; PR39). *Exit:* both
   columns green on one code state.
 - **FX-N13 · Streaming, both datasets · wip.** stream_eve 12/12, stream_lin 12/12; left: G0To (oracle arms), ST6.
@@ -144,6 +154,8 @@ streaming, heterogeneity and unavailability (Δ max accuracy vs syn_0, among bas
 - *Heterogeneity:* untested ⬚ (every run is Dirichlet α 0.1).
 - *Why Felix's comm is high early:* async stacks keep c = 15 in flight, and Felix ships a full model with every eval task; sync Oort
   moves 11 models per ~18 s round. Felix wins traffic only by reaching the target much sooner (C3 ✅ wherever it alone reaches).
+- *Lever (PR39a sim, cifar syn_0):* Felix K5 reaches 40% in 18.9 min / 8.2 GB (vs oort 24.8 / 7.6) and 50% in 46 min / 18.1 GB (vs
+  17.1): C2' flips, C3 / C3' within ~10%. Pending: PR39b FedBuff K5 control, then real legs (E5).
 
 ### Running config (G3) and invariants checked
 
@@ -301,16 +313,24 @@ depth, slot occupancy, train time lost to eval (I-F1), update disagreement, beli
 - *I6 · Exploration by uncertainty,* not a decay clock (same quantity as I2).
 
 **Execution (one change at a time):**
-- *E1 · PR39a: syn_0 knob sweep · todo (operator launches).* `--tier F39A`: G3 syn_0 control + one knob per arm (`F39A_ARMS`: c 10/20/30,
+- *E1 · PR39a: syn_0 knob sweep · done.* `--tier F39A`: G3 syn_0 control + one knob per arm (`F39A_ARMS`: c 10/20/30,
   K 5/20, eval off / gate 15 / 5, exploration low / high, speed penalty 0 / 4, round_threshold 30 / 100, cut_off_util 0.5 / 0.95,
   staleness a_exp 0 / 1, scale 1 / 0, server lr 0.7 / 1.5), 3 seeds (1234-1236; operator 10-19), sim-only,
   jayne only; cifar all 23 arms, speech
   ctl / eval0 / gate5 / c10 / c30 / lr07. Overrides: `--agg-hp 'sel.<k>=v opt.<k>[.<sub>]=v'`. Grade: `knob_sweep.py <pools>` (max
-  accuracy, min / GB to 40% and target, versions, staleness, top-20% share, eval picks, Δ vs ctl). *Exit:* each knob marked
-  move / keep / no-effect.
-- *E2 · Fit and prune.* Fit U* and R per knob; set the winners, delete no-effect flags and arms (Decisions). Instrument ‖Δ_i‖ /
-  cos(Δ_i, Δ̄) (telemetry only) if I1 needs them.
-- *E3 · Mechanisms behind flags.* I2 → I3 → I1 → I5 → I6, each a short syn_0 sim screen vs E2's best; keep only what wins.
+  accuracy, min / GB to 40% and target, versions, staleness, top-20% share, eval picks, Δ vs ctl). **Done:** cifar ctl 26.7 min /
+  11.3 GB to 40%, 54.7 / 21.2 to target. *Move:* K 5 (19 / 8.2, 46 / 18; wins time and bytes, fewer updates to target), c 30
+  (16 / 13.4, 33 / 27: time for bytes). *Worse:* K 20, c 10 (time), lr 0.7 (cifar), gate 15 / 5 (bytes). *No effect (3-seed range
+  overlaps ctl):* exploration, round_penalty, round_threshold, cut_off_util, a_exp, scale, lr 1.5, eval off. Speech: c 10 cuts GB to
+  target 100 → 70 at equal time; c 30 fails EV10 / EV11 (2.8-4.2% pastdated) / EV13 on 2 / 3 legs, untrusted; EV13 stall also on
+  ctl_r1, c10_r1. Speech K 5 untested. *Fit (cifar, updates = versions × K):* R scales with c (c30 169 vs ctl 79 updates/min) but
+  U* rises with staleness (c30 ~5.5k vs ~4.3k); K5 cuts U* (~3.5k) at equal R; bytes track U*. Selector knobs leave the top-20%
+  share at ~0.41: selection doesn't bind on syn_0 α 0.1. Eval at gate 35 buys nothing (eval0 = ctl), only bytes.
+- *E2 · K × c grid · todo (PR39b, operator launches).* `F39B_ARMS`: Felix K 2 / 3 / 5 / 10 × c 15 / 20 / 30 (K10c15 = control);
+  FedBuff K 10 / 5 × c 15 / 30 (fairness control); speech K10c15, K5c15, K3c15, K5c20, K10c20 (no c30, FX-N110). Then set the winners
+  and delete the no-effect F39A knobs' arms (Decisions). Instrument ‖Δ_i‖ / cos(Δ_i, Δ̄) (telemetry only) if I1 needs them.
+- *E3 · Mechanisms behind flags.* I5 (adaptive c / K: the only levers that move) → I2 / I3 (make eval pay or drop it) → I1 / I6 at
+  E4 (selection may bind only under unavailability); each a short syn_0 sim screen vs E2's best; keep only what wins.
 - *E4 · syn_50_3st.* Repeat E1-E3 where availability matters (I4, eval on AVL_EVAL).
 - *E5 · Confirm.* Real legs for the kept changes (sim parity is graded on today's config only), then PR39 on the optimized Felix.
 
@@ -522,6 +542,8 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   an idle real node (cifar 8-47 vs 17-77 ms by rank), and the gap compounds into the stream clock (FX-D191).
 - **FX-L83** Read a real↔sim fork at its first differing commit set before blaming the clock: equal-D picks racing for the K-th slot
   is a draw (FX-L72), cifar lin oort round 13 (384 vs 437, both D = 2 s); a version closed late on a straggler is a bug (FX-D194 v12).
+- **FX-L84** Tune Felix through K and c first: on syn_0 α 0.1 only they move TTA (K5 −29% min to 40%, −27% GB); Oort selector,
+  staleness-weight and eval-gate knobs sit inside the 3-seed band (PR39a).
 - **FX-L74** "Sim outside all n reals" is no refute: under exchangeability it holds with probability 2/(n+1) (50% at n=3); vote per real (FX-D161).
 - **FX-L78** Per-trainer memory is at its floor: 312 MiB CUDA context per process (MPS doesn't shrink it) + ~1.0-1.5 GB host RAM after
   FX-N84's 10-12% cut. Gain throughput by packing on measured footprints (FX-N100), not by trimming trainers (operator 10-15).

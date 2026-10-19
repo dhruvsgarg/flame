@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FX-N109: per-arm medians of a knob-sweep pool (F39A) against its control arm.
+"""FX-N109: per-arm medians of a knob-sweep pool (F39A, F39B) against its control arm.
 
   knob_sweep.py POOL... [--json]
 
@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from accuracy_table import TARGETS, _agg_events, dataset_of, rows_from_pools  # noqa: E402
 from felix_claims import leg_stats  # noqa: E402
 
-ARM = re.compile(r"(?:gs_)?F39A_(\w+?)_r(\d+)$")
+ARM = re.compile(r"(?:gs_)?F39[AB]_(\w+?)_r(\d+)$")
 
 
 def leg_metrics(run_dir):
@@ -89,7 +89,7 @@ def main(argv=None):
     if a.json:
         print(json.dumps(rows, indent=1))
         return 0
-    ctl = {(r["dataset"], r["baseline"]): r for r in rows if r["arm"] == "ctl"}
+    ctl = {(r["dataset"], r["baseline"]): r for r in rows if r["arm"] in ("ctl", "K10c15")}  # K10c15 = F39B control
     print("| dataset | baseline | arm | reps | max % | min to 40% (reach) | GB to 40% | min to target (reach) | GB to target "
           "| versions | staleness | top-20% share | eval picks | Δ min to 40% vs ctl |")
     print("|" + "---|" * 14)

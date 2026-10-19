@@ -129,6 +129,12 @@ F39A_ARMS = {
     "sc1": dict(hp="opt.agg_rate_conf.scale=1.0"), "sc0": dict(hp="opt.agg_rate_conf.scale=0.0"),
     "lr07": dict(hp="opt.learning_rate=0.7"), "lr15": dict(hp="opt.learning_rate=1.5"),
 }
+# FX-N109 (PR39b): K x c grid; arms with fb=True also run fedbuff (fairness control: does the knob help the baseline too?).
+F39B_ARMS = {f"K{k}c{c}": dict(agg_goal=k, c=c, fb=(k, c) in ((10, 15), (5, 15), (10, 30), (5, 30)))
+             for k in (2, 3, 5, 10) for c in (15, 20, 30)}
+# Equal step per update, different step frequency: is K's gain fresher models or a bigger effective lr?
+F39B_ARMS.update(K10lr2=dict(agg_goal=10, c=15, hp="opt.learning_rate=2.0"),
+                 K5lr05=dict(agg_goal=5, c=15, hp="opt.learning_rate=0.5"))
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
@@ -394,14 +400,14 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         if tier == "G3C":
             out = [replace(ph, pid=ph.pid.replace("G3_", "G3C_"), kind="real") for ph in out]
         return out
-    if tier == "F39A":  # FX-N109: Felix knob sweep, one knob per arm off the G3 control, syn_0 sims, seed per replicate
+    if tier in ("F39A", "F39B"):  # FX-N109: Felix knob sweep off the G3 control, syn_0 sims, seed per replicate
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
         out = []
-        for arm, kw in F39A_ARMS.items():
+        for arm, kw in (F39A_ARMS if tier == "F39A" else F39B_ARMS).items():
             kw = dict(kw)
-            bls = ("felix", "fedbuff") if arm == "ctl" else ("felix",)
+            bls = ("felix", "fedbuff") if arm == "ctl" or kw.pop("fb", False) else ("felix",)
             hp = " ".join(x for x in (g3.agg_hp, kw.pop("hp", "")) if x)
-            out += [replace(g3, pid=f"{DS_TAG[ds]}F39A_{arm}_r{i}", baselines=bls, kind="sim_ev",
+            out += [replace(g3, pid=f"{DS_TAG[ds]}{tier}_{arm}_r{i}", baselines=bls, kind="sim_ev",
                             agg_hp=f"{hp} seed={1233 + i}", **kw) for i in range(1, F39A_REPS + 1)]
         return out
     if tier == "G3S":  # sim-only replicates of every G3 cell: G3S<i>_<cell>, graded on banked + equivalent reals
@@ -2034,7 +2040,7 @@ def code_key() -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A F39B, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

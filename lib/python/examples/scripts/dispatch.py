@@ -366,6 +366,8 @@ def main(argv=None) -> int:
     ap.add_argument("--plan", action="store_true")
     a = ap.parse_args(argv)
     batch = yaml.safe_load(open(a.batch))
+    for n, g in batch.get("gpus", {}).items():  # PL16: pin a node off GPUs a foreign job holds
+        NODES[n]["gpus"] = str(g)
     root = EX / "experiments" / f"dispatch_{batch['name']}_{time.strftime('%Y%m%d_%H%M')}"
     root.mkdir(parents=True, exist_ok=True)
     d = Dispatcher(batch, a.nodes.split(","), root)

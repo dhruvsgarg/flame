@@ -1,0 +1,9 @@
+# PR39b (FX-N109 E2): Felix K x c grid on syn_0, sim-only, 3 seeds, 60-min vclock screens; K10c15 = control.
+# FedBuff runs K10/5 x c15/30 (fairness control); K10lr2 / K5lr05 split step size from step frequency.
+# Speech skips c30 (FX-N110). `knob_sweep.py <pools>`
+name: pr39b
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1 --scale-smoke 3600"
+gpus: {jayne: "2,3,4,5,6,7"}  # jayne GPU 0: foreign job (PL16)
+stages:
+  - {id: C, args: "--tier F39B --datasets cifar10"}
+  - {id: S, args: "--tier F39B --gpu-share 2 --datasets google_speech --phases 'F39B_K10c15_r1 F39B_K10c15_r2 F39B_K10c15_r3 F39B_K5c15_r1 F39B_K5c15_r2 F39B_K5c15_r3 F39B_K3c15_r1 F39B_K3c15_r2 F39B_K3c15_r3'"}
