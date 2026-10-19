@@ -555,8 +555,13 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             all_popped.append(p)
 
         committed = []
+        n_k = 0  # commits counting to first_k
+        _lookahead = str(getattr(getattr(getattr(self, "config", None), "hyperparameters", None),
+                                 "sim_reinject_lookahead", True)).lower() == "true"
         for end, sct, (msg, md) in all_popped:
-            if len(committed) >= first_k:
+            if _lookahead and n_k < first_k:  # FX-D194: a delivery due by this sct lands first, in this version
+                n_k += self._sync_sim_commit_due_withheld(channel, sct, committed, first_k - n_k)
+            if n_k >= first_k:
                 self._sim_sync_carry[end] = (sct, (msg, md))
                 if end in _carried_wd:
                     self._sim_sync_carry_withheld.add(end)
@@ -584,6 +589,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 f"T_v={self._vclock.now:.1f}"
             )
             committed.append((msg, md))
+            n_k += 1
 
         # E.1 / E.2: drain withheld-delivery bonus. After the barrier advances the
         # clock, re-inject any newly-due entries, then commit them as stale bonus
@@ -594,32 +600,48 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             if wh is None:
                 break
             wend, wdts, (wmsg, wmd) = wh
-            if self._sync_wait_k_on() and len(committed) >= first_k and self._sim_counts_to_k(wmsg):
+            _counts = self._sync_wait_k_on() and self._sim_counts_to_k(wmsg)
+            if _counts and n_k >= first_k:
                 # FX-D122: co-due deliveries past K carry; real's version closes at the K-th arrival.
                 # FX-D130: commits later as a withheld delivery; slot held until then.
                 self._sim_sync_carry[wend] = (wdts, (wmsg, wmd))
                 self._sim_sync_carry_withheld.add(wend)
                 continue
-            materialize_weights(wmsg)
-            # Batch 3 T3.5 (K11): advance before emitting, matching asyncfl's
-            # existing order — see _emit_withheld_delivery's docstring for why
-            # this specific advance is provably a no-op here either way, but
-            # the uniform ordering is kept as a defensive rule across stacks.
-            _wd = self._sim_take_withheld_delivering(wend)
-            self._advance_sim_clock(wdts)
-            if _wd is not None:
-                self._emit_withheld_delivery(wend, wmsg, _wd[0], _wd[1])
-            _srd = wmsg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)  # FX-D124: as the fresh loop stamps
-            if _srd is not None:
-                channel.set_end_property(wend, PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=float(_srd)))
-            self._sim_ready_ts = {**getattr(self, "_sim_ready_ts", {}), wend: float(wdts)}
-            logger.info(
-                f"[SYNC_WITHHELD_DELIVER] end={str(wend)[-4:]} "
-                f"delivery_ts={wdts:.1f} T_v={self._vclock.now:.1f}"
-            )
-            committed.append((wmsg, wmd))
+            self._sync_sim_commit_withheld(channel, wend, wdts, wmsg, wmd, committed)
+            n_k += bool(_counts)
 
         return committed
+
+    def _sync_sim_commit_due_withheld(self, channel, horizon, committed, room) -> int:
+        """FX-D194: commit withheld deliveries due by `horizon` before the fresh update there; returns how many count to K."""
+        self._sim_reinject_ready_withheld(horizon=horizon)
+        counted = 0
+        while counted < room and (ts := self._sim_buffer.peek_min_ts()) is not None and ts <= horizon:
+            wend, wdts, (wmsg, wmd) = self._sim_buffer.pop_min()
+            self._sync_sim_commit_withheld(channel, wend, wdts, wmsg, wmd, committed)
+            counted += bool(self._sync_wait_k_on() and self._sim_counts_to_k(wmsg))
+        return counted
+
+    def _sync_sim_commit_withheld(self, channel, wend, wdts, wmsg, wmd, committed) -> None:
+        """Commit one re-injected withheld delivery at its delivery_ts."""
+        materialize_weights(wmsg)
+        # Batch 3 T3.5 (K11): advance before emitting, matching asyncfl's
+        # existing order — see _emit_withheld_delivery's docstring for why
+        # this specific advance is provably a no-op here either way, but
+        # the uniform ordering is kept as a defensive rule across stacks.
+        _wd = self._sim_take_withheld_delivering(wend)
+        self._advance_sim_clock(wdts)
+        if _wd is not None:
+            self._emit_withheld_delivery(wend, wmsg, _wd[0], _wd[1])
+        _srd = wmsg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)  # FX-D124: as the fresh loop stamps
+        if _srd is not None:
+            channel.set_end_property(wend, PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=float(_srd)))
+        self._sim_ready_ts = {**getattr(self, "_sim_ready_ts", {}), wend: float(wdts)}
+        logger.info(
+            f"[SYNC_WITHHELD_DELIVER] end={str(wend)[-4:]} "
+            f"delivery_ts={wdts:.1f} T_v={self._vclock.now:.1f}"
+        )
+        committed.append((wmsg, wmd))
 
     def _sim_counts_to_k(self, msg) -> bool:
         """FX-D156: a due stale delivery (never counts to K, FX-N57) lands this pass, before the next selection, as in

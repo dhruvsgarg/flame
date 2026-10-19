@@ -47,3 +47,12 @@ def test_g3s_sims_vote_by_majority_and_supersede_the_older_g3_pair(monkeypatch):
     assert rs.score(["old", "new"])[("oort", "cifar10", "stream_lin")] == "green"
     grades["new"][1] = C("G3S2_lin_syn_0", "syn_0", "oort", "red", "")
     assert rs.score(["old", "new"])[("oort", "cifar10", "stream_lin")] == "red"
+
+
+def test_g0us_votes_supersede_the_g0u_screen_pair(monkeypatch):
+    # FX-D194: G0US sims vote for their G0U cell as G3S sims do for G3.
+    C = rs.pl.Cell
+    grades = {"old": [C("gs_G0U_syn_50_3st", "syn_50_3st", "feddance", "red", "x")],
+              "new": [C(f"gs_G0US{i}_syn_50_3st", "syn_50_3st", "feddance", st, "") for i, st in ((1, "red"), (2, "green"), (3, "green"))]}
+    monkeypatch.setattr(rs.pl, "grade_pool", lambda root, s: grades[str(root)])
+    assert rs.score(["old", "new"])[("feddance", "google_speech", "syn_50_3st")] == "green"

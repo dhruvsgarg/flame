@@ -113,6 +113,22 @@ G0U_OORT = {("cifar10", "syn_50_3st"): dict(n=50, agg_goal=10, c=13, gpus=1),
 G3_SHAPE = {"cifar10": dict(n=75, agg_goal=10, c=15, gpus=1), "google_speech": dict(n=50, agg_goal=10, c=15, gpus=2, sim_gpus=4)}
 G3_RUNTIME_S, G3_EVAL_EVERY = 7200, 10  # 2 h legs (operator 10-15; R6: convergence sign-off 2-4 h)
 G3S_REPS = 3  # FX-N103: sim replicates per G3 cell, graded against its real-path-identical reals (parity_ladder)
+# FX-N109 (PR39a): one knob off Felix's G3 control per arm; drop an arm's flag once its knob is decided (FELIX "design").
+F39A_REPS = 3
+F39A_ARMS = {
+    "ctl": {},
+    "c10": dict(c=10), "c20": dict(c=20), "c30": dict(c=30),
+    "K5": dict(agg_goal=5), "K20": dict(agg_goal=20),
+    "eval0": dict(hp="sel.evalGoalFactor=0"), "gate15": dict(hp="sel.evalStaleGate=15"),
+    "gate5": dict(hp="sel.evalStaleGate=5"),
+    "explo": dict(hp="sel.exploration_min=0.05 sel.exploration_decay=0.98"), "exphi": dict(hp="sel.exploration_min=0.5"),
+    "pen0": dict(hp="sel.round_penalty=0"), "pen4": dict(hp="sel.round_penalty=4"),
+    "thr30": dict(hp="sel.round_threshold=30"), "thr100": dict(hp="sel.round_threshold=100"),
+    "cut05": dict(hp="sel.cut_off_util=0.5"), "cut095": dict(hp="sel.cut_off_util=0.95"),
+    "a0": dict(hp="opt.agg_rate_conf.a_exp=0"), "a1": dict(hp="opt.agg_rate_conf.a_exp=1.0"),
+    "sc1": dict(hp="opt.agg_rate_conf.scale=1.0"), "sc0": dict(hp="opt.agg_rate_conf.scale=0.0"),
+    "lr07": dict(hp="opt.learning_rate=0.7"), "lr15": dict(hp="opt.learning_rate=1.5"),
+}
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
@@ -351,6 +367,9 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [replace(ph, pid=ph.pid.replace("T3_", "T3C_"), kind="real") for ph in tier_phases("T3", baselines, ds)]
     if tier == "G0UC":  # R7 control: a real replicate per G0U cell (same-code real<->real floor, Q2)
         return [replace(ph, pid=ph.pid.replace("G0U_", "G0UC_"), kind="real") for ph in tier_phases("G0U", baselines, ds)]
+    if tier == "G0US":  # FX-D194: sim-only replicates of every G0U cell, graded as G3S
+        return [replace(ph, pid=ph.pid.replace("G0U_", f"G0US{i}_"), kind="sim")
+                for i in range(1, G3S_REPS + 1) for ph in tier_phases("G0U", baselines, ds)]
     if tier == "CHG":  # L17: real syn_0 legs at the G0U cohort, input to profile_felix_charges.py after a transport change
         return [Phase(f"{DS_TAG[ds]}CHG", baselines, "syn_0", runtime_s=600, dataset=ds, harness="none", kind="real",
                       **G0U_SHAPE[ds])]
@@ -374,6 +393,16 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                          agg_hp=f"{lin} evalEveryNRounds={G3_EVAL_EVERY}", **kw))
         if tier == "G3C":
             out = [replace(ph, pid=ph.pid.replace("G3_", "G3C_"), kind="real") for ph in out]
+        return out
+    if tier == "F39A":  # FX-N109: Felix knob sweep, one knob per arm off the G3 control, syn_0 sims, seed per replicate
+        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
+        out = []
+        for arm, kw in F39A_ARMS.items():
+            kw = dict(kw)
+            bls = ("felix", "fedbuff") if arm == "ctl" else ("felix",)
+            hp = " ".join(x for x in (g3.agg_hp, kw.pop("hp", "")) if x)
+            out += [replace(g3, pid=f"{DS_TAG[ds]}F39A_{arm}_r{i}", baselines=bls, kind="sim_ev",
+                            agg_hp=f"{hp} seed={1233 + i}", **kw) for i in range(1, F39A_REPS + 1)]
         return out
     if tier == "G3S":  # sim-only replicates of every G3 cell: G3S<i>_<cell>, graded on banked + equivalent reals
         return [replace(ph, pid=ph.pid.replace("G3_", f"G3S{i}_"), kind="sim")
@@ -1991,16 +2020,21 @@ NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python
 
 
 def code_key() -> str:
-    """Tracked run-affecting files plus their uncommitted diff: two pools share a gate and floors only on identical code."""
+    """Blob ids of the tracked run-affecting files as on disk: two pools share a gate and floors only on identical code; a
+    screen on uncommitted code keys as its commit does (FX-D194)."""
     git = lambda *a: subprocess.run(["git", "-C", str(REPO), *a], capture_output=True, text=True).stdout
     spec = ["--", ".", *(f":(exclude,glob){p}" for p in NOT_RUN_AFFECTING)]
-    return hashlib.sha1((git("ls-files", "-s", *spec) + git("diff", "HEAD", *spec)).encode()).hexdigest()[:12]
+    blobs = {f: meta.split()[1] for meta, f in (ln.split("\t", 1) for ln in git("ls-files", "-s", *spec).splitlines())}
+    changed = [f for f in git("diff", "--name-only", "HEAD", *spec).splitlines() if f in blobs]
+    for f in changed:
+        blobs[f] = git("hash-object", f).strip() if (REPO / f).exists() else ""
+    return hashlib.sha1("".join(f"{b}\t{f}\n" for f, b in sorted(blobs.items()) if b).encode()).hexdigest()[:12]
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

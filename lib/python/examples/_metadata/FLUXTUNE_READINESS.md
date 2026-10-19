@@ -59,6 +59,8 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
   → `simUnavailability`; then drop the legacy branch in `ClientAvailability._init_availability`. *Exit:* no `trackTrainerAvail` in code.
 - **FT-N16 · U6 barrier anchor on absolute ready times (FX-D151) · todo.** `fwdllm_aggregator` feeds `_barrier_anchored_lags`
   dispatch-relative durations (`SIM_CLIENT_TASK_TRAIN_DURATION_S`); wrong once picks are dispatched at different times (top-ups).
+- **FT-N17 · Mid-barrier withheld deliveries (FX-D194) · todo.** `fwdllm_aggregator`'s incremental sync commits K fresh updates before
+  re-injecting a send-gated one due earlier; port `_sync_sim_commit_due_withheld`. *Exit:* a test as `test_sim_barrier`'s FX-D194.
 - **FT-N14 · Real abandon telemetry (FX-N77) · todo.** asyncfl selector reclaims now emit `abandon_timeout`; check fwdllm's
   own abandon path emits it in real. *Exit:* real fwdllm abandons visible to stall-cause stamping.
 - **FT-N11 · 6 red fwdllm tests (R10) · todo.** `tests/mode/test_fwdllm_{probe_report,server_update_audit,eval_background}`

@@ -23,7 +23,7 @@ from accuracy_table import TARGETS, _agg_events, curve, dataset_of, rows_from_po
 
 BIG = 100_000
 MARGIN = 0.9  # "significantly lower": Felix <= 0.9 x the best other baseline
-ROUND_BOUND = {"google_speech"}  # operator 10-18: datasets whose 2 h legs may end below target
+ROUND_BOUND = {"google_speech", "cifar10"}  # operator 10-18 (speech), 10-19 (cifar): 2 h legs may end below target
 LOSS_DROP = 0.05  # "not flat": last-third median eval loss ≥ 5% under the first third's (median: one spike can't flip it)
 MIN_EVALS = 6
 REDISPATCH_S = 60.0  # FX-N106: a timed-out slot is re-dispatched within this (median)

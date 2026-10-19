@@ -148,6 +148,10 @@ REAL_SAME_CODE = (
      "git diff 17acb20c8 6d5e16541: harness_pool G3S tier + sim-only GPU count"),
     ({"5e0137646a6a", "2872646e24f4"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
      "harness_pool FX-D192 exclusive GPU placement"),
+    ({"2872646e24f4", "0467e5519788"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "FX-D194 sim-only (_sync_sim_recv_first_k) + harness_pool G0US tier"),
+    ({"0467e5519788", "b5bb7b240c90"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "harness_pool code_key hashes on-disk blobs (FX-D194)"),
 )
 
 
@@ -177,6 +181,19 @@ def _same_length(phase_dir: Path, baseline: str, cmd_txt: str) -> bool:
     """L18: a cross-pool real pairs only at equal `--runtime-s`."""
     rt, own = _runtime_s(phase_dir, baseline), re.search(r"--runtime-s (\S+)", cmd_txt)
     return rt is None or own is None or rt == own[1]
+
+
+#: Sim-only replicate phases G3S<i>_<cell> / G0US<i>_<cell> (FX-D193, FX-D194).
+SIM_REP = re.compile(r"(G3|G0U)S\d+_")
+
+
+def sim_only_target(phase: str) -> str:
+    """The paired cell of a sim-only replicate phase (gs_G0US2_syn_50_3st -> gs_G0U_syn_50_3st)."""
+    return SIM_REP.sub(lambda m: m[1] + "_", phase)
+
+
+def _sim_only_cmds(root: Path) -> list:
+    return sorted(c for c in root.glob("*/*_sim/cmd.txt") if SIM_REP.search(c.parent.parent.name))
 
 
 def _replicate_cells(root: Path) -> dict:
@@ -220,16 +237,16 @@ def _replicate_cells(root: Path) -> dict:
                         ctl = cmd.parent / f"control_{p.name}_{ph}"  # floors land in this pool, never the other key's
                         ctl.mkdir(exist_ok=True)
                         cells.setdefault((target, b), (Path(own[1]), cmd, []))[2].append((Path(r["real_dir"]), ctl))
-    for cmd in sorted(root.glob("*G3S*/*_sim/cmd.txt")):  # sim-only replicates: every equivalent real of the cell votes
+    for cmd in _sim_only_cmds(root):  # sim-only replicates: every equivalent real of the cell votes
         phase, b = cmd.parent.parent.name, re.search(r"--baselines (\S+)", cmd.read_text())
         if not b:
             continue
-        b, target = b[1], re.sub(r"G3S\d+_", "G3_", phase)
+        b, target = b[1], sim_only_target(phase)
         reals = []
         for p in sorted(root.parent.iterdir()):
             if not (p.is_dir() and _real_same_code(key, _code_state(p), b)):
                 continue
-            for ph in (target, target.replace("G3_", "G3C_")):
+            for ph in (target, target.replace("G3_", "G3C_").replace("G0U_", "G0UC_")):
                 f = p / ph / "summary.tsv"
                 if not _same_length(p / ph, b, cmd.read_text()):
                     continue
@@ -294,7 +311,7 @@ def regrade_pool(root: Path, jobs: int = 20) -> None:
     def one(cmd_txt: Path) -> None:
         t = cmd_txt.read_text()
         phase = cmd_txt.parent.parent.name
-        if "G3S" in phase:  # a sim-only leg: its first equivalent real stands in for --real-dir
+        if SIM_REP.search(phase):  # a sim-only leg: its first equivalent real stands in for --real-dir
             b, rows = re.search(r"--baselines (\S+)", t), list(csv.DictReader(open(cmd_txt.parent / "summary.tsv"), delimiter="\t"))
             cell = cells.get((phase, b[1] if b else ""))
             if not (cell and rows and rows[0].get("sim_dir")):
@@ -329,7 +346,7 @@ def regrade_pool(root: Path, jobs: int = 20) -> None:
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     with cf.ThreadPoolExecutor(jobs) as ex:
-        list(ex.map(one, [*root.glob("*/*_grade/cmd.txt"), *root.glob("*G3S*/*_sim/cmd.txt")]))
+        list(ex.map(one, [*root.glob("*/*_grade/cmd.txt"), *_sim_only_cmds(root)]))
 
 
 def grade_pool(root: Path, max_stage: int) -> List[Cell]:
@@ -343,7 +360,7 @@ def grade_pool(root: Path, max_stage: int) -> List[Cell]:
             red, known = [], []
             want = EXPECTED_FAIL.get(bare)
             sides = ("ev_real",) if bare.startswith(REAL_ONLY) else \
-                ("ev_sim",) if bare.startswith(SIM_ONLY) or bare.startswith("G3S") else ("ev_real", "ev_sim")
+                ("ev_sim",) if bare.startswith(SIM_ONLY) or SIM_REP.match(bare) else ("ev_real", "ev_sim")
             ev = _regraded_ev(f.parent, tr, b)
             for side in sides:
                 fails = ev[side] if side in ev else _ev_fails(r.get(side, ""))

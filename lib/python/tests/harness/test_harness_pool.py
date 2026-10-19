@@ -535,7 +535,10 @@ def test_code_key_ignores_files_no_leg_runs(tmp_path, monkeypatch):
     git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "c1")
     assert pool.code_key() == k0
     (tmp_path / "lib/python/flame/agg.py").write_text("x = 2\n")
-    assert pool.code_key() != k0
+    k1 = pool.code_key()
+    assert k1 != k0
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "c2")
+    assert pool.code_key() == k1  # FX-D194: a pre-commit screen keys as its commit
 
 
 def test_g3_shape_meets_baseline_constraints():
@@ -654,3 +657,15 @@ def test_exclusive_leg_skips_gpus_with_another_pools_shared_slots(tmp_path):
     sharer.put("gslot_0_0", "30.0,1.0,1.000")
     assert pool.exclusive_gpus(2, [0, 2, 3], excl) == [2, 3]
     assert pool.exclusive_gpus(3, [0, 2, 3], excl) is None
+
+
+def test_f39a_one_knob_per_arm():
+    """FX-N109: each F39A arm is the G3 syn_0 control plus its one knob, sim-only, a seed per replicate."""
+    phs = pool.tier_phases("F39A", pool.B6, "cifar10")
+    g3 = next(p for p in pool.tier_phases("G3", ("felix",), "cifar10") if p.pid == "G3_syn_0")
+    assert len(phs) == len(pool.F39A_ARMS) * pool.F39A_REPS
+    by = {p.pid: p for p in phs}
+    assert by["F39A_ctl_r1"].baselines == ("felix", "fedbuff") and by["F39A_c10_r1"].baselines == ("felix",)
+    assert all(p.kind == "sim_ev" and p.trace == "syn_0" and p.n == g3.n for p in phs)
+    assert by["F39A_c10_r1"].c == 10 and by["F39A_K5_r1"].agg_goal == 5 and by["F39A_ctl_r1"].c == g3.c
+    assert by["F39A_gate5_r3"].agg_hp == f"{g3.agg_hp} sel.evalStaleGate=5 seed=1236"

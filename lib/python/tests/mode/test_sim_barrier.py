@@ -364,3 +364,33 @@ def test_barrier_never_awaits_an_answered_dispatch():
     ch._queue = []
     list(agg._sim_barrier_recv(ch, ["t1"]))              # t1 answered dispatch 0.0 above: still one pass
     assert len(ch.recv_calls) == 2
+
+
+@pytest.mark.parametrize("on, want, carried", [(True, ["ta", "tg"], {"ts"}), (False, ["ta", "ts"], {"tg"})])
+def test_sync_withheld_due_mid_barrier_lands_in_this_version(on, want, carried):
+    # FX-D194 (G0U speech feddance syn_50_3st v12): tg gated at sct 20, due 50; sim closed v12 on ts (sct 60), carried tg.
+    agg = _bare(SyncAgg)
+    agg._round = 12
+    agg.config = SimpleNamespace(hyperparameters=SimpleNamespace(sim_reinject_lookahead=on))
+    agg._sync_wait_k_on = lambda: True
+    agg._sim_take_withheld_delivering = lambda e: None
+    held = {}
+
+    def gate(ch, end, sct, msgmd):
+        if end != "tg":
+            return False
+        held[end] = (50.0, msgmd)
+        return True
+
+    def reinject(horizon=None):
+        now = max(agg._vclock.now, horizon or 0.0)
+        for e, (dts, msgmd) in list(held.items()):
+            if dts <= now:
+                agg._sim_buffer.add(e, dts, held.pop(e)[1])
+
+    agg._sim_withhold_if_unavail = gate
+    agg._sim_reinject_ready_withheld = reinject
+    ch = RecordingChannel({"ta": 10.0, "tg": 20.0, "ts": 60.0}, ["ts", "tg", "ta"])
+    out = agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=2)
+    assert [md[0] for _m, md in out] == want
+    assert set(agg._sim_sync_carry) == carried

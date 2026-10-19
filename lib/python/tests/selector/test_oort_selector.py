@@ -825,3 +825,25 @@ def test_exploration_decays_once_per_round(make_ends):
     sel.select(ends, {"round": 5}, trainer_unavail_list=[], task_to_perform="train", num_to_select=1,
                agg_version_key=5, trainer_version_keys={})
     assert sel.exploration_factor == 0.45
+
+
+class TestEvalStaleGate:
+    """FX-N109: evalStaleGate sets the versions since a trainer's last eval/train before it is eval-eligible."""
+
+    @staticmethod
+    def _eligible(sel, last_eval, version):
+        from unittest.mock import MagicMock
+        from flame.selector.async_base import SelectContext
+        end = MagicMock()
+        end.get_property.return_value = last_eval
+        return sel._task_extra_eligible("e", end, SelectContext(task_to_perform="eval", model_version=version))
+
+    def test_default_35(self, async_oort):
+        assert not self._eligible(async_oort, 10, 44)
+        assert self._eligible(async_oort, 10, 45)
+        assert not self._eligible(async_oort, None, 100)  # never trained
+
+    def test_configured(self):
+        sel = AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=0.5, roundNudgeType="last_train",
+                                selectType="default", evalStaleGate=5)
+        assert self._eligible(sel, 10, 15) and not self._eligible(sel, 10, 14)

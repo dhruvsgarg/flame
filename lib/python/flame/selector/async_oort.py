@@ -100,6 +100,9 @@ class AsyncOortSelector(AsyncSelectorBase):
                 "fastest, or maxSamples"
             )
 
+        # FX-N109: versions since a trainer's last eval/train before it is eval-eligible
+        self.eval_stale_gate = int(kwargs.get("evalStaleGate", 35))
+
         # With Oort, we select 1.3 * k ends and wait until k ends to
         # complete at a round
         self.overcommitment = 1.3
@@ -160,11 +163,11 @@ class AsyncOortSelector(AsyncSelectorBase):
 
     def _task_extra_eligible(self, end_id, end, ctx: SelectContext) -> bool:
         """Eval-only staleness gate: only consider trainers that have trained
-        before AND whose last eval is at least 35 model-versions old."""
+        before AND whose last eval is at least `evalStaleGate` model-versions old."""
         if ctx.task_to_perform != "eval":
             return True
         last_eval = end.get_property(PROP_LAST_EVAL_ROUND)
-        return last_eval is not None and ctx.model_version - last_eval >= 35
+        return last_eval is not None and ctx.model_version - last_eval >= self.eval_stale_gate
 
     def _choose(self, candidates: dict[str, End], k: int, ctx: SelectContext) -> list:
         if ctx.task_to_perform == "eval":

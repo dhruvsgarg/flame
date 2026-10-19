@@ -1,0 +1,7 @@
+# PR39a (FX-N109): Felix knob sweep on syn_0, sim-only, one knob per arm off the G3 control, 3 seeds each.
+# Cifar runs every arm (~8 min a leg); speech runs the arms most likely to move it (~40 min a leg). `knob_sweep.py <pools>`
+name: pr39a
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1"
+stages:
+  - {id: C, args: "--tier F39A --datasets cifar10"}
+  - {id: S, args: "--tier F39A --gpu-share 2 --datasets google_speech --phases 'F39A_ctl_r1 F39A_ctl_r2 F39A_ctl_r3 F39A_eval0_r1 F39A_eval0_r2 F39A_eval0_r3 F39A_gate5_r1 F39A_gate5_r2 F39A_gate5_r3 F39A_c10_r1 F39A_c10_r2 F39A_c10_r3 F39A_c30_r1 F39A_c30_r2 F39A_c30_r3 F39A_lr07_r1 F39A_lr07_r2 F39A_lr07_r3'"}

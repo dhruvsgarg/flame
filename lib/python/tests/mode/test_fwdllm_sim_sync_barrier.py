@@ -70,6 +70,8 @@ class _FakeBarrierAgg:
     _note_sim_known_delay = _SyncBase._note_sim_known_delay
     _sim_reinject_ready_withheld = _SyncBase._sim_reinject_ready_withheld
     _sim_withhold_if_unavail = _SyncBase._sim_withhold_if_unavail
+    _sync_sim_commit_due_withheld = _SyncBase._sync_sim_commit_due_withheld
+    _sync_sim_commit_withheld = _SyncBase._sync_sim_commit_withheld
     _barrier_anchored_lags = staticmethod(_SyncBase._barrier_anchored_lags)
 
     def __init__(self):

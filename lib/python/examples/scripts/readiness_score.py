@@ -47,14 +47,14 @@ def score(pools):
             if c.status == "red" and any(re.match(r"real (MISSING|EV0)\b", w) for w in c.why.split("; ")):
                 continue  # L18: a dead real leg (no telemetry) is no evidence; the cell's other pairs grade it
             pairs[(c.baseline, c.dataset, sc, c.phase, c.trace)] = c.status
-    # G3S<i>_<cell> sims vote as one cell (majority red = red, FX-N103), superseding that cell's older-key G3 pair.
+    # G3S<i>_ / G0US<i>_<cell> sims vote as one cell (majority red = red, FX-N103), superseding that cell's older-key pair.
     votes = {}
     for (b, d, sc, ph, tr), st in pairs.items():
-        if "G3S" in ph:
-            votes.setdefault((b, d, sc, re.sub(r"G3S\d+_", "G3_", ph), tr), []).append(st)
+        if pl.SIM_REP.search(ph):
+            votes.setdefault((b, d, sc, pl.sim_only_target(ph), tr), []).append(st)
     for (b, d, sc, ph, tr), sts in votes.items():
         pairs = {k: v for k, v in pairs.items() if not (k[:3] == (b, d, sc) and k[4] == tr
-                                                       and re.sub(r"G3S\d+_", "G3_", k[3]) == ph)}
+                                                       and pl.sim_only_target(k[3]) == ph)}
         pairs[(b, d, sc, ph, tr)] = "red" if 2 * sts.count("red") > len(sts) else ("known" if "known" in sts else "green")
     cells = {}
     for (b, d, sc, _, _), st in pairs.items():

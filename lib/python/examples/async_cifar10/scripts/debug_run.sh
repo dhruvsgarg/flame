@@ -410,6 +410,15 @@ for e_src in cfg.get("experiments", []):
                   "legacy hand constants in force", flush=True)
         for kv in os.environ.get("AGG_HP", "").split():
             k, v = kv.split("=", 1)
+            # FX-N109: sel.<k> / opt.<k>[.<sub>] set selector / optimizer kwargs (knob sweeps)
+            _root = {"sel": "selector", "opt": "optimizer"}.get(k.split(".", 1)[0])
+            if _root and "." in k:
+                _d = e["aggregator"]["config_overrides"].setdefault(_root, {}).setdefault("kwargs", {})
+                *_path, _leaf = k.split(".")[1:]
+                for _p in _path:
+                    _d = _d.setdefault(_p, {})
+                _d[_leaf] = yaml.safe_load(v)
+                continue
             h[k] = yaml.safe_load(v)
         _thp = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
         for kv in os.environ.get("TRAINER_HP", "").split():

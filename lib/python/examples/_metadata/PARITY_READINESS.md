@@ -185,8 +185,8 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR39 · G3S1 votes for the last red + bands (FELIX Next steps):** `dispatch.py batches/pr39.yaml` → 76 / 76 → Felix claims gate
-  (FX-N108) → sim-only experiments.
+- **PR39 · hold 76 / 76 on the FX-D194 key + bands · parked (operator 10-19):** re-targeted on the optimized Felix (FELIX FX-N109)
+  → Felix claims gate (FX-N108) → sim-only experiments.
 - **Long blocks (G1U, G1AS grid) · deferred by C18** until PR37: FELIX FX-N93.
 
 **Operator decisions** (Felix-specific ones: FELIX Decisions)
