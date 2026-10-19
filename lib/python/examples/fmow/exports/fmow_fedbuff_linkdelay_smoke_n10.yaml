@@ -1,0 +1,57 @@
+# FMoW FedBuff (async) smoke with link-layer delay; async twin of
+# fmow_fedavg_linkdelay_smoke_n10.yaml (aggregator/pytorch/main_asyncfl_agg.py).
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fmow/exports/fmow_fedbuff_linkdelay_smoke_n10.yaml
+
+experiments:
+  - name: fmow_fedbuff_linkdelay_smoke_n10
+    description: "FMoW FedBuff async smoke (10 trainers) with link-layer comm delay (direct routing)."
+
+    baseline: fedbuff
+
+    trainer:
+      num_trainers: 10
+      start_id: 1
+      dataset:
+        path_style: true
+      availability:
+        mode: syn_0
+      enable_training_delays: true
+      time_mode: simulated
+      hyperparameters:
+        batchSize: 16
+        learningRate: 0.0001
+        linkLayer:
+          enabled: true
+          affectsDelay: true
+          routing: direct
+          satelliteEcefPath: "lib/python/examples/fmow/metadata/leo/ecef.npz"
+
+    aggregator:
+      config_template: metadata/aggregator_base.json
+      selector: fedbuff
+      tracking_mode: default
+      agg_goal: 3
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fmow_fedbuff_linkdelay_smoke_n10
+        hyperparameters:
+          batchSize: 16
+          learningRate: 0.0001
+          rounds: 50
+          aggGoal: 3
+          fmow_config_path: "lib/python/examples/fmow/configs/fmow_config.yaml"
+          linkLayer:
+            enabled: true
+            satelliteEcefPath: "lib/python/examples/fmow/metadata/leo/ecef.npz"
+        selector:
+          kwargs:
+            c: 5
+            aggGoal: 3
+        optimizer:
+          kwargs:
+            dataset_name: fmow
+            learning_rate: 1.0  # FedBuff server LR, untuned for FMoW

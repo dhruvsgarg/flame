@@ -20,6 +20,8 @@ _LAZY = {
     "lookup_satellite_ecef": "propagation",
     "slant_range_km": "propagation",
     "LinkRuntime": "runtime",
+    "TransferEstimate": "transfer",
+    "estimate_transfer": "transfer",
 }
 
 
@@ -38,4 +40,6 @@ __all__ = [
     "geodetic_to_ecef_km",
     "lookup_satellite_ecef",
     "slant_range_km",
+    "TransferEstimate",
+    "estimate_transfer",
 ]

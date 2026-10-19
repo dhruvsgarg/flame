@@ -116,6 +116,38 @@ class IonosphericConfig:
     loss_db: float = 0.005
 
 
+@dataclass
+class TransferConfig:
+    # Fraction of Shannon capacity actually achieved (modem/coding/protocol
+    # overhead). 1.0 = the Shannon upper bound.
+    efficiency: float = 1.0
+    # Bytes per model transfer; None = measured from the model's weights.
+    payload_bytes: Optional[int] = None
+    speed_of_light_km_s: float = 299792.458
+
+
+@dataclass
+class IslConfig:
+    # Multi-hop path latency/hop count per (timestep, satellite) from this
+    # ground station (one-way ms; hop_count 1 = directly visible).
+    latency_path: str = "lib/python/examples/_metadata/leo/latency.npz"
+    # Representative optical ISL rate; the RF ground leg is usually the bottleneck.
+    throughput_mbps: float = 10000.0
+    per_hop_processing_ms: float = 0.0
+
+
+@dataclass
+class ToxiproxyConfig:
+    api_host: str = "127.0.0.1"
+    api_port: int = 8474
+    # Trainer i listens on listen_port_base + satellite_index.
+    listen_host: str = "127.0.0.1"
+    listen_port_base: int = 23000
+    # Multiplier on modeled throughput before it becomes a bandwidth toxic,
+    # since localhost Toxiproxy can't reproduce Gbps-scale rates faithfully.
+    bandwidth_scale: float = 1.0
+
+
 def _sub(cls_, raw_sub: Optional[dict], key_map: dict):
     """Build a nested dataclass from a raw dict, keyed by wire-format alias.
 
@@ -155,6 +187,12 @@ class LinkLayerConfig:
     # satellite_coordinates_path (geodetic.npz, lat/lon only) already points
     # at; this is the sibling ecef.npz, needed for altitude/slant range.
     satellite_ecef_path: str = "lib/python/examples/_metadata/leo/ecef.npz"
+    # "direct": ground station <-> satellite only, waiting for the next pass
+    # when not visible. "isl": relay via inter-satellite links (latency.npz).
+    routing: str = "direct"
+    # Real-mode delay enforcement: "sleep" (trainer sleeps the comm legs) or
+    # "toxiproxy" (per-trainer proxy shapes the real MQTT traffic).
+    enforcement: str = "sleep"
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     physical: PhysicalConfig = field(default_factory=PhysicalConfig)
     pathloss: PathLossConfig = field(default_factory=PathLossConfig)
@@ -164,6 +202,9 @@ class LinkLayerConfig:
     losses: LossConfig = field(default_factory=LossConfig)
     atmospheric: AtmosphericConfig = field(default_factory=AtmosphericConfig)
     ionospheric: IonosphericConfig = field(default_factory=IonosphericConfig)
+    transfer: TransferConfig = field(default_factory=TransferConfig)
+    isl: IslConfig = field(default_factory=IslConfig)
+    toxiproxy: ToxiproxyConfig = field(default_factory=ToxiproxyConfig)
 
     @property
     def precompute(self) -> bool:
@@ -184,6 +225,8 @@ class LinkLayerConfig:
                 raw.get("minReferenceRangeKm", cls.min_reference_range_km)
             ),
             satellite_ecef_path=str(raw.get("satelliteEcefPath", cls.satellite_ecef_path)),
+            routing=str(raw.get("routing", cls.routing)),
+            enforcement=str(raw.get("enforcement", cls.enforcement)),
             geometry=_sub(
                 GeometryConfig,
                 raw.get("geometry"),
@@ -246,5 +289,34 @@ class LinkLayerConfig:
                 IonosphericConfig,
                 raw.get("ionospheric"),
                 {"lossDb": "loss_db"},
+            ),
+            transfer=_sub(
+                TransferConfig,
+                raw.get("transfer"),
+                {
+                    "efficiency": "efficiency",
+                    "payloadBytes": "payload_bytes",
+                    "speedOfLightKmS": "speed_of_light_km_s",
+                },
+            ),
+            isl=_sub(
+                IslConfig,
+                raw.get("isl"),
+                {
+                    "latencyPath": "latency_path",
+                    "throughputMbps": "throughput_mbps",
+                    "perHopProcessingMs": "per_hop_processing_ms",
+                },
+            ),
+            toxiproxy=_sub(
+                ToxiproxyConfig,
+                raw.get("toxiproxy"),
+                {
+                    "apiHost": "api_host",
+                    "apiPort": "api_port",
+                    "listenHost": "listen_host",
+                    "listenPortBase": "listen_port_base",
+                    "bandwidthScale": "bandwidth_scale",
+                },
             ),
         )
