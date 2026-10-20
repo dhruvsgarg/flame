@@ -24,9 +24,10 @@ D2, D4; Felix only) on both nodes, D3 offline → decisions written here → bas
   (FX-D199); FX-N112 test eval on the leg's clock, every leg / 24 (FX-D200); FX-N115 per-baseline timeout 1.5 × its longest modeled task
   (FX-D198; cifar Felix / FedBuff 677 s, Oort 561 s, REFL 58 s, FedDance 69 s; speech 1920 / 916 / 685 / 695 s; Papaya section:
   Q-PAPAYA); FX-N114 dead knobs out (FX-D202). The timeout change redefines every baseline's legs (L35): PR39's cells re-run in D5.
-- **PR40a · Felix only: D1 + D2 + D4 in one sim batch (operator 10-21) · ready on `eee629c36` / key `2c4bca3d0cb8` (both nodes).**
-  Launch (tmux `dg_flame`, jayne): `cd lib/python/examples && python scripts/dispatch.py batches/pr40a.yaml`. ETA ~5 h (4-7 h): the
-  planner's 87 h assumes sims at 1/1.6 real time with no history; FX-D197 sims run 15-40× real (PR39: 2 h vclock in 3-8 min).
+- **PR40a · Felix only: D1 + D2 + D4 in one sim batch (operator 10-21) · ready on `a7faf4ccb` / key `bfc2aaf44ded` (both nodes).**
+  Launch (tmux `dg_flame`, jayne): `cd lib/python/examples && python scripts/dispatch.py batches/pr40a.yaml`. ETA ~2 h (1.5-3 h): cifar
+  3 h-vclock sims take ~6 min (first PR40a launch, stopped 10-20 15:05 to go to one seed), speech 6 h ~15-25 min; the planner's 25 h
+  has no history at these lengths yet.
   Felix gets top priority: iterate Felix-only batches until its config, formulation and gains are settled; baselines (FedBuff, the
   closest, first) re-run afterwards on stable code. 3 h cifar / 6 h speech vclock, seed 1 only (Decisions: sparse config search),
   sims only, 61 legs; seeds 2-3 then confirm the kept arms. *Smoke 10-21*
