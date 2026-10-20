@@ -117,6 +117,7 @@ EVAL_POINTS = 24
 G3S_REPS = 3  # FX-N103: sim replicates per G3 cell, graded against its real-path-identical reals (parity_ladder)
 # FX-N109 (PR39a): one knob off Felix's G3 control per arm; drop an arm's flag once its knob is decided (FELIX "design").
 F39A_REPS = 3
+F39_SEEDS = tuple(range(1, F39A_REPS + 1))  # --seeds: config search runs r1, confirmation adds r2, r3 (FELIX Decisions 10-21)
 F39A_ARMS = {
     "ctl": {},
     "c10": dict(c=10), "c20": dict(c=20), "c30": dict(c=30),
@@ -454,7 +455,7 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                 hp = " ".join(x for x in (base.agg_hp, kw.pop("hp", ""), oracle_a(ds) if kw.pop("oracle", False) else "") if x)
                 thp = " ".join(x for x in (base.trainer_hp, kw.pop("thp", "")) if x)
                 out += [replace(base, pid=f"{DS_TAG[ds]}{tier}_{cell}{arm}_r{i}", baselines=bls, kind="sim_ev", trace=trace,
-                                trainer_hp=thp, agg_hp=f"{hp} seed={1233 + i}", **kw) for i in range(1, F39A_REPS + 1)]
+                                trainer_hp=thp, agg_hp=f"{hp} seed={1233 + i}", **kw) for i in F39_SEEDS]
         return out
     if tier == "G3S":  # sim-only replicates of every G3 cell: G3S<i>_<cell>, graded on banked + equivalent reals
         return [replace(ph, pid=ph.pid.replace("G3_", f"G3S{i}_"), kind="sim")
@@ -2126,6 +2127,7 @@ def main(argv=None) -> int:
     ap.add_argument("--progress-label", default="", help="prefix of the PROGRESS lines (the ladder passes its rung)")
     ap.add_argument("--output-dir", default="")
     ap.add_argument("--smoke", action="store_true", help="every leg 60s, n<=12 (the pool's own gate)")
+    ap.add_argument("--seeds", default="", help="F39 tiers: replicate ids to run, e.g. 1 or 2,3 (default all)")
     ap.add_argument("--scale-smoke", type=int, default=0, metavar="S",
                     help="FX-D56: every leg S seconds at its production n, c and GPUs (density/OOM check before a block)")
     ap.add_argument("--gate", action=argparse.BooleanOptionalAction, default=None,
@@ -2146,7 +2148,9 @@ def main(argv=None) -> int:
     ap.add_argument("--jobs-json", default="", help="FX-D186: write this node's jobs, estimates and capacity here and exit")
     ap.add_argument("--queue", default="", help="FX-D186: run only units listed in this file (dispatch.py); END / ABORT")
     a = ap.parse_args(argv)
-    global MEASURED, GPU_SHARE, SHORT_LEGS
+    global MEASURED, GPU_SHARE, SHORT_LEGS, F39_SEEDS
+    if a.seeds:
+        F39_SEEDS = tuple(int(x) for x in a.seeds.split(","))
     MEASURED, GPU_SHARE, SHORT_LEGS = a.lease_from_telemetry, a.gpu_share, bool(a.scale_smoke)
     set_gpu_allow(a.gpu_ids)
 

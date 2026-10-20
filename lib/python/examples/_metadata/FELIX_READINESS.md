@@ -28,7 +28,8 @@ D2, D4; Felix only) on both nodes, D3 offline → decisions written here → bas
   Launch (tmux `dg_flame`, jayne): `cd lib/python/examples && python scripts/dispatch.py batches/pr40a.yaml`. ETA ~5 h (4-7 h): the
   planner's 87 h assumes sims at 1/1.6 real time with no history; FX-D197 sims run 15-40× real (PR39: 2 h vclock in 3-8 min).
   Felix gets top priority: iterate Felix-only batches until its config, formulation and gains are settled; baselines (FedBuff, the
-  closest, first) re-run afterwards on stable code. 3 h cifar / 6 h speech vclock, 3 seeds, sims only, 183 legs. *Smoke 10-21*
+  closest, first) re-run afterwards on stable code. 3 h cifar / 6 h speech vclock, seed 1 only (Decisions: sparse config search),
+  sims only, 61 legs; seeds 2-3 then confirm the kept arms. *Smoke 10-21*
   (`experiments/pool_20261021_pr40smoke{A,B}`, jayne, 900 s vclock): 11 legs rc 0, EV PASS on the graded ones; timeouts reach the
   aggregator per baseline (677 / 561 / 1920 / 916 s); 24 test evals per cifar leg; local samples s64 → 62, split β 0.33 → 49; eval
   tasks dispatch on static legs (24), none on 15-min stream / f2 legs (gate not yet reached). *Decides:* the utility (D3 on I9 arms),
@@ -245,6 +246,9 @@ real↔real replicate sets the band (L12).
 - **Felix optimization (10-19, FX-N109):** α 0.1 only; syn_0 first, then syn_50_3st; one change at a time. Signals Felix may use must be
   general across datasets, models and unavailability (update norm / direction allowed). Knob flags are temporary: keep a flag only
   while its knob is undecided or proven useful; delete it (code, config, F39A arm) once the knob is dropped or fixed.
+- **Sparse config search (10-21):** search configs with one seed per arm; add seeds (`harness_pool --seeds 2,3`) and longer legs only
+  for the arms still in contention (best arm, anchors, any arm within the seed spread of the best, PR39a/b: ~10-15% in min to target).
+  Replicates prove reproducibility and the spread; they are wasted on arms that lose.
 - **Day plan (10-21):** mornings finalize Felix and fix baselines with code + quick sim screens; long runs launch only after every
   screen-decidable choice is decided (Next steps D0-D5).
 - **Claims on long sims (10-21):** reals stay 2 h for parity; claims (FX-N108) and paper numbers grade sims at 12 h cifar / 24 h speech

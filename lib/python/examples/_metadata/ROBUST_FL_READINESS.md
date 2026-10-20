@@ -77,6 +77,8 @@ Scoreboard
   compounding clocks, replicate floors, draw cells. Never use a long run to find bugs. Every run is packed on measured resources (PARITY
   C21, C22, Throughput).
 
+- **R25 Sparse search, dense confirmation (operator 10-21):** search configs on one seed per arm; replicates and longer runs go only to
+  arms still in contention (FELIX Decisions).
 - **R1 Correctness first; passing tests and parity are consequences.** If something looks wrong against
   FL/systems first principles, stop, raise it, and fix the concept, even when every test and rung is green.
   A rung green because both sides are equally wrong is a regression. Pair every relative check with an

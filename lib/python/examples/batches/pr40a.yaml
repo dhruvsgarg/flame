@@ -1,16 +1,16 @@
 # PR40a (operator 10-21; FELIX Next steps D1, D2, D4): Felix only, sims, jayne 0,2-7 + shepherd 0-3; baselines re-run after Felix is
-# final. Vclock 3 h cifar / 6 h speech (F39_RUNTIME_S), 3 seeds, test eval every leg / 24. Stages in priority order:
+# final. Vclock 3 h cifar / 6 h speech (F39_RUNTIME_S), seed 1 only (config search; r2, r3 confirm the kept arms), test eval every leg / 24. Stages in priority order:
 #  E  (D4) F39E: eval tasks' value. Cells syn_0 / syn_50_3st x static / events stream (alpha 0.1, FedScale devices): Felix ctl, eval0,
 #     g10 (gate 10), u (I9), u0 (I9, no eval tasks), oracle (streams).
 #  C  (D1) F39C mechanisms not covered by E's anchors (F39E s0_ctl / s0_u = ctl / uK10): cifar K5, nK10, pK10, dkc, f2; speech dkc, f2.
 #  W  (D2) F39W local work: fixed samples per task (capped at an epoch) and per-client split at beta 0.5 / 0.33.
 # Read: knob_sweep.py, selection_audit.py (Gini, coverage, local samples), utility_evidence.py (D3 on the I9 arms), accuracy_table.py.
 name: pr40a
-common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1 --baselines felix"
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1 --baselines felix --seeds 1"
 stages:
   - {id: EC, args: "--tier F39E --datasets cifar10"}
   - {id: ES, args: "--tier F39E --gpu-share 2 --datasets google_speech"}
-  - {id: CC, args: "--tier F39C --datasets cifar10 --phases 'F39C_K5_r1 F39C_K5_r2 F39C_K5_r3 F39C_nK10_r1 F39C_nK10_r2 F39C_nK10_r3 F39C_pK10_r1 F39C_pK10_r2 F39C_pK10_r3 F39C_dkc_r1 F39C_dkc_r2 F39C_dkc_r3 F39C_f2_r1 F39C_f2_r2 F39C_f2_r3'"}
-  - {id: CS, args: "--tier F39C --gpu-share 2 --datasets google_speech --phases 'gs_F39C_dkc_r1 gs_F39C_dkc_r2 gs_F39C_dkc_r3 gs_F39C_f2_r1 gs_F39C_f2_r2 gs_F39C_f2_r3'"}
+  - {id: CC, args: "--tier F39C --datasets cifar10 --phases 'F39C_K5_r1 F39C_nK10_r1 F39C_pK10_r1 F39C_dkc_r1 F39C_f2_r1'"}
+  - {id: CS, args: "--tier F39C --gpu-share 2 --datasets google_speech --phases 'gs_F39C_dkc_r1 gs_F39C_f2_r1'"}
   - {id: WC, args: "--tier F39W --datasets cifar10"}
   - {id: WS, args: "--tier F39W --gpu-share 2 --datasets google_speech"}

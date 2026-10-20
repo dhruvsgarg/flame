@@ -703,3 +703,12 @@ def test_stall_limit_covers_the_task_timeout():
     real = pool.Job("x", "p", "syn_50_3st", "oort", "real", [], 50, 7200, "none", 4, 10, dataset="google_speech")
     assert pool.stall_limit_s(real, 15) > 1.2 * 916
     assert pool.stall_limit_s(replace(real, harness="stub"), 15) == 900
+
+
+def test_seeds_narrow_screen_replicates(monkeypatch):
+    """FELIX Decisions 10-21: config search runs one seed; confirmation adds the rest."""
+    monkeypatch.setattr(pool, "F39_SEEDS", (1,))
+    pids = [p.pid for p in pool.tier_phases("F39W", ("felix",), "cifar10")]
+    assert pids and all(p.endswith("_r1") for p in pids)
+    monkeypatch.setattr(pool, "F39_SEEDS", (2, 3))
+    assert {p.pid[-2:] for p in pool.tier_phases("F39W", ("felix",), "cifar10")} == {"r2", "r3"}
