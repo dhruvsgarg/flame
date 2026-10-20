@@ -24,7 +24,9 @@ D2, D4; Felix only) on both nodes, D3 offline → decisions written here → bas
   (FX-D199); FX-N112 test eval on the leg's clock, every leg / 24 (FX-D200); FX-N115 per-baseline timeout 1.5 × its longest modeled task
   (FX-D198; cifar Felix / FedBuff 677 s, Oort 561 s, REFL 58 s, FedDance 69 s; speech 1920 / 916 / 685 / 695 s; Papaya section:
   Q-PAPAYA); FX-N114 dead knobs out (FX-D202). The timeout change redefines every baseline's legs (L35): PR39's cells re-run in D5.
-- **PR40a · Felix only: D1 + D2 + D4 in one sim batch (operator 10-21) · ready (`batches/pr40a.yaml`; jayne 0,2-7 + shepherd 0-3).**
+- **PR40a · Felix only: D1 + D2 + D4 in one sim batch (operator 10-21) · ready on `eee629c36` / key `2c4bca3d0cb8` (both nodes).**
+  Launch (tmux `dg_flame`, jayne): `cd lib/python/examples && python scripts/dispatch.py batches/pr40a.yaml`. ETA ~5 h (4-7 h): the
+  planner's 87 h assumes sims at 1/1.6 real time with no history; FX-D197 sims run 15-40× real (PR39: 2 h vclock in 3-8 min).
   Felix gets top priority: iterate Felix-only batches until its config, formulation and gains are settled; baselines (FedBuff, the
   closest, first) re-run afterwards on stable code. 3 h cifar / 6 h speech vclock, 3 seeds, sims only, 183 legs. *Smoke 10-21*
   (`experiments/pool_20261021_pr40smoke{A,B}`, jayne, 900 s vclock): 11 legs rc 0, EV PASS on the graded ones; timeouts reach the
