@@ -283,9 +283,11 @@ class PyTorchCifar10Trainer(Trainer):
         samples: train = local_steps x batch, else epochs x visible shard (the experiment's shard, also under harness truncation)."""
         frac = self._stream_visible / self._stream_total if getattr(self, "_stream_total", 0) else 1.0
         shard = len(self.trainer_indices_list) * min(1.0, frac)
-        steps = self.config.hyperparameters.local_steps
+        steps = getattr(self, "_task_steps", self.config.hyperparameters.local_steps)
         if kind == "train":
             samples = steps * self.batch_size if steps is not None else self.epochs * shard
+            if steps is not None and self.config.hyperparameters.local_work:
+                samples = min(samples, shard)  # FX-N116: capped at one epoch
             passes, transfers = 3, 2
         else:
             samples, passes, transfers = self.epochs * shard, 1, 1
@@ -293,6 +295,20 @@ class PyTorchCifar10Trainer(Trainer):
                                      comm_s=transfers * self.model_kbit / self.bandwidth_kbps if comm else 0.0,
                                      kbit=self.model_kbit)
         return self._effective_delay_s(self._last_task_model["compute_s"] + self._last_task_model["comm_s"])
+
+    def _local_steps(self, num_batches: int):
+        """FX-N116: mini-batch steps of this task (None = `epochs` passes). "split" sets compute = beta / (1 - beta) x transfer,
+        the time-optimal local work when an update's progress grows as samples^beta."""
+        hp = self.config.hyperparameters
+        rule, steps = hp.local_work, hp.local_steps
+        if rule == "cap":
+            return min(steps, num_batches) if steps is not None else None
+        if rule == "split":
+            beta = float(hp.local_work_beta)
+            transfer_s = 2 * self.model_kbit / self.bandwidth_kbps
+            samples = beta / (1 - beta) * transfer_s / (3 * self.compute_ms / 1000.0)
+            return max(1, min(num_batches, round(samples / self.batch_size)))
+        return steps
 
     def _effective_delay_s(self, raw_s: float) -> float:
         """Modeled task time with the optional floor, then divided by trainingDelayFactor (harness time compression)."""
@@ -850,6 +866,7 @@ class PyTorchCifar10Trainer(Trainer):
         num_batches = len(self.train_loader)
         dataset_size = len(self.train_loader.dataset)
         _pre["loader"] = time.time() - _phase_train_entry
+        self._task_steps = self._local_steps(num_batches)
         _D = self._task_time_s("train")
         _task = dict(self._last_task_model)
         _D = _D if self.training_delay_enabled else 0.0
@@ -886,7 +903,7 @@ class PyTorchCifar10Trainer(Trainer):
         _gpu_slot = self._acquire_gpu_slot((self._sim_send_ts or 0.0) + _D)
         if _gpu_slot is not None and self.simulated and getattr(self.config.hyperparameters, "sim_gpu_train_slots", 0):
             _gpu_start = time.time()
-        steps = self.config.hyperparameters.local_steps
+        steps = self._task_steps
         _cap = harness.stub_max_steps(self.config.hyperparameters, self.harness_mode)
         if _cap is not None:
             steps = min(steps, _cap) if steps is not None else _cap

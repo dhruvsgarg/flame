@@ -165,6 +165,9 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     epochs: int
     # FX-N74: mini-batch iterations per task (FedScale `local_steps`, cycling the local data); None = `epochs` full passes.
     local_steps: t.Optional[int] = Field(alias="localSteps", default=None)
+    # FX-N116: "" = as configured | "cap" = local_steps capped at an epoch | "split" = compute = beta/(1-beta) x transfer, per client
+    local_work: str = Field(alias="localWork", default="")
+    local_work_beta: float = Field(alias="localWorkBeta", default=0.5)
     # FedBuff §5: a short last batch scales the step lr by its size / batchSize.
     lr_batch_normalize: bool = Field(alias="lrBatchNormalize", default=False)
     # FX-N74: Oort statistical utility form; "fedscale" = sqrt(EMA_0.2 batch mean loss^2, first pass) x trained samples
@@ -172,6 +175,8 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     stat_utility: str = Field(alias="statUtility", default="legacy")
     aggregation_goal: t.Optional[int] = Field(alias="aggGoal", default=None)
     eval_every_n_rounds: t.Optional[int] = Field(alias="evalEveryNRounds", default=50)
+    # FX-N112: test eval every N s of the leg's clock (sim vclock / real since the join); overrides evalEveryNRounds
+    eval_every_s: t.Optional[float] = Field(alias="evalEverySeconds", default=None)
     eval_goal_factor: t.Optional[float] = Field(alias="evalGoalFactor", default=None)
     # Target-accuracy stopping: stop once test accuracy stays >= target for
     # `stable_evals_above_target` consecutive evals (resets on any dip). The

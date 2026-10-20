@@ -58,17 +58,21 @@ def test_shape_goes_through_agg_goal_and_only_async_gets_c(generator_source, tmp
 
 
 def test_dataset_timeout_scales_with_delay_factor(generator_source, tmp_path, monkeypatch):
-    """FX-D197: per-dataset abandon timeout (2 x longest FedScale task), compressed by a harness --delay-factor; no D scale."""
+    """FX-N115: per-baseline timeout (1.5 x its longest modeled task), compressed by a harness --delay-factor."""
     monkeypatch.delenv("DELAY_FACTOR", raising=False)
     e = _one(generator_source, tmp_path, monkeypatch, "fedbuff", DATASET="google_speech")
     assert "training_delay_factor" not in e["trainer"].get("hyperparameters", {})
-    assert e["aggregator"]["config_overrides"]["hyperparameters"]["send_timeout_wait_s"] == 2560.0
+    t = e["aggregator"]["config_overrides"]["hyperparameters"]["send_timeout_wait_s"]
+    assert 1900 < t < 1940  # 1.5 x the longest speech epoch (1280 s)
     h = _one(generator_source, tmp_path, monkeypatch, "fedbuff", DATASET="google_speech", DELAY_FACTOR="4")
     assert h["trainer"]["hyperparameters"]["training_delay_factor"] == 4.0
-    assert h["aggregator"]["config_overrides"]["hyperparameters"]["send_timeout_wait_s"] == 640.0
+    assert h["aggregator"]["config_overrides"]["hyperparameters"]["send_timeout_wait_s"] == t / 4
     monkeypatch.delenv("DELAY_FACTOR", raising=False)
     c = _one(generator_source, tmp_path, monkeypatch, "fedbuff", DATASET="cifar10")
-    assert c["aggregator"]["config_overrides"]["hyperparameters"]["send_timeout_wait_s"] == 903.0
+    r = _one(generator_source, tmp_path, monkeypatch, "refl", DATASET="cifar10")
+    tc = c["aggregator"]["config_overrides"]["hyperparameters"]["send_timeout_wait_s"]
+    tr = r["aggregator"]["config_overrides"]["hyperparameters"]["send_timeout_wait_s"]
+    assert 670 < tc < 685 and tr < 100  # each baseline's own local work: REFL's one step is short
 
 
 def test_trainer_hp_beats_by_baseline(generator_source, tmp_path, monkeypatch):

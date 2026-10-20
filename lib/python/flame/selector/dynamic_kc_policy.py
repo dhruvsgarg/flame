@@ -378,31 +378,6 @@ class SchedulePolicy(DynamicKCPolicy):
         return "schedule"
 
 
-class NoiseScaleKPolicy(DynamicKCPolicy):
-    """FX-N109 I5: K tracks kappa x the gradient noise scale B (EMA over cycles; `update_stats.UpdateStats`).
-
-    kappa 1: B estimates the critical batch (McCandlish et al. 2018). ema "sweep": weight K / n, i.e. B averaged over about
-    one population sweep of updates, so no smoothing constant is tuned."""
-
-    def __init__(self, kappa: float = 1.0, ema="sweep"):
-        self.kappa, self.ema = kappa, ema
-        self._b: Optional[float] = None
-
-    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
-        b = metrics.get("noise_scale")
-        if b is None or b != b or b == float("inf") or b < 0:
-            return None
-        a = min(1.0, current_k / max(1, metrics.get("n_trainers") or 1)) if self.ema == "sweep" else float(self.ema)
-        self._b = b if self._b is None else (1 - a) * self._b + a * b
-        return max(1, round(self.kappa * self._b))
-
-    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
-        return None
-
-    def name(self) -> str:
-        return "noise_scale_k"
-
-
 class AimdKPolicy(DynamicKCPolicy):
     """FX-N109 I5: find the step-size edge online, TCP-style (AIMD on K; the step per update is η w / K).
 
@@ -461,7 +436,6 @@ _POLICY_REGISTRY: dict = {
     "adaptive_k_var_tracking": AdaptiveKVarTrackingPolicy,
     "composite": CompositePolicy,
     "schedule": SchedulePolicy,
-    "noise_scale_k": NoiseScaleKPolicy,
     "aimd_k": AimdKPolicy,
     "availability_cap": AvailabilityCapPolicy,
 }

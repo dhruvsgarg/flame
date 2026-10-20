@@ -4,7 +4,7 @@
   selection_audit.py POOL... [--legs PHASE:BASELINE ...] [--json]
 
 Per leg:
-- picks: top-20% update share; Spearman of a client's train picks vs shard size, speed (−median duration) and per-sample
+- picks: top-20% share and Gini of train tasks per client (never-picked count 0), coverage, mean local samples per task; Spearman of a client's train picks vs shard size, speed (−median duration) and per-sample
   loss (utility / size); mean samples per update vs the population mean.
 - classes (cifar): total variation between the label mass of aggregated updates (one shard histogram per update,
   normalized) and the population's.
@@ -138,7 +138,12 @@ def audit(run_dir):
     tot = sum(picks.values())
     top = sorted(picks.values(), reverse=True)[:max(1, len(ids) // 5)]
     p = [picks[e] for e in ids]
-    out = {"trainers": len(ids), "top20": sum(top) / tot,
+    n_pop = len(glob.glob(os.path.join(run_dir, "telemetry", "trainer_*.jsonl")))
+    xs = sorted(p + [0] * (n_pop - len(ids)))  # never-picked clients count as 0
+    gini = sum((2 * i - len(xs) + 1) * x for i, x in enumerate(xs)) / (len(xs) * tot)
+    trained = [x.get("model_samples") for r in T.values() for x in r]
+    out = {"trainers": len(ids), "top20": sum(top) / tot, "gini": gini, "coverage": len(ids) / max(n_pop, 1),
+           "local_samples": st.mean(trained) if all(v is not None for v in trained) else None,
            "picks_size": spearman(p, [size[e] for e in ids]), "picks_speed": spearman(p, [-dur[e] for e in ids]),
            "picks_loss": spearman(p, [rms[e] for e in ids]), "dur_size": spearman([dur[e] for e in ids], [size[e] for e in ids]),
            "samples_per_update": sum(picks[e] * size[e] for e in ids) / tot, "pop_samples": st.mean(size.values())}
@@ -169,12 +174,13 @@ def main(argv=None):
     if a.json:
         print(json.dumps(rows, indent=1))
         return 0
-    print("| leg | top-20% | picks~size | ~speed | ~loss/sample | dur~size | samples/update (pop) | class TV "
+    print("| leg | top-20% | Gini · coverage | local samples | picks~size | ~speed | ~loss/sample | dur~size | samples/update (pop) | class TV "
           "| belief err eval / train | believed÷actual eval / train | belief rank | eval/train | K (B) at 10/50/90% |")
-    print("|" + "---|" * 13)
+    print("|" + "---|" * 15)
     for r in rows:
         k = " · ".join(f"{kk} ({fmt(b, 1)})" for kk, b in r.get("k_traj") or []) or "–"
-        print(f"| {r['phase']} {r['baseline']} | {r['top20']:.2f} | {fmt(r['picks_size'])} | {fmt(r['picks_speed'])} "
+        print(f"| {r['phase']} {r['baseline']} | {r['top20']:.2f} | {r['gini']:.2f} · {r['coverage']:.2f} "
+              f"| {fmt(r.get('local_samples'), 0)} | {fmt(r['picks_size'])} | {fmt(r['picks_speed'])} "
               f"| {fmt(r['picks_loss'])} | {fmt(r['dur_size'])} | {r['samples_per_update']:.0f} ({r['pop_samples']:.0f}) "
               f"| {fmt(r.get('class_tv'), 3)} | {fmt(r.get('err_eval'))} / {fmt(r.get('err_train'))} "
               f"| {fmt(r.get('bias_eval'))} / {fmt(r.get('bias_train'))} | {fmt(r.get('belief_rank'))} "

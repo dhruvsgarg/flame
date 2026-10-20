@@ -375,8 +375,9 @@ for e_src in cfg.get("experiments", []):
             h["trace_time_scale"] = float(os.environ["FLAME_TRACE_TIME_SCALE"])
         if delay_factor:
             e["trainer"].setdefault("hyperparameters", {})["training_delay_factor"] = float(delay_factor)
-        if prof.get("send_timeout_wait_s"):  # FX-D197: dataset timeout, compressed with the harness delay factor
-            h["send_timeout_wait_s"] = float(prof["send_timeout_wait_s"]) / float(delay_factor or 1)
+        if prof.get("model_kbit"):  # FX-N115: the baseline's own timeout, compressed with the harness delay factor
+            from flame.launch import task_timeout as _tto
+            h["send_timeout_wait_s"] = round(_tto.task_timeout_s(bl, ds_name, prof), 1) / float(delay_factor or 1)
         if prof.get("gpu_train_slots") and not harness_mode:  # FX-D58: GPU legs only
             e["trainer"].setdefault("hyperparameters", {})["gpu_train_slots"] = int(prof["gpu_train_slots"])
         if prof.get("sim_gpu_train_slots") and not harness_mode:  # FX-N98: sim legs only (trainer ignores it in real)

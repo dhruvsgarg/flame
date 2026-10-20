@@ -1,8 +1,0 @@
-# PR39s (FX-N109 F39S): does Felix's eval selector sense heterogeneous data growth and pay for its bytes? cifar syn_0, events
-# stream (per-client chunk times), full 2 h vclock sims, 3 seeds. ctl = felix + fedbuff + oort; eval0 / gateU (I8) / uK10 (I9) /
-# ugU (I8 + I9) / oracle (true current utility injected). Read: knob_sweep.py, selection_audit.py (belief err, eval/train).
-name: pr39s
-common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1"
-gpus: {jayne: "0,2,3,4,5,6,7"}
-stages:
-  - {id: C, args: "--tier F39S --datasets cifar10"}

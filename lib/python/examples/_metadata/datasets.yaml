@@ -11,8 +11,9 @@ data_roots:
 datasets:
   # A dataset sets only what differs per dataset; every baseline-defining value lives in baseline_reference.yaml.
   cifar10:  # the template itself; per-baseline values: baseline_reference.yaml (FX-N74)
-    # FX-D197: abandon timeout = 2 x the longest FedScale task (epoch or Oort's 20 steps) in the n=300 population
-    send_timeout_wait_s: 903
+    # FX-N115: per-baseline task timeout = 1.5 x its longest modeled task over this split (flame/launch/task_timeout.py)
+    reference_split: cifar10_alpha0.1_n300
+    model_kbit: 16800.3125  # model size as the trainer measures it (FX-D197)
 
   google_speech:
     description: >-
@@ -23,8 +24,9 @@ datasets:
       launcher, registry delays (identical for trainers 1-100), syn_*/mobiperf_3st traces, streaming,
       selector knobs, join barrier n-10. Trainer Adam lr 0.000195: a centralized check on 10 trainers' data
       (4 epochs) reached 43% test acc at 0.000195, 35% at 0.001, chance at 0.04; server lr per baseline below.
-    # FX-D197: abandon timeout = 2 x the longest FedScale task (epoch or Oort's 20 steps) in the n=100 population
-    send_timeout_wait_s: 2560
+    # FX-N115: per-baseline task timeout = 1.5 x its longest modeled task over this split (flame/launch/task_timeout.py)
+    reference_split: google_speech_alpha0.1_n100
+    model_kbit: 226665.34375  # model size as the trainer measures it (FX-D197)
     # FX-D58: <= 7 trainers train at once per A40 (25 idle x 0.47 GB + 7 x 3.1 GB = 33 GB); a random c=30 first wave put 9-11 on one.
     gpu_train_slots: 7
     # FX-N98: sim trains one at a time per A40, earliest deadline first (gpu_slot_bench.py: K=1 is the best throughput, 11.4 vs 10.1 steps/s at K=2-3; concurrency only slows each task); 0 reverts.

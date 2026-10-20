@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from dataclasses import replace
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "examples" / "scripts"
 
@@ -669,3 +670,36 @@ def test_f39a_one_knob_per_arm():
     assert all(p.kind == "sim_ev" and p.trace == "syn_0" and p.n == g3.n for p in phs)
     assert by["F39A_c10_r1"].c == 10 and by["F39A_K5_r1"].agg_goal == 5 and by["F39A_ctl_r1"].c == g3.c
     assert by["F39A_gate5_r3"].agg_hp == f"{g3.agg_hp} sel.evalStaleGate=5 seed=1236"
+
+
+def test_f39w_local_work_arms():
+    """FX-N116: fixed local samples (capped at an epoch) and per-client split arms, Felix only, at the F39 vclock."""
+    by = {p.pid: p for p in pool.tier_phases("F39W", pool.B6, "google_speech")}
+    assert set(by) == {f"gs_F39W_{a}_r{i}" for a in ("s128", "s256", "s512", "wb50", "wb33") for i in (1, 2, 3)}
+    assert "localWork=cap localSteps=16" in by["gs_F39W_s256_r1"].trainer_hp  # 256 samples / batch 16
+    assert "localWork=split localWorkBeta=0.33" in by["gs_F39W_wb33_r2"].trainer_hp
+    assert all(p.baselines == ("felix",) and p.runtime_s == pool.F39_RUNTIME_S["google_speech"] for p in by.values())
+
+
+def test_f39e_eval_value_grid():
+    """Operator 10-21: four cells (trace x static / events stream), eval on / off, I9 on / off; oracle on streams only."""
+    by = {p.pid: p for p in pool.tier_phases("F39E", pool.B6, "cifar10")}
+    assert len(by) == (4 * 5 + 2) * pool.F39A_REPS
+    assert by["F39E_s50ev_ctl_r1"].baselines == ("felix", "fedbuff", "oort") and by["F39E_s50ev_ctl_r1"].trace == "syn_50_3st"
+    assert '"mode":"events"' in by["F39E_s0ev_u0_r1"].trainer_hp and "utilityOnReceive=true" in by["F39E_s0ev_u0_r1"].trainer_hp
+    assert "sel.evalGoalFactor=0" in by["F39E_s0ev_u0_r1"].agg_hp and '"enabled":"False"' in by["F39E_s50_eval0_r1"].agg_hp
+    assert "F39E_s0_oracle_r1" not in by and "oracle_utility_injection" in by["F39E_s0ev_oracle_r1"].agg_hp
+
+
+def test_eval_cadence_follows_leg_runtime(tmp_path):
+    """FX-N112: G3-family legs eval every runtime / EVAL_POINTS seconds of their own clock."""
+    ph = next(p for p in pool.tier_phases("F39C", ("felix",), "cifar10") if p.pid == "F39C_ctl_r1")
+    j = next(j for j in pool.build_jobs([ph], 0.2, 1, {}) if j.mode != "grade")
+    assert f"evalEverySeconds={10800 / pool.EVAL_POINTS:g}" in " ".join(j.args)
+
+
+def test_stall_limit_covers_the_task_timeout():
+    """FX-N111: S1 never fires before a leg's own abandon timeout could."""
+    real = pool.Job("x", "p", "syn_50_3st", "oort", "real", [], 50, 7200, "none", 4, 10, dataset="google_speech")
+    assert pool.stall_limit_s(real, 15) > 1.2 * 916
+    assert pool.stall_limit_s(replace(real, harness="stub"), 15) == 900

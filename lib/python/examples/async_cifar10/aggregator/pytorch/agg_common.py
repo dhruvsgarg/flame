@@ -103,15 +103,23 @@ class ExampleAggregatorMixin:
         Backgrounding is why eval needs no sim_model_*_compute_time vclock fold (flame/config.py); a synchronous
         eval would need one or sim would under-count wall time.
         """
-        eval_every = getattr(self.config.hyperparameters, "eval_every_n_rounds", 10) or 10
-        if self._round % eval_every != 0 and not (self.EVAL_ROUND_ONE and self._round == 1):
-            return
         if getattr(self, "_round_committed", None) is False:  # FX-D128: eval only on the committing pass
             return
+        every_s = getattr(self.config.hyperparameters, "eval_every_s", None)
+        if every_s:  # FX-N112: first commit at or after each mark of the leg's clock
+            mark = int(self._avail_now() // float(every_s))
+            if mark <= getattr(self, "_eval_last_mark", -1):
+                return
+        else:
+            eval_every = getattr(self.config.hyperparameters, "eval_every_n_rounds", 10) or 10
+            if self._round % eval_every != 0 and not (self.EVAL_ROUND_ONE and self._round == 1):
+                return
         self._eval_every_n_commits = 1  # FX-D63: the round gate is the cadence; a commit stride on top halved it
         eval_model = self._eval_snapshot_model()  # on self.eval_device
         if eval_model is None:
             return  # prior async eval still running
+        if every_s:
+            self._eval_last_mark = mark
         round_num, test_loader, device = self._round, self.test_loader, self.eval_device
 
         def _job():

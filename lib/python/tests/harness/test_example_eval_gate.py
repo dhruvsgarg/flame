@@ -52,3 +52,23 @@ def test_eval_copy_built_at_initialize(monkeypatch):
                         property(lambda self: SimpleNamespace(model=lambda: torch.nn.Linear(2, 2))))
     agg.initialize()
     assert agg._eval_model is not None and agg._eval_model is not agg.model
+
+
+class _TimedAgg(_Agg):
+    """FX-N112: evalEverySeconds gates on the leg's clock (`_avail_now`), whatever the round."""
+
+    def __init__(self, now):
+        super().__init__(rnd=7, committed=True)
+        self.config.hyperparameters.eval_every_s = 300.0
+        self.now = now
+
+    def _avail_now(self):
+        return self.now
+
+
+@pytest.mark.parametrize("now, last_mark, evals", [(0.0, -1, 1), (299.0, 0, 0), (300.0, 0, 1), (1250.0, 1, 1), (1250.0, 4, 0)])
+def test_time_cadence_evaluates_once_per_mark(now, last_mark, evals):
+    agg = _TimedAgg(now)
+    agg._eval_last_mark = last_mark
+    agg.evaluate()
+    assert agg.snapshots == evals

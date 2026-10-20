@@ -185,7 +185,7 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR39 · hold 76 / 76 on the FX-D194 key + bands · parked (operator 10-19):** re-targeted on the optimized Felix (FELIX FX-N109)
+- **PR39 · re-grade parity on the FX-D197 key · phase 1 done 10-20: 14 / 24 cells (FELIX Scoreboard); phase 2 = FELIX D5a**
   → Felix claims gate (FX-N108) → sim-only experiments.
 - **Long blocks (G1U, G1AS grid) · deferred by C18** until PR37: FELIX FX-N93.
 
