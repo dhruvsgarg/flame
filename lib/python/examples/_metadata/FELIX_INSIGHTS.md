@@ -119,6 +119,9 @@ reconstruction (§4 #4).
 
 ## 5. Findings (measured; each line cites its evidence)
 
+**Every finding below ran on work-independent task durations (before FELIX FX-D197, 10-20) and is void for the paper;
+kept only as hypotheses to re-measure.**
+
 - **REFL staleness (I-C1, 10-12):** aggregated updates > 5 rounds stale are 0% on syn_0 (G1A/G1AS cifar + speech, up to 496 rounds,
   max staleness 5), 0-2.4% on syn_50 and 0-1.1% on mobiperf (G0U, max 12); stale share 14-33%. Source: `agg_round.staleness`, jayne
   `async_cifar10/experiments/*refl*{G1A,G1AS,G0U}*`. Why it matters: a 5-round cap (SAFA's) would change nothing on syn_0.
@@ -146,4 +149,4 @@ to 70% everywhere except CIFAR-10 syn_50 (39 h).
   - *Selection concentration.* Felix's top 20% of clients supply 57% of cifar updates (FedBuff 23%, Oort family 59-69%, FedDance 63-69%);
     unavailability spreads Felix's picks (43%). *Driver (PR39b, `selection_audit.py`):* shard size, not speed. Picks vs size ρ +0.95 cifar / +0.80 speech,
     vs speed +0.13 / +0.40, vs per-sample loss −0.88 / −0.39. Oort's |D|-weighted utility does this on a duration model where size costs
-    no time (FELIX Q-DUR). Class mass of updates stays within TV 0.04 of the population (FedBuff 0.08).
+    no time (fixed by FELIX FX-D197). Class mass of updates stays within TV 0.04 of the population (FedBuff 0.08).
