@@ -23,9 +23,9 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
   `selection_audit.py`, tiers F39C / F39S, `batches/pr39c1.yaml` / `pr39c2.yaml` / `pr39s.yaml` (FX-D196). *Smoke (10-20, 10-min vclock,
   seed 1, `async_cifar10/experiments/run_20261020_00*_F39C_*` (pool dirs lost)):* every leg EV PASS after the EV3 fix. f2's K walks 10 → 2, backs off on a loss spike,
   settles at 3-4; dkc (old weight) goes 10 → 15 (an early false backoff) → 6. I9 cuts cifar eval-belief bias 1.19 → 0.96 (error
-  0.21 → 0.09). Speech smokes are too short to reach an eval or a stable AIMD window. *Next:* (1) shepherd pulls; operator launches
-  PR39c1 on shepherd's 8 GPUs (`dispatch.py batches/pr39c1.yaml --nodes shepherd`, tmux `dg_flame`; 30 Felix legs, ~1.5 h, RAM-bound at
-  ~5 legs); (2) read it with `knob_sweep.py` + `selection_audit.py`; (3) PR39c2 (the remainder + FedBuff controls), then PR39s. *Exit:* E1-E5 of the design.
+  0.21 → 0.09). Speech smokes are too short to reach an eval or a stable AIMD window. *Next:* (1) operator launches
+  PR39c1 on shepherd GPUs 0-3 (4-7: pbehnam3) (`dispatch.py batches/pr39c1.yaml --nodes shepherd`, tmux `dg_flame`; 33 Felix legs,
+  plan ~2.8 h); (2) read it with `knob_sweep.py` + `selection_audit.py`; (3) PR39c2 (the remainder + FedBuff controls), then PR39s. *Exit:* E1-E5 of the design.
 
 - **PR39 · Hold 76 / 76 on the FX-D194 key + band strengtheners · blocked: FX-N109 (operator 10-19: re-target on the optimized Felix).** Commit, push; shepherd pulls; then
   `dispatch.py batches/pr39.yaml --plan`, `dispatch.py batches/pr39.yaml` (tmux `dg_flame`). Stages: S speech G3S1 all six × syn_0 /
