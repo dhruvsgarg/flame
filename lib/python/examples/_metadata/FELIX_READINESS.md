@@ -27,13 +27,11 @@ Work rule: PARITY C10, C17, C18. Test levels: pytest (~3 min) · CPU tiers T1-T4
   PR39c1 on shepherd GPUs 0-3 (4-7: pbehnam3) (`dispatch.py batches/pr39c1.yaml --nodes shepherd`, tmux `dg_flame`; 33 Felix legs,
   plan ~2.8 h); (2) read it with `knob_sweep.py` + `selection_audit.py`; (3) PR39c2 (the remainder + FedBuff controls), then PR39s. *Exit:* E1-E5 of the design.
 
-- **PR39 · Hold 76 / 76 on the FX-D194 key + band strengtheners · blocked: FX-N109 (operator 10-19: re-target on the optimized Felix).** Commit, push; shepherd pulls; then
-  `dispatch.py batches/pr39.yaml --plan`, `dispatch.py batches/pr39.yaml` (tmux `dg_flame`). Stages: S speech G3S1 all six × syn_0 /
-  syn_50_3st / lin; C cifar G3S1 lin for felix, fedbuff, refl, feddance; CF cifar feddance G3S1 syn_50_3st (the one G3 cell FX-D194
-  moves that S/C miss; syn_0 and lin have no gated deliveries); D felix, fedbuff G3 syn_50_3st both datasets (re-derived
-  gate_release); RA a third G3C syn_50_3st real for cifar oort, oort_star. Key `b5bb7b240c90` (linked to the G0US key in
-  `REAL_SAME_CODE`); a further run-affecting edit before launch needs a new link. *Claim:* every cell stays green, 76 / 76 on mixed
-  keys. Refute: a G3S red on a cell green today. *Then:* rewrite the Scoreboard, FX-N108.
+- **PR39 · Re-grade parity on the FX-D197 key, two phases · phase 1 launched 10-20 (operator).** The old G3S-vote batch graded against
+  reals that FX-D197 voided, so PR39 is PR38-shaped. *Phase 1 (`batches/pr39.yaml`, jayne 7 + shepherd 4 GPUs, plan ~9.3 h, 24 real+sim
+  pairs):* stage FB Felix + FedBuff syn_0 / syn_50_3st both datasets (tiering, selection, aggregation), then OS0 / OS5 oort, oort_star,
+  refl, feddance syn_0 / syn_50_3st (correctness). *Phase 2 (after reviewing phase 1):* lin cells, G3C real replicates, G3S votes
+  once reals exist. *Claim:* every phase-1 cell grades inside the real↔real band, EV PASS. Then: rewrite the Scoreboard, FX-N108.
 
 - **FX-N103 · Cifar lin oort: real > sim lean · wip (cell green).** G3S `pool_20261018_033638_G3S`: sims 455 / 543 / 669 versions vs 2 h
   reals 551 / 625 / 694 (floor 17-40%), 7 of 9 pairs real > sim. 10-18 audit, no biased input found: (a) sim S3 ≡ real 145243 for 15
