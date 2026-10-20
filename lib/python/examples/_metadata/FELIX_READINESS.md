@@ -1061,8 +1061,18 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **Q-EV21 · Felix "reaches AVL_EVAL" arms only at ≥ 20 eval picks · parked: FX-N109 I2.** The eval budget (evalGoalFactor · K = 10 per
   version) is a cap: the 35-version gate, train returns resetting `last_eval_round`, and AVL_EVAL-only on 3-state traces leave 0.5-10%
   used (PR38). Re-decide once FX-N109 settles the eval policy.
-- **Q-DUR · Task duration ignores shard size · open (operator 10-20: keep the FedBuff runtime distribution).** D is the client's
-  speed class only (ρ(duration, shard size) = 0.01). It affects neither sim correctness, parity nor speedup. It does feed the
-  utility: Oort's |D| factor makes big shards free picks (Felix 1.7× samples per update on cifar), inflating size-aware selectors
-  (Felix, Oort) over size-blind ones (FedBuff). Test without inventing a distribution: PR39c1 `pK10` (rank by per-sample utility).
-  If the gain holds, the claim stands as is; if not, report it and consider equal work per task.
+- **Q-DUR · Task duration ignores shard size · open, quantified 10-20 (no code yet).** Today D = the client's 2024 speed-class
+  delay (`trainer_registry.yaml`), and ρ(D, shard size) ≈ 0. Shards at α 0.1: cifar n75 CV 0.80 (14-481 samples), speech n50 CV 0.42.
+  - *Candidate distributions:* (a) proportional D·s/s̄: speech keeps its shape (CV 0.63 → 0.70); cifar widens (CV 0.65 → 1.07,
+    max/min 24× → 435×, 10 clients < 1 s), which is not today's distribution. (b) **Rank-remap:** order clients by D·s and give them
+    today's durations in that order. The marginal is exactly today's; ρ(D, size) becomes +0.69 cifar / +0.38 speech. No client
+    exceeds the 90 / 450 s timeouts under either.
+  - *Dynamics (event sim, c 15, K 10; random picks reproduce PR39b FedBuff at 80 upd/min).* If Felix keeps today's picks, under remap
+    cifar Felix drops from 93 to 61 upd/min and its samples/s lead over FedBuff shrinks from 1.97× (401 vs 204) to 1.32× (252 vs 190).
+    Speech shrinks from 1.35× (325 vs 240) to 1.19× (274 vs 230). Staleness and FedBuff are unchanged.
+  - *Reading:* on cifar, roughly half of Felix's throughput edge is free shard size. That's material to the selection claim, but it
+    is an upper bound: under remap, Felix's speed term would see the cost and re-pick. Side effects of remap: Oort's size-vs-speed
+    trade-off becomes real (as in its paper); likely fewer real overruns (big shards get the long D; unmeasured); every parity cell needs a new key
+    (fold into PR39).
+  - *Next:* decide remap (recommended) vs keep; if remap, one registry change + a G3 syn_0 sim screen for all six, then PR39c1's arms
+    re-run on it. PR39c1's `pK10` gives a no-code early read today.

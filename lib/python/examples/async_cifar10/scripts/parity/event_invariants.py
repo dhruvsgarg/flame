@@ -107,14 +107,15 @@ def _train_commits(run):
             and e.get("task_to_perform", "train") == "train"]
 
 
-def _registry_delays() -> dict:
-    """end_id (task_id) -> raw registry D."""
+def _registry_devices() -> dict:
+    """end_id (task_id) -> (compute ms/sample, bandwidth kbps): the FedScale device (FX-D197)."""
     try:
         with open(_REGISTRY) as f:
             reg = yaml.safe_load(f)
     except OSError:
         return {}
-    return {t["task_id"]: float(t["training_delay_s"]) for t in reg.get("trainers", {}).values()}
+    return {t["task_id"]: (float(t["compute_ms_per_sample"]), float(t["bandwidth_kbps"]))
+            for t in reg.get("trainers", {}).values() if "compute_ms_per_sample" in t}
 
 
 def _effective_d(run, raw: float) -> float:
@@ -194,9 +195,10 @@ def ev2_task_alternation(run):
 
 
 def ev3_duration_model(run):
-    """Trainer's modeled duration = max(gpu, D) with D = registry D (floor, factor), + measured overhead in sim (C13);
+    """Trainer's modeled duration = max(gpu, D), D = FedScale task time of its registry device (FX-D197; floor, factor) + the I9
+    pass, + measured overhead in sim (C13);
     sim: sct = send + duration + delivery lag (FX-D108) + leg."""
-    reg = _registry_delays()
+    reg = _registry_devices()
     sim = _simulated(run)
     n = bad_max = bad_budget = bad_sct = bad_stamp = 0
     examples = []
@@ -207,7 +209,7 @@ def ev3_duration_model(run):
         if e.get("sim_send_ts") is not None:
             stamps[(e.get("end_id"), e.get("round"), e.get("task", "train"))].add(round(e["sim_send_ts"], 6))
     for tid, evs in run["trainers"].items():
-        d_true = _effective_d(run, reg[tid]) if tid in reg else None
+        dev = reg.get(tid)
         for e in evs:
             if e.get("event") != "trainer_round" or e.get("task_to_perform", "train") != "train":
                 continue
@@ -217,10 +219,14 @@ def ev3_duration_model(run):
             if None not in (gpu, dur, budget) and abs(dur - max(gpu, budget) - ovh) > _EPS_S:
                 bad_max += 1
                 examples.append((tid[-4:], "dur!=max(gpu,D)", dur, gpu, budget))
-            d_task = budget - (e.get("utility_pass_s") or 0.0) if budget is not None else None  # FX-N109 I9 charges D/20
+            smp, kbit = e.get("model_samples"), e.get("model_kbit")
+            d_true = None
+            if dev is not None and None not in (smp, kbit):  # train: 3 x samples x ms + 2 transfers
+                d_true = _effective_d(run, 3 * smp * dev[0] / 1000.0 + 2 * kbit / dev[1])
+            d_task = budget - (e.get("utility_pass_s") or 0.0) if budget is not None else None  # FX-N109 I9 pass
             if d_true is not None and budget is not None and budget > 0 and abs(d_task - d_true) > 1e-3:
                 bad_budget += 1
-                examples.append((tid[-4:], "D!=registry", budget, d_true))
+                examples.append((tid[-4:], "D!=device model", budget, d_true))
             if sim and None not in (e.get("sim_send_ts"), e.get("sim_completion_ts"), dur):
                 legs.append((tid, e["sim_completion_ts"] - e["sim_send_ts"] - dur - (e.get("sim_delivery_lag_s") or 0.0)))
                 sent = stamps.get((tid, e.get("round"), "train"))
@@ -239,7 +245,7 @@ def ev3_duration_model(run):
                 examples.append((tid[-4:], "sct!=send+dur+leg", round(x, 3), round(leg, 3)))
     bad = bad_max + bad_budget + bad_sct + bad_stamp
     return _res("PASS" if bad == 0 else "FAIL",
-                f"rounds={n} dur!=max={bad_max} D!=registry={bad_budget} sct!=send+dur+leg={bad_sct}"
+                f"rounds={n} dur!=max={bad_max} D!=device={bad_budget} sct!=send+dur+leg={bad_sct}"
                 + (f" send_ts!=dispatch={bad_stamp}" if sim else "")
                 + (f" leg={leg:.3f}s" if leg is not None else ""), examples=examples[:10])
 

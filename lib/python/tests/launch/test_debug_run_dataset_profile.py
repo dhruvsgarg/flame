@@ -57,19 +57,18 @@ def test_shape_goes_through_agg_goal_and_only_async_gets_c(generator_source, tmp
     assert o["aggregator"]["agg_goal"] == 3 and "c" not in o["aggregator"]["config_overrides"]["selector"]["kwargs"]
 
 
-def test_speech_device_time_scale_scales_d_and_timeout(generator_source, tmp_path, monkeypatch):
-    """FX-D46: speech D x5 (divisor 0.2) and the per-dispatch timeout 450s; a harness --delay-factor wins; cifar untouched."""
+def test_dataset_timeout_scales_with_delay_factor(generator_source, tmp_path, monkeypatch):
+    """FX-D197: per-dataset abandon timeout (2 x longest FedScale task), compressed by a harness --delay-factor; no D scale."""
     monkeypatch.delenv("DELAY_FACTOR", raising=False)
     e = _one(generator_source, tmp_path, monkeypatch, "fedbuff", DATASET="google_speech")
-    assert e["trainer"]["hyperparameters"]["training_delay_factor"] == pytest.approx(0.2)
-    assert e["aggregator"]["config_overrides"]["hyperparameters"]["send_timeout_wait_s"] == 450.0
+    assert "training_delay_factor" not in e["trainer"].get("hyperparameters", {})
+    assert e["aggregator"]["config_overrides"]["hyperparameters"]["send_timeout_wait_s"] == 2560.0
     h = _one(generator_source, tmp_path, monkeypatch, "fedbuff", DATASET="google_speech", DELAY_FACTOR="4")
     assert h["trainer"]["hyperparameters"]["training_delay_factor"] == 4.0
-    assert "send_timeout_wait_s" not in h["aggregator"]["config_overrides"]["hyperparameters"]
+    assert h["aggregator"]["config_overrides"]["hyperparameters"]["send_timeout_wait_s"] == 640.0
     monkeypatch.delenv("DELAY_FACTOR", raising=False)
     c = _one(generator_source, tmp_path, monkeypatch, "fedbuff", DATASET="cifar10")
-    assert "training_delay_factor" not in c["trainer"].get("hyperparameters", {})
-    assert "send_timeout_wait_s" not in c["aggregator"]["config_overrides"]["hyperparameters"]
+    assert c["aggregator"]["config_overrides"]["hyperparameters"]["send_timeout_wait_s"] == 903.0
 
 
 def test_trainer_hp_beats_by_baseline(generator_source, tmp_path, monkeypatch):

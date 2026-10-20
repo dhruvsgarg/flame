@@ -47,7 +47,7 @@ def _clean_run():
             trainers[t] += [
                 {"event": "task_recv", "round": rnd, "ts": ts + 0.01},
                 {"event": "trainer_round", "round": rnd, "ts": ts + 0.02, "task_to_perform": "train",
-                 "real_gpu_time_s": 0.01, "sim_round_duration_s": 5.0, "training_budget_s": 5.0,
+                 "real_gpu_time_s": 0.01, "sim_round_duration_s": 5.0, "training_budget_s": 5.0, "model_samples": 100, "model_kbit": 1000.0,
                  "sim_send_ts": vclock, "sim_completion_ts": vclock + 5.0},
                 {"event": "task_send", "round": rnd, "ts": ts + 0.03, "task_to_perform": "train"},
             ]
@@ -62,7 +62,7 @@ def _clean_run():
 
 @pytest.fixture(autouse=True)
 def _no_registry(monkeypatch):
-    monkeypatch.setattr(ev, "_registry_delays", lambda: {T1: 5.0, T2: 5.0})
+    monkeypatch.setattr(ev, "_registry_devices", lambda: {T1: (10.0, 1000.0), T2: (10.0, 1000.0)})
 
 
 def _status(run_dir, name):
@@ -85,18 +85,18 @@ def test_ev2_double_recv_fails(tmp_path):
 
 
 def test_ev3_registry_mismatch_fails(tmp_path, monkeypatch):
-    monkeypatch.setattr(ev, "_registry_delays", lambda: {T1: 9.0, T2: 5.0})
+    monkeypatch.setattr(ev, "_registry_devices", lambda: {T1: (30.0, 1000.0), T2: (10.0, 1000.0)})
     assert _status(_write_run(tmp_path, *_clean_run()), "EV3_duration_model") == "FAIL"
 
 
 def test_ev3_delay_factor_applied(tmp_path, monkeypatch):
-    monkeypatch.setattr(ev, "_registry_delays", lambda: {T1: 20.0, T2: 20.0})
+    monkeypatch.setattr(ev, "_registry_devices", lambda: {T1: (60.0, 1000.0), T2: (60.0, 1000.0)})
     run = _write_run(tmp_path, *_clean_run(), hp={"trainingDelayFactor": 4.0})
     assert _status(run, "EV3_duration_model") == "PASS"
 
 
 def test_ev3_utility_pass_charge_passes(tmp_path, monkeypatch):
-    monkeypatch.setattr(ev, "_registry_delays", lambda: {T1: 5.0, T2: 5.0})
+    monkeypatch.setattr(ev, "_registry_devices", lambda: {T1: (10.0, 1000.0), T2: (10.0, 1000.0)})
     agg, tr = _clean_run()
     for evs in tr.values():
         for e in evs:

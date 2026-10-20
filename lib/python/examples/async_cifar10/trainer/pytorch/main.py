@@ -126,9 +126,10 @@ class PyTorchCifar10Trainer(Trainer):
         self.training_delay_enabled = (
             _tde if isinstance(_tde, bool) else str(_tde).strip().lower() == "true"
         )
-        self.training_delay_s = self._effective_delay_s(
-            float(self.config.hyperparameters.training_delay_s)
-        )
+        # FX-D197: task time = FedScale device model (registry compute_ms_per_sample, bandwidth_kbps); see _task_time_s
+        self.compute_ms = float(self.config.hyperparameters.compute_ms_per_sample)
+        self.bandwidth_kbps = float(self.config.hyperparameters.bandwidth_kbps)
+        self.model_kbit = None  # model size, set at initialize()
         self.harness_mode = harness.harness_mode(self.config.hyperparameters)
 
         # Add satellite coordinates
@@ -275,8 +276,26 @@ class PyTorchCifar10Trainer(Trainer):
         """Induce transient unavailability"""
         pass
 
+    def _task_time_s(self, kind: str, comm: bool = True) -> float:
+        """FX-D197: FedScale task time (Oort / REFL `getCompletionTime`), harness floor / factor applied.
+
+        train: 3 x samples x ms/sample (forward + backward) + down + up model transfers; eval: 1 x samples + download.
+        samples: train = local_steps x batch, else epochs x visible shard (the experiment's shard, also under harness truncation)."""
+        frac = self._stream_visible / self._stream_total if getattr(self, "_stream_total", 0) else 1.0
+        shard = len(self.trainer_indices_list) * min(1.0, frac)
+        steps = self.config.hyperparameters.local_steps
+        if kind == "train":
+            samples = steps * self.batch_size if steps is not None else self.epochs * shard
+            passes, transfers = 3, 2
+        else:
+            samples, passes, transfers = self.epochs * shard, 1, 1
+        self._last_task_model = dict(samples=samples, compute_s=passes * samples * self.compute_ms / 1000.0,
+                                     comm_s=transfers * self.model_kbit / self.bandwidth_kbps if comm else 0.0,
+                                     kbit=self.model_kbit)
+        return self._effective_delay_s(self._last_task_model["compute_s"] + self._last_task_model["comm_s"])
+
     def _effective_delay_s(self, raw_s: float) -> float:
-        """Registry D with the optional floor, then divided by trainingDelayFactor (unset = raw)."""
+        """Modeled task time with the optional floor, then divided by trainingDelayFactor (harness time compression)."""
         hp = self.config.hyperparameters
         floor_s = float(getattr(hp, "training_delay_floor_s", 0.0) or 0.0)
         factor = getattr(hp, "training_delay_factor", None)
@@ -405,6 +424,7 @@ class PyTorchCifar10Trainer(Trainer):
             torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = True, False
 
         self.model = self.data_spec.model().to(self.device)
+        self.model_kbit = sum(v.numel() * v.element_size() for v in self.model.state_dict().values()) * 8 / 1024
         self._warmup_device()
         
         # Log model memory usage
@@ -533,7 +553,7 @@ class PyTorchCifar10Trainer(Trainer):
             dataset = data_utils.Subset(dataset, indices)
         logger.info(
             f"[HARNESS] trainer={self.trainer_id} mode={self.harness_mode} "
-            f"samples={len(indices)} device={self.device} delay_s={self.training_delay_s:.2f}"
+            f"samples={len(indices)} device={self.device} ms_per_sample={getattr(self, 'compute_ms', None)}"
         )
 
         # GPU pre-load for small datasets (cuts CPU RAM). Full pool is retained;
@@ -830,7 +850,9 @@ class PyTorchCifar10Trainer(Trainer):
         num_batches = len(self.train_loader)
         dataset_size = len(self.train_loader.dataset)
         _pre["loader"] = time.time() - _phase_train_entry
-        _D = self.training_delay_s if self.training_delay_enabled else 0.0
+        _D = self._task_time_s("train")
+        _task = dict(self._last_task_model)
+        _D = _D if self.training_delay_enabled else 0.0
         if self.simulated:
             _expected_wallclock_hint = f"~GPU wall-clock only; virtual_advance=max(gpu,D={_D:.1f}s)"
         else:
@@ -918,9 +940,11 @@ class PyTorchCifar10Trainer(Trainer):
         self.memory_profiler.log_memory_after_round()
         _post["mem_profile"] = time.time() - _phase_post_start
 
-        _modeled_delay_s = self.training_delay_s if self.training_delay_enabled else 0.0
-        _upass_s = _modeled_delay_s / 20.0 if _u0 is not None else 0.0  # I9's pre-pass is one eval: D/20, as evaluate()
-        _modeled_delay_s += _upass_s
+        _modeled_delay_s = _D
+        _upass_s = 0.0
+        if _u0 is not None and self.training_delay_enabled:  # I9's pre-pass: one forward over the visible data
+            _upass_s = self._effective_delay_s(self._task_time_s("eval", comm=False))
+            _modeled_delay_s += _upass_s
         _remaining_time = max(0.0, _modeled_delay_s - _real_gpu_time_s)
         _overran = self.training_delay_enabled and _real_gpu_time_s > _modeled_delay_s
         self._training_budget_s = _modeled_delay_s
@@ -1018,6 +1042,7 @@ class PyTorchCifar10Trainer(Trainer):
                     "stream_clock_s": self._stream_clock_s,
                     "training_budget_s": _modeled_delay_s,
                     "utility_pass_s": _upass_s,
+                    **{f"model_{k}": v for k, v in _task.items()},  # FX-D197: FedScale terms (EV3 recomputes them)
                     "remaining_time_s": _remaining_time,
                     "overran": _overran,
                     "grad_norm_epoch1": self._grad_norm_epoch1,
@@ -1253,11 +1278,8 @@ class PyTorchCifar10Trainer(Trainer):
                 # of the dataset
                 self.normalize_stat_utility(epoch)
         _real_eval_gpu_s = time.time() - _eval_gpu_t0
-        # Eval is ~20x faster than training (NPUs don't support training), so the
-        # modeled eval delay is training_delay_s/20.
-        _modeled_eval_delay_s = (
-            self.training_delay_s / 20.0 if self.training_delay_enabled else 0.0
-        )
+        # FX-D197: eval = one forward pass over the visible data + the model download
+        _modeled_eval_delay_s = self._task_time_s("eval") if self.training_delay_enabled else 0.0
         if self.simulated:
             # Stamp THIS eval's own completion ts (= send_ts + max(gpu, D_eval)).
             # Without it the send path reuses the last TRAIN round's _sim_completion_ts,
@@ -1269,11 +1291,8 @@ class PyTorchCifar10Trainer(Trainer):
                 (self._sim_send_ts if self._sim_send_ts is not None else self._sim_now())
                 + _eval_dur
             )
-        elif self.training_delay_enabled:
-            if str(getattr(self.config.hyperparameters, "realEvalDelayFloor", False)).lower() == "true":
-                eval_delay = math.floor(self.training_delay_s / 20.0)  # pre-FX-D183 revert
-            else:  # FX-D183: real eval spans max(gpu, D/20), as sim charges
-                eval_delay = max(0.0, _modeled_eval_delay_s - _real_eval_gpu_s)
+        elif self.training_delay_enabled:  # FX-D183: real eval spans max(gpu, modeled), as sim charges
+            eval_delay = max(0.0, _modeled_eval_delay_s - _real_eval_gpu_s)
             time.sleep(eval_delay)
             logger.debug(
                 f"Delayed eval time for trainer " f"{self.trainer_id} by {eval_delay}s"
@@ -1400,7 +1419,7 @@ def main():
         f"has heartbeats_enabled: {t.heartbeats_enabled}, "
         f"has client_notify: {t.client_notify['enabled']}, "
         f"training_delay_enabled: {t.training_delay_enabled}, "
-        f"training_delay_s: {t.training_delay_s}"
+        f"device ms/sample: {t.compute_ms}, kbps: {t.bandwidth_kbps}"
     )
 
     # Register exit handler to generate memory report
