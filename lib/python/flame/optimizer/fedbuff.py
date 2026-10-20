@@ -48,6 +48,7 @@ class FedBuff(AbstractOptimizer):
         # FX-D61: BN stats = mean of absolute stats (BN at the update's version + delta), outside rate and server lr.
         self.bn_absolute_mean = str(kwargs.get("bn_absolute_mean", True)).lower() == "true"
         self._bn_hist, self._bn_sum, self._bn_n, self._version = {}, {}, 0, None
+        self._u_sum, self._u_n = 0.0, 0  # FX-N109 I7: cycle utility sum / count for rate type "norm"
 
         ml_framework_in_use = get_ml_framework_in_use()
         if ml_framework_in_use == MLFramework.PYTORCH:
@@ -190,6 +191,12 @@ class FedBuff(AbstractOptimizer):
                     beta_type="polynomial_upshift",
                 )
 
+            elif self.agg_rate_conf["type"] == "norm":
+                # FX-N109 I7: u_i/sqrt(1+s); scale_add divides by the cycle's mean u
+                u = max(float(tres.stat_utility or 0.0), 0.0)
+                self._u_sum, self._u_n = self._u_sum + u, self._u_n + 1
+                rate = u / math.sqrt(1 + version - tres.version)
+
             logger.info(
                 f"agg ver: {version}, trainer ver: {tres.version}, "
                 f"trainer stat_utility: {tres.stat_utility}, rate: {rate}, "
@@ -225,6 +232,9 @@ class FedBuff(AbstractOptimizer):
         logger.debug(f"base_weights.keys(): {base_weights.keys()}")
 
         learning_rate = self.learning_rate
+        if self._u_n:  # rate "norm": divide by the cycle's mean utility
+            learning_rate = learning_rate * self._u_n / self._u_sum if self._u_sum > 0 else 0.0
+            self._u_sum, self._u_n = 0.0, 0
         bn = self.bn_absolute_mean and self._version is not None
         if bn:
             self._bn_hist.setdefault(self._version, self._bn_copy(base_weights))

@@ -135,6 +135,26 @@ F39B_ARMS = {f"K{k}c{c}": dict(agg_goal=k, c=c, fb=(k, c) in ((10, 15), (5, 15),
 # Equal step per update, different step frequency: is K's gain fresher models or a bigger effective lr?
 F39B_ARMS.update(K10lr2=dict(agg_goal=10, c=15, hp="opt.learning_rate=2.0"),
                  K5lr05=dict(agg_goal=5, c=15, hp="opt.learning_rate=0.5"))
+# FX-N109 (PR39c1/c2): E3 mechanisms, syn_0. "thp" = trainer hp. Fixed-γ arms are diagnostics, not configs.
+# I5: AIMD on K over loss-on-receive (needs I9); K = B pinned at c (FX-T59)
+_DKC = "sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=aimd_k sel.dynamic_kc.k_min=2"
+_STATS = "sel.dynamic_kc.stats=true"  # I5 telemetry only: B and stale-vs-fresh cos per cycle
+_NORM, _GATEU, _UREC = "opt.agg_rate_conf.type=norm", "sel.evalGateUnit=updates", "utilityOnReceive=true"
+F39C_ARMS = {
+    "ctl": dict(hp=_STATS, fb=True), "K5": dict(agg_goal=5, hp=_STATS),  # anchors (= PR39b K10c15 / K5c15)
+    "K3lr06": dict(agg_goal=3, hp="opt.learning_rate=0.6"), "K2lr04": dict(agg_goal=2, hp="opt.learning_rate=0.4"),  # E3a γ≈.17
+    "K5lr05": dict(agg_goal=5, hp="opt.learning_rate=0.5"), "K10lr2": dict(hp="opt.learning_rate=2.0"),  # E3a speech κ 1.4 / 2.8
+    "nK10": dict(hp=_NORM), "nK5": dict(agg_goal=5, hp=_NORM), "nK10c30": dict(c=30, hp=_NORM),  # E3b I7
+    "gK5": dict(agg_goal=5, hp=_GATEU),  # E3c I8
+    "uK10": dict(thp=_UREC),  # I9
+    "pK10": dict(hp="sel.utilityPerSample=true", thp=_UREC),  # size-neutral utility (Q-DUR)
+    "dkc": dict(hp=_DKC, thp=_UREC),  # E3d I5 from K10; FedBuff stays K10
+    "f2": dict(hp=f"{_DKC} {_NORM} {_GATEU}", thp=_UREC),  # all kept mechanisms together
+}
+# FX-N109 F39S: does Felix's eval selector sense heterogeneous data growth, and does it pay its bytes? events stream
+# (per-client chunk times), full G3 length; oracle = true current utility injected (upper bound on sensing).
+F39S_ARMS = {"ctl": dict(bls=("felix", "fedbuff", "oort")), "eval0": dict(hp="sel.evalGoalFactor=0"),
+             "gateU": dict(hp=_GATEU), "uK10": dict(thp=_UREC), "ugU": dict(hp=_GATEU, thp=_UREC), "oracle": dict(oracle=True)}
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
@@ -400,14 +420,22 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         if tier == "G3C":
             out = [replace(ph, pid=ph.pid.replace("G3_", "G3C_"), kind="real") for ph in out]
         return out
-    if tier in ("F39A", "F39B"):  # FX-N109: Felix knob sweep off the G3 control, syn_0 sims, seed per replicate
+    if tier in ("F39A", "F39B", "F39C", "F39S"):  # FX-N109: Felix knob sweeps off a G3 control, sims, seed per replicate
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
+        if tier == "F39S":
+            ev = stream_hp("events", G3_RUNTIME_S, "")
+            g3 = replace(g3, trainer_hp=f"{ev} {DETERMINISTIC}", agg_hp=f"{ev} evalEveryNRounds={G3_EVAL_EVERY}")
         out = []
-        for arm, kw in (F39A_ARMS if tier == "F39A" else F39B_ARMS).items():
+        for arm, kw in {"F39A": F39A_ARMS, "F39B": F39B_ARMS, "F39C": F39C_ARMS, "F39S": F39S_ARMS}[tier].items():
             kw = dict(kw)
-            bls = ("felix", "fedbuff") if arm == "ctl" or kw.pop("fb", False) else ("felix",)
-            hp = " ".join(x for x in (g3.agg_hp, kw.pop("hp", "")) if x)
-            out += [replace(g3, pid=f"{DS_TAG[ds]}{tier}_{arm}_r{i}", baselines=bls, kind="sim_ev",
+            fb = kw.pop("fb", False)
+            bls = kw.pop("bls", None) or (("felix", "fedbuff") if arm == "ctl" or fb else ("felix",))
+            bls = tuple(b for b in bls if b in baselines)  # --baselines narrows an arm (PR39c1: Felix only)
+            if not bls:
+                continue
+            hp = " ".join(x for x in (g3.agg_hp, kw.pop("hp", ""), oracle_a(ds) if kw.pop("oracle", False) else "") if x)
+            thp = " ".join(x for x in (g3.trainer_hp, kw.pop("thp", "")) if x)
+            out += [replace(g3, pid=f"{DS_TAG[ds]}{tier}_{arm}_r{i}", baselines=bls, kind="sim_ev", trainer_hp=thp,
                             agg_hp=f"{hp} seed={1233 + i}", **kw) for i in range(1, F39A_REPS + 1)]
         return out
     if tier == "G3S":  # sim-only replicates of every G3 cell: G3S<i>_<cell>, graded on banked + equivalent reals
@@ -2040,7 +2068,7 @@ def code_key() -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A F39B, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A F39B F39C F39S, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

@@ -1,0 +1,9 @@
+# PR39c2 (FX-N109 E3 remainder, after PR39c1): E3a fixed-γ diagnostics (is speech's K5 failure κ or K?), I7 at K5 / c30, I8 gate,
+# speech K5 anchors, FedBuff K10c15 controls. Felix + FedBuff (FedBuff stays K10). Read as PR39c1.
+name: pr39c2
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1 --scale-smoke 3600"
+gpus: {jayne: "0,2,3,4,5,6,7"}
+stages:
+  - {id: S, args: "--tier F39C --gpu-share 2 --datasets google_speech --baselines felix --phases 'gs_F39C_K5_r1 gs_F39C_K5_r2 gs_F39C_K5_r3 gs_F39C_K5lr05_r1 gs_F39C_K5lr05_r2 gs_F39C_K5lr05_r3 gs_F39C_K10lr2_r1 gs_F39C_K10lr2_r2 gs_F39C_K10lr2_r3 gs_F39C_nK10_r1 gs_F39C_nK10_r2 gs_F39C_nK10_r3 gs_F39C_nK5_r1 gs_F39C_nK5_r2 gs_F39C_nK5_r3 gs_F39C_pK10_r1 gs_F39C_pK10_r2 gs_F39C_pK10_r3'"}
+  - {id: C, args: "--tier F39C --datasets cifar10 --baselines felix --phases 'F39C_K3lr06_r1 F39C_K3lr06_r2 F39C_K3lr06_r3 F39C_K2lr04_r1 F39C_K2lr04_r2 F39C_K2lr04_r3 F39C_nK5_r1 F39C_nK5_r2 F39C_nK5_r3 F39C_nK10c30_r1 F39C_nK10c30_r2 F39C_nK10c30_r3 F39C_gK5_r1 F39C_gK5_r2 F39C_gK5_r3'"}
+  - {id: F, args: "--tier F39C --baselines fedbuff --datasets 'cifar10 google_speech' --gpu-share 2 --phases 'F39C_ctl_r1 F39C_ctl_r2 F39C_ctl_r3 gs_F39C_ctl_r1 gs_F39C_ctl_r2 gs_F39C_ctl_r3'"}

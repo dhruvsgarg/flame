@@ -95,6 +95,17 @@ def test_ev3_delay_factor_applied(tmp_path, monkeypatch):
     assert _status(run, "EV3_duration_model") == "PASS"
 
 
+def test_ev3_utility_pass_charge_passes(tmp_path, monkeypatch):
+    monkeypatch.setattr(ev, "_registry_delays", lambda: {T1: 5.0, T2: 5.0})
+    agg, tr = _clean_run()
+    for evs in tr.values():
+        for e in evs:
+            if e["event"] == "trainer_round":  # FX-N109 I9: budget = D + D/20, reported apart
+                e.update(training_budget_s=5.25, sim_round_duration_s=5.25, utility_pass_s=0.25,
+                         sim_completion_ts=e["sim_send_ts"] + 5.25)
+    assert _status(_write_run(tmp_path, agg, tr), "EV3_duration_model") == "PASS"
+
+
 def test_ev5_commit_without_send_fails(tmp_path):
     agg, tr = _clean_run()
     tr[T2] = [e for e in tr[T2] if e["event"] != "task_send"]
@@ -106,6 +117,16 @@ def test_ev7_short_round_fails(tmp_path):
     first_commit = next(i for i, e in enumerate(agg) if e["event"] == "agg_round")
     del agg[first_commit]
     assert _status(_write_run(tmp_path, agg, tr), "EV7_agg_goal_cadence") == "FAIL"
+
+
+def test_ev7_dynamic_k_round_passes(tmp_path):
+    agg, tr = _clean_run()
+    first_commit = next(i for i, e in enumerate(agg) if e["event"] == "agg_round")
+    del agg[first_commit]
+    for e in agg:
+        if e["event"] == "agg_round" and e.get("round") == 1:
+            e["agg_goal"] = 1  # FX-N109 I5: the controller set K = 1 for round 1
+    assert _status(_write_run(tmp_path, agg, tr), "EV7_agg_goal_cadence") == "PASS"
 
 
 def test_ev8_choosing_over_cap_fails(tmp_path):

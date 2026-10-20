@@ -39,6 +39,7 @@ from flame.selector.properties import (
     PROP_DATASET_SIZE,
     PROP_END_ID,
     PROP_LAST_EVAL_ROUND,
+    PROP_LAST_REPORT_UPDATES,
     PROP_LAST_SELECTED_ROUND,
     PROP_SELECTED_COUNT,
     PROP_STAT_UTILITY,
@@ -102,6 +103,10 @@ class AsyncOortSelector(AsyncSelectorBase):
 
         # FX-N109: versions since a trainer's last eval/train before it is eval-eligible
         self.eval_stale_gate = int(kwargs.get("evalStaleGate", 35))
+        # FX-N109 I8: "updates" = gate x configured K committed updates, cadence independent of K
+        self.eval_gate_unit = str(kwargs.get("evalGateUnit", "versions"))
+        # FX-N109: rank by utility / |D| (drops Oort's size factor; Q-DUR)
+        self.utility_per_sample = str(kwargs.get("utilityPerSample", False)).lower() == "true"
 
         # With Oort, we select 1.3 * k ends and wait until k ends to
         # complete at a round
@@ -167,6 +172,10 @@ class AsyncOortSelector(AsyncSelectorBase):
         if ctx.task_to_perform != "eval":
             return True
         last_eval = end.get_property(PROP_LAST_EVAL_ROUND)
+        if self.eval_gate_unit == "updates":
+            last = end.get_property(PROP_LAST_REPORT_UPDATES)
+            now = (ctx.channel_props or {}).get("n_updates", 0)
+            return last_eval is not None and last is not None and now - last >= self.eval_stale_gate * self.agg_goal
         return last_eval is not None and ctx.model_version - last_eval >= self.eval_stale_gate
 
     def _choose(self, candidates: dict[str, End], k: int, ctx: SelectContext) -> list:
@@ -545,6 +554,9 @@ class AsyncOortSelector(AsyncSelectorBase):
                 end_id not in trainer_unavail_list
             ):
                 end_utility = ends[end_id].get_property(PROP_STAT_UTILITY)
+                size = ends[end_id].get_property(PROP_DATASET_SIZE)
+                if end_utility is not None and self.utility_per_sample and size:
+                    end_utility = end_utility / size
                 if end_utility is not None:
                     utility_list.append(
                         {PROP_END_ID: end_id, PROP_UTILITY: end_utility}

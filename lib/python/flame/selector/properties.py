@@ -13,6 +13,7 @@ PROP_LAST_SELECTED_ROUND = "last_selected_round"
 PROP_LAST_RETURNED_ROUND = "last_returned_round"
 PROP_LAST_EVAL_ROUND = "last_eval_round"
 PROP_LAST_ENGAGED_ROUND = "last_engaged_round"
+PROP_LAST_REPORT_UPDATES = "last_report_updates"  # FX-N109 I8: committed updates when this end last reported utility
 
 # Round timing
 PROP_ROUND_START_TIME = "round_start_time"

@@ -351,6 +351,107 @@ class CompositePolicy(DynamicKCPolicy):
         return f"composite[{','.join(p.name() for p in self.policies)}]"
 
 
+def _interp(points: list, x: float) -> float:
+    """Piecewise-linear [[x, y], ...] at x, held flat past either end."""
+    pts = sorted(points)
+    if x <= pts[0][0]:
+        return pts[0][1]
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        if x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return pts[-1][1]
+
+
+class SchedulePolicy(DynamicKCPolicy):
+    """FX-N109 I5 probe: K / c as piecewise-linear functions of aggregated updates (`n_updates`); tests phase dependence."""
+
+    def __init__(self, k_points: Optional[list] = None, c_points: Optional[list] = None):
+        self.k_points, self.c_points = k_points, c_points
+
+    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        return round(_interp(self.k_points, metrics.get("n_updates", 0))) if self.k_points else None
+
+    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
+        return round(_interp(self.c_points, metrics.get("n_updates", 0))) if self.c_points else None
+
+    def name(self) -> str:
+        return "schedule"
+
+
+class NoiseScaleKPolicy(DynamicKCPolicy):
+    """FX-N109 I5: K tracks kappa x the gradient noise scale B (EMA over cycles; `update_stats.UpdateStats`).
+
+    kappa 1: B estimates the critical batch (McCandlish et al. 2018). ema "sweep": weight K / n, i.e. B averaged over about
+    one population sweep of updates, so no smoothing constant is tuned."""
+
+    def __init__(self, kappa: float = 1.0, ema="sweep"):
+        self.kappa, self.ema = kappa, ema
+        self._b: Optional[float] = None
+
+    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        b = metrics.get("noise_scale")
+        if b is None or b != b or b == float("inf") or b < 0:
+            return None
+        a = min(1.0, current_k / max(1, metrics.get("n_trainers") or 1)) if self.ema == "sweep" else float(self.ema)
+        self._b = b if self._b is None else (1 - a) * self._b + a * b
+        return max(1, round(self.kappa * self._b))
+
+    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
+        return None
+
+    def name(self) -> str:
+        return "noise_scale_k"
+
+
+class AimdKPolicy(DynamicKCPolicy):
+    """FX-N109 I5: find the step-size edge online, TCP-style (AIMD on K; the step per update is η w / K).
+
+    Per window of one population sweep (n updates): if the clients' per-sample loss (I9: of the model they received) did not
+    rise by more than 2 standard errors vs the previous window, K -= 1 (larger step); if it rose, K *= 2 (back off)."""
+
+    def __init__(self):
+        self._win: list = []
+        self._prev: Optional[tuple] = None  # (mean, standard error) of the previous window
+
+    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        self._win += list(metrics.get("cycle_losses") or [])
+        if len(self._win) < max(2, metrics.get("n_trainers") or 0):
+            return None
+        n = len(self._win)
+        m = sum(self._win) / n
+        se = (sum((x - m) ** 2 for x in self._win) / (n - 1) / n) ** 0.5
+        prev, self._prev, self._win = self._prev, (m, se), []
+        if prev is None:
+            return None
+        rose = m - prev[0] > 2 * (se ** 2 + prev[1] ** 2) ** 0.5
+        return current_k * 2 if rose else current_k - 1
+
+    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
+        return None
+
+    def name(self) -> str:
+        return "aimd_k"
+
+
+class AvailabilityCapPolicy(DynamicKCPolicy):
+    """FX-N109 I5: c = min(configured c, rho x train-eligible pool), so the selector keeps a choice when the pool shrinks."""
+
+    def __init__(self, rho: float = 0.5):
+        self.rho = rho
+
+    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        return None
+
+    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
+        n, c0 = metrics.get("n_eligible_train"), metrics.get("c_config")
+        if n is None or c0 is None:
+            return None
+        return max(1, min(int(c0), int(self.rho * n)))
+
+    def name(self) -> str:
+        return "availability_cap"
+
+
 _POLICY_REGISTRY: dict = {
     "noop": NoOpPolicy,
     "variance_based": VarianceBasedPolicy,
@@ -359,6 +460,10 @@ _POLICY_REGISTRY: dict = {
     "step_schedule": StepSchedulePolicy,
     "adaptive_k_var_tracking": AdaptiveKVarTrackingPolicy,
     "composite": CompositePolicy,
+    "schedule": SchedulePolicy,
+    "noise_scale_k": NoiseScaleKPolicy,
+    "aimd_k": AimdKPolicy,
+    "availability_cap": AvailabilityCapPolicy,
 }
 
 

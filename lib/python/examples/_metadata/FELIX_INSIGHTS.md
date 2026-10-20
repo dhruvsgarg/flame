@@ -144,4 +144,6 @@ to 70% everywhere except CIFAR-10 syn_50 (39 h).
     −6 to −11 pp); 1-mini-batch REFL / FedDance barely change (they never use the full shard).
   - *Server lr (FX-D185).* Felix at 0.3 (PR37) reached 48.9% cifar in 2 h; at FedBuff's 1.0 (PR38) 53.8% and 50% at 63 min vs FedBuff 107.
   - *Selection concentration.* Felix's top 20% of clients supply 57% of cifar updates (FedBuff 23%, Oort family 59-69%, FedDance 63-69%);
-    unavailability spreads Felix's picks (43%).
+    unavailability spreads Felix's picks (43%). *Driver (PR39b, `selection_audit.py`):* shard size, not speed. Picks vs size ρ +0.95 cifar / +0.80 speech,
+    vs speed +0.13 / +0.40, vs per-sample loss −0.88 / −0.39. Oort's |D|-weighted utility does this on a duration model where size costs
+    no time (FELIX Q-DUR). Class mass of updates stays within TV 0.04 of the population (FedBuff 0.08).

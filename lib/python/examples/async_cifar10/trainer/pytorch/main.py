@@ -868,6 +868,7 @@ class PyTorchCifar10Trainer(Trainer):
         _cap = harness.stub_max_steps(self.config.hyperparameters, self.harness_mode)
         if _cap is not None:
             steps = min(steps, _cap) if steps is not None else _cap
+        _u0 = self._receive_utility() if self._utility_on_receive() else None  # FX-N109 I9
         # FX-D144: batch order seeded by logical identity, not the process RNG (incidental draws forked sim from real)
         self._task_seq = getattr(self, "_task_seq", 0) + 1
         torch.manual_seed(harness.stable_seed((self.trainer_id, self._round, self._task_seq)))
@@ -881,6 +882,8 @@ class PyTorchCifar10Trainer(Trainer):
                 final_loss = epoch_loss
             if epoch_batches == 0:
                 break
+        if _u0 is not None:
+            self._stat_utility = _u0
         # Stub: charge a realistic GPU-compute span (flame.harness.stub_compute_s).
         _stub_s = harness.stub_compute_s(self.config.hyperparameters, self.harness_mode,
                                          (self.trainer_id, self._round))
@@ -916,6 +919,8 @@ class PyTorchCifar10Trainer(Trainer):
         _post["mem_profile"] = time.time() - _phase_post_start
 
         _modeled_delay_s = self.training_delay_s if self.training_delay_enabled else 0.0
+        _upass_s = _modeled_delay_s / 20.0 if _u0 is not None else 0.0  # I9's pre-pass is one eval: D/20, as evaluate()
+        _modeled_delay_s += _upass_s
         _remaining_time = max(0.0, _modeled_delay_s - _real_gpu_time_s)
         _overran = self.training_delay_enabled and _real_gpu_time_s > _modeled_delay_s
         self._training_budget_s = _modeled_delay_s
@@ -1012,6 +1017,7 @@ class PyTorchCifar10Trainer(Trainer):
                     "time_mode": self.time_mode,
                     "stream_clock_s": self._stream_clock_s,
                     "training_budget_s": _modeled_delay_s,
+                    "utility_pass_s": _upass_s,
                     "remaining_time_s": _remaining_time,
                     "overran": _overran,
                     "grad_norm_epoch1": self._grad_norm_epoch1,
@@ -1166,6 +1172,27 @@ class PyTorchCifar10Trainer(Trainer):
             self.memory_profiler.log_component_memory(f"epoch_{epoch}", "END")
 
         return batches_processed, last_loss
+
+    def _utility_on_receive(self) -> bool:
+        return bool(getattr(self.config.hyperparameters, "utility_on_receive", False))
+
+    def _receive_utility(self):
+        """FX-N109 I9: |D| x rms loss of the received model on the visible data (eval's estimand), before training.
+
+        The in-training FedScale EMA reads the loss after most of the epoch, so 1-epoch tasks on big shards report a low loss.
+        BN running stats are restored: the pass must not change the update."""
+        bufs = {k: v.clone() for k, v in self.model.named_buffers()}
+        self.reset_stat_utility()
+        with torch.no_grad():
+            for batch_idx, (data, target) in enumerate(self.train_loader):
+                data, target = data.to(self.device), target.to(self.device)
+                with self._amp():
+                    self.oort_loss(self.model(data), target, 1, batch_idx)
+        self.normalize_stat_utility(1)
+        u = self._stat_utility
+        self.model.load_state_dict(bufs, strict=False)
+        self.reset_stat_utility()
+        return u
 
     def evaluate(self) -> None:
         """Evaluate a model."""

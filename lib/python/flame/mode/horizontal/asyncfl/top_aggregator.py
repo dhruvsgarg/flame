@@ -27,6 +27,7 @@ from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND, wait_arrival
 from flame import harness
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD
 from flame.common.constants import DeviceType
+from flame.config import TrainerAvailState
 from flame.common.util import (
     materialize_weights,
     model_device,
@@ -50,7 +51,8 @@ from flame import telemetry
 from flame.telemetry.events import build_agg_round, build_dispatch, build_utility_belief
 from flame.telemetry.agg_timing import agg_timing
 from flame.sim import SimReorderBuffer
-from flame.selector.properties import PROP_SIM_SEND_TS, PROP_SIM_COMPLETION_TS
+from flame.selector.properties import (PROP_AVL_STATE, PROP_LAST_REPORT_UPDATES, PROP_SIM_COMPLETION_TS,
+                                       PROP_SIM_SEND_TS)
 from flame.selector.oort import (
     PROP_DATASET_SIZE,
     PROP_LAST_SELECTED_ROUND,
@@ -104,6 +106,7 @@ class TopAggregator(SyncTopAgg):
         self._agg_goal_cnt = 0
         self._agg_goal_weights = None
         self._agg_goal = self.config.hyperparameters.aggregation_goal or 1
+        self._init_dynamic_kc()
         # An end may only contribute once per aggregation cycle (reset
         # alongside _agg_goal_cnt in _reset_agg_goal_variables). Guards
         # against a duplicate/late message from an end that was reclaimed
@@ -255,10 +258,56 @@ class TopAggregator(SyncTopAgg):
 
         self.all_trainers = set()
 
+    def _init_dynamic_kc(self) -> None:
+        """FX-N109 I5: `selector.kwargs.dynamic_kc` {enabled, stats, policy, policy_kwargs, k_/c_ min/max}; absent = static K / c."""
+        conf = (self.config.selector.kwargs or {}).get("dynamic_kc") or {}
+        on = lambda k: str(conf.get(k, False)).lower() == "true"
+        self._dkc, self._dkc_pending_k, self._dkc_updates = None, None, 0
+        self._dkc_c_config = int((self.config.selector.kwargs or {}).get("c", 0) or 0)
+        self._dkc_stats, self._dkc_losses = None, []
+        if on("enabled") or on("stats"):
+            from flame.selector.update_stats import UpdateStats
+            self._dkc_stats = UpdateStats()
+        if on("enabled"):
+            from flame.selector.dynamic_kc_controller import DynamicKCController
+            from flame.selector.dynamic_kc_policy import build_policy
+            self._dkc = DynamicKCController(
+                build_policy(conf.get("policy", "noop"), conf.get("policy_kwargs") or {}),
+                k_init=self._agg_goal, c_init=self._dkc_c_config or self._agg_goal,
+                k_min=int(conf.get("k_min", 1)), k_max=int(conf.get("k_max", 100)),
+                c_min=int(conf.get("c_min", 1)), c_max=int(conf.get("c_max", self._dkc_c_config or 100)))  # c <= config c: EV8
+
+    def _dynamic_kc_step(self, channel) -> None:
+        """FX-N109 I5: after a commit, close the cycle's update stats and ask the controller for the next K / c."""
+        self._dkc_updates += self._agg_goal
+        st = self._dkc_stats.close()
+        ends = channel.ends() or []
+        states = [channel.get_end_property(e, PROP_AVL_STATE) for e in ends]
+        train_ok = {None, TrainerAvailState.AVL_TRAIN.value}  # no trace = every end trainable
+        self._dkc_losses = getattr(self, "_dkc_losses", [])
+        metrics = {"n_updates": self._dkc_updates, "model_version": self._round, "c_config": self._dkc_c_config,
+                   "n_trainers": len(channel.all_ends() or []), "cycle_losses": self._dkc_losses,
+                   "n_eligible_train": sum(s in train_ok for s in states), "noise_scale": st.get("noise_scale"),
+                   "avg_staleness": float(np.mean(self._round_update_values["staleness"] or [0]))}
+        k, c = self._agg_goal, self._dkc_c_config
+        if self._dkc is not None:
+            k, c = self._dkc.step(metrics)
+            self._dkc_pending_k = k  # applied at the cycle reset: the inner loop exits on _agg_goal_cnt == _agg_goal
+            channel.set_property("dynamic_c", c)
+        if telemetry.is_enabled():
+            from flame.selector.update_stats import cos_split
+            telemetry.emit("dynamic_kc", round=self._round, k=k, c=c, cos_stale_minus_fresh=cos_split(
+                st.get("cos_by_staleness") or []), **{x: v for x, v in metrics.items() if x not in ("model_version", "cycle_losses")},
+                loss_per_sample=float(np.mean(self._dkc_losses)) if self._dkc_losses else None,
+                **{x: st.get(x) for x in ("n", "g2", "tr_sigma", "sq_mean", "mean_sq")})
+        self._dkc_losses = []
+
     def _reset_agg_goal_variables(self):
         logger.debug("##### reset agg goal variables")
         # reset agg goal count
         self._agg_goal_cnt = 0
+        if getattr(self, "_dkc_pending_k", None) is not None:  # bare-init guard (tests)
+            self._agg_goal, self._dkc_pending_k = self._dkc_pending_k, None
 
         # reset the per-cycle duplicate-contribution guard (see internal_init)
         self._agg_cycle_contributed_ends = set()
@@ -926,6 +975,7 @@ class TopAggregator(SyncTopAgg):
             channel.set_end_property(
                 end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
             )
+            channel.set_end_property(end, PROP_LAST_REPORT_UPDATES, getattr(self, "_n_updates", 0))
             round_start_time_tup = channel.get_end_property(end, PROP_ROUND_START_TIME)
             end = metadata[0]
             timestamp = metadata[1]
@@ -953,6 +1003,7 @@ class TopAggregator(SyncTopAgg):
             channel.set_end_property(
                 end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
             )
+            channel.set_end_property(end, PROP_LAST_REPORT_UPDATES, getattr(self, "_n_updates", 0))
 
             # TODO: (DG) Also set the end property for task=eval done
             # at timestamp=current.
@@ -1304,6 +1355,13 @@ class TopAggregator(SyncTopAgg):
             weights is not None and count > 0
         ):  # SC_TS: count = 0 means no data (it was trained on!), so ignore!
             tres = TrainResult(weights, count, version, stat_utility)
+            if getattr(self, "_dkc_stats", None) is not None:
+                from flame.optimizer.bn_buffers import is_bn_stat
+                from flame.selector.update_stats import flatten
+                self._dkc_stats.add(flatten(weights, is_bn_stat), staleness=self._round - version)
+                if stat_utility and count:  # per-sample rms loss (I9: of the received model)
+                    self._dkc_losses = getattr(self, "_dkc_losses", [])
+                    self._dkc_losses.append(float(stat_utility) / count)
             _cs0 = time.time()
             self.cache[end] = tres   # in-memory (MemCache)
             self._agg_cycle_contributed_ends.add(end)
@@ -1469,6 +1527,10 @@ class TopAggregator(SyncTopAgg):
 
         # decrement counter since updates consumed from queue
         self._updates_in_queue -= self._agg_goal
+        self._n_updates = getattr(self, "_n_updates", 0) + self._agg_goal
+        channel.set_property("n_updates", self._n_updates)  # FX-N109 I8: the eval gate's clock
+        if getattr(self, "_dkc_stats", None) is not None:
+            self._dynamic_kc_step(channel)
 
         logger.debug(
             f"====== aggregation finished for round {self._round}, "

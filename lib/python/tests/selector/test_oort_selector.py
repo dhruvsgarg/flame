@@ -827,6 +827,22 @@ def test_exploration_decays_once_per_round(make_ends):
     assert sel.exploration_factor == 0.45
 
 
+class TestUtilityPerSample:
+    """FX-N109: utilityPerSample ranks by utility / dataset size."""
+
+    def test_divides_by_size(self):
+        from unittest.mock import MagicMock
+        sel = AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=1, roundNudgeType="last_train",
+                                selectType="default", utilityPerSample="true")
+        ends = {}
+        for eid, u, n in (("a", 100.0, 10), ("b", 300.0, 100)):
+            e = MagicMock()
+            e.get_property.side_effect = lambda k, u=u, n=n: {"stat_utility": u, "dataset_size": n}.get(k)
+            ends[eid] = e
+        ul, _ = sel.fetch_statistical_utility(ends, [], [])
+        assert {x["end_id"]: x["utility"] for x in ul} == {"a": 10.0, "b": 3.0}
+
+
 class TestEvalStaleGate:
     """FX-N109: evalStaleGate sets the versions since a trainer's last eval/train before it is eval-eligible."""
 
@@ -847,3 +863,14 @@ class TestEvalStaleGate:
         sel = AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=0.5, roundNudgeType="last_train",
                                 selectType="default", evalStaleGate=5)
         assert self._eligible(sel, 10, 15) and not self._eligible(sel, 10, 14)
+
+    def test_updates_unit_counts_committed_updates(self):
+        from unittest.mock import MagicMock
+        from flame.selector.async_base import SelectContext
+        sel = AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=1, roundNudgeType="last_train",
+                                selectType="default", evalStaleGate=5, evalGateUnit="updates")
+        end = MagicMock()
+        end.get_property.side_effect = lambda k: {"last_eval_round": 3, "last_report_updates": 100}.get(k)
+        ok = lambda n: sel._task_extra_eligible("e", end, SelectContext(task_to_perform="eval", model_version=999,
+                                                                        channel_props={"n_updates": n}))
+        assert not ok(149) and ok(150)  # gate 5 x K 10 updates, whatever the version count

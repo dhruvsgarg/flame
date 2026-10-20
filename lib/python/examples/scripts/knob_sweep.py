@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FX-N109: per-arm medians of a knob-sweep pool (F39A, F39B) against its control arm.
+"""FX-N109: per-arm medians of a knob-sweep pool (F39A, F39B, F39C, F39S) against its control arm.
 
   knob_sweep.py POOL... [--json]
 
@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from accuracy_table import TARGETS, _agg_events, dataset_of, rows_from_pools  # noqa: E402
 from felix_claims import leg_stats  # noqa: E402
 
-ARM = re.compile(r"(?:gs_)?F39[AB]_(\w+?)_r(\d+)$")
+ARM = re.compile(r"(?:gs_)?F39[ABCS]_(\w+?)_r(\d+)$")
 
 
 def leg_metrics(run_dir):

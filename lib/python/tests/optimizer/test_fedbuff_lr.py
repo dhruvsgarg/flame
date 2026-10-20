@@ -33,3 +33,26 @@ class TestFedBuffLearningRate:
     def test_missing_learning_rate_fails_loudly(self):
         with pytest.raises(KeyError):
             _make_fedbuff(dataset_name="cifar-10")
+
+
+class TestFedBuffNormRate:
+    """FX-N109 I7: rate "norm" weights u_i / u_bar x 1/sqrt(1+s); the cycle's mean weight is FedBuff's."""
+
+    def test_utility_reweights_within_cycle(self):
+        from flame.mode.horizontal.syncfl.top_aggregator import MemCache
+        from flame.optimizer.train_result import TrainResult
+        fb = _make_fedbuff(learning_rate=1.0, agg_rate_conf={"type": "norm"})
+        agg = None
+        for u, d in ((1.0, 1.0), (3.0, 2.0)):
+            agg = fb.do(agg, MemCache({"e": TrainResult({"w": torch.full((1,), d)}, 1, 5, u)}), total=1, version=5)
+        out = fb.scale_add_agg_weights({"w": torch.zeros(1)}, agg, agg_goal=2)
+        assert torch.allclose(out["w"], torch.tensor([(0.5 * 1.0 + 1.5 * 2.0) / 2]))
+        assert fb._u_n == 0  # reset for the next cycle
+
+    def test_staleness_discount_is_fedbuffs(self):
+        from flame.mode.horizontal.syncfl.top_aggregator import MemCache
+        from flame.optimizer.train_result import TrainResult
+        fb = _make_fedbuff(learning_rate=1.0, agg_rate_conf={"type": "norm"})
+        agg = fb.do(None, MemCache({"e": TrainResult({"w": torch.ones(1)}, 1, 2, 4.0)}), total=1, version=5)  # staleness 3
+        out = fb.scale_add_agg_weights({"w": torch.zeros(1)}, agg, agg_goal=1)
+        assert torch.allclose(out["w"], torch.tensor([0.5]))

@@ -217,7 +217,8 @@ def ev3_duration_model(run):
             if None not in (gpu, dur, budget) and abs(dur - max(gpu, budget) - ovh) > _EPS_S:
                 bad_max += 1
                 examples.append((tid[-4:], "dur!=max(gpu,D)", dur, gpu, budget))
-            if d_true is not None and budget is not None and budget > 0 and abs(budget - d_true) > 1e-3:
+            d_task = budget - (e.get("utility_pass_s") or 0.0) if budget is not None else None  # FX-N109 I9 charges D/20
+            if d_true is not None and budget is not None and budget > 0 and abs(d_task - d_true) > 1e-3:
                 bad_budget += 1
                 examples.append((tid[-4:], "D!=registry", budget, d_true))
             if sim and None not in (e.get("sim_send_ts"), e.get("sim_completion_ts"), dur):
@@ -339,7 +340,8 @@ def ev7_agg_goal_cadence(run):
                     f"empty={len(empty)} gaps={len(gaps)} under_agg_goal={len(under)}",
                     over=dict(list(over.items())[:5]), empty=empty[:5], gaps=gaps[:5], under=under[:5])
     closed = rounds[:-1]
-    wrong = {r: per_round[r] for r in closed if per_round[r] != k}
+    k_at = {e.get("round"): e.get("agg_goal") or k for e in commits}  # FX-N109 I5: K in force per round (dynamic K)
+    wrong = {r: per_round[r] for r in closed if per_round[r] != k_at.get(r, k)}
     gaps = [(a, b) for a, b in zip(rounds, rounds[1:]) if b - a != 1]
     ok = not wrong and not gaps
     return _res("PASS" if ok else "FAIL",
