@@ -1128,6 +1128,13 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         aggregators that know the dataset override it. Must never raise."""
         return
 
+    def _sync_wants_picks(self, channel, desired: int = 0) -> bool:
+        """F42-T1: whether this version still misses picks (a check-in window opens only then)."""
+        if not self._sync_wait_k_on():
+            return True
+        desired = desired or getattr(channel._selector, "num_of_ends", None) or self.config.hyperparameters.aggregation_goal or 1
+        return desired - len(self._sync_version_inflight(channel)) - len(self._sync_accepted_ends()) > 0
+
     def _sync_wait_k_plan(self, channel, num_eligible: int, threshold: int):
         """FX-N37: (picks, eligible needed to dispatch) for this version's missing slots; None when none are missing."""
         desired = getattr(channel._selector, "num_of_ends", threshold)
@@ -1176,7 +1183,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # E.1: oracular gate — build the unavailability list for this selection.
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
-                task_to_perform
+                task_to_perform, want=self._sync_wants_picks(channel)
             )
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts.
@@ -1301,6 +1308,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                                      agg_version_key=self.version_key,
                                      trainer_version_keys=_version_keys,
                                      num_to_select=_need)
+        self.checkin_after_select(channel, selected_ends)  # F42-T1
         if not selected_ends:
             return
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)

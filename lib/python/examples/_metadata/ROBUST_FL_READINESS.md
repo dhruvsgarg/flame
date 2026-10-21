@@ -8,7 +8,7 @@ accuracy in the expected time window (tracked per track: FELIX Scoreboard). Equa
 **Four docs (plus FELIX's insights companion) are the only working references:**
 - **this doc** — the rules for all four docs, the lessons and tripwires both tracks share, and the queue of
   shared infrastructure work;
-- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS (10-21): Felix contribution ledger (FELIX Active build C1-C7); F41 = 10 h sim batch of all six + Felix C3-C5 arms on trace-tied data growth, then claims (FX-N108) → sim-only experiments. Throughput (FX-N100) on every batch; sim speedup never < 1×, aim 2-5×+.**
+- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS (10-21): finalize Felix in a 7 h plan (FELIX Next steps F42: smoke → S1 screen → F43 confirm) on the contribution ledger, then claims (FX-N108) → sim-only experiments. Throughput (FX-N100) on every batch; sim speedup never < 1×, aim 2-5×+.**
   - [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) — Felix's companion: telemetry-backed insights for the paper (model, catalog, findings).
 - [PARITY_READINESS.md](PARITY_READINESS.md) — real↔sim parity for both tracks: climbing rules (C1-C9: correct before
   equal, instrument what you can't see, launch only when fixes are maximized), method, tools, per-track scoreboard.
@@ -77,9 +77,10 @@ Scoreboard
   compounding clocks, replicate floors, draw cells. Never use a long run to find bugs. Every run is packed on measured resources (PARITY
   C21, C22, Throughput).
 
-- **R27 Availability knowledge (operator 10-21; sanity check on every baseline):** only Felix (and FluxTune, built on it) learns client
-  state, and only through the client's own notify. Every other baseline is unaware, except a `*` variant (Oort*, REFL*), which is
-  labelled oracle and reads the trace. Physical limits (an offline client cannot upload) apply to all. FELIX F42a.
+- **R27 Availability knowledge (operator 10-21; sanity check on every baseline):** each stack learns client state only through its own
+  deployed mechanism: Felix (and FluxTune) by the client's notify on every flip; baselines by check-in (plus REFL's on-device
+  forecaster), never the trace. A `*` variant (Oort*, REFL*, FedDance*) reads the trace and is labelled oracle. Physical limits (an
+  offline client cannot upload) apply to all. FELIX F42a; check-in = FELIX F42-T1 (until built, baselines run blind).
 - **R26 Idea → model → short realistic screen → end to end, else pivot (operator 10-21).** A new mechanism is first modeled on stored
   telemetry and traces (offline, minutes), then screened on the shortest scenario our workload really has (real device / availability
   traces, ≤ 30 min). Only a gain there earns an implementation for end-to-end FL legs; no gain = pivot, recorded as a tripwire. Each

@@ -597,19 +597,51 @@ def test_ev21_eval_tasks_are_felix_only_and_reach_avl_eval(tmp_path, monkeypatch
     assert _status(_ev21_run(tmp_path / "e", monkeypatch, evals=["AVL_TRAIN"] * 25, done=False, **felix), "EV21_avl_eval_semantics") == "PASS"  # live prefix
 
 
-def _ev22(b, hp, agg=(), sel=None):
+def _ev22(b, hp, agg=(), sel=None, phase="F42_s50u_ctl"):
     cfg = {"hyperparameters": {"simUnavailability": True, **hp}, "selector": {"kwargs": sel or {}}}
-    return ev.ev22_availability_knowledge({"dir": f"/x/run_1_dbg_{b}_n75_alpha0.1_syn_50_3st_sim", "cfg": cfg, "agg": list(agg)})
+    return ev.ev22_availability_knowledge({"dir": f"/x/run_1_{phase}_dbg_{b}_n75_alpha0.1_syn_50_3st_sim", "cfg": cfg,
+                                           "agg": list(agg)})
 
 
 def test_ev22_r27_knowledge_per_baseline():
     assert _ev22("felix", {"proactive_inflight_evict": "True"})["status"] == "PASS"
+    assert _ev22("felix", {"avail_knowledge": "checkin"}, phase="F42_s50u_fck")["status"] == "PASS"  # K1 ablation
+    assert _ev22("felix", {"avail_knowledge": "checkin"})["status"] == "FAIL"
     assert _ev22("oort_star", {"avail_select_filter": "True", "proactive_inflight_evict": "False"})["status"] == "PASS"
     assert _ev22("refl", {"avail_select_filter": "True"})["status"] == "FAIL"  # F41's REFL: current-state filter
+    assert _ev22("refl", {"avail_knowledge": "checkin"}, sel={"avail_predictor": "prophet"})["status"] == "PASS"
     assert _ev22("refl", {"avail_knowledge": "oracle"}, sel={"avail_predictor": "oracle"})["status"] == "PASS"  # REFL*
-    assert _ev22("feddance", {"avail_knowledge": "none", "avail_select_filter": "False"})["status"] == "PASS"
-    assert _ev22("feddance", {"avail_knowledge": "oracle"}, sel={"checkin_source": "selection"})["status"] == "PASS"  # FedDance*
-    assert _ev22("feddance", {"avail_knowledge": "oracle"}, sel={"checkin_source": "returns"})["status"] == "FAIL"
+    assert _ev22("feddance", {"avail_knowledge": "none", "avail_select_filter": "False"})["status"] == "FAIL"
+    assert _ev22("feddance", {"avail_knowledge": "none"}, phase="F42_s50u_fdblind")["status"] == "PASS"
+    assert _ev22("feddance", {"avail_knowledge": "oracle"}, phase="F42_s50u_fdstar")["status"] == "PASS"  # FedDance*
+    assert _ev22("fedbuff", {"avail_knowledge": "oracle"}, phase="F42_s50u_fbstar")["status"] == "PASS"  # FedBuff*
+    assert _ev22("fedbuff", {"avail_knowledge": "oracle"})["status"] == "FAIL"
+    assert _ev22("fedbuff", {"avail_knowledge": "oracle"}, phase="F42C_s50u_fbstar_hstub")["status"] == "PASS"  # harness suffix
+
+
+def _ev23(agg, sel=(), trace=None):
+    cfg = {"hyperparameters": {"avail_knowledge": "checkin", "time_mode": "simulated"}}
+    run = {"dir": "/x/run_1_F42_s50u_ctl_dbg_fedbuff_n75_sim", "cfg": cfg, "agg": list(agg) + list(sel)}
+    orig = ev._ground_truth
+    ev._ground_truth = lambda r: trace
+    try:
+        return ev.ev23_checkin_protocol(run)
+    finally:
+        ev._ground_truth = orig
+
+
+def test_ev23_checkin_protocol():
+    from sortedcontainers import SortedDict
+    tr = {"a": SortedDict({0.0: "AVL_TRAIN", 100.0: "UN_AVL", 300.0: "AVL_TRAIN"})}
+    ck = lambda k, t, **f: {"event": "checkin", "kind": k, "end_id": "a", "t": t, **f}
+    pick = {"event": "selection", "task": "train", "round": 1, "chosen": ["a"]}
+    ok = [ck("pooled", 10), ck("picked", 20), ck("rejected", 50, reconnect_at=200), ck("missed", 200), ck("pooled", 300)]
+    assert _ev23(ok, [pick], tr)["status"] == "PASS"
+    assert _ev23([ck("picked", 20)], [pick], tr)["status"] == "FAIL"  # no waiting check-in
+    assert _ev23([ck("rejected", 50, reconnect_at=200), ck("pooled", 150)], (), tr)["status"] == "FAIL"  # ignored pace steering
+    assert _ev23([ck("pooled", 150)], (), tr)["status"] == "FAIL"  # checked in while UN_AVL
+    assert _ev23([ck("missed", 50)], (), tr)["status"] == "FAIL"  # missed while AVL_TRAIN
+    assert _ev23([ck("pooled", 10)], [pick], tr)["status"] == "FAIL"  # a pick the protocol never saw
 
 
 def test_ev22_unaware_run_that_excludes_unavail_fails():

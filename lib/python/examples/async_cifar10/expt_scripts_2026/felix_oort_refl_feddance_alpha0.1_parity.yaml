@@ -226,6 +226,7 @@ experiments:
       learningRate: 0.01
     config_overrides:
       hyperparameters:
+        checkinClient: basic  # F42-T1 real: the device's check-in
         data_streaming:
           enabled: 'True'
           full_data_available_after_s: 10800
@@ -236,7 +237,7 @@ experiments:
   aggregator:
     config_template: ../_metadata/aggregator_base.json
     selector: oort
-    tracking_mode: default  # R27: unaware (log-name label only)
+    tracking_mode: default  # R27: check-in (log-name label only)
     agg_goal: 10
     log_to_wandb: false
     config_overrides:
@@ -252,10 +253,9 @@ experiments:
         aggGoal: 10
         # FX-N67: gate off (it delivers stragglers a round late).
         simInflightCarryover: false
-        # oort is unaware at selection (avail_select_filter=False); the trace is
-        # used for starvation-advance vclock tracking only, not selection filtering.
-        avail_select_filter: 'False'
-        avail_knowledge: none  # R27
+        # R27: oort learns availability by check-in only (the trace drives the sim's check-ins, F42-T1).
+        avail_select_filter: 'True'
+        avail_knowledge: checkin  # R27: Bonawitz check-in (F42-T1)
         proactive_inflight_evict: 'False'
         checkpoint:
           enabled: 'True'
@@ -292,6 +292,7 @@ experiments:
       learningRate: 0.01
     config_overrides:
       hyperparameters:
+        checkinClient: basic  # F42-T1 real: the device's check-in
         data_streaming:
           enabled: 'True'
           full_data_available_after_s: 10800
@@ -302,7 +303,7 @@ experiments:
   aggregator:
     config_template: ../_metadata/aggregator_base.json
     selector: oort
-    tracking_mode: default  # R27: unaware (log-name label only)
+    tracking_mode: default  # R27: check-in (log-name label only)
     agg_goal: 10
     log_to_wandb: false
     config_overrides:
@@ -314,10 +315,9 @@ experiments:
         rounds: 20000
         max_experiment_runtime_s: 12600
         aggGoal: 10
-        # oort is unaware at selection (avail_select_filter=False); the trace is
-        # used for starvation-advance vclock tracking only, not selection filtering.
-        avail_select_filter: 'False'
-        avail_knowledge: none  # R27
+        # R27: oort learns availability by check-in only (the trace drives the sim's check-ins, F42-T1).
+        avail_select_filter: 'True'
+        avail_knowledge: checkin  # R27: Bonawitz check-in (F42-T1)
         proactive_inflight_evict: 'False'
         checkpoint:
           enabled: 'True'
@@ -356,6 +356,7 @@ experiments:
       learningRate: 0.01
     config_overrides:
       hyperparameters:
+        checkinClient: prophet  # F42-T1 real: the device's check-in
         data_streaming:
           enabled: 'True'
           full_data_available_after_s: 10800
@@ -366,7 +367,7 @@ experiments:
   aggregator:
     config_template: ../_metadata/aggregator_base.json
     selector: refl_oort
-    tracking_mode: default  # R27: unaware (log-name label only)
+    tracking_mode: default  # R27: check-in (log-name label only)
     agg_goal: 10
     log_to_wandb: false
     config_overrides:
@@ -393,9 +394,9 @@ experiments:
         # in _advance_sim_clock (max(vclock,sct)+overhead, drift-instrumented), NOT a
         # clock ramp. Refine the value from the next run's K3b residual if over/under.
         simCommitOverheadSeconds: 0.011
-        # R27: refl is unaware (REFL* / REFL-fc are F42b arms).
-        avail_select_filter: 'False'
-        avail_knowledge: none  # R27
+        # R27: refl = check-in + its paper's on-device Prophet forecast (REFL* is an F42 arm).
+        avail_select_filter: 'True'
+        avail_knowledge: checkin  # R27: Bonawitz check-in (F42-T1)
         proactive_inflight_evict: 'False'
         checkpoint:
           enabled: 'True'
@@ -439,6 +440,7 @@ experiments:
       learningRate: 0.01
     config_overrides:
       hyperparameters:
+        checkinClient: prophet  # F42-T1 real: the device's check-in
         data_streaming:
           enabled: 'True'
           full_data_available_after_s: 10800
@@ -449,7 +451,7 @@ experiments:
   aggregator:
     config_template: ../_metadata/aggregator_base.json
     selector: refl_oort
-    tracking_mode: default  # R27: unaware (log-name label only)
+    tracking_mode: default  # R27: check-in (log-name label only)
     agg_goal: 10
     log_to_wandb: false
     config_overrides:
@@ -461,9 +463,9 @@ experiments:
         rounds: 20000
         max_experiment_runtime_s: 12600
         aggGoal: 10
-        # R27: refl is unaware (REFL* / REFL-fc are F42b arms).
-        avail_select_filter: 'False'
-        avail_knowledge: none  # R27
+        # R27: refl = check-in + its paper's on-device Prophet forecast (REFL* is an F42 arm).
+        avail_select_filter: 'True'
+        avail_knowledge: checkin  # R27: Bonawitz check-in (F42-T1)
         proactive_inflight_evict: 'False'
         checkpoint:
           enabled: 'True'
@@ -508,6 +510,7 @@ experiments:
       learningRate: 0.01
     config_overrides:
       hyperparameters:
+        checkinClient: basic  # F42-T1 real: the device's check-in
         data_streaming:
           enabled: 'True'
           full_data_available_after_s: 10800
@@ -518,7 +521,7 @@ experiments:
   aggregator:
     config_template: ../_metadata/aggregator_base.json
     selector: feddance
-    tracking_mode: default  # R27: unaware (log-name label only)
+    tracking_mode: default  # R27: check-in (log-name label only)
     agg_goal: 10
     log_to_wandb: false
     config_overrides:
@@ -533,9 +536,9 @@ experiments:
         min_trainers_join_timeout_s: 600
         aggGoal: 10
         evalEveryNRounds: 50
-        # R27: feddance is unaware; its predictor learns from returns.
-        avail_select_filter: 'False'
-        avail_knowledge: none  # R27
+        # R27: feddance learns from check-ins (F42-T4).
+        avail_select_filter: 'True'
+        avail_knowledge: checkin  # R27: Bonawitz check-in (F42-T1)
         proactive_inflight_evict: 'False'
         checkpoint:
           enabled: 'True'
@@ -543,7 +546,7 @@ experiments:
       selector:
         kwargs:
           aggr_num: 10
-          checkin_source: returns
+          checkin_source: selection  # F42-T4: the check-in pool is its per-round check-ins
   execution:
     num_gpus: 8
     sleep_between_spawns: 1.0
@@ -573,6 +576,7 @@ experiments:
       learningRate: 0.01
     config_overrides:
       hyperparameters:
+        checkinClient: basic  # F42-T1 real: the device's check-in
         data_streaming:
           enabled: 'True'
           full_data_available_after_s: 10800
@@ -583,7 +587,7 @@ experiments:
   aggregator:
     config_template: ../_metadata/aggregator_base.json
     selector: feddance
-    tracking_mode: default  # R27: unaware (log-name label only)
+    tracking_mode: default  # R27: check-in (log-name label only)
     agg_goal: 10
     log_to_wandb: false
     config_overrides:
@@ -596,9 +600,9 @@ experiments:
         max_experiment_runtime_s: 12600
         aggGoal: 10
         evalEveryNRounds: 50
-        # R27: feddance is unaware; its predictor learns from returns.
-        avail_select_filter: 'False'
-        avail_knowledge: none  # R27
+        # R27: feddance learns from check-ins (F42-T4).
+        avail_select_filter: 'True'
+        avail_knowledge: checkin  # R27: Bonawitz check-in (F42-T1)
         proactive_inflight_evict: 'False'
         checkpoint:
           enabled: 'True'
@@ -608,7 +612,7 @@ experiments:
       selector:
         kwargs:
           aggr_num: 10
-          checkin_source: returns
+          checkin_source: selection  # F42-T4: the check-in pool is its per-round check-ins
   execution:
     num_gpus: 8
     sleep_between_spawns: 1.0
@@ -770,6 +774,7 @@ experiments:
       learningRate: 0.01
     config_overrides:
       hyperparameters:
+        checkinClient: basic  # F42-T1 real: the device's check-in
         data_streaming:
           enabled: "True"
           full_data_available_after_s: 10800
@@ -798,8 +803,8 @@ experiments:
         simSctOrderedDrain: true
         simClockJumpClamp: true
         inflightResidence: true
-        avail_select_filter: 'False'
-        avail_knowledge: none  # R27
+        avail_select_filter: 'True'
+        avail_knowledge: checkin  # R27: Bonawitz check-in (F42-T1)
         proactive_inflight_evict: "False"
         sim_unavailability: "True"
         checkpoint:
@@ -841,6 +846,7 @@ experiments:
       learningRate: 0.01
     config_overrides:
       hyperparameters:
+        checkinClient: basic  # F42-T1 real: the device's check-in
         data_streaming:
           enabled: "True"
           full_data_available_after_s: 10800
@@ -864,8 +870,8 @@ experiments:
         max_experiment_runtime_s: 12600
         aggGoal: 10
         evalEveryNRounds: 50
-        avail_select_filter: 'False'
-        avail_knowledge: none  # R27
+        avail_select_filter: 'True'
+        avail_knowledge: checkin  # R27: Bonawitz check-in (F42-T1)
         proactive_inflight_evict: "False"
         sim_unavailability: "True"
         checkpoint:

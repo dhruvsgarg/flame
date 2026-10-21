@@ -9,9 +9,9 @@ expected after the next run) → Decisions → reference sections.
 every earlier result (parity 76 / 76 and PR39 14 / 24, PR38-PR40a, F39*, the utility bench) ran on static data or an older runtime and
 is **OBSOLETE as evidence**: cite it as a hypothesis at most. Purge it from this doc as each section is next touched.
 
-**At a glance (10-21 late):** F41: Felix new ≈ old (within noise, 1 seed); Felix leads every baseline on static data and under
-unavailability. Cifar streams plateau by ~6 h and every stack then overfits (held-out loss 1.7 → 3.2) while spending 63-79% of its
-bytes. Building F42: Felix-only client notify (R27), honest REFL / FedDance, a 10% validation split, and validation-paced c.
+**At a glance (10-21 night):** F41: Felix new ≈ old (within noise, 1 seed); Felix led every (then blind) baseline. Cifar streams
+plateau by ~6 h and then overfit while spending 63-79% of the bytes. F42 built: baselines learn availability by Bonawitz check-in
+(REFL + its Prophet forecaster), `*` oracles, Felix by check-in (K1), CPU gates F42C / F42CR green; next: GPU smoke → S0 (syn_0) → S1.
 
 ## Next steps (persistent queue — top item is next)
 
@@ -21,19 +21,39 @@ Work rule: PARITY C10, C17, C18; ROBUST R0. Test levels: pytest (~3 min) · CPU 
 **Run naming (operator 10-21): the batch number changes only at a long-run launch; screens stay F42 with a letter (F42a, F42b).**
 Every batch runs Felix new and old side by side; FedDance and Oort run only after the Felix decision or when their code changes.
 
-- **F42 · RESUME HERE (paused 10-21 16:35).** State: code built, uncommitted work committed with this note; full pytest green.
-  1. **Operator confirms the knob table below** (Q-F42-KNOBS); edit `scripts/config_audit.py` EXPECT if a row changes.
-  2. ✅ Smoke D (`experiments/pool_20261021_1630_F42SMOKE_D`: e0p, l5p, fdstar, l4, 30 min vclock): rc 0, EV PASS, config_audit ✅.
-  3. Shepherd: `git pull` (PL18). Smoke both nodes: `tmux new -s f42s 'python scripts/dispatch.py batches/f42smoke.yaml'` (`--plan`
-     first; 56 legs at 1 h / 30 min vclock, ~40 min). Pass = rc 0, EV PASS (EV22 incl.), `config_audit.py` exit 0 on all four pools,
-     `predictor_audit.py` fills REFL-fc's flagged column and FedDance's ρ(V).
-  4. Full run: `tmux new -s f42 'python scripts/dispatch.py batches/f42.yaml'` (56 legs, cifar 48 h / speech 36 h vclock; ETA ~10-12 h
-     by F41's rate at twice the length; confirm with `--plan`).
-  5. Read-out: `felix_plots.py POOLS --prefix F42 --new l5p --also felix:l5 refl:rfc refl:rstar` (add ladder arms as needed),
-     `accuracy_table.py`, `felix_claims.py --felix-arm l5p`, `predictor_audit.py` (mispredictions → abandons / wasted slot-hours / TTA),
-     `selection_audit.py`, `client_accuracy.py`; rewrite the Scoreboard and ledger (+1 ladder: which feature adds, which costs).
-  *Smoke so far (`pool_20261021_1506_F42SMOKE_{C,S}`, older arm names new / newp):* 9 legs rc 0, EV PASS; holdout trains 30 of 33
-  visible; 30 probes / h gave only 74 held-out samples (now 60 / h); unaware REFL-fc 132 abandons / h vs oracle-filter REFL (F41) 20.
+- **F42 · RESUME HERE: 5 h plan (operator 10-21 19:45).** Question: how Felix new (l5 / l5p) compares with Felix old (ctl) and the
+  baselines, first on syn_0 (selection + aggregation alone), then on syn_50_3st (+ availability). Times from the smoke launch; run
+  `dispatch.py --plan` before each launch; shepherd `git pull` first (PL18); no code edits once a run is live (PL5).
+  1. **0:00-0:30 · GPU smoke** `tmux new -s f42s 'python scripts/dispatch.py batches/f42smoke.yaml'` (the S0 + S1 legs at 30 min vclock).
+     Pass = rc 0, EV PASS incl. EV22 / EV23, `config_audit.py` exit 0, `predictor_audit.py` fills REFL's precision / recall and the
+     check-in columns; rejects ≈ ≤ 1 per idle client per round (sync) / ≤ 2 per pick (async).
+  2. **0:30-2:00 · S0 (syn_0)** `tmux new -s f42s0 'python scripts/dispatch.py batches/f42s0.yaml'`: 8 h vclock, seed 1; Felix ctl / e0 /
+     l3b / l4 / l5 / l5p / e0p; FedBuff, FedAvg, REFL, FedDance (cifar) by check-in and REFL*, FedDance*, FedBuff* (on syn_0 a `*` arm
+     differs only by the check-in cost: the selection / aggregation comparison reads `*`, the gap to non-`*` is the protocol's cost).
+  3. **2:00-3:45 · S1 (syn_50_3st)** `tmux new -s f42s1 'python scripts/dispatch.py batches/f42s1.yaml'`: same arms + Felix by
+     check-in (fck, K1). Can co-run with S0 if `--plan` shows room (R24).
+  4. **3:45-4:30 · Read (Claude):** verdict rules below per Felix feature; Felix new vs old per cell; Felix vs each baseline and its
+     `*`; `felix_plots.py`, `accuracy_table.py`, `predictor_audit.py`, `avail_view_plot.py`, `config_audit.py`; rewrite the Scoreboard.
+     *Expectation (C19, before the data):* syn_0: Felix ≥ FedBuff on AUC (async, same work), REFL ≈ FedAvg (random-like picks, 1 step),
+     sync check-in arms ≤ their `*` by ~W (10% of each round). syn_50_3st: Felix beats every check-in baseline (dead picks hold slots to
+     the timeout; reconnects and misses idle slots), fck between Felix and FedBuff, `*` arms close part of the gap.
+     *Verdict rules (1 seed, cifar noise ~4 pp AUC):* a feature stays if its +1 arm beats its predecessor by > 2 pp AUC, or ties (± 2 pp)
+     at ≥ 20% fewer bytes or a lower worst-10% client accuracy gap; a tie with no saving drops it (flag kept, reason recorded). Pacing
+     (l5 → l5p, e0 → e0p) stays at ≥ 30% fewer cifar bytes with ≤ 1 pp AUC loss and < 25% speech throttle. C4 stays only if K is off its
+     bounds ≥ 50% of the leg. C5 stays only if speech shows no ± 10 pp eval spikes vs l4.
+  5. **Then:** F43 confirm (24 h cifar / 18 h speech, seeds 1-2 for Felix final / old) and D5 long runs.
+  **Open before D5 (real legs; F42 runs sims only):**
+  - **F42-T7 · Real-mode notify on GPU · todo.** CPU stub real Felix leg passed (`pool_20261021_1931_F42CR_A`: rc 0, EV clean, 4393
+    versions); left: the ≤ 15-min GPU real leg with flip → STATE_UPDATE latency ≤ 2 s and missed + false ≤ 1% of client-time.
+  - **F42-T9 · Real FedBuff check-in throughput · todo.** F42CR real FedBuff: 45 picks in 10 min with 41 pooled clients never picked
+    (sim F42C: 13.8k picks, 0 rejects); root before any real check-in leg. REFL real trainers import Prophet: leg RAM 41 vs 24 GB est.
+  *Local gates (CPU stub, no GPU):* `pool_20261021_1911_F42C_B` (sim, 30 min vclock): every check-in / `*` / fck leg rc 0, EV22 + EV23
+  PASS (FedAvg 185 picks, FedDance 271, REFL 31 before the hold-off fix, FedBuff 13.8k); `pool_20261021_1931_F42CR_A` (real, 10 min):
+  trainers' CHECK_IN → pool / reject → picks only from the pool, EV clean on all five. *GPU smoke 1 (`pool_20261021_1831_F42T1_A`,
+  pre-fix):* rc 0 but pace steering churned (FedBuff 300k rejects / 2.8k picks; FedAvg 44k, FedDance 50k, REFL stalled at round 5):
+  reconnect = one dispatch gap (async), and an overdue / top-up-collapsed round estimate (sync); fixed and pinned by
+  `test_checkin.py` population tests. T8 pacing sanity: smoke D l5p ran ~68 probes / h × mean 3.0 held-out samples ≈ 200 / h ≥ `min_n`
+  150, and the held-out set grows with the stream.
 
   **F42 knob table (Q-F42-KNOBS: operator to confirm).** All legs: n 75 cifar / 50 speech, α 0.1, K 10, trace-tied `usage` stream from
   24 h, `validation_holdout` 0.1 (no stack trains on it), FedScale task time, per-baseline timeout (FX-D198), seed 1.
@@ -48,27 +68,40 @@ Every batch runs Felix new and old side by side; FedDance and Oort run only afte
   | l5 = l4 + C5 (Felix new, no pacing) | notify | as l3b | value × staleness | AIMD K / 15 | – | |
   | **l5p = l5 + pacing (Felix new)** | notify | as l3b | value × staleness | AIMD K / pace_c (≥ c/4) | 60 probes / h, AVL_EVAL first; window 1 h, ≥ 150 samples | |
   | e0p = e0 + pacing | notify | as e0 | rate `new` | 10 / pace_c | as l5p | isolates pacing |
-  | FedBuff | none | uniform async | FedBuff 1/√(1+τ) | 10 / 15 | – | as published |
-  | REFL | none (IPS off: no predictor) | random among all clients | SAA | 10, picks 13 | – | 1 step |
-  | REFL-fc | none + on-device forecaster: majority of the client's own past days at that time of day (computed agg-side from the client's own trace history = the device's local knowledge) | IPS priority (soon-to-leave first) | SAA | 10 / 13 | – | accuracy 1.0 (errors are real) |
-  | REFL* | oracle: filter + future trace (fork's simulation, 10% knockout) | IPS priority | SAA | 10 / 13 | – | labelled oracle |
-  | FedDance | none; predictor V_m (Poisson) learns from returned updates, aggregator-side | V·I·A + MAB | FedAvg equal | 10 / 13 | – | |
-  | FedDance* | oracle: filter + predictor fed by online check-ins (trace) | V·I·A + MAB | FedAvg equal | 10 / 13 | – | labelled oracle |
-  | Oort / Oort* | none / oracle | – | – | – | – | not in F42 (cadence) |
+  | Felix + check-in (fck, K1) | check-in (no notify, no eviction) | as l5p | as l5p | as l5p | as l5p | isolates notify |
+  | FedBuff | check-in (async: pooled while a slot is free) | uniform async | FedBuff 1/√(1+τ) | 10 / 15 | – | as published |
+  | FedBuff* (fbstar) | oracle: trace online set at selection | uniform async | as FedBuff | 10 / 15 | – | labelled oracle |
+  | FedAvg (ablation) | check-in (sync windows) | uniform | FedAvg equal | 10 / 13 | – | FedDance's training config (1 step) |
+  | REFL | check-in + on-device Prophet p(avail in [μ, 2μ]) sent with it | Alg. 1: least available first (hold-off 0, deviation) | SAA | 10 / 13 | – | 1 step |
+  | REFL* (rstar) | oracle: filter + future trace (fork's simulation, 10% knockout), no hold-off | IPS priority | SAA | 10 / 13 | – | labelled oracle |
+  | FedDance | check-in; V_m (Poisson) counts its per-round check-ins | V·I·A + MAB | FedAvg equal | 10 / 13 | – | |
+  | FedDance* (fdstar) | oracle: filter + V fed by the trace online set | V·I·A + MAB | FedAvg equal | 10 / 13 | – | labelled oracle |
+  | Oort / Oort* | check-in / oracle | – | – | – | – | not in F42 (cadence) |
+  Check-in (all non-`*` baselines): sync window W = 10% of the round estimate (EWMA α 0.25, prior = task timeout), rejected →
+  reconnect in the next window + U(0, W) (overdue: now + μ); async reconnect = now + m × gap × U(0.5, 1.5), m = clients on hold
+  (prior gap = timeout / c).
 
   Built pieces (full pytest green):
   - *F42a (R27):* `avail_knowledge` notify / oracle / none gates filter + eviction (`ClientAvailability._believed_state`; sim notify =
-    trace flip + `notify_latency_s`, real = the trainer's STATE_UPDATE push); refl / feddance now unaware; checks: config
-    (`test_r27_availability_knowledge_per_baseline`) and run (EV22, which flags F41's REFL and FedDance).
-  - *F42b:* `refl_predictors.py` TraceOracle (REFL*) and SeasonalForecaster (REFL-fc, own past days); FedDance `checkin_source:
-    returns`.
+    trace flip + `notify_latency_s`, real = the trainer's STATE_UPDATE push); checks: config
+    (`test_r27_availability_knowledge_per_baseline`) and run (EV22: knowledge per arm name, `*star` = oracle, `fck` = Felix check-in).
+  - *F42-T1 check-in:* `avail_knowledge: checkin` (`flame/availability/checkin.py` ledger, `checkin_client.py` trainer, ClientAvailability
+    gate / `checkin_after_select` in the syncfl, oort and asyncfl engines; `checkin` telemetry; EV23); default for every non-`*`
+    baseline in the parity YAML (trainer `checkinClient`); protocol and formulas: Paper block "Availability protocol".
+  - *F42-T3 REFL:* `ProphetForecaster` + selector `avail_predictor: prophet` (Alg. 1) + `holdoff_rounds` (0, deviation recorded in
+    `baseline_reference.yaml`); REFL* (`rstar`) = TraceOracle. SeasonalForecaster (old REFL-fc) has no arm: `# DEAD?(F42-T3)`.
+  - *F42-T4 FedDance:* `checkin_source: selection` reads the check-in pool under `checkin` knowledge.
+  - *F42-T5 arms:* F42 tier ctl adds FedAvg; `rstar`, `fdstar`, `fbstar` (`*`), `fck` (Felix by check-in); `rfc` removed;
+    `config_audit.py` EXPECT; CPU gates `--tier F42C` (sim) / `F42CR` (real) on the stub harness, ≤ 15 min, before any GPU smoke.
+  - *F42-T2:* `scripts/avail_view_plot.py RUN...` (truth vs believed-available share, per-client lanes, missed / false s per client-h).
   - *F42c:* trainer `validation_holdout` (every 10th arrival, no stack trains on it); `validation_probe` makes Felix's eval tasks
     score it (`VAL_PROBE`); `probePerWindow` / `probeWindowS` token bucket, AVL_EVAL first, spill to idle AVL_TRAIN.
   - *F42d:* `dynamic_kc` policy `pace_c` (window 1 h, ≥ 150 held-out samples; ρ 0.1, β 0.75, floor c/4), composed with C4's K.
   - *Audit tools:* `config_audit.py` (effective knobs vs the table; exit 1 on drift or a leg with no row), `predictor_audit.py`
-    (pick survival vs ground truth, REFL flagged-pick survival, FedDance ρ(V, survival), abandons / h, wasted slot-hours), REFL
-    selection logs `priority_ids` / `slot_s`; exclusion stamps split `unavail` (knowledge) from `computing` / `cooling` (busy).
-  *Untested:* the real-mode notify push (a ≤ 15-min real Felix leg before D5's reals).
+    (pick survival vs ground truth, REFL flagged-pick survival + precision / recall of "leaves soon", FedDance ρ(V, survival),
+    abandons / h, wasted slot-hours, check-in pooled / rejected / missed per client-h, sim notify fidelity; no crash without
+    `agg_round`, any run name), REFL selection logs `priority_ids` / `picked_p`; exclusion stamps split `unavail` from busy.
+  *Untested:* pacing end to end (unit tests only; S0 / S1 are the first legs long enough).
 - **F42e · Silent drops and packet loss (ablation) · todo.** A client that vanishes silently holds its slot until `send_timeout_wait_s`
   (Felix cifar 677 s / speech 1920 s); no heartbeat or per-client timeout. Inject p ∈ {1, 5, 10}% silent losses and notify delay / loss;
   candidate fix: per-client timeout = k × its modeled task time. *Exit:* Felix within 1 pp AUC of p = 0 at 5%.
@@ -263,6 +296,20 @@ real↔real replicate sets the band (L12).
 - **Felix design scope (10-21):** Felix may choose local work per client (FedBuff keeps 1 epoch); a new utility is modeled and shown on
   stored data before it is coded; eval tasks stay, and their value is shown on streams / unavailability from true data; knobs with no
   effect leave the code and the model.
+- **REFL hold-off (10-21 night, Claude, L34):** off at our population (Paper block "REFL as deployed"; reversible: `holdoff_rounds`).
+- **Prophet in `dg_flame` (10-21):** prophet 1.1.6 + cmdstanpy 1.2.4 (1.3 cannot load prophet's bundled CmdStan); pip, additive.
+- **Baseline availability knowledge (operator 10-21 late; replaces F42's "blind" baselines, built by F42-T1..T5):** each baseline learns
+  availability only through its own deployed mechanism: check-in (Bonawitz et al. 2019 / Papaya) for REFL, Oort, FedDance, FedBuff,
+  FedAvg; REFL adds its paper's on-device forecaster. Oracles keep a `*` and are labelled inflated (REFL* = the fork's future trace).
+  Blind variants are K1 ablations only. No privacy claim vs baselines; Felix's claims are accuracy, time and communication.
+  *Protocol (operator 10-21 night, built by F42-T1, sim and real):* `X` = as deployed (Bonawitz check-in), `X*` = as its paper
+  evaluated it (FedScale online set at selection). Pace steering: a rejected client reconnects inside the next selection window
+  at a uniform random time; sync window W = 10% of the stack's own round-time estimate (its selector picks at window close, REFL
+  Alg. 1); async reconnect = now + m × gap × U(0.5, 1.5) (m clients on hold, gap = estimated time between dispatches: held clients
+  return at the dispatch rate). Not AVL_TRAIN at reconnect = missed
+  opportunity, next check-in at its next flip; departure learned only at task failure / timeout. REFL alone keeps its 5-round
+  post-submit hold-off (later set to 0 at our n, see "REFL hold-off"). Extra arms: FedBuff* (oracle) and Felix with check-in (K1). Fairness is a guardrail, not a claim; FedAvg
+  stays an ablation; C9 (local work in steps) deferred, REFL's cifar-stream 45% lead accepted.
 - **Felix design rules (operator 10-21):**
   - *No state prediction:* devices are bursty; Felix never forecasts when a client changes availability state (A4 dropped). It
     reacts to the state the trace shows (aware dispatch, eviction).
@@ -404,7 +451,7 @@ while the model is still learning. Evidence = F41 (1 seed; arms within noise, so
 
 | # | feature | tried → result | diagnosis | next try | state |
 |---|---|---|---|---|---|
-| C1 | aware dispatch + eviction | cifar s50u: Felix 3.6k updates / h vs FedBuff 0.24k; AUC 41.8 vs 21.4 | works: unaware stacks hold slots to the timeout | silent-drop ablation (F43) | **gain** |
+| C1 | aware dispatch + eviction | cifar s50u: Felix 3.6k updates / h vs FedBuff 0.24k; AUC 41.8 vs 21.4 | works: unaware stacks hold slots to the timeout | silent-drop ablation (F42e) | **gain** |
 | C2 | async, one epoch of work | static: Felix leads all (cifar 50% 360 vs 420-961 min); s50u streams: REFL ties (45% at 661 vs 780 min) | streams leave 30-70 visible samples, so an epoch is 1-2 steps ≈ REFL's one | local work in steps, not epochs, on small shards (C9) | **gain** static; shrinks on streams |
 | C3 | rank \|D\| q / last task s | +30-60% updates and bytes / h; faster early (cifar s0u 35% at 60 vs 120 min); plateau ≤ e0; speech AUC −2.9 / −1.9 | per second favours small fast shards; per byte (constant bytes per update) the old size rank is right | C3 while validation improves fast, size rank once F42 paces | wip: phase-gated retry |
 | bal | participation discount | top-20% share 0.46 → 0.40; c3b > c3 everywhere; vs e0 cifar ±0.6, speech s50u +1.2 | only meaningful with C3's concentration | keep inside the C3 retry | wip |
@@ -585,6 +632,104 @@ per minute with c tasks in flight · d̄ = mean task time, o = per-task overhead
 - *Unavailability and streams (Felix alone; baselines in D5):* cifar syn_0 → syn_50_3st 39.3 → 39.2 (static) and 37.9 → 37.9
   (stream); speech 46.7 → 43.5 and 44.7 → 40.8. The stream costs 1.4 (cifar) and 2-3 pp (speech). Felix keeps R under syn_50_3st
   (versions 305 → 403 cifar, 112 → 142 speech: picks ~ speed −0.39 → +0.12 cifar, +0.17 → +0.86 speech) at staleness 1.3 → 2.7.
+
+### Paper: setup, baselines, findings, story (draft, operator 10-21: iterate after F43; cite runs, `hyp` until F43)
+
+*Setup (paper methodology):* CIFAR-10 (n 75 screens / 300 paper) and Google Speech (50 / 100), Dirichlet α 0.1; FedScale task-time model
+(compute ∝ samples × device speed + model transfer over device bandwidth, Scope); availability traces syn_0, syn_50_3st, MobiPerf
+3-state (AVL_TRAIN / AVL_EVAL / UN_AVL); data grows while a device is in use (`usage` stream tied to its own trace, Scope "Design record");
+legs start 24 h into the trace so each client starts with its day-1 data (and the trace's start artifact, one long in-use stretch,
+is skipped); 10% of each client's arrivals held out (no stack trains on them); test eval every 30 min of the leg's clock; per-baseline
+task timeout (2 × the longest FedScale task, FX-D198); sims graded against reals for parity (PARITY).
+
+*Baselines (source-faithful, `baseline_reference.yaml`; availability per Decisions "Baseline availability knowledge"):*
+
+| stack | mode | selection | aggregation | local work | client keeps | server keeps | knows of availability |
+|---|---|---|---|---|---|---|---|
+| **Felix** | async | learning per slot-second among clients that can finish (C3 + bal) | value × staleness, adaptive K, paced c (C4, C5, C8) | 1 epoch | current state (OS signals) | believed state per client (3 states) | now, pushed on every flip; evicts mid-task; no forecast |
+| FedBuff | async | uniform | buffered, 1/√(1+τ) | 1 epoch | – | check-in set (T1) | at check-in; departure at timeout |
+| FedAvg (ablation) | sync | uniform | FedAvg | 1 step (FedDance's config) | – | check-in set (T1) | same |
+| Oort | sync | utility × speed penalty, UCB | YoGi | 20 steps | – | check-in set (T1) | same |
+| REFL | sync, stale updates kept | least available first by p (Alg. 1); hold-off off at our n | SAA | 1 step | availability log + Prophet model | p sent at check-in | check-in + forecast |
+| REFL* | as REFL | as REFL | SAA | 1 step | – | future trace, 10% of each list dropped (fork's "0.9 accuracy": kept flags always right) | oracle, inflated |
+| FedDance | sync | V·I·A + MAB | FedAvg equal | 1 step | loss / accuracy with the update | ≤ 50 check-in rounds per client; V = 1 − exp(−5λ) | check-in rate (T4) |
+| FedDance* | as FedDance | as FedDance | as FedDance | 1 step | – | trace online set per round | oracle |
+
+*Availability protocol: implementation record (F42-T1, T3, T4; paper methods text; code is the source of truth):*
+- **Who knows what (R27, `avail_knowledge`, `ClientAvailability._believed_state`).** `notify` (Felix): the client pushes every flip
+  (real: STATE_UPDATE notify; sim: the trace flip `notify_latency_s` late, 0 by default); Felix filters and evicts mid-task.
+  `checkin` (every non-`*` baseline, and Felix's K1 ablation `fck`): the server knows only who is waiting in its check-in pool; busy
+  picks are known busy; a departure is learned only at task failure / the per-baseline timeout (FX-D198); no eviction. `oracle` (`*`):
+  the trace's online set at selection (FedScale `getFeasibleClients`, REFL client_manager.py:256), no eviction. `none`: blind.
+- **Check-in protocol (`flame/availability/checkin.py` `CheckinLedger`; Bonawitz et al. 2019 §2-3, pace steering).** A client checks
+  in when it turns AVL_TRAIN, when a task ends while AVL_TRAIN, or at its reconnect time if AVL_TRAIN then (else a *missed
+  opportunity*: it waits for its next flip). The server pools it while a selection is open, else rejects it with a reconnect time.
+  - *Sync stacks (REFL, Oort, FedDance, FedAvg; syncfl / oort engines):* a selection window opens when the version still misses picks
+    (`_sync_wants_picks`: no window while wait-K needs none; a mid-round top-up opens one too), lasts W = 0.1 × the round estimate
+    μ, and stays open past W until the
+    stack's selector has enough pool members (starved windows keep collecting); the selector picks only from the pool at close
+    (REFL Alg. 1 "End_Selection_Window"); the rest are rejected. μ = EWMA of round-start gaps (top-up windows excluded), μ ← 0.75 × last gap + 0.25 × μ (REFL
+    `deadline_alpha` 0.25, aggregator.py:636), prior μ = the stack's task timeout. Reconnect = next window start estimate (last
+    start + μ; if already past, now + μ) + U(0, W).
+  - *Async stacks (FedBuff, Felix `fck`; asyncfl engine):* no windows; a check-in is pooled while a concurrency slot is free
+    (free at leg start), else rejected. Reconnect = now + m × g × U(0.5, 1.5), m = clients on hold (incl. this one), g = EWMA of the
+    time between dispatches (α 0.25, prior = timeout / c): together the held clients return at about the dispatch rate (Bonawitz pace
+    steering's goal), and the jitter avoids a thundering herd.
+  - *Sim* replays the protocol from each client's trace on the vclock (`advance`); the sync window's W is charged on the vclock
+    (selection latency). *Real*: the trainer runs `flame/availability/checkin_client.py` (CHECK_IN on the STATE_UPDATE notify,
+    json {p}); the aggregator replies to a rejection with a directed `MessageType.CHECKIN_RECONNECT` {at, mu} on the shared trace
+    clock; check-ins received before the first selection are queued (`Channel.set_checkin_handler`).
+  - *Telemetry:* `checkin` events (pooled / rejected + reconnect_at / missed / picked, trace clock). *Checks:* EV23 (picks only from the
+    pool; sim check-ins only in AVL_TRAIN, misses only outside; nobody back before its reconnect), EV22 (knowledge per arm),
+    `tests/availability/test_checkin.py`.
+- **REFL as deployed (paper §4.1 Alg. 1, §7; F42-T3).** Each device fits Prophet (1.1.6, cmdstanpy 1.2.4; daily seasonality, no
+  weekly / yearly) on its own AVL_TRAIN share in 5-min bins from trace start to the start of the current trace day, refit once per
+  trace day (`refl_predictors.ProphetForecaster`); p = mean forecast over [now + μ, now + 2μ], clipped to [0, 1], sent with the
+  check-in (sim: computed agg-side from the same per-client history; no future data is read). The selector sorts the pool by p
+  ascending (no forecast = 1.0, "assumed available", §4.1 fn. 5; ties by a seeded draw) and takes the top N. Hold-off: off
+  (`holdoff_rounds: 0`; the paper's 5 rounds × 13 picks holds out 65 of our 75 clients vs ~6.5% of its 1,000, and the fork has none;
+  F42C REFL stalled with every pool member held off). Deviations: paper over fork code for the deployed variant
+  (the fork simulates IPS with the future trace: that is REFL*); Prophet trained per device on its own trace instead of on Stunner;
+  refit daily (paper: "periodically"); p uses the server's μ as the slot (§7 query a = (μ, 2μ)). REFL* = the fork's oracle
+  (`TraceOracle`, avail_priority 1, 0.9 knockout, no hold-off).
+- **FedDance (F42-T4):** its predictor V_m = 1 − exp(−5λ) counts per-round check-ins (paper Alg. 1); deployed = the check-in pool
+  at each selection (`checkin_source: selection` under `checkin` knowledge); FedDance* = the trace's online set.
+- **FedAvg (ablation):** FedDance's experiment and training config with `utility: random` (debug_run.sh), i.e. uniform selection
+  from the check-in pool + FedAvg equal weights, 1 local step.
+- **FedBuff*:** FedBuff with the trace's online set at selection (labelled oracle).
+
+*Findings so far (evidence; 1 seed):*
+- F41: Felix (old) leads every baseline in AUC on cifar s0 / s0u / s50u and speech s0 / s50u (speech s0u: FedBuff 42.2 vs old 39.7,
+  new 42.3); FedBuff collapses under s50u (AUC 41.8 vs 21.4
+  cifar) because a dead pick holds its slot to the timeout. Felix new ≈ old (within noise).
+- F41: cifar streams plateau by ~6 h and every stack then overfits (held-out loss 1.7 → 3.2) while spending 63-79% of its bytes: the
+  room for pacing (C8; offline replay −47 to −54% bytes at ≤ 0.6 pp AUC).
+- F41: on streams Felix's samples-per-update edge shrinks (visible shards 30-70 samples, an epoch ≈ REFL's 1 step); REFL reaches cifar
+  s50u 45% first (661 vs 780 min).
+- F42 smokes: Felix pick survival 0.99-1.00 at 0 timeouts; FedDance* 0.99, ρ(V, survive) +0.72, 15.9 timeouts / h; blind REFL 0.88,
+  132 / h; FedBuff 0.60, 37 / h.
+
+*Story (proposal):* availability changes faster than any forecast; a system that **reacts** to it at each layer beats one that
+predicts it. Felix (1) learns state the moment it changes and frees the slot (vs check-in staleness, forecasts, timeouts), (2) fills
+each slot with the most learning per second among clients that can finish, (3) sizes the server step to staleness and stability,
+(4) stops spending bytes once held-out data says the model stopped learning. Each layer is one ablation (K1-K4); the end-to-end
+claim (K5) is time and bytes to accuracy.
+
+*Candidate claims (each names its experiment, metric and ablation):*
+- **K1 · React, don't predict (C1):** notify + evict wastes fewer slots and misses fewer opportunities than check-in (+ REFL's forecast,
+  FedDance's V), matching the oracles, with O(1) state. Metrics: belief mismatch (T2), pick survival, missed opportunities, timeouts / h,
+  wasted slot-h / h, Felix's own cost (evicted partial work), messages / h, TTA. Ablations: Felix with check-in only, Felix blind.
+- **K2 · Learning per slot-second (C3 + bal):** R × s̄ and TTA vs e0; top-20% share, worst-10% client accuracy (`client_accuracy.py`).
+- **K3 · Step control (C4, C5):** eval swing and AUC on speech vs l3b; K trajectory.
+- **K4 · Bytes only while learning (C8 pacing):** bytes to matched accuracy and final accuracy vs l5 / e0; held-out loss; probe cost
+  (~1% bytes). Later: a dynamic probe rate.
+- **K5 · End to end:** time and bytes to target vs every baseline; s0 static, s0u, s50u, MobiPerf × both datasets; Felix's loss from
+  s0u → s50u smallest.
+- **K6 · Robustness (F42e):** silent drops p ∈ {1, 5, 10}%, notify delay / loss.
+- **K7 · Overheads:** notify messages / h vs check-ins / h, probe bytes share, aggregator ms per selection.
+- **K8 · Scale:** reference n 300 cifar / 100 speech on long sims (D5).
+
+Sources: K1-K4 from S1 + F43; K5, K7 from F43, then D5's 48 h runs; K6 from F42e; K8 from D5.
 
 **Avenues after PR40a (ROBUST R26: model → short realistic screen → end to end, else pivot).** Felix's measured edge is
 availability handling and samples per slot-second. Novelty has to come from what the baselines ignore: a device model with real
@@ -1397,6 +1542,7 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 
 ## Open questions (operator)
 
+- **Q-F42-KNOBS · Confirm the F42 knob table (rewritten by F42-T5) and the 5 h plan (Next steps F42).**
 
 - **Q-PAPAYA · Section / page of FedBuff-Papaya's 1.5× task-timeout rule** (FX-N115 cites it).
 - **Q-EV21 · Felix "reaches AVL_EVAL" arms only at ≥ 20 eval picks · parked: FX-N109 I2.** The eval budget (evalGoalFactor · K = 10 per

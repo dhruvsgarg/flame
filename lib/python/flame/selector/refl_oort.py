@@ -87,8 +87,11 @@ class REFLOortSelector(OortSelector):
 
         # F42b (R27): REFL* = "oracle" (future trace), REFL-fc = "forecast" (on-device, own past days); built at first select.
         self.avail_predictor = kwargs.get("avail_predictor") or None
-        if self.avail_predictor not in (None, "oracle", "forecast"):
-            raise ValueError(f"avail_predictor={self.avail_predictor!r}: expected oracle or forecast")
+        if self.avail_predictor not in (None, "oracle", "forecast", "prophet"):
+            raise ValueError(f"avail_predictor={self.avail_predictor!r}: expected oracle, forecast or prophet")
+        # F42-T3: paper §4.1 hold-off: a participant does not check in again for this many rounds after its pick.
+        self.holdoff_rounds = int(kwargs.get("holdoff_rounds", 0) or 0)
+        self._pick_round: Dict[str, int] = {}
         self._round_s = None  # EMA of the time between selections: REFL's slot length
         if trace_file:
             self.avail_tracker = REFLAvailabilityTracker(trace_file, trainer_registry)
@@ -145,7 +148,7 @@ class REFLOortSelector(OortSelector):
         round_num = channel_props.get("round", 0)
         cur_time = channel_props.get("cur_time", channel_props.get("vclock_now") or 0)
         round_duration_hint = kwargs.get("round_duration", 100.0)
-        if self.avail_predictor:
+        if self.avail_predictor and self.avail_predictor != "prophet":
             if self.avail_tracker is None and channel_props.get("availability_trace"):
                 from flame.availability.refl_predictors import SeasonalForecaster, TraceOracle
                 cls = TraceOracle if self.avail_predictor == "oracle" else SeasonalForecaster
@@ -199,6 +202,8 @@ class REFLOortSelector(OortSelector):
 
         # Build blacklist if enabled
         blacklist = self.get_blacklist(eligible_ends) if self.blacklist_rounds > 0 else set()
+        if self.holdoff_rounds > 0:
+            blacklist |= {e for e in eligible_ends if round_num - self._pick_round.get(e, -10**9) < self.holdoff_rounds}
 
         # Build priority lists using availability tracker
         priority_ends, remaining_ends = self.build_priority_lists(
@@ -211,7 +216,14 @@ class REFLOortSelector(OortSelector):
         )
 
         # Select based on priority mode
-        if self.avail_priority == 0:
+        checkin_p = channel_props.get("checkin_p") or {}
+        if self.avail_predictor == "prophet":
+            # F42-T3, REFL Alg. 1: least available first (p ascending, ties shuffled); no forecast = assumed available (§4.1 fn. 5).
+            cand = [e for e in eligible_ends if e not in blacklist]
+            draw = lambda c: random.Random(f"{self._seed}|refl_p|{self._draw_key}|{c}").random()
+            selected = sorted(cand, key=lambda c: (1.0 if checkin_p.get(c) is None else checkin_p[c], draw(c)))[:num_to_select]
+            priority_ends = [e for e in selected if checkin_p.get(e) is not None and checkin_p[e] < 0.5]
+        elif self.avail_priority == 0:
             # No priority: use standard Oort on all available ends
             all_candidates = set(priority_ends + remaining_ends)
             selected = self._pick(
@@ -246,6 +258,8 @@ class REFLOortSelector(OortSelector):
             )
 
         newly_selected = set(selected)
+        for e in newly_selected:
+            self._pick_round[e] = round_num
         self.newly_selected_this_round = newly_selected
         self.selected_ends = self.selected_ends | newly_selected
 
@@ -272,6 +286,7 @@ class REFLOortSelector(OortSelector):
                 "priority_ids": sorted(set(priority_ends) & set(newly_selected)),  # F42: predictor audit (picks it said leave soon)
                 "slot_s": round_duration_hint if self.avail_tracker is not None else None,
                 "num_blacklist": len(blacklist),
+                "picked_p": {e: checkin_p.get(e) for e in sorted(newly_selected)} if self.avail_predictor == "prophet" else None,
                 "stale_due": self.stale_due,
                 "exploration_factor": self.exploration_factor,
                 "explore_ids": list(getattr(self, "_last_explore", [])),

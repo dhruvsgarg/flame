@@ -26,13 +26,14 @@ EXPECT = {
     ("felix", "ctl"): _OLD, ("felix", "e0"): _E0, ("felix", "l3"): _L3, ("felix", "l3b"): _L3B, ("felix", "l4"): _L4,
     ("felix", "l5"): _L5, ("felix", "l5p"): dict(_L5, dkc="composite[aimd_k,pace_c]", probe="60", vprobe="true"),
     ("felix", "e0p"): dict(_E0, dkc="pace_c", probe="60", vprobe="true"),
-    ("fedbuff", "*"): dict(know="none", evict="false", rate="old"),
-    ("refl", "ctl"): dict(know="none", evict="false", pred="-"),  # avail_priority 1 without a predictor = IPS off at runtime
-    ("refl", "rfc"): dict(know="none", evict="false", pred="forecast", prio="1", prob="1.0"),
-    ("refl", "rstar"): dict(know="oracle", evict="false", pred="oracle", prio="1", prob="0.9"),
-    ("feddance", "ctl"): dict(know="none", evict="false", checkin="returns"),
+    ("felix", "fck"): dict(_L5, dkc="composite[aimd_k,pace_c]", probe="60", vprobe="true", know="checkin", evict="false"),
+    ("fedbuff", "*"): dict(know="checkin", evict="false", rate="old"), ("fedbuff", "fbstar"): dict(know="oracle", evict="false", rate="old"),
+    ("refl", "ctl"): dict(know="checkin", evict="false", pred="prophet", holdoff="0"),
+    ("refl", "rstar"): dict(know="oracle", evict="false", pred="oracle", prio="1", prob="0.9", holdoff="0"),
+    ("feddance", "ctl"): dict(know="checkin", evict="false", checkin="selection"),
     ("feddance", "fdstar"): dict(know="oracle", evict="false", checkin="selection"),
-    ("oort", "*"): dict(know="none", evict="false"), ("oort_star", "*"): dict(know="oracle", evict="false"),
+    ("fedavg", "*"): dict(know="checkin", evict="false"),
+    ("oort", "*"): dict(know="checkin", evict="false"), ("oort_star", "*"): dict(know="oracle", evict="false"),
 }
 COMMON = dict(holdout="0.1")
 
@@ -56,7 +57,7 @@ def knobs(run_dir, trainer_hp):
                 probe=_s(sel.get("probePerWindow")), vprobe=_s(trainer_hp.get("validation_probe")),
                 prefix=_s(trainer_hp.get("utilityPrefixSamples")), holdout=_s(trainer_hp.get("validation_holdout")),
                 pred=_s(sel.get("avail_predictor")), prio=_s(sel.get("avail_priority")), prob=_s(sel.get("avail_probability")),
-                checkin=_s(sel.get("checkin_source")), K=_s(hp.get("aggGoal")), c=_s(sel.get("c")),
+                checkin=_s(sel.get("checkin_source")), holdoff=_s(sel.get("holdoff_rounds")), K=_s(hp.get("aggGoal")), c=_s(sel.get("c")),
                 timeout=_s(hp.get("send_timeout_wait_s")))
 
 
@@ -80,7 +81,7 @@ def main(argv=None):
     pools = (argv if argv is not None else sys.argv[1:])
     bad = 0
     cols = ("know", "evict", "eval", "ups", "bal", "dkc", "rate", "probe", "vprobe", "prefix", "holdout", "pred", "prio", "prob",
-            "checkin", "K", "c", "timeout")
+            "checkin", "holdoff", "K", "c", "timeout")
     print("| leg | " + " | ".join(cols) + " | ok |\n|" + "---|" * (len(cols) + 2))
     for pool in pools:
         for leg, b, arm, k in legs(pool):

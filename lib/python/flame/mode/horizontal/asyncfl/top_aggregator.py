@@ -96,6 +96,7 @@ class TopAggregator(SyncTopAgg):
 
     # FX-D23: `send + D` lower-bounds sct, so a zero-slack gate is exact; fwdllm keeps _SIM_ORDER_SLACK_S.
     _SIM_ORDER_SLACK_DEFAULT_S = 0.0
+    _CHECKIN_SYNC = False  # F42-T1: pool check-ins while slots are free
     _sim_order_slack_s = _SIM_ORDER_SLACK_DEFAULT_S
 
     def internal_init(self) -> None:
@@ -1783,6 +1784,7 @@ class TopAggregator(SyncTopAgg):
         ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
                             agg_version_key=self.version_key,
                             trainer_version_keys=self._task_version_keys(channel, task_to_perform))
+        self.checkin_after_select(channel, ends)  # F42-T1
         if not ends:
             logger.debug(f"No trainers found for tag {tag}")
             return

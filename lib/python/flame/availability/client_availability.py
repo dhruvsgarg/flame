@@ -19,12 +19,15 @@ is off, preserving byte-identical output on syn_0 runs.
 Stage C will activate free_stalled_slot and wire the pending_withheld ledger.
 """
 
+import json
 import logging
 import math
+import threading
 import time
 from typing import Optional
 
 from flame import harness, telemetry
+from flame.availability.checkin import CheckinLedger
 from flame.availability.trace import deliverable, load_trace, next_avail_after, state_at
 from flame.availability.trace import (
     read_trainer_unavailability as _read_trainer_unavailability,
@@ -35,12 +38,14 @@ from flame.selector.properties import PROP_AVL_STATE, PROP_EXCL_REASON, PROP_ROU
 from flame.telemetry.events import (
     build_abandon_timeout,
     build_agg_belief_change,
+    build_checkin,
     build_withheld_delivery,
 )
 
 logger = logging.getLogger(__name__)
 
-AVAIL_KNOWLEDGE = ("notify", "oracle", "none")  # R27
+AVAIL_KNOWLEDGE = ("notify", "oracle", "none", "checkin")  # R27; checkin = Bonawitz check-in (F42-T1)
+CHECKIN_MSG, RECONNECT_MSG = "CHECK_IN", "RECONNECT"  # F42-T1 real-mode control states on the STATE_UPDATE notify
 
 # Re-clock of the selector's wall-based abandon (SEND_TIMEOUT_WAIT_S) onto the
 # vclock. Heuristic basis (PARITY.md / design §1): train takes ≤60s, so an
@@ -62,6 +67,8 @@ class ClientAvailability:
 
     # FX-D12: fwdllm keeps the channel's UN_AVL slot release until S8 ports this.
     _SUBSTRATE_OWNS_INFLIGHT_RELEASE = True
+    # F42-T1: sync stacks select in check-in windows; asyncfl overrides (pool while slots are free).
+    _CHECKIN_SYNC = True
 
     # ------------------------------------------------------------------
     # Initialization
@@ -215,6 +222,8 @@ class ClientAvailability:
         """oracle: the trace now. notify: the client's last push (real: STATE_UPDATE on the channel end; sim: the trace flip
         delivered `notify_latency_s` later). Only called when avail_knowledge != none."""
         k = self._knowledge()
+        if k == "checkin":  # F42-T1: only a waiting check-in is known available
+            return TrainerAvailState.AVL_TRAIN if tid in self._checkin_ledger().pool else TrainerAvailState.UN_AVL
         if k == "notify" and not getattr(self, "simulated", False):
             st = self._notified_states().get(tid)
             return st if st is not None else TrainerAvailState.AVL_TRAIN
@@ -249,7 +258,139 @@ class ClientAvailability:
 
     @property
     def _belief_source(self) -> str:
-        return {"notify": "client_notify", "oracle": "trace_read"}.get(self._knowledge(), "none")
+        return {"notify": "client_notify", "oracle": "trace_read", "checkin": "checkin"}.get(self._knowledge(), "none")
+
+    # ------------------------------------------------------------------
+    # Check-in (F42-T1, flame.availability.checkin): what a deployed baseline server knows
+    # ------------------------------------------------------------------
+
+    def _checkin_ledger(self) -> CheckinLedger:
+        led = getattr(self, "_checkin", None)
+        if led is None:
+            kw = dict(getattr(getattr(self.config, "hyperparameters", None), "checkin", None) or {})
+            sel_kw = getattr(getattr(self.config, "selector", None), "kwargs", None) or {}
+            c = max(1, int(sel_kw.get("c", 1) or 1))
+            gap = self._task_timeout_s() / (1 if self._CHECKIN_SYNC else c)  # server's prior: its round deadline / c
+            led = CheckinLedger(sync=self._CHECKIN_SYNC, initial_gap_s=float(kw.pop("initial_gap_s", gap)),
+                                window_frac=float(kw.get("window_frac", 0.1)), jitter=tuple(kw.get("jitter", (0.5, 1.5))),
+                                alpha=float(kw.get("alpha", 0.25)), seed=int(kw.get("seed", 0)), on_event=self._checkin_event)
+            led.busy, led.lock = set(), threading.RLock()
+            self._checkin = led
+            for ch in self._avail_channels():  # real: CHECK_IN notifies (incl. any that arrived before the first selection)
+                ch.set_checkin_handler(self.on_checkin_message)
+        return led
+
+    def _checkin_forecaster(self):
+        """F42-T3: REFL's on-device Prophet model, replayed agg-side in sim (real trainers send p with their check-in)."""
+        kw = getattr(getattr(self.config, "selector", None), "kwargs", None) or {}
+        if kw.get("avail_predictor") != "prophet" or not getattr(self, "simulated", False):
+            return None
+        if getattr(self, "_checkin_fc", None) is None:
+            from flame.availability.refl_predictors import ProphetForecaster
+            self._checkin_fc = ProphetForecaster(self._avail_trace_name)
+        return self._checkin_fc
+
+    def _checkin_event(self, kind, end, t, fields) -> None:
+        if kind == "pooled":
+            fc = self._checkin_forecaster()
+            if fc is not None:
+                fields["p"] = fc.p(end, t, self._checkin.gap)
+            if fields.get("p") is not None:
+                self.__dict__.setdefault("_checkin_p", {})[end] = fields["p"]
+        if telemetry.is_enabled():
+            ev, f = build_checkin(kind=kind, end_id=end, t=t, round_num=getattr(self, "_round", -1), **fields)
+            telemetry.emit(ev, **f)
+
+    def _checkin_train_at(self, end: str, t: float) -> float:
+        trace = self.trainer_event_dict.get(end)
+        if not trace or deliverable(state_at(trace, t), "train"):
+            return t
+        return next_avail_after(trace, t, "train")
+
+    def _checkin_is_train(self, end: str, t: float) -> bool:
+        trace = self.trainer_event_dict.get(end)
+        return not trace or deliverable(state_at(trace, t), "train")
+
+    def _checkin_idle(self) -> list:
+        """Ends that may check in: known, not in flight, not already waiting in the pool."""
+        led = self._checkin_ledger()
+        inflight = set().union(*(self._avail_inflight_ends(ch) for ch in self._avail_channels())) if self._avail_channels() else set()
+        for e in led.busy - inflight:  # a task ended on a path that never called release: free from now
+            self._checkin_release(e, self._avail_now())
+        led.busy = inflight
+        return [e for e in self.trainer_event_dict if e not in inflight and e not in led.pool]
+
+    def _checkin_release(self, end: str, t: float) -> None:
+        """A busy client's task ended; a late update from a client already released (abandoned) changes nothing."""
+        led = self._checkin_ledger()
+        with led.lock:
+            if end in led.busy:
+                led.busy.discard(end)
+                led.release(end, t)
+
+    def _checkin_gate(self, want: bool) -> list:
+        """F42-T1 selection gate: ineligible = everyone not waiting in the check-in pool. Sync: picks only at a window's close
+        (sim jumps the vclock there; real waits); want=False closes an idle window (its pool is told to reconnect)."""
+        led = self._checkin_ledger()
+        sim = getattr(self, "simulated", False)
+        with led.lock:
+            now = self._avail_now()
+            if sim:
+                led.advance(now, self._checkin_idle(), self._checkin_train_at, self._checkin_is_train)
+            if led.sync:
+                if not want:
+                    if led.window is not None:
+                        self._checkin_tell(led.after_select(now, [], slots_left=False))
+                    return list(self.trainer_event_dict)
+                close = led.open_window(now, getattr(self, "_round", None))
+                if now < close:
+                    if not sim:
+                        return list(self.trainer_event_dict)  # real: keep collecting until the window closes
+                    self._vclock.advance(close)
+                    led.advance(close, self._checkin_idle(), self._checkin_train_at, self._checkin_is_train)
+            for ch in self._avail_channels():
+                ch.properties["checkin_p"] = {e: p for e, p in getattr(self, "_checkin_p", {}).items() if e in led.pool}
+            return [e for e in self.trainer_event_dict if e not in led.pool]
+
+    def checkin_after_select(self, channel, picked) -> None:
+        """F42-T1: a selection picked `picked`; the rest of the pool is told to reconnect (sync: window closes)."""
+        if self._knowledge() != "checkin" or getattr(self, "trainer_event_dict", None) is None:
+            return
+        led = self._checkin_ledger()
+        with led.lock:
+            now = self._avail_now()
+            picked = list(picked or ())
+            for e in picked:
+                if e in led.pool:
+                    self._checkin_event("picked", e, now, {})
+            sel = getattr(channel, "_selector", None)
+            c = int(channel.properties.get("dynamic_c", getattr(sel, "c", 0)) or 0)
+            slots_left = (not led.sync) and len(self._avail_inflight_ends(channel)) < c
+            led.busy |= set(picked)
+            self._checkin_tell(led.after_select(now, picked, slots_left=slots_left))
+
+    def _checkin_tell(self, told) -> None:
+        """Real: send each rejected client its reconnect time (sim clients follow the ledger directly)."""
+        if getattr(self, "simulated", False) or not told:
+            return
+        from flame.mode.message import MessageType
+        mu = self._checkin_ledger().gap
+        for ch in self._avail_channels():
+            for end, at in told:
+                if ch.has(end):
+                    ch.send_payload(end, ch.dumps({MessageType.CHECKIN_RECONNECT: {"at": at, "mu": mu}}))
+
+    def on_checkin_message(self, end: str, payload: str, wall_ts: Optional[float] = None) -> None:
+        """Real: a client's CHECK_IN (json {p}) received at wall_ts; pooled or told to reconnect. p = REFL's on-device forecast."""
+        if self._knowledge() != "checkin" or getattr(self, "trainer_event_dict", None) is None:
+            return
+        info = json.loads(payload) if payload else {}
+        t = max(0.0, wall_ts - self.agg_start_time_ts) if wall_ts is not None else self._avail_now()
+        led = self._checkin_ledger()
+        with led.lock:
+            r = led.on_checkin(end, t, p=info.get("p"))
+        if r is not None:  # off the backend loop: a send from its own thread would deadlock on run_async
+            threading.Thread(target=self._checkin_tell, args=([(end, r)],), daemon=True).start()
 
     # ------------------------------------------------------------------
     # Selection gate
@@ -284,7 +425,7 @@ class ClientAvailability:
             )
         return unavail
 
-    def get_curr_task_ineligible_trainers(self, task: str) -> list:
+    def get_curr_task_ineligible_trainers(self, task: str, want: bool = True) -> list:
         """D.2: UN_AVL + task-type-ineligible trainers per the trace-read.
 
         Extends get_curr_unavail_trainers with the task-type partition:
@@ -301,6 +442,8 @@ class ClientAvailability:
             return []
         if not getattr(self, "avail_select_filter", True):
             return []
+        if self._knowledge() == "checkin":
+            return self._checkin_gate(want)
         has_eval = getattr(self, "_trace_has_avl_eval", False)
         excluded_state = (
             TrainerAvailState.AVL_EVAL if task == "train"
@@ -415,6 +558,8 @@ class ClientAvailability:
         if trace is None:
             return
         now = float(sct) if sct is not None else self._avail_now()
+        if self._knowledge() == "checkin":
+            self._checkin_release(end, now)
         state = state_at(trace, now)
         self._record_avail_belief(end, state.value, observed_at=now, checkpoint="commit")
 
@@ -498,6 +643,8 @@ class ClientAvailability:
                 f"[AVAIL] free_stalled_slot({end!r}) — gate off, no-op"
             )
             return None
+        if self._knowledge() == "checkin":
+            self._checkin_release(end, float(sct) if sct is not None else self._avail_now())
 
         # 1. Slot ledger: release the concurrency slot so a replacement is
         #    selectable. Mirrors the abandon path's removal (random.py:215).
@@ -1219,6 +1366,12 @@ class ClientAvailability:
             return None
         now = self._avail_now()
         candidates: list = []
+        if self._knowledge() == "checkin":  # F42-T1: the next check-in (or reconnect) is the only news
+            nxt = self._checkin_ledger().next_checkin(now, self._checkin_idle(), self._checkin_train_at, self._checkin_is_train)
+            candidates += [nxt] if nxt is not None else []
+            pw = getattr(self, "pending_withheld", None)
+            candidates += [ts for ts in (pw or {}).values() if ts > now]
+            return min(candidates) if candidates else None
         task = self._wake_task()
         for trace in self.trainer_event_dict.values():
             nxt = next_avail_after(trace, now, task)

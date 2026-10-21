@@ -44,6 +44,7 @@ from flame.mode.horizontal.trainer import Trainer
 from flame import telemetry
 from flame.telemetry.events import (
     build_avail_change,
+    build_checkin,
     build_trainer_round,
     build_util_disparity,
 )
@@ -413,6 +414,8 @@ class PyTorchCifar10Trainer(Trainer):
                     state=self.avl_state,
                     timestamp=str(time.time()),
                 )
+            if getattr(self, "_checkin_client", None) is not None:
+                self._checkin_client.on_flip(self.avl_state == TrainerAvailState.AVL_TRAIN)
 
     @property
     def data_spec(self) -> "fl_data.DatasetSpec":
@@ -1359,12 +1362,38 @@ class PyTorchCifar10Trainer(Trainer):
         # EOT, or process shutdown (a trainer UN_AVL at run end gets no EOT, only SIGTERM): FX-D7.
         return getattr(self, "_work_done", False) or getattr(self, "_shutting_down", False)
 
+    def _make_checkin_client(self):
+        """F42-T1 real: the device's check-in client, once the trace origin is known (sim replays it agg-side)."""
+        mode = getattr(getattr(self.config, "hyperparameters", None), "checkin_client", None)
+        if not mode or self.simulated or getattr(self, "_agg_start_origin", None) is None:
+            return None
+        from flame.availability.checkin_client import CheckinClient
+        forecast = None
+        if mode == "prophet":
+            from flame.availability.refl_predictors import ProphetForecaster
+            fc = ProphetForecaster(self.client_notify["trace"])
+            forecast = lambda t, mu: fc.p(self.trainer_id, t, mu)
+
+        def emit(kind, t, f):
+            if telemetry.is_enabled():
+                ev, fields = build_checkin(kind=kind, end_id=str(self.trainer_id), t=t, round_num=int(self._round), **f)
+                telemetry.emit(ev, **fields)
+        c = CheckinClient(send=lambda pl: self._perform_channel_state_update(tag="upload", state="CHECK_IN", timestamp=pl),
+                          now=self._sim_now, is_train=lambda: self.avl_state == TrainerAvailState.AVL_TRAIN,
+                          forecast=forecast, emit=emit)
+        c.start()
+        return c
+
     def notify_trainer_avail(self) -> None:
         # Both flags are set before channel.leave; _work_done is absent until run(), FX-D7.
         while not self._avail_thread_done():
             time.sleep(1)  # Will check every 1 second
             try:
                 self.check_and_update_state_avl()
+                if getattr(self, "_checkin_client", None) is None:
+                    self._checkin_client = self._make_checkin_client()
+                else:
+                    self._checkin_client.tick()
             except Exception:
                 if not self._avail_thread_done():
                     raise

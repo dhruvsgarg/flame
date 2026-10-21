@@ -778,7 +778,7 @@ class TopAggregator(BaseTopAggregator):
             # AVL_TRAIN from "eval" dispatch (inert where a baseline never
             # dispatches eval, e.g. oort, Challenge 8).
             curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
-                task_to_perform
+                task_to_perform, want=self._sync_wants_picks(channel, desired_selection)
             )
             _state_ineligible = set(curr_unavail_trainer_list)  # R27: knowledge-based only (EV22 reads its stamp)
             # invariant 2: a trainer with a withheld update stays out of the
@@ -934,6 +934,7 @@ class TopAggregator(BaseTopAggregator):
                                      agg_version_key=self.version_key,
                                      trainer_version_keys=_version_keys,
                                      num_to_select=_need)
+        self.checkin_after_select(channel, selected_ends)  # F42-T1
         if not selected_ends:
             return
 

@@ -435,6 +435,10 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     avail_knowledge: t.Optional[str] = Field(alias="availKnowledge", default=None)
     # F42a sim notify: a flip reaches the aggregator this many seconds late (0 = instant push).
     notify_latency_s: t.Optional[float] = Field(alias="notifyLatencyS", default=0.0)
+    # F42-T1 check-in (avail_knowledge=checkin): window_frac, jitter [lo, hi], alpha, seed (flame.availability.checkin).
+    checkin: t.Optional[dict] = Field(alias="checkin", default=None)
+    # F42-T1 real trainer: run the check-in client (flame.availability.checkin_client); "prophet" adds REFL's forecast p.
+    checkin_client: t.Optional[str] = Field(alias="checkinClient", default=None)
     # FX-N37: a sync version commits only at K accepted updates; timed-out picks are replaced mid-round.
     sync_wait_for_k: t.Optional[bool] = Field(alias="syncWaitForK", default=False)
     # FX-D148: wait-K versions dispatch to whoever is eligible, not only at c eligible.

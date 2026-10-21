@@ -256,6 +256,13 @@ class Trainer(Role, metaclass=ABCMeta):
             channel._selector.ordered_updates_recv_ends.append(end)
             channel.cleanup_recvd_ends()
             return
+        if MessageType.CHECKIN_RECONNECT in msg:  # F42-T1: a rejected check-in; no task
+            _ck = getattr(self, "_checkin_client", None)
+            if _ck is not None:
+                _ck.on_reconnect(msg[MessageType.CHECKIN_RECONNECT]["at"], msg[MessageType.CHECKIN_RECONNECT].get("mu"))
+            channel._selector.ordered_updates_recv_ends.append(end)
+            channel.cleanup_recvd_ends()
+            return
 
         # FX-D9: drop an answered request (version <= answered; a train answer covers eval), before any state change.
         _req_task = msg.get(MessageType.TASK_TO_PERFORM, self.task_to_perform)
@@ -281,6 +288,8 @@ class Trainer(Role, metaclass=ABCMeta):
             self._round = msg[MessageType.ROUND]
             logger.debug(f"[TRAINER_FETCH] Updated round from {prev_round} to {self._round} for trainer_id {self.trainer_id}")
 
+        if (MessageType.WEIGHTS in msg or MessageType.WEIGHTS_BYTES in msg) and getattr(self, "_checkin_client", None):
+            self._checkin_client.on_task_start()  # F42-T1
         if MessageType.WEIGHTS in msg or MessageType.WEIGHTS_BYTES in msg:
             # Load the model onto GPU if self.model is None:
             # self._load_model_onto_gpu()
@@ -377,6 +386,8 @@ class Trainer(Role, metaclass=ABCMeta):
         )
         if tag == TAG_UPLOAD:
             self._send_weights(tag)
+            if getattr(self, "_checkin_client", None) is not None:
+                self._checkin_client.on_task_end()  # F42-T1: may check in again
 
     def _send_weights(self, tag: str) -> None:
         logger.debug(

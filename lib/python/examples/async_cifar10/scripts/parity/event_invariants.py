@@ -847,13 +847,20 @@ def ev21_avl_eval_semantics(run):
 
 
 def _r27_expected(run) -> str:
-    """R27: Felix learns state by notify; Oort*, REFL* (avail_predictor=oracle), FedDance* (checkin_source=selection) are oracle;
-    every other run unaware."""
-    m = re.search(r"_dbg_(?:google_speech_)?(\w+?)_n\d+", os.path.basename(run["dir"].rstrip("/")))
+    """R27: Felix learns state by notify (its K1 ablation `fck` by check-in); a `*` variant (Oort*, an arm named *star) is oracle;
+    a `blind` arm is unaware; every other baseline learns by check-in (F42-T1)."""
+    name = os.path.basename(run["dir"].rstrip("/"))
+    m = re.search(r"_dbg_(?:google_speech_)?(\w+?)_n\d+", name)
     b = m.group(1) if m else ""
+    phase = re.sub(r"_h(?:stub|tiny_cpu)$", "", name.split("_dbg_")[0])  # harness legs append _h<mode>
     kw = run["cfg"].get("selector", {}).get("kwargs", {}) or {}
-    star = (b == "refl" and kw.get("avail_predictor") == "oracle") or (b == "feddance" and kw.get("checkin_source") == "selection")
-    return {"felix": "notify", "oort_star": "oracle"}.get(b) or ("oracle" if star else "none")  # REFL*, FedDance*
+    if b == "oort_star" or re.search(r"_\w*star\b", phase) or (b == "refl" and kw.get("avail_predictor") == "oracle"):
+        return "oracle"
+    if re.search(r"_\w*blind\b", phase):
+        return "none"
+    if b == "felix":
+        return "checkin" if re.search(r"_fck\b", phase) else "notify"
+    return "checkin"
 
 
 def ev22_availability_knowledge(run):
@@ -873,18 +880,55 @@ def ev22_availability_knowledge(run):
     return _res("PASS", f"knowledge={know}")
 
 
+def ev23_checkin_protocol(run):
+    """F42-T1: a check-in run picks only clients waiting in its pool; sim check-ins happen only in AVL_TRAIN, a missed reconnect
+    only outside it, and a rejected client is next heard of no earlier than its reconnect time (pace steering)."""
+    if _hp(run, "avail_knowledge") != "checkin":
+        return _res("SKIP", "not a check-in run")
+    ck = sorted((e for e in run["agg"] if e.get("event") == "checkin"), key=lambda e: e.get("t", 0))
+    if not ck:
+        sels = _events(run, "selection", task="train")
+        return _res("FAIL" if sels else "SKIP", "check-in run emitted no checkin events")
+    from flame.availability.trace import deliverable, state_at
+    sim = _simulated(run)
+    gt, tol = (_ground_truth(run), 1e-6) if sim else (None, 2.0)  # real: receipt vs the trainer's own clock
+    bad, last = [], {}
+    for e in ck:
+        end, t, k = e.get("end_id"), float(e.get("t") or 0), e.get("kind")
+        prev = last.get(end)
+        if k == "picked" and (prev is None or prev.get("kind") != "pooled"):
+            bad.append(f"{end[-4:]} picked at {t:.0f} without a waiting check-in")
+        if prev is not None and prev.get("kind") == "rejected" and k in ("pooled", "rejected", "missed") \
+                and t < float(prev.get("reconnect_at") or 0) - tol:
+            bad.append(f"{end[-4:]} back at {t:.0f} before its reconnect {prev['reconnect_at']:.0f}")
+        closing = k == "rejected" and (prev or {}).get("kind") == "pooled"  # told at the window's close, checked in earlier
+        if gt and gt.get(end) is not None and k in ("pooled", "rejected", "missed") and not closing:
+            on = deliverable(state_at(gt[end], t), "train")
+            if (k == "missed") == on:
+                bad.append(f"{end[-4:]} {k} at {t:.0f} while {'' if on else 'not '}AVL_TRAIN")
+        last[end] = e
+    picks = {(s.get("round"), c) for s in _events(run, "selection", task="train") for c in _newly_chosen(s)}
+    picked = sum(e.get("kind") == "picked" for e in ck)
+    if bad:
+        return _res("FAIL", f"{len(bad)} protocol breaks, e.g. " + "; ".join(bad[:3]))
+    if picked < len(picks):
+        return _res("FAIL", f"{len(picks) - picked} of {len(picks)} train picks had no waiting check-in")
+    n = Counter(e.get("kind") for e in ck)
+    return _res("PASS", f"pooled={n['pooled']} rejected={n['rejected']} missed={n['missed']} picked={n['picked']}")
+
+
 CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model, ev4_real_sleep,
           ev5_commit_accounting, ev6_staleness, ev7_agg_goal_cadence, ev8_concurrency_cap,
           ev9_selector_state, ev10_dispatch_one_in_flight, ev11_vclock, ev12_reached_budget,
           ev13_no_stall, ev14_eval_sane, ev15_one_task_per_version, ev16_withheld_delivery,
           ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev20_abandon_on_time,
-          ev21_avl_eval_semantics, ev22_availability_knowledge]
+          ev21_avl_eval_semantics, ev22_availability_knowledge, ev23_checkin_protocol]
 
 
 # Live early exit: checks whose FAIL on a log prefix stays FAIL on the full log (EV11: its backwards count only).
 EARLY = (ev6_staleness, ev8_concurrency_cap, ev9_selector_state, ev11_vclock, ev14_eval_sane, ev15_one_task_per_version,
          ev16_withheld_delivery, ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev21_avl_eval_semantics,
-         ev22_availability_knowledge)
+         ev22_availability_knowledge, ev23_checkin_protocol)
 
 
 def doomed(run_dir: str) -> list:

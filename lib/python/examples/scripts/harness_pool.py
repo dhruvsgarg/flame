@@ -190,15 +190,18 @@ _PACE = f"sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=pace_c sel.dynamic_k
 _C4P = ('sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=composite sel.dynamic_kc.k_min=5 sel.dynamic_kc.policy_kwargs='
         '{"sub_policies":[{"name":"aimd_k","kwargs":{"memory":true,"stall":true}},' + _PACE_C + ']}')
 _L3, _L3B = f"{_E0} {_C3}", f"{_E0} {_C3} {_BAL}"
-F42_ARMS = {"ctl": dict(bls=("felix", "fedbuff", "refl", "feddance")),  # Felix old; REFL / FedDance unaware (R27)
+F42_ARMS = {"ctl": dict(bls=("felix", "fedbuff", "refl", "feddance", "fedavg")),  # Felix old; baselines by check-in (R27, F42-T1)
             "e0": dict(hp=f"{_E0} {_STATS}"),
             "l3": dict(hp=f"{_L3} {_STATS}", thp=_PRE), "l3b": dict(hp=f"{_L3B} {_STATS}", thp=_PRE), "l4": dict(hp=f"{_L3B} {_C4}", thp=_PRE),
             "l5": dict(hp=f"{_L3B} {_C4} {_C5}", thp=_PRE),  # Felix new without pacing
             "l5p": dict(hp=f"{_L3B} {_C5} {_C4P} {_PROBE[0]}", thp=f"{_PRE} {_PROBE[1]}"),  # Felix new
             "e0p": dict(hp=f"{_E0} {_PACE} {_PROBE[0]}", thp=_PROBE[1]),  # pacing alone on old Felix's selector
-            "rfc": dict(bls=("refl",), hp="sel.avail_predictor=forecast sel.avail_priority=1 sel.avail_probability=1.0"),
-            "rstar": dict(bls=("refl",), hp="sel.avail_predictor=oracle sel.avail_priority=1 avail_knowledge=oracle avail_select_filter=True"),
-            "fdstar": dict(bls=("feddance",), hp="sel.checkin_source=selection avail_knowledge=oracle avail_select_filter=True")}
+            "rstar": dict(bls=("refl",), hp="sel.avail_predictor=oracle sel.avail_priority=1 sel.holdoff_rounds=0 avail_knowledge=oracle"),
+            "fdstar": dict(bls=("feddance",), hp="sel.checkin_source=selection avail_knowledge=oracle"),
+            "fbstar": dict(bls=("fedbuff",), hp="avail_knowledge=oracle"),  # `*` = the trace's online set at selection
+            # K1 ablation: Felix new learning availability by check-in (no notify, no eviction)
+            "fck": dict(hp=f"{_L3B} {_C5} {_C4P} {_PROBE[0]} avail_knowledge=checkin proactive_inflight_evict=False",
+                        thp=f"{_PRE} {_PROBE[1]}")}
 # D2 F39W (FX-N116): Felix's local samples per task; fixed (capped at an epoch) vs per-client split (compute = beta/(1-beta) x transfer)
 F39W_SAMPLES = {"cifar10": (32, 64, 128), "google_speech": (128, 256, 512)}
 F39W_BETAS = (0.5, 0.33)
@@ -546,6 +549,17 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                     out.append(replace(base, pid=f"{DS_TAG[ds]}F42_{cell}_{arm}", baselines=bls,
                                        agg_hp=f"{base.agg_hp} {kw.get('hp', '')}".strip(),
                                        trainer_hp=f"{base.trainer_hp} {kw.get('thp', '')}".strip()))
+        return out
+    if tier in ("F42C", "F42CR"):  # F42-T1 local gate on the CPU stub harness: F42C every arm in sim (30 min vclock);
+        real = tier == "F42CR"      # F42CR the deployed arms in real mode (10 min wall, trace x4): check-in client, Felix notify (T7)
+        out = []
+        for arm, kw in F42_ARMS.items():
+            bls = tuple(b for b in kw.get("bls", ("felix",)) if b in baselines)
+            if bls and (not real or arm == "ctl"):
+                out.append(Phase(f"{tier}_s50u_{arm}", bls, "syn_50_3st", runtime_s=600 if real else 1800, n=40, dataset=ds,
+                                 harness="stub", trace_offset_s="86400", kind="real" if real else "sim_ev",
+                                 trace_scale="4" if real else "", agg_hp=f"evalEverySeconds={F42_EVAL_S} {kw.get('hp', '')}".strip(),
+                                 trainer_hp=f"{_HOLD} {kw.get('thp', '')}".strip()))
         return out
     if tier == "G3S":  # sim-only replicates of every G3 cell: G3S<i>_<cell>, graded on banked + equivalent reals
         return [replace(ph, pid=ph.pid.replace("G3_", f"G3S{i}_"), kind="sim")
@@ -2192,7 +2206,7 @@ def code_key() -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A F39B F39C F39W F39E F40S F41 F42, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A F39B F39C F39W F39E F40S F41 F42 F42C F42CR, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

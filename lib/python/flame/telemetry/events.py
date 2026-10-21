@@ -30,6 +30,7 @@ EVENT_DISPATCH = "dispatch"          # per-dispatch re-dispatch-stagger validati
 EVENT_WITHHELD_DELIVERY = "withheld_delivery"  # late stale delivery of a send-gated update
 EVENT_ABANDON_TIMEOUT = "abandon_timeout"      # task-timeout slot-free of a stalled trainer (FX-D46)
 EVENT_AGG_BELIEF_CHANGE = "agg_belief_change"   # aggregator's belief about a trainer's avail state
+EVENT_CHECKIN = "checkin"            # F42-T1: a check-in protocol step (pooled / rejected / missed / picked)
 EVENT_STEP_TIMING = "step_timing"    # per-function wall duration of a timed compute step
 EVENT_COMM = "comm"                  # one message put on the wire (byte-size accounting)
 EVENT_VERSION_BUMP_CENSUS = "version_bump_census"  # #S1: pool-wide in-flight state at a model_version bump
@@ -1009,3 +1010,8 @@ def build_agg_belief_change(
         "checkpoint": checkpoint,
         "source": source,
     }
+
+
+def build_checkin(*, kind: str, end_id: str, t: float, round_num: int = -1, **fields) -> tuple[str, dict[str, Any]]:
+    """F42-T1 check-in step on the trace clock: pooled, rejected (reconnect_at), missed (unavailable at its reconnect), picked."""
+    return EVENT_CHECKIN, {"kind": kind, "end_id": end_id, "t": float(t), "round": round_num, **fields}
