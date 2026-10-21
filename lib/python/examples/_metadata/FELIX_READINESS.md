@@ -24,15 +24,15 @@ Every batch runs Felix new and old side by side; FedDance and Oort run only afte
 - **F42 · RESUME HERE: 5 h plan (operator 10-21 19:45).** Question: how Felix new (l5 / l5p) compares with Felix old (ctl) and the
   baselines, first on syn_0 (selection + aggregation alone), then on syn_50_3st (+ availability). Times from the smoke launch; run
   `dispatch.py --plan` before each launch; shepherd `git pull` first (PL18); no code edits once a run is live (PL5).
-  1. **0:00-0:30 · GPU smoke** `tmux new -s f42s 'python scripts/dispatch.py batches/f42smoke.yaml'` (the S0 + S1 legs at 30 min vclock).
-     Pass = rc 0, EV PASS incl. EV22 / EV23, `config_audit.py` exit 0, `predictor_audit.py` fills REFL's precision / recall and the
-     check-in columns; rejects ≈ ≤ 1 per idle client per round (sync) / ≤ 2 per pick (async).
-  2. **0:30-2:00 · S0 (syn_0)** `tmux new -s f42s0 'python scripts/dispatch.py batches/f42s0.yaml'`: 8 h vclock, seed 1; Felix ctl / e0 /
-     l3b / l4 / l5 / l5p / e0p; FedBuff, FedAvg, REFL, FedDance (cifar) by check-in and REFL*, FedDance*, FedBuff* (on syn_0 a `*` arm
-     differs only by the check-in cost: the selection / aggregation comparison reads `*`, the gap to non-`*` is the protocol's cost).
-  3. **2:00-3:45 · S1 (syn_50_3st)** `tmux new -s f42s1 'python scripts/dispatch.py batches/f42s1.yaml'`: same arms + Felix by
-     check-in (fck, K1). Can co-run with S0 if `--plan` shows room (R24).
-  4. **3:45-4:30 · Read (Claude):** verdict rules below per Felix feature; Felix new vs old per cell; Felix vs each baseline and its
+  1. **0:00-0:20 · GPU smoke** `tmux new -s f42s 'python scripts/dispatch.py batches/f42smoke.yaml'` (one leg per stack / arm type, 15 min
+     vclock). Pass = rc 0, EV PASS incl. EV22 / EV23, `config_audit.py` exit 0, `predictor_audit.py` fills REFL's precision / recall and
+     the check-in columns; rejects ≤ ~1 per idle client per round (sync) / ≤ ~2 per pick (async). Claude grades it before step 2.
+  2. **0:20-3:30 · S0 + S1, one batch** `tmux new -s f42s01 'python scripts/dispatch.py batches/f42s01.yaml'`: 4 h vclock, seed 1; Felix
+     ctl (old) / l5 / l5p (new); FedBuff, FedAvg, REFL, FedDance (cifar) by check-in; s0u (syn_0, selection + aggregation alone) adds
+     REFL* as the check-in-cost control; s50u adds REFL*, FedDance* (cifar), FedBuff*, fck (K1). ~35 legs; host RAM binds (~98 GB per
+     cifar leg, ~4 per node); measured ~10-12 wall-min per vclock-h → ~3 h (the planner's 15 h has no 4 h history). Cut for time: the
+     ladder middle (e0, l3b, l4, e0p) → F43. Optional early read at +30 min (abandons / h, rejects, K / c).
+  3. **3:30-4:15 · Read (Claude):** verdict rules below per Felix feature; Felix new vs old per cell; Felix vs each baseline and its
      `*`; `felix_plots.py`, `accuracy_table.py`, `predictor_audit.py`, `avail_view_plot.py`, `config_audit.py`; rewrite the Scoreboard.
      *Expectation (C19, before the data):* syn_0: Felix ≥ FedBuff on AUC (async, same work), REFL ≈ FedAvg (random-like picks, 1 step),
      sync check-in arms ≤ their `*` by ~W (10% of each round). syn_50_3st: Felix beats every check-in baseline (dead picks hold slots to
@@ -41,7 +41,7 @@ Every batch runs Felix new and old side by side; FedDance and Oort run only afte
      at ≥ 20% fewer bytes or a lower worst-10% client accuracy gap; a tie with no saving drops it (flag kept, reason recorded). Pacing
      (l5 → l5p, e0 → e0p) stays at ≥ 30% fewer cifar bytes with ≤ 1 pp AUC loss and < 25% speech throttle. C4 stays only if K is off its
      bounds ≥ 50% of the leg. C5 stays only if speech shows no ± 10 pp eval spikes vs l4.
-  5. **Then:** F43 confirm (24 h cifar / 18 h speech, seeds 1-2 for Felix final / old) and D5 long runs.
+  4. **Then:** F43 confirm (24 h cifar / 18 h speech, seeds 1-2 for Felix final / old) and D5 long runs.
   **Open before D5 (real legs; F42 runs sims only):**
   - **F42-T7 · Real-mode notify on GPU · todo.** CPU stub real Felix leg passed (`pool_20261021_1931_F42CR_A`: rc 0, EV clean, 4393
     versions); left: the ≤ 15-min GPU real leg with flip → STATE_UPDATE latency ≤ 2 s and missed + false ≤ 1% of client-time.

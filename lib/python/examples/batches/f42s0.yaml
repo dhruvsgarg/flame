@@ -1,8 +1,0 @@
-# F42 S0 (operator 10-21): syn_0 first: selection / aggregation alone (check-in is near-free when every client is online).
-# Felix old + ladder + pacing vs FedBuff, FedAvg, REFL, FedDance (cifar only: speech FedDance ~106 min) by check-in, and their `*`
-# (on syn_0 a `*` arm differs only by the check-in cost: `*` isolates selection / aggregation).
-name: f42s0
-common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1 --scale-smoke 28800 --gate"
-stages:
-  - {id: S0S, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines felix,fedbuff,refl,fedavg --phases 'gs_F42_s0u_ctl gs_F42_s0u_e0 gs_F42_s0u_l3b gs_F42_s0u_l4 gs_F42_s0u_l5 gs_F42_s0u_l5p gs_F42_s0u_e0p gs_F42_s0u_rstar gs_F42_s0u_fbstar'"}
-  - {id: S0C, args: "--tier F42 --datasets cifar10 --baselines felix,fedbuff,refl,feddance,fedavg --phases 'F42_s0u_ctl F42_s0u_e0 F42_s0u_l3b F42_s0u_l4 F42_s0u_l5 F42_s0u_l5p F42_s0u_e0p F42_s0u_rstar F42_s0u_fdstar F42_s0u_fbstar'"}
