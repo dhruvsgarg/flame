@@ -43,7 +43,10 @@ decided on screen evidence, so no long run rests on a decision one short run cou
   novelty / novelty + gsec on the `usage` stream, cifar. Dropped from the 10-21 draft (`batches/pr40b.yaml` to be rewritten): pre and
   gsec on static or `events` cells, where offline stale beliefs already rank right (Formulation A6), so their expected gain is ~0.
 - **FX-N124 · Sanity-check every 10-21 change before any run that uses it (operator 10-21: test before the run, not after) · todo;
-  GPU items wait for the operator's go.** Changes: FX-N118 clock eval gate, FX-N119 free fresh utility, FX-N120 continuous
+  GPU part running (10-21 23:43, tmux `dg_flame:f40s`, key on `a22f01785`): `experiments/f40s_smoke_20261020_2343/run.sh` =
+  `batches/f40s.yaml` on jayne 0,2-7 + shepherd 0-3 (pools `experiments/pool_20261020_2343_F40S_{JAYNE,SHEPHERD}_{SC,SS}`), then the
+  bench checks on jayne (`bench.jsonl`, `BENCH.md`, `DONE.txt` in that dir). ETA ~1-1.5 h. *Next:* read G2 / G3, then the FX-N122
+  grid.** Changes: FX-N118 clock eval gate, FX-N119 free fresh utility, FX-N120 continuous
   off-charger data growth, FX-N121 AIMD memory, FX-N122 utility bench, FX-N123 trace offset. Each line: check · how · pass if.
   *CPU (no GPU):*
   - C1 full pytest · ROBUST "Full pytest" · green (2781 passed 10-21, before the speech bench edits).
