@@ -23,8 +23,7 @@ Every batch runs Felix new and old side by side; FedDance and Oort run only afte
 
 - **F42 · RESUME HERE (paused 10-21 16:35).** State: code built, uncommitted work committed with this note; full pytest green.
   1. **Operator confirms the knob table below** (Q-F42-KNOBS); edit `scripts/config_audit.py` EXPECT if a row changes.
-  2. Read smoke D (`experiments/pool_20261021_1630_F42SMOKE_D`: e0p, l5p, fdstar, l4 at 30 min vclock, launched 16:30 on jayne):
-     `event_invariants.py` per leg + `config_audit.py POOL` (exit 0 = every knob matches).
+  2. ✅ Smoke D (`experiments/pool_20261021_1630_F42SMOKE_D`: e0p, l5p, fdstar, l4, 30 min vclock): rc 0, EV PASS, config_audit ✅.
   3. Shepherd: `git pull` (PL18). Smoke both nodes: `tmux new -s f42s 'python scripts/dispatch.py batches/f42smoke.yaml'` (`--plan`
      first; 56 legs at 1 h / 30 min vclock, ~40 min). Pass = rc 0, EV PASS (EV22 incl.), `config_audit.py` exit 0 on all four pools,
      `predictor_audit.py` fills REFL-fc's flagged column and FedDance's ρ(V).
