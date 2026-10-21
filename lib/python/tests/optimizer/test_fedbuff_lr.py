@@ -56,3 +56,18 @@ class TestFedBuffNormRate:
         agg = fb.do(None, MemCache({"e": TrainResult({"w": torch.ones(1)}, 1, 2, 4.0)}), total=1, version=5)  # staleness 3
         out = fb.scale_add_agg_weights({"w": torch.zeros(1)}, agg, agg_goal=1)
         assert torch.allclose(out["w"], torch.tensor([0.5]))
+
+
+class TestFedBuffValueRate:
+    """C5: rate "value" weights samples^beta x (1+s)^-a, normalized to a mean weight of 1 per cycle."""
+
+    def test_weights_by_samples_and_staleness(self):
+        from flame.mode.horizontal.syncfl.top_aggregator import MemCache
+        from flame.optimizer.train_result import TrainResult
+        fb = _make_fedbuff(learning_rate=1.0, agg_rate_conf={"type": "value", "beta": 0.5, "a": 1.0})
+        agg = None
+        for n, ver, d in ((4, 5, 1.0), (16, 4, 2.0)):  # u = 2 / 1 = 2 and 4 / 2 = 2
+            agg = fb.do(agg, MemCache({"e": TrainResult({"w": torch.full((1,), d)}, n, ver, 1.0)}), total=n, version=5)
+        out = fb.scale_add_agg_weights({"w": torch.zeros(1)}, agg, agg_goal=2)
+        assert torch.allclose(out["w"], torch.tensor([(1.0 + 2.0) / 2]))
+        assert fb._u_n == 0

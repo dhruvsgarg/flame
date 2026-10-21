@@ -81,8 +81,9 @@ OORT_SHAPE = {"syn_0": "syn_0s", "syn_0b": None, "syn_20_3st": "syn_20_3sts", "s
 # CPU legs that need longer for EV1's >= 4 commits (unaware oort waits out 90s timeouts; run 4: 0 in 240s).
 MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 3000,  # FX-D165: AVL_EVAL is UN_AVL; PR36 960 s gave 1 commit, G0U sim's 4th at 2508 s
                  ("oort", "syn_20_3st", "google_speech"): 600}  # FX-N85 d: 300 s gave 10 matched rounds (PR31 C2)
-# Full length under --scale-smoke (value: harness, None = all): at 240 s unaware oort got 1 round, GPU fedbuff 6 (PR36-short).
+# Longer under --scale-smoke (value: harness, None = all): at 240 s unaware oort got 1 round, GPU fedbuff 6 (PR36-short).
 SHORT_KEEP = {("oort", "syn_50_3st"): None, ("fedbuff", "syn_50_3st"): "none"}
+SHORT_KEEP_S = 3600  # their smoke length (FX-N125)
 # FX-D52: G0U legs whose unaware picks hold slots a full timeout run longer, to reach a gradeable round count.
 G0U_RUNTIME_X = {("oort", "mobiperf_3st"): 4, ("fedbuff", "mobiperf_3st", "google_speech"): 3}
 GPU_N = {"cifar10": 300, "google_speech": 100}  # the datasets' reference cohorts (datasets.yaml)
@@ -156,6 +157,24 @@ F39_RUNTIME_S = {"cifar10": 10800, "google_speech": 21600}
 F40S_RUNTIME_S = {"cifar10": 1800, "google_speech": 3600}
 USAGE = 'data_streaming={"enabled":"True","mode":"usage","initial_frac":0.0,"full_data_available_after_s":1}'
 _DKCM = f"{_DKC} sel.dynamic_kc.policy_kwargs.memory=true"  # FX-N121
+
+
+def usage_hp(trace: str) -> str:
+    """Q-STREAM: data accrues while the trainer is off AVL_TRAIN on the leg's own trace (syn_0: linear)."""
+    return ('data_streaming={"enabled":"True","mode":"usage","initial_frac":0.0,"full_data_available_after_s":1,'
+            '"trace":"%s"}' % trace)
+
+
+# F41 (ledger C3-C5 + balance, operator 10-21): all six + Felix arms, sims, 24 h into the trace. Cells: syn_0 static (s0),
+# syn_0 usage (s0u: linear growth), syn_50_3st usage (s50u). Felix arms run on the usage cells; s0 = baselines + Felix all.
+F41_RUNTIME_S = {"cifar10": 86400, "google_speech": 64800}  # ≤ 8.5 h wall on jayne 7 + shepherd 4 GPUs
+F41_CELLS = {"s0": ("syn_0", False), "s0u": ("syn_0", True), "s50u": ("syn_50_3st", True)}
+_C3 = "sel.utilityPerSecond=true"
+_C4 = ("sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=aimd_k sel.dynamic_kc.k_min=5 "
+       "sel.dynamic_kc.policy_kwargs.memory=true sel.dynamic_kc.policy_kwargs.stall=true")
+_C5, _BAL = "opt.agg_rate_conf.type=value", "sel.participationDecay=1.0"
+F41_ARMS = {"ctl": dict(bls=B6), "c3": dict(hp=_C3, thp=_PRE), "c3b": dict(hp=f"{_C3} {_BAL}", thp=_PRE),
+            "c4": dict(hp=_C4, thp=_PRE), "c5": dict(hp=_C5), "all": dict(hp=f"{_C3} {_BAL} {_C4} {_C5}", thp=_PRE)}
 # D2 F39W (FX-N116): Felix's local samples per task; fixed (capped at an epoch) vs per-client split (compute = beta/(1-beta) x transfer)
 F39W_SAMPLES = {"cifar10": (32, 64, 128), "google_speech": (128, 256, 512)}
 F39W_BETAS = (0.5, 0.33)
@@ -473,6 +492,23 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [replace(base, pid=f"{DS_TAG[ds]}F40S_{a}", baselines=tuple(b for b in bls if b in baselines),
                         agg_hp=f"{base.agg_hp} {hp}".strip(), trainer_hp=f"{base.trainer_hp} {thp}".strip())
                 for a, (bls, hp, thp) in arms.items() if any(b in baselines for b in bls)]
+    if tier == "F41":
+        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        out = []
+        for cell, (trace, stream) in F41_CELLS.items():
+            dsh = usage_hp(trace) if stream else full
+            base = replace(g3, runtime_s=F41_RUNTIME_S[ds], trace=trace, trace_offset_s="86400" if stream else "", kind="sim_ev",
+                           trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} {G3_EVAL}")
+            for arm, kw in F41_ARMS.items():
+                if not stream and arm not in ("ctl", "all"):
+                    continue
+                bls = tuple(b for b in kw.get("bls", ("felix",)) if b in baselines)
+                if bls:
+                    out.append(replace(base, pid=f"{DS_TAG[ds]}F41_{cell}_{arm}", baselines=bls,
+                                       agg_hp=f"{base.agg_hp} {kw.get('hp', '')}".strip(),
+                                       trainer_hp=f"{base.trainer_hp} {kw.get('thp', '')}".strip()))
+        return out
     if tier == "G3S":  # sim-only replicates of every G3 cell: G3S<i>_<cell>, graded on banked + equivalent reals
         return [replace(ph, pid=ph.pid.replace("G3_", f"G3S{i}_"), kind="sim")
                 for i in range(1, G3S_REPS + 1) for ph in tier_phases("G3", baselines, ds)]
@@ -598,7 +634,7 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
             at_shape = ph.harness != "none" and ph.runtime_s in {v["runtime_s"] for v in SHAPES.values() if v["trace"] == t}  # not smoke/T1
             rt = max(ph.runtime_s, MIN_RUNTIME_S.get((b, t, ph.dataset), MIN_RUNTIME_S.get((b, t), 0))) if at_shape else ph.runtime_s
             if ph.full_runtime_s and (b, t) in SHORT_KEEP and SHORT_KEEP[(b, t)] in (None, ph.harness):
-                rt = max(rt, ph.full_runtime_s)
+                rt = max(rt, min(ph.full_runtime_s, SHORT_KEEP_S))
             if "G0U" in ph.pid:
                 rt *= G0U_RUNTIME_X.get((b, t, ph.dataset), G0U_RUNTIME_X.get((b, t), 1))
             base = ["--harness", ph.harness, "--baselines", b, "--traces", t, "--runtime-s", str(rt),
@@ -2118,7 +2154,7 @@ def code_key() -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A F39B F39C F39W F39E F40S, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A F39B F39C F39W F39E F40S F41, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

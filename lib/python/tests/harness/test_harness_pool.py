@@ -486,6 +486,9 @@ def test_short_cap_keeps_unaware_oort_syn_50_full_length():
     assert rt("T3", "cifar10", "fedbuff")["T3_syn_50_3st_fedbuff_real"] == 240  # GPU-only keep
     assert rt("G0U", "cifar10", "fedbuff")["G0U_syn_50_3st_fedbuff_real"] == pool.G0U_RUNTIME_S["cifar10"]
     assert set(rt("G0T", "cifar10", "oort").values()) == {240, pool.G0U_RUNTIME_S["cifar10"]}
+    f41 = {j.jid: j.runtime_s for j in pool.build_jobs([p for p in pool.tier_phases("F41", ("oort",), "cifar10")
+                                                         if not pool.cap_runtime([p], 240)], 1.0, 1, {})}
+    assert f41["F41_s50u_ctl_syn_50_3st_oort_sim"] == pool.SHORT_KEEP_S  # FX-N125: a 24 h leg smokes at 1 h, not in full
 
 
 def test_trainer_cap_per_gpu_spans_legs(tmp_path, monkeypatch):
@@ -724,3 +727,20 @@ def test_f40s_smoke_carries_the_offset_stream_and_new_knobs():
     assert all(p.trace == "syn_50_3st" and p.trace_offset_s == "86400" and '"mode":"usage"' in p.trainer_hp for p in (ctl, new))
     assert "utilityPrefixSamples=64" in new.trainer_hp and "evalGateUnit=seconds" in new.agg_hp
     assert "policy_kwargs.memory=true" in new.agg_hp and "utilityPrefixSamples" not in ctl.trainer_hp
+
+
+def test_f41_cells_arms_and_trace_tied_stream():
+    """F41: s0 static (baselines + Felix all), s0u / s50u usage tied to the leg's own trace; Felix arms carry their knobs."""
+    by = {p.pid: p for p in pool.tier_phases("F41", pool.B6, "cifar10")}
+    assert sum(len(p.baselines) for p in by.values()) == 29
+    assert set(by) >= {"F41_s0_ctl", "F41_s0_all", "F41_s0u_c3", "F41_s50u_c5"} and "F41_s0_c3" not in by
+    assert by["F41_s0_ctl"].baselines == pool.B6 and "data_streaming" in by["F41_s0_ctl"].trainer_hp
+    assert '"enabled":"False"' in by["F41_s0_ctl"].trainer_hp and not by["F41_s0_ctl"].trace_offset_s
+    for cell, trace in (("s0u", "syn_0"), ("s50u", "syn_50_3st")):
+        p = by[f"F41_{cell}_ctl"]
+        assert p.trace == trace and p.trace_offset_s == "86400" and f'"trace":"{trace}"' in p.trainer_hp
+        assert f'"trace":"{trace}"' in p.agg_hp  # aggregator / checker read the same schedule
+    assert "utilityPerSecond=true" in by["F41_s50u_c3"].agg_hp and "utilityPrefixSamples=64" in by["F41_s50u_c3"].trainer_hp
+    assert "participationDecay=1.0" in by["F41_s50u_c3b"].agg_hp
+    assert "k_min=5" in by["F41_s50u_c4"].agg_hp and "stall=true" in by["F41_s50u_c4"].agg_hp
+    assert "agg_rate_conf.type=value" in by["F41_s50u_c5"].agg_hp

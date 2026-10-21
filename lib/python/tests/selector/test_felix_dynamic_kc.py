@@ -70,3 +70,14 @@ def test_aimd_k_memory_holds_twice_the_unstable_k():
     p.compute_new_k(4, {"cycle_losses": [1.0, 1.1, 0.9, 1.0], "n_trainers": 4})
     assert p.compute_new_k(4, {"cycle_losses": [3.0, 3.1, 2.9, 3.0], "n_trainers": 4}) == 8  # rise at K 4
     assert p.compute_new_k(8, {"cycle_losses": [2.0, 2.1, 1.9, 2.0], "n_trainers": 4}) == 8  # no rise, but floor 2 x 4
+
+
+def test_aimd_k_stall_pairs_each_client_with_itself():
+    p = build_policy("aimd_k", {"stall": True, "memory": True})  # Q-AIMD
+    hard = {"a": 3.0, "b": 1.0, "c": 2.0, "d": 0.5}  # 6x spread across clients: only paired differences see progress
+    m = lambda d: {"cycle_client_losses": [(e, q + d + 0.01 * i) for i, (e, q) in enumerate(hard.items())], "n_trainers": 8}
+    assert p.compute_new_k(10, m(0.0)) is None  # first contact: no pairs yet
+    assert p.compute_new_k(10, m(-0.2)) == 9  # every client improved: larger step
+    assert p.compute_new_k(9, {"cycle_client_losses": [(e, q - 0.2 + x) for (e, q), x in
+                                                       zip(hard.items(), (0.01, -0.01, 0.02, -0.02))], "n_trainers": 8}) == 10  # flat
+    assert p.compute_new_k(10, m(0.3)) == 20 and p.floor == 20  # rise: back off, remember

@@ -77,6 +77,38 @@ def test_usage_reads_the_trace_offset(monkeypatch):
     assert off.frac(0) == base.frac(86400) and off.frac(3600) == base.frac(90000)
 
 
+def test_usage_follows_the_legs_own_trace():
+    """Q-STREAM: `trace` = the leg's availability trace; data accrues only off AVL_TRAIN on it; syn_0 grows linearly."""
+    from flame.availability.trace import load_trace
+    tid = "505f9fc483cf4df68a2409257b5fad7d3c580370"  # trainer_001
+    cfg = {**ON, "mode": "usage", "initial_frac": 0.0, "trace": "syn_50_3st"}
+    a = ss.from_config(cfg, tid, scale=1, offset=0.0)
+    assert a.times != ss.from_config({**cfg, "trace": ""}, tid, scale=1, offset=0.0).times  # not the MobiPerf device
+    tr = load_trace("syn_50_3st", "trainer_001")
+    ts = list(tr.keys())
+    for t0, t1 in zip(ts, ts[1:40]):  # constant while AVL_TRAIN, growing otherwise
+        grew = a.frac(t1) > a.frac(t0)
+        assert grew == (tr[t0] != "AVL_TRAIN"), (t0, tr[t0])
+    lin = ss.from_config({**cfg, "trace": "syn_0"}, tid, scale=1, offset=0.0)
+    span = ss.USAGE_SPAN_S
+    assert lin.frac(0) == 0 and abs(lin.frac(span / 2) - 0.5) < 1e-9 and lin.frac(span) == 1.0
+    with pytest.raises(KeyError):
+        ss.from_config({**cfg, "trace": "syn_99"}, tid, scale=1)
+
+
+def test_usage_index_matches_the_trace_and_its_source():
+    """FX-N126: the compact per-trace index (no 14 MB YAML per trainer) records its source checksum and yields the same sessions."""
+    from flame.availability.trace import _DEFAULT_TRACE_DIR, _raw_synthetic
+    idx = ss._usage_index("syn_50_3st")
+    assert idx["sha256"] == ss._sha256(os.path.join(str(_DEFAULT_TRACE_DIR), "synthetic_traces.yaml"))
+    raw = _raw_synthetic(str(_DEFAULT_TRACE_DIR))["syn_50_3st"]["per_trainer"]["n300"]["trainer_002"]
+    tid = "505f9fc483cf4df68a2409257b5fad7d3c580371"  # trainer_002
+    sessions = ss.usage_sessions(tid, trace="syn_50_3st")
+    use = [(float(t), st != "AVL_TRAIN") for t, st in raw]
+    starts = [t for (t, u), (_, pu) in zip(use, [(None, False)] + use[:-1]) if u and not pu and t < ss.USAGE_SPAN_S]
+    assert list(sessions[0]) == starts
+
+
 def test_stagger_matches_previous_derivation():
     cfg = {**ON, "stagger": {"enabled": "True", "onset_max_s": 300, "rate_jitter": 0.5, "min_visible": 4}}
     s = ss.from_config(cfg, "abc", scale=1)

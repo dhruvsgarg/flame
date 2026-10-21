@@ -108,6 +108,10 @@ class AsyncOortSelector(AsyncSelectorBase):
         self.eval_gate_unit = str(kwargs.get("evalGateUnit", "versions"))
         # FX-N109: rank by utility / |D| (drops Oort's size factor; Q-DUR)
         self.utility_per_sample = str(kwargs.get("utilityPerSample", False)).lower() == "true"
+        # C3: rank by |D| q / task seconds (progress per second); the speed penalty is then off (time is in the utility)
+        self.utility_per_second = str(kwargs.get("utilityPerSecond", False)).lower() == "true"
+        # balance: utility x (1 + picks / mean picks)^-gamma (0 = off)
+        self.participation_decay = float(kwargs.get("participationDecay", 0.0) or 0.0)
 
         # With Oort, we select 1.3 * k ends and wait until k ends to
         # complete at a round
@@ -560,6 +564,12 @@ class AsyncOortSelector(AsyncSelectorBase):
                 size = ends[end_id].get_property(PROP_DATASET_SIZE)
                 if end_utility is not None and self.utility_per_sample and size:
                     end_utility = end_utility / size
+                if end_utility is not None and self.utility_per_second:
+                    dur = ends[end_id].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
+                    if dur is not None and dur.total_seconds() > 0:
+                        end_utility = end_utility / dur.total_seconds()
+                if end_utility is not None and self.participation_decay:
+                    end_utility *= self._participation_factor(ends, end_id)
                 if end_utility is not None:
                     utility_list.append(
                         {PROP_END_ID: end_id, PROP_UTILITY: end_utility}
@@ -568,6 +578,15 @@ class AsyncOortSelector(AsyncSelectorBase):
                     unexplored_end_ids.append(end_id)
 
         return utility_list, unexplored_end_ids
+
+    def _participation_factor(self, ends: dict[str, End], end_id: str) -> float:
+        """(1 + picks / mean picks over picked ends)^-gamma: damps clients picked far above the mean."""
+        counts = [e.get_property(PROP_SELECTED_COUNT) or 0 for e in ends.values()]
+        picked = [c for c in counts if c]
+        if not picked:
+            return 1.0
+        mine = ends[end_id].get_property(PROP_SELECTED_COUNT) or 0
+        return (1.0 + mine / (sum(picked) / len(picked))) ** -self.participation_decay
 
     def calculate_round_preferred_duration(self, ends: dict[str, End]) -> float:
         """Calculate round preferred duration based on round_threshold and
@@ -640,7 +659,7 @@ class AsyncOortSelector(AsyncSelectorBase):
         # trained yet but has only pushed an eval update. For these trainers,
         # we retain the multiplicative factor as 1 so as to incentivise them
         # to be picked whenever available to train.
-        if end_round_duration is None:
+        if end_round_duration is None or self.utility_per_second:
             return 1
 
         if end_round_duration <= self.round_preferred_duration:

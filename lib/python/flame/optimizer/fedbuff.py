@@ -197,6 +197,13 @@ class FedBuff(AbstractOptimizer):
                 self._u_sum, self._u_n = self._u_sum + u, self._u_n + 1
                 rate = u / math.sqrt(1 + version - tres.version)
 
+            elif self.agg_rate_conf["type"] == "value":
+                # C5: update value (samples^beta, PR40a) x staleness (1+s)^-a; scale_add divides by the cycle's mean
+                u = float(tres.count or 0) ** float(self.agg_rate_conf.get("beta", 0.65))
+                u /= (1 + version - tres.version) ** float(self.agg_rate_conf.get("a", 0.5))
+                self._u_sum, self._u_n = self._u_sum + u, self._u_n + 1
+                rate = u
+
             logger.info(
                 f"agg ver: {version}, trainer ver: {tres.version}, "
                 f"trainer stat_utility: {tres.stat_utility}, rate: {rate}, "
@@ -232,7 +239,7 @@ class FedBuff(AbstractOptimizer):
         logger.debug(f"base_weights.keys(): {base_weights.keys()}")
 
         learning_rate = self.learning_rate
-        if self._u_n:  # rate "norm": divide by the cycle's mean utility
+        if self._u_n:  # rate "norm" / "value": divide by the cycle's mean weight
             learning_rate = learning_rate * self._u_n / self._u_sum if self._u_sum > 0 else 0.0
             self._u_sum, self._u_n = 0.0, 0
         bn = self.bn_absolute_mean and self._version is not None

@@ -843,6 +843,39 @@ class TestUtilityPerSample:
         assert {x["end_id"]: x["utility"] for x in ul} == {"a": 10.0, "b": 3.0}
 
 
+class TestUtilityPerSecond:
+    """C3: utilityPerSecond ranks by utility / last task seconds and drops the speed penalty; participationDecay damps
+    clients picked above the mean."""
+
+    @staticmethod
+    def _ends(spec):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        ends = {}
+        for eid, u, dur, picks in spec:
+            e = MagicMock()
+            e.get_property.side_effect = lambda k, u=u, dur=dur, picks=picks: {
+                "stat_utility": u, "client_task_train_duration_s": timedelta(seconds=dur), "selected_count": picks}.get(k)
+            ends[eid] = e
+        return ends
+
+    def test_divides_by_duration_and_skips_penalty(self):
+        sel = AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=1, roundNudgeType="last_train",
+                                selectType="default", utilityPerSecond="true")
+        ends = self._ends((("a", 100.0, 10.0, 1), ("b", 300.0, 100.0, 1)))
+        ul, _ = sel.fetch_statistical_utility(ends, [], [])
+        assert {x["end_id"]: x["utility"] for x in ul} == {"a": 10.0, "b": 3.0}
+        assert sel.calculate_global_system_utility_of_trainer(ends, "b") == 1
+
+    def test_participation_decay(self):
+        sel = AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=1, roundNudgeType="last_train",
+                                selectType="default", participationDecay=1.0)
+        ends = self._ends((("a", 10.0, 1.0, 3), ("b", 10.0, 1.0, 1)))  # mean picks 2
+        ul, _ = sel.fetch_statistical_utility(ends, [], [])
+        got = {x["end_id"]: x["utility"] for x in ul}
+        assert got["a"] == pytest.approx(10.0 / 2.5) and got["b"] == pytest.approx(10.0 / 1.5)
+
+
 class TestEvalStaleGate:
     """FX-N109: evalStaleGate sets the versions since a trainer's last eval/train before it is eval-eligible."""
 

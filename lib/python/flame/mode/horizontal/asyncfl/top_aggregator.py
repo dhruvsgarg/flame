@@ -287,6 +287,7 @@ class TopAggregator(SyncTopAgg):
         self._dkc_losses = getattr(self, "_dkc_losses", [])
         metrics = {"n_updates": self._dkc_updates, "model_version": self._round, "c_config": self._dkc_c_config,
                    "n_trainers": len(channel.all_ends() or []), "cycle_losses": self._dkc_losses,
+                   "cycle_client_losses": getattr(self, "_dkc_client_losses", []),
                    "n_eligible_train": sum(s in train_ok for s in states), "noise_scale": st.get("noise_scale"),
                    "avg_staleness": float(np.mean(self._round_update_values["staleness"] or [0]))}
         k, c = self._agg_goal, self._dkc_c_config
@@ -297,10 +298,11 @@ class TopAggregator(SyncTopAgg):
         if telemetry.is_enabled():
             from flame.selector.update_stats import cos_split
             telemetry.emit("dynamic_kc", round=self._round, k=k, c=c, cos_stale_minus_fresh=cos_split(
-                st.get("cos_by_staleness") or []), **{x: v for x, v in metrics.items() if x not in ("model_version", "cycle_losses")},
+                st.get("cos_by_staleness") or []),
+                **{x: v for x, v in metrics.items() if x not in ("model_version", "cycle_losses", "cycle_client_losses")},
                 loss_per_sample=float(np.mean(self._dkc_losses)) if self._dkc_losses else None,
                 **{x: st.get(x) for x in ("n", "g2", "tr_sigma", "sq_mean", "mean_sq")})
-        self._dkc_losses = []
+        self._dkc_losses, self._dkc_client_losses = [], []
 
     def _reset_agg_goal_variables(self):
         logger.debug("##### reset agg goal variables")
@@ -1364,6 +1366,8 @@ class TopAggregator(SyncTopAgg):
                 if stat_utility and count:  # per-sample rms loss (I9: of the received model)
                     self._dkc_losses = getattr(self, "_dkc_losses", [])
                     self._dkc_losses.append(float(stat_utility) / count)
+                    self._dkc_client_losses = getattr(self, "_dkc_client_losses", [])
+                    self._dkc_client_losses.append((end, float(stat_utility) / count))  # Q-AIMD paired signal
             _cs0 = time.time()
             self.cache[end] = tres   # in-memory (MemCache)
             self._agg_cycle_contributed_ends.add(end)
