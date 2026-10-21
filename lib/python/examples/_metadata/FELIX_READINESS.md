@@ -399,6 +399,21 @@ most learning per second among those that can finish before they leave.
 | C6 | eval tier (eval tasks on AVL_EVAL) | – | no time gain (PR40a D4); ≤ 0.02 evals / train under unavailability | **no gain**: traces keep 3 states for realism |
 | C7 | fresh / novel utilities | – | FX-T66, FX-T67 | **refuted** |
 
+*Old vs new Felix (F41 arm in brackets; Formulation terms: R updates / min, s̄ samples / update, U* updates to ε, B bytes):*
+
+| | old Felix (ctl) | new Felix | moves |
+|---|---|---|---|
+| C1 availability | aware dispatch, evict at the AVL_TRAIN flip, AVL_EVAL eval-only | same | R under unavailability |
+| C2 work / mode | async, 1 epoch over visible data, c 15 | same | s̄, no barrier |
+| C3 train pick | Oort score: normalized \|D\| · post-epoch loss + UCB, × (pref / d)² from the 70th pct, pacer-faded by ~1.9 h → size-driven | \|D\| · received-model loss (prefix, FX-N119) ÷ last task s; no penalty; same normalization, UCB, sampling ∝ score [c3] | R ↑, s̄ ↓ (risk), B / h ↑ |
+| balance | UCB only (top-20% share 0.54 cifar syn_0, PR39) | utility × (1 + picks / mean)^-1 [c3b] | coverage, worst-10% |
+| C4 K | fixed K 10 | AIMD on paired per-client loss change, floor 5, memory, c fixed [c4] | step frequency, U* |
+| C5 weight | 0.4 (1+τ)^-0.25 + 0.6 (1.5 − (1+u)^-0.1), u = \|D\| q: additive, saturates (0.80-0.94) | samples^0.65 × (1+τ)^-0.5 ÷ cycle mean: multiplicative, 2-9× spread, mean step unchanged [c5] | U* |
+| eval tasks | 10 / version, 35-version gate, AVL_EVAL devices | unchanged in F41; no measured gain (C6) | B (small) |
+| data | static / `events` stream | trace-tied `usage` growth (all six) | setting, not a mechanism |
+
+Loss moves from both selection and weight (old) to selection only (new); the weight now trades update size against staleness.
+
 *Why Felix today beats Oort (same `async_oort` code, different settings):* it ranks by size, not speed (Oort's (pref / d)² from the
 10th percentile picks small fast clients), so 1.6× samples per update at equal R (PR39 vs FedBuff); a near-flat weight = a larger
 effective server step (PR39b: the step matters); aware dispatch + eviction (C1); one epoch vs 20 fixed steps. Not eval tasks (C6).
