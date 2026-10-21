@@ -63,17 +63,33 @@ decided on screen evidence, so no long run rests on a decision one short run cou
   - C6 bench on CPU, both datasets · `utility_bench.py --gpu cpu --n 20 --horizon-h 0.75` (cifar done 10-21: arms diverge after
     exploration; speech: its clip cache builds on CPU (3 GB, `~/.cache/flame_utility_bench` by default), but ResNet34 training
     on CPU exceeds 15 min even at n 6, so the speech leg moves to G1) · every arm runs, oracle ≥ stale on the audit, eval arms
-    dispatch evals on 3-state traces.
+    dispatch evals on 3-state traces. **Cifar GPU smoke 10-21** (s50_usage, 1 h, seed 1, `f40s_smoke_20261020_2343/BENCH.md`):
+    every arm runs; last-30% accuracy felix 29.9 · random 27.7 · oortpen 34.1 (61 GB, 3.5× felix's bytes) · size_d 34.9 ·
+    pre_d 35.4 · nov_d 34.8 · nov_eval_d 34.6 (94 evals) · nov_oracle_d 35.6 · pre_oracle_d 36.0. Audit regret felix 0.48 ·
+    oortpen 0.72 · pre_d 0.18 · nov_d 0.16 · oracles 0. Read as a smoke only (one seed, 1 h): the per-second term carries most
+    of the gap so far; fresh vs stale is ≤ 1 pp at 1 h.
   *GPU (operator's go):*
   - G1 bench calibration · `felix` / `random` on syn_0 vs PR40a ctl / FedBuff · versions ±15%, top-20% share within 0.15
-    (cifar done: 287 vs 305, 0.25 vs 0.25); speech: same check vs PR40a speech ctl before its grid.
+    (cifar done: 287 vs 305, 0.25 vs 0.25). **Speech passed 10-21 after a bench fix:** the bench added weighted deltas to BN
+    running stats and every speech arm collapsed to 1.5% (`f40s_smoke_20261020_2343/BENCH.md`); it now mirrors flame's FedBuff
+    (BN stats = mean of the trained values, running_var clamped; FX-D61, FX-N64): felix syn_0 1 h 15 versions, 19.5% (real
+    PR40a ctl ~19 versions / h, 25% at ~90 min). The speech rows of that BENCH.md are void; cifar (no BN) stands.
   - G2 real-stack smoke of each knob, ≤ 15 min, both datasets · `harness_pool --tier F40S` (`batches/f40s.yaml`): ctl = Felix,
     FedBuff, Oort on syn_50_3st + `usage` at +24 h; new = Felix + `utilityPrefixSamples`, `evalGateUnit=seconds`,
     `dynamic_kc.policy_kwargs.memory`; 30 min cifar / 60 min speech vclock · EV PASS; knobs in the roles' configs (PL7); eval tasks > 0 on
     syn_50_3st; visible counts in trainer telemetry match `stream_schedule` at the task times; no per-task time independent of
-    samples; `trace_offset_s` in the run config.
+    samples; `trace_offset_s` in the run config. **Passed 10-21 (F40S pools `experiments/pool_20261020_2343_F40S_*`, 8 legs, rc 0,
+    0 overruns):** EV PASS on 7 / 8; cifar Oort EV1 FAIL = 1 sync round in 30 min (unaware Oort holds slots to its 561 s abandon
+    under syn_50_3st), a leg-length artifact, not a bug (speech Oort PASS); `trace_offset_s` 86400 in every config; knobs in the
+    aggregator config; trainer visible counts = `stream_schedule` in 1926 / 1926 cifar and 570 + 553 / 1123 speech train tasks;
+    task samples = visible samples in all (47 cifar differ by 1e-14); clients whose data grew since their first task: 490 tasks
+    (cifar ctl). Clock eval gate: evals 21 vs 12 (cifar), 19 vs 0 (speech) under syn_50_3st. **Open:** AIMD + memory still walks
+    K 10 → 2 (cifar) and 10 → 4 (speech) in 30-60 min: no loss *rise* fires while loss falls, so the floor never engages
+    (FX-N121; Q-AIMD).
   - G3 staleness is visible in the real stack · `selection_audit.py` on G2's `usage` legs · believed vs actual utility error
-    grows with belief age (the effect the paper claims, measured before it is graded).
+    grows with belief age (the effect the paper claims, measured before it is graded). **Directional 10-21:** cifar Felix
+    (ctl / new) median |believed − actual| / actual by belief age 0-4 / 5-19 / 20-59 versions: 6.1 / 7.3 / – % and 6.5 / 13 /
+    26 %; speech flat (8 / 7 / 8 %) in 1 h. Few old beliefs in 30-60 min: the graded check needs ≥ 12 h stream legs.
   *What the runs must show.* Paper goal (operator 10-21): minimize time to accuracy and communication cost while maximizing
   accuracy. Sub-goal, in service of it: show the new utility measure and selector logic beat today's, as follows.
   - The Oort-style utility (|D| · loss, read at the last contact) goes stale under realistic, trace-derived data growth, and stale
@@ -1369,5 +1385,8 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   used (PR38). Re-decide once FX-N109 settles the eval policy.
 - **Q-PR40A · Sign off D1-D4 (Next steps): drop I5, I9 (`utilityOnReceive`; FX-N119 replaces it), pK10, g10 flags; keep I7 as the
   constant-free weight (operator 10-21: yes, improve via FX-N119).**
+- **Q-AIMD · AIMD on K needs a signal for "too small K" (slow progress), not only a loss rise: K falls to k_min on both datasets
+  (FX-N124 G2). Options: progress per update (Δ test-loss proxy from clients' received-model loss) falling → K × 2; or drop
+  adaptive K and fix K per κ (K5 cifar, K10 speech).**
 - **Q-DESIGN · (1) Utility: decided by FX-N122 (operator 10-21: new formulation, tested locally first). (2) Data model A, real
   time, decided. (3) PR40b = (a) + (b) + FX-N122's winners vs Felix today and Oort.** Blocks PR40b.

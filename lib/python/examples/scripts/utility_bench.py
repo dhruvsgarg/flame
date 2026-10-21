@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "..", ".."))
 import fl_data  # noqa: E402
 import stream_schedule  # noqa: E402
 from flame.availability.trace import load_trace  # noqa: E402
+from flame.optimizer.bn_buffers import clamp_running_var, is_bn_stat  # noqa: E402
 
 META = os.path.join(HERE, "..", "_metadata")
 MEAN, STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
@@ -273,7 +274,8 @@ class Bench:
         m.eval()
         q_post = self.rms_loss(m, [idx[j] for j in perm])
         delta = {k: (p.detach() - base.state_dict()[k]) for k, p in m.state_dict().items()}
-        return delta, q_pre, q_post, q_new
+        bn = {k: p.detach().clone() for k, p in m.state_dict().items() if is_bn_stat(k)}  # absolute, as flame's FedBuff
+        return delta, q_pre, q_post, q_new, bn
 
     @torch.no_grad()
     def test_acc(self):
@@ -352,7 +354,7 @@ class Bench:
                 if not ok:
                     evicted += 1
                     continue
-                delta, q_pre, q_post, q_new = self.local_train(snapshots[base_v], c, vis)
+                delta, q_pre, q_post, q_new, bn = self.local_train(snapshots[base_v], c, vis)
                 nbytes += self.kbit / 8 * 1e3  # upload
                 durations[c.i] = d
                 c.contacted, c.belief_ts, c.b_vis, c.seen = True, t, vis, vis
@@ -362,11 +364,15 @@ class Bench:
                 u = vis * q_pre
                 tau = v - base_v
                 w = 0.4 * (1 + tau) ** -0.25 + 0.6 * (1.5 - (1 + u) ** -0.1)
-                buf.append((w, delta))
-                if len(buf) >= a.k:
+                buf.append((w, delta, bn))
+                if len(buf) >= a.k:  # flame FedBuff: weighted mean delta; BN running stats = mean of the trained values (FX-D61, FX-N64)
                     sd = self.model.state_dict()
                     for kname in sd:
-                        sd[kname] = sd[kname] + sum(w_ * dl[kname] for w_, dl in buf) / len(buf)
+                        if is_bn_stat(kname):
+                            sd[kname] = sum(b_[kname] for _, _, b_ in buf) / len(buf)
+                        else:
+                            sd[kname] = sd[kname] + sum(w_ * dl[kname] for w_, dl, _ in buf) / len(buf)
+                    clamp_running_var(sd)
                     self.model.load_state_dict(sd)
                     buf, v = [], v + 1
                     snapshots[v] = copy.deepcopy(self.model)
