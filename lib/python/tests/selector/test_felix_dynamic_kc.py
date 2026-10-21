@@ -63,3 +63,10 @@ def test_aimd_k_steps_down_while_loss_holds_and_doubles_on_rise():
     assert p.compute_new_k(10, {"cycle_losses": flat, "n_trainers": 4}) == 9  # no rise: larger step
     assert p.compute_new_k(9, {"cycle_losses": [3.0, 3.1], "n_trainers": 4}) is None  # window still filling
     assert p.compute_new_k(9, {"cycle_losses": [3.0, 3.2], "n_trainers": 4}) == 18  # rise past 2 SE: back off
+
+
+def test_aimd_k_memory_holds_twice_the_unstable_k():
+    p = build_policy("aimd_k", {"memory": True})  # FX-N121
+    p.compute_new_k(4, {"cycle_losses": [1.0, 1.1, 0.9, 1.0], "n_trainers": 4})
+    assert p.compute_new_k(4, {"cycle_losses": [3.0, 3.1, 2.9, 3.0], "n_trainers": 4}) == 8  # rise at K 4
+    assert p.compute_new_k(8, {"cycle_losses": [2.0, 2.1, 1.9, 2.0], "n_trainers": 4}) == 8  # no rise, but floor 2 x 4

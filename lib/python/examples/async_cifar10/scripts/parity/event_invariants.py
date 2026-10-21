@@ -564,15 +564,17 @@ def _ground_truth(run):
         return None
     import os
     from flame.availability.trace import read_trainer_unavailability
-    scale, env = _hp(run, "trace_time_scale"), os.environ.get("FLAME_TRACE_TIME_SCALE")
-    os.environ["FLAME_TRACE_TIME_SCALE"] = str(scale or 1)
+    keep = {k: os.environ.get(k) for k in ("FLAME_TRACE_TIME_SCALE", "FLAME_TRACE_OFFSET_S")}
+    os.environ["FLAME_TRACE_TIME_SCALE"] = str(_hp(run, "trace_time_scale") or 1)
+    os.environ["FLAME_TRACE_OFFSET_S"] = str(_hp(run, "trace_offset_s") or 0)  # FX-N123
     try:
         return read_trainer_unavailability(_trace(run))
     finally:
-        if env is None:
-            os.environ.pop("FLAME_TRACE_TIME_SCALE")
-        else:
-            os.environ["FLAME_TRACE_TIME_SCALE"] = env
+        for k, v in keep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def ev16_withheld_delivery(run):
@@ -702,13 +704,14 @@ def ev19_stream_schedule(run):
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
     import stream_schedule
     scale = float(_hp(run, "trace_time_scale") or 1.0)
+    offset = float(_hp(run, "trace_offset_s") or 0.0)  # FX-N123
     sim = _simulated(run)
     origin = _trace_origin(run)
     max_lag = 1.5 * float(_hp(run, "send_timeout_wait_s") or 90.0) + 30.0
     n = wrong = nonmono = clock_bad = 0
     examples, fracs = [], []
     for tid, evs in run["trainers"].items():
-        sched = stream_schedule.from_config(ds, tid, scale=scale)
+        sched = stream_schedule.from_config(ds, tid, scale=scale, offset=offset)
         last = -1
         for e in evs:
             if e.get("event") != "trainer_round" or e.get("stream_clock_s") is None or e.get("visible_samples") is None:

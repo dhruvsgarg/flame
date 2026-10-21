@@ -51,7 +51,7 @@ from flame import telemetry
 from flame.telemetry.events import build_agg_round, build_dispatch, build_utility_belief
 from flame.telemetry.agg_timing import agg_timing
 from flame.sim import SimReorderBuffer
-from flame.selector.properties import (PROP_AVL_STATE, PROP_LAST_REPORT_UPDATES, PROP_SIM_COMPLETION_TS,
+from flame.selector.properties import (PROP_AVL_STATE, PROP_LAST_REPORT_TS, PROP_LAST_REPORT_UPDATES, PROP_SIM_COMPLETION_TS,
                                        PROP_SIM_SEND_TS)
 from flame.selector.oort import (
     PROP_DATASET_SIZE,
@@ -976,6 +976,7 @@ class TopAggregator(SyncTopAgg):
                 end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
             )
             channel.set_end_property(end, PROP_LAST_REPORT_UPDATES, getattr(self, "_n_updates", 0))
+            channel.set_end_property(end, PROP_LAST_REPORT_TS, self._avail_now())
             round_start_time_tup = channel.get_end_property(end, PROP_ROUND_START_TIME)
             end = metadata[0]
             timestamp = metadata[1]
@@ -1004,6 +1005,7 @@ class TopAggregator(SyncTopAgg):
                 end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
             )
             channel.set_end_property(end, PROP_LAST_REPORT_UPDATES, getattr(self, "_n_updates", 0))
+            channel.set_end_property(end, PROP_LAST_REPORT_TS, self._avail_now())
 
             # TODO: (DG) Also set the end property for task=eval done
             # at timestamp=current.

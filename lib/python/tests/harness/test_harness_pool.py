@@ -684,7 +684,9 @@ def test_f39w_local_work_arms():
 def test_f39e_eval_value_grid():
     """Operator 10-21: four cells (trace x static / events stream), eval on / off, I9 on / off; oracle on streams only."""
     by = {p.pid: p for p in pool.tier_phases("F39E", pool.B6, "cifar10")}
-    assert len(by) == (4 * 5 + 2) * pool.F39A_REPS
+    assert len(by) == (4 * 8 + 2) * pool.F39A_REPS  # + PR40b pre / gsec / pregsec
+    assert "utilityPrefixSamples=64" in by["F39E_s50_pregsec_r1"].trainer_hp
+    assert "sel.evalGateUnit=seconds" in by["F39E_s50_gsec_r1"].agg_hp and "utilityPrefixSamples" not in by["F39E_s50_gsec_r1"].trainer_hp
     assert by["F39E_s50ev_ctl_r1"].baselines == ("felix", "fedbuff", "oort") and by["F39E_s50ev_ctl_r1"].trace == "syn_50_3st"
     assert '"mode":"events"' in by["F39E_s0ev_u0_r1"].trainer_hp and "utilityOnReceive=true" in by["F39E_s0ev_u0_r1"].trainer_hp
     assert "sel.evalGoalFactor=0" in by["F39E_s0ev_u0_r1"].agg_hp and '"enabled":"False"' in by["F39E_s50_eval0_r1"].agg_hp
@@ -712,3 +714,13 @@ def test_seeds_narrow_screen_replicates(monkeypatch):
     assert pids and all(p.endswith("_r1") for p in pids)
     monkeypatch.setattr(pool, "F39_SEEDS", (2, 3))
     assert {p.pid[-2:] for p in pool.tier_phases("F39W", ("felix",), "cifar10")} == {"r2", "r3"}
+
+
+def test_f40s_smoke_carries_the_offset_stream_and_new_knobs():
+    """FX-N124 G2: both cells run syn_50_3st + the usage stream 24 h into the trace; `new` adds the 10-21 knobs."""
+    by = {p.pid: p for p in pool.tier_phases("F40S", pool.B6, "google_speech")}
+    ctl, new = by["gs_F40S_ctl"], by["gs_F40S_new"]
+    assert ctl.baselines == ("felix", "fedbuff", "oort") and new.baselines == ("felix",)
+    assert all(p.trace == "syn_50_3st" and p.trace_offset_s == "86400" and '"mode":"usage"' in p.trainer_hp for p in (ctl, new))
+    assert "utilityPrefixSamples=64" in new.trainer_hp and "evalGateUnit=seconds" in new.agg_hp
+    assert "policy_kwargs.memory=true" in new.agg_hp and "utilityPrefixSamples" not in ctl.trainer_hp

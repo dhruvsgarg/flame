@@ -5,11 +5,13 @@ here unrepeated. **Focus (operator 10-19): improve Felix itself (FX-N109: syn_0,
 model (FX-D197, 10-20); then the claims gate (FX-N108) and sim-only experiments (FX-N12).** Order: Next steps → Scoreboard (now, and
 expected after the next run) → Decisions → reference sections.
 
-**At a glance (10-20):** PR39 phase 1 (key `5dd8771a35f7`, 24 G3 pairs, both nodes, 8.5 h) is the first batch on FX-D197: 14 / 24 cells
-green, 4 reals killed by a stall rule shorter than the new task timeout (FX-N111), 6 reds. **No baseline reaches target (cifar 50%,
-speech 60%) in 2 h any more**, so claims move to long sims (Decisions 10-21). At matched lower accuracy Felix is fastest in every graded cell
-and the only stack past 30% on cifar syn_50_3st; Oort moves the fewest bytes on cifar syn_0 (Scoreboard). Update quality U* did not
-move between runtimes; only the update rate R did (Formulation). PR39c1 (I5-I9) has not run yet.
+**At a glance (10-21):** PR40a (Felix-only design screen, key `bfc2aaf44ded`, 61 sims, seed 1, both nodes, 3.4 h) decided D1-D4:
+**no new mechanism (I5, I7, I9, eval tasks, sub-epoch local work) beats default Felix beyond the seed floor; I9 loses in all 13 cells
+(its extra pass costs 14-20% of R).** Eval tasks add no time to accuracy on streams or unavailability, and under
+unavailability they barely run (Formulation "PR40a"). Felix itself is unhurt by syn_50_3st on cifar (speech −3 pp). Its edge rests on
+availability-aware dispatch and a size-driven pick (its speed penalty fades out early). Offline (10-21): |D| · loss picks are size-driven, so fresh beliefs, eval
+tasks and jagged MobiPerf-derived growth can't reorder them (FX-L94); a novelty utility (A10) is the open design (Q-DESIGN). PR39 phase 1 (14 / 24 parity
+cells) stands; no baseline reaches target in 2 h, so claims move to long sims (D5b), after the baselines re-run on the D0 timeouts.
 
 ## Next steps (persistent queue — top item is next)
 
@@ -17,44 +19,85 @@ Work rule: PARITY C10, C17, C18; ROBUST R0. Test levels: pytest (~3 min) · CPU 
 (a 3 h-vclock G3 sim takes ~10 min wall on FX-D197) · long (G3 reals, long-vclock claims sims).
 
 **Day plan (operator 10-21): finalize Felix and the baselines with code fixes and quick sim screens; no long run until D1-D4 are
-decided on screen evidence, so no long run rests on a decision one short run could overturn.** Order: D0 (one new code key) → PR40a (D1,
-D2, D4; Felix only) on both nodes, D3 offline → decisions written here → baselines re-run → D5 long runs.
+decided on screen evidence, so no long run rests on a decision one short run could overturn.** Order: D0 ✅ → PR40a ✅ (D1-D4 below)
+→ PR40b (Felix follow-ups) → baselines re-run on stable code (FedBuff first) → D5 long runs.
 
-- **D0 · Fixes, one code key · built 10-21 (full pytest 2774 green; smoke: PR40a below).** FX-N111 S1 ≥ 1.25 × the leg's timeout
+- **D0 · Fixes, one code key · built 10-21 (full pytest 2774 green; smoke `pool_20261021_pr40smoke{A,B}`).** FX-N111 S1 ≥ 1.25 × the leg's timeout
   (FX-D199); FX-N112 test eval on the leg's clock, every leg / 24 (FX-D200); FX-N115 per-baseline timeout 1.5 × its longest modeled task
   (FX-D198; cifar Felix / FedBuff 677 s, Oort 561 s, REFL 58 s, FedDance 69 s; speech 1920 / 916 / 685 / 695 s; Papaya section:
   Q-PAPAYA); FX-N114 dead knobs out (FX-D202). The timeout change redefines every baseline's legs (L35): PR39's cells re-run in D5.
-- **PR40a · Felix only: D1 + D2 + D4 in one sim batch (operator 10-21) · ready on `a7faf4ccb` / key `bfc2aaf44ded` (both nodes).**
-  Launch (tmux `dg_flame`, jayne): `cd lib/python/examples && python scripts/dispatch.py batches/pr40a.yaml`. ETA ~2 h (1.5-3 h): cifar
-  3 h-vclock sims take ~6 min (first PR40a launch, stopped 10-20 15:05 to go to one seed), speech 6 h ~15-25 min; the planner's 25 h
-  has no history at these lengths yet.
-  Felix gets top priority: iterate Felix-only batches until its config, formulation and gains are settled; baselines (FedBuff, the
-  closest, first) re-run afterwards on stable code. 3 h cifar / 6 h speech vclock, seed 1 only (Decisions: sparse config search),
-  sims only, 61 legs; seeds 2-3 then confirm the kept arms. *Smoke 10-21*
-  (`experiments/pool_20261021_pr40smoke{A,B}`, jayne, 900 s vclock): 11 legs rc 0, EV PASS on the graded ones; timeouts reach the
-  aggregator per baseline (677 / 561 / 1920 / 916 s); 24 test evals per cifar leg; local samples s64 → 62, split β 0.33 → 49; eval
-  tasks dispatch on static legs (24), none on 15-min stream / f2 legs (gate not yet reached). *Decides:* the utility (D3 on I9 arms),
-  the eval selector's value (D4), I5 / I7 / I9 (D1), local work (D2). *Read:* `knob_sweep.py`, `accuracy_table.py`,
-  `selection_audit.py` (Gini, coverage, local samples), `utility_evidence.py`.
-  - *D1 · I5 / I7 / I8 / I9 (FX-N109, stages CC / CS):* cifar K5, nK10, pK10, dkc, f2; speech dkc, f2; anchors ctl / uK10 = F39E s0_ctl
-    / s0_u. Claim and refute: Execution E3.
-  - *D2 · local work (FX-N116, stages WC / WS):* Felix s ∈ {32, 64, 128} cifar, {128, 256, 512} speech (capped at an epoch), and per-client
-    split at β 0.5 / 0.33 (`localWork=split`); the epoch anchor = F39E s0_ctl. Read U*(s), R(s), B(s) → β. *Claim:* β < 0.5 and a split
-    arm beats the epoch on TTA. *Refute:* β ≥ 0.5: keep the epoch, spend local work on bytes only. Model: Formulation "Local work".
-  - *D4 · eval-task value (stages EC / ES):* cells syn_0 / syn_50_3st × static / events stream, all at α 0.1 and FedScale device speeds;
-    Felix ctl (eval on, gate 35), g10 (gate 10: at 35 speech Felix ran 2 eval tasks per 2 h), eval0, u (I9), u0 (I9, eval off),
-    oracle (stream cells); FedBuff + Oort in the baseline batch after Felix is final. *Claim:* eval arms
-    beat eval0 on TTA beyond the seed range on stream and unavailability cells and lower Gini, closing part of the gap to the oracle;
-    on static syn_0 the time cost is small. *Refute:* eval0 ≈ ctl on streams too → eval kept only as a fairness knob at its measured
-    cost, or redesigned as I2. Evidence so far: Formulation "Eval tasks".
-- **D3 · FX-N117 utility (Q-UTIL: model → evidence → code) · step 1 done on stored legs; step 1' on PR40a.** `utility_evidence.py`
-  over PR39 + PR39a + PR39b sims (157 Felix and 28 FedBuff legs): the loss term has no positive progress signal beyond samples (partial
-  r of window progress with the aggregated clients' loss / test loss, given samples, staleness and phase: Felix cifar +0.02 [+0.01,
-  +0.03], speech −0.08 [−0.13, −0.01]; FedBuff −0.25 / −0.32), and it barely reorders picks (Spearman of |D| · loss with |D| per
-  selection: 0.86 cifar, 0.72 speech). Expected: q here is the old estimand, the post-training loss (FX-T57), so this tests today's utility, not
-  the candidate. *Next:* rerun on PR40a's I9 arms (pre-training
-  loss); only if q then shows signal, code `utility: value_rate` (s·q/d), else the s/d arm. *Exit:* a utility with measured gain, or
-  the loss term recorded as no-gain (FX-T62).
+- **D1-D4 · decided by PR40a, operator sign-off pending (Q-PR40A) · wip.** Pools `experiments/pool_20261020_1511_PR40A_{JAYNE,SHEPHERD}_
+  {EC,ES,CC,CS,WC,WS}`; seed floor adds `pool_20261020_1450_PR40A_JAYNE_EC` ctl r1-r3 (same run path). Evidence: Formulation "PR40a".
+  - *D1:* drop I5 (`aimd_k`: K walks to k_min, speech collapses), I9 as a selection signal (−1.4 to −7 pp, all 13 cells), pK10; I7 (nK10)
+    ties ctl: keep as the constant-free weight or drop (operator). K5 is the only arm ahead on cifar (needs seeds 2-3: PR40b).
+  - *D2:* β 0.6-0.7 cifar, ~0.4 speech; sub-epoch work gains no time beyond the floor and costs 1.5-3× bytes. Keep the epoch; A1
+    (more than an epoch for transfer-bound clients) models at +9-17% bytes, low priority.
+  - *D3 (short term only):* fresh loss slows the next window's progress (partial r −0.47); the long-term coverage effect is untested.
+    The loss term stays (Decisions 10-21) and is re-read with a free fresh utility (FX-N119) and per-client accuracy.
+  - *D4 refuted on these cells:* eval ≈ eval0 on all 8 (±2.3 pp, mixed signs), g10 worse on speech, oracle = ctl on events streams;
+    under unavailability the version gate blocks eval (0-0.02 per train). Eval value now rests on FX-N118 and A6.
+  Dropped knobs leave code and config per FX-N114 once signed off.
+- **PR40b · Felix-only follow-up screen · on hold: scope by Q-DESIGN (operator 10-21: no run until every arm is consequential).**
+  Proposed (ROBUST R26; only arms whose result changes a decision): (a) cifar K5 seeds 2-3 (fixed K?); (b) A7 `dkcm` = AIMD +
+  memory + FX-N119's free loss signal, cifar + speech, seeds 1-2 (adaptive K?); (c) only if Q-DESIGN picks A10: ctl / oracle /
+  novelty / novelty + gsec on the `usage` stream, cifar. Dropped from the 10-21 draft (`batches/pr40b.yaml` to be rewritten): pre and
+  gsec on static or `events` cells, where offline stale beliefs already rank right (Formulation A6), so their expected gain is ~0.
+- **FX-N124 · Sanity-check every 10-21 change before any run that uses it (operator 10-21: test before the run, not after) · todo;
+  GPU items wait for the operator's go.** Changes: FX-N118 clock eval gate, FX-N119 free fresh utility, FX-N120 continuous
+  off-charger data growth, FX-N121 AIMD memory, FX-N122 utility bench, FX-N123 trace offset. Each line: check · how · pass if.
+  *CPU (no GPU):*
+  - C1 full pytest · ROBUST "Full pytest" · green (2781 passed 10-21, before the speech bench edits).
+  - C2 stream = design record, both datasets · `stream_schedule` on cifar (75) and speech (50) clients at offset 24 h · median
+    visible ~16% (cifar), every client's visible count non-decreasing, accrual only while not AVL_TRAIN, full at the trace's end.
+    **Passed 10-21:** cifar / speech median 0.16 / 0.17 at the start, monotone, 0 growth while charging, full at 6 days.
+  - C3 availability and stream share one clock · `load_trace` with `FLAME_TRACE_OFFSET_S=86400` vs the raw trace at t + 24 h ·
+    identical states (pytest `test_offset_shifts_every_trace…`); the run records `trace_offset_s` and EV16 / EV19 replay it.
+  - C4 task time follows the visible data, both datasets · trainer `_task_time_s` on a streaming client at two stream times ·
+    time grows with visible samples (3 × samples × ms + transfers); EV3 0 mismatches on the smoke legs. **Passed 10-21
+    (trainer method, speech-like client):** 80 / 400 / 800 visible → 94.6 / 141.7 / 200.5 s = the formula; EV3 part waits for G2.
+  - C5 prefix utility = received model's loss · pytest `test_prefix_utility…`; on a CPU leg, train-return utility ≈ an eval of
+    the same model on the same client (ratio ~1, not the 1.2-1.25 inflation of today's EMA).
+  - C6 bench on CPU, both datasets · `utility_bench.py --gpu cpu --n 20 --horizon-h 0.75` (cifar done 10-21: arms diverge after
+    exploration; speech: its clip cache builds on CPU (3 GB, `~/.cache/flame_utility_bench` by default), but ResNet34 training
+    on CPU exceeds 15 min even at n 6, so the speech leg moves to G1) · every arm runs, oracle ≥ stale on the audit, eval arms
+    dispatch evals on 3-state traces.
+  *GPU (operator's go):*
+  - G1 bench calibration · `felix` / `random` on syn_0 vs PR40a ctl / FedBuff · versions ±15%, top-20% share within 0.15
+    (cifar done: 287 vs 305, 0.25 vs 0.25); speech: same check vs PR40a speech ctl before its grid.
+  - G2 real-stack smoke of each knob, ≤ 15 min, both datasets · `harness_pool --tier F40S` (`batches/f40s.yaml`): ctl = Felix,
+    FedBuff, Oort on syn_50_3st + `usage` at +24 h; new = Felix + `utilityPrefixSamples`, `evalGateUnit=seconds`,
+    `dynamic_kc.policy_kwargs.memory`; 30 min cifar / 60 min speech vclock · EV PASS; knobs in the roles' configs (PL7); eval tasks > 0 on
+    syn_50_3st; visible counts in trainer telemetry match `stream_schedule` at the task times; no per-task time independent of
+    samples; `trace_offset_s` in the run config.
+  - G3 staleness is visible in the real stack · `selection_audit.py` on G2's `usage` legs · believed vs actual utility error
+    grows with belief age (the effect the paper claims, measured before it is graded).
+  *What the runs must show.* Paper goal (operator 10-21): minimize time to accuracy and communication cost while maximizing
+  accuracy. Sub-goal, in service of it: show the new utility measure and selector logic beat today's, as follows.
+  - The Oort-style utility (|D| · loss, read at the last contact) goes stale under realistic, trace-derived data growth, and stale
+    beliefs mis-rank clients: measured as pick rank and regret against the true current utility (bench `--audit-every`, real
+    stack: `selection_audit.py` belief error and rank) for Felix today and the Oort baseline.
+  - The utility must not be dominated by |D|: |D| · loss ranks ≈ |D| (Spearman 0.96) because loss spans 2× and |D| 25×; a
+    utility of what is new since the client's last train, per second of task time, separates clients by value.
+  - Fresh beats stale, and sensing recovers it: novelty with eval refresh closes most of the stale → oracle gap (FX-N122 links 2-3),
+    and beats Felix today and Oort in time to accuracy at equal or lower bytes and better worst-10% clients.
+- **FX-N118 · Eval gate on the clock (`evalGateUnit: seconds`) · built; screened only inside A10.** Smoke: 6 evals vs 0 on cifar
+  syn_50_3st in 20 min.
+- **FX-N119 · Fresh utility at no cost (`utilityPrefixSamples`) · built; used as A7's loss signal.** Offline: freshness can't reorder
+  today's size-driven picks (A6), so no stand-alone screen.
+- **FX-N120 · Trace-derived data growth (`data_streaming.mode: usage`, continuous accrual) · built (`stream_schedule.usage_sessions`,
+  pytest).** Choice, alternatives and evidence: Scope, "Design record: streaming data model".
+- **FX-N123 · Leg start offset into the trace (`FLAME_TRACE_OFFSET_S`) · built (`trace.offset_events`, availability + stream on one
+  clock; recorded as `trace_offset_s`, checkers replay it, pytest).** Next (with PR40b): a `--trace-offset` flag through
+  `harness_pool` → `debug_run.sh`, and ≥ 12 h `usage` stream cells.
+- **FX-N122 · Utility microbenchmark (`scripts/utility_bench.py`) · ready; waits for GPUs (operator).** In-process async FL on
+  the real model, split, FedScale device times and traces; only the utility term changes per arm; calibrated to PR40a ctl (287 vs 305
+  versions; random top-20% 0.25 = FedBuff's). *Claim chain (each arm pair answers one link):* (1) utility beyond speed matters:
+  `pre_d` > `size_d`; (2) it must be fresh: `nov_d` (stale) < `nov_oracle_d`; (3) it can be sensed: `nov_eval_d` closes most of that
+  gap; (4) the winner beats today: > `felix` and `oortpen` (Oort's reference penalty) and `random`. Scenarios: syn_0 3 h,
+  syn_50_3st 3 h, syn_50_3st + `usage` 12 h (start +24 h, continuous accrual), + class drift 12 h; 3 seeds; metrics: last-30% accuracy, min to 30/35/40%, worst-10%
+  client, GB. *Decision:* candidates that win their link beyond the seed range go into PR40b as real-stack sims beside Felix today
+  and the Oort baseline; a broken link is a tripwire, not a run. Cost ~12 GPU-h (12 h stream legs ~9 min each): ~50 min on jayne 7 + shepherd 4 GPUs.
+- **FX-N121 · Adaptive K with memory (`dynamic_kc.policy_kwargs.memory`) · built (pytest); PR40b (b).**
 - **D5 · Long runs, after D1-D4 are decided · todo.** (a) PR39 phase 2 parity, 2 h reals: rerun the 4 STALLED reals and the DOOMED
   speech Felix syn_50_3st sim, G3C replicates for every red (each rests on 1 real), lin cells, FX-N113. (b) Claims (FX-N108) on sims at
   12 h cifar / 24 h speech vclock on the optimized Felix, every baseline. Phase 1: `dispatch_pr39_20261020_0344`, pools
@@ -77,7 +120,9 @@ D2, D4; Felix only) on both nodes, D3 offline → decisions written here → bas
   real), speech included (PR38 felix 44 min), so long-vclock sims are cheap (D5b). *Next:* FX-N84's fork-server import sharing
   (~280 MB/trainer); default `--gpu-cpus-per-trainer` 0.4 → 0.1 after PR39 (changes the key): G0US n=50 GPU sims leased 28 cores,
   used avg 0.9-2.4 / p95 ≤ 5.5, so 4 legs filled 120 CPUs with GPU 7 idle. *Exit:* a 10-min mixed batch at ≥ 2× PR36's legs/h with
-  interference at the solo baseline (PL19, `CPU_SAT`, sim slowdown ≤ 1.25×, EV/parity = solo).
+  interference at the solo baseline (PL19, `CPU_SAT`, sim slowdown ≤ 1.25×, EV/parity = solo). PR40a (61 Felix sims, 3.4 h vs 2 h
+  ETA): jayne 9.5 legs/h, concurrency 2.7, CPU 6%, RAM peak 338 / 504 GB, GPU idle 22%; shepherd 8.6 legs/h, concurrency 1.5, GPU idle
+  67%; 0 slow legs. Binding: each 75-trainer sim reserves ~96 GB host RAM (79 GB used), so ≤ 4-5 legs fit a node.
 - **FX-N94 · tiny_cpu first-contact sim delivery lag · todo.** `smoke_fxd160_0010`: first-contact lag 1.1-1.7 s (real ~0.03 s), sim
   clock +1.7 s by round 3; GPU legs ≤ 0.5 s. *Exit:* first-contact lag ≈ later tasks' on tiny_cpu.
 - **FX-N85 · Close PR27/PR28 roots · wip.** (b) cifar Oort-family stub legs run one real step (FX-D110 extended); (c) A5 builder:
@@ -100,7 +145,8 @@ D2, D4; Felix only) on both nodes, D3 offline → decisions written here → bas
   (b) cifar fedbuff syn_50_3st K2 FAIL at rel 2.7% under tol 8% (33 vs 34 versions): read why the checker fails it; (c) cifar oort_star
   syn_50_3st A2c speed bias (real −28 s, sim −11 s); (d) cifar refl syn_50_3st A2 KS 0.21, A3 decile 7 0.26; (e) speech fedbuff
   syn_50_3st A2 KS 0.35, U6 real 0.14 s vs sim 0 (FX-N76); (f) speech Felix syn_50_3st sim DOOMED EV16 (1 late commit of 350, 63
-  withheld). *Exit:* each a fix in tree or a draw on ≥ 3 reals.
+  withheld); PR40a: 4 more (`gs_F39E_s50_{g10,u,u0}`, `s50ev_u`; 1-2 late commits each), so a sim mechanism, not a draw; (g) PR40a
+  speech `s0_eval0`, `s0ev_eval0` EV13 FAIL (stall; FX-N110?). *Exit:* each a fix in tree or a draw on ≥ 3 reals.
 - **FX-N110 · Speech sim gate failsafe under GPU contention · todo.** PR39a `gs_F39A_c30_r1`: trainer 0388 took 11 min wall for a ~4 s
   train (06:55-07:06, its GPUs ~98% SM with packed legs at `--gpu-share 2`); `SIM_GATE_FAILSAFE` dropped it at 457 s (round 143), then
   128 pastdated commits (EV11 2.8%), 1 redispatch (EV10); c30_r2 same; EV13 stalls on ctl_r1 (304 s), c10_r1 (141 s), and PR39b
@@ -179,7 +225,7 @@ Read: Felix's lead over the async control (FedBuff) and its resilience to unavai
 1-step stacks (FedDance, REFL) shrank because their tasks are communication-bound while Felix's epoch is compute-bound; its lead over
 Oort grew on time but Oort moves less than half of Felix's bytes (C3 ❌).
 
-**Expected after PR39c1:** f2 matches cifar's best fixed arm (K5) within seed range; dkc's K settles at 3-6 on cifar.
+**Expected after PR40b:** cifar K5 stays ahead of ctl on seeds 2-3 (≥ 1 eval step); A1 cuts cifar GB to 40% below the epoch's at equal time.
 
 ### Running config (G3) and invariants checked
 
@@ -257,6 +303,21 @@ real↔real replicate sets the band (L12).
 - **Felix design scope (10-21):** Felix may choose local work per client (FedBuff keeps 1 epoch); a new utility is modeled and shown on
   stored data before it is coded; eval tasks stay, and their value is shown on streams / unavailability from true data; knobs with no
   effect leave the code and the model.
+- **Felix design rules (operator 10-21):**
+  - *No state prediction:* devices are bursty; Felix never forecasts when a client changes availability state (A4 dropped). It
+    reacts to the state the trace shows (aware dispatch, eviction).
+  - *No similarity ranking:* ranking clients by agreement with the population biases the model toward the majority (A5 dropped).
+  - *High-loss clients are wanted (operator hypothesis):* their data is what the model has not learned. Picking and up-weighting them
+    should strengthen the model long term and keep minority clients from being left behind. Judge this on per-client accuracy
+    (`client_accuracy.py`, worst 10%) and long legs, not on short test-loss windows (D3's metric sees only the short term).
+  - *Richness, not just size:* a client's value is its samples × how unfit the model is to them (Oort's |D| · rms loss), measured on
+    the received model at no extra pass (FX-N119).
+  - *Screening:* ROBUST R26 for every idea below.
+  - *Data-growth model (operator 10-21):* Scope, "Design record: streaming data model".
+  - *Paper goal:* minimize time to accuracy and communication, maximize accuracy. *Sub-goal (claim to establish):* Felix needs a
+    fresh utility besides speed; it must be sensed from the environment (it can't be predicted:
+    a client's arrivals are bursty, hour-to-hour correlation ≈ 0, and who has new data reshuffles within hours) and must not be
+    stale (FX-N122).
 - **Long runs launch through `scripts/dispatch.py` (10-17):** a batch YAML of harness_pool stages; never hand-split stages per node.
 - **EuroSys FedDance (10-11/12): FedDance's algorithm on our setup, apples to apples.**
   - *Common:* model, Dirichlet α=0.1, n=300 cifar / 100 speech, K=10 aggregated (c=13), the May-2025 shared trainer (1 epoch, bs 32, lr
@@ -314,8 +375,47 @@ it (`getCompletionTime`):
   reports mismatches and per-baseline train / eval times per leg. 10-20 shepherd smokes (G3 syn_0, 20 / 30 min vclock, all six):
   0 mismatches over 4,212 train tasks, every eval span equal to its formula, EV PASS on every leg, and the cifar Felix real + sim
   pair grades parity PASS (396 vs 400 tasks, same 33.1 s mean). Measured mean task time, cifar / speech: Felix 33 / 292 s
-  (its speed term picks devices fast for their work), FedBuff 42 / 299 s, Oort and Oort* 151 / 165 s (44 / 66 tasks in the leg),
+  (fast clients are free again sooner and re-picked; its speed penalty fades out), FedBuff 42 / 299 s, Oort and Oort* 151 / 165 s (44 / 66 tasks in the leg),
   REFL 11 / 95 s, FedDance 12 / 83 s.
+
+**Design record: streaming data model (FX-N120, FX-N123; operator 10-21; paper methodology).**
+- *Chosen:* `data_streaming.mode: usage` with `FLAME_TRACE_OFFSET_S=86400`.
+  - *Who generates data, when:* a device generates data while it is off the charger, and the data accrues continuously
+    through each off-charger session. In the MobiPerf 3-state trace (6 days, 300 devices), AVL_TRAIN is the charging state (it is
+    identical in the 50% and 75% battery variants for all 300 devices), so off-charger = AVL_EVAL + UN_AVL.
+  - *How much:* visible(t) = off-charger seconds so far / all off-charger seconds in the 6-day trace, × the client's Dirichlet
+    shard. Within a device, data ∝ time off the charger (a 3 h session brings 6× a 30 min one). Across devices the totals stay
+    the shard: a device off the charger more gets its data sooner, not more of it.
+  - *Clock:* the trace's own (real time, no compression), shared with availability. Every leg starts 24 h into the trace, so
+    availability and data both read trace time t + 24 h, and a client starts with the data its usage generated by then (no
+    seeded initial share).
+  - *Assumption stated in the paper:* a device off the charger is in use, and its data generation is proportional to time in
+    use. The trace records no screen state; battery drain (B below) supports that usage intensity is jagged.
+- *Rejected, and why:*
+  - *events* (the old stream): 9 equal chunks at uniform random times. Every client grows alike in expectation, so even an oracle
+    gains nothing (PR40a), and it is not derived from any trace.
+  - *One lump at the end of each off-charger session* (the first `usage` draft): new data appears only when charging starts, the
+    moment the device becomes trainable. An eval in AVL_EVAL then never sees new data (0% of sessions vs 64% with continuous
+    accrual), which rules out sensing by construction, and only 37 / 75 clients grow in a 12 h leg (vs 71).
+  - *B, battery drain:* one equal lump per observed 75 → 50% drain (the gap between the two variants' threshold crossings; median
+    156 min, p25-p90 68-495 min, within-device CV 0.69). Too sparse: no device gets data in the first 6 h, 11 / 75 none in 6
+    days, 3 lumps per device.
+  - *C, session length × drain rate:* behaves like the session-length model (only 213 / 1600 sessions have a measured drain, and
+    per-device scaling cancels against the fixed shard), at the cost of an extra assumption.
+  - *Trainable time as generation time:* charging devices are mostly idle, so this inverts the usage signal.
+  - *A seeded initial share (10%, or lower):* a tuned value. At 0-1% all 75 clients start with < 5 samples; at any seeded share
+    starting at trace time 0, the median client gets no new data in 12 h (devices sit in one long off-charger stretch early on).
+    The 24 h offset derives the start instead: median 16% visible.
+  - *Other offsets:* 0 h leaves every client with ~1 sample; 48 h / 72 h start at 27% / 43% visible with less growth left
+    (median ×1.14 / ×1.05 in 12 h, end-lump numbers). 24 h is the first day boundary with enough data to train on.
+  - *Compressing the trace into the leg (earlier draft: 24 trace hours per 3 h leg):* distorts the burst structure; legs run
+    ≥ 12 h of trace time instead.
+- *Measured properties (75 cifar clients, offline, start +24 h, continuous):* median visible 16% at the start; 71 / 75 clients
+  receive new data within 12 h (median growth ×1.5); a mid-session eval sees new data in 64% of off-charger sessions; arrivals
+  are bursty (81% of a client's data in its busiest 10% of hours) and unpredictable from history (hour-to-hour correlation −0.02);
+  who-has-new-data rank agreement, this window vs the next, 0.65 / 0.48 / 0.26 at 1 / 3 / 6 h (session-length model). Total size
+  rankings barely move (everyone grows in proportion), so the case for sensing rests on what is new since a client's last train
+  (the novelty utility), not on |D|.
 
 - **Correct, not just equal:** every baseline follows its reference and hits target on full data; root and fix every red per run.
 - **Scope:** `felix`, `oort`, `oort_star`, `refl`, `feddance`, `fedbuff` (+ `*_oracle` arms, FX-N13; `fedavg` = FedDance's random arm,
@@ -357,8 +457,12 @@ per minute with c tasks in flight · d̄ = mean task time, o = per-task overhead
   2.5k × 139 = 0.35M; PR38 0.32M vs 0.33M) and R ties (21-24 vs 21 / min). Felix wins on s̄ alone: 1.6× the samples per update at the
   same update rate, so 1.6× the samples per slot-second and per byte. That is all of its 1.7× U* gain, on both runtimes.
 - *Where s̄ comes from (`selection_audit.py`, PR39):* picks track shard size (ρ +0.78; PR38 +0.97) and run against per-sample loss
-  (−0.72; −0.90), though size now costs time (duration ~ size +0.68). The speed term keeps those tasks short: 33 s mean vs FedBuff's
-  42 s (10-20 smokes) for 1.6× the samples, so Felix picks devices ~2× faster per sample. The loss term adds no measurable S*.
+  (−0.72; −0.90), though size now costs time (duration ~ size +0.68). **Felix's speed penalty fades out by design, not by bug:** the parity
+  YAML (`felix_oort_refl_feddance_alpha0.1_parity.yaml`) starts Felix at round_threshold 70 (Oort: 10) with exploration_decay 0.999
+  ("async has no straggler barrier"), and the reference pacer relaxes it every flat window: preferred duration 52 s (~30% of clients
+  penalized) at 13 min, 167 s (~5%) at 75 min, ∞ from ~1.9 h (PR40a ctl). The sync Oort baseline is faithful: threshold 10 → 20,
+  45-75% of candidates penalized (PR39). Short tasks (33 s vs FedBuff's 42 s) also come from async re-picking: a fast client is free
+  again sooner. In async, speed belongs in the utility as value per slot-second (u / d), not as a barrier penalty (FX-N122). The loss term adds no measurable S*.
 - *Unavailability:* aware dispatch + eviction keep Felix's R at 22-24 / min on syn_50_3st (syn_0 21-24). Unaware stacks hold a slot to
   the abandon timeout (903 s cifar): FedBuff's R falls 21 → 3 / min, Oort's round closes about every 15 min.
 - *Local work (D2, `hyp`):* write a task's time as d_i(s) = a_i s + b_i (a_i = 3 ms_i, b_i = 2m / bw_i; both measured per task:
@@ -372,26 +476,56 @@ per minute with c tasks in flight · d̄ = mean task time, o = per-task overhead
   U* rises (faster to ε, more bytes), while the most transfer-bound clients should do more work. *Against baselines:* FedDance / REFL's
   time edge is cheap transfer-bound tasks (R 37 / 31 vs Felix 21 / min), Oort's bytes edge is 600 samples per transfer; per-client s_i
   attacks both. Mixed s_i needs step-normalized weights (FedNova-style) to keep the objective consistent.
+  *Measured (PR40a W arms, U* to 35% ∝ s^−β):* cifar β 0.60-0.71 (s 32 / 63 / 123 vs the epoch's 238: U* 8.8k / 4.7k / 3.3k vs 2.1k),
+  speech 0.2-0.5 (noisy). The model then puts s* at ~0.4 epoch for the median cifar client and predicts only ~7% less time (speech
+  ≤ 20%), below the seed floor, at 2.3× the bytes. Measured: no fixed or split arm beats the epoch beyond the floor; GB per leg 1.5-3×.
+  The epoch is near the flat time optimum and much the cheapest in bytes. Clients whose compute share is below β (cifar p10 0.37)
+  have s* above the epoch, the side D2 never tested (Avenue A1).
 - *Utility (D3, `hyp`):* a client's value per slot-second is V_i = E[progress of its update] / d_i ≈ s_i · q_i · σ(τ_i) / d_i: samples
   (FX-L88: the dominant term), q_i = per-sample informativeness (loss on data the model hasn't fit), σ = the optimizer's staleness
   weight. Today's score approximates s_i · q_i by |D| · √EMA(loss²), with q_i read after training and stale (FX-T57), and 1 / d_i by
   Oort's step penalty beyond a preferred duration. Only q_i goes stale between contacts (s_i and d_i are known), so q_i's value decides
   the eval selector's job: if s·q/d beats s/d, eval tasks keep beliefs fresh; if not on static data, their job is streams, where new
   data is exactly the unfit data (high q_i).
+  *Measured (D3, `utility_evidence.py`, partial r of window progress with Q given samples, τ, phase):* fresh pre-training loss (I9 arms,
+  18 legs) −0.47 [−0.57, −0.35] cifar, −0.46 [−0.68, −0.26] speech; stale post-training loss (39 legs) −0.14 / −0.18. So over one
+  window (leg / 24) a high-loss client's update slows global progress: its shard is far from the population. That is the short
+  term only. The long-term claim (Decisions 10-21: learning those shards lifts the model and its worst clients) needs per-client
+  accuracy and long legs. *Per-client view (final global model, mean of the last 3 checkpoints, on each of the 75 cifar shards):*
+  on syn_0 a client's picks run against its final loss (ρ −0.20 to −0.34), and 10-13 clients get ≤ 2 picks in 3 h (size bias,
+  picks ~ size +0.86); worst-10% client accuracy 0.10-0.18 over the ctl draws. syn_50_3st's forced rotation leaves no such client
+  (0 with ≤ 2 picks; worst 10% 0.14-0.19, mean 0.43 vs 0.36-0.40). pK10 also picks everyone but drops size, and lands no better
+  (0.12). Untested so far: a fresh |D| · loss utility at no R cost (FX-N119, PR40b).
 - *Eval tasks (D4; PR39a, old runtime, syn_0, 3 seeds; PR38 lin):*
   - *Fairness: yes.* Eval tasks spread picks, monotonically in eval frequency: Gini of updates per client eval-off 0.47 → gate 35
     (ctl) 0.38 → gate 15 0.29 → gate 5 0.15 (FedBuff 0.08); top-20% share 0.46 → 0.41 → 0.36 → 0.28; speech eval-off 0.36, ctl 0.33,
     gate 5 0.08. Mechanism: an eval refreshes an unpicked client's stale belief so it re-enters the train top-k.
   - *Static data: fairness costs time and buys no accuracy.* Cifar min to 50% eval-off 55.9 / ctl 54.7 / gate 15 67.2 / gate 5 63.1, GB
     20.2 / 21.2 / 26.9 / 33.4, max accuracy 54-55% in all; class TV of updates already ≤ 0.07. Speech eval-off ≈ ctl.
-  - *Streams: no direct evidence.* No Felix eval-off arm has run on a stream, and G3 lin grows every client at one rate (FX-T58).
-    Indirect only (PR38 lin): Felix lost the least max accuracy to lin among multi-step stacks (cifar −3.4 pp vs FedBuff −7.6, Oort
-    −3.1 to −8.4, Oort* −5.9; speech −5.7 to −9.8 vs FedBuff −10.7 to −14.2), but with the same eval share as on syn_0, so it can't be
-    credited to eval tasks. D4 measures it.
+  - *PR40a (FX-D197): no time value on any cell* (table below). Eval's value is P(a fresh belief changes a pick) × the changed pick's
+    gain − its cost. The gain term is ~0: train-return beliefs already rank clients right (Spearman believed ~ actual 0.86-0.97), the
+    oracle's true utilities tie ctl on events streams, and the utility's loss part has the wrong sign (D3). The cost is 5-15% of
+    bytes (cifar g10), and on speech g10 also costs time. Fairness shrank too: Gini eval-off 0.56 → ctl 0.54 → g10 0.53 cifar,
+    0.37 / 0.36 / 0.30 speech.
+  - *Under unavailability eval barely runs:* 0.01 eval per train on cifar syn_50_3st, 0.00 on speech (0 evals in 6 h). Each eval pick
+    sees ~3.8 eligible AVL_EVAL clients, and the 35-version gate (~21 min cifar, ~1.5 h speech) rejects them all, because it outlasts
+    their AVL_EVAL episodes (FX-L86, Q-EV21). The denser gate (g10, 10 versions) ran 4× the evals on syn_0 and still gained nothing
+    there, so the gate blocks eval under unavailability, not on static data.
+  - *Felix vs Oort:* same train score (Oort's |D| · loss; Felix's speed penalty starts at 70 and fades), different system: async one pick per freed slot,
+    availability filter + eviction, one epoch of work, no over-commit, FedBuff server, eval tasks. Felix's gains over the Oort
+    baseline come from those, not from its eval selector.
 - *Step law (PR39b, update units, cifar):* γ = η w̄ / K per update; κ = γ c is the delay-adjusted step (staleness τ ≈ c / K versions).
   U* falls as κ grows to a per-dataset edge κ*_D (cifar 3-4; speech < 2.7: K5 diverges, FX-T55), then rises and diverges. At fixed κ, K
   and c trade (γ ∝ 1 / c cancels R ∝ c, time flat, U* and bytes grow with c); at equal γ the smaller K wins (FX-L85). Felix's weight
-  never shrinks γ with staleness (w ≥ 0.58, FX-T56). Re-measure in PR39c1.
+  never shrinks γ with staleness (w ≥ 0.58, FX-T56). On FX-D197 K5 (κ 2.7) is still cifar's only arm ahead (PR40a, seed 1).
+  *Why smaller K wins until the edge:* the server moves η · mean(K updates); a smaller K applies each update with more weight and
+  refreshes the model more often (lower staleness per update), which is a larger, fresher step. Past κ* the updates disagree too
+  much: within a cycle they are near-orthogonal on both datasets (‖mean Δ‖² / mean ‖Δ_i‖² × n ≈ 1.0-1.2, PR40a dynamic_kc stats),
+  so fewer of them average away less noise. *Why speech's edge is lower:* one epoch is ~56 local steps per speech update (shard
+  ~900, batch 16) vs ~7 on cifar, so each update drifts further (‖Δ_i‖² 1.7 vs 0.24) on a harder 35-class task; the same K is a
+  bigger effective step. A stability signal exists: clients' loss on the received model rose 3.3 → 5.4 while speech test loss hit
+  6.6-14 (dkc). AIMD failed on its policy, not its signal: it probes K down by 1 every sweep, so it keeps returning to the edge
+  (Avenue A7).
 
   | Felix arm (PR39b) | γ | κ | U* to 40% |
   |---|---|---|---|
@@ -404,24 +538,100 @@ per minute with c tasks in flight · d̄ = mean task time, o = per-task overhead
 - *Control problem (`hyp`):* hold κ just under κ*_D online (I5 AIMD on K; c from the bytes budget) and pick s_i per client (I11).
 - *Out of the model (no effect, PR39a; FX-N114):* exploration, round_penalty, round_threshold, cut_off_util, a_exp, scale; Felix's
   2024 rate shape stays only until I7 replaces it.
+- *PR40a read-out (seed 1; 3 h cifar / 6 h speech vclock; `knob_sweep.py`, `selection_audit.py`; acc = mean test accuracy over the
+  last 30% of the leg).* **Seed floor:** cifar s0 ctl r1-r3 plus a same-seed rerun give 36.9-40.5% (mean 39.3), 150 to > 180 min to
+  40%. A rerun is a new draw (FX-L91), so a single-arm gap under ~4 pp or ~30 min is noise.
+
+  | acc % (cifar · speech) | ctl | eval0 | g10 | u (I9) | u0 (I9, no eval) | oracle |
+  |---|---|---|---|---|---|---|
+  | syn_0 static | 36.9 (floor 39.3) · 46.7 | 41.8 · 46.7 | 38.5 · 43.4 | 36.1 · 39.5 | 35.6 · 39.4 | – |
+  | syn_0 events stream | 37.9 · 44.7 | 39.9 · 42.4 | 39.5 · 40.4 | 37.3 · 39.5 | 35.1 · 41.1 | 38.7 · 43.3 |
+  | syn_50_3st static | 39.2 · 43.5 | 39.9 · 43.8 | 38.9 · ⬚ | 35.8 · ⬚ | 36.2 · ⬚ | – |
+  | syn_50_3st events stream | 37.9 · 40.8 | 37.1 · 40.5 | 36.3 · 39.5 | 36.1 · ⬚ | 36.2 · 37.1 | 38.7 · 38.0 |
+
+  ⬚ = DOOMED EV16 (FX-N113f). Mechanisms (cifar syn_0 unless noted; acc · versions · GB per leg):
+
+  | arm | cifar | speech | read |
+  |---|---|---|---|
+  | ctl (K10, epoch) | 39.3 · 305 · 13.8 | 46.7 · 112 · 66 | anchor |
+  | K5 | **40.0** · 530 · 12.8 (35% in 97 min vs 105-112) | – (diverges, FX-T55) | only arm ahead; seeds 2-3 |
+  | nK10 (I7) | 38.6 · 315 · 14.2 | – | ties ctl |
+  | pK10 (per-sample q + I9) | 34.3 · 364 · 16.5 | – | size preference lost (picks ~ size −0.37) |
+  | dkc (I5 + I9) | 34.0 · 402 · 11.5; K 7 → 5 → 3 | 18.9 · 171 · 53; K 8 → 6 → 4 | AIMD walks K down past κ* |
+  | f2 (I5 + I7 + I8 + I9) | 31.9 · 755 · 10.0; K 4 → 2 | 27.7 · 280 · 52; K 7 → 2 | worst; K at k_min |
+  | s32 / s64 / s128 | 32.9 / 36.5 / 39.0 · GB 42 / 31 / 22 | s128 / 256 / 512: 45.8 / 45.7 / 44.6 · GB 169 / 138 / 98 | no time gain, bytes 1.5-3× |
+  | wb33 / wb50 (split) | 36.0 / 41.4 · GB 37 / 33 | 47.8 / 46.8 · GB 117 / 102 | within floor; 1.5-2.4× bytes |
+
+- *I9 costs its forward pass:* it must read the received model before training changes it, so it runs serially before the epoch.
+  On a device that is extra compute (a background thread shares the same processor), charged as one forward pass, 1/3 of the
+  epoch's compute: +~27% task time at cifar's 0.81 compute share. Measured R −18-20% cifar, −14% speech; accuracy −1.4 to −3.6 pp
+  cifar, −3 to −7 pp speech, below ctl and eval0 in all 13 I9 legs. Default Felix gets its utility free from the training losses
+  (an EMA over the epoch, so mostly the adapted model's loss); eval tasks run the same full pass as their own task. Free fix
+  (FX-N119): the first ~64 training samples' losses are the received model's loss (the first batch exactly, later ones after a
+  step or two), at no extra compute.
+- *Unavailability and streams (Felix alone; baselines in D5):* cifar syn_0 → syn_50_3st 39.3 → 39.2 (static) and 37.9 → 37.9
+  (stream); speech 46.7 → 43.5 and 44.7 → 40.8. The stream costs 1.4 (cifar) and 2-3 pp (speech). Felix keeps R under syn_50_3st
+  (versions 305 → 403 cifar, 112 → 142 speech: picks ~ speed −0.39 → +0.12 cifar, +0.17 → +0.86 speech) at staleness 1.3 → 2.7.
+
+**Avenues after PR40a (ROBUST R26: model → short realistic screen → end to end, else pivot).** Felix's measured edge is
+availability handling and samples per slot-second. Novelty has to come from what the baselines ignore: a device model with real
+compute and transfer spread (FedScale traces, cifar G3: compute 21-176 ms / sample, 13× range; bandwidth 1.8-32 Mbps, ~110×; the
+two uncorrelated, ρ −0.10), three availability states, and data that changes per client.
+- *A8 · Fresh |D| · loss at no cost (FX-N119, built; A7's signal, no stand-alone screen: FX-L94).* The utility from the first ~64 training samples' losses: the received
+  model's loss, no extra pass. Tests the operator's richness hypothesis (Decisions 10-21) without I9's 14-20% R tax.
+- *A3 · Eval gate on the clock (FX-N118, built; screened only with A10).* In versions the gate outlasts AVL_EVAL episodes, so evals stop under
+  unavailability. *Setting the time:* eval must fit an AVL_EVAL episode (median 10 min on syn_50_3st, 151 min on mobiperf_3st;
+  trace check 10-21), so the screen uses 300 s, half the shortest. Successor without a constant: an eval budget λ (share of
+  downloads) given to the stalest beliefs in seconds. Smoke (cifar syn_50_3st, 20 min): 6 evals vs 0 at the version gate.
+- *A6 · Trace-derived heterogeneous data growth (FX-N120 built; offline verdict below).* Stale beliefs rank right today because the rank is |D|-driven
+  (Spearman |D| · loss ~ |D| 0.91 cifar, 0.72 speech), and on static data or the `events` stream every client grows alike (oracle
+  = ctl). Eval sensing and fresh utilities can only pay where clients' data changes at different rates. *Design:* derive each
+  client's arrival rate from a cited source, not a tuned stagger. One candidate: data accrues while the device is in use (MobiPerf
+  activity), so data grows when the device can't train, and AVL_EVAL is the moment to sense it. *Screen:* oracle vs ctl vs eval0
+  first; no oracle gain = no eval gain, pivot.
+  *Trace facts (10-21):* the stored MobiPerf (and FedScale behave) traces hold only eligible / ineligible windows, no screen or
+  battery fields, so in-use = not AVL_TRAIN. Over 116 h the median device has 13 trainable sessions; in-use gaps run 0-783 min
+  (p25-p90); its first 6 h are mostly one long in-use stretch, so the trace is compressed (24 h → one leg).
+  *Offline verdict (replaying PR40a's real selection times; `|D|` beliefs refreshed at each contact):* growth gets jagged (per-client
+  CV 0.96 events → 2.7 usage), yet stale beliefs still rank right: Spearman belief ~ truth 0.99, top-15 overlap 0.97-0.98; at 16×
+  sparser contacts 0.89-0.96 / 0.81-0.86, about the same for events and usage. Even new data from a client's hardest class
+  barely reorders |D| · q (Spearman 0.993), because q spans 2× across clients (1.6-3.2) and |D| 25× (|D| · q ~ |D| 0.96).
+  **So no stream makes eval tasks pay while the utility is |D| · loss: it is size-driven by construction (FX-L94).**
+- *A10 · Novelty utility (proposal; Q-DESIGN).* Value what the model has not trained on: u_i = n_new,i · q_new,i + ρ · n_seen,i ·
+  q_seen,i, with n_new = samples that arrived since the client's last train, q_new their loss on the received model. Right after a
+  train n_new = 0, so a stale belief is maximally wrong when a usage lump lands. Only a contact (eval task) reveals the lump. This
+  is where eval tasks, the third availability state and usage streams meet, and it serves the operator's richness and coverage
+  goals (Decisions 10-21). Cost: the trainer reports its seen watermark (free), the eval's forward pass covers the new samples.
+- *A7 · Adaptive K with memory (model first on stored dkc / f2 telemetry).* Keep the signal (clients' loss on the received model,
+  free with A8). Change the policy: after a loss event at K_e, hold K ≥ 2 K_e (no re-probing below it); raise K on instability,
+  lower it on stable progress. This matches the operator's intent: larger K when training is unstable (speech), smaller when stable.
+- *A9 · Per-client accuracy as a graded metric.* Worst-10% client accuracy of the global model (`scripts/client_accuracy.py`, cifar) on
+  every screen. Eval tasks measure it on device for free, which also gives them a job on static data.
+- *A1 · Bytes-optimal local work (modeled 10-21, low priority).* Time-optimal s_i shrinks work for most clients (progress per byte
+  ×0.58-0.76); PR40a's split arms ran that rule and measured ~×1 time, where the s^β model predicted ×1.14 cifar / ×1.5 speech, so
+  the model over-predicts. Bytes-only (only transfer-bound clients do more than an epoch, 27 / 75 cifar, 13 / 50 speech, up to 4
+  epochs): +9-17% progress per byte cifar, +4-7% speech, time neutral. That is far below Oort's 2.2× bytes edge (C3).
+- *Dropped:* A2 prefetch on AVL_EVAL. From an AVL_EVAL start to the next AVL_TRAIN is a median 10-20 min on syn_50_3st (22-44
+  Felix versions on cifar, 4-8 on speech vs τ ≈ 2.7), so the prefetched model is stale and must be resent (operator, trace check
+  10-21). A4 state prediction (operator: bursty devices). A5 similarity ranking (operator: biases the model).
 
 **Verdict so far (general mechanisms only):**
-- *Works:* availability-aware dispatch + proactive eviction (R unchanged by syn_50_3st, PR38 and PR39); a speed-aware train pick that
-  raises samples per slot-second and per byte (1.6× FedBuff, both runtimes); setting the server step by κ (PR39b, update units).
-- *No effect or worse:* the loss term of the utility (no S* gain; D3 tests it properly); eval tasks for time on static data (eval0 = ctl,
-  PR39a; PR39: 9% of tasks, 4% of bytes), though they do spread picks (D4); exploration, round_penalty, round_threshold, cut_off_util, a_exp, scale (PR39a); K from the gradient noise scale
-  (FX-T59); a cifar-tuned K on speech (FX-T55); the 2024 rate constants (FX-T56).
-- *Untested on FX-D197:* I5, I7, I8, I9 (PR39c1), eval value under heterogeneous growth (PR39s). Default Felix still reads eval beliefs
-  1.20-1.25× the next train's utility (train 1.01, PR39), so I9 stays needed while eval tasks exist.
+- *Works:* availability-aware dispatch + proactive eviction (R unchanged by syn_50_3st, PR38-PR40a); a size-driven train pick that
+  raises samples per update at equal R (1.6× FedBuff, both runtimes; its speed penalty fades out by ~1.9 h); setting the server step by κ (PR39b; K5 on cifar, PR40a).
+- *No effect or worse (PR40a unless noted):* the loss term on short windows (D3; long-term untested); eval tasks for time on every cell,
+  streams and unavailability included (D4); I9 (−1.4 to −7 pp from its compute); I5 AIMD K (drifts to k_min); per-sample utility
+  (pK10); sub-epoch local work (bytes 1.5-3×, no time); I7 ties ctl; exploration, round_penalty, round_threshold, cut_off_util, a_exp,
+  scale (PR39a); K from the gradient noise scale (FX-T59); a cifar-tuned K on speech (FX-T55); the 2024 rate constants (FX-T56).
+- *Untested:* I8 alone (only inside f2), A3 / A8 (PR40b), A6, A7, A9; A1 modeled low-gain; A2 dropped on trace evidence.
 
-**Justification for the paper (`hyp` until PR39c1 + I10):** the train selector ranks clients by useful samples per slot-second,
-discounted by the chance the task finishes before the client leaves; it raises aggregated samples per minute and per byte at equal
-per-sample quality. The eval selector keeps those beliefs fresh and fair: it spreads participation (measured), and is meant to
-find clients whose data or availability changed (streams, unavailability; D4 measures it); on static data it is a fairness knob
-with a measured time cost.
+**Justification for the paper (`hyp` until PR40b + D5b):** the train selector ranks clients by samples per slot-second among the
+clients the availability model says can finish; it raises aggregated samples per minute and per byte at equal per-sample quality,
+and keeps that rate under unavailability. Eval tasks, as built, are not a time mechanism (PR40a); they enter the paper only through
+an avenue that measures a gain (A3 clock gate, A6 heterogeneous growth, A9 per-client accuracy), otherwise as a fairness knob at
+its measured cost.
 
 **Today (Felix default, PR39 G3, n:c:K 75:15:10 cifar / 50:15:10 speech):**
-- *Train pick:* Oort score (normalized |D| · loss utility + UCB bonus) × speed penalty, `scoring.OORT_PAPER_DEFAULTS` (its exploration
+- *Train pick:* Oort score (normalized |D| · loss utility + UCB bonus) × speed penalty (from threshold 70, off by ~1.9 h), `scoring.OORT_PAPER_DEFAULTS` (its exploration
   and pacer constants: no effect, out of the model). Top 20% of clients supply 54% of cifar syn_0 updates (FedBuff 25%).
 - *Eval pick:* budget evalGoalFactor · K = 10 per version, eligible only if trained before and ≥ 35 versions since its last eval or
   train (`evalStaleGate`); on 3-state traces AVL_EVAL devices only. PR39: 0.09 eval per train on cifar syn_0, 0.01 on syn_50_3st and speech.
@@ -442,32 +652,31 @@ occupancy, train time lost to eval, update disagreement, belief error.
 - *I3 · Eval → train on the same model:* an eval that ranks its client into the train top-k trains on the model it holds (one
   download saved).
 - *I4 · Finish probability (unavailability):* p_i from the client's session history; prefer tasks that fit the remaining window.
-- *I5 · Adaptive K (built, `aimd_k` + I9).* Per population sweep, if the clients' loss on the received model (I9) didn't rise by > 2 SE,
+- *I5 · Adaptive K (built, `aimd_k` + I9; refuted PR40a: K drifts to k_min, speech collapses).* Per population sweep, if the clients' loss on the received model (I9) didn't rise by > 2 SE,
   K −= 1, else K ×= 2 (TCP's AIMD constants, a one-sweep window, a 2-SE test). c stays the resource budget; `noise_scale_k` is telemetry.
 - *I6 · Exploration by uncertainty,* not a decay clock (same quantity as I2).
-- *I7 · Utility-normalized weight (built, `agg_rate_conf.type: norm`):* w_i = (u_i / ū_cycle) / √(1+τ_i); no constants.
+- *I7 · Utility-normalized weight (built, `agg_rate_conf.type: norm`; ties ctl, PR40a; next: feed it FX-N119's fresh utility so it
+  up-weights the high-loss clients the operator wants, ratio clipped to bound one client's pull):* w_i = (u_i / ū_cycle) / √(1+τ_i); no constants.
 - *I8 · Version-free eval gate (built, `evalGateUnit: updates`):* counts committed updates, so changing K keeps eval cadence.
-- *I9 · Utility on receive (built, trainer `utilityOnReceive`):* a no-grad pass on the received model measures |D| · rms loss, eval's
+- *I9 · Utility on receive (built, trainer `utilityOnReceive`; refuted PR40a: its compute costs 14-20% of R, belief buys nothing):* a no-grad pass on the received model measures |D| · rms loss, eval's
   quantity, so train and eval beliefs compare (one forward pass charged).
-- *I10 · Value per slot-second (D3; model first, Formulation "Utility"):* V_i = s_i · q_i · σ(τ_i) / d̂_i, × p_i under unavailability;
-  arms s/d (no loss term) and s·q/d (q fresh from I9 or an eval). Drops Oort's preferred-duration constant. Coded only after D3's
-  offline evidence.
-- *I11 · Local work per client (D2):* s_i = β / (1 − β) · b_i / a_i from the client's measured split, capped at one epoch, weights
-  step-normalized; the server step stays at its κ. β from the D2 screen.
+- *I10 · Value per slot-second (D3 done: s/d only, q as loss has the wrong sign):* V_i = s_i^β · σ(τ_i) / d̂_i, × p_i under
+  unavailability. Drops Oort's preferred-duration constant. PR40b (c).
+- *I11 · Local work per client (D2: capped at the epoch, no time gain, more bytes):* continues as A1 (uncapped above the epoch).
 
 **Execution (one change at a time):**
 - *E1 · PR39a: one-knob syn_0 sweep · done (old runtime)* (`pool_20261019_0326_PR39A_JAYNE_{C,S}`). Only K and c move cifar (FX-L84);
   speech c 10 cuts GB to target 100 → 70 at equal time. Overrides: `--agg-hp 'sel.<k>=v opt.<k>[.<sub>]=v'`.
 - *E2 · PR39b: K × c grid · done (old runtime)* (`--tier F39B`, `pool_20261019_1912_PR39B_*`, 69 legs): the step-law table.
-- *E3 · I5-I9 · in PR40a (D1).* Felix only, syn_0 sims, 3 seeds,
+- *E3 · I5-I9 · done PR40a (D1), seed 1.* Felix only, syn_0 sims,
   3 h cifar / 6 h speech vclock. Cifar: ctl, K5, uK10 (I9), nK10 (I7), pK10 (per-sample utility + I9), dkc (I5 + I9), f2 (I5 + I7 + I8 +
   I9); speech: ctl, uK10, dkc, f2. *Claim:* f2 matches each dataset's best fixed arm on time and bytes; dkc's K settles at 3-6 on cifar,
   higher on speech; pK10 within seed range of uK10. *Refute:* K pinned at a bound or random-walking; f2 behind the best fixed arm by
   more than the seed range.
-- *E3' · PR39c2 (`batches/pr39c2.yaml`) · ready, after PR39c1:* speech K5 / K5lr05 / K10lr2 (κ or K?), nK10, nK5, pK10; cifar K3lr06,
-  K2lr04, nK5, nK10c30, gK5 (I8); FedBuff K10c15 controls.
-- *E3s · eval-task value · in PR40a (D4, tier F39E; replaces F39S).*
-- *E3'' · I11 local work in PR40a (D2, tier F39W); I10 after D3 step 1' (no code before evidence).*
+- *E3' · PR39c2 (`batches/pr39c2.yaml`) · parked:* its I7 / pK10 arms are decided (PR40a); cifar K3lr06 / K2lr04 and speech
+  K5lr05 / K10lr2 (κ or K?) join PR40b only if K5 holds on seeds 2-3.
+- *E3s · eval-task value · done PR40a (D4, tier F39E): refuted.*
+- *E3'' · I11 local work · done PR40a (D2, tier F39W): epoch kept; A1 and I10 s/d in PR40b.*
 - *E4 · syn_50_3st:* repeat the kept changes where availability matters (I4).
 - *E5 · Confirm:* real legs for the kept changes, then PR39 on the optimized Felix.
 
@@ -685,14 +894,22 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   and K and c substitute for each other (PR39b, Formulation).
 - **FX-L85** At equal per-update step γ, prefer the smaller K (more frequent, smaller jumps): K5lr05 −16% and K5c15 −29% min to 40% vs
   K10 at the same γ (PR39b).
-- **FX-L86** Count eval gates and selector clocks in updates or seconds: counted in versions, eval's share of downloads grows 10% → 73%
-  as K drops 10 → 2 (PR39b).
+- **FX-L86** Count eval gates and selector clocks in updates or seconds: in versions, eval's download share grows 10% → 73% as K drops
+  10 → 2 (PR39b), and a 35-version gate outlasts AVL_EVAL episodes (0 speech evals, PR40a).
 - **FX-L87** Read what drives a selector's picks (`selection_audit.py`) before tuning its knobs: Felix's picks track shard size
   (ρ +0.78 PR39, +0.95 PR39b), not per-sample loss (−0.72 / −0.88).
 - **FX-L88** Split a TTA gain into S* (samples to target), s̄ (samples per update) and R (updates per minute) before crediting a
   selector: Felix's 1.7× U* gain over FedBuff is s̄ alone; per sample they tie (PR38, PR39).
 - **FX-L89** Compare across runtime models in update units: U* to 30% held for every stack PR38 → PR39 while R moved 1-12×, so
   update-unit findings (κ law) carry over and minute-unit ones don't.
+- **FX-L91** Size a one-seed screen by its draw floor: four cifar ctl sims (3 seeds + a same-seed rerun, forked at commit 1) span
+  36.9-40.5% and 150 → > 180 min to 40% (PR40a).
+- **FX-L92** Trust a sign repeated across cells over one cell's gap: I9 lost to ctl and eval0 in all 13 cells while single gaps sat
+  inside the floor (PR40a).
+- **FX-L93** Check a gain-model against a run it already covers before screening it: the s^β model predicted ×1.5 speech time
+  for PR40a's split arms, which measured ~×1 (A1).
+- **FX-L94** Ask whether a belief can reorder picks before refreshing it: |D| · loss is size-driven at α 0.1 (q 2× vs |D| 25× across
+  clients), so stale vs fresh loss and jagged growth move ranks ≤ 1-7% (offline, 10-21).
 - **FX-L90** Scale every liveness rule to the dataset's task timeout: S1's 15 min sat under cifar's 903 s abandon and killed 4 legit
   reals (PR39, FX-N111).
 - **FX-L74** "Sim outside all n reals" is no refute: under exchangeability it holds with probability 2/(n+1) (50% at n=3); vote per real (FX-D161).
@@ -775,16 +992,20 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   max 37% vs 51%; PR39b).
 - **FX-T57** Don't merge eval and train utilities into one belief unless they measure the same loss: eval reads pre-training loss and
   train the post-epoch EMA, so eval beliefs overstate 1.2-2.9× (PR39b; I9).
-- **FX-T58** Don't test eval-driven sensing on an unstaggered linear stream: every client grows at one rate, so ranks never change
-  (G3 lin). Use `events` or `stagger`.
+- **FX-T58** Don't test eval-driven sensing on a stream where every client grows alike: lin ranks never change, and on `events` the
+  oracle ties ctl (PR40a). Use heterogeneous `stagger` or distribution shift.
 - **FX-T60** Don't charge a task a time independent of its work: one per-client D let Felix train 1.7× bigger shards free, and gave
   Oort's 600-sample tasks and REFL's 10-sample tasks the same time (FX-D197).
 - **FX-T59** Don't set K from the within-cycle gradient noise scale at α 0.1: B is unbounded or 10²-10³ and K pins at c (smoke
   10-20). It measures client disagreement, not SGD noise.
 - **FX-T61** Don't compare TTA across stacks on a version eval cadence: in 2 h Oort got 8 evals, FedDance 44, every speech leg 1-4
   (PR39); eval on the leg's clock (FX-N112).
-- **FX-T62** Don't credit Felix's loss utility for its U* gain: S* ties FedBuff's and picks run against per-sample loss (PR38, PR39);
-  the gain is samples per update.
+- **FX-T62** Don't judge the loss term on short test-loss windows alone: over leg / 24 fresh loss slows progress (r −0.47, PR40a),
+  but its job is long-term coverage; grade it on per-client accuracy.
+- **FX-T64** Don't add a measurement pass to train tasks without pricing its R: I9's forward pass cut R 14-20% and accuracy 1.4-7 pp
+  (PR40a).
+- **FX-T65** Don't adapt K by AIMD on loss-on-receive: it walks K to k_min, past κ* (cifar 7 → 3, f2 → 2; speech dkc 18.9% vs
+  46.7%, PR40a).
 - **FX-T63** Don't lengthen a leg with `--scale-smoke S`: it caps runtime at min(runtime, S) and records no GPU footprint (PR39c1's
   21600 would have run 2 h); set the tier's runtime (`F39_RUNTIME_S`).
 - **FX-T56** Don't read Felix's a_exp / scale as a staleness discount: w = 0.4 α(τ) + 0.6 β with β ≈ 0.95 stays ≥ 0.58, so at K10
@@ -1143,3 +1364,7 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **Q-EV21 · Felix "reaches AVL_EVAL" arms only at ≥ 20 eval picks · parked: FX-N109 I2.** The eval budget (evalGoalFactor · K = 10 per
   version) is a cap: the 35-version gate, train returns resetting `last_eval_round`, and AVL_EVAL-only on 3-state traces leave 0.5-10%
   used (PR38). Re-decide once FX-N109 settles the eval policy.
+- **Q-PR40A · Sign off D1-D4 (Next steps): drop I5, I9 (`utilityOnReceive`; FX-N119 replaces it), pK10, g10 flags; keep I7 as the
+  constant-free weight (operator 10-21: yes, improve via FX-N119).**
+- **Q-DESIGN · (1) Utility: decided by FX-N122 (operator 10-21: new formulation, tested locally first). (2) Data model A, real
+  time, decided. (3) PR40b = (a) + (b) + FX-N122's winners vs Felix today and Oort.** Blocks PR40b.

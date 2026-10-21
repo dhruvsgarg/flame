@@ -816,6 +816,10 @@ class Trainer(Role, metaclass=ABCMeta):
             ema = getattr(self, "_util_ema", None)
             self._util_ema = sq if ema is None else 0.8 * ema + 0.2 * sq
             self._util_samples = getattr(self, "_util_samples", 0) + int(target.numel())
+            n0 = getattr(self, "_util_prefix_n", 0)
+            if n0 < self._utility_prefix_samples():  # FX-N119: pre-adaptation loss, sample-weighted
+                self._util_prefix_sq = getattr(self, "_util_prefix_sq", 0.0) + float(sq) * int(target.numel())
+                self._util_prefix_n = n0 + int(target.numel())
             return loss_list.mean() if reduction == "mean" else loss_list.sum()
         if epoch == 1 and batch_idx == 0:
             if "reduction" in kwargs.keys():
@@ -849,7 +853,9 @@ class Trainer(Role, metaclass=ABCMeta):
             ema = getattr(self, "_util_ema", None)
             if ema is not None:
                 trained = min(len(self.train_loader.dataset), self._util_samples)
-                self._stat_utility = math.sqrt(float(ema.item())) * trained
+                pn = getattr(self, "_util_prefix_n", 0)
+                msq = self._util_prefix_sq / pn if pn else float(ema.item())
+                self._stat_utility = math.sqrt(msq) * trained
             return
         if epoch == 1:
             self._stat_utility = len(self.train_loader.dataset) * math.sqrt(
@@ -862,10 +868,15 @@ class Trainer(Role, metaclass=ABCMeta):
         hp = getattr(getattr(self, "config", None), "hyperparameters", None)
         return getattr(hp, "stat_utility", "legacy") == "fedscale"
 
+    def _utility_prefix_samples(self) -> int:
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        return int(getattr(hp, "utility_prefix_samples", 0) or 0)
+
     def reset_stat_utility(self) -> None:
         """Reset the trainer's statistical utility to zero."""
         self._stat_utility = 0
         self._util_ema, self._util_samples = None, 0
+        self._util_prefix_sq, self._util_prefix_n = 0.0, 0
 
     def compose(self) -> None:
         """Compose role with tasklets."""

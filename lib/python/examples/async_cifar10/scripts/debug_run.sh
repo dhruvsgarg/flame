@@ -373,6 +373,8 @@ for e_src in cfg.get("experiments", []):
         # FLAME_TRACE_TIME_SCALE (env, read by flame.availability.trace): recorded for provenance.
         if os.environ.get("FLAME_TRACE_TIME_SCALE", "").strip():
             h["trace_time_scale"] = float(os.environ["FLAME_TRACE_TIME_SCALE"])
+        if os.environ.get("FLAME_TRACE_OFFSET_S", "").strip():  # FX-N123
+            h["trace_offset_s"] = float(os.environ["FLAME_TRACE_OFFSET_S"])
         if delay_factor:
             e["trainer"].setdefault("hyperparameters", {})["training_delay_factor"] = float(delay_factor)
         if prof.get("model_kbit"):  # FX-N115: the baseline's own timeout, compressed with the harness delay factor

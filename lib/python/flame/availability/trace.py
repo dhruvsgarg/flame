@@ -74,6 +74,7 @@ def _raw_synthetic(trace_dir: str) -> dict:
 # ---------------------------------------------------------------------------
 
 _TRACE_SCALE_ENV = "FLAME_TRACE_TIME_SCALE"
+_TRACE_OFFSET_ENV = "FLAME_TRACE_OFFSET_S"
 _scale_logged = False
 
 
@@ -91,12 +92,30 @@ def trace_time_scale() -> float:
     return scale
 
 
-def scale_events(events):
-    """[[ts, state], ...] with ts divided by trace_time_scale()."""
-    scale = trace_time_scale()
-    if scale == 1.0:
+def trace_offset_s() -> float:
+    """FX-N123: trace seconds skipped before the run's t = 0 (a leg starts this far into every trace). Unset/0 = trace start."""
+    raw = os.environ.get(_TRACE_OFFSET_ENV, "").strip()
+    off = float(raw) if raw else 0.0
+    if off < 0:
+        raise ValueError(f"{_TRACE_OFFSET_ENV}={raw!r} must be >= 0")
+    return off
+
+
+def offset_events(events, off: float):
+    """[[ts, state], ...] seen from trace time `off`: the state in force at `off` at 0, later events at ts - off."""
+    if not off:
         return events
-    return [[float(ts) / scale, state] for ts, state in events]
+    before = [e for e in events if float(e[0]) <= off]
+    head = [[0.0, before[-1][1]]] if before else []
+    return head + [[float(ts) - off, st] for ts, st in events if float(ts) > off]
+
+
+def scale_events(events):
+    """[[ts, state], ...] at the run's clock: shifted by trace_offset_s(), then divided by trace_time_scale()."""
+    scale, off = trace_time_scale(), trace_offset_s()
+    if scale == 1.0 and not off:
+        return events
+    return [[float(ts) / scale, state] for ts, state in offset_events(events, off)]
 
 
 def _canonical_trace_name(trace_name: str) -> str:

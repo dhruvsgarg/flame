@@ -874,3 +874,16 @@ class TestEvalStaleGate:
         ok = lambda n: sel._task_extra_eligible("e", end, SelectContext(task_to_perform="eval", model_version=999,
                                                                         channel_props={"n_updates": n}))
         assert not ok(149) and ok(150)  # gate 5 x K 10 updates, whatever the version count
+
+    def test_seconds_unit_reads_the_avail_clock(self):
+        from unittest.mock import MagicMock
+        from flame.selector.async_base import SelectContext
+        sel = AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=1, roundNudgeType="last_train",
+                                selectType="default", evalStaleGate=300, evalGateUnit="seconds")
+        end = MagicMock()
+        end.get_property.side_effect = lambda k: {"last_eval_round": 3, "last_report_ts": 1000.0}.get(k)
+
+        def ok(now):
+            sel._sim_now_s = now
+            return sel._task_extra_eligible("e", end, SelectContext(task_to_perform="eval", model_version=999))
+        assert not ok(1299.0) and ok(1300.0)  # FX-N118: 300 s since the last report, whatever the version count

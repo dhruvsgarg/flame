@@ -960,7 +960,7 @@ class PyTorchCifar10Trainer(Trainer):
         _modeled_delay_s = _D
         _upass_s = 0.0
         if _u0 is not None and self.training_delay_enabled:  # I9's pre-pass: one forward over the visible data
-            _upass_s = self._effective_delay_s(self._task_time_s("eval", comm=False))
+            _upass_s = self._task_time_s("eval", comm=False)  # already floored / scaled
             _modeled_delay_s += _upass_s
         _remaining_time = max(0.0, _modeled_delay_s - _real_gpu_time_s)
         _overran = self.training_delay_enabled and _real_gpu_time_s > _modeled_delay_s

@@ -39,6 +39,7 @@ from flame.selector.properties import (
     PROP_DATASET_SIZE,
     PROP_END_ID,
     PROP_LAST_EVAL_ROUND,
+    PROP_LAST_REPORT_TS,
     PROP_LAST_REPORT_UPDATES,
     PROP_LAST_SELECTED_ROUND,
     PROP_SELECTED_COUNT,
@@ -103,7 +104,7 @@ class AsyncOortSelector(AsyncSelectorBase):
 
         # FX-N109: versions since a trainer's last eval/train before it is eval-eligible
         self.eval_stale_gate = int(kwargs.get("evalStaleGate", 35))
-        # FX-N109 I8: "updates" = gate x configured K committed updates, cadence independent of K
+        # FX-N109 I8: "updates" = gate x configured K committed updates, cadence independent of K; FX-N118: "seconds" on the avail clock
         self.eval_gate_unit = str(kwargs.get("evalGateUnit", "versions"))
         # FX-N109: rank by utility / |D| (drops Oort's size factor; Q-DUR)
         self.utility_per_sample = str(kwargs.get("utilityPerSample", False)).lower() == "true"
@@ -176,6 +177,10 @@ class AsyncOortSelector(AsyncSelectorBase):
             last = end.get_property(PROP_LAST_REPORT_UPDATES)
             now = (ctx.channel_props or {}).get("n_updates", 0)
             return last_eval is not None and last is not None and now - last >= self.eval_stale_gate * self.agg_goal
+        if self.eval_gate_unit == "seconds":
+            last = end.get_property(PROP_LAST_REPORT_TS)
+            return last_eval is not None and last is not None and self._sim_now_s is not None \
+                and self._sim_now_s - last >= self.eval_stale_gate
         return last_eval is not None and ctx.model_version - last_eval >= self.eval_stale_gate
 
     def _choose(self, candidates: dict[str, End], k: int, ctx: SelectContext) -> list:
@@ -187,10 +192,8 @@ class AsyncOortSelector(AsyncSelectorBase):
         """Pick the `k` (capped by remaining eval headroom) candidates whose
         eval participation is stalest (ascending last_eval_round)."""
         feasible_extra = min(k, self.curr_round_eval_slots_left)
-        end_to_last_eval = {
-            end_id: end.get_property(PROP_LAST_EVAL_ROUND) or 0
-            for end_id, end in candidates.items()
-        }
+        prop = PROP_LAST_REPORT_TS if self.eval_gate_unit == "seconds" else PROP_LAST_EVAL_ROUND
+        end_to_last_eval = {end_id: end.get_property(prop) or 0 for end_id, end in candidates.items()}
         sorted_end_ids = sorted(end_to_last_eval, key=end_to_last_eval.get)
         chosen = sorted_end_ids[:feasible_extra]
         self.curr_round_eval_slots_left -= len(chosen)

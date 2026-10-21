@@ -60,3 +60,16 @@ def test_spawner_mobiperf_3st_mode(monkeypatch):
     monkeypatch.delenv("FLAME_TRACE_TIME_SCALE", raising=False)
     ml = MetadataLoader(md)
     assert ml.get_mobiperf_trace(7, "3st_50")
+
+
+def test_offset_shifts_every_trace_and_keeps_the_state_in_force(monkeypatch):
+    """FX-N123: FLAME_TRACE_OFFSET_S starts the run that far into the trace; the state at the offset holds from t = 0."""
+    monkeypatch.delenv("FLAME_TRACE_TIME_SCALE", raising=False)
+    monkeypatch.delenv("FLAME_TRACE_OFFSET_S", raising=False)
+    base = tr.load_trace("mobiperf_3st_50", "trainer_001")
+    monkeypatch.setenv("FLAME_TRACE_OFFSET_S", "86400")
+    off = tr.load_trace("mobiperf_3st_50", "trainer_001")
+    assert tr.state_at(off, 0.0) == tr.state_at(base, 86400.0)
+    for t in (10.0, 3600.0, 40000.0):
+        assert tr.state_at(off, t) == tr.state_at(base, 86400.0 + t)
+    assert tr.offset_events([[0, "A"], [10, "B"], [30, "C"]], 20) == [[0.0, "B"], [10.0, "C"]]

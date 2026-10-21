@@ -51,6 +51,32 @@ def test_events_steps_deterministic_and_full_at_horizon():
     assert a.times != ss.from_config({**cfg, "seed": 1}, "trainer7", scale=1).times
 
 
+def test_usage_accrues_through_off_charger_sessions():
+    """FX-N120: data accrues linearly while device_001 is off the charger (UN_AVL 0-753 s), and holds while it charges."""
+    cfg = {**ON, "mode": "usage", "initial_frac": 0.0}
+    tid = "505f9fc483cf4df68a2409257b5fad7d3c580370"  # trainer_001 -> device_001
+    a = ss.from_config(cfg, tid, scale=1)
+    assert a == ss.from_config(cfg, tid, scale=1) and a.times[0] == 0.0 and a.ends[0] == 753.0
+    assert 0 < a.frac(376.5) < a.frac(753) and abs(a.frac(376.5) - a.frac(753) / 2) < 1e-9  # linear within the session
+    assert a.frac(753) == a.frac(6000)  # charging 753-6862 s: no new data
+    assert a.frac(7000) > a.frac(6862)  # next off-charger session accrues again
+    seen = [a.visible(1000, t) for t in range(0, 6 * 86400 + 1, 600)]
+    assert seen == sorted(seen) and seen[-1] == 1000
+    assert a.times != ss.from_config(cfg, "505f9fc483cf4df68a2409257b5fad7d3c580371", scale=1).times
+    assert ss.from_config(cfg, "trainer7", scale=1).times  # non-registry ids get a seeded device
+
+
+def test_usage_reads_the_trace_offset(monkeypatch):
+    """FX-N123: a leg that starts `offset` into the trace sees the data accrued by then at its t = 0."""
+    cfg = {**ON, "mode": "usage", "initial_frac": 0.0}
+    tid = "505f9fc483cf4df68a2409257b5fad7d3c580370"
+    import dataclasses
+    base = dataclasses.replace(ss.from_config(cfg, tid, scale=1), offset=0.0)
+    monkeypatch.setenv("FLAME_TRACE_OFFSET_S", "86400")
+    off = ss.from_config(cfg, tid, scale=1)
+    assert off.frac(0) == base.frac(86400) and off.frac(3600) == base.frac(90000)
+
+
 def test_stagger_matches_previous_derivation():
     cfg = {**ON, "stagger": {"enabled": "True", "onset_max_s": 300, "rate_jitter": 0.5, "min_visible": 4}}
     s = ss.from_config(cfg, "abc", scale=1)

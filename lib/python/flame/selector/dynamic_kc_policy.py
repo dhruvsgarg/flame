@@ -382,11 +382,14 @@ class AimdKPolicy(DynamicKCPolicy):
     """FX-N109 I5: find the step-size edge online, TCP-style (AIMD on K; the step per update is η w / K).
 
     Per window of one population sweep (n updates): if the clients' per-sample loss (I9: of the model they received) did not
-    rise by more than 2 standard errors vs the previous window, K -= 1 (larger step); if it rose, K *= 2 (back off)."""
+    rise by more than 2 standard errors vs the previous window, K -= 1 (larger step); if it rose, K *= 2 (back off).
+    memory (FX-N121): after a rise at K_e, K never steps below 2 K_e again, so it stops re-probing a known unstable edge."""
 
-    def __init__(self):
+    def __init__(self, memory: bool = False):
         self._win: list = []
         self._prev: Optional[tuple] = None  # (mean, standard error) of the previous window
+        self.memory = str(memory).lower() == "true"
+        self.floor = 0
 
     def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
         self._win += list(metrics.get("cycle_losses") or [])
@@ -399,7 +402,9 @@ class AimdKPolicy(DynamicKCPolicy):
         if prev is None:
             return None
         rose = m - prev[0] > 2 * (se ** 2 + prev[1] ** 2) ** 0.5
-        return current_k * 2 if rose else current_k - 1
+        if rose and self.memory:
+            self.floor = max(self.floor, 2 * current_k)
+        return current_k * 2 if rose else max(current_k - 1, self.floor)
 
     def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
         return None

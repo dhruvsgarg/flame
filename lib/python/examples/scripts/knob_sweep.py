@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""FX-N109: per-arm medians of a knob-sweep pool (F39A, F39B, F39C, F39S) against its control arm.
+"""FX-N109: per-arm medians of a knob-sweep pool (F39A, F39B, F39C, F39E, F39W) against its control arm.
 
   knob_sweep.py POOL... [--json]
 
-Per leg: max accuracy, time and model bytes to 40% / 50% (cifar) or 40% / 60% (speech), versions, mean staleness,
+Per leg: max accuracy, mean accuracy over the last 30% of the leg's clock (smooths one-eval noise), time and model bytes to 40% / 50% (cifar) or 40% / 60% (speech), versions, mean staleness,
 top-20% update share, eval picks. Per arm: median over replicates and how many replicates reached each threshold.
 """
 import argparse
@@ -16,10 +16,10 @@ import statistics
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from accuracy_table import TARGETS, _agg_events, dataset_of, rows_from_pools  # noqa: E402
+from accuracy_table import TARGETS, _agg_events, curve, dataset_of, rows_from_pools  # noqa: E402
 from felix_claims import leg_stats  # noqa: E402
 
-ARM = re.compile(r"(?:gs_)?F39[ABCS]_(\w+?)_r(\d+)$")
+ARM = re.compile(r"(?:gs_)?F39[ABCSEW]_(\w+?)_r(\d+)$")
 
 
 def leg_metrics(run_dir):
@@ -41,7 +41,9 @@ def leg_metrics(run_dir):
                     evals += e.get("num_chosen") or 0
     tot = sum(counts.values())
     top = sorted(counts.values(), reverse=True)[:max(1, len(counts) // 5)]
-    out = {"max": st["max"], "versions": versions, "stale": statistics.mean(stale) if stale else None,
+    c, _ = curve(run_dir)
+    tail = [a for t, _r, a in c if t >= 0.7 * c[-1][0]]
+    out = {"max": st["max"], "last30": statistics.mean(tail), "versions": versions, "stale": statistics.mean(stale) if stale else None,
            "top20": sum(top) / tot if tot else None, "eval_picks": evals}
     for th in ths:
         t, b = st[th]
@@ -65,7 +67,7 @@ def med(xs):
 
 
 def table(arms):
-    keys = ["max", "t40", "gb40", "versions", "stale", "top20", "eval_picks"]
+    keys = ["max", "last30", "t40", "gb40", "versions", "stale", "top20", "eval_picks"]
     rows = []
     for (ds, b, arm), ms in sorted(arms.items()):
         tg = f"t{int(TARGETS[ds] * 100)}"
@@ -90,14 +92,14 @@ def main(argv=None):
         print(json.dumps(rows, indent=1))
         return 0
     ctl = {(r["dataset"], r["baseline"]): r for r in rows if r["arm"] in ("ctl", "K10c15")}  # K10c15 = F39B control
-    print("| dataset | baseline | arm | reps | max % | min to 40% (reach) | GB to 40% | min to target (reach) | GB to target "
+    print("| dataset | baseline | arm | reps | max % | last-30% % | min to 40% (reach) | GB to 40% | min to target (reach) | GB to target "
           "| versions | staleness | top-20% share | eval picks | Δ min to 40% vs ctl |")
-    print("|" + "---|" * 14)
+    print("|" + "---|" * 15)
     for r in rows:
         tg = f"t{int(TARGETS[r['dataset']] * 100)}"
         c = ctl.get((r["dataset"], r["baseline"]))
         d = r["t40"] - c["t40"] if c and r["t40"] is not None and c["t40"] is not None else None
-        print(f"| {r['dataset']} | {r['baseline']} | {r['arm']} | {r['reps']} | {fmt(r['max'] and r['max'] * 100)} "
+        print(f"| {r['dataset']} | {r['baseline']} | {r['arm']} | {r['reps']} | {fmt(r['max'] and r['max'] * 100)} | {fmt(r['last30'] and r['last30'] * 100)} "
               f"| {fmt(r['t40'])} ({r['reach40']}) | {fmt(r['gb40'])} | {fmt(r[tg])} ({r['reach_target']}) "
               f"| {fmt(r['gb' + tg[1:]])} | {fmt(r['versions'], 0)} | {fmt(r['stale'], 2)} | {fmt(r['top20'], 2)} "
               f"| {fmt(r['eval_picks'], 0)} | {fmt(d)} |")

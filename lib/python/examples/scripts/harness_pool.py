@@ -138,6 +138,7 @@ F39B_ARMS.update(K10lr2=dict(agg_goal=10, c=15, hp="opt.learning_rate=2.0"),
 _DKC = "sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=aimd_k sel.dynamic_kc.k_min=2"
 _STATS = "sel.dynamic_kc.stats=true"  # I5 telemetry only: B and stale-vs-fresh cos per cycle
 _NORM, _GATEU, _UREC = "opt.agg_rate_conf.type=norm", "sel.evalGateUnit=updates", "utilityOnReceive=true"
+_PRE, _GSEC = "utilityPrefixSamples=64", "sel.evalGateUnit=seconds sel.evalStaleGate=300"
 F39C_ARMS = {
     "ctl": dict(hp=_STATS, fb=True), "K5": dict(agg_goal=5, hp=_STATS),  # anchors (= PR39b K10c15 / K5c15)
     "K3lr06": dict(agg_goal=3, hp="opt.learning_rate=0.6"), "K2lr04": dict(agg_goal=2, hp="opt.learning_rate=0.4"),  # E3a γ≈.17
@@ -151,6 +152,10 @@ F39C_ARMS = {
 }
 # FX-N109 screen vclock per dataset (about PR39b's update counts under FX-D197)
 F39_RUNTIME_S = {"cifar10": 10800, "google_speech": 21600}
+# FX-N124 G2: real-stack smoke of the 10-21 changes on syn_50_3st + the usage stream, 24 h into the trace
+F40S_RUNTIME_S = {"cifar10": 1800, "google_speech": 3600}
+USAGE = 'data_streaming={"enabled":"True","mode":"usage","initial_frac":0.0,"full_data_available_after_s":1}'
+_DKCM = f"{_DKC} sel.dynamic_kc.policy_kwargs.memory=true"  # FX-N121
 # D2 F39W (FX-N116): Felix's local samples per task; fixed (capped at an epoch) vs per-client split (compute = beta/(1-beta) x transfer)
 F39W_SAMPLES = {"cifar10": (32, 64, 128), "google_speech": (128, 256, 512)}
 F39W_BETAS = (0.5, 0.33)
@@ -159,7 +164,9 @@ F39E_CELLS = {"s0": ("syn_0", False), "s0ev": ("syn_0", True), "s50": ("syn_50_3
 # g10: denser eval gate; at 35, speech Felix ran 2 eval tasks per 2 h (PR39).
 F39E_ARMS = {"ctl": dict(bls=("felix", "fedbuff", "oort")), "eval0": dict(hp="sel.evalGoalFactor=0"),
              "g10": dict(hp="sel.evalStaleGate=10"),
-             "u": dict(thp=_UREC), "u0": dict(hp="sel.evalGoalFactor=0", thp=_UREC), "oracle": dict(oracle=True, stream_only=True)}
+             "u": dict(thp=_UREC), "u0": dict(hp="sel.evalGoalFactor=0", thp=_UREC), "oracle": dict(oracle=True, stream_only=True),
+             # PR40b: fresh utility at no cost (FX-N119), eval gate on the clock (FX-N118; ~half a syn_50_3st AVL_EVAL episode)
+             "pre": dict(thp=_PRE), "gsec": dict(hp=_GSEC), "pregsec": dict(hp=_GSEC, thp=_PRE)}
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
@@ -259,6 +266,7 @@ class Phase:
     dataset: str = "cifar10"
     harness: str = "stub"
     trace_scale: str = ""
+    trace_offset_s: str = ""  # FX-N123: leg starts this far into every trace (availability + usage stream)
     agg_goal: Optional[int] = None  # None = the config's (GPU legs keep the reference knobs)
     c: Optional[int] = None
     sim_ceiling_x: int = 1  # sim wall ceiling = x * runtime (speech stub sims are aggregator-bound on CPU)
@@ -457,6 +465,14 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                 out += [replace(base, pid=f"{DS_TAG[ds]}{tier}_{cell}{arm}_r{i}", baselines=bls, kind="sim_ev", trace=trace,
                                 trainer_hp=thp, agg_hp=f"{hp} seed={1233 + i}", **kw) for i in F39_SEEDS]
         return out
+    if tier == "F40S":
+        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
+        base = replace(g3, runtime_s=F40S_RUNTIME_S[ds], trace="syn_50_3st", trace_offset_s="86400", kind="sim_ev",
+                       trainer_hp=f"{USAGE} {DETERMINISTIC}", agg_hp=f"{USAGE} {G3_EVAL}")
+        arms = {"ctl": (("felix", "fedbuff", "oort"), "", ""), "new": (("felix",), f"{_GSEC} {_DKCM}", _PRE)}
+        return [replace(base, pid=f"{DS_TAG[ds]}F40S_{a}", baselines=tuple(b for b in bls if b in baselines),
+                        agg_hp=f"{base.agg_hp} {hp}".strip(), trainer_hp=f"{base.trainer_hp} {thp}".strip())
+                for a, (bls, hp, thp) in arms.items() if any(b in baselines for b in bls)]
     if tier == "G3S":  # sim-only replicates of every G3 cell: G3S<i>_<cell>, graded on banked + equivalent reals
         return [replace(ph, pid=ph.pid.replace("G3_", f"G3S{i}_"), kind="sim")
                 for i in range(1, G3S_REPS + 1) for ph in tier_phases("G3", baselines, ds)]
@@ -588,7 +604,7 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
             base = ["--harness", ph.harness, "--baselines", b, "--traces", t, "--runtime-s", str(rt),
                     "--num-trainers", str(ph.n), "--dataset", ph.dataset]
             agg_hp = ph.agg_hp.replace(G3_EVAL, f"evalEverySeconds={rt / EVAL_POINTS:g}")
-            for flag, v in (("--trace-scale", ph.trace_scale), ("--agg-goal", ph.agg_goal),
+            for flag, v in (("--trace-scale", ph.trace_scale), ("--trace-offset-s", ph.trace_offset_s), ("--agg-goal", ph.agg_goal),
                             ("--concurrency", ph.c), ("--agg-hp", agg_hp),
                             ("--trainer-hp", ph.trainer_hp), ("--inject-bug", ph.inject_bug),
                             ("--delay-factor", ph.delay_factor)):
@@ -2102,7 +2118,7 @@ def code_key() -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A F39B F39C F39W F39E, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A F39B F39C F39W F39E F40S, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

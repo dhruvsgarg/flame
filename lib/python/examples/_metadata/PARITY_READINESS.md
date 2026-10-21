@@ -97,6 +97,7 @@ A new failure mode adds a check here in the same session.
 | PL24 | a sim aggregator exits via `exit_after_run`, never native teardown | no `terminate called without an active exception` / `Fatal Python error` after `channel leave done` (FX-D178) | PR36-short B1: one exit segfault aborted 9 cells |
 | PL25 | no pool runs on a stale RAM cap | `BLOCKED … pool RAM budget` while node RAM < 70% used = start-time snapshot (FX-N102) | PR37 shepherd S1: 2 legs at a time for 20 h, RAM peak 329 of 504 GB |
 | PL26 | exclusive and `--gpu-share` pools co-run on one node only on FX-D192+ code | `git log` contains `exclusive_gpus`; no `CUBLAS_STATUS_ALLOC_FAILED` / CUDA OOM in a leg's trainers.log | 10-18: two G3S pools OOM-aborted on GPU 0 |
+| PL27 | every mechanism changed since the last batch passed its listed sanity checks before launch, on CPU and on a ≤ 15-min GPU smoke | FELIX FX-N124 (C1-C6, G1-G3) | 10-21: today's utility / stream / offset changes must be verified before the run, not after |
 | PL21 | a new or changed prefix-safe EV passes on stored legs of all six × every trace before launch | run it over the last batch's legs (`event_invariants.load_run` + the check) | PR36: EV21 DOOMED 17 oort_star/fedbuff legs mid-batch |
 
 ## Throughput (both tracks; operator 10-15)

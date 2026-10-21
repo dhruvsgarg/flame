@@ -8,7 +8,7 @@ accuracy in the expected time window (tracked per track: FELIX Scoreboard). Equa
 **Four docs (plus FELIX's insights companion) are the only working references:**
 - **this doc** — the rules for all four docs, the lessons and tripwires both tracks share, and the queue of
   shared infrastructure work;
-- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS (10-20): optimize Felix (FX-N109) on the FedScale task-time model (FX-D197); PR39 phase 1 graded 14 / 24 on it; day plan D0-D5: fixes, then quick sim screens (I5-I9, local work, utility, eval value), then long runs → claims (FX-N108) → sim-only experiments. Throughput (FX-N100) on every batch; sim speedup never < 1×, aim 2-5×+.**
+- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS (10-20): optimize Felix (FX-N109) on the FedScale task-time model (FX-D197); PR39 phase 1 graded 14 / 24 on it; PR40a screened I5-I9, local work, utility and eval value: none beats default Felix (FELIX Formulation "PR40a"); next PR40b, baselines re-run, then long runs → claims (FX-N108) → sim-only experiments. Throughput (FX-N100) on every batch; sim speedup never < 1×, aim 2-5×+.**
   - [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) — Felix's companion: telemetry-backed insights for the paper (model, catalog, findings).
 - [PARITY_READINESS.md](PARITY_READINESS.md) — real↔sim parity for both tracks: climbing rules (C1-C9: correct before
   equal, instrument what you can't see, launch only when fixes are maximized), method, tools, per-track scoreboard.
@@ -77,6 +77,10 @@ Scoreboard
   compounding clocks, replicate floors, draw cells. Never use a long run to find bugs. Every run is packed on measured resources (PARITY
   C21, C22, Throughput).
 
+- **R26 Idea → model → short realistic screen → end to end, else pivot (operator 10-21).** A new mechanism is first modeled on stored
+  telemetry and traces (offline, minutes), then screened on the shortest scenario our workload really has (real device / availability
+  traces, ≤ 30 min). Only a gain there earns an implementation for end-to-end FL legs; no gain = pivot, recorded as a tripwire. Each
+  idea's design choice and verdict is written in the track doc.
 - **R25 Sparse search, dense confirmation (operator 10-21):** search configs on one seed per arm; replicates and longer runs go only to
   arms still in contention (FELIX Decisions).
 - **R1 Correctness first; passing tests and parity are consequences.** If something looks wrong against
