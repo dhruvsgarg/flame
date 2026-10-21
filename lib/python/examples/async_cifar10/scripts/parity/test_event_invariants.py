@@ -595,3 +595,25 @@ def test_ev21_eval_tasks_are_felix_only_and_reach_avl_eval(tmp_path, monkeypatch
     assert _status(_ev21_run(tmp_path / "c", monkeypatch, evals=["UN_AVL"], **felix), "EV21_avl_eval_semantics") == "FAIL"
     assert _status(_ev21_run(tmp_path / "d", monkeypatch, evals=["AVL_TRAIN"] * 25, **felix), "EV21_avl_eval_semantics") == "FAIL"  # never AVL_EVAL
     assert _status(_ev21_run(tmp_path / "e", monkeypatch, evals=["AVL_TRAIN"] * 25, done=False, **felix), "EV21_avl_eval_semantics") == "PASS"  # live prefix
+
+
+def _ev22(b, hp, agg=(), sel=None):
+    cfg = {"hyperparameters": {"simUnavailability": True, **hp}, "selector": {"kwargs": sel or {}}}
+    return ev.ev22_availability_knowledge({"dir": f"/x/run_1_dbg_{b}_n75_alpha0.1_syn_50_3st_sim", "cfg": cfg, "agg": list(agg)})
+
+
+def test_ev22_r27_knowledge_per_baseline():
+    assert _ev22("felix", {"proactive_inflight_evict": "True"})["status"] == "PASS"
+    assert _ev22("oort_star", {"avail_select_filter": "True", "proactive_inflight_evict": "False"})["status"] == "PASS"
+    assert _ev22("refl", {"avail_select_filter": "True"})["status"] == "FAIL"  # F41's REFL: current-state filter
+    assert _ev22("refl", {"avail_knowledge": "oracle"}, sel={"avail_predictor": "oracle"})["status"] == "PASS"  # REFL*
+    assert _ev22("feddance", {"avail_knowledge": "none", "avail_select_filter": "False"})["status"] == "PASS"
+    assert _ev22("feddance", {"avail_knowledge": "oracle"}, sel={"checkin_source": "selection"})["status"] == "PASS"  # FedDance*
+    assert _ev22("feddance", {"avail_knowledge": "oracle"}, sel={"checkin_source": "returns"})["status"] == "FAIL"
+
+
+def test_ev22_unaware_run_that_excludes_unavail_fails():
+    sel = {"event": "selection", "task": "train", "excluded_by": {"unavail": 3}}
+    assert _ev22("fedbuff", {"avail_knowledge": "none", "avail_select_filter": "False"}, agg=[sel])["status"] == "FAIL"
+    evi = {"event": "abandon_timeout", "reason": "aware_boundary_eviction"}
+    assert _ev22("oort_star", {"avail_knowledge": "oracle"}, agg=[evi])["status"] == "FAIL"

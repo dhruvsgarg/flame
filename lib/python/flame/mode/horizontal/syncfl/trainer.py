@@ -497,6 +497,8 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.LOCAL_ACCURACY: self._local_accuracy,
                 MessageType.TRAIN_LOSS_MEAN: getattr(self, "_train_loss_mean", None),
             }
+            if getattr(self, "_val_probe", None) is not None:
+                msg[MessageType.VAL_PROBE] = self._val_probe
 
         # simulated-time mode only: report the modeled completion time/duration
         # so the aggregator orders this update by a virtual clock. No-op in real

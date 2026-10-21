@@ -34,7 +34,9 @@ from flame.common.util import MLFramework, get_ml_framework_in_use
 from flame.end import End
 from flame.selector import scoring
 from flame.selector.async_base import AsyncSelectorBase, SelectContext
+from flame.config import TrainerAvailState
 from flame.selector.properties import (
+    PROP_AVL_STATE,
     PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_DATASET_SIZE,
     PROP_END_ID,
@@ -147,17 +149,35 @@ class AsyncOortSelector(AsyncSelectorBase):
         # top_aggregator.py; not a base-mechanism concept.
         self.trainer_eval_recv_ends = list()
         self.curr_round_eval_slots_left = int(self.eval_goal_factor * self.agg_goal)
+        # F42c probes: eval tasks become federated-validation probes, `probePerWindow` per `probeWindowS` (token bucket on
+        # the avail clock) instead of a per-version budget; AVL_EVAL clients first, idle AVL_TRAIN ones when none is free.
+        self.probe_per_window = int(kwargs.get("probePerWindow", 0) or 0)
+        self.probe_window_s = float(kwargs.get("probeWindowS", 3600.0))
+        self._probe_tokens, self._probe_t = float(self.probe_per_window), None
 
     # ------------------------------------------------------------------ hooks
 
     def _concurrency_for_task(self, task_to_perform, num_ends, effective_c):
         if task_to_perform == "eval":
+            if self.probe_per_window:
+                self._refill_probes()
+                return min(num_ends, effective_c + self.curr_round_eval_slots_left)
             if self.eval_goal_factor <= 0.0:
                 return 0
             # Maximum possible concurrency for eval; narrowed later in
             # `_choose` based on eval tasks already sent/received this round.
             return min(num_ends, effective_c + self.curr_round_eval_slots_left)
         return min(num_ends, effective_c)
+
+    def _refill_probes(self) -> None:
+        now = self._sim_now_s
+        if now is None:
+            return
+        if self._probe_t is not None:
+            self._probe_tokens = min(self.probe_per_window,
+                                     self._probe_tokens + (now - self._probe_t) * self.probe_per_window / self.probe_window_s)
+        self._probe_t = now
+        self.curr_round_eval_slots_left = int(self._probe_tokens)
 
     def _pre_choose(self, ctx: SelectContext) -> None:
         """Run the pacer that controls `round_threshold`. TRAIN-ONLY: felix's
@@ -176,6 +196,9 @@ class AsyncOortSelector(AsyncSelectorBase):
         before AND whose last eval is at least `evalStaleGate` model-versions old."""
         if ctx.task_to_perform != "eval":
             return True
+        if self.probe_per_window:  # a probe needs no training history; re-probe a client after evalStaleGate seconds
+            last = end.get_property(PROP_LAST_REPORT_TS)
+            return last is None or (self._sim_now_s is not None and self._sim_now_s - last >= self.eval_stale_gate)
         last_eval = end.get_property(PROP_LAST_EVAL_ROUND)
         if self.eval_gate_unit == "updates":
             last = end.get_property(PROP_LAST_REPORT_UPDATES)
@@ -196,11 +219,16 @@ class AsyncOortSelector(AsyncSelectorBase):
         """Pick the `k` (capped by remaining eval headroom) candidates whose
         eval participation is stalest (ascending last_eval_round)."""
         feasible_extra = min(k, self.curr_round_eval_slots_left)
-        prop = PROP_LAST_REPORT_TS if self.eval_gate_unit == "seconds" else PROP_LAST_EVAL_ROUND
+        prop = PROP_LAST_REPORT_TS if self.eval_gate_unit == "seconds" or self.probe_per_window else PROP_LAST_EVAL_ROUND
         end_to_last_eval = {end_id: end.get_property(prop) or 0 for end_id, end in candidates.items()}
-        sorted_end_ids = sorted(end_to_last_eval, key=end_to_last_eval.get)
-        chosen = sorted_end_ids[:feasible_extra]
+        key = end_to_last_eval.get
+        if self.probe_per_window:  # AVL_EVAL first: a probe there costs no train slot
+            key = lambda e: (candidates[e].get_property(PROP_AVL_STATE) != TrainerAvailState.AVL_EVAL.value,
+                             end_to_last_eval[e])
+        chosen = sorted(end_to_last_eval, key=key)[:feasible_extra]
         self.curr_round_eval_slots_left -= len(chosen)
+        if self.probe_per_window:
+            self._probe_tokens -= len(chosen)
         return chosen
 
     def _choose_train(self, candidates: dict[str, End], k: int, ctx: SelectContext) -> list:
@@ -326,7 +354,8 @@ class AsyncOortSelector(AsyncSelectorBase):
             self.ordered_updates_recv_ends + self.trainer_eval_recv_ends
         )
         self.trainer_eval_recv_ends = []
-        self.curr_round_eval_slots_left = int(self.eval_goal_factor * self.agg_goal)
+        if not self.probe_per_window:  # probes refill by time, not per version
+            self.curr_round_eval_slots_left = int(self.eval_goal_factor * self.agg_goal)
         super()._cleanup_recvd_ends(ends)
 
     def _cleanup_removed_ends(self, end_id: str) -> None:

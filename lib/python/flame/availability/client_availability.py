@@ -40,6 +40,8 @@ from flame.telemetry.events import (
 
 logger = logging.getLogger(__name__)
 
+AVAIL_KNOWLEDGE = ("notify", "oracle", "none")  # R27
+
 # Re-clock of the selector's wall-based abandon (SEND_TIMEOUT_WAIT_S) onto the
 # vclock. Heuristic basis (PARITY.md / design §1): train takes ≤60s, so an
 # in-flight trainer dispatched > 90 vclock-seconds ago is assumed offline.
@@ -89,14 +91,14 @@ class ClientAvailability:
         """
         hp = config.hyperparameters
         self.trainer_event_dict: Optional[dict] = None
+        self._avail_trace_name: Optional[str] = None
         # avail_select_filter: whether UN_AVL trainers are excluded from the
-        # selection pool (get_curr_task_ineligible_trainers). True for aware
-        # baselines (felix/oort_star/refl/feddance); False for unaware (oort/fedbuff).
+        # selection pool (get_curr_task_ineligible_trainers). True for Felix (notify) and the oracle `*` variants.
         self.avail_select_filter: bool = bool(
             getattr(hp, "avail_select_filter", True)
         )
         # proactive_inflight_evict: whether in-flight slots are freed at the next
-        # selection boundary when the trace shows UN_AVL (felix only).
+        # selection boundary when the client's state shows UN_AVL (felix only).
         # NOTE: `_legacy_aware` fallback is dead in practice -- the pydantic
         # field always exists (default=None), so getattr never falls back to
         # it; kept as the correct safe default if that ever changes.
@@ -104,6 +106,16 @@ class ClientAvailability:
         self.proactive_inflight_evict: bool = bool(
             getattr(hp, "proactive_inflight_evict", _legacy_aware)
         )
+        # R27 (F42a): how the aggregator learns client state. notify = the client's own push (Felix only); oracle = trace read
+        # (`*` variants); none = unaware. Unset = the legacy flags (evict → notify, filter → oracle).
+        self.avail_knowledge: str = str(getattr(hp, "avail_knowledge", None) or (
+            "notify" if self.proactive_inflight_evict else "oracle" if self.avail_select_filter else "none"))
+        if self.avail_knowledge not in AVAIL_KNOWLEDGE:
+            raise ValueError(f"avail_knowledge={self.avail_knowledge!r}: expected one of {AVAIL_KNOWLEDGE}")
+        if self.proactive_inflight_evict and self.avail_knowledge != "notify":
+            raise ValueError("R27: proactive_inflight_evict needs avail_knowledge=notify (only Felix learns a client's flip)")
+        self.avail_select_filter = self.avail_knowledge != "none"
+        self.notify_latency_s: float = float(getattr(hp, "notify_latency_s", None) or 0.0)
         self.pending_withheld: dict = {}
         # C.2 send-time withhold ledgers (shared by asyncfl + oort commit loops):
         #   _sim_withheld_payload   end -> (orig_sct, (msg, metadata)) held update
@@ -139,6 +151,7 @@ class ClientAvailability:
             logger.warning("[AVAIL] availability enabled but no trace name configured")
             return
 
+        self._avail_trace_name = trace_name
         trace_dir = getattr(hp, "availability_trace_dir", None)
         self.trainer_event_dict = self.read_trainer_unavailability(
             trace=trace_name, base_dir=trace_dir
@@ -195,7 +208,51 @@ class ClientAvailability:
         return _read_trainer_unavailability(trace, base_dir=base_dir)
 
     # ------------------------------------------------------------------
-    # Oracular selection gate
+    # Knowledge gate (R27): what the aggregator believes a client's state is
+    # ------------------------------------------------------------------
+
+    def _believed_state(self, tid: str, now: float) -> TrainerAvailState:
+        """oracle: the trace now. notify: the client's last push (real: STATE_UPDATE on the channel end; sim: the trace flip
+        delivered `notify_latency_s` later). Only called when avail_knowledge != none."""
+        k = self._knowledge()
+        if k == "notify" and not getattr(self, "simulated", False):
+            st = self._notified_states().get(tid)
+            return st if st is not None else TrainerAvailState.AVL_TRAIN
+        trace = self.trainer_event_dict.get(tid)
+        if not trace:
+            return TrainerAvailState.AVL_TRAIN
+        t = now - float(getattr(self, "notify_latency_s", 0.0) or 0.0) if k == "notify" else now
+        return state_at(trace, t)
+
+    def _notified_states(self) -> dict:
+        """Real notify: end -> the state its trainer last pushed (PROP_END_AVL_STATE via channel.update_state)."""
+        from flame.end import PROP_END_AVL_STATE
+        out = {}
+        for ch in self._avail_channels():
+            for eid, end in getattr(ch, "_ends", {}).items():
+                st = end.get_property(PROP_END_AVL_STATE)
+                if st is not None:
+                    out[eid] = TrainerAvailState(getattr(st, "value", st))
+        return out
+
+    def _avail_channels(self) -> list:
+        ch = self.cm.get_by_tag(self.dist_tag) if getattr(self, "cm", None) and getattr(self, "dist_tag", None) else None
+        return [ch] if ch is not None else []
+
+    def _probe_mode(self) -> bool:
+        kw = getattr(getattr(getattr(self, "config", None), "selector", None), "kwargs", None) or {}
+        return int(kw.get("probePerWindow", 0) or 0) > 0
+
+    def _knowledge(self) -> str:
+        """R27 mode; hosts built without _init_availability fall back to the legacy avail_select_filter mapping."""
+        return getattr(self, "avail_knowledge", None) or ("oracle" if getattr(self, "avail_select_filter", True) else "none")
+
+    @property
+    def _belief_source(self) -> str:
+        return {"notify": "client_notify", "oracle": "trace_read"}.get(self._knowledge(), "none")
+
+    # ------------------------------------------------------------------
+    # Selection gate
     # ------------------------------------------------------------------
 
     def get_curr_unavail_trainers(self) -> list:
@@ -217,8 +274,8 @@ class ClientAvailability:
         now = self._avail_now()
         unavail = [
             tid
-            for tid, trace in self.trainer_event_dict.items()
-            if state_at(trace, now) == TrainerAvailState.UN_AVL
+            for tid in self.trainer_event_dict
+            if self._believed_state(tid, now) == TrainerAvailState.UN_AVL
         ]
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -247,15 +304,15 @@ class ClientAvailability:
         has_eval = getattr(self, "_trace_has_avl_eval", False)
         excluded_state = (
             TrainerAvailState.AVL_EVAL if task == "train"
-            else TrainerAvailState.AVL_TRAIN if (task == "eval" and has_eval)
-            else None
+            else TrainerAvailState.AVL_TRAIN if (task == "eval" and has_eval and not self._probe_mode())
+            else None  # F42c probes spill to idle AVL_TRAIN clients (the selector prefers AVL_EVAL)
         )
         now = self._avail_now()
         ineligible = [
             tid
-            for tid, trace in self.trainer_event_dict.items()
-            if state_at(trace, now) == TrainerAvailState.UN_AVL
-            or (excluded_state is not None and state_at(trace, now) == excluded_state)
+            for tid in self.trainer_event_dict
+            if (st := self._believed_state(tid, now)) == TrainerAvailState.UN_AVL
+            or (excluded_state is not None and st == excluded_state)
         ]
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -296,9 +353,10 @@ class ClientAvailability:
         if self.trainer_event_dict is None:
             return
         now = self._avail_now()
+        aware = self._knowledge() != "none"  # R27: an unaware stack's stamp is telemetry only (its selector ignores it)
         for end_id in list(channel._ends.keys()):
             trace = self.trainer_event_dict.get(end_id)
-            state = state_at(trace, now) if trace else TrainerAvailState.AVL_TRAIN
+            state = (self._believed_state(end_id, now) if aware else state_at(trace, now)) if trace else TrainerAvailState.AVL_TRAIN
             channel.set_end_property(end_id, PROP_AVL_STATE, state)
         # No separate agg_belief_change emission for the "selection" checkpoint:
         # PROP_AVL_STATE (stamped above) is already read by emit_selection into
@@ -1117,11 +1175,10 @@ class ClientAvailability:
                 continue  # complete and delivered by now; still computing or send-gated is evictable (FX-D71, FX-D75)
             if end in committed or end in self.pending_withheld:
                 continue  # invariant 1: already committed / registered
-            trace = self.trainer_event_dict.get(end)
-            if not trace:
+            if not self.trainer_event_dict.get(end):
                 continue
             task = self._inflight_task(end)
-            state = state_at(trace, now)
+            state = self._believed_state(end, now)
             if deliverable(state, task):
                 continue  # can still deliver — leave the slot
             self.free_stalled_slot(
@@ -1144,7 +1201,7 @@ class ClientAvailability:
     def _wake_task(self) -> Optional[str]:
         """FX-D165: only an eval-dispatching selector (Felix) wakes on AVL_EVAL; for the rest AVL_EVAL is UN_AVL."""
         kw = getattr(getattr(getattr(self, "config", None), "selector", None), "kwargs", None) or {}
-        return None if float(kw.get("evalGoalFactor") or 0) > 0 else "train"
+        return None if float(kw.get("evalGoalFactor") or 0) > 0 or self._probe_mode() else "train"
 
     def _next_avail_vclock(self) -> Optional[float]:
         """Stage F: earliest vclock at which any trainer next becomes selectable.

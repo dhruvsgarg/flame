@@ -128,8 +128,8 @@ class TopAggregator(SyncTopAgg):
         # FX-N54: with no recv end, a due withheld delivery is work to commit, not starvation.
         self._sim_reinject_when_idle = str(
             getattr(self.config.hyperparameters, "sim_reinject_when_idle", True)).lower() == "true"
-        self._unaware_ignores_trace = str(
-            getattr(self.config.hyperparameters, "unaware_ignores_trace", True)).lower() == "true"
+        if str(getattr(self.config.hyperparameters, "unaware_ignores_trace", True)).lower() != "true":
+            raise ValueError("R27: unaware_ignores_trace=False lets an unaware baseline select on the oracle trace")
         # FX-N56: an unaware baseline's withheld trainer keeps its slot until its 90s timeout, as in real.
         self._sim_hold_withheld_slot = str(
             getattr(self.config.hyperparameters, "sim_hold_withheld_slot", True)).lower() == "true"
@@ -289,7 +289,8 @@ class TopAggregator(SyncTopAgg):
                    "n_trainers": len(channel.all_ends() or []), "cycle_losses": self._dkc_losses,
                    "cycle_client_losses": getattr(self, "_dkc_client_losses", []),
                    "n_eligible_train": sum(s in train_ok for s in states), "noise_scale": st.get("noise_scale"),
-                   "avg_staleness": float(np.mean(self._round_update_values["staleness"] or [0]))}
+                   "avg_staleness": float(np.mean(self._round_update_values["staleness"] or [0])),
+                   "now": self._avail_now(), "val_probes": getattr(self, "_val_probes", [])}
         k, c = self._agg_goal, self._dkc_c_config
         if self._dkc is not None:
             k, c = self._dkc.step(metrics)
@@ -299,10 +300,11 @@ class TopAggregator(SyncTopAgg):
             from flame.selector.update_stats import cos_split
             telemetry.emit("dynamic_kc", round=self._round, k=k, c=c, cos_stale_minus_fresh=cos_split(
                 st.get("cos_by_staleness") or []),
-                **{x: v for x, v in metrics.items() if x not in ("model_version", "cycle_losses", "cycle_client_losses")},
+                **{x: v for x, v in metrics.items() if x not in ("model_version", "cycle_losses", "cycle_client_losses", "val_probes")},
+                n_val_probes=len(metrics["val_probes"]),
                 loss_per_sample=float(np.mean(self._dkc_losses)) if self._dkc_losses else None,
                 **{x: st.get(x) for x in ("n", "g2", "tr_sigma", "sq_mean", "mean_sq")})
-        self._dkc_losses, self._dkc_client_losses = [], []
+        self._dkc_losses, self._dkc_client_losses, self._val_probes = [], [], []
 
     def _reset_agg_goal_variables(self):
         logger.debug("##### reset agg goal variables")
@@ -991,6 +993,13 @@ class TopAggregator(SyncTopAgg):
 
         # Case #2: Message after task_to_perform=EVAL
         elif MessageType.STAT_UTILITY in msg:
+            if msg.get(MessageType.VAL_PROBE):  # F42c: held-out (nll sum, correct, n) of the model this end received
+                self._val_probes = getattr(self, "_val_probes", [])
+                self._val_probes.append((self._avail_now(), *msg[MessageType.VAL_PROBE]))
+                if telemetry.is_enabled():
+                    nll, correct, n = msg[MessageType.VAL_PROBE]
+                    telemetry.emit("val_probe", round=self._round, end_id=end, model_version=msg[MessageType.MODEL_VERSION],
+                                   loss=nll / max(n, 1), acc=correct / max(n, 1), n=n, vclock_now=self._avail_now())
             logger.debug(
                 f"[AGG_RECV_EVAL] received eval message from {end}, "
                 f"with stat_utility={msg[MessageType.STAT_UTILITY]}, "
@@ -1701,6 +1710,7 @@ class TopAggregator(SyncTopAgg):
             curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
                 task_to_perform
             )
+            _state_ineligible = set(curr_unavail_trainer_list)  # R27: knowledge-based only (EV22 reads its stamp)
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts (§4.5 residence, sct→delivery_ts).
             if self._withheld_slot_held and channel._selector is not None:  # FX-N56: a selector timeout freed it
@@ -1713,7 +1723,7 @@ class TopAggregator(SyncTopAgg):
                 )
         else:
             curr_unavail_trainer_list = []
-            _wh = _ow = set()
+            _wh = _ow = _state_ineligible = set()
 
         # exclude ends in their post-commit cooldown (until vclock >= sct + gap);
         # prune expired entries.
@@ -1751,10 +1761,10 @@ class TopAggregator(SyncTopAgg):
         # the oracular read instead of staying all-UNKNOWN.
         self._avail_stamp_end_states(channel)
         if self.trainer_event_dict is not None and channel._selector is not None:
-            # FX-N55: the stamp is the oracle trace; an unaware baseline must not select on it.
-            channel._selector.filter_by_avl_state = self.avail_select_filter or not self._unaware_ignores_trace
-        self._stamp_exclusions(channel, task_to_perform, withheld=_wh, owed=_ow,
-                               unavail=set(curr_unavail_trainer_list))
+            # FX-N55, R27: an unaware baseline must not select on the stamp.
+            channel._selector.filter_by_avl_state = self.avail_select_filter
+        self._stamp_exclusions(channel, task_to_perform, withheld=_wh, owed=_ow, unavail=_state_ineligible,
+                               cooling=set(curr_unavail_trainer_list) - _state_ineligible - _wh - _ow)
 
         # Expose current availability-timeline time to selector so it can attach
         # it to selection events. _avail_now() covers both modes — real used to

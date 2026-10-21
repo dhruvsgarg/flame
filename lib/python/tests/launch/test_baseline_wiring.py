@@ -169,10 +169,10 @@ class TestOortStarWiring:
 
 
 class TestReflWiring:
-    def test_avail_select_filter_on(self, baselines, parity_experiments):
+    def test_unaware_r27(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "refl_n300_alpha0.1_syn0_stream_sim", "refl")
-        assert hp["avail_select_filter"] == "True"
+        assert hp["avail_select_filter"] == "False" and hp["avail_knowledge"] == "none"
 
     def test_proactive_inflight_evict_off(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
@@ -186,10 +186,10 @@ class TestReflWiring:
 
 
 class TestFedDanceWiring:
-    def test_avail_select_filter_on(self, baselines, parity_experiments):
+    def test_unaware_r27(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "feddance_n300_alpha0.1_syn0_stream_sim", "feddance")
-        assert hp["avail_select_filter"] == "True"
+        assert hp["avail_select_filter"] == "False" and hp["avail_knowledge"] == "none"
 
     def test_proactive_inflight_evict_off(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
@@ -237,3 +237,20 @@ class TestFedBuffWiring:
         assert str(tta.get("enabled", "False")).strip().lower() != "true", (
             "fedbuff should not use oracular tracking"
         )
+
+
+# R27 (ROBUST, operator 10-21): only Felix learns client state (its own notify); `*` variants are labelled oracle; the rest unaware.
+R27_ALLOWED = {"felix": "notify", "oort_star": "oracle"}
+
+
+def test_r27_availability_knowledge_per_baseline(baselines, parity_experiments):
+    seen = set()
+    for exp in parity_experiments:
+        b = exp["baseline"]
+        hp = _merged_hp(baselines, parity_experiments, exp["name"], b)
+        want = R27_ALLOWED.get(b, "none")
+        assert hp.get("avail_knowledge") == want, (exp["name"], hp.get("avail_knowledge"))
+        assert str(hp.get("avail_select_filter")) == ("False" if want == "none" else "True"), exp["name"]
+        assert (str(hp.get("proactive_inflight_evict")) == "True") == (want == "notify"), exp["name"]
+        seen.add(b)
+    assert {"felix", "fedbuff", "oort", "oort_star", "refl", "feddance"} <= seen

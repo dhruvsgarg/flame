@@ -77,6 +77,9 @@ Scoreboard
   compounding clocks, replicate floors, draw cells. Never use a long run to find bugs. Every run is packed on measured resources (PARITY
   C21, C22, Throughput).
 
+- **R27 Availability knowledge (operator 10-21; sanity check on every baseline):** only Felix (and FluxTune, built on it) learns client
+  state, and only through the client's own notify. Every other baseline is unaware, except a `*` variant (Oort*, REFL*), which is
+  labelled oracle and reads the trace. Physical limits (an offline client cannot upload) apply to all. FELIX F42a.
 - **R26 Idea → model → short realistic screen → end to end, else pivot (operator 10-21).** A new mechanism is first modeled on stored
   telemetry and traces (offline, minutes), then screened on the shortest scenario our workload really has (real device / availability
   traces, ≤ 30 min). Only a gain there earns an implementation for end-to-end FL legs; no gain = pivot, recorded as a tripwire. Each

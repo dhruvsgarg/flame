@@ -85,8 +85,15 @@ class REFLOortSelector(OortSelector):
         trace_file = kwargs.get("availability_trace_file", None)
         trainer_registry = kwargs.get("trainer_registry_file", None)
 
+        # F42b (R27): REFL* = "oracle" (future trace), REFL-fc = "forecast" (on-device, own past days); built at first select.
+        self.avail_predictor = kwargs.get("avail_predictor") or None
+        if self.avail_predictor not in (None, "oracle", "forecast"):
+            raise ValueError(f"avail_predictor={self.avail_predictor!r}: expected oracle or forecast")
+        self._round_s = None  # EMA of the time between selections: REFL's slot length
         if trace_file:
             self.avail_tracker = REFLAvailabilityTracker(trace_file, trainer_registry)
+        elif self.avail_predictor:
+            self.avail_tracker = None  # needs the leg's trace name (channel property `availability_trace`)
         else:
             self.avail_tracker = None
             if self.avail_priority > 0:
@@ -136,8 +143,19 @@ class REFLOortSelector(OortSelector):
             return {}
 
         round_num = channel_props.get("round", 0)
-        cur_time = channel_props.get("cur_time", 0)
+        cur_time = channel_props.get("cur_time", channel_props.get("vclock_now") or 0)
         round_duration_hint = kwargs.get("round_duration", 100.0)
+        if self.avail_predictor:
+            if self.avail_tracker is None and channel_props.get("availability_trace"):
+                from flame.availability.refl_predictors import SeasonalForecaster, TraceOracle
+                cls = TraceOracle if self.avail_predictor == "oracle" else SeasonalForecaster
+                self.avail_tracker = cls(channel_props["availability_trace"])
+            last = getattr(self, "_last_select_t", None)
+            if last is not None and cur_time > last:
+                d = cur_time - last
+                self._round_s = d if self._round_s is None else 0.8 * self._round_s + 0.2 * d
+            self._last_select_t = cur_time
+            round_duration_hint = kwargs.get("round_duration", self._round_s or 100.0)
 
         logger.info(
             f"REFL Oort selecting {num_of_ends} ends for round {round_num}, "
@@ -251,6 +269,8 @@ class REFLOortSelector(OortSelector):
             extra={
                 "avail_priority": self.avail_priority,
                 "num_priority": len(priority_ends),
+                "priority_ids": sorted(set(priority_ends) & set(newly_selected)),  # F42: predictor audit (picks it said leave soon)
+                "slot_s": round_duration_hint if self.avail_tracker is not None else None,
                 "num_blacklist": len(blacklist),
                 "stale_due": self.stale_due,
                 "exploration_factor": self.exploration_factor,

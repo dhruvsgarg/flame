@@ -111,6 +111,9 @@ class DynamicKCController:
                 )
                 self.c = clamped
                 self._c_history.append((self._total_updates, self.c))
+                if self.k > self.c:  # F42d: K <= c holds after c falls too
+                    self.k = max(self.k_min, self.c)
+                    self._k_history.append((self._total_updates, self.k))
 
         return self.k, self.c
 

@@ -1,0 +1,6 @@
+# F42 smoke (R19): every F42 leg at 1 h (cifar) / 30 min (speech) vclock on both nodes; then config_audit.py + EV + predictor_audit.
+name: f42smoke
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1"
+stages:
+  - {id: SS, args: "--tier F42 --gpu-share 2 --datasets google_speech --scale-smoke 1800"}
+  - {id: SC, args: "--tier F42 --datasets cifar10 --scale-smoke 3600"}

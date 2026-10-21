@@ -96,6 +96,10 @@ class PyTorchCifar10Trainer(Trainer):
         self.task_to_perform = "train"
 
         self.use_oort_loss_fn = self.config.hyperparameters.use_oort_loss_fn
+        # F42c: share of every client's data held out from training for all baselines; only Felix's eval probes read it.
+        self.validation_holdout = float(getattr(self.config.hyperparameters, "validation_holdout", 0) or 0)
+        self.validation_probe = str(getattr(self.config.hyperparameters, "validation_probe", False)).lower() == "true"
+        self._val_probe = None
         self.trainer_indices_list = self.config.hyperparameters.trainer_indices_list
         self.trainer_start_ts = time.time()
 
@@ -281,7 +285,7 @@ class PyTorchCifar10Trainer(Trainer):
 
         train: 3 x samples x ms/sample (forward + backward) + down + up model transfers; eval: 1 x samples + download.
         samples: train = local_steps x batch, else epochs x visible shard (the experiment's shard, also under harness truncation)."""
-        frac = self._stream_visible / self._stream_total if getattr(self, "_stream_total", 0) else 1.0
+        frac = getattr(self, "_train_visible", self._stream_visible) / self._stream_total if getattr(self, "_stream_total", 0) else 1.0
         shard = len(self.trainer_indices_list) * min(1.0, frac)
         steps = getattr(self, "_task_steps", self.config.hyperparameters.local_steps)
         if kind == "train":
@@ -289,6 +293,8 @@ class PyTorchCifar10Trainer(Trainer):
             if steps is not None and self.config.hyperparameters.local_work:
                 samples = min(samples, shard)  # FX-N116: capped at one epoch
             passes, transfers = 3, 2
+        elif getattr(self, "validation_probe", False) and getattr(self, "_val_mask", None) is not None:  # F42c probe
+            samples, passes, transfers = len(self.trainer_indices_list) * len(self._val_pos) / self._stream_total, 1, 1
         else:
             samples, passes, transfers = self.epochs * shard, 1, 1
         self._last_task_model = dict(samples=samples, compute_s=passes * samples * self.compute_ms / 1000.0,
@@ -632,6 +638,9 @@ class PyTorchCifar10Trainer(Trainer):
         self._stream_order = torch.randperm(
             self._stream_total, generator=torch.Generator().manual_seed(seed)
         )
+        h = getattr(self, "validation_holdout", 0.0)
+        k = round(1 / h) if h > 0 else 0
+        self._val_mask = (torch.arange(self._stream_total) % k == k - 1) if k else None  # F42c: every k-th arrival
 
         # Build initial loader (full pool unless streaming is enabled)
         self._rebuild_stream_loader()
@@ -682,6 +691,11 @@ class PyTorchCifar10Trainer(Trainer):
         self._stream_clock_s = self._stream_now() if self._stream_sched is not None else None
         n = self._stream_visible = self._visible_sample_count()
         full = n >= self._stream_total
+        pos = self._stream_order if full else self._stream_order[:n]
+        if getattr(self, "_val_mask", None) is not None:  # F42c: held-out arrivals never reach the train loader
+            m = self._val_mask[:len(pos)]
+            self._val_pos, pos, full = pos[m], pos[~m], False
+        self._train_visible = len(pos)
         if self._stream_gpu:
             if full:
                 subset = data_utils.TensorDataset(
@@ -689,16 +703,28 @@ class PyTorchCifar10Trainer(Trainer):
                 )
             else:
                 # align index with data device (order is built on CPU)
-                pos = self._stream_order[:n].to(self._stream_all_data.device)
+                gpos = pos.to(self._stream_all_data.device)
                 subset = data_utils.TensorDataset(
-                    self._stream_all_data[pos], self._stream_all_targets[pos]
+                    self._stream_all_data[gpos], self._stream_all_targets[gpos]
                 )
         else:
-            pos = self._stream_order if full else self._stream_order[:n]
             subset = data_utils.Subset(self._stream_full_dataset, pos.tolist())
         self.train_loader = torch.utils.data.DataLoader(
             subset, **self._stream_train_kwargs
         )
+
+    def _val_loader(self):
+        """F42c: a loader over the visible held-out samples (None when the holdout is off or none has arrived yet)."""
+        pos = getattr(self, "_val_pos", None)
+        if not getattr(self, "validation_probe", False) or getattr(self, "_val_mask", None) is None or pos is None or len(pos) == 0:
+            return None
+        kw = dict(self._stream_train_kwargs, shuffle=False)
+        if self._stream_gpu:
+            gpos = pos.to(self._stream_all_data.device)
+            ds = data_utils.TensorDataset(self._stream_all_data[gpos], self._stream_all_targets[gpos])
+        else:
+            ds = data_utils.Subset(self._stream_full_dataset, pos.tolist())
+        return torch.utils.data.DataLoader(ds, **kw)
 
     def _pool_tensors(self):
         """Return (data, targets) tensors for the full sample pool on device.
@@ -1268,12 +1294,17 @@ class PyTorchCifar10Trainer(Trainer):
         _eval_gpu_t0 = time.time()
         # FX-D41: fresh utility per eval; no graph (it chained across evals, OOM).
         self.reset_stat_utility()
+        loader, probe = self._val_loader(), [0.0, 0, 0]  # F42c: Felix's probe scores the held-out samples only
         with torch.no_grad():
-            for epoch in range(1, self.epochs + 1):
-                for batch_idx, (data, target) in enumerate(self.train_loader):
+            for epoch in range(1, (1 if loader is not None else self.epochs) + 1):
+                for batch_idx, (data, target) in enumerate(loader if loader is not None else self.train_loader):
                     data, target = data.to(self.device), target.to(self.device)
                     with self._amp():
                         output = self.model(data)
+                    if loader is not None:
+                        probe[0] += float(F.nll_loss(output.float(), target, reduction="sum"))
+                        probe[1] += int((output.argmax(1) == target).sum())
+                        probe[2] += len(target)
 
                     if self.use_oort_loss_fn == "False":
                         # Loss function to use with Fedbuff
@@ -1294,6 +1325,7 @@ class PyTorchCifar10Trainer(Trainer):
                 # normalize statistical utility of a trainer based on the size
                 # of the dataset
                 self.normalize_stat_utility(epoch)
+        self._val_probe = tuple(probe) if loader is not None else None
         _real_eval_gpu_s = time.time() - _eval_gpu_t0
         # FX-D197: eval = one forward pass over the visible data + the model download
         _modeled_eval_delay_s = self._task_time_s("eval") if self.training_delay_enabled else 0.0

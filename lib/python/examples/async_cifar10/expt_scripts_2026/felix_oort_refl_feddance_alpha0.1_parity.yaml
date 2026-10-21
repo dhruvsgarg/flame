@@ -21,6 +21,8 @@ experiments:
       learningRate: 0.01
     config_overrides:
       hyperparameters:
+        client_notify:  # R27: Felix trainers push their state flips (real)
+          enabled: 'True'
         data_streaming:
           enabled: 'True'
           full_data_available_after_s: 10800
@@ -98,6 +100,7 @@ experiments:
         # Two-axis flag split (T1): felix is the only baseline with both flags ON.
         sim_unavailability: 'True'
         avail_select_filter: 'True'
+        avail_knowledge: notify  # R27
         proactive_inflight_evict: 'True'
       selector:
         kwargs:
@@ -144,6 +147,8 @@ experiments:
       learningRate: 0.01
     config_overrides:
       hyperparameters:
+        client_notify:  # R27: Felix trainers push their state flips (real)
+          enabled: 'True'
         data_streaming:
           enabled: 'True'
           full_data_available_after_s: 10800
@@ -174,6 +179,7 @@ experiments:
         min_trainers_join_timeout_s: 600
         sim_unavailability: 'True'
         avail_select_filter: 'True'
+        avail_knowledge: notify  # R27
         proactive_inflight_evict: 'True'
       selector:
         kwargs:
@@ -230,7 +236,7 @@ experiments:
   aggregator:
     config_template: ../_metadata/aggregator_base.json
     selector: oort
-    tracking_mode: oracular
+    tracking_mode: default  # R27: unaware (log-name label only)
     agg_goal: 10
     log_to_wandb: false
     config_overrides:
@@ -249,6 +255,7 @@ experiments:
         # oort is unaware at selection (avail_select_filter=False); the trace is
         # used for starvation-advance vclock tracking only, not selection filtering.
         avail_select_filter: 'False'
+        avail_knowledge: none  # R27
         proactive_inflight_evict: 'False'
         checkpoint:
           enabled: 'True'
@@ -295,7 +302,7 @@ experiments:
   aggregator:
     config_template: ../_metadata/aggregator_base.json
     selector: oort
-    tracking_mode: oracular
+    tracking_mode: default  # R27: unaware (log-name label only)
     agg_goal: 10
     log_to_wandb: false
     config_overrides:
@@ -310,6 +317,7 @@ experiments:
         # oort is unaware at selection (avail_select_filter=False); the trace is
         # used for starvation-advance vclock tracking only, not selection filtering.
         avail_select_filter: 'False'
+        avail_knowledge: none  # R27
         proactive_inflight_evict: 'False'
         checkpoint:
           enabled: 'True'
@@ -358,7 +366,7 @@ experiments:
   aggregator:
     config_template: ../_metadata/aggregator_base.json
     selector: refl_oort
-    tracking_mode: oracular
+    tracking_mode: default  # R27: unaware (log-name label only)
     agg_goal: 10
     log_to_wandb: false
     config_overrides:
@@ -385,8 +393,9 @@ experiments:
         # in _advance_sim_clock (max(vclock,sct)+overhead, drift-instrumented), NOT a
         # clock ramp. Refine the value from the next run's K3b residual if over/under.
         simCommitOverheadSeconds: 0.011
-        # refl is aware at selection but not proactive-evict (reactive-90s).
-        avail_select_filter: 'True'
+        # R27: refl is unaware (REFL* / REFL-fc are F42b arms).
+        avail_select_filter: 'False'
+        avail_knowledge: none  # R27
         proactive_inflight_evict: 'False'
         checkpoint:
           enabled: 'True'
@@ -440,7 +449,7 @@ experiments:
   aggregator:
     config_template: ../_metadata/aggregator_base.json
     selector: refl_oort
-    tracking_mode: oracular
+    tracking_mode: default  # R27: unaware (log-name label only)
     agg_goal: 10
     log_to_wandb: false
     config_overrides:
@@ -452,8 +461,9 @@ experiments:
         rounds: 20000
         max_experiment_runtime_s: 12600
         aggGoal: 10
-        # refl is aware at selection but not proactive-evict (reactive-90s).
-        avail_select_filter: 'True'
+        # R27: refl is unaware (REFL* / REFL-fc are F42b arms).
+        avail_select_filter: 'False'
+        avail_knowledge: none  # R27
         proactive_inflight_evict: 'False'
         checkpoint:
           enabled: 'True'
@@ -508,7 +518,7 @@ experiments:
   aggregator:
     config_template: ../_metadata/aggregator_base.json
     selector: feddance
-    tracking_mode: client_notify
+    tracking_mode: default  # R27: unaware (log-name label only)
     agg_goal: 10
     log_to_wandb: false
     config_overrides:
@@ -523,8 +533,9 @@ experiments:
         min_trainers_join_timeout_s: 600
         aggGoal: 10
         evalEveryNRounds: 50
-        # feddance is aware at selection but not proactive-evict (reactive-90s).
-        avail_select_filter: 'True'
+        # R27: feddance is unaware; its predictor learns from returns.
+        avail_select_filter: 'False'
+        avail_knowledge: none  # R27
         proactive_inflight_evict: 'False'
         checkpoint:
           enabled: 'True'
@@ -532,6 +543,7 @@ experiments:
       selector:
         kwargs:
           aggr_num: 10
+          checkin_source: returns
   execution:
     num_gpus: 8
     sleep_between_spawns: 1.0
@@ -571,7 +583,7 @@ experiments:
   aggregator:
     config_template: ../_metadata/aggregator_base.json
     selector: feddance
-    tracking_mode: client_notify
+    tracking_mode: default  # R27: unaware (log-name label only)
     agg_goal: 10
     log_to_wandb: false
     config_overrides:
@@ -584,8 +596,9 @@ experiments:
         max_experiment_runtime_s: 12600
         aggGoal: 10
         evalEveryNRounds: 50
-        # feddance is aware at selection but not proactive-evict (reactive-90s).
-        avail_select_filter: 'True'
+        # R27: feddance is unaware; its predictor learns from returns.
+        avail_select_filter: 'False'
+        avail_knowledge: none  # R27
         proactive_inflight_evict: 'False'
         checkpoint:
           enabled: 'True'
@@ -595,6 +608,7 @@ experiments:
       selector:
         kwargs:
           aggr_num: 10
+          checkin_source: returns
   execution:
     num_gpus: 8
     sleep_between_spawns: 1.0
@@ -653,7 +667,8 @@ experiments:
         min_trainers_join_timeout_s: 600
         aggGoal: 10
         simInflightCarryover: false  # FX-N67
-        avail_select_filter: "True"
+        avail_select_filter: 'True'
+        avail_knowledge: oracle  # R27
         proactive_inflight_evict: "False"
         checkpoint:
           enabled: "True"
@@ -712,7 +727,8 @@ experiments:
         rounds: 20000
         max_experiment_runtime_s: 12600
         aggGoal: 10
-        avail_select_filter: "True"
+        avail_select_filter: 'True'
+        avail_knowledge: oracle  # R27
         proactive_inflight_evict: "False"
         checkpoint:
           enabled: "True"
@@ -782,7 +798,8 @@ experiments:
         simSctOrderedDrain: true
         simClockJumpClamp: true
         inflightResidence: true
-        avail_select_filter: "False"
+        avail_select_filter: 'False'
+        avail_knowledge: none  # R27
         proactive_inflight_evict: "False"
         sim_unavailability: "True"
         checkpoint:
@@ -847,7 +864,8 @@ experiments:
         max_experiment_runtime_s: 12600
         aggGoal: 10
         evalEveryNRounds: 50
-        avail_select_filter: "False"
+        avail_select_filter: 'False'
+        avail_knowledge: none  # R27
         proactive_inflight_evict: "False"
         sim_unavailability: "True"
         checkpoint:

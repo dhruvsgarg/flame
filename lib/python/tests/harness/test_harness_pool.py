@@ -746,3 +746,21 @@ def test_f41_cells_arms_and_trace_tied_stream():
     assert "participationDecay=1.0" in by["F41_s50u_c3b"].agg_hp
     assert "k_min=5" in by["F41_s50u_c4"].agg_hp and "stall=true" in by["F41_s50u_c4"].agg_hp
     assert "agg_rate_conf.type=value" in by["F41_s50u_c5"].agg_hp
+
+
+def test_f42_tier_r27_holdout_and_pacing():
+    """F42: every leg holds out 10%; Felix runs a +1 ladder; REFL / FedDance run unaware, forecast and oracle; no Oort."""
+    by = {p.pid: p for p in pool.tier_phases("F42", pool.B6, "cifar10")}
+    arms = ("ctl", "e0", "l3", "l3b", "l4", "l5", "l5p", "e0p", "rfc", "rstar", "fdstar")
+    assert set(by) == {f"F42_{c}_{a}" for c in ("s0u", "s50u") for a in arms}
+    assert all("validation_holdout=0.1" in p.trainer_hp for p in by.values()) and by["F42_s50u_ctl"].runtime_s == 172800
+    assert by["F42_s50u_ctl"].baselines == ("felix", "fedbuff", "refl", "feddance")
+    assert by["F42_s50u_rstar"].baselines == ("refl",) and "avail_predictor=oracle" in by["F42_s50u_rstar"].agg_hp
+    assert by["F42_s50u_fdstar"].baselines == ("feddance",) and "checkin_source=selection" in by["F42_s50u_fdstar"].agg_hp
+    ladder = [by[f"F42_s50u_{a}"].agg_hp for a in ("e0", "l3", "l3b", "l4", "l5")]
+    for knob, first in (("utilityPerSecond", 1), ("participationDecay", 2), ("aimd_k", 3), ("type=value", 4)):
+        assert [knob in h for h in ladder] == [i >= first for i in range(5)], knob
+    p = by["F42_s50u_l5p"]
+    assert "pace_c" in p.agg_hp and "aimd_k" in p.agg_hp and "probePerWindow=60" in p.agg_hp and "validation_probe=true" in p.trainer_hp
+    assert "policy=pace_c" in by["F42_s50u_e0p"].agg_hp and "utilityPerSecond" not in by["F42_s50u_e0p"].agg_hp
+    assert not any("pace_c" in by[f"F42_s50u_{a}"].agg_hp for a in ("e0", "l3", "l3b", "l4", "l5"))

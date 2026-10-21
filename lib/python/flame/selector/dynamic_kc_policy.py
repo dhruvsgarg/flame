@@ -457,6 +457,53 @@ class AvailabilityCapPolicy(DynamicKCPolicy):
         return "availability_cap"
 
 
+class PaceCPolicy(DynamicKCPolicy):
+    """F42d (Ledger C8): pace concurrency c by federated validation (Felix's eval probes on held-out client data).
+
+    Probes `(t, nll_sum, correct, n)` are pooled per window of `window_s` (extended until `min_n` samples); the signal is the
+    mean of the last two windows. Loss above (1 + rho) x its running min with accuracy no better than its best + delta
+    → c x beta (floor c_floor x c_config); loss back at its min, or accuracy past best + delta → c x 2 (cap c_config)."""
+
+    def __init__(self, window_s: float = 3600.0, min_n: int = 200, rho: float = 0.1, beta: float = 0.75,
+                 c_floor: float = 0.25, delta: float = 0.01):
+        self.window_s, self.min_n, self.rho = float(window_s), int(min_n), float(rho)
+        self.beta, self.c_floor, self.delta = float(beta), float(c_floor), float(delta)
+        self._t0, self._acc = None, [0.0, 0, 0]
+        self._sig: list = []
+        self.min_loss, self.best_acc, self.last = float("inf"), -1.0, None
+
+    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        return None
+
+    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
+        now = metrics.get("now")
+        for _, nll, correct, n in metrics.get("val_probes") or []:
+            self._acc[0] += nll; self._acc[1] += correct; self._acc[2] += n
+        if now is None:
+            return None
+        if self._t0 is None:
+            self._t0 = now
+        if now - self._t0 < self.window_s or self._acc[2] < self.min_n:
+            return None
+        self._sig.append((self._acc[0] / self._acc[2], self._acc[1] / self._acc[2]))
+        self._t0, self._acc = now, [0.0, 0, 0]
+        loss = sum(x for x, _ in self._sig[-2:]) / len(self._sig[-2:])
+        acc = sum(y for _, y in self._sig[-2:]) / len(self._sig[-2:])
+        c_cfg = int(metrics.get("c_config") or current_c)
+        self.last = dict(loss=loss, acc=acc, min_loss=self.min_loss, best_acc=self.best_acc)
+        if loss <= self.min_loss or acc > self.best_acc + self.delta:
+            new = min(c_cfg, 2 * current_c)
+        elif loss > (1 + self.rho) * self.min_loss:
+            new = max(max(1, round(self.c_floor * c_cfg)), round(self.beta * current_c))
+        else:
+            new = current_c
+        self.min_loss, self.best_acc = min(self.min_loss, loss), max(self.best_acc, acc)
+        return new
+
+    def name(self) -> str:
+        return "pace_c"
+
+
 _POLICY_REGISTRY: dict = {
     "noop": NoOpPolicy,
     "variance_based": VarianceBasedPolicy,
@@ -468,6 +515,7 @@ _POLICY_REGISTRY: dict = {
     "schedule": SchedulePolicy,
     "aimd_k": AimdKPolicy,
     "availability_cap": AvailabilityCapPolicy,
+    "pace_c": PaceCPolicy,
 }
 
 

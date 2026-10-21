@@ -793,7 +793,8 @@ def ev21_avl_eval_semantics(run):
         return _res("SKIP", "trace has no AVL_EVAL")
     from flame.availability.trace import deliverable, state_at
     aware = _truthy(_hp(run, "avail_select_filter", default="True"))
-    felix = float((run["cfg"].get("selector", {}).get("kwargs", {}) or {}).get("evalGoalFactor") or 0) > 0
+    kw = run["cfg"].get("selector", {}).get("kwargs", {}) or {}
+    felix = float(kw.get("evalGoalFactor") or 0) > 0 or int(kw.get("probePerWindow") or 0) > 0  # F42c probes
     bad_pick, bad_send, n_pick, n_send = [], [], 0, 0
     n_eval = eval_on_eval = 0
     bad_eval, seen, held = [], set(), set()
@@ -845,17 +846,45 @@ def ev21_avl_eval_semantics(run):
                 examples=(bad_pick + bad_send + bad_eval)[:10])
 
 
+def _r27_expected(run) -> str:
+    """R27: Felix learns state by notify; Oort*, REFL* (avail_predictor=oracle), FedDance* (checkin_source=selection) are oracle;
+    every other run unaware."""
+    m = re.search(r"_dbg_(?:google_speech_)?(\w+?)_n\d+", os.path.basename(run["dir"].rstrip("/")))
+    b = m.group(1) if m else ""
+    kw = run["cfg"].get("selector", {}).get("kwargs", {}) or {}
+    star = (b == "refl" and kw.get("avail_predictor") == "oracle") or (b == "feddance" and kw.get("checkin_source") == "selection")
+    return {"felix": "notify", "oort_star": "oracle"}.get(b) or ("oracle" if star else "none")  # REFL*, FedDance*
+
+
+def ev22_availability_knowledge(run):
+    """R27: the run's availability knowledge is the one its baseline may have; an unaware run never excludes a client as
+    UN_AVL at selection, and only a notify run evicts at a state flip."""
+    if not _truthy(_hp(run, "sim_unavailability", "simUnavailability", default=False)):
+        return _res("SKIP", "availability gate off")
+    evict, filt = _truthy(_hp(run, "proactive_inflight_evict", default=False)), _hp(run, "avail_select_filter", default=True)
+    know = _hp(run, "avail_knowledge") or ("notify" if evict else "oracle" if _truthy(filt) else "none")
+    want = _r27_expected(run)
+    if know != want:
+        return _res("FAIL", f"avail_knowledge={know}, R27 allows {want}")
+    excl = sum(int((e.get("excluded_by") or {}).get("unavail") or 0) for e in _events(run, "selection")) if know == "none" else 0
+    ev = sum(e.get("reason") == "aware_boundary_eviction" for e in _events(run, "abandon_timeout")) if know != "notify" else 0
+    if excl or ev:
+        return _res("FAIL", f"{know} run used state: unavail exclusions={excl}, aware evictions={ev}")
+    return _res("PASS", f"knowledge={know}")
+
+
 CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model, ev4_real_sleep,
           ev5_commit_accounting, ev6_staleness, ev7_agg_goal_cadence, ev8_concurrency_cap,
           ev9_selector_state, ev10_dispatch_one_in_flight, ev11_vclock, ev12_reached_budget,
           ev13_no_stall, ev14_eval_sane, ev15_one_task_per_version, ev16_withheld_delivery,
           ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev20_abandon_on_time,
-          ev21_avl_eval_semantics]
+          ev21_avl_eval_semantics, ev22_availability_knowledge]
 
 
 # Live early exit: checks whose FAIL on a log prefix stays FAIL on the full log (EV11: its backwards count only).
 EARLY = (ev6_staleness, ev8_concurrency_cap, ev9_selector_state, ev11_vclock, ev14_eval_sane, ev15_one_task_per_version,
-         ev16_withheld_delivery, ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev21_avl_eval_semantics)
+         ev16_withheld_delivery, ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev21_avl_eval_semantics,
+         ev22_availability_knowledge)
 
 
 def doomed(run_dir: str) -> list:

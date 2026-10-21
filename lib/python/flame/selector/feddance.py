@@ -53,6 +53,9 @@ class FedDanceSelector(AbstractSelector):
 
         self.history_window = kwargs.get("history_window", 50)
         self.prediction_window = kwargs.get("prediction_window", 5)
+        self.checkin_source = kwargs.get("checkin_source", "selection")
+        if self.checkin_source not in ("selection", "returns"):
+            raise ValueError(f"checkin_source={self.checkin_source!r}: expected selection or returns")
         self.accuracy_window = kwargs.get("accuracy_window", 5)
         self.overcommitment = kwargs.get("overcommitment", 1.0)
         self.negative_accuracy_handling = kwargs.get(
@@ -128,9 +131,10 @@ class FedDanceSelector(AbstractSelector):
 
         unavail = set(trainer_unavail_list or [])
 
-        for end_id in ends:
-            if end_id not in unavail:
-                self.predictor.record_checkin(end_id, round_num)
+        if self.checkin_source == "selection":  # legacy: the trace's online set; R27 forbids it for unaware FedDance
+            for end_id in ends:
+                if end_id not in unavail:
+                    self.predictor.record_checkin(end_id, round_num)
 
         eligible = {
             eid: e
@@ -263,6 +267,8 @@ class FedDanceSelector(AbstractSelector):
         from flame.mode.message import MessageType
 
         self.ordered_updates_recv_ends.append(end_id)
+        if self.checkin_source == "returns":  # F42b (R27): a client is seen only when its update arrives
+            self.predictor.record_checkin(end_id, round_num)
         if self.feedback == "aggregated":
             self._round_participants.append(end_id)
             if not accepted:  # FX-D150: no new loss/acc; a_m unchanged, so Eq. 7 sees a zero increment

@@ -150,6 +150,14 @@ def load_trace(
 
     syn_0 / all-available traces return an empty SortedDict (always AVL_TRAIN).
     """
+    result = SortedDict()
+    for ts, state in scale_events(raw_events(trace_name, trainer_key, base_dir=base_dir)):
+        result[float(ts)] = state
+    return result
+
+
+def raw_events(trace_name: str, trainer_key: str, *, base_dir: Optional[str] = None) -> list:
+    """[[ts, state], ...] of one trainer on the trace's own clock: no offset, no scale (a device's full history)."""
     trace_dir = str(Path(base_dir) if base_dir else _DEFAULT_TRACE_DIR)
     trace_name = _canonical_trace_name(trace_name)
 
@@ -171,11 +179,7 @@ def load_trace(
         events = per_trainer.get(trainer_key) or pattern
     else:
         raise KeyError(f"unsupported trace name: {trace_name!r}")
-
-    result = SortedDict()
-    for ts, state in scale_events(events):
-        result[float(ts)] = state
-    return result
+    return events
 
 
 def state_at(trace: SortedDict, t: float) -> TrainerAvailState:

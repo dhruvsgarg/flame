@@ -148,3 +148,25 @@ def test_sim_stream_clock_at_train_start(on, clock):
     t.simulated, t._sim_stream_at_start, t._sim_charge_lag, t.sim_download_leg_s = True, on, True, 0.2
     t._sim_send_ts, t._sim_wall_send_ts, t._wall_recv_ts = 500.0, 10.0, 10.4
     assert t._stream_now() == pytest.approx(clock)
+
+
+def test_validation_holdout_never_trains_and_grows_with_the_stream():
+    # F42c: every 10th arrival is held out for every baseline; the train loader never sees it
+    import torch
+    from main import PyTorchCifar10Trainer
+    t = PyTorchCifar10Trainer.__new__(PyTorchCifar10Trainer)
+    t._stream_sched = ss.from_config({**ON, "initial_frac": 0.1}, "t", scale=1)
+    t._stream_total, t._stream_gpu = 100, False
+    t._stream_full_dataset, t._stream_order = list(range(100)), torch.arange(100)
+    t._val_mask, t.validation_probe = torch.arange(100) % 10 == 9, True
+    t._stream_train_kwargs = {"batch_size": 4}
+    now = [500.0]
+    t._sim_now = lambda: now[0]
+    t._rebuild_stream_loader()
+    train = set(t.train_loader.dataset.indices)
+    assert t._stream_visible == 55 and len(train) == 50 and set(t._val_pos.tolist()) == {9, 19, 29, 39, 49}
+    assert not train & set(t._val_pos.tolist())
+    assert len(t._val_loader().dataset) == 5
+    now[0] = 2000.0
+    t._rebuild_stream_loader()
+    assert len(t._val_pos) == 10 and t._train_visible == 90
