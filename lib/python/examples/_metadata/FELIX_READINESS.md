@@ -36,15 +36,17 @@ decided on screen evidence, so no long run rests on a decision one short run cou
     under unavailability the version gate blocks eval (0-0.02 per train). Eval value now rests on FX-N118 and A6.
   Dropped knobs leave code and config per FX-N114 once signed off.
 - **F41 · Contribution screen, 10 h batch (ledger C3-C5 + balance) · ready: launch on the operator's go after commit + shepherd pull
-  (PL18).** `batches/f41.yaml` = `harness_pool --tier F41` both datasets: 29 sim legs each = s0 (static syn_0: six + Felix all), s0u
-  (syn_0 + linear growth) and s50u (syn_50_3st + trace-tied growth): six + Felix c3 / c3b / c4 / c5 / all; 24 h into the trace,
+  (PL18).** `batches/f41.yaml` = `harness_pool --tier F41` both datasets: 31 sim legs each = s0 (static syn_0: six + Felix all), s0u
+  (syn_0 + linear growth) and s50u (syn_50_3st + trace-tied growth): six + Felix e0 / c3 / c3b / c4 / c5 / all (all new-Felix arms
+  eval off; ctl Felix = old Felix with eval, the control; a first launch 10-21 04:21 was stopped to add this, moved to `_aborted`); 24 h into the trace,
   cifar 24 h / speech 18 h vclock, seed 1. Command: `tmux new -s f41 'python scripts/dispatch.py batches/f41.yaml'` (`--plan` first).
   *Packing (smoke):* after FX-D210 a usage leg peaks like a static one (cifar Felix 51 GB, static 73); 24 h keys have no RAM history, so
   leases use the formula (95 / 78 GB) → ~4 legs / node, ~8 at once; ≤ 8.5 h. Oort sims run 12 h vclock in 7-15 min. *Smoke 10-21 (`experiments/pool_20261021_0303_F41SMOKE_{A,B}`, `_0345_F41SMOKE_{C,D}`; 24
   legs, rc 0):* EV PASS 23 / 24 (oort_star EV1: 1 sync round in 10 min, leg-length artifact); knobs in every aggregator config (PL7);
-  EV19 PASS on the trace-tied stream. *Predictions:* confirm = c3 / all reach 30-35% cifar sooner than ctl Felix at ≤ ctl's GB and
+  EV19 PASS on the trace-tied stream; smoke F/G (eval off): e0 / all 0 eval tasks, ctl 1 per 971 trains, EV PASS. *Predictions:* confirm = c3 / all reach 30-35% cifar sooner than ctl Felix at ≤ ctl's GB and
   ≤ 0.6 top-20% share; c4 holds K in [5, 15] without divergence on speech; c5 ≥ ctl; Felix ahead of all five baselines on s50u.
-  Refute = c3 loses ctl's samples-per-update edge (later TTA) → drop C3, keep ctl's ranking; c4 / c5 inside ctl's band → drop.
+  Refute = c3 loses ctl's samples-per-update edge (later TTA) → drop C3, keep ctl's ranking; c4 / c5 inside e0's band → drop;
+  e0 ≈ ctl confirms eval tasks are dead weight.
   *Next:* `accuracy_table.py` + `felix_claims.py` + `selection_audit.py` on the pools; `resource_report.py --util`; rewrite ledger.
 - **D5 · Long runs, after D1-D4 are decided · todo.** (a) PR39 phase 2 parity, 2 h reals: rerun the 4 STALLED reals and the DOOMED
   speech Felix syn_50_3st sim, G3C replicates for every red (each rests on 1 real), lin cells, FX-N113. (b) Claims (FX-N108) on sims at
@@ -409,10 +411,21 @@ most learning per second among those that can finish before they leave.
 | balance | UCB only (top-20% share 0.54 cifar syn_0, PR39) | utility × (1 + picks / mean)^-1 [c3b] | coverage, worst-10% |
 | C4 K | fixed K 10 | AIMD on paired per-client loss change, floor 5, memory, c fixed [c4] | step frequency, U* |
 | C5 weight | 0.4 (1+τ)^-0.25 + 0.6 (1.5 − (1+u)^-0.1), u = \|D\| q: additive, saturates (0.80-0.94) | samples^0.65 × (1+τ)^-0.5 ÷ cycle mean: multiplicative, 2-9× spread, mean step unchanged [c5] | U* |
-| eval tasks | 10 / version, 35-version gate, AVL_EVAL devices | unchanged in F41; no measured gain (C6) | B (small) |
+| eval tasks | 10 / version, 35-version gate, AVL_EVAL devices | off (`evalGoalFactor 0`); ctl keeps them as the control, e0 = ctl without them | B (small) |
 | data | static / `events` stream | trace-tied `usage` growth (all six) | setting, not a mechanism |
 
 Loss moves from both selection and weight (old) to selection only (new); the weight now trades update size against staleness.
+
+*Role of loss (utility) — evidence, for the paper's framing:*
+- *Selection:* |D| · loss ranks like |D| (per task Spearman 0.95 cifar / 0.81 speech, PR40a ctl): client loss spans 1.45× (p10-p90),
+  |D| 120× cifar / 13× speech. Loss alone as the rank (pK10) lost; fresh loss slowed short-term progress (D3). Loss on a client's
+  new samples = on its trained ones (1.00, FX-T67), so loss carries no novelty. Loss is kept as a minor term in C3's rank and as C4's
+  progress signal (paired per client), where hardness cancels.
+- *Aggregation:* old Felix's utility term saturates (u 10²-10³ → w 0.80-0.94; constants no effect, PR39a, FX-T56); a loss-weighted
+  rate u / √(1+τ) (I7) tied ctl (PR40a). C5 grades an update by its size (samples^0.65, PR40a's measured progress per update) × its
+  staleness (1+τ)^-0.5, mean step unchanged: hypothesis until F41.
+- *Eval tasks:* exist to refresh loss beliefs; since loss barely moves ranks, stale beliefs flip ≤ 6-14% of picks at ≤ 1.1% regret
+  (FX-T66) and evals barely run under unavailability (F41 smoke ctl: 1 eval per 971 trains), they are off in new Felix.
 
 *Why Felix today beats Oort (same `async_oort` code, different settings):* it ranks by size, not speed (Oort's (pref / d)² from the
 10th percentile picks small fast clients), so 1.6× samples per update at equal R (PR39 vs FedBuff); a near-flat weight = a larger

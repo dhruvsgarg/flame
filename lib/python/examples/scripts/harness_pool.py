@@ -172,9 +172,11 @@ F41_CELLS = {"s0": ("syn_0", False), "s0u": ("syn_0", True), "s50u": ("syn_50_3s
 _C3 = "sel.utilityPerSecond=true"
 _C4 = ("sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=aimd_k sel.dynamic_kc.k_min=5 "
        "sel.dynamic_kc.policy_kwargs.memory=true sel.dynamic_kc.policy_kwargs.stall=true")
-_C5, _BAL = "opt.agg_rate_conf.type=value", "sel.participationDecay=1.0"
-F41_ARMS = {"ctl": dict(bls=B6), "c3": dict(hp=_C3, thp=_PRE), "c3b": dict(hp=f"{_C3} {_BAL}", thp=_PRE),
-            "c4": dict(hp=_C4, thp=_PRE), "c5": dict(hp=_C5), "all": dict(hp=f"{_C3} {_BAL} {_C4} {_C5}", thp=_PRE)}
+_C5, _BAL, _E0 = "opt.agg_rate_conf.type=value", "sel.participationDecay=1.0", "sel.evalGoalFactor=0"
+# New Felix runs without eval tasks (C6: no gain); ctl = old Felix (eval on) is their control, e0 = ctl without eval is each arm's base.
+F41_ARMS = {"ctl": dict(bls=B6), "e0": dict(hp=_E0), "c3": dict(hp=f"{_E0} {_C3}", thp=_PRE),
+            "c3b": dict(hp=f"{_E0} {_C3} {_BAL}", thp=_PRE), "c4": dict(hp=f"{_E0} {_C4}", thp=_PRE), "c5": dict(hp=f"{_E0} {_C5}"),
+            "all": dict(hp=f"{_E0} {_C3} {_BAL} {_C4} {_C5}", thp=_PRE)}
 # D2 F39W (FX-N116): Felix's local samples per task; fixed (capped at an epoch) vs per-client split (compute = beta/(1-beta) x transfer)
 F39W_SAMPLES = {"cifar10": (32, 64, 128), "google_speech": (128, 256, 512)}
 F39W_BETAS = (0.5, 0.33)

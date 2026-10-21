@@ -1,0 +1,69 @@
+snapshot_version: '1.0'
+timestamp: '2026-10-21T04:26:03.758830'
+hostname: jayne.cc.gatech.edu
+experiment:
+  name: dbg_google_speech_felix_n50_alpha0.1_syn_0_stream_sim
+  description: Felix (async_oort + fedbuff) WITH data streaming.
+  trainer:
+    num_trainers: 50
+    start_id: 1
+    dataset:
+      name: google_speech
+      dirichlet_alpha: 0.1
+    availability:
+      mode: syn_0
+    battery_threshold: 50
+    time_mode: simulated
+  aggregator:
+    config_template: ../_metadata/aggregator_base.json
+    selector: async_oort
+    tracking_mode: client_notify
+    agg_goal: 10
+    seed: 1234
+  execution:
+    num_gpus: 3
+    sleep_between_spawns: 1.0
+    aggregator_warmup_time: 60
+spawn_commands:
+  aggregator:
+  - /coc/scratch/dgarg/miniconda3/envs/dg_flame/bin/python
+  - /home/dgarg39/flame/lib/python/examples/async_cifar10/aggregator/pytorch/main_asyncfl_agg.py
+  - --config-json
+  - <inline>
+  trainers:
+  - python3
+  - -m
+  - flame.launch.spawn_trainer_cli
+  - --alpha
+  - '0.1'
+  - --availability
+  - syn_0
+  - --num-trainers
+  - '50'
+  - --start-id
+  - '1'
+  - --num-gpus
+  - '3'
+git_info:
+  commit: 559ca0e2f66f780969c50860ead0ce0f9d43678f
+  branch: dg/pending_fl_baselines
+  clean: true
+  uncommitted_changes: false
+metadata_location: /home/dgarg39/flame/lib/python/examples/async_cifar10/metadata
+metadata_checksums:
+  trainer_registry: c9485696103b691106fbe5ade9063db55b05c02462d7938abf7d75d17fc6d14a
+  dataset_splits:
+    cifar10_alpha0.1_n300.yaml: dcbc7ad04b53add63287e2855101806a62018eeb7452556d604d59e91adef8b9
+    cifar10_alpha0.1_n48.yaml: 50f34f2868a1443dd8ea0e43556aa3fbe5cf283289c411efca4ffbe5a6aa6063
+    cifar10_alpha0.1_n50.yaml: e634cf39c71eb4336f34e11e1a6b4a239d39854c44c314c9a770921de7189c69
+    cifar10_alpha1.0_n300.yaml: 8ba4d3bde49ab0c7cee8a6c3ffaf79f3ab9e2f357ffbcd937a40be9bffeb8be8
+    cifar10_alpha10.0_n300.yaml: eb019d6692ad566e8a93c6e709660520e0a48a9d52359ba788fa1dd54b0dcc77
+    cifar10_alpha100.0_n300.yaml: 13cbbbad0e9600bfc4847b216e70030bd42e46ec38c58b1a1515ec454cf9bb5c
+    google_speech_alpha0.1_n100.yaml: 79f9f22517082b464408e80653d0b71ad69932c1673834de40efb090604bd910
+    google_speech_alpha1.0_n100.yaml: 019df351eb8f80460773b866fb9f74c409e87eba1996aa30cf262e49a4803331
+    google_speech_alpha10.0_n100.yaml: 9c63b5695d14f9b4a4f7d72ea645f0a132855c2065a21389d3636c486054506a
+  availability_traces:
+    mobiperf_traces.yaml: dfc0612c589c4bdd496d586af753875a454ffcb7116b4890465dc5a0059becfe
+    satellite_traces.yaml: cb90e17d195c7849bceec66f05608a4800638caddd33b4ccb0829de5da45c15e
+    synthetic_traces.yaml: 807ff58e3e2e1fff142a0ca3149876de7069d0473615ee619b045c367182e28c
+aggregator_config: /home/dgarg39/flame/lib/python/examples/async_cifar10/experiments/run_20261021_042536_gs_F41_s0_all_dbg_google_speech_felix_n50_alpha0.1_syn_0_stream_sim/aggregator_config.json

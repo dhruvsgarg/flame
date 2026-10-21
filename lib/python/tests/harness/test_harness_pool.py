@@ -732,7 +732,9 @@ def test_f40s_smoke_carries_the_offset_stream_and_new_knobs():
 def test_f41_cells_arms_and_trace_tied_stream():
     """F41: s0 static (baselines + Felix all), s0u / s50u usage tied to the leg's own trace; Felix arms carry their knobs."""
     by = {p.pid: p for p in pool.tier_phases("F41", pool.B6, "cifar10")}
-    assert sum(len(p.baselines) for p in by.values()) == 29
+    assert sum(len(p.baselines) for p in by.values()) == 31
+    assert "evalGoalFactor=0" not in by["F41_s50u_ctl"].agg_hp  # old Felix keeps eval tasks as the control
+    assert all("evalGoalFactor=0" in by[f"F41_s50u_{a}"].agg_hp for a in ("e0", "c3", "c3b", "c4", "c5", "all"))
     assert set(by) >= {"F41_s0_ctl", "F41_s0_all", "F41_s0u_c3", "F41_s50u_c5"} and "F41_s0_c3" not in by
     assert by["F41_s0_ctl"].baselines == pool.B6 and "data_streaming" in by["F41_s0_ctl"].trainer_hp
     assert '"enabled":"False"' in by["F41_s0_ctl"].trainer_hp and not by["F41_s0_ctl"].trace_offset_s
