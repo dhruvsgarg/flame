@@ -119,6 +119,7 @@ G3S_REPS = 3  # FX-N103: sim replicates per G3 cell, graded against its real-pat
 # FX-N109 (PR39a): one knob off Felix's G3 control per arm; drop an arm's flag once its knob is decided (FELIX "design").
 F39A_REPS = 3
 F39_SEEDS = tuple(range(1, F39A_REPS + 1))  # --seeds: config search runs r1, confirmation adds r2, r3 (FELIX Decisions 10-21)
+F42_SEEDS = (1,)  # --seeds on F42: replicates for arms still in contention (R25)
 F39A_ARMS = {
     "ctl": {},
     "c10": dict(c=10), "c20": dict(c=20), "c30": dict(c=30),
@@ -181,7 +182,7 @@ F41_ARMS = {"ctl": dict(bls=B6), "e0": dict(hp=_E0), "c3": dict(hp=f"{_E0} {_C3}
 # (old → e0 → +C3 → +bal → +C4 → +C5 = new → +pacing) plus pacing alone; Oort skipped. Long enough for day 2-3 data growth.
 F42_RUNTIME_S = {"cifar10": 172800, "google_speech": 129600}
 F42_CELLS = {"s0u": "syn_0", "s50u": "syn_50_3st"}
-F42_EVAL_S = 1800  # test eval every 30 min of the leg's clock (leg / 24 would be 2 h at 48 h)
+F42_EVAL_S = 600  # test eval every 10 min of the leg's clock: TTA resolution (30 min quantized F42S01)
 _HOLD = "validation_holdout=0.1"
 _PROBE = ("sel.probePerWindow=60 sel.probeWindowS=3600 sel.evalStaleGate=3600", "validation_probe=true")
 _PACE_KW = '{"window_s":3600,"min_n":150}'
@@ -545,11 +546,17 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                            trainer_hp=f"{dsh} {DETERMINISTIC} {_HOLD}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S}")
             for arm, kw in F42_ARMS.items():
                 bls = tuple(b for b in kw.get("bls", ("felix",)) if b in baselines)
-                if bls:
-                    out.append(replace(base, pid=f"{DS_TAG[ds]}F42_{cell}_{arm}", baselines=bls,
-                                       agg_hp=f"{base.agg_hp} {kw.get('hp', '')}".strip(),
+                for i in F42_SEEDS if bls else ():  # seed 1 keeps the bare id (F42S01); --seeds 2 adds _r2 (seed 1235)
+                    out.append(replace(base, pid=f"{DS_TAG[ds]}F42_{cell}_{arm}" + (f"_r{i}" if i > 1 else ""), baselines=bls,
+                                       agg_hp=f"{base.agg_hp} {kw.get('hp', '')}{f' seed={1233 + i}' if i > 1 else ''}".strip(),
                                        trainer_hp=f"{base.trainer_hp} {kw.get('thp', '')}".strip()))
         return out
+    if tier == "F42R":  # F42-T7 / T9 on GPU: G3 real legs, 8 min wall: Felix notify + the check-in baselines
+        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
+        dsh = usage_hp("syn_50_3st")
+        return [replace(g3, pid=f"{DS_TAG[ds]}F42R_s50u_ctl", baselines=tuple(b for b in F42_ARMS["ctl"]["bls"] if b in baselines),
+                        runtime_s=480, trace="syn_50_3st", trace_offset_s="86400", kind="real",
+                        trainer_hp=f"{dsh} {DETERMINISTIC} {_HOLD}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S}")]
     if tier in ("F42C", "F42CR"):  # F42-T1 local gate on the CPU stub harness: F42C every arm in sim (30 min vclock);
         real = tier == "F42CR"      # F42CR the deployed arms in real mode (10 min wall, trace x4): check-in client, Felix notify (T7)
         out = []
@@ -2208,7 +2215,7 @@ def code_key() -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A F39B F39C F39W F39E F40S F41 F42 F42C F42CR, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A F39B F39C F39W F39E F40S F41 F42 F42C F42CR F42R, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")
@@ -2233,7 +2240,7 @@ def main(argv=None) -> int:
     ap.add_argument("--progress-label", default="", help="prefix of the PROGRESS lines (the ladder passes its rung)")
     ap.add_argument("--output-dir", default="")
     ap.add_argument("--smoke", action="store_true", help="every leg 60s, n<=12 (the pool's own gate)")
-    ap.add_argument("--seeds", default="", help="F39 tiers: replicate ids to run, e.g. 1 or 2,3 (default all)")
+    ap.add_argument("--seeds", default="", help="F39 / F42 tiers: replicate ids to run, e.g. 1 or 2,3 (F39 default all, F42 default 1)")
     ap.add_argument("--scale-smoke", type=int, default=0, metavar="S",
                     help="FX-D56: every leg S seconds at its production n, c and GPUs (density/OOM check before a block)")
     ap.add_argument("--gate", action=argparse.BooleanOptionalAction, default=None,
@@ -2254,9 +2261,9 @@ def main(argv=None) -> int:
     ap.add_argument("--jobs-json", default="", help="FX-D186: write this node's jobs, estimates and capacity here and exit")
     ap.add_argument("--queue", default="", help="FX-D186: run only units listed in this file (dispatch.py); END / ABORT")
     a = ap.parse_args(argv)
-    global MEASURED, GPU_SHARE, SHORT_LEGS, F39_SEEDS
+    global MEASURED, GPU_SHARE, SHORT_LEGS, F39_SEEDS, F42_SEEDS
     if a.seeds:
-        F39_SEEDS = tuple(int(x) for x in a.seeds.split(","))
+        F39_SEEDS = F42_SEEDS = tuple(int(x) for x in a.seeds.split(","))
     MEASURED, GPU_SHARE, SHORT_LEGS = a.lease_from_telemetry, a.gpu_share, bool(a.scale_smoke)
     set_gpu_allow(a.gpu_ids)
 

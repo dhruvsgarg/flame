@@ -920,3 +920,20 @@ class TestEvalStaleGate:
             sel._sim_now_s = now
             return sel._task_extra_eligible("e", end, SelectContext(task_to_perform="eval", model_version=999))
         assert not ok(1299.0) and ok(1300.0)  # FX-N118: 300 s since the last report, whatever the version count
+
+    def test_probe_gate_ignores_train_reports(self):
+        """F42c: a client training every minute stays probe-eligible; only its last probe starts the gate (F42S01: c pinned)."""
+        from unittest.mock import MagicMock
+        from flame.selector.async_base import SelectContext
+        sel = AsyncOortSelector(c=15, aggGoal=10, evalGoalFactor=0, roundNudgeType="last_train", selectType="default",
+                                evalStaleGate=3600, probePerWindow=60, probeWindowS=3600)
+        props = {"last_report_ts": 7190.0, "last_probe_ts": None}
+        end = MagicMock()
+        end.get_property.side_effect = props.get
+
+        def ok(now):
+            sel._sim_now_s = now
+            return sel._task_extra_eligible("e", end, SelectContext(task_to_perform="eval", model_version=999))
+        assert ok(7200.0)  # trained 10 s ago, never probed
+        props["last_probe_ts"] = 4000.0
+        assert not ok(7200.0) and ok(7600.0)

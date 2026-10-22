@@ -51,8 +51,8 @@ from flame import telemetry
 from flame.telemetry.events import build_agg_round, build_dispatch, build_utility_belief
 from flame.telemetry.agg_timing import agg_timing
 from flame.sim import SimReorderBuffer
-from flame.selector.properties import (PROP_AVL_STATE, PROP_LAST_REPORT_TS, PROP_LAST_REPORT_UPDATES, PROP_SIM_COMPLETION_TS,
-                                       PROP_SIM_SEND_TS)
+from flame.selector.properties import (PROP_AVL_STATE, PROP_LAST_PROBE_TS, PROP_LAST_REPORT_TS, PROP_LAST_REPORT_UPDATES,
+                                       PROP_SIM_COMPLETION_TS, PROP_SIM_SEND_TS)
 from flame.selector.oort import (
     PROP_DATASET_SIZE,
     PROP_LAST_SELECTED_ROUND,
@@ -1018,6 +1018,7 @@ class TopAggregator(SyncTopAgg):
             )
             channel.set_end_property(end, PROP_LAST_REPORT_UPDATES, getattr(self, "_n_updates", 0))
             channel.set_end_property(end, PROP_LAST_REPORT_TS, self._avail_now())
+            channel.set_end_property(end, PROP_LAST_PROBE_TS, self._avail_now())
 
             # TODO: (DG) Also set the end property for task=eval done
             # at timestamp=current.
@@ -1784,7 +1785,7 @@ class TopAggregator(SyncTopAgg):
         ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
                             agg_version_key=self.version_key,
                             trainer_version_keys=self._task_version_keys(channel, task_to_perform))
-        self.checkin_after_select(channel, ends)  # F42-T1
+        self.checkin_after_select(channel, ends, task_to_perform)  # F42-T1
         if not ends:
             logger.debug(f"No trainers found for tag {tag}")
             return

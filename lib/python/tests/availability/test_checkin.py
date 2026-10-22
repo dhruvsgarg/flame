@@ -186,3 +186,33 @@ def test_checkin_runs_over_the_legs_clients_not_the_trace_registry():
     ch = SimpleNamespace(_ends={f"c{i}": None for i in range(40)}, _selector=SimpleNamespace(selected_ends=set()))
     ca._avail_channels = lambda: [ch]
     assert ca._checkin_clients() == [f"c{i}" for i in range(40)]
+
+
+def test_async_probe_mode_keeps_the_pool_for_the_probe_pick():
+    """F42c + F42-T1: with train slots full, fck's probe pick still sees the pool (F42S01 fck ran 0 probes); then it is rejected."""
+    import threading
+    from types import SimpleNamespace
+    from flame.availability.client_availability import ClientAvailability
+    ca = ClientAvailability.__new__(ClientAvailability)
+    ca.trainer_event_dict, ca.simulated, ca.avail_knowledge = {"a": None, "b": None, "x": None}, True, "checkin"
+    led = CheckinLedger(sync=False, initial_gap_s=10.0)
+    led.busy, led.lock, ca._checkin = set(), threading.RLock(), led
+    ca._probe_mode = lambda: True
+    ca._avail_now = lambda: 5.0
+    ch = SimpleNamespace(properties={}, _selector=SimpleNamespace(c=1))
+    ca._avail_inflight_ends = lambda _ch: {"x"}  # the one train slot is busy
+    led.pool.update(a=1.0, b=2.0)
+    ca.checkin_after_select(ch, ["x"], "train")
+    assert set(led.pool) == {"a", "b"}
+    ca.checkin_after_select(ch, ["a"], "eval")
+    assert not led.pool and "b" in led.hold and "a" in led.busy
+
+
+def test_real_checkin_that_beats_its_own_commit_stays_pooled():
+    """F42-T9: a real trainer checks in right after its upload; the commit's release must not drop that check-in."""
+    led = CheckinLedger(sync=False, initial_gap_s=10.0)
+    assert led.on_checkin("a", 0.0) is None
+    led.after_select(1.0, ["a"], slots_left=True)
+    assert led.on_checkin("a", 50.0) is None  # task ended trainer-side; CHECK_IN arrives before the update commits
+    led.release("a", 50.2)
+    assert "a" in led.pool

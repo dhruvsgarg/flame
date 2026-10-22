@@ -164,7 +164,7 @@ class CheckinLedger:
         return out
 
     def release(self, end: str, t: float) -> None:
-        """A busy client's task ended (update, failure, timeout) at t: it may check in again from t."""
-        self.pool.pop(end, None)
+        """A busy client's task ended (update, failure, timeout) at t: it may check in again from t.
+        A check-in already pooled stays: it beat its own update's commit (F42-T9)."""
         self.hold.pop(end, None)
         self.free_since[end] = max(self.free_since.get(end, 0.0), t)

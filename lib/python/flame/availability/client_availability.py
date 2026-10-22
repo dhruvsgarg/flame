@@ -357,8 +357,29 @@ class ClientAvailability:
                 ch.properties["checkin_p"] = {e: p for e, p in getattr(self, "_checkin_p", {}).items() if e in led.pool}
             return [e for e in self.trainer_event_dict if e not in led.pool]
 
-    def checkin_after_select(self, channel, picked) -> None:
-        """F42-T1: a selection picked `picked`; the rest of the pool is told to reconnect (sync: window closes)."""
+    def _checkin_pool_waiting(self, channel) -> bool:
+        """F42-T10: a sync version short of picks already holds check-ins in its open window: select now, never jump past them.
+        Once per (round, pool), so a pool the selector won't pick cannot spin."""
+        if self._knowledge() != "checkin" or not getattr(self, "trainer_event_dict", None):
+            return False
+        wants = getattr(self, "_sync_wants_picks", None)
+        if wants is not None and not wants(channel):
+            return False
+        led = self._checkin_ledger()
+        with led.lock:
+            if getattr(self, "simulated", False):
+                led.advance(self._avail_now(), self._checkin_idle(), self._checkin_train_at, self._checkin_is_train)
+            if not (led.sync and led.window is not None and led.pool):
+                return False
+            key = (getattr(self, "_round", None), frozenset(led.pool))
+        if key == getattr(self, "_checkin_pool_woke", None):
+            return False
+        self._checkin_pool_woke = key
+        return True
+
+    def checkin_after_select(self, channel, picked, task: str = "train") -> None:
+        """F42-T1: a selection picked `picked`; the rest of the pool is told to reconnect (sync: window closes).
+        Async probe mode (F42c): a train pick keeps the pool for the eval pick that follows; that one rejects the rest."""
         if self._knowledge() != "checkin" or getattr(self, "trainer_event_dict", None) is None:
             return
         led = self._checkin_ledger()
@@ -372,8 +393,14 @@ class ClientAvailability:
             c = int(channel.properties.get("dynamic_c", getattr(sel, "c", 0)) or 0)
             slots_left = (not led.sync) and len(self._avail_inflight_ends(channel)) < c
             led.busy |= set(picked)
+            probes = not led.sync and self._probe_mode()
+            if probes and task == "eval":  # probes don't feed the dispatch-gap estimate
+                for e in picked:
+                    led.pool.pop(e, None)
+                picked = []
             keep = led.sync and self._sync_wait_k_on() and self._sync_wants_picks(channel, picked=picked)  # version still short
-            self._checkin_tell(led.after_select(now, picked, slots_left=slots_left, keep_open=keep))
+            hold = probes and task == "train"
+            self._checkin_tell(led.after_select(now, picked, slots_left=slots_left or hold, keep_open=keep))
 
     def _checkin_tell(self, told) -> None:
         """Real: send each rejected client its reconnect time (sim clients follow the ledger directly)."""
@@ -1156,6 +1183,8 @@ class ClientAvailability:
     def _sim_sync_next_wake(self, channel) -> Optional[float]:
         """FX-N37: next vclock event that can move a waiting sync round: a pick's timeout or a delivery."""
         now = self._avail_now()
+        if self._checkin_pool_waiting(channel):
+            return now
         buf = getattr(self, "_sim_buffer", None)
         cands = [d for d in getattr(self, "pending_withheld", {}).values() if now < d < math.inf]
         replied = self._sync_replied(channel)

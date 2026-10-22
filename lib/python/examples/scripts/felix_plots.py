@@ -24,7 +24,9 @@ CELLS = (("s0", "syn_0 · static"), ("s0u", "syn_0 · stream"), ("s50u", "syn_50
 BASE = (("fedbuff", "FedBuff", "#1baf7a", "-"), ("refl", "REFL", "#eda100", "-"), ("feddance", "FedDance", "#e87ba4", "-"),
         ("oort", "Oort", "#008300", "-"), ("oort_star", "Oort*", "#6250d6", "--"))
 ALSO = {"refl:rstar": ("REFL*", "#eda100", "--"), "refl:rfc": ("REFL-fc", "#eda100", ":"),
-        "felix:new": ("Felix new, no pacing", "#2a78d6", "--")}  # F42 arms
+        "felix:new": ("Felix new, no pacing", "#2a78d6", "--"), "felix:l5": ("Felix new, no pacing", "#2a78d6", "--"),
+        "felix:fck": ("Felix by check-in", "#2a78d6", ":"), "feddance:fdstar": ("FedDance*", "#e87ba4", "--"),
+        "fedbuff:fbstar": ("FedBuff*", "#1baf7a", "--")}  # F42 arms
 SMOOTH = {"cifar10": 1, "google_speech": 3}  # speech stream evals swing ±10-20 pp
 
 

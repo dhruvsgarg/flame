@@ -1,65 +1,79 @@
 # Felix readiness — backprop FL (async_cifar10, google_speech)
 
 Read [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) and [PARITY_READINESS.md](PARITY_READINESS.md) first; their rules, L and T apply
-here unrepeated. **Focus (operator 10-19): improve Felix itself (FX-N109: syn_0, then syn_50_3st; α 0.1), on the FedScale task-time
-model (FX-D197, 10-20); then the claims gate (FX-N108) and sim-only experiments (FX-N12).** Order: Next steps → Scoreboard (now, and
-expected after the next run) → Decisions → reference sections.
+here unrepeated. **Focus (operator 10-22): optimize Felix new for time to accuracy (F42b), then bytes; then the claims gate (FX-N108)
+and sim-only experiments (FX-N12).** Order: Next steps → Scoreboard → Decisions → reference sections.
 
-**Setup reset (operator 10-21): only runs from F41 (10-21) onward count.** F41 is the first batch on trace-tied `usage` streams;
-every earlier result (parity 76 / 76 and PR39 14 / 24, PR38-PR40a, F39*, the utility bench) ran on static data or an older runtime and
-is **OBSOLETE as evidence**: cite it as a hypothesis at most. Purge it from this doc as each section is next touched.
+**Setup reset (operator 10-21): only runs from F41 (10-21) onward count** (trace-tied `usage` streams, FedScale task time, R27
+availability knowledge). Earlier results ran on static data or an older runtime and are not evidence (`git log` keeps them).
 
-**At a glance (10-21 night):** F41: Felix new ≈ old (within noise, 1 seed); Felix led every (then blind) baseline. Cifar streams
-plateau by ~6 h and then overfit while spending 63-79% of the bytes. F42 built: baselines learn availability by Bonawitz check-in
-(REFL + its Prophet forecaster), `*` oracles, Felix by check-in (K1), CPU gates F42C / F42CR green; next: GPU smoke → S0 (syn_0) → S1.
+**At a glance (10-22):** F42S01 (4 h, seed 1): Felix new reaches accuracy sooner than old on 3 of 4 cells (speech −17 to −21% to 30%,
+cifar syn_0 −16% to 40%; cifar syn_50_3st mixed) at +30% bytes, within one seed's noise on cifar AUC; pacing never ran (probe gate bug)
+and C4's K sat at c = 15. Felix leads every baseline on every cell. Fixed since: sync check-in stall (T10), probe gate, fck probes, real
+check-in pool loss (T9), EV21 scope; smoke 2 green; GPU real notify (T7) and check-in (T9) pass on F42R. Next: F42b (12 h, ladder middle, seed 2).
 
 ## Next steps (persistent queue — top item is next)
 
-Work rule: PARITY C10, C17, C18; ROBUST R0. Test levels: pytest (~3 min) · CPU tiers T1-T4/TS · GPU ≤ 30-min screens · sim screens
-(a 3 h-vclock G3 sim takes ~10 min wall on FX-D197) · long (G3 reals, long-vclock claims sims).
+Work rule: PARITY C10, C17, C18; ROBUST R0. Test levels: pytest (~1 min scoped) · CPU tiers (F42C sim / F42CR real, stub) · GPU
+smokes ≤ 15 min (F42 `--scale-smoke 3600`, F42R real) · screens (F42 sims: a 4 h-vclock leg takes 4-12 min wall) · long (G3 reals).
 
 **Run naming (operator 10-21): the batch number changes only at a long-run launch; screens stay F42 with a letter (F42a, F42b).**
 Every batch runs Felix new and old side by side; FedDance and Oort run only after the Felix decision or when their code changes.
 
-- **F42 · RESUME HERE: 5 h plan (operator 10-21 19:45).** Question: how Felix new (l5 / l5p) compares with Felix old (ctl) and the
-  baselines, first on syn_0 (selection + aggregation alone), then on syn_50_3st (+ availability). Times from the smoke launch; run
-  `dispatch.py --plan` before each launch; shepherd `git pull` first (PL18); no code edits once a run is live (PL5).
-  1. **0:00-0:20 · GPU smoke** `tmux new -s f42s 'python scripts/dispatch.py batches/f42smoke.yaml'` (one leg per stack / arm type, 15 min
-     vclock). Pass = rc 0, EV PASS incl. EV22 / EV23, `config_audit.py` exit 0, `predictor_audit.py` fills REFL's precision / recall and
-     the check-in columns; rejects ≤ ~1 per idle client per round (sync) / ≤ ~2 per pick (async). Claude grades it before step 2.
-  2. **0:20-3:30 · S0 + S1, one batch** `tmux new -s f42s01 'python scripts/dispatch.py batches/f42s01.yaml'`: 4 h vclock, seed 1; Felix
-     ctl (old) / l5 / l5p (new); FedBuff by check-in; REFL*, FedDance* (cifar) on both cells; s50u adds FedBuff*, fck (K1); sync
-     baselines by check-in wait for F42-T10. 26 legs; host RAM binds (~98 GB per
-     cifar leg, ~4 per node); measured ~10-12 wall-min per vclock-h → ~3 h (the planner's 15 h has no 4 h history). Cut for time: the
-     ladder middle (e0, l3b, l4, e0p) → F43. Optional early read at +30 min (abandons / h, rejects, K / c).
-  3. **3:30-4:15 · Read (Claude):** verdict rules below per Felix feature; Felix new vs old per cell; Felix vs each baseline and its
-     `*`; `felix_plots.py`, `accuracy_table.py`, `predictor_audit.py`, `avail_view_plot.py`, `config_audit.py`; rewrite the Scoreboard.
-     *Expectation (C19, before the data):* syn_0: Felix ≥ FedBuff on AUC (async, same work), REFL ≈ FedAvg (random-like picks, 1 step),
-     sync check-in arms ≤ their `*` by ~W (10% of each round). syn_50_3st: Felix beats every check-in baseline (dead picks hold slots to
-     the timeout; reconnects and misses idle slots), fck between Felix and FedBuff, `*` arms close part of the gap.
-     *Verdict rules (1 seed, cifar noise ~4 pp AUC):* a feature stays if its +1 arm beats its predecessor by > 2 pp AUC, or ties (± 2 pp)
-     at ≥ 20% fewer bytes or a lower worst-10% client accuracy gap; a tie with no saving drops it (flag kept, reason recorded). Pacing
-     (l5 → l5p, e0 → e0p) stays at ≥ 30% fewer cifar bytes with ≤ 1 pp AUC loss and < 25% speech throttle. C4 stays only if K is off its
-     bounds ≥ 50% of the leg. C5 stays only if speech shows no ± 10 pp eval spikes vs l4.
-  4. **Then:** F43 confirm (24 h cifar / 18 h speech, seeds 1-2 for Felix final / old) and D5 long runs.
-  - **F42-T10 · Sync check-in on GPU stalls · todo (blocks the REFL / FedDance / FedAvg check-in arms; they run as an add-on batch
-    once fixed).** Fixed so far: phantom clients (the ledger ran over the 300-client registry, not the leg's ends), a start-to-start
-    round estimate that locked rounds slow, wait-K windows that closed while the version still missed picks. CPU stub now healthy
-    (`pool_*_F42C_D`: REFL 288 versions vs REFL* 146, FedDance 112 vs 357, ≤ 86 rejects); GPU still 4-6 versions / 15 min vs 51-57 for
-    the oracles: clients pooled in an open wait-K window are not a wake event, so `_sim_sync_wait` jumps to the next trace flip
-    (57 → 600 s). *Exit:* GPU 15-min sync check-in within ~3× of its `*`, EV23 PASS.
-  **Open before D5 (real legs; F42 runs sims only):**
-  - **F42-T7 · Real-mode notify on GPU · todo.** CPU stub real Felix leg passed (`pool_20261021_1931_F42CR_A`: rc 0, EV clean, 4393
-    versions); left: the ≤ 15-min GPU real leg with flip → STATE_UPDATE latency ≤ 2 s and missed + false ≤ 1% of client-time.
-  - **F42-T9 · Real FedBuff check-in throughput · todo.** F42CR real FedBuff: 45 picks in 10 min with 41 pooled clients never picked
-    (sim F42C: 13.8k picks, 0 rejects); root before any real check-in leg. REFL real trainers import Prophet: leg RAM 41 vs 24 GB est.
-  *Local gates (CPU stub, no GPU):* `pool_20261021_1911_F42C_B` (sim, 30 min vclock): every check-in / `*` / fck leg rc 0, EV22 + EV23
-  PASS (FedAvg 185 picks, FedDance 271, REFL 31 before the hold-off fix, FedBuff 13.8k); `pool_20261021_1931_F42CR_A` (real, 10 min):
-  trainers' CHECK_IN → pool / reject → picks only from the pool, EV clean on all five. *GPU smoke 1 (`pool_20261021_1831_F42T1_A`,
-  pre-fix):* rc 0 but pace steering churned (FedBuff 300k rejects / 2.8k picks; FedAvg 44k, FedDance 50k, REFL stalled at round 5):
-  reconnect = one dispatch gap (async), and an overdue / top-up-collapsed round estimate (sync); fixed and pinned by
-  `test_checkin.py` population tests. T8 pacing sanity: smoke D l5p ran ~68 probes / h × mean 3.0 held-out samples ≈ 200 / h ≥ `min_n`
-  150, and the held-out set grows with the stream.
+- **F42b · RESUME HERE: 12 h screen · launching on shepherd alone (operator 10-22).** Shepherd `git pull` (PL18), then from
+  `lib/python/examples`: `python scripts/dispatch.py batches/f42b.yaml --nodes shepherd --plan`, `tmux new -s f42b 'python
+  scripts/dispatch.py batches/f42b.yaml --nodes shepherd'`. 50 sims, 12 h vclock, eval every 10 min, ETA ~5.5-6 h (RAM: ~4 legs at once): Felix ctl / l3b / l4 / l5 / l5p (+ seed 2 for ctl and l5p),
+  fck on s50u; FedBuff, REFL, FedDance, FedAvg by check-in; REFL*, FedDance*, FedBuff* (s50u); speech without FedDance.
+  - *Question:* does Felix new (l5p, pacing now live) beat old (ctl) on time to accuracy, and which ledger step carries it?
+  - *Prediction (C19, before the data):* l5p ≤ ctl in time to 40% cifar / 30% speech on ≥ 3 of 4 cells on both seeds; after cifar's
+    ~6 h plateau pace_c cuts c and l5p spends ≥ 30% fewer bytes than l5 at ≤ 1 pp AUC; l4 ≥ l5 on speech (C5 hurt speech in F41);
+    l3b vs l4 isolates K 10 → 15. Sync check-in baselines land within 3× of their `*` versions (smoke 2: 0.5-1.2×).
+  - *Refute / stop rule:* l5p within the ctl seed spread on time on every cell and no byte cut → stop the ledger climb, keep old Felix
+    plus only the steps that win.
+  - *Read (Claude):* `accuracy_table.py` + checkpoint TTA (35 / 40% cifar, 25 / 30% speech), AUC, GB; `felix_plots.py`;
+    `dynamic_kc` K / c per hour; `predictor_audit.py`; `config_audit.py`; `resource_report.py --util`. Then rewrite the Scoreboard,
+    the ledger, and queue F43 (24 h cifar / 18 h speech, seeds 1-3 for the winners).
+- **F42-T11 · REFL real startup · todo.** REFL real trainers import and fit Prophet before their first check-in: F42R REFL reached 399
+  of 480 s (EV12 FAIL; ~80 s lost, ~1% of a 2 h leg) and its leg RAM is 116 vs 95 GB est (RAM_OVER). *Exit:* EV12 PASS on an 8-min
+  F42R REFL leg and leg RAM within estimate (lazy fit after the first check-in, or a raised RAM estimate).
+- **F42e · Silent drops and packet loss (ablation) · todo.** A client that vanishes silently holds its slot until `send_timeout_wait_s`
+  (Felix cifar 677 s / speech 1920 s); no heartbeat or per-client timeout. Inject p ∈ {1, 5, 10}% silent losses and notify delay / loss;
+  candidate fix: per-client timeout = k × its modeled task time. *Exit:* Felix within 1 pp AUC of p = 0 at 5%.
+- **D5 · Long runs (next batch number) after F42b / F43 · todo.** Parity re-graded on the streaming setup with R27 knowledge (G3 reals +
+  sims, both cells, all six): the pre-reset parity reds (old FX-N9, N103, N110, N113) are re-checked there, not chased on old keys;
+  claims (FX-N108) on long sims. Re-measure real notify latency (F42R: 15 flips) and check-in throughput on 2 h reals.
+- **FX-N108 · Felix claims gate (operator 10-17) · blocked: D5; blocks FX-N12.** `felix_claims.py --felix-arm` grades one Felix arm per
+  cell on long sims with the 10-min eval cadence. C4 heterogeneity: out of scope while every run is α 0.1 (operator 10-19).
+- **FX-N100 · Throughput (central goal, operator 10-15) · wip.** F42S01 sims: 4 h-vclock legs in 4-12 min wall (20-50× real), host RAM
+  binds (~96 GB reserved per 75-trainer leg, 5 legs per node). *Next:* FX-N84's fork-server import sharing (~280 MB / trainer).
+  *Exit:* a 10-min mixed batch at ≥ 2× PR36's legs / h with interference at the solo baseline.
+- **FX-N94 · tiny_cpu first-contact sim delivery lag · todo.** `smoke_fxd160_0010`: first-contact lag 1.1-1.7 s (real ~0.03 s), sim
+  clock +1.7 s by round 3; GPU legs ≤ 0.5 s. *Exit:* first-contact lag ≈ later tasks' on tiny_cpu.
+- **FX-N85 · Close PR27/PR28 roots · wip.** (b) cifar Oort-family stub legs run one real step (FX-D110 extended); (c) A5 builder:
+  apply FX-D125's observed-window rule to `state_timeline_agreement`. *Exit:* every listed cell green or floor-gated.
+- **FX-N92 · Felix insights for the paper (operator 10-12) · wip.** [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) Next steps IN1, IN2, IN4.
+  *Exit:* findings for every catalog row, real↔sim agreed.
+- **FX-N90 · FedDance coverage under over-commit · todo.** Literal Alg. 1 l.3 zeroes picked-but-never-aggregated devices forever (F3
+  syn_0: 104/300); `straggler_score: mean` restores coverage but biases to slow ends. *Exit:* a cited rule with coverage ≈ random and
+  no speed bias, or recorded as FedDance's own.
+- **FX-N91 · EuroSys plot debts (no runs now, operator 10-12) · todo.** (a) controls: G1X cifar syn_0 `fedavg` sim 20 h; G1X speech
+  mobiperf `felix`; (b) a `straggler_score: mean` arm (FX-N90); (c) REFL label + ×1.06 factor; (d) MobiPerf e2e table vs logs (OORT* 15.6
+  vs 9.45 h; REFL mobiperf has no log); (e) speech e2e May-2025 rows have no logs; (f) comm to 70% from counted messages, not time share.
+- **FX-N84 · Trainer memory audit · wip.** PSS/trainer cifar 1052 MB, speech 1160 MB after lazy mlflow + own coords; aggregator
+  `malloc_trim` after eval. Left: `import torch` ~280 MB, cuDNN/cuBLAS host ~390 MB (fork-server sharing: FX-N100). *Exit:* footprint
+  table, fixes, new caps.
+- **FX-N76 `[C][S]` · C13 real-cost audit · wip.** Real speech FedBuff arrival → commit 0.12 s mean (sim 0): profile and charge it if it
+  moves K2. Re-measure in D5.
+- **FX-N42 `[S]` · Parity ladder · wip (PARITY Q2-Q6).** *Exit:* a run graded per cell on both axes, DIST on ≥ 3-leg floors.
+- **FX-N10 · google_speech on the launcher · wip.** *Next:* S4 cleanup.
+- **FX-N22 · Fast parallel harness · wip.** ISO oort,oort_star solo vs packed at cpt 0.5 / 0.25 (`harness_iso_compare.py`).
+- **FX-N2 · Parent S2 pipeline for async_cifar10 · todo.**
+- **FX-N93 · Convergence parity at the reference config · todo (after D5).** One C19 block per step: (1) six × both datasets reach
+  target or are audited round-bound; (2) real↔sim pairs + real replicate at reference n, deterministic kernels; (3) syn_50_3st +
+  mobiperf_3st; (4) sim speed ≥ 5× at reference n (S6); (5) FX-N12. Graded on the convergence board.
+  **FX-N12 · paper experiments sim-only · blocked: D5, FX-N108.**
+
+**F42 reference: arms, knobs and built pieces.**
 
   **F42 knob table (Q-F42-KNOBS: operator to confirm).** All legs: n 75 cifar / 50 speech, α 0.1, K 10, trace-tied `usage` stream from
   24 h, `validation_holdout` 0.1 (no stack trains on it), FedScale task time, per-baseline timeout (FX-D198), seed 1.
@@ -107,130 +121,65 @@ Every batch runs Felix new and old side by side; FedDance and Oort run only afte
     (pick survival vs ground truth, REFL flagged-pick survival + precision / recall of "leaves soon", FedDance ρ(V, survival),
     abandons / h, wasted slot-hours, check-in pooled / rejected / missed per client-h, sim notify fidelity; no crash without
     `agg_round`, any run name), REFL selection logs `priority_ids` / `picked_p`; exclusion stamps split `unavail` from busy.
-  *Untested:* pacing end to end (unit tests only; S0 / S1 are the first legs long enough).
-- **F42e · Silent drops and packet loss (ablation) · todo.** A client that vanishes silently holds its slot until `send_timeout_wait_s`
-  (Felix cifar 677 s / speech 1920 s); no heartbeat or per-client timeout. Inject p ∈ {1, 5, 10}% silent losses and notify delay / loss;
-  candidate fix: per-client timeout = k × its modeled task time. *Exit:* Felix within 1 pp AUC of p = 0 at 5%.
-- **F41-fix · Read-out debts · wip.** (a) ✅ `felix_claims.py` grades one Felix arm per cell (`--felix-arm`) with usage-stream cells
-  apart. (c) `utility_bench.py`'s `felix` arm ≠ Felix (top-20% 0.73 vs real 0.35): calibrate before any bench verdict. (d) Reruns:
-  cifar s50u e0 (EV10), speech s0u c3 (EV13), speech s50u all (DOOMED EV16, FX-N113f).
-- **D5 · Long runs (next batch number) after the F42 screens · todo.** Parity re-graded on the streaming setup with R27 knowledge;
-  claims (FX-N108) on long sims.
-
-- **FX-N103 · Cifar lin oort: real > sim lean · wip (old runtime; re-check on PR39 phase 2 lin).** G3S `pool_20261018_033638_G3S`: sims 455 / 543 / 669 versions vs 2 h
-  reals 551 / 625 / 694 (floor 17-40%), 7 of 9 pairs real > sim. 10-18 audit, no biased input found: (a) sim S3 ≡ real 145243 for 15
-  rounds (observed durations Δ 0.001 s, utilities identical); (b) fork at v16 is a ms tie at a whole-second budget (0420 vs 0375, both
-  5.001 s), as reals fork among themselves (v17); (c) aggregator cost real 54-66 vs sim 30 ms/cycle leans the wrong way; (d) 10-min pair
-  `pool_20261018_031320_G3` 79 / 79 rounds, advance 7.34 / 7.39 s. Post-fork sims drift to slower picks (mean observed 4.2-11.4 s vs real
-  3.8-9.1 s). *Next:* more draws, not fixes: ≥ 3 more lin oort sims in the sim-only phase. *Exit:* no one-sided lean over ≥ 6 sims × 3 reals.
-- **FX-N108 · Felix claims gate (operator 10-17) · blocked: D5; blocks FX-N12.** `felix_claims.py` on PR39 phase 1: C1-C3
-  n/a, nobody reaches 50% / 60% (or 40% on cifar) in 2 h; C1 reads cifar syn_0 all `learning`, the rest ❌ (speech has < 6 evals, so
-  the learning test can't run). At matched lower accuracy (Scoreboard): C2 holds in every graded cell; C3 fails on cifar syn_0 against
-  Oort (2.2× fewer bytes than Felix to 35%); C4 holds (Felix −1.8 pp syn_0 → syn_50_3st, baselines −9 to −21 pp). *Next:* grade on long
-  sims (D5b) with a time eval cadence (FX-N112). C4 heterogeneity: out of scope while every run is α 0.1 (operator 10-19).
-- **FX-N100 · Throughput: utilization-aware packing (central goal, operator 10-15) · wip.** PR39 phase 1 (`--util`): jayne 3.1 legs/h,
-  concurrency 3.0, RAM peak 410 / 504 GB, GPU memory 41%, idle 34%; shepherd 2.4 legs/h, concurrency 2.4, idle 41%; 3 / 59k overruns.
-  Binding: host RAM (G3 reals reserve 80-100 GB for 2 h). FX-D197 sims are short: every 2 h-vclock G3 sim took 3-8 min wall (15-40×
-  real), speech included (PR38 felix 44 min), so long-vclock sims are cheap (D5b). *Next:* FX-N84's fork-server import sharing
-  (~280 MB/trainer); default `--gpu-cpus-per-trainer` 0.4 → 0.1 after PR39 (changes the key): G0US n=50 GPU sims leased 28 cores,
-  used avg 0.9-2.4 / p95 ≤ 5.5, so 4 legs filled 120 CPUs with GPU 7 idle. *Exit:* a 10-min mixed batch at ≥ 2× PR36's legs/h with
-  interference at the solo baseline (PL19, `CPU_SAT`, sim slowdown ≤ 1.25×, EV/parity = solo). PR40a (61 Felix sims, 3.4 h vs 2 h
-  ETA): jayne 9.5 legs/h, concurrency 2.7, CPU 6%, RAM peak 338 / 504 GB, GPU idle 22%; shepherd 8.6 legs/h, concurrency 1.5, GPU idle
-  67%; 0 slow legs. Binding: each 75-trainer sim reserves ~96 GB host RAM (79 GB used), so ≤ 4-5 legs fit a node.
-- **FX-N94 · tiny_cpu first-contact sim delivery lag · todo.** `smoke_fxd160_0010`: first-contact lag 1.1-1.7 s (real ~0.03 s), sim
-  clock +1.7 s by round 3; GPU legs ≤ 0.5 s. *Exit:* first-contact lag ≈ later tasks' on tiny_cpu.
-- **FX-N85 · Close PR27/PR28 roots · wip.** (b) cifar Oort-family stub legs run one real step (FX-D110 extended); (c) A5 builder:
-  apply FX-D125's observed-window rule to `state_timeline_agreement`. *Exit:* every listed cell green or floor-gated.
-- **FX-N92 · Felix insights for the paper (operator 10-12) · wip.** [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) Next steps IN1, IN2, IN4.
-  *Exit:* findings for every catalog row, real↔sim agreed.
-- **FX-N90 · FedDance coverage under over-commit · todo.** Literal Alg. 1 l.3 zeroes picked-but-never-aggregated devices forever (F3
-  syn_0: 104/300); `straggler_score: mean` restores coverage but biases to slow ends. *Exit:* a cited rule with coverage ≈ random and
-  no speed bias, or recorded as FedDance's own.
-- **FX-N91 · EuroSys plot debts (no runs now, operator 10-12) · todo.** (a) controls: G1X cifar syn_0 `fedavg` sim 20 h; G1X speech
-  mobiperf `felix`; (b) a `straggler_score: mean` arm (FX-N90); (c) REFL label + ×1.06 factor; (d) MobiPerf e2e table vs logs (OORT* 15.6
-  vs 9.45 h; REFL mobiperf has no log); (e) speech e2e May-2025 rows have no logs; (f) comm to 70% from counted messages, not time share.
-- **FX-N84 · Trainer memory audit · wip.** PSS/trainer cifar 1052 MB, speech 1160 MB after lazy mlflow + own coords; aggregator
-  `malloc_trim` after eval. Left: `import torch` ~280 MB, cuDNN/cuBLAS host ~390 MB (fork-server sharing: FX-N100). *Exit:* footprint
-  table, fixes, new caps.
-
-*Short-run queue (fix + verify with pytest, stored telemetry, CPU tiers or GPU screens):*
-- **FX-N113 · PR39 phase-1 reds, offline first · todo.** All on one real, so draw vs mechanism needs G3C reals (C23). (a) cifar oort syn_0
-  `convergence_loss`: the real forks at the r40 eval (21.3 vs 18.4%) while sim, oort_star real and oort_star sim agree to the digit;
-  (b) cifar fedbuff syn_50_3st K2 FAIL at rel 2.7% under tol 8% (33 vs 34 versions): read why the checker fails it; (c) cifar oort_star
-  syn_50_3st A2c speed bias (real −28 s, sim −11 s); (d) cifar refl syn_50_3st A2 KS 0.21, A3 decile 7 0.26; (e) speech fedbuff
-  syn_50_3st A2 KS 0.35, U6 real 0.14 s vs sim 0 (FX-N76); (f) speech Felix syn_50_3st sim DOOMED EV16 (1 late commit of 350, 63
-  withheld); PR40a: 4 more (`gs_F39E_s50_{g10,u,u0}`, `s50ev_u`; 1-2 late commits each), so a sim mechanism, not a draw; (g) PR40a
-  speech `s0_eval0`, `s0ev_eval0` EV13 FAIL (stall; FX-N110?). *Exit:* each a fix in tree or a draw on ≥ 3 reals.
-- **FX-N110 · Speech sim gate failsafe under GPU contention · todo.** PR39a `gs_F39A_c30_r1`: trainer 0388 took 11 min wall for a ~4 s
-  train (06:55-07:06, its GPUs ~98% SM with packed legs at `--gpu-share 2`); `SIM_GATE_FAILSAFE` dropped it at 457 s (round 143), then
-  128 pastdated commits (EV11 2.8%), 1 redispatch (EV10); c30_r2 same; EV13 stalls on ctl_r1 (304 s), c10_r1 (141 s), and PR39b
-  `gs_F39B_K10c15_r1` fedbuff (the only non-PASS of 69 legs). Root the 11-min hang, then a solo vs packed c30 screen. *Exit:* speech
-  c30 EV-clean when packed.
-- **FX-N9 · Unavailability, all six × syn_50_3st / mobiperf_3st · wip.** FX-D197 key: syn_50_3st 3 / 12 (PR39; 4 STALLED, FX-N111),
-  mobiperf_3st not run. *Exit:* both columns green on one code state.
-- **FX-N13 · Streaming, both datasets · wip.** stream_eve 12/12, stream_lin 12/12; left: G0To (oracle arms), ST6.
-- **FX-N30 `[S]` · Speech streaming on GPU screens · wip.** G0T + G3 lin green on all six; left: G0To.
-- **FX-N74 `[C]` · Every baseline reaches target on full data · wip: 0 / 12 on FX-D197 (2 h legs; D5b).** Folds into FX-N108 C1.
-- **FX-N76 `[C][S]` · C13 real-cost audit · wip.** `trainer_speed_identity` red only where real overran D; real speech FedBuff
-  arrival → commit 0.12 s mean (sim 0): profile and charge it if it moves K2.
-- **FX-N42 `[S]` · Parity ladder · wip (PARITY Q2-Q6).** *Exit:* a run graded per cell on both axes, DIST on ≥ 3-leg floors.
-- **FX-N10 · google_speech on the launcher · wip.** *Next:* S4 cleanup.
-- **FX-N22 · Fast parallel harness · wip.** ISO oort,oort_star solo vs packed at cpt 0.5 / 0.25 (`harness_iso_compare.py`).
-- **FX-N2 · Parent S2 pipeline for async_cifar10 · todo.**
-
-*After 76/76 — convergence and accuracy:*
-- **FX-N93 · Convergence parity at the reference config · todo.** One C19 block per step: (1) G1AS six × both datasets: target or
-  audited round-bound; (2) G1A real↔sim pairs + real replicate at reference n, deterministic kernels (time-to-target rung, C7); (3) G1U
-  syn_50 + mobiperf 3 h; (4) sim speed ≥ 5× at reference n (S6); (5) FX-N12. Graded on the convergence board.
-  **FX-N12 · paper experiments sim-only · blocked: PR39, FX-N108.**
+  - *Fixes 10-22:* sync check-in wakes on a pooled window (`_checkin_pool_waiting`, T10); probe gate on `last_probe_ts`, not train
+    reports (F42S01 ran 0 probes after the first burst); async probe picks keep the pool (fck); `CheckinLedger.release` keeps a
+    post-task check-in (T9); EV21 skips the AVL_EVAL-reach claim under `checkin`; `harness_pool --tier F42 --seeds 2` (`_r2`, seed
+    1235); `--tier F42R` (GPU real, 10 min); `predictor_audit` REFL precision / recall on its [μ, 2μ] horizon, syn_0 per-client rates.
+  *Untested:* pacing end to end (probes now ~60 / h; c cannot move inside smoke 2's 1 h window): F42b.
 
 ---
 
 ## Scoreboard (rewrite after every run, PARITY C5)
 
-**OBSOLETE (setup reset 10-21): parity (76 / 76, PR39 phase 1 14 / 24) and every PR38-PR40a table ran on static data or the old
-runtime; removed from this board (`git log`).** Parity is re-graded on the streaming setup in D5.
+**F42S01 (10-21; sims, seed 1, 4 h vclock from 24 h into the trace, `usage` streams, R27 knowledge; pools
+`experiments/pool_20261021_2154_F42S01_{JAYNE,SHEPHERD}_*`).** Cifar accuracy from every saved checkpoint on the full test set
+(~10 min apart), speech from the leg's 30-min evals (2-point smoothed). AUC = mean accuracy over those evals · GB = total traffic.
+Old = Felix ctl; new = l5 (no pacing) / l5p (pacing; ran as l5: probes stopped after the first burst, fixed since).
 
-**F41 (10-21; sims, seed 1, n 75 cifar / 50 speech, 24 h / 18 h vclock from 24 h into the trace; pools
-`experiments/pool_20261021_0443_F41_{JAYNE,SHEPHERD}_{FC,FS}`).** Metric: mean test accuracy over the 24 evals (AUC; evals every
-~1 h cifar / 43 min speech, so TTA is quantized and speech stream evals swing ±10-20 pp) · total GB. Old = Felix ctl, new = `all`.
+| cell | old Felix | new l5 | new l5p | best baseline · others (AUC) |
+|---|---|---|---|---|
+| cifar syn_0 | 33.0 · 35% 122 m · 40% 183 m · 54 GB | 32.6 · 117 m · **153 m** · 70 GB | 33.2 · **107 m** · **153 m** · 71 GB | FedDance* 30.9 (35% 162 m, 40% 217 m) · REFL* 28.5 · FedBuff 26.3 |
+| cifar syn_50_3st | 32.3 · **110 m** · **183 m** · 63 GB | 32.6 · 115 m · 213 m · 73 GB | 32.7 · 125 m · 236 m · 74 GB | FedDance* 31.7 (35% 125 m, no 38%) · REFL* 27.7 · fck 25.8 · FedBuff* 24.4 · FedBuff 22.9 |
+| speech syn_0 | 24.5 · 30% 150 m · final 32.0 · 114 GB | 25.8 · **119 m** · 38.0 · 148 GB | **26.5** · **119 m** · **40.8** · 149 GB | FedBuff 21.5 (30% 210 m) · REFL* 6.7 |
+| speech syn_50_3st | 21.7 · 180 m · 33.9 · 131 GB | **23.9** · **150 m** · 37.3 · 128 GB | 23.6 · 179 m · **38.8** · 128 GB | FedBuff* 16.9 · fck 15.5 · FedBuff 14.7 · REFL* 5.4 |
 
 Plots (in place, latest batch; `scripts/felix_plots.py POOLS`): ![cifar](felix_cifar10.png) ![speech](felix_google_speech.png)
 
-| cell | old Felix | new Felix | best Felix arm | baselines (AUC · GB) |
-|---|---|---|---|---|
-| cifar s0 static | **49.0** · 93 | 49.7 · 120 | – | FedBuff 47.6 · 134, FedDance 46.3 · 289, REFL 43.6 · 223, Oort 41.4 · 17 |
-| cifar s0u | **42.4** · 257 | 42.3 · 311 | ctl | FedBuff 41.0 · 330, REFL 40.9 · 223, FedDance 38.9 · 299, Oort 35.9 · 33 |
-| cifar s50u | **41.8** · 312 | 41.1 · 350 | e0 41.9 | REFL 40.6 · 218, FedDance 37.0 · 330, Oort* 29.8 · 18, FedBuff 21.4 · 29 |
-| speech s0 static | 52.7 · 184 | **55.4** · 256 | – | FedBuff 49.3 · 197, FedDance 27.0 · 478, Oort 24.8 · 149, REFL 19.3 · 331 |
-| speech s0u | 39.7 · 394 | 42.3 · 522 | c4 **43.7** · 412 | FedBuff 42.2 · 414, Oort 24.3 · 151, FedDance 23.4 · 423, REFL 17.2 · 330 |
-| speech s50u | 40.9 · 494 | DOOMED | c3b **43.4** · 535 | FedBuff 27.4 · 112, FedDance 23.5 · 368, Oort* 17.6 · 93, REFL 15.0 · 245 |
+**Verdict (1 seed; cifar seed spread ~4 pp AUC / ~30 min to target, PR40a-era floor, re-measured by F42b seed 2):**
+- *Time to accuracy, new vs old:* new is ahead on speech (both cells: −17 to −21% to 30%, +3 to +9 pp final) and cifar syn_0 (−16% to
+  40%); cifar syn_50_3st is mixed (new −20% to 38%, +16 to +29% to 40%). Cifar AUC ties (±0.9). Promising, not yet proven: no cifar
+  gap exceeds the seed spread, and speech's +1.3-2.0 AUC is one seed with ±10 pp eval swings.
+- *Cost:* new spends +30% bytes on cifar and speech syn_0 (C3 picks fast clients: +36% updates / h), equal on speech syn_50_3st.
+  Pacing (the byte lever) never engaged; F42b is its first test.
+- *Which steps:* K walks to c = 15 within the first hour in every new leg (C4's `stall` rule adds 1 whenever paired client loss shows
+  no significant change, which on 30-70-sample shards is almost always), so new = C3 + balance + K 15 + C5 − eval tasks. The ladder
+  middle (l3b, l4) is unrun, so the gain is not yet attributed.
+- *Felix vs baselines:* every Felix arm leads every baseline on every cell (cifar 35% at 107-125 m vs FedDance* 125-162 m; speech 30%
+  at 119-180 m vs FedBuff 210 m / never). REFL* on speech is round-bound at 1 step (≤ 11%).
+- *K1 (notify vs check-in):* Felix by check-in (fck) loses 7-8 AUC vs l5p on syn_50_3st (cifar 25.8 vs 32.7, speech 15.5 vs 23.6): the
+  notify + evict mechanism carries most of Felix's unavailability edge.
 
-Time · GB to matched accuracy: cifar s0 50%: old 360 min · 26 GB, new 480 · 50, FedDance 420 · 87, FedBuff 540 · 50, Oort 961 · 13;
-cifar s0u 40%: old 180 · 40, REFL 300 · 46, FedBuff 300 · 79; cifar s50u 45%: **REFL 661 · 99**, old 780 · 183; speech s0 60%: old
-539 · 96, new 537 · 132, FedBuff 719 · 132.
+**F42 smoke 2 (10-22, jayne, 1 h vclock, 15 legs, `experiments/pool_20261022_0213_F42SMOKE2_JAYNE_*`):** rc 0 on all 15. Sync check-in
+versions vs their `*`: REFL syn_0 159 / 184, syn_50_3st 221 / 178, FedDance 120 / 247, speech REFL 13 / 23, FedAvg 100. Rejects ≤ 0.5
+per idle client per round. Probes: cifar l5p 56, fck 57 in 1 h; speech 40-43 in 30 min. EV PASS except fck EV21 (the checker
+asked check-in Felix to reach AVL_EVAL; scoped out, fixed).
 
-Read (telemetry, `selection_audit.py` + per-hour `trainer_round` / `agg_round`):
-- *Streams carry almost no new data per update:* visible share grows 17% → 29% over 24 h, < 1 new sample per update for every stack;
-  cifar plateaus by ~6 h and stacks then spend 63-79% of their bytes on it (speech still learning: 7-38%).
-- *Streams erase Felix's samples-per-update edge:* visible shards are 30-70 samples (cifar), so an epoch is 1-2 steps, close to REFL's
-  1 step. REFL's 11 s tasks are never cut by availability flips (staleness 0.4-0.7 vs Felix 2-3), so it keeps its rate under syn_50_3st.
-- *Eval tasks:* ctl ≈ e0 in every cell (C6). *C3* +30-60% updates / h and bytes / h, plateau ≤ e0, speech unstable. *C4* K → 15 (= c)
-  in the first hour of every leg and stays: a fixed K 15 that steadies speech, never adapts. *C5* neutral cifar, worst arm on speech.
-
-**Expected after F42:** Felix ≥ 40% fewer bytes than every async / 1-step baseline on cifar streams at equal final accuracy.
+**Expected after F42b:** l5p ≤ ctl to 40% cifar / 30% speech on ≥ 3 of 4 cells on both seeds; l5p ≥ 30% fewer bytes than l5 on
+cifar after the plateau; check-in baselines on the board (REFL, FedDance, FedAvg).
 
 ### Running config (G3) and invariants checked
 
 - *Shape (`harness_pool.G3_SHAPE`, all six):* cifar n:c:K 75:15:10 on 1 A40, speech 50:15:10 on 2; the reference split's first n
-  trainers (Dirichlet α 0.1); 2 h real / 2 h vclock; eval every 10 versions on the full test set; `trainerDeterministic`; speech bf16
-  (FX-D168); Oort-family over-commit 1.1, REFL/FedDance picks round(K × 1.3).
+  trainers (Dirichlet α 0.1); G3 parity legs 2 h real / 2 h vclock, eval every 10 versions; F42 screens eval every 10 min of the leg's
+  clock (`F42_EVAL_S`) on the full test set; `trainerDeterministic`; speech bf16 (FX-D168); Oort-family over-commit 1.1, REFL/FedDance
+  picks round(K × 1.3); 10% validation holdout no stack trains on.
 - *Task time:* FedScale device model (Scope, "Task-time model").
 - *Task timeout:* `send_timeout_wait_s` 903 s cifar / 2560 s speech (2 × the longest FedScale task in the reference population,
   `datasets.yaml`) for every non-Felix baseline;
   Felix evicts at the availability flip (`aware_boundary_eviction`).
-- *Availability handling:* select filter = felix, oort_star, refl, feddance; unaware = oort, fedbuff (upload held until AVL_TRAIN or
-  abandoned). Proactive eviction = Felix only (FX-L11). AVL_EVAL is eval-only and Felix-only (FX-D165).
+- *Availability knowledge (R27, `avail_knowledge`):* Felix notify (filter + evict at the flip); every non-`*` baseline check-in;
+  `*` arms oracle. Uploads held until AVL_TRAIN or abandoned. Proactive eviction = Felix only (FX-L11). AVL_EVAL is eval-only and
+  Felix-only (FX-D165).
 - *Training/server knobs (`baseline_reference.yaml`; source-faithful or recorded deviation, L33-L37):*
 
   | baseline · dataset | local work | batch | client lr / opt | mom · wd | lr decay | server | utility | status |
@@ -242,7 +191,7 @@ Read (telemetry, `selection_audit.py` + per-hour `trainer_round` / `agg_round`):
   | feddance · cifar / speech | 1 step | 24 / 32 | 0.1 / 0.075 SGD | 0.9 · 5e-4 | 0.98 / 10 | FedAvg equal | – | final |
 
   Felix vs FedBuff differ only in Felix's selection (utility + speed, availability-aware, eval tasks), its rate (staleness + utility)
-  and FedBuff's last-batch lr normalization. Felix's rate constants are 2024 values; its rate is ~staleness-blind (FX-T56); exploration knobs don't bind on syn_0 (PR39a).
+  and FedBuff's last-batch lr normalization; Felix new swaps the selection and rate per the ledger (Active build).
 
 **Cross-cutting capabilities**
 
@@ -255,15 +204,15 @@ Read (telemetry, `selection_audit.py` + per-hour `trainer_round` / `agg_round`):
 | DIST tolerances from replicate floors | 🟡 2-real bands gate regrade (FX-D188 keeps reds past 3× floor); none tightened | FX-D37, PARITY Q2 |
 | real == sim with deterministic kernels | ✅ mechanism; re-measure on FX-D197 | FX-D144/D149/D158 |
 | no-overrun rule (PL19) | ✅ mechanism; re-measure on FX-D197 | FX-D180 |
-| streaming / oracle experiment | 🟡 EV19 green both datasets; oracle advantage ungraded | FX-N13 |
 | sim speedup vs real (leg wall) | re-measure on FX-D197 (speech async GPU-slot-bound, FX-L81) | FX-D180 |
 | one dispatcher batch over both nodes | ✅ PR38: 60 units, 18.7 h vs 20.7 h plan, auto-collect | FX-D186 |
 | paper experiments sim-only | ⬚ | FX-N12 |
 
-**Accuracy table (FX-N74; `scripts/accuracy_table.py`).** Target cifar 50%, speech 60%, syn_0, full data, the leg's own clock. FX-D197:
-0 / 12 reach target in 2 h; cifar max 32-39%, speech async 28-29%, speech sync 4-10% (PR39).
+**Accuracy table (`scripts/accuracy_table.py`).** Full-data targets cifar 50%, speech 60%; on `usage` streams no stack reaches them in
+4 h (F42S01 max: cifar 43%, speech 41%), so screens grade matched accuracy (35 / 40% cifar, 25 / 30% speech) and FX-N108 sets the
+stream targets on long sims.
 
-**Convergence board (FX-N93; long runs beyond the 76 screens).** Green when all four columns pass; thresholds nominal until a
+**Convergence board (FX-N93; D5 long runs).** Green when all four columns pass; thresholds nominal until a
 real↔real replicate sets the band (L12).
 - **A · accuracy:** sim reaches target within 90-120 min on its clock, or is round-bound and real and sim reach the same accuracy at
   the same time.
@@ -272,7 +221,7 @@ real↔real replicate sets the band (L12).
 - **U · hours under unavailability:** syn_50_3st + mobiperf_3st, ≥ 2 h: INV/EXACT green and C's criteria.
 - **S · sim speed (operator 10-14):** never slower than real; 1-2× needs a review; 2-5× and beyond is the goal.
 
-**Convergence ⬚ / 12 on FX-D197.**
+**Convergence ⬚ (D5).**
 
 ---
 
@@ -296,7 +245,7 @@ real↔real replicate sets the band (L12).
   for the arms still in contention (best arm, anchors, any arm within the seed spread of the best, PR39a/b: ~10-15% in min to target).
   Replicates prove reproducibility and the spread; they are wasted on arms that lose.
 - **Day plan (10-21):** mornings finalize Felix and fix baselines with code + quick sim screens; long runs launch only after every
-  screen-decidable choice is decided (Next steps D0-D5).
+  screen-decidable choice is decided (Next steps F42b → D5).
 - **Claims on long sims (10-21):** reals stay 2 h for parity; claims (FX-N108) and paper numbers grade sims at 12 h cifar / 24 h speech
   vclock. The aggregator's test eval runs on the leg's clock (Δt = leg / 24) in its background thread, same for all six (FX-N112).
 - **Felix design scope (10-21):** Felix may choose local work per client (FedBuff keeps 1 epoch); a new utility is modeled and shown on
@@ -350,19 +299,19 @@ real↔real replicate sets the band (L12).
   overrun D, real and sim, else fewer trainers per GPU (FX-N98).
 - **Felix claims (10-17):** all six reach target; Felix's TTA significantly lowest and its traffic to target lowest in every scenario;
   Felix least affected by streaming, heterogeneity and unavailability. Any miss is a ⚠️ on the Scoreboard and blocks FX-N12.
-- **Sim-only experiments (10-14):** after the G3 batch (all six × syn_0 + syn_50_3st + stream_lin × both datasets) sits inside the
-  real↔real band, paper experiments run sim-only.
+- **Sim-only experiments (10-14):** after D5's G3 batch (all six × syn_0 + syn_50_3st on `usage` streams × both datasets) sits inside
+  the real↔real band, paper experiments run sim-only.
 - **Sim speed (10-14):** never slower than real; 1-2× needs review; 2-5× and beyond is the target; always look for more.
 - **Speed levers (10-14 late):** speech bf16 (FX-D168); balanced GPU placement (FX-D169); one scaled n:c:K per dataset for all baselines
   (`G3_SHAPE`); more parallel legs via scaled n/c/K at fixed ratios.
 - **C1 and degenerate cells (10-18; cifar 10-19):** a speech or cifar baseline below target in a 90-120 min leg is round-bound if its eval loss falls and
   accuracy rises; near-degenerate unaware speech cells under unavailability are fine while every abandon fires at the task timeout
   (the dataset's `send_timeout_wait_s`) and its slot is re-selected; simulator studies give them longer legs (FX-N106 closed).
-- **Launches (10-18):** Claude runs short tests on jayne itself; PR39 and other long batches launch only on the operator's go.
+- **Launches (10-18):** Claude runs short tests on jayne itself; long batches launch only on the operator's go.
 - **Real-path-identical keys (10-18):** reals pair across code keys whose diff leaves the real path unchanged
   (`parity_ladder.REAL_SAME_CODE`, evidence per link), so sim-only fixes re-grade against existing reals instead of new 2 h reals.
-- **Run scope (10-12, 10-14):** the 76/76 stands on one code state = one `code_key` (FX-D162), which may span batches; a band pairs
-  only within one key; syn_50_3st takes its baseline's syn_0 band (10-15; FX-L80 asks to revisit for Oort).
+- **Run scope (10-12, 10-14):** a parity board stands on one code state = one `code_key` (FX-D162), which may span batches; a band
+  pairs only within one key; syn_50_3st takes its baseline's syn_0 band (10-15; FX-L80 asks to revisit for Oort).
 
 ---
 
@@ -434,7 +383,7 @@ it (`getCompletionTime`):
   (the novelty utility), not on |D|.
 
 - **Correct, not just equal:** every baseline follows its reference and hits target on full data; root and fix every red per run.
-- **Scope:** `felix`, `oort`, `oort_star`, `refl`, `feddance`, `fedbuff` (+ `*_oracle` arms, FX-N13; `fedavg` = FedDance's random arm,
+- **Scope:** `felix`, `oort`, `oort_star`, `refl`, `feddance`, `fedbuff` (+ `*` oracle arms, R27; `fedavg` = FedDance's random arm,
   FX-D146). Out: `oracle`.
 - **Traces:** `syn_0`, `syn_20_3st`, `syn_50_3st`, `mobiperf_3st` (FX-D166). `syn_10_3st` = the old "syn_20" level (10.8%, EuroSys'26;
   FX-D18). The 2-state `syn_{10,20,50}` keys are deleted (`b1c53e940`); scoreboard columns keep the short names.
@@ -448,25 +397,25 @@ it (`getCompletionTime`):
 ## Active build — Felix design: ideas and execution (FX-N109, operator 10-19)
 
 **Goal:** minimize time and bytes to accuracy with mechanisms general across datasets, models and availability (no per-dataset
-constants, Decisions 10-19). α 0.1; syn_0 first, then syn_50_3st. **Evidence in this section dated before F41 (PR38-PR40a, PR39a / b,
-I5-I9, the bench) ran on static data / older runtimes: OBSOLETE, hypotheses only (setup reset 10-21).**
+constants, Decisions 10-19). α 0.1; syn_0 first, then syn_50_3st.
 
 **Contribution ledger (operator 10-21: revisit and fix before discarding; discard only with a stated reason).** Felix = async FL that
 puts each slot on the client with the most learning per second among those that can finish before they leave, and spends bytes only
-while the model is still learning. Evidence = F41 (1 seed; arms within noise, so no verdicts yet: re-read every batch); AUC = mean accuracy over 24 evals; Δ vs e0.
+while the model is still learning. Evidence = F41 (24 h, 1 seed) and F42S01 (4 h, 1 seed); both within noise on cifar, so verdicts
+wait for F42b's seed 2.
 
 | # | feature | tried → result | diagnosis | next try | state |
 |---|---|---|---|---|---|
-| C1 | aware dispatch + eviction | cifar s50u: Felix 3.6k updates / h vs FedBuff 0.24k; AUC 41.8 vs 21.4 | works: unaware stacks hold slots to the timeout | silent-drop ablation (F42e) | **gain** |
-| C2 | async, one epoch of work | static: Felix leads all (cifar 50% 360 vs 420-961 min); s50u streams: REFL ties (45% at 661 vs 780 min) | streams leave 30-70 visible samples, so an epoch is 1-2 steps ≈ REFL's one | local work in steps, not epochs, on small shards (C9) | **gain** static; shrinks on streams |
-| C3 | rank \|D\| q / last task s | +30-60% updates and bytes / h; faster early (cifar s0u 35% at 60 vs 120 min); plateau ≤ e0; speech AUC −2.9 / −1.9 | per second favours small fast shards; per byte (constant bytes per update) the old size rank is right | C3 while validation improves fast, size rank once F42 paces | wip: phase-gated retry |
-| bal | participation discount | top-20% share 0.46 → 0.40; c3b > c3 everywhere; vs e0 cifar ±0.6, speech s50u +1.2 | only meaningful with C3's concentration | keep inside the C3 retry | wip |
-| C4 | adaptive K (AIMD on paired client loss) | K → 15 (= c) by version ~45-60 in every leg; speech AUC +3.2 / +0.8 (steadier), cifar early slower; bytes = e0 | its signal is training loss on unchanged shards: the median client's loss falls through the plateau (memorization) while test loss rises 1.6 → 3.5; "no significant change → K+1" then walks K to c | drive K (and c, F42) from federated validation, not training loss | wip: signal swap |
-| C5 | value × staleness weight | cifar ±0.1 AUC; speech −7.1 / −4.7, ±10 pp evals | 2-9× weight spread on noisy small-shard updates = step spikes | clip the ratio to [0.5, 2] and pair with K 15; else revert to the flat weight | wip: tempered retry |
-| C6 | eval tasks | as belief refresh: ctl ≈ e0 everywhere | the train-return beliefs already rank right | new job: federated validation probe for F42 / C4 (scalar loss / accuracy on held-out client data) | wip: repurposed |
-| C7 | fresh / novel utilities | refuted on the old setup (FX-T66, FX-T67) | streams add < 1 sample per update, so novelty is ~0 here | only if a stream with real growth arrives | parked |
-| C8 | overfit-aware pacing of c (F42) | offline replay of F41 (`scripts/pacing_replay.py`, pessimistic: progress ∝ updates): cifar streams −47 to −54% bytes at ≤ 0.6 pp AUC; speech throttles 0-21% at ≤ 0.4 pp AUC (validation loss still falling); static cifar −39% bytes but final −6 pp | rule: c × β when validation loss > 1.1 × its running min, × 2 when back at the min; static cifar keeps gaining accuracy while its loss rises (overconfidence) | gate on validation loss rising AND accuracy flat; sim screen | wip: model passes on streams |
-| C9 | step / work adapted to the plateau | – | speech evals swing ±10-20 pp (step too large on small shards), cifar overfits | ReduceLROnPlateau on the server lr from the same validation signal; min local steps on small shards | todo |
+| C1 | aware dispatch + eviction (notify) | F41 cifar s50u: Felix 3.6k updates / h vs FedBuff 0.24k; F42S01 fck (same Felix, check-in) −7 to −8 AUC on s50u | works: check-in stacks learn a departure only at the timeout | silent-drop ablation (F42e) | **gain** |
+| C2 | async, one epoch of work | F41 static: Felix leads all; streams: REFL ties (cifar s50u 45% at 661 vs 780 min) | streams leave 30-70 visible samples, so an epoch is 1-2 steps ≈ REFL's one | local work in steps on small shards (C9) | **gain** static; shrinks on streams |
+| C3 | rank \|D\| q / last task s | +30-60% updates and bytes / h (F41, F42S01 +36% picks); faster early | per second favours small fast shards; bytes / h rise with the rate | attribute in F42b (l3b vs e0-less ctl); pacing to pay the bytes | wip |
+| bal | participation discount | F41 top-20% share 0.46 → 0.40; c3b > c3 everywhere | only meaningful with C3's concentration | inside l3b (F42b) | wip |
+| C4 | adaptive K (AIMD, `stall`) | K → c = 15 within the first hour in every leg (F41, F42S01) | `stall` adds 1 whenever paired client loss shows no significant change, almost always on tiny shards: C4 = fixed K 15 | F42b l3b (K 10) vs l4 (K → 15); if K 15 wins, drop AIMD for K = c; else a validation-driven signal | wip: K-only test |
+| C5 | value × staleness weight | F41: cifar ±0.1 AUC, speech −7.1 / −4.7; F42S01 inside l5 (speech new ahead) | 2-9× weight spread on noisy small-shard updates = step spikes | F42b l4 vs l5 on speech | wip |
+| C6 | eval tasks | ctl ≈ e0 everywhere (F41) | train-return beliefs already rank right | repurposed as validation probes (C8) | repurposed |
+| C7 | fresh / novel utilities | refuted pre-reset (FX-T66, FX-T67) | streams add < 1 sample per update | only with a stream of real growth | parked |
+| C8 | pacing c by federated validation (pace_c) | F42S01: never engaged (probes stopped after the first burst; fixed); offline F41 replay: cifar −47 to −54% bytes at ≤ 0.6 pp AUC | c × β when held-out loss > 1.1 × its min and accuracy flat | F42b l5p vs l5 (12 h covers cifar's plateau) | wip: first end-to-end test |
+| C9 | step / work adapted to the plateau | – | speech evals swing ±10-20 pp, cifar overfits | server-lr ReduceLROnPlateau from the C8 signal; min local steps on small shards | todo |
 
 *Old vs new Felix (F41 arm in brackets; Formulation terms: R updates / min, s̄ samples / update, U* updates to ε, B bytes):*
 
@@ -483,23 +432,6 @@ while the model is still learning. Evidence = F41 (1 seed; arms within noise, so
 
 Loss moves from both selection and weight (old) to selection only (new); the weight now trades update size against staleness.
 
-*Role of loss (utility) — evidence, for the paper's framing:*
-- *Selection:* |D| · loss ranks like |D| (per task Spearman 0.95 cifar / 0.81 speech, PR40a ctl): client loss spans 1.45× (p10-p90),
-  |D| 120× cifar / 13× speech. Loss alone as the rank (pK10) lost; fresh loss slowed short-term progress (D3). Loss on a client's
-  new samples = on its trained ones (1.00, FX-T67), so loss carries no novelty. Loss is kept as a minor term in C3's rank and as C4's
-  progress signal (paired per client), where hardness cancels.
-- *Aggregation:* old Felix's utility term saturates (u 10²-10³ → w 0.80-0.94; constants no effect, PR39a, FX-T56); a loss-weighted
-  rate u / √(1+τ) (I7) tied ctl (PR40a). C5 grades an update by its size (samples^0.65, PR40a's measured progress per update) × its
-  staleness (1+τ)^-0.5, mean step unchanged: hypothesis until F41.
-- *Eval tasks:* exist to refresh loss beliefs; since loss barely moves ranks, stale beliefs flip ≤ 6-14% of picks at ≤ 1.1% regret
-  (FX-T66) and evals barely run under unavailability (F41 smoke ctl: 1 eval per 971 trains), they are off in new Felix.
-
-*Why Felix today beats Oort (same `async_oort` code, different settings):* it ranks by size, not speed (Oort's (pref / d)² from the
-10th percentile picks small fast clients), so 1.6× samples per update at equal R (PR39 vs FedBuff); a near-flat weight = a larger
-effective server step (PR39b: the step matters); aware dispatch + eviction (C1); one epoch vs 20 fixed steps. Not eval tasks (C6).
-*To prove (F41):* C3 keeps C2's gain and does not widen Oort's bytes lead; balance at equal TTA; C4; C5. Offline ranking model:
-`scripts/rank_sim.py` (closed-loop selectors on real speeds, traces, streams; loss calibrated on PR40a).
-
 **Formulation.** For a target accuracy ε:
 
     TTA(ε) = U*(ε) / R          B(ε) = U*(ε) · b + E · m
@@ -508,144 +440,13 @@ effective server step (PR39b: the step matters); aware dispatch + eviction (C1);
 U* = aggregated updates to ε (update quality) · S* = local samples to ε · s̄ = local samples per update · R = aggregated updates
 per minute with c tasks in flight · d̄ = mean task time, o = per-task overhead · b ≈ 2m bytes per update (model m) · E = eval downloads.
 
-- *The runtime moves R, not U* (PR38 → PR39, cifar syn_0 to 30%, real):*
-
-  | stack | U* | R / min | samples / update | MB / update |
-  |---|---|---|---|---|
-  | felix | 1.3k → 1.4-1.5k | 93 → 21-24 | 245 → 224 | 4.5 |
-  | fedbuff | 2.2-2.4k → 2.5k | 79 → 21 | 152 → 139 | 4.3 |
-  | feddance | 2.8k → 2.4k | 50 → 37 | 24 (1 step) | 5.6 |
-  | refl | 2.9-3.2k → 3.2k | 31 → 31 | 10 (1 step) | 5.0 |
-  | oort / oort* | 0.9-1.2k → 0.7k | 78 → 6.2 | 600 (20 steps) | 4.8 |
-
-  Findings stated in updates (U*, κ) carry over from PR39a / PR39b; anything stated in minutes is re-measured.
-- *Felix vs FedBuff, the clean control (same trainer, server, K, c):* S* ties (to 30%: Felix 1.4k × 224 = 0.33M samples, FedBuff
-  2.5k × 139 = 0.35M; PR38 0.32M vs 0.33M) and R ties (21-24 vs 21 / min). Felix wins on s̄ alone: 1.6× the samples per update at the
-  same update rate, so 1.6× the samples per slot-second and per byte. That is all of its 1.7× U* gain, on both runtimes.
-- *Where s̄ comes from (`selection_audit.py`, PR39):* picks track shard size (ρ +0.78; PR38 +0.97) and run against per-sample loss
-  (−0.72; −0.90), though size now costs time (duration ~ size +0.68). **Felix's speed penalty fades out by design, not by bug:** the parity
-  YAML (`felix_oort_refl_feddance_alpha0.1_parity.yaml`) starts Felix at round_threshold 70 (Oort: 10) with exploration_decay 0.999
-  ("async has no straggler barrier"), and the reference pacer relaxes it every flat window: preferred duration 52 s (~30% of clients
-  penalized) at 13 min, 167 s (~5%) at 75 min, ∞ from ~1.9 h (PR40a ctl). The sync Oort baseline is faithful: threshold 10 → 20,
-  45-75% of candidates penalized (PR39). Short tasks (33 s vs FedBuff's 42 s) also come from async re-picking: a fast client is free
-  again sooner. In async, speed belongs in the utility as value per slot-second (u / d), not as a barrier penalty (C3). The loss term adds no measurable S*.
-- *Unavailability:* aware dispatch + eviction keep Felix's R at 22-24 / min on syn_50_3st (syn_0 21-24). Unaware stacks hold a slot to
-  the abandon timeout (903 s cifar): FedBuff's R falls 21 → 3 / min, Oort's round closes about every 15 min.
-- *Local work (D2, `hyp`):* write a task's time as d_i(s) = a_i s + b_i (a_i = 3 ms_i, b_i = 2m / bw_i; both measured per task:
-  `model_compute_s / model_samples`, `model_comm_s`) and an update's progress as g(s), concave in s (more local steps drift more at
-  α 0.1), g ∝ s^β. Time to ε ∝ d_i(s) / g(s), minimized at **s_i* = β / (1 − β) · b_i / a_i**: more local work for clients whose transfer
-  is dear relative to compute. Bytes ∝ 1 / g(s) always fall with s, so s trades time against bytes. The only unknown is β, a property of
-  model × data, measured by the D2 screen (or online), not tuned per dataset.
-  *Sub-optimality today:* Felix gives every client one epoch, whatever its split. Its tasks are compute-bound: median compute share
-  0.81 cifar (p10 0.37, p90 0.98), 0.72 speech (0.29-0.93) (PR39 sims). Cross-stack U* vs samples per update (REFL 10 → Oort 600) hints
-  β ≈ 0.37 (optimizers differ, so only a hint); at β < 0.5, s* sits below the epoch for most clients: shorter tasks raise R faster than
-  U* rises (faster to ε, more bytes), while the most transfer-bound clients should do more work. *Against baselines:* FedDance / REFL's
-  time edge is cheap transfer-bound tasks (R 37 / 31 vs Felix 21 / min), Oort's bytes edge is 600 samples per transfer; per-client s_i
-  attacks both. Mixed s_i needs step-normalized weights (FedNova-style) to keep the objective consistent.
-  *Measured (PR40a W arms, U* to 35% ∝ s^−β):* cifar β 0.60-0.71 (s 32 / 63 / 123 vs the epoch's 238: U* 8.8k / 4.7k / 3.3k vs 2.1k),
-  speech 0.2-0.5 (noisy). The model then puts s* at ~0.4 epoch for the median cifar client and predicts only ~7% less time (speech
-  ≤ 20%), below the seed floor, at 2.3× the bytes. Measured: no fixed or split arm beats the epoch beyond the floor; GB per leg 1.5-3×.
-  The epoch is near the flat time optimum and much the cheapest in bytes. Clients whose compute share is below β (cifar p10 0.37)
-  have s* above the epoch, the side D2 never tested (Avenue A1).
-- *Utility (D3, `hyp`):* a client's value per slot-second is V_i = E[progress of its update] / d_i ≈ s_i · q_i · σ(τ_i) / d_i: samples
-  (FX-L88: the dominant term), q_i = per-sample informativeness (loss on data the model hasn't fit), σ = the optimizer's staleness
-  weight. Today's score approximates s_i · q_i by |D| · √EMA(loss²), with q_i read after training and stale (FX-T57), and 1 / d_i by
-  Oort's step penalty beyond a preferred duration. Only q_i goes stale between contacts (s_i and d_i are known), so q_i's value decides
-  the eval selector's job: if s·q/d beats s/d, eval tasks keep beliefs fresh; if not on static data, their job is streams, where new
-  data is exactly the unfit data (high q_i).
-  *Measured (D3, `utility_evidence.py`, partial r of window progress with Q given samples, τ, phase):* fresh pre-training loss (I9 arms,
-  18 legs) −0.47 [−0.57, −0.35] cifar, −0.46 [−0.68, −0.26] speech; stale post-training loss (39 legs) −0.14 / −0.18. So over one
-  window (leg / 24) a high-loss client's update slows global progress: its shard is far from the population. That is the short
-  term only. The long-term claim (Decisions 10-21: learning those shards lifts the model and its worst clients) needs per-client
-  accuracy and long legs. *Per-client view (final global model, mean of the last 3 checkpoints, on each of the 75 cifar shards):*
-  on syn_0 a client's picks run against its final loss (ρ −0.20 to −0.34), and 10-13 clients get ≤ 2 picks in 3 h (size bias,
-  picks ~ size +0.86); worst-10% client accuracy 0.10-0.18 over the ctl draws. syn_50_3st's forced rotation leaves no such client
-  (0 with ≤ 2 picks; worst 10% 0.14-0.19, mean 0.43 vs 0.36-0.40). pK10 also picks everyone but drops size, and lands no better
-  (0.12). A fresh |D| · loss utility at no R cost (FX-N119) feeds C3 / C4 in F41.
-- *Eval tasks (D4; PR39a, old runtime, syn_0, 3 seeds; PR38 lin):*
-  - *Fairness: yes.* Eval tasks spread picks, monotonically in eval frequency: Gini of updates per client eval-off 0.47 → gate 35
-    (ctl) 0.38 → gate 15 0.29 → gate 5 0.15 (FedBuff 0.08); top-20% share 0.46 → 0.41 → 0.36 → 0.28; speech eval-off 0.36, ctl 0.33,
-    gate 5 0.08. Mechanism: an eval refreshes an unpicked client's stale belief so it re-enters the train top-k.
-  - *Static data: fairness costs time and buys no accuracy.* Cifar min to 50% eval-off 55.9 / ctl 54.7 / gate 15 67.2 / gate 5 63.1, GB
-    20.2 / 21.2 / 26.9 / 33.4, max accuracy 54-55% in all; class TV of updates already ≤ 0.07. Speech eval-off ≈ ctl.
-  - *PR40a (FX-D197): no time value on any cell* (table below). Eval's value is P(a fresh belief changes a pick) × the changed pick's
-    gain − its cost. The gain term is ~0: train-return beliefs already rank clients right (Spearman believed ~ actual 0.86-0.97), the
-    oracle's true utilities tie ctl on events streams, and the utility's loss part has the wrong sign (D3). The cost is 5-15% of
-    bytes (cifar g10), and on speech g10 also costs time. Fairness shrank too: Gini eval-off 0.56 → ctl 0.54 → g10 0.53 cifar,
-    0.37 / 0.36 / 0.30 speech.
-  - *Under unavailability eval barely runs:* 0.01 eval per train on cifar syn_50_3st, 0.00 on speech (0 evals in 6 h). Each eval pick
-    sees ~3.8 eligible AVL_EVAL clients, and the 35-version gate (~21 min cifar, ~1.5 h speech) rejects them all, because it outlasts
-    their AVL_EVAL episodes (FX-L86, Q-EV21). The denser gate (g10, 10 versions) ran 4× the evals on syn_0 and still gained nothing
-    there, so the gate blocks eval under unavailability, not on static data.
-  - *Felix vs Oort:* same train score (Oort's |D| · loss; Felix's speed penalty starts at 70 and fades), different system: async one pick per freed slot,
-    availability filter + eviction, one epoch of work, no over-commit, FedBuff server, eval tasks. Felix's gains over the Oort
-    baseline come from those, not from its eval selector.
-- *Step law (PR39b, update units, cifar):* γ = η w̄ / K per update; κ = γ c is the delay-adjusted step (staleness τ ≈ c / K versions).
-  U* falls as κ grows to a per-dataset edge κ*_D (cifar 3-4; speech < 2.7: K5 diverges, FX-T55), then rises and diverges. At fixed κ, K
-  and c trade (γ ∝ 1 / c cancels R ∝ c, time flat, U* and bytes grow with c); at equal γ the smaller K wins (FX-L85). Felix's weight
-  never shrinks γ with staleness (w ≥ 0.58, FX-T56). On FX-D197 K5 (κ 2.7) is still cifar's only arm ahead (PR40a, seed 1).
-  *Why smaller K wins until the edge:* the server moves η · mean(K updates); a smaller K applies each update with more weight and
-  refreshes the model more often (lower staleness per update), which is a larger, fresher step. Past κ* the updates disagree too
-  much: within a cycle they are near-orthogonal on both datasets (‖mean Δ‖² / mean ‖Δ_i‖² × n ≈ 1.0-1.2, PR40a dynamic_kc stats),
-  so fewer of them average away less noise. *Why speech's edge is lower:* one epoch is ~56 local steps per speech update (shard
-  ~900, batch 16) vs ~7 on cifar, so each update drifts further (‖Δ_i‖² 1.7 vs 0.24) on a harder 35-class task; the same K is a
-  bigger effective step. A stability signal exists: clients' loss on the received model rose 3.3 → 5.4 while speech test loss hit
-  6.6-14 (dkc). AIMD failed on its policy, not its signal: it probes K down by 1 every sweep, so it keeps returning to the edge
-  (Avenue A7).
-
-  | Felix arm (PR39b) | γ | κ | U* to 40% |
-  |---|---|---|---|
-  | K10c15 (ctl) · K5lr05 | .089 · .086 | 1.3 | 2.3k · 1.9k |
-  | K10c20 | .088 | 1.8 | 2.4k |
-  | **K5c15** · K10c30 · K10lr2 | .172 · .085 · .178 | 2.6-2.7 | **1.4k** · 2.5k · 2.0k |
-  | K5c20 · K3c15 · K5c30 | .168 · .277 · .160 | 3.4 · 4.2 · 4.8 | 1.7k · 2.1k · 2.4k |
-  | K3c20 / c30 · K2c15 / c20 / c30 | .27 · .41 | 5.5-8.0 · 6.2-12 | 2.6-3.2k · 4.1k → ∞ |
-
-- *Control problem (`hyp`):* hold κ just under κ*_D online (I5 AIMD on K; c from the bytes budget) and pick s_i per client (I11).
-- *Out of the model (no effect, PR39a; FX-N114):* exploration, round_penalty, round_threshold, cut_off_util, a_exp, scale; Felix's
-  2024 rate shape stays only until I7 replaces it.
-- *PR40a read-out (seed 1; 3 h cifar / 6 h speech vclock; `knob_sweep.py`, `selection_audit.py`; acc = mean test accuracy over the
-  last 30% of the leg).* **Seed floor:** cifar s0 ctl r1-r3 plus a same-seed rerun give 36.9-40.5% (mean 39.3), 150 to > 180 min to
-  40%. A rerun is a new draw (FX-L91), so a single-arm gap under ~4 pp or ~30 min is noise.
-
-  | acc % (cifar · speech) | ctl | eval0 | g10 | u (I9) | u0 (I9, no eval) | oracle |
-  |---|---|---|---|---|---|---|
-  | syn_0 static | 36.9 (floor 39.3) · 46.7 | 41.8 · 46.7 | 38.5 · 43.4 | 36.1 · 39.5 | 35.6 · 39.4 | – |
-  | syn_0 events stream | 37.9 · 44.7 | 39.9 · 42.4 | 39.5 · 40.4 | 37.3 · 39.5 | 35.1 · 41.1 | 38.7 · 43.3 |
-  | syn_50_3st static | 39.2 · 43.5 | 39.9 · 43.8 | 38.9 · ⬚ | 35.8 · ⬚ | 36.2 · ⬚ | – |
-  | syn_50_3st events stream | 37.9 · 40.8 | 37.1 · 40.5 | 36.3 · 39.5 | 36.1 · ⬚ | 36.2 · 37.1 | 38.7 · 38.0 |
-
-  ⬚ = DOOMED EV16 (FX-N113f). Mechanisms (cifar syn_0 unless noted; acc · versions · GB per leg):
-
-  | arm | cifar | speech | read |
-  |---|---|---|---|
-  | ctl (K10, epoch) | 39.3 · 305 · 13.8 | 46.7 · 112 · 66 | anchor |
-  | K5 | **40.0** · 530 · 12.8 (35% in 97 min vs 105-112) | – (diverges, FX-T55) | only arm ahead; seeds 2-3 |
-  | nK10 (I7) | 38.6 · 315 · 14.2 | – | ties ctl |
-  | pK10 (per-sample q + I9) | 34.3 · 364 · 16.5 | – | size preference lost (picks ~ size −0.37) |
-  | dkc (I5 + I9) | 34.0 · 402 · 11.5; K 7 → 5 → 3 | 18.9 · 171 · 53; K 8 → 6 → 4 | AIMD walks K down past κ* |
-  | f2 (I5 + I7 + I8 + I9) | 31.9 · 755 · 10.0; K 4 → 2 | 27.7 · 280 · 52; K 7 → 2 | worst; K at k_min |
-  | s32 / s64 / s128 | 32.9 / 36.5 / 39.0 · GB 42 / 31 / 22 | s128 / 256 / 512: 45.8 / 45.7 / 44.6 · GB 169 / 138 / 98 | no time gain, bytes 1.5-3× |
-  | wb33 / wb50 (split) | 36.0 / 41.4 · GB 37 / 33 | 47.8 / 46.8 · GB 117 / 102 | within floor; 1.5-2.4× bytes |
-
-- *I9 costs its forward pass:* it must read the received model before training changes it, so it runs serially before the epoch.
-  On a device that is extra compute (a background thread shares the same processor), charged as one forward pass, 1/3 of the
-  epoch's compute: +~27% task time at cifar's 0.81 compute share. Measured R −18-20% cifar, −14% speech; accuracy −1.4 to −3.6 pp
-  cifar, −3 to −7 pp speech, below ctl and eval0 in all 13 I9 legs. Default Felix gets its utility free from the training losses
-  (an EMA over the epoch, so mostly the adapted model's loss); eval tasks run the same full pass as their own task. Free fix
-  (FX-N119): the first ~64 training samples' losses are the received model's loss (the first batch exactly, later ones after a
-  step or two), at no extra compute.
-- *Unavailability and streams (Felix alone; baselines in D5):* cifar syn_0 → syn_50_3st 39.3 → 39.2 (static) and 37.9 → 37.9
-  (stream); speech 46.7 → 43.5 and 44.7 → 40.8. The stream costs 1.4 (cifar) and 2-3 pp (speech). Felix keeps R under syn_50_3st
-  (versions 305 → 403 cifar, 112 → 142 speech: picks ~ speed −0.39 → +0.12 cifar, +0.17 → +0.86 speech) at staleness 1.3 → 2.7.
-
 ### Paper: setup, baselines, findings, story (draft, operator 10-21: iterate after F43; cite runs, `hyp` until F43)
 
 *Setup (paper methodology):* CIFAR-10 (n 75 screens / 300 paper) and Google Speech (50 / 100), Dirichlet α 0.1; FedScale task-time model
 (compute ∝ samples × device speed + model transfer over device bandwidth, Scope); availability traces syn_0, syn_50_3st, MobiPerf
 3-state (AVL_TRAIN / AVL_EVAL / UN_AVL); data grows while a device is in use (`usage` stream tied to its own trace, Scope "Design record");
 legs start 24 h into the trace so each client starts with its day-1 data (and the trace's start artifact, one long in-use stretch,
-is skipped); 10% of each client's arrivals held out (no stack trains on them); test eval every 30 min of the leg's clock; per-baseline
+is skipped); 10% of each client's arrivals held out (no stack trains on them); test eval every 10 min of the leg's clock; per-baseline
 task timeout (2 × the longest FedScale task, FX-D198); sims graded against reals for parity (PARITY).
 
 *Baselines (source-faithful, `baseline_reference.yaml`; availability per Decisions "Baseline availability knowledge"):*
@@ -705,15 +506,14 @@ task timeout (2 × the longest FedScale task, FX-D198); sims graded against real
 - **FedBuff*:** FedBuff with the trace's online set at selection (labelled oracle).
 
 *Findings so far (evidence; 1 seed):*
-- F41: Felix (old) leads every baseline in AUC on cifar s0 / s0u / s50u and speech s0 / s50u (speech s0u: FedBuff 42.2 vs old 39.7,
-  new 42.3); FedBuff collapses under s50u (AUC 41.8 vs 21.4
-  cifar) because a dead pick holds its slot to the timeout. Felix new ≈ old (within noise).
+- F41 + F42S01: Felix (old and new) leads every baseline in AUC and time to matched accuracy on every stream cell; FedBuff collapses
+  under syn_50_3st (cifar AUC 22.9 vs Felix 32-33) because a dead pick holds its slot to the timeout; FedDance* is the closest.
+- F42S01: Felix new reaches accuracy sooner than old on speech and cifar syn_0 at +30% bytes; within one seed's noise on cifar (Scoreboard).
+- F42S01 K1: Felix by check-in loses 7-8 AUC on syn_50_3st vs notify (cifar 25.8 vs 32.7, speech 15.5 vs 23.6).
 - F41: cifar streams plateau by ~6 h and every stack then overfits (held-out loss 1.7 → 3.2) while spending 63-79% of its bytes: the
-  room for pacing (C8; offline replay −47 to −54% bytes at ≤ 0.6 pp AUC).
+  room for pacing (C8).
 - F41: on streams Felix's samples-per-update edge shrinks (visible shards 30-70 samples, an epoch ≈ REFL's 1 step); REFL reaches cifar
   s50u 45% first (661 vs 780 min).
-- F42 smokes: Felix pick survival 0.99-1.00 at 0 timeouts; FedDance* 0.99, ρ(V, survive) +0.72, 15.9 timeouts / h; blind REFL 0.88,
-  132 / h; FedBuff 0.60, 37 / h.
 
 *Story (proposal):* availability changes faster than any forecast; a system that **reacts** to it at each layer beats one that
 predicts it. Felix (1) learns state the moment it changes and frees the slot (vs check-in staleness, forecasts, timeouts), (2) fills
@@ -737,112 +537,19 @@ claim (K5) is time and bytes to accuracy.
 
 Sources: K1-K4 from S1 + F43; K5, K7 from F43, then D5's 48 h runs; K6 from F42e; K8 from D5.
 
-**Avenues after PR40a (ROBUST R26: model → short realistic screen → end to end, else pivot).** Felix's measured edge is
-availability handling and samples per slot-second. Novelty has to come from what the baselines ignore: a device model with real
-compute and transfer spread (FedScale traces, cifar G3: compute 21-176 ms / sample, 13× range; bandwidth 1.8-32 Mbps, ~110×; the
-two uncorrelated, ρ −0.10), three availability states, and data that changes per client.
-- *A8 · Fresh |D| · loss at no cost (FX-N119, built; A7's signal, no stand-alone screen: FX-L94).* The utility from the first ~64 training samples' losses: the received
-  model's loss, no extra pass. Tests the operator's richness hypothesis (Decisions 10-21) without I9's 14-20% R tax.
-- *A3 · Eval gate on the clock (FX-N118, built; screened only with A10).* In versions the gate outlasts AVL_EVAL episodes, so evals stop under
-  unavailability. *Setting the time:* eval must fit an AVL_EVAL episode (median 10 min on syn_50_3st, 151 min on mobiperf_3st;
-  trace check 10-21), so the screen uses 300 s, half the shortest. Successor without a constant: an eval budget λ (share of
-  downloads) given to the stalest beliefs in seconds. Smoke (cifar syn_50_3st, 20 min): 6 evals vs 0 at the version gate.
-- *A6 · Trace-derived heterogeneous data growth (FX-N120 built; offline verdict below).* Stale beliefs rank right today because the rank is |D|-driven
-  (Spearman |D| · loss ~ |D| 0.91 cifar, 0.72 speech), and on static data or the `events` stream every client grows alike (oracle
-  = ctl). Eval sensing and fresh utilities can only pay where clients' data changes at different rates. *Design:* derive each
-  client's arrival rate from a cited source, not a tuned stagger. One candidate: data accrues while the device is in use (MobiPerf
-  activity), so data grows when the device can't train, and AVL_EVAL is the moment to sense it. *Screen:* oracle vs ctl vs eval0
-  first; no oracle gain = no eval gain, pivot.
-  *Trace facts (10-21):* the stored MobiPerf (and FedScale behave) traces hold only eligible / ineligible windows, no screen or
-  battery fields, so in-use = not AVL_TRAIN. Over 116 h the median device has 13 trainable sessions; in-use gaps run 0-783 min
-  (p25-p90); its first 6 h are mostly one long in-use stretch, so the trace is compressed (24 h → one leg).
-  *Offline verdict (replaying PR40a's real selection times; `|D|` beliefs refreshed at each contact):* growth gets jagged (per-client
-  CV 0.96 events → 2.7 usage), yet stale beliefs still rank right: Spearman belief ~ truth 0.99, top-15 overlap 0.97-0.98; at 16×
-  sparser contacts 0.89-0.96 / 0.81-0.86, about the same for events and usage. Even new data from a client's hardest class
-  barely reorders |D| · q (Spearman 0.993), because q spans 2× across clients (1.6-3.2) and |D| 25× (|D| · q ~ |D| 0.96).
-  **So no stream makes eval tasks pay while the utility is |D| · loss: it is size-driven by construction (FX-L94).**
-- *A10 · Novelty utility (dropped: FX-T67).* Value what the model has not trained on: u_i = n_new,i · q_new,i + ρ · n_seen,i ·
-  q_seen,i, with n_new = samples that arrived since the client's last train, q_new their loss on the received model. Right after a
-  train n_new = 0, so a stale belief is maximally wrong when a usage lump lands. Only a contact (eval task) reveals the lump. This
-  is where eval tasks, the third availability state and usage streams meet, and it serves the operator's richness and coverage
-  goals (Decisions 10-21). Cost: the trainer reports its seen watermark (free), the eval's forward pass covers the new samples.
-- *A7 · Adaptive K with memory (model first on stored dkc / f2 telemetry).* Keep the signal (clients' loss on the received model,
-  free with A8). Change the policy: after a loss event at K_e, hold K ≥ 2 K_e (no re-probing below it); raise K on instability,
-  lower it on stable progress. This matches the operator's intent: larger K when training is unstable (speech), smaller when stable.
-- *A9 · Per-client accuracy as a graded metric.* Worst-10% client accuracy of the global model (`scripts/client_accuracy.py`, cifar) on
-  every screen. Eval tasks measure it on device for free, which also gives them a job on static data.
-- *A1 · Bytes-optimal local work (modeled 10-21, low priority).* Time-optimal s_i shrinks work for most clients (progress per byte
-  ×0.58-0.76); PR40a's split arms ran that rule and measured ~×1 time, where the s^β model predicted ×1.14 cifar / ×1.5 speech, so
-  the model over-predicts. Bytes-only (only transfer-bound clients do more than an epoch, 27 / 75 cifar, 13 / 50 speech, up to 4
-  epochs): +9-17% progress per byte cifar, +4-7% speech, time neutral. That is far below Oort's 2.2× bytes edge (C3).
-- *Dropped:* A2 prefetch on AVL_EVAL. From an AVL_EVAL start to the next AVL_TRAIN is a median 10-20 min on syn_50_3st (22-44
-  Felix versions on cifar, 4-8 on speech vs τ ≈ 2.7), so the prefetched model is stale and must be resent (operator, trace check
-  10-21). A4 state prediction (operator: bursty devices). A5 similarity ranking (operator: biases the model).
-
-**Verdict so far (general mechanisms only):**
-- *Works:* availability-aware dispatch + proactive eviction (R unchanged by syn_50_3st, PR38-PR40a); a size-driven train pick that
-  raises samples per update at equal R (1.6× FedBuff, both runtimes; its speed penalty fades out by ~1.9 h); setting the server step by κ (PR39b; K5 on cifar, PR40a).
-- *No effect or worse (PR40a unless noted):* the loss term on short windows (D3; long-term untested); eval tasks for time on every cell,
-  streams and unavailability included (D4); I9 (−1.4 to −7 pp from its compute); I5 AIMD K (drifts to k_min); per-sample utility
-  (pK10); sub-epoch local work (bytes 1.5-3×, no time); I7 ties ctl; exploration, round_penalty, round_threshold, cut_off_util, a_exp,
-  scale (PR39a); K from the gradient noise scale (FX-T59); a cifar-tuned K on speech (FX-T55); the 2024 rate constants (FX-T56).
-- *Untested:* I8 alone (only inside f2), A9; A3 / A6 / A10 dropped (FX-T66, FX-T67); A7 / A8 → C4 / C3 in F41; A1 modeled low-gain.
-
-**Justification for the paper (`hyp` until F41 + D5b):** the train selector ranks clients by samples per slot-second among the
-clients the availability model says can finish; it raises aggregated samples per minute and per byte at equal per-sample quality,
-and keeps that rate under unavailability. Eval tasks, as built, are not a time mechanism (PR40a); they enter the paper only through
-an avenue that measures a gain (A3 clock gate, A6 heterogeneous growth, A9 per-client accuracy), otherwise as a fairness knob at
-its measured cost.
-
-**Today (Felix default, PR39 G3, n:c:K 75:15:10 cifar / 50:15:10 speech):**
-- *Train pick:* Oort score (normalized |D| · loss utility + UCB bonus) × speed penalty (from threshold 70, off by ~1.9 h), `scoring.OORT_PAPER_DEFAULTS` (its exploration
-  and pacer constants: no effect, out of the model). Top 20% of clients supply 54% of cifar syn_0 updates (FedBuff 25%).
-- *Eval pick:* budget evalGoalFactor · K = 10 per version, eligible only if trained before and ≥ 35 versions since its last eval or
-  train (`evalStaleGate`); on 3-state traces AVL_EVAL devices only. PR39: 0.09 eval per train on cifar syn_0, 0.01 on syn_50_3st and speech.
-- *Aggregation:* FedBuff, server lr 1.0, w = 0.4 · (1 + τ)^-0.25 + 0.6 · (1.5 − (1 + u)^-0.1) (`fedbuff.weight_factor`; constants no
-  effect, PR39a); u ~10²-10³, so w ≈ 0.58 + 0.4 · (1 + τ)^-0.25 (0.80-0.94 measured), where FedBuff's 1/√(1+τ) falls 0.69 → 0.44 as c / K grows. c, K, lr fixed.
-- *Unavailability:* aware dispatch, proactive eviction, evals only to AVL_EVAL devices; no prediction of a device leaving mid-task.
-
 **Signals (general, privacy-safe: scalars the server already gets, or update geometry it already sees):** per client: task time split
-(compute s / sample, transfer s), availability history → p_i = P(finishes before leaving), loss utility u_i, data size n_i, belief
-age, ‖Δ_i‖ and cos(Δ_i, Δ̄) (not secure-aggregation compatible). Per aggregator: accuracy per update, staleness, buffer depth, slot
-occupancy, train time lost to eval, update disagreement, belief error.
+(compute s / sample, transfer s), availability history, loss utility u_i, data size n_i, belief age, ‖Δ_i‖ and cos(Δ_i, Δ̄) (not
+secure-aggregation compatible). Per aggregator: held-out loss / accuracy (probes), accuracy per update, staleness, buffer depth, slot
+occupancy, update disagreement, belief error.
 
-**Ideas (state `hyp` until a screen measures them):**
-- *I1 · Train value per slot-second.* V_i = p_i · u_i · s(τ_i) / d_i, s = the optimizer's own staleness weight; plus a coverage term
-  against repeat picks. I10 is its first test.
-- *I2 · Eval by value of information.* Eval m iff P(a fresh belief moves m into the train top-k) × gain > λ · model bytes. Replaces the
-  fixed gate.
-- *I3 · Eval → train on the same model:* an eval that ranks its client into the train top-k trains on the model it holds (one
-  download saved).
-- *I4 · Finish probability (unavailability):* p_i from the client's session history; prefer tasks that fit the remaining window.
-- *I5 · Adaptive K (built, `aimd_k` + I9; refuted PR40a: K drifts to k_min, speech collapses).* Per population sweep, if the clients' loss on the received model (I9) didn't rise by > 2 SE,
-  K −= 1, else K ×= 2 (TCP's AIMD constants, a one-sweep window, a 2-SE test). c stays the resource budget; `noise_scale_k` is telemetry.
-- *I6 · Exploration by uncertainty,* not a decay clock (same quantity as I2).
-- *I7 · Utility-normalized weight (built, `agg_rate_conf.type: norm`; ties ctl, PR40a; next: feed it FX-N119's fresh utility so it
-  up-weights the high-loss clients the operator wants, ratio clipped to bound one client's pull):* w_i = (u_i / ū_cycle) / √(1+τ_i); no constants.
-- *I8 · Version-free eval gate (built, `evalGateUnit: updates`):* counts committed updates, so changing K keeps eval cadence.
-- *I9 · Utility on receive (built, trainer `utilityOnReceive`; refuted PR40a: its compute costs 14-20% of R, belief buys nothing):* a no-grad pass on the received model measures |D| · rms loss, eval's
-  quantity, so train and eval beliefs compare (one forward pass charged).
-- *I10 · Value per slot-second (D3 done: s/d only, q as loss has the wrong sign):* V_i = s_i^β · σ(τ_i) / d̂_i, × p_i under
-  unavailability. Drops Oort's preferred-duration constant. = C3 (F41).
-- *I11 · Local work per client (D2: capped at the epoch, no time gain, more bytes):* continues as A1 (uncapped above the epoch).
-
-**Execution (one change at a time):**
-- *E1 · PR39a: one-knob syn_0 sweep · done (old runtime)* (`pool_20261019_0326_PR39A_JAYNE_{C,S}`). Only K and c move cifar (FX-L84);
-  speech c 10 cuts GB to target 100 → 70 at equal time. Overrides: `--agg-hp 'sel.<k>=v opt.<k>[.<sub>]=v'`.
-- *E2 · PR39b: K × c grid · done (old runtime)* (`--tier F39B`, `pool_20261019_1912_PR39B_*`, 69 legs): the step-law table.
-- *E3 · I5-I9 · done PR40a (D1), seed 1.* Felix only, syn_0 sims,
-  3 h cifar / 6 h speech vclock. Cifar: ctl, K5, uK10 (I9), nK10 (I7), pK10 (per-sample utility + I9), dkc (I5 + I9), f2 (I5 + I7 + I8 +
-  I9); speech: ctl, uK10, dkc, f2. *Claim:* f2 matches each dataset's best fixed arm on time and bytes; dkc's K settles at 3-6 on cifar,
-  higher on speech; pK10 within seed range of uK10. *Refute:* K pinned at a bound or random-walking; f2 behind the best fixed arm by
-  more than the seed range.
-- *E3' · PR39c2 (`batches/pr39c2.yaml`) · parked:* its I7 / pK10 arms are decided (PR40a); cifar K3lr06 / K2lr04 and speech
-  K5lr05 / K10lr2 (κ or K?) run only if fixed K5 holds on seeds 2-3.
-- *E3s · eval-task value · done PR40a (D4, tier F39E): refuted.*
-- *E3'' · I11 local work · done PR40a (D2, tier F39W): epoch kept; A1 low priority; I10 s/d = C3.*
-- *E4 · syn_50_3st:* repeat the kept changes where availability matters (I4).
-- *E5 · Confirm:* real legs for the kept changes, then PR39 on the optimized Felix.
+**Hypotheses carried over the reset (`hyp`; pre-reset evidence, re-test before use):**
+- *Step law:* κ = η w̄ c / K is the delay-adjusted step; time to ε falls as κ grows to a per-dataset edge, then diverges (speech's edge is
+  lower: ~56 local steps per update vs ~7 on cifar). On streams' 1-2-step updates the edge may move up (C4's K 15).
+- *Local work:* with d_i(s) = a_i s + b_i and progress ∝ s^β, s_i* = β / (1 − β) · b_i / a_i; the epoch sat near the time optimum and was
+  cheapest in bytes on static data (C9 revisits small shards).
+- *Eval tasks:* no time value as belief refresh (|D| · loss ranks like |D|); kept only as validation probes (C8).
+- *Utility on receive (I9):* a separate forward pass costs 14-20% of R; the first ~64 training samples' losses (FX-N119) give the
+  received model's loss free.
 
 ## Active build — throughput (FX-N100, absorbs FX-N99; operator 10-15)
 
@@ -929,16 +636,6 @@ CPU harness catches logic bugs; distribution parity is decided on GPU.
   shepherd, runs + pools copied to jayne 10-13).
 - Tests: `tests/harness/test_{slot_isolation,harness_pool,fl_data}.py`, `tests/launch/test_debug_run_dataset_profile.py`.
 
-## Active build — streaming time-to-accuracy (FX-N12, FX-N13)
-
-- **Experiment:** six baselines × two datasets × four traces × two stream modes; metric time-to-target.
-- **Claim:** Felix's eval selector finds clients whose data just grew; others don't.
-- **linear:** each trainer grows 10% → 100% of its shard by the horizon.
-- **events:** starts 10%; nine 10% chunks land at seeded uniform times, unsynchronized.
-- Stream clock = trace time; horizon 6 days (paper) or leg span (screens); chunks ignore availability.
-- **Built (FX-D47):** one `stream_schedule.py` for trainer, oracle, replay and EV19; tiers TS/TSo, G0T/G0To.
-- **Left:** ST5 speech on GPU screens (FX-N30) · ST6 sim-only sweep + oracle advantage (needs P8).
-
 ## Baseline hyperparameters (operator 10-08)
 
 Single source: `_metadata/baseline_reference.yaml` (value + citation per baseline x dataset; rules ROBUST L33-L37).
@@ -976,6 +673,7 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-L60** Keep real measurement off the ingest path; read queue_wait spikes against evals.
 
 **Availability**
+- **FX-L95** A real client's small post-task notify can beat its own update's commit; a ledger release at commit must keep state the client sent after dispatch (F42-T9: the check-in pool emptied).
 - **FX-L11** Two axes: select filter (felix, oort_star, refl, feddance); proactive evict (felix only).
 - **FX-L12** Mid-flight dropout: compute completes, send gated or buffered, commits late and stale.
 - **FX-L13** Sim jumps the vclock under scarcity; size `--runtime-s` for it.
@@ -1103,6 +801,7 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-T34** Don't mark a stale gated straggler's landing round as a stall.
 
 **Availability**
+- **FX-T71** Don't key a probe / eval gate on train-report times: a busy client reports every task, so it never looks stale and probes stop (F42S01: 0 probes after the first burst).
 - **FX-T5** Don't hold all buffered ends out of refl's pool; it over-holds.
 - **FX-T9** Don't express "busy" through the UN_AVL list.
 - **FX-T10** Don't broadcast availability per tick over MQTT; read the trace.
@@ -1222,6 +921,11 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   carried, its feedback missed that selection (F1 cifar feddance eve). `simIngestStalePastK=false` reverts.
 
 **Availability**
+- **FX-D211** F42-T9: `CheckinLedger.release` keeps a check-in pooled while its own update commits (real trainers check in right
+  after upload). F42CR real 10 min: FedBuff 5 → 429 versions, REFL 2 → 81; F42R GPU 8 min: Felix 53, REFL 24, FedDance 14, FedBuff 13
+  (sims 52 / 29 / 16 / 27); EV PASS (REFL EV12: F42-T11). `notify_recv` receipts (`Channel.update_state`) feed
+  `predictor_audit.real_notify_fidelity` (F42-T7): F42R GPU real Felix 8 min, flip → receipt 0.13 s p50 / p95 (8 flips; a
+  partial packed run 1.36 / 2.69 s, 7 flips), missed 0 / false 0.4 s per client-h, EV PASS; D5's 2 h reals re-measure it.
 - **FX-D2** Unavailability v1 for all six: send-gate/deliver-late, two ledgers, evict, starvation advance.
 - **FX-D5** Real withheld updates are delivered; `mobiperf_3st` launchable.
 - **FX-D12** Only withhold/evict/abandon free slots; dispatch consumes the end's earlier receipt.
@@ -1548,7 +1252,7 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 
 ## Open questions (operator)
 
-- **Q-F42-KNOBS · Confirm the F42 knob table (rewritten by F42-T5) and the 5 h plan (Next steps F42).**
+- **Q-F42-KNOBS · Confirm the F42 knob table ("F42 reference") and the F42b plan (Next steps).**
 
 - **Q-PAPAYA · Section / page of FedBuff-Papaya's 1.5× task-timeout rule** (FX-N115 cites it).
 - **Q-EV21 · Felix "reaches AVL_EVAL" arms only at ≥ 20 eval picks · parked: FX-N109 I2.** The eval budget (evalGoalFactor · K = 10 per

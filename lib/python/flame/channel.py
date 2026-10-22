@@ -1256,6 +1256,9 @@ class Channel(object):
 
         old_end_state = self._ends[end_id].get_property(PROP_END_AVL_STATE)
         self._ends[end_id].set_property(PROP_END_AVL_STATE, new_state)
+        from flame import telemetry
+        if telemetry.is_enabled():  # F42-T7: real notify fidelity (predictor_audit) reads receipts on the wall clock
+            telemetry.emit("notify_recv", end_id=end_id, state=str(getattr(new_state, "value", new_state)), recv_ts=time.time())
         logger.info(
             f"Updated new_state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(PROP_END_AVL_STATE)} from timestamp: {timestamp}"
         )

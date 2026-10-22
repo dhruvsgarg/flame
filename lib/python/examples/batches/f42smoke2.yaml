@@ -1,0 +1,8 @@
+# F42 smoke 2 (R19, after F42-T10 + probe-gate fixes): 1 h vclock, 13 legs. Sync check-in arms (REFL, FedDance, FedAvg) within ~3x
+# their `*` versions, EV23 PASS; l5p / fck val probes ~60 / h after the first hour's burst (F42c), fck > 0 probes.
+name: f42smoke2
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1 --scale-smoke 3600"
+stages:
+  - {id: SC0, args: "--tier F42 --datasets cifar10 --baselines refl --phases 'F42_s0u_ctl F42_s0u_rstar'"}
+  - {id: SC1, args: "--tier F42 --datasets cifar10 --baselines felix,refl,feddance,fedavg --phases 'F42_s50u_ctl F42_s50u_rstar F42_s50u_fdstar F42_s50u_l5p F42_s50u_fck'"}
+  - {id: SS, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines refl,felix --phases 'gs_F42_s50u_ctl gs_F42_s50u_rstar gs_F42_s50u_l5p gs_F42_s50u_fck'"}

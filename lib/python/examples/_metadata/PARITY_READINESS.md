@@ -169,15 +169,8 @@ Single source: [FELIX_READINESS.md](FELIX_READINESS.md) → Scoreboard (cell mat
 accuracy table, convergence board A/C/U/S for long runs: FX-N93). `scripts/readiness_score.py <pools>`: baseline × dataset × scenario cells green / applicable, worst pair wins, a later
 pool supersedes, untested counts as not green. INV/EXACT via `--grade <pool> --regrade --max-stage 9`; DIST gated by floors only (Q4).
 
-**Settled.**
-- L1-L5 (run 8) green apart from no-floor tolerances; L6 G0C + G0 35/0/1.
-- Real↔real K2 at syn_0: cifar ≤ 5%, speech ≤ 3% (feddance 17-19%). Rows below that name syn_20/syn_50 ran the deleted 2-state traces.
-- Cifar L7 n=300: G1 felix/fedbuff K2 ≤ 0.3%; G1L acc diff within real↔real.
-- Cifar G2 refl/oort/feddance green; N62 oort syn_50 3 h 69/69.
-- Speech G1S felix + fedbuff, G2 oort + refl green on INV/EXACT.
-
-G0UC real↔real floors (n=50 2-state syn_50, throughput rel; syn_50_3st floors come from PR36 G0UC): oort 0.90 · refl 0.20 · fedbuff 0.18 · feddance 0.13 · oort_star 0.06 · felix 0.02.
-Mobiperf: feddance 0.56, others ≤ 0.07. n=50 syn_50 stall placement is chaotic (FX-L53).
+**Before the setup reset (10-21)** every parity result (76 / 76, PR39 14 / 24, the G0UC floors) ran on static data or the old
+runtime: not evidence (`git log`). Parity re-grades on the streaming setup with R27 knowledge in FELIX D5; floors re-derive there.
 
 ## FluxTune scoreboard
 Parked with the track; board in simulate_fwdllm.md §A.
@@ -186,9 +179,9 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR39 · re-grade parity on the FX-D197 key · phase 1 done 10-20: 14 / 24 cells (FELIX Scoreboard); phase 2 = FELIX D5a**
-  → Felix claims gate (FX-N108) → sim-only experiments.
-- **Long blocks (G1U, G1AS grid) · deferred by C18** until PR37: FELIX FX-N93.
+- **FELIX F42b → F43 (Felix screens, sims only)**, then **D5 · parity re-grade on the streaming setup** (G3 reals + sims, all six,
+  syn_0 + syn_50_3st, both datasets) → Felix claims gate (FX-N108) → sim-only experiments.
+- **Long blocks (G1U, G1AS grid) · deferred by C18** until D5: FELIX FX-N93.
 
 **Operator decisions** (Felix-specific ones: FELIX Decisions)
 - Claude runs PL3 and launches blocks in tmux `dg_flame`; phase 0 aborts on failure (10-06).

@@ -41,6 +41,7 @@ from flame.selector.properties import (
     PROP_DATASET_SIZE,
     PROP_END_ID,
     PROP_LAST_EVAL_ROUND,
+    PROP_LAST_PROBE_TS,
     PROP_LAST_REPORT_TS,
     PROP_LAST_REPORT_UPDATES,
     PROP_LAST_SELECTED_ROUND,
@@ -197,7 +198,7 @@ class AsyncOortSelector(AsyncSelectorBase):
         if ctx.task_to_perform != "eval":
             return True
         if self.probe_per_window:  # a probe needs no training history; re-probe a client after evalStaleGate seconds
-            last = end.get_property(PROP_LAST_REPORT_TS)
+            last = end.get_property(PROP_LAST_PROBE_TS)  # not train reports: busy clients report every task
             return last is None or (self._sim_now_s is not None and self._sim_now_s - last >= self.eval_stale_gate)
         last_eval = end.get_property(PROP_LAST_EVAL_ROUND)
         if self.eval_gate_unit == "updates":
@@ -219,7 +220,8 @@ class AsyncOortSelector(AsyncSelectorBase):
         """Pick the `k` (capped by remaining eval headroom) candidates whose
         eval participation is stalest (ascending last_eval_round)."""
         feasible_extra = min(k, self.curr_round_eval_slots_left)
-        prop = PROP_LAST_REPORT_TS if self.eval_gate_unit == "seconds" or self.probe_per_window else PROP_LAST_EVAL_ROUND
+        prop = PROP_LAST_PROBE_TS if self.probe_per_window else PROP_LAST_REPORT_TS if self.eval_gate_unit == "seconds" \
+            else PROP_LAST_EVAL_ROUND
         end_to_last_eval = {end_id: end.get_property(prop) or 0 for end_id, end in candidates.items()}
         key = end_to_last_eval.get
         if self.probe_per_window:  # AVL_EVAL first: a probe there costs no train slot

@@ -837,7 +837,8 @@ def ev21_avl_eval_semantics(run):
                 if not any(deliverable(state_at(tr, t), "train") for t in (out, out - _GATE_POLL_S)):
                     bad_send.append((tid[-4:], e.get("round"), state_at(tr, out).value))
     done = bool(_events(run, "run_end"))
-    no_eval_reach = felix and done and n_eval >= _EV21_MIN_EVALS and not eval_on_eval
+    sees_eval = str(_hp(run, "avail_knowledge", default="")).lower() != "checkin"  # a check-in pool holds AVL_TRAIN only (fck)
+    no_eval_reach = felix and sees_eval and done and n_eval >= _EV21_MIN_EVALS and not eval_on_eval
     bad = len(bad_pick) + len(bad_send) + len(bad_eval) + no_eval_reach
     return _res("PASS" if not bad else "FAIL",
                 f"aware={aware} train_picks={n_pick} not_AVL_TRAIN={len(bad_pick)} real_train_sends={n_send} "
