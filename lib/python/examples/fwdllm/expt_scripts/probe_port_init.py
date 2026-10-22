@@ -59,6 +59,8 @@ def measure(model_type, model_name, rf, num_labels, peft_method="adapter"):
     # excludes it (tc_transformer_trainer_distribute.py:217).
     if model_type == "distilbert":
         model.add_module("pre_classifier", torch.nn.Sequential())
+    elif model_type == "roberta-large":
+        model.classifier.add_module("dense", torch.nn.Sequential())
     tr = [p for p in model.parameters() if p.requires_grad]
     p = sum(x.numel() for x in tr)
     n = math.sqrt(sum(float(x.detach().pow(2).sum()) for x in tr))

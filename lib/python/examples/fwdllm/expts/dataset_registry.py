@@ -35,8 +35,10 @@ _CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 ADAPTER_P_BY_MODEL = {
     "distilbert": {16: 447264, 32: 225936, 64: 115272},
     # p=4,225,540 at rf=16 measured on run_20260823_145932 ([ProbeDim]); the
-    # classifier is 1024*4+4 for agnews, so the adapter half is 4,221,440.
-    "roberta-large": {16: 4221440},
+    # classifier is 1024*4+4 for agnews, so the adapter half is 4,221,440. The
+    # trainer now drops classifier.dense (1,049,600), leaving 3,171,840.
+    # LoRA (q,v) keyed by r: r=6 589,824 (yelp-p p 591,874), measured 2026-10-18.
+    "roberta-large": {16: 3171840, 6: 589824},
     # SmolLM2-360M + LoRA (q,v), keyed by LoRA r, not rf. agnews p: r=8 823,040; r=4 413,440; r=2 208,640.
     "llama": {8: 819200, 4: 409600, 2: 204800},
 }

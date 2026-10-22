@@ -128,7 +128,7 @@ PERTURBATION_COUNT=""  # P: probes per trainer per iteration (trainer hyperparam
 PROBE_COMBINE=""       # S-H: select|mean -- how the P probes become one upload; empty => code default select
 SERVER_STEP_RULE=""    # S-A: raw_sgd|trust_ratio (aggregator); empty => code default raw_sgd
 RHO_STAR=""            # S-A: target relative step under trust_ratio
-RHO_SCHEDULE=""        # S-B: const|rm|landing|pool -- `landing` = C-1 law C; `pool` = s*sqrt(P*N/p)
+RHO_SCHEDULE=""        # S-B: const|rm|landing|pool|exp -- `landing` = C-1 law C; `pool` = s*sqrt(P*N/p); `exp` = pool rho0 * exp(-(t-1)/(2*T_res))
 RHO_EXP=""             # S-B: anneal exponent, must exceed 0.5
 B_MAX=""               # C-1: budget ceiling, ln(Phi_peak). Unset = D1's ln 2 prior
 T_RES=""               # C-1: control resolution as a RATE, never decremented (300)
@@ -200,7 +200,7 @@ usage() {
   echo "          (BASELINE_DELAY_DEFAULTS in this script); pass explicitly only to override." >&2
   echo "          [--server-update-audit] [--pool-split-half-audit]" >&2
   echo "          [--learning-rate F] [--perturbation-count N] [--probe-combine select|mean]" >&2
-  echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho-schedule const|rm|landing|pool] [--rho-exp F]" >&2
+  echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho-schedule const|rm|landing|pool|exp] [--rho-exp F]" >&2
   echo "          [--b-max F] [--t-res F] [--budget-stop-frac F (0 = off)] [--phi-stop off|log_only|halt] [--phi-stop-threshold F]" >&2
   echo "          [--b-max-probe-every N] [--b-max-probe-n N] [--b-max-probe-phis L]" >&2
   echo "          [--b-max-policy mean|ratchet|anchor] [--eval-max-samples N] [--eval-every-n-commits N]" >&2
