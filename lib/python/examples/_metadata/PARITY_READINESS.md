@@ -179,7 +179,7 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **FELIX F42b → F43 (Felix screens, sims only)**, then **D5 · parity re-grade on the streaming setup** (G3 reals + sims, all six,
+- **FELIX F42-T12 → F43 (baseline reds, then Felix screens, sims only)**, then **D5 · parity re-grade on the streaming setup** (G3 reals + sims, all six,
   syn_0 + syn_50_3st, both datasets) → Felix claims gate (FX-N108) → sim-only experiments.
 - **Long blocks (G1U, G1AS grid) · deferred by C18** until D5: FELIX FX-N93.
 

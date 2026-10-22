@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""FELIX Scoreboard plots, rewritten in place per batch: accuracy vs time, traffic vs time, accuracy vs traffic.
+"""FELIX Scoreboard plots, rewritten in place per batch: Felix arms vs time, baselines vs time (Felix old as reference), accuracy vs traffic.
 
   felix_plots.py POOL... [--prefix F42] [--new newp] [--old ctl] [--no-old] [--also felix:new:"Felix new, no pacing" ...]
 
-One PNG per dataset (`<out>/felix_<dataset>.png`): columns = the batch's cells, lines = Felix new / old, --also arms, every baseline.
+One PNG per dataset (`<out>/felix_<dataset>.png`): columns = the batch's cells; y zoomed to the post-warm-up band; lines labelled at their end.
 """
 import argparse
 import bisect
@@ -27,7 +27,8 @@ ALSO = {"refl:rstar": ("REFL*", "#eda100", "--"), "refl:rfc": ("REFL-fc", "#eda1
         "felix:new": ("Felix new, no pacing", "#2a78d6", "--"), "felix:l5": ("Felix new, no pacing", "#2a78d6", "--"),
         "felix:fck": ("Felix by check-in", "#2a78d6", ":"), "feddance:fdstar": ("FedDance*", "#e87ba4", "--"),
         "fedbuff:fbstar": ("FedBuff*", "#1baf7a", "--")}  # F42 arms
-SMOOTH = {"cifar10": 1, "google_speech": 3}  # speech stream evals swing ±10-20 pp
+SMOOTH = {"cifar10": 3, "google_speech": 5}  # evals swing ±5 pp cifar, ±10-20 pp speech
+WARM_H = 2.0  # y range starts from the lowest smoothed accuracy after this
 
 
 def leg(d):
@@ -64,32 +65,56 @@ def main(argv=None):
             want[(dataset_of(sim), parts[0], b, parts[1])] = sim
     with ProcessPoolExecutor(32) as ex:
         data = dict(zip(want, ex.map(leg, want.values())))
+    smooth = lambda ys, k: [sum(ys[max(0, i - k + 1):i + 1]) / len(ys[max(0, i - k + 1):i + 1]) for i in range(len(ys))]
     for ds in sorted({k[0] for k in data}):
         cells = [c for c in CELLS if any(k[0] == ds and k[1] == c[0] for k in data)]
-        fig, ax = plt.subplots(3, len(cells), figsize=(5.4 * len(cells), 13), sharey="row", squeeze=False)
+        k = SMOOTH.get(ds, 1)
+        curves = {key: ([p[0] for p in pts], smooth([p[1] for p in pts], k), [p[2] for p in pts])
+                  for key, (pts, _) in data.items() if key[0] == ds and pts}
+        top = max((acc[-1] for _, acc, _ in curves.values()), default=0)  # stalled legs (< half the best final) don't set the range
+        late = [a_ for (t, acc, _) in curves.values() if acc[-1] >= top / 2 for t_, a_ in zip(t, acc) if t_ >= WARM_H]
+        ylo, yhi = (max(0, min(late) - 2), max(late) + 1.5) if late else (None, None)
+        rows = (("Felix: new vs old", lambda b, arm: b == "felix"),
+                ("Baselines (Felix old for reference)", lambda b, arm: b != "felix" or arm == a.old),
+                ("Accuracy vs traffic (all)", lambda b, arm: True))
+        fig, ax = plt.subplots(3, len(cells), figsize=(6.2 * len(cells), 13.5), sharey=True, squeeze=False)
         for j, (cell, title) in enumerate(cells):
-            for b, arm, lab, col, ls, lw in series:
-                if (ds, cell, b, arm) not in data:
-                    continue
-                pts, tot = data[(ds, cell, b, arm)]
-                k = SMOOTH.get(ds, 1)
-                acc = [sum(p[1] for p in pts[max(0, i - k + 1):i + 1]) / len(pts[max(0, i - k + 1):i + 1]) for i in range(len(pts))]
-                ax[0, j].plot([p[0] for p in pts], acc, ls, color=col, lw=lw, label=lab, marker="o", ms=3)
-                ax[1, j].plot([t for t, _ in tot], [g for _, g in tot], ls, color=col, lw=lw, label=lab)
-                ax[2, j].plot([p[2] for p in pts], acc, ls, color=col, lw=lw, label=lab, marker="o", ms=3)
-            ax[0, j].set_title(title, fontsize=12)
-            for i, (xl, yl) in enumerate((("hours (sim clock)", "test accuracy %"), ("hours (sim clock)", "model traffic, GB"),
-                                           ("model traffic, GB", "test accuracy %"))):
-                ax[i, j].set_xlabel(xl, fontsize=9)
-                ax[i, 0].set_ylabel(yl, fontsize=10)
+            for i, (rtitle, keep) in enumerate(rows):
+                ends = []
+                for b, arm, lab, col, ls, lw in series:
+                    key = (ds, cell, b, arm)
+                    if key not in curves or not keep(b, arm):
+                        continue
+                    t, acc, gb = curves[key]
+                    x = gb if i == 2 else t
+                    ref = i == 1 and b == "felix"
+                    ax[i, j].plot(x, acc, ls, color=col, lw=2.6 if ref else lw, alpha=0.9, label=lab, zorder=3 if ref else 2)
+                    if i < 2:
+                        ends.append([acc[-1], lab, col])
+                ends.sort()
+                for n_ in range(1, len(ends)):  # nudge end labels apart (min gap 4% of the y range)
+                    ends[n_][0] = max(ends[n_][0], ends[n_ - 1][0] + 0.04 * (yhi - ylo))
+                for y, lab, col in ends:
+                    ax[i, j].annotate(lab, (1.01, y), xycoords=("axes fraction", "data"), fontsize=8, color="#52514e", va="center",
+                                      annotation_clip=False)
+                    ax[i, j].plot([1.0], [y], marker="s", ms=5, color=col, transform=ax[i, j].get_yaxis_transform(), clip_on=False)
+                ax[i, j].set_title(f"{title} · {rtitle}" if i else title, fontsize=11 if i else 12)
+                ax[i, j].set_xlabel("model traffic, GB" if i == 2 else "hours (sim clock)", fontsize=9)
                 ax[i, j].grid(alpha=0.25, lw=0.6)
                 ax[i, j].spines[["top", "right"]].set_visible(False)
-        h, l = next(((h, l) for h, l in (x.get_legend_handles_labels() for x in ax[0]) if len(h) == max(
-            len(x.get_legend_handles_labels()[0]) for x in ax[0])))
-        fig.legend(h, l, loc="upper center", ncol=len(l), fontsize=10, frameon=False, bbox_to_anchor=(0.5, 0.965))
-        sm = ", accuracy: 3-eval rolling mean" if SMOOTH.get(ds, 1) > 1 else ""
-        fig.suptitle(f"{a.prefix} · {ds} · sims, seed 1{sm}", fontsize=14)
-        fig.tight_layout(rect=(0, 0, 1, 0.94))
+                if ylo is not None:
+                    ax[i, j].set_ylim(ylo, yhi)
+            ax[0, j].set_title(f"{title} · Felix: new vs old", fontsize=11)
+        for i in range(3):
+            ax[i, 0].set_ylabel("test accuracy %", fontsize=10)
+        h, l = {}, {}
+        for x in ax[2]:
+            for h_, l_ in zip(*x.get_legend_handles_labels()):
+                h.setdefault(l_, h_)
+        fig.legend(list(h.values()), list(h), loc="lower center", ncol=min(len(h), 6), fontsize=9, frameon=False)
+        fig.suptitle(f"{a.prefix} · {ds} · sims, seed 1 · accuracy: {k}-eval rolling mean · y from the lowest value after {WARM_H:g} h (stalled legs clipped)",
+                     fontsize=13)
+        fig.tight_layout(rect=(0, 0.05, 0.93, 0.97))
         out = os.path.join(a.out, f"felix_{ds}.png")
         fig.savefig(out, dpi=100)
         print(out)
