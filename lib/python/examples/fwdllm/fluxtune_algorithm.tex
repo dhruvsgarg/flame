@@ -199,6 +199,60 @@ The training data is cut into $T_{\mathrm{bins}}$ \emph{data bins}, fixed local 
 \end{algorithmic}
 \end{algorithm}
 
+\subsection{Choosing $N$ and $\rho$ for a new setting}
+\label{sec:ft:setting}
+A \emph{setting} is a model with its adapters ($p$), a dataset, and a local batch size. Three server constants remain---the pool size $N$, the initial trust ratio $\rho_0$ and the inflation budget $\Phi^*$---and none is searched per setting.
+
+\paragraph{Accuracy is a function of progress, not of the step schedule.}
+Let progress be the alignment-weighted distance travelled, $\Lambda_t=\sum_{k\le t}\rho_k\sqrt{PN_k/p}$.
+On agnews three step schedules (exponentially decaying, the same with staleness- and alignment-based $\omega_k$, and constant) reached $0.86$ at $\Lambda=0.839$, $0.808$ and $0.852$,
+at inflation $\Phi=1.62$, $1.60$ and $1.90$. The client gradients needed for a given progress are fixed too, $\sum_tN_t=\Lambda^2p/(2PB)$ (met to $0.4\%$),
+so the step changes how fast a run gets there, not where it ends.
+
+\paragraph{The step is the largest for which that still holds.}
+A forward gradient is a slope measured at the current weights, and a step is valid while the slope still holds after the move. Below that limit accuracy at a given $\Lambda$ does not depend on $\rho$; above it, a step buys less accuracy per unit of $\Lambda$.
+We set $\rho_0$ to the largest value whose accuracy-versus-$\Lambda$ curve still overlaps a reference run, $\rho_0=0.07$: a one-sided validity check, not a search.
+% TODO(R1/R2): rho0 = 0.10 and 0.14 against the 0.067 reference; raise rho0 only if the curves overlap.
+$\rho$ is a ratio of weight norms, so one value carries across settings: $\rho_0\approx0.068$ ran on agnews, yahoo and yelp-p.
+The step then decays, $\rho_t=\rho_0e^{-(t-1)/(2T_{\mathrm{res}})}$, which bounds inflation at $\Phi_\infty=e^{\rho_0^2T_{\mathrm{res}}/2}$. $T_{\mathrm{res}}=2\ln\Phi^*/\rho_0^2=283$ spends the same budget $\Phi^*=2$ in every setting,
+and the absolute step $\rho_t\norm{\ttr}$ falls from $0.93$ to $0.31$ by aggregation $1{,}000$, where a constant $\rho$ grew it $3\times$.
+
+\paragraph{The pool size is set by the dataset, not by the model or the client count.}
+At fixed $N$ the decaying step banks at most
+\begin{equation}
+\Lambda_\infty=\frac{4\ln\Phi^*}{\rho_0}\sqrt{\frac{PN}{p}},\qquad\text{so}\qquad
+N\ge N^*=\frac pP\Bigl(\frac{\rho_0\Lambda_{\mathrm{need}}}{4\ln\Phi^*}\Bigr)^2
+\label{eq:ft:nstar}
+\end{equation}
+is needed to reach $\Lambda_{\mathrm{need}}$, the progress at which accuracy plateaus. The first form matched measured $\Lambda$ to $0.5\%$ and $0.6\%$ on two runs.
+A larger $p$ lowers alignment ($\cos\propto1/\sqrt p$), but the trust ratio lengthens the absolute step with $\norm{\ttr}\propto\sqrt p$, so the useful movement per aggregation, $\rho\norm{\ttr}\cos$, does not depend on $p$ and $\Lambda_{\mathrm{need}}\propto1/\sqrt p$.
+$N^*\propto p\Lambda_{\mathrm{need}}^2$ is therefore a property of the dataset and batch size. One cross-model check: SmolLM2-1.7B ($p=806{,}912$) reached $0.832$ on agnews at $0.70\times$ DistilBERT's $\Lambda$, against the predicted $0.75$.
+Measured on DistilBERT, $N^*=34$ and $42$ on agnews (batch $8$, two runs) and $38$ on yahoo (batch $32$; $53$ at batch $8$). We use $N=50$ in every setting; a larger $N$ only spends more perturbations per unit of progress.
+The number of available clients sets the concurrency $C\le N$, not $N$. Measured agreement cannot size the pool either: $n_{\mathrm{eff}}=N\bigl(1+O(P/p)\bigr)$, because each client gradient carries $\approx p/P$ times more perturbation noise than signal.
+The ratio $\rho_0/\cos$ ($s$ in Eq.~\eqref{eq:ft:step}) is an outcome of these choices (Table~\ref{tab:ft:settings}), not a setting.
+
+\begin{table}[t]
+\centering
+\caption{Server constants per setting ($P=10$, $\Phi^*=2$). $N$ and $\rho_0$ are shared; $T_{\mathrm{res}}$ and $\rho_0/\cos$ follow.}
+\label{tab:ft:settings}
+\small
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+Setting & $p$ & $n$ & $N$ & $\sqrt{PN/p}$ & $\rho_0$ & $T_{\mathrm{res}}$ & $\rho_0/\cos$ \\
+\midrule
+DistilBERT, agnews & 450{,}340 & 100 & 50 & 0.0333 & 0.07 & 283 & 2.10 \\
+RoBERTa-large, yelp-p & 591{,}874 & 100 & 50 & 0.0291 & 0.07 & 283 & 2.41 \\
+SmolLM2-1.7B, yahoo & 806{,}912 & 75 & 50 & 0.0249 & 0.07 & 283 & 2.81 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Compute, not $N$ or $\rho$, decides whether a setting reaches its target.}
+In $T_{\mathrm{wall}}$ aggregations a setting reaches $\Lambda_\infty\bigl(1-e^{-T_{\mathrm{wall}}/(2T_{\mathrm{res}})}\bigr)$. If that falls short of $\Lambda_{\mathrm{need}}$, no choice of $N$ or $\rho$ recovers it;
+only the batch size, the adapter rank ($p$) or the wall time can.
+% Estimate (not measured): SmolLM2-1.7B/yahoo at N=50, ~255 s/aggregation -> ~170 aggregations in 12 h -> Lambda ~0.25 vs ~0.62 needed.
+% TODO(F3): check ||theta_tr|| at init scales as sqrt(p) for the LoRA settings (15.3 / 17.9 expected).
+
 \subsection{Comparison with the full FluxTune controller}
 \label{sec:ft:full}
 The full FluxTune controller already used the trust-ratio step but added four mechanisms: a variance-style condition $n_{\mathrm{eff}}\ge N_{\mathrm{req}}=p(\rho^*_t/s)^2/P$ to aggregate, with $\rho^*_t$ the allowed step at aggregation $t$,

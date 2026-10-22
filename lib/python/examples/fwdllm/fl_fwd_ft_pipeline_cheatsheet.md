@@ -123,7 +123,7 @@ Removed: the `n_eff` gate and `max_iter`, ω weights, law C / `ρ_max`, the `B_m
 | `ρ_max` | largest step the pool can afford within `max_iter` rounds (`landing` only) |
 | `‖θ_tr‖` | L2 norm of all trainable (adapter) weights as one vector, recomputed each commit |
 | `B`, Φ | budget spent, `½·Σ ln(1+ρ²)`; Φ = e^B = how much ‖θ_tr‖ has grown |
-| `p`, `P`, `s` | trainable params; probes per upload; safety factor (`ρ ≤ s·cos`) |
+| `p`, `P`, `s` | trainable params; probes per upload; `s = ρ/cos`, step over alignment (derived, logged; §8) |
 | `C`, `K`, `I` | trainers in flight; uploads per round; rounds in this commit |
 | `G` | pooled gradient direction |
 | `n_eff` | how many independent uploads the pool is worth; below pool size if uploads disagree |
@@ -212,38 +212,61 @@ checks plumbing, not accuracy. What changes:
 
 How to run it, what to read and what to do next: [fl_fwd_ft_smollm2_smoke_plan.md](fl_fwd_ft_smollm2_smoke_plan.md).
 
-## 8. Choosing the pool size N per model (DRAFT, not final)
+## 8. Choosing N, ρ0 and T_res
 
-> **Not final.** A working procedure, not a validated rule. The √p scaling, the ρ band and the distinct-data
-> threshold are untested off DistilBERT. EXPERIMENTS.md §3 P0b must close before any paper run uses it.
+Three knobs, none tuned per setting. A **cell** is one model + dataset + batch size.
 
-N = client gradients pooled per commit (`--pool-target`), not iterations (`I = N/K`). ρ follows from it:
-`ρ = s·√(P·N/p)` ⇔ `N(ρ) = p·(ρ/s)²/P`.
+| Knob | Value | Scope | Set by |
+|---|---|---|---|
+| `N` (uploads per commit) | **50** | per dataset · bs; same for every model | `N ≥ N* ≈ 29·Λ_need²·(ρ0/0.07)²`, rounded up to a multiple of `K` |
+| ρ0 (starting relative step) | **0.07** | global | largest step that has run cleanly; ρ_max test R1/R2 pending |
+| Φ\* (weight-growth budget) | **2** | global | P0 `exp` ended at Φ 1.93 at its 0.878 peak |
+| `T_res` | **283** | derived | `2·lnΦ*/ρ0²` |
+| `C` | clients in flight | system | daily availability; keep `C ≤ N` |
 
-**Key fact:** gradients to reach Φ\*, `G* = 2·lnΦ*·p/(s²·P)`, have no N in them. N only splits that work into
-fewer, larger commits or more, smaller ones. So N is chosen for the system, never tuned for accuracy.
+Derived, not knobs: `s = ρ0/cos` (pass it as `--gate-safety-s` until ρ0 can be passed directly: 2.10 / 2.41 / 2.81 for
+DistilBERT / RoBERTa-L / SmolLM2-1.7B at N 50), and `n_eff = N·(1 + O(P/p))` ≡ N (a correlated-probe alarm, not an input).
 
-| Step | Rule |
-|---|---|
-| 1. System bounds | `N_min = max(C, 2K)` (staleness ≤ 1, ≥ 2 iterations/commit) · `N_max = min(n, max_iter·K)` (n = clients the node fits) |
-| 2. Step-size band | ρ ∈ [0.03, 0.07] ⇒ N ∈ [N(0.03), N(0.07)] · target `N₀ = 50·√(p/450,340)` (DistilBERT's N = 50 scaled by √p) |
-| 3. Choose | clamp N₀ into the overlap, round to a multiple of K · no overlap, large p: N = N_max, accept ρ < 0.03 · small p: N = N_min, lower P |
-| 4. Data check | passes over data ≈ `G*·bs·d/|D|` (d ≈ 0.77 at N = n, measured) · under ~1 pass with N near n ⇒ N ≈ 0.75·n or raise bs |
-| 5. Derive | `I = N/K` · `T* = 2·lnΦ*/ln(1+ρ²)` · wall ≈ `T*·(t_commit + I·t_iter)` · eval stride ≥ ⌈t_eval/commit time⌉ + 1 |
-| 6. First hour | I exact · distinct clients/pool ÷ N ≥ 0.7 · Φ on `(1+ρ²)^(t/2)` · 0 `eval still running` · commits/h within 15% |
+```
+cos   = √(P·N/p)                      alignment of the pooled update (closed form)
+ρ_t   = ρ0·e^{−(t−1)/(2·T_res)}       Φ_∞ = e^{ρ0²·T_res/2} = Φ*
+Λ(t)  = Λ_∞·(1 − e^{−t/(2·T_res)})    Λ_∞ = 4·lnΦ*·cos/ρ0     (Λ = Σ ρ_t·cos_t, progress)
+N*    = p·(ρ0·Λ_need/(4·lnΦ*))²/P     minimum N so that Λ_∞ ≥ Λ_need
+```
 
-N stays fixed for the whole run. To cut wall time, change p or throughput, not N.
+The Λ law matches measured Λ to 0.5–0.6% (P0 `exp` c1071, P0b bs 32 c717).
 
-Planned cells (EXPERIMENTS.md §2; s = 1.5, P = 10, Φ\* = 3, K = 10, C = 30, bs = 8):
+**Why none of the three is tuned:**
+- **Accuracy depends on Λ alone.** Three schedules reach 0.86 on AG News at Λ 0.81–0.85, and total uploads to a given
+  Λ are ρ-free (time law). Inside the safe range ρ0 changes speed, not accuracy, so it needs a one-sided validity check,
+  not a sweep. ρ is unitless, so one value can transfer.
+- **N is model-free.** A larger p gives noisier uploads (cos ∝ 1/√p) but a longer absolute step (ρ·‖θ_tr‖, ‖θ_tr‖ ∝ √p),
+  so useful movement per commit `ρ·‖θ_tr‖·cos` is p-free and Λ_need ∝ 1/√p. Hence `N* ∝ p·Λ_need²` is constant.
+  N above N\* only costs probes; client availability moves C, not N.
+- **The late step anneals.** ρ_t decays and Φ stops at Φ\*: the absolute step falls from 0.93 to 0.31 by c1000
+  (DistilBERT). Constant ρ grew it 0.67 → 2.0 and overshot.
 
-| Cell | p | n | N | ρ | T\* (commits) | G\* | passes over train set |
-|---|---|---|---|---|---|---|---|
-| DistilBERT · AG News | 450,340 | 100 | 50 | 0.050 | ~880 | 44k | ~2.9 |
-| RoBERTa-large LoRA · Yelp-P | 591,874 | 100 | 60 | 0.048 | ~960 | 58k | ~0.9 ⚠ |
-| SmolLM2-1.7B LoRA · Yahoo | 806,912 | 75 | 70 | 0.044 | ~1,130 | 79k | ~0.45 ⚠ |
+**Measured** (DistilBERT; `expt_scripts/lambda_need.py <run_dir> --targets …`, 5-eval mean, Λ_need at peak − 0.5 pt;
+the logged `progress_lambda` is 2B/s, right only at constant s):
 
-⚠ Under one pass: Step 4 says raise bs (to ~16 for Yelp-P, ~24 for Yahoo). Whether more data moves accuracy at
-Φ\* is untested.
+| Dataset · bs | Run | Λ at target | Λ_need | N\* |
+|---|---|---|---|---|
+| AG News · 8 | P0 `exp` / G1 / P0 `pool` | 0.839 / 0.808 / 0.852 (0.86) | 1.216 / 1.089 / — | 42 / 34 |
+| Yahoo · 32 | P0b | 0.830 (0.65) | 1.148 | 38 |
+| Yahoo · 8 | P0b | 1.059 (0.65) | 1.363 | 53 |
 
-Measured inputs (SmolLM2-1.7B, N = 50, 8 h): t_commit 9.2 s, t_iter 5.1 s, full AG News eval 144 s. Clients the
-node fits (8× A40): ~75 for 1.7B (4.2–4.4 GB/trainer); 100 for DistilBERT and RoBERTa (memory allows more).
+N = 50 covers all but Yahoo at bs 8 (not run). bs moves Λ_need, so N is per dataset · bs. Λ_need is needed again only
+for a new, possibly much harder dataset (N\* ∝ Λ_need²): one DistilBERT run to plateau (early slopes do not predict it).
+
+**Rests on, untested:** (1) ‖θ_tr‖ ∝ √p for the LoRA models: check the first `trainable_weight_norm` against 15.3
+(RoBERTa-L) and 17.9 (SmolLM2-1.7B); (2) the same accuracy needs the same absolute movement across models: one point,
+SmolLM2-1.7B reached 0.832 on AG News at 0.70× DistilBERT's Λ vs 0.75 predicted; (3) ρ0 0.07 on the large models.
+If (1)–(2) fail, N picks up a model factor; if a run reaches Φ\* still climbing, N was too small.
+
+**First-hours abort rule (new model):** Φ off `(1+ρ²)^{t/2}` by > 1%, no accuracy above chance by ~c50, or GL decay
+before Φ ≈ 1.5 → halve ρ0 (0.035), quadruple T_res (1,132); N stays.
+
+**Compute check, before a long run.** Λ reachable = Λ_∞·(1 − e^{−T_wall/(2·T_res)}), T_wall = cap ÷ measured s/commit.
+Below Λ_need·√(450,340/p) at target ⇒ no N or ρ fixes it: change bs, rank (p) or the cap. Estimate: SmolLM2-1.7B ·
+Yahoo at N 50 ~255 s/commit → ~170 commits in 12 h → Λ ≈ 0.25 vs ≈ 0.62 needed. A capped run ends mid-decay
+(ρ ≈ 0.05): report the best checkpoint or shorten T_res.

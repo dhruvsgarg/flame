@@ -56,6 +56,11 @@
 #   --after          post-launch hooks: parity,sanity,plot.
 #   --stop-on-fail   abort remaining runs on first non-zero exit.
 #   --dry-run / --yes / --force / --show-all  preview / skip-confirm / override-block / expand table.
+#   --max-commits N  halt at N commits (stop_reason commit_cap, any --phi-stop); the stop-rule
+#                    warm-up/horizon scale to 0.45N/0.15N (450/150 at N=1000).
+#   --rho0 F         rho0 for --rho-schedule pool|exp, set directly; overrides --gate-safety-s.
+#   --eval-resample  with --eval-max-samples: a fresh draw per eval, seeded by commit index.
+#   --final-full-eval  one full-test eval at run end, emitted as agg_eval_final.
 # Other knobs (see usage()): --var-stopping-policy --agg-rate-type --target-acc
 # --converge-window --stall-* --delay-divisor --delay-floor --run-set --clean.
 set -u
@@ -124,10 +129,12 @@ SERVER_UPDATE_AUDIT="" # I-1 audit: per-commit ||delta||/||w||. OFF by default -
 ALLOW_STALE_PROFILE="" # --allow-stale-profile: downgrade ONLY the profile-staleness check to a warn
 POOL_SPLIT_HALF_AUDIT="" # L1 audit: per-commit pool split-half cosine. OFF -- adds a pass over (params x uploads)
 LEARNING_RATE=""       # server step size (aggregator hyperparameters); empty => trainer_base.yaml (0.01)
+TRAIN_BATCH_SIZE=""    # samples per trainer batch = one data_id bin (both sides); empty => base configs (8)
 PERTURBATION_COUNT=""  # P: probes per trainer per iteration (trainer hyperparameters); empty => code default 10
 PROBE_COMBINE=""       # S-H: select|mean -- how the P probes become one upload; empty => code default select
 SERVER_STEP_RULE=""    # S-A: raw_sgd|trust_ratio (aggregator); empty => code default raw_sgd
 RHO_STAR=""            # S-A: target relative step under trust_ratio
+RHO0=""                # rho0 for --rho-schedule pool|exp, set directly; overrides --gate-safety-s (s = rho0/sqrt(P*N/p))
 RHO_SCHEDULE=""        # S-B: const|rm|landing|pool|exp -- `landing` = C-1 law C; `pool` = s*sqrt(P*N/p); `exp` = pool rho0 * exp(-(t-1)/(2*T_res))
 RHO_EXP=""             # S-B: anneal exponent, must exceed 0.5
 B_MAX=""               # C-1: budget ceiling, ln(Phi_peak). Unset = D1's ln 2 prior
@@ -140,6 +147,9 @@ B_MAX_PROBE_N=""       # 3.1: held-out samples per probe eval (512)
 B_MAX_POLICY=""        # 3.1: mean|ratchet|anchor -- how successive senses combine
 EVAL_MAX_SAMPLES=""    # agg eval on a fixed subsample of the test set. Unset = full set
 EVAL_EVERY_N_COMMITS="" # commits per agg eval. Unset = yaml value (2)
+EVAL_RESAMPLE=""       # --eval-resample: fresh eval_max_samples draw per eval, seeded by commit
+FINAL_FULL_EVAL=""     # --final-full-eval: one full-test eval at run end (agg_eval_final)
+MAX_COMMITS=""         # commit cap: halt at N commits (stop_reason commit_cap); also scales the stop-rule warm-up
 B_MAX_PROBE_PHIS=""    # 3.1: comma-separated Phi grid (1.5,2,2.5,3,3.5,4)
 SATURATION_STOP=""     # E: 1 = stop when held-out accuracy stops rising (Prechelt GL). Unset = off
 SAT_STALL_FRAC=""      # E': stall trigger. g=(m_t-m_{t-h})/m_t <= this for `patience` evals.
@@ -199,11 +209,12 @@ usage() {
   echo "    --delays/--delay-divisor/--delay-floor default to each baseline's settled value" >&2
   echo "          (BASELINE_DELAY_DEFAULTS in this script); pass explicitly only to override." >&2
   echo "          [--server-update-audit] [--pool-split-half-audit]" >&2
-  echo "          [--learning-rate F] [--perturbation-count N] [--probe-combine select|mean]" >&2
-  echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho-schedule const|rm|landing|pool|exp] [--rho-exp F]" >&2
+  echo "          [--learning-rate F] [--train-batch-size N] [--perturbation-count N] [--probe-combine select|mean]" >&2
+  echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho0 F] [--rho-schedule const|rm|landing|pool|exp] [--rho-exp F]" >&2
   echo "          [--b-max F] [--t-res F] [--budget-stop-frac F (0 = off)] [--phi-stop off|log_only|halt] [--phi-stop-threshold F]" >&2
   echo "          [--b-max-probe-every N] [--b-max-probe-n N] [--b-max-probe-phis L]" >&2
   echo "          [--b-max-policy mean|ratchet|anchor] [--eval-max-samples N] [--eval-every-n-commits N]" >&2
+  echo "          [--eval-resample] [--final-full-eval] [--max-commits N]" >&2
   echo "          [--saturation-stop] [--retention-probe-every N]  (E: the saturation stop; P3': cos(theta_t,theta_0))" >&2
   echo "          [--sat-stall-frac F] [--no-sat-decay]  (stall trigger; drop the GL decay trigger)" >&2
   echo "          [--send-timeout-s S]  (abandon timeout; scale with the delays, e.g. 3600 for 1.7B)" >&2
@@ -255,10 +266,12 @@ while [[ $# -gt 0 ]]; do
     --server-update-audit)  SERVER_UPDATE_AUDIT=1; shift ;;
     --pool-split-half-audit) POOL_SPLIT_HALF_AUDIT=1; shift ;;
     --learning-rate)        LEARNING_RATE="$2"; shift 2 ;;
+    --train-batch-size)     TRAIN_BATCH_SIZE="$2"; shift 2 ;;
     --perturbation-count)   PERTURBATION_COUNT="$2"; shift 2 ;;
     --probe-combine)        PROBE_COMBINE="$2"; shift 2 ;;
     --server-step-rule)     SERVER_STEP_RULE="$2"; shift 2 ;;
     --rho-star)             RHO_STAR="$2"; shift 2 ;;
+    --rho0)                 RHO0="$2"; shift 2 ;;
     --rho-schedule)         RHO_SCHEDULE="$2"; shift 2 ;;
     --rho-exp)              RHO_EXP="$2"; shift 2 ;;
     --b-max)                B_MAX="$2"; shift 2 ;;
@@ -273,6 +286,9 @@ while [[ $# -gt 0 ]]; do
                             B_MAX_POLICY="$2"; shift 2 ;;
     --eval-max-samples)     EVAL_MAX_SAMPLES="$2"; shift 2 ;;
     --eval-every-n-commits) EVAL_EVERY_N_COMMITS="$2"; shift 2 ;;
+    --eval-resample)        EVAL_RESAMPLE=1; shift ;;
+    --final-full-eval)      FINAL_FULL_EVAL=1; shift ;;
+    --max-commits)          MAX_COMMITS="$2"; shift 2 ;;
     --saturation-stop)      SATURATION_STOP=1; shift ;;
     --sat-stall-frac)       SAT_STALL_FRAC="$2"; shift 2 ;;
     --send-timeout-s)       SEND_TIMEOUT_S="$2"; shift 2 ;;
@@ -480,9 +496,9 @@ DATASET="$DATASET" MODEL_TYPE="$MODEL_TYPE" MODEL_NAME="$MODEL_NAME" PEFT_METHOD
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
 SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" POOL_SPLIT_HALF_AUDIT="$POOL_SPLIT_HALF_AUDIT" \
 ALLOW_STALE_PROFILE="$ALLOW_STALE_PROFILE" \
-LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
+LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" TRAIN_BATCH_SIZE="$TRAIN_BATCH_SIZE" \
   PROBE_COMBINE="$PROBE_COMBINE" SERVER_STEP_RULE="$SERVER_STEP_RULE" \
-  RHO_STAR="$RHO_STAR" RHO_SCHEDULE="$RHO_SCHEDULE" RHO_EXP="$RHO_EXP" \
+  RHO_STAR="$RHO_STAR" RHO0="$RHO0" RHO_SCHEDULE="$RHO_SCHEDULE" RHO_EXP="$RHO_EXP" \
   B_MAX="$B_MAX" T_RES="$T_RES" BUDGET_STOP_FRAC="$BUDGET_STOP_FRAC" \
   PHI_STOP="$PHI_STOP" PHI_STOP_THRESHOLD="$PHI_STOP_THRESHOLD" \
   B_MAX_PROBE_EVERY="$B_MAX_PROBE_EVERY" B_MAX_PROBE_N="$B_MAX_PROBE_N" \
@@ -493,6 +509,7 @@ LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
   POOL_TARGET="$POOL_TARGET" DYNAMIC_KC="$DYNAMIC_KC" \
   RETENTION_PROBE_EVERY="$RETENTION_PROBE_EVERY" \
   EVAL_MAX_SAMPLES="$EVAL_MAX_SAMPLES" EVAL_EVERY_N_COMMITS="$EVAL_EVERY_N_COMMITS" \
+  EVAL_RESAMPLE="$EVAL_RESAMPLE" FINAL_FULL_EVAL="$FINAL_FULL_EVAL" MAX_COMMITS="$MAX_COMMITS" \
   TRAINABLE_SCOPE="$TRAINABLE_SCOPE" COMMIT_GATE="$COMMIT_GATE" GATE_SAFETY_S="$GATE_SAFETY_S" \
   GATE_RHO_REF="$GATE_RHO_REF" COS_GROUND_TRUTH_AUDIT="$COS_GROUND_TRUTH_AUDIT" \
   COS_PROBE_BATCH_SIZE="$COS_PROBE_BATCH_SIZE" COS_PROBE_EVERY="$COS_PROBE_EVERY" \
@@ -539,8 +556,10 @@ VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID
 SERVER_UPDATE_AUDIT = env("SERVER_UPDATE_AUDIT") or ""
 POOL_SPLIT_HALF_AUDIT = env("POOL_SPLIT_HALF_AUDIT") or ""
 LEARNING_RATE = env("LEARNING_RATE") or ""; PERTURBATION_COUNT = env("PERTURBATION_COUNT") or ""
+TRAIN_BATCH_SIZE = env("TRAIN_BATCH_SIZE") or ""
 PROBE_COMBINE = env("PROBE_COMBINE") or ""
 SERVER_STEP_RULE = env("SERVER_STEP_RULE") or ""; RHO_STAR = env("RHO_STAR") or ""
+RHO0 = env("RHO0") or ""
 RHO_SCHEDULE = env("RHO_SCHEDULE") or ""; RHO_EXP = env("RHO_EXP") or ""
 B_MAX = env("B_MAX") or ""; T_RES = env("T_RES") or ""
 BUDGET_STOP_FRAC = env("BUDGET_STOP_FRAC") or ""
@@ -557,6 +576,8 @@ DYNAMIC_KC = env("DYNAMIC_KC") or ""
 RETENTION_PROBE_EVERY = env("RETENTION_PROBE_EVERY") or ""
 EVAL_MAX_SAMPLES = env("EVAL_MAX_SAMPLES") or ""
 EVAL_EVERY_N_COMMITS = env("EVAL_EVERY_N_COMMITS") or ""
+EVAL_RESAMPLE = env("EVAL_RESAMPLE") or ""; FINAL_FULL_EVAL = env("FINAL_FULL_EVAL") or ""
+MAX_COMMITS = env("MAX_COMMITS") or ""
 TRAINABLE_SCOPE = env("TRAINABLE_SCOPE") or ""
 COMMIT_GATE = env("COMMIT_GATE") or ""; GATE_SAFETY_S = env("GATE_SAFETY_S") or ""
 GATE_RHO_REF = env("GATE_RHO_REF") or ""
@@ -792,6 +813,9 @@ def patch(exp, run_key, variant, trace):
     # P and the combination rule are ENACTED trainer-side, but S-C's gate needs
     # them aggregator-side too (G_rule = E[v_par^2] under select, P under mean),
     # so both copies are written and must agree -- the aggregator logs its G_rule.
+    if TRAIN_BATCH_SIZE:  # aggregator sizes data_id bins from it, so both sides must agree
+        exp["trainer"]["config_overrides"]["hyperparameters"]["train_batch_size"] = int(TRAIN_BATCH_SIZE)
+        h["train_batch_size"] = int(TRAIN_BATCH_SIZE)
     if PERTURBATION_COUNT:
         exp["trainer"]["config_overrides"]["hyperparameters"]["perturbation_count"] = int(PERTURBATION_COUNT)
         h["perturbation_count"] = int(PERTURBATION_COUNT)
@@ -836,6 +860,8 @@ def patch(exp, run_key, variant, trace):
         h["server_step_rule"] = SERVER_STEP_RULE
     if RHO_STAR:
         h["rho_star"] = float(RHO_STAR)
+    if RHO0:
+        h["rho0"] = float(RHO0)
     if RHO_SCHEDULE:
         h["rho_schedule"] = RHO_SCHEDULE
     if RHO_EXP:
@@ -882,6 +908,12 @@ def patch(exp, run_key, variant, trace):
         h["eval_max_samples"] = int(EVAL_MAX_SAMPLES)
     if EVAL_EVERY_N_COMMITS:
         h["eval_every_n_commits"] = int(EVAL_EVERY_N_COMMITS)
+    if EVAL_RESAMPLE:
+        h["eval_resample"] = True
+    if FINAL_FULL_EVAL:
+        h["final_full_eval"] = True
+    if MAX_COMMITS:
+        h["max_commits"] = int(MAX_COMMITS)
     # S-I: BOTH sides build the model, so both need the scope or the aggregator's
     # requires_grad mask disagrees with the trainer's probe mask.
     if TRAINABLE_SCOPE:

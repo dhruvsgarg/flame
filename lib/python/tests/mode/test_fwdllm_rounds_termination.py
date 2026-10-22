@@ -82,7 +82,7 @@ class _FakeAggregator:
     def aggregate(self, round_id):
         pass
 
-    def eval_model(self, model=None):
+    def eval_model(self, model=None, **_):
         return {"eval_loss": 0.0}, None, None
 
     def _log_and_reset_model_version_stats(self):

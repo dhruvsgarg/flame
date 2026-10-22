@@ -5,7 +5,9 @@
   shared lessons (L) and tripwires (T) apply here. This doc holds only what is specific to FluxTune:
   gradients (JVPs) aggregated instead of weights, a variance-gated commit, and the `data_id` progress axis.
 - **Paper runs unparked (operator 10-17):** [RUN_PLAN.md](../paper_expts_fluxtune/RUN_PLAN.md) gates G0 (FT-N1), P0 (FT-N4), G1 (grad-aware keep/drop)
-  first. The rest of this queue stays parked behind Felix (FX-N9, FX-N11), except keeping this track green (R10).
+  first. **Read RUN_PLAN's Status board first** (what is running, done, next). The rest of this queue stays parked behind Felix (FX-N9, FX-N11), except keeping this track green (R10).
+- **Run status (operator 10-18):** keep RUN_PLAN's Status board current: update it in the same session as every
+  launch, finish or decision (run dir, node, GPUs, tmux, logs, outcome).
 - **Scope:** nine baselines on AG News / DistilBERT, n=100, α=1, `jvp_eval_mode` ON: `fluxtune`, `fwdllm`,
   `fwdllm_it_unaware`, `fwdllm_it_oracular`, `fedbuff_round`, `fedbuff_it_unaware`, `fedbuff_it_oracular`,
   `felix_round`, `felix_it`.
@@ -72,7 +74,7 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
   only historical hits; `test_baselines.py` + `test_config_generator.py` are green. (b) Retune the
   placeholder `learning_rate: 0.075` for `felix_round`/`felix_it` (`TODO(verify)` in `baselines.yaml`).
   (c) An N=10 sim smoke per new baseline. Keep `fluxtune_dynkc` parked, not deleted.
-- **FT-N4 · Training stability I-1 under v2 · todo** (owned by fluxtune_contributions.md §8). *Exit:* a 4h+
+- **FT-N4 · Training stability I-1 under v2 · closed 10-18 for DistilBERT** (P0 `exp` crossed 7 lap wraps, no collapse; check P3/P4 at their first wrap) (owned by fluxtune_contributions.md §8). *Exit:* a 4h+
   run holds past the lap boundary. Gates every long experiment run.
 - **FT-N5 · Unavailability for the grad loop · blocked: Felix FX-N6 audit + FX-N9.** Reuse the audited
   `ClientAvailability` path; harness first; syn_20_3st → syn_50_3st → mobiperf_3st. *Exit:* A1-A8/K11 + the syn_0

@@ -277,12 +277,7 @@ class FedSGDAggregator(TopAggregator):
                 f"probe_combine={_pc} P={_P} G_rule={self._g_rule} "
                 f"rho_ref={self._gate_rho_ref}"
             )
-        if self._rho_schedule == "pool" or _exp_pool:
-            # rho0 from the pool; `pool` holds it, `exp` decays it in _rho_star_now().
-            self._rho_star = self._gate_safety_s * math.sqrt(
-                self._g_rule * self._pool_target / self._p_trainable)
-            logger.info(f"[ServerStep] rho_schedule={self._rho_schedule} "
-                        f"N={self._pool_target} -> rho*={self._rho_star:.6g}")
+        self._set_rho0(_exp_pool)
 
         self.track_trainer_avail = (
             self.config.hyperparameters.track_trainer_avail or None
@@ -329,6 +324,8 @@ class FedSGDAggregator(TopAggregator):
         # READS it -- the anneal and the stop -- is flag-gated off.
         self._B = 0.0
         self._stop_fired = None
+        # Commit cap: halts at this many commits whatever phi_stop says. 0/unset = off.
+        self._max_commits = int(getattr(self.args, "max_commits", 0) or 0) or None
         self._rho_max = None
         # `landing` = law C, with T_res a fixed RATE never decremented, so B
         # approaches B_max as B_max*(1-e^{-t/T_res}), always from below.
@@ -404,8 +401,9 @@ class FedSGDAggregator(TopAggregator):
         # 1x) and are passed separately so neither can move the other.
         if self._sat_stop and self._phi_stop != "off":
             self._sat_det = SaturationDetector(
-                warmup_commits(self._b_max_probe_every),
-                slope_horizon=slope_horizon_commits(self._b_max_probe_every),
+                warmup_commits(self._b_max_probe_every, commit_cap=self._max_commits),
+                slope_horizon=slope_horizon_commits(
+                    self._b_max_probe_every, commit_cap=self._max_commits),
                 stall_frac=self._sat_stall_frac,
                 decay=self._sat_decay,
             )
@@ -451,6 +449,24 @@ class FedSGDAggregator(TopAggregator):
                 f"[Landing] phi_stop={self._phi_stop} "
                 f"threshold={self._phi_stop_threshold} (no sensed B_max)"
             )
+
+    def _set_rho0(self, exp_pool):
+        """rho0 for pool/exp. `rho0` sets it directly and s becomes the implied
+        rho0/sqrt(G_rule*N/p); otherwise rho0 = s*sqrt(G_rule*N/p)."""
+        self._rho0 = float(getattr(self.args, "rho0", 0) or 0) or None
+        if self._rho_schedule == "pool" or exp_pool:
+            # `pool` holds rho0, `exp` decays it in _rho_star_now().
+            _scale = math.sqrt(self._g_rule * self._pool_target / self._p_trainable)
+            if self._rho0:
+                self._gate_safety_s = self._rho0 / _scale
+            self._rho_star = self._gate_safety_s * _scale
+            logger.info(f"[ServerStep] rho_schedule={self._rho_schedule} "
+                        f"N={self._pool_target} -> rho*={self._rho_star:.6g} "
+                        f"s={self._gate_safety_s:.4g}{' (from rho0)' if self._rho0 else ''}")
+        elif self._rho0 and self._rho_schedule == "exp":
+            self._rho_star = self._rho0   # exp without a pool decays the given rho0
+        elif self._rho0:
+            logger.warning(f"rho0={self._rho0} ignored: only rho_schedule pool|exp reads it")
 
     def internal_init(self) -> None:
         """Base init, then size `data_id`'s range to THIS dataset's shards.
@@ -879,7 +895,16 @@ class FedSGDAggregator(TopAggregator):
         evaluate is dominated, not a trade-off: a frozen model's accuracy is
         fixed, so further evals cost GPU and return eval noise (D6).
         """
-        if self._phi_stop == "off" or self._stop_fired:
+        if self._stop_fired:
+            return
+        _cap = getattr(self, "_max_commits", None)
+        if _cap and self._commit_count >= _cap:
+            self._stop_fired = "commit_cap"
+            logger.warning(f"[BudgetStop] reason=commit_cap action=halt "
+                           f"commit={self._commit_count} Phi={math.exp(self._B):.4g}")
+            self._work_done = True
+            return
+        if self._phi_stop == "off":
             return
         # The detector runs on the eval thread; this only reads its latch.
         _sat = getattr(self, "_sat_det", None)
@@ -1718,6 +1743,7 @@ class FedSGDAggregator(TopAggregator):
                 "agg_rate_conf": getattr(getattr(self, "optimizer", None), "agg_rate_conf", None),
                 "server_step_rule": self._server_step_rule,
                 "rho_star": self._rho_star,
+                "rho0": self._rho0,
                 "rho_schedule": self._rho_schedule,
                 "rho_exp": self._rho_exp,
                 "rho_max": self._rho_max,
@@ -1731,6 +1757,7 @@ class FedSGDAggregator(TopAggregator):
                 "budget_stop_frac": (None if math.isinf(self._budget_stop_frac)
                                      else self._budget_stop_frac),
                 "saturation_stop": self._sat_stop,
+                "max_commits": self._max_commits,
                 "sat_stall_frac": self._sat_stall_frac,
                 "sat_decay": self._sat_decay,
                 "pool_target": self._pool_target,

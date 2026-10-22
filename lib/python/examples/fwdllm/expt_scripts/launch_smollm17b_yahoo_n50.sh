@@ -1,36 +1,53 @@
 #!/usr/bin/env bash
-# SmolLM2-1.7B Yahoo N=50 run: the 20261020_0125 screen config, Phi halt, HOURS wall ceiling, watchdog + acc tracker.
-# Eval stride 7: 6,000-row eval ~220 s vs ~43 s/commit (stride 5 blocked commits).
-# Vclock cap = 40x wall (screen ran ~14x), so the wall ceiling ends the run.
-# Usage: HOURS=3 ./launch_smollm17b_yahoo_n50.sh   Stop: kill -TERM -- -<pgid printed below>
+# SmolLM2-1.7B · Yahoo, RUN_PLAN §2 cell: N 50, bs 32, --rho0 0.07 (`exp`, T_res 283; implied s 2.81), watchdog + acc tracker.
+# Stop rule, both arms: stall + GL + commit cap + wall cap. The Phi rail is lifted for `fwdllm` (not part of that rule).
+# Eval: 6,000 rows, fresh draw per eval; one full-test eval at the end (~40 min, est.), so the watchdog gets FINAL_EVAL_H.
+# Vclock cap = 40x wall, so the wall ceiling, not the vclock, ends the run.
+# Usage: ARM=fluxtune|fwdllm HOURS=12 MAX_COMMITS=380 STRIDE=4 ./launch_smollm17b_yahoo_n50.sh [extra run_sequential flags]
+#   MAX_COMMITS = HOURS*3600 / measured s/commit (S sets it; 380 is the bs 32 estimate). Same value in both arms.
+#   STRIDE = ceil(t_eval / s_commit) + 1.   Stop: kill -TERM -- -<pgid printed below>
 set -euo pipefail
 cd "$(dirname "$0")"
 source /coc/scratch/dgarg/miniconda3/etc/profile.d/conda.sh && conda activate test_fwdllm
 export FWDLLM_FD_SCALE_INVARIANT=1 EXPT_GPU_ALLOW_PEER=1
-HOURS=${HOURS:-24}
+ARM=${ARM:-fluxtune}
+HOURS=${HOURS:-12}
+MAX_COMMITS=${MAX_COMMITS:-380}
+STRIDE=${STRIDE:-4}
+NUM_TRAINERS=${NUM_TRAINERS:-75}
+FINAL_EVAL_H=${FINAL_EVAL_H:-1}
 VCLOCK=$(python -c "print(int($HOURS*3600*40))")
+case "$ARM" in
+  fluxtune) ARM_FLAGS=(--probe-combine mean --perturbation-count 10 --server-step-rule trust_ratio --rho0 0.07
+                       --commit-gate fixed --pool-target 50 --rho-schedule exp --t-res 283 --agg-rate-type uniform
+                       --var-stopping-policy off) ;;
+  # --force: fwdllm has only an agnews charge profile; the 1.7B vclock is mispriced either way until G0.
+  fwdllm)   ARM_FLAGS=(--phi-stop-threshold 1e9 --force) ;;
+  *) echo "ARM must be fluxtune or fwdllm" >&2; exit 2 ;;
+esac
 TS=$(date +%Y%m%d_%H%M)
-LOG=../smollm17b_yahoo_n50_${TS}.log
+TAG=smollm17b_yahoo_n50_${ARM}_${TS}
+LOG=../${TAG}.log
 SINCE=$(date +%s)
-setsid nohup ./run_sequential.sh --yes --clean --only fluxtune --mode sim --allow-stale-profile \
-  --dataset yahoo --partition-method "niid_label_clients=100_alpha=1" --num-trainers 50 --num-gpus 8 \
+# --allow-stale-profile: no 1.7B charge profile yet (G0), so the DistilBERT-derived one stands in.
+setsid nohup ./run_sequential.sh --yes --clean --only "$ARM" --mode sim --allow-stale-profile \
+  --dataset yahoo --partition-method "niid_label_clients=100_alpha=1" --num-trainers "$NUM_TRAINERS" --num-gpus 8 \
   --agg-goal 10 --c 30 --min-initial-frac 0.9 \
   --model-type llama --model-name HuggingFaceTB/SmolLM2-1.7B --peft-method lora --lora-r 4 \
   --adapter-reduction-factor 16 --fd-scale-invariant --delay-divisor 0.0192 --delay-floor 4.0 --send-timeout-s 3600 \
-  --probe-combine mean --server-step-rule trust_ratio --gate-safety-s 1.5 \
-  --commit-gate fixed --pool-target 50 --rho-schedule pool --agg-rate-type uniform \
-  --var-stopping-policy off --max-iter-per-data-id 20 \
+  --train-batch-size 32 "${ARM_FLAGS[@]}" \
   --budget-stop-frac 0 --b-max-probe-every 0 --phi-stop halt \
+  --saturation-stop --sat-stall-frac 0.003 --max-commits "$MAX_COMMITS" \
   --server-update-audit --no-cos-ground-truth-audit \
-  --eval-max-samples 6000 --eval-every-n-commits 7 \
-  --max-runtime-s "$VCLOCK" --sim-wall-ceiling-h "$HOURS" \
+  --eval-max-samples 6000 --eval-resample --eval-every-n-commits "$STRIDE" --final-full-eval \
+  --max-runtime-s "$VCLOCK" --sim-wall-ceiling-h "$HOURS" "$@" \
   > "$LOG" 2>&1 < /dev/null &
 sleep 1
 PGID=$(ps -o pgid= -p $! | tr -d ' ')
 setsid nohup python watch_arm.py --exp-dir ../experiments --since "$SINCE" --pgid "$PGID" --kill \
-  --max-hours "$(python -c "print($HOURS+0.5)")" \
-  > "../smollm17b_yahoo_n50_${TS}_watch.log" 2>&1 < /dev/null &
+  --max-hours "$(python -c "print($HOURS+0.5+$FINAL_EVAL_H)")" \
+  > "../${TAG}_watch.log" 2>&1 < /dev/null &
 setsid nohup python track_acc.py --exp-dir ../experiments --since "$SINCE" --pgid "$PGID" \
-  --out "../smollm17b_yahoo_n50_${TS}_acc.log" > /dev/null 2>&1 < /dev/null &
-echo "launched pgid=$PGID hours=$HOURS vclock_cap=$VCLOCK log=$LOG"
-echo "watch=../smollm17b_yahoo_n50_${TS}_watch.log acc=../smollm17b_yahoo_n50_${TS}_acc.log"
+  --out "../${TAG}_acc.log" > /dev/null 2>&1 < /dev/null &
+echo "launched arm=$ARM pgid=$PGID hours=$HOURS max_commits=$MAX_COMMITS stride=$STRIDE vclock_cap=$VCLOCK log=$LOG"
+echo "watch=../${TAG}_watch.log acc=../${TAG}_acc.log"

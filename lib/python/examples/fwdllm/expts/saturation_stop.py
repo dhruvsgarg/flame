@@ -72,24 +72,34 @@ curves does it fire before that run's own peak.
 SAT_STALL_FRAC = 0.003          # row E': fire when one horizon adds <= this fraction of m
 SAT_GL_THRESHOLD = 0.005        # Prechelt GL, on chance-uncorrected accuracy
 SAT_PATIENCE = 20               # consecutive breaching evals before firing
+SAT_STALL_LEAK = 1              # a non-stall eval takes this off the stall streak (None = reset to 0)
 SAT_SMOOTH_WINDOW = 11          # trailing-mean width, the same one §5.5 scores on
 SAT_WARMUP_CADENCE_MULT = 3     # warm-up = this x b_max_probe_every (row E2)
 SAT_SLOPE_CADENCE_MULT = 1      # progress horizon = this x the same cadence
 SAT_WARMUP_FALLBACK = 450       # when the probe is off there is no cadence to tie to
 SAT_SLOPE_FALLBACK = 150        # ditto for the progress horizon
+SAT_FALLBACK_CAP = 1000         # commit cap the two fallbacks were sized for; they scale with it
 
 
-def warmup_commits(probe_every, mult=SAT_WARMUP_CADENCE_MULT):
+def _fallback(n, commit_cap):
+    """n scaled to `commit_cap` (n itself when uncapped), so a run whose cap sits
+    below the warm-up (1.7B, RoBERTa: ~380 commits in 12 h) still arms."""
+    return max(1, round(n * commit_cap / SAT_FALLBACK_CAP)) if commit_cap else n
+
+
+def warmup_commits(probe_every, mult=SAT_WARMUP_CADENCE_MULT, commit_cap=None):
     """The arming point, as a multiple of the probe cadence. Falls back to the
     same number the shipped cadence produces when the probe is disabled."""
-    return int(mult * probe_every) if probe_every else SAT_WARMUP_FALLBACK
+    return (int(mult * probe_every) if probe_every
+            else _fallback(SAT_WARMUP_FALLBACK, commit_cap))
 
 
-def slope_horizon_commits(probe_every, mult=SAT_SLOPE_CADENCE_MULT):
+def slope_horizon_commits(probe_every, mult=SAT_SLOPE_CADENCE_MULT, commit_cap=None):
     """How far back "is it still rising?" looks. Same cadence, different
     multiple -- 1x, 1.5x and 2x all give the same out-of-sample verdict, so the
     multiple sits on a plateau; 0.5x does not and still fires early."""
-    return int(mult * probe_every) if probe_every else SAT_SLOPE_FALLBACK
+    return (int(mult * probe_every) if probe_every
+            else _fallback(SAT_SLOPE_FALLBACK, commit_cap))
 
 
 class SaturationDetector:
@@ -101,7 +111,8 @@ class SaturationDetector:
 
     def __init__(self, warmup, threshold=SAT_GL_THRESHOLD,
                  patience=SAT_PATIENCE, window=SAT_SMOOTH_WINDOW,
-                 slope_horizon=None, stall_frac=None, decay=True):
+                 slope_horizon=None, stall_frac=None, decay=True,
+                 stall_leak=SAT_STALL_LEAK):
         self.warmup = int(warmup)
         self.decay = bool(decay)     # False => GL trigger off, stall only
         self.threshold = float(threshold)
@@ -109,6 +120,8 @@ class SaturationDetector:
         self.window = int(window)
         # None disables the stall trigger => byte-identical to the 08-22 rule.
         self.stall_frac = None if stall_frac is None else float(stall_frac)
+        # Leaky streak: one noisy eval reset the old streak (simplified run, c761).
+        self.stall_leak = None if stall_leak is None else int(stall_leak)
         # Independent of `warmup` on purpose: deriving it from there couples
         # them, so a warm-up sweep silently sweeps this too (E2's gate caught it).
         self.slope_horizon = (int(slope_horizon) if slope_horizon is not None
@@ -117,7 +130,7 @@ class SaturationDetector:
         self._hist = []              # (commit, smoothed) back over the horizon
         self._best = None
         self._breaches = 0           # consecutive DECAY breaches
-        self._stalls = 0             # consecutive STALL breaches
+        self._stalls = 0             # STALL streak, leaky (see stall_leak)
         self.fired_at = None
         self.last_smoothed = self.last_gl = None   # telemetry only
         # "stall" | "decay", and None while the stall trigger is off -- with one
@@ -168,7 +181,12 @@ class SaturationDetector:
         spanned = self._hist and (commit - self._hist[0][0]) >= self.slope_horizon
         if self.stall_frac is not None and smoothed > 0 and spanned:
             g = (smoothed - self._hist[0][1]) / smoothed
-            self._stalls = self._stalls + 1 if g <= self.stall_frac else 0
+            if g <= self.stall_frac:
+                self._stalls += 1
+            elif self.stall_leak is None:
+                self._stalls = 0
+            else:
+                self._stalls = max(0, self._stalls - self.stall_leak)
         else:
             self._stalls = 0
         if self._stalls >= self.patience:

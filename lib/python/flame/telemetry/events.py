@@ -18,6 +18,7 @@ from typing import Any, Optional
 EVENT_RUN_META = "run_meta"          # one-time run identity / config snapshot
 EVENT_SELECTION = "selection"        # selector decision for a round
 EVENT_AGG_EVAL = "agg_eval"          # aggregator test loss/accuracy
+EVENT_AGG_EVAL_FINAL = "agg_eval_final"  # one full-test eval at run end (fwdllm final_full_eval)
 EVENT_AGG_ROUND = "agg_round"        # aggregation step: staleness/agg-goal/participation
 EVENT_TRAINER_ROUND = "trainer_round"  # per-round trainer timing/availability
 EVENT_UTIL_DISPARITY = "util_disparity"  # streamed-prefix vs full-pool utility
@@ -54,6 +55,7 @@ KNOWN_EVENTS = frozenset(
         EVENT_RUN_META,
         EVENT_SELECTION,
         EVENT_AGG_EVAL,
+        EVENT_AGG_EVAL_FINAL,
         EVENT_AGG_ROUND,
         EVENT_TRAINER_ROUND,
         EVENT_UTIL_DISPARITY,
@@ -136,6 +138,15 @@ def build_agg_eval(
     fields = {"round": round_num}
     fields.update(metrics)
     return EVENT_AGG_EVAL, fields
+
+
+def build_agg_eval_final(
+    *, round_num: int, metrics: dict[str, float]
+) -> tuple[str, dict[str, Any]]:
+    """Run-end full-test eval; kept apart from agg_eval so it never joins the curve."""
+    fields = {"round": round_num}
+    fields.update(metrics)
+    return EVENT_AGG_EVAL_FINAL, fields
 
 
 def build_model_health(*, round_num: int, weights: dict) -> tuple[str, dict[str, Any]]:

@@ -452,6 +452,8 @@ class ExperimentRunner:
             except (TypeError, ValueError):
                 budget_s = 0.0
             watchdog_s = (budget_s + 1200.0) if budget_s > 0 else None
+            if watchdog_s and hp.get("final_full_eval"):
+                watchdog_s += 3600.0  # the run-end full-test eval (~40 min on 1.7B · Yahoo)
             wd_msg = f"{watchdog_s:.0f}s" if watchdog_s else "no limit"
             print(f"  waiting for aggregator to finish... (watchdog {wd_msg})")
             if not self.aggregator_spawner.wait(timeout=watchdog_s):
