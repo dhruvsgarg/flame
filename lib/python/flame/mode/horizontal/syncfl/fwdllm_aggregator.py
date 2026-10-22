@@ -3244,9 +3244,11 @@ class TopAggregator(AsyncTopAgg):
 
         # Uncomment the below to log the prediction stats
         probs = F.softmax(torch.tensor(preds), dim=1)  # Shape: [N, 4]
-        log_margin_distribution(probs)
+        # Log-only margin/error histograms: skip their numpy work unless DEBUG.
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            log_margin_distribution(probs)
+            log_error_distribution(probs, out_label_ids)
         compute_metrics_with_logging(probs, preds, out_label_ids, self.test_global)
-        log_error_distribution(probs, out_label_ids)
 
         # L4 collapse signature: an inflated weight norm shows up as larger logits,
         # then saturated softmax (entropy -> 0) massed on one class -- which is why

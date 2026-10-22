@@ -164,7 +164,7 @@ FD_SCALE_INVARIANT=""  # 1 = export FWDLLM_FD_SCALE_INVARIANT=1 for every proces
 DYNAMIC_KC=""          # on|off -- selector dynamic K/C controller; empty => baseline default (off)
 GATE_SAFETY_S=""       # S-C: safety factor s in rho <= s*cos; empty => code default 0.4
 GATE_RHO_REF=""        # S-C: annealed|setpoint -- which rho sizes the pool; empty => code default annealed
-COS_GROUND_TRUTH_AUDIT="" # B1: per-commit cos(G,g) vs a real backward pass on a fixed held-out batch. 1=on, 0=off, empty=inherit the catalog (v2 sets it ON)
+COS_GROUND_TRUTH_AUDIT="" # B1: per-commit cos(G,g) vs a real backward pass on a fixed held-out batch. 1=on, 0=off, empty=inherit the catalog (off)
 COS_PROBE_BATCH_SIZE=""   # B1: size of that batch; empty => code default 1024 (B17)
 COS_PROBE_EVERY=""        # B1: run the probe every k-th commit; empty => 1 (it costs ~83s/commit at 1024)
 SERVER_WEIGHT_DECAY=""    # Q2: decay the trainable slice after the step; "auto" = rho^2/2
@@ -629,7 +629,8 @@ delays_on = (DELAYS == "on")
 # per-client partition size and hence observed compute. Re-derive both against
 # post-switch compute if TIMING_OVERRUN shows up.
 BASELINE_DELAY_DEFAULTS = {
-    "fluxtune":           {"delays": True, "factor": 0.48, "floor": 4.0},
+    # 12.51 / (24.685 × 1.06) (20 passes, NPU cost, +6% buffer on every arm: EXPERIMENTS §9 10-22).
+    "fluxtune":           {"delays": True, "factor": 0.478, "floor": 4.0},
     # fluxtune_v1 is byte-identical to the profiled fluxtune (no rf/estimator
     # change) -- same numbers, not a guess.
     "fluxtune_v1":        {"delays": True, "factor": 0.48, "floor": 4.0},
@@ -638,8 +639,9 @@ BASELINE_DELAY_DEFAULTS = {
     # trainable params -> compute is if anything a bit lower, so this is a
     # conservative placeholder, not validated). Re-derive if TIMING_OVERRUN
     # shows up on a v2 run (same caveat as the sim_charge_profile one).
-    "fluxtune_v2":        {"delays": True, "factor": 0.48, "floor": 4.0},
-    "fwdllm":             {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fluxtune_v2":        {"delays": True, "factor": 0.478, "floor": 4.0},
+    # 12.51 / (2.468 × 1.06) (2 passes, jvp_perf_opt, +6%); fluxtune's floor keeps the same D shape (EXPERIMENTS §9 10-22).
+    "fwdllm":             {"delays": True, "factor": 4.78, "floor": 4.0},
     "fwdllm_it_oracular": {"delays": True, "factor": 1.63, "floor": 7.0},
     "fwdllm_it_unaware":  {"delays": True, "factor": 1.63, "floor": 7.0},
     "fedbuff_round":      {"delays": True, "factor": 1.63, "floor": 7.0},
@@ -835,7 +837,7 @@ def patch(exp, run_key, variant, trace):
         h["gate_rho_ref"] = GATE_RHO_REF
     # B1: server-side ground-truth cos(G,g). Aggregator-only, no trainer cost.
     # Written only when the CLI said so, either way -- unset inherits the catalog,
-    # which is why `--no-` exists: v2 sets it ON and nothing could turn it off.
+    # catalog default is off; `--no-` kept for explicit opt-out.
     if COS_GROUND_TRUTH_AUDIT:
         h["cos_ground_truth_audit"] = COS_GROUND_TRUTH_AUDIT != "0"
     if COS_PROBE_BATCH_SIZE:

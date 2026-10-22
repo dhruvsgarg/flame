@@ -634,10 +634,10 @@ baselines:
           gate_rho_ref note below.
         - gate_safety_s=1.5 -- an efficiency constant in that closed form, not a
           safety bound (fl_fwd_ft_practice.md P4.2 "G-1b").
-        - cos_ground_truth_audit=true, cos_probe_batch_size=1024,
+        - cos_ground_truth_audit=false, cos_probe_batch_size=1024,
           cos_probe_every=25 -- emit-only ground-truth cos audit on a fixed
           1024-sample reference (B17), strided every 25 commits to bound its real
-          -wall cost (B19).
+          -wall cost (B19). Off by default (emit-only); enable per run with --cos-ground-truth-audit.
         - adapter_reduction_factor=64 (DUAL: trainer + aggregator) -- a
           memory/compute-only knob, inert at a pinned rho* (P3 "p").
       gate_rho_ref note: G-2 (fl_fwd_ft_practice.md P4.5, landed 2026-08-15)
@@ -719,7 +719,7 @@ baselines:
         commit_gate: n_target              # item 4
         gate_rho_ref: setpoint             # item 4 (NOT annealed -- see note above, item 5b)
         gate_safety_s: 1.5                 # item 5
-        cos_ground_truth_audit: true       # item 6
+        cos_ground_truth_audit: false      # item 6 (emit-only, opt-in)
         cos_probe_batch_size: 1024         # item 6 (B17 fixed reference)
         cos_probe_every: 25                # item 6 (B19 stride)
         adapter_reduction_factor: 64       # item 8, DUAL -- also under trainer: below

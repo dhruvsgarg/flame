@@ -90,7 +90,7 @@ per-update GPU → CPU grad copy was the slow one (1.38 GB each update); O1 is w
 - Trainer processes on one GPU take turns on its compute (no MPS), so only *active* trainers slow each other: an update
   that takes 6 s alone takes ~24 s with four active. That depends on **C**.
 - Sim charges each update max(measured GPU time, modeled delay). While GPU time stays below the delay, contention is
-  invisible to the vclock. §O's delays are calibrated to DistilBERT on a phone NPU (+1.5 s buffer); bigger models need
+  invisible to the vclock. §O's delays are calibrated to DistilBERT on a phone NPU (+6% buffer); bigger models need
   them scaled with forward cost (smoke plan §13), or packing starts setting the vclock (`[TIMING_OVERRUN]`).
 - Delays never add wall time in sim (it doesn't sleep them); they only stretch the vclock, so raise `--max-runtime-s`
   with them.

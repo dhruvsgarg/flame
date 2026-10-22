@@ -364,6 +364,9 @@ class ForwardTextClassificationTrainer:
         self.test_dl = test_dl
 
     def log_memory(self, tag, device):
+        # Diagnostic only, called per batch: DEBUG-gated like the aggregator's.
+        if not logging.getLogger().isEnabledFor(logging.DEBUG):
+            return
         # GPU memory
         allocated = torch.cuda.memory_allocated(device)
         reserved = torch.cuda.memory_reserved(device)
@@ -372,7 +375,7 @@ class ForwardTextClassificationTrainer:
         process = psutil.Process()
         cpu_memory = process.memory_info().rss  # in bytes
 
-        logging.info(
+        logging.debug(
             f"[MEM:{tag}] "
             f"GPU Allocated: {allocated/1e6:.2f} MB | "
             f"GPU Reserved: {reserved/1e6:.2f} MB | "

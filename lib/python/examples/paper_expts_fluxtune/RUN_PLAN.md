@@ -10,7 +10,7 @@ the recipe, queue and scoring). Run times are from measured run speeds (§4); **
 
 ## Status board (keep current: update on every launch, finish and decision)
 
-Last updated 2026-10-19 02:10. Paths relative to `lib/python/examples/fwdllm/`; run dirs under `experiments/`.
+Last updated 2026-10-22 (operator review of every setting). Paths relative to `lib/python/examples/fwdllm/`; run dirs under `experiments/`.
 
 **Running**
 
@@ -37,8 +37,11 @@ Last updated 2026-10-19 02:10. Paths relative to `lib/python/examples/fwdllm/`; 
 | ID | Needs | State |
 |---|---|---|
 | G0 v2 charge profile (FT-N1) | ≥ 2 real legs with the §2 recipe; `--agg-rate-type uniform` | todo (last gating run on shepherd); blocks every sim figure run |
-| S smoke SmolLM2-1.7B · Yahoo | — | todo: both arms at the §2 recipe (`exp`, ρ0 0.07, s 2.81, bs 32); measures bs 32 s/commit for decision 5 and the eval stride. Launch: `ARM=fluxtune HOURS=2 fwdllm/expt_scripts/launch_smollm17b_yahoo_n50.sh`, then `ARM=fwdllm` |
+| S smoke SmolLM2-1.7B · Yahoo | — | todo: both arms at the §2 recipe (`exp`, ρ0 0.07, s 2.81, bs 32, n 75); measures bs 32 s/commit for F2 and the eval stride, and whether n 75 fits (OOM → n 60). Launch: `ARM=fluxtune HOURS=2 fwdllm/expt_scripts/launch_smollm17b_yahoo_n50.sh`, then `ARM=fwdllm` |
 | S smoke RoBERTa-L · Yelp-P | — | running (jayne); its s/commit feeds the Λ compute check (F2) |
+| T_res 12 h cells (RoBERTa, 1.7B) | no run: math from S's bs 32 s/commit | todo after S: T = `--max-commits` (12 h ÷ s/commit); solve T_res·(1 − e^(−T/T_res)) = 2·lnΦ\*/ρ0² = 283 so Φ reaches Φ\* at T (T 380 → ~615). DistilBERT keeps 283 (T 1,000 ≥ ~3·T_res) |
+| D divisor per model | no run: S's per-sample cost | todo after S: D = passes × s/sample × bs / 2, × 1.06, both arms; replaces the dry run's 0.0192 |
+| `fwdllm` lr screen | RoBERTa-L · Yelp-P, 1.7B · Yahoo; lr {1e-4, 3e-4, 1e-3} | todo after S: 6 × ~1.5 h; best lr feeds P3/P4's `fwdllm` arm (DistilBERT keeps 0.01) |
 | R1/R2 ρ_max | shepherd, 2 × 2 h | todo; decides whether ρ0 rises above 0.07 |
 | N50 check | shepherd, 2 h | todo; confirms N 50 at ρ0 0.07 against P0 (N 90) |
 | F1 Yelp-P N check | shepherd, ~4 h | optional; P3 reaching target also confirms N 50 on Yelp-P |
@@ -47,19 +50,18 @@ Last updated 2026-10-19 02:10. Paths relative to `lib/python/examples/fwdllm/`; 
 450 → 0.45·N, so set it near the commits a 12 h run reaches: ~380 on RoBERTa and 1.7B, est.); `--eval-resample` (fresh
 `--eval-max-samples` draw per eval, seeded by commit); `--final-full-eval` (one full-test eval at run end, event `agg_eval_final`).
 
-**Open operator decisions**
-1. P1 `fwdllm` arm stop: raise `max_runtime_s` so it runs to the 3 h wall cap (recommended) or compare at equal vclock.
-2. `B_max origin` FAIL on `pool` / A0: does the gate apply to controls? Settle before A0 is reused in P1.
-3. DistilBERT eval stride 4 vs 5 (recommended: keep 4; evals run back to back, 6.7 s/commit includes them).
-4. C3 `agg_criteria` iteration cap: set from A0's iterations per bin (data exists; not extracted).
-5. P4 compute (after S measures bs 32, operator 10-22): at N 50, bs 32 (~114 s/commit, scaled from the bs 8 dry run), 12 h gives ~380 commits and Λ ≈ 0.48 vs ≈ 0.62 needed for 0.65.
-   Options: bs 8 (~2.7× faster per commit, needs ~1.3× more Λ), longer cap, lower LoRA rank (smaller p), or report P4 as under budget.
-6. DistilBERT figure runs (P1 onward) at N 90 or N 50. Both are ≥ N\*; 50 matches the other cells and costs nothing (P1 not started).
-7. Capped runs end mid-decay (ρ ≈ 0.05 at the 12 h cap): keep T_res 283 and report the best checkpoint, or shorten T_res.
+**Operator decisions (closed 10-22)**
+1. P1 `fwdllm` runs to the 3 h wall cap (`--max-runtime-s` ≥ 40 × wall cap), not equal vclock.
+2. `B_max origin` gate applies only when BmaxProbe is on; A0 and `pool` are not invalidated (code fix: EXPERIMENTS §8).
+3. DistilBERT eval stride 4.
+4. No iteration-cap arm: C3 `agg_criteria` is trimmed to `n_target` + N {10, 20, 90}.
+5. 12 h cells (RoBERTa, 1.7B): bs 32 if F2 shows reachable Λ ≥ Λ_need, else bs 8 (TTA is vclock, but a DNF scores nothing).
+6. DistilBERT figure runs at N 50 if the N50 check passes, else N 90.
+7. Horizon-aware T_res on both 12 h cells.
 
-Closed by data, not by decision: grad-aware (G1), bs (P0b → 32), Yelp-P/Yahoo eval sample + stride (S), v1 profile (G0).
+Closed by data, not by decision: grad-aware (G1), bs (P0b → 32, subject to F2), Yelp-P/Yahoo eval stride (S), v1 profile (G0).
 
-**Then the figure runs:** P1 → P2 → P5, P6; P3/P4 after S; P7 after FT-N5; P8 after P2–P4.
+**Then the figure runs:** P1 → P2 → P5, P6; P3/P4 after S and the lr screens; P7 after FT-N5; P8 deferred.
 
 ## 0. P0 + A0 queue (done 2026-10-18)
 
@@ -143,44 +145,47 @@ All rendered by `fwdllm/expt_scripts/make_paper_figs.py` into `paper_figs/<manif
 | 11–13 | `b3_<cell>.pdf` | `figs_e2e.yaml` | B3: How does training progress? Uploads per commit; cumulative commits vs time | FluxTune: steady pool of N, steady commit rate; FwdLLM: large, variable pools, few commits |
 | 14 | `c_phase_a.pdf` | `figs_ablation.yaml` | C1: What does each concept add to FwdLLM alone? (every C plot: TTA bars, acc vs time, acc vs commits) | E1, E2, E3 gain per commit; S1 gains wall clock only. Small singles + big A6 jump ⇒ concepts interact |
 | 15 | `c_phase_b.pdf` | `figs_ablation.yaml` | C2: Cumulative ladder (headline ablation) | Each rung lowers TTA; E1 + E3 less than the sum (both are variance reduction) |
-| 16 | `c_agg_criteria.pdf` | `figs_ablation.yaml` | C3: When to commit? | Fixed pool ≥ variance gate; the var gate's iterations per bin vary widely (hitting time, FT-L4) |
-| 17 | `c_update_utility.pdf` | `figs_ablation.yaml` | C3: How to combine probes? | Mean of P beats FwdLLM's aligned 1-of-10; gain flattens with P (variance ∝ 1/P); P=1 worst |
-| 18 | `c_step_size.pdf` + `c_step_size_step_size.pdf` | `figs_ablation.yaml` | C3: Which server step rule? ρ and Φ per commit | Tuned SGD matches the trust ratio early, then drifts as ‖θ‖ grows; const ρ overshoots its peak; `exp` holds |
+| 16 | `c_agg_criteria.pdf` | `figs_ablation.yaml` | C3: How sensitive is FluxTune to N, and does an adaptive pool help? | Flat for N ≥ N\* (50, 90); N 10/20 noisier per step; `n_target` ≈ fixed N |
+| 17 | `c_update_utility.pdf` | `figs_ablation.yaml` | C3: How to combine 10 probes? | Mean beats FwdLLM's aligned 1-of-10; cos-sim and top-1 fall between |
+| 18 | `c_step_size.pdf` + `c_step_size_step_size.pdf` | `figs_ablation.yaml` | C3: Which ρ schedule? ρ and Φ per commit | const ρ (`pool`) plateaus and hits the Φ rail; budget-matched `rm` vs `exp` isolates the decay shape |
 | 19 | `c_agg_weights.pdf` | `figs_ablation.yaml` | C3: Do aggregation weights matter? | Near-inert (≤ 0.6% weight change): the three arms fall within noise |
 | 20–21 | `c_avail_syn_0.pdf`, `c_avail_mobiperf_3st_50.pdf` | `figs_availability.yaml` | C4: Are the gains just async? Does FluxTune hold up under real availability? | `syn_0`: FedBuff(P), Felix(P) fall short of FluxTune. `mobiperf_3st_50`: FluxTune holds vs the availability-aware Felix(P) |
-| 22 | `c5_generalisation.pdf` | `figs_ablation.yaml` | C5: Do the winning concepts transfer to other data and a larger model? | Same ranking on Yahoo, Yelp-P and on 1.7B |
+| 22 | `c5_generalisation.pdf` | `figs_ablation.yaml` | C5 (deferred): Do the winning concepts transfer to other data and a larger model? | Same ranking on Yahoo, Yelp-P and on 1.7B |
 
 ## 2. Cells, pool size and eval
 
-**Common to every run:** sim mode, `syn_0` (except C4), Dirichlet α=1, **1 seed per arm** (3 later if time
-allows), `server_update_audit: true`, the same stop rule (stall 0.003 + GL decay + ~1,000-commit cap + wall cap).
+**Common to every run:** sim mode, `syn_0` (except C4), Dirichlet α=1, **1 seed per arm**,
+`server_update_audit: true`, cos audit off, `tta_consecutive: 2`, the same stop rule (stall 0.003 + GL decay + commit cap + wall cap),
+async C = 0.3·n, K = C/3.
 **FluxTune** = the [EXPERIMENTS.md §2](EXPERIMENTS.md#2-setup) recipe with `--pool-target {N}`. With 1 seed, a gap
 under the 2.3-pt replicate noise is unresolved.
 
 | Cell | p | Clients n | Pool N | ρ0 (`--rho0`) | T_res | implied s | Target | Wall cap | Eval sample (rows) | Stride |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `distilbert_agnews` | 450,340 | 100 | 50 (90 until decision 6) | 0.07 | 283 | 2.10 (1.57 at N 90) | 0.86 | 3 h | full test (7,600) | 4 |
-| `roberta_large_yelp` | 591,874 | 100 | 50 | 0.07 | 283 | 2.41 | 0.82 | 12 h | open: sample size TBD | open: TBD |
-| `smollm2_1p7b_yahoo` | 806,912 | 75 | 50 | 0.07 | 283 | 2.81 | 0.65 | 12 h | 6,000, resampled per eval (operator 10-22) | set from S's bs 32 s/commit (4, est.) |
+| `distilbert_agnews` | 450,340 | 100 | 50 if N50 check passes, else 90 | 0.07 | 283 | 2.10 (1.57 at N 90) | 0.86 | 3 h | full test (7,600) | 4 |
+| `roberta_large_yelp` | 591,874 | 100 | 50 | 0.07 | horizon-aware (~615 at 380 commits) | 2.41 | 0.82 | 12 h | 10% = 3,800, resampled per eval | set from S (4, est.) |
+| `smollm2_1p7b_yahoo` | 806,912 | 75 (60 if OOM) | 50 | 0.07 | horizon-aware (~615 at 380 commits) | 2.81 | 0.65 | 12 h | 10% = 6,000, resampled per eval | set from S's bs 32 s/commit (4, est.) |
 
-DistilBERT runs use N 90 until decision 6. C5 on Yelp-P / Yahoo uses that dataset's eval setting (open).
+C = 0.3·n, K = C/3: 30 / 10 at n 100, 23 / 8 at n 75, 18 / 6 at n 60. Big-cell bs: 32 unless F2 fails (then 8).
 
 **Per-cell launch flags** (on top of the [EXPERIMENTS §2](EXPERIMENTS.md#2-setup) recipe; `{}` = still open):
 
 ```
 # distilbert_agnews (bs 8, full test set, so no --eval-max-samples)
---dataset agnews --num-trainers 100 --pool-target 50 --rho0 0.07 --t-res 283 --train-batch-size 8
+--dataset agnews --num-trainers 100 --pool-target {50 | 90} --rho0 0.07 --t-res 283 --train-batch-size 8
 --max-commits 1000 --final-full-eval --eval-every-n-commits 4 --sim-wall-ceiling-h 3
-# roberta_large_yelp (fwdllm arm: --learning-rate 3e-4)
+# roberta_large_yelp (fwdllm arm: --learning-rate {lr screen})
 --dataset yelp-p --model-type roberta-large --peft-method lora --lora-r 6 --num-trainers 100
---pool-target 50 --rho0 0.07 --t-res 283 --train-batch-size 32
---max-commits {from S, ~370} --eval-max-samples {rows} --eval-resample --final-full-eval
---eval-every-n-commits {stride} --sim-wall-ceiling-h 12
+--pool-target 50 --rho0 0.07 --t-res {horizon-aware} --train-batch-size {32 | 8 per F2}
+--max-commits {from S, ~370} --eval-max-samples 3800 --eval-resample --final-full-eval
+--eval-every-n-commits {stride} --sim-wall-ceiling-h 12 --delay-divisor {D from S}
 # smollm2_1p7b_yahoo (all of this is fwdllm/expt_scripts/launch_smollm17b_yahoo_n50.sh: ARM, HOURS, MAX_COMMITS, STRIDE env)
---dataset yahoo --model-type llama --model-name HuggingFaceTB/SmolLM2-1.7B --peft-method lora --lora-r 4 --num-trainers 75
---pool-target 50 --rho0 0.07 --t-res 283 --train-batch-size 32 --no-cos-ground-truth-audit
+--dataset yahoo --model-type llama --model-name HuggingFaceTB/SmolLM2-1.7B --peft-method lora --lora-r 4 --num-trainers {75 | 60}
+--pool-target 50 --rho0 0.07 --t-res {horizon-aware} --train-batch-size {32 | 8 per F2}
 --max-commits {from S, ~380} --eval-max-samples 6000 --eval-resample --final-full-eval
---eval-every-n-commits {stride, 4 est.} --sim-wall-ceiling-h 12
+--eval-every-n-commits {stride, 4 est.} --sim-wall-ceiling-h 12 --delay-divisor {D from S}
+# fwdllm arm on 1.7B: --learning-rate {lr screen}
+# every cell: --no-cos-ground-truth-audit
 # every cell: --max-runtime-s >= 40 × wall cap in s, so the wall ceiling, not the vclock, binds
 ```
 
@@ -199,21 +204,22 @@ How to set the new flags:
 
 - **N 50, every cell.** `N ≥ N* ≈ 29·Λ_need²·(ρ0/0.07)²`, set per dataset · bs; p cancels across models. Measured N\*:
   AG News 34–42, Yahoo bs 32 38 (F0). Client availability sets C (clients in flight), with C ≤ N.
-- **ρ0 0.07, every model; T_res = 2·lnΦ\*/ρ0² = 283 (Φ\* 2).** ρ0 is the largest step that has run cleanly (R1/R2 test
+- **ρ0 0.07, every model; T_res = 2·lnΦ\*/ρ0² = 283 (Φ\* 2), horizon-aware on the 12 h cells.** ρ0 is the largest step that has run cleanly (R1/R2 test
   higher). Pass it as `--rho0` (overrides `--gate-safety-s`; the aggregator logs the implied s = ρ0·√(p/(P·N))).
 - **First-hours abort rule (RoBERTa-L, 1.7B):** Φ off (1+ρ²)^(t/2) by > 1%, no accuracy above chance by ~c50, or GL decay
   before Φ ≈ 1.5 → halve ρ0 to 0.035 (`--rho0 0.035`), T_res 1,132; N stays.
 
 **Eval.** Each eval scores a fresh random sample of the test set: a new draw each eval, seeded by commit index so
 a rerun repeats it (`--eval-resample`).
-DistilBERT scores the full test set (7,600 rows) every 4th commit, so it needs no resampling. **Open:** sample size and stride for Yelp-P and Yahoo (below are the old 3,000–3,800-row, stride-4 estimates). ~3,000–3,800 rows per eval gives a standard error ≤ 0.9 pt at target, below the 2.3-pt replicate noise. A fresh
-draw can cross the target by luck, so `tta_consecutive: 2`. Each run ends with one full-test eval (`--final-full-eval`), which
+DistilBERT scores the full test set (7,600 rows) every 4th commit, so it needs no resampling. Yelp-P and Yahoo score 10% of
+the test set (3,800 / 6,000 rows), which gives the same noise at each target (≈ ±1.2 pt, 95%), below the 2.3-pt replicate noise;
+stride is set from S. `tta_consecutive: 2` in every cell. Each run ends with one full-test eval (`--final-full-eval`), which
 supplies the final accuracy in the text.
 
 | Cell | t_eval (sample) | s/commit, no eval | Eval share at stride 4 | Evals per run |
 |---|---|---|---|---|
 | DistilBERT · AG News | ~26 s measured on P0, aggregator pinned (full 7,600 rows) | — | evals back to back: 6.7 s/commit incl. eval (P0) | ~270 in 2 h (P0 `exp`) |
-| RoBERTa · Yelp-P | ~23 s at 3,800 rows (est., ~6 ms/row); open | ~234 s at bs 32 (est., §4) | ~2.5% at 3,800 rows; open | ~46; open |
+| RoBERTa · Yelp-P | ~23 s at 3,800 rows (est., ~6 ms/row) | ~117 s at bs 32 (est., §4) | ~5% at 3,800 rows (est.) | ~90 (est.) |
 | SmolLM2-1.7B · Yahoo | **220–294 s at 6,000 rows (measured 10-20, median 251 s; eval batch 8, 7 trainers share the aggregator's GPU)** | **~43 s at N 50, bs 8 (measured)**; ~114 s at bs 32 (est., §4) | 0 at stride 7, bs 8 (stride 5 held commits 0.6–16 s); stride 4 at bs 32 (est.) | ~1 per 5 min |
 
 Stride = ⌈t_eval / s_commit⌉ + 1: 4 for RoBERTa; 7 for 1.7B at bs 8, 4 at bs 32 (est.); DistilBERT (P0: 26 s eval,
@@ -235,33 +241,32 @@ sample size. 6,000 rows give ±1.2 pt (95%) at acc 0.65.
 | R1/R2 ρ_max | DistilBERT · AG News, bs 8 | P0 `exp` config (N 90, same seed) at `--rho0 0.10` (T_res 139) and `--rho0 0.14` (T_res 71); overlay accuracy vs Λ on P0 at matched Λ (not peak: Λ_∞ shrinks as 1/ρ0) | 2 | 2 h cap | todo | ρ_max = largest ρ0 that overlaps P0 within ±0.005. Raise it only if R1 overlaps; at 0.10, N\* ≈ 80 |
 | N50 check | DistilBERT · AG News, bs 8 | §2 recipe, N 50, `--rho0 0.07`, T_res 283 vs P0 `exp` (N 90): TTA 0.86/0.87, peak, samples read | 1 | 2 h cap | todo | N 50 adopted if peak within 2.3 pt of P0 |
 | F1 Yelp-P N check | DistilBERT · Yelp-P, bs 32, seq 256 | §2 recipe as P0b (N 90, `--rho0 0.067`, T_res 300), eval 3,000 rows stride 4; run to plateau; `lambda_need.py <run> --targets 0.80 0.82` | 1 | ~4 h cap | optional | N\* for Yelp-P; N 50 holds if Λ_need ≤ 1.32. Reusable as P8's DistilBERT · Yelp-P FluxTune arm if eval settings match |
-| F2 compute check | RoBERTa-L · Yelp-P; SmolLM2-1.7B · Yahoo | no run: S s/commit scaled to N 50 → T_wall = 12 h ÷ s/commit → Λ reachable = Λ_∞·(1 − e^{−T_wall/566}), Λ_∞ = 4·ln2·√(P·N/p)/0.07, vs Λ_need × √(450,340/p) | 0 | — | after S | go, or decision 5. Est.: 1.7B Λ ≈ 0.48 vs ≈ 0.62; RoBERTa Λ ≈ 0.55 |
+| F2 compute check | RoBERTa-L · Yelp-P; SmolLM2-1.7B · Yahoo | no run: S s/commit scaled to N 50 → T_wall = 12 h ÷ s/commit → Λ reachable = Λ_∞·(1 − e^{−T_wall/566}), Λ_∞ = 4·ln2·√(P·N/p)/0.07, vs Λ_need × √(450,340/p) | 0 | — | after S | bs 32 if reachable Λ ≥ need, else bs 8 (decision 5). Est.: 1.7B Λ ≈ 0.48 vs ≈ 0.62; RoBERTa Λ ≈ 0.55 |
 | F3 transfer checks | RoBERTa-L · Yelp-P; SmolLM2-1.7B · Yahoo | no extra run: (a) S's first `trainable_weight_norm` vs 13.35·√(p/450,340) = 15.3 / 17.9; (b) P3/P4 `lambda_need.py`: Λ at milestones vs DistilBERT × √(450,340/p) | 0 | — | (a) after S, (b) after P3/P4 | if either fails, N picks up a model factor; raise N for C5 and the 3-seed reruns |
 
 ### 3.2 Figure runs
 
-All DistilBERT arms run at N 90 until decision 6, 3 h cap, 1 seed.
+All DistilBERT arms run at the N the N50 check picks (50, else 90), 3 h cap, 1 seed.
 
 | ID | Model · Dataset | Arms | Runs | Time per run | Status | Plots |
 |---|---|---|---|---|---|---|
 | **P1** | DistilBERT · AG News | `fwdllm`, FluxTune | 2 | 3 h cap (FluxTune hits the ~1,000-commit cap at ~1.9 h) | blocked: G0 | #1, 4, 5, 8, 11; also C1 A0/A6, C2 endpoints, C4 `syn_0` |
-| **P3** | RoBERTa-large · Yelp-P | `fwdllm`, FluxTune; lr 3e-4 | 2 | 12 h (cap) | blocked: S, F2 | #2, 4, 6, 9, 12 |
-| **P4** | SmolLM2-1.7B · Yahoo | `fwdllm`, FluxTune | 2 | 12 h (cap; ~380 commits at N 50, bs 32 (est., §4)) | blocked: S, F2, decision 5 | #3, 4, 7, 10, 13; C5 references |
-| **P2 (C1)** | DistilBERT · AG News | A1 `--probe-combine mean --perturbation-count 10`; A2 `--server-step-rule trust_ratio --rho-schedule const --rho-star {0.03,0.05,0.07,0.10}`; A3 `--commit-gate fixed --pool-target 90 --var-stopping-policy off`; A4 `fedbuff_it_unaware` with FwdLLM's estimator | 7 | 3 h | blocked: P1 | #14; picks the C3 groups |
+| **P3** | RoBERTa-large · Yelp-P | `fwdllm` (screened lr), FluxTune | 2 | 12 h (cap) | blocked: S, F2, lr screen | #2, 4, 6, 9, 12 |
+| **P4** | SmolLM2-1.7B · Yahoo | `fwdllm` (screened lr), FluxTune | 2 | 12 h (cap; ~380 commits at N 50, bs 32 (est., §4)) | blocked: S, F2, lr screen | #3, 4, 7, 10, 13 |
+| **P2 (C1)** | DistilBERT · AG News | A1 `--probe-combine mean --perturbation-count 10`; A2 `--server-step-rule trust_ratio --rho-schedule exp --rho0 0.07 --t-res 283`; A3 `--commit-gate fixed --pool-target {N} --var-stopping-policy off`; A4 `fedbuff_it_unaware` with FwdLLM's estimator | 4 | 3 h | blocked: P1 | #14; picks the C3 groups |
 | P2 pairs | DistilBERT · AG News | A1+A2, A1+A3, A2+A3, only if singles gain little but A6 jumps | 3 | 3 h | `decide` | #14 |
 | **P5 (C2)** | DistilBERT · AG News | FwdLLM → +E1 → +E1+E2 → +E1+E2+E3 (sync) → FluxTune; the two middle rungs are new | 2 | 3 h | blocked: P2 | #15 |
-| **P6 `agg_criteria`** | DistilBERT · AG News | `--commit-gate var --var-threshold {0.1,0.3,1.0}`; iteration cap (`max_iterations_per_data_id`, value TBD); `--commit-gate n_target`; `--commit-gate fixed --pool-target {10,20,50}` (90 = A6) | 8 | 3 h | blocked: P2 | #16 |
-| **P6 `update_utility`** | DistilBERT · AG News | A0 (reused); `--perturbation-count 1 --probe-combine mean`; P ∈ {2,5,20} mean (10 = A6) | 4 | 3 h | blocked: P2 | #17 |
-| P6 `update_utility` + | DistilBERT · AG News | cos-sim weighted; top-1 probe | 2 | 3 h | `code` · `decide` | #17. Expected: between aligned-1 and mean-of-P |
+| **P6 `agg_criteria`** | DistilBERT · AG News | `--commit-gate n_target`; `--commit-gate fixed --pool-target {10,20,90}` (50 = A6; if N stays 90, 50 replaces 90) | 4 | 3 h | blocked: P2 | #16 |
+| **P6 `update_utility`** | DistilBERT · AG News | A0, A6 (reused); cos-sim weighted; top-1 probe; all P=10 | 2 | 3 h | `code`; blocked: P2 | #17. Expected: between aligned-1 and mean |
 | P6 `update_utility` + | DistilBERT · AG News | antithetic; orthogonal probes | 2 | 3 h | `code` · `decide` | #17. Expected: lower estimator variance at equal P, like raising P (guess) |
-| **P6 `step_size`** | DistilBERT · AG News | `--server-step-rule raw_sgd --learning-rate {0.003,0.01,0.03,0.1}`; `--rho-schedule const`; `pool` (from P0); `rm`; `exp` (= A6) | 6 | 3 h | blocked: P2 | #18 |
+| **P6 `step_size`** | DistilBERT · AG News | `pool` (P0's run reused); `--rho-schedule rm --rho0 0.07 --rho-exp {a}`, a solved so Φ = Φ\* at the commit cap (≈ 0.1 at 1,000); `exp` (= A6). No SGD arm | 1 | 3 h | blocked: P2 | #18 |
 | P6 `step_size` + | DistilBERT · AG News | `phi` (ρ0/Φ) | 1 | 3 h | `code` · `decide` | #18. Alternative decay; expected ≈ `exp` (guess) |
 | P6 `step_size` + | DistilBERT · AG News | `--server-momentum 0.5` (0.9 diverged) | 1 | 3 h | `decide` | #18. Expected: small or no gain (guess) |
 | P6 `step_size` + | DistilBERT · AG News | server Adam; Yogi; normalised SGD; clipping | 4 | 3 h | `code` · `decide` | #18. Expected: normalised SGD and clipping ≈ trust ratio (both bound the step); Adam/Yogi untested (guess) |
-| **P6 `agg_weights`** | DistilBERT · AG News | `--agg-rate-type new`; `uniform` = A6, `grad_aware` = G1's run | 1 | 3 h | blocked: P2 | #19 |
+| **P6 `agg_weights`** | DistilBERT · AG News | `--agg-rate-type new`; `uniform` = A6, `grad_aware` = G1's run (N 90, ρ 0.067) | 1 | 3 h | blocked: P2 | #19 |
 | **P7 (C4)** | DistilBERT · AG News | FedBuff(P) `fedbuff_round`, Felix(P) `felix_round` on `syn_0` + `mobiperf_3st_50`; FluxTune on `mobiperf_3st_50` (FwdLLM and FluxTune `syn_0` = P1) | 5 | 3 h | blocked: FT-N5 | #20–21 |
-| **P8 (C5)** | DistilBERT · Yahoo, Yelp-P | 2–3 winning C1 concepts + FwdLLM + FluxTune, per dataset | 8–10 | ~3.5 h | blocked: P2 | #22 |
-| **P8 (C5)** | SmolLM2-1.7B · Yahoo | FwdLLM + the largest C1 concept (P4 supplies both references) | 1 | 12 h | blocked: P2, P4 | #22 |
+| P8 (C5) | DistilBERT · Yahoo, Yelp-P | 2–3 winning C1 concepts + FwdLLM + FluxTune, per dataset | 8–10 | ~3.5 h | deferred | #22 |
+| P8 (C5) | SmolLM2-1.7B · Yahoo | FwdLLM + the largest C1 concept (P4 supplies both references) | 1 | 12 h | deferred | #22 |
 
 ### 3.3 Run log: SmolLM2-1.7B · Yahoo
 
@@ -335,20 +340,18 @@ Scaling is linear in N, ×1.33 for seq 192 → 256, and ×2.66 for bs 8 → 32 (
 
 | Group | Runs | Node-hours |
 |---|---|---|
-| Gating (G0, P0, G1, P0b bs, S) | ~12 | ~31 + G0 |
+| Gating (G0, P0, G1, P0b bs, S, R1/R2, N50, `fwdllm` lr screens) | ~21 | ~46 + G0 |
 | [A]/[B] (P1, P3, P4) | 6 | ~54 |
-| C1 + C2 | 9 | ~27 |
-| C3 committed | 19 | ~57 |
+| C1 + C2 | 6 | ~18 |
+| C3 committed (2 need code) | 8 | ~24 |
 | C4 | 5 | ~15 |
-| C5 | 9–11 | ~30–35 DistilBERT + 12 for 1.7B |
-| **Committed total** | ~61 | ~232 |
-| `decide` arms (P2 pairs, C3 extras incl. `phi`) | 13 | ~39 |
-
-3 seeds later ≈ 3× the figure-run rows.
+| **Committed total** | ~46 | ~157 + G0 |
+| `decide` arms (P2 pairs, C3 extras incl. `phi`) | 11 | ~33 |
+| C5 (deferred) | 9–11 | ~30–35 DistilBERT + 12 for 1.7B |
 
 ## 6. Open (closed by data, not by decision)
 
 - RoBERTa s/commit and t_eval, and both charge profiles: S records them, then the §2 and §4 estimates are replaced.
   1.7B · Yahoo s/commit and t_eval are measured at bs 8 (§3.3); bs 32 is scaled.
 - N 50 and ρ_max 0.07: closed by the N50 check and R1/R2 (§3.1).
-- C3 `agg_criteria` iteration cap value: set from A0's measured iterations per bin.
+- 12 h-cell bs (F2), 1.7B n (75 or 60), per-model D, `fwdllm` lr, horizon-aware T_res: closed by S and the lr screens.
