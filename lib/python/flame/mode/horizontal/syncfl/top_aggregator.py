@@ -1128,12 +1128,14 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         aggregators that know the dataset override it. Must never raise."""
         return
 
-    def _sync_wants_picks(self, channel, desired: int = 0) -> bool:
-        """F42-T1: whether this version still misses picks (a check-in window opens only then)."""
+    def _sync_wants_picks(self, channel, desired: int = 0, picked=()) -> bool:
+        """F42-T1: whether this version still misses picks (a check-in window opens only then); `picked` = this selection's
+        picks, not yet stamped in flight."""
         if not self._sync_wait_k_on():
             return True
         desired = desired or getattr(channel._selector, "num_of_ends", None) or self.config.hyperparameters.aggregation_goal or 1
-        return desired - len(self._sync_version_inflight(channel)) - len(self._sync_accepted_ends()) > 0
+        fresh = self._sync_version_inflight(channel) | set(picked)
+        return desired - len(fresh) - len(self._sync_accepted_ends()) > 0
 
     def _sync_wait_k_plan(self, channel, num_eligible: int, threshold: int):
         """FX-N37: (picks, eligible needed to dispatch) for this version's missing slots; None when none are missing."""

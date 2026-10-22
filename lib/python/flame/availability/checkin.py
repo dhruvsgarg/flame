@@ -137,8 +137,9 @@ class CheckinLedger:
             self.window = (now, now + self.window_s())
         return self.window[1]
 
-    def after_select(self, now: float, picked: Iterable[str], slots_left: bool) -> list:
-        """A selection at now picked `picked`; the rest of the pool is rejected. Returns [(end, reconnect_at)] to tell."""
+    def after_select(self, now: float, picked: Iterable[str], slots_left: bool, keep_open: bool = False) -> list:
+        """A selection at now picked `picked`; the rest of the pool is rejected. Returns [(end, reconnect_at)] to tell.
+        Sync keep_open: the version still misses picks, so the window stays open and the pool keeps waiting."""
         picked = [e for e in picked if e in self.pool]
         for e in picked:
             del self.pool[e]
@@ -147,6 +148,8 @@ class CheckinLedger:
             if self._last_sel is not None and now > self._last_sel:
                 self.gap = (1 - self.alpha) * (now - self._last_sel) / len(picked) + self.alpha * self.gap
             self._last_sel = now
+        if self.sync and keep_open:
+            return []
         if self.sync:
             if self.window is not None and self._round_window:
                 self._last_close = now

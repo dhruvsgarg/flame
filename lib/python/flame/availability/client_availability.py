@@ -311,14 +311,19 @@ class ClientAvailability:
         trace = self.trainer_event_dict.get(end)
         return not trace or deliverable(state_at(trace, t), "train")
 
+    def _checkin_clients(self) -> list:
+        """The leg's own clients (connected ends with a trace), not the whole trace registry."""
+        ends = set().union(*(set(getattr(ch, "_ends", {})) for ch in self._avail_channels())) if self._avail_channels() else set()
+        return [e for e in self.trainer_event_dict if e in ends]
+
     def _checkin_idle(self) -> list:
-        """Ends that may check in: known, not in flight, not already waiting in the pool."""
+        """Ends that may check in: the leg's clients, not in flight, not already waiting in the pool."""
         led = self._checkin_ledger()
         inflight = set().union(*(self._avail_inflight_ends(ch) for ch in self._avail_channels())) if self._avail_channels() else set()
         for e in led.busy - inflight:  # a task ended on a path that never called release: free from now
             self._checkin_release(e, self._avail_now())
         led.busy = inflight
-        return [e for e in self.trainer_event_dict if e not in inflight and e not in led.pool]
+        return [e for e in self._checkin_clients() if e not in inflight and e not in led.pool]
 
     def _checkin_release(self, end: str, t: float) -> None:
         """A busy client's task ended; a late update from a client already released (abandoned) changes nothing."""
@@ -367,7 +372,8 @@ class ClientAvailability:
             c = int(channel.properties.get("dynamic_c", getattr(sel, "c", 0)) or 0)
             slots_left = (not led.sync) and len(self._avail_inflight_ends(channel)) < c
             led.busy |= set(picked)
-            self._checkin_tell(led.after_select(now, picked, slots_left=slots_left))
+            keep = led.sync and self._sync_wait_k_on() and self._sync_wants_picks(channel, picked=picked)  # version still short
+            self._checkin_tell(led.after_select(now, picked, slots_left=slots_left, keep_open=keep))
 
     def _checkin_tell(self, told) -> None:
         """Real: send each rejected client its reconnect time (sim clients follow the ledger directly)."""
@@ -1367,7 +1373,11 @@ class ClientAvailability:
         now = self._avail_now()
         candidates: list = []
         if self._knowledge() == "checkin":  # F42-T1: the next check-in (or reconnect) is the only news
-            nxt = self._checkin_ledger().next_checkin(now, self._checkin_idle(), self._checkin_train_at, self._checkin_is_train)
+            led = self._checkin_ledger()
+            with led.lock:
+                if getattr(self, "simulated", False):  # replay due check-ins first, else a past one hides the next wake
+                    led.advance(now, self._checkin_idle(), self._checkin_train_at, self._checkin_is_train)
+                nxt = led.next_checkin(now, self._checkin_idle(), self._checkin_train_at, self._checkin_is_train)
             candidates += [nxt] if nxt is not None else []
             pw = getattr(self, "pending_withheld", None)
             candidates += [ts for ts in (pw or {}).values() if ts > now]

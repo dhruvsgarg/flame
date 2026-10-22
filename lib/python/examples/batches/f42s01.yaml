@@ -1,10 +1,14 @@
-# F42 S0 + S1 (operator 10-21, 5 h budget): 4 h vclock, seed 1. Felix old (ctl) vs new (l5, l5p) vs baselines by check-in.
-# s0u (syn_0): selection / aggregation alone, REFL* as the check-in-cost control; s50u (syn_50_3st): + availability, every `*`, fck.
-# Speech skips FedDance (~106-min legs). Cut for time: ladder middle (e0, l3b, l4, e0p) -> F43.
+# F42 S0 + S1 (operator 10-21, 5 h budget): 4 h vclock, seed 1. Felix old (ctl) vs new (l5, l5p) vs FedBuff (check-in) and the
+# `*` oracles (REFL*, FedDance*, FedBuff*); s50u adds Felix by check-in (fck, K1). Sync baselines by check-in (REFL, FedDance,
+# FedAvg) are left out until their GPU wake bug is fixed (FELIX F42-T10); they run as an add-on batch. Cut for time: e0, l3b, l4, e0p.
 name: f42s01
 common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1 --scale-smoke 14400 --gate"
 stages:
-  - {id: S0C, args: "--tier F42 --datasets cifar10 --baselines felix,fedbuff,refl,feddance,fedavg --phases 'F42_s0u_ctl F42_s0u_l5 F42_s0u_l5p F42_s0u_rstar'"}
-  - {id: S0S, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines felix,fedbuff,refl,fedavg --phases 'gs_F42_s0u_ctl gs_F42_s0u_l5 gs_F42_s0u_l5p gs_F42_s0u_rstar'"}
-  - {id: S1C, args: "--tier F42 --datasets cifar10 --baselines felix,fedbuff,refl,feddance,fedavg --phases 'F42_s50u_ctl F42_s50u_l5 F42_s50u_l5p F42_s50u_rstar F42_s50u_fdstar F42_s50u_fbstar F42_s50u_fck'"}
-  - {id: S1S, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines felix,fedbuff,refl,fedavg --phases 'gs_F42_s50u_ctl gs_F42_s50u_l5 gs_F42_s50u_l5p gs_F42_s50u_rstar gs_F42_s50u_fbstar gs_F42_s50u_fck'"}
+  - {id: S0C, args: "--tier F42 --datasets cifar10 --baselines felix,fedbuff --phases 'F42_s0u_ctl F42_s0u_l5 F42_s0u_l5p'"}
+  - {id: S0Co, args: "--tier F42 --datasets cifar10 --baselines refl,feddance --phases 'F42_s0u_rstar F42_s0u_fdstar'"}
+  - {id: S0S, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines felix,fedbuff --phases 'gs_F42_s0u_ctl gs_F42_s0u_l5 gs_F42_s0u_l5p'"}
+  - {id: S0So, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines refl --phases 'gs_F42_s0u_rstar'"}
+  - {id: S1C, args: "--tier F42 --datasets cifar10 --baselines felix,fedbuff --phases 'F42_s50u_ctl F42_s50u_l5 F42_s50u_l5p F42_s50u_fbstar F42_s50u_fck'"}
+  - {id: S1Co, args: "--tier F42 --datasets cifar10 --baselines refl,feddance --phases 'F42_s50u_rstar F42_s50u_fdstar'"}
+  - {id: S1S, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines felix,fedbuff --phases 'gs_F42_s50u_ctl gs_F42_s50u_l5 gs_F42_s50u_l5p gs_F42_s50u_fbstar gs_F42_s50u_fck'"}
+  - {id: S1So, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines refl --phases 'gs_F42_s50u_rstar'"}

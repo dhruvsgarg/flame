@@ -5,6 +5,7 @@ from flame.availability.checkin import CheckinLedger
 
 # client "a": AVL_TRAIN [0, 100), UN_AVL [100, 300), AVL_TRAIN [300, inf); "b": always AVL_TRAIN
 ON = {"a": [(0, 100), (300, math.inf)], "b": [(0, math.inf)]}
+_ON0 = dict(ON)
 
 
 def is_train(e, t):
@@ -142,6 +143,8 @@ def _drive(sync, hours=8.0, task_s=120.0, k=10, c=15):
         picks += len(got)
         if not sync:
             now = min(nxt)
+    ON.clear()
+    ON.update(_ON0)
     return led, picks
 
 
@@ -163,3 +166,23 @@ def test_sync_estimate_does_not_lock_in_slow_rounds():
     """A large prior (the task timeout) must not keep rounds slow: rounds settle near the task time, not the prior (F42 smoke)."""
     led, picks = _drive(sync=True, task_s=20.0)
     assert picks / 10 > 0.5 * 8 * 3600 / 25  # rounds of ~20 s task + window, not the 300 s prior
+
+
+def test_sync_window_stays_open_while_the_version_misses_picks():
+    led = CheckinLedger(sync=True, initial_gap_s=100.0)
+    led.open_window(0.0, round_id=0)
+    led.advance(10.0, ["a"], train_at, is_train)
+    assert led.after_select(10.0, ["a"], slots_left=False, keep_open=True) == [] and led.window is not None
+    led.release("b", 20.0)  # b checks in mid-round while the version still waits: pooled, not rejected
+    led.advance(30.0, ["b"], train_at, is_train)
+    assert "b" in led.pool and led.stats["rejects"] == 0
+
+
+def test_checkin_runs_over_the_legs_clients_not_the_trace_registry():
+    from types import SimpleNamespace
+    from flame.availability.client_availability import ClientAvailability
+    ca = ClientAvailability.__new__(ClientAvailability)
+    ca.trainer_event_dict = {f"c{i}": None for i in range(300)}  # the registry
+    ch = SimpleNamespace(_ends={f"c{i}": None for i in range(40)}, _selector=SimpleNamespace(selected_ends=set()))
+    ca._avail_channels = lambda: [ch]
+    assert ca._checkin_clients() == [f"c{i}" for i in range(40)]

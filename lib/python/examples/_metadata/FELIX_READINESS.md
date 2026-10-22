@@ -28,8 +28,8 @@ Every batch runs Felix new and old side by side; FedDance and Oort run only afte
      vclock). Pass = rc 0, EV PASS incl. EV22 / EV23, `config_audit.py` exit 0, `predictor_audit.py` fills REFL's precision / recall and
      the check-in columns; rejects ≤ ~1 per idle client per round (sync) / ≤ ~2 per pick (async). Claude grades it before step 2.
   2. **0:20-3:30 · S0 + S1, one batch** `tmux new -s f42s01 'python scripts/dispatch.py batches/f42s01.yaml'`: 4 h vclock, seed 1; Felix
-     ctl (old) / l5 / l5p (new); FedBuff, FedAvg, REFL, FedDance (cifar) by check-in; s0u (syn_0, selection + aggregation alone) adds
-     REFL* as the check-in-cost control; s50u adds REFL*, FedDance* (cifar), FedBuff*, fck (K1). ~35 legs; host RAM binds (~98 GB per
+     ctl (old) / l5 / l5p (new); FedBuff by check-in; REFL*, FedDance* (cifar) on both cells; s50u adds FedBuff*, fck (K1); sync
+     baselines by check-in wait for F42-T10. 26 legs; host RAM binds (~98 GB per
      cifar leg, ~4 per node); measured ~10-12 wall-min per vclock-h → ~3 h (the planner's 15 h has no 4 h history). Cut for time: the
      ladder middle (e0, l3b, l4, e0p) → F43. Optional early read at +30 min (abandons / h, rejects, K / c).
   3. **3:30-4:15 · Read (Claude):** verdict rules below per Felix feature; Felix new vs old per cell; Felix vs each baseline and its
@@ -42,6 +42,12 @@ Every batch runs Felix new and old side by side; FedDance and Oort run only afte
      (l5 → l5p, e0 → e0p) stays at ≥ 30% fewer cifar bytes with ≤ 1 pp AUC loss and < 25% speech throttle. C4 stays only if K is off its
      bounds ≥ 50% of the leg. C5 stays only if speech shows no ± 10 pp eval spikes vs l4.
   4. **Then:** F43 confirm (24 h cifar / 18 h speech, seeds 1-2 for Felix final / old) and D5 long runs.
+  - **F42-T10 · Sync check-in on GPU stalls · todo (blocks the REFL / FedDance / FedAvg check-in arms; they run as an add-on batch
+    once fixed).** Fixed so far: phantom clients (the ledger ran over the 300-client registry, not the leg's ends), a start-to-start
+    round estimate that locked rounds slow, wait-K windows that closed while the version still missed picks. CPU stub now healthy
+    (`pool_*_F42C_D`: REFL 288 versions vs REFL* 146, FedDance 112 vs 357, ≤ 86 rejects); GPU still 4-6 versions / 15 min vs 51-57 for
+    the oracles: clients pooled in an open wait-K window are not a wake event, so `_sim_sync_wait` jumps to the next trace flip
+    (57 → 600 s). *Exit:* GPU 15-min sync check-in within ~3× of its `*`, EV23 PASS.
   **Open before D5 (real legs; F42 runs sims only):**
   - **F42-T7 · Real-mode notify on GPU · todo.** CPU stub real Felix leg passed (`pool_20261021_1931_F42CR_A`: rc 0, EV clean, 4393
     versions); left: the ≤ 15-min GPU real leg with flip → STATE_UPDATE latency ≤ 2 s and missed + false ≤ 1% of client-time.
