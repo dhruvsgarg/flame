@@ -22,16 +22,20 @@ def test_sync_window_pools_then_rejects_into_next_window():
     led.advance(close, ["a", "b"], train_at, is_train)
     assert set(led.pool) == {"a", "b"} and led.stats["checkins"] == 2
     told = dict(led.after_select(close, ["b"], slots_left=False))
-    assert set(told) == {"a"} and 200.0 <= told["a"] <= 220.0  # inside the next window [0 + gap, + W]
+    assert set(told) == {"a"} and 20.0 <= told["a"] <= 40.0  # no training-phase estimate yet: back within a window
     assert led.pool == {} and led.window is None
+    led.open_window(120.0, round_id=1)  # round 1's training phase took 100 s
+    assert led.train_d == 100.0 and led.window_s() == 10.0
+    assert 225.0 <= led.reconnect_at(125.0) <= 235.0  # last close 20 + 100 is overdue at 125: 125 + 100 + U(0, W 10)
 
 
 def test_unavailable_at_reconnect_is_a_missed_opportunity():
     led = CheckinLedger(sync=True, initial_gap_s=200.0)
+    led._last_close, led.train_d = 0.0, 200.0  # a known 200 s training phase
     led.open_window(0.0)
     led.advance(20.0, ["a"], train_at, is_train)
     (_, r), = led.after_select(20.0, [], slots_left=False)
-    assert 200 <= r <= 220 and not is_train("a", r)
+    assert 200 <= r <= 240 and not is_train("a", r)
     assert led.next_checkin(150.0, ["a"], train_at, is_train) == r  # the reconnect is a wake-up
     led.advance(299.0, ["a"], train_at, is_train)
     assert led.stats["missed"] == 1 and "a" not in led.pool
@@ -42,13 +46,14 @@ def test_unavailable_at_reconnect_is_a_missed_opportunity():
 
 def test_checkin_between_windows_is_rejected_and_comes_back_in_the_next():
     led = CheckinLedger(sync=True, initial_gap_s=100.0)
-    led.open_window(0.0)
-    led.after_select(10.0, [], slots_left=False)
+    led._last_close, led.train_d = 0.0, 90.0
+    led.open_window(0.0, round_id=0)
+    led.after_select(10.0, [], slots_left=False)  # round 0's selection closes at 10
     led.release("b", 50.0)  # b's task ends mid-round: checks in at 50, rejected
     led.advance(60.0, ["b"], train_at, is_train)
-    assert led.stats["rejects"] == 1 and 100.0 <= led.hold["b"] <= 110.0
-    close = led.open_window(100.0)
-    assert led.gap == 100.0  # EWMA of round starts: 0.75 * 100 + 0.25 * 100
+    assert led.stats["rejects"] == 1 and 100.0 <= led.hold["b"] <= 109.0  # 10 + 90 + U(0, W 9)
+    close = led.open_window(100.0, round_id=1)
+    assert led.train_d == 90.0  # training phase 10 -> 100: 0.75 * 90 + 0.25 * 90
     led.advance(close, ["b"], train_at, is_train)
     assert "b" in led.pool
 
@@ -145,10 +150,16 @@ def test_sync_pace_steering_does_not_churn():
     rounds = picks / 10
     assert rounds >= 20
     assert led.stats["rejects"] / (75 * rounds) < 1.0  # at most one return per idle client per round, never a poll loop
-    assert 1.0 < led.gap / 120.0 < 10  # the round estimate tracks round starts, not top-up windows
+    assert 0.8 < led.train_d / 120.0 < 1.5  # the training-phase estimate tracks the task time, not selection waits
 
 
 def test_async_pace_steering_matches_the_dispatch_rate():
     led, picks = _drive(sync=False)
     assert picks >= 0.5 * 15 * 8 * 3600 / 120  # slots stay mostly busy
     assert led.stats["rejects"] / max(1, picks) < 5  # held clients come back at about the dispatch rate
+
+
+def test_sync_estimate_does_not_lock_in_slow_rounds():
+    """A large prior (the task timeout) must not keep rounds slow: rounds settle near the task time, not the prior (F42 smoke)."""
+    led, picks = _drive(sync=True, task_s=20.0)
+    assert picks / 10 > 0.5 * 8 * 3600 / 25  # rounds of ~20 s task + window, not the 300 s prior

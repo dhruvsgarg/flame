@@ -4,8 +4,9 @@
 
 A client checks in when it turns AVL_TRAIN, or at its reconnect time if AVL_TRAIN then. The server pools it while a selection is
 open (sync: a window of W = window_frac x the round-time estimate, the selector picks at its close; async: while slots are free),
-else rejects it with a reconnect time inside the next selection: sync = next round start + U(0, W) (one round estimate from now
-once that start is overdue), async = now + m x gap x U(jitter) with m clients on hold, so held clients return at the dispatch rate.
+else rejects it with a reconnect time inside the next selection: sync = last round-start close + the training-phase estimate
++ U(0, W) (from now once overdue; within W before any estimate), async = now + m x gap x U(jitter) with m clients on hold, so
+held clients return at the dispatch rate. The sync estimate excludes selection waits: a starved window cannot feed back into it.
 Not AVL_TRAIN at its reconnect time = missed opportunity; it checks in again at its next flip. A departure is never reported:
 the server learns it only by task failure / timeout. One ledger serves both modes: sim derives check-ins from the trace
 (`advance`), real feeds the clients' CHECK_IN messages (`on_checkin`).
@@ -31,6 +32,9 @@ class CheckinLedger:
         self._rng = random.Random(seed)
         self._last_sel: Optional[float] = None  # sync: last round start; async: last dispatch
         self._round = None
+        self.train_d: Optional[float] = None  # sync: EWMA of round-start close -> next round start (the training phase)
+        self._last_close: Optional[float] = None
+        self._round_window = False
         self.pool: Dict[str, float] = {}  # checked in, waiting for a pick: end -> check-in time
         self.hold: Dict[str, float] = {}  # end -> reconnect time handed out
         self.free_since: Dict[str, float] = {}  # end -> earliest time it may check in (leg start, task end)
@@ -41,7 +45,7 @@ class CheckinLedger:
 
     # -- clock-free rules -------------------------------------------------
     def window_s(self) -> float:
-        return self.window_frac * self.gap if self.sync else 0.0
+        return self.window_frac * (self.train_d if self.train_d is not None else self.gap) if self.sync else 0.0
 
     def is_open(self, t: float) -> bool:
         if self.sync:  # open from its start until the selection closes it (a starved window keeps collecting)
@@ -50,8 +54,10 @@ class CheckinLedger:
 
     def reconnect_at(self, t: float) -> float:
         if self.sync:
-            nxt = self._last_sel + self.gap if self._last_sel is not None else t + self.gap
-            return (nxt if nxt > t else t + self.gap) + self._rng.uniform(0.0, self.window_s())
+            if self.train_d is None or self._last_close is None:
+                return t + self._rng.uniform(0.0, self.window_s())  # no estimate yet: come back within a window
+            nxt = self._last_close + self.train_d
+            return (nxt if nxt > t else t + self.train_d) + self._rng.uniform(0.0, self.window_s())
         return t + max(1, len(self.hold) + 1) * self.gap * self._rng.uniform(*self.jitter)
 
     def _emit(self, kind: str, end: str, t: float, **f) -> None:
@@ -121,9 +127,12 @@ class CheckinLedger:
         """Sync: open a selection window at now (no-op if open); returns its close time. A new round_id is a round start: it
         updates the round-time estimate (mid-round top-up windows do not)."""
         if self.window is None:
-            if round_id is None or round_id != self._round:
-                if self._last_sel is not None and now > self._last_sel:
-                    self.gap = (1 - self.alpha) * (now - self._last_sel) + self.alpha * self.gap
+            self._round_window = round_id is None or round_id != self._round
+            if self._round_window:
+                if self._last_close is not None and now > self._last_close:
+                    d = now - self._last_close
+                    self.train_d = d if self.train_d is None else (1 - self.alpha) * d + self.alpha * self.train_d
+                    self.gap = self.train_d + self.window_s()  # the round estimate μ (REFL's slot, real `mu`)
                 self._last_sel, self._round = now, round_id
             self.window = (now, now + self.window_s())
         return self.window[1]
@@ -139,6 +148,8 @@ class CheckinLedger:
                 self.gap = (1 - self.alpha) * (now - self._last_sel) / len(picked) + self.alpha * self.gap
             self._last_sel = now
         if self.sync:
+            if self.window is not None and self._round_window:
+                self._last_close = now
             self.window = None
         else:
             self.open_since = (self.open_since if self.open_since is not None else now) if slots_left else None
