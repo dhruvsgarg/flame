@@ -1817,9 +1817,11 @@ class Pool:
                         fcntl.flock(lock, fcntl.LOCK_EX)
                         per = per_trainer_footprint(j, history)
                         used = {i: m / 1024 for i, _, m in _gpu_query()}
-                        cap, k_even = TRAINERS_PER_GPU.get(j.dataset, 75), -(-j.n // j.gpus)
+                        cap = TRAINERS_PER_GPU.get(j.dataset, 75)
+                        m = max(j.gpus, -(-j.n // cap))  # unmeasured legs still respect the trainer cap (share <= 1)
+                        k_even = -(-j.n // m)
                         if per is None:  # unmeasured: whole GPUs, even split
-                            placed = place_gpus(j.gpus, gpu_footprint(j, history), node_gpus, leases, used, k_even / cap)
+                            placed = place_gpus(m, gpu_footprint(j, history), node_gpus, leases, used, k_even / cap)
                             plan = ([(g, k_even, sl, GPU_MEM_CAP * GPU_GB, GPU_SM_CAP, round(k_even / cap, 3)) for g, sl in placed]
                                     if placed else None)
                         else:
