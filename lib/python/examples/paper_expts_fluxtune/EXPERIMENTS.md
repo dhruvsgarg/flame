@@ -102,8 +102,12 @@ Each item: action · exit · state. [B] adds no runs: it reads the [A] runs.
   (4 runs). Pass: `[ProbeDim]` p = 591,874 / 806,912, no OOM or trainer death, FluxTune accuracy off chance
   (0.50 Yelp-P, 0.10 Yahoo), ρ not pinned at its cap. Record s/commit and vclock/wall to set N, the charge
   profile and the per-run time in P3/P4.
+  - [x] 1.7B · Yahoo FluxTune, 10-20 (`run_20261020_015616`, 1.23 h; details and files [RUN_PLAN §3.3](RUN_PLAN.md#33-run-log-smollm2-17b--yahoo)):
+    passes. p 806,912; 0 OOM / dead trainers; acc 0.141 → 0.266 at commit 92; ρ 0.0373 fixed (`pool`, not capped);
+    43 s/commit at N 50, vclock/wall ~17×; distinct clients / pool 0.74. Ran at N 50 / `pool`, not the cell's N 70 / `exp`.
+  - [ ] 1.7B · Yahoo `fwdllm` arm; RoBERTa · Yelp-P both arms; charge profile (1.7B used the DistilBERT `fluxtune_yahoo.yaml`).
 - **P3 · [A] `roberta_large_yelp` · blocked: P0b, S.** 12 h wall cap, scored on TTA.
-- **P4 · [A] `smollm2_1p7b_yahoo` · blocked: P0b, S.** 12 h wall cap (~320 commits), scored on TTA.
+- **P4 · [A] `smollm2_1p7b_yahoo` · blocked: P0b, S.** 12 h wall cap (~720 commits at N 70, RUN_PLAN §4), scored on TTA.
 - **P5 · C2 cumulative ladder · blocked: P2.** Reuses P1/P2 arms where the config is identical.
 - **P6 · C3 design choices · blocked: P2.** Only the concepts Phase A shows matter.
 - **P7 · C4 async SOTA + availability · blocked: FT-N5** (unavailability wiring for the grad loop).
@@ -300,3 +304,5 @@ Decided 2026-10-17: targets 0.86 / 0.82 / 0.65; n 100 / 100 / 75; pool N rule an
 12 h wall cap on RoBERTa and 1.7B; 1 seed per arm; no SmolLM2-360M runs; C4 traces `syn_0` + `mobiperf_3st_50`.
 Decided 2026-10-17 (later): pool N 90 / 100 / 70; DistilBERT eval = full test set, stride 4. Eval sample size and stride for Yelp-P and Yahoo stay open (RUN_PLAN §2).
 Decided 2026-10-17 (latest): ρ = exponential decay (`exp`, T_res 300) in the baseline; N final, N-check run dropped. Open, closed by gating runs: grad-aware (G1), batch size (P0b bs). Also open: whether T_res stays (hand-tuned, no budget behind it) or becomes a target Φ_final / `phi`.
+Decided 2026-10-20: 1.7B · Yahoo eval = 6,000 fixed rows, stride 7 (eval ~250 s vs ~43 s/commit); every 1.7B run passes
+`--no-cos-ground-truth-audit` (the audit's CPU backward hung and killed the 10-19 aggregator).

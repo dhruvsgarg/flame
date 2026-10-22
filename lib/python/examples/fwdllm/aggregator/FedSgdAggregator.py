@@ -243,9 +243,9 @@ class FedSGDAggregator(TopAggregator):
         # `fixed` gate / `pool` schedule: commit at N uploads; rho = s*sqrt(G_rule*N/p).
         _pt = getattr(self.args, "pool_target", None)
         self._pool_target = int(_pt) if _pt not in (None, "", 0, "0") else None
-        if (self._commit_gate == "fixed" or self._rho_schedule == "pool") \
+        if (self._commit_gate == "fixed" or self._rho_schedule in ("pool", "exp")) \
                 and self._pool_target is None:
-            raise ValueError("commit_gate=fixed / rho_schedule=pool need pool_target")
+            raise ValueError("commit_gate=fixed / rho_schedule=pool|exp need pool_target")
         self._gate_safety_s = float(getattr(self.args, "gate_safety_s", 0.4) or 0.4)
         # Which rho sizes the pool. `annealed` (shipped) uses rho_t, which under
         # S-B drives N_req -> 0, floors the gate at I=1 and decays progress as
@@ -281,8 +281,8 @@ class FedSGDAggregator(TopAggregator):
             # rho0 from the pool; `pool` holds it, `exp` decays it in _rho_star_now().
             self._rho_star = self._gate_safety_s * math.sqrt(
                 self._g_rule * self._pool_target / self._p_trainable)
-            logger.info(f"[ServerStep] rho_schedule=pool N={self._pool_target} "
-                        f"-> rho*={self._rho_star:.6g}")
+            logger.info(f"[ServerStep] rho_schedule={self._rho_schedule} "
+                        f"N={self._pool_target} -> rho*={self._rho_star:.6g}")
 
         self.track_trainer_avail = (
             self.config.hyperparameters.track_trainer_avail or None

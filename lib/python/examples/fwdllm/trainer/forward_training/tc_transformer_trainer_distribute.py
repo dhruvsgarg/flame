@@ -215,6 +215,9 @@ class ForwardTextClassificationTrainer:
         self.model = model
         if self.args.model_type == "distilbert":
             self.model.add_module("pre_classifier", nn.Sequential())
+        elif self.args.model_type == "roberta-large":
+            # Same drop for roberta's head: kept, classifier.dense adds 1,049,600 to p.
+            self.model.classifier.add_module("dense", nn.Sequential())
         # self.model.to(self.device)
 
         # training results
@@ -290,7 +293,8 @@ class ForwardTextClassificationTrainer:
         elif self.args.model_type == "bert":
             self.layer_id_for_check = 12
         elif self.args.model_type == "roberta-large":
-            self.layer_id_for_check = 12
+            # lora: layer.1 query lora_B; 12 is a frozen bias under lora.
+            self.layer_id_for_check = 28 if self.args.peft_method == "lora" else 12
         elif self.args.model_type == "albert":
             self.layer_id_for_check = 22
         elif self.args.model_type == "llama":

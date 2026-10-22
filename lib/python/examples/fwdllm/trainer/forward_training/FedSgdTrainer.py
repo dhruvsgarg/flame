@@ -238,12 +238,14 @@ class FedSGDTrainer(Trainer):
             f"len={len(self.avl_events_syn_0)} content={self.avl_events_syn_0!r}"
         )
 
+        # The spawner ships only the 3-state syn_20/syn_50 twins (b1c53e940
+        # deleted the 2-state ones); the bare names still select them below.
         self.avl_events_syn_20 = _parse_avl_events(
-            self.config.hyperparameters.avl_events_syn_20
+            self.config.hyperparameters.avl_events_syn_20_3st
         )
 
         self.avl_events_syn_50 = _parse_avl_events(
-            self.config.hyperparameters.avl_events_syn_50
+            self.config.hyperparameters.avl_events_syn_50_3st
         )
 
         self.avl_events_syn_train_100_eval_0_unavail_0 = _parse_avl_events(
@@ -274,10 +276,10 @@ class FedSGDTrainer(Trainer):
         if self.client_notify["trace"] == "syn_0":
             self.state_avl_event_ts = self.avl_events_syn_0
             logger.info(f"Set avl_events_syn_0 for trainer id {self.trainer_id}.")
-        elif self.client_notify["trace"] == "syn_20":
+        elif self.client_notify["trace"] in ("syn_20", "syn_20_3st"):
             self.state_avl_event_ts = self.avl_events_syn_20
             logger.info(f"Set avl_events_syn_20 for trainer id {self.trainer_id}.")
-        elif self.client_notify["trace"] == "syn_50":
+        elif self.client_notify["trace"] in ("syn_50", "syn_50_3st"):
             self.state_avl_event_ts = self.avl_events_syn_50
             logger.info(f"Set avl_events_syn_50 for trainer id {self.trainer_id}.")
         elif self.client_notify["trace"] == "avl_events_syn_train_100_eval_0_unavail_0":
