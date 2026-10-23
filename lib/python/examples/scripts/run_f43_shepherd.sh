@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# F43 (FX-N139) speech baselines on shepherd GPUs 4-7 (~6 h; stage B keeps 0-3), from the worktree ~/flame_f43 (T15: never the live tree).
+# F43 (FX-N139) speech baselines on shepherd GPUs 4-7 (~6 h; stage B keeps 0-3), from the worktree /home/dgarg39/flame_f43 (T15: never the live tree).
 #   FedBuff, then FedBuff* if FedBuff ends within 3 h (--deadline-h 3). One Ctrl+C stops all (harness_pool, R20).
-# Usage (tmux on shepherd): cd ~/flame_f43 && git fetch && git checkout --detach origin/dg/pending_fl_baselines && bash lib/python/examples/scripts/run_f43_shepherd.sh
+# Usage (tmux on shepherd): cd /home/dgarg39/flame_f43 && git fetch && git checkout --detach origin/dg/pending_fl_baselines && bash lib/python/examples/scripts/run_f43_shepherd.sh
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 OUT=experiments/F43_shepherd_$(date +%m%d_%H%M)

@@ -32,8 +32,8 @@ Every batch runs Felix new and old side by side; FedDance and Oort run only afte
   `experiments/ceiling_1022` b64: cifar n 300 69% at 48 h, 72% at 72 h; speech n 100 72% at 12 h, 73-79% at 24 h; n 75 / 50 cap at 61% /
   74% by day 6). Every F43 leg stops once the mean of its last 5 evals ≥ 70% (`targetWindow`, FX-D229; operator 10-23).
   *Batch (two commands, ~8.5 h jayne / ~6 h shepherd GPUs 4-7):*
-  - jayne tmux: `cd ~/flame && git pull && bash lib/python/examples/scripts/run_f43_jayne.sh` → `experiments/F43_jayne_<ts>/`.
-  - shepherd tmux (worktree; stage B keeps the main tree and GPUs 0-3): `cd ~/flame_f43 && git fetch && git checkout --detach origin/dg/pending_fl_baselines && bash
+  - jayne tmux: `cd /home/dgarg39/flame && git pull && bash lib/python/examples/scripts/run_f43_jayne.sh` → `experiments/F43_jayne_<ts>/`.
+  - shepherd tmux (worktree; stage B keeps the main tree and GPUs 0-3): `cd /home/dgarg39/flame_f43 && git fetch && git checkout --detach origin/dg/pending_fl_baselines && bash
     lib/python/examples/scripts/run_f43_shepherd.sh` → `experiments/F43_shepherd_<ts>/`; copy it and its `run_*gs_F43_*` dirs to jayne.
   - cifar (jayne, bench): n 300 c 60 K 15 (sync K/N 5%, L34), 120 h vclock (trace end) from day 1, both cells, seed 1, all six + `*` +
     Felix old, l3b, l3b_e2, l3b_e3 (26 legs at once on GPUs 0,5,6; `FLAME_TELEMETRY_LEAN=1`; 8.3 h timeout). Measured
