@@ -33,14 +33,14 @@ Every batch runs Felix new and old side by side; FedDance and Oort run only afte
   74% by day 6). Every F43 leg stops once the mean of its last 5 evals ≥ 70% (`targetWindow`, FX-D229; operator 10-23).
   *Batch (two commands, ~8.5 h jayne / ~6 h shepherd GPUs 4-7):*
   - jayne tmux: `cd ~/flame && git pull && bash lib/python/examples/scripts/run_f43_jayne.sh` → `experiments/F43_jayne_<ts>/`.
-  - shepherd tmux (worktree; stage B keeps the main tree and GPUs 0-3): `cd ~/flame_f43 && git pull && bash
+  - shepherd tmux (worktree; stage B keeps the main tree and GPUs 0-3): `cd ~/flame_f43 && git fetch && git checkout --detach origin/dg/pending_fl_baselines && bash
     lib/python/examples/scripts/run_f43_shepherd.sh` → `experiments/F43_shepherd_<ts>/`; copy it and its `run_*gs_F43_*` dirs to jayne.
   - cifar (jayne, bench): n 300 c 60 K 15 (sync K/N 5%, L34), 120 h vclock (trace end) from day 1, both cells, seed 1, all six + `*` +
     Felix old, l3b, l3b_e2, l3b_e3 (26 legs at once on GPUs 0,5,6; `FLAME_TELEMETRY_LEAN=1`; 8.3 h timeout). Measured
     (`bench_F43_smoke_1023_0457`, 2 h vclock): Felix l3b / old 12 min (slowest: cut near ~80 h unless they stop at 70%), e3 6.6 min,
     FedBuff 5, REFL 5.7, Oort 0.7; ~6 GB RAM, 3.5 GB GPU, SM 9-26% per leg (CPU-bound); full telemetry 99% `selection.per_trainer`.
   - speech (harness), n 100 c 30 K 10, 24 h, syn_0, one leg per node at a time: jayne GPUs 2-4 Felix l3b_e3 then l3b; shepherd GPUs 4-7
-    FedBuff (ctl), then FedBuff* if FedBuff ends within 3 h. Measured (`pool_F43_spsmoke` on shepherd): 6.3× real time (24 h ≈ 3.8 h),
+    FedBuff (ctl), then FedBuff* if FedBuff ends within 3 h. Measured (shepherd smoke, 5 min): 6.3× real time (24 h ≈ 3.8 h),
     leg RAM 119 GB, GPU peak 36 / 45 GB, 0 overruns. Felix old and syn_50_3st speech: next batch.
   *Prediction:* cifar: no stack reaches 70% at n 300 by 72 h (FL ~2-4 pp under the 72% ceiling); 60 / 65% reached; l3b_e3 lowest GB to every
   target it hits, Felix first in time at 40-60%; the e3 plateau ≤ l3b's. Speech: Felix reaches 60-65% in 24 h; 70% only if FL tracks the
