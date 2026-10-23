@@ -30,19 +30,24 @@ Every batch runs Felix new and old side by side; FedDance and Oort run only afte
 - **FX-N139 · RESUME HERE: parse F43 before any further Felix fix or optimization, both datasets (operator 10-23) · launched by
   the operator.** *Goal (operator 10-23):* targets up to the 70% goal, so the populations rise to the reference cohort (ceilings,
   `experiments/ceiling_1022` b64: cifar n 300 69% at 48 h, 72% at 72 h; speech n 100 72% at 12 h, 73-79% at 24 h; n 75 / 50 cap at 61% /
-  74% by day 6). *Batch (one command, jayne tmux, ~8.5 h):* `bash lib/python/examples/scripts/run_f43_jayne.sh` → `experiments/F43_jayne_<ts>/`.
-  - cifar: bench, n 300 c 60 K 15 (sync K/N 5%, L34), 72 h vclock from day 1, both cells, seed 1, all six + `*` + Felix old, l3b,
-    l3b_e2, l3b_e3 (26 legs at once on GPUs 0,5,6; `FLAME_TELEMETRY_LEAN=1`). Measured (`bench_F43_smoke_1023_0457`, 2 h vclock): Felix
-    l3b / old 12 min (→ ~7.3 h at 72 h; slowest), e3 6.6 min, FedBuff 5, REFL 5.7, Oort 0.7; ~6 GB RAM, 3.5 GB GPU, SM 9-26% per leg
-    (CPU-bound); full telemetry 99% `selection.per_trainer` (4.8 GB per 1.4 h Felix leg), hence lean.
-  - speech: harness, n 100 c 30 K 10, 24 h, syn_0, Felix l3b_e3, l3b, Felix old + FedBuff (ctl), FedBuff*; one leg at a time on GPUs
-    2,3,4 (`--gate`, `--deadline-h 8` skips late starts). Not packing-measured (C21): harness estimate ~150 GB RAM per leg.
+  74% by day 6). Every F43 leg stops once the mean of its last 5 evals ≥ 70% (`targetWindow`, FX-D229; operator 10-23).
+  *Batch (two commands, ~8.5 h jayne / ~6 h shepherd GPUs 4-7):*
+  - jayne tmux: `cd ~/flame && git pull && bash lib/python/examples/scripts/run_f43_jayne.sh` → `experiments/F43_jayne_<ts>/`.
+  - shepherd tmux (worktree; stage B keeps the main tree and GPUs 0-3): `cd ~/flame_f43 && git pull && bash
+    lib/python/examples/scripts/run_f43_shepherd.sh` → `experiments/F43_shepherd_<ts>/`; copy it and its `run_*gs_F43_*` dirs to jayne.
+  - cifar (jayne, bench): n 300 c 60 K 15 (sync K/N 5%, L34), 120 h vclock (trace end) from day 1, both cells, seed 1, all six + `*` +
+    Felix old, l3b, l3b_e2, l3b_e3 (26 legs at once on GPUs 0,5,6; `FLAME_TELEMETRY_LEAN=1`; 8.3 h timeout). Measured
+    (`bench_F43_smoke_1023_0457`, 2 h vclock): Felix l3b / old 12 min (slowest: cut near ~80 h unless they stop at 70%), e3 6.6 min,
+    FedBuff 5, REFL 5.7, Oort 0.7; ~6 GB RAM, 3.5 GB GPU, SM 9-26% per leg (CPU-bound); full telemetry 99% `selection.per_trainer`.
+  - speech (harness), n 100 c 30 K 10, 24 h, syn_0, one leg per node at a time: jayne GPUs 2-4 Felix l3b_e3 then l3b; shepherd GPUs 4-7
+    FedBuff (ctl), then FedBuff* if FedBuff ends within 3 h. Measured (`pool_F43_spsmoke` on shepherd): 6.3× real time (24 h ≈ 3.8 h),
+    leg RAM 119 GB, GPU peak 36 / 45 GB, 0 overruns. Felix old and syn_50_3st speech: next batch.
   *Prediction:* cifar: no stack reaches 70% at n 300 by 72 h (FL ~2-4 pp under the 72% ceiling); 60 / 65% reached; l3b_e3 lowest GB to every
   target it hits, Felix first in time at 40-60%; the e3 plateau ≤ l3b's. Speech: Felix reaches 60-65% in 24 h; 70% only if FL tracks the
   ceiling within 3 pp. *Parse (in order):* (1) `cifar_report.md` / `speech_report.md` (bench_report: AUC, time + GB to 40-70%, final,
   ceiling); (2) EV summary on the speech pool, `config_audit.py`; (3) rewrite the Scoreboard (new F43 table) and `felix_plots.py` with
   the ceiling; (4) record which targets each stack reaches and where Felix loses (time or bytes), and re-rank FX-N135 / N136 on that.
-  *Then* resume FX-N135. Cut legs (72 h not reached by the 8.3 h timeout) still score every target they reached.
+  *Then* resume FX-N135. Cut legs (timeout before 120 h) still score every target they reached; a stopped leg's "final" is its stop point.
 - **Storage (operator 10-23):** jayne `/home` 1.4 TB free (`cleanup_experiments.py` dry run would free 238 GB: uncited run dirs, `.pt`);
   shepherd 289 GB free of a shared 2.6 TB (ours 254 GB: `flame` 182, `aish_test` 53; cleanup frees 9.7 GB). Prune with `--apply` on the
   operator's word (R21); lean telemetry on every n ≥ 300 bench leg.
@@ -1282,6 +1287,8 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-D227** `FLAME_TELEMETRY_LEAN=1` drops `selection.per_trainer` (99% of bytes at n 300; `test_lean_drops_selection_per_trainer`).
 - **FX-D228** Tier F43 (`F43_ARMS` at `F43_SHAPE`, `F43_RUNTIME_S`; `test_f43_tier_reference_cohort`), `scripts/run_f43_jayne.sh` (cifar bench +
   speech harness, one TERM stops all; Ctrl+C in tmux), arm `l3b_e4_srv`.
+- **FX-D229** `targetWindow` (config): stop when the mean of the last w evals ≥ `targetAccuracy`; unset = the consecutive rule
+  (`test_target_window_stop.py`). F43 legs set 0.7 / 5 (`F43_STOP`).
 - **FX-D224** Felix screen knobs: `sel.selectType=random` (uniform picks); F42 arms `l3b_b3`, `l3b_pb`, `l3b_ro`, `l3bn`, `rnd`,
   `rnd_ro`, `rnd_ron` (all `_srv`).
 - **FX-D218** Bench from harness plans: `bench_pool.py --harness-args` (harness_pool `_parser` / `plan`, dry-run YAMLs), `--gpus-per-leg`

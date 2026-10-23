@@ -235,7 +235,8 @@ F42_ARMS["l3bn_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=f"{_PRE} l
 F42_ARMS.update({f"l3b_e{e}_srv": dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=f"{_PRE} epochs={e}") for e in (2, 3, 4)})  # FX-N135
 F43_ARMS = ("ctl_srv", "rstar_srv", "fdstar_srv", "fbstar_srv", "l3b_srv", "l3b_e2_srv", "l3b_e3_srv")  # F43: baselines + Felix contenders
 F43_SHAPE = {"cifar10": dict(n=300, c=60, agg_goal=15), "google_speech": dict(n=100, c=30, agg_goal=10, gpus=3, sim_gpus=3)}
-F43_RUNTIME_S = {"cifar10": 259200, "google_speech": 86400}  # cifar 70% needs ~day 3 at n 300 (ceiling 72% at 72 h); speech ~24 h
+F43_RUNTIME_S = {"cifar10": 432000, "google_speech": 86400}  # to the trace end (cifar ceiling 75% at 120 h); speech ceiling 73-79% at 24 h
+F43_STOP = "targetAccuracy=0.7 targetWindow=5"  # operator 10-23: stop at the 70% goal on the mean of the last 5 evals
 F42_ARMS["l3b_ro_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep opt.agg_rate_conf.type=old", thp=_PRE)  # FX-N132: FedBuff's rate
 # D2 F39W (FX-N116): Felix's local samples per task; fixed (capped at an epoch) vs per-client split (compute = beta/(1-beta) x transfer)
 F39W_SAMPLES = {"cifar10": (32, 64, 128), "google_speech": (128, 256, 512)}
@@ -590,7 +591,7 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         for ph in tier_phases("F42", baselines, ds):
             arm = re.sub(r"^(?:gs_)?F42_s(?:0|50)u_", "", ph.pid)
             if arm in F43_ARMS:
-                out.append(replace(ph, pid=ph.pid.replace("F42_", "F43_"), runtime_s=F43_RUNTIME_S[ds], **F43_SHAPE[ds]))
+                out.append(replace(ph, pid=ph.pid.replace("F42_", "F43_"), runtime_s=F43_RUNTIME_S[ds], agg_hp=f"{ph.agg_hp} {F43_STOP}", **F43_SHAPE[ds]))
         return out
     if tier == "F42R":  # F42-T7 / T9 on GPU: G3 real legs, 8 min wall: Felix notify + the check-in baselines
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))

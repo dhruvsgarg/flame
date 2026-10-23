@@ -785,4 +785,4 @@ def test_f43_tier_reference_cohort():
     for ds, n in (("cifar10", 300), ("google_speech", 100)):
         ph = pool.tier_phases("F43", ("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star"), ds)
         assert len(ph) == 2 * len(pool.F43_ARMS) and all(p.n == n and p.agg_goal / n >= 0.05 for p in ph)
-        assert all(p.runtime_s == pool.F43_RUNTIME_S[ds] for p in ph)
+        assert all(p.runtime_s == pool.F43_RUNTIME_S[ds] and pool.F43_STOP in p.agg_hp for p in ph)
