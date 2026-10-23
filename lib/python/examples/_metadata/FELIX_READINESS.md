@@ -7,8 +7,8 @@ parity and the claims gate (FX-N108) → sim-only experiments (FX-N12).** Paper 
 **Only runs from F41 (10-21) onward count** (setup reset: trace-tied `usage` streams, FedScale task time, R27 availability knowledge).
 Pre-reset results, tiers (F39*, F40S, F41) and arms for rejected features are deleted; `git log` keeps them.
 
-**At a glance (10-23, 16:30): goal = highest target accuracy fastest; next = launch FL1 S1 + S2 (F44, FX-N141), cifar only, on shepherd
-GPUs 0-3, ~75 min.** Speech n 100: every
+**At a glance (10-23, 16:30): goal = highest target accuracy fastest; next = launch FL1 S1 + S2 (F44, FX-N141), cifar only, jayne + shepherd,
+~75 min.** Speech n 100: every
 leg reaches 70%; Felix new first at every target (70% at 610 vs FedBuff 860 min), l3b_e3 lowest GB, no cifar-style plateau. Cifar n 300:
 the plateau stays (Felix flat at 54-56% from hour 2-4; FedBuff passes it at ~6 h and ends at 58%; ceiling ~65%); nobody reaches 60%.
 Felix is first to 40-50% and lowest GB except Oort (5-10× less, 15-26 h); Felix old beats new from hour 4. e2 / e3 diverge to NaN on
@@ -25,52 +25,41 @@ Work rule: PARITY C10, C17, C18; ROBUST R0. Test levels: pytest (~1 min scoped) 
 bench screens (cifar 12 h vclock in 4-12 min wall) · harness sims (speech) · long (G3 reals). Batch numbers change only at a long-run
 launch; screens keep the number with a letter. Every batch runs Felix new and old side by side.
 
-- **FX-N141 · RESUME HERE: Felix loop FL1 = tier F44, build up from FedBuff (operator 10-23) · S1 + S2 ready to launch (operator).**
-  *Run priority (operator 10-23, standing):* (1) cifar only until the Felix config is final there; speech gets no Felix runs before
-  that, since each cifar step would make them stale. Then speech confirms the final config in one batch. (2) Every run answers a
-  named question in the step it belongs to; no arm "just to see": no single-knob ablations inside a group unless the group result is
-  ambiguous, no FedBuff* unless the step touches availability knowledge (F43: within 0.4 pp of FedBuff), no re-run of an unchanged
-  baseline. (3) Cheapest rung first (screen before 48 h before 120 h; 1 seed, 3 only for a step winner). (4) Don't crowd other
-  users' jobs: pick the node and GPUs with headroom, cap legs per GPU.
-  *Launch (tmux on shepherd):* `bash /home/dgarg39/flame/lib/python/examples/scripts/run_fl1.sh`: 21 cifar legs on GPUs 0-3 (6 / GPU,
-  beside Aish's fwdllm jobs), ~75 min; rsyncs `experiments/FL1_<ts>` (`cifar_verdict.md`, `config_audit.md`) to jayne at the end.
-  *Smoke `FL1_smoke_1023_1436` (1 h vclock):* pipeline green (config_audit 31 / 31 ✅, verdict tables build); 1 h is too
-  short to rank (`l3b` 52% / 50% vs FedBuff 35% / 28% on s0 / s50u; `b1*` ≈ FedBuff). The verdict says "PASS no target reached" when
-  neither side reaches a target: read those rows as no information.
-  *Goal (operator 10-23, standing):* Felix reaches the **highest target accuracy fastest** on every dataset and cell; lowest bytes is a
-  bonus, never at the cost of final accuracy. Reaching an intermediate accuracy first but ending lower is a failure. A component stays
-  only if it shortens time to the highest target without lowering final accuracy (within the seed band); components that need each
-  other are decided as a group. Selection must balance speed, utility and client diversity, so fast clients alone can't cap accuracy.
-  *Why build up from FedBuff:* FedBuff ends highest on cifar (58% vs Felix 56-57%, F43) and Felix differs from it only in selection,
-  rate, notify / evict and the missing sub-batch lr normalization; adding Felix pieces one group at a time onto the stack that already
-  reaches the top shows which piece buys speed and which costs accuracy.
-  *Horizon (F43 telemetry):* cifar streams expose 18 / 25 / 33 / 50 / 66 / 100% of each client's data at 0 / 12 / 24 / 48 / 72 / 120 h;
-  the ceiling is 62 / 66 / 69 / 72 / 75% there and FL trails it by ≥ 7 pp (FedBuff 58% vs 65% at 22 h), so no stack can reach 70% on a
-  cifar stream within the 6-day trace. Speech n 100 reaches 70% in 10-14 h.
-  *Targets (operator 10-23, option a):* cifar static full data (`s0`) races to 70%; streams use 40-55% plus 90 / 95% of the ceiling at
-  the cell's horizon (`fl1_verdict.py`); speech the same rule.
-  *Loop (each step one cifar batch, FedBuff + Felix old + Felix new as anchors in the same batch):*
-  - lane: cifar bench n 300 (static full data `s0` for the high-target race; `s0u` / `s50u` streams for tracking); speech harness
-    n 100 `s0u` only for the final config (run priority);
-  - duration ladder: 12 h screen (cifar ~75 min wall, 24+ legs at once) → 48 h for the step's winner → 120 h confirmation once per group;
-  - pass rule vs FedBuff in the same batch: final ≥ FedBuff final − seed band AND time ≤ FedBuff at every target up to the highest
-    either reaches; report top-20% pick share, coverage and worst-10% client accuracy beside it (diversity guard);
-  - sparse search, dense confirmation (R25): 1 seed per arm, 3 seeds for the step winner.
-  *Steps (groups in order; each starts from the previous winner):*
-  1. S1 base = FedBuff + C1 (notify / evict) + averaged model: individual; must be ≥ FedBuff (syn_50_3st is where C1 can act).
-  2. S2 step group: sub-batch lr normalization + update-norm guard (+ weight decay) + local epochs 2 / 3 (epochs need the guard).
-  3. S3 selection, one term at a time on one score: speed (per second) → utility (|D| q) → balance / diversity → exploration;
-     sampled ∝ score (not top-K), with a coverage floor; keep a term only if it passes the rule.
-  4. S4 rate: Felix rate `new` vs FedBuff's 1/√(1+τ) on the S3 winner.
-  5. S5 bytes: local work / pacing tuned on the winner without losing final accuracy.
-  *Where each idea comes from:* both Felix designs: C1 notify + evict (S1), FedBuff buffer. Felix old: Oort statistical utility
-  |D| · loss and UCB exploration (S3 utility, exploration terms), rate `new` (S4). Felix new: per-second speed normalization (S3
-  speed), participation balance (S3 diversity), prefix utility on the received model (S3, free measurement), averaged model (base),
-  local epochs (S2). Added from the baselines: FedBuff's sub-batch lr normalization (S1 base), FedScale clients' weight decay 5e-4
-  (S2), and a dimensionless update-norm guard (FX-D232, S2). Dropped: eval tasks (C6), AIMD K (C4), value rate (C5), pacing as built.
-  *F44 arms (S1 + S2):* anchors FedBuff, Felix old, Felix new; `b1` (S1) = FedBuff on Felix's stack (notify / evict, uniform picks,
-  FedBuff rate + lr normalization, averaged); `b1gw` +guard +wd; `b1gw_e2` / `b1gw_e3` +epochs. Cifar 21 legs (3 cells).
-  `config_audit.py` checks sel / nclip / lrn / wd / ep on every leg.
+- **FX-N141 · RESUME HERE: Felix loop FL1 = tier F44, build Felix up from FedBuff on cifar (operator 10-23).**
+  - **Status:** S1 + S2 (F44) ready to launch on both nodes (operator). Next after its verdict: S3.
+  - **Launch (operator, tmux, same TAG on both):** `TAG=<mmdd_hhmm> bash /home/dgarg39/flame/lib/python/examples/scripts/run_fl1.sh`
+    on jayne (GPUs 0-7: `s0` + `s0u`, 14 legs) and shepherd (GPUs 0-3: `s50u`, 7 legs); ≤ 2 legs / GPU beside Aish's fwdllm jobs,
+    ~75 min. Output `experiments/FL1_<TAG>/{jayne,shepherd}/cifar_verdict.md` (shepherd rsyncs its half to jayne).
+  - **Goal (standing):** Felix reaches the **highest target accuracy fastest** on every dataset and cell. Lowest bytes is a bonus,
+    never at the cost of final accuracy; first to an intermediate accuracy but ending lower is a failure. Selection balances speed,
+    utility and diversity, so fast clients alone can't cap accuracy.
+  - **Run priority (standing):** (1) cifar only until its Felix config is final (each cifar step would make speech Felix runs
+    stale); then speech confirms the final config in one batch. (2) Every run answers a named question of its step: no single-knob
+    ablations inside a group unless the group result is ambiguous, no FedBuff* unless the step touches availability knowledge (F43:
+    within 0.4 pp of FedBuff), no re-run of an unchanged baseline. (3) Cheapest rung first. (4) Don't crowd other users' jobs.
+  - **Method:**
+    - *Why from FedBuff:* it ends highest on cifar (58% vs Felix 56-57%, F43); Felix differs only in selection, rate, notify / evict
+      and the missing sub-batch lr normalization, so adding pieces one group at a time shows which buys speed and which costs accuracy.
+    - *Cells:* cifar bench n 300: static full data `s0` (races to 70%), streams `s0u` / `s50u` (ceiling 62 / 66 / 69 / 72 / 75% at
+      12 / 24 / 48 / 72 / 120 h; FL trails it ≥ 7 pp, so no stream reaches 70% in 6 days).
+    - *Targets:* `s0` 50-70% every 5 pp; streams 40% up plus 90 / 95% of the ceiling at the horizon (`fl1_verdict.py`).
+    - *Pass rule vs FedBuff in the same batch:* final ≥ FedBuff − seed band AND no slower at every target up to the highest either
+      reaches; top-20% pick share and coverage beside it. "PASS no target reached" = no information.
+    - *Ladder:* 12 h screen (1 seed) → 48 h for the step winner (3 seeds) → 120 h once per group. Anchors every batch: FedBuff, Felix
+      old (`ctl`), Felix new (`l3b`).
+  - **Steps (each starts from the previous winner):**
+    1. S1 base `b1` = FedBuff + C1 notify / evict + averaged model; must be ≥ FedBuff (`s50u` is where C1 can act). *F44.*
+    2. S2 step group on `b1`: update-norm guard (FX-D232) + wd 5e-4 (`b1gw`), + local epochs 2 / 3 (`b1gw_e2/e3`; need the guard). *F44.*
+    3. S3 selection, one term at a time on one score, sampled ∝ score with a coverage floor: speed per second (Felix new) → utility
+       |D| q (Felix old) → balance (Felix new) → UCB exploration (Felix old); prefix utility on the received model is free.
+    4. S4 rate: Felix rate `new` vs FedBuff's 1/√(1+τ). 5. S5 bytes: local work / pacing without losing final accuracy.
+    Dropped up front: eval tasks (C6), AIMD K (C4), value rate (C5), pacing as built.
+  - **Done / found:**
+    - *F44 built (10-23):* tier `F44` (21 cifar legs, 3 cells × FedBuff, `ctl`, `l3b`, `b1`, `b1gw`, `b1gw_e2`, `b1gw_e3`),
+      `fl1_verdict.py`, `run_fl1.sh`; `config_audit.py` checks sel / nclip / lrn / wd / ep per leg.
+    - *Smoke `FL1_smoke_1023_1436` (1 h vclock, jayne) + 1-leg shepherd smoke (2.6 min):* pipeline green (audit 31 / 31 ✅); 1 h too
+      short to rank (`l3b` 52 / 50% vs FedBuff 35 / 28% on `s0` / `s50u`; `b1*` ≈ FedBuff). `update_clipped` shows up ~2.7k times
+      in a 1 h `b1g` leg's logs, so the guard is active at 1 epoch (count not yet per update).
 - **FX-N132 · General mechanisms only (operator 10-22) · standing, via FX-N141.** No per-dataset / n / K / c constants in Felix's
   mechanisms; scored averaged vs averaged.
 - **F42g follow-up · todo.** Rerun fdstar and fbstar speech, both cells (DOOMED EV22 by the pool's stale checker), ~21 min each.
