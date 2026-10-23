@@ -7,8 +7,8 @@ parity and the claims gate (FX-N108) → sim-only experiments (FX-N12).** Paper 
 **Only runs from F41 (10-21) onward count** (setup reset: trace-tied `usage` streams, FedScale task time, R27 availability knowledge).
 Pre-reset results, tiers (F39*, F40S, F41) and arms for rejected features are deleted; `git log` keeps them.
 
-**At a glance (10-23, 16:30): goal = highest target accuracy fastest; next = launch FL1 S1 + S2 (F44, FX-N141) on jayne + shepherd,
-~1.5-2 h.** Speech n 100: every
+**At a glance (10-23, 16:30): goal = highest target accuracy fastest; next = launch FL1 S1 + S2 (F44, FX-N141), cifar only, on shepherd
+GPUs 0-3, ~75 min.** Speech n 100: every
 leg reaches 70%; Felix new first at every target (70% at 610 vs FedBuff 860 min), l3b_e3 lowest GB, no cifar-style plateau. Cifar n 300:
 the plateau stays (Felix flat at 54-56% from hour 2-4; FedBuff passes it at ~6 h and ends at 58%; ceiling ~65%); nobody reaches 60%.
 Felix is first to 40-50% and lowest GB except Oort (5-10× less, 15-26 h); Felix old beats new from hour 4. e2 / e3 diverge to NaN on
@@ -26,10 +26,15 @@ bench screens (cifar 12 h vclock in 4-12 min wall) · harness sims (speech) · l
 launch; screens keep the number with a letter. Every batch runs Felix new and old side by side.
 
 - **FX-N141 · RESUME HERE: Felix loop FL1 = tier F44, build up from FedBuff (operator 10-23) · S1 + S2 ready to launch (operator).**
-  *Launch (tmux on jayne):* `bash /home/dgarg39/flame/lib/python/examples/scripts/run_fl1.sh`: cifar bench on jayne GPUs 0-3, speech
-  anchors on jayne 4-7, speech `b1*` on shepherd 0-3 via ssh (its run dirs rsync back); aborts unless both `/home/dgarg39/flame` trees
-  are on one clean commit. Est. ~75 min cifar, ~70 min per speech half. Output `experiments/FL1_<ts>/{cifar,speech}_verdict.md`.
-  *Smoke `FL1_smoke_1023_1436` (1 h vclock):* pipeline green (config_audit 31 / 31 ✅, speech EV PASS, verdict tables build); 1 h is too
+  *Run priority (operator 10-23, standing):* (1) cifar only until the Felix config is final there; speech gets no Felix runs before
+  that, since each cifar step would make them stale. Then speech confirms the final config in one batch. (2) Every run answers a
+  named question in the step it belongs to; no arm "just to see": no single-knob ablations inside a group unless the group result is
+  ambiguous, no FedBuff* unless the step touches availability knowledge (F43: within 0.4 pp of FedBuff), no re-run of an unchanged
+  baseline. (3) Cheapest rung first (screen before 48 h before 120 h; 1 seed, 3 only for a step winner). (4) Don't crowd other
+  users' jobs: pick the node and GPUs with headroom, cap legs per GPU.
+  *Launch (tmux on shepherd):* `bash /home/dgarg39/flame/lib/python/examples/scripts/run_fl1.sh`: 21 cifar legs on GPUs 0-3 (6 / GPU,
+  beside Aish's fwdllm jobs), ~75 min; rsyncs `experiments/FL1_<ts>` (`cifar_verdict.md`, `config_audit.md`) to jayne at the end.
+  *Smoke `FL1_smoke_1023_1436` (1 h vclock):* pipeline green (config_audit 31 / 31 ✅, verdict tables build); 1 h is too
   short to rank (`l3b` 52% / 50% vs FedBuff 35% / 28% on s0 / s50u; `b1*` ≈ FedBuff). The verdict says "PASS no target reached" when
   neither side reaches a target: read those rows as no information.
   *Goal (operator 10-23, standing):* Felix reaches the **highest target accuracy fastest** on every dataset and cell; lowest bytes is a
@@ -44,10 +49,9 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
   cifar stream within the 6-day trace. Speech n 100 reaches 70% in 10-14 h.
   *Targets (operator 10-23, option a):* cifar static full data (`s0`) races to 70%; streams use 40-55% plus 90 / 95% of the ceiling at
   the cell's horizon (`fl1_verdict.py`); speech the same rule.
-  *Loop (each step one batch, both datasets, FedBuff + Felix old + Felix new as anchors in the same batch; FedBuff* only when a step
-  touches availability knowledge, F43 had it within 0.4 pp of FedBuff):*
-  - lanes: cifar bench n 300 (static full data `s0` for the high-target race; `s0u` / `s50u` streams for tracking), speech harness n 50
-    `s0u` screens, n 100 for the step winner; no single-knob ablations inside a group unless the group result is ambiguous;
+  *Loop (each step one cifar batch, FedBuff + Felix old + Felix new as anchors in the same batch):*
+  - lane: cifar bench n 300 (static full data `s0` for the high-target race; `s0u` / `s50u` streams for tracking); speech harness
+    n 100 `s0u` only for the final config (run priority);
   - duration ladder: 12 h screen (cifar ~75 min wall, 24+ legs at once) → 48 h for the step's winner → 120 h confirmation once per group;
   - pass rule vs FedBuff in the same batch: final ≥ FedBuff final − seed band AND time ≤ FedBuff at every target up to the highest
     either reaches; report top-20% pick share, coverage and worst-10% client accuracy beside it (diversity guard);
@@ -65,8 +69,8 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
   local epochs (S2). Added from the baselines: FedBuff's sub-batch lr normalization (S1 base), FedScale clients' weight decay 5e-4
   (S2), and a dimensionless update-norm guard (FX-D232, S2). Dropped: eval tasks (C6), AIMD K (C4), value rate (C5), pacing as built.
   *F44 arms (S1 + S2):* anchors FedBuff, Felix old, Felix new; `b1` (S1) = FedBuff on Felix's stack (notify / evict, uniform picks,
-  FedBuff rate + lr normalization, averaged); `b1gw` +guard +wd; `b1gw_e2` / `b1gw_e3` +epochs (speech: e3 only). Cifar 21 legs
-  (3 cells), speech 6 legs (s0u, n 50). `config_audit.py` checks sel / nclip / lrn / wd / ep on every leg.
+  FedBuff rate + lr normalization, averaged); `b1gw` +guard +wd; `b1gw_e2` / `b1gw_e3` +epochs. Cifar 21 legs (3 cells).
+  `config_audit.py` checks sel / nclip / lrn / wd / ep on every leg.
 - **FX-N132 · General mechanisms only (operator 10-22) · standing, via FX-N141.** No per-dataset / n / K / c constants in Felix's
   mechanisms; scored averaged vs averaged.
 - **F42g follow-up · todo.** Rerun fdstar and fbstar speech, both cells (DOOMED EV22 by the pool's stale checker), ~21 min each.
@@ -262,8 +266,8 @@ cifar syn_0; top-20% pick share 44% / 63% / 24%): ![why cifar](felix_why_cifar10
 
 - **Reference cohort (10-23):** targets at n 300 cifar / 100 speech; batches may run 8 h on jayne's 7 GPUs. Long runs (> 15-20 min)
   otherwise go to shepherd; short tests may use both nodes.
-- **Nodes (10-23):** batches may use all of jayne's GPUs plus shepherd 0-3, launched by the operator from jayne. Both run from
-  `/home/dgarg39/flame` on the same pushed commit (no extra worktrees); leave flame clones we did not create alone.
+- **Nodes (10-23):** jayne (all GPUs) and shepherd 0-3 are ours, shared with Aish's fwdllm runs (`~/aish_test`): don't interfere.
+  Both nodes run from `/home/dgarg39/flame` on the same pushed commit (no extra worktrees); leave flame clones we did not create alone.
 - **Felix-new config (10-23):** l3b + prefix one batch; no phase-dependent step (FX-N134 dropped: FX-T80, T81).
 - **Felix optimization (10-19, 10-22):** α 0.1; syn_0 first, then syn_50_3st; one change at a time; signals general across datasets,
   models and availability (update norm / direction allowed); Felix may choose local work per client (FedBuff keeps 1 epoch). Knob
