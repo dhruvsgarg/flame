@@ -207,6 +207,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             or 20
         )
         self._consecutive_above_target = 0
+        self._target_window = getattr(self.config.hyperparameters, "target_window", None)
+        self._target_evals = []
 
         # Simulation time mode (replaces speedup_factor). "simulated": order
         # updates by a virtual clock fed by trainer-reported completion times;
@@ -1715,6 +1717,13 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         """
         target = getattr(self, "_target_accuracy", None)
         if target is None:
+            return
+        w = getattr(self, "_target_window", None)
+        if w:  # FX-D229: windowed mean, robust to single-eval jitter
+            self._target_evals = (getattr(self, "_target_evals", []) + [test_accuracy or 0.0])[-int(w):]
+            if len(self._target_evals) == int(w) and sum(self._target_evals) / int(w) >= target:
+                logger.info(f"[TARGET_STOP] round={round_num} mean of last {w} evals >= target={target}; stopping.")
+                self._work_done = True
             return
         if test_accuracy is not None and test_accuracy >= target:
             self._consecutive_above_target += 1

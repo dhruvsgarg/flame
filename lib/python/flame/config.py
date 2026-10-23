@@ -189,6 +189,8 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     stable_evals_above_target: t.Optional[int] = Field(
         alias="stableEvalsAboveTarget", default=20
     )
+    # FX-D229: set = stop once the mean of the last `target_window` evals >= target (replaces the consecutive rule).
+    target_window: t.Optional[int] = Field(alias="targetWindow", default=None)
     round_nudge_type: t.Optional[str] = Field(
         alias="roundNudgeType", default="last_train"
     )
