@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """FELIX Scoreboard plots, rewritten in place per batch: Felix arms vs time, baselines vs time (Felix old as reference), accuracy vs traffic.
 
-  felix_plots.py POOL... [--prefix F42] [--new newp] [--old ctl] [--no-old] [--also felix:new:"Felix new, no pacing" ...]
+  felix_plots.py POOL... [--prefix F42] [--new newp] [--old ctl] [--no-old] [--also fedbuff:fbstar ...]
 
 One PNG per dataset (`<out>/felix_<dataset>.png`): columns = the batch's cells; y zoomed to the post-warm-up band; lines labelled at their end.
 """
@@ -24,12 +24,10 @@ from felix_claims import traffic  # noqa: E402
 CELLS = (("s0", "syn_0 · static"), ("s0u", "syn_0 · stream"), ("s50u", "syn_50_3st · stream"))  # absent cells are dropped
 BASE = (("fedbuff", "FedBuff", "#1baf7a", "-"), ("refl", "REFL", "#eda100", "-"), ("feddance", "FedDance", "#e87ba4", "-"),
         ("oort", "Oort", "#008300", "-"), ("oort_star", "Oort*", "#6250d6", "--"))
-ALSO = {"refl:rstar": ("REFL*", "#eda100", "--"), "refl:rfc": ("REFL-fc", "#eda100", ":"),
-        "felix:new": ("Felix new, no pacing", "#2a78d6", "--"), "felix:l5": ("Felix new, no pacing", "#2a78d6", "--"),
-        "felix:fck": ("Felix by check-in", "#2a78d6", ":"), "feddance:fdstar": ("FedDance*", "#e87ba4", "--"),
-        "fedbuff:fbstar": ("FedBuff*", "#1baf7a", "--"),
-        "felix:l3b_srv:raw": ("Felix new, unserved", "#2a78d6", ":"), "felix:v2pr": ("Felix pacer v2", "#7a7a7a", ":"),
-        "fedavg:ctl": ("FedAvg", "#9c6b30", ":")}  # F42 arms
+ALSO = {"refl:rstar": ("REFL*", "#eda100", "--"), "felix:fck": ("Felix by check-in", "#2a78d6", ":"),
+        "feddance:fdstar": ("FedDance*", "#e87ba4", "--"), "fedbuff:fbstar": ("FedBuff*", "#1baf7a", "--"),
+        "felix:l3b_srv:raw": ("Felix new, unserved", "#2a78d6", ":"), "felix:l3b_e3_srv": ("Felix new, 3 epochs", "#2a78d6", "--"),
+        "fedavg:ctl": ("FedAvg", "#9c6b30", ":")}  # F42 / F43 arms
 SMOOTH = {"cifar10": 3, "google_speech": 5}  # evals swing ±5 pp cifar, ±10-20 pp speech
 WARM_H = 2.0  # y range starts from the lowest smoothed accuracy after this
 

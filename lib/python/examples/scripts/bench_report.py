@@ -69,8 +69,20 @@ def cells(pools):
                 if d and d != "-" and os.path.isdir(d):
                     ds = "google_speech" if "google_speech" in d else "cifar10"
                     arm = re.sub(r"^(gs_)?F\d+\w*?_s\d+u?_", "", re.sub(r"_r\d+$", "", phase))
-                    out.setdefault((ds, r["trace"], arm, r["baseline"]), []).append(d)
+                    static = re.search(r"F\d+[A-Za-z]?_s\d+_", phase) is not None  # `s0` static vs `s0u` stream on one trace
+                    out.setdefault((ds, r["trace"] + (" static" if static else ""), arm, r["baseline"]), []).append(d)
     return out
+
+
+def ceiling_at(ceil, ds, trace, h):
+    """Centralized ceiling (scripts/ceiling.py rows) at hour h, linear between its hours; None without a row."""
+    pts = sorted((r["hour"], r["ceiling"]) for r in ceil if r["dataset"] == ds and r["trace"] == trace)  # streams only
+    if not pts:
+        return None
+    for (h0, c0), (h1, c1) in zip(pts, pts[1:]):
+        if h0 <= h <= h1:
+            return c0 + (c1 - c0) * (h - h0) / (h1 - h0)
+    return pts[0][1] if h < pts[0][0] else pts[-1][1]
 
 
 def main(argv=None):
@@ -78,7 +90,9 @@ def main(argv=None):
     ap.add_argument("pools", nargs="+")
     ap.add_argument("--targets", default="")
     ap.add_argument("--json-out")
+    ap.add_argument("--ceiling", nargs="*", default=[])
     a = ap.parse_args(argv)
+    ceil = [r for c in a.ceiling for r in json.load(open(c))]
     rows, cs = [], sorted(cells(a.pools).items())
     tgt = lambda ds: [float(x) for x in a.targets.split(",") if x] or TARGETS[ds]
     raw = [((ds, trace, arm + ":raw", b), dirs) for (ds, trace, arm, b), dirs in cs if arm.endswith("_srv")]  # FX-N128
@@ -95,16 +109,17 @@ def main(argv=None):
         for k in legs[0]:
             v = [x[k] for x in legs if x[k] is not None]
             agg[k] = (st.mean(v), max(v) - min(v), len(v)) if v else (None, None, 0)
-        rows.append(dict(dataset=ds, trace=trace, arm=arm, baseline=b, n=len(legs), **agg))
+        c = ceiling_at(ceil, ds, trace, agg["end_h"][0])
+        rows.append(dict(dataset=ds, trace=trace, arm=arm, baseline=b, n=len(legs), ceiling=(c, 0, 1 if c else 0), **agg))
     f = lambda m, s=1, pct=False: "–" if m[0] is None else (f"{100 * m[0]:.1f}±{100 * m[1] / 2:.1f}" if pct else f"{m[0]:.{s}f}")
     for (ds, trace) in sorted({(r["dataset"], r["trace"]) for r in rows}):
         ths = [k[3:] for k in rows[0] if k.startswith("tta")]
         print(f"\n## {ds} {trace}\n| arm | baseline | seeds | AUC % | final % | " + " | ".join(f"TTA {t} min (hit) | GB→{t}" for t in ths)
-              + " | GB |\n|" + "---|" * (6 + 2 * len(ths)))
+              + " | GB | end h | ceiling % |\n|" + "---|" * (8 + 2 * len(ths)))
         for r in sorted((r for r in rows if (r["dataset"], r["trace"]) == (ds, trace)), key=lambda r: -(r["auc"][0] or 0)):
             print(f"| {label(r['arm'])} | {r['baseline']} | {r['n']} | {f(r['auc'], pct=True)} | {f(r['final'], pct=True)} | "
                   + " | ".join(f"{f(r['tta' + t], 0)} ({r['tta' + t][2]}/{r['n']}) | {f(r['gb' + t])}" for t in ths)
-                  + f" | {f(r['gb'])} |")
+                  + f" | {f(r['gb'])} | {f(r['end_h'])} | {f(r['ceiling'], pct=True)} |")
     if a.json_out:
         json.dump(rows, open(a.json_out, "w"), indent=1)
     return 0

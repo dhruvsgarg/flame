@@ -116,48 +116,9 @@ G3_RUNTIME_S = 7200  # 2 h legs (operator 10-15; R6: convergence sign-off 2-4 h)
 G3_EVAL = "evalEverySeconds=auto"  # FX-N112: test eval every leg / EVAL_POINTS of the leg's clock, same for all six
 EVAL_POINTS = 24
 G3S_REPS = 3  # FX-N103: sim replicates per G3 cell, graded against its real-path-identical reals (parity_ladder)
-# FX-N109 (PR39a): one knob off Felix's G3 control per arm; drop an arm's flag once its knob is decided (FELIX "design").
-F39A_REPS = 3
-F39_SEEDS = tuple(range(1, F39A_REPS + 1))  # --seeds: config search runs r1, confirmation adds r2, r3 (FELIX Decisions 10-21)
 F42_SEEDS = (1,)  # --seeds on F42: replicates for arms still in contention (R25)
-F39A_ARMS = {
-    "ctl": {},
-    "c10": dict(c=10), "c20": dict(c=20), "c30": dict(c=30),
-    "K5": dict(agg_goal=5), "K20": dict(agg_goal=20),
-    "eval0": dict(hp="sel.evalGoalFactor=0"), "gate15": dict(hp="sel.evalStaleGate=15"),
-    "gate5": dict(hp="sel.evalStaleGate=5"),
-    # FX-N114: exploration, round_penalty, round_threshold, cut_off_util, a_exp, scale arms dropped (PR39a: no effect)
-    "lr07": dict(hp="opt.learning_rate=0.7"), "lr15": dict(hp="opt.learning_rate=1.5"),
-}
-# FX-N109 (PR39b): K x c grid; arms with fb=True also run fedbuff (fairness control: does the knob help the baseline too?).
-F39B_ARMS = {f"K{k}c{c}": dict(agg_goal=k, c=c, fb=(k, c) in ((10, 15), (5, 15), (10, 30), (5, 30)))
-             for k in (2, 3, 5, 10) for c in (15, 20, 30)}
-# Equal step per update, different step frequency: is K's gain fresher models or a bigger effective lr?
-F39B_ARMS.update(K10lr2=dict(agg_goal=10, c=15, hp="opt.learning_rate=2.0"),
-                 K5lr05=dict(agg_goal=5, c=15, hp="opt.learning_rate=0.5"))
-# FX-N109 (PR39c1/c2): E3 mechanisms, syn_0. "thp" = trainer hp. Fixed-γ arms are diagnostics, not configs.
-# I5: AIMD on K over loss-on-receive (needs I9); K = B pinned at c (FX-T59)
-_DKC = "sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=aimd_k sel.dynamic_kc.k_min=2"
 _STATS = "sel.dynamic_kc.stats=true"  # I5 telemetry only: B and stale-vs-fresh cos per cycle
-_NORM, _GATEU, _UREC = "opt.agg_rate_conf.type=norm", "sel.evalGateUnit=updates", "utilityOnReceive=true"
-_PRE, _GSEC = "utilityPrefixSamples=64", "sel.evalGateUnit=seconds sel.evalStaleGate=300"
-F39C_ARMS = {
-    "ctl": dict(hp=_STATS, fb=True), "K5": dict(agg_goal=5, hp=_STATS),  # anchors (= PR39b K10c15 / K5c15)
-    "K3lr06": dict(agg_goal=3, hp="opt.learning_rate=0.6"), "K2lr04": dict(agg_goal=2, hp="opt.learning_rate=0.4"),  # E3a γ≈.17
-    "K5lr05": dict(agg_goal=5, hp="opt.learning_rate=0.5"), "K10lr2": dict(hp="opt.learning_rate=2.0"),  # E3a speech κ 1.4 / 2.8
-    "nK10": dict(hp=_NORM), "nK5": dict(agg_goal=5, hp=_NORM), "nK10c30": dict(c=30, hp=_NORM),  # E3b I7
-    "gK5": dict(agg_goal=5, hp=_GATEU),  # E3c I8
-    "uK10": dict(thp=_UREC),  # I9
-    "pK10": dict(hp="sel.utilityPerSample=true", thp=_UREC),  # size-neutral utility (Q-DUR)
-    "dkc": dict(hp=_DKC, thp=_UREC),  # E3d I5 from K10; FedBuff stays K10
-    "f2": dict(hp=f"{_DKC} {_NORM} {_GATEU}", thp=_UREC),  # all kept mechanisms together
-}
-# FX-N109 screen vclock per dataset (about PR39b's update counts under FX-D197)
-F39_RUNTIME_S = {"cifar10": 10800, "google_speech": 21600}
-# FX-N124 G2: real-stack smoke of the 10-21 changes on syn_50_3st + the usage stream, 24 h into the trace
-F40S_RUNTIME_S = {"cifar10": 1800, "google_speech": 3600}
-USAGE = 'data_streaming={"enabled":"True","mode":"usage","initial_frac":0.0,"full_data_available_after_s":1}'
-_DKCM = f"{_DKC} sel.dynamic_kc.policy_kwargs.memory=true"  # FX-N121
+_PRE = "utilityPrefixSamples=64"
 
 
 def usage_hp(trace: str) -> str:
@@ -166,60 +127,22 @@ def usage_hp(trace: str) -> str:
             '"trace":"%s"}' % trace)
 
 
-# F41 (ledger C3-C5 + balance, operator 10-21): all six + Felix arms, sims, 24 h into the trace. Cells: syn_0 static (s0),
-# syn_0 usage (s0u: linear growth), syn_50_3st usage (s50u). Felix arms run on the usage cells; s0 = baselines + Felix all.
-F41_RUNTIME_S = {"cifar10": 86400, "google_speech": 64800}  # ≤ 8.5 h wall on jayne 7 + shepherd 4 GPUs
-F41_CELLS = {"s0": ("syn_0", False), "s0u": ("syn_0", True), "s50u": ("syn_50_3st", True)}
 _C3 = "sel.utilityPerSecond=true"
-_C4 = ("sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=aimd_k sel.dynamic_kc.k_min=5 "
-       "sel.dynamic_kc.policy_kwargs.memory=true sel.dynamic_kc.policy_kwargs.stall=true")
-_C5, _BAL, _E0 = "opt.agg_rate_conf.type=value", "sel.participationDecay=1.0", "sel.evalGoalFactor=0"
+_BAL, _E0 = "sel.participationDecay=1.0", "sel.evalGoalFactor=0"
 # New Felix runs without eval tasks (C6: no gain); ctl = old Felix (eval on) is their control, e0 = ctl without eval is each arm's base.
-F41_ARMS = {"ctl": dict(bls=B6), "e0": dict(hp=_E0), "c3": dict(hp=f"{_E0} {_C3}", thp=_PRE),
-            "c3b": dict(hp=f"{_E0} {_C3} {_BAL}", thp=_PRE), "c4": dict(hp=f"{_E0} {_C4}", thp=_PRE), "c5": dict(hp=f"{_E0} {_C5}"),
-            "all": dict(hp=f"{_E0} {_C3} {_BAL} {_C4} {_C5}", thp=_PRE)}
-# F42 (operator 10-21): R27 baselines + their oracle `*` variants, Felix as a +1 feature ladder
-# (old → e0 → +C3 → +bal → +C4 → +C5 = new → +pacing) plus pacing alone; Oort skipped. Long enough for day 2-3 data growth.
+# F42 (operator 10-21): R27 baselines + their oracle `*` variants, Felix old and the l3b ladder (C4, C5, pacing dropped: FELIX).
 F42_RUNTIME_S = {"cifar10": 172800, "google_speech": 129600}
 F42_CELLS = {"s0u": "syn_0", "s50u": "syn_50_3st"}
 F42_EVAL_S = 600  # test eval every 10 min of the leg's clock: TTA resolution (30 min quantized F42S01)
-_HOLD = "validation_holdout=0.1"  # FX-N130: only arms that read held-out data pay for it; the rest train on 100%
-_PROBE = ("sel.probePerWindow=60 sel.probeWindowS=3600 sel.evalStaleGate=3600", f"validation_probe=true {_HOLD}")
-_PACE_KW = '{"window_s":3600,"min_n":150}'
-_PACE_C = '{"name":"pace_c","kwargs":' + _PACE_KW + '}'
-_PACE = f"sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=pace_c sel.dynamic_kc.policy_kwargs={_PACE_KW}"
-_C4P = ('sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=composite sel.dynamic_kc.k_min=5 sel.dynamic_kc.policy_kwargs='
-        '{"sub_policies":[{"name":"aimd_k","kwargs":{"memory":true,"stall":true}},' + _PACE_C + ']}')
 _L3, _L3B = f"{_E0} {_C3}", f"{_E0} {_C3} {_BAL}"
-_EMA = "0.5,0.8,0.9,0.95"
-_VREP = f"validation_probe=true validation_report=true {_HOLD}"  # FX-N127 V2: held-out report on train tasks and probes
-
-
-def _pace_gain(law):  # FX-N127 V3: pace c only (K stays 10), tau 10 min
-    return ("sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=pace_gain sel.dynamic_kc.k_follows_c=false "
-            f'sel.dynamic_kc.policy_kwargs={{"tau_s":600,"law":"{law}","c_min":2}}')
-
 F42_ARMS = {"ctl": dict(bls=("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star")),  # Felix old; baselines (R27)
             "e0": dict(hp=f"{_E0} {_STATS}"),
-            "l3": dict(hp=f"{_L3} {_STATS}", thp=_PRE), "l3b": dict(hp=f"{_L3B} {_STATS}", thp=_PRE), "l4": dict(hp=f"{_L3B} {_C4}", thp=_PRE),
-            "l5": dict(hp=f"{_L3B} {_C4} {_C5}", thp=_PRE),  # Felix new without pacing
-            "l5p": dict(hp=f"{_L3B} {_C5} {_C4P} {_PROBE[0]}", thp=f"{_PRE} {_PROBE[1]}"),  # Felix new
-            "e0p": dict(hp=f"{_E0} {_PACE} {_PROBE[0]}", thp=_PROBE[1]),  # pacing alone on old Felix's selector
+            "l3": dict(hp=f"{_L3} {_STATS}", thp=_PRE), "l3b": dict(hp=f"{_L3B} {_STATS}", thp=_PRE),
             "rstar": dict(bls=("refl",), hp="sel.avail_predictor=oracle sel.avail_priority=1 sel.holdoff_rounds=0 avail_knowledge=oracle"),
             "fdstar": dict(bls=("feddance",), hp="sel.checkin_source=selection avail_knowledge=oracle"),
             "fbstar": dict(bls=("fedbuff",), hp="avail_knowledge=oracle"),  # `*` = the trace's online set at selection
             # K1 ablation: Felix new learning availability by check-in (no notify, no eviction)
-            "fck": dict(hp=f"{_L3B} {_C5} {_C4P} {_PROBE[0]} avail_knowledge=checkin proactive_inflight_evict=False",
-                        thp=f"{_PRE} {_PROBE[1]}"),
-            # F42d (FX-N127 / N128 screens): pacer v2 on l3b (K fixed 10); server step sweep for Felix old / l3b / FedBuff (V4)
-            "v2p": dict(hp=f"{_L3B} {_pace_gain('snr')} {_PROBE[0]}", thp=f"{_PRE} {_VREP}"),
-            "v2pr": dict(hp=f"{_L3B} {_pace_gain('ratio')} {_PROBE[0]}", thp=f"{_PRE} {_VREP}"),
-            "v2p_s025": dict(hp=f"{_L3B} {_pace_gain('snr')} {_PROBE[0]} opt.learning_rate=0.25", thp=f"{_PRE} {_VREP}"),
-            **{f"{a}_s{tag}": dict(bls=bls, hp=f"{hp} opt.learning_rate={lr}".strip(), thp=thp)
-               for a, bls, hp, thp in (("ctl", ("felix", "fedbuff"), "", ""), ("l3b", ("felix",), f"{_L3B} {_STATS}", _PRE))
-               for tag, lr in (("05", 0.5), ("025", 0.25))},
-            # FX-N128 serve-EMA screen: training unchanged, EMAs of the model sequence scored beside it (agg_eval_ema)
-            "ctl_ema": dict(bls=("felix", "fedbuff"), hp=f"evalEma={_EMA}"), "l3b_ema": dict(hp=f"{_L3B} {_STATS} evalEma={_EMA}", thp=_PRE),
+            "fck": dict(hp=f"{_L3B} {_STATS} serveEma=sweep avail_knowledge=checkin proactive_inflight_evict=False", thp=_PRE),
             # FX-N128 serve-EMA: the served (and graded) model averages ~one population sweep of versions (b = 1 - K / n)
             "ctl_srv": dict(bls=("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star"), hp="serveEma=sweep"),
             "l3b_srv": dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=_PRE)}
@@ -237,18 +160,20 @@ F43_ARMS = ("ctl_srv", "rstar_srv", "fdstar_srv", "fbstar_srv", "l3b_srv", "l3b_
 F43_SHAPE = {"cifar10": dict(n=300, c=60, agg_goal=15), "google_speech": dict(n=100, c=30, agg_goal=10, gpus=4, sim_gpus=4)}  # 3 GPUs OOM (33 trainers x 1.2 GB + agg)
 F43_RUNTIME_S = {"cifar10": 432000, "google_speech": 86400}  # to the trace end (cifar ceiling 75% at 120 h); speech ceiling 73-79% at 24 h
 F43_STOP = "targetAccuracy=0.7 targetWindow=5"  # operator 10-23: stop at the 70% goal on the mean of the last 5 evals
+# F44 = loop FL1 (FX-N141): Felix built up from FedBuff, 12 h screens; static full-data cifar races to 70%, streams track the ceiling.
+F44_CELLS = {"cifar10": {"s0": ("syn_0", False), "s0u": ("syn_0", True), "s50u": ("syn_50_3st", True)},
+             "google_speech": {"s0u": ("syn_0", True)}}
+F44_RUNTIME_S = 43200
+F44_SHAPE = {"cifar10": F43_SHAPE["cifar10"], "google_speech": {}}  # speech screens at G3's n 50 (n 100 confirms)
+_B1 = f"{_E0} sel.selectType=random opt.agg_rate_conf.type=old serveEma=sweep"  # S1: FedBuff on Felix's stack (notify / evict)
+_B1T = "lr_batch_normalize=true"  # FedBuff's §5 sub-batch lr normalization
+_GUARD, _WD = "opt.norm_clip=3", "trainerWeightDecay=0.0005"  # S2: FX-D232 guard; FedScale clients' wd (baseline_reference)
+F44_ARMS = {"ctl_srv": dict(bls=("felix", "fedbuff")), "l3b_srv": {},  # no FedBuff* (F43: within 0.4 pp of FedBuff)
+            "b1": dict(hp=_B1, thp=_B1T),  # S2 decided as a group: no single-knob b1w / b1g unless b1gw is ambiguous
+            "b1gw": dict(hp=f"{_B1} {_GUARD}", thp=f"{_B1T} {_WD}"),
+            **{f"b1gw_e{e}": dict(hp=f"{_B1} {_GUARD}", thp=f"{_B1T} {_WD} epochs={e}") for e in (2, 3)}}
+F44_SPEECH_ARMS = ("ctl_srv", "l3b_srv", "b1", "b1gw", "b1gw_e3")
 F42_ARMS["l3b_ro_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep opt.agg_rate_conf.type=old", thp=_PRE)  # FX-N132: FedBuff's rate
-# D2 F39W (FX-N116): Felix's local samples per task; fixed (capped at an epoch) vs per-client split (compute = beta/(1-beta) x transfer)
-F39W_SAMPLES = {"cifar10": (32, 64, 128), "google_speech": (128, 256, 512)}
-F39W_BETAS = (0.5, 0.33)
-# D4 F39E: eval tasks' value per cell (trace x static | events stream), with / without I9; oracle bounds sensing on streams.
-F39E_CELLS = {"s0": ("syn_0", False), "s0ev": ("syn_0", True), "s50": ("syn_50_3st", False), "s50ev": ("syn_50_3st", True)}
-# g10: denser eval gate; at 35, speech Felix ran 2 eval tasks per 2 h (PR39).
-F39E_ARMS = {"ctl": dict(bls=("felix", "fedbuff", "oort")), "eval0": dict(hp="sel.evalGoalFactor=0"),
-             "g10": dict(hp="sel.evalStaleGate=10"),
-             "u": dict(thp=_UREC), "u0": dict(hp="sel.evalGoalFactor=0", thp=_UREC), "oracle": dict(oracle=True, stream_only=True),
-             # PR40b: fresh utility at no cost (FX-N119), eval gate on the clock (FX-N118; ~half a syn_50_3st AVL_EVAL episode)
-             "pre": dict(thp=_PRE), "gsec": dict(hp=_GSEC), "pregsec": dict(hp=_GSEC, thp=_PRE)}
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
@@ -515,63 +440,6 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         if tier == "G3C":
             out = [replace(ph, pid=ph.pid.replace("G3_", "G3C_"), kind="real") for ph in out]
         return out
-    if tier in ("F39A", "F39B", "F39C", "F39W", "F39E"):  # FX-N109: Felix screens off a G3 control, sims, seed per replicate
-        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
-        if tier in ("F39C", "F39W", "F39E"):
-            g3 = replace(g3, runtime_s=F39_RUNTIME_S[ds])
-        cells = {"": ("syn_0", False)}
-        arms = {"F39A": F39A_ARMS, "F39B": F39B_ARMS, "F39C": F39C_ARMS, "F39E": F39E_ARMS}.get(tier)
-        if tier == "F39W":
-            batch = 32 if ds == "cifar10" else 16  # Felix's batch (baseline_reference.yaml)
-            arms = {f"s{n}": dict(thp=f"localWork=cap localSteps={n // batch}") for n in F39W_SAMPLES[ds]}
-            arms.update({f"wb{round(100 * b)}": dict(thp=f"localWork=split localWorkBeta={b}") for b in F39W_BETAS})
-        if tier == "F39E":
-            cells = {f"{c}_": v for c, v in F39E_CELLS.items()}
-        out = []
-        for cell, (trace, stream) in cells.items():
-            base = g3
-            if stream:
-                ev = stream_hp("events", base.runtime_s, "")
-                base = replace(g3, trainer_hp=f"{ev} {DETERMINISTIC}", agg_hp=f"{ev} {G3_EVAL}")
-            for arm, kw in arms.items():
-                kw = dict(kw)
-                fb = kw.pop("fb", False)
-                if kw.pop("stream_only", False) and not stream:
-                    continue
-                bls = kw.pop("bls", None) or (("felix", "fedbuff") if arm == "ctl" or fb else ("felix",))
-                bls = tuple(b for b in bls if b in baselines)  # --baselines narrows an arm (PR39c1: Felix only)
-                if not bls:
-                    continue
-                hp = " ".join(x for x in (base.agg_hp, kw.pop("hp", ""), oracle_a(ds) if kw.pop("oracle", False) else "") if x)
-                thp = " ".join(x for x in (base.trainer_hp, kw.pop("thp", "")) if x)
-                out += [replace(base, pid=f"{DS_TAG[ds]}{tier}_{cell}{arm}_r{i}", baselines=bls, kind="sim_ev", trace=trace,
-                                trainer_hp=thp, agg_hp=f"{hp} seed={1233 + i}", **kw) for i in F39_SEEDS]
-        return out
-    if tier == "F40S":
-        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
-        base = replace(g3, runtime_s=F40S_RUNTIME_S[ds], trace="syn_50_3st", trace_offset_s="86400", kind="sim_ev",
-                       trainer_hp=f"{USAGE} {DETERMINISTIC}", agg_hp=f"{USAGE} {G3_EVAL}")
-        arms = {"ctl": (("felix", "fedbuff", "oort"), "", ""), "new": (("felix",), f"{_GSEC} {_DKCM}", _PRE)}
-        return [replace(base, pid=f"{DS_TAG[ds]}F40S_{a}", baselines=tuple(b for b in bls if b in baselines),
-                        agg_hp=f"{base.agg_hp} {hp}".strip(), trainer_hp=f"{base.trainer_hp} {thp}".strip())
-                for a, (bls, hp, thp) in arms.items() if any(b in baselines for b in bls)]
-    if tier == "F41":
-        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
-        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
-        out = []
-        for cell, (trace, stream) in F41_CELLS.items():
-            dsh = usage_hp(trace) if stream else full
-            base = replace(g3, runtime_s=F41_RUNTIME_S[ds], trace=trace, trace_offset_s="86400" if stream else "", kind="sim_ev",
-                           trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} {G3_EVAL}")
-            for arm, kw in F41_ARMS.items():
-                if not stream and arm not in ("ctl", "all"):
-                    continue
-                bls = tuple(b for b in kw.get("bls", ("felix",)) if b in baselines)
-                if bls:
-                    out.append(replace(base, pid=f"{DS_TAG[ds]}F41_{cell}_{arm}", baselines=bls,
-                                       agg_hp=f"{base.agg_hp} {kw.get('hp', '')}".strip(),
-                                       trainer_hp=f"{base.trainer_hp} {kw.get('thp', '')}".strip()))
-        return out
     if tier == "F42":
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
         out = []
@@ -592,6 +460,25 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
             arm = re.sub(r"^(?:gs_)?F42_s(?:0|50)u_", "", ph.pid)
             if arm in F43_ARMS:
                 out.append(replace(ph, pid=ph.pid.replace("F42_", "F43_"), runtime_s=F43_RUNTIME_S[ds], agg_hp=f"{ph.agg_hp} {F43_STOP}", **F43_SHAPE[ds]))
+        return out
+    if tier == "F44":  # FX-N141 loop FL1: F42 arms reused for anchors, F44_ARMS on top
+        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        out = []
+        for cell, (trace, stream) in F44_CELLS[ds].items():
+            dsh = usage_hp(trace) if stream else full
+            base = replace(g3, runtime_s=F44_RUNTIME_S, trace=trace, trace_offset_s="86400" if stream else "", kind="sim_ev",
+                           trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S} {F43_STOP}",
+                           **F44_SHAPE[ds])
+            for arm, kw in F44_ARMS.items():
+                if ds == "google_speech" and arm not in F44_SPEECH_ARMS:
+                    continue
+                ref = F42_ARMS.get(arm, {})
+                hp, thp = kw.get("hp", ref.get("hp", "")), kw.get("thp", ref.get("thp", ""))
+                bls = tuple(b for b in kw.get("bls", ref.get("bls", ("felix",))) if b in baselines)
+                if bls:
+                    out.append(replace(base, pid=f"{DS_TAG[ds]}F44_{cell}_{arm}", baselines=bls,
+                                       agg_hp=f"{base.agg_hp} {hp}".strip(), trainer_hp=f"{base.trainer_hp} {thp}".strip()))
         return out
     if tier == "F42R":  # F42-T7 / T9 on GPU: G3 real legs, 8 min wall: Felix notify + the check-in baselines
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
@@ -2257,7 +2144,7 @@ def code_key() -> str:
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A F39B F39C F39W F39E F40S F41 F42 F42C F42CR F42R, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F42 F42C F42CR F42R F43 F44, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")
@@ -2282,7 +2169,7 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--progress-label", default="", help="prefix of the PROGRESS lines (the ladder passes its rung)")
     ap.add_argument("--output-dir", default="")
     ap.add_argument("--smoke", action="store_true", help="every leg 60s, n<=12 (the pool's own gate)")
-    ap.add_argument("--seeds", default="", help="F39 / F42 tiers: replicate ids to run, e.g. 1 or 2,3 (F39 default all, F42 default 1)")
+    ap.add_argument("--seeds", default="", help="F42 tiers: replicate ids to run, e.g. 1 or 2,3 (default 1)")
     ap.add_argument("--scale-smoke", type=int, default=0, metavar="S",
                     help="FX-D56: every leg S seconds at its production n, c and GPUs (density/OOM check before a block)")
     ap.add_argument("--gate", action=argparse.BooleanOptionalAction, default=None,
@@ -2307,9 +2194,9 @@ def _parser() -> argparse.ArgumentParser:
 
 def plan(a, ap):
     """Phases and jobs for parsed args (main, and bench_pool --tier: the same legs, FX-D213)."""
-    global MEASURED, GPU_SHARE, SHORT_LEGS, F39_SEEDS, F42_SEEDS
+    global MEASURED, GPU_SHARE, SHORT_LEGS, F42_SEEDS
     if a.seeds:
-        F39_SEEDS = F42_SEEDS = tuple(int(x) for x in a.seeds.split(","))
+        F42_SEEDS = tuple(int(x) for x in a.seeds.split(","))
     MEASURED, GPU_SHARE, SHORT_LEGS = a.lease_from_telemetry, a.gpu_share, bool(a.scale_smoke)
     set_gpu_allow(a.gpu_ids)
 

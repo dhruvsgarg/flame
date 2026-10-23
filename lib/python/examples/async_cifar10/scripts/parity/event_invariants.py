@@ -578,6 +578,29 @@ def _ground_truth(run):
                 os.environ[k] = v
 
 
+def _sync_closes(run):
+    """Sorted (close vclock, intake cut, K-th fresh arrival, round) per sync train round; cut = its last contributor's
+    arrival (sct or withheld delivery_ts); either is the close when an arrival is not logged."""
+    sct = {(tid, e["round"]): float(e["sim_completion_ts"]) for tid, evs in run["trainers"].items() for e in evs
+           if e.get("event") == "trainer_round" and e.get("sim_completion_ts") is not None}
+    dts = {(e.get("end_id"), round(float(e["sct"]), 3)): float(e["delivery_ts"]) for e in _events(run, "withheld_delivery")}
+    out = []
+    for e in _train_commits(run):
+        if e.get("vclock_now") is None:
+            continue
+        c, arr, fresh = float(e["vclock_now"]), [], []
+        for t, st in zip(e.get("contributing_trainers") or [], e.get("staleness") or []):
+            s = sct.get((t, e["round"] - st)) if st is not None else None
+            arr.append(None if s is None else dts.get((t, round(s, 3)), s))
+            if st == 0:
+                fresh.append(arr[-1])
+        cut = max(arr) if arr and None not in arr else c
+        k = int(e.get("agg_goal") or 0)
+        kcut = sorted(fresh)[k - 1] if k and len(fresh) >= k and None not in fresh else c
+        out.append((c, cut, kcut, e.get("round")))
+    return sorted(out, key=lambda x: x[0])
+
+
 def ev16_withheld_delivery(run):
     """Sim: a train update whose trainer is not AVL_TRAIN at its sct (UN_AVL or AVL_EVAL, FX-N97) commits only
     as a withheld delivery, at delivery_ts = next deliverable state after sct (FX-L12); catches committing at sct,
@@ -593,8 +616,7 @@ def ev16_withheld_delivery(run):
     examples = []
     budget = float(_hp(run, "max_experiment_runtime_s", "maxExperimentRuntimeS") or math.inf)
     # FX-D51: a sync delivery joins the open round and commits at its close, as in real.
-    closes = [] if _is_async(run) else sorted(
-        float(e["vclock_now"]) for e in _train_commits(run) if e.get("vclock_now") is not None)
+    closes = [] if _is_async(run) else _sync_closes(run)
     release = float(_hp(run, "sim_gate_release_s", "simGateReleaseSeconds") or 0.0)  # FX-D163
     committed = {(t, e["round"] - st) for e in _train_commits(run) if e.get("round") is not None
                  for t, st in zip(e.get("contributing_trainers") or [], e.get("staleness") or [])
@@ -618,7 +640,10 @@ def ev16_withheld_delivery(run):
         _due = float(e["delivery_ts"])
         # Sync: a close not yet logged (live prefix) is the commit itself, never late (FX-D136). A delivery due at a close's
         # instant joins the next version (that close took its K first): F42-T12 (b).
-        _close = next((c for c in closes if c > _due + _EPS_S), math.inf if not _is_async(run) else _due)
+        # A round could not take a delivery due after its last arrival, or a fresh one due at or after its K-th fresh (F42g REFL).
+        _tr = e["round"] - e["staleness"] if e.get("round") is not None and e.get("staleness") is not None else None
+        _close = next((c for c, cut, kcut, r in closes if c > _due + _EPS_S and cut >= _due - _EPS_S
+                       and not (r == _tr and kcut <= _due + _EPS_S)), math.inf if not _is_async(run) else _due)
         if e.get("actual_commit_ts") is not None and _due < budget and \
                 float(e["actual_commit_ts"]) > max(_due + _LATE_DELIVERY_S, _close + _EPS_S):
             late += 1

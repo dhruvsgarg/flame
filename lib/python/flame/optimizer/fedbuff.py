@@ -23,6 +23,8 @@ SecAgg algorithm is not the scope of this implementation.
 """
 import logging
 import math
+import statistics
+from collections import deque
 
 import numpy as np
 from diskcache import Cache
@@ -32,6 +34,7 @@ from ..common.util import MLFramework, get_ml_framework_in_use, valid_frameworks
 from .abstract import AbstractOptimizer
 from .bn_buffers import clamp_running_var, is_bn_stat
 from .regularizer.default import Regularizer
+from .. import telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,9 @@ class FedBuff(AbstractOptimizer):
         self.bn_absolute_mean = str(kwargs.get("bn_absolute_mean", True)).lower() == "true"
         self._bn_hist, self._bn_sum, self._bn_n, self._version = {}, {}, 0, None
         self._u_sum, self._u_n = 0.0, 0  # FX-N109 I7: cycle utility sum / count for rate type "norm"
+        # FX-D232: clip an update's norm to norm_clip x the median of the last 200 (0 = off); FX-T82's lone 241 vs 0.03 step.
+        self.norm_clip = float(kwargs.get("norm_clip", 0) or 0)
+        self._norms = deque(maxlen=200)
 
         ml_framework_in_use = get_ml_framework_in_use()
         if ml_framework_in_use == MLFramework.PYTORCH:
@@ -211,9 +217,24 @@ class FedBuff(AbstractOptimizer):
             )
             self._version = version
             self._bn_base = self._bn_hist.get(tres.version)
+            if self.norm_clip > 0:
+                self._clip_norm(tres, version)
             self.aggregate_fn(tres, rate)
 
         return self.agg_goal_weights
+
+    def _clip_norm(self, tres, version):
+        """FX-D232: scale a delta whose L2 (BN stats excluded) exceeds norm_clip x the running median; needs 10 norms first."""
+        if not isinstance(tres.weights, dict):
+            return
+        norm = math.sqrt(sum(float(v.double().pow(2).sum()) for k, v in tres.weights.items()
+                             if v.is_floating_point() and not is_bn_stat(k)))
+        med = statistics.median(self._norms) if len(self._norms) >= 10 else None
+        self._norms.append(norm)
+        if med and norm > self.norm_clip * med:
+            scale = self.norm_clip * med / norm
+            tres.weights = {k: v if is_bn_stat(k) or not v.is_floating_point() else v * scale for k, v in tres.weights.items()}
+            telemetry.emit("update_clipped", version=version, trainer_version=tres.version, norm=norm, median=med, scale=scale)
 
     def scale_add_agg_weights(
         self, base_weights: ModelWeights, agg_goal_weights: ModelWeights, agg_goal: int

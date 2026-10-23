@@ -21,29 +21,25 @@ _OLD = dict(know="notify", evict="true", eval="1.0", ups="-", bal="-", dkc="-", 
 _E0 = dict(_OLD, eval="0")
 _L3 = dict(_E0, ups="true", prefix="64")
 _L3B = dict(_L3, bal="1.0")
-_L4 = dict(_L3B, dkc="aimd_k")
-_L5 = dict(_L4, rate="value")
-_VAL = dict(probe="60", vprobe="true", holdout="0.1")  # FX-N130: arms reading held-out data hold out 10%
-_V2 = dict(_L3B, dkc="pace_gain", kfc="false", vrep="true", **_VAL)  # FX-N127: l3b + pacer v2, K fixed
+_B1 = dict(_E0, sel="random", rate="old", serve="sweep", lrn="true")
 EXPECT = {
-    ("felix", "ctl"): _OLD, ("felix", "e0"): _E0, ("felix", "l3"): _L3, ("felix", "l3b"): _L3B, ("felix", "l4"): _L4,
-    ("felix", "l5"): _L5, ("felix", "l5p"): dict(_L5, dkc="composite[aimd_k,pace_c]", **_VAL),
-    ("felix", "e0p"): dict(_E0, dkc="pace_c", **_VAL),
-    ("felix", "fck"): dict(_L5, dkc="composite[aimd_k,pace_c]", know="checkin", evict="false", **_VAL),
-    ("felix", "v2p"): _V2, ("felix", "v2pr"): _V2, ("felix", "v2p_s025"): dict(_V2, lr="0.25"),
-    ("felix", "ctl_s05"): dict(_OLD, lr="0.5"), ("felix", "ctl_s025"): dict(_OLD, lr="0.25"),
-    ("felix", "l3b_s05"): dict(_L3B, lr="0.5"), ("felix", "l3b_s025"): dict(_L3B, lr="0.25"),
-    ("felix", "ctl_ema"): _OLD, ("felix", "l3b_ema"): _L3B, ("fedbuff", "ctl_ema"): dict(know="checkin", evict="false", rate="old"),
+    ("felix", "ctl"): _OLD, ("felix", "e0"): _E0, ("felix", "l3"): _L3, ("felix", "l3b"): _L3B,
+    ("felix", "fck"): dict(_L3B, know="checkin", evict="false", serve="sweep"),
     ("felix", "ctl_srv"): dict(_OLD, serve="sweep"), ("felix", "l3b_srv"): dict(_L3B, serve="sweep"),
+    ("felix", "l3b_e2_srv"): dict(_L3B, serve="sweep", ep="2"), ("felix", "l3b_e3_srv"): dict(_L3B, serve="sweep", ep="3"),
+    ("felix", "l3b_e4_srv"): dict(_L3B, serve="sweep", ep="4"),
     ("felix", "l3b_b3_srv"): dict(_L3B, bal="3.0", serve="sweep"),
     ("felix", "l3b_pb_srv"): dict(_L3B, prefix="-1", serve="sweep"),
     ("felix", "l3b_ro_srv"): dict(_L3B, rate="old", serve="sweep"),
-    ("felix", "rnd_srv"): dict(_E0, serve="sweep"),
-    ("felix", "l3bn_srv"): dict(_L3B, serve="sweep"),
-    ("felix", "rnd_ro_srv"): dict(_E0, rate="old", serve="sweep"), ("felix", "rnd_ron_srv"): dict(_E0, rate="old", serve="sweep"),
+    ("felix", "rnd_srv"): dict(_E0, sel="random", serve="sweep"),
+    ("felix", "l3bn_srv"): dict(_L3B, serve="sweep", lrn="true"),
+    ("felix", "rnd_ro_srv"): dict(_E0, sel="random", rate="old", serve="sweep"),
+    ("felix", "rnd_ron_srv"): dict(_B1),
+    # F44 / FL1 (FX-N141): S1 base b1 = FedBuff on Felix's stack; S2 adds the guard (FX-D232), wd, epochs
+    ("felix", "b1"): _B1, ("felix", "b1w"): dict(_B1, wd="0.0005"), ("felix", "b1g"): dict(_B1, nclip="3"),
+    ("felix", "b1gw"): dict(_B1, nclip="3", wd="0.0005"),
+    ("felix", "b1gw_e2"): dict(_B1, nclip="3", wd="0.0005", ep="2"), ("felix", "b1gw_e3"): dict(_B1, nclip="3", wd="0.0005", ep="3"),
     ("fedbuff", "ctl_srv"): dict(know="checkin", evict="false", rate="old", serve="sweep"),
-    ("fedbuff", "ctl_s05"): dict(know="checkin", evict="false", rate="old", lr="0.5"),
-    ("fedbuff", "ctl_s025"): dict(know="checkin", evict="false", rate="old", lr="0.25"),
     ("fedbuff", "*"): dict(know="checkin", evict="false", rate="old"), ("fedbuff", "fbstar"): dict(know="oracle", evict="false", rate="old"),
     ("refl", "ctl"): dict(know="checkin", evict="false", pred="prophet", holdoff="0"),
     ("refl", "rstar"): dict(know="oracle", evict="false", pred="oracle", prio="1", prob="0.9", holdoff="0"),
@@ -52,7 +48,7 @@ EXPECT = {
     ("fedavg", "*"): dict(know="checkin", evict="false"),
     ("oort", "*"): dict(know="checkin", evict="false"), ("oort_star", "*"): dict(know="oracle", evict="false"),
 }
-COMMON = dict(holdout="-", serve="-", p34="ok")
+COMMON = dict(holdout="-", serve="-", p34="ok", sel="-", nclip="-", lrn="-", wd="-", ep="-")
 
 
 def _s(v):
@@ -76,7 +72,9 @@ def knobs(run_dir, trainer_hp):
                 pred=_s(sel.get("avail_predictor")), prio=_s(sel.get("avail_priority")), prob=_s(sel.get("avail_probability")),
                 checkin=_s(sel.get("checkin_source")), holdoff=_s(sel.get("holdoff_rounds")), K=_s(hp.get("aggGoal")), c=_s(sel.get("c")),
                 timeout=_s(hp.get("send_timeout_wait_s")), lr=_s(opt.get("learning_rate")), kfc=_s(dk.get("k_follows_c")),
-                vrep=_s(trainer_hp.get("validation_report")), serve=_s(hp.get("serveEma")))
+                vrep=_s(trainer_hp.get("validation_report")), serve=_s(hp.get("serveEma")), sel=_s(sel.get("selectType")).replace("default", "-"),
+                nclip=_s(opt.get("norm_clip")), lrn=_s(trainer_hp.get("lr_batch_normalize")),
+                wd=_s(trainer_hp.get("trainerWeightDecay")), ep=_s(trainer_hp.get("epochs")))
 
 
 def holdout_check(run_dir, holdout):
@@ -115,7 +113,7 @@ def legs(pool):
             yield leg, b, arm, dict(k, p34=holdout_check(runs[-1], k["holdout"]))
     for run in sorted(glob.glob(os.path.join(pool, "*", "runs", "*_s[0-9]*", "run_*"))):  # bench_pool layout (FX-D213)
         phase, slot = run.split(os.sep)[-4], run.split(os.sep)[-2]
-        m = re.match(r"(?:gs_)?F\d+\w*?_s\d+u?_(\w+?)$", phase)
+        m = re.match(r"(?:gs_)?F\d+\w*?_s\d+u?_(\w+)$", phase)
         b = re.match(r"(?:syn_\w+?|mobiperf\w*?)_([a-z_]+)_s\d+$", slot)
         if not (m and b):
             continue
@@ -129,7 +127,7 @@ def main(argv=None):
     pools = (argv if argv is not None else sys.argv[1:])
     bad = 0
     cols = ("know", "evict", "eval", "ups", "bal", "dkc", "rate", "probe", "vprobe", "prefix", "holdout", "pred", "prio", "prob",
-            "checkin", "holdoff", "K", "c", "timeout", "lr", "kfc", "vrep", "serve", "p34")
+            "checkin", "holdoff", "K", "c", "timeout", "lr", "serve", "sel", "nclip", "lrn", "wd", "ep", "p34")
     print("| leg | " + " | ".join(cols) + " | ok |\n|" + "---|" * (len(cols) + 2))
     for pool in pools:
         for leg, b, arm, k in legs(pool):

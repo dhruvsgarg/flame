@@ -4,6 +4,7 @@
 
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -486,9 +487,9 @@ def test_short_cap_keeps_unaware_oort_syn_50_full_length():
     assert rt("T3", "cifar10", "fedbuff")["T3_syn_50_3st_fedbuff_real"] == 240  # GPU-only keep
     assert rt("G0U", "cifar10", "fedbuff")["G0U_syn_50_3st_fedbuff_real"] == pool.G0U_RUNTIME_S["cifar10"]
     assert set(rt("G0T", "cifar10", "oort").values()) == {240, pool.G0U_RUNTIME_S["cifar10"]}
-    f41 = {j.jid: j.runtime_s for j in pool.build_jobs([p for p in pool.tier_phases("F41", ("oort",), "cifar10")
+    f42 = {j.jid: j.runtime_s for j in pool.build_jobs([p for p in pool.tier_phases("F42", ("oort",), "cifar10")
                                                          if not pool.cap_runtime([p], 240)], 1.0, 1, {})}
-    assert f41["F41_s50u_ctl_syn_50_3st_oort_sim"] == pool.SHORT_KEEP_S  # FX-N125: a 24 h leg smokes at 1 h, not in full
+    assert f42["F42_s50u_ctl_syn_50_3st_oort_sim"] == pool.SHORT_KEEP_S  # FX-N125: a long leg smokes at 1 h, not in full
 
 
 def test_trainer_cap_per_gpu_spans_legs(tmp_path, monkeypatch):
@@ -663,44 +664,11 @@ def test_exclusive_leg_skips_gpus_with_another_pools_shared_slots(tmp_path):
     assert pool.exclusive_gpus(3, [0, 2, 3], excl) is None
 
 
-def test_f39a_one_knob_per_arm():
-    """FX-N109: each F39A arm is the G3 syn_0 control plus its one knob, sim-only, a seed per replicate."""
-    phs = pool.tier_phases("F39A", pool.B6, "cifar10")
-    g3 = next(p for p in pool.tier_phases("G3", ("felix",), "cifar10") if p.pid == "G3_syn_0")
-    assert len(phs) == len(pool.F39A_ARMS) * pool.F39A_REPS
-    by = {p.pid: p for p in phs}
-    assert by["F39A_ctl_r1"].baselines == ("felix", "fedbuff") and by["F39A_c10_r1"].baselines == ("felix",)
-    assert all(p.kind == "sim_ev" and p.trace == "syn_0" and p.n == g3.n for p in phs)
-    assert by["F39A_c10_r1"].c == 10 and by["F39A_K5_r1"].agg_goal == 5 and by["F39A_ctl_r1"].c == g3.c
-    assert by["F39A_gate5_r3"].agg_hp == f"{g3.agg_hp} sel.evalStaleGate=5 seed=1236"
-
-
-def test_f39w_local_work_arms():
-    """FX-N116: fixed local samples (capped at an epoch) and per-client split arms, Felix only, at the F39 vclock."""
-    by = {p.pid: p for p in pool.tier_phases("F39W", pool.B6, "google_speech")}
-    assert set(by) == {f"gs_F39W_{a}_r{i}" for a in ("s128", "s256", "s512", "wb50", "wb33") for i in (1, 2, 3)}
-    assert "localWork=cap localSteps=16" in by["gs_F39W_s256_r1"].trainer_hp  # 256 samples / batch 16
-    assert "localWork=split localWorkBeta=0.33" in by["gs_F39W_wb33_r2"].trainer_hp
-    assert all(p.baselines == ("felix",) and p.runtime_s == pool.F39_RUNTIME_S["google_speech"] for p in by.values())
-
-
-def test_f39e_eval_value_grid():
-    """Operator 10-21: four cells (trace x static / events stream), eval on / off, I9 on / off; oracle on streams only."""
-    by = {p.pid: p for p in pool.tier_phases("F39E", pool.B6, "cifar10")}
-    assert len(by) == (4 * 8 + 2) * pool.F39A_REPS  # + PR40b pre / gsec / pregsec
-    assert "utilityPrefixSamples=64" in by["F39E_s50_pregsec_r1"].trainer_hp
-    assert "sel.evalGateUnit=seconds" in by["F39E_s50_gsec_r1"].agg_hp and "utilityPrefixSamples" not in by["F39E_s50_gsec_r1"].trainer_hp
-    assert by["F39E_s50ev_ctl_r1"].baselines == ("felix", "fedbuff", "oort") and by["F39E_s50ev_ctl_r1"].trace == "syn_50_3st"
-    assert '"mode":"events"' in by["F39E_s0ev_u0_r1"].trainer_hp and "utilityOnReceive=true" in by["F39E_s0ev_u0_r1"].trainer_hp
-    assert "sel.evalGoalFactor=0" in by["F39E_s0ev_u0_r1"].agg_hp and '"enabled":"False"' in by["F39E_s50_eval0_r1"].agg_hp
-    assert "F39E_s0_oracle_r1" not in by and "oracle_utility_injection" in by["F39E_s0ev_oracle_r1"].agg_hp
-
-
 def test_eval_cadence_follows_leg_runtime(tmp_path):
     """FX-N112: G3-family legs eval every runtime / EVAL_POINTS seconds of their own clock."""
-    ph = next(p for p in pool.tier_phases("F39C", ("felix",), "cifar10") if p.pid == "F39C_ctl_r1")
+    ph = next(p for p in pool.tier_phases("G3", ("felix",), "cifar10") if p.pid == "G3_syn_0")
     j = next(j for j in pool.build_jobs([ph], 0.2, 1, {}) if j.mode != "grade")
-    assert f"evalEverySeconds={10800 / pool.EVAL_POINTS:g}" in " ".join(j.args)
+    assert f"evalEverySeconds={pool.G3_RUNTIME_S / pool.EVAL_POINTS:g}" in " ".join(j.args)
 
 
 def test_stall_limit_covers_the_task_timeout():
@@ -712,72 +680,34 @@ def test_stall_limit_covers_the_task_timeout():
 
 def test_seeds_narrow_screen_replicates(monkeypatch):
     """FELIX Decisions 10-21: config search runs one seed; confirmation adds the rest."""
-    monkeypatch.setattr(pool, "F39_SEEDS", (1,))
-    pids = [p.pid for p in pool.tier_phases("F39W", ("felix",), "cifar10")]
-    assert pids and all(p.endswith("_r1") for p in pids)
-    monkeypatch.setattr(pool, "F39_SEEDS", (2, 3))
-    assert {p.pid[-2:] for p in pool.tier_phases("F39W", ("felix",), "cifar10")} == {"r2", "r3"}
+    monkeypatch.setattr(pool, "F42_SEEDS", (1,))
+    pids = [p.pid for p in pool.tier_phases("F42", ("felix",), "cifar10")]
+    assert pids and not any(re.search(r"_r\d$", p) for p in pids)
+    monkeypatch.setattr(pool, "F42_SEEDS", (2, 3))
+    assert {p.pid[-2:] for p in pool.tier_phases("F42", ("felix",), "cifar10")} == {"r2", "r3"}
 
 
-def test_f40s_smoke_carries_the_offset_stream_and_new_knobs():
-    """FX-N124 G2: both cells run syn_50_3st + the usage stream 24 h into the trace; `new` adds the 10-21 knobs."""
-    by = {p.pid: p for p in pool.tier_phases("F40S", pool.B6, "google_speech")}
-    ctl, new = by["gs_F40S_ctl"], by["gs_F40S_new"]
-    assert ctl.baselines == ("felix", "fedbuff", "oort") and new.baselines == ("felix",)
-    assert all(p.trace == "syn_50_3st" and p.trace_offset_s == "86400" and '"mode":"usage"' in p.trainer_hp for p in (ctl, new))
-    assert "utilityPrefixSamples=64" in new.trainer_hp and "evalGateUnit=seconds" in new.agg_hp
-    assert "policy_kwargs.memory=true" in new.agg_hp and "utilityPrefixSamples" not in ctl.trainer_hp
-
-
-def test_f41_cells_arms_and_trace_tied_stream():
-    """F41: s0 static (baselines + Felix all), s0u / s50u usage tied to the leg's own trace; Felix arms carry their knobs."""
-    by = {p.pid: p for p in pool.tier_phases("F41", pool.B6, "cifar10")}
-    assert sum(len(p.baselines) for p in by.values()) == 31
-    assert "evalGoalFactor=0" not in by["F41_s50u_ctl"].agg_hp  # old Felix keeps eval tasks as the control
-    assert all("evalGoalFactor=0" in by[f"F41_s50u_{a}"].agg_hp for a in ("e0", "c3", "c3b", "c4", "c5", "all"))
-    assert set(by) >= {"F41_s0_ctl", "F41_s0_all", "F41_s0u_c3", "F41_s50u_c5"} and "F41_s0_c3" not in by
-    assert by["F41_s0_ctl"].baselines == pool.B6 and "data_streaming" in by["F41_s0_ctl"].trainer_hp
-    assert '"enabled":"False"' in by["F41_s0_ctl"].trainer_hp and not by["F41_s0_ctl"].trace_offset_s
-    for cell, trace in (("s0u", "syn_0"), ("s50u", "syn_50_3st")):
-        p = by[f"F41_{cell}_ctl"]
-        assert p.trace == trace and p.trace_offset_s == "86400" and f'"trace":"{trace}"' in p.trainer_hp
-        assert f'"trace":"{trace}"' in p.agg_hp  # aggregator / checker read the same schedule
-    assert "utilityPerSecond=true" in by["F41_s50u_c3"].agg_hp and "utilityPrefixSamples=64" in by["F41_s50u_c3"].trainer_hp
-    assert "participationDecay=1.0" in by["F41_s50u_c3b"].agg_hp
-    assert "k_min=5" in by["F41_s50u_c4"].agg_hp and "stall=true" in by["F41_s50u_c4"].agg_hp
-    assert "agg_rate_conf.type=value" in by["F41_s50u_c5"].agg_hp
-
-
-def test_f42_tier_r27_holdout_and_pacing():
-    """F42: only arms reading held-out data hold out 10% (FX-N130); Felix +1 ladder; check-in baselines, `*` oracles, Felix K1."""
+def test_f42_tier_r27_arms():
+    """F42: Felix old + l3b ladder, check-in baselines, `*` oracles, Felix K1; no arm holds data out now (FX-N130)."""
     by = {p.pid: p for p in pool.tier_phases("F42", pool.B6 + ("fedavg",), "cifar10")}
-    arms = ("ctl", "e0", "l3", "l3b", "l4", "l5", "l5p", "e0p", "rstar", "fdstar", "fbstar", "fck", "v2p", "v2pr", "v2p_s025",
-            "ctl_s05", "ctl_s025", "l3b_s05", "l3b_s025", "ctl_ema", "l3b_ema", "ctl_srv", "l3b_srv",
+    arms = ("ctl", "e0", "l3", "l3b", "rstar", "fdstar", "fbstar", "fck", "ctl_srv", "l3b_srv",
             "rstar_srv", "fdstar_srv", "fbstar_srv", "l3b_b3_srv", "l3b_pb_srv", "l3b_ro_srv", "rnd_srv", "rnd_ro_srv", "rnd_ron_srv", "l3bn_srv",
             "l3b_e2_srv", "l3b_e3_srv", "l3b_e4_srv")
     assert set(by) == {f"F42_{c}_{a}" for c in ("s0u", "s50u") for a in arms}
-    assert {p.pid for p in by.values() if "validation_holdout=0.1" in p.trainer_hp} == \
-        {f"F42_{c}_{a}" for c in ("s0u", "s50u") for a in ("l5p", "e0p", "fck", "v2p", "v2pr", "v2p_s025")}
-    assert all(("validation_probe=true" in p.trainer_hp) == ("validation_holdout" in p.trainer_hp) for p in by.values())
+    assert not any("validation_holdout" in p.trainer_hp for p in by.values())
     assert by["F42_s50u_ctl"].runtime_s == 172800
     assert by["F42_s50u_ctl"].baselines == ("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star")
     assert by["F42_s50u_ctl_srv"].baselines == by["F42_s50u_ctl"].baselines  # FX-N133: every baseline's averaged model
     assert "serveEma=sweep" in by["F42_s50u_rstar_srv"].agg_hp and "avail_predictor=oracle" in by["F42_s50u_rstar_srv"].agg_hp
     assert "avail_knowledge=oracle" in by["F42_s50u_fbstar"].agg_hp and by["F42_s50u_fbstar"].baselines == ("fedbuff",)
-    assert "avail_knowledge=checkin" in by["F42_s50u_fck"].agg_hp and "proactive_inflight_evict=False" in by["F42_s50u_fck"].agg_hp
+    fck = by["F42_s50u_fck"]
+    assert "avail_knowledge=checkin" in fck.agg_hp and "proactive_inflight_evict=False" in fck.agg_hp and "participationDecay" in fck.agg_hp
     assert by["F42_s50u_rstar"].baselines == ("refl",) and "avail_predictor=oracle" in by["F42_s50u_rstar"].agg_hp
     assert by["F42_s50u_fdstar"].baselines == ("feddance",) and "checkin_source=selection" in by["F42_s50u_fdstar"].agg_hp
-    ladder = [by[f"F42_s50u_{a}"].agg_hp for a in ("e0", "l3", "l3b", "l4", "l5")]
-    for knob, first in (("utilityPerSecond", 1), ("participationDecay", 2), ("aimd_k", 3), ("type=value", 4)):
-        assert [knob in h for h in ladder] == [i >= first for i in range(5)], knob
-    p = by["F42_s50u_l5p"]
-    assert "pace_c" in p.agg_hp and "aimd_k" in p.agg_hp and "probePerWindow=60" in p.agg_hp and "validation_probe=true" in p.trainer_hp
-    assert "policy=pace_c" in by["F42_s50u_e0p"].agg_hp and "utilityPerSecond" not in by["F42_s50u_e0p"].agg_hp
-    assert not any("pace_c" in by[f"F42_s50u_{a}"].agg_hp for a in ("e0", "l3", "l3b", "l4", "l5"))
-    v2 = by["F42_s50u_v2p"]  # FX-N127: l3b + pace_gain (K fixed), V2 reports on train tasks and probes
-    assert "policy=pace_gain" in v2.agg_hp and "k_follows_c=false" in v2.agg_hp and "validation_report=true" in v2.trainer_hp
-    assert "opt.learning_rate=0.25" in by["F42_s50u_ctl_s025"].agg_hp and by["F42_s50u_ctl_s025"].baselines == ("felix", "fedbuff")
-    assert "evalEma=" in by["F42_s50u_l3b_ema"].agg_hp and "utilityPerSecond=true" in by["F42_s50u_l3b_ema"].agg_hp
+    ladder = [by[f"F42_s50u_{a}"].agg_hp for a in ("e0", "l3", "l3b")]
+    for knob, first in (("utilityPerSecond", 1), ("participationDecay", 2)):
+        assert [knob in h for h in ladder] == [i >= first for i in range(3)], knob
+    assert not any("dynamic_kc.enabled" in p.agg_hp for p in by.values())
 
 
 def test_f43_tier_reference_cohort():

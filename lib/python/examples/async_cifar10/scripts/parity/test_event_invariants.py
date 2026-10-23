@@ -432,6 +432,22 @@ def test_ev16_sync_delivery_due_at_a_close_joins_the_next(tmp_path, monkeypatch,
     assert _status(run, "EV16_withheld_delivery") == status
 
 
+@pytest.mark.parametrize("t2_sct, status", [(20.0, "PASS"), (55.0, "FAIL")])
+def test_ev16_sync_round_cut_before_delivery_joins_the_next(tmp_path, monkeypatch, t2_sct, status):
+    # F42g REFL speech: a round whose last arrival (cut) precedes the delivery closes later but can't take it.
+    _unavail_T1(monkeypatch)
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round":
+            agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
+                        "delivery_ts": 50.0, "actual_commit_ts": 500.0})
+    tr[T2].append({"event": "trainer_round", "ts": 9, "round": 3, "sim_completion_ts": t2_sct})
+    agg += [{"event": "agg_round", "task_to_perform": "train", "ts": 10 + i, "round": 3 + i, "contributing_trainers": [T2],
+             "staleness": [i], "vclock_now": c, "commit_gap_s": 0.0} for i, c in enumerate((60.0, 600.0))]
+    run = _write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 1000}, optimizer="oort")
+    assert _status(run, "EV16_withheld_delivery") == status
+
+
 def test_ev16_dropped_stale_sync_delivery_is_not_a_late_commit(tmp_path, monkeypatch):
     # F42-T12: a stale withheld delivery a no-stale sync stack drops (FX-N57) never commits, however late it is ingested.
     _unavail_T1(monkeypatch)

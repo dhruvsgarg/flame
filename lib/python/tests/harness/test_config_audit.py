@@ -28,9 +28,7 @@ def test_holdout_tenth_drops_every_tenth_arrival(tmp_path):
 
 
 def test_only_validation_arms_expect_a_holdout():
-    held = {k for k, v in ca.EXPECT.items() if v.get("holdout") == "0.1"}
-    assert held == {("felix", a) for a in ("l5p", "e0p", "fck", "v2p", "v2pr", "v2p_s025")}
-    assert all((v.get("vprobe") == "true") == (k in held) for k, v in ca.EXPECT.items())
+    assert not any(v.get("holdout") == "0.1" or v.get("vprobe") == "true" for v in ca.EXPECT.values())  # no arm reads held-out data
 
 
 def test_bench_pool_layout_is_audited(tmp_path):

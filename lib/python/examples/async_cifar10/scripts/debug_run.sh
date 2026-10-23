@@ -295,7 +295,7 @@ for e_src in cfg.get("experiments", []):
         else:
             # High round cap so the wall/vclock budget (max_experiment_runtime_s) is the
             # binding stop condition, not an early round-count termination.
-            h["rounds"] = 20000
+            h["rounds"] = 10000000  # F43: 20000 cut n 300 async legs at 17-35 h
             if num_trainers_override:
                 # Shrink the cohort but keep runtime_s as the real budget (unlike
                 # smoke, which hardcodes rounds=4/runtime=240 -- too short for a

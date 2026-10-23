@@ -8,7 +8,7 @@ accuracy in the expected time window (tracked per track: FELIX Scoreboard). Equa
 **Four docs (plus FELIX's insights companion) are the only working references:**
 - **this doc** — the rules for all four docs, the lessons and tripwires both tracks share, and the queue of
   shared infrastructure work;
-- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS (10-22): optimize Felix new for time to accuracy (FELIX Next steps F42-T12 → F43 → D5 long runs), then claims (FX-N108) → sim-only experiments. Throughput (FX-N100) on every batch; sim speedup never < 1×, aim 2-5×+.**
+- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS (10-23): Felix reaches the highest target accuracy fastest (FELIX FX-N141 loop FL1 → D5 long runs), then claims (FX-N108) → sim-only experiments. Throughput (FX-N100) on every batch; sim speedup never < 1×, aim 2-5×+.**
   - [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) — Felix's companion: telemetry-backed insights for the paper (model, catalog, findings).
 - [PARITY_READINESS.md](PARITY_READINESS.md) — real↔sim parity for both tracks: climbing rules (C1-C9: correct before
   equal, instrument what you can't see, launch only when fixes are maximized), method, tools, per-track scoreboard.
@@ -80,7 +80,7 @@ Scoreboard
 - **R27 Availability knowledge (operator 10-21; sanity check on every baseline):** each stack learns client state only through its own
   deployed mechanism: Felix (and FluxTune) by the client's notify on every flip; baselines by check-in (plus REFL's on-device
   forecaster), never the trace. A `*` variant (Oort*, REFL*, FedDance*) reads the trace and is labelled oracle. Physical limits (an
-  offline client cannot upload) apply to all. Built: FELIX "F42 reference" (notify, check-in, oracle; EV22, EV23).
+  offline client cannot upload) apply to all. Built: FELIX FX-D231 (notify, check-in, oracle; EV22, EV23); protocol in FELIX_INSIGHTS §6.
 - **R26 Idea → model → short realistic screen → end to end, else pivot (operator 10-21).** A new mechanism is first modeled on stored
   telemetry and traces (offline, minutes), then screened on the shortest scenario our workload really has (real device / availability
   traces, ≤ 30 min). Only a gain there earns an implementation for end-to-end FL legs; no gain = pivot, recorded as a tripwire. Each

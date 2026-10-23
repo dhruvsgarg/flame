@@ -71,3 +71,26 @@ class TestFedBuffValueRate:
         out = fb.scale_add_agg_weights({"w": torch.zeros(1)}, agg, agg_goal=2)
         assert torch.allclose(out["w"], torch.tensor([(1.0 + 2.0) / 2]))
         assert fb._u_n == 0
+
+
+class TestFedBuffNormClip:
+    """FX-D232: an update above norm_clip x the running median norm is scaled down to it; off by default."""
+
+    def _run(self, norms, **kw):
+        from flame.mode.horizontal.syncfl.top_aggregator import MemCache
+        from flame.optimizer.train_result import TrainResult
+        fb = _make_fedbuff(learning_rate=1.0, **kw)
+        agg = None
+        for n in norms:
+            agg = fb.do(None, MemCache({"e": TrainResult({"w": torch.tensor([float(n)])}, 1, 5, 1.0)}), total=1, version=5)
+        return agg["w"].item()
+
+    def test_outlier_is_clipped_to_k_median(self):
+        assert self._run([1.0] * 10 + [100.0], norm_clip=3) == pytest.approx(3.0)
+
+    def test_off_by_default_and_before_ten_norms(self):
+        assert self._run([1.0] * 10 + [100.0]) == pytest.approx(100.0)
+        assert self._run([1.0] * 5 + [100.0], norm_clip=3) == pytest.approx(100.0)
+
+    def test_typical_update_untouched(self):
+        assert self._run([1.0] * 10 + [2.5], norm_clip=3) == pytest.approx(2.5)
