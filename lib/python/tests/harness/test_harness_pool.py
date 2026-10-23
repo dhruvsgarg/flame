@@ -753,7 +753,8 @@ def test_f42_tier_r27_holdout_and_pacing():
     by = {p.pid: p for p in pool.tier_phases("F42", pool.B6 + ("fedavg",), "cifar10")}
     arms = ("ctl", "e0", "l3", "l3b", "l4", "l5", "l5p", "e0p", "rstar", "fdstar", "fbstar", "fck", "v2p", "v2pr", "v2p_s025",
             "ctl_s05", "ctl_s025", "l3b_s05", "l3b_s025", "ctl_ema", "l3b_ema", "ctl_srv", "l3b_srv",
-            "rstar_srv", "fdstar_srv", "fbstar_srv", "l3b_b3_srv", "l3b_pb_srv", "l3b_ro_srv", "rnd_srv", "rnd_ro_srv", "rnd_ron_srv", "l3bn_srv")
+            "rstar_srv", "fdstar_srv", "fbstar_srv", "l3b_b3_srv", "l3b_pb_srv", "l3b_ro_srv", "rnd_srv", "rnd_ro_srv", "rnd_ron_srv", "l3bn_srv",
+            "l3b_e2_srv", "l3b_e3_srv")
     assert set(by) == {f"F42_{c}_{a}" for c in ("s0u", "s50u") for a in arms}
     assert {p.pid for p in by.values() if "validation_holdout=0.1" in p.trainer_hp} == \
         {f"F42_{c}_{a}" for c in ("s0u", "s50u") for a in ("l5p", "e0p", "fck", "v2p", "v2pr", "v2p_s025")}

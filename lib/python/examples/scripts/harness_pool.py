@@ -232,6 +232,7 @@ F42_ARMS["rnd_ro_srv"] = dict(hp=f"{_E0} sel.selectType=random opt.agg_rate_conf
 F42_ARMS["rnd_ron_srv"] = dict(hp=f"{_E0} sel.selectType=random opt.agg_rate_conf.type=old serveEma=sweep",
                                thp="lr_batch_normalize=true")  # + FedBuff's last-batch lr normalization
 F42_ARMS["l3bn_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=f"{_PRE} lr_batch_normalize=true")  # FX-N132 (c1): l3b + lr norm
+F42_ARMS.update({f"l3b_e{e}_srv": dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=f"{_PRE} epochs={e}") for e in (2, 3)})  # FX-N135
 F42_ARMS["l3b_ro_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep opt.agg_rate_conf.type=old", thp=_PRE)  # FX-N132: FedBuff's rate
 # D2 F39W (FX-N116): Felix's local samples per task; fixed (capped at an epoch) vs per-client split (compute = beta/(1-beta) x transfer)
 F39W_SAMPLES = {"cifar10": (32, 64, 128), "google_speech": (128, 256, 512)}

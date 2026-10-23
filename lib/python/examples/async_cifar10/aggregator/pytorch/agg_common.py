@@ -16,7 +16,7 @@ import time
 import torch
 import torch.nn.functional as F
 
-from flame import harness
+from flame import harness, telemetry
 from flame.dataset import Dataset
 
 import fl_data
@@ -127,6 +127,24 @@ class ExampleAggregatorMixin:
                     e[k].mul_(b).add_(v.detach().to(e[k].device), alpha=1 - b)
                 else:
                     e[k].copy_(v)
+        if self._serve and "serve" in self._emas and telemetry.is_enabled():
+            self._emit_drift(sd)
+
+    def _emit_drift(self, sd) -> None:
+        """FX-D225: per version, d = |w - w̄| (served EMA), step = |Δw|, cos of consecutive steps (`agg_drift`)."""
+        from flame.optimizer.bn_buffers import is_bn_stat
+        from flame.selector.update_stats import flatten
+        w = flatten(sd, is_bn_stat)
+        prev, last = getattr(self, "_drift_prev", None), getattr(self, "_drift_step", None)
+        self._drift_prev = w.clone()
+        if prev is None:
+            return
+        step = w - prev
+        dist = float((w - flatten(self._emas["serve"], is_bn_stat).to(w.device)).norm())
+        sn = float(step.norm())
+        cos = float(step.dot(last) / (sn * last.norm())) if last is not None and sn > 0 and last.norm() > 0 else None
+        self._drift_step = step
+        telemetry.emit("agg_drift", round=self._round, now=self._avail_now(), dist=dist, step=sn, step_cos=cos)
 
     def evaluate(self) -> None:
         """Test the model every evalEveryNRounds rounds (default 10), off the critical path in a daemon thread.
