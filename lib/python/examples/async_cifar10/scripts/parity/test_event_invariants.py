@@ -106,6 +106,18 @@ def test_ev3_utility_pass_charge_passes(tmp_path, monkeypatch):
     assert _status(_write_run(tmp_path, agg, tr), "EV3_duration_model") == "PASS"
 
 
+@pytest.mark.parametrize("val_pass, status", [(0.1, "PASS"), (None, "FAIL")])
+def test_ev3_held_out_pass_charge(tmp_path, monkeypatch, val_pass, status):
+    # FX-N127 P5: the held-out report's forward pass is charged and reported apart; unreported it is a D mismatch
+    monkeypatch.setattr(ev, "_registry_devices", lambda: {T1: (10.0, 1000.0), T2: (10.0, 1000.0)})
+    agg, tr = _clean_run()
+    for evs in tr.values():
+        for e in evs:
+            if e["event"] == "trainer_round":
+                e.update(training_budget_s=5.1, sim_round_duration_s=5.1, val_pass_s=val_pass, sim_completion_ts=e["sim_send_ts"] + 5.1)
+    assert _status(_write_run(tmp_path, agg, tr), "EV3_duration_model") == status
+
+
 def test_ev5_commit_without_send_fails(tmp_path):
     agg, tr = _clean_run()
     tr[T2] = [e for e in tr[T2] if e["event"] != "task_send"]

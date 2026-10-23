@@ -97,6 +97,36 @@ class ExampleAggregatorMixin:
     def check_and_sleep(self) -> None:
         pass
 
+    def _serve_beta(self) -> float:
+        """FX-N128 serveEma=sweep: average over ~one population sweep of versions (K updates each): b = 1 - K / n, n = clients
+        that have contributed so far (grows from K as the population joins)."""
+        n = len(getattr(self, "_trainer_participation_in_round_count", None) or {})
+        return max(0.0, 1.0 - float(getattr(self, "_agg_goal", 1) or 1) / max(n, 1))
+
+    def _ema_step(self) -> None:
+        """FX-N128: per committed version, ema_b <- b ema_b + (1 - b) model for each b in `evalEma` ("0.5,0.9"; scored beside the
+        model as `agg_eval_ema`) and, with `serveEma` (sweep | b), the served model (scored as `agg_eval`). Training unchanged."""
+        betas = getattr(self, "_ema_betas", None)
+        if betas is None:
+            raw = getattr(self.config.hyperparameters, "evalEma", None) or ""
+            betas = self._ema_betas = [float(x) for x in str(raw).replace(",", " ").split()]
+            self._emas = {}
+            self._serve = getattr(self.config.hyperparameters, "serveEma", None)
+        if not betas and not self._serve:
+            return
+        sd = self.model.state_dict()
+        for key in betas + (["serve"] if self._serve else []):
+            b = key if key != "serve" else self._serve_beta() if str(self._serve) == "sweep" else float(self._serve)
+            e = self._emas.get(key)
+            if e is None:
+                self._emas[key] = {k: v.detach().clone() for k, v in sd.items()}
+                continue
+            for k, v in sd.items():
+                if torch.is_floating_point(v):
+                    e[k].mul_(b).add_(v.detach().to(e[k].device), alpha=1 - b)
+                else:
+                    e[k].copy_(v)
+
     def evaluate(self) -> None:
         """Test the model every evalEveryNRounds rounds (default 10), off the critical path in a daemon thread.
 
@@ -105,6 +135,7 @@ class ExampleAggregatorMixin:
         """
         if getattr(self, "_round_committed", None) is False:  # FX-D128: eval only on the committing pass
             return
+        self._ema_step()
         every_s = getattr(self.config.hyperparameters, "eval_every_s", None)
         if every_s:  # FX-N112: first commit at or after each mark of the leg's clock
             mark = int(self._avail_now() // float(every_s))
@@ -121,23 +152,40 @@ class ExampleAggregatorMixin:
         if every_s:
             self._eval_last_mark = mark
         round_num, test_loader, device = self._round, self.test_loader, self.eval_device
+        emas = [(b, {k: v.clone() for k, v in sd.items()}) for b, sd in getattr(self, "_emas", {}).items() if b != "serve"]
+        served = getattr(self, "_emas", {}).get("serve")
+        if served is not None:  # FX-N128: agg_eval scores the served model; the raw one goes to agg_eval_raw
+            emas.append(("raw", None))
+            raw_sd = {k: v.clone() for k, v in eval_model.state_dict().items()}
+            eval_model.load_state_dict(served)
+
+        def _test(m):
+            m.eval()
+            loss = torch.zeros((), device=device)
+            correct = torch.zeros((), device=device, dtype=torch.long)
+            with torch.no_grad():
+                for data, target in test_loader:
+                    data, target = fl_data.model_input(data.to(device)), target.to(device)
+                    output = m(data)
+                    loss += F.nll_loss(output, target, reduction="sum")
+                    correct += (output.argmax(dim=1) == target).sum()
+            total = len(test_loader.dataset)
+            return loss.item() / total, correct.item() / total  # one device sync per eval (FX-N76 R3)
 
         def _job():
             try:
                 t0 = time.time()
-                eval_model.eval()
-                loss = torch.zeros((), device=device)
-                correct = torch.zeros((), device=device, dtype=torch.long)
-                with torch.no_grad():
-                    for data, target in test_loader:
-                        data, target = fl_data.model_input(data.to(device)), target.to(device)
-                        output = eval_model(data)
-                        loss += F.nll_loss(output, target, reduction="sum")
-                        correct += (output.argmax(dim=1) == target).sum()
-                loss, correct = loss.item(), correct.item()  # one device sync per eval (FX-N76 R3)
-                total = len(test_loader.dataset)
+                loss, acc = _test(eval_model)
                 logger.info(f"[ASYNC_EVAL_TIMING] round={round_num} wall_s={time.time() - t0:.2f} device={device}")  # FX-N70
-                self._eval_emit(round_num, loss / total, correct / total)
+                if emas:  # before the emit frees the eval slot
+                    from flame import telemetry
+                    m = self._ema_model = getattr(self, "_ema_model", None) or copy.deepcopy(eval_model)
+                    for b, sd in emas:
+                        m.load_state_dict(raw_sd if b == "raw" else sd)
+                        el, ea = _test(m)
+                        telemetry.emit("agg_eval_raw" if b == "raw" else "agg_eval_ema", round=round_num,
+                                       **({} if b == "raw" else {"beta": b}), **{"test-loss": el, "test-accuracy": ea})
+                self._eval_emit(round_num, loss, acc)
                 if os.environ.get(ENV_AGG_MALLOC_TRIM, "1") != "0":  # once per eval, off the commit path
                     logger.info(f"[AGG_MALLOC_TRIM] round={round_num} s={trim_host_heap():.3f}")
             except Exception as e:  # eval must never break training

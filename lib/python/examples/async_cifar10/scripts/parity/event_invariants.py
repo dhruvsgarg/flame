@@ -196,7 +196,7 @@ def ev2_task_alternation(run):
 
 def ev3_duration_model(run):
     """Trainer's modeled duration = max(gpu, D), D = FedScale task time of its registry device (FX-D197; floor, factor) + the I9
-    pass, + measured overhead in sim (C13);
+    and held-out passes, + measured overhead in sim (C13);
     sim: sct = send + duration + delivery lag (FX-D108) + leg."""
     reg = _registry_devices()
     sim = _simulated(run)
@@ -223,7 +223,8 @@ def ev3_duration_model(run):
             d_true = None
             if dev is not None and None not in (smp, kbit):  # train: 3 x samples x ms + 2 transfers
                 d_true = _effective_d(run, 3 * smp * dev[0] / 1000.0 + 2 * kbit / dev[1])
-            d_task = budget - (e.get("utility_pass_s") or 0.0) if budget is not None else None  # FX-N109 I9 pass
+            passes = (e.get("utility_pass_s") or 0.0) + (e.get("val_pass_s") or 0.0)  # FX-N109 I9 / FX-N127 held-out pass
+            d_task = budget - passes if budget is not None else None
             if d_true is not None and budget is not None and budget > 0 and abs(d_task - d_true) > 1e-3:
                 bad_budget += 1
                 examples.append((tid[-4:], "D!=device model", budget, d_true))

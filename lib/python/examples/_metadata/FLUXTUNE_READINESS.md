@@ -42,12 +42,25 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 
 ## Next steps (persistent queue — resumes after Felix)
 
-- **FT-N18 · fwdllm on the in-process bench (FELIX V5) · todo (after FX-N129's gate).** Port `scripts/fl_bench.py` to the fwdllm
-  stack: `fwdllm_aggregator` (barrier / variance-gated cadence, `version_key` with iterations), `FedSgdTrainer` (its own
-  `ChannelManager` import in `fwdllm_trainer.py` needs the same patch), its channel calls (check every method it uses on the
-  in-memory channel), H5 path-style data and `client_idx_modulo`, the fwdllm trace keys it reads unconditionally
-  (`avl_events_syn_*`), and GPU memory of LLM trainers (workers per GPU). Validity chain as Felix: real ⇄ harness sim (FT parity)
-  ⇄ bench (B2 against fwdllm harness sim legs). *Exit:* B2 green on the fwdllm board cells.
+- **FT-N18 · fwdllm on the in-process bench (FELIX V5, FX-D213 / D218) · todo (on resume).** *Why:* Felix's harness legs bound on host
+  RAM (84-99 GB, one process per trainer), so a node ran 4-5 legs; the bench (aggregator + W worker processes, in-memory channel) runs
+  ~4 GB legs: cifar 121-141 legs / h on jayne vs ~15 on both nodes (8-9×). It pays only when per-trainer process cost binds; speech
+  sims are GPU-compute-bound and gained ~1×.
+  - *Step 0, decide (≤ 15 min):* profile one fwdllm harness sim leg at production n (`resource_report.py --util`: RAM, GPU memory, SM).
+    RAM / GPU memory bound (one DistilBERT copy per trainer) → port; SM-bound → stay on the harness, record why here.
+  - *Port:* `fwdllm_aggregator` (barrier / variance-gated cadence, `version_key` with iterations), `FedSgdTrainer` (its own
+    `ChannelManager` import in `fwdllm_trainer.py` needs the same patch), every channel method it calls on the in-memory channel, H5
+    path-style data and `client_idx_modulo`, the trace keys it reads unconditionally (`avl_events_syn_*`), workers per GPU by LLM memory;
+    `bench_pool.py --harness-args` so legs come from the harness plan.
+  - *Adoption gate (Felix passed B1, B2, B4 before any screen; B3 still open there):* B1 replay of real commits from a checkpoint within
+    1 pp; B2 per baseline × trace, 3 bench seeds vs fwdllm harness sim legs at matched clock: |AUC Δ| ≤ max(1.5 pp, either side's seed
+    range), updates / h ±10%, bytes ±5%, mean task time ±5% with 0 task-time formula mismatches; fwdllm-specific: iterations per
+    `data_id`, variance pass rate and commit cadence within the same bands; B4 bench seed floors; a red re-runs with 2-3 harness seeds
+    before naming a root (both Felix reds were draws); `config_audit` on bench legs (knobs = table, holdout P3 / P4); same results at
+    2 and 4 workers; analysis tools read bench legs unchanged; packing per FX-T73 / T74 (one math thread, CUDA contexts per GPU).
+  - *Using it:* bench results stand for real only on cells green on both links, real ⇄ harness sim (FT parity) and harness ⇄ bench
+    (FX-L96); never grade the bench against real; re-run B2 on touched cells after any shared `flame/` or trainer change.
+  *Exit:* step 0 recorded; if ported, B1 / B2 / B4 green on the fwdllm board cells.
 
 - **FT-N16 · Measured packing for FluxTune blocks · todo (on resume).** PARITY C21/C22 and Throughput: screen each block's legs at
   production density, record per-leg CPU/RAM/GPU footprints, pack with `--gpu-share`/`--lease-from-telemetry`. *Exit:* a FluxTune block's

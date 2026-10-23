@@ -29,5 +29,19 @@ def test_holdout_tenth_drops_every_tenth_arrival(tmp_path):
 
 def test_only_validation_arms_expect_a_holdout():
     held = {k for k, v in ca.EXPECT.items() if v.get("holdout") == "0.1"}
-    assert held == {("felix", "l5p"), ("felix", "e0p"), ("felix", "fck")}
+    assert held == {("felix", a) for a in ("l5p", "e0p", "fck", "v2p", "v2pr", "v2p_s025")}
     assert all((v.get("vprobe") == "true") == (k in held) for k, v in ca.EXPECT.items())
+
+
+def test_bench_pool_layout_is_audited(tmp_path):
+    # FX-D213: bench_pool writes POOL/<phase>/runs/<trace>_<baseline>_s<seed>/run_*; its dry-run inputs (_yaml/) are not legs
+    run = tmp_path / "F42_s0u_v2p" / "runs" / "syn_0_felix_s2" / "run_x"
+    (run / "telemetry").mkdir(parents=True)
+    (run / "telemetry" / "trainer_a.jsonl").write_text(json.dumps(dict(event="trainer_round", task_to_perform="train",
+                                                                        visible_samples=20, dataset_size=18)) + "\n")
+    (run / "aggregator_config.json").write_text(json.dumps(dict(hyperparameters={}, selector={}, optimizer={})))
+    (run / "debug_run.yaml").write_text("experiments:\n- trainer: {config_overrides: {hyperparameters: {validation_holdout: 0.1}}}\n")
+    (tmp_path / "_yaml" / "j_sim" / "runs" / "x").mkdir(parents=True)
+    (tmp_path / "_yaml" / "j_sim" / "runs" / "x" / "debug_run.yaml").write_text("experiments: []\n")
+    [(leg, b, arm, k)] = list(ca.legs(str(tmp_path)))
+    assert (leg, b, arm, k["holdout"], k["p34"]) == ("F42_s0u_v2p/syn_0_felix_s2", "felix", "v2p", "0.1", "ok")

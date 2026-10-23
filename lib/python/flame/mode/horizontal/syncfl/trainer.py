@@ -510,6 +510,8 @@ class Trainer(Role, metaclass=ABCMeta):
             }
             if getattr(self, "_val_probe", None) is not None:
                 msg[MessageType.VAL_PROBE] = self._val_probe
+        if self.task_to_perform == "train" and getattr(self, "_val_train_report", None) is not None:  # FX-N127 V2 (a)
+            msg[MessageType.VAL_PROBE] = self._val_train_report
 
         # simulated-time mode only: report the modeled completion time/duration
         # so the aggregator orders this update by a virtual clock. No-op in real

@@ -54,7 +54,7 @@ def audit(run_dir, dev):
                 continue
             ms, kbps = dev[tid]
             exp = (3 * e["model_samples"] * ms / 1000 + 2 * e["model_kbit"] / kbps) / fac
-            got = e["training_budget_s"] - (e.get("utility_pass_s") or 0.0)
+            got = e["training_budget_s"] - (e.get("utility_pass_s") or 0.0) - (e.get("val_pass_s") or 0.0)
             dur = e["sim_round_duration_s"] if e.get("sim_round_duration_s") is not None else e["training_budget_s"]
             if abs(got - exp) > 1e-3 or dur + 1e-6 < e["training_budget_s"]:
                 bad += 1

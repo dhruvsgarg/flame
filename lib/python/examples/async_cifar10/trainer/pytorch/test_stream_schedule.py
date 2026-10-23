@@ -170,3 +170,45 @@ def test_validation_holdout_never_trains_and_grows_with_the_stream():
     now[0] = 2000.0
     t._rebuild_stream_loader()
     assert len(t._val_pos) == 10 and t._train_visible == 90
+
+
+def test_val_report_is_exact_eval_mode_and_paired_with_the_previous_report():
+    # FX-N127 V2 / P1: the report = nll of the received model on the held-out samples (eval mode, buffers kept);
+    # d_* pair this client's current loss with its previous report on the same (first n_paired) samples.
+    import contextlib
+    import torch
+    import torch.nn.functional as F
+    from main import PyTorchCifar10Trainer
+    torch.manual_seed(0)
+    t = PyTorchCifar10Trainer.__new__(PyTorchCifar10Trainer)
+    X, Y = torch.randn(100, 4), torch.randint(0, 3, (100,))
+    t._stream_sched = ss.from_config({**ON, "initial_frac": 0.1}, "t", scale=1)
+    t._stream_total, t._stream_gpu = 100, False
+    t._stream_full_dataset, t._stream_order = torch.utils.data.TensorDataset(X, Y), torch.arange(100)
+    t._val_mask, t.validation_probe, t.validation_report = torch.arange(100) % 10 == 9, False, True
+    t._stream_train_kwargs, t.device, t._amp, t._vr_prev = {"batch_size": 4}, "cpu", contextlib.nullcontext, None
+    t.model = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.BatchNorm1d(8), torch.nn.Linear(8, 3), torch.nn.LogSoftmax(1))
+    t.model.train()
+    now = [500.0]
+    t._sim_now = lambda: now[0]
+    t._rebuild_stream_loader()
+    t._round = 7
+    bufs = {k: v.clone() for k, v in t.model.named_buffers()}
+    rep = t._val_report()
+    pos = t._val_pos
+    t.model.eval()
+    with torch.no_grad():
+        nll = F.nll_loss(t.model(X[pos]), Y[pos], reduction="none")
+    t.model.train()
+    assert t.model.training and all(torch.equal(v, bufs[k]) for k, v in t.model.named_buffers())
+    assert rep[:3] == (pytest.approx(float(nll.sum()), rel=1e-6), rep[1], 5) and rep[3:] == (0.0, 0, 0, -1)
+    with torch.no_grad():
+        t.model[0].weight.mul_(2)  # a new model version arrives; the stream grows
+    now[0], t._round = 2000.0, 9
+    t._rebuild_stream_loader()
+    rep2 = t._val_report()
+    t.model.eval()
+    with torch.no_grad():
+        nll2 = F.nll_loss(t.model(X[t._val_pos]), Y[t._val_pos], reduction="none")
+    assert rep2[2] == 10 and rep2[5] == 5 and rep2[6] == 7
+    assert rep2[3] == pytest.approx(float(nll2[:5].sum() - nll.sum()), rel=1e-5)

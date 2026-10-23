@@ -504,6 +504,72 @@ class PaceCPolicy(DynamicKCPolicy):
         return "pace_c"
 
 
+class PaceGainPolicy(DynamicKCPolicy):
+    """FX-N127 (V3): pace c by the held-out gain per aggregated update (V2 reports: train tasks + probes, paired per client).
+
+    Every report pairs a client's held-out loss on the model it received with its previous report on the same samples:
+    g = -d_nll / (n_paired x updates between the two models). Pooled over the reports of the last `tau_s` (ratio estimator,
+    weight n_paired x updates) -> g_hat and its standard error. One decision per tau_s / 4:
+    snr: z = g_hat / se >= 2 -> c x 2 (learning is measurable: spend); z < 0.5 -> c / 2 (no measurable gain); else hold.
+    ratio: c = c_max x g_hat / g_peak (g_peak = largest significant g_hat so far).
+    tau_s is the one setting (operator: react within minutes); thresholds are z-scores, so they follow the measured noise."""
+
+    def __init__(self, tau_s: float = 600.0, law: str = "snr", c_min: int = 2):
+        self.tau_s, self.law, self.c_min = float(tau_s), str(law), int(c_min)
+        if self.law not in ("snr", "ratio"):
+            raise ValueError(f"pace_gain law={law!r}: expected snr or ratio")
+        self._win: deque = deque()
+        self._last_t, self.g_peak, self._state = None, 0.0, {}
+
+    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        return None
+
+    def _estimate(self, now: float):
+        while self._win and self._win[0][0] < now - self.tau_s:
+            self._win.popleft()
+        w = [x[2] for x in self._win]
+        sw = sum(w)
+        if len(w) < 3 or sw <= 0:
+            return None, None
+        g = sum(x[1] for x in self._win) / sw  # -sum d_nll / sum (n_paired x du)
+        per = [(x[1] / x[2], x[2]) for x in self._win]
+        var = sum((wi * (gi - g)) ** 2 for gi, wi in per) / sw ** 2 * len(w) / (len(w) - 1)
+        return g, var ** 0.5
+
+    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
+        now = metrics.get("now")
+        for r in metrics.get("val_reports") or []:
+            if r.get("n_pair") and r.get("du", 0) > 0:
+                self._win.append((r["t"], -r["d_nll"], r["n_pair"] * r["du"]))
+        if now is None:
+            return None
+        if self._last_t is None:
+            self._last_t = now
+        if now - self._last_t < self.tau_s / 4:
+            return None
+        self._last_t = now
+        g, se = self._estimate(now)
+        c_max = int(metrics.get("c_config") or current_c)
+        if g is None:
+            self._state = dict(pace_reports=len(self._win))
+            return None
+        z = g / se if se > 0 else float("inf") if g > 0 else 0.0
+        if z >= 2:
+            self.g_peak = max(self.g_peak, g)
+        if self.law == "snr":
+            new = min(c_max, 2 * current_c) if z >= 2 else max(self.c_min, -(-current_c // 2)) if z < 0.5 else current_c
+        else:
+            new = current_c if self.g_peak <= 0 else max(self.c_min, min(c_max, round(c_max * g / self.g_peak)))
+        self._state = dict(pace_g=g, pace_se=se, pace_z=z, pace_g_peak=self.g_peak, pace_reports=len(self._win))
+        return new
+
+    def state(self) -> dict:
+        return dict(self._state)
+
+    def name(self) -> str:
+        return "pace_gain"
+
+
 _POLICY_REGISTRY: dict = {
     "noop": NoOpPolicy,
     "variance_based": VarianceBasedPolicy,
@@ -516,6 +582,7 @@ _POLICY_REGISTRY: dict = {
     "aimd_k": AimdKPolicy,
     "availability_cap": AvailabilityCapPolicy,
     "pace_c": PaceCPolicy,
+    "pace_gain": PaceGainPolicy,
 }
 
 

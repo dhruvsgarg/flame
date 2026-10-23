@@ -348,10 +348,12 @@ class PoolRouter:
         self.results, self.channel, self._tasks, self._sent = ctx.Queue(), None, 0, {}
         env = {k: v for k, v in os.environ.items() if k.startswith(("FLAME_", "CUDA_")) or k.endswith("_NUM_THREADS")}
         self.queues, self.procs, self.of = [], [], {}
+        gpus = [g for g in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if g]
         for w in range(workers):
             share = cfgs[w::workers]
             q = ctx.Queue()
-            p = ctx.Process(target=_worker_main, args=(share, battery, time_mode, str(trainer_main), tel_dir, log_path, env,
+            wenv = dict(env, CUDA_VISIBLE_DEVICES=gpus[w % len(gpus)]) if len(gpus) > 1 else env  # --gpu A,B: workers round-robin
+            p = ctx.Process(target=_worker_main, args=(share, battery, time_mode, str(trainer_main), tel_dir, log_path, wenv,
                                                         q, self.results), daemon=True)
             p.start()
             self.queues.append(q)

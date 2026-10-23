@@ -265,6 +265,7 @@ class TopAggregator(SyncTopAgg):
         on = lambda k: str(conf.get(k, False)).lower() == "true"
         self._dkc, self._dkc_pending_k, self._dkc_updates = None, None, 0
         self._dkc_c_config = int((self.config.selector.kwargs or {}).get("c", 0) or 0)
+        self._dkc_k_config = self._agg_goal
         self._dkc_stats, self._dkc_losses = None, []
         if on("enabled") or on("stats"):
             from flame.selector.update_stats import UpdateStats
@@ -276,7 +277,8 @@ class TopAggregator(SyncTopAgg):
                 build_policy(conf.get("policy", "noop"), conf.get("policy_kwargs") or {}),
                 k_init=self._agg_goal, c_init=self._dkc_c_config or self._agg_goal,
                 k_min=int(conf.get("k_min", 1)), k_max=int(conf.get("k_max", 100)),
-                c_min=int(conf.get("c_min", 1)), c_max=int(conf.get("c_max", self._dkc_c_config or 100)))  # c <= config c: EV8
+                c_min=int(conf.get("c_min", 1)), c_max=int(conf.get("c_max", self._dkc_c_config or 100)),  # c <= config c: EV8
+                k_follows_c=str(conf.get("k_follows_c", True)).lower() == "true")
 
     def _dynamic_kc_step(self, channel) -> None:
         """FX-N109 I5: after a commit, close the cycle's update stats and ask the controller for the next K / c."""
@@ -291,7 +293,8 @@ class TopAggregator(SyncTopAgg):
                    "cycle_client_losses": getattr(self, "_dkc_client_losses", []),
                    "n_eligible_train": sum(s in train_ok for s in states), "noise_scale": st.get("noise_scale"),
                    "avg_staleness": float(np.mean(self._round_update_values["staleness"] or [0])),
-                   "now": self._avail_now(), "val_probes": getattr(self, "_val_probes", [])}
+                   "now": self._avail_now(), "val_probes": getattr(self, "_val_probes", []),
+                   "val_reports": getattr(self, "_val_reports", []), "k_config": self._dkc_k_config}
         k, c = self._agg_goal, self._dkc_c_config
         if self._dkc is not None:
             k, c = self._dkc.step(metrics)
@@ -301,11 +304,30 @@ class TopAggregator(SyncTopAgg):
             from flame.selector.update_stats import cos_split
             telemetry.emit("dynamic_kc", round=self._round, k=k, c=c, cos_stale_minus_fresh=cos_split(
                 st.get("cos_by_staleness") or []),
-                **{x: v for x, v in metrics.items() if x not in ("model_version", "cycle_losses", "cycle_client_losses", "val_probes")},
-                n_val_probes=len(metrics["val_probes"]),
+                **{x: v for x, v in metrics.items()
+                   if x not in ("model_version", "cycle_losses", "cycle_client_losses", "val_probes", "val_reports")},
+                n_val_probes=len(metrics["val_probes"]), **(self._dkc.policy_state() if self._dkc is not None else {}),
                 loss_per_sample=float(np.mean(self._dkc_losses)) if self._dkc_losses else None,
                 **{x: st.get(x) for x in ("n", "g2", "tr_sigma", "sq_mean", "mean_sq")})
-        self._dkc_losses, self._dkc_client_losses, self._val_probes = [], [], []
+        self._dkc_losses, self._dkc_client_losses, self._val_probes, self._val_reports = [], [], [], []
+
+    def _ingest_val_report(self, end, msg, src) -> None:
+        """F42c / FX-N127 V2: pool a held-out report. (nll, correct, n) feeds pace_c; a V2 report (+ d_nll, d_correct, n_paired,
+        prev version) feeds pace_gain with the updates and seconds between the two models it pairs (version -> (U, t) map)."""
+        rep, v, now = msg[MessageType.VAL_PROBE], msg[MessageType.MODEL_VERSION], self._avail_now()
+        self._val_probes = getattr(self, "_val_probes", [])
+        self._val_probes.append((now, *rep[:3]))
+        e = dict(t=now, src=src, nll=rep[0], correct=rep[1], n=rep[2])
+        if len(rep) >= 7 and rep[5] > 0:
+            vu = getattr(self, "_version_updates", {})
+            (u1, t1), (u0, t0) = vu.get(v, (0, 0.0)), vu.get(rep[6], (0, 0.0))
+            e.update(d_nll=rep[3], d_correct=rep[4], n_pair=rep[5], du=u1 - u0, dt=t1 - t0)
+        self._val_reports = getattr(self, "_val_reports", [])
+        self._val_reports.append(e)
+        if telemetry.is_enabled():
+            telemetry.emit("val_probe", round=self._round, end_id=end, model_version=v, loss=rep[0] / max(rep[2], 1),
+                           acc=rep[1] / max(rep[2], 1), n=rep[2], vclock_now=now, src=src,
+                           **{k: e[k] for k in ("d_nll", "d_correct", "n_pair", "du", "dt") if k in e})
 
     def _reset_agg_goal_variables(self):
         logger.debug("##### reset agg goal variables")
@@ -973,6 +995,8 @@ class TopAggregator(SyncTopAgg):
                 channel.cleanup_provided_ends(end)
                 return
 
+            if msg.get(MessageType.VAL_PROBE):  # FX-N127 V2 (a): the held-out report piggybacked on a train task
+                self._ingest_val_report(end, msg, "train")
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
             )
@@ -995,12 +1019,7 @@ class TopAggregator(SyncTopAgg):
         # Case #2: Message after task_to_perform=EVAL
         elif MessageType.STAT_UTILITY in msg:
             if msg.get(MessageType.VAL_PROBE):  # F42c: held-out (nll sum, correct, n) of the model this end received
-                self._val_probes = getattr(self, "_val_probes", [])
-                self._val_probes.append((self._avail_now(), *msg[MessageType.VAL_PROBE]))
-                if telemetry.is_enabled():
-                    nll, correct, n = msg[MessageType.VAL_PROBE]
-                    telemetry.emit("val_probe", round=self._round, end_id=end, model_version=msg[MessageType.MODEL_VERSION],
-                                   loss=nll / max(n, 1), acc=correct / max(n, 1), n=n, vclock_now=self._avail_now())
+                self._ingest_val_report(end, msg, "eval")
             logger.debug(
                 f"[AGG_RECV_EVAL] received eval message from {end}, "
                 f"with stat_utility={msg[MessageType.STAT_UTILITY]}, "
@@ -1546,6 +1565,9 @@ class TopAggregator(SyncTopAgg):
         self._updates_in_queue -= self._agg_goal
         self._n_updates = getattr(self, "_n_updates", 0) + self._agg_goal
         channel.set_property("n_updates", self._n_updates)  # FX-N109 I8: the eval gate's clock
+        if not hasattr(self, "_version_updates"):
+            self._version_updates = {}
+        self._version_updates[self._round + 1] = (self._n_updates, self._avail_now())  # FX-N127: version v+1's updates, birth
         if getattr(self, "_dkc_stats", None) is not None:
             self._dynamic_kc_step(channel)
 

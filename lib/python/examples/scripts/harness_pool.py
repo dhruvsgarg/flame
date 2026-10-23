@@ -191,6 +191,14 @@ _PACE = f"sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=pace_c sel.dynamic_k
 _C4P = ('sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=composite sel.dynamic_kc.k_min=5 sel.dynamic_kc.policy_kwargs='
         '{"sub_policies":[{"name":"aimd_k","kwargs":{"memory":true,"stall":true}},' + _PACE_C + ']}')
 _L3, _L3B = f"{_E0} {_C3}", f"{_E0} {_C3} {_BAL}"
+_EMA = "0.5,0.8,0.9,0.95"
+_VREP = f"validation_probe=true validation_report=true {_HOLD}"  # FX-N127 V2: held-out report on train tasks and probes
+
+
+def _pace_gain(law):  # FX-N127 V3: pace c only (K stays 10), tau 10 min
+    return ("sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=pace_gain sel.dynamic_kc.k_follows_c=false "
+            f'sel.dynamic_kc.policy_kwargs={{"tau_s":600,"law":"{law}","c_min":2}}')
+
 F42_ARMS = {"ctl": dict(bls=("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star")),  # Felix old; baselines (R27)
             "e0": dict(hp=f"{_E0} {_STATS}"),
             "l3": dict(hp=f"{_L3} {_STATS}", thp=_PRE), "l3b": dict(hp=f"{_L3B} {_STATS}", thp=_PRE), "l4": dict(hp=f"{_L3B} {_C4}", thp=_PRE),
@@ -202,7 +210,18 @@ F42_ARMS = {"ctl": dict(bls=("felix", "fedbuff", "refl", "feddance", "fedavg", "
             "fbstar": dict(bls=("fedbuff",), hp="avail_knowledge=oracle"),  # `*` = the trace's online set at selection
             # K1 ablation: Felix new learning availability by check-in (no notify, no eviction)
             "fck": dict(hp=f"{_L3B} {_C5} {_C4P} {_PROBE[0]} avail_knowledge=checkin proactive_inflight_evict=False",
-                        thp=f"{_PRE} {_PROBE[1]}")}
+                        thp=f"{_PRE} {_PROBE[1]}"),
+            # F42d (FX-N127 / N128 screens): pacer v2 on l3b (K fixed 10); server step sweep for Felix old / l3b / FedBuff (V4)
+            "v2p": dict(hp=f"{_L3B} {_pace_gain('snr')} {_PROBE[0]}", thp=f"{_PRE} {_VREP}"),
+            "v2pr": dict(hp=f"{_L3B} {_pace_gain('ratio')} {_PROBE[0]}", thp=f"{_PRE} {_VREP}"),
+            "v2p_s025": dict(hp=f"{_L3B} {_pace_gain('snr')} {_PROBE[0]} opt.learning_rate=0.25", thp=f"{_PRE} {_VREP}"),
+            **{f"{a}_s{tag}": dict(bls=bls, hp=f"{hp} opt.learning_rate={lr}".strip(), thp=thp)
+               for a, bls, hp, thp in (("ctl", ("felix", "fedbuff"), "", ""), ("l3b", ("felix",), f"{_L3B} {_STATS}", _PRE))
+               for tag, lr in (("05", 0.5), ("025", 0.25))},
+            # FX-N128 serve-EMA screen: training unchanged, EMAs of the model sequence scored beside it (agg_eval_ema)
+            "ctl_ema": dict(bls=("felix", "fedbuff"), hp=f"evalEma={_EMA}"), "l3b_ema": dict(hp=f"{_L3B} {_STATS} evalEma={_EMA}", thp=_PRE),
+            # FX-N128 serve-EMA: the served (and graded) model averages ~one population sweep of versions (b = 1 - K / n)
+            "ctl_srv": dict(bls=("felix", "fedbuff"), hp="serveEma=sweep"), "l3b_srv": dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=_PRE)}
 # D2 F39W (FX-N116): Felix's local samples per task; fixed (capped at an epoch) vs per-client split (compute = beta/(1-beta) x transfer)
 F39W_SAMPLES = {"cifar10": (32, 64, 128), "google_speech": (128, 256, 512)}
 F39W_BETAS = (0.5, 0.33)
@@ -2212,7 +2231,7 @@ def code_key() -> str:
     return hashlib.sha1("".join(f"{b}\t{f}\n" for f, b in sorted(blobs.items()) if b).encode()).hexdigest()[:12]
 
 
-def main(argv=None) -> int:
+def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
                     help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F39A F39B F39C F39W F39E F40S F41 F42 F42C F42CR F42R, e.g. 'T2,G1' = CPU matrix + GPU block")
@@ -2260,7 +2279,11 @@ def main(argv=None) -> int:
     ap.add_argument("--gpu-share", type=int, default=1, help="FX-N100: max legs per GPU, placed by measured footprint")
     ap.add_argument("--jobs-json", default="", help="FX-D186: write this node's jobs, estimates and capacity here and exit")
     ap.add_argument("--queue", default="", help="FX-D186: run only units listed in this file (dispatch.py); END / ABORT")
-    a = ap.parse_args(argv)
+    return ap
+
+
+def plan(a, ap):
+    """Phases and jobs for parsed args (main, and bench_pool --tier: the same legs, FX-D213)."""
     global MEASURED, GPU_SHARE, SHORT_LEGS, F39_SEEDS, F42_SEEDS
     if a.seeds:
         F39_SEEDS = F42_SEEDS = tuple(int(x) for x in a.seeds.split(","))
@@ -2303,6 +2326,13 @@ def main(argv=None) -> int:
     jobs = build_jobs(phases, a.cpus_per_trainer, a.gpus_per_job, history, a.gpu_cpus_per_trainer)
     i, n = map(int, a.shard.split("/"))
     jobs = shard(jobs, i, n)
+    return jobs, tiers, datasets, baselines, real_changed
+
+
+def main(argv=None) -> int:
+    ap = _parser()
+    a = ap.parse_args(argv)
+    jobs, tiers, datasets, baselines, real_changed = plan(a, ap)
 
     root = Path(a.output_dir or OUT_DIR / f"pool_{time.strftime('%Y%m%d_%H%M%S')}_{'_'.join(tiers)}").resolve()
     root.mkdir(parents=True, exist_ok=True)

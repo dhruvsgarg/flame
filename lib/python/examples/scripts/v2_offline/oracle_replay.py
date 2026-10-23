@@ -6,6 +6,9 @@ Clock: a version costs Σ task_s(picks) / c slot-seconds (c = 15 tasks in flight
 Selection: random · old (|D|·q_post, size-driven) · new (|D|·q_pre / task s × balance) · oracle (top-K marginal value per second,
 every candidate trained) · oracle_upd (per update). Aggregation on random picks: uniform · old rate · new rate · oracle weights.
 Busy rule: last version's picks are not eligible (they are still in flight in the async system).
+V4 candidates (FX-N128): agg_util (w ∝ |D| q_pre, nothing new sent) · agg_self (w ∝ |D| × own held-out gain, one more client pass) ·
+agg_ls_oracle / agg_ls_fed (uniform direction, server step α from ALPHAS judged on test half A / on FED_CLIENTS available clients'
+held-out samples = federated validation).
 """
 import argparse, json, math, random, statistics as st, sys
 import numpy as np
@@ -17,10 +20,27 @@ import oracle_probe as op  # noqa: E402
 from flame.optimizer.bn_buffers import is_bn_stat  # noqa: E402
 
 K, CSLOT = 10, 15
+ALPHAS, FED_CLIENTS = (0.125, 0.25, 0.5, 1.0, 1.5, 2.0), 20
 
 
 def old_rate(u):
     return 0.4 * 1.0 + 0.6 * (1.5 - (1 + u) ** -0.1)
+
+
+def held_idx(pr, c, train_idx):
+    """The client's visible held-out samples: every 10th arrival of the visible prefix (train-visible / 0.9)."""
+    n = int(round(len(train_idx) / 0.9))
+    return [p for j, p in enumerate(c.order[:n]) if j % pr.k_hold == pr.k_hold - 1]
+
+
+@torch.no_grad()
+def train_loss(pr, m, params, idx):
+    """Mean nll of `params` on train-set samples `idx` (held-out data lives in the train set)."""
+    if not idx:
+        return 0.0
+    m.eval()
+    s = torch.tensor(idx, device=pr.dev)
+    return float(F.nll_loss(pr.fwd_p(m, params, pr.b.X[s]), pr.b.Y[s]))
 
 
 def main():
@@ -46,7 +66,7 @@ def main():
         for pol in a.policies:
             m.load_state_dict(sd0)
             rng = random.Random(7)
-            t, picks, busy, curve = ts0, {c.tid: 0 for c in pr.b.cl}, set(), [(0, 0.0, A0, L0)]
+            t, picks, busy, curve, alphas = ts0, {c.tid: 0 for c in pr.b.cl}, set(), [(0, 0.0, A0, L0)], []
             for v in range(1, a.versions + 1):
                 base = {k: x.clone() for k, x in m.state_dict().items()}
                 cands = []
@@ -90,8 +110,12 @@ def main():
                     chosen = sorted(cands, key=lambda x: -info[x[0].tid]["val"] / info[x[0].tid]["s"])[:K]
                 else:  # oracle_upd
                     chosen = sorted(cands, key=lambda x: -info[x[0].tid]["val"])[:K]
-                deltas, ws_old, ws_new, cost = [], [], [], 0.0
+                deltas, ws_old, ws_new, ws_util, ws_self, cost = [], [], [], [], [], 0.0
                 for c, idx in chosen:
+                    m.load_state_dict(base)
+                    q_pre = pr.b.rms_loss(m, idx[:64]) if pol == "agg_util" else None
+                    hold = held_idx(pr, c, idx) if pol == "agg_self" else []
+                    pre_h = train_loss(pr, m, base, hold) if hold else None
                     if c.tid in info:
                         d = info[c.tid]["delta"]; qp = info[c.tid]["q_post"]
                     else:
@@ -101,6 +125,13 @@ def main():
                     deltas.append(d)
                     ws_old.append(old_rate(len(idx) * qp))
                     ws_new.append(len(idx) ** 0.65)
+                    if q_pre is not None:
+                        ws_util.append(len(idx) * q_pre)
+                    if hold:
+                        post = {k: (base[k] + d[k] if not is_bn_stat(k) else base[k]) for k in base}
+                        ws_self.append(len(idx) * max(1e-3, pre_h - train_loss(pr, m, post, hold)))
+                    elif pol == "agg_self":
+                        ws_self.append(len(idx) * 1e-3)
                     cost += c.task_s(len(idx))
                     picks[c.tid] += 1
                 ws_new = [w / st.mean(ws_new) for w in ws_new]
@@ -126,6 +157,22 @@ def main():
                     w = w.detach().tolist()
                 elif pol == "agg_uniform":
                     w = [1.0] * len(deltas)
+                elif pol in ("agg_util", "agg_self"):
+                    raw = ws_util if pol == "agg_util" else ws_self
+                    w = [x / st.mean(raw) for x in raw]
+                elif pol in ("agg_ls_oracle", "agg_ls_fed"):
+                    if pol == "agg_ls_fed":
+                        pool = [c for c, _ in rng.sample(cands, min(FED_CLIENTS, len(cands)))]
+                        judge = [j for c in pool for j in held_idx(pr, c, pr.train_idx(c, t))]
+                    keys = [k for k in base if not is_bn_stat(k)]
+                    def cand(al):
+                        return {k: (base[k] + al * sum(dl[k] for dl in deltas) / K if k in keys else base[k]) for k in base}
+                    score = (lambda p: pr.loss_acc(m, pr.A, p)[0]) if pol == "agg_ls_oracle" else (lambda p: train_loss(pr, m, p, judge))
+                    al = min(ALPHAS, key=lambda x: score(cand(x)))
+                    alphas.append(al)
+                    w = [al] * len(deltas)
+                elif pol.startswith("agg_fixed"):  # agg_fixed2: fixed server step 2
+                    w = [float(pol[9:].replace("p", "."))] * len(deltas)
                 elif pol == "new":
                     w = ws_new  # new Felix = new selection + C5 weights
                 else:
@@ -140,7 +187,7 @@ def main():
             fin = curve[-1]
             print(f"   {pol:11} v {fin[0]}  +{fin[1]:6.1f} min  acc {fin[2]:.3f}  loss {fin[3]:.3f}  | acc by version "
                   + " ".join(f"{x[2]*100:.1f}" for x in curve[1:]) + "  | min " + " ".join(f"{x[1]:.0f}" for x in curve[1:]), flush=True)
-            out.append(dict(run=a.run, h=ts0 / 3600, pol=pol, curve=curve))
+            out.append(dict(run=a.run, h=ts0 / 3600, pol=pol, curve=curve, alphas=alphas))
             json.dump(out, open(a.out, "w"))
 
 

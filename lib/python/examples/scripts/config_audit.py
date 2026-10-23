@@ -24,11 +24,20 @@ _L3B = dict(_L3, bal="1.0")
 _L4 = dict(_L3B, dkc="aimd_k")
 _L5 = dict(_L4, rate="value")
 _VAL = dict(probe="60", vprobe="true", holdout="0.1")  # FX-N130: arms reading held-out data hold out 10%
+_V2 = dict(_L3B, dkc="pace_gain", kfc="false", vrep="true", **_VAL)  # FX-N127: l3b + pacer v2, K fixed
 EXPECT = {
     ("felix", "ctl"): _OLD, ("felix", "e0"): _E0, ("felix", "l3"): _L3, ("felix", "l3b"): _L3B, ("felix", "l4"): _L4,
     ("felix", "l5"): _L5, ("felix", "l5p"): dict(_L5, dkc="composite[aimd_k,pace_c]", **_VAL),
     ("felix", "e0p"): dict(_E0, dkc="pace_c", **_VAL),
     ("felix", "fck"): dict(_L5, dkc="composite[aimd_k,pace_c]", know="checkin", evict="false", **_VAL),
+    ("felix", "v2p"): _V2, ("felix", "v2pr"): _V2, ("felix", "v2p_s025"): dict(_V2, lr="0.25"),
+    ("felix", "ctl_s05"): dict(_OLD, lr="0.5"), ("felix", "ctl_s025"): dict(_OLD, lr="0.25"),
+    ("felix", "l3b_s05"): dict(_L3B, lr="0.5"), ("felix", "l3b_s025"): dict(_L3B, lr="0.25"),
+    ("felix", "ctl_ema"): _OLD, ("felix", "l3b_ema"): _L3B, ("fedbuff", "ctl_ema"): dict(know="checkin", evict="false", rate="old"),
+    ("felix", "ctl_srv"): dict(_OLD, serve="sweep"), ("felix", "l3b_srv"): dict(_L3B, serve="sweep"),
+    ("fedbuff", "ctl_srv"): dict(know="checkin", evict="false", rate="old", serve="sweep"),
+    ("fedbuff", "ctl_s05"): dict(know="checkin", evict="false", rate="old", lr="0.5"),
+    ("fedbuff", "ctl_s025"): dict(know="checkin", evict="false", rate="old", lr="0.25"),
     ("fedbuff", "*"): dict(know="checkin", evict="false", rate="old"), ("fedbuff", "fbstar"): dict(know="oracle", evict="false", rate="old"),
     ("refl", "ctl"): dict(know="checkin", evict="false", pred="prophet", holdoff="0"),
     ("refl", "rstar"): dict(know="oracle", evict="false", pred="oracle", prio="1", prob="0.9", holdoff="0"),
@@ -60,7 +69,8 @@ def knobs(run_dir, trainer_hp):
                 prefix=_s(trainer_hp.get("utilityPrefixSamples")), holdout=_s(trainer_hp.get("validation_holdout")),
                 pred=_s(sel.get("avail_predictor")), prio=_s(sel.get("avail_priority")), prob=_s(sel.get("avail_probability")),
                 checkin=_s(sel.get("checkin_source")), holdoff=_s(sel.get("holdoff_rounds")), K=_s(hp.get("aggGoal")), c=_s(sel.get("c")),
-                timeout=_s(hp.get("send_timeout_wait_s")))
+                timeout=_s(hp.get("send_timeout_wait_s")), lr=_s(opt.get("learning_rate")), kfc=_s(dk.get("k_follows_c")),
+                vrep=_s(trainer_hp.get("validation_report")), serve=_s(hp.get("serveEma")))
 
 
 def holdout_check(run_dir, holdout):
@@ -81,6 +91,8 @@ def holdout_check(run_dir, holdout):
 
 def legs(pool):
     for y in sorted(glob.glob(os.path.join(pool, "*", "*_sim", "runs", "*", "debug_run.yaml"))):
+        if f"{os.sep}_yaml{os.sep}" in y:  # bench_pool's dry-run inputs, not legs
+            continue
         leg = y.split(os.sep)[-4]
         m = re.match(r"(?:gs_)?F\d+\w*?_(s\d+u?)_(\w+?)_(syn_\w+|mobiperf\w*)_(\w+)_sim$", leg)
         if not m:
@@ -95,13 +107,23 @@ def legs(pool):
         if runs:
             k = knobs(runs[-1], thp)
             yield leg, b, arm, dict(k, p34=holdout_check(runs[-1], k["holdout"]))
+    for run in sorted(glob.glob(os.path.join(pool, "*", "runs", "*_s[0-9]*", "run_*"))):  # bench_pool layout (FX-D213)
+        phase, slot = run.split(os.sep)[-4], run.split(os.sep)[-2]
+        m = re.match(r"(?:gs_)?F\d+\w*?_s\d+u?_(\w+?)$", phase)
+        b = re.match(r"(?:syn_\w+?|mobiperf\w*?)_([a-z_]+)_s\d+$", slot)
+        if not (m and b):
+            continue
+        exp = (yaml.safe_load(open(os.path.join(run, "debug_run.yaml"))).get("experiments") or [{}])[0]
+        thp = ((exp.get("trainer") or {}).get("config_overrides") or {}).get("hyperparameters") or {}
+        k = knobs(run, thp)
+        yield f"{phase}/{slot}", b.group(1), re.sub(r"_r\d+$", "", m.group(1)), dict(k, p34=holdout_check(run, k["holdout"]))
 
 
 def main(argv=None):
     pools = (argv if argv is not None else sys.argv[1:])
     bad = 0
     cols = ("know", "evict", "eval", "ups", "bal", "dkc", "rate", "probe", "vprobe", "prefix", "holdout", "pred", "prio", "prob",
-            "checkin", "holdoff", "K", "c", "timeout", "p34")
+            "checkin", "holdoff", "K", "c", "timeout", "lr", "kfc", "vrep", "serve", "p34")
     print("| leg | " + " | ".join(cols) + " | ok |\n|" + "---|" * (len(cols) + 2))
     for pool in pools:
         for leg, b, arm, k in legs(pool):

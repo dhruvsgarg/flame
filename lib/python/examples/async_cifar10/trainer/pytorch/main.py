@@ -101,9 +101,11 @@ class PyTorchCifar10Trainer(Trainer):
         # FX-N130: held-out share of local data; set only by arms that read it.
         self.validation_holdout = float(getattr(self.config.hyperparameters, "validation_holdout", 0) or 0)
         self.validation_probe = str(getattr(self.config.hyperparameters, "validation_probe", False)).lower() == "true"
-        if self.validation_probe and self.validation_holdout <= 0:
-            raise ValueError("validation_probe needs validation_holdout > 0 (FX-N130)")
-        self._val_probe = None
+        # FX-N127 V2: held-out report (eval mode, paired with this client's previous one) on every train task and probe
+        self.validation_report = str(getattr(self.config.hyperparameters, "validation_report", False)).lower() == "true"
+        if (self.validation_probe or self.validation_report) and self.validation_holdout <= 0:
+            raise ValueError("validation_probe / validation_report need validation_holdout > 0 (FX-N130)")
+        self._val_probe, self._val_train_report, self._vr_prev = None, None, None
         self.trainer_indices_list = self.config.hyperparameters.trainer_indices_list
         self.trainer_start_ts = time.time()
 
@@ -297,6 +299,8 @@ class PyTorchCifar10Trainer(Trainer):
             if steps is not None and self.config.hyperparameters.local_work:
                 samples = min(samples, shard)  # FX-N116: capped at one epoch
             passes, transfers = 3, 2
+        elif kind == "val":  # FX-N127 V2 (a): one forward pass over the held-out samples, no transfer
+            samples, passes, transfers = len(self.trainer_indices_list) * len(self._val_pos) / self._stream_total, 1, 0
         elif getattr(self, "validation_probe", False) and getattr(self, "_val_mask", None) is not None:  # F42c probe
             samples, passes, transfers = len(self.trainer_indices_list) * len(self._val_pos) / self._stream_total, 1, 1
         else:
@@ -722,7 +726,8 @@ class PyTorchCifar10Trainer(Trainer):
     def _val_loader(self):
         """F42c: a loader over the visible held-out samples (None when the holdout is off or none has arrived yet)."""
         pos = getattr(self, "_val_pos", None)
-        if not getattr(self, "validation_probe", False) or getattr(self, "_val_mask", None) is None or pos is None or len(pos) == 0:
+        on = getattr(self, "validation_probe", False) or getattr(self, "validation_report", False)
+        if not on or getattr(self, "_val_mask", None) is None or pos is None or len(pos) == 0:
             return None
         kw = dict(self._stream_train_kwargs, shuffle=False)
         if self._stream_gpu:
@@ -940,6 +945,7 @@ class PyTorchCifar10Trainer(Trainer):
         if _cap is not None:
             steps = min(steps, _cap) if steps is not None else _cap
         _u0 = self._receive_utility() if self._utility_on_receive() else None  # FX-N109 I9
+        self._val_train_report = self._val_report() if self.validation_report else None  # FX-N127 V2 (a)
         # FX-D144: batch order seeded by logical identity, not the process RNG (incidental draws forked sim from real)
         self._task_seq = getattr(self, "_task_seq", 0) + 1
         torch.manual_seed(harness.stable_seed((self.trainer_id, self._round, self._task_seq)))
@@ -994,6 +1000,8 @@ class PyTorchCifar10Trainer(Trainer):
         if _u0 is not None and self.training_delay_enabled:  # I9's pre-pass: one forward over the visible data
             _upass_s = self._task_time_s("eval", comm=False)  # already floored / scaled
             _modeled_delay_s += _upass_s
+        _vpass_s = self._task_time_s("val") if self._val_train_report is not None and self.training_delay_enabled else 0.0
+        _modeled_delay_s += _vpass_s  # P5: the held-out pass is charged
         _remaining_time = max(0.0, _modeled_delay_s - _real_gpu_time_s)
         _overran = self.training_delay_enabled and _real_gpu_time_s > _modeled_delay_s
         self._training_budget_s = _modeled_delay_s
@@ -1091,6 +1099,7 @@ class PyTorchCifar10Trainer(Trainer):
                     "stream_clock_s": self._stream_clock_s,
                     "training_budget_s": _modeled_delay_s,
                     "utility_pass_s": _upass_s,
+                    "val_pass_s": _vpass_s,
                     **{f"model_{k}": v for k, v in _task.items()},  # FX-D197: FedScale terms (EV3 recomputes them)
                     "remaining_time_s": _remaining_time,
                     "overran": _overran,
@@ -1247,6 +1256,32 @@ class PyTorchCifar10Trainer(Trainer):
 
         return batches_processed, last_loss
 
+    def _val_report(self):
+        """FX-N127 V2: (nll sum, correct, n, d_nll, d_correct, n_paired, prev model version) of the received model on the
+        held-out samples, eval mode, buffers untouched. d_* = change on the samples of this client's previous report (held-out
+        arrivals only grow, in order, so they are its first n_paired): the pairing lives on the client, the server sees sums."""
+        loader = self._val_loader()
+        if loader is None:
+            return None
+        was_training = self.model.training
+        self.model.eval()
+        nll, hit = [], []
+        with torch.no_grad():
+            for data, target in loader:
+                data, target = data.to(self.device), target.to(self.device)
+                with self._amp():
+                    out = self.model(data).float()
+                nll.append(F.nll_loss(out, target, reduction="none"))
+                hit.append((out.argmax(1) == target).float())
+        self.model.train(was_training)
+        nll, hit = torch.cat(nll).double().cpu(), torch.cat(hit).double().cpu()
+        prev, n = self._vr_prev, len(nll)
+        k = min(prev[0], n) if prev else 0
+        rep = (float(nll.sum()), int(hit.sum()), n, float(nll[:k].sum()) - prev[1] if k else 0.0,
+               int(hit[:k].sum()) - prev[2] if k else 0, k, prev[3] if prev else -1)
+        self._vr_prev = (n, float(nll.sum()), int(hit.sum()), self._round)
+        return rep
+
     def _utility_on_receive(self) -> bool:
         return bool(getattr(self.config.hyperparameters, "utility_on_receive", False))
 
@@ -1332,6 +1367,8 @@ class PyTorchCifar10Trainer(Trainer):
                 # of the dataset
                 self.normalize_stat_utility(epoch)
         self._val_probe = tuple(probe) if loader is not None else None
+        if self._val_probe is not None and self.validation_report:  # V2 (b): probes send the same report as train tasks
+            self._val_probe = self._val_report()
         _real_eval_gpu_s = time.time() - _eval_gpu_t0
         # FX-D197: eval = one forward pass over the visible data + the model download
         _modeled_eval_delay_s = self._task_time_s("eval") if self.training_delay_enabled else 0.0

@@ -1,8 +1,10 @@
 # F42c (harness reference legs, 12 h vclock, seed 1): the F42b cells that had no leg, so bench gate B2 (FELIX V5) covers all
-# six + `*` on both datasets: Oort / Oort* (cifar, speech), FedDance / FedDance* / FedAvg (speech). 14 sim legs.
+# six + `*` on both datasets: Oort / Oort* (cifar, speech), FedDance / FedDance* / FedAvg (speech), + FedDance cifar syn_50_3st seed 2
+# (FX-N129 red: draw vs root). 15 sim legs.
 name: f42c
 common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1 --scale-smoke 43200 --gate"
 stages:
+  - {id: C1R, args: "--tier F42 --seeds 2 --datasets cifar10 --baselines feddance --phases 'F42_s50u_ctl_r2'"}
   - {id: C0, args: "--tier F42 --datasets cifar10 --baselines oort,oort_star --phases 'F42_s0u_ctl F42_s50u_ctl'"}
   - {id: S0, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines oort,oort_star,feddance,fedavg --phases 'gs_F42_s0u_ctl gs_F42_s0u_fdstar'"}
   - {id: S1, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines oort,oort_star,feddance,fedavg --phases 'gs_F42_s50u_ctl gs_F42_s50u_fdstar'"}

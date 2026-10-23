@@ -26,12 +26,17 @@ BASE = (("fedbuff", "FedBuff", "#1baf7a", "-"), ("refl", "REFL", "#eda100", "-")
 ALSO = {"refl:rstar": ("REFL*", "#eda100", "--"), "refl:rfc": ("REFL-fc", "#eda100", ":"),
         "felix:new": ("Felix new, no pacing", "#2a78d6", "--"), "felix:l5": ("Felix new, no pacing", "#2a78d6", "--"),
         "felix:fck": ("Felix by check-in", "#2a78d6", ":"), "feddance:fdstar": ("FedDance*", "#e87ba4", "--"),
-        "fedbuff:fbstar": ("FedBuff*", "#1baf7a", "--")}  # F42 arms
+        "fedbuff:fbstar": ("FedBuff*", "#1baf7a", "--"),
+        "felix:l3b_srv:raw": ("Felix new, unserved", "#2a78d6", ":"), "felix:v2pr": ("Felix pacer v2", "#7a7a7a", ":"),
+        "fedavg:ctl": ("FedAvg", "#9c6b30", ":")}  # F42 arms
 SMOOTH = {"cifar10": 3, "google_speech": 5}  # evals swing ±5 pp cifar, ±10-20 pp speech
 WARM_H = 2.0  # y range starts from the lowest smoothed accuracy after this
 
 
 def leg(d):
+    if d.endswith(":raw"):  # FX-N128: a serveEma leg's unserved model
+        from bench_report import leg as bench_leg
+        return [(t / 3600, 100 * a, b / 1e9) for t, a, b in bench_leg(d[:-4], b'"agg_eval_raw"')[0]], []
     c, _ = curve(d)
     tr = traffic(d)
     ts, cum, s = [], [], 0.0
@@ -52,17 +57,21 @@ def main(argv=None):
     ap.add_argument("--no-old", action="store_true")
     ap.add_argument("--also", nargs="*", default=list(ALSO), help="extra baseline:arm series (known: %s)" % ", ".join(ALSO))
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "_metadata"))
+    ap.add_argument("--base-arm", nargs="*", default=[], help="baseline:arm, e.g. fedbuff:ctl_srv:raw (F42f)")
     a = ap.parse_args(argv)
+    a.base_arm = dict(x.split(":", 1) for x in a.base_arm)
     series = [("felix", a.new, "Felix new", "#2a78d6", "-", 2.4)]
     if not a.no_old:
         series.append(("felix", a.old, "Felix old", "#eb6834", "-", 2.0))
-    series += [(b, "ctl", lab, col, ls, 1.4) for b, lab, col, ls in BASE]
-    series += [(*k.split(":"), *ALSO[k], 1.6) for k in a.also if k in ALSO]
+    series += [(b, a.base_arm.get(b, "ctl"), lab, col, ls, 1.4) for b, lab, col, ls in BASE]
+    series += [(*k.split(":", 1), *ALSO[k], 1.6) for k in a.also if k in ALSO]
     want = {}  # (dataset, cell, baseline, arm) -> sim dir
     for phase, b, _, _, sim in rows_from_pools(a.pools):
-        parts = phase.split(f"{a.prefix}_", 1)[-1].split("_")
+        parts = phase.split(f"{a.prefix}_", 1)[-1].split("_", 1)
         if sim and len(parts) == 2:
             want[(dataset_of(sim), parts[0], b, parts[1])] = sim
+            if parts[1].endswith("_srv"):
+                want[(dataset_of(sim), parts[0], b, parts[1] + ":raw")] = sim + ":raw"
     with ProcessPoolExecutor(32) as ex:
         data = dict(zip(want, ex.map(leg, want.values())))
     smooth = lambda ys, k: [sum(ys[max(0, i - k + 1):i + 1]) / len(ys[max(0, i - k + 1):i + 1]) for i in range(len(ys))]
