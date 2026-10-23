@@ -42,6 +42,11 @@ Every batch runs Felix new and old side by side; FedDance and Oort run only afte
   - speech (harness), n 100 c 30 K 10, 24 h, syn_0, one leg per node at a time: jayne GPUs 2-4 Felix l3b_e3 then l3b; shepherd GPUs 4-7
     FedBuff (ctl), then FedBuff* if FedBuff ends within 3 h. Measured (shepherd smoke, 5 min): 6.3× real time (24 h ≈ 3.8 h),
     leg RAM 119 GB, GPU peak 36 / 45 GB, 0 overruns. Felix old and syn_50_3st speech: next batch.
+  *Running (10-23 06:06):* jayne cifar `experiments/F43_jayne_1023_0547/cifar` (24 legs: FedAvg not in the plan's default six;
+  ETA ~14:20); speech at 3 GPUs OOM'd (33 trainers × 1.2 GB + agg > 44 GB), relaunched at 4 GPUs / leg: jayne tmux `dg_f43sp` →
+  `F43_jayne_1023_0547/speech2` (GPUs 2-4 + 7, waits for our `ceiling.py` on GPU 7), shepherd tmux `dg_f43` →
+  `flame_f43/.../experiments/F43_shepherd_1023_0600` (FedBuff on 4-7 at 19-24 GB / GPU). Score speech2 by hand (the jayne script's
+  own report reads the dead `speech` pool).
   *Prediction:* cifar: no stack reaches 70% at n 300 by 72 h (FL ~2-4 pp under the 72% ceiling); 60 / 65% reached; l3b_e3 lowest GB to every
   target it hits, Felix first in time at 40-60%; the e3 plateau ≤ l3b's. Speech: Felix reaches 60-65% in 24 h; 70% only if FL tracks the
   ceiling within 3 pp. *Parse (in order):* (1) `cifar_report.md` / `speech_report.md` (bench_report: AUC, time + GB to 40-70%, final,
