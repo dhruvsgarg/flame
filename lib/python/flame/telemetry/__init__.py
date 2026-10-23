@@ -42,6 +42,7 @@ from .events import (  # noqa: F401  (re-exported for convenience)
 logger = logging.getLogger(__name__)
 
 ENV_DIR = "FLAME_TELEMETRY_DIR"
+ENV_LEAN = "FLAME_TELEMETRY_LEAN"  # FX-D227: "1" drops `selection.per_trainer` (99% of bytes at n 300)
 
 _writer: Optional["TelemetryWriter"] = None
 _config_lock = threading.Lock()
@@ -79,6 +80,7 @@ class TelemetryWriter:
         self._lock = threading.Lock()
         # line-buffered so a killed process still leaves complete records
         self._fh = open(path, "a", buffering=1)
+        self._lean = os.environ.get(ENV_LEAN) == "1"
 
     def emit(self, event: str, **fields: Any) -> None:
         rec: dict[str, Any] = {
@@ -89,6 +91,8 @@ class TelemetryWriter:
         if self.end_id is not None:
             rec["end_id"] = self.end_id
         rec.update(fields)
+        if self._lean and event == "selection":
+            rec.pop("per_trainer", None)
         line = json.dumps(rec, default=_json_default)
         with self._lock:
             self._fh.write(line + "\n")

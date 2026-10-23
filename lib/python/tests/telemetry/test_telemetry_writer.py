@@ -83,3 +83,19 @@ class TestWriting:
         assert r["duration"] == 2.5
         assert sorted(r["chosen"]) == ["a", "b"]
         assert r["util"] == 1.25
+
+
+@pytest.mark.parametrize("lean", ["1", None])
+def test_lean_drops_selection_per_trainer(tmp_path, monkeypatch, lean):
+    """FX-D227: FLAME_TELEMETRY_LEAN=1 drops only `selection.per_trainer`; unset is unchanged."""
+    if lean:
+        monkeypatch.setenv(telemetry.ENV_LEAN, lean)
+    else:
+        monkeypatch.delenv(telemetry.ENV_LEAN, raising=False)
+    w = telemetry.configure("aggregator", run_dir=str(tmp_path))
+    telemetry.emit("selection", per_trainer={"a": 1}, chosen=["a"])
+    telemetry.emit("dispatch", per_trainer={"a": 1})
+    telemetry.shutdown()
+    sel, disp = _read_jsonl(w.path)
+    assert ("per_trainer" in sel) is (lean is None) and sel["chosen"] == ["a"]
+    assert disp["per_trainer"] == {"a": 1}

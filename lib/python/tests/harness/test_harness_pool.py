@@ -754,7 +754,7 @@ def test_f42_tier_r27_holdout_and_pacing():
     arms = ("ctl", "e0", "l3", "l3b", "l4", "l5", "l5p", "e0p", "rstar", "fdstar", "fbstar", "fck", "v2p", "v2pr", "v2p_s025",
             "ctl_s05", "ctl_s025", "l3b_s05", "l3b_s025", "ctl_ema", "l3b_ema", "ctl_srv", "l3b_srv",
             "rstar_srv", "fdstar_srv", "fbstar_srv", "l3b_b3_srv", "l3b_pb_srv", "l3b_ro_srv", "rnd_srv", "rnd_ro_srv", "rnd_ron_srv", "l3bn_srv",
-            "l3b_e2_srv", "l3b_e3_srv")
+            "l3b_e2_srv", "l3b_e3_srv", "l3b_e4_srv")
     assert set(by) == {f"F42_{c}_{a}" for c in ("s0u", "s50u") for a in arms}
     assert {p.pid for p in by.values() if "validation_holdout=0.1" in p.trainer_hp} == \
         {f"F42_{c}_{a}" for c in ("s0u", "s50u") for a in ("l5p", "e0p", "fck", "v2p", "v2pr", "v2p_s025")}
@@ -778,3 +778,11 @@ def test_f42_tier_r27_holdout_and_pacing():
     assert "policy=pace_gain" in v2.agg_hp and "k_follows_c=false" in v2.agg_hp and "validation_report=true" in v2.trainer_hp
     assert "opt.learning_rate=0.25" in by["F42_s50u_ctl_s025"].agg_hp and by["F42_s50u_ctl_s025"].baselines == ("felix", "fedbuff")
     assert "evalEma=" in by["F42_s50u_l3b_ema"].agg_hp and "utilityPerSecond=true" in by["F42_s50u_l3b_ema"].agg_hp
+
+
+def test_f43_tier_reference_cohort():
+    """FX-N139: F43 = F43_ARMS at the reference cohort, sync K/N >= 5% (L34), both cells."""
+    for ds, n in (("cifar10", 300), ("google_speech", 100)):
+        ph = pool.tier_phases("F43", ("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star"), ds)
+        assert len(ph) == 2 * len(pool.F43_ARMS) and all(p.n == n and p.agg_goal / n >= 0.05 for p in ph)
+        assert all(p.runtime_s == pool.F43_RUNTIME_S[ds] for p in ph)

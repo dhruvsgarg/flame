@@ -7,7 +7,7 @@ and sim-only experiments (FX-N12).** Order: Next steps → Scoreboard → Decisi
 **Setup reset (operator 10-21): only runs from F41 (10-21) onward count** (trace-tied `usage` streams, FedScale task time, R27
 availability knowledge). Earlier results ran on static data or an older runtime and are not evidence (`git log` keeps them).
 
-**At a glance (10-23, 03:40):** cifar now scored averaged vs averaged for every arm (F42g). Felix new is first in time to 40% in both cells
+**At a glance (10-23, 05:40): next = parse F43 (FX-N139).** cifar now scored averaged vs averaged for every arm (F42g). Felix new is first in time to 40% in both cells
 and lowest in GB on syn_0 only. Felix plateaus at 43-45% by hour 4 while FedBuff / REFL* / FedDance pass it by 8-10 h; normalized sub-batch steps buy ≤ 1 pp on
 same code (FX-T79), and no inferred phase switch exists (FX-N134 dropped). Bytes: 3 local epochs cut GB to 40% by 40-48%
 (lowest of all stacks by ~2×) at +4 / +17 min (FX-N135). The F42-T12 fixes
@@ -27,7 +27,26 @@ smokes ≤ 15 min (F42 `--scale-smoke 3600`, F42R real) · screens (F42 sims: a 
 **Run naming (operator 10-21): the batch number changes only at a long-run launch; screens stay F42 with a letter (F42a, F42b).**
 Every batch runs Felix new and old side by side; FedDance and Oort run only after the Felix decision or when their code changes.
 
-- **FX-N135 · RESUME HERE (10-24 morning): bytes via local work · wip.** Felix config = l3b + prefix one batch (FX-N134 dropped).
+- **FX-N139 · RESUME HERE: parse F43 before any further Felix fix or optimization, both datasets (operator 10-23) · launched by
+  the operator.** *Goal (operator 10-23):* targets up to the 70% goal, so the populations rise to the reference cohort (ceilings,
+  `experiments/ceiling_1022` b64: cifar n 300 69% at 48 h, 72% at 72 h; speech n 100 72% at 12 h, 73-79% at 24 h; n 75 / 50 cap at 61% /
+  74% by day 6). *Batch (one command, jayne tmux, ~8.5 h):* `bash lib/python/examples/scripts/run_f43_jayne.sh` → `experiments/F43_jayne_<ts>/`.
+  - cifar: bench, n 300 c 60 K 15 (sync K/N 5%, L34), 72 h vclock from day 1, both cells, seed 1, all six + `*` + Felix old, l3b,
+    l3b_e2, l3b_e3 (26 legs at once on GPUs 0,5,6; `FLAME_TELEMETRY_LEAN=1`). Measured (`bench_F43_smoke_1023_0457`, 2 h vclock): Felix
+    l3b / old 12 min (→ ~7.3 h at 72 h; slowest), e3 6.6 min, FedBuff 5, REFL 5.7, Oort 0.7; ~6 GB RAM, 3.5 GB GPU, SM 9-26% per leg
+    (CPU-bound); full telemetry 99% `selection.per_trainer` (4.8 GB per 1.4 h Felix leg), hence lean.
+  - speech: harness, n 100 c 30 K 10, 24 h, syn_0, Felix l3b_e3, l3b, Felix old + FedBuff (ctl), FedBuff*; one leg at a time on GPUs
+    2,3,4 (`--gate`, `--deadline-h 8` skips late starts). Not packing-measured (C21): harness estimate ~150 GB RAM per leg.
+  *Prediction:* cifar: no stack reaches 70% at n 300 by 72 h (FL ~2-4 pp under the 72% ceiling); 60 / 65% reached; l3b_e3 lowest GB to every
+  target it hits, Felix first in time at 40-60%; the e3 plateau ≤ l3b's. Speech: Felix reaches 60-65% in 24 h; 70% only if FL tracks the
+  ceiling within 3 pp. *Parse (in order):* (1) `cifar_report.md` / `speech_report.md` (bench_report: AUC, time + GB to 40-70%, final,
+  ceiling); (2) EV summary on the speech pool, `config_audit.py`; (3) rewrite the Scoreboard (new F43 table) and `felix_plots.py` with
+  the ceiling; (4) record which targets each stack reaches and where Felix loses (time or bytes), and re-rank FX-N135 / N136 on that.
+  *Then* resume FX-N135. Cut legs (72 h not reached by the 8.3 h timeout) still score every target they reached.
+- **Storage (operator 10-23):** jayne `/home` 1.4 TB free (`cleanup_experiments.py` dry run would free 238 GB: uncited run dirs, `.pt`);
+  shepherd 289 GB free of a shared 2.6 TB (ours 254 GB: `flame` 182, `aish_test` 53; cleanup frees 9.7 GB). Prune with `--apply` on the
+  operator's word (R21); lean telemetry on every n ≥ 300 bench leg.
+- **FX-N135 · Bytes via local work · wip (after FX-N139's parse).** Felix config = l3b + prefix one batch (FX-N134 dropped).
   GB to target = updates to target: lost dispatches < 1%, ~4.3 MB / update (l3b syn_50_3st: 43454 sent, 43420 committed), so skipping
   sub-batch tasks frees slots, not bytes. Lever = accuracy per update via local epochs (FX-L99). *Screen F42h-ep (10-23, bench,
   3 seeds, 12 h, `experiments/bench_F42h_ep_1023_0441` vs same-code l3b in `bench_F42h_drift_1023_0418`):* min / GB to 40% · final %
@@ -385,6 +404,8 @@ real↔real replicate sets the band (L12).
 
 ## Decisions (operator; standing until changed here)
 
+- **Reference cohort for targets (operator 10-23):** raise n (cifar 300, speech 100) to reach the 70% goal; batches may run 8 h on
+  jayne's 7 GPUs (F43).
 - **FX-N134 dropped (operator 10-23):** no phase-dependent step: (B) / (G) are no phase signal (FX-T80, T81) and the
   same-code gain of always-normalized steps is ≤ 1 pp on one cell. Felix-new config = l3b + prefix one batch.
 - **Runs (operator 10-23):** short tests may use jayne and shepherd together; anything longer than 15-20 min runs on shepherd alone.
@@ -1258,6 +1279,9 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-D225** `agg_drift` telemetry (FX-N134 G): per version |w − w̄| (served EMA), |Δw|, cos of consecutive steps, on every `serveEma` leg
   (`agg_common._emit_drift`).
 - **FX-D226** F42 arms `l3b_e2_srv`, `l3b_e3_srv` (l3b + `epochs` 2 / 3; FX-N135).
+- **FX-D227** `FLAME_TELEMETRY_LEAN=1` drops `selection.per_trainer` (99% of bytes at n 300; `test_lean_drops_selection_per_trainer`).
+- **FX-D228** Tier F43 (`F43_ARMS` at `F43_SHAPE`, `F43_RUNTIME_S`; `test_f43_tier_reference_cohort`), `scripts/run_f43_jayne.sh` (cifar bench +
+  speech harness, one TERM stops all; Ctrl+C in tmux), arm `l3b_e4_srv`.
 - **FX-D224** Felix screen knobs: `sel.selectType=random` (uniform picks); F42 arms `l3b_b3`, `l3b_pb`, `l3b_ro`, `l3bn`, `rnd`,
   `rnd_ro`, `rnd_ron` (all `_srv`).
 - **FX-D218** Bench from harness plans: `bench_pool.py --harness-args` (harness_pool `_parser` / `plan`, dry-run YAMLs), `--gpus-per-leg`
