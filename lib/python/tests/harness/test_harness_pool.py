@@ -752,13 +752,16 @@ def test_f42_tier_r27_holdout_and_pacing():
     """F42: only arms reading held-out data hold out 10% (FX-N130); Felix +1 ladder; check-in baselines, `*` oracles, Felix K1."""
     by = {p.pid: p for p in pool.tier_phases("F42", pool.B6 + ("fedavg",), "cifar10")}
     arms = ("ctl", "e0", "l3", "l3b", "l4", "l5", "l5p", "e0p", "rstar", "fdstar", "fbstar", "fck", "v2p", "v2pr", "v2p_s025",
-            "ctl_s05", "ctl_s025", "l3b_s05", "l3b_s025", "ctl_ema", "l3b_ema", "ctl_srv", "l3b_srv")
+            "ctl_s05", "ctl_s025", "l3b_s05", "l3b_s025", "ctl_ema", "l3b_ema", "ctl_srv", "l3b_srv",
+            "rstar_srv", "fdstar_srv", "fbstar_srv", "l3b_b3_srv", "l3b_pb_srv", "l3b_ro_srv", "rnd_srv", "rnd_ro_srv", "rnd_ron_srv", "l3bn_srv")
     assert set(by) == {f"F42_{c}_{a}" for c in ("s0u", "s50u") for a in arms}
     assert {p.pid for p in by.values() if "validation_holdout=0.1" in p.trainer_hp} == \
         {f"F42_{c}_{a}" for c in ("s0u", "s50u") for a in ("l5p", "e0p", "fck", "v2p", "v2pr", "v2p_s025")}
     assert all(("validation_probe=true" in p.trainer_hp) == ("validation_holdout" in p.trainer_hp) for p in by.values())
     assert by["F42_s50u_ctl"].runtime_s == 172800
     assert by["F42_s50u_ctl"].baselines == ("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star")
+    assert by["F42_s50u_ctl_srv"].baselines == by["F42_s50u_ctl"].baselines  # FX-N133: every baseline's averaged model
+    assert "serveEma=sweep" in by["F42_s50u_rstar_srv"].agg_hp and "avail_predictor=oracle" in by["F42_s50u_rstar_srv"].agg_hp
     assert "avail_knowledge=oracle" in by["F42_s50u_fbstar"].agg_hp and by["F42_s50u_fbstar"].baselines == ("fedbuff",)
     assert "avail_knowledge=checkin" in by["F42_s50u_fck"].agg_hp and "proactive_inflight_evict=False" in by["F42_s50u_fck"].agg_hp
     assert by["F42_s50u_rstar"].baselines == ("refl",) and "avail_predictor=oracle" in by["F42_s50u_rstar"].agg_hp

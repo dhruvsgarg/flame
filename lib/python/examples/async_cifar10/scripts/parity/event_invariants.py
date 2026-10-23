@@ -596,8 +596,13 @@ def ev16_withheld_delivery(run):
     closes = [] if _is_async(run) else sorted(
         float(e["vclock_now"]) for e in _train_commits(run) if e.get("vclock_now") is not None)
     release = float(_hp(run, "sim_gate_release_s", "simGateReleaseSeconds") or 0.0)  # FX-D163
+    committed = {(t, e["round"] - st) for e in _train_commits(run) if e.get("round") is not None
+                 for t, st in zip(e.get("contributing_trainers") or [], e.get("staleness") or [])
+                 if st is not None}
     for e in _events(run, "withheld_delivery"):
         held[(e.get("end_id"), round(float(e["sct"]), 3))] = e
+        if not _is_async(run) and e.get("staleness") and (e.get("end_id"), e["round"] - e["staleness"]) not in committed:
+            continue  # a stale sync delivery its stack drops (FX-N57) never commits: no lateness to grade
         tr = gt.get(e.get("end_id"))
         if tr is not None:
             sct = float(e["sct"])  # = ClientAvailability.compute_delivery_ts
@@ -611,15 +616,13 @@ def ev16_withheld_delivery(run):
             examples.append((e["end_id"][-4:], "commit<delivery_ts", e["actual_commit_ts"], e["delivery_ts"]))
         # A delivery at the budget commits when the final round closes: not late.
         _due = float(e["delivery_ts"])
-        # Sync: a close not yet logged (live prefix) is the commit itself, never late (FX-D136).
-        _close = next((c for c in closes if c >= _due - _EPS_S), math.inf if not _is_async(run) else _due)
+        # Sync: a close not yet logged (live prefix) is the commit itself, never late (FX-D136). A delivery due at a close's
+        # instant joins the next version (that close took its K first): F42-T12 (b).
+        _close = next((c for c in closes if c > _due + _EPS_S), math.inf if not _is_async(run) else _due)
         if e.get("actual_commit_ts") is not None and _due < budget and \
                 float(e["actual_commit_ts"]) > max(_due + _LATE_DELIVERY_S, _close + _EPS_S):
             late += 1
             examples.append((e["end_id"][-4:], "commit>>delivery_ts", e["actual_commit_ts"], e["delivery_ts"]))
-    committed = {(t, e["round"] - st) for e in _train_commits(run) if e.get("round") is not None
-                 for t, st in zip(e.get("contributing_trainers") or [], e.get("staleness") or [])
-                 if st is not None}
     unheld = n = 0
     for tid, evs in run["trainers"].items():
         tr = gt.get(tid)
@@ -855,6 +858,7 @@ def _r27_expected(run) -> str:
     m = re.search(r"_dbg_(?:google_speech_)?(\w+?)_n\d+", name)
     b = m.group(1) if m else ""
     phase = re.sub(r"_h(?:stub|tiny_cpu)$", "", name.split("_dbg_")[0])  # harness legs append _h<mode>
+    phase = re.sub(r"(?:_srv)?(?:_r\d+)?$", "", phase)  # FX-N133 averaged-model arms, seed replicates
     kw = run["cfg"].get("selector", {}).get("kwargs", {}) or {}
     if b == "oort_star" or re.search(r"_\w*star\b", phase) or (b == "refl" and kw.get("avail_predictor") == "oracle"):
         return "oracle"

@@ -81,11 +81,12 @@ class SeasonalForecaster(_TracePredictor):  # DEAD?(F42-T3): no arm since REFL r
 class ProphetForecaster(_TracePredictor):
     """REFL (paper §4.1, Alg. 1; F42-T3): a per-client Prophet model on the client's own AVL_TRAIN history, sampled every
     `step_s` with daily seasonality and refit once per trace day; p(a, b) = mean forecast over [a, b], clipped to [0, 1]. The device
-    computes it from its own log (real: the trainer; sim: the aggregator replays it), so no history after `now` is ever read."""
+    computes it from its own log (real: the trainer; sim: the aggregator replays it), so no history after `now` is ever read.
+    growth "flat" (F42-T12 c): on 1-2 days of history a linear trend pins ~55% of client-slots at p 0 or 1, a fixed priority set."""
 
-    def __init__(self, trace_name: str, registry_path: Optional[str] = None, step_s: float = 300.0):
+    def __init__(self, trace_name: str, registry_path: Optional[str] = None, step_s: float = 300.0, growth: str = "flat"):
         super().__init__(trace_name, registry_path)
-        self.step_s = float(step_s)
+        self.step_s, self.growth = float(step_s), growth
         self._fit: Dict[str, tuple] = {}  # client -> (fit day, grid start, yhat array)
         self.fits = 0
 
@@ -100,7 +101,7 @@ class ProphetForecaster(_TracePredictor):
         end = day * DAY_S
         ts = np.arange(0.0, end, self.step_s)
         y = [_avl_train_share(times, states, t, t + self.step_s) for t in ts]
-        m = Prophet(daily_seasonality=True, weekly_seasonality=False, yearly_seasonality=False)
+        m = Prophet(growth=getattr(self, "growth", "flat"), daily_seasonality=True, weekly_seasonality=False, yearly_seasonality=False)
         m.fit(pd.DataFrame({"ds": pd.to_datetime(ts, unit="s"), "y": y}))
         grid = np.arange(end, end + 2 * DAY_S, self.step_s)
         yhat = m.predict(pd.DataFrame({"ds": pd.to_datetime(grid, unit="s")}))["yhat"].to_numpy()

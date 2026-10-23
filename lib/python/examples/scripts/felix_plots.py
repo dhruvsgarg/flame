@@ -8,6 +8,7 @@ One PNG per dataset (`<out>/felix_<dataset>.png`): columns = the batch's cells; 
 import argparse
 import bisect
 import os
+import re
 import sys
 from concurrent.futures import ProcessPoolExecutor
 
@@ -58,6 +59,7 @@ def main(argv=None):
     ap.add_argument("--also", nargs="*", default=list(ALSO), help="extra baseline:arm series (known: %s)" % ", ".join(ALSO))
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "_metadata"))
     ap.add_argument("--base-arm", nargs="*", default=[], help="baseline:arm, e.g. fedbuff:ctl_srv:raw (F42f)")
+    ap.add_argument("--basis", choices=("avg", "cur"), help="FX-N133: every series from its `_srv` leg's averaged or current model")
     a = ap.parse_args(argv)
     a.base_arm = dict(x.split(":", 1) for x in a.base_arm)
     series = [("felix", a.new, "Felix new", "#2a78d6", "-", 2.4)]
@@ -65,6 +67,10 @@ def main(argv=None):
         series.append(("felix", a.old, "Felix old", "#eb6834", "-", 2.0))
     series += [(b, a.base_arm.get(b, "ctl"), lab, col, ls, 1.4) for b, lab, col, ls in BASE]
     series += [(*k.split(":", 1), *ALSO[k], 1.6) for k in a.also if k in ALSO]
+    if a.basis:
+        on = lambda arm: re.sub(r"_srv(:raw)?$", "", arm) + ("_srv" if a.basis == "avg" else "_srv:raw")
+        a.old, seen = on(a.old), set()
+        series = [s_ for s_ in ((b, on(arm), *r) for b, arm, *r in series) if s_[:2] not in seen and not seen.add(s_[:2])]
     want = {}  # (dataset, cell, baseline, arm) -> sim dir
     for phase, b, _, _, sim in rows_from_pools(a.pools):
         parts = phase.split(f"{a.prefix}_", 1)[-1].split("_", 1)
@@ -121,7 +127,8 @@ def main(argv=None):
             for h_, l_ in zip(*x.get_legend_handles_labels()):
                 h.setdefault(l_, h_)
         fig.legend(list(h.values()), list(h), loc="lower center", ncol=min(len(h), 6), fontsize=9, frameon=False)
-        fig.suptitle(f"{a.prefix} · {ds} · sims, seed 1 · accuracy: {k}-eval rolling mean · y from the lowest value after {WARM_H:g} h (stalled legs clipped)",
+        basis = {"avg": "averaged models", "cur": "current models"}.get(a.basis, "mixed models")
+        fig.suptitle(f"{a.prefix} · {ds} · sims, seed 1 · {basis} · accuracy: {k}-eval rolling mean · y from the lowest value after {WARM_H:g} h (stalled legs clipped)",
                      fontsize=13)
         fig.tight_layout(rect=(0, 0.05, 0.93, 0.97))
         out = os.path.join(a.out, f"felix_{ds}.png")

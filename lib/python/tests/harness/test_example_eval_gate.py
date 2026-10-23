@@ -91,6 +91,14 @@ def test_ema_tracks_each_committed_version_and_serve_beta_is_one_sweep():
     assert agg._emas["serve"]["weight"].item() == pytest.approx(b * (b * 0 + (1 - b) * 2) + (1 - b) * 4)
 
 
+def test_serve_beta_on_sync_stacks_reads_round_contributors_and_aggregation_goal():
+    # FX-N133: sync aggregators have no _agg_goal / participation dict; K and n come from the config and the rounds' caches
+    agg = _Agg(1, True)
+    agg.config.hyperparameters = SimpleNamespace(serveEma="sweep", aggregation_goal=10)
+    agg._contributors_seen = {f"t{i}" for i in range(50)}
+    assert agg._serve_beta() == pytest.approx(1 - 10 / 50)
+
+
 def test_no_ema_knobs_touch_nothing():
     agg = _Agg(21, True)
     agg._ema_step()  # no model needed: off is a no-op (R9)

@@ -58,3 +58,14 @@ def test_mean_training_loss_over_local_iterations():
     t._train_epoch(1)
     t.finalize_local_accuracy()
     assert t._train_loss_batches == 2 and t._train_loss_mean is not None and t._train_loss_mean > 0
+
+
+def test_prefix_minus_one_is_one_training_batch():
+    # FX-N132 (f): utilityPrefixSamples=-1 sizes the pre-step loss prefix by the shared batch setting
+    from types import SimpleNamespace
+    from flame.mode.horizontal.syncfl.trainer import Trainer
+    t = SimpleNamespace(_utility_prefix_samples=lambda: Trainer._utility_prefix_samples(t))
+    t.config, t.batch_size = SimpleNamespace(hyperparameters=SimpleNamespace(utility_prefix_samples=-1)), 32
+    assert t._utility_prefix_samples() == 32
+    t.config.hyperparameters.utility_prefix_samples = 64
+    assert t._utility_prefix_samples() == 64

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
-"""FX-N35: the UN_AVL share a leg actually saw, from its own selection telemetry (avail_composition).
+"""FX-N35: the UN_AVL share of candidates a leg's selector believed at selection (avail_composition); under check-in a client
+not checked in counts as UN_AVL (F42-T12 g), so it is a knowledge measure, not offline picks.
 
   leg_unavailability.py RUN_DIR [RUN_DIR ...]   # one line per dir: '<frac> <n_selections>'
 """

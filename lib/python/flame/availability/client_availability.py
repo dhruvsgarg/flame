@@ -273,7 +273,8 @@ class ClientAvailability:
             gap = self._task_timeout_s() / (1 if self._CHECKIN_SYNC else c)  # server's prior: its round deadline / c
             led = CheckinLedger(sync=self._CHECKIN_SYNC, initial_gap_s=float(kw.pop("initial_gap_s", gap)),
                                 window_frac=float(kw.get("window_frac", 0.1)), jitter=tuple(kw.get("jitter", (0.5, 1.5))),
-                                alpha=float(kw.get("alpha", 0.25)), seed=int(kw.get("seed", 0)), on_event=self._checkin_event)
+                                alpha=float(kw.get("alpha", 0.25)), seed=int(kw.get("seed", 0)), on_event=self._checkin_event,
+                                overdue=str(kw.get("overdue", "window")))
             led.busy, led.lock = set(), threading.RLock()
             self._checkin = led
             for ch in self._avail_channels():  # real: CHECK_IN notifies (incl. any that arrived before the first selection)
@@ -287,7 +288,7 @@ class ClientAvailability:
             return None
         if getattr(self, "_checkin_fc", None) is None:
             from flame.availability.refl_predictors import ProphetForecaster
-            self._checkin_fc = ProphetForecaster(self._avail_trace_name)
+            self._checkin_fc = ProphetForecaster(self._avail_trace_name, growth=kw.get("prophet_growth", "flat"))
         return self._checkin_fc
 
     def _checkin_event(self, kind, end, t, fields) -> None:

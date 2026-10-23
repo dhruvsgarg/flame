@@ -221,7 +221,18 @@ F42_ARMS = {"ctl": dict(bls=("felix", "fedbuff", "refl", "feddance", "fedavg", "
             # FX-N128 serve-EMA screen: training unchanged, EMAs of the model sequence scored beside it (agg_eval_ema)
             "ctl_ema": dict(bls=("felix", "fedbuff"), hp=f"evalEma={_EMA}"), "l3b_ema": dict(hp=f"{_L3B} {_STATS} evalEma={_EMA}", thp=_PRE),
             # FX-N128 serve-EMA: the served (and graded) model averages ~one population sweep of versions (b = 1 - K / n)
-            "ctl_srv": dict(bls=("felix", "fedbuff"), hp="serveEma=sweep"), "l3b_srv": dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=_PRE)}
+            "ctl_srv": dict(bls=("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star"), hp="serveEma=sweep"),
+            "l3b_srv": dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=_PRE)}
+F42_ARMS.update({f"{a}_srv": dict(F42_ARMS[a], hp=F42_ARMS[a]["hp"] + " serveEma=sweep") for a in ("rstar", "fdstar", "fbstar")})  # FX-N133
+# FX-N132 (c) screen: does pick concentration cap cifar's late plateau? l3b with a 3x stronger balance exponent
+F42_ARMS["l3b_b3_srv"] = dict(hp=f"{_E0} {_C3} sel.participationDecay=3.0 {_STATS} serveEma=sweep", thp=_PRE)
+F42_ARMS["l3b_pb_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp="utilityPrefixSamples=-1")  # FX-N132 (f): prefix = one batch
+F42_ARMS["rnd_srv"] = dict(hp=f"{_E0} sel.selectType=random serveEma=sweep")  # FX-N132 (c1): Felix with uniform picks
+F42_ARMS["rnd_ro_srv"] = dict(hp=f"{_E0} sel.selectType=random opt.agg_rate_conf.type=old serveEma=sweep")
+F42_ARMS["rnd_ron_srv"] = dict(hp=f"{_E0} sel.selectType=random opt.agg_rate_conf.type=old serveEma=sweep",
+                               thp="lr_batch_normalize=true")  # + FedBuff's last-batch lr normalization
+F42_ARMS["l3bn_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=f"{_PRE} lr_batch_normalize=true")  # FX-N132 (c1): l3b + lr norm
+F42_ARMS["l3b_ro_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep opt.agg_rate_conf.type=old", thp=_PRE)  # FX-N132: FedBuff's rate
 # D2 F39W (FX-N116): Felix's local samples per task; fixed (capped at an epoch) vs per-client split (compute = beta/(1-beta) x transfer)
 F39W_SAMPLES = {"cifar10": (32, 64, 128), "google_speech": (128, 256, 512)}
 F39W_BETAS = (0.5, 0.33)

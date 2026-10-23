@@ -592,6 +592,7 @@ class TopAggregator(BaseTopAggregator):
             self._version_mean_util = getattr(self, "_version_mean_util", {})
             self._version_mean_util[self._round] = sum(_fresh_u) / len(_fresh_u)
 
+        self._contributors_seen = getattr(self, "_contributors_seen", set()) | set(self.cache)  # FX-N133: serveEma's n
         # optimizer conducts optimization (in this case, aggregation)
         _opt0 = time.time()
         # An empty cache commits nothing, whatever the optimizer returns (FX-L28).

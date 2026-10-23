@@ -35,6 +35,12 @@ EXPECT = {
     ("felix", "l3b_s05"): dict(_L3B, lr="0.5"), ("felix", "l3b_s025"): dict(_L3B, lr="0.25"),
     ("felix", "ctl_ema"): _OLD, ("felix", "l3b_ema"): _L3B, ("fedbuff", "ctl_ema"): dict(know="checkin", evict="false", rate="old"),
     ("felix", "ctl_srv"): dict(_OLD, serve="sweep"), ("felix", "l3b_srv"): dict(_L3B, serve="sweep"),
+    ("felix", "l3b_b3_srv"): dict(_L3B, bal="3.0", serve="sweep"),
+    ("felix", "l3b_pb_srv"): dict(_L3B, prefix="-1", serve="sweep"),
+    ("felix", "l3b_ro_srv"): dict(_L3B, rate="old", serve="sweep"),
+    ("felix", "rnd_srv"): dict(_E0, serve="sweep"),
+    ("felix", "l3bn_srv"): dict(_L3B, serve="sweep"),
+    ("felix", "rnd_ro_srv"): dict(_E0, rate="old", serve="sweep"), ("felix", "rnd_ron_srv"): dict(_E0, rate="old", serve="sweep"),
     ("fedbuff", "ctl_srv"): dict(know="checkin", evict="false", rate="old", serve="sweep"),
     ("fedbuff", "ctl_s05"): dict(know="checkin", evict="false", rate="old", lr="0.5"),
     ("fedbuff", "ctl_s025"): dict(know="checkin", evict="false", rate="old", lr="0.25"),
@@ -46,7 +52,7 @@ EXPECT = {
     ("fedavg", "*"): dict(know="checkin", evict="false"),
     ("oort", "*"): dict(know="checkin", evict="false"), ("oort_star", "*"): dict(know="oracle", evict="false"),
 }
-COMMON = dict(holdout="-", p34="ok")
+COMMON = dict(holdout="-", serve="-", p34="ok")
 
 
 def _s(v):
@@ -127,7 +133,9 @@ def main(argv=None):
     print("| leg | " + " | ".join(cols) + " | ok |\n|" + "---|" * (len(cols) + 2))
     for pool in pools:
         for leg, b, arm, k in legs(pool):
-            row = EXPECT.get((b, arm)) or EXPECT.get((b, "*"))
+            base = re.sub(r"_srv$", "", arm)  # FX-N133: an `_srv` arm = its base arm + the averaged model
+            row = EXPECT.get((b, arm)) or EXPECT.get((b, base)) or EXPECT.get((b, "*"))
+            row = dict(row, serve="sweep") if row is not None and arm != base else row
             want = dict(COMMON, **(row or {}))
             miss = [f"{x}={k[x]}≠{v}" for x, v in want.items() if k.get(x) != v] + ([] if row else ["no expected row"])
             bad += bool(miss)

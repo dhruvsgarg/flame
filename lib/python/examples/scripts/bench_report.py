@@ -20,6 +20,11 @@ import sys
 TARGETS = {"cifar10": (0.35, 0.40), "google_speech": (0.25, 0.30)}
 
 
+def label(arm):
+    """FX-N133: `X_srv` prints as `X avg` (averaged model), `X_srv:raw` as `X cur` (the same leg's current model)."""
+    return re.sub(r"_srv$", " avg", re.sub(r"_srv:raw$", " cur", arm))
+
+
 def leg(run_dir, event=b'"agg_eval"'):
     """[(t, acc, cumulative bytes)] and the end clock, streamed in event order (t = the last commit's vclock).
     `event` b'"agg_eval_raw"' reads a serveEma leg's unserved model (FX-N128)."""
@@ -97,7 +102,7 @@ def main(argv=None):
         print(f"\n## {ds} {trace}\n| arm | baseline | seeds | AUC % | final % | " + " | ".join(f"TTA {t} min (hit) | GB→{t}" for t in ths)
               + " | GB |\n|" + "---|" * (6 + 2 * len(ths)))
         for r in sorted((r for r in rows if (r["dataset"], r["trace"]) == (ds, trace)), key=lambda r: -(r["auc"][0] or 0)):
-            print(f"| {r['arm']} | {r['baseline']} | {r['n']} | {f(r['auc'], pct=True)} | {f(r['final'], pct=True)} | "
+            print(f"| {label(r['arm'])} | {r['baseline']} | {r['n']} | {f(r['auc'], pct=True)} | {f(r['final'], pct=True)} | "
                   + " | ".join(f"{f(r['tta' + t], 0)} ({r['tta' + t][2]}/{r['n']}) | {f(r['gb' + t])}" for t in ths)
                   + f" | {f(r['gb'])} |")
     if a.json_out:

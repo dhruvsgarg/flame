@@ -884,8 +884,10 @@ class Trainer(Role, metaclass=ABCMeta):
         return getattr(hp, "stat_utility", "legacy") == "fedscale"
 
     def _utility_prefix_samples(self) -> int:
+        """-1 = one training batch: the pass's only pre-step loss, sized by the shared batch setting (FX-N132 f)."""
         hp = getattr(getattr(self, "config", None), "hyperparameters", None)
-        return int(getattr(hp, "utility_prefix_samples", 0) or 0)
+        n = int(getattr(hp, "utility_prefix_samples", 0) or 0)
+        return int(getattr(self, "batch_size", 0) or getattr(hp, "batch_size", 0) or 0) if n < 0 else n
 
     def reset_stat_utility(self) -> None:
         """Reset the trainer's statistical utility to zero."""

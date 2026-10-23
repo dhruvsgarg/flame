@@ -27,7 +27,9 @@ def test_sync_window_pools_then_rejects_into_next_window():
     assert led.pool == {} and led.window is None
     led.open_window(120.0, round_id=1)  # round 1's training phase took 100 s
     assert led.train_d == 100.0 and led.window_s() == 10.0
-    assert 225.0 <= led.reconnect_at(125.0) <= 235.0  # last close 20 + 100 is overdue at 125: 125 + 100 + U(0, W 10)
+    assert 125.0 <= led.reconnect_at(125.0) <= 135.0  # last close 20 + 100 is overdue at 125: poll within a window (F42-T12 d)
+    led.overdue = "round"
+    assert 225.0 <= led.reconnect_at(125.0) <= 235.0  # revert: 125 + the 100 s phase + U(0, W 10)
 
 
 def test_unavailable_at_reconnect_is_a_missed_opportunity():

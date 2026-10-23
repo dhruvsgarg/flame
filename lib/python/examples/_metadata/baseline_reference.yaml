@@ -34,7 +34,7 @@ refl:
       overcommitment: 1.3
       avail_predictor: prophet
       holdoff_rounds: 0
-    src: "[code] run_exps.sh:79 samplers=random, :97 availprios=1, :99 availprob=0.9, :70 overcommit=1.3 (aggregator.py:637 round()); argParser.py:102 blacklist -1; [paper] §4.1 Alg. 1 + Prophet forecaster (deployed REFL, F42-T3; the fork simulates it with the future trace = REFL*); hold-off: [paper] §4.1 5 rounds vs [code] none (blacklist -1) -> 0: at our n 75 x 13 picks it holds out 65 of 75 clients (paper ~6.5% of 1000); F42C stub REFL stalled at round 2 with every pool member held off (experiments/pool_20261021_1911_F42C_B)"
+    src: "[code] run_exps.sh:79 samplers=random, :97 availprios=1, :99 availprob=0.9, :70 overcommit=1.3 (aggregator.py:637 round()); argParser.py:102 blacklist -1; [paper] §4.1 Alg. 1 + Prophet forecaster (deployed REFL, F42-T3; the fork simulates it with the future trace = REFL*); hold-off: [paper] §4.1 5 rounds vs [code] none (blacklist -1) -> 0: at our n 75 x 13 picks it holds out 65 of 75 clients (paper ~6.5% of 1000); F42C stub REFL stalled at round 2 with every pool member held off (experiments/pool_20261021_1911_F42C_B); Prophet growth flat [ours]: the paper fits weeks of history, our legs 1-2 days, where a linear trend pins ~55% of client-slots at p 0 / 1 (F42-T12 c)"
   datasets:
     cifar10:
       model: {source: "ResNet18 ([paper] Table 1)", ours: "CifarNet (fl_data.py:56)"}

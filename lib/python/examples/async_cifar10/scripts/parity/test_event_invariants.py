@@ -417,6 +417,37 @@ def test_ev16_sync_delivery_awaiting_unlogged_close_passes(tmp_path, monkeypatch
     assert _status(run, "EV16_withheld_delivery") == "PASS"
 
 
+@pytest.mark.parametrize("closes, status", [((50.0, 600.0), "PASS"), ((60.0, 600.0), "FAIL")])
+def test_ev16_sync_delivery_due_at_a_close_joins_the_next(tmp_path, monkeypatch, closes, status):
+    # F42-T12 (b): a close at the delivery's instant took its K first; the delivery commits in the next version.
+    _unavail_T1(monkeypatch)
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round":
+            agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
+                        "delivery_ts": 50.0, "actual_commit_ts": 500.0})
+    agg += [{"event": "agg_round", "task_to_perform": "train", "ts": 10 + i, "round": 3 + i, "contributing_trainers": [T2],
+             "staleness": [0], "vclock_now": c, "commit_gap_s": 0.0} for i, c in enumerate(closes)]
+    run = _write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 1000}, optimizer="oort")
+    assert _status(run, "EV16_withheld_delivery") == status
+
+
+def test_ev16_dropped_stale_sync_delivery_is_not_a_late_commit(tmp_path, monkeypatch):
+    # F42-T12: a stale withheld delivery a no-stale sync stack drops (FX-N57) never commits, however late it is ingested.
+    _unavail_T1(monkeypatch)
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round":
+            agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
+                        "delivery_ts": 50.0, "actual_commit_ts": 50.0})
+    agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": 30.0, "round": 8, "staleness": 5,
+                "delivery_ts": 50.0, "actual_commit_ts": 500.0})
+    agg.append({"event": "agg_round", "task_to_perform": "train", "ts": 10, "round": 8, "contributing_trainers": [T2],
+                "staleness": [0], "vclock_now": 60.0, "commit_gap_s": 0.0})
+    run = _write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 1000}, optimizer="oort")
+    assert _status(run, "EV16_withheld_delivery") == "PASS"
+
+
 def _gated_real_run(tmp_path, dispatch_ends):
     # T1's update sits behind its send-gate over ts 10-20; a sync selection at 15 still lists it in flight.
     agg = [{"event": "selection", "task": "train", "ts": 15.0, "chosen": [T1, T2]}]

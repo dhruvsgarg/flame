@@ -218,11 +218,13 @@ class REFLOortSelector(OortSelector):
         # Select based on priority mode
         checkin_p = channel_props.get("checkin_p") or {}
         if self.avail_predictor == "prophet":
-            # F42-T3, REFL Alg. 1: least available first (p ascending, ties shuffled); no forecast = assumed available (§4.1 fn. 5).
+            # F42-T3, REFL Alg. 1 as the fork runs it (resampleClients): predicted gone over [mu, 2 mu] (p < 0.5) first, shuffled,
+            # then a random fill; no forecast = assumed available (§4.1 fn. 5). F42-T12 (c): a strict p order concentrated picks.
             cand = [e for e in eligible_ends if e not in blacklist]
-            draw = lambda c: random.Random(f"{self._seed}|refl_p|{self._draw_key}|{c}").random()
-            selected = sorted(cand, key=lambda c: (1.0 if checkin_p.get(c) is None else checkin_p[c], draw(c)))[:num_to_select]
-            priority_ends = [e for e in selected if checkin_p.get(e) is not None and checkin_p[e] < 0.5]
+            low = [e for e in cand if checkin_p.get(e) is not None and checkin_p[e] < 0.5]
+            selected = self._select_priority_fill(eligible_ends, low, [e for e in cand if e not in set(low)], num_to_select,
+                                                  round_num)
+            priority_ends = [e for e in selected if e in set(low)]
         elif self.avail_priority == 0:
             # No priority: use standard Oort on all available ends
             all_candidates = set(priority_ends + remaining_ends)

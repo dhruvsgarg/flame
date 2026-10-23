@@ -273,6 +273,9 @@ class AsyncOortSelector(AsyncSelectorBase):
                 candidates, num_of_ends=feasible_extra, agg_version_key=agg_version_key
             )
 
+        if self.select_type == "random":  # FX-N132 (c1) screen: Felix with uniform picks
+            self.round = model_version
+            return self.select_random(candidates, num_of_ends=feasible_extra, agg_version_key=agg_version_key)
         if self.select_type == "default":
             chosen, exploit_end_ids = self._select_candidates_using_default(
                 cutoff_utility=cutoff_utility,

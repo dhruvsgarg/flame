@@ -16,6 +16,7 @@
 """horizontal FL top level aggregator."""
 
 import logging
+import math
 import os
 import threading
 import time
@@ -556,9 +557,15 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
         committed = []
         n_k = 0  # commits counting to first_k
+        _cap = self._sim_checkin_horizon(channel)
         _lookahead = str(getattr(getattr(getattr(self, "config", None), "hyperparameters", None),
                                  "sim_reinject_lookahead", True)).lower() == "true"
         for end, sct, (msg, md) in all_popped:
+            if sct > _cap:  # F42-T12 (d): the next check-in can open this version first; real's window timer won't wait
+                self._sim_sync_carry[end] = (sct, (msg, md))
+                if end in _carried_wd:
+                    self._sim_sync_carry_withheld.add(end)
+                continue
             if _lookahead and n_k < first_k:  # FX-D194: a delivery due by this sct lands first, in this version
                 n_k += self._sync_sim_commit_due_withheld(channel, sct, committed, first_k - n_k)
             if n_k >= first_k:
@@ -995,6 +1002,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             logger.debug(f"_agg_training_stats: {self._agg_training_stats}")
         self._reset_aggregator_stats()
 
+        self._contributors_seen = getattr(self, "_contributors_seen", set()) | set(self.cache)  # FX-N133: serveEma's n
         # optimizer conducts optimization (in this case, aggregation)
         _opt0 = time.time()
         # An empty cache commits nothing, whatever the optimizer returns (FX-L28).
@@ -1136,6 +1144,16 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         desired = desired or getattr(channel._selector, "num_of_ends", None) or self.config.hyperparameters.aggregation_goal or 1
         fresh = self._sync_version_inflight(channel) | set(picked)
         return desired - len(fresh) - len(self._sync_accepted_ends()) > 0
+
+    def _sim_checkin_horizon(self, channel) -> float:
+        """F42-T12 (d): while this version still misses picks under check-in, its next check-in may fill the window; a sim
+        drain stops there instead of jumping to a straggler's completion. `simCheckinDrainCap=false` reverts."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        if (getattr(self, "_knowledge", lambda: None)() != "checkin"
+                or str(getattr(hp, "sim_checkin_drain_cap", True)).lower() != "true" or not self._sync_wants_picks(channel)):
+            return math.inf
+        nxt = self._next_avail_vclock()
+        return math.inf if nxt is None else nxt
 
     def _sync_wait_k_plan(self, channel, num_eligible: int, threshold: int):
         """FX-N37: (picks, eligible needed to dispatch) for this version's missing slots; None when none are missing."""

@@ -43,7 +43,7 @@ done
     done
   done
   # FX-N35: the UN_AVL share each leg saw at selection (real / sim).
-  echo; echo "effective unavailability (UN_AVL share at selection, real / sim):"
+  echo; echo "believed UN_AVL share of candidates at selection (check-in: not checked in; not offline picks), real / sim:"
   for f in "$ROOT"/*/summary.tsv; do
     [ -f "$f" ] || continue
     p="$(basename "$(dirname "$f")")"

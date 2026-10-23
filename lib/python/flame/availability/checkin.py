@@ -5,7 +5,7 @@
 A client checks in when it turns AVL_TRAIN, or at its reconnect time if AVL_TRAIN then. The server pools it while a selection is
 open (sync: a window of W = window_frac x the round-time estimate, the selector picks at its close; async: while slots are free),
 else rejects it with a reconnect time inside the next selection: sync = last round-start close + the training-phase estimate
-+ U(0, W) (from now once overdue; within W before any estimate), async = now + m x gap x U(jitter) with m clients on hold, so
++ U(0, W) (overdue: now + U(0, W), F42-T12 d; `overdue="round"` reverts to now + the estimate; within W before any estimate), async = now + m x gap x U(jitter) with m clients on hold, so
 held clients return at the dispatch rate. The sync estimate excludes selection waits: a starved window cannot feed back into it.
 Not AVL_TRAIN at its reconnect time = missed opportunity; it checks in again at its next flip. A departure is never reported:
 the server learns it only by task failure / timeout. One ledger serves both modes: sim derives check-ins from the trace
@@ -23,11 +23,12 @@ CHECKIN_MODES = ("sync", "async")
 
 class CheckinLedger:
     def __init__(self, sync: bool, initial_gap_s: float, window_frac: float = 0.1, jitter: Tuple[float, float] = (0.5, 1.5),
-                 alpha: float = 0.25, seed: int = 0, on_event: Optional[Callable] = None):
+                 alpha: float = 0.25, seed: int = 0, on_event: Optional[Callable] = None, overdue: str = "window"):
         if initial_gap_s <= 0:
             raise ValueError(f"initial_gap_s={initial_gap_s}: the server's prior round / dispatch gap must be > 0")
         self.sync = sync
         self.window_frac, self.jitter, self.alpha = float(window_frac), tuple(jitter), float(alpha)
+        self.overdue = overdue  # sync: a late round's early arrival polls within a window ("window") or waits a phase ("round")
         self.gap = float(initial_gap_s)  # EWMA (REFL α on history): sync round duration (round starts only), async dispatch gap
         self._rng = random.Random(seed)
         self._last_sel: Optional[float] = None  # sync: last round start; async: last dispatch
@@ -57,7 +58,8 @@ class CheckinLedger:
             if self.train_d is None or self._last_close is None:
                 return t + self._rng.uniform(0.0, self.window_s())  # no estimate yet: come back within a window
             nxt = self._last_close + self.train_d
-            return (nxt if nxt > t else t + self.train_d) + self._rng.uniform(0.0, self.window_s())
+            late = self.train_d if self.overdue == "round" else 0.0
+            return (nxt if nxt > t else t + late) + self._rng.uniform(0.0, self.window_s())
         return t + max(1, len(self.hold) + 1) * self.gap * self._rng.uniform(*self.jitter)
 
     def _emit(self, kind: str, end: str, t: float, **f) -> None:

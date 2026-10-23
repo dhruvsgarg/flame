@@ -99,9 +99,10 @@ class ExampleAggregatorMixin:
 
     def _serve_beta(self) -> float:
         """FX-N128 serveEma=sweep: average over ~one population sweep of versions (K updates each): b = 1 - K / n, n = clients
-        that have contributed so far (grows from K as the population joins)."""
-        n = len(getattr(self, "_trainer_participation_in_round_count", None) or {})
-        return max(0.0, 1.0 - float(getattr(self, "_agg_goal", 1) or 1) / max(n, 1))
+        that have contributed so far (grows from K as the population joins). FX-N133: sync stacks, one version per round."""
+        n = len(getattr(self, "_trainer_participation_in_round_count", None) or getattr(self, "_contributors_seen", None) or {})
+        k = getattr(self, "_agg_goal", None) or getattr(self.config.hyperparameters, "aggregation_goal", None) or 1
+        return max(0.0, 1.0 - float(k) / max(n, 1))
 
     def _ema_step(self) -> None:
         """FX-N128: per committed version, ema_b <- b ema_b + (1 - b) model for each b in `evalEma` ("0.5,0.9"; scored beside the
