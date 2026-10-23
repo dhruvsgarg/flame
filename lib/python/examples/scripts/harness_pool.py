@@ -234,7 +234,7 @@ F42_ARMS["rnd_ron_srv"] = dict(hp=f"{_E0} sel.selectType=random opt.agg_rate_con
 F42_ARMS["l3bn_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=f"{_PRE} lr_batch_normalize=true")  # FX-N132 (c1): l3b + lr norm
 F42_ARMS.update({f"l3b_e{e}_srv": dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=f"{_PRE} epochs={e}") for e in (2, 3, 4)})  # FX-N135
 F43_ARMS = ("ctl_srv", "rstar_srv", "fdstar_srv", "fbstar_srv", "l3b_srv", "l3b_e2_srv", "l3b_e3_srv")  # F43: baselines + Felix contenders
-F43_SHAPE = {"cifar10": dict(n=300, c=60, agg_goal=15), "google_speech": dict(n=100, c=30, agg_goal=10, gpus=3, sim_gpus=3)}
+F43_SHAPE = {"cifar10": dict(n=300, c=60, agg_goal=15), "google_speech": dict(n=100, c=30, agg_goal=10, gpus=4, sim_gpus=4)}  # 3 GPUs OOM (33 trainers x 1.2 GB + agg)
 F43_RUNTIME_S = {"cifar10": 432000, "google_speech": 86400}  # to the trace end (cifar ceiling 75% at 120 h); speech ceiling 73-79% at 24 h
 F43_STOP = "targetAccuracy=0.7 targetWindow=5"  # operator 10-23: stop at the 70% goal on the mean of the last 5 evals
 F42_ARMS["l3b_ro_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep opt.agg_rate_conf.type=old", thp=_PRE)  # FX-N132: FedBuff's rate
