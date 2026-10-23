@@ -429,6 +429,12 @@ class ClientAvailability:
     # Selection gate
     # ------------------------------------------------------------------
 
+    def _leg_trace_ids(self) -> list:
+        """Trace ids of the leg's connected clients (all trace ids before any channel exists); only these reach a selector."""
+        chans = self._avail_channels() if getattr(self, "cm", None) is not None else []
+        ends = set().union(*(set(getattr(ch, "_ends", {})) for ch in chans)) if chans else None
+        return [t for t in self.trainer_event_dict if ends is None or t in ends]
+
     def get_curr_unavail_trainers(self) -> list:
         """Trainers in UN_AVL state per trace-read at _avail_now().
 
@@ -448,7 +454,7 @@ class ClientAvailability:
         now = self._avail_now()
         unavail = [
             tid
-            for tid in self.trainer_event_dict
+            for tid in self._leg_trace_ids()
             if self._believed_state(tid, now) == TrainerAvailState.UN_AVL
         ]
         if logger.isEnabledFor(logging.DEBUG):
@@ -486,7 +492,7 @@ class ClientAvailability:
         now = self._avail_now()
         ineligible = [
             tid
-            for tid in self.trainer_event_dict
+            for tid in self._leg_trace_ids()
             if (st := self._believed_state(tid, now)) == TrainerAvailState.UN_AVL
             or (excluded_state is not None and st == excluded_state)
         ]

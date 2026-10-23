@@ -97,9 +97,12 @@ class PyTorchCifar10Trainer(Trainer):
         self.task_to_perform = "train"
 
         self.use_oort_loss_fn = self.config.hyperparameters.use_oort_loss_fn
-        # F42c: share of every client's data held out from training for all baselines; only Felix's eval probes read it.
+        self._update_norms = bool(getattr(self.config.hyperparameters, "trainer_update_norms", False))  # telemetry-only syncs
+        # FX-N130: held-out share of local data; set only by arms that read it.
         self.validation_holdout = float(getattr(self.config.hyperparameters, "validation_holdout", 0) or 0)
         self.validation_probe = str(getattr(self.config.hyperparameters, "validation_probe", False)).lower() == "true"
+        if self.validation_probe and self.validation_holdout <= 0:
+            raise ValueError("validation_probe needs validation_holdout > 0 (FX-N130)")
         self._val_probe = None
         self.trainer_indices_list = self.config.hyperparameters.trainer_indices_list
         self.trainer_start_ts = time.time()
@@ -912,11 +915,11 @@ class PyTorchCifar10Trainer(Trainer):
         _cycle_start = time.time()
         _pre["log"] = _cycle_start - _phase_train_entry
 
-        # Find current location
-        elapsed_s = self._sim_now()
-        timestep = min(int(elapsed_s), self.coords.shape[0]-1)
-        lat, lon = self.coords[timestep]
-        logger.info(f"({elapsed_s}s) Trainer {self.trainer_id} Location: ({lat:.2f}, {lon:.2f})")
+        # Satellite runs only: current location on the LEO trace
+        lat = lon = None
+        if getattr(self, "coords", None) is not None:
+            timestep = min(int(self._sim_now()), self.coords.shape[0] - 1)
+            lat, lon = (float(v) for v in self.coords[timestep])
         _pre["coords"] = time.time() - _phase_train_entry
 
         total_batches_processed = 0
@@ -1026,7 +1029,7 @@ class PyTorchCifar10Trainer(Trainer):
         # Telemetry-only: skip entirely when telemetry is off, and accumulate
         # the squared-diff on-device so we sync once (not once per parameter).
         delta_weight_l2 = None
-        if telemetry.is_enabled():
+        if telemetry.is_enabled() and getattr(self, "_update_norms", False):
             try:
                 ref = getattr(self, "weights", None)
                 if ref is not None:
@@ -1190,7 +1193,7 @@ class PyTorchCifar10Trainer(Trainer):
             # Epoch-1 gradient L2 (telemetry only): one fused GPU reduction and
             # a single .item() sync per batch, instead of a .item() per param
             # (which forced ~12 GPU->CPU syncs/batch on the shared-GPU queue).
-            if epoch == 1 and telemetry.is_enabled():
+            if epoch == 1 and getattr(self, "_update_norms", False) and telemetry.is_enabled():
                 _gsq = None
                 for p in self.model.parameters():
                     if p.grad is not None:

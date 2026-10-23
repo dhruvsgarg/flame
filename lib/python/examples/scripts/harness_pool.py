@@ -178,20 +178,20 @@ _C5, _BAL, _E0 = "opt.agg_rate_conf.type=value", "sel.participationDecay=1.0", "
 F41_ARMS = {"ctl": dict(bls=B6), "e0": dict(hp=_E0), "c3": dict(hp=f"{_E0} {_C3}", thp=_PRE),
             "c3b": dict(hp=f"{_E0} {_C3} {_BAL}", thp=_PRE), "c4": dict(hp=f"{_E0} {_C4}", thp=_PRE), "c5": dict(hp=f"{_E0} {_C5}"),
             "all": dict(hp=f"{_E0} {_C3} {_BAL} {_C4} {_C5}", thp=_PRE)}
-# F42 (operator 10-21): R27 baselines + their oracle `*` variants, 10% validation holdout for all, Felix as a +1 feature ladder
+# F42 (operator 10-21): R27 baselines + their oracle `*` variants, Felix as a +1 feature ladder
 # (old → e0 → +C3 → +bal → +C4 → +C5 = new → +pacing) plus pacing alone; Oort skipped. Long enough for day 2-3 data growth.
 F42_RUNTIME_S = {"cifar10": 172800, "google_speech": 129600}
 F42_CELLS = {"s0u": "syn_0", "s50u": "syn_50_3st"}
 F42_EVAL_S = 600  # test eval every 10 min of the leg's clock: TTA resolution (30 min quantized F42S01)
-_HOLD = "validation_holdout=0.1"
-_PROBE = ("sel.probePerWindow=60 sel.probeWindowS=3600 sel.evalStaleGate=3600", "validation_probe=true")
+_HOLD = "validation_holdout=0.1"  # FX-N130: only arms that read held-out data pay for it; the rest train on 100%
+_PROBE = ("sel.probePerWindow=60 sel.probeWindowS=3600 sel.evalStaleGate=3600", f"validation_probe=true {_HOLD}")
 _PACE_KW = '{"window_s":3600,"min_n":150}'
 _PACE_C = '{"name":"pace_c","kwargs":' + _PACE_KW + '}'
 _PACE = f"sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=pace_c sel.dynamic_kc.policy_kwargs={_PACE_KW}"
 _C4P = ('sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=composite sel.dynamic_kc.k_min=5 sel.dynamic_kc.policy_kwargs='
         '{"sub_policies":[{"name":"aimd_k","kwargs":{"memory":true,"stall":true}},' + _PACE_C + ']}')
 _L3, _L3B = f"{_E0} {_C3}", f"{_E0} {_C3} {_BAL}"
-F42_ARMS = {"ctl": dict(bls=("felix", "fedbuff", "refl", "feddance", "fedavg")),  # Felix old; baselines by check-in (R27, F42-T1)
+F42_ARMS = {"ctl": dict(bls=("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star")),  # Felix old; baselines (R27)
             "e0": dict(hp=f"{_E0} {_STATS}"),
             "l3": dict(hp=f"{_L3} {_STATS}", thp=_PRE), "l3b": dict(hp=f"{_L3B} {_STATS}", thp=_PRE), "l4": dict(hp=f"{_L3B} {_C4}", thp=_PRE),
             "l5": dict(hp=f"{_L3B} {_C4} {_C5}", thp=_PRE),  # Felix new without pacing
@@ -543,7 +543,7 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         for cell, trace in F42_CELLS.items():
             dsh = usage_hp(trace)
             base = replace(g3, runtime_s=F42_RUNTIME_S[ds], trace=trace, trace_offset_s="86400", kind="sim_ev",
-                           trainer_hp=f"{dsh} {DETERMINISTIC} {_HOLD}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S}")
+                           trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S}")
             for arm, kw in F42_ARMS.items():
                 bls = tuple(b for b in kw.get("bls", ("felix",)) if b in baselines)
                 for i in F42_SEEDS if bls else ():  # seed 1 keeps the bare id (F42S01); --seeds 2 adds _r2 (seed 1235)
@@ -556,7 +556,7 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         dsh = usage_hp("syn_50_3st")
         return [replace(g3, pid=f"{DS_TAG[ds]}F42R_s50u_ctl", baselines=tuple(b for b in F42_ARMS["ctl"]["bls"] if b in baselines),
                         runtime_s=480, trace="syn_50_3st", trace_offset_s="86400", kind="real",
-                        trainer_hp=f"{dsh} {DETERMINISTIC} {_HOLD}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S}")]
+                        trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S}")]
     if tier in ("F42C", "F42CR"):  # F42-T1 local gate on the CPU stub harness: F42C every arm in sim (30 min vclock);
         real = tier == "F42CR"      # F42CR the deployed arms in real mode (10 min wall, trace x4): check-in client, Felix notify (T7)
         out = []
@@ -566,7 +566,7 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                 out.append(Phase(f"{tier}_s50u_{arm}", bls, "syn_50_3st", runtime_s=600 if real else 1800, n=40, dataset=ds,
                                  harness="stub", trace_offset_s="86400", kind="real" if real else "sim_ev",
                                  trace_scale="4" if real else "", agg_hp=f"evalEverySeconds={F42_EVAL_S} {kw.get('hp', '')}".strip(),
-                                 trainer_hp=f"{_HOLD} {kw.get('thp', '')}".strip()))
+                                 trainer_hp=kw.get("thp", "")))
         return out
     if tier == "G3S":  # sim-only replicates of every G3 cell: G3S<i>_<cell>, graded on banked + equivalent reals
         return [replace(ph, pid=ph.pid.replace("G3_", f"G3S{i}_"), kind="sim")

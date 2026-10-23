@@ -42,6 +42,13 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 
 ## Next steps (persistent queue — resumes after Felix)
 
+- **FT-N18 · fwdllm on the in-process bench (FELIX V5) · todo (after FX-N129's gate).** Port `scripts/fl_bench.py` to the fwdllm
+  stack: `fwdllm_aggregator` (barrier / variance-gated cadence, `version_key` with iterations), `FedSgdTrainer` (its own
+  `ChannelManager` import in `fwdllm_trainer.py` needs the same patch), its channel calls (check every method it uses on the
+  in-memory channel), H5 path-style data and `client_idx_modulo`, the fwdllm trace keys it reads unconditionally
+  (`avl_events_syn_*`), and GPU memory of LLM trainers (workers per GPU). Validity chain as Felix: real ⇄ harness sim (FT parity)
+  ⇄ bench (B2 against fwdllm harness sim legs). *Exit:* B2 green on the fwdllm board cells.
+
 - **FT-N16 · Measured packing for FluxTune blocks · todo (on resume).** PARITY C21/C22 and Throughput: screen each block's legs at
   production density, record per-leg CPU/RAM/GPU footprints, pack with `--gpu-share`/`--lease-from-telemetry`. *Exit:* a FluxTune block's
   `--util` record in this doc before its first long run.
