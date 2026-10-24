@@ -59,6 +59,19 @@ def test_jobs_from_pools_collapses_seed_replicates(tmp_path):
     assert [j[:3] for j in jobs] == [("F42_s0u_ctl", "felix", "syn_0"), ("gs_F42_s50u_l5p", "felix", "syn_50_3st")]
 
 
+def test_pick_places_by_free_memory_and_counts_ramping_legs():
+    from types import SimpleNamespace
+    a = SimpleNamespace(per_gpu=3, leg_gpu_gb=4.0, leg_ram_gb=8.0, gpu_reserve_gb=2.0, ramp_s=240)
+    pick = bench_pool.pick
+    assert pick(["0", "7"], {}, {"0": 20.0, "7": 7.0}, 100.0, a, 0) == "0"  # most free
+    assert pick(["7"], {}, {"7": 5.0}, 100.0, a, 0) is None  # 5 − 2 reserve < 4
+    young = {i: (None,) * 6 + (0.0, "0") for i in range(4)}  # 4 legs ramping on GPU 0 hold 16 GB not yet visible
+    assert pick(["0", "7"], young, {"0": 20.0, "7": 7.0}, 100.0, a, 10) == "7"
+    assert pick(["0"], {}, {"0": 20.0}, 7.0, a, 0) is None  # host RAM
+    full = {i: (None,) * 6 + (-999.0, "0") for i in range(3)}
+    assert pick(["0"], full, {"0": 40.0}, 100.0, a, 0) is None  # per-GPU cap
+
+
 def test_leg_stats_matched_horizon(tmp_path):
     tel = tmp_path / "telemetry"
     tel.mkdir()

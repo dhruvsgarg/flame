@@ -28,8 +28,8 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
 - **FX-N141 · RESUME HERE: Felix loop FL1, build Felix up from FedBuff on cifar (operator 10-23).**
   - **Status:** S1 + S2 done (F44, `FL1_1023_1700`). S3 + the S1-closing leg = tier F45, built, ready to launch (operator).
   - **Launch (operator, tmux, same TAG on both):** `TIER=F45 TAG=<mmdd_hhmm> bash /home/dgarg39/flame/lib/python/examples/scripts/run_fl1.sh`
-    on jayne (GPUs 0, 2-7, ≤ 3 legs / GPU: `s0` + `s0u`, 18 legs; GPU 1 aggregate ECC) and shepherd (GPUs 0-7, ≤ 2: `s50u`, 10
-    legs); a leg holds ~3.4 GB GPU, slots fill round-robin; ~75-90 min. Output `experiments/FL1_<TAG>/{jayne,shepherd}/`: `cifar_verdict.md`, `config_audit.md`, `selection_audit.md`.
+    on jayne (GPUs 0, 2-7: `s0` + `s0u`, 18 legs; GPU 1 aggregate ECC) and shepherd (GPUs 0-7: `s50u`, 10 legs); legs queue and
+    start on the GPU with the most free memory when GPU (4 GB + 2 reserve) and host RAM (8 GB) fit, ≤ 3 / GPU; ~75-90 min. Output `experiments/FL1_<TAG>/{jayne,shepherd}/`: `cifar_verdict.md`, `config_audit.md`, `selection_audit.md`.
   - **Goal (standing):** Felix reaches the **highest target accuracy fastest** on every dataset and cell. Lowest bytes is a bonus,
     never at the cost of final accuracy; first to an intermediate accuracy but ending lower is a failure. Selection balances speed,
     utility and diversity, so fast clients alone can't cap accuracy.
@@ -108,6 +108,7 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
   - **S5 · bytes:** local work (epochs, guard) / pacing without losing final accuracy.
   - **Built:** `F44` / `F45` tiers (`harness_pool.py`), `run_fl1.sh` (`TIER`), `fl1_verdict.py` (+ updates / staleness / starvation),
     `config_audit.py` (sel / nclip / lrn / wd / ep / su / ucb / c), `selection_audit.py` per batch, selector `prop` (`async_oort.py`).
+    `bench_pool.py` queues legs by free GPU memory + host RAM (`--leg-gpu-gb`, `--leg-ram-gb`, `--gpu-reserve-gb`, `--ramp-s`).
 - **FX-N132 · General mechanisms only (operator 10-22) · standing, via FX-N141.** No per-dataset / n / K / c constants in Felix's
   mechanisms; scored averaged vs averaged.
 - **F42g follow-up · todo.** Rerun fdstar and fbstar speech, both cells (DOOMED EV22 by the pool's stale checker), ~21 min each.

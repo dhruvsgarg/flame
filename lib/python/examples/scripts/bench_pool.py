@@ -5,7 +5,8 @@
   bench_pool.py --jobs JOBS.tsv --out POOL ...        # JOBS.tsv: phase baseline trace yaml (one leg per line)
   bench_pool.py --harness-args "--tier F42 --datasets cifar10 --phases '...'" --out POOL ...   # the harness's own legs, now
 
-Every leg runs `fl_bench.py` under a hard timeout; one Ctrl+C stops all (R20). Seed i runs aggregator seed 1233 + i, the
+Every leg runs `fl_bench.py` under a hard timeout; one Ctrl+C stops all (R20). Legs queue and start on the allowed GPU with the
+most free memory once it and host RAM fit one more leg (`--leg-gpu-gb`, `--leg-ram-gb`, minus legs still ramping), ≤ `--per-gpu`. Seed i runs aggregator seed 1233 + i, the
 harness's `--seeds` convention. Prints a progress line per finished leg and the pool's legs / h at the end.
 """
 import argparse
@@ -58,6 +59,35 @@ def jobs_from_harness(args, out):
     return res
 
 
+def free_gb(gpus):
+    """({gpu: free GB}, host MemAvailable GB); GPUs None when nvidia-smi fails (count-only placement)."""
+    try:
+        q = subprocess.run(["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"], capture_output=True,
+                           text=True, timeout=30, check=True).stdout
+        g = {i.strip(): float(m) / 1024 for i, m in (line.split(",") for line in q.strip().splitlines())}
+        g = {x: g[x] for x in gpus if x in g}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        g = None
+    ram = next((int(line.split()[1]) / 2**20 for line in open("/proc/meminfo") if line.startswith("MemAvailable")), float("inf"))
+    return g, ram
+
+
+def pick(groups, running, gfree, ram, a, now):
+    """The group (GPUs of one leg) with the most free memory that fits a leg, or None. Legs younger than ramp_s count at full size."""
+    young = [v[-1] for v in running.values() if now - v[6] < a.ramp_s]
+    if ram - a.leg_ram_gb * len(young) < a.leg_ram_gb:
+        return None
+    best = None
+    for grp in groups:
+        gs = grp.split(",")
+        if sum(v[-1] == grp for v in running.values()) >= a.per_gpu:
+            continue
+        free = float("inf") if gfree is None else min(gfree.get(x, 0.0) - a.leg_gpu_gb * sum(grp2 == grp for grp2 in young) for x in gs)
+        if free - a.gpu_reserve_gb >= a.leg_gpu_gb and (best is None or free > best[0]):
+            best = (free, grp)
+    return best and best[1]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--from-pools", nargs="*", default=[])
@@ -67,7 +97,11 @@ def main(argv=None):
     ap.add_argument("--seeds", nargs="+", type=int, default=[1])
     ap.add_argument("--only", default="", help="regex on '<phase> <baseline> <trace>'")
     ap.add_argument("--gpus", default="0,2,3,4,5,6,7")
-    ap.add_argument("--per-gpu", type=int, default=4)
+    ap.add_argument("--per-gpu", type=int, default=4, help="cap on legs per GPU group")
+    ap.add_argument("--leg-gpu-gb", type=float, default=4.0, help="GPU memory one leg needs (cifar bench ~3.4 GB)")
+    ap.add_argument("--leg-ram-gb", type=float, default=8.0, help="host RAM one leg needs")
+    ap.add_argument("--gpu-reserve-gb", type=float, default=2.0, help="free GPU memory left for other users' jobs")
+    ap.add_argument("--ramp-s", type=float, default=240, help="a new leg reaches full memory within this")
     ap.add_argument("--gpus-per-leg", type=int, default=1, help="a leg's workers spread over this many GPUs (speech)")
     ap.add_argument("--timeout-s", type=float, default=900)
     ap.add_argument("--runtime-s", type=float, default=None, help="vclock budget override (smokes)")
@@ -84,9 +118,9 @@ def main(argv=None):
     queue = [(j, s) for j in jobs for s in a.seeds]
     g = a.gpus.split(",")
     groups = [",".join(g[i:i + a.gpus_per_leg]) for i in range(0, len(g) - a.gpus_per_leg + 1, a.gpus_per_leg)]
-    slots = [x for _ in range(a.per_gpu) for x in groups]  # round-robin: spread legs over GPUs first
-    running, done, t0 = {}, [], time.time()
-    print(f"[bench_pool] {len(queue)} legs on {len(slots)} slots ({a.gpus} x {a.per_gpu}), timeout {a.timeout_s:.0f}s", flush=True)
+    running, done, t0, nid, probe_t, waited = {}, [], time.time(), 0, 0.0, time.time()
+    print(f"[bench_pool] {len(queue)} legs on GPUs {a.gpus} (≤ {a.per_gpu} / GPU, {a.leg_gpu_gb:g} GB GPU + {a.leg_ram_gb:g} GB RAM"
+          f" per leg), timeout {a.timeout_s:.0f}s", flush=True)
 
     def kill(p, sig):
         try:
@@ -105,20 +139,28 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, stop)
 
     while queue or running:
-        for slot in [s for s in range(len(slots)) if s not in running]:
-            if not queue:
+        while queue and time.time() - probe_t >= 10:
+            probe_t = time.time()
+            gfree, ram = free_gb([x for grp in groups for x in grp.split(",")])
+            grp = pick(groups, running, gfree, ram, a, probe_t)
+            if grp is None:
+                if time.time() - waited > 300:
+                    print(f"[bench_pool] waiting: {len(queue)} queued, {len(running)} running, no GPU / RAM fits a leg", flush=True)
+                    waited = time.time()
                 break
+            probe_t, waited = 0.0, time.time()  # placed: probe again at once, the new leg counts as ramping
             (phase, b, trace, y), seed = queue.pop(0)
             d = out / phase / "runs" / f"{trace}_{b}_s{seed}"
             d.mkdir(parents=True, exist_ok=True)
-            cmd = [PY, str(HERE / "fl_bench.py"), y, "--out", str(d), "--gpu", slots[slot], "--seed", str(1233 + seed), "--workers", str(a.workers)]
+            cmd = [PY, str(HERE / "fl_bench.py"), y, "--out", str(d), "--gpu", grp, "--seed", str(1233 + seed), "--workers", str(a.workers)]
             if a.runtime_s:
                 cmd += ["--runtime-s", str(a.runtime_s)]
             log = open(d / "leg.out", "w")
             p = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)  # own group: kill takes workers
-            running[slot] = (p, phase, b, trace, seed, d, time.time())
+            running[nid], nid = (p, phase, b, trace, seed, d, time.time(), grp), nid + 1
+            print(f"[bench_pool] START {phase} {b} {trace} s{seed} on GPU {grp}", flush=True)
         time.sleep(2)
-        for slot, (p, phase, b, trace, seed, d, ts) in list(running.items()):
+        for slot, (p, phase, b, trace, seed, d, ts, _grp) in list(running.items()):
             if p.poll() is None and time.time() - ts > a.timeout_s:
                 kill(p, signal.SIGKILL)
                 p.wait()

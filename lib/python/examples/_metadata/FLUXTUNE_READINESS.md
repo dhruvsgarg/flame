@@ -42,6 +42,14 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 
 ## Next steps (persistent queue — resumes after Felix)
 
+- **FT-N19 · One bench queue for Felix and FluxTune · todo (after FT-N18; operator 10-23).** *Why:* both projects share jayne /
+  shepherd; one `bench_pool.py` queue that takes cifar / speech (Felix) and fwdllm (FluxTune) legs together runs them interleaved
+  without hand-split GPU lists or one batch waiting on the other. `bench_pool.py` already places each leg by free GPU memory + host
+  RAM (FELIX FX-N141 Built); left: fwdllm legs on the bench (FT-N18), a per-leg resource class (fwdllm DistilBERT legs need more GPU
+  memory than cifar's ~3.4 GB: set `--leg-gpu-gb` per job from a profile, not one flag), a jobs file mixing tiers from both
+  harnesses, and per-project output pools. *Exit:* one mixed batch (Felix screen + fwdllm screen) on both nodes, every leg ok,
+  no OOM, legs / h ≥ the two batches run back to back.
+
 - **FT-N18 · fwdllm on the in-process bench (FELIX V5, FX-D213 / D218) · todo (on resume).** *Why:* Felix's harness legs bound on host
   RAM (84-99 GB, one process per trainer), so a node ran 4-5 legs; the bench (aggregator + W worker processes, in-memory channel) runs
   ~4 GB legs: cifar 121-141 legs / h on jayne vs ~15 on both nodes (8-9×). It pays only when per-trainer process cost binds; speech

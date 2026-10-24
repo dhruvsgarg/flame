@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # FL1 (FX-N141): one loop step = tier $TIER (default F45) on cifar only (bench n 300, 12 h), judged vs FedBuff (fl1_verdict.py). Split by cell:
-#   jayne GPUs 0,2-7 (≤ 3 legs / GPU): s0 static + s0u · shepherd GPUs 0-7 (≤ 2): s50u. ~3.4 GB GPU per leg. One Ctrl+C stops all (R20).
+#   jayne GPUs 0,2-7: s0 static + s0u · shepherd GPUs 0-7: s50u; legs queue onto GPUs by free GPU memory + host RAM (bench_pool,
+#   ≤ PER_GPU each). One Ctrl+C stops all (R20).
 # Usage (tmux on each node, same TAG): [TIER=F45] TAG=<mmdd_hhmm> bash /home/dgarg39/flame/lib/python/examples/scripts/run_fl1.sh
 #   [env: GPUS ONLY PER_GPU]; shepherd rsyncs its half to jayne's experiments/FL1_<TAG>/shepherd at the end.
 set -uo pipefail
@@ -13,7 +14,7 @@ OUT=experiments/FL1_$TAG/$HOST
 PY="conda run --no-capture-output -n dg_flame python"
 case $HOST in
     jayne) GPUS=${GPUS:-0,2,3,4,5,6,7}; PER_GPU=${PER_GPU:-3}; ONLY=${ONLY:-${TIER}_s0u?_} ;;  # GPU 1: aggregate ECC (ROBUST)
-    *)     GPUS=${GPUS:-0,1,2,3,4,5,6,7}; PER_GPU=${PER_GPU:-2}; ONLY=${ONLY:-${TIER}_s50u_} ;;
+    *)     GPUS=${GPUS:-0,1,2,3,4,5,6,7}; PER_GPU=${PER_GPU:-3}; ONLY=${ONLY:-${TIER}_s50u_} ;;
 esac
 CEIL=experiments/ceiling_1022
 
