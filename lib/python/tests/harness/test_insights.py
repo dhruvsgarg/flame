@@ -31,7 +31,7 @@ def _events():
         {"event": "agg_round", "ts": 9.0, "vclock_now": 9.0, "contributing_trainers": ["t1", "t2"], "staleness": [0, 1]},
         {"event": "agg_round", "ts": 19.0, "vclock_now": 19.0, "contributing_trainers": ["t1"], "staleness": [7]},
         {"event": "agg_round", "ts": 15.0, "task_to_perform": "eval", "contributing_trainers": ["t3"], "staleness": [0]},
-        {"event": "abandon_timeout", "ts": 12.0, "reason": "abandon_90s_vclock"},
+        {"event": "abandon_timeout", "ts": 12.0, "reason": "abandon_timeout_vclock"},
         {"event": "wire", "ts": 1.0, "dir": "send", "bytes": 2_000_000},
         {"event": "wire", "ts": 2.0, "dir": "recv", "bytes": 1_000_000},
         {"event": "agg_timing", "ts": 9.0, "recv_wait_s": 1.0, "ingest_s": 0.5, "commit_s": 0.1, "other_s": 0.0, "cycle_s": 1.6},
@@ -43,7 +43,7 @@ def test_metrics(tmp_path):
     assert r["I-A2"]["contributors"] == 2 and r["I-A2"]["coverage"] == 0.5
     assert r["I-A3"]["train"]["chosen"] == 3 and r["I-A3"]["train"]["choice_ratio_mean"] == 4.0
     assert r["I-A5"] == {"explore": 1, "exploit": 3, "explore_share": 0.25}
-    assert r["I-B1"]["aggregated"] == 3 and r["I-B1"]["waste_share"] == 0.0 and r["I-B1"]["abandons"] == {"abandon_90s_vclock": 1}
+    assert r["I-B1"]["aggregated"] == 3 and r["I-B1"]["waste_share"] == 0.0 and r["I-B1"]["abandons"] == {"abandon_timeout_vclock": 1}
     assert r["I-C1"]["updates"] == 3 and abs(r["I-C1"]["gt5_share"] - 1 / 3) < 1e-9
     assert r["I-E1"]["mb_per_aggregated_update"] == 1.0 and r["I-E1"]["trainer_side_mb"] == 0.0005
     f1 = r["I-F1"]

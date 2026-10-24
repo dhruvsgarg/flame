@@ -475,6 +475,19 @@ class TestTotalCommitsIsTerminalStatesTimeHalf:
         assert res["throughput"]["replicate_floor_rel"] == {"throughput_rel": 0.043}
         assert res["total_commits"]["tol"] == k8["time_tol"], "U2 shares K8's gate"
 
+    def test_a_residual_past_k_floors_stays_red_when_the_floor_swallowed_the_tolerance(self):
+        """FX-D188 (PR38 cifar lin oort): a 17% floor > 8% nominal SKIPped K2 at a 57% residual."""
+        from parity.test_ladder import AGG_GOAL, _build_mode
+
+        from parity.checks import run_all_parity
+        real_agg, real_tr = _build_mode(20, advance=10.0, with_vclock=False)
+        sim_agg, sim_tr = _build_mode(20, advance=25.0, with_vclock=True)
+        far = run_all_parity(real_agg, sim_agg, real_tr, sim_tr, agg_goal=AGG_GOAL, floors={"throughput_rel": 0.17})
+        assert far["throughput"]["ok"] is False and far["throughput"].get("status") != "SKIP"
+        assert "throughput_rel" in far["throughput"]["beyond_floor"]
+        near = run_all_parity(real_agg, sim_agg, real_tr, sim_tr, agg_goal=AGG_GOAL, floors={"throughput_rel": 0.25})
+        assert near["throughput"]["status"] == "SKIP"
+
 
 class TestTheSharedCadenceCountVotesOnce:
     """`v1_iter_per_data_id`, `cohort_sequence.count` and

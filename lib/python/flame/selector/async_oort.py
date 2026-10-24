@@ -34,11 +34,16 @@ from flame.common.util import MLFramework, get_ml_framework_in_use
 from flame.end import End
 from flame.selector import scoring
 from flame.selector.async_base import AsyncSelectorBase, SelectContext
+from flame.config import TrainerAvailState
 from flame.selector.properties import (
+    PROP_AVL_STATE,
     PROP_CLIENT_TASK_TRAIN_DURATION,
     PROP_DATASET_SIZE,
     PROP_END_ID,
     PROP_LAST_EVAL_ROUND,
+    PROP_LAST_PROBE_TS,
+    PROP_LAST_REPORT_TS,
+    PROP_LAST_REPORT_UPDATES,
     PROP_LAST_SELECTED_ROUND,
     PROP_SELECTED_COUNT,
     PROP_STAT_UTILITY,
@@ -100,6 +105,20 @@ class AsyncOortSelector(AsyncSelectorBase):
                 "fastest, or maxSamples"
             )
 
+        # FX-N109: versions since a trainer's last eval/train before it is eval-eligible
+        self.eval_stale_gate = int(kwargs.get("evalStaleGate", 35))
+        # FX-N109 I8: "updates" = gate x configured K committed updates, cadence independent of K; FX-N118: "seconds" on the avail clock
+        self.eval_gate_unit = str(kwargs.get("evalGateUnit", "versions"))
+        # FX-N109: rank by utility / |D| (drops Oort's size factor; Q-DUR)
+        self.utility_per_sample = str(kwargs.get("utilityPerSample", False)).lower() == "true"
+        # C3: rank by |D| q / task seconds (progress per second); the speed penalty is then off (time is in the utility)
+        self.utility_per_second = str(kwargs.get("utilityPerSecond", False)).lower() == "true"
+        # balance: utility x (1 + picks / mean picks)^-gamma (0 = off)
+        self.participation_decay = float(kwargs.get("participationDecay", 0.0) or 0.0)
+        # FX-N141 S3 (selectType=prop): false = score without |D| q (speed only); scoreUcb adds Oort's temporal term to score / max
+        self.score_utility = str(kwargs.get("scoreUtility", True)).lower() == "true"
+        self.score_ucb = str(kwargs.get("scoreUcb", False)).lower() == "true"
+
         # With Oort, we select 1.3 * k ends and wait until k ends to
         # complete at a round
         self.overcommitment = 1.3
@@ -134,17 +153,35 @@ class AsyncOortSelector(AsyncSelectorBase):
         # top_aggregator.py; not a base-mechanism concept.
         self.trainer_eval_recv_ends = list()
         self.curr_round_eval_slots_left = int(self.eval_goal_factor * self.agg_goal)
+        # F42c probes: eval tasks become federated-validation probes, `probePerWindow` per `probeWindowS` (token bucket on
+        # the avail clock) instead of a per-version budget; AVL_EVAL clients first, idle AVL_TRAIN ones when none is free.
+        self.probe_per_window = int(kwargs.get("probePerWindow", 0) or 0)
+        self.probe_window_s = float(kwargs.get("probeWindowS", 3600.0))
+        self._probe_tokens, self._probe_t = float(self.probe_per_window), None
 
     # ------------------------------------------------------------------ hooks
 
     def _concurrency_for_task(self, task_to_perform, num_ends, effective_c):
         if task_to_perform == "eval":
+            if self.probe_per_window:
+                self._refill_probes()
+                return min(num_ends, effective_c + self.curr_round_eval_slots_left)
             if self.eval_goal_factor <= 0.0:
                 return 0
             # Maximum possible concurrency for eval; narrowed later in
             # `_choose` based on eval tasks already sent/received this round.
             return min(num_ends, effective_c + self.curr_round_eval_slots_left)
         return min(num_ends, effective_c)
+
+    def _refill_probes(self) -> None:
+        now = self._sim_now_s
+        if now is None:
+            return
+        if self._probe_t is not None:
+            self._probe_tokens = min(self.probe_per_window,
+                                     self._probe_tokens + (now - self._probe_t) * self.probe_per_window / self.probe_window_s)
+        self._probe_t = now
+        self.curr_round_eval_slots_left = int(self._probe_tokens)
 
     def _pre_choose(self, ctx: SelectContext) -> None:
         """Run the pacer that controls `round_threshold`. TRAIN-ONLY: felix's
@@ -160,11 +197,22 @@ class AsyncOortSelector(AsyncSelectorBase):
 
     def _task_extra_eligible(self, end_id, end, ctx: SelectContext) -> bool:
         """Eval-only staleness gate: only consider trainers that have trained
-        before AND whose last eval is at least 35 model-versions old."""
+        before AND whose last eval is at least `evalStaleGate` model-versions old."""
         if ctx.task_to_perform != "eval":
             return True
+        if self.probe_per_window:  # a probe needs no training history; re-probe a client after evalStaleGate seconds
+            last = end.get_property(PROP_LAST_PROBE_TS)  # not train reports: busy clients report every task
+            return last is None or (self._sim_now_s is not None and self._sim_now_s - last >= self.eval_stale_gate)
         last_eval = end.get_property(PROP_LAST_EVAL_ROUND)
-        return last_eval is not None and ctx.model_version - last_eval >= 35
+        if self.eval_gate_unit == "updates":
+            last = end.get_property(PROP_LAST_REPORT_UPDATES)
+            now = (ctx.channel_props or {}).get("n_updates", 0)
+            return last_eval is not None and last is not None and now - last >= self.eval_stale_gate * self.agg_goal
+        if self.eval_gate_unit == "seconds":
+            last = end.get_property(PROP_LAST_REPORT_TS)
+            return last_eval is not None and last is not None and self._sim_now_s is not None \
+                and self._sim_now_s - last >= self.eval_stale_gate
+        return last_eval is not None and ctx.model_version - last_eval >= self.eval_stale_gate
 
     def _choose(self, candidates: dict[str, End], k: int, ctx: SelectContext) -> list:
         if ctx.task_to_perform == "eval":
@@ -175,13 +223,17 @@ class AsyncOortSelector(AsyncSelectorBase):
         """Pick the `k` (capped by remaining eval headroom) candidates whose
         eval participation is stalest (ascending last_eval_round)."""
         feasible_extra = min(k, self.curr_round_eval_slots_left)
-        end_to_last_eval = {
-            end_id: end.get_property(PROP_LAST_EVAL_ROUND) or 0
-            for end_id, end in candidates.items()
-        }
-        sorted_end_ids = sorted(end_to_last_eval, key=end_to_last_eval.get)
-        chosen = sorted_end_ids[:feasible_extra]
+        prop = PROP_LAST_PROBE_TS if self.probe_per_window else PROP_LAST_REPORT_TS if self.eval_gate_unit == "seconds" \
+            else PROP_LAST_EVAL_ROUND
+        end_to_last_eval = {end_id: end.get_property(prop) or 0 for end_id, end in candidates.items()}
+        key = end_to_last_eval.get
+        if self.probe_per_window:  # AVL_EVAL first: a probe there costs no train slot
+            key = lambda e: (candidates[e].get_property(PROP_AVL_STATE) != TrainerAvailState.AVL_EVAL.value,
+                             end_to_last_eval[e])
+        chosen = sorted(end_to_last_eval, key=key)[:feasible_extra]
         self.curr_round_eval_slots_left -= len(chosen)
+        if self.probe_per_window:
+            self._probe_tokens -= len(chosen)
         return chosen
 
     def _choose_train(self, candidates: dict[str, End], k: int, ctx: SelectContext) -> list:
@@ -206,6 +258,14 @@ class AsyncOortSelector(AsyncSelectorBase):
                 candidates, num_of_ends=feasible_extra, agg_version_key=agg_version_key
             )
 
+        if self.select_type == "prop":
+            chosen = self._select_candidates_prop(candidates, utility_list, unexplored_end_ids, feasible_extra, model_version,
+                                                  agg_version_key)
+            self._pick_split = {"exploit": set(chosen) - set(unexplored_end_ids), "explore": set(chosen) & set(unexplored_end_ids)}
+            self.increment_selected_count_on_selected_ends(candidates, {end_id: candidates[end_id] for end_id in chosen})
+            self.round = model_version
+            return chosen
+
         # The percentile must see the FULL registered client population, not
         # this call's transient candidate pool -- reference Oort computes it
         # from ALL tracked arms, not just this dispatch's feasible set. Async's
@@ -224,6 +284,9 @@ class AsyncOortSelector(AsyncSelectorBase):
                 candidates, num_of_ends=feasible_extra, agg_version_key=agg_version_key
             )
 
+        if self.select_type == "random":  # FX-N132 (c1) screen: Felix with uniform picks
+            self.round = model_version
+            return self.select_random(candidates, num_of_ends=feasible_extra, agg_version_key=agg_version_key)
         if self.select_type == "default":
             chosen, exploit_end_ids = self._select_candidates_using_default(
                 cutoff_utility=cutoff_utility,
@@ -307,7 +370,8 @@ class AsyncOortSelector(AsyncSelectorBase):
             self.ordered_updates_recv_ends + self.trainer_eval_recv_ends
         )
         self.trainer_eval_recv_ends = []
-        self.curr_round_eval_slots_left = int(self.eval_goal_factor * self.agg_goal)
+        if not self.probe_per_window:  # probes refill by time, not per version
+            self.curr_round_eval_slots_left = int(self.eval_goal_factor * self.agg_goal)
         super()._cleanup_recvd_ends(ends)
 
     def _cleanup_removed_ends(self, end_id: str) -> None:
@@ -542,6 +606,17 @@ class AsyncOortSelector(AsyncSelectorBase):
                 end_id not in trainer_unavail_list
             ):
                 end_utility = ends[end_id].get_property(PROP_STAT_UTILITY)
+                size = ends[end_id].get_property(PROP_DATASET_SIZE)
+                if end_utility is not None and not self.score_utility:
+                    end_utility = 1.0
+                if end_utility is not None and self.utility_per_sample and size:
+                    end_utility = end_utility / size
+                if end_utility is not None and self.utility_per_second:
+                    dur = ends[end_id].get_property(PROP_CLIENT_TASK_TRAIN_DURATION)
+                    if dur is not None and dur.total_seconds() > 0:
+                        end_utility = end_utility / dur.total_seconds()
+                if end_utility is not None and self.participation_decay:
+                    end_utility *= self._participation_factor(ends, end_id)
                 if end_utility is not None:
                     utility_list.append(
                         {PROP_END_ID: end_id, PROP_UTILITY: end_utility}
@@ -550,6 +625,15 @@ class AsyncOortSelector(AsyncSelectorBase):
                     unexplored_end_ids.append(end_id)
 
         return utility_list, unexplored_end_ids
+
+    def _participation_factor(self, ends: dict[str, End], end_id: str) -> float:
+        """(1 + picks / mean picks over picked ends)^-gamma: damps clients picked far above the mean."""
+        counts = [e.get_property(PROP_SELECTED_COUNT) or 0 for e in ends.values()]
+        picked = [c for c in counts if c]
+        if not picked:
+            return 1.0
+        mine = ends[end_id].get_property(PROP_SELECTED_COUNT) or 0
+        return (1.0 + mine / (sum(picked) / len(picked))) ** -self.participation_decay
 
     def calculate_round_preferred_duration(self, ends: dict[str, End]) -> float:
         """Calculate round preferred duration based on round_threshold and
@@ -622,7 +706,7 @@ class AsyncOortSelector(AsyncSelectorBase):
         # trained yet but has only pushed an eval update. For these trainers,
         # we retain the multiplicative factor as 1 so as to incentivise them
         # to be picked whenever available to train.
-        if end_round_duration is None:
+        if end_round_duration is None or self.utility_per_second:
             return 1
 
         if end_round_duration <= self.round_preferred_duration:
@@ -758,6 +842,20 @@ class AsyncOortSelector(AsyncSelectorBase):
 
         candidates = [*explore_end_ids, *exploit_end_ids]
         return candidates, exploit_end_ids
+
+    def _select_candidates_prop(self, ends, utility_list, unexplored_end_ids, k, model_version, agg_version_key=None) -> list:
+        """FX-N141 S3: never-trained ends first (coverage floor), the rest sampled ∝ score / max (+ UCB when scoreUcb)."""
+        chosen = self._keyed_topk(unexplored_end_ids, k, agg_version_key, "prop_explore")
+        top = max((u[PROP_UTILITY] for u in utility_list), default=0.0)
+        pairs = []
+        for u in utility_list:
+            w = u[PROP_UTILITY] / top if top > 0 else 1.0
+            if self.score_ucb:
+                w += self.calculate_temporal_uncertainty_of_trainer(ends, u[PROP_END_ID], model_version)
+            if w > 0:
+                pairs.append((u[PROP_END_ID], w))
+        need = min(len(pairs), k - len(chosen))
+        return chosen + (self._keyed_weighted_topk(pairs, need, agg_version_key, "prop_score") if need > 0 else [])
 
     # Invoked when selection mode is maxSamples i.e. select clients with
     # largest local datasets

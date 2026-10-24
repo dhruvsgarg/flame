@@ -107,14 +107,15 @@ def _train_commits(run):
             and e.get("task_to_perform", "train") == "train"]
 
 
-def _registry_delays() -> dict:
-    """end_id (task_id) -> raw registry D."""
+def _registry_devices() -> dict:
+    """end_id (task_id) -> (compute ms/sample, bandwidth kbps): the FedScale device (FX-D197)."""
     try:
         with open(_REGISTRY) as f:
             reg = yaml.safe_load(f)
     except OSError:
         return {}
-    return {t["task_id"]: float(t["training_delay_s"]) for t in reg.get("trainers", {}).values()}
+    return {t["task_id"]: (float(t["compute_ms_per_sample"]), float(t["bandwidth_kbps"]))
+            for t in reg.get("trainers", {}).values() if "compute_ms_per_sample" in t}
 
 
 def _effective_d(run, raw: float) -> float:
@@ -194,9 +195,10 @@ def ev2_task_alternation(run):
 
 
 def ev3_duration_model(run):
-    """Trainer's modeled duration = max(gpu, D) with D = registry D (floor, factor), + measured overhead in sim (C13);
+    """Trainer's modeled duration = max(gpu, D), D = FedScale task time of its registry device (FX-D197; floor, factor) + the I9
+    and held-out passes, + measured overhead in sim (C13);
     sim: sct = send + duration + delivery lag (FX-D108) + leg."""
-    reg = _registry_delays()
+    reg = _registry_devices()
     sim = _simulated(run)
     n = bad_max = bad_budget = bad_sct = bad_stamp = 0
     examples = []
@@ -207,7 +209,7 @@ def ev3_duration_model(run):
         if e.get("sim_send_ts") is not None:
             stamps[(e.get("end_id"), e.get("round"), e.get("task", "train"))].add(round(e["sim_send_ts"], 6))
     for tid, evs in run["trainers"].items():
-        d_true = _effective_d(run, reg[tid]) if tid in reg else None
+        dev = reg.get(tid)
         for e in evs:
             if e.get("event") != "trainer_round" or e.get("task_to_perform", "train") != "train":
                 continue
@@ -217,9 +219,15 @@ def ev3_duration_model(run):
             if None not in (gpu, dur, budget) and abs(dur - max(gpu, budget) - ovh) > _EPS_S:
                 bad_max += 1
                 examples.append((tid[-4:], "dur!=max(gpu,D)", dur, gpu, budget))
-            if d_true is not None and budget is not None and budget > 0 and abs(budget - d_true) > 1e-3:
+            smp, kbit = e.get("model_samples"), e.get("model_kbit")
+            d_true = None
+            if dev is not None and None not in (smp, kbit):  # train: 3 x samples x ms + 2 transfers
+                d_true = _effective_d(run, 3 * smp * dev[0] / 1000.0 + 2 * kbit / dev[1])
+            passes = (e.get("utility_pass_s") or 0.0) + (e.get("val_pass_s") or 0.0)  # FX-N109 I9 / FX-N127 held-out pass
+            d_task = budget - passes if budget is not None else None
+            if d_true is not None and budget is not None and budget > 0 and abs(d_task - d_true) > 1e-3:
                 bad_budget += 1
-                examples.append((tid[-4:], "D!=registry", budget, d_true))
+                examples.append((tid[-4:], "D!=device model", budget, d_true))
             if sim and None not in (e.get("sim_send_ts"), e.get("sim_completion_ts"), dur):
                 legs.append((tid, e["sim_completion_ts"] - e["sim_send_ts"] - dur - (e.get("sim_delivery_lag_s") or 0.0)))
                 sent = stamps.get((tid, e.get("round"), "train"))
@@ -238,7 +246,7 @@ def ev3_duration_model(run):
                 examples.append((tid[-4:], "sct!=send+dur+leg", round(x, 3), round(leg, 3)))
     bad = bad_max + bad_budget + bad_sct + bad_stamp
     return _res("PASS" if bad == 0 else "FAIL",
-                f"rounds={n} dur!=max={bad_max} D!=registry={bad_budget} sct!=send+dur+leg={bad_sct}"
+                f"rounds={n} dur!=max={bad_max} D!=device={bad_budget} sct!=send+dur+leg={bad_sct}"
                 + (f" send_ts!=dispatch={bad_stamp}" if sim else "")
                 + (f" leg={leg:.3f}s" if leg is not None else ""), examples=examples[:10])
 
@@ -339,7 +347,8 @@ def ev7_agg_goal_cadence(run):
                     f"empty={len(empty)} gaps={len(gaps)} under_agg_goal={len(under)}",
                     over=dict(list(over.items())[:5]), empty=empty[:5], gaps=gaps[:5], under=under[:5])
     closed = rounds[:-1]
-    wrong = {r: per_round[r] for r in closed if per_round[r] != k}
+    k_at = {e.get("round"): e.get("agg_goal") or k for e in commits}  # FX-N109 I5: K in force per round (dynamic K)
+    wrong = {r: per_round[r] for r in closed if per_round[r] != k_at.get(r, k)}
     gaps = [(a, b) for a, b in zip(rounds, rounds[1:]) if b - a != 1]
     ok = not wrong and not gaps
     return _res("PASS" if ok else "FAIL",
@@ -556,15 +565,40 @@ def _ground_truth(run):
         return None
     import os
     from flame.availability.trace import read_trainer_unavailability
-    scale, env = _hp(run, "trace_time_scale"), os.environ.get("FLAME_TRACE_TIME_SCALE")
-    os.environ["FLAME_TRACE_TIME_SCALE"] = str(scale or 1)
+    keep = {k: os.environ.get(k) for k in ("FLAME_TRACE_TIME_SCALE", "FLAME_TRACE_OFFSET_S")}
+    os.environ["FLAME_TRACE_TIME_SCALE"] = str(_hp(run, "trace_time_scale") or 1)
+    os.environ["FLAME_TRACE_OFFSET_S"] = str(_hp(run, "trace_offset_s") or 0)  # FX-N123
     try:
         return read_trainer_unavailability(_trace(run))
     finally:
-        if env is None:
-            os.environ.pop("FLAME_TRACE_TIME_SCALE")
-        else:
-            os.environ["FLAME_TRACE_TIME_SCALE"] = env
+        for k, v in keep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _sync_closes(run):
+    """Sorted (close vclock, intake cut, K-th fresh arrival, round) per sync train round; cut = its last contributor's
+    arrival (sct or withheld delivery_ts); either is the close when an arrival is not logged."""
+    sct = {(tid, e["round"]): float(e["sim_completion_ts"]) for tid, evs in run["trainers"].items() for e in evs
+           if e.get("event") == "trainer_round" and e.get("sim_completion_ts") is not None}
+    dts = {(e.get("end_id"), round(float(e["sct"]), 3)): float(e["delivery_ts"]) for e in _events(run, "withheld_delivery")}
+    out = []
+    for e in _train_commits(run):
+        if e.get("vclock_now") is None:
+            continue
+        c, arr, fresh = float(e["vclock_now"]), [], []
+        for t, st in zip(e.get("contributing_trainers") or [], e.get("staleness") or []):
+            s = sct.get((t, e["round"] - st)) if st is not None else None
+            arr.append(None if s is None else dts.get((t, round(s, 3)), s))
+            if st == 0:
+                fresh.append(arr[-1])
+        cut = max(arr) if arr and None not in arr else c
+        k = int(e.get("agg_goal") or 0)
+        kcut = sorted(fresh)[k - 1] if k and len(fresh) >= k and None not in fresh else c
+        out.append((c, cut, kcut, e.get("round")))
+    return sorted(out, key=lambda x: x[0])
 
 
 def ev16_withheld_delivery(run):
@@ -582,11 +616,15 @@ def ev16_withheld_delivery(run):
     examples = []
     budget = float(_hp(run, "max_experiment_runtime_s", "maxExperimentRuntimeS") or math.inf)
     # FX-D51: a sync delivery joins the open round and commits at its close, as in real.
-    closes = [] if _is_async(run) else sorted(
-        float(e["vclock_now"]) for e in _train_commits(run) if e.get("vclock_now") is not None)
+    closes = [] if _is_async(run) else _sync_closes(run)
     release = float(_hp(run, "sim_gate_release_s", "simGateReleaseSeconds") or 0.0)  # FX-D163
+    committed = {(t, e["round"] - st) for e in _train_commits(run) if e.get("round") is not None
+                 for t, st in zip(e.get("contributing_trainers") or [], e.get("staleness") or [])
+                 if st is not None}
     for e in _events(run, "withheld_delivery"):
         held[(e.get("end_id"), round(float(e["sct"]), 3))] = e
+        if not _is_async(run) and e.get("staleness") and (e.get("end_id"), e["round"] - e["staleness"]) not in committed:
+            continue  # a stale sync delivery its stack drops (FX-N57) never commits: no lateness to grade
         tr = gt.get(e.get("end_id"))
         if tr is not None:
             sct = float(e["sct"])  # = ClientAvailability.compute_delivery_ts
@@ -600,15 +638,16 @@ def ev16_withheld_delivery(run):
             examples.append((e["end_id"][-4:], "commit<delivery_ts", e["actual_commit_ts"], e["delivery_ts"]))
         # A delivery at the budget commits when the final round closes: not late.
         _due = float(e["delivery_ts"])
-        # Sync: a close not yet logged (live prefix) is the commit itself, never late (FX-D136).
-        _close = next((c for c in closes if c >= _due - _EPS_S), math.inf if not _is_async(run) else _due)
+        # Sync: a close not yet logged (live prefix) is the commit itself, never late (FX-D136). A delivery due at a close's
+        # instant joins the next version (that close took its K first): F42-T12 (b).
+        # A round could not take a delivery due after its last arrival, or a fresh one due at or after its K-th fresh (F42g REFL).
+        _tr = e["round"] - e["staleness"] if e.get("round") is not None and e.get("staleness") is not None else None
+        _close = next((c for c, cut, kcut, r in closes if c > _due + _EPS_S and cut >= _due - _EPS_S
+                       and not (r == _tr and kcut <= _due + _EPS_S)), math.inf if not _is_async(run) else _due)
         if e.get("actual_commit_ts") is not None and _due < budget and \
                 float(e["actual_commit_ts"]) > max(_due + _LATE_DELIVERY_S, _close + _EPS_S):
             late += 1
             examples.append((e["end_id"][-4:], "commit>>delivery_ts", e["actual_commit_ts"], e["delivery_ts"]))
-    committed = {(t, e["round"] - st) for e in _train_commits(run) if e.get("round") is not None
-                 for t, st in zip(e.get("contributing_trainers") or [], e.get("staleness") or [])
-                 if st is not None}
     unheld = n = 0
     for tid, evs in run["trainers"].items():
         tr = gt.get(tid)
@@ -694,13 +733,14 @@ def ev19_stream_schedule(run):
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
     import stream_schedule
     scale = float(_hp(run, "trace_time_scale") or 1.0)
+    offset = float(_hp(run, "trace_offset_s") or 0.0)  # FX-N123
     sim = _simulated(run)
     origin = _trace_origin(run)
     max_lag = 1.5 * float(_hp(run, "send_timeout_wait_s") or 90.0) + 30.0
     n = wrong = nonmono = clock_bad = 0
     examples, fracs = [], []
     for tid, evs in run["trainers"].items():
-        sched = stream_schedule.from_config(ds, tid, scale=scale)
+        sched = stream_schedule.from_config(ds, tid, scale=scale, offset=offset)
         last = -1
         for e in evs:
             if e.get("event") != "trainer_round" or e.get("stream_clock_s") is None or e.get("visible_samples") is None:
@@ -782,7 +822,8 @@ def ev21_avl_eval_semantics(run):
         return _res("SKIP", "trace has no AVL_EVAL")
     from flame.availability.trace import deliverable, state_at
     aware = _truthy(_hp(run, "avail_select_filter", default="True"))
-    felix = float((run["cfg"].get("selector", {}).get("kwargs", {}) or {}).get("evalGoalFactor") or 0) > 0
+    kw = run["cfg"].get("selector", {}).get("kwargs", {}) or {}
+    felix = float(kw.get("evalGoalFactor") or 0) > 0 or int(kw.get("probePerWindow") or 0) > 0  # F42c probes
     bad_pick, bad_send, n_pick, n_send = [], [], 0, 0
     n_eval = eval_on_eval = 0
     bad_eval, seen, held = [], set(), set()
@@ -825,7 +866,8 @@ def ev21_avl_eval_semantics(run):
                 if not any(deliverable(state_at(tr, t), "train") for t in (out, out - _GATE_POLL_S)):
                     bad_send.append((tid[-4:], e.get("round"), state_at(tr, out).value))
     done = bool(_events(run, "run_end"))
-    no_eval_reach = felix and done and n_eval >= _EV21_MIN_EVALS and not eval_on_eval
+    sees_eval = str(_hp(run, "avail_knowledge", default="")).lower() != "checkin"  # a check-in pool holds AVL_TRAIN only (fck)
+    no_eval_reach = felix and sees_eval and done and n_eval >= _EV21_MIN_EVALS and not eval_on_eval
     bad = len(bad_pick) + len(bad_send) + len(bad_eval) + no_eval_reach
     return _res("PASS" if not bad else "FAIL",
                 f"aware={aware} train_picks={n_pick} not_AVL_TRAIN={len(bad_pick)} real_train_sends={n_send} "
@@ -834,17 +876,90 @@ def ev21_avl_eval_semantics(run):
                 examples=(bad_pick + bad_send + bad_eval)[:10])
 
 
+def _r27_expected(run) -> str:
+    """R27: Felix learns state by notify (its K1 ablation `fck` by check-in); a `*` variant (Oort*, an arm named *star) is oracle;
+    a `blind` arm is unaware; every other baseline learns by check-in (F42-T1)."""
+    name = os.path.basename(run["dir"].rstrip("/"))
+    m = re.search(r"_dbg_(?:google_speech_)?(\w+?)_n\d+", name)
+    b = m.group(1) if m else ""
+    phase = re.sub(r"_h(?:stub|tiny_cpu)$", "", name.split("_dbg_")[0])  # harness legs append _h<mode>
+    phase = re.sub(r"(?:_srv)?(?:_r\d+)?$", "", phase)  # FX-N133 averaged-model arms, seed replicates
+    kw = run["cfg"].get("selector", {}).get("kwargs", {}) or {}
+    if b == "oort_star" or re.search(r"_\w*star\b", phase) or (b == "refl" and kw.get("avail_predictor") == "oracle"):
+        return "oracle"
+    if re.search(r"_\w*blind\b", phase):
+        return "none"
+    if b == "felix":
+        return "checkin" if re.search(r"_fck\b", phase) else "notify"
+    return "checkin"
+
+
+def ev22_availability_knowledge(run):
+    """R27: the run's availability knowledge is the one its baseline may have; an unaware run never excludes a client as
+    UN_AVL at selection, and only a notify run evicts at a state flip."""
+    if not _truthy(_hp(run, "sim_unavailability", "simUnavailability", default=False)):
+        return _res("SKIP", "availability gate off")
+    evict, filt = _truthy(_hp(run, "proactive_inflight_evict", default=False)), _hp(run, "avail_select_filter", default=True)
+    know = _hp(run, "avail_knowledge") or ("notify" if evict else "oracle" if _truthy(filt) else "none")
+    want = _r27_expected(run)
+    if know != want:
+        return _res("FAIL", f"avail_knowledge={know}, R27 allows {want}")
+    excl = sum(int((e.get("excluded_by") or {}).get("unavail") or 0) for e in _events(run, "selection")) if know == "none" else 0
+    ev = sum(e.get("reason") == "aware_boundary_eviction" for e in _events(run, "abandon_timeout")) if know != "notify" else 0
+    if excl or ev:
+        return _res("FAIL", f"{know} run used state: unavail exclusions={excl}, aware evictions={ev}")
+    return _res("PASS", f"knowledge={know}")
+
+
+def ev23_checkin_protocol(run):
+    """F42-T1: a check-in run picks only clients waiting in its pool; sim check-ins happen only in AVL_TRAIN, a missed reconnect
+    only outside it, and a rejected client is next heard of no earlier than its reconnect time (pace steering)."""
+    if _hp(run, "avail_knowledge") != "checkin":
+        return _res("SKIP", "not a check-in run")
+    ck = sorted((e for e in run["agg"] if e.get("event") == "checkin"), key=lambda e: e.get("t", 0))
+    if not ck:
+        sels = _events(run, "selection", task="train")
+        return _res("FAIL" if sels else "SKIP", "check-in run emitted no checkin events")
+    from flame.availability.trace import deliverable, state_at
+    sim = _simulated(run)
+    gt, tol = (_ground_truth(run), 1e-6) if sim else (None, 2.0)  # real: receipt vs the trainer's own clock
+    bad, last = [], {}
+    for e in ck:
+        end, t, k = e.get("end_id"), float(e.get("t") or 0), e.get("kind")
+        prev = last.get(end)
+        if k == "picked" and (prev is None or prev.get("kind") != "pooled"):
+            bad.append(f"{end[-4:]} picked at {t:.0f} without a waiting check-in")
+        if prev is not None and prev.get("kind") == "rejected" and k in ("pooled", "rejected", "missed") \
+                and t < float(prev.get("reconnect_at") or 0) - tol:
+            bad.append(f"{end[-4:]} back at {t:.0f} before its reconnect {prev['reconnect_at']:.0f}")
+        closing = k == "rejected" and (prev or {}).get("kind") == "pooled"  # told at the window's close, checked in earlier
+        if gt and gt.get(end) is not None and k in ("pooled", "rejected", "missed") and not closing:
+            on = deliverable(state_at(gt[end], t), "train")
+            if (k == "missed") == on:
+                bad.append(f"{end[-4:]} {k} at {t:.0f} while {'' if on else 'not '}AVL_TRAIN")
+        last[end] = e
+    picks = {(s.get("round"), c) for s in _events(run, "selection", task="train") for c in _newly_chosen(s)}
+    picked = sum(e.get("kind") == "picked" for e in ck)
+    if bad:
+        return _res("FAIL", f"{len(bad)} protocol breaks, e.g. " + "; ".join(bad[:3]))
+    if picked < len(picks):
+        return _res("FAIL", f"{len(picks) - picked} of {len(picks)} train picks had no waiting check-in")
+    n = Counter(e.get("kind") for e in ck)
+    return _res("PASS", f"pooled={n['pooled']} rejected={n['rejected']} missed={n['missed']} picked={n['picked']}")
+
+
 CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model, ev4_real_sleep,
           ev5_commit_accounting, ev6_staleness, ev7_agg_goal_cadence, ev8_concurrency_cap,
           ev9_selector_state, ev10_dispatch_one_in_flight, ev11_vclock, ev12_reached_budget,
           ev13_no_stall, ev14_eval_sane, ev15_one_task_per_version, ev16_withheld_delivery,
           ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev20_abandon_on_time,
-          ev21_avl_eval_semantics]
+          ev21_avl_eval_semantics, ev22_availability_knowledge, ev23_checkin_protocol]
 
 
 # Live early exit: checks whose FAIL on a log prefix stays FAIL on the full log (EV11: its backwards count only).
 EARLY = (ev6_staleness, ev8_concurrency_cap, ev9_selector_state, ev11_vclock, ev14_eval_sane, ev15_one_task_per_version,
-         ev16_withheld_delivery, ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev21_avl_eval_semantics)
+         ev16_withheld_delivery, ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev21_avl_eval_semantics,
+         ev22_availability_knowledge, ev23_checkin_protocol)
 
 
 def doomed(run_dir: str) -> list:

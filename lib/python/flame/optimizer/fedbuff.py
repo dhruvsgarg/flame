@@ -23,6 +23,8 @@ SecAgg algorithm is not the scope of this implementation.
 """
 import logging
 import math
+import statistics
+from collections import deque
 
 import numpy as np
 from diskcache import Cache
@@ -32,6 +34,7 @@ from ..common.util import MLFramework, get_ml_framework_in_use, valid_frameworks
 from .abstract import AbstractOptimizer
 from .bn_buffers import clamp_running_var, is_bn_stat
 from .regularizer.default import Regularizer
+from .. import telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,13 @@ class FedBuff(AbstractOptimizer):
         # FX-D61: BN stats = mean of absolute stats (BN at the update's version + delta), outside rate and server lr.
         self.bn_absolute_mean = str(kwargs.get("bn_absolute_mean", True)).lower() == "true"
         self._bn_hist, self._bn_sum, self._bn_n, self._version = {}, {}, 0, None
+        self._u_sum, self._u_n = 0.0, 0  # FX-N109 I7: cycle utility sum / count for rate type "norm"
+        # FX-D232: clip an update's norm to norm_clip x the median of the last 200 (0 = off); FX-T82's lone 241 vs 0.03 step.
+        self.norm_clip = float(kwargs.get("norm_clip", 0) or 0)
+        self._norms = deque(maxlen=200)
+        # F46 S4: server lr x the aggregator's loss phase (flame/selector/loss_phase.py); 1.0 = off
+        self.phase_step = str(kwargs.get("phase_step", False)).lower() == "true"
+        self.step_scale = 1.0
 
         ml_framework_in_use = get_ml_framework_in_use()
         if ml_framework_in_use == MLFramework.PYTORCH:
@@ -190,6 +200,19 @@ class FedBuff(AbstractOptimizer):
                     beta_type="polynomial_upshift",
                 )
 
+            elif self.agg_rate_conf["type"] == "norm":
+                # FX-N109 I7: u_i/sqrt(1+s); scale_add divides by the cycle's mean u
+                u = max(float(tres.stat_utility or 0.0), 0.0)
+                self._u_sum, self._u_n = self._u_sum + u, self._u_n + 1
+                rate = u / math.sqrt(1 + version - tres.version)
+
+            elif self.agg_rate_conf["type"] == "value":
+                # C5: update value (samples^beta, PR40a) x staleness (1+s)^-a; scale_add divides by the cycle's mean
+                u = float(tres.count or 0) ** float(self.agg_rate_conf.get("beta", 0.65))
+                u /= (1 + version - tres.version) ** float(self.agg_rate_conf.get("a", 0.5))
+                self._u_sum, self._u_n = self._u_sum + u, self._u_n + 1
+                rate = u
+
             logger.info(
                 f"agg ver: {version}, trainer ver: {tres.version}, "
                 f"trainer stat_utility: {tres.stat_utility}, rate: {rate}, "
@@ -197,9 +220,24 @@ class FedBuff(AbstractOptimizer):
             )
             self._version = version
             self._bn_base = self._bn_hist.get(tres.version)
+            if self.norm_clip > 0:
+                self._clip_norm(tres, version)
             self.aggregate_fn(tres, rate)
 
         return self.agg_goal_weights
+
+    def _clip_norm(self, tres, version):
+        """FX-D232: scale a delta whose L2 (BN stats excluded) exceeds norm_clip x the running median; needs 10 norms first."""
+        if not isinstance(tres.weights, dict):
+            return
+        norm = math.sqrt(sum(float(v.double().pow(2).sum()) for k, v in tres.weights.items()
+                             if v.is_floating_point() and not is_bn_stat(k)))
+        med = statistics.median(self._norms) if len(self._norms) >= 10 else None
+        self._norms.append(norm)
+        if med and norm > self.norm_clip * med:
+            scale = self.norm_clip * med / norm
+            tres.weights = {k: v if is_bn_stat(k) or not v.is_floating_point() else v * scale for k, v in tres.weights.items()}
+            telemetry.emit("update_clipped", version=version, trainer_version=tres.version, norm=norm, median=med, scale=scale)
 
     def scale_add_agg_weights(
         self, base_weights: ModelWeights, agg_goal_weights: ModelWeights, agg_goal: int
@@ -224,7 +262,10 @@ class FedBuff(AbstractOptimizer):
     ) -> ModelWeights:
         logger.debug(f"base_weights.keys(): {base_weights.keys()}")
 
-        learning_rate = self.learning_rate
+        learning_rate = self.learning_rate * self.step_scale
+        if self._u_n:  # rate "norm" / "value": divide by the cycle's mean weight
+            learning_rate = learning_rate * self._u_n / self._u_sum if self._u_sum > 0 else 0.0
+            self._u_sum, self._u_n = 0.0, 0
         bn = self.bn_absolute_mean and self._version is not None
         if bn:
             self._bn_hist.setdefault(self._version, self._bn_copy(base_weights))

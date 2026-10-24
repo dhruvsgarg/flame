@@ -137,6 +137,39 @@ def _trainer_delay_map() -> dict:
     return out
 
 
+_DEVICE_SPEED_CACHE: Optional[dict] = None
+
+
+def _trainer_device_speed_map() -> dict:
+    """{task_id: compute ms/sample} of each trainer's FedScale device (FX-D197): the backprop stacks' static per-trainer
+    speed (the FluxTune helpers above keep training_delay_s). {} if the registry has no device fields."""
+    global _DEVICE_SPEED_CACHE
+    if _DEVICE_SPEED_CACHE is None:
+        _DEVICE_SPEED_CACHE = {}
+        path = Path(__file__).resolve().parent.parent.parent / "metadata" / "trainer_registry.yaml"
+        if path.is_file():
+            last_task = None
+            for line in path.read_text().splitlines():
+                m = re.search(r"task_id:\s*(\S+)", line)
+                if m:
+                    last_task = m.group(1).strip().strip("'\"")
+                    continue
+                m = re.search(r"compute_ms_per_sample:\s*([\d.]+)", line)
+                if m and last_task is not None:
+                    _DEVICE_SPEED_CACHE[last_task], last_task = float(m.group(1)), None
+    return _DEVICE_SPEED_CACHE
+
+
+def _trainer_device_class_map() -> dict:
+    """{task_id: speed quartile q1..q4} of the device speed; S2's class-level participation check."""
+    sp = _trainer_device_speed_map()
+    if not sp:
+        return {}
+    v = sorted(sp.values())
+    cut = [v[len(v) * k // 4] for k in (1, 2, 3)]
+    return {t: f"q{1 + sum(x >= c for c in cut)}" for t, x in sp.items()}
+
+
 def jaccard(a: set, b: set) -> float:
     if not a and not b:
         return 1.0
@@ -1213,7 +1246,7 @@ def eligible_speed_composition_parity(real: dict, sim: dict, ks_tol: float = 0.2
     Observed-speed means are retained as a diagnostic. Falls back to observed speed
     when the registry is unavailable (other examples).
     """
-    delay = _trainer_delay_map()
+    delay = _trainer_device_speed_map()
 
     def pool(sel_events):
         meta, obs = [], []
@@ -1274,7 +1307,7 @@ def selection_speed_bias_parity(real: dict, sim: dict, ks_tol: float = 0.20,
     Observed means retained as a diagnostic; falls back to observed when the registry
     is unavailable.
     """
-    delay = _trainer_delay_map()
+    delay = _trainer_device_speed_map()
 
     def split(events):
         sel, pool, sel_obs, pool_obs = [], [], [], []
@@ -2250,7 +2283,7 @@ def participation_parity(real: dict, sim: dict, ks_tol: float = 0.2) -> dict:
     # Jun-24 refl shares match (TVD 0.026), while per-SECOND buckets re-expose the
     # same stochastic within-class identity noise (TVD 0.187, sign-alternating).
     # Same §5 class as P1/F1-3 per-trainer KS.
-    speed_class = _trainer_speed_class_map()
+    speed_class = _trainer_device_class_map()
     speed_class_tvd = None
     if speed_class:
         def class_share(counter):
@@ -4400,7 +4433,7 @@ def abandon_timeout_parity(real: dict, sim: dict,
                            wall_leak_ceiling_s: float = 1e7) -> dict:
     """abandon_timeout [NEW, CONTROL]: the 90s abandon fires on the VCLOCK.
 
-    Each C.3 abandon (``reason="abandon_90s_vclock"``) frees a stalled
+    Each C.3 abandon (``reason="abandon_timeout_vclock"``) frees a stalled
     in-flight slot at age >= SEND_TIMEOUT_WAIT_S. Control purpose
     (Challenge 2): the deadline must be measured on the vclock, not the wall —
     a wall-clock leak surfaces as an age in epoch-scale seconds (~1.7e9)
@@ -8225,8 +8258,15 @@ def run_all_parity(real_agg: dict, sim_agg: dict,
         _res["floor_gated_tol"] = {m: round(e, 4) for m, _f, _n, e in _measured}
         _res["nominal_tol"] = {m: n for m, _f, n, _e in _measured}
         if _ungradeable[_rung]:
-            _res.update({"ok": True, "status": "SKIP",
-                         "reason": _ungradeable[_rung]})
+            # FX-D188: past K x its floor a gap is signal, not noise.
+            _floor = {m: f for m, f, _n, _e in _measured}
+            _beyond = {m: round(abs(v), 4) for r, fld, m in _CONTROL_GAPS if r == _rung and m in _floor
+                       for v in [_res.get(fld)] if isinstance(v, (int, float)) and abs(v) > _FLOOR_TOL_K * _floor[m]}
+            if _beyond:
+                _res.update({"ok": False, "beyond_floor": _beyond})
+            else:
+                _res.update({"ok": True, "status": "SKIP",
+                             "reason": _ungradeable[_rung]})
 
     # Stamp WHERE each verdict's threshold came from. A fail on a CALIBRATED rung
     # with no measured floor is not the same evidence as one on a floor-gated

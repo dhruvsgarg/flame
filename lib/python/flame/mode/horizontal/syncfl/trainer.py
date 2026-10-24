@@ -256,6 +256,13 @@ class Trainer(Role, metaclass=ABCMeta):
             channel._selector.ordered_updates_recv_ends.append(end)
             channel.cleanup_recvd_ends()
             return
+        if MessageType.CHECKIN_RECONNECT in msg:  # F42-T1: a rejected check-in; no task
+            _ck = getattr(self, "_checkin_client", None)
+            if _ck is not None:
+                _ck.on_reconnect(msg[MessageType.CHECKIN_RECONNECT]["at"], msg[MessageType.CHECKIN_RECONNECT].get("mu"))
+            channel._selector.ordered_updates_recv_ends.append(end)
+            channel.cleanup_recvd_ends()
+            return
 
         # FX-D9: drop an answered request (version <= answered; a train answer covers eval), before any state change.
         _req_task = msg.get(MessageType.TASK_TO_PERFORM, self.task_to_perform)
@@ -281,6 +288,8 @@ class Trainer(Role, metaclass=ABCMeta):
             self._round = msg[MessageType.ROUND]
             logger.debug(f"[TRAINER_FETCH] Updated round from {prev_round} to {self._round} for trainer_id {self.trainer_id}")
 
+        if (MessageType.WEIGHTS in msg or MessageType.WEIGHTS_BYTES in msg) and getattr(self, "_checkin_client", None):
+            self._checkin_client.on_task_start()  # F42-T1
         if MessageType.WEIGHTS in msg or MessageType.WEIGHTS_BYTES in msg:
             # Load the model onto GPU if self.model is None:
             # self._load_model_onto_gpu()
@@ -300,6 +309,8 @@ class Trainer(Role, metaclass=ABCMeta):
         ):
             self._sim_send_ts = msg[MessageType.SIM_SEND_TS]
         self._sim_wall_send_ts = msg.get(MessageType.SIM_WALL_SEND_TS)  # FX-D108
+        _fan = msg.get(MessageType.SIM_FANOUT) or ()
+        self._sim_fanout_rank = _fan.index(str(self.trainer_id)) if str(self.trainer_id) in _fan else None  # FX-D191
         _mqtt_vclock_end = getattr(self, "vclock_now", None)
         self._phase_vclock_s["mqtt_fetch_s"] = (
             _mqtt_vclock_end - _mqtt_vclock_start
@@ -375,6 +386,8 @@ class Trainer(Role, metaclass=ABCMeta):
         )
         if tag == TAG_UPLOAD:
             self._send_weights(tag)
+            if getattr(self, "_checkin_client", None) is not None:
+                self._checkin_client.on_task_end()  # F42-T1: may check in again
 
     def _send_weights(self, tag: str) -> None:
         logger.debug(
@@ -495,6 +508,10 @@ class Trainer(Role, metaclass=ABCMeta):
                 MessageType.LOCAL_ACCURACY: self._local_accuracy,
                 MessageType.TRAIN_LOSS_MEAN: getattr(self, "_train_loss_mean", None),
             }
+            if getattr(self, "_val_probe", None) is not None:
+                msg[MessageType.VAL_PROBE] = self._val_probe
+        if self.task_to_perform == "train" and getattr(self, "_val_train_report", None) is not None:  # FX-N127 V2 (a)
+            msg[MessageType.VAL_PROBE] = self._val_train_report
 
         # simulated-time mode only: report the modeled completion time/duration
         # so the aggregator orders this update by a virtual clock. No-op in real
@@ -814,6 +831,10 @@ class Trainer(Role, metaclass=ABCMeta):
             ema = getattr(self, "_util_ema", None)
             self._util_ema = sq if ema is None else 0.8 * ema + 0.2 * sq
             self._util_samples = getattr(self, "_util_samples", 0) + int(target.numel())
+            n0 = getattr(self, "_util_prefix_n", 0)
+            if n0 < self._utility_prefix_samples():  # FX-N119: pre-adaptation loss, sample-weighted
+                self._util_prefix_sq = getattr(self, "_util_prefix_sq", 0.0) + float(sq) * int(target.numel())
+                self._util_prefix_n = n0 + int(target.numel())
             return loss_list.mean() if reduction == "mean" else loss_list.sum()
         if epoch == 1 and batch_idx == 0:
             if "reduction" in kwargs.keys():
@@ -847,7 +868,9 @@ class Trainer(Role, metaclass=ABCMeta):
             ema = getattr(self, "_util_ema", None)
             if ema is not None:
                 trained = min(len(self.train_loader.dataset), self._util_samples)
-                self._stat_utility = math.sqrt(float(ema.item())) * trained
+                pn = getattr(self, "_util_prefix_n", 0)
+                msq = self._util_prefix_sq / pn if pn else float(ema.item())
+                self._stat_utility = math.sqrt(msq) * trained
             return
         if epoch == 1:
             self._stat_utility = len(self.train_loader.dataset) * math.sqrt(
@@ -860,10 +883,17 @@ class Trainer(Role, metaclass=ABCMeta):
         hp = getattr(getattr(self, "config", None), "hyperparameters", None)
         return getattr(hp, "stat_utility", "legacy") == "fedscale"
 
+    def _utility_prefix_samples(self) -> int:
+        """-1 = one training batch: the pass's only pre-step loss, sized by the shared batch setting (FX-N132 f)."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        n = int(getattr(hp, "utility_prefix_samples", 0) or 0)
+        return int(getattr(self, "batch_size", 0) or getattr(hp, "batch_size", 0) or 0) if n < 0 else n
+
     def reset_stat_utility(self) -> None:
         """Reset the trainer's statistical utility to zero."""
         self._stat_utility = 0
         self._util_ema, self._util_samples = None, 0
+        self._util_prefix_sq, self._util_prefix_n = 0.0, 0
 
     def compose(self) -> None:
         """Compose role with tasklets."""

@@ -47,6 +47,7 @@ RUNTIME_S=300
 NUM_TRAINERS=60
 DELAY_FACTOR=""   # default 4 on the CPU harness, unscaled on the GPU path (--harness none)
 TRACE_SCALE=""
+TRACE_OFFSET_S=""  # FX-N123: leg starts this far into every trace
 TIMEOUT_BUFFER_S=300
 CHECK_TIMEOUT_S=900
 OUT="$EX_DIR/experiments/harness_$(date +%Y%m%d_%H%M%S)"
@@ -76,6 +77,7 @@ while [[ $# -gt 0 ]]; do
     --num-trainers)     NUM_TRAINERS="$2"; shift 2 ;;
     --delay-factor)     DELAY_FACTOR="$2"; shift 2 ;;
     --trace-scale)      TRACE_SCALE="$2"; shift 2 ;;
+    --trace-offset-s)   TRACE_OFFSET_S="$2"; shift 2 ;;
     --timeout-buffer-s) TIMEOUT_BUFFER_S="$2"; shift 2 ;;
     --output-dir)       OUT="$2"; shift 2 ;;
     --agg-hp)           AGG_HP="$2"; shift 2 ;;
@@ -108,6 +110,7 @@ else
 fi
 # Compress availability time with the delays so a short leg still crosses trace transitions.
 if [ -n "$TRACE_SCALE" ]; then export FLAME_TRACE_TIME_SCALE="$TRACE_SCALE"; else unset FLAME_TRACE_TIME_SCALE; fi
+if [ -n "$TRACE_OFFSET_S" ]; then export FLAME_TRACE_OFFSET_S="$TRACE_OFFSET_S"; else unset FLAME_TRACE_OFFSET_S; fi
 # S1: re-inject a known sim bug (flame.harness.injected) so the checker must catch it.
 if [ -n "$INJECT_BUG" ]; then export FLAME_INJECT_BUG="$INJECT_BUG"; else unset FLAME_INJECT_BUG; fi
 
@@ -136,7 +139,7 @@ fi
 SUMMARY_TSV="$OUT/summary.tsv"
 printf 'trace\tbaseline\tev_real\tev_sim\tparity\tscore\tn_fail\troots\tcrash_lines\ttimeout\treal_dir\tsim_dir\treal_src\n' > "$SUMMARY_TSV"
 echo "dataset=$DATASET agg_goal=${AGG_GOAL:-cfg} c=${CONC:-cfg} sim_ceiling_x=$SIM_CEIL_X harness=$HARNESS baselines='$BASELINES' traces='$TRACES' mode=$MODE real_from='$REAL_FROM' runtime_s=$RUNTIME_S n=$NUM_TRAINERS" \
-     "delay_factor=$DELAY_FACTOR trace_scale=${TRACE_SCALE:-1} agg_hp='$AGG_HP' trainer_hp='$TRAINER_HP' inject_bug='$INJECT_BUG'" \
+     "delay_factor=$DELAY_FACTOR trace_scale=${TRACE_SCALE:-1} trace_offset_s=${TRACE_OFFSET_S:-0} agg_hp='$AGG_HP' trainer_hp='$TRAINER_HP' inject_bug='$INJECT_BUG'" \
      "run_tag=${FLAME_RUN_TAG:-} broker=${FLAME_MQTT_BROKER:-system} cpus=$(taskset -cp $$ 2>/dev/null | awk '{print $NF}') gpus=${GPU_IDS:-} env=$FLAME_CONDA_ENV" \
   | tee "$OUT/suite.cfg"
 

@@ -19,12 +19,15 @@ is off, preserving byte-identical output on syn_0 runs.
 Stage C will activate free_stalled_slot and wire the pending_withheld ledger.
 """
 
+import json
 import logging
 import math
+import threading
 import time
 from typing import Optional
 
 from flame import harness, telemetry
+from flame.availability.checkin import CheckinLedger
 from flame.availability.trace import deliverable, load_trace, next_avail_after, state_at
 from flame.availability.trace import (
     read_trainer_unavailability as _read_trainer_unavailability,
@@ -35,10 +38,14 @@ from flame.selector.properties import PROP_AVL_STATE, PROP_EXCL_REASON, PROP_ROU
 from flame.telemetry.events import (
     build_abandon_timeout,
     build_agg_belief_change,
+    build_checkin,
     build_withheld_delivery,
 )
 
 logger = logging.getLogger(__name__)
+
+AVAIL_KNOWLEDGE = ("notify", "oracle", "none", "checkin")  # R27; checkin = Bonawitz check-in (F42-T1)
+CHECKIN_MSG, RECONNECT_MSG = "CHECK_IN", "RECONNECT"  # F42-T1 real-mode control states on the STATE_UPDATE notify
 
 # Re-clock of the selector's wall-based abandon (SEND_TIMEOUT_WAIT_S) onto the
 # vclock. Heuristic basis (PARITY.md / design §1): train takes ≤60s, so an
@@ -60,6 +67,8 @@ class ClientAvailability:
 
     # FX-D12: fwdllm keeps the channel's UN_AVL slot release until S8 ports this.
     _SUBSTRATE_OWNS_INFLIGHT_RELEASE = True
+    # F42-T1: sync stacks select in check-in windows; asyncfl overrides (pool while slots are free).
+    _CHECKIN_SYNC = True
 
     # ------------------------------------------------------------------
     # Initialization
@@ -89,14 +98,14 @@ class ClientAvailability:
         """
         hp = config.hyperparameters
         self.trainer_event_dict: Optional[dict] = None
+        self._avail_trace_name: Optional[str] = None
         # avail_select_filter: whether UN_AVL trainers are excluded from the
-        # selection pool (get_curr_task_ineligible_trainers). True for aware
-        # baselines (felix/oort_star/refl/feddance); False for unaware (oort/fedbuff).
+        # selection pool (get_curr_task_ineligible_trainers). True for Felix (notify) and the oracle `*` variants.
         self.avail_select_filter: bool = bool(
             getattr(hp, "avail_select_filter", True)
         )
         # proactive_inflight_evict: whether in-flight slots are freed at the next
-        # selection boundary when the trace shows UN_AVL (felix only).
+        # selection boundary when the client's state shows UN_AVL (felix only).
         # NOTE: `_legacy_aware` fallback is dead in practice -- the pydantic
         # field always exists (default=None), so getattr never falls back to
         # it; kept as the correct safe default if that ever changes.
@@ -104,6 +113,16 @@ class ClientAvailability:
         self.proactive_inflight_evict: bool = bool(
             getattr(hp, "proactive_inflight_evict", _legacy_aware)
         )
+        # R27 (F42a): how the aggregator learns client state. notify = the client's own push (Felix only); oracle = trace read
+        # (`*` variants); none = unaware. Unset = the legacy flags (evict → notify, filter → oracle).
+        self.avail_knowledge: str = str(getattr(hp, "avail_knowledge", None) or (
+            "notify" if self.proactive_inflight_evict else "oracle" if self.avail_select_filter else "none"))
+        if self.avail_knowledge not in AVAIL_KNOWLEDGE:
+            raise ValueError(f"avail_knowledge={self.avail_knowledge!r}: expected one of {AVAIL_KNOWLEDGE}")
+        if self.proactive_inflight_evict and self.avail_knowledge != "notify":
+            raise ValueError("R27: proactive_inflight_evict needs avail_knowledge=notify (only Felix learns a client's flip)")
+        self.avail_select_filter = self.avail_knowledge != "none"
+        self.notify_latency_s: float = float(getattr(hp, "notify_latency_s", None) or 0.0)
         self.pending_withheld: dict = {}
         # C.2 send-time withhold ledgers (shared by asyncfl + oort commit loops):
         #   _sim_withheld_payload   end -> (orig_sct, (msg, metadata)) held update
@@ -139,6 +158,7 @@ class ClientAvailability:
             logger.warning("[AVAIL] availability enabled but no trace name configured")
             return
 
+        self._avail_trace_name = trace_name
         trace_dir = getattr(hp, "availability_trace_dir", None)
         self.trainer_event_dict = self.read_trainer_unavailability(
             trace=trace_name, base_dir=trace_dir
@@ -195,8 +215,226 @@ class ClientAvailability:
         return _read_trainer_unavailability(trace, base_dir=base_dir)
 
     # ------------------------------------------------------------------
-    # Oracular selection gate
+    # Knowledge gate (R27): what the aggregator believes a client's state is
     # ------------------------------------------------------------------
+
+    def _believed_state(self, tid: str, now: float) -> TrainerAvailState:
+        """oracle: the trace now. notify: the client's last push (real: STATE_UPDATE on the channel end; sim: the trace flip
+        delivered `notify_latency_s` later). Only called when avail_knowledge != none."""
+        k = self._knowledge()
+        if k == "checkin":  # F42-T1: only a waiting check-in is known available
+            return TrainerAvailState.AVL_TRAIN if tid in self._checkin_ledger().pool else TrainerAvailState.UN_AVL
+        if k == "notify" and not getattr(self, "simulated", False):
+            st = self._notified_states().get(tid)
+            return st if st is not None else TrainerAvailState.AVL_TRAIN
+        trace = self.trainer_event_dict.get(tid)
+        if not trace:
+            return TrainerAvailState.AVL_TRAIN
+        t = now - float(getattr(self, "notify_latency_s", 0.0) or 0.0) if k == "notify" else now
+        return state_at(trace, t)
+
+    def _notified_states(self) -> dict:
+        """Real notify: end -> the state its trainer last pushed (PROP_END_AVL_STATE via channel.update_state)."""
+        from flame.end import PROP_END_AVL_STATE
+        out = {}
+        for ch in self._avail_channels():
+            for eid, end in getattr(ch, "_ends", {}).items():
+                st = end.get_property(PROP_END_AVL_STATE)
+                if st is not None:
+                    out[eid] = TrainerAvailState(getattr(st, "value", st))
+        return out
+
+    def _avail_channels(self) -> list:
+        ch = self.cm.get_by_tag(self.dist_tag) if getattr(self, "cm", None) and getattr(self, "dist_tag", None) else None
+        return [ch] if ch is not None else []
+
+    def _probe_mode(self) -> bool:
+        kw = getattr(getattr(getattr(self, "config", None), "selector", None), "kwargs", None) or {}
+        return int(kw.get("probePerWindow", 0) or 0) > 0
+
+    def _knowledge(self) -> str:
+        """R27 mode; hosts built without _init_availability fall back to the legacy avail_select_filter mapping."""
+        return getattr(self, "avail_knowledge", None) or ("oracle" if getattr(self, "avail_select_filter", True) else "none")
+
+    @property
+    def _belief_source(self) -> str:
+        return {"notify": "client_notify", "oracle": "trace_read", "checkin": "checkin"}.get(self._knowledge(), "none")
+
+    # ------------------------------------------------------------------
+    # Check-in (F42-T1, flame.availability.checkin): what a deployed baseline server knows
+    # ------------------------------------------------------------------
+
+    def _checkin_ledger(self) -> CheckinLedger:
+        led = getattr(self, "_checkin", None)
+        if led is None:
+            kw = dict(getattr(getattr(self.config, "hyperparameters", None), "checkin", None) or {})
+            sel_kw = getattr(getattr(self.config, "selector", None), "kwargs", None) or {}
+            c = max(1, int(sel_kw.get("c", 1) or 1))
+            gap = self._task_timeout_s() / (1 if self._CHECKIN_SYNC else c)  # server's prior: its round deadline / c
+            led = CheckinLedger(sync=self._CHECKIN_SYNC, initial_gap_s=float(kw.pop("initial_gap_s", gap)),
+                                window_frac=float(kw.get("window_frac", 0.1)), jitter=tuple(kw.get("jitter", (0.5, 1.5))),
+                                alpha=float(kw.get("alpha", 0.25)), seed=int(kw.get("seed", 0)), on_event=self._checkin_event,
+                                overdue=str(kw.get("overdue", "window")))
+            led.busy, led.lock = set(), threading.RLock()
+            self._checkin = led
+            for ch in self._avail_channels():  # real: CHECK_IN notifies (incl. any that arrived before the first selection)
+                ch.set_checkin_handler(self.on_checkin_message)
+        return led
+
+    def _checkin_forecaster(self):
+        """F42-T3: REFL's on-device Prophet model, replayed agg-side in sim (real trainers send p with their check-in)."""
+        kw = getattr(getattr(self.config, "selector", None), "kwargs", None) or {}
+        if kw.get("avail_predictor") != "prophet" or not getattr(self, "simulated", False):
+            return None
+        if getattr(self, "_checkin_fc", None) is None:
+            from flame.availability.refl_predictors import ProphetForecaster
+            self._checkin_fc = ProphetForecaster(self._avail_trace_name, growth=kw.get("prophet_growth", "flat"))
+        return self._checkin_fc
+
+    def _checkin_event(self, kind, end, t, fields) -> None:
+        if kind == "pooled":
+            fc = self._checkin_forecaster()
+            if fc is not None:
+                fields["p"] = fc.p(end, t, self._checkin.gap)
+            if fields.get("p") is not None:
+                self.__dict__.setdefault("_checkin_p", {})[end] = fields["p"]
+        if telemetry.is_enabled():
+            ev, f = build_checkin(kind=kind, end_id=end, t=t, round_num=getattr(self, "_round", -1), **fields)
+            telemetry.emit(ev, **f)
+
+    def _checkin_train_at(self, end: str, t: float) -> float:
+        trace = self.trainer_event_dict.get(end)
+        if not trace or deliverable(state_at(trace, t), "train"):
+            return t
+        return next_avail_after(trace, t, "train")
+
+    def _checkin_is_train(self, end: str, t: float) -> bool:
+        trace = self.trainer_event_dict.get(end)
+        return not trace or deliverable(state_at(trace, t), "train")
+
+    def _checkin_clients(self) -> list:
+        """The leg's own clients (connected ends with a trace), not the whole trace registry."""
+        ends = set().union(*(set(getattr(ch, "_ends", {})) for ch in self._avail_channels())) if self._avail_channels() else set()
+        return [e for e in self.trainer_event_dict if e in ends]
+
+    def _checkin_idle(self) -> list:
+        """Ends that may check in: the leg's clients, not in flight, not already waiting in the pool."""
+        led = self._checkin_ledger()
+        inflight = set().union(*(self._avail_inflight_ends(ch) for ch in self._avail_channels())) if self._avail_channels() else set()
+        for e in led.busy - inflight:  # a task ended on a path that never called release: free from now
+            self._checkin_release(e, self._avail_now())
+        led.busy = inflight
+        return [e for e in self._checkin_clients() if e not in inflight and e not in led.pool]
+
+    def _checkin_release(self, end: str, t: float) -> None:
+        """A busy client's task ended; a late update from a client already released (abandoned) changes nothing."""
+        led = self._checkin_ledger()
+        with led.lock:
+            if end in led.busy:
+                led.busy.discard(end)
+                led.release(end, t)
+
+    def _checkin_gate(self, want: bool) -> list:
+        """F42-T1 selection gate: ineligible = everyone not waiting in the check-in pool. Sync: picks only at a window's close
+        (sim jumps the vclock there; real waits); want=False closes an idle window (its pool is told to reconnect)."""
+        led = self._checkin_ledger()
+        sim = getattr(self, "simulated", False)
+        with led.lock:
+            now = self._avail_now()
+            if sim:
+                led.advance(now, self._checkin_idle(), self._checkin_train_at, self._checkin_is_train)
+            if led.sync:
+                if not want:
+                    if led.window is not None:
+                        self._checkin_tell(led.after_select(now, [], slots_left=False))
+                    return list(self.trainer_event_dict)
+                close = led.open_window(now, getattr(self, "_round", None))
+                if now < close:
+                    if not sim:
+                        return list(self.trainer_event_dict)  # real: keep collecting until the window closes
+                    self._vclock.advance(close)
+                    led.advance(close, self._checkin_idle(), self._checkin_train_at, self._checkin_is_train)
+            for ch in self._avail_channels():
+                ch.properties["checkin_p"] = {e: p for e, p in getattr(self, "_checkin_p", {}).items() if e in led.pool}
+            return [e for e in self.trainer_event_dict if e not in led.pool]
+
+    def _checkin_pool_waiting(self, channel) -> bool:
+        """F42-T10: a sync version short of picks already holds check-ins in its open window: select now, never jump past them.
+        Once per (round, pool), so a pool the selector won't pick cannot spin."""
+        if self._knowledge() != "checkin" or not getattr(self, "trainer_event_dict", None):
+            return False
+        wants = getattr(self, "_sync_wants_picks", None)
+        if wants is not None and not wants(channel):
+            return False
+        led = self._checkin_ledger()
+        with led.lock:
+            if getattr(self, "simulated", False):
+                led.advance(self._avail_now(), self._checkin_idle(), self._checkin_train_at, self._checkin_is_train)
+            if not (led.sync and led.window is not None and led.pool):
+                return False
+            key = (getattr(self, "_round", None), frozenset(led.pool))
+        if key == getattr(self, "_checkin_pool_woke", None):
+            return False
+        self._checkin_pool_woke = key
+        return True
+
+    def checkin_after_select(self, channel, picked, task: str = "train") -> None:
+        """F42-T1: a selection picked `picked`; the rest of the pool is told to reconnect (sync: window closes).
+        Async probe mode (F42c): a train pick keeps the pool for the eval pick that follows; that one rejects the rest."""
+        if self._knowledge() != "checkin" or getattr(self, "trainer_event_dict", None) is None:
+            return
+        led = self._checkin_ledger()
+        with led.lock:
+            now = self._avail_now()
+            picked = list(picked or ())
+            for e in picked:
+                if e in led.pool:
+                    self._checkin_event("picked", e, now, {})
+            sel = getattr(channel, "_selector", None)
+            c = int(channel.properties.get("dynamic_c", getattr(sel, "c", 0)) or 0)
+            slots_left = (not led.sync) and len(self._avail_inflight_ends(channel)) < c
+            led.busy |= set(picked)
+            probes = not led.sync and self._probe_mode()
+            if probes and task == "eval":  # probes don't feed the dispatch-gap estimate
+                for e in picked:
+                    led.pool.pop(e, None)
+                picked = []
+            keep = led.sync and self._sync_wait_k_on() and self._sync_wants_picks(channel, picked=picked)  # version still short
+            hold = probes and task == "train"
+            self._checkin_tell(led.after_select(now, picked, slots_left=slots_left or hold, keep_open=keep))
+
+    def _checkin_tell(self, told) -> None:
+        """Real: send each rejected client its reconnect time (sim clients follow the ledger directly)."""
+        if getattr(self, "simulated", False) or not told:
+            return
+        from flame.mode.message import MessageType
+        mu = self._checkin_ledger().gap
+        for ch in self._avail_channels():
+            for end, at in told:
+                if ch.has(end):
+                    ch.send_payload(end, ch.dumps({MessageType.CHECKIN_RECONNECT: {"at": at, "mu": mu}}))
+
+    def on_checkin_message(self, end: str, payload: str, wall_ts: Optional[float] = None) -> None:
+        """Real: a client's CHECK_IN (json {p}) received at wall_ts; pooled or told to reconnect. p = REFL's on-device forecast."""
+        if self._knowledge() != "checkin" or getattr(self, "trainer_event_dict", None) is None:
+            return
+        info = json.loads(payload) if payload else {}
+        t = max(0.0, wall_ts - self.agg_start_time_ts) if wall_ts is not None else self._avail_now()
+        led = self._checkin_ledger()
+        with led.lock:
+            r = led.on_checkin(end, t, p=info.get("p"))
+        if r is not None:  # off the backend loop: a send from its own thread would deadlock on run_async
+            threading.Thread(target=self._checkin_tell, args=([(end, r)],), daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Selection gate
+    # ------------------------------------------------------------------
+
+    def _leg_trace_ids(self) -> list:
+        """Trace ids of the leg's connected clients (all trace ids before any channel exists); only these reach a selector."""
+        chans = self._avail_channels() if getattr(self, "cm", None) is not None else []
+        ends = set().union(*(set(getattr(ch, "_ends", {})) for ch in chans)) if chans else None
+        return [t for t in self.trainer_event_dict if ends is None or t in ends]
 
     def get_curr_unavail_trainers(self) -> list:
         """Trainers in UN_AVL state per trace-read at _avail_now().
@@ -217,8 +455,8 @@ class ClientAvailability:
         now = self._avail_now()
         unavail = [
             tid
-            for tid, trace in self.trainer_event_dict.items()
-            if state_at(trace, now) == TrainerAvailState.UN_AVL
+            for tid in self._leg_trace_ids()
+            if self._believed_state(tid, now) == TrainerAvailState.UN_AVL
         ]
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -227,7 +465,7 @@ class ClientAvailability:
             )
         return unavail
 
-    def get_curr_task_ineligible_trainers(self, task: str) -> list:
+    def get_curr_task_ineligible_trainers(self, task: str, want: bool = True) -> list:
         """D.2: UN_AVL + task-type-ineligible trainers per the trace-read.
 
         Extends get_curr_unavail_trainers with the task-type partition:
@@ -244,18 +482,20 @@ class ClientAvailability:
             return []
         if not getattr(self, "avail_select_filter", True):
             return []
+        if self._knowledge() == "checkin":
+            return self._checkin_gate(want)
         has_eval = getattr(self, "_trace_has_avl_eval", False)
         excluded_state = (
             TrainerAvailState.AVL_EVAL if task == "train"
-            else TrainerAvailState.AVL_TRAIN if (task == "eval" and has_eval)
-            else None
+            else TrainerAvailState.AVL_TRAIN if (task == "eval" and has_eval and not self._probe_mode())
+            else None  # F42c probes spill to idle AVL_TRAIN clients (the selector prefers AVL_EVAL)
         )
         now = self._avail_now()
         ineligible = [
             tid
-            for tid, trace in self.trainer_event_dict.items()
-            if state_at(trace, now) == TrainerAvailState.UN_AVL
-            or (excluded_state is not None and state_at(trace, now) == excluded_state)
+            for tid in self._leg_trace_ids()
+            if (st := self._believed_state(tid, now)) == TrainerAvailState.UN_AVL
+            or (excluded_state is not None and st == excluded_state)
         ]
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -296,9 +536,10 @@ class ClientAvailability:
         if self.trainer_event_dict is None:
             return
         now = self._avail_now()
+        aware = self._knowledge() != "none"  # R27: an unaware stack's stamp is telemetry only (its selector ignores it)
         for end_id in list(channel._ends.keys()):
             trace = self.trainer_event_dict.get(end_id)
-            state = state_at(trace, now) if trace else TrainerAvailState.AVL_TRAIN
+            state = (self._believed_state(end_id, now) if aware else state_at(trace, now)) if trace else TrainerAvailState.AVL_TRAIN
             channel.set_end_property(end_id, PROP_AVL_STATE, state)
         # No separate agg_belief_change emission for the "selection" checkpoint:
         # PROP_AVL_STATE (stamped above) is already read by emit_selection into
@@ -357,6 +598,8 @@ class ClientAvailability:
         if trace is None:
             return
         now = float(sct) if sct is not None else self._avail_now()
+        if self._knowledge() == "checkin":
+            self._checkin_release(end, now)
         state = state_at(trace, now)
         self._record_avail_belief(end, state.value, observed_at=now, checkpoint="commit")
 
@@ -369,7 +612,7 @@ class ClientAvailability:
     #   * delivery ledger — pending_withheld[end] = delivery_ts; the completed
     #                       update is HELD, not discarded, and committed later
     #                       (stale) by the live commit loop.
-    # The same effect path serves all three triggers (90s vclock abandon, aware
+    # The same effect path serves all three triggers (task-timeout abandon, aware
     # boundary eviction, and the future avl_* message) — only the trigger differs.
 
     def compute_delivery_ts(self, end: str, sct: float, task: str = "train") -> float:
@@ -423,7 +666,7 @@ class ClientAvailability:
     ) -> Optional[float]:
         """Free an in-flight slot and register its pending withheld delivery.
 
-        Triggered by (a) the 90s vclock abandon for everyone (C.3) and (b) the
+        Triggered by (a) the task-timeout abandon for everyone (C.3) and (b) the
         aware boundary eviction for availability_aware baselines (Stage D); Stage H
         adds an avl_* message trigger without changing this effect logic — the
         abstraction exists for exactly that swap.
@@ -440,6 +683,8 @@ class ClientAvailability:
                 f"[AVAIL] free_stalled_slot({end!r}) — gate off, no-op"
             )
             return None
+        if self._knowledge() == "checkin":
+            self._checkin_release(end, float(sct) if sct is not None else self._avail_now())
 
         # 1. Slot ledger: release the concurrency slot so a replacement is
         #    selectable. Mirrors the abandon path's removal (random.py:215).
@@ -696,7 +941,7 @@ class ClientAvailability:
             self._sim_withheld_payload[end] = (float(sct), msgmd)
         async_hold = getattr(self, "_sim_hold_withheld_slot", False)  # FX-N56
         if (self._sync_wait_k_on() or async_hold) and not getattr(self, "proactive_inflight_evict", False):
-            # FX-N37: real can't see a withhold, so the slot stays held until dispatch+90s.
+            # FX-N37: real can't see a withhold, so the slot stays held until dispatch + timeout.
             self.pending_withheld[end] = dts
             self._withheld_slot_held.add(end)
             if async_hold:
@@ -828,7 +1073,7 @@ class ClientAvailability:
             updates.close()
 
     def _real_round_recv_deadline(self, channel, ends, earliest: bool = False) -> float:
-        """Real sync round: wait until every awaited trainer is past its own 90s since dispatch (FX-L40),
+        """Real sync round: wait until every awaited trainer is past its own task timeout since dispatch (FX-L40),
         capped at the run budget's end. Abandoned ends don't extend the wait. `earliest` (FX-N37): stop at
         the first pending timeout instead, so distribute can replace that pick."""
         hp = self.config.hyperparameters
@@ -869,13 +1114,13 @@ class ClientAvailability:
 
     @property
     def _withheld_slot_held(self) -> set:
-        """FX-N37: withheld sim picks still holding their slot until dispatch+90s."""
+        """FX-N37: withheld sim picks still holding their slot until dispatch + timeout."""
         if not hasattr(self, "_withheld_slot_held_set"):
             self._withheld_slot_held_set = set()
         return self._withheld_slot_held_set
 
     def _sync_wait_k_on(self) -> bool:
-        """FX-N37 gate; needs the substrate, whose 90s abandon frees stalled picks."""
+        """FX-N37 gate; needs the substrate, whose task-timeout abandon frees stalled picks."""
         hp = getattr(getattr(self, "config", None), "hyperparameters", None)
         return bool(getattr(hp, "sync_wait_for_k", False)) and getattr(self, "trainer_event_dict", None) is not None
 
@@ -945,6 +1190,8 @@ class ClientAvailability:
     def _sim_sync_next_wake(self, channel) -> Optional[float]:
         """FX-N37: next vclock event that can move a waiting sync round: a pick's timeout or a delivery."""
         now = self._avail_now()
+        if self._checkin_pool_waiting(channel):
+            return now
         buf = getattr(self, "_sim_buffer", None)
         cands = [d for d in getattr(self, "pending_withheld", {}).values() if now < d < math.inf]
         replied = self._sync_replied(channel)
@@ -1029,7 +1276,7 @@ class ClientAvailability:
         return min(due) if due else None
 
     def _sim_starvation_wake(self, channel) -> Optional[float]:
-        """FX-D182: a starved sync sim jumps to the next flip or pick timeout, whichever is first (real's timer fires at 90 s)."""
+        """FX-D182: a starved sync sim jumps to the next flip or pick timeout, whichever is first (real's timer fires at the task timeout)."""
         nxt = self._next_avail_vclock()
         hp = getattr(getattr(self, "config", None), "hyperparameters", None)
         if str(getattr(hp, "sim_abandon_wakes", True)).lower() != "true":
@@ -1039,7 +1286,7 @@ class ClientAvailability:
         return ab if nxt is None else (nxt if ab is None else min(nxt, ab))
 
     def _abandon_stalled(self, channel) -> None:
-        """C.3: free in-flight slots stalled past 90s since dispatch (vclock in sim, wall in real).
+        """C.3: free in-flight slots stalled past the task timeout since dispatch (vclock in sim, wall in real).
 
         Re-clocks the selector's wall-based abandon (inert in sim) onto the vclock.
         A trainer dispatched > 90 vclock-seconds ago whose update has neither
@@ -1059,7 +1306,7 @@ class ClientAvailability:
         for end, sst, held in self._abandon_candidates(channel):
             if now - sst <= self._task_timeout_s():
                 continue
-            reason = "abandon_90s_vclock" if getattr(self, "simulated", False) else "abandon_90s_wall"
+            reason = "abandon_timeout_vclock" if getattr(self, "simulated", False) else "abandon_timeout_wall"
             if held:  # FX-N37: delivery ledger already registered; only the slot frees
                 self._withheld_slot_held.discard(end)
                 self._avail_free_slot_ledger(channel, end)
@@ -1093,14 +1340,14 @@ class ClientAvailability:
         """D.1: Proactively free in-flight slots for trainers now showing UN_AVL.
 
         For availability_aware baselines the oracular trace read at the selection
-        boundary is authoritative (FX-N97: UN_AVL, or AVL_EVAL for a train task) — no need to wait for the 90s vclock deadline
+        boundary is authoritative (FX-N97: UN_AVL, or AVL_EVAL for a train task) — no need to wait for the task-timeout deadline
         (C.3). A trainer that transitioned to UN_AVL since it was dispatched has
         its slot freed immediately so a replacement is selectable this round.
 
         Same effect as free_stalled_slot (slot ledger freed + delivery ledger
         registered) — only the trigger differs from C.3. No-op when the gate is
         off (trainer_event_dict is None) or proactive_inflight_evict is False (unaware
-        and aware-at-selection-only baselines stay on the C.3 90s path).
+        and aware-at-selection-only baselines stay on the C.3 timeout path).
         """
         if not getattr(self, "proactive_inflight_evict", False):
             return
@@ -1117,11 +1364,10 @@ class ClientAvailability:
                 continue  # complete and delivered by now; still computing or send-gated is evictable (FX-D71, FX-D75)
             if end in committed or end in self.pending_withheld:
                 continue  # invariant 1: already committed / registered
-            trace = self.trainer_event_dict.get(end)
-            if not trace:
+            if not self.trainer_event_dict.get(end):
                 continue
             task = self._inflight_task(end)
-            state = state_at(trace, now)
+            state = self._believed_state(end, now)
             if deliverable(state, task):
                 continue  # can still deliver — leave the slot
             self.free_stalled_slot(
@@ -1144,7 +1390,7 @@ class ClientAvailability:
     def _wake_task(self) -> Optional[str]:
         """FX-D165: only an eval-dispatching selector (Felix) wakes on AVL_EVAL; for the rest AVL_EVAL is UN_AVL."""
         kw = getattr(getattr(getattr(self, "config", None), "selector", None), "kwargs", None) or {}
-        return None if float(kw.get("evalGoalFactor") or 0) > 0 else "train"
+        return None if float(kw.get("evalGoalFactor") or 0) > 0 or self._probe_mode() else "train"
 
     def _next_avail_vclock(self) -> Optional[float]:
         """Stage F: earliest vclock at which any trainer next becomes selectable.
@@ -1162,6 +1408,16 @@ class ClientAvailability:
             return None
         now = self._avail_now()
         candidates: list = []
+        if self._knowledge() == "checkin":  # F42-T1: the next check-in (or reconnect) is the only news
+            led = self._checkin_ledger()
+            with led.lock:
+                if getattr(self, "simulated", False):  # replay due check-ins first, else a past one hides the next wake
+                    led.advance(now, self._checkin_idle(), self._checkin_train_at, self._checkin_is_train)
+                nxt = led.next_checkin(now, self._checkin_idle(), self._checkin_train_at, self._checkin_is_train)
+            candidates += [nxt] if nxt is not None else []
+            pw = getattr(self, "pending_withheld", None)
+            candidates += [ts for ts in (pw or {}).values() if ts > now]
+            return min(candidates) if candidates else None
         task = self._wake_task()
         for trace in self.trainer_event_dict.values():
             nxt = next_avail_after(trace, now, task)

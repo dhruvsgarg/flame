@@ -155,7 +155,10 @@ class ConfigGenerator:
             )
             config["hyperparameters"]["trainer_indices_list"] = dataset_indices
 
-        config["hyperparameters"]["training_delay_s"] = trainer_meta["training_delay_s"]
+        config["hyperparameters"]["training_delay_s"] = trainer_meta["training_delay_s"]  # FluxTune (fwdllm) only
+        for k in ("compute_ms_per_sample", "bandwidth_kbps"):  # FX-D197: backprop task time = FedScale device model
+            if k in trainer_meta:
+                config["hyperparameters"][k] = float(trainer_meta[k])
         
         # Set training_delay_enabled from overrides (default True)
         training_delay_enabled = overrides.get("hyperparameters.training_delay_enabled", "True")
@@ -465,7 +468,8 @@ class TrainerSpawner:
             raise ValueError(f"unknown gpu_placement {self.gpu_placement!r} (balanced | round_robin)")
         meta = getattr(self.config_gen, "metadata", None)  # None: a launcher without a registry stays round-robin
         if self.gpu_placement == "balanced" and self.gpu_ids and meta is not None:
-            delays = {t: float(meta.get_trainer_metadata(t)["training_delay_s"]) for t in trainer_ids}
+            m = {t: meta.get_trainer_metadata(t) for t in trainer_ids}  # FX-D197: GPU load ~ per-sample compute
+            delays = {t: float(m[t].get("compute_ms_per_sample", m[t]["training_delay_s"])) for t in trainer_ids}
             caps = parse_gpu_trainer_caps(os.environ.get("FLAME_GPU_TRAINER_CAPS", ""))
             self._gpu_of = balanced_gpu_placement(delays, self.gpu_ids, caps)
             load = {g: round(sum(1 / max(delays[t], 1e-9) for t, gg in self._gpu_of.items() if gg == g), 3)

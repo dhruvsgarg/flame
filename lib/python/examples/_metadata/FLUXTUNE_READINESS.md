@@ -42,6 +42,34 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 
 ## Next steps (persistent queue — resumes after Felix)
 
+- **FT-N19 · One bench queue for Felix and FluxTune · todo (after FT-N18; operator 10-23).** *Why:* both projects share jayne /
+  shepherd; one `bench_pool.py` queue that takes cifar / speech (Felix) and fwdllm (FluxTune) legs together runs them interleaved
+  without hand-split GPU lists or one batch waiting on the other. `bench_pool.py` already places each leg by free GPU memory + host
+  RAM (FELIX FX-N141 Built); left: fwdllm legs on the bench (FT-N18), a per-leg resource class (fwdllm DistilBERT legs need more GPU
+  memory than cifar's ~3.4 GB: set `--leg-gpu-gb` per job from a profile, not one flag), a jobs file mixing tiers from both
+  harnesses, and per-project output pools. *Exit:* one mixed batch (Felix screen + fwdllm screen) on both nodes, every leg ok,
+  no OOM, legs / h ≥ the two batches run back to back.
+
+- **FT-N18 · fwdllm on the in-process bench (FELIX V5, FX-D213 / D218) · todo (on resume).** *Why:* Felix's harness legs bound on host
+  RAM (84-99 GB, one process per trainer), so a node ran 4-5 legs; the bench (aggregator + W worker processes, in-memory channel) runs
+  ~4 GB legs: cifar 121-141 legs / h on jayne vs ~15 on both nodes (8-9×). It pays only when per-trainer process cost binds; speech
+  sims are GPU-compute-bound and gained ~1×.
+  - *Step 0, decide (≤ 15 min):* profile one fwdllm harness sim leg at production n (`resource_report.py --util`: RAM, GPU memory, SM).
+    RAM / GPU memory bound (one DistilBERT copy per trainer) → port; SM-bound → stay on the harness, record why here.
+  - *Port:* `fwdllm_aggregator` (barrier / variance-gated cadence, `version_key` with iterations), `FedSgdTrainer` (its own
+    `ChannelManager` import in `fwdllm_trainer.py` needs the same patch), every channel method it calls on the in-memory channel, H5
+    path-style data and `client_idx_modulo`, the trace keys it reads unconditionally (`avl_events_syn_*`), workers per GPU by LLM memory;
+    `bench_pool.py --harness-args` so legs come from the harness plan.
+  - *Adoption gate (Felix passed B1, B2, B4 before any screen; B3 still open there):* B1 replay of real commits from a checkpoint within
+    1 pp; B2 per baseline × trace, 3 bench seeds vs fwdllm harness sim legs at matched clock: |AUC Δ| ≤ max(1.5 pp, either side's seed
+    range), updates / h ±10%, bytes ±5%, mean task time ±5% with 0 task-time formula mismatches; fwdllm-specific: iterations per
+    `data_id`, variance pass rate and commit cadence within the same bands; B4 bench seed floors; a red re-runs with 2-3 harness seeds
+    before naming a root (both Felix reds were draws); `config_audit` on bench legs (knobs = table, holdout P3 / P4); same results at
+    2 and 4 workers; analysis tools read bench legs unchanged; packing per FX-T73 / T74 (one math thread, CUDA contexts per GPU).
+  - *Using it:* bench results stand for real only on cells green on both links, real ⇄ harness sim (FT parity) and harness ⇄ bench
+    (FX-L96); never grade the bench against real; re-run B2 on touched cells after any shared `flame/` or trainer change.
+  *Exit:* step 0 recorded; if ported, B1 / B2 / B4 green on the fwdllm board cells.
+
 - **FT-N16 · Measured packing for FluxTune blocks · todo (on resume).** PARITY C21/C22 and Throughput: screen each block's legs at
   production density, record per-leg CPU/RAM/GPU footprints, pack with `--gpu-share`/`--lease-from-telemetry`. *Exit:* a FluxTune block's
   `--util` record in this doc before its first long run.
@@ -59,6 +87,8 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
   → `simUnavailability`; then drop the legacy branch in `ClientAvailability._init_availability`. *Exit:* no `trackTrainerAvail` in code.
 - **FT-N16 · U6 barrier anchor on absolute ready times (FX-D151) · todo.** `fwdllm_aggregator` feeds `_barrier_anchored_lags`
   dispatch-relative durations (`SIM_CLIENT_TASK_TRAIN_DURATION_S`); wrong once picks are dispatched at different times (top-ups).
+- **FT-N17 · Mid-barrier withheld deliveries (FX-D194) · todo.** `fwdllm_aggregator`'s incremental sync commits K fresh updates before
+  re-injecting a send-gated one due earlier; port `_sync_sim_commit_due_withheld`. *Exit:* a test as `test_sim_barrier`'s FX-D194.
 - **FT-N14 · Real abandon telemetry (FX-N77) · todo.** asyncfl selector reclaims now emit `abandon_timeout`; check fwdllm's
   own abandon path emits it in real. *Exit:* real fwdllm abandons visible to stall-cause stamping.
 - **FT-N11 · 6 red fwdllm tests (R10) · todo.** `tests/mode/test_fwdllm_{probe_report,server_update_audit,eval_background}`

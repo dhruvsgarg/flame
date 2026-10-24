@@ -16,6 +16,7 @@
 """horizontal FL top level aggregator."""
 
 import logging
+import math
 import os
 import threading
 import time
@@ -206,6 +207,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             or 20
         )
         self._consecutive_above_target = 0
+        self._target_window = getattr(self.config.hyperparameters, "target_window", None)
+        self._target_evals = []
 
         # Simulation time mode (replaces speedup_factor). "simulated": order
         # updates by a virtual clock fed by trainer-reported completion times;
@@ -555,8 +558,19 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             all_popped.append(p)
 
         committed = []
+        n_k = 0  # commits counting to first_k
+        _cap = self._sim_checkin_horizon(channel)
+        _lookahead = str(getattr(getattr(getattr(self, "config", None), "hyperparameters", None),
+                                 "sim_reinject_lookahead", True)).lower() == "true"
         for end, sct, (msg, md) in all_popped:
-            if len(committed) >= first_k:
+            if sct > _cap:  # F42-T12 (d): the next check-in can open this version first; real's window timer won't wait
+                self._sim_sync_carry[end] = (sct, (msg, md))
+                if end in _carried_wd:
+                    self._sim_sync_carry_withheld.add(end)
+                continue
+            if _lookahead and n_k < first_k:  # FX-D194: a delivery due by this sct lands first, in this version
+                n_k += self._sync_sim_commit_due_withheld(channel, sct, committed, first_k - n_k)
+            if n_k >= first_k:
                 self._sim_sync_carry[end] = (sct, (msg, md))
                 if end in _carried_wd:
                     self._sim_sync_carry_withheld.add(end)
@@ -584,6 +598,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 f"T_v={self._vclock.now:.1f}"
             )
             committed.append((msg, md))
+            n_k += 1
 
         # E.1 / E.2: drain withheld-delivery bonus. After the barrier advances the
         # clock, re-inject any newly-due entries, then commit them as stale bonus
@@ -594,32 +609,48 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             if wh is None:
                 break
             wend, wdts, (wmsg, wmd) = wh
-            if self._sync_wait_k_on() and len(committed) >= first_k and self._sim_counts_to_k(wmsg):
+            _counts = self._sync_wait_k_on() and self._sim_counts_to_k(wmsg)
+            if _counts and n_k >= first_k:
                 # FX-D122: co-due deliveries past K carry; real's version closes at the K-th arrival.
                 # FX-D130: commits later as a withheld delivery; slot held until then.
                 self._sim_sync_carry[wend] = (wdts, (wmsg, wmd))
                 self._sim_sync_carry_withheld.add(wend)
                 continue
-            materialize_weights(wmsg)
-            # Batch 3 T3.5 (K11): advance before emitting, matching asyncfl's
-            # existing order — see _emit_withheld_delivery's docstring for why
-            # this specific advance is provably a no-op here either way, but
-            # the uniform ordering is kept as a defensive rule across stacks.
-            _wd = self._sim_take_withheld_delivering(wend)
-            self._advance_sim_clock(wdts)
-            if _wd is not None:
-                self._emit_withheld_delivery(wend, wmsg, _wd[0], _wd[1])
-            _srd = wmsg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)  # FX-D124: as the fresh loop stamps
-            if _srd is not None:
-                channel.set_end_property(wend, PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=float(_srd)))
-            self._sim_ready_ts = {**getattr(self, "_sim_ready_ts", {}), wend: float(wdts)}
-            logger.info(
-                f"[SYNC_WITHHELD_DELIVER] end={str(wend)[-4:]} "
-                f"delivery_ts={wdts:.1f} T_v={self._vclock.now:.1f}"
-            )
-            committed.append((wmsg, wmd))
+            self._sync_sim_commit_withheld(channel, wend, wdts, wmsg, wmd, committed)
+            n_k += bool(_counts)
 
         return committed
+
+    def _sync_sim_commit_due_withheld(self, channel, horizon, committed, room) -> int:
+        """FX-D194: commit withheld deliveries due by `horizon` before the fresh update there; returns how many count to K."""
+        self._sim_reinject_ready_withheld(horizon=horizon)
+        counted = 0
+        while counted < room and (ts := self._sim_buffer.peek_min_ts()) is not None and ts <= horizon:
+            wend, wdts, (wmsg, wmd) = self._sim_buffer.pop_min()
+            self._sync_sim_commit_withheld(channel, wend, wdts, wmsg, wmd, committed)
+            counted += bool(self._sync_wait_k_on() and self._sim_counts_to_k(wmsg))
+        return counted
+
+    def _sync_sim_commit_withheld(self, channel, wend, wdts, wmsg, wmd, committed) -> None:
+        """Commit one re-injected withheld delivery at its delivery_ts."""
+        materialize_weights(wmsg)
+        # Batch 3 T3.5 (K11): advance before emitting, matching asyncfl's
+        # existing order — see _emit_withheld_delivery's docstring for why
+        # this specific advance is provably a no-op here either way, but
+        # the uniform ordering is kept as a defensive rule across stacks.
+        _wd = self._sim_take_withheld_delivering(wend)
+        self._advance_sim_clock(wdts)
+        if _wd is not None:
+            self._emit_withheld_delivery(wend, wmsg, _wd[0], _wd[1])
+        _srd = wmsg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)  # FX-D124: as the fresh loop stamps
+        if _srd is not None:
+            channel.set_end_property(wend, PROP_CLIENT_TASK_TRAIN_DURATION, timedelta(seconds=float(_srd)))
+        self._sim_ready_ts = {**getattr(self, "_sim_ready_ts", {}), wend: float(wdts)}
+        logger.info(
+            f"[SYNC_WITHHELD_DELIVER] end={str(wend)[-4:]} "
+            f"delivery_ts={wdts:.1f} T_v={self._vclock.now:.1f}"
+        )
+        committed.append((wmsg, wmd))
 
     def _sim_counts_to_k(self, msg) -> bool:
         """FX-D156: a due stale delivery (never counts to K, FX-N57) lands this pass, before the next selection, as in
@@ -973,6 +1004,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             logger.debug(f"_agg_training_stats: {self._agg_training_stats}")
         self._reset_aggregator_stats()
 
+        self._contributors_seen = getattr(self, "_contributors_seen", set()) | set(self.cache)  # FX-N133: serveEma's n
         # optimizer conducts optimization (in this case, aggregation)
         _opt0 = time.time()
         # An empty cache commits nothing, whatever the optimizer returns (FX-L28).
@@ -1106,6 +1138,25 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         aggregators that know the dataset override it. Must never raise."""
         return
 
+    def _sync_wants_picks(self, channel, desired: int = 0, picked=()) -> bool:
+        """F42-T1: whether this version still misses picks (a check-in window opens only then); `picked` = this selection's
+        picks, not yet stamped in flight."""
+        if not self._sync_wait_k_on():
+            return True
+        desired = desired or getattr(channel._selector, "num_of_ends", None) or self.config.hyperparameters.aggregation_goal or 1
+        fresh = self._sync_version_inflight(channel) | set(picked)
+        return desired - len(fresh) - len(self._sync_accepted_ends()) > 0
+
+    def _sim_checkin_horizon(self, channel) -> float:
+        """F42-T12 (d): while this version still misses picks under check-in, its next check-in may fill the window; a sim
+        drain stops there instead of jumping to a straggler's completion. `simCheckinDrainCap=false` reverts."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        if (getattr(self, "_knowledge", lambda: None)() != "checkin"
+                or str(getattr(hp, "sim_checkin_drain_cap", True)).lower() != "true" or not self._sync_wants_picks(channel)):
+            return math.inf
+        nxt = self._next_avail_vclock()
+        return math.inf if nxt is None else nxt
+
     def _sync_wait_k_plan(self, channel, num_eligible: int, threshold: int):
         """FX-N37: (picks, eligible needed to dispatch) for this version's missing slots; None when none are missing."""
         desired = getattr(channel._selector, "num_of_ends", threshold)
@@ -1154,7 +1205,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # E.1: oracular gate — build the unavailability list for this selection.
         if self.trainer_event_dict is not None:
             curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
-                task_to_perform
+                task_to_perform, want=self._sync_wants_picks(channel)
             )
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts.
@@ -1279,6 +1330,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                                      agg_version_key=self.version_key,
                                      trainer_version_keys=_version_keys,
                                      num_to_select=_need)
+        self.checkin_after_select(channel, selected_ends)  # F42-T1
         if not selected_ends:
             return
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
@@ -1301,6 +1353,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             msg[MessageType.AGG_START_TS] = self.agg_start_time_ts
         if self.simulated:
             msg[MessageType.SIM_WALL_SEND_TS] = time.time()  # FX-D108
+            msg[MessageType.SIM_FANOUT] = [str(e) for e in selected_ends]  # FX-D191: send order
         _payload = channel.dumps(msg)
         _send_t0 = time.time()  # [DISTRIBUTE_TIMING]
         for end in selected_ends:
@@ -1664,6 +1717,13 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         """
         target = getattr(self, "_target_accuracy", None)
         if target is None:
+            return
+        w = getattr(self, "_target_window", None)
+        if w:  # FX-D229: windowed mean, robust to single-eval jitter
+            self._target_evals = (getattr(self, "_target_evals", []) + [test_accuracy or 0.0])[-int(w):]
+            if len(self._target_evals) == int(w) and sum(self._target_evals) / int(w) >= target:
+                logger.info(f"[TARGET_STOP] round={round_num} mean of last {w} evals >= target={target}; stopping.")
+                self._work_done = True
             return
         if test_accuracy is not None and test_accuracy >= target:
             self._consecutive_above_target += 1

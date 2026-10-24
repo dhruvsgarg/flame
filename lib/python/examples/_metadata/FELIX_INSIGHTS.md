@@ -88,6 +88,7 @@ reconstruction (§4 #4).
 | **C · Aggregation** | | | | | |
 | I-C1 | how stale are aggregated updates? | staleness histogram; weight mass by staleness | `agg_round.staleness` (existing) | all | measured (REFL, this doc §5) |
 | I-C2 | how long does a sync round wait for stragglers? | version start → K-th fresh arrival; idle slot-seconds at the barrier | trainer `task_recv.sim_send_ts` + `agg_round` (§4 #4) | refl, oort family, feddance | hyp |
+| I-C4 | where does staleness come from? | τ split by visibility lag (ready → commit > 60 s = held upload) vs in-flight work: share of updates, share of Σ τ, task span per source | `agg_round.staleness`, `update_visibility_lag_s`, `trainer_speed_s` (existing) | all async | measured (F45, §5) |
 | I-C3 | async buffer dynamics | `buf_depth`, `commit_gap_s`, visibility lag | `agg_round` (existing) | felix, fedbuff | hyp |
 | **D · Overheads** | | | | | |
 | I-D1 | where does server wall time go? | recv_wait / ingest / commit / other per commit | `agg_timing` (existing) | all | hyp |
@@ -103,6 +104,7 @@ reconstruction (§4 #4).
 | **G · Time-to-accuracy decomposition** | | | | | |
 | I-G1 | why is X faster to target? | TTA = U* / R: U* = aggregated updates to target (statistical efficiency), R = aggregated updates per hour (system efficiency); R = c_eff · (1 − waste) / s̄_T | `agg_round`, `agg_eval`, §4 #4 | all | hyp |
 | I-G2 | marginal value of an update | d acc / d aggregated update per phase of the run | `agg_eval` + `agg_round` (existing) | all | hyp |
+| I-G3 | how long does an early lead last? | lead = ∫(acc − acc_FedBuff) dt in pp·h, split 0-4 h / 4-12 h; hour FedBuff is ahead for good; break-even ≈ end + lead / late gap | `agg_eval` (existing) | all vs FedBuff | measured (FL1 F44 / F45, §5) |
 
 ## 4. Instrumentation (telemetry only, no behaviour change, no checker reads it)
 
@@ -119,11 +121,234 @@ reconstruction (§4 #4).
 
 ## 5. Findings (measured; each line cites its evidence)
 
+**FL1 log (FELIX FX-N141; cifar bench n 300, 12 h; standing: one crisp line per worked / failed mechanism, for motivation / eval).**
+- *Unaware async idles, and the idling hides staleness (F44 `s50u`, `FL1_1023_1700`).* FedBuff waits on check-ins (98k
+  slot-starvation events) and holds slots of departed clients to its 677 s timeout: ~33 of 60 slots busy, 116k updates. Notify /
+  evict (`b1`) keeps all 60 busy: 213k updates, 50-55% 80 min sooner, but staleness 7.8 vs 4.8 under the same 1/√(1+τ) rate costs
+  1.2 pp final. *Confirmed (F45 `b1_c33`):* aware at c 33 ends 57.1 vs FedBuff 56.3% (staleness 4.2) but at FedBuff's pace (lead −8
+  vs +23 pp·h). Motivation: awareness buys speed; aggregation must absorb the staleness it creates.
+- *Utility alone keeps accuracy at fewer bytes (F45 `s3u` / `s3uo`, `FL1_1023_2130`):* |D| q picks big shards (picks~size +0.84-0.96),
+  41 vs 25 samples / update on `s0u`: FedBuff's final with 20-27% fewer updates and GB. q from the training pass ties a pre-step batch.
+- *Speed buys early and costs late (F45 `s3vu`, `s3v`, `s3vubx_oc`):* across arms each pp·h gained before 4 h comes back 0.6-1.0×
+  after; the speed term costs 1.5-2 pp final on streams. Speed alone picks small shards (83 vs 164 samples / update, class TV 0.117 vs
+  FedBuff 0.051) and ends −3.8 pp. Balance wins back about half; UCB does nothing (±0.3 pp); Oort's cutoff is fastest to 50%, lowest final.
+- *Felix new's early lead is half step, half selection (F44 `l3b` vs F45 `s3vubx_oc`, same selection):* rate `new` + no lr
+  normalization reach 49.5 vs 40.9% at 1 h on `s0u` (`b1` 31%) and lose less late (−13 vs −19 pp·h). Test: F46 (S4).
+- *The stream plateau is memorization (F45 trainer telemetry):* clients' per-sample loss of the received model falls 2.0 → 1.2 by
+  4 h → 0.1 by 9 h on `s0u` / `s50u` (every stack, FedBuff too); accuracy stops rising once it passes ~1, and only 2-3% of tasks see
+  new data. Static shards (164 samples) fall 1.7 → 0.6 and keep learning to 9 h. Motivation: once local data is fit, more steps
+  only add noise; the step and c should follow the loss left (F46 `ps`, `cp`).
+- *Felix's rate `new` is a big constant step, not a staleness rule (F44 / F45 `agg_round`):* mean weight 0.73-0.78 early, 0.61-0.65
+  late vs 0.51-0.53 for 1/√(1+τ); its utility term is ~constant and its staleness exponent (0.25) is weak.
+- *Speed arms lose by update noise more than staleness (F45 `s0u`):* mean τ 3.9 for every c 60 arm (τ > 8: 10.6 vs 8.0%), but 30%
+  more updates of 12% fewer samples at the same step. `s50u`'s staleness is mostly unavailability (next line).
+- *Unavailability makes staleness that straggler fixes cannot see (I-C4 `insights.py`, F45 `agg_round` `update_visibility_lag_s`; paper argument
+  for staleness ≠ unavailability):* staleness has two sources. (1) In-flight work: τ ≈ c / K, its tail = slow tasks; without
+  unavailability (`s0u`) it is all of it (τ > 20 from 89-92 s tasks vs 11-14 s median, 0 held uploads). (2) Held uploads: a client
+  that leaves mid-task finishes, but its upload waits until it returns (our availability model: compute completes, the send waits).
+  On `s50u` these are 1.1-1.2% of updates but **49-51% of all staleness**, mean τ 184-373 versions (hours), from clients with
+  19-21 s tasks (median 10-11 s, not 10× stragglers); 99-100% of τ > 20 updates are held for FedBuff / `b1_c33`, 62-71% for the
+  Felix arms. Same for every stack (FedBuff 1337 withheld deliveries, Felix arms 2094-2140). So async FL's straggler machinery
+  (staleness-weighted rates, deadlines, speed-aware selection) targets source 1: a staleness rule only down-weights a held update
+  once it lands, and a speed rule cannot predict who will leave. Availability-awareness acts on source 2 before it happens (who to
+  pick, whether to evict). Next evidence: τ by source per stack on mobiperf, and how much accuracy the held updates cost
+  (drop-on-return ablation).
+- *Loss utility: the pass-averaged EMA is the one signal that builds a good buffer (q audit, `experiments/qaudit_1024`):* early no
+  |D|-weighted loss predicts an update's value; once shards are memorized, top-15 by |D| · Oort EMA cuts test loss 4× random (0.155
+  vs 0.035), while one pre-step batch (−0.30) and held-out loss (−0.13) are worse than random.
+- *An early lead fades on streams (I-G3, F44 + F45):* Felix new leads FedBuff by up to 20 pp at 1-2 h (+34-47 pp·h by 12 h), but
+  FedBuff is ahead for good from 5-6 h and leads by 2 pp at 8-12 h; at that gap the lead is gone by ~30 h. Static data: no fade.
+- *More local epochs = drift, not staleness (F44 `b1gw_e3`).* Same staleness (3.9), 45-60% fewer updates, equal accuracy to 4 h
+  then −3 pp by 8 h on non-IID α 0.1; GB −28 to −58%. Local work needs per-client control, not a global epoch count.
+- *Weight decay on clients does nothing for async cifar (F44 `b1gw`):* ±0.5 pp final vs `b1`.
+- *Static data has no plateau (F44 `s0`):* every arm 64-68.5% at 12 h; the 54-57% stream plateau is the stream's data, not Felix.
+
+**Every finding below ran on work-independent task durations (before FELIX FX-D197, 10-20) and is void for the paper;
+kept only as hypotheses to re-measure.**
+
 - **REFL staleness (I-C1, 10-12):** aggregated updates > 5 rounds stale are 0% on syn_0 (G1A/G1AS cifar + speech, up to 496 rounds,
   max staleness 5), 0-2.4% on syn_50 and 0-1.1% on mobiperf (G0U, max 12); stale share 14-33%. Source: `agg_round.staleness`, jayne
   `async_cifar10/experiments/*refl*{G1A,G1AS,G0U}*`. Why it matters: a 5-round cap (SAFA's) would change nothing on syn_0.
 - **Telemetry smoke (§4, 10-12, stub, cifar):** real↔sim agree on every logical metric: felix mobiperf T3 choice ratio 5.75 vs 5.73, explore
   share 0.42% vs 0.42%, waste 0.8% vs 0.6%; refl mobiperf T3 waste 0.4% vs 0.8%, 4.31 vs 4.34 MB per aggregated update
   (`pool_20261012_183234_T3`). Felix chose 0 eval tasks on these ≤ 6-min legs (gate g = 35), as §1 predicts.
-- **FedDance coverage (I-A2):** ≈ a third of cifar devices zeroed within 2 h; 91 of 300 ever contribute on mobiperf (FX-N90, FELIX
-  "FedDance in the paper").
+- **FedDance coverage (I-A2; paper eval text, evidence `fd_20261012_0503` telemetry, FX-N90):** FedDance climbs fast, then plateaus below 70% on
+both datasets. Its utility favours fast, high-loss devices, so early rounds are short (12 s vs 15.5 s for random selection on CIFAR-10)
+and accuracy rises steeply (≈40% within 2 h). But FedDance gives a selected device whose update was dropped as a straggler zero
+statistical utility (Alg. 1, l. 3), and over-commit (13 picks for 10 updates) drops three devices every round. Within two hours a third
+of the CIFAR-10 population (99-105 of 300) is zeroed and never contributes again; under MobiPerf, where few devices are online at once,
+only 91 of 300 ever contribute and 20% of devices supply 96% of updates. With non-IID data (Dirichlet α = 0.1) the excluded devices'
+classes never reach the model: CIFAR-10 plateaus at 64-65% on the synthetic traces and 49% on MobiPerf; Speech Commands shows the same
+skew (55 of 100 devices ever contribute, 20% supply 84% of updates) and reaches 68.9% after 20 h. Extrapolated, FedDance needs > 48 h
+to 70% everywhere except CIFAR-10 syn_50 (39 h).
+- **What moves accuracy and time to accuracy (G3, n:c:K 75:15:10 cifar / 50:15:10 speech, 2 h; real legs, sims agree; PR37 + PR38):**
+  - *Unavailability (syn_50_3st vs syn_0) hurts by awareness and task length.* Aware selectors keep their pace (Felix +4-7% versions);
+    unaware ones lose rounds to abandons and gated uploads: cifar oort −44% versions, fedbuff −13% (staleness 1.4 → 4.4). Speech is far
+    harsher (tasks ~5× longer vs the same 1 min-3 h windows): fedbuff −59% versions, oort −85% (FX-N106).
+  - *Dataset.* Speech gives ~5× fewer versions in 2 h (felix 1031 vs 220) but more accuracy per version; the sync four are round-bound
+    on speech (≤ 23% at 97-121 versions) while cifar Oort reaches ~50%.
+  - *Streaming (lin, data 10% → 100% over 2 h) costs accuracy, not versions,* for multi-step learners (cifar −3 to −8 pp max, speech
+    −6 to −11 pp); 1-mini-batch REFL / FedDance barely change (they never use the full shard).
+  - *Server lr (FX-D185).* Felix at 0.3 (PR37) reached 48.9% cifar in 2 h; at FedBuff's 1.0 (PR38) 53.8% and 50% at 63 min vs FedBuff 107.
+  - *Selection concentration.* Felix's top 20% of clients supply 57% of cifar updates (FedBuff 23%, Oort family 59-69%, FedDance 63-69%);
+    unavailability spreads Felix's picks (43%). *Driver (PR39b, `selection_audit.py`):* shard size, not speed. Picks vs size ρ +0.95 cifar / +0.80 speech,
+    vs speed +0.13 / +0.40, vs per-sample loss −0.88 / −0.39. Oort's |D|-weighted utility does this on a duration model where size costs
+    no time (fixed by FELIX FX-D197). Class mass of updates stays within TV 0.04 of the population (FedBuff 0.08).
+
+## 6. Paper methods and story (moved from FELIX_READINESS 10-23; code is the source of truth)
+
+**Task-time model (FX-D197, operator 10-20; paper methodology).** Every task's modeled time is FedScale's, as Oort and REFL compute
+it (`getCompletionTime`):
+
+    t = 3 · samples · ms_per_sample / 1000  +  transfers · model_kbit / bandwidth_kbps      (then ÷ harness delay factor)
+
+- *Devices:* FedScale's `client_device_capacity` traces (500k devices; `third_party/REFL/dataset/data/device_info`); trainer k gets
+  device k, REFL's `clientId % len(profiles)`. Registry fields `compute_ms_per_sample`, `bandwidth_kbps`. Across all 500k devices:
+  compute p10 / p50 / p90 21 / 41 / 175 ms per sample, bandwidth 1.8 / 6.1 / 32.5 Mbps.
+- *Work:* samples = local steps × batch (Oort 20 × 30 / 15, REFL 1 × 10 / 20, FedDance 1 × 24 / 32), else epochs × visible shard
+  (Felix, FedBuff: 1 epoch, so it grows with streamed data). 3× = forward + backward. Model 2.15 MB cifar, 29.0 MB speech.
+- *Transfers:* train = download + upload (2); eval = one forward pass (1×) + download; Felix's I9 utility pass = one forward pass.
+- *Timeout:* each dataset's abandon timeout is 2 × the longest task in its reference population (cifar 903 s, speech 2560 s), the
+  same ratio as the old 90 s / 450 s.
+- *Mean task time (G3 populations, cifar / speech):* Felix / FedBuff 50 / 324 s, Oort 168 / 185 s, REFL 11 / 112 s, FedDance
+  15 / 115 s, eval 18 / 126 s.
+- *What it replaced:* one per-client delay (2024 speed classes, mean 12 s cifar / 58 s speech) for every task, whatever its work.
+  That let Felix train 1.7× bigger shards at no cost, undercharged Oort's 600-sample tasks 3.4× relative to Felix's epochs, and
+  charged REFL / FedDance a full epoch's time for one minibatch.
+- *Validation:* EV3 recomputes t for every train task (registry device, reported samples and model size); `task_time_audit.py`
+  reports mismatches and per-baseline train / eval times per leg. 10-20 shepherd smokes (G3 syn_0, 20 / 30 min vclock, all six):
+  0 mismatches over 4,212 train tasks, every eval span equal to its formula, EV PASS on every leg, and the cifar Felix real + sim
+  pair grades parity PASS (396 vs 400 tasks, same 33.1 s mean). Measured mean task time, cifar / speech: Felix 33 / 292 s
+  (fast clients are free again sooner and re-picked; its speed penalty fades out), FedBuff 42 / 299 s, Oort and Oort* 151 / 165 s (44 / 66 tasks in the leg),
+  REFL 11 / 95 s, FedDance 12 / 83 s.
+
+**Design record: streaming data model (FX-N120, FX-N123; operator 10-21; paper methodology).**
+- *Chosen:* `data_streaming.mode: usage` + `trace: <the leg's trace>` (Q-STREAM, operator 10-21; `harness_pool.usage_hp`) with
+  `FLAME_TRACE_OFFSET_S=86400`.
+  - *Who generates data, when:* a device generates data while it is in use = not AVL_TRAIN on **its own leg trace** (syn_X_3st or
+    MobiPerf; in MobiPerf AVL_TRAIN is the charging state), accruing continuously through each in-use session. A trace with no in-use
+    time (syn_0) grows linearly over the span. syn_0 runs two variants: static full data (`s0`) and linear growth (`s0u`).
+  - *How much:* visible(t) = in-use seconds so far / all in-use seconds in the 6-day span, × the client's Dirichlet shard. Within a
+    device, data ∝ time in use (a 3 h session brings 6× a 30 min one). Across devices the totals stay the shard: a device in use
+    more gets its data sooner, not more of it. Without `trace`, the trainer's MobiPerf device drives growth (FX-N120's original).
+  - *Clock:* the trace's own (real time, no compression), shared with availability. Every leg starts 24 h into the trace, so
+    availability and data both read trace time t + 24 h, and a client starts with the data its usage generated by then (no
+    seeded initial share).
+  - *Assumption stated in the paper:* a device off the charger is in use, and its data generation is proportional to time in
+    use. The trace records no screen state; battery drain (B below) supports that usage intensity is jagged.
+- *Rejected, and why:*
+  - *events* (the old stream): 9 equal chunks at uniform random times. Every client grows alike in expectation, so even an oracle
+    gains nothing (PR40a), and it is not derived from any trace.
+  - *One lump at the end of each off-charger session* (the first `usage` draft): new data appears only when charging starts, the
+    moment the device becomes trainable. An eval in AVL_EVAL then never sees new data (0% of sessions vs 64% with continuous
+    accrual), which rules out sensing by construction, and only 37 / 75 clients grow in a 12 h leg (vs 71).
+  - *B, battery drain:* one equal lump per observed 75 → 50% drain (the gap between the two variants' threshold crossings; median
+    156 min, p25-p90 68-495 min, within-device CV 0.69). Too sparse: no device gets data in the first 6 h, 11 / 75 none in 6
+    days, 3 lumps per device.
+  - *C, session length × drain rate:* behaves like the session-length model (only 213 / 1600 sessions have a measured drain, and
+    per-device scaling cancels against the fixed shard), at the cost of an extra assumption.
+  - *Trainable time as generation time:* charging devices are mostly idle, so this inverts the usage signal.
+  - *A seeded initial share (10%, or lower):* a tuned value. At 0-1% all 75 clients start with < 5 samples; at any seeded share
+    starting at trace time 0, the median client gets no new data in 12 h (devices sit in one long off-charger stretch early on).
+    The 24 h offset derives the start instead: median 16% visible.
+  - *Other offsets:* 0 h leaves every client with ~1 sample; 48 h / 72 h start at 27% / 43% visible with less growth left
+    (median ×1.14 / ×1.05 in 12 h, end-lump numbers). 24 h is the first day boundary with enough data to train on.
+  - *Compressing the trace into the leg (earlier draft: 24 trace hours per 3 h leg):* distorts the burst structure; legs run
+    ≥ 12 h of trace time instead.
+- *Measured properties (75 cifar clients, offline, start +24 h, continuous):* median visible 16% at the start; 71 / 75 clients
+  receive new data within 12 h (median growth ×1.5); a mid-session eval sees new data in 64% of off-charger sessions; arrivals
+  are bursty (81% of a client's data in its busiest 10% of hours) and unpredictable from history (hour-to-hour correlation −0.02);
+  who-has-new-data rank agreement, this window vs the next, 0.65 / 0.48 / 0.26 at 1 / 3 / 6 h (session-length model). Total size
+  rankings barely move (everyone grows in proportion), so the case for sensing rests on what is new since a client's last train
+  (the novelty utility), not on |D|.
+
+
+*Setup (paper methodology):* CIFAR-10 (n 75 screens / 300 paper) and Google Speech (50 / 100), Dirichlet α 0.1; FedScale task-time model
+(compute ∝ samples × device speed + model transfer over device bandwidth, Scope); availability traces syn_0, syn_50_3st, MobiPerf
+3-state (AVL_TRAIN / AVL_EVAL / UN_AVL); data grows while a device is in use (`usage` stream tied to its own trace, Scope "Design record");
+legs start 24 h into the trace so each client starts with its day-1 data (and the trace's start artifact, one long in-use stretch,
+is skipped); 10% of each client's arrivals held out (no stack trains on them); test eval every 10 min of the leg's clock; per-baseline
+task timeout (2 × the longest FedScale task, FX-D198); sims graded against reals for parity (PARITY).
+
+*Baselines (source-faithful, `baseline_reference.yaml`; availability per Decisions "Baseline availability knowledge"):*
+
+| stack | mode | selection | aggregation | local work | client keeps | server keeps | knows of availability |
+|---|---|---|---|---|---|---|---|
+| **Felix** | async | learning per slot-second among clients that can finish (C3 + bal) | FedBuff buffer, rate `new` (staleness + utility), averaged model served | 1 epoch | current state (OS signals) | believed state per client (3 states) | now, pushed on every flip; evicts mid-task; no forecast |
+| FedBuff | async | uniform | buffered, 1/√(1+τ) | 1 epoch | – | check-in set (T1) | at check-in; departure at timeout |
+| FedAvg (ablation) | sync | uniform | FedAvg | 1 step (FedDance's config) | – | check-in set (T1) | same |
+| Oort | sync | utility × speed penalty, UCB | YoGi | 20 steps | – | check-in set (T1) | same |
+| REFL | sync, stale updates kept | least available first by p (Alg. 1); hold-off off at our n | SAA | 1 step | availability log + Prophet model | p sent at check-in | check-in + forecast |
+| REFL* | as REFL | as REFL | SAA | 1 step | – | future trace, 10% of each list dropped (fork's "0.9 accuracy": kept flags always right) | oracle, inflated |
+| FedDance | sync | V·I·A + MAB | FedAvg equal | 1 step | loss / accuracy with the update | ≤ 50 check-in rounds per client; V = 1 − exp(−5λ) | check-in rate (T4) |
+| FedDance* | as FedDance | as FedDance | as FedDance | 1 step | – | trace online set per round | oracle |
+
+*Availability protocol: implementation record (F42-T1, T3, T4; paper methods text; code is the source of truth):*
+- **Who knows what (R27, `avail_knowledge`, `ClientAvailability._believed_state`).** `notify` (Felix): the client pushes every flip
+  (real: STATE_UPDATE notify; sim: the trace flip `notify_latency_s` late, 0 by default); Felix filters and evicts mid-task.
+  `checkin` (every non-`*` baseline, and Felix's K1 ablation `fck`): the server knows only who is waiting in its check-in pool; busy
+  picks are known busy; a departure is learned only at task failure / the per-baseline timeout (FX-D198); no eviction. `oracle` (`*`):
+  the trace's online set at selection (FedScale `getFeasibleClients`, REFL client_manager.py:256), no eviction. `none`: blind.
+- **Check-in protocol (`flame/availability/checkin.py` `CheckinLedger`; Bonawitz et al. 2019 §2-3, pace steering).** A client checks
+  in when it turns AVL_TRAIN, when a task ends while AVL_TRAIN, or at its reconnect time if AVL_TRAIN then (else a *missed
+  opportunity*: it waits for its next flip). The server pools it while a selection is open, else rejects it with a reconnect time.
+  - *Sync stacks (REFL, Oort, FedDance, FedAvg; syncfl / oort engines):* a selection window opens when the version still misses picks
+    (`_sync_wants_picks`: no window while wait-K needs none; a mid-round top-up opens one too), lasts W = 0.1 × the round estimate
+    μ, and stays open past W until the
+    stack's selector has enough pool members (starved windows keep collecting); the selector picks only from the pool at close
+    (REFL Alg. 1 "End_Selection_Window"); the rest are rejected. μ = EWMA of round-start gaps (top-up windows excluded), μ ← 0.75 × last gap + 0.25 × μ (REFL
+    `deadline_alpha` 0.25, aggregator.py:636), prior μ = the stack's task timeout. Reconnect = next window start estimate (last
+    start + μ; if already past, now + μ) + U(0, W).
+  - *Async stacks (FedBuff, Felix `fck`; asyncfl engine):* no windows; a check-in is pooled while a concurrency slot is free
+    (free at leg start), else rejected. Reconnect = now + m × g × U(0.5, 1.5), m = clients on hold (incl. this one), g = EWMA of the
+    time between dispatches (α 0.25, prior = timeout / c): together the held clients return at about the dispatch rate (Bonawitz pace
+    steering's goal), and the jitter avoids a thundering herd.
+  - *Sim* replays the protocol from each client's trace on the vclock (`advance`); the sync window's W is charged on the vclock
+    (selection latency). *Real*: the trainer runs `flame/availability/checkin_client.py` (CHECK_IN on the STATE_UPDATE notify,
+    json {p}); the aggregator replies to a rejection with a directed `MessageType.CHECKIN_RECONNECT` {at, mu} on the shared trace
+    clock; check-ins received before the first selection are queued (`Channel.set_checkin_handler`).
+  - *Telemetry:* `checkin` events (pooled / rejected + reconnect_at / missed / picked, trace clock). *Checks:* EV23 (picks only from the
+    pool; sim check-ins only in AVL_TRAIN, misses only outside; nobody back before its reconnect), EV22 (knowledge per arm),
+    `tests/availability/test_checkin.py`.
+- **REFL as deployed (paper §4.1 Alg. 1, §7; F42-T3).** Each device fits Prophet (1.1.6, cmdstanpy 1.2.4; daily seasonality, no
+  weekly / yearly) on its own AVL_TRAIN share in 5-min bins from trace start to the start of the current trace day, refit once per
+  trace day (`refl_predictors.ProphetForecaster`); p = mean forecast over [now + μ, now + 2μ], clipped to [0, 1], sent with the
+  check-in (sim: computed agg-side from the same per-client history; no future data is read). The selector sorts the pool by p
+  ascending (no forecast = 1.0, "assumed available", §4.1 fn. 5; ties by a seeded draw) and takes the top N. Hold-off: off
+  (`holdoff_rounds: 0`; the paper's 5 rounds × 13 picks holds out 65 of our 75 clients vs ~6.5% of its 1,000, and the fork has none;
+  F42C REFL stalled with every pool member held off). Deviations: paper over fork code for the deployed variant
+  (the fork simulates IPS with the future trace: that is REFL*); Prophet trained per device on its own trace instead of on Stunner;
+  refit daily (paper: "periodically"); p uses the server's μ as the slot (§7 query a = (μ, 2μ)). REFL* = the fork's oracle
+  (`TraceOracle`, avail_priority 1, 0.9 knockout, no hold-off).
+- **FedDance (F42-T4):** its predictor V_m = 1 − exp(−5λ) counts per-round check-ins (paper Alg. 1); deployed = the check-in pool
+  at each selection (`checkin_source: selection` under `checkin` knowledge); FedDance* = the trace's online set.
+- **FedAvg (ablation):** FedDance's experiment and training config with `utility: random` (debug_run.sh), i.e. uniform selection
+  from the check-in pool + FedAvg equal weights, 1 local step.
+- **FedBuff*:** FedBuff with the trace's online set at selection (labelled oracle).
+
+*Story (proposal):* availability changes faster than any forecast; a system that **reacts** to it at each layer beats one that
+predicts it. Felix (1) learns state the moment it changes and frees the slot (vs check-in staleness, forecasts, timeouts), (2) fills
+each slot with the most learning per second among clients that can finish, (3) sizes the server step to staleness and stability,
+(4) stops spending bytes once held-out data says the model stopped learning. Each layer is one ablation (K1-K4); the end-to-end
+claim (K5) is time and bytes to accuracy.
+
+*Candidate claims (each names its experiment, metric and ablation):*
+- **K1 · React, don't predict (C1):** notify + evict wastes fewer slots and misses fewer opportunities than check-in (+ REFL's forecast,
+  FedDance's V), matching the oracles, with O(1) state. Metrics: belief mismatch (T2), pick survival, missed opportunities, timeouts / h,
+  wasted slot-h / h, Felix's own cost (evicted partial work), messages / h, TTA. Ablations: Felix with check-in only, Felix blind.
+- **K2 · Learning per slot-second (C3 + bal):** R × s̄ and TTA vs e0; top-20% share, worst-10% client accuracy (`client_accuracy.py`).
+- **K3 · Step control (C4, C5):** eval swing and AUC on speech vs l3b; K trajectory.
+- **K4 · Bytes only while learning (C8 pacing):** bytes to matched accuracy and final accuracy vs l5 / e0; held-out loss; probe cost
+  (~1% bytes). Later: a dynamic probe rate.
+- **K5 · End to end:** time and bytes to target vs every baseline; s0 static, s0u, s50u, MobiPerf × both datasets; Felix's loss from
+  s0u → s50u smallest.
+- **K6 · Robustness (F42e):** silent drops p ∈ {1, 5, 10}%, notify delay / loss.
+- **K7 · Overheads:** notify messages / h vs check-ins / h, probe bytes share, aggregator ms per selection.
+- **K8 · Scale:** reference n 300 cifar / 100 speech on long sims (D5).
+
+Sources: K1-K4 from S1 + F43; K5, K7 from F43, then D5's 48 h runs; K6 from F42e; K8 from D5.
+
+**Signals (general, privacy-safe: scalars the server already gets, or update geometry it already sees):** per client: task time split
+(compute s / sample, transfer s), availability history, loss utility u_i, data size n_i, belief age, ‖Δ_i‖ and cos(Δ_i, Δ̄) (not
+secure-aggregation compatible). Per aggregator: held-out loss / accuracy (probes), accuracy per update, staleness, buffer depth, slot
+occupancy, update disagreement, belief error.

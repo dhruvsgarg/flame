@@ -825,3 +825,136 @@ def test_exploration_decays_once_per_round(make_ends):
     sel.select(ends, {"round": 5}, trainer_unavail_list=[], task_to_perform="train", num_to_select=1,
                agg_version_key=5, trainer_version_keys={})
     assert sel.exploration_factor == 0.45
+
+
+class TestUtilityPerSample:
+    """FX-N109: utilityPerSample ranks by utility / dataset size."""
+
+    def test_divides_by_size(self):
+        from unittest.mock import MagicMock
+        sel = AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=1, roundNudgeType="last_train",
+                                selectType="default", utilityPerSample="true")
+        ends = {}
+        for eid, u, n in (("a", 100.0, 10), ("b", 300.0, 100)):
+            e = MagicMock()
+            e.get_property.side_effect = lambda k, u=u, n=n: {"stat_utility": u, "dataset_size": n}.get(k)
+            ends[eid] = e
+        ul, _ = sel.fetch_statistical_utility(ends, [], [])
+        assert {x["end_id"]: x["utility"] for x in ul} == {"a": 10.0, "b": 3.0}
+
+
+class TestUtilityPerSecond:
+    """C3: utilityPerSecond ranks by utility / last task seconds and drops the speed penalty; participationDecay damps
+    clients picked above the mean."""
+
+    @staticmethod
+    def _ends(spec):
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+        ends = {}
+        for eid, u, dur, picks in spec:
+            e = MagicMock()
+            e.get_property.side_effect = lambda k, u=u, dur=dur, picks=picks: {
+                "stat_utility": u, "client_task_train_duration_s": timedelta(seconds=dur), "selected_count": picks}.get(k)
+            ends[eid] = e
+        return ends
+
+    def test_divides_by_duration_and_skips_penalty(self):
+        sel = AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=1, roundNudgeType="last_train",
+                                selectType="default", utilityPerSecond="true")
+        ends = self._ends((("a", 100.0, 10.0, 1), ("b", 300.0, 100.0, 1)))
+        ul, _ = sel.fetch_statistical_utility(ends, [], [])
+        assert {x["end_id"]: x["utility"] for x in ul} == {"a": 10.0, "b": 3.0}
+        assert sel.calculate_global_system_utility_of_trainer(ends, "b") == 1
+
+    def test_participation_decay(self):
+        sel = AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=1, roundNudgeType="last_train",
+                                selectType="default", participationDecay=1.0)
+        ends = self._ends((("a", 10.0, 1.0, 3), ("b", 10.0, 1.0, 1)))  # mean picks 2
+        ul, _ = sel.fetch_statistical_utility(ends, [], [])
+        got = {x["end_id"]: x["utility"] for x in ul}
+        assert got["a"] == pytest.approx(10.0 / 2.5) and got["b"] == pytest.approx(10.0 / 1.5)
+
+
+class TestPropSelect:
+    """FX-N141 S3: selectType=prop picks never-trained ends first, then samples ∝ score; scoreUtility=false scores speed only."""
+
+    @staticmethod
+    def _sel(**kw):
+        return AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=0, roundNudgeType="last_train", selectType="prop", **kw)
+
+    def test_speed_only_score(self):
+        sel = self._sel(scoreUtility="false", utilityPerSecond="true")
+        ends = TestUtilityPerSecond._ends((("a", 100.0, 10.0, 1), ("b", 300.0, 100.0, 1)))
+        ul, _ = sel.fetch_statistical_utility(ends, [], [])
+        assert {x["end_id"]: x["utility"] for x in ul} == {"a": 0.1, "b": 0.01}
+
+    def test_unexplored_first_then_proportional(self):
+        sel = self._sel()
+        ul = [{"end_id": "a", "utility": 1.0}, {"end_id": "b", "utility": 1e-9}]
+        assert sel._select_candidates_prop({}, ul, ["u"], 2, 5, agg_version_key=1)[0] == "u"
+        picks = [sel._select_candidates_prop({}, ul, [], 1, 5, agg_version_key=v)[0] for v in range(200)]
+        assert picks.count("a") > 190
+
+
+class TestEvalStaleGate:
+    """FX-N109: evalStaleGate sets the versions since a trainer's last eval/train before it is eval-eligible."""
+
+    @staticmethod
+    def _eligible(sel, last_eval, version):
+        from unittest.mock import MagicMock
+        from flame.selector.async_base import SelectContext
+        end = MagicMock()
+        end.get_property.return_value = last_eval
+        return sel._task_extra_eligible("e", end, SelectContext(task_to_perform="eval", model_version=version))
+
+    def test_default_35(self, async_oort):
+        assert not self._eligible(async_oort, 10, 44)
+        assert self._eligible(async_oort, 10, 45)
+        assert not self._eligible(async_oort, None, 100)  # never trained
+
+    def test_configured(self):
+        sel = AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=0.5, roundNudgeType="last_train",
+                                selectType="default", evalStaleGate=5)
+        assert self._eligible(sel, 10, 15) and not self._eligible(sel, 10, 14)
+
+    def test_updates_unit_counts_committed_updates(self):
+        from unittest.mock import MagicMock
+        from flame.selector.async_base import SelectContext
+        sel = AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=1, roundNudgeType="last_train",
+                                selectType="default", evalStaleGate=5, evalGateUnit="updates")
+        end = MagicMock()
+        end.get_property.side_effect = lambda k: {"last_eval_round": 3, "last_report_updates": 100}.get(k)
+        ok = lambda n: sel._task_extra_eligible("e", end, SelectContext(task_to_perform="eval", model_version=999,
+                                                                        channel_props={"n_updates": n}))
+        assert not ok(149) and ok(150)  # gate 5 x K 10 updates, whatever the version count
+
+    def test_seconds_unit_reads_the_avail_clock(self):
+        from unittest.mock import MagicMock
+        from flame.selector.async_base import SelectContext
+        sel = AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=1, roundNudgeType="last_train",
+                                selectType="default", evalStaleGate=300, evalGateUnit="seconds")
+        end = MagicMock()
+        end.get_property.side_effect = lambda k: {"last_eval_round": 3, "last_report_ts": 1000.0}.get(k)
+
+        def ok(now):
+            sel._sim_now_s = now
+            return sel._task_extra_eligible("e", end, SelectContext(task_to_perform="eval", model_version=999))
+        assert not ok(1299.0) and ok(1300.0)  # FX-N118: 300 s since the last report, whatever the version count
+
+    def test_probe_gate_ignores_train_reports(self):
+        """F42c: a client training every minute stays probe-eligible; only its last probe starts the gate (F42S01: c pinned)."""
+        from unittest.mock import MagicMock
+        from flame.selector.async_base import SelectContext
+        sel = AsyncOortSelector(c=15, aggGoal=10, evalGoalFactor=0, roundNudgeType="last_train", selectType="default",
+                                evalStaleGate=3600, probePerWindow=60, probeWindowS=3600)
+        props = {"last_report_ts": 7190.0, "last_probe_ts": None}
+        end = MagicMock()
+        end.get_property.side_effect = props.get
+
+        def ok(now):
+            sel._sim_now_s = now
+            return sel._task_extra_eligible("e", end, SelectContext(task_to_perform="eval", model_version=999))
+        assert ok(7200.0)  # trained 10 s ago, never probed
+        props["last_probe_ts"] = 4000.0
+        assert not ok(7200.0) and ok(7600.0)

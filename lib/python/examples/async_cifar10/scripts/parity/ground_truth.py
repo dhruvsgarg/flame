@@ -64,24 +64,27 @@ def load_ground_truth(
     `trace_time_scale` when given (L29: never this process's FLAME_TRACE_TIME_SCALE).
     Returns None when trace_name is falsy or the registry/trace can't be read.
     """
-    scale = None
+    scale = offset = None
     if run_dir:
         try:
             with open(os.path.join(run_dir, "aggregator_config.json")) as f:
-                scale = (json.load(f).get("hyperparameters") or {}).get("trace_time_scale")
+                hp = json.load(f).get("hyperparameters") or {}
+            scale, offset = hp.get("trace_time_scale"), hp.get("trace_offset_s")  # FX-N123
         except (OSError, ValueError, AttributeError):
             pass
-    if scale is None:
+    if scale is None and offset is None:
         return read_trainer_unavailability(trace_name, base_dir=base_dir)
-    env = os.environ.get("FLAME_TRACE_TIME_SCALE")
-    os.environ["FLAME_TRACE_TIME_SCALE"] = str(scale)
+    keep = {k: os.environ.get(k) for k in ("FLAME_TRACE_TIME_SCALE", "FLAME_TRACE_OFFSET_S")}
+    os.environ["FLAME_TRACE_TIME_SCALE"] = str(scale or 1)
+    os.environ["FLAME_TRACE_OFFSET_S"] = str(offset or 0)
     try:
         return read_trainer_unavailability(trace_name, base_dir=base_dir)
     finally:
-        if env is None:
-            os.environ.pop("FLAME_TRACE_TIME_SCALE")
-        else:
-            os.environ["FLAME_TRACE_TIME_SCALE"] = env
+        for k, v in keep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def by_short_id(ground_truth: Optional[dict]) -> dict:

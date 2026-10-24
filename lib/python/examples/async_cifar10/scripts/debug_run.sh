@@ -295,7 +295,7 @@ for e_src in cfg.get("experiments", []):
         else:
             # High round cap so the wall/vclock budget (max_experiment_runtime_s) is the
             # binding stop condition, not an early round-count termination.
-            h["rounds"] = 20000
+            h["rounds"] = 10000000  # F43: 20000 cut n 300 async legs at 17-35 h
             if num_trainers_override:
                 # Shrink the cohort but keep runtime_s as the real budget (unlike
                 # smoke, which hardcodes rounds=4/runtime=240 -- too short for a
@@ -373,12 +373,13 @@ for e_src in cfg.get("experiments", []):
         # FLAME_TRACE_TIME_SCALE (env, read by flame.availability.trace): recorded for provenance.
         if os.environ.get("FLAME_TRACE_TIME_SCALE", "").strip():
             h["trace_time_scale"] = float(os.environ["FLAME_TRACE_TIME_SCALE"])
+        if os.environ.get("FLAME_TRACE_OFFSET_S", "").strip():  # FX-N123
+            h["trace_offset_s"] = float(os.environ["FLAME_TRACE_OFFSET_S"])
         if delay_factor:
             e["trainer"].setdefault("hyperparameters", {})["training_delay_factor"] = float(delay_factor)
-        elif prof.get("device_time_scale"):  # FX-D46: dataset D scale; the per-dispatch timeout scales with it
-            _k = float(prof["device_time_scale"])
-            e["trainer"].setdefault("hyperparameters", {})["training_delay_factor"] = 1.0 / _k
-            h["send_timeout_wait_s"] = 90.0 * _k
+        if prof.get("model_kbit"):  # FX-N115: the baseline's own timeout, compressed with the harness delay factor
+            from flame.launch import task_timeout as _tto
+            h["send_timeout_wait_s"] = round(_tto.task_timeout_s(bl, ds_name, prof), 1) / float(delay_factor or 1)
         if prof.get("gpu_train_slots") and not harness_mode:  # FX-D58: GPU legs only
             e["trainer"].setdefault("hyperparameters", {})["gpu_train_slots"] = int(prof["gpu_train_slots"])
         if prof.get("sim_gpu_train_slots") and not harness_mode:  # FX-N98: sim legs only (trainer ignores it in real)
@@ -400,12 +401,25 @@ for e_src in cfg.get("experiments", []):
                 _thp0 = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
                 _thp0["simCompletionLegSeconds"] = _leg
                 _thp0["simDownloadLegSeconds"] = get_profiled_charge_s(_prof, "download_leg", _stack) or 0.0  # FX-D116
+                _thp0["simSendPrepSeconds"] = get_profiled_charge_s(_prof, "send_prep", _stack) or 0.0  # FX-D191
+                _rk = (yaml.safe_load(open(_prof)).get("download_by_rank") or {}).get(_stack) or {}
+                if _rk.get("charge") and _rk.get("ranks_s"):
+                    _thp0["simDownloadByRank"] = _rk["ranks_s"]  # FX-D191
         if os.environ.get("SIM_CHARGES", "profiled") == "profiled" and "simChargeProfilePath" not in h:
             # FX-D99: a silent fallback once ran a 0.6 s placeholder leg.
             print(f"WARNING: no profiled sim charges for {os.path.basename(_prof)} stack of {bl}; "
                   "legacy hand constants in force", flush=True)
         for kv in os.environ.get("AGG_HP", "").split():
             k, v = kv.split("=", 1)
+            # FX-N109: sel.<k> / opt.<k>[.<sub>] set selector / optimizer kwargs (knob sweeps)
+            _root = {"sel": "selector", "opt": "optimizer"}.get(k.split(".", 1)[0])
+            if _root and "." in k:
+                _d = e["aggregator"]["config_overrides"].setdefault(_root, {}).setdefault("kwargs", {})
+                *_path, _leaf = k.split(".")[1:]
+                for _p in _path:
+                    _d = _d.setdefault(_p, {})
+                _d[_leaf] = yaml.safe_load(v)
+                continue
             h[k] = yaml.safe_load(v)
         _thp = e["trainer"].setdefault("config_overrides", {}).setdefault("hyperparameters", {})
         for kv in os.environ.get("TRAINER_HP", "").split():

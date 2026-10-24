@@ -1,0 +1,9 @@
+# PR39 phase 1 (FELIX Next steps; FX-D197 key): ~9 h on jayne 7 + shepherd 4 GPUs. Priority order: Felix vs FedBuff real+sim pairs
+# (tiering, selection, aggregation) on syn_0 and syn_50_3st, then the four other baselines' syn_0 and syn_50_3st pairs (correctness).
+# Phase 2 (lin, G3C replicates, remaining cells) follows after review. `dispatch.py batches/pr39.yaml`
+name: pr39
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1"
+stages:
+  - {id: FB, args: "--tier G3 --datasets all --baselines felix,fedbuff --phases 'G3_syn_0 gs_G3_syn_0 G3_syn_50_3st gs_G3_syn_50_3st'"}
+  - {id: OS0, args: "--tier G3 --datasets all --baselines oort,oort_star,refl,feddance --phases 'G3_syn_0 gs_G3_syn_0'"}
+  - {id: OS5, args: "--tier G3 --datasets all --baselines oort,oort_star,refl,feddance --phases 'G3_syn_50_3st gs_G3_syn_50_3st'"}

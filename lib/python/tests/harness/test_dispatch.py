@@ -49,3 +49,12 @@ def test_slow_node_receives_fewer_remaining_units():
     committed = {"a": [("R:old_real", 3 * 3600, 10, 80, 1, 0.0, [])], "b": []}  # a's running leg is 3 h over its estimate
     assign, _, _ = dp.plan(units, caps, committed)
     assert sum(n == "b" for n in assign.values()) == 3
+
+
+def test_finished_units_leave_the_status_count():
+    # PR38 printed "unfinished/unreleased 40" after every unit had finished.
+    (u,) = dp.units_from_jobs("R", 0, {"a": _reals(1, 60)}, ["a"])
+    assert not dp.unit_done(u, {})
+    u.node = "a"
+    assert not dp.unit_done(u, {("a", "R"): {"done": {}}})
+    assert dp.unit_done(u, {("a", "R"): {"done": {"G3C_b0_real": "x"}}})

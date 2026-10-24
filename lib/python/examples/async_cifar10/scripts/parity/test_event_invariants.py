@@ -47,7 +47,7 @@ def _clean_run():
             trainers[t] += [
                 {"event": "task_recv", "round": rnd, "ts": ts + 0.01},
                 {"event": "trainer_round", "round": rnd, "ts": ts + 0.02, "task_to_perform": "train",
-                 "real_gpu_time_s": 0.01, "sim_round_duration_s": 5.0, "training_budget_s": 5.0,
+                 "real_gpu_time_s": 0.01, "sim_round_duration_s": 5.0, "training_budget_s": 5.0, "model_samples": 100, "model_kbit": 1000.0,
                  "sim_send_ts": vclock, "sim_completion_ts": vclock + 5.0},
                 {"event": "task_send", "round": rnd, "ts": ts + 0.03, "task_to_perform": "train"},
             ]
@@ -62,7 +62,7 @@ def _clean_run():
 
 @pytest.fixture(autouse=True)
 def _no_registry(monkeypatch):
-    monkeypatch.setattr(ev, "_registry_delays", lambda: {T1: 5.0, T2: 5.0})
+    monkeypatch.setattr(ev, "_registry_devices", lambda: {T1: (10.0, 1000.0), T2: (10.0, 1000.0)})
 
 
 def _status(run_dir, name):
@@ -85,14 +85,37 @@ def test_ev2_double_recv_fails(tmp_path):
 
 
 def test_ev3_registry_mismatch_fails(tmp_path, monkeypatch):
-    monkeypatch.setattr(ev, "_registry_delays", lambda: {T1: 9.0, T2: 5.0})
+    monkeypatch.setattr(ev, "_registry_devices", lambda: {T1: (30.0, 1000.0), T2: (10.0, 1000.0)})
     assert _status(_write_run(tmp_path, *_clean_run()), "EV3_duration_model") == "FAIL"
 
 
 def test_ev3_delay_factor_applied(tmp_path, monkeypatch):
-    monkeypatch.setattr(ev, "_registry_delays", lambda: {T1: 20.0, T2: 20.0})
+    monkeypatch.setattr(ev, "_registry_devices", lambda: {T1: (60.0, 1000.0), T2: (60.0, 1000.0)})
     run = _write_run(tmp_path, *_clean_run(), hp={"trainingDelayFactor": 4.0})
     assert _status(run, "EV3_duration_model") == "PASS"
+
+
+def test_ev3_utility_pass_charge_passes(tmp_path, monkeypatch):
+    monkeypatch.setattr(ev, "_registry_devices", lambda: {T1: (10.0, 1000.0), T2: (10.0, 1000.0)})
+    agg, tr = _clean_run()
+    for evs in tr.values():
+        for e in evs:
+            if e["event"] == "trainer_round":  # FX-N109 I9: budget = D + D/20, reported apart
+                e.update(training_budget_s=5.25, sim_round_duration_s=5.25, utility_pass_s=0.25,
+                         sim_completion_ts=e["sim_send_ts"] + 5.25)
+    assert _status(_write_run(tmp_path, agg, tr), "EV3_duration_model") == "PASS"
+
+
+@pytest.mark.parametrize("val_pass, status", [(0.1, "PASS"), (None, "FAIL")])
+def test_ev3_held_out_pass_charge(tmp_path, monkeypatch, val_pass, status):
+    # FX-N127 P5: the held-out report's forward pass is charged and reported apart; unreported it is a D mismatch
+    monkeypatch.setattr(ev, "_registry_devices", lambda: {T1: (10.0, 1000.0), T2: (10.0, 1000.0)})
+    agg, tr = _clean_run()
+    for evs in tr.values():
+        for e in evs:
+            if e["event"] == "trainer_round":
+                e.update(training_budget_s=5.1, sim_round_duration_s=5.1, val_pass_s=val_pass, sim_completion_ts=e["sim_send_ts"] + 5.1)
+    assert _status(_write_run(tmp_path, agg, tr), "EV3_duration_model") == status
 
 
 def test_ev5_commit_without_send_fails(tmp_path):
@@ -106,6 +129,16 @@ def test_ev7_short_round_fails(tmp_path):
     first_commit = next(i for i, e in enumerate(agg) if e["event"] == "agg_round")
     del agg[first_commit]
     assert _status(_write_run(tmp_path, agg, tr), "EV7_agg_goal_cadence") == "FAIL"
+
+
+def test_ev7_dynamic_k_round_passes(tmp_path):
+    agg, tr = _clean_run()
+    first_commit = next(i for i, e in enumerate(agg) if e["event"] == "agg_round")
+    del agg[first_commit]
+    for e in agg:
+        if e["event"] == "agg_round" and e.get("round") == 1:
+            e["agg_goal"] = 1  # FX-N109 I5: the controller set K = 1 for round 1
+    assert _status(_write_run(tmp_path, agg, tr), "EV7_agg_goal_cadence") == "PASS"
 
 
 def test_ev8_choosing_over_cap_fails(tmp_path):
@@ -217,7 +250,7 @@ def test_ev15_duplicate_send_fails(tmp_path):
 def test_ev15_same_version_redispatch_needs_timeout_and_policy(tmp_path):
     agg, tr = _clean_run()
     d = [e for e in agg if e["event"] == "dispatch"][-1]
-    agg.append({"event": "abandon_timeout", "end_id": d["end_id"], "reason": "abandon_90s_vclock", "ts": 50})
+    agg.append({"event": "abandon_timeout", "end_id": d["end_id"], "reason": "abandon_timeout_vclock", "ts": 50})
     agg.append({**d, "ts": 51})
     assert _status(_write_run(tmp_path, agg, tr), "EV15_one_task_per_version") == "FAIL"
     run = _write_run(tmp_path / "b", agg, tr, hp={"task_retry_policy": "fixed"})
@@ -380,6 +413,53 @@ def test_ev16_sync_delivery_awaiting_unlogged_close_passes(tmp_path, monkeypatch
         if e["event"] == "trainer_round":
             agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
                         "delivery_ts": 50.0, "actual_commit_ts": 500.0})
+    run = _write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 1000}, optimizer="oort")
+    assert _status(run, "EV16_withheld_delivery") == "PASS"
+
+
+@pytest.mark.parametrize("closes, status", [((50.0, 600.0), "PASS"), ((60.0, 600.0), "FAIL")])
+def test_ev16_sync_delivery_due_at_a_close_joins_the_next(tmp_path, monkeypatch, closes, status):
+    # F42-T12 (b): a close at the delivery's instant took its K first; the delivery commits in the next version.
+    _unavail_T1(monkeypatch)
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round":
+            agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
+                        "delivery_ts": 50.0, "actual_commit_ts": 500.0})
+    agg += [{"event": "agg_round", "task_to_perform": "train", "ts": 10 + i, "round": 3 + i, "contributing_trainers": [T2],
+             "staleness": [0], "vclock_now": c, "commit_gap_s": 0.0} for i, c in enumerate(closes)]
+    run = _write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 1000}, optimizer="oort")
+    assert _status(run, "EV16_withheld_delivery") == status
+
+
+@pytest.mark.parametrize("t2_sct, status", [(20.0, "PASS"), (55.0, "FAIL")])
+def test_ev16_sync_round_cut_before_delivery_joins_the_next(tmp_path, monkeypatch, t2_sct, status):
+    # F42g REFL speech: a round whose last arrival (cut) precedes the delivery closes later but can't take it.
+    _unavail_T1(monkeypatch)
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round":
+            agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
+                        "delivery_ts": 50.0, "actual_commit_ts": 500.0})
+    tr[T2].append({"event": "trainer_round", "ts": 9, "round": 3, "sim_completion_ts": t2_sct})
+    agg += [{"event": "agg_round", "task_to_perform": "train", "ts": 10 + i, "round": 3 + i, "contributing_trainers": [T2],
+             "staleness": [i], "vclock_now": c, "commit_gap_s": 0.0} for i, c in enumerate((60.0, 600.0))]
+    run = _write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 1000}, optimizer="oort")
+    assert _status(run, "EV16_withheld_delivery") == status
+
+
+def test_ev16_dropped_stale_sync_delivery_is_not_a_late_commit(tmp_path, monkeypatch):
+    # F42-T12: a stale withheld delivery a no-stale sync stack drops (FX-N57) never commits, however late it is ingested.
+    _unavail_T1(monkeypatch)
+    agg, tr = _clean_run()
+    for e in tr[T1]:
+        if e["event"] == "trainer_round":
+            agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": e["sim_completion_ts"],
+                        "delivery_ts": 50.0, "actual_commit_ts": 50.0})
+    agg.append({"event": "withheld_delivery", "ts": 9, "end_id": T1, "sct": 30.0, "round": 8, "staleness": 5,
+                "delivery_ts": 50.0, "actual_commit_ts": 500.0})
+    agg.append({"event": "agg_round", "task_to_perform": "train", "ts": 10, "round": 8, "contributing_trainers": [T2],
+                "staleness": [0], "vclock_now": 60.0, "commit_gap_s": 0.0})
     run = _write_run(tmp_path, agg, tr, hp={"max_experiment_runtime_s": 1000}, optimizer="oort")
     assert _status(run, "EV16_withheld_delivery") == "PASS"
 
@@ -574,3 +654,57 @@ def test_ev21_eval_tasks_are_felix_only_and_reach_avl_eval(tmp_path, monkeypatch
     assert _status(_ev21_run(tmp_path / "c", monkeypatch, evals=["UN_AVL"], **felix), "EV21_avl_eval_semantics") == "FAIL"
     assert _status(_ev21_run(tmp_path / "d", monkeypatch, evals=["AVL_TRAIN"] * 25, **felix), "EV21_avl_eval_semantics") == "FAIL"  # never AVL_EVAL
     assert _status(_ev21_run(tmp_path / "e", monkeypatch, evals=["AVL_TRAIN"] * 25, done=False, **felix), "EV21_avl_eval_semantics") == "PASS"  # live prefix
+
+
+def _ev22(b, hp, agg=(), sel=None, phase="F42_s50u_ctl"):
+    cfg = {"hyperparameters": {"simUnavailability": True, **hp}, "selector": {"kwargs": sel or {}}}
+    return ev.ev22_availability_knowledge({"dir": f"/x/run_1_{phase}_dbg_{b}_n75_alpha0.1_syn_50_3st_sim", "cfg": cfg,
+                                           "agg": list(agg)})
+
+
+def test_ev22_r27_knowledge_per_baseline():
+    assert _ev22("felix", {"proactive_inflight_evict": "True"})["status"] == "PASS"
+    assert _ev22("felix", {"avail_knowledge": "checkin"}, phase="F42_s50u_fck")["status"] == "PASS"  # K1 ablation
+    assert _ev22("felix", {"avail_knowledge": "checkin"})["status"] == "FAIL"
+    assert _ev22("oort_star", {"avail_select_filter": "True", "proactive_inflight_evict": "False"})["status"] == "PASS"
+    assert _ev22("refl", {"avail_select_filter": "True"})["status"] == "FAIL"  # F41's REFL: current-state filter
+    assert _ev22("refl", {"avail_knowledge": "checkin"}, sel={"avail_predictor": "prophet"})["status"] == "PASS"
+    assert _ev22("refl", {"avail_knowledge": "oracle"}, sel={"avail_predictor": "oracle"})["status"] == "PASS"  # REFL*
+    assert _ev22("feddance", {"avail_knowledge": "none", "avail_select_filter": "False"})["status"] == "FAIL"
+    assert _ev22("feddance", {"avail_knowledge": "none"}, phase="F42_s50u_fdblind")["status"] == "PASS"
+    assert _ev22("feddance", {"avail_knowledge": "oracle"}, phase="F42_s50u_fdstar")["status"] == "PASS"  # FedDance*
+    assert _ev22("fedbuff", {"avail_knowledge": "oracle"}, phase="F42_s50u_fbstar")["status"] == "PASS"  # FedBuff*
+    assert _ev22("fedbuff", {"avail_knowledge": "oracle"})["status"] == "FAIL"
+    assert _ev22("fedbuff", {"avail_knowledge": "oracle"}, phase="F42C_s50u_fbstar_hstub")["status"] == "PASS"  # harness suffix
+
+
+def _ev23(agg, sel=(), trace=None):
+    cfg = {"hyperparameters": {"avail_knowledge": "checkin", "time_mode": "simulated"}}
+    run = {"dir": "/x/run_1_F42_s50u_ctl_dbg_fedbuff_n75_sim", "cfg": cfg, "agg": list(agg) + list(sel)}
+    orig = ev._ground_truth
+    ev._ground_truth = lambda r: trace
+    try:
+        return ev.ev23_checkin_protocol(run)
+    finally:
+        ev._ground_truth = orig
+
+
+def test_ev23_checkin_protocol():
+    from sortedcontainers import SortedDict
+    tr = {"a": SortedDict({0.0: "AVL_TRAIN", 100.0: "UN_AVL", 300.0: "AVL_TRAIN"})}
+    ck = lambda k, t, **f: {"event": "checkin", "kind": k, "end_id": "a", "t": t, **f}
+    pick = {"event": "selection", "task": "train", "round": 1, "chosen": ["a"]}
+    ok = [ck("pooled", 10), ck("picked", 20), ck("rejected", 50, reconnect_at=200), ck("missed", 200), ck("pooled", 300)]
+    assert _ev23(ok, [pick], tr)["status"] == "PASS"
+    assert _ev23([ck("picked", 20)], [pick], tr)["status"] == "FAIL"  # no waiting check-in
+    assert _ev23([ck("rejected", 50, reconnect_at=200), ck("pooled", 150)], (), tr)["status"] == "FAIL"  # ignored pace steering
+    assert _ev23([ck("pooled", 150)], (), tr)["status"] == "FAIL"  # checked in while UN_AVL
+    assert _ev23([ck("missed", 50)], (), tr)["status"] == "FAIL"  # missed while AVL_TRAIN
+    assert _ev23([ck("pooled", 10)], [pick], tr)["status"] == "FAIL"  # a pick the protocol never saw
+
+
+def test_ev22_unaware_run_that_excludes_unavail_fails():
+    sel = {"event": "selection", "task": "train", "excluded_by": {"unavail": 3}}
+    assert _ev22("fedbuff", {"avail_knowledge": "none", "avail_select_filter": "False"}, agg=[sel])["status"] == "FAIL"
+    evi = {"event": "abandon_timeout", "reason": "aware_boundary_eviction"}
+    assert _ev22("oort_star", {"avail_knowledge": "oracle"}, agg=[evi])["status"] == "FAIL"

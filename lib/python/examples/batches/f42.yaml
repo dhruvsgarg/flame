@@ -1,0 +1,9 @@
+# F42 (FELIX F42a-d; operator 10-21): R27 baselines + oracle variants (REFL / REFL-fc / REFL*, FedDance / FedDance*), FedBuff, 10%
+# validation holdout for every leg, Felix +1 ladder (ctl, e0, l3, l3b, l4, l5, l5p) + e0p; cells s0u / s50u from 24 h into the trace,
+# cifar 48 h / speech 36 h vclock, eval every 30 min, seed 1; 28 legs per dataset. Read: felix_plots.py, config_audit.py,
+# predictor_audit.py, accuracy_table, felix_claims --felix-arm l5p, selection_audit, dynamic_kc c / K trajectories.
+name: f42
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1"
+stages:
+  - {id: FS, args: "--tier F42 --gpu-share 2 --datasets google_speech"}
+  - {id: FC, args: "--tier F42 --datasets cifar10"}

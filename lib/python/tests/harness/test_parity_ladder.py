@@ -127,7 +127,7 @@ def test_floors_take_every_same_code_replicate(tmp_path, monkeypatch):
 
 
 def test_g3c_replicate_floors_its_g3_cell_and_syn_50(tmp_path, monkeypatch):
-    # PR37 pass 2: a G3C real (another same-code pool) floors its G3 cell; syn_50_3st takes the syn_0 band (operator 10-15).
+    # FX-D181: a G3C real (another same-code pool) floors its G3 cell; syn_50_3st takes the syn_0 band (operator 10-15).
     exp = tmp_path / "experiments"
     for pool in ("pool_A", "pool_B"):
         (exp / pool).mkdir(parents=True)
@@ -148,6 +148,25 @@ def test_g3c_replicate_floors_its_g3_cell_and_syn_50(tmp_path, monkeypatch):
     assert lad._replicate_cells(exp / "pool_A")[("G3_lin_syn_0", "oort")][2][0][0] == Path("r_G3C_lin_syn_0")
 
 
+def test_syn_50_band_from_a_sibling_pools_syn_0_cell(tmp_path, monkeypatch):
+    # PR38: the syn_0 cell + G3C ran on shepherd, syn_50_3st on jayne; jayne's syn_50_3st still takes the syn_0 band.
+    exp = tmp_path / "experiments"
+    for pool in ("pool_J", "pool_S", "pool_SR"):
+        (exp / pool).mkdir(parents=True)
+        (exp / pool / "code_key.txt").write_text("k1")
+    (exp / "pool_SR" / "G3C_syn_0").mkdir()
+    (exp / "pool_SR" / "G3C_syn_0" / "summary.tsv").write_text("trace\tbaseline\treal_dir\nsyn_0\toort\tr2\n")
+    for pool, ph in (("pool_S", "G3_syn_0"), ("pool_J", "G3_syn_50_3st")):
+        g = exp / pool / ph / f"{ph}_oort_grade"
+        g.mkdir(parents=True)
+        (g / "cmd.txt").write_text(f"x --real-dir own_{ph} --sim-dir s --agg-goal 10 --runtime-s 7200")
+
+    def run(cmd, **_):
+        Path(cmd[cmd.index("--json-out") + 1]).write_text(json.dumps({"terminal_state": {"trainers_rel_diff": 0.04}}))
+    monkeypatch.setattr(lad.subprocess, "run", run)
+    assert ("G3_syn_50_3st", "oort") in lad._control_floors(exp / "pool_J", Path("checker"), 2)
+
+
 def test_minority_of_reals_is_the_draw(tmp_path):
     # L13, PR34 speech feddance eve: sim red vs its own real only (1 of 3 reals) is the draw; vs a majority, the code.
     red = {"terminal_state": {"ok": False, "tier": "EXACT"}}
@@ -161,3 +180,68 @@ def test_minority_of_reals_is_the_draw(tmp_path):
     assert _status(lad.grade_pool(root, 9))[("gs_G0T_eve_syn_50_3st", "feddance")][0] == "red"
     (p / "syn_50_3st_feddance.rep2.json").unlink()  # n=2: no vote, any fail is red (L12)
     assert _status(lad.grade_pool(root, 9))[("gs_G0T_eve_syn_50_3st", "feddance")][0] == "red"
+
+
+def test_reals_pair_across_a_real_path_identical_key(tmp_path, monkeypatch):
+    # PR37 -> PR38 changed only sim paths for oort: PR37's oort real votes on PR38's cell; Felix's (lr changed) does not.
+    exp = tmp_path / "experiments"
+    for pool, key in (("pool_37", "1e6004b6c305"), ("pool_38", "44d44bd2d67b")):
+        (exp / pool).mkdir(parents=True)
+        (exp / pool / "code_key.txt").write_text(key)
+    real37 = tmp_path / "r37"
+    real37.mkdir()
+    (exp / "pool_37" / "G3_syn_50_3st").mkdir()
+    (exp / "pool_37" / "G3_syn_50_3st" / "summary.tsv").write_text(
+        f"trace\tbaseline\treal_dir\nsyn_50_3st\toort\t{real37}\nsyn_50_3st\tfelix\t{real37}\n")
+    for b in ("oort", "felix"):
+        g = exp / "pool_38" / "G3_syn_50_3st" / f"G3_syn_50_3st_{b}_grade"
+        g.mkdir(parents=True)
+        (g / "cmd.txt").write_text(f"x --real-dir own --sim-dir s --baselines {b} --agg-goal 10 --runtime-s 7200")
+    cells = lad._replicate_cells(exp / "pool_38")
+    assert [r for r, _ in cells[("G3_syn_50_3st", "oort")][2]] == [real37]
+    assert ("G3_syn_50_3st", "felix") not in cells
+
+
+def test_real_same_code_is_transitive_per_baseline():
+    assert lad._real_same_code("1e6004b6c305", "3dbbe373124a", "oort")
+    assert not lad._real_same_code("1e6004b6c305", "3dbbe373124a", "felix")  # Felix's lr changed at 44d44bd2d67b
+    assert lad._real_same_code("44d44bd2d67b", "3dbbe373124a", "felix")
+
+
+def test_g3s_sim_votes_against_every_equivalent_real(tmp_path):
+    exp = tmp_path / "experiments"
+    reals = []
+    for pool, key, ph in (("pool_38", "44d44bd2d67b", "G3_syn_0"), ("pool_38c", "44d44bd2d67b", "G3C_syn_0"),
+                          ("pool_39", "8ee1e79a2897", None)):
+        (exp / pool).mkdir(parents=True)
+        (exp / pool / "code_key.txt").write_text(key)
+        if ph:
+            r = tmp_path / f"r_{pool}"
+            r.mkdir()
+            reals.append(r)
+            (exp / pool / ph).mkdir()
+            (exp / pool / ph / "summary.tsv").write_text(f"trace\tbaseline\treal_dir\nsyn_0\toort_star\t{r}\n")
+    leg = exp / "pool_39" / "G3S1_syn_0" / "G3S1_syn_0_oort_star_sim"
+    leg.mkdir(parents=True)
+    (leg / "cmd.txt").write_text("x --baselines oort_star --traces syn_0 --mode sim --agg-goal 10 --runtime-s 7200")
+    own, cmd, rest = lad._replicate_cells(exp / "pool_39")[("G3S1_syn_0", "oort_star")]
+    assert {own, *(r for r, _ in rest)} == set(reals) and cmd == leg / "cmd.txt"
+
+
+def test_g3s_skips_reals_of_another_run_length(tmp_path):
+    # L18: a 10-min G3 screen's real is no replicate of a 2 h G3S cell.
+    exp = tmp_path / "experiments"
+    reals = {}
+    for pool, rt in (("pool_2h", 7200), ("pool_10m", 600)):
+        (exp / pool / "G3_syn_0" / "G3_syn_0_oort_real").mkdir(parents=True)
+        (exp / pool / "code_key.txt").write_text("8ee1e79a2897")
+        (exp / pool / "G3_syn_0" / "G3_syn_0_oort_real" / "cmd.txt").write_text(f"x --baselines oort --runtime-s {rt}")
+        reals[pool] = tmp_path / f"r_{pool}"
+        reals[pool].mkdir()
+        (exp / pool / "G3_syn_0" / "summary.tsv").write_text(f"trace\tbaseline\treal_dir\nsyn_0\toort\t{reals[pool]}\n")
+    leg = exp / "pool_s" / "G3S1_syn_0" / "G3S1_syn_0_oort_sim"
+    leg.mkdir(parents=True)
+    (exp / "pool_s" / "code_key.txt").write_text("8ee1e79a2897")
+    (leg / "cmd.txt").write_text("x --baselines oort --traces syn_0 --mode sim --agg-goal 10 --runtime-s 7200")
+    own, _, rest = lad._replicate_cells(exp / "pool_s")[("G3S1_syn_0", "oort")]
+    assert own == reals["pool_2h"] and rest == []

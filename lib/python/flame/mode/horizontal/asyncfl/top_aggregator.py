@@ -27,6 +27,7 @@ from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND, wait_arrival
 from flame import harness
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD
 from flame.common.constants import DeviceType
+from flame.config import TrainerAvailState
 from flame.common.util import (
     materialize_weights,
     model_device,
@@ -50,7 +51,8 @@ from flame import telemetry
 from flame.telemetry.events import build_agg_round, build_dispatch, build_utility_belief
 from flame.telemetry.agg_timing import agg_timing
 from flame.sim import SimReorderBuffer
-from flame.selector.properties import PROP_SIM_SEND_TS, PROP_SIM_COMPLETION_TS
+from flame.selector.properties import (PROP_AVL_STATE, PROP_LAST_PROBE_TS, PROP_LAST_REPORT_TS, PROP_LAST_REPORT_UPDATES,
+                                       PROP_SIM_COMPLETION_TS, PROP_SIM_SEND_TS)
 from flame.selector.oort import (
     PROP_DATASET_SIZE,
     PROP_LAST_SELECTED_ROUND,
@@ -94,6 +96,7 @@ class TopAggregator(SyncTopAgg):
 
     # FX-D23: `send + D` lower-bounds sct, so a zero-slack gate is exact; fwdllm keeps _SIM_ORDER_SLACK_S.
     _SIM_ORDER_SLACK_DEFAULT_S = 0.0
+    _CHECKIN_SYNC = False  # F42-T1: pool check-ins while slots are free
     _sim_order_slack_s = _SIM_ORDER_SLACK_DEFAULT_S
 
     def internal_init(self) -> None:
@@ -104,6 +107,7 @@ class TopAggregator(SyncTopAgg):
         self._agg_goal_cnt = 0
         self._agg_goal_weights = None
         self._agg_goal = self.config.hyperparameters.aggregation_goal or 1
+        self._init_dynamic_kc()
         # An end may only contribute once per aggregation cycle (reset
         # alongside _agg_goal_cnt in _reset_agg_goal_variables). Guards
         # against a duplicate/late message from an end that was reclaimed
@@ -125,8 +129,8 @@ class TopAggregator(SyncTopAgg):
         # FX-N54: with no recv end, a due withheld delivery is work to commit, not starvation.
         self._sim_reinject_when_idle = str(
             getattr(self.config.hyperparameters, "sim_reinject_when_idle", True)).lower() == "true"
-        self._unaware_ignores_trace = str(
-            getattr(self.config.hyperparameters, "unaware_ignores_trace", True)).lower() == "true"
+        if str(getattr(self.config.hyperparameters, "unaware_ignores_trace", True)).lower() != "true":
+            raise ValueError("R27: unaware_ignores_trace=False lets an unaware baseline select on the oracle trace")
         # FX-N56: an unaware baseline's withheld trainer keeps its slot until its 90s timeout, as in real.
         self._sim_hold_withheld_slot = str(
             getattr(self.config.hyperparameters, "sim_hold_withheld_slot", True)).lower() == "true"
@@ -255,10 +259,94 @@ class TopAggregator(SyncTopAgg):
 
         self.all_trainers = set()
 
+    def _init_dynamic_kc(self) -> None:
+        """FX-N109 I5: `selector.kwargs.dynamic_kc` {enabled, stats, policy, policy_kwargs, k_/c_ min/max}; absent = static K / c."""
+        conf = (self.config.selector.kwargs or {}).get("dynamic_kc") or {}
+        on = lambda k: str(conf.get(k, False)).lower() == "true"
+        self._dkc, self._dkc_pending_k, self._dkc_updates = None, None, 0
+        self._dkc_c_config = int((self.config.selector.kwargs or {}).get("c", 0) or 0)
+        self._dkc_k_config = self._agg_goal
+        self._dkc_stats, self._dkc_losses = None, []
+        # F46 S4: loss phase for the server step (opt.phase_step) and / or the felix_c policy's c
+        self._phase = None
+        if getattr(self.optimizer, "phase_step", False) or conf.get("policy") == "felix_c":
+            from flame.selector.loss_phase import LossPhase
+            self._phase = LossPhase(window=int(conf.get("phase_window", 0) or 0) or self._n_trainers_hint())
+        if on("enabled") or on("stats"):
+            from flame.selector.update_stats import UpdateStats
+            self._dkc_stats = UpdateStats()
+        if on("enabled"):
+            from flame.selector.dynamic_kc_controller import DynamicKCController
+            from flame.selector.dynamic_kc_policy import build_policy
+            self._dkc = DynamicKCController(
+                build_policy(conf.get("policy", "noop"), conf.get("policy_kwargs") or {}),
+                k_init=self._agg_goal, c_init=self._dkc_c_config or self._agg_goal,
+                k_min=int(conf.get("k_min", 1)), k_max=int(conf.get("k_max", 100)),
+                c_min=int(conf.get("c_min", 1)), c_max=int(conf.get("c_max", self._dkc_c_config or 100)),  # c <= config c: EV8
+                k_follows_c=str(conf.get("k_follows_c", True)).lower() == "true")
+
+    def _n_trainers_hint(self) -> int:
+        """Population size for one sweep of updates: the configured trainer count, else the join minimum."""
+        hp = self.config.hyperparameters
+        return int(getattr(hp, "num_trainers", 0) or getattr(hp, "min_trainers_to_start", 0) or 100)
+
+    def _dynamic_kc_step(self, channel) -> None:
+        """FX-N109 I5: after a commit, close the cycle's update stats and ask the controller for the next K / c."""
+        self._dkc_updates += self._agg_goal
+        st = self._dkc_stats.close()
+        ends = channel.all_ends() or []  # every joined end; channel.ends() would run a selection (F46 smoke)
+        states = [channel.get_end_property(e, PROP_AVL_STATE) for e in ends]
+        train_ok = {None, TrainerAvailState.AVL_TRAIN.value}  # no trace = every end trainable
+        self._dkc_losses = getattr(self, "_dkc_losses", [])
+        metrics = {"n_updates": self._dkc_updates, "model_version": self._round, "c_config": self._dkc_c_config,
+                   "n_trainers": len(channel.all_ends() or []), "cycle_losses": self._dkc_losses,
+                   "cycle_client_losses": getattr(self, "_dkc_client_losses", []),
+                   "n_eligible_train": sum(s in train_ok for s in states), "noise_scale": st.get("noise_scale"),
+                   "avg_staleness": float(np.mean(self._round_update_values["staleness"] or [0])),
+                   "now": self._avail_now(), "val_probes": getattr(self, "_val_probes", []),
+                   "val_reports": getattr(self, "_val_reports", []), "k_config": self._dkc_k_config,
+                   "loss_phase": self._phase.phi if getattr(self, "_phase", None) is not None else None}
+        k, c = self._agg_goal, self._dkc_c_config
+        if self._dkc is not None:
+            k, c = self._dkc.step(metrics)
+            self._dkc_pending_k = k  # applied at the cycle reset: the inner loop exits on _agg_goal_cnt == _agg_goal
+            channel.set_property("dynamic_c", c)
+        if telemetry.is_enabled():
+            from flame.selector.update_stats import cos_split
+            telemetry.emit("dynamic_kc", round=self._round, k=k, c=c, step_scale=getattr(self.optimizer, "step_scale", None),
+                           cos_stale_minus_fresh=cos_split(
+                st.get("cos_by_staleness") or []),
+                **{x: v for x, v in metrics.items()
+                   if x not in ("model_version", "cycle_losses", "cycle_client_losses", "val_probes", "val_reports")},
+                n_val_probes=len(metrics["val_probes"]), **(self._dkc.policy_state() if self._dkc is not None else {}),
+                loss_per_sample=float(np.mean(self._dkc_losses)) if self._dkc_losses else None,
+                **{x: st.get(x) for x in ("n", "g2", "tr_sigma", "sq_mean", "mean_sq")})
+        self._dkc_losses, self._dkc_client_losses, self._val_probes, self._val_reports = [], [], [], []
+
+    def _ingest_val_report(self, end, msg, src) -> None:
+        """F42c / FX-N127 V2: pool a held-out report. (nll, correct, n) feeds pace_c; a V2 report (+ d_nll, d_correct, n_paired,
+        prev version) feeds pace_gain with the updates and seconds between the two models it pairs (version -> (U, t) map)."""
+        rep, v, now = msg[MessageType.VAL_PROBE], msg[MessageType.MODEL_VERSION], self._avail_now()
+        self._val_probes = getattr(self, "_val_probes", [])
+        self._val_probes.append((now, *rep[:3]))
+        e = dict(t=now, src=src, nll=rep[0], correct=rep[1], n=rep[2])
+        if len(rep) >= 7 and rep[5] > 0:
+            vu = getattr(self, "_version_updates", {})
+            (u1, t1), (u0, t0) = vu.get(v, (0, 0.0)), vu.get(rep[6], (0, 0.0))
+            e.update(d_nll=rep[3], d_correct=rep[4], n_pair=rep[5], du=u1 - u0, dt=t1 - t0)
+        self._val_reports = getattr(self, "_val_reports", [])
+        self._val_reports.append(e)
+        if telemetry.is_enabled():
+            telemetry.emit("val_probe", round=self._round, end_id=end, model_version=v, loss=rep[0] / max(rep[2], 1),
+                           acc=rep[1] / max(rep[2], 1), n=rep[2], vclock_now=now, src=src,
+                           **{k: e[k] for k in ("d_nll", "d_correct", "n_pair", "du", "dt") if k in e})
+
     def _reset_agg_goal_variables(self):
         logger.debug("##### reset agg goal variables")
         # reset agg goal count
         self._agg_goal_cnt = 0
+        if getattr(self, "_dkc_pending_k", None) is not None:  # bare-init guard (tests)
+            self._agg_goal, self._dkc_pending_k = self._dkc_pending_k, None
 
         # reset the per-cycle duplicate-contribution guard (see internal_init)
         self._agg_cycle_contributed_ends = set()
@@ -919,6 +1007,8 @@ class TopAggregator(SyncTopAgg):
                 channel.cleanup_provided_ends(end)
                 return
 
+            if msg.get(MessageType.VAL_PROBE):  # FX-N127 V2 (a): the held-out report piggybacked on a train task
+                self._ingest_val_report(end, msg, "train")
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
             )
@@ -926,6 +1016,8 @@ class TopAggregator(SyncTopAgg):
             channel.set_end_property(
                 end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
             )
+            channel.set_end_property(end, PROP_LAST_REPORT_UPDATES, getattr(self, "_n_updates", 0))
+            channel.set_end_property(end, PROP_LAST_REPORT_TS, self._avail_now())
             round_start_time_tup = channel.get_end_property(end, PROP_ROUND_START_TIME)
             end = metadata[0]
             timestamp = metadata[1]
@@ -938,6 +1030,8 @@ class TopAggregator(SyncTopAgg):
 
         # Case #2: Message after task_to_perform=EVAL
         elif MessageType.STAT_UTILITY in msg:
+            if msg.get(MessageType.VAL_PROBE):  # F42c: held-out (nll sum, correct, n) of the model this end received
+                self._ingest_val_report(end, msg, "eval")
             logger.debug(
                 f"[AGG_RECV_EVAL] received eval message from {end}, "
                 f"with stat_utility={msg[MessageType.STAT_UTILITY]}, "
@@ -953,6 +1047,9 @@ class TopAggregator(SyncTopAgg):
             channel.set_end_property(
                 end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
             )
+            channel.set_end_property(end, PROP_LAST_REPORT_UPDATES, getattr(self, "_n_updates", 0))
+            channel.set_end_property(end, PROP_LAST_REPORT_TS, self._avail_now())
+            channel.set_end_property(end, PROP_LAST_PROBE_TS, self._avail_now())
 
             # TODO: (DG) Also set the end property for task=eval done
             # at timestamp=current.
@@ -1304,6 +1401,17 @@ class TopAggregator(SyncTopAgg):
             weights is not None and count > 0
         ):  # SC_TS: count = 0 means no data (it was trained on!), so ignore!
             tres = TrainResult(weights, count, version, stat_utility)
+            if getattr(self, "_phase", None) is not None and stat_utility and count:
+                self._phase.add(float(stat_utility) / count)  # F46: per-sample rms loss of the received model
+            if getattr(self, "_dkc_stats", None) is not None:
+                from flame.optimizer.bn_buffers import is_bn_stat
+                from flame.selector.update_stats import flatten
+                self._dkc_stats.add(flatten(weights, is_bn_stat), staleness=self._round - version)
+                if stat_utility and count:  # per-sample rms loss (I9: of the received model)
+                    self._dkc_losses = getattr(self, "_dkc_losses", [])
+                    self._dkc_losses.append(float(stat_utility) / count)
+                    self._dkc_client_losses = getattr(self, "_dkc_client_losses", [])
+                    self._dkc_client_losses.append((end, float(stat_utility) / count))  # Q-AIMD paired signal
             _cs0 = time.time()
             self.cache[end] = tres   # in-memory (MemCache)
             self._agg_cycle_contributed_ends.add(end)
@@ -1446,19 +1554,15 @@ class TopAggregator(SyncTopAgg):
                     not in self._trainer_participation_in_round_count.keys()
                 ):
                     self._trainer_participation_in_round_count[trainer_update] = 1
-                    self._trainer_participation_in_round[trainer_update] = [
-                        0
-                    ] * 20000  # assuming max 20K rounds
-                    self._trainer_participation_in_round[trainer_update][
-                        self._round - 1
-                    ] = 1
+                    # rounds this trainer contributed to; a set, no round cap (F45 s3v crashed at 20000)
+                    self._trainer_participation_in_round[trainer_update] = {self._round - 1}
                 else:
                     self._trainer_participation_in_round_count[trainer_update] += 1
-                    self._trainer_participation_in_round[trainer_update][
-                        self._round - 1
-                    ] = 1
+                    self._trainer_participation_in_round[trainer_update].add(self._round - 1)
 
         _t_commit = time.time()
+        if getattr(self, "_phase", None) is not None and getattr(self.optimizer, "phase_step", False):
+            self.optimizer.step_scale = self._phase.phi
         self.weights = self.optimizer.scale_add_agg_weights(
             self.weights, self._agg_goal_weights, self._agg_goal
         )
@@ -1469,6 +1573,13 @@ class TopAggregator(SyncTopAgg):
 
         # decrement counter since updates consumed from queue
         self._updates_in_queue -= self._agg_goal
+        self._n_updates = getattr(self, "_n_updates", 0) + self._agg_goal
+        channel.set_property("n_updates", self._n_updates)  # FX-N109 I8: the eval gate's clock
+        if not hasattr(self, "_version_updates"):
+            self._version_updates = {}
+        self._version_updates[self._round + 1] = (self._n_updates, self._avail_now())  # FX-N127: version v+1's updates, birth
+        if getattr(self, "_dkc_stats", None) is not None:
+            self._dynamic_kc_step(channel)
 
         logger.debug(
             f"====== aggregation finished for round {self._round}, "
@@ -1633,6 +1744,7 @@ class TopAggregator(SyncTopAgg):
             curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
                 task_to_perform
             )
+            _state_ineligible = set(curr_unavail_trainer_list)  # R27: knowledge-based only (EV22 reads its stamp)
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts (§4.5 residence, sct→delivery_ts).
             if self._withheld_slot_held and channel._selector is not None:  # FX-N56: a selector timeout freed it
@@ -1645,7 +1757,7 @@ class TopAggregator(SyncTopAgg):
                 )
         else:
             curr_unavail_trainer_list = []
-            _wh = _ow = set()
+            _wh = _ow = _state_ineligible = set()
 
         # exclude ends in their post-commit cooldown (until vclock >= sct + gap);
         # prune expired entries.
@@ -1683,10 +1795,10 @@ class TopAggregator(SyncTopAgg):
         # the oracular read instead of staying all-UNKNOWN.
         self._avail_stamp_end_states(channel)
         if self.trainer_event_dict is not None and channel._selector is not None:
-            # FX-N55: the stamp is the oracle trace; an unaware baseline must not select on it.
-            channel._selector.filter_by_avl_state = self.avail_select_filter or not self._unaware_ignores_trace
-        self._stamp_exclusions(channel, task_to_perform, withheld=_wh, owed=_ow,
-                               unavail=set(curr_unavail_trainer_list))
+            # FX-N55, R27: an unaware baseline must not select on the stamp.
+            channel._selector.filter_by_avl_state = self.avail_select_filter
+        self._stamp_exclusions(channel, task_to_perform, withheld=_wh, owed=_ow, unavail=_state_ineligible,
+                               cooling=set(curr_unavail_trainer_list) - _state_ineligible - _wh - _ow)
 
         # Expose current availability-timeline time to selector so it can attach
         # it to selection events. _avail_now() covers both modes — real used to
@@ -1705,6 +1817,7 @@ class TopAggregator(SyncTopAgg):
         ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
                             agg_version_key=self.version_key,
                             trainer_version_keys=self._task_version_keys(channel, task_to_perform))
+        self.checkin_after_select(channel, ends, task_to_perform)  # F42-T1
         if not ends:
             logger.debug(f"No trainers found for tag {tag}")
             return

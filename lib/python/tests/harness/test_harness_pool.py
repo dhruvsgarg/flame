@@ -4,10 +4,12 @@
 
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
 
 import pytest
+from dataclasses import replace
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "examples" / "scripts"
 
@@ -485,6 +487,9 @@ def test_short_cap_keeps_unaware_oort_syn_50_full_length():
     assert rt("T3", "cifar10", "fedbuff")["T3_syn_50_3st_fedbuff_real"] == 240  # GPU-only keep
     assert rt("G0U", "cifar10", "fedbuff")["G0U_syn_50_3st_fedbuff_real"] == pool.G0U_RUNTIME_S["cifar10"]
     assert set(rt("G0T", "cifar10", "oort").values()) == {240, pool.G0U_RUNTIME_S["cifar10"]}
+    f42 = {j.jid: j.runtime_s for j in pool.build_jobs([p for p in pool.tier_phases("F42", ("oort",), "cifar10")
+                                                         if not pool.cap_runtime([p], 240)], 1.0, 1, {})}
+    assert f42["F42_s50u_ctl_syn_50_3st_oort_sim"] == pool.SHORT_KEEP_S  # FX-N125: a long leg smokes at 1 h, not in full
 
 
 def test_trainer_cap_per_gpu_spans_legs(tmp_path, monkeypatch):
@@ -535,7 +540,10 @@ def test_code_key_ignores_files_no_leg_runs(tmp_path, monkeypatch):
     git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "c1")
     assert pool.code_key() == k0
     (tmp_path / "lib/python/flame/agg.py").write_text("x = 2\n")
-    assert pool.code_key() != k0
+    k1 = pool.code_key()
+    assert k1 != k0
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "c2")
+    assert pool.code_key() == k1  # FX-D194: a pre-commit screen keys as its commit
 
 
 def test_g3_shape_meets_baseline_constraints():
@@ -638,3 +646,73 @@ def test_grade_reserves_checker_ram_not_the_legs_peak(monkeypatch):
     mk = lambda mode: pool.Job(f"G3_syn_0_felix_{mode}", "G3_syn_0", "syn_0", "felix", mode, [], 75, 7200, "none", 2, 1.0)
     assert pool.mem_estimate_gb(mk("grade"), hist) == pool.GRADE_RAM_GB
     assert pool.mem_estimate_gb(mk("real"), hist) > 80
+
+
+def test_g3_speech_sim_spans_more_gpus_than_its_real():
+    # FX-L81: one sim train slot per GPU paces an async speech sim, so the sim leg spreads; its real twin keeps 2.
+    jobs = {j.jid: j for j in pool.build_jobs(pool.tier_phases("G3", ("felix",), "google_speech"), 1.0, 8, {})}
+    assert jobs["gs_G3_syn_0_felix_sim"].gpus == 4 and jobs["gs_G3_syn_0_felix_real"].gpus == 2
+    assert {j.gpus for j in pool.build_jobs(pool.tier_phases("G3", ("felix",), "cifar10"), 1.0, 8, {}) if j.mode != "grade"} == {1}
+
+
+def test_exclusive_leg_skips_gpus_with_another_pools_shared_slots(tmp_path):
+    # FX-D192: a sharing pool's packed sim on GPU 0 OOM-killed an exclusive speech sim placed there 2 s later.
+    sharer, excl = pool.Leases(tmp_path), pool.Leases(tmp_path)
+    assert sharer.take("gslot_0_0")
+    sharer.put("gslot_0_0", "30.0,1.0,1.000")
+    assert pool.exclusive_gpus(2, [0, 2, 3], excl) == [2, 3]
+    assert pool.exclusive_gpus(3, [0, 2, 3], excl) is None
+
+
+def test_eval_cadence_follows_leg_runtime(tmp_path):
+    """FX-N112: G3-family legs eval every runtime / EVAL_POINTS seconds of their own clock."""
+    ph = next(p for p in pool.tier_phases("G3", ("felix",), "cifar10") if p.pid == "G3_syn_0")
+    j = next(j for j in pool.build_jobs([ph], 0.2, 1, {}) if j.mode != "grade")
+    assert f"evalEverySeconds={pool.G3_RUNTIME_S / pool.EVAL_POINTS:g}" in " ".join(j.args)
+
+
+def test_stall_limit_covers_the_task_timeout():
+    """FX-N111: S1 never fires before a leg's own abandon timeout could."""
+    real = pool.Job("x", "p", "syn_50_3st", "oort", "real", [], 50, 7200, "none", 4, 10, dataset="google_speech")
+    assert pool.stall_limit_s(real, 15) > 1.2 * 916
+    assert pool.stall_limit_s(replace(real, harness="stub"), 15) == 900
+
+
+def test_seeds_narrow_screen_replicates(monkeypatch):
+    """FELIX Decisions 10-21: config search runs one seed; confirmation adds the rest."""
+    monkeypatch.setattr(pool, "F42_SEEDS", (1,))
+    pids = [p.pid for p in pool.tier_phases("F42", ("felix",), "cifar10")]
+    assert pids and not any(re.search(r"_r\d$", p) for p in pids)
+    monkeypatch.setattr(pool, "F42_SEEDS", (2, 3))
+    assert {p.pid[-2:] for p in pool.tier_phases("F42", ("felix",), "cifar10")} == {"r2", "r3"}
+
+
+def test_f42_tier_r27_arms():
+    """F42: Felix old + l3b ladder, check-in baselines, `*` oracles, Felix K1; no arm holds data out now (FX-N130)."""
+    by = {p.pid: p for p in pool.tier_phases("F42", pool.B6 + ("fedavg",), "cifar10")}
+    arms = ("ctl", "e0", "l3", "l3b", "rstar", "fdstar", "fbstar", "fck", "ctl_srv", "l3b_srv",
+            "rstar_srv", "fdstar_srv", "fbstar_srv", "l3b_b3_srv", "l3b_pb_srv", "l3b_ro_srv", "rnd_srv", "rnd_ro_srv", "rnd_ron_srv", "l3bn_srv",
+            "l3b_e2_srv", "l3b_e3_srv", "l3b_e4_srv")
+    assert set(by) == {f"F42_{c}_{a}" for c in ("s0u", "s50u") for a in arms}
+    assert not any("validation_holdout" in p.trainer_hp for p in by.values())
+    assert by["F42_s50u_ctl"].runtime_s == 172800
+    assert by["F42_s50u_ctl"].baselines == ("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star")
+    assert by["F42_s50u_ctl_srv"].baselines == by["F42_s50u_ctl"].baselines  # FX-N133: every baseline's averaged model
+    assert "serveEma=sweep" in by["F42_s50u_rstar_srv"].agg_hp and "avail_predictor=oracle" in by["F42_s50u_rstar_srv"].agg_hp
+    assert "avail_knowledge=oracle" in by["F42_s50u_fbstar"].agg_hp and by["F42_s50u_fbstar"].baselines == ("fedbuff",)
+    fck = by["F42_s50u_fck"]
+    assert "avail_knowledge=checkin" in fck.agg_hp and "proactive_inflight_evict=False" in fck.agg_hp and "participationDecay" in fck.agg_hp
+    assert by["F42_s50u_rstar"].baselines == ("refl",) and "avail_predictor=oracle" in by["F42_s50u_rstar"].agg_hp
+    assert by["F42_s50u_fdstar"].baselines == ("feddance",) and "checkin_source=selection" in by["F42_s50u_fdstar"].agg_hp
+    ladder = [by[f"F42_s50u_{a}"].agg_hp for a in ("e0", "l3", "l3b")]
+    for knob, first in (("utilityPerSecond", 1), ("participationDecay", 2)):
+        assert [knob in h for h in ladder] == [i >= first for i in range(3)], knob
+    assert not any("dynamic_kc.enabled" in p.agg_hp for p in by.values())
+
+
+def test_f43_tier_reference_cohort():
+    """FX-N139: F43 = F43_ARMS at the reference cohort, sync K/N >= 5% (L34), both cells."""
+    for ds, n in (("cifar10", 300), ("google_speech", 100)):
+        ph = pool.tier_phases("F43", ("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star"), ds)
+        assert len(ph) == 2 * len(pool.F43_ARMS) and all(p.n == n and p.agg_goal / n >= 0.05 for p in ph)
+        assert all(p.runtime_s == pool.F43_RUNTIME_S[ds] and pool.F43_STOP in p.agg_hp for p in ph)

@@ -108,3 +108,6 @@ class MessageType(Enum):
     TRAIN_LOSS_MEAN = 45     # mean mini-batch training loss over this task's local iterations (FedDance I_m, Eq. 6)
     CLIENT_TASK_TRAIN_INTRINSIC_S = 47  # real: sim's duration formula, no weight staging (FX-D123)
     SIM_WALL_SEND_TS = 46    # sim: aggregator wall clock at fan-out start; trainer's recv - this = its delivery lag (FX-D108)
+    SIM_FANOUT = 48          # sim: recipients in send order; a trainer's index picks its real-profiled download (FX-D191)
+    VAL_PROBE = 49           # F42c eval probe: (nll sum, correct, n) of the received model on held-out samples
+    CHECKIN_RECONNECT = 50   # F42-T1 real: {at, mu}: a rejected check-in's reconnect time and the server's round estimate

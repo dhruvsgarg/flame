@@ -1233,16 +1233,32 @@ class Channel(object):
         )
         self._selector._cleanup_removed_ends(end_id)
 
+    def set_checkin_handler(self, fn) -> None:
+        """F42-T1: route CHECK_IN notifies to fn(end, payload, wall_ts); replays any received before it was set."""
+        self._checkin_handler = fn
+        for args in self.__dict__.pop("_checkin_pending", []):
+            fn(*args)
+
     async def update_state(
         self, end_id: str, new_state: TrainerAvailState, timestamp: str
     ):
         """Update the state of an end in the channel."""
+        if str(new_state) == "CHECK_IN":  # F42-T1: a protocol message, not a state
+            fn = getattr(self, "_checkin_handler", None)
+            if fn is None:
+                self.__dict__.setdefault("_checkin_pending", []).append((end_id, timestamp, time.time()))
+            else:
+                fn(end_id, timestamp, time.time())
+            return
         if not self.has(end_id):
             logger.info(f"End {end_id} not in channel {self._name}")
             return
 
         old_end_state = self._ends[end_id].get_property(PROP_END_AVL_STATE)
         self._ends[end_id].set_property(PROP_END_AVL_STATE, new_state)
+        from flame import telemetry
+        if telemetry.is_enabled():  # F42-T7: real notify fidelity (predictor_audit) reads receipts on the wall clock
+            telemetry.emit("notify_recv", end_id=end_id, state=str(getattr(new_state, "value", new_state)), recv_ts=time.time())
         logger.info(
             f"Updated new_state of end {end_id} in channel {self._name} to state: {self._ends[end_id].get_property(PROP_END_AVL_STATE)} from timestamp: {timestamp}"
         )

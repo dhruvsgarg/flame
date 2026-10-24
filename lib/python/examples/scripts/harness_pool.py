@@ -81,8 +81,9 @@ OORT_SHAPE = {"syn_0": "syn_0s", "syn_0b": None, "syn_20_3st": "syn_20_3sts", "s
 # CPU legs that need longer for EV1's >= 4 commits (unaware oort waits out 90s timeouts; run 4: 0 in 240s).
 MIN_RUNTIME_S = {("oort", "mobiperf_3st"): 3000,  # FX-D165: AVL_EVAL is UN_AVL; PR36 960 s gave 1 commit, G0U sim's 4th at 2508 s
                  ("oort", "syn_20_3st", "google_speech"): 600}  # FX-N85 d: 300 s gave 10 matched rounds (PR31 C2)
-# Full length under --scale-smoke (value: harness, None = all): at 240 s unaware oort got 1 round, GPU fedbuff 6 (PR36-short).
+# Longer under --scale-smoke (value: harness, None = all): at 240 s unaware oort got 1 round, GPU fedbuff 6 (PR36-short).
 SHORT_KEEP = {("oort", "syn_50_3st"): None, ("fedbuff", "syn_50_3st"): "none"}
+SHORT_KEEP_S = 3600  # their smoke length (FX-N125)
 # FX-D52: G0U legs whose unaware picks hold slots a full timeout run longer, to reach a gradeable round count.
 G0U_RUNTIME_X = {("oort", "mobiperf_3st"): 4, ("fedbuff", "mobiperf_3st", "google_speech"): 3}
 GPU_N = {"cifar10": 300, "google_speech": 100}  # the datasets' reference cohorts (datasets.yaml)
@@ -110,8 +111,105 @@ G0U_OORT = {("cifar10", "syn_50_3st"): dict(n=50, agg_goal=10, c=13, gpus=1),
             ("google_speech", "syn_50_3st"): dict(n=50, agg_goal=10, c=13, gpus=2)}
 # PR37 (operator 10-14): one n:c:K per dataset for all six, cohort = the reference split's first n trainers (same shard, compute,
 # D). K=10 keeps Oort's exploitLen >= 1 (FX-L63), sync K/n >= 5% (L34); c=15 > K keeps async overlap; <= 75 / 25 per A40.
-G3_SHAPE = {"cifar10": dict(n=75, agg_goal=10, c=15, gpus=1), "google_speech": dict(n=50, agg_goal=10, c=15, gpus=2)}
-G3_RUNTIME_S, G3_EVAL_EVERY = 7200, 10  # 2 h legs (operator 10-15; R6: convergence sign-off 2-4 h)
+G3_SHAPE = {"cifar10": dict(n=75, agg_goal=10, c=15, gpus=1), "google_speech": dict(n=50, agg_goal=10, c=15, gpus=2, sim_gpus=4)}
+G3_RUNTIME_S = 7200  # 2 h legs (operator 10-15; R6: convergence sign-off 2-4 h)
+G3_EVAL = "evalEverySeconds=auto"  # FX-N112: test eval every leg / EVAL_POINTS of the leg's clock, same for all six
+EVAL_POINTS = 24
+G3S_REPS = 3  # FX-N103: sim replicates per G3 cell, graded against its real-path-identical reals (parity_ladder)
+F42_SEEDS = (1,)  # --seeds on F42: replicates for arms still in contention (R25)
+_STATS = "sel.dynamic_kc.stats=true"  # I5 telemetry only: B and stale-vs-fresh cos per cycle
+_PRE = "utilityPrefixSamples=64"
+
+
+def usage_hp(trace: str) -> str:
+    """Q-STREAM: data accrues while the trainer is off AVL_TRAIN on the leg's own trace (syn_0: linear)."""
+    return ('data_streaming={"enabled":"True","mode":"usage","initial_frac":0.0,"full_data_available_after_s":1,'
+            '"trace":"%s"}' % trace)
+
+
+_C3 = "sel.utilityPerSecond=true"
+_BAL, _E0 = "sel.participationDecay=1.0", "sel.evalGoalFactor=0"
+# New Felix runs without eval tasks (C6: no gain); ctl = old Felix (eval on) is their control, e0 = ctl without eval is each arm's base.
+# F42 (operator 10-21): R27 baselines + their oracle `*` variants, Felix old and the l3b ladder (C4, C5, pacing dropped: FELIX).
+F42_RUNTIME_S = {"cifar10": 172800, "google_speech": 129600}
+F42_CELLS = {"s0u": "syn_0", "s50u": "syn_50_3st"}
+F42_EVAL_S = 600  # test eval every 10 min of the leg's clock: TTA resolution (30 min quantized F42S01)
+_L3, _L3B = f"{_E0} {_C3}", f"{_E0} {_C3} {_BAL}"
+F42_ARMS = {"ctl": dict(bls=("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star")),  # Felix old; baselines (R27)
+            "e0": dict(hp=f"{_E0} {_STATS}"),
+            "l3": dict(hp=f"{_L3} {_STATS}", thp=_PRE), "l3b": dict(hp=f"{_L3B} {_STATS}", thp=_PRE),
+            "rstar": dict(bls=("refl",), hp="sel.avail_predictor=oracle sel.avail_priority=1 sel.holdoff_rounds=0 avail_knowledge=oracle"),
+            "fdstar": dict(bls=("feddance",), hp="sel.checkin_source=selection avail_knowledge=oracle"),
+            "fbstar": dict(bls=("fedbuff",), hp="avail_knowledge=oracle"),  # `*` = the trace's online set at selection
+            # K1 ablation: Felix new learning availability by check-in (no notify, no eviction)
+            "fck": dict(hp=f"{_L3B} {_STATS} serveEma=sweep avail_knowledge=checkin proactive_inflight_evict=False", thp=_PRE),
+            # FX-N128 serve-EMA: the served (and graded) model averages ~one population sweep of versions (b = 1 - K / n)
+            "ctl_srv": dict(bls=("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star"), hp="serveEma=sweep"),
+            "l3b_srv": dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=_PRE)}
+F42_ARMS.update({f"{a}_srv": dict(F42_ARMS[a], hp=F42_ARMS[a]["hp"] + " serveEma=sweep") for a in ("rstar", "fdstar", "fbstar")})  # FX-N133
+# FX-N132 (c) screen: does pick concentration cap cifar's late plateau? l3b with a 3x stronger balance exponent
+F42_ARMS["l3b_b3_srv"] = dict(hp=f"{_E0} {_C3} sel.participationDecay=3.0 {_STATS} serveEma=sweep", thp=_PRE)
+F42_ARMS["l3b_pb_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp="utilityPrefixSamples=-1")  # FX-N132 (f): prefix = one batch
+F42_ARMS["rnd_srv"] = dict(hp=f"{_E0} sel.selectType=random serveEma=sweep")  # FX-N132 (c1): Felix with uniform picks
+F42_ARMS["rnd_ro_srv"] = dict(hp=f"{_E0} sel.selectType=random opt.agg_rate_conf.type=old serveEma=sweep")
+F42_ARMS["rnd_ron_srv"] = dict(hp=f"{_E0} sel.selectType=random opt.agg_rate_conf.type=old serveEma=sweep",
+                               thp="lr_batch_normalize=true")  # + FedBuff's last-batch lr normalization
+F42_ARMS["l3bn_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=f"{_PRE} lr_batch_normalize=true")  # FX-N132 (c1): l3b + lr norm
+F42_ARMS.update({f"l3b_e{e}_srv": dict(hp=f"{_L3B} {_STATS} serveEma=sweep", thp=f"{_PRE} epochs={e}") for e in (2, 3, 4)})  # FX-N135
+F43_ARMS = ("ctl_srv", "rstar_srv", "fdstar_srv", "fbstar_srv", "l3b_srv", "l3b_e2_srv", "l3b_e3_srv")  # F43: baselines + Felix contenders
+F43_SHAPE = {"cifar10": dict(n=300, c=60, agg_goal=15), "google_speech": dict(n=100, c=30, agg_goal=10, gpus=4, sim_gpus=4)}  # 3 GPUs OOM (33 trainers x 1.2 GB + agg)
+F43_RUNTIME_S = {"cifar10": 432000, "google_speech": 86400}  # to the trace end (cifar ceiling 75% at 120 h); speech ceiling 73-79% at 24 h
+F43_STOP = "targetAccuracy=0.7 targetWindow=5"  # operator 10-23: stop at the 70% goal on the mean of the last 5 evals
+# F44 = loop FL1 (FX-N141): Felix built up from FedBuff, 12 h screens; static full-data cifar races to 70%, streams track the ceiling.
+F44_CELLS = {"cifar10": {"s0": ("syn_0", False), "s0u": ("syn_0", True), "s50u": ("syn_50_3st", True)},
+             "google_speech": {"s0u": ("syn_0", True)}}
+F44_RUNTIME_S = 43200
+F44_SHAPE = {"cifar10": F43_SHAPE["cifar10"], "google_speech": {}}  # speech screens at G3's n 50 (n 100 confirms)
+_B1 = f"{_E0} sel.selectType=random opt.agg_rate_conf.type=old serveEma=sweep"  # S1: FedBuff on Felix's stack (notify / evict)
+_B1T = "lr_batch_normalize=true"  # FedBuff's §5 sub-batch lr normalization
+_GUARD, _WD = "opt.norm_clip=3", "trainerWeightDecay=0.0005"  # S2: FX-D232 guard; FedScale clients' wd (baseline_reference)
+F44_ARMS = {"ctl_srv": dict(bls=("felix", "fedbuff")), "l3b_srv": {},  # no FedBuff* (F43: within 0.4 pp of FedBuff)
+            "b1": dict(hp=_B1, thp=_B1T),  # S2 decided as a group: no single-knob b1w / b1g unless b1gw is ambiguous
+            "b1gw": dict(hp=f"{_B1} {_GUARD}", thp=f"{_B1T} {_WD}"),
+            **{f"b1gw_e{e}": dict(hp=f"{_B1} {_GUARD}", thp=f"{_B1T} {_WD} epochs={e}") for e in (2, 3)}}
+F44_SPEECH_ARMS = ("ctl_srv", "l3b_srv", "b1", "b1gw", "b1gw_e3")
+# F45 = FL1 S3 on b1: `prop` selection, score terms one at a time, both utility q's, Oort sampling; FedBuff anchor (Felix old / new
+# from F44). `b1_c33` closes S1: b1 at FedBuff's effective s50u concurrency (60 × 116k / 213k updates).
+_S3 = _B1.replace("sel.selectType=random", "sel.selectType=prop")
+_S3U, _PB = f"{_S3} {_C3}", f"{_B1T} utilityPrefixSamples=-1"
+F45_ARMS = {"ctl_srv": dict(bls=("fedbuff",)),
+            "s3v": dict(hp=f"{_S3U} sel.scoreUtility=false", thp=_B1T),  # speed per second
+            "s3u": dict(hp=_S3, thp=_PB),  # utility |D| q alone (q = pre-step loss, one batch: Felix new)
+            "s3uo": dict(hp=_S3, thp=_B1T),  # utility alone, q = EMA loss over the pass (Oort / Felix old)
+            "s3vu": dict(hp=_S3U, thp=_PB),  # |D| q per second
+            "s3vuo": dict(hp=_S3U, thp=_B1T),  # |D| q per second, Oort's q
+            "s3vub": dict(hp=f"{_S3U} {_BAL}", thp=_PB),  # + balance
+            "s3vubx": dict(hp=f"{_S3U} {_BAL} sel.scoreUcb=true", thp=_PB),  # + UCB
+            "s3vubx_oc": dict(hp=f"{_B1.replace('sel.selectType=random', 'sel.selectType=default')} {_C3} {_BAL}", thp=_PB),
+            "b1_c33": dict(hp=_B1, thp=_B1T, c=33, cells=("s50u",))}
+# F46 = FL1 S4 on both S3 carries (uo = s3uo, vub = s3vub) at FedBuff's own K 10 (paper §6.1) and c 60 (= its cifar c / n 20%):
+# rate at fixed K / c; c at fixed rate (availability / loss phase, in [K, c]); both; a K x c probe (c / K sets staleness, K the
+# averaging). `o` = the carry at rate old (F45 ran K 15). Telemetry `dynamic_kc` per commit (c, phi, step_scale).
+F46_SHAPE = dict(F43_SHAPE["cifar10"], agg_goal=10)
+_RNEW = "opt.agg_rate_conf.type=new"
+_DKCF = "sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=felix_c sel.dynamic_kc.c_min=10"
+_S4V = {"o": {}, "n": dict(hp=_RNEW), "nl": dict(hp=_RNEW, lrn=False),  # Felix's rate, with / without lr batch-normalize
+        "p1": dict(hp=f"{_RNEW} opt.agg_rate_conf.scale=1.0 opt.agg_rate_conf.a_exp=1.0"),  # rate 1/(1+τ)
+        "ps": dict(hp="opt.phase_step=true"),  # server lr x loss phase
+        "cp": dict(hp=f"{_DKCF} sel.dynamic_kc.policy_kwargs.phase=true"),  # c x loss phase
+        "pscp": dict(hp=f"opt.phase_step=true {_DKCF} sel.dynamic_kc.policy_kwargs.phase=true"),
+        "ca": dict(hp=f"{_DKCF} sel.dynamic_kc.policy_kwargs.avail=true", cells=("s50u",)),  # c x trainable share (syn_0: = c)
+        "cap": dict(hp=f"{_DKCF} sel.dynamic_kc.policy_kwargs.avail=true sel.dynamic_kc.policy_kwargs.phase=true", cells=("s50u",)),
+        "psca": dict(hp=f"opt.phase_step=true {_DKCF} sel.dynamic_kc.policy_kwargs.avail=true", cells=("s50u",)),
+        "c30": dict(c=30, cells=("s0u", "s50u")), "k20": dict(agg_goal=20, cells=("s0u", "s50u"))}  # K x c probe: c / K 3
+F46_ARMS = {"ctl_srv": dict(bls=("fedbuff",))}
+for _b, (_bhp, _bthp) in {"uo": (_S3, ""), "vub": (f"{_S3U} {_BAL}", "utilityPrefixSamples=-1")}.items():
+    for _v, _kw in _S4V.items():
+        _vhp = _kw.get("hp", "")
+        _hp = f"{_bhp.replace('opt.agg_rate_conf.type=old', '') if _RNEW in _vhp else _bhp} {_vhp} {_STATS}"
+        F46_ARMS[f"{_b}_{_v}"] = dict(hp=" ".join(_hp.split()), thp=" ".join(f"{_B1T if _kw.get('lrn', True) else ''} {_bthp}".split()),
+                                      **{k: _kw[k] for k in ("cells", "c", "agg_goal") if k in _kw})
+F42_ARMS["l3b_ro_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep opt.agg_rate_conf.type=old", thp=_PRE)  # FX-N132: FedBuff's rate
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
 STREAM_T = 'data_streaming={"enabled":"True","full_data_available_after_s":240}'
@@ -211,6 +309,7 @@ class Phase:
     dataset: str = "cifar10"
     harness: str = "stub"
     trace_scale: str = ""
+    trace_offset_s: str = ""  # FX-N123: leg starts this far into every trace (availability + usage stream)
     agg_goal: Optional[int] = None  # None = the config's (GPU legs keep the reference knobs)
     c: Optional[int] = None
     sim_ceiling_x: int = 1  # sim wall ceiling = x * runtime (speech stub sims are aggregator-bound on CPU)
@@ -220,6 +319,7 @@ class Phase:
     kind: str = "pair"  # pair: real+sim legs + grade | sim: sim leg vs banked real | sim_ev: sim leg, EV only | real: real leg, EV only
     cpt: Optional[float] = None  # CPUs per trainer for this phase; None = --cpus-per-trainer
     gpus: Optional[int] = None  # GPU legs: GPUs each; None = --gpus-per-job
+    sim_gpus: Optional[int] = None  # a pair's sim leg: GPUs each (FX-L81: one train slot per GPU paces it); None = gpus
     delay_factor: str = ""  # divides every trainer's D (debug_run --delay-factor)
     full_runtime_s: int = 0  # runtime before a --scale-smoke cap (0 = uncapped)
 
@@ -349,6 +449,9 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         return [replace(ph, pid=ph.pid.replace("T3_", "T3C_"), kind="real") for ph in tier_phases("T3", baselines, ds)]
     if tier == "G0UC":  # R7 control: a real replicate per G0U cell (same-code real<->real floor, Q2)
         return [replace(ph, pid=ph.pid.replace("G0U_", "G0UC_"), kind="real") for ph in tier_phases("G0U", baselines, ds)]
+    if tier == "G0US":  # FX-D194: sim-only replicates of every G0U cell, graded as G3S
+        return [replace(ph, pid=ph.pid.replace("G0U_", f"G0US{i}_"), kind="sim")
+                for i in range(1, G3S_REPS + 1) for ph in tier_phases("G0U", baselines, ds)]
     if tier == "CHG":  # L17: real syn_0 legs at the G0U cohort, input to profile_felix_charges.py after a transport change
         return [Phase(f"{DS_TAG[ds]}CHG", baselines, "syn_0", runtime_s=600, dataset=ds, harness="none", kind="real",
                       **G0U_SHAPE[ds])]
@@ -366,13 +469,74 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
         kw = dict(dataset=ds, harness="none", runtime_s=G3_RUNTIME_S, **G3_SHAPE[ds])
         out = [Phase(f"{DS_TAG[ds]}G3_{t}", baselines, t, trainer_hp=f"{full} {DETERMINISTIC}",
-                     agg_hp=f"{full} evalEveryNRounds={G3_EVAL_EVERY}", **kw) for t in ("syn_0", "syn_50_3st")]
+                     agg_hp=f"{full} {G3_EVAL}", **kw) for t in ("syn_0", "syn_50_3st")]
         lin = stream_hp("linear", G3_RUNTIME_S, "")
         out.append(Phase(f"{DS_TAG[ds]}G3_lin_syn_0", baselines, "syn_0", trainer_hp=f"{lin} {DETERMINISTIC}",
-                         agg_hp=f"{lin} evalEveryNRounds={G3_EVAL_EVERY}", **kw))
+                         agg_hp=f"{lin} {G3_EVAL}", **kw))
         if tier == "G3C":
             out = [replace(ph, pid=ph.pid.replace("G3_", "G3C_"), kind="real") for ph in out]
         return out
+    if tier == "F42":
+        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
+        out = []
+        for cell, trace in F42_CELLS.items():
+            dsh = usage_hp(trace)
+            base = replace(g3, runtime_s=F42_RUNTIME_S[ds], trace=trace, trace_offset_s="86400", kind="sim_ev",
+                           trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S}")
+            for arm, kw in F42_ARMS.items():
+                bls = tuple(b for b in kw.get("bls", ("felix",)) if b in baselines)
+                for i in F42_SEEDS if bls else ():  # seed 1 keeps the bare id (F42S01); --seeds 2 adds _r2 (seed 1235)
+                    out.append(replace(base, pid=f"{DS_TAG[ds]}F42_{cell}_{arm}" + (f"_r{i}" if i > 1 else ""), baselines=bls,
+                                       agg_hp=f"{base.agg_hp} {kw.get('hp', '')}{f' seed={1233 + i}' if i > 1 else ''}".strip(),
+                                       trainer_hp=f"{base.trainer_hp} {kw.get('thp', '')}".strip()))
+        return out
+    if tier == "F43":  # FX-N135 / N139: F43_ARMS at the reference cohort (c the same share of n, sync K/N >= 5%, L34)
+        out = []
+        for ph in tier_phases("F42", baselines, ds):
+            arm = re.sub(r"^(?:gs_)?F42_s(?:0|50)u_", "", ph.pid)
+            if arm in F43_ARMS:
+                out.append(replace(ph, pid=ph.pid.replace("F42_", "F43_"), runtime_s=F43_RUNTIME_S[ds], agg_hp=f"{ph.agg_hp} {F43_STOP}", **F43_SHAPE[ds]))
+        return out
+    if tier in ("F44", "F45", "F46"):  # FX-N141 loop FL1: F42 arms reused for anchors, the step's arms on top
+        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        out = []
+        for cell, (trace, stream) in F44_CELLS[ds].items():
+            dsh = usage_hp(trace) if stream else full
+            base = replace(g3, runtime_s=F44_RUNTIME_S, trace=trace, trace_offset_s="86400" if stream else "", kind="sim_ev",
+                           trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S} {F43_STOP}",
+                           **(F46_SHAPE if tier == "F46" and ds == "cifar10" else F44_SHAPE[ds]))
+            for arm, kw in {"F44": F44_ARMS, "F45": F45_ARMS, "F46": F46_ARMS}[tier].items():
+                if ds == "google_speech" and (tier != "F44" or arm not in F44_SPEECH_ARMS) or cell not in kw.get("cells", (cell,)):
+                    continue
+                ref = F42_ARMS.get(arm, {})
+                hp, thp = kw.get("hp", ref.get("hp", "")), kw.get("thp", ref.get("thp", ""))
+                bls = tuple(b for b in kw.get("bls", ref.get("bls", ("felix",))) if b in baselines)
+                if bls:
+                    out.append(replace(base, pid=f"{DS_TAG[ds]}{tier}_{cell}_{arm}", baselines=bls,
+                                       agg_hp=f"{base.agg_hp} {hp}".strip(), trainer_hp=f"{base.trainer_hp} {thp}".strip(),
+                                       **{k: kw[k] for k in ("c", "agg_goal") if k in kw}))
+        return out
+    if tier == "F42R":  # F42-T7 / T9 on GPU: G3 real legs, 8 min wall: Felix notify + the check-in baselines
+        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
+        dsh = usage_hp("syn_50_3st")
+        return [replace(g3, pid=f"{DS_TAG[ds]}F42R_s50u_ctl", baselines=tuple(b for b in F42_ARMS["ctl"]["bls"] if b in baselines),
+                        runtime_s=480, trace="syn_50_3st", trace_offset_s="86400", kind="real",
+                        trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S}")]
+    if tier in ("F42C", "F42CR"):  # F42-T1 local gate on the CPU stub harness: F42C every arm in sim (30 min vclock);
+        real = tier == "F42CR"      # F42CR the deployed arms in real mode (10 min wall, trace x4): check-in client, Felix notify (T7)
+        out = []
+        for arm, kw in F42_ARMS.items():
+            bls = tuple(b for b in kw.get("bls", ("felix",)) if b in baselines)
+            if bls and (not real or arm == "ctl"):
+                out.append(Phase(f"{tier}_s50u_{arm}", bls, "syn_50_3st", runtime_s=600 if real else 1800, n=40, dataset=ds,
+                                 harness="stub", trace_offset_s="86400", kind="real" if real else "sim_ev",
+                                 trace_scale="4" if real else "", agg_hp=f"evalEverySeconds={F42_EVAL_S} {kw.get('hp', '')}".strip(),
+                                 trainer_hp=kw.get("thp", "")))
+        return out
+    if tier == "G3S":  # sim-only replicates of every G3 cell: G3S<i>_<cell>, graded on banked + equivalent reals
+        return [replace(ph, pid=ph.pid.replace("G3_", f"G3S{i}_"), kind="sim")
+                for i in range(1, G3S_REPS + 1) for ph in tier_phases("G3", baselines, ds)]
     if tier in ("G1X", "G1XP"):  # FedDance sprint: EuroSys'26 setup, every baseline on one config; G1XP = real+sim convergence pair
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
         kw = dict(n=GPU_N[ds], dataset=ds, harness="none", trainer_hp=f"{full} {EUROSYS_TRAINER_HP}", gpus=4, agg_goal=EUROSYS_K)
@@ -455,6 +619,20 @@ class Job:
         return f"{self.dataset}|{self.harness}|{self.mode}|{self.trace}|{self.baseline}|n{self.n}|rt{self.runtime_s}"
 
 
+def stall_limit_s(job: Job, stall_min: float) -> float:
+    """FX-N111: S1 waits at least 1.25 x the leg's task timeout (FX-N115), so a round held by one abandon is no stall."""
+    base = stall_min * 60
+    if job.harness != "none":
+        return base  # harness legs compress their timeout with the delay factor
+    try:
+        import yaml
+        from flame.launch import task_timeout
+        prof = yaml.safe_load(open(SCRIPT_DIR.parent / "_metadata" / "datasets.yaml", encoding="utf-8"))["datasets"][job.dataset] or {}
+        return max(base, 1.25 * task_timeout.task_timeout_s(job.baseline, job.dataset, prof))
+    except (KeyError, TypeError, OSError):
+        return base
+
+
 def estimate_s(job: Job, history: dict) -> float:
     past = history.get(job.key, [])
     if past:
@@ -481,13 +659,14 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
             at_shape = ph.harness != "none" and ph.runtime_s in {v["runtime_s"] for v in SHAPES.values() if v["trace"] == t}  # not smoke/T1
             rt = max(ph.runtime_s, MIN_RUNTIME_S.get((b, t, ph.dataset), MIN_RUNTIME_S.get((b, t), 0))) if at_shape else ph.runtime_s
             if ph.full_runtime_s and (b, t) in SHORT_KEEP and SHORT_KEEP[(b, t)] in (None, ph.harness):
-                rt = max(rt, ph.full_runtime_s)
+                rt = max(rt, min(ph.full_runtime_s, SHORT_KEEP_S))
             if "G0U" in ph.pid:
                 rt *= G0U_RUNTIME_X.get((b, t, ph.dataset), G0U_RUNTIME_X.get((b, t), 1))
             base = ["--harness", ph.harness, "--baselines", b, "--traces", t, "--runtime-s", str(rt),
                     "--num-trainers", str(ph.n), "--dataset", ph.dataset]
-            for flag, v in (("--trace-scale", ph.trace_scale), ("--agg-goal", ph.agg_goal),
-                            ("--concurrency", ph.c), ("--agg-hp", ph.agg_hp),
+            agg_hp = ph.agg_hp.replace(G3_EVAL, f"evalEverySeconds={rt / EVAL_POINTS:g}")
+            for flag, v in (("--trace-scale", ph.trace_scale), ("--trace-offset-s", ph.trace_offset_s), ("--agg-goal", ph.agg_goal),
+                            ("--concurrency", ph.c), ("--agg-hp", agg_hp),
                             ("--trainer-hp", ph.trainer_hp), ("--inject-bug", ph.inject_bug),
                             ("--delay-factor", ph.delay_factor)):
                 if v:
@@ -503,12 +682,12 @@ def build_jobs(phases: List[Phase], per_trainer: float, gpus_per_job: int, histo
                 f"{stem}_{mode}", ph.pid, t, b, mode, args, ph.n, rt, ph.harness, c, m, gg, deps,
                 unit=stem, dataset=ph.dataset)
             if ph.kind == "pair":
-                real, sim = mk("real", base + ["--mode", "real"]), mk("sim", base + ["--mode", "sim"])
+                real, sim = mk("real", base + ["--mode", "real"]), mk("sim", base + ["--mode", "sim"], gg=ph.sim_gpus or g)
                 jobs += [real, sim, mk("grade", base, (real.jid, sim.jid), 2, 1.0, 0)]
             elif ph.kind == "real":  # replicate for a real<->real control (R7)
                 jobs.append(mk("real", base + ["--mode", "real"]))
             elif ph.kind == "sim":
-                jobs.append(mk("sim", base + ["--mode", "sim", "--real-from", "auto"]))
+                jobs.append(mk("sim", base + ["--mode", "sim", "--real-from", "auto"], gg=ph.sim_gpus or g))
             else:
                 jobs.append(mk("sim", base + ["--mode", "sim"]))
     size_gpu_slots(jobs, history, gpu_per_trainer)
@@ -1061,6 +1240,13 @@ def gpus_wanted_above(leases: "Leases", priority: int) -> int:
     return int(max(vals, default=0))
 
 
+def exclusive_gpus(m: int, usable: List[int], leases: "Leases") -> Optional[List[int]]:
+    """FX-D192: m whole GPUs from `usable` carrying no live `gslot_*` lease of any pool (call under gpu_place.lock)."""
+    held = {g for g, v in _gpu_commits(usable, leases).items() if v[2]}
+    free = [g for g in usable if g not in held]
+    return free[:m] if len(free) >= m else None
+
+
 def slot_leases(cpus: List[int], gpus: List[int], port: Optional[int] = None) -> List[str]:
     return [f"cpu{c}" for c in cpus] + [f"gpu{g}" for g in gpus] + ([f"port{port}"] if port else [])
 
@@ -1590,14 +1776,25 @@ class Pool:
                                           f"needs {j.cpus} CPUs, {len(probe['cpus'])} foreign-busy ({own} held by this pool)")
                         continue
                     gp, gslots, caps, lock = usable[:j.gpus], [], "", None
+                    if j.gpus and not share:  # FX-D192: an exclusive leg skips GPUs a sharing pool holds slots on
+                        lock = open(leases.root / "gpu_place.lock", "w")
+                        fcntl.flock(lock, fcntl.LOCK_EX)
+                        gp = exclusive_gpus(j.gpus, usable, leases)
+                        if gp is None:
+                            lock.close()
+                            cm.release(cpus, groups)
+                            blocked[j.jid] = f"needs {j.gpus} GPUs without another pool's shared slots"
+                            continue
                     if share:  # FX-N100: read commitments, choose, commit, as one step per node
                         lock = open(leases.root / "gpu_place.lock", "w")
                         fcntl.flock(lock, fcntl.LOCK_EX)
                         per = per_trainer_footprint(j, history)
                         used = {i: m / 1024 for i, _, m in _gpu_query()}
-                        cap, k_even = TRAINERS_PER_GPU.get(j.dataset, 75), -(-j.n // j.gpus)
+                        cap = TRAINERS_PER_GPU.get(j.dataset, 75)
+                        m = max(j.gpus, -(-j.n // cap))  # unmeasured legs still respect the trainer cap (share <= 1)
+                        k_even = -(-j.n // m)
                         if per is None:  # unmeasured: whole GPUs, even split
-                            placed = place_gpus(j.gpus, gpu_footprint(j, history), node_gpus, leases, used, k_even / cap)
+                            placed = place_gpus(m, gpu_footprint(j, history), node_gpus, leases, used, k_even / cap)
                             plan = ([(g, k_even, sl, GPU_MEM_CAP * GPU_GB, GPU_SM_CAP, round(k_even / cap, 3)) for g, sl in placed]
                                     if placed else None)
                         else:
@@ -1782,7 +1979,7 @@ class Pool:
         self.say(f"START {j.jid} cpus={_ranges(cpus)} port={port}{' gpus=' + str(gp) if gp else ''}"
                  f"{' trainers/gpu=' + caps if caps else ''} est={j.est_s / 60:.1f}m")
         t = time.time()
-        watch = StallWatch(t, self.stall_min * 60) if self.stall_min > 0 and j.mode != "grade" else None
+        watch = StallWatch(t, stall_limit_s(j, self.stall_min)) if self.stall_min > 0 and j.mode != "grade" else None
         return Running(j, proc, cpus, gp, port, tag, t, out, watch=watch)
 
     def merge(self) -> None:
@@ -1970,16 +2167,21 @@ NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python
 
 
 def code_key() -> str:
-    """Tracked run-affecting files plus their uncommitted diff: two pools share a gate and floors only on identical code."""
+    """Blob ids of the tracked run-affecting files as on disk: two pools share a gate and floors only on identical code; a
+    screen on uncommitted code keys as its commit does (FX-D194)."""
     git = lambda *a: subprocess.run(["git", "-C", str(REPO), *a], capture_output=True, text=True).stdout
     spec = ["--", ".", *(f":(exclude,glob){p}" for p in NOT_RUN_AFFECTING)]
-    return hashlib.sha1((git("ls-files", "-s", *spec) + git("diff", "HEAD", *spec)).encode()).hexdigest()[:12]
+    blobs = {f: meta.split()[1] for meta, f in (ln.split("\t", 1) for ln in git("ls-files", "-s", *spec).splitlines())}
+    changed = [f for f in git("diff", "--name-only", "HEAD", *spec).splitlines() if f in blobs]
+    for f in changed:
+        blobs[f] = git("hash-object", f).strip() if (REPO / f).exists() else ""
+    return hashlib.sha1("".join(f"{b}\t{f}\n" for f, b in sorted(blobs.items()) if b).encode()).hexdigest()[:12]
 
 
-def main(argv=None) -> int:
+def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F42 F42C F42CR F42R F43 F44 F45 F46, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")
@@ -2004,6 +2206,7 @@ def main(argv=None) -> int:
     ap.add_argument("--progress-label", default="", help="prefix of the PROGRESS lines (the ladder passes its rung)")
     ap.add_argument("--output-dir", default="")
     ap.add_argument("--smoke", action="store_true", help="every leg 60s, n<=12 (the pool's own gate)")
+    ap.add_argument("--seeds", default="", help="F42 tiers: replicate ids to run, e.g. 1 or 2,3 (default 1)")
     ap.add_argument("--scale-smoke", type=int, default=0, metavar="S",
                     help="FX-D56: every leg S seconds at its production n, c and GPUs (density/OOM check before a block)")
     ap.add_argument("--gate", action=argparse.BooleanOptionalAction, default=None,
@@ -2023,8 +2226,14 @@ def main(argv=None) -> int:
     ap.add_argument("--gpu-share", type=int, default=1, help="FX-N100: max legs per GPU, placed by measured footprint")
     ap.add_argument("--jobs-json", default="", help="FX-D186: write this node's jobs, estimates and capacity here and exit")
     ap.add_argument("--queue", default="", help="FX-D186: run only units listed in this file (dispatch.py); END / ABORT")
-    a = ap.parse_args(argv)
-    global MEASURED, GPU_SHARE, SHORT_LEGS
+    return ap
+
+
+def plan(a, ap):
+    """Phases and jobs for parsed args (main, and bench_pool --tier: the same legs, FX-D213)."""
+    global MEASURED, GPU_SHARE, SHORT_LEGS, F42_SEEDS
+    if a.seeds:
+        F42_SEEDS = tuple(int(x) for x in a.seeds.split(","))
     MEASURED, GPU_SHARE, SHORT_LEGS = a.lease_from_telemetry, a.gpu_share, bool(a.scale_smoke)
     set_gpu_allow(a.gpu_ids)
 
@@ -2064,6 +2273,13 @@ def main(argv=None) -> int:
     jobs = build_jobs(phases, a.cpus_per_trainer, a.gpus_per_job, history, a.gpu_cpus_per_trainer)
     i, n = map(int, a.shard.split("/"))
     jobs = shard(jobs, i, n)
+    return jobs, tiers, datasets, baselines, real_changed
+
+
+def main(argv=None) -> int:
+    ap = _parser()
+    a = ap.parse_args(argv)
+    jobs, tiers, datasets, baselines, real_changed = plan(a, ap)
 
     root = Path(a.output_dir or OUT_DIR / f"pool_{time.strftime('%Y%m%d_%H%M%S')}_{'_'.join(tiers)}").resolve()
     root.mkdir(parents=True, exist_ok=True)

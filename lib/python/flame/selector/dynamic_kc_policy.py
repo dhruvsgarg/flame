@@ -351,6 +351,250 @@ class CompositePolicy(DynamicKCPolicy):
         return f"composite[{','.join(p.name() for p in self.policies)}]"
 
 
+def _interp(points: list, x: float) -> float:
+    """Piecewise-linear [[x, y], ...] at x, held flat past either end."""
+    pts = sorted(points)
+    if x <= pts[0][0]:
+        return pts[0][1]
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+        if x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return pts[-1][1]
+
+
+class SchedulePolicy(DynamicKCPolicy):
+    """FX-N109 I5 probe: K / c as piecewise-linear functions of aggregated updates (`n_updates`); tests phase dependence."""
+
+    def __init__(self, k_points: Optional[list] = None, c_points: Optional[list] = None):
+        self.k_points, self.c_points = k_points, c_points
+
+    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        return round(_interp(self.k_points, metrics.get("n_updates", 0))) if self.k_points else None
+
+    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
+        return round(_interp(self.c_points, metrics.get("n_updates", 0))) if self.c_points else None
+
+    def name(self) -> str:
+        return "schedule"
+
+
+class AimdKPolicy(DynamicKCPolicy):
+    """FX-N109 I5: find the step-size edge online, TCP-style (AIMD on K; the step per update is η w / K).
+
+    Per window of one population sweep (n updates): if the clients' per-sample loss (I9: of the model they received) did not
+    rise by more than 2 standard errors vs the previous window, K -= 1 (larger step); if it rose, K *= 2 (back off).
+    memory (FX-N121): after a rise at K_e, K never steps below 2 K_e again, so it stops re-probing a known unstable edge.
+    stall (Q-AIMD): paired per client (each client's loss vs its own previous one, so client hardness cancels): a significant
+    fall steps K down, a rise doubles it, no measurable progress raises it by 1."""
+
+    def __init__(self, memory: bool = False, stall: bool = False):
+        self._win: list = []
+        self._prev: Optional[tuple] = None  # (mean, standard error) of the previous window
+        self.memory = str(memory).lower() == "true"
+        self.stall = str(stall).lower() == "true"
+        self.floor = 0
+        self._last: dict = {}  # stall: client -> its last loss
+
+    def _paired_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        for end, q in metrics.get("cycle_client_losses") or []:
+            if end in self._last:
+                self._win.append(q - self._last[end])
+            self._last[end] = q
+        if len(self._win) < max(4, (metrics.get("n_trainers") or 0) // 2):
+            return None
+        n = len(self._win)
+        m = sum(self._win) / n
+        se = (sum((x - m) ** 2 for x in self._win) / (n - 1) / n) ** 0.5
+        self._win = []
+        if m > 2 * se:
+            if self.memory:
+                self.floor = max(self.floor, 2 * current_k)
+            return current_k * 2
+        if m < -2 * se:
+            return max(current_k - 1, self.floor)
+        return current_k + 1
+
+    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        if self.stall:
+            return self._paired_k(current_k, metrics)
+        self._win += list(metrics.get("cycle_losses") or [])
+        if len(self._win) < max(2, metrics.get("n_trainers") or 0):
+            return None
+        n = len(self._win)
+        m = sum(self._win) / n
+        se = (sum((x - m) ** 2 for x in self._win) / (n - 1) / n) ** 0.5
+        prev, self._prev, self._win = self._prev, (m, se), []
+        if prev is None:
+            return None
+        rose = m - prev[0] > 2 * (se ** 2 + prev[1] ** 2) ** 0.5
+        if rose and self.memory:
+            self.floor = max(self.floor, 2 * current_k)
+        return current_k * 2 if rose else max(current_k - 1, self.floor)
+
+    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
+        return None
+
+    def name(self) -> str:
+        return "aimd_k"
+
+
+class AvailabilityCapPolicy(DynamicKCPolicy):
+    """FX-N109 I5: c = min(configured c, rho x train-eligible pool), so the selector keeps a choice when the pool shrinks."""
+
+    def __init__(self, rho: float = 0.5):
+        self.rho = rho
+
+    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        return None
+
+    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
+        n, c0 = metrics.get("n_eligible_train"), metrics.get("c_config")
+        if n is None or c0 is None:
+            return None
+        return max(1, min(int(c0), int(self.rho * n)))
+
+    def name(self) -> str:
+        return "availability_cap"
+
+
+class FelixCPolicy(DynamicKCPolicy):
+    """F46 S4: c = c_config x (trainable share now, if avail) x (loss phase, if phase); the controller floors it at c_min (K)."""
+
+    def __init__(self, avail=False, phase=False):
+        self.avail = str(avail).lower() == "true"
+        self.phase = str(phase).lower() == "true"
+
+    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        return None
+
+    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
+        c0 = metrics.get("c_config")
+        if not c0:
+            return None
+        c = float(c0)
+        if self.avail and metrics.get("n_eligible_train") is not None and metrics.get("n_trainers"):
+            c *= metrics["n_eligible_train"] / metrics["n_trainers"]
+        if self.phase and metrics.get("loss_phase") is not None:
+            c *= metrics["loss_phase"]
+        return max(1, min(int(c0), round(c)))
+
+    def name(self) -> str:
+        return "felix_c"
+
+
+class PaceCPolicy(DynamicKCPolicy):
+    """F42d (Ledger C8): pace concurrency c by federated validation (Felix's eval probes on held-out client data).
+
+    Probes `(t, nll_sum, correct, n)` are pooled per window of `window_s` (extended until `min_n` samples); the signal is the
+    mean of the last two windows. Loss above (1 + rho) x its running min with accuracy no better than its best + delta
+    → c x beta (floor c_floor x c_config); loss back at its min, or accuracy past best + delta → c x 2 (cap c_config)."""
+
+    def __init__(self, window_s: float = 3600.0, min_n: int = 200, rho: float = 0.1, beta: float = 0.75,
+                 c_floor: float = 0.25, delta: float = 0.01):
+        self.window_s, self.min_n, self.rho = float(window_s), int(min_n), float(rho)
+        self.beta, self.c_floor, self.delta = float(beta), float(c_floor), float(delta)
+        self._t0, self._acc = None, [0.0, 0, 0]
+        self._sig: list = []
+        self.min_loss, self.best_acc, self.last = float("inf"), -1.0, None
+
+    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        return None
+
+    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
+        now = metrics.get("now")
+        for _, nll, correct, n in metrics.get("val_probes") or []:
+            self._acc[0] += nll; self._acc[1] += correct; self._acc[2] += n
+        if now is None:
+            return None
+        if self._t0 is None:
+            self._t0 = now
+        if now - self._t0 < self.window_s or self._acc[2] < self.min_n:
+            return None
+        self._sig.append((self._acc[0] / self._acc[2], self._acc[1] / self._acc[2]))
+        self._t0, self._acc = now, [0.0, 0, 0]
+        loss = sum(x for x, _ in self._sig[-2:]) / len(self._sig[-2:])
+        acc = sum(y for _, y in self._sig[-2:]) / len(self._sig[-2:])
+        c_cfg = int(metrics.get("c_config") or current_c)
+        self.last = dict(loss=loss, acc=acc, min_loss=self.min_loss, best_acc=self.best_acc)
+        if loss <= self.min_loss or acc > self.best_acc + self.delta:
+            new = min(c_cfg, 2 * current_c)
+        elif loss > (1 + self.rho) * self.min_loss:
+            new = max(max(1, round(self.c_floor * c_cfg)), round(self.beta * current_c))
+        else:
+            new = current_c
+        self.min_loss, self.best_acc = min(self.min_loss, loss), max(self.best_acc, acc)
+        return new
+
+    def name(self) -> str:
+        return "pace_c"
+
+
+class PaceGainPolicy(DynamicKCPolicy):
+    """FX-N127 (V3): pace c by the held-out gain per aggregated update (V2 reports: train tasks + probes, paired per client).
+
+    Every report pairs a client's held-out loss on the model it received with its previous report on the same samples:
+    g = -d_nll / (n_paired x updates between the two models). Pooled over the reports of the last `tau_s` (ratio estimator,
+    weight n_paired x updates) -> g_hat and its standard error. One decision per tau_s / 4:
+    snr: z = g_hat / se >= 2 -> c x 2 (learning is measurable: spend); z < 0.5 -> c / 2 (no measurable gain); else hold.
+    ratio: c = c_max x g_hat / g_peak (g_peak = largest significant g_hat so far).
+    tau_s is the one setting (operator: react within minutes); thresholds are z-scores, so they follow the measured noise."""
+
+    def __init__(self, tau_s: float = 600.0, law: str = "snr", c_min: int = 2):
+        self.tau_s, self.law, self.c_min = float(tau_s), str(law), int(c_min)
+        if self.law not in ("snr", "ratio"):
+            raise ValueError(f"pace_gain law={law!r}: expected snr or ratio")
+        self._win: deque = deque()
+        self._last_t, self.g_peak, self._state = None, 0.0, {}
+
+    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        return None
+
+    def _estimate(self, now: float):
+        while self._win and self._win[0][0] < now - self.tau_s:
+            self._win.popleft()
+        w = [x[2] for x in self._win]
+        sw = sum(w)
+        if len(w) < 3 or sw <= 0:
+            return None, None
+        g = sum(x[1] for x in self._win) / sw  # -sum d_nll / sum (n_paired x du)
+        per = [(x[1] / x[2], x[2]) for x in self._win]
+        var = sum((wi * (gi - g)) ** 2 for gi, wi in per) / sw ** 2 * len(w) / (len(w) - 1)
+        return g, var ** 0.5
+
+    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
+        now = metrics.get("now")
+        for r in metrics.get("val_reports") or []:
+            if r.get("n_pair") and r.get("du", 0) > 0:
+                self._win.append((r["t"], -r["d_nll"], r["n_pair"] * r["du"]))
+        if now is None:
+            return None
+        if self._last_t is None:
+            self._last_t = now
+        if now - self._last_t < self.tau_s / 4:
+            return None
+        self._last_t = now
+        g, se = self._estimate(now)
+        c_max = int(metrics.get("c_config") or current_c)
+        if g is None:
+            self._state = dict(pace_reports=len(self._win))
+            return None
+        z = g / se if se > 0 else float("inf") if g > 0 else 0.0
+        if z >= 2:
+            self.g_peak = max(self.g_peak, g)
+        if self.law == "snr":
+            new = min(c_max, 2 * current_c) if z >= 2 else max(self.c_min, -(-current_c // 2)) if z < 0.5 else current_c
+        else:
+            new = current_c if self.g_peak <= 0 else max(self.c_min, min(c_max, round(c_max * g / self.g_peak)))
+        self._state = dict(pace_g=g, pace_se=se, pace_z=z, pace_g_peak=self.g_peak, pace_reports=len(self._win))
+        return new
+
+    def state(self) -> dict:
+        return dict(self._state)
+
+    def name(self) -> str:
+        return "pace_gain"
+
+
 _POLICY_REGISTRY: dict = {
     "noop": NoOpPolicy,
     "variance_based": VarianceBasedPolicy,
@@ -359,6 +603,12 @@ _POLICY_REGISTRY: dict = {
     "step_schedule": StepSchedulePolicy,
     "adaptive_k_var_tracking": AdaptiveKVarTrackingPolicy,
     "composite": CompositePolicy,
+    "schedule": SchedulePolicy,
+    "aimd_k": AimdKPolicy,
+    "availability_cap": AvailabilityCapPolicy,
+    "felix_c": FelixCPolicy,
+    "pace_c": PaceCPolicy,
+    "pace_gain": PaceGainPolicy,
 }
 
 

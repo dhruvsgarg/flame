@@ -286,3 +286,22 @@ def test_sim_wait_hold_gives_up_after_task_timeout():
     agg._sim_hold = (["b"], 0.0)                         # held since the epoch: past the task timeout
     agg._sim_sync_wait(ch)
     assert agg._vclock.now > 20.0 and "b" in agg._sim_barrier_gave_up
+
+
+def test_sim_selects_now_when_checkins_wait_in_an_open_window():
+    # F42-T10: GPU REFL / FedDance / FedAvg by check-in jumped 57 -> 600 s past clients already pooled for the short version.
+    import threading
+    from flame.availability.checkin import CheckinLedger
+    agg, ch = _withheld_pick(wait_k=True)
+    agg.avail_knowledge = "checkin"
+    agg._next_avail_vclock = lambda: 600.0
+    led = CheckinLedger(sync=True, initial_gap_s=50.0)
+    led.busy, led.lock = set(), threading.RLock()
+    agg._checkin = led
+    led.open_window(0.0, round_id=3)
+    led.pool["c"] = 15.0
+    assert agg._sim_sync_next_wake(ch) == 20.0  # pick c now
+    assert agg._checkin_pool_waiting(ch) is False  # same pool again: no spin, the normal wake applies
+    led.window = None  # window closed: pooled clients wait for the next one
+    agg._checkin_pool_woke = None
+    assert agg._checkin_pool_waiting(ch) is False

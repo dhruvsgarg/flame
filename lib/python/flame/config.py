@@ -158,12 +158,19 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     trainer_weight_decay: float = Field(alias="trainerWeightDecay", default=0.0)
     trainer_clip_grad_norm: float = Field(alias="trainerClipGradNorm", default=0.0)  # FX-D126: 0 = off (source Oort's clip is commented out)
     trainer_deterministic: bool = Field(alias="trainerDeterministic", default=False)  # FX-D149: deterministic cuDNN kernels
+    trainer_update_norms: bool = Field(alias="trainerUpdateNorms", default=False)  # per-batch grad norm + delta L2 telemetry
+    utility_on_receive: bool = Field(alias="utilityOnReceive", default=False)  # FX-N109 I9: utility before training
+    # FX-N119: > 0 = utility from the first ~S training samples' loss (the received model's, no extra pass); 0 = epoch EMA
+    utility_prefix_samples: int = Field(alias="utilityPrefixSamples", default=0)
     trainer_amp: str = Field(alias="trainerAmp", default="")  # FX-N98: "bf16" = bf16 autocast forward on CUDA; "" = fp32
     weight_decay: t.Optional[float] = Field(alias="weightDecay", default=None)
     rounds: int
     epochs: int
     # FX-N74: mini-batch iterations per task (FedScale `local_steps`, cycling the local data); None = `epochs` full passes.
     local_steps: t.Optional[int] = Field(alias="localSteps", default=None)
+    # FX-N116: "" = as configured | "cap" = local_steps capped at an epoch | "split" = compute = beta/(1-beta) x transfer, per client
+    local_work: str = Field(alias="localWork", default="")
+    local_work_beta: float = Field(alias="localWorkBeta", default=0.5)
     # FedBuff §5: a short last batch scales the step lr by its size / batchSize.
     lr_batch_normalize: bool = Field(alias="lrBatchNormalize", default=False)
     # FX-N74: Oort statistical utility form; "fedscale" = sqrt(EMA_0.2 batch mean loss^2, first pass) x trained samples
@@ -171,6 +178,8 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     stat_utility: str = Field(alias="statUtility", default="legacy")
     aggregation_goal: t.Optional[int] = Field(alias="aggGoal", default=None)
     eval_every_n_rounds: t.Optional[int] = Field(alias="evalEveryNRounds", default=50)
+    # FX-N112: test eval every N s of the leg's clock (sim vclock / real since the join); overrides evalEveryNRounds
+    eval_every_s: t.Optional[float] = Field(alias="evalEverySeconds", default=None)
     eval_goal_factor: t.Optional[float] = Field(alias="evalGoalFactor", default=None)
     # Target-accuracy stopping: stop once test accuracy stays >= target for
     # `stable_evals_above_target` consecutive evals (resets on any dip). The
@@ -180,6 +189,8 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     stable_evals_above_target: t.Optional[int] = Field(
         alias="stableEvalsAboveTarget", default=20
     )
+    # FX-D229: set = stop once the mean of the last `target_window` evals >= target (replaces the consecutive rule).
+    target_window: t.Optional[int] = Field(alias="targetWindow", default=None)
     round_nudge_type: t.Optional[str] = Field(
         alias="roundNudgeType", default="last_train"
     )
@@ -248,6 +259,10 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_download_leg_s: t.Optional[float] = Field(
         alias="simDownloadLegSeconds", default=0.0
     )
+    # FX-D191: real download per fan-out rank (profiled); a sim task charges its rank's, not its own measured lag.
+    sim_download_by_rank: t.Optional[list] = Field(alias="simDownloadByRank", default=None)
+    # FX-D191: real D-end -> send minus its pre/post-train time (weight packing + send path), added to sim sct.
+    sim_send_prep_s: t.Optional[float] = Field(alias="simSendPrepSeconds", default=0.0)
     # C13: sim adds each update's measured trainer pre/post-train time to its duration.
     sim_charge_trainer_overhead: t.Optional[bool] = Field(
         alias="simChargeTrainerOverhead", default=True
@@ -419,6 +434,14 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     proactive_inflight_evict: t.Optional[bool] = Field(
         alias="proactiveInflightEvict", default=None
     )
+    # R27 (F42a): how the aggregator learns client state: notify (Felix) | oracle (`*` variants) | none; None = from avail_select_filter.
+    avail_knowledge: t.Optional[str] = Field(alias="availKnowledge", default=None)
+    # F42a sim notify: a flip reaches the aggregator this many seconds late (0 = instant push).
+    notify_latency_s: t.Optional[float] = Field(alias="notifyLatencyS", default=0.0)
+    # F42-T1 check-in (avail_knowledge=checkin): window_frac, jitter [lo, hi], alpha, seed (flame.availability.checkin).
+    checkin: t.Optional[dict] = Field(alias="checkin", default=None)
+    # F42-T1 real trainer: run the check-in client (flame.availability.checkin_client); "prophet" adds REFL's forecast p.
+    checkin_client: t.Optional[str] = Field(alias="checkinClient", default=None)
     # FX-N37: a sync version commits only at K accepted updates; timed-out picks are replaced mid-round.
     sync_wait_for_k: t.Optional[bool] = Field(alias="syncWaitForK", default=False)
     # FX-D148: wait-K versions dispatch to whoever is eligible, not only at c eligible.

@@ -52,3 +52,54 @@ def test_eval_copy_built_at_initialize(monkeypatch):
                         property(lambda self: SimpleNamespace(model=lambda: torch.nn.Linear(2, 2))))
     agg.initialize()
     assert agg._eval_model is not None and agg._eval_model is not agg.model
+
+
+class _TimedAgg(_Agg):
+    """FX-N112: evalEverySeconds gates on the leg's clock (`_avail_now`), whatever the round."""
+
+    def __init__(self, now):
+        super().__init__(rnd=7, committed=True)
+        self.config.hyperparameters.eval_every_s = 300.0
+        self.now = now
+
+    def _avail_now(self):
+        return self.now
+
+
+@pytest.mark.parametrize("now, last_mark, evals", [(0.0, -1, 1), (299.0, 0, 0), (300.0, 0, 1), (1250.0, 1, 1), (1250.0, 4, 0)])
+def test_time_cadence_evaluates_once_per_mark(now, last_mark, evals):
+    agg = _TimedAgg(now)
+    agg._eval_last_mark = last_mark
+    agg.evaluate()
+    assert agg.snapshots == evals
+
+
+def test_ema_tracks_each_committed_version_and_serve_beta_is_one_sweep():
+    # FX-N128: ema_b <- b ema_b + (1 - b) model per committed version; serveEma=sweep uses b = 1 - K / contributors
+    import torch
+    agg = _Agg(1, True)
+    agg.config.hyperparameters = SimpleNamespace(evalEma="0.5", serveEma="sweep")
+    agg.model, agg._agg_goal = torch.nn.Linear(1, 1, bias=False), 10
+    agg._trainer_participation_in_round_count = {f"t{i}": 1 for i in range(40)}
+    for w in (0.0, 2.0, 4.0):
+        with torch.no_grad():
+            agg.model.weight.fill_(w)
+        agg._ema_step()
+    assert agg._emas[0.5]["weight"].item() == pytest.approx(0.5 * (0.5 * 0 + 0.5 * 2) + 0.5 * 4)  # 2.5
+    b = 1 - 10 / 40
+    assert agg._serve_beta() == pytest.approx(b)
+    assert agg._emas["serve"]["weight"].item() == pytest.approx(b * (b * 0 + (1 - b) * 2) + (1 - b) * 4)
+
+
+def test_serve_beta_on_sync_stacks_reads_round_contributors_and_aggregation_goal():
+    # FX-N133: sync aggregators have no _agg_goal / participation dict; K and n come from the config and the rounds' caches
+    agg = _Agg(1, True)
+    agg.config.hyperparameters = SimpleNamespace(serveEma="sweep", aggregation_goal=10)
+    agg._contributors_seen = {f"t{i}" for i in range(50)}
+    assert agg._serve_beta() == pytest.approx(1 - 10 / 50)
+
+
+def test_no_ema_knobs_touch_nothing():
+    agg = _Agg(21, True)
+    agg._ema_step()  # no model needed: off is a no-op (R9)
+    assert agg._emas == {} and agg._serve is None

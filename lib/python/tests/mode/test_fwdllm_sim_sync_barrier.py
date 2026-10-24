@@ -70,6 +70,9 @@ class _FakeBarrierAgg:
     _note_sim_known_delay = _SyncBase._note_sim_known_delay
     _sim_reinject_ready_withheld = _SyncBase._sim_reinject_ready_withheld
     _sim_withhold_if_unavail = _SyncBase._sim_withhold_if_unavail
+    _sync_sim_commit_due_withheld = _SyncBase._sync_sim_commit_due_withheld
+    _sync_sim_commit_withheld = _SyncBase._sync_sim_commit_withheld
+    _sim_checkin_horizon = _SyncBase._sim_checkin_horizon
     _barrier_anchored_lags = staticmethod(_SyncBase._barrier_anchored_lags)
 
     def __init__(self):
@@ -147,3 +150,16 @@ class TestBarrierAnchoredLags:
 
     def test_empty_is_empty(self):
         assert _SyncBase._barrier_anchored_lags([]) == []
+
+
+def test_checkin_horizon_carries_updates_past_the_next_checkin():
+    # F42-T12 (d): a version still short of picks under check-in stops its drain at the next check-in; later updates carry.
+    agg = _FakeBarrierAgg()
+    agg._sim_sync_carry, agg._sim_sync_carry_withheld = {}, set()
+    agg._knowledge, agg._sync_wants_picks, agg._next_avail_vclock = (lambda: "checkin"), (lambda ch: True), (lambda: 25.0)
+    ch = _FakeBarrierChannel()
+    for e, s in [("A", 10.0), ("B", 40.0)]:
+        ch.add_msg(e, sct=s, dur=s)
+    committed = agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=2)
+    assert [m[MessageType.SIM_COMPLETION_TS] for m, _ in committed] == [10.0]
+    assert set(agg._sim_sync_carry) == {"B"} and agg._vclock.now == 10.0

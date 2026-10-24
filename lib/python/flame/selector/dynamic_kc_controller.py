@@ -60,6 +60,7 @@ class DynamicKCController:
         c_min: int,
         c_max: int,
         update_every_n_aggs: int = 1,
+        k_follows_c: bool = True,
     ):
         self.policy = policy
         self.k = k_init
@@ -69,6 +70,7 @@ class DynamicKCController:
         self.c_min = c_min
         self.c_max = c_max
         self.update_every_n_aggs = update_every_n_aggs
+        self.k_follows_c = k_follows_c  # FX-N127: False keeps K when c falls
 
         self._agg_counter = 0
         self._total_updates = 0
@@ -90,7 +92,7 @@ class DynamicKCController:
 
         if new_k is not None:
             # Enforce that K cannot exceed C, nor k_max
-            upper_bound = min(self.k_max, self.c)
+            upper_bound = min(self.k_max, self.c) if self.k_follows_c else self.k_max
             clamped = max(self.k_min, min(upper_bound, new_k))
             if clamped != self.k:
                 logger.info(
@@ -111,8 +113,15 @@ class DynamicKCController:
                 )
                 self.c = clamped
                 self._c_history.append((self._total_updates, self.c))
+                if self.k_follows_c and self.k > self.c:  # F42d: K <= c holds after c falls too
+                    self.k = max(self.k_min, self.c)
+                    self._k_history.append((self._total_updates, self.k))
 
         return self.k, self.c
+
+    def policy_state(self) -> dict:
+        """The policy's own state for the dynamic_kc event (R8), {} when it keeps none."""
+        return getattr(self.policy, "state", lambda: {})()
 
     def get_k(self) -> int:
         return self.k

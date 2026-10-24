@@ -58,6 +58,8 @@
 - **C21 Measured packing before any batch config (operator 10-15).** A batch (PR36, PR37, any FluxTune block) is configured only after
   a 5-10 min screen at production density shows its packing on measured CPU, RAM, GPU memory and GPU SM use, not formula estimates
   or lease counts. Name the binding resource and the number that binds it, and record both here and in the track doc.
+- **C23 A band is the cell's own (10-18):** a sim graded against a borrowed band (another trace's, another key's reals) is a
+  provisional verdict; chaotic cells (unavailability, streaming Oort) get their own ≥ 3 reals before a red names a mechanism (FX-L80).
 - **C22 Maximum signal per unit time (operator 10-15).** Time is the scarcest resource and nodes are shared.
   - Find issues with the shortest run that shows them; long runs only confirm a config already shown correct (C15, C18).
   - Run as many legs at once as measured resources allow without interference (Throughput below); a stalled or idle resource is
@@ -94,6 +96,8 @@ A new failure mode adds a check here in the same session.
 | PL23 | packed GPU footprints are per nominal GPU, floored per trainer, and at most FX-T36 trainers share a GPU | `gpu|` history ≈ exclusive peaks (cifar n50 ~20 GB, speech ~40 GB/GPU); no `CUDA error: out of memory` in a smoke's trainers.log (FX-D175) | PR36-short: B1 + S1 OOM-aborted, 137 trainers on one A40 |
 | PL24 | a sim aggregator exits via `exit_after_run`, never native teardown | no `terminate called without an active exception` / `Fatal Python error` after `channel leave done` (FX-D178) | PR36-short B1: one exit segfault aborted 9 cells |
 | PL25 | no pool runs on a stale RAM cap | `BLOCKED … pool RAM budget` while node RAM < 70% used = start-time snapshot (FX-N102) | PR37 shepherd S1: 2 legs at a time for 20 h, RAM peak 329 of 504 GB |
+| PL26 | exclusive and `--gpu-share` pools co-run on one node only on FX-D192+ code | `git log` contains `exclusive_gpus`; no `CUBLAS_STATUS_ALLOC_FAILED` / CUDA OOM in a leg's trainers.log | 10-18: two G3S pools OOM-aborted on GPU 0 |
+| PL27 | every mechanism changed since the last batch passed its listed sanity checks before launch, on CPU and on a ≤ 15-min GPU smoke | FELIX FX-N124 (C1-C6, G1-G3) | 10-21: today's utility / stream / offset changes must be verified before the run, not after |
 | PL21 | a new or changed prefix-safe EV passes on stored legs of all six × every trace before launch | run it over the last batch's legs (`event_invariants.load_run` + the check) | PR36: EV21 DOOMED 17 oort_star/fedbuff legs mid-batch |
 
 ## Throughput (both tracks; operator 10-15)
@@ -165,15 +169,8 @@ Single source: [FELIX_READINESS.md](FELIX_READINESS.md) → Scoreboard (cell mat
 accuracy table, convergence board A/C/U/S for long runs: FX-N93). `scripts/readiness_score.py <pools>`: baseline × dataset × scenario cells green / applicable, worst pair wins, a later
 pool supersedes, untested counts as not green. INV/EXACT via `--grade <pool> --regrade --max-stage 9`; DIST gated by floors only (Q4).
 
-**Settled.**
-- L1-L5 (run 8) green apart from no-floor tolerances; L6 G0C + G0 35/0/1.
-- Real↔real K2 at syn_0: cifar ≤ 5%, speech ≤ 3% (feddance 17-19%). Rows below that name syn_20/syn_50 ran the deleted 2-state traces.
-- Cifar L7 n=300: G1 felix/fedbuff K2 ≤ 0.3%; G1L acc diff within real↔real.
-- Cifar G2 refl/oort/feddance green; N62 oort syn_50 3 h 69/69.
-- Speech G1S felix + fedbuff, G2 oort + refl green on INV/EXACT.
-
-G0UC real↔real floors (n=50 2-state syn_50, throughput rel; syn_50_3st floors come from PR36 G0UC): oort 0.90 · refl 0.20 · fedbuff 0.18 · feddance 0.13 · oort_star 0.06 · felix 0.02.
-Mobiperf: feddance 0.56, others ≤ 0.07. n=50 syn_50 stall placement is chaotic (FX-L53).
+**Before the setup reset (10-21)** every parity result (76 / 76, PR39 14 / 24, the G0UC floors) ran on static data or the old
+runtime: not evidence (`git log`). Parity re-grades on the streaming setup with R27 knowledge in FELIX D5; floors re-derive there.
 
 ## FluxTune scoreboard
 Parked with the track; board in simulate_fwdllm.md §A.
@@ -182,11 +179,11 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **PR38 · PR37 + G3C replicates on the fix-bundle key (FELIX Next steps):** `dispatch.py batches/pr38.yaml` (both nodes, balanced) →
-  Felix claims gate (FX-N108) + convergence board C → sim-only experiments.
-- **Long blocks (G1U, G1AS grid) · deferred by C18** until PR37: FELIX FX-N93.
+- **FELIX FX-N141 (loop FL1: Felix built up from FedBuff, highest accuracy fastest)**, then **D5 · parity re-grade on the streaming setup** (G3 reals + sims, all six,
+  syn_0 + syn_50_3st, both datasets) → Felix claims gate (FX-N108) → sim-only experiments.
+- **Long blocks (G1U, G1AS grid) · deferred by C18** until D5: FELIX FX-N93.
 
-**Operator decisions**
+**Operator decisions** (Felix-specific ones: FELIX Decisions)
 - Claude runs PL3 and launches blocks in tmux `dg_flame`; phase 0 aborts on failure (10-06).
 - Cifar GPU legs at 0.2 CPU/trainer; a run's second block auto-starts (10-05).
 - Fix the real aggregator, not the wire format; speech device time ×5 (10-04).
@@ -204,10 +201,6 @@ Parked with the track; board in simulate_fwdllm.md §A.
 - Trainer memory audit to raise n (FX-N84) (10-08).
 - One code state = one `code_key` over run-affecting files (FX-D162); a re-screen may span batches on it (PR35 + PR36) (10-14).
 - Skip PR35b; FX-N97/N96/N98 before PR36; ≤ 1-2% overruns; PR37 (all six, 3 h) gates sim-only experiments (10-14).
-- 2-state syn traces deleted; 3-state `syn_*_3st` everywhere (10-14, FX-D166).
-- Sim speed: never slower than real; 1-2× needs review; 2-5× and beyond is the target; always look for more speedup (10-14).
-- Batches span jayne GPUs 0,2-7 + shepherd GPUs 0-3; scale n/c/K at fixed ratios to run more legs in parallel (10-14).
-- Speech trains in bf16 (FX-D168); GPU placement balanced by default (FX-D169); PR37 shape G3 (10-14 late).
 - Throughput is the central goal; batch configs only after measured packing (C21, C22); no long run at low utilization (10-15).
 - No full PR36 rerun: its untested cells and draw floors run as a tail inside PR37; the board mixes code keys; PR37 replicate reals run as a second pass after a clean first pass (10-16).
 

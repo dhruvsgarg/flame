@@ -17,6 +17,9 @@ def rows(ref: dict) -> list:
     out = []
     for bl, e in ref.items():
         e = br.entry(ref, bl)
+        av = (ref.get(bl) or {}).get("availability")
+        if av and "source_v" in av:  # F42-T1: deployed availability mechanism vs the source's simulation
+            out.append((bl, "all", "availability", av["source_v"], av["v"], av["why"], av["evidence"]))
         for ds, d in (e or {}).get("datasets", {}).items():
             m = d.get("model", {})
             if m.get("source") not in (None, "ours") and m.get("source") != m.get("ours"):

@@ -7,6 +7,8 @@ Per aggregator stack (asyncfl | oort_sync | fedavg, from baselines.yaml), from e
   dispatch_latency = commit -> next send: sync stacks = last update of version v -> [DISTRIBUTE_TIMING] round v+1;
                      asyncfl = [DISTRIBUTE_TIMING] - the latest update arrival before it
   gate_release     = FX-D163: a send-gated update's flip -> send (trainer telemetry) + its mqtt_lag + queue_wait
+  send_prep        = FX-D191: post_wait (D end -> send) minus the run's median trainer pre/post-train time, which sim measures
+  download_by_rank = FX-D191: sync stacks: median agg_to_trainer at each fan-out rank (a version's lags sorted = send order)
 The launcher (debug_run.sh) applies them to every baseline of that stack. Only this script writes the numbers.
 
 Usage: profile_felix_charges.py --dataset D --harness H --out sim_charge_profiles/<H>_<D>.yaml <pool | *_real dir> ...
@@ -42,8 +44,8 @@ def stack_of(baseline: str) -> str:
 
 
 def leg_samples(log: str, stack: str):
-    """(completion_leg, dispatch_latency, download_leg) samples from one real aggregator log."""
-    legs, lat, down = [], [], []
+    """(completion_leg, dispatch_latency, download_leg, post_wait, {version: downloads}) from one real aggregator log."""
+    legs, lat, down, post, by_version = [], [], [], [], defaultdict(list)
     last_by_version, dist_by_round, last_recv = {}, {}, None
     for line in open(log, errors="ignore"):
         if "[LAG_DECOMP]" in line:
@@ -51,9 +53,14 @@ def leg_samples(log: str, stack: str):
             if all(vals):
                 legs.append(sum(float(v.group(1)) for v in vals))
             d = re.search(DOWNLOAD_KEY + r"=(-?[0-9.]+)", line)
+            m = re.search(r"version=(\d+)", line)
             if d:
                 down.append(float(d.group(1)))
-            m = re.search(r"version=(\d+)", line)
+                if m:
+                    by_version[int(m.group(1))].append(float(d.group(1)))
+            pw = re.search(r"post_wait_s=(-?[0-9.]+)", line)
+            if pw:
+                post.append(float(pw.group(1)))
             if m:
                 last_by_version[int(m.group(1))] = _ts(line)
             last_recv = _ts(line)
@@ -67,7 +74,30 @@ def leg_samples(log: str, stack: str):
     if stack != "asyncfl":
         lat = [dist_by_round[v + 1] - t for v, t in last_by_version.items()
                if v + 1 in dist_by_round and dist_by_round[v + 1] > t]
-    return legs, lat, down
+    return legs, lat, down, post, by_version
+
+
+def trainer_overhead_median(run: str):
+    """Median real pre+post-train time of train tasks (the part of post_wait sim already measures, C13)."""
+    xs = []
+    for f in glob.glob(f"{run}/telemetry/trainer_*.jsonl"):
+        for line in open(f):
+            if '"trainer_round"' in line:
+                e = json.loads(line)
+                if e.get("task_to_perform") == "train" and e.get("trainer_overhead_s") is not None:
+                    xs.append(e["trainer_overhead_s"])
+    return st.median(xs) if xs else None
+
+
+def rank_entry(groups: list):
+    """Per-rank medians over versions that fanned out to >= 2 ends; ranks with < 20 samples are dropped."""
+    ranks = defaultdict(list)
+    for g in groups:
+        if len(g) >= 2:
+            for i, x in enumerate(sorted(g)):
+                ranks[i].append(x)
+    meds = [round(st.median(ranks[i]), 4) for i in sorted(ranks) if len(ranks[i]) >= 20]
+    return {"ranks_s": meds, "n": sum(len(v) for v in ranks.values()), "charge": True} if meds else None
 
 
 def gate_samples(run: str, log: str) -> list:
@@ -120,7 +150,8 @@ def main():
     runs = sorted(r for r in runs if ("google_speech" in r) == (a.dataset == "google_speech")
                   and (tag in r if tag else "_hstub_" not in r and "_htiny_cpu_" not in r))
     pooled = {"completion_leg": defaultdict(list), "dispatch_latency": defaultdict(list),
-              "download_leg": defaultdict(list), "gate_release": defaultdict(list)}
+              "download_leg": defaultdict(list), "gate_release": defaultdict(list), "send_prep": defaultdict(list)}
+    groups = defaultdict(list)  # stack -> per-version download lists
     used = []
     for r in runs:
         m = re.search(r"_(felix|fedbuff|oort_star|oort|refl|feddance|oracle)_n\d+", r)
@@ -128,7 +159,12 @@ def main():
         if not m or not logs:
             continue
         stack = stack_of(m.group(1))
-        legs, lat, down = leg_samples(logs[0], stack)
+        legs, lat, down, post, by_version = leg_samples(logs[0], stack)
+        ovh = trainer_overhead_median(r)
+        if ovh is not None:
+            pooled["send_prep"][stack] += [max(0.0, x - ovh) for x in post]
+        if stack != "asyncfl":
+            groups[stack] += list(by_version.values())
         pooled["completion_leg"][stack] += legs
         pooled["dispatch_latency"][stack] += lat
         pooled["download_leg"][stack] += down
@@ -137,6 +173,7 @@ def main():
         if not a.only or gates:
             used.append(os.path.basename(r))
     out = {label: {s: _entry(xs) for s, xs in by.items() if xs} for label, by in pooled.items()}
+    out["download_by_rank"] = {s: e for s, g in groups.items() if (e := rank_entry(g))}
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
     meta = {"dataset": a.dataset, "harness": a.harness, "host": socket.gethostname().split(".")[0], "commit": commit,
             "date": str(date.today()), "tool": "profile_felix_charges.py", "runs": used}
@@ -149,8 +186,9 @@ def main():
         out["_meta"] = meta
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     yaml.safe_dump(out, open(a.out, "w"), sort_keys=False)
-    for label in ("completion_leg", "dispatch_latency", "download_leg", "gate_release"):
+    for label in ("completion_leg", "dispatch_latency", "download_leg", "gate_release", "send_prep"):
         print(label, {s: (e["mean_s"], e["n"]) for s, e in out.get(label, {}).items()})
+    print("download_by_rank", {s: e["ranks_s"] for s, e in out.get("download_by_rank", {}).items()})
     print(f"{len(used)} real legs -> {a.out}")
 
 

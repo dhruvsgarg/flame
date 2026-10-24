@@ -270,6 +270,8 @@ class OortSelector(AbstractSelector):
                 if hasattr(_pref, "total_seconds") else _pref,
                 # pacer state: the percentile that sets pref (read pref divergence directly).
                 "round_threshold": getattr(self, "round_threshold", None),
+                # FX-N103: pacer input (exploits counted, their mean utility, exploits picked)
+                "pacer_sample": getattr(self, "_pacer_sample", None),
                 "alpha": getattr(self, "alpha", None),
                 "vclock_now": channel_props.get("vclock_now"),
                 # per-round speed-penalty summary over selected (see _system_util_summary)
@@ -532,6 +534,7 @@ class OortSelector(AbstractSelector):
             if last_paced_round is not None and returned is not None and returned >= last_paced_round and util is not None:
                 cnt, total = cnt + 1, total + util
         self.exploitation_util_history.append(total / cnt)
+        self._pacer_sample = (int(cnt), total / cnt, len(getattr(self, "_last_exploit", ())))
 
     def update_exploration_factor(self) -> None:
         self.exploration_factor = max(

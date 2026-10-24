@@ -67,6 +67,12 @@ class Unit:
         return max((l.est[n] for l in self.legs if not l.deps), default=0) + sum(l.est[n] for l in self.legs if l.deps)
 
 
+def unit_done(u: Unit, status: dict) -> bool:
+    """Every leg of a released unit is in its node pool's status.json `done`."""
+    done = status.get((u.node, u.stage), {}).get("done", {})
+    return u.node is not None and all(l.key.split(":", 1)[1] in done for l in u.legs)
+
+
 @dataclass
 class NodeCap:
     cpus: int
@@ -277,9 +283,13 @@ class Dispatcher:
             if mt and st.get("mem_available_gb", mt) < 0.1 * mt:
                 warn.append(f"!  {n}: host RAM {st['mem_available_gb']:.0f} of {mt:.0f} GB free")
         for n in self.nodes:  # foreign GPU processes on this batch's GPUs (PL16); other GPUs of the node are not ours
-            r = sh(n, "nvidia-smi --query-gpu=index,uuid --format=csv,noheader; echo ==; "
-                      "nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader | while IFS=', ' read u p; do "
-                      "echo \"$u $(ps -o user= -p $p)\"; done")
+            try:
+                r = sh(n, "nvidia-smi --query-gpu=index,uuid --format=csv,noheader; echo ==; "
+                          "nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader | while IFS=', ' read u p; do "
+                          "echo \"$u $(ps -o user= -p $p)\"; done")
+            except subprocess.TimeoutExpired:  # f42c: a slow probe must not kill the batch
+                warn.append(f"!  {n}: GPU probe timed out (skipped this poll)")
+                continue
             head, _, apps = r.stdout.partition("==")
             idx = {u.strip(): i.strip() for i, u in (l.split(",") for l in head.split("\n") if "," in l)}
             ours = set(NODES[n]["gpus"].split(","))
@@ -294,8 +304,9 @@ class Dispatcher:
             stz = [st for (m, _), st in self.status.items() if m == n]
             running = sum(len(st.get("running", {})) for st in stz)
             done = sum(len(st.get("done", {})) for st in stz)
-            left = sum(1 for u in self.units if u.node in (None, n))
-            self.log(f"STATUS {n}: legs running {running}, done {done}; units unfinished/unreleased {left}; "
+            left = sum(1 for u in self.units if u.node == n and not unit_done(u, self.status))
+            self.log(f"STATUS {n}: legs running {running}, done {done}; units released+unfinished {left}, "
+                     f"unreleased {sum(u.node is None for u in self.units)}; "
                      f"finish ~{(spans.get(n, 0) - time.time()) / 3600:.1f} h")
 
     def run(self) -> int:
@@ -359,6 +370,8 @@ def main(argv=None) -> int:
     ap.add_argument("--plan", action="store_true")
     a = ap.parse_args(argv)
     batch = yaml.safe_load(open(a.batch))
+    for n, g in batch.get("gpus", {}).items():  # PL16: pin a node off GPUs a foreign job holds
+        NODES[n]["gpus"] = str(g)
     root = EX / "experiments" / f"dispatch_{batch['name']}_{time.strftime('%Y%m%d_%H%M')}"
     root.mkdir(parents=True, exist_ok=True)
     d = Dispatcher(batch, a.nodes.split(","), root)

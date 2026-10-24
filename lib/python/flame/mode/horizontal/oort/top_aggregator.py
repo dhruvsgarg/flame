@@ -592,6 +592,7 @@ class TopAggregator(BaseTopAggregator):
             self._version_mean_util = getattr(self, "_version_mean_util", {})
             self._version_mean_util[self._round] = sum(_fresh_u) / len(_fresh_u)
 
+        self._contributors_seen = getattr(self, "_contributors_seen", set()) | set(self.cache)  # FX-N133: serveEma's n
         # optimizer conducts optimization (in this case, aggregation)
         _opt0 = time.time()
         # An empty cache commits nothing, whatever the optimizer returns (FX-L28).
@@ -778,8 +779,9 @@ class TopAggregator(BaseTopAggregator):
             # AVL_TRAIN from "eval" dispatch (inert where a baseline never
             # dispatches eval, e.g. oort, Challenge 8).
             curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
-                task_to_perform
+                task_to_perform, want=self._sync_wants_picks(channel, desired_selection)
             )
+            _state_ineligible = set(curr_unavail_trainer_list)  # R27: knowledge-based only (EV22 reads its stamp)
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts (§4.5 residence, sct→delivery_ts).
             _wh, _ow = self.withheld_held_ends(), self.real_owed_held_ends(channel)
@@ -790,7 +792,7 @@ class TopAggregator(BaseTopAggregator):
                 )
         else:
             curr_unavail_trainer_list = []
-            _wh = _ow = set()
+            _wh = _ow = _state_ineligible = set()
 
         # [SIM_RESIDENCE] (§4.5) Mark trainers STILL COMPUTING in sim time unavailable for this
         # selection. In sim a dispatched update arrives physically at once, so the trainer can
@@ -821,14 +823,15 @@ class TopAggregator(BaseTopAggregator):
         # just evicted) so emit_selection's avail_composition/per_trainer reflect
         # the oracular read instead of staying all-UNKNOWN.
         self._avail_stamp_end_states(channel)
-        self._stamp_exclusions(channel, task_to_perform, withheld=_wh, owed=_ow,
-                               unavail=set(curr_unavail_trainer_list))
+        self._stamp_exclusions(channel, task_to_perform, withheld=_wh, owed=_ow, unavail=_state_ineligible,
+                               computing=set(curr_unavail_trainer_list) - _state_ineligible - _wh - _ow)
 
         # Expose current availability-timeline time to selector so it can attach
         # it to selection events (C.6.1 — restores per-trainer avl_state identity
         # at emit time). _avail_now() covers both modes — real used to be
         # skipped here (see syncfl/top_aggregator.py for the parity fallout).
         channel.properties["vclock_now"] = self._avail_now()
+        channel.properties["availability_trace"] = getattr(self, "_avail_trace_name", None)  # F42b: REFL* / REFL-fc
 
         logger.debug(
             f"Sending weights to trainers with task_to_perform = {task_to_perform}"
@@ -932,6 +935,7 @@ class TopAggregator(BaseTopAggregator):
                                      agg_version_key=self.version_key,
                                      trainer_version_keys=_version_keys,
                                      num_to_select=_need)
+        self.checkin_after_select(channel, selected_ends)  # F42-T1
         if not selected_ends:
             return
 
@@ -956,6 +960,7 @@ class TopAggregator(BaseTopAggregator):
             msg[MessageType.AGG_START_TS] = self.agg_start_time_ts
         if self.simulated:
             msg[MessageType.SIM_WALL_SEND_TS] = time.time()  # FX-D108
+            msg[MessageType.SIM_FANOUT] = [str(e) for e in selected_ends]  # FX-D191: send order
         _payload = channel.dumps(msg)
         _send_t0 = time.time()
         for end in selected_ends:

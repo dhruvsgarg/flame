@@ -135,6 +135,67 @@ def _code_state(pool: Path) -> str:
     return m.group(0) if m else pool.name
 
 
+#: Code keys whose REAL legs ran identical code for these baselines (their sims may differ): reals pair across them (L18).
+#: Evidence = the run-affecting diff between the keys' commits.
+REAL_SAME_CODE = (
+    ({"1e6004b6c305", "44d44bd2d67b"}, {"fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "git diff 70895fcfc 2f8dca198: sim-only FX-D182, Felix-only FX-D183/D185, harness_pool scheduling FX-D179/D186/D187"),
+    ({"44d44bd2d67b", "3dbbe373124a"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "git diff 2f8dca198 10378bf8a: sim charge profiles + sim_gpus, telemetry fields/labels, comments"),
+    ({"3dbbe373124a", "8ee1e79a2897"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "git diff 10378bf8a 17acb20c8: FX-D191 sim-only (SIM_FANOUT set/read only when simulated), sim profiles"),
+    ({"8ee1e79a2897", "5e0137646a6a"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "git diff 17acb20c8 6d5e16541: harness_pool G3S tier + sim-only GPU count"),
+    ({"5e0137646a6a", "2872646e24f4"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "harness_pool FX-D192 exclusive GPU placement"),
+    ({"2872646e24f4", "0467e5519788"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "FX-D194 sim-only (_sync_sim_recv_first_k) + harness_pool G0US tier"),
+    ({"0467e5519788", "b5bb7b240c90"}, {"felix", "fedbuff", "refl", "oort", "oort_star", "feddance"},
+     "harness_pool code_key hashes on-disk blobs (FX-D194)"),
+)
+
+
+def _real_same_code(a: str, b: str, baseline: str) -> bool:
+    """Transitive over REAL_SAME_CODE links that cover this baseline."""
+    seen, todo = {a}, [a]
+    while todo:
+        k = todo.pop()
+        for keys, bls, _ in REAL_SAME_CODE:
+            if k in keys and baseline in bls:
+                todo += [x for x in keys if x not in seen]
+                seen |= keys
+    return b in seen
+
+
+def _runtime_s(phase_dir: Path, baseline: str) -> Optional[str]:
+    """`--runtime-s` of a phase's leg for this baseline (None if no cmd.txt records it)."""
+    for c in phase_dir.glob("*/cmd.txt"):
+        t = c.read_text()
+        b, rt = re.search(r"--baselines (\S+)", t), re.search(r"--runtime-s (\S+)", t)
+        if b and rt and b[1] == baseline:
+            return rt[1]
+    return None
+
+
+def _same_length(phase_dir: Path, baseline: str, cmd_txt: str) -> bool:
+    """L18: a cross-pool real pairs only at equal `--runtime-s`."""
+    rt, own = _runtime_s(phase_dir, baseline), re.search(r"--runtime-s (\S+)", cmd_txt)
+    return rt is None or own is None or rt == own[1]
+
+
+#: Sim-only replicate phases G3S<i>_<cell> / G0US<i>_<cell> (FX-D193, FX-D194).
+SIM_REP = re.compile(r"(G3|G0U)S\d+_")
+
+
+def sim_only_target(phase: str) -> str:
+    """The paired cell of a sim-only replicate phase (gs_G0US2_syn_50_3st -> gs_G0U_syn_50_3st)."""
+    return SIM_REP.sub(lambda m: m[1] + "_", phase)
+
+
+def _sim_only_cmds(root: Path) -> list:
+    return sorted(c for c in root.glob("*/*_sim/cmd.txt") if SIM_REP.search(c.parent.parent.name))
+
+
 def _replicate_cells(root: Path) -> dict:
     """{(phase, baseline): (own real, grade cmd.txt, [(replicate real, its control phase dir)])}: G0C per G0 syn_0 cell,
     G0UC per G0U, G0TC per G0T, T3C per T3, G3C per G3 cell; replicates may sit in any same-code pool of the block."""
@@ -149,11 +210,53 @@ def _replicate_cells(root: Path) -> dict:
         target = f"{pre}{tag[:-2]}_{trace}"
         for r in csv.DictReader(open(f), delimiter="\t"):
             b = r["baseline"]
-            cmd = next((c for g in (f"{target}_{b}", f"{target}_{r['trace']}_{b}")  # Oort-family *s shapes name legs by trace too
-                        for c in root.glob(f"{target}/{g}_grade/cmd.txt")), None)  # the regraded pool's own real
+            cmd = next((c for p in (root, *same) for g in (f"{target}_{b}", f"{target}_{r['trace']}_{b}")  # Oort *s shapes: by trace
+                        for c in p.glob(f"{target}/{g}_grade/cmd.txt")), None)  # own pool first, then a sibling (FX-D181)
             own = re.search(r"--real-dir (\S+)", cmd.read_text()) if cmd else None
             if own and r.get("real_dir"):
                 cells.setdefault((target, b), (Path(own[1]), cmd, []))[2].append((Path(r["real_dir"]), f.parent))
+    # Reals of a real-path-identical key (REAL_SAME_CODE): its pair legs and its *C replicates of the same cell.
+    key = _code_state(root)
+    other = [p for p in sorted(root.parent.iterdir()) if p.is_dir() and _code_state(p) not in (key,)]
+    for cmd in sorted(root.glob("*/*_grade/cmd.txt")):
+        target, t = cmd.parent.parent.name, cmd.read_text()
+        b, own = re.search(r"--baselines (\S+)", t), re.search(r"--real-dir (\S+)", t)
+        if not (b and own) or target.startswith(REAL_ONLY):
+            continue
+        b = b[1]
+        for p in other:
+            if not _real_same_code(key, _code_state(p), b):
+                continue
+            tag = target.replace("G3_", "G3C_").replace("G0U_", "G0UC_").replace("T3_", "T3C_").replace("G0T_", "G0TC_")
+            for ph in {target, tag}:
+                f = p / ph / "summary.tsv"
+                if not _same_length(p / ph, b, t):
+                    continue
+                for r in (csv.DictReader(open(f), delimiter="\t") if f.exists() else []):
+                    if r["baseline"] == b and r.get("real_dir") and Path(r["real_dir"]).is_dir():
+                        ctl = cmd.parent / f"control_{p.name}_{ph}"  # floors land in this pool, never the other key's
+                        ctl.mkdir(exist_ok=True)
+                        cells.setdefault((target, b), (Path(own[1]), cmd, []))[2].append((Path(r["real_dir"]), ctl))
+    for cmd in _sim_only_cmds(root):  # sim-only replicates: every equivalent real of the cell votes
+        phase, b = cmd.parent.parent.name, re.search(r"--baselines (\S+)", cmd.read_text())
+        if not b:
+            continue
+        b, target = b[1], sim_only_target(phase)
+        reals = []
+        for p in sorted(root.parent.iterdir()):
+            if not (p.is_dir() and _real_same_code(key, _code_state(p), b)):
+                continue
+            for ph in (target, target.replace("G3_", "G3C_").replace("G0U_", "G0UC_")):
+                f = p / ph / "summary.tsv"
+                if not _same_length(p / ph, b, cmd.read_text()):
+                    continue
+                for r in (csv.DictReader(open(f), delimiter="\t") if f.exists() else []):
+                    if r["baseline"] == b and r.get("real_dir") and Path(r["real_dir"]).is_dir():
+                        ctl = cmd.parent / f"control_{p.name}_{ph}"
+                        ctl.mkdir(exist_ok=True)
+                        reals.append((Path(r["real_dir"]), ctl))
+        if reals:
+            cells[(phase, b)] = (reals[0][0], cmd, reals[1:])
     return cells
 
 
@@ -202,19 +305,28 @@ def regrade_pool(root: Path, jobs: int = 20) -> None:
     checker = EXAMPLES / "async_cifar10" / "scripts" / "parity_check.py"
     events = checker.parent / "parity" / "event_invariants.py"
     floors = _control_floors(root, checker, jobs)
-    reps = {k: [r for r, _ in v[2]] for k, v in _replicate_cells(root).items()}
+    cells = _replicate_cells(root)
+    reps = {k: [r for r, _ in v[2]] for k, v in cells.items()}
 
     def one(cmd_txt: Path) -> None:
         t = cmd_txt.read_text()
+        phase = cmd_txt.parent.parent.name
+        if SIM_REP.search(phase):  # a sim-only leg: its first equivalent real stands in for --real-dir
+            b, rows = re.search(r"--baselines (\S+)", t), list(csv.DictReader(open(cmd_txt.parent / "summary.tsv"), delimiter="\t"))
+            cell = cells.get((phase, b[1] if b else ""))
+            if not (cell and rows and rows[0].get("sim_dir")):
+                return
+            t += f" --real-dir {cell[0]} --sim-dir {rows[0]['sim_dir']} --traces {rows[0]['trace']}"
         g = {k: re.search(rf"--{k} (\S+)", t) for k in ("real-dir", "sim-dir", "agg-goal", "runtime-s", "baselines", "traces")}
         if not all(g[k] for k in ("real-dir", "sim-dir", "runtime-s")):
             return
         out = cmd_txt.parent / "parity_regrade"
         out.mkdir(exist_ok=True)
         name = next(iter((cmd_txt.parent / "parity").glob("*.json")), None)
+        if name is None and g["traces"] and g["baselines"]:
+            name = Path(f"{g['traces'][1]}_{g['baselines'][1]}.json")
         if name is None:
             return
-        phase = cmd_txt.parent.parent.name
         fl = floors.get((phase, g["baselines"][1] if g["baselines"] else ""))
         extra = []
         if fl:
@@ -234,7 +346,7 @@ def regrade_pool(root: Path, jobs: int = 20) -> None:
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     with cf.ThreadPoolExecutor(jobs) as ex:
-        list(ex.map(one, root.glob("*/*_grade/cmd.txt")))
+        list(ex.map(one, [*root.glob("*/*_grade/cmd.txt"), *_sim_only_cmds(root)]))
 
 
 def grade_pool(root: Path, max_stage: int) -> List[Cell]:
@@ -248,7 +360,7 @@ def grade_pool(root: Path, max_stage: int) -> List[Cell]:
             red, known = [], []
             want = EXPECTED_FAIL.get(bare)
             sides = ("ev_real",) if bare.startswith(REAL_ONLY) else \
-                ("ev_sim",) if bare.startswith(SIM_ONLY) else ("ev_real", "ev_sim")
+                ("ev_sim",) if bare.startswith(SIM_ONLY) or SIM_REP.match(bare) else ("ev_real", "ev_sim")
             ev = _regraded_ev(f.parent, tr, b)
             for side in sides:
                 fails = ev[side] if side in ev else _ev_fails(r.get(side, ""))

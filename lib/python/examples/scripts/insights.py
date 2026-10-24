@@ -8,6 +8,7 @@ counts only if both sides agree). Reads `telemetry/*.jsonl` + `aggregator_config
 """
 import argparse
 import collections
+import statistics
 import glob
 import json
 import os
@@ -123,6 +124,23 @@ def i_c1_staleness(run):
             "max": max(h) if h else None, "hist": dict(sorted(h.items()))}
 
 
+def i_c4_staleness_source(run, held_lag_s=60.0):
+    """Staleness by source: held upload (ready -> commit lag > held_lag_s: the client left, its send waited) vs in-flight work."""
+    rows = []
+    for e in _ev(run, "agg_round"):
+        if e.get("task_to_perform") == "eval":
+            continue
+        for s, sp, lag in zip(e.get("staleness") or [], e.get("trainer_speed_s") or [], e.get("update_visibility_lag_s") or []):
+            rows.append((int(s), float(sp or 0), float(lag or 0)))
+    tot = sum(r[0] for r in rows)
+    out = {"updates": len(rows), "withheld_events": len(_ev(run, "withheld_delivery"))}
+    for name, xs in (("held", [r for r in rows if r[2] > held_lag_s]), ("work", [r for r in rows if r[2] <= held_lag_s])):
+        out[name] = {"update_share": len(xs) / len(rows) if rows else None, "tau_share": sum(r[0] for r in xs) / tot if tot else None,
+                     "tau_mean": statistics.mean(r[0] for r in xs) if xs else None,
+                     "task_s_median": statistics.median(r[1] for r in xs) if xs else None}
+    return out
+
+
 def i_d1_server_wall(run):
     rows = _ev(run, "agg_timing")
     keys = ("recv_wait_s", "ingest_s", "commit_s", "other_s", "cycle_s")
@@ -166,7 +184,7 @@ def i_g1_rate(run):
     return {"span_s": span, "aggregated_per_h": (agg / span * 3600) if span else None}
 
 
-METRICS = {"I-A2": i_a2_coverage, "I-A3": i_a3_choice, "I-A5": i_a5_explore, "I-B1": i_b1_waste, "I-C1": i_c1_staleness,
+METRICS = {"I-A2": i_a2_coverage, "I-A3": i_a3_choice, "I-A5": i_a5_explore, "I-B1": i_b1_waste, "I-C1": i_c1_staleness, "I-C4": i_c4_staleness_source,
            "I-D1": i_d1_server_wall, "I-E1": i_e1_wire, "I-F1": i_f1_occupancy, "I-G1": i_g1_rate}
 
 

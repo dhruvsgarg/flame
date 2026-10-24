@@ -44,6 +44,7 @@ from flame.mode.horizontal.trainer import Trainer
 from flame import telemetry
 from flame.telemetry.events import (
     build_avail_change,
+    build_checkin,
     build_trainer_round,
     build_util_disparity,
 )
@@ -96,6 +97,15 @@ class PyTorchCifar10Trainer(Trainer):
         self.task_to_perform = "train"
 
         self.use_oort_loss_fn = self.config.hyperparameters.use_oort_loss_fn
+        self._update_norms = bool(getattr(self.config.hyperparameters, "trainer_update_norms", False))  # telemetry-only syncs
+        # FX-N130: held-out share of local data; set only by arms that read it.
+        self.validation_holdout = float(getattr(self.config.hyperparameters, "validation_holdout", 0) or 0)
+        self.validation_probe = str(getattr(self.config.hyperparameters, "validation_probe", False)).lower() == "true"
+        # FX-N127 V2: held-out report (eval mode, paired with this client's previous one) on every train task and probe
+        self.validation_report = str(getattr(self.config.hyperparameters, "validation_report", False)).lower() == "true"
+        if (self.validation_probe or self.validation_report) and self.validation_holdout <= 0:
+            raise ValueError("validation_probe / validation_report need validation_holdout > 0 (FX-N130)")
+        self._val_probe, self._val_train_report, self._vr_prev = None, None, None
         self.trainer_indices_list = self.config.hyperparameters.trainer_indices_list
         self.trainer_start_ts = time.time()
 
@@ -126,9 +136,10 @@ class PyTorchCifar10Trainer(Trainer):
         self.training_delay_enabled = (
             _tde if isinstance(_tde, bool) else str(_tde).strip().lower() == "true"
         )
-        self.training_delay_s = self._effective_delay_s(
-            float(self.config.hyperparameters.training_delay_s)
-        )
+        # FX-D197: task time = FedScale device model (registry compute_ms_per_sample, bandwidth_kbps); see _task_time_s
+        self.compute_ms = float(self.config.hyperparameters.compute_ms_per_sample)
+        self.bandwidth_kbps = float(self.config.hyperparameters.bandwidth_kbps)
+        self.model_kbit = None  # model size, set at initialize()
         self.harness_mode = harness.harness_mode(self.config.hyperparameters)
 
         # Add satellite coordinates
@@ -141,15 +152,14 @@ class PyTorchCifar10Trainer(Trainer):
              # Own satellite only: the full (steps, 300, 2) array is 49 MB per trainer (FX-N84).
              self.coords = np.load(coords_path)["coords"][:, self.satellite_index].copy()
 
-        # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
-        # (buffer-residence queue_wait + re-dispatch latency) that the sim sct omitted, so sim's
-        # cycle was short and advance under-charged. sct = send_ts + max(gpu, D) + leg; staleness
-        # (= cycle/advance) is invariant to it, only advance/throughput change.
+        # Sim-only profiled upload leg (FX-D23): sct = send_ts + max(gpu, D) + leg; trainer speed stays pure compute.
         _leg = getattr(self.config.hyperparameters, "sim_completion_leg_s", 0.0)
         self.sim_completion_leg_s = float(_leg) if _leg is not None else 0.0
         self._sim_charge_overhead = getattr(self.config.hyperparameters, "sim_charge_trainer_overhead", True) is not False
         self._sim_charge_lag = bool(getattr(self.config.hyperparameters, "sim_charge_delivery_lag", False))
         self.sim_download_leg_s = float(getattr(self.config.hyperparameters, "sim_download_leg_s", 0.0) or 0.0)
+        self.sim_download_by_rank = [float(x) for x in (getattr(self.config.hyperparameters, "sim_download_by_rank", None) or [])]
+        self.sim_send_prep_s = float(getattr(self.config.hyperparameters, "sim_send_prep_s", 0.0) or 0.0)
         _hp = self.config.hyperparameters
         self._sim_stream_at_start = str(getattr(_hp, "sim_stream_at_train_start", True)).lower() == "true"
 
@@ -276,8 +286,46 @@ class PyTorchCifar10Trainer(Trainer):
         """Induce transient unavailability"""
         pass
 
+    def _task_time_s(self, kind: str, comm: bool = True) -> float:
+        """FX-D197: FedScale task time (Oort / REFL `getCompletionTime`), harness floor / factor applied.
+
+        train: 3 x samples x ms/sample (forward + backward) + down + up model transfers; eval: 1 x samples + download.
+        samples: train = local_steps x batch, else epochs x visible shard (the experiment's shard, also under harness truncation)."""
+        frac = getattr(self, "_train_visible", self._stream_visible) / self._stream_total if getattr(self, "_stream_total", 0) else 1.0
+        shard = len(self.trainer_indices_list) * min(1.0, frac)
+        steps = getattr(self, "_task_steps", self.config.hyperparameters.local_steps)
+        if kind == "train":
+            samples = steps * self.batch_size if steps is not None else self.epochs * shard
+            if steps is not None and self.config.hyperparameters.local_work:
+                samples = min(samples, shard)  # FX-N116: capped at one epoch
+            passes, transfers = 3, 2
+        elif kind == "val":  # FX-N127 V2 (a): one forward pass over the held-out samples, no transfer
+            samples, passes, transfers = len(self.trainer_indices_list) * len(self._val_pos) / self._stream_total, 1, 0
+        elif getattr(self, "validation_probe", False) and getattr(self, "_val_mask", None) is not None:  # F42c probe
+            samples, passes, transfers = len(self.trainer_indices_list) * len(self._val_pos) / self._stream_total, 1, 1
+        else:
+            samples, passes, transfers = self.epochs * shard, 1, 1
+        self._last_task_model = dict(samples=samples, compute_s=passes * samples * self.compute_ms / 1000.0,
+                                     comm_s=transfers * self.model_kbit / self.bandwidth_kbps if comm else 0.0,
+                                     kbit=self.model_kbit)
+        return self._effective_delay_s(self._last_task_model["compute_s"] + self._last_task_model["comm_s"])
+
+    def _local_steps(self, num_batches: int):
+        """FX-N116: mini-batch steps of this task (None = `epochs` passes). "split" sets compute = beta / (1 - beta) x transfer,
+        the time-optimal local work when an update's progress grows as samples^beta."""
+        hp = self.config.hyperparameters
+        rule, steps = hp.local_work, hp.local_steps
+        if rule == "cap":
+            return min(steps, num_batches) if steps is not None else None
+        if rule == "split":
+            beta = float(hp.local_work_beta)
+            transfer_s = 2 * self.model_kbit / self.bandwidth_kbps
+            samples = beta / (1 - beta) * transfer_s / (3 * self.compute_ms / 1000.0)
+            return max(1, min(num_batches, round(samples / self.batch_size)))
+        return steps
+
     def _effective_delay_s(self, raw_s: float) -> float:
-        """Registry D with the optional floor, then divided by trainingDelayFactor (unset = raw)."""
+        """Modeled task time with the optional floor, then divided by trainingDelayFactor (harness time compression)."""
         hp = self.config.hyperparameters
         floor_s = float(getattr(hp, "training_delay_floor_s", 0.0) or 0.0)
         factor = getattr(hp, "training_delay_factor", None)
@@ -373,6 +421,8 @@ class PyTorchCifar10Trainer(Trainer):
                     state=self.avl_state,
                     timestamp=str(time.time()),
                 )
+            if getattr(self, "_checkin_client", None) is not None:
+                self._checkin_client.on_flip(self.avl_state == TrainerAvailState.AVL_TRAIN)
 
     @property
     def data_spec(self) -> "fl_data.DatasetSpec":
@@ -406,6 +456,7 @@ class PyTorchCifar10Trainer(Trainer):
             torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = True, False
 
         self.model = self.data_spec.model().to(self.device)
+        self.model_kbit = sum(v.numel() * v.element_size() for v in self.model.state_dict().values()) * 8 / 1024
         self._warmup_device()
         
         # Log model memory usage
@@ -534,7 +585,7 @@ class PyTorchCifar10Trainer(Trainer):
             dataset = data_utils.Subset(dataset, indices)
         logger.info(
             f"[HARNESS] trainer={self.trainer_id} mode={self.harness_mode} "
-            f"samples={len(indices)} device={self.device} delay_s={self.training_delay_s:.2f}"
+            f"samples={len(indices)} device={self.device} ms_per_sample={getattr(self, 'compute_ms', None)}"
         )
 
         # GPU pre-load for small datasets (cuts CPU RAM). Full pool is retained;
@@ -597,6 +648,9 @@ class PyTorchCifar10Trainer(Trainer):
         self._stream_order = torch.randperm(
             self._stream_total, generator=torch.Generator().manual_seed(seed)
         )
+        h = getattr(self, "validation_holdout", 0.0)
+        k = round(1 / h) if h > 0 else 0
+        self._val_mask = (torch.arange(self._stream_total) % k == k - 1) if k else None  # F42c: every k-th arrival
 
         # Build initial loader (full pool unless streaming is enabled)
         self._rebuild_stream_loader()
@@ -619,7 +673,11 @@ class PyTorchCifar10Trainer(Trainer):
         )
 
     def _sim_delivery_lag_s(self) -> float:
-        """FX-D108: the task's fan-out delivery lag in sim (measured, else the profiled download leg)."""
+        """Sim fan-out delivery lag: real's profiled lag at this task's send rank (FX-D191), else measured (FX-D108),
+        else the profiled mean download leg (FX-D116)."""
+        _rank, _prof = getattr(self, "_sim_fanout_rank", None), getattr(self, "sim_download_by_rank", None)
+        if _prof and _rank is not None:
+            return _prof[min(_rank, len(_prof) - 1)]
         _wst, _wrt = getattr(self, "_sim_wall_send_ts", None), getattr(self, "_wall_recv_ts", None)
         if self._sim_charge_lag and _wst is not None and _wrt is not None:
             return max(0.0, float(_wrt) - float(_wst))
@@ -643,6 +701,11 @@ class PyTorchCifar10Trainer(Trainer):
         self._stream_clock_s = self._stream_now() if self._stream_sched is not None else None
         n = self._stream_visible = self._visible_sample_count()
         full = n >= self._stream_total
+        pos = self._stream_order if full else self._stream_order[:n]
+        if getattr(self, "_val_mask", None) is not None:  # F42c: held-out arrivals never reach the train loader
+            m = self._val_mask[:len(pos)]
+            self._val_pos, pos, full = pos[m], pos[~m], False
+        self._train_visible = len(pos)
         if self._stream_gpu:
             if full:
                 subset = data_utils.TensorDataset(
@@ -650,16 +713,29 @@ class PyTorchCifar10Trainer(Trainer):
                 )
             else:
                 # align index with data device (order is built on CPU)
-                pos = self._stream_order[:n].to(self._stream_all_data.device)
+                gpos = pos.to(self._stream_all_data.device)
                 subset = data_utils.TensorDataset(
-                    self._stream_all_data[pos], self._stream_all_targets[pos]
+                    self._stream_all_data[gpos], self._stream_all_targets[gpos]
                 )
         else:
-            pos = self._stream_order if full else self._stream_order[:n]
             subset = data_utils.Subset(self._stream_full_dataset, pos.tolist())
         self.train_loader = torch.utils.data.DataLoader(
             subset, **self._stream_train_kwargs
         )
+
+    def _val_loader(self):
+        """F42c: a loader over the visible held-out samples (None when the holdout is off or none has arrived yet)."""
+        pos = getattr(self, "_val_pos", None)
+        on = getattr(self, "validation_probe", False) or getattr(self, "validation_report", False)
+        if not on or getattr(self, "_val_mask", None) is None or pos is None or len(pos) == 0:
+            return None
+        kw = dict(self._stream_train_kwargs, shuffle=False)
+        if self._stream_gpu:
+            gpos = pos.to(self._stream_all_data.device)
+            ds = data_utils.TensorDataset(self._stream_all_data[gpos], self._stream_all_targets[gpos])
+        else:
+            ds = data_utils.Subset(self._stream_full_dataset, pos.tolist())
+        return torch.utils.data.DataLoader(ds, **kw)
 
     def _pool_tensors(self):
         """Return (data, targets) tensors for the full sample pool on device.
@@ -827,7 +903,10 @@ class PyTorchCifar10Trainer(Trainer):
         num_batches = len(self.train_loader)
         dataset_size = len(self.train_loader.dataset)
         _pre["loader"] = time.time() - _phase_train_entry
-        _D = self.training_delay_s if self.training_delay_enabled else 0.0
+        self._task_steps = self._local_steps(num_batches)
+        _D = self._task_time_s("train")
+        _task = dict(self._last_task_model)
+        _D = _D if self.training_delay_enabled else 0.0
         if self.simulated:
             _expected_wallclock_hint = f"~GPU wall-clock only; virtual_advance=max(gpu,D={_D:.1f}s)"
         else:
@@ -841,11 +920,11 @@ class PyTorchCifar10Trainer(Trainer):
         _cycle_start = time.time()
         _pre["log"] = _cycle_start - _phase_train_entry
 
-        # Find current location
-        elapsed_s = self._sim_now()
-        timestep = min(int(elapsed_s), self.coords.shape[0]-1)
-        lat, lon = self.coords[timestep]
-        logger.info(f"({elapsed_s}s) Trainer {self.trainer_id} Location: ({lat:.2f}, {lon:.2f})")
+        # Satellite runs only: current location on the LEO trace
+        lat = lon = None
+        if getattr(self, "coords", None) is not None:
+            timestep = min(int(self._sim_now()), self.coords.shape[0] - 1)
+            lat, lon = (float(v) for v in self.coords[timestep])
         _pre["coords"] = time.time() - _phase_train_entry
 
         total_batches_processed = 0
@@ -861,10 +940,12 @@ class PyTorchCifar10Trainer(Trainer):
         _gpu_slot = self._acquire_gpu_slot((self._sim_send_ts or 0.0) + _D)
         if _gpu_slot is not None and self.simulated and getattr(self.config.hyperparameters, "sim_gpu_train_slots", 0):
             _gpu_start = time.time()
-        steps = self.config.hyperparameters.local_steps
+        steps = self._task_steps
         _cap = harness.stub_max_steps(self.config.hyperparameters, self.harness_mode)
         if _cap is not None:
             steps = min(steps, _cap) if steps is not None else _cap
+        _u0 = self._receive_utility() if self._utility_on_receive() else None  # FX-N109 I9
+        self._val_train_report = self._val_report() if self.validation_report else None  # FX-N127 V2 (a)
         # FX-D144: batch order seeded by logical identity, not the process RNG (incidental draws forked sim from real)
         self._task_seq = getattr(self, "_task_seq", 0) + 1
         torch.manual_seed(harness.stable_seed((self.trainer_id, self._round, self._task_seq)))
@@ -878,6 +959,8 @@ class PyTorchCifar10Trainer(Trainer):
                 final_loss = epoch_loss
             if epoch_batches == 0:
                 break
+        if _u0 is not None:
+            self._stat_utility = _u0
         # Stub: charge a realistic GPU-compute span (flame.harness.stub_compute_s).
         _stub_s = harness.stub_compute_s(self.config.hyperparameters, self.harness_mode,
                                          (self.trainer_id, self._round))
@@ -912,7 +995,13 @@ class PyTorchCifar10Trainer(Trainer):
         self.memory_profiler.log_memory_after_round()
         _post["mem_profile"] = time.time() - _phase_post_start
 
-        _modeled_delay_s = self.training_delay_s if self.training_delay_enabled else 0.0
+        _modeled_delay_s = _D
+        _upass_s = 0.0
+        if _u0 is not None and self.training_delay_enabled:  # I9's pre-pass: one forward over the visible data
+            _upass_s = self._task_time_s("eval", comm=False)  # already floored / scaled
+            _modeled_delay_s += _upass_s
+        _vpass_s = self._task_time_s("val") if self._val_train_report is not None and self.training_delay_enabled else 0.0
+        _modeled_delay_s += _vpass_s  # P5: the held-out pass is charged
         _remaining_time = max(0.0, _modeled_delay_s - _real_gpu_time_s)
         _overran = self.training_delay_enabled and _real_gpu_time_s > _modeled_delay_s
         self._training_budget_s = _modeled_delay_s
@@ -934,7 +1023,7 @@ class PyTorchCifar10Trainer(Trainer):
         # added ONLY here, NOT to _sim_round_duration — so trainer_speed_s, OORT utility, the gate
         # predictor and P3/T2 controls keep pure compute; only the vclock (which advances to sct)
         # sees the real cycle time.
-        _leg = self.sim_completion_leg_s if self.simulated else 0.0
+        _leg = self.sim_completion_leg_s + self.sim_send_prep_s if self.simulated else 0.0
         self._sim_completion_ts = (
             (self._sim_send_ts if self._sim_send_ts is not None else self._sim_now())
             + sim_round_duration
@@ -948,7 +1037,7 @@ class PyTorchCifar10Trainer(Trainer):
         # Telemetry-only: skip entirely when telemetry is off, and accumulate
         # the squared-diff on-device so we sync once (not once per parameter).
         delta_weight_l2 = None
-        if telemetry.is_enabled():
+        if telemetry.is_enabled() and getattr(self, "_update_norms", False):
             try:
                 ref = getattr(self, "weights", None)
                 if ref is not None:
@@ -1009,6 +1098,9 @@ class PyTorchCifar10Trainer(Trainer):
                     "time_mode": self.time_mode,
                     "stream_clock_s": self._stream_clock_s,
                     "training_budget_s": _modeled_delay_s,
+                    "utility_pass_s": _upass_s,
+                    "val_pass_s": _vpass_s,
+                    **{f"model_{k}": v for k, v in _task.items()},  # FX-D197: FedScale terms (EV3 recomputes them)
                     "remaining_time_s": _remaining_time,
                     "overran": _overran,
                     "grad_norm_epoch1": self._grad_norm_epoch1,
@@ -1110,7 +1202,7 @@ class PyTorchCifar10Trainer(Trainer):
             # Epoch-1 gradient L2 (telemetry only): one fused GPU reduction and
             # a single .item() sync per batch, instead of a .item() per param
             # (which forced ~12 GPU->CPU syncs/batch on the shared-GPU queue).
-            if epoch == 1 and telemetry.is_enabled():
+            if epoch == 1 and getattr(self, "_update_norms", False) and telemetry.is_enabled():
                 _gsq = None
                 for p in self.model.parameters():
                     if p.grad is not None:
@@ -1164,6 +1256,53 @@ class PyTorchCifar10Trainer(Trainer):
 
         return batches_processed, last_loss
 
+    def _val_report(self):
+        """FX-N127 V2: (nll sum, correct, n, d_nll, d_correct, n_paired, prev model version) of the received model on the
+        held-out samples, eval mode, buffers untouched. d_* = change on the samples of this client's previous report (held-out
+        arrivals only grow, in order, so they are its first n_paired): the pairing lives on the client, the server sees sums."""
+        loader = self._val_loader()
+        if loader is None:
+            return None
+        was_training = self.model.training
+        self.model.eval()
+        nll, hit = [], []
+        with torch.no_grad():
+            for data, target in loader:
+                data, target = data.to(self.device), target.to(self.device)
+                with self._amp():
+                    out = self.model(data).float()
+                nll.append(F.nll_loss(out, target, reduction="none"))
+                hit.append((out.argmax(1) == target).float())
+        self.model.train(was_training)
+        nll, hit = torch.cat(nll).double().cpu(), torch.cat(hit).double().cpu()
+        prev, n = self._vr_prev, len(nll)
+        k = min(prev[0], n) if prev else 0
+        rep = (float(nll.sum()), int(hit.sum()), n, float(nll[:k].sum()) - prev[1] if k else 0.0,
+               int(hit[:k].sum()) - prev[2] if k else 0, k, prev[3] if prev else -1)
+        self._vr_prev = (n, float(nll.sum()), int(hit.sum()), self._round)
+        return rep
+
+    def _utility_on_receive(self) -> bool:
+        return bool(getattr(self.config.hyperparameters, "utility_on_receive", False))
+
+    def _receive_utility(self):
+        """FX-N109 I9: |D| x rms loss of the received model on the visible data (eval's estimand), before training.
+
+        The in-training FedScale EMA reads the loss after most of the epoch, so 1-epoch tasks on big shards report a low loss.
+        BN running stats are restored: the pass must not change the update."""
+        bufs = {k: v.clone() for k, v in self.model.named_buffers()}
+        self.reset_stat_utility()
+        with torch.no_grad():
+            for batch_idx, (data, target) in enumerate(self.train_loader):
+                data, target = data.to(self.device), target.to(self.device)
+                with self._amp():
+                    self.oort_loss(self.model(data), target, 1, batch_idx)
+        self.normalize_stat_utility(1)
+        u = self._stat_utility
+        self.model.load_state_dict(bufs, strict=False)
+        self.reset_stat_utility()
+        return u
+
     def evaluate(self) -> None:
         """Evaluate a model."""
         # Implement only forward pass evaluate if the trainer is available to train or to evaluate
@@ -1196,12 +1335,17 @@ class PyTorchCifar10Trainer(Trainer):
         _eval_gpu_t0 = time.time()
         # FX-D41: fresh utility per eval; no graph (it chained across evals, OOM).
         self.reset_stat_utility()
+        loader, probe = self._val_loader(), [0.0, 0, 0]  # F42c: Felix's probe scores the held-out samples only
         with torch.no_grad():
-            for epoch in range(1, self.epochs + 1):
-                for batch_idx, (data, target) in enumerate(self.train_loader):
+            for epoch in range(1, (1 if loader is not None else self.epochs) + 1):
+                for batch_idx, (data, target) in enumerate(loader if loader is not None else self.train_loader):
                     data, target = data.to(self.device), target.to(self.device)
                     with self._amp():
                         output = self.model(data)
+                    if loader is not None:
+                        probe[0] += float(F.nll_loss(output.float(), target, reduction="sum"))
+                        probe[1] += int((output.argmax(1) == target).sum())
+                        probe[2] += len(target)
 
                     if self.use_oort_loss_fn == "False":
                         # Loss function to use with Fedbuff
@@ -1222,12 +1366,12 @@ class PyTorchCifar10Trainer(Trainer):
                 # normalize statistical utility of a trainer based on the size
                 # of the dataset
                 self.normalize_stat_utility(epoch)
+        self._val_probe = tuple(probe) if loader is not None else None
+        if self._val_probe is not None and self.validation_report:  # V2 (b): probes send the same report as train tasks
+            self._val_probe = self._val_report()
         _real_eval_gpu_s = time.time() - _eval_gpu_t0
-        # Eval is ~20x faster than training (NPUs don't support training), so the
-        # modeled eval delay is training_delay_s/20.
-        _modeled_eval_delay_s = (
-            self.training_delay_s / 20.0 if self.training_delay_enabled else 0.0
-        )
+        # FX-D197: eval = one forward pass over the visible data + the model download
+        _modeled_eval_delay_s = self._task_time_s("eval") if self.training_delay_enabled else 0.0
         if self.simulated:
             # Stamp THIS eval's own completion ts (= send_ts + max(gpu, D_eval)).
             # Without it the send path reuses the last TRAIN round's _sim_completion_ts,
@@ -1239,11 +1383,8 @@ class PyTorchCifar10Trainer(Trainer):
                 (self._sim_send_ts if self._sim_send_ts is not None else self._sim_now())
                 + _eval_dur
             )
-        elif self.training_delay_enabled:
-            if str(getattr(self.config.hyperparameters, "realEvalDelayFloor", False)).lower() == "true":
-                eval_delay = math.floor(self.training_delay_s / 20.0)  # pre-FX-D183 revert
-            else:  # FX-D183: real eval spans max(gpu, D/20), as sim charges
-                eval_delay = max(0.0, _modeled_eval_delay_s - _real_eval_gpu_s)
+        elif self.training_delay_enabled:  # FX-D183: real eval spans max(gpu, modeled), as sim charges
+            eval_delay = max(0.0, _modeled_eval_delay_s - _real_eval_gpu_s)
             time.sleep(eval_delay)
             logger.debug(
                 f"Delayed eval time for trainer " f"{self.trainer_id} by {eval_delay}s"
@@ -1261,12 +1402,38 @@ class PyTorchCifar10Trainer(Trainer):
         # EOT, or process shutdown (a trainer UN_AVL at run end gets no EOT, only SIGTERM): FX-D7.
         return getattr(self, "_work_done", False) or getattr(self, "_shutting_down", False)
 
+    def _make_checkin_client(self):
+        """F42-T1 real: the device's check-in client, once the trace origin is known (sim replays it agg-side)."""
+        mode = getattr(getattr(self.config, "hyperparameters", None), "checkin_client", None)
+        if not mode or self.simulated or getattr(self, "_agg_start_origin", None) is None:
+            return None
+        from flame.availability.checkin_client import CheckinClient
+        forecast = None
+        if mode == "prophet":
+            from flame.availability.refl_predictors import ProphetForecaster
+            fc = ProphetForecaster(self.client_notify["trace"])
+            forecast = lambda t, mu: fc.p(self.trainer_id, t, mu)
+
+        def emit(kind, t, f):
+            if telemetry.is_enabled():
+                ev, fields = build_checkin(kind=kind, end_id=str(self.trainer_id), t=t, round_num=int(self._round), **f)
+                telemetry.emit(ev, **fields)
+        c = CheckinClient(send=lambda pl: self._perform_channel_state_update(tag="upload", state="CHECK_IN", timestamp=pl),
+                          now=self._sim_now, is_train=lambda: self.avl_state == TrainerAvailState.AVL_TRAIN,
+                          forecast=forecast, emit=emit)
+        c.start()
+        return c
+
     def notify_trainer_avail(self) -> None:
         # Both flags are set before channel.leave; _work_done is absent until run(), FX-D7.
         while not self._avail_thread_done():
             time.sleep(1)  # Will check every 1 second
             try:
                 self.check_and_update_state_avl()
+                if getattr(self, "_checkin_client", None) is None:
+                    self._checkin_client = self._make_checkin_client()
+                else:
+                    self._checkin_client.tick()
             except Exception:
                 if not self._avail_thread_done():
                     raise
@@ -1370,7 +1537,7 @@ def main():
         f"has heartbeats_enabled: {t.heartbeats_enabled}, "
         f"has client_notify: {t.client_notify['enabled']}, "
         f"training_delay_enabled: {t.training_delay_enabled}, "
-        f"training_delay_s: {t.training_delay_s}"
+        f"device ms/sample: {t.compute_ms}, kbps: {t.bandwidth_kbps}"
     )
 
     # Register exit handler to generate memory report
