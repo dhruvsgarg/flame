@@ -173,6 +173,20 @@ F44_ARMS = {"ctl_srv": dict(bls=("felix", "fedbuff")), "l3b_srv": {},  # no FedB
             "b1gw": dict(hp=f"{_B1} {_GUARD}", thp=f"{_B1T} {_WD}"),
             **{f"b1gw_e{e}": dict(hp=f"{_B1} {_GUARD}", thp=f"{_B1T} {_WD} epochs={e}") for e in (2, 3)}}
 F44_SPEECH_ARMS = ("ctl_srv", "l3b_srv", "b1", "b1gw", "b1gw_e3")
+# F45 = FL1 S3 on b1: `prop` selection, score terms one at a time, both utility q's, Oort sampling; FedBuff anchor (Felix old / new
+# from F44). `b1_c33` closes S1: b1 at FedBuff's effective s50u concurrency (60 × 116k / 213k updates).
+_S3 = _B1.replace("sel.selectType=random", "sel.selectType=prop")
+_S3U, _PB = f"{_S3} {_C3}", f"{_B1T} utilityPrefixSamples=-1"
+F45_ARMS = {"ctl_srv": dict(bls=("fedbuff",)),
+            "s3v": dict(hp=f"{_S3U} sel.scoreUtility=false", thp=_B1T),  # speed per second
+            "s3u": dict(hp=_S3, thp=_PB),  # utility |D| q alone (q = pre-step loss, one batch: Felix new)
+            "s3uo": dict(hp=_S3, thp=_B1T),  # utility alone, q = EMA loss over the pass (Oort / Felix old)
+            "s3vu": dict(hp=_S3U, thp=_PB),  # |D| q per second
+            "s3vuo": dict(hp=_S3U, thp=_B1T),  # |D| q per second, Oort's q
+            "s3vub": dict(hp=f"{_S3U} {_BAL}", thp=_PB),  # + balance
+            "s3vubx": dict(hp=f"{_S3U} {_BAL} sel.scoreUcb=true", thp=_PB),  # + UCB
+            "s3vubx_oc": dict(hp=f"{_B1.replace('sel.selectType=random', 'sel.selectType=default')} {_C3} {_BAL}", thp=_PB),
+            "b1_c33": dict(hp=_B1, thp=_B1T, c=33, cells=("s50u",))}
 F42_ARMS["l3b_ro_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep opt.agg_rate_conf.type=old", thp=_PRE)  # FX-N132: FedBuff's rate
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
@@ -461,7 +475,7 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
             if arm in F43_ARMS:
                 out.append(replace(ph, pid=ph.pid.replace("F42_", "F43_"), runtime_s=F43_RUNTIME_S[ds], agg_hp=f"{ph.agg_hp} {F43_STOP}", **F43_SHAPE[ds]))
         return out
-    if tier == "F44":  # FX-N141 loop FL1: F42 arms reused for anchors, F44_ARMS on top
+    if tier in ("F44", "F45"):  # FX-N141 loop FL1: F42 arms reused for anchors, the step's arms on top
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
         out = []
@@ -470,15 +484,16 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
             base = replace(g3, runtime_s=F44_RUNTIME_S, trace=trace, trace_offset_s="86400" if stream else "", kind="sim_ev",
                            trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S} {F43_STOP}",
                            **F44_SHAPE[ds])
-            for arm, kw in F44_ARMS.items():
-                if ds == "google_speech" and arm not in F44_SPEECH_ARMS:
+            for arm, kw in (F44_ARMS if tier == "F44" else F45_ARMS).items():
+                if ds == "google_speech" and (tier != "F44" or arm not in F44_SPEECH_ARMS) or cell not in kw.get("cells", (cell,)):
                     continue
                 ref = F42_ARMS.get(arm, {})
                 hp, thp = kw.get("hp", ref.get("hp", "")), kw.get("thp", ref.get("thp", ""))
                 bls = tuple(b for b in kw.get("bls", ref.get("bls", ("felix",))) if b in baselines)
                 if bls:
-                    out.append(replace(base, pid=f"{DS_TAG[ds]}F44_{cell}_{arm}", baselines=bls,
-                                       agg_hp=f"{base.agg_hp} {hp}".strip(), trainer_hp=f"{base.trainer_hp} {thp}".strip()))
+                    out.append(replace(base, pid=f"{DS_TAG[ds]}{tier}_{cell}_{arm}", baselines=bls,
+                                       agg_hp=f"{base.agg_hp} {hp}".strip(), trainer_hp=f"{base.trainer_hp} {thp}".strip(),
+                                       **{k: kw[k] for k in ("c",) if k in kw}))
         return out
     if tier == "F42R":  # F42-T7 / T9 on GPU: G3 real legs, 8 min wall: Felix notify + the check-in baselines
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
@@ -2144,7 +2159,7 @@ def code_key() -> str:
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F42 F42C F42CR F42R F43 F44, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F42 F42C F42CR F42R F43 F44 F45, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

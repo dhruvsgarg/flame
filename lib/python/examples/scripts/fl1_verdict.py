@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """FX-N141 loop FL1: each arm vs FedBuff (averaged models, same batch) per cell; PASS = final >= FedBuff's - band and no slower at
-every target up to the highest either reaches. Diversity beside it: top-20% share of train tasks and client coverage.
+every target up to the highest either reaches. Beside it: updates, mean staleness, slot starvation, top-20% share, coverage.
 
   fl1_verdict.py POOL... [--ceiling C.json ...] [--band-pp 1.0] [--json-out V.json]
 
@@ -30,6 +30,24 @@ def diversity(run_dir):
         return None, None
     counts.sort(reverse=True)
     return sum(counts[:max(1, len(counts) // 5)]) / sum(counts), sum(c > 0 for c in counts) / len(counts)
+
+
+def pace(run_dir):
+    """(aggregated updates, mean staleness, slot-starvation events): the throughput -> staleness trade (F44 S1)."""
+    n = tot = starve = 0
+    for f in glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl")):
+        with open(f, "rb") as fh:
+            for line in fh:
+                if b'"slot_starvation"' in line:
+                    starve += 1
+                elif b'"agg_round"' in line:
+                    st = json.loads(line).get("staleness") or []
+                    n, tot = n + len(st), tot + sum(st)
+    return n, (tot / n if n else None), starve
+
+
+def leg_stats(run_dir):
+    return diversity(run_dir) + pace(run_dir)
 
 
 def targets(ds, trace, horizon_h, ceil):
@@ -67,7 +85,7 @@ def main(argv=None):
         groups.setdefault((ds, trace), {})[(b, arm)] = dirs[0]
     rows = []
     with Pool(min(32, len(cs) or 1)) as pool:
-        div = dict(zip([d for g in groups.values() for d in g.values()], pool.map(diversity, [d for g in groups.values() for d in g.values()])))
+        div = dict(zip([d for g in groups.values() for d in g.values()], pool.map(leg_stats, [d for g in groups.values() for d in g.values()])))
     for (ds, trace), legs in sorted(groups.items()):
         if ANCHOR not in legs:
             print(f"\n## {ds} {trace}: no FedBuff anchor, skipped")
@@ -78,19 +96,20 @@ def main(argv=None):
         st = {k: stats(d, ths, smooth) for k, d in legs.items()}
         fb = st[ANCHOR]
         print(f"\n## {ds} {trace} (horizon {horizon:.0f} h; targets {', '.join(f'{100 * t:.1f}' for t in ths)}%)\n"
-              "| arm | final % | " + " | ".join(f"min→{100 * t:.1f}" for t in ths) + " | GB | top-20% | coverage | verdict |\n|"
-              + "---|" * (len(ths) + 6))
+              "| arm | final % | " + " | ".join(f"min→{100 * t:.1f}" for t in ths) + " | GB | updates | stale | starve | top-20% | coverage | verdict |\n|"
+              + "---|" * (len(ths) + 9))
         for (b, arm), s in sorted(st.items(), key=lambda kv: -(kv[1] or {}).get("final", 0)):
             if s is None:
                 continue
             v = ("anchor", "") if (b, arm) == ANCHOR else judge(s, fb, ths, a.band_pp / 100)
-            top, cov = div[legs[(b, arm)]]
+            top, cov, ups, stale, starve = div[legs[(b, arm)]]
             print(f"| {b} {label(arm)} | {100 * s['final']:.1f} | " + " | ".join("–" if s[f'tta{t:g}'] is None else f"{s[f'tta{t:g}']:.0f}"
                                                                           for t in ths)
-                  + f" | {s['gb']:.0f} | {'–' if top is None else f'{100 * top:.0f}%'} | {'–' if cov is None else f'{100 * cov:.0f}%'}"
+                  + f" | {s['gb']:.0f} | {ups / 1000:.0f}k | {'–' if stale is None else f'{stale:.1f}'} | {starve / 1000:.0f}k"
+                  f" | {'–' if top is None else f'{100 * top:.0f}%'} | {'–' if cov is None else f'{100 * cov:.0f}%'}"
                   f" | {v[0]} {v[1]} |")
             rows.append(dict(dataset=ds, cell=trace, baseline=b, arm=arm, verdict=v[0], why=v[1], top20=top, coverage=cov,
-                             **{k: s[k] for k in s}))
+                             updates=ups, staleness=stale, starvation=starve, **{k: s[k] for k in s}))
     if a.json_out:
         json.dump(rows, open(a.json_out, "w"), indent=1)
     return 0

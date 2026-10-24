@@ -115,6 +115,9 @@ class AsyncOortSelector(AsyncSelectorBase):
         self.utility_per_second = str(kwargs.get("utilityPerSecond", False)).lower() == "true"
         # balance: utility x (1 + picks / mean picks)^-gamma (0 = off)
         self.participation_decay = float(kwargs.get("participationDecay", 0.0) or 0.0)
+        # FX-N141 S3 (selectType=prop): false = score without |D| q (speed only); scoreUcb adds Oort's temporal term to score / max
+        self.score_utility = str(kwargs.get("scoreUtility", True)).lower() == "true"
+        self.score_ucb = str(kwargs.get("scoreUcb", False)).lower() == "true"
 
         # With Oort, we select 1.3 * k ends and wait until k ends to
         # complete at a round
@@ -254,6 +257,14 @@ class AsyncOortSelector(AsyncSelectorBase):
             return self.select_random(
                 candidates, num_of_ends=feasible_extra, agg_version_key=agg_version_key
             )
+
+        if self.select_type == "prop":
+            chosen = self._select_candidates_prop(candidates, utility_list, unexplored_end_ids, feasible_extra, model_version,
+                                                  agg_version_key)
+            self._pick_split = {"exploit": set(chosen) - set(unexplored_end_ids), "explore": set(chosen) & set(unexplored_end_ids)}
+            self.increment_selected_count_on_selected_ends(candidates, {end_id: candidates[end_id] for end_id in chosen})
+            self.round = model_version
+            return chosen
 
         # The percentile must see the FULL registered client population, not
         # this call's transient candidate pool -- reference Oort computes it
@@ -596,6 +607,8 @@ class AsyncOortSelector(AsyncSelectorBase):
             ):
                 end_utility = ends[end_id].get_property(PROP_STAT_UTILITY)
                 size = ends[end_id].get_property(PROP_DATASET_SIZE)
+                if end_utility is not None and not self.score_utility:
+                    end_utility = 1.0
                 if end_utility is not None and self.utility_per_sample and size:
                     end_utility = end_utility / size
                 if end_utility is not None and self.utility_per_second:
@@ -829,6 +842,20 @@ class AsyncOortSelector(AsyncSelectorBase):
 
         candidates = [*explore_end_ids, *exploit_end_ids]
         return candidates, exploit_end_ids
+
+    def _select_candidates_prop(self, ends, utility_list, unexplored_end_ids, k, model_version, agg_version_key=None) -> list:
+        """FX-N141 S3: never-trained ends first (coverage floor), the rest sampled ∝ score / max (+ UCB when scoreUcb)."""
+        chosen = self._keyed_topk(unexplored_end_ids, k, agg_version_key, "prop_explore")
+        top = max((u[PROP_UTILITY] for u in utility_list), default=0.0)
+        pairs = []
+        for u in utility_list:
+            w = u[PROP_UTILITY] / top if top > 0 else 1.0
+            if self.score_ucb:
+                w += self.calculate_temporal_uncertainty_of_trainer(ends, u[PROP_END_ID], model_version)
+            if w > 0:
+                pairs.append((u[PROP_END_ID], w))
+        need = min(len(pairs), k - len(chosen))
+        return chosen + (self._keyed_weighted_topk(pairs, need, agg_version_key, "prop_score") if need > 0 else [])
 
     # Invoked when selection mode is maxSamples i.e. select clients with
     # largest local datasets

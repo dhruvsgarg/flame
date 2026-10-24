@@ -876,6 +876,27 @@ class TestUtilityPerSecond:
         assert got["a"] == pytest.approx(10.0 / 2.5) and got["b"] == pytest.approx(10.0 / 1.5)
 
 
+class TestPropSelect:
+    """FX-N141 S3: selectType=prop picks never-trained ends first, then samples ∝ score; scoreUtility=false scores speed only."""
+
+    @staticmethod
+    def _sel(**kw):
+        return AsyncOortSelector(c=30, aggGoal=10, evalGoalFactor=0, roundNudgeType="last_train", selectType="prop", **kw)
+
+    def test_speed_only_score(self):
+        sel = self._sel(scoreUtility="false", utilityPerSecond="true")
+        ends = TestUtilityPerSecond._ends((("a", 100.0, 10.0, 1), ("b", 300.0, 100.0, 1)))
+        ul, _ = sel.fetch_statistical_utility(ends, [], [])
+        assert {x["end_id"]: x["utility"] for x in ul} == {"a": 0.1, "b": 0.01}
+
+    def test_unexplored_first_then_proportional(self):
+        sel = self._sel()
+        ul = [{"end_id": "a", "utility": 1.0}, {"end_id": "b", "utility": 1e-9}]
+        assert sel._select_candidates_prop({}, ul, ["u"], 2, 5, agg_version_key=1)[0] == "u"
+        picks = [sel._select_candidates_prop({}, ul, [], 1, 5, agg_version_key=v)[0] for v in range(200)]
+        assert picks.count("a") > 190
+
+
 class TestEvalStaleGate:
     """FX-N109: evalStaleGate sets the versions since a trainer's last eval/train before it is eval-eligible."""
 

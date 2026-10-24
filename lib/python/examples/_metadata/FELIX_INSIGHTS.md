@@ -119,6 +119,19 @@ reconstruction (§4 #4).
 
 ## 5. Findings (measured; each line cites its evidence)
 
+**FL1 log (FELIX FX-N141; cifar bench n 300, 12 h; standing: one crisp line per worked / failed mechanism, for motivation / eval).**
+- *Unaware async idles, and the idling hides staleness (F44 `s50u`, `FL1_1023_1700`).* FedBuff waits on check-ins (98k
+  slot-starvation events) and holds slots of departed clients to the 903 s timeout: ~33 of 60 slots busy, 116k updates. Notify /
+  evict (`b1`) keeps all 60 busy: 213k updates, 50-55% 80 min sooner, but staleness 7.8 vs 4.8 under the same 1/√(1+τ) rate costs
+  1.2 pp final. Motivation: awareness buys speed; aggregation must absorb the staleness it creates. Test: F45 `b1_c33`.
+- *More local epochs = drift, not staleness (F44 `b1gw_e3`).* Same staleness (3.9), 45-60% fewer updates, equal accuracy to 4 h
+  then −3 pp by 8 h on non-IID α 0.1; GB −28 to −58%. Local work needs per-client control, not a global epoch count.
+- *Weight decay on clients does nothing for async cifar (F44 `b1gw`):* ±0.5 pp final vs `b1`.
+- *Static data has no plateau (F44 `s0`):* every arm 64-68.5% at 12 h; the 54-57% stream plateau is the stream's data, not Felix.
+- *Speed alone selects small shards (F45 smoke, 1 h):* picks~size ρ −0.40, 18 samples / update vs population 27; adding |D| q
+  flips it (+0.53); utility alone is all size (+0.91) at 36% fewer updates. Speed alone starves big-data clients; utility
+  alone starves fast ones.
+
 **Every finding below ran on work-independent task durations (before FELIX FX-D197, 10-20) and is void for the paper;
 kept only as hypotheses to re-measure.**
 

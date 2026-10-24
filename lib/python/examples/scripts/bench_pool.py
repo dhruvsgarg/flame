@@ -84,7 +84,7 @@ def main(argv=None):
     queue = [(j, s) for j in jobs for s in a.seeds]
     g = a.gpus.split(",")
     groups = [",".join(g[i:i + a.gpus_per_leg]) for i in range(0, len(g) - a.gpus_per_leg + 1, a.gpus_per_leg)]
-    slots = [x for x in groups for _ in range(a.per_gpu)]
+    slots = [x for _ in range(a.per_gpu) for x in groups]  # round-robin: spread legs over GPUs first
     running, done, t0 = {}, [], time.time()
     print(f"[bench_pool] {len(queue)} legs on {len(slots)} slots ({a.gpus} x {a.per_gpu}), timeout {a.timeout_s:.0f}s", flush=True)
 

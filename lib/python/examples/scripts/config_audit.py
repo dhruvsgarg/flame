@@ -39,6 +39,13 @@ EXPECT = {
     ("felix", "b1"): _B1, ("felix", "b1w"): dict(_B1, wd="0.0005"), ("felix", "b1g"): dict(_B1, nclip="3"),
     ("felix", "b1gw"): dict(_B1, nclip="3", wd="0.0005"),
     ("felix", "b1gw_e2"): dict(_B1, nclip="3", wd="0.0005", ep="2"), ("felix", "b1gw_e3"): dict(_B1, nclip="3", wd="0.0005", ep="3"),
+    # F45 / FL1 S3: b1 + selectType=prop, one score term at a time
+    ("felix", "s3v"): dict(_B1, sel="prop", ups="true", su="false"), ("felix", "s3vu"): dict(_B1, sel="prop", ups="true", prefix="-1"),
+    ("felix", "s3vub"): dict(_B1, sel="prop", ups="true", prefix="-1", bal="1.0"),
+    ("felix", "s3vubx"): dict(_B1, sel="prop", ups="true", prefix="-1", bal="1.0", ucb="true"),
+    ("felix", "s3u"): dict(_B1, sel="prop", prefix="-1"), ("felix", "s3uo"): dict(_B1, sel="prop"),
+    ("felix", "s3vuo"): dict(_B1, sel="prop", ups="true"), ("felix", "s3vubx_oc"): dict(_B1, sel="-", ups="true", prefix="-1", bal="1.0"),
+    ("felix", "b1_c33"): dict(_B1, c="33"),
     ("fedbuff", "ctl_srv"): dict(know="checkin", evict="false", rate="old", serve="sweep"),
     ("fedbuff", "*"): dict(know="checkin", evict="false", rate="old"), ("fedbuff", "fbstar"): dict(know="oracle", evict="false", rate="old"),
     ("refl", "ctl"): dict(know="checkin", evict="false", pred="prophet", holdoff="0"),
@@ -48,7 +55,7 @@ EXPECT = {
     ("fedavg", "*"): dict(know="checkin", evict="false"),
     ("oort", "*"): dict(know="checkin", evict="false"), ("oort_star", "*"): dict(know="oracle", evict="false"),
 }
-COMMON = dict(holdout="-", serve="-", p34="ok", sel="-", nclip="-", lrn="-", wd="-", ep="-")
+COMMON = dict(holdout="-", serve="-", p34="ok", sel="-", nclip="-", lrn="-", wd="-", ep="-", su="-", ucb="-")
 
 
 def _s(v):
@@ -74,7 +81,8 @@ def knobs(run_dir, trainer_hp):
                 timeout=_s(hp.get("send_timeout_wait_s")), lr=_s(opt.get("learning_rate")), kfc=_s(dk.get("k_follows_c")),
                 vrep=_s(trainer_hp.get("validation_report")), serve=_s(hp.get("serveEma")), sel=_s(sel.get("selectType")).replace("default", "-"),
                 nclip=_s(opt.get("norm_clip")), lrn=_s(trainer_hp.get("lr_batch_normalize")),
-                wd=_s(trainer_hp.get("trainerWeightDecay")), ep=_s(trainer_hp.get("epochs")))
+                wd=_s(trainer_hp.get("trainerWeightDecay")), ep=_s(trainer_hp.get("epochs")),
+                su=_s(sel.get("scoreUtility")), ucb=_s(sel.get("scoreUcb")))
 
 
 def holdout_check(run_dir, holdout):
@@ -127,7 +135,7 @@ def main(argv=None):
     pools = (argv if argv is not None else sys.argv[1:])
     bad = 0
     cols = ("know", "evict", "eval", "ups", "bal", "dkc", "rate", "probe", "vprobe", "prefix", "holdout", "pred", "prio", "prob",
-            "checkin", "holdoff", "K", "c", "timeout", "lr", "serve", "sel", "nclip", "lrn", "wd", "ep", "p34")
+            "checkin", "holdoff", "K", "c", "timeout", "lr", "serve", "sel", "nclip", "lrn", "wd", "ep", "su", "ucb", "p34")
     print("| leg | " + " | ".join(cols) + " | ok |\n|" + "---|" * (len(cols) + 2))
     for pool in pools:
         for leg, b, arm, k in legs(pool):
