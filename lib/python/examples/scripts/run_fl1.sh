@@ -16,7 +16,7 @@ case $HOST in
     jayne) GPUS=${GPUS:-0,2,3,4,5,6,7}; PER_GPU=${PER_GPU:-3}; ONLY=${ONLY:-${TIER}_s0u?_} ;;  # GPU 1: aggregate ECC (ROBUST)
     *)     GPUS=${GPUS:-0,1,2,3,4,5,6,7}; PER_GPU=${PER_GPU:-3}; ONLY=${ONLY:-${TIER}_s50u_} ;;
 esac
-CEIL=experiments/ceiling_1022
+CEIL=experiments/ceiling_1024_aug  # FX-N143: augmented ceilings
 
 [ -z "$(git status --porcelain -uno)" ] || { echo "[FL1] tree dirty"; exit 1; }
 mkdir -p "$OUT"
@@ -32,7 +32,7 @@ echo "[FL1] running $ONLY on GPUs $GPUS; log $OUT/cifar.log"
 wait
 
 # CARRY: earlier pools whose unchanged arms join the verdict (this batch's FedBuff stays the anchor: first pool wins)
-$PY scripts/fl1_verdict.py "$OUT/cifar" ${CARRY:-} --ceiling $CEIL/b64_cifar10_n300_syn_0.json $CEIL/b64_cifar10_n300_syn_50_3st.json \
+$PY scripts/fl1_verdict.py "$OUT/cifar" ${CARRY:-} --ceiling $CEIL/cifar10_n300_syn_0.json $CEIL/cifar10_n300_syn_50_3st.json $CEIL/cifar10_n300_mobiperf_3st.json \
     --json-out "$OUT/cifar_verdict.json" > "$OUT/cifar_verdict.md" 2>&1
 $PY scripts/config_audit.py "$OUT/cifar" > "$OUT/config_audit.md" 2>&1 || echo "[FL1] config_audit: mismatches (see config_audit.md)"
 $PY scripts/selection_audit.py "$OUT/cifar" > "$OUT/selection_audit.md" 2>&1 || echo "[FL1] selection_audit failed"

@@ -160,7 +160,7 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     trainer_deterministic: bool = Field(alias="trainerDeterministic", default=False)  # FX-D149: deterministic cuDNN kernels
     trainer_update_norms: bool = Field(alias="trainerUpdateNorms", default=False)  # per-batch grad norm + delta L2 telemetry
     utility_on_receive: bool = Field(alias="utilityOnReceive", default=False)  # FX-N109 I9: utility before training
-    trainer_augment_each_pass: bool = Field(alias="trainerAugmentEachPass", default=False)  # FX-D233: fresh crop / flip per batch
+    trainer_augment_each_pass: bool = Field(alias="trainerAugmentEachPass", default=True)  # FX-D233/N143: fresh per-batch train augmentation
     # FX-N119: > 0 = utility from the first ~S training samples' loss (the received model's, no extra pass); 0 = epoch EMA
     utility_prefix_samples: int = Field(alias="utilityPrefixSamples", default=0)
     trainer_amp: str = Field(alias="trainerAmp", default="")  # FX-N98: "bf16" = bf16 autocast forward on CUDA; "" = fp32

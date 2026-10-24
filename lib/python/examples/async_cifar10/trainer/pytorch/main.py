@@ -426,8 +426,9 @@ class PyTorchCifar10Trainer(Trainer):
 
     @property
     def _augment_each_pass(self) -> bool:
-        """FX-D233: GPU preload freezes one augmentation draw per sample; this re-draws it every batch (cifar only)."""
-        return bool(getattr(self.config.hyperparameters, "trainer_augment_each_pass", False)) and self.data_spec.name == "cifar10"
+        """FX-D233 / N143: fresh per-batch draws of the dataset's standard train augmentation (GPU preload froze one per sample)."""
+        return bool(getattr(self.config.hyperparameters, "trainer_augment_each_pass", True)) \
+            and getattr(self, "harness_mode", None) != "stub"
 
     @property
     def data_spec(self) -> "fl_data.DatasetSpec":
@@ -580,7 +581,7 @@ class PyTorchCifar10Trainer(Trainer):
             indices = torch.arange(n)
         else:
             dataset = self.data_spec.train()
-            if self._augment_each_pass:  # FX-D233: load plain; _train_epoch draws crop / flip per batch
+            if self._augment_each_pass and self.data_spec.name == "cifar10":  # FX-D233: load plain; _train_epoch draws crop / flip per batch
                 dataset.transform = fl_data.cifar_plain_tf()
 
             # create indices into a list and convert to tensor
@@ -1186,7 +1187,7 @@ class PyTorchCifar10Trainer(Trainer):
                 break
             data, target = data.to(self.device), target.to(self.device)
             if self._augment_each_pass:
-                data = fl_data.augment_batch(data)
+                data = fl_data.augment(self.data_spec.name, data)
             self.optimizer.zero_grad(set_to_none=True)  # Use set_to_none=True for better memory
             if self.config.hyperparameters.lr_batch_normalize:  # FedBuff §5 learning-rate normalization
                 for g in self.optimizer.param_groups:

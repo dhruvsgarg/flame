@@ -205,6 +205,51 @@ def augment_batch(x: torch.Tensor, pad: int = 4) -> torch.Tensor:
     return out
 
 
+_NOISE: dict = {}
+
+
+def _speech_noise(device) -> torch.Tensor:
+    """FedScale's BackgroundNoiseDataset: the `_background_noise_` clips concatenated, cut into 1 s rows (float, cached per device)."""
+    if device not in _NOISE:
+        from scipy.io import wavfile
+
+        clips = [torch.from_numpy(wavfile.read(p)[1].astype(np.int16)) for p in sorted((speech_root() / "_background_noise_").glob("*.wav"))]
+        x = torch.cat(clips).float() / 32768.0
+        _NOISE[device] = x[: len(x) // SPEECH_LEN * SPEECH_LEN].view(-1, SPEECH_LEN).to(device)
+    return _NOISE[device]
+
+
+def augment_speech_batch(x: torch.Tensor, p: float = 0.5) -> torch.Tensor:
+    """FX-N143: FedScale's google_speech train augmentation (fllibs.py), each with p 0.5 per clip, on a float waveform batch [B, 1, L]:
+    amplitude x U(0.7, 1.1); speed + pitch by 1 / (1 + U(-0.2, 0.2)), cut / zero-padded to L; shift by up to 8 STFT hops of 512
+    (0.256 s); background noise mix U(0, 0.45). Omitted: STFT phase-vocoder stretch (speed covers duration)."""
+    b, _, n = x.shape
+    dev = x.device
+    on = lambda: torch.rand(b, device=dev) < p
+    x = torch.where(on()[:, None, None], x * torch.empty(b, 1, 1, device=dev).uniform_(0.7, 1.1), x)
+    t = torch.arange(n, device=dev, dtype=torch.float32)
+    f = torch.where(on(), 1.0 / (1.0 + torch.empty(b, device=dev).uniform_(-0.2, 0.2)), torch.ones(b, device=dev))
+    shift = torch.where(on(), torch.randint(-round(0.256 * n), round(0.256 * n) + 1, (b,), device=dev), torch.zeros(b, dtype=torch.long, device=dev))
+    u = t[None, :] + shift[:, None]  # shift after the speed change: out[t] = sped[t + shift], sped[u] = in[u * f] for u < n
+    pos = u * f[:, None]
+    i0 = pos.floor().long()
+    w = pos - i0
+    valid = (u >= 0) & (u <= n - 1) & (pos <= n - 1)
+    xs = x[:, 0, :]
+    y = (1 - w) * xs.gather(1, i0.clamp(0, n - 1)) + w * xs.gather(1, (i0 + 1).clamp(0, n - 1))
+    y = torch.where(valid, y, torch.zeros_like(y))
+    if n == SPEECH_LEN:  # the noise bank is 1 s rows (harness stub clips are shorter)
+        noise = _speech_noise(dev)
+        pct = torch.where(on(), torch.empty(b, device=dev).uniform_(0, 0.45), torch.zeros(b, device=dev))[:, None]
+        y = y * (1 - pct) + noise[torch.randint(len(noise), (b,), device=dev)] * pct
+    return y[:, None, :].to(x.dtype)
+
+
+def augment(name: str, x: torch.Tensor) -> torch.Tensor:
+    """FX-N143: the dataset's standard train augmentation, fresh draws per batch."""
+    return augment_batch(x) if name == "cifar10" else augment_speech_batch(x)
+
+
 def _cifar_train():
     import torchvision.transforms as T
     from torchvision.datasets import CIFAR10

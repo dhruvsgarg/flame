@@ -146,7 +146,7 @@ reconstruction (§4 #4).
   and leaves finals within 0.4 pp. Static shards (few partial batches) don't change.
 - *Streams overfit once the window's data is learned (F46 `fn`, hourly evals + trainer `visible_samples`):* the federation sees
   only ~8.4k → 12.1k samples over the 12 h window (+3% / h; 1.5-3% of tasks see new data), and a centralized model on the same
-  data gains just 59.8 → 61.8%, so the plateau is mostly data (same on F45's every stack). Overfitting sits on top: test loss
+  data gains just 59.8 → 61.8% (that ceiling froze draws too; F47 refutes "mostly data"). Overfitting sits on top: test loss
   bottoms at 1.24 at 2 h and climbs to 3.1 at flat accuracy while clients' loss of the received model falls to 0.03. Arms that train less late (c by phase,
   c 30) hold test loss at 1.3-1.8 and end +0.3-1.5 pp. Cause found: the trainer's GPU preload freezes one crop / flip draw per
   sample, so every stack re-fits identical images (FX-D233). Open: whether an overfit model absorbs day 2's data (F47, 24 h).
@@ -158,10 +158,36 @@ reconstruction (§4 #4).
 - *A fit client's loss cannot tell new data from noise; pacing c can (F46 offline, FX-T88):* jumps ×8 vs a client's own last task
   hit 5.8% of tasks on static data (none new) vs 3.4-3.6% on streams. But c by phase regulates itself: as c falls, each pick waits
   longer and carries more new data (`s0u` `uo_cp`: tasks with new data 5.8 → 12.3 → 20.3% at 3-6 / 6-9 / 9-12 h vs a flat 3% at
-  c 60), which lifts the received-model loss and so φ and c. Training paces itself to data arrival without a per-client detector.
+  c 60), which lifts the received-model loss and so φ and c. *Refuted over 48 h (F47):* c sits at its floor 10 (φ ≤ 0.12) from
+  6-8 h to 48 h while data keeps arriving; c by phase saves bytes, it does not pace.
+- *Frozen crop draws, not data, made the stream plateau (F47 `aug` A/B, `FL1_1024_0432`):* per-batch crop / flip keeps test loss
+  < 1 and clients' received-model loss at 1.2-1.3 (vs 0.03-0.13) and lifts Felix +10-12 pp at 4 h, FedBuff +11-13 at 8-12 h, MobiPerf
+  +16-17 pp; streams reach 70% in 5.5-5.8 h (Felix) past the old frozen-draw ceiling. With it Felix's lead no longer fades: 65%
+  1.9-2.7× sooner than FedBuff at 36-58% fewer GB on static / syn traces, ahead at every eval.
+- *MobiPerf removes choice before it removes slots (F47 `smu`):* ~50-67 of 300 trainable vs c 60, so Felix's picks equal FedBuff's
+  (picks~size −0.45 vs −0.46, τ 15) and its edge to 65% falls to 1.24× (−9% GB). c × trainable share (≈ 12) restores choice
+  (+0.48, τ 3.3) and ends +3.8 pp on 92% fewer GB, but reaches 40% 4× later: the case for a pool-aware c that keeps early throughput.
 - *Augmentation is setup hygiene, not a Felix claim (FX-D233):* it lifts every multi-pass learner (Felix, FedBuff, Oort's 600-sample
-  tasks); 1-step REFL / FedDance barely revisit a sample and their test loss stays ~1.35 (F43), so they gain little. The relative
-  gap must come from pacing (c by phase / availability, F47).
+  tasks); 1-step REFL / FedDance barely revisit a sample and their test loss stays ~1.35 (F43), so they gain little. F47: Felix's
+  gap over FedBuff holds with augmentation on both, without any pacing (65% 1.9-2.7× sooner on syn traces).
+- *Dynamic c: throughput first, choice once data is fit (F48a, `FL1_1024_F48c`, cifar MobiPerf, augmentation, 3 h;
+  `dynamic_c_report.py`).* Every fixed bound that restores choice loses early: c ≤ ½ / ⅓ trainable or c × share lift picks~size
+  from −0.36 to +0.18 / +0.42 / +0.54 but end 48.6 / 43.8 / 36.5% vs c 60's 51.8% (26k / 14k / 7k vs 77k updates). Early every
+  update helps and the model is far from fit, so updates beat selection. The ramp, c = φ · 60 + (1 − φ) · min(60, ½ trainable),
+  keeps c 60's pace (same eval tick at 40 / 45 / 50%, 52.1%) on 19% fewer GB.
+  - *Ramp down:* φ = mean client loss over the last n updates / its running peak, recomputed every commit (K updates), so c follows
+    the fit within minutes: 57 → 52 → 47 → 43 → 37 → 32 at 0.5-3 h as φ goes 0.88 → 0.28 (about −5 per half hour). It starts as soon
+    as clients fit their data, which is fastest where the pool is small and retrained often (MobiPerf).
+  - *Ramp up:* φ divides by a running peak, so it barely recovers (F47 c by phase: floor 10 from 6-8 h to 48 h while data kept
+    arriving). c rises through the pool term instead: as φ → 0, c → ½ trainable, so c tracks availability (F48a `ch2`: 21 → 24
+    when trainable rose 43 → 49 at 3 h). Day-long MobiPerf swings (charging at night) are F48L's question.
+  - *Never binds on syn traces:* ½ trainable ≥ 72 > 60 on syn_0 / syn_50_3st, so the ramp is a no-op there by construction.
+- *Why K stays fixed while c moves (reviewer question):* K is the buffer, the number of updates averaged per server step; c / K
+  sets staleness (τ ≈ c / K). Lowering c at fixed K lowers staleness (F48a τ 5.5 → 3.2), which is what unavailability needs.
+  Lowering K with c would keep τ but average fewer updates per step at rate `new`'s large weight (0.6-0.8), so noisier steps.
+  Measured: adaptive K (AIMD on loss, C4) walked K to its floor or to c with no gain (FX-T65); K 20 at c 60 lost to c 30 at K 10 at
+  the same τ (−0.5 pp at 2.3× GB, F46). And K is FedBuff's own choice (paper §6.1: K 10 across benchmarks), so only Felix's c
+  moves; c ≥ K keeps one full buffer in flight.
 - *Selectivity is c / trainable, not c / n (F46 `s50u`, FX-L103):* at c 60 of ~148 trainable, 40% of the pool is in flight and
   big-shard (long-task) clients are the ones held busy, so utility picks dilute (picks~size +0.67, 33 samples / update) vs c 30
   (+0.93, 40). Availability shrinks the selector's effective choice before it shrinks its slots: the case for c ∝ trainable count.
@@ -191,7 +217,7 @@ reconstruction (§4 #4).
 - *More local epochs = drift, not staleness (F44 `b1gw_e3`).* Same staleness (3.9), 45-60% fewer updates, equal accuracy to 4 h
   then −3 pp by 8 h on non-IID α 0.1; GB −28 to −58%. Local work needs per-client control, not a global epoch count.
 - *Weight decay on clients does nothing for async cifar (F44 `b1gw`):* ±0.5 pp final vs `b1`.
-- *Static data has no plateau (F44 `s0`):* every arm 64-68.5% at 12 h; the 54-57% stream plateau is the stream's data, not Felix.
+- *Static data has no plateau (F44 `s0`):* every arm 64-68.5% at 12 h; the 54-57% stream plateau was frozen-draw overfitting (F47).
 
 **Every finding below ran on work-independent task durations (before FELIX FX-D197, 10-20) and is void for the paper;
 kept only as hypotheses to re-measure.**

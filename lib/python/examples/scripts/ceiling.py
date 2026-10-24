@@ -22,7 +22,7 @@ import utility_bench as ub  # noqa: E402
 sys.path.insert(0, os.path.join(HERE, "..", "async_cifar10"))
 import stream_schedule  # noqa: E402
 
-EPOCHS = {"cifar10": 40, "google_speech": 15}
+EPOCHS = {"cifar10": 40, "google_speech": 30}  # speech: 15 under-trains with augmentation (68.7 vs 75.6% at 12 h)
 
 
 def visible_idx(ds, n, trace, offset_s):
@@ -42,7 +42,7 @@ def visible_idx(ds, n, trace, offset_s):
     return lambda t: [p for order, s in cl for p in order[:s.visible(len(order), t)]], sorted({j for k in keys for j in spl[k]})
 
 
-def ceiling(ds, idx, data, dev, epochs, batch=32):
+def ceiling(ds, idx, data, dev, epochs, batch=32, augment=True):
     X, Y, Xt, Yt = data
     m = (ub.fl_data.CifarNet() if ds == "cifar10" else ub.fl_data.ResNet34_1D()).to(dev)
     opt = torch.optim.SGD(m.parameters(), lr=0.04, momentum=0.9, weight_decay=5e-4)
@@ -53,9 +53,10 @@ def ceiling(ds, idx, data, dev, epochs, batch=32):
         random.shuffle(idx)
         for b in range(0, len(idx), batch):
             s = idx[b:b + batch]
+            x = ub.fl_data.augment(ds, ub.fl_data.model_input(X[s])) if augment else X[s]  # FX-N143: as the trainers
             opt.zero_grad()
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=ds != "cifar10"):
-                loss = F.nll_loss(fwd(X[s]).float(), Y[s])
+                loss = F.nll_loss(fwd(x).float(), Y[s])
             loss.backward()
             opt.step()
         m.eval()
@@ -74,6 +75,7 @@ def main(argv=None):
     ap.add_argument("--offset-h", type=float, default=24.0)
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--batch", type=int, default=32, help="cifar: 64 (v2_offline/ceiling300 recipe, best of the two)")
+    ap.add_argument("--no-augment", action="store_true", help="pre-FX-N143 ceiling (no augmentation)")
     ap.add_argument("--gpu", default="0")
     ap.add_argument("--json-out")
     a = ap.parse_args(argv)
@@ -85,7 +87,7 @@ def main(argv=None):
     out = []
     for h in a.hours:
         idx = at(h * 3600)
-        acc = ceiling(a.dataset, idx, data, dev, a.epochs or EPOCHS[a.dataset], a.batch)
+        acc = ceiling(a.dataset, idx, data, dev, a.epochs or EPOCHS[a.dataset], a.batch, not a.no_augment)
         out.append(dict(dataset=a.dataset, n=a.n, trace=a.trace, hour=h, samples=len(idx), ceiling=acc))
         print(f"{a.dataset} n {a.n} {a.trace} t {h:g} h: {len(idx)} visible samples -> ceiling {acc:.3f}", flush=True)
         if a.json_out:
