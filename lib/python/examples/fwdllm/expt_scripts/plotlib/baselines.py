@@ -104,16 +104,16 @@ SYSTEM_LABEL = "FluxTune"
 # round-level anchor -> +IT -> +IT+O (each step lightens by the same fraction,
 # so the amount of tinting itself reads as "how many derivation steps away").
 # fwdllm-lineage: vermillion (Okabe-Ito #D55E00).
-_FWDLLM_HUES = ["#D55E00", "#E29252", "#EDBB94"]      # fwdllm, +IT, +IT+O
+_FWDLLM_HUES = ["#D55E00", "#DD7E33", "#E69E66"]      # fwdllm, +IT, +IT+O
 # fedbuff-lineage: bluish-green (Okabe-Ito #009E73).
-_FEDBUFF_HUES = ["#009E73", "#52BDA0", "#94D6C4"]     # fedbuff_round, +IT, +IT+O
+_FEDBUFF_HUES = ["#009E73", "#33B18F", "#66C5AB"]     # fedbuff_round, +IT, +IT+O
 # felix-lineage: orange (Okabe-Ito #E69F00) — no +IT+O twin, just the 2 steps.
-_FELIX_HUES = ["#E69F00", "#EEBE52"]                  # felix_round, +IT
+_FELIX_HUES = ["#E69F00", "#EBB233"]                  # felix_round, +IT
 # Sequential CVD-safe blue ramp (ColorBrewer "Blues"), light→dark encodes
 # FluxTune's own opt-ablation ladder: more learning-affecting opts enabled ⇒
 # darker. Ordered, not categorical — the four fluxtune configs form a 2×2 over
 # Opt-2/Opt-3.
-_ABLATION_BLUES = ["#9ecae1", "#4292c6", "#2171b5", "#08306b"]
+_ABLATION_BLUES = ["#6baed6", "#3182bd", "#08519c", "#08306b"]
 # FluxTune: continuous/async reselect on its own selection+agg — not a ported
 # baseline with round/+IT/+IT+O siblings, so it gets its own dedicated blue
 # rather than joining a substrate ramp above. Literally the opt-ladder ramp's

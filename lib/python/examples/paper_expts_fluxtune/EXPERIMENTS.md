@@ -41,15 +41,29 @@ DistilBERT stays on AG News so the [C] ablations share the [A] cell (A0/A6 reuse
 
 **Sim mode (every figure run).** Trainers do the real compute; each task's device delay D is charged to the vclock instead
 of slept, so a cell runs 3.4× (DistilBERT) to 33× (RoBERTa-L) faster than real ([RUN_PLAN §4](RUN_PLAN.md#4-run-time-basis)).
-Every time axis and TTA is vclock. A sim number stands for real only when (1) the cell's D divisor (S) and charge profile
-(G0) come from real legs at the §2 recipe (pending for RoBERTa-L and 1.7B) and (2) real and sim agree at matched commits
-(checked on DistilBERT · AG News, 10-24). Run rules: [RUN_PLAN §2](RUN_PLAN.md#2-cells-pool-size-and-eval) "Sim and real legs".
+Every time axis and TTA is vclock. A sim number stands for real only when (1) the cell's D divisor (below, measured 10-24)
+and charge profile (G0, pending for RoBERTa-L and 1.7B) hold and (2) real and sim agree at matched commits (checked on
+DistilBERT · AG News, 10-24). Run rules: [RUN_PLAN §2](RUN_PLAN.md#2-cells-pool-size-and-eval) "Sim and real legs".
 
 **Eval:** DistilBERT scores the full test set every 4th commit. Yelp-P and Yahoo score 10% of the test set (3,800 / 6,000
 rows, ≈ ±1.2 pt at target), resampled per eval; stride = ⌈t_eval / s_commit⌉ + 1 from S.
 
-**Per-cell settings from S (operator 10-22):** the task-cost divisor D is re-derived per model (same formula, × 1.06);
-the `fwdllm` lr is screened on RoBERTa and 1.7B at {1e-4, 3e-4, 1e-3} (DistilBERT keeps 0.01); 1.7B's n 75 gets a
+**Task cost D per model (measured 10-24).** D = `training_delay_s` / divisor, where `training_delay_s` is each trainer's
+device-class delay (4–19 s, median 11, floored at 4.0). DistilBERT's divisor rests on the FwdLLM paper's NPU cost (0.3086
+s/sample; §9 10-22). Bigger models scale it by their A40 cost per task relative to DistilBERT at the same bs (one trainer
+alone per GPU, eval off; `fwdllm/ft_profile_20261024/` on shepherd): divisor = 0.478 / (ratio × bs / 8). `fwdllm` keeps
+the 10× arm ratio.
+
+| Cell | bs | A40 s / task (tasks) | Ratio vs DistilBERT bs 32 | `fluxtune` divisor | `fwdllm` divisor | `fluxtune` D (min–median–max) |
+|---|---|---|---|---|---|---|
+| DistilBERT · AG News | 8 | 0.238 (1,943); 0.375 at bs 32 (1,355) | 1 | **0.478** | **4.78** | 8.4 – 23 – 40 s |
+| RoBERTa-L · Yelp-P | 32 | 2.617 (129) | 6.98 | **0.0171** (0.0169 in use: within 1%) | **0.171** | 4 – 11 – 19 min |
+| SmolLM2-1.7B · Yahoo | 32 | 9.518 (8) | 25.4 | **0.0047** (was 0.0192: 4.1× too large) | **0.047** | 14 – 39 – 67 min |
+
+Assumes a phone NPU scales across models as an A40 does; plausible for RoBERTa-L, optimistic for 1.7B (likely
+memory-bound on a phone, so its D is a lower bound).
+
+**Per-cell settings from S (operator 10-22):** the `fwdllm` lr is screened on RoBERTa and 1.7B at {1e-4, 3e-4, 1e-3} (DistilBERT keeps 0.01); 1.7B's n 75 gets a
 short memory screen at bs 32.
 
 **FluxTune recipe** (every FluxTune arm: [A], A6, C4). The simplified controller
@@ -88,11 +102,11 @@ Three knobs, none tuned per setting. Rule, derivation and measurements:
 | Knob | Value | Rests on | Gap |
 |---|---|---|---|
 | N | 50, every cell | `N* ≈ 29·Λ_need²` per dataset · bs: AG News 34–42, Yahoo bs 32 38 (F0); p cancels across models | N 50 at ρ0 0.07 never run (N50 check); Yelp-P unmeasured; p cancellation rests on one point |
-| ρ0 | 0.07, every model | largest step that has run cleanly (DistilBERT, 0.067–0.068 on all three datasets); accuracy depends on Λ alone below it | nothing above 0.07 tested (R1/R2); large models untested (P3/P4 abort rule) |
+| ρ0 | 0.07 DistilBERT; 0.14 RoBERTa-L, 1.7B (operator 10-24) | 0.07 is the largest step that has run cleanly (DistilBERT, 0.067–0.068 on all three datasets); accuracy depends on Λ alone below it | nothing above 0.07 run yet (R1/R2 on DistilBERT; big cells via the P3/P4 abort rule, fallback 0.07); N\* scales with (ρ0/0.07)² (N row) |
 | Φ\* | 2 | P0 `exp` peaked at Φ 1.90, ended 1.93 | not swept |
-| T_res | 283 = 2·lnΦ\*/ρ0² (DistilBERT); 12 h cells solve T_res·(1 − e^(−T/T_res)) = 283 at T = `--max-commits` (~615 at T 380) | derived; horizon-aware so capped runs reach Φ\* | T from S's s/commit |
+| T_res | 2·lnΦ\*/ρ0²: 283 at ρ0 0.07 (DistilBERT), 71 at 0.14 (RoBERTa-L, 1.7B; T ~380 ≫ T_res, so horizon-aware ≈ 71) | derived; capped runs reach Φ\* | none at 0.14 |
 
-ρ0 is passed directly (`--rho0`); s = ρ0/cos is derived (2.10 / 2.41 / 2.81 at N 50) and logged. `--gate-safety-s` still works when `--rho0` is unset.
+ρ0 is passed directly (`--rho0`); s = ρ0/cos is derived (2.10 / 4.82 / 5.62 at N 50) and logged. `--gate-safety-s` still works when `--rho0` is unset.
 **n_eff cannot set N.** `n_eff = N·(1 + O(P/p))`: all six recent runs read n_eff/N = 1.000 median (≥ 0.956), since
 each upload is ~p/P ≈ 45,000× more probe noise than gradient. It detects only correlated probes; log it, don't gate on it.
 
@@ -125,7 +139,7 @@ Each item: action · exit · state. [B] adds no runs: it reads the [A] runs.
     learns. p 806,912; 0 OOM / dead trainers; acc 0.141 → 0.266 at commit 92; ρ 0.0373 fixed (`pool`, not capped);
     43 s/commit at N 50, vclock/wall ~17×; distinct clients / pool 0.74. Ran at N 50 / `pool` / bs 8 (s 1.5), not the cell's `exp` / bs 32 / ρ0 0.07.
   - [ ] 1.7B · Yahoo both arms at the §2 recipe (`exp`, bs 32, n 75; measures bs 32 s/commit for F2 and the n 75 memory fit); RoBERTa · Yelp-P both arms; charge profiles (the dry run used the DistilBERT `fluxtune_yahoo.yaml`).
-  - [ ] Per big cell: D divisor, `fwdllm` lr screen, F2 bs check (§2).
+  - [ ] Per big cell: `fwdllm` lr screen, F2 bs check (§2).
 - **P3 · [A] `roberta_large_yelp` · blocked: S.** 12 h wall cap, scored on TTA.
 - **P4 · [A] `smollm2_1p7b_yahoo` · blocked: S.** 12 h wall cap (~380 commits at bs 32, est. from the measured bs 8 pace; RUN_PLAN §4), scored on TTA.
 - **P5 · C2 cumulative ladder · blocked: P2.** Reuses P1/P2 arms where the config is identical.
@@ -302,8 +316,10 @@ python make_paper_figs.py --manifest figs_e2e.yaml --synthetic   # layout previe
 - The prior 1.7B run used N=50 (milder non-IID) and the October DistilBERT runs used N=50 (simplified) or the
   `n_target` gate (full controller, mean pool 49.5), not today's N=90; their accuracies are not like for like.
 - `learning_rate` is inert under trust ratio; the RoBERTa lr 3e-4 applies to the `fwdllm` arm only.
-- RoBERTa-L and 1.7B vclock hours rest on an estimated D divisor and pre-recipe dataset profiles until S and G0; quote
-  their TTA in hours only after that (FLUXTUNE FT-T11).
+- RoBERTa-L and 1.7B vclock hours rest on pre-recipe dataset profiles until G0; quote their TTA in hours only after
+  that (FLUXTUNE FT-T11). 1.7B runs before 10-24 used divisor 0.0192, so their vclock under-charges D 4.1×; their
+  accuracy per commit stands.
+- The big-model D assumes A40 cost ratios transfer to the phone NPU (§2); 1.7B's is likely a lower bound.
 
 ## 9. Legacy IDs cited in code
 
@@ -335,3 +351,4 @@ Decided 2026-10-22 (later): +6% buffer on both arms (D × 1.06, keeps the arm ra
 Decided 2026-10-22 (operator review): recipe, ρ0 0.07 (+ R1/R2, abort rule), Φ\* 2, stop rule, caps, targets, PEFT confirmed; T_res horizon-aware on
 both 12 h cells; bs 32 unless F2 fails; C = 0.3·n, K = C/3; 1.7B n 75 → 60 on OOM; big-cell eval 10% of test; per-model D; `fwdllm` lr screens;
 1 seed; `tta_consecutive` 2 everywhere; cos audit off everywhere; C3 trimmed (§4); `B_max origin` gate not applied to A0/`pool`; C5 deferred.
+Decided 2026-10-24 (operator): ρ0 0.14 on RoBERTa-L and 1.7B `fluxtune`, T_res 71 (Φ\* 2); DistilBERT stays 0.07. Open: N 50 vs N\* × 4 (RUN_PLAN §6).

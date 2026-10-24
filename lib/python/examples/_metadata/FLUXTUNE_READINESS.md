@@ -164,8 +164,8 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   14× (RUN_PLAN §4). The limit is the serial per-commit aggregator (~225 ms), not sleeps.
 - **FT-L11** Sim charges each task's modeled delay D = `training_delay_s / divisor` to the vclock; real sleeps it. Recipe D
   dwarfs GPU time (RoBERTa 237–1,124 s vs 9 s), so the gain ≈ D / GPU time.
-- **FT-L12** Size a real leg by D, not wall: at recipe divisors a RoBERTa / 1.7B iteration takes 4–19 min, first commit
-  ~1 h; a 10-min real leg measures speed only (`ft_models_check_20261024`, shepherd).
+- **FT-L12** Size a real leg by D, not wall: an iteration takes 4–19 min on RoBERTa-L, 14–67 min on 1.7B (EXPERIMENTS §2);
+  first commit ≥ 1 h. A 10-min real leg measures speed only (`ft_models_check_20261024`, shepherd).
 - **FT-L13** Compare real and sim at matched commits, never matched wall: n 50, real 103 commits at 0.33–0.34 vs sim
   0.32–0.37 at c100 (`ft_n50_check_20261024`, shepherd).
 - **FT-L14** Real `max_runtime_s` counts from aggregator start, join barrier included (minInit = N); 100 trainers take
@@ -176,6 +176,8 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   `FLAME_RUN_LABEL` each (`ft_models_check_20261024/run.sh`).
 - **FT-L17** SmolLM2-1.7B bs 32: ≤ 4 trainers per A40 when the aggregator shares the lane; 8 per GPU OOMed two trainers
   (`ft_models_check_20261024/first_try`).
+- **FT-L18** Measure a model's D from one trainer alone on a GPU, eval off: per-task cost varies ≤ 2%, so ~25 tasks fix
+  it; anchor the ratio to DistilBERT at the same bs (`ft_profile_20261024`, shepherd).
 
 ## FluxTune tripwires (don'ts)
 
@@ -194,10 +196,14 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
 - **FT-T9** Don't forget `export FWDLLM_FD_SCALE_INVARIANT=1` for v2 (the preflight errors without it).
 - **FT-T10** Don't leave short real `fluxtune` legs in `experiments/`: the profile-staleness preflight counts them and
   blocks every later `fluxtune` sim. Move smokes to their check dir.
-- **FT-T11** Don't read RoBERTa-L or 1.7B vclock hours as calibrated: their dataset profiles (`fluxtune_yelp-p.yaml`,
-  `fluxtune_yahoo.yaml`) predate the §2 recipe, and D's divisor is still an estimate until S.
+- **FT-T11** Don't read RoBERTa-L or 1.7B vclock hours as final: their dataset profiles (`fluxtune_yelp-p.yaml`,
+  `fluxtune_yahoo.yaml`) predate the §2 recipe until G0; 1.7B runs before 10-24 charged D 4.1× short (FT-T13).
 - **FT-T12** Don't give lanes one `FLAME_RUN_LABEL`: `run_sequential` then merges both legs' summaries (`AGG_KILLED`,
   `2 agg log(s)`); read stop reasons from each aggregator log.
+- **FT-T13** Don't scale D by model size alone: the divisor needs the bs factor too (D ∝ bs). 1.7B's 0.0192 missed bs 8 → 32;
+  measured 0.0047 (EXPERIMENTS §2).
+- **FT-T14** Don't time trainer cost with the aggregator's eval on the same GPU: a full-test eval slowed tasks 2.7–3.5× for
+  4–8 min (`ft_profile_20261024`); cap or skip eval when profiling.
 
 ---
 

@@ -25,6 +25,8 @@ DNF = "DNF"          # seed never reached target
 
 _ARM_MARKERS = ["o", "s", "D", "v", "P", "X", "h", "<", ">"]
 _ARM_LS = ["--", ":", "-."]
+# saturated categorical hues for non-registry arms; skip FwdLLM vermillion / FluxTune navy
+_ARM_COLORS = ["#009E73", "#AA3377", "#E69F00", "#56B4E9", "#000000", "#999933"]
 
 
 # --------------------------------------------------------------------------- #
@@ -39,14 +41,11 @@ class Arm:
 
 
 def arm_style(key, label=None, idx=0, n=1, sync=False):
-    """Registry style for a baseline key; else a step on FluxTune's blue ladder ramp."""
+    """Registry style for a baseline key; else a distinct categorical hue."""
     if key in B.BASELINES:
         st = B.BASELINES[key]
         return dataclasses.replace(st, label=label or st.label)
-    import matplotlib
-    frac = 0.35 + 0.45 * (idx / max(1, n - 1))
-    color = matplotlib.colors.to_hex(matplotlib.colormaps["Blues"](frac))
-    return B.Style(key=key, label=label or key, color=color,
+    return B.Style(key=key, label=label or key, color=_ARM_COLORS[idx % len(_ARM_COLORS)],
                    linestyle=_ARM_LS[idx % len(_ARM_LS)],
                    marker=_ARM_MARKERS[idx % len(_ARM_MARKERS)],
                    emphasis="regular", order=50 + idx, sync=sync)
@@ -121,10 +120,10 @@ def _line(ax, x, y, st, smooth=0.0, label=None):
         return False
     xs, ys = zip(*pts)
     if smooth:
-        ax.plot(xs, ys, color=st.color, linestyle=st.linestyle, lw=0.7, alpha=0.22)
+        ax.plot(xs, ys, color=st.color, linestyle=st.linestyle, lw=0.8, alpha=0.3)
         ys = S.ema(list(ys), smooth)
     ax.plot(xs, ys, color=st.color, linestyle=st.linestyle, marker=st.marker,
-            markevery=0.12, markersize=4, lw=1.6, label=label, zorder=3,
+            markevery=0.12, markersize=4.5, lw=2.0, label=label, zorder=3,
             **st.marker_fill_kwargs())
     return True
 
@@ -166,7 +165,7 @@ def _ratio_callout(ax, x0, x1, y, text, color):
 def _shared_legend(fig, arms, ncol=None):
     from matplotlib.lines import Line2D
     handles = [Line2D([], [], color=a.style.color, linestyle=a.style.linestyle,
-                      marker=a.style.marker, markersize=4, lw=1.6,
+                      marker=a.style.marker, markersize=4.5, lw=2.0,
                       **a.style.marker_fill_kwargs()) for a in arms]
     fig.tight_layout(pad=0.3)
     fig.legend(handles, [a.label for a in arms], loc="lower center",
@@ -204,7 +203,7 @@ def draw_e2e_row(axes, arms, cell, opts, title_prefix=True):
         down = s["down_gb"][0] if s["down_gb"] else 0.0
         up = s["up_gb"][0] if s["up_gb"] else 0.0
         dnf = s["n_reached"] == 0
-        alpha = 0.45 if dnf else 1.0
+        alpha = 0.6 if dnf else 1.0
         ax_b.bar(i, down, 0.6, color=a.style.color, edgecolor="white", lw=1.0,
                  alpha=alpha, zorder=3)
         ax_b.bar(i, up, 0.6, bottom=down, color=a.style.color, hatch="....",
@@ -297,7 +296,7 @@ def fig_b1_participation(arms, cell, opts):
             continue
         ys = np.arange(1, len(mins) + 1) / len(mins) * 100
         p50 = float(np.median(mins))
-        ax.plot(mins, ys, color=a.style.color, linestyle=a.style.linestyle, lw=1.6,
+        ax.plot(mins, ys, color=a.style.color, linestyle=a.style.linestyle, lw=2.0,
                 label=f"{a.label} (P50 {p50:.1f} min)")
         ax.plot([p50], [50], marker="|", markersize=9, color=a.style.color)
         drawn.append(a)
@@ -352,7 +351,7 @@ def fig_b2_diversity(arms, cell, opts):
         lx = np.linspace(0, 100, c.size + 1)
         ly = np.concatenate([[0], np.cumsum(c) / c.sum() * 100])
         g = _gini(counts)
-        ax_b.plot(lx, ly, color=a.style.color, linestyle=a.style.linestyle, lw=1.6,
+        ax_b.plot(lx, ly, color=a.style.color, linestyle=a.style.linestyle, lw=2.0,
                   label=f"{a.label} (Gini {g:.2f})")
         drawn.append(a)
     if not drawn:
