@@ -186,21 +186,43 @@ class SpeechCommands(data_utils.Dataset):
         return model_input(wav), label
 
 
+CIFAR_MEAN, CIFAR_STD = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
+
+
+def augment_batch(x: torch.Tensor, pad: int = 4) -> torch.Tensor:
+    """FX-D233: _cifar_train's RandomCrop(32, padding=4) + flip on a normalized NCHW batch, fresh draws per call."""
+    b, c, h, w = x.shape
+    fill = (-torch.tensor(CIFAR_MEAN, device=x.device) / torch.tensor(CIFAR_STD, device=x.device)).view(1, c, 1, 1)
+    xp = fill.expand(b, c, h + 2 * pad, w + 2 * pad).clone()
+    xp[:, :, pad:pad + h, pad:pad + w] = x
+    i = torch.randint(0, 2 * pad + 1, (b,), device=x.device)
+    j = torch.randint(0, 2 * pad + 1, (b,), device=x.device)
+    rows = (i[:, None] + torch.arange(h, device=x.device))[:, None, :, None]
+    cols = (j[:, None] + torch.arange(w, device=x.device))[:, None, None, :]
+    out = xp[torch.arange(b, device=x.device)[:, None, None, None], torch.arange(c, device=x.device)[None, :, None, None], rows, cols]
+    flip = torch.rand(b, device=x.device) < 0.5
+    out[flip] = out[flip].flip(3)
+    return out
+
+
 def _cifar_train():
     import torchvision.transforms as T
     from torchvision.datasets import CIFAR10
 
-    tf = T.Compose([T.RandomCrop(32, padding=4), T.RandomHorizontalFlip(), T.ToTensor(),
-                    T.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
+    tf = T.Compose([T.RandomCrop(32, padding=4), T.RandomHorizontalFlip(), cifar_plain_tf()])
     return CIFAR10(str(dataset_dir("cifar10")), train=True, download=True, transform=tf)
 
 
-def _cifar_test():
+def cifar_plain_tf():
     import torchvision.transforms as T
+
+    return T.Compose([T.ToTensor(), T.Normalize(CIFAR_MEAN, CIFAR_STD)])
+
+
+def _cifar_test():
     from torchvision.datasets import CIFAR10
 
-    tf = T.Compose([T.ToTensor(), T.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
-    return CIFAR10(str(dataset_dir("cifar10")), train=False, download=True, transform=tf)
+    return CIFAR10(str(dataset_dir("cifar10")), train=False, download=True, transform=cifar_plain_tf())
 
 
 @dataclass(frozen=True)

@@ -42,6 +42,10 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 
 ## Next steps (persistent queue — resumes after Felix)
 
+- **FT-N20 · Data augmentation like every Felix stack (FELIX FX-D233, FX-N143) · todo (on resume).** Felix found its GPU preload froze
+  one augmentation draw per sample for the whole run. Check the fwdllm loaders for the same (cached / pre-tokenized samples) and
+  apply the dataset's standard per-pass augmentation, if it has one, to FluxTune and every fwdllm baseline alike. *Exit:* noted in
+  the setup text; one smoke per baseline with it on.
 - **FT-N19 · One bench queue for Felix and FluxTune · todo (after FT-N18; operator 10-23).** *Why:* both projects share jayne /
   shepherd; one `bench_pool.py` queue that takes cifar / speech (Felix) and fwdllm (FluxTune) legs together runs them interleaved
   without hand-split GPU lists or one batch waiting on the other. `bench_pool.py` already places each leg by free GPU memory + host

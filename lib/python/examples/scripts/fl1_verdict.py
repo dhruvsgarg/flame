@@ -90,7 +90,8 @@ def judge(arm, fb, ths, band):
         return "FAIL", f"final {100 * arm['final']:.1f} < FedBuff {100 * fb['final']:.1f} − {100 * band:.1f}"
     for t in hit:
         a, b = arm[f"tta{t:g}"], fb[f"tta{t:g}"]
-        if a is None or (b is not None and a > b + 1):  # same eval tick = tie (commit jitter)
+        e = arm.get("eval_min") or fb.get("eval_min")  # evals lag their tick by a commit gap (FX-T86)
+        if a is None or (b is not None and (a // e > b // e if e else a > b + 1)):  # same eval tick = tie
             return "FAIL", f"{100 * t:.1f}%: {a if a is None else round(a)} vs FedBuff {b if b is None else round(b)} min"
     return "PASS", f"highest {100 * max(hit):.1f}%" if hit else "no target reached"
 

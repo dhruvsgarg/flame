@@ -43,6 +43,15 @@ def leg(run_dir, event=b'"agg_eval"'):
     return pts, t, nbytes
 
 
+def eval_period_min(run_dir):
+    """The leg's eval tick (evalEverySeconds) in minutes; None if unset."""
+    try:
+        s = json.load(open(os.path.join(run_dir, "aggregator_config.json")))["hyperparameters"].get("evalEverySeconds")
+        return float(s) / 60 if s else None
+    except (OSError, KeyError, ValueError, TypeError):
+        return None
+
+
 def stats(run_dir, targets, smooth, event=b'"agg_eval"'):
     pts, end, nbytes = leg(run_dir, event)
     if not pts:
@@ -50,7 +59,7 @@ def stats(run_dir, targets, smooth, event=b'"agg_eval"'):
     acc = [a for _, a, _ in pts]
     sm = [st.mean(acc[max(0, i - smooth + 1):i + 1]) for i in range(len(acc))]
     out = dict(auc=st.mean(acc), final=st.mean(a for t, a, _ in pts if t >= 0.9 * end) if end else acc[-1], gb=nbytes / 1e9,
-               end_h=end / 3600)
+               end_h=end / 3600, eval_min=eval_period_min(run_dir))
     for th in targets:
         hit = next((i for i, a in enumerate(sm) if a >= th), None)
         out[f"tta{th:g}"] = pts[hit][0] / 60 if hit is not None else None
@@ -68,7 +77,7 @@ def cells(pools):
                 d = r.get("sim_dir") or ""
                 if d and d != "-" and os.path.isdir(d):
                     ds = "google_speech" if "google_speech" in d else "cifar10"
-                    arm = re.sub(r"^(gs_)?F\d+\w*?_s\d+u?_", "", re.sub(r"_r\d+$", "", phase))
+                    arm = re.sub(r"^(gs_)?F\d+\w*?_s(?:\d+u?|mu)_", "", re.sub(r"_r\d+$", "", phase))  # smu = MobiPerf stream
                     static = re.search(r"F\d+[A-Za-z]?_s\d+_", phase) is not None  # `s0` static vs `s0u` stream on one trace
                     out.setdefault((ds, r["trace"] + (" static" if static else ""), arm, r["baseline"]), []).append(d)
     return out

@@ -15,6 +15,10 @@ An insight counts only if real and sim agree on it (same metric on a parity pair
   cooling slots, and where `PROP_LAST_EVAL_ROUND` is first set (the eval gate needs it non-null). *Exit:* every §1 symbol cites a code line.
 - **IN2 · Run `insights.py` on every PR31 pool · todo (after PR31).** I-A2/A3/A5, B1, C1, D1, E1, F1, G1 today; add I-A1 (pick share by
   speed quartile), I-A4, I-C2 (sync barrier wait), I-G2 next. *Exit:* one JSON + figure per row, real↔sim agreement per metric.
+- **IN5 · Watch in every long run (D5, 48 h rungs, F47) · standing (F46).** Per leg: hour the clients' loss of the received model
+  falls below ~0.3 (data-bound onset) vs the accuracy plateau; pick dilution (picks~size, samples / update) vs c / trainable on
+  MobiPerf; whether rate `new`'s 12 h lead survives to 48 h; held-upload share of τ at K 10. *Exit:* each measured on cifar +
+  speech, syn_50 and MobiPerf.
 - **IN4 · Felix train/eval interference on long runs · blocked: a long Felix leg (PR21 G1A / G1U).** Short screens cannot show it
   (§1 evidence). *Exit:* I-F1..F4 measured on cifar + speech, syn_0 and mobiperf, real and sim.
 
@@ -132,12 +136,35 @@ reconstruction (§4 #4).
 - *Speed buys early and costs late (F45 `s3vu`, `s3v`, `s3vubx_oc`):* across arms each pp·h gained before 4 h comes back 0.6-1.0×
   after; the speed term costs 1.5-2 pp final on streams. Speed alone picks small shards (83 vs 164 samples / update, class TV 0.117 vs
   FedBuff 0.051) and ends −3.8 pp. Balance wins back about half; UCB does nothing (±0.3 pp); Oort's cutoff is fastest to 50%, lowest final.
-- *Felix new's early lead is half step, half selection (F44 `l3b` vs F45 `s3vubx_oc`, same selection):* rate `new` + no lr
-  normalization reach 49.5 vs 40.9% at 1 h on `s0u` (`b1` 31%) and lose less late (−13 vs −19 pp·h). Test: F46 (S4).
-- *The stream plateau is memorization (F45 trainer telemetry):* clients' per-sample loss of the received model falls 2.0 → 1.2 by
-  4 h → 0.1 by 9 h on `s0u` / `s50u` (every stack, FedBuff too); accuracy stops rising once it passes ~1, and only 2-3% of tasks see
-  new data. Static shards (164 samples) fall 1.7 → 0.6 and keep learning to 9 h. Motivation: once local data is fit, more steps
-  only add noise; the step and c should follow the loss left (F46 `ps`, `cp`).
+  *F46 (K 10):* under every aggregation utility alone ends higher in 25 / 28 pairs (+0.6 pp, −19% GB); under rate `new` the speed
+  term buys ≤ 10 min to 50%, so the FedScale cost of big shards is worth paying.
+- *The server step sets the pace, not the staleness rule (F46 `uo_{o,n,nl,p1}`, same selection, K 10, τ 5.9):* rate `new`
+  (weight 0.61-0.78, F45) vs 1/√(1+τ) (0.51-0.53) vs 1/(1+τ): 50% at 60-80 / 120-130 / 210-280 min; static final 69.6-69.9 / 68.2 / 65.5%.
+  A bigger step wins everywhere and costs nothing final; the stronger discount loses everywhere. Felix new's early lead is its step.
+- *Sub-batch lr normalization buys stability, not accuracy (F46 `uo_n` vs `uo_nl`):* a partial batch at full lr weighs each sample
+  lr / m instead of lr / B; normalizing restores equal weights, halves the stream eval swing (0.22-0.48 vs 0.30-0.85 pp per eval)
+  and leaves finals within 0.4 pp. Static shards (few partial batches) don't change.
+- *Streams overfit once the window's data is learned (F46 `fn`, hourly evals + trainer `visible_samples`):* the federation sees
+  only ~8.4k → 12.1k samples over the 12 h window (+3% / h; 1.5-3% of tasks see new data), and a centralized model on the same
+  data gains just 59.8 → 61.8%, so the plateau is mostly data (same on F45's every stack). Overfitting sits on top: test loss
+  bottoms at 1.24 at 2 h and climbs to 3.1 at flat accuracy while clients' loss of the received model falls to 0.03. Arms that train less late (c by phase,
+  c 30) hold test loss at 1.3-1.8 and end +0.3-1.5 pp. Cause found: the trainer's GPU preload freezes one crop / flip draw per
+  sample, so every stack re-fits identical images (FX-D233). Open: whether an overfit model absorbs day 2's data (F47, 24 h).
+- *On streams a client's loss says how well its data is fit, not how much learning is left (F46 `ps`, `pscp`, FX-T85).* Oort and
+  REFL read loss as learning left because their shards are static, so a fit shard is a spent one. With streaming data a fit
+  client may get new data next hour, and no client can know what is left. Measured: φ falls with clients' loss on static data
+  too (0.41 at 12 h) while accuracy still climbs, so a φ-scaled step loses 0.9-3.2 pp static and gains ≤ 0.6 on streams.
+  Using φ to cut c is safer than to cut the step (static −0.2 pp): c sets bytes, the step sets progress.
+- *A fit client's loss cannot tell new data from noise; pacing c can (F46 offline, FX-T88):* jumps ×8 vs a client's own last task
+  hit 5.8% of tasks on static data (none new) vs 3.4-3.6% on streams. But c by phase regulates itself: as c falls, each pick waits
+  longer and carries more new data (`s0u` `uo_cp`: tasks with new data 5.8 → 12.3 → 20.3% at 3-6 / 6-9 / 9-12 h vs a flat 3% at
+  c 60), which lifts the received-model loss and so φ and c. Training paces itself to data arrival without a per-client detector.
+- *Augmentation is setup hygiene, not a Felix claim (FX-D233):* it lifts every multi-pass learner (Felix, FedBuff, Oort's 600-sample
+  tasks); 1-step REFL / FedDance barely revisit a sample and their test loss stays ~1.35 (F43), so they gain little. The relative
+  gap must come from pacing (c by phase / availability, F47).
+- *Selectivity is c / trainable, not c / n (F46 `s50u`, FX-L103):* at c 60 of ~148 trainable, 40% of the pool is in flight and
+  big-shard (long-task) clients are the ones held busy, so utility picks dilute (picks~size +0.67, 33 samples / update) vs c 30
+  (+0.93, 40). Availability shrinks the selector's effective choice before it shrinks its slots: the case for c ∝ trainable count.
 - *Felix's rate `new` is a big constant step, not a staleness rule (F44 / F45 `agg_round`):* mean weight 0.73-0.78 early, 0.61-0.65
   late vs 0.51-0.53 for 1/√(1+τ); its utility term is ~constant and its staleness exponent (0.25) is weak.
 - *Speed arms lose by update noise more than staleness (F45 `s0u`):* mean τ 3.9 for every c 60 arm (τ > 8: 10.6 vs 8.0%), but 30%
@@ -156,8 +183,11 @@ reconstruction (§4 #4).
 - *Loss utility: the pass-averaged EMA is the one signal that builds a good buffer (q audit, `experiments/qaudit_1024`):* early no
   |D|-weighted loss predicts an update's value; once shards are memorized, top-15 by |D| · Oort EMA cuts test loss 4× random (0.155
   vs 0.035), while one pre-step batch (−0.30) and held-out loss (−0.13) are worse than random.
-- *An early lead fades on streams (I-G3, F44 + F45):* Felix new leads FedBuff by up to 20 pp at 1-2 h (+34-47 pp·h by 12 h), but
-  FedBuff is ahead for good from 5-6 h and leads by 2 pp at 8-12 h; at that gap the lead is gone by ~30 h. Static data: no fade.
+- *An early lead fades only where Felix trains more on the same data (I-G3; F46 `fn` vs FedBuff, gap per 2 h block):* static
+  +6.5 / +10.3 / +6.0 / +2.9 / +1.6 / +1.4 pp (never behind); `s0u` +9.0 / +6.1, then ±0.5 (tie); `s50u` +11.6 / +7.7 / +0.3 / −0.9
+  / −1.0 / −0.4 (behind at 88% of evals after 4 h). On `s50u` Felix makes 179k updates vs FedBuff's 120k (FedBuff idles ~half its
+  slots) on the same ~12k visible samples, and its test loss ends 3.26 vs 2.26. Overfitting, not staleness: `k20` (τ 5.9, 179k
+  updates) ends −0.4 pp vs FedBuff, `c30` (τ 5.8, 72k) +0.2. The fix is to stop training fit data (c by phase, augmentation; F47).
 - *More local epochs = drift, not staleness (F44 `b1gw_e3`).* Same staleness (3.9), 45-60% fewer updates, equal accuracy to 4 h
   then −3 pp by 8 h on non-IID α 0.1; GB −28 to −58%. Local work needs per-client control, not a global epoch count.
 - *Weight decay on clients does nothing for async cifar (F44 `b1gw`):* ±0.5 pp final vs `b1`.
@@ -267,7 +297,7 @@ it (`getCompletionTime`):
 (compute ∝ samples × device speed + model transfer over device bandwidth, Scope); availability traces syn_0, syn_50_3st, MobiPerf
 3-state (AVL_TRAIN / AVL_EVAL / UN_AVL); data grows while a device is in use (`usage` stream tied to its own trace, Scope "Design record");
 legs start 24 h into the trace so each client starts with its day-1 data (and the trace's start artifact, one long in-use stretch,
-is skipped); 10% of each client's arrivals held out (no stack trains on them); test eval every 10 min of the leg's clock; per-baseline
+is skipped); 10% of each client's arrivals held out (no stack trains on them); clients draw a fresh random crop + flip per batch (cifar, FX-D233); test eval every 10 min of the leg's clock; per-baseline
 task timeout (2 × the longest FedScale task, FX-D198); sims graded against reals for parity (PARITY).
 
 *Baselines (source-faithful, `baseline_reference.yaml`; availability per Decisions "Baseline availability knowledge"):*
