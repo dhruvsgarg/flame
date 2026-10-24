@@ -243,9 +243,11 @@ class FedSGDAggregator(TopAggregator):
         # `fixed` gate / `pool` schedule: commit at N uploads; rho = s*sqrt(G_rule*N/p).
         _pt = getattr(self.args, "pool_target", None)
         self._pool_target = int(_pt) if _pt not in (None, "", 0, "0") else None
-        if (self._commit_gate == "fixed" or self._rho_schedule in ("pool", "exp")) \
+        # `exp` with rho0 needs no pool (_set_rho0 decays rho0 directly; C1 A2 keeps FwdLLM's var gate).
+        _exp_needs_pool = self._rho_schedule == "exp" and not getattr(self.args, "rho0", None)
+        if (self._commit_gate == "fixed" or self._rho_schedule == "pool" or _exp_needs_pool) \
                 and self._pool_target is None:
-            raise ValueError("commit_gate=fixed / rho_schedule=pool|exp need pool_target")
+            raise ValueError("commit_gate=fixed / rho_schedule=pool (or exp without rho0) need pool_target")
         self._gate_safety_s = float(getattr(self.args, "gate_safety_s", 0.4) or 0.4)
         # Which rho sizes the pool. `annealed` (shipped) uses rho_t, which under
         # S-B drives N_req -> 0, floors the gate at I=1 and decays progress as

@@ -458,7 +458,9 @@ class ForwardTextClassificationTrainer:
                             logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
                             all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
 
-                        if not self.select_perturbation_using_jvp and self.grad is not None:
+                        # `mean` assimilates all P probes, so FwdLLM's top-1 cos-sim pick is skipped (E1).
+                        if (not self.select_perturbation_using_jvp and self.grad is not None
+                                and self.probe_combine != "mean"):
                             # Cosine-sim rank of the 10 candidates against the
                             # carried grad; runs on CPU (old_grad arrives on CPU).
                             with _stage_timer(self, "tb_cos_sim_select"):

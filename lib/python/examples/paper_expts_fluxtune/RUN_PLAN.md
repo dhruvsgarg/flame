@@ -17,11 +17,13 @@ Last updated 2026-10-22 (operator review of every setting). Paths relative to `l
 | ID | Node · GPUs · tmux | Started → ETA | Run dir · logs | Check |
 |---|---|---|---|---|
 | S smoke RoBERTa-L · Yelp-P | jayne | 10-18 (operator) | — | — |
+| rb60: RoBERTa-L · Yelp-P to 0.60, `fwdllm` (lr 0.01) → FluxTune (§2 recipe, T_res 615, max-commits 380, bs 32) | jayne · GPUs 0–7 · `dg_flame:rb60` | 10-23 16:06 → each arm ≤ 12 h | script `fwdllm/expt_scripts/nodes/run_node_roberta_yelp_to60_queue.sh`; queue log `fwdllm/rb60_queue_20261023_1606.log`; arm → run dir `fwdllm/rb60_20261023_160630/runs.tsv`; figures `fwdllm/rb60_20261023_160630/paper_figs/` (script `fwdllm/expt_scripts/plot_roberta_yelp60.py`) | n 100, drops to 75 on OOM; D est. (fluxtune 0.0169, fwdllm 0.169) |
 
 **Done**
 
 | ID | Outcome | Detail |
 |---|---|---|
+| ag60 preview (10-22, jayne, 2 lanes, 07:24 → 10:34) | 22 of 23 DistilBERT · AG News arms reached 0.60; A3 (FwdLLM + fixed pool) diverged, stopped by hand. TTA (vclock h): FluxTune 0.51 vs FwdLLM 2.27 (4.5×); A1 0.31, A12 0.67, A123 1.95, A2 5.9; N 10/20/50/90 0.23/0.37/0.51/0.71. Not scored (1 seed, target 0.60, window 1) | script `fwdllm/expt_scripts/nodes/run_node_agnews_to60_queue.sh`; arm → run dir `fwdllm/ag60_20261022_{072444,073816,074438}/runs.tsv`; figures `fwdllm/ag60_20261022_074438/paper_figs/` (script `fwdllm/expt_scripts/plot_ag60.py`); fixed on the way: mean-of-10 on FwdLLM (A1), `exp` without pool (A2), converge watcher after a lap wrap. Figure manifests' `target_acc` still 0.60 (restore 0.80) |
 | F0 Λ readout | no run: Λ_need from P0 `exp`, G1, P0b → N\* 34–42 (AG News), 38 (Yahoo bs 32) → N 50 every cell | §3.1 |
 | 1.7B · Yahoo dry run | learns: 99 commits, 43 s/commit at N 50 bs 8, acc 0.141 → 0.266 (`pool`, stopped by hand 1.23 h); not an S leg | §3.3 |
 | P0b bs 32 | **bs 32 is the recipe** (decided 10-19). Stopped 10-19 02:00 at 717 commits; same plateau as bs 8 (0.669, max 0.671), 35–40% fewer vclock h and commits to 0.5/0.6/0.65. Real wall is reversed (18.6 vs 7.0 s/commit) | §0c |

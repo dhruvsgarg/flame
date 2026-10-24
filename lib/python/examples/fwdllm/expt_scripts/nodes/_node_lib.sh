@@ -25,8 +25,8 @@ node_run () {  # node_run <node-label> <arm-label> [launcher flags...]
     return 0
   fi
 
-  local before since
-  before="$(ls -1dt "$RUNS"/run_* 2>/dev/null | head -1)"
+  local before since pat="run_*${FLAME_RUN_LABEL:+_${FLAME_RUN_LABEL}_*}"  # parallel lanes: this slot's runs only
+  before="$(ls -1dt "$RUNS"/$pat 2>/dev/null | head -1)"
   since="$(date +%s)"
 
   # Job control so the launcher gets its OWN process group: the watchdog kills by
@@ -47,16 +47,28 @@ node_run () {  # node_run <node-label> <arm-label> [launcher flags...]
     watch_pid=$!
   fi
 
+  # NODE_TIMEOUT_S: hard backstop -- kill the launcher's group if it outlives its clean wall-cap stop.
+  local timer_pid=""
+  if [ "${NODE_TIMEOUT_S:-0}" -gt 0 ]; then
+    ( sleep "$NODE_TIMEOUT_S"; kill -0 "$run_pid" 2>/dev/null || exit 0
+      echo "!!! [$node] $label HARD TIMEOUT after ${NODE_TIMEOUT_S}s -- killing its process group" >&2
+      kill -TERM -"$run_pid" 2>/dev/null; sleep 30; kill -KILL -"$run_pid" 2>/dev/null ) &
+    timer_pid=$!
+  fi
+
   wait "$run_pid" || echo "!!! [$node] $label launcher rc=$? (continuing if it committed)"
   if [ -n "$watch_pid" ]; then
     kill "$watch_pid" 2>/dev/null; wait "$watch_pid" 2>/dev/null
   fi
+  if [ -n "$timer_pid" ]; then
+    pkill -P "$timer_pid" sleep 2>/dev/null; kill "$timer_pid" 2>/dev/null; wait "$timer_pid" 2>/dev/null
+  fi
 
   local run commits c_ev c_log
-  run="$(ls -1dt "$RUNS"/run_* 2>/dev/null | head -1)"
+  run="$(ls -1dt "$RUNS"/$pat 2>/dev/null | head -1)"
   if [ -z "$run" ] || [ "$run" = "$before" ]; then
     echo "!!! [$node] $label produced NO RUN DIRECTORY -- aborting node." >&2
-    exit 1
+    [ "${NODE_ABORT_ON_FAULT:-1}" = "1" ] && exit 1; return 1  # 0: a queue skips the arm instead
   fi
   # Larger of two sources: `server_update` needs `server_update_audit`, which the
   # real profiling arm never sets. `grep -o | wc -l`, not `grep -c ... || echo 0`
@@ -80,7 +92,7 @@ node_run () {  # node_run <node-label> <arm-label> [launcher flags...]
   if [ "$commits" -lt 5 ]; then
     echo "!!! [$node] $label committed $commits times -- systemic fault, aborting node." >&2
     grep -m1 -A12 Traceback "$run"/*aggregator.log >&2 2>/dev/null
-    exit 1
+    [ "${NODE_ABORT_ON_FAULT:-1}" = "1" ] && exit 1; return 1
   fi
   # The four in-flight gates of buildplan §6, at the end rather than never. A
   # breach does NOT abort: the arm is already spent, and a controller arm that
