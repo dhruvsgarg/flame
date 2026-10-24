@@ -152,7 +152,7 @@ feddance:
 
 fedbuff:
   availability: {v: "check-in (Bonawitz pace steering, F42-T1); fedbuff* = trace oracle", src: "[paper] FedBuff/Papaya (arXiv 2106.06639, 2111.04877): devices check in to a coordinator; no public code; FedBuff* = trace online set", source_v: "trace online set at selection (FedScale simulation)", why: "R27: a deployed server learns availability by check-in", evidence: "FELIX_READINESS Paper block: availability protocol record"}
-  participation: {k_over_n: null, src: "[paper] §6: async, buffer K=10 independent of concurrency; ours c = 10% (cifar) / 30% (speech) of n"}
+  participation: {k_over_n: null, src: "[paper] §6: async, buffer K=10 independent of concurrency; ours c = 20% (cifar, n 300 c 60) / 30% (speech, n 100 c 30) of n"}
   datasets:
     cifar10:
       model: {source: "four-layer CNN ([paper] App. B.1)", ours: "CifarNet (fl_data.py:56)"}
@@ -178,7 +178,7 @@ fedbuff:
         src: "[paper] Alg. 1; server lr [ours] FX-N74; no speech value in [paper]: CIFAR's momentum 0"
 
 felix:  # ours: Felix is the system under study
-  participation: {k_over_n: null, src: "[ours] async: c = 10% (cifar) / 30% (speech) of n, aggGoal 10"}
+  participation: {k_over_n: null, src: "[ours] async: c = 20% (cifar, n 300 c 60) / 30% (speech, n 100 c 30) of n, aggGoal 10"}
   datasets:
     cifar10:
       model: {source: "ours", ours: "CifarNet (fl_data.py:56)"}

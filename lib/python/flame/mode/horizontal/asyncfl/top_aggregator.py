@@ -267,6 +267,11 @@ class TopAggregator(SyncTopAgg):
         self._dkc_c_config = int((self.config.selector.kwargs or {}).get("c", 0) or 0)
         self._dkc_k_config = self._agg_goal
         self._dkc_stats, self._dkc_losses = None, []
+        # F46 S4: loss phase for the server step (opt.phase_step) and / or the felix_c policy's c
+        self._phase = None
+        if getattr(self.optimizer, "phase_step", False) or conf.get("policy") == "felix_c":
+            from flame.selector.loss_phase import LossPhase
+            self._phase = LossPhase(window=int(conf.get("phase_window", 0) or 0) or self._n_trainers_hint())
         if on("enabled") or on("stats"):
             from flame.selector.update_stats import UpdateStats
             self._dkc_stats = UpdateStats()
@@ -280,11 +285,16 @@ class TopAggregator(SyncTopAgg):
                 c_min=int(conf.get("c_min", 1)), c_max=int(conf.get("c_max", self._dkc_c_config or 100)),  # c <= config c: EV8
                 k_follows_c=str(conf.get("k_follows_c", True)).lower() == "true")
 
+    def _n_trainers_hint(self) -> int:
+        """Population size for one sweep of updates: the configured trainer count, else the join minimum."""
+        hp = self.config.hyperparameters
+        return int(getattr(hp, "num_trainers", 0) or getattr(hp, "min_trainers_to_start", 0) or 100)
+
     def _dynamic_kc_step(self, channel) -> None:
         """FX-N109 I5: after a commit, close the cycle's update stats and ask the controller for the next K / c."""
         self._dkc_updates += self._agg_goal
         st = self._dkc_stats.close()
-        ends = channel.ends() or []
+        ends = channel.all_ends() or []  # every joined end; channel.ends() would run a selection (F46 smoke)
         states = [channel.get_end_property(e, PROP_AVL_STATE) for e in ends]
         train_ok = {None, TrainerAvailState.AVL_TRAIN.value}  # no trace = every end trainable
         self._dkc_losses = getattr(self, "_dkc_losses", [])
@@ -294,7 +304,8 @@ class TopAggregator(SyncTopAgg):
                    "n_eligible_train": sum(s in train_ok for s in states), "noise_scale": st.get("noise_scale"),
                    "avg_staleness": float(np.mean(self._round_update_values["staleness"] or [0])),
                    "now": self._avail_now(), "val_probes": getattr(self, "_val_probes", []),
-                   "val_reports": getattr(self, "_val_reports", []), "k_config": self._dkc_k_config}
+                   "val_reports": getattr(self, "_val_reports", []), "k_config": self._dkc_k_config,
+                   "loss_phase": self._phase.phi if getattr(self, "_phase", None) is not None else None}
         k, c = self._agg_goal, self._dkc_c_config
         if self._dkc is not None:
             k, c = self._dkc.step(metrics)
@@ -302,7 +313,8 @@ class TopAggregator(SyncTopAgg):
             channel.set_property("dynamic_c", c)
         if telemetry.is_enabled():
             from flame.selector.update_stats import cos_split
-            telemetry.emit("dynamic_kc", round=self._round, k=k, c=c, cos_stale_minus_fresh=cos_split(
+            telemetry.emit("dynamic_kc", round=self._round, k=k, c=c, step_scale=getattr(self.optimizer, "step_scale", None),
+                           cos_stale_minus_fresh=cos_split(
                 st.get("cos_by_staleness") or []),
                 **{x: v for x, v in metrics.items()
                    if x not in ("model_version", "cycle_losses", "cycle_client_losses", "val_probes", "val_reports")},
@@ -1389,6 +1401,8 @@ class TopAggregator(SyncTopAgg):
             weights is not None and count > 0
         ):  # SC_TS: count = 0 means no data (it was trained on!), so ignore!
             tres = TrainResult(weights, count, version, stat_utility)
+            if getattr(self, "_phase", None) is not None and stat_utility and count:
+                self._phase.add(float(stat_utility) / count)  # F46: per-sample rms loss of the received model
             if getattr(self, "_dkc_stats", None) is not None:
                 from flame.optimizer.bn_buffers import is_bn_stat
                 from flame.selector.update_stats import flatten
@@ -1540,19 +1554,15 @@ class TopAggregator(SyncTopAgg):
                     not in self._trainer_participation_in_round_count.keys()
                 ):
                     self._trainer_participation_in_round_count[trainer_update] = 1
-                    self._trainer_participation_in_round[trainer_update] = [
-                        0
-                    ] * 20000  # assuming max 20K rounds
-                    self._trainer_participation_in_round[trainer_update][
-                        self._round - 1
-                    ] = 1
+                    # rounds this trainer contributed to; a set, no round cap (F45 s3v crashed at 20000)
+                    self._trainer_participation_in_round[trainer_update] = {self._round - 1}
                 else:
                     self._trainer_participation_in_round_count[trainer_update] += 1
-                    self._trainer_participation_in_round[trainer_update][
-                        self._round - 1
-                    ] = 1
+                    self._trainer_participation_in_round[trainer_update].add(self._round - 1)
 
         _t_commit = time.time()
+        if getattr(self, "_phase", None) is not None and getattr(self.optimizer, "phase_step", False):
+            self.optimizer.step_scale = self._phase.phi
         self.weights = self.optimizer.scale_add_agg_weights(
             self.weights, self._agg_goal_weights, self._agg_goal
         )

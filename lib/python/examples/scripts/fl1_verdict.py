@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """FX-N141 loop FL1: each arm vs FedBuff (averaged models, same batch) per cell; PASS = final >= FedBuff's - band and no slower at
-every target up to the highest either reaches. Beside it: updates, mean staleness, slot starvation, top-20% share, coverage.
+every target up to the highest either reaches. Beside it: lead vs FedBuff (I-G3: pp·h, late gap, gap at equal GB), updates,
+mean staleness, slot starvation, top-20% share, coverage.
 
   fl1_verdict.py POOL... [--ceiling C.json ...] [--band-pp 1.0] [--json-out V.json]
 
@@ -15,7 +16,7 @@ import sys
 from multiprocessing import Pool
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bench_report import cells, ceiling_at, label, stats  # noqa: E402
+from bench_report import cells, ceiling_at, label, leg, stats  # noqa: E402
 
 ANCHOR = ("fedbuff", "ctl_srv")
 
@@ -47,7 +48,30 @@ def pace(run_dir):
 
 
 def leg_stats(run_dir):
-    return diversity(run_dir) + pace(run_dir)
+    return diversity(run_dir) + pace(run_dir) + (leg(run_dir)[:2],)
+
+
+def gaps(arm, fb, early_h=4.0):
+    """Lead vs FedBuff (I-G3): ∫(acc − acc_FB) dt in pp·h before / after `early_h`, mean gap over the last third (pp), and
+    the mean gap at equal bytes over the GB both reach (pp). arm, fb = (points [(t, acc, bytes)], end s)."""
+    (pa, ea), (pf, ef) = arm, fb
+    if not pa or not pf:
+        return dict(lead_early=None, lead_late=None, late_gap=None, byte_gap=None)
+
+    def at(pts, x, i):  # last point with coordinate i <= x
+        ys = [p[1] for p in pts if p[i] <= x]
+        return ys[-1] if ys else 0.0
+    end = min(ea, ef)
+    grid = [m * 60.0 for m in range(1, int(end // 60) + 1)]
+    d = [(t, 100 * (at(pa, t, 0) - at(pf, t, 0))) for t in grid]
+    early = sum(g for t, g in d if t <= early_h * 3600) / 60
+    late = sum(g for t, g in d if t > early_h * 3600) / 60
+    tail = [g for t, g in d if t > end * 2 / 3]
+    gb = min(pa[-1][2], pf[-1][2])
+    bgrid = [gb * i / 200 for i in range(1, 201)]
+    bg = [100 * (at(pa, b, 2) - at(pf, b, 2)) for b in bgrid]
+    return dict(lead_early=early, lead_late=late, late_gap=sum(tail) / len(tail) if tail else None,
+                byte_gap=sum(bg) / len(bg) if gb > 0 else None)
 
 
 def targets(ds, trace, horizon_h, ceil):
@@ -66,7 +90,7 @@ def judge(arm, fb, ths, band):
         return "FAIL", f"final {100 * arm['final']:.1f} < FedBuff {100 * fb['final']:.1f} − {100 * band:.1f}"
     for t in hit:
         a, b = arm[f"tta{t:g}"], fb[f"tta{t:g}"]
-        if a is None or (b is not None and a > b):
+        if a is None or (b is not None and a > b + 1):  # same eval tick = tie (commit jitter)
             return "FAIL", f"{100 * t:.1f}%: {a if a is None else round(a)} vs FedBuff {b if b is None else round(b)} min"
     return "PASS", f"highest {100 * max(hit):.1f}%" if hit else "no target reached"
 
@@ -96,20 +120,24 @@ def main(argv=None):
         st = {k: stats(d, ths, smooth) for k, d in legs.items()}
         fb = st[ANCHOR]
         print(f"\n## {ds} {trace} (horizon {horizon:.0f} h; targets {', '.join(f'{100 * t:.1f}' for t in ths)}%)\n"
-              "| arm | final % | " + " | ".join(f"min→{100 * t:.1f}" for t in ths) + " | GB | updates | stale | starve | top-20% | coverage | verdict |\n|"
-              + "---|" * (len(ths) + 9))
+              "| arm | final % | " + " | ".join(f"min→{100 * t:.1f}" for t in ths)
+              + " | lead pp·h 0-4 / 4+ h | late Δ | Δ@GB | GB | updates | stale | starve | top-20% | coverage | verdict |\n|"
+              + "---|" * (len(ths) + 12))
         for (b, arm), s in sorted(st.items(), key=lambda kv: -(kv[1] or {}).get("final", 0)):
             if s is None:
                 continue
             v = ("anchor", "") if (b, arm) == ANCHOR else judge(s, fb, ths, a.band_pp / 100)
-            top, cov, ups, stale, starve = div[legs[(b, arm)]]
+            top, cov, ups, stale, starve, curve = div[legs[(b, arm)]]
+            g = gaps(curve, div[legs[ANCHOR]][5])
+            f1 = lambda x: "–" if x is None else f"{x:+.1f}"
             print(f"| {b} {label(arm)} | {100 * s['final']:.1f} | " + " | ".join("–" if s[f'tta{t:g}'] is None else f"{s[f'tta{t:g}']:.0f}"
                                                                           for t in ths)
+                  + f" | {f1(g['lead_early'])} / {f1(g['lead_late'])} | {f1(g['late_gap'])} | {f1(g['byte_gap'])}"
                   + f" | {s['gb']:.0f} | {ups / 1000:.0f}k | {'–' if stale is None else f'{stale:.1f}'} | {starve / 1000:.0f}k"
                   f" | {'–' if top is None else f'{100 * top:.0f}%'} | {'–' if cov is None else f'{100 * cov:.0f}%'}"
                   f" | {v[0]} {v[1]} |")
             rows.append(dict(dataset=ds, cell=trace, baseline=b, arm=arm, verdict=v[0], why=v[1], top20=top, coverage=cov,
-                             updates=ups, staleness=stale, starvation=starve, **{k: s[k] for k in s}))
+                             updates=ups, staleness=stale, starvation=starve, **g, **{k: s[k] for k in s}))
     if a.json_out:
         json.dump(rows, open(a.json_out, "w"), indent=1)
     return 0

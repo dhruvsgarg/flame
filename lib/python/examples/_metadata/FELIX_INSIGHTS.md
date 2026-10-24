@@ -88,6 +88,7 @@ reconstruction (§4 #4).
 | **C · Aggregation** | | | | | |
 | I-C1 | how stale are aggregated updates? | staleness histogram; weight mass by staleness | `agg_round.staleness` (existing) | all | measured (REFL, this doc §5) |
 | I-C2 | how long does a sync round wait for stragglers? | version start → K-th fresh arrival; idle slot-seconds at the barrier | trainer `task_recv.sim_send_ts` + `agg_round` (§4 #4) | refl, oort family, feddance | hyp |
+| I-C4 | where does staleness come from? | τ split by visibility lag (ready → commit > 60 s = held upload) vs in-flight work: share of updates, share of Σ τ, task span per source | `agg_round.staleness`, `update_visibility_lag_s`, `trainer_speed_s` (existing) | all async | measured (F45, §5) |
 | I-C3 | async buffer dynamics | `buf_depth`, `commit_gap_s`, visibility lag | `agg_round` (existing) | felix, fedbuff | hyp |
 | **D · Overheads** | | | | | |
 | I-D1 | where does server wall time go? | recv_wait / ingest / commit / other per commit | `agg_timing` (existing) | all | hyp |
@@ -103,6 +104,7 @@ reconstruction (§4 #4).
 | **G · Time-to-accuracy decomposition** | | | | | |
 | I-G1 | why is X faster to target? | TTA = U* / R: U* = aggregated updates to target (statistical efficiency), R = aggregated updates per hour (system efficiency); R = c_eff · (1 − waste) / s̄_T | `agg_round`, `agg_eval`, §4 #4 | all | hyp |
 | I-G2 | marginal value of an update | d acc / d aggregated update per phase of the run | `agg_eval` + `agg_round` (existing) | all | hyp |
+| I-G3 | how long does an early lead last? | lead = ∫(acc − acc_FedBuff) dt in pp·h, split 0-4 h / 4-12 h; hour FedBuff is ahead for good; break-even ≈ end + lead / late gap | `agg_eval` (existing) | all vs FedBuff | measured (FL1 F44 / F45, §5) |
 
 ## 4. Instrumentation (telemetry only, no behaviour change, no checker reads it)
 
@@ -121,16 +123,45 @@ reconstruction (§4 #4).
 
 **FL1 log (FELIX FX-N141; cifar bench n 300, 12 h; standing: one crisp line per worked / failed mechanism, for motivation / eval).**
 - *Unaware async idles, and the idling hides staleness (F44 `s50u`, `FL1_1023_1700`).* FedBuff waits on check-ins (98k
-  slot-starvation events) and holds slots of departed clients to the 903 s timeout: ~33 of 60 slots busy, 116k updates. Notify /
+  slot-starvation events) and holds slots of departed clients to its 677 s timeout: ~33 of 60 slots busy, 116k updates. Notify /
   evict (`b1`) keeps all 60 busy: 213k updates, 50-55% 80 min sooner, but staleness 7.8 vs 4.8 under the same 1/√(1+τ) rate costs
-  1.2 pp final. Motivation: awareness buys speed; aggregation must absorb the staleness it creates. Test: F45 `b1_c33`.
+  1.2 pp final. *Confirmed (F45 `b1_c33`):* aware at c 33 ends 57.1 vs FedBuff 56.3% (staleness 4.2) but at FedBuff's pace (lead −8
+  vs +23 pp·h). Motivation: awareness buys speed; aggregation must absorb the staleness it creates.
+- *Utility alone keeps accuracy at fewer bytes (F45 `s3u` / `s3uo`, `FL1_1023_2130`):* |D| q picks big shards (picks~size +0.84-0.96),
+  41 vs 25 samples / update on `s0u`: FedBuff's final with 20-27% fewer updates and GB. q from the training pass ties a pre-step batch.
+- *Speed buys early and costs late (F45 `s3vu`, `s3v`, `s3vubx_oc`):* across arms each pp·h gained before 4 h comes back 0.6-1.0×
+  after; the speed term costs 1.5-2 pp final on streams. Speed alone picks small shards (83 vs 164 samples / update, class TV 0.117 vs
+  FedBuff 0.051) and ends −3.8 pp. Balance wins back about half; UCB does nothing (±0.3 pp); Oort's cutoff is fastest to 50%, lowest final.
+- *Felix new's early lead is half step, half selection (F44 `l3b` vs F45 `s3vubx_oc`, same selection):* rate `new` + no lr
+  normalization reach 49.5 vs 40.9% at 1 h on `s0u` (`b1` 31%) and lose less late (−13 vs −19 pp·h). Test: F46 (S4).
+- *The stream plateau is memorization (F45 trainer telemetry):* clients' per-sample loss of the received model falls 2.0 → 1.2 by
+  4 h → 0.1 by 9 h on `s0u` / `s50u` (every stack, FedBuff too); accuracy stops rising once it passes ~1, and only 2-3% of tasks see
+  new data. Static shards (164 samples) fall 1.7 → 0.6 and keep learning to 9 h. Motivation: once local data is fit, more steps
+  only add noise; the step and c should follow the loss left (F46 `ps`, `cp`).
+- *Felix's rate `new` is a big constant step, not a staleness rule (F44 / F45 `agg_round`):* mean weight 0.73-0.78 early, 0.61-0.65
+  late vs 0.51-0.53 for 1/√(1+τ); its utility term is ~constant and its staleness exponent (0.25) is weak.
+- *Speed arms lose by update noise more than staleness (F45 `s0u`):* mean τ 3.9 for every c 60 arm (τ > 8: 10.6 vs 8.0%), but 30%
+  more updates of 12% fewer samples at the same step. `s50u`'s staleness is mostly unavailability (next line).
+- *Unavailability makes staleness that straggler fixes cannot see (I-C4 `insights.py`, F45 `agg_round` `update_visibility_lag_s`; paper argument
+  for staleness ≠ unavailability):* staleness has two sources. (1) In-flight work: τ ≈ c / K, its tail = slow tasks; without
+  unavailability (`s0u`) it is all of it (τ > 20 from 89-92 s tasks vs 11-14 s median, 0 held uploads). (2) Held uploads: a client
+  that leaves mid-task finishes, but its upload waits until it returns (our availability model: compute completes, the send waits).
+  On `s50u` these are 1.1-1.2% of updates but **49-51% of all staleness**, mean τ 184-373 versions (hours), from clients with
+  19-21 s tasks (median 10-11 s, not 10× stragglers); 99-100% of τ > 20 updates are held for FedBuff / `b1_c33`, 62-71% for the
+  Felix arms. Same for every stack (FedBuff 1337 withheld deliveries, Felix arms 2094-2140). So async FL's straggler machinery
+  (staleness-weighted rates, deadlines, speed-aware selection) targets source 1: a staleness rule only down-weights a held update
+  once it lands, and a speed rule cannot predict who will leave. Availability-awareness acts on source 2 before it happens (who to
+  pick, whether to evict). Next evidence: τ by source per stack on mobiperf, and how much accuracy the held updates cost
+  (drop-on-return ablation).
+- *Loss utility: the pass-averaged EMA is the one signal that builds a good buffer (q audit, `experiments/qaudit_1024`):* early no
+  |D|-weighted loss predicts an update's value; once shards are memorized, top-15 by |D| · Oort EMA cuts test loss 4× random (0.155
+  vs 0.035), while one pre-step batch (−0.30) and held-out loss (−0.13) are worse than random.
+- *An early lead fades on streams (I-G3, F44 + F45):* Felix new leads FedBuff by up to 20 pp at 1-2 h (+34-47 pp·h by 12 h), but
+  FedBuff is ahead for good from 5-6 h and leads by 2 pp at 8-12 h; at that gap the lead is gone by ~30 h. Static data: no fade.
 - *More local epochs = drift, not staleness (F44 `b1gw_e3`).* Same staleness (3.9), 45-60% fewer updates, equal accuracy to 4 h
   then −3 pp by 8 h on non-IID α 0.1; GB −28 to −58%. Local work needs per-client control, not a global epoch count.
 - *Weight decay on clients does nothing for async cifar (F44 `b1gw`):* ±0.5 pp final vs `b1`.
 - *Static data has no plateau (F44 `s0`):* every arm 64-68.5% at 12 h; the 54-57% stream plateau is the stream's data, not Felix.
-- *Speed alone selects small shards (F45 smoke, 1 h):* picks~size ρ −0.40, 18 samples / update vs population 27; adding |D| q
-  flips it (+0.53); utility alone is all size (+0.91) at 36% fewer updates. Speed alone starves big-data clients; utility
-  alone starves fast ones.
 
 **Every finding below ran on work-independent task durations (before FELIX FX-D197, 10-20) and is void for the paper;
 kept only as hypotheses to re-measure.**

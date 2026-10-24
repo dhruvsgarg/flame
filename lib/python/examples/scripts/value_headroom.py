@@ -9,6 +9,8 @@ same model; its value = test-loss drop on half A of the test set when applied al
 buffer of K picked by each rule is applied (mean of deltas) and its loss drop reported: the buffer oracle (greedy on A),
 top-K by value, random K, a diverse buffer (greedy min pairwise cosine of the deltas), a label-balanced buffer
 (greedy min variance over classes of the summed classifier-bias deltas), top-K by |D|, by q, by |D| q. Also: ρ(value, signal) and value persistence ρ between probe versions.
+q estimators (Q-S3): `q` pre-step first batch (Felix new), `qo` Oort EMA over the pass, `qv` rms loss on a held-out
+`--holdout` share of the shard (never trained), `qt` rms loss on the whole train shard (reference).
 Full shards (late-phase streams); no availability.
 """
 import argparse
@@ -38,6 +40,7 @@ def main(argv=None):
     ap.add_argument("--k", type=int, default=10)
     ap.add_argument("--gpu", default="0")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--holdout", type=float, default=0.0, help="held-out share of each shard (enables qv)")
     ap.add_argument("--json-out")
     a = ap.parse_args(argv)
     import fl_data
@@ -52,10 +55,13 @@ def main(argv=None):
     ty = torch.tensor([int(test[i][1]) for i in range(len(test))]).to(dev)
     half = len(ty) // 2
     A, B = (tx[:half], ty[:half]), (tx[half:], ty[half:])
-    shards = []
+    shards, held = [], []
     for t in trainers:
         idx = list(t["hyperparameters"]["trainer_indices_list"])
-        shards.append((torch.stack([train[i][0] for i in idx]).to(dev), torch.tensor([int(train[i][1]) for i in idx]).to(dev)))
+        k = min(len(idx) - 1, max(1, round(len(idx) * a.holdout))) if a.holdout > 0 else 0  # keep >= 1 train sample
+        st = lambda ii: (torch.stack([train[i][0] for i in ii]).to(dev), torch.tensor([int(train[i][1]) for i in ii]).to(dev))
+        shards.append(st(idx[k:] if k else idx))
+        held.append(st(idx[:k]) if k > 0 else None)
     rng = random.Random(a.seed)
     torch.manual_seed(a.seed)
     model = spec.model().to(dev)
@@ -69,30 +75,34 @@ def main(argv=None):
                 p.copy_(v[i:i + n].view_as(p))
                 i += n
 
-    def loss_on(v, data):
+    def loss_on(v, data, p=1):
+        """Mean loss^p of v on data, eval mode (p 2 = Oort's statistic)."""
         load(work, v)
         work.eval()
         with torch.no_grad():
-            return sum(F.nll_loss(work(fl_data.model_input(data[0][j:j + 1000])), data[1][j:j + 1000], reduction="sum").item()
+            return sum(F.nll_loss(work(fl_data.model_input(data[0][j:j + 1000])), data[1][j:j + 1000],
+                                  reduction="none").pow(p).sum().item()
                        for j in range(0, len(data[1]), 1000)) / len(data[1])
 
     def local(v, c):
-        """One local epoch from v on client c: (delta, pre-step loss of the first batch)."""
+        """One local epoch from v on client c: (delta, (pre-step rms loss of the first batch, Oort EMA rms over the pass))."""
         load(work, v)
         work.train()
         opt = torch.optim.SGD(work.parameters(), lr=lr)
         x, y = shards[c]
         perm = torch.randperm(len(y), device=dev)
-        q = None
+        q = ema = None
         for j in range(0, len(y), bs):
             b = perm[j:j + bs]
             out = work(fl_data.model_input(x[b]))
-            ls = F.nll_loss(out, y[b])
-            q = ls.item() if q is None else q
+            lv = F.nll_loss(out, y[b], reduction="none")
+            sq = lv.detach().pow(2).mean().item()
+            q = sq ** 0.5 if q is None else q
+            ema = sq if ema is None else 0.8 * ema + 0.2 * sq  # the trainer's FedScale EMA (syncfl trainer.oort_loss)
             opt.zero_grad()
-            ls.backward()
+            lv.mean().backward()
             opt.step()
-        return flat(work) - v, q
+        return flat(work) - v, (q, ema ** 0.5)
 
     work = spec.model().to(dev)
     v = flat(model)
@@ -106,8 +116,13 @@ def main(argv=None):
         res = [local(v, c) for c in range(n)]
         val = [base_a - loss_on(v + d / a.k, A) for d, _ in res]
         size = [len(shards[c][1]) for c in range(n)]
-        q = [x for _, x in res]
-        sig = {"|D|": size, "q": q, "|D| q": [s * x for s, x in zip(size, q)]}
+        q, qo = [x[0] for _, x in res], [x[1] for _, x in res]
+        qt = [loss_on(v, shards[c], 2) ** 0.5 for c in range(n)]
+        sig = {"|D|": size, "q": q, "|D| q": [s * x for s, x in zip(size, q)], "|D| qo": [s * x for s, x in zip(size, qo)],
+               "|D| qt": [s * x for s, x in zip(size, qt)]}
+        if a.holdout > 0:  # a 1-sample shard holds nothing out: its train loss stands in
+            qv = [loss_on(v, held[c] or shards[c], 2) ** 0.5 for c in range(n)]
+            sig.update({"qv": qv, "|D| qv": [s * x for s, x in zip(size, qv)]})
         gain = lambda picks: base_b - loss_on(v + torch.stack([res[c][0] for c in picks]).mean(0), B)
         top = lambda s: sorted(range(n), key=lambda c: -s[c])[:a.k]
         rand = sum(gain(rng.sample(range(n), a.k)) for _ in range(8)) / 8

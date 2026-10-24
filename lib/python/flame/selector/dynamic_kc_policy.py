@@ -457,6 +457,31 @@ class AvailabilityCapPolicy(DynamicKCPolicy):
         return "availability_cap"
 
 
+class FelixCPolicy(DynamicKCPolicy):
+    """F46 S4: c = c_config x (trainable share now, if avail) x (loss phase, if phase); the controller floors it at c_min (K)."""
+
+    def __init__(self, avail=False, phase=False):
+        self.avail = str(avail).lower() == "true"
+        self.phase = str(phase).lower() == "true"
+
+    def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
+        return None
+
+    def compute_new_c(self, current_c: int, metrics: dict) -> Optional[int]:
+        c0 = metrics.get("c_config")
+        if not c0:
+            return None
+        c = float(c0)
+        if self.avail and metrics.get("n_eligible_train") is not None and metrics.get("n_trainers"):
+            c *= metrics["n_eligible_train"] / metrics["n_trainers"]
+        if self.phase and metrics.get("loss_phase") is not None:
+            c *= metrics["loss_phase"]
+        return max(1, min(int(c0), round(c)))
+
+    def name(self) -> str:
+        return "felix_c"
+
+
 class PaceCPolicy(DynamicKCPolicy):
     """F42d (Ledger C8): pace concurrency c by federated validation (Felix's eval probes on held-out client data).
 
@@ -581,6 +606,7 @@ _POLICY_REGISTRY: dict = {
     "schedule": SchedulePolicy,
     "aimd_k": AimdKPolicy,
     "availability_cap": AvailabilityCapPolicy,
+    "felix_c": FelixCPolicy,
     "pace_c": PaceCPolicy,
     "pace_gain": PaceGainPolicy,
 }

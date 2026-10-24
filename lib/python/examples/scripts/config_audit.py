@@ -46,6 +46,14 @@ EXPECT = {
     ("felix", "s3u"): dict(_B1, sel="prop", prefix="-1"), ("felix", "s3uo"): dict(_B1, sel="prop"),
     ("felix", "s3vuo"): dict(_B1, sel="prop", ups="true"), ("felix", "s3vubx_oc"): dict(_B1, sel="-", ups="true", prefix="-1", bal="1.0"),
     ("felix", "b1_c33"): dict(_B1, c="33"),
+    # F46 / FL1 S4: rate / c variants on both S3 carries (harness_pool._S4V)
+    **{("felix", f"{b}_{v}"): dict(base, **kw) for b, base in (("uo", dict(_B1, sel="prop")),
+                                                               ("vub", dict(_B1, sel="prop", ups="true", prefix="-1", bal="1.0")))
+       for v, kw in dict(o={}, n=dict(rate="new", rp="0.4/0.25"), nl=dict(rate="new", rp="0.4/0.25", lrn="-"),
+                         p1=dict(rate="new", rp="1.0/1.0"), ps=dict(ps="true"),
+                         cp=dict(dkc="felix_c", dkcp="phase", cmin="10"), pscp=dict(ps="true", dkc="felix_c", dkcp="phase", cmin="10"),
+                         ca=dict(dkc="felix_c", dkcp="avail", cmin="10"), cap=dict(dkc="felix_c", dkcp="avail+phase", cmin="10"),
+                         psca=dict(ps="true", dkc="felix_c", dkcp="avail", cmin="10"), c30=dict(c="30"), k20=dict(K="20")).items()},
     ("fedbuff", "ctl_srv"): dict(know="checkin", evict="false", rate="old", serve="sweep"),
     ("fedbuff", "*"): dict(know="checkin", evict="false", rate="old"), ("fedbuff", "fbstar"): dict(know="oracle", evict="false", rate="old"),
     ("refl", "ctl"): dict(know="checkin", evict="false", pred="prophet", holdoff="0"),
@@ -55,7 +63,8 @@ EXPECT = {
     ("fedavg", "*"): dict(know="checkin", evict="false"),
     ("oort", "*"): dict(know="checkin", evict="false"), ("oort_star", "*"): dict(know="oracle", evict="false"),
 }
-COMMON = dict(holdout="-", serve="-", p34="ok", sel="-", nclip="-", lrn="-", wd="-", ep="-", su="-", ucb="-")
+COMMON = dict(holdout="-", serve="-", p34="ok", sel="-", nclip="-", lrn="-", wd="-", ep="-", su="-", ucb="-", rp="-", ps="-",
+              dkcp="-", cmin="-")
 
 
 def _s(v):
@@ -82,7 +91,10 @@ def knobs(run_dir, trainer_hp):
                 vrep=_s(trainer_hp.get("validation_report")), serve=_s(hp.get("serveEma")), sel=_s(sel.get("selectType")).replace("default", "-"),
                 nclip=_s(opt.get("norm_clip")), lrn=_s(trainer_hp.get("lr_batch_normalize")),
                 wd=_s(trainer_hp.get("trainerWeightDecay")), ep=_s(trainer_hp.get("epochs")),
-                su=_s(sel.get("scoreUtility")), ucb=_s(sel.get("scoreUcb")))
+                su=_s(sel.get("scoreUtility")), ucb=_s(sel.get("scoreUcb")),
+                rp=f"{rc.get('scale')}/{rc.get('a_exp')}" if (rc := opt.get("agg_rate_conf") or {}).get("type") == "new" else "-",
+                ps=_s(opt.get("phase_step")), cmin=_s(dk.get("c_min")) if pol else "-",
+                dkcp="+".join(k for k in ("avail", "phase") if str((dk.get("policy_kwargs") or {}).get(k)).lower() == "true") or "-")
 
 
 def holdout_check(run_dir, holdout):
@@ -135,7 +147,7 @@ def main(argv=None):
     pools = (argv if argv is not None else sys.argv[1:])
     bad = 0
     cols = ("know", "evict", "eval", "ups", "bal", "dkc", "rate", "probe", "vprobe", "prefix", "holdout", "pred", "prio", "prob",
-            "checkin", "holdoff", "K", "c", "timeout", "lr", "serve", "sel", "nclip", "lrn", "wd", "ep", "su", "ucb", "p34")
+            "checkin", "holdoff", "K", "c", "timeout", "lr", "serve", "sel", "nclip", "lrn", "wd", "ep", "su", "ucb", "rp", "ps", "dkcp", "cmin", "p34")
     print("| leg | " + " | ".join(cols) + " | ok |\n|" + "---|" * (len(cols) + 2))
     for pool in pools:
         for leg, b, arm, k in legs(pool):

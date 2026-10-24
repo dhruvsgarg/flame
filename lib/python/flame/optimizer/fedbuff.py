@@ -55,6 +55,9 @@ class FedBuff(AbstractOptimizer):
         # FX-D232: clip an update's norm to norm_clip x the median of the last 200 (0 = off); FX-T82's lone 241 vs 0.03 step.
         self.norm_clip = float(kwargs.get("norm_clip", 0) or 0)
         self._norms = deque(maxlen=200)
+        # F46 S4: server lr x the aggregator's loss phase (flame/selector/loss_phase.py); 1.0 = off
+        self.phase_step = str(kwargs.get("phase_step", False)).lower() == "true"
+        self.step_scale = 1.0
 
         ml_framework_in_use = get_ml_framework_in_use()
         if ml_framework_in_use == MLFramework.PYTORCH:
@@ -259,7 +262,7 @@ class FedBuff(AbstractOptimizer):
     ) -> ModelWeights:
         logger.debug(f"base_weights.keys(): {base_weights.keys()}")
 
-        learning_rate = self.learning_rate
+        learning_rate = self.learning_rate * self.step_scale
         if self._u_n:  # rate "norm" / "value": divide by the cycle's mean weight
             learning_rate = learning_rate * self._u_n / self._u_sum if self._u_sum > 0 else 0.0
             self._u_sum, self._u_n = 0.0, 0

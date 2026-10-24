@@ -7,8 +7,10 @@ parity and the claims gate (FX-N108) → sim-only experiments (FX-N12).** Paper 
 **Only runs from F41 (10-21) onward count** (setup reset: trace-tied `usage` streams, FedScale task time, R27 availability knowledge).
 Pre-reset results, tiers (F39*, F40S, F41) and arms for rejected features are deleted; `git log` keeps them.
 
-**At a glance (10-23, 21:30): goal = highest target accuracy fastest. FL1 S1 + S2 done (F44): b1 ≈ FedBuff except `s50u` (−1.2 pp,
-staleness); S2 no winner. Running: S3 selection ladder + S1-closing `b1_c33` (F45, `FL1_1023_2130`, FX-N141).** Speech n 100: every
+**At a glance (10-23, late): goal = highest target accuracy fastest. FL1 S1-S3 done (F44, F45): `s50u` gap is staleness (`b1_c33`
+57.1 vs FedBuff 56.3); S3: utility alone (`s3uo`) is the only selection to pass `s0` + `s0u`, the speed term buys early and loses late.
+Felix new's 12 h lead +34-90 pp·h fades from 5-6 h (−2 pp at 8-12 h). Stream plateau = memorized shards (clients' loss 2.0 → 0.1).
+Next: S4 aggregation (F46, 59 legs, built, K 10 per FedBuff's paper): rate × c × K × loss phase on `s3uo` + `s3vub`.** Speech n 100: every
 leg reaches 70%; Felix new first at every target (70% at 610 vs FedBuff 860 min), l3b_e3 lowest GB, no cifar-style plateau. Cifar n 300:
 the plateau stays (Felix flat at 54-56% from hour 2-4; FedBuff passes it at ~6 h and ends at 58%; ceiling ~65%); nobody reaches 60%.
 Felix is first to 40-50% and lowest GB except Oort (5-10× less, 15-26 h); Felix old beats new from hour 4. e2 / e3 diverge to NaN on
@@ -19,6 +21,21 @@ recent versions (β = 1 − K/n), served and scored for every stack, never train
 *Felix old* = arm `ctl` (Oort score + UCB + eval tasks); *Felix new* = `l3b` (C3 utility per second + balance, no eval tasks). Both use
 rate `new` and FedBuff's buffer.
 
+**Cohort and participation (the one place for n / K / c; operator 10-23: each stack at its own paper's ratios, no stack favoured).**
+Rule (`baseline_reference.yaml`): sync K = ceil(max(paper K / N, 5%) × n); async stacks keep FedBuff's buffer K 10 (paper §6.1:
+"K = 10 is a good setting across benchmarks") and its c / n (paper Table 1: c 1000 of 5,000 CIFAR-10 clients = 20%).
+
+| stack | paper setting | cifar n 300: K · in flight | speech n 100: K · in flight |
+|---|---|---|---|
+| FedBuff · Felix | K 10, c 1000 of 5,000 (20%) | 10 · c 60 (Felix dynamic c in [10, 60]) | 10 · c 30 (30%: Q-SPEECHC) |
+| Oort · Oort* | 100 of 1.3K = 3.8% → 5% | 15 · 16 (× 1.1, truncated) | 5 · 5 (rule; F43 ran 10 · 11: Q-SPEECHK) |
+| REFL · REFL* | 10 of 1,000 = 1% → 5% | 15 · 20 (× 1.3, rounded) | 5 · 6 (rule; F43 10 · 13) |
+| FedDance · FedDance* · FedAvg | 10 of 1,000 = 1% → 5% | 15 · 19 (× 1.3, truncated) | 5 · 6 (rule; F43 10 · 13) |
+
+Async stacks hold c / K = 6 (cifar) / 3 (speech) tasks in flight per buffer (staleness ≈ c / K); sync stacks 1.1-1.3 × K per round
+(they wait instead of going stale). Screens: n:c:K 75:15:10 cifar, 50:15:10 speech (G3_SHAPE). **F43-F45 ran every cifar stack at
+K 15 (async off its paper's K); F46 onward uses this table.** Cohort = the reference split's first n trainers, Dirichlet α 0.1.
+
 ## Next steps (persistent queue — top item is next)
 
 Work rule: PARITY C10, C17, C18; ROBUST R0. Test levels: pytest (~1 min scoped) · CPU tiers (F42C / F42CR, stub) · GPU smokes ≤ 15 min ·
@@ -26,11 +43,15 @@ bench screens (cifar 12 h vclock in 4-12 min wall) · harness sims (speech) · l
 launch; screens keep the number with a letter. Every batch runs Felix new and old side by side.
 
 - **FX-N141 · RESUME HERE: Felix loop FL1, build Felix up from FedBuff on cifar (operator 10-23).**
-  - **Status:** S1 + S2 done (F44, `FL1_1023_1700`). F45 (S3 + `b1_c33`) **running** since 10-23 21:30: `FL1_1023_2130`, code
-    `cf27b7d56`, 28 / 28 legs started. Next: read `{jayne,shepherd}/cifar_verdict.md` + `selection_audit.md`, fill S3 / S1 *Found*.
-  - **Launch (operator, tmux, same TAG on both):** `TIER=F45 TAG=<mmdd_hhmm> bash /home/dgarg39/flame/lib/python/examples/scripts/run_fl1.sh`
-    on jayne (GPUs 0, 2-7: `s0` + `s0u`, 18 legs; GPU 1 aggregate ECC) and shepherd (GPUs 0-7: `s50u`, 10 legs); legs queue and
-    start on the GPU with the most free memory when GPU (4 GB + 2 reserve) and host RAM (8 GB) fit, ≤ 3 / GPU; ~75-90 min. Output `experiments/FL1_<TAG>/{jayne,shepherd}/`: `cifar_verdict.md`, `config_audit.md`, `selection_audit.md`.
+  - **Status:** S1-S3 done (F44 `FL1_1023_1700`, F45 `FL1_1023_2130`). F46 (S4) built + 1 h smoke (`experiments/FL1_smoke_F46_1024`);
+    q audit (`experiments/qaudit_1024`). Smoke: 11 / 11 legs, audit ✅; φ 1.0 → 0.81-0.90 in hour 1 with c and step following;
+    availability arms re-smoked after FX-T84 (c ≈ 30 of 60 at ~150 / 300 trainable, `FL1_smoke_F46b_1024`); K 10 audit ✅
+    (`FL1_smoke_F46c_1024`). Next: operator launches F46 (below); then fill S4 *Found*.
+  - **Launch (operator, tmux on jayne; shepherd unavailable 10-24; the script refuses a dirty tree):**
+    `TIER=F46 ONLY=F46_ PER_GPU=5 TAG=<mmdd_hhmm> bash /home/dgarg39/flame/lib/python/examples/scripts/run_fl1.sh` on jayne alone:
+    all 59 legs (`s0` 15, `s0u` 19, `s50u` 25) on GPUs 0, 2-7 (GPU 1 aggregate ECC), ≤ 5 / GPU (35 at once: ~4 GB GPU, ≤ 8 GB RAM
+    each; 128 cores, 454 GB free); legs queue onto the GPU with the most free memory; ETA ~2-2.5 h (F45 per-leg 18-75 min). Output
+    `experiments/FL1_<TAG>/jayne/`: `cifar_verdict.md`, `config_audit.md`, `selection_audit.md`.
   - **Goal (standing):** Felix reaches the **highest target accuracy fastest** on every dataset and cell. Lowest bytes is a bonus,
     never at the cost of final accuracy; first to an intermediate accuracy but ending lower is a failure. Selection balances speed,
     utility and diversity, so fast clients alone can't cap accuracy.
@@ -44,13 +65,18 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
     - *Per step (standing, operator 10-23):* write the step's options table here **before** the run and its findings **after**;
       the interesting why (worked / failed and its mechanism) also goes to FELIX_INSIGHTS §5 "FL1 log" for motivation / eval.
     - *Rungs:* 1 h smoke (~10 min; configs + early speed only, can't rank: `l3b` leads at 1 h and loses at 12 h) → 12 h screen, 1
-      seed, prune (~75 min) → 48 h, 3 seeds, step winner (locks the step) → 120 h once per group.
-    - *Cells:* cifar bench n 300 c 60 K 15: static full data `s0` (races to 70%), streams `s0u` / `s50u` (ceiling 62 / 66 / 69 / 72 /
+      seed, prune (~75 min) → 48 h, 3 seeds (operator 10-23: only for steps without a clear winner; a clear winner = beats every
+      rival by > 1 pp final or > 2× the 0.4 pp anchor drift on lead, on every cell; else the top 2 of each open step run as a cross
+      product) → 120 h once per group.
+    - *Cells (n / K / c: Cohort table):* cifar bench n 300: static full data `s0` (races to 70%), streams `s0u` / `s50u` (ceiling 62 / 66 / 69 / 72 /
       75% at 12 / 24 / 48 / 72 / 120 h; FL trails it ≥ 7 pp).
     - *Targets:* `s0` 50-70% every 5 pp; streams 40% up plus 90 / 95% of the ceiling at the horizon (`fl1_verdict.py`).
     - *Pass rule vs FedBuff in the same batch:* final ≥ FedBuff − 1 pp AND no slower at every target up to the highest either
-      reaches. Beside it: updates, mean staleness, slot starvation, top-20% share, coverage; picks vs size / speed / loss in
-      `selection_audit.md`.
+      reaches (same eval tick = tie). Beside it: lead (pp·h 0-4 / 4+ h), late gap (last third), gap at equal GB, updates, mean
+      staleness, slot starvation, top-20% share, coverage; picks vs size / speed / loss in `selection_audit.md`.
+    - *Why lead (AUC) beside time to target (operator 10-23):* TTA is quantized to the 10-min eval and flips on one noisy eval near a
+      threshold (one seed); lead integrates the whole curve, so it ranks screens. It is time-axis; "Δ@GB" is the bytes-axis twin.
+      The paper reports TTA and bytes to target.
   - **Knobs (all steps):**
 
     | aspect | knob | values | step | state |
@@ -61,23 +87,25 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
     | update-norm guard | `opt.norm_clip` | off / 3 | S2 | only for > 1 epoch |
     | client weight decay (local SGD) | `trainerWeightDecay` | 0 / 5e-4 | S2 | dropped |
     | local epochs (C9) | `epochs` | 1 / 2 / 3 | S2 → S5 | deferred (drift) |
-    | sampling rule | `sel.selectType` | random / `prop` / Oort cutoff (`default`) | S3 | F45 |
-    | speed term | `sel.utilityPerSecond`, `sel.scoreUtility=false` | on / off | S3 | F45 |
-    | utility \|D\| q | q: `utilityPrefixSamples` | off / Oort EMA loss² over the pass (Felix old) / pre-step one batch, −1 (Felix new) | S3 | F45 |
-    | balance | `sel.participationDecay` | 0 / 1 | S3 | F45 |
-    | exploration | `sel.scoreUcb` | off / on | S3 | F45 |
-    | concurrency | `c` (K 15) | 60 / 33 | S1 → S4 | F45 `b1_c33` |
-    | aggregation rate | `opt.agg_rate_conf.type` | old 1/√(1+τ) / new | S4 | next |
+    | sampling rule | `sel.selectType` | random / `prop` / Oort cutoff (`default`) | S3 | `prop` (cutoff: lowest final) |
+    | speed term | `sel.utilityPerSecond`, `sel.scoreUtility=false` | on / off | S3 → S4 | both carried (`uo` off, `vub` on) |
+    | utility \|D\| q | q: `utilityPrefixSamples` | off / Oort EMA loss² over the pass (Felix old) / pre-step one batch, −1 (Felix new) | S3 | on; q open (Q-Q) |
+    | balance | `sel.participationDecay` | 0 / 1 | S3 | with the speed term (`vub`) |
+    | exploration | `sel.scoreUcb` | off / on | S3 | dropped (±0.3 pp) |
+    | concurrency | `c`; `felix_c` (`avail`, `phase`) in [K, c] | 60 / 30; × trainable share; × loss phase | S4 | F46 |
+    | buffer | K (`agg_goal`) | 10 (FedBuff's) / 20 | S4 | F46 probe |
+    | aggregation rate | `opt.agg_rate_conf` | old 1/√(1+τ) / new / 1/(1+τ) | S4 | F46 |
+    | server step | `opt.phase_step` (lr × loss phase) | off / on | S4 | F46 |
     | bytes | epochs, pacing | – | S5 | later |
     | dropped earlier | eval tasks (C6), AIMD K (C4), value rate (C5), pacing as built | – | – | – |
 
   - **S1 · base `b1` = FedBuff + C1 notify / evict + averaged model (F44).** *Question:* does availability awareness alone beat FedBuff?
     - *Options:* `b1` vs FedBuff on 3 cells (C1 only acts on `s50u`).
     - *Found:* ties `s0` (67.4 vs 67.9%), passes `s0u` (56.7 vs 56.8%, 10-20 min sooner); `s50u` 80 min sooner to 50-55% but final
-      55.5 vs 56.7% (FAIL). FedBuff idles: 98k slot-starvation events waiting for check-ins + dead slots held to the 903 s timeout →
+      55.5 vs 56.7% (FAIL). FedBuff idles: 98k slot-starvation events waiting for check-ins + dead slots held to its 677 s timeout →
       ~33 of 60 slots busy, 116k vs 213k updates, staleness 4.8 vs 7.8 under the same rate (`s0u` 3.9 vs 3.7, no gap).
-    - *Decision:* keep C1 (speed). Open: is the `s50u` loss staleness? → F45 `b1_c33` (c at FedBuff's effective 33): final ≥ FedBuff ⇒
-      staleness confirmed, S4 fixes it at full c; else C1 itself needs a look.
+      F45 `b1_c33`: 57.1 vs FedBuff 56.3% final (staleness 4.2), but FedBuff's pace (45% at 220 vs 190 min; lead −7.7 vs b1 +23 pp·h).
+    - *Decision:* keep C1 (speed); `s50u` loss = staleness at c 60 (confirmed). S4 must keep c 60's speed with c 33's final.
   - **S2 · stability and local work on `b1` (F44).** *Question:* does guard + wd, or 2 / 3 epochs, lift final accuracy?
     - *Options:* `b1gw` (guard 3 × median norm + client wd 5e-4), `b1gw_e2` / `e3`; selection random throughout.
     - *Found:* no winner. Guard ✓ (e2 / e3 finite to 12 h; FX-T82 fixed). wd ±0.5 pp. e3: same staleness (3.9), 45-60% fewer
@@ -104,18 +132,75 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
       flips it (+0.53, 33); utility alone (`s3u`) is all size (ρ +0.91, speed −0.16) and makes 36% fewer updates than `s3vu`; Oort's q (`s3uo`) picks
       the same at 1 h (+0.91);
       balance cuts top-20% share 53 → 42%; 1 h accuracy 37-41% vs `b1` 33%. `b1_c33` / `s3vubx_oc` audit ✅ (c 33 applied).
-    - *Found:* pending F45.
-  - **S4 · rate / staleness on the S3 winner.** Felix rate `new` vs 1/√(1+τ), and c, sized by `b1_c33`.
-  - **S5 · bytes:** local work (epochs, guard) / pacing without losing final accuracy.
-  - **Built:** `F44` / `F45` tiers (`harness_pool.py`), `run_fl1.sh` (`TIER`), `fl1_verdict.py` (+ updates / staleness / starvation),
-    `config_audit.py` (sel / nclip / lrn / wd / ep / su / ucb / c), `selection_audit.py` per batch, selector `prop` (`async_oort.py`).
+    - *Found (F45; lead = ∫(acc − FedBuff) dt in pp·h, 0-4 h / 4-12 h; Scoreboard):*
+      - Utility alone (`s3u`, `s3uo`) is the only config to pass `s0` + `s0u` (68.3 / 68.0, 56.3 / 56.7 vs 68.0 / 56.8), with 20-27%
+        fewer updates and GB (41 vs 25 samples / update on `s0u`). q prefix vs Oort EMA: tie (≤ 0.4 pp = the anchor's F44 → F45 drift).
+      - Speed term: +3-4 pp at 1 h, −1.5-2 pp final on streams; across arms each pp·h gained before 4 h comes back 0.6-1.0× after
+        (`s0u`: `s3u` +16 / −2, `s3vu` +26 / −15, `_oc` +31 / −19). Speed alone (`s3v`): 83 vs 164 samples / update, class TV 0.117
+        (FedBuff 0.051), −3.8 pp static; its stream legs crashed at v20000 (52-53% at 10 h, FAIL anyway).
+      - Balance wins back ~half the speed term's loss (+0.5-1 pp); UCB ±0.3 pp; Oort cutoff is fastest to 50% (100-130 min) and lowest final.
+      - `s50u`: no arm passes; every c 60 arm runs staleness 7.7-7.8 and trails FedBuff from ~7 h. `s3u` / `s3uo` end −0.7 / −0.8 pp
+        (in band) but never reach 56.3%.
+      - Felix new's selection on `b1` (`s3vubx_oc`: rate old, lr batch-normalize) reaches 40.9% at 1 h vs `l3b` 49.5% and loses more
+        late (`s0u` −19 vs −13 pp·h): about half of Felix new's early lead is its step (rate `new`, no lr normalize), not selection.
+    - *Mechanism checks (after F45):* speed arms are not much staler (`s0u` τ mean 3.9 for all; τ > 8 10.6 vs 8.0% for `s3u`); they
+      make more, smaller updates (36 vs 41 samples / update, 180k vs 138k) at the same step, so the late loss is step size × update
+      noise, which K, c and the rate set (S4). `s50u` τ mean 7.8 is a p99 tail of 100-160 versions (updates finished away, uploaded on return).
+    - *q audit (`value_headroom.py --holdout 0.1`, static shards, uniform K 15 trajectory, `experiments/qaudit_1024`; value = test-loss
+      drop of one client's update; buffer = test-loss drop of the top 15 by a signal; v3000 = memorized, test loss 1.13 → 1.49):*
+
+      | signal | ρ(value) v20 / 200 / 1000 / 3000 | top-15 buffer v3000 (random +0.035, oracle +0.37) |
+      |---|---|---|
+      | \|D\| · Oort EMA q over the pass (`qo`, `s3uo`) | +0.04 / +0.05 / −0.09 / **+0.58** | **+0.155** |
+      | \|D\| · pre-step one batch (`q`, `s3u` / `vub`) | +0.02 / +0.04 / −0.10 / +0.50 | −0.304 |
+      | \|D\| · held-out 10% (`qv`) | −0.04 / −0.02 / −0.12 / +0.20 | −0.125 |
+      | \|D\| · whole train shard (`qt`, reference) | +0.01 / +0.04 / −0.09 / +0.46 | −0.202 |
+      | q pre-step alone · \|D\| alone | +0.88 / +0.74 / +0.11 / +0.68 · −0.08 / −0.07 / −0.14 / +0.19 | −0.951 · +0.019 |
+
+      Early, no |D|-weighted loss predicts value (high-loss updates win alone but not in a buffer, FX-T78); once shards are
+      memorized, the pass-averaged EMA is the best signal and the only one that builds a better-than-random buffer (4×). One
+      pre-step batch is too noisy; held-out loss loses 10% of the data and is weaker. Candidate: Oort EMA (`uo`'s q).
+    - *Decision (operator 10-23):* carry both `s3uo` (`uo`) and `s3vub` (`vub`) into S4 against every aggregation; drop UCB and the
+      cutoff. q (Q-Q): `vub` moves to the EMA q after S4 if the audit holds; only the utility arms re-run (3 legs per q, at the S4
+      winner's aggregation), never the whole S3 ladder.
+  - **S4 · aggregation on both S3 carries (F46, tier `F46_ARMS`; 12 h; arm = `<uo|vub>_<variant>`; FedBuff anchor; K 10, c 60 per the Cohort table, so every arm incl. `o` re-runs).**
+    *Questions (operator 10-23):* which step (rate fixed or adaptive) at fixed K / c; which c at fixed rate (availability, phase);
+    both by phase; where K and c move staleness vs throughput; does the speed term pay under a better aggregation?
+    - *Inputs (F45 telemetry):* rate `new` is a near-constant large step, not a staleness rule: mean weight 0.73-0.78 early, 0.61-0.65
+      late (old 0.51-0.53; `s50u` old 0.51 at τ 7.8), because the utility term ≈ constant. Phase signal = clients' per-sample loss
+      of the received model: 2.0 → 1.2 by 4 h → 0.1 by 9 h on streams (accuracy flat once < ~1; only 2-3% of tasks see new data);
+      static 1.7 → 0.6 with accuracy rising to 9 h. φ = window mean / peak (`flame/selector/loss_phase.py`, window = n updates).
+
+    | variant | cells | rate | lr norm | c (K 10) | answers |
+    |---|---|---|---|---|---|
+    | `o` (= F45 `s3uo`, `s3vub` at K 10) | 3 | old 1/√(1+τ) | on | 60 | base |
+    | `n` · `nl` | 3 | new | on · off | 60 | Felix's rate; lr normalization |
+    | `p1` | 3 | 1/(1+τ) | on | 60 | stronger staleness discount (fixed) |
+    | `ps` | 3 | old × φ | on | 60 | adaptive step by phase (Polyak-like) |
+    | `cp` | 3 | old | on | 60 × φ, ≥ 10 | c by phase (also saves bytes late) |
+    | `pscp` | 3 | old × φ | on | 60 × φ | both by phase |
+    | `ca` · `cap` | `s50u` | old | on | 60 × trainable share (· × φ) | c by availability (syn_0: = 60) |
+    | `psca` | `s50u` | old × φ | on | 60 × trainable share | step by phase, c by availability |
+    | `c30` · `k20` | streams | old | on | 30 · 60 with K 20 | K × c probe: c / K 3 via less throughput vs more averaging |
+
+    - *Expected:* `nl` fastest early, lowest final (= `l3b`'s step); `ps` / `pscp` keep `uo`'s final with ≥ its lead and fewer GB
+      (`cp`); on `s50u` `ca` ≈ `b1_c33`'s final at more speed; `k20` ≥ `c30` (same c / K, full throughput); the speed term
+      (`vub`) closes on `uo` under `ps` / `p1` if its late loss is step noise.
+    - *Next by result:* phase wins → test the phase signal's window and a held-out φ; K × c matters → one K / c sweep around the
+      winner; nothing beats rate old → S5.
+  - **S5 · bytes:** local work (epochs, guard) / pacing (phase `c` overlaps) without losing final accuracy.
+  - **S6 · confirm:** speech n 100 on the final config (one batch), then the 48 h rung (rule above), then D5.
+  - **Built:** `F44` / `F45` / `F46` tiers (`harness_pool.py`), `run_fl1.sh` (`TIER`, `CARRY`), `fl1_verdict.py` (+ updates /
+    staleness / starvation / lead), `config_audit.py` (sel / nclip / lrn / wd / ep / su / ucb / c / K / rp / ps / dkcp / cmin),
+    `selection_audit.py` per batch, selector `prop` (`async_oort.py`); loss phase (`loss_phase.py`, `opt.phase_step`, policy
+    `felix_c`; `dynamic_kc` telemetry carries c, φ, step_scale); `value_headroom.py --holdout` (q estimators vs update value).
     `bench_pool.py` queues legs by free GPU memory + host RAM (`--leg-gpu-gb`, `--leg-ram-gb`, `--gpu-reserve-gb`, `--ramp-s`).
 - **FX-N132 · General mechanisms only (operator 10-22) · standing, via FX-N141.** No per-dataset / n / K / c constants in Felix's
   mechanisms; scored averaged vs averaged.
 - **F42g follow-up · todo.** Rerun fdstar and fbstar speech, both cells (DOOMED EV22 by the pool's stale checker), ~21 min each.
 - **F42-T12 · Baseline reds · wip.** All F42g EVs pass on current checker (FX-D220-D222 fixed REFL picks, sync check-in, EV16). *Exit
   left:* speech syn_0 check-in ≥ 80% of its `*` AUC: Oort 85% ✓, REFL 73% ✗ (13.6 vs 18.7), FedDance* pending the rerun above.
-- **FX-N135 · Bytes via local work · blocked: stability (FX-T82, idea I1).** GB to target = updates × ~4.3 MB, so the lever is accuracy
+- **FX-N135 · Bytes via local work · blocked: stability (FX-T82; guard FX-D232 built, S5).** GB to target = updates × ~4.3 MB, so the lever is accuracy
   per update (FX-L99). n 75 screen (`bench_F42h_ep_1023_0441`, 3 seeds, 12 h): min / GB to 40% · final %
 
   | arm | syn_0 | syn_50_3st |
@@ -126,7 +211,7 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
 
   F43: cifar e2 / e3 diverge (FX-T82); speech e3 stable, lowest GB to 60-70% (223 / 326 / 537 vs FedBuff 377 / 472 / 573) but 70% at 998
   vs l3b 610 min. *Next (after a guard):* e2 / e3 at n 300 to 24 h; then a constant-free rule (FX-D201 `split` uncapped, or a step floor).
-- **FX-N136 · Speech: Felix's current model swings · todo (idea I5).** Felix cur never reaches 60% (avg 70%); FedBuff cur 64%. Speech has
+- **FX-N136 · Speech: Felix's current model swings · todo.** Felix cur never reaches 60% (avg 70%); FedBuff cur 64%. Speech has
   0% sub-batch tasks (median 150-183 samples / task), so FX-L100's cifar root does not apply.
 - **FX-N137 · Buffer composition · todo, low priority.** Greedy buffer oracle +0.10-0.18 nats / version over random; single proxies fail
   (FX-T78). Next: combined signals as weights, scored in `value_headroom.py` before code.
@@ -134,7 +219,7 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
   rate `new` scale 0.4 / a 0.25 / b 0.1: derive a from the staleness distribution. γ 1.0 stays.
 - **FX-N129 · Bench gate (V5) · wip.** Cifar B2 27 / 27 cells PASS vs harness sims (`bench_B2_1022_1917`, `bench_B2oort_*`). Speech stays on
   the harness (GPU-compute-bound). Left: B3 (`predictor_audit.py`).
-- **FX-N127 · Pacer · parked (FX-T72, T75).** Revive only for idea I6 (bytes after the cifar plateau), with c ≥ K.
+- **FX-N127 · Pacer · parked (FX-T72, T75).** Revive only for bytes after the cifar plateau (S5), with c ≥ K.
 - **FX-N128 · Aggregation (V4) · parked.** Per-update weights fail (FX-T77), a smaller fixed step loses (FX-T76); serve-EMA (FX-D217) kept.
 - **FX-N131 · FB1: day 0 → 6 bench batch, n 300 / 100, 3 traces, 3 seeds · deferred (operator 10-23)** until the Felix config is decided.
 - **F42-T11 · REFL real startup · todo.** Prophet fit before the first check-in costs ~80 s and RAM 116 vs 95 GB est. *Exit:* EV12 PASS on an
@@ -159,26 +244,33 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
 - **FX-N42 · Parity ladder · wip (PARITY Q2-Q6).** · **FX-N10 · speech on the launcher · wip (S4).** · **FX-N22 · Fast harness · wip.**
   · **FX-N2 · S2 pipeline for async_cifar10 · todo.**
 
-**Current arms (harness `F42_ARMS`, F43 = `F43_ARMS` at the reference cohort; `config_audit.py` checks every leg).** n 75 / 50 screens,
-α 0.1, K 10 (F43: K 15 cifar), trace-tied `usage` stream from 24 h, FedScale task time, per-baseline timeout (FX-D198), seed 1.
-
-| arm | availability knowledge (R27) | selection | aggregation | note |
-|---|---|---|---|---|
-| Felix old (`ctl`) | notify: filter + evict at flip | Oort score + UCB; eval tasks | FedBuff buffer, rate `new` | 1 epoch |
-| Felix new (`l3b`) | notify | \|D\| q / last task s (prefix-64 loss) × (1 + picks / mean)^-1 | as old | eval off |
-| `l3b_e2/e3/e4` | notify | as l3b | as l3b | 2 / 3 / 4 epochs |
-| Felix by check-in (`fck`, K1) | check-in, no eviction | as l3b | as l3b | ablation |
-| FedBuff · FedBuff* | check-in · oracle | uniform async | 1/√(1+τ), lr batch-normalize | |
-| FedAvg (ablation) | check-in (sync windows) | uniform | FedAvg | FedDance's training config |
-| REFL · REFL* | check-in + Prophet · oracle (future trace, 10% knockout) | Alg. 1 priority-fill · IPS | SAA | 1 step |
-| FedDance · FedDance* | check-in · oracle | V·I·A + MAB | FedAvg | 1 step |
-| Oort · Oort* | check-in · oracle | utility × speed, UCB | YoGi | 20 steps |
-
-Every arm also runs `_srv` (averaged model served). Check-in protocol: FELIX_INSIGHTS §6.
+Arms per baseline (selection, aggregation, knowledge): FELIX_INSIGHTS §6 table; every arm also runs `_srv` (averaged model).
 
 ---
 
 ## Scoreboard (rewrite after every run, PARITY C5)
+
+**F45 = FL1 S3 + `b1_c33` (10-23; `experiments/FL1_1023_2130/{jayne,shepherd}`, as F44; stream `s3v` crashed at v20000).** Per cell:
+final Δ vs the same batch's FedBuff (pp) · lead pp·h at 12 h (0-4 h / 4-12 h) · verdict. FedBuff F44 → F45: 67.9 → 68.0, 56.8 → 56.8,
+56.7 → 56.3% (same seed: drift ≤ 0.4 pp, AUC ≤ 0.2).
+
+| arm | s0 (static) | s0u | s50u |
+|---|---|---|---|
+| Felix new `l3b` (F44) | 0.0 · **+90** (+61 / +29) · PASS | −1.7 · +34 (+47 / −13) · FAIL | −2.4 · +47 (+53 / −6) · FAIL |
+| Felix old `ctl` (F44) | **+0.6** · +70 (+43 / +27) · PASS | −0.8 · **+34** (+40 / −6) · PASS | −1.2 · **+53** (+50 / +3) · FAIL |
+| `b1` (F44) | −0.5 · +2 · FAIL | −0.1 · +5 · PASS | −1.2 · +23 · FAIL |
+| `s3uo` | 0.0 · +14 (+5 / +9) · PASS | **−0.1** · +15 (+16 / −1) · PASS | −0.8 · +31 (+29 / +2) · FAIL (56.3% never) |
+| `s3u` | **+0.3** · +12 · PASS | −0.5 · +14 (+16 / −2) · PASS | −0.7 · +33 (+29 / +4) · FAIL (56.3% never) |
+| `s3vu` · `s3vuo` | −0.6 · −0.8 · +37 · +39 · PASS | −2.0 · −2.2 · +11 · +10 · FAIL | −1.2 · −1.9 · +32 · +30 · FAIL |
+| `s3vub` · `s3vubx` | −0.4 · −0.4 · +29 · +26 · PASS | −1.0 · −1.1 · +14 · +14 · FAIL | −1.4 · −1.8 · +32 · +29 · FAIL |
+| `s3vubx_oc` (new's selection on `b1`) | −1.2 · +46 (+35 / +11) · FAIL | −2.4 · +12 (+31 / −19) · FAIL | −2.4 · +27 (+38 / −10) · FAIL |
+| `s3v` | −3.8 · +5 · FAIL | crashed (52.4% at 10.6 h) | crashed (53.2% at 10.2 h) |
+| `b1_c33` | – | – | **+0.8** · −8 (−5 / −3) · FAIL (45%: 220 vs 190 min) |
+
+- *Lead fades on streams:* FedBuff is ahead for good from 5.1 h (`l3b` `s0u`) / 6.3 h (`s50u`); at the 8-12 h gap (−2.0 / −2.3 pp)
+  Felix new's cumulative lead hits zero at ~29 / ~33 h, Felix old's at ~45 h / ~70 h, `s3uo`'s at ~43 / ~37 h (if gaps hold). Static:
+  no fade (+0.8 pp at 8-12 h).
+- *Bytes:* `s3u` / `s3uo` 595 / 210 GB vs FedBuff 747 / 287 (`s0u` / `s0`); speed-term arms ≈ FedBuff; `s50u` every c 60 arm +50-80%.
 
 **F44 = FL1 S1 + S2 (10-23; `experiments/FL1_1023_1700/{jayne,shepherd}`, cifar bench n 300 c 60 K 15, 12 h, seed 1, averaged
 model).** final % · min to 50% / top · GB; top = 65% (`s0`), 55.6% / 56.3% (`s0u` / `s50u`, 90% of the 62 / 62.6% ceiling).
@@ -189,7 +281,7 @@ model).** final % · min to 50% / top · GB; top = 65% (`s0`), 55.6% / 56.3% (`s
 | Felix old (`ctl`) | **68.5** · 80 / 241 · 219 | 56.0 · 100 / **180** · 651 | 55.5 · 90 / – · 845 | PASS · PASS · FAIL |
 | Felix new (`l3b`) | 67.9 · **60** / **150** · 257 | 55.1 · **60** / – · 732 | 54.3 · **70** / – · 868 | PASS · FAIL · FAIL |
 | `b1` (S1) | 67.4 · 180 / 450 · 303 | 56.7 · 200 / 300 · 785 | 55.5 · 190 / – · 917 | tie · PASS · FAIL |
-| `b1gw` | 67.8 · 180 / 460 · 303 | 56.4 · 210 / 300 · 785 | 54.9 · 200 / – · 917 | FAIL ×3 (ties / −1.8) |
+| `b1gw` | 67.8 · 180 / 460 · 303 | 56.4 · 210 / 300 · 785 | 54.9 · 200 / – · 917 | FAIL · PASS · FAIL |
 | `b1gw_e2` · `e3` | 65.2 · 63.9 · – · 176 · **127** | 55.6 · 53.5 · 520 / – · 550 · **429** | 53.5 · 53.0 · – · 662 · **528** | FAIL ×6 |
 
 **F43 (10-23; reference cohort, seed 1, averaged model for every arm; `experiments/F43_jayne_1023_0547`, shepherd
@@ -234,21 +326,6 @@ Speech syn_0: accuracy % at 2 / 4 / 8 / 12 h · min / GB to 60 / 65 / 70% (ceili
 - *Prediction check:* no 70% on cifar ✓; 60 / 65% ✗ (nobody passes 58.5%, async cut at 17-35 h); e3 lowest GB ✓ except Oort-family;
   Felix first at 40-60% ✗ at 55% (cifar); speech 70% ✓ (better than predicted: 10 h).
 
-**F43 ideas (inputs to FX-N141's steps: I1-I3 → S2, I4 → S3, I5 → S4, I6 → S5):**
-- **I1 · Update-norm guard (prerequisite for local epochs).** Cifar e2 / e3: one finite aggregate step of 241 at v5537 (typical 0.02-0.3)
-  → NaN; clients hit local loss 0.000 on 45-111 samples; the guard rejects only non-finite. Test: reject or clip updates > k × running
-  median norm, n 300 e3 24 h.
-- **I2 · Sub-batch step normalization at n 300.** The plateau tracks Felix's full-lr sub-batch steps (bullet above); `l3bn` gained ≤ 1 pp
-  at n 75 but cost early speed; the gap to FedBuff is now 1.5-2.5 pp. Test: l3bn vs l3b at n 300, 24 h, both cells.
-- **I3 · Weight decay or logit control on Felix.** Async test loss rises 2× while accuracy is flat; sync stacks with wd don't. May share
-  I1's root. Test: Felix wd 5e-4, n 300, 24 h (Felix-only innovation; baselines keep their source values).
-- **I4 · Old selection late, new early.** Old ≥ new from hour 4; ablate C3 vs balance on the late phase, or measure which old term
-  (UCB exploration, eval tasks) holds accuracy. A phase switch needs a signal (FX-T80, T81 found none).
-- **I5 · Speech current-model noise.** Felix's speech lead needs the averaged model (cur never 60% vs FedBuff cur 64%). Look at the
-  step: rate `new` scale / staleness spread vs FedBuff's on speech.
-- **I6 · Bytes after the plateau.** ~1000 GB for +1.9 pp after hour 4 on cifar; a pacer that cuts c on a stalled averaged-model gain and
-  releases on new data saves it (FX-N127 parked; F42b's c fell below K). Never fires on speech (no plateau).
-
 **n 75 / 50 screens, current code (10-23; 12 h; cifar bench 3 seeds `bench_F42f_1022_2112` + `bench_F42g_1023`; speech harness
 `pool_20261022_2115_F42F_SPEECH_JAYNE` (Felix, FedBuff, 2 seeds) + `pool_1023_F42G_SPEECH_SHEPHERD` (baselines, 1 seed)).** Averaged
 model. Cifar: AUC % · min / GB to 40% · final %. Speech: AUC % · min to 30% · final %.
@@ -273,17 +350,15 @@ Plots (`felix_plots.py POOL... --prefix F43 --new l3b_srv --old ctl_srv --basis 
 ![speech](felix_google_speech.png) · why (`felix_why.py POOL...`; F43: Felix new 22.6k hour-1 updates vs old 12.9k vs FedBuff 16.8k on
 cifar syn_0; top-20% pick share 44% / 63% / 24%): ![why cifar](felix_why_cifar10.png) ![why speech](felix_why_google_speech.png)
 
-**Expected after the next run (F45, S3):** score sampling speeds `b1` toward Felix new early (50% ≤ 120 min on `s0` / `s0u`);
-balance + UCB hold final within 1 pp of FedBuff on `s0u`; `s50u` final stays ~55% (staleness, S4); `b1_c33` reaches FedBuff's
-56.7% on `s50u` (staleness root confirmed).
+**Expected after the next run (F46, S4):** see S4 *Expected*. F45 check: score sampling sped `b1` (50% at 110-170 vs 180-200 min ✓);
+balance + UCB within 1 pp on `s0u` ✓ (−1.0 / −1.1, but `s3vub` slower at 55.6%); `s50u` ~55% ✓; `b1_c33` ≥ FedBuff ✓.
 
 ### Running config and invariants checked
 
-- *Shapes:* screens G3_SHAPE cifar n:c:K 75:15:10 on 1 A40, speech 50:15:10 on 2-4; F43 cifar 300:60:15, speech 100:30:10 on 4 GPUs.
-  Reference split's first n trainers (Dirichlet α 0.1); eval every 10 min of the leg's clock on the full test set; speech bf16
-  (FX-D168); Oort-family over-commit 1.1, REFL / FedDance picks round(K × 1.3); F43 stops at a 70% 5-eval mean (FX-D229).
-- *Task time:* FedScale device model (FELIX_INSIGHTS §6). *Timeout:* `send_timeout_wait_s` 903 s cifar / 2560 s speech for every
-  non-Felix baseline; Felix evicts at the flip. *Knowledge (R27):* Felix notify; non-`*` baselines check-in; `*` oracle. AVL_EVAL is
+- *Shapes:* n / K / c in "Cohort and participation" (top). GPUs: cifar screens 1 A40, n 300 bench 1 GPU / leg; speech 2-4. Eval
+  every 10 min of the leg's clock on the full test set; speech bf16 (FX-D168); F43 stops at a 70% 5-eval mean (FX-D229).
+- *Task time:* FedScale device model (FELIX_INSIGHTS §6). *Timeout:* `send_timeout_wait_s` per baseline (FX-D198; cifar 903 s
+  n 75, FedBuff n 300 677 s; speech 2560 s) for every non-Felix baseline; Felix evicts at the flip. *Knowledge (R27):* Felix notify; non-`*` baselines check-in; `*` oracle. AVL_EVAL is
   eval-only and Felix-only (FX-D165).
 - *Training / server knobs (`baseline_reference.yaml`; source-faithful or recorded deviation, L33-L37):*
 
@@ -349,7 +424,7 @@ balance + UCB hold final within 1 pp of FedBuff on `s0u`; `s50u` final stays ~55
 - **Baselines (10-08, 10-10, 10-12):** source-faithful values in `baseline_reference.yaml` (ROBUST L33-L37); cifar Oort clip 1.0 recorded
   (FX-D126); FX-D148 partial dispatch for refl / oort / feddance; REFL staleness unbounded.
 - **Traces and overruns (10-14):** 3-state syn traces only (FX-D166); ≤ 1-2% of tasks may overrun D, else fewer trainers per GPU.
-- **Speed levers (10-14):** speech bf16, balanced GPU placement, one n:c:K per dataset for all baselines.
+- **Speed levers (10-14):** speech bf16, balanced GPU placement, one n per dataset for all baselines (K / c: Cohort table).
 - **Degenerate cells (10-18):** a baseline below target in a short leg is round-bound if loss falls and accuracy rises.
 - **Launches (10-17, 10-18):** long batches through `scripts/dispatch.py` on the operator's go; Claude runs short tests itself.
 - **Parity keys (10-12, 10-18):** a board stands on one `code_key` (FX-D162); reals pair across real-path-identical keys
@@ -381,7 +456,7 @@ the most learning per second among those that can finish before they leave.
 | C1 | aware dispatch + eviction (notify) | Felix by check-in −4.4 AUC cifar / −10.0 speech syn_50_3st (F42b) | **gain** |
 | C2 | async, 1 epoch | first to 40-50% everywhere; on cifar flat from hour 2-4 at full-lr sub-batch steps (FX-L100) | gain early; plateau |
 | C3 + bal | \|D\| q / task s, participation discount | n 300: +3-5 pp at 1 h, 1.75× hour-1 updates vs old; old ≥ new from hour 4 (F43) | gain early only |
-| C9 | local epochs | −40-48% GB to 40% (n 75); cifar NaN at n 300 (FX-T82); speech e3 −30% GB | blocked: guard (I1) |
+| C9 | local epochs | −40-48% GB to 40% (n 75); cifar NaN at n 300 (FX-T82); speech e3 −30% GB | guard built (FX-D232); S5 |
 | serve | averaged model (EMA) | +0.6-2 AUC cifar, +4-8 speech, every stack (FX-D217, FX-D219) | kept, generic |
 | C4 · C5 · C6 · C8 | adaptive K · value rate · eval tasks · pacing | no gain or loss (FX-T65, rejected table, FX-T72, T75) | dropped (arms deleted) |
 
@@ -532,7 +607,7 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - FedDance: 1 mini-batch, FedScale defaults (equal-weight FedAvg, decay 0.98/10) [paper]; I_m = mean local training loss (Eq. 6).
 - FedScale-family clients (REFL, Oort, FedDance): SGD momentum 0.9, weight decay 5e-4, fresh per task [code].
 - FedBuff: 1 epoch, lr normalization [paper]; client/server lr [ours] (paper tunes by sweep). Felix: [ours].
-- Sync K = 5% of n (cifar 15, speech 5); async keeps aggGoal 10, c 10% / 30%.
+- n / K / c: "Cohort and participation" (top).
 
 ## Felix lessons (dos)
 
@@ -693,7 +768,9 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   speech) but a fixed 0.5 / 0.25 lost 1.2-6.4 AUC closed-loop for Felix and 4-12 for FedBuff (slow early; F42d).
 - **FX-T82** Don't run > 1 local epoch on cifar without an update-norm guard: F43 e2 / e3 hit local loss 0.000 on 45-111 samples, one
   finite step 241 (typical 0.02-0.3) passed `NONFINITE_REJECT` and the model went NaN at 5-11 h.
-- **FX-T83** Don't size a run by a round cap: 20000 versions cut n 300 async legs at 17-35 h of a 120 h budget (F43; FX-D230).
+- **FX-T84** Don't read the population through `channel.ends()` outside dispatch: it runs a selection and returns the in-flight
+  set; `_dynamic_kc_step` did, so `n_eligible_train` = in-flight and F46 smoke's `ca` c fell to its floor 15 (fixed: `all_ends()`).
+- **FX-T83** Don't size a run or a per-round array by a round cap: 20000 versions cut F43 n 300 async legs at 17-35 h; a 20000-slot list crashed F45 `s3v` at 10 h (FX-D230).
 - **FX-T80** Don't gate the step on buffer coherence r = |mean Δ|² / mean |Δ|²: K·r ≈ 0.8-1.25 all run (signal ≤ 3% of update energy),
   lowest early, peaks before the plateau (F42f / F42g l3b vs l3bn legs, `dynamic_kc` stats).
 - **FX-T81** Don't gate on |w − w̄| / |Δw| or consecutive-step cosine: d rises with step decay, cos peaks +0.1-0.2 at plateau approach,
@@ -800,11 +877,11 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   seen in round caches (syncfl and oort stacks); harness arms `ctl_srv` (all baselines), `rstar_srv`, `fdstar_srv`, `fbstar_srv`.
 - **FX-D220** EV16 sync rule (F42-T12 b, h): a withheld delivery is graded against the first close that could take it: due before its
   intake cut (last arrival) and, if fresh for that round, before its K-th fresh arrival (`_sync_closes`).
-- **FX-D230** `debug_run.sh` round cap 10^7 (was 20000), so the vclock budget binds; `bench_report.py --ceiling` adds end h and the
-  centralized ceiling there.
+- **FX-D230** `debug_run.sh` round cap 10^7 (was 20000), so the vclock budget binds; asyncfl per-trainer participation is a set of
+  rounds (was a 20000 list); `bench_report.py --ceiling` adds end h and the centralized ceiling there.
 - **FX-D232** FedBuff `norm_clip` (`opt.norm_clip=k`, 0 off): an update whose L2 (BN stats excluded) exceeds k × the median of the last
   200 is scaled to it after 10 norms; emits `update_clipped` (`tests/optimizer/test_fedbuff_lr.py`). Tier F44 = FL1 (`F44_ARMS`, static
-  `s0` + streams, 12 h), `scripts/run_fl1.sh`, `scripts/fl1_verdict.py` (pass rule vs FedBuff, top-20% share, coverage);
+  `s0` + streams, 12 h), `scripts/run_fl1.sh`, `scripts/fl1_verdict.py` (pass rule vs FedBuff, same eval tick = tie, top-20% share, coverage);
   `bench_report` keeps static `s0` apart from `s0u`.
 - **FX-D231** R27 availability knowledge (F42a, F42-T1..T5): `avail_knowledge` notify / checkin / oracle / none
   (`ClientAvailability._believed_state`; `flame/availability/checkin.py` ledger + `checkin_client.py`; EV22, EV23); REFL
@@ -1189,6 +1266,13 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   YoGi and FedScale utility already matched. Deviations: no a-priori size/speed before first contact; stragglers run, then drop.
 
 ## Open questions (operator)
+
+- **Q-Q · Utility q:** the q audit favours Oort's EMA over the pass (late buffer 4× random; pre-step batch and held-out worse).
+  Switch `vub` (speed + balance) to the EMA q after S4 (3 legs), or now in F46 (+10 legs)?
+- **Q-SPEECHK · Speech sync K:** the 5% rule gives K 5 at n 100; F43 ran every speech stack at K 10 (10%). Rule or 10?
+- **Q-SPEECHC · Speech c:** speech runs c 30 of n 100 (30%); FedBuff's paper ratio is 20% (c 20). Move speech to c 20 at S6?
+- **Q-PHASE · Felix c bounds:** F46 bounds dynamic c to [K, c_config] = [10, 60] (20% of n, FedBuff's c). Keep the upper bound at
+  FedBuff's c for fairness, or allow Felix above it when availability is high?
 
 - **Q-ARMS · Confirm the current arms table (Next steps "Current arms").**
 - **Q-CHECKIN · Open: whether sync check-in may keep its window open until K × 1.3 have checked in (F42-T12 d).**

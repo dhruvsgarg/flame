@@ -187,6 +187,28 @@ F45_ARMS = {"ctl_srv": dict(bls=("fedbuff",)),
             "s3vubx": dict(hp=f"{_S3U} {_BAL} sel.scoreUcb=true", thp=_PB),  # + UCB
             "s3vubx_oc": dict(hp=f"{_B1.replace('sel.selectType=random', 'sel.selectType=default')} {_C3} {_BAL}", thp=_PB),
             "b1_c33": dict(hp=_B1, thp=_B1T, c=33, cells=("s50u",))}
+# F46 = FL1 S4 on both S3 carries (uo = s3uo, vub = s3vub) at FedBuff's own K 10 (paper §6.1) and c 60 (= its cifar c / n 20%):
+# rate at fixed K / c; c at fixed rate (availability / loss phase, in [K, c]); both; a K x c probe (c / K sets staleness, K the
+# averaging). `o` = the carry at rate old (F45 ran K 15). Telemetry `dynamic_kc` per commit (c, phi, step_scale).
+F46_SHAPE = dict(F43_SHAPE["cifar10"], agg_goal=10)
+_RNEW = "opt.agg_rate_conf.type=new"
+_DKCF = "sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=felix_c sel.dynamic_kc.c_min=10"
+_S4V = {"o": {}, "n": dict(hp=_RNEW), "nl": dict(hp=_RNEW, lrn=False),  # Felix's rate, with / without lr batch-normalize
+        "p1": dict(hp=f"{_RNEW} opt.agg_rate_conf.scale=1.0 opt.agg_rate_conf.a_exp=1.0"),  # rate 1/(1+τ)
+        "ps": dict(hp="opt.phase_step=true"),  # server lr x loss phase
+        "cp": dict(hp=f"{_DKCF} sel.dynamic_kc.policy_kwargs.phase=true"),  # c x loss phase
+        "pscp": dict(hp=f"opt.phase_step=true {_DKCF} sel.dynamic_kc.policy_kwargs.phase=true"),
+        "ca": dict(hp=f"{_DKCF} sel.dynamic_kc.policy_kwargs.avail=true", cells=("s50u",)),  # c x trainable share (syn_0: = c)
+        "cap": dict(hp=f"{_DKCF} sel.dynamic_kc.policy_kwargs.avail=true sel.dynamic_kc.policy_kwargs.phase=true", cells=("s50u",)),
+        "psca": dict(hp=f"opt.phase_step=true {_DKCF} sel.dynamic_kc.policy_kwargs.avail=true", cells=("s50u",)),
+        "c30": dict(c=30, cells=("s0u", "s50u")), "k20": dict(agg_goal=20, cells=("s0u", "s50u"))}  # K x c probe: c / K 3
+F46_ARMS = {"ctl_srv": dict(bls=("fedbuff",))}
+for _b, (_bhp, _bthp) in {"uo": (_S3, ""), "vub": (f"{_S3U} {_BAL}", "utilityPrefixSamples=-1")}.items():
+    for _v, _kw in _S4V.items():
+        _vhp = _kw.get("hp", "")
+        _hp = f"{_bhp.replace('opt.agg_rate_conf.type=old', '') if _RNEW in _vhp else _bhp} {_vhp} {_STATS}"
+        F46_ARMS[f"{_b}_{_v}"] = dict(hp=" ".join(_hp.split()), thp=" ".join(f"{_B1T if _kw.get('lrn', True) else ''} {_bthp}".split()),
+                                      **{k: _kw[k] for k in ("cells", "c", "agg_goal") if k in _kw})
 F42_ARMS["l3b_ro_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep opt.agg_rate_conf.type=old", thp=_PRE)  # FX-N132: FedBuff's rate
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
@@ -475,7 +497,7 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
             if arm in F43_ARMS:
                 out.append(replace(ph, pid=ph.pid.replace("F42_", "F43_"), runtime_s=F43_RUNTIME_S[ds], agg_hp=f"{ph.agg_hp} {F43_STOP}", **F43_SHAPE[ds]))
         return out
-    if tier in ("F44", "F45"):  # FX-N141 loop FL1: F42 arms reused for anchors, the step's arms on top
+    if tier in ("F44", "F45", "F46"):  # FX-N141 loop FL1: F42 arms reused for anchors, the step's arms on top
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
         out = []
@@ -483,8 +505,8 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
             dsh = usage_hp(trace) if stream else full
             base = replace(g3, runtime_s=F44_RUNTIME_S, trace=trace, trace_offset_s="86400" if stream else "", kind="sim_ev",
                            trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S} {F43_STOP}",
-                           **F44_SHAPE[ds])
-            for arm, kw in (F44_ARMS if tier == "F44" else F45_ARMS).items():
+                           **(F46_SHAPE if tier == "F46" and ds == "cifar10" else F44_SHAPE[ds]))
+            for arm, kw in {"F44": F44_ARMS, "F45": F45_ARMS, "F46": F46_ARMS}[tier].items():
                 if ds == "google_speech" and (tier != "F44" or arm not in F44_SPEECH_ARMS) or cell not in kw.get("cells", (cell,)):
                     continue
                 ref = F42_ARMS.get(arm, {})
@@ -493,7 +515,7 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                 if bls:
                     out.append(replace(base, pid=f"{DS_TAG[ds]}{tier}_{cell}_{arm}", baselines=bls,
                                        agg_hp=f"{base.agg_hp} {hp}".strip(), trainer_hp=f"{base.trainer_hp} {thp}".strip(),
-                                       **{k: kw[k] for k in ("c",) if k in kw}))
+                                       **{k: kw[k] for k in ("c", "agg_goal") if k in kw}))
         return out
     if tier == "F42R":  # F42-T7 / T9 on GPU: G3 real legs, 8 min wall: Felix notify + the check-in baselines
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
@@ -2159,7 +2181,7 @@ def code_key() -> str:
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F42 F42C F42CR F42R F43 F44 F45, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F42 F42C F42CR F42R F43 F44 F45 F46, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

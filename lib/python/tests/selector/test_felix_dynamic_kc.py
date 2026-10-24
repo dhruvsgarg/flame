@@ -81,3 +81,28 @@ def test_aimd_k_stall_pairs_each_client_with_itself():
     assert p.compute_new_k(9, {"cycle_client_losses": [(e, q - 0.2 + x) for (e, q), x in
                                                        zip(hard.items(), (0.01, -0.01, 0.02, -0.02))], "n_trainers": 8}) == 10  # flat
     assert p.compute_new_k(10, m(0.3)) == 20 and p.floor == 20  # rise: back off, remember
+
+
+def test_felix_c_scales_by_availability_and_phase():
+    m = {"c_config": 60, "n_eligible_train": 150, "n_trainers": 300, "loss_phase": 0.5}
+    assert build_policy("felix_c", {"avail": "true"}).compute_new_c(60, m) == 30
+    assert build_policy("felix_c", {"phase": "true"}).compute_new_c(60, m) == 30
+    assert build_policy("felix_c", {"avail": "true", "phase": "true"}).compute_new_c(60, m) == 15
+    assert build_policy("felix_c", {"phase": "true"}).compute_new_c(60, dict(m, loss_phase=None)) == 60
+    ctl = DynamicKCController(build_policy("felix_c", {"phase": "true"}), k_init=15, c_init=60, k_min=1, k_max=100,
+                              c_min=15, c_max=60, k_follows_c=True)
+    assert ctl.step(dict(m, loss_phase=0.05)) == (15, 15)  # floored at K
+
+
+def test_loss_phase_tracks_peak():
+    from flame.selector.loss_phase import LossPhase
+    p = LossPhase(window=2)
+    p.add(2.0)
+    assert p.phi == 1.0  # window not full
+    p.add(2.0)
+    p.add(1.0)
+    p.add(1.0)
+    assert p.phi == 0.5
+    p.add(3.0)
+    p.add(3.0)
+    assert p.phi == 1.0  # new data: new peak
