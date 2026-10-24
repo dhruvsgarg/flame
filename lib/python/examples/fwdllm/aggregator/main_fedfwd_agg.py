@@ -89,30 +89,8 @@ def post_complete_message(tc_args):
         pipe.write("training is finished! \n%s" % (str(tc_args)))
 
 
-if __name__ == "__main__":
-    # --log_to_wandb/--wandb_run_name are CLI-only (not in config JSON), mirroring
-    # async_cifar10/aggregator/pytorch/main_fedavg_agg.py's initialize_wandb()
-    # gating pattern. No module-level wandb.init() -- gating here is additive.
-    _cli_parser = argparse.ArgumentParser(add_help=False)
-    _cli_parser.add_argument("--log_to_wandb", action="store_true")
-    _cli_parser.add_argument("--wandb_run_name", type=str, default=None)
-    _cli_parser.add_argument("--log_level", default="INFO")
-    _cli_args, _ = _cli_parser.parse_known_args()
-
-    config = load_config_from_argv()
-
-    logger.setLevel(_cli_args.log_level)
-
-    logging.basicConfig(
-        level=logging._nameToLevel[_cli_args.log_level],
-        format="%(process)s %(asctime)s.%(msecs)03d - {%(module)s.py (%(lineno)d)} - %(funcName)s(): %(message)s",
-        datefmt="%Y-%m-%d,%H:%M:%S",
-    )
-    logger.info(config)
-
-    # Logged before the CUDA call so a wedged/hung GPU driver shows up as a
-    # stalled log file right after this line, instead of a silently empty one
-    # (torch.cuda.is_available() can block indefinitely on a wedged driver).
+def build_aggregator(config):
+    """FedSGDAggregator from its launcher config (the launcher entrypoint and the in-process bench)."""
     logger.info("checking CUDA availability...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"using device: {device}")
@@ -184,6 +162,34 @@ if __name__ == "__main__":
         fed_trainer,
         num_labels,
     )
+    return aggregator
+
+
+if __name__ == "__main__":
+    # --log_to_wandb/--wandb_run_name are CLI-only (not in config JSON), mirroring
+    # async_cifar10/aggregator/pytorch/main_fedavg_agg.py's initialize_wandb()
+    # gating pattern. No module-level wandb.init() -- gating here is additive.
+    _cli_parser = argparse.ArgumentParser(add_help=False)
+    _cli_parser.add_argument("--log_to_wandb", action="store_true")
+    _cli_parser.add_argument("--wandb_run_name", type=str, default=None)
+    _cli_parser.add_argument("--log_level", default="INFO")
+    _cli_args, _ = _cli_parser.parse_known_args()
+
+    config = load_config_from_argv()
+
+    logger.setLevel(_cli_args.log_level)
+
+    logging.basicConfig(
+        level=logging._nameToLevel[_cli_args.log_level],
+        format="%(process)s %(asctime)s.%(msecs)03d - {%(module)s.py (%(lineno)d)} - %(funcName)s(): %(message)s",
+        datefmt="%Y-%m-%d,%H:%M:%S",
+    )
+    logger.info(config)
+
+    # Logged before the CUDA call so a wedged/hung GPU driver shows up as a
+    # stalled log file right after this line, instead of a silently empty one
+    # (torch.cuda.is_available() can block indefinitely on a wedged driver).
+    aggregator = build_aggregator(config)
 
     if _cli_args.log_to_wandb:
         initialize_wandb(run_name=_cli_args.wandb_run_name)

@@ -61,6 +61,7 @@ arm A12    "FwdLLM + E1 + E2"                "${FWD[@]}" "${E1[@]}" "${E2[@]}"
 arm A123   "FwdLLM + E1 + E2 + E3 (sync)"    "${FWD[@]}" "${E1[@]}" "${E2[@]}" "${E3[@]}"
 arm A13    "FwdLLM + E1 + E3"                "${FWD[@]}" "${E1[@]}" "${E3[@]}"
 arm A23    "FwdLLM + E2 + E3"                "${FWD[@]}" "${E2[@]}" "${E3[@]}"
+arm A14    "FedBuff-IT + E1 (S1 + mean)"     --only fedbuff_it_unaware "${COMMON[@]}" "${E1[@]}"
 # P6 · C3 agg_criteria
 arm Cnt    "n_target pool"                   "${FLUX[@]}" "${RECIPE[@]}" --commit-gate n_target
 arm CN10   "fixed N 10"                      "${FLUX[@]}" --pool-target 10 "${RECIPE[@]}"

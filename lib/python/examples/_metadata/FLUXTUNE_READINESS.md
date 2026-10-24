@@ -46,7 +46,12 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
   one augmentation draw per sample for the whole run. Check the fwdllm loaders for the same (cached / pre-tokenized samples) and
   apply the dataset's standard per-pass augmentation, if it has one, to FluxTune and every fwdllm baseline alike. *Exit:* noted in
   the setup text; one smoke per baseline with it on.
-- **FT-N19 · One bench queue for Felix and FluxTune · todo (after FT-N18; operator 10-23).** *Why:* both projects share jayne /
+- **FT-N19 · One bench queue for Felix and FluxTune · code done 10-24; exit run waits for a Felix screen + shepherd (operator).**
+  *Built:* `bench_pool.py` jobs-file columns `gpu_gb= ram_gb= workers= runtime_s= project=`, else the dataset's
+  `scripts/bench_profiles.yaml` entry (measured: cifar10, agnews), else the flags; the queue starts the first leg that fits; a mixed
+  queue writes `POOL/<project>/<phase>/` (project from the baseline's stack). Smoke (jayne GPUs 0-3): 2 Felix FedBuff cifar n 300 +
+  2 fwdllm AG News legs, 4/4 ok in 3.9 min, cifar and fwdllm legs sharing a GPU; the fwdllm leg bit-identical to its solo run.
+  *Left:* RoBERTa-L / speech profiles; per-job `--gpus-per-leg`; the exit run below. *Why:* both projects share jayne /
   shepherd; one `bench_pool.py` queue that takes cifar / speech (Felix) and fwdllm (FluxTune) legs together runs them interleaved
   without hand-split GPU lists or one batch waiting on the other. `bench_pool.py` already places each leg by free GPU memory + host
   RAM (FELIX FX-N141 Built); left: fwdllm legs on the bench (FT-N18), a per-leg resource class (fwdllm DistilBERT legs need more GPU
@@ -54,7 +59,7 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
   harnesses, and per-project output pools. *Exit:* one mixed batch (Felix screen + fwdllm screen) on both nodes, every leg ok,
   no OOM, legs / h ≥ the two batches run back to back.
 
-- **FT-N18 · fwdllm on the in-process bench (FELIX V5, FX-D213 / D218) · todo (on resume).** *Why:* Felix's harness legs bound on host
+- **FT-N18 · fwdllm on the in-process bench (FELIX V5, FX-D213 / D218) · B2 + B4 green 10-24 (FT-D3); B1 open.** *Why:* Felix's harness legs bound on host
   RAM (84-99 GB, one process per trainer), so a node ran 4-5 legs; the bench (aggregator + W worker processes, in-memory channel) runs
   ~4 GB legs: cifar 121-141 legs / h on jayne vs ~15 on both nodes (8-9×). It pays only when per-trainer process cost binds; speech
   sims are GPU-compute-bound and gained ~1×.
@@ -73,6 +78,11 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
   - *Using it:* bench results stand for real only on cells green on both links, real ⇄ harness sim (FT parity) and harness ⇄ bench
     (FX-L96); never grade the bench against real; re-run B2 on touched cells after any shared `flame/` or trainer change.
   *Exit:* step 0 recorded; if ported, B1 / B2 / B4 green on the fwdllm board cells.
+  - *Scope (operator 10-24):* B2 tested `fwdllm` and `fluxtune` only; `fedbuff_*`, `felix_*` and `fwdllm_it_*` were not tested
+    on the bench specifically (same aggregator / trainer classes; their async-staleness, pacing and per-iteration re-pick paths are
+    unchecked there), so run a B2 cell before reading any of them off the bench.
+  - *Left:* B1 (checkpoint replay of real commits); B2 on RoBERTa-L; a fwdllm knob table for
+    `config_audit` (FT-N15); `bench_pool --harness-args` for `run_sequential.sh` plans (legs come from its dry-run YAMLs via `--jobs` now).
 
 - **FT-N16 · Measured packing for FluxTune blocks · todo (on resume).** PARITY C21/C22 and Throughput: screen each block's legs at
   production density, record per-leg CPU/RAM/GPU footprints, pack with `--gpu-share`/`--lease-from-telemetry`. *Exit:* a FluxTune block's
@@ -176,6 +186,19 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   zero fails — simulate_fwdllm.md §A-§B.
 - **FT-D2** Sim barrier redesign (event-driven, no hard-coded waits), profiled charge registry,
   estimator v2 — FWDLLM_DESIGN.md §M/§P, BASELINES.md.
+- **FT-D3** fwdllm on the bench (FT-N18, 10-24). *Step 0:* ported without a ledger leg: ag60 step timings showed 1.5 (`fwdllm`) and
+  4.9 (`fluxtune`) of 100 trainers training at once on 4 GPUs, every trainer holding its own model + CUDA context; a bench leg measured
+  11.0 GB RAM / 3.6 GB GPU (DistilBERT · AG News n 100, 4 workers; 2.3 GB GPU at 2). *Port:* `trainer/main.py` `build_trainer`,
+  `main_fedfwd_agg.py` `build_aggregator` (harness `__main__` unchanged); `fl_bench.py` detects the FedFwd stack, applies
+  `client_idx_modulo`, one model per worker with each trainer's trainable slice + global RNG swapped around its task;
+  `bench_validate.py` adds iterations / `data_id`, variance pass rate, commits / h (±10%). *Gate:* a bench seed replays the
+  same-seed harness leg exactly (every commit and eval, seeds 1234-1236 over 8,427 s; ≤ 2e-7 relative float drift); inline, 2 and 4
+  workers bit-identical. B2 (`bench_B2_20261024/`, 3 bench vs 3 harness seeds): `fwdllm` syn_0 AUC 32.1 / 31.8, upd / h, GB,
+  iterations, var pass, commits / h equal; `fluxtune` syn_0 (1 harness seed) AUC 44.6 / 43.4, all within band. B4 floors at this
+  cell: `fwdllm` seeds span AUC 24.6-44.4, upd / h 3,606-7,699, final acc 0.25-0.76 (FT-T7: never read one seed); `fluxtune` AUC
+  43.2-45.6. `fluxtune` does not replay same-seed (vclock 82.67 vs 82.70 s by commit 8): its config charges measured wall time
+  (`sim_model_agg_compute_time`, truthful gate), so it grades on B2's bands only. Packing: 1 leg / GPU gave 8-9 legs / h on 3 GPUs
+  (~20 min legs); denser packing per FX-T74 untested.
 
 ## Open questions (operator)
 - Does C2 (dynamic K/C) land in the headline `fluxtune` config or get descoped? (BASELINES.md ᵖ note.)

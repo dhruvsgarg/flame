@@ -10,7 +10,7 @@ cell:
   id: distilbert_agnews
   label: "DistilBERT · AG News"
   n_clients: 100
-  target_acc: 0.80          # pencilled (EXPERIMENTS.md §2)
+  target_acc: 0.60          # TEMP ag60 preview (restore 0.80)
 
 groups:
   - id: phase_a                       # C1: FwdLLM + one concept

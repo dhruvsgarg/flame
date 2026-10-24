@@ -23,6 +23,12 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 EX = HERE.parent / "async_cifar10"
+FWD = HERE.parent / "fwdllm"  # FLUXTUNE FT-N18: the fwdllm stack's example dir
+
+
+def _is_fwdllm(main_path) -> bool:
+    """A baseline on the FedFwd stack: its main under examples/fwdllm, or baselines.yaml's relative FedFwd aggregator_main."""
+    return "fwdllm" in Path(main_path).parts or Path(main_path).name == "main_fedfwd_agg.py"
 sys.path[:0] = [str(HERE.parents[1]), str(EX), str(EX / "trainer" / "pytorch"), str(EX / "aggregator" / "pytorch")]
 
 
@@ -67,6 +73,9 @@ def resolve(yaml_path):
     r.example_dir, r.metadata_dir_default = EX, EX / "metadata"
     paths = r._resolve_example_paths(exp)
     entry = r._resolve_baseline(exp, load_baselines(paths["metadata_dir"]))
+    if _is_fwdllm(r._resolve_aggregator_main(exp, entry)) and not exp.example.dir:
+        r.example_dir = FWD
+        paths = r._resolve_example_paths(exp)
     tmpl = paths["example_dir"] / exp.aggregator.config_template if exp.aggregator.config_template else None
     agg, _ = r._build_aggregator_config(exp, tmpl, entry)
     r._validate_selector_label(exp, agg)
@@ -77,10 +86,11 @@ def resolve(yaml_path):
             "hyperparameters.training_delay_enabled": str(exp.trainer.enable_training_delays)}
     over.update({f"hyperparameters.{k}": v for k, v in (exp.trainer.hyperparameters or {}).items()})
     ids = range(exp.trainer.start_id, exp.trainer.start_id + exp.trainer.num_trainers)
+    mod = exp.trainer.client_idx_modulo  # runner: N trainers wrap onto M path-style partitions (fwdllm H5)
     trainers = [gen.generate_trainer_config(
         tid, exp.trainer.dataset.dirichlet_alpha, exp.trainer.availability.mode, dataset_name=exp.trainer.dataset.name,
         num_trainers=exp.trainer.split_num_trainers or exp.trainer.num_trainers, skip_index_splits=exp.trainer.dataset.path_style,
-        **over) for tid in ids]
+        **{**over, **({"hyperparameters.client_idx": (tid - 1) % mod} if mod else {})}) for tid in ids]
     return exp, agg, trainers, paths["example_dir"] / r._resolve_aggregator_main(exp, entry), paths["trainer_main"]
 
 
@@ -227,18 +237,21 @@ class TrainerHost:
         _fast_yaml()
         import dataclasses
         import functools
-        import fl_data
         from flame import telemetry
         import flame.mode.horizontal.syncfl.trainer as sync_trainer
 
-        for k, s in list(fl_data.SPECS.items()):  # one train-set object per process; trainers take Subsets of it
-            fl_data.SPECS[k] = dataclasses.replace(s, train=functools.lru_cache(maxsize=1)(s.train))
         self.writer = telemetry._writer if isinstance(telemetry._writer, RoutingWriter) else None
         if self.writer is None and tel_dir:
             self.writer = telemetry._writer = RoutingWriter(None, tel_dir)
+        self.trainers, self.tch, self.tasks, self.fwd = {}, {}, 0, _is_fwdllm(trainer_main)
+        if self.fwd:
+            self._init_fwdllm(cfgs, time_mode, trainer_main, reply)
+            return
+        import fl_data
+        for k, s in list(fl_data.SPECS.items()):  # one train-set object per process; trainers take Subsets of it
+            fl_data.SPECS[k] = dataclasses.replace(s, train=functools.lru_cache(maxsize=1)(s.train))
         mod = _load_module(trainer_main, "bench_trainer_main")
         mod.gc = _GC()
-        self.trainers, self.tch, self.tasks = {}, {}, 0
         for d in cfgs:
             cfg = _config(d)
             t = mod.PyTorchCifar10Trainer(cfg, battery, time_mode)
@@ -252,6 +265,64 @@ class TrainerHost:
                 t.init_oort_variables()
                 t.load_data()
             self.trainers[tid], self.tch[tid] = t, ch
+
+    def _init_fwdllm(self, cfgs, time_mode, trainer_main, reply):
+        """FT-N18: fwdllm trainers share one model per process (a harness trainer owns its process and its copy); each keeps
+        its trainable slice and global RNG streams, swapped in around its task. Frozen weights are identical by construction."""
+        import flame.mode.horizontal.syncfl.fwdllm_trainer as fwd_trainer
+        mod = _load_module(trainer_main, "bench_fwd_trainer_main")
+        shared, self._state = {}, {}
+        for d in cfgs:
+            cfg = _config(d)
+            cfg.hyperparameters.time_mode = time_mode  # the spawner's --time_mode CLI arg
+            tid = str(cfg.task_id)
+            ch = TrainerChannel(tid, reply)
+            cm = _CM(cfg, {n: ch for n in cfg.channels})
+            with self._as(tid):
+                t = mod.build_trainer(cfg, shared)
+                self._model = shared["model"][1]
+                t.initialize()
+                fwd_trainer.ChannelManager = lambda cm=cm: cm  # internal_init: self.cm = ChannelManager(); self.cm(config)
+                t.internal_init()
+            self.trainers[tid], self.tch[tid] = t, ch
+            self._state[tid] = self._snapshot()
+
+    def _snapshot(self):
+        import random
+        import numpy as np
+        import torch
+        cuda = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+        return ([p.detach().clone() for p in self._model.parameters() if p.requires_grad],
+                (torch.get_rng_state(), cuda, np.random.get_state(), random.getstate()))
+
+    def _restore(self, state):
+        import random
+        import numpy as np
+        import torch
+        params, (cpu, cuda, nps, pys) = state
+        with torch.no_grad():
+            for p, v in zip((p for p in self._model.parameters() if p.requires_grad), params):
+                p.copy_(v)
+        torch.set_rng_state(cpu)
+        if cuda is not None:
+            torch.cuda.set_rng_state(cuda)
+        np.random.set_state(nps)
+        random.setstate(pys)
+
+    def _run_fwdllm(self, tid, t):
+        """The harness loop's one iteration (get >> train >> put >> pause_exec) on this trainer's own model state."""
+        from flame.mode.horizontal.syncfl.fwdllm_trainer import TAG_FETCH, TAG_UPLOAD
+        self._restore(self._state[tid])
+        try:
+            t.get(TAG_FETCH)
+            if not t.fetch_success or t._work_done:
+                return
+            t.train_with_data_id()
+            t.put(TAG_UPLOAD)
+            t.pause_execution()
+            self.tasks += 1
+        finally:
+            self._state[tid] = self._snapshot()
 
     def _as(self, tid):
         host = self
@@ -271,6 +342,8 @@ class TrainerHost:
         t = self.trainers[tid]
         self.tch[tid].inbox.append((payload, datetime.now()))
         with self._as(tid):
+            if self.fwd:
+                return self._run_fwdllm(tid, t)
             t._fetch_weights(TAG_FETCH)
             if not t.fetch_success or t._work_done:
                 return
@@ -590,7 +663,8 @@ def run_leg(yaml_path, out, label=None, workers=0):
 
     agg_mod = _load_module(agg_main, "bench_agg_main")
     sync_top.ChannelManager = lambda: AggCM(None, {})
-    a = agg_mod.PyTorchCifar10Aggregator(_config(agg_cfg), False)
+    a = (agg_mod.build_aggregator(_config(agg_cfg)) if _is_fwdllm(agg_main)
+         else agg_mod.PyTorchCifar10Aggregator(_config(agg_cfg), False))
     orig_init = a.internal_init
 
     def internal_init():  # trainers join once the channel exists
@@ -635,7 +709,7 @@ def main(argv=None):
         for e in d["experiments"]:
             h = e["aggregator"]["config_overrides"]["hyperparameters"]
             if a.runtime_s:
-                h["max_experiment_runtime_s"] = a.runtime_s
+                h["max_experiment_runtime_s"] = h["max_runtime_s"] = a.runtime_s  # max_runtime_s: the fwdllm stack's key
             if a.seed is not None:
                 h["seed"] = a.seed
         os.makedirs(a.out, exist_ok=True)

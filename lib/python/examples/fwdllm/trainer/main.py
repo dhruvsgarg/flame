@@ -53,53 +53,10 @@ def post_complete_message(tc_args):
         pipe.write("training is finished! \n%s" % (str(tc_args)))
 
 
-if __name__ == "__main__":
-    config = load_config_from_argv()
-
-    # --time_mode is a launcher CLI-only arg (not in config JSON), appended by
-    # TrainerSpawner.spawn_trainer() to every trainer's argv. Threaded into
-    # config.hyperparameters so FedSGDTrainer reads it uniformly with the
-    # aggregator. "simulated": skip the emulated-delay sleep and stamp a modeled
-    # completion timestamp the aggregator orders updates by; "real" (default):
-    # unchanged wall-clock behavior. log_level/battery_threshold are similarly
-    # launcher/manual-run CLI-only.
-    _cli_parser = argparse.ArgumentParser(add_help=False)
-    _cli_parser.add_argument("--time_mode", default="real")
-    _cli_parser.add_argument("--log_level", default="INFO")
-    _cli_parser.add_argument("--battery_threshold", default=50)
-    _cli_args, _ = _cli_parser.parse_known_args()
-
-    logging.basicConfig(
-        level=logging._nameToLevel[_cli_args.log_level],
-        format="%(process)s %(asctime)s.%(msecs)03d - {%(module)s.py (%(lineno)d)} - %(funcName)s(): %(message)s",
-        datefmt="%Y-%m-%d,%H:%M:%S",
-    )
-    logging.debug(config)
-    telemetry.configure(role="trainer", end_id=str(config.task_id))
-    config.hyperparameters.time_mode = _cli_args.time_mode
+def build_trainer(config, shared=None):
+    """One FedSGDTrainer from its launcher config. `shared` (in-process bench): a per-process dict holding one model,
+    tokenizer and preprocessor for every trainer built in it; None = this process's only trainer."""
     set_seed(config.hyperparameters.manual_seed)
-
-    # Pinning self-report: confirm the CPU/GPU affinity the spawner intended
-    # (CUDA_VISIBLE_DEVICES + os.sched_setaffinity per trainer) took effect in
-    # this child. The trainer trains on cuda:0 of the CVD-masked single-GPU
-    # view, so one visible device here == correct pinning. Emitted as a grep-able
-    # [PIN] line so post-proc can verify balanced trainer->(gpu,core) placement.
-    try:
-        _cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
-        _cores = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else []
-        _gpu_name, _gpu_dev, _ndev = "<no-cuda>", -1, 0
-        if torch.cuda.is_available():
-            _gpu_dev = torch.cuda.current_device()
-            _gpu_name = torch.cuda.get_device_name(_gpu_dev)
-            _ndev = torch.cuda.device_count()
-        logging.info(
-            f"[PIN] pid={os.getpid()} client_idx={config.hyperparameters.client_idx} "
-            f"CUDA_VISIBLE_DEVICES={_cvd} cuda_device={_gpu_dev} ({_gpu_name}) "
-            f"cuda_device_count={_ndev} cpu_affinity={_cores}"
-        )
-    except Exception as _pin_exc:  # never let self-report break a trainer
-        logging.warning(f"[PIN] self-report failed: {_pin_exc}")
-
     # dataset attributes
     attributes = BaseDataManager.load_attributes(config.hyperparameters.data_file_path)
     num_labels = len(attributes["label_vocab"])
@@ -107,54 +64,61 @@ if __name__ == "__main__":
     # create the model (one builder, shared with the aggregator -- handoff §22.1)
     require_trainer_knobs(config.hyperparameters)
     model_args = build_model_args(config.hyperparameters, num_labels)
-    model_config, client_model, tokenizer = create_model(
-        model_args, formulation="classification"
-    )
-    # Trainer only: the aggregator's fp32 reference probes run outside autocast.
-    if fwdgrad_utils.frozen_lowp_enabled(model_args.model_type, getattr(model_args, "fp16", False)):
-        fwdgrad_utils.store_frozen_linears_lowp(client_model)
+    warm = shared is None or "model" not in shared
+    if warm:
+        model_config, client_model, tokenizer = create_model(
+            model_args, formulation="classification"
+        )
+        # Trainer only: the aggregator's fp32 reference probes run outside autocast.
+        if fwdgrad_utils.frozen_lowp_enabled(model_args.model_type, getattr(model_args, "fp16", False)):
+            fwdgrad_utils.store_frozen_linears_lowp(client_model)
 
-    def bytes_to_mb(num_bytes):
-        return num_bytes / (1024 * 1024)
+        def bytes_to_mb(num_bytes):
+            return num_bytes / (1024 * 1024)
 
-    total_params = trainable_params = frozen_params = 0
-    zero_trainable = zero_frozen = 0
-    trainable_bytes = frozen_bytes = 0
+        total_params = trainable_params = frozen_params = 0
+        zero_trainable = zero_frozen = 0
+        trainable_bytes = frozen_bytes = 0
 
-    for name, param in client_model.named_parameters():
-        numel = param.numel()
-        param_bytes = numel * param.element_size()
-        total_params += numel
+        for name, param in client_model.named_parameters():
+            numel = param.numel()
+            param_bytes = numel * param.element_size()
+            total_params += numel
 
-        if param.requires_grad:
-            trainable_params += numel
-            trainable_bytes += param_bytes
-            if torch.all(param == 0):
-                print(f"[Trainable] {name} is all zeros")
-                zero_trainable += numel
-        else:
-            frozen_params += numel
-            frozen_bytes += param_bytes
-            if torch.all(param == 0):
-                print(f"[Frozen] {name} is all zeros")
-                zero_frozen += numel
+            if param.requires_grad:
+                trainable_params += numel
+                trainable_bytes += param_bytes
+                if torch.all(param == 0):
+                    print(f"[Trainable] {name} is all zeros")
+                    zero_trainable += numel
+            else:
+                frozen_params += numel
+                frozen_bytes += param_bytes
+                if torch.all(param == 0):
+                    print(f"[Frozen] {name} is all zeros")
+                    zero_frozen += numel
 
-    logging.info(f"Total parameters: {total_params}")
-    logging.info(
-        f"  Trainable: {trainable_params} | Zeroed: {zero_trainable} | Size: {bytes_to_mb(trainable_bytes):.2f} MB"
-    )
-    logging.info(
-        f"  Frozen:    {frozen_params} | Zeroed: {zero_frozen} | Size: {bytes_to_mb(frozen_bytes):.2f} MB"
-    )
-    logging.info(f"Total size: {bytes_to_mb(trainable_bytes + frozen_bytes):.2f} MB")
-    logging.info(
-        f"Total zero-weighted: {zero_trainable + zero_frozen} ({100 * (zero_trainable + zero_frozen) / total_params:.2f}%)"
-    )
+        logging.info(f"Total parameters: {total_params}")
+        logging.info(
+            f"  Trainable: {trainable_params} | Zeroed: {zero_trainable} | Size: {bytes_to_mb(trainable_bytes):.2f} MB"
+        )
+        logging.info(
+            f"  Frozen:    {frozen_params} | Zeroed: {zero_frozen} | Size: {bytes_to_mb(frozen_bytes):.2f} MB"
+        )
+        logging.info(f"Total size: {bytes_to_mb(trainable_bytes + frozen_bytes):.2f} MB")
+        logging.info(
+            f"Total zero-weighted: {zero_trainable + zero_frozen} ({100 * (zero_trainable + zero_frozen) / total_params:.2f}%)"
+        )
+
+        preprocessor = TLMPreprocessor(
+            args=model_args, label_vocab=attributes["label_vocab"], tokenizer=tokenizer
+        )
+        if shared is not None:
+            shared.update(model=(model_config, client_model, tokenizer), preprocessor=preprocessor)
+    else:
+        (model_config, client_model, tokenizer), preprocessor = shared["model"], shared["preprocessor"]
 
     # data manager
-    preprocessor = TLMPreprocessor(
-        args=model_args, label_vocab=attributes["label_vocab"], tokenizer=tokenizer
-    )
     process_id = 1
     # TODO: data_loader_num_workers is used for client partition sampling in BaseDataManager,
     # not for DataLoader parallelism (all DataLoader calls hardcode num_workers=0). Rename
@@ -195,7 +159,8 @@ if __name__ == "__main__":
     )
     # Trainer-only warmup; must not run on the aggregator's own trainer instance
     # (see _warmup_gpu_kernels docstring).
-    client_trainer._warmup_gpu_kernels()
+    if warm:
+        client_trainer._warmup_gpu_kernels()
     fed_trainer = FedTransformerTrainer(client_trainer, client_model)
 
     # client manager in their code also passes client index which is the list of clients that need to do training
@@ -210,6 +175,57 @@ if __name__ == "__main__":
         fed_trainer,
         config,
     )
+
+    return trainer
+
+
+if __name__ == "__main__":
+    config = load_config_from_argv()
+
+    # --time_mode is a launcher CLI-only arg (not in config JSON), appended by
+    # TrainerSpawner.spawn_trainer() to every trainer's argv. Threaded into
+    # config.hyperparameters so FedSGDTrainer reads it uniformly with the
+    # aggregator. "simulated": skip the emulated-delay sleep and stamp a modeled
+    # completion timestamp the aggregator orders updates by; "real" (default):
+    # unchanged wall-clock behavior. log_level/battery_threshold are similarly
+    # launcher/manual-run CLI-only.
+    _cli_parser = argparse.ArgumentParser(add_help=False)
+    _cli_parser.add_argument("--time_mode", default="real")
+    _cli_parser.add_argument("--log_level", default="INFO")
+    _cli_parser.add_argument("--battery_threshold", default=50)
+    _cli_args, _ = _cli_parser.parse_known_args()
+
+    logging.basicConfig(
+        level=logging._nameToLevel[_cli_args.log_level],
+        format="%(process)s %(asctime)s.%(msecs)03d - {%(module)s.py (%(lineno)d)} - %(funcName)s(): %(message)s",
+        datefmt="%Y-%m-%d,%H:%M:%S",
+    )
+    logging.debug(config)
+    telemetry.configure(role="trainer", end_id=str(config.task_id))
+    config.hyperparameters.time_mode = _cli_args.time_mode
+
+    # Pinning self-report: confirm the CPU/GPU affinity the spawner intended
+    # (CUDA_VISIBLE_DEVICES + os.sched_setaffinity per trainer) took effect in
+    # this child. The trainer trains on cuda:0 of the CVD-masked single-GPU
+    # view, so one visible device here == correct pinning. Emitted as a grep-able
+    # [PIN] line so post-proc can verify balanced trainer->(gpu,core) placement.
+    try:
+        _cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
+        _cores = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else []
+        _gpu_name, _gpu_dev, _ndev = "<no-cuda>", -1, 0
+        if torch.cuda.is_available():
+            _gpu_dev = torch.cuda.current_device()
+            _gpu_name = torch.cuda.get_device_name(_gpu_dev)
+            _ndev = torch.cuda.device_count()
+        logging.info(
+            f"[PIN] pid={os.getpid()} client_idx={config.hyperparameters.client_idx} "
+            f"CUDA_VISIBLE_DEVICES={_cvd} cuda_device={_gpu_dev} ({_gpu_name}) "
+            f"cuda_device_count={_ndev} cpu_affinity={_cores}"
+        )
+    except Exception as _pin_exc:  # never let self-report break a trainer
+        logging.warning(f"[PIN] self-report failed: {_pin_exc}")
+
+    trainer = build_trainer(config)
 
     if trainer.client_notify["trace"] is not None:
         logging.info(

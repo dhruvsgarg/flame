@@ -5,7 +5,8 @@
 
 Per cell (bench seeds pooled, harness seeds pooled): AUC = mean test accuracy over the matched horizon, train updates / h,
 GB on the wire, mean train task time (charged budget). PASS when |AUC delta| <= max(1.5 pp, either side's seed range),
-updates / h and task time within 10% / 5%, bytes within 5%. Exit 1 on any FAIL.
+updates / h and task time within 10% / 5%, bytes within 5%. fwdllm legs (FLUXTUNE FT-N18) add iterations per data_id at commit,
+variance pass rate and commits / h, each within 10%. Exit 1 on any FAIL.
 """
 import argparse
 import csv
@@ -17,12 +18,14 @@ import statistics as st
 import sys
 
 AUC_PP, UPD, GB, TASK = 1.5, 0.10, 0.05, 0.05
+FWD = {"iters": 0.10, "var_pass": 0.10, "commits_h": 0.10}  # FT-N18: the fwdllm cadence bands
 
 
 def leg_stats(run_dir, horizon=None):
-    """(end vclock, [(t, acc)], train commits, wire bytes, train budgets) up to `horizon`."""
+    """(end vclock, [(t, acc)], train commits, wire bytes, train budgets, fwdllm cadence) up to `horizon`."""
     f = glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl"))[0]
     t, end, evals, commits, nbytes, pts = 0.0, 0.0, [], 0, 0, []
+    iters, var_checks, var_pass = [], 0, 0
     with open(f, "rb") as fh:
         for line in fh:
             if b'"agg_round"' in line:
@@ -33,6 +36,11 @@ def leg_stats(run_dir, horizon=None):
                 end = t
                 if e.get("task_to_perform") != "eval":  # async: one train update per event; sync: one round of K
                     commits += len(e.get("staleness") or [])
+                if e.get("var") is not None:  # fwdllm: one variance check per agg round
+                    var_checks += 1
+                    var_pass += bool(e.get("var_good_enough"))
+                if e.get("commit_reason") is not None:
+                    iters.append(int(e.get("cycle_iteration") or 0))  # the committed cycle's, not the reset counter
             elif b'"agg_eval"' in line:
                 e = json.loads(line)
                 if e.get("test-accuracy") is not None:
@@ -47,7 +55,10 @@ def leg_stats(run_dir, horizon=None):
                     r = json.loads(line)
                     if r.get("task_to_perform") == "train" and (horizon is None or (r.get("sim_send_ts") or 0) <= horizon):
                         budgets.append(float(r.get("training_budget_s") or 0))
-    return end, evals, commits, nbytes, budgets
+    h = max(end, 1e-9) / 3600
+    fwd = dict(iters=st.mean(iters), var_pass=var_pass / var_checks if var_checks else None,
+               commits_h=len(iters) / h) if iters else {}
+    return end, evals, commits, nbytes, budgets, fwd
 
 
 def cells(pools, sim_col="sim_dir"):
@@ -65,9 +76,10 @@ def cells(pools, sim_col="sim_dir"):
 def summarize(dirs, horizon):
     rows = []
     for d in dirs:
-        end, ev, n, b, bud = leg_stats(d, horizon)
+        end, ev, n, b, bud, fwd = leg_stats(d, horizon)
         h = max(end, 1e-9) / 3600
-        rows.append(dict(auc=st.mean(a for _, a in ev) if ev else None, upd_h=n / h, gb=b / 1e9, task=st.mean(bud) if bud else None))
+        rows.append(dict(auc=st.mean(a for _, a in ev) if ev else None, upd_h=n / h, gb=b / 1e9, task=st.mean(bud) if bud else None,
+                         **{k: fwd.get(k) for k in FWD}))
     pick = lambda k: [r[k] for r in rows if r[k] is not None]
     return {k: (st.mean(pick(k)), max(pick(k)) - min(pick(k))) if pick(k) else (None, None) for k in rows[0]}
 
@@ -92,12 +104,16 @@ def main(argv=None):
         miss = ([f"AUC {d_auc:+.1f}>{tol:.1f}"] if d_auc is None or abs(d_auc) > tol else []) + \
             ([f"upd {100 * rel('upd_h'):.0f}%"] if rel("upd_h") > UPD else []) + \
             ([f"GB {100 * rel('gb'):.0f}%"] if rel("gb") > GB else []) + \
-            ([f"task {100 * rel('task'):.0f}%"] if b["task"][0] and rel("task") > TASK else [])
+            ([f"task {100 * rel('task'):.0f}%"] if b["task"][0] and rel("task") > TASK else []) + \
+            [f"{k} {100 * rel(k):.0f}%" for k, tol_k in FWD.items() if b[k][0] is not None and h[k][0] is not None and rel(k) > tol_k]
         bad += bool(miss)
         f = lambda x, s=1: "–" if x is None else f"{x:.{s}f}"
         print(f"| {' '.join(key)} | {len(bench[key])}/{len(harness[key])} | {f(100 * b['auc'][0])} / {f(100 * h['auc'][0])} "
               f"({f(d_auc)}) | {f(b['upd_h'][0], 0)} / {f(h['upd_h'][0], 0)} | {f(b['gb'][0])} / {f(h['gb'][0])} | "
               f"{f(b['task'][0])} / {f(h['task'][0])} | {'PASS' if not miss else 'FAIL ' + ', '.join(miss)} |")
+        if b["iters"][0] is not None and h["iters"][0] is not None:
+            print(f"|   fwdllm: iters/data_id {f(b['iters'][0], 2)} / {f(h['iters'][0], 2)}, var pass "
+                  f"{f(b['var_pass'][0], 3)} / {f(h['var_pass'][0], 3)}, commits/h {f(b['commits_h'][0])} / {f(h['commits_h'][0])} | | | | | |")
         out.append(dict(cell=key, horizon_s=horizon, bench=b, harness=h, miss=miss))
     if a.json_out:
         json.dump(out, open(a.json_out, "w"), indent=1, default=str)

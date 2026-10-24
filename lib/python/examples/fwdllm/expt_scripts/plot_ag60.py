@@ -29,7 +29,7 @@ GROUPS = [
     ("phase_a_pairs", "FwdLLM + two concepts (C1 pairs)", ["group"],
      [("A0", "fwdllm", "FwdLLM", True), ("A12", "a12", "+ E1 + E2", True),
       ("A13", "a13", "+ E1 + E3", True), ("A23", "a23", "+ E2 + E3", True),
-      ("A6", "fluxtune", "FluxTune", False)]),
+      ("A14", "a14", "+ E1 + async", False), ("A6", "fluxtune", "FluxTune", False)]),
     ("phase_b", "Cumulative: FwdLLM → FluxTune (C2)", ["group"],
      [("A0", "fwdllm", "FwdLLM", True), ("A1", "b1", "+ mean probes", True),
       ("A12", "b2", "+ trust ratio", True), ("A123", "b3", "+ fixed pool", True),
