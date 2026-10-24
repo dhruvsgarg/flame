@@ -7,8 +7,8 @@ parity and the claims gate (FX-N108) → sim-only experiments (FX-N12).** Paper 
 **Only runs from F41 (10-21) onward count** (setup reset: trace-tied `usage` streams, FedScale task time, R27 availability knowledge).
 Pre-reset results, tiers (F39*, F40S, F41) and arms for rejected features are deleted; `git log` keeps them.
 
-**At a glance (10-23, 19:00): goal = highest target accuracy fastest. FL1 S1 + S2 done (F44): b1 ≈ FedBuff except `s50u` (−1.2 pp,
-staleness); S2 no winner. Next = launch S3 selection ladder (F45, FX-N141), cifar only, jayne + shepherd, ~75 min.** Speech n 100: every
+**At a glance (10-23, 21:30): goal = highest target accuracy fastest. FL1 S1 + S2 done (F44): b1 ≈ FedBuff except `s50u` (−1.2 pp,
+staleness); S2 no winner. Running: S3 selection ladder + S1-closing `b1_c33` (F45, `FL1_1023_2130`, FX-N141).** Speech n 100: every
 leg reaches 70%; Felix new first at every target (70% at 610 vs FedBuff 860 min), l3b_e3 lowest GB, no cifar-style plateau. Cifar n 300:
 the plateau stays (Felix flat at 54-56% from hour 2-4; FedBuff passes it at ~6 h and ends at 58%; ceiling ~65%); nobody reaches 60%.
 Felix is first to 40-50% and lowest GB except Oort (5-10× less, 15-26 h); Felix old beats new from hour 4. e2 / e3 diverge to NaN on
@@ -26,7 +26,8 @@ bench screens (cifar 12 h vclock in 4-12 min wall) · harness sims (speech) · l
 launch; screens keep the number with a letter. Every batch runs Felix new and old side by side.
 
 - **FX-N141 · RESUME HERE: Felix loop FL1, build Felix up from FedBuff on cifar (operator 10-23).**
-  - **Status:** S1 + S2 done (F44, `FL1_1023_1700`). S3 + the S1-closing leg = tier F45, built, ready to launch (operator).
+  - **Status:** S1 + S2 done (F44, `FL1_1023_1700`). F45 (S3 + `b1_c33`) **running** since 10-23 21:30: `FL1_1023_2130`, code
+    `cf27b7d56`, 28 / 28 legs started. Next: read `{jayne,shepherd}/cifar_verdict.md` + `selection_audit.md`, fill S3 / S1 *Found*.
   - **Launch (operator, tmux, same TAG on both):** `TIER=F45 TAG=<mmdd_hhmm> bash /home/dgarg39/flame/lib/python/examples/scripts/run_fl1.sh`
     on jayne (GPUs 0, 2-7: `s0` + `s0u`, 18 legs; GPU 1 aggregate ECC) and shepherd (GPUs 0-7: `s50u`, 10 legs); legs queue and
     start on the GPU with the most free memory when GPU (4 GB + 2 reserve) and host RAM (8 GB) fit, ≤ 3 / GPU; ~75-90 min. Output `experiments/FL1_<TAG>/{jayne,shepherd}/`: `cifar_verdict.md`, `config_audit.md`, `selection_audit.md`.
