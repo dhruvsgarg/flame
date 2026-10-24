@@ -4,7 +4,7 @@ The live plan for the FluxTune paper's evaluation. The doc rules in
 [ROBUST_FL_READINESS.md](../_metadata/ROBUST_FL_READINESS.md) apply: every line is true now, no changelog, a
 finished item is deleted. Infra and parity status live in [FLUXTUNE_READINESS.md](../_metadata/FLUXTUNE_READINESS.md);
 figures come from `fwdllm/expt_scripts/make_paper_figs.py` (§7). Plot list, run list and measured run times:
-[RUN_PLAN.md](RUN_PLAN.md).
+[RUN_PLAN.md](RUN_PLAN.md). Task cost D per model (calculation and values): [D_CALIBRATION.md](D_CALIBRATION.md).
 
 ---
 
@@ -48,20 +48,14 @@ DistilBERT · AG News, 10-24). Run rules: [RUN_PLAN §2](RUN_PLAN.md#2-cells-poo
 **Eval:** DistilBERT scores the full test set every 4th commit. Yelp-P and Yahoo score 10% of the test set (3,800 / 6,000
 rows, ≈ ±1.2 pt at target), resampled per eval; stride = ⌈t_eval / s_commit⌉ + 1 from S.
 
-**Task cost D per model (measured 10-24).** D = `training_delay_s` / divisor, where `training_delay_s` is each trainer's
-device-class delay (4–19 s, median 11, floored at 4.0). DistilBERT's divisor rests on the FwdLLM paper's NPU cost (0.3086
-s/sample; §9 10-22). Bigger models scale it by their A40 cost per task relative to DistilBERT at the same bs (one trainer
-alone per GPU, eval off; `fwdllm/ft_profile_20261024/` on shepherd): divisor = 0.478 / (ratio × bs / 8). `fwdllm` keeps
-the 10× arm ratio.
+**Task cost D per model** (`--delay-divisor`; D = device delay / divisor). Calculation, measurements, full D tables and
+how to re-derive for a new model: **[D_CALIBRATION.md](D_CALIBRATION.md)**.
 
-| Cell | bs | A40 s / task (tasks) | Ratio vs DistilBERT bs 32 | `fluxtune` divisor | `fwdllm` divisor | `fluxtune` D (min–median–max) |
-|---|---|---|---|---|---|---|
-| DistilBERT · AG News | 8 | 0.238 (1,943); 0.375 at bs 32 (1,355) | 1 | **0.478** | **4.78** | 8.4 – 23 – 40 s |
-| RoBERTa-L · Yelp-P | 32 | 2.617 (129) | 6.98 | **0.0171** (0.0169 in use: within 1%) | **0.171** | 4 – 11 – 19 min |
-| SmolLM2-1.7B · Yahoo | 32 | 9.518 (8) | 25.4 | **0.0047** (was 0.0192: 4.1× too large) | **0.047** | 14 – 39 – 67 min |
-
-Assumes a phone NPU scales across models as an A40 does; plausible for RoBERTa-L, optimistic for 1.7B (likely
-memory-bound on a phone, so its D is a lower bound).
+| Cell | bs | `fluxtune` divisor | `fwdllm` divisor | `fluxtune` D: min – median – max (100 trainers) |
+|---|---|---|---|---|
+| DistilBERT · AG News | 8 | 0.478 | 4.78 | 8.4 s – 23 s – 1.6 min |
+| RoBERTa-L · Yelp-P | 32 | 0.0169 | 0.169 | 3.9 min – 10.8 min – 46 min |
+| SmolLM2-1.7B · Yahoo | 32 | 0.0047 | 0.047 | 14 min – 39 min – 2.8 h |
 
 **Per-cell settings from S (operator 10-22):** the `fwdllm` lr is screened on RoBERTa and 1.7B at {1e-4, 3e-4, 1e-3} (DistilBERT keeps 0.01); 1.7B's n 75 gets a
 short memory screen at bs 32.
@@ -319,7 +313,7 @@ python make_paper_figs.py --manifest figs_e2e.yaml --synthetic   # layout previe
 - RoBERTa-L and 1.7B vclock hours rest on pre-recipe dataset profiles until G0; quote their TTA in hours only after
   that (FLUXTUNE FT-T11). 1.7B runs before 10-24 used divisor 0.0192, so their vclock under-charges D 4.1×; their
   accuracy per commit stands.
-- The big-model D assumes A40 cost ratios transfer to the phone NPU (§2); 1.7B's is likely a lower bound.
+- The big-model D assumes A40 cost ratios transfer to the phone NPU ([D_CALIBRATION §6](D_CALIBRATION.md#6-rules-and-caveats)); 1.7B's is likely a lower bound.
 
 ## 9. Legacy IDs cited in code
 

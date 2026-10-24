@@ -3,10 +3,9 @@
 # One lane on all 8 GPUs. n starts at NUM_TRAINERS (100); an OOM / no-commit arm reruns at FALLBACK_TRAINERS (75),
 # and an arm already done at the larger n is rerun so both arms share n. Plots render at the end (plot_roberta_yelp60.py).
 #   tmux new-window -t dg_flame -n rb60 "bash nodes/run_node_roberta_yelp_to60_queue.sh 2>&1 | tee ../rb60_queue_\$(date +%Y%m%d_%H%M).log"
-# Env: TARGET (0.60), HOURS (12, wall cap per arm), MAX_COMMITS (380), STRIDE (4), T_RES (615 = horizon-aware at 380),
-#   FWD_LR (0.01), FLUX_D / FWD_D (delay divisors, est. below), ARMS ("fwdllm fluxtune"), NODE_DRY_RUN=1 (flags only).
-# D = 12.51 / (passes × s/sample × bs/2 × 1.06), s/sample = DistilBERT's 0.3086 × 5.3 (params) × 1.33 (seq 256/192) ≈ 2.18
-#   (est.; S replaces it): fluxtune 20 passes → 0.0169, fwdllm 2 passes → 0.169.
+# Env: TARGET (0.60), HOURS (12, wall cap per arm), MAX_COMMITS (380), STRIDE (4), T_RES (71 = Φ* 2 at ρ0 0.14),
+#   FWD_LR (0.01), FLUX_D / FWD_D (delay divisors, measured: paper_expts_fluxtune/D_CALIBRATION.md), ARMS ("fwdllm fluxtune"), NODE_DRY_RUN=1 (flags only).
+#   STOP_AT_TARGET (1): 0 drops the target-acc stop, so a paper / S run ends on the §2 stop rule (stall, GL, commit cap, wall).
 set -u
 . "$(dirname "$0")/_node_lib.sh"
 source /coc/scratch/dgarg/miniconda3/etc/profile.d/conda.sh && conda activate test_fwdllm
@@ -17,10 +16,11 @@ export NODE_ABORT_ON_FAULT=0  # a failed arm is retried at the fallback n, not a
 GPUS=0,1,2,3,4,5,6,7
 export FLAME_SLOT_GPUS=$GPUS
 TARGET=${TARGET:-0.60}
+STOP_AT_TARGET=${STOP_AT_TARGET:-1}
 HOURS=${HOURS:-12}
 MAX_COMMITS=${MAX_COMMITS:-380}
 STRIDE=${STRIDE:-4}
-T_RES=${T_RES:-615}
+T_RES=${T_RES:-71}
 FWD_LR=${FWD_LR:-0.01}
 FLUX_D=${FLUX_D:-0.0169}
 FWD_D=${FWD_D:-0.169}
@@ -39,8 +39,9 @@ common () {  # common <n>: cell flags shared by both arms
     --server-update-audit --no-cos-ground-truth-audit \
     --eval-max-samples 3800 --eval-resample --eval-every-n-commits "$STRIDE" --final-full-eval \
     --saturation-stop --sat-stall-frac 0.003 --max-commits "$MAX_COMMITS" \
-    --max-runtime-s $(( HOURS * 3600 * 40 )) --sim-wall-ceiling-s $(( HOURS * 3600 )) \
-    --target-acc "$TARGET" --converge-window 1
+    --max-runtime-s 1000000000 --sim-wall-ceiling-s $(( HOURS * 3600 ))
+  [ "$STOP_AT_TARGET" = 1 ] && printf '%s\n' --target-acc "$TARGET" --converge-window 1
+  return 0
 }
 
 arm_args () {  # arm_args <arm> <n>
@@ -51,7 +52,7 @@ arm_args () {  # arm_args <arm> <n>
                 --phi-stop halt --phi-stop-threshold 1e9 ;;  # phi_stop off disables the stall/GL detector
     fluxtune) printf '%s\n' --only fluxtune "${base[@]}" --agg-goal $(( (c + 1) / 3 )) --c "$c" \
                 --delay-divisor "$FLUX_D" --delay-floor 4.0 \
-                --probe-combine mean --perturbation-count 10 --server-step-rule trust_ratio --rho0 0.07 \
+                --probe-combine mean --perturbation-count 10 --server-step-rule trust_ratio --rho0 0.14 \
                 --commit-gate fixed --pool-target 50 --rho-schedule exp --t-res "$T_RES" --agg-rate-type uniform \
                 --var-stopping-policy off --budget-stop-frac 0 --b-max-probe-every 0 --phi-stop halt ;;
   esac

@@ -164,14 +164,14 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   14× (RUN_PLAN §4). The limit is the serial per-commit aggregator (~225 ms), not sleeps.
 - **FT-L11** Sim charges each task's modeled delay D = `training_delay_s / divisor` to the vclock; real sleeps it. Recipe D
   dwarfs GPU time (RoBERTa 237–1,124 s vs 9 s), so the gain ≈ D / GPU time.
-- **FT-L12** Size a real leg by D, not wall: an iteration takes 4–19 min on RoBERTa-L, 14–67 min on 1.7B (EXPERIMENTS §2);
+- **FT-L12** Size a real leg by D, not wall: an iteration takes 4–46 min on RoBERTa-L, 14 min–2.8 h on 1.7B (D_CALIBRATION);
   first commit ≥ 1 h. A 10-min real leg measures speed only (`ft_models_check_20261024`, shepherd).
 - **FT-L13** Compare real and sim at matched commits, never matched wall: n 50, real 103 commits at 0.33–0.34 vs sim
   0.32–0.37 at c100 (`ft_n50_check_20261024`, shepherd).
 - **FT-L14** Real `max_runtime_s` counts from aggregator start, join barrier included (minInit = N); 100 trainers take
   ~3.5 min to join, so a real smoke needs ≥ 6 min (`smoke_merge_20261024`).
-- **FT-L15** A sim leg ends on its wall ceiling: `--max-runtime-s` ≥ 40 × wall cap plus `--sim-wall-ceiling-s`;
-  `run_sequential`'s kill budget follows `max_runtime_s` (~+130 s), not the ceiling.
+- **FT-L15** A sim leg ends on its wall ceiling: `--max-runtime-s 1000000000 --force` plus `--sim-wall-ceiling-*` (40× ended
+  rb60 at 4.7 h); `run_sequential`'s kill budget follows `max_runtime_s` (~+130 s), not the ceiling.
 - **FT-L16** Side-by-side legs run as lanes: private mosquitto, `FLAME_SLOT_GPUS`, `taskset` cores and a distinct
   `FLAME_RUN_LABEL` each (`ft_models_check_20261024/run.sh`).
 - **FT-L17** SmolLM2-1.7B bs 32: ≤ 4 trainers per A40 when the aggregator shares the lane; 8 per GPU OOMed two trainers
@@ -201,7 +201,7 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
 - **FT-T12** Don't give lanes one `FLAME_RUN_LABEL`: `run_sequential` then merges both legs' summaries (`AGG_KILLED`,
   `2 agg log(s)`); read stop reasons from each aggregator log.
 - **FT-T13** Don't scale D by model size alone: the divisor needs the bs factor too (D ∝ bs). 1.7B's 0.0192 missed bs 8 → 32;
-  measured 0.0047 (EXPERIMENTS §2).
+  measured 0.0047 (`paper_expts_fluxtune/D_CALIBRATION.md`).
 - **FT-T14** Don't time trainer cost with the aggregator's eval on the same GPU: a full-test eval slowed tasks 2.7–3.5× for
   4–8 min (`ft_profile_20261024`); cap or skip eval when profiling.
 
