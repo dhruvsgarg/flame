@@ -54,6 +54,13 @@ EXPECT = {
                          cp=dict(dkc="felix_c", dkcp="phase", cmin="10"), pscp=dict(ps="true", dkc="felix_c", dkcp="phase", cmin="10"),
                          ca=dict(dkc="felix_c", dkcp="avail", cmin="10"), cap=dict(dkc="felix_c", dkcp="avail+phase", cmin="10"),
                          psca=dict(ps="true", dkc="felix_c", dkcp="avail", cmin="10"), c30=dict(c="30"), k20=dict(K="20")).items()},
+    # F47 / FL1 S4b + S5 on Felix new (harness_pool.F47_ARMS)
+    **{("felix", a): dict(_B1, sel="prop", rate="new", rp="0.4/0.25", **kw) for a, kw in dict(
+        fn={}, fn_cp=dict(dkc="felix_c", dkcp="phase", cmin="10"), fn_c30=dict(c="30"),
+        fn_ca=dict(dkc="felix_c", dkcp="avail", cmin="10"), fn_cap=dict(dkc="felix_c", dkcp="avail+phase", cmin="10"),
+        fn_e2=dict(nclip="3", ep="2"), fn_e3=dict(nclip="3", ep="3"), fn_aug=dict(aug="true"),
+        fn_cp_aug=dict(dkc="felix_c", dkcp="phase", cmin="10", aug="true")).items()},
+    ("fedbuff", "ctl_aug"): dict(know="checkin", evict="false", rate="old", serve="sweep", aug="true"),
     ("fedbuff", "ctl_srv"): dict(know="checkin", evict="false", rate="old", serve="sweep"),
     ("fedbuff", "*"): dict(know="checkin", evict="false", rate="old"), ("fedbuff", "fbstar"): dict(know="oracle", evict="false", rate="old"),
     ("refl", "ctl"): dict(know="checkin", evict="false", pred="prophet", holdoff="0"),
@@ -64,7 +71,7 @@ EXPECT = {
     ("oort", "*"): dict(know="checkin", evict="false"), ("oort_star", "*"): dict(know="oracle", evict="false"),
 }
 COMMON = dict(holdout="-", serve="-", p34="ok", sel="-", nclip="-", lrn="-", wd="-", ep="-", su="-", ucb="-", rp="-", ps="-",
-              dkcp="-", cmin="-")
+              dkcp="-", cmin="-", aug="-")
 
 
 def _s(v):
@@ -93,7 +100,7 @@ def knobs(run_dir, trainer_hp):
                 wd=_s(trainer_hp.get("trainerWeightDecay")), ep=_s(trainer_hp.get("epochs")),
                 su=_s(sel.get("scoreUtility")), ucb=_s(sel.get("scoreUcb")),
                 rp=f"{rc.get('scale')}/{rc.get('a_exp')}" if (rc := opt.get("agg_rate_conf") or {}).get("type") == "new" else "-",
-                ps=_s(opt.get("phase_step")), cmin=_s(dk.get("c_min")) if pol else "-",
+                ps=_s(opt.get("phase_step")), aug=_s(trainer_hp.get("trainerAugmentEachPass")), cmin=_s(dk.get("c_min")) if pol else "-",
                 dkcp="+".join(k for k in ("avail", "phase") if str((dk.get("policy_kwargs") or {}).get(k)).lower() == "true") or "-")
 
 
@@ -118,7 +125,7 @@ def legs(pool):
         if f"{os.sep}_yaml{os.sep}" in y:  # bench_pool's dry-run inputs, not legs
             continue
         leg = y.split(os.sep)[-4]
-        m = re.match(r"(?:gs_)?F\d+\w*?_(s\d+u?)_(\w+?)_(syn_\w+|mobiperf\w*)_(\w+)_sim$", leg)
+        m = re.match(r"(?:gs_)?F\d+\w*?_(s\d+u?|smu)_(\w+?)_(syn_\w+|mobiperf\w*)_(\w+)_sim$", leg)
         if not m:
             continue
         cell, arm, _, b = m.groups()
@@ -133,7 +140,7 @@ def legs(pool):
             yield leg, b, arm, dict(k, p34=holdout_check(runs[-1], k["holdout"]))
     for run in sorted(glob.glob(os.path.join(pool, "*", "runs", "*_s[0-9]*", "run_*"))):  # bench_pool layout (FX-D213)
         phase, slot = run.split(os.sep)[-4], run.split(os.sep)[-2]
-        m = re.match(r"(?:gs_)?F\d+\w*?_s\d+u?_(\w+)$", phase)
+        m = re.match(r"(?:gs_)?F\d+\w*?_s(?:\d+u?|mu)_(\w+)$", phase)
         b = re.match(r"(?:syn_\w+?|mobiperf\w*?)_([a-z_]+)_s\d+$", slot)
         if not (m and b):
             continue
@@ -147,7 +154,7 @@ def main(argv=None):
     pools = (argv if argv is not None else sys.argv[1:])
     bad = 0
     cols = ("know", "evict", "eval", "ups", "bal", "dkc", "rate", "probe", "vprobe", "prefix", "holdout", "pred", "prio", "prob",
-            "checkin", "holdoff", "K", "c", "timeout", "lr", "serve", "sel", "nclip", "lrn", "wd", "ep", "su", "ucb", "rp", "ps", "dkcp", "cmin", "p34")
+            "checkin", "holdoff", "K", "c", "timeout", "lr", "serve", "sel", "nclip", "lrn", "wd", "ep", "su", "ucb", "rp", "ps", "dkcp", "cmin", "aug", "p34")
     print("| leg | " + " | ".join(cols) + " | ok |\n|" + "---|" * (len(cols) + 2))
     for pool in pools:
         for leg, b, arm, k in legs(pool):

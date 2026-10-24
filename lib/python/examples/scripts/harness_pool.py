@@ -209,6 +209,19 @@ for _b, (_bhp, _bthp) in {"uo": (_S3, ""), "vub": (f"{_S3U} {_BAL}", "utilityPre
         _hp = f"{_bhp.replace('opt.agg_rate_conf.type=old', '') if _RNEW in _vhp else _bhp} {_vhp} {_STATS}"
         F46_ARMS[f"{_b}_{_v}"] = dict(hp=" ".join(_hp.split()), thp=" ".join(f"{_B1T if _kw.get('lrn', True) else ''} {_bthp}".split()),
                                       **{k: _kw[k] for k in ("cells", "c", "agg_goal") if k in _kw})
+# F47 = FL1 S4b + S5 on Felix new (`fn` = F46 `uo_n`); streams 48 h (two trace days, ceiling 68.8%), static 24 h (stops at 70%):
+# c by phase / availability, guarded local epochs, fresh augmentation per batch (FX-D233; FedBuff too); `smu` = MobiPerf stream.
+F47_CELLS = {**F44_CELLS["cifar10"], "smu": ("mobiperf_3st", True)}
+F47_RUNTIME_S = {"s0": 86400, "s0u": 172800, "s50u": 172800, "smu": 172800}
+_FN = " ".join(f"{_S3.replace('opt.agg_rate_conf.type=old', '')} {_RNEW} {_STATS}".split())
+_FCP, _AUG = f"{_FN} {_DKCF} sel.dynamic_kc.policy_kwargs.phase=true", "trainerAugmentEachPass=true"
+F47_ARMS = {"ctl_srv": dict(bls=("fedbuff",)), "ctl_aug": dict(bls=("fedbuff",), hp="serveEma=sweep", thp=_AUG),
+            "fn": dict(hp=_FN, thp=_B1T), "fn_cp": dict(hp=_FCP, thp=_B1T),
+            "fn_c30": dict(hp=_FN, thp=_B1T, c=30, cells=("s0u", "s50u")),
+            "fn_ca": dict(hp=f"{_FN} {_DKCF} sel.dynamic_kc.policy_kwargs.avail=true", thp=_B1T, cells=("smu",)),
+            "fn_cap": dict(hp=f"{_FCP} sel.dynamic_kc.policy_kwargs.avail=true", thp=_B1T, cells=("smu",)),
+            **{f"fn_e{e}": dict(hp=f"{_FN} {_GUARD}", thp=f"{_B1T} epochs={e}", cells=("s0", "s0u", "s50u")) for e in (2, 3)},
+            "fn_aug": dict(hp=_FN, thp=f"{_B1T} {_AUG}"), "fn_cp_aug": dict(hp=_FCP, thp=f"{_B1T} {_AUG}", cells=("s0u", "s50u"))}
 F42_ARMS["l3b_ro_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep opt.agg_rate_conf.type=old", thp=_PRE)  # FX-N132: FedBuff's rate
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
@@ -497,16 +510,16 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
             if arm in F43_ARMS:
                 out.append(replace(ph, pid=ph.pid.replace("F42_", "F43_"), runtime_s=F43_RUNTIME_S[ds], agg_hp=f"{ph.agg_hp} {F43_STOP}", **F43_SHAPE[ds]))
         return out
-    if tier in ("F44", "F45", "F46"):  # FX-N141 loop FL1: F42 arms reused for anchors, the step's arms on top
+    if tier in ("F44", "F45", "F46", "F47"):  # FX-N141 loop FL1: F42 arms reused for anchors, the step's arms on top
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
         out = []
-        for cell, (trace, stream) in F44_CELLS[ds].items():
+        for cell, (trace, stream) in (F47_CELLS if tier == "F47" and ds == "cifar10" else F44_CELLS[ds]).items():
             dsh = usage_hp(trace) if stream else full
-            base = replace(g3, runtime_s=F44_RUNTIME_S, trace=trace, trace_offset_s="86400" if stream else "", kind="sim_ev",
+            base = replace(g3, runtime_s=F47_RUNTIME_S[cell] if tier == "F47" else F44_RUNTIME_S, trace=trace, trace_offset_s="86400" if stream else "", kind="sim_ev",
                            trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S} {F43_STOP}",
-                           **(F46_SHAPE if tier == "F46" and ds == "cifar10" else F44_SHAPE[ds]))
-            for arm, kw in {"F44": F44_ARMS, "F45": F45_ARMS, "F46": F46_ARMS}[tier].items():
+                           **(F46_SHAPE if tier in ("F46", "F47") and ds == "cifar10" else F44_SHAPE[ds]))
+            for arm, kw in {"F44": F44_ARMS, "F45": F45_ARMS, "F46": F46_ARMS, "F47": F47_ARMS}[tier].items():
                 if ds == "google_speech" and (tier != "F44" or arm not in F44_SPEECH_ARMS) or cell not in kw.get("cells", (cell,)):
                     continue
                 ref = F42_ARMS.get(arm, {})
@@ -2181,7 +2194,7 @@ def code_key() -> str:
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F42 F42C F42CR F42R F43 F44 F45 F46, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F42 F42C F42CR F42R F43 F44 F45 F46 F47, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

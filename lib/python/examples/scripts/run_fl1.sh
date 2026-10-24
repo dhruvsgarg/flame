@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.." || exit 1
 EX=$PWD
 HOST=$(hostname -s)
 [ -n "${TAG:-}" ] || { echo "[FL1] set TAG (same on both nodes)"; exit 1; }
-TIER=${TIER:-F46}
+TIER=${TIER:-F47}
 OUT=experiments/FL1_$TAG/$HOST
 PY="conda run --no-capture-output -n dg_flame python"
 case $HOST in
@@ -26,8 +26,8 @@ pid=
 stop() { echo "[FL1] stopping"; kill -TERM -- -"$pid" 2>/dev/null; sleep 10; kill -KILL -- -"$pid" 2>/dev/null; exit 130; }
 trap stop INT TERM HUP
 
-FLAME_TELEMETRY_LEAN=1 setsid timeout --foreground 21600 $PY scripts/bench_pool.py --harness-args "--tier $TIER --datasets cifar10" \
-    --only "$ONLY" --out "$OUT/cifar" --gpus "$GPUS" --per-gpu "$PER_GPU" --timeout-s 20000 > "$OUT/cifar.log" 2>&1 & pid=$!
+FLAME_TELEMETRY_LEAN=1 setsid timeout --foreground ${POOL_TIMEOUT_S:-39600} $PY scripts/bench_pool.py --harness-args "--tier $TIER --datasets cifar10" \
+    --only "$ONLY" --out "$OUT/cifar" --gpus "$GPUS" --per-gpu "$PER_GPU" --timeout-s ${LEG_TIMEOUT_S:-36000} > "$OUT/cifar.log" 2>&1 & pid=$!
 echo "[FL1] running $ONLY on GPUs $GPUS; log $OUT/cifar.log"
 wait
 
