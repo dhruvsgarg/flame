@@ -106,6 +106,7 @@ def main(argv=None):
     ap.add_argument("--timeout-s", type=float, default=900)
     ap.add_argument("--runtime-s", type=float, default=None, help="vclock budget override (smokes)")
     ap.add_argument("--workers", type=int, default=2, help="trainer worker processes per leg (fl_bench --workers)")
+    ap.add_argument("--first", default="", help="regex: matching legs start first (long legs, so the pool ends sooner)")
     a = ap.parse_args(argv)
     jobs = jobs_from_pools(a.from_pools)
     if a.jobs:
@@ -116,6 +117,8 @@ def main(argv=None):
         jobs += jobs_from_harness(a.harness_args, out)
     jobs = [j for j in jobs if re.search(a.only, " ".join(j[:3]))]
     queue = [(j, s) for j in jobs for s in a.seeds]
+    if a.first:
+        queue.sort(key=lambda q: not re.search(a.first, " ".join(q[0][:3])))  # stable: phase order otherwise
     g = a.gpus.split(",")
     groups = [",".join(g[i:i + a.gpus_per_leg]) for i in range(0, len(g) - a.gpus_per_leg + 1, a.gpus_per_leg)]
     running, done, t0, nid, probe_t, waited = {}, [], time.time(), 0, 0.0, time.time()

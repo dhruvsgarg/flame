@@ -75,6 +75,8 @@ EXPECT = {
     ("refl", "rstar"): dict(know="oracle", evict="false", pred="oracle", prio="1", prob="0.9", holdoff="0"),
     ("feddance", "ctl"): dict(know="checkin", evict="false", checkin="selection"),
     ("feddance", "fdstar"): dict(know="oracle", evict="false", checkin="selection"),
+    ("refl", "sync_srv"): dict(know="checkin", evict="false", pred="prophet", holdoff="0", serve="sweep"),  # F49
+    ("feddance", "sync_srv"): dict(know="checkin", evict="false", checkin="selection", serve="sweep"),
     ("fedavg", "*"): dict(know="checkin", evict="false"),
     ("oort", "*"): dict(know="checkin", evict="false"), ("oort_star", "*"): dict(know="oracle", evict="false"),
 }

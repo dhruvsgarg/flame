@@ -13,7 +13,7 @@ steps). With it Felix new reaches 65% 1.9-2.7× sooner than FedBuff at 36-58% fe
 and 70% there at 44 h (FedBuff 68.4% at 48 h). Dropped: epochs 2 / 3, c 30. c by phase = bytes variant (60-70 min later
 to 65% at −10-18% GB); c by availability restores choice on MobiPerf (+3.8 pp, −92% GB) but starts 4× slower. Since: augmentation
 default on both datasets + augmented ceilings (FX-N143); F48a: the c ramp (`fn_chr`) keeps c 60's pace on MobiPerf at −19% GB.
-Running F48 (`run_f48.sh`): 24 h MobiPerf confirm (ramp, eval tasks), rate-constant sweep, speech confirm.** Speech n 100 (F43, no aug): every leg reaches 70%; Felix new first at every target (70% at
+Next: F49 decider (`run_f49.sh`, ~2-3 h): Felix new vs every baseline, both datasets; then F48 sanity (`run_f48.sh`).** Speech n 100 (F43, no aug): every leg reaches 70%; Felix new first at every target (70% at
 610 vs FedBuff 860 min), l3b_e3 lowest GB. Every pre-F47 cifar number ran frozen draws: valid within a batch, not for the paper.
 
 **Terms.** Each aggregation makes a version. *Current model* = the latest version; training continues from it. *Averaged model* = EMA of
@@ -45,7 +45,7 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
 - **FX-N141 · RESUME HERE: Felix loop FL1, build Felix up from FedBuff on cifar (operator 10-23).**
   - **Status:** S1-S5 done (F44 `FL1_1023_1700`, F45 `FL1_1023_2130`, F46 `FL1_1024_0020/jayne`, F47 `FL1_1024_0432/jayne`: 32 / 32
     legs in 468 min, 4.1 legs / h, audit ✅, `work_done` on every leg, no NaN, overruns ≤ 10 ms). Next: FX-N143 (augmentation default +
-    augmented ceiling + targets) ✅; F48a ✅; F48 batch next (S6: `run_f48.sh`).
+    augmented ceiling + targets) ✅; F48a ✅; next F49 decider (`run_f49.sh`), then the F48 sanity batch (S6).
   - **Launch (operator, tmux on jayne; the script refuses a dirty tree):**
     `TIER=<tier> ONLY=<tier>_ PER_GPU=5 TAG=<mmdd_hhmm> bash /home/dgarg39/flame/lib/python/examples/scripts/run_fl1.sh` on GPUs 0,
     2-7, ≤ 5 / GPU (~4 GB GPU, ≤ 8 GB RAM each). Output `experiments/FL1_<TAG>/jayne/`: `cifar_verdict.md`, `config_audit.md`,
@@ -252,7 +252,17 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
     - *F48S · speech n 100 (12 h, 1 seed, harness, operator):* Felix old + FedBuff (`ctl_srv`), `fn_chr` on `s0u`, `s50u`, `smu`, plain
       `fn` on `smu` (elsewhere = `fn_chr`); c 20 (Q-SPEECHC); first speech run with augmentation. Smoke ✅ (`FL1_1024_F48S_smoke`: EV
       PASS, 0 / 61 overruns, c 10-11 at 18-22 trainable, RAM 132 GB, GPU 22 / 45 GB).
-    - *F48 batch (`run_f48.sh`, jayne, ~10-11 h; one Ctrl+C stops all):* (1) cifar bench GPU 5: F48L = FedBuff, `fn`, `fn_chr`,
+    - *F49 decider first (`run_f49.sh`, jayne, ~2-3 h; operator 10-24: know Felix's final config wins before writing):* Felix new
+      (`fn_chr`) vs FedBuff, REFL, FedDance, FedAvg, Oort + REFL* / FedDance* / Oort* × cifar n 300 and speech n 100 × `s0u` /
+      `s50u` / `smu`, 12 h, augmentation on, plus `fn` (c 60) on `smu`; 56 bench legs, two pools sharing GPUs 0, 2-7, long legs first
+      (`bench_pool --first`). Async K 10 / c 20% n, sync K by the 5% rule (smoke `experiments/F49_smoke`: K 15 / 5, knowledge per
+      stack, audit 14 / 14 ✅). Speech runs on the bench here (2 h vs ~10 h on the harness, one 4-GPU leg at a time); bench ⇄ harness
+      for speech is cross-checked by F48S. *Decides:* Felix new first to every target and fewest GB to it vs every deployed baseline
+      on every cell, final ≥ best baseline − 1 pp. *Expect* (F47 / F43): cifar 65% 1.9-2.7× sooner than FedBuff at 36-58% fewer GB on
+      syn traces, ≥ 1.2× on MobiPerf; sync stacks ≥ 5× later to 50%; speech 1.4-2× sooner to 60-70%. Oort spends the fewest GB but
+      reaches few targets (FX-L101). *If it holds:* Felix config is final, writing starts; F48 runs the sanity checks. *If not:* the
+      losing cell names the knob (MobiPerf → c ramp vs c 60; speech → c 20 / rate) and F48 tests it before any seeds.
+    - *F48 sanity batch after F49 (`run_f48.sh`, jayne, ~10-11 h; one Ctrl+C stops all):* (1) cifar bench GPU 5: F48L = FedBuff, `fn`, `fn_chr`,
       `fn_ev` (`fn_chr` + Felix old's eval tasks) × MobiPerf, 24 h (~3-4 h). (2) cifar bench GPUs 6-7: F48R = rate `new` sweep on
       `fn_chr`, one knob at a time (scale 0.2 / 0.7, a 0 / 0.5, b 0.05 / 0.2) + FedBuff × `s0u` / `smu`, 12 h (~2-3 h; constants date
       from 2024, before every setup fix). (3) speech harness GPUs 0, 2-4: F48S, one 4-GPU leg at a time (37.8 / 45 GB per GPU), 10
