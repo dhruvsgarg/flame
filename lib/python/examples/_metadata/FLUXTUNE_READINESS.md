@@ -35,12 +35,20 @@
 | felix_round | ✅ | ✅ 62/0/30 | ⬚ |
 | felix_it | ✅ | ✅ 66/0/27 | ⬚ |
 
-syn_0 parity is closed on v1. Unavailability: `fwdllm_aggregator.py` has no send-gate, deliver-late or
+Big models (RoBERTa-L, SmolLM2-1.7B): real↔sim parity not graded; it transfers from DistilBERT under FT-L19, checked by
+FT-N21. syn_0 parity is closed on v1. Unavailability: `fwdllm_aggregator.py` has no send-gate, deliver-late or
 withheld-delivery wiring yet (only the oracular select filter and the sync scarcity wait).
 
 ---
 
 ## Next steps (persistent queue — resumes after Felix)
+
+- **FT-N21 · Big-model real↔sim transfer check (FT-L19) · todo.** Per model, one 1–2 h real leg at the paper packing beside
+  a same-seed sim leg. *Exit:* 0 `[TIMING_OVERRUN]`, real `vclock_charge` spans near the dataset profile, no eval-held
+  commits beyond seconds, accuracy within band at matched commits. *Why:* the 10-min legs (10-24) reached no real commit.
+- **FT-N22 · Server momentum with ρ0 0.14 · todo (proposed 10-24).** DistilBERT · AG News, N 50, ρ0 0.14, T_res 71, momentum
+  0.5 vs none, 3 seeds each, to 0.86 two in a row; bench is fine (DistilBERT `fluxtune` passed B2). *Exit:* keep or drop a
+  momentum arm for RoBERTa. *Why:* only single-seed evidence to 0.60 (FT-T15), and Φ ≠ e^B under momentum (FT-T16).
 
 - **FT-N20 · Data augmentation like every Felix stack (FELIX FX-D233, FX-N143) · todo (on resume).** Felix found its GPU preload froze
   one augmentation draw per sample for the whole run. Check the fwdllm loaders for the same (cached / pre-tokenized samples) and
@@ -81,7 +89,8 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
   - *Scope (operator 10-24):* B2 tested `fwdllm` and `fluxtune` only; `fedbuff_*`, `felix_*` and `fwdllm_it_*` were not tested
     on the bench specifically (same aggregator / trainer classes; their async-staleness, pacing and per-iteration re-pick paths are
     unchecked there), so run a B2 cell before reading any of them off the bench.
-  - *Left:* B1 (checkpoint replay of real commits); B2 on RoBERTa-L; a fwdllm knob table for
+  - *Left:* B1 (checkpoint replay of real commits); a B2 cell plus a `bench_profiles.yaml` entry per big model (Yelp-P,
+    Yahoo fall back to 4 GB/leg, so SmolLM legs would OOM); 12 h cells stay on the harness (operator 10-24); a fwdllm knob table for
     `config_audit` (FT-N15); `bench_pool --harness-args` for `run_sequential.sh` plans (legs come from its dry-run YAMLs via `--jobs` now).
 
 - **FT-N16 · Measured packing for FluxTune blocks · todo (on resume).** PARITY C21/C22 and Throughput: screen each block's legs at
@@ -174,10 +183,12 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   rb60 at 4.7 h); `run_sequential`'s kill budget follows `max_runtime_s` (~+130 s), not the ceiling.
 - **FT-L16** Side-by-side legs run as lanes: private mosquitto, `FLAME_SLOT_GPUS`, `taskset` cores and a distinct
   `FLAME_RUN_LABEL` each (`ft_models_check_20261024/run.sh`).
-- **FT-L17** SmolLM2-1.7B bs 32: ≤ 4 trainers per A40 when the aggregator shares the lane; 8 per GPU OOMed two trainers
-  (`ft_models_check_20261024/first_try`).
+- **FT-L17** SmolLM2-1.7B bs 32: 8 trainers per A40 on a 2-GPU lane holding the aggregator OOMed two; 4 per GPU ran
+  clean (`ft_models_check_20261024/first_try`). Check GPU memory in the first 10 min at any denser packing.
 - **FT-L18** Measure a model's D from one trainer alone on a GPU, eval off: per-task cost varies ≤ 2%, so ~25 tasks fix
   it; anchor the ratio to DistilBERT at the same bs (`ft_profile_20261024`, shepherd).
+- **FT-L19** DistilBERT's real↔sim parity extends to a new model: no code branches on the model between modes; it holds while
+  GPU time ≪ D (no overruns) and first commits match a same-seed sim leg (FT-N21).
 
 ## FluxTune tripwires (don'ts)
 
@@ -204,6 +215,10 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   measured 0.0047 (`paper_expts_fluxtune/D_CALIBRATION.md`).
 - **FT-T14** Don't time trainer cost with the aggregator's eval on the same GPU: a full-test eval slowed tasks 2.7–3.5× for
   4–8 min (`ft_profile_20261024`); cap or skip eval when profiling.
+- **FT-T15** Don't read the ag60 preview's time-to-0.60 as ablation evidence: 1 seed per arm, stopped at the first eval
+  ≥ 0.60 (no consecutive rule); `Smom` dipped to 0.28 just before.
+- **FT-T16** Don't add server momentum to an `exp` run without re-deriving T_res: Φ ≠ e^B under momentum
+  (`FedSgdAggregator.py:433`), so Φ\* 2 no longer holds; 0.9 diverged.
 
 ---
 
@@ -228,6 +243,8 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
 
 - **FT-D4** `main_fedfwd_agg.py` ends with `exit_after_run` (PARITY PL24, FX-D178): 4 of 7 legs had aborted in native
   teardown after `channel leave done`; `test_aggregator_mains_end_with_exit_after_run` guards every aggregator main.
+- **FT-D5** Task cost D per model (10-24): [D_CALIBRATION.md](../paper_expts_fluxtune/D_CALIBRATION.md) and
+  `profile_task_cost.sh`; RoBERTa-L 0.0169 confirmed, SmolLM2-1.7B 0.0192 → 0.0047 (per arm in its launcher).
 
 ## Open questions (operator)
 - Does C2 (dynamic K/C) land in the headline `fluxtune` config or get descoped? (BASELINES.md ᵖ note.)

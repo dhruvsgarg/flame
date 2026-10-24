@@ -6,28 +6,28 @@ kind: e2e
 prefix: e2e
 baseline: fwdllm
 champion: fluxtune
-tta_consecutive: 1          # evals in a row >= target that define "reached"
+tta_consecutive: 2          # evals in a row >= target that define "reached" (EXPERIMENTS.md §9, 10-22)
 figures: [row, grid, b1, b2, b3]
 
 cells:
   - id: distilbert_agnews
     label: "DistilBERT · AG News"
     n_clients: 100
-    target_acc: 0.60        # TEMP ag60 preview (restore 0.80)
+    target_acc: 0.86        # paper target (EXPERIMENTS.md §9, 10-17)
     arms:
       fwdllm: []
       fluxtune: []
-  - id: xx_yahoo
-    label: "XX · Yahoo Answers"   # model TBD
-    n_clients: 100          # TBD
-    target_acc: 0.60        # TEMP ag60 preview (restore 0.80)
+  - id: roberta_large_yelp
+    label: "RoBERTa-L · Yelp-P"
+    n_clients: 100
+    target_acc: 0.82        # paper target
     arms:
       fwdllm: []
       fluxtune: []
-  - id: smollm2_1p7b_yelp
-    label: "SmolLM2-1.7B · Yelp-P"
-    n_clients: 50           # TBD
-    target_acc: 0.60        # TEMP ag60 preview (restore 0.80)
+  - id: smollm2_1p7b_yahoo
+    label: "SmolLM2-1.7B · Yahoo"
+    n_clients: 75           # 60 if 75 OOMs (RUN_PLAN §2)
+    target_acc: 0.65        # paper target (FwdLLM paper's Yahoo target)
     arms:
       fwdllm: []
       fluxtune: []

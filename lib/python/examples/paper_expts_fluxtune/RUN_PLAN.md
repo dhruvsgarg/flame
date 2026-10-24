@@ -16,7 +16,7 @@ Last updated 2026-10-24 (sim vs real checks, §2 sim rules; FT-N18 B2 launch; 10
 
 | ID | Node · GPUs · tmux | Started → ETA | Run dir · logs | Check |
 |---|---|---|---|---|
-| — none — | | | | |
+| S RoBERTa-L · Yelp-P `fluxtune` (§2 recipe: n 100, ρ0 0.14, T_res 71, divisor 0.0169, no momentum, no target stop) | shepherd · GPUs 0–7 · `dg_flame:rbflux` | 10-24 19:13 → ~07:30 (12 h wall + final eval) | `run_20261024_191344_rb60_fluxtune_n100_*`; logs and reviewed config `fwdllm/rbflux_20261024/` (`queue_*.log`, `acc_*.log`) | first hours: acc > 0.50 by ~c50, Φ ≤ 2, GPU < 85%; else abort rule (ρ0 0.07) |
 
 **Done**
 
@@ -27,7 +27,7 @@ Last updated 2026-10-24 (sim vs real checks, §2 sim rules; FT-N18 B2 launch; 10
 | Sim vs real, big models (10-24, shepherd, 14:30 → 15:00) | `fluxtune` n 16 / C 8 / K 5, 10 min per leg, §2 recipe: RoBERTa-L sim 5 commits, 5.3 vclock h (33×), acc 0.53 → 0.57; SmolLM2-1.7B sim 2 commits, 2.2 vclock h (14×); both real legs 0 iterations (D 4–19 min). 0 errors. Not paper runs | `fwdllm/ft_models_check_20261024/` on shepherd (`run.sh`, 4 run dirs; `first_try/` = the 8-per-GPU SmolLM OOM); §4 table; FT-L11, L12, L17 |
 | Sim vs real, DistilBERT n 50 (10-24, shepherd, 13:33 → 14:06) | `fluxtune` n 50 / C 20 / K 10, 30 min per leg: real 103 commits, acc 0.33–0.34; sim 345 commits, 6,202 vclock s (3.4×), acc 0.54 and rising, no collapse past the lap boundary; matched at c100. Not paper runs | `fwdllm/ft_n50_check_20261024/` on shepherd (`run.sh`, both run dirs); FT-L13 |
 | FT-N18 B2 (10-24, jayne, 02:58 → 03:58) | fwdllm bench gate PASS on DistilBERT · AG News n 100 `syn_0`: `fwdllm` (3 bench vs 3 harness seeds, every same-seed pair identical) and `fluxtune` (3 vs A6, AUC 44.6 / 43.4). Not paper runs | `fwdllm/bench_B2_20261024/` (`b2.json`, `bench/`, `harness/`, `run_harness_seeds.sh`); harness run dirs `experiments/run_20261024_033641_b2h_s123[56]_*`; FLUXTUNE FT-D3 |
-| ag60 preview (10-22, jayne, 2 lanes, 07:24 → 10:34) | 22 of 23 DistilBERT · AG News arms reached 0.60; A3 (FwdLLM + fixed pool) diverged, stopped by hand. TTA (vclock h): FluxTune 0.51 vs FwdLLM 2.27 (4.5×); A1 0.31, A12 0.67, A123 1.95, A2 5.9; N 10/20/50/90 0.23/0.37/0.51/0.71. Not scored (1 seed, target 0.60, window 1) | script `fwdllm/expt_scripts/nodes/run_node_agnews_to60_queue.sh`; arm → run dir `fwdllm/ag60_20261022_{072444,073816,074438}/runs.tsv`; figures `fwdllm/ag60_20261022_074438/paper_figs/` (script `fwdllm/expt_scripts/plot_ag60.py`); fixed on the way: mean-of-10 on FwdLLM (A1), `exp` without pool (A2), converge watcher after a lap wrap. Figure manifests' `target_acc` still 0.60 (restore 0.80) |
+| ag60 preview (10-22, jayne, 2 lanes, 07:24 → 10:34) | 22 of 23 DistilBERT · AG News arms reached 0.60; A3 (FwdLLM + fixed pool) diverged, stopped by hand. TTA (vclock h): FluxTune 0.51 vs FwdLLM 2.27 (4.5×); A1 0.31, A12 0.67, A123 1.95, A2 5.9; N 10/20/50/90 0.23/0.37/0.51/0.71. Not scored (1 seed, target 0.60, window 1) | script `fwdllm/expt_scripts/nodes/run_node_agnews_to60_queue.sh`; arm → run dir `fwdllm/ag60_20261022_{072444,073816,074438}/runs.tsv`; figures `fwdllm/ag60_20261022_074438/paper_figs/` (script `fwdllm/expt_scripts/plot_ag60.py`); fixed on the way: mean-of-10 on FwdLLM (A1), `exp` without pool (A2), converge watcher after a lap wrap. Figure manifests now at the cell targets (0.86 / 0.82 / 0.65, `tta_consecutive` 2) |
 | F0 Λ readout | no run: Λ_need from P0 `exp`, G1, P0b → N\* 34–42 (AG News), 38 (Yahoo bs 32) → N 50 every cell | §3.1 |
 | 1.7B · Yahoo dry run | learns: 99 commits, 43 s/commit at N 50 bs 8, acc 0.141 → 0.266 (`pool`, stopped by hand 1.23 h); not an S leg | §3.3 |
 | P0b bs 32 | **bs 32 is the recipe** (decided 10-19). Stopped 10-19 02:00 at 717 commits; same plateau as bs 8 (0.669, max 0.671), 35–40% fewer vclock h and commits to 0.5/0.6/0.65. Real wall is reversed (18.6 vs 7.0 s/commit) | §0c |
@@ -43,8 +43,10 @@ Last updated 2026-10-24 (sim vs real checks, §2 sim rules; FT-N18 B2 launch; 10
 | ID | Needs | State |
 |---|---|---|
 | G0 v2 charge profile (FT-N1) | ≥ 2 real legs with the §2 recipe; `--agg-rate-type uniform` | todo (last gating run on shepherd); blocks every sim figure run |
-| S smoke SmolLM2-1.7B · Yahoo | — | todo: both arms at the §2 recipe (`exp`, ρ0 0.14, T_res 71, s 5.62, bs 32, n 75); measures bs 32 s/commit for F2 and the eval stride, and whether n 75 fits (OOM → n 60). Launch: `ARM=fluxtune HOURS=2 fwdllm/expt_scripts/launch_smollm17b_yahoo_n50.sh`, then `ARM=fwdllm` |
-| S smoke RoBERTa-L · Yelp-P | — | todo (shepherd, 12 h): `ARMS=fluxtune STOP_AT_TARGET=0 TARGET=0.82 HOURS=12 bash fwdllm/expt_scripts/nodes/run_node_roberta_yelp_to60_queue.sh` at the §2 recipe (ρ0 0.14, T_res 71); its s/commit feeds F2 and `--max-commits`. 10-18 attempt at the old recipe (bs 8, pool 100) learned to 0.633 in 2 h (`run_20261018_175532`) |
+| S smoke SmolLM2-1.7B · Yahoo | — | todo: both arms at the §2 recipe (`exp`, ρ0 0.14, T_res 71, s 5.62, bs 32, n 75); measures bs 32 s/commit for F2 and the eval stride, and whether n 75 fits (OOM → n 60; ~9.4 trainers / GPU on 8 GPUs, denser than FLUXTUNE FT-L17's clean 4: check GPU memory in the first 10 min). Divisor 0.0047 / 0.047 (D_CALIBRATION). Launch: `ARM=fluxtune HOURS=2 fwdllm/expt_scripts/launch_smollm17b_yahoo_n50.sh`, then `ARM=fwdllm` |
+| S smoke RoBERTa-L · Yelp-P | — | running 10-24 19:13 (Running table above); launched as `ARMS=fluxtune HOURS=12 bash fwdllm/expt_scripts/nodes/run_node_roberta_yelp_to60_queue.sh` (defaults: TARGET 0.82, no target stop) at the §2 recipe (ρ0 0.14, T_res 71); its s/commit feeds F2 and `--max-commits`. 10-18 attempt at the old recipe (bs 8, pool 100) learned to 0.633 in 2 h (`run_20261018_175532`) |
+| Big-model real↔sim check (FLUXTUNE FT-N21) | 1–2 h real leg + same-seed sim leg per model, paper packing | todo; confirms DistilBERT's parity transfers (0 overruns, accuracy within band at matched commits) |
+| Momentum + ρ0 0.14 (FT-N22) | DistilBERT · AG News, 3 seeds × 2 arms, bench OK | optional, proposed 10-24; decides a RoBERTa momentum arm |
 | `fwdllm` lr screen | RoBERTa-L · Yelp-P, 1.7B · Yahoo; lr {1e-4, 3e-4, 1e-3} | todo after S: 6 × ~1.5 h; best lr feeds P3/P4's `fwdllm` arm (DistilBERT keeps 0.01) |
 | R1/R2 ρ_max | shepherd, 2 × 2 h | todo; decides whether DistilBERT's ρ0 rises above 0.07 (big cells run 0.14, operator 10-24) |
 | N50 check | shepherd, 2 h | todo; confirms N 50 at ρ0 0.07 against P0 (N 90) |
@@ -63,6 +65,7 @@ Last updated 2026-10-24 (sim vs real checks, §2 sim rules; FT-N18 B2 launch; 10
 6. DistilBERT figure runs at N 50 if the N50 check passes, else N 90.
 7. Horizon-aware T_res on both 12 h cells.
 8. (10-24) ρ0 0.14 on RoBERTa-L and 1.7B `fluxtune`, T_res 71 (Φ\* 2); DistilBERT stays 0.07.
+9. (10-24) 12 h cells run on the harness, not the bench; the RoBERTa S run has no server momentum.
 
 Closed by data, not by decision: grad-aware (G1), bs (P0b → 32, subject to F2), Yelp-P/Yahoo eval stride (S), v1 profile (G0).
 

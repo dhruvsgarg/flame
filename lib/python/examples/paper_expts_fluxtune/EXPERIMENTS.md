@@ -121,10 +121,13 @@ Each item: action · exit · state. [B] adds no runs: it reads the [A] runs.
   - [ ] **T_res:** optional C3 sweep {150, 300, 600}; report as a decay constant (parked).
 - **G0 · v2 charge profile (FT-N1) · exit: v2 sim block graded 0-fail · todo. Blocks every sim run.** Paired
   v2 real legs with the §2 recipe (`uniform`) (FT-L6, FT-T8).
+- **FT-N21 · big-model real↔sim transfer check · todo.** One 1–2 h real leg per big model beside a same-seed sim leg
+  (FLUXTUNE FT-L19); a sim figure on RoBERTa-L or 1.7B cites it.
 - **P1 · [A] `distilbert_agnews`: `fwdllm` + `fluxtune`, 1 seed · exit: `e2e_distilbert_agnews.pdf` from
   real runs · blocked: G0.** These runs are also C1's A0 and A6.
 - **P2 · C1 Phase A (A1–A4, 1 seed) · blocked: P1.** Its result picks the C3 groups worth running.
-- **S · smoke `roberta_large_yelp` + `smollm2_1p7b_yahoo` · exit: both cells pass · running (jayne, operator, 10-18/19);
+- **S · smoke `roberta_large_yelp` + `smollm2_1p7b_yahoo` · exit: both cells pass · RoBERTa `fluxtune` running (shepherd,
+  10-24 19:13, §2 recipe at ρ0 0.14, 12 h; RUN_PLAN Running); SmolLM and both `fwdllm` arms todo;
   `classifier.dense` drop is in code (10-22); RoBERTa runs before it read p +1,049,600. Feeds no figure.** `fwdllm` + `fluxtune`, 1 seed each, 2 h cap
   (4 runs). Pass: `[ProbeDim]` p = 591,874 / 806,912, no OOM or trainer death, FluxTune accuracy off chance
   (0.50 Yelp-P, 0.10 Yahoo), ρ not pinned at its cap. Record s/commit and vclock/wall to set N, the charge
@@ -296,6 +299,8 @@ python make_paper_figs.py --manifest figs_e2e.yaml --synthetic   # layout previe
 - E1 and E3 are both variance reduction (more probes vs more uploads per step), so their combined gain is less
   than the sum.
 - S1 improves TTA, not accuracy per commit.
+- Server momentum 0.5 shortens early TTA (ag60 `Smom` 0.35 vs 0.53 vclock h to 0.60, 1 seed) but is untested with ρ0 0.14
+  and beyond 0.60 (FLUXTUNE FT-N22, FT-T15).
 
 **Code gaps**
 - [ ] `check_arm_health.py`: skip the `B_max origin` gate when `b_max_probe_every` is 0 (B_max is then a stale ln 2

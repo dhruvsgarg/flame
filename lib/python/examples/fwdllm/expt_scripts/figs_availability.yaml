@@ -5,22 +5,22 @@ kind: e2e
 prefix: c_avail
 baseline: felix_round
 champion: fluxtune
-tta_consecutive: 1
+tta_consecutive: 2
 figures: [row, grid]
 
 cells:
   - id: syn_0
     label: "100% available (syn_0)"
     n_clients: 100
-    target_acc: 0.60        # TEMP ag60 preview (restore 0.80)
+    target_acc: 0.86        # same as figs_e2e distilbert_agnews
     arms: {fwdllm: [], fedbuff_round: [], felix_round: [], fluxtune: []}   # fwdllm = sync reference
   - id: syn_50_3st
     label: "50% unavailable (syn_50_3st)"
     n_clients: 100
-    target_acc: 0.60        # TEMP ag60 preview (restore 0.80)
+    target_acc: 0.86
     arms: {fedbuff_round: [], felix_round: [], fluxtune: []}
   - id: mobiperf_3st
     label: "MobiPerf trace (mobiperf_3st)"
     n_clients: 100
-    target_acc: 0.60        # TEMP ag60 preview (restore 0.80)
+    target_acc: 0.86
     arms: {fedbuff_round: [], felix_round: [], fluxtune: []}

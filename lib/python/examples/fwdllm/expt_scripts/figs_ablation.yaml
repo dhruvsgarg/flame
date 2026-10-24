@@ -5,12 +5,12 @@
 kind: ablation
 baseline: fwdllm
 champion: fluxtune
-tta_consecutive: 1
+tta_consecutive: 2
 cell:
   id: distilbert_agnews
   label: "DistilBERT · AG News"
   n_clients: 100
-  target_acc: 0.60          # TEMP ag60 preview (restore 0.80)
+  target_acc: 0.86          # paper target (EXPERIMENTS.md §9, 10-17)
 
 groups:
   - id: phase_a                       # C1: FwdLLM + one concept

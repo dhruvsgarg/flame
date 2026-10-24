@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# RoBERTa-L · Yelp-P (RUN_PLAN §2 roberta_large_yelp cell), FwdLLM then FluxTune, each stopped at TARGET acc (0.60).
+# RoBERTa-L · Yelp-P (RUN_PLAN §2 roberta_large_yelp cell), FwdLLM then FluxTune; TARGET = the cell's 0.82.
 # One lane on all 8 GPUs. n starts at NUM_TRAINERS (100); an OOM / no-commit arm reruns at FALLBACK_TRAINERS (75),
 # and an arm already done at the larger n is rerun so both arms share n. Plots render at the end (plot_roberta_yelp60.py).
 #   tmux new-window -t dg_flame -n rb60 "bash nodes/run_node_roberta_yelp_to60_queue.sh 2>&1 | tee ../rb60_queue_\$(date +%Y%m%d_%H%M).log"
-# Env: TARGET (0.60), HOURS (12, wall cap per arm), MAX_COMMITS (380), STRIDE (4), T_RES (71 = Φ* 2 at ρ0 0.14),
+# Env: TARGET (0.82), HOURS (12, wall cap per arm), MAX_COMMITS (380), STRIDE (4), T_RES (71 = Φ* 2 at ρ0 0.14),
 #   FWD_LR (0.01), FLUX_D / FWD_D (delay divisors, measured: paper_expts_fluxtune/D_CALIBRATION.md), ARMS ("fwdllm fluxtune"), NODE_DRY_RUN=1 (flags only).
-#   STOP_AT_TARGET (1): 0 drops the target-acc stop, so a paper / S run ends on the §2 stop rule (stall, GL, commit cap, wall).
+#   STOP_AT_TARGET (0): 1 stops an arm at its first eval >= TARGET (preview); 0 ends on the §2 stop rule (stall, GL, cap, wall).
 set -u
 . "$(dirname "$0")/_node_lib.sh"
 source /coc/scratch/dgarg/miniconda3/etc/profile.d/conda.sh && conda activate test_fwdllm
@@ -15,8 +15,8 @@ export NODE_ABORT_ON_FAULT=0  # a failed arm is retried at the fallback n, not a
 
 GPUS=0,1,2,3,4,5,6,7
 export FLAME_SLOT_GPUS=$GPUS
-TARGET=${TARGET:-0.60}
-STOP_AT_TARGET=${STOP_AT_TARGET:-1}
+TARGET=${TARGET:-0.82}
+STOP_AT_TARGET=${STOP_AT_TARGET:-0}
 HOURS=${HOURS:-12}
 MAX_COMMITS=${MAX_COMMITS:-380}
 STRIDE=${STRIDE:-4}
