@@ -46,7 +46,7 @@ from examples.fwdllm.aggregator.FedSgdAggregator import FedSGDAggregator
 # which import TopAggregator straight from flame.mode.horizontal.*.
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import TopAggregator  # noqa: F401
 
-from flame.launch.cli import load_config_from_argv
+from flame.launch.cli import exit_after_run, load_config_from_argv
 from flame import telemetry
 
 logger = logging.getLogger(__name__)
@@ -198,3 +198,5 @@ if __name__ == "__main__":
 
     aggregator.compose()
     aggregator.run()
+
+    exit_after_run()  # PL24: skip native teardown

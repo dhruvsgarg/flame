@@ -160,8 +160,22 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   stability claim needs a 4h+ run.
 - **FT-L9** Bench repros must build the model in the mode production uses (dropout live, training mode);
   inference mode gives bit-exact nulls.
-- **FT-L10** Sim must produce a speedup (`vclock/wall ≥ 1`). The current limit is the serial per-commit
-  aggregator (~225 ms), not sleeps.
+- **FT-L10** Sim must produce a speedup (`vclock/wall ≥ 1`); measured 10-24: DistilBERT 3.4×, RoBERTa-L 33×, SmolLM2-1.7B
+  14× (RUN_PLAN §4). The limit is the serial per-commit aggregator (~225 ms), not sleeps.
+- **FT-L11** Sim charges each task's modeled delay D = `training_delay_s / divisor` to the vclock; real sleeps it. Recipe D
+  dwarfs GPU time (RoBERTa 237–1,124 s vs 9 s), so the gain ≈ D / GPU time.
+- **FT-L12** Size a real leg by D, not wall: at recipe divisors a RoBERTa / 1.7B iteration takes 4–19 min, first commit
+  ~1 h; a 10-min real leg measures speed only (`ft_models_check_20261024`, shepherd).
+- **FT-L13** Compare real and sim at matched commits, never matched wall: n 50, real 103 commits at 0.33–0.34 vs sim
+  0.32–0.37 at c100 (`ft_n50_check_20261024`, shepherd).
+- **FT-L14** Real `max_runtime_s` counts from aggregator start, join barrier included (minInit = N); 100 trainers take
+  ~3.5 min to join, so a real smoke needs ≥ 6 min (`smoke_merge_20261024`).
+- **FT-L15** A sim leg ends on its wall ceiling: `--max-runtime-s` ≥ 40 × wall cap plus `--sim-wall-ceiling-s`;
+  `run_sequential`'s kill budget follows `max_runtime_s` (~+130 s), not the ceiling.
+- **FT-L16** Side-by-side legs run as lanes: private mosquitto, `FLAME_SLOT_GPUS`, `taskset` cores and a distinct
+  `FLAME_RUN_LABEL` each (`ft_models_check_20261024/run.sh`).
+- **FT-L17** SmolLM2-1.7B bs 32: ≤ 4 trainers per A40 when the aggregator shares the lane; 8 per GPU OOMed two trainers
+  (`ft_models_check_20261024/first_try`).
 
 ## FluxTune tripwires (don'ts)
 
@@ -178,6 +192,12 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
 - **FT-T8** Don't run a `fluxtune` v2 sim on the v1 charge profile (`--only fluxtune` isn't blocked by the
   preflight).
 - **FT-T9** Don't forget `export FWDLLM_FD_SCALE_INVARIANT=1` for v2 (the preflight errors without it).
+- **FT-T10** Don't leave short real `fluxtune` legs in `experiments/`: the profile-staleness preflight counts them and
+  blocks every later `fluxtune` sim. Move smokes to their check dir.
+- **FT-T11** Don't read RoBERTa-L or 1.7B vclock hours as calibrated: their dataset profiles (`fluxtune_yelp-p.yaml`,
+  `fluxtune_yahoo.yaml`) predate the §2 recipe, and D's divisor is still an estimate until S.
+- **FT-T12** Don't give lanes one `FLAME_RUN_LABEL`: `run_sequential` then merges both legs' summaries (`AGG_KILLED`,
+  `2 agg log(s)`); read stop reasons from each aggregator log.
 
 ---
 
@@ -199,6 +219,9 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   43.2-45.6. `fluxtune` does not replay same-seed (vclock 82.67 vs 82.70 s by commit 8): its config charges measured wall time
   (`sim_model_agg_compute_time`, truthful gate), so it grades on B2's bands only. Packing: 1 leg / GPU gave 8-9 legs / h on 3 GPUs
   (~20 min legs); denser packing per FX-T74 untested.
+
+- **FT-D4** `main_fedfwd_agg.py` ends with `exit_after_run` (PARITY PL24, FX-D178): 4 of 7 legs had aborted in native
+  teardown after `channel leave done`; `test_aggregator_mains_end_with_exit_after_run` guards every aggregator main.
 
 ## Open questions (operator)
 - Does C2 (dynamic K/C) land in the headline `fluxtune` config or get descoped? (BASELINES.md ᵖ note.)

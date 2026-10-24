@@ -39,6 +39,12 @@ hardest task (Yahoo: 10 classes, FwdLLM paper target 0.65). Trainable p rises wi
 
 DistilBERT stays on AG News so the [C] ablations share the [A] cell (A0/A6 reuse its runs).
 
+**Sim mode (every figure run).** Trainers do the real compute; each task's device delay D is charged to the vclock instead
+of slept, so a cell runs 3.4× (DistilBERT) to 33× (RoBERTa-L) faster than real ([RUN_PLAN §4](RUN_PLAN.md#4-run-time-basis)).
+Every time axis and TTA is vclock. A sim number stands for real only when (1) the cell's D divisor (S) and charge profile
+(G0) come from real legs at the §2 recipe (pending for RoBERTa-L and 1.7B) and (2) real and sim agree at matched commits
+(checked on DistilBERT · AG News, 10-24). Run rules: [RUN_PLAN §2](RUN_PLAN.md#2-cells-pool-size-and-eval) "Sim and real legs".
+
 **Eval:** DistilBERT scores the full test set every 4th commit. Yelp-P and Yahoo score 10% of the test set (3,800 / 6,000
 rows, ≈ ±1.2 pt at target), resampled per eval; stride = ⌈t_eval / s_commit⌉ + 1 from S.
 
@@ -296,6 +302,8 @@ python make_paper_figs.py --manifest figs_e2e.yaml --synthetic   # layout previe
 - The prior 1.7B run used N=50 (milder non-IID) and the October DistilBERT runs used N=50 (simplified) or the
   `n_target` gate (full controller, mean pool 49.5), not today's N=90; their accuracies are not like for like.
 - `learning_rate` is inert under trust ratio; the RoBERTa lr 3e-4 applies to the `fwdllm` arm only.
+- RoBERTa-L and 1.7B vclock hours rest on an estimated D divisor and pre-recipe dataset profiles until S and G0; quote
+  their TTA in hours only after that (FLUXTUNE FT-T11).
 
 ## 9. Legacy IDs cited in code
 

@@ -10,7 +10,7 @@ the recipe, queue and scoring). Run times are from measured run speeds (§4); **
 
 ## Status board (keep current: update on every launch, finish and decision)
 
-Last updated 2026-10-24 (FT-N18 B2 launch; 10-22 operator review of every setting). Paths relative to `lib/python/examples/fwdllm/`; run dirs under `experiments/`.
+Last updated 2026-10-24 (sim vs real checks, §2 sim rules; FT-N18 B2 launch; 10-22 operator review of every setting). Paths relative to `lib/python/examples/fwdllm/`; run dirs under `experiments/`.
 
 **Running**
 
@@ -23,6 +23,8 @@ Last updated 2026-10-24 (FT-N18 B2 launch; 10-22 operator review of every settin
 
 | ID | Outcome | Detail |
 |---|---|---|
+| Sim vs real, big models (10-24, shepherd, 14:30 → 15:00) | `fluxtune` n 16 / C 8 / K 5, 10 min per leg, §2 recipe: RoBERTa-L sim 5 commits, 5.3 vclock h (33×), acc 0.53 → 0.57; SmolLM2-1.7B sim 2 commits, 2.2 vclock h (14×); both real legs 0 iterations (D 4–19 min). 0 errors. Not paper runs | `fwdllm/ft_models_check_20261024/` on shepherd (`run.sh`, 4 run dirs; `first_try/` = the 8-per-GPU SmolLM OOM); §4 table; FT-L11, L12, L17 |
+| Sim vs real, DistilBERT n 50 (10-24, shepherd, 13:33 → 14:06) | `fluxtune` n 50 / C 20 / K 10, 30 min per leg: real 103 commits, acc 0.33–0.34; sim 345 commits, 6,202 vclock s (3.4×), acc 0.54 and rising, no collapse past the lap boundary; matched at c100. Not paper runs | `fwdllm/ft_n50_check_20261024/` on shepherd (`run.sh`, both run dirs); FT-L13 |
 | FT-N18 B2 (10-24, jayne, 02:58 → 03:58) | fwdllm bench gate PASS on DistilBERT · AG News n 100 `syn_0`: `fwdllm` (3 bench vs 3 harness seeds, every same-seed pair identical) and `fluxtune` (3 vs A6, AUC 44.6 / 43.4). Not paper runs | `fwdllm/bench_B2_20261024/` (`b2.json`, `bench/`, `harness/`, `run_harness_seeds.sh`); harness run dirs `experiments/run_20261024_033641_b2h_s123[56]_*`; FLUXTUNE FT-D3 |
 | ag60 preview (10-22, jayne, 2 lanes, 07:24 → 10:34) | 22 of 23 DistilBERT · AG News arms reached 0.60; A3 (FwdLLM + fixed pool) diverged, stopped by hand. TTA (vclock h): FluxTune 0.51 vs FwdLLM 2.27 (4.5×); A1 0.31, A12 0.67, A123 1.95, A2 5.9; N 10/20/50/90 0.23/0.37/0.51/0.71. Not scored (1 seed, target 0.60, window 1) | script `fwdllm/expt_scripts/nodes/run_node_agnews_to60_queue.sh`; arm → run dir `fwdllm/ag60_20261022_{072444,073816,074438}/runs.tsv`; figures `fwdllm/ag60_20261022_074438/paper_figs/` (script `fwdllm/expt_scripts/plot_ag60.py`); fixed on the way: mean-of-10 on FwdLLM (A1), `exp` without pool (A2), converge watcher after a lap wrap. Figure manifests' `target_acc` still 0.60 (restore 0.80) |
 | F0 Λ readout | no run: Λ_need from P0 `exp`, G1, P0b → N\* 34–42 (AG News), 38 (Yahoo bs 32) → N 50 every cell | §3.1 |
@@ -202,6 +204,23 @@ How to set the new flags:
   loop exits: ~30 s on DistilBERT, ~40 min on 1.7B · Yahoo (60,000 rows, est.). Give external watchdogs that much margin
   (`launch_smollm17b_yahoo_n50.sh` kills at `HOURS` + 0.5 h).
 
+**Sim and real legs (every run; why: [FLUXTUNE_READINESS](../_metadata/FLUXTUNE_READINESS.md) FT-L10–L17, FT-T10–T12):**
+- **What sim is.** Real compute, modeled time: each task's delay D (`training_delay_s / --delay-divisor`) is charged to the
+  vclock, not slept. TTA and every figure's x axis are vclock. Speed vs real in §4.
+- **Calibration.** vclock = D per task (`--delay-divisor`, set from S) + aggregator charges (`sim_charge_profiles/fluxtune_<dataset>.yaml`,
+  < 1 s per op). Yelp-P and Yahoo profiles predate the §2 recipe (`--allow-stale-profile`); G0 re-profiles them from a
+  full-budget real run, never a smoke. Until S and G0, big-model vclock hours are approximate.
+- **Caps.** Sim: `--max-runtime-s` ≥ 40 × wall cap plus `--sim-wall-ceiling-{s,h}`; the ceiling ends the leg. Real:
+  `--max-runtime-s` is wall from aggregator start, join included (~3.5 min at n 100).
+- **Real legs are slow by design.** At recipe D a RoBERTa / 1.7B iteration takes 4–19 min and the first commit ~1 h; a
+  check of accuracy needs ≥ 2 h. Compare real and sim at matched commits, never matched wall.
+- **Side by side.** Real and sim legs in parallel run as lanes (own GPUs, cores, mosquitto, `FLAME_RUN_LABEL`), as in
+  `fwdllm/ft_models_check_20261024/run.sh`. 1.7B at bs 32: ≤ 4 trainers per GPU on a lane that holds the aggregator.
+- **After a real smoke,** move its run dir out of `experiments/`, or the profile-staleness preflight blocks the next
+  `fluxtune` sim.
+- **Bench** (`fl_bench.py` / `bench_pool.py`) is sim only and stands for the harness only on cells that passed B2
+  (FLUXTUNE FT-N18): DistilBERT · AG News `fwdllm`, `fluxtune`.
+
 **Pool size N** = client gradients pooled into one server commit (`--pool-target`), not clients n. Rule and derivation:
 [cheatsheet §8](../fwdllm/fl_fwd_ft_pipeline_cheatsheet.md#8-choosing-n-ρ0-and-t_res).
 
@@ -338,6 +357,15 @@ Scaling is linear in N, ×1.33 for seq 192 → 256, and ×2.66 for bs 8 → 32 (
   ~380 commits in 12 h. The old 255 s estimate scaled the AG News run, whose s/commit included a full eval every 2 commits.
 - **RoBERTa-large · Yelp-P, N 50, bs 32:** 360M's 33 s × 1.33 × 2.66 ≈ 117 s/commit (est.) → ~370 commits in 12 h.
 - Both sit below a 1,000-commit cap's 450-commit warm-up; `--max-commits ~380` scales it to ~170 so stall and GL arm. S replaces these
+
+**Sim speed vs real** (10-24, shepherd, `fluxtune`, real and sim legs side by side on the same node; Done rows above).
+Gain = vclock / wall; it tracks D / GPU time per task (FT-L11). Big-model vclock is not yet calibrated (FT-T11).
+
+| Cell (check shape) | Wall per leg | Real: commits | Sim: commits · vclock | Gain | D per task · GPU per task |
+|---|---|---|---|---|---|
+| DistilBERT · AG News (n 50, C 20, K 10) | 30 min | 103 | 345 · 1.72 h | 3.4× | — (smoke-YAML delays) |
+| RoBERTa-L · Yelp-P (n 16, C 8, K 5, §2 recipe) | 10 min | 0 (0 iterations) | 5 · 5.3 h | 33× | 237–1,124 s (mean 536) · 9 s |
+| SmolLM2-1.7B · Yahoo (n 16, C 8, K 5, §2 recipe) | 10 min | 0 (0 iterations) | 2 · 2.2 h | 14× | 208–990 s (mean 483) · 21 s |
 
 ## 5. Compute (1 seed; one run = one node)
 

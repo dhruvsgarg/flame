@@ -32,3 +32,12 @@ def test_exit_after_run_off_returns(tmp_path):
     p = subprocess.run([sys.executable, "-c", _SCRIPT, str(tmp_path / "y")], capture_output=True, text=True, timeout=60,
                        env={**__import__("os").environ, "FLAME_HARD_EXIT": "0"})
     assert p.returncode == 9, p.stderr
+
+
+def test_aggregator_mains_end_with_exit_after_run():
+    # PL24: a main that skips it aborts in native teardown (fwdllm missed it until 10-24).
+    import pathlib
+    ex = pathlib.Path(__file__).resolve().parents[2] / "examples"
+    mains = [*ex.glob("async_cifar10/aggregator/pytorch/main_*_agg.py"), ex / "fwdllm/aggregator/main_fedfwd_agg.py"]
+    missing = [str(m) for m in mains if "exit_after_run()" not in m.read_text()]
+    assert len(mains) >= 4 and not missing, missing
