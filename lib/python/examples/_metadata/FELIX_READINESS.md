@@ -64,6 +64,13 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
     figures (`target_<ds>_<cell>.png`, `target_bars_<ds>.png`); tested on F49 with placeholder targets. Re-read F49 against the
     targets (12 h: likely nobody hits; report end accuracy + the highest common accuracy) and rewrite FELIX_INSIGHTS §5 / §7 numbers.
   - *Exit:* targets fixed in Decisions; F49 re-reported at them; F48 launched.
+- **FX-N147 · Paper claim: eligibility is hard to forecast (operator 10-25) · first cut ✅.** Paper uses 2 states (eligible / not);
+  AVL_EVAL = not eligible in text. `scripts/eligibility_forecast.py` (trace-only; REFL Prophet via `ProphetForecaster._model`,
+  FedDance V_m, time-of-day vote, "eligible now"; n 300, days 1-5, h 5 / 15 / 60 min) → `paper_felix/data/fx_n147_*.json`, Fig 2.
+  - *MobiPerf:* who is eligible in [t+h, t+2h]: now AUC 0.97-0.84 ≥ FedDance 0.92-0.84 ≫ Prophet 0.68-0.69. Among eligible, who stays
+    for h: Prophet 0.57-0.58, FedDance 0.65-0.67; Brier worse than the base rate for both. Corr 0.95 (5 min) → 0.64 (1 h) → 0.12-0.19
+    (12-24 h). syn_50 memoryless (all AUC 0.50). F49 run audit: Prophet flags ~100% of picks, precision 0.01-0.03.
+  - *Left:* log FedDance V_m per pick (run-level ρ); re-check on the FB1 trace window; speech traces are the same files.
 - **FX-N141 · Felix loop FL1, build Felix up from FedBuff on cifar (operator 10-23).**
   - **Status:** S1-S5 done (F44 `FL1_1023_1700`, F45 `FL1_1023_2130`, F46 `FL1_1024_0020/jayne`, F47 `FL1_1024_0432/jayne`: 32 / 32
     legs in 468 min, 4.1 legs / h, audit ✅, `work_done` on every leg, no NaN, overruns ≤ 10 ms). Next: FX-N143 (augmentation default +
@@ -720,6 +727,8 @@ per minute with c tasks in flight · d̄ = mean task time, o = per-task overhead
 ### Paper: motivation and evaluation from FL1 (F44-F47; cifar bench n 300, one seed per arm)
 
 **Motivation (each hook a measured figure; FELIX_INSIGHTS §5 keeps the mechanism).**
+- *M0 Eligibility is hard to forecast (operator 10-25, FX-N147):* deployed forecasters (REFL Prophet, FedDance V_m) no better than
+  persistence on MobiPerf (FX-N147 ✅). Paper uses 2 states (eligible / not).
 - *M1 Unaware async idles:* FedBuff on `s50u` keeps ~33 of 60 slots busy (98k waits for check-ins, departed clients' slots held to
   the 677 s timeout): 116k vs 213k updates with notify / evict (F44). Awareness buys throughput.
 - *M2 Availability removes choice before it removes slots:* MobiPerf leaves ~50-67 of 300 clients trainable, so at FedBuff's c / n

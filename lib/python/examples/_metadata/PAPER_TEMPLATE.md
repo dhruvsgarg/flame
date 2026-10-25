@@ -177,7 +177,8 @@ badges; plan for it from day one. Rough page split: abstract + intro 1.25 · bac
   1. *Stakes (P4):* 3-4 deployments plus one survey. Say why the task is critical: FL serves user-facing models, so quality is
      user-visible; high accuracy is a moving target (users and their data change), not a fixed goal, so it must be reached fast and
      re-reached. Then the trend that makes it worse (more devices, bigger models, stricter privacy) and who loses.
-  2. *Why the constraint matters:* only then the resource argument (e.g. why device slots must be kept busy).
+  2. *Why the constraint matters:* only then the resource argument (e.g. why device slots must be kept busy). Introduce every
+     metric axis ¶7 reports (e.g. time and bytes) here, with why it costs someone.
   3. *Problem as a tension (P1)*, one bolded sentence, general across models and datasets. Show the contention, not just the two
      ends: what each end costs, why no static setting serves both, and which dynamics move the balance. The reader must feel why it
      is hard and why it must be solved.
@@ -186,9 +187,10 @@ badges; plan for it from day one. Rough page split: abstract + intro 1.25 · bac
      descriptions.
   5. *Insight:* one sentence a reader can repeat, once the challenges are clear. If possible, one root cause behind the symptoms (P2).
   6. *Ideas:* crisp ideas, each mapped to a limitation in ¶4. No mechanism detail (formulas, constants, message formats).
-  7. *Results:* ranges vs the strongest deployed baseline on both axes, and one honest limit.
-  8. *Contributions:* 3-4 bullets, each a systems or ML idea (an insight, a mechanism, a result). Never "we analyse traces", "we
-     build a system" or "we design X" as a contribution.
+  7. *Results:* ranges vs the strongest deployed baseline on both axes. No limitations in the intro; they go at the end of the
+     evaluation (B.15, P24).
+  8. *Contributions:* 3-4 bullets, each a systems or ML idea (an insight, a mechanism, a result). An analysis counts only by what it
+     finds (the broken assumptions and where the loss goes). Never "we analyse traces", "we build a system" or "we design X".
 - **Arguments:** qualitative = why the root cause is structural, so it survives every baseline knob; quantitative = at most 2-3
   numbers in the whole intro (the headline ranges plus one that carries the argument).
 - **Figures:** Figure 1 is a teaser that shows the problem and the win at once, on the hardest realistic setting, annotated "N×
@@ -200,12 +202,14 @@ badges; plan for it from day one. Rough page split: abstract + intro 1.25 · bac
 ### B.2 Background (≈0.5 page, text only)
 
 - **Purpose:** only what motivation and design need; crisp.
-- **Dos:** introduce well-known FL terms (client selection, sync rounds vs async buffered aggregation, concurrency, buffer size,
+- **Dos:** open with 1-2 sentences on the FL setting itself (server, clients, local training, aggregation) for a reader new to FL.
+  Then introduce well-known FL terms (client selection, sync rounds vs async buffered aggregation, concurrency, buffer size,
   staleness) in a few sentences of text, cited. Spend the space on concepts that are new to the reader, that our findings rest on,
   or that we draw insights from (e.g. device availability and eligibility, what the server knows when, streaming device data).
-  Position prior systems at a high level along the axes we innovate on (a short table is fine), not by describing them.
-- **Concepts:** version, staleness, concurrency vs buffer size, availability states, time to accuracy, bytes to accuracy.
-- **Don'ts:** no FL primer, loop diagram or sync-vs-async section; no baseline descriptions; no claims (interactions such as
+  Position prior systems along the axes we innovate on: a table with rows = our system's key concepts, columns = the closest
+  systems, each cell what that system does for the concept or "–" if it has none. No descriptions beyond the cells.
+- **Concepts:** version, staleness, concurrency vs buffer size, eligibility (eligible / not), time to accuracy, bytes to accuracy.
+- **Don'ts:** no FL primer beyond those 1-2 sentences, no loop diagram or sync-vs-async section; no baseline descriptions; no claims (interactions such as
   "availability causes staleness" are motivation findings); no term that is never used again.
 
 ### B.3 Motivation and characterization ("The case for X", ≈1.5 pages)
@@ -215,6 +219,15 @@ badges; plan for it from day one. Rough page split: abstract + intro 1.25 · bac
 - **Inline setup:** each subsection states its own setup (what ran, on which cell) in a sentence or two next to its figure; no
   separate setup paragraph.
 - **Baselines:** give just enough about a baseline to make the point; assume no prior knowledge of it, and don't describe it at length.
+- **Don't reveal the solution:** show each gap and how large it is, never our mechanism. An idealized arm is framed as a bound, not
+  as our system. The reader should see a large opportunity here and learn how it is taken only in the overview and design.
+- **Lead with the biggest gap:** if the headline number is small (e.g. −1.2 pp), find the framing that shows the real cost (2× the
+  work for no accuracy) instead of reporting the small delta alone.
+- **Knowledge sources:** when stacks differ in what they know (check-in, forecast, oracle), state each source's measured accuracy;
+  a tie between a predictor and an oracle can mean the oracle does not help, not that the predictor is good.
+- **Evidence matches the claim:** a statistic about one quantity (e.g. data arrivals) never supports a claim about another (eligibility).
+- **"Hard to predict" needs a predictor test:** the deployed forecasters' error vs a naive baseline (persistence) on the same trace,
+  at the horizons that matter.
 - **Carry-through:** every element of the setting the title or intro claims (e.g. streaming data) gets a motivation finding and a
   design answer, or is demoted to setup.
 - **Structure:** 3-4 subsections. Each = one observation (the subsection title is the claim) → one figure → one "Opportunity." /
@@ -226,7 +239,7 @@ badges; plan for it from day one. Rough page split: abstract + intro 1.25 · bac
 - **Data:** the same traces, models and datasets as the evaluation, so motivation numbers reappear later. A controlled experiment
   (P9) is allowed if it is labelled as such.
 - **Figures / tables:** trace histograms or CDFs, a baseline-vs-bound curve, a literature-settings table if the field shares a blind
-  spot (P8).
+  spot (P8). Keep them small: rows of column-width subfigures, about 1.2 in tall; no full-width figure for one simple curve.
 - **Citations:** trace sources (MobiPerf, the 136k-user trace of Yang et al. WWW'21, Stunner), deployment papers for the conditions.
 - **Don'ts:** no strawman baselines; no setting you don't evaluate; no result from a setup later declared void.
 
@@ -234,7 +247,7 @@ badges; plan for it from day one. Rough page split: abstract + intro 1.25 · bac
 
 - **Purpose:** the reader's map before details.
 - **Dos:** design goals (3-4, each testable and later measured); non-goals (what is deliberately not done: no forecasting, no raw-data
-  access, no per-dataset constants); architecture figure split into client and server parts with numbered steps (P10); what each party
+  access, no per-dataset constants, no per-client or hardware-specific models); use the decided names, never placeholders; architecture figure split into client and server parts with numbered steps (P10); what each party
   sends, and its privacy footprint; a short API or pseudocode listing; an overview-by-example timeline (P11).
 - **Don'ts:** don't repeat the design; don't hide what the server must know.
 
