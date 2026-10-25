@@ -5,6 +5,9 @@ here unrepeated. **Focus (operator 10-25): the Felix config is final and frozen 
 harness test of the speech bench (FX-N149), then FB1 (6-day runs to the target) → D5 parity and the claims gate (FX-N108) → sim-only
 experiments (FX-N12).** Paper methods and story: [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) §6.
 
+**Paper evaluation:** plan = `felix_paper_outline.md` "Evaluation plan" (Table 2 figures → claims → runs, Table 1 run sets); rules =
+PAPER_TEMPLATE Part E "Evaluation plan and run pipeline" (manifest, digests, first version before seeds, mlsys27 storage).
+
 **Only runs from F41 (10-21) onward count** (setup reset: trace-tied `usage` streams, FedScale task time, R27 availability knowledge).
 Pre-reset results, tiers (F39*, F40S, F41) and arms for rejected features are deleted; `git log` keeps them. Pre-F47 cifar numbers
 ran frozen augmentation draws: relative evidence only, never for the paper.

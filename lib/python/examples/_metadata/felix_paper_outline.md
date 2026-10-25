@@ -242,6 +242,71 @@ standalone full-width figure for a single curve.
 - **§5.5 Algorithm 1 (P16) + robustness (50 w):** one box for Felix-Notify → Felix-Pace → Felix-Select → Felix-Agg with line-cited prose; missed or delayed
   notifies degrade gracefully (K6, F42e ⚠ to measure).
 
+## Evaluation plan (operator 10-25; rules: PAPER_TEMPLATE Part E "Evaluation plan and run pipeline")
+
+**How to read:** Table 2 = every figure / table → claim → runs it reads; Table 1 = each run set once; a run feeds every figure
+that lists it. Execution (tiers, commands, status, paths) lives in FELIX_READINESS. **First version** = seed 1 of every run a
+main-text figure needs; seeds 2-3 and appendix rows after, re-plotting as data lands.
+
+**Shared setup:** cifar n 300 / speech n 100, Dirichlet α 0.1; usage-tied data streams on every trace (static only in the appendix);
+traces syn_0, syn_20, syn_50, MobiPerf; each stack at its own paper's K / c ("Cohort and participation"); start +24 h into the
+6-day trace; stop at the target (cifar 80%, speech 88%; 5-eval mean) or the trace end (120 h); time and GB at the stop. Bench
+(B2-validated per dataset: cifar ✅, speech = FX-N149). **Deployable** = FedBuff, Oort (check-in), REFL (Prophet forecast),
+FedDance (check-in Poisson forecast), FedAvg; **oracle** = FedBuff*, Oort*, REFL*, FedDance*, FedAvg* (the trace's eligible set at
+selection); Felix = `fx`. **Ablation cells** = {cifar, speech} × {syn_50, MobiPerf}.
+
+### Table 2: figures and tables → claims → runs
+
+| figure / table | where | claim it backs | content | cells | runs |
+|---|---|---|---|---|---|
+| **End to end** | | | | | |
+| Teaser figure | Introduction | Felix reaches the target N× sooner at N% fewer GB than every deployable stack | accuracy vs time and vs GB; Felix vs deployable | cifar MobiPerf | End-to-end |
+| Headline table | Evaluation: end to end | Felix is first to target on every cell, vs deployable and vs oracle stacks | rows dataset × trace (8); cols Felix │ 5 deployable ║ 5 oracle; h · GB to target, or ✗ + end accuracy; best bold | all 8 | End-to-end |
+| Convergence curves | Appendix | Felix's lead holds over the whole run, not only at the target | accuracy vs time per cell; deployable solid, oracle dashed | all 8 | End-to-end |
+| Static data table | Appendix | Gains hold without data streams | headline-table row, static shards | syn_0 static × 2 datasets | End-to-end static |
+| **Why Felix wins (same runs)** | | | | | |
+| Efficiency split table | Evaluation: where the time goes | Each speedup = fewer updates to target (statistical) × more updates per hour (system); which one wins depends on the trace | per stack × cell: updates to target, updates / h, ratios vs Felix | all 8 (main: 4 ablation cells) | End-to-end |
+| Slot use figure | Evaluation: where the time goes; Motivation: async idles | Async baselines idle slots waiting for check-ins or held by departed clients; sync stacks wait at the barrier; Felix keeps slots busy | share of slot time busy / idle / held by a departed client, per stack | cifar syn_50, MobiPerf; speech MobiPerf | End-to-end |
+| Round time figure | Motivation: the barrier | Sync rounds are set by the slowest pick, mostly model transfer; an oracle can't shorten them | round time: compute / transfer / waiting for the slowest; sync stacks ± oracle | speech + cifar MobiPerf | End-to-end |
+| Staleness by source figure | Motivation: staleness; Evaluation | In FedBuff most staleness comes from uploads held across a departure; Felix evicts them | staleness split by cause; FedBuff, FedBuff*, Felix | cifar syn_50, MobiPerf | End-to-end |
+| Client picks figure | Evaluation: which clients train | Felix picks clients with the most left to learn; speed-first or uniform picks give less per update | picks vs data size, samples / update, coverage, top-20% share; per stack | 4 ablation cells (rest appendix) | End-to-end |
+| Concurrency figure | Evaluation: concurrency; Motivation: choice lost | Felix's c follows the eligible pool and the training phase; a fixed c can't serve both early and late | c, eligible pool, loss phase over time (Felix) vs fixed c | cifar MobiPerf, syn_50; speech MobiPerf | End-to-end |
+| Wasted bytes table | Evaluation: communication | Bytes follow updates; timed-out, evicted and late tasks are paid traffic | GB by task fate (aggregated / timed out / evicted / late) per stack | 4 ablation cells (rest appendix) | End-to-end |
+| Eligibility knowledge table | Motivation: knowledge per stack | Check-in is blind to departures, forecasts are no better than "eligible now", the oracle is blind mid-task; Felix's reports are exact | per stack: share of dispatches to clients that leave mid-task, departure detection lag; forecast AUC | MobiPerf, syn_50 | End-to-end + forecast study |
+| Forecast accuracy figure | Motivation: hard to forecast | Deployed forecasters add nothing over "eligible now" | AUC / Brier vs horizon | MobiPerf, syn_50 | forecast study ✅ |
+| Eligibility trace figure | Motivation: scarce and shifting | Eligible pool ≈ 20%, membership churns within hours | pool size, sessions, autocorrelation | all traces | trace only ✅ |
+| Overhead table | Evaluation: cost (or appendix) | Eligibility reports cost ≪ 1% of traffic; server work per commit is small | messages per client-hour, report vs model bytes, server time per commit | all 8 | End-to-end |
+| **Ablations: design choices** | | | | | |
+| Ladder figure | Evaluation: what each mechanism adds | Each mechanism adds on top of FedBuff; none alone gives the full gain | time / GB to target: FedBuff → + Notify → + Select → + Agg → + Pace (= Felix) | ablation cells | Ladder + End-to-end |
+| Availability swap | Ablations: Felix-Notify | Inside Felix, client reports + eviction beat check-in, a forecast and an oracle at selection | Felix with knowledge = check-in / forecast / oracle vs reports | ablation cells | Swap: availability |
+| Selection swap | Ablations: Felix-Select | Utility-proportional selection beats uniform and Oort's (speed + UCB + cutoff) | Felix with each selector | ablation cells | Swap: selection |
+| Aggregation swap | Ablations: Felix-Agg | A large step with a mild staleness discount beats 1/√(1+τ) and 1/(1+τ) | Felix with each rule | ablation cells | Swap: aggregation |
+| Concurrency swap | Ablations: Felix-Pace | The ramp beats fixed c 60, a small fixed c and c ∝ eligible pool | Felix with each c rule | ablation cells | Swap: concurrency (c 60 = Ladder `fn`) |
+| Rejected ideas table | Ablations (rows with an aha); rest appendix | The obvious fixes lose: more local work per task (fewer bytes, slower to target), UCB exploration (ties), forecasting, a stronger staleness discount, c ∝ eligible | one row per idea: Δ time / GB vs Felix, one-line cause | ablation cells | Rejected ideas + the swaps |
+| **Ablations: robustness and cost** | | | | | |
+| Silent departures figure | Ablations: robustness | Clients that leave without reporting cost Felix little: the task timeout reclaims the slot | time / GB to target vs silent share p ∈ {0, 1, 5, 10}% | ablation cells | Robustness: silent |
+| Lost reports / uploads figure | Appendix (after first version) | Lost or late reports and lost uploads degrade Felix gracefully | time to target vs loss p, delay d | ablation cells | Robustness: lost |
+| Sensitivity table | Appendix (after first version) | One config for both datasets; results hold under ± changes to the step knobs, c_max, K | time to target per knob ± | 2 cells | Sensitivity |
+| Parked | — | new model / dataset (PAPER_TEMPLATE C.1-C.2) | only if time remains | — | — |
+
+### Table 1: run sets (seed 1 = first version; seeds 2-3 for End-to-end and Ladder after)
+
+| run set | arms | cells | legs / seed | needs before launch | priority |
+|---|---|---|---|---|---|
+| End-to-end | `fx`, FedBuff, Oort, REFL, FedDance, FedAvg, FedBuff*, Oort*, REFL*, FedDance*, FedAvg* | 2 datasets × 4 traces | 88 | FedAvg* arm + 2 h smoke; syn_20 cell; digest + plots on a smoke | 1 |
+| Ladder | `b1` (+ Notify), `uo_o` (+ Select), `fn` (+ Agg, c 60) | ablation cells | 12 | — (arms exist) | 2 |
+| Swap: concurrency | small fixed c (c 30), c ∝ eligible (`ca`) | ablation cells | 8 | port to `fx` base | 2 |
+| Swap: availability | `fx` + check-in (no eviction), `fx` + oracle; forecast if cheap | ablation cells | 8-12 | arms on `fx` (forecast = new code ❓) | 2 |
+| Swap: aggregation | `fx` + 1/√(1+τ), `fx` + 1/(1+τ) | ablation cells | 8 | arms on `fx` | 3 |
+| Swap: selection | `fx` + uniform, `fx` + Oort's selector | ablation cells | 8 | arms on `fx` | 3 |
+| Rejected ideas | `fx` + UCB, `fx` + 2 local epochs | ablation cells | 8 | arms on `fx` | 3 |
+| Robustness: silent | `fx` at p 1 / 5 / 10% silent departures (p 0 = End-to-end) | ablation cells | 12 | new code (F42e) + smoke | 3 |
+| End-to-end static | `fx` + 5 deployable, static shards | syn_0 × 2 datasets | 12 | — | 4 (appendix) |
+| Robustness: lost · Sensitivity | — | — | — | after first version | 5 |
+
+**First version ≈ 166 legs** (≈ 154 at priorities 1-3 + 12 static). Speech is the bottleneck (1 leg / GPU, async 10-13 h for 120 h):
+measure 2 legs / GPU on the speech smoke; use jayne when free. Order: End-to-end first (cifar and speech pools in parallel), then
+priorities 2-3, cifar ahead of speech within each.
 ## Later sections (claims they must back; outline after the front matter is final)
 
 - Theory: inherit FedBuff's rate under bounded staleness; state where held uploads break the bound (P17 slogan TBD).

@@ -499,6 +499,23 @@ telemetry, the launcher and `baselines.yaml` wiring. Speech was added the same w
 - **Baselines are source-faithful;** every deviation sits in one generated table (`baseline_reference.yaml`, `baseline_deviations.py --md`).
 - **Simulator fidelity is a result:** both papers carry a fidelity paragraph and an appendix table against real runs.
 
+**Evaluation plan and run pipeline (operator 10-25; set for Felix, reused as is for FluxTune):**
+- **Plan in the paper outline, two tables.** Table 2 = every figure / table → section → claim → runs it reads (word labels, not
+  numbers); Table 1 = each run set once (arms, cells, stop rule, seeds), derived from Table 2. A run feeds every figure that lists
+  it; a figure with no run, or a run no figure reads, is cut. Execution (tiers, commands, status, paths) lives in the readiness doc.
+- **Main text vs appendix decided in Table 2** (column `where`): the 10 pages carry the headline, the diagnosis that explains it and
+  the ablations with an aha; completeness rows (static data, every cell's curves, extra baselines) go to the appendix.
+- **First version before seeds:** one seed of every run a main-text figure needs, so every figure exists early; then seeds 2-3 and
+  appendix rows, re-plotting as data lands. Within a section, runs where we contribute most go first.
+- **Scripted, no hand steps:** a manifest (code) lists every expected leg; a status command reports done / missing / stale per
+  figure; a leg counts only if its code key, config audit and digest check pass (no stale data). Each leg is digested once at its
+  end into a small file holding every series the plots read; plots read digests only. Raw logs are compressed after digesting.
+- **Telemetry proven before launch:** every plot script runs on a smoke of the real tier and draws every panel; a missing series is
+  fixed before launch, never by re-running later.
+- **Storage:** final runs under `/coc/scratch/dgarg/mlsys27_<paper>_runs_<yyyymmdd>/<run set>/<dataset>_<trace>/<arm>/seed<k>`
+  (shared by all nodes); never `/nethome` (50 GB quota); node-local `/home` only for screens. Before a launch: free-space check
+  (≥ 2× the batch's estimate) and superseded logs deleted from an operator-confirmed keep list.
+
 ---
 
 ## Part F — Open items
