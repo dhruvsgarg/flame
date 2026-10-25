@@ -46,11 +46,14 @@ launch; screens keep the number with a letter. Launches: tmux on jayne or shephe
 
 **A · Before FB1 (10-25 on shepherd; tmux `dg_flame`, TAG `1025_SH`).** Order: 1 → 2 → 3 → 4 → 5. Rule while B2S runs: no new
 GPU job on GPUs it uses (a pool sees any other process with ≥ 1 GB on a GPU as busy and waits; it never kills); CPU-only analysis is fine.
+**FB1 waits for the final Felix evaluation plan (operator, 10-25 evening):** the plan sets the experiments; FB1's arms / cells / stop
+rule are revised to it before launch (step 5). GPUs free for it ≈ 17:00-17:30 (after B2S); until then only steps 2-4.
 
 1. **Running now (started 14:45-15:05):** win 0 = FX-N148 bench (`fx`, `ctl_srv` on speech `smu`, GPUs 2, 3; ETA ~15:20);
    win 1 = FX-N149 h49 (5 harness legs, `--gpu-ids 0,1,4-7`); win 2 = FX-N149 h48 (`fx` leg, `--gpu-ids 2,3,6,7`, starts when
    win 0 frees 2, 3). Speech harness legs take **4 GPUs** each (F43_SHAPE `gpus=4` overrides `--gpus-per-job`), so ≤ 2 at once;
-   12 h vclock ≈ 35 min wall per async leg (sync unmeasured). **ETA all B2S ≈ 17:00-17:30.**
+   12 h vclock ≈ 32 min wall per harness leg (FedBuff 32.1 min), bench speech ≈ 60 min. Status 15:36: FedBuff ✅ 15:20, FedAvg
+   running; win 0 ≈ 68 / 73 evals. **ETA all B2S ≈ 17:00-17:30.**
 2. **When win 0 ends (~15:20), CPU only:** `fl1_verdict.py experiments/F48S_1025_SH experiments/F49_1024_1530/speech`,
    `config_audit.py experiments/F48S_1025_SH` (`fx` row `rp 0.4/0.25/0.2`). *Shows:* `fx` ≥ `fn_chr` (F49) and ahead of Felix
    old and FedBuff at every rung; a miss is a finding, `fx` stays frozen.
@@ -67,7 +70,7 @@ GPU job on GPUs it uses (a pool sees any other process with ≥ 1 GB on a GPU as
 4. **When B2S ends: grade FX-N149** (CPU): `bench_validate.py --bench experiments/F49_1024_1530/speech experiments/F48S_1025_SH
    --harness experiments/B2S_1025_SH/*`. B2 rule per stack: AUC within max(1.5 pp, seed range), updates / h ±10%, bytes ±5%, task
    time ±5%. *Red:* root the bench gap before FB1 speech; FB1 cifar goes ahead.
-5. **FX-N131 · FB1 launch** (after 3 passes; speech also after 4): `TAG=<mmdd_hhmm> bash scripts/run_fb1.sh` (both datasets, all 8
+5. **FX-N131 · FB1 launch** (after the evaluation plan is in and FB1 is revised to it; cifar after 3, speech after 3 + 4): `TAG=<mmdd_hhmm> bash scripts/run_fb1.sh` (both datasets, all 8
    GPUs; jayne: `GPUS=0,2-7`), or `DS=cifar` first if speech is red. 96 legs (48 / dataset: 12 arms × `s0` / `s0u` / `s50u` /
    `smu`), each to the target (cifar 80%, speech 88%) or 120 h. One seed first, 3 once trends hold. F48 / F49 wall: cifar 7-18 h
    per leg at 4 / GPU; speech async 10-13 h, sync 2.5-6 h at 1 / GPU (re-estimate from the smoke).
