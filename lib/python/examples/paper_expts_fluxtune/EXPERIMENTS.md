@@ -16,6 +16,8 @@ model/dataset pair we test.
 - **Primary metrics:** time to target accuracy (TTA, simulated hours, lower is better) and communication cost
   (GB uplink + downlink until target, lower is better).
 - **Secondary metrics:** commits to target, peak accuracy, client engagement time, selection diversity.
+- **FwdLLM plateaus on non-IID data** (the FwdLLM paper also reports it never reaches the IID maximum), so the
+  target may be DNF for it; speedups then follow the §5 rule (time to its peak, plus "≥ X×" at target).
 - **Primary comparison:** FluxTune (§2 recipe, = C1's A6) vs FwdLLM. Only these two appear in [A] and [B].
 - **Secondary baselines:** FedBuff(P) and Felix(P) (`fedbuff_round`, `felix_round`, forward perturbation). They
   appear only in C4, which answers "are the gains just async FL?" (FwdLLM as the sync reference) without diluting
@@ -106,11 +108,11 @@ in `FedAvgServerManager_var.py`); 1,000 uniform clients. Evidence: [RUN_PLAN §3
 
 | Cell | lr | var threshold | Status | Evidence |
 |---|---|---|---|---|
-| SmolLM2-1.7B · Yahoo (LoRA q,v r 4) | **3e-3** | **8.4** | final (var 15 optional check) | lr 3e-3 beats 1e-3 and 3e-4 at matched commits (c13: acc 0.305 vs 0.199; all at var 8.4); 1e-2 overshoots (c1 loss 4.10 vs 2.57). Smoke at the final values (n 10, `data_bin`, 2 h, 67 commits, ~10 iterations per commit): acc 0.108 → 0.222 (c9) → 0.306 (c25) → 0.368 (c49) → **0.384** (c65); loss 2.57 → **2.03** (c57); MCC +0.32 |
+| SmolLM2-1.7B · Yahoo (LoRA q,v r 4) | **3e-3** | **8.4** | final (10-25 13:58: var 15 and lr 5e-3 both worse) | lr 3e-3 beats 1e-3 and 3e-4 at matched commits (c13: acc 0.305 vs 0.199; all at var 8.4); 1e-2 overshoots (c1 loss 4.10 vs 2.57). Smoke at the final values (n 10, `data_bin`, 2 h, 67 commits, ~10 iterations per commit): acc 0.108 → 0.222 (c9) → 0.306 (c25) → 0.368 (c49) → **0.384** (c65); loss 2.57 → **2.03** (c57); MCC +0.32 |
 | RoBERTa-L · Yelp-P (BitFit) | **1e-2** | **0.2** | final (10-25 07:15) | the only setup with a steady gain (best loss 0.678, MCC +0.13 at c82); s ≈ 1.76 at p 273,410; 1e-3 / 3e-3 under-step, 3e-2 noise-dominated; var 0.4 the same per commit but noisier; LoRA r 6 (lr 2.5e-3) flatter on α 1 and α 100. Progress per commit is small (Λ ≈ 0.05 by c90): expect `fwdllm` to miss 0.82 in 12 h |
-| DistilBERT · AG News | 0.01 | 0.1 (upstream) | unchanged | A0 |
+| DistilBERT · AG News | 0.01 | 0.3 (`baselines.yaml`; upstream 0.1) | final (RUN_PLAN decision 14) | A0 |
 
-Left to tune: 1.7B var (optional single check of var 15 at lr 3e-3). Closed 07:15: RoBERTa lr / var; LoRA vs BitFit (LoRA flatter, no LoRA grid).
+Closed 07:15: RoBERTa lr / var; LoRA vs BitFit (LoRA flatter, no LoRA grid).
 Open diagnostic: RoBERTa-L `fwdllm` on AG News (model vs task). Details: [RUN_PLAN §3.5](RUN_PLAN.md#35-sanity-and-smoke-runs-no-figure).
 
 Kept from before: sync, K = c = 10 clients per iteration, var gate on (`var_control`), `perturbation_sampling`, no iteration cap,
@@ -164,7 +166,7 @@ Each item: action · exit · state. [B] adds no runs: it reads the [A] runs.
 - **FT-N21 · big-model real↔sim transfer check · todo.** One 1–2 h real leg per big model beside a same-seed sim leg
   (FLUXTUNE FT-L19); a sim figure on RoBERTa-L or 1.7B cites it.
 - **P1 · [A] `distilbert_agnews`: `fwdllm` + `fluxtune`, 1 seed · exit: `e2e_distilbert_agnews.pdf` from
-  real runs · blocked: G0.** These runs are also C1's A0 and A6.
+  real runs · runs done 10-25 (FluxTune 0.86 at 4.34 vclock h; FwdLLM DNF, best 0.855; RUN_PLAN §3.6); manifest + figure todo.** These runs are also C1's A0 and A6.
 - **P2 · C1 Phase A (A1–A4, 1 seed) · blocked: P1.** Its result picks the C3 groups worth running.
 - **S · smoke `roberta_large_yelp` + `smollm2_1p7b_yahoo` · exit: both cells pass · RoBERTa `fluxtune` running (shepherd,
   10-24 19:13, §2 recipe at ρ0 0.14, 12 h; RUN_PLAN Running); SmolLM and both `fwdllm` arms todo;
@@ -178,7 +180,7 @@ Each item: action · exit · state. [B] adds no runs: it reads the [A] runs.
   - [x] 1.7B · Yahoo `fluxtune`: folded into the paper run (RUN_PLAN run 6, decision 13; n 60 fits, stride 3 from the 10-23 run). Was: 1.7B · Yahoo both arms at the §2 recipe (`exp`, bs 32, n 75; measures bs 32 s/commit for F2 and the n 75 memory fit); RoBERTa · Yelp-P both arms; charge profiles (the dry run used the DistilBERT `fluxtune_yahoo.yaml`).
   - [ ] Per big cell: `fwdllm` lr screen, F2 bs check (§2).
 - **P3 · [A] `roberta_large_yelp` · blocked: S.** 12 h wall cap, scored on TTA.
-- **P4 · [A] `smollm2_1p7b_yahoo` · blocked: S.** 12 h wall cap (~380 commits at bs 32, est. from the measured bs 8 pace; RUN_PLAN §4), scored on TTA.
+- **P4 · [A] `smollm2_1p7b_yahoo` · `fluxtune` (run 6) running on jayne since 10-25 07:57; `fwdllm` (run 5) ready (lr 3e-3, var 8.4).** Stop: acc ≥ 0.65 on 2 evals or 20 h wall (RUN_PLAN decision 13), scored on TTA.
 - **P5 · C2 cumulative ladder · blocked: P2.** Reuses P1/P2 arms where the config is identical.
 - **P6 · C3 design choices · blocked: P2.** Only the concepts Phase A shows matter.
 - **P7 · C4 async SOTA + availability · blocked: FT-N5** (unavailability wiring for the grad loop).
@@ -292,6 +294,14 @@ Deferred (operator 10-22).
 
 - **TTA** = native time of the first eval that ends `tta_consecutive` evals in a row ≥ target (manifest key,
   2 in every cell). Native time is the sim vclock (wall time for real runs).
+- **Speedup** = FwdLLM TTA / FluxTune TTA, in sim time only (wall time depends on simulator packing). If FwdLLM is
+  DNF at the target: headline = time to FwdLLM's peak (FluxTune's first eval ≥ that peak); also "≥ X×" at the target
+  (FwdLLM's whole run / FluxTune TTA) and the peak gain. Never extrapolate a DNF curve or quote a hand-picked
+  threshold; same rule in every cell. Worked example: RUN_PLAN §3.6.
+- **Curves are EMA-smoothed (0.6, `--smooth`), raw curve faint underneath.** Smoothing is visual only: TTA, peaks and
+  markers use the raw evals.
+- **Peak gaps under the 2.3-pt noise floor are not claims.** A DNF and a speedup are; say "plateaus at X" rather than
+  "can't reach".
 - **Bytes and commits to target** are counted up to that eval. A seed that never reaches target is DNF: its
   bytes and commits are whole-run, drawn faded and labelled DNF.
 - **Seeds:** 1 per arm; same-seed replicate noise is 2.3 points (`parity_floors/fluxtune.yaml`),
