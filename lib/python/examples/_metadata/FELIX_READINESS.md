@@ -52,9 +52,9 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
     (a) centralized ceiling, full shards (= trace end, every trace), cosine lr: `ceiling.py --full --cosine --epochs E`.
     cifar ✅ **89.0%** (e200; e100 88.2%; 49.3k samples). speech e60 / e100 on GPUs 2 / 3: ~5 min per epoch, ETA ~01:00 / ~04:30 10-25.
     (b) FL upper bound = ideal FedAvg (`fl_bound.py`: all n clients each round, full shards, no unavailability, 1 epoch at Felix /
-    FedBuff's client recipe, |D|-weighted, augmentation; stops 100 rounds after the best 5-eval mean). cifar GPU 4: round 425 at
-    59.6% and climbing at ~3.4 s / round (up to 3000 rounds, ≤ 2.5 h more). speech on GPUs 0,1,6,7 (`--gpu 0,1,6,7` splits each
-    round's clients): 47 s / round vs 5 min on 1 GPU; round 10 at 19%; 300-600 rounds to plateau ≈ 4-8 h (overnight).
+    FedBuff's client recipe, |D|-weighted, augmentation; stops 100 rounds after the best 5-eval mean). cifar GPU 4: round 895 at
+    71.5% and climbing at ~4 s / round (up to 3000 rounds, ≤ 2.5 h more). speech on GPUs 5,0,1,4,6,7 (`--gpu` list splits each
+    round's clients; relaunched 20:25): 42 s / round vs 5 min on 1 GPU; round 10 at 20%; 300-600 rounds ≈ 3.5-7 h (overnight).
   - *What to look for:* (1) the FL bound must plateau (5-eval mean flat for 100 rounds); if it is still rising at the round cap,
     raise `--rounds` and resume, don't take the cap value. (2) FL bound ≤ centralized (non-IID α 0.1 costs some pp); if the FL bound
     is far below what Felix already reached (cifar `fn_chr` 74.4% at 12 h, F49), the "ideal" recipe is the weak point (lr 0.04, no
