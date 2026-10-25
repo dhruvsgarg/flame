@@ -193,3 +193,37 @@ def test_rho0_exp_without_pool():
 def test_rho0_ignored_by_const():
     a = _rho(sched="const", rho0=0.2, pool=None)
     assert a._rho_star == 0.01 and a._gate_safety_s == 1.5
+
+
+# ---- target stop -----------------------------------------------------------
+
+def _target(acc=0.65, window=2):
+    a = _stopper(None)
+    a._target_stop_acc, a._target_stop_window, a._target_streak, a._target_hit_at = acc, window, 0, None
+    a._eval_commit = 0
+    a.feed = lambda x: FedSGDAggregator._feed_target_stop(a, x)
+    return a
+
+
+def test_target_needs_consecutive_evals():
+    a = _target()
+    for c, acc in enumerate([0.66, 0.64, 0.66], 1):
+        a._eval_commit = c
+        a.feed(acc)
+    a.check()
+    assert a._target_hit_at is None and not a._work_done
+    a._eval_commit = 4
+    a.feed(0.70)
+    a.check()
+    assert a._target_hit_at == 4 and a._work_done and a._stop_fired == "target"
+
+
+def test_target_halts_with_phi_stop_off_and_no_target_is_inert():
+    a = _target(window=1)
+    a.feed(0.9)
+    a.check()
+    assert a._work_done
+    b = _target(acc=None)
+    b.feed(0.99)
+    b.check()
+    assert not b._work_done

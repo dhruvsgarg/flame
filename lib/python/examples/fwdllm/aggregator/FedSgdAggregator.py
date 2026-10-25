@@ -328,6 +328,11 @@ class FedSGDAggregator(TopAggregator):
         self._stop_fired = None
         # Commit cap: halts at this many commits whatever phi_stop says. 0/unset = off.
         self._max_commits = int(getattr(self.args, "max_commits", 0) or 0) or None
+        # Target stop: halt once `target_stop_window` consecutive evals reach `target_stop_acc`; 0/unset = off.
+        self._target_stop_acc = float(getattr(self.args, "target_stop_acc", 0) or 0) or None
+        self._target_stop_window = int(getattr(self.args, "target_stop_window", 0) or 2)
+        self._target_streak = 0
+        self._target_hit_at = None
         self._rho_max = None
         # `landing` = law C, with T_res a fixed RATE never decremented, so B
         # approaches B_max as B_max*(1-e^{-t/T_res}), always from below.
@@ -904,6 +909,12 @@ class FedSGDAggregator(TopAggregator):
             self._stop_fired = "commit_cap"
             logger.warning(f"[BudgetStop] reason=commit_cap action=halt "
                            f"commit={self._commit_count} Phi={math.exp(self._B):.4g}")
+            self._work_done = True
+            return
+        if getattr(self, "_target_hit_at", None) is not None:
+            self._stop_fired = "target"
+            logger.warning(f"[BudgetStop] reason=target action=halt acc>={self._target_stop_acc} x{self._target_stop_window} "
+                           f"at commit {self._target_hit_at} commit={self._commit_count} Phi={math.exp(self._B):.4g}")
             self._work_done = True
             return
         if self._phi_stop == "off":
@@ -1675,6 +1686,7 @@ class FedSGDAggregator(TopAggregator):
         detector sees the series in order.
         """
         out = super().eval_model(*args, **kwargs)
+        self._feed_target_stop((out[0] or {}).get("acc") if out else None)
         if self._sat_det is not None:
             try:
                 acc = (out[0] or {}).get("acc")
@@ -1694,6 +1706,14 @@ class FedSGDAggregator(TopAggregator):
             except Exception:  # pragma: no cover - the detector must never fault eval
                 logger.debug("saturation detector update failed", exc_info=True)
         return out
+
+    def _feed_target_stop(self, acc):
+        """Latch `_target_hit_at` once `_target_stop_window` consecutive evals reach the target; the commit path halts."""
+        if self._target_stop_acc is None or self._target_hit_at is not None or acc is None:
+            return
+        self._target_streak = self._target_streak + 1 if acc >= self._target_stop_acc else 0
+        if self._target_streak >= self._target_stop_window:
+            self._target_hit_at = self._eval_commit
 
     def _emit_sat_state(self, acc):
         """One `sat_state` record per eval (rows 16-17). Never faults eval."""
@@ -1760,6 +1780,7 @@ class FedSGDAggregator(TopAggregator):
                                      else self._budget_stop_frac),
                 "saturation_stop": self._sat_stop,
                 "max_commits": self._max_commits,
+                "target_stop_acc": self._target_stop_acc,
                 "sat_stall_frac": self._sat_stall_frac,
                 "sat_decay": self._sat_decay,
                 "pool_target": self._pool_target,

@@ -3530,6 +3530,10 @@ class TopAggregator(AsyncTopAgg):
         if not self._round_selected_ends:
             return
         now = self._round_cache_clock_now()
+        # Never shorter than the send timeout: 1.7B tasks charge D up to ~400 s, so 300 s evicted live ends.
+        stuck_s = max(ROUND_CACHE_STUCK_TIMEOUT_S,
+                      float(getattr(getattr(getattr(self, "config", None), "hyperparameters", None),
+                                    "send_timeout_wait_s", 0) or 0))
         still_present = []
         for end in self._round_selected_ends:
             if not channel.has(end):
@@ -3547,10 +3551,10 @@ class TopAggregator(AsyncTopAgg):
                 self._round_cache_activity_ts.pop(end, None)
                 continue
             last_active = self._round_cache_activity_ts.get(end, now)
-            if now - last_active > ROUND_CACHE_STUCK_TIMEOUT_S:
+            if now - last_active > stuck_s:
                 logger.info(
                     f"[ReselectGate] pruning stuck (no accepted contribution "
-                    f"in {now - last_active:.0f}s > {ROUND_CACHE_STUCK_TIMEOUT_S}s) "
+                    f"in {now - last_active:.0f}s > {stuck_s:.0f}s) "
                     f"end {end} from per-round cache for round={self._round}"
                 )
                 self._round_cache_activity_ts.pop(end, None)

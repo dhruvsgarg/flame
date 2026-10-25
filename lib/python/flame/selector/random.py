@@ -169,7 +169,7 @@ class RandomSelector(AbstractSelector):
             logger.info(f"available ends: {avl_candidates}")
 
             # update this in case clients timed out
-            required_trainers = min(len(ends), self.c - len(trainers_in_use))
+            required_trainers = max(0, min(len(ends), self.c - len(trainers_in_use)))  # in-use > c must not crash sample()
             logger.info(
                 f"Waiting on {trainers_in_use_cnt}, need {required_trainers} more to maintain concurrency {self.c}"
             )

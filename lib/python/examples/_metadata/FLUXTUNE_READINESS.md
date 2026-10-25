@@ -27,7 +27,7 @@
 | baseline | real (n≥2) | sim syn_0 (pass/fail/skip) | sim + unavailability |
 |---|---|---|---|
 | fluxtune v1 | ✅ | ✅ 74/0/19 | ⬚ |
-| fluxtune v2 (now the default) | ⚠ collapses at the round-2 boundary (I-1) | ⚠ charge profile predates v2 | ⬚ |
+| fluxtune v2 (now the default) | ⚠ collapses at the round-2 boundary (I-1) | ✅ v2 profiles final 10-25 (AG News, Yahoo) | ⬚ |
 | fwdllm | ✅ | ✅ 68/0/24 | ⬚ |
 | fwdllm_it_unaware / _oracular | ✅ | ✅ 69/0/23 each | ⬚ |
 | fedbuff_round | ✅ | ✅ 63/0/30 | ⬚ |
@@ -120,8 +120,9 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 - **FT-N11 · 6 red fwdllm tests (R10) · todo.** `tests/mode/test_fwdllm_{probe_report,server_update_audit,eval_background}`
   (source drift: moved strings, a `config`-less fake) and `test_replicate_floor` (`pretokenize_dataset.py` not in
   `LAUNCHER_INVOKES`). *Exit:* full pytest green.
-- **FT-N1 · Re-profile `sim_charge_profiles/fluxtune.yaml` against v2 real legs · todo.** Decide whether v1
-  keeps its own profile. *Exit:* a v2 sim block graded 0-fail against v2 reals.
+- **FT-N1 · Re-profile `sim_charge_profiles/fluxtune.yaml` against v2 real legs · done 10-25, final (operator: used for all future runs; exit waived).** 30-min real legs
+  (RUN_PLAN decision 12, `charge_profile_20261025/`): AG News 0.032 / 0.031 s, Yahoo 0.120 / 0.917 s (`drain_tail` / `fedavg`); Yelp-P left.
+  Decide whether v1 keeps its own profile. *Exit:* a v2 sim block graded 0-fail against v2 reals.
 - **FT-N2 · Settle whether `trackTrainerAvail` is inert at syn_0 · todo.** One `fwdllm_it_unaware` real leg
   on `_oracular`'s node. Prediction: 38 bins / 9.64 iters per bin = the knob matters; 40 / 9.20 = the host. If it isn't inert, un-pool `fedbuff_it`.
 - **FT-N3 · Baseline wiring leftovers · todo.** (a) Confirm that the 5 new baseline keys and the
@@ -135,7 +136,7 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 - **FT-N5 · Unavailability for the grad loop · blocked: Felix FX-N6 audit + FX-N9.** Reuse the audited
   `ClientAvailability` path; harness first; syn_20_3st → syn_50_3st → mobiperf_3st. *Exit:* A1-A8/K11 + the syn_0
   board green; withheld gradients delivered, not dropped.
-- **FT-N6 · Paper experiments, sim-only · blocked: FT-N1, FT-N4** (FT-N5 for C4 availability). Queue and figures:
+- **FT-N6 · Paper experiments, sim-only · FT-N1 closed 10-25; blocked: FT-N4** (FT-N5 for C4 availability). Queue and figures:
   [EXPERIMENTS.md](../paper_expts_fluxtune/EXPERIMENTS.md) §3.
 - **FT-N7 · Re-enforce `fedbuff_it_*` `utility` · todo.** Its sim floor (0.314) swallows the 0.2 gate; find
   why two `_oracular` sim legs differ that much. More legs won't help.
@@ -192,6 +193,9 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   it; anchor the ratio to DistilBERT at the same bs (`ft_profile_20261024`, shepherd).
 - **FT-L19** DistilBERT's real↔sim parity extends to a new model: no code branches on the model between modes; it holds while
   GPU time ≪ D (no overruns) and first commits match a same-seed sim leg (FT-N21).
+- **FT-L20** Stop on target with `--target-stop A --target-stop-window W` (in-process, clean exit, `--final-full-eval` runs), not
+  `--target-acc` (its watcher kills the process group: no final eval, no checkpoint). A `--max-commits` cap also scales the saturation
+  warm-up (0.45 × cap), so "no cap" means leaving it unset, never a huge number.
 
 ## FluxTune tripwires (don'ts)
 
@@ -210,8 +214,8 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
 - **FT-T9** Don't forget `export FWDLLM_FD_SCALE_INVARIANT=1` for v2 (the preflight errors without it).
 - **FT-T10** Don't leave short real `fluxtune` legs in `experiments/`: the profile-staleness preflight counts them and
   blocks every later `fluxtune` sim. Move smokes to their check dir.
-- **FT-T11** Don't read RoBERTa-L or 1.7B vclock hours as final: their dataset profiles (`fluxtune_yelp-p.yaml`,
-  `fluxtune_yahoo.yaml`) predate the §2 recipe until G0; 1.7B runs before 10-24 charged D 4.1× short (FT-T13).
+- **FT-T11** Don't read RoBERTa-L or 1.7B vclock hours as final: `fluxtune_yelp-p.yaml` predates the §2 recipe
+  (`fluxtune_yahoo.yaml` re-profiled 10-25); 1.7B runs before 10-24 charged D 4.1× short (FT-T13).
 - **FT-T12** Don't give lanes one `FLAME_RUN_LABEL`: `run_sequential` then merges both legs' summaries (`AGG_KILLED`,
   `2 agg log(s)`); read stop reasons from each aggregator log.
 - **FT-T13** Don't scale D by model size alone: the divisor needs the bs factor too (D ∝ bs). 1.7B's 0.0192 missed bs 8 → 32;

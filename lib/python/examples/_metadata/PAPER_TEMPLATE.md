@@ -3,10 +3,10 @@
 **Purpose.** A writing guide shared by two independent MLSys submissions, Felix and FluxTune. Part A distills what six accepted
 papers do well: Oort (OSDI'21), REFL (EuroSys'23), FedBuff (AISTATS'22), FwdLLM (ATC'24), FLINT (MLSys'23) and FedDance
 (SoCC'25). Part B turns that into a section-by-section template: purpose, dos, don'ts, arguments, data, citations, figures,
-math, experiments. Each paper's authors use Parts A and B to write their own paper-specific markdown (Felix: [felix_paper_outline.md](felix_paper_outline.md));
-Part C keeps Felix's pending items, Part D is FluxTune's starting point. Part E holds rules both papers share, and Part F the open items.
+math, experiments. Each paper's authors use Parts A and B to write their own paper-specific markdown (Felix: [felix_paper_outline.md](felix_paper_outline.md);
+FluxTune: [fluxtune_paper_outline.md](fluxtune_paper_outline.md)). Parts C and D keep each paper's pending items. Part E holds rules both papers share, and Part F the open items.
 
-**Owners.** Felix: Dhruv. FluxTune: Aish (with Dhruv); its latest solution and experiment docs live on Aish's branch.
+**Owners.** Felix: Dhruv. FluxTune: Aish (with Dhruv).
 
 ---
 
@@ -436,18 +436,14 @@ telemetry, the launcher and `baselines.yaml` wiring. Speech was added the same w
 
 ---
 
-## Part D — FluxTune (starting point only)
+## Part D — FluxTune (pending items only)
 
-> **Disclaimer.** Aish (with Dhruv) owns FluxTune's paper and will overhaul or replace this part. The latest solution, experiments,
-> models and target accuracies are in markdowns on Aish's branch; this repo's FluxTune docs (FLUXTUNE_READINESS, EXPERIMENTS.md,
-> the deprecated `fwdllm/fl_fwd_ft_*` and `fluxtune_contributions.md`) may be stale. Nothing here decides FluxTune's narrative,
-> evaluation or wording.
+FluxTune's narrative, names, evidence pointers and limits live in [fluxtune_paper_outline.md](fluxtune_paper_outline.md). Pending:
 
-- **Next step (Aish):** take the solution, experiment plan, models (FwdLLM's model set) and target accuracies from Aish's branch markdowns
-  into FluxTune's paper markdown, written against Parts A and B.
-- **Material in this repo that may help, if still current:** the scale-free accounting (budget, progress, time laws) in
-  `fwdllm/fl_fwd_ft_solution.md` Part 3-4; the figure set in `fwdllm/figs/`; the figure pipeline `fwdllm/expt_scripts/make_paper_figs.py`;
-  the baselines' naming firewall in [BASELINES.md](BASELINES.md) ("Felix ↔ FluxTune disambiguation").
+1. **Second forward-only baseline** (MeZO-style ZO-SGD in FL) so each gap's generality rests on more than FwdLLM data (writing
+   rules §1); not in RUN_PLAN yet.
+2. **Implementation, evaluation and ablation outline:** after the front matter (title → §5) is final.
+3. **Every headline number:** blocked on G0 (charge profile), S and runs 1-10 (RUN_PLAN §3).
 
 ---
 
@@ -464,7 +460,7 @@ telemetry, the launcher and `baselines.yaml` wiring. Speech was added the same w
 
 ## Part F — Open items
 
-1. **FluxTune:** models, targets and the system definition come from Aish's branch markdowns (Part D next step).
+1. **FluxTune:** title and whether async counts as a concept ([fluxtune_paper_outline.md](fluxtune_paper_outline.md) §0).
 2. **Felix third workload:** confirm Reddit + ALBERT (C.1), and whether the SmolLM2 + LoRA variant is in budget.
 3. **Real-device measurement:** a small on-phone measurement (Felix: notify / check-in cost; FluxTune: forward-pass time on an NPU)
    would close the most common systems-venue objection; decide per paper.
