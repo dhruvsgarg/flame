@@ -50,11 +50,11 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
     the reference; a stack that never hits reports its end accuracy, time and GB.
   - *Running on jayne (launched 10-24 ~19:30, output `experiments/ceiling_1024_full/`; scripts uncommitted in the tree):*
     (a) centralized ceiling, full shards (= trace end, every trace), cosine lr: `ceiling.py --full --cosine --epochs E`.
-    cifar ✅ **89.0%** (e200; e100 88.2%; 49.3k samples). speech e60 / e100 on GPUs 2 / 3: ~5 min per epoch, ETA ~01:00 / ~04:30 10-25.
+    cifar ✅ **89.0%** (e200; e100 88.2%; 49.3k samples). speech ✅ **94.5%** (e100; e60 94.4%: converged).
     (b) FL upper bound = ideal FedAvg (`fl_bound.py`: all n clients each round, full shards, no unavailability, 1 epoch at Felix /
-    FedBuff's client recipe, |D|-weighted, augmentation; stops 100 rounds after the best 5-eval mean). cifar GPU 4: round 895 at
-    71.5% and climbing at ~4 s / round (up to 3000 rounds, ≤ 2.5 h more). speech on GPUs 5,0,1,4,6,7 (`--gpu` list splits each
-    round's clients; relaunched 20:25): 42 s / round vs 5 min on 1 GPU; round 10 at 20%; 300-600 rounds ≈ 3.5-7 h (overnight).
+    FedBuff's client recipe, plain SGD, |D|-weighted, augmentation; stops 100 rounds after the best 5-eval mean). Status 10-25 01:00:
+    cifar GPU 4 round 1925, 78.3% and still rising (+0.2 pp / 50 rounds; cap 3000 ≤ 1.2 h). speech GPUs 5,0,1,4,6,7 round 390,
+    82.5%, rising +0.4 pp / 25 rounds at 42 s / round (hours more). Each plateau, once reached, is that dataset's target.
   - *What to look for:* (1) the FL bound must plateau (5-eval mean flat for 100 rounds); if it is still rising at the round cap,
     raise `--rounds` and resume, don't take the cap value. (2) FL bound ≤ centralized (non-IID α 0.1 costs some pp); if the FL bound
     is far below what Felix already reached (cifar `fn_chr` 74.4% at 12 h, F49), the "ideal" recipe is the weak point (lr 0.04, no
@@ -289,7 +289,9 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
       final target is judged only in FB1. No speech arm in F48R; no tuning for speech's early lag (judge = time to target).
       F48L checks: does `fn_chr` keep ≥ `fn` over a full MobiPerf day (c should rise with the night pool) and do eval tasks (`fn_ev`)
       help or cost slots. F48R checks: no one-knob change to rate `new` (scale / a / b) beats the 2024 set by > 0.5 pp or an eval tick.
-    - *F48 sanity batch after the targets (`run_f48.sh`, jayne, ~10-11 h; one Ctrl+C stops all):* (1) cifar bench GPU 5: F48L = FedBuff, `fn`, `fn_chr`,
+    - *Launch 10-25 (by hand, `experiments/F48_<TAG>/`):* F48L GPU 2, F48R GPU 3 (~2-4 h; need no targets); then `run_f48.sh`'s
+      verdict / audit / `dynamic_c` lines. F48S waits for the speech FL bound to free 4 GPUs.
+    - *F48 sanity batch (`run_f48.sh`, jayne, ~10-11 h; one Ctrl+C stops all):* (1) cifar bench GPU 5: F48L = FedBuff, `fn`, `fn_chr`,
       `fn_ev` (`fn_chr` + Felix old's eval tasks) × MobiPerf, 24 h (~3-4 h). (2) cifar bench GPUs 6-7: F48R = rate `new` sweep on
       `fn_chr`, one knob at a time (scale 0.2 / 0.7, a 0 / 0.5, b 0.05 / 0.2) + FedBuff × `s0u` / `smu`, 12 h (~2-3 h; constants date
       from 2024, before every setup fix). (3) speech harness GPUs 0, 2-4: F48S, one 4-GPU leg at a time (37.8 / 45 GB per GPU), 10
@@ -300,7 +302,7 @@ launch; screens keep the number with a letter. Every batch runs Felix new and ol
       `fn_chr` first to every target vs FedBuff and Felix old on all 3 cells (F43: 1.4-2×), final ≥ FedBuff − 1 pp; augmentation
       leaves speech ≥ F43's no-aug curve at 12 h.
     - *Then, if they hold:* Felix new = `fn_chr` (+ any sweep winner > 0.5 pp on both cells, re-checked on speech) → one seed of all
-      six + `*` arms × both datasets × `s0u` / `s50u` / `smu`, 48 h, with the ladder (FedBuff, `b1`, `uo_o`, `fn`, `fn_chr`) → if the
+      six + `*` arms × both datasets × `s0` / `s0u` / `s50u` / `smu`, 48 h, with the ladder (FedBuff, `b1`, `uo_o`, `fn`, `fn_chr`) → if the
       trends hold, 3 seeds = the paper runs. *If not:* `fn_chr` < `fn` at 24 h → c 60 stays and the ramp is an ablation row; `fn_ev`
       wins → eval tasks back in; a sweep arm wins by > 1 pp → adopt it and re-run F48L's two Felix arms on it.
   - **Built:** `F44` / `F45` / `F46` tiers (`harness_pool.py`), `run_fl1.sh` (`TIER`, `CARRY`), `fl1_verdict.py` (+ updates /
@@ -642,10 +644,15 @@ GB ✓ (+1.2-1.3 pp, −80-91%); day-2 climb ≥ 2 pp ✗ (1.0-2.0, plateau = fr
 - **Data stream (10-22):** 6-day `usage` stream tied to each leg's own trace; screens keep it and raise n instead of compressing time.
 - **Targets and comparison (10-24, supersedes 10-22's 80 / 90 / 95%):** one final target per dataset = the FL upper bound (ideal
   FedAvg, FX-N146); the converged centralized ceiling is reported beside it; no lowered fractions. Hit = first 5-eval mean ≥ target.
+  Every experiment (FB1, ladder) runs to this plateau, not to a published target (operator 10-25): the cohort holds ~all train
+  samples (cifar 49.3k of 50k, speech 84.0k of 84.8k), so the bound is not inflated by small n; it is stricter than FedBuff's CIFAR-10 60% (its Table
+  2; other model). Plain SGD as every stack (no momentum / server averaging). Oort / REFL speech targets: unverified.
   Paper runs (FB1): every stack on the 6-day trace (legs start +24 h, so ≤ 120 h) until it hits the target; one that never does
   reports accuracy, time and GB at the trace end. Report at the hit, not at a horizon: time and GB vs the fastest deployed
   (check-in) baseline (× sooner, × fewer GB), tables / bars normalized to the best stack, and each stack's accuracy and GB at Felix's
   hit. Oort et al. are compared once long runs let them reach the target.
+- **Streams = setting, not a claim (10-25):** title names availability only. F47 65%: `s0` 1.9× / −58% GB ≈ `s0u` 2.0× / −55%;
+  gain grows with unavailability (`s50u` 2.7×); c by phase, the one stream mechanism, failed (FX-T89). `s0` joins the 48 h ladder.
 - **Ablations (10-24, secondary):** graceful degradation under dropped / missed messages (F42e) and each Felix layer swapped for the
   baselines' way (FX-N145).
 - **Fast bench (10-22):** used for screens only on cells green against the harness (B2); speech screens stay on the harness.
