@@ -22,6 +22,8 @@ NAMES = {"felix": "Felix", "fedbuff": "FedBuff", "refl": "REFL", "feddance": "Fe
          "oort_star": "Oort*"}
 FELIX, REF, MUTED = "#2a78d6", "#eb6834", "#9a9893"  # palette.md slots 1 / 2; the rest recede
 
+FELIX_ARMS = ("fx", "fn_chr")  # final Felix new (b 0.2); fn_chr = it at b 0.1 (F48a-F49)
+
 
 def name(b, arm):
     n = NAMES.get(b, b)
@@ -29,7 +31,7 @@ def name(b, arm):
         return "REFL*"
     if arm.startswith("fdstar"):
         return "FedDance*"
-    return n if b != "felix" or arm == "fn_chr" else f"Felix ({arm})"
+    return n if b != "felix" or arm in FELIX_ARMS else f"Felix ({arm})"
 
 
 def mean5(pts):
@@ -52,7 +54,7 @@ def cell_rows(legs, target):
                          acc=(hit or m[-1])[1], end_acc=m[-1][1], end_h=end / 3600, end_gb=nbytes / 1e9, curve=m))
     hits = [r for r in rows if r["hit"]]
     tmin, gmin = (min(r["t_h"] for r in hits), min(r["gb"] for r in hits)) if hits else (None, None)
-    fx = next((r for r in rows if r["baseline"] == "felix" and r["arm"] == "fn_chr"), None)
+    fx = next((r for r in rows if r["baseline"] == "felix" and r["arm"] in FELIX_ARMS), None)
     dep = [r for r in hits if r["baseline"] != "felix" and not r["oracle"]]
     ref = min(dep, key=lambda r: r["t_h"]) if dep else None
     for r in rows:

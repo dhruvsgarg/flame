@@ -232,14 +232,15 @@ F48_CELLS = {"cifar10": {"smu": ("mobiperf_3st", True)},
 F48_RUNTIME_S = {"cifar10": 10800, "google_speech": 43200}
 F48_SHAPE = {"cifar10": F46_SHAPE, "google_speech": dict(F43_SHAPE["google_speech"], c=20)}
 _FPOOL = f"{_FN} {_DKCF} sel.dynamic_kc.policy_kwargs.pool="
+_FCHR = f"{_FPOOL}0.5 sel.dynamic_kc.policy_kwargs.ramp=true"
+# Felix new, frozen 10-25: `fn_chr` at rate b 0.2 (baseline_reference.yaml); arm `fx`
+FELIX_FINAL = _FCHR
 F48_ARMS = {"cifar10": {"ctl_srv": dict(bls=("fedbuff",)), "fn": dict(hp=_FN, thp=_B1T), "fn_ca": F47_ARMS["fn_ca"],
                         "fn_ch2": dict(hp=f"{_FPOOL}0.5", thp=_B1T), "fn_ch3": dict(hp=f"{_FPOOL}0.33", thp=_B1T),
                         "fn_chp": dict(hp=f"{_FPOOL}0.5 sel.dynamic_kc.policy_kwargs.phase=true", thp=_B1T),
                         "fn_chr": dict(hp=f"{_FPOOL}0.5 sel.dynamic_kc.policy_kwargs.ramp=true", thp=_B1T),
                         "fn_ev": dict(hp=f"{_FPOOL}0.5 sel.dynamic_kc.policy_kwargs.ramp=true".replace(_E0, ""), thp=_B1T)},  # + Felix old's eval tasks
-            "google_speech": {"ctl_srv": dict(bls=("felix", "fedbuff")), "fn": dict(hp=_FN, thp=_B1T, cells=("smu",)),  # = fn_chr elsewhere
-                              "fn_chr": dict(hp=f"{_FPOOL}0.5 sel.dynamic_kc.policy_kwargs.ramp=true", thp=_B1T)}}
-_FCHR = f"{_FPOOL}0.5 sel.dynamic_kc.policy_kwargs.ramp=true"
+            "google_speech": {"ctl_srv": dict(bls=("felix", "fedbuff")), "fx": dict(hp=FELIX_FINAL, thp=_B1T)}}
 F48R_ARMS = {"ctl_srv": dict(bls=("fedbuff",)), "fn_chr": dict(hp=_FCHR, thp=_B1T),
              **{f"r_{k}": dict(hp=f"{_FCHR} opt.agg_rate_conf.{v}", thp=_B1T) for k, v in dict(
                  s02="scale=0.2", s07="scale=0.7", a0="a_exp=0.0", a05="a_exp=0.5", b005="b_exp=0.05", b02="b_exp=0.2").items()}}

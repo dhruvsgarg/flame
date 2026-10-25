@@ -10,7 +10,7 @@ An insight counts only if real and sim agree on it (same metric on a parity pair
 
 ## Next steps (top item is next)
 
-- **IN6 · Re-read F49 at the final targets · blocked: FELIX FX-N146 (bounds running).** `target_report.py` on F49 with the FL-bound
+- **IN6 · Re-read F49 at the final targets · todo (targets set 10-25: cifar 80%, speech 88%; FELIX FX-N146).** `target_report.py` on F49 with the FL-bound
   targets; rewrite the F49 block below and §7's numbers at the hit (× sooner / × fewer GB vs the fastest deployed baseline, gap at
   Felix's hit, normalized bars). The current F49 numbers use the old 90 / 95%-of-ceiling targets. *Exit:* §5 F49 and §7 cite the
   final targets. Dropped (operator 10-24): tuning the rate for speech's first 2.5 h (judge = time to target) and explaining the
@@ -132,7 +132,7 @@ reconstruction (§4 #4).
 
 ## 5. Findings (measured; each line cites its evidence)
 
-**F49 end to end (numbers at the old 90 / 95%-of-ceiling targets; IN6 re-reads at the final ones): Felix new (`fn_chr`) vs every baseline (`experiments/F49_1024_1530`, code `0f6858e70`; cifar n 300 / speech
+**F49 end to end (numbers at the old 90 / 95%-of-ceiling targets; IN6 re-reads at the final ones): Felix new (`fn_chr` = `fx` at rate b 0.1) vs every baseline (`experiments/F49_1024_1530`, code `0f6858e70`; cifar n 300 / speech
 n 100 × `s0u` / `s50u` / `smu`, 12 h, augmentation on, 1 seed, averaged model; 56 / 56 legs ok, config audit 56 / 56 ✅).**
 I-G1 split from `agg_round` (cumulative updates) + `agg_eval` + `wire`: TTA = U* / R, U* = updates to target, R = updates / h.
 
@@ -250,8 +250,17 @@ I-G1 split from `agg_round` (cumulative updates) + `agg_eval` + `wire`: TTA = U*
     as clients fit their data, which is fastest where the pool is small and retrained often (MobiPerf).
   - *Ramp up:* φ divides by a running peak, so it barely recovers (F47 c by phase: floor 10 from 6-8 h to 48 h while data kept
     arriving). c rises through the pool term instead: as φ → 0, c → ½ trainable, so c tracks availability (F48a `ch2`: 21 → 24
-    when trainable rose 43 → 49 at 3 h). Day-long MobiPerf swings (charging at night) are F48L's question.
+    when trainable rose 43 → 49 at 3 h). Over a MobiPerf day (F48L) trainable stays 40-66, so c holds 25-38: no night surge to follow.
   - *Never binds on syn traces:* ½ trainable ≥ 72 > 60 on syn_0 / syn_50_3st, so the ramp is a no-op there by construction.
+  - *24 h confirm (F48L, `experiments/F48_1025_0114/cifar_L`):* ramp 64.8 vs c 60 63.7 vs FedBuff 61.2%, the only arm to 65% (1390
+    min), on 1056 vs 2319 / 2152 GB; τ 8.4 vs 11.7; picks~size −0.40 → −0.12. The late gain is less staleness and fewer wasted
+    slots (starvation 5k vs 417k), not yet selection (picks~size stays < 0).
+- *Eval tasks still cost more than they buy (F48L `fn_ev`):* refreshing beliefs with Felix old's eval tasks on top of the ramp ties
+  (64.6%, one tick later at 65%, same GB) while 262k slot-starvation events appear: the selector's stale beliefs are good enough.
+- *The 2024 rate constants over-damp (F48R, one knob at a time on `fn_chr`, cifar `s0u` / `smu`, 12 h):* every less-damped arm
+  (a 0, b 0.2, s 0.2) is 1-3 eval ticks sooner with ≤ +0.5 pp; every more-damped arm (a 0.5, b 0.05, s 0.7) is 2-4 ticks slower and
+  −0.2-1.0 pp. a 0 is fastest but drops the staleness term; b 0.2 keeps the staleness–utility trade-off at ≤ 1 tick of it and
+  becomes `fx`. Same story as F46: the step size, not the staleness rule, sets the pace.
 - *Why K stays fixed while c moves (reviewer question):* K is the buffer, the number of updates averaged per server step; c / K
   sets staleness (τ ≈ c / K). Lowering c at fixed K lowers staleness (F48a τ 5.5 → 3.2), which is what unavailability needs.
   Lowering K with c would keep τ but average fewer updates per step at rate `new`'s large weight (0.6-0.8), so noisier steps.
@@ -400,7 +409,7 @@ task timeout (2 × the longest FedScale task, FX-D198); sims graded against real
 
 | stack | mode | selection | aggregation | local work | client keeps | server keeps | knows of availability |
 |---|---|---|---|---|---|---|---|
-| **Felix** | async | learning per slot-second among clients that can finish (C3 + bal) | FedBuff buffer, rate `new` (staleness + utility), averaged model served | 1 epoch | current state (OS signals) | believed state per client (3 states) | now, pushed on every flip; evicts mid-task; no forecast |
+| **Felix** (`fx`) | async | utility (\|D\| × Oort EMA q, `prop`) among online clients; c ramps 60 → ½ trainable as clients fit their data | FedBuff buffer K 10, rate `new` (staleness + utility; s 0.4 / a 0.25 / b 0.2), averaged model served | 1 epoch | current state (OS signals) | believed state per client (3 states) | now, pushed on every flip; evicts mid-task; no forecast |
 | FedBuff | async | uniform | buffered, 1/√(1+τ) | 1 epoch | – | check-in set (T1) | at check-in; departure at timeout |
 | FedAvg (ablation) | sync | uniform | FedAvg | 1 step (FedDance's config) | – | check-in set (T1) | same |
 | Oort | sync | utility × speed penalty, UCB | YoGi | 20 steps | – | check-in set (T1) | same |
@@ -454,18 +463,17 @@ task timeout (2 × the longest FedScale task, FX-D198); sims graded against real
 
 *Story (proposal):* availability changes faster than any forecast; a system that **reacts** to it at each layer beats one that
 predicts it. Felix (1) learns state the moment it changes and frees the slot (vs check-in staleness, forecasts, timeouts), (2) fills
-each slot with the most learning per second among clients that can finish, (3) sizes the server step to staleness and stability,
-(4) stops spending bytes once held-out data says the model stopped learning. Each layer is one ablation (K1-K4); the end-to-end
+each slot with the most learning per sample among online clients, (3) takes a large server step weighted by staleness and
+utility, (4) shrinks concurrency to the trainable pool once clients fit their data, so bytes buy choice, not staleness. Each layer is one ablation (K1-K4); the end-to-end
 claim (K5) is time and bytes to accuracy.
 
 *Candidate claims (each names its experiment, metric and ablation):*
 - **K1 · React, don't predict (C1):** notify + evict wastes fewer slots and misses fewer opportunities than check-in (+ REFL's forecast,
   FedDance's V), matching the oracles, with O(1) state. Metrics: belief mismatch (T2), pick survival, missed opportunities, timeouts / h,
   wasted slot-h / h, Felix's own cost (evicted partial work), messages / h, TTA. Ablations: Felix with check-in only, Felix blind.
-- **K2 · Learning per slot-second (C3 + bal):** R × s̄ and TTA vs e0; top-20% share, worst-10% client accuracy (`client_accuracy.py`).
-- **K3 · Step control (C4, C5):** eval swing and AUC on speech vs l3b; K trajectory.
-- **K4 · Bytes only while learning (C8 pacing):** bytes to matched accuracy and final accuracy vs l5 / e0; held-out loss; probe cost
-  (~1% bytes). Later: a dynamic probe rate.
+- **K2 · Learning per sample (C3, `prop`):** U* and TTA vs uniform picks; top-20% share, worst-10% client accuracy (`client_accuracy.py`).
+- **K3 · Step (rate `new`):** time to 50% / target vs 1/√(1+τ) and 1/(1+τ) at the same selection (F46, F48R).
+- **K4 · Concurrency follows the pool (c ramp):** GB and time to target vs c 60 on MobiPerf (F48L: +1.1 pp at 46% GB); picks~size, τ.
 - **K5 · End to end:** time and bytes to target vs every baseline; s0 static, s0u, s50u, MobiPerf × both datasets; Felix's loss from
   s0u → s50u smallest.
 - **K6 · Robustness (F42e):** silent drops p ∈ {1, 5, 10}%, notify delay / loss.
