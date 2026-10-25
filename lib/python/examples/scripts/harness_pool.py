@@ -251,6 +251,20 @@ F49_ARMS = {"fn_chr": dict(hp=_FCHR, thp=_B1T), "ctl_srv": dict(bls=("fedbuff",)
             "fn": dict(hp=_FN, thp=_B1T, cells=("smu",)),
             "sync_srv": dict(bls=("refl", "feddance", "fedavg", "oort", "oort_star"), hp="serveEma=sweep", agg_goal=None),
             "rstar_srv": dict(F42_ARMS["rstar_srv"], agg_goal=None), "fdstar_srv": dict(F42_ARMS["fdstar_srv"], agg_goal=None)}
+# FB1 = paper runs (FX-N150 / N131): F49's stacks + `*` arms with Felix = `fx`, plus the ladder (FedBuff, b1, uo_o, fn, fx); 4 cells,
+# streams from +24 h of the 6-day trace (<= 120 h); each leg stops when its 5-eval mean hits targets.json. FB1S = 2 h smoke, low target.
+FB1_CELLS = {"s0": ("syn_0", False), **F49_CELLS}
+FB1_ARMS = {"fx": dict(hp=FELIX_FINAL, thp=_B1T), **{a: F49_ARMS[a] for a in ("ctl_srv", "sync_srv", "rstar_srv", "fdstar_srv")},
+            "b1": F44_ARMS["b1"], "uo_o": F46_ARMS["uo_o"], "fn": dict(hp=_FN, thp=_B1T)}
+FB1_RUNTIME_S = {"FB1": 432000, "FB1S": 7200}
+FB1S_TARGETS = {"cifar10": 0.35, "google_speech": 0.25}  # reachable in 2 h by the async stacks (F49)
+
+
+def final_targets() -> dict:
+    """{dataset: final target} from `_metadata/targets.json` (FX-N146)."""
+    return {k: v for k, v in json.load(open(SCRIPT_DIR.parent / "_metadata" / "targets.json")).items() if k != "src"}
+
+
 F42_ARMS["l3b_ro_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep opt.agg_rate_conf.type=old", thp=_PRE)  # FX-N132: FedBuff's rate
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
@@ -564,6 +578,23 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                 if bls:
                     out.append(replace(base, pid=f"{DS_TAG[ds]}{tier}_{cell}_{arm}", baselines=bls,
                                        agg_hp=f"{base.agg_hp} {hp}".strip(), trainer_hp=f"{base.trainer_hp} {thp}".strip(),
+                                       **{k: kw[k] for k in ("c", "agg_goal") if k in kw}))
+        return out
+    if tier in FB1_RUNTIME_S:
+        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        stop = f"targetAccuracy={(FB1S_TARGETS if tier == 'FB1S' else final_targets())[ds]} targetWindow=5"
+        out = []
+        for cell, (trace, stream) in FB1_CELLS.items():
+            dsh = usage_hp(trace) if stream else full
+            base = replace(g3, runtime_s=FB1_RUNTIME_S[tier], trace=trace, trace_offset_s="86400" if stream else "", kind="sim_ev",
+                           trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S} {stop}", **F48_SHAPE[ds])
+            for arm, kw in FB1_ARMS.items():
+                bls = tuple(b for b in kw.get("bls", ("felix",)) if b in baselines)
+                if bls:
+                    out.append(replace(base, pid=f"{DS_TAG[ds]}{tier}_{cell}_{arm}", baselines=bls,
+                                       agg_hp=f"{base.agg_hp} {kw.get('hp', '')}".strip(),
+                                       trainer_hp=f"{base.trainer_hp} {kw.get('thp', '')}".strip(),
                                        **{k: kw[k] for k in ("c", "agg_goal") if k in kw}))
         return out
     if tier == "F42R":  # F42-T7 / T9 on GPU: G3 real legs, 8 min wall: Felix notify + the check-in baselines
@@ -2230,7 +2261,7 @@ def code_key() -> str:
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F42 F42C F42CR F42R F43 F44 F45 F46 F47 F48 F48L F48R F49, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F42 F42C F42CR F42R F43 F44 F45 F46 F47 F48 F48L F48R F49 FB1 FB1S, e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

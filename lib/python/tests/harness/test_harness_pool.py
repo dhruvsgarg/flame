@@ -716,3 +716,17 @@ def test_f43_tier_reference_cohort():
         ph = pool.tier_phases("F43", ("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star"), ds)
         assert len(ph) == 2 * len(pool.F43_ARMS) and all(p.n == n and p.agg_goal / n >= 0.05 for p in ph)
         assert all(p.runtime_s == pool.F43_RUNTIME_S[ds] and pool.F43_STOP in p.agg_hp for p in ph)
+
+
+def test_fb1_tier_runs_to_targets_json():
+    """FX-N150: FB1 = every stack + `*` arms + the ladder x 4 cells, 120 h from +24 h on streams, stop at targets.json's target."""
+    bls = ("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star")
+    for ds in ("cifar10", "google_speech"):
+        ph = pool.tier_phases("FB1", bls, ds)
+        assert len(ph) == 4 * len(pool.FB1_ARMS)
+        assert all(p.runtime_s == 432000 and f"targetAccuracy={pool.final_targets()[ds]} targetWindow=5" in p.agg_hp for p in ph)
+        assert all(p.trace_offset_s == ("" if "_s0_" in p.pid else "86400") for p in ph)
+        fx = [p for p in ph if p.pid.endswith("_fx")]
+        assert len(fx) == 4 and all(pool.FELIX_FINAL in p.agg_hp for p in fx)
+        smoke = pool.tier_phases("FB1S", bls, ds)
+        assert len(smoke) == len(ph) and all(p.runtime_s == 7200 and f"targetAccuracy={pool.FB1S_TARGETS[ds]}" in p.agg_hp for p in smoke)

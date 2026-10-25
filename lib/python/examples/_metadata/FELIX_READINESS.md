@@ -75,7 +75,7 @@ launch; screens keep the number with a letter. Launches: tmux on jayne or shephe
   - *Grade:* `bench_validate.py --bench experiments/F49_1024_1530/speech experiments/F48S_<TAG> --harness experiments/B2S_<TAG>/*`.
   - *Exit:* B2 rule per stack (AUC within max(1.5 pp, seed range), updates / h ±10%, bytes ±5%, task time ±5%). *If red:* root the
     bench gap before FB1 speech; FB1 cifar goes ahead.
-- **FX-N150 · FB1 tier + smoke · todo (code, then ≤ 15 min GPU).** Tier `FB1` in `harness_pool.py`: the six stacks + `*` arms (F49's
+- **FX-N150 · FB1 tier + smoke · wip (tier + `run_fb1.sh` ✅ 10-25: 48 legs / dataset, FB1S YAMLs checked; smoke after B2S frees GPUs).** Tier `FB1` in `harness_pool.py`: the six stacks + `*` arms (F49's
   arm set, `fx` for Felix) and the ladder (FedBuff, `b1`, `uo_o`, `fn`, `fx`) × `s0` / `s0u` / `s50u` / `smu` × cifar n 300 / speech
   n 100; 6-day trace from +24 h, runtime 120 h, stop at `targetAccuracy` = `targets.json` (5-eval mean, `targetWindow=5`);
   `run_fb1.sh` (bench pools, long legs first). *Exit:* `--smoke` legs pass the config audit (`fx` row `rp 0.4/0.25/0.2`), stop at a
