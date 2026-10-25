@@ -50,10 +50,13 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
   0.5 vs none, 3 seeds each, to 0.86 two in a row; bench is fine (DistilBERT `fluxtune` passed B2). *Exit:* keep or drop a
   momentum arm for RoBERTa. *Why:* only single-seed evidence to 0.60 (FT-T15), and Φ ≠ e^B under momentum (FT-T16).
 
-- **FT-N20 · Data augmentation like every Felix stack (FELIX FX-D233, FX-N143) · todo (on resume).** Felix found its GPU preload froze
-  one augmentation draw per sample for the whole run. Check the fwdllm loaders for the same (cached / pre-tokenized samples) and
-  apply the dataset's standard per-pass augmentation, if it has one, to FluxTune and every fwdllm baseline alike. *Exit:* noted in
-  the setup text; one smoke per baseline with it on.
+- **FT-N20 · Data augmentation like every Felix stack (FELIX FX-D233, FX-N143, Decisions "Augmentation") · todo (on resume).**
+  *Principle (operator 10-24):* if the baselines' own pipelines augment, every stack and the ceiling do, with fresh draws per pass on
+  the device; never adopted or skipped for convenience. Felix found its GPU preload froze one draw per sample (+10-17 pp once fixed).
+  *Verify:* (1) what fwdllm's / FwdLLM's and FedScale's AG News loaders do (text usually has no standard augmentation: then record
+  "none, as the baselines", not a new trick); (2) whether pre-tokenized / cached samples freeze any random step (masking, truncation
+  offset). *Add* only what the baselines' code does, to FluxTune and every fwdllm baseline alike, plus the defense (what, standard,
+  on-device cost, why it helps, no privacy claim, targets re-derived). *Exit:* noted in the setup text; one smoke per baseline.
 - **FT-N19 · One bench queue for Felix and FluxTune · code done 10-24; exit run waits for a Felix screen + shepherd (operator).**
   *Built:* `bench_pool.py` jobs-file columns `gpu_gb= ram_gb= workers= runtime_s= project=`, else the dataset's
   `scripts/bench_profiles.yaml` entry (measured: cifar10, agnews), else the flags; the queue starts the first leg that fits; a mixed

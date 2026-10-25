@@ -458,11 +458,14 @@ class AvailabilityCapPolicy(DynamicKCPolicy):
 
 
 class FelixCPolicy(DynamicKCPolicy):
-    """F46 S4: c = c_config x (trainable share now, if avail) x (loss phase, if phase); the controller floors it at c_min (K)."""
+    """F46 S4: c = c_config x (trainable share now, if avail) x (loss phase, if phase), at most pool x trainable now (FX-N144:
+    keeps idle trainable clients to choose from; `ramp` blends c -> bound by 1 - φ); the controller floors it at c_min (K)."""
 
-    def __init__(self, avail=False, phase=False):
+    def __init__(self, avail=False, phase=False, pool=0.0, ramp=False):
         self.avail = str(avail).lower() == "true"
         self.phase = str(phase).lower() == "true"
+        self.pool = float(pool)
+        self.ramp = str(ramp).lower() == "true"  # pool bound phases in as φ falls: throughput early, choice once data is fit
 
     def compute_new_k(self, current_k: int, metrics: dict) -> Optional[int]:
         return None
@@ -476,6 +479,10 @@ class FelixCPolicy(DynamicKCPolicy):
             c *= metrics["n_eligible_train"] / metrics["n_trainers"]
         if self.phase and metrics.get("loss_phase") is not None:
             c *= metrics["loss_phase"]
+        if self.pool > 0 and metrics.get("n_eligible_train") is not None:
+            bound = min(c, self.pool * metrics["n_eligible_train"])
+            phi = metrics.get("loss_phase")
+            c = phi * c + (1 - phi) * bound if self.ramp and phi is not None else bound
         return max(1, min(int(c0), round(c)))
 
     def name(self) -> str:

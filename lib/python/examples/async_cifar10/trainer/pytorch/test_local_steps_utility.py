@@ -18,7 +18,8 @@ def _trainer(stat_utility="legacy", local_steps=None, prefix=0):
     t.model, t.device, t.loss_fn = torch.nn.Linear(4, 3), torch.device("cpu"), torch.nn.CrossEntropyLoss
     t.use_oort_loss_fn, t.batch_size, t._step_lr = "True", 4, 0.1
     t.config = SimpleNamespace(hyperparameters=SimpleNamespace(
-        stat_utility=stat_utility, local_steps=local_steps, lr_batch_normalize=False, utility_prefix_samples=prefix))
+        stat_utility=stat_utility, local_steps=local_steps, lr_batch_normalize=False, utility_prefix_samples=prefix,
+        trainer_augment_each_pass=False))  # toy 4-feature inputs
     t.optimizer = torch.optim.SGD(t.model.parameters(), lr=0.1)
     t.memory_profiler = SimpleNamespace(log_component_memory=lambda *a: None)
     t.reset_stat_utility()

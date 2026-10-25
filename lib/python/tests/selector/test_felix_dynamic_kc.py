@@ -94,6 +94,14 @@ def test_felix_c_scales_by_availability_and_phase():
     assert ctl.step(dict(m, loss_phase=0.05)) == (15, 15)  # floored at K
 
 
+def test_felix_c_pool_bound_binds_only_on_a_small_trainable_pool():
+    m = {"c_config": 60, "n_eligible_train": 150, "n_trainers": 300, "loss_phase": 0.5}
+    pool = build_policy("felix_c", {"pool": 0.5})
+    assert pool.compute_new_c(60, m) == 60  # 0.5 x 150 = 75 > 60: no bind
+    assert pool.compute_new_c(60, dict(m, n_eligible_train=60)) == 30  # MobiPerf-like pool
+    assert build_policy("felix_c", {"pool": 0.5, "phase": "true"}).compute_new_c(60, dict(m, n_eligible_train=60)) == 30
+
+
 def test_loss_phase_tracks_peak():
     from flame.selector.loss_phase import LossPhase
     p = LossPhase(window=2)
@@ -106,3 +114,12 @@ def test_loss_phase_tracks_peak():
     p.add(3.0)
     p.add(3.0)
     assert p.phi == 1.0  # new data: new peak
+
+
+def test_felix_c_pool_ramp_trades_throughput_for_choice_as_phase_falls():
+    m = {"c_config": 60, "n_eligible_train": 60, "n_trainers": 300}
+    ramp = build_policy("felix_c", {"pool": 0.5, "ramp": "true"})
+    assert ramp.compute_new_c(60, dict(m, loss_phase=1.0)) == 60  # early: full throughput
+    assert ramp.compute_new_c(60, dict(m, loss_phase=0.5)) == 45
+    assert ramp.compute_new_c(60, dict(m, loss_phase=0.0)) == 30  # fit: the pool bound
+    assert ramp.compute_new_c(60, dict(m, n_eligible_train=150, loss_phase=0.0)) == 60  # big pool: never binds
