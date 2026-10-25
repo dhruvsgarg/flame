@@ -44,45 +44,33 @@ bench screens (cifar 12 h vclock in 4-12 min wall) · harness sims (speech) · l
 launch; screens keep the number with a letter. Launches: tmux on jayne or shepherd (whichever is free; ROBUST L38), committed tree (scripts refuse a dirty one), `PY="conda run
 --no-capture-output -n dg_flame python"`, from `lib/python/examples`.
 
-**A · Before FB1 (start 10-26 morning; N146 is code, N148 and N149 run in parallel on the free GPUs, ~3 h).**
+**A · Before FB1 (10-25 on shepherd; tmux `dg_flame`, TAG `1025_SH`).** Order: 1 → 2 → 3 → 4 → 5. Rule while B2S runs: no new
+GPU job on GPUs it uses (a pool sees any other process with ≥ 1 GB on a GPU as busy and waits; it never kills); CPU-only analysis is fine.
 
-- **FX-N146 · wire the targets + re-read F49 at them · ✅ 10-25.** `bench_report.final_targets()` / `ladder()` read
-  `targets.json`; `fl1_verdict.py`, `target_report.py`, `run_f4*.sh` take no `--ceiling` / `--target`. F49 at them
-  (`experiments/F49_1024_1530/n146_*`): 6 / 6 PASS; nobody hits; at the highest common accuracy Felix vs FedBuff 1.24-2.45× sooner,
-  −9 to −69% GB (speech `s50u` +3%); FELIX_INSIGHTS §5 / §7 rewritten (IN6).
-  - *Targets (Decisions "Targets and comparison"; `_metadata/targets.json`):* cifar = FL bound (80.1% at the 3000-round cap); speech
-    = **88%, set by the operator** (FL bound 87.5% at round 835, stopped while rising +0.7 pp / 100 rounds; fits put round 1500 at
-    88.6-89.9%). Centralized ceilings beside them: 89.0% / 94.5%.
-  - *Do (code, no runs):* `fl1_verdict.py`, `target_report.py` and `run_f4*.sh` read `_metadata/targets.json` (no `--ceiling` /
-    `--target` by hand); `target_report.py` on F49 / F48 (12-24 h: nobody hits; report end accuracy + the highest common accuracy);
-    rewrite FELIX_INSIGHTS §5 F49 / §7 numbers (IN6).
-  - *Exit:* every verdict script reads `targets.json`; F49 re-reported at them.
-- **FX-N148 · Speech sanity of `fx` (bench, 2 legs, ~1.3 h) · todo.** `fx` and Felix old (`ctl_srv`) on speech `smu` (hardest cell:
-  F49 1.26×, −10% GB), 12 h vclock = F49's horizon; FedBuff and the sync stacks reuse F49's `smu` legs (code unchanged).
-  - *Launch (GPUs 2, 3):* `$PY scripts/bench_pool.py --harness-args "--tier F48 --datasets google_speech --baselines felix"
-    --only "gs_F48_smu_" --out experiments/F48S_<TAG> --gpus 2,3 --per-gpu 1 --leg-gpu-gb 10 --leg-ram-gb 30 --workers 4
-    --timeout-s 14400`; then `fl1_verdict.py experiments/F48S_<TAG> experiments/F49_1024_1530/speech` and `config_audit.py`.
-  - *Shows:* `fx` ≥ `fn_chr` (b 0.1, F49) and ahead of Felix old and FedBuff at every target. A miss is a finding; `fx` stays frozen.
-- **FX-N149 · Harness test before FB1: bench validity for speech · todo (blocks FB1 speech, not cifar).** Bench and harness share the
-  stacks' code; the bench swaps MQTT / processes for an in-memory channel, workers and its own commit gate. Cifar B2 passed 27 / 27
-  (FX-N129); speech never ran B2, and F49's bench speech curves sit 10-14 pp under F43's harness ones (augmentation, c 30 → 20 and
-  harness → bench confounded).
-  - *Launch (shepherd GPUs 0, 1, 4-7, jayne drops GPU 1; F49 / F48 dirs copied to shepherd 10-25; 6 legs, 148 GB RAM each so ≤ 3 at once, ≤ 2 beside FX-N148; ~55 min per async leg, sync unmeasured):*
-    `$PY scripts/harness_pool.py --tier F49 --datasets google_speech --baselines fedbuff,refl,feddance,fedavg,oort --phases
-    "gs_F49_smu_ctl_srv gs_F49_smu_sync_srv" --gpu-ids 0,1,4,5,6,7 --gpus-per-job 2 --output-dir experiments/B2S_<TAG>/h49` and
-    `$PY scripts/harness_pool.py --tier F48 --datasets google_speech --baselines felix --phases gs_F48_smu_fx --gpu-ids 0,1,4,5
-    --output-dir experiments/B2S_<TAG>/h48` (dry-runs ✅ 10-25).
-  - *Grade:* `bench_validate.py --bench experiments/F49_1024_1530/speech experiments/F48S_<TAG> --harness experiments/B2S_<TAG>/*`.
-  - *Exit:* B2 rule per stack (AUC within max(1.5 pp, seed range), updates / h ±10%, bytes ±5%, task time ±5%). *If red:* root the
-    bench gap before FB1 speech; FB1 cifar goes ahead.
-- **FX-N150 · FB1 tier + smoke · wip (tier + `run_fb1.sh` ✅ 10-25: 48 legs / dataset, FB1S YAMLs checked; smoke after B2S frees GPUs).** Tier `FB1` in `harness_pool.py`: the six stacks + `*` arms (F49's
-  arm set, `fx` for Felix) and the ladder (FedBuff, `b1`, `uo_o`, `fn`, `fx`) × `s0` / `s0u` / `s50u` / `smu` × cifar n 300 / speech
-  n 100; 6-day trace from +24 h, runtime 120 h, stop at `targetAccuracy` = `targets.json` (5-eval mean, `targetWindow=5`);
-  `run_fb1.sh` (bench pools, long legs first). *Exit:* `--smoke` legs pass the config audit (`fx` row `rp 0.4/0.25/0.2`), stop at a
-  lowered smoke target, and a 2 h-vclock leg of each stack keeps RAM flat; leg-count and wall-time estimate written here.
-- **FX-N131 · FB1: the paper runs · todo (cifar after FX-N146 + N150; speech after FX-N149).** Each leg until it hits the target
-  (Decisions "Targets and comparison"); one seed first, 3 seeds once the trends hold. Estimate from F48 / F49 wall times: cifar
-  120 h ≈ 7-18 h per leg at 4 / GPU; speech async ≈ 10-13 h, sync ≈ 2.5-6 h per leg at 1 / GPU.
+1. **Running now (started 14:45-15:05):** win 0 = FX-N148 bench (`fx`, `ctl_srv` on speech `smu`, GPUs 2, 3; ETA ~15:20);
+   win 1 = FX-N149 h49 (5 harness legs, `--gpu-ids 0,1,4-7`); win 2 = FX-N149 h48 (`fx` leg, `--gpu-ids 2,3,6,7`, starts when
+   win 0 frees 2, 3). Speech harness legs take **4 GPUs** each (F43_SHAPE `gpus=4` overrides `--gpus-per-job`), so ≤ 2 at once;
+   12 h vclock ≈ 35 min wall per async leg (sync unmeasured). **ETA all B2S ≈ 17:00-17:30.**
+2. **When win 0 ends (~15:20), CPU only:** `fl1_verdict.py experiments/F48S_1025_SH experiments/F49_1024_1530/speech`,
+   `config_audit.py experiments/F48S_1025_SH` (`fx` row `rp 0.4/0.25/0.2`). *Shows:* `fx` ≥ `fn_chr` (F49) and ahead of Felix
+   old and FedBuff at every rung; a miss is a finding, `fx` stays frozen.
+3. **FX-N150 smoke, cifar half (safe now):** `TAG=1025_SH SMOKE=1 DS=cifar GPUS=6,7 bash scripts/run_fb1.sh` before win 2 claims
+   6, 7 (cifar legs ~3.4 GB, 2 h vclock ≈ 1-2 min each; if 6, 7 are busy, it waits); win 2 then waits minutes, results unchanged
+   (harness legs run on the virtual clock). Speech half **after B2S ends**: `TAG=1025_SH SMOKE=1 DS=speech bash scripts/run_fb1.sh`
+   (10 GB per leg would block h49's next start). *Exit:* config audit ✅, legs stop at the smoke target (cifar 35%, speech 25%),
+   RAM flat over the 2 h legs; write leg count (96) and wall estimate here.
+4. **When B2S ends: grade FX-N149** (CPU): `bench_validate.py --bench experiments/F49_1024_1530/speech experiments/F48S_1025_SH
+   --harness experiments/B2S_1025_SH/*`. B2 rule per stack: AUC within max(1.5 pp, seed range), updates / h ±10%, bytes ±5%, task
+   time ±5%. *Red:* root the bench gap before FB1 speech; FB1 cifar goes ahead.
+5. **FX-N131 · FB1 launch** (after 3 passes; speech also after 4): `TAG=<mmdd_hhmm> bash scripts/run_fb1.sh` (both datasets, all 8
+   GPUs; jayne: `GPUS=0,2-7`), or `DS=cifar` first if speech is red. 96 legs (48 / dataset: 12 arms × `s0` / `s0u` / `s50u` /
+   `smu`), each to the target (cifar 80%, speech 88%) or 120 h. One seed first, 3 once trends hold. F48 / F49 wall: cifar 7-18 h
+   per leg at 4 / GPU; speech async 10-13 h, sync 2.5-6 h at 1 / GPU (re-estimate from the smoke).
+
+Done 10-25: **FX-N146** targets wired (`bench_report.final_targets()` / `ladder()`; no `--ceiling` / `--target`); F49 6 / 6 PASS
+at them, nobody hits 80 / 88% in 12 h; at the highest common accuracy Felix vs FedBuff 1.24-2.45× sooner, −9 to −69% GB (speech
+`s50u` +3%); FELIX_INSIGHTS §5 / §7 (IN6). **FX-N150** code: tiers `FB1` / `FB1S`, `run_fb1.sh` (`SMOKE`, `DS`, `GPUS`), merged
+(`7aa97b4a5`); smoke = step 3. Bench speech validity: FX-N149 = steps 1, 4 (cifar B2 27 / 27, FX-N129).
 
 **B · Standing.**
 - **FX-N132 · General mechanisms only (operator 10-22).** No per-dataset / n / K / c constants in Felix's mechanisms; scored averaged vs averaged.
