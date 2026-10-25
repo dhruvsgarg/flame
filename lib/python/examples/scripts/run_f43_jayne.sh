@@ -30,10 +30,9 @@ pids+=($!)
 echo "[F43] cifar pid ${pids[0]}, speech pid ${pids[1]}; logs $OUT/{cifar,speech}.log"
 wait
 
-T_CIFAR=0.4,0.45,0.5,0.55,0.6,0.65,0.7
-$PY scripts/bench_report.py "$OUT/cifar" --targets "$T_CIFAR" --json-out "$OUT/cifar_report.json" \
+$PY scripts/bench_report.py "$OUT/cifar" --json-out "$OUT/cifar_report.json" \
     --ceiling experiments/ceiling_1022/b64_cifar10_n300_syn_0.json experiments/ceiling_1022/b64_cifar10_n300_syn_50_3st.json \
     > "$OUT/cifar_report.md" 2>&1
-$PY scripts/bench_report.py "$OUT/speech" --targets 0.5,0.6,0.65,0.7 --json-out "$OUT/speech_report.json" \
+$PY scripts/bench_report.py "$OUT/speech" --json-out "$OUT/speech_report.json" \
     --ceiling experiments/ceiling_1022/google_speech_n100_syn_0.json > "$OUT/speech_report.md" 2>&1
 echo "[F43] done: $OUT/{cifar,speech}_report.md"

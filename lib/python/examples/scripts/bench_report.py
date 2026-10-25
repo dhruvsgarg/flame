@@ -3,6 +3,8 @@
 
   bench_report.py POOL... [--targets 0.35,0.4] [--json-out R.json] [--ceiling C.json ...]
 
+Targets default to `ladder(ds)`: 5 pp rungs up to the final target in `_metadata/targets.json` (FX-N146).
+
 AUC = mean test accuracy over the leg's horizon (the Scoreboard's); TTA = first (3-eval mean for speech) eval >= target on the
 leg's clock; GB to target = wire bytes (both directions) up to that eval; final = mean accuracy over the last 10% of the horizon.
 Cells print mean and seed range (max - min); `--ceiling` adds the centralized ceiling at the leg's end (scripts/ceiling.py).
@@ -17,7 +19,18 @@ import re
 import statistics as st
 import sys
 
-TARGETS = {"cifar10": (0.35, 0.40), "google_speech": (0.25, 0.30)}
+TARGETS_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "_metadata", "targets.json")
+
+
+def final_targets():
+    """{dataset: final target} from `_metadata/targets.json` (FX-N146; Decisions "Targets and comparison")."""
+    return {k: v for k, v in json.load(open(TARGETS_JSON)).items() if k != "src"}
+
+
+def ladder(ds, lo=0.4):
+    """Rungs every 5 pp from lo below the dataset's final target, then the target itself."""
+    t = final_targets()[ds]
+    return [r / 100 for r in range(round(100 * lo), round(100 * t), 5) if r / 100 < t - 1e-9] + [t]
 
 
 def label(arm):
@@ -103,7 +116,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     ceil = [r for c in a.ceiling for r in json.load(open(c))]
     rows, cs = [], sorted(cells(a.pools).items())
-    tgt = lambda ds: [float(x) for x in a.targets.split(",") if x] or TARGETS[ds]
+    tgt = lambda ds: [float(x) for x in a.targets.split(",") if x] or ladder(ds)
     raw = [((ds, trace, arm + ":raw", b), dirs) for (ds, trace, arm, b), dirs in cs if arm.endswith("_srv")]  # FX-N128
     jobs = [(d, tgt(ds), 3 if ds == "google_speech" else 1, ev) for (ds, _, arm, _), dirs in cs + raw for d in dirs
             for ev in [b'"agg_eval_raw"' if arm.endswith(":raw") else b'"agg_eval"']]

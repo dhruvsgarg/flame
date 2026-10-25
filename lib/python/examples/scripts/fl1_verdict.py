@@ -3,10 +3,10 @@
 every target up to the highest either reaches. Beside it: lead vs FedBuff (I-G3: pp·h, late gap, gap at equal GB), updates,
 mean staleness, slot starvation, top-20% share, coverage.
 
-  fl1_verdict.py POOL... [--ceiling C.json ...] [--band-pp 1.0] [--json-out V.json]
+  fl1_verdict.py POOL... [--band-pp 1.0] [--json-out V.json]
 
-Targets: static cells 50-70% every 5 pp; stream cells 40% up in 5 pp steps below 90% of the centralized ceiling at the cell's
-horizon, plus 90% and 95% of that ceiling (operator 10-23, Q-TARGET a).
+Targets: bench_report.ladder, 5 pp rungs (static cells from 50%, streams from 40%) up to the final target in
+`_metadata/targets.json` (FX-N146).
 """
 import argparse
 import glob
@@ -16,7 +16,7 @@ import sys
 from multiprocessing import Pool
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bench_report import cells, ceiling_at, label, leg, stats  # noqa: E402
+from bench_report import cells, label, ladder, leg, stats  # noqa: E402
 
 ANCHOR = ("fedbuff", "ctl_srv")
 
@@ -74,13 +74,8 @@ def gaps(arm, fb, early_h=4.0):
                 byte_gap=sum(bg) / len(bg) if gb > 0 else None)
 
 
-def targets(ds, trace, horizon_h, ceil):
-    if trace.endswith(" static"):
-        return [0.5, 0.55, 0.6, 0.65, 0.7]
-    c = ceiling_at(ceil, ds, trace, horizon_h)
-    if c is None:
-        return [0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7]
-    return [t for t in (0.4, 0.45, 0.5, 0.55, 0.6, 0.65) if t < 0.9 * c - 1e-9] + [round(0.9 * c, 3), round(0.95 * c, 3)]
+def targets(ds, trace):
+    return ladder(ds, 0.5 if trace.endswith(" static") else 0.4)
 
 
 def judge(arm, fb, ths, band):
@@ -99,11 +94,9 @@ def judge(arm, fb, ths, band):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pools", nargs="+")
-    ap.add_argument("--ceiling", nargs="*", default=[])
     ap.add_argument("--band-pp", type=float, default=1.0)
     ap.add_argument("--json-out")
     a = ap.parse_args(argv)
-    ceil = [r for c in a.ceiling for r in json.load(open(c))]
     cs = cells(a.pools)
     groups = {}
     for (ds, trace, arm, b), dirs in cs.items():
@@ -116,7 +109,7 @@ def main(argv=None):
             print(f"\n## {ds} {trace}: no FedBuff anchor, skipped")
             continue
         horizon = stats(legs[ANCHOR], [], 1)["end_h"]
-        ths = targets(ds, trace, horizon, ceil)
+        ths = targets(ds, trace)
         smooth = 3 if ds == "google_speech" else 1
         st = {k: stats(d, ths, smooth) for k, d in legs.items()}
         fb = st[ANCHOR]

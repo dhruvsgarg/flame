@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Time and bytes to the final target (operator 10-24): every stack is compared at the moment it reaches the target, not at a horizon.
 
-  target_report.py POOL... --target cifar10=0.75 google_speech=0.70 [--out DIR]
+  target_report.py POOL... [--target cifar10=0.75 ...] [--out DIR]
+
+Targets default to `_metadata/targets.json` (FX-N146); `--target` only for smoke checks.
 
 Hit = first eval whose 5-eval mean >= target. Per cell: time / GB to target, both normalized to the best stack (1.00); a stack
 that never hits reports its last 5-eval mean, end time and GB. Reference = the fastest deployed (check-in) baseline to the target;
 `*` oracle arms are shown but never the reference. At Felix's hit: each stack's 5-eval mean and GB (the vertical gap).
+If Felix misses: time / GB of Felix and FedBuff to the highest 5-eval mean both reach.
 Figures: per cell accuracy vs time and vs GB (Felix, the reference, the rest muted); per dataset bars of normalized time / GB.
 """
 import argparse
@@ -15,7 +18,7 @@ import sys
 from multiprocessing import Pool
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bench_report import cells, leg  # noqa: E402
+from bench_report import cells, final_targets, leg  # noqa: E402
 
 ORACLE = ("rstar", "fdstar", "oort_star", "fbstar")
 NAMES = {"felix": "Felix", "fedbuff": "FedBuff", "refl": "REFL", "feddance": "FedDance", "fedavg": "FedAvg", "oort": "Oort",
@@ -66,8 +69,22 @@ def cell_rows(legs, target):
     return rows, fx, ref
 
 
+def common(fx, fb):
+    """Highest 5-eval mean Felix and FedBuff both reach, with each one's (h, GB) to it; None if either is missing."""
+    if not (fx and fb):
+        return None
+    c = min(max(p[1] for p in fx["curve"]), max(p[1] for p in fb["curve"]))
+    first = lambda r: next((p[0] / 3600, p[2] / 1e9) for p in r["curve"] if p[1] >= c)
+    return c, first(fx), first(fb)
+
+
 def table(ds, cell, target, rows, fx, ref):
     out = [f"\n## {ds} {cell}: target {100 * target:.1f}% (5-eval mean)"]
+    fb = next((r for r in rows if r["baseline"] == "fedbuff" and not r["oracle"]), None)
+    if fx and not fx["hit"] and (cm := common(fx, fb)):
+        c, (ft, fg), (bt, bg) = cm
+        out.append(f"Felix misses the target; highest common accuracy with FedBuff {100 * c:.1f}%: Felix {ft:.1f} h / {fg:.0f} GB "
+                   f"vs FedBuff {bt:.1f} h / {bg:.0f} GB (**{bt / ft:.2f}× sooner, {bg / fg:.2f}× fewer GB**)")
     if fx and fx["hit"] and ref:
         out.append(f"Felix vs the fastest deployed baseline ({ref['stack']}): **{ref['t_h'] / fx['t_h']:.2f}× sooner, "
                    f"{ref['gb'] / fx['gb']:.2f}× fewer GB** ({fx['t_h']:.1f} vs {ref['t_h']:.1f} h, {fx['gb']:.0f} vs {ref['gb']:.0f} GB)")
@@ -146,10 +163,10 @@ def bars(ds, per_cell, path):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pools", nargs="+")
-    ap.add_argument("--target", nargs="+", required=True, help="dataset=accuracy, e.g. cifar10=0.75")
+    ap.add_argument("--target", nargs="+", default=[], help="dataset=accuracy override, e.g. cifar10=0.75 (smoke checks only)")
     ap.add_argument("--out", default=None, help="dir for figures + JSON (default: first pool)")
     a = ap.parse_args(argv)
-    tg = {k: float(v) for k, v in (s.split("=") for s in a.target)}
+    tg = dict(final_targets(), **{k: float(v) for k, v in (s.split("=") for s in a.target)})
     out = a.out or a.pools[0]
     os.makedirs(out, exist_ok=True)
     cs = cells(a.pools)

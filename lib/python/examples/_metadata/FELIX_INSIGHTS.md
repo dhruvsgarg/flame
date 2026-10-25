@@ -10,10 +10,9 @@ An insight counts only if real and sim agree on it (same metric on a parity pair
 
 ## Next steps (top item is next)
 
-- **IN6 · Re-read F49 at the final targets · todo (targets set 10-25: cifar 80%, speech 88%; FELIX FX-N146).** `target_report.py` on F49 with the FL-bound
-  targets; rewrite the F49 block below and §7's numbers at the hit (× sooner / × fewer GB vs the fastest deployed baseline, gap at
-  Felix's hit, normalized bars). The current F49 numbers use the old 90 / 95%-of-ceiling targets. *Exit:* §5 F49 and §7 cite the
-  final targets. Dropped (operator 10-24): tuning the rate for speech's first 2.5 h (judge = time to target) and explaining the
+- **IN6 · Re-read F49 at the final targets · ✅ 10-25 (FELIX FX-N146).** No stack reaches cifar 80% / speech 88% in 12 h, so §5 F49
+  and §7 compare at the highest 5-eval mean Felix and FedBuff both reach (`experiments/F49_1024_1530/n146_*`); numbers at the hit
+  come from FB1. Dropped (operator 10-24): tuning the rate for speech's first 2.5 h (judge = time to target) and explaining the
   speech gap to F43 (accepted: setup changed).
 - **IN7 · Bytes frontier vs Oort · todo (after FB1).** Where Oort reaches the target on long runs, compare GB to it; probe whether
   Felix's late phase can cut bytes (`cp`, per-client local work) without losing time to target.
@@ -132,20 +131,21 @@ reconstruction (§4 #4).
 
 ## 5. Findings (measured; each line cites its evidence)
 
-**F49 end to end (numbers at the old 90 / 95%-of-ceiling targets; IN6 re-reads at the final ones): Felix new (`fn_chr` = `fx` at rate b 0.1) vs every baseline (`experiments/F49_1024_1530`, code `0f6858e70`; cifar n 300 / speech
+**F49 end to end (re-read 10-25 at the final targets, IN6: nobody reaches cifar 80% / speech 88% in 12 h; compared at the highest
+5-eval mean Felix and FedBuff both reach, = FedBuff's 12 h peak, so × sooner is capped by the horizon): Felix new (`fn_chr` = `fx` at rate b 0.1) vs every baseline (`experiments/F49_1024_1530`, code `0f6858e70`; cifar n 300 / speech
 n 100 × `s0u` / `s50u` / `smu`, 12 h, augmentation on, 1 seed, averaged model; 56 / 56 legs ok, config audit 56 / 56 ✅).**
 I-G1 split from `agg_round` (cumulative updates) + `agg_eval` + `wire`: TTA = U* / R, U* = updates to target, R = updates / h.
 
-| cell | top target both reach: Felix vs FedBuff min · GB | U* ratio · R ratio (FedBuff / Felix, Felix / FedBuff) | final Felix · FedBuff · best sync |
+| cell | highest common 5-eval mean: Felix vs FedBuff h · GB | U* ratio · R ratio (FedBuff / Felix, Felix / FedBuff) | final Felix · FedBuff · best sync |
 |---|---|---|---|
-| cifar `s0u` | 68.3%: 270 vs 530 (1.96×) · 260 vs 569 GB (−54%) | 65%: 2.24× fewer updates · 0.89× the rate | 74.4 · 71.2 · 52.4 (Oort) |
-| cifar `s50u` | 67.8%: 250 vs 650 (2.6×) · 303 vs 465 (−35%) | 65%: 1.65× · 1.70× | 73.2 · 69.0 · 51.3 (Oort*) |
-| cifar `smu` | 55%: 230 vs 350 (1.52×) · 314 vs 571 (−45%) | 50%: 1.67× · 0.94× | 59.1 · 56.3 · 47.4 (FedDance) |
-| speech `s0u` | 50%: 376 vs 580 (1.54×) · 177 vs 242 (−27%) | 50%: 1.33× · 1.25× | 63.5 · 53.3 · 17.1 (FedDance*) |
-| speech `s50u` | 40%: 256 vs 613 (2.4×) · 145 vs 139 (+4%) | 40%: 1.0× · 2.6× | 64.5 · 44.0 · 15.0 (FedDance*) |
-| speech `smu` | 45%: 535 vs 676 (1.26×) · 265 vs 295 (−10%) | 40%: 1.19× · 1.5× | 52.8 · 46.4 · 21.1 (FedDance*) |
+| cifar `s0u` | 71.4%: 6.7 vs 12.0 h (1.80×) · 375 vs 753 GB (−50%) | 65%: 2.24× fewer updates · 0.89× the rate | 74.4 · 71.2 · 52.4 (Oort) |
+| cifar `s50u` | 69.3%: 5.2 vs 12.0 (2.32×) · 369 vs 513 (−28%) | 65%: 1.65× · 1.70× | 73.2 · 69.0 · 51.3 (Oort*) |
+| cifar `smu` | 56.8%: 5.0 vs 12.0 (2.40×) · 371 vs 1184 (−69%) | 50%: 1.67× · 0.94× | 59.1 · 56.3 · 47.4 (FedDance) |
+| speech `s0u` | 53.7%: 8.1 vs 12.0 (1.48×) · 227 vs 294 (−23%) | 50%: 1.33× · 1.25× | 63.5 · 53.3 · 17.1 (FedDance*) |
+| speech `s50u` | 44.3%: 4.9 vs 12.0 (2.45×) · 167 vs 162 (+3%) | 40%: 1.0× · 2.6× | 64.5 · 44.0 · 15.0 (FedDance*) |
+| speech `smu` | 46.9%: 9.6 vs 11.9 (1.24×) · 286 vs 315 (−9%) | 40%: 1.19× · 1.5× | 52.8 · 46.4 · 21.1 (FedDance*) |
 
-- *Time: Felix is first to every target on every cell vs every baseline (6 / 6 PASS),* and the only stack past 50% on speech /
+- *Time: Felix is first to every rung (5 pp up to the final target) on every cell vs every baseline (6 / 6 PASS, `n146_*_verdict.md`),* and the only stack past 50% on speech /
   past 55% on cifar except FedBuff. Expectations held: cifar 65% 2.0 / 2.8× sooner on syn traces (F47: 1.9-2.7×), MobiPerf 1.5×
   (≥ 1.2×), sync stacks ≥ 5× later to 50% or never, speech ≥ 1.4× wherever FedBuff gets there at all.
 - *Where the time comes from differs by cell, and that is the paper's structure.* No unavailability (`s0u`): all of it is
@@ -493,7 +493,7 @@ occupancy, update disagreement, belief error.
    without unavailability Felix wins only by needing fewer updates (2.24×); with it, half comes from keeping slots busy (1.70×);
    on speech `s50u` all of it does. A method that only raises throughput cannot save bytes.
 2. **Bytes follow updates, not time.** Each update costs one model round trip, so bytes to target = U* × model size. Felix saves
-   27-55% GB vs FedBuff exactly where it needs fewer updates. The byte floor belongs to whoever puts the most learning in one
+   9-69% GB vs FedBuff at the highest common accuracy exactly where it needs fewer updates (F49). The byte floor belongs to whoever puts the most learning in one
    round trip: Oort (600 local samples) reaches 40-50% on 7-14× fewer bytes, 4-12× later. Time and bytes are a frontier, not one axis.
 3. **Awareness pays only inside an async engine.** FedBuff idles (98-239k starvation events) waiting for check-ins; Felix's notify +
    evict keeps slots busy. But giving a sync stack the oracle (REFL*, FedDance*) changes ≤ 1.5 pp: the round barrier, not knowledge,
@@ -514,5 +514,6 @@ occupancy, update disagreement, belief error.
 9. **Compare at the target, not at a horizon.** A horizon snapshot ranks curves mid-flight; the paper's question is when each
    stack reaches the accuracy that matters and what it paid by then (time and bytes at the hit, FELIX Decisions).
 10. **Honest limits:** below ~50% the 1-step sync stacks and Oort spend fewer bytes; speech sync baselines are transfer-bound and
-   near chance for hours under the 5% K rule; speech Felix lags FedBuff in its first 2.5 h; 1 seed, 12 h.
+   near chance for hours under the 5% K rule; speech Felix lags FedBuff in its first 2.5 h; 1 seed, 12 h; no stack reaches the
+   final target (cifar 80%, speech 88%) in 12 h, so F49's ratios are at the highest common accuracy until FB1 reports at the hit.
 

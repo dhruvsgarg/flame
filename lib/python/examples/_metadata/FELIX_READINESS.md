@@ -46,7 +46,10 @@ launch; screens keep the number with a letter. Launches: tmux on jayne or shephe
 
 **A · Before FB1 (start 10-26 morning; N146 is code, N148 and N149 run in parallel on the free GPUs, ~3 h).**
 
-- **FX-N146 · RESUME HERE: wire the targets + re-read F49 at them · wip (targets ✅ 10-25: cifar 80%, speech 88%).**
+- **FX-N146 · wire the targets + re-read F49 at them · ✅ 10-25.** `bench_report.final_targets()` / `ladder()` read
+  `targets.json`; `fl1_verdict.py`, `target_report.py`, `run_f4*.sh` take no `--ceiling` / `--target`. F49 at them
+  (`experiments/F49_1024_1530/n146_*`): 6 / 6 PASS; nobody hits; at the highest common accuracy Felix vs FedBuff 1.24-2.45× sooner,
+  −9 to −69% GB (speech `s50u` +3%); FELIX_INSIGHTS §5 / §7 rewritten (IN6).
   - *Targets (Decisions "Targets and comparison"; `_metadata/targets.json`):* cifar = FL bound (80.1% at the 3000-round cap); speech
     = **88%, set by the operator** (FL bound 87.5% at round 835, stopped while rising +0.7 pp / 100 rounds; fits put round 1500 at
     88.6-89.9%). Centralized ceilings beside them: 89.0% / 94.5%.

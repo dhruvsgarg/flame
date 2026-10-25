@@ -9,7 +9,6 @@ cd "$(dirname "$0")/.." || exit 1
 [ -n "${TAG:-}" ] || { echo "[F49] set TAG"; exit 1; }
 [ -z "$(git status --porcelain -uno)" ] || { echo "[F49] tree dirty"; exit 1; }
 OUT=experiments/F49_$TAG
-CEIL=experiments/ceiling_1024_aug
 PY="conda run --no-capture-output -n dg_flame python"
 GPUS=${GPUS:-0,2,3,4,5,6,7}
 BLS="felix,fedbuff,refl,feddance,fedavg,oort,oort_star"
@@ -32,9 +31,7 @@ echo "[F49] running; logs $OUT/{cifar,speech}.log"
 wait
 
 for ds in cifar speech; do
-    c=$([ $ds = cifar ] && echo cifar10_n300 || echo google_speech_n100)
-    $PY scripts/fl1_verdict.py "$OUT/$ds" --ceiling $CEIL/${c}_syn_0.json $CEIL/${c}_syn_50_3st.json $CEIL/${c}_mobiperf_3st.json \
-        --json-out "$OUT/${ds}_verdict.json" > "$OUT/${ds}_verdict.md" 2>&1
+    $PY scripts/fl1_verdict.py "$OUT/$ds" --json-out "$OUT/${ds}_verdict.json" > "$OUT/${ds}_verdict.md" 2>&1
     $PY scripts/config_audit.py "$OUT/$ds" > "$OUT/${ds}_config_audit.md" 2>&1 || echo "[F49] $ds config_audit: mismatches"
     $PY scripts/selection_audit.py "$OUT/$ds" > "$OUT/${ds}_selection_audit.md" 2>&1 || echo "[F49] $ds selection_audit failed"
 done
