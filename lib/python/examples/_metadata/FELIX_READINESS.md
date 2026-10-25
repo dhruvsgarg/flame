@@ -57,6 +57,15 @@ rule are revised to it before launch (step 5). GPUs free for it ≈ 17:00-17:30 
    win 0 frees 2, 3). Speech harness legs take **4 GPUs** each (F43_SHAPE `gpus=4` overrides `--gpus-per-job`), so ≤ 2 at once;
    12 h vclock ≈ 32 min wall per harness leg (FedBuff 32.1 min), bench speech ≈ 60 min. Status 15:36: FedBuff ✅ 15:20, FedAvg
    running; win 0 ≈ 68 / 73 evals. **ETA all B2S ≈ 17:00-17:30.**
+**Results 10-25 17:00 (B2S done 16:47):**
+- *FX-N148 ✅ / finding:* speech `smu` 12 h, `fx` ahead of `fn_chr` (b 0.1) and FedBuff at every rung (40%: 277 vs 526 min; 50%: 597
+  vs never); **Felix old (`ctl_srv`) ties `fx`** (within one eval tick to 40-55%, final 55.5 vs 54.2%). Not a paper comparison
+  (no old-vs-new); `fx` stays frozen. Config audit ✅. `experiments/F48S_1025_SH/verdict.md`.
+- *FX-N149 partial:* FedBuff PASS (AUC Δ 0.3 pp, upd / h, GB, task ±1%). Sync stacks: AUC Δ ≤ 0.6 pp but **bench runs +7-10% more
+  updates / h and GB** for FedAvg, FedDance, REFL (Oort equal); task time ±7% mixed → FAIL on the 5% bytes rule. The bias favours the
+  baselines (more throughput, same accuracy). `fx` harness leg **DOOMED at 7.5 h (EV16: 1 late commit of 4180)**: no Felix B2 row
+  yet; re-run with `--doom-min 0` and root EV16 separately. `experiments/B2S_1025_SH/bench_validate.md`.
+
 2. **When win 0 ends (~15:20), CPU only:** `fl1_verdict.py experiments/F48S_1025_SH experiments/F49_1024_1530/speech`,
    `config_audit.py experiments/F48S_1025_SH` (`fx` row `rp 0.4/0.25/0.2`). *Shows:* `fx` ≥ `fn_chr` (F49) and ahead of Felix
    old and FedBuff at every rung; a miss is a finding, `fx` stays frozen.
