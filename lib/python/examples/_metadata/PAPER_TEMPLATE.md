@@ -358,16 +358,103 @@ minutes to an hour of wall time). Bonus: data that is generated while the device
 
 | rank | workload | model | why it fits | cost and risk |
 |---|---|---|---|---|
-| **1 (recommended)** | **Next-word prediction / smart reply on Reddit**, FedScale's per-user split (or StackOverflow) | **ALBERT-base (11M)** first (Oort and REFL ran it on Reddit; FedScale has the configs, so baselines are source-faithful), then a **small decoder, SmolLM2-135M with LoRA**, as the generative-era variant | keyboard LMs are FL's flagship deployment (Gboard); text is typed while the device is in use, so `usage` streams are literally right; natural non-IID per user; perplexity is the standard metric; a transformer adds a new model class | ALBERT: 45 MB on the wire (it shares weights across layers, not compute: per-token FLOPs ≈ BERT-base); SmolLM2 + LoRA: adapters of a few MB on the wire, but ~270 MB (fp16) of frozen weights per client in memory and per-token FLOPs ~1.5× ALBERT's, so check n 100 fits the bench before committing |
+| **1 (recommended)** | **Language modeling on Reddit**, FedScale's per-user split (or StackOverflow). FedScale / REFL train ALBERT with *masked* LM (15% masking, `third_party/REFL/core/client.py:116`), reported as perplexity; a decoder trains next-token on the same split | **ALBERT-base (11M)** first (Oort and REFL ran it on Reddit; FedScale has the configs, so baselines are source-faithful), then a **small decoder, SmolLM2-135M with LoRA**, as the generative-era variant | keyboard LMs are FL's flagship deployment (Gboard); text is typed while the device is in use, so `usage` streams are literally right; natural non-IID per user; perplexity is the standard metric; a transformer adds a new model class | ALBERT: 45 MB on the wire (it shares weights across layers, not compute: per-token FLOPs ≈ BERT-base); SmolLM2 + LoRA: adapters of a few MB on the wire, but ~270 MB (fp16) of frozen weights per client in memory and per-token FLOPs ~1.5× ALBERT's, so check n 100 fits the bench before committing |
 | 2 | **On-device assistant intent and slot classification**, MASSIVE (51 locales, split by locale + user) or Amazon reviews by user | **MobileBERT (25M) or DistilBERT (66M)**, full fine-tune or adapters | an "agentic" front end (routing a request to an app action) that runs on phones today; a BERT-class model is backprop-feasible on device; classification keeps eval cheap | MASSIVE has no real user ids (locale split only); reviews are not a mobile-native task |
 | 3 | **Tool-call / function-calling fine-tuning for an on-device agent** (e.g. xLAM / Glaive function-calling, Android in the Wild UI actions) | SmolLM2-135M/360M or Qwen2.5-0.5B with LoRA | the most current story (agentic workloads on phones) | no natural user partition (synthetic or per-episode); generative eval is expensive; backprop on 0.36-0.5B on phones collides with FluxTune's memory-wall premise; long tasks (minutes) stress the trace model. Treat as a demo or discussion, not the third workload |
 | baseline-safe fallback | **FEMNIST** (per writer, LEAF) or **OpenImage** (per author, FedScale) | ResNet-18 / ShuffleNet / MobileNetV2 | native to Oort, REFL and FedDance (EMNIST, Tiny-ImageNet), so it is easy to defend | not a new model class; adds breadth, not novelty |
 
-**Recommendation.** Reddit next-word prediction with ALBERT-base as the third workload. Baselines run their own Reddit configs, the
+**Recommendation.** Reddit language modeling with ALBERT-base as the third workload. Baselines run their own Reddit configs, the
 deployment story is the strongest in FL, and the data-generation model matches our streams. Add SmolLM2-135M + LoRA on the same Reddit
 split only if the bench budget allows; it answers "does Felix hold for a generative transformer" without leaving backprop-feasible scale.
-Before either, three checks: (1) task time = FLOP-scaled FedScale ms per sample, audited by EV3; (2) every baseline's Reddit config is in
-`baseline_reference.yaml` with a citation; (3) one 1 h bench smoke per stack at n 100 for legs / h and memory.
+
+### C.2 Plan outline: adding Reddit + ALBERT-base (and optionally SmolLM2-135M + LoRA)
+
+> An outline to move into Felix's paper doc or FELIX_READINESS. Nothing here is implemented or decided; every item is a proposal
+> with the open choice named. Code pointers are from a read of the tree at commit `96cfc10bf`.
+
+**C.2.1 Workload variants (choose one or both)**
+
+| variant | task / loss | metric | partition | why |
+|---|---|---|---|---|
+| A · ALBERT-base-v2 (11M params, ~45 MB) | masked LM, 15% masking, FedScale's block size | perplexity (lower is better) | FedScale `reddit/client_data_mapping` (per user), first n users after FedScale's `filter_less` | Oort and REFL ran exactly this, so baselines use their own configs |
+| B · SmolLM2-135M + LoRA | causal next-token LM on the same Reddit split | perplexity (+ optional next-token top-1 accuracy) | identical to A | generative-transformer variant; only the model changes |
+| alternative text source | StackOverflow, per user, next-word | perplexity | FedScale / TFF split | if Reddit's 25 GB download or cleaning is a blocker |
+
+Open choices: n (300 like cifar, or 100 like speech); sequence / block length (sets cost); for B, LoRA rank and target modules.
+
+**C.2.2 What carries over unchanged (dataset-agnostic, in `flame/`)**
+
+Selectors (Felix, Oort, REFL, FedDance, FedBuff, FedAvg), aggregators and optimizers (FedBuff buffer, rate `new`, YoGi, SAA, FedAvg),
+availability (notify, check-in ledger, REFL Prophet, oracle arms), `usage` data streams tied to each trace, the vclock / harness / bench,
+telemetry, the launcher and `baselines.yaml` wiring. Speech was added the same way: one `DatasetSpec` in
+[fl_data.py](../async_cifar10/fl_data.py) used by the shared trainer `async_cifar10/trainer/pytorch/main.py`.
+
+**C.2.3 What has to be built (dev checklist)**
+
+1. **Data:** download FedScale Reddit (`third_party/fedscale_dataset/download.sh reddit`, ~25 GB) under the data root; tokenizer
+   (ALBERT's / SmolLM2's); a reference split file from `client_data_mapping` for the chosen n; held-out test set as FedScale builds it.
+2. **`DatasetSpec` in `fl_data.py`:** model builder (HF `albert-base-v2`; SmolLM2 + LoRA via PEFT), train / test loaders, loss
+   (masked-LM masking for A, causal shift for B), optimizer sort for the server table.
+3. **Trainer loop (`main.py`):** token batches instead of image / waveform tensors; masking per batch for A; per-sample loss for the
+   loss-based utilities (Oort, Felix, FedDance's importance factor) computed on LM loss; no augmentation (text: none, matching the
+   baselines; record it as FT-N20 / FX-D233 did); bf16 autocast as speech.
+4. **Eval metric everywhere it is read:** perplexity, lower is better. Today the pipeline assumes accuracy: `agg_eval`,
+   `targetAccuracy` / `stableEvalsAboveTarget`, `fl1_verdict.py`, `target_report.py`, `felix_plots.py`, `accuracy_table`, `ceiling.py`,
+   `fl_bound.py`, FedDance's accuracy-increment factor (decide: next-token or masked-token accuracy as its input). Likely the largest
+   hidden cost.
+5. **Task time:** the FedScale device model needs a per-model compute factor. FedScale scales ALBERT at 6.05× MobileNet
+   (`model_factor`, `third_party/REFL/core/argParser.py:232`); our `compute_ms_per_sample` path (`flame/launch/spawner.py:159`) applies
+   none today. Add a model factor (for B, scale by FLOPs vs ALBERT), keep EV3 / `task_time_audit.py` at 0 mismatches. Side check: whether
+   speech's ResNet34 should have carried FedScale's resnet factor (2.4×).
+6. **`datasets.yaml` entry:** `reference_split`, `model_kbit` (measured), GPU train slots, trainer hyperparameters, aggregator overrides.
+7. **`baseline_reference.yaml` rows per baseline × reddit:** Oort / REFL from their Reddit configs (REFL `core/evals/configs/reddit/conf_exp.yml`:
+   lr 1e-4, min lr 1e-5, batch 40, `filter_less` 41, YoGi); FedDance and FedBuff have no Reddit config, so their nearest config with a
+   recorded deviation (ROBUST L34, L37); Felix ours. Sync K / async c by the Cohort rule.
+8. **Per-baseline task timeout** recomputed for the new split (`flame/launch/task_timeout.py`).
+9. **Tests and smokes:** stub mode for the harness, `test_baseline_reference.py` rows, one EV-graded harness pair per stack, then
+   bench B2 for the new cells before any screen (Fast bench decision).
+
+**C.2.4 Configs, targets and bounds**
+
+- **Baseline configs:** from the papers' code first (code wins over paper text, L34), cited in `baseline_reference.yaml`.
+- **Targets:** the papers' targets are for their setups (Oort: perplexity 39 on 1.6M clients; REFL Table 2: 43.6 semi-centralized with
+  YoGi), not ours (n users, our traces, streams). Following FELIX_READINESS Decisions "Targets and comparison", derive our own:
+  centralized ceiling (`ceiling.py`) and FL upper bound (`fl_bound.py`, ideal FedAvg) on our split, both in perplexity.
+- **Sanity anchor:** our ceiling and bound should land in the papers' ballpark (~40 perplexity for ALBERT on Reddit); far off means the
+  training recipe, tokenizer or masking differs, not the FL systems.
+
+**C.2.5 Cost estimate (rough, from FLOPs; confirm with a 1 h bench smoke per stack)**
+
+- ALBERT shares weights across layers but not compute: ≈ BERT-base, ~33 GFLOP per 64-token training sample (3× a ~11 GFLOP forward).
+- At ~60 TFLOP/s achieved on an A40, Felix at cifar-like volume (~14-17k updates / h × ~40 samples / update ≈ 0.6M samples / h) costs
+  ~1-1.5 GPU-h per 12 h-vclock leg, plus eval; Reddit clients hold few samples each, so samples per update may be lower.
+- SmolLM2-135M + LoRA: ~1.5-2× ALBERT per sample (LoRA cuts bytes on the wire, not the backward pass).
+- FB1-length runs (6 trace days, until the target) ≈ 12× the 12 h figure per leg; B roughly doubles the batch budget.
+- Unknowns that move this: block length, local work per baseline (Oort 20 steps vs REFL / FedDance 1 step vs 1 epoch), eval set size and
+  cadence, GPU memory per trainer (bench packing).
+
+**C.2.6 Streaming data: how it could enter the paper (framing options, not decided)**
+
+- *Realism and motivation:* the stacks compared (Oort, REFL, FedBuff, FedDance) assume static shards. Our `usage` streams (FELIX_INSIGHTS
+  §6) make data appear while a device is in use, which fits Reddit (comments are typed in use) better than any other workload.
+- *Evidence it makes FL harder* (FELIX_INSIGHTS §5): loss-based utility misreads a fit client as spent; multi-pass learners revisit few
+  samples many times and overfit; streaming costs multi-step learners accuracy that 1-step stacks don't notice.
+- *Claim scope:* "none of the systems we compare against model data arriving over time", not "no FL system does"; check continual /
+  online FL work before writing related work.
+- *Headline only with a mechanism:* streams can be a headline claim only if a Felix mechanism responds to them (candidate: the c ramp's
+  loss phase); otherwise they stay setup and motivation.
+- *Bounds under streams:* FX-N146 bounds use full shards (trace end), so a stream run approaches them only as data arrives. Options: report
+  the gap to the bound over time; keep the static `s0` cell beside the stream cells to show what streaming costs.
+
+**C.2.7 Suggested order (each step gated by the previous)**
+
+1. Data + split + `DatasetSpec` + perplexity eval, stub-mode harness pass.
+2. Task-time model factor + EV3 audit.
+3. Baseline rows + timeouts; one harness pair per stack.
+4. Centralized ceiling and FL bound on the split (targets).
+5. Bench B2 on the new cells; 1 h smokes for cost (C.2.5).
+6. Screens, then the FB1-length runs alongside cifar and speech.
+7. Variant B only after A's cost is measured.
 
 ---
 
