@@ -3,8 +3,8 @@
 **Purpose.** A writing guide shared by two independent MLSys submissions, Felix and FluxTune. Part A distills what six accepted
 papers do well: Oort (OSDI'21), REFL (EuroSys'23), FedBuff (AISTATS'22), FwdLLM (ATC'24), FLINT (MLSys'23) and FedDance
 (SoCC'25). Part B turns that into a section-by-section template: purpose, dos, don'ts, arguments, data, citations, figures,
-math, experiments. Each paper's authors use Parts A and B to write their own paper-specific markdown; Parts C and D are only
-starting points (see their disclaimers). Part E holds rules both papers share, and Part F the open items.
+math, experiments. Each paper's authors use Parts A and B to write their own paper-specific markdown (Felix: [felix_paper_outline.md](felix_paper_outline.md));
+Part C keeps Felix's pending items, Part D is FluxTune's starting point. Part E holds rules both papers share, and Part F the open items.
 
 **Owners.** Felix: Dhruv. FluxTune: Aish (with Dhruv); its latest solution and experiment docs live on Aish's branch.
 
@@ -333,19 +333,10 @@ badges; plan for it from day one. Rough page split: abstract + intro 1.25 · bac
 
 ---
 
-## Part C — Felix (starting point only)
+## Part C — Felix (pending items only)
 
-> **Disclaimer.** Dhruv will overhaul or replace this part in Felix's own paper markdown. It only points to the docs that hold
-> Felix's evidence and records the third-workload recommendation. It deliberately does not decide Felix's narrative, evaluation or
-> wording; the authors derive those from Parts A and B.
-
-- **Evidence lives in:** [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) §5 (findings), §6 (methods, protocol, baselines table), §7 (reader
-  takeaways); [FELIX_READINESS.md](FELIX_READINESS.md) Scoreboard, Decisions ("Targets and comparison", "Augmentation"), "Paper:
-  motivation and evaluation from FL1", and the rejected-ideas table.
-- **Framing note:** Felix is one system and one paper. The current implementation supersedes the earlier one, and the paper presents
-  it as Felix, with the added baselines; no old-vs-new comparison.
-- **For Felix's markdown (to defend there, not here):** the bytes trade-off vs Oort and the 1-step sync stacks below ~50%; the speech sync
-  baselines near chance for hours; claims that rest on one seed or the old targets.
+Felix's narrative, evidence pointers, names and limits live in [felix_paper_outline.md](felix_paper_outline.md). Only the pending
+third workload stays here.
 
 ### C.1 Third workload for Felix: recommendations
 
@@ -433,20 +424,7 @@ telemetry, the launcher and `baselines.yaml` wiring. Speech was added the same w
 - Unknowns that move this: block length, local work per baseline (Oort 20 steps vs REFL / FedDance 1 step vs 1 epoch), eval set size and
   cadence, GPU memory per trainer (bench packing).
 
-**C.2.6 Streaming data: how it could enter the paper (framing options, not decided)**
-
-- *Realism and motivation:* the stacks compared (Oort, REFL, FedBuff, FedDance) assume static shards. Our `usage` streams (FELIX_INSIGHTS
-  §6) make data appear while a device is in use, which fits Reddit (comments are typed in use) better than any other workload.
-- *Evidence it makes FL harder* (FELIX_INSIGHTS §5): loss-based utility misreads a fit client as spent; multi-pass learners revisit few
-  samples many times and overfit; streaming costs multi-step learners accuracy that 1-step stacks don't notice.
-- *Claim scope:* "none of the systems we compare against model data arriving over time", not "no FL system does"; check continual /
-  online FL work before writing related work.
-- *Headline only with a mechanism:* streams can be a headline claim only if a Felix mechanism responds to them (candidate: the c ramp's
-  loss phase); otherwise they stay setup and motivation.
-- *Bounds under streams:* FX-N146 bounds use full shards (trace end), so a stream run approaches them only as data arrives. Options: report
-  the gap to the bound over time; keep the static `s0` cell beside the stream cells to show what streaming costs.
-
-**C.2.7 Suggested order (each step gated by the previous)**
+**C.2.6 Suggested order (each step gated by the previous)**
 
 1. Data + split + `DatasetSpec` + perplexity eval, stub-mode harness pass.
 2. Task-time model factor + EV3 audit.
