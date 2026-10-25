@@ -3,7 +3,7 @@
 
   bench_pool.py --from-pools F42B_POOLS... --out POOL [--seeds 1 2 3] [--only REGEX] [--gpus 0,2,3] [--per-gpu 4]
   bench_pool.py --jobs JOBS.tsv --out POOL ...        # JOBS.tsv: phase baseline trace yaml (one leg per line)
-  bench_pool.py --harness-args "--tier F42 --datasets cifar10 --phases '...'" --out POOL ...   # the harness's own legs, now
+  bench_pool.py --harness-args "--tier F42 --datasets cifar10 --phases '...'" [--harness-args ...] --out POOL ...   # the harness's own legs, now
 
 Every leg runs `fl_bench.py` under a hard timeout; one Ctrl+C stops all (R20). Legs queue and start on the allowed GPU with the
 most free memory once it and host RAM fit one more leg (`--leg-gpu-gb`, `--leg-ram-gb`, minus legs still ramping), ≤ `--per-gpu`. Seed i runs aggregator seed 1233 + i, the
@@ -92,7 +92,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--from-pools", nargs="*", default=[])
     ap.add_argument("--jobs")
-    ap.add_argument("--harness-args", default="", help="harness_pool args; legs from its current plan (dry-run YAMLs)")
+    ap.add_argument("--harness-args", action="append", default=[], help="harness_pool args; legs from its current plan (dry-run YAMLs); repeatable")
     ap.add_argument("--out", required=True)
     ap.add_argument("--seeds", nargs="+", type=int, default=[1])
     ap.add_argument("--only", default="", help="regex on '<phase> <baseline> <trace>'")
@@ -107,21 +107,25 @@ def main(argv=None):
     ap.add_argument("--runtime-s", type=float, default=None, help="vclock budget override (smokes)")
     ap.add_argument("--workers", type=int, default=2, help="trainer worker processes per leg (fl_bench --workers)")
     ap.add_argument("--first", default="", help="regex: matching legs start first (long legs, so the pool ends sooner)")
+    ap.add_argument("--digest", action="store_true", help="FX-N153: leg_digest.py on each finished leg (digest, then gzip raw logs)")
     a = ap.parse_args(argv)
     jobs = jobs_from_pools(a.from_pools)
     if a.jobs:
         jobs += [tuple(line.split("\t")[:4]) for line in open(a.jobs).read().splitlines() if line and not line.startswith("#")]
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    if a.harness_args:
-        jobs += jobs_from_harness(a.harness_args, out)
+    sys.path.insert(0, str(HERE))
+    import harness_pool as hp
+    (out / "code_key.txt").write_text(hp.code_key() + "\n")  # FX-D162: paper_runs status keys legs on it
+    for h in a.harness_args:
+        jobs += jobs_from_harness(h, out)
     jobs = [j for j in jobs if re.search(a.only, " ".join(j[:3]))]
     queue = [(j, s) for j in jobs for s in a.seeds]
     if a.first:
         queue.sort(key=lambda q: not re.search(a.first, " ".join(q[0][:3])))  # stable: phase order otherwise
     g = a.gpus.split(",")
     groups = [",".join(g[i:i + a.gpus_per_leg]) for i in range(0, len(g) - a.gpus_per_leg + 1, a.gpus_per_leg)]
-    running, done, t0, nid, probe_t, waited = {}, [], time.time(), 0, 0.0, time.time()
+    running, done, t0, nid, probe_t, waited, digests = {}, [], time.time(), 0, 0.0, time.time(), []
     print(f"[bench_pool] {len(queue)} legs on GPUs {a.gpus} (≤ {a.per_gpu} / GPU, {a.leg_gpu_gb:g} GB GPU + {a.leg_ram_gb:g} GB RAM"
           f" per leg), timeout {a.timeout_s:.0f}s", flush=True)
 
@@ -132,10 +136,11 @@ def main(argv=None):
             pass
 
     def stop(*_):
-        for p, *_ in running.values():
+        procs = [v[0] for v in running.values()] + digests
+        for p in procs:
             kill(p, signal.SIGTERM)
         time.sleep(3)
-        for p, *_ in running.values():
+        for p in procs:
             kill(p, signal.SIGKILL)
         sys.exit(130)
     signal.signal(signal.SIGINT, stop)
@@ -180,12 +185,18 @@ def main(argv=None):
                     if f.tell() == 0:
                         f.write("baseline\ttrace\tseed\treal_dir\tsim_dir\n")
                     f.write(f"{b}\t{trace}\t{seed}\t\t{res['run_dir']}\n")
+            if ok and a.digest:
+                digests.append(subprocess.Popen([PY, str(HERE / "leg_digest.py"), res["run_dir"]], stdout=open(d / "digest.out", "w"),
+                                                stderr=subprocess.STDOUT, start_new_session=True))
             print(f"[bench_pool] {'DONE' if ok else 'FAIL rc=' + str(p.returncode)} {phase} {b} {trace} s{seed} "
                   f"{(time.time() - ts) / 60:.1f} min {res and res.get('tasks')} tasks "
                   f"({len(done)}/{len(done) + len(queue) + len(running)})", flush=True)
+    bad_digest = sum(p.wait() != 0 for p in digests)
+    if bad_digest:
+        print(f"[bench_pool] {bad_digest}/{len(digests)} digests FAILED (see <leg>/digest.out)", flush=True)
     h = (time.time() - t0) / 3600
     print(f"[bench_pool] {sum(done)}/{len(done)} legs ok in {h * 60:.1f} min: {sum(done) / max(h, 1e-9):.1f} legs/h", flush=True)
-    return 0 if all(done) else 1
+    return 0 if all(done) and not bad_digest else 1
 
 
 if __name__ == "__main__":

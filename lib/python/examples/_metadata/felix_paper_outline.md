@@ -2,11 +2,12 @@
 
 Built on [PAPER_TEMPLATE.md](PAPER_TEMPLATE.md) Parts A-B (P# = its moves) and Part E (shared rules); neither is repeated here.
 Evidence: [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) §5 (findings), §6 (methods, baselines table), §7 (takeaways); [FELIX_READINESS.md](FELIX_READINESS.md)
-Decisions, contribution ledger, "Paper: motivation and evaluation from FL1", rejected-ideas table.
+Decisions (`fx` layer table), Scoreboard, rejected-ideas table.
 **Scope now:** title → §5 design. Theory, implementation, evaluation, ablations come after the front matter is final.
 **Framing:** one system, one paper; the current implementation is Felix, no old-vs-new comparison.
 **Numbers:** F49 (12 h, 1 seed) at the old 90 / 95%-of-ceiling targets ⚠ re-read at the FL-bound targets (FX-N146, FELIX_INSIGHTS
-IN6) before any number is final.
+IN6) before any number is final. Felix MobiPerf numbers from F47-F49 also ran 1-7% impossible extra
+tasks (FX-N157): ⚠ re-read every MobiPerf Felix number on FB2 data.
 
 ## 0. Open choices (decide before drafting prose)
 
@@ -19,7 +20,7 @@ eligibility is hard to forecast**, used in every section. Title open.
 | eligible clients (decided) | a client is **eligible** while its device meets the training criteria: idle, charging, unmetered network (Bonawitz et al. 2019). Two states only: eligible or not (online but not eligible = not eligible). The **eligible pool** = clients eligible now. Define once in §2 ¶2; never "available" for this | — |
 | decomposition | time to accuracy = updates to accuracy ÷ update throughput (statistical × system efficiency, Oort §2); bytes to accuracy = dispatched tasks × model round-trip bytes = update throughput × (1 + discard share) × round trip × time to accuracy | — |
 | mechanism names (decided scheme; ablation legends Felix−X) | **Felix-Notify** (push-based availability + eviction) · **Felix-Select** (utility-proportional client selection, \|D\| × EMA loss) · **Felix-Pace** (availability-adaptive concurrency) · **Felix-Agg** (staleness-tolerant aggregation, large server step) | descriptive only: push-based availability tracking · utility-proportional selection · adaptive concurrency · staleness-tolerant aggregation |
-| streams (decided 10-25) | **setting, not hero:** part of the realistic setup (usage-tied streams) and methodology, kept wherever the setting is described; not in the title, the tension or the contributions, no stream-specific motivation subsection. Evidence (F47 `fn_aug` vs `ctl_aug`, time / GB to 65%): `s0` static 1.9× / −58%, `s0u` stream 2.0× / −55%, `s50u` stream + unavailability 2.7× / −36%, `smu` 1.24× / −9%: the gain grows with unavailability, not streaming; the one stream-specific mechanism (c by loss phase) was refuted as a pacer (FX-T89). Caveats: 1 seed, at 65% not the final target, `fn` (≈ `fn_chr` on syn traces). Eval claim: "gains hold on static and streaming data" (add `s0` to the 48 h ladder / FB1 cells) | revisit only if a final-target run shows a clearly larger edge on streams |
+| streams (decided 10-25) | **setting, not hero:** part of the realistic setup (usage-tied streams) and methodology, kept wherever the setting is described; not in the title, the tension or the contributions, no stream-specific motivation subsection. Evidence (⚠ FX-N157 taints MobiPerf; F47 `fn_aug` vs `ctl_aug`, time / GB to 65%): `s0` static 1.9× / −58%, `s0u` stream 2.0× / −55%, `s50u` stream + unavailability 2.7× / −36%, `smu` 1.24× / −9%: the gain grows with unavailability, not streaming; the one stream-specific mechanism (c by loss phase) was refuted as a pacer (FX-T89). Caveats: 1 seed, at 65% not the final target, `fn` (≈ `fn_chr` on syn traces). Eval claim: "gains hold on static and streaming data" (add `s0` to the 48 h ladder / FB1 cells) | revisit only if a final-target run shows a clearly larger edge on streams |
 | eligibility states (decided 10-25) | **eligible / not eligible** everywhere; no tiers. Code's AVL_EVAL = not eligible in text (feeds only unused on-device evals, FX-D165). One methods line: "traces also mark online-not-eligible time; every stack treats it as not eligible" | — |
 | eligibility predictability (decided 10-25: claim it; FX-N147) | **Claim:** the deployed forecasters (REFL's per-device Prophet, FedDance's check-in Poisson V_m, both as run in our baselines) add nothing over the naive guess "eligible now stays eligible". **Method (MobiPerf, n 300, days 1-5, h 5-60 min):** ground truth = the trace (did the client stay eligible?); each predictor is scored against it: AUC (ranking; truth = 1.0, coin = 0.5) and Brier (probability error; truth = 0). **Q1, who is eligible in [t+h, t+2h]:** naive AUC 0.97-0.84, FedDance 0.92-0.84, Prophet 0.68-0.69. **Q2, which eligible client stays for h:** naive can't rank (0.5), Prophet 0.57-0.58, FedDance 0.65-0.67; both Brier worse than the base rate (0.37-0.53 / 0.12-0.29 vs 0.05-0.24). **Why:** eligibility memory fades within hours (corr 0.64 at 1 h, 0.12-0.19 at 12-24 h). syn_50 is memoryless by design (all AUC 0.50): control only. **Wording:** "forecasts add nothing over eligible now", not "unpredictable" | if a forecaster beats the naive guess: drop the claim, keep "scarce and shifting" |
 | availability knowledge per stack (measure: FX-N147) | §3.2 table: what each stack knows and how accurate it is: check-in (exact at check-in, blind to departures until timeout), REFL Prophet and FedDance V_m forecasts (error from FX-N147), oracle `*` (exact at selection, blind mid-task). Component microbenchmark (P21) in eval | — |
@@ -61,7 +62,7 @@ eligibility is hard to forecast**, used in every section. Title open.
   eligibility that is hard to predict, and tune selection, concurrency and aggregation separately; even oracle availability changes little.
 - **S4 insight (25 w):** drive all three from the live eligible pool, reported by the clients.
 - **S5 system (30 w):** Felix: Felix-Notify, Felix-Select, Felix-Pace, Felix-Agg, one clause each.
-- **S6 results (30 w, P3 ranges on time and bytes):** Felix is first to every target on 2 datasets × 3 traces.
+- **S6 results (30 w, P3 ranges on time and bytes):** Felix is first to every target on 2 datasets × 4 traces.
   - 1.26-2.6× sooner than FedBuff at −55% to +4% GB ⚠ re-read at final targets.
 
 ## §1 Introduction (≈ 1.25 pages, ~900 words + Fig 1; argument first, ≤ 3 numbers)
@@ -103,7 +104,7 @@ eligibility is hard to forecast**, used in every section. Title open.
   2. *Systems:* push-based availability with eviction and availability-adaptive concurrency, with no forecasting (eligibility is
      hard to forecast, §3.1).
   3. *ML:* utility-proportional client selection and staleness-tolerant aggregation for async FL.
-  4. *Result:* first to every target, faster than the strongest deployed baseline on 2 datasets × 3 traces, with the speedup split
+  4. *Result:* first to every target, faster than the strongest deployed baseline on 2 datasets × 4 traces, with the speedup split
      into statistical × system efficiency; gains hold on static and streaming data.
 
 ## §2 Background (≈ 0.5 page, ~350 words, text only)
@@ -229,7 +230,7 @@ standalone full-width figure for a single curve.
   - *Observation:* §3.5; early every update helps, so every fixed bound that restores choice loses early.
   - *Mechanism:* φ = mean received-model loss over recent updates / running peak, recomputed every commit;
     c = φ · c_max + (1 − φ) · min(c_max, ½ eligible), within [K, c_max]. Ramps down within minutes; rises with the pool, not φ.
-  - *Evidence:* MobiPerf −50% GB (659 vs 1308), same tick to 40-50%, +0.5 pp, starvation 5k vs 209k; a no-op on syn traces and on
+  - *Evidence (⚠ F48, FX-N157: re-read on FB2):* MobiPerf −50% GB (659 vs 1308), same tick to 40-50%, +0.5 pp, starvation 5k vs 209k; a no-op on syn traces and on
     speech (φ stays 0.56-0.91), as designed.
   - *Why not:* fixed c ∝ eligible (4× slower start); c by loss phase alone (floor 10 from 6-8 h to 48 h); held-out pacing (noise);
     AIMD K (walks to floor). K stays fixed: τ ≈ c / K, and K 10 is FedBuff's own choice.
@@ -250,7 +251,8 @@ main-text figure needs; seeds 2-3 and appendix rows after, re-plotting as data l
 
 **Shared setup:** cifar n 300 / speech n 100, Dirichlet α 0.1; usage-tied data streams on every trace (static only in the appendix);
 traces syn_0, syn_20, syn_50, MobiPerf; each stack at its own paper's K / c ("Cohort and participation"); start +24 h into the
-6-day trace; stop at the target (cifar 80%, speech 88%; 5-eval mean) or the trace end (120 h); time and GB at the stop. Bench
+6-day trace (each client starts with its day-1 data; 0 h leaves ~1 sample per client, FELIX_INSIGHTS
+streams design); stop at the target (cifar 80%, speech 88%; 5-eval mean) or the trace end (120 h); time and GB at the stop. Bench
 (B2-validated per dataset: cifar ✅, speech = FX-N149). **Deployable** = FedBuff, Oort (check-in), REFL (Prophet forecast),
 FedDance (check-in Poisson forecast), FedAvg; **oracle** = FedBuff*, Oort*, REFL*, FedDance*, FedAvg* (the trace's eligible set at
 selection); Felix = `fx`. **Ablation cells** = {cifar, speech} × {syn_50, MobiPerf}.
@@ -304,7 +306,8 @@ selection); Felix = `fx`. **Ablation cells** = {cifar, speech} × {syn_50, MobiP
 | End-to-end static | `fx` + 5 deployable, static shards | syn_0 × 2 datasets | 12 | — | 4 (appendix) |
 | Robustness: lost · Sensitivity | — | — | — | after first version | 5 |
 
-**First version ≈ 166 legs** (≈ 154 at priorities 1-3 + 12 static). Speech is the bottleneck (1 leg / GPU, async 10-13 h for 120 h):
+**First version ≈ 166 legs** (manifest: 152 / seed incl. 12 static; silent departures not yet in it). **First plots
+(operator 10-25 late) = priorities 1-2, 116 legs.** Speech is the bottleneck (1 leg / GPU, async 10-13 h for 120 h):
 measure 2 legs / GPU on the speech smoke; use jayne when free. Order: End-to-end first (cifar and speech pools in parallel), then
 priorities 2-3, cifar ahead of speech within each.
 ## Later sections (claims they must back; outline after the front matter is final)
@@ -314,4 +317,4 @@ priorities 2-3, cifar ahead of speech within each.
 - Ablations: ladder A0-A4 + K1, swap ablations (FX-N145), why-not table.
 - Limits paragraph at the end of the evaluation (P24; moved from intro ¶7): below ~50%, Oort and 1-step sync stacks spend fewer
   bytes at several times the time; speech sync stacks transfer-bound under the 5% K rule;
-  speech FedBuff leads Felix for the first ~2.5 h; seeds.
+  speech FedBuff leads Felix for the first ~2.5 h (⚠ FB1S smoke: Felix 22% vs FedBuff 16% at 2 h; re-read); seeds.

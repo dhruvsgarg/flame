@@ -552,10 +552,14 @@ class _NullBackend:
 
 
 def run_leg(yaml_path, out, label=None, workers=0):
+    _fast_yaml()
+    import yaml
+    for e in yaml.safe_load(open(yaml_path))["experiments"][:1]:
+        off = ((e.get("aggregator") or {}).get("config_overrides") or {}).get("hyperparameters", {}).get("trace_offset_s")
+        if off is not None:  # before resolve: the spawner shifts trainer traces by it (FX-N151)
+            os.environ["FLAME_TRACE_OFFSET_S"] = str(off)
     exp, agg_cfg, tcfgs, agg_main, trainer_main = resolve(yaml_path)
     hp = agg_cfg["hyperparameters"]
-    if hp.get("trace_offset_s") is not None:
-        os.environ["FLAME_TRACE_OFFSET_S"] = str(hp["trace_offset_s"])  # harness_suite --trace-offset-s
     job = agg_cfg["job"]["id"]
     run_dir = Path(out) / f"run_{datetime.now():%Y%m%d_%H%M%S}_{label + '_' if label else ''}{job}"
     tel = run_dir / "telemetry"

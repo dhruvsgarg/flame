@@ -12,6 +12,7 @@ Cells print mean and seed range (max - min); `--ceiling` adds the centralized ce
 import argparse
 import csv
 import glob
+import gzip
 import json
 import multiprocessing
 import os
@@ -41,10 +42,10 @@ def label(arm):
 def leg(run_dir, event=b'"agg_eval"'):
     """[(t, acc, cumulative bytes)] and the end clock, streamed in event order (t = the last commit's vclock).
     `event` b'"agg_eval_raw"' reads a serveEma leg's unserved model (FX-N128)."""
-    f = glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl"))[0]
+    f = (glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl")) + glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl.gz")))[0]
     t, nbytes, pts = 0.0, 0, []
     wire, vclk, acc = re.compile(rb'"bytes": (\d+)'), re.compile(rb'"vclock_now": ([-0-9.e]+)'), re.compile(rb'"test-accuracy": ([-0-9.e]+)')
-    with open(f, "rb") as fh:
+    with (gzip.open(f, "rb") if f.endswith(".gz") else open(f, "rb")) as fh:  # leg_digest gzips raw logs
         for line in fh:
             if b'"wire"' in line:
                 nbytes += int(wire.search(line).group(1))
@@ -91,7 +92,7 @@ def cells(pools):
                 if d and d != "-" and os.path.isdir(d):
                     ds = "google_speech" if "google_speech" in d else "cifar10"
                     arm = re.sub(r"^(gs_)?FB?\d+\w*?_s(?:\d+u?|mu)_", "", re.sub(r"_r\d+$", "", phase))  # smu = MobiPerf stream
-                    static = re.search(r"FB?\d+[A-Za-z]?_s\d+_", phase) is not None  # `s0` static vs `s0u` stream on one trace
+                    static = re.search(r"FB?\d+\w*?_s\d+_", phase) is not None  # `s0` static vs `s0u` stream on one trace
                     out.setdefault((ds, r["trace"] + (" static" if static else ""), arm, r["baseline"]), []).append(d)
     return out
 

@@ -140,6 +140,9 @@ class TopAggregator(SyncTopAgg):
         # FX-D90: a send-gated trainer's held slot frees when its delivery commits, as in real.
         self._sim_hold_delivering_slot = str(
             getattr(self.config.hyperparameters, "sim_hold_delivering_slot", True)).lower() == "true"
+        # FX-N157: a client committed before its sct (clock-jump clamp) stays busy until sct, as its device still computes.
+        self._sim_busy_until_sct = str(getattr(self.config.hyperparameters, "sim_busy_until_sct", True)).lower() == "true"
+        self._sim_busy_until: dict = {}
         # FX-D89: the abandon deadline is a sim clock event, as real's selector timer.
         self._sim_abandon_wakes = str(
             getattr(self.config.hyperparameters, "sim_abandon_wakes", True)).lower() == "true"
@@ -648,6 +651,8 @@ class TopAggregator(SyncTopAgg):
             if _min_future_exp is not None:
                 _advance_to = max(_now, min(sct, _min_future_exp + self._sim_order_slack_s))
         self._advance_sim_clock(_advance_to)
+        if sct > self._vclock.now and getattr(self, "_sim_busy_until_sct", True):  # FX-N157
+            self.__dict__.setdefault("_sim_busy_until", {})[_end] = sct
         # Re-dispatch tell (second contribution this cycle). Drives the past-dating source breakdown.
         _was_recommit = _end in getattr(self, "_agg_cycle_contributed_ends", ())
         if not hasattr(self, "_sim_commit_count"):
@@ -692,8 +697,9 @@ class TopAggregator(SyncTopAgg):
                 self._sim_free_slot_ts.append(self._vclock.now)
         # Gate bookkeeping: trainer no longer in flight; its MODELED_DELAY_S
         # was already learned into _sim_known_delay_s by _ingest above.
-        self._sim_inflight_expected.pop(_end, None)
-        getattr(self, "_sim_dispatch_wall", {}).pop(_end, None)
+        if self._sim_inflight_expected.get(_end, float(sct)) == float(sct):  # FX-N157: keep a newer dispatch's entry
+            self._sim_inflight_expected.pop(_end, None)
+            getattr(self, "_sim_dispatch_wall", {}).pop(_end, None)
         _commit_gap = self._vclock.now - sct
         # a "past-dated" commit is one the clock already lapped
         # (sct < vclock by more than the gate slack) — exactly what inflates
@@ -1681,6 +1687,12 @@ class TopAggregator(SyncTopAgg):
         if getattr(self, "_sim_hold_delivering_slot", True):  # FX-D90: a held slot frees at its delivery's commit
             held |= self._sim_delivering_held & pending_in_buffer
         held |= self._withheld_slot_held  # FX-N56: freed by _abandon_stalled at dispatch+90s
+        busy = getattr(self, "_sim_busy_until", None)
+        if busy:  # FX-N157: busy until its sct, not its early commit
+            now = self._vclock.now
+            for e in [e for e, t in busy.items() if t <= now]:
+                del busy[e]
+            held |= set(busy)
         if harness.injected("no_busy_hold"):
             held = set()
 

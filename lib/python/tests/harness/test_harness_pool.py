@@ -730,3 +730,22 @@ def test_fb1_tier_runs_to_targets_json():
         assert len(fx) == 4 and all(pool.FELIX_FINAL in p.agg_hp for p in fx)
         smoke = pool.tier_phases("FB1S", bls, ds)
         assert len(smoke) == len(ph) and all(p.runtime_s == 7200 and f"targetAccuracy={pool.FB1S_TARGETS[ds]}" in p.agg_hp for p in smoke)
+
+
+def test_fb2_run_sets_match_table_1():
+    """FX-N154: FB2<set> = the paper's run sets; legs per seed and dataset as felix_paper_outline Table 1; smoke = 2 h, FB1S target."""
+    bls = ("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star")
+    want = dict(E2E=44, LAD=6, SWC=4, SWA=4, SWG=4, SWS=4, REJ=4, STA=6)
+    for ds in ("cifar10", "google_speech"):
+        for k, n in want.items():
+            ph = pool.tier_phases(f"FB2{k}", bls, ds)
+            assert sum(len(p.baselines) for p in ph) == n, k
+            assert all(p.runtime_s == 432000 and f"targetAccuracy={pool.final_targets()[ds]} targetWindow=5" in p.agg_hp for p in ph)
+            assert all(p.trace_offset_s == ("" if "_s0_" in p.pid else "86400") for p in ph)
+            smoke = pool.tier_phases(f"FB2{k}S", bls, ds)
+            assert [p.pid.replace(f"FB2{k}S_", f"FB2{k}_") for p in smoke] == [p.pid for p in ph]
+            assert all(p.runtime_s == 7200 and f"targetAccuracy={pool.FB1S_TARGETS[ds]} " in p.agg_hp for p in smoke)
+        swaps = [p for k in ("SWA", "SWG", "SWS", "REJ") for p in pool.tier_phases(f"FB2{k}", bls, ds)]
+        assert all(p.baselines == ("felix",) and p.agg_hp.count("sel.selectType=") == 1 for p in swaps)
+        cfix = [p for p in pool.tier_phases("FB2SWC", bls, ds) if p.pid.endswith("_fx_cfix")]
+        assert {p.c for p in cfix} == {pool.F48_SHAPE[ds]["c"] // 2} and all("dynamic_kc.enabled" not in p.agg_hp for p in cfix)

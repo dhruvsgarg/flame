@@ -948,12 +948,32 @@ def ev23_checkin_protocol(run):
     return _res("PASS", f"pooled={n['pooled']} rejected={n['rejected']} missed={n['missed']} picked={n['picked']}")
 
 
+def ev24_busy_until_completion(run):
+    """FX-N157 (L4 on the vclock): a client gets no new train task before its previous one's modeled completion (sct),
+    unless that task was abandoned / evicted; EV10 orders by wall time, so an early (clamped) commit hid this."""
+    if not _simulated(run):
+        return _res("SKIP", "sim-only (real: one trainer process serializes its tasks)")
+    gone = {(e.get("end_id"), round(float(e["sim_send_ts"]), 2)) for e in _events(run, "abandon_timeout") if e.get("sim_send_ts") is not None}
+    n, bad, ex = 0, 0, []
+    for tid, evs in run["trainers"].items():
+        ts = sorted((float(e["sim_send_ts"]), float(e["sim_completion_ts"])) for e in evs
+                    if e.get("event") == "trainer_round" and e.get("task_to_perform", "train") == "train"
+                    and e.get("sim_send_ts") is not None and e.get("sim_completion_ts") is not None)
+        n += len(ts)
+        for (s0, c0), (s1, _) in zip(ts, ts[1:]):
+            if s1 < c0 - _EPS_S and (tid, round(s0, 2)) not in gone:
+                bad += 1
+                if len(ex) < 10:
+                    ex.append((tid[-4:], round(s0, 1), round(c0, 1), round(s1, 1)))
+    return _res("PASS" if not bad else "FAIL", f"tasks={n} dispatched_while_computing={bad}", examples=ex)
+
+
 CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model, ev4_real_sleep,
           ev5_commit_accounting, ev6_staleness, ev7_agg_goal_cadence, ev8_concurrency_cap,
           ev9_selector_state, ev10_dispatch_one_in_flight, ev11_vclock, ev12_reached_budget,
           ev13_no_stall, ev14_eval_sane, ev15_one_task_per_version, ev16_withheld_delivery,
           ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev20_abandon_on_time,
-          ev21_avl_eval_semantics, ev22_availability_knowledge, ev23_checkin_protocol]
+          ev21_avl_eval_semantics, ev22_availability_knowledge, ev23_checkin_protocol, ev24_busy_until_completion]
 
 
 # Live early exit: checks whose FAIL on a log prefix stays FAIL on the full log (EV11: its backwards count only).

@@ -22,11 +22,12 @@ DPI, FORMATS = 300, ("pdf", "png")
 INK, MUTED, GRID, SURFACE = "#1f1f1e", "#6b6a64", "#e4e3de", "#ffffff"
 STACK = {"Felix": ("#2a78d6", "-"), "FedBuff": ("#1baf7a", "-"), "REFL": ("#eda100", "-"), "FedDance": ("#e87ba4", "-"),
          "Oort": ("#008300", "-"), "FedAvg": ("#9c6b30", "-"), "REFL*": ("#eda100", "--"), "FedDance*": ("#e87ba4", "--"),
-         "Oort*": ("#008300", "--"), "FedBuff*": ("#1baf7a", "--")}
+         "Oort*": ("#008300", "--"), "FedBuff*": ("#1baf7a", "--"),
+         "FedAvg*": ("#9c6b30", "--")}
 PRED = {"naive: eligible now": ("#2a78d6", "-", "o"), "REFL Prophet": ("#eda100", "-", "s"), "FedDance $V_m$": ("#e87ba4", "-", "^"),
         "time-of-day vote": ("#6250d6", "--", "D")}  # availability predictors (FX-N147)
 TRACE = {"MobiPerf": (INK, "-"), "syn_50": (MUTED, "--"), "syn_0": ("#b1b0a9", ":")}
-STATUS = {"MOCK": "#e34948", "PRELIM": "#c98500", "DRAFT": "#6250d6"}  # real figures carry no status
+STATUS = {"MOCK": "#e34948", "PRELIM": "#c98500", "DRAFT": "#6250d6", "MISSING": "#6b6a64"}  # real figures carry no status
 
 # ---- z-order: data above grid; lines and markers above bars and fills ----
 Z = {"fill": 1, "bar": 2, "line": 3, "hero": 4, "marker": 5, "annot": 6, "status": 10}

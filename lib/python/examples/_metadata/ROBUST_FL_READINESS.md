@@ -8,7 +8,7 @@ accuracy in the expected time window (tracked per track: FELIX Scoreboard). Equa
 **Four docs (plus FELIX's insights companion) are the only working references:**
 - **this doc** — the rules for all four docs, the lessons and tripwires both tracks share, and the queue of
   shared infrastructure work;
-- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS (10-25 evening): Felix paper first version (`fx` frozen): sync-stack bench gap (FELIX FX-N151), run pipeline + run sets (FX-N153, FX-N154), then End-to-end seed 1 (FX-N131) → D5 long runs, claims (FX-N108). Throughput (FX-N100) on every batch; sim speedup never < 1×, aim 2-5×+.**
+- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS (10-25 evening): Felix paper first version (`fx` frozen): Felix busy hold (FELIX FX-N157), sync-stack bench gap (FX-N151), smoke of the built run pipeline + run sets (FX-N153, FX-N154), then End-to-end seed 1 (FX-N131) → D5 long runs, claims (FX-N108). Throughput (FX-N100) on every batch; sim speedup never < 1×, aim 2-5×+.**
   - [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) — Felix's companion: telemetry-backed insights for the paper (model, catalog, findings).
 - [PARITY_READINESS.md](PARITY_READINESS.md) — real↔sim parity for both tracks: climbing rules (C1-C9: correct before
   equal, instrument what you can't see, launch only when fixes are maximized), method, tools, per-track scoreboard.
