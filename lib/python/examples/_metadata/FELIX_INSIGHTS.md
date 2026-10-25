@@ -2,7 +2,7 @@
 
 Read [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) first; its doc rules apply here. **Purpose (operator 10-12):** turn end-to-end
 numbers (time-to-accuracy, communication) into arguments backed by telemetry: *why* Felix wins or loses against each baseline, with
-a formal model where one exists and a measured figure for every claim. **Status:** §4 instrumentation ✅ (10-12); metrics in `scripts/insights.py`; findings grow per run (§5). Iterative: each run adds evidence; a claim lives here only with its metric, source and evidence.
+a formal model where one exists and a measured figure for every claim. **Status:** §4 instrumentation ✅ (10-12); metrics in `scripts/insights.py`; findings grow per run (§5); reader takeaways in §7. Iterative: each run adds evidence; a claim lives here only with its metric, source and evidence.
 
 **Entry format.** `ID · claim · metric (formula) · source (event.field) · baselines · figure · evidence (run dir) · state`.
 States: `hyp` (stated, unmeasured) · `measured` (number + run) · `proved` (bound derived + measured inside it) · `refuted`.
@@ -10,6 +10,13 @@ An insight counts only if real and sim agree on it (same metric on a parity pair
 
 ## Next steps (top item is next)
 
+- **IN6 · Re-read F49 at the final targets · blocked: FELIX FX-N146 (bounds running).** `target_report.py` on F49 with the FL-bound
+  targets; rewrite the F49 block below and §7's numbers at the hit (× sooner / × fewer GB vs the fastest deployed baseline, gap at
+  Felix's hit, normalized bars). The current F49 numbers use the old 90 / 95%-of-ceiling targets. *Exit:* §5 F49 and §7 cite the
+  final targets. Dropped (operator 10-24): tuning the rate for speech's first 2.5 h (judge = time to target) and explaining the
+  speech gap to F43 (accepted: setup changed).
+- **IN7 · Bytes frontier vs Oort · todo (after FB1).** Where Oort reaches the target on long runs, compare GB to it; probe whether
+  Felix's late phase can cut bytes (`cp`, per-client local work) without losing time to target.
 - **IN1 · Verify the model against code · todo (no runs).** Confirm §1 notation line by line: eval span `s_E` (trainer `task_recv →
   task_send` for `task=eval`), eval budget reset rule (`curr_round_eval_slots_left` on train commit only, `async_oort._cleanup_recvd_ends`),
   cooling slots, and where `PROP_LAST_EVAL_ROUND` is first set (the eval gate needs it non-null). *Exit:* every §1 symbol cites a code line.
@@ -99,14 +106,14 @@ reconstruction (§4 #4).
 | I-D2 | client overhead share | (task span − D) / task span | trainer `task_recv` / `task_send` (existing) | all | hyp |
 | **E · Communication** | | | | | |
 | I-E1 | bytes per aggregated update | sent + received bytes / aggregated updates; wasted share (I-B1 outcomes) | `wire` (§4 #2) | all | hyp |
-| I-E2 | communication to accuracy | cumulative bytes at each eval point | `wire` + `agg_eval` | all | hyp (EuroSys uses message counts, FX-N91 f) |
+| I-E2 | communication to accuracy | cumulative bytes at each eval point | `wire` + `agg_eval` | all | measured (F49, §5) |
 | **F · Felix train/eval interplay (§1)** | | | | | |
 | I-F1 | how often does train wait on eval? | blocked-time share; ρ vs P1 bound | `selection` occupancy (§4 #1) | felix | hyp |
 | I-F2 | does eval steal good train picks? | trainers in S_E that rank in train's top-k at that selection | `selection.per_trainer` + occupancy (§4 #1) | felix | hyp |
 | I-F3 | is eval starved by train? | eval budget used per version; eval-eligible but busy count | occupancy + `selection(task=eval)` | felix | hyp |
 | I-F4 | does eval feedback improve train picks? | utility-belief error with vs without a recent eval | `utility_belief` + per_trainer belief source | felix | hyp |
 | **G · Time-to-accuracy decomposition** | | | | | |
-| I-G1 | why is X faster to target? | TTA = U* / R: U* = aggregated updates to target (statistical efficiency), R = aggregated updates per hour (system efficiency); R = c_eff · (1 − waste) / s̄_T | `agg_round`, `agg_eval`, §4 #4 | all | hyp |
+| I-G1 | why is X faster to target? | TTA = U* / R: U* = aggregated updates to target (statistical efficiency), R = aggregated updates per hour (system efficiency); R = c_eff · (1 − waste) / s̄_T | `agg_round`, `agg_eval`, §4 #4 | all | measured (F49, §5) |
 | I-G2 | marginal value of an update | d acc / d aggregated update per phase of the run | `agg_eval` + `agg_round` (existing) | all | hyp |
 | I-G3 | how long does an early lead last? | lead = ∫(acc − acc_FedBuff) dt in pp·h, split 0-4 h / 4-12 h; hour FedBuff is ahead for good; break-even ≈ end + lead / late gap | `agg_eval` (existing) | all vs FedBuff | measured (FL1 F44 / F45, §5) |
 
@@ -124,6 +131,69 @@ reconstruction (§4 #4).
 `tests/harness/test_insights.py`). Volume: `wire` = 2 events per message (≈ dispatches + updates), the rest are fields.
 
 ## 5. Findings (measured; each line cites its evidence)
+
+**F49 end to end (numbers at the old 90 / 95%-of-ceiling targets; IN6 re-reads at the final ones): Felix new (`fn_chr`) vs every baseline (`experiments/F49_1024_1530`, code `0f6858e70`; cifar n 300 / speech
+n 100 × `s0u` / `s50u` / `smu`, 12 h, augmentation on, 1 seed, averaged model; 56 / 56 legs ok, config audit 56 / 56 ✅).**
+I-G1 split from `agg_round` (cumulative updates) + `agg_eval` + `wire`: TTA = U* / R, U* = updates to target, R = updates / h.
+
+| cell | top target both reach: Felix vs FedBuff min · GB | U* ratio · R ratio (FedBuff / Felix, Felix / FedBuff) | final Felix · FedBuff · best sync |
+|---|---|---|---|
+| cifar `s0u` | 68.3%: 270 vs 530 (1.96×) · 260 vs 569 GB (−54%) | 65%: 2.24× fewer updates · 0.89× the rate | 74.4 · 71.2 · 52.4 (Oort) |
+| cifar `s50u` | 67.8%: 250 vs 650 (2.6×) · 303 vs 465 (−35%) | 65%: 1.65× · 1.70× | 73.2 · 69.0 · 51.3 (Oort*) |
+| cifar `smu` | 55%: 230 vs 350 (1.52×) · 314 vs 571 (−45%) | 50%: 1.67× · 0.94× | 59.1 · 56.3 · 47.4 (FedDance) |
+| speech `s0u` | 50%: 376 vs 580 (1.54×) · 177 vs 242 (−27%) | 50%: 1.33× · 1.25× | 63.5 · 53.3 · 17.1 (FedDance*) |
+| speech `s50u` | 40%: 256 vs 613 (2.4×) · 145 vs 139 (+4%) | 40%: 1.0× · 2.6× | 64.5 · 44.0 · 15.0 (FedDance*) |
+| speech `smu` | 45%: 535 vs 676 (1.26×) · 265 vs 295 (−10%) | 40%: 1.19× · 1.5× | 52.8 · 46.4 · 21.1 (FedDance*) |
+
+- *Time: Felix is first to every target on every cell vs every baseline (6 / 6 PASS),* and the only stack past 50% on speech /
+  past 55% on cifar except FedBuff. Expectations held: cifar 65% 2.0 / 2.8× sooner on syn traces (F47: 1.9-2.7×), MobiPerf 1.5×
+  (≥ 1.2×), sync stacks ≥ 5× later to 50% or never, speech ≥ 1.4× wherever FedBuff gets there at all.
+- *Where the time comes from differs by cell, and that is the paper's structure.* No unavailability (`s0u`): all of it is
+  statistical efficiency (2.24× fewer updates at 11% *lower* rate: big-shard picks run longer tasks, picks~size +0.92, 40 vs 25
+  samples / update). Unavailability (`s50u`): half each (1.65× × 1.70×); FedBuff idles on check-ins (98k starvation events vs 0).
+  Speech `s50u`: all rate (same U*, 2.6× R): there awareness alone is the win. MobiPerf: U* only (R 0.94×).
+- *Bytes vs FedBuff follow U*, never R:* every update costs the same model round trip (cifar 4.3 MB, so GB to target = U* × 4.3 MB
+  to ±2%). Felix saves 27-55% GB where it needs fewer updates and nothing where it wins by rate (speech `s50u` +4%). Time and bytes
+  are separate claims with separate mechanisms: selection + step buy both; awareness buys time only.
+- *Bytes vs the sync stacks and Oort: not a win, and the paper must say so.* At 40% the 1-step sync stacks spend 45-60 GB vs
+  Felix's 50 (syn) and 44-51 vs 98 GB (MobiPerf); Oort reaches 40-50% on 5-13 GB (Felix 50-100 GB, 7-14× more) at 4-12× the time.
+  At the sync stacks' own 12 h budget (139-184 GB) Felix is +10-17 pp ahead on syn traces but ties on MobiPerf (46-48 vs 47-48%);
+  at Oort's budget (7-16 GB) Felix is 27-37 pp behind. Claim = fewest GB to every target ≥ 55% (cifar) / ≥ 45% (speech), the
+  only targets no baseline but FedBuff reaches; below that Felix trades bytes for 4-12× time.
+- *Why the sync stacks are byte-frugal early (cifar: 14 s tasks, 59% transfer, rounds wait ~31 s):* a fresh 1-step update (τ 0) is worth about one stale 1-epoch Felix update (U* to 40%:
+  9-12k vs 11.5k on syn traces); on MobiPerf Felix needs 22.6k (τ 6.1, held uploads), so it ties per byte. Their limit is the round
+  barrier: 2000 rounds × 15 picks × 10-24 samples in 12 h (R 2-4k / h vs Felix 14-17k), flat at 46-49% from 6 h. Oort is frugal for
+  a different reason: 600 local samples per 4.3 MB (U* to 40% 1.1-1.5k updates, 8-10× fewer) at 214-237 rounds in 12 h.
+- *Speech sync stacks sit at chance (3.7% of 35 classes) for 4-6 h and end 4-21%:* 160-186 rounds in 12 h (cifar 2000). Not bytes
+  (async moves more: FedBuff 295 vs FedAvg 64 GB) but waiting: a 1-step speech task is 123 s, 93% of it moving the 29 MB model, and
+  each round waits for its slowest of 6 picks (median 256 s ≈ the 238 s between rounds), so 12 h trains ~2 passes of the data.
+  Async overlaps 20 tasks, never waits on the slowest, and each task carries an epoch (FedBuff 28% compute vs FedAvg 7%). Mechanical, not broken (cifar
+  same code: 47-52%), but it is the setup's weakest point for a reviewer (K 5 by the 5% rule, 1 local step from FedDance's config).
+- *Oracle knowledge does not rescue a sync stack:* REFL* = REFL ±0.6 pp everywhere; FedDance* is faster early (cifar MobiPerf 40%
+  at 120 vs 200 min) but ends 1.5 pp lower and concentrates (top-20% 91% vs 67%). The bottleneck is the barrier and local work, not
+  knowing who is online, which is why Felix's awareness only pays inside an async engine.
+- *The c ramp is a strict win on cifar MobiPerf (12 h):* `fn_chr` vs `fn` same eval tick at 40-50%, 55% 30 min sooner, +0.5 pp
+  final, **−50% GB** (659 vs 1308), τ 6.1 vs 7.8, starvation 5k vs 209k (c 60 > trainable ~55-68 leaves slots waiting), picks~size
+  −0.13 vs −0.37, top-20% 50 vs 63%. c follows φ 0.81 → 0.06 to ~35 (= its pool term). On speech φ stays 0.56-0.91 (clients never fit
+  their data in 12 h), so c 19 → 16 and `fn` ≈ `fn_chr` (53.2 / 52.8%, −9% GB): the ramp acts only once data is fit, as designed.
+- *Against expectation: speech `s0u` FedBuff leads the first ~2.5 h* (1 h 18.9 vs 8.8%, lead 0-4 h −4.9 pp·h); raw models agree (13.9
+  vs 9.9%), so it is training, not the served average. Felix makes 10% fewer updates in hour 1 (489 vs 542, tasks 142 vs 104 s from
+  big-shard picks) yet loses 2× in accuracy, so per-update value is lower early. Hypothesis: rate `new`'s large step (0.7) on early
+  speech updates; untested (F48R sweeps cifar only).
+- *Against expectation: speech is 10-14 pp below F43 for both stacks* (Felix 38.5 / 53.7% at 4 / 8 h vs F43 56.5 / 67.8; FedBuff
+  36.7 / 47.6 vs 46.7 / 57.8). Three changes are confounded: augmentation (speech's centralized model needs 30 vs 15 epochs with
+  it), c 30 → 20, harness → bench. Felix ends 11 pp under the 75.6% speech ceiling (F43: 2 pp). F48S (harness, aug, c 20) separates them.
+- *Server averaging matters most where steps are big:* averaged − current model at 12 h: speech Felix +4.2-13.0 pp, FedBuff
+  +1.6-10.4; cifar −0.4 to +3.0; eval-to-eval swing 1.4-4.5 → 0.2-1.0 pp. Felix's lead survives without it (speech `s0u` current 56.4
+  vs 44.1%, cifar `s50u` 72.2 vs 68.5%), so it is not an averaging artifact.
+- *Staleness is not the binding cost once data is not memorized:* Felix runs τ 11.7 vs FedBuff 7.3 on cifar `s50u` and still ends
+  +4.2 pp (F44-F46 without augmentation: the same staleness gap cost 1.2 pp). Overfitting made staleness look expensive.
+- *Coverage on MobiPerf is the trace's, not the selector's:* 57-62% of devices ever train for every stack (the rest never charge
+  in the 12 h window). Fairness metrics on MobiPerf must be over the reachable set.
+- *Sanity:* cifar anchors repeat F47 within one eval tick (FedBuff 65% at 420 min `s0u` both; Felix 50% at 80 / 80 / 140 min);
+  speech does not (above). **The cifar ceiling is under-trained, not a bound:** Felix 74.4% > the 71.9% `s0u` 12 h ceiling (40
+  epochs, fixed lr on 12.2k samples vs Felix's ~480 sample-passes per sample), so 90 / 95%-of-ceiling targets understate the top.
+  Converged on full shards (= trace end; cosine lr, 200 epochs) the centralized cifar ceiling is 89.0% (FELIX FX-N146).
 
 **FL1 log (FELIX FX-N141; cifar bench n 300, 12 h; standing: one crisp line per worked / failed mechanism, for motivation / eval).**
 - *Unaware async idles, and the idling hides staleness (F44 `s50u`, `FL1_1023_1700`).* FedBuff waits on check-ins (98k
@@ -323,7 +393,7 @@ it (`getCompletionTime`):
 (compute ∝ samples × device speed + model transfer over device bandwidth, Scope); availability traces syn_0, syn_50_3st, MobiPerf
 3-state (AVL_TRAIN / AVL_EVAL / UN_AVL); data grows while a device is in use (`usage` stream tied to its own trace, Scope "Design record");
 legs start 24 h into the trace so each client starts with its day-1 data (and the trace's start artifact, one long in-use stretch,
-is skipped); 10% of each client's arrivals held out (no stack trains on them); clients draw a fresh random crop + flip per batch (cifar, FX-D233); test eval every 10 min of the leg's clock; per-baseline
+is skipped); every stack trains on 100% of visible data (no holdout, F49 audit); clients draw a fresh random crop + flip per batch (cifar, FX-D233); test eval every 10 min of the leg's clock; per-baseline
 task timeout (2 × the longest FedScale task, FX-D198); sims graded against reals for parity (PARITY).
 
 *Baselines (source-faithful, `baseline_reference.yaml`; availability per Decisions "Baseline availability knowledge"):*
@@ -408,3 +478,33 @@ Sources: K1-K4 from S1 + F43; K5, K7 from F43, then D5's 48 h runs; K6 from F42e
 (compute s / sample, transfer s), availability history, loss utility u_i, data size n_i, belief age, ‖Δ_i‖ and cos(Δ_i, Δ̄) (not
 secure-aggregation compatible). Per aggregator: held-out loss / accuracy (probes), accuracy per update, staleness, buffer depth, slot
 occupancy, update disagreement, belief error.
+
+## 7. Takeaways for the reader (each backed by §5; the paper's teaching points)
+
+1. **Time to accuracy = updates needed ÷ update rate (I-G1).** Every gain is one or the other, and the cells separate them:
+   without unavailability Felix wins only by needing fewer updates (2.24×); with it, half comes from keeping slots busy (1.70×);
+   on speech `s50u` all of it does. A method that only raises throughput cannot save bytes.
+2. **Bytes follow updates, not time.** Each update costs one model round trip, so bytes to target = U* × model size. Felix saves
+   27-55% GB vs FedBuff exactly where it needs fewer updates. The byte floor belongs to whoever puts the most learning in one
+   round trip: Oort (600 local samples) reaches 40-50% on 7-14× fewer bytes, 4-12× later. Time and bytes are a frontier, not one axis.
+3. **Awareness pays only inside an async engine.** FedBuff idles (98-239k starvation events) waiting for check-ins; Felix's notify +
+   evict keeps slots busy. But giving a sync stack the oracle (REFL*, FedDance*) changes ≤ 1.5 pp: the round barrier, not knowledge,
+   is what holds it back.
+4. **Selection decides which data the federation learns from.** Utility per |D| picks big shards (picks~size +0.92) and runs fewer,
+   longer, more valuable tasks; speed-first picks small shards and caps accuracy (F45). Choice exists only when c ≪ trainable:
+   at c ≥ the online pool every selector is uniform (MobiPerf `fn` picks = FedBuff's).
+5. **Throughput first, choice once the data is fit (c ramp).** Early every update helps; once clients fit their data (φ falls) extra
+   slots buy staleness and bytes, so c shrinks toward ½ the trainable pool: −50% GB on MobiPerf at equal or better time. Where
+   clients never fit their data (speech, 12 h) the ramp stays out of the way by itself.
+6. **The server step sets the pace; averaging cleans the noise.** Rate `new`'s large step is Felix's early lead (F46); serving the
+   EMA of versions turns a noisy fast iterate into a stable model (+4-13 pp on speech, swing 2-4× smaller): Polyak averaging, for FL.
+7. **Staleness was a symptom of overfitting.** Without augmentation the same τ gap cost 1.2 pp; with it Felix runs 1.6× FedBuff's
+   staleness and ends +4.2 pp. Fix memorization before blaming asynchrony.
+8. **What does not work, and why:** more local epochs (drift on α 0.1 shards), a staleness-discounted step 1/(1+τ) (too small),
+   φ-scaled steps (φ falls while accuracy climbs), fixed c ∝ availability (gives up early throughput), forecasting availability
+   (REFL ≈ REFL*), UCB exploration (±0.3 pp).
+9. **Compare at the target, not at a horizon.** A horizon snapshot ranks curves mid-flight; the paper's question is when each
+   stack reaches the accuracy that matters and what it paid by then (time and bytes at the hit, FELIX Decisions).
+10. **Honest limits:** below ~50% the 1-step sync stacks and Oort spend fewer bytes; speech sync baselines are transfer-bound and
+   near chance for hours under the 5% K rule; speech Felix lags FedBuff in its first 2.5 h; 1 seed, 12 h.
+
