@@ -305,10 +305,9 @@ baselines:
       + unaware trainer availability (no trackTrainerAvail, no
       client_notify) + random-candidate perturbation (perturbation_sampling
       on, JVP scoring off -- both are trainer_base.yaml defaults, not
-      overridden here). Selection is per-round
-      (reselect_each_iteration=false): one selection persists across all
-      databins/iterations of a round, re-sampled only when the round
-      advances. This is the smoke-test baseline (cheapest, exercises the
+      overridden here). Selection is per-commit
+      (reselect_cadence=data_bin): a fresh cohort after every commit;
+      per-round pinning trained poorly (10-25). This is the smoke-test baseline (cheapest, exercises the
       sync path).
     example:
       aggregator_main: aggregator/main_fedfwd_agg.py
@@ -345,6 +344,7 @@ baselines:
         # iteration (~90% redundant, ~22 GB) because the return-driven staleness
         # guard never marked actively-training clients current.
         reselect_each_iteration: false
+        reselect_cadence: data_bin  # wins over reselect_each_iteration: new cohort per commit
     trainer:
       hyperparameters:
         client_notify:

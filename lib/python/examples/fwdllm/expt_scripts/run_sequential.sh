@@ -59,6 +59,7 @@
 #   --max-commits N  halt at N commits (stop_reason commit_cap, any --phi-stop); the stop-rule
 #                    warm-up/horizon scale to 0.45N/0.15N (450/150 at N=1000).
 #   --target-stop A  halt cleanly once --target-stop-window W (default 2) consecutive evals reach acc A; final eval still runs.
+#   --reselect-cadence round|data_bin|iteration  cohort reselection cadence; unset = baselines.yaml (fwdllm: data_bin).
 #   --rho0 F         rho0 for --rho-schedule pool|exp, set directly; overrides --gate-safety-s.
 #   --eval-resample  with --eval-max-samples: a fresh draw per eval, seeded by commit index.
 #   --final-full-eval  one full-test eval at run end, emitted as agg_eval_final.
@@ -152,6 +153,7 @@ EVAL_RESAMPLE=""       # --eval-resample: fresh eval_max_samples draw per eval, 
 FINAL_FULL_EVAL=""     # --final-full-eval: one full-test eval at run end (agg_eval_final)
 TARGET_STOP=""         # in-process target stop: halt (clean exit, final eval runs) once --target-stop-window evals >= this acc
 TARGET_STOP_WINDOW=""  # consecutive evals for --target-stop (default 2)
+RESELECT_CADENCE=""    # round|data_bin|iteration; unset = baselines.yaml
 MAX_COMMITS=""         # commit cap: halt at N commits (stop_reason commit_cap); also scales the stop-rule warm-up
 B_MAX_PROBE_PHIS=""    # 3.1: comma-separated Phi grid (1.5,2,2.5,3,3.5,4)
 SATURATION_STOP=""     # E: 1 = stop when held-out accuracy stops rising (Prechelt GL). Unset = off
@@ -218,6 +220,7 @@ usage() {
   echo "          [--b-max-probe-every N] [--b-max-probe-n N] [--b-max-probe-phis L]" >&2
   echo "          [--b-max-policy mean|ratchet|anchor] [--eval-max-samples N] [--eval-every-n-commits N]" >&2
   echo "          [--eval-resample] [--final-full-eval] [--max-commits N] [--target-stop A] [--target-stop-window W]" >&2
+  echo "          [--reselect-cadence round|data_bin|iteration]" >&2
   echo "          [--saturation-stop] [--retention-probe-every N]  (E: the saturation stop; P3': cos(theta_t,theta_0))" >&2
   echo "          [--sat-stall-frac F] [--no-sat-decay]  (stall trigger; drop the GL decay trigger)" >&2
   echo "          [--send-timeout-s S]  (abandon timeout; scale with the delays, e.g. 3600 for 1.7B)" >&2
@@ -294,6 +297,7 @@ while [[ $# -gt 0 ]]; do
     --max-commits)          MAX_COMMITS="$2"; shift 2 ;;
     --target-stop)          TARGET_STOP="$2"; shift 2 ;;
     --target-stop-window)   TARGET_STOP_WINDOW="$2"; shift 2 ;;
+    --reselect-cadence)     RESELECT_CADENCE="$2"; shift 2 ;;
     --saturation-stop)      SATURATION_STOP=1; shift ;;
     --sat-stall-frac)       SAT_STALL_FRAC="$2"; shift 2 ;;
     --send-timeout-s)       SEND_TIMEOUT_S="$2"; shift 2 ;;
@@ -514,7 +518,7 @@ LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" TRAIN_BA
   POOL_TARGET="$POOL_TARGET" DYNAMIC_KC="$DYNAMIC_KC" \
   RETENTION_PROBE_EVERY="$RETENTION_PROBE_EVERY" \
   EVAL_MAX_SAMPLES="$EVAL_MAX_SAMPLES" EVAL_EVERY_N_COMMITS="$EVAL_EVERY_N_COMMITS" \
-  EVAL_RESAMPLE="$EVAL_RESAMPLE" FINAL_FULL_EVAL="$FINAL_FULL_EVAL" MAX_COMMITS="$MAX_COMMITS" TARGET_STOP="$TARGET_STOP" TARGET_STOP_WINDOW="$TARGET_STOP_WINDOW" \
+  EVAL_RESAMPLE="$EVAL_RESAMPLE" FINAL_FULL_EVAL="$FINAL_FULL_EVAL" MAX_COMMITS="$MAX_COMMITS" TARGET_STOP="$TARGET_STOP" TARGET_STOP_WINDOW="$TARGET_STOP_WINDOW" RESELECT_CADENCE="$RESELECT_CADENCE" \
   TRAINABLE_SCOPE="$TRAINABLE_SCOPE" COMMIT_GATE="$COMMIT_GATE" GATE_SAFETY_S="$GATE_SAFETY_S" \
   GATE_RHO_REF="$GATE_RHO_REF" COS_GROUND_TRUTH_AUDIT="$COS_GROUND_TRUTH_AUDIT" \
   COS_PROBE_BATCH_SIZE="$COS_PROBE_BATCH_SIZE" COS_PROBE_EVERY="$COS_PROBE_EVERY" \
@@ -584,6 +588,7 @@ EVAL_EVERY_N_COMMITS = env("EVAL_EVERY_N_COMMITS") or ""
 EVAL_RESAMPLE = env("EVAL_RESAMPLE") or ""; FINAL_FULL_EVAL = env("FINAL_FULL_EVAL") or ""
 MAX_COMMITS = env("MAX_COMMITS") or ""
 TARGET_STOP = env("TARGET_STOP") or ""; TARGET_STOP_WINDOW = env("TARGET_STOP_WINDOW") or ""
+RESELECT_CADENCE = env("RESELECT_CADENCE") or ""
 TRAINABLE_SCOPE = env("TRAINABLE_SCOPE") or ""
 COMMIT_GATE = env("COMMIT_GATE") or ""; GATE_SAFETY_S = env("GATE_SAFETY_S") or ""
 GATE_RHO_REF = env("GATE_RHO_REF") or ""
@@ -925,6 +930,8 @@ def patch(exp, run_key, variant, trace):
     if TARGET_STOP:
         h["target_stop_acc"] = float(TARGET_STOP)
         h["target_stop_window"] = int(TARGET_STOP_WINDOW or 2)
+    if RESELECT_CADENCE:
+        h["reselect_cadence"] = RESELECT_CADENCE
     # S-I: BOTH sides build the model, so both need the scope or the aggregator's
     # requires_grad mask disagrees with the trainer's probe mask.
     if TRAINABLE_SCOPE:
