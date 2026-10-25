@@ -41,7 +41,7 @@ K 15 (async off its paper's K); F46 onward uses this table.** Cohort = the refer
 
 Work rule: PARITY C10, C17, C18; ROBUST R0. Test levels: pytest (~1 min scoped) · CPU tiers (F42C / F42CR, stub) · GPU smokes ≤ 15 min ·
 bench screens (cifar 12 h vclock in 4-12 min wall) · harness sims (speech) · long (G3 reals). Batch numbers change only at a long-run
-launch; screens keep the number with a letter. Launches: tmux on jayne, committed tree (scripts refuse a dirty one), `PY="conda run
+launch; screens keep the number with a letter. Launches: tmux on jayne or shepherd (whichever is free; ROBUST L38), committed tree (scripts refuse a dirty one), `PY="conda run
 --no-capture-output -n dg_flame python"`, from `lib/python/examples`.
 
 **A · Before FB1 (start 10-26 morning; N146 is code, N148 and N149 run in parallel on the free GPUs, ~3 h).**
@@ -64,7 +64,7 @@ launch; screens keep the number with a letter. Launches: tmux on jayne, committe
   stacks' code; the bench swaps MQTT / processes for an in-memory channel, workers and its own commit gate. Cifar B2 passed 27 / 27
   (FX-N129); speech never ran B2, and F49's bench speech curves sit 10-14 pp under F43's harness ones (augmentation, c 30 → 20 and
   harness → bench confounded).
-  - *Launch (GPUs 0, 1, 4-7; 6 legs, 148 GB RAM each so ≤ 3 at once; ~55 min per async leg, sync unmeasured):*
+  - *Launch (shepherd GPUs 0, 1, 4-7, jayne drops GPU 1; F49 / F48 dirs copied to shepherd 10-25; 6 legs, 148 GB RAM each so ≤ 3 at once, ≤ 2 beside FX-N148; ~55 min per async leg, sync unmeasured):*
     `$PY scripts/harness_pool.py --tier F49 --datasets google_speech --baselines fedbuff,refl,feddance,fedavg,oort --phases
     "gs_F49_smu_ctl_srv gs_F49_smu_sync_srv" --gpu-ids 0,1,4,5,6,7 --gpus-per-job 2 --output-dir experiments/B2S_<TAG>/h49` and
     `$PY scripts/harness_pool.py --tier F48 --datasets google_speech --baselines felix --phases gs_F48_smu_fx --gpu-ids 0,1,4,5
@@ -238,9 +238,9 @@ any cell.
 
 ## Decisions (operator; standing until changed here)
 
-- **Reference cohort (10-23):** targets at n 300 cifar / 100 speech; batches may run 8 h on jayne's 7 GPUs. Long runs (> 15-20 min)
-  otherwise go to shepherd; short tests may use both nodes.
-- **Nodes (10-23):** jayne (all GPUs) and shepherd 0-3 are ours, shared with Aish's fwdllm runs (`~/aish_test`): don't interfere.
+- **Reference cohort (10-23):** targets at n 300 cifar / 100 speech.
+- **Nodes (10-25, supersedes 10-23):** jayne and shepherd are interchangeable; run on whichever has free GPUs and switch any time
+  (ROBUST L38: hardware, storage). Shared with Aish's fwdllm runs (`~/aish_test`): check `nvidia-smi` first; don't interfere.
   Both nodes run from `/home/dgarg39/flame` on the same pushed commit (no extra worktrees); leave flame clones we did not create alone.
 - **Felix new = `fx`, final and frozen (operator 10-25; F44-F49).** Never edit it: a new idea runs as its own arm or ablation row
   against `fx`. One config for cifar and speech; it lives in `baseline_reference.yaml` (felix server) + `harness_pool.FELIX_FINAL`

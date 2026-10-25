@@ -427,7 +427,7 @@ def main(argv=None):
     ap.add_argument("--seeds", nargs="+", type=int, default=[1])
     ap.add_argument("--dataset", choices=sorted(DATA), default="cifar10")
     ap.add_argument("--n", type=int, default=0, help="population (default: the dataset's G3 n)")
-    ap.add_argument("--cache", default=os.path.expanduser("~/.cache/flame_utility_bench"))
+    ap.add_argument("--cache", default=str(fl_data.cache_dir("flame_utility_bench")))
     ap.add_argument("--c", type=int, default=15)
     ap.add_argument("--k", type=int, default=10)
     ap.add_argument("--rho", type=float, default=0.5, help="nov: weight of already-trained samples")

@@ -34,7 +34,8 @@ def _fast_yaml():
     if getattr(yaml, "_bench_fast", False):
         return
     orig, loader = yaml.safe_load, getattr(yaml, "CSafeLoader", yaml.SafeLoader)
-    cache = Path(os.environ.get("FLAME_BENCH_CACHE", Path.home() / ".cache" / "flame_bench")) / "yaml"
+    import fl_data
+    cache = Path(os.environ.get("FLAME_BENCH_CACHE") or fl_data.cache_dir("flame_bench")) / "yaml"
 
     def safe_load(stream):
         name = getattr(stream, "name", None)
