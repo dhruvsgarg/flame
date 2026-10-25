@@ -54,7 +54,12 @@ GPU job on GPUs it uses (a pool sees any other process with ≥ 1 GB on a GPU as
 2. **When win 0 ends (~15:20), CPU only:** `fl1_verdict.py experiments/F48S_1025_SH experiments/F49_1024_1530/speech`,
    `config_audit.py experiments/F48S_1025_SH` (`fx` row `rp 0.4/0.25/0.2`). *Shows:* `fx` ≥ `fn_chr` (F49) and ahead of Felix
    old and FedBuff at every rung; a miss is a finding, `fx` stays frozen.
-3. **FX-N150 smoke, cifar half (safe now):** `TAG=1025_SH SMOKE=1 DS=cifar GPUS=6,7 bash scripts/run_fb1.sh` before win 2 claims
+3. **FX-N150 smoke.** *Cifar ✅ 15:24 (`experiments/FB1S_1025_SH`, 12 / 12 legs in 9.8 min on GPUs 6, 7):* config audit 12 / 12
+   (after fixing `FB?\d+` arm parsing in `bench_report` / `config_audit` and FB ladder rp = b 0.2); stop at target works (async
+   stacks + FedDance* hit 35% at 0.8-1.8 h vclock and end there; the rest run the 2 h); `fx` 1.6× sooner, 1.4× fewer GB than
+   FedBuff. Wall speed: async ≈ 8-12× real time at 4 / GPU, sync ≈ 60× → FB1 cifar never-hit async legs ≈ 10-15 h wall.
+   **RAM flat not shown:** bench legs log no RSS and smoke legs stop < 2 h; check it on FB1's first hours (sample leg RSS per
+   hour; > 8 GB `--leg-ram-gb` or rising = stop). *Original plan:* `TAG=1025_SH SMOKE=1 DS=cifar GPUS=6,7 bash scripts/run_fb1.sh` before win 2 claims
    6, 7 (cifar legs ~3.4 GB, 2 h vclock ≈ 1-2 min each; if 6, 7 are busy, it waits); win 2 then waits minutes, results unchanged
    (harness legs run on the virtual clock). Speech half **after B2S ends**: `TAG=1025_SH SMOKE=1 DS=speech bash scripts/run_fb1.sh`
    (10 GB per leg would block h49's next start). *Exit:* config audit ✅, legs stop at the smoke target (cifar 35%, speech 25%),

@@ -139,7 +139,7 @@ def legs(pool):
         if f"{os.sep}_yaml{os.sep}" in y:  # bench_pool's dry-run inputs, not legs
             continue
         leg = y.split(os.sep)[-4]
-        m = re.match(r"(?:gs_)?F\d+\w*?_(s\d+u?|smu)_(\w+?)_(syn_\w+|mobiperf\w*)_(\w+)_sim$", leg)
+        m = re.match(r"(?:gs_)?FB?\d+\w*?_(s\d+u?|smu)_(\w+?)_(syn_\w+|mobiperf\w*)_(\w+)_sim$", leg)
         if not m:
             continue
         cell, arm, _, b = m.groups()
@@ -154,7 +154,7 @@ def legs(pool):
             yield leg, b, arm, dict(k, p34=holdout_check(runs[-1], k["holdout"]))
     for run in sorted(glob.glob(os.path.join(pool, "*", "runs", "*_s[0-9]*", "run_*"))):  # bench_pool layout (FX-D213)
         phase, slot = run.split(os.sep)[-4], run.split(os.sep)[-2]
-        m = re.match(r"(?:gs_)?F\d+\w*?_s(?:\d+u?|mu)_(\w+)$", phase)
+        m = re.match(r"(?:gs_)?FB?\d+\w*?_s(?:\d+u?|mu)_(\w+)$", phase)
         b = re.match(r"(?:syn_\w+?|mobiperf\w*?)_([a-z_]+)_s\d+$", slot)
         if not (m and b):
             continue
@@ -175,6 +175,8 @@ def main(argv=None):
             base = re.sub(r"_srv$", "", arm)  # FX-N133: an `_srv` arm = its base arm + the averaged model
             row = EXPECT.get((b, arm)) or EXPECT.get((b, base)) or EXPECT.get((b, "*"))
             row = dict(row, serve="sweep") if row is not None and arm != base else row
+            if row and row.get("rp") == "0.4/0.25/0.1" and re.match(r"(?:gs_)?FB", leg):
+                row = dict(row, rp="0.4/0.25/0.2")  # FB1 ladder arms run the frozen rate (b 0.2, Decisions `fx`)
             want = dict(COMMON, **(row or {}))
             miss = [f"{x}={k[x]}≠{v}" for x, v in want.items() if k.get(x) != v] + ([] if row else ["no expected row"])
             bad += bool(miss)

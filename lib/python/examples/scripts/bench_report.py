@@ -90,8 +90,8 @@ def cells(pools):
                 d = r.get("sim_dir") or ""
                 if d and d != "-" and os.path.isdir(d):
                     ds = "google_speech" if "google_speech" in d else "cifar10"
-                    arm = re.sub(r"^(gs_)?F\d+\w*?_s(?:\d+u?|mu)_", "", re.sub(r"_r\d+$", "", phase))  # smu = MobiPerf stream
-                    static = re.search(r"F\d+[A-Za-z]?_s\d+_", phase) is not None  # `s0` static vs `s0u` stream on one trace
+                    arm = re.sub(r"^(gs_)?FB?\d+\w*?_s(?:\d+u?|mu)_", "", re.sub(r"_r\d+$", "", phase))  # smu = MobiPerf stream
+                    static = re.search(r"FB?\d+[A-Za-z]?_s\d+_", phase) is not None  # `s0` static vs `s0u` stream on one trace
                     out.setdefault((ds, r["trace"] + (" static" if static else ""), arm, r["baseline"]), []).append(d)
     return out
 
