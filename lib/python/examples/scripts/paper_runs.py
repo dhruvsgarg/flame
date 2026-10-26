@@ -142,7 +142,7 @@ def report(states, seeds, smoke=False):
     return "\n".join(lines)
 
 
-SPEECH = "--per-gpu 1 --leg-gpu-gb 10 --leg-ram-gb 30 --workers 4"  # FX-N156 measures --per-gpu 2
+SPEECH = "--per-gpu 1 --leg-gpu-gb 22 --leg-ram-gb 30 --workers 4"  # speech leg peaks ~20 GB (10-25); FX-N156 measures --per-gpu 2
 CIFAR = "--per-gpu 4"
 FIRST = "_(sync_srv|rstar_srv|fdstar_srv|favstar_srv|ctl_srv|fbstar_srv|b1|uo_o) "  # stacks that may run the full 120 h
 

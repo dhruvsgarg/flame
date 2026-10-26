@@ -51,11 +51,13 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
    legs + cifar `fx` ~00:30, smoke ~00:40, cifar `fn` EV24 leg ~01:30, B2 (4 h vclock, ~45 min) after it.
    - **~00:40 go / no-go (operator 10-25: start cifar before B2, accepting a redo if B2 fails):** pane C shows no new ALERT;
      `grep -E "EV16|EV24" experiments/EV24_1025_ev2/b_*/ev.md` → 0 on every finished leg (speech = the FX-N160 exit);
-     `$PY scripts/paper_runs.py status --smoke --root experiments/FB2S_1025b` 60 / 60 done; `$PY scripts/paper_plots.py --smoke`
-     renders every figure (PRELIM). A fail → fix, re-run only it (re-running a launch script skips done legs).
+     `$PY scripts/paper_runs.py status --smoke --root experiments/FB2S_1025b`: cifar 30 / 30 done (✅ 23:58); `$PY
+     scripts/paper_plots.py --smoke` renders the cifar panels (PRELIM). Speech smoke failures don't block the cifar run (FX-N161).
    - **Go:** launch step 2 now. Let pane A finish EV24 (it prints `[EV24] <dir>: ...` per pool; cifar `fn` ~01:30), then Ctrl+C it
      before or while B2 waits: B2 harness legs need the whole node's CPUs and stay BLOCKED while the cifar run uses the node; B2 moves
      to step 3. Check `experiments/EV24_1025_ev2/{h,b_cifar10}/ev.md` once EV24 prints.
+   - *Run 2 at 23:58:* cifar smoke 30 / 30, speech 11 / 30; EV24 harness speech leg rc 0 in 33 min (not DOOMED: FX-N160 fix
+     likely holds; grade on its `ev.md`). Speech FedDance / FedAvg smoke legs hung (FX-N161).
    - *Run 1 (10-25, `9af372278`):* EV24 0 on all legs → FX-N157 fix holds; EV16 failed on speech `fx` (FX-N160); bench EV0 "fails"
      were the checker. Smoke 52 / 60: 8 bench legs CUDA-OOM'd beside the EV24 harness leg (44 / 45 GB on GPUs 0-3) and hung to the
      1 h timeout (FX-D239, FX-T91). B2 cifar: the harness leg got 1 GPU, 300 trainers OOM at start, the pool aborted. Harness
@@ -67,6 +69,9 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
 3. [ ] **B2 on a quiet node, after the cifar run:** `DS=cifar10 TAG=<mmdd>_c RT=14400 bash scripts/run_b2.sh` (~45 min), then
    `TAG=<mmdd>_s bash scripts/run_b2.sh` (speech, 3-4 h+). *Pass:* both `bench_validate.md` within bars (cifar 27 / 27; FX-N151).
    Cifar B2 fail → redo the cifar run. Contention may skew the wall-measured trainer overhead (C13): re-run a failing row quiet.
+3b. [ ] **Speech smoke re-run** (before step 4, after pane A ends): `$PY scripts/paper_runs.py launch --smoke --prio 4 --root
+   experiments/FB2S_1025b && bash experiments/FB2S_1025b/launch_p4_smoke.sh` (regenerate first: it bakes `--leg-gpu-gb`; skips
+   done legs). *Pass:* 60 / 60.
 4. [ ] **Speech run (after step 3 passes):** `$PY scripts/paper_runs.py launch --prio 2 --datasets google_speech && bash <root>/launch_p2_speech.sh`
    (~26 async × ~11 h + 32 sync × ~4 h on 8 GPUs ≈ 2-2.5 days; less with target hits).
 5. [ ] **Tables as data lands:** `paper_runs.py status` + `paper_plots.py` (finished legs only); fill the outline's ⚠ numbers.
@@ -92,6 +97,12 @@ cifar 12 h vclock in 4-12 min. Layout `<root>/<cifar|speech>/<phase>/runs/<trace
 - **FX-N153 / N154 · Run pipeline and run sets · built (FX-D235, D236); exit = step 1 smoke.** `FB2E2E` … `FB2STA` = Table 1
   (152 legs / seed). Digests gzip raw logs; `bench_report`, `config_audit` read `.gz`, other readers don't yet.
 - **FX-N159 · Per-dataset launch · built** (`paper_runs.py launch --datasets`).
+- **FX-N161 · Speech bench legs OOM when packed · open.** A speech bench leg holds ~18-20 GB GPU (5 procs) but was declared
+  `--leg-gpu-gb 10`, so pools stacked legs on one 44 GB GPU; startup OOM'd 2 speech smoke legs (10-25 23:18). Fixed in
+  `paper_runs.py` (22, not code-keyed); still 10 in `run_ev24.sh` / `run_b2.sh` (fix after pane A ends: it re-keys code). Cross-pool
+  race remains (each pool sees only its own ramping legs): keep cifar and speech pools apart while speech legs start. The FX-D239
+  watchdog starts after workers are ready, so a worker dying in `TrainerHost.__init__` still hangs the leg to its timeout: start it
+  before the ready wait (re-keys code; do it with the run_*.sh fix).
 - **FX-N155 · Robustness: silent departures · todo (code, priority 3).** With probability p a client's flip to not eligible is not
   reported; Felix holds the slot until `send_timeout_wait_s`. p ∈ {1, 5, 10}% on the ablation cells. Lost / late reports, lost
   uploads, sensitivity: after the first version.
