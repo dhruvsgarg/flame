@@ -5,9 +5,8 @@ Evidence: [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) §5 (findings), §6 (methods, b
 Decisions (`fx` layer table), Scoreboard, rejected-ideas table.
 **Scope now:** title → §5 design. Theory, implementation, evaluation, ablations come after the front matter is final.
 **Framing:** one system, one paper; the current implementation is Felix, no old-vs-new comparison.
-**Numbers:** F49 (12 h, 1 seed) at the old 90 / 95%-of-ceiling targets ⚠ re-read at the FL-bound targets (FX-N146, FELIX_INSIGHTS
-IN6) before any number is final. Felix MobiPerf numbers from F47-F49 also ran 1-7% impossible extra
-tasks (FX-N157): ⚠ re-read every MobiPerf Felix number on FB2 data.
+**Numbers:** cifar end to end = FB2 (seed 1, 80% FL-bound target, FELIX_READINESS Scoreboard); MobiPerf FedBuff, speech and
+seeds 2-3 ⚠ pending. Every other number is F47-F49 (12 h, old targets; MobiPerf Felix tainted by FX-N157) ⚠ re-read on FB2.
 
 ## 0. Open choices (decide before drafting prose)
 
@@ -24,7 +23,9 @@ eligibility is hard to forecast**, used in every section. Title open.
 | eligibility states (decided 10-25) | **eligible / not eligible** everywhere; no tiers. Code's AVL_EVAL = not eligible in text (feeds only unused on-device evals, FX-D165). One methods line: "traces also mark online-not-eligible time; every stack treats it as not eligible" | — |
 | eligibility predictability (decided 10-25: claim it; FX-N147) | **Claim:** the deployed forecasters (REFL's per-device Prophet, FedDance's check-in Poisson V_m, both as run in our baselines) add nothing over the naive guess "eligible now stays eligible". **Method (MobiPerf, n 300, days 1-5, h 5-60 min):** ground truth = the trace (did the client stay eligible?); each predictor is scored against it: AUC (ranking; truth = 1.0, coin = 0.5) and Brier (probability error; truth = 0). **Q1, who is eligible in [t+h, t+2h]:** naive AUC 0.97-0.84, FedDance 0.92-0.84, Prophet 0.68-0.69. **Q2, which eligible client stays for h:** naive can't rank (0.5), Prophet 0.57-0.58, FedDance 0.65-0.67; both Brier worse than the base rate (0.37-0.53 / 0.12-0.29 vs 0.05-0.24). **Why:** eligibility memory fades within hours (corr 0.64 at 1 h, 0.12-0.19 at 12-24 h). syn_50 is memoryless by design (all AUC 0.50): control only. **Wording:** "forecasts add nothing over eligible now", not "unpredictable" | if a forecaster beats the naive guess: drop the claim, keep "scarce and shifting" |
 | availability knowledge per stack (measure: FX-N147) | §3.2 table: what each stack knows and how accurate it is: check-in (exact at check-in, blind to departures until timeout), REFL Prophet and FedDance V_m forecasts (error from FX-N147), oracle `*` (exact at selection, blind mid-task). Component microbenchmark (P21) in eval | — |
-| bytes claim | "fewest GB to every target only FedBuff also reaches"; below that Felix trades bytes for 4-12× time | drop bytes from the abstract (weakens P3) |
+| bytes claim (⚠ FB2 cifar breaks it: `s50u` +34% GB vs FedBuff; FX-N165) | "fewest GB to every target only FedBuff also reaches"; below that Felix trades bytes for 4-12× time | report time first and bytes as a range (−33% to +34%); or drop bytes from the abstract (weakens P3) |
+| target per trace (decided 10-26; rule: FELIX_READINESS Decisions "Reporting target per trace") | report at the FL bound where it is attainable (cifar syn traces 80%) and at the highest level any stack holds within the 120 h trace on harder deployments (cifar MobiPerf 75%): "baselines reach 80% on the less difficult deployments; on MobiPerf with high heterogeneity only 75% is attainable, so we use it as the representative target"; appendix: speedup / GB vs target 60-80% | one target for all cells (all miss on MobiPerf) |
+| sync baselines' lr decay (decided 10-26, FX-N163; call out in the evaluation setup + deviations table) | off for REFL, Oort, FedDance, FedAvg (and `*`), as FedBuff and Felix: their per-round decay is tuned for ~1-2k rounds and stalls them at 48-56% over our 120 h traces (≥ 10× the rounds); off lifts them +24-26 pp at 24 h | keep source decay (baselines look broken) |
 | not contributions (applied to every stack) | averaged (EMA) model served; per-batch augmentation (bug fix, FX-D233); FedBuff's buffer K 10 | — |
 
 ## 1. The spine (every section restates a slice of this)
@@ -63,7 +64,10 @@ eligibility is hard to forecast**, used in every section. Title open.
 - **S4 insight (25 w):** drive all three from the live eligible pool, reported by the clients.
 - **S5 system (30 w):** Felix: Felix-Notify, Felix-Select, Felix-Pace, Felix-Agg, one clause each.
 - **S6 results (30 w, P3 ranges on time and bytes):** Felix is first to every target on 2 datasets × 4 traces.
-  - 1.26-2.6× sooner than FedBuff at −55% to +4% GB ⚠ re-read at final targets.
+  - cifar (FB2, seed 1, to 80%): **1.13-1.23× sooner than FedBuff** (65.3-72.0 h vs 77.8-81.0 h) at **−33% to +34% GB**
+    (`s0u` −33%, `s20u` −12%, `s50u` +34%); vs FedBuff\* 1.11-1.24×, −32% to +28%. MobiPerf at its 75% target: Felix 95.2 h ·
+    2,277 GB; FedBuff ⚠ running (72.1% at 80.8 h). Speech ⚠ pending; sync stacks ⚠ rerun with decay off (FX-N163). For reference,
+    all cells at 75%: 1.45-1.84× FedBuff, −44% to +10% GB. F49's 1.26-2.6× / −55% to +4% were at the old, lower targets.
 
 ## §1 Introduction (≈ 1.25 pages, ~900 words + Fig 1; argument first, ≤ 3 numbers)
 
@@ -252,7 +256,9 @@ main-text figure needs; seeds 2-3 and appendix rows after, re-plotting as data l
 **Shared setup:** cifar n 300 / speech n 100, Dirichlet α 0.1; usage-tied data streams on every trace (static only in the appendix);
 traces syn_0, syn_20, syn_50, MobiPerf; each stack at its own paper's K / c ("Cohort and participation"); start +24 h into the
 6-day trace (each client starts with its day-1 data; 0 h leaves ~1 sample per client, FELIX_INSIGHTS
-streams design); stop at the target (cifar 80%, speech 88%; 5-eval mean) or the trace end (120 h); time and GB at the stop. Bench
+streams design); stop at the target (cifar 80%, speech 88%; 5-eval mean) or the trace end (120 h); report time and GB at each
+cell's reporting target (§0 "target per trace": cifar MobiPerf 75%). Sync baselines run without client lr decay (§0; deviations
+table). Bench
 (B2-validated per dataset: cifar ✅, speech = FX-N149). **Deployable** = FedBuff, Oort (check-in), REFL (Prophet forecast),
 FedDance (check-in Poisson forecast), FedAvg; **oracle** = FedBuff*, Oort*, REFL*, FedDance*, FedAvg* (the trace's eligible set at
 selection); Felix = `fx`. **Ablation cells** = {cifar, speech} × {syn_50, MobiPerf}.
