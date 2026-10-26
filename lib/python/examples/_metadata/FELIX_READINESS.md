@@ -58,9 +58,9 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
      s50u_ucb`. Tail ETA ~02:30 10-27 (`smu_fn` 52.6 / 120 h after 9.6 h wall: ~22 h of its 24 h timeout). Status: `paper_runs.py
      status --root <root> --datasets cifar10`. 59 zombie `[python]` children of the pool (FX-N164): harmless, gone at pool exit.
 2b. [ ] **Cifar sync rerun, lr decay off (FX-N163; 32 legs = 4 cells × sync_srv / rstar / fdstar / favstar).** Commit first (the
-   script refuses a dirty tree; code key `d7d2d9234f6e`), then in tmux `dg_flame`: `bash
+   script refuses a dirty tree; code key `b15a4239be2c`), then in tmux `dg_flame`: `bash
    /coc/scratch/dgarg/mlsys27_felix_runs_20261026/launch_n163_cifar.sh`. Log `<root>/cifar_n163.log`; may co-run with step 2's tail
-   (`--per-gpu 3`). Same root: a leg's newest `run_*` wins; `cifar/code_key.txt` becomes `d7d2d9234f6e`, while the non-sync legs
+   (`--per-gpu 3` on GPUs 0,1,2,4,6,7: 3 + 5 hold the old pool's tightest legs). Same root: a leg's newest `run_*` wins; `cifar/code_key.txt` becomes `b15a4239be2c`, while the non-sync legs
    stay on `4ce2e2809998` (differs only in sync `lr_decay`, C20). ETA: sync 120 h legs took 4-7 h wall; hits stop sooner.
    *Expect:* REFL / FedDance / FedAvg ≥ 72% by 24 h (screen), most reach 75% and some 80% within 120 h; Felix stays first.
    Then re-render (`paper_plots.py`) and rewrite the Scoreboard.
