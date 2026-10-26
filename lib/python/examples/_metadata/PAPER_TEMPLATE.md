@@ -3,7 +3,7 @@
 **Purpose.** A writing guide shared by two independent MLSys submissions, Felix and FluxTune. Part A distills what six accepted
 papers do well: Oort (OSDI'21), REFL (EuroSys'23), FedBuff (AISTATS'22), FwdLLM (ATC'24), FLINT (MLSys'23) and FedDance
 (SoCC'25). Part B turns that into a section-by-section template: purpose, dos, don'ts, arguments, data, citations, figures,
-math, experiments. Each paper's authors use Parts A and B to write their own paper-specific markdown (Felix: [felix_paper_outline.md](felix_paper_outline.md));
+math, experiments, plus a prompt for turning an outline into prose (B.20). Each paper's authors use Parts A and B to write their own paper-specific markdown (Felix: [felix_paper_outline.md](felix_paper_outline.md));
 Part C keeps Felix's pending items, Part D is FluxTune's starting point. Part E holds rules both papers share, and Part F the open items.
 
 **Owners.** Felix: Dhruv. FluxTune: Aish (with Dhruv); its latest solution and experiment docs live on Aish's branch.
@@ -369,6 +369,68 @@ badges; plan for it from day one. Rough page split: abstract + intro 1.25 · bac
 - [ ] Simulator fidelity shown against real runs.
 - [ ] Limitations section says where the gain shrinks.
 - [ ] Artifact appendix maps claims to scripts.
+
+### B.20 Prose protocol (prompt for turning an outline section into prose)
+
+Paste this subsection into the LLM along with the inputs listed in step 0. Draft one section per call.
+
+**0. Inputs (the author supplies these).** The outline section to draft, plus the sections before and after it. The matching
+Part B entry and B.18. The paper's names table (e.g. felix_paper_outline §0) and its spine (§1). The figure and table list with
+captions. The word budget from the outline. The output format (LaTeX or Markdown).
+
+**1. Source of truth.** The outline fixes the story, the claims, their order and their scope. Change the wording, not the argument.
+Don't add a claim, contribution, number, citation, baseline or result, and don't strengthen one. If something is missing or
+ambiguous, write `[[CHECK: …]]` inline and keep going. Copy numbers, units, names and citation keys exactly.
+
+**2. Plan before writing (keep it internal).** State the section's job in one sentence and what the reader should believe by its
+end. Group the bullets into paragraphs, one point per paragraph; several bullets may become one sentence, and some become none.
+Order them so each paragraph needs only what came before. Test the plan: read only the paragraphs' first sentences in order.
+They should tell the section's story on their own.
+
+**3. Draft paragraphs.** Each paragraph opens with its point and then gives the mechanism, evidence or consequence behind it.
+Keep 3-6 sentences per paragraph; avoid one-sentence paragraphs except for a deliberate turn. Define a term before using it, and
+bring in a figure at the sentence that needs it.
+
+**4. Flow.** Begin each sentence with something the reader already has (the last idea, a defined term) and end it with the new
+information. This, not connectives, is what makes prose flow. Use a connective only for a real relation (because, but, so,
+for example), and never two "Moreover / Furthermore / Additionally" in one section. End a paragraph on its consequence, not by
+restating its opening.
+
+**5. Sentences.** Keep one idea per sentence, about 30 words at most, with the subject and verb early. Use verbs, not nominalizations
+("we evaluate", not "we perform an evaluation"), and no noun stacks longer than three words. Vary sentence length. Use "we" for
+what the authors did and the system's name for what the system does. Use the present tense for the design and for what results
+show, and the past tense for what was run.
+
+**6. One term per concept.** Use the names table's term every time and never vary it for style ("eligible clients" stays "eligible
+clients"). Translate internal vocabulary (run IDs, readiness IDs, P#, cell, leg, arm, bench, vclock) into the paper's terms.
+Expand each acronym at first use.
+
+**7. Calibrate.** Each claim is only as strong as its evidence. "Shows" means measured; "suggests" means inferred; an explanation
+that wasn't tested is "likely" or "we attribute this to". Scope every result to what was tested (traces, datasets, models, scale).
+State losses as losses. Use "first", "optimal", "guarantees" and "significant" only when they are literally true.
+
+**8. Avoid the marks of LLM prose.**
+- Words: delve, crucial, pivotal, landscape, seamless(ly), robust (unless the paper defines it), leverage, underscore, showcase, a
+  testament to, plays a key role, it is worth noting, notably, in summary, paving the way.
+- Patterns: "not only X but also Y"; "it's not X, it's Y"; triplets added for rhythm ("fast, scalable and robust"); a trailing
+  "-ing" clause that comments on the sentence (", highlighting the need for…"); rhetorical questions; a colon setting up a reveal;
+  each paragraph ending in a summary sentence; every paragraph the same length.
+- Punctuation and formatting: at most one em dash per paragraph, few semicolons, no bold inside prose, no lists where the outline
+  has an argument (a list stays only where the template asks for one, e.g. contributions), no headings added.
+
+**9. Italics.** Use none by default and at most one per section. Italics are for a term at its defining use or for the one contrast
+the section rests on. Never italicize a phrase, a whole sentence or a number.
+
+**10. Revise in three passes.** (a) *Cut:* delete every sentence whose removal loses nothing, and every word that adds no meaning.
+(b) *Check:* each claim against its outline bullet, figure or number, and the first-sentence test from step 2. (c) *Read aloud:* rewrite
+any sentence that has to be read twice, any run of short choppy sentences, and anything from step 8. Confirm the draft is within
+±10% of the word budget.
+
+**11. Output.** Return only the prose in the requested format, with headings, labels, `\cite`, `\ref` and math left as they are.
+After the prose, list the `[[CHECK]]` items, one line each. No summary of the process.
+
+**Optional second call (reviewer).** Give a fresh LLM the draft, steps 6-9 and the outline section. Ask it to list (not fix) every
+claim with no outline support, every step-8 mark and every term not in the names table. Fix those by hand or in a third call.
 
 ---
 

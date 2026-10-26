@@ -56,6 +56,10 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
    - **Go:** launch step 2 now. Let pane A finish EV24 (it prints `[EV24] <dir>: ...` per pool; cifar `fn` ~01:30), then Ctrl+C it
      before or while B2 waits: B2 harness legs need the whole node's CPUs and stay BLOCKED while the cifar run uses the node; B2 moves
      to step 3. Check `experiments/EV24_1025_ev2/{h,b_cifar10}/ev.md` once EV24 prints.
+   - *Run 2 at 00:45 → GO:* EV16 0 and EV24 0 on all 4 finished legs (bench cifar `fx`, bench speech `fx` + `fn`, harness speech
+     `fx` full 12 h) → FX-N160 fix holds; cifar smoke 30 / 30, speech 28 / 30 (2 = FX-N161); every smoke figure renders. Open:
+     cifar `fx` 12 h bench leg took 72 min with no harness beside it (smoke 2 h legs median 8 min) vs the doc's 4-12 min: wall per
+     leg, not contention, sets the cifar run's ETA (a 120 h leg could take ~12 h wall); measure on the first cifar legs.
    - *Run 2 at 23:58:* cifar smoke 30 / 30, speech 11 / 30; EV24 harness speech leg rc 0 in 33 min (not DOOMED: FX-N160 fix
      likely holds; grade on its `ev.md`). Speech FedDance / FedAvg smoke legs hung (FX-N161).
    - *Run 1 (10-25, `9af372278`):* EV24 0 on all legs → FX-N157 fix holds; EV16 failed on speech `fx` (FX-N160); bench EV0 "fails"
