@@ -489,6 +489,11 @@ def ev12_reached_budget(run):
         ts = [e["ts"] for e in commits + sels + ends]
         reached = max(ts) - (min(e["ts"] for e in sels) if sels else commits[0]["ts"])
     ok = reached >= _BUDGET_FRAC * budget
+    # A target stop (targetAccuracy over the last targetWindow evals, as leg_digest's hit) ends early by design.
+    tgt, w = _hp(run, "targetAccuracy"), int(_hp(run, "targetWindow") or 5)
+    acc = [float(e["test-accuracy"]) for e in _events(run, "agg_eval") if e.get("test-accuracy") is not None]
+    if not ok and tgt and len(acc) >= w and sum(acc[-w:]) / w >= float(tgt) and ends:
+        return _res("PASS", f"stopped at target {float(tgt):.0%} at {reached:.0f}s (budget {budget:.0f}s)")
     return _res("PASS" if ok else "FAIL", f"reached={reached:.0f}s budget={budget:.0f}s (need {_BUDGET_FRAC:.0%})")
 
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -43,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 ENV_DIR = "FLAME_TELEMETRY_DIR"
 ENV_LEAN = "FLAME_TELEMETRY_LEAN"  # FX-D227: "1" drops `selection.per_trainer` (99% of bytes at n 300)
+ENV_FULL = "FLAME_TELEMETRY_FULL"  # FX-D240: "1" keeps every selection's full `per_trainer`
+ENV_SNAPSHOT_S = "FLAME_TELEMETRY_SNAPSHOT_S"  # FX-D240: full `per_trainer` snapshot period (clock s), default 600
 
 _writer: Optional["TelemetryWriter"] = None
 _config_lock = threading.Lock()
@@ -81,6 +84,9 @@ class TelemetryWriter:
         # line-buffered so a killed process still leaves complete records
         self._fh = open(path, "a", buffering=1)
         self._lean = os.environ.get(ENV_LEAN) == "1"
+        self._full = os.environ.get(ENV_FULL) == "1"
+        self._snap_s = float(os.environ.get(ENV_SNAPSHOT_S) or 600)
+        self._next_snap: dict = {}  # task -> clock of its next full snapshot
 
     def emit(self, event: str, **fields: Any) -> None:
         rec: dict[str, Any] = {
@@ -93,9 +99,24 @@ class TelemetryWriter:
         rec.update(fields)
         if self._lean and event == "selection":
             rec.pop("per_trainer", None)
+        elif event == "selection" and not self._full and isinstance(rec.get("per_trainer"), dict):
+            self._trim_selection(rec)
         line = json.dumps(rec, default=_json_default)
         with self._lock:
             self._fh.write(line + "\n")
+
+    def _trim_selection(self, rec: dict) -> None:
+        """FX-D240: `per_trainer` = the chosen ends only, plus the whole pool once per snapshot period per task
+        (marked `per_trainer_full`): the pool at n 300 was 97% of telemetry bytes."""
+        task = rec.get("task")
+        clock = float(rec.get("vclock_now") if rec.get("vclock_now") is not None else rec["ts"])
+        if clock >= self._next_snap.get(task, -math.inf):
+            self._next_snap[task] = clock + self._snap_s
+            rec["per_trainer_full"] = True
+            return
+        chosen = set(rec.get("chosen") or ())
+        rec["per_trainer"] = {k: v for k, v in rec["per_trainer"].items() if k in chosen}
+        rec["per_trainer_full"] = False  # pool readers skip it; older logs (no flag) are full
 
     def close(self) -> None:
         with self._lock:

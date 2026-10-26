@@ -59,7 +59,7 @@ def windows(run_dir):
                 t = tasks.get((end, e["round"] - (tau or 0)))
                 if t and u:
                     rounds.setdefault(e["round"], []).append((u / t[1], tau or 0, t[0]))  # q = utility / shard: rms loss
-        elif b'"selection"' in line and b'"utility": ' in line:
+        elif b'"selection"' in line and b'"utility": ' in line and b'"per_trainer_full": false' not in line:  # FX-D240: pool only
             e = json.loads(line)
             pt = [(v["utility"], shard[k]) for k, v in (e.get("per_trainer") or {}).items() if v.get("utility") and k in shard]
             if len(pt) >= 5:

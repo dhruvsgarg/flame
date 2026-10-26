@@ -99,3 +99,28 @@ def test_lean_drops_selection_per_trainer(tmp_path, monkeypatch, lean):
     sel, disp = _read_jsonl(w.path)
     assert ("per_trainer" in sel) is (lean is None) and sel["chosen"] == ["a"]
     assert disp["per_trainer"] == {"a": 1}
+
+
+def test_selection_keeps_chosen_plus_periodic_full_snapshot(tmp_path, monkeypatch):
+    """FX-D240: default `per_trainer` = chosen ends; the whole pool once per FLAME_TELEMETRY_SNAPSHOT_S per task."""
+    for k in (telemetry.ENV_LEAN, telemetry.ENV_FULL):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv(telemetry.ENV_SNAPSHOT_S, "100")
+    w = telemetry.configure("aggregator", run_dir=str(tmp_path))
+    pool = {"a": {"u": 1}, "b": {"u": 2}, "c": {"u": 3}}
+    for t, task in ((0, "train"), (50, "train"), (60, "eval"), (120, "train")):
+        telemetry.emit("selection", task=task, vclock_now=t, per_trainer=dict(pool), chosen=["b"])
+    telemetry.shutdown()
+    recs = _read_jsonl(w.path)
+    assert [sorted(r["per_trainer"]) for r in recs] == [["a", "b", "c"], ["b"], ["a", "b", "c"], ["a", "b", "c"]]
+    assert [r["per_trainer_full"] for r in recs] == [True, False, True, True]
+
+
+def test_full_env_keeps_every_pool(tmp_path, monkeypatch):
+    monkeypatch.delenv(telemetry.ENV_LEAN, raising=False)
+    monkeypatch.setenv(telemetry.ENV_FULL, "1")
+    w = telemetry.configure("aggregator", run_dir=str(tmp_path))
+    for t in (0, 1):
+        telemetry.emit("selection", task="train", vclock_now=t, per_trainer={"a": 1, "b": 2}, chosen=["b"])
+    telemetry.shutdown()
+    assert all(sorted(r["per_trainer"]) == ["a", "b"] for r in _read_jsonl(w.path))

@@ -17,7 +17,7 @@ PY="conda run --no-capture-output -n dg_flame python"
 mkdir -p "$OUT"
 git log -1 --format='%h %s' > "$OUT/code_state.txt"
 CAP=$([ -n "${RT:-}" ] && echo "--scale-smoke $RT" || echo ""); BRT=$([ -n "${RT:-}" ] && echo "--runtime-s $RT" || echo "")
-BENCH=$([ "$DS" = google_speech ] && echo "--per-gpu 1 --leg-gpu-gb 10 --leg-ram-gb 30 --workers 4" || echo "--per-gpu 4")
+BENCH=$([ "$DS" = google_speech ] && echo "--per-gpu 1 --leg-gpu-gb 22 --leg-ram-gb 30 --workers 4" || echo "--per-gpu 4")
 
 pids=()
 stop() { echo "[B2] stopping"; for p in "${pids[@]}"; do kill -TERM -- -"$p" 2>/dev/null; done; sleep 10

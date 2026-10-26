@@ -44,36 +44,22 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
 (`paper_runs.py` → `bench_pool`); the harness is only the B2 / EV24 reference. Final runs on `/coc/scratch`.
 
 **A · Paper first plots (operator 10-25 late).** Runbook; tick each step here with its pool path when it passes.
-1. [ ] **Gates · running since 10-25 23:15 (code `6dbd6e535`; FX-D238 / D239).** Panes: A `TAG=1025_ev2 bash scripts/run_ev24.sh
-   && DS=cifar10 TAG=1025_c2 RT=14400 bash scripts/run_b2.sh`; B smoke `experiments/FB2S_1025b/launch_p4_smoke.sh` (GPUs 4-7,
-   FX-T91); C `python scripts/watch_runs.py experiments/EV24_1025_ev2 experiments/B2_cifar10_1025_c2 experiments/FB2S_1025b`
-   (every 10 min; ALERT on FAIL / DOOMED / ABORT, traceback or OOM, telemetry stalled 15 min, idle GPU). Expected: speech EV24
-   legs + cifar `fx` ~00:30, smoke ~00:40, cifar `fn` EV24 leg ~01:30, B2 (4 h vclock, ~45 min) after it.
-   - **~00:40 go / no-go (operator 10-25: start cifar before B2, accepting a redo if B2 fails):** pane C shows no new ALERT;
-     `grep -E "EV16|EV24" experiments/EV24_1025_ev2/b_*/ev.md` → 0 on every finished leg (speech = the FX-N160 exit);
-     `$PY scripts/paper_runs.py status --smoke --root experiments/FB2S_1025b`: cifar 30 / 30 done (✅ 23:58); `$PY
-     scripts/paper_plots.py --smoke` renders the cifar panels (PRELIM). Speech smoke failures don't block the cifar run (FX-N161).
-   - **Go:** launch step 2 now. Let pane A finish EV24 (it prints `[EV24] <dir>: ...` per pool; cifar `fn` ~01:30), then Ctrl+C it
-     before or while B2 waits: B2 harness legs need the whole node's CPUs and stay BLOCKED while the cifar run uses the node; B2 moves
-     to step 3. Check `experiments/EV24_1025_ev2/{h,b_cifar10}/ev.md` once EV24 prints.
-   - *Run 2 at 00:45 → GO:* EV16 0 and EV24 0 on all 4 finished legs (bench cifar `fx`, bench speech `fx` + `fn`, harness speech
-     `fx` full 12 h) → FX-N160 fix holds; cifar smoke 30 / 30, speech 28 / 30 (2 = FX-N161); every smoke figure renders. Open:
-     cifar `fx` 12 h bench leg took 72 min with no harness beside it (smoke 2 h legs median 8 min) vs the doc's 4-12 min: wall per
-     leg, not contention, sets the cifar run's ETA (a 120 h leg could take ~12 h wall); measure on the first cifar legs.
-   - *Run 2 at 23:58:* cifar smoke 30 / 30, speech 11 / 30; EV24 harness speech leg rc 0 in 33 min (not DOOMED: FX-N160 fix
-     likely holds; grade on its `ev.md`). Speech FedDance / FedAvg smoke legs hung (FX-N161).
-   - *Run 1 (10-25, `9af372278`):* EV24 0 on all legs → FX-N157 fix holds; EV16 failed on speech `fx` (FX-N160); bench EV0 "fails"
-     were the checker. Smoke 52 / 60: 8 bench legs CUDA-OOM'd beside the EV24 harness leg (44 / 45 GB on GPUs 0-3) and hung to the
-     1 h timeout (FX-D239, FX-T91). B2 cifar: the harness leg got 1 GPU, 300 trainers OOM at start, the pool aborted. Harness
-     "past deadline: later starts SKIPPED" = the no-history ETA (`est` 452 m / leg) passes the deadline; only later starts skip.
-2. [ ] **Cifar run (before B2, operator's risk):** `$PY scripts/paper_runs.py launch --prio 2 --datasets cifar10 && bash
-   <root>/launch_p2_cifar.sh` (root printed). Watch: `python scripts/watch_runs.py <root>`; `paper_runs.py status` per figure.
-   Legs run to target 80% or 120 h vclock; run 1's 12 h cifar bench legs took 72-129 min under contention (doc said 4-12 min solo):
-   compare the smoke's wall times to settle it before estimating the cifar run.
+1. ✅ **Gates (10-26 01:40, code `6dbd6e535`).** EV24 gate 5 / 5 legs EV16 0 + EV24 0 (`experiments/EV24_1025_ev2`; FX-N157,
+   N160 fixed); cifar smoke 30 / 30 + every figure renders (`experiments/FB2S_1025b`); speech smoke 28 / 30 (step 3b); B2 moved
+   to step 3 (operator 10-25: cifar before B2, redo if B2 fails). Run 1 (`9af372278`): EV16 on speech `fx` (FX-N160), 8 smoke legs
+   CUDA-OOM'd beside a harness leg (FX-T91, D239), B2 harness leg got 1 GPU and aborted.
+2. [ ] **Cifar run, priorities 1-3 (70 legs).** `$PY scripts/paper_runs.py launch --prio 3 --datasets cifar10 && bash
+   <root>/launch_p3_cifar.sh` (root printed, `/coc/scratch`). Watch: `python scripts/watch_runs.py <root>`; `paper_runs.py status`.
+   Queue: stacks that may run the full 120 h first, then sets by priority, so priority 3 only fills tail slots. 32 at once
+   (4 / GPU × 8); a finished leg's slot is refilled at once. Code key: FX-D240 changed only telemetry after the smoke (checked on a
+   2 h leg, `experiments/TEL_1026`, EV 20 / 20).
+   - *Expected in 12 h (estimate, FX-N162):* sync stacks (Oort, REFL, FedDance, FedAvg and `*`) all, even at 120 h; Felix `fx` /
+     ladder / swaps at 24-48 h; FedBuff / FedBuff\* if they hit by ~36-48 h, else they run on (to 120 h ≈ 2.5× longer; FX-N158 caps
+     it). Re-time from the first finished legs: `grep DONE <root>/cifar_s1.log`.
 3. [ ] **B2 on a quiet node, after the cifar run:** `DS=cifar10 TAG=<mmdd>_c RT=14400 bash scripts/run_b2.sh` (~45 min), then
    `TAG=<mmdd>_s bash scripts/run_b2.sh` (speech, 3-4 h+). *Pass:* both `bench_validate.md` within bars (cifar 27 / 27; FX-N151).
    Cifar B2 fail → redo the cifar run. Contention may skew the wall-measured trainer overhead (C13): re-run a failing row quiet.
-3b. [ ] **Speech smoke re-run** (before step 4, after pane A ends): `$PY scripts/paper_runs.py launch --smoke --prio 4 --root
+3b. [ ] **Speech smoke re-run** (before step 4): `$PY scripts/paper_runs.py launch --smoke --prio 4 --root
    experiments/FB2S_1025b && bash experiments/FB2S_1025b/launch_p4_smoke.sh` (regenerate first: it bakes `--leg-gpu-gb`; skips
    done legs). *Pass:* 60 / 60.
 4. [ ] **Speech run (after step 3 passes):** `$PY scripts/paper_runs.py launch --prio 2 --datasets google_speech && bash <root>/launch_p2_speech.sh`
@@ -85,8 +71,10 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
 
 Facts for the runbook: smoke = 2 h vclock, stops at `FB1S_TARGETS` (cifar 35%, speech 15%); paper legs stop at the 5-eval mean ≥
 target (`targetAccuracy`, `targetWindow` 5; every stack, sync and async) or at 120 h vclock (6-day trace, legs start +24 h so each
-client has its day-1 data); wall timeout 24 h / leg (smoke 1 h). Wall per 2 h vclock, speech bench: sync ~4 min, async 10-11 min;
-cifar 12 h vclock in 4-12 min. Layout `<root>/<cifar|speech>/<phase>/runs/<trace>_<baseline>_s<k>/`, phase `FB2<set>_<cell>_<arm>`.
+client has its day-1 data); wall timeout 24 h / leg (smoke 1 h). Wall per 2 h vclock, speech bench: sync ~4 min, async 10-11 min.
+Cifar bench (10-26): Felix ~6-7 min wall per vclock hour solo (12 h leg 72 min, `fn` 133 min; F49 the same), packed 4 / GPU
+×1.5-1.8; output on NFS +9% (n = 1). A bench leg is not faster than a harness leg (speech 12 h: harness 33 min on 4 GPUs, bench
+75 min on 1); the bench's gain is parallel legs (cifar 32 vs 1, speech 8 vs ~2). Layout `<root>/<cifar|speech>/<phase>/runs/<trace>_<baseline>_s<k>/`, phase `FB2<set>_<cell>_<arm>`.
 
 - **FX-N157 · Felix dispatched to clients still computing · fixed (FX-D237); EV24 0 on run 1's 5 legs; exit = step 1 EV24.**
   The async clock-jump clamp committed an update before its sct and freed the client; a second path popped a newer dispatch's
@@ -101,12 +89,12 @@ cifar 12 h vclock in 4-12 min. Layout `<root>/<cifar|speech>/<phase>/runs/<trace
 - **FX-N153 / N154 · Run pipeline and run sets · built (FX-D235, D236); exit = step 1 smoke.** `FB2E2E` … `FB2STA` = Table 1
   (152 legs / seed). Digests gzip raw logs; `bench_report`, `config_audit` read `.gz`, other readers don't yet.
 - **FX-N159 · Per-dataset launch · built** (`paper_runs.py launch --datasets`).
-- **FX-N161 · Speech bench legs OOM when packed · open.** A speech bench leg holds ~18-20 GB GPU (5 procs) but was declared
-  `--leg-gpu-gb 10`, so pools stacked legs on one 44 GB GPU; startup OOM'd 2 speech smoke legs (10-25 23:18). Fixed in
-  `paper_runs.py` (22, not code-keyed); still 10 in `run_ev24.sh` / `run_b2.sh` (fix after pane A ends: it re-keys code). Cross-pool
-  race remains (each pool sees only its own ramping legs): keep cifar and speech pools apart while speech legs start. The FX-D239
-  watchdog starts after workers are ready, so a worker dying in `TrainerHost.__init__` still hangs the leg to its timeout: start it
-  before the ready wait (re-keys code; do it with the run_*.sh fix).
+- **FX-N161 · Speech bench legs OOM when packed · fixed (10-26).** A speech bench leg holds ~18-20 GB GPU (5 procs) but was
+  declared `--leg-gpu-gb 10`, so pools stacked legs on one 44 GB GPU; startup OOM'd 2 speech smoke legs. Now 22 in `paper_runs.py`,
+  `run_ev24.sh`, `run_b2.sh`; the FX-D239 watchdog also covers worker startup. Each pool sees only its own ramping legs: worst case
+  per GPU 1 speech (20) + 4 cifar (4 × 3.4) = 34 GB fits, but no harness leg beside bench legs (FX-T91).
+- **FX-N162 · Cifar run ETA · open.** Per-leg wall, not storage: measure on the run's first finished legs, then decide FX-N158
+  (plateau stop) and FX-N100 (bench throughput) if the FedBuff tail runs past ~24 h wall.
 - **FX-N155 · Robustness: silent departures · todo (code, priority 3).** With probability p a client's flip to not eligible is not
   reported; Felix holds the slot until `send_timeout_wait_s`. p ∈ {1, 5, 10}% on the ablation cells. Lost / late reports, lost
   uploads, sensitivity: after the first version.
@@ -132,8 +120,7 @@ cifar 12 h vclock in 4-12 min. Layout `<root>/<cifar|speech>/<phase>/runs/<trace
 
 ## Scoreboard (rewrite after every run, PARITY C5)
 
-**Now:** no FB2 data yet; gate run 1 failed on EV16 (FX-N160) and GPU contention (FX-T91); run 2 (fixes FX-D238 / D239) running
-since 10-25 23:15; go / no-go for the cifar run at ~00:40 (Next steps A1). **Expected after step 1:** 60 / 60 smoke legs, config audit ✅, EV24 0 on
+**Now:** gates passed 10-26 01:40 (A1); cifar run (A2) launching; no FB2 data yet. **Expected after step 1:** 60 / 60 smoke legs, config audit ✅, EV24 0 on
 Felix legs, async legs stop at the smoke target, every Table 2 figure renders. Felix's MobiPerf lead may shrink slightly (no
 double booking); refuted if Felix loses to FedBuff on `smu`.
 
@@ -661,6 +648,10 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-D239** Bench fail-fast: `fl_bench` exits a leg (rc 70) when a worker dies, not at the wall timeout
   (`test_dead_worker_fails_the_leg`); EV0 accepts telemetry `run_end` (bench legs have no aggregator log); `run_ev24.sh` grades the
   harness run dirs in `async_cifar10/experiments` and skips the `.log` files; `scripts/watch_runs.py` (pool watcher, ALERT lines).
+- **FX-D240** Two-tier selection telemetry (default; `FLAME_TELEMETRY_FULL=1` = old): `selection.per_trainer` keeps the chosen ends,
+  the whole pool once per 600 s clock per task (`per_trainer_full` true; trimmed events false, so pool readers skip them; old logs
+  have no flag). 2 h cifar Felix leg: 1.76 GB → 78 MB raw (lean 71); EV9 / EV21 still run. `paper_runs` no longer exports
+  `FLAME_TELEMETRY_LEAN` (drops the field entirely). EV12 passes a target stop (5-eval mean ≥ `targetAccuracy`).
 - **FX-D234** Path-independent check-in (FX-N151): `CheckinLedger(replay="time")` replays sim check-ins in time order (ties by end)
   with one jitter stream per client, so end order and `advance` cadence (harness vs bench) no longer change a run; `checkin.replay=end`
   reverts (`test_time_replay_is_path_independent`). `fl_bench` sets `FLAME_TRACE_OFFSET_S` before generating trainer configs (bench

@@ -13,6 +13,7 @@ import importlib.util
 import json
 import logging
 import os
+import queue
 import sys
 import tempfile
 import threading
@@ -363,7 +364,11 @@ class PoolRouter:
                 self.of[str(d["taskid"])] = w
         ready = 0
         while ready < workers:
-            kind, _ = self.results.get()
+            try:
+                kind, _ = self.results.get(timeout=5)
+            except queue.Empty:  # a worker that died building its trainers never reports ready
+                self._check_workers()
+                continue
             ready += kind == "ready"
         self.ids = [str(d["taskid"]) for d in cfgs]
         self._rx = threading.Thread(target=self._pump, daemon=True)
@@ -374,11 +379,14 @@ class PoolRouter:
     def _watch(self):
         """A dead worker strands its trainers' replies: fail the leg now, not at the pool's wall timeout."""
         while not self._closing:
-            for w, p in enumerate(self.procs):
-                if p.exitcode not in (None, 0):
-                    print(f"[fl_bench] worker {w} died rc={p.exitcode}: failing the leg", flush=True)
-                    os._exit(70)
+            self._check_workers()
             time.sleep(5)
+
+    def _check_workers(self):
+        for w, p in enumerate(self.procs):
+            if p.exitcode not in (None, 0):
+                print(f"[fl_bench] worker {w} died rc={p.exitcode}: failing the leg", flush=True)
+                os._exit(70)
 
     def _pump(self):
         while True:

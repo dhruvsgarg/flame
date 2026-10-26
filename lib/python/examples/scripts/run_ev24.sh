@@ -19,7 +19,7 @@ setsid $PY scripts/harness_pool.py --tier F48 --datasets google_speech --baselin
     --deadline-h 12 --output-dir "$OUT/h" > "$OUT/h.log" 2>&1 & pids+=($!)
 for ds in cifar10 google_speech; do
     P=$([ "$ds" = google_speech ] && echo gs_ || echo "")
-    BENCH=$([ "$ds" = google_speech ] && echo "--per-gpu 1 --leg-gpu-gb 10 --leg-ram-gb 30 --workers 4" || echo "--per-gpu 4")
+    BENCH=$([ "$ds" = google_speech ] && echo "--per-gpu 1 --leg-gpu-gb 22 --leg-ram-gb 30 --workers 4" || echo "--per-gpu 4")
     setsid $PY scripts/bench_pool.py --harness-args "--tier FB2E2E --datasets $ds --baselines felix --phases '${P}FB2E2E_smu_fx'" \
         --harness-args "--tier FB2LAD --datasets $ds --baselines felix --phases '${P}FB2LAD_smu_fn'" --out "$OUT/b_$ds" \
         --gpus "$BGPUS" $BENCH --runtime-s 43200 --timeout-s 14400 > "$OUT/b_$ds.log" 2>&1 & pids+=($!)

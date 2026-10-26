@@ -97,6 +97,8 @@ def _spearman(a: list[float], b: list[float]) -> float | None:
 
 def selection_metrics(sel: dict, true_u: dict[str, float]) -> dict | None:
     """Score one selection's picks against the true utilities of its pickable pool."""
+    if sel.get("per_trainer_full") is False:  # FX-D240: chosen-only event, no pool to score against
+        return None
     pt = sel.get("per_trainer") or {}
     chosen = [c for c in sel["chosen"] if c in true_u]
     pool = [t for t, v in pt.items()

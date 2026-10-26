@@ -173,7 +173,6 @@ cd "{os.path.abspath(os.path.join(HERE, '..'))}" || exit 1
 [ -z "$(git status --porcelain -uno)" ] || {{ echo "[paper_runs] tree dirty"; exit 1; }}
 PY="conda run --no-capture-output -n dg_flame python"
 GPUS=${{GPUS:-{gpus}}}
-export FLAME_TELEMETRY_LEAN=1
 mkdir -p {" ".join(os.path.join(root, d) for d in DS.values())}
 git log -1 --format='%h %s' > {root}/code_state.txt
 pids=()
