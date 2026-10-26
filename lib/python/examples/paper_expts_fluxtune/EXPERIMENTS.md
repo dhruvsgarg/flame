@@ -67,13 +67,13 @@ how to re-derive for a new model: **[D_CALIBRATION.md](D_CALIBRATION.md)**.
 | ρ decline | ρ_t = ρ0·exp(−(t−1)/(2·T_res)), T_res = 2·lnΦ_budget/ρ0² (§2.1); landing's decay without B_max, stop or rail | `--rho-schedule exp --t-res {T_res}` (P0 chose it 10-18) | constant ρ grows the absolute step 3× (0.67 → 2.0); the simplified arm overshot its peak (Φ 2.68), and SmolLM2 sat at ρ 0.037 throughout |
 | GL decay stop | DistilBERT only (fires on 20 evals past the warm-up, 0.45 × `--max-commits`, > 0.5% below best); big cells stop on target | `--saturation-stop` without `--no-sat-decay` | free collapse guard |
 
-**Big cells add (decision 15, RUN_PLAN):** server momentum 0.9 (`--server-momentum 0.9`); stop only at target ×2 (`--target-stop {target} --target-stop-window 2`;
+**Big cells add (decisions 15–16, RUN_PLAN):** no server momentum (0.9 diverged on both big cells at full n); stop only at target ×2 (`--target-stop {target} --target-stop-window 2`;
 commit cap 100,000 and Φ rail 1e9 are inert, saturation stop off); bench, one leg per 4 GPUs.
 
 Unchanged from the simplified controller: P=10 `mean`, trust ratio, fixed pool N, uniform ω (G1 kept it 10-18;
 `grad_aware` is a C3 arm), stall rule 0.003 (leaky streak; DistilBERT), Φ rail (DistilBERT). Train batch size 8 on AG News, 32 on Yelp-P and Yahoo (P0b).
 Async: C = 0.3·n clients in flight, K = C/3 (30 / 10 at n 100). s, ρ0 and T_res are per cell (§2.1). Under `exp`, Φ is bounded by Φ_budget = exp(ρ0²·T_res/2): 2 on DistilBERT (the Φ rail
-never fires; the commit cap (§5) ends the run), 4 on RoBERTa-L, ≈ 210 on 1.7B (rail off on both).
+never fires; the commit cap (§5) ends the run), 4 on both big cells (rail off).
 Stop-rule warm-up and horizon are 450 / 150 at a 1,000-commit cap and scale with `--max-commits` (`expts/saturation_stop.py`).
 
 ```
@@ -84,7 +84,7 @@ export FWDLLM_FD_SCALE_INVARIANT=1   # required when p != 450,340 (FT-T9)
 --var-stopping-policy off --budget-stop-frac 0 --b-max-probe-every 0 --phi-stop halt
 --saturation-stop --sat-stall-frac 0.003 --server-update-audit --no-cos-ground-truth-audit
 --max-commits {cap} --final-full-eval [--eval-max-samples {rows} --eval-resample]   # rows: Yelp-P, Yahoo
-# big cells: --server-momentum 0.9 --target-stop {target} --target-stop-window 2 --max-commits 100000 --phi-stop-threshold 1e9, no --saturation-stop
+# big cells: --target-stop {target} --target-stop-window 2 --max-commits 100000 --phi-stop-threshold 1e9, no --saturation-stop
 ```
 
 Runs from before the ρ anneal (§3 P0), including all July runs, are FluxTune v1 or pre-anneal and do not feed
@@ -136,8 +136,8 @@ Inputs are N, s and Φ_budget; ρ0 and T_res follow per model. Rule, derivation 
 | N | 50, every cell | `N* ≈ 29·Λ_need²` per dataset · bs: AG News 34–42, Yahoo bs 32 38 (F0); p cancels across models; DistilBERT run 2 reached 0.86 at N 50 | Yelp-P unmeasured; p cancellation rests on one point |
 | s | **2.4 RoBERTa-L, 2.81 1.7B** (operator 10-26, decision 15); DistilBERT keeps ρ0 0.07 (s 2.10) | 1.5 validated on DistilBERT's three tasks (0.872 / 0.664 / 0.810, within 0.008 of the FL targets); without momentum, s > 2 under-trains (s 2.9 reaches the rail with half the Λ, buildplan §5.12). 1.7B at s 2.81: 0.598 at Φ_budget 2 (budget-bound, §3.4); with momentum 0.9 it led every smoke (§2.2) | s 2.4 / 2.81 + momentum unproven at full n until P3 / P4 |
 | ρ0 | s·√(P·N/p) at P 10, N 50: **0.0698 RoBERTa-L, 0.0978 1.7B (r 2, passed as `--rho0`)**; 0.07 DistilBERT | derived | — |
-| Φ_budget | **4 RoBERTa-L; ≈ 210 1.7B** (T_res 1,119 at ρ0 0.0978; ρ only halves by c1,500); 2 on DistilBERT | DistilBERT peaks at Φ\* 2.82 / 3.00 / 2.91 (22-run ledger: 2.4–3.3); 4 sits above every peak. Φ\* is knowable only from a run: the Φ_knee probe tracks the trajectory, not Φ\* (buildplan §5.6). The run checks itself: a peak before Φ 4 found Φ\*; accuracy still rising near Φ 4 means raise it | Φ\* unmeasured beyond DistilBERT |
-| T_res | **570 RoBERTa-L** (= 2·ln4/ρ0²), **1,119 1.7B** (set, operator); 283 DistilBERT (Φ_budget 2) | derived / set | momentum 0.9 makes the realised step larger than ρ; Φ read from the run |
+| Φ_budget | **4 on both big cells**; 2 on DistilBERT | DistilBERT peaks at Φ\* 2.82 / 3.00 / 2.91 (22-run ledger: 2.4–3.3); 4 sits above every peak. Φ\* is knowable only from a run: the Φ_knee probe tracks the trajectory, not Φ\* (buildplan §5.6). The run checks itself: a peak before Φ 4 found Φ\*; accuracy still rising near Φ 4 means raise it | Φ\* unmeasured beyond DistilBERT |
+| T_res | 2·lnΦ_budget/ρ0²: **570 RoBERTa-L, 290 1.7B**; 283 DistilBERT (Φ_budget 2) | derived | — |
 
 RoBERTa-L passes `--gate-safety-s 2.4 --t-res 570` without `--rho0`; 1.7B passes `--rho0 0.0978`; under `exp` with `--pool-target` the aggregator derives ρ0
 and logs `[ServerStep] … rho*= s=`. DistilBERT passes `--rho0 0.07` (overrides `--gate-safety-s`).
@@ -160,13 +160,13 @@ Single seed throughout (noise 2.3 pt); "kept" = in the recipe today. Runs: RUN_P
 | More probes per client (P 40) | dropped | 1.7B: 4× cost per commit for ~4× progress (§3.7 `sm_k40s`) | no: compute-neutral |
 | Trust-ratio step, `exp` ρ decline (E2) | kept | P0: `exp` 0.878 vs constant ρ 0.872, no collapse over 7 lap wraps | form no; s, Φ_budget yes |
 | Step s = ρ0 / cos(pool, g) | kept as the unit | fixed ρ0 across p handicaps arms (§3.7: s 2.01 / 1.40 vs 2.81) | yes: 2.10 / 2.4 / 2.81 |
-| Φ_budget (→ T_res) | set explicitly | budget-bound plateaus: 1.7B 0.598 at budget 2 (85% spent); RoBERTa-L 0.732 at Φ 2.0 (budget 2) | yes: 2 / 4 / ≈ 210 |
+| Φ_budget (→ T_res) | set explicitly | budget-bound plateaus: 1.7B 0.598 at budget 2 (85% spent); RoBERTa-L 0.732 at Φ 2.0 (budget 2) | yes: 2 DistilBERT, 4 big cells |
 | Fixed pool N (E3) | kept, N 50 | F0: N\* 34–42 (AG News), 38 (Yahoo); p cancels | per dataset · bs only |
 | Async C = 0.3·n, K = C/3 (S1) | kept | wall-clock gain only | no |
 | Uniform ω (vs `grad_aware`) | kept | G1: within 0.6 pt at equal commits, +14% s/commit | no |
 | bs 32 on seq-256 tasks | kept | P0b: same plateau as bs 8, 35–40% fewer vclock h | per task |
 | Smaller LoRA rank | 1.7B r 2 (r 4 before) | same s: r 2 +3–6 pt by c30, same per-task cost (probe forwards dominate) | yes; RoBERTa-L r 6 untested lower |
-| Server momentum 0.9 | big cells | 1.7B: best 0.432 (c28) vs 0.357 plain r 2 (c43); lead appears once the buffer fills (~c9) | yes: untested on DistilBERT at ρ0 0.07; weight norm grows faster |
+| Server momentum 0.9 | dropped | led 1.7B n 12 smokes to c31 (0.432 vs 0.357), then diverged at full n: 1.7B peak 0.331 (c28), loss 2.14 → 4.16 and norm 6.3× by c40; RoBERTa-L norm 3.7× by c50, one-class evals; DistilBERT diverged | compounds with the trust ratio (step ∝ ‖θ_t‖); a ‖θ_0‖-scaled step would need code |
 | Saturation / GL stop | DistilBERT only | big cells stop on target | — |
 | Cos ground-truth audit | off everywhere | stalls 1.7B at commit 1 (CPU backward) | no |
 
@@ -184,8 +184,8 @@ Each item: action · exit · state. [B] adds no runs: it reads the [A] runs.
 - **P1 · [A] `distilbert_agnews`: `fwdllm` + `fluxtune`, 1 seed · exit: `e2e_distilbert_agnews.pdf` from
   real runs · runs done 10-25 (FluxTune 0.86 at 4.34 vclock h; FwdLLM DNF, best 0.855; RUN_PLAN §3.6); manifest + figure todo.** These runs are also C1's A0 and A6.
 - **P2 · C1 Phase A (A1–A4, 1 seed) · blocked: P1.** Its result picks the C3 groups worth running.
-- **P3 · [A] `roberta_large_yelp` · `fluxtune` (run 4) running on jayne bench GPUs 4–7 since 10-26 01:50 (decision 15); `fwdllm` todo.** Stop: acc ≥ 0.82 on 2 evals or 30.5 h wall, scored on TTA.
-- **P4 · [A] `smollm2_1p7b_yahoo` · `fluxtune` (run 6b, r 2 + momentum) running on jayne bench GPUs 0–3 since 10-26 01:50 (decision 15; run 6 stopped at c398, peak 0.576); `fwdllm` (run 5) ready (lr 3e-3, var 8.4).** Stop: acc ≥ 0.65 on 2 evals or 30.5 h wall, scored on TTA.
+- **P3 · [A] `roberta_large_yelp` · `fluxtune` (run 4b, no momentum) running on jayne bench GPUs 4–7 since 10-26 02:55 (decisions 15–16; run 4 with momentum diverged); `fwdllm` todo.** Stop: acc ≥ 0.82 on 2 evals or 30.5 h wall, scored on TTA.
+- **P4 · [A] `smollm2_1p7b_yahoo` · `fluxtune` 6c running on jayne bench GPUs 0–3 since 10-26 04:07 (r 2, s 2.81, T_res 290, no momentum; 6b with momentum diverged at c40, run 6 peaked 0.576); `fwdllm` (run 5) ready (lr 3e-3, var 8.4).** Stop: acc ≥ 0.65 on 2 evals or 30.5 h wall, scored on TTA.
 - **P5 · C2 cumulative ladder · blocked: P2.** Reuses P1/P2 arms where the config is identical.
 - **P6 · C3 design choices · blocked: P2.** Only the concepts Phase A shows matter.
 - **P7 · C4 async SOTA + availability · blocked: FT-N5** (unavailability wiring for the grad loop).
@@ -412,3 +412,5 @@ validated 1.5 and the 2 compute limit) → ρ0 0.0509 RoBERTa-L, 0.0436 1.7B; Φ
 (in-process `--target-stop`) or 20 h wall, Φ rail 4 (never fires below Φ_budget 4), no commit cap, saturation off, then one full-test eval. Open: 12 h caps vs ~1,700–2,300 commits to Φ 3 (RUN_PLAN §6).
 Decided 2026-10-26 (operator; RUN_PLAN decision 15): big-cell `fluxtune` on the bench, 4 GPUs each, momentum 0.9, stop only at target ×2. RoBERTa-L s 2.4, T_res 570 (Φ_budget 4);
 1.7B LoRA r 2, ρ0 0.0978 (s 2.81), T_res 1,119 (from the §3.7 smokes). Supersedes 10-25's s 1.75 / 2.0 and 12 / 20 h caps (now 30.5 h wall).
+Decided 2026-10-26 02:50 (operator; RUN_PLAN decision 16): RoBERTa-L drops momentum (diverged at c50); s 2.4, T_res 570 kept.
+Decided 2026-10-26 04:07 (operator; RUN_PLAN decision 17): 1.7B drops momentum (diverged at c40); T_res 290 (Φ_budget 4).

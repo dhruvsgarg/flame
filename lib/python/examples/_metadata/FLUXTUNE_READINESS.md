@@ -47,8 +47,8 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 ## Next steps (persistent queue — resumes after Felix)
 
 - **FT-N23 · Big-cell paper runs P3 / P4 (RUN_PLAN decision 15) · wip, running since 10-26 01:50 on jayne.** RoBERTa-L · Yelp-P
-  `fluxtune` on GPUs 4–7 (`fwdllm/paper_rb_20261026/`, pgid 1318655), SmolLM2-1.7B · Yahoo on GPUs 0–3 (`fwdllm/paper_sm_20261026/`, pgid
-  1318620); bench, stop at target ×2 or the 30.5 h `bench_pool` timeout (a kill: no final eval). *Next:* read the first-hours pace and Φ;
+  `fluxtune` without momentum on GPUs 4–7 (`fwdllm/paper_rb_20261026b/`, pgid 1360735, since 02:55; check c150 acc > 0.58); SmolLM2-1.7B · Yahoo 6c (r 2, T_res 290, no momentum) on GPUs 0–3
+  (`fwdllm/paper_sm_20261026b/`, pgid 1404994, since 04:07; momentum run 6b diverged at c40); bench, stop at target ×2 or the 30.5 h `bench_pool` timeout (a kill: no final eval). *Next:* read the first-hours pace and Φ;
   check accuracy across the first lap wrap (FT-L8); log both on the RUN_PLAN board; then the `fwdllm` arms (runs 3, 5). *Exit:* both
   cells scored (TTA or DNF) in `figs_e2e.yaml`.
 - **FT-N21 · Big-model real↔sim transfer check (FT-L19) · todo.** Per model, one 1–2 h real leg at the paper packing beside
@@ -204,8 +204,6 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
 - **FT-L24** At fixed s, lower LoRA rank helped 1.7B: r 2 beat r 4 by 3–6 pt at c30 at the same per-task cost (probe forwards
   dominate; RUN_PLAN §3.7).
 - **FT-L25** More probes per client is compute-neutral: P 40 cost 4× per commit for ~4× progress on 1.7B (`sm_k40s`). Keep P 10.
-- **FT-L26** Server momentum 0.9 (heavy-ball before trust-ratio normalisation, step norm stays ρ‖θ‖) led 1.7B once its buffer filled
-  (~c9): best 0.432 vs 0.357 plain (`bench_sm_20261025/POOL_m`).
 - **FT-L27** `fwdllm` baseline: reselect the cohort every commit (`data_bin`, as upstream); a round-pinned non-IID cohort teaches its
   label prior (RoBERTa class-1 share 0.996; RUN_PLAN §3.5).
 - **FT-L28** `fwdllm`'s var threshold sets the pooled probe count, not direction quality; set it per model by matching iterations per
@@ -241,7 +239,7 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
 - **FT-T15** Don't read the ag60 preview's time-to-0.60 as ablation evidence: 1 seed per arm, stopped at the first eval
   ≥ 0.60 (no consecutive rule); `Smom` dipped to 0.28 just before.
 - **FT-T16** Don't read Φ from the `exp` schedule under server momentum: Φ ≠ e^B (`FedSgdAggregator.py:433`); read `server_update`.
-  0.9 diverged on DistilBERT (ag60), so test it per cell.
+  0.9 diverged on every cell: DistilBERT (ag60), RoBERTa-L (‖θ‖ 3.7× by c50), 1.7B (6.3× by c40, after a short-smoke lead); steps ∝ ‖θ_t‖ compound.
 - **FT-T17** Don't run the cos ground-truth audit on 1.7B: it stalls every leg at commit 1 (CPU backward, 60–70 GB RAM), even at batch 64.
 - **FT-T18** Don't trust the bench's `sim_wall_ceiling_s`: `fl_bench` ignores it; `bench_pool.py --timeout-s` is the cap and kills (no
   final eval).
