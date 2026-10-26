@@ -46,8 +46,9 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
 **A · Paper first plots (operator 10-25 late).** Runbook; tick each step here with its pool path when it passes.
 1. [ ] **Commit** FX-D238 / D239 (gates run on a clean tree; the `flame/` change re-keys code, so every smoke leg re-runs).
 2. [ ] **Gates, two tmux windows at once (~2.5-3 h):**
-   - A: `TAG=1025_ev2 bash scripts/run_ev24.sh && DS=cifar10 TAG=1025_c2 bash scripts/run_b2.sh` (EV24 ~2.2 h: cifar `fn`
-     bench leg 129 min; the B2 harness legs take the whole node's CPUs, so they run one at a time and wait for the smoke to end)
+   - A: `TAG=1025_ev2 bash scripts/run_ev24.sh && DS=cifar10 TAG=1025_c2 RT=14400 bash scripts/run_b2.sh` (EV24 ~2.2 h: cifar
+     `fn` bench leg 129 min; B2 at 4 h vclock, matched horizon (speech B2 ran 4 h, N151); its harness legs take the whole node's
+     CPUs, so they run one at a time after the smoke)
    - B: `$PY scripts/paper_runs.py launch --smoke --prio 4 --gpus 4,5,6,7 --root experiments/FB2S_1025b &&
      bash experiments/FB2S_1025b/launch_p4_smoke.sh`. GPUs 4-7 only: a harness leg on 0-3 fills them (FX-T91).
    - C (watch): `python scripts/watch_runs.py experiments/EV24_1025_ev2 experiments/B2_cifar10_1025_c2 experiments/FB2S_1025b`
