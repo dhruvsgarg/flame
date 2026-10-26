@@ -2,7 +2,7 @@
 
 2026-10-10. Ported, checked offline and smoked (results §6; simplified 6 h run §7–§8; DistilBERT parity run, N=50, §9;
 trainer and aggregator performance optimisations and regression checks §0; further improvements §11; ~1B model §12;
-1.7B port and first run §13).
+1.7B port and first run §13; rank / probes / momentum smokes §14).
 Why this model and the full-run estimate: session notes §9–§10 ([fl_fwd_ft_aishwwarya_session_2026-10-01.md](fl_fwd_ft_aishwwarya_session_2026-10-01.md)).
 Long-form explanations (why each copy existed, bf16, caching allocator, host RAM): [fl_fwd_ft_trainer_memory_explained.md](fl_fwd_ft_trainer_memory_explained.md).
 
@@ -610,3 +610,86 @@ The step-6 command with these changes:
 Φ = 3 needs ~1,560 commits (~21–31 h), so 8 h ends before the run's own stop.
 
 **Owed:** RC12 (aggregator RAM, read from this run); step 6 pass condition from this run (= RC10).
+
+## 14. SmolLM2-1.7B on Yahoo: rank / probes / momentum smokes (2026-10-25)
+
+Follows §13 (p = 794,624 there; the harness telemetry reads 806,912 at r=4 with the head). Snapshot taken 2026-10-26 00:30; the four sim legs below are still running, so the tables are a point in time (regenerate from the run dirs).
+
+### Summary
+- **Backprop ceiling (r=4, centralised, pooled test sample): ~0.77** (plateau from step 750; single seed). Best FluxTune SmolLM so far: 0.598 (shepherd, n=60). The 0.65 target was inherited from DistilBERT's FL target (0.660 vs its 0.734 ceiling, a 7-pt gap); for SmolLM a 5-8 pt drop from 0.77 suggests **0.69-0.72**.
+- **Best so far: LoRA r=2 + server momentum 0.9 at the same s (2.81).** At matched commits it is ahead of plain r=2 (c12: 0.249 / 2.119 vs 0.212 / 2.237) and of base (0.182 / 2.302). Promising, not proven: one seed, n=12 smoke, and only ~4 evals past the point where the momentum buffer filled.
+- **r=2 beats r=4 at the same s** (loss ~0.05-0.09 lower, acc +3-6 pts by c30), once rho is scaled with the cosine.
+- **K=40 probes is compute-neutral at best** (4x cost per commit for ~4x progress per commit), so it is not worth running.
+- **Decay (`t_res`) is irrelevant in the first ~30 commits**; only the combined r=2+momentum leg uses the slower t_res 1119, so that confound is untested.
+
+### What we learned (order of discovery)
+1. `--cos-ground-truth-audit` stalls every leg at commit 1 (aggregator at 100% CPU, ~60-70 GB RAM, GPUs idle), even with `--cos-probe-batch-size 64 --cos-probe-every 5`. Keep it `--no-cos-ground-truth-audit` for SmolLM.
+2. In this harness `s = rho0 / cos_theory`, `cos_theory = sqrt(G*N/p)` (G probes, N pool, p trainable). A fixed `rho0` across arms lets s vary (first r=2 / K=40 legs had s = 2.01 / 1.40 against base 2.81) and handicaps them. Hold **s fixed**: rho0 = 0.0698 (r=4,k=10), 0.0978 (r=2,k=10), 0.1387 (r=4,k=40).
+3. Under `trust_ratio` the step is `rho * ||theta||`; ||theta|| scales ~sqrt(p), so with a fixed rho0 the cosine gain from a smaller p is cancelled (step x cos was 0.0148 base vs 0.0155 r=2).
+4. LoRA rank barely changes per-task cost (probe forwards dominate): ~21 s r=4 vs ~23 s r=2 per task; commit gap 5.1 vs 5.4 min.
+5. Momentum is heavy-ball applied before the trust-ratio normalisation, so the step norm stays `rho*||theta||`; its benefit appears after the buffer fills (~10 commits). It started behind plain r=2 (c3, c6) and crossed at c9.
+
+### Shared arm settings (`expt_scripts/run_sequential.sh`, sim mode)
+`--only fluxtune --dataset yahoo --partition-method niid_label_clients=100_alpha=1 --num-trainers 12 --c 6 --c-async 6 --agg-goal 5 --min-initial-frac 0.9 --model-type llama --model-name HuggingFaceTB/SmolLM2-1.7B --peft-method lora --adapter-reduction-factor 16 --fd-scale-invariant --delay-divisor 0.0047 --delay-floor 4.0 --send-timeout-s 3600 --train-batch-size 32 --probe-combine mean --server-step-rule trust_ratio --gate-safety-s 2 --commit-gate fixed --pool-target 50 --rho-schedule exp --agg-rate-type uniform --var-stopping-policy off --phi-stop-threshold 4 --budget-stop-frac 0 --b-max-probe-every 0 --phi-stop halt --server-update-audit --no-cos-ground-truth-audit --eval-max-samples 2000 --eval-resample --eval-every-n-commits 3 --max-commits 150 --max-runtime-s 1000000000 --sim-wall-ceiling-h 24 --force --yes`
+Launched through `scripts/bench_pool.py --gpus-per-leg 2 --per-gpu 1` (jobs files in `bench_sm_20261025/`), 2 GPUs per leg, `workers=6`.
+
+### Arms (per-arm values)
+| arm | k | LoRA r | p | rho0 | s | t_res | momentum | GPUs | config yaml | run dir |
+|---|---|---|---|---|---|---|---|---|---|---|
+| base | 10 | 4 | 806,912 | 0.07 | 2.81 | 560 | 0 | 0,1 | expt_scripts/smoke_logs/20261025_204018/ | bench_sm_20261025/POOL/sm_base/runs/syn_0_fluxtune_s1/run_20261025_204054_* |
+| r2_s | 10 | 2 | 413,696 | 0.0978 | 2.81 | 560 | 0 | 4,5 | expt_scripts/smoke_logs/20261025_211919/ | bench_sm_20261025/POOL_s/sm_r2s/runs/syn_0_fluxtune_s1/run_20261025_211930_* |
+| k40_s | 40 | 4 | 806,912 | 0.14 | 2.81 | 560 | 0 | 2,3 | expt_scripts/smoke_logs/20261025_211907/ | bench_sm_20261025/POOL_s/sm_k40s/runs/syn_0_fluxtune_s1/run_20261025_211930_* |
+| r2_mom | 10 | 2 | 413,696 | 0.0978 | 2.81 | 1119 | 0.9 | 6,7 | expt_scripts/smoke_logs/20261025_224827/ | bench_sm_20261025/POOL_m/sm_r2m/runs/syn_0_fluxtune_s1/run_20261025_224838_* |
+
+Logs inside each run dir: `bench.log` (aggregator + trainers), `telemetry/aggregator_*.jsonl` (`server_update`, `agg_eval`, `agg_round`), `telemetry/trainer_*.jsonl`; the bench driver log is `bench_sm_20261025/bench{3,4,5}.log` and `leg.out` under each `POOL*/sm_*/runs/*/`.
+
+### Per-arm controller values (first commit; mean commit gap)
+| arm | commits | rho (c1) | cos_theory | s=rho/cos | step norm (c1) | weight norm now | min / commit |
+|---|---|---|---|---|---|---|---|
+| base | 44 | 0.0698 | 0.0249 | 2.81 | 0.595 | 9.42 | 5.1 |
+| r2_s | 36 | 0.0973 | 0.0348 | 2.80 | 0.620 | 7.50 | 5.3 |
+| k40_s | 9 | 0.1387 | 0.0498 | 2.79 | 1.190 | 9.27 | 19.6 |
+| r2_mom | 17 | 0.0973 | 0.0348 | 2.80 | 0.620 | 11.76 | 5.7 |
+
+### Matched evals: accuracy / test loss (wall minutes since leg start)
+| eval | base | r=2 same s | K=40 same s | r=2 + momentum |
+|---|---|---|---|---|
+| c0 | 0.131 / 2.765 (0 m) | 0.135 / 2.698 (0 m) | 0.144 / 2.506 (0 m) | 0.132 / 2.699 (0 m) |
+| c3 | 0.158 / 2.464 (16 m) | 0.153 / 2.407 (16 m) | 0.180 / 2.281 (58 m) | 0.142 / 2.480 (18 m) |
+| c6 | 0.143 / 2.408 (31 m) | 0.155 / 2.367 (32 m) | 0.196 / 2.189 (117 m) | 0.170 / 2.510 (34 m) |
+| c9 | 0.149 / 2.336 (47 m) | 0.171 / 2.288 (48 m) | – | 0.202 / 2.207 (51 m) |
+| c12 | 0.182 / 2.302 (63 m) | 0.212 / 2.237 (65 m) | – | 0.249 / 2.119 (68 m) |
+| c15 | 0.203 / 2.246 (77 m) | 0.214 / 2.209 (81 m) | – | 0.283 / 2.065 (85 m) |
+| c18 | 0.210 / 2.217 (92 m) | 0.226 / 2.170 (97 m) | – | – |
+| c21 | 0.228 / 2.168 (107 m) | 0.266 / 2.115 (112 m) | – | – |
+| c24 | 0.233 / 2.128 (122 m) | 0.263 / 2.065 (128 m) | – | – |
+| c27 | 0.241 / 2.088 (137 m) | 0.285 / 1.999 (143 m) | – | – |
+| c30 | 0.243 / 2.118 (152 m) | 0.300 / 2.029 (158 m) | – | – |
+| c33 | 0.266 / 2.071 (167 m) | 0.319 / 1.983 (174 m) | – | – |
+| c36 | 0.290 / 2.031 (183 m) | – | – | – |
+| c39 | 0.277 / 2.035 (198 m) | – | – | – |
+| c42 | 0.328 / 1.963 (212 m) | – | – | – |
+
+Eval noise: 2000 resampled test rows, accuracy ~±0.8 pt, loss ~±0.02.
+
+### Backprop ceiling (`expt_scripts/backprop_ceiling.py`, AdamW lr 2e-4, bs 32, bf16 autocast, seed 1233, 3000-row test sample)
+- r=4: step 250 0.751, 500 0.757, 750 0.770, 1000 0.761, 1250 0.775, 1500 0.767, 1750 0.769 (stopped). Trainable p = 806,912, same as the harness. Curve `bp_ceiling_20261025/r4/curve.jsonl`, log `bp_ceiling_20261025/r4.log`.
+- r=2: only step 250 logged, 0.746 / 0.816 (stopped by request). p = 413,696. `bp_ceiling_20261025/r2/curve.jsonl`, `r2.log`.
+
+### Earlier / discarded runs (for reference)
+| run | what | result | location |
+|---|---|---|---|
+| n=60 baseline (stopped at c398) | rho0 0.0497 (s=2), t_res 1119, k 10, r 4, pool 50, agg-goal 10, c 30, eval 6000 | acc ~0.56 (best 0.576 by c398); loss still falling ~0.09 per 100 commits when stopped, heading to the 10-23 run's ~0.59 plateau | experiments/run_20261025_075720_fluxtune_yahoo_n60_smoke_syn_0_sim/ |
+| yesterday n=60 (shepherd, 14.4 h, 531 commits) | rho0 0.07, t_res 283 | best 0.598, plateau 0.57-0.595 from c350 | shepherd:experiments/run_20261023_220053_fluxtune_yahoo_n60_smoke_syn_0_sim/ |
+| audit stalls | cos audit batch 1024 / 64 | stuck at commit 1 | bench_sm_20261025/POOL_audit1024_stalled/, POOL_audit64_stalled/ |
+| first k40 / r2 legs (fixed rho0 0.07, s 1.40 / 2.01) | killed ~21:19 | r2 c3 2.455 vs base 2.464 (equal) | bench_sm_20261025/POOL/sm_k40, POOL/sm_r2 |
+
+### Caveats
+- n=12 trainers, 150-commit cap, single seed; do not compare with the n=60 runs (different n, agg-goal, s, eval size).
+- r=2+momentum also carries `t_res 1119` (the others 560); both changes were requested together.
+- Momentum's trainable weight norm grows faster (11.15 at c16 vs 7.43 for plain r=2 at c34, from the same 6.4 start); watch for instability.
+
+### Next
+1. Read r2_mom against r2_s at c15-c30; if it holds, launch a full-size (n=60) r=2+momentum run with `--target-stop 0.70` and no commit cap.
+2. Try r=1 at the same s, and r=2+momentum with `t_res 560` to separate the decay confound.
+3. Port the same-s rule and the audit-off setting to the RoBERTa-L recipe (see FLUXTUNE_READINESS.md).

@@ -4,8 +4,8 @@
 - **Read [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) first.** Its doc rules, operating rules (R1-R13),
   shared lessons (L) and tripwires (T) apply here. This doc holds only what is specific to FluxTune:
   gradients (JVPs) aggregated instead of weights, a variance-gated commit, and the `data_id` progress axis.
-- **Paper runs unparked (operator 10-17):** [RUN_PLAN.md](../paper_expts_fluxtune/RUN_PLAN.md) gates G0 (FT-N1), P0 (FT-N4), G1 (grad-aware keep/drop)
-  first. **Read RUN_PLAN's Status board first** (what is running, done, next). The rest of this queue stays parked behind Felix (FX-N9, FX-N11), except keeping this track green (R10).
+- **Paper runs active:** **read [RUN_PLAN.md](../paper_expts_fluxtune/RUN_PLAN.md)'s Status board first** (what is running, done, next);
+  recipe, concepts and per-cell knobs: [EXPERIMENTS.md](../paper_expts_fluxtune/EXPERIMENTS.md) §2–§2.2. The infra queue below stays parked behind Felix (FX-N9, FX-N11), except keeping this track green (R10).
 - **Run status (operator 10-18):** keep RUN_PLAN's Status board current: update it in the same session as every
   launch, finish or decision (run dir, node, GPUs, tmux, logs, outcome).
 - **Scope:** nine baselines on AG News / DistilBERT, n=100, α=1, `jvp_eval_mode` ON: `fluxtune`, `fwdllm`,
@@ -30,7 +30,7 @@
 | baseline | real (n≥2) | sim syn_0 (pass/fail/skip) | sim + unavailability |
 |---|---|---|---|
 | fluxtune v1 | ✅ | ✅ 74/0/19 | ⬚ |
-| fluxtune v2 (now the default) | ⚠ collapses at the round-2 boundary (I-1) | ✅ v2 profiles final 10-25 (AG News, Yahoo) | ⬚ |
+| fluxtune v2 (now the default) | ⚠ v1 collapsed at the round-2 boundary (I-1); v2 `exp` held 7 lap wraps in sim (P0), real unchecked | ✅ v2 profiles final 10-25 (AG News, Yahoo) | ⬚ |
 | fwdllm | ✅ | ✅ 68/0/24 | ⬚ |
 | fwdllm_it_unaware / _oracular | ✅ | ✅ 69/0/23 each | ⬚ |
 | fedbuff_round | ✅ | ✅ 63/0/30 | ⬚ |
@@ -39,20 +39,21 @@
 | felix_it | ✅ | ✅ 66/0/27 | ⬚ |
 
 Big models (RoBERTa-L, SmolLM2-1.7B): real↔sim parity not graded; it transfers from DistilBERT under FT-L19, checked by
-FT-N21. syn_0 parity is closed on v1. Unavailability: `fwdllm_aggregator.py` has no send-gate, deliver-late or
+FT-N21. Bench ≡ harness passed on all three cells (FT-D3, FT-D7). syn_0 parity is closed on v1. Unavailability: `fwdllm_aggregator.py` has no send-gate, deliver-late or
 withheld-delivery wiring yet (only the oracular select filter and the sync scarcity wait).
 
 ---
 
 ## Next steps (persistent queue — resumes after Felix)
 
+- **FT-N23 · Big-cell paper runs P3 / P4 (RUN_PLAN decision 15) · wip, running since 10-26 01:50 on jayne.** RoBERTa-L · Yelp-P
+  `fluxtune` on GPUs 4–7 (`fwdllm/paper_rb_20261026/`, pgid 1318655), SmolLM2-1.7B · Yahoo on GPUs 0–3 (`fwdllm/paper_sm_20261026/`, pgid
+  1318620); bench, stop at target ×2 or the 30.5 h `bench_pool` timeout (a kill: no final eval). *Next:* read the first-hours pace and Φ;
+  check accuracy across the first lap wrap (FT-L8); log both on the RUN_PLAN board; then the `fwdllm` arms (runs 3, 5). *Exit:* both
+  cells scored (TTA or DNF) in `figs_e2e.yaml`.
 - **FT-N21 · Big-model real↔sim transfer check (FT-L19) · todo.** Per model, one 1–2 h real leg at the paper packing beside
   a same-seed sim leg. *Exit:* 0 `[TIMING_OVERRUN]`, real `vclock_charge` spans near the dataset profile, no eval-held
   commits beyond seconds, accuracy within band at matched commits. *Why:* the 10-min legs (10-24) reached no real commit.
-- **FT-N22 · Server momentum with ρ0 0.14 · todo (proposed 10-24).** DistilBERT · AG News, N 50, ρ0 0.14, T_res 71, momentum
-  0.5 vs none, 3 seeds each, to 0.86 two in a row; bench is fine (DistilBERT `fluxtune` passed B2). *Exit:* keep or drop a
-  momentum arm for RoBERTa. *Why:* only single-seed evidence to 0.60 (FT-T15), and Φ ≠ e^B under momentum (FT-T16).
-
 - **FT-N20 · Data augmentation like every Felix stack (FELIX FX-D233, FX-N143, Decisions "Augmentation") · todo (on resume).**
   *Principle (operator 10-24):* if the baselines' own pipelines augment, every stack and the ceiling do, with fresh draws per pass on
   the device; never adopted or skipped for convenience. Felix found its GPU preload froze one draw per sample (+10-17 pp once fixed).
@@ -95,8 +96,8 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
   - *Scope (operator 10-24):* B2 tested `fwdllm` and `fluxtune` only; `fedbuff_*`, `felix_*` and `fwdllm_it_*` were not tested
     on the bench specifically (same aggregator / trainer classes; their async-staleness, pacing and per-iteration re-pick paths are
     unchecked there), so run a B2 cell before reading any of them off the bench.
-  - *Left:* B1 (checkpoint replay of real commits); a B2 cell plus a `bench_profiles.yaml` entry per big model (Yelp-P,
-    Yahoo fall back to 4 GB/leg, so SmolLM legs would OOM); 12 h cells stay on the harness (operator 10-24); a fwdllm knob table for
+  - *Left:* B1 (checkpoint replay of real commits); `bench_profiles.yaml` entries for `yelp-p` / `yahoo` (big legs set `gpu_gb= ram_gb=
+    workers=` in their jobs file today, FT-L29); same result at 2 and 4 workers on big models; a fwdllm knob table for
     `config_audit` (FT-N15); `bench_pool --harness-args` for `run_sequential.sh` plans (legs come from its dry-run YAMLs via `--jobs` now).
 
 - **FT-N16 · Measured packing for FluxTune blocks · todo (on resume).** PARITY C21/C22 and Throughput: screen each block's legs at
@@ -123,9 +124,6 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 - **FT-N11 · 6 red fwdllm tests (R10) · todo.** `tests/mode/test_fwdllm_{probe_report,server_update_audit,eval_background}`
   (source drift: moved strings, a `config`-less fake) and `test_replicate_floor` (`pretokenize_dataset.py` not in
   `LAUNCHER_INVOKES`). *Exit:* full pytest green.
-- **FT-N1 · Re-profile `sim_charge_profiles/fluxtune.yaml` against v2 real legs · done 10-25, final (operator: used for all future runs; exit waived).** 30-min real legs
-  (RUN_PLAN decision 12, `charge_profile_20261025/`): AG News 0.032 / 0.031 s, Yahoo 0.120 / 0.917 s (`drain_tail` / `fedavg`); Yelp-P left.
-  Decide whether v1 keeps its own profile. *Exit:* a v2 sim block graded 0-fail against v2 reals.
 - **FT-N2 · Settle whether `trackTrainerAvail` is inert at syn_0 · todo.** One `fwdllm_it_unaware` real leg
   on `_oracular`'s node. Prediction: 38 bins / 9.64 iters per bin = the knob matters; 40 / 9.20 = the host. If it isn't inert, un-pool `fedbuff_it`.
 - **FT-N3 · Baseline wiring leftovers · todo.** (a) Confirm that the 5 new baseline keys and the
@@ -134,13 +132,11 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
   only historical hits; `test_baselines.py` + `test_config_generator.py` are green. (b) Retune the
   placeholder `learning_rate: 0.075` for `felix_round`/`felix_it` (`TODO(verify)` in `baselines.yaml`).
   (c) An N=10 sim smoke per new baseline. Keep `fluxtune_dynkc` parked, not deleted.
-- **FT-N4 · Training stability I-1 under v2 · closed 10-18 for DistilBERT** (P0 `exp` crossed 7 lap wraps, no collapse; check P3/P4 at their first wrap) (owned by fluxtune_contributions.md §8). *Exit:* a 4h+
-  run holds past the lap boundary. Gates every long experiment run.
 - **FT-N5 · Unavailability for the grad loop · blocked: Felix FX-N6 audit + FX-N9.** Reuse the audited
   `ClientAvailability` path; harness first; syn_20_3st → syn_50_3st → mobiperf_3st. *Exit:* A1-A8/K11 + the syn_0
   board green; withheld gradients delivered, not dropped.
-- **FT-N6 · Paper experiments, sim-only · FT-N1 closed 10-25; blocked: FT-N4** (FT-N5 for C4 availability). Queue and figures:
-  [EXPERIMENTS.md](../paper_expts_fluxtune/EXPERIMENTS.md) §3.
+- **FT-N6 · Paper experiments, sim-only · wip** (P1 DistilBERT runs done; big cells = FT-N23; C4 availability blocked: FT-N5). Queue and
+  figures: [EXPERIMENTS.md](../paper_expts_fluxtune/EXPERIMENTS.md) §3; also add `fluxtune_yelp-p.yaml` from a 30-min real leg (FT-T11).
 - **FT-N7 · Re-enforce `fedbuff_it_*` `utility` · todo.** Its sim floor (0.314) swallows the 0.2 gate; find
   why two `_oracular` sim legs differ that much. More legs won't help.
 - **FT-N8 · Promote `sim_sct_ordered_drain` + `sim_model_dispatch_queue` · todo.** Currently fluxtune-only;
@@ -172,7 +168,7 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   preflight checks their provenance. Re-profile after ANY training-knob change, before reading a residual.
 - **FT-L7** Pair legs on `jvp_eval_mode` AND `max_runtime_s` AND commit. A pinned baseline (0.0% floor) is
   the only one that can show a small between-config effect.
-- **FT-L8** The collapse happens at the lap boundary (~wall 4300-4800s, round 1→2); any accuracy or
+- **FT-L8** v1's collapse happens at the lap boundary (~wall 4300-4800s, round 1→2); any accuracy or
   stability claim needs a 4h+ run.
 - **FT-L9** Bench repros must build the model in the mode production uses (dropout live, training mode);
   inference mode gives bit-exact nulls.
@@ -190,15 +186,32 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   rb60 at 4.7 h); `run_sequential`'s kill budget follows `max_runtime_s` (~+130 s), not the ceiling.
 - **FT-L16** Side-by-side legs run as lanes: private mosquitto, `FLAME_SLOT_GPUS`, `taskset` cores and a distinct
   `FLAME_RUN_LABEL` each (`ft_models_check_20261024/run.sh`).
-- **FT-L17** SmolLM2-1.7B bs 32: 8 trainers per A40 on a 2-GPU lane holding the aggregator OOMed two; 4 per GPU ran
+- **FT-L17** SmolLM2-1.7B bs 32, harness: 8 trainers per A40 on a 2-GPU lane holding the aggregator OOMed two; 4 per GPU ran
   clean (`ft_models_check_20261024/first_try`). Check GPU memory in the first 10 min at any denser packing.
 - **FT-L18** Measure a model's D from one trainer alone on a GPU, eval off: per-task cost varies ≤ 2%, so ~25 tasks fix
   it; anchor the ratio to DistilBERT at the same bs (`ft_profile_20261024`, shepherd).
 - **FT-L19** DistilBERT's real↔sim parity extends to a new model: no code branches on the model between modes; it holds while
   GPU time ≪ D (no overruns) and first commits match a same-seed sim leg (FT-N21).
 - **FT-L20** Stop on target with `--target-stop A --target-stop-window W` (in-process, clean exit, `--final-full-eval` runs), not
-  `--target-acc` (its watcher kills the process group: no final eval, no checkpoint). A `--max-commits` cap also scales the saturation
-  warm-up (0.45 × cap), so "no cap" means leaving it unset, never a huge number.
+  `--target-acc` (its watcher kills the process group: no final eval, no checkpoint). A `--max-commits` cap scales only the saturation
+  warm-up (0.45 × cap): with that stop on, leave it unset; with it off, a huge cap is inert.
+- **FT-L21** Hold the step s = ρ0 / √(P·N/p) fixed when p, P or N change, never ρ0: a fixed ρ0 gave r 2 / P 40 arms s 2.01 / 1.40
+  vs 2.81 and handicapped them (RUN_PLAN §3.7).
+- **FT-L22** Accuracy tracks Λ = 2B/s, schedule-independent; size N per dataset · bs from N\* ≈ 29·Λ_need² (AG News 34–42, Yahoo 38),
+  p cancels across models (EXPERIMENTS §2.1, F0).
+- **FT-L23** Choose Φ_budget = exp(ρ0²·T_res/2) explicitly: budget-bound runs plateau early (1.7B 0.598 at budget 2; RoBERTa-L 0.732 at
+  Φ 2.0 cap, shepherd `run_20261024_191344`).
+- **FT-L24** At fixed s, lower LoRA rank helped 1.7B: r 2 beat r 4 by 3–6 pt at c30 at the same per-task cost (probe forwards
+  dominate; RUN_PLAN §3.7).
+- **FT-L25** More probes per client is compute-neutral: P 40 cost 4× per commit for ~4× progress on 1.7B (`sm_k40s`). Keep P 10.
+- **FT-L26** Server momentum 0.9 (heavy-ball before trust-ratio normalisation, step norm stays ρ‖θ‖) led 1.7B once its buffer filled
+  (~c9): best 0.432 vs 0.357 plain (`bench_sm_20261025/POOL_m`).
+- **FT-L27** `fwdllm` baseline: reselect the cohort every commit (`data_bin`, as upstream); a round-pinned non-IID cohort teaches its
+  label prior (RoBERTa class-1 share 0.996; RUN_PLAN §3.5).
+- **FT-L28** `fwdllm`'s var threshold sets the pooled probe count, not direction quality; set it per model by matching iterations per
+  commit (1.7B 8.4 ≈ RoBERTa 0.2; RUN_PLAN §3.5).
+- **FT-L29** Big-cell bench legs: one per 4 GPUs; 1.7B bs 32 worker ~5 GB GPU / 2.5 GB RAM, aggregator 7 GB / 10 GB; 24 workers fit
+  (36 of 46 GB). An eval adds ~10% wall, 0 vclock (`paper_sm_20261026`).
 
 ## FluxTune tripwires (don'ts)
 
@@ -208,7 +221,7 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
 - **FT-T3** Don't re-derive redispatch turnaround from timestamp differences (it prices waiting).
 - **FT-T4** Don't admit by lowest modeled completion time instead of first-arrived (FIFO-violating;
   deadlocks under unavailability).
-- **FT-T5** Don't treat the round-cadence cohort pin as a defect (by design).
+- **FT-T5** Don't treat the round-cadence cohort pin as a parity defect (by design there); paper `fwdllm` arms run `data_bin` (FT-L27).
 - **FT-T6** Don't blame reduced precision or GPU nondeterminism for the replicate floor; the source is live
   dropout inside the finite difference.
 - **FT-T7** Don't read cadence or convergence off a single real leg on an uncapped baseline.
@@ -217,8 +230,8 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
 - **FT-T9** Don't forget `export FWDLLM_FD_SCALE_INVARIANT=1` for v2 (the preflight errors without it).
 - **FT-T10** Don't leave short real `fluxtune` legs in `experiments/`: the profile-staleness preflight counts them and
   blocks every later `fluxtune` sim. Move smokes to their check dir.
-- **FT-T11** Don't read RoBERTa-L or 1.7B vclock hours as final: `fluxtune_yelp-p.yaml` predates the §2 recipe
-  (`fluxtune_yahoo.yaml` re-profiled 10-25); 1.7B runs before 10-24 charged D 4.1× short (FT-T13).
+- **FT-T11** Don't read RoBERTa-L vclock hours as final: `fluxtune_yelp-p.yaml` predates the recipe (charges ≪ D, small error);
+  1.7B runs before 10-24 charged D 4.1× short (FT-T13).
 - **FT-T12** Don't give lanes one `FLAME_RUN_LABEL`: `run_sequential` then merges both legs' summaries (`AGG_KILLED`,
   `2 agg log(s)`); read stop reasons from each aggregator log.
 - **FT-T13** Don't scale D by model size alone: the divisor needs the bs factor too (D ∝ bs). 1.7B's 0.0192 missed bs 8 → 32;
@@ -227,8 +240,11 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   4–8 min (`ft_profile_20261024`); cap or skip eval when profiling.
 - **FT-T15** Don't read the ag60 preview's time-to-0.60 as ablation evidence: 1 seed per arm, stopped at the first eval
   ≥ 0.60 (no consecutive rule); `Smom` dipped to 0.28 just before.
-- **FT-T16** Don't add server momentum to an `exp` run without re-deriving T_res: Φ ≠ e^B under momentum
-  (`FedSgdAggregator.py:433`), so Φ\* 2 no longer holds; 0.9 diverged.
+- **FT-T16** Don't read Φ from the `exp` schedule under server momentum: Φ ≠ e^B (`FedSgdAggregator.py:433`); read `server_update`.
+  0.9 diverged on DistilBERT (ag60), so test it per cell.
+- **FT-T17** Don't run the cos ground-truth audit on 1.7B: it stalls every leg at commit 1 (CPU backward, 60–70 GB RAM), even at batch 64.
+- **FT-T18** Don't trust the bench's `sim_wall_ceiling_s`: `fl_bench` ignores it; `bench_pool.py --timeout-s` is the cap and kills (no
+  final eval).
 
 ---
 
@@ -253,6 +269,11 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
 
 - **FT-D4** `main_fedfwd_agg.py` ends with `exit_after_run` (PARITY PL24, FX-D178): 4 of 7 legs had aborted in native
   teardown after `channel leave done`; `test_aggregator_mains_end_with_exit_after_run` guards every aggregator main.
+- **FT-D6** v2 charge profiles (10-25, RUN_PLAN decision 12): `sim_charge_profiles/fluxtune.yaml` (AG News 0.032 / 0.031 s) and
+  `fluxtune_yahoo.yaml` (0.120 / 0.917 s, `drain_tail` / `fedavg`) from 30-min real legs, final for every run; Yelp-P not re-profiled.
+- **FT-D7** Bench ≡ harness on the big cells (10-25/26, RUN_PLAN §3.5): RoBERTa-L `fwdllm` (V1, identical), 1.7B `fwdllm` (V2c, identical),
+  1.7B `fluxtune` (F_sm, ≤ 3.2e-5 relative), RoBERTa-L `fluxtune` (operator); `fwdllm` stuck-eviction window = max(300 s,
+  `send_timeout_wait_s`) (`test_send_timeout_extends_stuck_window`).
 - **FT-D5** Task cost D per model (10-24): [D_CALIBRATION.md](../paper_expts_fluxtune/D_CALIBRATION.md) and
   `profile_task_cost.sh`; RoBERTa-L 0.0169 confirmed, SmolLM2-1.7B 0.0192 → 0.0047 (per arm in its launcher).
 
