@@ -26,7 +26,11 @@ for ds in cifar10 google_speech; do
 done
 echo "[EV24] running; logs $OUT/{h,b_cifar10,b_google_speech}.log"
 wait
-for d in "$OUT"/h "$OUT"/b_*; do
-    $PY async_cifar10/scripts/parity/event_invariants.py $(find "$d" -type d -name 'run_*') --json-out "$d/ev.json" > "$d/ev.md" 2>&1
+for d in "$OUT"/h "$OUT"/b_*/; do
+    d=${d%/}
+    # harness run dirs live in async_cifar10/experiments, bench ones under the pool
+    runs=$([ "$d" = "$OUT/h" ] && find async_cifar10/experiments -maxdepth 1 -name 'run_*gs_F48_smu_fx_*' -newer "$OUT/code_state.txt" \
+           || find "$d" -type d -name 'run_*')
+    $PY async_cifar10/scripts/parity/event_invariants.py $runs --json-out "$d/ev.json" > "$d/ev.md" 2>&1
     echo "[EV24] $d: $(grep -h 'EV24' "$d/ev.md" | head -3)"
 done

@@ -82,3 +82,19 @@ def test_leg_stats_matched_horizon(tmp_path):
                                                          training_budget_s=12.0)) + "\n")
     end, evals, commits, nbytes, bud = bench_validate.leg_stats(str(tmp_path), horizon=1800)
     assert end == 1800 and commits == 3 and evals == [(1800.0, 0.3)] and nbytes == 1000 and bud == [12.0]
+
+
+def test_dead_worker_fails_the_leg(monkeypatch):
+    """A worker that died (e.g. CUDA OOM) exits the leg instead of stranding its trainers until the wall timeout."""
+    r = fl_bench.PoolRouter.__new__(fl_bench.PoolRouter)
+    r._closing, r.procs = False, [type("P", (), {"exitcode": None})(), type("P", (), {"exitcode": 1})()]
+
+    def _exit(rc):
+        raise SystemExit(rc)
+    monkeypatch.setattr(fl_bench.os, "_exit", _exit)
+    try:
+        r._watch()
+    except SystemExit as e:
+        assert e.code == 70
+    else:
+        raise AssertionError("watchdog did not fail the leg")

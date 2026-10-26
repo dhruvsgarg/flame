@@ -368,6 +368,17 @@ class PoolRouter:
         self.ids = [str(d["taskid"]) for d in cfgs]
         self._rx = threading.Thread(target=self._pump, daemon=True)
         self._rx.start()
+        self._closing = False
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    def _watch(self):
+        """A dead worker strands its trainers' replies: fail the leg now, not at the pool's wall timeout."""
+        while not self._closing:
+            for w, p in enumerate(self.procs):
+                if p.exitcode not in (None, 0):
+                    print(f"[fl_bench] worker {w} died rc={p.exitcode}: failing the leg", flush=True)
+                    os._exit(70)
+            time.sleep(5)
 
     def _pump(self):
         while True:
@@ -389,6 +400,7 @@ class PoolRouter:
         return self._tasks
 
     def close(self):
+        self._closing = True
         for q in self.queues:
             q.put(None)
         for p in self.procs:

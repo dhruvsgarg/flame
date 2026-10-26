@@ -44,12 +44,23 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
 (`paper_runs.py` → `bench_pool`); the harness is only the B2 / EV24 reference. Final runs on `/coc/scratch`.
 
 **A · Paper first plots (operator 10-25 late).** Runbook; tick each step here with its pool path when it passes.
-1. [ ] **Commit** the pipeline (FX-D234-D237, `paper_runs` / `paper_plots` / `leg_digest`, `run_b2.sh`, `run_ev24.sh`).
-2. [ ] **Gates, two tmux windows at once (~1.5 h):**
-   - A: `TAG=1025_ev bash scripts/run_ev24.sh && DS=cifar10 TAG=1025_c bash scripts/run_b2.sh`
-   - B: `$PY scripts/paper_runs.py launch --smoke --prio 4 && bash experiments/FB2S_<mmdd>/launch_p4_smoke.sh` (path printed)
-   - *Pass:* EV24 0 in every `experiments/EV24_1025_ev/*/ev.md` (FX-N157); `B2_cifar10_1025_c/bench_validate.md` 27 / 27;
-     `paper_runs.py status --smoke` 60 / 60 done; `paper_plots.py --smoke` renders every figure (PRELIM). A fail → fix, re-run only it.
+1. [ ] **Commit** FX-D238 / D239 (gates run on a clean tree; the `flame/` change re-keys code, so every smoke leg re-runs).
+2. [ ] **Gates, two tmux windows at once (~2.5-3 h):**
+   - A: `TAG=1025_ev2 bash scripts/run_ev24.sh && DS=cifar10 TAG=1025_c2 bash scripts/run_b2.sh` (EV24 ~2.2 h: cifar `fn`
+     bench leg 129 min; the B2 harness legs take the whole node's CPUs, so they run one at a time and wait for the smoke to end)
+   - B: `$PY scripts/paper_runs.py launch --smoke --prio 4 --gpus 4,5,6,7 --root experiments/FB2S_1025b &&
+     bash experiments/FB2S_1025b/launch_p4_smoke.sh`. GPUs 4-7 only: a harness leg on 0-3 fills them (FX-T91).
+   - C (watch): `python scripts/watch_runs.py experiments/EV24_1025_ev2 experiments/B2_cifar10_1025_c2 experiments/FB2S_1025b`
+     (every 10 min: done / failed per pool, ALERT on FAIL / DOOMED / ABORT, traceback or OOM, telemetry stalled 15 min, idle GPU).
+   - *Pass:* EV24 0 and EV16 0 in every `experiments/EV24_1025_ev2/*/ev.md` (FX-N157, N160); `B2_cifar10_1025_c2/bench_validate.md`
+     27 / 27; `paper_runs.py status --smoke` 60 / 60 done; `paper_plots.py --smoke` renders every figure (PRELIM). A fail → fix,
+     re-run only it.
+   - *Run 1 (10-25, `9af372278`):* EV24 0 on all legs (bench cifar + speech `fx` / `fn` 12 h, harness speech `fx` to 26.7 k s) →
+     FX-N157 fix holds. EV16 failed on speech `fx` (FX-N160). Bench EV0 "fails" were the checker (no aggregator log), fixed.
+     Smoke 52 / 60: the EV24 harness leg peaked 44 / 45 GB on GPUs 0-3, 8 bench legs died of CUDA OOM in a worker and hung to the
+     1 h timeout (FX-D239). B2 cifar: the harness leg got 1 GPU (smoke held 1-3), 300 trainers OOM at start, the pool aborted.
+     "past deadline: later starts SKIPPED" = the ETA from the no-history `est` (452 m / leg; a solo cifar Felix harness leg took 17 m) passes the 12 h deadline;
+     only starts after it are skipped.
 3. [ ] **Cifar run + speech B2:** `$PY scripts/paper_runs.py launch --prio 2 --datasets cifar10 && bash <root>/launch_p2_cifar.sh`;
    `TAG=1025_s bash scripts/run_b2.sh` (speech, 3-4 h+). *Pass (FX-N151):* `B2_google_speech_1025_s/bench_validate.md` within bars.
    Contention may skew the wall-measured trainer overhead (C13): re-run a failing B2 row on a quiet node before calling a gap.
@@ -65,10 +76,13 @@ target (`targetAccuracy`, `targetWindow` 5; every stack, sync and async) or at 1
 client has its day-1 data); wall timeout 24 h / leg (smoke 1 h). Wall per 2 h vclock, speech bench: sync ~4 min, async 10-11 min;
 cifar 12 h vclock in 4-12 min. Layout `<root>/<cifar|speech>/<phase>/runs/<trace>_<baseline>_s<k>/`, phase `FB2<set>_<cell>_<arm>`.
 
-- **FX-N157 · Felix dispatched to clients still computing · fixed (FX-D237); exit = step 2 EV24.** The async clock-jump clamp
-  committed an update before its sct and freed the client; a second path popped a newer dispatch's in-flight entry. After the fix:
-  bench cifar `smu` 1.2 h EV24 0 (`experiments/N157_1025b`). After the exit: add EV24 to `EARLY` once it passes stored legs of all
-  stacks (PL21).
+- **FX-N157 · Felix dispatched to clients still computing · fixed (FX-D237); EV24 0 on run 1's 5 legs; exit = step 2 EV24.**
+  The async clock-jump clamp committed an update before its sct and freed the client; a second path popped a newer dispatch's
+  in-flight entry. After the exit: add EV24 to `EARLY` once it passes stored legs of all stacks (PL21).
+- **FX-N160 · Evicted update committed late · fixed (FX-D238); exit = step 2 EV16.** Felix evicts a client going unavailable
+  (`aware_boundary_eviction`); `free_stalled_slot` drops it from the gate's in-flight set, so the gate stopped waiting for its update.
+  When that update arrived late in wall time the clock had passed its delivery: speech `smu` `fx` commit 59 s (bench) / 12.8 s
+  (harness) after delivery, 1 of ~58 withheld per 12 h; cifar 0. Verify: `experiments/N160_1025` (bench speech `fx` + `fn`, fixed code).
 - **FX-N151 · Sync-stack bench gap · fixed root (FX-D234); exit = step 3 speech B2.** Root: check-in reconnect jitter from one
   shared RNG in end order. Rest = sampling noise (REFL `smu` 4 h bench +12% updates / h, heavy straggler tail); `bench_validate.py`
   bars widen to either side's seed range (operator 10-25). Data: `experiments/N151_1025/`.
@@ -100,7 +114,7 @@ cifar 12 h vclock in 4-12 min. Layout `<root>/<cifar|speech>/<phase>/runs/<trace
 
 ## Scoreboard (rewrite after every run, PARITY C5)
 
-**Now:** no FB2 data yet; step 2 of the runbook is next. **Expected after step 2:** 60 / 60 smoke legs, config audit ✅, EV24 0 on
+**Now:** no FB2 data yet; step 2 run 1 failed on EV16 (FX-N160) and GPU contention (FX-T91); fixes FX-D238 / D239, re-run next. **Expected after step 2:** 60 / 60 smoke legs, config audit ✅, EV24 0 on
 Felix legs, async legs stop at the smoke target, every Table 2 figure renders. Felix's MobiPerf lead may shrink slightly (no
 double booking); refuted if Felix loses to FedBuff on `smu`.
 
@@ -513,6 +527,8 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
   augmentation removes it for every stack (F47 +10-17 pp; FX-D233).
 - **FX-T89** Don't expect c by loss phase to self-pace: F47 streams hold c at floor 10 (φ ≤ 0.12) from 6-8 h to 48 h while data
   keeps arriving; it saves bytes, not pace.
+- **FX-T91** Don't put bench legs on GPUs a harness leg uses: a speech harness leg grows to 44 / 45 GB per GPU after the bench
+  placed its legs; 8 smoke legs OOM'd (10-25). Split GPUs (`--gpus`), or run in sequence.
 - **FX-T90** Don't rank legs that hit the target stop by final or total GB: F47 `aug` legs stopped at 70% in 4-13 h; compare time /
   GB to target, or run to the horizon.
 - **FX-T78** Don't pick by individual update value or pre-step loss q: the top-K buffer loses 0.04-0.4 nats to random K
@@ -620,6 +636,12 @@ Single source: `_metadata/baseline_reference.yaml` (value + citation per baselin
 - **FX-D237** Busy until sct (FX-N157): an async client committed before its sct (clock-jump clamp) stays busy until sct
   (`sim_busy_until_sct`, default on) and is a sim wake-up; EV24 `busy_until_completion` (dispatch before the previous task's sct,
   not abandoned) in `event_invariants.py`, not yet prefix-safe.
+- **FX-D238** Gate on evicted updates (FX-N160): the async commit gate probes and holds for an evicted end whose update has not
+  arrived, at its `pending_withheld` delivery (a lower bound); the failsafe gives it up (`sim_gate_evicted`, default on;
+  `test_gate_waits_for_evicted_in_transit_update`).
+- **FX-D239** Bench fail-fast: `fl_bench` exits a leg (rc 70) when a worker dies, not at the wall timeout
+  (`test_dead_worker_fails_the_leg`); EV0 accepts telemetry `run_end` (bench legs have no aggregator log); `run_ev24.sh` grades the
+  harness run dirs in `async_cifar10/experiments` and skips the `.log` files; `scripts/watch_runs.py` (pool watcher, ALERT lines).
 - **FX-D234** Path-independent check-in (FX-N151): `CheckinLedger(replay="time")` replays sim check-ins in time order (ties by end)
   with one jitter stream per client, so end order and `advance` cadence (harness vs bench) no longer change a run; `checkin.replay=end`
   reverts (`test_time_replay_is_path_independent`). `fl_bench` sets `FLAME_TRACE_OFFSET_S` before generating trainer configs (bench

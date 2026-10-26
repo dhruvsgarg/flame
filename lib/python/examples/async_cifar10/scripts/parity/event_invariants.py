@@ -142,7 +142,8 @@ def _res(status, detail="", **kw):
 
 # ── checks ──────────────────────────────────────────────────────────────────
 def ev0_clean_exit(run):
-    """No tracebacks in any log (a teardown SIGTERM's `SystemExit: 0` excepted, fail_fast); the aggregator logged its budget stop."""
+    """No tracebacks in any log (a teardown SIGTERM's `SystemExit: 0` excepted, fail_fast); the aggregator logged its budget stop
+    (or, bench, emitted `run_end` with work_done)."""
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))
     from fail_fast import TRACEBACK, fatal_hits
@@ -154,6 +155,7 @@ def ev0_clean_exit(run):
     if run["agg_log"]:
         with open(run["agg_log"], errors="replace") as f:
             stopped = any("stopping run" in line.lower() for line in f)  # incl. [SIM_WALL_CEILING]
+    stopped = stopped or any(e.get("work_done") for e in run["agg"] if e.get("event") == "run_end")  # bench: no agg log
     status = "FAIL" if (tb or not stopped) else "PASS"
     return _res(status, f"tracebacks={tb} stopping_run={stopped}", tracebacks=tb, stopped=stopped)
 
