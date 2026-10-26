@@ -10,7 +10,6 @@ cd "$(dirname "$0")/.." || exit 1
 [ -n "${TAG:-}" ] || { echo "[F48] set TAG"; exit 1; }
 [ -z "$(git status --porcelain -uno)" ] || { echo "[F48] tree dirty"; exit 1; }
 OUT=experiments/F48_$TAG
-CEIL=experiments/ceiling_1024_aug
 PY="conda run --no-capture-output -n dg_flame python"
 mkdir -p "$OUT"
 git log -1 --format='%h %s' > "$OUT/code_state.txt"
@@ -30,14 +29,12 @@ setsid timeout --foreground 64800 $PY scripts/harness_pool.py --tier F48 --datas
 echo "[F48] running; logs $OUT/{cifar_L,cifar_R,speech}.log"
 wait
 
-C="$CEIL/cifar10_n300_syn_0.json $CEIL/cifar10_n300_syn_50_3st.json $CEIL/cifar10_n300_mobiperf_3st.json"
-S="$CEIL/google_speech_n100_syn_0.json $CEIL/google_speech_n100_syn_50_3st.json $CEIL/google_speech_n100_mobiperf_3st.json"
 for x in L R; do
-    $PY scripts/fl1_verdict.py "$OUT/cifar_$x" --ceiling $C --json-out "$OUT/cifar_${x}_verdict.json" > "$OUT/cifar_${x}_verdict.md" 2>&1
+    $PY scripts/fl1_verdict.py "$OUT/cifar_$x" --json-out "$OUT/cifar_${x}_verdict.json" > "$OUT/cifar_${x}_verdict.md" 2>&1
     $PY scripts/config_audit.py "$OUT/cifar_$x" > "$OUT/cifar_${x}_config_audit.md" 2>&1 || echo "[F48] cifar_$x config_audit: mismatches"
     $PY scripts/selection_audit.py "$OUT/cifar_$x" > "$OUT/cifar_${x}_selection_audit.md" 2>&1 || echo "[F48] cifar_$x selection_audit failed"
 done
-$PY scripts/fl1_verdict.py "$OUT/speech" --ceiling $S --json-out "$OUT/speech_verdict.json" > "$OUT/speech_verdict.md" 2>&1
+$PY scripts/fl1_verdict.py "$OUT/speech" --json-out "$OUT/speech_verdict.json" > "$OUT/speech_verdict.md" 2>&1
 $PY scripts/selection_audit.py "$OUT/speech" > "$OUT/speech_selection_audit.md" 2>&1 || echo "[F48] speech selection_audit failed"
 $PY scripts/dynamic_c_report.py "$OUT/cifar_L" "$OUT/cifar_R" "$OUT/speech" > "$OUT/dynamic_c.md" 2>&1
 echo "[F48] done: $OUT/{cifar_L,cifar_R,speech}_verdict.md, dynamic_c.md"

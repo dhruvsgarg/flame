@@ -5,7 +5,7 @@
 
 Per cell (bench seeds pooled, harness seeds pooled): AUC = mean test accuracy over the matched horizon, train updates / h,
 GB on the wire, mean train task time (charged budget). PASS when |AUC delta| <= max(1.5 pp, either side's seed range),
-updates / h and task time within 10% / 5%, bytes within 5%. fwdllm legs (FLUXTUNE FT-N18) add iterations per data_id at commit,
+updates / h, task time and bytes within 10% / 5% / 5% or either side's relative seed range (Q-B2BAR). fwdllm legs (FLUXTUNE FT-N18) add iterations per data_id at commit,
 variance pass rate and commits / h, each within 10%. Exit 1 on any FAIL.
 """
 import argparse
@@ -89,6 +89,7 @@ def main(argv=None):
     ap.add_argument("--bench", nargs="+", required=True)
     ap.add_argument("--harness", nargs="+", required=True)
     ap.add_argument("--json-out")
+    ap.add_argument("--upd", type=float, default=UPD, help="updates / h tolerance (FX-N151: 0.05 for the sync stacks)")
     a = ap.parse_args(argv)
     bench, harness = cells(a.bench), cells(a.harness)
     out, bad = [], 0
@@ -99,12 +100,15 @@ def main(argv=None):
         horizon = min(leg_stats(d)[0] for d in bench[key] + harness[key])
         b, h = summarize(bench[key], horizon), summarize(harness[key], horizon)
         rel = lambda k: abs(b[k][0] - h[k][0]) / h[k][0] if h[k][0] else 0.0
+        # Q-B2BAR: a flat bar can fail on replicate noise, so it widens to the larger seed range (as for AUC); needs >= 2 legs/side.
+        spread = lambda k: max((x[k][1] / x[k][0] if x[k][0] else 0.0) for x in (b, h))
+        bar = lambda k, flat: max(flat, spread(k))
         d_auc = 100 * (b["auc"][0] - h["auc"][0]) if b["auc"][0] is not None and h["auc"][0] is not None else None
         tol = max(AUC_PP, 100 * (b["auc"][1] or 0), 100 * (h["auc"][1] or 0))
         miss = ([f"AUC {d_auc:+.1f}>{tol:.1f}"] if d_auc is None or abs(d_auc) > tol else []) + \
-            ([f"upd {100 * rel('upd_h'):.0f}%"] if rel("upd_h") > UPD else []) + \
-            ([f"GB {100 * rel('gb'):.0f}%"] if rel("gb") > GB else []) + \
-            ([f"task {100 * rel('task'):.0f}%"] if b["task"][0] and rel("task") > TASK else []) + \
+            ([f"upd {100 * rel('upd_h'):.0f}%"] if rel("upd_h") > bar("upd_h", a.upd) else []) + \
+            ([f"GB {100 * rel('gb'):.0f}%"] if rel("gb") > bar("gb", GB) else []) + \
+            ([f"task {100 * rel('task'):.0f}%"] if b["task"][0] and rel("task") > bar("task", TASK) else []) + \
             [f"{k} {100 * rel(k):.0f}%" for k, tol_k in FWD.items() if b[k][0] is not None and h[k][0] is not None and rel(k) > tol_k]
         bad += bool(miss)
         f = lambda x, s=1: "–" if x is None else f"{x:.{s}f}"

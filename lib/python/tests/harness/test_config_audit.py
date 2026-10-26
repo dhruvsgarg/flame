@@ -43,3 +43,13 @@ def test_bench_pool_layout_is_audited(tmp_path):
     (tmp_path / "_yaml" / "j_sim" / "runs" / "x" / "debug_run.yaml").write_text("experiments: []\n")
     [(leg, b, arm, k)] = list(ca.legs(str(tmp_path)))
     assert (leg, b, arm, k["holdout"], k["p34"]) == ("F42_s0u_v2p/syn_0_felix_s2", "felix", "v2p", "0.1", "ok")
+
+
+def test_every_fb2_arm_has_an_expected_row():
+    """FX-N154: a new run-set arm without a config_audit row would pass unchecked."""
+    import harness_pool as hp
+    for rs in hp.FB2_SETS.values():
+        for arm, kw in rs["arms"].items():
+            for b in kw.get("bls", ("felix",)):
+                base = arm[:-4] if arm.endswith("_srv") else arm
+                assert (b, arm) in ca.EXPECT or (b, base) in ca.EXPECT or (b, "*") in ca.EXPECT, (b, arm)

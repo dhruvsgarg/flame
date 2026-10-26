@@ -10,7 +10,10 @@ held clients return at the dispatch rate. The sync estimate excludes selection w
 Not AVL_TRAIN at its reconnect time = missed opportunity; it checks in again at its next flip. A departure is never reported:
 the server learns it only by task failure / timeout. One ledger serves both modes: sim derives check-ins from the trace
 (`advance`), real feeds the clients' CHECK_IN messages (`on_checkin`).
+FX-N151 `replay="time"`: sim replays check-ins in time order (ties by end) and draws each client's jitter from its own stream,
+so a run does not depend on end order or on how often `advance` runs; `"end"` = the old per-end replay on one shared stream.
 """
+import heapq
 import math
 import random
 from typing import Callable, Dict, Iterable, Optional, Tuple
@@ -23,13 +26,17 @@ CHECKIN_MODES = ("sync", "async")
 
 class CheckinLedger:
     def __init__(self, sync: bool, initial_gap_s: float, window_frac: float = 0.1, jitter: Tuple[float, float] = (0.5, 1.5),
-                 alpha: float = 0.25, seed: int = 0, on_event: Optional[Callable] = None, overdue: str = "window"):
+                 alpha: float = 0.25, seed: int = 0, on_event: Optional[Callable] = None, overdue: str = "window",
+                 replay: str = "time"):
         if initial_gap_s <= 0:
             raise ValueError(f"initial_gap_s={initial_gap_s}: the server's prior round / dispatch gap must be > 0")
         self.sync = sync
         self.window_frac, self.jitter, self.alpha = float(window_frac), tuple(jitter), float(alpha)
         self.overdue = overdue  # sync: a late round's early arrival polls within a window ("window") or waits a phase ("round")
         self.gap = float(initial_gap_s)  # EWMA (REFL α on history): sync round duration (round starts only), async dispatch gap
+        if replay not in ("time", "end"):
+            raise ValueError(f"replay={replay!r}: 'time' or 'end'")
+        self.replay, self._seed, self._rngs = replay, seed, {}
         self._rng = random.Random(seed)
         self._last_sel: Optional[float] = None  # sync: last round start; async: last dispatch
         self._round = None
@@ -53,14 +60,22 @@ class CheckinLedger:
             return self.window is not None and t >= self.window[0]
         return self.open_since is not None and t >= self.open_since
 
-    def reconnect_at(self, t: float) -> float:
+    def _uniform(self, end: Optional[str], a: float, b: float) -> float:
+        if self.replay == "end" or end is None:
+            return self._rng.uniform(a, b)
+        rng = self._rngs.get(end)
+        if rng is None:
+            rng = self._rngs[end] = random.Random(f"{self._seed}:{end}")
+        return rng.uniform(a, b)
+
+    def reconnect_at(self, t: float, end: Optional[str] = None) -> float:
         if self.sync:
             if self.train_d is None or self._last_close is None:
-                return t + self._rng.uniform(0.0, self.window_s())  # no estimate yet: come back within a window
+                return t + self._uniform(end, 0.0, self.window_s())  # no estimate yet: come back within a window
             nxt = self._last_close + self.train_d
             late = self.train_d if self.overdue == "round" else 0.0
-            return (nxt if nxt > t else t + late) + self._rng.uniform(0.0, self.window_s())
-        return t + max(1, len(self.hold) + 1) * self.gap * self._rng.uniform(*self.jitter)
+            return (nxt if nxt > t else t + late) + self._uniform(end, 0.0, self.window_s())
+        return t + max(1, len(self.hold) + 1) * self.gap * self._uniform(end, *self.jitter)
 
     def _emit(self, kind: str, end: str, t: float, **f) -> None:
         if self.on_event is not None:
@@ -80,7 +95,7 @@ class CheckinLedger:
         return self._reject(end, t)
 
     def _reject(self, end: str, t: float) -> float:
-        r = self.reconnect_at(t)
+        r = self.reconnect_at(t, end)
         self.hold[end] = r
         self.stats["rejects"] += 1
         self._emit("rejected", end, t, reconnect_at=r)
@@ -107,8 +122,35 @@ class CheckinLedger:
             return train_at(end, h)
         return train_at(end, base)
 
+    def _step(self, end: str, train_at: TrainAt, is_train: IsTrain) -> Tuple[float, bool]:
+        """(time, missed) of this end's next step: a check-in, or a reconnect it is not AVL_TRAIN for (_next_checkin's rule)."""
+        base = self.free_since.get(end, 0.0)
+        h = self.hold.get(end)
+        if h is not None and h >= base:
+            return h, not is_train(end, h)
+        return train_at(end, base), False
+
     def advance(self, now: float, idle: Iterable[str], train_at: TrainAt, is_train: IsTrain) -> None:
         """Sim: replay every check-in of the idle (not busy, not pooled) clients up to now under the current open state."""
+        if self.replay == "time":
+            steps = [(t, e, m) for e in idle if e not in self.pool for t, m in [self._step(e, train_at, is_train)] if t <= now]
+            heapq.heapify(steps)
+            for _ in range(100000 * max(1, len(steps))):
+                if not steps:
+                    break
+                t, end, missed = heapq.heappop(steps)
+                if missed:
+                    del self.hold[end]
+                    self.free_since[end] = t
+                    self.on_missed(end, t)
+                else:
+                    self.on_checkin(end, t)
+                    if end in self.pool:
+                        continue
+                t, missed = self._step(end, train_at, is_train)
+                if t <= now:
+                    heapq.heappush(steps, (t, end, missed))
+            return
         for end in idle:
             for _ in range(100000):
                 if end in self.pool:
@@ -160,7 +202,7 @@ class CheckinLedger:
             self.open_since = (self.open_since if self.open_since is not None else now) if slots_left else None
         out = []
         if not slots_left or self.sync:
-            for e in list(self.pool):
+            for e in (sorted(self.pool) if self.replay == "time" else list(self.pool)):
                 del self.pool[e]
                 out.append((e, self._reject(e, now)))
         return out

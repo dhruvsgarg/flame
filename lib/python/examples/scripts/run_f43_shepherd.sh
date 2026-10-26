@@ -9,6 +9,6 @@ PY="conda run --no-capture-output -n dg_flame python"
 $PY scripts/harness_pool.py --tier F43 --datasets google_speech --baselines fedbuff \
     --phases "gs_F43_s0u_ctl_srv gs_F43_s0u_fbstar_srv" --gpu-ids "${SPEECH_GPUS:-4,5,6,7}" --gpu-cpus-per-trainer 0.1 \
     --gate --deadline-h 3 --output-dir "$OUT/speech"
-$PY scripts/bench_report.py "$OUT/speech" --targets 0.5,0.6,0.65,0.7 --json-out "$OUT/speech_report.json" \
+$PY scripts/bench_report.py "$OUT/speech" --json-out "$OUT/speech_report.json" \
     --ceiling experiments/ceiling_1022/google_speech_n100_syn_0.json > "$OUT/speech_report.md" 2>&1
 echo "[F43] done: $OUT/speech_report.md (copy $OUT and its async_cifar10/experiments/run_*gs_F43_* dirs to jayne)"

@@ -11,6 +11,9 @@
 - **Scope:** nine baselines on AG News / DistilBERT, n=100, α=1, `jvp_eval_mode` ON: `fluxtune`, `fwdllm`,
   `fwdllm_it_unaware`, `fwdllm_it_oracular`, `fedbuff_round`, `fedbuff_it_unaware`, `fedbuff_it_oracular`,
   `felix_round`, `felix_it`.
+- **Paper evaluation:** follow PAPER_TEMPLATE Part E "Evaluation plan and run pipeline" as Felix did (outline Tables 2 → 1,
+  manifest + digests + status, first version before seeds, `/coc/scratch/dgarg/mlsys27_fluxtune_runs_<date>/`); reuse Felix's
+  scripts (`paper_runs.py`, `leg_digest.py`, `paper_plots.py`).
 - **IDs:** `FT-N` next steps · `FT-L` lessons · `FT-T` tripwires · `FT-D` done.
 - **Reference (read only for detail):** parity board, runbook, full lesson and dead-end list →
   [simulate_fwdllm.md](../fwdllm/simulate_fwdllm.md) (§A, §B.1, §D, §E, §F) · design, charge registry →

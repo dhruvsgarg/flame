@@ -63,7 +63,7 @@ class Probe:
         self.ds = "google_speech" if "google_speech" in run else "cifar10"
         self.trace = "syn_50_3st" if "syn_50_3st" in run else "syn_0"
         os.environ["FLAME_TRACE_OFFSET_S"] = "86400"
-        a = Namespace(horizon_h=1, trace_offset_h=24.0, dataset=self.ds, n=0, cache=os.path.expanduser("~/.cache/flame_utility_bench"),
+        a = Namespace(horizon_h=1, trace_offset_h=24.0, dataset=self.ds, n=0, cache=str(ub.fl_data.cache_dir("flame_utility_bench")),
                       probe=64, rho=0.5)
         self.dev = f"cuda:{gpu}"
         self.b = ub.Bench(a, "syn_0", "random", 1, self.dev)  # model, data, fwd, local_train

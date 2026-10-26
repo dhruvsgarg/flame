@@ -88,7 +88,7 @@ def main(argv=None):
     random.seed(0)
     torch.manual_seed(0)
     at, all_idx = visible_idx(a.dataset, a.n, a.trace, a.offset_h * 3600)
-    data = ub.load_data(a.dataset, all_idx, os.path.expanduser("~/.cache/flame_utility_bench"), dev)
+    data = ub.load_data(a.dataset, all_idx, str(ub.fl_data.cache_dir("flame_utility_bench")), dev)
     out = []
     for h in (["full"] if a.full else a.hours):
         idx = all_idx if a.full else at(h * 3600)

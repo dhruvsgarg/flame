@@ -40,6 +40,18 @@ def dataset_dir(name: str) -> Path:
     return LEGACY_DIRS[name]
 
 
+def cache_dir(name: str) -> Path:
+    """<cache_root>/<name>: $FLAME_CACHE_ROOT, then datasets.yaml cache_root (shared scratch; /nethome has a 50 GB quota)."""
+    root = os.environ.get("FLAME_CACHE_ROOT")
+    if not root:
+        try:
+            import yaml
+            root = yaml.safe_load(open(DATASETS_YAML)).get("cache_root")
+        except (OSError, ValueError):
+            pass
+    return Path(root or Path.home() / ".cache") / name
+
+
 def speech_root() -> Path:
     return dataset_dir("google_speech") / "SpeechCommands" / "speech_commands_v0.02"
 SPEECH_TRAIN_SIZE = 84843  # v0.02 training subset; the 2024 split indices assume exactly this list

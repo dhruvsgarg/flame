@@ -3,6 +3,8 @@
 
   bench_report.py POOL... [--targets 0.35,0.4] [--json-out R.json] [--ceiling C.json ...]
 
+Targets default to `ladder(ds)`: 5 pp rungs up to the final target in `_metadata/targets.json` (FX-N146).
+
 AUC = mean test accuracy over the leg's horizon (the Scoreboard's); TTA = first (3-eval mean for speech) eval >= target on the
 leg's clock; GB to target = wire bytes (both directions) up to that eval; final = mean accuracy over the last 10% of the horizon.
 Cells print mean and seed range (max - min); `--ceiling` adds the centralized ceiling at the leg's end (scripts/ceiling.py).
@@ -10,6 +12,7 @@ Cells print mean and seed range (max - min); `--ceiling` adds the centralized ce
 import argparse
 import csv
 import glob
+import gzip
 import json
 import multiprocessing
 import os
@@ -17,7 +20,18 @@ import re
 import statistics as st
 import sys
 
-TARGETS = {"cifar10": (0.35, 0.40), "google_speech": (0.25, 0.30)}
+TARGETS_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "_metadata", "targets.json")
+
+
+def final_targets():
+    """{dataset: final target} from `_metadata/targets.json` (FX-N146; Decisions "Targets and comparison")."""
+    return {k: v for k, v in json.load(open(TARGETS_JSON)).items() if k != "src"}
+
+
+def ladder(ds, lo=0.4):
+    """Rungs every 5 pp from lo below the dataset's final target, then the target itself."""
+    t = final_targets()[ds]
+    return [r / 100 for r in range(round(100 * lo), round(100 * t), 5) if r / 100 < t - 1e-9] + [t]
 
 
 def label(arm):
@@ -28,10 +42,10 @@ def label(arm):
 def leg(run_dir, event=b'"agg_eval"'):
     """[(t, acc, cumulative bytes)] and the end clock, streamed in event order (t = the last commit's vclock).
     `event` b'"agg_eval_raw"' reads a serveEma leg's unserved model (FX-N128)."""
-    f = glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl"))[0]
+    f = (glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl")) + glob.glob(os.path.join(run_dir, "telemetry", "aggregator_*.jsonl.gz")))[0]
     t, nbytes, pts = 0.0, 0, []
     wire, vclk, acc = re.compile(rb'"bytes": (\d+)'), re.compile(rb'"vclock_now": ([-0-9.e]+)'), re.compile(rb'"test-accuracy": ([-0-9.e]+)')
-    with open(f, "rb") as fh:
+    with (gzip.open(f, "rb") if f.endswith(".gz") else open(f, "rb")) as fh:  # leg_digest gzips raw logs
         for line in fh:
             if b'"wire"' in line:
                 nbytes += int(wire.search(line).group(1))
@@ -77,8 +91,8 @@ def cells(pools):
                 d = r.get("sim_dir") or ""
                 if d and d != "-" and os.path.isdir(d):
                     ds = "google_speech" if "google_speech" in d else "cifar10"
-                    arm = re.sub(r"^(gs_)?F\d+\w*?_s(?:\d+u?|mu)_", "", re.sub(r"_r\d+$", "", phase))  # smu = MobiPerf stream
-                    static = re.search(r"F\d+[A-Za-z]?_s\d+_", phase) is not None  # `s0` static vs `s0u` stream on one trace
+                    arm = re.sub(r"^(gs_)?FB?\d+\w*?_s(?:\d+u?|mu)_", "", re.sub(r"_r\d+$", "", phase))  # smu = MobiPerf stream
+                    static = re.search(r"FB?\d+\w*?_s\d+_", phase) is not None  # `s0` static vs `s0u` stream on one trace
                     out.setdefault((ds, r["trace"] + (" static" if static else ""), arm, r["baseline"]), []).append(d)
     return out
 
@@ -103,7 +117,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     ceil = [r for c in a.ceiling for r in json.load(open(c))]
     rows, cs = [], sorted(cells(a.pools).items())
-    tgt = lambda ds: [float(x) for x in a.targets.split(",") if x] or TARGETS[ds]
+    tgt = lambda ds: [float(x) for x in a.targets.split(",") if x] or ladder(ds)
     raw = [((ds, trace, arm + ":raw", b), dirs) for (ds, trace, arm, b), dirs in cs if arm.endswith("_srv")]  # FX-N128
     jobs = [(d, tgt(ds), 3 if ds == "google_speech" else 1, ev) for (ds, _, arm, _), dirs in cs + raw for d in dirs
             for ev in [b'"agg_eval_raw"' if arm.endswith(":raw") else b'"agg_eval"']]

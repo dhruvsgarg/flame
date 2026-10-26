@@ -30,7 +30,7 @@ def local_epochs(ds, dev, clients, lr, conn):
     random.seed(hash((ds, dev)) & 0x7FFFFFFF)
     cl = shards(ds, clients[0])[clients[1]:clients[2]]
     allc = shards(ds, clients[0])
-    X, Y, _, _ = ub.load_data(ds, sorted({j for c in allc for j in c}), os.path.expanduser("~/.cache/flame_utility_bench"), dev)
+    X, Y, _, _ = ub.load_data(ds, sorted({j for c in allc for j in c}), str(ub.fl_data.cache_dir("flame_utility_bench")), dev)
     bf16 = ds != "cifar10"
     w = (ub.fl_data.CifarNet() if ds == "cifar10" else ub.fl_data.ResNet34_1D()).to(dev)
     batch = ub.DATA[ds]["batch"]
@@ -75,7 +75,7 @@ def main(argv=None):
     random.seed(0)
     torch.manual_seed(0)
     cl = shards(ds, a.n)
-    X, Y, Xt, Yt = ub.load_data(ds, sorted({j for c in cl for j in c}), os.path.expanduser("~/.cache/flame_utility_bench"), dev)
+    X, Y, Xt, Yt = ub.load_data(ds, sorted({j for c in cl for j in c}), str(ub.fl_data.cache_dir("flame_utility_bench")), dev)
     bf16 = ds != "cifar10"
     g = (ub.fl_data.CifarNet() if ds == "cifar10" else ub.fl_data.ResNet34_1D()).to(dev)
     w = (ub.fl_data.CifarNet() if ds == "cifar10" else ub.fl_data.ResNet34_1D()).to(dev)

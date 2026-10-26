@@ -186,6 +186,16 @@ def test_ev10_redispatch_after_withhold_passes(tmp_path):
     assert _status(_write_run(tmp_path, agg, tr), "EV10_dispatch_one_in_flight") == "PASS"
 
 
+def test_ev24_dispatch_while_computing_fails_unless_abandoned(tmp_path):
+    agg, tr = _clean_run()
+    assert _status(_write_run(tmp_path / "a", agg, tr), "EV24_busy_until_completion") == "PASS"
+    r = next(e for e in tr[T1] if e["event"] == "trainer_round")
+    early = {**r, "sim_send_ts": r["sim_completion_ts"] - 1.0, "sim_completion_ts": r["sim_completion_ts"] + 5.0}
+    assert _status(_write_run(tmp_path / "b", agg, {**tr, T1: tr[T1] + [early]}), "EV24_busy_until_completion") == "FAIL"
+    ab = {"event": "abandon_timeout", "end_id": T1, "sim_send_ts": r["sim_send_ts"], "vclock_now": r["sim_send_ts"] + 1}
+    assert _status(_write_run(tmp_path / "c", agg + [ab], {**tr, T1: tr[T1] + [early]}), "EV24_busy_until_completion") == "PASS"
+
+
 def test_ev11_clock_backwards_fails(tmp_path):
     agg, tr = _clean_run()
     commits = [e for e in agg if e["event"] == "agg_round"]

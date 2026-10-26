@@ -232,14 +232,15 @@ F48_CELLS = {"cifar10": {"smu": ("mobiperf_3st", True)},
 F48_RUNTIME_S = {"cifar10": 10800, "google_speech": 43200}
 F48_SHAPE = {"cifar10": F46_SHAPE, "google_speech": dict(F43_SHAPE["google_speech"], c=20)}
 _FPOOL = f"{_FN} {_DKCF} sel.dynamic_kc.policy_kwargs.pool="
+_FCHR = f"{_FPOOL}0.5 sel.dynamic_kc.policy_kwargs.ramp=true"
+# Felix new, frozen 10-25: `fn_chr` at rate b 0.2 (baseline_reference.yaml); arm `fx`
+FELIX_FINAL = _FCHR
 F48_ARMS = {"cifar10": {"ctl_srv": dict(bls=("fedbuff",)), "fn": dict(hp=_FN, thp=_B1T), "fn_ca": F47_ARMS["fn_ca"],
                         "fn_ch2": dict(hp=f"{_FPOOL}0.5", thp=_B1T), "fn_ch3": dict(hp=f"{_FPOOL}0.33", thp=_B1T),
                         "fn_chp": dict(hp=f"{_FPOOL}0.5 sel.dynamic_kc.policy_kwargs.phase=true", thp=_B1T),
                         "fn_chr": dict(hp=f"{_FPOOL}0.5 sel.dynamic_kc.policy_kwargs.ramp=true", thp=_B1T),
                         "fn_ev": dict(hp=f"{_FPOOL}0.5 sel.dynamic_kc.policy_kwargs.ramp=true".replace(_E0, ""), thp=_B1T)},  # + Felix old's eval tasks
-            "google_speech": {"ctl_srv": dict(bls=("felix", "fedbuff")), "fn": dict(hp=_FN, thp=_B1T, cells=("smu",)),  # = fn_chr elsewhere
-                              "fn_chr": dict(hp=f"{_FPOOL}0.5 sel.dynamic_kc.policy_kwargs.ramp=true", thp=_B1T)}}
-_FCHR = f"{_FPOOL}0.5 sel.dynamic_kc.policy_kwargs.ramp=true"
+            "google_speech": {"ctl_srv": dict(bls=("felix", "fedbuff")), "fx": dict(hp=FELIX_FINAL, thp=_B1T)}}
 F48R_ARMS = {"ctl_srv": dict(bls=("fedbuff",)), "fn_chr": dict(hp=_FCHR, thp=_B1T),
              **{f"r_{k}": dict(hp=f"{_FCHR} opt.agg_rate_conf.{v}", thp=_B1T) for k, v in dict(
                  s02="scale=0.2", s07="scale=0.7", a0="a_exp=0.0", a05="a_exp=0.5", b005="b_exp=0.05", b02="b_exp=0.2").items()}}
@@ -250,6 +251,45 @@ F49_ARMS = {"fn_chr": dict(hp=_FCHR, thp=_B1T), "ctl_srv": dict(bls=("fedbuff",)
             "fn": dict(hp=_FN, thp=_B1T, cells=("smu",)),
             "sync_srv": dict(bls=("refl", "feddance", "fedavg", "oort", "oort_star"), hp="serveEma=sweep", agg_goal=None),
             "rstar_srv": dict(F42_ARMS["rstar_srv"], agg_goal=None), "fdstar_srv": dict(F42_ARMS["fdstar_srv"], agg_goal=None)}
+# FB1 = paper runs (FX-N150 / N131): F49's stacks + `*` arms with Felix = `fx`, plus the ladder (FedBuff, b1, uo_o, fn, fx); 4 cells,
+# streams from +24 h of the 6-day trace (<= 120 h); each leg stops when its 5-eval mean hits targets.json. FB1S = 2 h smoke, low target.
+FB1_CELLS = {"s0": ("syn_0", False), **F49_CELLS}
+FB1_ARMS = {"fx": dict(hp=FELIX_FINAL, thp=_B1T), **{a: F49_ARMS[a] for a in ("ctl_srv", "sync_srv", "rstar_srv", "fdstar_srv")},
+            "b1": F44_ARMS["b1"], "uo_o": F46_ARMS["uo_o"], "fn": dict(hp=_FN, thp=_B1T)}
+FB1_RUNTIME_S = {"FB1": 432000, "FB1S": 7200}
+FB1S_TARGETS = {"cifar10": 0.35, "google_speech": 0.15}  # reachable in 2 h by the async stacks (F49; FB1S speech: Felix 22%, FedBuff 16%)
+# FB2 = the paper's run sets (FX-N154; felix_paper_outline Table 1, manifest scripts/paper_runs.py): tier FB2<set>, smoke FB2<set>S
+# (2 h, FB1S_TARGETS). Cells as FB1 + `s20u`; swaps are `fx` with one layer replaced; every leg stops at its target or 120 h.
+FB2_CELLS = {**FB1_CELLS, "s20u": ("syn_20_3st", True)}
+FB2_ABL = ("s50u", "smu")  # ablation cells
+_fxs = lambda old, new, **kw: dict(hp=" ".join(FELIX_FINAL.replace(old, new).split()), thp=_B1T, **kw)  # `fx`, one knob swapped
+_fxa = lambda add, thp="", **kw: dict(hp=f"{FELIX_FINAL} {add}", thp=f"{_B1T} {thp}".strip(), **kw)  # `fx` + knobs
+_DEPLOY = ("refl", "feddance", "fedavg", "oort")
+FB2_SETS = {
+    "E2E": dict(cells=("s0u", "s20u", "s50u", "smu"), prio=1, arms={
+        **{a: FB1_ARMS[a] for a in ("fx", "ctl_srv", "sync_srv", "rstar_srv", "fdstar_srv")},
+        "fbstar_srv": F42_ARMS["fbstar_srv"], "favstar_srv": dict(bls=("fedavg",), hp="avail_knowledge=oracle serveEma=sweep", agg_goal=None)}),
+    "LAD": dict(cells=FB2_ABL, prio=2, arms={a: FB1_ARMS[a] for a in ("b1", "uo_o", "fn")}),
+    "SWC": dict(cells=FB2_ABL, prio=2, arms={"fx_cfix": dict(hp=_FN, thp=_B1T, c={"cifar10": 30, "google_speech": 10}),  # ½ FedBuff's c
+                                             "fx_ca": dict(hp=f"{_FN} {_DKCF} sel.dynamic_kc.policy_kwargs.avail=true", thp=_B1T)}),
+    "SWA": dict(cells=FB2_ABL, prio=2, arms={"fx_ck": _fxa("avail_knowledge=checkin proactive_inflight_evict=False"),
+                                             "fx_or": _fxa("avail_knowledge=oracle proactive_inflight_evict=False")}),
+    "SWG": dict(cells=FB2_ABL, prio=3, arms={"fx_rold": _fxs(_RNEW, "opt.agg_rate_conf.type=old"),  # 1/√(1+τ)
+                                             "fx_r1": _fxa("opt.agg_rate_conf.scale=1.0 opt.agg_rate_conf.a_exp=1.0")}),  # 1/(1+τ)
+    "SWS": dict(cells=FB2_ABL, prio=3, arms={"fx_rnd": _fxs("sel.selectType=prop", "sel.selectType=random"),
+                                             "fx_oort": _fxs("sel.selectType=prop", "sel.selectType=default")}),  # speed + UCB + cutoff
+    "REJ": dict(cells=FB2_ABL, prio=3, arms={"fx_ucb": _fxa("sel.scoreUcb=true"), "fx_e2": _fxa(_GUARD, thp="epochs=2")}),
+    "STA": dict(cells=("s0",), prio=4, arms={"fx": FB1_ARMS["fx"], "ctl_srv": FB1_ARMS["ctl_srv"],
+                                             "sync_srv": dict(FB1_ARMS["sync_srv"], bls=_DEPLOY)}),
+}
+FB2_TIERS = {f"FB2{k}{s}": k for k in FB2_SETS for s in ("", "S")}
+
+
+def final_targets() -> dict:
+    """{dataset: final target} from `_metadata/targets.json` (FX-N146)."""
+    return {k: v for k, v in json.load(open(SCRIPT_DIR.parent / "_metadata" / "targets.json")).items() if k != "src"}
+
+
 F42_ARMS["l3b_ro_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep opt.agg_rate_conf.type=old", thp=_PRE)  # FX-N132: FedBuff's rate
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
@@ -563,6 +603,43 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                 if bls:
                     out.append(replace(base, pid=f"{DS_TAG[ds]}{tier}_{cell}_{arm}", baselines=bls,
                                        agg_hp=f"{base.agg_hp} {hp}".strip(), trainer_hp=f"{base.trainer_hp} {thp}".strip(),
+                                       **{k: kw[k] for k in ("c", "agg_goal") if k in kw}))
+        return out
+    if tier in FB2_TIERS:
+        rs, smoke = FB2_SETS[FB2_TIERS[tier]], tier[3:] != FB2_TIERS[tier]
+        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        stop = f"targetAccuracy={(FB1S_TARGETS if smoke else final_targets())[ds]} targetWindow=5"
+        out = []
+        for cell in rs["cells"]:
+            trace, stream = FB2_CELLS[cell]
+            dsh = usage_hp(trace) if stream else full
+            base = replace(g3, runtime_s=FB1_RUNTIME_S["FB1S" if smoke else "FB1"], trace=trace, trace_offset_s="86400" if stream else "",
+                           kind="sim_ev", trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S} {stop}",
+                           **F48_SHAPE[ds])
+            for arm, kw in rs["arms"].items():
+                bls = tuple(b for b in kw.get("bls", ("felix",)) if b in baselines)
+                if bls:
+                    out.append(replace(base, pid=f"{DS_TAG[ds]}{tier}_{cell}_{arm}", baselines=bls,
+                                       agg_hp=f"{base.agg_hp} {kw.get('hp', '')}".strip(),
+                                       trainer_hp=f"{base.trainer_hp} {kw.get('thp', '')}".strip(),
+                                       **{k: kw[k][ds] if isinstance(kw[k], dict) else kw[k] for k in ("c", "agg_goal") if k in kw}))
+        return out
+    if tier in FB1_RUNTIME_S:
+        g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
+        full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
+        stop = f"targetAccuracy={(FB1S_TARGETS if tier == 'FB1S' else final_targets())[ds]} targetWindow=5"
+        out = []
+        for cell, (trace, stream) in FB1_CELLS.items():
+            dsh = usage_hp(trace) if stream else full
+            base = replace(g3, runtime_s=FB1_RUNTIME_S[tier], trace=trace, trace_offset_s="86400" if stream else "", kind="sim_ev",
+                           trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S} {stop}", **F48_SHAPE[ds])
+            for arm, kw in FB1_ARMS.items():
+                bls = tuple(b for b in kw.get("bls", ("felix",)) if b in baselines)
+                if bls:
+                    out.append(replace(base, pid=f"{DS_TAG[ds]}{tier}_{cell}_{arm}", baselines=bls,
+                                       agg_hp=f"{base.agg_hp} {kw.get('hp', '')}".strip(),
+                                       trainer_hp=f"{base.trainer_hp} {kw.get('thp', '')}".strip(),
                                        **{k: kw[k] for k in ("c", "agg_goal") if k in kw}))
         return out
     if tier == "F42R":  # F42-T7 / T9 on GPU: G3 real legs, 8 min wall: Felix notify + the check-in baselines
@@ -2211,7 +2288,8 @@ NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python
                      *(f"lib/python/examples/scripts/{s}.py" for s in (
                          "parity_ladder", "readiness_score", "logical_diff", "insights", "accuracy_table", "replicate_spread",
                          "resource_report", "profile_report", "fd_sanity", "eurosys_export", "baseline_deviations",
-                         "cleanup_experiments", "test_inventory", "harness_iso_compare", "felix_claims", "fl_lr_check", "dispatch")))
+                         "cleanup_experiments", "test_inventory", "harness_iso_compare", "felix_claims", "fl_lr_check", "dispatch",
+                         "paper_runs", "leg_digest", "paper_plots")))
 
 
 def code_key() -> str:
@@ -2229,7 +2307,7 @@ def code_key() -> str:
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", required=True,
-                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F42 F42C F42CR F42R F43 F44 F45 F46 F47 F48 F48L F48R F49, e.g. 'T2,G1' = CPU matrix + GPU block")
+                    help="comma list of T1 T2 T3 T4 GS G0 G0C N64 N64S G1 G2 G1A G1L N62 ISO ISO_FILL F42 F42C F42CR F42R F43 F44 F45 F46 F47 F48 F48L F48R F49 FB1 FB1S FB2<set>[S] (FB2_SETS), e.g. 'T2,G1' = CPU matrix + GPU block")
     ap.add_argument("--datasets", default="cifar10", help="comma list of cifar10, google_speech, or 'all'")
     ap.add_argument("--baselines", default="", help="space- or comma-separated; default = --changed set, else all six")
     ap.add_argument("--changed", default="", help="git ref: run only baselines affected by the diff vs it")

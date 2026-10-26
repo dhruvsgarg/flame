@@ -6,6 +6,7 @@ minus the holdout (none held out at holdout 0). Exit 1 on any mismatch, so a smo
   config_audit.py POOL...
 """
 import glob
+import gzip
 import json
 import os
 import re
@@ -25,7 +26,7 @@ _B1 = dict(_E0, sel="random", rate="old", serve="sweep", lrn="true")
 EXPECT = {
     ("felix", "ctl"): _OLD, ("felix", "e0"): _E0, ("felix", "l3"): _L3, ("felix", "l3b"): _L3B,
     ("felix", "fck"): dict(_L3B, know="checkin", evict="false", serve="sweep"),
-    ("felix", "ctl_srv"): dict(_OLD, serve="sweep"), ("felix", "l3b_srv"): dict(_L3B, serve="sweep"),
+    ("felix", "ctl_srv"): dict(_OLD, serve="sweep", rp="0.4/0.25/0.2"), ("felix", "l3b_srv"): dict(_L3B, serve="sweep"),
     ("felix", "l3b_e2_srv"): dict(_L3B, serve="sweep", ep="2"), ("felix", "l3b_e3_srv"): dict(_L3B, serve="sweep", ep="3"),
     ("felix", "l3b_e4_srv"): dict(_L3B, serve="sweep", ep="4"),
     ("felix", "l3b_b3_srv"): dict(_L3B, bal="3.0", serve="sweep"),
@@ -49,21 +50,29 @@ EXPECT = {
     # F46 / FL1 S4: rate / c variants on both S3 carries (harness_pool._S4V)
     **{("felix", f"{b}_{v}"): dict(base, **kw) for b, base in (("uo", dict(_B1, sel="prop")),
                                                                ("vub", dict(_B1, sel="prop", ups="true", prefix="-1", bal="1.0")))
-       for v, kw in dict(o={}, n=dict(rate="new", rp="0.4/0.25"), nl=dict(rate="new", rp="0.4/0.25", lrn="-"),
-                         p1=dict(rate="new", rp="1.0/1.0"), ps=dict(ps="true"),
+       for v, kw in dict(o={}, n=dict(rate="new", rp="0.4/0.25/0.1"), nl=dict(rate="new", rp="0.4/0.25/0.1", lrn="-"),
+                         p1=dict(rate="new", rp="1.0/1.0/0.1"), ps=dict(ps="true"),
                          cp=dict(dkc="felix_c", dkcp="phase", cmin="10"), pscp=dict(ps="true", dkc="felix_c", dkcp="phase", cmin="10"),
                          ca=dict(dkc="felix_c", dkcp="avail", cmin="10"), cap=dict(dkc="felix_c", dkcp="avail+phase", cmin="10"),
                          psca=dict(ps="true", dkc="felix_c", dkcp="avail", cmin="10"), c30=dict(c="30"), k20=dict(K="20")).items()},
     # F48 / FL1 S6: c bounds on Felix new (harness_pool.F48_ARMS)
-    **{("felix", a): dict(_B1, sel="prop", rate="new", rp="0.4/0.25", lrn="true", **kw) for a, kw in dict(
+    **{("felix", a): dict(_B1, sel="prop", rate="new", rp="0.4/0.25/0.1", lrn="true", **kw) for a, kw in dict(
         fn_ch2=dict(dkc="felix_c", dkcp="pool0.5", cmin="10"), fn_ch3=dict(dkc="felix_c", dkcp="pool0.33", cmin="10"),
         fn_chp=dict(dkc="felix_c", dkcp="phase+pool0.5", cmin="10"), fn_chr=dict(dkc="felix_c", dkcp="ramp+pool0.5", cmin="10"),
         fn_ev=dict(dkc="felix_c", dkcp="ramp+pool0.5", cmin="10", eval="1.0")).items()},
-    # F48R: rate `new` sweep on fn_chr (b shows only in the leg config)
+    # F48R: rate `new` sweep on fn_chr (b 0.1 then)
     **{("felix", a): dict(_B1, sel="prop", rate="new", rp=rp, lrn="true", dkc="felix_c", dkcp="ramp+pool0.5", cmin="10") for a, rp in dict(
-        r_s02="0.2/0.25", r_s07="0.7/0.25", r_a0="0.4/0.0", r_a05="0.4/0.5", r_b005="0.4/0.25", r_b02="0.4/0.25").items()},
+        r_s02="0.2/0.25/0.1", r_s07="0.7/0.25/0.1", r_a0="0.4/0.0/0.1", r_a05="0.4/0.5/0.1", r_b005="0.4/0.25/0.05",
+        r_b02="0.4/0.25/0.2").items()},
+    # Felix new, final (harness_pool.FELIX_FINAL): fn_chr at b 0.2
+    ("felix", "fx"): dict(_B1, sel="prop", rate="new", rp="0.4/0.25/0.2", lrn="true", dkc="felix_c", dkcp="ramp+pool0.5", cmin="10"),
+    # FB2 swaps (harness_pool.FB2_SETS): `fx` with one layer replaced
+    **{("felix", a): {**_B1, **dict(sel="prop", rate="new", rp="0.4/0.25/0.2", lrn="true", dkc="felix_c", dkcp="ramp+pool0.5", cmin="10"), **kw}
+       for a, kw in dict(fx_cfix=dict(dkc="-", dkcp="-", cmin="-"), fx_ca=dict(dkcp="avail"), fx_ck=dict(know="checkin", evict="false"),
+                         fx_or=dict(know="oracle", evict="false"), fx_rold=dict(rate="old", rp="-"), fx_r1=dict(rp="1.0/1.0/0.2"),
+                         fx_rnd=dict(sel="random"), fx_oort=dict(sel="-"), fx_ucb=dict(ucb="true"), fx_e2=dict(nclip="3", ep="2")).items()},
     # F47 / FL1 S4b + S5 on Felix new (harness_pool.F47_ARMS)
-    **{("felix", a): dict(_B1, sel="prop", rate="new", rp="0.4/0.25", **kw) for a, kw in dict(
+    **{("felix", a): dict(_B1, sel="prop", rate="new", rp="0.4/0.25/0.1", **kw) for a, kw in dict(
         fn={}, fn_cp=dict(dkc="felix_c", dkcp="phase", cmin="10"), fn_c30=dict(c="30"),
         fn_ca=dict(dkc="felix_c", dkcp="avail", cmin="10"), fn_cap=dict(dkc="felix_c", dkcp="avail+phase", cmin="10"),
         fn_e2=dict(nclip="3", ep="2"), fn_e3=dict(nclip="3", ep="3"), fn_aug=dict(aug="true"),
@@ -77,7 +86,7 @@ EXPECT = {
     ("feddance", "fdstar"): dict(know="oracle", evict="false", checkin="selection"),
     ("refl", "sync_srv"): dict(know="checkin", evict="false", pred="prophet", holdoff="0", serve="sweep"),  # F49
     ("feddance", "sync_srv"): dict(know="checkin", evict="false", checkin="selection", serve="sweep"),
-    ("fedavg", "*"): dict(know="checkin", evict="false"),
+    ("fedavg", "*"): dict(know="checkin", evict="false"), ("fedavg", "favstar"): dict(know="oracle", evict="false"),
     ("oort", "*"): dict(know="checkin", evict="false"), ("oort_star", "*"): dict(know="oracle", evict="false"),
 }
 COMMON = dict(holdout="-", serve="-", p34="ok", sel="-", nclip="-", lrn="-", wd="-", ep="-", su="-", ucb="-", rp="-", ps="-",
@@ -109,7 +118,7 @@ def knobs(run_dir, trainer_hp):
                 nclip=_s(opt.get("norm_clip")), lrn=_s(trainer_hp.get("lr_batch_normalize")),
                 wd=_s(trainer_hp.get("trainerWeightDecay")), ep=_s(trainer_hp.get("epochs")),
                 su=_s(sel.get("scoreUtility")), ucb=_s(sel.get("scoreUcb")),
-                rp=f"{rc.get('scale')}/{rc.get('a_exp')}" if (rc := opt.get("agg_rate_conf") or {}).get("type") == "new" else "-",
+                rp=f"{rc.get('scale')}/{rc.get('a_exp')}/{rc.get('b_exp')}" if (rc := opt.get("agg_rate_conf") or {}).get("type") == "new" else "-",
                 ps=_s(opt.get("phase_step")), aug=_s(trainer_hp.get("trainerAugmentEachPass", True)), cmin=_s(dk.get("c_min")) if pol else "-",
                 dkcp="+".join([k for k in ("avail", "phase", "ramp") if str((pk := dk.get("policy_kwargs") or {}).get(k)).lower() == "true"]
                               + ([f"pool{pk['pool']}"] if pk.get("pool") else [])) or "-")
@@ -119,8 +128,8 @@ def holdout_check(run_dir, holdout):
     """P3 / P4: each train task's trained count = visible − visible // k (k = 1 / holdout; 0 held out when off)."""
     k = round(1 / float(holdout)) if holdout not in ("-", "0", "0.0") else 0
     bad = n = 0
-    for f in glob.glob(os.path.join(run_dir, "telemetry", "trainer_*.jsonl")):
-        for line in open(f):
+    for f in glob.glob(os.path.join(run_dir, "telemetry", "trainer_*.jsonl")) + glob.glob(os.path.join(run_dir, "telemetry", "trainer_*.jsonl.gz")):
+        for line in (gzip.open(f, "rt") if f.endswith(".gz") else open(f)):
             if '"trainer_round"' not in line:
                 continue
             r = json.loads(line)
@@ -136,7 +145,7 @@ def legs(pool):
         if f"{os.sep}_yaml{os.sep}" in y:  # bench_pool's dry-run inputs, not legs
             continue
         leg = y.split(os.sep)[-4]
-        m = re.match(r"(?:gs_)?F\d+\w*?_(s\d+u?|smu)_(\w+?)_(syn_\w+|mobiperf\w*)_(\w+)_sim$", leg)
+        m = re.match(r"(?:gs_)?FB?\d+\w*?_(s\d+u?|smu)_(\w+?)_(syn_\w+|mobiperf\w*)_(\w+)_sim$", leg)
         if not m:
             continue
         cell, arm, _, b = m.groups()
@@ -151,7 +160,7 @@ def legs(pool):
             yield leg, b, arm, dict(k, p34=holdout_check(runs[-1], k["holdout"]))
     for run in sorted(glob.glob(os.path.join(pool, "*", "runs", "*_s[0-9]*", "run_*"))):  # bench_pool layout (FX-D213)
         phase, slot = run.split(os.sep)[-4], run.split(os.sep)[-2]
-        m = re.match(r"(?:gs_)?F\d+\w*?_s(?:\d+u?|mu)_(\w+)$", phase)
+        m = re.match(r"(?:gs_)?FB?\d+\w*?_s(?:\d+u?|mu)_(\w+)$", phase)
         b = re.match(r"(?:syn_\w+?|mobiperf\w*?)_([a-z_]+)_s\d+$", slot)
         if not (m and b):
             continue
@@ -159,6 +168,33 @@ def legs(pool):
         thp = ((exp.get("trainer") or {}).get("config_overrides") or {}).get("hyperparameters") or {}
         k = knobs(run, thp)
         yield f"{phase}/{slot}", b.group(1), re.sub(r"_r\d+$", "", m.group(1)), dict(k, p34=holdout_check(run, k["holdout"]))
+
+
+def missing(leg, b, arm, k):
+    """The knobs of leg (baseline b, phase arm) that differ from its EXPECT row, [] when it matches."""
+    base = re.sub(r"_srv$", "", arm)  # FX-N133: an `_srv` arm = its base arm + the averaged model
+    row = EXPECT.get((b, arm)) or EXPECT.get((b, base)) or EXPECT.get((b, "*"))
+    row = dict(row, serve="sweep") if row is not None and arm != base else row
+    if row and row.get("rp") == "0.4/0.25/0.1" and re.match(r"(?:gs_)?FB", leg):
+        row = dict(row, rp="0.4/0.25/0.2")  # FB1 ladder arms run the frozen rate (b 0.2, Decisions `fx`)
+    want = dict(COMMON, **(row or {}))
+    return [f"{x}={k[x]}≠{v}" for x, v in want.items() if k.get(x) != v] + ([] if row else ["no expected row"])
+
+
+def audit_run(run_dir):
+    """FX-N153: one bench leg (<phase>/runs/<trace>_<baseline>_s<k>/run_*) -> {ok, miss, knobs}; leg_digest stores it."""
+    run_dir = os.path.abspath(run_dir)
+    phase, slot = run_dir.split(os.sep)[-4], run_dir.split(os.sep)[-2]
+    m = re.match(r"(?:gs_)?FB?\d+\w*?_s(?:\d+u?|mu)_(\w+)$", phase)
+    b = re.match(r"(?:syn_\w+?|mobiperf\w*?)_([a-z_]+)_s\d+$", slot)
+    if not (m and b):
+        return dict(ok=False, miss=[f"unparsed leg path {phase}/{slot}"], knobs={})
+    exp = (yaml.safe_load(open(os.path.join(run_dir, "debug_run.yaml"))).get("experiments") or [{}])[0]
+    thp = ((exp.get("trainer") or {}).get("config_overrides") or {}).get("hyperparameters") or {}
+    k = knobs(run_dir, thp)
+    k["p34"] = holdout_check(run_dir, k["holdout"])
+    miss = missing(phase, b.group(1), re.sub(r"_r\d+$", "", m.group(1)), k)
+    return dict(ok=not miss, miss=miss, knobs=k)
 
 
 def main(argv=None):
@@ -169,11 +205,7 @@ def main(argv=None):
     print("| leg | " + " | ".join(cols) + " | ok |\n|" + "---|" * (len(cols) + 2))
     for pool in pools:
         for leg, b, arm, k in legs(pool):
-            base = re.sub(r"_srv$", "", arm)  # FX-N133: an `_srv` arm = its base arm + the averaged model
-            row = EXPECT.get((b, arm)) or EXPECT.get((b, base)) or EXPECT.get((b, "*"))
-            row = dict(row, serve="sweep") if row is not None and arm != base else row
-            want = dict(COMMON, **(row or {}))
-            miss = [f"{x}={k[x]}≠{v}" for x, v in want.items() if k.get(x) != v] + ([] if row else ["no expected row"])
+            miss = missing(leg, b, arm, k)
             bad += bool(miss)
             print(f"| {leg} | " + " | ".join(k[x] for x in cols) + f" | {'✅' if not miss else '❌ ' + ', '.join(miss)} |")
     return 1 if bad else 0

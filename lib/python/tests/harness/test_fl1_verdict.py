@@ -32,3 +32,12 @@ def test_eval_period_from_config(tmp_path):
     (tmp_path / "aggregator_config.json").write_text(json.dumps({"hyperparameters": {"evalEverySeconds": 600}}))
     assert bench_report.eval_period_min(str(tmp_path)) == 10.0
     assert bench_report.eval_period_min(str(tmp_path / "missing")) is None
+
+
+def test_targets_climb_to_targets_json():
+    # FX-N146: every rung below the final target, which comes from _metadata/targets.json
+    final = bench_report.final_targets()
+    for ds in ("cifar10", "google_speech"):
+        for trace, lo in (("mobiperf_3st", 0.4), ("syn_0 static", 0.5)):
+            ths = fl1_verdict.targets(ds, trace)
+            assert ths[0] == lo and ths[-1] == final[ds] and all(t < final[ds] for t in ths[:-1])

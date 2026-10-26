@@ -44,7 +44,7 @@ def test_unavailable_at_reconnect_is_a_missed_opportunity():
     assert led.stats["missed"] == 1 and "a" not in led.pool
     assert led.next_checkin(299.0, ["a"], train_at, is_train) == 300  # back at its next flip
     led.advance(310.0, ["a"], train_at, is_train)  # checks in at 300, no window open: rejected again
-    assert led.stats["rejects"] == 2 and led.hold["a"] > 300
+    assert led.stats["rejects"] >= 2 and led.hold["a"] > 310  # a reconnect inside 310 is rejected again
 
 
 def test_checkin_between_windows_is_rejected_and_comes_back_in_the_next():
@@ -218,3 +218,24 @@ def test_real_checkin_that_beats_its_own_commit_stays_pooled():
     assert led.on_checkin("a", 50.0) is None  # task ended trainer-side; CHECK_IN arrives before the update commits
     led.release("a", 50.2)
     assert "a" in led.pool
+
+
+def test_time_replay_is_path_independent():
+    """FX-N151: end order and advance cadence (harness wakes often, bench rarely) leave the same check-in history."""
+    on = {f"e{i}": [(0, 40 + 13 * i), (90 + 7 * i, 400), (460, math.inf)] for i in range(8)}
+    tr = lambda e, t: any(a <= t < b for a, b in on[e])
+    ta = lambda e, t: t if tr(e, t) else min((a for a, _ in on[e] if a > t), default=math.inf)
+
+    def run(order, ticks):
+        led = CheckinLedger(sync=True, initial_gap_s=100.0, seed=3)
+        led._last_close, led.train_d = 0.0, 90.0
+        led.after_select(0.0, [], slots_left=False)
+        for now in ticks:
+            led.advance(now, order, ta, tr)
+        return led.stats, led.hold, led.free_since
+
+    ends = sorted(on)
+    base = run(ends, [600.0])
+    assert run(ends[::-1], [600.0]) == base
+    assert run(ends[3:] + ends[:3], [17.0 * k for k in range(1, 36)] + [600.0]) == base
+    assert base[0]["rejects"] > len(ends)

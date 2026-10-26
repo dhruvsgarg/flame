@@ -7,6 +7,7 @@
 # first entry below that has the dataset, else the old in-repo dir (fwdllm shares the root: fl_datasets/fwdllm).
 data_roots:
   - /coc/scratch/dgarg/fl_datasets
+cache_root: /coc/scratch/dgarg/flame_cache  # fl_data.cache_dir: bench / utility caches, shared by both nodes; never /nethome (50 GB quota)
 
 datasets:
   # A dataset sets only what differs per dataset; every baseline-defining value lives in baseline_reference.yaml.

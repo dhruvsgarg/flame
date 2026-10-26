@@ -8,7 +8,7 @@ accuracy in the expected time window (tracked per track: FELIX Scoreboard). Equa
 **Four docs (plus FELIX's insights companion) are the only working references:**
 - **this doc** — the rules for all four docs, the lessons and tripwires both tracks share, and the queue of
   shared infrastructure work;
-- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS (10-23): Felix reaches the highest target accuracy fastest (FELIX FX-N141 loop FL1 → D5 long runs), then claims (FX-N108) → sim-only experiments. Throughput (FX-N100) on every batch; sim speedup never < 1×, aim 2-5×+.**
+- [FELIX_READINESS.md](FELIX_READINESS.md) — Felix: backprop FL (async_cifar10, google_speech). **CURRENT FOCUS (10-25 evening): Felix paper first version (`fx` frozen): Felix busy hold (FELIX FX-N157), sync-stack bench gap (FX-N151), smoke of the built run pipeline + run sets (FX-N153, FX-N154), then End-to-end seed 1 (FX-N131) → D5 long runs, claims (FX-N108). Throughput (FX-N100) on every batch; sim speedup never < 1×, aim 2-5×+.**
   - [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) — Felix's companion: telemetry-backed insights for the paper (model, catalog, findings).
 - [PARITY_READINESS.md](PARITY_READINESS.md) — real↔sim parity for both tracks: climbing rules (C1-C9: correct before
   equal, instrument what you can't see, launch only when fixes are maximized), method, tools, per-track scoreboard.
@@ -103,7 +103,7 @@ Scoreboard
   `experiments/<suite>_<ts>/` dir with a summary file; Claude reads that dir afterwards. Claude hands over the
   command, the expected duration and the prediction (what result confirms and what refutes). Long runs launch
   through `scripts/dispatch.py BATCH.yaml` in tmux (operator 10-17; PARITY PL4): it balances both nodes so they finish together. **Runs go on
-  jayne GPUs 0,2-7 and shepherd GPUs 0-3, together (operator 10-14); never launch on kaylee or wash.** Legs run in parallel only in isolated slots (R18).
+  jayne and/or shepherd, whichever is free; switch any time (operator 10-25; L38); never launch on kaylee or wash.** Legs run in parallel only in isolated slots (R18).
 - **R5 One mechanism per run** when a fix could perturb another baseline. Shared roots before per-baseline
   roots: a bug failing rungs on 2+ baselines outranks one that fails on 1.
 - **R6 Run length follows the residual's shape.** Per-cycle mechanisms show up in 15-45 min. Accumulating or
@@ -275,6 +275,11 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
 - **L37 `[baseline]`** Our model is fixed. Assimilate the baseline first (source knobs as-is); if it doesn't learn on our model,
   change the fewest knobs one at a time (server step, then client lr, then batch), keep the rest, and record each
   (`source_v`, `why`, `evidence`) with per-cell model parity; `scripts/baseline_deviations.py --md` is the paper's table.
+- **L38 `[ops]`** Nodes are interchangeable (operator 10-25): jayne and shepherd = 8× A40 46 GB, 128 cores, 503 GB RAM each;
+  same commit at `/home/dgarg39/flame` on both. Storage (checked 10-25): `/home` = node-local 2.6 TB md RAID (run dirs; shepherd
+  92% full / ~210 GB free, jayne 54%); `/coc/scratch` = 25 TB NFS shared by all nodes (data `fl_datasets`, conda `dg_flame`, caches
+  `flame_cache` via `datasets.yaml cache_root`); `/nethome` = shared NFS home, 50 GB quota (T19). GPUs: jayne GPU 1 has aggregate
+  uncorrected ECC 1 (pin `0,2-7`); shepherd 0-7 clean. Switching nodes: rsync the run dirs a grader reads (`experiments/<batch>`).
 
 ## Shared tripwires (don'ts)
 
@@ -305,6 +310,8 @@ Tags: `[clock]` `[order]` `[slot]` `[select]` `[avail]` `[measure]` `[floor]` `[
 - **T16** Don't interpolate a message, payload or ledger in a log f-string; it formats even at an off level (`test_no_eager_payload_logs.py`).
 - **T17** Don't re-publish a QoS-2 message from the app on a timeout: the copy gets a new mid, and the receiver splices it into the
   next message (FX-D85). paho + the broker own delivery.
+- **T19** Don't write anything large under `/nethome` (`~`): 50 GB quota shared by every node, ~25 GB used (vscode-server,
+  HF cache). Caches → `fl_data.cache_dir` (`/coc/scratch/dgarg/flame_cache`), runs → `/home`, data → `/coc/scratch` (L38).
 - **T18** Don't let a daemon thread log at interpreter exit: a thread holding stdout's lock aborts finalization (`Fatal Python
   error: _enter_buffered_busy`); stop and join it in the atexit hook (FX-D87).
 
