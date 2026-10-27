@@ -17,6 +17,7 @@ from collections import defaultdict
 import pytest
 
 from flame.mode.horizontal.syncfl.top_aggregator import TopAggregator
+from flame.end import End
 from flame.mode.message import MessageType
 from flame.selector.properties import (
     PROP_SIM_SEND_TS,
@@ -36,6 +37,8 @@ class FakeSyncChannel:
         self._rd = dict(round_durations or {})
         self._queue = list(arrival_order)
         self._props = defaultdict(dict)
+        self._ends = {e: End(e) for e in scts}
+        self._selector = None
         for e in self._scts:
             self._props[e][PROP_SIM_SEND_TS] = sim_send_ts
 
@@ -45,11 +48,13 @@ class FakeSyncChannel:
     def ends(self, *a):
         return list(self._scts)
 
-    def get_end_property(self, end, key):
-        return self._props[end].get(key)
+    def get_end_property(self, end_id, key):
+        return self._props[end_id].get(key)
 
     def set_end_property(self, end, key, val):
         self._props[end][key] = val
+        if end in self._ends:
+            self._ends[end].set_property(key, val)
 
     def recv_fifo(self, end_ids, first_k=0, timeout=None):
         ids = set(end_ids)
@@ -98,6 +103,7 @@ def _make_agg():
     agg.trainer_event_dict = None
     agg.pending_withheld = {}
     agg._sim_known_delay_s = {}
+    agg._sim_discarded_completions = {}
     return agg
 
 

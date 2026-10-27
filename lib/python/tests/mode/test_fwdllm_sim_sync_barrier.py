@@ -69,6 +69,7 @@ class _FakeBarrierAgg:
     _note_sim_known_delay = _SyncBase._note_sim_known_delay
     _sim_reinject_ready_withheld = _SyncBase._sim_reinject_ready_withheld
     _sim_withhold_if_unavail = _SyncBase._sim_withhold_if_unavail
+    _sim_release_discarded = _SyncBase._sim_release_discarded
     _barrier_anchored_lags = staticmethod(_SyncBase._barrier_anchored_lags)
 
     def __init__(self):
@@ -76,6 +77,7 @@ class _FakeBarrierAgg:
         self._vclock = VirtualClock()
         self._sim_buffer = SimReorderBuffer()
         self._sim_known_delay_s = {}
+        self._sim_discarded_completions = {}
 
 
 class TestSyncFirstKSmallestSct:

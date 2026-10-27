@@ -31,7 +31,7 @@ from flame.channel import (
 )
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD, End
 from flame.config import TrainerAvailState
-from flame.selector.properties import PROP_AVL_STATE
+from flame.selector.properties import PROP_AVL_STATE, PROP_SIM_COMPLETION_TS
 
 logger = logging.getLogger(__name__)
 SEND_TIMEOUT_WAIT_S = 90
@@ -141,6 +141,10 @@ class RandomSelector(AbstractSelector):
             # We use list() to avoid "dictionary changed size during iteration" errors
             current_time = time.time()
             for end_id in list(self.selected_ends):
+                if end_id in ends:
+                    completion = ends[end_id].get_property(PROP_SIM_COMPLETION_TS)
+                    if completion is not None and completion > channel_props.get("vclock_now", float("inf")):
+                        continue  # received result still completing in simulated time
                 if end_id in self.time_sent:
                     if (current_time - self.time_sent[end_id]) > SEND_TIMEOUT_WAIT_S:
                         logger.info(f"Moving {end_id} to stale_ends (Timeout).")

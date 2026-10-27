@@ -68,6 +68,7 @@ def _stub_common(agg, channel, *, simulated):
     agg._avail_now = lambda: 0.0
     agg._sim_abandon_stalled = lambda ch: None
     agg._sim_evict_unavail_inflight = lambda ch: None
+    agg._sim_discarded_completions = {}
     agg.datasampler = types.SimpleNamespace(get_metadata=lambda r, e: {})
     agg.weights = {}
 
