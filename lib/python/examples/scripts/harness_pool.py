@@ -190,7 +190,7 @@ F45_ARMS = {"ctl_srv": dict(bls=("fedbuff",)),
 # F46 = FL1 S4 on both S3 carries (uo = s3uo, vub = s3vub) at FedBuff's own K 10 (paper §6.1) and c 60 (= its cifar c / n 20%):
 # rate at fixed K / c; c at fixed rate (availability / loss phase, in [K, c]); both; a K x c probe (c / K sets staleness, K the
 # averaging). `o` = the carry at rate old (F45 ran K 15). Telemetry `dynamic_kc` per commit (c, phi, step_scale).
-F46_SHAPE = dict(F43_SHAPE["cifar10"], agg_goal=10)
+F46_SHAPE = dict(F43_SHAPE["cifar10"], agg_goal=10, gpus=None)  # FX-D52: n=300 takes every GPU; None overrides G3's gpus=1
 _RNEW = "opt.agg_rate_conf.type=new"
 _DKCF = "sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=felix_c sel.dynamic_kc.c_min=10"
 _S4V = {"o": {}, "n": dict(hp=_RNEW), "nl": dict(hp=_RNEW, lrn=False),  # Felix's rate, with / without lr batch-normalize
