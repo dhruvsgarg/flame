@@ -110,3 +110,5 @@ class MessageType(Enum):
     # knowledge of the end_id -> satellite_index mapping (end_id carries no
     # such information -- see flame.mode.horizontal.syncfl.top_aggregator).
     SATELLITE_INDEX = 44
+    SATELLITE_ASSIGNMENTS = 45  # shared dispatch manifest; roles use their own entry
+    SATELLITE_ASSIGNMENT = 46   # result's assignment identity and delivery outcome

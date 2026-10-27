@@ -43,6 +43,13 @@ class ContactSchedule:
     def at(self, index, time_s):
         return tuple(c for c in self.for_satellite(index) if c.start_s <= time_s < c.end_s)
 
+    def until(self, horizon_s):
+        horizon = min(float(horizon_s), self.horizon_s)
+        return ContactSchedule(self.satellite_names, self.station_names, self.start_s, horizon,
+            {i: [Contact(c.station_id, c.start_s, min(c.end_s, horizon))
+                 for c in contacts if c.start_s < horizon]
+             for i, contacts in self._contacts.items()})
+
     def availability_events(self, min_window_s=0):
         """Shorten each station's start-eligibility window, then union stations.
 

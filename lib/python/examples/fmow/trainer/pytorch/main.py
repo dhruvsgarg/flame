@@ -487,6 +487,10 @@ class PyTorchFMoWTrainer(SatelliteSimulation, Trainer):
     
     def train(self) -> None:
         logger.info(f"Entered train method for {self.trainer_id}")
+        if not self.satellite_assignment_delivered():
+            self.dataset_size = 0
+            self._stat_utility = self._local_accuracy = 0
+            return
         # Per-phase timing: time from train() entry to the start of the GPU
         # compute loop (setup/avail/loader-rebuild overhead). Reported in
         # [TRAIN_CYCLE] + telemetry so the breakdown is first-class.
@@ -647,7 +651,7 @@ class PyTorchFMoWTrainer(SatelliteSimulation, Trainer):
         # sees the real cycle time.
         _leg = self.sim_completion_leg_s if self.simulated else 0.0
         self._sim_completion_ts = (
-            (self._sim_send_ts if self._sim_send_ts is not None else self._sim_now())
+            self.satellite_training_start_s()
             + sim_round_duration
             + _leg
         )
@@ -892,7 +896,7 @@ class PyTorchFMoWTrainer(SatelliteSimulation, Trainer):
             _eval_dur = max(_real_eval_gpu_s, _modeled_eval_delay_s)
             self._sim_round_duration = _eval_dur
             self._sim_completion_ts = (
-                (self._sim_send_ts if self._sim_send_ts is not None else self._sim_now())
+                self.satellite_training_start_s()
                 + _eval_dur
             )
         elif self.training_delay_enabled:
