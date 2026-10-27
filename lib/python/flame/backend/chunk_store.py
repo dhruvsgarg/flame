@@ -44,6 +44,8 @@ class ChunkStore(object):
         self.recv_buf = {}
         self.eom_seqno = None
         self._first_chunk_ts = None
+        self._last_chunk_ts = None
+        self.transfer_id = None
 
         # for both fragment and assemble
         self.data = EMPTY_PAYLOAD
@@ -99,12 +101,23 @@ class ChunkStore(object):
         message) is set, bytes in the array are joined.
         """
 
+        if msg.seqno < 0 or (self.eom_seqno is not None and msg.seqno > self.eom_seqno):
+            return False
+        if self.transfer_id is not None and self.transfer_id != msg.transfer_id:
+            return False
+        if msg.eom and (
+            (self.eom_seqno is not None and self.eom_seqno != msg.seqno)
+            or any(seq > msg.seqno for seq in self.recv_buf)
+        ):
+            return False
+        self.transfer_id = msg.transfer_id
         if msg.seqno in self.recv_buf:
             logger.debug(f"duplicate seqno {msg.seqno} from {msg.end_id}, ignoring")
-            return True
+            return self.recv_buf[msg.seqno] == msg.payload and (msg.eom == (msg.seqno == self.eom_seqno))
             
         if self._first_chunk_ts is None:
-            self._first_chunk_ts = time.time()
+            self._first_chunk_ts = time.monotonic()
+        self._last_chunk_ts = time.monotonic()
 
         logger.debug(f"chunk {msg.seqno}: {len(msg.payload)}")
         # add payload to a recv buf
@@ -123,6 +136,6 @@ class ChunkStore(object):
         return (
             bool(self.recv_buf)
             and not self.eom
-            and self._first_chunk_ts is not None
-            and (time.time() - self._first_chunk_ts) > timeout_s
+            and self._last_chunk_ts is not None
+            and (time.monotonic() - self._last_chunk_ts) > timeout_s
         )
