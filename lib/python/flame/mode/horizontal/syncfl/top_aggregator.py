@@ -778,6 +778,11 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             return None, committed_dt.timestamp(), None
         return ready_dt.timestamp(), committed_dt.timestamp(), (committed_dt - ready_dt).total_seconds()
 
+    def _weights_for_aggregation(self, msg):
+        """Decode accepted updates onto the model device by default."""
+        weights = materialize_weights(msg, model_device(self.model))
+        return weights_to_model_device(weights, self.model) if weights is not None else None
+
     def _aggregate_weights(self, tag: str) -> None:
         logger.debug("Agg weights inside top_aggregator syncfl")
         self._round_committed = False  # FX-D10
@@ -945,9 +950,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             # Lazy-deserialize: restore the tensor from WEIGHTS_BYTES if the sim
             # barrier didn't already (real sync arrives here with bytes). Default
             # None so an eval-only/malformed message can't UnboundLocalError.
-            weights = None
-            if materialize_weights(msg, model_device(self.model)) is not None:
-                weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+            weights = self._weights_for_aggregation(msg)
             _why = nonfinite_reason(msg, weights, nonfinite_hp(self))
             if _why:  # FX-D111: a failed task: not aggregated, not counted to K, utility not recorded
                 nonfinite_reject(end, _why, self._round, msg.get(MessageType.MODEL_VERSION))
