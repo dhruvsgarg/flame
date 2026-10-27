@@ -268,8 +268,8 @@ _DEPLOY = ("refl", "feddance", "fedavg", "oort")
 FB2_SETS = {
     "E2E": dict(cells=("s0u", "s20u", "s50u", "smu"), prio=1, arms={
         **{a: FB1_ARMS[a] for a in ("fx", "ctl_srv", "sync_srv", "rstar_srv")},
-        # FX-N163 decay rule per leg: FedDance* runs 27-38k cifar rounds in 120 h (FedDance 17-22k) -> every 300, not 200
-        "fdstar_srv": dict(FB1_ARMS["fdstar_srv"], thp={"cifar10": "lrDecayEpoch=300"}),
+        # FX-N163 target anchor: FedDance* has no decay-off crossing -> its family's every (baseline_reference.yaml)
+        "fdstar_srv": FB1_ARMS["fdstar_srv"],
         "fbstar_srv": F42_ARMS["fbstar_srv"], "favstar_srv": dict(bls=("fedavg",), hp="avail_knowledge=oracle serveEma=sweep", agg_goal=None)}),
     "LAD": dict(cells=FB2_ABL, prio=2, arms={a: FB1_ARMS[a] for a in ("b1", "uo_o", "fn")}),
     "SWC": dict(cells=FB2_ABL, prio=2, arms={"fx_cfix": dict(hp=_FN, thp=_B1T, c={"cifar10": 30, "google_speech": 10}),  # ½ FedBuff's c
