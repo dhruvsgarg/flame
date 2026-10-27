@@ -5,6 +5,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 [ -n "${TAG:-}" ] || { echo "[EV24] set TAG"; exit 1; }
 [ -z "$(git status --porcelain -uno)" ] || { echo "[EV24] tree dirty"; exit 1; }
+[ "$(hostname -s)" = shepherd ] || { [ -n "${HGPUS:-}" ] && [ -n "${BGPUS:-}" ]; } || { echo "[EV24] off shepherd: ask the operator, then set HGPUS and BGPUS"; exit 1; }
 HGPUS=${HGPUS:-0,1,2,3}; BGPUS=${BGPUS:-4,5,6,7}
 OUT=experiments/EV24_$TAG
 PY="conda run --no-capture-output -n dg_flame python"

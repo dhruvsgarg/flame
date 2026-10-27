@@ -1,0 +1,2 @@
+{"cifar10": {"mobiperf_3st": 0.75},
+ "src": "FELIX Decisions 'Reporting target per trace' (operator 10-26): the highest 5-eval mean any stack holds in the 120 h trace, rounded down to 5 pp, capped at targets.json. cifar MobiPerf: Felix best 77.8% (swap fx_ca), FedBuff 74.1% -> 75%. Legs stop here and the digest's hit reads it."}

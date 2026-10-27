@@ -47,9 +47,9 @@ refl:
       optimizer: {v: sgd, src: "[code] FedScale client SGD"}
       momentum: {v: 0.9, src: "[code] core/client.py:71 (enforce_sgd off, argParser.py:41)"}
       weight_decay: {v: 0.0005, src: "[code] core/client.py:71"}
-      lr_decay: {v: none, src: "[code] argParser.py:115,119,120", source_v: {factor: 0.98, every: 10, min: 0.00005},
-                 why: "per-round decay spends its lr budget by ~2k rounds (~12 h); our 120 h legs run 10x the source rounds, so every sync stack stalled at 48-56% (FX-N163); off as for FedBuff / Felix, all sync stacks, both datasets (operator 10-26)",
-                 evidence: "cifar syn_0 24 h: FedAvg 48.2 -> 72.9%, REFL 48.6 -> 74.3% (experiments/N163_1026)"}
+      lr_decay: {v: {factor: 0.98, every: 200, min: 0.00005}, src: "[code] argParser.py:115,119,120", source_v: {factor: 0.98, every: 10, min: 0.00005},
+                 why: "source decays over its ~1,000-round budget (13% of base lr at the end for 0.98 / 10; Oort floors by ~600 rounds); our 120 h legs run ~18-23k rounds, so the schedule is scaled by 20x (every 200) to span the same budget, one rule for every sync stack (FX-N163); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%",
+                 evidence: "cifar syn_0 24 h, unscaled decay vs none: FedAvg 48.2 -> 72.9%, REFL 48.6 -> 74.3% (experiments/N163_1026); rounds in 120 h from the decay-off rerun digests (FB2E2E sync legs, cifar)"}
       server:
         v: {sort: refl, kwargs: {deadline: 100, target_ratio: 0.8, stale_update: -1, stale_factor: 1, stale_beta: 0.35,
                                  scale_coff: 10.0, initial_deadline: 100.0}}
@@ -63,9 +63,9 @@ refl:
       optimizer: {v: sgd, src: "[code] FedScale client SGD"}
       momentum: {v: 0.9, src: "[code] core/client.py:71 (enforce_sgd off, argParser.py:41)"}
       weight_decay: {v: 0.0005, src: "[code] core/client.py:71"}
-      lr_decay: {v: none, src: "[code] argParser.py:115,119,120", source_v: {factor: 0.98, every: 10, min: 0.00005},
-                 why: "per-round decay spends its lr budget by ~2k rounds (~12 h); our 120 h legs run 10x the source rounds, so every sync stack stalled at 48-56% (FX-N163); off as for FedBuff / Felix, all sync stacks, both datasets (operator 10-26)",
-                 evidence: "cifar syn_0 24 h: FedAvg 48.2 -> 72.9%, REFL 48.6 -> 74.3% (experiments/N163_1026)"}
+      lr_decay: {v: {factor: 0.98, every: 20, min: 0.00005}, src: "[code] argParser.py:115,119,120", source_v: {factor: 0.98, every: 10, min: 0.00005},
+                 why: "source decays over its ~1,000-round budget (13% of base lr at the end for 0.98 / 10; Oort floors by ~600 rounds); our 120 h legs run ~1.7k rounds, so the schedule is scaled by 2x (every 20) to span the same budget, one rule for every sync stack (FX-N163); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%",
+                 evidence: "speech rounds: F49 12 h sync legs 160-186 rounds (~14 / h, FELIX_READINESS Decisions); re-derive on FB2 speech"}
       server:
         v: {sort: refl, kwargs: {deadline: 100, target_ratio: 0.8, stale_update: -1, stale_factor: -4, stale_beta: 0.35,
                                  scale_coff: 1.0, initial_deadline: 100.0}}
@@ -89,9 +89,9 @@ oort:
       clip_grad_norm: {v: 1.0, src: "[code] learner.py:284 (clip line commented out in source)", source_v: 0.0,
                        why: "1-8-sample streaming shards blow up one delta -> NaN rounds (PR27 R1); clip keeps full-data accuracy",
                        evidence: "fl_lr_check shard 4-8: NaN 3/6 seeds -> 0/6 (experiments/lrcheck_20261010_fxd126); full data r300: 48.9/54.5% -> 48.9/49.9%, r200 equal (lrcheck_20261010_clipfull); PR28: 0 update_rejected in 14 clip legs"}
-      lr_decay: {v: none, src: "[code] argParser.py:86,87,101", source_v: {factor: 0.95, every: 5, min: 0.0001},
-                 why: "per-round decay spends its lr budget by ~2k rounds (~12 h); our 120 h legs run 10x the source rounds, so every sync stack stalled at 48-56% (FX-N163); off as for FedBuff / Felix, all sync stacks, both datasets (operator 10-26)",
-                 evidence: "cifar syn_0 24 h: FedAvg 48.2 -> 72.9%, REFL 48.6 -> 74.3% (experiments/N163_1026)"}
+      lr_decay: {v: {factor: 0.95, every: 5, min: 0.0001}, src: "[code] argParser.py:86,87,101", source_v: {factor: 0.95, every: 5, min: 0.0001},
+                 why: "source decays over its ~1,000-round budget (13% of base lr at the end for 0.98 / 10; Oort floors by ~600 rounds); our 120 h legs run ~0.9-1.2k rounds, so the schedule is scaled by 1x (every 5) to span the same budget, one rule for every sync stack (FX-N163); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%",
+                 evidence: "cifar syn_0 24 h, unscaled decay vs none: FedAvg 48.2 -> 72.9%, REFL 48.6 -> 74.3% (experiments/N163_1026); rounds in 120 h from the decay-off rerun digests (FB2E2E sync legs, cifar)"}
       stat_utility: {v: fedscale, src: "[code] learner.py:296-312"}
       server:
         v: {sort: fedavg_yogi, kwargs: {yogi_eta: 0.005, yogi_tau: 0.001, yogi_momentum: 0.0, yogi_v_decay: 0.999, weighting: equal,
@@ -112,9 +112,9 @@ oort:
       optimizer: {v: sgd, src: "[code] learner.py:155 MySGD"}
       momentum: {v: 0.9, src: "[code] learner.py:155"}
       weight_decay: {v: 0.0005, src: "[code] learner.py:155"}
-      lr_decay: {v: none, src: "[code] speech/conf.yml:48; argParser.py:86,101", source_v: {factor: 0.95, every: 15, min: 0.0001},
-                 why: "per-round decay spends its lr budget by ~2k rounds (~12 h); our 120 h legs run 10x the source rounds, so every sync stack stalled at 48-56% (FX-N163); off as for FedBuff / Felix, all sync stacks, both datasets (operator 10-26)",
-                 evidence: "cifar syn_0 24 h: FedAvg 48.2 -> 72.9%, REFL 48.6 -> 74.3% (experiments/N163_1026)"}
+      lr_decay: {v: {factor: 0.95, every: 30, min: 0.0001}, src: "[code] speech/conf.yml:48; argParser.py:86,101", source_v: {factor: 0.95, every: 15, min: 0.0001},
+                 why: "source decays over its ~1,000-round budget (13% of base lr at the end for 0.98 / 10; Oort floors by ~600 rounds); our 120 h legs run ~1.7k rounds, so the schedule is scaled by 2x (every 30) to span the same budget, one rule for every sync stack (FX-N163); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%",
+                 evidence: "speech rounds: F49 12 h sync legs 160-186 rounds (~14 / h, FELIX_READINESS Decisions); re-derive on FB2 speech"}
       stat_utility: {v: fedscale, src: "[code] learner.py:296-312"}
       server:
         v: {sort: fedavg_yogi, kwargs: {yogi_eta: 0.002, yogi_tau: 0.001, yogi_momentum: 0.0, yogi_v_decay: 0.999, weighting: equal}}
@@ -145,9 +145,9 @@ feddance:
       optimizer: {v: sgd, src: "[paper] §6.1 FedScale defaults"}
       momentum: {v: 0.9, src: "[paper] §6.1 FedScale defaults (FedScale client = REFL core/client.py:71)"}
       weight_decay: {v: 0.0005, src: "[paper] §6.1 FedScale defaults (REFL core/client.py:71)"}
-      lr_decay: {v: none, src: "[paper] §6.1 FedScale defaults (REFL argParser.py:115,119,120)", source_v: {factor: 0.98, every: 10, min: 0.00005},
-                 why: "per-round decay spends its lr budget by ~2k rounds (~12 h); our 120 h legs run 10x the source rounds, so every sync stack stalled at 48-56% (FX-N163); off as for FedBuff / Felix, all sync stacks, both datasets (operator 10-26)",
-                 evidence: "cifar syn_0 24 h: FedAvg 48.2 -> 72.9%, REFL 48.6 -> 74.3% (experiments/N163_1026)"}
+      lr_decay: {v: {factor: 0.98, every: 200, min: 0.00005}, src: "[paper] §6.1 FedScale defaults (REFL argParser.py:115,119,120)", source_v: {factor: 0.98, every: 10, min: 0.00005},
+                 why: "source decays over its ~1,000-round budget (13% of base lr at the end for 0.98 / 10; Oort floors by ~600 rounds); our 120 h legs run ~18-23k rounds, so the schedule is scaled by 20x (every 200) to span the same budget, one rule for every sync stack (FX-N163); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%",
+                 evidence: "cifar syn_0 24 h, unscaled decay vs none: FedAvg 48.2 -> 72.9%, REFL 48.6 -> 74.3% (experiments/N163_1026); rounds in 120 h from the decay-off rerun digests (FB2E2E sync legs, cifar)"}
       server: {v: {sort: fedavg, kwargs: {weighting: equal}}, src: "[paper] §6.1 FedScale default aggregation (FedAvg, 1/K: REFL aggregator.py:744)"}
     google_speech:
       model: {source: "ResNet34 ([paper] Table 1)", ours: "ResNet34_1D on raw waveform (fl_data.py:97)"}
@@ -157,9 +157,9 @@ feddance:
       optimizer: {v: sgd, src: "[paper] §6.1 FedScale defaults"}
       momentum: {v: 0.9, src: "[paper] §6.1 FedScale defaults (FedScale client = REFL core/client.py:71)"}
       weight_decay: {v: 0.0005, src: "[paper] §6.1 FedScale defaults (REFL core/client.py:71)"}
-      lr_decay: {v: none, src: "[paper] §6.1 FedScale defaults", source_v: {factor: 0.98, every: 10, min: 0.00005},
-                 why: "per-round decay spends its lr budget by ~2k rounds (~12 h); our 120 h legs run 10x the source rounds, so every sync stack stalled at 48-56% (FX-N163); off as for FedBuff / Felix, all sync stacks, both datasets (operator 10-26)",
-                 evidence: "cifar syn_0 24 h: FedAvg 48.2 -> 72.9%, REFL 48.6 -> 74.3% (experiments/N163_1026)"}
+      lr_decay: {v: {factor: 0.98, every: 20, min: 0.00005}, src: "[paper] §6.1 FedScale defaults", source_v: {factor: 0.98, every: 10, min: 0.00005},
+                 why: "source decays over its ~1,000-round budget (13% of base lr at the end for 0.98 / 10; Oort floors by ~600 rounds); our 120 h legs run ~1.7k rounds, so the schedule is scaled by 2x (every 20) to span the same budget, one rule for every sync stack (FX-N163); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%",
+                 evidence: "speech rounds: F49 12 h sync legs 160-186 rounds (~14 / h, FELIX_READINESS Decisions); re-derive on FB2 speech"}
       server: {v: {sort: fedavg, kwargs: {weighting: equal}}, src: "[paper] §6.1 FedScale default aggregation (FedAvg, 1/K: REFL aggregator.py:744)"}
 
 fedbuff:

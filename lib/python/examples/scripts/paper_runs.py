@@ -98,6 +98,8 @@ def leg_state(root, rs, ds, leg, seed, key, smoke):
         return "stale", "digest invalid", d
     if not (d.get("audit") or {}).get("ok"):
         return "stale", "config audit", d
+    if d["end"].get("diverged"):
+        return "stale", "diverged", d
     horizon_h = hp.FB1_RUNTIME_S["FB1S" if smoke else "FB1"] / 3600
     if not d["end"]["hit"] and d["end"]["h"] < horizon_h - 0.1:
         return "stale", "stopped early", d
@@ -172,6 +174,7 @@ set -uo pipefail
 cd "{os.path.abspath(os.path.join(HERE, '..'))}" || exit 1
 [ -z "$(git status --porcelain -uno)" ] || {{ echo "[paper_runs] tree dirty"; exit 1; }}
 PY="conda run --no-capture-output -n dg_flame python"
+[ "$(hostname -s)" = shepherd ] || [ -n "${{GPUS:-}}" ] || {{ echo "[paper_runs] off shepherd: ask the operator, then set GPUS"; exit 1; }}
 GPUS=${{GPUS:-{gpus}}}
 mkdir -p {" ".join(os.path.join(root, d) for d in DS.values())}
 git log -1 --format='%h %s' > {root}/code_state.txt
@@ -193,7 +196,7 @@ def main(argv=None):
     ap.add_argument("--seeds", nargs="+", type=int, default=[1])
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--prio", type=int, default=1)
-    ap.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
+    ap.add_argument("--gpus", default="0,1,2,3")  # shepherd 0-3; elsewhere the launch script demands GPUS (operator 10-26)
     ap.add_argument("--datasets", nargs="+", choices=tuple(DS), default=list(DS), help="launch only these (FX-N159)")
     ap.add_argument("--code-key", help="the manifest's code key (default: this tree's)")
     ap.add_argument("--json")

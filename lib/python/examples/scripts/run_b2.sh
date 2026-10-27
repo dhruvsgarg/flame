@@ -9,6 +9,7 @@ cd "$(dirname "$0")/.." || exit 1
 [ -n "${TAG:-}" ] || { echo "[B2] set TAG"; exit 1; }
 [ -z "$(git status --porcelain -uno)" ] || { echo "[B2] tree dirty"; exit 1; }
 DS=${DS:-google_speech}; CELL=${CELL:-smu}; ARMS=${ARMS:-sync_srv ctl_srv}; BLS=${BLS:-refl,feddance,fedavg,oort,fedbuff}
+[ "$(hostname -s)" = shepherd ] || { [ -n "${HGPUS:-}" ] && [ -n "${BGPUS:-}" ]; } || { echo "[B2] off shepherd: ask the operator, then set HGPUS and BGPUS"; exit 1; }
 HGPUS=${HGPUS:-0,1,2,3}; BGPUS=${BGPUS:-4,5,6,7}; UPD=${UPD:-0.05}
 P=$([ "$DS" = google_speech ] && echo gs_ || echo "")
 PHASES=$(for a in $ARMS; do echo -n "${P}F49_${CELL}_$a "; done)

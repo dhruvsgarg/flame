@@ -290,6 +290,12 @@ def final_targets() -> dict:
     return {k: v for k, v in json.load(open(SCRIPT_DIR.parent / "_metadata" / "targets.json")).items() if k != "src"}
 
 
+def trace_target(ds: str, trace: str) -> float:
+    """Reporting target of a dataset on a trace: `_metadata/trace_targets.json` override, else the final target."""
+    ov = json.load(open(SCRIPT_DIR.parent / "_metadata" / "trace_targets.json")).get(ds, {})
+    return min(final_targets()[ds], ov.get(trace, 1.0))
+
+
 F42_ARMS["l3b_ro_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep opt.agg_rate_conf.type=old", thp=_PRE)  # FX-N132: FedBuff's rate
 DETERMINISTIC = "trainerDeterministic=true"  # FX-D158: G0U/G0T pairs are equality legs (PL15); off, GPU numerics fork near-ties
 G0U_RUNTIME_S = {"cifar10": 900, "google_speech": 1800}  # speech: ~4 cycles of its 450s timeout (FX-D46)
@@ -609,11 +615,11 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         rs, smoke = FB2_SETS[FB2_TIERS[tier]], tier[3:] != FB2_TIERS[tier]
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
-        stop = f"targetAccuracy={(FB1S_TARGETS if smoke else final_targets())[ds]} targetWindow=5"
         out = []
         for cell in rs["cells"]:
             trace, stream = FB2_CELLS[cell]
             dsh = usage_hp(trace) if stream else full
+            stop = f"targetAccuracy={FB1S_TARGETS[ds] if smoke else trace_target(ds, trace)} targetWindow=5"
             base = replace(g3, runtime_s=FB1_RUNTIME_S["FB1S" if smoke else "FB1"], trace=trace, trace_offset_s="86400" if stream else "",
                            kind="sim_ev", trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S} {stop}",
                            **F48_SHAPE[ds])
@@ -628,10 +634,10 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
     if tier in FB1_RUNTIME_S:
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
-        stop = f"targetAccuracy={(FB1S_TARGETS if tier == 'FB1S' else final_targets())[ds]} targetWindow=5"
         out = []
         for cell, (trace, stream) in FB1_CELLS.items():
             dsh = usage_hp(trace) if stream else full
+            stop = f"targetAccuracy={FB1S_TARGETS[ds] if tier == 'FB1S' else trace_target(ds, trace)} targetWindow=5"
             base = replace(g3, runtime_s=FB1_RUNTIME_S[tier], trace=trace, trace_offset_s="86400" if stream else "", kind="sim_ev",
                            trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S} {stop}", **F48_SHAPE[ds])
             for arm, kw in FB1_ARMS.items():

@@ -718,13 +718,20 @@ def test_f43_tier_reference_cohort():
         assert all(p.runtime_s == pool.F43_RUNTIME_S[ds] and pool.F43_STOP in p.agg_hp for p in ph)
 
 
+def test_trace_target_lowers_mobiperf_cifar():
+    """Operator 10-26: cifar MobiPerf legs stop at 75% (trace_targets.json); other cells keep targets.json."""
+    assert pool.trace_target("cifar10", "mobiperf_3st") == 0.75
+    assert pool.trace_target("cifar10", "syn_0") == pool.final_targets()["cifar10"]
+    assert pool.trace_target("google_speech", "mobiperf_3st") == pool.final_targets()["google_speech"]
+
+
 def test_fb1_tier_runs_to_targets_json():
     """FX-N150: FB1 = every stack + `*` arms + the ladder x 4 cells, 120 h from +24 h on streams, stop at targets.json's target."""
     bls = ("felix", "fedbuff", "refl", "feddance", "fedavg", "oort", "oort_star")
     for ds in ("cifar10", "google_speech"):
         ph = pool.tier_phases("FB1", bls, ds)
         assert len(ph) == 4 * len(pool.FB1_ARMS)
-        assert all(p.runtime_s == 432000 and f"targetAccuracy={pool.final_targets()[ds]} targetWindow=5" in p.agg_hp for p in ph)
+        assert all(p.runtime_s == 432000 and f"targetAccuracy={pool.trace_target(ds, p.trace)} targetWindow=5" in p.agg_hp for p in ph)
         assert all(p.trace_offset_s == ("" if "_s0_" in p.pid else "86400") for p in ph)
         fx = [p for p in ph if p.pid.endswith("_fx")]
         assert len(fx) == 4 and all(pool.FELIX_FINAL in p.agg_hp for p in fx)
@@ -740,7 +747,7 @@ def test_fb2_run_sets_match_table_1():
         for k, n in want.items():
             ph = pool.tier_phases(f"FB2{k}", bls, ds)
             assert sum(len(p.baselines) for p in ph) == n, k
-            assert all(p.runtime_s == 432000 and f"targetAccuracy={pool.final_targets()[ds]} targetWindow=5" in p.agg_hp for p in ph)
+            assert all(p.runtime_s == 432000 and f"targetAccuracy={pool.trace_target(ds, p.trace)} targetWindow=5" in p.agg_hp for p in ph)
             assert all(p.trace_offset_s == ("" if "_s0_" in p.pid else "86400") for p in ph)
             smoke = pool.tier_phases(f"FB2{k}S", bls, ds)
             assert [p.pid.replace(f"FB2{k}S_", f"FB2{k}_") for p in smoke] == [p.pid for p in ph]

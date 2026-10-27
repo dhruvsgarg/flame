@@ -27,7 +27,7 @@ sys.path[:0] = [HERE, os.path.join(HERE, "..", "..")]
 SCHEMA = 1
 SOURCES = {  # series -> telemetry it is built from
     "acc": "agg_eval / agg_eval_raw (test accuracy), t = last agg_round vclock_now, gb = cumulative wire bytes, updates = cumulative",
-    "hit": "acc 5-eval mean (targetWindow) >= targetAccuracy (aggregator_config)", "end": "run_end / last agg_round, acc",
+    "hit": "acc 5-eval mean (targetWindow) >= report_target (config target, lowered by trace_targets.json)", "end": "run_end / last agg_round, acc",
     "updates": "agg_round (len staleness = updates), agg_timing (versions)",
     "staleness": "agg_round.staleness (all), withheld_delivery.staleness (held across a departure)",
     "slots": "trainer_round tasks, release by agg_round / abandon_timeout, departures from the trace, capacity selection.effective_c",
@@ -104,6 +104,7 @@ def aggregator_pass(run_dir):
     t, nbytes, send_sizes, msgs, n_upd = 0.0, 0, [], 0, 0
     upd_t, ver_t, stale, wstale, commits, aband = [], [], [], [], collections.defaultdict(list), collections.defaultdict(list)
     csel, cdkc, checkins, timing, run_end = [], [], 0, collections.defaultdict(list), None
+    nonfinite = 0
     wire_b, vclk, accre = re.compile(rb'"bytes": (\d+)'), re.compile(rb'"vclock_now": ([-0-9.e]+)'), re.compile(rb'"test-accuracy": ([-0-9.e]+)')
     for path in _files(run_dir, "aggregator_*"):
         with _open(path) as fh:
@@ -117,6 +118,8 @@ def aggregator_pass(run_dir):
                         send_sizes.append(b)
                 elif k == b"checkin":
                     checkins += 1
+                elif k == b"update_rejected":
+                    nonfinite += b"nonfinite" in line
                 elif k in (b"agg_eval", b"agg_eval_raw"):
                     a = float(accre.search(line).group(1))
                     (acc if k == b"agg_eval" else raw).append((t, a, nbytes, n_upd))
@@ -157,7 +160,7 @@ def aggregator_pass(run_dir):
                     run_end = float(e.get("vclock_now") or t)
     return dict(acc=acc, raw=raw, end=run_end if run_end is not None else t, gb=nbytes / 1e9, msgs=msgs, model_b=st.median(send_sizes) if send_sizes else 0,
                 upd_t=upd_t, ver_t=ver_t, stale=stale, wstale=wstale, commits=commits, aband=aband, csel=csel, cdkc=cdkc,
-                checkins=checkins, timing=timing, rounds=rounds)
+                checkins=checkins, timing=timing, rounds=rounds, nonfinite=nonfinite)
 
 
 def trainer_tasks(run_dir):
@@ -187,6 +190,15 @@ def binned(pts, bin_s=600.0):
     return [out[k] for k in sorted(out)]
 
 
+def report_target(cfg):
+    """The leg's reporting target: its config target, lowered to the trace's `_metadata/trace_targets.json` override."""
+    hp = cfg.get("hyperparameters", {})
+    tgt = hp.get("targetAccuracy")
+    ds = {"cifar-10": "cifar10", "google-speech": "google_speech"}.get(str(cfg.get("job", {}).get("name")))
+    ov = json.load(open(os.path.join(HERE, "..", "_metadata", "trace_targets.json"))).get(ds, {}).get(hp.get("availability_trace"))
+    return tgt if tgt is None or ov is None else min(float(tgt), ov)
+
+
 def digest(run_dir):
     cfg = json.load(open(os.path.join(run_dir, "aggregator_config.json")))
     hp = cfg.get("hyperparameters", {})
@@ -197,18 +209,19 @@ def digest(run_dir):
         any(len(r[2]) > 1 for r in A["rounds"].values())
     d = dict(schema=SCHEMA, run_dir=os.path.abspath(run_dir), sources=SOURCES, sync=sync,
              config=dict(job=cfg.get("job", {}).get("name"), selector=cfg.get("selector", {}).get("sort"),
-                         target=hp.get("targetAccuracy"), window=hp.get("targetWindow"), K=hp.get("aggGoal"),
+                         target=hp.get("targetAccuracy"), report_target=report_target(cfg), window=hp.get("targetWindow"), K=hp.get("aggGoal"),
                          c=(cfg.get("selector", {}).get("kwargs") or {}).get("c"), runtime_s=hp.get("max_experiment_runtime_s"),
                          trace_offset_s=hp.get("trace_offset_s"), knowledge=hp.get("avail_knowledge")))
     # accuracy, hit, end
     acc = A["acc"]
     d["acc"] = dict(t=[p[0] for p in acc], acc=[p[1] for p in acc], gb=[p[2] / 1e9 for p in acc], updates=[p[3] for p in acc],
                     raw=[p[1] for p in A["raw"]] if len(A["raw"]) == len(acc) else [])
-    w, tgt = int(hp.get("targetWindow") or 5), hp.get("targetAccuracy")
+    w, tgt = int(hp.get("targetWindow") or 5), report_target(cfg)
     sm = [st.mean(d["acc"]["acc"][max(0, i - w + 1):i + 1]) for i in range(len(acc))]
     i = next((i for i, a in enumerate(sm) if tgt is not None and i + 1 >= w and a >= float(tgt)), None)
     d["hit"] = None if i is None else dict(target=float(tgt), h=acc[i][0] / 3600, gb=acc[i][2] / 1e9, acc=sm[i], updates=acc[i][3])
-    d["end"] = dict(h=end_t / 3600, gb=A["gb"], acc_last=sm[-1] if sm else None, hit=i is not None)
+    d["end"] = dict(h=end_t / 3600, gb=A["gb"], acc_last=sm[-1] if sm else None, hit=i is not None,
+                    diverged=A["nonfinite"] >= 100)  # a diverged global model rejects every update as non-finite (FX-N166b)
     # updates / versions
     hours = max(1, int(end_t // 3600) + 1)
     per_h, vper_h = [0] * hours, [0] * hours
