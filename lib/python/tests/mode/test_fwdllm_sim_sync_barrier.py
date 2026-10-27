@@ -64,6 +64,8 @@ class _FakeBarrierAgg:
     availability gate OFF (pending_withheld / trainer_event_dict unset)."""
 
     _sync_sim_recv_first_k = _SyncBase._sync_sim_recv_first_k
+    _prepare_simulated_update = _SyncBase._prepare_simulated_update
+    _validate_simulated_quorum = _SyncBase._validate_simulated_quorum
     _advance_sim_clock = _SyncBase._advance_sim_clock
     _sim_recv_timeout_s = _SyncBase._sim_recv_timeout_s
     _sim_barrier_recv = _SyncBase._sim_barrier_recv

@@ -145,12 +145,8 @@ class PyTorchFMoWTrainer(SatelliteSimulation, Trainer):
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
 
         # Add satellite coordinates
-        coords_path = self.config.hyperparameters.satellite_coordinates_path
-        if (coords_path):
-             # Config paths are repo-root-relative; trainers don't run from the root.
-             if not os.path.isabs(coords_path):
-                 coords_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), *[".."] * 6, coords_path)
-             self.coords = np.load(coords_path)["coords"]
+        coords_path = Path(self.fmow_cfg.satellites.leo_dir) / "geodetic.npz"
+        self.coords = np.load(coords_path)["coords"]
 
         # Sim-only post-compute completion leg (§3i): real has ~1.6s after compute
         # (buffer-residence queue_wait + re-dispatch latency) that the sim sct omitted, so sim's
@@ -490,6 +486,10 @@ class PyTorchFMoWTrainer(SatelliteSimulation, Trainer):
     
     def train(self) -> None:
         logger.info(f"Entered train method for {self.trainer_id}")
+        if not self.satellite_assignment_delivered():
+            self.dataset_size = 0
+            self._stat_utility = self._local_accuracy = 0
+            return
         # Per-phase timing: time from train() entry to the start of the GPU
         # compute loop (setup/avail/loader-rebuild overhead). Reported in
         # [TRAIN_CYCLE] + telemetry so the breakdown is first-class.
@@ -650,7 +650,7 @@ class PyTorchFMoWTrainer(SatelliteSimulation, Trainer):
         # sees the real cycle time.
         _leg = self.sim_completion_leg_s if self.simulated else 0.0
         self._sim_completion_ts = (
-            (self._sim_send_ts if self._sim_send_ts is not None else self._sim_now())
+            self.satellite_training_start_s()
             + sim_round_duration
             + _leg
         )
@@ -895,7 +895,7 @@ class PyTorchFMoWTrainer(SatelliteSimulation, Trainer):
             _eval_dur = max(_real_eval_gpu_s, _modeled_eval_delay_s)
             self._sim_round_duration = _eval_dur
             self._sim_completion_ts = (
-                (self._sim_send_ts if self._sim_send_ts is not None else self._sim_now())
+                self.satellite_training_start_s()
                 + _eval_dur
             )
         elif self.training_delay_enabled:
