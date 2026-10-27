@@ -261,7 +261,7 @@ cell's reporting target (§0 "target per trace": cifar MobiPerf 75%). Sync basel
 table). Bench
 (B2-validated per dataset: cifar ✅, speech = FX-N149). **Deployable** = FedBuff, Oort (check-in), REFL (Prophet forecast),
 FedDance (check-in Poisson forecast), FedAvg; **oracle** = FedBuff*, Oort*, REFL*, FedDance*, FedAvg* (the trace's eligible set at
-selection); Felix = `fx`. **Ablation cells** = {cifar, speech} × {syn_50, MobiPerf}.
+selection); Felix = `fx`. **Ablation cells** = cifar × {syn_50, MobiPerf} (operator 10-27: ablations on cifar only; speech ablations priority 3, appendix if run).
 
 ### Table 2: figures and tables → claims → runs
 
@@ -302,13 +302,13 @@ selection); Felix = `fx`. **Ablation cells** = {cifar, speech} × {syn_50, MobiP
 | run set | arms | cells | legs / seed | needs before launch | priority |
 |---|---|---|---|---|---|
 | End-to-end | `fx`, FedBuff, Oort, REFL, FedDance, FedAvg, FedBuff*, Oort*, REFL*, FedDance*, FedAvg* | 2 datasets × 4 traces | 88 | FedAvg* arm + 2 h smoke; syn_20 cell; digest + plots on a smoke | 1 |
-| Ladder | `b1` (+ Notify), `uo_o` (+ Select), `fn` (+ Agg, c 60) | ablation cells | 12 | — (arms exist) | 2 |
-| Swap: concurrency | small fixed c (c 30), c ∝ eligible (`ca`) | ablation cells | 8 | port to `fx` base | 2 |
-| Swap: availability | `fx` + check-in (no eviction), `fx` + oracle; forecast if cheap | ablation cells | 8-12 | arms on `fx` (forecast = new code ❓) | 2 |
-| Swap: aggregation | `fx` + 1/√(1+τ), `fx` + 1/(1+τ) | ablation cells | 8 | arms on `fx` | 3 |
-| Swap: selection | `fx` + uniform, `fx` + Oort's selector | ablation cells | 8 | arms on `fx` | 3 |
-| Rejected ideas | `fx` + UCB, `fx` + 2 local epochs | ablation cells | 8 | arms on `fx` | 3 |
-| Robustness: silent | `fx` at p 1 / 5 / 10% silent departures (p 0 = End-to-end) | ablation cells | 12 | new code (F42e) + smoke | 3 |
+| Ladder | `b1` (+ Notify), `uo_o` (+ Select), `fn` (+ Agg, c 60) | ablation cells | 6 | — (arms exist) | 2 (speech: 3) |
+| Swap: concurrency | small fixed c (c 30), c ∝ eligible (`ca`) | ablation cells | 4 | port to `fx` base | 2 (speech: 3) |
+| Swap: availability | `fx` + check-in (no eviction), `fx` + oracle; forecast if cheap | ablation cells | 4-6 | arms on `fx` (forecast = new code ❓) | 2 (speech: 3) |
+| Swap: aggregation | `fx` + 1/√(1+τ), `fx` + 1/(1+τ) | ablation cells | 4 | arms on `fx` | 3 |
+| Swap: selection | `fx` + uniform, `fx` + Oort's selector | ablation cells | 4 | arms on `fx` | 3 |
+| Rejected ideas | `fx` + UCB, `fx` + 2 local epochs | ablation cells | 4 | arms on `fx` | 3 |
+| Robustness: silent | `fx` at p 1 / 5 / 10% silent departures (p 0 = End-to-end) | ablation cells | 6 | new code (F42e) + smoke | 3 |
 | End-to-end static | `fx` + 5 deployable, static shards | syn_0 × 2 datasets | 12 | — | 4 (appendix) |
 | Seeds 2-3 | End-to-end + Ladder, both datasets | as seed 1 | 100 / seed | every seed-1 run of priorities 1-4 | 5 |
 | Robustness: lost · Sensitivity | — | — | — | after first version | 6 |
@@ -317,7 +317,8 @@ selection); Felix = `fx`. **Ablation cells** = {cifar, speech} × {syn_50, MobiP
 (operator 10-25 late) = priorities 1-2, 116 legs.** Speech is the bottleneck (1 leg / GPU, async 10-13 h for 120 h):
 measure 2 legs / GPU on the speech smoke; use jayne when free. **Run order (operator 10-27):** seed 1 of every End-to-end cell
 (both datasets) first, then seed 1 of priorities 2 → 3 → 4, then seeds 2-3; within a priority, cifar ahead of speech. Status 10-27:
-cifar seed 1 priorities 1-3 done; speech seed 1 End-to-end + priority 2 next (FELIX_READINESS node plan).
+cifar seed 1 priorities 1-3 done; speech seed 1 End-to-end (44 legs) running, one End-to-end plot first; everything else waits
+(FELIX_READINESS node plan).
 ## Later sections (claims they must back; outline after the front matter is final)
 
 - Theory: inherit FedBuff's rate under bounded staleness; state where held uploads break the bound (P17 slogan TBD).

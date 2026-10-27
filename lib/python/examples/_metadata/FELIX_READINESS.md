@@ -52,51 +52,49 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
 | 10-27 04:05 → 06:47 | jayne 2-7 | B2 cifar run 3 | 3 / 5 rows PASS | 2 h 40 | step 3 |
 | 10-27 10:52 → ~15:15 | shepherd 0-3 | 2d sync rerun, every 100 (tmux `n163h`) | 22 / 32 done at 13:00 | ~4 h 20 | operator 10-27 |
 | 10-27 10:54 → 12:04 | jayne 2-7 | B2 cifar oort (RT 12 h) + fedbuff reruns | fedbuff PASS, oort upd +5.3% | 1 h 10 | ✅ recorded |
-| now → ~15:15 | jayne 2-7 | 3 · B2 speech sync (4 rows) | harness 4 + bench 2 | ~1.75 h | gates speech sync legs |
-| now → ~10-28 23:00 | shepherd 0-3 | 4 · speech pool S (beside 2d's last 10; async needs no B2) | 11 · 1 | ~33 h | Felix `smu` first (sets the target) |
-| ~15:15 → ~10-29 00:30 | jayne 2-7 | 4 · speech pool J (after B2; no `smu` legs) | 32 · 1 | ~33 h | E2E first |
-| ~10-28 01:00 → ~10-29 morning | jayne 2-7 | 4 · speech pool M: the other 15 `smu` legs, at the new target | 15 · 1 | as GPUs free | after the target commit |
-| speech tail | freed GPUs | speech priority 3 (seed 1), then cifar / speech seeds 2-3 | — | — | Run order rule |
-| when freed | jayne 0-1 | speech legs from S's tail (not yet started) | · 1 | — | only if Aish's pool (since 11:29) ends; ask |
+| now → ~10-28 12:00 | shepherd 0-3 | 4 · speech pool S: `fx` × 4 cells (`smu` sets the target), then FedBuff × 3 syn cells | 7 · 1 | ~22 h | E2E only |
+| now → ~10-28 13:00 | jayne 2-7 | 4 · speech pool J: every non-`smu` FedBuff\* + sync leg | 27 · 1 | ~23 h | E2E only |
+| ~10-28 01:00 → ~10-28 evening | jayne 2-7 | 4 · speech pool M: the other 10 `smu` legs, at the new target | 10 · 1 | as GPUs free | after the target commit |
+| after speech E2E | jayne 2-7 | 3 · B2 speech sync (4 rows) | harness 4 + bench 2 | ~1.75 h | after, as cifar did (operator 10-27) |
+| then | freed GPUs | Run order rule: seeds 2-3, speech ablations (priority 3) | — | — | — |
+| when freed | jayne 0-1 | legs from J's tail (not yet started) | · 1 | — | only if Aish's pool (since 11:29) ends; ask |
 
 Two pools must never share a GPU with a harness leg (FX-T91 OOM); bench pools may (1 speech + 4 cifar = 34 GB, FX-N161).
-**Run order rule (operator 10-27; standing):** seed 1 of every End-to-end cell (both datasets) first, then seed 1 of priorities 2 →
-3 → 4, then seeds 2-3; so speech seed 1 goes ahead of any cifar seed 2-3. **Sequencing (operator 10-27 13:00):** no idle GPUs, no
-reruns, running past 10 h is fine: one queue per node with every remaining leg in that order (longest first within a priority), so a
-GPU takes the next leg the moment one ends; a leg starts only after what fixes its config (speech sync: B2 speech). No cifar seeds
-beside speech legs (they would slow seed 1). Speech priority ≤ 2 = 26 async × ~11 h + 32 sync × ~4 h ≈ 414 GPU-h on 10 GPUs:
-speech End-to-end done ~10-28 evening, priority 2 ~10-29 morning.
+**Run order rule (operator 10-27; standing):** seed 1 of every End-to-end cell (both datasets; every final sync / async config) first,
+for the one End-to-end plot of numbers and gains; everything else waits. Ablations (Ladder, swaps, rejected ideas) are cifar-only in
+the paper (cifar seed 1 done); speech ablations moved to priority 3. Then seed 1 of priorities 2 → 3 → 4, then seeds 2-3.
+**Sequencing (operator 10-27 13:00):** no idle GPUs, no reruns, running past 10 h is fine: one queue per node, longest legs first, so
+a GPU takes the next leg the moment one ends. No cifar seeds beside speech legs (they would slow seed 1). B2 speech runs after the
+speech E2E legs (operator 10-27: cifar ran B2 after too); a clear B2 miss means rerunning that baseline's speech legs. Speech E2E =
+12 async × ~11 h + 32 sync × ~4 h ≈ 260 GPU-h on 10 GPUs: done ~10-28 evening.
 
 **Commands (10-27; tmux, from `/home/dgarg39/flame/lib/python/examples`, `R=/coc/scratch/dgarg/mlsys27_felix_runs_20261026`).**
-Split scripts are pre-built (`$R/split_launch.py` from `$R/launch_p2_speech.sh`): S 11 + J 32 now, M 15 after the speech MobiPerf
-target = all 58 speech priority ≤ 2 legs, no overlap. Every speech pool runs `--gpu-reserve-gb 10`, so pools sharing a node never
-stack two speech legs on one GPU (placement reads real free memory). Scripts refuse a dirty tree.
-*Why the split (operator 10-27):* speech `smu` 88% is out of reach (F49 Felix 52.8% at 12 h; cifar `smu` topped at 77.8% vs 80%), so
-it gets a per-trace target like cifar's 75% (Decisions "Reporting target per trace"). A leg's target is fixed in its YAML when its
-pool starts, so the Felix `smu` legs that set it run first (`fx`, `fx_ca`, `fx_cfix`; cifar's best was `fx_ca`) and every other `smu`
-leg (FedBuff, sync, Ladder, availability swap) waits for pool M to stop at the new target instead of running 120 h.
+Split scripts are pre-built (`$R/split_launch.py` from `$R/launch_p2_speech.sh`): S 7 + J 27 now, M 10 after the speech MobiPerf
+target = all 44 speech End-to-end legs, no overlap. Every speech pool runs `--gpu-reserve-gb 10`, so pools sharing a node never stack
+two speech legs on one GPU (placement reads real free memory; S's first legs wait for 2d's last cifar legs to free memory).
+*Why M waits:* speech `smu` 88% is out of reach (F49 Felix 52.8% at 12 h; cifar `smu` topped at 77.8% vs 80%), so it gets a per-trace
+target like cifar's 75% (Decisions "Reporting target per trace"). A leg's target is fixed in its YAML when its pool starts, so Felix
+`smu` (in S's first wave) sets it, and the other `smu` legs start in pool M at that target instead of running 120 h.
 
 | # | node · when | command | est. wall |
 |---|---|---|---|
-| 1 | jayne · now | `tmux new -s b2s` → `HGPUS=2,3,4,5 BGPUS=6,7 DS=google_speech TAG=1027_s ARMS=sync_srv BLS=refl,feddance,fedavg,oort bash scripts/run_b2.sh` | ~1.75 h |
-| 2 | shepherd · now (beside 2d) | `tmux new -s sp_S` → `bash $R/launch_p2_speech_S.sh` (log `$R/speech_s1_S.log`). Wave 1: `smu` `fx`, `fx_ca`, `fx_cfix` + `s50u` `fx`; then `fx` / FedBuff on `s0u`, `s20u`, FedBuff `s50u`, `s50u` swaps | ~33 h (3 waves of ~11 h; wave 1 ends ~10-28 01:00) |
-| 3 | jayne · after 1 passes | read `experiments/B2_google_speech_1027_s/bench_validate.md`; then `tmux new -s sp_J` → `GPUS=2,3,4,5,6,7 bash $R/launch_p2_speech_J.sh` (log `$R/speech_s1_J.log`) | ~33 h (3 FedBuff\* ~11 h ∥ 24 sync ~4 h → 5 `s50u` Ladder / swap ~11 h) |
-| 3a | any · when S wave 1 ends (~10-28 01:00) | speech MobiPerf target: peak 5-eval mean of the 3 Felix `smu` legs (`leg_digest`), rounded down to 5 pp → add `"google_speech": {"mobiperf_3st": X}` to `_metadata/trace_targets.json`, commit, push, `git pull` on both nodes; re-digest the finished `smu` legs (hit = X). The key change marks S / J legs `stale: code key` (as cifar's 75%): accept | ~15 min |
-| 3b | jayne · after 3a | pool M (block below; the split must print 15 legs) | 10 sync ~4 h + 5 async ≤ 11 h, on GPUs as J frees them |
-| 4 | either · speech prio 3 seed 1, when a pool has no unstarted legs | `$PY scripts/paper_runs.py launch --prio 3 --datasets google_speech --root $R`, then `python3 $R/split_launch.py $R/launch_p3_speech.sh $R/launch_p3_speech_<node>.sh <node> <gpus> '^gs_FB2(SWG\|SWS\|REJ)_'` and run it (12 legs; silent departures need code, FX-N155) | ~11 h / wave of async legs |
-| 5 | freed GPUs · after speech seed 1 | `$PY scripts/paper_runs.py launch --prio 2 --seeds 2 3 --datasets cifar10 --gpus <gpus> --root $R && bash $R/launch_p2_cifar.sh` (sync at every 100) | ~1 day (cifar 4 / GPU) |
+| 1 | shepherd · now (beside 2d) | `tmux new -s sp_S` → `bash $R/launch_p1_speech_S.sh` (log `$R/speech_s1_S.log`) | ~22 h (wave 1: 4 `fx`, ~11 h; wave 2: 3 FedBuff, ~11 h) |
+| 2 | jayne · now | `tmux new -s sp_J` → `GPUS=2,3,4,5,6,7 bash $R/launch_p1_speech_J.sh` (log `$R/speech_s1_J.log`) | ~23 h (3 FedBuff\* ~11 h ∥ 24 sync ~4 h each) |
+| 3 | any · when `smu` `fx` ends (~10-28 01:00) | speech MobiPerf target: peak 5-eval mean of `smu` `fx` (`leg_digest`), rounded down to 5 pp → add `"google_speech": {"mobiperf_3st": X}` to `_metadata/trace_targets.json`, commit, push, `git pull` on both nodes; re-digest `smu` `fx` (hit = X). The key change marks S / J legs `stale: code key` (as cifar's 75%): accept | ~15 min |
+| 4 | jayne · after 3 | pool M (block below; the split must print 10 legs) | ≤ 11 h (2 FedBuff / FedBuff\* + 8 sync), on GPUs as J frees them |
+| 5 | jayne 2-7 · after speech E2E | `tmux new -s b2s` → `HGPUS=2,3,4,5 BGPUS=6,7 DS=google_speech TAG=1027_s ARMS=sync_srv BLS=refl,feddance,fedavg,oort bash scripts/run_b2.sh` | ~1.75 h |
+| 6 | freed GPUs · after 5 | Run order rule: `$PY scripts/paper_runs.py launch --prio 2 --seeds 2 3 --datasets cifar10 --gpus <gpus> --root $R && bash $R/launch_p2_cifar.sh` (sync at every 100); speech priority 3 later | ~1 day (cifar 4 / GPU) |
 
-Command 3b (pool M):
+Command 4 (pool M):
 ```
 $PY scripts/paper_runs.py launch --prio 2 --datasets google_speech --root $R   # rewrites the script only; pool M's YAMLs take X when it starts
-python3 $R/split_launch.py $R/launch_p2_speech.sh $R/launch_p2_speech_M.sh M 2,3,4,5,6,7 '^gs_FB2(E2E|LAD|SWA)_smu_(?!fx )' \
+python3 $R/split_launch.py $R/launch_p2_speech.sh $R/launch_p1_speech_M.sh M 2,3,4,5,6,7 '^gs_FB2E2E_smu_(?!fx )' \
     '^gs_FB2E2E_smu_(ctl_srv|fbstar_srv) ' '--gpu-reserve-gb 10'
-tmux new -s sp_M   # then: GPUS=2,3,4,5,6,7 bash $R/launch_p2_speech_M.sh
+tmux new -s sp_M   # then: GPUS=2,3,4,5,6,7 bash $R/launch_p1_speech_M.sh
 ```
 
 *Never run a full `launch_p*_<dataset>.sh` while that dataset's pools run: running legs count as missing and would run twice;
-split off only legs no pool holds.* A B2 row that clearly fails: remove its legs from `launch_p2_speech_J.sh` (rerun `split_launch.py`
-with a narrower KEEP) before step 3. Checks while running: 3c.2-3.4 on the first speech sync legs (~12 h in).
+split off only legs no pool holds.* Checks while running: 3c.2-3.4 on the first speech sync legs (~12 h in).
 
 **A · Paper first plots (operator 10-25 late).** Runbook; tick each step here with its pool path when it passes.
 1. ✅ **Gates (10-26, `6dbd6e535`).** EV24 5 / 5 (EV16 0, EV24 0); cifar smoke 30 / 30 + figures render; speech smoke 28 / 30 (step 3b).
@@ -142,10 +140,9 @@ with a narrower KEEP) before step 3. Checks while running: 3c.2-3.4 on the first
    - *Felix in B2:* not in runs 1-5 (`fx` is not an F49 arm; `ctl_srv` × fedbuff = FedBuff). Felix's bench ⇄ harness match is
      FX-N149 (speech `fx` + FedBuff, 10-25) and cifar B2 ✅; the later Felix fixes (N157, N160) change both sides and passed EV24, so no
      rerun. Optional (+~1 h): add `fn_chr` to the speech B2 `ARMS`.
-   - **Speech B2 (`1027_s`, jayne 2-7, now; ~1.75 h):** sync rows only (Felix / FedBuff green, FX-N149), 12 h vclock, cell `smu`.
-     `HGPUS=2,3,4,5 BGPUS=6,7 DS=google_speech TAG=1027_s ARMS=sync_srv BLS=refl,feddance,fedavg,oort bash scripts/run_b2.sh`
-     *Pass:* 4 rows within bars. A marginal miss (like cifar oort) → accept and record; a clear miss → drop that baseline from pool J
-     until rooted. Also read rounds / h per baseline from the digests (3c.3).
+   - **Speech B2 (`1027_s`): after the speech E2E legs (operator 10-27; command 5).** Sync rows only (Felix / FedBuff green,
+     FX-N149), 12 h vclock, cell `smu`. A marginal miss (like cifar oort) → accept and record; a clear miss → root it and rerun that
+     baseline's speech legs. Also read rounds / h per baseline from the digests (3c.3).
 3b. [ ] **Speech smoke re-run: skipped (proposal 10-27; operator to confirm).** 10-26 smoke passed 28 / 30 (2 OOMs,
    fixed FX-N161); since then only the sync lr overlay changed, which B2 speech exercises. Was:
    `R2=$R/FB2S_speech; $PY scripts/paper_runs.py launch --smoke --prio 4 --datasets google_speech --gpus 0,1,2,3 --root $R2 && bash
@@ -178,19 +175,17 @@ with a narrower KEEP) before step 3. Checks while running: 3c.2-3.4 on the first
       last round 6-20% of base (source 13%), not at the floor early.
    5. *Fairness:* oracle `*` arms run about the same rounds / h as their non-oracle arm; a big gap means a stall or divergence, not speed.
    6. Then the speech run (step 4); after the first ~12 h, re-run checks 2-3 on the live legs before trusting the rest.
-4. [ ] **Speech run (after step 3):** `$PY scripts/paper_runs.py launch --prio 2 --datasets google_speech && bash <root>/launch_p2_speech.sh`
+4. [ ] **Speech run (B2 after, operator 10-27):** full set `$PY scripts/paper_runs.py launch --prio 2 --datasets google_speech && bash <root>/launch_p2_speech.sh`
    (~26 async × ~11 h + 32 sync × ~4 h on 8 GPUs ≈ 2-2.5 days; less with target hits).
-   *Split:* commands 2-3 (node plan); `--first "^gs_FB2E2E_\S+_(fx|ctl_srv|fbstar_srv) "` puts E2E async first, the stable sort
-   keeps the rest in tier order (E2E → LAD → SWC → SWA); the generated default also lifted ladder / sync legs.
-   - Pool S (shepherd 0-3, now; 11): Felix `smu` (`fx`, `fx_ca`, `fx_cfix`) first, then `fx` / FedBuff on the syn cells + `s50u` swaps.
-   - Pool J (jayne 2-7, after B2; 32): every non-`smu` FedBuff\* / sync / Ladder / availability-swap leg. B2 rows that clearly fail
-     are left out until rooted.
-   - Pool M (jayne, after the speech MobiPerf target; 15): every other `smu` leg (commands 3a-3b).
+   *Now (operator 10-27): End-to-end only (44 legs), commands 1-4; Ladder / swaps for speech moved to priority 3.*
+   - Pool S (shepherd 0-3, 7): `fx` × 4 cells first, then FedBuff × 3 syn cells.
+   - Pool J (jayne 2-7, 27): every non-`smu` FedBuff\* and sync leg, FedBuff\* first.
+   - Pool M (jayne, after the speech MobiPerf target; 10): FedBuff, FedBuff\* and the 8 sync legs on `smu`.
    *Cifar seeds 2-3:* after speech seed 1 (Run order rule); sync at every 100 (2d).
 5. [ ] **Tables as data lands:** `paper_runs.py status` + `paper_plots.py` (finished legs only); fill the outline's ⚠ numbers.
    GPUs free for the operator only in the speech tail (< 8 legs left).
-6. Then (FX-N131, Run order rule): speech priority 3 seed 1 (swaps: aggregation, selection; rejected ideas; silent departures
-   FX-N155) → static (appendix) → seeds 2-3 of End-to-end and Ladder (cifar and speech) on GPUs the speech tail frees.
+6. Then (FX-N131, Run order rule): seeds 2-3 of End-to-end and Ladder (cifar and speech) → speech ablations (priority 3: Ladder,
+   swaps, rejected ideas) → static (appendix); silent departures (FX-N155) need code first.
 
 Facts for the runbook: smoke = 2 h vclock, stops at `FB1S_TARGETS` (cifar 35%, speech 15%); paper legs stop at the 5-eval mean ≥
 target (`targetAccuracy`, `targetWindow` 5; every stack, sync and async) or at 120 h vclock (6-day trace, legs start +24 h so each
@@ -294,7 +289,7 @@ Cifar bench (10-26): Felix ~6-7 min wall per vclock hour solo (12 h leg 72 min, 
 **Now (10-27 11:00):** cifar priorities 1-3 70 / 70 + 2c (32 sync legs, every 120), 0 diverged. 2d (every 100) launching on shepherd;
 B2 cifar 4 / 5 PASS + oort marginal (upd +5.3% vs 5%); speech B2 next (jayne 2-7). **Open reds:** REFL / FedDance beat Felix on `smu` by 16-21 h at ~½ the GB (FX-N166);
 swaps beat `fx` on `s50u` (FX-N165); FedDance\* ✗ 66-78%; Oort family ✗ 69-76% (6-11 rounds / h); End-to-end cifar `stale: code key`.
-**Next:** B2 speech (jayne 2-7) ∥ speech pool S (shepherd, beside 2d) now; ~15:15 2d pick + pool J; seeds 2-3 after speech seed 1.
+**Next:** speech E2E pools S (shepherd) ∥ J (jayne) now; ~10-28 01:00 speech MobiPerf target + pool M; then B2 speech, seeds 2-3.
 
 **Latest result: FB2 cifar End-to-end (10-27, seed 1, 80% target, `smu` 75%, root `/coc/scratch/dgarg/mlsys27_felix_runs_20261026`).**
 h · GB to target, else ✗ final % at 120 h. Sync stacks = **2c, every 120** (code `ccb25f6fc`; 2d's every-100 table goes beside it); `*` = oracle arm.
