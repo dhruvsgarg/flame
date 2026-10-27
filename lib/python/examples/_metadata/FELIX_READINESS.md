@@ -49,7 +49,7 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
 
 | when | node · GPUs | what | legs · per GPU | wall | why now |
 |---|---|---|---|---|---|
-| 21:2x → ~01:30 | jayne 4-7 | 2b B: REFL, FedDance, Oort, Oort\*, REFL\*, FedDance\* (`launch_n163b_rest.sh`, log `$R/cifar_n163b_rest.log`) | 24 · 3 | ~4 h | 2a: decay alone stops divergence |
+| restart ~22:10 → ~00:30 | jayne 4-7 | 2b B: REFL, FedDance, Oort, Oort\*, REFL\*, FedDance\* (`launch_n163b_rest.sh`, log `$R/cifar_n163b_rest.log`) | 24 · 6 | ~2-2.5 h | 2a fix; FedDance\* every 300 needs a restart |
 | 21:30 → ~00:30 | shepherd 0,1 | 2b A: FedAvg gate (`launch_n163b_gate.sh`) | 4 · 2 | 1.5-3 h | FedAvg diverged 4 / 4 decay-off; live check of 2a |
 | 21:30 → ~00:00 | shepherd 2,3 | 2b C: FedAvg\* (`launch_n163b_favstar.sh`) | 4 · 2 | 1-2 h | run beside the gate; gate fail costs only these 4 legs again |
 | after A + C (~00:30) | shepherd 0-3 | 3b speech smoke | 30 · 1 | ~1.5 h | pipeline gate for speech; needs 4 free GPUs |
@@ -110,8 +110,14 @@ was only because GPU 3 then held a ladder leg.
      ```
      *Pass* = no FedAvg leg `diverged` and each hits 80% or runs to 120 h (`paper_runs.py status --root $R --datasets cifar10`).
      *Fail* = reopen 2a (looser clip from measured grad norms; 1.0 is rejected), then rerun the family (A, C, REFL / FedDance of B).
-   - **B · Jayne GPUs 4-7, running (started ~21:20):** the 24 non-FedAvg legs at 3 / GPU, ~4 h → ~01:30. Watch
-     `tail $R/cifar_n163b_rest.log`. Redone only if A fails.
+   - **B · Jayne GPUs 4-7: restart needed (10-26 22:00).** The 21:20 pool runs FedDance\* at every 200 (now 300, Decisions decay
+     Procedure; C20: those legs are invalid) and caps 3 / GPU, so 12 legs wait for a ~23:30 second wave. Jayne has room (128 cores,
+     load ~29, 368 GB RAM free, 12 / 46 GB per GPU): stop the pool (Ctrl+C in tmux `n163b_rest`, ~40 min of 12 legs lost) and rerun
+     all 24 at 6 / GPU on the new code, ~2-2.5 h → ~00:30:
+     ```
+     cd /home/dgarg39/flame/lib/python/examples && sed -i 's/--per-gpu 3/--per-gpu 6/' $R/launch_n163b_rest.sh && GPUS=4,5,6,7 bash $R/launch_n163b_rest.sh
+     ```
+     Then check one FedDance\* leg's `debug_run.yaml`: `lrDecayEpoch: 300` (others 200; Oort 5). Redone only if A fails.
    - **C · Shepherd GPUs 2,3, running beside A (started 21:30):** FedAvg\* ×4 at 2 / GPU, ~1-2 h. Redone (1-2 h) if A fails.
      ```
      cd /home/dgarg39/flame/lib/python/examples && GPUS=2,3 bash /coc/scratch/dgarg/mlsys27_felix_runs_20261026/launch_n163b_favstar.sh
@@ -408,9 +414,16 @@ GB on syn cells (FX-N166). Hits stop sooner than 120 h; ⚠ = FedAvg leg stopped
   decay / decay / clip; grep live legs for `NONFINITE_REJECT` and 0-rounds / h stretches, which make a leg look slow); (2) rounds in
   120 h per baseline × cell = digest `updates.versions` / `end.h` × 120, stable legs only; (3) per-leg `every` = source `every` ×
   rounds / 1,000 (lr then ends at the source's end fraction, 13% for FedScale); (4) one value per family when the per-leg values sit
-  within ~±25% of it, else split the family; (5) after the run, re-check (2) on its digests. Cifar result: REFL, FedDance, FedAvg
-  and their `*` arms per-leg 167-273 → **all every 200** (lr ends at 6-19%); Oort / Oort\* 0.8-1.4k rounds → every 5 (source).
-  Clip 1.0 rejected for the family (in-process: 55-61% vs 70%).
+  within ~±25% of it, else split the family; (5) after the run, re-check (2) on its digests. Cifar result: REFL, REFL\*,
+  FedDance, FedAvg, FedAvg\* per-leg 167-273 → **every 200** (lr ends at 6-19%); **FedDance\* 27-38k rounds (oracle avoids departing
+  clients, fewer timeouts; read off the unscaled-decay legs, which never diverged) → every 300** (`harness_pool` FB2 `fdstar_srv`,
+  cifar only); Oort / Oort\* 0.8-1.4k → every 5 (source). Same value for oracle and non-oracle arms is preferred, not required: it
+  held by coincidence elsewhere. Clip 1.0 rejected for the family (in-process: 55-61% vs 70%).
+  *Why decay is required, not tuning (operator 10-26):* a config is deployable only if it never diverges; one that diverges on
+  some runs and not others is not. Constant lr 0.1 diverged in 10 / 32 cifar legs (FedAvg 4 / 4, FedAvg\* 2, FedDance\* 3, REFL\*
+  1; in-process NaN at 14.75k rounds), so the FedScale-family sync baselines cannot run without lr decay, and the decay-off
+  (afternoon) results are invalid, including the legs that hit 80% before diverging (their speed came from an lr that is not stable over a
+  full run). The source decay unscaled is not usable either (stalls at 47-56%, no divergence); the scaled decay is stable (3 / 3 seeds).
 - **Traces and overruns (10-14):** 3-state syn traces only (FX-D166); ≤ 1-2% of tasks may overrun D, else fewer trainers per GPU.
 - **Speed levers (10-14):** speech bf16, balanced GPU placement, one n per dataset for all baselines (K / c: Cohort table).
 - **Degenerate cells (10-18):** a baseline below target in a short leg is round-bound if loss falls and accuracy rises.

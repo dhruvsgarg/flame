@@ -146,7 +146,7 @@ feddance:
       momentum: {v: 0.9, src: "[paper] §6.1 FedScale defaults (FedScale client = REFL core/client.py:71)"}
       weight_decay: {v: 0.0005, src: "[paper] §6.1 FedScale defaults (REFL core/client.py:71)"}
       lr_decay: {v: {factor: 0.98, every: 200, min: 0.00005}, src: "[paper] §6.1 FedScale defaults (REFL argParser.py:115,119,120)", source_v: {factor: 0.98, every: 10, min: 0.00005},
-                 why: "source decays over its ~1,000-round budget (13% of base lr at the end for 0.98 / 10; Oort floors by ~600 rounds); our 120 h legs run ~18-23k rounds, so the schedule is scaled by 20x (every 200) to span the same budget, one rule for every sync stack (FX-N163); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%",
+                 why: "source decays over its ~1,000-round budget (13% of base lr at the end for 0.98 / 10; Oort floors by ~600 rounds); our 120 h legs run ~18-23k rounds, so the schedule is scaled by 20x (every 200) to span the same budget, one rule for every sync stack (FX-N163); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%; FedDance* (oracle) runs 27-38k cifar rounds -> every 300 (harness_pool FB2 fdstar_srv)",
                  evidence: "cifar syn_0 24 h, unscaled decay vs none: FedAvg 48.2 -> 72.9%, REFL 48.6 -> 74.3% (experiments/N163_1026); rounds in 120 h from the decay-off rerun digests (FB2E2E sync legs, cifar)"}
       server: {v: {sort: fedavg, kwargs: {weighting: equal}}, src: "[paper] §6.1 FedScale default aggregation (FedAvg, 1/K: REFL aggregator.py:744)"}
     google_speech:

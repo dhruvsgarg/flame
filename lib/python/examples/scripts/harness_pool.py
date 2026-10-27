@@ -267,7 +267,9 @@ _fxa = lambda add, thp="", **kw: dict(hp=f"{FELIX_FINAL} {add}", thp=f"{_B1T} {t
 _DEPLOY = ("refl", "feddance", "fedavg", "oort")
 FB2_SETS = {
     "E2E": dict(cells=("s0u", "s20u", "s50u", "smu"), prio=1, arms={
-        **{a: FB1_ARMS[a] for a in ("fx", "ctl_srv", "sync_srv", "rstar_srv", "fdstar_srv")},
+        **{a: FB1_ARMS[a] for a in ("fx", "ctl_srv", "sync_srv", "rstar_srv")},
+        # FX-N163 decay rule per leg: FedDance* runs 27-38k cifar rounds in 120 h (FedDance 17-22k) -> every 300, not 200
+        "fdstar_srv": dict(FB1_ARMS["fdstar_srv"], thp={"cifar10": "lrDecayEpoch=300"}),
         "fbstar_srv": F42_ARMS["fbstar_srv"], "favstar_srv": dict(bls=("fedavg",), hp="avail_knowledge=oracle serveEma=sweep", agg_goal=None)}),
     "LAD": dict(cells=FB2_ABL, prio=2, arms={a: FB1_ARMS[a] for a in ("b1", "uo_o", "fn")}),
     "SWC": dict(cells=FB2_ABL, prio=2, arms={"fx_cfix": dict(hp=_FN, thp=_B1T, c={"cifar10": 30, "google_speech": 10}),  # ½ FedBuff's c
@@ -628,8 +630,8 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                 if bls:
                     out.append(replace(base, pid=f"{DS_TAG[ds]}{tier}_{cell}_{arm}", baselines=bls,
                                        agg_hp=f"{base.agg_hp} {kw.get('hp', '')}".strip(),
-                                       trainer_hp=f"{base.trainer_hp} {kw.get('thp', '')}".strip(),
-                                       **{k: kw[k][ds] if isinstance(kw[k], dict) else kw[k] for k in ("c", "agg_goal") if k in kw}))
+                                       **{k: kw[k][ds] if isinstance(kw[k], dict) else kw[k] for k in ("c", "agg_goal") if k in kw},
+                                       trainer_hp=f"{base.trainer_hp} {kw['thp'].get(ds, '') if isinstance(kw.get('thp'), dict) else kw.get('thp', '')}".strip()))
         return out
     if tier in FB1_RUNTIME_S:
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
