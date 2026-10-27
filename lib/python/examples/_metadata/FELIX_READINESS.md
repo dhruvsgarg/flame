@@ -44,37 +44,47 @@ Work rule: PARITY C10, C17, C18; ROBUST R0. Launches: tmux on shepherd GPUs 0-3 
 dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg_flame python"`. Paper runs are all bench
 (`paper_runs.py` → `bench_pool`); the harness is only the B2 / EV24 reference. Final runs on `/coc/scratch`.
 
+**Node plan (10-26 21:30; rewrite on every change).** Ours: shepherd GPUs 0-3, jayne GPUs 4-7 (operator; jayne 0-3 are Aish's, shepherd
+4-7 not ours). Both nodes share `/home/dgarg39/flame` (one checkout) and `$R=/coc/scratch/dgarg/mlsys27_felix_runs_20261026`.
+
+| when | node · GPUs | what | legs · per GPU | wall | why now |
+|---|---|---|---|---|---|
+| 21:2x → ~01:30 | jayne 4-7 | 2b B: REFL, FedDance, Oort, Oort\*, REFL\*, FedDance\* (`launch_n163b_rest.sh`, log `$R/cifar_n163b_rest.log`) | 24 · 3 | ~4 h | 2a: decay alone stops divergence |
+| now → ~00:30 | shepherd 0,1 | 2b A: FedAvg gate (`launch_n163b_gate.sh`) | 4 · 2 | 1.5-3 h | FedAvg diverged 4 / 4 decay-off; live check of 2a |
+| now → ~00:00 | shepherd 2,3 | 2b C: FedAvg\* (`launch_n163b_favstar.sh`) | 4 · 2 | 1-2 h | run beside the gate; gate fail costs only these 4 legs again |
+| now → ~21:50 | shepherd 3 | 2a seeds 2-3 (in-process, ~1 GB) | 2 sims | ~25 min | n = 1 seed was thin; NaN → reopen 2a |
+| after A + C (~00:30) | shepherd 0-3 | 3b speech smoke | 30 · 1 | ~1.5 h | pipeline gate for speech; needs 4 free GPUs |
+| after 3b (~02:00) | shepherd 0-3 | 3c speech sanity (in-process arms) | 4 sims | ~1 h | set speech decay, catch divergence before step 4 |
+| after all cifar (~01:30-02:00) | jayne 4-7 (quiet) | 3 cifar B2 | harness | ~45 min | cifar validation; fail → redo cifar |
+| after 3, 3b, 3c pass | both | 4 speech run | ~58 (26 async + 32 sync) | ~2-2.5 days | — |
+
+Gate and FedAvg\* use separate GPU pairs (two pools must never share a GPU: FX-T91 OOM). All of 0-3 is used; the old "0,1,2"
+was only because GPU 3 then held a ladder leg.
+
 **A · Paper first plots (operator 10-25 late).** Runbook; tick each step here with its pool path when it passes.
 1. ✅ **Gates (10-26 01:40, code `6dbd6e535`).** EV24 gate 5 / 5 legs EV16 0 + EV24 0 (`experiments/EV24_1025_ev2`; FX-N157,
    N160 fixed); cifar smoke 30 / 30 + every figure renders (`experiments/FB2S_1025b`); speech smoke 28 / 30 (step 3b); B2 moved
    to step 3 (operator 10-25: cifar before B2, redo if B2 fails). Run 1 (`9af372278`): EV16 on speech `fx` (FX-N160), 8 smoke legs
    CUDA-OOM'd beside a harness leg (FX-T91, D239), B2 harness leg got 1 GPU and aborted.
-2. [ ] **Cifar run, priorities 1-3 (70 legs).** `$PY scripts/paper_runs.py launch --prio 3 --datasets cifar10 && bash
+2. ✅ **Cifar run, priorities 1-3 (70 legs; done 10-26 ~21:00, 69 / 70 ok + `fn` killed at 75% and digested by hand).** `$PY scripts/paper_runs.py launch --prio 3 --datasets cifar10 && bash
    <root>/launch_p3_cifar.sh` (root printed, `/coc/scratch`). Watch: `python scripts/watch_runs.py <root>`; `paper_runs.py status`.
    Queue: stacks that may run the full 120 h first, then sets by priority, so priority 3 only fills tail slots. 32 at once
    (4 / GPU × 8); a finished leg's slot is refilled at once. Code key: FX-D240 changed only telemetry after the smoke (checked on a
    2 h leg, `experiments/TEL_1026`, EV 20 / 20).
-   - *Running (10-26 20:10):* root `/coc/scratch/dgarg/mlsys27_felix_runs_20261026`, pool pid 3687682, 67 DONE + 1 stopped at 75% (`fn`), 0
-     failures. Two `smu` (MobiPerf) legs left, both progressing: ladder `b1` (GPU 3, best 5-eval mean 73.3%) and `uo_o` (GPU 5, 74.1%).
-     **Each is stopped at its first 5-eval mean ≥ 75%** (operator 10-26) by a watcher in the session scratchpad
-     (`stop_uo_o_at_75.sh`, `stop_b1_at_75.sh`; they kill that leg's process group only), else they run out at ~23:20. A killed leg is
-     logged `FAIL rc=-15` by the pool and not digested: run `scripts/leg_digest.py <run dir>` by hand (hit = 75%, then `done`).
-     `fn` was stopped this way at 103.3 h (5-eval mean 75.2%, digest hit=True); FedBuff\* `smu` finished its 120 h (never 75%).
-     GPUs 0, 1, 2, 4, 6, 7 are free. Status: `paper_runs.py status --root <root> --datasets cifar10`. 59 zombie `[python]` children
-     of the pool (FX-N164): harmless, gone at exit.
+   - Ladder `b1`, `uo_o` `smu` finished in the pool (digested); `fn` stopped at 103.3 h (5-eval mean 75.2%). A leg killed by hand is
+     logged `FAIL rc=-15` and not digested: `scripts/leg_digest.py <run dir>`. Status: `paper_runs.py status --root $R --datasets cifar10`.
 2a. ✅ **Divergence fix for the FedScale family (FX-N166b, operator 10-26). Result 21:15: scaled decay alone fixes it; no clip.**
-   A no decay: 70.9% at 12.5k, NaN by 15k (reproduced). B decay 0.98 / 200: stable to 20k, 69.7%. C clip 1.0: stable but
-   61.1% at 20k; D both: 54.7% (clip 1.0 throttles 1-step SGD: unfair, rejected). n = 1 seed, FedAvg only: the live gate (2b A) and
-   check 2 of 3c (0 `NONFINITE_REJECT`, no 0-rounds / h stretch) on every 2b leg confirm it. 10 / 32 decay-off sync legs diverged, not 3:
+   n = 1 seed, FedAvg only: seeds 2-3 (below), the live gate (2b A) and check 2 of 3c (0 `NONFINITE_REJECT`, no 0-rounds / h
+   stretch) on every 2b leg confirm it. 10 / 32 decay-off sync legs diverged, not 3:
    FedAvg 4 / 4, FedAvg\* `s50u` `smu`, FedDance\* `s20u` `s50u` (round 3,918, 17.6 h) `smu`, REFL\* `smu` (end); each then ran to 120 h
    frozen with 0 rounds / h (`smu` FedAvg and the `*` arms were never flagged). Order (operator): (1) prove no family baseline diverges,
    (2) re-measure rounds / h on the stable legs, (3) set decay `every` from rounds at 120 h, (4) commit, launch 2b.
    - ✅ *Result (10-26 21:18; shepherd GPUs 0-3 only, operator):* in-process FedAvg, 20k rounds, cifar α 0.1 n300, K 15, batch 24,
      1 step, lr 0.1, mom 0.9, wd 5e-4; logs `$R/n163_divcheck/`. A no decay: **NaN at round 14,750** (reproduced). B decay 0.98 / 200:
-     stable, 70% held to 20k. C clip 1.0: stable but 61%; D both: 55% (clip 1.0 binds every step, too tight). **Decision: decay
-     alone, no clip; launch 2b as committed.** Simulator accuracies are below live (no augmentation): compare arms only. *Running:*
-     B seeds 2-3 to 27k rounds (GPU 3, `B_decay_seed{2,3}.log`, ~25 min); a NaN there → reopen with a looser clip (measure grad norms
-     first; 1.0 is out). Live safety net: the digest's `diverged` flag on every 2b leg (check step D). Rerun one arm: `$PY scripts/fl_lr_check.py --dataset cifar10 --pairs 0.1:1 --rate 1
+     stable, 70% held to 20k. C clip 1.0: stable but 61%; D both: 55% (clip 1.0 binds every step: unfair, rejected). **Decision: decay
+     alone, no clip; launch 2b as committed.** Simulator accuracies are below live (no augmentation): compare arms only. *Running
+     (21:20 → ~21:50):* B seeds 2-3 to 27k rounds (shepherd GPU 3, `B_decay_seed{2,3}.log`); a NaN there → stop 2b's REFL / FedDance /
+     FedAvg legs and reopen with a looser clip (measure grad norms first; 1.0 is out). Live safety net: the digest's `diverged` flag on every 2b leg (check step D). Rerun one arm: `$PY scripts/fl_lr_check.py --dataset cifar10 --pairs 0.1:1 --rate 1
      --k 15 --batch 24 --local-steps 1 --momentum 0.9 --weight-decay 0.0005 --rounds 20000 --eval-every 250 --gpus 0
      [--lr-decay 0.98:200:0.00005] [--clip-grad-norm 1.0]` (~70 ms / round; `--baseline` is broken for fedavg: KeyError 'trainer').
    - *Rates for `every` (decay-off digests, rounds / 120 h, diverged legs excluded):* REFL 20-27k, REFL\* 22-26k, FedDance 17-22k,
@@ -84,32 +94,24 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
      train loss nears 0.3 the global step doubles per round (FedDance\* `s50u` r3,905-3,916: step 0.3 → 10⁴, loss 0.3 → 10⁴ → NaN
      on every client): a late-training instability, not one outlier client. FedDance paper (SoCC'25, `feddance_socc25.pdf` on jayne)
      and its technical report (proof only) give no decay: "FedScale defaults" (0.98 / 10) stays.
-2b. [ ] **Cifar sync rerun (2a passed; B launched on jayne 10-26 21:10); lr decay scaled to our round budget (FX-N163; 32 legs = 4 cells × sync_srv / rstar / fdstar / favstar; the main
+2b. [ ] **Cifar sync rerun (2a passed; B running on jayne since 10-26 ~21:20 at `b1a091ff5`, doc-only diff to HEAD, same code key); lr decay scaled to our round budget (FX-N163; 32 legs = 4 cells × sync_srv / rstar / fdstar / favstar; the main
    sync results).** Configs, `diverged` flag and the MobiPerf 75% stop are committed (code key changes for the sync legs only, C20). Same
    root `R=/coc/scratch/dgarg/mlsys27_felix_runs_20261026`; a leg's newest `run_*` wins. Scripts (all `bench_pool`, `/coc/scratch` logs
    `$R/cifar_n163b_*.log`): `launch_n163b_gate.sh` (4 FedAvg legs), `launch_n163b_rest.sh` (24 = REFL, FedDance, Oort, Oort\*, REFL\*,
    FedDance\*), `launch_n163b_favstar.sh` (4 FedAvg\*), `launch_n163b_cifar.sh` (all 32, if one node is free). Each aborts on a dirty
    tree, off-shepherd without `GPUS`, and stops all children on one Ctrl+C. Run in tmux, conda env `dg_flame` is set inside.
-   - **A · Shepherd, now (GPUs 0,1,2 free; 3 and 5 hold the last two ladder legs):** FedAvg gate, 4 legs at 2 / GPU, ~1.5-3 h.
+   - **A · Shepherd GPUs 0,1, now:** FedAvg gate, 4 legs at 2 / GPU, ~1.5-3 h.
      ```
      tmux new -s n163b_gate
-     cd /home/dgarg39/flame/lib/python/examples && GPUS=0,1,2 bash /coc/scratch/dgarg/mlsys27_felix_runs_20261026/launch_n163b_gate.sh
+     cd /home/dgarg39/flame/lib/python/examples && GPUS=0,1 bash /coc/scratch/dgarg/mlsys27_felix_runs_20261026/launch_n163b_gate.sh
      ```
      *Pass* = no FedAvg leg `diverged` and each hits 80% or runs to 120 h (`paper_runs.py status --root $R --datasets cifar10`).
-     *Fail* = add Oort's recorded `clip_grad_norm` 1.0 (PR27) to the FedScale-family cifar entries as a recorded deviation, then rerun
-     the family (gate, FedAvg\*, and the REFL / FedDance legs of B).
-   - **B · Jayne GPUs 4-7 (operator-named; 0-3 are Aish's), after the speech smoke (3b) frees them (~22:45):** the 24 non-FedAvg legs at 3 / GPU, ~4 h (last full run 188 min on 18 slots).
+     *Fail* = reopen 2a (looser clip from measured grad norms; 1.0 is rejected), then rerun the family (A, C, REFL / FedDance of B).
+   - **B · Jayne GPUs 4-7, running (started ~21:20):** the 24 non-FedAvg legs at 3 / GPU, ~4 h → ~01:30. Watch
+     `tail $R/cifar_n163b_rest.log`. Redone only if A fails.
+   - **C · Shepherd GPUs 2,3, now, beside A (second tmux window):** FedAvg\* ×4 at 2 / GPU, ~1-2 h. Redone (1-2 h) if A fails.
      ```
-     ssh jayne
-     cd /home/dgarg39/flame && git pull && git log -1 --format='%h %s'      # must match shepherd's: git -C /home/dgarg39/flame log -1 --format=%h
-     tmux new -s n163b_rest
-     cd /home/dgarg39/flame/lib/python/examples && GPUS=4,5,6,7 bash /coc/scratch/dgarg/mlsys27_felix_runs_20261026/launch_n163b_rest.sh
-     ```
-     If the gate fails and the clip lands, these 24 legs are redone. (The old "REFL / FedDance did not diverge" was wrong: FedDance\*
-     diverged 3 / 4, step 2a.)
-   - **C · After A passes (shepherd GPUs 0-3 once the tail ends, ~23:20):** FedAvg\* ×4, ~1-2 h.
-     ```
-     cd /home/dgarg39/flame/lib/python/examples && GPUS=0,1,2,3 bash /coc/scratch/dgarg/mlsys27_felix_runs_20261026/launch_n163b_favstar.sh
+     cd /home/dgarg39/flame/lib/python/examples && GPUS=2,3 bash /coc/scratch/dgarg/mlsys27_felix_runs_20261026/launch_n163b_favstar.sh
      ```
    - **D · When A, B, C are done:** `paper_runs.py status --root $R --datasets cifar10` (all 32 `done`, 0 `diverged` / `stopped early`), then
      re-render `paper_plots.py` and rewrite the Scoreboard. *Expect:* REFL / FedDance / FedAvg reach 80% on the syn cells (interim
@@ -117,12 +119,9 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
 3. [ ] **B2 on a quiet node, after the cifar run:** `DS=cifar10 TAG=<mmdd>_c RT=14400 bash scripts/run_b2.sh` (~45 min), then
    `TAG=<mmdd>_s bash scripts/run_b2.sh` (speech, 3-4 h+). *Pass:* both `bench_validate.md` within bars (cifar 27 / 27; FX-N151).
    Cifar B2 fail → redo the cifar run. Contention may skew the wall-measured trainer overhead (C13): re-run a failing row quiet.
-3b. [ ] **Speech smoke re-run** (before step 4): `$PY scripts/paper_runs.py launch --smoke --prio 4 --root
-   experiments/FB2S_1025b && bash experiments/FB2S_1025b/launch_p4_smoke.sh` (regenerate first: it bakes `--leg-gpu-gb`; skips
-   done legs). *Pass:* 60 / 60. **Next action:** can start now on the idle GPUs (1, 2, 4, 6, 7; the 4 tail legs hold 0, 3, 5) while the
-   tail finishes; B2 (step 3) waits for the tail to end (~01:15).
-   *Running 10-26 ~21:10 on jayne GPUs 4-7 (operator), fresh root on shared scratch:* `R2=$R/FB2S_speech_jayne; $PY
-   scripts/paper_runs.py launch --smoke --prio 4 --datasets google_speech --gpus 4,5,6,7 --root $R2 && bash $R2/launch_p4_smoke_speech.sh` (30 speech legs, 1 / GPU, ~1.5 h; pass 30 / 30).
+3b. [ ] **Speech smoke re-run (before step 4; not started: jayne took 2b B).** On shepherd GPUs 0-3 once 2b A and C end (~00:30):
+   `R2=$R/FB2S_speech; $PY scripts/paper_runs.py launch --smoke --prio 4 --datasets google_speech --gpus 0,1,2,3 --root $R2 && bash
+   $R2/launch_p4_smoke_speech.sh` (30 speech legs, 1 / GPU, ~1.5 h; script name ends `_speech`). *Pass:* 30 / 30.
 3c. [ ] **Speech sync sanity, before step 4 (operator 10-26: do not repeat cifar's misses).** Same rule as cifar, own numbers: speech
    decay `every` = source `every` × (speech rounds in 120 h) / 1,000, measured, not copied from cifar (speech rounds are ~10× fewer).
    Current overlay (FX-N163, from F49's ~14 rounds / h ≈ 1.7k): every 20, Oort 30. Run after 2a so its fix is in the test.
