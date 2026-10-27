@@ -154,8 +154,10 @@ class RandomSelector(AbstractSelector):
             trainers_used_in_iteration = self.all_selected
             logger.info(f"already_in_use: {trainers_in_use}")
             avl_candidates = set()
+            version_key = kwargs.get("agg_version_key")
+            version_keys = kwargs.get("trainer_version_keys") or {}
             for end_ in ends.keys():
-                if end_ not in trainers_used_in_iteration:
+                if end_ not in trainers_used_in_iteration and (version_key is None or version_keys.get(end_) != version_key):
                     curr_end_id_avl_state = ends[end_].get_property(PROP_AVL_STATE)
                     logger.info(f"state of {end_} : {curr_end_id_avl_state}")
                     if curr_end_id_avl_state in (
