@@ -75,6 +75,8 @@ Split scripts are pre-built (`$R/split_launch.py` from `$R/launch_p2_speech.sh`)
 target = all 44 speech End-to-end legs, no overlap. Every speech pool runs `--gpu-reserve-gb 20`: placement reads real free memory,
 and with 45 GB GPUs (44.4 GiB free when empty) a speech leg (22) then starts only on an empty GPU, never beside another speech leg or
 2d's cifar legs. Jayne 0-1 are free (FluxTune leg done 13:57), so J uses all 8.
+*Tripwire (10-27 14:20):* pools sharing `--out` share `_yaml/`; S's first launch crashed (`dry run gave 0 yaml`) when J's dry-run
+rewrote the same dirs. `split_launch.py` now keeps each pool's `--phases` to its own legs; relaunch S (command 1) as is.
 *Why M waits:* speech `smu` 88% is out of reach (F49 Felix 52.8% at 12 h; cifar `smu` topped at 77.8% vs 80%), so it gets a per-trace
 target like cifar's 75% (Decisions "Reporting target per trace"). A leg's target is fixed in its YAML when its pool starts, so Felix
 `smu` (pool S) sets it, and the other `smu` legs start in pool M at that target instead of running 120 h. M goes on shepherd because S
