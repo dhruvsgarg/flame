@@ -522,6 +522,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 break
             _take(md)
             yield msg, md
+        if getattr(self, "require_complete_sim_cohort", False):
+            return  # the caller reports missing replies after the independent host deadline
         hp = getattr(getattr(self, "config", None), "hyperparameters", None)
         if str(getattr(hp, "sim_barrier_awaits_picks", True)).lower() != "true":
             return
@@ -615,6 +617,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 sct = float(sct) if sct is not None else self._vclock.now
                 buf.add(end, sct, (msg, md))
             drained_all = all(buf.has(e) for e in ends)
+            if not drained_all and getattr(self, "require_complete_sim_cohort", False):
+                missing = sorted(e for e in ends if not buf.has(e))
+                raise TimeoutError(f"Sync cohort incomplete; missing trainer responses: {missing}")
         barrier_wait = time.time() - barrier_t0
         if ends:
             logger.info(
@@ -691,7 +696,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 # FX-D122: co-due deliveries past K carry; real's version closes at the K-th arrival.
                 # FX-D130: commits later as a withheld delivery; slot held until then.
                 self._sim_sync_carry[wend] = (wdts, (wmsg, wmd))
-                channel.set_end_property(wend, PROP_SIM_COMPLETION_TS, wdts)
+                if channel.has(wend):
+                    channel.set_end_property(wend, PROP_SIM_COMPLETION_TS, wdts)
                 self._sim_sync_carry_withheld.add(wend)
                 continue
             self._sync_sim_commit_withheld(channel, wend, wdts, wmsg, wmd, committed)
@@ -1262,6 +1268,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             need = min(need, num_eligible)
         return need, max(1, min(need, len(channel._ends)))
 
+    def _await_training_channel(self, channel):
+        channel.await_join()
+
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         # data_id / iteration_per_data_id are FwdLLM-only; default them so
         # non-FwdLLM aggregators (fedavg, feddance) on this base stack don't
@@ -1278,7 +1287,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             return
 
         # this call waits for at least one peer to join this channel
-        channel.await_join()
+        self._await_training_channel(channel)
         # then wait for the configured cohort so real/sim select from the same pool
         self._await_min_trainers(channel)
 
