@@ -89,8 +89,8 @@ oort:
       clip_grad_norm: {v: 1.0, src: "[code] learner.py:284 (clip line commented out in source)", source_v: 0.0,
                        why: "1-8-sample streaming shards blow up one delta -> NaN rounds (PR27 R1); clip keeps full-data accuracy",
                        evidence: "fl_lr_check shard 4-8: NaN 3/6 seeds -> 0/6 (experiments/lrcheck_20261010_fxd126); full data r300: 48.9/54.5% -> 48.9/49.9%, r200 equal (lrcheck_20261010_clipfull); PR28: 0 update_rejected in 14 clip legs"}
-      lr_decay: {v: {factor: 0.95, every: 5, min: 0.0001}, src: "[code] argParser.py:86,87,101", source_v: {factor: 0.95, every: 5, min: 0.0001},
-                 why: "source decays over its ~1,000-round budget (13% of base lr at the end for 0.98 / 10; Oort floors by ~600 rounds); our 120 h legs run ~0.9-1.2k rounds, so the schedule is scaled by 1x (every 5) to span the same budget, one rule for every sync stack (FX-N163); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%",
+      lr_decay: {v: {factor: 0.95, every: 9, min: 0.0001}, src: "[code] argParser.py:86,87,101", source_v: {factor: 0.95, every: 5, min: 0.0001},
+                 why: "source decays over its ~1,000-round budget (13% of base lr at the end for 0.98 / 10; Oort floors by ~600 rounds); our 120 h legs run ~0.9-1.2k rounds, and the source floors at round ~584 (58% of its 1,000; its conf: \"may converge w/ ~400 rounds\"), which ours do not, so every is stretched to put the floor at the end of our run: 5 x rounds / 584 = 6-12 per leg (Oort, Oort*) -> every 9 (floor ~1,050 rounds; FX-N163, operator 10-26; every 5 ended at 52-57% vs 73-76% decay-off), one rule for every sync stack (FX-N163); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%",
                  evidence: "cifar syn_0 24 h, unscaled decay vs none: FedAvg 48.2 -> 72.9%, REFL 48.6 -> 74.3% (experiments/N163_1026); rounds in 120 h from the decay-off rerun digests (FB2E2E sync legs, cifar)"}
       stat_utility: {v: fedscale, src: "[code] learner.py:296-312"}
       server:

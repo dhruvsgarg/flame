@@ -117,7 +117,7 @@ was only because GPU 3 then held a ladder leg.
      ```
      cd /home/dgarg39/flame/lib/python/examples && sed -i 's/--per-gpu 3/--per-gpu 6/' $R/launch_n163b_rest.sh && GPUS=4,5,6,7 bash $R/launch_n163b_rest.sh
      ```
-     Then check one FedDance\* leg's `debug_run.yaml`: `lrDecayEpoch: 300` (others 200; Oort 5). Redone only if A fails.
+     Then check one FedDance\* leg's `debug_run.yaml`: `lrDecayEpoch: 300` (others 200; Oort / Oort\* 9; the 6 Oort legs finished 21:2x at every 5 are superseded, kept as evidence). Redone only if A fails.
    - **C · Shepherd GPUs 2,3, running beside A (started 21:30):** FedAvg\* ×4 at 2 / GPU, ~1-2 h. Redone (1-2 h) if A fails.
      ```
      cd /home/dgarg39/flame/lib/python/examples && GPUS=2,3 bash /coc/scratch/dgarg/mlsys27_felix_runs_20261026/launch_n163b_favstar.sh
@@ -417,7 +417,7 @@ GB on syn cells (FX-N166). Hits stop sooner than 120 h; ⚠ = FedAvg leg stopped
   within ~±25% of it, else split the family; (5) after the run, re-check (2) on its digests. Cifar result: REFL, REFL\*,
   FedDance, FedAvg, FedAvg\* per-leg 167-273 → **every 200** (lr ends at 6-19%); **FedDance\* 27-38k rounds (oracle avoids departing
   clients, fewer timeouts; read off the unscaled-decay legs, which never diverged) → every 300** (`harness_pool` FB2 `fdstar_srv`,
-  cifar only); Oort / Oort\* 0.8-1.4k → every 5 (source). Same value for oracle and non-oracle arms is preferred, not required: it
+  cifar only); **Oort / Oort\* every 9, not the source 5:** the source floors at round ~584 (58% of its 1,000 rounds; conf "may converge w/ ~400 rounds"), our legs have not converged by then (every 5: 52-57% vs 73-76% decay-off), so the floor goes at the end of our 0.7-1.4k rounds: 5 × rounds / 584 = 6-12 per leg → 9 (floor ~1,050; recorded deviation; FX-N163 rule extended: decay spans the run). Same value for oracle and non-oracle arms is preferred, not required: it
   held by coincidence elsewhere. Clip 1.0 rejected for the family (in-process: 55-61% vs 70%).
   *Why decay is required, not tuning (operator 10-26):* a config is deployable only if it never diverges; one that diverges on
   some runs and not others is not. Constant lr 0.1 diverged in 10 / 32 cifar legs (FedAvg 4 / 4, FedAvg\* 2, FedDance\* 3, REFL\*
