@@ -513,6 +513,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 sct = float(sct) if sct is not None else self._vclock.now
                 buf.add(end, sct, (msg, md))
             drained_all = all(buf.has(e) for e in ends)
+            if not drained_all and getattr(self, "require_complete_sim_cohort", False):
+                missing = sorted(e for e in ends if not buf.has(e))
+                raise TimeoutError(f"Sync cohort incomplete; missing trainer responses: {missing}")
         barrier_wait = time.time() - barrier_t0
         if ends:
             logger.info(
@@ -1054,6 +1057,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             self, "_sim_discarded_completions", {}
         ).keys()
 
+    def _await_training_channel(self, channel):
+        channel.await_join()
+
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         # data_id / iteration_per_data_id are FwdLLM-only; default them so
         # non-FwdLLM aggregators (fedavg, feddance) on this base stack don't
@@ -1070,7 +1076,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             return
 
         # this call waits for at least one peer to join this channel
-        channel.await_join()
+        self._await_training_channel(channel)
         # then wait for the configured cohort so real/sim select from the same pool
         self._await_min_trainers(channel)
 

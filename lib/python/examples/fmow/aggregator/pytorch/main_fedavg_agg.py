@@ -16,6 +16,8 @@
 """FMoW horizontal FL, FedAvg  SyncFL aggregator for PyTorch."""
 
 import logging
+import math
+import time
 
 import torch
 import torch.nn as nn
@@ -67,6 +69,29 @@ logger = logging.getLogger(__name__)
 
 class PyTorchFMoWAggregator(TopAggregator):
     """PyTorch FMoW Aggregator."""
+
+    require_complete_sim_cohort = True
+
+    def _sim_recv_timeout_s(self, ends):
+        timeout = float(getattr(self.config.hyperparameters, "trainer_recv_wall_timeout_s", 600))
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("trainer_recv_wall_timeout_s must be finite and positive")
+        return timeout
+
+    def _await_training_channel(self, channel):
+        if getattr(self, "_join_barrier_done", False):
+            return
+        timeout = float(getattr(self.config.hyperparameters, "min_trainers_join_timeout_s", 600))
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("min_trainers_join_timeout_s must be finite and positive")
+        deadline = time.monotonic() + timeout
+        if channel.await_join(timeout=timeout):
+            raise TimeoutError("No trainer joined before the startup deadline")
+        required = int(getattr(self.config.hyperparameters, "min_trainers_to_start", 0) or 0)
+        while len(channel._ends) < required:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Only {len(channel._ends)}/{required} trainers joined; inspect trainer startup logs")
+            time.sleep(0.1)
 
     def __init__(self, config: Config, log_to_wandb: bool = False) -> None:
         """Initialize a class instance."""
