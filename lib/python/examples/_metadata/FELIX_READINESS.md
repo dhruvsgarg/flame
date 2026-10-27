@@ -121,7 +121,7 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
    done legs). *Pass:* 60 / 60. **Next action:** can start now on the idle GPUs (1, 2, 4, 6, 7; the 4 tail legs hold 0, 3, 5) while the
    tail finishes; B2 (step 3) waits for the tail to end (~01:15).
    *Running 10-26 ~21:10 on jayne GPUs 4-7 (operator), fresh root on shared scratch:* `R2=$R/FB2S_speech_jayne; $PY
-   scripts/paper_runs.py launch --smoke --prio 4 --datasets google_speech --gpus 4,5,6,7 --root $R2 && bash $R2/launch_p4_smoke.sh`.
+   scripts/paper_runs.py launch --smoke --prio 4 --datasets google_speech --gpus 4,5,6,7 --root $R2 && bash $R2/launch_p4_smoke_speech.sh` (30 speech legs, 1 / GPU, ~1.5 h; pass 30 / 30).
 3c. [ ] **Speech sync sanity, before step 4 (operator 10-26: do not repeat cifar's misses).** Same rule as cifar, own numbers: speech
    decay `every` = source `every` × (speech rounds in 120 h) / 1,000, measured, not copied from cifar (speech rounds are ~10× fewer).
    Current overlay (FX-N163, from F49's ~14 rounds / h ≈ 1.7k): every 20, Oort 30. Run after 2a so its fix is in the test.
