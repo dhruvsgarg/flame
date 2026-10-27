@@ -44,12 +44,12 @@ Work rule: PARITY C10, C17, C18; ROBUST R0. Launches: tmux on shepherd GPUs 0-3 
 dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg_flame python"`. Paper runs are all bench
 (`paper_runs.py` → `bench_pool`); the harness is only the B2 / EV24 reference. Final runs on `/coc/scratch`.
 
-**Node plan (10-26 21:45; rewrite on every change).** Ours: shepherd GPUs 0-3, jayne GPUs 4-7 (operator; jayne 0-3 are Aish's, shepherd
+**Node plan (10-26 22:10; rewrite on every change).** Ours: shepherd GPUs 0-3, jayne GPUs 4-7 (operator; jayne 0-3 are Aish's, shepherd
 4-7 not ours). Both nodes share `/home/dgarg39/flame` (one checkout) and `$R=/coc/scratch/dgarg/mlsys27_felix_runs_20261026`.
 
 | when | node · GPUs | what | legs · per GPU | wall | why now |
 |---|---|---|---|---|---|
-| restart ~22:10 → ~00:30 | jayne 4-7 | 2b B: REFL, FedDance, Oort, Oort\*, REFL\*, FedDance\* (`launch_n163b_rest.sh`, log `$R/cifar_n163b_rest.log`) | 24 · 6 | ~2-2.5 h | 2a fix; FedDance\* every 300 needs a restart |
+| 22:06 → ~00:30 | jayne 4-7 | 2b B: REFL, FedDance, Oort, Oort\*, REFL\*, FedDance\* (`launch_n163b_rest.sh`, log `$R/cifar_n163b_rest.log`) | 24 · 6 | ~2-2.5 h | 2a fix; FedDance\* every 300, Oort 9 |
 | 21:30 → ~00:30 | shepherd 0,1 | 2b A: FedAvg gate (`launch_n163b_gate.sh`) | 4 · 2 | 1.5-3 h | FedAvg diverged 4 / 4 decay-off; live check of 2a |
 | 21:30 → ~00:00 | shepherd 2,3 | 2b C: FedAvg\* (`launch_n163b_favstar.sh`) | 4 · 2 | 1-2 h | run beside the gate; gate fail costs only these 4 legs again |
 | after A + C (~00:30) | shepherd 0-3 | 3b speech smoke | 30 · 1 | ~1.5 h | pipeline gate for speech; needs 4 free GPUs |
@@ -100,9 +100,12 @@ was only because GPU 3 then held a ladder leg.
    `$R/cifar_n163b_*.log`): `launch_n163b_gate.sh` (4 FedAvg legs), `launch_n163b_rest.sh` (24 = REFL, FedDance, Oort, Oort\*, REFL\*,
    FedDance\*), `launch_n163b_favstar.sh` (4 FedAvg\*), `launch_n163b_cifar.sh` (all 32, if one node is free). Each aborts on a dirty
    tree, off-shepherd without `GPUS`, and stops all children on one Ctrl+C. Run in tmux, conda env `dg_flame` is set inside.
-   *Status 10-26 21:40:* A, B, C all running, configs verified in every new leg's `debug_run.yaml` (REFL / FedDance / FedAvg
-   families lr 0.1, ×0.98 / 200, no clip; Oort / Oort\* 0.04, ×0.95 / 5, clip 1.0). Empty `run_*_2128*` FedAvg dirs = a restarted
-   gate launch; harmless (newest wins).
+   *Status 10-26 22:10:* A, C running since 21:30 (`lrDecayEpoch: 200`, 0 `NONFINITE_REJECT`). At ~37 min wall: FedAvg\* 10.9-12.0k
+   rounds (57-68 h vclock), 78-79% syn / 71.6% `smu`, past every decay-off divergence point (6.8-9.7k); FedAvg 2.3-7.3k rounds,
+   65-77%. B relaunched 22:06 at `11a02732d` (6 / GPU). The 21:18 B pool's 12 unfinished dirs were deleted; its 6 finished Oort /
+   Oort\* legs (every 5, 52-57%) stay as evidence, superseded by B. Empty `run_*_2128*` FedAvg dirs = a restarted gate launch;
+   harmless (newest wins). Read accuracy live: last `"agg_eval"` (`test-accuracy`) in the leg's `telemetry/aggregator_*.jsonl`
+   (plain jsonl while running, ~1.7 GB: `tail -c 60000000`).
    - **A · Shepherd GPUs 0,1, running (started 21:30):** FedAvg gate, 4 legs at 2 / GPU, ~1.5-3 h.
      ```
      tmux new -s n163b_gate
@@ -110,14 +113,12 @@ was only because GPU 3 then held a ladder leg.
      ```
      *Pass* = no FedAvg leg `diverged` and each hits 80% or runs to 120 h (`paper_runs.py status --root $R --datasets cifar10`).
      *Fail* = reopen 2a (looser clip from measured grad norms; 1.0 is rejected), then rerun the family (A, C, REFL / FedDance of B).
-   - **B · Jayne GPUs 4-7: restart needed (10-26 22:00).** The 21:20 pool runs FedDance\* at every 200 (now 300, Decisions decay
-     Procedure; C20: those legs are invalid) and caps 3 / GPU, so 12 legs wait for a ~23:30 second wave. Jayne has room (128 cores,
-     load ~29, 368 GB RAM free, 12 / 46 GB per GPU): stop the pool (Ctrl+C in tmux `n163b_rest`, ~40 min of 12 legs lost) and rerun
-     all 24 at 6 / GPU on the new code, ~2-2.5 h → ~00:30:
-     ```
-     cd /home/dgarg39/flame/lib/python/examples && sed -i 's/--per-gpu 3/--per-gpu 6/' $R/launch_n163b_rest.sh && GPUS=4,5,6,7 bash $R/launch_n163b_rest.sh
-     ```
-     Then check one FedDance\* leg's `debug_run.yaml`: `lrDecayEpoch: 300` (others 200; Oort / Oort\* 9; the 6 Oort legs finished 21:2x at every 5 are superseded, kept as evidence). Redone only if A fails.
+   - **B · Jayne GPUs 4-7, running (relaunched 22:06, code `11a02732d`, all 24 at 6 / GPU, ~2-2.5 h → ~00:30).** Restarted so
+     FedDance\* runs every 300 and Oort / Oort\* every 9 (Decisions decay Procedure); 6 / GPU fits (128 cores, 368 GB RAM, 12 / 46 GB
+     per GPU at 3). Relaunch if needed (the script already says 6 / GPU):
+     `cd /home/dgarg39/flame/lib/python/examples && GPUS=4,5,6,7 bash $R/launch_n163b_rest.sh`.
+     *Check once legs start:* `lrDecayEpoch` in each new `debug_run.yaml` = 300 FedDance\*, 200 REFL / REFL\* / FedDance, 9 Oort /
+     Oort\*; first 10 min: no OOM / `FAIL` in `$R/cifar_n163b_rest.log`. Redone only if A fails.
    - **C · Shepherd GPUs 2,3, running beside A (started 21:30):** FedAvg\* ×4 at 2 / GPU, ~1-2 h. Redone (1-2 h) if A fails.
      ```
      cd /home/dgarg39/flame/lib/python/examples && GPUS=2,3 bash /coc/scratch/dgarg/mlsys27_felix_runs_20261026/launch_n163b_favstar.sh
@@ -152,6 +153,8 @@ was only because GPU 3 then held a ladder leg.
       drops to 0 while the leg runs (cifar's diverged legs ran to 120 h frozen and looked like plain misses).
    3. *Rates:* rounds / h per baseline × cell (incl. `*` arms) from stable legs (3b smoke = early rate; confirm on the first full
       legs); rounds at 120 h → `every`; one bucket per ~2× spread, Oort separate. Change the overlay only if rounds differ > 2× from 1.7k.
+      Oort: place its floor at the end of the run as cifar did (every = 15 × rounds / ~584 for speech's 0.95 / 15 source), not at
+      58% of it; check the oracle arms' rounds separately (cifar FedDance\* ran ~1.5× FedDance).
    4. *Schedule check:* trainer `lr` in `trainer_round` telemetry = base × factor^((round − 1) // every) at 2-3 rounds; lr at the leg's
       last round 6-20% of base (source 13%), not at the floor early.
    5. *Fairness:* oracle `*` arms run about the same rounds / h as their non-oracle arm; a big gap means a stall or divergence, not speed.
