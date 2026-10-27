@@ -98,7 +98,12 @@ Two pools must never share a GPU (FX-T91 OOM).
    *Run 2 (`1027_c2`, 03:34, same code): not a pass.* Bench 5 / 5 ok (21.7 min). Harness FAIL-FAST again, 3 min in, CUDA OOM in
    `model.to(device)` on the first leg (`fedbuff`, `gpus=[2]`, no foreign load): not contention. *Root (fixed 10-27):* `F46_SHAPE` (F46-F49,
    FB2 harness phases) inherited G3's cifar `gpus=1`, so the n = 300 harness leg got 1 GPU (FX-D52: needs all 4); now `gpus=None` (= every
-   `HGPUS`). 80 harness-pool / config-audit tests pass. Commit, then rerun with `TAG=1027_c3`.
+   `HGPUS`). 80 harness-pool / config-audit tests pass (`08b094f8c`).
+   *Run 3 (`1027_c3`, 04:05, tmux jayne; `/coc/scratch/dgarg/b2_speech_chain.sh` queues speech B2 `1027_s` only if every cifar row PASSes;
+   log `/coc/scratch/dgarg/b2_speech_chain.log`; commit before it starts, `run_b2.sh` refuses a dirty tree):* bench 5 / 5 ok. Harness: oort ✅
+   (7.5 min, 1 GPU-set of 4 now used); fedbuff DOOMED by EV23 at 04:31 (3 of 22,759 picks had no waiting check-in, 0.013%, no tolerance) →
+   fedbuff row has no harness data; refl / feddance / fedavg BLOCKED from 04:31 (need 120 CPUs; foreign load of ours on jayne GPUs 0,1 holds ~13).
+   Open: why 3 picks lacked a check-in (FX-D231 race vs bug); rerun fedbuff alone (`ARMS=ctl_srv`) after the others.
 3b. [ ] **Speech smoke re-run (before step 4; not started: jayne took 2b B).** On shepherd GPUs 0-3 once 2b A and C end (~00:30):
    `R2=$R/FB2S_speech; $PY scripts/paper_runs.py launch --smoke --prio 4 --datasets google_speech --gpus 0,1,2,3 --root $R2 && bash
    $R2/launch_p4_smoke_speech.sh` (30 speech legs, 1 / GPU, ~1.5 h; script name ends `_speech`). *Pass:* 30 / 30.
