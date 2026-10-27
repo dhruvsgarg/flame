@@ -85,6 +85,8 @@ class MqttBackend(AbstractBackend):
         self._cleanup_ready = set()
         self._is_connected = False
         self._reconnecting = False
+        self._pending_subscriptions = {}
+        self._joined_channels = set()
 
         if self._initialized:
             return
@@ -146,6 +148,7 @@ class MqttBackend(AbstractBackend):
             self._mqtt_client.on_connect = self.on_connect
             self._mqtt_client.on_disconnect = self.on_disconnect
             self._mqtt_client.on_message = self.on_message
+            self._mqtt_client.on_subscribe = self.on_subscribe
             self._mqtt_client.will_set(
                 self._health_check_topic,
                 payload=f"{self._id}:{END_STATUS_OFF}",
@@ -160,7 +163,6 @@ class MqttBackend(AbstractBackend):
             keepalive_timeout = 300  # 5 minutes
             self._mqtt_client.connect(self._broker, keepalive=keepalive_timeout)
             logger.info(f"MQTT client connecting to {self._broker} with keepalive={keepalive_timeout}s")
-            self._mqtt_client.subscribe(self._health_check_topic)
 
         coro = _setup_mqtt_client()
         _, success = run_async(coro, self._loop, DEFAULT_RUN_ASYNC_WAIT_TIME)
@@ -218,13 +220,39 @@ class MqttBackend(AbstractBackend):
         """Join a channel by subscribing to topics."""
         # subscribe/announce only after the connection is up, else both can be
         # silently dropped (startup race)
-        self._wait_for_connect()
+        _, success = run_async(self._join_channel(channel), self._loop, DEFAULT_RUN_ASYNC_WAIT_TIME + 1)
+        if not success:
+            raise ConnectionError(f"MQTT channel {channel.name()} did not finish subscribing and joining")
 
-        for topic in self._topics_for_notify(channel):
-            self.subscribe(topic)
+    async def _join_channel(self, channel):
+        async def ready():
+            while not self._is_connected:
+                await asyncio.sleep(0.01)
+            pending = []
+            try:
+                for topic in self._topics_for_notify(channel):
+                    rc, mid = self._mqtt_client.subscribe(topic, qos=MqttQoS.EXACTLY_ONCE)
+                    if rc != mqtt.MQTT_ERR_SUCCESS:
+                        raise ConnectionError(f"MQTT subscription rejected for {topic}: {rc}")
+                    future = asyncio.get_running_loop().create_future()
+                    self._pending_subscriptions[mid] = future
+                    pending.append((mid, future))
+                await asyncio.gather(*(future for _, future in pending))
+                if not self.notify(channel.name(), msg_pb2.NotifyType.JOIN):
+                    raise ConnectionError("MQTT disconnected before JOIN was published")
+                self._joined_channels.add(channel.name())
+            finally:
+                for mid, _ in pending:
+                    self._pending_subscriptions.pop(mid, None)
+        await asyncio.wait_for(ready(), DEFAULT_RUN_ASYNC_WAIT_TIME)
 
-        # notify after subscription to topics is finished
-        self.notify(channel.name(), msg_pb2.NotifyType.JOIN)
+    def on_subscribe(self, client, userdata, mid, granted_qos, properties=None):
+        future = self._pending_subscriptions.get(mid)
+        if future is not None and not future.done():
+            if any(getattr(qos, "value", qos) >= 128 for qos in granted_qos):
+                future.set_exception(ConnectionError("MQTT broker rejected subscription"))
+            else:
+                future.set_result(None)
 
     def leave(self, channel: Channel) -> None:
         """Leave a channel.
@@ -234,6 +262,7 @@ class MqttBackend(AbstractBackend):
         logger.debug(
             f"Sending notification of type LEAVE from " f"channel {channel.name()}"
         )
+        self._joined_channels.discard(channel.name())
         self.notify(channel.name(), msg_pb2.NotifyType.LEAVE)
 
         logger.debug("Going to start unsubscribing topics")
@@ -356,8 +385,21 @@ class MqttBackend(AbstractBackend):
         """on_connect publishes a health check message to a mqtt
         broker."""
         logger.info(f"MQTT client connected: rc={rc}")
+        if rc != 0:
+            self._is_connected = False
+            logger.error(f"MQTT connection rejected: {rc}")
+            return
         self._is_connected = True
         self._reconnecting = False
+        client.subscribe(self._health_check_topic)
+
+        async def restore(channel):
+            try:
+                await self._join_channel(channel)
+            except Exception:
+                logger.exception(f"Failed to restore MQTT channel {channel.name()}")
+        for name in list(self._joined_channels):
+            asyncio.create_task(restore(self._channels[name]))
 
         # publish health data; format: <end_id>:<status> status is either
         # END_STATUS_ON or END_STATUS_OFF

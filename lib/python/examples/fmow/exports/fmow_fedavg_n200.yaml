@@ -46,6 +46,7 @@ experiments:
           availability_trace: satellite
           min_trainers_to_start: 200
           min_trainers_join_timeout_s: 600
+          trainer_recv_wall_timeout_s: 600
           
         selector:
           kwargs:
