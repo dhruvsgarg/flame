@@ -1254,6 +1254,8 @@ class ClientAvailability:
         replied = self._sync_replied(channel) if wait_k else set()
         out = []
         for end in list(inflight):
+            if end in getattr(self, "_sim_sync_carry", {}):
+                continue  # physically received; its simulated completion is already known
             if buf is not None and buf.has(end):
                 continue  # already arrived — not stalled
             held = end in self._withheld_slot_held
