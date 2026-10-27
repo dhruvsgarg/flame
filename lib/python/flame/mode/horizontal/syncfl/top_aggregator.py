@@ -502,20 +502,27 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         barrier_t0 = time.time()
         drained_all = True
         if ends:
+            received = set()
             # Exact per-end bound, or None to genuinely block.
             timeout = self._sim_recv_timeout_s(ends)
             for msg, md in channel.recv_fifo(ends, first_k=len(ends), timeout=timeout):
                 if not msg:  # no more ready (bound expired or set drained)
                     break
                 end = md[0]
+                received.add(end)
+                prepared = self._prepare_simulated_update(channel, end, msg, md)
+                if prepared is None:
+                    continue
+                msg, md = prepared
                 self._note_sim_known_delay(end, msg)
                 sct = msg.get(MessageType.SIM_COMPLETION_TS)
                 sct = float(sct) if sct is not None else self._vclock.now
                 buf.add(end, sct, (msg, md))
-            drained_all = all(buf.has(e) for e in ends)
+            drained_all = all(e in received for e in ends)
             if not drained_all and getattr(self, "require_complete_sim_cohort", False):
-                missing = sorted(e for e in ends if not buf.has(e))
+                missing = sorted(e for e in ends if e not in received)
                 raise TimeoutError(f"Sync cohort incomplete; missing trainer responses: {missing}")
+        self._validate_simulated_quorum(channel, buf, first_k)
         barrier_wait = time.time() - barrier_t0
         if ends:
             logger.info(
@@ -632,6 +639,18 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         if ready_dt is None:
             return None, committed_dt.timestamp(), None
         return ready_dt.timestamp(), committed_dt.timestamp(), (committed_dt - ready_dt).total_seconds()
+
+    def _prepare_simulated_update(self, channel, end, msg, metadata):
+        return msg, metadata
+
+    def _validate_simulated_quorum(self, channel, buffered, first_k):
+        pass
+
+    def _prepare_training_dispatch(self, channel, ends, msg):
+        return msg
+
+    def _extra_unavailable_trainers(self):
+        return set()
 
     def _weights_for_aggregation(self, weights):
         """Choose where received updates wait before reduction."""
@@ -1120,6 +1139,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             curr_unavail_trainer_list = list(
                 set(curr_unavail_trainer_list) | self._sim_discarded_completions.keys()
             )
+        curr_unavail_trainer_list = list(set(curr_unavail_trainer_list) | self._extra_unavailable_trainers())
         channel.set_curr_unavailable_trainers(
             trainer_unavail_list=curr_unavail_trainer_list
         )
@@ -1167,6 +1187,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         if not selected_ends:
             if self.simulated and (
                 self.trainer_event_dict is not None or self._sim_discarded_completions
+                or self._extra_unavailable_trainers()
             ):
                 _nxt = self._next_avail_vclock()
                 _completion = min(self._sim_discarded_completions.values(), default=None)
@@ -1250,6 +1271,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             # availability lookups anchor to the SAME point the aggregator uses
             # (post-join-barrier-reanchor), not a per-trainer local origin.
             msg[MessageType.AGG_START_TS] = self.agg_start_time_ts
+        msg = self._prepare_training_dispatch(channel, selected_ends, msg)
         _payload = channel.dumps(msg)
         _send_t0 = time.time()  # [DISTRIBUTE_TIMING]
         for end in selected_ends:

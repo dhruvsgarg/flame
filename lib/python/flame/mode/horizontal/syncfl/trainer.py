@@ -178,6 +178,18 @@ class Trainer(Role, metaclass=ABCMeta):
         if tag == TAG_FETCH:
             self._fetch_weights(tag)
 
+    def _allow_model_reuse(self, msg):
+        return False
+
+    def _assignment_has_model(self, msg):
+        return True
+
+    def _on_training_assignment(self, msg):
+        pass
+
+    def _prepare_training_result(self, msg):
+        return msg
+
     def _fetch_weights(self, tag: str) -> None:
         logger.debug(
             f"### FETCH WEIGHTS start for tag: {tag}, "
@@ -247,7 +259,7 @@ class Trainer(Role, metaclass=ABCMeta):
             # the trainer would never make progress. We allow to
             # trainer to re-train for == round condition if the
             # message was dropped.
-            if self._round <= self._updates_returned_upto_round:
+            if self._round <= self._updates_returned_upto_round and not self._allow_model_reuse(msg):
                 logger.info(
                     f"[TRAINER_FETCH_ABORT] Fetch weights aborted for given model version "
                     f"{self._round} while trainer_id {self.trainer_id} has "
@@ -274,12 +286,13 @@ class Trainer(Role, metaclass=ABCMeta):
             # self._load_model_onto_gpu()
 
             # Update the model
-            with self._phase("weights_to_ram_s"):
-                self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
-            with self._phase("weights_to_gpu_s"):
-                self._update_model()
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
+            if self._assignment_has_model(msg):
+                with self._phase("weights_to_ram_s"):
+                    self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+                with self._phase("weights_to_gpu_s"):
+                    self._update_model()
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
 
         # Capture virtual send-time stamped by aggregator (sim mode); used for sim_completion_ts.
         if MessageType.SIM_SEND_TS in msg:
@@ -332,6 +345,7 @@ class Trainer(Role, metaclass=ABCMeta):
         else:
             logger.debug(f"Didn't find TASK_TO_PERFORM in msg")
 
+        self._on_training_assignment(msg)
         self.fetch_success = True
 
         logger.info(
@@ -515,6 +529,7 @@ class Trainer(Role, metaclass=ABCMeta):
         _wall_send_ts = time.time()
         msg[MessageType.WALL_SEND_TS] = _wall_send_ts
 
+        msg = self._prepare_training_result(msg)
         with self._phase("mqtt_send_s"):
             channel.send(end, msg)
 

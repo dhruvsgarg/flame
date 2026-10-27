@@ -70,6 +70,8 @@ class _FakeBarrierAgg:
     _sim_reinject_ready_withheld = _SyncBase._sim_reinject_ready_withheld
     _sim_withhold_if_unavail = _SyncBase._sim_withhold_if_unavail
     _sim_release_discarded = _SyncBase._sim_release_discarded
+    _prepare_simulated_update = _SyncBase._prepare_simulated_update
+    _validate_simulated_quorum = _SyncBase._validate_simulated_quorum
     _barrier_anchored_lags = staticmethod(_SyncBase._barrier_anchored_lags)
 
     def __init__(self):
