@@ -2,6 +2,8 @@
 from pathlib import Path
 from dataclasses import asdict
 import importlib
+import logging
+import math
 import time
 import uuid
 
@@ -14,6 +16,8 @@ from fmow.dependencies.satellite_availability import SatelliteAvailability
 from .contacts import ContactSchedule
 from .links import Direction, TransferRequest
 from .transfers import TransferPlanner
+
+logger = logging.getLogger(__name__)
 
 
 class SatelliteSimulation:
@@ -38,6 +42,7 @@ class SatelliteSimulation:
         self._satellite_assignment = None
         self._satellite_seen_assignments = set()
         self._satellite_failed_ends = set()
+        self._satellite_uploads = {}
         if role == "trainer":
             self.satellite_index = int(config.hyperparameters.satellite_index)
 
@@ -78,7 +83,8 @@ class SatelliteSimulation:
         if self._satellite_role == "aggregator":
             return self._avail_now()
         if self.simulated:
-            if self._satellite_assignment is not None and self._satellite_assignment["complete"]:
+            if (not getattr(self, "_work_done", False) and self._satellite_assignment is not None
+                    and self._satellite_assignment["complete"]):
                 return self._satellite_assignment["model_arrival_s"]
             return float(self._sim_send_ts) if self._sim_send_ts is not None else 0.0
         origin = self._agg_start_origin if self._agg_start_origin is not None else self.trainer_start_ts
@@ -90,6 +96,8 @@ class SatelliteSimulation:
             raise ValueError("Link delivery integration currently supports simulated aggregators only")
         if not callable(getattr(provider, "sample", None)):
             raise TypeError("Satellite link provider must implement sample(request)")
+        if any(getattr(self, name, None) is not None for name in ("link_runtime_uplink", "link_runtime_downlink")):
+            raise ValueError("Configure one link timing system; legacy Flame link runtime is already enabled")
         limit = getattr(self.config.hyperparameters, "max_experiment_runtime_s", None)
         contacts = self.satellite_contacts.until(limit) if limit else self.satellite_contacts
         self._satellite_planner = TransferPlanner(contacts, provider)
@@ -155,6 +163,9 @@ class SatelliteSimulation:
     def satellite_training_start_s(self):
         return self.satellite_now_s()
 
+    def satellite_link_delivery_enabled(self):
+        return self._satellite_assignment is not None and self._satellite_assignment["download"] is not None
+
     def _prepare_training_result(self, msg):
         msg = super()._prepare_training_result(msg)
         if self._satellite_assignment is not None:
@@ -171,7 +182,41 @@ class SatelliteSimulation:
                 self._satellite_failed_ends.add(end)
                 self._avail_free_slot_ledger(channel, end)
                 return None
+            planner = self._get_satellite_planner()
+            if planner is not None:
+                compute_end = float(msg[MessageType.SIM_COMPLETION_TS])
+                if not math.isfinite(compute_end) or compute_end < expected["model_arrival_s"]:
+                    raise ValueError("Satellite compute completion must follow model arrival")
+                if MessageType.WEIGHTS_BYTES in msg:
+                    size = len(msg[MessageType.WEIGHTS_BYTES])
+                elif MessageType.WEIGHTS in msg:
+                    size = len(cloudpickle.dumps(msg[MessageType.WEIGHTS]))
+                else:
+                    size = 0
+                outcome = planner.estimate(TransferRequest(expected["id"] + ":update",
+                    expected["satellite_index"], Direction.UPDATE_UPLOAD, compute_end, size))
+                self._satellite_uploads[end] = outcome
+                logger.info("[SATELLITE_TRANSFER] end=%s assignment=%s outcome=%s", end, expected["id"], asdict(outcome))
+                if not outcome.complete:
+                    self._satellite_failed_ends.add(end)
+                    self._avail_free_slot_ledger(channel, end)
+                    return None
+                msg[MessageType.SIM_COMPLETION_TS] = outcome.arrival_s
         return super()._prepare_simulated_update(channel, end, msg, metadata)
+
+    def _sim_withhold_if_unavail(self, channel, end, sct, msgmd):
+        outcome = self._satellite_uploads.get(end)
+        expected = self._satellite_assignments.get(end)
+        header = msgmd[0].get(MessageType.SATELLITE_ASSIGNMENT)
+        if (outcome is not None and outcome.complete and expected is not None
+                and header is not None and header["id"] == expected["id"]
+                and outcome.transfer_id == expected["id"] + ":update"
+                and sct == outcome.arrival_s):
+            # The full station contacts already gated this payload. Eligibility
+            # is only a selector projection, not a second delivery constraint.
+            self._record_commit_belief(end, sct)
+            return False
+        return super()._sim_withhold_if_unavail(channel, end, sct, msgmd)
 
     def _validate_simulated_quorum(self, channel, buffered, first_k):
         super()._validate_simulated_quorum(channel, buffered, first_k)
