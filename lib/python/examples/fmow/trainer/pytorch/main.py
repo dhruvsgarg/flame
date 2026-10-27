@@ -49,10 +49,10 @@ from collections import deque
 from pathlib import Path
 
 # FMoW imports
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from fmow.simulation import SatelliteSimulation
 from model import build_model
-from config import load_config
 from fmow_dataset import FMoWDataset
-from satellite_availability import SatelliteAvailability
 
 logger = logging.getLogger(__name__)
 
@@ -80,13 +80,12 @@ def _stagger_params(trainer_id, onset_max_s, base_span_s, rate_jitter):
     return onset_s, max(base_span_s / 4.0, span_s)
 
 
-class PyTorchFMoWTrainer(Trainer):
+class PyTorchFMoWTrainer(SatelliteSimulation, Trainer):
     """PyTorch FMoW Trainer."""
 
     def __init__(self, config: Config, battery_threshold, time_mode="simulated") -> None:
         """Initialize a class instance."""
-        self.config = config
-        self.fmow_cfg = load_config(self.config.hyperparameters.fmow_config_path)
+        self._init_satellite_simulation(config, role="trainer")
         self.dataset_size = 0
         self.model = None
         # Oort requires its loss function to have 'reduction'
@@ -146,7 +145,6 @@ class PyTorchFMoWTrainer(Trainer):
         self.training_delay_s = float(self.config.hyperparameters.training_delay_s)
 
         # Add satellite coordinates
-        self.satellite_index = int(self.config.hyperparameters.satellite_index)
         coords_path = self.config.hyperparameters.satellite_coordinates_path
         if (coords_path):
              self.coords = np.load(coords_path)["coords"]
@@ -214,7 +212,7 @@ class PyTorchFMoWTrainer(Trainer):
         )
 
         if self.client_notify["trace"] == "satellite":
-            availability = SatelliteAvailability(self.fmow_cfg.availability.trace_path)
+            availability = self.satellite_availability
             self.state_avl_event_ts = availability.events_for_satellite(
                 self.satellite_index
             )
@@ -328,10 +326,7 @@ class PyTorchFMoWTrainer(Trainer):
         class of bug as B2.0.3). Falls back to `trainer_start_ts` only until
         the first dispatch arrives.
         """
-        if self.simulated:
-            return float(self._sim_send_ts) if self._sim_send_ts is not None else 0.0
-        origin = self._agg_start_origin if self._agg_start_origin is not None else self.trainer_start_ts
-        return time.time() - origin
+        return self.satellite_now_s()
 
     def _refresh_avl_state(self) -> None:
         """Advance availability state to the current point in the trace, both
