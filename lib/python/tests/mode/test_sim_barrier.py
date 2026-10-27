@@ -97,6 +97,7 @@ def _bare(cls):
     a.trainer_event_dict = None
     a.pending_withheld = {}
     a._sim_known_delay_s = {}
+    a._sim_discarded_completions = {}
     return a
 
 

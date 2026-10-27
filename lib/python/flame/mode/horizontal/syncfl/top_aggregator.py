@@ -238,6 +238,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # (mirrors asyncfl's _sim_buffer; stays empty when gate is off).
         self._sim_buffer = SimReorderBuffer()
         self._sim_committed: set = set()
+        # Physically received surplus results still occupy a simulated slot
+        # until completion. Retain timestamps, not their model weights.
+        self._sim_discarded_completions: dict[str, float] = {}
 
         # Shared per-trainer delay cache (end -> MODELED_DELAY_S). No
         # cross-trainer fallback -- an unseen end has no entry.
@@ -486,7 +489,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         have their update held and delivered stale at delivery_ts. After the
         first_k barrier loop, drains _sim_buffer for any withheld updates now
         due (re-injected stale bonus; E.2 accept-stale for feddance/FedAvg).
-        Gate off (trainer_event_dict=None) ⇒ byte-identical to prior behaviour.
+        Gate off (trainer_event_dict=None) disables the availability send-gate.
         """
         # E.1: re-inject withheld updates whose delivery_ts ≤ current vclock
         # into self._sim_buffer (no-op when gate is off).
@@ -495,7 +498,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # Barrier: drain the whole selected set in one recv_fifo pass, then pick
         # the first_k smallest sim_completion_ts (never before a smaller is in).
         buf = SimReorderBuffer()
-        ends = [e for e in ends if channel.has(e)]
+        ends = [e for e in ends if channel.has(e) and e not in self._sim_discarded_completions]
         barrier_t0 = time.time()
         drained_all = True
         if ends:
@@ -529,6 +532,11 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
         committed = []
         for end, sct, (msg, md) in all_popped:
+            if len(committed) >= first_k:
+                # first_k quota met; remaining straggler updates dropped.
+                self._sim_discarded_completions[end] = sct
+                channel.set_end_property(end, PROP_SIM_COMPLETION_TS, sct)
+                continue
             # Lazy deserialize before gate check (payload may be needed for stash).
             if MessageType.WEIGHTS_BYTES in msg:
                 msg[MessageType.WEIGHTS] = cloudpickle.loads(
@@ -537,8 +545,6 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             # E.1: send-gate — withhold if trainer is UN_AVL at completion.
             if self._sim_withhold_if_unavail(channel, end, sct, (msg, md)):
                 continue
-            if len(committed) >= first_k:
-                break  # first_k quota met; remaining straggler updates dropped
             self._advance_sim_clock(sct)
             _sst = channel.get_end_property(end, PROP_SIM_SEND_TS)
             _srd = msg.get(MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S)
@@ -581,6 +587,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             )
             committed.append((wmsg, wmd))
 
+        self._sim_release_discarded(channel)
         return committed
 
     @staticmethod
@@ -625,6 +632,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
     def _aggregate_weights(self, tag: str) -> None:
         logger.debug("Agg weights inside top_aggregator syncfl")
+        self._sync_aggregation_completed = False
         channel = self.cm.get_by_tag(tag)
         if not channel:
             return
@@ -643,9 +651,13 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # simulated mode where distribute/aggregate run back-to-back) — skip and
         # retry rather than crash on len(None).
         ends = channel.ends(VAL_CH_STATE_RECV)
-        if not ends:
+        if self.simulated:
+            ends = [e for e in (ends or []) if e not in self._sim_discarded_completions]
+            self._sim_reinject_ready_withheld()
+        if not ends and not (self.simulated and len(self._sim_buffer)):
             time.sleep(0.5)
             return
+        ends = ends or []
         logger.debug(
             f"Waiting for first_k={first_k} responses from {len(ends)} selected trainers"
         )
@@ -947,6 +959,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         self.weights = global_weights
         self._update_model()
 
+        self._sync_aggregation_completed = True
+
         if channel._selector is not None:
             channel._selector.on_round_completed(channel._ends, self._round)
 
@@ -1024,6 +1038,18 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         aggregators that know the dataset override it. Must never raise."""
         return
 
+    def _sim_release_discarded(self, channel) -> None:
+        for end, sct in list(self._sim_discarded_completions.items()):
+            if sct <= self._vclock.now or not channel.has(end):
+                self._avail_free_slot_ledger(channel, end)
+                del self._sim_discarded_completions[end]
+
+    def _avail_inflight_ends(self, channel) -> set:
+        # Received results waiting on simulation time must not be abandoned.
+        return super()._avail_inflight_ends(channel) - getattr(
+            self, "_sim_discarded_completions", {}
+        ).keys()
+
     def _distribute_weights(self, tag: str, task_to_perform: str = "train") -> None:
         # data_id / iteration_per_data_id are FwdLLM-only; default them so
         # non-FwdLLM aggregators (fedavg, feddance) on this base stack don't
@@ -1046,6 +1072,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
         # before distributing weights, update it from global model
         self._update_weights()
+
+        if self.simulated:
+            self._sim_release_discarded(channel)
+            self._sim_reinject_ready_withheld()
 
         # E.1: re-clock the 90s abandon to the vclock and free stalled slots so a
         # replacement is selectable this round (no-op when the gate is off).
@@ -1076,6 +1106,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 )
         else:
             curr_unavail_trainer_list = []
+        if self.simulated and self._sim_discarded_completions:
+            curr_unavail_trainer_list = list(
+                set(curr_unavail_trainer_list) | self._sim_discarded_completions.keys()
+            )
         channel.set_curr_unavailable_trainers(
             trainer_unavail_list=curr_unavail_trainer_list
         )
@@ -1115,19 +1149,34 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             set(channel._ends.keys()) - set(curr_unavail_trainer_list) - _in_flight
         )
 
-        if num_eligible < _threshold:
-            if self.simulated and self.trainer_event_dict is not None:
+        # Empty selections can also mean the selector cannot fill its cohort.
+        selected_ends = (
+            channel.ends(VAL_CH_STATE_SEND, task_to_perform)
+            if num_eligible >= _threshold else []
+        )
+        if not selected_ends:
+            if self.simulated and (
+                self.trainer_event_dict is not None or self._sim_discarded_completions
+            ):
                 _nxt = self._next_avail_vclock()
+                _completion = min(self._sim_discarded_completions.values(), default=None)
+                if _completion is not None:
+                    _nxt = _completion if _nxt is None else min(_nxt, _completion)
                 _budget = float(
                     getattr(self.config.hyperparameters, "max_experiment_runtime_s", float("inf"))
                 )
-                if _nxt is not None and _nxt > self._vclock.now and self._vclock.now < _budget:
-                    self._vclock.advance(_nxt)
+                _awaiting = _in_flight - self._sim_discarded_completions.keys()
+                if self._vclock.now < _budget and (_awaiting or len(self._sim_buffer)):
+                    return  # receive pending work before declaring exhaustion
+                if _nxt is not None and self._vclock.now < _nxt < float("inf") and self._vclock.now < _budget:
+                    self._vclock.advance(min(_nxt, _budget))
                     self._sim_abandon_stalled(channel)
-                    curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
-                        task_to_perform
+                    curr_unavail_trainer_list = (
+                        self.get_curr_task_ineligible_trainers(task_to_perform)
+                        if self.trainer_event_dict is not None else []
                     )
                     _held = self.withheld_held_ends()
+                    _held |= {e for e, sct in self._sim_discarded_completions.items() if sct > self._vclock.now}
                     if _held:
                         curr_unavail_trainer_list = list(
                             set(curr_unavail_trainer_list) | _held
@@ -1173,9 +1222,6 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # SEND state: pick (new) trainers to send the model to. With a buffered
         # selector (random) this fills concurrency; stateless selectors ignore
         # the state and return their normal selection.
-        selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform)
-        if not selected_ends:
-            return
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 
         # Same model goes to every recipient this round; build + serialize once.
@@ -1279,8 +1325,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             f"cleared self._trainers_used_in_curr_round "
             f"{self._trainers_used_in_curr_round}"
         )
-        self._round += 1
-        self._work_done = self._round > self._rounds
+        # Other stacks override _aggregate_weights and keep their cadence.
+        if getattr(self, "_sync_aggregation_completed", True):
+            self._round += 1
+        self._work_done = self._work_done or self._round > self._rounds
 
         # Optional runtime cap: stop once max_experiment_runtime_s has elapsed.
         # Clock interpretation is mode-dependent:
