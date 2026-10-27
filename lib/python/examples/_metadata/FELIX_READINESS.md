@@ -43,7 +43,7 @@ Work rule: PARITY C10, C17, C18; ROBUST R0. Launches: tmux on shepherd GPUs 0-3 
 dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg_flame python"`. Paper runs are all bench
 (`paper_runs.py` → `bench_pool`); the harness is only the B2 / EV24 reference. Final runs on `/coc/scratch`.
 
-**Node plan (10-27; rewrite on every change).** Ours: shepherd GPUs 0-3, jayne GPUs 0-7 (operator 10-27: 0-1 once the FluxTune leg ends; shepherd
+**Node plan (10-27; rewrite on every change).** Ours: shepherd GPUs 0-3, jayne GPUs 0-7 (operator 10-27; FluxTune leg on 0-1 done 13:57; shepherd
 4-7 not ours). Each node has its own `/home/dgarg39/flame` checkout (`git pull` on jayne after a push); both share `$R=/coc/scratch/dgarg/mlsys27_felix_runs_20261026`.
 
 | when | node · GPUs | what | legs · per GPU | wall | why now |
@@ -52,46 +52,49 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
 | 10-27 04:05 → 06:47 | jayne 2-7 | B2 cifar run 3 | 3 / 5 rows PASS | 2 h 40 | step 3 |
 | 10-27 10:52 → ~15:15 | shepherd 0-3 | 2d sync rerun, every 100 (tmux `n163h`) | 22 / 32 done at 13:00 | ~4 h 20 | operator 10-27 |
 | 10-27 10:54 → 12:04 | jayne 2-7 | B2 cifar oort (RT 12 h) + fedbuff reruns | fedbuff PASS, oort upd +5.3% | 1 h 10 | ✅ recorded |
-| now → ~10-28 12:00 | shepherd 0-3 | 4 · speech pool S: `fx` × 4 cells (`smu` sets the target), then FedBuff × 3 syn cells | 7 · 1 | ~22 h | E2E only |
-| now → ~10-28 11:00 | jayne 0-7 | 4 · speech pool J: every non-`smu` FedBuff\* + sync leg (0-1 once FluxTune ends) | 27 · 1 | ~20 h | E2E only |
-| ~10-28 01:00 → ~10-28 evening | jayne 0-7 | 4 · speech pool M: the other 10 `smu` legs, at the new target | 10 · 1 | as GPUs free | after the target commit |
+| now → ~10-28 02:00 | shepherd 0-3 | 4 · speech pool S: `fx` × 4 cells (`smu` sets the target) | 4 · 1 | ~11 h (+ wait for 2d) | E2E only |
+| now → ~10-28 12:00 | jayne 0-7 | 4 · speech pool J: every non-`smu` non-Felix leg, oracle arms first | 30 · 1 | ~20 h | E2E only |
+| ~10-28 02:00 → ~10-28 18:00 | shepherd 0-3 | 4 · speech pool M: the other 10 `smu` legs at the new target, oracle first | 10 · 1 | ~16 h | after the target commit |
 | after speech E2E | jayne 2-7 | 3 · B2 speech sync (4 rows) | harness 4 + bench 2 | ~1.75 h | after, as cifar did (operator 10-27) |
 | then | freed GPUs | Run order rule: seeds 2-3, speech ablations (priority 3) | — | — | — |
 
 Two pools must never share a GPU with a harness leg (FX-T91 OOM); bench pools may (1 speech + 4 cifar = 34 GB, FX-N161).
 **Run order rule (operator 10-27; standing):** seed 1 of every End-to-end cell (both datasets; every final sync / async config) first,
-for the one End-to-end plot of numbers and gains; everything else waits. Ablations (Ladder, swaps, rejected ideas) are cifar-only in
-the paper (cifar seed 1 done); speech ablations moved to priority 3. Then seed 1 of priorities 2 → 3 → 4, then seeds 2-3.
+for the one End-to-end plot of numbers and gains; everything else waits. Within it, Felix, then the oracle `*` arms, then the
+deployable ones, so every baseline is on the plot early (cifar seed 1: oracle and check-in arms close for REFL 86-95 vs 88-94 h,
+FedBuff 78-81 vs 72-82 h; not for FedDance: FedDance\* ✗ 77%, so deployable FedDance still matters). Ablations (Ladder, swaps,
+rejected ideas) are cifar-only in the paper (cifar seed 1 done); speech ablations moved to priority 3. Then seed 1 of priorities
+2 → 3 → 4, then seeds 2-3.
 **Sequencing (operator 10-27 13:00):** no idle GPUs, no reruns, running past 10 h is fine: one queue per node, longest legs first, so
 a GPU takes the next leg the moment one ends. No cifar seeds beside speech legs (they would slow seed 1). B2 speech runs after the
 speech E2E legs (operator 10-27: cifar ran B2 after too); a clear B2 miss means rerunning that baseline's speech legs. Speech E2E =
-12 async × ~11 h + 32 sync × ~4 h ≈ 260 GPU-h on 10 GPUs: done ~10-28 evening.
+12 async × ~11 h + 32 sync × ~4 h ≈ 260 GPU-h on 12 GPUs: done ~10-28 evening.
 
-**Commands (10-27; tmux, from `/home/dgarg39/flame/lib/python/examples`, `R=/coc/scratch/dgarg/mlsys27_felix_runs_20261026`).**
-Split scripts are pre-built (`$R/split_launch.py` from `$R/launch_p2_speech.sh`): S 7 + J 27 now, M 10 after the speech MobiPerf
-target = all 44 speech End-to-end legs, no overlap. Every speech pool runs `--gpu-reserve-gb 20`: placement reads real free memory, and with
-45 GB GPUs (44.4 GiB free when empty) a speech leg (22) then starts only on an empty GPU: never beside another speech leg, 2d's
-cifar legs or the FluxTune leg on jayne 0-1 (4 GB but 100% util; 40.9 GiB free → blocked). So J lists jayne 0-7 and takes 0-1 when
-FluxTune ends (operator 10-27: ~1 h).
+**Commands (10-27 14:15; tmux, from `/home/dgarg39/flame/lib/python/examples`, `R=/coc/scratch/dgarg/mlsys27_felix_runs_20261026`).**
+Split scripts are pre-built (`$R/split_launch.py` from `$R/launch_p2_speech.sh`): S 4 + J 30 now, M 10 after the speech MobiPerf
+target = all 44 speech End-to-end legs, no overlap. Every speech pool runs `--gpu-reserve-gb 20`: placement reads real free memory,
+and with 45 GB GPUs (44.4 GiB free when empty) a speech leg (22) then starts only on an empty GPU, never beside another speech leg or
+2d's cifar legs. Jayne 0-1 are free (FluxTune leg done 13:57), so J uses all 8.
 *Why M waits:* speech `smu` 88% is out of reach (F49 Felix 52.8% at 12 h; cifar `smu` topped at 77.8% vs 80%), so it gets a per-trace
 target like cifar's 75% (Decisions "Reporting target per trace"). A leg's target is fixed in its YAML when its pool starts, so Felix
-`smu` (in S's first wave) sets it, and the other `smu` legs start in pool M at that target instead of running 120 h.
+`smu` (pool S) sets it, and the other `smu` legs start in pool M at that target instead of running 120 h. M goes on shepherd because S
+ends there just as the target lands.
 
 | # | node · when | command | est. wall |
 |---|---|---|---|
-| 1 | shepherd · now (beside 2d) | `tmux new -s sp_S` → `bash $R/launch_p1_speech_S.sh` (log `$R/speech_s1_S.log`) | ~22 h (wave 1: 4 `fx`, ~11 h; wave 2: 3 FedBuff, ~11 h) |
-| 2 | jayne · now | `tmux new -s sp_J` → `GPUS=0,1,2,3,4,5,6,7 bash $R/launch_p1_speech_J.sh` (log `$R/speech_s1_J.log`) | ~20 h (3 FedBuff\* ~11 h ∥ 24 sync ~4 h each) |
-| 3 | any · when `smu` `fx` ends (~10-28 01:00) | speech MobiPerf target: peak 5-eval mean of `smu` `fx` (`leg_digest`), rounded down to 5 pp → add `"google_speech": {"mobiperf_3st": X}` to `_metadata/trace_targets.json`, commit, push, `git pull` on both nodes; re-digest `smu` `fx` (hit = X). The key change marks S / J legs `stale: code key` (as cifar's 75%): accept | ~15 min |
-| 4 | jayne · after 3 | pool M (block below; the split must print 10 legs) | ≤ 11 h (2 FedBuff / FedBuff\* + 8 sync), on GPUs as J frees them |
+| 1 | shepherd · now (beside 2d) | `tmux new -s sp_S` → `bash $R/launch_p1_speech_S.sh` (log `$R/speech_s1_S.log`); legs start as 2d frees each GPU (~15:15) | ~11 h |
+| 2 | jayne · now | `tmux new -s sp_J` → `GPUS=0,1,2,3,4,5,6,7 bash $R/launch_p1_speech_J.sh` (log `$R/speech_s1_J.log`); 15 oracle legs first (FedBuff\*, REFL\*, FedDance\*, FedAvg\*, Oort\*), then FedBuff + 12 deployable sync | ~20 h (6 async ~11 h, 24 sync ~4 h) |
+| 3 | any · when `smu` `fx` ends (~10-28 02:00) | speech MobiPerf target: peak 5-eval mean of `smu` `fx` (`leg_digest`), rounded down to 5 pp → add `"google_speech": {"mobiperf_3st": X}` to `_metadata/trace_targets.json`, commit, push, `git pull` on both nodes; re-digest `smu` `fx` (hit = X). The key change marks S / J legs `stale: code key` (as cifar's 75%): accept | ~15 min |
+| 4 | shepherd · after 3 | pool M (block below; the split must print 10 legs) | ~16 h (2 async ≤ 11 h + 8 sync ~4 h on 4 GPUs) |
 | 5 | jayne 2-7 · after speech E2E | `tmux new -s b2s` → `HGPUS=2,3,4,5 BGPUS=6,7 DS=google_speech TAG=1027_s ARMS=sync_srv BLS=refl,feddance,fedavg,oort bash scripts/run_b2.sh` | ~1.75 h |
 | 6 | freed GPUs · after 5 | Run order rule: `$PY scripts/paper_runs.py launch --prio 2 --seeds 2 3 --datasets cifar10 --gpus <gpus> --root $R && bash $R/launch_p2_cifar.sh` (sync at every 100); speech priority 3 later | ~1 day (cifar 4 / GPU) |
 
-Command 4 (pool M):
+Command 4 (pool M, shepherd):
 ```
 $PY scripts/paper_runs.py launch --prio 2 --datasets google_speech --root $R   # rewrites the script only; pool M's YAMLs take X when it starts
-python3 $R/split_launch.py $R/launch_p2_speech.sh $R/launch_p1_speech_M.sh M 0,1,2,3,4,5,6,7 '^gs_FB2E2E_smu_(?!fx )' \
-    '^gs_FB2E2E_smu_(ctl_srv|fbstar_srv) ' '--gpu-reserve-gb 20'
-tmux new -s sp_M   # then: GPUS=0,1,2,3,4,5,6,7 bash $R/launch_p1_speech_M.sh
+python3 $R/split_launch.py $R/launch_p2_speech.sh $R/launch_p1_speech_M.sh M 0,1,2,3 '^gs_FB2E2E_smu_(?!fx )' \
+    '^gs_FB2E2E_\S+_((fbstar|rstar|fdstar|favstar)_srv \S+|sync_srv oort_star) ' '--gpu-reserve-gb 20'
+tmux new -s sp_M   # then: bash $R/launch_p1_speech_M.sh
 ```
 
 *Never run a full `launch_p*_<dataset>.sh` while that dataset's pools run: running legs count as missing and would run twice;
@@ -179,9 +182,9 @@ split off only legs no pool holds.* Checks while running: 3c.2-3.4 on the first 
 4. [ ] **Speech run (B2 after, operator 10-27):** full set `$PY scripts/paper_runs.py launch --prio 2 --datasets google_speech && bash <root>/launch_p2_speech.sh`
    (~26 async × ~11 h + 32 sync × ~4 h on 8 GPUs ≈ 2-2.5 days; less with target hits).
    *Now (operator 10-27): End-to-end only (44 legs), commands 1-4; Ladder / swaps for speech moved to priority 3.*
-   - Pool S (shepherd 0-3, 7): `fx` × 4 cells first, then FedBuff × 3 syn cells.
-   - Pool J (jayne 0-7, 27): every non-`smu` FedBuff\* and sync leg, FedBuff\* first.
-   - Pool M (jayne, after the speech MobiPerf target; 10): FedBuff, FedBuff\* and the 8 sync legs on `smu`.
+   - Pool S (shepherd 0-3, 4): `fx` × 4 cells.
+   - Pool J (jayne 0-7, 30): every non-`smu` non-Felix leg, oracle arms first.
+   - Pool M (shepherd 0-3, after the speech MobiPerf target; 10): every other `smu` leg, oracle arms first.
    *Cifar seeds 2-3:* after speech seed 1 (Run order rule); sync at every 100 (2d).
 5. [ ] **Tables as data lands:** `paper_runs.py status` + `paper_plots.py` (finished legs only); fill the outline's ⚠ numbers.
    GPUs free for the operator only in the speech tail (< 8 legs left).

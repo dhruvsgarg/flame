@@ -41,6 +41,12 @@
 syn_0 parity is closed on v1. Unavailability: `fwdllm_aggregator.py` has no send-gate, deliver-late or
 withheld-delivery wiring yet (only the oracular select filter and the sync scarcity wait).
 
+**Latest (10-27; bench, syn_0, seed 1, n = 1; `~/aish_test/.../fwdllm/paper_dy_20261027/POOL_full_{flux,fwdllm}`).** FluxTune
+hit the 65% target (`BudgetStop` 2 evals ≥ 0.65 at commit 557; best 66.2%, 4.78 h vclock, 148 min wall). FwdLLM stalled at 58-60%
+(best 61.6% at 22.9 h; stopped at 47.8 h). At FwdLLM's best (first eval ≥ 61.6%): FluxTune 3.29 h vs 22.9 h = **6.95× sooner**, 27.4
+vs 263.1 GB = **−90% traffic** (down 17.2 vs 24.4 GB, −29%; up 10.2 vs 238.7 GB, −96%); final accuracy +4.6 pp (66.2 vs 61.6%).
+Uplink is summed from trainer telemetry by wall timestamp. Unchecked: whether FwdLLM's stall is the method or this config.
+
 ---
 
 ## Next steps (persistent queue — resumes after Felix)
