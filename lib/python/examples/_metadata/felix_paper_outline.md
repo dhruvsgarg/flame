@@ -297,7 +297,7 @@ selection); Felix = `fx`. **Ablation cells** = {cifar, speech} × {syn_50, MobiP
 | Sensitivity table | Appendix (after first version) | One config for both datasets; results hold under ± changes to the step knobs, c_max, K | time to target per knob ± | 2 cells | Sensitivity |
 | Parked | — | new model / dataset (PAPER_TEMPLATE C.1-C.2) | only if time remains | — | — |
 
-### Table 1: run sets (seed 1 = first version; seeds 2-3 for End-to-end and Ladder after)
+### Table 1: run sets (seed 1 = first version; seeds 2-3 for End-to-end and Ladder after every seed-1 run)
 
 | run set | arms | cells | legs / seed | needs before launch | priority |
 |---|---|---|---|---|---|
@@ -310,12 +310,14 @@ selection); Felix = `fx`. **Ablation cells** = {cifar, speech} × {syn_50, MobiP
 | Rejected ideas | `fx` + UCB, `fx` + 2 local epochs | ablation cells | 8 | arms on `fx` | 3 |
 | Robustness: silent | `fx` at p 1 / 5 / 10% silent departures (p 0 = End-to-end) | ablation cells | 12 | new code (F42e) + smoke | 3 |
 | End-to-end static | `fx` + 5 deployable, static shards | syn_0 × 2 datasets | 12 | — | 4 (appendix) |
-| Robustness: lost · Sensitivity | — | — | — | after first version | 5 |
+| Seeds 2-3 | End-to-end + Ladder, both datasets | as seed 1 | 100 / seed | every seed-1 run of priorities 1-4 | 5 |
+| Robustness: lost · Sensitivity | — | — | — | after first version | 6 |
 
 **First version ≈ 166 legs** (manifest: 152 / seed incl. 12 static; silent departures not yet in it). **First plots
 (operator 10-25 late) = priorities 1-2, 116 legs.** Speech is the bottleneck (1 leg / GPU, async 10-13 h for 120 h):
-measure 2 legs / GPU on the speech smoke; use jayne when free. Order: End-to-end first (cifar and speech pools in parallel), then
-priorities 2-3, cifar ahead of speech within each.
+measure 2 legs / GPU on the speech smoke; use jayne when free. **Run order (operator 10-27):** seed 1 of every End-to-end cell
+(both datasets) first, then seed 1 of priorities 2 → 3 → 4, then seeds 2-3; within a priority, cifar ahead of speech. Status 10-27:
+cifar seed 1 priorities 1-3 done; speech seed 1 End-to-end + priority 2 next (FELIX_READINESS node plan).
 ## Later sections (claims they must back; outline after the front matter is final)
 
 - Theory: inherit FedBuff's rate under bounded staleness; state where held uploads break the bound (P17 slogan TBD).
