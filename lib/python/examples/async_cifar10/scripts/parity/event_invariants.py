@@ -983,7 +983,7 @@ CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model
           ev21_avl_eval_semantics, ev22_availability_knowledge, ev23_checkin_protocol, ev24_busy_until_completion]
 
 
-# Live early exit: checks whose FAIL on a log prefix stays FAIL on the full log (EV11: its backwards count only).
+# Live early exit: checks whose FAIL on a log prefix stays FAIL on the full log (EV11: its backwards count only; EV23: protocol breaks only).
 EARLY = (ev6_staleness, ev8_concurrency_cap, ev9_selector_state, ev11_vclock, ev14_eval_sane, ev15_one_task_per_version,
          ev16_withheld_delivery, ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev21_avl_eval_semantics,
          ev22_availability_knowledge, ev23_checkin_protocol)
@@ -999,7 +999,8 @@ def doomed(run_dir: str) -> list:
         except Exception:  # noqa: BLE001 -- a partial log must never kill a leg by crashing a check
             continue
         if r["status"] == "FAIL" and not (fn is ev11_vclock and "backwards=0 " in r["detail"]) \
-                and not (fn is ev19_stream_schedule and "no trainer_round carries" in r["detail"]):
+                and not (fn is ev19_stream_schedule and "no trainer_round carries" in r["detail"]) \
+                and not (fn is ev23_checkin_protocol and "no waiting check-in" in r["detail"]):  # picked lines can trail
             out.append(re.match(r"ev\d+", fn.__name__)[0].upper() + ": " + r["detail"])
     return out
 
