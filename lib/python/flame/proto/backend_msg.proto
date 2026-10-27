@@ -55,4 +55,5 @@ message Data {
   int32 seqno =3;
   bool eom = 4;
   bytes payload = 5;
+  string transfer_id = 6;
 }

@@ -16,6 +16,7 @@
 """Chunk Manager."""
 
 import logging
+import time
 from datetime import datetime
 from queue import Empty, Queue
 from threading import Thread
@@ -50,8 +51,35 @@ class ChunkThread(Thread):
         self._end_id = kwargs[KEY_END_ID]
 
         self.queue = Queue()
-        self.chunk_store = ChunkStore()
+        self.stores: dict[str, ChunkStore] = {}
+        self.retired: dict[str, float] = {}
         self._done = False
+
+    def _expire(self):
+        now = time.monotonic()
+        self.retired = {key: until for key, until in self.retired.items() if until > now}
+        for key, store in list(self.stores.items()):
+            if store.is_stale(TRANSFER_TIMEOUT):
+                logger.warning(f"Incomplete transfer {key} from {self._end_id} expired")
+                del self.stores[key]
+                self.retired[key] = now + TRANSFER_TIMEOUT
+
+    def _consume(self, msg):
+        self._expire()
+        if not msg.transfer_id:
+            logger.error("Missing transfer identity; sender and receiver backends must be upgraded together")
+            return None
+        if msg.transfer_id in self.retired:
+            return None
+        store = self.stores.setdefault(msg.transfer_id, ChunkStore())
+        accepted = store.assemble(msg)
+        if not accepted or store.eom:
+            del self.stores[msg.transfer_id]
+            self.retired[msg.transfer_id] = time.monotonic() + TRANSFER_TIMEOUT
+            if accepted:
+                return store.get_data()
+            logger.warning(f"Invalid chunk in transfer {msg.transfer_id} from {self._end_id}")
+        return None
 
     def stop(self):
         """Set a flag to stop the thread."""
@@ -101,28 +129,21 @@ class ChunkThread(Thread):
                 msg = self.queue.get(timeout=QUEUE_TIMEOUT)
             except Empty:
                 logger.debug("Currently empty")
-                if self.chunk_store.is_stale(TRANSFER_TIMEOUT):
-                    logger.warning(
-                        f"incomplete transfer for {self._end_id} stalled for "
-                        f"{TRANSFER_TIMEOUT}s (chunk likely lost); resetting"
-                    )
-                    self.chunk_store.reset()
-                    self._backend.set_cleanup_ready(self._end_id)
+                self._expire()
                 continue
 
             timestamp = datetime.now()
 
             # assemble is done in a chunk thread so that it won't block asyncio
             # task
-            self.chunk_store.assemble(msg)
+            payload = self._consume(msg)
             logger.debug("Assemble attempted for chunkstore")
 
-            if not self.chunk_store.eom:
-                logger.debug(f"self.chunk_store.eom is {self.chunk_store.eom}")
+            if payload is None:
+                logger.debug("Transfer remains incomplete or was rejected")
                 self._backend.set_cleanup_ready(msg.end_id)
                 continue
                 
-            payload = self.chunk_store.get_data()
             logger.debug(
                 f"Payload will now be pushed to target receive queue for end: {msg.end_id}"
             )
@@ -131,8 +152,7 @@ class ChunkThread(Thread):
                 inner(msg.end_id, payload, timestamp), self._backend.loop()
             )
 
-            # message was completely assembled, reset the chunk store
-            self.chunk_store.reset()
+            # The completed transfer was retired by _consume.
 
         logger.debug(f"finished chunk thread for {self._end_id}")
 
@@ -143,21 +163,22 @@ class ChunkManager(object):
     def __init__(self, backend):
         """Initialize an instance."""
         self._backend = backend
-        self._chunk_threads: dict[str, ChunkThread] = {}
+        self._chunk_threads: dict[tuple[str, str], ChunkThread] = {}
 
     def handle(self, msg: msg_pb2.Data, channel: Channel) -> None:
         """Process msg."""
-        if msg.end_id not in self._chunk_threads:
+        key = (channel.name(), msg.end_id)
+        if key not in self._chunk_threads:
             kwargs = {
                 KEY_BACKEND: self._backend,
                 KEY_CHANNEL: channel,
                 KEY_END_ID: msg.end_id,
             }
             chunk_thd = ChunkThread(kwargs=kwargs, daemon=True)
-            self._chunk_threads[msg.end_id] = chunk_thd
+            self._chunk_threads[key] = chunk_thd
             chunk_thd.start()
 
-        chunk_thd = self._chunk_threads[msg.end_id]
+        chunk_thd = self._chunk_threads[key]
         logger.debug(f"adding message to chunk thd for end: {msg.end_id}")
         chunk_thd.insert(msg)
         logger.debug(
@@ -166,7 +187,7 @@ class ChunkManager(object):
 
     def stop(self, end_id):
         """Stop chunk thread associated with end id."""
-        if end_id in self._chunk_threads:
-            chunk_thd = self._chunk_threads[end_id]
-            chunk_thd.stop()
-            del self._chunk_threads[end_id]
+        for key, chunk_thd in list(self._chunk_threads.items()):
+            if key[1] == end_id:
+                chunk_thd.stop()
+                del self._chunk_threads[key]

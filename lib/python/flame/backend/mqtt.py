@@ -17,6 +17,7 @@
 
 import asyncio
 import logging
+import uuid
 import time
 from collections import deque
 from enum import IntEnum
@@ -543,13 +544,14 @@ class MqttBackend(AbstractBackend):
         """Send data chunks (synchronous version - deprecated, use send_chunks_async)."""
         chunk_store = ChunkStore()
         chunk_store.set_data(data)
+        transfer_id = uuid.uuid4().hex
 
         while True:
             chunk, seqno, eom = chunk_store.get_chunk()
             if chunk is None:
                 break
 
-            self.send_chunk(topic, ch_name, chunk, seqno, eom)
+            self.send_chunk(topic, ch_name, chunk, seqno, eom, transfer_id)
 
     async def send_chunks_async(self, topic, ch_name: str, data: bytes) -> None:
         """Send data chunks asynchronously.
@@ -560,16 +562,17 @@ class MqttBackend(AbstractBackend):
         """
         chunk_store = ChunkStore()
         chunk_store.set_data(data)
+        transfer_id = uuid.uuid4().hex
 
         while True:
             chunk, seqno, eom = chunk_store.get_chunk()
             if chunk is None:
                 break
 
-            await self.send_chunk_async(topic, ch_name, chunk, seqno, eom)
+            await self.send_chunk_async(topic, ch_name, chunk, seqno, eom, transfer_id)
 
     def send_chunk(
-        self, topic: str, channel_name: str, data: bytes, seqno: int, eom: bool
+        self, topic: str, channel_name: str, data: bytes, seqno: int, eom: bool, transfer_id: str
     ) -> None:
         """Send a chunk with retry logic for disconnections."""
         msg = msg_pb2.Data()
@@ -578,6 +581,7 @@ class MqttBackend(AbstractBackend):
         msg.payload = data
         msg.seqno = seqno
         msg.eom = eom
+        msg.transfer_id = transfer_id
 
         any = Any()
         any.Pack(msg)
@@ -654,7 +658,7 @@ class MqttBackend(AbstractBackend):
         raise RuntimeError(f"Failed to send chunk {seqno} to {topic} after {max_retries} retries")
 
     async def send_chunk_async(
-        self, topic: str, channel_name: str, data: bytes, seqno: int, eom: bool
+        self, topic: str, channel_name: str, data: bytes, seqno: int, eom: bool, transfer_id: str
     ) -> None:
         """Send a chunk asynchronously with retry logic for disconnections.
         
@@ -667,6 +671,7 @@ class MqttBackend(AbstractBackend):
         msg.payload = data
         msg.seqno = seqno
         msg.eom = eom
+        msg.transfer_id = transfer_id
 
         any = Any()
         any.Pack(msg)

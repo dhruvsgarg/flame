@@ -17,6 +17,7 @@
 
 import asyncio
 import logging
+import uuid
 import socket
 import time
 from typing import AsyncIterable, Iterable
@@ -531,6 +532,7 @@ class PointToPointBackend(AbstractBackend):
     ) -> Iterable[msg_pb2.Data]:
         chunk_store = ChunkStore()
         chunk_store.set_data(data)
+        transfer_id = uuid.uuid4().hex
 
         while True:
             chunk, seqno, eom = chunk_store.get_chunk()
@@ -543,6 +545,7 @@ class PointToPointBackend(AbstractBackend):
                 payload=chunk,
                 seqno=seqno,
                 eom=eom,
+                transfer_id=transfer_id,
             )
 
             yield msg
