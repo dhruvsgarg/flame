@@ -62,7 +62,10 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
      `fn` was stopped this way at 103.3 h (5-eval mean 75.2%, digest hit=True); FedBuff\* `smu` finished its 120 h (never 75%).
      GPUs 0, 1, 2, 4, 6, 7 are free. Status: `paper_runs.py status --root <root> --datasets cifar10`. 59 zombie `[python]` children
      of the pool (FX-N164): harmless, gone at exit.
-2a. [ ] **Divergence fix for the FedScale family, blocks 2b (FX-N166b, operator 10-26).** 10 / 32 decay-off sync legs diverged, not 3:
+2a. ✅ **Divergence fix for the FedScale family (FX-N166b, operator 10-26). Result 21:15: scaled decay alone fixes it; no clip.**
+   A no decay: 70.9% at 12.5k, NaN by 15k (reproduced). B decay 0.98 / 200: stable to 20k, 69.7%. C clip 1.0: stable but
+   61.1% at 20k; D both: 54.7% (clip 1.0 throttles 1-step SGD: unfair, rejected). n = 1 seed, FedAvg only: the live gate (2b A) and
+   check 2 of 3c (0 `NONFINITE_REJECT`, no 0-rounds / h stretch) on every 2b leg confirm it. 10 / 32 decay-off sync legs diverged, not 3:
    FedAvg 4 / 4, FedAvg\* `s50u` `smu`, FedDance\* `s20u` `s50u` (round 3,918, 17.6 h) `smu`, REFL\* `smu` (end); each then ran to 120 h
    frozen with 0 rounds / h (`smu` FedAvg and the `*` arms were never flagged). Order (operator): (1) prove no family baseline diverges,
    (2) re-measure rounds / h on the stable legs, (3) set decay `every` from rounds at 120 h, (4) commit, launch 2b.
@@ -83,7 +86,7 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
      train loss nears 0.3 the global step doubles per round (FedDance\* `s50u` r3,905-3,916: step 0.3 → 10⁴, loss 0.3 → 10⁴ → NaN
      on every client): a late-training instability, not one outlier client. FedDance paper (SoCC'25, `feddance_socc25.pdf` on jayne)
      and its technical report (proof only) give no decay: "FedScale defaults" (0.98 / 10) stays.
-2b. [ ] **Cifar sync rerun, BLOCKED on 2a; lr decay scaled to our round budget (FX-N163; 32 legs = 4 cells × sync_srv / rstar / fdstar / favstar; the main
+2b. [ ] **Cifar sync rerun (2a passed; B launched on jayne 10-26 21:10); lr decay scaled to our round budget (FX-N163; 32 legs = 4 cells × sync_srv / rstar / fdstar / favstar; the main
    sync results).** Configs, `diverged` flag and the MobiPerf 75% stop are committed (code key changes for the sync legs only, C20). Same
    root `R=/coc/scratch/dgarg/mlsys27_felix_runs_20261026`; a leg's newest `run_*` wins. Scripts (all `bench_pool`, `/coc/scratch` logs
    `$R/cifar_n163b_*.log`): `launch_n163b_gate.sh` (4 FedAvg legs), `launch_n163b_rest.sh` (24 = REFL, FedDance, Oort, Oort\*, REFL\*,
