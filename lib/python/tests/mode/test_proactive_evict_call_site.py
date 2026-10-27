@@ -117,6 +117,7 @@ def _make_syncfl_agg(channel, *, simulated, evict_spy, abandon_spy):
     agg.config = types.SimpleNamespace(
         hyperparameters=types.SimpleNamespace(aggregation_goal=1)
     )
+    agg._sim_discarded_completions = {}
     return agg
 
 

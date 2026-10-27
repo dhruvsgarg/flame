@@ -317,7 +317,7 @@ class PyTorchFMoWTrainer(SatelliteSimulation, Trainer):
 
     def _sim_now(self) -> float:
         """Wall-elapsed since the aggregator's trace-read origin (real) or
-        last-task sim_send_ts (simulated).
+        current assignment's model arrival (simulated).
 
         Real mode anchors to `_agg_start_origin` (broadcast by the aggregator)
         rather than this trainer's own `trainer_start_ts`, so every trainer's
@@ -649,7 +649,7 @@ class PyTorchFMoWTrainer(SatelliteSimulation, Trainer):
         # added ONLY here, NOT to _sim_round_duration — so trainer_speed_s, OORT utility, the gate
         # predictor and P3/T2 controls keep pure compute; only the vclock (which advances to sct)
         # sees the real cycle time.
-        _leg = self.sim_completion_leg_s if self.simulated else 0.0
+        _leg = self.sim_completion_leg_s if self.simulated and not self.satellite_link_delivery_enabled() else 0.0
         self._sim_completion_ts = (
             self.satellite_training_start_s()
             + sim_round_duration
