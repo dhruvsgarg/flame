@@ -122,8 +122,8 @@ was only because GPU 3 then held a ladder leg.
 3b. [ ] **Speech smoke re-run (before step 4; not started: jayne took 2b B).** On shepherd GPUs 0-3 once 2b A and C end (~00:30):
    `R2=$R/FB2S_speech; $PY scripts/paper_runs.py launch --smoke --prio 4 --datasets google_speech --gpus 0,1,2,3 --root $R2 && bash
    $R2/launch_p4_smoke_speech.sh` (30 speech legs, 1 / GPU, ~1.5 h; script name ends `_speech`). *Pass:* 30 / 30.
-3c. [ ] **Speech sync sanity, before step 4 (operator 10-26: do not repeat cifar's misses).** Same rule as cifar, own numbers: speech
-   decay `every` = source `every` × (speech rounds in 120 h) / 1,000, measured, not copied from cifar (speech rounds are ~10× fewer).
+3c. [ ] **Speech sync sanity, before step 4 (operator 10-26: do not repeat cifar's misses).** Follow the decay *Procedure*
+   (Decisions, "Sync stacks"), with speech's own rounds, not cifar's (speech rounds are ~10× fewer).
    Current overlay (FX-N163, from F49's ~14 rounds / h ≈ 1.7k): every 20, Oort 30. Run after 2a so its fix is in the test.
    1. *Divergence, in-process:* `fl_lr_check.py --dataset google_speech` with each speech recipe (Baseline hyperparameters: REFL
       batch 20 lr 0.05; FedDance / FedAvg batch 32 lr 0.075; 1 step, mom 0.9, wd 5e-4), arms = no decay / decay / clip / both, to
@@ -390,6 +390,13 @@ GB on syn cells (FX-N166). Hits stop sooner than 120 h; ⚠ = FedAvg leg stopped
   5) spans the sources' ~1,000 rounds; our 120 h legs run ~18-23k (cifar REFL family), so `every` is scaled by rounds / 1,000, one rule
   for every baseline (FX-N163 has the factors). Unscaled it stalled every sync stack at 48-56%. Felix and FedBuff run no decay (FedBuff's
   paper describes none), as in their designs. An interim decay-off run is in the Scoreboard; the rerun (2b) gives the main numbers.
+  *Procedure (operator 10-26; cifar did it in 2a, speech repeats it in 3c):* (1) prove no baseline diverges (in-process arms: no
+  decay / decay / clip; grep live legs for `NONFINITE_REJECT` and 0-rounds / h stretches, which make a leg look slow); (2) rounds in
+  120 h per baseline × cell = digest `updates.versions` / `end.h` × 120, stable legs only; (3) per-leg `every` = source `every` ×
+  rounds / 1,000 (lr then ends at the source's end fraction, 13% for FedScale); (4) one value per family when the per-leg values sit
+  within ~±25% of it, else split the family; (5) after the run, re-check (2) on its digests. Cifar result: REFL, FedDance, FedAvg
+  and their `*` arms per-leg 167-273 → **all every 200** (lr ends at 6-19%); Oort / Oort\* 0.8-1.4k rounds → every 5 (source).
+  Clip 1.0 rejected for the family (in-process: 55-61% vs 70%).
 - **Traces and overruns (10-14):** 3-state syn traces only (FX-D166); ≤ 1-2% of tasks may overrun D, else fewer trainers per GPU.
 - **Speed levers (10-14):** speech bf16, balanced GPU placement, one n per dataset for all baselines (K / c: Cohort table).
 - **Degenerate cells (10-18):** a baseline below target in a short leg is round-bound if loss falls and accuracy rises.
