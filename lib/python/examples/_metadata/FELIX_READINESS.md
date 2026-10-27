@@ -69,16 +69,14 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
    FedAvg 4 / 4, FedAvg\* `s50u` `smu`, FedDance\* `s20u` `s50u` (round 3,918, 17.6 h) `smu`, REFL\* `smu` (end); each then ran to 120 h
    frozen with 0 rounds / h (`smu` FedAvg and the `*` arms were never flagged). Order (operator): (1) prove no family baseline diverges,
    (2) re-measure rounds / h on the stable legs, (3) set decay `every` from rounds at 120 h, (4) commit, launch 2b.
-   - *Running (20:55, ~25-30 min, shepherd GPUs 0-3 only, operator):* in-process FedAvg, 20k rounds, cifar α 0.1 n300, K 15, batch 24,
-     1 step, lr 0.1, mom 0.9, wd 5e-4; logs `$R/n163_divcheck/{A_nodecay,B_decay,C_clip,D_decay_clip}.log` (symlink to a session
-     scratchpad: copy the files into `$R/n163_divcheck_logs/` if they are still there). Arms: A no decay (must reproduce the blow-up),
-     B decay 0.98 / 200, C clip 1.0, D both. Rerun one arm: `$PY scripts/fl_lr_check.py --dataset cifar10 --pairs 0.1:1 --rate 1
+   - ✅ *Result (10-26 21:18; shepherd GPUs 0-3 only, operator):* in-process FedAvg, 20k rounds, cifar α 0.1 n300, K 15, batch 24,
+     1 step, lr 0.1, mom 0.9, wd 5e-4; logs `$R/n163_divcheck/`. A no decay: **NaN at round 14,750** (reproduced). B decay 0.98 / 200:
+     stable, 70% held to 20k. C clip 1.0: stable but 61%; D both: 55% (clip 1.0 binds every step, too tight). **Decision: decay
+     alone, no clip; launch 2b as committed.** Simulator accuracies are below live (no augmentation): compare arms only. *Running:*
+     B seeds 2-3 to 27k rounds (GPU 3, `B_decay_seed{2,3}.log`, ~25 min); a NaN there → reopen with a looser clip (measure grad norms
+     first; 1.0 is out). Live safety net: the digest's `diverged` flag on every 2b leg (check step D). Rerun one arm: `$PY scripts/fl_lr_check.py --dataset cifar10 --pairs 0.1:1 --rate 1
      --k 15 --batch 24 --local-steps 1 --momentum 0.9 --weight-decay 0.0005 --rounds 20000 --eval-every 250 --gpus 0
      [--lr-decay 0.98:200:0.00005] [--clip-grad-norm 1.0]` (~70 ms / round; `--baseline` is broken for fedavg: KeyError 'trainer').
-   - *Decide:* B stable and A diverges → decay alone suffices, launch 2b as committed. Only C / D stable, or A never diverges (test
-     inconclusive: random picks, no availability) → add `clip_grad_norm` 1.0 (Oort's recorded value, FX-D126) to the REFL, FedDance,
-     FedAvg cifar entries of `baseline_reference.yaml` as one uniform recorded deviation; check D's accuracy ≥ B's. Then a short live
-     gate on FedDance\* `s50u` past round ~4k (~15 min wall last run) before the 24 legs.
    - *Rates for `every` (decay-off digests, rounds / 120 h, diverged legs excluded):* REFL 20-27k, REFL\* 22-26k, FedDance 17-22k,
      FedDance\* 25k (`s0u`, only stable leg), FedAvg / FedAvg\* 17-23k (syn). All 17-27k → one bucket, every 200 stays (ends at 6-19% of
      base lr; source 13%); Oort / Oort\* 0.8-1.4k → every 5. Re-check on the fixed runs' digests; re-bucket only if a leg is < 10k.
@@ -100,7 +98,7 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
      *Pass* = no FedAvg leg `diverged` and each hits 80% or runs to 120 h (`paper_runs.py status --root $R --datasets cifar10`).
      *Fail* = add Oort's recorded `clip_grad_norm` 1.0 (PR27) to the FedScale-family cifar entries as a recorded deviation, then rerun
      the family (gate, FedAvg\*, and the REFL / FedDance legs of B).
-   - **B · Jayne GPUs 4-7 (operator-named; 0-3 are Aish's), now:** the 24 non-FedAvg legs at 3 / GPU, ~4 h (last full run 188 min on 18 slots).
+   - **B · Jayne GPUs 4-7 (operator-named; 0-3 are Aish's), after the speech smoke (3b) frees them (~22:45):** the 24 non-FedAvg legs at 3 / GPU, ~4 h (last full run 188 min on 18 slots).
      ```
      ssh jayne
      cd /home/dgarg39/flame && git pull && git log -1 --format='%h %s'      # must match shepherd's: git -C /home/dgarg39/flame log -1 --format=%h
