@@ -117,8 +117,8 @@ was only because GPU 3 then held a ladder leg.
      FedDance\* runs every 300 and Oort / Oort\* every 9 (Decisions decay Procedure); 6 / GPU fits (128 cores, 368 GB RAM, 12 / 46 GB
      per GPU at 3). Relaunch if needed (the script already says 6 / GPU):
      `cd /home/dgarg39/flame/lib/python/examples && GPUS=4,5,6,7 bash $R/launch_n163b_rest.sh`.
-     *Check once legs start:* `lrDecayEpoch` in each new `debug_run.yaml` = 300 FedDance\*, 200 REFL / REFL\* / FedDance, 9 Oort /
-     Oort\*; first 10 min: no OOM / `FAIL` in `$R/cifar_n163b_rest.log`. Redone only if A fails.
+     ✅ 22:08: all 24 started; `lrDecayEpoch` verified in each `debug_run.yaml` = 300 FedDance\*, 200 REFL / REFL\* / FedDance, 9 Oort /
+     Oort\*. Still check the first ~10 min at 6 / GPU: no OOM / `FAIL` in `$R/cifar_n163b_rest.log`. Redone only if A fails.
    - **C · Shepherd GPUs 2,3, running beside A (started 21:30):** FedAvg\* ×4 at 2 / GPU, ~1-2 h. Redone (1-2 h) if A fails.
      ```
      cd /home/dgarg39/flame/lib/python/examples && GPUS=2,3 bash /coc/scratch/dgarg/mlsys27_felix_runs_20261026/launch_n163b_favstar.sh
