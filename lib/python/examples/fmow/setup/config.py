@@ -16,7 +16,11 @@ class SatellitesConfig:
 
 @dataclass
 class CaptureConfig:
-    radius: float = 15.0
+    off_nadir_deg: float = 30.0
+
+    def __post_init__(self):
+        if not 0 <= self.off_nadir_deg <= 90:
+            raise ValueError("capture.off_nadir_deg must be between 0 and 90 degrees")
 
 @dataclass
 class GroundStationsConfig:
