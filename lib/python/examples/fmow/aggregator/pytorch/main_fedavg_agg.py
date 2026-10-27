@@ -27,6 +27,8 @@ import torchvision.transforms as transforms
 import wandb
 from flame.config import Config
 from flame.dataset import Dataset
+from flame.common.constants import DeviceType
+from flame.common.util import weights_to_device
 from flame.mode.horizontal.top_aggregator import TopAggregator
 
 from pathlib import Path
@@ -132,6 +134,10 @@ class PyTorchFMoWAggregator(TopAggregator):
         """Train a model."""
         # Implement this if testing is needed in aggregator
         pass
+
+    def _weights_for_aggregation(self, weights):
+        """Buffer updates on CPU; FedAvg reduces them on the model's GPU."""
+        return weights_to_device(weights, DeviceType.CPU)
 
     def evaluate(self) -> None:
         """Evaluate (test) a model."""

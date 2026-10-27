@@ -93,6 +93,9 @@ class FedAvg(AbstractOptimizer):
         logger.debug("calling _aggregate_pytorch")
 
         for k, v in tres.weights.items():
+            # Move only the current contribution, keeping buffered updates on
+            # their original device. Same-device transfers are no-ops.
+            v = v.to(device=self.agg_weights[k].device)
             tmp = v * rate
             # tmp.dtype is always float32 or double as rate is float
             # if v.dtype is integer (int32 or int64), there is type

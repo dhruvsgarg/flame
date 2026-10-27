@@ -630,6 +630,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             return None, committed_dt.timestamp(), None
         return ready_dt.timestamp(), committed_dt.timestamp(), (committed_dt - ready_dt).total_seconds()
 
+    def _weights_for_aggregation(self, weights):
+        """Choose where received updates wait before reduction."""
+        return weights_to_model_device(weights, self.model)
+
     def _aggregate_weights(self, tag: str) -> None:
         logger.debug("Agg weights inside top_aggregator syncfl")
         self._sync_aggregation_completed = False
@@ -810,7 +814,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             # None so an eval-only/malformed message can't UnboundLocalError.
             weights = None
             if materialize_weights(msg) is not None:
-                weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+                weights = self._weights_for_aggregation(msg[MessageType.WEIGHTS])
 
             if MessageType.DATASET_SIZE in msg:
                 count = msg[MessageType.DATASET_SIZE]
