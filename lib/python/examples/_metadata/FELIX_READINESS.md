@@ -62,7 +62,28 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
      `fn` was stopped this way at 103.3 h (5-eval mean 75.2%, digest hit=True); FedBuff\* `smu` finished its 120 h (never 75%).
      GPUs 0, 1, 2, 4, 6, 7 are free. Status: `paper_runs.py status --root <root> --datasets cifar10`. 59 zombie `[python]` children
      of the pool (FX-N164): harmless, gone at exit.
-2b. [ ] **Cifar sync rerun, lr decay scaled to our round budget (FX-N163; 32 legs = 4 cells × sync_srv / rstar / fdstar / favstar; the main
+2a. [ ] **Divergence fix for the FedScale family, blocks 2b (FX-N166b, operator 10-26).** 10 / 32 decay-off sync legs diverged, not 3:
+   FedAvg 4 / 4, FedAvg\* `s50u` `smu`, FedDance\* `s20u` `s50u` (round 3,918, 17.6 h) `smu`, REFL\* `smu` (end); each then ran to 120 h
+   frozen with 0 rounds / h (`smu` FedAvg and the `*` arms were never flagged). Order (operator): (1) prove no family baseline diverges,
+   (2) re-measure rounds / h on the stable legs, (3) set decay `every` from rounds at 120 h, (4) commit, launch 2b.
+   - *Running (20:55, ~25-30 min, shepherd GPUs 0-3 only, operator):* in-process FedAvg, 20k rounds, cifar α 0.1 n300, K 15, batch 24,
+     1 step, lr 0.1, mom 0.9, wd 5e-4; logs `$R/n163_divcheck/{A_nodecay,B_decay,C_clip,D_decay_clip}.log` (symlink to a session
+     scratchpad: copy the files into `$R/n163_divcheck_logs/` if they are still there). Arms: A no decay (must reproduce the blow-up),
+     B decay 0.98 / 200, C clip 1.0, D both. Rerun one arm: `$PY scripts/fl_lr_check.py --dataset cifar10 --pairs 0.1:1 --rate 1
+     --k 15 --batch 24 --local-steps 1 --momentum 0.9 --weight-decay 0.0005 --rounds 20000 --eval-every 250 --gpus 0
+     [--lr-decay 0.98:200:0.00005] [--clip-grad-norm 1.0]` (~70 ms / round; `--baseline` is broken for fedavg: KeyError 'trainer').
+   - *Decide:* B stable and A diverges → decay alone suffices, launch 2b as committed. Only C / D stable, or A never diverges (test
+     inconclusive: random picks, no availability) → add `clip_grad_norm` 1.0 (Oort's recorded value, FX-D126) to the REFL, FedDance,
+     FedAvg cifar entries of `baseline_reference.yaml` as one uniform recorded deviation; check D's accuracy ≥ B's. Then a short live
+     gate on FedDance\* `s50u` past round ~4k (~15 min wall last run) before the 24 legs.
+   - *Rates for `every` (decay-off digests, rounds / 120 h, diverged legs excluded):* REFL 20-27k, REFL\* 22-26k, FedDance 17-22k,
+     FedDance\* 25k (`s0u`, only stable leg), FedAvg / FedAvg\* 17-23k (syn). All 17-27k → one bucket, every 200 stays (ends at 6-19% of
+     base lr; source 13%); Oort / Oort\* 0.8-1.4k → every 5. Re-check on the fixed runs' digests; re-bucket only if a leg is < 10k.
+   - *Why it diverges:* fixed lr 0.1, 1 SGD step (fresh optimizer, so momentum is inert), no clip, CifarNet has no normalization. As
+     train loss nears 0.3 the global step doubles per round (FedDance\* `s50u` r3,905-3,916: step 0.3 → 10⁴, loss 0.3 → 10⁴ → NaN
+     on every client): a late-training instability, not one outlier client. FedDance paper (SoCC'25, `feddance_socc25.pdf` on jayne)
+     and its technical report (proof only) give no decay: "FedScale defaults" (0.98 / 10) stays.
+2b. [ ] **Cifar sync rerun, BLOCKED on 2a; lr decay scaled to our round budget (FX-N163; 32 legs = 4 cells × sync_srv / rstar / fdstar / favstar; the main
    sync results).** Configs, `diverged` flag and the MobiPerf 75% stop are committed (code key changes for the sync legs only, C20). Same
    root `R=/coc/scratch/dgarg/mlsys27_felix_runs_20261026`; a leg's newest `run_*` wins. Scripts (all `bench_pool`, `/coc/scratch` logs
    `$R/cifar_n163b_*.log`): `launch_n163b_gate.sh` (4 FedAvg legs), `launch_n163b_rest.sh` (24 = REFL, FedDance, Oort, Oort\*, REFL\*,
@@ -83,7 +104,8 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
      tmux new -s n163b_rest
      cd /home/dgarg39/flame/lib/python/examples && GPUS=4,5,6,7 bash /coc/scratch/dgarg/mlsys27_felix_runs_20261026/launch_n163b_rest.sh
      ```
-     If the gate fails and the clip lands, these 24 legs are redone (accepted risk: REFL / FedDance did not diverge in 24 legs at lr 0.1).
+     If the gate fails and the clip lands, these 24 legs are redone. (The old "REFL / FedDance did not diverge" was wrong: FedDance\*
+     diverged 3 / 4, step 2a.)
    - **C · After A passes (shepherd GPUs 0-3 once the tail ends, ~23:20):** FedAvg\* ×4, ~1-2 h.
      ```
      cd /home/dgarg39/flame/lib/python/examples && GPUS=0,1,2,3 bash /coc/scratch/dgarg/mlsys27_felix_runs_20261026/launch_n163b_favstar.sh
@@ -98,7 +120,23 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
    experiments/FB2S_1025b && bash experiments/FB2S_1025b/launch_p4_smoke.sh` (regenerate first: it bakes `--leg-gpu-gb`; skips
    done legs). *Pass:* 60 / 60. **Next action:** can start now on the idle GPUs (1, 2, 4, 6, 7; the 4 tail legs hold 0, 3, 5) while the
    tail finishes; B2 (step 3) waits for the tail to end (~01:15).
-4. [ ] **Speech run (after step 3 passes):** `$PY scripts/paper_runs.py launch --prio 2 --datasets google_speech && bash <root>/launch_p2_speech.sh`
+   *Running 10-26 ~21:10 on jayne GPUs 4-7 (operator), fresh root on shared scratch:* `R2=$R/FB2S_speech_jayne; $PY
+   scripts/paper_runs.py launch --smoke --prio 4 --datasets google_speech --gpus 4,5,6,7 --root $R2 && bash $R2/launch_p4_smoke.sh`.
+3c. [ ] **Speech sync sanity, before step 4 (operator 10-26: do not repeat cifar's misses).** Same rule as cifar, own numbers: speech
+   decay `every` = source `every` × (speech rounds in 120 h) / 1,000, measured, not copied from cifar (speech rounds are ~10× fewer).
+   Current overlay (FX-N163, from F49's ~14 rounds / h ≈ 1.7k): every 20, Oort 30. Run after 2a so its fix is in the test.
+   1. *Divergence, in-process:* `fl_lr_check.py --dataset google_speech` with each speech recipe (Baseline hyperparameters: REFL
+      batch 20 lr 0.05; FedDance / FedAvg batch 32 lr 0.075; 1 step, mom 0.9, wd 5e-4), arms = no decay / decay / clip / both, to
+      ≥ 3k rounds (> 120 h of speech rounds). Any non-finite → apply the 2a fix to speech too.
+   2. *Divergence, live:* every speech sync leg's newest `bench.log` has 0 `NONFINITE_REJECT`; digest `updates.versions_per_h` never
+      drops to 0 while the leg runs (cifar's diverged legs ran to 120 h frozen and looked like plain misses).
+   3. *Rates:* rounds / h per baseline × cell (incl. `*` arms) from stable legs (3b smoke = early rate; confirm on the first full
+      legs); rounds at 120 h → `every`; one bucket per ~2× spread, Oort separate. Change the overlay only if rounds differ > 2× from 1.7k.
+   4. *Schedule check:* trainer `lr` in `trainer_round` telemetry = base × factor^((round − 1) // every) at 2-3 rounds; lr at the leg's
+      last round 6-20% of base (source 13%), not at the floor early.
+   5. *Fairness:* oracle `*` arms run about the same rounds / h as their non-oracle arm; a big gap means a stall or divergence, not speed.
+   6. Then the speech run (step 4); after the first ~12 h, re-run checks 2-3 on the live legs before trusting the rest.
+4. [ ] **Speech run (after steps 3 and 3c pass):** `$PY scripts/paper_runs.py launch --prio 2 --datasets google_speech && bash <root>/launch_p2_speech.sh`
    (~26 async × ~11 h + 32 sync × ~4 h on 8 GPUs ≈ 2-2.5 days; less with target hits).
 5. [ ] **Tables as data lands:** `paper_runs.py status` + `paper_plots.py` (finished legs only); fill the outline's ⚠ numbers.
    GPUs free for the operator only in the speech tail (< 8 legs left).
@@ -159,8 +197,8 @@ Cifar bench (10-26): Felix ~6-7 min wall per vclock hour solo (12 h leg 72 min, 
   (10-26):** `s0u` round 9,723 (58.8 h; last eval 10% = chance, best 78.7%), `s20u` 5,979 (37.8 h), `s50u` 10,070 (71 h). Client
   `stat_utility` grows 4 → 300 → 10⁴ → 10¹² over ~8 rounds (a feedback blow-up, not one outlier client), then the model is non-finite,
   every update is rejected (`nonfinite_utility`, ~294 per leg, FX-D111) and the run ends as `work_done`, which the digest read as a
-  plain early stop. Cause: constant lr 0.1 + momentum 0.9, 1 step, no clip and no decay (the decay-off run); FedDance / REFL (same
-  recipe) did not diverge in 24 legs, FedAvg's random picks did 3 of 3. Fix: the scaled decay lowers lr (0.1 → 0.04 at 9k rounds, 0.01
+  plain early stop. Cause: constant lr 0.1 + momentum 0.9, 1 step, no clip and no decay (the decay-off run); correction 10-26 21:00: 10 / 32 legs
+  diverged (FedAvg 4 / 4, FedAvg\* 2, FedDance\* 3, REFL\* `smu`; step 2a), so the Scoreboard's ✗ for those are frozen-at-divergence. Fix: the scaled decay lowers lr (0.1 → 0.04 at 9k rounds, 0.01
   at 23k); unproven, so step 2b gates it on the 4 FedAvg legs first, with Oort's recorded clip as the fallback. Divergence is now
   flagged by the digest (patch outside the tree, step 2b). (d) *Why sync stacks do not stall on unavailability (FedDance `s50u`, digest):* a round is ~20 s (1 step × 24 samples,
   2.15 MB model, ~10 s compute + ~10 s comm), so only 1.5% of tasks see the client leave mid-task (2,593 of 168k) and 1.8% time out;
