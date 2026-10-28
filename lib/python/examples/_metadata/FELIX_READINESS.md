@@ -54,8 +54,8 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
 | 10-27 10:54 → 12:04 | jayne 2-7 | B2 cifar oort (RT 12 h) + fedbuff reruns | fedbuff PASS, oort upd +5.3% | 1 h 10 | ✅ recorded |
 | 10-27 17:00 → ~21:45 | shepherd 4-7 | 2e · cifar sync at lr decay every 50 = main (tmux `e50`, `$R/cifar_e50`, worktree `~/flame_e50`) | 32 / 32 ok, 0 diverged | 4 h 48 | ✅ recorded |
 | 10-27 14:44 → 10-28 01:22 | shepherd 0-3 | 4 · speech pool S: `fx` × 4 cells | 4 / 4 ok, 0 diverged | 10 h 38 | ✅ recorded; GPUs 0-3 idle until M |
-| 10-27 14:22 → ~10-28 12:00 (10-28 01:35: 10 / 30 done, 8 running, 12 queued) | jayne 0-7 | 4 · speech pool J: every non-`smu` non-Felix leg, oracle arms first | 30 · 1 | ~21 h | E2E only; do not mark stale |
-| next (script built) → +~16 h | shepherd 0-3 | 4 · speech pool M: the other 10 `smu` legs at the new target, oracle first | 10 · 1 | ~16 h | target set; run command 4's tmux line |
+| 10-27 14:22 → ~10-28 12:00 (10-28 02:38: 12 / 30 done, 8 running, 10 queued; the queue self-launches as GPUs free, no action) | jayne 0-7 | 4 · speech pool J: every non-`smu` non-Felix leg, oracle arms first | 30 · 1 | ~21 h | E2E only; do not mark stale |
+| 10-28 ~02:45 (operator launches) → ~17:00-19:00 | shepherd 0-3 | 4 · speech pool M: the other 10 `smu` legs at the new target, oracle first | 10 · 1 | ~16 h | target set; run command 4's tmux line |
 | after speech E2E | jayne 2-7 | 3 · B2 speech sync (4 rows) | harness 4 + bench 2 | ~1.75 h | after, as cifar did (operator 10-27) |
 | then | freed GPUs | future TODO (operator 10-28: no time): seeds 2-3, then speech ablations (priority 3, below seeds; skipped, cifar covers them) | — | — | — |
 
@@ -88,7 +88,7 @@ ends there just as the target lands.
 | 1 | ✅ shepherd · pool S | done 10-28 01:22, 4 / 4 (`$R/speech_s1_S.log`) | 10 h 38 |
 | 2 | jayne · running (10-28 01:35: 10 / 30) | `tmux new -s sp_J` → `GPUS=0,1,2,3,4,5,6,7 bash $R/launch_p1_speech_J.sh` (log `$R/speech_s1_J.log`); 15 oracle legs first (FedBuff\*, REFL\*, FedDance\*, FedAvg\*, Oort\*), then FedBuff + 12 deployable sync | ~20 h (6 async ~11 h, 24 sync ~4 h) |
 | 3 | ✅ done 10-28 (`159efc904`; `smu` `fx` re-digested: re-set to 84% (operator 10-28): hit 97.8 h, 1,378 GB; pushed, jayne pulled) | speech MobiPerf target: peak 5-eval mean of `smu` `fx` (`leg_digest`), rounded down to 5 pp → add `"google_speech": {"mobiperf_3st": 0.80}` to `_metadata/trace_targets.json` together with the uncommitted `leg_digest.report_target` fix (it read speech as cifar via job name "cifar-10", so the `smu` `fx` digest says hit 31.4 h at 75%; the real hit is 80%), commit, push, `git pull` on both nodes; re-digest `smu` `fx` (hit = 80%). The key change marks S / J legs `stale: code key` (as cifar's 75%): accept | ~15 min |
-| 4 | shepherd · **ready: `launch_p1_speech_M.sh` built, 10 legs** | pool M (block below; the split must print 10 legs) | ~16 h (2 async ≤ 11 h + 8 sync ~4 h on 4 GPUs) |
+| 4 | shepherd · **launch 10-28 ~02:45, tmux `sp_M`; log `$R/speech_s1_M.log`; ends ~17:00-19:00 (ctl ~10 h, FedBuff\* ≤ 11 h, 8 sync 3-5 h on 4 GPUs)** | pool M (block below; the split must print 10 legs) | ~16 h (2 async ≤ 11 h + 8 sync ~4 h on 4 GPUs) |
 | 5 | jayne 2-7 · after speech E2E | `tmux new -s b2s` → `HGPUS=2,3,4,5 BGPUS=6,7 DS=google_speech TAG=1027_s ARMS=sync_srv BLS=refl,feddance,fedavg,oort bash scripts/run_b2.sh` | ~1.75 h |
 | 6 | **future TODO (operator 10-28: no time; cifar and speech seeds 2-3 not planned)** | Run order rule: `$PY scripts/paper_runs.py launch --prio 2 --seeds 2 3 --datasets cifar10 --gpus <gpus> --root $R && bash $R/launch_p2_cifar.sh` (sync at every 100); speech priority 3 later | ~1 day (cifar 4 / GPU) |
 
@@ -308,7 +308,7 @@ Cifar bench (10-26): Felix ~6-7 min wall per vclock hour solo (12 h leg 72 min, 
 **Now (10-28 01:40):** speech E2E seed 1: pool S done (Felix 4 / 4), pool J 10 / 30 (table below); cifar priorities 1-3 70 / 70 + sync reruns 2c / 2d / 2e (every 120 / 100 / 50; **2e = main**), 0 diverged;
 B2 cifar 4 / 5 PASS + oort marginal (upd +5.3% vs 5%); speech B2 after speech E2E. **Open reds:** REFL / FedDance beat Felix on `smu` by 16-21 h at ~½ the GB (FX-N166);
 swaps beat `fx` on `s50u` (FX-N165); FedDance\* ✗ 66-78%; Oort family ✗ 69-76% (6-11 rounds / h); End-to-end cifar `stale: code key`.
-**Next:** launch pool M now (`tmux new -s sp_M`, `bash $R/launch_p1_speech_M.sh`; shepherd idle; target 84%, Felix hits it at 97.8 h); pool J ends ~10-28 12:00; then B2 speech, seeds 2-3.
+**Remaining speech E2E (10-28 02:38): 16 / 44 done, 8 running + 10 queued (pool J), 10 pool M (launching). Everything else = future TODO (seeds 2-3, then speech ablations; static run set not scheduled). Next:** launch pool M now (`tmux new -s sp_M`, `bash $R/launch_p1_speech_M.sh`; shepherd idle; target 84%, Felix hits it at 97.8 h); pool J ends ~10-28 12:00; then B2 speech, seeds 2-3.
 
 **Latest result: FB2 speech End-to-end, partial (10-28 01:40, seed 1, 88% target, `smu` target pending, same root `$R/speech`; pool S done, pool J 10 / 30).**
 h · GB to 88%, else ✗ final % at 120 h; (↻ n %) = running, accuracy at that sim hour. Sync stacks K 5 (rule), lr decay unchanged (20 / 30). `*` = oracle.
