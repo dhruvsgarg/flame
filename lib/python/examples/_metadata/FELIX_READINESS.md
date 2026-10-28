@@ -203,6 +203,7 @@ split off only legs no pool holds.* Checks while running: 3c.2-3.4 on the first 
    - Pool M (shepherd 0-3, after the speech MobiPerf target; 10): every other `smu` leg, oracle arms first.
    *Cifar seeds 2-3:* future TODO (operator 10-28: no time); sync at every 50 if ever run (2e main).
 5. [ ] **Tables as data lands:** `paper_runs.py status` + `paper_plots.py` (finished legs only); fill the outline's ⚠ numbers.
+   **Paper table data:** `paper_felix/figs/expts/results_{cifar10,google_speech}.json` (`scripts/paper_json.py --root $R`; per cell × stack: time / GB / updates to target, accuracy at fixed hours, GB by fate, staleness, slot use, ratios vs Felix, ablations; `meta.complete`). Cifar complete (44 / 44); **speech: re-run after pools J and M finish (~10-28 evening) and commit**.
    GPUs free for the operator only in the speech tail (< 8 legs left).
 6. Then (FX-N131, Run order rule): static (appendix); silent departures (FX-N155) need code first. **Future TODO (operator 10-28, no time), in order:** seeds 2-3 of End-to-end and Ladder, both datasets; then speech Ladder / swaps / rejected ideas (priority 3, skipped: cifar seed 1 has them).
 

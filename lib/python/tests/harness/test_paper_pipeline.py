@@ -94,3 +94,21 @@ def test_status_and_launch_on_an_empty_root(tmp_path):
 def test_every_table_2_row_has_a_plot():
     import paper_plots  # asserts FIGS == paper_runs.FIGURES at import
     assert set(paper_plots.FIGS) == set(pr.FIGURES)
+
+
+def test_paper_json_metrics_and_ratios():
+    import paper_json as pj
+    d = dict(config=dict(target=0.8, window=2, K=10), end=dict(h=3.0, gb=9.0, acc_last=0.82, hit=True),
+             acc=dict(t=[3600, 7200, 10800], acc=[0.5, 0.7, 0.9], gb=[1.0, 2.0, 3.0], updates=[10, 20, 30]), updates=dict(total=30),
+             fates=dict(gb=dict(aggregated=9.0, late=1.0)), staleness=dict(all={"0": 1, "2": 1}), slots={}, departures={}, overhead={})
+    assert pj.first_cross(d, 0.75) == (3.0, 3.0, 30)  # 2-eval mean 0.6 at h 2, 0.8 at h 3
+    assert pj.first_cross(d, 0.75) is not None and pj.first_cross(d, 0.95) is None
+    m = pj.leg_metrics(d, "cifar10", "s0u")
+    assert (m["status"], m["time_h"], m["gb"], m["mean_staleness"], m["paid_not_used_pct"]) == ("hit", 3.0, 3.0, 1.0, 10.0)
+    fx, o = dict(time_h=3.0, gb=3.0, target=0.8), dict(time_h=6.0, gb=6.0, acc_at_felix_hit_h=70.0)
+    assert pj.vs(fx, o) == dict(speedup=2.0, gb_ratio=0.5, gb_saving_pct=50.0, acc_gain_pp_at_felix_hit_h=10.0)
+
+
+def test_report_target_reads_dataset_name():
+    cfg = dict(job=dict(name="cifar-10"), hyperparameters=dict(dataset_name="google_speech", targetAccuracy=0.88, availability_trace="mobiperf_3st"))
+    assert leg_digest.report_target(cfg) == 0.84
