@@ -194,7 +194,7 @@ def report_target(cfg):
     """The leg's reporting target: its config target, lowered to the trace's `_metadata/trace_targets.json` override."""
     hp = cfg.get("hyperparameters", {})
     tgt = hp.get("targetAccuracy")
-    ds = {"cifar-10": "cifar10", "google-speech": "google_speech"}.get(str(cfg.get("job", {}).get("name")))
+    ds = hp.get("dataset_name") or {"cifar-10": "cifar10"}.get(str(cfg.get("job", {}).get("name")))  # speech's job name is "cifar-10"
     ov = json.load(open(os.path.join(HERE, "..", "_metadata", "trace_targets.json"))).get(ds, {}).get(hp.get("availability_trace"))
     return tgt if tgt is None or ov is None else min(float(tgt), ov)
 
