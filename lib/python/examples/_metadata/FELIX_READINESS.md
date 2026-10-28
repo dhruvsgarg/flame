@@ -57,7 +57,7 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
 | 10-27 14:22 → ~10-28 12:00 (10-28 01:35: 10 / 30 done, 8 running, 12 queued) | jayne 0-7 | 4 · speech pool J: every non-`smu` non-Felix leg, oracle arms first | 30 · 1 | ~21 h | E2E only; do not mark stale |
 | next (script built) → +~16 h | shepherd 0-3 | 4 · speech pool M: the other 10 `smu` legs at the new target, oracle first | 10 · 1 | ~16 h | target set; run command 4's tmux line |
 | after speech E2E | jayne 2-7 | 3 · B2 speech sync (4 rows) | harness 4 + bench 2 | ~1.75 h | after, as cifar did (operator 10-27) |
-| then | freed GPUs | Run order rule: seeds 2-3, speech ablations (priority 3) | — | — | — |
+| then | freed GPUs | speech ablations (priority 3); seeds 2-3 = future TODO (operator 10-28: no time) | — | — | — |
 
 Two pools must never share a GPU with a harness leg (FX-T91 OOM); bench pools may (1 speech + 4 cifar = 34 GB, FX-N161).
 **Run order rule (operator 10-27; standing):** seed 1 of every End-to-end cell (both datasets; every final sync / async config) first,
@@ -65,7 +65,7 @@ for the one End-to-end plot of numbers and gains; everything else waits. Within 
 deployable ones, so every baseline is on the plot early (cifar seed 1: oracle and check-in arms close for REFL 86-95 vs 88-94 h,
 FedBuff 78-81 vs 72-82 h; not for FedDance: FedDance\* ✗ 77%, so deployable FedDance still matters). Ablations (Ladder, swaps,
 rejected ideas) are cifar-only in the paper (cifar seed 1 done); speech ablations moved to priority 3. Then seed 1 of priorities
-2 → 3 → 4, then seeds 2-3.
+2 → 3 → 4; seeds 2-3 are a future TODO (operator 10-28).
 **Sequencing (operator 10-27 13:00):** no idle GPUs, no reruns, running past 10 h is fine: one queue per node, longest legs first, so
 a GPU takes the next leg the moment one ends. No cifar seeds beside speech legs (they would slow seed 1). B2 speech runs after the
 speech E2E legs (operator 10-27: cifar ran B2 after too); a clear B2 miss means rerunning that baseline's speech legs. Speech E2E =
@@ -87,10 +87,10 @@ ends there just as the target lands.
 |---|---|---|---|
 | 1 | ✅ shepherd · pool S | done 10-28 01:22, 4 / 4 (`$R/speech_s1_S.log`) | 10 h 38 |
 | 2 | jayne · running (10-28 01:35: 10 / 30) | `tmux new -s sp_J` → `GPUS=0,1,2,3,4,5,6,7 bash $R/launch_p1_speech_J.sh` (log `$R/speech_s1_J.log`); 15 oracle legs first (FedBuff\*, REFL\*, FedDance\*, FedAvg\*, Oort\*), then FedBuff + 12 deployable sync | ~20 h (6 async ~11 h, 24 sync ~4 h) |
-| 3 | ✅ done 10-28 (`159efc904`; `smu` `fx` re-digested: hit 80% at 49.5 h, 970 GB; pushed, jayne pulled) | speech MobiPerf target: peak 5-eval mean of `smu` `fx` (`leg_digest`), rounded down to 5 pp → add `"google_speech": {"mobiperf_3st": 0.80}` to `_metadata/trace_targets.json` together with the uncommitted `leg_digest.report_target` fix (it read speech as cifar via job name "cifar-10", so the `smu` `fx` digest says hit 31.4 h at 75%; the real hit is 80%), commit, push, `git pull` on both nodes; re-digest `smu` `fx` (hit = 80%). The key change marks S / J legs `stale: code key` (as cifar's 75%): accept | ~15 min |
+| 3 | ✅ done 10-28 (`159efc904`; `smu` `fx` re-digested: re-set to 84% (operator 10-28): hit 97.8 h, 1,378 GB; pushed, jayne pulled) | speech MobiPerf target: peak 5-eval mean of `smu` `fx` (`leg_digest`), rounded down to 5 pp → add `"google_speech": {"mobiperf_3st": 0.80}` to `_metadata/trace_targets.json` together with the uncommitted `leg_digest.report_target` fix (it read speech as cifar via job name "cifar-10", so the `smu` `fx` digest says hit 31.4 h at 75%; the real hit is 80%), commit, push, `git pull` on both nodes; re-digest `smu` `fx` (hit = 80%). The key change marks S / J legs `stale: code key` (as cifar's 75%): accept | ~15 min |
 | 4 | shepherd · **ready: `launch_p1_speech_M.sh` built, 10 legs** | pool M (block below; the split must print 10 legs) | ~16 h (2 async ≤ 11 h + 8 sync ~4 h on 4 GPUs) |
 | 5 | jayne 2-7 · after speech E2E | `tmux new -s b2s` → `HGPUS=2,3,4,5 BGPUS=6,7 DS=google_speech TAG=1027_s ARMS=sync_srv BLS=refl,feddance,fedavg,oort bash scripts/run_b2.sh` | ~1.75 h |
-| 6 | freed GPUs · after 5 | Run order rule: `$PY scripts/paper_runs.py launch --prio 2 --seeds 2 3 --datasets cifar10 --gpus <gpus> --root $R && bash $R/launch_p2_cifar.sh` (sync at every 100); speech priority 3 later | ~1 day (cifar 4 / GPU) |
+| 6 | **future TODO (operator 10-28: no time; cifar and speech seeds 2-3 not planned)** | Run order rule: `$PY scripts/paper_runs.py launch --prio 2 --seeds 2 3 --datasets cifar10 --gpus <gpus> --root $R && bash $R/launch_p2_cifar.sh` (sync at every 100); speech priority 3 later | ~1 day (cifar 4 / GPU) |
 
 Command 4 (pool M, shepherd):
 ```
@@ -201,11 +201,11 @@ split off only legs no pool holds.* Checks while running: 3c.2-3.4 on the first 
    - Pool S (shepherd 0-3, 4): `fx` × 4 cells.
    - Pool J (jayne 0-7, 30): every non-`smu` non-Felix leg, oracle arms first.
    - Pool M (shepherd 0-3, after the speech MobiPerf target; 10): every other `smu` leg, oracle arms first.
-   *Cifar seeds 2-3:* after speech seed 1 (Run order rule); sync at every 50 (2e main; operator to confirm).
+   *Cifar seeds 2-3:* future TODO (operator 10-28: no time); sync at every 50 if ever run (2e main).
 5. [ ] **Tables as data lands:** `paper_runs.py status` + `paper_plots.py` (finished legs only); fill the outline's ⚠ numbers.
    GPUs free for the operator only in the speech tail (< 8 legs left).
-6. Then (FX-N131, Run order rule): seeds 2-3 of End-to-end and Ladder (cifar and speech) → speech ablations (priority 3: Ladder,
-   swaps, rejected ideas) → static (appendix); silent departures (FX-N155) need code first.
+6. Then (FX-N131, Run order rule): speech ablations (priority 3: Ladder,
+   swaps, rejected ideas) → static (appendix); silent departures (FX-N155) need code first. **Future TODO (operator 10-28, no time):** seeds 2-3 of End-to-end and Ladder, both datasets.
 
 Facts for the runbook: smoke = 2 h vclock, stops at `FB1S_TARGETS` (cifar 35%, speech 15%); paper legs stop at the 5-eval mean ≥
 target (`targetAccuracy`, `targetWindow` 5; every stack, sync and async) or at 120 h vclock (6-day trace, legs start +24 h so each
@@ -309,7 +309,7 @@ Cifar bench (10-26): Felix ~6-7 min wall per vclock hour solo (12 h leg 72 min, 
 **Now (10-28 01:40):** speech E2E seed 1: pool S done (Felix 4 / 4), pool J 10 / 30 (table below); cifar priorities 1-3 70 / 70 + sync reruns 2c / 2d / 2e (every 120 / 100 / 50; **2e = main**), 0 diverged;
 B2 cifar 4 / 5 PASS + oort marginal (upd +5.3% vs 5%); speech B2 after speech E2E. **Open reds:** REFL / FedDance beat Felix on `smu` by 16-21 h at ~½ the GB (FX-N166);
 swaps beat `fx` on `s50u` (FX-N165); FedDance\* ✗ 66-78%; Oort family ✗ 69-76% (6-11 rounds / h); End-to-end cifar `stale: code key`.
-**Next:** launch pool M now (`tmux new -s sp_M`, `bash $R/launch_p1_speech_M.sh`; shepherd idle; target 80%, Felix hits it at 49.5 h); pool J ends ~10-28 12:00; then B2 speech, seeds 2-3.
+**Next:** launch pool M now (`tmux new -s sp_M`, `bash $R/launch_p1_speech_M.sh`; shepherd idle; target 84%, Felix hits it at 97.8 h); pool J ends ~10-28 12:00; then B2 speech, seeds 2-3.
 
 **Latest result: FB2 speech End-to-end, partial (10-28 01:40, seed 1, 88% target, `smu` target pending, same root `$R/speech`; pool S done, pool J 10 / 30).**
 h · GB to 88%, else ✗ final % at 120 h; (↻ n %) = running, accuracy at that sim hour. Sync stacks K 5 (rule), lr decay unchanged (20 / 30). `*` = oracle.
@@ -319,7 +319,7 @@ h · GB to 88%, else ✗ final % at 120 h; (↻ n %) = running, accuracy at that
 | `s0u` | 70.9 · 1,499 | 101.2 · 2,081 (↻ 85% @ 63 h) | ✗ 75.6 | ✗ 41.0 | ✗ 55.2 | ✗ 54.3 |
 | `s20u` | 68.6 · 1,575 | ↻ 86% @ 92 h | ✗ 68.9 | ✗ 39.0 | ✗ 53.0 | ↻ 51% @ 116 h |
 | `s50u` | 66.2 · 1,762 | ↻ 84% @ 81 h | ✗ 53.5 | ✗ 39.2 | ↻ 48% @ 97 h | ↻ 39% @ 58 h |
-| `smu` (80%) | 49.5 · 970 (peak 5-mean 84.2%) | queued in M | M | M | M | M |
+| `smu` (84%) | 97.8 · 1,378 (peak 5-mean 84.2%) | queued in M | M | M | M | M |
 
 **Trends:** Felix hits 88% on all 3 synthetic cells in 66-71 h, ahead at every checkpoint (63 / 77 / 84 / 87% at 10 / 20 / 40 / 60 h vs FedBuff\* 52 / 71 / 81 / 84% on `s0u`):
 **1.43× sooner, −28% GB** on `s0u`; `s20u` / `s50u` FedBuff\* is on track to hit later than 92 / 81 h (the 1.3-1.5× window again). No sync stack nears 88%: Oort\* is best (76 / 69 / 54%) and
@@ -466,7 +466,7 @@ Felix vs best sync (2c; FedDance): `s0u` 1.26× sooner, `s20u` 1.13×, `s50u` 1.
     trace, rounded down to 5 pp, capped at the dataset's FL bound. Baselines reach the FL bound on the less difficult deployments;
     on MobiPerf (high heterogeneity, trainable 18-22%) only a lower level is attainable in the trace window, so that level is the
     representative target. Paper wording: "on MobiPerf we report the time and data to 75%, the highest level any system sustains".
-  - *Values:* cifar syn traces **80%**; cifar MobiPerf **75%**; speech by the same rule once FB2 speech lands.
+  - *Values:* cifar syn traces **80%**; cifar MobiPerf **75%**; speech **84%** (operator 10-28: Felix `fx` peak 84.2%, no 5 pp rounding; legs stop at the hit, a miss reports 120 h accuracy).
   - *Evidence (10-26, peak 5-eval means on cifar `smu`, seed 1):* Felix `fx` 76.0% (hit 75% at 95.2 h), best Felix variant 77.8%
     (`fx_ca`), FedBuff 74.1%, FedBuff\* ≤ 74.6%; sync stacks void until the scaled-decay rerun (interim decay-off: REFL 76.5%, FedDance
     76.1%, Oort 69%, none near 80%). Best stack 77.8% → 75%, below the 80% bound. Re-check on seeds 2-3; if 75% is missed, 72%.
