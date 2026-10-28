@@ -57,14 +57,14 @@ dirty one), from `lib/python/examples`, `PY="conda run --no-capture-output -n dg
 | 10-27 14:22 → ~10-28 12:00 (10-28 01:35: 10 / 30 done, 8 running, 12 queued) | jayne 0-7 | 4 · speech pool J: every non-`smu` non-Felix leg, oracle arms first | 30 · 1 | ~21 h | E2E only; do not mark stale |
 | next (script built) → +~16 h | shepherd 0-3 | 4 · speech pool M: the other 10 `smu` legs at the new target, oracle first | 10 · 1 | ~16 h | target set; run command 4's tmux line |
 | after speech E2E | jayne 2-7 | 3 · B2 speech sync (4 rows) | harness 4 + bench 2 | ~1.75 h | after, as cifar did (operator 10-27) |
-| then | freed GPUs | speech ablations (priority 3); seeds 2-3 = future TODO (operator 10-28: no time) | — | — | — |
+| then | freed GPUs | future TODO (operator 10-28: no time): seeds 2-3, then speech ablations (priority 3, below seeds; skipped, cifar covers them) | — | — | — |
 
 Two pools must never share a GPU with a harness leg (FX-T91 OOM); bench pools may (1 speech + 4 cifar = 34 GB, FX-N161).
 **Run order rule (operator 10-27; standing):** seed 1 of every End-to-end cell (both datasets; every final sync / async config) first,
 for the one End-to-end plot of numbers and gains; everything else waits. Within it, Felix, then the oracle `*` arms, then the
 deployable ones, so every baseline is on the plot early (cifar seed 1: oracle and check-in arms close for REFL 86-95 vs 88-94 h,
 FedBuff 78-81 vs 72-82 h; not for FedDance: FedDance\* ✗ 77%, so deployable FedDance still matters). Ablations (Ladder, swaps,
-rejected ideas) are cifar-only in the paper (cifar seed 1 done); speech ablations moved to priority 3. Then seed 1 of priorities
+rejected ideas) are cifar-only in the paper (cifar seed 1 done); speech ablations skipped (priority 3, below seeds 2-3; operator 10-28). Then seed 1 of priorities
 2 → 3 → 4; seeds 2-3 are a future TODO (operator 10-28).
 **Sequencing (operator 10-27 13:00):** no idle GPUs, no reruns, running past 10 h is fine: one queue per node, longest legs first, so
 a GPU takes the next leg the moment one ends. No cifar seeds beside speech legs (they would slow seed 1). B2 speech runs after the
@@ -204,8 +204,7 @@ split off only legs no pool holds.* Checks while running: 3c.2-3.4 on the first 
    *Cifar seeds 2-3:* future TODO (operator 10-28: no time); sync at every 50 if ever run (2e main).
 5. [ ] **Tables as data lands:** `paper_runs.py status` + `paper_plots.py` (finished legs only); fill the outline's ⚠ numbers.
    GPUs free for the operator only in the speech tail (< 8 legs left).
-6. Then (FX-N131, Run order rule): speech ablations (priority 3: Ladder,
-   swaps, rejected ideas) → static (appendix); silent departures (FX-N155) need code first. **Future TODO (operator 10-28, no time):** seeds 2-3 of End-to-end and Ladder, both datasets.
+6. Then (FX-N131, Run order rule): static (appendix); silent departures (FX-N155) need code first. **Future TODO (operator 10-28, no time), in order:** seeds 2-3 of End-to-end and Ladder, both datasets; then speech Ladder / swaps / rejected ideas (priority 3, skipped: cifar seed 1 has them).
 
 Facts for the runbook: smoke = 2 h vclock, stops at `FB1S_TARGETS` (cifar 35%, speech 15%); paper legs stop at the 5-eval mean ≥
 target (`targetAccuracy`, `targetWindow` 5; every stack, sync and async) or at 120 h vclock (6-day trace, legs start +24 h so each

@@ -261,7 +261,7 @@ cell's reporting target (§0 "target per trace": cifar MobiPerf 75%). Sync basel
 table). Bench
 (B2-validated per dataset: cifar ✅, speech = FX-N149). **Deployable** = FedBuff, Oort (check-in), REFL (Prophet forecast),
 FedDance (check-in Poisson forecast), FedAvg; **oracle** = FedBuff*, Oort*, REFL*, FedDance*, FedAvg* (the trace's eligible set at
-selection); Felix = `fx`. **Ablation cells** = cifar × {syn_50, MobiPerf} (operator 10-27: ablations on cifar only; speech ablations priority 3, appendix if run).
+selection); Felix = `fx`. **Ablation cells** = cifar × {syn_50, MobiPerf} (operator 10-27: ablations on cifar only; speech ablations skipped, priority 3 below seeds 2-3, operator 10-28).
 
 ### Table 2: figures and tables → claims → runs
 
@@ -302,9 +302,9 @@ selection); Felix = `fx`. **Ablation cells** = cifar × {syn_50, MobiPerf} (oper
 | run set | arms | cells | legs / seed | needs before launch | priority |
 |---|---|---|---|---|---|
 | End-to-end | `fx`, FedBuff, Oort, REFL, FedDance, FedAvg, FedBuff*, Oort*, REFL*, FedDance*, FedAvg* | 2 datasets × 4 traces | 88 | FedAvg* arm + 2 h smoke; syn_20 cell; digest + plots on a smoke | 1 |
-| Ladder | `b1` (+ Notify), `uo_o` (+ Select), `fn` (+ Agg, c 60) | ablation cells | 6 | — (arms exist) | 2 (speech: 3) |
-| Swap: concurrency | small fixed c (c 30), c ∝ eligible (`ca`) | ablation cells | 4 | port to `fx` base | 2 (speech: 3) |
-| Swap: availability | `fx` + check-in (no eviction), `fx` + oracle; forecast if cheap | ablation cells | 4-6 | arms on `fx` (forecast = new code ❓) | 2 (speech: 3) |
+| Ladder | `b1` (+ Notify), `uo_o` (+ Select), `fn` (+ Agg, c 60) | ablation cells | 6 | — (arms exist) | 2 (speech: 3, skipped: cifar covers; below seeds 2-3) |
+| Swap: concurrency | small fixed c (c 30), c ∝ eligible (`ca`) | ablation cells | 4 | port to `fx` base | 2 (speech: 3, skipped: cifar covers; below seeds 2-3) |
+| Swap: availability | `fx` + check-in (no eviction), `fx` + oracle; forecast if cheap | ablation cells | 4-6 | arms on `fx` (forecast = new code ❓) | 2 (speech: 3, skipped: cifar covers; below seeds 2-3) |
 | Swap: aggregation | `fx` + 1/√(1+τ), `fx` + 1/(1+τ) | ablation cells | 4 | arms on `fx` | 3 |
 | Swap: selection | `fx` + uniform, `fx` + Oort's selector | ablation cells | 4 | arms on `fx` | 3 |
 | Rejected ideas | `fx` + UCB, `fx` + 2 local epochs | ablation cells | 4 | arms on `fx` | 3 |
