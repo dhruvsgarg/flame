@@ -2289,7 +2289,7 @@ def run_smoke(cmd, log: Path, run_s: float = 900, wait_s: float = 3600) -> Optio
 
 
 # L18: files no leg executes (docs, tests, graders, batch drivers); editing them keeps the code state.
-NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python/examples/batches/**", "lib/python/examples/async_cifar10/scripts/parity/**",
+NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python/examples/batches/**", "lib/python/examples/paper_felix/**", "lib/python/examples/async_cifar10/scripts/parity/**",
                      "lib/python/examples/async_cifar10/scripts/parity_check.py", "lib/python/examples/scripts/run_*.py",
                      *(f"lib/python/examples/fwdllm/expt_scripts/{p}" for p in (  # plots: PR36 split its key mid-batch
                          "plotlib/**", "make_paper_figs.py", "preview_palette.py", "figs*.yaml")),
@@ -2297,7 +2297,7 @@ NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python
                          "parity_ladder", "readiness_score", "logical_diff", "insights", "accuracy_table", "replicate_spread",
                          "resource_report", "profile_report", "fd_sanity", "eurosys_export", "baseline_deviations",
                          "cleanup_experiments", "test_inventory", "harness_iso_compare", "felix_claims", "fl_lr_check", "dispatch",
-                         "paper_runs", "leg_digest", "paper_plots")))
+                         "paper_runs", "leg_digest", "paper_plots", "paper_json")))
 
 
 def code_key() -> str:

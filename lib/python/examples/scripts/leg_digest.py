@@ -24,7 +24,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE, os.path.join(HERE, "..", "..")]
-SCHEMA = 1
+SCHEMA = 3
 SOURCES = {  # series -> telemetry it is built from
     "acc": "agg_eval / agg_eval_raw (test accuracy), t = last agg_round vclock_now, gb = cumulative wire bytes, updates = cumulative",
     "hit": "acc 5-eval mean (targetWindow) >= report_target (config target, lowered by trace_targets.json)", "end": "run_end / last agg_round, acc",
@@ -239,6 +239,8 @@ def digest(run_dir):
     for tk in tasks:
         by_end[tk[0]].append(tk)
     fates, lags, left, held_s, busy_s, wait_s, comp_s = collections.Counter(), [], 0, 0.0, 0.0, 0.0, 0.0
+    notify = hp.get("avail_knowledge") == "notify"
+    by_fate = collections.defaultdict(lambda: [0.0, 0.0, 0.0])  # fate -> [compute, wait, held] slot-seconds
     detected = collections.Counter()
     hb, hh = [0.0] * hours, [0.0] * hours
 
@@ -269,6 +271,8 @@ def digest(run_dir):
                 rel, fate = c_t, "aggregated"
             else:  # arrived and not aggregated (sync straggler, stale-rejected), or still out at the end
                 rel, fate = min(arrive, nxt, end_t), "open" if arrive > end_t else "discarded"
+            if ab is None and notify and arrive > done:  # FX-N167: notify's send gate frees the slot at completion (no event)
+                rel = min(rel, done)
             fates[fate] += 1
             rel = max(rel, t0)
             dep = first_departure(trace.get(end), t0, rel)
@@ -282,6 +286,8 @@ def digest(run_dir):
             on = rel if dep is None else max(t0, dep)  # [t0, on] online, [on, rel] held by a departed client
             comp_s += min(done, on) - t0
             wait_s += max(0.0, on - done)  # finished, online, waiting for the commit (sync barrier)
+            bf = by_fate[fate]
+            bf[0], bf[1], bf[2] = bf[0] + min(done, on) - t0, bf[1] + max(0.0, on - done), bf[2] + rel - on
             busy_s += on - t0
             held_s += rel - on
             add(hb, t0, on)
@@ -295,7 +301,7 @@ def digest(run_dir):
         elif d["config"]["c"]:
             cap = float(d["config"]["c"]) * end_t
     occ = busy_s + held_s
-    d["slots"] = dict(busy_s=busy_s, held_departed_s=held_s, compute_s=comp_s, wait_s=wait_s, capacity_s=cap,
+    d["slots"] = dict(busy_s=busy_s, held_departed_s=held_s, compute_s=comp_s, wait_s=wait_s, capacity_s=cap, by_fate=dict(by_fate),
                       idle_s=None if cap is None else max(0.0, cap - occ), busy_per_h=hb, held_per_h=hh)
     m = A["model_b"]
     deliv = ("aggregated", "late", "discarded")

@@ -30,7 +30,8 @@ SMOKE_CELL = {"STA": "s0"}  # smoke: one cell per run set (default smu)
 ALL = ("s0u", "s20u", "s50u", "smu")
 # Table 2 rows: figure -> (where, [(run set, datasets, cells, arms or None = all)]). Silent departures: FX-N155 (no run set yet).
 _ABL = hp.FB2_ABL
-_E2E_ABL = [("E2E", DS, _ABL, ("fx", "ctl_srv", "fbstar_srv"))]
+ABL_DS = ("cifar10",)  # ablations are cifar-only (operator 10-27)
+_E2E_ABL = [("E2E", ABL_DS, _ABL, ("fx", "ctl_srv", "fbstar_srv"))]
 FIGURES = {
     "teaser": ("main", [("E2E", ("cifar10",), ("smu",), None)]),
     "headline": ("main", [("E2E", DS, ALL, None)]),
@@ -38,6 +39,7 @@ FIGURES = {
     "static": ("appendix", [("STA", DS, ("s0",), None)]),
     "efficiency": ("main", [("E2E", DS, ALL, None)]),
     "slots": ("main", [("E2E", ("cifar10",), ("s50u", "smu"), None), ("E2E", ("google_speech",), ("smu",), None)]),
+    "stall": ("main", [("E2E", DS, ("s50u", "smu"), None)]),
     "rounds": ("main", [("E2E", DS, ("smu",), None)]),
     "staleness": ("main", [("E2E", ("cifar10",), ("s50u", "smu"), ("fx", "ctl_srv", "fbstar_srv"))]),
     "picks": ("main", [("E2E", DS, _ABL, None)]),
@@ -45,12 +47,12 @@ FIGURES = {
     "wasted": ("main", [("E2E", DS, _ABL, None)]),
     "knowledge": ("main", [("E2E", DS, ("s50u", "smu"), None)]),
     "overhead": ("appendix", [("E2E", DS, ALL, None)]),
-    "ladder": ("main", [("LAD", DS, _ABL, None), ("E2E", DS, _ABL, ("fx", "ctl_srv"))]),
-    "swap_availability": ("main", [("SWA", DS, _ABL, None), *_E2E_ABL]),
-    "swap_selection": ("main", [("SWS", DS, _ABL, None), *_E2E_ABL]),
-    "swap_aggregation": ("main", [("SWG", DS, _ABL, None), *_E2E_ABL]),
-    "swap_concurrency": ("main", [("SWC", DS, _ABL, None), ("LAD", DS, _ABL, ("fn",)), *_E2E_ABL]),
-    "rejected": ("main", [("REJ", DS, _ABL, None), *_E2E_ABL]),
+    "ladder": ("main", [("LAD", ABL_DS, _ABL, None), ("E2E", ABL_DS, _ABL, ("fx", "ctl_srv"))]),
+    "swap_availability": ("main", [("SWA", ABL_DS, _ABL, None), *_E2E_ABL]),
+    "swap_selection": ("main", [("SWS", ABL_DS, _ABL, None), *_E2E_ABL]),
+    "swap_aggregation": ("main", [("SWG", ABL_DS, _ABL, None), *_E2E_ABL]),
+    "swap_concurrency": ("main", [("SWC", ABL_DS, _ABL, None), ("LAD", ABL_DS, _ABL, ("fn",)), *_E2E_ABL]),
+    "rejected": ("main", [("REJ", ABL_DS, _ABL, None), *_E2E_ABL]),
 }
 
 

@@ -1,21 +1,22 @@
 {
  "meta": {
   "dataset": "google_speech",
-  "generated": "2026-10-28T02:54",
+  "generated": "2026-10-28T17:50",
   "seeds": [
    1
   ],
   "run_root": "/coc/scratch/dgarg/mlsys27_felix_runs_20261026",
-  "code_key": "bb9aa2160cbf",
-  "legs_done": 16,
+  "code_key": "ee6d91a88027",
+  "legs_done": 44,
   "legs_total": 44,
-  "complete": false,
+  "complete": true,
   "units": {
    "time_h": "hours of simulated time to the cell's target (5-eval mean)",
    "gb": "cumulative wire GB at that time",
    "acc": "percent",
    "speedup": "stack time / Felix time",
-   "gb_ratio": "Felix GB / stack GB"
+   "gb_ratio": "Felix GB / stack GB",
+   "slot_time_h": "slot-hours over the whole run (to the hit or 120 h): useful / discarded compute, held by a departed client, waiting at the barrier, idle"
   },
   "notes": "status hit = reached target, miss = ran to the end without it (final_acc, peak_acc5), pending = leg not done"
  },
@@ -84,18 +85,152 @@
      "slot_busy_pct": 100.0,
      "slot_held_departed_pct": 0.0,
      "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 1416.8,
+      "wasted_compute": 1.0,
+      "held_departed": 0.0,
+      "waiting": 0.0,
+      "idle": 0.5
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
      "wire_msgs": 51646,
      "diverged": false,
      "kind": "felix",
      "n_seeds": 1
     },
     "FedBuff": {
-     "status": "pending",
-     "reason": "no digest"
+     "status": "hit",
+     "target": 0.88,
+     "time_h": 102.75,
+     "gb": 1829.3,
+     "updates_to_target": 31502,
+     "updates_per_h": 307.0,
+     "final_acc": 88.02,
+     "peak_acc5": 88.02,
+     "end_h": 102.75,
+     "end_gb": 1829.4,
+     "total_updates": 31503,
+     "acc_at_h": {
+      "6": 40.48,
+      "12": 52.35,
+      "24": 71.7,
+      "48": 82.28,
+      "72": 85.31,
+      "96": 87.27,
+      "120": null
+     },
+     "time_h_to_acc": {
+      "50": 10.79,
+      "60": 16.62,
+      "70": 22.29,
+      "80": 39.09,
+      "84": 59.59,
+      "88": 102.75
+     },
+     "gb_to_acc": {
+      "50": 266.1,
+      "60": 399.2,
+      "70": 517.4,
+      "80": 852.5,
+      "84": 1206.3,
+      "88": 1829.3
+     },
+     "acc_at_felix_hit_h": 85.14,
+     "gb_by_fate": {
+      "aggregated": 1828.7,
+      "open": 0.5
+     },
+     "paid_not_used_pct": 0.03,
+     "mean_staleness": 1.55,
+     "slot_busy_pct": 88.5,
+     "slot_held_departed_pct": 0.0,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 1817.9,
+      "wasted_compute": 0.6,
+      "held_departed": 0.0,
+      "waiting": 0.0,
+      "idle": 236.5
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 63030,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": 1.449,
+      "gb_ratio": 0.819,
+      "gb_saving_pct": 18.1,
+      "acc_gain_pp_at_felix_hit_h": 2.86
+     }
     },
     "Oort": {
-     "status": "pending",
-     "reason": "no digest"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 68.27,
+     "peak_acc5": 68.32,
+     "end_h": 120.06,
+     "end_gb": 247.9,
+     "total_updates": 4270,
+     "acc_at_h": {
+      "6": 3.6,
+      "12": 8.43,
+      "24": 24.08,
+      "48": 39.7,
+      "72": 50.55,
+      "96": 59.0,
+      "120": 68.29
+     },
+     "time_h_to_acc": {
+      "50": 71.19,
+      "60": 97.58,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": 149.2,
+      "60": 202.9,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 49.76,
+     "gb_by_fate": {
+      "aggregated": 247.9
+     },
+     "paid_not_used_pct": 0.0,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 227.5,
+      "wasted_compute": 0.0,
+      "held_departed": 0.0,
+      "waiting": 203.1,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 8540,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 38.24
+     }
     },
     "REFL": {
      "status": "miss",
@@ -144,6 +279,15 @@
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 315.4,
+      "wasted_compute": 0.1,
+      "held_departed": 0.0,
+      "waiting": 288.0,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
      "wire_msgs": 18600,
      "diverged": false,
      "kind": "deployable",
@@ -156,12 +300,140 @@
      }
     },
     "FedDance": {
-     "status": "pending",
-     "reason": "no digest"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 51.5,
+     "peak_acc5": 52.29,
+     "end_h": 120.06,
+     "end_gb": 621.3,
+     "total_updates": 8920,
+     "acc_at_h": {
+      "6": 7.32,
+      "12": 13.06,
+      "24": 26.07,
+      "48": 39.36,
+      "72": 45.49,
+      "96": 43.81,
+      "120": 51.21
+     },
+     "time_h_to_acc": {
+      "50": 100.37,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": 520.7,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 43.55,
+     "gb_by_fate": {
+      "discarded": 103.5,
+      "aggregated": 517.8,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 16.66,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 241.9,
+      "wasted_compute": 150.1,
+      "held_departed": 0.0,
+      "waiting": 242.4,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 21408,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 44.45
+     }
     },
     "FedAvg": {
-     "status": "pending",
-     "reason": "no digest"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 51.54,
+     "peak_acc5": 51.54,
+     "end_h": 120.03,
+     "end_gb": 611.6,
+     "total_updates": 8775,
+     "acc_at_h": {
+      "6": 6.79,
+      "12": 12.89,
+      "24": 24.24,
+      "48": 35.99,
+      "72": 44.71,
+      "96": 47.88,
+      "120": 51.54
+     },
+     "time_h_to_acc": {
+      "50": 92.53,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": 473.3,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 43.08,
+     "gb_by_fate": {
+      "discarded": 102.1,
+      "aggregated": 509.4,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 16.71,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 233.8,
+      "wasted_compute": 146.1,
+      "held_departed": 0.0,
+      "waiting": 235.5,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 21072,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 44.92
+     }
     },
     "FedBuff*": {
      "status": "hit",
@@ -210,6 +482,15 @@
      "slot_busy_pct": 100.0,
      "slot_held_departed_pct": 0.0,
      "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 2022.9,
+      "wasted_compute": 1.2,
+      "held_departed": 0.0,
+      "waiting": 0.0,
+      "idle": 0.6
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
      "wire_msgs": 71690,
      "diverged": false,
      "kind": "oracle",
@@ -267,6 +548,15 @@
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 321.7,
+      "wasted_compute": 0.0,
+      "held_departed": 0.0,
+      "waiting": 278.0,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
      "wire_msgs": 11770,
      "diverged": false,
      "kind": "oracle",
@@ -325,6 +615,15 @@
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 489.4,
+      "wasted_compute": 0.0,
+      "held_departed": 0.0,
+      "waiting": 385.5,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
      "wire_msgs": 28848,
      "diverged": false,
      "kind": "oracle",
@@ -384,6 +683,15 @@
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 313.0,
+      "wasted_compute": 198.2,
+      "held_departed": 0.0,
+      "waiting": 286.5,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
      "wire_msgs": 35508,
      "diverged": false,
      "kind": "oracle",
@@ -443,6 +751,15 @@
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 300.1,
+      "wasted_compute": 187.1,
+      "held_departed": 0.0,
+      "waiting": 299.3,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
      "wire_msgs": 27480,
      "diverged": false,
      "kind": "oracle",
@@ -458,14 +775,26 @@
    "summary": {
     "target": 0.88,
     "felix_first": true,
-    "all_stacks_in": false,
-    "best_deployable": null,
+    "all_stacks_in": true,
+    "best_deployable": "FedBuff",
     "best_oracle": "FedBuff*",
+    "vs_best_deployable": {
+     "stack": "FedBuff",
+     "speedup": 1.449,
+     "gb_ratio": 0.819,
+     "gb_saving_pct": 18.1
+    },
     "vs_best_oracle": {
      "stack": "FedBuff*",
      "speedup": 1.428,
      "gb_ratio": 0.72,
      "gb_saving_pct": 28.0
+    },
+    "vs_fedbuff": {
+     "stack": "FedBuff",
+     "speedup": 1.449,
+     "gb_ratio": 0.819,
+     "gb_saving_pct": 18.1
     }
    }
   },
@@ -520,36 +849,435 @@
      "paid_not_used_pct": 6.09,
      "mean_staleness": 2.41,
      "slot_busy_pct": 99.9,
-     "slot_held_departed_pct": 2.4,
+     "slot_held_departed_pct": 0.1,
      "left_mid_task_pct": 6.68,
+     "slot_time_h": {
+      "useful_compute": 1302.5,
+      "wasted_compute": 68.5,
+      "held_departed": 1.2,
+      "waiting": 0.0,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 2.0,
+     "timeouts": 0,
      "wire_msgs": 54274,
      "diverged": false,
      "kind": "felix",
      "n_seeds": 1
     },
     "FedBuff": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "hit",
+     "target": 0.88,
+     "time_h": 116.08,
+     "gb": 1629.8,
+     "updates_to_target": 28065,
+     "updates_per_h": 242.0,
+     "final_acc": 88.01,
+     "peak_acc5": 88.01,
+     "end_h": 116.09,
+     "end_gb": 1630.0,
+     "total_updates": 28066,
+     "acc_at_h": {
+      "6": 35.36,
+      "12": 51.39,
+      "24": 68.13,
+      "48": 80.31,
+      "72": 84.38,
+      "96": 86.35,
+      "120": null
+     },
+     "time_h_to_acc": {
+      "50": 11.66,
+      "60": 18.42,
+      "70": 25.45,
+      "80": 46.21,
+      "84": 66.55,
+      "88": 116.08
+     },
+     "gb_to_acc": {
+      "50": 233.9,
+      "60": 358.2,
+      "70": 477.9,
+      "80": 797.6,
+      "84": 1075.0,
+      "88": 1629.8
+     },
+     "acc_at_felix_hit_h": 83.76,
+     "gb_by_fate": {
+      "aggregated": 1627.9,
+      "late": 1.3,
+      "open": 0.4
+     },
+     "paid_not_used_pct": 0.11,
+     "mean_staleness": 1.53,
+     "slot_busy_pct": 68.6,
+     "slot_held_departed_pct": 18.6,
+     "left_mid_task_pct": 8.11,
+     "slot_time_h": {
+      "useful_compute": 1589.8,
+      "wasted_compute": 3.0,
+      "held_departed": 430.7,
+      "waiting": 0.0,
+      "idle": 298.2
+     },
+     "slot_time_lost_per_departure_s": 681.0,
+     "timeouts": 0,
+     "wire_msgs": 56161,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": 1.692,
+      "gb_ratio": 0.966,
+      "gb_saving_pct": 3.4,
+      "acc_gain_pp_at_felix_hit_h": 4.24
+     }
     },
     "Oort": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 55.74,
+     "peak_acc5": 55.74,
+     "end_h": 120.0,
+     "end_gb": 205.3,
+     "total_updates": 3495,
+     "acc_at_h": {
+      "6": 4.24,
+      "12": 4.91,
+      "24": 15.31,
+      "48": 29.43,
+      "72": 40.39,
+      "96": 47.93,
+      "120": 55.56
+     },
+     "time_h_to_acc": {
+      "50": 103.17,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": 176.8,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 38.8,
+     "gb_by_fate": {
+      "aggregated": 201.9,
+      "discarded": 0.9,
+      "open": 0.0,
+      "timeout": 0.7,
+      "late": 0.9
+     },
+     "paid_not_used_pct": 1.25,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 7.38,
+     "slot_time_h": {
+      "useful_compute": 171.7,
+      "wasted_compute": 3.5,
+      "held_departed": 60.9,
+      "waiting": 216.3,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 840.0,
+     "timeouts": 25,
+     "wire_msgs": 7072,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 49.2
+     }
     },
     "REFL": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 32.0,
+     "peak_acc5": 32.0,
+     "end_h": 120.0,
+     "end_gb": 439.1,
+     "total_updates": 7559,
+     "acc_at_h": {
+      "6": 3.77,
+      "12": 7.05,
+      "24": 7.85,
+      "48": 16.16,
+      "72": 19.8,
+      "96": 25.77,
+      "120": 31.95
+     },
+     "time_h_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 20.0,
+     "gb_by_fate": {
+      "aggregated": 430.7,
+      "late": 8.0,
+      "open": 0.1,
+      "timeout": 0.1
+     },
+     "paid_not_used_pct": 1.86,
+     "mean_staleness": 0.22,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 6.16,
+     "slot_time_h": {
+      "useful_compute": 237.3,
+      "wasted_compute": 5.6,
+      "held_departed": 105.6,
+      "waiting": 276.0,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 816.0,
+     "timeouts": 4,
+     "wire_msgs": 15128,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 68.0
+     }
     },
     "FedDance": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 50.14,
+     "peak_acc5": 50.14,
+     "end_h": 120.01,
+     "end_gb": 528.4,
+     "total_updates": 7555,
+     "acc_at_h": {
+      "6": 5.74,
+      "12": 12.39,
+      "24": 19.7,
+      "48": 33.59,
+      "72": 38.52,
+      "96": 45.27,
+      "120": 50.14
+     },
+     "time_h_to_acc": {
+      "50": 119.84,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": 527.0,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 41.95,
+     "gb_by_fate": {
+      "discarded": 80.2,
+      "aggregated": 437.9,
+      "timeout": 4.8,
+      "late": 0.7,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 16.37,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 4.93,
+     "slot_time_h": {
+      "useful_compute": 200.0,
+      "wasted_compute": 104.8,
+      "held_departed": 85.4,
+      "waiting": 231.5,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 684.0,
+     "timeouts": 164,
+     "wire_msgs": 18206,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 46.05
+     }
     },
     "FedAvg": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 46.36,
+     "peak_acc5": 48.83,
+     "end_h": 120.0,
+     "end_gb": 513.9,
+     "total_updates": 7340,
+     "acc_at_h": {
+      "6": 4.22,
+      "12": 9.79,
+      "24": 16.32,
+      "48": 33.02,
+      "72": 39.94,
+      "96": 43.26,
+      "120": 46.36
+     },
+     "time_h_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 38.18,
+     "gb_by_fate": {
+      "discarded": 77.5,
+      "aggregated": 425.3,
+      "late": 0.8,
+      "timeout": 5.2
+     },
+     "paid_not_used_pct": 16.41,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 5.49,
+     "slot_time_h": {
+      "useful_compute": 190.6,
+      "wasted_compute": 103.0,
+      "held_departed": 89.5,
+      "waiting": 231.2,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 663.0,
+     "timeouts": 178,
+     "wire_msgs": 17706,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 49.82
+     }
     },
     "FedBuff*": {
-     "status": "pending",
-     "reason": "no digest"
+     "status": "hit",
+     "target": 0.88,
+     "time_h": 117.59,
+     "gb": 1950.5,
+     "updates_to_target": 33583,
+     "updates_per_h": 286.0,
+     "final_acc": 88.03,
+     "peak_acc5": 88.03,
+     "end_h": 117.59,
+     "end_gb": 1950.5,
+     "total_updates": 33584,
+     "acc_at_h": {
+      "6": 37.83,
+      "12": 52.77,
+      "24": 71.15,
+      "48": 81.51,
+      "72": 84.72,
+      "96": 86.75,
+      "120": null
+     },
+     "time_h_to_acc": {
+      "50": 10.81,
+      "60": 16.5,
+      "70": 23.29,
+      "80": 42.76,
+      "84": 62.57,
+      "88": 117.59
+     },
+     "gb_to_acc": {
+      "50": 259.9,
+      "60": 381.1,
+      "70": 525.9,
+      "80": 891.0,
+      "84": 1211.6,
+      "88": 1950.5
+     },
+     "acc_at_felix_hit_h": 84.62,
+     "gb_by_fate": {
+      "aggregated": 1948.1,
+      "open": 0.6,
+      "late": 1.4
+     },
+     "paid_not_used_pct": 0.1,
+     "mean_staleness": 1.9,
+     "slot_busy_pct": 79.5,
+     "slot_held_departed_pct": 20.5,
+     "left_mid_task_pct": 7.6,
+     "slot_time_h": {
+      "useful_compute": 1866.1,
+      "wasted_compute": 3.2,
+      "held_departed": 482.0,
+      "waiting": 0.0,
+      "idle": 0.6
+     },
+     "slot_time_lost_per_departure_s": 680.0,
+     "timeouts": 0,
+     "wire_msgs": 67205,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": 1.714,
+      "gb_ratio": 0.808,
+      "gb_saving_pct": 19.2,
+      "acc_gain_pp_at_felix_hit_h": 3.38
+     }
     },
     "Oort*": {
      "status": "miss",
@@ -601,6 +1329,15 @@
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 6.76,
+     "slot_time_h": {
+      "useful_compute": 236.2,
+      "wasted_compute": 6.5,
+      "held_departed": 82.0,
+      "waiting": 276.1,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 928.0,
+     "timeouts": 40,
      "wire_msgs": 9414,
      "diverged": false,
      "kind": "oracle",
@@ -661,6 +1398,15 @@
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 6.86,
+     "slot_time_h": {
+      "useful_compute": 342.5,
+      "wasted_compute": 27.3,
+      "held_departed": 200.7,
+      "waiting": 336.3,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 911.0,
+     "timeouts": 1,
      "wire_msgs": 23130,
      "diverged": false,
      "kind": "oracle",
@@ -722,6 +1468,15 @@
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 4.97,
+     "slot_time_h": {
+      "useful_compute": 259.2,
+      "wasted_compute": 134.6,
+      "held_departed": 115.7,
+      "waiting": 297.7,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 673.0,
+     "timeouts": 206,
      "wire_msgs": 24922,
      "diverged": false,
      "kind": "oracle",
@@ -783,6 +1538,15 @@
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 5.05,
+     "slot_time_h": {
+      "useful_compute": 257.7,
+      "wasted_compute": 135.0,
+      "held_departed": 110.4,
+      "waiting": 303.6,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 672.0,
+     "timeouts": 236,
      "wire_msgs": 23390,
      "diverged": false,
      "kind": "oracle",
@@ -798,9 +1562,27 @@
    "summary": {
     "target": 0.88,
     "felix_first": true,
-    "all_stacks_in": false,
-    "best_deployable": null,
-    "best_oracle": null
+    "all_stacks_in": true,
+    "best_deployable": "FedBuff",
+    "best_oracle": "FedBuff*",
+    "vs_best_deployable": {
+     "stack": "FedBuff",
+     "speedup": 1.692,
+     "gb_ratio": 0.966,
+     "gb_saving_pct": 3.4
+    },
+    "vs_best_oracle": {
+     "stack": "FedBuff*",
+     "speedup": 1.714,
+     "gb_ratio": 0.808,
+     "gb_saving_pct": 19.2
+    },
+    "vs_fedbuff": {
+     "stack": "FedBuff",
+     "speedup": 1.692,
+     "gb_ratio": 0.966,
+     "gb_saving_pct": 3.4
+    }
    }
   },
   "s50u": {
@@ -854,36 +1636,438 @@
      "paid_not_used_pct": 11.77,
      "mean_staleness": 3.96,
      "slot_busy_pct": 99.9,
-     "slot_held_departed_pct": 12.4,
+     "slot_held_departed_pct": 0.3,
      "left_mid_task_pct": 13.49,
+     "slot_time_h": {
+      "useful_compute": 1192.4,
+      "wasted_compute": 130.7,
+      "held_departed": 4.1,
+      "waiting": 0.0,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 4.0,
+     "timeouts": 0,
      "wire_msgs": 60692,
      "diverged": false,
      "kind": "felix",
      "n_seeds": 1
     },
     "FedBuff": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 85.74,
+     "peak_acc5": 86.24,
+     "end_h": 120.03,
+     "end_gb": 1118.3,
+     "total_updates": 19250,
+     "acc_at_h": {
+      "6": 28.89,
+      "12": 43.06,
+      "24": 56.55,
+      "48": 76.12,
+      "72": 82.24,
+      "96": 84.28,
+      "120": 85.73
+     },
+     "time_h_to_acc": {
+      "50": 16.17,
+      "60": 26.72,
+      "70": 35.67,
+      "80": 63.99,
+      "84": 86.46,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": 205.2,
+      "60": 323.1,
+      "70": 422.2,
+      "80": 682.1,
+      "84": 870.8,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 81.01,
+     "gb_by_fate": {
+      "aggregated": 1081.8,
+      "late": 35.6,
+      "open": 0.4,
+      "timeout": 0.1
+     },
+     "paid_not_used_pct": 3.23,
+     "mean_staleness": 1.57,
+     "slot_busy_pct": 42.3,
+     "slot_held_departed_pct": 40.7,
+     "left_mid_task_pct": 17.88,
+     "slot_time_h": {
+      "useful_compute": 980.2,
+      "wasted_compute": 35.2,
+      "held_departed": 978.0,
+      "waiting": 0.0,
+      "idle": 407.3
+     },
+     "slot_time_lost_per_departure_s": 1022.0,
+     "timeouts": 3,
+     "wire_msgs": 38530,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 6.99
+     }
     },
     "Oort": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 49.98,
+     "peak_acc5": 49.98,
+     "end_h": 120.06,
+     "end_gb": 165.0,
+     "total_updates": 2610,
+     "acc_at_h": {
+      "6": 4.09,
+      "12": 4.79,
+      "24": 9.53,
+      "48": 25.99,
+      "72": 34.42,
+      "96": 41.36,
+      "120": 49.98
+     },
+     "time_h_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 32.57,
+     "gb_by_fate": {
+      "aggregated": 147.7,
+      "timeout": 5.2,
+      "late": 3.8,
+      "discarded": 3.0,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 7.57,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 16.64,
+     "slot_time_h": {
+      "useful_compute": 114.5,
+      "wasted_compute": 12.7,
+      "held_departed": 179.6,
+      "waiting": 167.0,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 1367.0,
+     "timeouts": 179,
+     "wire_msgs": 5686,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 55.43
+     }
     },
     "REFL": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 25.89,
+     "peak_acc5": 29.93,
+     "end_h": 120.07,
+     "end_gb": 383.9,
+     "total_updates": 6596,
+     "acc_at_h": {
+      "6": 3.6,
+      "12": 6.7,
+      "24": 8.67,
+      "48": 15.58,
+      "72": 21.37,
+      "96": 23.76,
+      "120": 25.99
+     },
+     "time_h_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 21.69,
+     "gb_by_fate": {
+      "aggregated": 356.6,
+      "late": 25.5,
+      "timeout": 0.9,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 6.9,
+     "mean_staleness": 0.37,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 11.08,
+     "slot_time_h": {
+      "useful_compute": 182.7,
+      "wasted_compute": 13.2,
+      "held_departed": 194.3,
+      "waiting": 246.2,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 954.0,
+     "timeouts": 30,
+     "wire_msgs": 13228,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 66.31
+     }
     },
     "FedDance": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 44.42,
+     "peak_acc5": 45.61,
+     "end_h": 120.02,
+     "end_gb": 404.9,
+     "total_updates": 5630,
+     "acc_at_h": {
+      "6": 3.77,
+      "12": 9.06,
+      "24": 15.34,
+      "48": 27.42,
+      "72": 35.59,
+      "96": 40.15,
+      "120": 44.42
+     },
+     "time_h_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 34.9,
+     "gb_by_fate": {
+      "aggregated": 325.1,
+      "timeout": 12.7,
+      "discarded": 52.5,
+      "late": 1.7,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 17.09,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 10.72,
+     "slot_time_h": {
+      "useful_compute": 150.0,
+      "wasted_compute": 80.1,
+      "held_departed": 172.0,
+      "waiting": 200.6,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 828.0,
+     "timeouts": 439,
+     "wire_msgs": 13950,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 53.1
+     }
     },
     "FedAvg": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 44.38,
+     "peak_acc5": 44.93,
+     "end_h": 120.02,
+     "end_gb": 416.1,
+     "total_updates": 5800,
+     "acc_at_h": {
+      "6": 3.71,
+      "12": 7.16,
+      "24": 14.04,
+      "48": 26.34,
+      "72": 35.02,
+      "96": 41.56,
+      "120": 44.38
+     },
+     "time_h_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 32.39,
+     "gb_by_fate": {
+      "discarded": 54.4,
+      "timeout": 12.5,
+      "aggregated": 335.7,
+      "late": 1.0,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 16.82,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 10.17,
+     "slot_time_h": {
+      "useful_compute": 144.3,
+      "wasted_compute": 77.9,
+      "held_departed": 168.5,
+      "waiting": 200.4,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 832.0,
+     "timeouts": 429,
+     "wire_msgs": 14336,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 55.61
+     }
     },
     "FedBuff*": {
-     "status": "pending",
-     "reason": "no digest"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 86.88,
+     "peak_acc5": 87.25,
+     "end_h": 120.05,
+     "end_gb": 1397.6,
+     "total_updates": 24060,
+     "acc_at_h": {
+      "6": 31.45,
+      "12": 46.29,
+      "24": 63.52,
+      "48": 78.42,
+      "72": 82.98,
+      "96": 85.17,
+      "120": 86.89
+     },
+     "time_h_to_acc": {
+      "50": 14.0,
+      "60": 22.19,
+      "70": 30.41,
+      "80": 55.95,
+      "84": 82.67,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": 228.9,
+      "60": 346.9,
+      "70": 459.3,
+      "80": 761.5,
+      "84": 1054.4,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 82.05,
+     "gb_by_fate": {
+      "aggregated": 1355.2,
+      "late": 41.4,
+      "open": 0.6,
+      "timeout": 0.1
+     },
+     "paid_not_used_pct": 3.01,
+     "mean_staleness": 2.04,
+     "slot_busy_pct": 52.5,
+     "slot_held_departed_pct": 47.5,
+     "left_mid_task_pct": 16.68,
+     "slot_time_h": {
+      "useful_compute": 1215.7,
+      "wasted_compute": 44.1,
+      "held_departed": 1140.7,
+      "waiting": 0.0,
+      "idle": 0.4
+     },
+     "slot_time_lost_per_departure_s": 1022.0,
+     "timeouts": 3,
+     "wire_msgs": 48155,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 5.95
+     }
     },
     "Oort*": {
      "status": "miss",
@@ -934,6 +2118,15 @@
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 15.45,
+     "slot_time_h": {
+      "useful_compute": 151.0,
+      "wasted_compute": 15.3,
+      "held_departed": 222.1,
+      "waiting": 214.8,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 1405.0,
+     "timeouts": 275,
      "wire_msgs": 7364,
      "diverged": false,
      "kind": "oracle",
@@ -994,6 +2187,15 @@
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 11.08,
+     "slot_time_h": {
+      "useful_compute": 269.1,
+      "wasted_compute": 30.4,
+      "held_departed": 294.2,
+      "waiting": 301.0,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 956.0,
+     "timeouts": 15,
      "wire_msgs": 19998,
      "diverged": false,
      "kind": "oracle",
@@ -1006,20 +2208,157 @@
      }
     },
     "FedDance*": {
-     "status": "pending",
-     "reason": "no digest"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 52.57,
+     "peak_acc5": 53.83,
+     "end_h": 120.0,
+     "end_gb": 635.4,
+     "total_updates": 8795,
+     "acc_at_h": {
+      "6": 8.01,
+      "12": 14.61,
+      "24": 24.06,
+      "48": 39.95,
+      "72": 44.6,
+      "96": 47.69,
+      "120": 52.57
+     },
+     "time_h_to_acc": {
+      "50": 100.83,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": 531.5,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 40.71,
+     "gb_by_fate": {
+      "discarded": 87.5,
+      "aggregated": 508.0,
+      "timeout": 18.7,
+      "late": 2.5
+     },
+     "paid_not_used_pct": 17.62,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 9.65,
+     "slot_time_h": {
+      "useful_compute": 194.2,
+      "wasted_compute": 107.4,
+      "held_departed": 243.4,
+      "waiting": 261.1,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 830.0,
+     "timeouts": 645,
+     "wire_msgs": 21894,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 47.29
+     }
     },
     "FedAvg*": {
-     "status": "pending",
-     "reason": "no digest"
+     "status": "miss",
+     "target": 0.88,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 50.42,
+     "peak_acc5": 50.49,
+     "end_h": 120.02,
+     "end_gb": 552.6,
+     "total_updates": 7625,
+     "acc_at_h": {
+      "6": 4.02,
+      "12": 11.82,
+      "24": 19.54,
+      "48": 34.69,
+      "72": 41.15,
+      "96": 45.39,
+      "120": 50.42
+     },
+     "time_h_to_acc": {
+      "50": 115.35,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": 532.9,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 39.5,
+     "gb_by_fate": {
+      "timeout": 19.3,
+      "discarded": 71.2,
+      "aggregated": 440.1,
+      "late": 2.5,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 17.45,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 11.26,
+     "slot_time_h": {
+      "useful_compute": 191.0,
+      "wasted_compute": 107.3,
+      "held_departed": 242.4,
+      "waiting": 266.0,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 814.0,
+     "timeouts": 665,
+     "wire_msgs": 19038,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 48.5
+     }
     }
    },
    "summary": {
     "target": 0.88,
     "felix_first": true,
-    "all_stacks_in": false,
+    "all_stacks_in": true,
     "best_deployable": null,
-    "best_oracle": null
+    "best_oracle": null,
+    "vs_fedbuff": {
+     "stack": "FedBuff",
+     "speedup": null,
+     "gb_ratio": null,
+     "gb_saving_pct": null
+    }
    }
   },
   "smu": {
@@ -1073,60 +2412,726 @@
      "paid_not_used_pct": 2.16,
      "mean_staleness": 3.37,
      "slot_busy_pct": 80.2,
-     "slot_held_departed_pct": 42.3,
+     "slot_held_departed_pct": 0.7,
      "left_mid_task_pct": 3.16,
+     "slot_time_h": {
+      "useful_compute": 1206.8,
+      "wasted_compute": 19.7,
+      "held_departed": 11.3,
+      "waiting": 0.0,
+      "idle": 291.4
+     },
+     "slot_time_lost_per_departure_s": 49.0,
+     "timeouts": 0,
      "wire_msgs": 52765,
      "diverged": false,
      "kind": "felix",
      "n_seeds": 1
     },
     "FedBuff": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.84,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 80.69,
+     "peak_acc5": 83.45,
+     "end_h": 120.1,
+     "end_gb": 1592.1,
+     "total_updates": 27350,
+     "acc_at_h": {
+      "6": 37.44,
+      "12": 45.95,
+      "24": 62.97,
+      "48": 76.11,
+      "72": 79.93,
+      "96": 82.22,
+      "120": 80.67
+     },
+     "time_h_to_acc": {
+      "50": 13.15,
+      "60": 22.19,
+      "70": 30.28,
+      "80": 66.74,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": 334.3,
+      "60": 481.6,
+      "70": 620.4,
+      "80": 1153.6,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 83.25,
+     "gb_by_fate": {
+      "aggregated": 1555.1,
+      "late": 32.4,
+      "timeout": 2.2,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 2.18,
+     "mean_staleness": 3.96,
+     "slot_busy_pct": 53.2,
+     "slot_held_departed_pct": 15.2,
+     "left_mid_task_pct": 3.8,
+     "slot_time_h": {
+      "useful_compute": 1261.6,
+      "wasted_compute": 17.4,
+      "held_departed": 364.9,
+      "waiting": 0.0,
+      "idle": 758.1
+     },
+     "slot_time_lost_per_departure_s": 1262.0,
+     "timeouts": 76,
+     "wire_msgs": 54854,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 0.75
+     }
     },
     "Oort": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.84,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 43.5,
+     "peak_acc5": 43.69,
+     "end_h": 120.06,
+     "end_gb": 177.4,
+     "total_updates": 2960,
+     "acc_at_h": {
+      "6": 2.97,
+      "12": 4.08,
+      "24": 11.83,
+      "48": 23.13,
+      "72": 34.66,
+      "96": 40.4,
+      "120": 43.51
+     },
+     "time_h_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 40.28,
+     "gb_by_fate": {
+      "aggregated": 171.6,
+      "timeout": 2.7,
+      "late": 0.2,
+      "discarded": 0.2
+     },
+     "paid_not_used_pct": 1.74,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 5.07,
+     "slot_time_h": {
+      "useful_compute": 158.4,
+      "wasted_compute": 3.0,
+      "held_departed": 45.4,
+      "waiting": 214.3,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 1055.0,
+     "timeouts": 93,
+     "wire_msgs": 6112,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 43.72
+     }
     },
     "REFL": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.84,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 34.02,
+     "peak_acc5": 40.62,
+     "end_h": 120.03,
+     "end_gb": 691.6,
+     "total_updates": 11860,
+     "acc_at_h": {
+      "6": 5.98,
+      "12": 13.04,
+      "24": 19.49,
+      "48": 25.06,
+      "72": 32.75,
+      "96": 34.37,
+      "120": 34.37
+     },
+     "time_h_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 37.52,
+     "gb_by_fate": {
+      "aggregated": 678.5,
+      "late": 8.9,
+      "timeout": 2.1,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 1.6,
+     "mean_staleness": 1.58,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 2.76,
+     "slot_time_h": {
+      "useful_compute": 278.1,
+      "wasted_compute": 4.4,
+      "held_departed": 58.9,
+      "waiting": 271.6,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 645.0,
+     "timeouts": 71,
+     "wire_msgs": 23830,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 46.48
+     }
     },
     "FedDance": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.84,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 38.99,
+     "peak_acc5": 45.76,
+     "end_h": 120.02,
+     "end_gb": 715.0,
+     "total_updates": 10260,
+     "acc_at_h": {
+      "6": 5.52,
+      "12": 10.12,
+      "24": 19.92,
+      "48": 14.44,
+      "72": 40.86,
+      "96": 42.17,
+      "120": 38.88
+     },
+     "time_h_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 43.61,
+     "gb_by_fate": {
+      "aggregated": 595.6,
+      "discarded": 108.5,
+      "timeout": 5.4,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 16.06,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 2.37,
+     "slot_time_h": {
+      "useful_compute": 217.9,
+      "wasted_compute": 139.4,
+      "held_departed": 45.0,
+      "waiting": 247.4,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 555.0,
+     "timeouts": 186,
+     "wire_msgs": 24634,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 40.39
+     }
     },
     "FedAvg": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.84,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 39.85,
+     "peak_acc5": 47.31,
+     "end_h": 120.04,
+     "end_gb": 751.3,
+     "total_updates": 10780,
+     "acc_at_h": {
+      "6": 9.14,
+      "12": 14.05,
+      "24": 20.63,
+      "48": 34.84,
+      "72": 41.99,
+      "96": 44.29,
+      "120": 40.07
+     },
+     "time_h_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 44.53,
+     "gb_by_fate": {
+      "aggregated": 625.7,
+      "timeout": 4.7,
+      "discarded": 116.2,
+      "late": 0.1,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 16.19,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 2.07,
+     "slot_time_h": {
+      "useful_compute": 214.1,
+      "wasted_compute": 146.0,
+      "held_departed": 39.8,
+      "waiting": 239.4,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 534.0,
+     "timeouts": 161,
+     "wire_msgs": 25886,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 39.47
+     }
     },
     "FedBuff*": {
-     "status": "pending",
-     "reason": "no digest"
+     "status": "miss",
+     "target": 0.84,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 80.86,
+     "peak_acc5": 83.41,
+     "end_h": 120.1,
+     "end_gb": 1708.3,
+     "total_updates": 29370,
+     "acc_at_h": {
+      "6": 38.61,
+      "12": 46.62,
+      "24": 64.29,
+      "48": 76.48,
+      "72": 80.32,
+      "96": 82.41,
+      "120": 80.84
+     },
+     "time_h_to_acc": {
+      "50": 12.76,
+      "60": 21.48,
+      "70": 29.95,
+      "80": 66.37,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": 368.4,
+      "60": 526.7,
+      "70": 678.7,
+      "80": 1264.2,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 83.01,
+     "gb_by_fate": {
+      "aggregated": 1679.9,
+      "late": 25.0,
+      "timeout": 1.7,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 1.56,
+     "mean_staleness": 3.5,
+     "slot_busy_pct": 55.6,
+     "slot_held_departed_pct": 11.6,
+     "left_mid_task_pct": 2.92,
+     "slot_time_h": {
+      "useful_compute": 1318.7,
+      "wasted_compute": 17.2,
+      "held_departed": 279.5,
+      "waiting": 0.0,
+      "idle": 786.6
+     },
+     "slot_time_lost_per_departure_s": 1171.0,
+     "timeouts": 58,
+     "wire_msgs": 58858,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 0.99
+     }
     },
     "Oort*": {
-     "status": "pending",
-     "reason": "no digest"
+     "status": "miss",
+     "target": 0.84,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 61.28,
+     "peak_acc5": 62.97,
+     "end_h": 120.11,
+     "end_gb": 277.8,
+     "total_updates": 4675,
+     "acc_at_h": {
+      "6": 1.92,
+      "12": 10.28,
+      "24": 24.0,
+      "48": 37.52,
+      "72": 48.72,
+      "96": 54.15,
+      "120": 61.32
+     },
+     "time_h_to_acc": {
+      "50": 83.75,
+      "60": 112.35,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": 198.0,
+      "60": 259.8,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 54.38,
+     "gb_by_fate": {
+      "aggregated": 271.3,
+      "timeout": 3.2,
+      "late": 0.1,
+      "discarded": 0.1
+     },
+     "paid_not_used_pct": 1.19,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 3.64,
+     "slot_time_h": {
+      "useful_compute": 245.2,
+      "wasted_compute": 4.6,
+      "held_departed": 45.0,
+      "waiting": 305.5,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 931.0,
+     "timeouts": 109,
+     "wire_msgs": 9570,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 29.62
+     }
     },
     "REFL*": {
-     "status": "pending",
-     "reason": "no digest"
+     "status": "miss",
+     "target": 0.84,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 34.9,
+     "peak_acc5": 40.89,
+     "end_h": 120.02,
+     "end_gb": 1081.3,
+     "total_updates": 18598,
+     "acc_at_h": {
+      "6": 7.2,
+      "12": 13.9,
+      "24": 20.04,
+      "48": 27.64,
+      "72": 34.35,
+      "96": 37.34,
+      "120": 34.89
+     },
+     "time_h_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 37.97,
+     "gb_by_fate": {
+      "aggregated": 1069.1,
+      "late": 10.3,
+      "timeout": 0.9,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 1.04,
+     "mean_staleness": 1.73,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 1.82,
+     "slot_time_h": {
+      "useful_compute": 467.8,
+      "wasted_compute": 6.2,
+      "held_departed": 52.3,
+      "waiting": 390.1,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 556.0,
+     "timeouts": 30,
+     "wire_msgs": 37256,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 46.03
+     }
     },
     "FedDance*": {
-     "status": "pending",
-     "reason": "no digest"
+     "status": "miss",
+     "target": 0.84,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 51.99,
+     "peak_acc5": 60.74,
+     "end_h": 120.0,
+     "end_gb": 1622.7,
+     "total_updates": 23300,
+     "acc_at_h": {
+      "6": 11.96,
+      "12": 19.24,
+      "24": 36.68,
+      "48": 45.05,
+      "72": 54.5,
+      "96": 54.32,
+      "120": 51.99
+     },
+     "time_h_to_acc": {
+      "50": 61.86,
+      "60": 102.01,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": 752.8,
+      "60": 1285.5,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 58.81,
+     "gb_by_fate": {
+      "aggregated": 1352.5,
+      "discarded": 257.0,
+      "timeout": 6.5,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 16.31,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 1.18,
+     "slot_time_h": {
+      "useful_compute": 328.7,
+      "wasted_compute": 184.8,
+      "held_departed": 47.0,
+      "waiting": 264.9,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 511.0,
+     "timeouts": 225,
+     "wire_msgs": 55908,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 25.19
+     }
     },
     "FedAvg*": {
-     "status": "pending",
-     "reason": "missing"
+     "status": "miss",
+     "target": 0.84,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 42.61,
+     "peak_acc5": 48.09,
+     "end_h": 120.02,
+     "end_gb": 1056.5,
+     "total_updates": 15175,
+     "acc_at_h": {
+      "6": 9.42,
+      "12": 16.57,
+      "24": 29.18,
+      "48": 37.7,
+      "72": 40.5,
+      "96": 44.9,
+      "120": 42.39
+     },
+     "time_h_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "gb_to_acc": {
+      "50": null,
+      "60": null,
+      "70": null,
+      "80": null,
+      "84": null,
+      "88": null
+     },
+     "acc_at_felix_hit_h": 46.55,
+     "gb_by_fate": {
+      "discarded": 163.3,
+      "aggregated": 880.9,
+      "timeout": 6.1,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 16.13,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 1.92,
+     "slot_time_h": {
+      "useful_compute": 286.5,
+      "wasted_compute": 198.5,
+      "held_departed": 50.7,
+      "waiting": 304.4,
+      "idle": 0.0
+     },
+     "slot_time_lost_per_departure_s": 523.0,
+     "timeouts": 210,
+     "wire_msgs": 36402,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 37.45
+     }
     }
    },
    "summary": {
     "target": 0.84,
     "felix_first": true,
-    "all_stacks_in": false,
+    "all_stacks_in": true,
     "best_deployable": null,
-    "best_oracle": null
+    "best_oracle": null,
+    "vs_fedbuff": {
+     "stack": "FedBuff",
+     "speedup": null,
+     "gb_ratio": null,
+     "gb_saving_pct": null
+    }
    }
   }
  }

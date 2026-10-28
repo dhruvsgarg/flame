@@ -4,7 +4,7 @@
   paper_plots.py [--root R] [--seeds 1] [--smoke] [--only teaser headline ...] [--out DIR]
 
 Legs come from the manifest (paper_runs.py); a panel with missing legs is drawn and labelled MISSING (count), never dropped; any
-figure not from final data (smoke, one seed) is labelled PRELIM. Figures -> paper_felix/figs/expts/ (PDF + PNG), tables -> .md.
+figure from smoke data is labelled PRELIM (seed 1 = first version, final until seeds 2-3 land). Figures -> paper_felix/figs/expts/ (PDF + PNG), tables -> .md.
 """
 import argparse
 import collections
@@ -42,7 +42,7 @@ class Data:
         for (rs, ds, lg, s), (st_, _, d) in self.states.items():
             if d is not None and not pr.leg_digest.check(d):
                 self.by[(ds, lg[1], lg[2], lg[3])].append(d)
-        self.prelim = smoke or len(seeds) < 3
+        self.prelim = smoke
 
     def cells(self, cells):
         return [pr.SMOKE_CELL.get("E2E", "smu")] if self.smoke else list(cells)
@@ -117,7 +117,7 @@ def curve_panel(ax, D, ds, cell, names, x="t"):
         d = legs[0]  # seed 1 curve; seeds add a band later
         xs = [t / 3600 for t in d["acc"]["t"]] if x == "t" else d["acc"]["gb"]
         ax.plot(xs, [100 * a for a in d["acc"]["acc"]], label=name, **style(name))
-    tgt = next((d["config"]["target"] for n in names for d in D.stack(ds, cell, n)), None)
+    tgt = next((d["config"].get("report_target") or d["config"]["target"] for n in names for d in D.stack(ds, cell, n)), None)
     if tgt:
         ax.axhline(100 * float(tgt), color="#6b6a64", lw=LINE["ref"], ls=":")
     ax.set_xlabel("hours" if x == "t" else "GB")
@@ -153,7 +153,8 @@ def curves(D):
     for i, ds in enumerate(pr.DS):
         for j, c in enumerate(cells):
             curve_panel(axs[i][j], D, ds, c, ("Felix", *DEPLOY, *ORACLE))
-    axs[0][-1].legend(fontsize=5, ncol=2)
+    fig.subplots_adjust(hspace=0.6, wspace=0.35)
+    axs[0][-1].legend(fontsize=5, loc="upper left", bbox_to_anchor=(1.02, 1))
     return save(fig, "curves")
 
 
@@ -205,6 +206,62 @@ def slots(D):
         mark(ax, miss, D.prelim)
     axs[0][0].legend(fontsize=5)
     return save(fig, "slots")
+
+
+def slot_split(d):
+    """Slot-hours over the run: useful / wasted compute, held by a departed client, finished but waiting (sync barrier), idle (async)."""
+    s, f = d["slots"], d["slots"].get("by_fate") or {}
+    comp = lambda keep: sum(v[0] for k, v in f.items() if (k == "aggregated") == keep) / 3600
+    occ = s["busy_s"] + s["held_departed_s"]
+    return {"useful_compute": comp(True), "wasted_compute": comp(False), "held_departed": s["held_departed_s"] / 3600,
+            "waiting": s["wait_s"] / 3600, "idle": max(0.0, (s["capacity_s"] or occ) - occ) / 3600}
+
+
+def lost_per_departure_s(d):
+    """Mean slot time between a client leaving mid-task and its slot's release (eviction, timeout or delivery)."""
+    n = (d.get("departures") or {}).get("left_mid_task") or 0
+    return d["slots"]["held_departed_s"] / n if n else None
+
+
+STALL = (("useful_compute", "#2a78d6", "useful compute"), ("wasted_compute", "#9ec5f0", "compute discarded"),
+         ("held_departed", "#e34948", "held by departed client"), ("waiting", "#eda100", "finished, waiting (barrier)"),
+         ("idle", "#b1b0a9", "idle (no task)"))
+
+
+def stall(D):
+    """Raw slot-hours per stack over its run: where task time went, and what each stack lost to departures it could not see."""
+    panels = [(ds, c) for ds in pr.DS for c in D.cells(["s50u", "smu"])]
+    names = ("Felix", "FedBuff", "FedBuff*", "REFL", "FedDance", "FedAvg", "Oort")
+    fig, axs = plt.subplots(1, len(panels), figsize=(FULL_W, ROW_H * 1.4), squeeze=False)
+    fig.subplots_adjust(wspace=0.45)
+    rows = []
+    for ax, (ds, c) in zip(axs[0], panels):
+        lab, cols, miss = [], [[] for _ in STALL], 0
+        for n in names:
+            legs = D.stack(ds, c, n)
+            if not legs:
+                miss += 1
+                continue
+            d, sp = legs[0], slot_split(legs[0])
+            lab.append(n)
+            for i, (k, _, _) in enumerate(STALL):
+                cols[i].append(sp[k])
+            tot = sum(sp.values()) or 1.0
+            lost = lost_per_departure_s(d)
+            rows.append([DSN[ds], CELL[c], n, f"{d['end']['h']:.0f}", *(f"{sp[k]:.0f}" for k, _, _ in STALL),
+                         f"{100 * (sp['wasted_compute'] + sp['held_departed'] + sp['idle']) / tot:.0f}%",
+                         f"{100 * (d['departures']['share'] or 0):.1f}%", "–" if lost is None else f"{lost:.0f}",
+                         sum(d["fates"]["counts"].get(k, 0) for k in ("timeout", "evicted", "late")),
+                         "eviction" if d["config"].get("knowledge") == "notify" else "timeout"])
+        _bars(ax, lab, cols, [col for _, col, _ in STALL], [t for _, _, t in STALL])
+        ax.set_ylabel("slot-hours")
+        ax.set_title(f"{DSN[ds]} {CELL[c]}")
+        mark(ax, miss, D.prelim)
+    axs[0][-1].legend(fontsize=5, loc="upper left", bbox_to_anchor=(1.02, 1))
+    table("stall", ["dataset", "trace", "stack", "run h", *(t + " (slot-h)" for _, _, t in STALL), "lost share",
+                    "tasks whose client left", "slot time lost per departure (s)", "tasks released early", "released by"], rows,
+          "slot-hours = Σ over tasks; async capacity = c(t) × run time, sync = its picks' task time; a run ends at the target or 120 h")
+    return save(fig, "stall")
 
 
 def rounds(D):
@@ -354,7 +411,7 @@ def overhead(D):
 # ---------------------------------------------------------------- ablations
 def _arm_bars(D, name, arms, extra=()):
     """time and GB to target per arm on the ablation cells: FedBuff and `fx` plus the run set's arms."""
-    cells = [(ds, c) for ds in pr.DS for c in D.cells(pr.hp.FB2_ABL)]
+    cells = [(ds, c) for ds in pr.ABL_DS for c in D.cells(pr.hp.FB2_ABL)]
     fig, axs = plt.subplots(2, len(cells), figsize=(FULL_W, ROW_H * 2.2), squeeze=False)
     for j, (ds, c) in enumerate(cells):
         series = [("FedBuff", D.stack(ds, c, "FedBuff")), *[(ARMS[a], D.get(ds, c, a, "felix")) for a in arms],
@@ -372,6 +429,7 @@ def _arm_bars(D, name, arms, extra=()):
             ax.set_ylabel("hours to target" if key == "h" else "GB to target")
             if i == 0:
                 ax.set_title(f"{DSN[ds]} {CELL[c]}")
+                ax.tick_params(labelbottom=False)
             mark(ax, miss, D.prelim)
     return save(fig, name)
 
@@ -398,7 +456,7 @@ def swap_concurrency(D):
 
 def rejected(D):
     rows = []
-    for ds in pr.DS:
+    for ds in pr.ABL_DS:
         for c in D.cells(pr.hp.FB2_ABL):
             fx = D.stack(ds, c, "Felix")
             fh, fg = at_hit(fx, "h"), at_hit(fx, "gb")
@@ -410,7 +468,7 @@ def rejected(D):
     return table("rejected", ["dataset", "trace", "idea", "Δ time to target vs Felix", "Δ GB"], rows)
 
 
-FIGS = {f.__name__: f for f in (teaser, headline, curves, static, efficiency, slots, rounds, staleness, picks, concurrency, wasted,
+FIGS = {f.__name__: f for f in (teaser, headline, curves, static, efficiency, slots, stall, rounds, staleness, picks, concurrency, wasted,
                                  knowledge, overhead, ladder, swap_availability, swap_selection, swap_aggregation, swap_concurrency,
                                  rejected)}
 assert set(FIGS) == set(pr.FIGURES), set(FIGS) ^ set(pr.FIGURES)

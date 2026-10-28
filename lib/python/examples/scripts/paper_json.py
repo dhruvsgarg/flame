@@ -5,8 +5,8 @@
 
 Reads the same manifest and digests as paper_plots.py. Writes results_<dataset>.json (default paper_felix/figs/expts/): re-run after
 legs land; a stack whose leg is not done is `"status": "pending"`, never dropped, and `meta.complete` says whether every leg is in.
-Root: a scratch root of symlinks over RUN_ROOT (cifar's sync / oracle pools from `cifar_e50`, the main lr decay, until it is the
-default) with this tree's code key, so the manifest accepts the pools; rebuilt on every run unless --no-build-root.
+Root: a scratch root of symlinks over RUN_ROOT (cifar's sync / oracle pools live in `cifar_e50`, lr decay every 50) with this tree's
+code key, so the manifest accepts the pools; rebuilt on every run unless --no-build-root.
 """
 import argparse
 import datetime
@@ -117,6 +117,9 @@ def leg_metrics(d, ds, cell, felix_h=None):
         "slot_busy_pct": rnd(100 * slots["busy_s"] / cap, 1) if cap and "busy_s" in slots else None,
         "slot_held_departed_pct": rnd(100 * slots["held_departed_s"] / cap, 1) if cap and "held_departed_s" in slots else None,
         "left_mid_task_pct": rnd(100 * dep["share"], 2) if "share" in dep else None,
+        "slot_time_h": {k: rnd(v, 1) for k, v in pp.slot_split(d).items()} if "by_fate" in slots else None,
+        "slot_time_lost_per_departure_s": rnd(pp.lost_per_departure_s(d), 0) if "by_fate" in slots else None,
+        "timeouts": (d.get("fates") or {}).get("counts", {}).get("timeout", 0),
         "wire_msgs": (d.get("overhead") or {}).get("wire_msgs"), "diverged": d["end"].get("diverged", False),
     }
     return out
@@ -205,7 +208,8 @@ def build(D, ds, root, seeds, key):
     return {"meta": {"dataset": ds, "generated": datetime.datetime.now().isoformat(timespec="minutes"), "seeds": seeds, "run_root": root,
                      "code_key": key, "legs_done": done, "legs_total": len(allstacks), "complete": done == len(allstacks),
                      "units": {"time_h": "hours of simulated time to the cell's target (5-eval mean)", "gb": "cumulative wire GB at that time",
-                               "acc": "percent", "speedup": "stack time / Felix time", "gb_ratio": "Felix GB / stack GB"},
+                               "acc": "percent", "speedup": "stack time / Felix time", "gb_ratio": "Felix GB / stack GB",
+                               "slot_time_h": "slot-hours over the whole run (to the hit or 120 h): useful / discarded compute, held by a departed client, waiting at the barrier, idle"},
                      "notes": "status hit = reached target, miss = ran to the end without it (final_acc, peak_acc5), pending = leg not done"},
             "stack_kinds": {n: ("felix" if n == "Felix" else "oracle" if n in pp.ORACLE else "deployable") for n in NAMES},
             "cells": cells}

@@ -47,8 +47,8 @@ refl:
       optimizer: {v: sgd, src: "[code] FedScale client SGD"}
       momentum: {v: 0.9, src: "[code] core/client.py:71 (enforce_sgd off, argParser.py:41)"}
       weight_decay: {v: 0.0005, src: "[code] core/client.py:71"}
-      lr_decay: {v: {factor: 0.98, every: 100, min: 0.00005}, src: "[code] argParser.py:115,119,120", source_v: {factor: 0.98, every: 10, min: 0.00005},
-                 why: "source ends at 13% of base lr (0.98^100) after its 1,000-round run; we place that end at the round a constant-lr (decay-off) run of our workload reaches target: every = crossing rounds / 100, one value for the FedScale family (FX-N163 target anchor; median ~120, operator 10-27 chose 100 in step 2d); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%",
+      lr_decay: {v: {factor: 0.98, every: 50, min: 0.00005}, src: "[code] argParser.py:115,119,120", source_v: {factor: 0.98, every: 10, min: 0.00005},
+                 why: "source ends at 13% of base lr (0.98^100) after its 1,000-round run; we place that end at the round a constant-lr (decay-off) run of our workload reaches target: every = crossing rounds / 100, one value for the FedScale family (FX-N163 target anchor; median ~120; operator 10-27: every 50 final (2e), 100 / 120 = appendix sensitivity); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%",
                  evidence: "cifar syn_0 24 h, unscaled decay vs none: FedAvg 48.2 -> 72.9%, REFL 48.6 -> 74.3% (experiments/N163_1026); decay-off FB2E2E digests (10-26 15:06): crossings 8.8-15.0k rounds, every 87-149, median ~120 (FX-N163); 20-400 in-process sensitivity in $R/n163_every"}
       server:
         v: {sort: refl, kwargs: {deadline: 100, target_ratio: 0.8, stale_update: -1, stale_factor: 1, stale_beta: 0.35,
@@ -89,8 +89,8 @@ oort:
       clip_grad_norm: {v: 1.0, src: "[code] learner.py:284 (clip line commented out in source)", source_v: 0.0,
                        why: "1-8-sample streaming shards blow up one delta -> NaN rounds (PR27 R1); clip keeps full-data accuracy",
                        evidence: "fl_lr_check shard 4-8: NaN 3/6 seeds -> 0/6 (experiments/lrcheck_20261010_fxd126); full data r300: 48.9/54.5% -> 48.9/49.9%, r200 equal (lrcheck_20261010_clipfull); PR28: 0 update_rejected in 14 clip legs"}
-      lr_decay: {v: {factor: 0.95, every: 100, min: 0.0001}, src: "[code] argParser.py:86,87,101", source_v: {factor: 0.95, every: 5, min: 0.0001},
-                 why: "one every for every sync stack (FX-N163 target anchor; operator 10-27: 120, then 100 in step 2d): no Oort / Oort* decay-off leg reached target in 120 h (73-76%), so its own anchor only bounds every >= 9 (floor at run end); 120 is inside that bound; Oort keeps its factor / floor, and at its ~0.8-1.4k rounds lr ends at 57-70% of base (near decay-off, which never diverged); every 9 ended at 59-66%",
+      lr_decay: {v: {factor: 0.95, every: 50, min: 0.0001}, src: "[code] argParser.py:86,87,101", source_v: {factor: 0.95, every: 5, min: 0.0001},
+                 why: "one every for every sync stack (FX-N163 target anchor; operator 10-27: every 50 final (2e), 100 / 120 = appendix sensitivity): no Oort / Oort* decay-off leg reached target in 120 h (73-76%), so its own anchor only bounds every >= 9 (floor at run end); 120 is inside that bound; Oort keeps its factor / floor, and at its ~0.8-1.4k rounds lr ends at 57-70% of base (near decay-off, which never diverged); every 9 ended at 59-66%",
                  evidence: "decay-off FB2E2E digests (10-26 15:06): Oort 76.1 / 75.5 / 74.8 / 68.6%, Oort* 73.3 / 72.7 / 73.6 / 69.3% at 120 h (s0u / s20u / s50u / smu), 0 diverged; every 9 (2b): 59-66%"}
       stat_utility: {v: fedscale, src: "[code] learner.py:296-312"}
       server:
@@ -145,8 +145,8 @@ feddance:
       optimizer: {v: sgd, src: "[paper] §6.1 FedScale defaults"}
       momentum: {v: 0.9, src: "[paper] §6.1 FedScale defaults (FedScale client = REFL core/client.py:71)"}
       weight_decay: {v: 0.0005, src: "[paper] §6.1 FedScale defaults (REFL core/client.py:71)"}
-      lr_decay: {v: {factor: 0.98, every: 100, min: 0.00005}, src: "[paper] §6.1 FedScale defaults (REFL argParser.py:115,119,120)", source_v: {factor: 0.98, every: 10, min: 0.00005},
-                 why: "source ends at 13% of base lr (0.98^100) after its 1,000-round run; we place that end at the round a constant-lr (decay-off) run of our workload reaches target: every = crossing rounds / 100, one value for the FedScale family (FX-N163 target anchor; median ~120, operator 10-27 chose 100 in step 2d); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%",
+      lr_decay: {v: {factor: 0.98, every: 50, min: 0.00005}, src: "[paper] §6.1 FedScale defaults (REFL argParser.py:115,119,120)", source_v: {factor: 0.98, every: 10, min: 0.00005},
+                 why: "source ends at 13% of base lr (0.98^100) after its 1,000-round run; we place that end at the round a constant-lr (decay-off) run of our workload reaches target: every = crossing rounds / 100, one value for the FedScale family (FX-N163 target anchor; median ~120; operator 10-27: every 50 final (2e), 100 / 120 = appendix sensitivity); unscaled it spent the lr by ~2k rounds and stalled every stack at 48-56%",
                  evidence: "cifar syn_0 24 h, unscaled decay vs none: FedAvg 48.2 -> 72.9%, REFL 48.6 -> 74.3% (experiments/N163_1026); decay-off FB2E2E digests (10-26 15:06): crossings 8.8-15.0k rounds, every 87-149, median ~120 (FX-N163); 20-400 in-process sensitivity in $R/n163_every"}
       server: {v: {sort: fedavg, kwargs: {weighting: equal}}, src: "[paper] §6.1 FedScale default aggregation (FedAvg, 1/K: REFL aggregator.py:744)"}
     google_speech:

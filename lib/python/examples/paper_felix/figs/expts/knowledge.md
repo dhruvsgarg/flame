@@ -24,25 +24,25 @@ forecast AUC rows: paper_felix/data/fx_n147_*.json (FX-N147)
 | CIFAR-10 | syn_50 | REFL* | 0.98% | 52 s |
 | CIFAR-10 | syn_50 | FedDance* | 0.95% | 65 s |
 | CIFAR-10 | syn_50 | FedAvg* | 1.22% | 63 s |
-| Speech | MobiPerf | Felix | missing |  |
-| Speech | MobiPerf | FedBuff | missing |  |
-| Speech | MobiPerf | Oort | missing |  |
-| Speech | MobiPerf | REFL | missing |  |
-| Speech | MobiPerf | FedDance | missing |  |
-| Speech | MobiPerf | FedAvg | missing |  |
-| Speech | MobiPerf | FedBuff* | missing |  |
-| Speech | MobiPerf | Oort* | missing |  |
-| Speech | MobiPerf | REFL* | missing |  |
-| Speech | MobiPerf | FedDance* | missing |  |
-| Speech | MobiPerf | FedAvg* | missing |  |
-| Speech | syn_50 | Felix | missing |  |
-| Speech | syn_50 | FedBuff | missing |  |
-| Speech | syn_50 | Oort | missing |  |
-| Speech | syn_50 | REFL | missing |  |
-| Speech | syn_50 | FedDance | missing |  |
-| Speech | syn_50 | FedAvg | missing |  |
-| Speech | syn_50 | FedBuff* | missing |  |
-| Speech | syn_50 | Oort* | missing |  |
-| Speech | syn_50 | REFL* | missing |  |
-| Speech | syn_50 | FedDance* | missing |  |
-| Speech | syn_50 | FedAvg* | missing |  |
+| Speech | MobiPerf | Felix | 3.16% | 10 s |
+| Speech | MobiPerf | FedBuff | 3.80% | 1872 s |
+| Speech | MobiPerf | Oort | 5.07% | 859 s |
+| Speech | MobiPerf | REFL | 2.76% | 685 s |
+| Speech | MobiPerf | FedDance | 2.37% | 675 s |
+| Speech | MobiPerf | FedAvg | 2.07% | 664 s |
+| Speech | MobiPerf | FedBuff* | 2.92% | 1836 s |
+| Speech | MobiPerf | Oort* | 3.64% | 802 s |
+| Speech | MobiPerf | REFL* | 1.82% | 670 s |
+| Speech | MobiPerf | FedDance* | 1.18% | 677 s |
+| Speech | MobiPerf | FedAvg* | 1.92% | 668 s |
+| Speech | syn_50 | Felix | 13.49% | 1 s |
+| Speech | syn_50 | FedBuff | 17.88% | 1761 s |
+| Speech | syn_50 | Oort | 16.64% | 838 s |
+| Speech | syn_50 | REFL | 11.08% | 623 s |
+| Speech | syn_50 | FedDance | 10.72% | 654 s |
+| Speech | syn_50 | FedAvg | 10.17% | 643 s |
+| Speech | syn_50 | FedBuff* | 16.68% | 1742 s |
+| Speech | syn_50 | Oort* | 15.45% | 802 s |
+| Speech | syn_50 | REFL* | 11.08% | 586 s |
+| Speech | syn_50 | FedDance* | 9.65% | 621 s |
+| Speech | syn_50 | FedAvg* | 11.26% | 600 s |

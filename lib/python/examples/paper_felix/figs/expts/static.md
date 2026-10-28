@@ -1,4 +1,4 @@
-time · GB to target (5-eval mean), ✗ = end accuracy; deployable then oracle (*) PRELIM
+time · GB to target (5-eval mean), ✗ = end accuracy; deployable then oracle (*)
 
 | dataset | trace | Felix | FedBuff | Oort | REFL | FedDance | FedAvg |
 |---|---|---|---|---|---|---|---|

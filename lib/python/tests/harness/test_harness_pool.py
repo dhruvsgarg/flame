@@ -722,7 +722,8 @@ def test_trace_target_lowers_mobiperf_cifar():
     """Operator 10-26: cifar MobiPerf legs stop at 75% (trace_targets.json); other cells keep targets.json."""
     assert pool.trace_target("cifar10", "mobiperf_3st") == 0.75
     assert pool.trace_target("cifar10", "syn_0") == pool.final_targets()["cifar10"]
-    assert pool.trace_target("google_speech", "mobiperf_3st") == pool.final_targets()["google_speech"]
+    assert pool.trace_target("google_speech", "mobiperf_3st") == 0.84
+    assert pool.trace_target("google_speech", "syn_0") == pool.final_targets()["google_speech"]
 
 
 def test_fb1_tier_runs_to_targets_json():

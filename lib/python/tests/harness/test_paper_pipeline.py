@@ -59,6 +59,29 @@ def test_digest_series_and_fates(tmp_path):
     assert d["picks"]["n"] == 3 and d["picks"]["coverage"] == 1.0 and d["sync"] is False
 
 
+def test_withheld_slot_frees_at_completion_only_for_notify(tmp_path, monkeypatch):
+    """FX-N167: x leaves mid-task (5 s), finishes (10 s), returns (25 s), commits (30 s): Felix's send gate frees the slot at
+    completion, a check-in stack holds it until delivery."""
+    run = _leg(tmp_path)
+    tel = run / "telemetry"
+    for f in tel.glob("trainer_*.jsonl"):
+        f.unlink()
+    _w(tel / "aggregator_j.jsonl", [
+        dict(event="agg_round", round=1, vclock_now=30.0, staleness=[0], contributing_trainers=["x"]),
+        dict(event="agg_eval", round=1, **{"test-accuracy": 0.6}), dict(event="run_end", vclock_now=50.0)])
+    _w(tel / "trainer_x.jsonl", [dict(event="trainer_round", sim_send_ts=0.0, sim_completion_ts=10.0, sim_round_duration_s=10.0,
+                                      total_samples=10, model_samples=10, round=0)])
+    monkeypatch.setattr(leg_digest, "trace_events", lambda *_: {"x": [(0.0, "AVL_TRAIN"), (5.0, "UN_AVL"), (25.0, "AVL_TRAIN")]})
+    cfg = json.loads((run / "aggregator_config.json").read_text())
+    held = {}
+    for k in ("notify", "checkin"):
+        cfg["hyperparameters"]["avail_knowledge"] = k
+        (run / "aggregator_config.json").write_text(json.dumps(cfg))
+        held[k] = leg_digest.digest(str(run))["slots"]["held_departed_s"]
+    assert held == {"notify": 10 - 5, "checkin": 30 - 5}
+    assert leg_digest.digest(str(run))["slots"]["by_fate"] == {"aggregated": [5.0, 0.0, 25.0]}  # checkin: compute to the departure
+
+
 def test_digest_main_writes_then_gzips_raw(tmp_path):
     run = _leg(tmp_path)
     assert leg_digest.main([str(run)]) == 0

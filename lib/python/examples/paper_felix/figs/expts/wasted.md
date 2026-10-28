@@ -22,25 +22,25 @@
 | CIFAR-10 | MobiPerf | REFL* | 2072.7 | 0.2 | 0.0 | 2.7 | 0.1% |
 | CIFAR-10 | MobiPerf | FedDance* | 2340.1 | 1.7 | 0.0 | 620.0 | 21.0% |
 | CIFAR-10 | MobiPerf | FedAvg* | 1645.1 | 1.8 | 0.0 | 434.5 | 21.0% |
-| Speech | syn_50 | Felix | missing |  |  |  |  |
-| Speech | syn_50 | FedBuff | missing |  |  |  |  |
-| Speech | syn_50 | Oort | missing |  |  |  |  |
-| Speech | syn_50 | REFL | missing |  |  |  |  |
-| Speech | syn_50 | FedDance | missing |  |  |  |  |
-| Speech | syn_50 | FedAvg | missing |  |  |  |  |
-| Speech | syn_50 | FedBuff* | missing |  |  |  |  |
-| Speech | syn_50 | Oort* | missing |  |  |  |  |
-| Speech | syn_50 | REFL* | missing |  |  |  |  |
-| Speech | syn_50 | FedDance* | missing |  |  |  |  |
-| Speech | syn_50 | FedAvg* | missing |  |  |  |  |
-| Speech | MobiPerf | Felix | missing |  |  |  |  |
-| Speech | MobiPerf | FedBuff | missing |  |  |  |  |
-| Speech | MobiPerf | Oort | missing |  |  |  |  |
-| Speech | MobiPerf | REFL | missing |  |  |  |  |
-| Speech | MobiPerf | FedDance | missing |  |  |  |  |
-| Speech | MobiPerf | FedAvg | missing |  |  |  |  |
-| Speech | MobiPerf | FedBuff* | missing |  |  |  |  |
-| Speech | MobiPerf | Oort* | missing |  |  |  |  |
-| Speech | MobiPerf | REFL* | missing |  |  |  |  |
-| Speech | MobiPerf | FedDance* | missing |  |  |  |  |
-| Speech | MobiPerf | FedAvg* | missing |  |  |  |  |
+| Speech | syn_50 | Felix | 1553.5 | 0.0 | 0.5 | 206.2 | 11.8% |
+| Speech | syn_50 | FedBuff | 1081.8 | 0.1 | 0.0 | 35.6 | 3.2% |
+| Speech | syn_50 | Oort | 147.7 | 5.2 | 0.0 | 6.8 | 7.6% |
+| Speech | syn_50 | REFL | 356.6 | 0.9 | 0.0 | 25.5 | 6.9% |
+| Speech | syn_50 | FedDance | 325.1 | 12.7 | 0.0 | 54.2 | 17.1% |
+| Speech | syn_50 | FedAvg | 335.7 | 12.5 | 0.0 | 55.4 | 16.8% |
+| Speech | syn_50 | FedBuff* | 1355.2 | 0.1 | 0.0 | 41.4 | 3.0% |
+| Speech | syn_50 | Oort* | 194.2 | 8.0 | 0.0 | 3.6 | 5.6% |
+| Speech | syn_50 | REFL* | 535.1 | 0.4 | 0.0 | 44.3 | 7.7% |
+| Speech | syn_50 | FedDance* | 508.0 | 18.7 | 0.0 | 90.0 | 17.6% |
+| Speech | syn_50 | FedAvg* | 440.1 | 19.3 | 0.0 | 73.7 | 17.5% |
+| Speech | MobiPerf | Felix | 1496.5 | 0.0 | 1.8 | 31.0 | 2.2% |
+| Speech | MobiPerf | FedBuff | 1555.1 | 2.2 | 0.0 | 32.4 | 2.2% |
+| Speech | MobiPerf | Oort | 171.6 | 2.7 | 0.0 | 0.3 | 1.7% |
+| Speech | MobiPerf | REFL | 678.5 | 2.1 | 0.0 | 8.9 | 1.6% |
+| Speech | MobiPerf | FedDance | 595.6 | 5.4 | 0.0 | 108.5 | 16.1% |
+| Speech | MobiPerf | FedAvg | 625.7 | 4.7 | 0.0 | 116.2 | 16.2% |
+| Speech | MobiPerf | FedBuff* | 1679.9 | 1.7 | 0.0 | 25.0 | 1.6% |
+| Speech | MobiPerf | Oort* | 271.3 | 3.2 | 0.0 | 0.1 | 1.2% |
+| Speech | MobiPerf | REFL* | 1069.1 | 0.9 | 0.0 | 10.3 | 1.0% |
+| Speech | MobiPerf | FedDance* | 1352.5 | 6.5 | 0.0 | 257.0 | 16.3% |
+| Speech | MobiPerf | FedAvg* | 880.9 | 6.1 | 0.0 | 163.3 | 16.1% |

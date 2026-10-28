@@ -5,8 +5,9 @@ Evidence: [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) §5 (findings), §6 (methods, b
 Decisions (`fx` layer table), Scoreboard, rejected-ideas table.
 **Scope now:** title → §5 design. Theory, implementation, evaluation, ablations come after the front matter is final.
 **Framing:** one system, one paper; the current implementation is Felix, no old-vs-new comparison.
-**Numbers:** cifar end to end = FB2 (seed 1, 80% FL-bound target, FELIX_READINESS Scoreboard); MobiPerf FedBuff, speech and
-seeds 2-3 ⚠ pending. Every other number is F47-F49 (12 h, old targets; MobiPerf Felix tainted by FX-N157) ⚠ re-read on FB2.
+**Numbers:** end to end = FB2 seed 1, both datasets, all 11 stacks (FELIX_READINESS Scoreboard; data
+`paper_felix/figs/expts/results_{cifar10,google_speech}.json`); seeds 2-3 ⚠ future. Every other number is F47-F49 (12 h, old targets;
+MobiPerf Felix tainted by FX-N157) ⚠ re-read on FB2.
 
 ## 0. Open choices (decide before drafting prose)
 
@@ -23,8 +24,8 @@ eligibility is hard to forecast**, used in every section. Title open.
 | eligibility states (decided 10-25) | **eligible / not eligible** everywhere; no tiers. Code's AVL_EVAL = not eligible in text (feeds only unused on-device evals, FX-D165). One methods line: "traces also mark online-not-eligible time; every stack treats it as not eligible" | — |
 | eligibility predictability (decided 10-25: claim it; FX-N147) | **Claim:** the deployed forecasters (REFL's per-device Prophet, FedDance's check-in Poisson V_m, both as run in our baselines) add nothing over the naive guess "eligible now stays eligible". **Method (MobiPerf, n 300, days 1-5, h 5-60 min):** ground truth = the trace (did the client stay eligible?); each predictor is scored against it: AUC (ranking; truth = 1.0, coin = 0.5) and Brier (probability error; truth = 0). **Q1, who is eligible in [t+h, t+2h]:** naive AUC 0.97-0.84, FedDance 0.92-0.84, Prophet 0.68-0.69. **Q2, which eligible client stays for h:** naive can't rank (0.5), Prophet 0.57-0.58, FedDance 0.65-0.67; both Brier worse than the base rate (0.37-0.53 / 0.12-0.29 vs 0.05-0.24). **Why:** eligibility memory fades within hours (corr 0.64 at 1 h, 0.12-0.19 at 12-24 h). syn_50 is memoryless by design (all AUC 0.50): control only. **Wording:** "forecasts add nothing over eligible now", not "unpredictable" | if a forecaster beats the naive guess: drop the claim, keep "scarce and shifting" |
 | availability knowledge per stack (measure: FX-N147) | §3.2 table: what each stack knows and how accurate it is: check-in (exact at check-in, blind to departures until timeout), REFL Prophet and FedDance V_m forecasts (error from FX-N147), oracle `*` (exact at selection, blind mid-task). Component microbenchmark (P21) in eval | — |
-| bytes claim (⚠ FB2 cifar breaks it: `s50u` +34% GB vs FedBuff; FX-N165) | "fewest GB to every target only FedBuff also reaches"; below that Felix trades bytes for 4-12× time | report time first and bytes as a range (−33% to +34%); or drop bytes from the abstract (weakens P3) |
-| target per trace (decided 10-26; rule: FELIX_READINESS Decisions "Reporting target per trace") | report at the FL bound where it is attainable (cifar syn traces 80%) and at the highest level any stack holds within the 120 h trace on harder deployments (cifar MobiPerf 75%): "baselines reach 80% on the less difficult deployments; on MobiPerf with high heterogeneity only 75% is attainable, so we use it as the representative target"; appendix: speedup / GB vs target 60-80% | one target for all cells (all miss on MobiPerf) |
+| bytes claim (⚠ FB2 cifar breaks it: `s50u` +34% GB vs FedBuff; FX-N165; speech −3% to −18%) | "fewest GB to every target only FedBuff also reaches"; below that Felix trades bytes for 4-12× time | report time first and bytes as a range (−33% to +34%); or drop bytes from the abstract (weakens P3) |
+| target per trace (decided 10-26; rule: FELIX_READINESS Decisions "Reporting target per trace") | report at the FL bound where it is attainable (cifar syn traces 80%) and at the highest level any stack holds within the 120 h trace on harder deployments (cifar MobiPerf 75%; speech MobiPerf 84% ⚠ FX-N168: the rule gives 80%): "baselines reach 80% on the less difficult deployments; on MobiPerf with high heterogeneity only 75% is attainable, so we use it as the representative target"; appendix: speedup / GB vs target 60-80% | one target for all cells (all miss on MobiPerf) |
 | sync baselines' lr decay (decided 10-26, FX-N163; call out in the evaluation setup + deviations table) | off for REFL, Oort, FedDance, FedAvg (and `*`), as FedBuff and Felix: their per-round decay is tuned for ~1-2k rounds and stalls them at 48-56% over our 120 h traces (≥ 10× the rounds); off lifts them +24-26 pp at 24 h | keep source decay (baselines look broken) |
 | not contributions (applied to every stack) | averaged (EMA) model served; per-batch augmentation (bug fix, FX-D233); FedBuff's buffer K 10 | — |
 
@@ -44,6 +45,22 @@ eligibility is hard to forecast**, used in every section. Title open.
   early, quality late). Fixing one layer shifts the cost to another
   (removing idle slots raised staleness 4.8 → 7.8, −1.2 pp under 1/√(1+τ)), so the fix is cross-stack.
 - **Insight:** drive selection, concurrency and aggregation together from the live eligible pool, reported by the clients.
+- **Evidence the insight pays: no slot waits on a departed client (FB2 seed 1, `stall` figure + table, `results_*.json` `slot_time_h`).**
+  Every stack's slot time splits into useful compute, discarded compute, held by a departed client, finished-but-waiting (sync
+  barrier) and idle.
+  - *Felix* loses 0-49 s of slot time per departure (it evicts on the client's report), so 1-2% of its slot time is lost on cifar and
+    10% on speech `s50u` (discarded partial work). On speech MobiPerf it is 21%, almost all idle: c exceeds the eligible pool.
+  - *FedBuff* learns a departure only at its timeout, so each one holds a slot 6-21 min (378-1,262 s). That is 30-59% of its slot time
+    held or idle: 1,678 of 4,861 slot-h on cifar `s50u`, 978 of 2,400 on speech `s50u`. The oracle (FedBuff\*) is no better (37-49%),
+    because clients leave after selection.
+  - *Sync stacks* lose 51-1,367 s per departure. They also spend about as much slot time finished and waiting at the barrier (or on
+    the 1.3× over-commit, FedDance / FedAvg: 485-592 slot-h discarded on cifar) as computing.
+  - On syn traces Felix turns the same eligible time into 1.6-2.2× FedBuff's useful compute per hour (cifar `s50u` 59 vs 37 slot-h / h;
+    speech `s50u` 18 vs 8): the system-efficiency half of its time-to-accuracy gain. On MobiPerf Felix deliberately runs fewer tasks
+    (c ramps to ½ the eligible pool: cifar 27 vs 42 slot-h / h) and still reaches the target first. This is where its bytes saving
+    comes from (2,277 vs FedBuff's 6.0k GB at 120 h).
+  - Candidate contribution wording: "Felix never waits on a client that has left: departures cost it seconds of slot time, not the
+    6-21 min timeout every check-in stack must pay."
 
 | symptom (§3) | factor hit | mechanism (§5) | ablation arm (later) |
 |---|---|---|---|
@@ -63,11 +80,13 @@ eligibility is hard to forecast**, used in every section. Title open.
   eligibility that is hard to predict, and tune selection, concurrency and aggregation separately; even oracle availability changes little.
 - **S4 insight (25 w):** drive all three from the live eligible pool, reported by the clients.
 - **S5 system (30 w):** Felix: Felix-Notify, Felix-Select, Felix-Pace, Felix-Agg, one clause each.
-- **S6 results (30 w, P3 ranges on time and bytes):** Felix is first to every target on 2 datasets × 4 traces.
-  - cifar (FB2, seed 1, to 80%): **1.13-1.23× sooner than FedBuff** (65.3-72.0 h vs 77.8-81.0 h) at **−33% to +34% GB**
-    (`s0u` −33%, `s20u` −12%, `s50u` +34%); vs FedBuff\* 1.11-1.24×, −32% to +28%. MobiPerf at its 75% target: Felix 95.2 h ·
-    2,277 GB; FedBuff ⚠ running (72.1% at 80.8 h). Speech ⚠ pending; sync stacks ⚠ rerun with decay off (FX-N163). For reference,
-    all cells at 75%: 1.45-1.84× FedBuff, −44% to +10% GB. F49's 1.26-2.6× / −55% to +4% were at the old, lower targets.
+- **S6 results (30 w, P3 ranges on time and bytes):** Felix is the only stack to reach the target on all 2 datasets × 4 traces
+  (FB2, seed 1); no sync stack (incl. oracle arms) reaches it anywhere.
+  - cifar (80%; MobiPerf 75%): **1.13-1.23× sooner than FedBuff** (65.3-72.0 h vs 77.8-81.0 h) at **−33% to +34% GB**
+    (`s0u` −33%, `s20u` −12%, `s50u` +34%); vs FedBuff\* 1.11-1.24×, −32% to +28%. MobiPerf: Felix 95.2 h · 2,277 GB; FedBuff ✗ 73.6%.
+  - speech (88%; MobiPerf 84% ⚠ FX-N168): **1.45-1.69× sooner than FedBuff** on `s0u` / `s20u` at −18% / −3% GB (vs FedBuff\* 1.43-1.71×,
+    −28% / −19%); FedBuff ✗ on `s50u` (85.7%) and `smu` (80.7%). At 80% on `smu`: 1.35×, −16% GB.
+  - Range for the abstract: **1.1-1.7× sooner than FedBuff, −33% to +34% GB**; sync stacks plateau 61-78% (cifar) / 26-76% (speech).
 
 ## §1 Introduction (≈ 1.25 pages, ~900 words + Fig 1; argument first, ≤ 3 numbers)
 
@@ -110,6 +129,28 @@ eligibility is hard to forecast**, used in every section. Title open.
   3. *ML:* utility-proportional client selection and staleness-tolerant aggregation for async FL.
   4. *Result:* first to every target, faster than the strongest deployed baseline on 2 datasets × 4 traces, with the speedup split
      into statistical × system efficiency; gains hold on static and streaming data.
+
+### Task timeout per stack (evaluation setup + deviations table)
+
+**Rule (FX-D198, `flame/launch/task_timeout.py`):** timeout = 1.5 × the slowest modeled task of that stack's local work over the
+reference population. 1.5× is FedBuff / Papaya's factor (our old 90 s = 1.5 × 60 s). We use the maximum rather than a percentile so
+that every device can finish a task. Task time = 3 × samples × device ms/sample + 2 × model size / device bandwidth (FedScale model).
+
+| stack · local work | cifar: median task · slowest · timeout | speech: median · slowest · timeout |
+|---|---|---|
+| Felix, FedBuff · 1 epoch of the client's shard | 26 s · 451 s · **677 s** | 276 s · 1,280 s · **1,920 s** |
+| REFL · 1 step (batch 10 / 20) | 8 · 39 · **58 s** | 92 · 457 · **685 s** |
+| FedDance, FedAvg · 1 step (batch 24 / 32) | 13 · 46 · **69 s** | 94 · 463 · **695 s** |
+| Oort · 20 steps | 80 · 374 · **561 s** | 180 · 611 · **916 s** |
+
+- *Why async is longer:* async stacks train a full local epoch per task. With Dirichlet shards, the slowest device holding the largest
+  shard sets the maximum, 17× the median task on cifar. A 1-step sync task is a few samples plus two model transfers.
+- *Why it depends on the dataset:* model size (cifar 2.15 MB vs speech 29 MB, so transfer dominates speech) and per-sample compute.
+- *Why it depends on the stack:* each stack's own local work (source-faithful, L34). A shorter common timeout would cut off the slow
+  devices of the epoch-based stacks, which could then never finish a task.
+- *Consequence:* a check-in stack holds a departed client's slot for its timeout minus the time already spent. That is the 6-21 min per
+  departure above, and it grows with model size and local work, exactly where devices are slowest. Felix's push reports make the
+  timeout irrelevant (it stays only as a fallback for silent departures, FX-N155).
 
 ## §2 Background (≈ 0.5 page, ~350 words, text only)
 
@@ -163,7 +204,13 @@ standalone full-width figure for a single curve.
   - **Takeaway:** the server must work from the live eligible pool, not the population or a forecast of it.
 - **§3.2 Knowing who is eligible does not help a sync stack; the barrier is the limit (150 w + Fig 3 + Table 2).**
   - *Setup:* speech, sync stacks with their deployed availability knowledge vs an oracle (`*`). *Aha:* perfect knowledge of who is
-    eligible barely helps (REFL* ± 0.6 pp, FedDance* ≤ 1.5 pp). REFL ≈ REFL* says nothing about REFL's forecaster: the oracle itself
+    eligible barely helps (REFL* ± 0.6 pp, FedDance* ≤ 1.5 pp; F49 12 h). ⚠ FB2 120 h contradicts it for sync: oracle arms end 1-18 pp
+    higher, yet still 35-76%, far below target; async FedBuff\* ≈ FedBuff holds (±1.5 h). **Revised claim (operator 10-28):** "in most
+    cells oracle knowledge does not help: async and cifar sync (±3 pp; FedBuff\* ±1.5 h), because the oracle is exact only at selection and
+    the loss comes from clients leaving mid-task (equal with and without it) and, for sync, from the round barrier. Where it helps (speech
+    sync, +1-18 pp) it is not foresight but protocol time: a check-in stack waits 41-109 s between rounds for picks to check in (also on
+    syn_0, where no one ever leaves), 20-50% of a 110-220 s round, so the oracle runs 1.2-2.3× the rounds; on cifar that wait is 1-4 s of
+    18 s." Felix gets the same effect from push notifications: no wait, and departures seen at once. REFL ≈ REFL* says nothing about REFL's forecaster: the oracle itself
     gains nothing, because rounds wait for the slowest of 6 picks (median 256 s ≈ 238 s between rounds; 160-186 rounds in 12 h).
   - *Why rounds are long though tasks are short:* the "≤ 60 s per client" from FedBuff's setup was our old per-client delay, replaced
     by FedScale's device model (FX-D197). A 1-step speech task is 123 s, 93% of it moving the 29 MB model at device bandwidth (p50 6.1
@@ -275,6 +322,7 @@ selection); Felix = `fx`. **Ablation cells** = cifar × {syn_50, MobiPerf} (oper
 | **Why Felix wins (same runs)** | | | | | |
 | Efficiency split table | Evaluation: where the time goes | Each speedup = fewer updates to target (statistical) × more updates per hour (system); which one wins depends on the trace | per stack × cell: updates to target, updates / h, ratios vs Felix | all 8 (main: 4 ablation cells) | End-to-end |
 | Slot use figure | Evaluation: where the time goes; Motivation: async idles | Async baselines idle slots waiting for check-ins or held by departed clients; sync stacks wait at the barrier; Felix keeps slots busy | share of slot time busy / idle / held by a departed client, per stack | cifar syn_50, MobiPerf; speech MobiPerf | End-to-end |
+| Stall figure + table (`stall`) | Evaluation: where the time goes; Motivation: async idles | Felix loses seconds per departure; check-in stacks hold a slot until timeout (6-21 min), sync stacks also wait at the barrier | raw slot-hours per stack: useful / discarded compute, held by departed, barrier wait, idle; per-departure loss, releases | cifar + speech × syn_50, MobiPerf | End-to-end ✅ |
 | Round time figure | Motivation: the barrier | Sync rounds are set by the slowest pick, mostly model transfer; an oracle can't shorten them | round time: compute / transfer / waiting for the slowest; sync stacks ± oracle | speech + cifar MobiPerf | End-to-end |
 | Staleness by source figure | Motivation: staleness; Evaluation | In FedBuff most staleness comes from uploads held across a departure; Felix evicts them | staleness split by cause; FedBuff, FedBuff*, Felix | cifar syn_50, MobiPerf | End-to-end |
 | Client picks figure | Evaluation: which clients train | Felix picks clients with the most left to learn; speed-first or uniform picks give less per update | picks vs data size, samples / update, coverage, top-20% share; per stack | 4 ablation cells (rest appendix) | End-to-end |
@@ -317,13 +365,13 @@ selection); Felix = `fx`. **Ablation cells** = cifar × {syn_50, MobiPerf} (oper
 (operator 10-25 late) = priorities 1-2, 116 legs.** Speech is the bottleneck (1 leg / GPU, async 10-13 h for 120 h):
 measure 2 legs / GPU on the speech smoke; use jayne when free. **Run order (operator 10-27):** seed 1 of every End-to-end cell
 (both datasets) first, then seed 1 of priorities 2 → 3 → 4, then seeds 2-3; within a priority, cifar ahead of speech. Status 10-27:
-cifar seed 1 priorities 1-3 done; speech seed 1 End-to-end (44 legs) running, one End-to-end plot first; everything else waits
-(FELIX_READINESS node plan).
+first version done (10-28): End-to-end seed 1 on both datasets (88 legs) + cifar priorities 2-3; figures and results JSONs
+populated. **Seeds 2-3, static and speech ablations: closed for the submission (operator 10-28);** the paper reports seed 1.
 ## Later sections (claims they must back; outline after the front matter is final)
 
 - Theory: inherit FedBuff's rate under bounded staleness; state where held uploads break the bound (P17 slogan TBD).
-- Evaluation (K5): time and GB at the hit vs the fastest deployed baseline, all cells, 3 seeds, FB1 6-day runs; U* × R table (P19).
+- Evaluation (K5): time and GB at the hit vs the fastest deployed baseline, all cells, seed 1 (seeds 2-3 closed, operator 10-28), FB2 6-day runs; U* × R table (P19).
 - Ablations: ladder A0-A4 + K1, swap ablations (FX-N145), why-not table.
 - Limits paragraph at the end of the evaluation (P24; moved from intro ¶7): below ~50%, Oort and 1-step sync stacks spend fewer
   bytes at several times the time; speech sync stacks transfer-bound under the 5% K rule;
-  speech FedBuff leads Felix for the first ~2.5 h (⚠ FB1S smoke: Felix 22% vs FedBuff 16% at 2 h; re-read); seeds.
+  speech FedBuff leads Felix only in the first hour of `s0u` (15.7 vs 9.1% at 1 h; Felix ahead from 2 h, FB2); seeds.
