@@ -32,7 +32,9 @@ everything above it is project-agnostic. Add a rule here whenever a review round
   ≤ ≥ ±, τ only if the paper defines it. Accuracy deltas are absolute and written "+1.8%" (the paper's text and caption use
   the same convention).
 - **Capitalize:** the first letter of axis-label words (at least the first word), and the first word of every in-plot text,
-  annotation and legend entry ("Target 75%", "2.8× fewer GB than FedBuff").
+  annotation and legend entry ("Target 75%", "2.8× fewer GB than FedBuff"), schematics included; a label starting with a
+  symbol ($c$, $K$) stays as is.
+- **Schematics of our system name no other system:** name the concept ("timeout", "steep discount"), not the baseline.
 - **No titles** inside the plot. The caption says what it is; panel identity goes in the caption's (a) / (b) or a short in-axes tag.
 - **System name is a parameter.** Every label passes through one `label()` / `SYS_NAME`; renaming the system is a one-line change.
 - **Each plot has one message.** Write it down first ("ours hits the target at 95 h; no baseline reaches it"); every design choice

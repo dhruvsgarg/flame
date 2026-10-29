@@ -30,79 +30,183 @@ def _link(ax, a, b, kind, rad=0.0, color=INK):
     ax.add_patch(FancyArrowPatch(a, b, arrowstyle="-|>", color=color, connectionstyle=f"arc3,rad={rad}", shrinkA=0, shrinkB=0, zorder=5, **st))
 
 
+# F6 palette: one accent for FLuX (new), one for the learning feedback; the inherited async engine stays grey.
+NEW, FB = "#1B7F79", "#7B1E6B"
+ENGINE, BUSY = "#f1f1ef", "#d6d6d3"
+
+
+def _rbox(ax, x, y, w, h, ec=INK, fc="white", lw=1.0, ls="-", r=0.05, z=2):
+    ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle=f"round,pad=0,rounding_size={r}", fc=fc, ec=ec, lw=lw, ls=ls, zorder=z))
+
+
+def _badge(ax, x, y, n, c=INK):
+    ax.text(x, y, n, ha="center", va="center", fontsize=10, weight="bold", color="white", zorder=9,
+            bbox=dict(boxstyle="circle,pad=0.2", fc=c, ec="white", lw=0.8))
+
+
+def _flow(ax, a, b, kind, c=INK, rad=0.0, z=5):
+    """kind: 'ctl' = dashed control message (bytes); 'data' = thick model / update (MB)."""
+    st = dict(lw=1.0, ls=(0, (3, 1.8)), mutation_scale=8) if kind == "ctl" else dict(lw=2.4, mutation_scale=11)
+    ax.add_patch(FancyArrowPatch(a, b, arrowstyle="-|>", color=c, connectionstyle=f"arc3,rad={rad}", shrinkA=0, shrinkB=0, zorder=z, **st))
+
+
 def fig_architecture():
-    """F6, figure*: one live signal (the eligible pool) drives three coupled controllers; FLuX parts blue, inherited FedBuff engine grey."""
-    fig, ax = plt.subplots(figsize=(FULL_W, 2.55))
-    ax.set(xlim=(0, 1), ylim=(0, 1))
+    """F6, figure*: the live eligible pool, pushed by clients, drives Pace, Select and (through c -> τ) Agg; FLuX parts in one
+    accent, feedback in a second, inherited FedBuff engine grey. Badges 1-8 = §4 ¶2 steps; the prose, not the figure, explains them."""
+    W, H = FULL_W, 3.3
+    fig = plt.figure(figsize=(W, H), layout="none")
+    ax = fig.add_axes((0, 0, 1, 1))
+    ax.set(xlim=(0, W), ylim=(0, H))
     ax.axis("off")
-    S, kw, sm = label("Felix"), dict(fontsize=FONT["annot"]), dict(fontsize=FONT["status"])
-    ax.add_patch(Rectangle((0.0, 0.02), 0.175, 0.96, fc="#f2f2f2", ec="none", gid="region"))
-    ax.add_patch(Rectangle((0.2, 0.53), 0.555, 0.45, fc="#e8f1f8", ec=FELIX, lw=LINE["axis"], gid="region"))
-    ax.add_patch(Rectangle((0.2, 0.02), 0.555, 0.47, fc="#f2f2f2", ec="none", gid="region"))
-    ax.text(0.0875, 0.955, "Devices", ha="center", va="top", fontsize=FONT["label"], weight="bold")
-    ax.text(0.207, 0.955, f"{S} control plane (new)", ha="left", va="top", fontsize=FONT["label"], weight="bold", color=FELIX)
-    ax.text(0.207, 0.035, "Data plane (FedBuff engine, inherited)", ha="left", va="bottom", fontsize=FONT["label"], weight="bold")
-    # devices
-    phones = (("Eligible", True, ""), ("Not eligible", False, ""), ("Left mid-task", False, "x"), ("Training", True, "task"),
-              ("Not eligible", False, ""))
-    py = [0.80 - 0.135 * k for k in range(5)]
-    for y, (txt, el, mk) in zip(py, phones):
-        ax.add_patch(FancyBboxPatch((0.012, y - 0.05), 0.022, 0.1, boxstyle="round,pad=0.002,rounding_size=0.006", fc="white" if el else "#cfcfcf",
-                                    ec=INK, lw=LINE["axis"], ls="-" if el else (0, (2, 1.5))))
-        if mk == "task":
-            ax.add_patch(Rectangle((0.016, y - 0.03), 0.014, 0.035, fc=FELIX, ec="none"))
-        elif mk == "x":
-            ax.plot([0.023], [y], "x", color=INK, ms=4, mew=1.0)
-        ax.text(0.042, y, txt, ha="left", va="center", **kw)
-    ax.text(0.0875, 0.1, "Eligible = idle, charging,\nunmetered (OS signals);\ndata arrives while in use", ha="center", va="center",
-            linespacing=1.1, **sm)
-    # control plane: ledger -> bus -> three controllers side by side
-    _box(ax, 0.215, 0.6, 0.15, 0.3, "Eligibility ledger\nlive pool $P(t)$\n1 bit + $|D|$, $q$\nper client", ec=FELIX)
-    ctl = ((0.405, f"{S}-Pace", "how many:\n$c = f(|P|, \\varphi)$"), (0.525, f"{S}-Select", "whom:\n$p \\propto |D|\\,q$"),
-           (0.645, f"{S}-Evict", "free the\nslot now"))
-    ax.plot([0.365, 0.695], [0.87, 0.87], color=FELIX, lw=LINE["ref"], ls=(0, (3, 2)), zorder=4)
-    for x, name, body in ctl:
-        _box(ax, x, 0.6, 0.1, 0.22, "", ec=FELIX)
-        ax.text(x + 0.05, 0.8, name, ha="center", va="top", weight="bold", **kw)
-        ax.text(x + 0.05, 0.67, body, ha="center", va="center", linespacing=1.1, **kw)
-        _link(ax, (x + 0.05, 0.87), (x + 0.05, 0.82), "ctl", color=FELIX)
-    # data plane: slot row under the controllers; buffer -> Agg -> version below
-    ax.add_patch(Rectangle((0.45, 0.29), 0.295, 0.11, fc="white", ec=INK, lw=LINE["axis"]))
+    S, F, TT = label("Felix"), 8.5, 10  # one body size, one title size
+
+    # regions: devices | control plane (new, white) over data plane (inherited, grey)
+    ax.add_patch(Rectangle((0.02, 0.02), 1.42, H - 0.04, fc="#f6f5f1", ec="none", zorder=0))
+    ax.add_patch(Rectangle((1.54, 1.66), W - 1.56, H - 1.68, fc="white", ec=MUTEDK, lw=0.6, zorder=0))
+    ax.add_patch(Rectangle((1.54, 0.02), W - 1.56, 1.56, fc=ENGINE, ec="none", zorder=0))
+    ax.text(0.73, H - 0.07, "Devices", ha="center", va="top", fontsize=TT, weight="bold")
+    ax.text(1.62, H - 0.07, f"{S} control plane", ha="left", va="top", fontsize=TT, weight="bold")
+    ax.text(W - 0.08, 0.06, "Async training and aggregation", ha="right", va="bottom", fontsize=TT, weight="bold", color=MUTEDK)
+
+    # devices: four states, each a phone + state + why
+    dev = {"A": 2.72, "D": 2.12, "C": 1.42, "B": 0.78}
+    def phone(y, ec, fc, ls="-"):
+        _rbox(ax, 0.1, y - 0.21, 0.22, 0.42, ec=ec, fc=fc, lw=1.2, ls=ls, r=0.04)
+    phone(dev["A"], NEW, "white")
+    ax.text(0.21, dev["A"] + 0.02, "$\\bf{A}$", ha="center", va="center", fontsize=F, color=NEW)
+    phone(dev["D"], INK, BUSY, ls=(0, (2, 1.5)))
+    ax.plot([0.21], [dev["D"]], "x", color=INK, ms=6, mew=1.6, zorder=4)
+    phone(dev["C"], INK, "white")
+    ax.add_patch(Rectangle((0.14, dev["C"] - 0.12), 0.14, 0.2, fc=MUTEDK, ec="none", zorder=3))
+    ax.text(0.21, dev["C"] - 0.02, "C", ha="center", va="center", fontsize=F, color="white", weight="bold", zorder=4)
+    phone(dev["B"], INK, BUSY, ls=(0, (2, 1.5)))
+    for k, hgt in enumerate((0.06, 0.1, 0.15)):
+        ax.add_patch(Rectangle((0.135 + 0.05 * k, dev["B"] - 0.15), 0.035, hgt, fc=INK, ec="none", zorder=3))
+    rows = (("A", "Eligible", "Idle, charging, Wi-Fi", NEW), ("D", "Leaves mid-task", "Unplugged: reports it", INK),
+            ("C", "Training", "1 epoch on local data", INK), ("B", "In use: not eligible", "New data arrives, $|D|\\uparrow$", INK))
+    for key, st, why, c in rows:
+        ax.text(0.38, dev[key] + 0.07, st, ha="left", va="center", fontsize=F, weight="bold", color=c)
+        ax.text(0.38, dev[key] - 0.09, why, ha="left", va="center", fontsize=F)
+    _flow(ax, (0.12, 0.33), (0.42, 0.33), "ctl")
+    ax.text(0.47, 0.33, "Control (bytes)", ha="left", va="center", fontsize=F)
+    _flow(ax, (0.12, 0.15), (0.42, 0.15), "data")
+    ax.text(0.47, 0.15, "Model / update (MB)", ha="left", va="center", fontsize=F)
+
+    # Notify: eligibility ledger, one row per client
+    lx, ly, lw_, lh = 1.62, 1.74, 1.16, 1.3
+    _rbox(ax, lx, ly, lw_, lh, ec=NEW, fc="white", lw=1.2)
+    ax.text(lx + lw_ / 2, ly + lh - 0.06, f"{S}-Notify", ha="center", va="top", fontsize=TT, weight="bold", color=NEW)
+    ax.text(lx + lw_ / 2, ly + lh - 0.24, "Eligibility ledger", ha="center", va="top", fontsize=F)
+    for x, h in ((lx + 0.36, "Elig."), (lx + 0.66, "$|D|$"), (lx + 0.98, "$q$")):
+        ax.text(x, ly + 0.86, h, ha="center", va="center", fontsize=F, color=MUTEDK)
+    led = (("A", 1, 0.55, ".7"), ("D", "x", 0.3, ".4"), ("C", 1, 0.4, ".5"), ("B", 0, 0.7, ".9"))
+    for k, (n, el, d, q) in enumerate(led):
+        y = ly + 0.7 - 0.15 * k
+        ax.text(lx + 0.12, y, n, ha="center", va="center", fontsize=F, weight="bold")
+        ax.add_patch(Rectangle((lx + 0.31, y - 0.05), 0.1, 0.1, fc=NEW if el == 1 else "white", ec=NEW, lw=0.8, zorder=3))
+        if el == "x":
+            ax.text(lx + 0.36, y, "1→0", ha="center", va="center", fontsize=F, color=NEW, weight="bold", zorder=4,
+                    bbox=dict(boxstyle="round,pad=0.05", fc="white", ec="none"))
+        ax.add_patch(Rectangle((lx + 0.5, y - 0.035), 0.32 * d / 0.7, 0.07, fc=INK, ec="none", zorder=3))
+        ax.text(lx + 0.98, y, q, ha="center", va="center", fontsize=F)
+    ax.text(lx + lw_ / 2, ly + 0.08, "No forecast", ha="center", va="bottom", fontsize=F, style="italic", color=NEW)
+
+    # the live pool: one signal fanned out to the controllers
+    by = 2.82
+    ax.plot([lx + lw_, 6.3], [by, by], color=NEW, lw=2.6, solid_capstyle="round", zorder=4)
+    ax.text(2.88, by + 0.06, "Live eligible pool $P(t)$, pushed by clients, drives every controller",
+            ha="left", va="bottom", fontsize=F, weight="bold", color=NEW)
+    cy, ch = 1.74, 0.92
+    boxes = ((2.9, 1.22, NEW, f"{S}-Pace"), (4.24, 1.22, NEW, f"{S}-Select"), (5.58, 1.08, NEW, f"{S}-Notify"))
+    for x, w, c, name in boxes:
+        _rbox(ax, x, cy, w, ch, ec=c, fc="white", lw=1.2)
+        ax.text(x + w / 2, cy + ch - 0.05, name, ha="center", va="top", fontsize=TT, weight="bold", color=c)
+        _flow(ax, (x + w / 2, by), (x + w / 2, cy + ch), "ctl", c=NEW)
+
+    # Pace mini-plot: c starts at c_max, falls toward ½ pool as φ falls, then follows the pool
+    px, py, pw, ph = 3.0, 1.95, 0.8, 0.4
+    pool = [0.8, 0.78, 0.74, 0.66, 0.68, 0.58, 0.46, 0.42, 0.5, 0.58, 0.56]
+    ts = [px + pw * i / 10 for i in range(11)]
+    phi = [max(0.0, 1 - i / 5) for i in range(11)]
+    cc = [f * 1.0 + (1 - f) * 0.5 * p for f, p in zip(phi, pool)]
+    ax.step(ts, [py + ph * p for p in pool], where="post", color=MUTEDK, lw=1.2, zorder=4)
+    ax.plot(ts, [py + ph * v for v in cc], color=NEW, lw=2.0, zorder=5)
+    ax.plot([px, px + pw], [py, py], color=INK, lw=0.6)
+    ax.text(px + pw + 0.02, py + ph * 0.7, "Pool", ha="left", va="center", fontsize=F, color=MUTEDK)
+    ax.text(px + pw + 0.02, py + ph * 0.28, "$c$", ha="left", va="center", fontsize=F, color=NEW, weight="bold")
+    ax.text(px + 0.05, py + ph * 1.0, "$c_{\\rm max}$", ha="left", va="bottom", fontsize=F, color=NEW)
+    ax.text(2.9 + 0.61, cy + 0.04, "How many: $c \\to$ pool / 2", ha="center", va="bottom", fontsize=F)
+
+    # Select mini-plot: pick probability over eligible clients
+    sx, sy = 4.4, 1.98
+    for k, v in enumerate((0.35, 0.9, 0.55, 0.2, 0.7, 0.4)):
+        ax.add_patch(Rectangle((sx + 0.15 * k, sy), 0.1, 0.4 * v, fc=NEW if k == 1 else BUSY, ec="none", zorder=3))
+    ax.plot([sx - 0.03, sx + 0.9], [sy, sy], color=INK, lw=0.6)
+    ax.text(sx + 0.27, sy + 0.33, "Pick", ha="left", va="center", fontsize=F, color=NEW, weight="bold")
+    ax.text(4.24 + 0.61, cy + 0.04, "Whom: $p \\propto |D|\\cdot q$", ha="center", va="bottom", fontsize=F)
+
+    # Evict mini-plot: slot time lost per departure
+    ex = 5.66
+    ax.text(ex, 2.37, "Lost per departure", ha="left", va="center", fontsize=F, color=MUTEDK)
+    ax.add_patch(Rectangle((ex - 0.02, 2.12), 0.98, 0.12, fc=BUSY, ec="none", zorder=3))
+    ax.text(ex + 0.01, 2.18, "Timeout: 6-21 min", ha="left", va="center", fontsize=F, zorder=4)
+    ax.add_patch(Rectangle((ex, 1.94), 0.04, 0.12, fc=NEW, ec="none", zorder=3))
+    ax.text(ex + 0.07, 2.0, f"{S}: $\\leq$49 s", ha="left", va="center", fontsize=F, color=NEW, weight="bold")
+    ax.text(5.58 + 0.54, cy + 0.04, "Evict on report", ha="center", va="bottom", fontsize=F)
+
+    # data plane: slots in flight
+    sy0, sh = 1.12, 0.3
+    _rbox(ax, 3.5, sy0 - 0.06, 3.14, sh + 0.12, ec=INK, fc="white", lw=0.8, r=0.03)
+    ax.text(3.58, sy0 + sh / 2, "$c$ slots\nin flight", ha="left", va="center", fontsize=F, linespacing=1.0)
+    slots = ("C", "", "E", "F", "D", "G")
+    sxs = [4.18 + 0.4 * k for k in range(6)]
+    for x, n in zip(sxs, slots):
+        free = n in ("", "D")
+        ax.add_patch(Rectangle((x, sy0), 0.32, sh, fc="white" if free else BUSY, ec=INK, lw=0.6, ls=(0, (2, 1.2)) if free else "-", zorder=3))
+        if n == "D":
+            ax.plot([x + 0.16], [sy0 + sh / 2], "x", color=NEW, ms=7, mew=1.8, zorder=4)
+        elif n:
+            ax.text(x + 0.16, sy0 + sh / 2, n, ha="center", va="center", fontsize=F, weight="bold", zorder=4)
+
+    # data plane: buffer -> Agg -> version
+    _rbox(ax, 1.62, 0.2, 0.9, 0.56, ec=INK, fc="white", lw=0.8)
+    ax.text(2.07, 0.715, "Buffer", ha="center", va="top", fontsize=F, weight="bold")
     for k in range(5):
-        ax.add_patch(Rectangle((0.535 + 0.042 * k, 0.31), 0.034, 0.07, fc=FELIX if k != 3 else "white", ec=INK, lw=0.4))
-    ax.text(0.457, 0.345, "$c$ slots\nin flight", ha="left", va="center", linespacing=1.0, **sm)
-    for x, w, t, ec in ((0.215, 0.11, "Buffer\n$K$ updates", INK), (0.36, 0.16, f"{S}-Agg\nweight $(1+\\tau)^{{-1/4}}$", FELIX),
-                        (0.555, 0.19, "Version $v{+}1$ → served model", INK)):
-        _box(ax, x, 0.09, w, 0.13, t, ec=ec)
-    _link(ax, (0.325, 0.155), (0.36, 0.155), "data")
-    _link(ax, (0.52, 0.155), (0.555, 0.155), "data"); _num(ax, 0.5375, 0.2, "7")
-    # scenario
-    _link(ax, (0.13, py[0]), (0.215, py[0]), "ctl"); _num(ax, 0.17, py[0] + 0.035, "1")
-    _link(ax, (0.125, py[2]), (0.215, 0.64), "ctl"); _num(ax, 0.17, 0.62, "5")
-    for x, n in ((0.455, "2"), (0.575, "3"), (0.695, "5")):
-        _link(ax, (x, 0.6), (x, 0.4), "ctl", color=FELIX); _num(ax, x + 0.014, 0.5, n)
-    _link(ax, (0.45, 0.36), (0.105, py[3] + 0.015), "data"); _num(ax, 0.3, 0.405, "4")
-    _link(ax, (0.07, py[3] - 0.035), (0.215, 0.17), "data"); _num(ax, 0.155, 0.31, "6")
-    # feedback (8): update loss -> q in the ledger; commit loss -> φ in Pace; c -> τ -> Agg weight
-    _link(ax, (0.26, 0.22), (0.26, 0.6), "ctl", color=FELIX); _num(ax, 0.245, 0.5, "8")
-    ax.text(0.268, 0.47, "loss → $q$", ha="left", va="center", **sm)
-    _link(ax, (0.42, 0.22), (0.42, 0.6), "ctl", color=FELIX); _num(ax, 0.405, 0.5, "8")
-    ax.text(0.405, 0.27, "loss → $\\varphi$", ha="right", va="center", **sm)
-    _link(ax, (0.48, 0.29), (0.48, 0.22), "ctl", color=FELIX)
-    ax.text(0.487, 0.255, "$c$ → staleness $\\tau$", ha="left", va="center", **sm)
-    # step list + key, inside the figure
-    steps = ("Client becomes eligible, reports it", "Pace sets $c$ from pool, loss phase", "Select fills a free slot",
-             "The model is dispatched", "Client leaves mid-task, reports;\nEvict frees the slot, refilled at once",
-             "Update + loss return to the buffer", "Agg commits a version every $K$", "Losses update $q$ and $\\varphi$")
-    y = 0.95
-    for k, t in enumerate(steps, 1):
-        _num(ax, 0.775, y - 0.025, str(k))
-        ax.text(0.79, y, t, ha="left", va="top", linespacing=1.05, **kw)
-        y -= 0.1 if "\n" in t else 0.065
-    ax.add_patch(FancyArrowPatch((0.77, 0.12), (0.81, 0.12), arrowstyle="-|>", lw=LINE["ref"], ls=(0, (3, 2)), mutation_scale=6, color=INK))
-    ax.text(0.815, 0.12, "Control message (bytes)", ha="left", va="center", **kw)
-    ax.add_patch(FancyArrowPatch((0.77, 0.05), (0.81, 0.05), arrowstyle="-|>", lw=LINE["hero"], mutation_scale=9, color=INK))
-    ax.text(0.815, 0.05, "Model / update (MB)", ha="left", va="center", **kw)
+        ax.add_patch(Rectangle((1.72 + 0.14 * k, 0.25), 0.1, 0.14, fc=INK if k < 3 else "white", ec=INK, lw=0.5, zorder=3))
+    ax.text(2.07, 0.4, "$K$ updates", ha="center", va="bottom", fontsize=F)
+    ax_, aw = 2.82, 1.62
+    _rbox(ax, ax_, 0.2, aw, 0.62, ec=NEW, fc="white", lw=1.2)
+    ax.text(ax_ + 0.06, 0.77, f"{S}-Agg", ha="left", va="top", fontsize=TT, weight="bold", color=NEW)
+    ax.text(ax_ + 0.06, 0.58, "Weight\n$(1{+}\\tau)^{-1/4}$", ha="left", va="top", fontsize=F, linespacing=1.1)
+    gx, gy, gw, gh = 3.66, 0.34, 0.4, 0.34
+    taus = [i / 2 for i in range(41)]
+    for e, c, ls_, lw_ in ((0.25, NEW, "-", 2.0), (0.5, MUTEDK, (0, (2, 1.2)), 1.0)):
+        ax.plot([gx + gw * t / 20 for t in taus], [gy + gh * (1 + t) ** -e for t in taus], color=c, ls=ls_, lw=lw_, zorder=4)
+    ax.plot([gx, gx + gw], [gy, gy], color=INK, lw=0.6)
+    ax.plot([gx, gx], [gy, gy + gh], color=INK, lw=0.6)
+    ax.text(gx + gw + 0.03, gy + gh * 0.75, "Mild", ha="left", va="center", fontsize=F, color=NEW, weight="bold")
+    ax.text(gx + gw + 0.03, gy + gh * 0.3, "Steep", ha="left", va="center", fontsize=F, color=MUTEDK)
+    ax.text(gx + gw / 2, gy - 0.02, "Staleness $\\tau$", ha="center", va="top", fontsize=F)
+    _rbox(ax, 4.74, 0.3, 1.9, 0.46, ec=INK, fc="white", lw=0.8)
+    ax.text(5.69, 0.53, "Version $v{+}1$ → served model", ha="center", va="center", fontsize=F)
+    _flow(ax, (2.52, 0.48), (2.82, 0.48), "data")
+    _flow(ax, (4.44, 0.53), (4.74, 0.53), "data")
+
+    # the scenario: badges colored by the mechanism that acts (black = inherited engine)
+    _flow(ax, (1.36, dev["A"]), (lx, dev["A"]), "ctl", c=NEW); _badge(ax, 1.49, dev["A"] + 0.12, "1")
+    _flow(ax, (1.36, dev["D"]), (lx, dev["D"]), "ctl", c=NEW); _badge(ax, 1.49, dev["D"] + 0.12, "5")
+    for x, n, c in ((3.95, "2", NEW), (sxs[1] + 0.16, "3", NEW), (sxs[4] + 0.16, "5", NEW)):
+        _flow(ax, (x, cy), (x, sy0 + sh), "ctl", c=c); _badge(ax, x + 0.13, 1.56, n)
+    _flow(ax, (3.5, 1.3), (1.42, 1.33), "data"); _badge(ax, 1.9, 1.32, "4")
+    _flow(ax, (1.2, dev["C"] - 0.2), (1.8, 0.76), "data"); _badge(ax, 1.6, 0.97, "6")
+    _badge(ax, 4.59, 0.67, "7")
+    # feedback: losses to q (Select's signal, kept in the ledger) and φ (Pace); c sets τ (Agg)
+    _flow(ax, (2.3, 0.76), (2.3, ly), "ctl", c=FB); _badge(ax, 2.3, 1.56, "8")
+    ax.text(2.36, 1.15, "Loss → Utility $q$", ha="left", va="center", fontsize=F, color=FB, weight="bold")
+    _flow(ax, (3.28, 0.82), (3.28, cy), "ctl", c=FB); _badge(ax, 3.28, 1.56, "8")
+    ax.text(3.22, 0.93, "Loss → Phase $\\varphi$", ha="right", va="center", fontsize=F, color=FB, weight="bold")
+    _flow(ax, (4.0, sy0 - 0.06), (4.0, 0.82), "ctl", c=FB)
+    ax.text(4.07, 0.95, "$c$ → staleness $\\tau \\approx c/K$", ha="left", va="center", fontsize=F, color=FB, weight="bold")
     return save(fig, SEC, "fig_architecture")
 
 
