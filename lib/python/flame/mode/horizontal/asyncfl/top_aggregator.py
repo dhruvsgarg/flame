@@ -137,6 +137,9 @@ class TopAggregator(SyncTopAgg):
         # FX-N60: an evicted/abandoned end's late update is ingested, as real receives it.
         self._sim_ingest_evicted = str(
             getattr(self.config.hyperparameters, "sim_ingest_evicted", True)).lower() == "true"
+        # FX-N160: the commit gate waits for an evicted end's in-transit update due before the buffered min.
+        self._sim_gate_evicted = str(
+            getattr(self.config.hyperparameters, "sim_gate_evicted", True)).lower() == "true"
         # FX-D90: a send-gated trainer's held slot frees when its delivery commits, as in real.
         self._sim_hold_delivering_slot = str(
             getattr(self.config.hyperparameters, "sim_hold_delivering_slot", True)).lower() == "true"
@@ -422,6 +425,14 @@ class TopAggregator(SyncTopAgg):
             self._sim_buffer.add(metadata[0], float(sct if sct is not None else self._vclock.now), (msg, metadata))
             logger.info(f"[EVICTED_INGEST] end={str(metadata[0])[-4:]} sct={sct}")
 
+    def _sim_evicted_in_transit(self, channel) -> dict:
+        """FX-N160: evicted ends whose update has not arrived -> its earliest delivery (pending_withheld lower bound)."""
+        if not getattr(self, "_sim_gate_evicted", False) or not getattr(self, "pending_withheld", None):
+            return {}
+        pay, gave_up = getattr(self, "_sim_withheld_payload", {}), self.__dict__.setdefault("_sim_evicted_gave_up", set())
+        return {e: float(d) for e, d in self.pending_withheld.items()
+                if math.isfinite(d) and e not in pay and (e, d) not in gave_up and not self._sim_buffer.has(e) and channel.has(e)}
+
     def _sim_unknown_stuck(self, pending_ends) -> bool:
         """Cold-start gate: hold while a pending first-contact end may still be computing."""
         stuck = bool(self._sim_cold_start_inflight() & set(pending_ends))
@@ -490,6 +501,8 @@ class TopAggregator(SyncTopAgg):
                 if channel.has(e)
                 and not self._sim_buffer.has(e) and e not in self._sim_committed
             ]
+            _evicted = self._sim_evicted_in_transit(channel)
+            live_inflight += [e for e in _evicted if e not in live_inflight]
             # ends still pending ingestion this pass — drives the "nothing left to
             # commit and nothing in flight" loop-exit below (per ingestion path).
             _pending_ends = live_inflight
@@ -502,7 +515,7 @@ class TopAggregator(SyncTopAgg):
             _pre_inflight = [
                 (e, exp) for e, exp in self._sim_inflight_expected.items()
                 if not self._sim_buffer.has(e) and e not in self._sim_committed
-            ]
+            ] + list(_evicted.items())
             if getattr(self, "_sim_sct_ordered_drain", False):
                 # sct-faithful ingestion: drain each live in-flight end's rx queue
                 # DIRECTLY (no recv_fifo streamer), so the buffer is a COMPLETE
@@ -555,6 +568,7 @@ class TopAggregator(SyncTopAgg):
                 ]
                 to_probe += [e for e in self._sim_cold_start_inflight()
                              if e not in _seen and e not in to_probe and channel.has(e)]
+                to_probe += [e for e in _evicted if e not in to_probe]
                 _pending_ends = to_probe
                 if to_probe:
                     probed = max(probed, len(to_probe))
@@ -583,6 +597,10 @@ class TopAggregator(SyncTopAgg):
                     continue  # already drained into the buffer, or committed
                 if min_stuck is None or exp < min_stuck:
                     min_stuck, _stuck_end = exp, e
+            _evicted = self._sim_evicted_in_transit(channel)
+            for e, exp in _evicted.items():
+                if min_stuck is None or exp < min_stuck:
+                    min_stuck, _stuck_end = exp, e
             earlier_stuck = (buffered_min is not None and min_stuck is not None
                              and min_stuck + self._sim_order_slack_s < buffered_min)
             unknown_stuck = self._sim_unknown_stuck(_pending_ends)
@@ -599,6 +617,8 @@ class TopAggregator(SyncTopAgg):
                                f"{str(_stuck_end)[-4:]} exp={min_stuck} after {time.time() - barrier_t0:.0f}s wall")
                 if _stuck_end is not None:
                     self._sim_inflight_expected.pop(_stuck_end, None)
+                    if _stuck_end in _evicted:
+                        self.__dict__.setdefault("_sim_evicted_gave_up", set()).add((_stuck_end, _evicted[_stuck_end]))
                 break
             # else: HOLD — an in-flight trainer is expected to complete before the
             # buffered min, so committing now would lap it (the past-dating source).

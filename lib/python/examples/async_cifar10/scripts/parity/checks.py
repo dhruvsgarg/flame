@@ -1251,6 +1251,8 @@ def eligible_speed_composition_parity(real: dict, sim: dict, ks_tol: float = 0.2
     def pool(sel_events):
         meta, obs = [], []
         for e in sel_events:
+            if e.get("per_trainer_full") is False:  # FX-D240: chosen-only event
+                continue
             for eid, cand in (e.get("per_trainer") or {}).items():
                 d = delay.get(eid)
                 if d is not None:

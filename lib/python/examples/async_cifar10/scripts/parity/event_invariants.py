@@ -142,7 +142,8 @@ def _res(status, detail="", **kw):
 
 # ── checks ──────────────────────────────────────────────────────────────────
 def ev0_clean_exit(run):
-    """No tracebacks in any log (a teardown SIGTERM's `SystemExit: 0` excepted, fail_fast); the aggregator logged its budget stop."""
+    """No tracebacks in any log (a teardown SIGTERM's `SystemExit: 0` excepted, fail_fast); the aggregator logged its budget stop
+    (or, bench, emitted `run_end` with work_done)."""
     import sys
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))
     from fail_fast import TRACEBACK, fatal_hits
@@ -154,6 +155,7 @@ def ev0_clean_exit(run):
     if run["agg_log"]:
         with open(run["agg_log"], errors="replace") as f:
             stopped = any("stopping run" in line.lower() for line in f)  # incl. [SIM_WALL_CEILING]
+    stopped = stopped or any(e.get("work_done") for e in run["agg"] if e.get("event") == "run_end")  # bench: no agg log
     status = "FAIL" if (tb or not stopped) else "PASS"
     return _res(status, f"tracebacks={tb} stopping_run={stopped}", tracebacks=tb, stopped=stopped)
 
@@ -487,6 +489,11 @@ def ev12_reached_budget(run):
         ts = [e["ts"] for e in commits + sels + ends]
         reached = max(ts) - (min(e["ts"] for e in sels) if sels else commits[0]["ts"])
     ok = reached >= _BUDGET_FRAC * budget
+    # A target stop (targetAccuracy over the last targetWindow evals, as leg_digest's hit) ends early by design.
+    tgt, w = _hp(run, "targetAccuracy"), int(_hp(run, "targetWindow") or 5)
+    acc = [float(e["test-accuracy"]) for e in _events(run, "agg_eval") if e.get("test-accuracy") is not None]
+    if not ok and tgt and len(acc) >= w and sum(acc[-w:]) / w >= float(tgt) and ends:
+        return _res("PASS", f"stopped at target {float(tgt):.0%} at {reached:.0f}s (budget {budget:.0f}s)")
     return _res("PASS" if ok else "FAIL", f"reached={reached:.0f}s budget={budget:.0f}s (need {_BUDGET_FRAC:.0%})")
 
 
@@ -976,7 +983,7 @@ CHECKS = [ev0_clean_exit, ev1_progress, ev2_task_alternation, ev3_duration_model
           ev21_avl_eval_semantics, ev22_availability_knowledge, ev23_checkin_protocol, ev24_busy_until_completion]
 
 
-# Live early exit: checks whose FAIL on a log prefix stays FAIL on the full log (EV11: its backwards count only).
+# Live early exit: checks whose FAIL on a log prefix stays FAIL on the full log (EV11: its backwards count only; EV23: protocol breaks only).
 EARLY = (ev6_staleness, ev8_concurrency_cap, ev9_selector_state, ev11_vclock, ev14_eval_sane, ev15_one_task_per_version,
          ev16_withheld_delivery, ev17_real_gate_repick, ev18_model_finite, ev19_stream_schedule, ev21_avl_eval_semantics,
          ev22_availability_knowledge, ev23_checkin_protocol)
@@ -992,7 +999,8 @@ def doomed(run_dir: str) -> list:
         except Exception:  # noqa: BLE001 -- a partial log must never kill a leg by crashing a check
             continue
         if r["status"] == "FAIL" and not (fn is ev11_vclock and "backwards=0 " in r["detail"]) \
-                and not (fn is ev19_stream_schedule and "no trainer_round carries" in r["detail"]):
+                and not (fn is ev19_stream_schedule and "no trainer_round carries" in r["detail"]) \
+                and not (fn is ev23_checkin_protocol and "no waiting check-in" in r["detail"]):  # picked lines can trail
             out.append(re.match(r"ev\d+", fn.__name__)[0].upper() + ": " + r["detail"])
     return out
 

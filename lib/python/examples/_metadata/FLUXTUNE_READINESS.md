@@ -42,6 +42,12 @@ Big models (RoBERTa-L, SmolLM2-1.7B): real↔sim parity not graded; it transfers
 FT-N21. Bench ≡ harness passed on all three cells (FT-D3, FT-D7). syn_0 parity is closed on v1. Unavailability: `fwdllm_aggregator.py` has no send-gate, deliver-late or
 withheld-delivery wiring yet (only the oracular select filter and the sync scarcity wait).
 
+**Latest (10-27; bench, syn_0, seed 1, n = 1; `~/aish_test/.../fwdllm/paper_dy_20261027/POOL_full_{flux,fwdllm}`).** FluxTune
+hit the 65% target (`BudgetStop` 2 evals ≥ 0.65 at commit 557; best 66.2%, 4.78 h vclock, 148 min wall). FwdLLM stalled at 58-60%
+(best 61.6% at 22.9 h; stopped at 47.8 h). At FwdLLM's best (first eval ≥ 61.6%): FluxTune 3.29 h vs 22.9 h = **6.95× sooner**, 27.4
+vs 263.1 GB = **−90% traffic** (down 17.2 vs 24.4 GB, −29%; up 10.2 vs 238.7 GB, −96%); final accuracy +4.6 pp (66.2 vs 61.6%).
+Uplink is summed from trainer telemetry by wall timestamp. Unchecked: whether FwdLLM's stall is the method or this config.
+
 ---
 
 ## Next steps (persistent queue — resumes after Felix)
@@ -54,6 +60,13 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 - **FT-N21 · Big-model real↔sim transfer check (FT-L19) · todo.** Per model, one 1–2 h real leg at the paper packing beside
   a same-seed sim leg. *Exit:* 0 `[TIMING_OVERRUN]`, real `vclock_charge` spans near the dataset profile, no eval-held
   commits beyond seconds, accuracy within band at matched commits. *Why:* the 10-min legs (10-24) reached no real commit.
+- **FT-N24 · Slot accounting in the fwdllm digest (from Felix, 10-29) · todo (on resume).** Felix's parser charged two things to
+  "lost" slot time that were not: (1) with notify, a client that finished and went offline kept its slot until the next sim event,
+  though the send gate frees it at completion (FX-N167; fixed in `leg_digest.py`); (2) `slot_split` counted the `late` fate
+  (an update aggregated *after* an eviction / timeout record, e.g. a withheld upload delivered on return) as discarded compute
+  (fixed in `paper_plots.USED`). After both, Felix computes 98.9-100% of its occupied slot time on every trace (was shown losing up
+  to 10%). *Check:* the fwdllm digest frees slots at completion under the send gate and counts late-but-aggregated gradients as used.
+  *Exit:* a fwdllm leg's slot split sums to capacity with no late-aggregated update in "discarded".
 - **FT-N20 · Data augmentation like every Felix stack (FELIX FX-D233, FX-N143, Decisions "Augmentation") · todo (on resume).**
   *Principle (operator 10-24):* if the baselines' own pipelines augment, every stack and the ceiling do, with fresh draws per pass on
   the device; never adopted or skipped for convenience. Felix found its GPU preload froze one draw per sample (+10-17 pp once fixed).
@@ -210,6 +223,8 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   commit (1.7B 8.4 ≈ RoBERTa 0.2; RUN_PLAN §3.5).
 - **FT-L29** Big-cell bench legs: one per 4 GPUs; 1.7B bs 32 worker ~5 GB GPU / 2.5 GB RAM, aggregator 7 GB / 10 GB; 24 workers fit
   (36 of 46 GB). An eval adds ~10% wall, 0 vclock (`paper_sm_20261026`).
+- **FT-L30** An update's fate is its commit record, not its abandon record: an update aggregated after an eviction / timeout
+  is used compute. Charge a slot only while the server waits on it; a send-gated finished task frees it at completion (FT-N24).
 
 ## FluxTune tripwires (don'ts)
 

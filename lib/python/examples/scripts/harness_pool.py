@@ -190,7 +190,7 @@ F45_ARMS = {"ctl_srv": dict(bls=("fedbuff",)),
 # F46 = FL1 S4 on both S3 carries (uo = s3uo, vub = s3vub) at FedBuff's own K 10 (paper §6.1) and c 60 (= its cifar c / n 20%):
 # rate at fixed K / c; c at fixed rate (availability / loss phase, in [K, c]); both; a K x c probe (c / K sets staleness, K the
 # averaging). `o` = the carry at rate old (F45 ran K 15). Telemetry `dynamic_kc` per commit (c, phi, step_scale).
-F46_SHAPE = dict(F43_SHAPE["cifar10"], agg_goal=10)
+F46_SHAPE = dict(F43_SHAPE["cifar10"], agg_goal=10, gpus=None)  # FX-D52: n=300 takes every GPU; None overrides G3's gpus=1
 _RNEW = "opt.agg_rate_conf.type=new"
 _DKCF = "sel.dynamic_kc.enabled=true sel.dynamic_kc.policy=felix_c sel.dynamic_kc.c_min=10"
 _S4V = {"o": {}, "n": dict(hp=_RNEW), "nl": dict(hp=_RNEW, lrn=False),  # Felix's rate, with / without lr batch-normalize
@@ -267,7 +267,9 @@ _fxa = lambda add, thp="", **kw: dict(hp=f"{FELIX_FINAL} {add}", thp=f"{_B1T} {t
 _DEPLOY = ("refl", "feddance", "fedavg", "oort")
 FB2_SETS = {
     "E2E": dict(cells=("s0u", "s20u", "s50u", "smu"), prio=1, arms={
-        **{a: FB1_ARMS[a] for a in ("fx", "ctl_srv", "sync_srv", "rstar_srv", "fdstar_srv")},
+        **{a: FB1_ARMS[a] for a in ("fx", "ctl_srv", "sync_srv", "rstar_srv")},
+        # FX-N163 target anchor: FedDance* has no decay-off crossing -> its family's every (baseline_reference.yaml)
+        "fdstar_srv": FB1_ARMS["fdstar_srv"],
         "fbstar_srv": F42_ARMS["fbstar_srv"], "favstar_srv": dict(bls=("fedavg",), hp="avail_knowledge=oracle serveEma=sweep", agg_goal=None)}),
     "LAD": dict(cells=FB2_ABL, prio=2, arms={a: FB1_ARMS[a] for a in ("b1", "uo_o", "fn")}),
     "SWC": dict(cells=FB2_ABL, prio=2, arms={"fx_cfix": dict(hp=_FN, thp=_B1T, c={"cifar10": 30, "google_speech": 10}),  # ½ FedBuff's c
@@ -288,6 +290,12 @@ FB2_TIERS = {f"FB2{k}{s}": k for k in FB2_SETS for s in ("", "S")}
 def final_targets() -> dict:
     """{dataset: final target} from `_metadata/targets.json` (FX-N146)."""
     return {k: v for k, v in json.load(open(SCRIPT_DIR.parent / "_metadata" / "targets.json")).items() if k != "src"}
+
+
+def trace_target(ds: str, trace: str) -> float:
+    """Reporting target of a dataset on a trace: `_metadata/trace_targets.json` override, else the final target."""
+    ov = json.load(open(SCRIPT_DIR.parent / "_metadata" / "trace_targets.json")).get(ds, {})
+    return min(final_targets()[ds], ov.get(trace, 1.0))
 
 
 F42_ARMS["l3b_ro_srv"] = dict(hp=f"{_L3B} {_STATS} serveEma=sweep opt.agg_rate_conf.type=old", thp=_PRE)  # FX-N132: FedBuff's rate
@@ -609,11 +617,11 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
         rs, smoke = FB2_SETS[FB2_TIERS[tier]], tier[3:] != FB2_TIERS[tier]
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
-        stop = f"targetAccuracy={(FB1S_TARGETS if smoke else final_targets())[ds]} targetWindow=5"
         out = []
         for cell in rs["cells"]:
             trace, stream = FB2_CELLS[cell]
             dsh = usage_hp(trace) if stream else full
+            stop = f"targetAccuracy={FB1S_TARGETS[ds] if smoke else trace_target(ds, trace)} targetWindow=5"
             base = replace(g3, runtime_s=FB1_RUNTIME_S["FB1S" if smoke else "FB1"], trace=trace, trace_offset_s="86400" if stream else "",
                            kind="sim_ev", trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S} {stop}",
                            **F48_SHAPE[ds])
@@ -622,16 +630,16 @@ def tier_phases(tier: str, baselines: tuple, ds: str = "cifar10") -> List[Phase]
                 if bls:
                     out.append(replace(base, pid=f"{DS_TAG[ds]}{tier}_{cell}_{arm}", baselines=bls,
                                        agg_hp=f"{base.agg_hp} {kw.get('hp', '')}".strip(),
-                                       trainer_hp=f"{base.trainer_hp} {kw.get('thp', '')}".strip(),
-                                       **{k: kw[k][ds] if isinstance(kw[k], dict) else kw[k] for k in ("c", "agg_goal") if k in kw}))
+                                       **{k: kw[k][ds] if isinstance(kw[k], dict) else kw[k] for k in ("c", "agg_goal") if k in kw},
+                                       trainer_hp=f"{base.trainer_hp} {kw['thp'].get(ds, '') if isinstance(kw.get('thp'), dict) else kw.get('thp', '')}".strip()))
         return out
     if tier in FB1_RUNTIME_S:
         g3 = next(ph for ph in tier_phases("G3", ("felix",), ds) if ph.pid.endswith("G3_syn_0"))
         full = 'data_streaming={"enabled":"False","full_data_available_after_s":0}'
-        stop = f"targetAccuracy={(FB1S_TARGETS if tier == 'FB1S' else final_targets())[ds]} targetWindow=5"
         out = []
         for cell, (trace, stream) in FB1_CELLS.items():
             dsh = usage_hp(trace) if stream else full
+            stop = f"targetAccuracy={FB1S_TARGETS[ds] if tier == 'FB1S' else trace_target(ds, trace)} targetWindow=5"
             base = replace(g3, runtime_s=FB1_RUNTIME_S[tier], trace=trace, trace_offset_s="86400" if stream else "", kind="sim_ev",
                            trainer_hp=f"{dsh} {DETERMINISTIC}", agg_hp=f"{dsh} evalEverySeconds={F42_EVAL_S} {stop}", **F48_SHAPE[ds])
             for arm, kw in FB1_ARMS.items():
@@ -2281,7 +2289,7 @@ def run_smoke(cmd, log: Path, run_s: float = 900, wait_s: float = 3600) -> Optio
 
 
 # L18: files no leg executes (docs, tests, graders, batch drivers); editing them keeps the code state.
-NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python/examples/batches/**", "lib/python/examples/async_cifar10/scripts/parity/**",
+NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python/examples/batches/**", "lib/python/examples/paper_felix/**", "lib/python/examples/async_cifar10/scripts/parity/**",
                      "lib/python/examples/async_cifar10/scripts/parity_check.py", "lib/python/examples/scripts/run_*.py",
                      *(f"lib/python/examples/fwdllm/expt_scripts/{p}" for p in (  # plots: PR36 split its key mid-batch
                          "plotlib/**", "make_paper_figs.py", "preview_palette.py", "figs*.yaml")),
@@ -2289,7 +2297,7 @@ NOT_RUN_AFFECTING = ("**/*.md", "**/*.ipynb", "lib/python/tests/**", "lib/python
                          "parity_ladder", "readiness_score", "logical_diff", "insights", "accuracy_table", "replicate_spread",
                          "resource_report", "profile_report", "fd_sanity", "eurosys_export", "baseline_deviations",
                          "cleanup_experiments", "test_inventory", "harness_iso_compare", "felix_claims", "fl_lr_check", "dispatch",
-                         "paper_runs", "leg_digest", "paper_plots")))
+                         "paper_runs", "leg_digest", "paper_plots", "paper_json")))
 
 
 def code_key() -> str:

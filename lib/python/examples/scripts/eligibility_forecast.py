@@ -137,8 +137,24 @@ def run(trace, n, d0, d1, every, procs):
         "ever_12h": float((E[:, leg0:leg1].max(1) > 0).mean()),
         "sessions_s": [s for r in res for s in r[3]],
         "left_1h": float((H[:, :-1] * (1 - H[:, 1:])).sum() / max(H[:, :-1].sum(), 1)),  # eligible now, not in 1 h
+        **turnover(trace, n),
     }
     return out
+
+
+def turnover(trace, n):
+    """F2a overlay, no forecasts: hourly share of the eligible pool that was not eligible 1 h earlier, full trace."""
+    import yaml
+    keys = sorted(yaml.safe_load(open(os.path.join(HERE, "..", "_metadata", "trainer_registry.yaml")))["trainers"])[:n]
+    ev = {k: raw_events(trace, k) for k in keys}
+    grid = np.arange(0.0, max(float(e[-1][0]) for e in ev.values() if e), 3600.0)  # the last state holds to the trace's end
+    rows = []
+    for k in keys:
+        times, states = [float(t) for t, _ in ev[k]], [str(s).split(".")[-1] for _, s in ev[k]]
+        rows.append([(states[bisect.bisect_right(times, t) - 1] if times and t >= times[0] else "AVL_TRAIN") == "AVL_TRAIN" for t in grid])
+    E = np.array(rows, float)
+    new = (E[:, 1:] * (1 - E[:, :-1])).sum(0) / np.maximum(E[:, 1:].sum(0), 1)
+    return {"turnover_t": [0.0, *new.tolist()], "turnover_dt_s": 3600.0}
 
 
 def main(argv=None):
@@ -149,8 +165,17 @@ def main(argv=None):
     ap.add_argument("--every-min", type=float, default=30)
     ap.add_argument("--procs", type=int, default=96)
     ap.add_argument("--out", default=OUT)
+    ap.add_argument("--turnover-only", action="store_true", help="add only stats.turnover_t to the existing JSONs (no forecasts)")
     a = ap.parse_args(argv)
     os.makedirs(a.out, exist_ok=True)
+    if a.turnover_only:
+        for tr in a.traces:
+            path = os.path.join(a.out, f"fx_n147_{tr}.json")
+            r = json.load(open(path))
+            r["stats"].update(turnover(tr, a.n))
+            json.dump(r, open(path, "w"))
+            print(f"{tr}: turnover mean {100 * np.mean(r['stats']['turnover_t'][1:]):.0f}% -> {path}")
+        return
     for tr in a.traces:
         r = run(tr, a.n, a.days[0], a.days[1], a.every_min * 60, a.procs)
         path = os.path.join(a.out, f"fx_n147_{tr}.json")

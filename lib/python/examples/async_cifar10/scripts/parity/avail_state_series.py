@@ -57,7 +57,7 @@ def build_trainer_state_series(
         selection_events, key=lambda x: (x.get("round", 0), x.get("ts", 0.0))
     ):
         t = _event_time(e, mode, t0)
-        if t is None:
+        if t is None or e.get("per_trainer_full") is False:  # FX-D240: chosen-only event, not the pool
             continue
         for end_id, cand in (e.get("per_trainer") or {}).items():
             state = cand.get("avl_state")

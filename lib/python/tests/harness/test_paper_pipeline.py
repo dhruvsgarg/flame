@@ -59,6 +59,29 @@ def test_digest_series_and_fates(tmp_path):
     assert d["picks"]["n"] == 3 and d["picks"]["coverage"] == 1.0 and d["sync"] is False
 
 
+def test_withheld_slot_frees_at_completion_only_for_notify(tmp_path, monkeypatch):
+    """FX-N167: x leaves mid-task (5 s), finishes (10 s), returns (25 s), commits (30 s): Felix's send gate frees the slot at
+    completion, a check-in stack holds it until delivery."""
+    run = _leg(tmp_path)
+    tel = run / "telemetry"
+    for f in tel.glob("trainer_*.jsonl"):
+        f.unlink()
+    _w(tel / "aggregator_j.jsonl", [
+        dict(event="agg_round", round=1, vclock_now=30.0, staleness=[0], contributing_trainers=["x"]),
+        dict(event="agg_eval", round=1, **{"test-accuracy": 0.6}), dict(event="run_end", vclock_now=50.0)])
+    _w(tel / "trainer_x.jsonl", [dict(event="trainer_round", sim_send_ts=0.0, sim_completion_ts=10.0, sim_round_duration_s=10.0,
+                                      total_samples=10, model_samples=10, round=0)])
+    monkeypatch.setattr(leg_digest, "trace_events", lambda *_: {"x": [(0.0, "AVL_TRAIN"), (5.0, "UN_AVL"), (25.0, "AVL_TRAIN")]})
+    cfg = json.loads((run / "aggregator_config.json").read_text())
+    held = {}
+    for k in ("notify", "checkin"):
+        cfg["hyperparameters"]["avail_knowledge"] = k
+        (run / "aggregator_config.json").write_text(json.dumps(cfg))
+        held[k] = leg_digest.digest(str(run))["slots"]["held_departed_s"]
+    assert held == {"notify": 10 - 5, "checkin": 30 - 5}
+    assert leg_digest.digest(str(run))["slots"]["by_fate"] == {"aggregated": [5.0, 0.0, 25.0]}  # checkin: compute to the departure
+
+
 def test_digest_main_writes_then_gzips_raw(tmp_path):
     run = _leg(tmp_path)
     assert leg_digest.main([str(run)]) == 0
@@ -94,3 +117,21 @@ def test_status_and_launch_on_an_empty_root(tmp_path):
 def test_every_table_2_row_has_a_plot():
     import paper_plots  # asserts FIGS == paper_runs.FIGURES at import
     assert set(paper_plots.FIGS) == set(pr.FIGURES)
+
+
+def test_paper_json_metrics_and_ratios():
+    import paper_json as pj
+    d = dict(config=dict(target=0.8, window=2, K=10), end=dict(h=3.0, gb=9.0, acc_last=0.82, hit=True),
+             acc=dict(t=[3600, 7200, 10800], acc=[0.5, 0.7, 0.9], gb=[1.0, 2.0, 3.0], updates=[10, 20, 30]), updates=dict(total=30),
+             fates=dict(gb=dict(aggregated=9.0, late=1.0)), staleness=dict(all={"0": 1, "2": 1}), slots={}, departures={}, overhead={})
+    assert pj.first_cross(d, 0.75) == (3.0, 3.0, 30)  # 2-eval mean 0.6 at h 2, 0.8 at h 3
+    assert pj.first_cross(d, 0.75) is not None and pj.first_cross(d, 0.95) is None
+    m = pj.leg_metrics(d, "cifar10", "s0u")
+    assert (m["status"], m["time_h"], m["gb"], m["mean_staleness"], m["paid_not_used_pct"]) == ("hit", 3.0, 3.0, 1.0, 10.0)
+    fx, o = dict(time_h=3.0, gb=3.0, target=0.8), dict(time_h=6.0, gb=6.0, acc_at_felix_hit_h=70.0)
+    assert pj.vs(fx, o) == dict(speedup=2.0, gb_ratio=0.5, gb_saving_pct=50.0, acc_gain_pp_at_felix_hit_h=10.0)
+
+
+def test_report_target_reads_dataset_name():
+    cfg = dict(job=dict(name="cifar-10"), hyperparameters=dict(dataset_name="google_speech", targetAccuracy=0.88, availability_trace="mobiperf_3st"))
+    assert leg_digest.report_target(cfg) == 0.84

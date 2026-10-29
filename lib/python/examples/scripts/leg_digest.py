@@ -24,13 +24,15 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE, os.path.join(HERE, "..", "..")]
-SCHEMA = 1
+SCHEMA = 3
 SOURCES = {  # series -> telemetry it is built from
     "acc": "agg_eval / agg_eval_raw (test accuracy), t = last agg_round vclock_now, gb = cumulative wire bytes, updates = cumulative",
-    "hit": "acc 5-eval mean (targetWindow) >= targetAccuracy (aggregator_config)", "end": "run_end / last agg_round, acc",
+    "hit": "acc 5-eval mean (targetWindow) >= report_target (config target, lowered by trace_targets.json)", "end": "run_end / last agg_round, acc",
     "updates": "agg_round (len staleness = updates), agg_timing (versions)",
     "staleness": "agg_round.staleness (all), withheld_delivery.staleness (held across a departure)",
-    "slots": "trainer_round tasks, release by agg_round / abandon_timeout, departures from the trace, capacity selection.effective_c",
+    "slots": "trainer_round tasks, release by agg_round / abandon_timeout, departures from the trace, capacity selection.effective_c; "
+             "await_commit_frac = share of the selector's free slot-time with no dispatchable client because every eligible idle "
+             "one still has an uncommitted update (one task per client per version)",
     "rounds": "sync only: trainer_round per model version (model_compute_s, model_comm_s), agg_round vclock_now",
     "picks": "trainer_round per client (total_samples, model_samples)", "c": "dynamic_kc (Felix) else selection",
     "fates": "task release kind x median wire send bytes", "departures": "trace flips inside a task, release time",
@@ -103,7 +105,8 @@ def aggregator_pass(run_dir):
     acc, raw, rounds, evals = [], [], {}, []
     t, nbytes, send_sizes, msgs, n_upd = 0.0, 0, [], 0, 0
     upd_t, ver_t, stale, wstale, commits, aband = [], [], [], [], collections.defaultdict(list), collections.defaultdict(list)
-    csel, cdkc, checkins, timing, run_end = [], [], 0, collections.defaultdict(list), None
+    csel, cdkc, checkins, timing, run_end, sfree = [], [], 0, collections.defaultdict(list), None, []
+    nonfinite = 0
     wire_b, vclk, accre = re.compile(rb'"bytes": (\d+)'), re.compile(rb'"vclock_now": ([-0-9.e]+)'), re.compile(rb'"test-accuracy": ([-0-9.e]+)')
     for path in _files(run_dir, "aggregator_*"):
         with _open(path) as fh:
@@ -117,6 +120,8 @@ def aggregator_pass(run_dir):
                         send_sizes.append(b)
                 elif k == b"checkin":
                     checkins += 1
+                elif k == b"update_rejected":
+                    nonfinite += b"nonfinite" in line
                 elif k in (b"agg_eval", b"agg_eval_raw"):
                     a = float(accre.search(line).group(1))
                     (acc if k == b"agg_eval" else raw).append((t, a, nbytes, n_upd))
@@ -152,12 +157,15 @@ def aggregator_pass(run_dir):
                     vt = e.get("vclock_now")
                     if vt is not None:
                         csel.append((float(vt), e.get("effective_c") or e.get("num_chosen"), e.get("num_eligible")))
+                        free = max(0, (e.get("free_slots") or 0) - (e.get("num_chosen") or 0))
+                        blocked = max(0, (e.get("num_eligible") or 0) - (e.get("in_flight_train") or 0) - (e.get("idle_eligible") or 0))
+                        sfree.append((float(vt), free, min(free, blocked)))  # blocked = eligible, idle, update not yet committed
                 elif k == b"run_end":
                     e = json.loads(line)
                     run_end = float(e.get("vclock_now") or t)
     return dict(acc=acc, raw=raw, end=run_end if run_end is not None else t, gb=nbytes / 1e9, msgs=msgs, model_b=st.median(send_sizes) if send_sizes else 0,
-                upd_t=upd_t, ver_t=ver_t, stale=stale, wstale=wstale, commits=commits, aband=aband, csel=csel, cdkc=cdkc,
-                checkins=checkins, timing=timing, rounds=rounds)
+                upd_t=upd_t, ver_t=ver_t, stale=stale, wstale=wstale, commits=commits, aband=aband, csel=csel, cdkc=cdkc, sfree=sfree,
+                checkins=checkins, timing=timing, rounds=rounds, nonfinite=nonfinite)
 
 
 def trainer_tasks(run_dir):
@@ -187,6 +195,15 @@ def binned(pts, bin_s=600.0):
     return [out[k] for k in sorted(out)]
 
 
+def report_target(cfg):
+    """The leg's reporting target: its config target, lowered to the trace's `_metadata/trace_targets.json` override."""
+    hp = cfg.get("hyperparameters", {})
+    tgt = hp.get("targetAccuracy")
+    ds = hp.get("dataset_name") or {"cifar-10": "cifar10"}.get(str(cfg.get("job", {}).get("name")))  # speech's job name is "cifar-10"
+    ov = json.load(open(os.path.join(HERE, "..", "_metadata", "trace_targets.json"))).get(ds, {}).get(hp.get("availability_trace"))
+    return tgt if tgt is None or ov is None else min(float(tgt), ov)
+
+
 def digest(run_dir):
     cfg = json.load(open(os.path.join(run_dir, "aggregator_config.json")))
     hp = cfg.get("hyperparameters", {})
@@ -197,18 +214,19 @@ def digest(run_dir):
         any(len(r[2]) > 1 for r in A["rounds"].values())
     d = dict(schema=SCHEMA, run_dir=os.path.abspath(run_dir), sources=SOURCES, sync=sync,
              config=dict(job=cfg.get("job", {}).get("name"), selector=cfg.get("selector", {}).get("sort"),
-                         target=hp.get("targetAccuracy"), window=hp.get("targetWindow"), K=hp.get("aggGoal"),
+                         target=hp.get("targetAccuracy"), report_target=report_target(cfg), window=hp.get("targetWindow"), K=hp.get("aggGoal"),
                          c=(cfg.get("selector", {}).get("kwargs") or {}).get("c"), runtime_s=hp.get("max_experiment_runtime_s"),
                          trace_offset_s=hp.get("trace_offset_s"), knowledge=hp.get("avail_knowledge")))
     # accuracy, hit, end
     acc = A["acc"]
     d["acc"] = dict(t=[p[0] for p in acc], acc=[p[1] for p in acc], gb=[p[2] / 1e9 for p in acc], updates=[p[3] for p in acc],
                     raw=[p[1] for p in A["raw"]] if len(A["raw"]) == len(acc) else [])
-    w, tgt = int(hp.get("targetWindow") or 5), hp.get("targetAccuracy")
+    w, tgt = int(hp.get("targetWindow") or 5), report_target(cfg)
     sm = [st.mean(d["acc"]["acc"][max(0, i - w + 1):i + 1]) for i in range(len(acc))]
     i = next((i for i, a in enumerate(sm) if tgt is not None and i + 1 >= w and a >= float(tgt)), None)
     d["hit"] = None if i is None else dict(target=float(tgt), h=acc[i][0] / 3600, gb=acc[i][2] / 1e9, acc=sm[i], updates=acc[i][3])
-    d["end"] = dict(h=end_t / 3600, gb=A["gb"], acc_last=sm[-1] if sm else None, hit=i is not None)
+    d["end"] = dict(h=end_t / 3600, gb=A["gb"], acc_last=sm[-1] if sm else None, hit=i is not None,
+                    diverged=A["nonfinite"] >= 100)  # a diverged global model rejects every update as non-finite (FX-N166b)
     # updates / versions
     hours = max(1, int(end_t // 3600) + 1)
     per_h, vper_h = [0] * hours, [0] * hours
@@ -226,6 +244,8 @@ def digest(run_dir):
     for tk in tasks:
         by_end[tk[0]].append(tk)
     fates, lags, left, held_s, busy_s, wait_s, comp_s = collections.Counter(), [], 0, 0.0, 0.0, 0.0, 0.0
+    notify = hp.get("avail_knowledge") == "notify"
+    by_fate = collections.defaultdict(lambda: [0.0, 0.0, 0.0])  # fate -> [compute, wait, held] slot-seconds
     detected = collections.Counter()
     hb, hh = [0.0] * hours, [0.0] * hours
 
@@ -256,6 +276,8 @@ def digest(run_dir):
                 rel, fate = c_t, "aggregated"
             else:  # arrived and not aggregated (sync straggler, stale-rejected), or still out at the end
                 rel, fate = min(arrive, nxt, end_t), "open" if arrive > end_t else "discarded"
+            if ab is None and notify and arrive > done:  # FX-N167: notify's send gate frees the slot at completion (no event)
+                rel = min(rel, done)
             fates[fate] += 1
             rel = max(rel, t0)
             dep = first_departure(trace.get(end), t0, rel)
@@ -269,6 +291,8 @@ def digest(run_dir):
             on = rel if dep is None else max(t0, dep)  # [t0, on] online, [on, rel] held by a departed client
             comp_s += min(done, on) - t0
             wait_s += max(0.0, on - done)  # finished, online, waiting for the commit (sync barrier)
+            bf = by_fate[fate]
+            bf[0], bf[1], bf[2] = bf[0] + min(done, on) - t0, bf[1] + max(0.0, on - done), bf[2] + rel - on
             busy_s += on - t0
             held_s += rel - on
             add(hb, t0, on)
@@ -282,8 +306,12 @@ def digest(run_dir):
         elif d["config"]["c"]:
             cap = float(d["config"]["c"]) * end_t
     occ = busy_s + held_s
-    d["slots"] = dict(busy_s=busy_s, held_departed_s=held_s, compute_s=comp_s, wait_s=wait_s, capacity_s=cap,
-                      idle_s=None if cap is None else max(0.0, cap - occ), busy_per_h=hb, held_per_h=hh)
+    sf = sorted(A["sfree"])  # selector's free slot-time, and the part where every eligible idle client awaits its commit
+    free_s = sum(f * (b[0] - a[0]) for a, b in zip(sf, sf[1:]) for f in (a[1],))
+    await_s = sum(w * (b[0] - a[0]) for a, b in zip(sf, sf[1:]) for w in (a[2],))
+    d["slots"] = dict(busy_s=busy_s, held_departed_s=held_s, compute_s=comp_s, wait_s=wait_s, capacity_s=cap, by_fate=dict(by_fate),
+                      idle_s=None if cap is None else max(0.0, cap - occ), busy_per_h=hb, held_per_h=hh,
+                      await_commit_frac=await_s / free_s if free_s else 0.0)
     m = A["model_b"]
     deliv = ("aggregated", "late", "discarded")
     d["fates"] = dict(counts=dict(fates), model_mb=m / 1e6, gb={f: n * m * (2 if f in deliv else 1) / 1e9 for f, n in fates.items()})

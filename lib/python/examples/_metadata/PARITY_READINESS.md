@@ -179,8 +179,8 @@ Parked with the track; board in simulate_fwdllm.md §A.
 
 ## Next steps (run queue — top item is next)
 
-- **FELIX FX-N157 / FX-N151 / FX-N154 / FX-N131 (Felix busy hold, sync bench gap, run-set smoke, End-to-end)**, then **D5 · parity re-grade on the streaming setup** (G3 reals + sims, all six,
-  syn_0 + syn_50_3st, both datasets) → Felix claims gate (FX-N108) → sim-only experiments.
+- **FELIX FX-N151 (B2 speech, after the FluxTune ablations)**; then, after the paper, **D5 · parity re-grade on the streaming setup**
+  (G3 reals + sims, all six, syn_0 + syn_50_3st, both datasets) → Felix claims gate (FX-N108).
 - **Long blocks (G1U, G1AS grid) · deferred by C18** until D5: FELIX FX-N93.
 
 **Operator decisions** (Felix-specific ones: FELIX Decisions)

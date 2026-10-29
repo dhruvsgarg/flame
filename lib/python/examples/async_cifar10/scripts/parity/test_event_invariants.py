@@ -587,6 +587,19 @@ def test_doomed_only_prefix_safe_fails(tmp_path):
     assert ev.doomed(_write_run(tmp_path / "c", agg, tr)) == []
 
 
+def test_doomed_skips_ev23_pick_count(monkeypatch):
+    # A live prefix can log a selection before its `picked` check-in (B2 1027_c3 fedbuff; the full log PASSes).
+    cfg = {"hyperparameters": {"avail_knowledge": "checkin", "time_mode": "simulated"}}
+    ck = lambda k, t: {"event": "checkin", "kind": k, "end_id": "a", "t": t}
+    pick = {"event": "selection", "task": "train", "round": 1, "chosen": ["a"]}
+    runs = {"short": [ck("pooled", 10), pick], "break": [ck("picked", 20), pick]}
+    monkeypatch.setattr(ev, "EARLY", (ev.ev23_checkin_protocol,))
+    monkeypatch.setattr(ev, "_ground_truth", lambda r: None)
+    monkeypatch.setattr(ev, "load_run", lambda d: {"dir": d, "cfg": cfg, "agg": runs[d]})
+    assert ev.doomed("short") == []
+    assert [d.split(":")[0] for d in ev.doomed("break")] == ["EV23"]
+
+
 def _eval_trace(monkeypatch):
     # T1: TRAIN -> EVAL [0,50) -> TRAIN; T2 always TRAIN.
     from sortedcontainers import SortedDict

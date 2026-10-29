@@ -30,27 +30,37 @@ SMOKE_CELL = {"STA": "s0"}  # smoke: one cell per run set (default smu)
 ALL = ("s0u", "s20u", "s50u", "smu")
 # Table 2 rows: figure -> (where, [(run set, datasets, cells, arms or None = all)]). Silent departures: FX-N155 (no run set yet).
 _ABL = hp.FB2_ABL
-_E2E_ABL = [("E2E", DS, _ABL, ("fx", "ctl_srv", "fbstar_srv"))]
+ABL_DS = ("cifar10",)  # ablations are cifar-only (operator 10-27)
+_E2E_ABL = [("E2E", ABL_DS, _ABL, ("fx", "ctl_srv", "fbstar_srv"))]
 FIGURES = {
     "teaser": ("main", [("E2E", ("cifar10",), ("smu",), None)]),
     "headline": ("main", [("E2E", DS, ALL, None)]),
     "curves": ("appendix", [("E2E", DS, ALL, None)]),
     "static": ("appendix", [("STA", DS, ("s0",), None)]),
     "efficiency": ("main", [("E2E", DS, ALL, None)]),
-    "slots": ("main", [("E2E", ("cifar10",), ("s50u", "smu"), None), ("E2E", ("google_speech",), ("smu",), None)]),
+    "slots": ("main", [("E2E", DS, ("s50u", "smu"), None)]),
+    "slots_base": ("main", [("E2E", DS, ("s50u", "smu"), None)]),
+    "stall": ("main", [("E2E", DS, ("s50u", "smu"), None)]),
     "rounds": ("main", [("E2E", DS, ("smu",), None)]),
     "staleness": ("main", [("E2E", ("cifar10",), ("s50u", "smu"), ("fx", "ctl_srv", "fbstar_srv"))]),
-    "picks": ("main", [("E2E", DS, _ABL, None)]),
+    "picks": ("main", [("E2E", ("cifar10",), _ABL, ("fx", "ctl_srv"))]),
+    "picks_speech": ("main", [("E2E", ("google_speech",), _ABL, ("fx", "ctl_srv"))]),
     "concurrency": ("main", [("E2E", ("cifar10",), ("s50u", "smu"), ("fx",)), ("E2E", ("google_speech",), ("smu",), ("fx",))]),
+    "concurrency_base": ("main", [("E2E", DS, ("smu",), ("fx", "ctl_srv"))]),
     "wasted": ("main", [("E2E", DS, _ABL, None)]),
     "knowledge": ("main", [("E2E", DS, ("s50u", "smu"), None)]),
     "overhead": ("appendix", [("E2E", DS, ALL, None)]),
-    "ladder": ("main", [("LAD", DS, _ABL, None), ("E2E", DS, _ABL, ("fx", "ctl_srv"))]),
-    "swap_availability": ("main", [("SWA", DS, _ABL, None), *_E2E_ABL]),
-    "swap_selection": ("main", [("SWS", DS, _ABL, None), *_E2E_ABL]),
-    "swap_aggregation": ("main", [("SWG", DS, _ABL, None), *_E2E_ABL]),
-    "swap_concurrency": ("main", [("SWC", DS, _ABL, None), ("LAD", DS, _ABL, ("fn",)), *_E2E_ABL]),
-    "rejected": ("main", [("REJ", DS, _ABL, None), *_E2E_ABL]),
+    "ladder": ("main", [("LAD", ABL_DS, _ABL, None), ("E2E", ABL_DS, _ABL, ("fx", "ctl_srv"))]),
+    "swap_availability": ("main", [("SWA", ABL_DS, _ABL, None), *_E2E_ABL]),
+    "swap_selection": ("main", [("SWS", ABL_DS, _ABL, None), *_E2E_ABL]),
+    "swap_aggregation": ("main", [("SWG", ABL_DS, _ABL, None), *_E2E_ABL]),
+    "swap_concurrency": ("main", [("SWC", ABL_DS, _ABL, None), ("LAD", ABL_DS, _ABL, ("fn",)), *_E2E_ABL]),
+    "rejected": ("main", [("REJ", ABL_DS, _ABL, None), *_E2E_ABL]),
+    "oracle_gain": ("main", [("E2E", DS, ALL, None)]),
+    "fill_slots": ("main", [("LAD", ABL_DS, ("s50u",), ("b1",)), ("E2E", ABL_DS, ("s50u",), ("ctl_srv",))]),
+    "choice_replay": ("main", [("SWC", ABL_DS, _ABL, None), ("LAD", ABL_DS, _ABL, ("fn",)), ("E2E", ABL_DS, _ABL, ("fx", "ctl_srv"))]),
+    "pace_levels": ("main", [("SWC", ABL_DS, _ABL, None), ("LAD", ABL_DS, _ABL, ("fn",)), ("E2E", ABL_DS, _ABL, ("fx", "ctl_srv"))]),
+    "pace_bytes": ("main", [("LAD", ABL_DS, _ABL, ("fn",)), ("E2E", ABL_DS, _ABL, ("fx",))]),
 }
 
 
@@ -98,6 +108,8 @@ def leg_state(root, rs, ds, leg, seed, key, smoke):
         return "stale", "digest invalid", d
     if not (d.get("audit") or {}).get("ok"):
         return "stale", "config audit", d
+    if d["end"].get("diverged"):
+        return "stale", "diverged", d
     horizon_h = hp.FB1_RUNTIME_S["FB1S" if smoke else "FB1"] / 3600
     if not d["end"]["hit"] and d["end"]["h"] < horizon_h - 0.1:
         return "stale", "stopped early", d
@@ -142,7 +154,7 @@ def report(states, seeds, smoke=False):
     return "\n".join(lines)
 
 
-SPEECH = "--per-gpu 1 --leg-gpu-gb 10 --leg-ram-gb 30 --workers 4"  # FX-N156 measures --per-gpu 2
+SPEECH = "--per-gpu 1 --leg-gpu-gb 22 --leg-ram-gb 30 --workers 4"  # speech leg peaks ~20 GB (10-25); FX-N156 measures --per-gpu 2
 CIFAR = "--per-gpu 4"
 FIRST = "_(sync_srv|rstar_srv|fdstar_srv|favstar_srv|ctl_srv|fbstar_srv|b1|uo_o) "  # stacks that may run the full 120 h
 
@@ -172,8 +184,8 @@ set -uo pipefail
 cd "{os.path.abspath(os.path.join(HERE, '..'))}" || exit 1
 [ -z "$(git status --porcelain -uno)" ] || {{ echo "[paper_runs] tree dirty"; exit 1; }}
 PY="conda run --no-capture-output -n dg_flame python"
+[ "$(hostname -s)" = shepherd ] || [ -n "${{GPUS:-}}" ] || {{ echo "[paper_runs] off shepherd: ask the operator, then set GPUS"; exit 1; }}
 GPUS=${{GPUS:-{gpus}}}
-export FLAME_TELEMETRY_LEAN=1
 mkdir -p {" ".join(os.path.join(root, d) for d in DS.values())}
 git log -1 --format='%h %s' > {root}/code_state.txt
 pids=()
@@ -194,7 +206,7 @@ def main(argv=None):
     ap.add_argument("--seeds", nargs="+", type=int, default=[1])
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--prio", type=int, default=1)
-    ap.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
+    ap.add_argument("--gpus", default="0,1,2,3")  # shepherd 0-3; elsewhere the launch script demands GPUS (operator 10-26)
     ap.add_argument("--datasets", nargs="+", choices=tuple(DS), default=list(DS), help="launch only these (FX-N159)")
     ap.add_argument("--code-key", help="the manifest's code key (default: this tree's)")
     ap.add_argument("--json")

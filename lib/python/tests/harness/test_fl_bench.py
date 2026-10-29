@@ -157,3 +157,19 @@ def test_pick_sizes_each_leg_by_its_own_need():
     assert bench_pool.pick(["0"], young, {"0": 15.0}, 100.0, a, 10, (4.0, 8.0)) is None
     assert bench_pool.pick(["0"], young, {"0": 17.0}, 100.0, a, 10, (4.0, 8.0)) == "0"
     assert bench_pool.pick(["0"], young, {"0": 40.0}, 35.0, a, 10, (4.0, 8.0)) is None  # host RAM: 35 - 30 < 8
+
+
+def test_dead_worker_fails_the_leg(monkeypatch):
+    """A worker that died (e.g. CUDA OOM) exits the leg instead of stranding its trainers until the wall timeout."""
+    r = fl_bench.PoolRouter.__new__(fl_bench.PoolRouter)
+    r._closing, r.procs = False, [type("P", (), {"exitcode": None})(), type("P", (), {"exitcode": 1})()]
+
+    def _exit(rc):
+        raise SystemExit(rc)
+    monkeypatch.setattr(fl_bench.os, "_exit", _exit)
+    try:
+        r._watch()
+    except SystemExit as e:
+        assert e.code == 70
+    else:
+        raise AssertionError("watchdog did not fail the leg")

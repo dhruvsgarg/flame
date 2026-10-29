@@ -674,3 +674,22 @@ def test_abandon_wake_keeps_buffered_slot(keep):
     msg, _ = agg._sim_recv_min(channel, [])
     assert msg is None and agg._vclock.now == pytest.approx(95.0)
     assert (channel._ends["A"].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD) is not keep
+
+
+@pytest.mark.parametrize("gate", [True, False])
+def test_gate_waits_for_evicted_in_transit_update(gate):
+    """FX-N160: an evicted end's update (slot-only pending_withheld, no payload yet) due before the buffered min is
+    drained before that min commits; else the clock laps its delivery (EV16 commit_late)."""
+    agg = _make_agg()
+    agg._sim_gate_evicted = gate
+    agg.simulated = True
+    agg.pending_withheld = {"EV": 3.0}
+    agg._sim_withheld_payload = {}
+    agg._sim_buffer.add(
+        "A", 10.0,
+        ({MessageType.WEIGHTS: "w_A", MessageType.SIM_COMPLETION_TS: 10.0}, ("A", None)),
+    )
+    channel = FakeChannel(inflight={"A", "EV"}, arrival_order=[("EV", 12.0)])
+    msg, (end, _) = agg._sim_recv_min(channel, [])
+    assert end == "A"
+    assert agg._sim_buffer.has("EV") == gate
