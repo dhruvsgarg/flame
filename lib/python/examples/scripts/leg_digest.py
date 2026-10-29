@@ -30,7 +30,9 @@ SOURCES = {  # series -> telemetry it is built from
     "hit": "acc 5-eval mean (targetWindow) >= report_target (config target, lowered by trace_targets.json)", "end": "run_end / last agg_round, acc",
     "updates": "agg_round (len staleness = updates), agg_timing (versions)",
     "staleness": "agg_round.staleness (all), withheld_delivery.staleness (held across a departure)",
-    "slots": "trainer_round tasks, release by agg_round / abandon_timeout, departures from the trace, capacity selection.effective_c",
+    "slots": "trainer_round tasks, release by agg_round / abandon_timeout, departures from the trace, capacity selection.effective_c; "
+             "await_commit_frac = share of the selector's free slot-time with no dispatchable client because every eligible idle "
+             "one still has an uncommitted update (one task per client per version)",
     "rounds": "sync only: trainer_round per model version (model_compute_s, model_comm_s), agg_round vclock_now",
     "picks": "trainer_round per client (total_samples, model_samples)", "c": "dynamic_kc (Felix) else selection",
     "fates": "task release kind x median wire send bytes", "departures": "trace flips inside a task, release time",
@@ -103,7 +105,7 @@ def aggregator_pass(run_dir):
     acc, raw, rounds, evals = [], [], {}, []
     t, nbytes, send_sizes, msgs, n_upd = 0.0, 0, [], 0, 0
     upd_t, ver_t, stale, wstale, commits, aband = [], [], [], [], collections.defaultdict(list), collections.defaultdict(list)
-    csel, cdkc, checkins, timing, run_end = [], [], 0, collections.defaultdict(list), None
+    csel, cdkc, checkins, timing, run_end, sfree = [], [], 0, collections.defaultdict(list), None, []
     nonfinite = 0
     wire_b, vclk, accre = re.compile(rb'"bytes": (\d+)'), re.compile(rb'"vclock_now": ([-0-9.e]+)'), re.compile(rb'"test-accuracy": ([-0-9.e]+)')
     for path in _files(run_dir, "aggregator_*"):
@@ -155,11 +157,14 @@ def aggregator_pass(run_dir):
                     vt = e.get("vclock_now")
                     if vt is not None:
                         csel.append((float(vt), e.get("effective_c") or e.get("num_chosen"), e.get("num_eligible")))
+                        free = max(0, (e.get("free_slots") or 0) - (e.get("num_chosen") or 0))
+                        blocked = max(0, (e.get("num_eligible") or 0) - (e.get("in_flight_train") or 0) - (e.get("idle_eligible") or 0))
+                        sfree.append((float(vt), free, min(free, blocked)))  # blocked = eligible, idle, update not yet committed
                 elif k == b"run_end":
                     e = json.loads(line)
                     run_end = float(e.get("vclock_now") or t)
     return dict(acc=acc, raw=raw, end=run_end if run_end is not None else t, gb=nbytes / 1e9, msgs=msgs, model_b=st.median(send_sizes) if send_sizes else 0,
-                upd_t=upd_t, ver_t=ver_t, stale=stale, wstale=wstale, commits=commits, aband=aband, csel=csel, cdkc=cdkc,
+                upd_t=upd_t, ver_t=ver_t, stale=stale, wstale=wstale, commits=commits, aband=aband, csel=csel, cdkc=cdkc, sfree=sfree,
                 checkins=checkins, timing=timing, rounds=rounds, nonfinite=nonfinite)
 
 
@@ -301,8 +306,12 @@ def digest(run_dir):
         elif d["config"]["c"]:
             cap = float(d["config"]["c"]) * end_t
     occ = busy_s + held_s
+    sf = sorted(A["sfree"])  # selector's free slot-time, and the part where every eligible idle client awaits its commit
+    free_s = sum(f * (b[0] - a[0]) for a, b in zip(sf, sf[1:]) for f in (a[1],))
+    await_s = sum(w * (b[0] - a[0]) for a, b in zip(sf, sf[1:]) for w in (a[2],))
     d["slots"] = dict(busy_s=busy_s, held_departed_s=held_s, compute_s=comp_s, wait_s=wait_s, capacity_s=cap, by_fate=dict(by_fate),
-                      idle_s=None if cap is None else max(0.0, cap - occ), busy_per_h=hb, held_per_h=hh)
+                      idle_s=None if cap is None else max(0.0, cap - occ), busy_per_h=hb, held_per_h=hh,
+                      await_commit_frac=await_s / free_s if free_s else 0.0)
     m = A["model_b"]
     deliv = ("aggregated", "late", "discarded")
     d["fates"] = dict(counts=dict(fates), model_mb=m / 1e6, gb={f: n * m * (2 if f in deliv else 1) / 1e9 for f, n in fates.items()})

@@ -112,7 +112,7 @@ def leg_metrics(d, ds, cell, felix_h=None):
         "time_h_to_acc": {str(x): rnd((c := first_cross(d, x / 100)) and c[0]) for x in levels},
         "gb_to_acc": {str(x): rnd((c := first_cross(d, x / 100)) and c[1], 1) for x in levels},
         "acc_at_felix_hit_h": rnd(None if felix_h is None or (a := acc_at(d, felix_h)) is None else 100 * a),
-        "gb_by_fate": {k: rnd(v, 1) for k, v in fates.items()}, "paid_not_used_pct": rnd(100 * (1 - fates.get("aggregated", 0) / tot), 2) if tot else None,
+        "gb_by_fate": {k: rnd(v, 1) for k, v in fates.items()}, "paid_not_used_pct": rnd(100 * (1 - sum(fates.get(k, 0) for k in pp.USED) / tot), 2) if tot else None,
         "mean_staleness": rnd(sum(int(k) * v for k, v in stal.items()) / n, 2) if n else None,
         "slot_busy_pct": rnd(100 * slots["busy_s"] / cap, 1) if cap and "busy_s" in slots else None,
         "slot_held_departed_pct": rnd(100 * slots["held_departed_s"] / cap, 1) if cap and "held_departed_s" in slots else None,
@@ -188,7 +188,8 @@ def ablations(D, ds, cell, state):
             legs = D.get(ds, cell, a, "felix")
             if legs:
                 m = leg_metrics(legs[0], ds, cell)
-                rows[pp.ARMS[a]] = {"arm": a, **{k: m[k] for k in ("status", "time_h", "gb", "final_acc", "peak_acc5", "mean_staleness", "paid_not_used_pct")},
+                rows[pp.ARMS[a]] = {"arm": a, **{k: m[k] for k in ("status", "time_h", "gb", "final_acc", "peak_acc5", "end_h", "mean_staleness", "paid_not_used_pct",
+                                                                    "time_h_to_acc", "gb_to_acc", "acc_at_h")},
                                     "vs_felix": {"time_ratio": ratio(m["time_h"], ref["Felix"]["time_h"]), "gb_ratio": ratio(m["gb"], ref["Felix"]["gb"])}}
         if rows:
             out[group] = rows

@@ -1,12 +1,12 @@
 {
  "meta": {
   "dataset": "google_speech",
-  "generated": "2026-10-28T17:50",
+  "generated": "2026-10-29T05:20",
   "seeds": [
    1
   ],
   "run_root": "/coc/scratch/dgarg/mlsys27_felix_runs_20261026",
-  "code_key": "ee6d91a88027",
+  "code_key": "85e2b7ba3b5f",
   "legs_done": 44,
   "legs_total": 44,
   "complete": true,
@@ -35,7 +35,7 @@
  },
  "cells": {
   "s0u": {
-   "label": "syn_0",
+   "label": "Syn-0%",
    "target": 0.88,
    "stacks": {
     "Felix": {
@@ -90,7 +90,8 @@
       "wasted_compute": 1.0,
       "held_departed": 0.0,
       "waiting": 0.0,
-      "idle": 0.5
+      "idle": 0.5,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -151,7 +152,8 @@
       "wasted_compute": 0.6,
       "held_departed": 0.0,
       "waiting": 0.0,
-      "idle": 236.5
+      "idle": 236.5,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -217,7 +219,8 @@
       "wasted_compute": 0.0,
       "held_departed": 0.0,
       "waiting": 203.1,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -284,7 +287,8 @@
       "wasted_compute": 0.1,
       "held_departed": 0.0,
       "waiting": 288.0,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -352,7 +356,8 @@
       "wasted_compute": 150.1,
       "held_departed": 0.0,
       "waiting": 242.4,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -420,7 +425,8 @@
       "wasted_compute": 146.1,
       "held_departed": 0.0,
       "waiting": 235.5,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -487,7 +493,8 @@
       "wasted_compute": 1.2,
       "held_departed": 0.0,
       "waiting": 0.0,
-      "idle": 0.6
+      "idle": 0.6,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -553,7 +560,8 @@
       "wasted_compute": 0.0,
       "held_departed": 0.0,
       "waiting": 278.0,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -620,7 +628,8 @@
       "wasted_compute": 0.0,
       "held_departed": 0.0,
       "waiting": 385.5,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -688,7 +697,8 @@
       "wasted_compute": 198.2,
       "held_departed": 0.0,
       "waiting": 286.5,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -756,7 +766,8 @@
       "wasted_compute": 187.1,
       "held_departed": 0.0,
       "waiting": 299.3,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -799,7 +810,7 @@
    }
   },
   "s20u": {
-   "label": "syn_20",
+   "label": "Syn-20%",
    "target": 0.88,
    "stacks": {
     "Felix": {
@@ -846,17 +857,18 @@
       "open": 0.6,
       "evicted": 0.2
      },
-     "paid_not_used_pct": 6.09,
+     "paid_not_used_pct": 0.05,
      "mean_staleness": 2.41,
      "slot_busy_pct": 99.9,
      "slot_held_departed_pct": 0.1,
      "left_mid_task_pct": 6.68,
      "slot_time_h": {
-      "useful_compute": 1302.5,
-      "wasted_compute": 68.5,
+      "useful_compute": 1369.7,
+      "wasted_compute": 1.2,
       "held_departed": 1.2,
       "waiting": 0.0,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 2.0,
      "timeouts": 0,
@@ -908,17 +920,18 @@
       "late": 1.3,
       "open": 0.4
      },
-     "paid_not_used_pct": 0.11,
+     "paid_not_used_pct": 0.03,
      "mean_staleness": 1.53,
      "slot_busy_pct": 68.6,
      "slot_held_departed_pct": 18.6,
      "left_mid_task_pct": 8.11,
      "slot_time_h": {
-      "useful_compute": 1589.8,
-      "wasted_compute": 3.0,
+      "useful_compute": 1591.9,
+      "wasted_compute": 0.9,
       "held_departed": 430.7,
       "waiting": 0.0,
-      "idle": 298.2
+      "idle": 298.2,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 681.0,
      "timeouts": 0,
@@ -978,17 +991,18 @@
       "timeout": 0.7,
       "late": 0.9
      },
-     "paid_not_used_pct": 1.25,
+     "paid_not_used_pct": 0.79,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 7.38,
      "slot_time_h": {
-      "useful_compute": 171.7,
-      "wasted_compute": 3.5,
+      "useful_compute": 173.0,
+      "wasted_compute": 2.3,
       "held_departed": 60.9,
       "waiting": 216.3,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 840.0,
      "timeouts": 25,
@@ -1047,17 +1061,18 @@
       "open": 0.1,
       "timeout": 0.1
      },
-     "paid_not_used_pct": 1.86,
+     "paid_not_used_pct": 0.05,
      "mean_staleness": 0.22,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 6.16,
      "slot_time_h": {
-      "useful_compute": 237.3,
-      "wasted_compute": 5.6,
+      "useful_compute": 242.8,
+      "wasted_compute": 0.1,
       "held_departed": 105.6,
       "waiting": 276.0,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 816.0,
      "timeouts": 4,
@@ -1117,17 +1132,18 @@
       "late": 0.7,
       "open": 0.1
      },
-     "paid_not_used_pct": 16.37,
+     "paid_not_used_pct": 16.24,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 4.93,
      "slot_time_h": {
-      "useful_compute": 200.0,
-      "wasted_compute": 104.8,
+      "useful_compute": 200.6,
+      "wasted_compute": 104.3,
       "held_departed": 85.4,
       "waiting": 231.5,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 684.0,
      "timeouts": 164,
@@ -1186,17 +1202,18 @@
       "late": 0.8,
       "timeout": 5.2
      },
-     "paid_not_used_pct": 16.41,
+     "paid_not_used_pct": 16.25,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 5.49,
      "slot_time_h": {
-      "useful_compute": 190.6,
-      "wasted_compute": 103.0,
+      "useful_compute": 191.2,
+      "wasted_compute": 102.5,
       "held_departed": 89.5,
       "waiting": 231.2,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 663.0,
      "timeouts": 178,
@@ -1254,17 +1271,18 @@
       "open": 0.6,
       "late": 1.4
      },
-     "paid_not_used_pct": 0.1,
+     "paid_not_used_pct": 0.03,
      "mean_staleness": 1.9,
      "slot_busy_pct": 79.5,
      "slot_held_departed_pct": 20.5,
      "left_mid_task_pct": 7.6,
      "slot_time_h": {
-      "useful_compute": 1866.1,
-      "wasted_compute": 3.2,
+      "useful_compute": 1868.0,
+      "wasted_compute": 1.3,
       "held_departed": 482.0,
       "waiting": 0.0,
-      "idle": 0.6
+      "idle": 0.6,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 680.0,
      "timeouts": 0,
@@ -1324,17 +1342,18 @@
       "discarded": 1.5,
       "open": 0.0
      },
-     "paid_not_used_pct": 1.46,
+     "paid_not_used_pct": 0.99,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 6.76,
      "slot_time_h": {
-      "useful_compute": 236.2,
-      "wasted_compute": 6.5,
+      "useful_compute": 238.3,
+      "wasted_compute": 4.4,
       "held_departed": 82.0,
       "waiting": 276.1,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 928.0,
      "timeouts": 40,
@@ -1393,17 +1412,18 @@
       "open": 0.1,
       "timeout": 0.0
      },
-     "paid_not_used_pct": 3.78,
+     "paid_not_used_pct": 0.01,
      "mean_staleness": 0.33,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 6.86,
      "slot_time_h": {
-      "useful_compute": 342.5,
-      "wasted_compute": 27.3,
+      "useful_compute": 369.7,
+      "wasted_compute": 0.1,
       "held_departed": 200.7,
       "waiting": 336.3,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 911.0,
      "timeouts": 1,
@@ -1463,17 +1483,18 @@
       "late": 0.6,
       "open": 0.1
      },
-     "paid_not_used_pct": 16.49,
+     "paid_not_used_pct": 16.4,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 4.97,
      "slot_time_h": {
-      "useful_compute": 259.2,
-      "wasted_compute": 134.6,
+      "useful_compute": 259.6,
+      "wasted_compute": 134.1,
       "held_departed": 115.7,
       "waiting": 297.7,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 673.0,
      "timeouts": 206,
@@ -1533,17 +1554,18 @@
       "late": 0.3,
       "open": 0.1
      },
-     "paid_not_used_pct": 16.29,
+     "paid_not_used_pct": 16.24,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 5.05,
      "slot_time_h": {
-      "useful_compute": 257.7,
-      "wasted_compute": 135.0,
+      "useful_compute": 257.9,
+      "wasted_compute": 134.8,
       "held_departed": 110.4,
       "waiting": 303.6,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 672.0,
      "timeouts": 236,
@@ -1586,7 +1608,7 @@
    }
   },
   "s50u": {
-   "label": "syn_50",
+   "label": "Syn-50%",
    "target": 0.88,
    "stacks": {
     "Felix": {
@@ -1633,17 +1655,18 @@
       "open": 0.6,
       "evicted": 0.5
      },
-     "paid_not_used_pct": 11.77,
+     "paid_not_used_pct": 0.06,
      "mean_staleness": 3.96,
      "slot_busy_pct": 99.9,
      "slot_held_departed_pct": 0.3,
      "left_mid_task_pct": 13.49,
      "slot_time_h": {
-      "useful_compute": 1192.4,
-      "wasted_compute": 130.7,
+      "useful_compute": 1321.6,
+      "wasted_compute": 1.5,
       "held_departed": 4.1,
       "waiting": 0.0,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 4.0,
      "timeouts": 0,
@@ -1696,17 +1719,18 @@
       "open": 0.4,
       "timeout": 0.1
      },
-     "paid_not_used_pct": 3.23,
+     "paid_not_used_pct": 0.04,
      "mean_staleness": 1.57,
      "slot_busy_pct": 42.3,
      "slot_held_departed_pct": 40.7,
      "left_mid_task_pct": 17.88,
      "slot_time_h": {
-      "useful_compute": 980.2,
-      "wasted_compute": 35.2,
+      "useful_compute": 1014.4,
+      "wasted_compute": 1.0,
       "held_departed": 978.0,
       "waiting": 0.0,
-      "idle": 407.3
+      "idle": 407.3,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 1022.0,
      "timeouts": 3,
@@ -1766,17 +1790,18 @@
       "discarded": 3.0,
       "open": 0.1
      },
-     "paid_not_used_pct": 7.57,
+     "paid_not_used_pct": 5.18,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 16.64,
      "slot_time_h": {
-      "useful_compute": 114.5,
-      "wasted_compute": 12.7,
+      "useful_compute": 116.9,
+      "wasted_compute": 10.2,
       "held_departed": 179.6,
       "waiting": 167.0,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 1367.0,
      "timeouts": 179,
@@ -1835,17 +1860,18 @@
       "timeout": 0.9,
       "open": 0.1
      },
-     "paid_not_used_pct": 6.9,
+     "paid_not_used_pct": 0.24,
      "mean_staleness": 0.37,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 11.08,
      "slot_time_h": {
-      "useful_compute": 182.7,
-      "wasted_compute": 13.2,
+      "useful_compute": 195.0,
+      "wasted_compute": 1.0,
       "held_departed": 194.3,
       "waiting": 246.2,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 954.0,
      "timeouts": 30,
@@ -1905,17 +1931,18 @@
       "late": 1.7,
       "open": 0.1
      },
-     "paid_not_used_pct": 17.09,
+     "paid_not_used_pct": 16.65,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 10.72,
      "slot_time_h": {
-      "useful_compute": 150.0,
-      "wasted_compute": 80.1,
+      "useful_compute": 151.2,
+      "wasted_compute": 79.0,
       "held_departed": 172.0,
       "waiting": 200.6,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 828.0,
      "timeouts": 439,
@@ -1975,17 +2002,18 @@
       "late": 1.0,
       "open": 0.1
      },
-     "paid_not_used_pct": 16.82,
+     "paid_not_used_pct": 16.58,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 10.17,
      "slot_time_h": {
-      "useful_compute": 144.3,
-      "wasted_compute": 77.9,
+      "useful_compute": 144.9,
+      "wasted_compute": 77.3,
       "held_departed": 168.5,
       "waiting": 200.4,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 832.0,
      "timeouts": 429,
@@ -2044,17 +2072,18 @@
       "open": 0.6,
       "timeout": 0.1
      },
-     "paid_not_used_pct": 3.01,
+     "paid_not_used_pct": 0.05,
      "mean_staleness": 2.04,
      "slot_busy_pct": 52.5,
      "slot_held_departed_pct": 47.5,
      "left_mid_task_pct": 16.68,
      "slot_time_h": {
-      "useful_compute": 1215.7,
-      "wasted_compute": 44.1,
+      "useful_compute": 1258.1,
+      "wasted_compute": 1.7,
       "held_departed": 1140.7,
       "waiting": 0.0,
-      "idle": 0.4
+      "idle": 0.4,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 1022.0,
      "timeouts": 3,
@@ -2113,17 +2142,18 @@
       "discarded": 1.6,
       "late": 2.0
      },
-     "paid_not_used_pct": 5.63,
+     "paid_not_used_pct": 4.64,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 15.45,
      "slot_time_h": {
-      "useful_compute": 151.0,
-      "wasted_compute": 15.3,
+      "useful_compute": 153.4,
+      "wasted_compute": 12.9,
       "held_departed": 222.1,
       "waiting": 214.8,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 1405.0,
      "timeouts": 275,
@@ -2182,17 +2212,18 @@
       "timeout": 0.4,
       "open": 0.0
      },
-     "paid_not_used_pct": 7.73,
+     "paid_not_used_pct": 0.08,
      "mean_staleness": 0.53,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 11.08,
      "slot_time_h": {
-      "useful_compute": 269.1,
-      "wasted_compute": 30.4,
+      "useful_compute": 298.9,
+      "wasted_compute": 0.6,
       "held_departed": 294.2,
       "waiting": 301.0,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 956.0,
      "timeouts": 15,
@@ -2251,17 +2282,18 @@
       "timeout": 18.7,
       "late": 2.5
      },
-     "paid_not_used_pct": 17.62,
+     "paid_not_used_pct": 17.22,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 9.65,
      "slot_time_h": {
-      "useful_compute": 194.2,
-      "wasted_compute": 107.4,
+      "useful_compute": 195.5,
+      "wasted_compute": 106.1,
       "held_departed": 243.4,
       "waiting": 261.1,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 830.0,
      "timeouts": 645,
@@ -2321,17 +2353,18 @@
       "late": 2.5,
       "open": 0.1
      },
-     "paid_not_used_pct": 17.45,
+     "paid_not_used_pct": 16.98,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 11.26,
      "slot_time_h": {
-      "useful_compute": 191.0,
-      "wasted_compute": 107.3,
+      "useful_compute": 192.5,
+      "wasted_compute": 105.8,
       "held_departed": 242.4,
       "waiting": 266.0,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 814.0,
      "timeouts": 665,
@@ -2409,17 +2442,18 @@
       "evicted": 1.8,
       "open": 0.2
      },
-     "paid_not_used_pct": 2.16,
+     "paid_not_used_pct": 0.13,
      "mean_staleness": 3.37,
      "slot_busy_pct": 80.2,
      "slot_held_departed_pct": 0.7,
      "left_mid_task_pct": 3.16,
      "slot_time_h": {
-      "useful_compute": 1206.8,
-      "wasted_compute": 19.7,
+      "useful_compute": 1224.1,
+      "wasted_compute": 2.5,
       "held_departed": 11.3,
       "waiting": 0.0,
-      "idle": 291.4
+      "idle": 18.2,
+      "await_commit": 273.2
      },
      "slot_time_lost_per_departure_s": 49.0,
      "timeouts": 0,
@@ -2472,17 +2506,18 @@
       "timeout": 2.2,
       "open": 0.0
      },
-     "paid_not_used_pct": 2.18,
+     "paid_not_used_pct": 0.14,
      "mean_staleness": 3.96,
      "slot_busy_pct": 53.2,
      "slot_held_departed_pct": 15.2,
      "left_mid_task_pct": 3.8,
      "slot_time_h": {
-      "useful_compute": 1261.6,
-      "wasted_compute": 17.4,
+      "useful_compute": 1276.6,
+      "wasted_compute": 2.4,
       "held_departed": 364.9,
       "waiting": 0.0,
-      "idle": 758.1
+      "idle": 718.1,
+      "await_commit": 40.0
      },
      "slot_time_lost_per_departure_s": 1262.0,
      "timeouts": 76,
@@ -2541,17 +2576,18 @@
       "late": 0.2,
       "discarded": 0.2
      },
-     "paid_not_used_pct": 1.74,
+     "paid_not_used_pct": 1.64,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 5.07,
      "slot_time_h": {
       "useful_compute": 158.4,
-      "wasted_compute": 3.0,
+      "wasted_compute": 2.9,
       "held_departed": 45.4,
       "waiting": 214.3,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 1055.0,
      "timeouts": 93,
@@ -2610,17 +2646,18 @@
       "timeout": 2.1,
       "open": 0.1
      },
-     "paid_not_used_pct": 1.6,
+     "paid_not_used_pct": 0.31,
      "mean_staleness": 1.58,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 2.76,
      "slot_time_h": {
-      "useful_compute": 278.1,
-      "wasted_compute": 4.4,
+      "useful_compute": 281.2,
+      "wasted_compute": 1.3,
       "held_departed": 58.9,
       "waiting": 271.6,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 645.0,
      "timeouts": 71,
@@ -2689,7 +2726,8 @@
       "wasted_compute": 139.4,
       "held_departed": 45.0,
       "waiting": 247.4,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 555.0,
      "timeouts": 186,
@@ -2755,11 +2793,12 @@
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 2.07,
      "slot_time_h": {
-      "useful_compute": 214.1,
-      "wasted_compute": 146.0,
+      "useful_compute": 214.2,
+      "wasted_compute": 145.9,
       "held_departed": 39.8,
       "waiting": 239.4,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 534.0,
      "timeouts": 161,
@@ -2818,17 +2857,18 @@
       "timeout": 1.7,
       "open": 0.0
      },
-     "paid_not_used_pct": 1.56,
+     "paid_not_used_pct": 0.1,
      "mean_staleness": 3.5,
      "slot_busy_pct": 55.6,
      "slot_held_departed_pct": 11.6,
      "left_mid_task_pct": 2.92,
      "slot_time_h": {
-      "useful_compute": 1318.7,
-      "wasted_compute": 17.2,
+      "useful_compute": 1333.1,
+      "wasted_compute": 2.8,
       "held_departed": 279.5,
       "waiting": 0.0,
-      "idle": 786.6
+      "idle": 466.0,
+      "await_commit": 320.6
      },
      "slot_time_lost_per_departure_s": 1171.0,
      "timeouts": 58,
@@ -2887,7 +2927,7 @@
       "late": 0.1,
       "discarded": 0.1
      },
-     "paid_not_used_pct": 1.19,
+     "paid_not_used_pct": 1.17,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
@@ -2897,7 +2937,8 @@
       "wasted_compute": 4.6,
       "held_departed": 45.0,
       "waiting": 305.5,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 931.0,
      "timeouts": 109,
@@ -2956,17 +2997,18 @@
       "timeout": 0.9,
       "open": 0.1
      },
-     "paid_not_used_pct": 1.04,
+     "paid_not_used_pct": 0.09,
      "mean_staleness": 1.73,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 1.82,
      "slot_time_h": {
-      "useful_compute": 467.8,
-      "wasted_compute": 6.2,
+      "useful_compute": 473.3,
+      "wasted_compute": 0.7,
       "held_departed": 52.3,
       "waiting": 390.1,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 556.0,
      "timeouts": 30,
@@ -3035,7 +3077,8 @@
       "wasted_compute": 184.8,
       "held_departed": 47.0,
       "waiting": 264.9,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 511.0,
      "timeouts": 225,
@@ -3104,7 +3147,8 @@
       "wasted_compute": 198.5,
       "held_departed": 50.7,
       "waiting": 304.4,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 523.0,
      "timeouts": 210,

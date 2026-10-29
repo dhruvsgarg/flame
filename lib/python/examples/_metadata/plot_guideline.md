@@ -104,6 +104,8 @@ everything above it is project-agnostic. Add a rule here whenever a review round
   "1 h", "1 day"; 24 h steps for days), not raw seconds.
 - **Ratios read one way:** "N× faster / fewer GB" with N ≥ 1 when ours wins; when ours loses, say so plainly (0.7× GB is shown,
   not hidden). Near 1 (within 5%), write "Same …" and the reason ("pool stays above c"), never "1.0× faster".
+- **§-specific variants:** a plot used both in motivation (baselines only) and in design/eval gets two files (`<name>_base`
+  without ours, `<name>` with ours), never one figure that previews the fix.
 - **Honest data beats the outline.** If a figure contradicts a claim, draw it truthfully and fix the claim (or drop the figure);
   never pick the cell, window or metric that rescues it.
 
@@ -114,7 +116,7 @@ everything above it is project-agnostic. Add a rule here whenever a review round
 | ours reaches a level sooner / cheaper | accuracy vs time and vs GB (log), two panels, `sharey` | y zoomed to the race; arrows at the baseline's peak |
 | where a resource goes (share by cause) | horizontal 100%-style stacked bars of the *lost* part only, rows = methods | bar-end % label; ours bold |
 | order-of-magnitude gap (s vs min) | dot plot on a log axis, rows = methods, one marker shape per cell | clamp 0 to the axis floor ("≤1 s") |
-| ablation / swap arms | horizontal bars, rows = arms, columns = metric (time, GB), rows of panels = cells | misses hatched to run end + "Missed: peak %" |
+| ablation / swap arms | peak-accuracy dots first (cropped axis, Δ vs ours), then horizontal bars of time and GB; rows = arms, rows of panels = cells | misses hatched to run end; accuracy as dots because bars must start at 0 |
 | one quantity across a few cells | grouped vertical bars, ours vs strongest baseline, ratio above each pair | value axis from 0 |
 | a trend vs a ratio (e.g. choice vs c / pool) | scatter, one panel per cell, x range per panel | ours filled, other arms hollow |
 | a delta per method and cell (oracle gain) | dot plot around a 0 line | x range from the data, never clipped |

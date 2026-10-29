@@ -51,6 +51,13 @@ Uplink is summed from trainer telemetry by wall timestamp. Unchecked: whether Fw
 
 ## Next steps (persistent queue — resumes after Felix)
 
+- **FT-N21 · Slot accounting in the fwdllm digest (from Felix, 10-29) · todo (on resume).** Felix's parser charged two things to
+  "lost" slot time that were not: (1) with notify, a client that finished and went offline kept its slot until the next sim event,
+  though the send gate frees it at completion (FX-N167; fixed in `leg_digest.py`); (2) `slot_split` counted the `late` fate
+  (an update aggregated *after* an eviction / timeout record, e.g. a withheld upload delivered on return) as discarded compute
+  (fixed in `paper_plots.USED`). After both, Felix computes 98.9-100% of its occupied slot time on every trace (was shown losing up
+  to 10%). *Check:* the fwdllm digest frees slots at completion under the send gate and counts late-but-aggregated gradients as used.
+  *Exit:* a fwdllm leg's slot split sums to capacity with no late-aggregated update in "discarded".
 - **FT-N20 · Data augmentation like every Felix stack (FELIX FX-D233, FX-N143, Decisions "Augmentation") · todo (on resume).**
   *Principle (operator 10-24):* if the baselines' own pipelines augment, every stack and the ceiling do, with fresh draws per pass on
   the device; never adopted or skipped for convenience. Felix found its GPU preload froze one draw per sample (+10-17 pp once fixed).
@@ -164,6 +171,8 @@ Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm fami
   inference mode gives bit-exact nulls.
 - **FT-L10** Sim must produce a speedup (`vclock/wall ≥ 1`). The current limit is the serial per-commit
   aggregator (~225 ms), not sleeps.
+- **FT-L11** An update's fate is its commit record, not its abandon record: an update aggregated after an eviction / timeout
+  is used compute. Charge a slot only while the server waits on it; a send-gated finished task frees it at completion (FT-N21).
 
 ## FluxTune tripwires (don'ts)
 

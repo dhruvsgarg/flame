@@ -13,6 +13,8 @@ import statistics as st
 import sys
 import traceback
 
+import numpy as np
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE, os.path.join(HERE, "..", "paper_felix")]
 import paper_runs as pr  # noqa: E402
@@ -28,7 +30,7 @@ SYNC = ("Oort", "REFL", "FedDance", "FedAvg", "Oort*", "REFL*", "FedDance*", "Fe
 ARMS = {"b1": "+ Notify", "uo_o": "+ Select", "fn": "+ Agg (c = 60)", "fx_cfix": "Fixed c = 30", "fx_ca": "c ∝ eligible",
         "fx_ck": "Check-in", "fx_or": "Oracle", "fx_rold": "1/√(1+τ)", "fx_r1": "1/(1+τ)", "fx_rnd": "Uniform", "fx_oort": "Oort's selector",
         "fx_ucb": "+ UCB", "fx_e2": "2 epochs"}
-CELL = {"s0": "syn_0 static", "s0u": "syn_0", "s20u": "syn_20", "s50u": "syn_50", "smu": "MobiPerf"}
+CELL = {"s0": "Syn-0% static", "s0u": "Syn-0%", "s20u": "Syn-20%", "s50u": "Syn-50%", "smu": "MobiPerf"}  # as table_headline.tex
 DSN = {"cifar10": "CIFAR-10", "google_speech": "Speech"}
 
 
@@ -197,8 +199,8 @@ def teaser(D):
     # callouts after the legend: it shrinks the axes
     # callout strip above the target line
     ys = [81.9 - 2.85 * i for i in range(2)]
-    place(a0, f"{bf(sp['FedBuff'], 'x')} faster, {bf(pp['FedBuff'], '%')} vs FedBuff", [(0.8, ys[0], "left", "top")], **kw)
-    place(a0, f"{bf(sp[sync_best], 'x')} faster, {bf(pp[sync_best], '%')} vs {sync_best}",
+    place(a0, f"{bf(pp['FedBuff'], '%')}, {bf(sp['FedBuff'], 'x')} faster vs FedBuff", [(0.8, ys[0], "left", "top")], **kw)
+    place(a0, f"{bf(pp[sync_best], '%')}, {bf(sp[sync_best], 'x')} faster vs {sync_best}",
           [(0.8, ys[1], "left", "top")], **kw)
     place(a1, f"{bf(gb, 'x')} fewer GB vs FedBuff", [(35, ys[0], "left", "top")], **kw)
     place(a1, f"Target {tgt:.0f}% (only {label('Felix')})", [(35, ys[1], "left", "top")], **kw)
@@ -306,13 +308,18 @@ def bar_ends(ax, names, totals, texts, pad):
         ax.set_xlim(ax.get_xlim()[0], x1 * 1.04)
 
 
+USED = ("aggregated", "late")  # late = aggregated after an eviction / timeout record (e.g. a withheld upload delivered on return)
+
+
 def slot_split(d):
     """Slot-hours over the run: useful / wasted compute, held by a departed client, finished but waiting (sync barrier), idle (async)."""
     s, f = d["slots"], d["slots"].get("by_fate") or {}
-    comp = lambda keep: sum(v[0] for k, v in f.items() if (k == "aggregated") == keep) / 3600
+    comp = lambda keep: sum(v[0] for k, v in f.items() if (k in USED) == keep) / 3600
     occ = s["busy_s"] + s["held_departed_s"]
+    free = max(0.0, (s["capacity_s"] or occ) - occ) / 3600
+    aw = free * (s.get("await_commit_frac") or 0.0)  # free slot, but every eligible idle client's update awaits its commit
     return {"useful_compute": comp(True), "wasted_compute": comp(False), "held_departed": s["held_departed_s"] / 3600,
-            "waiting": s["wait_s"] / 3600, "idle": max(0.0, (s["capacity_s"] or occ) - occ) / 3600}
+            "waiting": s["wait_s"] / 3600, "idle": free - aw, "await_commit": aw}
 
 
 def lost_per_departure_s(d):
@@ -322,29 +329,39 @@ def lost_per_departure_s(d):
 
 
 STALL = (("useful_compute", "useful compute"), ("wasted_compute", "compute discarded"), ("held_departed", "held by departed client"),
-         ("waiting", "finished, waiting (barrier)"), ("idle", "idle (no task)"))
+         ("waiting", "finished, waiting (barrier)"), ("idle", "idle (no task)"), ("await_commit", "free, eligible clients await their commit"))
 LOSS = (("wasted_compute", "Discarded compute", dict(hatch="//////", **HATCH)), ("held_departed", "Held by departed client", dict(color=INK, **SOLID)),
-        ("waiting", "Waiting at round barrier", dict(hatch="......", **HATCH)), ("idle", "Idle slot", dict(color=LIGHT, **SOLID)))
+        ("waiting", "Waiting at round barrier", dict(hatch="......", **HATCH)), ("idle", "Idle slot", dict(color=LIGHT, **SOLID)),
+        ("await_commit", "Clients await own commit", dict(hatch="-----", **HATCH)))
 SLOT_NAMES = ("Felix", "FedBuff", "FedBuff*", "REFL", "FedDance", "FedAvg", "Oort")
 
 
-def slots(D):
-    """Share of slot time lost, by cause, per stack; 2 × 2 cells."""
-    fig, axs = plt.subplots(2, 2, figsize=(COL_W, 2.7), sharex=True, sharey=True)
+def slots(D, base=False):
+    """Share of slot time lost, by cause, per stack; 2 × 2 cells. base: §3 version, baselines only (no FLuX row)."""
+    names0 = SLOT_NAMES[1:] if base else SLOT_NAMES
+    loss = [(k, {"held_departed": "Held after client left (to timeout)", "idle": "Idle slot (no check-in yet)"}.get(k, lab) if base else lab, st_)
+            for k, lab, st_ in LOSS]
+    fig, axs = plt.subplots(2, 2, figsize=(COL_W, 2.7 if not base else 2.6), sharex=True, sharey=True)
     for ax, (ds, c) in zip(axs.flat, CELLS4):
-        rows = [(n, slot_split(D.stack(ds, c, n)[0])) for n in SLOT_NAMES if D.stack(ds, c, n)]
+        rows = [(n, slot_split(D.stack(ds, c, n)[0])) for n in names0 if D.stack(ds, c, n)]
         names = [n for n, _ in rows]
-        parts = [[100 * sp[k] / sum(sp.values()) for _, sp in rows] for k, _, _ in LOSS]
-        tot = hstack(ax, names, parts, [st_ for _, _, st_ in LOSS], [lab for _, lab, _ in LOSS])
+        parts = [[100 * sp[k] / sum(sp.values()) for _, sp in rows] for k, _, _ in loss]
+        tot = hstack(ax, names, parts, [st_ for _, _, st_ in loss], [lab for _, lab, _ in loss])
         bar_ends(ax, names, tot, [f"{t:.0f}%" for t in tot], 2)
         ax.set_xlim(0, 100)
-        mark(ax, len(SLOT_NAMES) - len(names), D.prelim)
+        if base:  # a strip above the first row holds the panel tag
+            ax.set_ylim(len(names) - 0.5, -1.5)
+        mark(ax, len(names0) - len(names), D.prelim)
     fig.supxlabel("Slot Time Lost (%)", fontsize=FONT["label"])
     h, l = axs[0][0].get_legend_handles_labels()
     fig.legend(h, l, loc="outside upper center", ncol=2, handlelength=1.6, columnspacing=1.0)
     for ax, (ds, c) in zip(axs.flat, CELLS4):
-        place(ax, tag(ds, c), [(98, y, "right", "center") for y in (0, 1, 2)], **TXT)
-    return save(fig, "slots")
+        place(ax, tag(ds, c), [(98, -1.05, "right", "center")] if base else [(98, y, "right", "center") for y in (0, 1, 2)], **TXT)
+    return save(fig, "slots_base" if base else "slots")
+
+
+def slots_base(D):
+    return slots(D, base=True)
 
 
 def stall(D):
@@ -359,7 +376,7 @@ def stall(D):
             tot = sum(sp.values()) or 1.0
             lost = lost_per_departure_s(d)
             rows.append([DSN[ds], CELL[c], n, f"{d['end']['h']:.0f}", *(f"{sp[k]:.0f}" for k, _ in STALL),
-                         f"{100 * (sp['wasted_compute'] + sp['held_departed'] + sp['idle']) / tot:.0f}%",
+                         f"{100 * (sp['wasted_compute'] + sp['held_departed'] + sp['idle']) / tot:.0f}%",  # await_commit, barrier: not lost
                          f"{100 * (d['departures']['share'] or 0):.1f}%", "–" if lost is None else f"{lost:.0f}",
                          sum(d["fates"]["counts"].get(k, 0) for k in ("timeout", "evicted", "late")),
                          "eviction" if d["config"].get("knowledge") == "notify" else "timeout"])
@@ -443,9 +460,9 @@ def staleness(D):
             held.append(s["sum_withheld"] / n_all)
             rest.append(max(0.0, s["sum_all"] / n_all - held[-1]))
         tot = hstack(ax, got, [rest, held], [dict(color=LIGHT, **SOLID), dict(color=INK, **SOLID)],
-                     ["From concurrency", "Held across a departure"])
+                     ["From concurrency", "Upload withheld while client offline"])
         ax.set_xlim(0, max(tot) * 1.5)
-        bar_ends(ax, got, tot, [f"{100 * h_ / t:.0f}% held" for h_, t in zip(held, tot)], max(tot) * 0.03)
+        bar_ends(ax, got, tot, [f"{100 * h_ / t:.0f}% withheld" for h_, t in zip(held, tot)], max(tot) * 0.03)
         ax.set_xlabel(f"Mean Staleness (versions)\nCIFAR-10, {CELL[c]}")
         mark(ax, len(names) - len(got), D.prelim)
     h, l = axs[0][0].get_legend_handles_labels()
@@ -453,13 +470,13 @@ def staleness(D):
     return save(fig, "staleness")
 
 
-def picks(D):
-    """Async selection, FLuX vs FedBuff per cell: correlation of picks with data size, and samples per update (ratio on top)."""
-    cells = [(ds, c) for ds, c in CELLS4 if D.stack(ds, c, "Felix") and D.stack(ds, c, "FedBuff")]
-    fig, axs = plt.subplots(2, 1, figsize=(COL_W, 2.3), sharex=True)
+def picks(D, ds="cifar10"):
+    """Async selection, FLuX vs FedBuff per cell of one dataset: correlation of picks with data size, and samples per update (ratio on top)."""
+    cells = [(d_, c) for d_, c in CELLS4 if d_ == ds and D.stack(d_, c, "Felix") and D.stack(d_, c, "FedBuff")]
+    fig, axs = plt.subplots(1, 2, figsize=(COL_W, 1.45))
     xs, w = range(len(cells)), 0.36
     for ax, key, ylab in ((axs[0], "corr_size", "Picks–Data Size\nCorrelation"), (axs[1], "samples_per_update", "Samples per Update")):
-        vals = {n: [D.stack(ds, c, n)[0]["picks"][key] or 0.0 for ds, c in cells] for n in ("Felix", "FedBuff")}
+        vals = {n: [D.stack(d_, c, n)[0]["picks"][key] or 0.0 for d_, c in cells] for n in ("Felix", "FedBuff")}
         for k, n in enumerate(("Felix", "FedBuff")):
             ax.bar([x + (k - 0.5) * w for x in xs], vals[n], width=w, color=STACK[n][0], label=label(n), zorder=Z["bar"],
                    edgecolor=STACK[n][0], lw=0.5)
@@ -472,15 +489,21 @@ def picks(D):
             ax.set_ylim(0, top * 1.3)
             for x, a, b in zip(xs, vals["Felix"], vals["FedBuff"]):
                 ax.text(x, max(a, b) + top * 0.04, bf(a / b, "x"), ha="center", va="bottom", **TXT)
-    axs[1].set_xticks(list(xs), [f"{DSN[ds]}\n{CELL[c]}" for ds, c in cells])
-    axs[1].tick_params(axis="x", length=0)
+        ax.set_xticks(list(xs), [CELL[c] for _, c in cells])
+        ax.tick_params(axis="x", length=0)
+        ax.grid(axis="x", visible=False)
+    fig.supxlabel(DSN[ds], fontsize=FONT["label"])
     h, l = axs[0].get_legend_handles_labels()
     fig.legend(h, l, loc="outside upper center", ncol=2)
-    return save(fig, "picks")
+    return save(fig, "picks" if ds == "cifar10" else "picks_speech")
 
 
-def concurrency(D):
-    """FLuX's concurrency follows the eligible pool on MobiPerf; FedBuff's fixed c often exceeds it."""
+def picks_speech(D):
+    return picks(D, "google_speech")
+
+
+def concurrency(D, base=False):
+    """FLuX's concurrency follows the eligible pool on MobiPerf; FedBuff's fixed c often exceeds it. base: §3 version, no FLuX line."""
     panels = [(ds, D.cells(["smu"])[0]) for ds in pr.DS]
     fig, axs = plt.subplots(1, len(panels), figsize=(COL_W, 1.55))
     over = {}
@@ -493,14 +516,15 @@ def concurrency(D):
         h = [t / 3600 for t in cc["t"]]
         el = [e if e is not None else float("nan") for e in cc["eligible"]]
         ax.plot(h, smooth_c(el, 15), color=INK, lw=LINE["muted"], label="Eligible clients", zorder=Z["line"])
-        ax.plot(h, smooth_c(cc["c"], 15), color=STACK["Felix"][0], lw=LINE["hero"], label=f"{label('Felix')} concurrency", zorder=Z["hero"])
+        if not base:
+            ax.plot(h, smooth_c(cc["c"], 15), color=STACK["Felix"][0], lw=LINE["hero"], label=f"{label('Felix')} concurrency", zorder=Z["hero"])
         fb = D.stack(ds, c, "FedBuff")
         if fb and fb[0]["config"]["c"]:
             cfb = float(fb[0]["config"]["c"])
             ax.axhline(cfb, color=STACK["FedBuff"][0], lw=LINE["width"], label="FedBuff concurrency", zorder=Z["line"])
             ok = [e for e in el if e == e]
             over[ds] = 100 * sum(e < cfb for e in ok) / len(ok)
-            ax.set_ylim(0.6 * min(v for v in cc["c"] if v), max(max(ok), cfb) * 1.4)
+            ax.set_ylim(0.6 * min(ok if base else [v for v in cc["c"] if v]), max(max(ok), cfb) * 1.4)
         ax.set(xlim=(0, 120), xticks=[0, 24, 48, 72, 96, 120], xlabel=f"Time (hours)\n{DSN[ds]}, {CELL[c]}")
     axs[0].set_ylabel("Clients")
     h, l = axs[0].get_legend_handles_labels()
@@ -510,7 +534,11 @@ def concurrency(D):
             y1 = ax.get_ylim()[1]
             place(ax, f"FedBuff > eligible\n{bf(over[ds], 'pct')} of the time", [(2, y1 * f, "left", "top") for f in (0.98, 0.94)]
                   + [(118, y1 * 0.98, "right", "top")], linespacing=1.1, **TXT)
-    return save(fig, "concurrency")
+    return save(fig, "concurrency_base" if base else "concurrency")
+
+
+def concurrency_base(D):
+    return concurrency(D, base=True)
 
 
 def oracle_gain(D):
@@ -557,55 +585,122 @@ def fill_slots(D):
                 marker="P", markevery=0.14, ms=3.2, mfc="white", mew=0.8, label=lab_b1, zorder=Z["line"])
         plot_stack(ax, fb, "FedBuff", x)
         ax.axhline(80, color=INK, lw=LINE["ref"], ls=(0, (3, 2)), zorder=Z["fill"])
-    axs[0].set(xlim=(0, 96), xticks=[0, 24, 48, 72, 96], ylim=(60, 86.5), yticks=[60, 65, 70, 75, 80], xlabel="Time (hours)",
+    axs[0].set(xlim=(0, 96), xticks=[0, 24, 48, 72, 96], ylim=(60, 89.5), yticks=[60, 65, 70, 75, 80], xlabel="Time (hours)",
                ylabel="Test Accuracy (%)")
     axs[1].set_xscale("log")
     axs[1].set(xlim=(100, 8000), xlabel="Data Moved (GB, log scale)")
     h, l = axs[0].get_legend_handles_labels()
     fig.legend(h[::-1], l[::-1], loc="outside upper center", ncol=2)
     sb = lambda d: (lambda s_: s_["sum_all"] / (sum(s_["all"].values()) or 1))(d["staleness"])
-    place(axs[0], f"{bf(b1['updates']['rate_h'] / fb['updates']['rate_h'], 'x')} the updates per hour,\n"
-          f"yet {bf(b1['hit']['h'] / fb['hit']['h'], 'x')} slower to 80%", [(1, 86.3, "left", "top")], linespacing=1.1, **TXT)
+    place(axs[0], f"Same 80%, with {bf(b1['updates']['rate_h'] / fb['updates']['rate_h'], 'x')} the\n"
+          f"updates per hour, {bf(b1['hit']['h'] / fb['hit']['h'], 'x')} slower", [(1, 89.3, "left", "top")], linespacing=1.1, **TXT)
     place(axs[1], f"Staleness {sb(fb):.1f} → {sb(b1):.1f},\n{bf(b1['hit']['gb'] / fb['hit']['gb'], 'x')} the GB",
-          [(110, 86.3, "left", "top")], linespacing=1.1, **TXT)
+          [(110, 89.3, "left", "top")], linespacing=1.1, **TXT)
     return save(fig, "fill_slots")
 
 
-def choice(D):
-    """§3.5: utility selection loses its choice as concurrency nears the eligible pool: ρ(picks, data size) vs c / eligible."""
-    cells = D.cells(pr.hp.FB2_ABL)
-    fig, axs = plt.subplots(1, len(cells), figsize=(COL_W, 1.6), sharey=True)
-    arms = ("fx", "fn", "fx_cfix", "fx_ca", "uo_o")
+VAR = {"fn": ("P", "-"), "fx_cfix": ("^", "--"), "fx_ca": ("D", ":")}  # FLuX variants: black, marker + dash per arm
+
+
+def choice_replay(D):
+    """§3.4: selection's choice is gone before the slots run out: ρ(picks, size) vs c / eligible, trace replay + measured runs."""
+    import json
+    cells = (("smu", "mobiperf_3st"), ("s50u", "syn_50_3st"))
+    fig, axs = plt.subplots(1, 2, figsize=(COL_W, 1.6), sharey=True)
     kw = dict(ls="none", mew=0.9, zorder=Z["marker"])
-    for ax, c in zip(axs, cells):
-        fx = D.stack("cifar10", c, "Felix")
-        if not fx:
-            mark(ax, 1, D.prelim)
-            continue
-        pool = st.mean(e for e in fx[0]["c"]["eligible"] if e)
-        for a in arms[::-1]:
-            legs = fx if a == "fx" else D.get("cifar10", c, a, "felix")
+    for ax, (c, tr) in zip(axs, cells):
+        rp = json.load(open(os.path.join(HERE, "..", "paper_felix", "data", f"choice_replay_{tr}.json")))
+        for pol, col, mk, lab in (("size", INK, "o", "Replay: size-weighted picks"), ("uniform", STACK["FedBuff"][0], "s", "Replay: uniform picks")):
+            rs = sorted({r["ratio"] for r in rp["rows"]})
+            ys = [st.mean(r["corr"] for r in rp["rows"] if r["ratio"] == x and r["policy"] == pol) for x in rs]
+            ax.plot(rs, ys, color=col, lw=LINE["width"], label=lab, zorder=Z["line"])
+        pool = rp["mean_eligible"]
+        for a in ("fx", "fn", "fx_cfix", "fx_ca"):  # measured runs: size × loss selection at four c
+            legs = D.stack("cifar10", c, "Felix") if a == "fx" else D.get("cifar10", c, a, "felix")
             if legs:
-                x, y = st.mean(v for v in legs[0]["c"]["c"] if v) / pool, legs[0]["picks"]["corr_size"]
-                if a == "fx":
-                    ax.plot(x, y, "o", ms=4.5, mfc=STACK["Felix"][0], mec=STACK["Felix"][0], label=label("Felix"), **kw)
-                else:
-                    ax.plot(x, y, "o", ms=4.5, mfc="white", mec=INK, label=f"{label('Felix')} selection, other c" if a == "uo_o" else None, **kw)
+                x = st.mean(v for v in legs[0]["c"]["c"] if v) / pool
+                ax.plot(x, legs[0]["picks"]["corr_size"], "o", ms=4.2, mfc="white", mec=INK,
+                        label="Runs: size × loss picks" if a == "fx" else None, **kw)
         fb = D.stack("cifar10", c, "FedBuff")
         if fb:
-            ax.plot(float(fb[0]["config"]["c"]) / pool, fb[0]["picks"]["corr_size"], "s", ms=3.2, mfc=STACK["FedBuff"][0],
-                    mec=STACK["FedBuff"][0], label="FedBuff (uniform)", **kw)
+            ax.plot(float(fb[0]["config"]["c"]) / pool, fb[0]["picks"]["corr_size"], "s", ms=3.6, mfc="white", mec=STACK["FedBuff"][0],
+                    label="Runs: FedBuff (uniform)", **kw)
         ax.axhline(0, color=INK, lw=LINE["axis"], zorder=Z["fill"])
-        ax.set(xlim=(0, 1.15 * max(ln.get_xdata()[0] for ln in ax.lines if len(ln.get_xdata()) == 1)), ylim=(-0.8, 1.0),
-               xlabel=f"Concurrency / Eligible\nCIFAR-10, {CELL[c]}")
+        ax.axvline(1, ymax=0.68, color=INK, lw=LINE["ref"], ls=(0, (3, 2)), zorder=Z["fill"])  # c = pool; stops below the callout
+        ax.set(xlim=(0, 1.55), xticks=[0, 0.5, 1, 1.5], ylim=(-0.75, 1.0), xlabel=f"Concurrency / Eligible Pool\nCIFAR-10, {CELL[c]}")
+        ax._rp = rp
     axs[0].set_ylabel("Picks–Data Size\nCorrelation")
-    h, l = axs[-1].get_legend_handles_labels()
-    order = [l.index(x) for x in (label("Felix"), f"{label('Felix')} selection, other c", "FedBuff (uniform)") if x in l]
-    fig.legend([h[k] for k in order], [l[k] for k in order], loc="outside upper center", ncol=3, columnspacing=0.6, handletextpad=0.1)
-    x1 = axs[-1].get_xlim()[1]
-    place(axs[-1], "Choice shrinks as\nconcurrency nears\nthe eligible pool", [(0.98 * x1, 0.95, "right", "top"), (0.98 * x1, 0.75, "right", "top")],
-          linespacing=1.1, **TXT)
-    return save(fig, "choice")
+    h, l = axs[0].get_legend_handles_labels()
+    fig.legend(h, l, loc="outside upper center", ncol=2, columnspacing=0.8, handlelength=1.4)
+    for ax in axs:
+        rows = ax._rp["rows"]
+        at = lambda x, pol: st.mean(r["corr"] for r in rows if r["ratio"] == x and r["policy"] == pol)
+        g0, g1 = (round(at(x, "size") - at(x, "uniform"), 2) + 0.0 for x in (0.2, 1.0))
+        place(ax, f"Gap over uniform:\n{g0:+.2f} at 0.2, {g1:+.2f} at 1".replace("-", "−").replace("+0.00", "0.00"),
+              [(1.52, 0.97, "right", "top"), (0.05, 0.97, "left", "top"), (0.05, -0.7, "left", "bottom")], linespacing=1.1, **TXT)
+    return save(fig, "choice_replay")
+
+
+def pace_levels(D):
+    """§5.3: no fixed c is best at every accuracy level: time and GB to each level per concurrency arm, cifar MobiPerf + syn_50."""
+    cells = ("smu", "s50u")
+    arms = (("Felix", None), ("fn", "Fixed c = 60"), ("fx_cfix", "Fixed c = 30"), ("fx_ca", "c ∝ eligible"), ("FedBuff", None))
+    fig, axs = plt.subplots(2, 2, figsize=(COL_W, 2.75), sharex="row")
+    best = {}
+    for i, c in enumerate(cells):
+        tgt = 100 * float(D.stack("cifar10", c, "Felix")[0]["config"]["report_target"])
+        marks = [50, 60, 65, 70, 75, 80]
+        for a, lab in arms[::-1]:
+            legs = D.stack("cifar10", c, a) if a in ("Felix", "FedBuff") else D.get("cifar10", c, a, "felix")
+            if not legs:
+                continue
+            d = legs[0]
+            pk = 100 * max(roll(d["acc"]["acc"]))
+            xs = [x for x in np.arange(50, pk + 1e-6, 0.25)] + [pk]
+            hit = [first_at(d, x / 100) for x in xs]
+            me = [k for k, x in enumerate(xs) if any(abs(x - m) < 0.13 for m in marks)] + [len(xs) - 1]
+            for j in (0, 1):
+                ys = [hh[j] for hh in hit]
+                if a in ("Felix", "FedBuff"):
+                    hero = a == "Felix"
+                    st_ = dict(color=STACK[a][0], lw=LINE["hero"] if hero else LINE["width"], marker=MARK[a], mfc=STACK[a][0] if hero else "white",
+                               zorder=Z["hero" if hero else "line"])
+                else:
+                    st_ = dict(color=INK, lw=LINE["width"], ls=VAR[a][1], marker=VAR[a][0], mfc="white", zorder=Z["line"])
+                axs[i][j].plot(xs, ys, markevery=me, ms=3.0, mew=0.8, label=label(lab or a), **st_)
+            for m in marks:
+                v = first_at(d, m / 100)
+                if v and a != "FedBuff":
+                    best.setdefault((c, m), []).append((v[0], lab or label(a)))
+        for j in (0, 1):
+            ax = axs[i][j]
+            ax.set_yscale("log")
+            ax.set_xlim(49, 81)
+            ax.set_xticks([50, 60, 70, 80])
+            if j == 0:
+                ax.set_yticks([1, 10, 100], ["1", "10", "100"])
+                ax.set_ylabel(f"Time to Level (hours)\nCIFAR-10, {CELL[c]}")
+            else:
+                ax.set_yticks([100, 1000], ["100", "1k"])
+                ax.set_ylabel("Data to Level (GB)")
+            ax.yaxis.set_minor_locator(plt.NullLocator())
+            y0, y1 = ax.get_ylim()
+            k = 12 if j == 0 else 1.6  # a strip above the time curves for the callout; the target line stops below it
+            ax.set_ylim(y0, y1 * k)
+            ax.axvline(tgt, ymax=np.log(y1 / y0) / np.log(k * y1 / y0), color=INK, lw=LINE["ref"], ls=(0, (3, 2)), zorder=Z["fill"])
+    for ax in axs[-1]:
+        ax.set_xlabel("Accuracy Level (%)")
+    h, l = axs[0][0].get_legend_handles_labels()
+    order = [l.index(x) for x in (label("Felix"), "Fixed c = 60", "Fixed c = 30", "c ∝ eligible", "FedBuff") if x in l]
+    fig.legend([h[k] for k in order], [l[k] for k in order], loc="outside upper center", ncol=3, handlelength=1.8, columnspacing=0.8)
+    for i, c in enumerate(cells):
+        tgt = round(100 * float(D.stack("cifar10", c, "Felix")[0]["config"]["report_target"]))
+        first = lambda m: ", ".join(sorted((n for t, n in best[(c, m)] if t <= 1.02 * min(best[(c, m)])[0]), key=lambda n: n != label("Felix"))
+                                    ).replace("Fixed c", "c")
+        y1 = axs[i][0].get_ylim()[1]
+        place(axs[i][0], f"Fastest by level:\n60%: {first(60)}\n{tgt}%: {first(tgt)}", [(49.5, y1 * 0.95, "left", "top")],
+              linespacing=1.1, **TXT)
+    return save(fig, "pace_levels")
 
 
 def pace_bytes(D):
@@ -652,9 +747,10 @@ def wasted(D):
                     continue
                 g = legs[0]["fates"]["gb"]
                 tot = sum(g.values()) or 1.0
-                rows.append([DSN[ds], CELL[c], n, f"{g.get('aggregated', 0):.1f}", f"{g.get('timeout', 0):.1f}", f"{g.get('evicted', 0):.1f}",
-                             f"{g.get('late', 0) + g.get('discarded', 0):.1f}", f"{100 * (1 - g.get('aggregated', 0) / tot):.1f}%"])
-    return table("wasted", ["dataset", "trace", "stack", "GB aggregated", "timed out", "evicted", "late / discarded", "paid, not used"], rows)
+                used = sum(g.get(k, 0) for k in USED)
+                rows.append([DSN[ds], CELL[c], n, f"{used:.1f}", f"{g.get('timeout', 0):.1f}", f"{g.get('evicted', 0):.1f}",
+                             f"{g.get('discarded', 0):.1f}", f"{100 * (1 - used / tot):.1f}%"])
+    return table("wasted", ["dataset", "trace", "stack", "GB aggregated (incl. late)", "timed out", "evicted", "discarded", "paid, not used"], rows)
 
 
 def knowledge(D):
@@ -691,26 +787,41 @@ def overhead(D):
 
 # ---------------------------------------------------------------- ablations
 def _arm_bars(D, name, arms, extra=()):
-    """Time and GB to target per arm on the cifar ablation cells; bar-end ratio vs FLuX, a miss shows its peak accuracy."""
+    """Peak accuracy (dots), then time and GB to target (bars) per arm on the cifar ablation cells; bar-end ratio vs FLuX, misses hatched."""
     cells = [(ds, c) for ds in pr.ABL_DS for c in D.cells(pr.hp.FB2_ABL)]
     series0 = lambda ds, c: [("FedBuff", D.stack(ds, c, "FedBuff")), *[(ARMS[a], D.get(ds, c, a, "felix")) for a in arms], *extra,
                              ("Felix", D.stack(ds, c, "Felix"))]
     n_rows = len(series0(*cells[0]))
-    fig, axs = plt.subplots(len(cells), 2, figsize=(COL_W, 0.6 + 0.21 * n_rows * len(cells)), sharey=True, sharex="col", squeeze=False)
+    fig, axs = plt.subplots(len(cells), 3, figsize=(COL_W, 0.6 + 0.21 * n_rows * len(cells)), sharey=True, sharex="col", squeeze=False)
     for i, (ds, c) in enumerate(cells):
         series = [(n, legs) for n, legs in series0(ds, c)]
         fx = series[-1][1]
-        for j, key in enumerate(("h", "gb")):
+        names = [n for n, _ in series]
+        ax = axs[i][0]  # accuracy first (success-metric hierarchy): peak 5-eval mean, comparable where runs go the full 120 h
+        tgt = 100 * float(fx[0]["config"]["report_target"]) if fx else None
+        peak = {n: 100 * max(max(roll(d["acc"]["acc"])) for d in legs) for n, legs in series if legs}
+        for y, n in enumerate(names):
+            if n in peak:
+                col = STACK[n][0] if n in ("Felix", "FedBuff") else INK
+                ax.plot(peak[n], y, MARK.get(n, "o"), ms=3.6, mfc=col if n == "Felix" else "white", mec=col, mew=0.9, ls="none",
+                        zorder=Z["marker"])
+        if tgt:
+            ax.axvline(tgt, color=INK, lw=LINE["ref"], ls=(0, (3, 2)), zorder=Z["fill"])
+        rowlabels(ax, [label(n) for n in names])
+        ax.grid(axis="y", visible=False)
+        full = fx and fx[0]["end"]["h"] >= 119  # runs stopped at the target tie on accuracy: no deltas
+        ax._acc = (names, peak, full, tgt)
+        if i == len(cells) - 1:
+            ax.set_xlabel("Peak\nAccuracy (%)")
+        for j, key in enumerate(("h", "gb"), 1):
             ax = axs[i][j]
-            names = [n for n, _ in series]
             vals, txt, styles = [], [], []
             for n, legs in series:
                 v = at_hit(legs, key) if legs else None
                 ref = at_hit(fx, key)
-                if v is None:  # missed the target (or missing): bar to the run's end, hatched, peak accuracy at the end
+                if v is None:  # missed the target (or missing): bar to the run's end, hatched
                     vals.append(mean(d["end"][key] for d in legs) if legs else 0.0)
-                    pk = max(max(roll(d["acc"]["acc"])) for d in legs) * 100 if legs else None
-                    txt.append("Missing" if not legs else f"Missed: {pk:.1f}%" if key == "h" else "Missed")
+                    txt.append("Missing" if not legs else "Missed")
                     styles.append("miss")
                 else:
                     vals.append(v)
@@ -719,15 +830,30 @@ def _arm_bars(D, name, arms, extra=()):
             for y, (v, sty) in enumerate(zip(vals, styles)):
                 col = STACK[sty][0] if sty in ("Felix", "FedBuff") else LIGHT
                 ax.barh(y, v, height=0.68, zorder=Z["bar"], **(dict(hatch="//////", **HATCH) if sty == "miss" else dict(color=col, **SOLID)))
-            rowlabels(ax, [label(n) if n == "Felix" else n for n in names])
-            ax.set_yticks(range(len(names)), [label(n) for n in names])
+            rowlabels(ax, [label(n) for n in names])
             top = max(vals) if vals else 1.0
             ax.set_xlim(0, top * 1.15)
             bar_ends(ax, names, vals, txt, top * 0.03)
+            ax.set_xticks([0, 60, 120] if key == "h" else [0, 2500, 5000], None if key == "h" else ["0", "2.5k", "5k"])
             if i == len(cells) - 1:
-                ax.set_xlabel("Time to Target (hours)" if key == "h" else "Data to Target (GB)")
+                ax.set_xlabel("Time to\nTarget (hours)" if key == "h" else "Data to\nTarget (GB)")
             mark(ax, sum(not legs for _, legs in series), D.prelim)
         axs[i][0].set_ylabel(tag(ds, c))
+    pk = [v for row in axs for v in row[0]._acc[1].values()] + [row[0]._acc[3] for row in axs if row[0]._acc[3]]
+    lo, hi = min(pk), max(pk)
+    for row in axs:  # delta labels after the shared x range is final
+        ax = row[0]
+        names, peak, full, tgt = ax._acc
+        ax.set_xlim(lo - 0.6, hi + 0.25 * (hi - lo) + 1.2)
+        if not full:
+            place(ax, f"All reach\n{tgt:.0f}%", [(lo - 0.4, len(names) - 1.5, "left", "center"), (lo - 0.4, 0.5, "left", "center")],
+                  linespacing=1.0, **TXT)
+            continue
+        for y, n in enumerate(names):
+            if n in peak:
+                t = f"{peak[n]:.1f}%" if n == "Felix" else f"{peak[n] - peak['Felix']:+.1f}%".replace("-", "−")
+                place(ax, t, [(peak[n] + 0.35, y, "left", "center"), (peak[n] - 0.35, y, "right", "center")],
+                      weight="bold" if n == "Felix" else "normal", **TXT)
     return save(fig, name)
 
 
@@ -765,9 +891,9 @@ def rejected(D):
     return table("rejected", ["dataset", "trace", "idea", "Δ time to target vs Felix", "Δ GB"], rows)
 
 
-FIGS = {f.__name__: f for f in (teaser, headline, curves, static, efficiency, slots, stall, rounds, staleness, picks, concurrency, wasted,
-                                 knowledge, overhead, ladder, swap_availability, swap_selection, swap_aggregation, swap_concurrency,
-                                 rejected, oracle_gain, fill_slots, choice, pace_bytes)}
+FIGS = {f.__name__: f for f in (teaser, headline, curves, static, efficiency, slots, slots_base, stall, rounds, staleness, picks, picks_speech,
+                                 concurrency, concurrency_base, wasted, knowledge, overhead, ladder, swap_availability, swap_selection,
+                                 swap_aggregation, swap_concurrency, rejected, oracle_gain, fill_slots, choice_replay, pace_bytes, pace_levels)}
 assert set(FIGS) == set(pr.FIGURES), set(FIGS) ^ set(pr.FIGURES)
 
 

@@ -1,12 +1,12 @@
 {
  "meta": {
   "dataset": "cifar10",
-  "generated": "2026-10-28T17:50",
+  "generated": "2026-10-29T05:20",
   "seeds": [
    1
   ],
   "run_root": "/coc/scratch/dgarg/mlsys27_felix_runs_20261026",
-  "code_key": "ee6d91a88027",
+  "code_key": "85e2b7ba3b5f",
   "legs_done": 44,
   "legs_total": 44,
   "complete": true,
@@ -35,7 +35,7 @@
  },
  "cells": {
   "s0u": {
-   "label": "syn_0",
+   "label": "Syn-0%",
    "target": 0.8,
    "stacks": {
     "Felix": {
@@ -88,7 +88,8 @@
       "wasted_compute": 0.6,
       "held_departed": 0.0,
       "waiting": 0.0,
-      "idle": 2.5
+      "idle": 2.5,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -147,7 +148,8 @@
       "wasted_compute": 0.5,
       "held_departed": 0.0,
       "waiting": 0.0,
-      "idle": 160.5
+      "idle": 160.5,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -212,7 +214,8 @@
       "wasted_compute": 108.8,
       "held_departed": 0.0,
       "waiting": 816.8,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -277,7 +280,8 @@
       "wasted_compute": 0.0,
       "held_departed": 0.0,
       "waiting": 1196.6,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -343,7 +347,8 @@
       "wasted_compute": 550.2,
       "held_departed": 0.0,
       "waiting": 729.8,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -409,7 +414,8 @@
       "wasted_compute": 573.9,
       "held_departed": 0.0,
       "waiting": 707.7,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -474,7 +480,8 @@
       "wasted_compute": 0.5,
       "held_departed": 0.0,
       "waiting": 0.0,
-      "idle": 3.7
+      "idle": 3.7,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -540,7 +547,8 @@
       "wasted_compute": 127.6,
       "held_departed": 0.0,
       "waiting": 913.4,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -605,7 +613,8 @@
       "wasted_compute": 0.0,
       "held_departed": 0.0,
       "waiting": 1215.0,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -671,7 +680,8 @@
       "wasted_compute": 599.0,
       "held_departed": 0.0,
       "waiting": 879.9,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -737,7 +747,8 @@
       "wasted_compute": 655.4,
       "held_departed": 0.0,
       "waiting": 808.0,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": null,
      "timeouts": 0,
@@ -780,7 +791,7 @@
    }
   },
   "s20u": {
-   "label": "syn_20",
+   "label": "Syn-20%",
    "target": 0.8,
    "stacks": {
     "Felix": {
@@ -825,17 +836,18 @@
       "open": 0.1,
       "evicted": 0.0
      },
-     "paid_not_used_pct": 0.9,
+     "paid_not_used_pct": 0.01,
      "mean_staleness": 7.45,
      "slot_busy_pct": 99.9,
      "slot_held_departed_pct": 0.0,
      "left_mid_task_pct": 0.92,
      "slot_time_h": {
-      "useful_compute": 3911.8,
-      "wasted_compute": 35.6,
+      "useful_compute": 3946.7,
+      "wasted_compute": 0.7,
       "held_departed": 0.2,
       "waiting": 0.0,
-      "idle": 2.7
+      "idle": 2.7,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 0.0,
      "timeouts": 0,
@@ -886,17 +898,18 @@
       "open": 0.1,
       "timeout": 0.0
      },
-     "paid_not_used_pct": 0.13,
+     "paid_not_used_pct": 0.0,
      "mean_staleness": 5.7,
      "slot_busy_pct": 77.9,
      "slot_held_departed_pct": 18.5,
      "left_mid_task_pct": 0.79,
      "slot_time_h": {
-      "useful_compute": 3767.1,
-      "wasted_compute": 13.0,
+      "useful_compute": 3779.7,
+      "wasted_compute": 0.4,
       "held_departed": 896.6,
       "waiting": 0.0,
-      "idle": 173.6
+      "idle": 173.6,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 603.0,
      "timeouts": 2,
@@ -953,17 +966,18 @@
       "late": 1.1,
       "timeout": 1.0
      },
-     "paid_not_used_pct": 10.35,
+     "paid_not_used_pct": 8.59,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 6.72,
      "slot_time_h": {
-      "useful_compute": 428.9,
-      "wasted_compute": 70.7,
+      "useful_compute": 430.8,
+      "wasted_compute": 68.9,
       "held_departed": 177.1,
       "waiting": 759.5,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 653.0,
      "timeouts": 481,
@@ -1020,17 +1034,18 @@
       "timeout": 0.2,
       "open": 0.0
      },
-     "paid_not_used_pct": 0.99,
+     "paid_not_used_pct": 0.01,
      "mean_staleness": 0.44,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 1.0,
      "slot_time_h": {
-      "useful_compute": 1002.4,
-      "wasted_compute": 3.3,
+      "useful_compute": 1005.6,
+      "wasted_compute": 0.1,
       "held_departed": 64.5,
       "waiting": 1200.8,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 66.0,
      "timeouts": 72,
@@ -1097,7 +1112,8 @@
       "wasted_compute": 537.1,
       "held_departed": 42.1,
       "waiting": 721.9,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 72.0,
      "timeouts": 2164,
@@ -1164,7 +1180,8 @@
       "wasted_compute": 546.7,
       "held_departed": 40.9,
       "waiting": 706.7,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 73.0,
      "timeouts": 2101,
@@ -1220,17 +1237,18 @@
       "late": 3.8,
       "open": 0.1
      },
-     "paid_not_used_pct": 0.13,
+     "paid_not_used_pct": 0.0,
      "mean_staleness": 6.03,
      "slot_busy_pct": 80.9,
      "slot_held_departed_pct": 19.1,
      "left_mid_task_pct": 0.78,
      "slot_time_h": {
-      "useful_compute": 3949.6,
-      "wasted_compute": 13.8,
+      "useful_compute": 3963.0,
+      "wasted_compute": 0.5,
       "held_departed": 933.5,
       "waiting": 0.0,
-      "idle": 3.3
+      "idle": 3.3,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 602.0,
      "timeouts": 0,
@@ -1288,17 +1306,18 @@
       "late": 1.3,
       "open": 0.0
      },
-     "paid_not_used_pct": 11.29,
+     "paid_not_used_pct": 9.51,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 7.83,
      "slot_time_h": {
-      "useful_compute": 631.8,
-      "wasted_compute": 128.1,
+      "useful_compute": 637.2,
+      "wasted_compute": 122.6,
       "held_departed": 246.5,
       "waiting": 971.1,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 636.0,
      "timeouts": 1012,
@@ -1355,17 +1374,18 @@
       "timeout": 0.1,
       "open": 0.0
      },
-     "paid_not_used_pct": 0.49,
+     "paid_not_used_pct": 0.01,
      "mean_staleness": 0.32,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 0.5,
      "slot_time_h": {
-      "useful_compute": 1151.3,
-      "wasted_compute": 6.6,
+      "useful_compute": 1157.7,
+      "wasted_compute": 0.1,
       "held_departed": 55.2,
       "waiting": 1199.5,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 100.0,
      "timeouts": 41,
@@ -1432,7 +1452,8 @@
       "wasted_compute": 569.2,
       "held_departed": 42.0,
       "waiting": 789.0,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 71.0,
      "timeouts": 2137,
@@ -1499,7 +1520,8 @@
       "wasted_compute": 633.9,
       "held_departed": 44.7,
       "waiting": 816.5,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 70.0,
      "timeouts": 2281,
@@ -1542,7 +1564,7 @@
    }
   },
   "s50u": {
-   "label": "syn_50",
+   "label": "Syn-50%",
    "target": 0.8,
    "stacks": {
     "Felix": {
@@ -1587,17 +1609,18 @@
       "open": 0.1,
       "evicted": 0.1
      },
-     "paid_not_used_pct": 1.67,
+     "paid_not_used_pct": 0.01,
      "mean_staleness": 11.86,
      "slot_busy_pct": 99.9,
      "slot_held_departed_pct": 0.0,
      "left_mid_task_pct": 1.73,
      "slot_time_h": {
-      "useful_compute": 4243.8,
-      "wasted_compute": 72.4,
+      "useful_compute": 4315.5,
+      "wasted_compute": 0.8,
       "held_departed": 0.4,
       "waiting": 0.0,
-      "idle": 3.4
+      "idle": 3.4,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 0.0,
      "timeouts": 0,
@@ -1648,17 +1671,18 @@
       "open": 0.1,
       "timeout": 0.0
      },
-     "paid_not_used_pct": 0.91,
+     "paid_not_used_pct": 0.01,
      "mean_staleness": 7.44,
      "slot_busy_pct": 61.7,
      "slot_held_departed_pct": 34.5,
      "left_mid_task_pct": 1.71,
      "slot_time_h": {
-      "useful_compute": 2961.0,
-      "wasted_compute": 37.3,
+      "useful_compute": 2997.6,
+      "wasted_compute": 0.7,
       "held_departed": 1677.6,
       "waiting": 0.0,
-      "idle": 184.5
+      "idle": 184.5,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 626.0,
      "timeouts": 16,
@@ -1716,17 +1740,18 @@
       "discarded": 3.7,
       "open": 0.0
      },
-     "paid_not_used_pct": 14.73,
+     "paid_not_used_pct": 11.41,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 13.36,
      "slot_time_h": {
-      "useful_compute": 325.5,
-      "wasted_compute": 79.7,
+      "useful_compute": 332.1,
+      "wasted_compute": 73.1,
       "held_departed": 403.6,
       "waiting": 650.9,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 836.0,
      "timeouts": 1120,
@@ -1784,17 +1809,18 @@
       "discarded": 0.1,
       "open": 0.0
      },
-     "paid_not_used_pct": 1.23,
+     "paid_not_used_pct": 0.07,
      "mean_staleness": 0.85,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 1.29,
      "slot_time_h": {
-      "useful_compute": 998.8,
-      "wasted_compute": 7.4,
+      "useful_compute": 1005.4,
+      "wasted_compute": 0.7,
       "held_departed": 106.6,
       "waiting": 1146.1,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 81.0,
      "timeouts": 464,
@@ -1861,7 +1887,8 @@
       "wasted_compute": 485.3,
       "held_departed": 108.7,
       "waiting": 692.6,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 83.0,
      "timeouts": 5403,
@@ -1928,7 +1955,8 @@
       "wasted_compute": 490.0,
       "held_departed": 107.2,
       "waiting": 688.2,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 83.0,
      "timeouts": 5411,
@@ -1985,17 +2013,18 @@
       "open": 0.1,
       "timeout": 0.0
      },
-     "paid_not_used_pct": 0.88,
+     "paid_not_used_pct": 0.01,
      "mean_staleness": 7.82,
      "slot_busy_pct": 64.1,
      "slot_held_departed_pct": 35.8,
      "left_mid_task_pct": 1.68,
      "slot_time_h": {
-      "useful_compute": 3061.0,
-      "wasted_compute": 36.9,
+      "useful_compute": 3097.5,
+      "wasted_compute": 0.5,
       "held_departed": 1729.6,
       "waiting": 0.0,
-      "idle": 2.7
+      "idle": 2.7,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 626.0,
      "timeouts": 9,
@@ -2053,17 +2082,18 @@
       "discarded": 4.4,
       "open": 0.0
      },
-     "paid_not_used_pct": 16.93,
+     "paid_not_used_pct": 13.26,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 16.56,
      "slot_time_h": {
-      "useful_compute": 443.1,
-      "wasted_compute": 157.8,
+      "useful_compute": 452.5,
+      "wasted_compute": 148.4,
       "held_departed": 583.1,
       "waiting": 831.4,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 762.0,
      "timeouts": 2074,
@@ -2120,17 +2150,18 @@
       "late": 15.8,
       "open": 0.0
      },
-     "paid_not_used_pct": 0.96,
+     "paid_not_used_pct": 0.02,
      "mean_staleness": 0.74,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 0.98,
      "slot_time_h": {
-      "useful_compute": 1118.9,
-      "wasted_compute": 9.8,
+      "useful_compute": 1128.1,
+      "wasted_compute": 0.5,
       "held_departed": 105.5,
       "waiting": 1178.6,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 98.0,
      "timeouts": 192,
@@ -2197,7 +2228,8 @@
       "wasted_compute": 554.1,
       "held_departed": 114.2,
       "waiting": 796.1,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 81.0,
      "timeouts": 5089,
@@ -2264,7 +2296,8 @@
       "wasted_compute": 609.1,
       "held_departed": 106.4,
       "waiting": 817.1,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 77.0,
      "timeouts": 5003,
@@ -2314,8 +2347,32 @@
       "gb": 4797.9,
       "final_acc": 80.05,
       "peak_acc5": 80.05,
+      "end_h": 90.5,
       "mean_staleness": 11.92,
-      "paid_not_used_pct": 1.43,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 3.0,
+       "60": 5.0,
+       "70": 11.17,
+       "75": 26.5,
+       "80": 90.5
+      },
+      "gb_to_acc": {
+       "50": 247.3,
+       "60": 401.5,
+       "70": 856.6,
+       "75": 1848.6,
+       "80": 4797.9
+      },
+      "acc_at_h": {
+       "6": 62.92,
+       "12": 70.69,
+       "24": 74.46,
+       "48": 77.02,
+       "72": 78.86,
+       "96": null,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 1.257,
        "gb_ratio": 1.477
@@ -2328,22 +2385,70 @@
       "gb": 3688.7,
       "final_acc": 80.01,
       "peak_acc5": 80.01,
+      "end_h": 90.67,
       "mean_staleness": 11.9,
-      "paid_not_used_pct": 1.86,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 4.0,
+       "70": 9.33,
+       "75": 26.0,
+       "80": 90.67
+      },
+      "gb_to_acc": {
+       "50": 184.5,
+       "60": 291.1,
+       "70": 629.6,
+       "75": 1481.0,
+       "80": 3688.7
+      },
+      "acc_at_h": {
+       "6": 65.22,
+       "12": 71.77,
+       "24": 74.6,
+       "48": 77.69,
+       "72": 79.05,
+       "96": null,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 1.259,
        "gb_ratio": 1.135
       }
      },
-     "+ Agg (c 60)": {
+     "+ Agg (c = 60)": {
       "arm": "fn",
       "status": "hit",
       "time_h": 73.17,
       "gb": 3280.7,
       "final_acc": 80.02,
       "peak_acc5": 80.02,
+      "end_h": 73.17,
       "mean_staleness": 11.94,
-      "paid_not_used_pct": 1.7,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 1.5,
+       "60": 2.5,
+       "70": 5.17,
+       "75": 20.17,
+       "80": 73.17
+      },
+      "gb_to_acc": {
+       "50": 112.8,
+       "60": 185.0,
+       "70": 366.9,
+       "75": 1220.7,
+       "80": 3280.7
+      },
+      "acc_at_h": {
+       "6": 70.85,
+       "12": 73.65,
+       "24": 75.93,
+       "48": 78.03,
+       "72": 79.97,
+       "96": null,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 1.016,
        "gb_ratio": 1.01
@@ -2351,29 +2456,77 @@
      }
     },
     "swap_availability": {
-     "check-in": {
+     "Check-in": {
       "arm": "fx_ck",
       "status": "hit",
       "time_h": 73.52,
       "gb": 677.7,
       "final_acc": 80.01,
       "peak_acc5": 80.01,
+      "end_h": 73.52,
       "mean_staleness": 3.21,
-      "paid_not_used_pct": 0.99,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.67,
+       "60": 4.84,
+       "70": 10.84,
+       "75": 22.84,
+       "80": 73.52
+      },
+      "gb_to_acc": {
+       "50": 99.7,
+       "60": 153.5,
+       "70": 267.4,
+       "75": 407.1,
+       "80": 677.7
+      },
+      "acc_at_h": {
+       "6": 62.68,
+       "12": 70.82,
+       "24": 75.52,
+       "48": 77.98,
+       "72": 79.81,
+       "96": null,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 1.021,
        "gb_ratio": 0.209
       }
      },
-     "oracle": {
+     "Oracle": {
       "arm": "fx_or",
       "status": "hit",
       "time_h": 66.84,
       "gb": 1706.5,
       "final_acc": 80.01,
       "peak_acc5": 80.01,
+      "end_h": 66.84,
       "mean_staleness": 7.83,
-      "paid_not_used_pct": 1.08,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.0,
+       "60": 3.5,
+       "70": 6.83,
+       "75": 18.17,
+       "80": 66.84
+      },
+      "gb_to_acc": {
+       "50": 87.0,
+       "60": 147.8,
+       "70": 272.6,
+       "75": 638.6,
+       "80": 1706.5
+      },
+      "acc_at_h": {
+       "6": 68.32,
+       "12": 73.22,
+       "24": 76.08,
+       "48": 78.6,
+       "72": null,
+       "96": null,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 0.928,
        "gb_ratio": 0.525
@@ -2381,29 +2534,77 @@
      }
     },
     "swap_selection": {
-     "uniform": {
+     "Uniform": {
       "arm": "fx_rnd",
       "status": "hit",
       "time_h": 64.83,
       "gb": 3779.7,
       "final_acc": 80.06,
       "peak_acc5": 80.06,
+      "end_h": 64.83,
       "mean_staleness": 12.02,
-      "paid_not_used_pct": 1.31,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 1.83,
+       "60": 2.83,
+       "70": 5.67,
+       "75": 17.67,
+       "80": 64.83
+      },
+      "gb_to_acc": {
+       "50": 153.2,
+       "60": 233.2,
+       "70": 451.1,
+       "75": 1296.4,
+       "80": 3779.7
+      },
+      "acc_at_h": {
+       "6": 70.3,
+       "12": 73.47,
+       "24": 76.09,
+       "48": 78.4,
+       "72": null,
+       "96": null,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 0.9,
        "gb_ratio": 1.163
       }
      },
-     "Oort's": {
+     "Oort's selector": {
       "arm": "fx_oort",
       "status": "hit",
       "time_h": 71.5,
       "gb": 3186.0,
       "final_acc": 80.0,
       "peak_acc5": 80.0,
+      "end_h": 71.5,
       "mean_staleness": 11.89,
-      "paid_not_used_pct": 1.7,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 1.33,
+       "60": 2.17,
+       "70": 5.5,
+       "75": 20.5,
+       "80": 71.5
+      },
+      "gb_to_acc": {
+       "50": 103.1,
+       "60": 163.7,
+       "70": 378.1,
+       "75": 1216.8,
+       "80": 3186.0
+      },
+      "acc_at_h": {
+       "6": 70.54,
+       "12": 72.99,
+       "24": 75.23,
+       "48": 77.79,
+       "72": null,
+       "96": null,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 0.993,
        "gb_ratio": 0.981
@@ -2418,8 +2619,32 @@
       "gb": 3641.7,
       "final_acc": 80.02,
       "peak_acc5": 80.02,
+      "end_h": 89.17,
       "mean_staleness": 11.9,
-      "paid_not_used_pct": 1.84,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 4.17,
+       "70": 9.83,
+       "75": 27.5,
+       "80": 89.17
+      },
+      "gb_to_acc": {
+       "50": 184.7,
+       "60": 302.8,
+       "70": 659.0,
+       "75": 1547.6,
+       "80": 3641.7
+      },
+      "acc_at_h": {
+       "6": 65.17,
+       "12": 71.77,
+       "24": 74.69,
+       "48": 77.39,
+       "72": 78.8,
+       "96": null,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 1.238,
        "gb_ratio": 1.121
@@ -2432,8 +2657,32 @@
       "gb": 4298.7,
       "final_acc": 80.09,
       "peak_acc5": 80.09,
+      "end_h": 117.0,
       "mean_staleness": 11.91,
-      "paid_not_used_pct": 2.07,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 4.67,
+       "60": 8.17,
+       "70": 18.0,
+       "75": 41.33,
+       "80": 117.0
+      },
+      "gb_to_acc": {
+       "50": 338.7,
+       "60": 567.3,
+       "70": 1122.6,
+       "75": 2139.6,
+       "80": 4298.7
+      },
+      "acc_at_h": {
+       "6": 54.3,
+       "12": 65.6,
+       "24": 72.28,
+       "48": 75.65,
+       "72": 77.64,
+       "96": 79.33,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 1.625,
        "gb_ratio": 1.323
@@ -2441,15 +2690,39 @@
      }
     },
     "swap_concurrency": {
-     "c \u00bd fixed": {
+     "Fixed c = 30": {
       "arm": "fx_cfix",
       "status": "hit",
       "time_h": 63.84,
       "gb": 1209.4,
       "final_acc": 80.02,
       "peak_acc5": 80.02,
+      "end_h": 63.84,
       "mean_staleness": 5.89,
-      "paid_not_used_pct": 1.94,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 4.33,
+       "70": 8.5,
+       "75": 18.34,
+       "80": 63.84
+      },
+      "gb_to_acc": {
+       "50": 75.6,
+       "60": 128.7,
+       "70": 240.7,
+       "75": 470.7,
+       "80": 1209.4
+      },
+      "acc_at_h": {
+       "6": 65.05,
+       "12": 72.92,
+       "24": 75.98,
+       "48": 78.45,
+       "72": null,
+       "96": null,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 0.887,
        "gb_ratio": 0.372
@@ -2462,8 +2735,32 @@
       "gb": 1198.1,
       "final_acc": 80.02,
       "peak_acc5": 80.02,
+      "end_h": 63.84,
       "mean_staleness": 5.85,
-      "paid_not_used_pct": 1.94,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 4.34,
+       "70": 8.67,
+       "75": 18.17,
+       "80": 63.84
+      },
+      "gb_to_acc": {
+       "50": 76.1,
+       "60": 128.1,
+       "70": 242.9,
+       "75": 462.7,
+       "80": 1198.1
+      },
+      "acc_at_h": {
+       "6": 64.87,
+       "12": 73.06,
+       "24": 75.89,
+       "48": 78.73,
+       "72": null,
+       "96": null,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 0.887,
        "gb_ratio": 0.369
@@ -2478,8 +2775,32 @@
       "gb": 3529.9,
       "final_acc": 80.0,
       "peak_acc5": 80.0,
+      "end_h": 79.5,
       "mean_staleness": 11.95,
-      "paid_not_used_pct": 1.71,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 1.67,
+       "60": 2.5,
+       "70": 5.17,
+       "75": 15.17,
+       "80": 79.5
+      },
+      "gb_to_acc": {
+       "50": 125.6,
+       "60": 185.9,
+       "70": 369.7,
+       "75": 966.8,
+       "80": 3529.9
+      },
+      "acc_at_h": {
+       "6": 70.96,
+       "12": 74.34,
+       "24": 76.13,
+       "48": 78.35,
+       "72": 79.74,
+       "96": null,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 1.104,
        "gb_ratio": 1.086
@@ -2492,8 +2813,32 @@
       "gb": 2345.4,
       "final_acc": 80.02,
       "peak_acc5": 80.02,
+      "end_h": 86.67,
       "mean_staleness": 11.95,
-      "paid_not_used_pct": 2.79,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 1.5,
+       "60": 2.33,
+       "70": 6.5,
+       "75": 23.33,
+       "80": 86.67
+      },
+      "gb_to_acc": {
+       "50": 79.2,
+       "60": 120.5,
+       "70": 311.7,
+       "75": 922.8,
+       "80": 2345.4
+      },
+      "acc_at_h": {
+       "6": 69.41,
+       "12": 72.15,
+       "24": 75.17,
+       "48": 77.59,
+       "72": 79.52,
+       "96": null,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 1.204,
        "gb_ratio": 0.722
@@ -2548,17 +2893,18 @@
       "evicted": 0.3,
       "open": 0.1
      },
-     "paid_not_used_pct": 0.41,
+     "paid_not_used_pct": 0.01,
      "mean_staleness": 9.89,
      "slot_busy_pct": 99.9,
      "slot_held_departed_pct": 0.0,
      "left_mid_task_pct": 0.46,
      "slot_time_h": {
-      "useful_compute": 3251.7,
-      "wasted_compute": 12.9,
+      "useful_compute": 3263.2,
+      "wasted_compute": 1.3,
       "held_departed": 1.6,
       "waiting": 0.0,
-      "idle": 3.0
+      "idle": 0.0,
+      "await_commit": 3.0
      },
      "slot_time_lost_per_departure_s": 2.0,
      "timeouts": 0,
@@ -2609,17 +2955,18 @@
       "timeout": 0.6,
       "open": 0.0
      },
-     "paid_not_used_pct": 0.16,
+     "paid_not_used_pct": 0.01,
      "mean_staleness": 16.12,
      "slot_busy_pct": 69.8,
      "slot_held_departed_pct": 6.7,
      "left_mid_task_pct": 0.33,
      "slot_time_h": {
-      "useful_compute": 5015.9,
-      "wasted_compute": 11.0,
+      "useful_compute": 5025.4,
+      "wasted_compute": 1.5,
       "held_departed": 484.5,
       "waiting": 0.0,
-      "idle": 1688.6
+      "idle": 1688.6,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 378.0,
      "timeouts": 258,
@@ -2677,17 +3024,18 @@
       "late": 0.0,
       "open": 0.0
      },
-     "paid_not_used_pct": 5.98,
+     "paid_not_used_pct": 5.95,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 3.32,
      "slot_time_h": {
-      "useful_compute": 528.1,
-      "wasted_compute": 72.1,
+      "useful_compute": 528.2,
+      "wasted_compute": 72.0,
       "held_departed": 92.6,
       "waiting": 794.4,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 648.0,
      "timeouts": 329,
@@ -2744,17 +3092,18 @@
       "timeout": 0.6,
       "open": 0.0
      },
-     "paid_not_used_pct": 0.41,
+     "paid_not_used_pct": 0.03,
      "mean_staleness": 4.96,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 0.58,
      "slot_time_h": {
-      "useful_compute": 1156.2,
-      "wasted_compute": 1.4,
+      "useful_compute": 1157.4,
+      "wasted_compute": 0.2,
       "held_departed": 43.8,
       "waiting": 1151.4,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 57.0,
      "timeouts": 282,
@@ -2821,7 +3170,8 @@
       "wasted_compute": 574.7,
       "held_departed": 18.3,
       "waiting": 683.6,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 52.0,
      "timeouts": 806,
@@ -2888,7 +3238,8 @@
       "wasted_compute": 592.2,
       "held_departed": 18.9,
       "waiting": 678.4,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 51.0,
      "timeouts": 841,
@@ -2945,17 +3296,18 @@
       "timeout": 0.5,
       "open": 0.0
      },
-     "paid_not_used_pct": 0.14,
+     "paid_not_used_pct": 0.01,
      "mean_staleness": 15.21,
      "slot_busy_pct": 70.5,
      "slot_held_departed_pct": 6.1,
      "left_mid_task_pct": 0.29,
      "slot_time_h": {
-      "useful_compute": 5065.2,
-      "wasted_compute": 10.9,
+      "useful_compute": 5074.4,
+      "wasted_compute": 1.6,
       "held_departed": 436.6,
       "waiting": 0.0,
-      "idle": 1687.5
+      "idle": 1485.2,
+      "await_commit": 202.3
      },
      "slot_time_lost_per_departure_s": 373.0,
      "timeouts": 218,
@@ -3013,17 +3365,18 @@
       "late": 0.0,
       "open": 0.0
      },
-     "paid_not_used_pct": 5.94,
+     "paid_not_used_pct": 5.93,
      "mean_staleness": 0.0,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 2.64,
      "slot_time_h": {
-      "useful_compute": 759.2,
-      "wasted_compute": 107.6,
+      "useful_compute": 759.3,
+      "wasted_compute": 107.5,
       "held_departed": 98.0,
       "waiting": 992.2,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 639.0,
      "timeouts": 381,
@@ -3080,17 +3433,18 @@
       "timeout": 0.2,
       "open": 0.0
      },
-     "paid_not_used_pct": 0.14,
+     "paid_not_used_pct": 0.01,
      "mean_staleness": 1.69,
      "slot_busy_pct": null,
      "slot_held_departed_pct": null,
      "left_mid_task_pct": 0.23,
      "slot_time_h": {
-      "useful_compute": 1247.7,
-      "wasted_compute": 1.4,
+      "useful_compute": 1248.8,
+      "wasted_compute": 0.2,
       "held_departed": 15.9,
       "waiting": 1175.5,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 51.0,
      "timeouts": 107,
@@ -3157,7 +3511,8 @@
       "wasted_compute": 619.5,
       "held_departed": 17.5,
       "waiting": 763.5,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 46.0,
      "timeouts": 783,
@@ -3224,7 +3579,8 @@
       "wasted_compute": 667.1,
       "held_departed": 19.0,
       "waiting": 763.5,
-      "idle": 0.0
+      "idle": 0.0,
+      "await_commit": 0.0
      },
      "slot_time_lost_per_departure_s": 50.0,
      "timeouts": 854,
@@ -3262,8 +3618,32 @@
       "gb": null,
       "final_acc": 73.75,
       "peak_acc5": 74.27,
+      "end_h": 120.0,
       "mean_staleness": 15.53,
-      "paid_not_used_pct": 0.26,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 4.17,
+       "60": 21.0,
+       "70": 61.17,
+       "75": null,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 460.7,
+       "60": 2089.4,
+       "70": 4552.7,
+       "75": null,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 54.43,
+       "12": 56.69,
+       "24": 61.37,
+       "48": 68.39,
+       "72": 71.45,
+       "96": 73.66,
+       "120": 73.81
+      },
       "vs_felix": {
        "time_ratio": null,
        "gb_ratio": null
@@ -3276,22 +3656,70 @@
       "gb": null,
       "final_acc": 72.79,
       "peak_acc5": 74.53,
+      "end_h": 120.0,
       "mean_staleness": 15.66,
-      "paid_not_used_pct": 0.27,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 4.0,
+       "60": 21.0,
+       "70": 59.5,
+       "75": null,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 441.0,
+       "60": 2078.5,
+       "70": 4418.8,
+       "75": null,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 54.52,
+       "12": 56.45,
+       "24": 61.67,
+       "48": 68.13,
+       "72": 71.0,
+       "96": 73.27,
+       "120": 72.76
+      },
       "vs_felix": {
        "time_ratio": null,
        "gb_ratio": null
       }
      },
-     "+ Agg (c 60)": {
+     "+ Agg (c = 60)": {
       "arm": "fn",
       "status": "hit",
       "time_h": 100.84,
       "gb": 5805.5,
       "final_acc": 75.17,
       "peak_acc5": 75.25,
+      "end_h": 103.3,
       "mean_staleness": 15.96,
-      "paid_not_used_pct": 0.27,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 12.83,
+       "70": 49.0,
+       "75": 100.84,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 285.7,
+       "60": 1373.0,
+       "70": 3958.7,
+       "75": 5805.5,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 56.72,
+       "12": 59.22,
+       "24": 64.3,
+       "48": 69.54,
+       "72": 72.72,
+       "96": 74.73,
+       "120": null
+      },
       "vs_felix": {
        "time_ratio": 1.059,
        "gb_ratio": 2.55
@@ -3299,29 +3727,77 @@
      }
     },
     "swap_availability": {
-     "check-in": {
+     "Check-in": {
       "arm": "fx_ck",
       "status": "hit",
       "time_h": 78.68,
       "gb": 729.2,
       "final_acc": 75.31,
       "peak_acc5": 76.45,
+      "end_h": 120.02,
       "mean_staleness": 4.93,
-      "paid_not_used_pct": 0.32,
+      "paid_not_used_pct": 0.02,
+      "time_h_to_acc": {
+       "50": 2.84,
+       "60": 9.67,
+       "70": 40.18,
+       "75": 78.68,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 157.6,
+       "60": 292.3,
+       "70": 551.6,
+       "75": 729.2,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 57.45,
+       "12": 60.69,
+       "24": 66.53,
+       "48": 71.36,
+       "72": 73.2,
+       "96": 76.14,
+       "120": 75.35
+      },
       "vs_felix": {
        "time_ratio": 0.827,
        "gb_ratio": 0.32
       }
      },
-     "oracle": {
+     "Oracle": {
       "arm": "fx_or",
       "status": "hit",
       "time_h": 89.51,
       "gb": 1957.7,
       "final_acc": 75.75,
       "peak_acc5": 76.23,
+      "end_h": 120.0,
       "mean_staleness": 9.33,
-      "paid_not_used_pct": 0.24,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 12.0,
+       "70": 43.18,
+       "75": 89.51,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 186.3,
+       "60": 566.2,
+       "70": 1325.6,
+       "75": 1957.7,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 57.2,
+       "12": 59.97,
+       "24": 65.22,
+       "48": 71.19,
+       "72": 73.48,
+       "96": 75.78,
+       "120": 75.79
+      },
       "vs_felix": {
        "time_ratio": 0.94,
        "gb_ratio": 0.86
@@ -3329,29 +3805,77 @@
      }
     },
     "swap_selection": {
-     "uniform": {
+     "Uniform": {
       "arm": "fx_rnd",
       "status": "hit",
       "time_h": 89.84,
       "gb": 2516.0,
       "final_acc": 75.64,
       "peak_acc5": 76.34,
+      "end_h": 120.0,
       "mean_staleness": 9.79,
-      "paid_not_used_pct": 0.34,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 12.5,
+       "70": 43.17,
+       "75": 89.84,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 233.4,
+       "60": 706.4,
+       "70": 1671.9,
+       "75": 2516.0,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 56.59,
+       "12": 59.63,
+       "24": 65.38,
+       "48": 71.13,
+       "72": 73.1,
+       "96": 75.69,
+       "120": 75.66
+      },
       "vs_felix": {
        "time_ratio": 0.944,
        "gb_ratio": 1.105
       }
      },
-     "Oort's": {
+     "Oort's selector": {
       "arm": "fx_oort",
       "status": "hit",
       "time_h": 80.34,
       "gb": 2109.3,
       "final_acc": 73.9,
       "peak_acc5": 76.1,
+      "end_h": 120.0,
       "mean_staleness": 10.03,
-      "paid_not_used_pct": 0.4,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 12.67,
+       "70": 43.67,
+       "75": 80.34,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 227.5,
+       "60": 664.1,
+       "70": 1517.8,
+       "75": 2109.3,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 57.12,
+       "12": 59.7,
+       "24": 65.0,
+       "48": 70.62,
+       "72": 73.57,
+       "96": 75.9,
+       "120": 73.96
+      },
       "vs_felix": {
        "time_ratio": 0.844,
        "gb_ratio": 0.926
@@ -3366,8 +3890,32 @@
       "gb": 2507.0,
       "final_acc": 74.82,
       "peak_acc5": 75.15,
+      "end_h": 120.0,
       "mean_staleness": 10.66,
-      "paid_not_used_pct": 0.39,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 3.84,
+       "60": 14.5,
+       "70": 51.51,
+       "75": 101.34,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 353.4,
+       "60": 832.3,
+       "70": 1803.2,
+       "75": 2507.0,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 54.97,
+       "12": 57.17,
+       "24": 62.7,
+       "48": 69.53,
+       "72": 72.34,
+       "96": 74.25,
+       "120": 74.77
+      },
       "vs_felix": {
        "time_ratio": 1.065,
        "gb_ratio": 1.101
@@ -3380,8 +3928,32 @@
       "gb": null,
       "final_acc": 71.73,
       "peak_acc5": 72.58,
+      "end_h": 120.0,
       "mean_staleness": 11.53,
-      "paid_not_used_pct": 0.38,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 6.17,
+       "60": 24.84,
+       "70": 75.84,
+       "75": null,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 547.9,
+       "60": 1383.6,
+       "70": 2558.5,
+       "75": null,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 49.79,
+       "12": 54.04,
+       "24": 59.09,
+       "48": 65.98,
+       "72": 69.16,
+       "96": 71.67,
+       "120": 71.68
+      },
       "vs_felix": {
        "time_ratio": null,
        "gb_ratio": null
@@ -3389,15 +3961,39 @@
      }
     },
     "swap_concurrency": {
-     "c \u00bd fixed": {
+     "Fixed c = 30": {
       "arm": "fx_cfix",
       "status": "hit",
       "time_h": 76.68,
       "gb": 1989.3,
       "final_acc": 76.2,
       "peak_acc5": 76.99,
+      "end_h": 120.0,
       "mean_staleness": 9.75,
-      "paid_not_used_pct": 0.4,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 3.17,
+       "60": 9.5,
+       "70": 37.84,
+       "75": 76.68,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 143.5,
+       "60": 354.8,
+       "70": 1177.0,
+       "75": 1989.3,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 58.0,
+       "12": 60.82,
+       "24": 66.2,
+       "48": 71.67,
+       "72": 74.5,
+       "96": 76.08,
+       "120": 76.24
+      },
       "vs_felix": {
        "time_ratio": 0.806,
        "gb_ratio": 0.874
@@ -3410,8 +4006,32 @@
       "gb": 383.4,
       "final_acc": 77.36,
       "peak_acc5": 77.82,
+      "end_h": 120.0,
       "mean_staleness": 3.16,
-      "paid_not_used_pct": 0.51,
+      "paid_not_used_pct": 0.02,
+      "time_h_to_acc": {
+       "50": 7.01,
+       "60": 13.34,
+       "70": 30.52,
+       "75": 61.52,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 68.3,
+       "60": 128.8,
+       "70": 239.3,
+       "75": 383.4,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 47.88,
+       "12": 56.92,
+       "24": 66.72,
+       "48": 73.4,
+       "72": 75.63,
+       "96": 77.29,
+       "120": 77.36
+      },
       "vs_felix": {
        "time_ratio": 0.646,
        "gb_ratio": 0.168
@@ -3426,8 +4046,32 @@
       "gb": 2227.5,
       "final_acc": 75.23,
       "peak_acc5": 75.91,
+      "end_h": 120.01,
       "mean_staleness": 10.13,
-      "paid_not_used_pct": 0.4,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.34,
+       "60": 11.5,
+       "70": 42.5,
+       "75": 89.51,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 217.0,
+       "60": 614.3,
+       "70": 1495.2,
+       "75": 2227.5,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 56.92,
+       "12": 60.31,
+       "24": 65.23,
+       "48": 70.92,
+       "72": 73.59,
+       "96": 75.75,
+       "120": 75.28
+      },
       "vs_felix": {
        "time_ratio": 0.94,
        "gb_ratio": 0.978
@@ -3440,8 +4084,32 @@
       "gb": null,
       "final_acc": 74.25,
       "peak_acc5": 74.31,
+      "end_h": 120.0,
       "mean_staleness": 10.47,
-      "paid_not_used_pct": 0.62,
+      "paid_not_used_pct": 0.05,
+      "time_h_to_acc": {
+       "50": 3.0,
+       "60": 16.01,
+       "70": 61.34,
+       "75": null,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 182.3,
+       "60": 580.3,
+       "70": 1284.7,
+       "75": null,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 55.45,
+       "12": 56.54,
+       "24": 61.87,
+       "48": 68.41,
+       "72": 70.93,
+       "96": 74.18,
+       "120": 74.18
+      },
       "vs_felix": {
        "time_ratio": null,
        "gb_ratio": null

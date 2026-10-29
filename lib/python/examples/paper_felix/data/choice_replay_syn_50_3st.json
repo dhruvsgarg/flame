@@ -1,0 +1,683 @@
+{
+ "trace": "syn_50_3st",
+ "dataset": "cifar10",
+ "n": 300,
+ "run_s": 432000.0,
+ "offset_s": 86400.0,
+ "mean_eligible": 149.5361111111111,
+ "metric": "pearson(size, picks)",
+ "rows": [
+  {
+   "ratio": 0.1,
+   "policy": "size",
+   "seed": 0,
+   "c": 15,
+   "corr": 0.8633002558329829,
+   "picks": 104393
+  },
+  {
+   "ratio": 0.1,
+   "policy": "size",
+   "seed": 1,
+   "c": 15,
+   "corr": 0.8628150936165266,
+   "picks": 103943
+  },
+  {
+   "ratio": 0.1,
+   "policy": "size",
+   "seed": 2,
+   "c": 15,
+   "corr": 0.8641834708014934,
+   "picks": 104021
+  },
+  {
+   "ratio": 0.1,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 15,
+   "corr": -0.5698893639029229,
+   "picks": 160119
+  },
+  {
+   "ratio": 0.1,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 15,
+   "corr": -0.5762194041091423,
+   "picks": 161025
+  },
+  {
+   "ratio": 0.1,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 15,
+   "corr": -0.5836603604948492,
+   "picks": 160982
+  },
+  {
+   "ratio": 0.15,
+   "policy": "size",
+   "seed": 0,
+   "c": 22,
+   "corr": 0.7707956316308954,
+   "picks": 170212
+  },
+  {
+   "ratio": 0.15,
+   "policy": "size",
+   "seed": 1,
+   "c": 22,
+   "corr": 0.7724914037726291,
+   "picks": 169958
+  },
+  {
+   "ratio": 0.15,
+   "policy": "size",
+   "seed": 2,
+   "c": 22,
+   "corr": 0.7727311559317298,
+   "picks": 170051
+  },
+  {
+   "ratio": 0.15,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 22,
+   "corr": -0.6245754995391258,
+   "picks": 248839
+  },
+  {
+   "ratio": 0.15,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 22,
+   "corr": -0.6139329853092067,
+   "picks": 249336
+  },
+  {
+   "ratio": 0.15,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 22,
+   "corr": -0.6234256652578983,
+   "picks": 249183
+  },
+  {
+   "ratio": 0.2,
+   "policy": "size",
+   "seed": 0,
+   "c": 30,
+   "corr": 0.6610682057642382,
+   "picks": 258379
+  },
+  {
+   "ratio": 0.2,
+   "policy": "size",
+   "seed": 1,
+   "c": 30,
+   "corr": 0.6614970262621825,
+   "picks": 258238
+  },
+  {
+   "ratio": 0.2,
+   "policy": "size",
+   "seed": 2,
+   "c": 30,
+   "corr": 0.6620731859107939,
+   "picks": 258271
+  },
+  {
+   "ratio": 0.2,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 30,
+   "corr": -0.643892211008831,
+   "picks": 362517
+  },
+  {
+   "ratio": 0.2,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 30,
+   "corr": -0.6345888416869723,
+   "picks": 361296
+  },
+  {
+   "ratio": 0.2,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 30,
+   "corr": -0.639717825389992,
+   "picks": 361887
+  },
+  {
+   "ratio": 0.3,
+   "policy": "size",
+   "seed": 0,
+   "c": 45,
+   "corr": 0.45781662503951237,
+   "picks": 458750
+  },
+  {
+   "ratio": 0.3,
+   "policy": "size",
+   "seed": 1,
+   "c": 45,
+   "corr": 0.45904414148230616,
+   "picks": 458452
+  },
+  {
+   "ratio": 0.3,
+   "policy": "size",
+   "seed": 2,
+   "c": 45,
+   "corr": 0.4573773043395763,
+   "picks": 459013
+  },
+  {
+   "ratio": 0.3,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 45,
+   "corr": -0.6376030084457796,
+   "picks": 602079
+  },
+  {
+   "ratio": 0.3,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 45,
+   "corr": -0.6385741712847326,
+   "picks": 602926
+  },
+  {
+   "ratio": 0.3,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 45,
+   "corr": -0.6412077502574922,
+   "picks": 602399
+  },
+  {
+   "ratio": 0.4,
+   "policy": "size",
+   "seed": 0,
+   "c": 60,
+   "corr": 0.26846908811145825,
+   "picks": 702633
+  },
+  {
+   "ratio": 0.4,
+   "policy": "size",
+   "seed": 1,
+   "c": 60,
+   "corr": 0.2688970198257835,
+   "picks": 702236
+  },
+  {
+   "ratio": 0.4,
+   "policy": "size",
+   "seed": 2,
+   "c": 60,
+   "corr": 0.2687971474629585,
+   "picks": 702393
+  },
+  {
+   "ratio": 0.4,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 60,
+   "corr": -0.6261614291103786,
+   "picks": 883611
+  },
+  {
+   "ratio": 0.4,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 60,
+   "corr": -0.6261671116939042,
+   "picks": 883940
+  },
+  {
+   "ratio": 0.4,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 60,
+   "corr": -0.6263744667174466,
+   "picks": 883964
+  },
+  {
+   "ratio": 0.5,
+   "policy": "size",
+   "seed": 0,
+   "c": 75,
+   "corr": 0.09383861627041354,
+   "picks": 990710
+  },
+  {
+   "ratio": 0.5,
+   "policy": "size",
+   "seed": 1,
+   "c": 75,
+   "corr": 0.09552916890193984,
+   "picks": 989652
+  },
+  {
+   "ratio": 0.5,
+   "policy": "size",
+   "seed": 2,
+   "c": 75,
+   "corr": 0.0943395663630024,
+   "picks": 990205
+  },
+  {
+   "ratio": 0.5,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 75,
+   "corr": -0.610075982450384,
+   "picks": 1209430
+  },
+  {
+   "ratio": 0.5,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 75,
+   "corr": -0.609562597290208,
+   "picks": 1210391
+  },
+  {
+   "ratio": 0.5,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 75,
+   "corr": -0.6095811496622774,
+   "picks": 1209961
+  },
+  {
+   "ratio": 0.6,
+   "policy": "size",
+   "seed": 0,
+   "c": 90,
+   "corr": -0.0646416650390838,
+   "picks": 1327602
+  },
+  {
+   "ratio": 0.6,
+   "policy": "size",
+   "seed": 1,
+   "c": 90,
+   "corr": -0.06455004499760533,
+   "picks": 1327776
+  },
+  {
+   "ratio": 0.6,
+   "policy": "size",
+   "seed": 2,
+   "c": 90,
+   "corr": -0.06478224692129621,
+   "picks": 1327926
+  },
+  {
+   "ratio": 0.6,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 90,
+   "corr": -0.5863074065285553,
+   "picks": 1587234
+  },
+  {
+   "ratio": 0.6,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 90,
+   "corr": -0.5860209904328926,
+   "picks": 1587752
+  },
+  {
+   "ratio": 0.6,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 90,
+   "corr": -0.5860851437886394,
+   "picks": 1587658
+  },
+  {
+   "ratio": 0.7,
+   "policy": "size",
+   "seed": 0,
+   "c": 105,
+   "corr": -0.21572130247981275,
+   "picks": 1731759
+  },
+  {
+   "ratio": 0.7,
+   "policy": "size",
+   "seed": 1,
+   "c": 105,
+   "corr": -0.21596231957898826,
+   "picks": 1732055
+  },
+  {
+   "ratio": 0.7,
+   "policy": "size",
+   "seed": 2,
+   "c": 105,
+   "corr": -0.21587545027453156,
+   "picks": 1731828
+  },
+  {
+   "ratio": 0.7,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 105,
+   "corr": -0.5556466119755765,
+   "picks": 2027278
+  },
+  {
+   "ratio": 0.7,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 105,
+   "corr": -0.5558337168147469,
+   "picks": 2027422
+  },
+  {
+   "ratio": 0.7,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 105,
+   "corr": -0.5556500270505649,
+   "picks": 2028401
+  },
+  {
+   "ratio": 0.8,
+   "policy": "size",
+   "seed": 0,
+   "c": 120,
+   "corr": -0.36013822644817783,
+   "picks": 2248312
+  },
+  {
+   "ratio": 0.8,
+   "policy": "size",
+   "seed": 1,
+   "c": 120,
+   "corr": -0.3603723210027114,
+   "picks": 2249160
+  },
+  {
+   "ratio": 0.8,
+   "policy": "size",
+   "seed": 2,
+   "c": 120,
+   "corr": -0.36007174646251827,
+   "picks": 2248128
+  },
+  {
+   "ratio": 0.8,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 120,
+   "corr": -0.5149535696663622,
+   "picks": 2554134
+  },
+  {
+   "ratio": 0.8,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 120,
+   "corr": -0.5143697637707944,
+   "picks": 2555287
+  },
+  {
+   "ratio": 0.8,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 120,
+   "corr": -0.5144469106229422,
+   "picks": 2554811
+  },
+  {
+   "ratio": 0.9,
+   "policy": "size",
+   "seed": 0,
+   "c": 135,
+   "corr": -0.43632286612163335,
+   "picks": 2979034
+  },
+  {
+   "ratio": 0.9,
+   "policy": "size",
+   "seed": 1,
+   "c": 135,
+   "corr": -0.4360343031266138,
+   "picks": 2979280
+  },
+  {
+   "ratio": 0.9,
+   "policy": "size",
+   "seed": 2,
+   "c": 135,
+   "corr": -0.4359163276721367,
+   "picks": 2979833
+  },
+  {
+   "ratio": 0.9,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 135,
+   "corr": -0.4516158853978724,
+   "picks": 3211393
+  },
+  {
+   "ratio": 0.9,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 135,
+   "corr": -0.45130307090809335,
+   "picks": 3211789
+  },
+  {
+   "ratio": 0.9,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 135,
+   "corr": -0.4516429848153962,
+   "picks": 3211388
+  },
+  {
+   "ratio": 1.0,
+   "policy": "size",
+   "seed": 0,
+   "c": 150,
+   "corr": -0.3903408081030456,
+   "picks": 3783944
+  },
+  {
+   "ratio": 1.0,
+   "policy": "size",
+   "seed": 1,
+   "c": 150,
+   "corr": -0.3903799384045733,
+   "picks": 3783932
+  },
+  {
+   "ratio": 1.0,
+   "policy": "size",
+   "seed": 2,
+   "c": 150,
+   "corr": -0.39047802064219483,
+   "picks": 3783886
+  },
+  {
+   "ratio": 1.0,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 150,
+   "corr": -0.3860239723830052,
+   "picks": 3854327
+  },
+  {
+   "ratio": 1.0,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 150,
+   "corr": -0.385952761951393,
+   "picks": 3854566
+  },
+  {
+   "ratio": 1.0,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 150,
+   "corr": -0.38597330854887846,
+   "picks": 3854507
+  },
+  {
+   "ratio": 1.1,
+   "policy": "size",
+   "seed": 0,
+   "c": 164,
+   "corr": -0.367381611426768,
+   "picks": 4052723
+  },
+  {
+   "ratio": 1.1,
+   "policy": "size",
+   "seed": 1,
+   "c": 164,
+   "corr": -0.36739352035985673,
+   "picks": 4052717
+  },
+  {
+   "ratio": 1.1,
+   "policy": "size",
+   "seed": 2,
+   "c": 164,
+   "corr": -0.3674155561875609,
+   "picks": 4052686
+  },
+  {
+   "ratio": 1.1,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 164,
+   "corr": -0.3669921485298921,
+   "picks": 4057702
+  },
+  {
+   "ratio": 1.1,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 164,
+   "corr": -0.3669874855725227,
+   "picks": 4057668
+  },
+  {
+   "ratio": 1.1,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 164,
+   "corr": -0.36699167440818237,
+   "picks": 4057677
+  },
+  {
+   "ratio": 1.25,
+   "policy": "size",
+   "seed": 0,
+   "c": 187,
+   "corr": -0.36570837789636923,
+   "picks": 4071130
+  },
+  {
+   "ratio": 1.25,
+   "policy": "size",
+   "seed": 1,
+   "c": 187,
+   "corr": -0.36570837789636923,
+   "picks": 4071130
+  },
+  {
+   "ratio": 1.25,
+   "policy": "size",
+   "seed": 2,
+   "c": 187,
+   "corr": -0.36570837789636923,
+   "picks": 4071130
+  },
+  {
+   "ratio": 1.25,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 187,
+   "corr": -0.36570837789636923,
+   "picks": 4071130
+  },
+  {
+   "ratio": 1.25,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 187,
+   "corr": -0.36570837789636923,
+   "picks": 4071130
+  },
+  {
+   "ratio": 1.25,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 187,
+   "corr": -0.36570837789636923,
+   "picks": 4071130
+  },
+  {
+   "ratio": 1.5,
+   "policy": "size",
+   "seed": 0,
+   "c": 224,
+   "corr": -0.36570837789636923,
+   "picks": 4071130
+  },
+  {
+   "ratio": 1.5,
+   "policy": "size",
+   "seed": 1,
+   "c": 224,
+   "corr": -0.36570837789636923,
+   "picks": 4071130
+  },
+  {
+   "ratio": 1.5,
+   "policy": "size",
+   "seed": 2,
+   "c": 224,
+   "corr": -0.36570837789636923,
+   "picks": 4071130
+  },
+  {
+   "ratio": 1.5,
+   "policy": "uniform",
+   "seed": 0,
+   "c": 224,
+   "corr": -0.36570837789636923,
+   "picks": 4071130
+  },
+  {
+   "ratio": 1.5,
+   "policy": "uniform",
+   "seed": 1,
+   "c": 224,
+   "corr": -0.36570837789636923,
+   "picks": 4071130
+  },
+  {
+   "ratio": 1.5,
+   "policy": "uniform",
+   "seed": 2,
+   "c": 224,
+   "corr": -0.36570837789636923,
+   "picks": 4071130
+  }
+ ]
+}

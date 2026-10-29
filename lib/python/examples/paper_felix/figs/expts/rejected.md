@@ -1,10 +1,10 @@
 | dataset | trace | idea | Δ time to target vs Felix | Δ GB |
 |---|---|---|---|---|
-| CIFAR-10 | syn_50 | + UCB | +10% | +9% |
-| CIFAR-10 | syn_50 | 2 epochs | +20% | -28% |
-| CIFAR-10 | syn_50 | Check-in | +2% | -79% |
-| CIFAR-10 | syn_50 | 1/√(1+τ) | +24% | +12% |
-| CIFAR-10 | syn_50 | c ∝ eligible | -11% | -63% |
+| CIFAR-10 | Syn-50% | + UCB | +10% | +9% |
+| CIFAR-10 | Syn-50% | 2 epochs | +20% | -28% |
+| CIFAR-10 | Syn-50% | Check-in | +2% | -79% |
+| CIFAR-10 | Syn-50% | 1/√(1+τ) | +24% | +12% |
+| CIFAR-10 | Syn-50% | c ∝ eligible | -11% | -63% |
 | CIFAR-10 | MobiPerf | + UCB | -6% | -2% |
 | CIFAR-10 | MobiPerf | 2 epochs | ✗ |  |
 | CIFAR-10 | MobiPerf | Check-in | -17% | -68% |
