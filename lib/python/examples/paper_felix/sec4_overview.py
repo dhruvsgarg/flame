@@ -65,8 +65,8 @@ def fig_architecture():
     ax.add_patch(Rectangle((1.54, 1.66), W - 1.56, H - 1.68, fc="white", ec=MUTEDK, lw=0.6, zorder=0))
     ax.add_patch(Rectangle((1.54, 0.02), W - 1.56, 1.56, fc=ENGINE, ec="none", zorder=0))
     ax.text(0.73, H - 0.07, "Devices", ha="center", va="top", fontsize=TT, weight="bold")
-    ax.text(1.62, H - 0.07, f"{S} control plane", ha="left", va="top", fontsize=TT, weight="bold")
-    ax.text(W - 0.08, 0.06, "Async training and aggregation", ha="right", va="bottom", fontsize=TT, weight="bold", color=MUTEDK)
+    ax.text(1.62, H - 0.07, "Control Plane", ha="left", va="top", fontsize=TT, weight="bold")
+    ax.text(W - 0.08, 0.06, "Async Training and Aggregation", ha="right", va="bottom", fontsize=TT, weight="bold", color=MUTEDK)
 
     # devices: four states, each a phone + state + why
     dev = {"A": 2.72, "D": 2.12, "C": 1.42, "B": 0.78}
@@ -188,7 +188,7 @@ def fig_architecture():
     ax.text(gx + gw + 0.03, gy + gh * 0.3, "Steep", ha="left", va="center", fontsize=F, color=MUTEDK)
     ax.text(gx + gw / 2, gy - 0.02, "Staleness $\\tau$", ha="center", va="top", fontsize=F)
     _rbox(ax, 4.74, 0.3, 1.9, 0.46, ec=INK, fc="white", lw=0.8)
-    ax.text(5.69, 0.53, "Version $v{+}1$ → served model", ha="center", va="center", fontsize=F)
+    ax.text(5.69, 0.53, "Version $v{+}1$ → Served Model", ha="center", va="center", fontsize=F)
     _flow(ax, (2.52, 0.48), (2.82, 0.48), "data")
     _flow(ax, (4.44, 0.53), (4.74, 0.53), "data")
 
