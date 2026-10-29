@@ -8,24 +8,30 @@ One place for every planned figure in [felix_paper_outline.md](../_metadata/feli
 - `python make_tables.py`: headline table from `figs/expts/results_*.json` → `figs/expts/table_headline.{tex,json}` + `numbers.tex`.
 - `data/fx_n147_<trace>.json`: FX-N147 trace data, from `../scripts/eligibility_forecast.py` (rerun it to refresh).
 - `data/runs/`: per-run telemetry cache (`extract.py`); `--refresh` re-reads the runs.
-- **Style:** [plot_config.py](plot_config.py) is the one master config (fonts, line widths, ticks, colors per stack / predictor /
-  trace, z-order: grid under bars, lines over bars). Every figure script, incl. later eval plots, imports it via `figlib`.
-- **Status labels** (per figure, or per panel in mixed figures): **MOCK** = placeholder numbers, **PRELIM** = real data, not final
-  (1 seed, 12 h, placeholder target, or another cell), **DRAFT** = schematic. Real figures and panels carry no label.
+- **Style:** [plot_guideline.md](../_metadata/plot_guideline.md) (rules) + [plot_config.py](plot_config.py) (the one master config:
+  `SYS_NAME`, sizes, fonts, palette, rcParams). Every save runs `figlib.overlaps()`; a figure that prints `OVERLAP` is not done.
 
-| section | figure | file | status | data now → data needed |
-|---|---|---|---|---|
-| §1 | Fig 1 teaser: accuracy vs time and vs GB | `s1_intro/fig1_teaser` | PRELIM | F49 cifar `smu` → FB1 at the FX-N146 target, 3 seeds |
-| §3.1 | Fig 2 eligibility: pool, sessions, memory, forecast AUC / Brier vs the trace | `s3_motivation/fig2_eligibility` | real (FX-N147) | MobiPerf + syn_50 traces, n 300, days 1-5 |
-| §3.2 | Fig 3 sync stacks vs oracle + round length | `s3_motivation/fig3_sync_oracle` | PRELIM | F49 cifar → speech (outline cell) |
-| §3.3 | Fig 4 slots taken vs computing; filling slots | `s3_motivation/fig4_slots` | (a) PRELIM, (b) MOCK | (b) F44 numbers → bound arm `b1` + FedBuff* on FL1 cells |
-| §3.4 | Fig 5 staleness by source | `s3_motivation/fig5_staleness_source` | PRELIM | F49 FedBuff → FB1 seeds |
-| §3.5 | Fig 6 eligible pool vs c; choice vs c / pool | `s3_motivation/fig6_choice` | (a) real, (b) MOCK | (b) → c sweep (F48a cells) with ρ(picks, size) |
-| §4 | architecture, numbered steps | `s4_overview/fig_architecture` | DRAFT | schematic |
-| §4 | overview by example (FedBuff vs Felix) | `s4_overview/fig_toy_timeline` | DRAFT | schematic |
-| §5.1 | Felix-Notify: Felix by check-in (K1) | `s5_design/fig5_1_notify` | MOCK | F42b numbers → `fck` on FL1 cells |
-| §5.2 | Felix-Select: ρ(picks, size), samples / update; speed term | `s5_design/fig5_2_select` | (a, b) PRELIM, (c) MOCK | (c) F45-F46 numbers → speed-term arm on FL1 cells |
-| §5.3 | Felix-Pace: c vs pool, φ, GB vs accuracy | `s5_design/fig5_3_pace` | PRELIM | F49 `fn_chr` vs `fn` → FB1 seeds |
-| §5.4 | Felix-Agg: weight vs τ; time to 50% | `s5_design/fig5_4_agg` | (a) real (analytic), (b) MOCK | (b) F46 ranges → rate arms on FL1 cells |
+**Paper figures (FB2 seed 1 unless noted; all one column, 3.25 in wide, except the appendix curves):**
 
-§2 has no figure (Table 1 is text). Table 2 (§3.2, knowledge per stack) takes its forecast rows from `data/fx_n147_*.json`.
+| section | figure | file |
+|---|---|---|
+| §1 | Fig 1 teaser: cifar MobiPerf, accuracy vs time and GB | `figs/expts/teaser` |
+| §3.1 | Eligible pool + eligibility memory (FX-N147 traces) | `figs/paper/s3_motivation/fig2_eligibility` |
+| §3.1 | Forecast AUC vs horizon (FX-N147) | `figs/paper/s3_motivation/fig2_forecast` |
+| §3.2 | Oracle gain in peak accuracy per stack and trace | `figs/expts/oracle_gain` |
+| §3.2 | Sync round time by component, ± oracle | `figs/expts/rounds` |
+| §3.3 | Filling every slot (`b1` bound) vs FedBuff | `figs/expts/fill_slots` |
+| §3.3 / eval | Slot time lost by cause (share) | `figs/expts/slots` |
+| §3.3 / eval | Slot time lost per departure (log) | `figs/expts/stall` |
+| §3.4 | Staleness: concurrency vs held across a departure | `figs/expts/staleness` |
+| §3.5 | Choice vs concurrency / eligible pool | `figs/expts/choice` |
+| §3.5 / §5.3 | Concurrency vs eligible pool | `figs/expts/concurrency` |
+| §5.3 | FLuX vs fixed c = 60: accuracy vs GB | `figs/expts/pace_bytes` |
+| §5.4 | Staleness weight per rule (analytic) | `figs/paper/s5_design/fig5_4_agg` |
+| §5.2 / eval | Selection: picks–size correlation, samples per update | `figs/expts/picks` |
+| ablations | Ladder, swaps (availability, selection, aggregation, concurrency) | `figs/expts/ladder`, `swap_*` |
+| appendix | Accuracy vs time, all 8 cells (full width) | `figs/expts/curves` |
+| §4 | Architecture, overview-by-example timeline (schematics) | `figs/paper/s4_overview/` |
+
+Regenerate: `python scripts/paper_plots.py --root $R/paper_root` (all data figures) and `python paper_felix/make_figs.py` (§3.1
+traces, §4 schematics, §5.4 analytic).

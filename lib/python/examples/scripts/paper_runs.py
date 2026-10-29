@@ -53,6 +53,10 @@ FIGURES = {
     "swap_aggregation": ("main", [("SWG", ABL_DS, _ABL, None), *_E2E_ABL]),
     "swap_concurrency": ("main", [("SWC", ABL_DS, _ABL, None), ("LAD", ABL_DS, _ABL, ("fn",)), *_E2E_ABL]),
     "rejected": ("main", [("REJ", ABL_DS, _ABL, None), *_E2E_ABL]),
+    "oracle_gain": ("main", [("E2E", DS, ALL, None)]),
+    "fill_slots": ("main", [("LAD", ABL_DS, ("s50u",), ("b1",)), ("E2E", ABL_DS, ("s50u",), ("ctl_srv",))]),
+    "choice": ("main", [("SWC", ABL_DS, _ABL, None), ("LAD", ABL_DS, _ABL, None), ("E2E", ABL_DS, _ABL, ("fx", "ctl_srv"))]),
+    "pace_bytes": ("main", [("LAD", ABL_DS, _ABL, ("fn",)), ("E2E", ABL_DS, _ABL, ("fx",))]),
 }
 
 

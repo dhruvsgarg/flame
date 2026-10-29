@@ -3,6 +3,9 @@
 Built on [PAPER_TEMPLATE.md](PAPER_TEMPLATE.md) Parts A-B (P# = its moves) and Part E (shared rules); neither is repeated here.
 Evidence: [FELIX_INSIGHTS.md](FELIX_INSIGHTS.md) §5 (findings), §6 (methods, baselines table), §7 (takeaways); [FELIX_READINESS.md](FELIX_READINESS.md)
 Decisions (`fx` layer table), Scoreboard, rejected-ideas table.
+**Figures (10-29):** all one column, FB2 seed 1, built and indexed in `paper_felix/README.md`; style rules in
+[plot_guideline.md](plot_guideline.md). Plots say **FLuX** (`SYS_NAME` in `paper_felix/plot_config.py`, one line to rename); text
+may say Felix until the name is final. Figure callouts use % for accuracy deltas (absolute points): the prose must match.
 **Scope now:** title → §5 design. Theory, implementation, evaluation, ablations come after the front matter is final.
 **Framing:** one system, one paper; the current implementation is Felix, no old-vs-new comparison.
 **Numbers:** end to end = FB2 seed 1, both datasets, all 11 stacks (FELIX_READINESS Scoreboard; data
@@ -90,7 +93,9 @@ eligibility is hard to forecast**, used in every section. Title open.
 
 ## §1 Introduction (≈ 1.25 pages, ~900 words + Fig 1; argument first, ≤ 3 numbers)
 
-- **Fig 1 teaser (hardest realistic cell: cifar MobiPerf `smu`):** accuracy vs time and vs GB, all stacks; annotated "N× sooner, N% fewer GB" ⚠.
+- **Fig 1 teaser (`figs/expts/teaser`, cifar MobiPerf `smu`, built 10-29):** accuracy vs time and vs GB (log), deployable
+  stacks. No baseline reaches 75%, so it compares at each baseline's peak: vs FedBuff **1.4× faster, +1.8%, 2.8× fewer GB**; vs
+  FedDance (best sync) **1.7× faster, +3.7%**. Sync stacks' bytes left out (fewer GB, never reach the accuracy: not a fair ratio).
 - **¶1 Stakes (P4) (150 w):** FL trains user-facing models on phones: keyboard prediction, speech, ranking (Gboard, Apple, Meta
   Papaya). Their quality is visible to users, and users change: new words, apps, habits. So high accuracy is a moving target, not a
   fixed goal; a deployment must reach it fast and reach it again as data shifts ⚠ cite (continual / periodic retraining in deployed FL).
@@ -190,7 +195,11 @@ and learns how it is taken in §4-§5.
 **Figures:** small multi-panel rows (Figs 2-6 as 2-3 rows of column-width subfigures, ~1.2 in tall); one message per panel; no
 standalone full-width figure for a single curve.
 
-- **§3.1 Eligibility is scarce, shifting and hard to forecast (P7) (160 w + Fig 2: pool, sessions, memory | forecast AUC / Brier by horizon; `paper_felix/`).**
+- **§3.1 Eligibility is scarce, shifting and hard to forecast (P7) (160 w + Fig 2 `fig2_eligibility` + `fig2_forecast`).**
+  - *Figures (10-29, full 6-day MobiPerf):* **16%** eligible on average (not 18-22%: that was the 12 h window), **30%** of
+    eligible clients gone 1 h later; autocorrelation **0.64** at 1 h, **0.12** at 12 h. Forecast AUC vs "eligible now": Prophet
+    **−0.16 to −0.30**; for who stays eligible, the best forecaster reaches **0.67** and "eligible now" is a coin flip (0.5).
+    Brier stays in text / table.
   - *Setup:* MobiPerf and syn_50 traces, 12 h. *Known:* devices are often offline; REFL and FedDance forecast who stays eligible.
   - *Aha 1:* the eligible pool is a fifth of the population and changes membership within hours; 4 in 10 devices never become
     eligible in 12 h (eligible 18-22%; 57-62% ever train in 12 h).
@@ -219,6 +228,9 @@ standalone full-width figure for a single curve.
   - *Table 2, knowledge per stack (answers "how good is each source"):* check-in = exact at check-in, blind to departures until
     timeout; forecast (REFL Prophet, FedDance V_m) = measured error vs trace (FX-N147, from §3.1); oracle = exact at selection, blind
     mid-task. Felix's row waits for §5.
+  - *Figures (10-29):* `oracle_gain` (oracle − deployable peak accuracy per stack × trace): cifar mostly within ±3% (FedDance\*
+    on MobiPerf −10%), speech sync up to +19%, FedBuff ≈ 0 everywhere; `rounds` (median round by component, ratio to its oracle:
+    1.1-2.0× on speech MobiPerf, the check-in wait; cifar REFL 0.7×).
   - **Takeaway:** availability knowledge pays only in an engine without a barrier.
 - **§3.3 Async FL idles half its slots, and filling them does not buy accuracy (160 w + Fig 4 slot occupancy).**
   - *Setup:* cifar `s50u`, FedBuff (c 60); FedBuff* (oracle at selection); and an idealized bound, FedBuff with every slot refilled
@@ -228,15 +240,24 @@ standalone full-width figure for a single curve.
   - *Aha 2, the bigger gap:* the idealized bound runs 1.8× the updates (213k vs 116k) and reaches 50-55% 80 min sooner, yet ends
     1.2 pp *lower*: staleness rises 4.8 → 7.8 under FedBuff's 1/√(1+τ). Doubling useful-looking work buys no final accuracy, and
     shrinking c to stay fresh gives back the speed (c 33: +0.8 pp, FedBuff's pace). Lead with this, not with the 1.2 pp.
+  - *Figure (`fill_slots`, FB2 cifar `s50u`, replaces the F44 numbers above):* the bound `b1` runs **1.8×** FedBuff's updates per
+    hour, staleness 7.4 → 11.9, yet is **1.1×** slower to 80% at **2.0×** the GB. Claim holds. Slot loss by cause (`slots`) and per
+    departure (`stall`, FLuX 26-626× less than FedBuff) back Aha 1.
   - **Takeaway:** fixing idleness alone moves the cost into staleness; the layers are coupled.
 - **§3.4 Unavailability, not slow devices, causes most staleness (130 w + Fig 5 τ by source).**
   - *Setup:* FedBuff, staleness split by cause. *Known:* staleness comes from stragglers. *Aha:* updates held across a departure are
     1.1-1.2% of updates but 49-51% of total staleness (mean τ 184-373), from median-speed clients.
+  - ⚠ *FB2 contradicts "Felix evicts them" (`staleness`, 10-29):* held uploads are 53-74% of FedBuff's staleness but also
+    **51-70% of FLuX's** (cifar `s50u` 12,992 late deliveries vs 54 evictions): a client that finishes and leaves before upload is
+    delivered on return, not evicted. Reword to the FedBuff half only, or drop the figure.
   - **Takeaway:** discounting late updates treats the symptom; the cause is the departure, which the server learns too late.
 - **§3.5 Availability removes choice before it removes capacity (150 w + Fig 6 picks~size vs c / eligible).**
   - *Setup:* MobiPerf, c 60 vs ~50-67 eligible of 300. *Known:* selection beats random. *Aha:* when c nears the eligible pool, every
     selector picks what FedBuff picks (picks~size −0.45 vs −0.46). A smaller fixed c restores choice (+3.8 pp, −92% GB) but starts
     4× slower.
+  - *Figures (FB2 cifar):* `choice`: ρ(picks, size) falls as c / eligible rises (MobiPerf: 0.38 at 0.2 → −0.28 at 1.26, where
+    FLuX's selector picks like FedBuff); `concurrency`: FedBuff's fixed c exceeds the eligible pool **81%** (cifar) / **69%**
+    (speech) of the time on MobiPerf, FLuX's c tracks ½ the pool.
   - **Takeaway:** no fixed concurrency serves both early and late training.
 - *Dropped §3.6 "streams make loss a stale selection signal" (10-25):* no stream-specific mechanism answers it (streams row, §0);
   the F46 finding predates FX-D233. At most a discussion line.
@@ -281,7 +302,8 @@ standalone full-width figure for a single curve.
   - *Observation:* §3.5; early every update helps, so every fixed bound that restores choice loses early.
   - *Mechanism:* φ = mean received-model loss over recent updates / running peak, recomputed every commit;
     c = φ · c_max + (1 − φ) · min(c_max, ½ eligible), within [K, c_max]. Ramps down within minutes; rises with the pool, not φ.
-  - *Evidence (⚠ F48, FX-N157: re-read on FB2):* MobiPerf −50% GB (659 vs 1308), same tick to 40-50%, +0.5 pp, starvation 5k vs 209k; a no-op on syn traces and on
+  - *FB2 (`pace_bytes`, 10-29):* vs fixed c = 60 (`fn`) on MobiPerf **2.5× fewer GB, 1.1× faster**; on syn_50 the same GB and
+    time (pool stays above c). *Old evidence:* MobiPerf −50% GB (659 vs 1308), same tick to 40-50%, +0.5 pp, starvation 5k vs 209k; a no-op on syn traces and on
     speech (φ stays 0.56-0.91), as designed.
   - *Why not:* fixed c ∝ eligible (4× slower start); c by loss phase alone (floor 10 from 6-8 h to 48 h); held-out pacing (noise);
     AIMD K (walks to floor). K stays fixed: τ ≈ c / K, and K 10 is FedBuff's own choice.
@@ -291,6 +313,7 @@ standalone full-width figure for a single curve.
   - *Mechanism:* rate `new` (`fedbuff.weight_factor`: polynomial staleness with a 0.25 exponent × loss-utility term; mean weight
     0.61-0.78) + per-sample lr normalization of partial batches (halves the stream eval swing).
   - *Why not:* stronger discount, φ-scaled step (−0.9 / −3.2 pp), smaller fixed lr (−1.2 to −6.4 AUC), FedAdam / Yogi (extra constants).
+  - *Figure:* `fig5_4_agg` (analytic weight vs τ): at τ = 10 FLuX-Agg gives **1.7×** FedBuff's weight.
 - **§5.5 Algorithm 1 (P16) + robustness (50 w):** one box for Felix-Notify → Felix-Pace → Felix-Select → Felix-Agg with line-cited prose; missed or delayed
   notifies degrade gracefully (K6, F42e ⚠ to measure).
 
@@ -325,7 +348,7 @@ selection); Felix = `fx`. **Ablation cells** = cifar × {syn_50, MobiPerf} (oper
 | Stall figure + table (`stall`) | Evaluation: where the time goes; Motivation: async idles | Felix loses seconds per departure; check-in stacks hold a slot until timeout (6-21 min), sync stacks also wait at the barrier | raw slot-hours per stack: useful / discarded compute, held by departed, barrier wait, idle; per-departure loss, releases | cifar + speech × syn_50, MobiPerf | End-to-end ✅ |
 | Round time figure | Motivation: the barrier | Sync rounds are set by the slowest pick, mostly model transfer; an oracle can't shorten them | round time: compute / transfer / waiting for the slowest; sync stacks ± oracle | speech + cifar MobiPerf | End-to-end |
 | Staleness by source figure | Motivation: staleness; Evaluation | In FedBuff most staleness comes from uploads held across a departure; Felix evicts them | staleness split by cause; FedBuff, FedBuff*, Felix | cifar syn_50, MobiPerf | End-to-end |
-| Client picks figure | Evaluation: which clients train | Felix picks clients with the most left to learn; speed-first or uniform picks give less per update | picks vs data size, samples / update, coverage, top-20% share; per stack | 4 ablation cells (rest appendix) | End-to-end |
+| Client picks figure (⚠ FB2: samples / update 1.3-1.6× FedBuff on cifar, 0.8-1.0× on speech) | Evaluation: which clients train | Felix picks clients with the most left to learn; speed-first or uniform picks give less per update | picks vs data size, samples / update, coverage, top-20% share; per stack | 4 ablation cells (rest appendix) | End-to-end |
 | Concurrency figure | Evaluation: concurrency; Motivation: choice lost | Felix's c follows the eligible pool and the training phase; a fixed c can't serve both early and late | c, eligible pool, loss phase over time (Felix) vs fixed c | cifar MobiPerf, syn_50; speech MobiPerf | End-to-end |
 | Wasted bytes table | Evaluation: communication | Bytes follow updates; timed-out, evicted and late tasks are paid traffic | GB by task fate (aggregated / timed out / evicted / late) per stack | 4 ablation cells (rest appendix) | End-to-end |
 | Eligibility knowledge table | Motivation: knowledge per stack | Check-in is blind to departures, forecasts are no better than "eligible now", the oracle is blind mid-task; Felix's reports are exact | per stack: share of dispatches to clients that leave mid-task, departure detection lag; forecast AUC | MobiPerf, syn_50 | End-to-end + forecast study |
@@ -333,7 +356,7 @@ selection); Felix = `fx`. **Ablation cells** = cifar × {syn_50, MobiPerf} (oper
 | Eligibility trace figure | Motivation: scarce and shifting | Eligible pool ≈ 20%, membership churns within hours | pool size, sessions, autocorrelation | all traces | trace only ✅ |
 | Overhead table | Evaluation: cost (or appendix) | Eligibility reports cost ≪ 1% of traffic; server work per commit is small | messages per client-hour, report vs model bytes, server time per commit | all 8 | End-to-end |
 | **Ablations: design choices** | | | | | |
-| Ladder figure | Evaluation: what each mechanism adds | Each mechanism adds on top of FedBuff; none alone gives the full gain | time / GB to target: FedBuff → + Notify → + Select → + Agg → + Pace (= Felix) | ablation cells | Ladder + End-to-end |
+| Ladder figure (⚠ FB2: on `s50u` + Notify / + Select are 1.3× slower than FLuX, behind FedBuff's 1.1×; the gain arrives with Agg) | Evaluation: what each mechanism adds | Each mechanism adds on top of FedBuff; none alone gives the full gain | time / GB to target: FedBuff → + Notify → + Select → + Agg → + Pace (= Felix) | ablation cells | Ladder + End-to-end |
 | Availability swap | Ablations: Felix-Notify | Inside Felix, client reports + eviction beat check-in, a forecast and an oracle at selection | Felix with knowledge = check-in / forecast / oracle vs reports | ablation cells | Swap: availability |
 | Selection swap | Ablations: Felix-Select | Utility-proportional selection beats uniform and Oort's (speed + UCB + cutoff) | Felix with each selector | ablation cells | Swap: selection |
 | Aggregation swap | Ablations: Felix-Agg | A large step with a mild staleness discount beats 1/√(1+τ) and 1/(1+τ) | Felix with each rule | ablation cells | Swap: aggregation |
