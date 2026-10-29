@@ -5,6 +5,7 @@ One place for every planned figure in [felix_paper_outline.md](../_metadata/feli
     python make_figs.py [--only s1 s3 s4 s5] [--refresh]      # dg_flame env; PDF + PNG into figs/paper/<section>/
 
 - `figs/paper/<section>/`: paper figures (§1-§5). `figs/expts/`: evaluation plots (later).
+- `python make_tables.py`: headline table from `figs/expts/results_*.json` → `figs/expts/table_headline.{tex,json}` + `numbers.tex`.
 - `data/fx_n147_<trace>.json`: FX-N147 trace data, from `../scripts/eligibility_forecast.py` (rerun it to refresh).
 - `data/runs/`: per-run telemetry cache (`extract.py`); `--refresh` re-reads the runs.
 - **Style:** [plot_config.py](plot_config.py) is the one master config (fonts, line widths, ticks, colors per stack / predictor /

@@ -316,7 +316,7 @@ selection); Felix = `fx`. **Ablation cells** = cifar × {syn_50, MobiPerf} (oper
 |---|---|---|---|---|---|
 | **End to end** | | | | | |
 | Teaser figure | Introduction | Felix reaches the target N× sooner at N% fewer GB than every deployable stack | accuracy vs time and vs GB; Felix vs deployable | cifar MobiPerf | End-to-end |
-| Headline table | Evaluation: end to end | Felix is first to target on every cell, vs deployable and vs oracle stacks | rows dataset × trace (8); cols Felix │ 5 deployable ║ 5 oracle; h · GB to target, or ✗ + end accuracy; best bold | all 8 | End-to-end |
+| Headline table | Evaluation: end to end | Felix is first to target on every cell, vs deployable and vs oracle stacks | one `table*`, layout + pipeline in "Headline table plan" below | all 8 | End-to-end |
 | Convergence curves | Appendix | Felix's lead holds over the whole run, not only at the target | accuracy vs time per cell; deployable solid, oracle dashed | all 8 | End-to-end |
 | Static data table | Appendix | Gains hold without data streams | headline-table row, static shards | syn_0 static × 2 datasets | End-to-end static |
 | **Why Felix wins (same runs)** | | | | | |
@@ -344,6 +344,41 @@ selection); Felix = `fx`. **Ablation cells** = cifar × {syn_50, MobiPerf} (oper
 | Lost reports / uploads figure | Appendix (after first version) | Lost or late reports and lost uploads degrade Felix gracefully | time to target vs loss p, delay d | ablation cells | Robustness: lost |
 | Sensitivity table | Appendix (after first version) | One config for both datasets; results hold under ± changes to the step knobs, c_max, K | time to target per knob ± | 2 cells | Sensitivity |
 | Parked | — | new model / dataset (PAPER_TEMPLATE C.1-C.2) | only if time remains | — | — |
+
+### Headline table plan (operator 10-28; to decide → build)
+
+**What each cell reports (priority order):** accuracy first, then time, then bytes.
+- *Reference per cell* = the fastest stack to the cell's target (Felix in all 8 cells today; the rule stays generic). Its row
+  shows absolute **h · GB**; every other row is relative to it.
+- *Stack hit the target:* **slowdown** = stack h / reference h (≥ 1×) and **GB ratio** = stack GB / reference GB (< 1 = fewer bytes,
+  e.g. cifar `s50u` FedBuff 1.13× · 0.75×).
+- *Stack missed:* time and GB ratios are undefined (it never got there), so the cell shows **✗ −Δ pp** spanning both sub-columns,
+  Δ = target − the stack's peak 5-eval accuracy over 120 h (`peak_acc5`): what it gave up, even with more time than Felix had (e.g.
+  cifar `s50u` FedAvg ✗ −5.2). Not "−Δ at Felix's hit time" (`acc_gain_pp_at_felix_hit_h`): larger, but unfair to stacks that
+  were still climbing; use it in prose only.
+- *Optional, decide after a mock:* for a miss, a small "(N×)" = Felix's time to that stack's peak ÷ the stack's time to it (Oort-style
+  "reaches FedAvg's best N× sooner"). Keeps a speed number on misses; drop it if the table gets busy. Needs a finer Felix curve than
+  the 50/60/70/… buckets in `time_h_to_acc`.
+- Not reported: a stack vs the best *baseline* (one reference per cell is enough; FedBuff comparisons go in prose).
+
+**Layout (one table, MLSys `table*`, full width):**
+- Rows = stacks (12): Felix (absolute) · then 5 baselines, each deployable row with its oracle `*` row directly below (FedBuff /
+  FedBuff\*, …), so "oracle barely helps" reads per pair. `\addlinespace` between baseline pairs; no vertical line for oracle.
+- Columns = CIFAR-10 {syn_0, syn_20, syn_50, MobiPerf} │ Speech {same}, one vertical rule between datasets only; each trace has 2
+  sub-columns (h× · GB×). Header row 2 gives each trace's target (80 / 80 / 80 / 75 · 88 / 88 / 88 / 84%).
+- Style (operator 10-28: no ✗ / grey, the table must tell a story): full `\textwidth`, `\small`; Felix row tinted blue; misses
+  = −Δ tinted red on one absolute scale (none < 2 pp, then < 5, < 10, < 30, ≥ 30), worst per column bold; fewest GB bold; last
+  column "targets reached" (Felix 8/8, FedBuff 5/8, sync 0/8). Story: FedBuff near misses, cifar sync ~5 pp short, speech sync
+  collapses 20-58 pp. Fallback if too wide: two `table` (one per dataset), same rows.
+
+**Pipeline (built 10-28; from the existing results JSONs, no new runs):** `scripts/paper_json.py` → `results_*.json` →
+`python paper_felix/make_tables.py` → `paper_felix/figs/expts/`:
+- `table_headline.json`: per cell × stack `ref`, `time_ratio`, `gb_ratio`, `acc_gap_pp` (target − `peak_acc5`, misses only).
+- `table_headline.tex`: `\input` as is; needs `booktabs, xcolor, pifont`. Not compiled here (no LaTeX on the server).
+- `numbers.tex`: prose macros (`\fxSpeedupFedBuffMin/Max`, `\fxGbChangeFedBuffMin/Max`, per-dataset `\fxCifar…` / `\fxSpeech…`,
+  `\fxCellsFirst`), so the abstract and §1 ¶7 never hard-code a value.
+- Ratios are computed in `make_tables.py`; it asserts they match `paper_json`'s `felix_vs_this.speedup`. Open: the optional "(N×)"
+  on misses needs FB2 eval series (the `data/runs/` cache is F49).
 
 ### Table 1: run sets (seed 1 = first version; seeds 2-3 for End-to-end and Ladder after every seed-1 run)
 
