@@ -31,3 +31,10 @@ cells:
     arms:
       fwdllm: []
       fluxtune: []
+  - id: distilbert_yahoo
+    label: "DistilBERT · Yahoo"
+    n_clients: 100
+    target_acc: 0.65        # operator 10-27 (P0b plateau 0.671)
+    arms:
+      fwdllm: []
+      fluxtune: []

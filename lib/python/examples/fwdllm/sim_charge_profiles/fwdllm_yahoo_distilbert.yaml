@@ -1,0 +1,31 @@
+# Real-profiled vclock charges for sim-only costs sim can't measure
+# live (FWDLLM_DESIGN.md §P). Regenerate via expt_scripts/
+# profile_sim_charges.py -- hand-edit only `charge:`/`rationale:`.
+_meta:
+  datasets:
+  - yahoo
+  profiled_at: '2026-10-27'
+drain_tail:
+  _default:
+    charge: true
+    mean_s: 0.0512
+    n: 280
+    p90_s: 0.0579
+    profiled_at: '2026-10-27'
+    rationale: sim runs the same op under ~100 co-located trainer threads, so its
+      live span is contention-inflated and folding it on the vclock injects sim-host
+      noise (simulate_fwdllm.md D-18, F-1/F-20). Charged from this baseline's own
+      real.
+    source_runs:
+    - run_20261027_032018_dy_fwd_real_fwdllm_yahoo_n30_smoke_syn_0_real
+fedavg:
+  _default:
+    charge: true
+    mean_s: 0.1041
+    n: 280
+    p90_s: 0.2889
+    profiled_at: '2026-10-27'
+    rationale: same as drain_tail -- sim's own span is contention-inflated, so the
+      charge comes from this baseline's own real.
+    source_runs:
+    - run_20261027_032018_dy_fwd_real_fwdllm_yahoo_n30_smoke_syn_0_real

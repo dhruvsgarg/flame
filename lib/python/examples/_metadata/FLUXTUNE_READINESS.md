@@ -46,11 +46,11 @@ withheld-delivery wiring yet (only the oracular select filter and the sync scarc
 
 ## Next steps (persistent queue — resumes after Felix)
 
-- **FT-N23 · Big-cell paper runs P3 / P4 (RUN_PLAN decision 15) · wip, running since 10-26 01:50 on jayne.** RoBERTa-L · Yelp-P
-  `fluxtune` without momentum on GPUs 4–7 (`fwdllm/paper_rb_20261026b/`, pgid 1360735, since 02:55; check c150 acc > 0.58); SmolLM2-1.7B · Yahoo 6c (r 2, T_res 290, no momentum) on GPUs 0–3
-  (`fwdllm/paper_sm_20261026b/`, pgid 1404994, since 04:07; momentum run 6b diverged at c40); bench, stop at target ×2 or the 30.5 h `bench_pool` timeout (a kill: no final eval). *Next:* read the first-hours pace and Φ;
-  check accuracy across the first lap wrap (FT-L8); log both on the RUN_PLAN board; then the `fwdllm` arms (runs 3, 5). *Exit:* both
-  cells scored (TTA or DNF) in `figs_e2e.yaml`.
+- **FT-N23 · Big-cell paper runs P3 / P4 (RUN_PLAN decision 15) · wip.** *P3 done 10-26:* RoBERTa-L · Yelp-P `fluxtune` (no momentum) hit 0.82 ×2 at c401, 6.0 h wall / 97.9 vclock h, final full-test 0.8264
+  (`fwdllm/paper_rb_20261026b/`). *P4 run 6c (SmolLM2-1.7B · Yahoo, r 2, T_res 290, no momentum, `fwdllm/paper_sm_20261026b/`, pgid 1404994, jayne GPUs 0–3):* DNF, stopped by hand 10-27 02:25 (no final eval): c~450 acc 0.597
+  (peak 0.606), plateau ~0.60, lap wrap crossed without collapse, Φ 2.89 of cap 4 (= ‖θ‖ growth, noise), schedule ceiling ≈ 0.62; GPUs 0–3 free. *Next:* forward-gradient
+  emulator (backprop gradient projected on 500 random probes, same trust-ratio / `exp` schedule) to screen a ‖θ₀‖-scaled step, momentum, r 1 before another FL run; then the `fwdllm` arms
+  (runs 3, 5). *Exit:* both cells scored (TTA or DNF) in `figs_e2e.yaml`.
 - **FT-N21 · Big-model real↔sim transfer check (FT-L19) · todo.** Per model, one 1–2 h real leg at the paper packing beside
   a same-seed sim leg. *Exit:* 0 `[TIMING_OVERRUN]`, real `vclock_charge` spans near the dataset profile, no eval-held
   commits beyond seconds, accuracy within band at matched commits. *Why:* the 10-min legs (10-24) reached no real commit.

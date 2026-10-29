@@ -10,14 +10,30 @@ the recipe, queue and scoring; task cost D per model: [D_CALIBRATION.md](D_CALIB
 
 ## Status board (keep current: update on every launch, finish and decision)
 
-Last updated 2026-10-26 04:07. Paths relative to `lib/python/examples/fwdllm/`; run dirs under `experiments/`.
+Last updated 2026-10-29 11:50. Paths relative to `lib/python/examples/fwdllm/`; run dirs under `experiments/`.
 
 **Running**
 
-| ID | Node · GPUs · tmux | Started → ETA | Run dir · logs | Check |
-|---|---|---|---|---|
-| P1 run 4b: RoBERTa-L · Yelp-P `fluxtune`, no momentum (decision 16) | jayne · GPUs 4–7, bench (`bench_pool.py`, 30 workers, pgid 1360735) | 10-26 02:55 → acc ≥ 0.82 ×2, or 30.5 h wall kill | `paper_rb_20261026b/POOL/rb_paper/runs/syn_0_fluxtune_s1/run_*`; `paper_rb_20261026b/bench.log`; config `paper_rb_20261026b/fluxtune_yelp-p_n100_smoke_syn_0_sim.yaml` | check at c150: acc > 0.58, weight norm ~14–17 |
-| P1 run 6c: SmolLM2-1.7B · Yahoo `fluxtune`, r 2, T_res 290, no momentum (decision 17) | jayne · GPUs 0–3, bench (`bench_pool.py`, 24 workers, pgid 1404994) | 10-26 04:07 → acc ≥ 0.65 ×2, or 30.5 h wall kill | `paper_sm_20261026b/POOL/sm_paper/runs/syn_0_fluxtune_s1/run_*`; `paper_sm_20261026b/bench.log`; config `paper_sm_20261026b/fluxtune_yahoo_n60_smoke_syn_0_sim.yaml` | weight norm should grow slowly (≲ 1%/commit) |
+**SmolLM2-1.7B · Yahoo near-IID (`alpha_100`, decision 18), `fluxtune` + `fwdllm`, LoRA r 2: relaunched 10-29 11:50, pgid 2967650 (kill -TERM -- -2967650).** Dir `paper_su_20261029/`
+(`launch.sh`, `jobs.tsv`, two yamls, `bench.log`, `POOL/`); jayne bench, 4 GPUs per leg: `fwdllm` GPUs 0–3 (20 workers; GPU 0 shares 8.5 GB with another user), `fluxtune` GPUs 4–7 (24 workers); stop 0.65 ×2 or 15 h timeout (54,000 s, kill, no final eval); `sim_wall_ceiling_s` now 1e9 (off). Try 1 (05:48 → 07:49) hit the 2 h default ceiling: final full-test `fluxtune` 0.434, `fwdllm` 0.419 → `try1_2h_ceiling/`.
+`fluxtune`: the run 6c recipe (ρ0 0.0978, T_res 290, no momentum, n 60, C 30 / K 10). `fwdllm`: lr 3e-3, var 8.4, `data_bin`, divisor 0.047, n 60, C = K = 10;
+its charge profile is the agnews `fwdllm.yaml` (preflight `--force`; vclock mispriced as in run 5).
+
+**DistilBERT · Yahoo (4th cell, operator 10-27): runs 28 / 29, one queued pipeline on jayne; **finished 10-27 13:57** (`pipeline done`).**
+Dir `paper_dy_20261027/`: `pipeline.sh` (driver), `pick_screen.py`, `pipeline.log` (stage log). Stages, in order:
+
+| Stage | What | Stop | Output |
+|---|---|---|---|
+| `real_fwdllm`, `real_flux` | 30-min real charge legs (n 30, bench-free, own broker) | 30 min each | `experiments/run_*_dy_{fwd,flux}_real_*_real` → `sim_charge_profiles/{fwdllm,fluxtune}_yahoo_distilbert.yaml` (model-suffixed; SmolLM's `fluxtune_yahoo.yaml` untouched) |
+| `screen` | 2 `fwdllm` sim legs in parallel, 1 GPU each: A lr 0.01 / var 0.3, B lr 0.003 / var 0.3 | fixed 1.5 h wall, no target stop | `POOL_screen/`; winner (best acc by the common vclock) in `winner.txt` |
+| `full_fwdllm` → `full_flux` | paper legs (run 28, 29), bench, 2 GPUs each | **only 0.65 ×2**, then full-test eval; no commit cap, wall ceiling 720 h (the code default is 2 h) | `POOL_full_fwdllm/`, `POOL_full_flux/` |
+
+**Run 28 (`fwdllm`, lr 0.01 / var 0.3, screen winner scrA 52.0% vs scrB 45.0%): DNF, stopped by hand (SIGTERM, no final eval) 10-27 11:28** after 5.5 h wall / ~46.7 vclock h, 243 evals: peak **0.616**, last 0.568; plateau 0.57–0.60 since ~07:00 (1.1 h in), loss flat ~1.28 from 08:00 then drifting up to ~1.31. Pipeline logged `exit=1` (rc −15) and marked the stage done. `POOL_full_fwdllm/P_fwdllm/runs/syn_0_fwdllm_s1/run_20261027_055652_P_fwdllm_fwdllm_yahoo_n100_smoke_syn_0_sim`.  
+**Run 29 (`fluxtune`): DONE 10-27 13:57** — see Done table.
+
+*Then:* add both run dirs to `figs_e2e.yaml` (`distilbert_yahoo`) — todo.
+
+**Running (shepherd, 10-29): cos-audit / pitch runs, not in the figure plan.** `paper_pitch_20261029a/` (q4 `fwdllm`, GPUs 2,3, since 00:18, 6 h timeout) and `paper_pitch_20261029b/` (q1 `pool`, q2 `exp` T_res 566, q3 `exp` T_res 849, GPUs 0,1,4,5,6,7, since 02:08; q5a/b queued). Cos audit on (every 25–50 commits) adds a ~440–500 s `[SIM_OVERHEAD]` pause per audit: slow, not stalled (checked 03:30: telemetry current, c328–373).
 
 The 10-24 RoBERTa S `fluxtune` run (`rbflux_20261024/`) never launched (dry run only, no run dir); its recipe (ρ0 0.14) is superseded by decision 15.
 
@@ -25,6 +41,10 @@ The 10-24 RoBERTa S `fluxtune` run (`rbflux_20261024/`) never launched (dry run 
 
 | ID | Outcome | Detail |
 |---|---|---|
+| AG News ablation + strategy queue (10-28 18:30 → 10-29 02:06, shepherd bench, `expt_scripts/queue_ablations_bench.sh`, 2 GPUs / leg, 4 h timeout) | Run ids = `aNN`. **Reached 0.86 ×2:** 8 (c501, 46 min wall, 4.15 vclock h), 10 (c377, 41 min, 32.6 h), 14 (c501, 47 min, 4.24 h), 19 (c369, 58 min, 4.93 h), 20 (c745, 50 min, 4.19 h), 21 (c365, 33 min, 2.69 h). **DNF:** 17 N 10 (cap 1000, peak 0.8355), 18 N 20 (cap 1000, peak 0.8593), 26 max-\|JVP\| (cap 1000, peak 0.8514), 22 momentum 0.8 (diverged to 0.25), baselines 11 / 12 / 13 (saturation stop, peaks 0.857 / 0.8555 / 0.8491, final 0.8553 / 0.8464 / 0.8295). **Stopped by hand 20:41** (first queue, no final eval): 15 (peak 0.8583), 16 (peak 0.7924). Full per-run numbers: §3.2 | first queue `paper_ab_20261028/` (a08, a10, a15, a16; `queue.log`, `bench.log`, `autostop.log`); second queue `paper_ab_20261028b/` (the rest; `queue.log`, `bench.log`); both under `lib/python/examples/fwdllm/` on **shepherd**, runs under `POOL/<arm>/runs/` |
+| P1 run 29: DistilBERT · Yahoo `fluxtune` (10-27 11:29 → 13:57, jayne bench, 8 workers) | **Target reached: 0.65 ×2 at c557** (`[BudgetStop] reason=target`, clean exit), 2.5 h wall (8,841 s), 17,200 vclock s (4.8 h), 27,979 tasks, Φ 1.82. 140 evals, peak **0.662**, **final full-test eval 0.652 / loss 1.341**. Run 28 `fwdllm` DNF (peak 0.616 at 46.7 vclock h) → FluxTune reaches 0.65 where FwdLLM never does | run dir `paper_dy_20261027/POOL_full_flux/P_fluxtune/runs/syn_0_fluxtune_s1/run_20261027_112923_P_fluxtune_fluxtune_yahoo_n100_smoke_syn_0_sim` (`telemetry/aggregator_*.jsonl`, `bench.log`, `bench_summary.json`); `paper_dy_20261027/{pipeline.log,bench_full_flux.log,P_fluxtune.yaml}` |
+| P1 run 4b: RoBERTa-L · Yelp-P `fluxtune`, LoRA r 6, no momentum (decision 16; 10-26 02:55 → 08:56, jayne bench GPUs 4–7, 30 workers) | **Target reached: 0.82 ×2 at c401** (`[BudgetStop] reason=target`, clean exit), 404 commits, **6.0 h wall (364 min), 97.9 vclock h** (16×), 20,229 tasks. Peak 0.834, last periodic eval 0.833, **final full-test eval 0.8264 / loss 0.408**. Φ 2.02 (budget 4 not used up); trainable weight norm 9.9 → 19.9 (2.0×), no divergence. First P3 paper point | run dir `paper_rb_20261026b/POOL/rb_paper/runs/syn_0_fluxtune_s1/run_20261026_025521_fluxtune_yelp-p_n100_smoke_syn_0_sim` (`telemetry/aggregator_*.jsonl`, `bench.log`, `bench_summary.json`); `paper_rb_20261026b/bench.log`; config `paper_rb_20261026b/fluxtune_yelp-p_n100_smoke_syn_0_sim.yaml`; launcher `paper_rb_20261026b/launch.sh` |
+| P1 run 6c: SmolLM2-1.7B · Yahoo `fluxtune`, r 2, T_res 290, no momentum (decision 17; 10-26 04:07 → 10-27 02:25, jayne bench GPUs 0–3, 24 workers) | **DNF, stopped by hand (SIGTERM, no final eval) at c~450 / 22.3 h wall**: peak **0.606**, acc 0.597 (c448), plateau 0.59–0.60 since c~350 (+0.5 pt / 100 commits). Lap wrap (c~439) crossed with no collapse. Φ 2.89 of cap 4 = ‖θ‖ growth 6.4 → 18.4 (matches a pure noise random walk, cos 0.035); Λ 0.755 / 0.987 → schedule ceiling ≈ 0.62, so 0.65 unreachable. Next: forward-gradient emulator screens (‖θ₀‖-scaled step, momentum, r 1) before another FL run | `paper_sm_20261026b/POOL/sm_paper/runs/syn_0_fluxtune_s1/run_20261026_040708_fluxtune_yahoo_n60_smoke_syn_0_sim`; `paper_sm_20261026b/bench.log`; config `paper_sm_20261026b/fluxtune_yahoo_n60_smoke_syn_0_sim.yaml` |
 | P1 run 6b: SmolLM2-1.7B `fluxtune` r 2 + momentum 0.9 (10-26 01:50 → 04:06, jayne bench) | **Stopped by hand at c40: diverging.** Peak acc 0.331 (c28), best loss 2.144 (c22); by c40 acc 0.267, loss 4.155, top-class share 0.52; trainable weight norm 6.4 → 40.0 (6.3×). Same failure as run 4 | `paper_sm_20261026/` (config, `bench.log`, POOL) |
 | P1 run 4: RoBERTa-L `fluxtune` + momentum 0.9 (10-26 01:50 → 02:44, jayne bench) | **Stopped by hand at c50: diverging.** Acc 0.551 (c1) → 0.473 (c49), one-class evals (top share 0.99–1.00), loss 0.69 → 0.71–0.79; trainable weight norm 9.9 → 37.0 (step 0.69 → 2.40), vs 13.9 at c49 without momentum (10-24). Logged Φ 1.12 is not ‖θ‖ growth under momentum (FT-T16) → decision 16 | `paper_rb_20261026/` (config, `bench.log`, POOL) |
 | §3.7 smokes (10-25, jayne bench, n 12) | **Stopped by hand 10-26** (operator; 01:27 `sm_base`, `sm_k40s`; 01:49 `sm_r2s`, `sm_r2m`). Best acc: `sm_r2m` **0.432** (c28; stopped c31), `sm_r2s` 0.357 (c43; c51), `sm_base` 0.328 (c42; c55), `sm_k40s` 0.288 (c12). `sm_r2m` led at matched commits, vclock and wall → decision 15 | `bench_sm_20261025/POOL/sm_base/`, `POOL_s/sm_{k40s,r2s}/`, `POOL_m/sm_r2m/`; `bench{3,4,5}.log`; §3.7 |
@@ -93,6 +113,9 @@ The 10-24 RoBERTa S `fluxtune` run (`rbflux_20261024/`) never launched (dry run 
     Φ_budget = 4 (without momentum, 1,119 leaves ρ near constant with the rail off).
 16. (10-26 02:50, operator) RoBERTa-L drops server momentum (run 4 diverged: norm 3.7× in 50 commits); s 2.4, T_res 570 kept (Λ max 1.16
     vs 0.29 at the 10-24 ρ0 0.14 / T_res 71, which plateaued at 0.732). 1.7B keeps momentum 0.9; watch its weight norm.
+18. (10-29, operator) "Uniform" partition runs use near-IID `niid_label_clients=100_alpha=100`: Yahoo's `uniform_client_1000` / `_10000` fail
+    `check_partitions.py` (515k duplicate train rows, test/train overlap); `100_alpha=1` and `100_alpha=100` pass. Both arms LoRA r 2
+    (`fwdllm` matches `fluxtune`; was r 4). Replaces the α=1 `fwdllm` n50 harness leg (stopped by hand 10-29 at c108 / 10.6 h: acc 0.49, best 0.523).
 
 Closed by data, not by decision: grad-aware (G1), bs (P0b → 32, subject to F2), Yelp-P/Yahoo eval stride (S), v1 profile (G0).
 
@@ -204,7 +227,7 @@ names; plots marked *new* need a renderer or manifest group first. Runs are §3.
 |---|---|---|---|---|
 | `tune_rho0` | ρ0 0.07 / 0.10 / 0.14 / 0.28 (Φ\* 2, so T_res 283 / 139 / 71 / 18) | main | 2, 14, 15, 16 | `c_rho_max` |
 | `tune_commit_rule` | when to commit: variance gate (FwdLLM) vs SNR target (`n_target`) vs fixed N 10 / 20 / 50 / 90 | main | 2, 9, 17, 18, 19, 20 | `c_agg_criteria` |
-| `tune_rho_schedule` | constant ρ vs `exp` vs `exp` + server momentum 0.5; plus ρ and Φ per commit | main | 2, 21, 22 | `c_step_size` + `c_step_size_step_size` (without `rm`) |
+| `tune_rho_schedule` | constant ρ vs `exp` vs `exp` + server momentum 0.8; plus ρ and Φ per commit | main | 2, 21, 22 | `c_step_size` + `c_step_size_step_size` (without `rm`) |
 | `tune_batch_size` | bs 8 vs 32 (DistilBERT · Yahoo, N 90) | appendix | P0b (§0c), no new run | `fwdllm/scripts/plot_p0b_bs8_vs_bs32.py` |
 | `tune_agg_weights` | uniform ω vs alignment-only ω (`grad_aware` without the staleness × utility base) | appendix | 2, 27 | `c_agg_weights` |
 
@@ -215,7 +238,7 @@ names; plots marked *new* need a renderer or manifest group first. Runs are §3.
 | `strategy_fwdllm_async` | FwdLLM's estimator, async per iteration (`fedbuff_it_unaware`) | main | 1, 2, 11 |
 | `strategy_fedbuff` | FedBuff(P) (`fedbuff_round`) | main | 1, 2, 13 |
 | `strategy_felix` | Felix(P) (`felix_round`, availability-aware) | main | 1, 2, 12 |
-| `strategy_availability_mobiperf` | FluxTune, Felix(P), FedBuff(P) on `mobiperf_3st_50` | main if FT-N5 lands | 23, 24, 25 |
+| `strategy_availability_mobiperf` | FluxTune, Felix(P), FedBuff(P) on `mobiperf_3st_50` | **not for MLSys** (dropped) | 23, 24, 25 |
 
 **Not plotted:** `b2` (diversity), `b3` (progression), `c_phase_a`, `c_phase_a_pairs`, `c_phase_b`, `c_update_utility`,
 `c5_generalisation` (deferred, operator 10-22).
@@ -232,6 +255,7 @@ under the 2.3-pt replicate noise is unresolved.
 |---|---|---|---|---|---|---|---|---|---|---|
 | `distilbert_agnews` | 450,340 | 100 | 50 | 0.07 | 283 | 2.10 | 0.86 | 6 h | full test (7,600) | 4 |
 | `roberta_large_yelp` | 591,874 | 100 | 50 | 0.0698 (from s) | **570** (Φ_budget 4) | **2.4** (set, decision 15) | 0.82 | 30 h | 10% = 3,800, resampled per eval | 4 |
+| `distilbert_yahoo` | 450,340 | 100 | 50 | 0.07 | 283 | 2.10 | 0.65 | 12 h | 10% = 6,000, resampled per eval | 4 |
 | `smollm2_1p7b_yahoo` | 413,696 (LoRA r 2) | 60 | 50 | **0.0978** (`--rho0`) | **290** (Φ_budget 4) | **2.81** (decision 15) | 0.65 | 30 h | 10% = 6,000, resampled per eval | 3 |
 
 C = 0.3·n, K = C/3 gives 30 / 10 at n 100; the 1.7B cell runs C 30 / K 10 at n 60 (decision 15). Big-cell bs 32.
@@ -335,37 +359,46 @@ sample size. 6,000 rows give ±1.2 pt (95%) at acc 0.65.
 
 Run in priority order: **P1** before **P2** before **P3**; within a priority, top to bottom. G0 closed 10-25 (decision 12).
 A 4-value tuning sweep runs 3 values at P2 and the 4th at P3 (3 points still plot the trend).
+AG News ablation / strategy runs (7, 8, 10–22, 26) queue on the jayne bench with [queue_ablations_bench.sh](../fwdllm/expt_scripts/queue_ablations_bench.sh): 2 GPUs per leg, 4 legs in parallel on 8 GPUs, **4 h bench timeout** (kill, no final eval), stop at **0.86 ×2** (`--target-stop`, then full-test eval), 2,000-commit cap. Order: 8, 10, 15, 16, 17, 19, 21, 14, 18, 20, 22, 26, then 13, 11, 12 last (baselines, never run). Runs 7, 9, 27 are not in the script (yaml override / gate not ready).
+**Launch** (when all 8 GPUs are free; from `lib/python/examples/fwdllm/`; output `paper_ab_20261028/` (first queue; second `paper_ab_20261028b/`), queue log `queue.log`, per-leg `START` / `DONE` / `FAIL` lines in `bench.log`, runs under `POOL/<arm>/runs/`; a failed leg does not stop the queue):
+```
+mkdir -p paper_ab_20261028
+OUT=paper_ab_20261028 setsid nohup bash expt_scripts/queue_ablations_bench.sh > paper_ab_20261028/queue.log 2>&1 < /dev/null &
+```
+Stop: `kill -TERM -- -<pgid>`. Subset: pass arm names (`a08 a15 …`); `DRY=1` renders the yamls only. Arm `aNN` = run NN.
 DistilBERT · AG News runs: §2 recipe (N 50, ρ0 0.07, T_res 283, bs 8), 6 h / 2,000-commit cap (decision 14), 1 seed, to peak accuracy. Flags below are the change from that.
 
-| Pri | # | Run | Model · Dataset | Flags (change from the cell recipe) | Time | Status | Plots |
-|---|---|---|---|---|---|---|---|
-| P1 | 1 | FwdLLM | DistilBERT · AG News | `fwdllm` arm, lr 0.01, var 0.3, `data_bin` | ≤ 6 h | **done** 10-25: DNF, best 0.855 (Done table) | `E2E_*`; reference in `strategy_*` |
-| P1 | 2 | FluxTune | DistilBERT · AG News | none | ≤ 6 h | **done** 10-25: 0.86 at 4.34 vclock h (Done table) | `E2E_*`, every `Contri_*`, every `tune_*` except `tune_batch_size`, `strategy_*` |
-| P1 | 7 | FluxTune − E1 | DistilBERT · AG News | drop `--probe-combine mean` (FwdLLM's aligned 1-of-10, P 10) | 3 h | on `fluxtune` `select` alone gives max-\|JVP\| (= run 26): also set `select_perturbation_using_jvp: false` (yaml override) for the cosine pick | `Contri_probe_mean` |
-| P1 | 8 | FluxTune − E2 | DistilBERT · AG News | drop `--server-step-rule trust_ratio --rho-schedule exp --rho0 --t-res` (SGD, lr 0.01) | 3 h | ready (G0 closed 10-25) | `Contri_trust_ratio` |
-| P1 | 9 | FluxTune − E3 | DistilBERT · AG News | `--commit-gate var` with FwdLLM's variance policy, no `--pool-target` | 3 h | variance gate under async never run | `Contri_fixed_pool`, `tune_commit_rule` |
-| P1 | 10 | FluxTune − S1 (= A123) | DistilBERT · AG News | `fwdllm` sync arm + E1, E2, E3 flags | 3 h | ready (G0 closed 10-25) | `Contri_async` |
-| P1 | 3 | FwdLLM | RoBERTa-L · Yelp-P | `fwdllm` arm, screened lr | 12 h | blocked: S, F2, lr screen | `E2E_*` |
-| P1 | 4 | FluxTune | RoBERTa-L · Yelp-P | decisions 15–16: LoRA r 6, s 2.4 (ρ0 0.0698), `exp` T_res 570, no momentum (0.9 diverged, Done table), n 100 / C 30 / K 10, bs 32; stop at 0.82 ×2 (no commit cap, Φ rail and saturation off), then full-test eval. Bench, 4 GPUs: `bash lib/python/examples/fwdllm/paper_rb_20261026b/launch.sh` | ≤ 30.5 h | **4b running** 10-26 02:55 (Running table) | `E2E_*` |
-| P1 | 5 | FwdLLM | SmolLM2-1.7B · Yahoo | `fwdllm` arm: lr 3e-3, var 8.4 (decision 11), LoRA q,v r 4, n 60, C = K = 10, `data_bin`, divisor 0.047; stop as run 6 (0.65 ×2 or 20 h). Launch `ARM=fwdllm bash lib/python/examples/fwdllm/expt_scripts/launch_smollm17b_yahoo_n50.sh` (8 GPUs, harness) | ≤ 20 h | ready (10-25); expect DNF (never reaches target) at 0.65 (smoke 0.384 at c65, ~107 s/commit) | `E2E_*` |
-| P1 | 6 | FluxTune | SmolLM2-1.7B · Yahoo | run 6 (r 4, s 2.0) peak 0.576; run 6b (r 2 + momentum 0.9) diverged at c40 (Done). **6c (decision 17):** LoRA r 2, ρ0 0.0978 (s 2.81), `exp` T_res 290 (Φ_budget 4), no momentum, n 60 / C 30 / K 10, bs 32; stop at 0.65 ×2, then full-test eval. `bash lib/python/examples/fwdllm/paper_sm_20261026b/launch.sh` | ≤ 30.5 h | **6c running** 10-26 04:07 (Running table) | `E2E_*` |
-| P2 | 11 | FwdLLM async (A4) | DistilBERT · AG News | `fedbuff_it_unaware` with FwdLLM's estimator | 3 h | ready (G0 closed 10-25) | `strategy_fwdllm_async` |
-| P2 | 12 | Felix(P) | DistilBERT · AG News | `felix_round`, `baselines.yaml` lr (0.075 placeholder) | 3 h | ready (G0 closed 10-25) | `strategy_felix` |
-| P2 | 13 | FedBuff(P) | DistilBERT · AG News | `fedbuff_round`, `baselines.yaml` lr | 3 h | ready (G0 closed 10-25) | `strategy_fedbuff` |
-| P2 | 15 | ρ0 0.14 | DistilBERT · AG News | `--rho0 0.14 --t-res 71` | 3 h | ready (G0 closed 10-25) | `tune_rho0` |
-| P2 | 16 | ρ0 0.28 | DistilBERT · AG News | `--rho0 0.28 --t-res 18` (upper limit; N\* scales as ρ0², so expected to break at N 50) | 3 h | ready (G0 closed 10-25) | `tune_rho0` |
-| P2 | 17 | N 10 | DistilBERT · AG News | `--pool-target 10` | 3 h | ready (G0 closed 10-25) | `tune_commit_rule` |
-| P2 | 19 | N 90 | DistilBERT · AG News | `--pool-target 90` (also confirms N 50 against P0's N 90) | 3 h | ready (G0 closed 10-25) | `tune_commit_rule` |
-| P2 | 21 | constant ρ | DistilBERT · AG News | `--rho-schedule pool` (ρ 0.07; ends on the Φ rail) | 3 h | ready (G0 closed 10-25) | `tune_rho_schedule` |
-| P3 | 14 | ρ0 0.10 | DistilBERT · AG News | `--rho0 0.10 --t-res 139` | 3 h | ready (G0 closed 10-25) | `tune_rho0` (4th value) |
-| P3 | 18 | N 20 | DistilBERT · AG News | `--pool-target 20` | 3 h | ready (G0 closed 10-25) | `tune_commit_rule` (4th value) |
-| P3 | 20 | adaptive pool | DistilBERT · AG News | `--commit-gate n_target` (no `--pool-target`) | 3 h | ready (G0 closed 10-25) | `tune_commit_rule` |
-| P3 | 22 | momentum 0.5 | DistilBERT · AG News | `--server-momentum 0.5` (0.9 diverged) | 3 h | ready (G0 closed 10-25) | `tune_rho_schedule` |
-| P3 | 23 | FluxTune, `mobiperf_3st_50` | DistilBERT · AG News | trace `mobiperf_3st_50` | 3 h | blocked: FT-N5 | `strategy_availability_mobiperf` |
-| P3 | 24 | Felix(P), `mobiperf_3st_50` | DistilBERT · AG News | as 12, trace `mobiperf_3st_50` | 3 h | blocked: FT-N5 | `strategy_availability_mobiperf` |
-| P3 | 25 | FedBuff(P), `mobiperf_3st_50` | DistilBERT · AG News | as 13, trace `mobiperf_3st_50` | 3 h | blocked: FT-N5 | `strategy_availability_mobiperf` |
-| P3 | 26 | FluxTune, max-\|JVP\| upload | DistilBERT · AG News | `--probe-combine select` (keeps `select_perturbation_using_jvp: true`: upload the 1 of 10 probes with the largest \|JVP\|; same 2P passes, D and bytes as run 2) | 3 h | ready (G0 closed 10-25) | `Contri_probe_mean` |
-| P3 | 27 | FluxTune, alignment-only ω | DistilBERT · AG News | `--agg-rate-type grad_aware` + yaml override `agg_rate_conf.base: neutral` (ω = alignment gate only, base 1.0; the launcher hardcodes `base: new`) | 3 h | ready (G0 closed 10-25) | `tune_agg_weights` |
+| Pri | # | Run | Model · Dataset | Flags (change from the cell recipe) | Time | Status | Plots | Logs (done runs; under `fwdllm/`) | Accuracy reached |
+|---|---|---|---|---|---|---|---|---|---|
+| P1 | 1 | FwdLLM | DistilBERT · AG News | `fwdllm` arm, lr 0.01, var 0.3, `data_bin` | ≤ 6 h | **done** 10-25: DNF, best 0.855 (Done table) | `E2E_*`; reference in `strategy_*` | `p1_distil_20261025/bench/P1_fwdllm/runs/syn_0_fwdllm_s1/leg.out`, `p1_distil_20261025/pool.log` (shepherd) | peak 0.855 (DNF) |
+| P1 | 2 | FluxTune | DistilBERT · AG News | none | ≤ 6 h | **done** 10-25: 0.86 at 4.34 vclock h (Done table) | `E2E_*`, every `Contri_*`, every `tune_*` except `tune_batch_size`, `strategy_*` | `p1_distil_20261025/bench/P1_fluxtune/runs/syn_0_fluxtune_s1/leg.out`, `p1_distil_20261025/pool.log` (shepherd) | peak 0.873 |
+| P1 | 7 | FluxTune − E1 | DistilBERT · AG News | drop `--probe-combine mean` (FwdLLM's aligned 1-of-10, P 10) | ≤ 4 h | on `fluxtune` `select` alone gives max-\|JVP\| (= run 26): also set `select_perturbation_using_jvp: false` (yaml override) for the cosine pick | `Contri_probe_mean` |  |  |
+| P1 | 8 | FluxTune − E2 | DistilBERT · AG News | drop `--server-step-rule trust_ratio --rho-schedule exp --rho0 --t-res` (SGD, lr 0.01) | ≤ 4 h | **done** 10-28 (shepherd bench): target 0.86 ×2 at c501, 46.0 min wall, 14,948 vclock s (4.15 h), 25,279 tasks; final full-test 0.8589. Raw SGD (lr 0.01) matches the trust-ratio run 2 (c525 / 4.34 h): E2 shows no gain at this cell, check before plotting | `Contri_trust_ratio` | `paper_ab_20261028/bench.log`, `paper_ab_20261028/POOL/a08/runs/syn_0_*_s1/run_*_a08_*/bench.log` | peak 0.8607, final 0.8589 |
+| P1 | 9 | FluxTune − E3 | DistilBERT · AG News | `--commit-gate var` with FwdLLM's variance policy, no `--pool-target` | ≤ 4 h | variance gate under async never run | `Contri_fixed_pool`, `tune_commit_rule` |  |  |
+| P1 | 10 | FluxTune − S1 (= A123) | DistilBERT · AG News | `fwdllm` sync arm + E1, E2, E3 flags | ≤ 4 h | **done** 10-28: target 0.86 ×2 at c377, 41.0 min wall, 117,295 vclock s (32.6 h), 19,000 tasks; final 0.8589. Sync + E1/E2/E3 flags is 7.5× slower in vclock than run 2 (4.3 h) | `Contri_async` | `paper_ab_20261028/bench.log`, `paper_ab_20261028/POOL/a10/runs/syn_0_*_s1/run_*_a10_*/bench.log` | peak 0.8611, final 0.8589 |
+| P1 | 3 | FwdLLM | RoBERTa-L · Yelp-P | `fwdllm` arm, screened lr | 12 h | blocked: S, F2, lr screen | `E2E_*` |  |  |
+| P1 | 4 | FluxTune | RoBERTa-L · Yelp-P | decisions 15–16: LoRA r 6, s 2.4 (ρ0 0.0698), `exp` T_res 570, no momentum (0.9 diverged, Done table), n 100 / C 30 / K 10, bs 32; stop at 0.82 ×2 (no commit cap, Φ rail and saturation off), then full-test eval. Bench, 4 GPUs: `bash lib/python/examples/fwdllm/paper_rb_20261026b/launch.sh` | ≤ 30.5 h | **done** 10-26 (4b): target 0.82 ×2 at c401, 6.0 h wall / 97.9 vclock h, final full-test 0.8264 (Done table) | `E2E_*` | `paper_rb_20261026b/bench.log`, `paper_rb_20261026b/POOL/rb_paper/runs/syn_0_fluxtune_s1/run_20261026_025521_*/bench.log` | peak 0.834, final 0.8264 |
+| P1 | 5 | FwdLLM | SmolLM2-1.7B · Yahoo | `fwdllm` arm: lr 3e-3, var 8.4 (decision 11), LoRA q,v r 4, n 60, C = K = 10, `data_bin`, divisor 0.047; stop as run 6 (0.65 ×2 or 20 h). Launch `ARM=fwdllm bash lib/python/examples/fwdllm/expt_scripts/launch_smollm17b_yahoo_n50.sh` (8 GPUs, harness) | ≤ 20 h | ready (10-25); expect DNF (never reaches target) at 0.65 (smoke 0.384 at c65, ~107 s/commit) | `E2E_*` |  |  |
+| P1 | 6 | FluxTune | SmolLM2-1.7B · Yahoo | run 6 (r 4, s 2.0) peak 0.576; run 6b (r 2 + momentum 0.9) diverged at c40 (Done). **6c (decision 17):** LoRA r 2, ρ0 0.0978 (s 2.81), `exp` T_res 290 (Φ_budget 4), no momentum, n 60 / C 30 / K 10, bs 32; stop at 0.65 ×2, then full-test eval. `bash lib/python/examples/fwdllm/paper_sm_20261026b/launch.sh` | ≤ 30.5 h | **done as DNF** 10-27 (6c): stopped by hand at c~450 / 22.3 h wall, peak 0.606 (Done table). **Backup for the figure if not re-run:** `fwdllm/paper_sm_20261026b/POOL/sm_paper/runs/syn_0_fluxtune_s1/run_20261026_040708_fluxtune_yahoo_n60_smoke_syn_0_sim` (plots from `agg_eval` + vclock; scores DNF) | `E2E_*` | `paper_sm_20261026b/bench.log`, `paper_sm_20261026b/POOL/sm_paper/runs/syn_0_fluxtune_s1/run_20261026_040708_*/bench.log` | peak 0.606 (DNF) |
+| P1 | 28 | FwdLLM | DistilBERT · Yahoo | `fwdllm` arm, n 100, C = K = 10, bs 32, `data_bin`, divisor 4.78; lr / var from the 1.5 h screen (0.01 vs 0.003, var 0.3); run until 0.65 ×2. `paper_dy_20261027/pipeline.sh` | until target | **done as DNF** 10-27: stopped by hand 11:28 after 5.5 h wall, peak 0.616, no final eval (Running) | `E2E_*` | `paper_dy_20261027/pipeline.log`, `paper_dy_20261027/POOL_full_fwdllm/P_fwdllm/runs/syn_0_fwdllm_s1/run_20261027_055652_*/bench.log` | peak 0.616 (DNF) |
+| P1 | 29 | FluxTune | DistilBERT · Yahoo | §2 recipe (N 50, ρ0 0.07, T_res 283), n 100 / C 30 / K 10, bs 32, divisor 0.478; run until 0.65 ×2. Same pipeline, after 28 | until target | **done** 10-27 (jayne bench, 11:29 → 13:57): target 0.65 ×2 at c557, 2.5 h wall (8,841 s), 17,200 vclock s (4.8 h), 27,979 tasks; final full-test 0.652 (Done table) | `E2E_*` |  |  | `paper_dy_20261027/pipeline.log`, `paper_dy_20261027/POOL_full_flux/P_fluxtune/runs/syn_0_fluxtune_s1/run_20261027_112923_P_fluxtune_fluxtune_yahoo_n100_smoke_syn_0_sim/bench.log` | peak 0.662, final 0.652 |
+| P2 | 11 | FwdLLM async (A4) | DistilBERT · AG News | `fedbuff_it_unaware` with FwdLLM's estimator | ≤ 4 h | **done as DNF** 10-29 (`reason=stall`, SatStop at c553, acc 0.8488 vs best 0.8546): 171 min wall, 174,280 vclock s (48.4 h), 221,489 tasks; final 0.8553 | `strategy_fwdllm_async` | `paper_ab_20261028b/bench.log`, `paper_ab_20261028b/POOL/a11/runs/syn_0_*_s1/run_*_a11_*/bench.log` | peak 0.8570, final 0.8553 |
+| P2 | 12 | Felix(P) | DistilBERT · AG News | `felix_round`, `baselines.yaml` lr (0.075 placeholder) | ≤ 4 h | **done as DNF** 10-29 (`reason=stall`, SatStop at c573, acc 0.8397 vs best 0.8501): 118 min wall, 107,203 vclock s (29.8 h), 153,930 tasks; final 0.8464 | `strategy_felix` | `paper_ab_20261028b/bench.log`, `paper_ab_20261028b/POOL/a12/runs/syn_0_*_s1/run_*_a12_*/bench.log` | peak 0.8555, final 0.8464 |
+| P2 | 13 | FedBuff(P) | DistilBERT · AG News | `fedbuff_round`, `baselines.yaml` lr | ≤ 4 h | **done as DNF** 10-29 (`reason=stall`, SatStop at c637, acc 0.8212 vs best 0.8367): 234 min wall, 243,761 vclock s (67.7 h), 303,910 tasks; final 0.8295 | `strategy_fedbuff` | `paper_ab_20261028b/bench.log`, `paper_ab_20261028b/POOL/a13/runs/syn_0_*_s1/run_*_a13_*/bench.log` | peak 0.8491, final 0.8295 |
+| P2 | 15 | ρ0 0.14 | DistilBERT · AG News | `--rho0 0.14 --t-res 71` | ≤ 4 h | **stopped by hand** 10-28 20:41 (first queue stopped to relaunch on 8 GPUs; no final eval): 89 min wall, ~c890, 32,006 vclock s (8.9 h); flat at 0.858 for the last 5 evals, never reached 0.86. Not rerun in `paper_ab_20261028b`: **rerun todo** | `tune_rho0` | `paper_ab_20261028/bench.log`, `paper_ab_20261028/POOL/a15/runs/syn_0_*_s1/run_*_a15_*/bench.log` | peak 0.8583 (no final eval) |
+| P2 | 16 | ρ0 0.28 | DistilBERT · AG News | `--rho0 0.28 --t-res 18` (upper limit; N\* scales as ρ0², so expected to break at N 50) | ≤ 4 h | **stopped by hand** 10-28 20:41 (same stop; no final eval): 84 min wall, ~c885, 30,088 vclock s (8.4 h); plateau 0.787. Usable as the expected-to-break point (DNF) | `tune_rho0` | `paper_ab_20261028/bench.log`, `paper_ab_20261028/POOL/a16/runs/syn_0_*_s1/run_*_a16_*/bench.log` | peak 0.7924 (no final eval) |
+| P2 | 17 | N 10 | DistilBERT · AG News | `--pool-target 10` | ≤ 4 h | **done as DNF** 10-28 (`commit_cap` 1000): 41.0 min wall, 7,058 vclock s (1.96 h), 10,029 tasks; flat 0.832–0.835; final 0.8328 | `tune_commit_rule` | `paper_ab_20261028b/bench.log`, `paper_ab_20261028b/POOL/a17/runs/syn_0_*_s1/run_*_a17_*/bench.log` | peak 0.8355, final 0.8328 |
+| P2 | 19 | N 90 | DistilBERT · AG News | `--pool-target 90` (also confirms N 50 against P0's N 90) | ≤ 4 h | **done** 10-28: target 0.86 ×2 at c369, 57.6 min wall, 17,746 vclock s (4.93 h), 33,509 tasks; final 0.8611 | `tune_commit_rule` | `paper_ab_20261028b/bench.log`, `paper_ab_20261028b/POOL/a19/runs/syn_0_*_s1/run_*_a19_*/bench.log` | peak 0.8612, final 0.8611 |
+| P2 | 21 | constant ρ | DistilBERT · AG News | `--rho-schedule pool` (ρ 0.07; ends on the Φ rail) | ≤ 4 h | **done** 10-28: target 0.86 ×2 at c365, 33.0 min wall, 9,693 vclock s (2.69 h), 18,429 tasks; final 0.8607. Fastest arm | `tune_rho_schedule` | `paper_ab_20261028b/bench.log`, `paper_ab_20261028b/POOL/a21/runs/syn_0_*_s1/run_*_a21_*/bench.log` | peak 0.8625, final 0.8607 |
+| P3 | 14 | ρ0 0.10 | DistilBERT · AG News | `--rho0 0.10 --t-res 139` | ≤ 4 h | **done** 10-28: target 0.86 ×2 at c501, 47.2 min wall, 15,258 vclock s (4.24 h), 25,329 tasks; final 0.8605 | `tune_rho0` (4th value) | `paper_ab_20261028b/bench.log`, `paper_ab_20261028b/POOL/a14/runs/syn_0_*_s1/run_*_a14_*/bench.log` | peak 0.8605, final 0.8605 |
+| P3 | 18 | N 20 | DistilBERT · AG News | `--pool-target 20` | ≤ 4 h | **done as DNF** 10-28 (`commit_cap` 1000): 53.1 min wall, 14,073 vclock s (3.91 h), 20,029 tasks; 0.1 pt short of 0.86, still rising slowly; final 0.8592. Rerun with a higher cap if N 20 needs a TTA | `tune_commit_rule` (4th value) | `paper_ab_20261028b/bench.log`, `paper_ab_20261028b/POOL/a18/runs/syn_0_*_s1/run_*_a18_*/bench.log` | peak 0.8593, final 0.8592 |
+| P3 | 20 | adaptive pool | DistilBERT · AG News | `--commit-gate n_target` (no `--pool-target`) | ≤ 4 h | **done** 10-28: target 0.86 ×2 at c745, 49.6 min wall, 15,069 vclock s (4.19 h), 22,529 tasks; final 0.8601 | `tune_commit_rule` | `paper_ab_20261028b/bench.log`, `paper_ab_20261028b/POOL/a20/runs/syn_0_*_s1/run_*_a20_*/bench.log` | peak 0.8605, final 0.8601 |
+| P3 | 22 | momentum 0.8 | DistilBERT · AG News | `--server-momentum 0.8` (0.9 diverged) | ≤ 4 h | **done as DNF, diverged** 10-28 (`reason=stall` at c534): 48.1 min wall, 12,721 vclock s (3.53 h), 26,729 tasks; peak 0.8214 early, then collapsed to 0.25 (one class), final loss 12.4. Momentum 0.8 diverges at AG News too | `tune_rho_schedule` | `paper_ab_20261028b/bench.log`, `paper_ab_20261028b/POOL/a22/runs/syn_0_*_s1/run_*_a22_*/bench.log` | peak 0.8214, final 0.2500 |
+| P3 | 23 | FluxTune, `mobiperf_3st_50` | DistilBERT · AG News | trace `mobiperf_3st_50` | ≤ 4 h | **not for MLSys** (dropped); was: blocked: FT-N5 | `strategy_availability_mobiperf` |  |  |
+| P3 | 24 | Felix(P), `mobiperf_3st_50` | DistilBERT · AG News | as 12, trace `mobiperf_3st_50` | ≤ 4 h | **not for MLSys** (dropped); was: blocked: FT-N5 | `strategy_availability_mobiperf` |  |  |
+| P3 | 25 | FedBuff(P), `mobiperf_3st_50` | DistilBERT · AG News | as 13, trace `mobiperf_3st_50` | ≤ 4 h | **not for MLSys** (dropped); was: blocked: FT-N5 | `strategy_availability_mobiperf` |  |  |
+| P3 | 26 | FluxTune, max-\|JVP\| upload | DistilBERT · AG News | max-\|JVP\| upload (same 2P passes, D and bytes as run 2); `select_perturbation_using_jvp` default | ≤ 4 h | **done as DNF** 10-28 (`commit_cap` 1000): 87.0 min wall, 34,047 vclock s (9.46 h), 50,029 tasks; peak 0.8514 then slipped; final 0.8475 | `Contri_probe_mean` | `paper_ab_20261028b/bench.log`, `paper_ab_20261028b/POOL/a26/runs/syn_0_*_s1/run_*_a26_*/bench.log` | peak 0.8514, final 0.8475 |
+| P3 | 27 | FluxTune, alignment-only ω | DistilBERT · AG News | `--agg-rate-type grad_aware` + yaml override `agg_rate_conf.base: neutral` (ω = alignment gate only, base 1.0; the launcher hardcodes `base: new`) | ≤ 4 h | ready (G0 closed 10-25) | `tune_agg_weights` |  |  |
 
 Deferred (operator 10-22): C5 generalisation (EXPERIMENTS §4).
 

@@ -1,0 +1,356 @@
+\section{\sys Design}
+\label{sec:design}
+\label{sec:fluxtune}
+
+\subsection{Overview}
+\label{sec:ft:overview}
+\dhruv{\sout{By now the audience will know what the core challenges are
+in solving the problem of fine-tuning LLMs on resource constrained
+devices. So have a "preamble" paragraph highlighting the 3 key solution
+components and why they interact together. Refer to the overall
+diagram. Then end the paragraph with pointing the reader to
+sub-sections.} Resolved: the paragraph below names the parts and points
+to each subsection. The diagram is still a placeholder.}
+
+\sys keeps the forward-gradient client of \secref{sec:bg:noise}
+unchanged and changes the updates and the server side system. (\figref{fig:ft_system}). It
+answers each challenge of \secref{sec:background} with one choice. It
+updates on a buffer of fixed size $N$, so the signal in each update is
+known from count of updates. It steps a fixed fraction $\rho$ of the weight norm,
+with $\rho$ as a function of size N (\secref{sec:ft:step}). Because the
+steps are weight-relative, the growth they cause is known in closed
+form. \dhruv{``known from count of updates'' above should be ``known
+from the number of client gradients''. Also: \tabref{tab:ft:notation}
+lists $N=50$, $\rho=0.050$, while \secref{sec:ft:step} gives $N=90$
+and $\rho_0=0.067$ for DistilBERT; $K$ is used there but never
+defined; and \secref{sec:ft:agg} uses ``probes'', ``uploads'',
+``aggregation'' and ``pool'', where the terminology says perturbation,
+client gradient, server update and buffer.} One rule ties the
+choices together. Every constant the server compares against is a
+ratio of like quantities: weight norm over weight norm, or count over
+count. Such constants do not move with the loss scale, the model or the
+stage of training. Algorithm~\ref{alg:fluxtune} states the full loop.
+
+Let $\ttr\in\mathbb{R}^p$ be the trainable weights (the adapters added
+to the frozen model), $L$ the loss, and $\norm{\cdot}$ the $\ell_2$
+norm. \tabref{tab:ft:notation} lists the notation and the values used.
+
+\begin{table}[t]
+\centering
+\caption{Notation and values used (AG News, DistilBERT with adapters).}
+\label{tab:ft:notation}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Symbol & Meaning & Value \\
+\midrule
+$p$ & number of trainable weights & 450{,}340 \\
+$P$ & perturbations per client gradient & 10 \\
+$h$ & finite-difference spacing & 0.01 \\
+$u_k$ & client gradient from client $k$ & --- \\
+$N$ & buffer size: client gradients per server update & 50 \\
+$G$ & buffer sum $\sum_k u_k$ (the step's direction) & --- \\
+$C$ & clients training at once & 30 \\
+$s$ & scale in $\rho=s\sqrt{PN/p}$ & 1.5 \\
+$\rho$ & relative step $\norm{\Delta\ttr}/\norm{\ttr}$ & 0.050 \\
+$B$, $\Phi$ & growth budget spent; weight-norm growth $e^B$ & --- \\
+$\Phi_{\mathrm{cap}}$ & growth cap (hard stop on $\Phi$) & 3 \\
+$a_t$, $m_t$, $g_t$ & accuracy, its 11-eval mean, gain over 150 updates & --- \\
+$T_{\mathrm{bins}}$ & shared minibatches, used in turn & 150 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\figslot{ft_system}{\sys. Clients send forward-gradient estimates. The
+server buffers $N$ of them, steps by a fixed fraction $\rho$ of the
+weight norm, tracks the weight-norm growth $\Phi$, and stops on a
+plateau or at $\Phi\ge\Phi_{\mathrm{cap}}$.}
+
+% -----------------------------------------------------------------------
+\subsection{Signal-calibrated steps}
+\label{sec:ft:step}
+\label{sec:ft:pool}
+
+The question is how far the server should step on an update that is
+mostly noise. \aishwwarya{explain why it is all noise, or refer to the section that explains it is all noise} The step can be sized in gradient units (SGD, with or without a
+variance threshold), in per-coordinate weight units (Adam), or relative to the
+whole weight vector. \secref{sec:bg:steps} shows that the first two drift as
+the weights grow. \sys takes the third.
+
+\myparagraph{A buffer of chosen size}
+The server updates once its buffer holds $N$ client gradients, and steps along
+their sum $G=\sum_{k=1}^{N}u_k$. By Eq.~\eqref{eq:bg:law}, $N$ fixes how much
+of $G$ is signal. A variance threshold controls the same quantity indirectly,
+since variance scales as $1/N$ and the threshold's best value drifts with the
+model and the weight norm. \sys states it directly, as a count that is fixed
+within a run and set once per model and dataset.
+
+\myparagraph{Setting $N$}
+The work needed to reach a given accuracy is a fixed number of client
+gradients, so $N$ only decides how that work is split into updates: fewer,
+larger ones, or more, smaller ones. It is therefore set by system limits, not
+tuned for accuracy. A larger $N$ gives a better-aimed step but fewer updates
+per hour and more stale arrivals; the step ceiling $\rho\le0.07$ and the
+population $n$ bound it from above, and $N\ge\max(C,2K)$ bounds it from below
+(staleness $\le1$). We take the largest $N\le\min\!\big(p(0.07/s)^2/P,\;n\big)$
+that is a multiple of $K$, which gives $N=90$ for DistilBERT, $100$ for
+RoBERTa-large and $70$ for SmolLM2-1.7B. The step in the next paragraph then
+follows from $N$.
+
+\myparagraph{A step relative to the weights}
+The server discards the length of update $G$ and moves the trainable weights by a
+fraction $\rho_t$ of their own norm:
+\begin{equation}
+\Delta\ttr=-\rho_t\,\norm{\ttr}\frac{G}{\norm{G}},\qquad
+\rho_0=s\sqrt{\frac{PN}{p}} .
+\label{eq:ft:step}
+\end{equation}
+A drifting gradient norm leaves the step unchanged (in one run $\norm{u_k}$
+rose from $685$ to $1{,}168$ with no effect), and any factor common to all
+client gradients cancels, so every client gradient gets weight one. The
+trust-ratio form comes from LARS and LAMB~\cite{you2017lars,you2020lamb}.
+What is new is how the step is set. The initial step $\rho_0$ scales with the
+cosine the buffer can deliver, so a step never outruns its signal by more than
+a factor $s$ ($\rho_0=0.067$ for $N=90$). We claim this scaling, not the
+constant: $s$ is calibrated once per model (\secref{sec:ft:discussion}).
+Because the absolute step still grows with $\norm{\ttr}$ and late updates add
+mostly noise, $\rho_t$ decays exponentially from $\rho_0$, which bounds the
+total growth of the weight norm.
+\dhruv{Consistency check from the intro rewrite: this says $\rho_t$
+decays exponentially, but Algorithm~\ref{alg:fluxtune} keeps $\rho$
+constant, \secref{sec:ft:budget} says ``at constant $\rho$'', and the
+context file's shipped config is $\rho=0.050$ constant. The intro's
+C2 claims the absolute step grows with the weights, which holds only
+if $\rho_t$ decays slower than $\norm{\ttr}$ grows. Which one ships?}
+
+\myparagraph{Why scale $\rho_0$ with the cosine}
+Each update is nearly perpendicular to the weights
+($|\cos(\ttr,\Delta\ttr)|<0.0006$), so it grows $\ln\norm{\ttr}$ by about
+$\rho_t^2/2$, while its progress along the true gradient is proportional to
+$\rho_t\cos(G,\nabla L)$. Growth per unit of progress thus scales as
+$\rho_t/\cos$. Choosing $\rho_0\approx s\cos$ holds that ratio at a constant
+\weak{derived here, not yet measured}.
+
+\aishwwarya{TODO- add the weight - radian diagram for better explanation}
+
+% -----------------------------------------------------------------------
+\subsection{Aggregating averaged client gradients}
+\label{sec:ft:agg}
+
+\emph{The question} is what a client should upload and how the server should
+combine uploads. A client holds $P$ probes, each a random direction with a
+measured slope, and only the server sees several clients. The design space has
+two axes: how a client reduces its $P$ probes to one upload (keep the single
+best-aligned probe, or combine all of them), and how the server weights the
+uploads it sums. Both choices fix how much of $G$ is signal
+(Eq.~\eqref{eq:bg:law}); \sys makes the simplest choice on each axis.
+
+\myparagraph{A client uploads the mean of all its probes}
+A client draws $P$ Gaussian directions $v_i$ over the trainable slice and
+measures the slope of the loss along each with a central difference,
+\begin{equation}
+d_i=\frac{L(\theta+hv_i)-L(\theta-hv_i)}{2h}\approx\nabla L\!\cdot\! v_i,\qquad
+u_k=\frac1P\sum_{i=1}^{P}d_iv_i,\qquad\E[u_k]=\nabla L .
+\label{eq:ft:fg}
+\end{equation}
+This costs $2P$ forward passes and no backward pass. Memory is that of
+inference and does not grow with $P$, and the upload is one $p$-vector
+whatever $P$ is. Keeping only the probe with the largest $|d_i|$ discards
+$P-1$ of the $P$ measurements the client paid for. The mean uses all of them:
+its noise power is $\tfrac{p}{P}\norm{\nabla L}^2$, so every added probe
+lowers it, and the estimate stays unbiased. In our runs the mean gave
+$3.35\times$ more alignment per unit of compute than selection. The argument
+applies to any forward-only method that forms its estimate from several
+probes per client.
+
+\myparagraph{The server sums uploads with equal weight}
+The server sums the $N$ uploads in its buffer, $G=\sum_{k=1}^{N}u_k$, so $G$
+is the mean of $NP$ independent probes and
+\begin{equation}
+\cos(G,\nabla L)\approx\sqrt{\frac{PN}{p}} ,
+\label{eq:ft:aim}
+\end{equation}
+which grows as $\sqrt N$ because signal adds coherently and noise adds as a
+random walk. Where the $P$ probes sit does not matter to the server: $P$ probes
+in each of $N$ clients and one probe in each of $NP$ clients give the same
+$G$. This is what lets \sys trade per-client compute for the number of
+clients without changing the algorithm. The argument needs the uploads to be
+independent, and they are: the number of independent uploads the pool is
+worth, $n_{\mathrm{eff}}$, stayed within $[0.98,1.03]\,N$ across runs. Measured
+alignment was about $12\times$ below Eq.~\eqref{eq:ft:aim} (backpropagation
+audits on held-out data gave $\cos\approx0.003$), so we use the formula for
+its scaling in $(P,N,p)$ and treat the constant as empirical.
+
+Weights on uploads would only matter if some uploads were worth more than
+others. We use $\omega_k=1$: because the step discards the length of $G$
+(Eq.~\eqref{eq:ft:step}), any factor common to all uploads cancels, and the
+remaining freshness- and alignment-based weights changed the aggregate by at
+most $0.6\%$ in a measurement \weak{pending the grad-aware comparison}.
+
+\myparagraph{All uploads in a buffer see the same data}
+The training data is cut into $T_{\mathrm{bins}}$ fixed local batches, indexed
+by \texttt{data\_id}. Aggregation $t$ uses bin $(t-1)\bmod T_{\mathrm{bins}}$
+for every upload in its buffer, so the probes being averaged all estimate the
+gradient of the same loss. Successive aggregations cycle through the bins.
+
+\myparagraph{Uploads are accepted asynchronously, without staleness correction}
+The server keeps $C$ clients running and gives each freed slot the current
+weights, so no round waits for the slowest device. An upload computed on
+weights $\tau$ aggregations old is added to the buffer unchanged. Since
+$\E[\tau]\approx C/N$, keeping $C\le N$ holds staleness near zero: the measured
+mean was $0.58$, with $96\%$ of uploads at most one aggregation stale. At this
+level a staleness weight had little to correct, so we do not use one.
+
+% -----------------------------------------------------------------------
+\subsection{Growth-budgeted stopping}
+\label{sec:ft:budget}
+\label{sec:ft:stop}
+
+The question is when a run should stop with no target.
+\emph{The design space} includes plateau detection on accuracy, a fixed
+number of server updates, and a cap on weight growth. Plateau detection
+alone has no backstop when evaluation noise hides the plateau
+(\secref{sec:bg:unattended}). \sys uses a plateau rule, backed by a cap
+on growth that it can compute exactly.
+
+\myparagraph{The growth budget}
+Each update is perpendicular to the weights (\secref{sec:bg:growth}).
+An update of relative size $\rho_k$ therefore multiplies the weight
+norm by exactly $\sqrt{1+\rho_k^2}$. Summing in log space gives the
+\emph{growth budget} spent after $t$ server updates:
+\begin{equation}
+\begin{gathered}
+B_t=\tfrac12\sum_{k\le t}\ln\!\left(1+\rho_k^2\right)\approx\tfrac12\sum_{k\le t}\rho_k^2,\\
+\Phi_t=e^{B_t}=\norm{\ttr^{(t)}}\big/\norm{\ttr^{(0)}} .
+\end{gathered}
+\label{eq:ft:phi}
+\end{equation}
+$B_t$ depends only on the steps taken. It needs no gradients, no
+accuracy and no tuned constants. Its prediction matched the measured
+norm ratio to within $0.04\%$ (median).
+
+The budget view is what makes $B$ useful. $\sum\rho^2$ is the sum of
+squared step sizes, the quantity classic stochastic-approximation
+theory requires to stay finite~\cite{robbins1951stochastic}. Here it
+also sets how far the weights have grown. So step size and run length
+trade off against one budget: larger steps spend it faster and end the
+run sooner. At constant $\rho$ the budget reduces to a step counter,
+$\Phi_t=(1+\rho^2)^{t/2}$. At $\rho=0.050$, $\Phi$ reaches $3$ after
+about $880$ server updates. Any schedule for $\rho$ spends the same
+budget differently \tbd{E12}.
+
+\myparagraph{The stop rule}
+Let $a_t$ be held-out accuracy after server update $t$, $m_t$ its
+11-evaluation trailing mean, and $g_t=(m_t-m_{t-150})/m_t$ its recent
+relative gain. Let $n_t$ count the consecutive evaluations with
+$g_t\le0.003$. After a warm-up of $450$ server updates, the run stops
+when
+\begin{equation}
+n_t\ge20\quad\lor\quad\Phi_t\ge\Phi_{\mathrm{cap}} .
+\label{eq:ft:stop}
+\end{equation}
+Smoothing and patience keep evaluation noise from ending the run
+early. The cap $\Phi_{\mathrm{cap}}=3$ sits below the cliff of
+\secref{sec:bg:growth}, so it bounds the damage if the plateau is
+missed.
+
+% -----------------------------------------------------------------------
+\subsection{Inherited pieces}
+\label{sec:ft:inherited}
+\label{sec:ft:fg}
+\label{sec:ft:async}
+
+Clients run the forward-gradient primitive of \secref{sec:bg:noise},
+averaging all $P$ perturbations (Eq.~\eqref{eq:bg:fg}). Server update
+$t$ uses shared minibatch $t\bmod T_{\mathrm{bins}}$. All client
+gradients in a buffer therefore see the same data, and successive
+updates cycle through it. Aggregation is asynchronous, as in
+FedBuff~\cite{nguyen2022fedbuff}. The server keeps $C$ clients running
+and hands each freed slot the current weights. Client gradients join
+the buffer as they arrive, unweighted, whatever their staleness.
+Keeping $C\le N$ holds staleness low (\secref{sec:bg:unattended}).
+
+\begin{algorithm}[t]
+\caption{\sys}
+\label{alg:fluxtune}
+\begin{algorithmic}[1]
+\Require weights $\theta$; $P,h,N,C,s,\Phi_{\mathrm{cap}},T_{\mathrm{bins}}$
+\State $\rho\gets s\sqrt{PN/p}$;\; $B\gets 0$;\; $t\gets 0$;\; buffer $\gets\emptyset$
+\While{not stopped}
+  \State $b\gets t\bmod T_{\mathrm{bins}}$ \Comment{shared minibatch}
+  \State keep $C$ clients busy, each with the current $(\theta,b)$
+  \ForAll{client \textbf{in parallel}}
+    \State draw $v_1,\dots,v_P\sim\mathcal{N}(0,I_p)$
+    \State $d_i\gets[L(\theta{+}hv_i)-L(\theta{-}hv_i)]/2h$ \Comment{on $b$}
+    \State send $u\gets\frac1P\sum_i d_iv_i$
+  \EndFor
+  \State on each arrival, add $u$ to the buffer \Comment{any staleness}
+  \If{$|\text{buffer}|\ge N$}
+    \State $G\gets\sum_{u\in\text{buffer}}u$
+    \If{$\norm{G}>0$}
+      \State $\ttr\gets\ttr-\rho\norm{\ttr}\,G/\norm{G}$ \Comment{Eq.~\eqref{eq:ft:step}}
+    \EndIf
+    \State $B\gets B+\tfrac12\ln(1+\rho^2)$;\; $\Phi\gets e^{B}$ \Comment{Eq.~\eqref{eq:ft:phi}}
+    \State $t\gets t+1$;\; buffer $\gets\emptyset$
+    \State every two updates, evaluate $a_t$ and update $n_t$
+    \If{$n_t\ge20$ \textbf{or} $\Phi\ge\Phi_{\mathrm{cap}}$} \Comment{Eq.~\eqref{eq:ft:stop}}
+      \State \textbf{stop}
+    \EndIf
+  \EndIf
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+% -----------------------------------------------------------------------
+\subsection{Limits}
+\label{sec:ft:discussion}
+All evidence so far is one model (DistilBERT with adapters) on one
+dataset (AG News), with one run per arm and evaluation noise of
+$\pm0.005$. The constant $s$ is empirical. The measured $\rho/\cos$ was
+$14$--$20$, not $1.5$. The cap $\Phi_{\mathrm{cap}}=3$ overshot here.
+Accuracy peaked near $\Phi\approx2.6$ and then slid
+(\secref{sec:bg:unattended}), and the cap does not transfer between
+models. The finite difference is precision-sensitive. With fixed $h$,
+the relative perturbation size falls from $0.50$ to about $0.17$ as
+$\norm{\ttr}$ triples, which did not hurt training here.
+
+% =============================================================================
+% Review comments resolved by the 2026-10-16 rewrite. Their sections moved
+% to 02-background.tex or were cut; kept struck through per convention.
+% =============================================================================
+\dhruv{\sout{if these are papers, they need to be cited} Resolved: LARS
+and LAMB are cited.}
+\dhruv{\sout{I think you are trying to explain the steps/ intuition here
+but its midway between defining the variables and giving the
+intuition.} Resolved: the overview gives intuition only; symbols live
+in the table.}
+\dhruv{\sout{this or theta?} Resolved: $p$ is the count, $\ttr$ the
+weights.}
+\dhruv{\sout{Sure fwdllm is a baseline but we dont center our solution
+around it.} Resolved: ``What FwdLLM does not solve'' is now general
+challenges in \secref{sec:background}.}
+\dhruv{\sout{Too much detail here and we shouldnt keep it in the main
+text as some of it might also be model specific} Resolved: claim-level
+only, in \secref{sec:bg:growth}.}
+\dhruv{\sout{Its going to be hard for systems people to follow this.
+Break it down into two parts.} Resolved: intuition first, then a
+skippable ``For the ML reader'' paragraph.}
+\dhruv{\sout{It needs to flow a bit better like an explanation/ teaching
+of new concepts against previously known concepts.} Resolved: rewritten
+as \secref{sec:bg:steps}.}
+\aishwwarya{\sout{explain this better - This threshold has to be
+fine-tuned for each model, dataset and even varies when we choose log 2
+vs log e.} Resolved: \secref{sec:bg:steps}.}
+\dhruv{\sout{Bulleted list isn't needed.} Resolved: prose in
+\secref{sec:bg:steps}.}
+\dhruv{\sout{This section is about our solution, the readers don't care
+about fwdllm.} Resolved: design no longer names FwdLLM.}
+\aishwwarya{\sout{how do we explain alignment, maybe give context wrt
+comparing against backward prop gradients} Resolved: ``cosine with the
+true gradient'', contrasted with backprop in \secref{sec:bg:noise}.}
+\aishwwarya{\sout{have to explain this better} Resolved: the buffer
+paragraph in \secref{sec:ft:step}.}
+\aishwwarya{\sout{this is not from the simplified algorithm} Resolved:
+the sawtooth schedule is not shipped and was removed.}
+\dhruv{\sout{What is this?} Resolved: the ``full controller'' is not
+shipped, so its comparison was cut.}
