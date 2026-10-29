@@ -202,6 +202,8 @@ and vclock h. On real wall bs 8 is faster (0.65 at 1.0 h vs 1.84 h).
 All rendered by `fwdllm/expt_scripts/make_paper_figs.py` into `paper_figs/<manifest>/`. The names below are the paper
 names; plots marked *new* need a renderer or manifest group first. Runs are §3.2 numbers. Every run goes to peak accuracy (§2 stop rule), not to a preview target.
 
+**Rendered 10-29** ([plot_guideline_fluxtune.md](../_metadata/plot_guideline_fluxtune.md) style): `paper_expts_fluxtune/plots/make_ft_figs.py` → `paper_expts_fluxtune/figs/`, from run digests in `plots/digests/` (`ft_digest.py`). Built: `E2E_acc_vs_time`, `E2E_acc_vs_commits`, `E2E_comm_to_target` (runs 1, 2, 4, 28, 29; SmolLM2 = running `paper_su_20261029`, PRELIM; RoBERTa-L without FwdLLM, PRELIM), `Contri_probe_mean` (2, 26), `Contri_trust_ratio` (2, 8), `Contri_async` (2, 10), `tune_rho0` (2, 14–16), `tune_commit_rule` (2, 17–20), `tune_rho_schedule` (2, 21, 22), `strategy_*` (1, 2, 11–13). Not built: `E2E_*_cdf` (renderer todo), `Contri_fixed_pool` / run 9, `tune_agg_weights` / run 27, run 7.
+
 **End to end** (`figs_e2e.yaml`; one panel per cell: DistilBERT · AG News, RoBERTa-L · Yelp-P, SmolLM2-1.7B · Yahoo)
 
 | Plot | Shows | Place | Runs | Renderer today |
