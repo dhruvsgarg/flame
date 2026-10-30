@@ -122,14 +122,9 @@ def build_tex(data):
         "\\midrule", *body,
         "\\bottomrule",
         "\\end{tabular*}",
-        "\\caption{\\sys{} is the only stack to reach the target accuracy in every cell (5-eval mean, one seed, 120\\,h trace). "
-        "Time: wall-clock hours to the target; Data: GB moved to the target (model downloads and uploads). Syn-$X$\\%: "
-        "synthetic trace with $X$\\% unavailability; MobiPerf: real device trace. "
-        "\\sys{}'s row: hours and GB. Other stacks that reach the target: time and data as a multiple of \\sys{}'s "
-        "($>1\\times$ = slower or more bytes). Stacks that never reach it: $-\\Delta$ = target minus the stack's peak accuracy "
-        "(pp), shaded by $\\Delta$ (none $<2$, then $<5$, $<10$, $<30$, $\\ge30$\\,pp); bold = worst in the column. $^*$ = the same "
-        "stack with oracle eligibility at selection. Bold ratio: least data in the column. Hits: cells where the stack reaches "
-        "the target.}",
+        "\\caption{\\sys{} alone reaches the target on every dataset--trace pair. \\sys{}'s row: hours and GB to target. "
+        "Other rows: multiples of \\sys{}'s ($>1\\times$ = worse; bold: least data) or, if missed, target minus peak accuracy "
+        "in points (shaded by gap; bold: worst). $^*$: oracle eligibility.}",
         "\\label{tab:headline}",
         "\\end{table*}", "", ""]).rstrip("\n") + "\n"
 
