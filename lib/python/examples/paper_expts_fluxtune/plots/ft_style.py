@@ -12,7 +12,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-SYS_NAME = "FluxTune"
+SYS_NAME = "SwiFT"
 
 
 def label(name):
@@ -30,7 +30,7 @@ DPI, FORMATS = 300, ("pdf", "png")
 # ---- colors (Paul Tol muted / high-contrast; no hue shared with Felix's Okabe-Ito) ----
 INK, GRID, SURFACE, FILL = "#000000", "#d9d9d9", "#ffffff", "#ebe3d0"
 STACK = {  # key: (color, linestyle, marker)
-    "FluxTune": ("#882255", "-", "D"),
+    SYS_NAME: ("#882255", "-", "D"),
     "FwdLLM": ("#44AA99", "-", "o"),
     "FwdLLM async": ("#EE7733", "-.", "o"),
     "FedBuff(P)": ("#332288", "-", "s"),

@@ -10,7 +10,7 @@ the recipe, queue and scoring; task cost D per model: [D_CALIBRATION.md](D_CALIB
 
 ## Status board (keep current: update on every launch, finish and decision)
 
-Last updated 2026-10-29 11:50. Paths relative to `lib/python/examples/fwdllm/`; run dirs under `experiments/`.
+Last updated 2026-10-30 (run 3 RoBERTa `fwdllm` = rb60 run, decision 19). Paths relative to `lib/python/examples/fwdllm/`; run dirs under `experiments/`.
 
 **Running**
 
@@ -116,6 +116,9 @@ The 10-24 RoBERTa S `fluxtune` run (`rbflux_20261024/`) never launched (dry run 
 18. (10-29, operator) "Uniform" partition runs use near-IID `niid_label_clients=100_alpha=100`: Yahoo's `uniform_client_1000` / `_10000` fail
     `check_partitions.py` (515k duplicate train rows, test/train overlap); `100_alpha=1` and `100_alpha=100` pass. Both arms LoRA r 2
     (`fwdllm` matches `fluxtune`; was r 4). Replaces the α=1 `fwdllm` n50 harness leg (stopped by hand 10-29 at c108 / 10.6 h: acc 0.49, best 0.523).
+19. (10-30, operator) RoBERTa-L `fwdllm` arm (run 3) = the 10-23 rb60 run, not rerun: LoRA r 6, lr 1e-2, var 0.3 (revises 9 and 11 for
+    RoBERTa-L). Closest to `fluxtune` (LoRA r 6, p 591,874); no BitFit or LoRA variant learned (§3.5). `paper_rb_20261029/` config
+    now mirrors rb60's `aggregator_config.json` (rerun only); E2E plots use rb60 as RoBERTa-L's FwdLLM curve.
 
 Closed by data, not by decision: grad-aware (G1), bs (P0b → 32, subject to F2), Yelp-P/Yahoo eval stride (S), v1 profile (G0).
 
@@ -202,19 +205,20 @@ and vclock h. On real wall bs 8 is faster (0.65 at 1.0 h vs 1.84 h).
 All rendered by `fwdllm/expt_scripts/make_paper_figs.py` into `paper_figs/<manifest>/`. The names below are the paper
 names; plots marked *new* need a renderer or manifest group first. Runs are §3.2 numbers. Every run goes to peak accuracy (§2 stop rule), not to a preview target.
 
-**Rendered 10-29** ([plot_guideline_fluxtune.md](../_metadata/plot_guideline_fluxtune.md) style): `paper_expts_fluxtune/plots/make_ft_figs.py` → `paper_expts_fluxtune/figs/`, from run digests in `plots/digests/` (`ft_digest.py`). Built: `E2E_acc_vs_time`, `E2E_acc_vs_commits`, `E2E_comm_to_target` (runs 1, 2, 4, 28, 29; SmolLM2 = running `paper_su_20261029`, PRELIM; RoBERTa-L without FwdLLM, PRELIM), `Contri_probe_mean` (2, 26), `Contri_trust_ratio` (2, 8), `Contri_async` (2, 10), `tune_rho0` (2, 14–16), `tune_commit_rule` (2, 17–20), `tune_rho_schedule` (2, 21, 22), `strategy_*` (1, 2, 11–13). Not built: `E2E_*_cdf` (renderer todo), `Contri_fixed_pool` / run 9, `tune_agg_weights` / run 27, run 7.
+**Rendered 10-29** ([plot_guideline_fluxtune.md](../_metadata/plot_guideline_fluxtune.md) style): `paper_expts_fluxtune/plots/make_ft_figs.py` → `paper_expts_fluxtune/figs/`, from run digests in `plots/digests/` (`make_ft_figs.py digest`). Built: `E2E_acc_vs_time`, `E2E_speedup`, `E2E_comm_to_target`, `E2E_participation`, `E2E_participation_per_commit`, `E2E_session_length` (runs 1–4, 28, 29; SmolLM2 = non-IID runs 5 / 6c (10-30; near-IID `paper_su_20261029` still running, digests `su_*` kept); RoBERTa-L FwdLLM = rb60, digest `rb_fwdllm.json`), `Contri_probe_mean` (2, 26), `Contri_trust_ratio` (2, 8), `Contri_async` (2, 10), `tune_rho0` (2, 14–16), `tune_commit_rule` (2, 17–20), `tune_rho_schedule` (2, 21, 22), `strategy_*` (1, 2, 11–13). Not built: `E2E_*_cdf` (renderer todo), `Contri_fixed_pool` / run 9, `tune_agg_weights` / run 27, run 7.
 
 **End to end** (`figs_e2e.yaml`; one panel per cell: DistilBERT · AG News, RoBERTa-L · Yelp-P, SmolLM2-1.7B · Yahoo)
 
 | Plot | Shows | Place | Runs | Renderer today |
 |---|---|---|---|---|
 | `E2E_acc_vs_time` | test accuracy vs sim time, "N× faster" at target | main | 1–6 | `e2e_<cell>` panel (a) |
-| `E2E_acc_vs_commits` | test accuracy vs server commits (better steps vs more steps per hour) | main | 1–6 | `e2e_<cell>` panel (c) |
+| `E2E_speedup` | bars: FwdLLM vs FluxTune time per cell (at target, else FwdLLM peak), speedup above each pair | main | 1–6 | — |
 | `E2E_comm_to_target` | GB to target, downlink + uplink stacked, "N× less" | main | 1–6 | `e2e_<cell>` panel (b) |
-| `E2E_participation_time_cdf` | CDF over clients of total engaged time in the run (sum of a client's sessions) | main | 1–6 | *new* (sum `session_durs` / `round_span_durs` per client) |
-| `E2E_session_length_cdf` | CDF of one engagement: FluxTune one task (dispatch → commit), FwdLLM one round | main | 1–6 | `b1_<cell>` |
+| `E2E_participation` | distinct clients used so far vs server commits, "N× fewer commits" to use all clients | main | 1–6 | `make_ft_figs.py` (digest `part`) |
+| `E2E_participation_per_commit` | distinct clients contributing to each server commit, "median N× more clients" | main | 1–6 | `make_ft_figs.py` (digest `part`) |
+| `E2E_session_length` | CDF of one engagement: FluxTune one task (dispatch → commit), FwdLLM a client's span in one round; "median N× shorter" | main | 1–6 | `make_ft_figs.py` (digest `sessions`) |
 
-**Concept contribution** (`figs_ablation.yaml`, *new* group; DistilBERT · AG News; FluxTune vs FluxTune without one concept: acc vs time, acc vs commits, "x× slower without")
+**Concept contribution** (`figs_ablation.yaml`, *new* group; DistilBERT · AG News; FluxTune vs FluxTune without one concept: acc vs time, "x× slower without")
 
 | Plot | Concept removed | Place | Runs |
 |---|---|---|---|
@@ -268,7 +272,7 @@ C = 0.3·n, K = C/3 gives 30 / 10 at n 100; the 1.7B cell runs C 30 / K 10 at n 
 # distilbert_agnews (bs 8, full test set, so no --eval-max-samples)
 --dataset agnews --num-trainers 100 --pool-target 50 --rho0 0.07 --t-res 283 --train-batch-size 8
 --max-commits 2000 --final-full-eval --eval-every-n-commits 4 --sim-wall-ceiling-h 6   # decision 14
-# roberta_large_yelp (fwdllm arm: --learning-rate {lr screen}); fluxtune = decisions 15–16, launcher fwdllm/paper_rb_20261026b/launch.sh
+# roberta_large_yelp: fluxtune = decisions 15–16, launcher fwdllm/paper_rb_20261026b/launch.sh; fwdllm arm (run 3) = rb60 run (LoRA r 6, lr 1e-2, var 0.3; decision 19), C = K = 10, rb60_20261023_160630/runs.tsv
 --dataset yelp-p --model-type roberta-large --peft-method lora --lora-r 6 --num-trainers 100 --c 30 --agg-goal 10
 --pool-target 50 --gate-safety-s 2.4 --t-res 570 --train-batch-size 32   # no --rho0, no momentum (decision 16)
 --target-stop 0.82 --target-stop-window 2 --max-commits 100000 --phi-stop-threshold 1e9 --eval-max-samples 3800 --eval-resample --final-full-eval
@@ -378,9 +382,9 @@ DistilBERT · AG News runs: §2 recipe (N 50, ρ0 0.07, T_res 283, bs 8), 6 h / 
 | P1 | 8 | FluxTune − E2 | DistilBERT · AG News | drop `--server-step-rule trust_ratio --rho-schedule exp --rho0 --t-res` (SGD, lr 0.01) | ≤ 4 h | **done** 10-28 (shepherd bench): target 0.86 ×2 at c501, 46.0 min wall, 14,948 vclock s (4.15 h), 25,279 tasks; final full-test 0.8589. Raw SGD (lr 0.01) matches the trust-ratio run 2 (c525 / 4.34 h): E2 shows no gain at this cell, check before plotting | `Contri_trust_ratio` | `paper_ab_20261028/bench.log`, `paper_ab_20261028/POOL/a08/runs/syn_0_*_s1/run_*_a08_*/bench.log` | peak 0.8607, final 0.8589 |
 | P1 | 9 | FluxTune − E3 | DistilBERT · AG News | `--commit-gate var` with FwdLLM's variance policy, no `--pool-target` | ≤ 4 h | variance gate under async never run | `Contri_fixed_pool`, `tune_commit_rule` |  |  |
 | P1 | 10 | FluxTune − S1 (= A123) | DistilBERT · AG News | `fwdllm` sync arm + E1, E2, E3 flags | ≤ 4 h | **done** 10-28: target 0.86 ×2 at c377, 41.0 min wall, 117,295 vclock s (32.6 h), 19,000 tasks; final 0.8589. Sync + E1/E2/E3 flags is 7.5× slower in vclock than run 2 (4.3 h) | `Contri_async` | `paper_ab_20261028/bench.log`, `paper_ab_20261028/POOL/a10/runs/syn_0_*_s1/run_*_a10_*/bench.log` | peak 0.8611, final 0.8589 |
-| P1 | 3 | FwdLLM | RoBERTa-L · Yelp-P | `fwdllm` arm, screened lr | 12 h | blocked: S, F2, lr screen | `E2E_*` |  |  |
+| P1 | 3 | FwdLLM | RoBERTa-L · Yelp-P | rb60 run reused (decision 19): n 100, bs 32, α 1, LoRA r 6, lr 1e-2, var 0.3, C = K = 10, eval 3,800 resampled / stride 4, full-test eval; caps 380 commits / 480 vclock h, saturation stop on, minInitialTrainers 90, 8 GPUs (not run 4's 0.82 ×2 stop); git 71cff972 (dirty), harness `expt_scripts/nodes/run_node_roberta_yelp_to60_queue.sh` | done 10-23 | **done** (10-23, harness): DNF, 365 server updates, 480 vclock h (runtime cap); peak 0.580 (c1), last 0.503, **final full-test 0.500 / loss 0.702** | `E2E_*` | run dir `experiments/run_20261023_160644_rb60_fwdllm_n100_fwdllm_yelp-p_n100_smoke_syn_0_sim`; `rb60_20261023_160630/`; matching config `paper_rb_20261029/fwdllm_yelp-p_n100_smoke_syn_0_sim.yaml`; plot digest `plots/digests/rb_fwdllm.json` (`make_ft_figs.py` id `rb_fwdllm`, E2E RoBERTa cell vs run 4) | peak 0.580, final 0.500 |
 | P1 | 4 | FluxTune | RoBERTa-L · Yelp-P | decisions 15–16: LoRA r 6, s 2.4 (ρ0 0.0698), `exp` T_res 570, no momentum (0.9 diverged, Done table), n 100 / C 30 / K 10, bs 32; stop at 0.82 ×2 (no commit cap, Φ rail and saturation off), then full-test eval. Bench, 4 GPUs: `bash lib/python/examples/fwdllm/paper_rb_20261026b/launch.sh` | ≤ 30.5 h | **done** 10-26 (4b): target 0.82 ×2 at c401, 6.0 h wall / 97.9 vclock h, final full-test 0.8264 (Done table) | `E2E_*` | `paper_rb_20261026b/bench.log`, `paper_rb_20261026b/POOL/rb_paper/runs/syn_0_fluxtune_s1/run_20261026_025521_*/bench.log` | peak 0.834, final 0.8264 |
-| P1 | 5 | FwdLLM | SmolLM2-1.7B · Yahoo | `fwdllm` arm: lr 3e-3, var 8.4 (decision 11), LoRA q,v r 4, n 60, C = K = 10, `data_bin`, divisor 0.047; stop as run 6 (0.65 ×2 or 20 h). Launch `ARM=fwdllm bash lib/python/examples/fwdllm/expt_scripts/launch_smollm17b_yahoo_n50.sh` (8 GPUs, harness) | ≤ 20 h | ready (10-25); expect DNF (never reaches target) at 0.65 (smoke 0.384 at c65, ~107 s/commit) | `E2E_*` |  |  |
+| P1 | 5 | FwdLLM | SmolLM2-1.7B · Yahoo | `fwdllm` arm: lr 3e-3, var 8.4 (decision 11), LoRA q,v **r 2** (decision 18), α 1, n 60, C = K = 10, `data_bin`, divisor 0.047; stop 0.65 ×2 (harness) | ≤ 20 h | **done as DNF** 10-29: stopped by hand at c108 / 10.6 h wall, peak 0.523, last 0.505, no final eval. **Plotted (10-30)** as SmolLM2's FwdLLM arm vs run 6c (non-IID α 1) until the near-IID `paper_su_20261029` pair finishes | `E2E_*` | run dir `experiments/run_20261028_182751_fwdllm_yahoo_n60_smoke_syn_0_sim`; plot digest `plots/digests/sm_fwdllm.json` (id `sm_fwdllm`; run 6c = `sm6c_fluxtune`) | peak 0.523 (DNF) |
 | P1 | 6 | FluxTune | SmolLM2-1.7B · Yahoo | run 6 (r 4, s 2.0) peak 0.576; run 6b (r 2 + momentum 0.9) diverged at c40 (Done). **6c (decision 17):** LoRA r 2, ρ0 0.0978 (s 2.81), `exp` T_res 290 (Φ_budget 4), no momentum, n 60 / C 30 / K 10, bs 32; stop at 0.65 ×2, then full-test eval. `bash lib/python/examples/fwdllm/paper_sm_20261026b/launch.sh` | ≤ 30.5 h | **done as DNF** 10-27 (6c): stopped by hand at c~450 / 22.3 h wall, peak 0.606 (Done table). **Backup for the figure if not re-run:** `fwdllm/paper_sm_20261026b/POOL/sm_paper/runs/syn_0_fluxtune_s1/run_20261026_040708_fluxtune_yahoo_n60_smoke_syn_0_sim` (plots from `agg_eval` + vclock; scores DNF) | `E2E_*` | `paper_sm_20261026b/bench.log`, `paper_sm_20261026b/POOL/sm_paper/runs/syn_0_fluxtune_s1/run_20261026_040708_*/bench.log` | peak 0.606 (DNF) |
 | P1 | 28 | FwdLLM | DistilBERT · Yahoo | `fwdllm` arm, n 100, C = K = 10, bs 32, `data_bin`, divisor 4.78; lr / var from the 1.5 h screen (0.01 vs 0.003, var 0.3); run until 0.65 ×2. `paper_dy_20261027/pipeline.sh` | until target | **done as DNF** 10-27: stopped by hand 11:28 after 5.5 h wall, peak 0.616, no final eval (Running) | `E2E_*` | `paper_dy_20261027/pipeline.log`, `paper_dy_20261027/POOL_full_fwdllm/P_fwdllm/runs/syn_0_fwdllm_s1/run_20261027_055652_*/bench.log` | peak 0.616 (DNF) |
 | P1 | 29 | FluxTune | DistilBERT · Yahoo | §2 recipe (N 50, ρ0 0.07, T_res 283), n 100 / C 30 / K 10, bs 32, divisor 0.478; run until 0.65 ×2. Same pipeline, after 28 | until target | **done** 10-27 (jayne bench, 11:29 → 13:57): target 0.65 ×2 at c557, 2.5 h wall (8,841 s), 17,200 vclock s (4.8 h), 27,979 tasks; final full-test 0.652 (Done table) | `E2E_*` |  |  | `paper_dy_20261027/pipeline.log`, `paper_dy_20261027/POOL_full_flux/P_fluxtune/runs/syn_0_fluxtune_s1/run_20261027_112923_P_fluxtune_fluxtune_yahoo_n100_smoke_syn_0_sim/bench.log` | peak 0.662, final 0.652 |
@@ -474,6 +478,8 @@ this run stopped at Λ 0.092. Λ 1.0 needs ~1,080 commits (~12.9 h at 84/h); Φ\
 | 10-24 shepherd | sim vs real, RoBERTa-L, 1.7B (10 min legs) | real ↔ sim, big models | not closed: real legs 0 commits (FT-N21 todo) | `ft_models_check_20261024/` |
 | 10-24 shepherd | D divisor profile | task cost per model | SmolLM 0.0047 | `ft_profile_20261024/` |
 | 10-24 jayne | FT-N18 B2 | bench ≡ harness, DistilBERT `fwdllm`, `fluxtune` | pass, same-seed pairs identical | `bench_B2_20261024/` |
+| 10-26 jayne | RoBERTa `fwdllm` smoke, n 20, 4 legs: LoRA r 2 lr 1e-2 / 3e-2 var 0.2, lr 1e-2 var 0.1; BitFit lr 3e-2 var 0.1 | does any LoRA / BitFit variant learn | no: all at chance after 60–116 commits (peak 0.54–0.60, loss ~0.69–0.71) | `rb_fwd_smoke_20261026/` |
+| 10-27 jayne | RoBERTa `fwdllm` lr test, n 100, LoRA r 6 var 0.3, lr 3e-3 / 1e-3 | lower lr on LoRA | no: flat 0.50–0.565 to c132 / c160; stopped by hand 03:05 (1.4 h, no final eval). Decision 11 (BitFit lr 1e-2, var 0.2) kept for run 3 | `rb_lr_20261027/` |
 
 **FwdLLM reference values** (github.com/UbiquitousLearning/FwdLLM): lr 0.01 for every model and dataset
 (`fedFwd_roberta-large_yelp-p_lr0.01_client_num_1000`); var threshold per model, not dataset (`FedSgdAggregator.py`:

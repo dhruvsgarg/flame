@@ -68,6 +68,10 @@ figsize, collision check.
   - Baseline misses the target: a time or bytes ratio at the target is undefined, so compare at the *same accuracy level* (time /
     bytes for ours to reach the baseline's peak vs the baseline's own time to it) **and** report the accuracy gained
     (+% over the baseline's peak), so the reader sees both how much sooner and how much better.
+  - Peak gain is drawn, not just written: a strip right of the curves holds each run's peak as a tick in its color, a black arrow
+    up to ours, and a bold "+X% peak" label (`peak_gain` in `make_ft_figs.py`); the target line stops at the strip.
+  - Speedup gap: light shaded span between the two hit times, dotted drop lines, hit dots in run colors, arrow at the level;
+    the "N× faster" label sits in the panel's middle, nearest free point to the span (`callout_pair`).
   - Compare only like with like: no bytes ratio against stacks that use fewer bytes but never reach the accuracy (that isn't a fair
     win or a fair loss; leave it out of the plot, discuss in text).
   - Highlight the best numbers that are also fair and interesting to a reviewer: the strongest baseline (always), plus the best
@@ -84,6 +88,8 @@ figsize, collision check.
 - **Give the real estate to the interesting part.** Zoom the axis to where the comparison happens (e.g. y from 60%, not 0%, when the
   race is for 75%: the early climb is uninteresting); use log axes when values span decades; cut long flat tails. Keep zooming
   until the empty area left is only what annotations use.
+- **No log scale on time or session-length axes** (author, 10-29): show gaps at true size; log shrinks the win we want seen.
+  Log only for quantities that span decades where linear hides the small series entirely (state "log scale").
 - **Axis breaks and cropped axes** (decided):
   - *Line / scatter plots* (position encodes value): a y-axis not starting at 0 needs **no break mark**; the tick labels show the
     range, and this is standard practice. Crop freely to the interesting range.
@@ -133,7 +139,7 @@ figsize, collision check.
 
 | message | form | notes |
 |---|---|---|
-| ours reaches a level sooner / cheaper | accuracy vs time and vs GB (log), two panels, `sharey` | y zoomed to the race; arrows at the baseline's peak |
+| ours reaches a level sooner / cheaper | accuracy vs time (linear) and vs GB, two panels, `sharey` | y zoomed to the race; arrows at the baseline's peak |
 | where a resource goes (share by cause) | horizontal 100%-style stacked bars of the *lost* part only, rows = methods | bar-end % label; ours bold |
 | order-of-magnitude gap (s vs min) | dot plot on a log axis, rows = methods, one marker shape per cell | clamp 0 to the axis floor ("≤1 s") |
 | ablation / swap arms | peak-accuracy dots first (cropped axis, Δ vs ours), then horizontal bars of time and GB; rows = arms, rows of panels = cells | misses hatched to run end; accuracy as dots because bars must start at 0 |
@@ -197,5 +203,5 @@ crowded data, a panel per cell when one cell carries the message (put the rest i
   - Ablation / tuning arms (`ARM`): green / blue / olive / cyan; don't plot arms next to a variant of the same color.
 - Text placement: `ft_style.place(ax, text, spots)`; `ft_style.overlaps(fig)` runs in every `save()` and prints `OVERLAP …`.
 - Data figures: `plots/make_ft_figs.py` (run registry `RUNS`, cells `CELLS`) → `paper_expts_fluxtune/figs/`; inputs are
-  per-run digests (`plots/ft_digest.py`, stdlib only: digest on the node that holds the run, copy the JSON back).
+  per-run digests (`plots/make_ft_figs.py digest`, stdlib only: digest on the node that holds the run, copy the JSON back).
 - Non-method fills: black (the loss to see), white + `\\` / `xx` hatches, warm sand `#ebe3d0` (the uninteresting part).
