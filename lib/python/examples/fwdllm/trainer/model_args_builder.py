@@ -36,6 +36,7 @@ _OPTIONAL = {
     # the default is inert there and the key stays out of aggregator_base.json.
     # `require_trainer_knobs` keeps it from silently defaulting on a real trainer.
     "select_perturbation_using_jvp": False,
+    "cos_select_every_bin": False,        # run 7: cos target = last commit on every bin
 }
 
 # Knobs whose default would silently change what a TRAINER computes.

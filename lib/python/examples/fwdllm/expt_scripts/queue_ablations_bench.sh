@@ -6,7 +6,8 @@
 # Usage:  OUT=paper_ab_20261028 bash queue_ablations_bench.sh [arm ...]        (no args: every arm in ORDER)
 #   GPUS=0,1,2,3,4,5,6,7  GPUS_PER_LEG=2  TIMEOUT_H=4  DRY=1 (render yamls + jobs file only)
 # Launch: setsid nohup bash queue_ablations_bench.sh > $OUT/queue.log 2>&1 < /dev/null &    Stop: kill -TERM -- -<pgid>
-# Not included: run 7 and 27 (need a yaml override whose key is not in the rendered yaml), run 9 (variance gate under async, never run), 23-25 (FT-N5 trace).
+# a07 stops on target only (no cap, stall, wall ceiling or rounds stop); run with TIMEOUT_H=0 (no bench timeout).
+# Not included: run 27 (needs a yaml override whose key is not in the rendered yaml), run 9 (variance gate under async, never run), 23-25 (FT-N5 trace).
 set -u
 FW="$(cd "$(dirname "$0")/.." && pwd)"
 EX="$(cd "$FW/.." && pwd)"
@@ -57,6 +58,13 @@ BASE[a19]=fluxtune; FLAGS[a19]="${FLUX[*]} --pool-target 90"
 BASE[a20]=fluxtune; FLAGS[a20]="$(drop --commit-gate --pool-target) --commit-gate n_target"
 BASE[a21]=fluxtune; FLAGS[a21]="$(drop --rho-schedule --t-res) --rho-schedule pool"
 BASE[a22]=fluxtune; FLAGS[a22]="${FLUX[*]} --server-momentum 0.8"
+# Run 7 (- E1): one cos-picked probe of P 10 vs the last commit, every bin; 2 passes, so fwdllm's divisor 4.78.
+SIM_TARGET=(--mode sim --num-trainers 100 --phi-stop-threshold 1e9 --max-commits 1000000000 --final-full-eval --eval-every-n-commits 4
+            --target-stop 0.86 --target-stop-window 2 --phi-stop off --budget-stop-frac 0
+            --sim-wall-ceiling-h 1000000 --max-runtime-s 1000000000 --force)
+declare -A TARGET_ONLY
+BASE[a07]=fluxtune; FLAGS[a07]="$(drop --probe-combine --delay-divisor --phi-stop) --probe-combine select --perturbation-select cos_every_bin --delay-divisor 4.78 --phi-stop off"; TARGET_ONLY[a07]=1
+POST[a07]='s/^\( *rounds:\) 50$/\1 1000000/'
 BASE[a26]=fluxtune; FLAGS[a26]="$(drop --probe-combine) --probe-combine select"
 # Pitch arms (_metadata/temp_fxtune_abl.md): SIM_LONG = no target / stall stop, per-commit server_update + cos(G,g) audit.
 SIM_LONG=(--mode sim --num-trainers 100 --phi-stop-threshold 1e9 --final-full-eval --eval-every-n-commits 4
@@ -76,6 +84,7 @@ ARMS=("${@:-${ORDER[@]}}")
 render () { # render <arm>: dry-run yaml -> $OUT/<arm>.yaml, ids renamed so legs do not collide
   local arm=$1 o src y sim=("${SIM[@]}")
   [ -n "${LONG[$arm]:-}" ] && sim=("${SIM_LONG[@]}")
+  [ -n "${TARGET_ONLY[$arm]:-}" ] && sim=("${SIM_TARGET[@]}")
   o=$(cd "$EX" && bash "$FW/expt_scripts/run_sequential.sh" "${COMMON[@]}" "${sim[@]}" ${FLAGS[$arm]} --dry-run 2>&1)
   src=$(grep -oE 'generated cfgs in [^ ]+' <<<"$o" | awk '{print $4}')
   y=$(ls "$src"/*_sim.yaml 2>/dev/null | head -1)
@@ -99,7 +108,7 @@ done
 log "bench start: ${#ARMS[@]} arms, gpus=$GPUS, $GPUS_PER_LEG per leg, timeout ${TIMEOUT_H} h"
 trap 'log stopping; kill -TERM $(jobs -p) 2>/dev/null; exit 130' INT TERM
 (cd "$EX" && python scripts/bench_pool.py --jobs "$OUT/jobs.tsv" --out "$OUT/POOL" --gpus "$GPUS" \
-  --gpus-per-leg "$GPUS_PER_LEG" --per-gpu 1 --timeout-s "$(python3 -c "print(int($TIMEOUT_H*3600))")" \
+  --gpus-per-leg "$GPUS_PER_LEG" --per-gpu 1 --timeout-s "$(python3 -c "print(int($TIMEOUT_H*3600) or 10**9)")" \
   > "$OUT/bench.log" 2>&1 < /dev/null) &
 wait
 log "bench exit (log $OUT/bench.log; runs under $OUT/POOL/<arm>/runs/)"

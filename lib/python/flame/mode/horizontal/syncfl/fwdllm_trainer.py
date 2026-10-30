@@ -436,7 +436,8 @@ class Trainer(Role, metaclass=ABCMeta):
                         else:
                             logger.debug(f"Trainer: {self.trainer_id}  - old_grad: None")
 
-                        if self.data_id % 2:
+                        # cos_select_every_bin: cos-pick against the last commit on every bin, not FwdLLM's odd bins only.
+                        if self.data_id % 2 or getattr(self.args, "cos_select_every_bin", False):
                             logger.debug(f"using old grad for : {self.data_id}")
                             self.trainer.model_trainer.old_grad = full_grad
                         else:

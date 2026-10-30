@@ -134,6 +134,7 @@ LEARNING_RATE=""       # server step size (aggregator hyperparameters); empty =>
 TRAIN_BATCH_SIZE=""    # samples per trainer batch = one data_id bin (both sides); empty => base configs (8)
 PERTURBATION_COUNT=""  # P: probes per trainer per iteration (trainer hyperparameters); empty => code default 10
 PROBE_COMBINE=""       # S-H: select|mean -- how the P probes become one upload; empty => code default select
+PERTURBATION_SELECT="" # select pick: jvp|cos|cos_every_bin (cos = FwdLLM odd bins only); empty => baselines.yaml
 SERVER_STEP_RULE=""    # S-A: raw_sgd|trust_ratio (aggregator); empty => code default raw_sgd
 RHO_STAR=""            # S-A: target relative step under trust_ratio
 RHO0=""                # rho0 for --rho-schedule pool|exp, set directly; overrides --gate-safety-s (s = rho0/sqrt(P*N/p))
@@ -215,6 +216,7 @@ usage() {
   echo "          (BASELINE_DELAY_DEFAULTS in this script); pass explicitly only to override." >&2
   echo "          [--server-update-audit] [--pool-split-half-audit]" >&2
   echo "          [--learning-rate F] [--train-batch-size N] [--perturbation-count N] [--probe-combine select|mean]" >&2
+  echo "          [--perturbation-select jvp|cos|cos_every_bin]" >&2
   echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho0 F] [--rho-schedule const|rm|landing|pool|exp] [--rho-exp F]" >&2
   echo "          [--b-max F] [--t-res F] [--budget-stop-frac F (0 = off)] [--phi-stop off|log_only|halt] [--phi-stop-threshold F]" >&2
   echo "          [--b-max-probe-every N] [--b-max-probe-n N] [--b-max-probe-phis L]" >&2
@@ -275,6 +277,7 @@ while [[ $# -gt 0 ]]; do
     --train-batch-size)     TRAIN_BATCH_SIZE="$2"; shift 2 ;;
     --perturbation-count)   PERTURBATION_COUNT="$2"; shift 2 ;;
     --probe-combine)        PROBE_COMBINE="$2"; shift 2 ;;
+    --perturbation-select)  PERTURBATION_SELECT="$2"; shift 2 ;;
     --server-step-rule)     SERVER_STEP_RULE="$2"; shift 2 ;;
     --rho-star)             RHO_STAR="$2"; shift 2 ;;
     --rho0)                 RHO0="$2"; shift 2 ;;
@@ -506,7 +509,7 @@ VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELA
 SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" POOL_SPLIT_HALF_AUDIT="$POOL_SPLIT_HALF_AUDIT" \
 ALLOW_STALE_PROFILE="$ALLOW_STALE_PROFILE" \
 LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" TRAIN_BATCH_SIZE="$TRAIN_BATCH_SIZE" \
-  PROBE_COMBINE="$PROBE_COMBINE" SERVER_STEP_RULE="$SERVER_STEP_RULE" \
+  PROBE_COMBINE="$PROBE_COMBINE" PERTURBATION_SELECT="$PERTURBATION_SELECT" SERVER_STEP_RULE="$SERVER_STEP_RULE" \
   RHO_STAR="$RHO_STAR" RHO0="$RHO0" RHO_SCHEDULE="$RHO_SCHEDULE" RHO_EXP="$RHO_EXP" \
   B_MAX="$B_MAX" T_RES="$T_RES" BUDGET_STOP_FRAC="$BUDGET_STOP_FRAC" \
   PHI_STOP="$PHI_STOP" PHI_STOP_THRESHOLD="$PHI_STOP_THRESHOLD" \
@@ -567,6 +570,7 @@ POOL_SPLIT_HALF_AUDIT = env("POOL_SPLIT_HALF_AUDIT") or ""
 LEARNING_RATE = env("LEARNING_RATE") or ""; PERTURBATION_COUNT = env("PERTURBATION_COUNT") or ""
 TRAIN_BATCH_SIZE = env("TRAIN_BATCH_SIZE") or ""
 PROBE_COMBINE = env("PROBE_COMBINE") or ""
+PERTURBATION_SELECT = env("PERTURBATION_SELECT") or ""
 SERVER_STEP_RULE = env("SERVER_STEP_RULE") or ""; RHO_STAR = env("RHO_STAR") or ""
 RHO0 = env("RHO0") or ""
 RHO_SCHEDULE = env("RHO_SCHEDULE") or ""; RHO_EXP = env("RHO_EXP") or ""
@@ -835,6 +839,11 @@ def patch(exp, run_key, variant, trace):
     if PROBE_COMBINE:
         exp["trainer"]["config_overrides"]["hyperparameters"]["probe_combine"] = PROBE_COMBINE
         h["probe_combine"] = PROBE_COMBINE
+    if PERTURBATION_SELECT:  # trainer-only; overrides baselines.yaml's select_perturbation_using_jvp
+        assert PERTURBATION_SELECT in ("jvp", "cos", "cos_every_bin"), PERTURBATION_SELECT
+        _thp = exp["trainer"]["config_overrides"]["hyperparameters"]
+        _thp["select_perturbation_using_jvp"] = PERTURBATION_SELECT == "jvp"
+        _thp["cos_select_every_bin"] = PERTURBATION_SELECT == "cos_every_bin"
     # S-C: scale-free commit gate. n_target sizes the pool from the step it is
     # about to take instead of comparing var against a tuned constant.
     if COMMIT_GATE:
