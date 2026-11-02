@@ -113,3 +113,72 @@ def test_runtime_isl_relays_when_not_in_view():
     # In view: same as direct (own RF link, one hop).
     e = rt.transfer(289, 3214.0, 10 * 1024 * 1024)
     assert e.hops == 1 and e.propagation_s == pytest.approx(508.3128 / 299792.458, rel=1e-3)
+
+
+@pytest.mark.skipif(not _ECEF.exists(), reason="ecef.npz not available")
+def test_isl_gateway_is_sticky_and_switches_by_margin():
+    from flame.link.propagation import elevation_deg, geodetic_to_ecef_km
+    from flame.link.runtime import LinkRuntime
+
+    raw = {"enabled": True, "satelliteEcefPath": str(_ECEF), "routing": "isl", "isl": {"switchMarginDeg": 10.0, "gatewaySelection": "sticky"}}
+    rt = LinkRuntime.from_link_layer_dict(raw, direction="downlink")
+    gw = rt.gateway_schedule()
+    cfg = rt.cfg
+    gs = geodetic_to_ecef_km(cfg.ground_station.lat_deg, cfg.ground_station.lon_deg, 0.0, cfg.geometry.earth_radius_km)
+
+    def elev(k, s):
+        return elevation_deg(rt.ecef_km[k, s], gs)
+
+    assert (gw >= 0).all()  # Svalbard always has a satellite in view
+    switches = np.flatnonzero(gw[1:] != gw[:-1]) + 1
+    assert 0 < len(switches) < len(gw) / 30  # held for tens of seconds, not per second
+    for k in switches:
+        old, new = int(gw[k - 1]), int(gw[k])
+        if elev(k, old) >= cfg.min_elevation_deg:  # old still in view: only a 10 deg better one replaces it
+            assert elev(k, new) >= elev(k, old) + 10.0
+
+
+@pytest.mark.skipif(not _LATENCY.exists(), reason="latency.npz not available")
+def test_isl_best_rate_gateway_repicks_each_step():
+    pytest.importorskip("itur")
+    from flame.link.runtime import LinkRuntime
+
+    base = {"enabled": True, "satelliteEcefPath": str(_ECEF), "routing": "isl"}
+    best = LinkRuntime.from_link_layer_dict({**base, "isl": {"latencyPath": str(_LATENCY)}})
+    sticky = LinkRuntime.from_link_layer_dict({**base, "isl": {"latencyPath": str(_LATENCY), "gatewaySelection": "sticky"}})
+    assert best.cfg.isl.gateway_selection == "best_rate"
+    for k in range(0, 600, 60):
+        g, rate = best._relay(k)
+        assert g >= 0 and rate >= sticky._relay(k)[1]
+
+
+def test_per_direction_bandwidth_overrides_shared():
+    from flame.link.budget import compute_link_budget
+
+    cfg = LinkLayerConfig.from_dict({"frequency": {"uplinkBandwidthMhz": 500, "downlinkBandwidthMhz": 120}})
+    assert cfg.frequency.bandwidth_mhz_for("uplink") == 500
+    assert cfg.frequency.bandwidth_mhz_for("downlink") == 120
+    shared = LinkLayerConfig.from_dict({"frequency": {"bandwidthMhz": 300}})
+    assert shared.frequency.bandwidth_mhz_for("uplink") == shared.frequency.bandwidth_mhz_for("downlink") == 300
+
+    pytest.importorskip("itur")
+    sat = np.array([6371.0 + 550.0, 0.0, 0.0])  # overhead a GS at (0, 0)
+    gs = {"groundStation": {"latDeg": 0.0, "lonDeg": 0.0}}
+    narrow = compute_link_budget(sat, LinkLayerConfig.from_dict({**gs, "frequency": {"downlinkBandwidthMhz": 120}}), "downlink")
+    wide = compute_link_budget(sat, LinkLayerConfig.from_dict({**gs, "frequency": {"downlinkBandwidthMhz": 480}}), "downlink")
+    assert wide.throughput_mbps > narrow.throughput_mbps
+    assert wide.snr_db == pytest.approx(narrow.snr_db - 10 * np.log10(4))  # 4x bandwidth = 4x noise
+
+
+def test_channels_multiply_throughput_not_noise():
+    pytest.importorskip("itur")
+    from flame.link.budget import compute_link_budget
+
+    sat = np.array([6371.0 + 550.0, 0.0, 0.0])
+    gs = {"groundStation": {"latDeg": 0.0, "lonDeg": 0.0}}
+    one = compute_link_budget(sat, LinkLayerConfig.from_dict(gs), "downlink")
+    eight = compute_link_budget(sat, LinkLayerConfig.from_dict({**gs, "frequency": {"downlinkChannels": 8}}), "downlink")
+    up = compute_link_budget(sat, LinkLayerConfig.from_dict({**gs, "frequency": {"downlinkChannels": 8}}), "uplink")
+    assert eight.snr_db == pytest.approx(one.snr_db)  # per-channel SNR unchanged
+    assert eight.throughput_mbps == pytest.approx(8 * one.throughput_mbps)
+    assert up.throughput_mbps < 2 * one.throughput_mbps  # uplink still 1 channel

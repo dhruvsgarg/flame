@@ -34,6 +34,10 @@ experiments:
           routing: isl
           enforcement: toxiproxy
           satelliteEcefPath: "lib/python/examples/fmow/metadata/leo/ecef.npz"
+          # SDA OCT v3 optical ISL rate; relay RF peaks ~2.2 Gbps, so it rarely binds.
+          isl:
+            throughputMbps: 2500
+            latencyPath: "lib/python/examples/fmow/metadata/leo/latency.npz"
 
     aggregator:
       config_template: metadata/aggregator_base.json

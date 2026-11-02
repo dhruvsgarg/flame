@@ -34,6 +34,7 @@ class TransferEstimate:
     throughput_mbps: float  # effective rate over transmit_s
     hops: int  # 1 = direct ground station <-> satellite
     complete: bool  # False if the series never offers a path
+    gateway: int = -1  # relay satellite at transmission start; -1 = own link
 
     def as_telemetry(self, prefix: str) -> dict:
         return {f"{prefix}_{k}": v for k, v in asdict(self).items()}
@@ -48,6 +49,7 @@ def estimate_transfer(
     hops_at: Callable[[int], int] = lambda k: 1,
     direction: str = "downlink",
     routing: str = "direct",
+    gateway_at: Callable[[int], int] = lambda k: -1,
 ) -> TransferEstimate:
     """Transfer `nbytes` starting at `start_s` over `rate_bps_at(k)` (bits/s
     usable during timestep k of an `n`-step periodic series; 0 = no path).
@@ -102,4 +104,5 @@ def estimate_transfer(
         throughput_mbps=throughput_mbps,
         hops=int(hops_at(first_k)),
         complete=True,
+        gateway=int(gateway_at(first_k)),
     )

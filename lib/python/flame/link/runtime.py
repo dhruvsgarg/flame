@@ -18,13 +18,13 @@ ever has one satellite_index, so this is identical to eager precompute for
 it; an aggregator only pays for the satellites that actually connect.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from flame.link.budget import LinkBudgetResult, compute_link_budget, compute_link_budget_series
 from flame.link.config import LinkLayerConfig
-from flame.link.propagation import lookup_satellite_ecef
+from flame.link.propagation import geodetic_to_ecef_km, lookup_satellite_ecef
 from flame.link.transfer import TransferEstimate, estimate_transfer
 
 
@@ -36,7 +36,8 @@ class LinkRuntime:
         self._series_cache: Dict[int, List[LinkBudgetResult]] = {}
         self._rate_cache: Dict[int, np.ndarray] = {}
         self._isl = None  # latency.npz arrays, loaded on first isl transfer
-        self._relay_cache: Dict[int, float] = {}
+        self._relay_cache: Dict[int, Tuple[int, float]] = {}  # k -> (gateway, rate bps)
+        self._gateway: Optional[np.ndarray] = None  # relay gateway per timestep, built on first isl relay
 
     @classmethod
     def from_link_layer_dict(
@@ -83,25 +84,73 @@ class LinkRuntime:
                 )
         return self._isl
 
-    def _relay_rate_bps(self, k: int) -> float:
-        """Best RF rate between the ground station and any satellite in view at k."""
-        rate = self._relay_cache.get(k)
-        if rate is None:
-            best = 0.0
-            for s in np.flatnonzero(self._isl_arrays()["direct_visible"][k]):
+    def gateway_schedule(self) -> np.ndarray:
+        """Relay gateway satellite per timestep (-1 = none in view).
+
+        Sticky: picked by longest remaining visibility, kept until it leaves
+        view or another in-view satellite is `isl.switch_margin_deg` higher.
+        """
+        if self._gateway is None:
+            gs = self.cfg.ground_station
+            gs_ecef = geodetic_to_ecef_km(gs.lat_deg, gs.lon_deg, gs.alt_m, self.cfg.geometry.earth_radius_km)
+            los = self.ecef_km - gs_ecef
+            up = gs_ecef / np.linalg.norm(gs_ecef)
+            cos_zen = (los @ up) / np.linalg.norm(los, axis=2)
+            elev = 90.0 - np.degrees(np.arccos(np.clip(cos_zen, -1.0, 1.0)))
+            vis = elev >= self.cfg.min_elevation_deg
+            n, num_sats = vis.shape
+            # Seconds of visibility left from each timestep; two sweeps so passes wrap like transfers do.
+            remaining = np.zeros((n, num_sats), dtype=np.int64)
+            run = np.zeros(num_sats, dtype=np.int64)
+            for k in range(2 * n - 1, -1, -1):
+                run = np.where(vis[k % n], run + 1, 0)
+                if k < n:
+                    remaining[k] = np.minimum(run, n)
+            margin = self.cfg.isl.switch_margin_deg
+            gateway = np.full(n, -1, dtype=np.int64)
+            g = -1
+            for k in range(n):
+                in_view = np.flatnonzero(vis[k])
+                if in_view.size == 0:
+                    g = -1
+                elif g < 0 or not vis[k, g]:
+                    g = int(in_view[np.argmax(remaining[k, in_view])])
+                else:
+                    best = int(in_view[np.argmax(elev[k, in_view])])
+                    if elev[k, best] >= elev[k, g] + margin:
+                        g = best
+                gateway[k] = g
+            self._gateway = gateway
+        return self._gateway
+
+    def _relay(self, k: int) -> Tuple[int, float]:
+        """(gateway, RF rate bps) for relaying at k per `isl.gateway_selection`; (-1, 0) if none."""
+        relay = self._relay_cache.get(k)
+        if relay is None:
+            if self.cfg.isl.gateway_selection == "best_rate":
+                candidates = np.flatnonzero(self._isl_arrays()["direct_visible"][k])
+            else:
+                candidates = [int(self.gateway_schedule()[k])]
+            g, best = -1, 0.0
+            for s in candidates:
+                if s < 0:
+                    continue
                 r = compute_link_budget(self.ecef_km[k, s], self.cfg, self.direction)
-                if r.visible:
-                    best = max(best, r.throughput_mbps)
-            rate = best * 1e6 * self.cfg.transfer.efficiency
-            self._relay_cache[k] = rate
-        return rate
+                if r.visible and r.throughput_mbps > best:
+                    g, best = int(s), r.throughput_mbps
+            relay = (g, best * 1e6 * self.cfg.transfer.efficiency)
+            self._relay_cache[k] = relay
+        return relay
+
+    def _relay_rate_bps(self, k: int) -> float:
+        return self._relay(k)[1]
 
     def transfer(self, satellite_index: int, start_s: float, nbytes: int) -> TransferEstimate:
         """Time to move `nbytes` in this runtime's direction, starting at
         `start_s` (seconds since the trajectory origin), per `cfg.routing`:
           direct -- this satellite's own RF link; waits for its next pass.
-          isl    -- own RF link when in view, else best relay in view, capped
-                    at the ISL rate, with latency.npz path delay and hops.
+          isl    -- own RF link when in view, else the gateway's RF link
+                    (per isl.gateway_selection), capped at the ISL rate, with latency.npz path delay and hops.
         """
         series = self._series(satellite_index)
         own = self._own_rate_bps(satellite_index)
@@ -132,8 +181,11 @@ class LinkRuntime:
         def hops(k):
             return 1 if own[k] > 0 else int(isl["hop_count"][k, satellite_index])
 
+        def gateway(k):
+            return -1 if own[k] > 0 else self._relay(k)[0]
+
         return estimate_transfer(
             rate, len(own), start_s, nbytes, prop, hops,
-            direction=self.direction, routing="isl",
+            direction=self.direction, routing="isl", gateway_at=gateway,
         )
 

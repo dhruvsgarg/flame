@@ -260,8 +260,10 @@ Every field below is a `LinkLayerConfig` field (`flame/link/config.py`) and ever
 | `transfer.payloadBytes` | `null` | Bytes per transfer; `null` = measured from the model's weights | — |
 | `transfer.speedOfLightKmS` | `299792.458` | For propagation delay | — |
 | `isl.latencyPath` | `examples/_metadata/leo/latency.npz` | Per-(timestep, satellite) multi-hop latency and hop count from Svalbard (25° mask) | — |
-| `isl.throughputMbps` | `10000` | ISL rate cap | Representative optical ISL |
+| `isl.throughputMbps` | `2500` | ISL rate cap | SDA Optical Communication Terminal standard v3 (1550 nm, 2.5 Gbps) |
 | `isl.perHopProcessingMs` | `0.0` | Added per relay hop | — |
+| `isl.switchMarginDeg` | `10.0` | `sticky` mode only: gateway picked by longest remaining visibility; replaced only when it leaves view or another satellite is this much higher | — |
+| `isl.gatewaySelection` | `best_rate` | `best_rate`: best RF rate among satellites in view, re-picked every timestep; or `sticky` (above) | — |
 | `toxiproxy.apiHost/apiPort` | `127.0.0.1:8474` | Toxiproxy HTTP API | — |
 | `toxiproxy.listenHost/listenPortBase` | `127.0.0.1`, `23000` | Trainer listens on `listenPortBase + satellite_index` | — |
 | `toxiproxy.bandwidthScale` | `1.0` | Multiplier on modeled rate before it becomes a bandwidth toxic | — |
@@ -280,6 +282,8 @@ Every field below is a `LinkLayerConfig` field (`flame/link/config.py`) and ever
 | `frequency.downlinkGhz` | `11.7 GHz` | Downlink carrier (mid of FCC-filed 10.7–12.7 GHz band) | [FCC STA 1423-EX-ST-2024](https://apps.fcc.gov/els/GetAtt.html?id=355143) |
 | `frequency.uplinkGhz` | `14.25 GHz` | Uplink carrier (mid of FCC-filed 14.0–14.5 GHz band) | Same filing |
 | `frequency.bandwidthMhz` | `240 MHz` | Channel bandwidth | [Ku-band downlink channelization measurements, arXiv:2210.11578](https://arxiv.org/pdf/2210.11578) — 8×240 MHz channels, 10 MHz guard bands |
+| `frequency.uplinkBandwidthMhz` / `frequency.downlinkBandwidthMhz` | `null` (= `bandwidthMhz`) | Per-direction channel bandwidth override (uplink = ground→satellite, downlink = satellite→ground) | — |
+| `frequency.uplinkChannels` / `frequency.downlinkChannels` | `1` | Parallel channels per direction; each at full EIRP over its own bandwidth, so SNR is per channel and throughput = channels × per-channel capacity | Same channelization source — up to 8 |
 | `losses.implementationLossDb` | `1.0 dB` | Fixed hardware/implementation margin | Representative |
 | `losses.rainMarginDb` | `0.0 dB` | Optional additive rain margin | Off by default |
 | `atmospheric.waterVaporDensityGM3` | `7.5 g/m³` | Water vapor density | US Standard Atmosphere, mid-latitude representative |
@@ -311,7 +315,7 @@ Time wraps modulo the trajectory length (10800 s), so long runs keep seeing pass
 | Mode | Rate | Propagation / hops |
 |---|---|---|
 | `direct` (default) | This satellite's own RF link; 0 when below the elevation mask | slant range / c; 1 hop |
-| `isl` | Own RF link when in view, else min(best in-view relay's RF rate, `isl.throughputMbps`) | `latency.npz` latency + (hops − 1) · `perHopProcessingMs`; `hop_count` |
+| `isl` | Own RF link when in view, else min(sticky gateway's RF rate, `isl.throughputMbps`) | `latency.npz` latency + (hops − 1) · `perHopProcessingMs`; `hop_count` |
 
 Svalbard always has 4–8 satellites in view, so `isl` never waits; `direct` waits for each satellite's next pass (median longest gap ≈ 1.5 h). `latency.npz` matches this module's own Svalbard / 25° visibility on 99.8% of (timestep, satellite) pairs.
 
