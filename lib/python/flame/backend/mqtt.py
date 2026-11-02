@@ -36,6 +36,8 @@ from flame.common.util import background_thread_loop, run_async
 from flame.proto import backend_msg_pb2 as msg_pb2
 from google.protobuf.any_pb2 import Any
 from paho.mqtt.client import MQTTv5
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.properties import Properties
 
 END_STATUS_ON = "online"
 END_STATUS_OFF = "offline"
@@ -47,6 +49,7 @@ END_STATUS_OFF = "offline"
 MQTT_TIME_WAIT = 14400  # 14400 sec
 MIN_CHECK_PERIOD = 1  # 1 sec
 MQTT_LOOP_CHECK_PERIOD = 1  # 1 sec
+MQTT_SESSION_EXPIRY_S = 300  # outlasts _reconnect's 30s max backoff
 TOPIC_SEP = "/"
 
 logger = logging.getLogger(__name__)
@@ -84,6 +87,7 @@ class MqttBackend(AbstractBackend):
         self._cleanup_ready = set()
         self._is_connected = False
         self._reconnecting = False
+        self._subscriptions = {}  # topic -> qos, replayed after reconnect
 
         if self._initialized:
             return
@@ -133,9 +137,12 @@ class MqttBackend(AbstractBackend):
         self._job_id = job_id
         self._id = task_id
 
+        # Job-scoped client id: concurrent jobs reuse task ids, and duplicate ids kick each other off the broker.
         self._mqtt_client = mqtt.Client(
-            mqtt.CallbackAPIVersion.VERSION1, self._id, protocol=MQTTv5
+            mqtt.CallbackAPIVersion.VERSION1, f"{self._id}@{self._job_id}", protocol=MQTTv5
         )
+        # Surfaces paho's socket errors (the actual cause behind rc=7 drops).
+        self._mqtt_client.enable_logger(logging.getLogger("paho"))
 
         self._health_check_topic = f"{MQTT_TOPIC_PREFIX}/{self._job_id}"
 
@@ -159,8 +166,14 @@ class MqttBackend(AbstractBackend):
             keepalive_timeout = 300  # 5 minutes
             # Optional "host:port" (e.g. a per-trainer Toxiproxy listener); default port 1883.
             host, _, port = self._broker.partition(":")
-            self._mqtt_client.connect(host, int(port) if port else 1883, keepalive=keepalive_timeout)
+            # Keep the broker session across reconnects so in-flight QoS 2 chunks survive.
+            connect_props = Properties(PacketTypes.CONNECT)
+            connect_props.SessionExpiryInterval = MQTT_SESSION_EXPIRY_S
+            self._mqtt_client.connect(
+                host, int(port) if port else 1883, keepalive=keepalive_timeout, properties=connect_props
+            )
             logger.info(f"MQTT client connecting to {self._broker} with keepalive={keepalive_timeout}s")
+            self._subscriptions[self._health_check_topic] = MqttQoS.AT_MOST_ONCE
             self._mqtt_client.subscribe(self._health_check_topic)
 
         coro = _setup_mqtt_client()
@@ -358,6 +371,11 @@ class MqttBackend(AbstractBackend):
         broker."""
         logger.info(f"MQTT client connected: rc={rc}")
         self._is_connected = True
+        if self._reconnecting:
+            # Clean session drops subscriptions on reconnect; restore them.
+            for topic, qos in list(self._subscriptions.items()):
+                client.subscribe(topic, qos=qos)
+            logger.info(f"Re-subscribed {len(self._subscriptions)} topics after reconnect")
         self._reconnecting = False
 
         # publish health data; format: <end_id>:<status> status is either
@@ -388,11 +406,24 @@ class MqttBackend(AbstractBackend):
             # Unexpected disconnect, attempt reconnection
             logger.info("Attempting to reconnect to MQTT broker...")
             self._reconnecting = True
+            # Not inline: paho marks the client CONNECTION_LOST after this callback returns.
+            asyncio.run_coroutine_threadsafe(self._reconnect(), self._loop)
+
+    async def _reconnect(self, connack_wait_s=10.0, max_delay_s=30.0):
+        """Retry reconnect with backoff until on_connect fires."""
+        delay = 1.0
+        while not self._is_connected:
             try:
-                client.reconnect()
+                self._mqtt_client.reconnect()
+                deadline = time.time() + connack_wait_s
+                while not self._is_connected and time.time() < deadline:
+                    await asyncio.sleep(0.1)
             except Exception as e:
-                logger.error(f"Reconnection failed: {e}")
-                self._reconnecting = False
+                logger.warning(f"Reconnect attempt failed: {e}")
+            if not self._is_connected:
+                logger.warning(f"Still disconnected; retrying in {delay:.0f}s")
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, max_delay_s)
 
     def on_message(self, client, userdata, message):
         """on_message receives message."""
@@ -413,11 +444,13 @@ class MqttBackend(AbstractBackend):
     def subscribe(self, topic) -> None:
         """Subscribe to a topic."""
         logger.debug(f"subscribe topic: {topic}")
+        self._subscriptions[topic] = MqttQoS.EXACTLY_ONCE
         self._mqtt_client.subscribe(topic, qos=MqttQoS.EXACTLY_ONCE)
 
     def unsubscribe(self, topic) -> None:
         """Unsubscribe from a topic."""
         logger.debug(f"unsubscribe topic: {topic}")
+        self._subscriptions.pop(topic, None)
         self._mqtt_client.unsubscribe(topic)
 
     def notify(self, channel_name, notify_type, notify_info=None) -> bool:
