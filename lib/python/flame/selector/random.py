@@ -57,6 +57,9 @@ class RandomSelector(AbstractSelector):
         except KeyError:
             raise KeyError("c is not specified in config")
 
+        # hyperparameters.send_timeout_wait_s (via channel_manager); defaults to the original constant.
+        self.send_timeout_wait_s = kwargs.get("send_timeout_wait_s", SEND_TIMEOUT_WAIT_S)
+
         # `c` (concurrency) alone drives selection, matching other selectors --
         # none have a `k` concept. A legacy `k` cap on cleanup caused a
         # starve-to-livelock bug; a leftover `k` in config is now inert (unused).
@@ -142,7 +145,7 @@ class RandomSelector(AbstractSelector):
             current_time = time.time()
             for end_id in list(self.selected_ends):
                 if end_id in self.time_sent:
-                    if (current_time - self.time_sent[end_id]) > SEND_TIMEOUT_WAIT_S:
+                    if (current_time - self.time_sent[end_id]) > self.send_timeout_wait_s:
                         logger.info(f"Moving {end_id} to stale_ends (Timeout).")
                         self.selected_ends.remove(end_id)
                         del self.all_selected[end_id] # This is needed if we want to resample from timed out ends
