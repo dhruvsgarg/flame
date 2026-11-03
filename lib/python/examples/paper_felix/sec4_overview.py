@@ -54,7 +54,7 @@ def fig_architecture():
     """F6, figure*: the live eligible pool, pushed by clients, drives Pace, Select and (through c -> τ) Agg; FLuX parts in one
     accent, feedback in a second, inherited FedBuff engine grey. Badges 1-8 = §4 ¶2 steps; the prose, not the figure, explains them."""
     W, H = FULL_W, 3.3
-    fig = plt.figure(figsize=(W, H), layout="none")
+    fig = plt.figure(figsize=(W, 2.6), layout="none")  # drawn on the 3.3 in canvas, squeezed vertically
     ax = fig.add_axes((0, 0, 1, 1))
     ax.set(xlim=(0, W), ylim=(0, H))
     ax.axis("off")
@@ -85,12 +85,12 @@ def fig_architecture():
     rows = (("A", "Eligible", "Idle, charging, Wi-Fi", NEW), ("D", "Leaves mid-task", "Unplugged: reports it", INK),
             ("C", "Training", "1 epoch on local data", INK), ("B", "In use: not eligible", "New data arrives, $|D|\\uparrow$", INK))
     for key, st, why, c in rows:
-        ax.text(0.38, dev[key] + 0.07, st, ha="left", va="center", fontsize=F, weight="bold", color=c)
-        ax.text(0.38, dev[key] - 0.09, why, ha="left", va="center", fontsize=F)
-    _flow(ax, (0.12, 0.33), (0.42, 0.33), "ctl")
-    ax.text(0.47, 0.33, "Control (bytes)", ha="left", va="center", fontsize=F)
-    _flow(ax, (0.12, 0.15), (0.42, 0.15), "data")
-    ax.text(0.47, 0.15, "Model / update (MB)", ha="left", va="center", fontsize=F)
+        ax.text(0.38, dev[key] + 0.11, st, ha="left", va="center", fontsize=F, weight="bold", color=c)
+        ax.text(0.38, dev[key] - 0.13, why, ha="left", va="center", fontsize=F)
+    _flow(ax, (0.12, 0.4), (0.42, 0.4), "ctl")
+    ax.text(0.47, 0.4, "Control (bytes)", ha="left", va="center", fontsize=F)
+    _flow(ax, (0.12, 0.17), (0.42, 0.17), "data")
+    ax.text(0.47, 0.17, "Model / update (MB)", ha="left", va="center", fontsize=F)
 
     # Notify: eligibility ledger, one row per client
     lx, ly, lw_, lh = 1.62, 1.74, 1.16, 1.3
@@ -177,7 +177,7 @@ def fig_architecture():
     ax_, aw = 2.82, 1.62
     _rbox(ax, ax_, 0.2, aw, 0.62, ec=NEW, fc="white", lw=1.2)
     ax.text(ax_ + 0.06, 0.77, f"{S}-Agg", ha="left", va="top", fontsize=TT, weight="bold", color=NEW)
-    ax.text(ax_ + 0.06, 0.58, "Weight\n$(1{+}\\tau)^{-1/4}$", ha="left", va="top", fontsize=F, linespacing=1.1)
+    ax.text(ax_ + 0.06, 0.58, "Weight\n$(1{+}\\tau)^{-0.25}u(\\ell)$", ha="left", va="top", fontsize=F, linespacing=1.1)
     gx, gy, gw, gh = 3.66, 0.34, 0.4, 0.34
     taus = [i / 2 for i in range(41)]
     for e, c, ls_, lw_ in ((0.25, NEW, "-", 2.0), (0.5, MUTEDK, (0, (2, 1.2)), 1.0)):
@@ -205,8 +205,6 @@ def fig_architecture():
     ax.text(2.36, 1.15, "Loss → Utility $q$", ha="left", va="center", fontsize=F, color=FB, weight="bold")
     _flow(ax, (3.28, 0.82), (3.28, cy), "ctl", c=FB); _badge(ax, 3.28, 1.56, "8")
     ax.text(3.22, 0.93, "Loss → Phase $\\varphi$", ha="right", va="center", fontsize=F, color=FB, weight="bold")
-    _flow(ax, (4.0, sy0 - 0.06), (4.0, 0.82), "ctl", c=FB)
-    ax.text(4.07, 0.95, "$c$ → staleness $\\tau \\approx c/K$", ha="left", va="center", fontsize=F, color=FB, weight="bold")
     return save(fig, SEC, "fig_architecture")
 
 

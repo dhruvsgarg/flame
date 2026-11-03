@@ -116,4 +116,4 @@ class MessageType(Enum):
     # ground-station-side link budget for this trainer without a priori
     # knowledge of the end_id -> satellite_index mapping (end_id carries no
     # such information -- see flame.mode.horizontal.syncfl.top_aggregator).
-    SATELLITE_INDEX = 44
+    SATELLITE_INDEX = 51

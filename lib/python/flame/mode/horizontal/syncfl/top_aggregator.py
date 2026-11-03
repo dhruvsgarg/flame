@@ -23,7 +23,6 @@ import time
 from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Optional
-import cloudpickle
 import numpy as np
 
 from diskcache import Cache
@@ -837,13 +836,10 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         # against that single barrier — collected here, finalized after the loop.
         _real_round_durs: list = list(getattr(self, "_sync_real_durs", [])) if _wait_k else []
         _sim_round_ready: list = list(getattr(self, "_sync_sim_ready", [])) if _wait_k else []
-        # end -> downlink-direction link_* fields (flame.link), for whichever
-        # contributing trainers had a cached satellite_index this round.
+        # end -> downlink link_* fields (flame.link) for trainers with a cached satellite_index.
         _round_link_extras: dict = {}
         _at.add_recv(time.time() - _t_recv)
         for msg, metadata in _at.iterate(updates):
-        _real_round_durs: list = []
-        for msg, metadata in updates:
             end, timestamp = metadata
             _t_msg_start = datetime.now()  # start of per-message processing (vii)
             _real_ready_ts = None  # WALL_SEND_TS (real); set below

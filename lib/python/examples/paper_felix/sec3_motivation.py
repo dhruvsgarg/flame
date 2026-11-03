@@ -10,7 +10,7 @@ from figlib import FONT, FULL_W, INK, LINE, PRED, TRACE, Z, place, plt, save, sm
 SEC = "s3_motivation"
 DATA = os.path.join(X.HERE, "data")
 TRACES = (("mobiperf_3st", "MobiPerf", *TRACE["MobiPerf"]), ("syn_50_3st", "Syn-50%", *TRACE["Syn-50%"]))
-PRED_KEYS = (("now", "Eligible now (naive)"), ("prophet", "REFL Prophet"), ("feddance", "FedDance forecast"), ("seasonal", "Time-of-day vote"))
+PRED_KEYS = (("now", "Persistence"), ("prophet", "REFL Prophet"), ("feddance", "FedDance forecast"), ("seasonal", "Time-of-day vote"))
 
 
 def _fx(trace):
@@ -60,7 +60,7 @@ def fig2_trace():
         b.text(to / 60 * 1.5, y, ds, ha="left", va="center", **kw)
     c.axhline(0, color=INK, lw=LINE["axis"], zorder=Z["fill"])
     _log_minutes(c, [(5, "5 min"), (60, "1 h"), (360, "6 h"), (1440, "1 day")])
-    c.set(xlim=(4, 1800), ylim=(-0.1, 1.05), xlabel="(c) Lag", ylabel="Autocorrelation")
+    c.set(xlim=(4, 1800), ylim=(-0.1, 1.05), xlabel="(c) Lag", ylabel="Correlation")
     m = fx["mobiperf_3st"]["metrics"]
     hs = sorted({int(k.split("_")[1]) for k in m})
     for ax, q, xl in ((d, "A", "(d) Horizon h: who is\neligible in [t+h, t+2h]"), (e, "B", "(e) Horizon h: eligible\nclient stays for h")):
@@ -90,7 +90,7 @@ def fig2_trace():
     A = {k: [m[f"A_{h}"][k]["auc"] for h in hs] for k, _ in PRED_KEYS}
     B = {k: [m[f"B_{h}"][k]["auc"] for h in hs] for k, _ in PRED_KEYS}
     gap = [x - y for x, y in zip(A["now"], A["prophet"])]
-    place(d, f"Prophet: {bf_(-min(gap))} to\n{bf_(-max(gap))} vs naive", [(4.4, y, "left", "bottom") for y in (0.31, 0.32)],
+    place(d, f"Prophet vs persistence:\n{bf_(-min(gap))} to {bf_(-max(gap))}", [(4.4, y, "left", "bottom") for y in (0.31, 0.32)],
           linespacing=1.1, **kw)
     place(e, "Coin flip", [(70, 0.49, "right", "top"), (5, 0.49, "left", "top")], **kw)
     best = max(max(B["prophet"]), max(B["feddance"]))

@@ -35,7 +35,7 @@ STACK = {"Felix": (OI["blue"], "-"), "FedBuff": (OI["vermillion"], "-"), "Oort":
          "FedDance": (OI["purple"], "-"), "FedAvg": (OI["sky"], "-"), "FedBuff*": (OI["vermillion"], "--"),
          "Oort*": (OI["green"], "--"), "REFL*": (OI["gold"], "--"), "FedDance*": (OI["purple"], "--"), "FedAvg*": (OI["sky"], "--")}
 MARK = {"Felix": "o", "FedBuff": "s", "Oort": "^", "REFL": "v", "FedDance": "D", "FedAvg": "X"}  # oracle `*` = its stack's marker
-PRED = {"Eligible now (naive)": (INK, "-", "o"), "REFL Prophet": (OI["gold"], "-", "v"), "FedDance forecast": (OI["purple"], "-", "D"),
+PRED = {"Persistence": (INK, "-", "o"), "REFL Prophet": (OI["gold"], "-", "v"), "FedDance forecast": (OI["purple"], "-", "D"),
         "Time-of-day vote": (INK, "--", "s")}  # FX-N147 predictors: forecasters in their stack's color, naive guesses black
 TRACE = {"MobiPerf": (INK, "-"), "Syn-50%": ("#8c8c8c", "--"), "Syn-0%": ("#b1b0a9", ":")}  # syn = memoryless control: grey on purpose
 STATUS = {"MOCK": "#e34948", "PRELIM": "#c98500", "DRAFT": "#6250d6", "MISSING": "#6b6a64"}  # real figures carry no status
