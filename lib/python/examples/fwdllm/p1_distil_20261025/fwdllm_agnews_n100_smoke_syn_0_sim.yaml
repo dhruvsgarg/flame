@@ -1,0 +1,87 @@
+experiments:
+- name: fwdllm_agnews_n100_smoke_syn_0_sim
+  description: 'FedFwd SIM smoke (100 trainers, c=10, fwdllm baseline: sync random+fedavg,
+    time_mode=simulated). Validates the Batch-1 sim clock/ordering port.'
+  baseline: fwdllm
+  example:
+    trainer_main: trainer/main.py
+  trainer:
+    num_trainers: 100
+    start_id: 1
+    dataset:
+      name: agnews
+      path_style: true
+      dirichlet_alpha: 1
+    availability:
+      mode: syn_0
+    time_mode: simulated
+    enable_training_delays: true
+    client_idx_modulo: 100
+    config_overrides:
+      hyperparameters:
+        seed: 1234
+        data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+        partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+        partition_method: niid_label_clients=100_alpha=1
+        jvp_eval_mode: true
+        jvp_perf_opt: true
+        sim_straggler_spread_s: 0.0
+        client_notify:
+          trace: syn_0
+        dataset: agnews
+        max_seq_length: 192
+        cache_dir: /coc/scratch/dgarg/fl_datasets/fwdllm/cache_dir
+        train_batch_size: 8
+        adapter_reduction_factor: 16
+    hyperparameters:
+      training_delay_factor: 4.78
+      training_delay_floor_s: 4.0
+  aggregator:
+    config_template: configs/aggregator_base.json
+    selector: random
+    tracking_mode: default
+    agg_goal: 10
+    log_to_wandb: false
+    config_overrides:
+      job:
+        id: fwdllm_agnews_n100_smoke_syn_0_sim
+      hyperparameters:
+        seed: 1234
+        rounds: 50
+        inflight_residence: true
+        max_data_id_progress: 9999
+        max_runtime_s: 1000000000
+        eval_every_n_commits: 4
+        sim_charge_profile_path: /home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/sim_charge_profiles/fwdllm.yaml
+        sim_wall_ceiling_s: 21600.0
+        sim_model_agg_compute_time: true
+        sim_model_dispatch_queue: true
+        sim_sct_ordered_drain: true
+        data_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/data_files/agnews_data.h5
+        partition_file_path: /coc/scratch/dgarg/fl_datasets/fwdllm/fednlp_data/partition_files/agnews_partition.h5
+        partition_method: niid_label_clients=100_alpha=1
+        dataset: agnews
+        max_seq_length: 192
+        cache_dir: /coc/scratch/dgarg/fl_datasets/fwdllm/cache_dir
+        server_update_audit: true
+        train_batch_size: 8
+        cos_ground_truth_audit: false
+        adapter_reduction_factor: 16
+        saturation_stop: true
+        sat_stall_frac: 0.003
+        final_full_eval: true
+        max_commits: 2000
+        trackTrainerAvail:
+          trace: syn_0
+      selector:
+        kwargs:
+          c: 10
+          minInitialTrainers: 100
+  execution:
+    num_gpus: 1
+    sleep_between_spawns: 2.0
+    aggregator_warmup_time: 20
+    monitoring:
+      enabled: false
+    gpu_ids:
+    - 0

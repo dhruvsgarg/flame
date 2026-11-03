@@ -26,6 +26,7 @@ _REQUIRED = (
 _OPTIONAL = {
     "trainable_scope": "adapters_head",   # S-I (inert on distilbert -- see §11.5)
     "adapter_reduction_factor": 16,       # the real p knob: 768/rf per adapter
+    "lora_r": 8,                          # LoRA rank: the p knob under peft_method=lora
     "perturbation_count": 10,             # P
     "probe_combine": "select",            # S-H
     "jvp_perf_opt": False,                # §L perf, bit-identical
@@ -35,6 +36,7 @@ _OPTIONAL = {
     # the default is inert there and the key stays out of aggregator_base.json.
     # `require_trainer_knobs` keeps it from silently defaulting on a real trainer.
     "select_perturbation_using_jvp": False,
+    "cos_select_every_bin": False,        # run 7: cos target = last commit on every bin
 }
 
 # Knobs whose default would silently change what a TRAINER computes.

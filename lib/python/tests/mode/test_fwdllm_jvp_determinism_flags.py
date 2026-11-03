@@ -47,7 +47,7 @@ class TestJvpFp32Gate:
             def __enter__(self): entered.append(True)
             def __exit__(self, *a): return False
 
-        monkeypatch.setattr(fwdgrad_utils, "autocast", lambda: _Spy())
+        monkeypatch.setattr(fwdgrad_utils, "autocast", lambda **_: _Spy())
         _run_jvp()
         assert entered == [True]
 
@@ -58,7 +58,7 @@ class TestJvpFp32Gate:
             def __enter__(self): entered.append(True)
             def __exit__(self, *a): return False
 
-        monkeypatch.setattr(fwdgrad_utils, "autocast", lambda: _Spy())
+        monkeypatch.setattr(fwdgrad_utils, "autocast", lambda **_: _Spy())
         monkeypatch.setenv("FWDLLM_JVP_FP32", "1")
         _run_jvp()
         assert entered == []

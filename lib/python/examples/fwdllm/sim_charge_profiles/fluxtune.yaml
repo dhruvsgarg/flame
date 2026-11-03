@@ -1,32 +1,34 @@
 # Real-profiled vclock charges for sim-only costs sim can't measure
 # live (FWDLLM_DESIGN.md §P). Regenerate via expt_scripts/
 # profile_sim_charges.py -- hand-edit only `charge:`/`rationale:`.
+_meta:
+  datasets:
+  - agnews
+  profiled_at: '2026-10-25'
 drain_tail:
   _default:
     charge: true
-    mean_s: 0.2783
-    n: 3601
-    p90_s: 0.5722
-    profiled_at: '2026-08-03'
+    mean_s: 0.0317
+    n: 178
+    p90_s: 0.0453
+    profiled_at: '2026-10-25'
     rationale: sim runs the same op under ~100 co-located trainer threads, so its
       live span is contention-inflated and folding it on the vclock injects sim-host
       noise (simulate_fwdllm.md D-18, F-1/F-20). Charged from this baseline's own
       real.
     source_runs:
-    - run_20260803_001625_fluxtune_n100_smoke_syn_0_real
-    - run_20260803_042016_fluxtune_n100_smoke_syn_0_real
+    - run_20261025_065511_g0_distil_fluxtune_agnews_n30_smoke_syn_0_real
 fedavg:
   _default:
     charge: true
-    mean_s: 0.0563
-    n: 3601
-    p90_s: 0.0525
-    profiled_at: '2026-08-03'
+    mean_s: 0.0305
+    n: 178
+    p90_s: 0.1151
+    profiled_at: '2026-10-25'
     rationale: same as drain_tail -- sim's own span is contention-inflated, so the
       charge comes from this baseline's own real.
     source_runs:
-    - run_20260803_001625_fluxtune_n100_smoke_syn_0_real
-    - run_20260803_042016_fluxtune_n100_smoke_syn_0_real
+    - run_20261025_065511_g0_distil_fluxtune_agnews_n30_smoke_syn_0_real
 redispatch_turnaround:
   var_bad:
     charge: false

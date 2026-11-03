@@ -1,0 +1,2 @@
+P1_fwdllm	fwdllm	syn_0	/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/p1_distil_20261025/fwdllm_agnews_n100_smoke_syn_0_sim.yaml	gpu_gb=4	ram_gb=12	workers=8
+P1_fluxtune	fluxtune	syn_0	/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/p1_distil_20261025/fluxtune_agnews_n100_smoke_syn_0_sim.yaml	gpu_gb=4	ram_gb=12	workers=8

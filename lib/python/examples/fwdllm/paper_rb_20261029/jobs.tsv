@@ -1,0 +1,1 @@
+rb_fwd_paper	fwdllm	syn_0	/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/paper_rb_20261029/fwdllm_yelp-p_n100_smoke_syn_0_sim.yaml	gpu_gb=24	ram_gb=60	workers=10

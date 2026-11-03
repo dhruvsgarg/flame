@@ -348,8 +348,10 @@ expt_launch() {
 # / SIM_STARVATION / tracebacks live in experiments/run_*/*_aggregator.log. Only
 # files newer than `marker` are scanned, so signals attribute to THIS run. Prints a
 # one-line verdict and exports EXPT_LAST_HEALTH (COMPLETED / CRASH / NO_AGG_ROUNDS /
-# WALL_CEILING / NO_MARKER); returns 0 only for agg_rounds && no wall-ceiling && no
-# crash. A healthy run is "COMPLETED", not "PASS" (PASS/FAIL is for actual checks).
+# WALL_CEILING / AGG_KILLED / NO_MARKER); returns 0 only for agg_rounds && no wall-ceiling
+# && no crash. A healthy run is "COMPLETED", not "PASS" (PASS/FAIL is for actual checks).
+# AGG_KILLED: the runner saw the aggregator exit non-zero with no traceback (a SIGKILL
+# leaves none; the 10-19 1.7B run read COMPLETED crash=0).
 expt_assert_run() {
   local example_dir="$1" marker="$2" label="${3:-run}"
   local expdir="$example_dir/experiments"
@@ -374,15 +376,18 @@ expt_assert_run() {
     n=$(grep -c  "\[SIM_STARVATION\]" "$f" 2>/dev/null);     starv=$(( starv + ${n:-0} ))
     n=$(grep -cE "Traceback \(most recent call last\)|CUDA error|Segmentation fault" "$f" 2>/dev/null); crash=$(( crash + ${n:-0} ))
   done < <(find "${roots[@]}" -name "*_aggregator.log" -newer "$marker" 2>/dev/null)
+  local killed=0 out; out="$(dirname "$marker")/${label}.out"
+  [ -f "$out" ] && { n=$(grep -c "aggregator FAILED (exit=" "$out" 2>/dev/null); killed=${n:-0}; }
   # A healthy, fully-run experiment is COMPLETED (a process outcome), not PASS.
   local status="COMPLETED"
   [ "$agg" -eq 0 ]   && status="NO_AGG_ROUNDS"
   [ "$wall" -gt 0 ]  && status="WALL_CEILING"
+  [ "$killed" -gt 0 ] && status="AGG_KILLED"
   [ "$crash" -gt 0 ] && status="CRASH"
   # Convergence-mode verdict (EXPERIMENTS.md WS2): only with a target accuracy. A
   # watcher-driven stop is CONVERGED; running out the safety caps is DID_NOT_CONVERGE.
   # A crash/wall-ceiling still wins (a failure, not a verdict).
-  if [ -n "${EXPT_TARGET_ACC:-}" ] && [ "$crash" -eq 0 ] && [ "$wall" -eq 0 ] && [ "$agg" -gt 0 ]; then
+  if [ -n "${EXPT_TARGET_ACC:-}" ] && [ "$crash" -eq 0 ] && [ "$killed" -eq 0 ] && [ "$wall" -eq 0 ] && [ "$agg" -gt 0 ]; then
     if [ "${EXPT_LAST_CONVERGED:-0}" = "1" ]; then status="CONVERGED"
     elif [ "${EXPT_LAST_STALLED:-0}" = "1" ]; then status="STALLED"
     else status="DID_NOT_CONVERGE"; fi
@@ -391,9 +396,9 @@ expt_assert_run() {
   # force-killed. Takes priority over other verdicts below.
   [ "${EXPT_LAST_TIMED_OUT:-0}" = "1" ] && status="TIMEOUT_KILLED"
   EXPT_LAST_HEALTH="$status"; export EXPT_LAST_HEALTH
-  printf "  [%s] %-14s agg_round=%s stopping_run=%s wall_ceiling=%s starvation=%s crash=%s (%s agg log(s))\n" \
-    "$label" "$status" "$agg" "$stop" "$wall" "$starv" "$crash" "$nlogs"
-  [ "$agg" -gt 0 ] && [ "$wall" -eq 0 ] && [ "$crash" -eq 0 ]
+  printf "  [%s] %-14s agg_round=%s stopping_run=%s wall_ceiling=%s starvation=%s crash=%s agg_killed=%s (%s agg log(s))\n" \
+    "$label" "$status" "$agg" "$stop" "$wall" "$starv" "$crash" "$killed" "$nlogs"
+  [ "$agg" -gt 0 ] && [ "$wall" -eq 0 ] && [ "$crash" -eq 0 ] && [ "$killed" -eq 0 ]
 }
 
 # Kill every FL worker of this user by name (the last-resort sweep after a group kill).

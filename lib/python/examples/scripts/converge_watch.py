@@ -8,10 +8,9 @@ terminates it the moment the convergence condition is met:
 
     the last W consecutive data bins are ALL >= target accuracy tau.
 
-Data bins complete in order (data_id = 0,1,2,...) and emit exactly one
-``agg_eval`` per bin at completion, so "W continuous bins all >= tau"
-is exactly a trailing run of W consecutive-data_id bins each with test-accuracy
->= tau. We track the trailing streak; a bin below tau resets it.
+"Last W bins" = the last W ``agg_eval`` events in arrival order, each with
+test-accuracy >= tau; one below tau resets the streak. (Not max data_id: ids
+step by the eval stride and restart at 0 each lap.)
 
 On convergence we write ``converge.json`` (time-to-converge in wall + vclock +
 data_id + round) and SIGTERM->SIGKILL the run's process group. If the run exits
@@ -41,7 +40,8 @@ def _newest_agg_jsonl(exp_dir: str, marker: str) -> str | None:
     except OSError:
         marker_mtime = 0.0
     best, best_mtime = None, marker_mtime - 1.0
-    for run_dir in glob.glob(os.path.join(exp_dir, "run_*")):
+    label = os.environ.get("FLAME_RUN_LABEL")  # parallel lanes: only this slot's run dirs
+    for run_dir in glob.glob(os.path.join(exp_dir, f"run_*_{label}_*" if label else "run_*")):
         try:
             if os.path.getmtime(run_dir) < marker_mtime - 5.0:
                 continue  # pre-existing run dir, not ours
@@ -58,8 +58,9 @@ def _newest_agg_jsonl(exp_dir: str, marker: str) -> str | None:
 
 
 def _scan(agg_path: str):
-    """Return (data_id->accuracy, data_id->loss, latest_vclock, max_round)."""
+    """Return (data_id->accuracy, data_id->loss, latest_vclock, max_round, [(data_id, acc)] in eval order)."""
     acc_by_bin: dict[int, float] = {}
+    seq: list[tuple[int, float]] = []
     loss_by_bin: dict[int, float] = {}
     latest_vclock = None
     max_round = 0
@@ -84,27 +85,26 @@ def _scan(agg_path: str):
                 lo = r.get("test-loss")
                 if d is not None and a is not None:
                     acc_by_bin[int(d)] = float(a)  # last eval for the bin wins
+                    seq.append((int(d), float(a)))
                 if d is not None and lo is not None:
                     loss_by_bin[int(d)] = float(lo)
             elif ev == "agg_round":
                 v = r.get("vclock_now")
                 if v is not None:
                     latest_vclock = float(v)
-    return acc_by_bin, loss_by_bin, latest_vclock, max_round
+    return acc_by_bin, loss_by_bin, latest_vclock, max_round, seq
 
 
-def _trailing_streak(acc_by_bin: dict[int, float], target: float):
-    """Length of the trailing run of consecutive data_ids all >= target, and the
-    first data_id in that run. Bins must be contiguous (no gap) to count."""
-    if not acc_by_bin:
-        return 0, None
-    top = max(acc_by_bin)
+def _trailing_streak(seq: list[tuple[int, float]], target: float):
+    """Length of the trailing run of evals (in arrival order) all >= target, and the
+    first data_id in that run. Arrival order, not max data_id: data_ids step by the
+    eval stride and restart at 0 each lap, so the highest id goes stale after a wrap."""
     streak, first = 0, None
-    d = top
-    while d in acc_by_bin and acc_by_bin[d] >= target:
+    for d, a in reversed(seq):
+        if a < target:
+            break
         streak += 1
         first = d
-        d -= 1
     return streak, first
 
 
@@ -194,11 +194,11 @@ def main() -> int:
             time.sleep(args.poll)
             continue
         try:
-            acc_by_bin, loss_by_bin, vclock, max_round = _scan(agg_path)
+            acc_by_bin, loss_by_bin, vclock, max_round, seq = _scan(agg_path)
         except OSError:
             time.sleep(args.poll)
             continue
-        streak, first = _trailing_streak(acc_by_bin, args.target_acc)
+        streak, first = _trailing_streak(seq, args.target_acc)
         best = max(acc_by_bin.values()) if acc_by_bin else None
         best_loss = min(loss_by_bin.values()) if loss_by_bin else None
         now = time.time()
@@ -225,7 +225,7 @@ def main() -> int:
             last_improve_ts = now
         no_improve_s = now - last_improve_ts
         if acc_by_bin:
-            top = max(acc_by_bin)
+            top = seq[-1][0]
             _stall_note = (f" no_improve={no_improve_s/60:.0f}m/{args.stall_window_s/60:.0f}m"
                            if args.stall_window_s > 0 else "")
             _loss_note = f" best_loss={best_loss:.4f}" if best_loss is not None else ""
@@ -238,22 +238,21 @@ def main() -> int:
                 "converged": True,
                 "target_accuracy": args.target_acc,
                 "window": args.window,
-                "trigger_data_id": max(acc_by_bin),
+                "trigger_data_id": seq[-1][0],
                 "first_bin_in_window": first,
                 "n_bins_completed": len(acc_by_bin),
                 "time_to_converge_wall_s": round(wall_s, 3),
                 "time_to_converge_vclock_s": vclock,
                 "rounds_at_converge": max_round,
                 "agg_telemetry": agg_path,
-                "window_accuracies": [acc_by_bin[b] for b in
-                                      range(first, max(acc_by_bin) + 1)],
+                "window_accuracies": [a for _, a in seq[-streak:]],
             }
             try:
                 with open(args.converge_json, "w", encoding="utf-8") as fh:
                     json.dump(payload, fh, indent=2)
             except OSError as e:
                 print(f"  [converge] WARN could not write {args.converge_json}: {e}", flush=True)
-            print(f"  [{label}] CONVERGED at data_id={max(acc_by_bin)} "
+            print(f"  [{label}] CONVERGED at data_id={seq[-1][0]} "
                   f"(wall={wall_s:.0f}s vclock={vclock}) -> terminating run", flush=True)
             _terminate(args.pgid, args.grace)
             return 0

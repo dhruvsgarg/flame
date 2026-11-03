@@ -123,7 +123,7 @@ class _FakeAggregator:
     def add_local_trained_result(self, *a, **k):
         pass
 
-    def eval_model(self, model=None):
+    def eval_model(self, model=None, **_):
         return dict(self._eval_result), None, []
 
     def _log_and_reset_model_version_stats(self):

@@ -83,7 +83,8 @@ DATASET="${1:?usage: run_node_p4.sh <agnews|yahoo|yelp-p> <controller|control>}"
 ARM="${2:?usage: run_node_p4.sh <agnews|yahoo|yelp-p> <controller|control>}"
 
 # Identity at the pinned rf=16 (_FD_REF_P is 450,340); set so the pin is safe to lift.
-export FWDLLM_FD_SCALE_INVARIANT=1
+# P4_FD_SCALE_INVARIANT=0 for a new-p port whose chord drifts (probe_port_init.py).
+export FWDLLM_FD_SCALE_INVARIANT="${P4_FD_SCALE_INVARIANT:-1}"
 
 FW="$(cd "$(dirname "$0")/../.." && pwd)"
 
@@ -202,13 +203,18 @@ fi
 MODEL_ARGS=()
 [[ -n "${P4_MODEL_TYPE:-}" ]] && MODEL_ARGS+=(--model-type "$P4_MODEL_TYPE")
 [[ -n "${P4_MODEL_NAME:-}" ]] && MODEL_ARGS+=(--model-name "$P4_MODEL_NAME")
+[[ -n "${P4_PEFT_METHOD:-}" ]] && MODEL_ARGS+=(--peft-method "$P4_PEFT_METHOD")
+[[ -n "${P4_LORA_R:-}" ]] && MODEL_ARGS+=(--lora-r "$P4_LORA_R")
 [[ -n "${P4_PARTITION:-}" ]] && MODEL_ARGS+=(--partition-method "$P4_PARTITION")
+# P4_GPU_IDS (e.g. 0,1) pins trainers + aggregator to those CUDA ordinals; default is all 8.
+GPU_ARGS=(--num-gpus 8)
+[[ -n "${P4_GPU_IDS:-}" ]] && GPU_ARGS=(--gpu-ids "$P4_GPU_IDS")
 
 COMMON=(--only fluxtune --mode sim --yes --clean --allow-stale-profile "${FORCE[@]}"
         --dataset "$DATASET" "${EVAL[@]}"
         --server-update-audit --no-cos-ground-truth-audit
         --min-initial-frac "${P4_MIN_INIT_FRAC:-0.9}"
-        --num-trainers "${P4_NUM_TRAINERS:-100}" --num-gpus 8 --agg-goal 10 --c 30
+        --num-trainers "${P4_NUM_TRAINERS:-100}" "${GPU_ARGS[@]}" --agg-goal 10 --c 30
         "${MODEL_ARGS[@]}"
         --probe-combine mean --commit-gate n_target
         --server-step-rule trust_ratio --gate-safety-s "${P4_GATE_S:-1.5}"

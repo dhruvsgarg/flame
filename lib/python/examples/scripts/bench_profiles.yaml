@@ -1,0 +1,10 @@
+# Per-leg resource classes for bench_pool.py (FLUXTUNE FT-N19): measured footprints keyed by the leg's dataset.
+# A jobs-file column (gpu_gb= / ram_gb= / workers=) overrides its profile; a dataset not listed uses the --leg-* flags.
+cifar10:      # Felix bench screens, 2 workers (FELIX_READINESS FX-N141: ~4 GB GPU, <= 8 GB RAM per leg)
+  gpu_gb: 4.0
+  ram_gb: 8.0
+  workers: 2
+agnews:       # fwdllm DistilBERT n 100, 4 workers: 3.6 GB GPU, 11.0 GB RAM over 6 processes (FLUXTUNE FT-D3)
+  gpu_gb: 4.0
+  ram_gb: 12.0
+  workers: 4

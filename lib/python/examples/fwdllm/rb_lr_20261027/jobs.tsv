@@ -1,0 +1,2 @@
+rblr_E_lora6_lr3e-3_v0.3	fwdllm	syn_0	/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/rb_lr_20261027/rblr_E_lora6_lr3e-3_v0.3.yaml	gpu_gb=24	ram_gb=60	workers=8
+rblr_F_lora6_lr1e-3_v0.3	fwdllm	syn_0	/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/rb_lr_20261027/rblr_F_lora6_lr1e-3_v0.3.yaml	gpu_gb=24	ram_gb=60	workers=8

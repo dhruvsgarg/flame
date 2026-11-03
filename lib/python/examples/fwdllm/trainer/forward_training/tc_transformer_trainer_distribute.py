@@ -215,6 +215,9 @@ class ForwardTextClassificationTrainer:
         self.model = model
         if self.args.model_type == "distilbert":
             self.model.add_module("pre_classifier", nn.Sequential())
+        elif self.args.model_type == "roberta-large":
+            # Same drop for roberta's head: kept, classifier.dense adds 1,049,600 to p.
+            self.model.classifier.add_module("dense", nn.Sequential())
         # self.model.to(self.device)
 
         # training results
@@ -290,9 +293,13 @@ class ForwardTextClassificationTrainer:
         elif self.args.model_type == "bert":
             self.layer_id_for_check = 12
         elif self.args.model_type == "roberta-large":
-            self.layer_id_for_check = 12
+            # lora: layer.1 query lora_B; 12 is a frozen bias under lora.
+            self.layer_id_for_check = 28 if self.args.peft_method == "lora" else 12
         elif self.args.model_type == "albert":
             self.layer_id_for_check = 22
+        elif self.args.model_type == "llama":
+            # layers.1 q lora_B; a lora_A slice is all-zero at init (B=0).
+            self.layer_id_for_check = 16
         self.var = 0
         logger.info(f"Client Trainer learning rate: {self.args.learning_rate}")
 
@@ -332,13 +339,14 @@ class ForwardTextClassificationTrainer:
             vocab_size = emb.num_embeddings if emb is not None else 1000
             seq_len = getattr(self.args, "max_seq_length", 128)
             dummy_x = torch.randint(0, vocab_size, (1, seq_len), device=self.device)
-            with torch.no_grad():
+            with torch.no_grad(), lowp_autocast(self.model):
                 self.model(dummy_x)
             self.model.train(was_training)
             logging.info(
                 f"[GPU_WARMUP] trainer_id={self.trainer_id} device={self.device} "
                 f"vocab_size={vocab_size} seq_len={seq_len} -- kernel warmup pass complete"
             )
+            trim_host_heap()  # model is on GPU now: release its freed CPU-load heap
         except Exception as e:
             logging.warning(f"[GPU_WARMUP] skipped (non-fatal): {e}")
 
@@ -356,6 +364,9 @@ class ForwardTextClassificationTrainer:
         self.test_dl = test_dl
 
     def log_memory(self, tag, device):
+        # Diagnostic only, called per batch: DEBUG-gated like the aggregator's.
+        if not logging.getLogger().isEnabledFor(logging.DEBUG):
+            return
         # GPU memory
         allocated = torch.cuda.memory_allocated(device)
         reserved = torch.cuda.memory_reserved(device)
@@ -364,7 +375,7 @@ class ForwardTextClassificationTrainer:
         process = psutil.Process()
         cpu_memory = process.memory_info().rss  # in bytes
 
-        logging.info(
+        logging.debug(
             f"[MEM:{tag}] "
             f"GPU Allocated: {allocated/1e6:.2f} MB | "
             f"GPU Reserved: {reserved/1e6:.2f} MB | "
@@ -385,10 +396,9 @@ class ForwardTextClassificationTrainer:
     def _make_model_functional(self, device):
         # Ensure model is on the correct device
         self.model.to(device)               # TODO(Gaurav): does this need to be in CPU?
-        
-        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
-            self.model
-        )
+
+        # One weight copy: fmodel runs self.model on the passed tensors (no functorch deep copy).
+        self.fmodel, self.params, self.buffers = make_functional_view(self.model)
         self.params = [p.to(device) for p in self.params]    # In case it was moved to CPU for serialization before being sent over the channel
         self.buffers = [b.to(device) for b in self.buffers]
         # The authoritative p: create_model counts before :217 drops
@@ -422,7 +432,8 @@ class ForwardTextClassificationTrainer:
                     # Full grad-shape clone (old_grad arrives from the aggregator
                     # on CPU); only on odd data_ids (old_grad is None on even ones).
                     with _stage_timer(self, "tb_grad_clone"):
-                        self.grad = None if self.old_grad is None else [g.clone() for g in self.old_grad]
+                        self.grad = None if self.old_grad is None else [
+                            g.clone() if p.requires_grad else g for g, p in zip(self.old_grad, self.params)]
 
                 # v_all_pert = []
                 v_buffer = {}
@@ -447,7 +458,9 @@ class ForwardTextClassificationTrainer:
                             logging.debug(f"candidate_v for client_idx {self.args.client_idx} is {_calculate_hash(candidate_v)} for param_name {k}")
                             all_perturbations_hash = _calculate_rolling_hash(candidate_v, all_perturbations_hash)
 
-                        if not self.select_perturbation_using_jvp and self.grad is not None:
+                        # `mean` assimilates all P probes, so FwdLLM's top-1 cos-sim pick is skipped (E1).
+                        if (not self.select_perturbation_using_jvp and self.grad is not None
+                                and self.probe_combine != "mean"):
                             # Cosine-sim rank of the 10 candidates against the
                             # carried grad; runs on CPU (old_grad arrives on CPU).
                             with _stage_timer(self, "tb_cos_sim_select"):
@@ -532,10 +545,12 @@ class ForwardTextClassificationTrainer:
                 or len(self.grad) != len(self.params)
             ):
                 # Optimization: Initialize on device to avoid Host to Device transfer every batch
-                self.grad = [torch.zeros_like(p, device=device) for p in self.params]
+                self.grad = [torch.zeros_like(p, device=device) if p.requires_grad
+                             else frozen_zero(p, device) for p in self.params]
             else:
                 # Ensure gradients are on the correct device (they might have been moved to CPU in a previous round)
-                self.grad = [fg.to(device).zero_() for fg in self.grad]
+                self.grad = [fg.to(device).zero_() if p.requires_grad else frozen_zero(p, device)
+                             for fg, p in zip(self.grad, self.params)]
                 
             return v_buffer, best_idx
         
@@ -563,7 +578,7 @@ class ForwardTextClassificationTrainer:
                     (
                         v_buffer[i][idx].to(device)
                         if p.requires_grad
-                        else torch.zeros_like(p).to(device)
+                        else frozen_zero(p, device)
                     )
                     for i, p in enumerate(self.params)
                 ]
@@ -573,7 +588,7 @@ class ForwardTextClassificationTrainer:
                     (
                         torch.randn_like(p, device=device)
                         if p.requires_grad
-                        else torch.zeros_like(p, device=device)
+                        else frozen_zero(p, device)
                     )
                     for p in self.params
                 ]
@@ -654,8 +669,11 @@ class ForwardTextClassificationTrainer:
         def _accumulate_and_extract_grads(device, jvp, v_params):
             # Optimization: Accumulate on device. self.grad should be on device.
             for j, fg in enumerate(self.grad):
-                updated = (jvp * v_params[j]) # Keep on device
-                fg.add_(updated)
+                if self.params[j].requires_grad:
+                    updated = (jvp * v_params[j]) # Keep on device
+                    fg.add_(updated)
+                else:
+                    updated = fg  # frozen: v is 0, nothing to add
                 if self.args.var_control and j == self.layer_id_for_check:
                     self.grad_for_var_check = updated.detach().cpu() # Move to CPU only for check
 
@@ -683,8 +701,11 @@ class ForwardTextClassificationTrainer:
                 losses.append(float(loss_i))
                 sq += float(jvp_i) ** 2
                 for j, fg in enumerate(self.grad):
-                    updated = ((inv * jvp_i) * v_params_i[j])
-                    fg.add_(updated)
+                    if self.params[j].requires_grad:
+                        updated = ((inv * jvp_i) * v_params_i[j])
+                        fg.add_(updated)
+                    else:
+                        updated = fg  # frozen: v is 0, nothing to add
                     if self.args.var_control and j == self.layer_id_for_check:
                         check_acc = updated if check_acc is None else check_acc + updated
                 del v_params_i
@@ -806,7 +827,7 @@ class ForwardTextClassificationTrainer:
         global_step = 0
         # Optimization: Use autocast for training loop if enabled
         from torch.cuda.amp import autocast
-        autocast_cm = autocast() if self.args.fp16 else contextlib.nullcontext()
+        autocast_cm = autocast(dtype=amp_dtype()) if self.args.fp16 else contextlib.nullcontext()
         if not self.args.fp16: logging.warning(f"Autocast is disabled: {self.args.fp16}")
 
         with torch.no_grad(), autocast_cm:
@@ -850,9 +871,13 @@ class ForwardTextClassificationTrainer:
             if p.requires_grad:
                 p.grad = fg.clone() # Already on device
 
-        self.grad = [fg.detach().cpu() for fg in self.grad]
+        self.grad = [fg.detach().cpu() if p.requires_grad else frozen_zero(p, "cpu")
+                     for fg, p in zip(self.grad, self.params)]
         if self.grad_for_var_check is not None:
             self.grad_for_var_check = self.grad_for_var_check.detach().cpu()
+        # Return this update's temporaries to the driver / OS: an idle trainer holds only the model.
+        torch.cuda.empty_cache()
+        trim_host_heap()
 
         allocated_after = torch.cuda.memory_allocated(device)
         self.log_memory("end", device)
@@ -863,6 +888,25 @@ class ForwardTextClassificationTrainer:
     @timer_decorator
 
     @timer_decorator
+    def _emit_probe_run_meta(self):
+        """Once per trainer: its own probe knobs, to diff against the aggregator's copy."""
+        if getattr(self, "_probe_run_meta_emitted", False):
+            return
+        self._probe_run_meta_emitted = True
+        try:
+            from flame import telemetry
+            if telemetry.is_enabled():
+                from flame.telemetry.events import build_run_meta
+                ev, fields = build_run_meta(scope="trainer_probe", config={
+                    "probe_combine": self.probe_combine,
+                    "perturbation_count": self.perturbation_count,
+                    "jvp_eval_mode": self.jvp_eval_mode,
+                    "train_batch_size": getattr(self.args, "train_batch_size", None),
+                })
+                telemetry.emit(ev, **fields)
+        except Exception:  # pragma: no cover - telemetry must never fault training
+            logging.debug("trainer run_meta emit failed", exc_info=True)
+
     def train_model(self, device=None, logging_state=None):
         if not device:
             device = self.device
@@ -875,16 +919,14 @@ class ForwardTextClassificationTrainer:
                 self.trainer_id
             )
 
+        self._emit_probe_run_meta()
         self.log_memory("train_model_start", device)
         self.allocated_before = torch.cuda.memory_allocated(device)
 
-        # H13: must wrap _make_model_functional too — functorch deep-copies the
-        # module, so a later toggle never reaches the fmodel the JVP evaluates.
+        # H13: fmodel runs self.model itself, so the JVP sees this block's eval mode.
         with (_eval_mode(self.model) if self.jvp_eval_mode
               else contextlib.nullcontext()):
             self._log_dropout_census()
-            # No _force_cuda_memory_cleanup(): empty_cache() is a device-wide sync
-            # and had nothing to reclaim (allocated stays flat across the run).
             self.log_memory("before_train_model", device)
             self._make_model_functional(device)
 
@@ -930,9 +972,7 @@ class ForwardTextClassificationTrainer:
         # todo: Make sure that the model doesn't need to be put back into train mode using: `self.model.train()` before this method returns
         self.model.eval()
         # Optimization: use cached functional model components
-        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
-            self.model
-        )
+        self.fmodel, self.params, self.buffers = make_functional_view(self.model)
         self.params = [p.to(device) for p in self.params]
         self.buffers = [b.to(device) for b in self.buffers]
 
@@ -945,7 +985,7 @@ class ForwardTextClassificationTrainer:
 
         logging.info(f"len(test_dl) = {n_batches}, total samples = {test_sample_len}")
 
-        with torch.no_grad():
+        with torch.no_grad(), lowp_autocast(self.model):
             for i, batch in enumerate(self.test_dl):
                 x = batch[1].to(device, non_blocking=True)
                 labels = batch[4].to(device, non_blocking=True)

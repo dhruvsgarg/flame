@@ -235,6 +235,10 @@ fluxtune:               target 24.685+1.5=26.185s → divisor = 12.51/26.185 ≈
 | registry-mean delay | 25.02s | 7.67s | 26.06s |
 | fast-class delay | 6.00s | 1.84s | 6.25s |
 
+> **SUPERSEDED 2026-10-22:** the flat +1.5 s became +6% on every arm (a flat term skews the arm ratio), and `fwdllm` runs
+> `jvp_perf_opt` (2 passes): `fluxtune` 12.51/(24.685×1.06) = **0.478**, `fwdllm` 12.51/(2.468×1.06) = **4.78**, floor 4.0 both
+> (`paper_expts_fluxtune/EXPERIMENTS.md` §9).
+
 **Fast-class headroom (the binding constraint — smallest budget, so checked explicitly, not just the mean).**
 Real observed GPU compute (07-12/13 banked runs, this dev GPU, not the NPU): fwdllm/plus mean 1.215s max
 1.712s; fluxtune mean 3.630s max 5.618s.

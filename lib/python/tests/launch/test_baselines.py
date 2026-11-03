@@ -198,6 +198,7 @@ class TestFwdllmBaselines:
         assert b["optimizer"]["sort"] == "fedavg"
         assert b["hyperparameters"]["trackTrainerAvail"]["enabled"] == "False"
         assert b["hyperparameters"]["reselect_each_iteration"] is False
+        assert b["hyperparameters"]["reselect_cadence"] == "data_bin"
         assert (
             baselines["fwdllm"]["trainer"]["hyperparameters"]["client_notify"]["enabled"]
             == "False"

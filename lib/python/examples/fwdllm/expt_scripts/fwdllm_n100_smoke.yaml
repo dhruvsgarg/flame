@@ -56,6 +56,8 @@ experiments:
           # H13: dropout off during the JVP's two finite-difference passes.
           # Code default ON (simulate_fwdllm.md §G); real and sim must match.
           jvp_eval_mode: true
+          # Skip the 3 diagnostic-only passes (2 passes/task, bit-identical grads); must match the _sim pair.
+          jvp_perf_opt: true
           client_notify:
             trace: syn_0
 

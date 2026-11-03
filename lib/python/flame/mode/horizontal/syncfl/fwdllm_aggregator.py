@@ -78,7 +78,7 @@ import math
 
 from flame import telemetry
 from flame.telemetry.events import (
-    build_agg_eval, build_agg_round, build_utility_belief, build_comm,
+    build_agg_eval, build_agg_eval_final, build_agg_round, build_utility_belief, build_comm,
     build_version_bump_census, build_redispatch_decomp, build_vclock_charge,
 )
 
@@ -119,6 +119,17 @@ def _calculate_hash(tensor):
 
     """Calculate a hash for a tensor for logging."""
     return hashlib.sha256(tensor.detach().cpu().numpy().tobytes()).hexdigest()
+
+
+def grad_slots(model):
+    """Zero grad list: real zeros for trainable params, a stride-0 view (no memory) for frozen ones."""
+    return [torch.zeros_like(p) if p.requires_grad
+            else torch.zeros((), dtype=p.dtype, device=p.device).expand(p.shape) for p in model.parameters()]
+
+
+def is_frozen_slot(t):
+    """A grad_slots() frozen entry: always zero, and in-place writes to it raise."""
+    return t.dim() > 0 and not any(t.stride())
 
 
 def log_error_distribution(probs, labels):
@@ -427,6 +438,8 @@ class TopAggregator(AsyncTopAgg):
         # seed, so this directly measures that instead of inferring it from
         # downstream cadence/variance symptoms.
         self._cycle_grad_norms = []
+        self._cycle_agg_weights = []  # per-contributor rate (omega_k) and align cos
+        self._cycle_align_cos = []
         # end -> canonical commit-order key (modeled_delay D, str(end)) for the
         # current cycle's cohort. Populated per contribution in aggregate_weights;
         # consumed by _canonicalize_cohort_commit_order to break equal-D ties by
@@ -915,7 +928,10 @@ class TopAggregator(AsyncTopAgg):
         else:
             staleness_val = self._model_version - version_for_rate
 
-            if self.optimizer.agg_rate_conf["type"] == "old":
+            if self.optimizer.agg_rate_conf["type"] == "uniform":
+                rate = 1.0  # omega = 1: plain sum, no staleness/utility/align weighting
+
+            elif self.optimizer.agg_rate_conf["type"] == "old":
                 rate = 1 / math.sqrt(1 + staleness_val)  # As per the Fedbuff paper
 
             elif self.optimizer.agg_rate_conf["type"] == "new":
@@ -975,6 +991,8 @@ class TopAggregator(AsyncTopAgg):
                     inverse_var=conf.get("inverse_var", False),
                     align_floor=_align_floor, var_eps=conf.get("var_eps", 1e-8),
                 )
+                if cos is not None:
+                    self.__dict__.setdefault("_cycle_align_cos", []).append(float(cos))
                 if cos is not None and cos < _align_floor:
                     self._grad_aware_gated_total = (
                         getattr(self, "_grad_aware_gated_total", 0) + 1
@@ -984,6 +1002,7 @@ class TopAggregator(AsyncTopAgg):
                         f"< floor={_align_floor} base={base:.3f} -> rate={rate:.4f}"
                     )
 
+        self.__dict__.setdefault("_cycle_agg_weights", []).append(float(rate))
         if rate != 1.0:
             logger.info(
                 f"Weighted received gradients by rate: {rate} with staleness: {staleness_val}, stat utility: {stat_utility}"
@@ -1030,7 +1049,7 @@ class TopAggregator(AsyncTopAgg):
                 for i in range(0, len(grad_list)):
                     if i == 0:
                         grad[id] = grad_list[i][id]
-                    else:
+                    elif not is_frozen_slot(grad[id]):
                         grad[id] += grad_list[i][id]
             self.print_trainable_params_stats(location="[end,aggregate_grad_pool()]")
             return grad
@@ -2190,6 +2209,8 @@ class TopAggregator(AsyncTopAgg):
         # may have advanced -- see build_agg_round call below).
         _cycle_contributors = list(self._per_agg_trainer_list)
         _cycle_grad_norm_list = list(self._cycle_grad_norms)
+        _cycle_agg_weights = list(getattr(self, "_cycle_agg_weights", []))
+        _cycle_align_cos = list(getattr(self, "_cycle_align_cos", []))
         _cycle_target_version = self._model_version
         _cycle_speed_s = []
         _cycle_stat_utility = []
@@ -2236,10 +2257,8 @@ class TopAggregator(AsyncTopAgg):
 
         self.add_local_trained_result(0, self.grad, self._agg_goal_cnt)
 
-        self.fmodel, self.params, self.buffers = fc.make_functional_with_buffers(
-            self.model
-        )
-        self.grad = [torch.zeros_like(p) for p in self.params]
+        # Was a functorch deep copy of the model each iteration, used only for these shapes.
+        self.grad = grad_slots(self.model)
 
         # Set before aggregate() — that function rolls back weights on var failure and clears the flag.
         self._force_commit_this_cycle = (
@@ -2402,10 +2421,11 @@ class TopAggregator(AsyncTopAgg):
                 def _fwdllm_eval_job(
                     _model=_eval_model_snapshot, _round_id=_eval_round_id,
                     _data_id=_eval_data_id, _iteration=_eval_iteration,
+                    _key=getattr(self, "_eval_commit_seq", 0),
                 ):
                     try:
                         _wall0 = time.time()
-                        result, _, _ = self.eval_model(model=_model)
+                        result, _, _ = self.eval_model(model=_model, sample_key=_key)
                         _wall_s = time.time() - _wall0  # diagnostic only, not folded
                         logger.info(
                             f"Round {_round_id}, Data ID {_data_id} "
@@ -2437,6 +2457,7 @@ class TopAggregator(AsyncTopAgg):
                                     # vclock (that asymmetry no longer exists now
                                     # that both modes background it symmetrically).
                                     "eval_wall_s": _wall_s,
+                                    "eval_sample_key": _key,
                                 },
                             )
                             telemetry.emit(ev, **fields)
@@ -2620,6 +2641,10 @@ class TopAggregator(AsyncTopAgg):
                         # Per-contributor raw grad L2 norm this cycle (parity
                         # target: mode-invariant given identical input+seed).
                         "grad_norm": _cycle_grad_norm_list,
+                        # Row 9: applied weight omega_k per contributor, and its
+                        # cos to the running pool under grad_aware.
+                        "agg_weight": _cycle_agg_weights,
+                        "align_cos": _cycle_align_cos or None,
                         # R1/W1 residence rungs: per-contributor [dispatch_ts,
                         # commit_ts] intervals for this cycle.
                         "contributor_intervals": _contributor_intervals,
@@ -2726,6 +2751,8 @@ class TopAggregator(AsyncTopAgg):
         # In-place clear: `_agg_pending_commit_ref` holds a live reference.
         self._per_agg_trainer_list.clear()
         self._cycle_grad_norms = []
+        self._cycle_agg_weights = []
+        self._cycle_align_cos = []
         self._commit_key_by_end = {}  # cohort-scoped
         self._pending_cohort_contribs = []  # already drained above; defensive
 
@@ -3084,12 +3111,15 @@ class TopAggregator(AsyncTopAgg):
         gc.collect()
 
     @timer_decorator
-    def eval_model(self, epoch=0, global_step=0, device=None, model=None):
+    def eval_model(self, epoch=0, global_step=0, device=None, model=None,
+                   sample_key=None, full=False):
         """model: the model to evaluate (default self.model, so any other
         existing caller stays byte-identical). eval_model() is called from a
         background daemon thread against an isolated snapshot -- it must
         never touch self.model directly, or it races the main thread's
-        concurrent aggregate()/next-cycle training on the SAME live model."""
+        concurrent aggregate()/next-cycle training on the SAME live model.
+        sample_key: seeds the `eval_resample` draw (the commit index).
+        full: score the whole test set whatever `eval_max_samples` says."""
         if not device:
             device = self.device
         if model is None:
@@ -3134,8 +3164,23 @@ class TopAggregator(AsyncTopAgg):
                 )
             self._cached_test_data = [t.to(device) for t in tensors]
 
-        input_ids_all = self._cached_test_data[1]
-        labels_all = self._cached_test_data[4]
+        test_data = self._cached_test_data
+        _hp = self.config.hyperparameters
+        _n_rs = int(getattr(_hp, "eval_max_samples", 0) or 0)
+        _all = list(self.test_global.dataset.tensors)
+        if full and test_data[0].shape[0] < _all[0].shape[0]:
+            # Final full-test eval: whole set on the device for this one pass.
+            test_data = [t.to(device) for t in _all]
+        elif (getattr(_hp, "eval_resample", False) and sample_key is not None
+                and 0 < _n_rs < _all[0].shape[0]):
+            # Fresh draw per eval, seeded by commit, so a rerun repeats it;
+            # sampled off the CPU copy so only n rows go to the device.
+            g = torch.Generator().manual_seed(20260810 + int(sample_key))
+            idx = torch.randperm(_all[0].shape[0], generator=g)[:_n_rs]
+            test_data = [t[idx].to(device) for t in _all]
+
+        input_ids_all = test_data[1]
+        labels_all = test_data[4]
         # Off the CACHE, not the dataset -- `eval_max_samples` makes them differ,
         # and this sizes the prediction buffers and the loop bound.
         test_sample_len = input_ids_all.shape[0]
@@ -3151,8 +3196,12 @@ class TopAggregator(AsyncTopAgg):
 
         from torch.cuda.amp import autocast
         import contextlib
+        import os
 
-        autocast_cm = autocast() if self.args.fp16 else contextlib.nullcontext()
+        # FWDLLM_AMP_DTYPE=bf16 (set for llama by create_model): fp16 overflows to NaN.
+        _bf16 = os.environ.get("FWDLLM_AMP_DTYPE", "").strip().lower() in ("bf16", "bfloat16")
+        autocast_cm = (autocast(dtype=torch.bfloat16 if _bf16 else torch.float16)
+                       if self.args.fp16 else contextlib.nullcontext())
         if not self.args.fp16:
             logging.warning(f"Autocast is disabled: {self.args.fp16}")
 
@@ -3195,9 +3244,11 @@ class TopAggregator(AsyncTopAgg):
 
         # Uncomment the below to log the prediction stats
         probs = F.softmax(torch.tensor(preds), dim=1)  # Shape: [N, 4]
-        log_margin_distribution(probs)
+        # Log-only margin/error histograms: skip their numpy work unless DEBUG.
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            log_margin_distribution(probs)
+            log_error_distribution(probs, out_label_ids)
         compute_metrics_with_logging(probs, preds, out_label_ids, self.test_global)
-        log_error_distribution(probs, out_label_ids)
 
         # L4 collapse signature: an inflated weight norm shows up as larger logits,
         # then saturated softmax (entropy -> 0) massed on one class -- which is why
@@ -3479,6 +3530,10 @@ class TopAggregator(AsyncTopAgg):
         if not self._round_selected_ends:
             return
         now = self._round_cache_clock_now()
+        # Never shorter than the send timeout: 1.7B tasks charge D up to ~400 s, so 300 s evicted live ends.
+        stuck_s = max(ROUND_CACHE_STUCK_TIMEOUT_S,
+                      float(getattr(getattr(getattr(self, "config", None), "hyperparameters", None),
+                                    "send_timeout_wait_s", 0) or 0))
         still_present = []
         for end in self._round_selected_ends:
             if not channel.has(end):
@@ -3496,10 +3551,10 @@ class TopAggregator(AsyncTopAgg):
                 self._round_cache_activity_ts.pop(end, None)
                 continue
             last_active = self._round_cache_activity_ts.get(end, now)
-            if now - last_active > ROUND_CACHE_STUCK_TIMEOUT_S:
+            if now - last_active > stuck_s:
                 logger.info(
                     f"[ReselectGate] pruning stuck (no accepted contribution "
-                    f"in {now - last_active:.0f}s > {ROUND_CACHE_STUCK_TIMEOUT_S}s) "
+                    f"in {now - last_active:.0f}s > {stuck_s:.0f}s) "
                     f"end {end} from per-round cache for round={self._round}"
                 )
                 self._round_cache_activity_ts.pop(end, None)
@@ -4530,6 +4585,36 @@ class TopAggregator(AsyncTopAgg):
             self.ends_not_selected_yet = False
             logger.info("Distributed to c ends and can wait for k updates")
 
+    def _final_full_eval(self) -> None:
+        """`final_full_eval`: one full-test eval of the final model, after the
+        loop exits, emitted as `agg_eval_final` (the text's final accuracy)."""
+        if not getattr(self.config.hyperparameters, "final_full_eval", False):
+            return
+        done = getattr(self, "_eval_done", None)
+        if done is not None and getattr(self, "_eval_inflight", False):
+            done.wait(timeout=3600.0)  # let the last strided eval land first
+        try:
+            _wall0 = time.time()
+            # This class's eval, not a subclass's: the stop detector must not see it.
+            result, _, _ = TopAggregator.eval_model(self, model=self.model, full=True)
+            logger.info(f"[FinalEval] full test set: acc={result.get('acc')} "
+                        f"loss={result.get('eval_loss')}")
+            if telemetry.is_enabled():
+                ev, fields = build_agg_eval_final(
+                    round_num=self._round,
+                    metrics={
+                        "test-loss": result.get("eval_loss"),
+                        "test-accuracy": result.get("acc"),
+                        "mcc": result.get("mcc"),
+                        "n_rows": int(self.test_global.dataset.tensors[0].shape[0]),
+                        "eval_wall_s": time.time() - _wall0,
+                        "vclock_now": getattr(self, "vclock_now", None),
+                    },
+                )
+                telemetry.emit(ev, **fields)
+        except Exception as e:  # the run is over; never fault the shutdown
+            logger.warning(f"[FinalEval] failed (non-fatal): {e}")
+
     def _check_early_stop_conditions(self) -> None:
         """Optional caps for short/smoke runs, checked independently of
         whether an aggregation goal is ever met: `max_data_id_progress`
@@ -4658,6 +4743,7 @@ class TopAggregator(AsyncTopAgg):
                 )
 
                 task_init = Tasklet("initialize", self.initialize)
+                task_final_eval = Tasklet("final_eval", self._final_full_eval)
 
             c = self.composer
             c.unlink()
@@ -4679,6 +4765,7 @@ class TopAggregator(AsyncTopAgg):
                     >> c.tasklet("analysis")
                     >> c.tasklet("save_metrics")
                 )
+                >> task_final_eval
                 >> c.tasklet("inform_end_of_training")
             )
         else:
@@ -4705,6 +4792,7 @@ class TopAggregator(AsyncTopAgg):
                 task_get_weights = Tasklet("aggregate", self.get, TAG_AGGREGATE)
 
                 task_init = Tasklet("initialize", self.initialize)
+                task_final_eval = Tasklet("final_eval", self._final_full_eval)
 
                 task_aggregate_grads_sync = Tasklet(
                     "aggregate", self._aggregate_grads_sync, TAG_AGGREGATE
@@ -4727,6 +4815,7 @@ class TopAggregator(AsyncTopAgg):
                     task_put_train
                     >> task_aggregate_grads_sync
                 )
+                >> task_final_eval
                 >> c.tasklet("inform_end_of_training")
             )
 

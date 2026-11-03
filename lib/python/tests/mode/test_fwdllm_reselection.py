@@ -6,6 +6,7 @@ whole round; per-iteration (True, default) caches per version_key, re-invoking t
 selector once per GENUINE (model_version, iteration)."""
 
 import time
+import types
 
 from flame.config import TrainerAvailState
 from flame.mode.horizontal.syncfl.fwdllm_aggregator import (
@@ -530,6 +531,18 @@ class TestStuckCachePruning:
 
         assert agg.select(channel, "train") == ["t1", "t2"]
         assert channel.calls == 1  # no re-query -- nothing pruned
+
+    def test_send_timeout_extends_stuck_window(self):
+        """A task charged D past 300 s (1.7B) is not stuck while within send_timeout_wait_s."""
+        agg = _FakeAggregator(reselect_each_iteration=False)
+        agg.config = types.SimpleNamespace(hyperparameters=types.SimpleNamespace(send_timeout_wait_s=3600))
+        channel = _FakeChannel(selections=[["t1", "t2"]], c=2)
+
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        agg._round_cache_activity_ts["t1"] = time.time() - (ROUND_CACHE_STUCK_TIMEOUT_S + 100)
+
+        assert agg.select(channel, "train") == ["t1", "t2"]
+        assert channel.calls == 1
 
     def test_freshly_cached_end_not_immediately_pruned(self):
         """Control: an end that just entered the cache (activity_ts == now,

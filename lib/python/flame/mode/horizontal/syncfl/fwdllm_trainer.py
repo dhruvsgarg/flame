@@ -424,9 +424,9 @@ class Trainer(Role, metaclass=ABCMeta):
                                     trainable_idx += 1
                                 else:
                                     # Append a zero tensor of same shape as
-                                    # param instead of None
+                                    # param instead of None (stride-0 view: no memory)
                                     full_grad.append(
-                                        torch.zeros_like(param, device="cpu")
+                                        torch.zeros((), dtype=param.dtype).expand(param.shape)
                                     )
                         
                         if partial_grad is not None:
@@ -436,7 +436,8 @@ class Trainer(Role, metaclass=ABCMeta):
                         else:
                             logger.debug(f"Trainer: {self.trainer_id}  - old_grad: None")
 
-                        if self.data_id % 2:
+                        # cos_select_every_bin: cos-pick against the last commit on every bin, not FwdLLM's odd bins only.
+                        if self.data_id % 2 or getattr(self.args, "cos_select_every_bin", False):
                             logger.debug(f"using old grad for : {self.data_id}")
                             self.trainer.model_trainer.old_grad = full_grad
                         else:

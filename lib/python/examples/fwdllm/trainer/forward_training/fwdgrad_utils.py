@@ -90,6 +90,69 @@ def functional_get_loss(
     return _get_loss(y, t, num_classes)
 
 
+def amp_dtype():
+    """`FWDLLM_AMP_DTYPE=bf16` for models whose activations overflow fp16 (Llama: NaN loss)."""
+    if os.environ.get("FWDLLM_AMP_DTYPE", "").strip().lower() in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    return torch.float16
+
+
+def frozen_lowp_enabled(model_type, fp16):
+    """`FWDLLM_FROZEN_LOWP=1|0`: store frozen Linear weights in amp_dtype(). Default on for llama only.
+
+    Exact only when every forward runs under autocast, which casts these weights to amp_dtype() anyway;
+    so off without `fp16` (autocast) and under FWDLLM_JVP_FP32.
+    """
+    v = os.environ.get("FWDLLM_FROZEN_LOWP", "").strip().lower()
+    on = v in ("1", "true", "yes") if v else model_type == "llama"
+    return on and bool(fp16) and not jvp_fp32_enabled()
+
+
+def store_frozen_linears_lowp(model):
+    """Cast frozen nn.Linear weight/bias to amp_dtype(); trainable params, embeddings and norms stay fp32."""
+    dt, n = amp_dtype(), 0
+    for m in model.modules():
+        if isinstance(m, torch.nn.Linear):
+            for t in (m.weight, m.bias):
+                if t is not None and not t.requires_grad and t.dtype != dt:
+                    t.data = t.data.to(dt)
+                    n += t.numel()
+    logger.info(f"[FrozenLowp] {n} frozen Linear params stored in {dt}")
+    return n
+
+
+def lowp_autocast(model):
+    """Autocast for a forward outside the training loop, on only if store_frozen_linears_lowp ran."""
+    lowp = any(p.dtype != torch.float32 for p in model.parameters() if p.is_floating_point())
+    return autocast(dtype=amp_dtype(), enabled=lowp)
+
+
+def make_functional_view(model):
+    """`make_functional_with_buffers` without its deep copy: fmodel(params, buffers, x) runs `model` itself,
+    and the returned params/buffers are the model's own tensors (same order as functorch's)."""
+    pn = [n for n, _ in model.named_parameters()]
+    bn = [n for n, _ in model.named_buffers()]
+
+    def fmodel(params, buffers, x):
+        return torch.func.functional_call(model, {**dict(zip(pn, params)), **dict(zip(bn, buffers))}, (x,))
+
+    return fmodel, [p for _, p in model.named_parameters()], [b for _, b in model.named_buffers()]
+
+
+def trim_host_heap():
+    """Return freed host heap to the OS (glibc keeps small freed blocks, e.g. the CPU-side model load). No-op off glibc."""
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
+def frozen_zero(p, device=None):
+    """Zero stand-in for a frozen param's grad/perturbation slot: a stride-0 view, no memory."""
+    return torch.zeros((), dtype=p.dtype, device=p.device if device is None else device).expand(p.shape)
+
+
 def jvp_fp32_enabled() -> bool:
     """`FWDLLM_JVP_FP32=1` runs the two JVP forward passes OUTSIDE autocast.
 
@@ -141,6 +204,17 @@ def _fd_spacing(v, trainable_idx):
             + (f"(scale_invariant=on, held at {_FD_REF_DISPLACEMENT:.4f} from p={_FD_REF_P})"
                if on else "(scale_invariant=off, h fixed -- displacement moves with p)")
         )
+        try:
+            from flame import telemetry
+            if telemetry.is_enabled():
+                from flame.telemetry.events import build_run_meta
+                ev, fields = build_run_meta(scope="trainer_fd", config={
+                    "p": p, "fd_h": h, "fd_displacement": h * math.sqrt(p),
+                    "fd_scale_invariant": on,
+                })
+                telemetry.emit(ev, **fields)
+        except Exception:  # pragma: no cover - telemetry must never fault training
+            logger.debug("fd run_meta emit failed", exc_info=True)
     return _FD_REF_DISPLACEMENT / math.sqrt(p) if on else 0.01
 
 
@@ -157,7 +231,7 @@ def calculate_jvp(func, params, v, trainable_idx=None):
     _FWD_PASSES += 2   # loss + terbulence_loss forward passes below
     _JVP_EVALS += 1
     h = _fd_spacing(v, trainable_idx)
-    _cast = _nullcontext() if jvp_fp32_enabled() else autocast()
+    _cast = _nullcontext() if jvp_fp32_enabled() else autocast(dtype=amp_dtype())
     with torch.no_grad(), _cast:
         if trainable_idx is None:
             minus = tuple([params[i] - h * v[i] for i in range(len(params))])
@@ -183,7 +257,7 @@ def calculate_jvp_after_actual_update(func, params, v, jvp_scalar):
     global _FWD_PASSES
     _FWD_PASSES += 1
     h = 0.01 # learning rate factor
-    with torch.no_grad(), autocast():
+    with torch.no_grad(), autocast(dtype=amp_dtype()):
         loss = func(tuple([params[i] - h * jvp_scalar * v[i] for i in range(len(params))]))
     return loss
 
@@ -193,7 +267,7 @@ def calculate_jvp_before_actual_update(func, params):
     """
     global _FWD_PASSES
     _FWD_PASSES += 1
-    with torch.no_grad(), autocast():
+    with torch.no_grad(), autocast(dtype=amp_dtype()):
         loss = func(tuple([params[i] for i in range(len(params))]))
     return loss
 

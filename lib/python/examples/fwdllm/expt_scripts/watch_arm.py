@@ -45,7 +45,8 @@ import time
 def newest_run(exp_dir, since):
     """Newest run_*/ created after `since` -- ours, not a pre-existing one."""
     best, best_m = None, since
-    for d in glob.glob(os.path.join(exp_dir, "run_*")):
+    label = os.environ.get("FLAME_RUN_LABEL")  # parallel lanes: only this slot's run dirs
+    for d in glob.glob(os.path.join(exp_dir, f"run_*_{label}_*" if label else "run_*")):
         try:
             m = os.path.getmtime(d)
         except OSError:

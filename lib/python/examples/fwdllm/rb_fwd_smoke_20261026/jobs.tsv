@@ -1,0 +1,4 @@
+rb_fwd_A_lora2_lr1e-2_v0.2	fwdllm	syn_0	/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/rb_fwd_smoke_20261026/rbfwd_A_lora2_lr1e-2_v0.2.yaml	gpu_gb=12	ram_gb=40	workers=4
+rb_fwd_B_lora2_lr3e-2_v0.2	fwdllm	syn_0	/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/rb_fwd_smoke_20261026/rbfwd_B_lora2_lr3e-2_v0.2.yaml	gpu_gb=12	ram_gb=40	workers=4
+rb_fwd_C_lora2_lr1e-2_v0.1	fwdllm	syn_0	/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/rb_fwd_smoke_20261026/rbfwd_C_lora2_lr1e-2_v0.1.yaml	gpu_gb=12	ram_gb=40	workers=4
+rb_fwd_D_bitfit_lr3e-2_v0.1	fwdllm	syn_0	/home/dgarg39/aish_test/flame/lib/python/examples/fwdllm/rb_fwd_smoke_20261026/rbfwd_D_bitfit_lr3e-2_v0.1.yaml	gpu_gb=12	ram_gb=40	workers=4

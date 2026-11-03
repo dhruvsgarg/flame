@@ -56,6 +56,13 @@
 #   --after          post-launch hooks: parity,sanity,plot.
 #   --stop-on-fail   abort remaining runs on first non-zero exit.
 #   --dry-run / --yes / --force / --show-all  preview / skip-confirm / override-block / expand table.
+#   --max-commits N  halt at N commits (stop_reason commit_cap, any --phi-stop); the stop-rule
+#                    warm-up/horizon scale to 0.45N/0.15N (450/150 at N=1000).
+#   --target-stop A  halt cleanly once --target-stop-window W (default 2) consecutive evals reach acc A; final eval still runs.
+#   --reselect-cadence round|data_bin|iteration  cohort reselection cadence; unset = baselines.yaml (fwdllm: data_bin).
+#   --rho0 F         rho0 for --rho-schedule pool|exp, set directly; overrides --gate-safety-s.
+#   --eval-resample  with --eval-max-samples: a fresh draw per eval, seeded by commit index.
+#   --final-full-eval  one full-test eval at run end, emitted as agg_eval_final.
 # Other knobs (see usage()): --var-stopping-policy --agg-rate-type --target-acc
 # --converge-window --stall-* --delay-divisor --delay-floor --run-set --clean.
 set -u
@@ -115,6 +122,7 @@ AVAIL_TRACE=""
 AVAIL_TRACES=""
 MODEL_TYPE=""          # --model-type NAME: second architecture (row N5c). Cache key leads
 MODEL_NAME=""          #   with model_type+model_name, so a new model needs its own pretokenize.
+PEFT_METHOD=""         # --peft-method adapter|lora|bitfit; llama needs lora.
 DATASET=""             # --dataset NAME: registry-derived data_file_path/partition_file_path/
                         # max_seq_length/name into both override blocks. unset => yaml default (agnews)
 PARTITION_METHOD=""
@@ -123,11 +131,14 @@ SERVER_UPDATE_AUDIT="" # I-1 audit: per-commit ||delta||/||w||. OFF by default -
 ALLOW_STALE_PROFILE="" # --allow-stale-profile: downgrade ONLY the profile-staleness check to a warn
 POOL_SPLIT_HALF_AUDIT="" # L1 audit: per-commit pool split-half cosine. OFF -- adds a pass over (params x uploads)
 LEARNING_RATE=""       # server step size (aggregator hyperparameters); empty => trainer_base.yaml (0.01)
+TRAIN_BATCH_SIZE=""    # samples per trainer batch = one data_id bin (both sides); empty => base configs (8)
 PERTURBATION_COUNT=""  # P: probes per trainer per iteration (trainer hyperparameters); empty => code default 10
 PROBE_COMBINE=""       # S-H: select|mean -- how the P probes become one upload; empty => code default select
+PERTURBATION_SELECT="" # select pick: jvp|cos|cos_every_bin (cos = FwdLLM odd bins only); empty => baselines.yaml
 SERVER_STEP_RULE=""    # S-A: raw_sgd|trust_ratio (aggregator); empty => code default raw_sgd
 RHO_STAR=""            # S-A: target relative step under trust_ratio
-RHO_SCHEDULE=""        # S-B: const|rm|landing -- `landing` = C-1 law C
+RHO0=""                # rho0 for --rho-schedule pool|exp, set directly; overrides --gate-safety-s (s = rho0/sqrt(P*N/p))
+RHO_SCHEDULE=""        # S-B: const|rm|landing|pool|exp -- `landing` = C-1 law C; `pool` = s*sqrt(P*N/p); `exp` = pool rho0 * exp(-(t-1)/(2*T_res))
 RHO_EXP=""             # S-B: anneal exponent, must exceed 0.5
 B_MAX=""               # C-1: budget ceiling, ln(Phi_peak). Unset = D1's ln 2 prior
 T_RES=""               # C-1: control resolution as a RATE, never decremented (300)
@@ -138,24 +149,37 @@ B_MAX_PROBE_EVERY=""   # 3.1: re-sense B_max every N commits. 0/unset = off
 B_MAX_PROBE_N=""       # 3.1: held-out samples per probe eval (512)
 B_MAX_POLICY=""        # 3.1: mean|ratchet|anchor -- how successive senses combine
 EVAL_MAX_SAMPLES=""    # agg eval on a fixed subsample of the test set. Unset = full set
+EVAL_EVERY_N_COMMITS="" # commits per agg eval. Unset = yaml value (2)
+EVAL_RESAMPLE=""       # --eval-resample: fresh eval_max_samples draw per eval, seeded by commit
+FINAL_FULL_EVAL=""     # --final-full-eval: one full-test eval at run end (agg_eval_final)
+TARGET_STOP=""         # in-process target stop: halt (clean exit, final eval runs) once --target-stop-window evals >= this acc
+TARGET_STOP_WINDOW=""  # consecutive evals for --target-stop (default 2)
+RESELECT_CADENCE=""    # round|data_bin|iteration; unset = baselines.yaml
+MAX_COMMITS=""         # commit cap: halt at N commits (stop_reason commit_cap); also scales the stop-rule warm-up
 B_MAX_PROBE_PHIS=""    # 3.1: comma-separated Phi grid (1.5,2,2.5,3,3.5,4)
 SATURATION_STOP=""     # E: 1 = stop when held-out accuracy stops rising (Prechelt GL). Unset = off
 SAT_STALL_FRAC=""      # E': stall trigger. g=(m_t-m_{t-h})/m_t <= this for `patience` evals.
+SEND_TIMEOUT_S=""      # per-dispatch abandon timeout (send_timeout_wait_s); empty => yaml (300 s)
                        # Unset = the 08-22 decay-only rule, byte-identical. 0.003 = shipped sizing.
 RETENTION_PROBE_EVERY="" # P3': log cos(theta_t,theta_0) every N commits. 0/unset = off
 TRAINABLE_SCOPE=""     # S-I: adapters_head|adapters_only -- adapters_only freezes pre_classifier (56.7% of p)
-COMMIT_GATE=""         # S-C: var|n_target -- n_target sizes the pool from rho_t (aggregator); empty => code default var
+COMMIT_GATE=""         # S-C: var|n_target|fixed -- n_target sizes the pool from rho_t (aggregator); empty => code default var
+POOL_TARGET=""         # N uploads per commit; needed by --commit-gate fixed and --rho-schedule pool
+SAT_DECAY=""           # 0 = GL decay trigger off (stall only); empty => on
+FD_SCALE_INVARIANT=""  # 1 = export FWDLLM_FD_SCALE_INVARIANT=1 for every process
+DYNAMIC_KC=""          # on|off -- selector dynamic K/C controller; empty => baseline default (off)
 GATE_SAFETY_S=""       # S-C: safety factor s in rho <= s*cos; empty => code default 0.4
 GATE_RHO_REF=""        # S-C: annealed|setpoint -- which rho sizes the pool; empty => code default annealed
-COS_GROUND_TRUTH_AUDIT="" # B1: per-commit cos(G,g) vs a real backward pass on a fixed held-out batch. 1=on, 0=off, empty=inherit the catalog (v2 sets it ON)
+COS_GROUND_TRUTH_AUDIT="" # B1: per-commit cos(G,g) vs a real backward pass on a fixed held-out batch. 1=on, 0=off, empty=inherit the catalog (off)
 COS_PROBE_BATCH_SIZE=""   # B1: size of that batch; empty => code default 1024 (B17)
 COS_PROBE_EVERY=""        # B1: run the probe every k-th commit; empty => 1 (it costs ~83s/commit at 1024)
 SERVER_WEIGHT_DECAY=""    # Q2: decay the trainable slice after the step; "auto" = rho^2/2
 SERVER_MOMENTUM=""        # S1: heavy-ball on the pooled DIRECTION (rho stays rho* under trust_ratio)
 ADAPTER_RF=""          # S-I: adapter bottleneck reduction_factor -- the real p knob; empty => code default 16
+LORA_R=""              # LoRA rank: the p knob under --peft-method lora; empty => code default 8
 MAX_ITER_PER_DATA_ID=""  # force-commit cap (max_iterations_per_data_id); review every run
 VAR_STOPPING_POLICY=""   # Opt-2: off|fixed_cap|plateau (empty => baselines.yaml, fluxtune=plateau)
-AGG_RATE_TYPE=""         # Opt-3: grad_aware|new (empty => baselines.yaml, fluxtune=grad_aware; new=FeLiX)
+AGG_RATE_TYPE=""         # Opt-3: grad_aware|new|old|uniform (uniform = omega 1; empty => baselines.yaml, fluxtune=grad_aware; new=FeLiX)
 TARGET_ACC=""          # convergence stop: terminate when last --converge-window bins all >= this acc
 CONVERGE_WINDOW=""     # W-bin window for the convergence stop (default 20 when --target-acc set)
 SIM_WALL_CEILING_S=""  # sim-mode REAL-wall-clock outer safety (hyperparameters.sim_wall_ceiling_s).
@@ -191,19 +215,27 @@ usage() {
   echo "    --delays/--delay-divisor/--delay-floor default to each baseline's settled value" >&2
   echo "          (BASELINE_DELAY_DEFAULTS in this script); pass explicitly only to override." >&2
   echo "          [--server-update-audit] [--pool-split-half-audit]" >&2
-  echo "          [--learning-rate F] [--perturbation-count N] [--probe-combine select|mean]" >&2
-  echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho-schedule const|rm|landing] [--rho-exp F]" >&2
-  echo "          [--b-max F] [--t-res F] [--budget-stop-frac F] [--phi-stop off|log_only|halt] [--phi-stop-threshold F]" >&2
+  echo "          [--learning-rate F] [--train-batch-size N] [--perturbation-count N] [--probe-combine select|mean]" >&2
+  echo "          [--perturbation-select jvp|cos|cos_every_bin]" >&2
+  echo "          [--server-step-rule raw_sgd|trust_ratio] [--rho-star F] [--rho0 F] [--rho-schedule const|rm|landing|pool|exp] [--rho-exp F]" >&2
+  echo "          [--b-max F] [--t-res F] [--budget-stop-frac F (0 = off)] [--phi-stop off|log_only|halt] [--phi-stop-threshold F]" >&2
   echo "          [--b-max-probe-every N] [--b-max-probe-n N] [--b-max-probe-phis L]" >&2
-  echo "          [--b-max-policy mean|ratchet|anchor] [--eval-max-samples N]" >&2
+  echo "          [--b-max-policy mean|ratchet|anchor] [--eval-max-samples N] [--eval-every-n-commits N]" >&2
+  echo "          [--eval-resample] [--final-full-eval] [--max-commits N] [--target-stop A] [--target-stop-window W]" >&2
+  echo "          [--reselect-cadence round|data_bin|iteration]" >&2
   echo "          [--saturation-stop] [--retention-probe-every N]  (E: the saturation stop; P3': cos(theta_t,theta_0))" >&2
+  echo "          [--sat-stall-frac F] [--no-sat-decay]  (stall trigger; drop the GL decay trigger)" >&2
+  echo "          [--send-timeout-s S]  (abandon timeout; scale with the delays, e.g. 3600 for 1.7B)" >&2
+  echo "          [--pool-target N] [--fd-scale-invariant] [--dynamic-kc on|off] [--agg-rate-type grad_aware|new|old|uniform]" >&2
   echo "          [--allow-stale-profile]  warn (not error) when local reals postdate the sim profile" >&2
-  echo "          [--trainable-scope adapters_head|adapters_only] [--commit-gate var|n_target] [--gate-safety-s F]" >&2
+  echo "          [--trainable-scope adapters_head|adapters_only] [--commit-gate var|n_target|fixed] [--gate-safety-s F]" >&2
   echo "          [--gate-rho-ref annealed|setpoint]  (setpoint stops S-C's pool vanishing with S-B's anneal)" >&2
   echo "          [--cos-ground-truth-audit | --no-cos-ground-truth-audit] [--cos-probe-batch-size N] [--cos-probe-every K]  (B1: real cos(G,g), aggregator-side; unset inherits the catalog)" >&2
   echo "          [--server-weight-decay auto|FLOAT]  (Q2: pins Phi=1 at auto=rho^2/2)" >&2
   echo "          [--server-momentum BETA]  (S1: temporal pooling; needs trust_ratio)" >&2
   echo "          [--adapter-reduction-factor N]  (768/N per adapter; the real p knob)" >&2
+  echo "          [--lora-r R]  (LoRA rank; the p knob under --peft-method lora)" >&2
+  echo "          [--model-type T] [--model-name N] [--peft-method adapter|lora|bitfit]" >&2
   echo "          [--target-acc A] [--converge-window W] [--stall-window-s S | --stall-window-h H] [--stall-min-delta D]" >&2
   echo "          [--stall-on acc|loss|either] [--loss-min-rel-delta R]" >&2
   echo "          [--sim-wall-ceiling-s S | --sim-wall-ceiling-h H]  REAL-wall-clock outer safety" >&2
@@ -236,15 +268,19 @@ while [[ $# -gt 0 ]]; do
     --dataset)              DATASET="$2"; shift 2 ;;
     --model-type)           MODEL_TYPE="$2"; shift 2 ;;
     --model-name)           MODEL_NAME="$2"; shift 2 ;;
+    --peft-method)          PEFT_METHOD="$2"; shift 2 ;;
     --partition-method)     PARTITION_METHOD="$2"; shift 2 ;;
     --var-threshold)        VAR_THRESHOLD="$2"; shift 2 ;;
     --server-update-audit)  SERVER_UPDATE_AUDIT=1; shift ;;
     --pool-split-half-audit) POOL_SPLIT_HALF_AUDIT=1; shift ;;
     --learning-rate)        LEARNING_RATE="$2"; shift 2 ;;
+    --train-batch-size)     TRAIN_BATCH_SIZE="$2"; shift 2 ;;
     --perturbation-count)   PERTURBATION_COUNT="$2"; shift 2 ;;
     --probe-combine)        PROBE_COMBINE="$2"; shift 2 ;;
+    --perturbation-select)  PERTURBATION_SELECT="$2"; shift 2 ;;
     --server-step-rule)     SERVER_STEP_RULE="$2"; shift 2 ;;
     --rho-star)             RHO_STAR="$2"; shift 2 ;;
+    --rho0)                 RHO0="$2"; shift 2 ;;
     --rho-schedule)         RHO_SCHEDULE="$2"; shift 2 ;;
     --rho-exp)              RHO_EXP="$2"; shift 2 ;;
     --b-max)                B_MAX="$2"; shift 2 ;;
@@ -258,11 +294,24 @@ while [[ $# -gt 0 ]]; do
     --b-max-policy)         case "$2" in mean|ratchet|anchor) ;; *) echo "ERROR: --b-max-policy must be mean|ratchet|anchor (got '$2')" >&2; exit 2 ;; esac
                             B_MAX_POLICY="$2"; shift 2 ;;
     --eval-max-samples)     EVAL_MAX_SAMPLES="$2"; shift 2 ;;
+    --eval-every-n-commits) EVAL_EVERY_N_COMMITS="$2"; shift 2 ;;
+    --eval-resample)        EVAL_RESAMPLE=1; shift ;;
+    --final-full-eval)      FINAL_FULL_EVAL=1; shift ;;
+    --max-commits)          MAX_COMMITS="$2"; shift 2 ;;
+    --target-stop)          TARGET_STOP="$2"; shift 2 ;;
+    --target-stop-window)   TARGET_STOP_WINDOW="$2"; shift 2 ;;
+    --reselect-cadence)     RESELECT_CADENCE="$2"; shift 2 ;;
     --saturation-stop)      SATURATION_STOP=1; shift ;;
     --sat-stall-frac)       SAT_STALL_FRAC="$2"; shift 2 ;;
+    --send-timeout-s)       SEND_TIMEOUT_S="$2"; shift 2 ;;
+    --no-sat-decay)         SAT_DECAY=0; shift ;;
+    --pool-target)          POOL_TARGET="$2"; shift 2 ;;
+    --fd-scale-invariant)   FD_SCALE_INVARIANT=1; shift ;;
+    --dynamic-kc)           case "$2" in on|off) ;; *) echo "ERROR: --dynamic-kc must be on|off (got '$2')" >&2; exit 2 ;; esac
+                            DYNAMIC_KC="$2"; shift 2 ;;
     --retention-probe-every) RETENTION_PROBE_EVERY="$2"; shift 2 ;;
     --trainable-scope)      TRAINABLE_SCOPE="$2"; shift 2 ;;
-    --commit-gate)          case "$2" in var|n_target) ;; *) echo "ERROR: --commit-gate must be var|n_target (got '$2')" >&2; exit 2 ;; esac
+    --commit-gate)          case "$2" in var|n_target|fixed) ;; *) echo "ERROR: --commit-gate must be var|n_target|fixed (got '$2')" >&2; exit 2 ;; esac
                             COMMIT_GATE="$2"; shift 2 ;;
     --gate-safety-s)        GATE_SAFETY_S="$2"; shift 2 ;;
     --gate-rho-ref)         case "$2" in annealed|setpoint) ;; *) echo "ERROR: --gate-rho-ref must be annealed|setpoint (got '$2')" >&2; exit 2 ;; esac
@@ -275,10 +324,11 @@ while [[ $# -gt 0 ]]; do
     --server-weight-decay) SERVER_WEIGHT_DECAY="$2"; shift 2 ;;
     --server-momentum) SERVER_MOMENTUM="$2"; shift 2 ;;
     --adapter-reduction-factor) ADAPTER_RF="$2"; shift 2 ;;
+    --lora-r)               LORA_R="$2"; shift 2 ;;
     --max-iter-per-data-id) MAX_ITER_PER_DATA_ID="$2"; shift 2 ;;
     --var-stopping-policy)  case "$2" in off|fixed_cap|plateau) ;; *) echo "ERROR: --var-stopping-policy must be off|fixed_cap|plateau (got '$2')" >&2; exit 2 ;; esac
                             VAR_STOPPING_POLICY="$2"; shift 2 ;;
-    --agg-rate-type)        case "$2" in grad_aware|new|old) ;; *) echo "ERROR: --agg-rate-type must be grad_aware|new|old (got '$2')" >&2; exit 2 ;; esac
+    --agg-rate-type)        case "$2" in grad_aware|new|old|uniform) ;; *) echo "ERROR: --agg-rate-type must be grad_aware|new|old|uniform (got '$2')" >&2; exit 2 ;; esac
                             AGG_RATE_TYPE="$2"; shift 2 ;;
     --target-acc)           TARGET_ACC="$2"; shift 2 ;;
     --converge-window)      CONVERGE_WINDOW="$2"; shift 2 ;;
@@ -310,6 +360,8 @@ while [[ $# -gt 0 ]]; do
 done
 case "$MODE" in sim|real|both) ;; *) echo "ERROR: --mode must be sim|real|both (got '$MODE')" >&2; exit 2 ;; esac
 case "$DELAYS" in on|off) ;; *) echo "ERROR: --delays must be on|off (got '$DELAYS')" >&2; exit 2 ;; esac
+# Exported so the preflight check and every launched worker see it.
+[ -n "$FD_SCALE_INVARIANT" ] && export FWDLLM_FD_SCALE_INVARIANT=1
 
 # --run-set NAME: pull the SHARED condition from experiments.yaml so every node in a
 # multi-node run launches the same condition from one source of truth (only --only
@@ -452,26 +504,29 @@ EXPT_RUNNER_DIR="$EXPT_RUNNER_DIR" \
 MODE="$MODE" DELAYS="$DELAYS" MAX_RUNTIME_S="$MAX_RUNTIME_S" MAX_DATA_ID="$MAX_DATA_ID" \
 NUM_TRAINERS="$NUM_TRAINERS" NUM_GPUS="$NUM_GPUS" GPU_IDS="$GPU_IDS" SEL_C="$SEL_C" SEL_C_ASYNC="$SEL_C_ASYNC" \
 SEL_K="$SEL_K" AGG_GOAL="$AGG_GOAL" MIN_INIT_TRAINERS="$MIN_INIT_TRAINERS" MIN_INIT_FRAC="$MIN_INIT_FRAC" \
-DATASET="$DATASET" MODEL_TYPE="$MODEL_TYPE" MODEL_NAME="$MODEL_NAME" PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
+DATASET="$DATASET" MODEL_TYPE="$MODEL_TYPE" MODEL_NAME="$MODEL_NAME" PEFT_METHOD="$PEFT_METHOD" PARTITION_METHOD="$PARTITION_METHOD" TRACE_CSV="$TRACE_CSV" GPUS_VISIBLE="$GPUS_VISIBLE" \
 VAR_THRESHOLD="$VAR_THRESHOLD" MAX_ITER_PER_DATA_ID="$MAX_ITER_PER_DATA_ID" DELAY_FACTOR="$DELAY_FACTOR" \
 SERVER_UPDATE_AUDIT="$SERVER_UPDATE_AUDIT" POOL_SPLIT_HALF_AUDIT="$POOL_SPLIT_HALF_AUDIT" \
 ALLOW_STALE_PROFILE="$ALLOW_STALE_PROFILE" \
-LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" \
-  PROBE_COMBINE="$PROBE_COMBINE" SERVER_STEP_RULE="$SERVER_STEP_RULE" \
-  RHO_STAR="$RHO_STAR" RHO_SCHEDULE="$RHO_SCHEDULE" RHO_EXP="$RHO_EXP" \
+LEARNING_RATE="$LEARNING_RATE" PERTURBATION_COUNT="$PERTURBATION_COUNT" TRAIN_BATCH_SIZE="$TRAIN_BATCH_SIZE" \
+  PROBE_COMBINE="$PROBE_COMBINE" PERTURBATION_SELECT="$PERTURBATION_SELECT" SERVER_STEP_RULE="$SERVER_STEP_RULE" \
+  RHO_STAR="$RHO_STAR" RHO0="$RHO0" RHO_SCHEDULE="$RHO_SCHEDULE" RHO_EXP="$RHO_EXP" \
   B_MAX="$B_MAX" T_RES="$T_RES" BUDGET_STOP_FRAC="$BUDGET_STOP_FRAC" \
   PHI_STOP="$PHI_STOP" PHI_STOP_THRESHOLD="$PHI_STOP_THRESHOLD" \
   B_MAX_PROBE_EVERY="$B_MAX_PROBE_EVERY" B_MAX_PROBE_N="$B_MAX_PROBE_N" \
   B_MAX_PROBE_PHIS="$B_MAX_PROBE_PHIS" \
   B_MAX_POLICY="$B_MAX_POLICY" \
-  SATURATION_STOP="$SATURATION_STOP" SAT_STALL_FRAC="$SAT_STALL_FRAC" \
+  SATURATION_STOP="$SATURATION_STOP" SAT_STALL_FRAC="$SAT_STALL_FRAC" SAT_DECAY="$SAT_DECAY" \
+  SEND_TIMEOUT_S="$SEND_TIMEOUT_S" \
+  POOL_TARGET="$POOL_TARGET" DYNAMIC_KC="$DYNAMIC_KC" \
   RETENTION_PROBE_EVERY="$RETENTION_PROBE_EVERY" \
-  EVAL_MAX_SAMPLES="$EVAL_MAX_SAMPLES" \
+  EVAL_MAX_SAMPLES="$EVAL_MAX_SAMPLES" EVAL_EVERY_N_COMMITS="$EVAL_EVERY_N_COMMITS" \
+  EVAL_RESAMPLE="$EVAL_RESAMPLE" FINAL_FULL_EVAL="$FINAL_FULL_EVAL" MAX_COMMITS="$MAX_COMMITS" TARGET_STOP="$TARGET_STOP" TARGET_STOP_WINDOW="$TARGET_STOP_WINDOW" RESELECT_CADENCE="$RESELECT_CADENCE" \
   TRAINABLE_SCOPE="$TRAINABLE_SCOPE" COMMIT_GATE="$COMMIT_GATE" GATE_SAFETY_S="$GATE_SAFETY_S" \
   GATE_RHO_REF="$GATE_RHO_REF" COS_GROUND_TRUTH_AUDIT="$COS_GROUND_TRUTH_AUDIT" \
   COS_PROBE_BATCH_SIZE="$COS_PROBE_BATCH_SIZE" COS_PROBE_EVERY="$COS_PROBE_EVERY" \
   SERVER_WEIGHT_DECAY="$SERVER_WEIGHT_DECAY" SERVER_MOMENTUM="$SERVER_MOMENTUM" \
-  ADAPTER_RF="$ADAPTER_RF" \
+  ADAPTER_RF="$ADAPTER_RF" LORA_R="$LORA_R" \
 DELAY_FLOOR="$DELAY_FLOOR" \
 VAR_STOPPING_POLICY="$VAR_STOPPING_POLICY" AGG_RATE_TYPE="$AGG_RATE_TYPE" \
 TARGET_ACC="$TARGET_ACC" CONVERGE_WINDOW="$CONVERGE_WINDOW" \
@@ -495,6 +550,7 @@ MODE = env("MODE"); DELAYS = env("DELAYS")
 DATASET = env("DATASET") or ""
 MODEL_TYPE = env("MODEL_TYPE") or ""   # row N5c: second architecture
 MODEL_NAME = env("MODEL_NAME") or ""
+PEFT_METHOD = env("PEFT_METHOD") or ""
 if DATASET and DATASET not in dsreg.names():
     # exit 3, not 2: 2 means "blocking check, --force can override" (render_and_gate's
     # code), which is wrong here -- --force cannot rescue an unknown dataset name.
@@ -512,8 +568,11 @@ VAR_THRESHOLD = env("VAR_THRESHOLD") or ""; MAX_ITER = env("MAX_ITER_PER_DATA_ID
 SERVER_UPDATE_AUDIT = env("SERVER_UPDATE_AUDIT") or ""
 POOL_SPLIT_HALF_AUDIT = env("POOL_SPLIT_HALF_AUDIT") or ""
 LEARNING_RATE = env("LEARNING_RATE") or ""; PERTURBATION_COUNT = env("PERTURBATION_COUNT") or ""
+TRAIN_BATCH_SIZE = env("TRAIN_BATCH_SIZE") or ""
 PROBE_COMBINE = env("PROBE_COMBINE") or ""
+PERTURBATION_SELECT = env("PERTURBATION_SELECT") or ""
 SERVER_STEP_RULE = env("SERVER_STEP_RULE") or ""; RHO_STAR = env("RHO_STAR") or ""
+RHO0 = env("RHO0") or ""
 RHO_SCHEDULE = env("RHO_SCHEDULE") or ""; RHO_EXP = env("RHO_EXP") or ""
 B_MAX = env("B_MAX") or ""; T_RES = env("T_RES") or ""
 BUDGET_STOP_FRAC = env("BUDGET_STOP_FRAC") or ""
@@ -524,8 +583,16 @@ B_MAX_PROBE_PHIS = env("B_MAX_PROBE_PHIS") or ""
 B_MAX_POLICY = env("B_MAX_POLICY") or ""
 SATURATION_STOP = env("SATURATION_STOP") or ""
 SAT_STALL_FRAC = env("SAT_STALL_FRAC") or ""
+SEND_TIMEOUT_S = env("SEND_TIMEOUT_S") or ""
+SAT_DECAY = env("SAT_DECAY") or ""; POOL_TARGET = env("POOL_TARGET") or ""
+DYNAMIC_KC = env("DYNAMIC_KC") or ""
 RETENTION_PROBE_EVERY = env("RETENTION_PROBE_EVERY") or ""
 EVAL_MAX_SAMPLES = env("EVAL_MAX_SAMPLES") or ""
+EVAL_EVERY_N_COMMITS = env("EVAL_EVERY_N_COMMITS") or ""
+EVAL_RESAMPLE = env("EVAL_RESAMPLE") or ""; FINAL_FULL_EVAL = env("FINAL_FULL_EVAL") or ""
+MAX_COMMITS = env("MAX_COMMITS") or ""
+TARGET_STOP = env("TARGET_STOP") or ""; TARGET_STOP_WINDOW = env("TARGET_STOP_WINDOW") or ""
+RESELECT_CADENCE = env("RESELECT_CADENCE") or ""
 TRAINABLE_SCOPE = env("TRAINABLE_SCOPE") or ""
 COMMIT_GATE = env("COMMIT_GATE") or ""; GATE_SAFETY_S = env("GATE_SAFETY_S") or ""
 GATE_RHO_REF = env("GATE_RHO_REF") or ""
@@ -535,6 +602,7 @@ COS_PROBE_EVERY = env("COS_PROBE_EVERY") or ""
 SERVER_WEIGHT_DECAY = env("SERVER_WEIGHT_DECAY") or ""
 SERVER_MOMENTUM = env("SERVER_MOMENTUM") or ""
 ADAPTER_RF = env("ADAPTER_RF") or ""
+LORA_R = env("LORA_R") or ""
 VAR_STOPPING_POLICY = env("VAR_STOPPING_POLICY") or ""; AGG_RATE_TYPE = env("AGG_RATE_TYPE") or ""
 DELAY_FACTOR = env("DELAY_FACTOR") or ""
 DELAY_FLOOR = env("DELAY_FLOOR") or ""
@@ -576,7 +644,8 @@ delays_on = (DELAYS == "on")
 # per-client partition size and hence observed compute. Re-derive both against
 # post-switch compute if TIMING_OVERRUN shows up.
 BASELINE_DELAY_DEFAULTS = {
-    "fluxtune":           {"delays": True, "factor": 0.48, "floor": 4.0},
+    # 12.51 / (24.685 × 1.06) (20 passes, NPU cost, +6% buffer on every arm: EXPERIMENTS §9 10-22).
+    "fluxtune":           {"delays": True, "factor": 0.478, "floor": 4.0},
     # fluxtune_v1 is byte-identical to the profiled fluxtune (no rf/estimator
     # change) -- same numbers, not a guess.
     "fluxtune_v1":        {"delays": True, "factor": 0.48, "floor": 4.0},
@@ -585,8 +654,9 @@ BASELINE_DELAY_DEFAULTS = {
     # trainable params -> compute is if anything a bit lower, so this is a
     # conservative placeholder, not validated). Re-derive if TIMING_OVERRUN
     # shows up on a v2 run (same caveat as the sim_charge_profile one).
-    "fluxtune_v2":        {"delays": True, "factor": 0.48, "floor": 4.0},
-    "fwdllm":             {"delays": True, "factor": 1.63, "floor": 7.0},
+    "fluxtune_v2":        {"delays": True, "factor": 0.478, "floor": 4.0},
+    # 12.51 / (2.468 × 1.06) (2 passes, jvp_perf_opt, +6%); fluxtune's floor keeps the same D shape (EXPERIMENTS §9 10-22).
+    "fwdllm":             {"delays": True, "factor": 4.78, "floor": 4.0},
     "fwdllm_it_oracular": {"delays": True, "factor": 1.63, "floor": 7.0},
     "fwdllm_it_unaware":  {"delays": True, "factor": 1.63, "floor": 7.0},
     "fedbuff_round":      {"delays": True, "factor": 1.63, "floor": 7.0},
@@ -716,6 +786,10 @@ def patch(exp, run_key, variant, trace):
         _mn = MODEL_NAME or MODEL_TYPE
         h["model_name"] = _mn
         exp["trainer"]["config_overrides"]["hyperparameters"]["model_name"] = _mn
+    # Both sides build the model, so both need the same PEFT or shapes differ.
+    if PEFT_METHOD:
+        h["peft_method"] = PEFT_METHOD
+        exp["trainer"]["config_overrides"]["hyperparameters"]["peft_method"] = PEFT_METHOD
     # ABSOLUTE, always: the aggregator resolves this with a bare open() against
     # its OWN cwd (sim_charge_registry.py:19), which spawner.py inherits from the
     # launching shell -- and a miss is a WARNING plus an empty dict, so the vclock
@@ -756,12 +830,20 @@ def patch(exp, run_key, variant, trace):
     # P and the combination rule are ENACTED trainer-side, but S-C's gate needs
     # them aggregator-side too (G_rule = E[v_par^2] under select, P under mean),
     # so both copies are written and must agree -- the aggregator logs its G_rule.
+    if TRAIN_BATCH_SIZE:  # aggregator sizes data_id bins from it, so both sides must agree
+        exp["trainer"]["config_overrides"]["hyperparameters"]["train_batch_size"] = int(TRAIN_BATCH_SIZE)
+        h["train_batch_size"] = int(TRAIN_BATCH_SIZE)
     if PERTURBATION_COUNT:
         exp["trainer"]["config_overrides"]["hyperparameters"]["perturbation_count"] = int(PERTURBATION_COUNT)
         h["perturbation_count"] = int(PERTURBATION_COUNT)
     if PROBE_COMBINE:
         exp["trainer"]["config_overrides"]["hyperparameters"]["probe_combine"] = PROBE_COMBINE
         h["probe_combine"] = PROBE_COMBINE
+    if PERTURBATION_SELECT:  # trainer-only; overrides baselines.yaml's select_perturbation_using_jvp
+        assert PERTURBATION_SELECT in ("jvp", "cos", "cos_every_bin"), PERTURBATION_SELECT
+        _thp = exp["trainer"]["config_overrides"]["hyperparameters"]
+        _thp["select_perturbation_using_jvp"] = PERTURBATION_SELECT == "jvp"
+        _thp["cos_select_every_bin"] = PERTURBATION_SELECT == "cos_every_bin"
     # S-C: scale-free commit gate. n_target sizes the pool from the step it is
     # about to take instead of comparing var against a tuned constant.
     if COMMIT_GATE:
@@ -775,7 +857,7 @@ def patch(exp, run_key, variant, trace):
         h["gate_rho_ref"] = GATE_RHO_REF
     # B1: server-side ground-truth cos(G,g). Aggregator-only, no trainer cost.
     # Written only when the CLI said so, either way -- unset inherits the catalog,
-    # which is why `--no-` exists: v2 sets it ON and nothing could turn it off.
+    # catalog default is off; `--no-` kept for explicit opt-out.
     if COS_GROUND_TRUTH_AUDIT:
         h["cos_ground_truth_audit"] = COS_GROUND_TRUTH_AUDIT != "0"
     if COS_PROBE_BATCH_SIZE:
@@ -791,12 +873,17 @@ def patch(exp, run_key, variant, trace):
     if ADAPTER_RF:
         h["adapter_reduction_factor"] = int(ADAPTER_RF)
         exp["trainer"]["config_overrides"]["hyperparameters"]["adapter_reduction_factor"] = int(ADAPTER_RF)
+    if LORA_R:
+        h["lora_r"] = int(LORA_R)
+        exp["trainer"]["config_overrides"]["hyperparameters"]["lora_r"] = int(LORA_R)
     # S-A/S-B: aggregator-side step rule. S-A alone leaves ||theta|| geometric,
     # so an arm that sets trust_ratio without rho_schedule=rm is testing S-A only.
     if SERVER_STEP_RULE:
         h["server_step_rule"] = SERVER_STEP_RULE
     if RHO_STAR:
         h["rho_star"] = float(RHO_STAR)
+    if RHO0:
+        h["rho0"] = float(RHO0)
     if RHO_SCHEDULE:
         h["rho_schedule"] = RHO_SCHEDULE
     if RHO_EXP:
@@ -830,11 +917,30 @@ def patch(exp, run_key, variant, trace):
     # only the curve -- no target, no chance level, no num_labels (buildplan §5.13).
     if SAT_STALL_FRAC:
         h["sat_stall_frac"] = float(SAT_STALL_FRAC)
+    if SEND_TIMEOUT_S:
+        h["send_timeout_wait_s"] = float(SEND_TIMEOUT_S)
+    if SAT_DECAY == "0":
+        h["sat_decay"] = False
+    if POOL_TARGET:
+        h["pool_target"] = int(POOL_TARGET)
     # P3': aggregator-only, one dot per strided commit.
     if RETENTION_PROBE_EVERY:
         h["retention_probe_every"] = int(RETENTION_PROBE_EVERY)
     if EVAL_MAX_SAMPLES:
         h["eval_max_samples"] = int(EVAL_MAX_SAMPLES)
+    if EVAL_EVERY_N_COMMITS:
+        h["eval_every_n_commits"] = int(EVAL_EVERY_N_COMMITS)
+    if EVAL_RESAMPLE:
+        h["eval_resample"] = True
+    if FINAL_FULL_EVAL:
+        h["final_full_eval"] = True
+    if MAX_COMMITS:
+        h["max_commits"] = int(MAX_COMMITS)
+    if TARGET_STOP:
+        h["target_stop_acc"] = float(TARGET_STOP)
+        h["target_stop_window"] = int(TARGET_STOP_WINDOW or 2)
+    if RESELECT_CADENCE:
+        h["reselect_cadence"] = RESELECT_CADENCE
     # S-I: BOTH sides build the model, so both need the scope or the aggregator's
     # requires_grad mask disagrees with the trainer's probe mask.
     if TRAINABLE_SCOPE:
@@ -857,6 +963,8 @@ def patch(exp, run_key, variant, trace):
                 "align_floor": 0.0, "inverse_var": False, "var_ref": 0.3,
                 "scale": 0.4, "a_exp": 0.25, "b_exp": 0.1,
             }
+        elif AGG_RATE_TYPE == "uniform":
+            _ok["agg_rate_conf"] = {"type": "uniform"}
         else:  # new (FeLiX) or old
             _ok["agg_rate_conf"] = {
                 "type": AGG_RATE_TYPE, "scale": 0.4, "a_exp": 0.25, "b_exp": 0.1,
@@ -876,6 +984,8 @@ def patch(exp, run_key, variant, trace):
         kwargs["c"] = int(SEL_C)
     if SEL_C_ASYNC and is_async:
         kwargs["c"] = int(SEL_C_ASYNC)
+    if DYNAMIC_KC:
+        kwargs.setdefault("dynamic_kc", {})["enabled"] = DYNAMIC_KC == "on"
     # K IS agg_goal. `selector.kwargs.k` is read by NOTHING in flame, so --k
     # (and the registry's `K`) silently no-opped; agg_goal is the single source
     # of truth the runner fans into hyperparameters.aggGoal + selector.kwargs
@@ -1000,9 +1110,11 @@ for trace in traces:
                 # model_type matters: the adapter table is per model, and reading
                 # it DistilBERT-only priced a roberta-large arm at 9.4x too small
                 # a `p` and refused a valid config (2026-08-24).
+                # LoRA's table is keyed by rank, adapters' by rf.
+                _size = (int(_hp("lora_r") or 8) if _hp("peft_method") == "lora"
+                         else int(_hp("adapter_reduction_factor") or 16))
                 _p_wc = dsreg.get(_hp("dataset") or "agnews").probe_dim(
-                    int(_hp("adapter_reduction_factor") or 16),
-                    str(_hp("model_type") or "distilbert"))
+                    _size, str(_hp("model_type") or "distilbert"), _hp("model_name"))
                 # (c)/(d): sim's REAL-wall cap is sim_wall_ceiling_s (code default
                 # max_runtime_s*20); real mode has no such knob -- its outer safety
                 # is max_experiment_runtime_s (patch()'s own default, above).

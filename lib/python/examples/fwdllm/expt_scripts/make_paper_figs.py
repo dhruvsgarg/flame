@@ -84,7 +84,7 @@ def _save(fig, out_dir, name, args, written):
         return
     if args.synthetic:
         P.watermark(fig)
-    S.save_pdf(fig, out_dir, name)
+    S.save_pdf(fig, out_dir, name, png=args.png)
     written.append(name)
 
 
@@ -144,6 +144,7 @@ def main() -> int:
     ap.add_argument("--smooth", type=float, default=0.6, help="EMA for curves (visual only)")
     ap.add_argument("--cutoff-mode", choices=["none", "peak_acc", "loss_plateau"],
                     default="none", help="clip each run's tail (default: full run)")
+    ap.add_argument("--png", action="store_true", help="also write a .png next to each .pdf")
     args = ap.parse_args()
     args.grace_s = None if args.cutoff_mode == "none" else 0.0
     args.cutoff_mode = "peak_acc" if args.cutoff_mode == "none" else args.cutoff_mode

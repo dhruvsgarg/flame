@@ -107,10 +107,12 @@ def ema(values, factor: float):
     return out
 
 
-def save_pdf(fig, out_dir: str, name: str):
+def save_pdf(fig, out_dir: str, name: str, png: bool = False):
     """Write `<out_dir>/<name>.pdf` — the only artifact. Figures are vector PDF
     (resolution-independent); `savefig.dpi=300` covers any rasterized element."""
     fig.tight_layout(pad=0.3)
     fig.savefig(os.path.join(out_dir, f"{name}.pdf"))
+    if png:  # raster copy for quick viewing
+        fig.savefig(os.path.join(out_dir, f"{name}.png"), dpi=150)
     import matplotlib.pyplot as plt
     plt.close(fig)

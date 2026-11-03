@@ -4,31 +4,31 @@
 _meta:
   datasets:
   - yahoo
-  profiled_at: '2026-08-22'
+  profiled_at: '2026-10-25'
 drain_tail:
   _default:
     charge: true
-    mean_s: 0.4339
-    n: 242
-    p90_s: 1.6294
-    profiled_at: '2026-08-22'
+    mean_s: 0.1199
+    n: 37
+    p90_s: 0.1498
+    profiled_at: '2026-10-25'
     rationale: sim runs the same op under ~100 co-located trainer threads, so its
       live span is contention-inflated and folding it on the vclock injects sim-host
       noise (simulate_fwdllm.md D-18, F-1/F-20). Charged from this baseline's own
       real.
     source_runs:
-    - run_20260820_122749_fluxtune_yahoo_n100_smoke_syn_0_real
+    - run_20261025_065655_g0_smollm_fluxtune_yahoo_n16_smoke_syn_0_real
 fedavg:
   _default:
     charge: true
-    mean_s: 0.075
-    n: 242
-    p90_s: 0.1984
-    profiled_at: '2026-08-22'
+    mean_s: 0.9174
+    n: 37
+    p90_s: 4.7161
+    profiled_at: '2026-10-25'
     rationale: same as drain_tail -- sim's own span is contention-inflated, so the
       charge comes from this baseline's own real.
     source_runs:
-    - run_20260820_122749_fluxtune_yahoo_n100_smoke_syn_0_real
+    - run_20261025_065655_g0_smollm_fluxtune_yahoo_n16_smoke_syn_0_real
 redispatch_turnaround:
   var_bad:
     charge: false
